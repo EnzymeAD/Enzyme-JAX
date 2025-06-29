@@ -1321,89 +1321,6 @@ public:
                           MGradientUtilsReverse *gutils) const {}
 };
 
-class AutoDiffDynamicSliceUpdateRev
-    : public ReverseAutoDiffOpInterface::ExternalModel<
-          AutoDiffDynamicSliceUpdateRev, DynamicUpdateSliceOp> {
-public:
-  LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
-                                         MGradientUtilsReverse *gutils,
-                                         SmallVector<Value> caches) const {
-    auto op = cast<DynamicUpdateSliceOp>(orig);
-    auto operand = op.getOperand();
-    auto update = op.getUpdate();
-
-    SmallVector<Value> startIndices;
-
-    Value diffe;
-    if (!gutils->isConstantValue(operand)) {
-
-      for (auto cache : caches) {
-        startIndices.push_back(gutils->popCache(cache, builder));
-      }
-
-      diffe = gutils->diffe(orig->getResult(0), builder);
-      auto operandDiffe = builder.create<DynamicUpdateSliceOp>(
-          orig->getLoc(), diffe,
-          cast<AutoDiffTypeInterface>(update.getType())
-              .createNullValue(builder, orig->getLoc()),
-          startIndices);
-
-      gutils->addToDiffe(operand, operandDiffe, builder);
-    }
-
-    if (!gutils->isConstantValue(update)) {
-      if (startIndices.size() != caches.size()) {
-        for (auto cache : caches) {
-          startIndices.push_back(gutils->popCache(cache, builder));
-        }
-      }
-
-      if (!diffe)
-        diffe = gutils->diffe(orig->getResult(0), builder);
-
-      auto sliceSizes = builder.getDenseI64ArrayAttr(
-          cast<TensorType>(update.getType()).getShape());
-      auto updateDiffe = builder.create<DynamicSliceOp>(
-          orig->getLoc(), diffe, startIndices, sliceSizes);
-
-      gutils->addToDiffe(update, updateDiffe, builder);
-    }
-
-    if (diffe)
-      gutils->zeroDiffe(op, builder);
-
-    return success();
-  }
-
-  SmallVector<Value> cacheValues(Operation *orig,
-                                 MGradientUtilsReverse *gutils) const {
-    auto op = cast<DynamicUpdateSliceOp>(orig);
-
-    if (gutils->isConstantValue(op.getOperand()) &&
-        gutils->isConstantValue(op.getUpdate()))
-      return {};
-
-    Operation *newOp = gutils->getNewFromOriginal(orig);
-    OpBuilder cacheBuilder(newOp);
-
-    auto startIndices = op.getStartIndices();
-
-    SmallVector<Value> caches;
-    caches.reserve(startIndices.size());
-
-    for (auto startIndex : startIndices) {
-      Value predCache = gutils->initAndPushCache(
-          gutils->getNewFromOriginal(startIndex), cacheBuilder);
-      caches.push_back(predCache);
-    }
-
-    return caches;
-  }
-
-  void createShadowValues(Operation *op, OpBuilder &builder,
-                          MGradientUtilsReverse *gutils) const {}
-};
-
 class AutoDiffSliceRev
     : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffSliceRev,
                                                        SliceOp> {
@@ -4420,8 +4337,6 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     WhileOp::attachInterface<AutoDiffReduceCF<WhileOp>>(*context);
     BroadcastInDimOp::attachInterface<AutoDiffBroadcastInDimRev>(*context);
     SliceOp::attachInterface<AutoDiffSliceRev>(*context);
-    DynamicUpdateSliceOp::attachInterface<AutoDiffDynamicSliceUpdateRev>(
-        *context);
     ReduceOp::attachInterface<AutoDiffReduceRev>(*context);
     ReduceWindowOp::attachInterface<AutoDiffReduceWindowRev>(*context);
     ConcatenateOp::attachInterface<AutoDiffConcatenateRev>(*context);
