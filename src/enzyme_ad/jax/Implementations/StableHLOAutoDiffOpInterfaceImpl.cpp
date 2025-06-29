@@ -740,12 +740,18 @@ class AutoDiffWhileRev
     for (auto &&[origarg, revinnerarg] : llvm::zip_equal(
              origBody->getArguments(), revInnerBody->getArguments())) {
       mapping.map(origarg, revinnerarg);
+      gutils->originalToNewFn.map(origarg, revinnerarg);
     }
     mapping.map(origBody->getArgument(0), currentIV);
+    gutils->originalToNewFn.map(origBody->getArgument(0), currentIV);
 
     for (Operation &op : origBody->without_terminator()) {
       auto newOp = builder.clone(op, mapping);
       gutils->originalToNewFnOps[&op] = newOp;
+      for (auto &&[oldv, newv] :
+           llvm::zip(op.getResults(), newOp->getResults())) {
+        gutils->originalToNewFn.map(oldv, newv);
+      }
     }
     {
       auto oldTerm = cast<stablehlo::ReturnOp>(origBody->getTerminator());
@@ -772,32 +778,25 @@ class AutoDiffWhileRev
       }
     }
 
-    for (auto [oldVal, newVal] : mapping.getValueMap())
-      gutils->originalToNewFn.map(oldVal, newVal);
-
     bool anyFailed = false;
 
-    llvm::errs() << " before visit: " << *parentFn << "\n";
-
     {
-      OpBuilder builder(revInner);
+      OpBuilder cacheBuilder(revInner);
       auto loc = orig->getLoc();
       auto cacheCreator = [&](Type t) {
-      Value cache = builder.create<enzyme::InitOp>(loc, t);
-      return std::make_pair(cache, cache);
-    };
-     gutils->registerCacheCreatorHook(cacheCreator);
+        Value cache = cacheBuilder.create<enzyme::InitOp>(loc, t);
+        return std::make_pair(cache, cache);
+      };
+      gutils->registerCacheCreatorHook(cacheCreator);
 
-    auto rstart = origBody->rbegin(), rend = origBody->rend();
-    rstart++;
-    for (auto it = rstart; it != rend; it++) {
-      Operation *op = &*it;
-      anyFailed |= gutils->Logic.visitChild(op, builder, gutils).failed();
+      auto rstart = origBody->rbegin(), rend = origBody->rend();
+      rstart++;
+      for (auto it = rstart; it != rend; it++) {
+        Operation *op = &*it;
+        anyFailed |= gutils->Logic.visitChild(op, builder, gutils).failed();
+      }
+      gutils->deregisterCacheCreatorHook(cacheCreator);
     }
-     gutils->deregisterCacheCreatorHook(cacheCreator);
-  }
-
-    llvm::errs() << " after visit: " << *parentFn << "\n";
 
     SmallVector<Value> newResults;
     for (auto &&[active, arg] :
@@ -832,7 +831,6 @@ class AutoDiffWhileRev
       }
     }
 
-    llvm::errs() << " post visit: " << *parentFn << "\n";
     return success(!anyFailed);
   }
 
@@ -2750,19 +2748,11 @@ private:
     }
     void dump() const {
       if (type == VAL)
-        llvm::errs() << "[" << V << ", "
-                     << "Value"
-                     << "]\n";
+        llvm::errs() << "[" << V << ", " << "Value" << "]\n";
       else if (type == OP)
-        llvm::errs() << "[" << *O << ", "
-                     << "Operation"
-                     << "]\n";
+        llvm::errs() << "[" << *O << ", " << "Operation" << "]\n";
       else
-        llvm::errs() << "["
-                     << "NULL"
-                     << ", "
-                     << "None"
-                     << "]\n";
+        llvm::errs() << "[" << "NULL" << ", " << "None" << "]\n";
     }
   };
 

@@ -1,3 +1,5 @@
+// RUN: enzymexlamlir-opt %s --enzyme --canonicalize --remove-unnecessary-enzyme-ops --enzyme-simplify-math --arith-raise --canonicalize | FileCheck %s
+
 module {
   func.func private @f(%arg18: tensor<1xf64>, %arg26: tensor<1xf64>, %arg33: tensor<1xf64>, %arg58: tensor<1xf64>) -> (tensor<1xf64>, tensor<1xf64>) {
 
@@ -37,4 +39,9 @@ module {
     return %0#0, %0#1 : tensor<1xf64>, tensor<1xf64>
   }
 }
+
+// This checks that we don't accidentally replace users of the %c_204 captured by the while loop for checkpointing with a pop from within checkpointing, and crash
+// when computing the derivative of %4.
+
+// CHECK: func.func private @diffef
 
