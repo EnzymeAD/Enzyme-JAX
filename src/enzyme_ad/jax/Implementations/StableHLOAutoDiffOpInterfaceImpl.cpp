@@ -779,12 +779,23 @@ class AutoDiffWhileRev
 
     llvm::errs() << " before visit: " << *parentFn << "\n";
 
+    {
+      OpBuilder builder(revInner);
+      auto loc = orig->getLoc();
+      auto cacheCreator = [&](Type t) {
+      Value cache = builder.create<enzyme::InitOp>(loc, t);
+      return std::make_pair(cache, cache);
+    };
+     gutils->registerCacheCreatorHook(cacheCreator);
+
     auto rstart = origBody->rbegin(), rend = origBody->rend();
     rstart++;
     for (auto it = rstart; it != rend; it++) {
       Operation *op = &*it;
       anyFailed |= gutils->Logic.visitChild(op, builder, gutils).failed();
     }
+     gutils->deregisterCacheCreatorHook(cacheCreator);
+  }
 
     llvm::errs() << " after visit: " << *parentFn << "\n";
 
