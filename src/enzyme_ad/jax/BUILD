@@ -343,9 +343,12 @@ td_library(
     name = "EnzymeXLADialectTdFiles",
     srcs = [
         "Dialect/Dialect.td",
+        "Dialect/EnzymeXLAAttrs.td",
+        "Dialect/EnzymeXLAOps.td",
     ],
     includes = ["."],
     deps = [
+        "@enzyme//:EnzymeDialectTdFiles",
         "@llvm-project//mlir:ControlFlowInterfacesTdFiles",
         "@llvm-project//mlir:FunctionInterfacesTdFiles",
         "@llvm-project//mlir:InferTypeOpInterface",
@@ -354,6 +357,33 @@ td_library(
         "@llvm-project//mlir:OpBaseTdFiles",
         "@llvm-project//mlir:SideEffectInterfacesTdFiles",
         "@llvm-project//mlir:ViewLikeInterfaceTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "EnzymeXLAAttrsIncGen",
+    tbl_outs = {
+        "Dialect/EnzymeXLAAttrEnums.h.inc": [
+            "--gen-enum-decls",
+            "--attrdefs-dialect=enzymexla",
+        ],
+        "Dialect/EnzymeXLAAttrEnums.cpp.inc": [
+            "--gen-enum-defs",
+            "--attrdefs-dialect=enzymexla",
+        ],
+        "Dialect/EnzymeXLAAttrDefs.h.inc": [
+            "--gen-attrdef-decls",
+            "--attrdefs-dialect=enzymexla",
+        ],
+        "Dialect/EnzymeXLAAttrDefs.cpp.inc": [
+            "--gen-attrdef-defs",
+            "--attrdefs-dialect=enzymexla",
+        ],
+    },
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/EnzymeXLAAttrs.td",
+    deps = [
+        ":EnzymeXLADialectTdFiles",
     ],
 )
 
@@ -386,6 +416,7 @@ gentbl_cc_library(
     tblgen = "@llvm-project//mlir:mlir-tblgen",
     td_file = "Dialect/EnzymeXLAOps.td",
     deps = [
+        ":EnzymeXLAAttrsIncGen",
         ":EnzymeXLADialectTdFiles",
         "@enzyme//:EnzymeDialectTdFiles",
         "@llvm-project//mlir:CopyOpInterfaceTdFiles",
@@ -467,6 +498,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":EnzymeHLOPatternsIncGen",
+        ":EnzymeXLAAttrsIncGen",
         ":EnzymeXLAOpsIncGen",
         ":EnzymeXLAPassesIncGen",
         ":RaisingTransformOps",
