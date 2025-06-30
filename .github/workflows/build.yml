@@ -80,10 +80,17 @@ jobs:
           retention-days: 90
       - name: Build wheel
         timeout-minutes: 240
+        if: ${{ !endsWith(matrix.os, 'arm') }}
         run: |
           bazel build $BAZEL_FLAGS --color=yes :wheel --test_output=errors
+      - name: Build
+        timeout-minutes: 240
+        if: ${{ endsWith(matrix.os, 'arm') }}
+        run: |
+          bazel build $BAZEL_FLAGS --color=yes :enzymexlamlir-opt --test_output=errors
       - name: Upload wheel
         uses: actions/upload-artifact@v4
+        if: ${{ !endsWith(matrix.os, 'arm') }}
         with:
           name: Enzyme-JAX-Wheel-${{ matrix.os }}-${{ matrix.python }}
           path: "bazel-bin/*.whl"
