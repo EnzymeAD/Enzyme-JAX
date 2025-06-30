@@ -5185,17 +5185,17 @@ public:
       for (auto i = 0; i < conditional->getNumResults(); i++)
         resultsNeeded.insert(i);
 
-    for (auto op : toLift) {
-      for (auto operand : op->getOperands()) {
-        if (auto ba = dyn_cast<BlockArgument>(operand)) {
-          if (!dominance.dominates(ba, conditional)) {
-            return rewriter.notifyMatchFailure(
-                loadOp,
-                "block argument requirement not part dominating conditional");
+      for (auto op : toLift) {
+        for (auto operand : op->getOperands()) {
+          if (auto ba = dyn_cast<BlockArgument>(operand)) {
+            if (!dominance.dominates(ba, conditional)) {
+              return rewriter.notifyMatchFailure(
+                  loadOp,
+                  "block argument requirement not part dominating conditional");
+            }
           }
         }
       }
-    }
     }
 
     auto cloneIntoBlock = [&](unsigned blockNum) {
