@@ -2881,8 +2881,9 @@ enum class IntrType : uint32_t {
 // `indexBitwidth`, sign-extend or truncate the resulting value to match the
 // bitwidth expected by the consumers of the value.
 template <typename Op, typename XOp, typename YOp, typename ZOp>
-struct OpLowering : public ConvertOpToLLVMPattern<Op> {
+struct OpLowering : public OpRewritePattern<Op> {
 private:
+  const LLVMTypeConverter &converter;
   unsigned indexBitwidth;
   IndexKind indexKind;
   IntrType intrType;
@@ -2890,21 +2891,22 @@ private:
 public:
   explicit OpLowering(const LLVMTypeConverter &typeConverter,
                       PatternBenefit benefit = 1)
-      : ConvertOpToLLVMPattern<Op>(typeConverter, benefit),
+      : OpRewritePattern<Op>(&typeConverter.getContext(), benefit),
+        converter(typeConverter),
         indexBitwidth(typeConverter.getIndexTypeBitwidth()),
         indexKind(IndexKind::Other), intrType(IntrType::None) {}
 
   explicit OpLowering(const LLVMTypeConverter &typeConverter,
                       IndexKind indexKind, IntrType intrType,
                       PatternBenefit benefit = 1)
-      : ConvertOpToLLVMPattern<Op>(typeConverter, benefit),
+      : OpRewritePattern<Op>(&typeConverter.getContext(), benefit),
+        converter(typeConverter),
         indexBitwidth(typeConverter.getIndexTypeBitwidth()),
         indexKind(indexKind), intrType(intrType) {}
 
   // Convert the kernel arguments to an LLVM type, preserve the rest.
-  LogicalResult
-  matchAndRewrite(Op op, typename Op::Adaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite(Op op,
+                                PatternRewriter &rewriter) const override {
     auto loc = op->getLoc();
     MLIRContext *context = rewriter.getContext();
     Operation *newOp;
@@ -2982,7 +2984,8 @@ public:
           loc, IntegerType::get(context, indexBitwidth), newOp->getResult(0));
     }
 
-    rewriter.replaceOp(op, newOp->getResults());
+    rewriter.replaceOpWithNewOp<UnrealizedConversionCastOp>(
+        op, op->getResultTypes(), newOp->getResults());
     return success();
   }
 };
@@ -3006,45 +3009,48 @@ populateCStyleGPUFuncLoweringPatterns(RewritePatternSet &patterns,
                         gpuTarget == "cuda"
                             ? NVVM::NVVMDialect::getKernelFuncAttrName()
                             : ROCDL::ROCDLDialect::getKernelFuncAttrName()));
-  }
-  if (gpuTarget == "cuda") {
-    using namespace mlir::gpu::index_lowering;
-    PatternBenefit benefit(1);
-    patterns.add<
-        gpu::index_lowering::OpLowering<gpu::ThreadIdOp, NVVM::ThreadIdXOp,
-                                        NVVM::ThreadIdYOp, NVVM::ThreadIdZOp>>(
-        typeConverter, IndexKind::Block, IntrType::Id, benefit);
-    patterns.add<
-        gpu::index_lowering::OpLowering<gpu::BlockDimOp, NVVM::BlockDimXOp,
-                                        NVVM::BlockDimYOp, NVVM::BlockDimZOp>>(
-        typeConverter, IndexKind::Block, IntrType::Dim, benefit);
-    patterns.add<gpu::index_lowering::OpLowering<
-        gpu::ClusterIdOp, NVVM::ClusterIdXOp, NVVM::ClusterIdYOp,
-        NVVM::ClusterIdZOp>>(typeConverter, IndexKind::Other, IntrType::Id,
-                             benefit);
-    patterns.add<gpu::index_lowering::OpLowering<
-        gpu::ClusterDimOp, NVVM::ClusterDimXOp, NVVM::ClusterDimYOp,
-        NVVM::ClusterDimZOp>>(typeConverter, IndexKind::Other, IntrType::Dim,
+  } else {
+    if (gpuTarget == "cuda") {
+      using namespace mlir::gpu::index_lowering;
+      PatternBenefit benefit(1);
+      patterns.add<gpu::index_lowering::OpLowering<
+          gpu::ThreadIdOp, NVVM::ThreadIdXOp, NVVM::ThreadIdYOp,
+          NVVM::ThreadIdZOp>>(typeConverter, IndexKind::Block, IntrType::Id,
                               benefit);
-    patterns.add<gpu::index_lowering::OpLowering<
-        gpu::ClusterBlockIdOp, NVVM::BlockInClusterIdXOp,
-        NVVM::BlockInClusterIdYOp, NVVM::BlockInClusterIdZOp>>(
-        typeConverter, IndexKind::Other, IntrType::Id, benefit);
-    patterns.add<gpu::index_lowering::OpLowering<
-        gpu::ClusterDimBlocksOp, NVVM::ClusterDimBlocksXOp,
-        NVVM::ClusterDimBlocksYOp, NVVM::ClusterDimBlocksZOp>>(
-        typeConverter, IndexKind::Other, IntrType::Dim, benefit);
-    patterns.add<gpu::index_lowering::OpLowering<
-        gpu::BlockIdOp, NVVM::BlockIdXOp, NVVM::BlockIdYOp, NVVM::BlockIdZOp>>(
-        typeConverter, IndexKind::Grid, IntrType::Id, benefit);
-    patterns.add<gpu::index_lowering::OpLowering<
-        gpu::GridDimOp, NVVM::GridDimXOp, NVVM::GridDimYOp, NVVM::GridDimZOp>>(
-        typeConverter, IndexKind::Grid, IntrType::Dim, benefit);
-    patterns.add<GPULaneIdOpToNVVM, GPUShuffleOpLowering>(typeConverter,
-                                                          benefit);
+      patterns.add<gpu::index_lowering::OpLowering<
+          gpu::BlockDimOp, NVVM::BlockDimXOp, NVVM::BlockDimYOp,
+          NVVM::BlockDimZOp>>(typeConverter, IndexKind::Block, IntrType::Dim,
+                              benefit);
+      patterns.add<gpu::index_lowering::OpLowering<
+          gpu::ClusterIdOp, NVVM::ClusterIdXOp, NVVM::ClusterIdYOp,
+          NVVM::ClusterIdZOp>>(typeConverter, IndexKind::Other, IntrType::Id,
+                               benefit);
+      patterns.add<gpu::index_lowering::OpLowering<
+          gpu::ClusterDimOp, NVVM::ClusterDimXOp, NVVM::ClusterDimYOp,
+          NVVM::ClusterDimZOp>>(typeConverter, IndexKind::Other, IntrType::Dim,
+                                benefit);
+      patterns.add<gpu::index_lowering::OpLowering<
+          gpu::ClusterBlockIdOp, NVVM::BlockInClusterIdXOp,
+          NVVM::BlockInClusterIdYOp, NVVM::BlockInClusterIdZOp>>(
+          typeConverter, IndexKind::Other, IntrType::Id, benefit);
+      patterns.add<gpu::index_lowering::OpLowering<
+          gpu::ClusterDimBlocksOp, NVVM::ClusterDimBlocksXOp,
+          NVVM::ClusterDimBlocksYOp, NVVM::ClusterDimBlocksZOp>>(
+          typeConverter, IndexKind::Other, IntrType::Dim, benefit);
+      patterns.add<
+          gpu::index_lowering::OpLowering<gpu::BlockIdOp, NVVM::BlockIdXOp,
+                                          NVVM::BlockIdYOp, NVVM::BlockIdZOp>>(
+          typeConverter, IndexKind::Grid, IntrType::Id, benefit);
+      patterns.add<
+          gpu::index_lowering::OpLowering<gpu::GridDimOp, NVVM::GridDimXOp,
+                                          NVVM::GridDimYOp, NVVM::GridDimZOp>>(
+          typeConverter, IndexKind::Grid, IntrType::Dim, benefit);
+      patterns.add<GPULaneIdOpToNVVM, GPUShuffleOpLowering>(typeConverter,
+                                                            benefit);
 
-    populateLibDeviceConversionPatterns(typeConverter, patterns, benefit);
-    patterns.add<GPUBarrierToNVVM>(typeConverter, benefit);
+      populateLibDeviceConversionPatterns(typeConverter, patterns, benefit);
+      patterns.add<GPUBarrierToNVVM>(typeConverter, benefit);
+    }
   }
 }
 
@@ -3106,7 +3112,10 @@ struct ConvertPolygeistToLLVMPass
       });
     }
 
-    m->walk([&](gpu::GPUModuleOp mod) {
+    SmallVector<Operation *> gmods;
+    m->walk([&](gpu::GPUModuleOp mod) { gmods.push_back(mod); });
+
+    for (auto mod : gmods) {
       RewritePatternSet patterns(&getContext());
 
       GreedyRewriteConfig config;
@@ -3120,7 +3129,7 @@ struct ConvertPolygeistToLLVMPass
               applyPatternsAndFoldGreedily(mod, std::move(patterns), config))) {
         signalPassFailure();
       }
-    });
+    };
 
     LLVMConversionTarget target(getContext());
     RewritePatternSet patterns(&getContext());
