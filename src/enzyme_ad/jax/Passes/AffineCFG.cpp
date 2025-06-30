@@ -5140,7 +5140,7 @@ public:
       for (auto op : toLift) {
         for (auto operand : op->getOperands()) {
           if (auto ba = dyn_cast<BlockArgument>(operand)) {
-            if (!dominance.dominates(ba, conditional)) {
+            if (!dominance.dominates(ba, postOp)) {
               return rewriter.notifyMatchFailure(
                   loadOp,
                   "block argument requirement not part dominating conditional");
@@ -5184,7 +5184,6 @@ public:
     } else {
       for (auto i = 0; i < conditional->getNumResults(); i++)
         resultsNeeded.insert(i);
-    }
 
     for (auto op : toLift) {
       for (auto operand : op->getOperands()) {
@@ -5196,6 +5195,7 @@ public:
           }
         }
       }
+    }
     }
 
     auto cloneIntoBlock = [&](unsigned blockNum) {
