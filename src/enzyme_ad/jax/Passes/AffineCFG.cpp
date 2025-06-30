@@ -5137,6 +5137,17 @@ public:
         return rewriter.notifyMatchFailure(
             loadOp, "non-pure operation on the path (V2)");
       }
+      for (auto op : toLift) {
+        for (auto operand : op->getOperands()) {
+          if (auto ba = dyn_cast<BlockArgument>(operand)) {
+            if (!dominance.dominates(ba, postOp)) {
+              return rewriter.notifyMatchFailure(
+                  loadOp,
+                  "block argument requirement not part dominating conditional");
+            }
+          }
+        }
+      }
 
       SmallVector<std::unique_ptr<Region>> regions;
       regions.emplace_back(new Region);
@@ -5173,6 +5184,18 @@ public:
     } else {
       for (auto i = 0; i < conditional->getNumResults(); i++)
         resultsNeeded.insert(i);
+
+      for (auto op : toLift) {
+        for (auto operand : op->getOperands()) {
+          if (auto ba = dyn_cast<BlockArgument>(operand)) {
+            if (!dominance.dominates(ba, conditional)) {
+              return rewriter.notifyMatchFailure(
+                  loadOp,
+                  "block argument requirement not part dominating conditional");
+            }
+          }
+        }
+      }
     }
 
     auto cloneIntoBlock = [&](unsigned blockNum) {
