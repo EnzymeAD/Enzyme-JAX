@@ -309,6 +309,15 @@ bool isScatterSetindexOp(stablehlo::ScatterOp &op);
 
 SmallVector<int64_t> computeGatherSliceSizes(stablehlo::ScatterOp &scatterOp);
 
+template <typename T>
+stablehlo::ConstantOp createConstantOpFromScalar(PatternRewriter &rewriter,
+                                                 Operation *op, T value) {
+  return rewriter.create<stablehlo::ConstantOp>(
+      op->getLoc(), op->getResult(0).getType(),
+      cast<ElementsAttr>(
+          mlir::enzyme::makeAttr(op->getResult(0).getType(), value)));
+}
+
 } // namespace stablehlo
 
 } // namespace mlir

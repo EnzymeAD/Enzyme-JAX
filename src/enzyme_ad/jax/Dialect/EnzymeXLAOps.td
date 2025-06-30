@@ -11,7 +11,7 @@
 
 include "Enzyme/MLIR/Dialect/Dialect.td"
 include "Dialect.td"
-
+include "EnzymeXLAAttrs.td"
 
 include "mlir/Interfaces/CopyOpInterface.td"
 include "mlir/Interfaces/ViewLikeInterface.td"
@@ -345,6 +345,8 @@ def CommRegionOp : EnzymeXLA_Op<"comm_region", [
   );
 }
 
+// Linear Algebra Ops
+
 def LUFactorizationOp: EnzymeXLA_Op<"linalg.lu", [Pure]> {
   let summary = "LU factorization operation with RowMaximum pivoting.";
 
@@ -382,6 +384,7 @@ def QRFactorizationOp: EnzymeXLA_Op<"linalg.qr", [Pure]> {
   }];
 }
 
+
 def SVDFactorizationOp : EnzymeXLA_Op<"linalg.svd", [Pure]> {
   let summary = "Singular Value Decomposition (SVD) factorization operation.";
 
@@ -396,6 +399,37 @@ def SVDFactorizationOp : EnzymeXLA_Op<"linalg.svd", [Pure]> {
     HLO_Tensor:$Vt,
     HLO_Tensor:$info
   );
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
+// Machine Learning Ops
+
+def GeluOp: EnzymeXLA_Op<"ml.gelu", [Pure, SameOperandsAndResultType, Elementwise]> {
+  let summary = "Computes the GELU activation function";
+
+  let arguments = (ins
+    HLO_Tensor:$input,
+    EnzymeXLA_GeluApproximationAttr:$gelu_approximation
+  );
+
+  let results = (outs HLO_Tensor:$result);
+
+  let assemblyFormat = [{
+    $input `,` `approximation``=`$gelu_approximation attr-dict `:` functional-type($input, results)
+  }];
+}
+
+def ReluOp: EnzymeXLA_Op<"ml.relu", [Pure, SameOperandsAndResultType, Elementwise]> {
+  let summary = "Computes the RELU activation function";
+
+  let arguments = (ins
+    HLO_Tensor:$input
+  );
+
+  let results = (outs HLO_Tensor:$result);
 
   let assemblyFormat = [{
     $input attr-dict `:` functional-type($input, results)
