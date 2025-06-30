@@ -2996,15 +2996,17 @@ public:
 static void
 populateCStyleGPUFuncLoweringPatterns(RewritePatternSet &patterns,
                                       LLVMTypeConverter &typeConverter,
-                                      std::string gpuTarget) {
-  patterns.add<GPUReturnOpLowering>(typeConverter);
-  patterns.add<GPUFuncOpLowering>(
-      typeConverter,
-      /*allocaAddrSpace=*/0,
-      StringAttr::get(&typeConverter.getContext(),
-                      gpuTarget == "cuda"
-                          ? NVVM::NVVMDialect::getKernelFuncAttrName()
-                          : ROCDL::ROCDLDialect::getKernelFuncAttrName()));
+                                      std::string gpuTarget, bool func) {
+  if (func) {
+    patterns.add<GPUReturnOpLowering>(typeConverter);
+    patterns.add<GPUFuncOpLowering>(
+        typeConverter,
+        /*allocaAddrSpace=*/0,
+        StringAttr::get(&typeConverter.getContext(),
+                        gpuTarget == "cuda"
+                            ? NVVM::NVVMDialect::getKernelFuncAttrName()
+                            : ROCDL::ROCDLDialect::getKernelFuncAttrName()));
+  }
   if (gpuTarget == "cuda") {
     using namespace mlir::gpu::index_lowering;
     PatternBenefit benefit(1);
@@ -3104,20 +3106,21 @@ struct ConvertPolygeistToLLVMPass
       });
     }
 
-    {
-      ConversionTarget target(getContext());
-      target.addLegalDialect<NVVM::NVVMDialect>();
+    m->walk([&](gpu::GPUModuleOp mod) {
+      RewritePatternSet patterns(&getContext());
 
-      m->walk([&](gpu::GPUModuleOp mod) {
-        RewritePatternSet patterns(&getContext());
-        // Insert our custom version of GPUFuncLowering
-        if (useCStyleMemRef) {
-          populateCStyleGPUFuncLoweringPatterns(patterns, converter, backend);
-        }
-        if (failed(applyPartialConversion(mod, target, std::move(patterns))))
-          signalPassFailure();
-      });
-    }
+      GreedyRewriteConfig config;
+
+      // Insert our custom version of GPUFuncLowering
+      if (useCStyleMemRef) {
+        populateCStyleGPUFuncLoweringPatterns(patterns, converter, backend,
+                                              false);
+      }
+      if (failed(
+              applyPatternsAndFoldGreedily(mod, std::move(patterns), config))) {
+        signalPassFailure();
+      }
+    });
 
     LLVMConversionTarget target(getContext());
     RewritePatternSet patterns(&getContext());
@@ -3148,7 +3151,7 @@ struct ConvertPolygeistToLLVMPass
 
     // Insert our custom version of GPUFuncLowering
     if (useCStyleMemRef) {
-      populateCStyleGPUFuncLoweringPatterns(patterns, converter, backend);
+      populateCStyleGPUFuncLoweringPatterns(patterns, converter, backend, true);
     }
 
     // Our custom versions of the gpu patterns
