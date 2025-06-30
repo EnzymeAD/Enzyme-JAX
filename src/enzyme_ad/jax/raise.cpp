@@ -184,7 +184,6 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
           assert(oldG);
           oldG->replaceAllUsesWith(glob);
           oldG->eraseFromParent();
-          break;
         }
       }
     }
