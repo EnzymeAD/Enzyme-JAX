@@ -20,7 +20,7 @@ def EnzymeXLA_Dialect : Dialect {
   let name = "enzymexla";
   let description = [{}];
   let cppNamespace = "::mlir::enzymexla";
-  // let useDefaultAttributePrinterParser = 1;
+  let useDefaultAttributePrinterParser = 1;
   // let useDefaultTypePrinterParser = 1;
 }
 
