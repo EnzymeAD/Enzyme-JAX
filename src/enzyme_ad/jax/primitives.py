@@ -1384,7 +1384,7 @@ def hlo_call(
         source=(
             in_tree,
             tuple(in_idx_map.items()),
-            tuple(out_idx_map.iterms()),
+            tuple(out_idx_map.items()),
             mfunc,
             tuple(jit_options.items()),
         ),
