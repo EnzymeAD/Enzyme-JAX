@@ -15896,6 +15896,10 @@ bool isConstantNonNegative(stablehlo::ConstantOp constOp) {
   Attribute attr = constOp.getValue();
 
   if (auto denseAttr = dyn_cast<DenseElementsAttr>(attr)) {
+    if (denseAttr.getType().getShape().size() && denseAttr.isSplat()) {
+      denseAttr = denseAttr.resizeSplat(
+          RankedTensorType::get({}, denseAttr.getType().getElementType()));
+    }
     // For floating point values
     if (denseAttr.getElementType().isF32() ||
         denseAttr.getElementType().isF64()) {
