@@ -93,6 +93,7 @@ class JAXMD(EnzymeJaxTest):
         self.fn = forward
         self.name = "jaxmd40"
         self.count = 10
+        self.samples = 5
         # self.revprimal = False
         # self.AllPipelines = pipelines
         # self.AllBackends = CurBackends

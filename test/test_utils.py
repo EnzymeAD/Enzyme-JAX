@@ -1,3 +1,5 @@
+import statistics
+
 def fix_paths():
     import os
 
@@ -570,10 +572,10 @@ def recursive_check(tester, lhs, rhs, tol=1e-6, tolerrors=None):
     tester.assertTrue(False)
 
 
-def pretty_print_table(name, pname, backend, key, time):
+def pretty_print_table(name, pname, backend, key, time, stddev=0):
     print(
         "{:<20}\t{:<20}\t{:<15}\t{:<10}\t{:<15.8f}".format(
-            name, pname, backend, key, time
+            name, pname, backend, key, time, stddev
         )
     )
 
@@ -586,6 +588,7 @@ class EnzymeJaxTest(absltest.TestCase):
         self.fwdfilter = lambda x: x
         self.revfilter = lambda x: x
         self.count = 10000
+        self.samples = 1
         self.AllBackends = AllBackends
         self.AllPipelines = AllPipelines()
         self.revprimal = True
@@ -695,19 +698,24 @@ class EnzymeJaxTest(absltest.TestCase):
                     else:
                         recursive_check(self, ao, primres, self.tol, self.tolerrors if hasattr(self, "tolerrors") else None)
 
-                    pretty_print_table(
-                        name,
-                        pname,
-                        backend,
-                        "Primal",
-                        timeit.Timer(
+                    times = timeit.Timer(
                             primalstr,
                             globals={
                                 "fn": rfn_enzyme,
                             }
                             | primalins,
-                        ).timeit(self.count)
-                        / self.count,
+                        ).repeat(self.samples, self.count)
+                    times = [t / self.count for t in times]
+                    time_mean = statistics.mean(times)
+                    time_stddev = statistics.stdev(times)
+
+                    pretty_print_table(
+                        name,
+                        pname,
+                        backend,
+                        "Primal",
+                        time_mean,
+                        time_stddev,
                     )
 
             # assert primres is not None
@@ -742,19 +750,24 @@ class EnzymeJaxTest(absltest.TestCase):
                         else:
                             recursive_check(self, tangents, fwdres, self.tol, self.tolerrors if hasattr(self, "tolerrors") else None)
 
-                        pretty_print_table(
-                            name,
-                            pname,
-                            backend,
-                            "Forward",
-                            timeit.Timer(
+                        times = timeit.Timer(
                                 fwdstr,
                                 globals={
                                     "fwd": fwd_enzyme,
                                 }
                                 | fwdins,
-                            ).timeit(self.count)
-                            / self.count,
+                            ).repeat(self.samples, self.count)
+                        times = [t / self.count for t in times]
+                        time_mean = statistics.mean(times)
+                        time_stddev = statistics.stdev(times)
+
+                        pretty_print_table(
+                            name,
+                            pname,
+                            backend,
+                            "Forward",
+                            time_mean,
+                            time_stddev,
                         )
 
             # assert fwdres is not None
@@ -795,19 +808,24 @@ class EnzymeJaxTest(absltest.TestCase):
                             else:
                                 recursive_check(self, grads, revres, self.tol, self.tolerrors if hasattr(self, "tolerrors") else None)
 
-                            pretty_print_table(
-                                name,
-                                pname,
-                                backend,
-                                "PreRev",
-                                timeit.Timer(
+                            times = timeit.Timer(
                                     revstr,
                                     globals={
                                         "rev": rev_enzyme,
                                     }
                                     | revins,
-                                ).timeit(self.count)
-                                / self.count,
+                                ).repeat(self.samples, self.count)
+                            times = [t / self.count for t in times]
+                            time_mean = statistics.mean(times)
+                            time_stddev = statistics.stdev(times)
+
+                            pretty_print_table(
+                                name,
+                                pname,
+                                backend,
+                                "PreRev",
+                                time_mean,
+                                time_stddev,
                             )
 
                         rfn_enzyme = in_fn
@@ -838,19 +856,24 @@ class EnzymeJaxTest(absltest.TestCase):
                         else:
                             recursive_check(self, grads, revres, self.tol, self.tolerrors if hasattr(self, "tolerrors") else None)
 
+                        times = timeit.Timer(
+                            revstr,
+                            globals={
+                                "rev": rev_enzyme,
+                            }
+                            | revins,
+                        ).repeat(self.samples, self.count)
+                        times = [t / self.count for t in times]
+                        time_mean = statistics.mean(times)
+                        time_stddev = statistics.stdev(times)
+
                         pretty_print_table(
                             name,
                             pname,
                             backend,
                             "PostRev",
-                            timeit.Timer(
-                                revstr,
-                                globals={
-                                    "rev": rev_enzyme,
-                                }
-                                | revins,
-                            ).timeit(self.count)
-                            / self.count,
+                            time_mean,
+                            time_stddev,
                         )
 
                     if pipeline is None or (pipeline.mlir_ad() and self.mlirad_rev):
@@ -888,17 +911,22 @@ class EnzymeJaxTest(absltest.TestCase):
                         else:
                             recursive_check(self, grads, revres, self.tol, self.tolerrors if hasattr(self, "tolerrors") else None)
 
+                        times = timeit.Timer(
+                            revstr,
+                            globals={
+                                "rev": rev_enzyme,
+                            }
+                            | revins,
+                        ).repeat(self.samples, self.count)
+                        times = [t / self.count for t in times]
+                        time_mean = statistics.mean(times)
+                        time_stddev = statistics.stdev(times)
+
                         pretty_print_table(
                             name,
                             pname,
                             backend,
                             "BothRev",
-                            timeit.Timer(
-                                revstr,
-                                globals={
-                                    "rev": rev_enzyme,
-                                }
-                                | revins,
-                            ).timeit(self.count)
-                            / self.count,
+                            time_mean,
+                            time_stddev,
                         )
