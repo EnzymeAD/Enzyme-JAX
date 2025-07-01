@@ -185,6 +185,23 @@ static bool legalCondition(Value en, bool dim = false) {
   return false;
 }
 
+bool isNonTopLevelPureSymbol(Value value) {
+  if (auto *defOp = value.getDefiningOp()) {
+    if (!isPure(defOp))
+      return false;
+
+    auto region = getLocalAffineScope(defOp);
+    if (!affine::isValidSymbol(value, region))
+      return false;
+    if (defOp->getNumOperands() != 0)
+      return false;
+    if (defOp->getParentRegion() == region)
+      return false;
+    return true;
+  }
+  return false;
+}
+
 /// The AffineNormalizer composes AffineApplyOp recursively. Its purpose is to
 /// keep a correspondence between the mathematical `map` and the `operands` of
 /// a given affine::AffineApplyOp. This correspondence is maintained by
@@ -247,18 +264,22 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
   SmallVector<Operation **> operationContext;
   std::function<Value(Value, bool)> fix = [&](Value v,
                                               bool index) -> Value /*legal*/ {
-    if (isValidSymbolInt(v, /*recur*/ false))
+    bool ntop = isNonTopLevelPureSymbol(v);
+    if (!ntop && isValidSymbolInt(v, /*recur*/ false)) {
       return v;
-    if (index && isAffineForArg(v))
+    }
+    if (index && isAffineForArg(v)) {
       return v;
+    }
     auto *op = v.getDefiningOp();
     if (!op)
       return nullptr;
     if (!op)
       llvm::errs() << v << "\n";
     assert(op);
-    if (isa<ConstantOp>(op) || isa<ConstantIndexOp>(op))
+    if (isa<ConstantOp>(op) || isa<ConstantIndexOp>(op)) {
       return v;
+    }
     if (!isReadOnly(op)) {
       return nullptr;
     }
@@ -331,12 +352,17 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
       if (front)
         assert(front->getBlock());
     }
+    if (!front && ntop) {
+      auto region = getLocalAffineScope(op);
+      front = &region->front().front();
+    }
     opsTodos.pop_back();
     if (!front)
       op->dump();
     assert(front);
     if (!rewriter) {
       operationContext.pop_back();
+      assert(isValidSymbolInt(op->getResult(0), /*recur*/ false));
       return op->getResult(0);
     } else {
       PatternRewriter::InsertionGuard B(*rewriter);
@@ -348,12 +374,14 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
       if (front)
         assert(front->getBlock());
       for (auto op_ptr : operationContext) {
-        if (*op_ptr == op)
+        if (*op_ptr == op) {
           *op_ptr = cloned;
+        }
       }
       rewriter->replaceOp(op, cloned->getResults());
 
       operationContext.pop_back();
+      assert(isValidSymbolInt(cloned->getResult(0), /*recur*/ false));
       return cloned->getResult(0);
     }
   };
@@ -645,7 +673,15 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
       if (!isValidSymbolInt(t, /*recur*/ false)) {
         if (t.getDefiningOp()) {
           if ((t = fix(t, false))) {
-            assert(isValidSymbolInt(t, /*recur*/ false));
+            if (!isValidSymbolInt(t, /*recur*/ false)) {
+              llvm::errs()
+                  << " op: "
+                  << *t.getDefiningOp()->getParentOfType<FunctionOpInterface>()
+                  << "\n";
+              llvm::errs() << " failed to move:" << t
+                           << " to become valid symbol\n";
+              llvm_unreachable("cannot move");
+            }
           } else
             llvm_unreachable("cannot move");
         } else
