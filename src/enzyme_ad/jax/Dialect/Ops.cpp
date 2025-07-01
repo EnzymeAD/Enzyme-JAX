@@ -1,5 +1,4 @@
-//===- EnzymeXLAOps.cpp - EnzymeXLA dialect ops -----------------------*- C++
-//-*-===//
+//===- EnzymeXLAOps.cpp - EnzymeXLA dialect ops -----------------*- C++ -*-===//
 //
 // This file is licensed under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -7,10 +6,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Ops.h"
 #include "../Utils.h"
 #include "Dialect.h"
 #include "Interfaces/AutoDiffTypeInterface.h"
+#include "Ops.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
@@ -38,6 +37,8 @@
 #include "llvm/Support/Debug.h"
 
 #include "llvm/ADT/TypeSwitch.h"
+
+#include <numeric>
 
 #define DEBUG_TYPE "enzymexla"
 
@@ -850,6 +851,111 @@ public:
   }
 };
 
+/// Simplify load(pointer2memref(gep(...(x)))) to load(x, idx)
+class LoadPointer2MemrefGEP final : public OpRewritePattern<memref::LoadOp> {
+public:
+  using OpRewritePattern<memref::LoadOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(memref::LoadOp op,
+                                PatternRewriter &rewriter) const override {
+    // FIXME: Only handle memref.load with single index for now
+    if (op.getIndices().size() != 1)
+      return failure();
+
+    // Match pointer2memref -> load pattern
+    auto src = op.getMemref().getDefiningOp<Pointer2MemrefOp>();
+    if (!src)
+      return failure();
+
+    // Get the element type and size of the final memref
+    Type elementType = op.getMemRefType().getElementType();
+    unsigned elementSize = elementType.getIntOrFloatBitWidth() / 8;
+    if (elementSize == 0)
+      return failure();
+
+    // Collect all GEPs in the chain
+    SmallVector<std::pair<LLVM::GEPOp, unsigned>> gepOps;
+    Value ptr = src.getSource();
+
+    while (auto gep = ptr.getDefiningOp<LLVM::GEPOp>()) {
+      // FIXME: Only handle GEPs with single index for now
+      if (gep.getIndices().size() != 1)
+        return failure();
+
+      // Get element type size in bytes
+      unsigned gepElemSize = 1;
+      auto elemTy = gep.getElemType();
+      if (elemTy.isIntOrFloat()) {
+        gepElemSize = elemTy.getIntOrFloatBitWidth() / 8;
+      }
+
+      gepOps.emplace_back(gep, gepElemSize);
+      ptr = gep.getBase();
+    }
+
+    if (gepOps.empty())
+      return failure();
+
+    Location loc = op.getLoc();
+    auto baseMemref = rewriter.create<Pointer2MemrefOp>(
+        loc, cast<MemRefType>(src.getType()), ptr);
+
+    // Start with the original load offset
+    Value finalIndex = op.getIndices()[0];
+    // Process GEPs in reverse order
+    for (auto [gep, gepElemSize] : llvm::reverse(gepOps)) {
+      PointerUnion<IntegerAttr, Value> rawIdx = gep.getIndices()[0];
+      Value idx = dyn_cast_if_present<Value>(rawIdx);
+      if (!idx)
+        idx = rewriter.create<arith::ConstantIndexOp>(
+            loc, cast<IntegerAttr>(rawIdx).getValue().getSExtValue());
+      // TODO: verify the total byte offset will be element-aligned for dynamic
+      // indices by inserting runtime check
+      if (auto constIdx = idx.getDefiningOp<arith::ConstantIndexOp>()) {
+        // For constant indices, static check and reject unaligned access
+        if ((constIdx.value() * gepElemSize) % elementSize != 0) {
+          return failure();
+        }
+      }
+
+      // Convert index to the right type if needed
+      if (!idx.getType().isIndex()) {
+        idx = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(),
+                                                  idx);
+      }
+
+      // Calculate byte offset: idx * gepElemSize / elementSize
+      unsigned gcd = std::gcd(gepElemSize, elementSize);
+      unsigned scaledGep = gepElemSize / gcd;
+      unsigned scaledElement = elementSize / gcd;
+
+      // Multiply first if needed
+      Value scaledIdx =
+          (scaledGep != 1)
+              ? rewriter.create<arith::MulIOp>(
+                    loc, idx,
+                    rewriter.create<arith::ConstantIndexOp>(loc, scaledGep))
+              : idx;
+
+      // Then divide if needed
+      Value elemOffset =
+          (scaledElement != 1)
+              ? rewriter.create<arith::DivUIOp>(
+                    loc, scaledIdx,
+                    rewriter.create<arith::ConstantIndexOp>(loc, scaledElement))
+              : scaledIdx;
+
+      // Add to total offset
+      finalIndex = rewriter.create<arith::AddIOp>(loc, finalIndex, elemOffset);
+    }
+
+    // Replace the load with a direct load from the base memref
+    rewriter.replaceOpWithNewOp<memref::LoadOp>(op, baseMemref,
+                                                ValueRange{finalIndex});
+    return success();
+  }
+};
+
 /// Simplify load (pointer2memref(x)) to llvm.load x
 template <typename Op>
 class MetaPointer2Memref final : public OpRewritePattern<Op> {
@@ -983,7 +1089,8 @@ void MetaPointer2Memref<affine::AffineStoreOp>::rewriteInternal(
 
 void Pointer2MemrefOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                                    MLIRContext *context) {
-  results.insert<Pointer2MemrefCast, Pointer2Memref2PointerCast>(context);
+  results.insert<Pointer2MemrefCast, Pointer2Memref2PointerCast,
+                 LoadPointer2MemrefGEP>(context);
   /*
   results.insert<Pointer2MemrefCast, Pointer2Memref2PointerCast,
                  MetaPointer2Memref<memref::LoadOp>,
