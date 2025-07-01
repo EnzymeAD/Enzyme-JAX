@@ -191,7 +191,9 @@ bool isNonTopLevelPureSymbol(Value value) {
       return false;
 
     auto region = getLocalAffineScope(defOp);
-    if (!affine::isValidSymbol(value, region))
+    Attribute operandCst;
+    if (!matchPattern(defOp, m_Constant(&operandCst)) &&
+        !affine::isValidSymbol(value, region))
       return false;
     if (defOp->getNumOperands() != 0)
       return false;
@@ -277,9 +279,6 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
     if (!op)
       llvm::errs() << v << "\n";
     assert(op);
-    if (isa<ConstantOp>(op) || isa<ConstantIndexOp>(op)) {
-      return v;
-    }
     if (!isReadOnly(op)) {
       return nullptr;
     }
@@ -381,7 +380,12 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
       rewriter->replaceOp(op, cloned->getResults());
 
       operationContext.pop_back();
-      assert(isValidSymbolInt(cloned->getResult(0), /*recur*/ false));
+      if (!isValidSymbolInt(cloned->getResult(0), /*recur*/ false)) {
+        llvm::errs() << " clonedParent: "
+                     << *cloned->getParentOfType<FunctionOpInterface>() << "\n";
+        llvm::errs() << " cloned: " << *cloned << "\n";
+        llvm_unreachable("busted");
+      }
       return cloned->getResult(0);
     }
   };
