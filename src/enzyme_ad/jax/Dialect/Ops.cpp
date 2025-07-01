@@ -6,10 +6,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Ops.h"
 #include "../Utils.h"
 #include "Dialect.h"
 #include "Interfaces/AutoDiffTypeInterface.h"
+#include "Ops.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
@@ -869,7 +869,9 @@ public:
 
     // Get the element type and size of the final memref
     Type elementType = op.getMemRefType().getElementType();
-    unsigned elementSize = elementType.getIntOrFloatBitWidth() / 8;
+    unsigned elementSize = elementType.isIntOrFloat()
+                               ? elementType.getIntOrFloatBitWidth() / 8
+                               : 0;
     if (elementSize == 0)
       return failure();
 
