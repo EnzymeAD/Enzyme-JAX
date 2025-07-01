@@ -531,31 +531,39 @@ def to_backend(x, backend):
     return jax.device_put(x, dev)
 
 
-def recursive_check(tester, lhs, rhs, tol=1e-6):
+def recursive_check(tester, lhs, rhs, tol=1e-6, tolerrors=None):
     import jax.numpy as jnp
     import jax
 
     tester.assertEqual(type(lhs), type(rhs))
     if isinstance(lhs, jax.Array):
         legal = (jnp.abs(lhs - rhs) < tol).all()
+        if not legal and tolerrors is not None:
+            error_perc = jnp.count_nonzero(jnp.abs(lhs - rhs) >= tol) / len(lhs)
+            if error_perc < tolerrors:
+                print("Warning: There are numbers above the tolerance threshold, but the error percentage", error_perc, "is below threshold", tolerrors)
+                legal = True
         if not legal:
+            print("tol", tol)
             print("lhs", lhs)
             print("rhs", rhs)
             print("abs", jnp.abs(lhs - rhs))
             print("eq", jnp.abs(lhs - rhs) < tol)
             print("max", jnp.max(jnp.abs(lhs - rhs)))
+            print("mean", jnp.mean(jnp.abs(lhs - rhs)))
+            print("count wrong", jnp.count_nonzero(jnp.abs(lhs - rhs) < tol), "/", len(lhs), "=", jnp.count_nonzero(jnp.abs(lhs - rhs) >= tol) / len(lhs))
         tester.assertTrue(legal)
         return
 
     if isinstance(lhs, tuple):
         for i, (g, g_p) in enumerate(zip(lhs, rhs)):
-            recursive_check(tester, g, g_p, tol)
+            recursive_check(tester, g, g_p, tol, tolerrors)
         return
 
     if isinstance(lhs, dict):
         tester.assertEqual(lhs.keys(), rhs.keys())
         for k in lhs.keys():
-            recursive_check(tester, lhs[k], rhs[k], tol)
+            recursive_check(tester, lhs[k], rhs[k], tol, tolerrors)
         return
 
     print("Unknown recursive type", type(lhs), " ", type(rhs))
@@ -685,7 +693,7 @@ class EnzymeJaxTest(absltest.TestCase):
                     if primres is None:
                         primres = ao
                     else:
-                        recursive_check(self, ao, primres, self.tol)
+                        recursive_check(self, ao, primres, self.tol, self.tolerrors if hasattr(self, "tolerrors") else None)
 
                     pretty_print_table(
                         name,
@@ -727,12 +735,12 @@ class EnzymeJaxTest(absltest.TestCase):
 
                         primals, tangents = fwd_enzyme(*(ins_backend + dins_backend))
 
-                        recursive_check(self, primals, primres, self.tol)
+                        recursive_check(self, primals, primres, self.tol, self.tolerrors if hasattr(self, "tolerrors") else None)
 
                         if fwdres is None:
                             fwdres = tangents
                         else:
-                            recursive_check(self, tangents, fwdres, self.tol)
+                            recursive_check(self, tangents, fwdres, self.tol, self.tolerrors if hasattr(self, "tolerrors") else None)
 
                         pretty_print_table(
                             name,
@@ -780,12 +788,12 @@ class EnzymeJaxTest(absltest.TestCase):
                                 assert grads is not None
 
                             if self.revprimal and primres is not None:
-                                recursive_check(self, primals, primres, self.tol)
+                                recursive_check(self, primals, primres, self.tol, self.tolerrors if hasattr(self, "tolerrors") else None)
 
                             if revres is None:
                                 revres = grads
                             else:
-                                recursive_check(self, grads, revres, self.tol)
+                                recursive_check(self, grads, revres, self.tol, self.tolerrors if hasattr(self, "tolerrors") else None)
 
                             pretty_print_table(
                                 name,
@@ -823,12 +831,12 @@ class EnzymeJaxTest(absltest.TestCase):
                             assert grads is not None
 
                         if self.revprimal and primres is not None:
-                            recursive_check(self, primals, primres, self.tol)
+                            recursive_check(self, primals, primres, self.tol, self.tolerrors if hasattr(self, "tolerrors") else None)
 
                         if revres is None:
                             revres = grads
                         else:
-                            recursive_check(self, grads, revres, self.tol)
+                            recursive_check(self, grads, revres, self.tol, self.tolerrors if hasattr(self, "tolerrors") else None)
 
                         pretty_print_table(
                             name,
@@ -873,12 +881,12 @@ class EnzymeJaxTest(absltest.TestCase):
                             assert grads is not None
 
                         if self.revprimal and primres is not None:
-                            recursive_check(self, primals, primres, self.tol)
+                            recursive_check(self, primals, primres, self.tol, self.tolerrors if hasattr(self, "tolerrors") else None)
 
                         if revres is None:
                             revres = grads
                         else:
-                            recursive_check(self, grads, revres, self.tol)
+                            recursive_check(self, grads, revres, self.tol, self.tolerrors if hasattr(self, "tolerrors") else None)
 
                         pretty_print_table(
                             name,

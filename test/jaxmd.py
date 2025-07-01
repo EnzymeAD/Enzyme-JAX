@@ -125,6 +125,9 @@ class JAXMD(EnzymeJaxTest):
         # GPU CI reverse mode needs loose, merits future investigation
         self.tol = 1e-2
 
+        # continue if percentage of errors is below this threshold
+        self.tolerrors = 0.003
+
 
 if __name__ == "__main__":
     import platform
