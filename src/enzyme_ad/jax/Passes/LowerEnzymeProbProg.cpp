@@ -462,7 +462,5 @@ struct LowerEnzymeProbProgPass
                                       std::move(patterns)))) {
       signalPassFailure();
     }
-
-    getOperation()->dump();
   }
 };
