@@ -367,7 +367,43 @@ def LUFactorizationOp: EnzymeXLA_Op<"linalg.lu", [Pure]> {
 }
 
 def QRFactorizationOp: EnzymeXLA_Op<"linalg.qr", [Pure]> {
-  let summary = "QR factorization operation.";
+  let summary = "QR factorization operation (high-level op)";
+
+  let description = [{
+    This operation computes the QR factorization of a matrix using Householder 
+    reflections. Mathematically, it decomposes A into the product of an 
+    orthogonal matrix Q and an upper triangular matrix R, such that A = QR.
+
+    This operation is modeled after the mathematical formulation of the QR 
+    factorization, and not after LAPACK's compact formats.
+  }];
+
+  let arguments = (ins
+    HLO_Tensor:$input
+  );
+
+  let results = (outs
+    HLO_Tensor:$Q,
+    HLO_Tensor:$R,
+    HLO_Tensor:$info
+  );
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
+def GEQRFOp : EnzymeXLA_Op<"linalg.geqrf", [Pure]> {
+  let summary = "QR factorization operation (low-level op)";
+
+  let description = [{
+    This operation computes the QR factorization of a matrix using Householder 
+    reflections. Mathematically, it decomposes A into the product of an 
+    orthogonal matrix Q and an upper triangular matrix R, such that A = QR.
+
+    This operation is modeled after LAPACK's *GEQRF routines, which returns the 
+    result in the QR packed format.
+  }];
 
   let arguments = (ins
     HLO_Tensor:$input
@@ -384,6 +420,32 @@ def QRFactorizationOp: EnzymeXLA_Op<"linalg.qr", [Pure]> {
   }];
 }
 
+def GEQRTOp : EnzymeXLA_Op<"linalg.geqrt", [Pure]> {
+  let summary = "QR factorization operation (low-level op)";
+
+  let description = [{
+    This operation computes the QR factorization of a matrix using Householder 
+    reflections. Mathematically, it decomposes A into the product of an 
+    orthogonal matrix Q and an upper triangular matrix R, such that A = QR.
+
+    This operation is modeled after LAPACK's *GEQRT routines, which returns the 
+    result in the QR packed format.
+  }];
+
+  let arguments = (ins
+    HLO_Tensor:$input
+  );
+
+  let results = (outs
+    HLO_Tensor:$output,
+    HLO_Tensor:$T,
+    HLO_Tensor:$info
+  );
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
 
 def SVDFactorizationOp : EnzymeXLA_Op<"linalg.svd", [Pure]> {
   let summary = "Singular Value Decomposition (SVD) factorization operation.";
