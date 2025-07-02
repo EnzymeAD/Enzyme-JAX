@@ -68,6 +68,25 @@ struct InitTraceOpConversion : public OpConversionPattern<enzyme::InitTraceOp> {
           cast<ElementsAttr>(makeAttr(loweredTraceType, 0)));
 
       std::string initTraceFn = "enzyme_probprog_init_trace";
+      std::string wrapperFn =
+          initTraceFn + "_wrapper_" + std::to_string(fnNum++);
+
+      {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+        auto funcType =
+            LLVM::LLVMFunctionType::get(llvmVoidType, {llvmPtrType}, false);
+        auto func =
+            rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), wrapperFn, funcType);
+        rewriter.setInsertionPointToStart(func.addEntryBlock(rewriter));
+
+        rewriter.create<LLVM::CallOp>(op.getLoc(), TypeRange{},
+                                      SymbolRefAttr::get(ctx, initTraceFn),
+                                      ValueRange{func.getArgument(0)});
+
+        rewriter.create<LLVM::ReturnOp>(op.getLoc(), ValueRange{});
+      }
 
       if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(initTraceFn)) {
         OpBuilder::InsertionGuard guard(rewriter);
@@ -86,7 +105,7 @@ struct InitTraceOpConversion : public OpConversionPattern<enzyme::InitTraceOp> {
 
       auto jitCall = rewriter.create<enzymexla::JITCallOp>(
           op.getLoc(), TypeRange{loweredTraceType},
-          mlir::FlatSymbolRefAttr::get(ctx, initTraceFn), ValueRange{tracePtr},
+          mlir::FlatSymbolRefAttr::get(ctx, wrapperFn), ValueRange{tracePtr},
           rewriter.getStringAttr(""),
           /*operand_layouts=*/
           rewriter.getArrayAttr({rewriter.getIndexTensorAttr({0})}),
@@ -340,10 +359,31 @@ struct AddSubtraceOpConversion
       auto i64TensorType = RankedTensorType::get({}, i64Type);
 
       std::string addSubtraceFn = "enzyme_probprog_add_subtrace";
+      std::string wrapperFn =
+          addSubtraceFn + "_wrapper_" + std::to_string(fnNum++);
 
       auto symbolConst = rewriter.create<stablehlo::ConstantOp>(
           op.getLoc(), i64TensorType,
           cast<ElementsAttr>(makeAttr(i64TensorType, symbolPtr)));
+
+      {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+        auto funcType = LLVM::LLVMFunctionType::get(
+            llvmVoidType, {llvmPtrType, llvmPtrType, llvmPtrType},
+            /*isVarArg=*/false);
+        auto func =
+            rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), wrapperFn, funcType);
+        rewriter.setInsertionPointToStart(func.addEntryBlock(rewriter));
+
+        rewriter.create<LLVM::CallOp>(
+            op.getLoc(), TypeRange{}, SymbolRefAttr::get(ctx, addSubtraceFn),
+            ValueRange{func.getArgument(0), func.getArgument(1),
+                       func.getArgument(2)});
+
+        rewriter.create<LLVM::ReturnOp>(op.getLoc(), ValueRange{});
+      }
 
       if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(addSubtraceFn)) {
         OpBuilder::InsertionGuard guard(rewriter);
@@ -357,7 +397,7 @@ struct AddSubtraceOpConversion
 
       rewriter.create<enzymexla::JITCallOp>(
           op.getLoc(), TypeRange{},
-          mlir::FlatSymbolRefAttr::get(ctx, addSubtraceFn),
+          mlir::FlatSymbolRefAttr::get(ctx, wrapperFn),
           ValueRange{trace, symbolConst, subtrace}, rewriter.getStringAttr(""),
           /*operand_layouts=*/nullptr,
           /*result_layouts=*/nullptr,
