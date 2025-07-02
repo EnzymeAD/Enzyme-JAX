@@ -4,7 +4,7 @@
 
 module {
   func.func @main(%arg0: tensor<64x64xf32>) -> (tensor<64x64xf32>, tensor<64xf32>, tensor<i64>) {
-    %0:3 = enzymexla.linalg.qr %arg0 : (tensor<64x64xf32>) -> (tensor<64x64xf32>, tensor<64xf32>, tensor<i64>)
+    %0:3 = enzymexla.linalg.geqrf %arg0 : (tensor<64x64xf32>) -> (tensor<64x64xf32>, tensor<64xf32>, tensor<i64>)
     return %0#0, %0#1, %0#2 : tensor<64x64xf32>, tensor<64xf32>, tensor<i64>
   }
 }
@@ -40,7 +40,7 @@ module {
   // CPU: func.func @main(%arg0: tensor<64x64xf64>) -> (tensor<64x64xf64>, tensor<64xf64>, tensor<i64>) {
   func.func @main(%arg0: tensor<64x64xf64>) -> (tensor<64x64xf64>, tensor<64xf64>, tensor<i64>) {
     // CPU: enzymexla.jit_call @enzymexla_wrapper_lapacke_dgeqrf_[[WRAPPER_ID:[0-9]+]]
-    %0:3 = enzymexla.linalg.qr %arg0 : (tensor<64x64xf64>) -> (tensor<64x64xf64>, tensor<64xf64>, tensor<i64>)
+    %0:3 = enzymexla.linalg.geqrf %arg0 : (tensor<64x64xf64>) -> (tensor<64x64xf64>, tensor<64xf64>, tensor<i64>)
     return %0#0, %0#1, %0#2 : tensor<64x64xf64>, tensor<64xf64>, tensor<i64>
   }
 }
@@ -49,7 +49,7 @@ module {
   // CPU: func.func @main(%arg0: tensor<64x64xcomplex<f32>>) -> (tensor<64x64xcomplex<f32>>, tensor<64xcomplex<f32>>, tensor<i64>) {
   func.func @main(%arg0: tensor<64x64xcomplex<f32>>) -> (tensor<64x64xcomplex<f32>>, tensor<64xcomplex<f32>>, tensor<i64>) {
     // CPU: enzymexla.jit_call @enzymexla_wrapper_lapacke_cgeqrf_[[WRAPPER_ID:[0-9]+]]
-    %0:3 = enzymexla.linalg.qr %arg0 : (tensor<64x64xcomplex<f32>>) -> (tensor<64x64xcomplex<f32>>, tensor<64xcomplex<f32>>, tensor<i64>)
+    %0:3 = enzymexla.linalg.geqrf %arg0 : (tensor<64x64xcomplex<f32>>) -> (tensor<64x64xcomplex<f32>>, tensor<64xcomplex<f32>>, tensor<i64>)
     return %0#0, %0#1, %0#2 : tensor<64x64xcomplex<f32>>, tensor<64xcomplex<f32>>, tensor<i64>
   }
 }
@@ -58,7 +58,7 @@ module {
   // CPU: func.func @main(%arg0: tensor<64x64xcomplex<f64>>) -> (tensor<64x64xcomplex<f64>>, tensor<64xcomplex<f64>>, tensor<i64>) {
   func.func @main(%arg0: tensor<64x64xcomplex<f64>>) -> (tensor<64x64xcomplex<f64>>, tensor<64xcomplex<f64>>, tensor<i64>) {
     // CPU: enzymexla.jit_call @enzymexla_wrapper_lapacke_zgeqrf_[[WRAPPER_ID:[0-9]+]]
-    %0:3 = enzymexla.linalg.qr %arg0 : (tensor<64x64xcomplex<f64>>) -> (tensor<64x64xcomplex<f64>>, tensor<64xcomplex<f64>>, tensor<i64>)
+    %0:3 = enzymexla.linalg.geqrf %arg0 : (tensor<64x64xcomplex<f64>>) -> (tensor<64x64xcomplex<f64>>, tensor<64xcomplex<f64>>, tensor<i64>)
     return %0#0, %0#1, %0#2 : tensor<64x64xcomplex<f64>>, tensor<64xcomplex<f64>>, tensor<i64>
   }
 }

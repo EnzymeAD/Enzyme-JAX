@@ -748,17 +748,17 @@ struct LUFactorizationOpLowering
   }
 };
 
-struct QRFactorizationOpLowering
-    : public OpRewritePattern<enzymexla::QRFactorizationOp> {
+struct GEQRFOpLowering
+    : public OpRewritePattern<enzymexla::GEQRFOp> {
   std::string backend;
   int64_t blasIntWidth;
 
-  QRFactorizationOpLowering(std::string backend, int64_t blasIntWidth,
+  GEQRFOpLowering(std::string backend, int64_t blasIntWidth,
                             MLIRContext *context, PatternBenefit benefit = 1)
       : OpRewritePattern(context, benefit), backend(backend),
         blasIntWidth(blasIntWidth) {}
 
-  LogicalResult matchAndRewrite(enzymexla::QRFactorizationOp op,
+  LogicalResult matchAndRewrite(enzymexla::GEQRFOp op,
                                 PatternRewriter &rewriter) const override {
     if (backend == "cpu")
       return this->matchAndRewrite_cpu(op, rewriter);
@@ -776,7 +776,7 @@ struct QRFactorizationOpLowering
 
   // TODO get matrix sizes dynamically so that we don't need to create a
   // function wrapper for each op instance
-  LogicalResult matchAndRewrite_cpu(enzymexla::QRFactorizationOp op,
+  LogicalResult matchAndRewrite_cpu(enzymexla::GEQRFOp op,
                                     PatternRewriter &rewriter) const {
     auto ctx = op->getContext();
     LLVMTypeConverter typeConverter(ctx);
@@ -929,7 +929,7 @@ struct QRFactorizationOpLowering
     return success();
   }
 
-  LogicalResult matchAndRewrite_cuda(enzymexla::QRFactorizationOp op,
+  LogicalResult matchAndRewrite_cuda(enzymexla::GEQRFOp op,
                                      PatternRewriter &rewriter) const {
     auto ctx = op->getContext();
     LLVMTypeConverter typeConverter(ctx);
@@ -984,7 +984,7 @@ struct QRFactorizationOpLowering
     return success();
   }
 
-  LogicalResult matchAndRewrite_tpu(enzymexla::QRFactorizationOp op,
+  LogicalResult matchAndRewrite_tpu(enzymexla::GEQRFOp op,
                                     PatternRewriter &rewriter) const {
     auto ctx = op->getContext();
     LLVMTypeConverter typeConverter(ctx);
@@ -1392,7 +1392,7 @@ struct LowerEnzymeXLALinalgPass
     RewritePatternSet patterns(context);
 
     patterns.add<LUFactorizationOpLowering>(backend, blasIntWidth, context);
-    patterns.add<QRFactorizationOpLowering>(backend, blasIntWidth, context);
+    patterns.add<GEQRFOpLowering>(backend, blasIntWidth, context);
     patterns.add<SVDFactorizationOpLowering>(backend, blasIntWidth, context);
 
     GreedyRewriteConfig config;
