@@ -160,6 +160,8 @@ struct AddSampleToTraceOpConversion
       auto llvmPtrType = LLVM::LLVMPointerType::get(ctx);
       auto llvmVoidType = LLVM::LLVMVoidType::get(ctx);
       auto llvmI64Type = IntegerType::get(ctx, 64);
+      auto loweredTraceType = RankedTensorType::get(
+          {}, IntegerType::get(ctx, 64, IntegerType::Unsigned));
 
       std::string addSampleToTraceFn = "enzyme_probprog_add_sample_to_trace";
 
@@ -307,16 +309,20 @@ struct AddSampleToTraceOpConversion
       jitOperands.push_back(symbolConst);
       jitOperands.append(sample.begin(), sample.end());
 
-      rewriter.create<enzymexla::JITCallOp>(
-          op.getLoc(), TypeRange{},
+      SmallVector<Attribute> aliases;
+      aliases.push_back(stablehlo::OutputOperandAliasAttr::get(
+          ctx, std::vector<int64_t>{}, 0, std::vector<int64_t>{}));
+
+      auto jitCall = rewriter.create<enzymexla::JITCallOp>(
+          op.getLoc(), TypeRange{loweredTraceType},
           mlir::FlatSymbolRefAttr::get(ctx, wrapperFn), jitOperands,
           rewriter.getStringAttr(""),
           /*operand_layouts=*/nullptr,
           /*result_layouts=*/nullptr,
-          /*output_operand_aliases=*/rewriter.getArrayAttr({}),
-          /*xla_side_effect_free=*/nullptr);
+          /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
+          /*xla_side_effect_free=*/rewriter.getUnitAttr());
 
-      rewriter.eraseOp(op);
+      rewriter.replaceOp(op, jitCall.getResults());
 
       return success();
     } else {
@@ -357,6 +363,8 @@ struct AddSubtraceOpConversion
       auto llvmVoidType = LLVM::LLVMVoidType::get(ctx);
       auto i64Type = IntegerType::get(ctx, 64);
       auto i64TensorType = RankedTensorType::get({}, i64Type);
+      auto loweredTraceType = RankedTensorType::get(
+          {}, IntegerType::get(ctx, 64, IntegerType::Unsigned));
 
       std::string addSubtraceFn = "enzyme_probprog_add_subtrace";
       std::string wrapperFn =
@@ -395,16 +403,21 @@ struct AddSubtraceOpConversion
                                           LLVM::Linkage::External);
       }
 
-      rewriter.create<enzymexla::JITCallOp>(
-          op.getLoc(), TypeRange{},
+      SmallVector<Attribute> aliases;
+      aliases.push_back(stablehlo::OutputOperandAliasAttr::get(
+          ctx, std::vector<int64_t>{}, 0, std::vector<int64_t>{}));
+
+      auto jitCall = rewriter.create<enzymexla::JITCallOp>(
+          op.getLoc(), TypeRange{loweredTraceType},
           mlir::FlatSymbolRefAttr::get(ctx, wrapperFn),
           ValueRange{trace, symbolConst, subtrace}, rewriter.getStringAttr(""),
           /*operand_layouts=*/nullptr,
           /*result_layouts=*/nullptr,
-          /*output_operand_aliases=*/rewriter.getArrayAttr({}),
-          /*xla_side_effect_free=*/nullptr);
+          /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
+          /*xla_side_effect_free=*/rewriter.getUnitAttr());
 
-      rewriter.eraseOp(op);
+      rewriter.replaceOp(op, jitCall.getResults());
+
       return success();
     } else {
       return rewriter.notifyMatchFailure(op, "Unknown backend " + backend);
