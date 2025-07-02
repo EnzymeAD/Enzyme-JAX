@@ -5969,15 +5969,27 @@ struct DivSimplify
     if (isa<FloatType>(op.getType().getElementType())) {
       DenseElementsAttr rhsAttr;
       if (matchPattern(op.getRhs(), m_Constant(&rhsAttr))) {
-        DenseElementsAttr lhsAttr;
-        if (matchPattern(op.getLhs(), m_Constant(&lhsAttr)))
-          return failure(); // const prop will evaluate this
+        {
+          DenseElementsAttr lhsAttr;
+          if (matchPattern(op.getLhs(), m_Constant(&lhsAttr)))
+            return failure(); // const prop will evaluate this
+        }
+
+        auto ty = op.getType();
+        if (rhsAttr.isSplat()) {
+          ty = RankedTensorType::get(
+              {}, cast<ShapedType>(op->getResultTypes()[0]).getElementType());
+          rhsAttr = rhsAttr.resizeSplat(ty);
+        }
 
         auto rhsTen = stablehlo::constantOp(rhsAttr);
-        auto oneTen = stablehlo::constantOp(
-            cast<ElementsAttr>(makeAttr(op.getType(), 1)));
-        auto out =
-            fromTensor(stablehlo::divideOp(oneTen, rhsTen, op.getType()));
+        auto oneTen =
+            stablehlo::constantOp(cast<ElementsAttr>(makeAttr(ty, 1)));
+        auto out = fromTensor(stablehlo::divideOp(oneTen, rhsTen, ty));
+
+        if (ty != op.getType()) {
+          out = out.resizeSplat(op.getType());
+        }
 
         rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
             op, op.getLhs(),
@@ -15884,6 +15896,10 @@ bool isConstantNonNegative(stablehlo::ConstantOp constOp) {
   Attribute attr = constOp.getValue();
 
   if (auto denseAttr = dyn_cast<DenseElementsAttr>(attr)) {
+    if (denseAttr.getType().getShape().size() && denseAttr.isSplat()) {
+      denseAttr = denseAttr.resizeSplat(
+          RankedTensorType::get({}, denseAttr.getType().getElementType()));
+    }
     // For floating point values
     if (denseAttr.getElementType().isF32() ||
         denseAttr.getElementType().isF64()) {

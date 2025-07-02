@@ -20,6 +20,10 @@
 #include "mlir/IR/Dialect.h"
 #include "mlir/Transforms/InliningUtils.h"
 
+#define GET_ATTRDEF_CLASSES
+#include "src/enzyme_ad/jax/Dialect/EnzymeXLAAttrDefs.cpp.inc"
+#include "src/enzyme_ad/jax/Dialect/EnzymeXLAAttrEnums.cpp.inc"
+
 // #include "Dialect/EnzymeEnums.cpp.inc"
 #include "src/enzyme_ad/jax/Dialect/EnzymeXLADialect.cpp.inc"
 
@@ -99,15 +103,12 @@ void EnzymeXLADialect::initialize() {
 #define GET_OP_LIST
 #include "src/enzyme_ad/jax/Dialect/EnzymeXLAOps.cpp.inc"
       >();
-  //  addAttributes<
-  // #define GET_ATTRDEF_LIST
-  // #include "src/enzyme_ad/jax/Dialect/EnzymeXLAAttributes.cpp.inc"
-  //      >();
+  addAttributes<
+#define GET_ATTRDEF_LIST
+#include "src/enzyme_ad/jax/Dialect/EnzymeXLAAttrDefs.cpp.inc"
+      >();
   //  addTypes<
   // #define GET_TYPEDEF_LIST
   // #include "src/enzyme_ad/jax/Dialect/EnzymeXLAOpsTypes.cpp.inc"
   //      >();
 }
-
-// #define GET_ATTRDEF_CLASSES
-// #include "src/enzyme_ad/jax/Dialect/EnzymeXLAAttributes.cpp.inc"
