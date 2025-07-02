@@ -429,7 +429,7 @@ def GEQRTOp : EnzymeXLA_Op<"linalg.geqrt", [Pure]> {
     orthogonal matrix Q and an upper triangular matrix R, such that A = QR.
 
     This operation is modeled after LAPACK's *GEQRT routines, which returns the 
-    result in the QR packed format.
+    result in the QR CompactWY format.
   }];
 
   let arguments = (ins
