@@ -412,6 +412,27 @@ struct AddSubtraceOpConversion
   }
 };
 
+struct UnrealizedConversionCastOpConversion
+    : public OpConversionPattern<UnrealizedConversionCastOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  std::string backend;
+  UnrealizedConversionCastOpConversion(std::string backend,
+                                       TypeConverter &typeConverter,
+                                       MLIRContext *context,
+                                       PatternBenefit benefit = 1)
+      : OpConversionPattern(typeConverter, context, benefit), backend(backend) {
+  }
+
+  LogicalResult
+  matchAndRewrite(UnrealizedConversionCastOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOp(op, adaptor.getOperands());
+
+    return success();
+  }
+};
+
 struct LowerEnzymeProbProgPass
     : public enzyme::impl::LowerEnzymeProbProgPassBase<
           LowerEnzymeProbProgPass> {
@@ -447,6 +468,11 @@ struct LowerEnzymeProbProgPass
     });
     target.addDynamicallyLegalOp<func::ReturnOp>(
         [&](func::ReturnOp r) { return typeConverter.isLegal(r); });
+    target.addDynamicallyLegalOp<UnrealizedConversionCastOp>(
+        [&](UnrealizedConversionCastOp c) {
+          return typeConverter.isLegal(c.getOperandTypes()) &&
+                 typeConverter.isLegal(c.getResultTypes());
+        });
 
     RewritePatternSet patterns(context);
 
@@ -456,7 +482,8 @@ struct LowerEnzymeProbProgPass
     populateReturnOpTypeConversionPattern(patterns, typeConverter);
 
     patterns.add<InitTraceOpConversion, AddSampleToTraceOpConversion,
-                 AddSubtraceOpConversion>(backend, typeConverter, context);
+                 AddSubtraceOpConversion, UnrealizedConversionCastOpConversion>(
+        backend, typeConverter, context);
 
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns)))) {
