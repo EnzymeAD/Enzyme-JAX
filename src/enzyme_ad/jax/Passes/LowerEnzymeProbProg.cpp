@@ -108,9 +108,9 @@ struct InitTraceOpConversion : public OpConversionPattern<enzyme::InitTraceOp> {
           mlir::FlatSymbolRefAttr::get(ctx, wrapperFn), ValueRange{tracePtr},
           rewriter.getStringAttr(""),
           /*operand_layouts=*/
-          rewriter.getArrayAttr({rewriter.getIndexTensorAttr({0})}),
+          rewriter.getArrayAttr({rewriter.getIndexTensorAttr({})}),
           /*result_layouts=*/
-          rewriter.getArrayAttr({rewriter.getIndexTensorAttr({0})}),
+          rewriter.getArrayAttr({rewriter.getIndexTensorAttr({})}),
           /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
           /*xla_side_effect_free=*/rewriter.getUnitAttr());
 
