@@ -25,6 +25,13 @@
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "stablehlo/dialect/Base.h"
+
+#define GET_ATTRDEF_CLASSES
+#include "src/enzyme_ad/jax/Dialect/EnzymeXLAAttrEnums.h.inc"
+
+#define GET_ATTRDEF_CLASSES
+#include "src/enzyme_ad/jax/Dialect/EnzymeXLAAttrDefs.h.inc"
+
 #define GET_OP_CLASSES
 #include "src/enzyme_ad/jax/Dialect/EnzymeXLAOps.h.inc"
 

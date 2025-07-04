@@ -805,6 +805,16 @@ template <typename From, typename To, auto F> struct ConverterBase {
   SmallVector<To> operator()(ValueRange range) {
     return llvm::map_to_vector(range, [&](From v) { return (*this)(v); });
   }
+  void replace(Value from0, Value from1) {
+    if (auto from = dyn_cast<From>(from0)) {
+      auto found = map.find(from);
+      if (found != map.end()) {
+        auto to = found->second;
+        map.erase(found);
+        map[cast<From>(from1)] = to;
+      }
+    }
+  }
 };
 
 using MemrefConverter = ConverterBase<PtrVal, MemRefVal, convertToMemref>;
@@ -1831,6 +1841,8 @@ convertLLVMToAffineAccess(Operation *op,
           for (auto &a2 : accessBuilders) {
             a2->maybeReplaceBase(load, newLoad);
           }
+          mc.replace(load, newLoad);
+          ic.replace(load, newLoad);
           rewriter.replaceOp(load, newLoad);
           for (auto attr : attrs) {
             newLoad->setAttr(attr.getName(), attr.getValue());
@@ -1856,6 +1868,8 @@ convertLLVMToAffineAccess(Operation *op,
       for (auto &a2 : accessBuilders) {
         a2->maybeReplaceBase(load, newLoad);
       }
+      mc.replace(load, newLoad);
+      ic.replace(load, newLoad);
       rewriter.replaceOp(load, newLoad);
       for (auto attr : attrs) {
         newLoad->setAttr(attr.getName(), attr.getValue());

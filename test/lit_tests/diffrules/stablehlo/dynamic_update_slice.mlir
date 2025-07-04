@@ -1,5 +1,5 @@
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=main outfn= argTys=enzyme_dup,enzyme_dup retTys=enzyme_dup mode=ForwardMode" | FileCheck %s --check-prefix=FORWARD
-// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=main outfn= argTys=enzyme_active,enzyme_active retTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise | FileCheck %s --check-prefix=REVERSE
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=main outfn= argTys=enzyme_active,enzyme_active retTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --canonicalize | FileCheck %s --check-prefix=REVERSE
 
 module {
   func.func @main(%arg0: tensor<10xf32>, %arg1: tensor<5xf32>) -> tensor<10xf32> {
@@ -17,13 +17,14 @@ module {
 // FORWARD-NEXT:  }
 
 // REVERSE:  func.func @main(%arg0: tensor<10xf32>, %arg1: tensor<5xf32>, %arg2: tensor<10xf32>) -> (tensor<10xf32>, tensor<5xf32>) {
+// REVERSE-NEXT:    %[[cst5:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<5xf32>
 // REVERSE-NEXT:    %c = stablehlo.constant dense<0> : tensor<i64>
-// REVERSE-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<10xf32>
-// REVERSE-NEXT:    %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<5xf32>
-// REVERSE-NEXT:    %0 = stablehlo.add %arg2, %cst : tensor<10xf32>
-// REVERSE-NEXT:    %1 = stablehlo.dynamic_update_slice %0, %cst_0, %c : (tensor<10xf32>, tensor<5xf32>, tensor<i64>) -> tensor<10xf32>
-// REVERSE-NEXT:    %2 = stablehlo.add %1, %cst : tensor<10xf32>
+// REVERSE-NEXT:    %[[cst10:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<10xf32>
+// REVERSE-NEXT:    %0 = stablehlo.add %arg2, %[[cst10]] : tensor<10xf32>
+// REVERSE-NEXT:    %1 = stablehlo.dynamic_update_slice %0, %[[cst5]], %c : (tensor<10xf32>, tensor<5xf32>, tensor<i64>) -> tensor<10xf32>
+// REVERSE-NEXT:    %2 = stablehlo.add %1, %[[cst10]] : tensor<10xf32>
 // REVERSE-NEXT:    %3 = stablehlo.dynamic_slice %0, %c, sizes = [5] : (tensor<10xf32>, tensor<i64>) -> tensor<5xf32>
-// REVERSE-NEXT:    %4 = stablehlo.add %3, %cst_0 : tensor<5xf32>
+// REVERSE-NEXT:    %4 = stablehlo.add %3, %[[cst5]] : tensor<5xf32>
 // REVERSE-NEXT:    return %2, %4 : tensor<10xf32>, tensor<5xf32>
 // REVERSE-NEXT:  }
+

@@ -396,6 +396,15 @@ def LowerEnzymeProbProgPass : Pass<"lower-enzyme-probprog"> {
   ];
 }
 
+def LowerEnzymeXLAMLPass : Pass<"lower-enzymexla-ml"> {
+  let summary = "Lower enzymexla mlops to stablehlo";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "chlo::ChloDialect",
+    "enzymexla::EnzymeXLADialect",
+  ];
+}
+
 def LowerJITPass : Pass<"lower-jit"> {
   let summary = "Lower jit call to custom call";
   let dependentDialects = [

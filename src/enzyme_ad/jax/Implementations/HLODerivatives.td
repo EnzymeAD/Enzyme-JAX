@@ -1101,7 +1101,26 @@ def : HLOMemoryIdentityOp<"DynamicSliceOp", [], [0], (Op $operand, (Variadic<"ge
                       (AssertingInactiveArg)
                     ]>;
 
-def : HLOMemoryIdentityOp<"DynamicUpdateSliceOp", [], [0, 1]>;
+def UpdateSliceShape : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  getI64Attr(builder, cast<TensorType>(op.getUpdate().getType()).getShape());
+}]>;
+
+def : HLOMemoryIdentityOp<"DynamicUpdateSliceOp", [], [0, 1], (Op $operand, $update, (Variadic<"getStartIndices">):$start_indices), 
+[
+                      (DynamicUpdateSlice
+                        (TypeOf $operand),
+                        (DiffeRet),
+                        (HLOConstantFP<"0"> $update),
+                        $start_indices
+                      ),
+                      (DynamicSlice
+                        (TypeOf $update),
+                        (DiffeRet),
+                        $start_indices,
+                        (UpdateSliceShape)
+                      ),
+                      (AssertingInactiveArg)
+                    ]>;
 
 def : HLODerivative<"CosineOp", (Op $x), [(CheckedMul (DiffeRet), (Neg (Sin $x)))], (Neg (Mul (Sin $x), (Shadow $x)))>;
 
