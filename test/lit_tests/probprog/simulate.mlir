@@ -192,34 +192,34 @@ module {
 // CPU:  func.func @test.simulate(%arg0: tensor<2xui64>, %arg1: tensor<f64>, %arg2: tensor<f64>) -> (tensor<ui64>, tensor<f64>, tensor<f64>, tensor<f64>, tensor<2xui64>, tensor<f64>, tensor<f64>) {
 // CPU-NEXT:     %cst = stablehlo.constant dense<0.000000e+00> : tensor<f64>
 // CPU-NEXT:     %c = stablehlo.constant dense<0> : tensor<ui64>
-// CPU-NEXT:     %0 = enzymexla.jit_call @enzyme_probprog_init_trace_wrapper_0 (%c) {operand_layouts = [dense<> : tensor<0xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>], result_layouts = [dense<> : tensor<0xindex>], xla_side_effect_free} : (tensor<ui64>) -> tensor<ui64>
+// CPU-NEXT:     %0 = enzymexla.jit_call @enzyme_probprog_init_trace_wrapper_0 (%c) {operand_layouts = [dense<> : tensor<0xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>], result_layouts = [dense<> : tensor<0xindex>]} : (tensor<ui64>) -> tensor<ui64>
 // CPU-NEXT:     %1:4 = call @normal(%arg0, %arg1, %arg2) : (tensor<2xui64>, tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<2xui64>, tensor<f64>, tensor<f64>)
 // CPU-NEXT:     %2 = call @logpdf(%1#0, %arg1, %arg2) : (tensor<f64>, tensor<f64>, tensor<f64>) -> tensor<f64>
 // CPU-NEXT:     %3 = stablehlo.add %2, %cst : tensor<f64>
 // CPU-NEXT:     %c_0 = stablehlo.constant dense<1> : tensor<i64>
-// CPU-NEXT:     %4 = enzymexla.jit_call @enzyme_probprog_add_sample_to_trace_wrapper_0 (%0, %c_0, %1#0) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>], xla_side_effect_free} : (tensor<ui64>, tensor<i64>, tensor<f64>) -> tensor<ui64> 
+// CPU-NEXT:     %4 = enzymexla.jit_call @enzyme_probprog_add_sample_to_trace_wrapper_0 (%0, %c_0, %1#0) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<ui64>, tensor<i64>, tensor<f64>) -> tensor<ui64> 
 // CPU-NEXT:     %5:7 = call @two_normals.simulate(%1#1, %1#0, %arg2) : (tensor<2xui64>, tensor<f64>, tensor<f64>) -> (tensor<ui64>, tensor<f64>, tensor<f64>, tensor<f64>, tensor<2xui64>, tensor<f64>, tensor<f64>)
 // CPU-NEXT:     %c_1 = stablehlo.constant dense<2> : tensor<i64>
-// CPU-NEXT:     %6 = enzymexla.jit_call @enzyme_probprog_add_subtrace_wrapper_0 (%4, %c_1, %5#0) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>], xla_side_effect_free} : (tensor<ui64>, tensor<i64>, tensor<ui64>) -> tensor<ui64> 
+// CPU-NEXT:     %6 = enzymexla.jit_call @enzyme_probprog_add_subtrace_wrapper_0 (%4, %c_1, %5#0) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<ui64>, tensor<i64>, tensor<ui64>) -> tensor<ui64> 
 // CPU-NEXT:     %7 = stablehlo.add %3, %5#1 : tensor<f64>
 // CPU-NEXT:     %c_2 = stablehlo.constant dense<2> : tensor<i64>
-// CPU-NEXT:     %8 = enzymexla.jit_call @enzyme_probprog_add_sample_to_trace_wrapper_1 (%6, %c_2, %5#2, %5#3) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>], xla_side_effect_free} : (tensor<ui64>, tensor<i64>, tensor<f64>, tensor<f64>) -> tensor<ui64> 
+// CPU-NEXT:     %8 = enzymexla.jit_call @enzyme_probprog_add_sample_to_trace_wrapper_1 (%6, %c_2, %5#2, %5#3) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<ui64>, tensor<i64>, tensor<f64>, tensor<f64>) -> tensor<ui64> 
 // CPU-NEXT:     return %8, %7, %5#2, %5#3, %5#4, %5#5, %5#6 : tensor<ui64>, tensor<f64>, tensor<f64>, tensor<f64>, tensor<2xui64>, tensor<f64>, tensor<f64>
 // CPU-NEXT:   }
 
 // CPU:  func.func @two_normals.simulate(%arg0: tensor<2xui64>, %arg1: tensor<f64>, %arg2: tensor<f64>) -> (tensor<ui64>, tensor<f64>, tensor<f64>, tensor<f64>, tensor<2xui64>, tensor<f64>, tensor<f64>) {
 // CPU-NEXT:     %cst = stablehlo.constant dense<0.000000e+00> : tensor<f64>
 // CPU-NEXT:     %c = stablehlo.constant dense<0> : tensor<ui64>
-// CPU-NEXT:     %0 = enzymexla.jit_call @enzyme_probprog_init_trace_wrapper_1 (%c) {operand_layouts = [dense<> : tensor<0xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>], result_layouts = [dense<> : tensor<0xindex>], xla_side_effect_free} : (tensor<ui64>) -> tensor<ui64>
+// CPU-NEXT:     %0 = enzymexla.jit_call @enzyme_probprog_init_trace_wrapper_1 (%c) {operand_layouts = [dense<> : tensor<0xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>], result_layouts = [dense<> : tensor<0xindex>]} : (tensor<ui64>) -> tensor<ui64>
 // CPU-NEXT:     %1:4 = call @normal(%arg0, %arg1, %arg2) : (tensor<2xui64>, tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<2xui64>, tensor<f64>, tensor<f64>)
 // CPU-NEXT:     %2 = call @logpdf(%1#0, %arg1, %arg2) : (tensor<f64>, tensor<f64>, tensor<f64>) -> tensor<f64>
 // CPU-NEXT:     %3 = stablehlo.add %2, %cst : tensor<f64>
 // CPU-NEXT:     %c_0 = stablehlo.constant dense<3> : tensor<i64>
-// CPU-NEXT:     %4 = enzymexla.jit_call @enzyme_probprog_add_sample_to_trace_wrapper_2 (%0, %c_0, %1#0) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>], xla_side_effect_free} : (tensor<ui64>, tensor<i64>, tensor<f64>) -> tensor<ui64> 
+// CPU-NEXT:     %4 = enzymexla.jit_call @enzyme_probprog_add_sample_to_trace_wrapper_2 (%0, %c_0, %1#0) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<ui
 // CPU-NEXT:     %5:4 = call @normal(%1#1, %arg1, %arg2) : (tensor<2xui64>, tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<2xui64>, tensor<f64>, tensor<f64>)
 // CPU-NEXT:     %6 = call @logpdf(%5#0, %arg1, %arg2) : (tensor<f64>, tensor<f64>, tensor<f64>) -> tensor<f64>
 // CPU-NEXT:     %7 = stablehlo.add %3, %6 : tensor<f64>
 // CPU-NEXT:     %c_1 = stablehlo.constant dense<4> : tensor<i64>
-// CPU-NEXT:     %8 = enzymexla.jit_call @enzyme_probprog_add_sample_to_trace_wrapper_3 (%4, %c_1, %5#0) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>], xla_side_effect_free} : (tensor<ui64>, tensor<i64>, tensor<f64>) -> tensor<ui64> 
+// CPU-NEXT:     %8 = enzymexla.jit_call @enzyme_probprog_add_sample_to_trace_wrapper_3 (%4, %c_1, %5#0) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<ui64>, tensor<i64>, tensor<f64>) -> tensor<ui64> 
 // CPU-NEXT:     return %8, %7, %1#0, %5#0, %5#1, %5#2, %5#3 : tensor<ui64>, tensor<f64>, tensor<f64>, tensor<f64>, tensor<2xui64>, tensor<f64>, tensor<f64>
 // CPU-NEXT:   }

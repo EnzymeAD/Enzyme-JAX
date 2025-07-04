@@ -112,7 +112,7 @@ struct InitTraceOpConversion : public OpConversionPattern<enzyme::InitTraceOp> {
           /*result_layouts=*/
           rewriter.getArrayAttr({rewriter.getIndexTensorAttr({})}),
           /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
-          /*xla_side_effect_free=*/rewriter.getUnitAttr());
+          /*xla_side_effect_free=*/nullptr);
 
       rewriter.replaceOp(op, jitCall.getResults());
 
@@ -320,7 +320,7 @@ struct AddSampleToTraceOpConversion
           /*operand_layouts=*/nullptr,
           /*result_layouts=*/nullptr,
           /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
-          /*xla_side_effect_free=*/rewriter.getUnitAttr());
+          /*xla_side_effect_free=*/nullptr);
 
       rewriter.replaceOp(op, jitCall.getResults());
 
@@ -414,7 +414,7 @@ struct AddSubtraceOpConversion
           /*operand_layouts=*/nullptr,
           /*result_layouts=*/nullptr,
           /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
-          /*xla_side_effect_free=*/rewriter.getUnitAttr());
+          /*xla_side_effect_free=*/nullptr);
 
       rewriter.replaceOp(op, jitCall.getResults());
 
