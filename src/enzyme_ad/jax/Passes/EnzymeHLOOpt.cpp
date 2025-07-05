@@ -4117,8 +4117,13 @@ struct WhileDeadResults final
     : CheckedOpRewritePattern<stablehlo::WhileOp, WhileDeadResults> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool isLoopResultDead(OpResult result, ArrayRef<int64_t> deadResults,
-                        bool &retryIfNewDead) const {
+  // backwardsUsesOfArguments is a map from terminator operand # to a set of all
+  // arguments which use it, laziliy initialized as required
+  bool isLoopResultDead(
+      bool isTotalPure, OpResult result, ArrayRef<int64_t> deadResults,
+      bool &retryIfNewDead,
+      std::map<int64_t, std::set<int64_t>> &backwardsUsesOfArguments,
+      std::map<int64_t, int> &forwardIsPure) const {
     // Not dead if the result is in use.
     if (!result.use_empty())
       return false;
@@ -4126,34 +4131,54 @@ struct WhileDeadResults final
     // Or if the corresponding argument is being used in computing the
     // condition.
     auto whileOp = cast<stablehlo::WhileOp>(result.getOwner());
-    Value condArgument =
-        whileOp.getCond().getArgument(result.getResultNumber());
-    SetVector<Operation *> forwardSlice;
-    getForwardSlice(condArgument, &forwardSlice);
-    if (!llvm::all_of(forwardSlice, mlir::isPure))
-      return false;
-    if (forwardSlice.contains(whileOp.getCond().front().getTerminator()))
-      return false;
-
-    // Or in computing another result. We first do a fast-path check of having
-    // the argument not influencing the terminator operation, before going into
-    // finer-grain analysis.
-    //
-    // TODO: it is possible that this argument does influence another terminator
-    // operand, but that operand in turn corresponds to a dead value, but
-    // handling that would require more complex logic of detecting dead cycles
-    // of value chains.
-    forwardSlice.clear();
-    assert(llvm::hasSingleElement(whileOp.getBody()));
-    Value bodyArgument =
-        whileOp.getBody().getArgument(result.getResultNumber());
-    getForwardSlice(bodyArgument, &forwardSlice);
-    if (!llvm::all_of(forwardSlice, mlir::isPure))
-      return false;
-
     Operation *bodyTerminator = whileOp.getBody().front().getTerminator();
-    if (!forwardSlice.contains(bodyTerminator))
+    BlockArgument bodyArgument =
+        whileOp.getBody().getArgument(result.getResultNumber());
+    auto ffound = forwardIsPure.find(result.getResultNumber());
+    if (ffound == forwardIsPure.end()) {
+      Value condArgument =
+          whileOp.getCond().getArgument(result.getResultNumber());
+      SetVector<Operation *> forwardSlice;
+      getForwardSlice(condArgument, &forwardSlice);
+      if (!isTotalPure && !llvm::all_of(forwardSlice, mlir::isPure)) {
+        forwardIsPure.emplace(result.getResultNumber(), 0);
+        return false;
+      }
+      if (forwardSlice.contains(whileOp.getCond().front().getTerminator())) {
+        forwardIsPure.emplace(result.getResultNumber(), 0);
+        return false;
+      }
+
+      // Or in computing another result. We first do a fast-path check of having
+      // the argument not influencing the terminator operation, before going
+      // into finer-grain analysis.
+      //
+      // TODO: it is possible that this argument does influence another
+      // terminator operand, but that operand in turn corresponds to a dead
+      // value, but handling that would require more complex logic of detecting
+      // dead cycles of value chains.
+      forwardSlice.clear();
+      assert(llvm::hasSingleElement(whileOp.getBody()));
+      getForwardSlice(bodyArgument, &forwardSlice);
+      if (!isTotalPure && !llvm::all_of(forwardSlice, mlir::isPure)) {
+        forwardIsPure.emplace(result.getResultNumber(), 0);
+        return false;
+      }
+      if (!forwardSlice.contains(bodyTerminator)) {
+        forwardIsPure.emplace(result.getResultNumber(), 2);
+        return true;
+      }
+      ffound = forwardIsPure.emplace(result.getResultNumber(), 1).first;
+    }
+
+    switch (ffound->second) {
+    case 0:
+      return false;
+    case 2:
       return true;
+    default:
+      break;
+    }
 
     for (OpOperand &terminatorOperand : bodyTerminator->getOpOperands()) {
       if (terminatorOperand.getOperandNumber() == result.getResultNumber())
@@ -4174,17 +4199,44 @@ struct WhileDeadResults final
         }
       }
 
-      SetVector<Operation *> backwardSlice;
-      BackwardSliceOptions options;
-      options.omitBlockArguments = true;
-      if (getBackwardSlice(terminatorOperand.get(), &backwardSlice, options)
-              .failed())
-        return false;
-      for (Operation *op : backwardSlice) {
-        if (llvm::is_contained(op->getOperands(), bodyArgument)) {
-          retryIfNewDead = true;
+      auto found =
+          backwardsUsesOfArguments.find(terminatorOperand.getOperandNumber());
+      if (found == backwardsUsesOfArguments.end()) {
+        SetVector<Operation *> backwardSlice;
+        BackwardSliceOptions options;
+        options.omitBlockArguments = true;
+        auto iter = backwardsUsesOfArguments
+                        .emplace(terminatorOperand.getOperandNumber(),
+                                 std::set<int64_t>{})
+                        .first;
+        found = iter;
+        auto &set = found->second;
+
+        if (getBackwardSlice(terminatorOperand.get(), &backwardSlice, options)
+                .failed()) {
+          set.insert(-1);
           return false;
         }
+        for (Operation *op : backwardSlice) {
+          for (auto val : op->getOperands()) {
+            if (auto arg = dyn_cast<BlockArgument>(val)) {
+              if (arg.getOwner() == &whileOp.getBody().front()) {
+                set.insert(arg.getArgNumber());
+                break;
+              }
+            }
+          }
+        }
+      }
+      assert (found != backwardsUsesOfArguments.end());
+
+      auto &set = found->second;
+      if (set.count(-1))
+        return false;
+
+      if (set.count(bodyArgument.getArgNumber())) {
+        retryIfNewDead = true;
+        return false;
       }
     }
     return true;
@@ -4214,13 +4266,17 @@ struct WhileDeadResults final
   LogicalResult matchAndRewriteImpl(stablehlo::WhileOp op,
                                     PatternRewriter &rewriter) const {
     SmallVector<int64_t> deadResults;
+    bool isTotalPure = isPure(op);
+    std::map<int64_t, int> forwardIsPure;
+    std::map<int64_t, std::set<int64_t>> backwardsUsesOfArguments;
     do {
       bool newDead = false;
       bool retry = false;
       for (OpResult result : op.getResults()) {
         if (llvm::is_contained(deadResults, result.getResultNumber()))
           continue;
-        if (!isLoopResultDead(result, deadResults, retry))
+        if (!isLoopResultDead(isTotalPure, result, deadResults, retry,
+                              backwardsUsesOfArguments, forwardIsPure))
           continue;
         deadResults.push_back(result.getResultNumber());
         newDead = true;
