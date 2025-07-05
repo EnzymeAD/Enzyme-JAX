@@ -4131,10 +4131,10 @@ struct WhileDeadResults final
     // Or if the corresponding argument is being used in computing the
     // condition.
     auto whileOp = cast<stablehlo::WhileOp>(result.getOwner());
-    auto ffound = forwardIsPure.find(result.getResultNumber());
     Operation *bodyTerminator = whileOp.getBody().front().getTerminator();
     BlockArgument bodyArgument =
         whileOp.getBody().getArgument(result.getResultNumber());
+    auto ffound = forwardIsPure.find(result.getResultNumber());
     if (ffound == forwardIsPure.end()) {
       Value condArgument =
           whileOp.getCond().getArgument(result.getResultNumber());
@@ -4168,7 +4168,7 @@ struct WhileDeadResults final
         forwardIsPure.emplace(result.getResultNumber(), 2);
         return true;
       }
-      forwardIsPure.emplace(result.getResultNumber(), 1);
+      ffound = forwardIsPure.emplace(result.getResultNumber(), 1).first;
     }
 
     switch (ffound->second) {
@@ -4228,6 +4228,7 @@ struct WhileDeadResults final
           }
         }
       }
+      assert (found != backwardsUsesOfArguments.end());
 
       auto &set = found->second;
       if (set.count(-1))
