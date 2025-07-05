@@ -4157,9 +4157,10 @@ struct WhileDeadResults final
     forwardSlice.clear();
     assert(llvm::hasSingleElement(whileOp.getBody()));
     getForwardSlice(bodyArgument, &forwardSlice);
-    if (!isTotalPure && !llvm::all_of(forwardSlice, mlir::isPure))
+    if (!isTotalPure && !llvm::all_of(forwardSlice, mlir::isPure)) {
       forwardIsPure.emplace(result.getResultNumber(), 0);
       return false;
+    }
     if (!forwardSlice.contains(bodyTerminator)) {
       forwardIsPure.emplace(result.getResultNumber(), 2);
       return true;
