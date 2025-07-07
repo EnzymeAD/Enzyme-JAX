@@ -4341,13 +4341,13 @@ struct WhileDeadResults final
 
     replaceTerminator(rewriter, op.getBody(), deadResults);
 
-      for (int64_t i : deadResults) {
-        auto arg = op.getCond().getArgument(i);
-        auto ty = arg.getType();
-        auto cst = rewriter.create<stablehlo::ConstantOp>(
-            arg.getLoc(), ty, cast<ElementsAttr>(rewriter.getZeroAttr(ty)));
-        rewriter.replaceAllUsesWith(arg, cst);
-      }
+    for (int64_t i : deadResults) {
+      auto arg = op.getCond().getArgument(i);
+      auto ty = arg.getType();
+      auto cst = rewriter.create<stablehlo::ConstantOp>(
+          arg.getLoc(), ty, cast<ElementsAttr>(rewriter.getZeroAttr(ty)));
+      rewriter.replaceAllUsesWith(arg, cst);
+    }
       for (int64_t i : deadResults) {
         auto arg = op.getBody().getArgument(i);
         auto ty = arg.getType();
