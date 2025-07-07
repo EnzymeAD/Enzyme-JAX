@@ -4282,191 +4282,202 @@ struct WhileDeadResults final
     std::map<int64_t, std::set<int64_t>> backwardsUsesOfArguments;
     SmallVector<OpResult> emptyResults;
     for (OpResult result : op.getResults()) {
-      if (result.use_empty()) emptyResults.push_back(result);
+      if (result.use_empty())
+        emptyResults.push_back(result);
     }
-    if (emptyResults.size() == 0) return failure();
+    if (emptyResults.size() == 0)
+      return failure();
 
-        DenseMap<Value, llvm::SmallPtrSet<BlockArgument, 3>> users;
-	for (auto ores : emptyResults) {
-          auto ba = op.getCond().getArgument(ores.getResultNumber());
-	  users[ba] = {ba};
-	}
-        llvm::SmallPtrSet<BlockArgument, 3> nonPure;
+    DenseMap<Value, llvm::SmallPtrSet<BlockArgument, 3>> users;
+    for (auto ores : emptyResults) {
+      auto ba = op.getCond().getArgument(ores.getResultNumber());
+      users[ba] = {ba};
+    }
+    llvm::SmallPtrSet<BlockArgument, 3> nonPure;
 
-	DenseMap<Operation*, llvm::SmallPtrSet<BlockArgument, 3>> opUsers;
-	for (auto &sop : op.getCond().front().without_terminator()) {
-	   llvm::SmallPtrSet<BlockArgument, 3> set;
-	   for (auto operand : sop.getOperands()) {
-	     auto found = users.find(operand);
-	     if (found != users.end()) {
-	       set.insert(found->second.begin(), found->second.end());
-	     }
-	   }
-	   if (!(sop.getNumRegions() == 0 || sop.hasTrait<OpTrait::IsIsolatedFromAbove>())) {
-	      SmallVector<Operation*> todo;
-	      for (auto &reg : sop.getRegions()) {
-	        for (auto &blk : reg) {
-		  for (auto &mop : blk) {
-		    todo.push_back(&mop);
-		  }
-		}
-	      }
-	      while (todo.size()) {
-	        auto cur = todo.pop_back_val();
-	        for (auto operand : cur->getOperands()) {
-	          auto found = users.find(operand);
-	          if (found != users.end()) {
-	            set.insert(found->second.begin(), found->second.end());
-	          }
-		}
-		if (!(cur->getNumRegions() == 0 || cur->hasTrait<OpTrait::IsIsolatedFromAbove>())) {
-	      for (auto &reg : cur->getRegions()) {
-	        for (auto &blk : reg) {
-		  for (auto &mop : blk) {
-		    todo.push_back(&mop);
-		  }
-		}
-	      }
-		}
-		
-	      }
-	   }
-	   if (set.size() == 0) continue;
-	   
-          if (!isTotalPure && !mlir::isPure(&sop)) {
-	    for (auto arg : set) nonPure.insert(arg);
-	  }
-	  for (auto res : sop.getResults())
-	    users[res] = set;
-	  opUsers[&sop] = set;
-	}
-	llvm::SmallPtrSet<BlockArgument, 3> terminatorUsers;
-	for (auto v : op.getCond().front().getTerminator()->getOperands()) {
-	     auto found = users.find(v);
-	     if (found != users.end()) {
-	       terminatorUsers.insert(found->second.begin(), found->second.end());
-	     }
-	}
+    DenseMap<Operation *, llvm::SmallPtrSet<BlockArgument, 3>> opUsers;
+    for (auto &sop : op.getCond().front().without_terminator()) {
+      llvm::SmallPtrSet<BlockArgument, 3> set;
+      for (auto operand : sop.getOperands()) {
+        auto found = users.find(operand);
+        if (found != users.end()) {
+          set.insert(found->second.begin(), found->second.end());
+        }
+      }
+      if (!(sop.getNumRegions() == 0 ||
+            sop.hasTrait<OpTrait::IsIsolatedFromAbove>())) {
+        SmallVector<Operation *> todo;
+        for (auto &reg : sop.getRegions()) {
+          for (auto &blk : reg) {
+            for (auto &mop : blk) {
+              todo.push_back(&mop);
+            }
+          }
+        }
+        while (todo.size()) {
+          auto cur = todo.pop_back_val();
+          for (auto operand : cur->getOperands()) {
+            auto found = users.find(operand);
+            if (found != users.end()) {
+              set.insert(found->second.begin(), found->second.end());
+            }
+          }
+          if (!(cur->getNumRegions() == 0 ||
+                cur->hasTrait<OpTrait::IsIsolatedFromAbove>())) {
+            for (auto &reg : cur->getRegions()) {
+              for (auto &blk : reg) {
+                for (auto &mop : blk) {
+                  todo.push_back(&mop);
+                }
+              }
+            }
+          }
+        }
+      }
+      if (set.size() == 0)
+        continue;
 
-	SmallVector<OpResult> emptyNonPure;
-        for (auto ores : emptyResults) {
-          auto oarg = op.getCond().getArgument(ores.getResultNumber());
-	  if (nonPure.count(oarg)) {
-	   continue;
-	  }
-	  if (terminatorUsers.count(oarg)) {
-	   continue;
-	  }
-	  emptyNonPure.push_back(ores);
-	}
-	if (emptyNonPure.size() == 0) {
-	  return failure();
-	}
+      if (!isTotalPure && !mlir::isPure(&sop)) {
+        for (auto arg : set)
+          nonPure.insert(arg);
+      }
+      for (auto res : sop.getResults())
+        users[res] = set;
+      opUsers[&sop] = set;
+    }
+    llvm::SmallPtrSet<BlockArgument, 3> terminatorUsers;
+    for (auto v : op.getCond().front().getTerminator()->getOperands()) {
+      auto found = users.find(v);
+      if (found != users.end()) {
+        terminatorUsers.insert(found->second.begin(), found->second.end());
+      }
+    }
 
-        DenseMap<Value, llvm::SmallPtrSet<BlockArgument, 3>> usersBody;
-        DenseMap<Operation*, llvm::SmallPtrSet<BlockArgument, 3>> opUsersBody;
-	terminatorUsers.clear();
-	nonPure.clear();
+    SmallVector<OpResult> emptyNonPure;
+    for (auto ores : emptyResults) {
+      auto oarg = op.getCond().getArgument(ores.getResultNumber());
+      if (nonPure.count(oarg)) {
+        continue;
+      }
+      if (terminatorUsers.count(oarg)) {
+        continue;
+      }
+      emptyNonPure.push_back(ores);
+    }
+    if (emptyNonPure.size() == 0) {
+      return failure();
+    }
 
-	for (auto ores : emptyNonPure) {
-          auto ba = op.getBody().getArgument(ores.getResultNumber());
-	  usersBody[ba] = {ba};
-	}
-        llvm::SmallPtrSet<BlockArgument, 3> nonPure2;
+    DenseMap<Value, llvm::SmallPtrSet<BlockArgument, 3>> usersBody;
+    DenseMap<Operation *, llvm::SmallPtrSet<BlockArgument, 3>> opUsersBody;
+    terminatorUsers.clear();
+    nonPure.clear();
 
-	for (auto &sop : op.getBody().front().without_terminator()) {
-	   llvm::SmallPtrSet<BlockArgument, 3> set;
-	   for (auto operand : sop.getOperands()) {
-	     auto found = usersBody.find(operand);
-	     if (found != usersBody.end()) {
-	       set.insert(found->second.begin(), found->second.end());
-	     }
-	   }
-	   if (!(sop.getNumRegions() == 0 || sop.hasTrait<OpTrait::IsIsolatedFromAbove>())) {
-	      SmallVector<Operation*> todo;
-	      for (auto &reg : sop.getRegions()) {
-	        for (auto &blk : reg) {
-		  for (auto &mop : blk) {
-		    todo.push_back(&mop);
-		  }
-		}
-	      }
-	      while (todo.size()) {
-	        auto cur = todo.pop_back_val();
-	        for (auto operand : cur->getOperands()) {
-	          auto found = usersBody.find(operand);
-	          if (found != usersBody.end()) {
-	            set.insert(found->second.begin(), found->second.end());
-	          }
-		}
-		if (!(cur->getNumRegions() == 0 || cur->hasTrait<OpTrait::IsIsolatedFromAbove>())) {
-	      for (auto &reg : cur->getRegions()) {
-	        for (auto &blk : reg) {
-		  for (auto &mop : blk) {
-		    todo.push_back(&mop);
-		  }
-		}
-	      }
-		}
-		
-	      }
-	   }
-	   if (set.size() == 0) continue;
-	   
-          if (!isTotalPure && !mlir::isPure(&sop)) {
-	    for (auto arg : set) nonPure2.insert(arg);
-	  }
-	  for (auto res : sop.getResults())
-	    usersBody[res] = set;
-	  opUsersBody[&sop] = set;
-	}
+    for (auto ores : emptyNonPure) {
+      auto ba = op.getBody().getArgument(ores.getResultNumber());
+      usersBody[ba] = {ba};
+    }
+    llvm::SmallPtrSet<BlockArgument, 3> nonPure2;
 
-	llvm::SmallPtrSet<OpResult, 3> emptyNonPure2;
-        for (auto ores : emptyNonPure) {
-          auto oarg = op.getBody().getArgument(ores.getResultNumber());
-	  if (nonPure2.count(oarg)) {
-	   continue;
-	  }
-	  emptyNonPure2.insert(ores);
-	}
-	if (emptyNonPure2.size() == 0) {
-	  return failure();
-	}
-	
-	SmallVector<llvm::SmallPtrSet<BlockArgument, 3>> terminatorArgUses;
-	for (auto v : op.getBody().front().getTerminator()->getOperands()) {
-	     auto found = usersBody.find(v);
-	     auto &set = terminatorArgUses.emplace_back();
-	     if (found != usersBody.end()) {
-		for (auto arg : found->second) {
-		  if (emptyNonPure2.count(op->getResult(arg.getArgNumber()))) set.insert(arg);
-		}
-	     }
-	}
-    
-	llvm::DenseSet<OpResult> removedResults;
-       SmallVector<OpResult> todo;
-       for (auto ores : op->getResults()) {
-	  if (!emptyNonPure2.count(ores))
-            todo.push_back(ores);
-	  removedResults.insert(ores);
-       }
-       
-       while(todo.size()) {
-	       auto cur = todo.pop_back_val(); 
-          if (!removedResults.count(cur)) continue;
-	  removedResults.erase(cur);
-	  for (auto arg : terminatorArgUses[cur.getResultNumber()]) {
-		  auto res2 = op->getResult(arg.getArgNumber());
-		  todo.push_back(res2);
-	  }
-       }
+    for (auto &sop : op.getBody().front().without_terminator()) {
+      llvm::SmallPtrSet<BlockArgument, 3> set;
+      for (auto operand : sop.getOperands()) {
+        auto found = usersBody.find(operand);
+        if (found != usersBody.end()) {
+          set.insert(found->second.begin(), found->second.end());
+        }
+      }
+      if (!(sop.getNumRegions() == 0 ||
+            sop.hasTrait<OpTrait::IsIsolatedFromAbove>())) {
+        SmallVector<Operation *> todo;
+        for (auto &reg : sop.getRegions()) {
+          for (auto &blk : reg) {
+            for (auto &mop : blk) {
+              todo.push_back(&mop);
+            }
+          }
+        }
+        while (todo.size()) {
+          auto cur = todo.pop_back_val();
+          for (auto operand : cur->getOperands()) {
+            auto found = usersBody.find(operand);
+            if (found != usersBody.end()) {
+              set.insert(found->second.begin(), found->second.end());
+            }
+          }
+          if (!(cur->getNumRegions() == 0 ||
+                cur->hasTrait<OpTrait::IsIsolatedFromAbove>())) {
+            for (auto &reg : cur->getRegions()) {
+              for (auto &blk : reg) {
+                for (auto &mop : blk) {
+                  todo.push_back(&mop);
+                }
+              }
+            }
+          }
+        }
+      }
+      if (set.size() == 0)
+        continue;
 
-	SmallVector<int64_t> deadResults;
-	for (auto ores : removedResults) {
-		deadResults.push_back(ores.getResultNumber());
-	}
-	if (deadResults.size() == 0) return failure();
+      if (!isTotalPure && !mlir::isPure(&sop)) {
+        for (auto arg : set)
+          nonPure2.insert(arg);
+      }
+      for (auto res : sop.getResults())
+        usersBody[res] = set;
+      opUsersBody[&sop] = set;
+    }
+
+    llvm::SmallPtrSet<OpResult, 3> emptyNonPure2;
+    for (auto ores : emptyNonPure) {
+      auto oarg = op.getBody().getArgument(ores.getResultNumber());
+      if (nonPure2.count(oarg)) {
+        continue;
+      }
+      emptyNonPure2.insert(ores);
+    }
+    if (emptyNonPure2.size() == 0) {
+      return failure();
+    }
+
+    SmallVector<llvm::SmallPtrSet<BlockArgument, 3>> terminatorArgUses;
+    for (auto v : op.getBody().front().getTerminator()->getOperands()) {
+      auto found = usersBody.find(v);
+      auto &set = terminatorArgUses.emplace_back();
+      if (found != usersBody.end()) {
+        for (auto arg : found->second) {
+          if (emptyNonPure2.count(op->getResult(arg.getArgNumber())))
+            set.insert(arg);
+        }
+      }
+    }
+
+    llvm::DenseSet<OpResult> removedResults;
+    SmallVector<OpResult> todo;
+    for (auto ores : op->getResults()) {
+      if (!emptyNonPure2.count(ores))
+        todo.push_back(ores);
+      removedResults.insert(ores);
+    }
+
+    while (todo.size()) {
+      auto cur = todo.pop_back_val();
+      if (!removedResults.count(cur))
+        continue;
+      removedResults.erase(cur);
+      for (auto arg : terminatorArgUses[cur.getResultNumber()]) {
+        auto res2 = op->getResult(arg.getArgNumber());
+        todo.push_back(res2);
+      }
+    }
+
+    SmallVector<int64_t> deadResults;
+    for (auto ores : removedResults) {
+      deadResults.push_back(ores.getResultNumber());
+    }
+    if (deadResults.size() == 0)
+      return failure();
 
     llvm::sort(deadResults);
 
