@@ -4303,15 +4303,33 @@ struct WhileDeadResults final
 	     }
 	   }
 	   if (!(sop.getNumRegions() == 0 || sop.hasTrait<OpTrait::IsIsolatedFromAbove>())) {
-	   sop.walk([&](Operation *s2) {
-	      if (s2 == &sop) return;
-	     for (auto operand : sop.getOperands()) {
-	     auto found = users.find(operand);
-	     if (found != users.end()) {
-	       set.insert(found->second.begin(), found->second.end());
-	     }
-	   }
-	   });
+	      SmallVector<Operation*> todo;
+	      for (auto &reg : sop.getRegions()) {
+	        for (auto &blk : reg) {
+		  for (auto &mop : blk) {
+		    todo.push_back(&mop);
+		  }
+		}
+	      }
+	      while (todo.size()) {
+	        auto cur = todo.pop_back_val();
+	        for (auto operand : cur->getOperands()) {
+	          auto found = users.find(operand);
+	          if (found != users.end()) {
+	            set.insert(found->second.begin(), found->second.end());
+	          }
+		}
+		if (!(cur->getNumRegions() == 0 || cur->hasTrait<OpTrait::IsIsolatedFromAbove>())) {
+	      for (auto &reg : cur->getRegions()) {
+	        for (auto &blk : reg) {
+		  for (auto &mop : blk) {
+		    todo.push_back(&mop);
+		  }
+		}
+	      }
+		}
+		
+	      }
 	   }
 	   if (set.size() == 0) continue;
 	   
@@ -4365,15 +4383,33 @@ struct WhileDeadResults final
 	     }
 	   }
 	   if (!(sop.getNumRegions() == 0 || sop.hasTrait<OpTrait::IsIsolatedFromAbove>())) {
-	   sop.walk([&](Operation *s2) {
-	      if (s2 == &sop) return;
-	     for (auto operand : sop.getOperands()) {
-	     auto found = usersBody.find(operand);
-	     if (found != usersBody.end()) {
-	       set.insert(found->second.begin(), found->second.end());
-	     }
-	   }
-	   });
+	      SmallVector<Operation*> todo;
+	      for (auto &reg : sop.getRegions()) {
+	        for (auto &blk : reg) {
+		  for (auto &mop : blk) {
+		    todo.push_back(&mop);
+		  }
+		}
+	      }
+	      while (todo.size()) {
+	        auto cur = todo.pop_back_val();
+	        for (auto operand : cur->getOperands()) {
+	          auto found = usersBody.find(operand);
+	          if (found != usersBody.end()) {
+	            set.insert(found->second.begin(), found->second.end());
+	          }
+		}
+		if (!(cur->getNumRegions() == 0 || cur->hasTrait<OpTrait::IsIsolatedFromAbove>())) {
+	      for (auto &reg : cur->getRegions()) {
+	        for (auto &blk : reg) {
+		  for (auto &mop : blk) {
+		    todo.push_back(&mop);
+		  }
+		}
+	      }
+		}
+		
+	      }
 	   }
 	   if (set.size() == 0) continue;
 	   
