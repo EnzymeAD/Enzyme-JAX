@@ -4148,9 +4148,10 @@ struct WhileDeadResults final
     if (emptyResults.size() == 0)
       return failure();
 
-
-    DenseMap<Value, llvm::SmallPtrSet<size_t, 3>*> users(emptyResults.size() + op.getCond().front().getOperations().size());
-    llvm::SmallVector<std::unique_ptr<llvm::SmallPtrSet<size_t, 3>>, 3> condCache;
+    DenseMap<Value, llvm::SmallPtrSet<size_t, 3> *> users(
+        emptyResults.size() + op.getCond().front().getOperations().size());
+    llvm::SmallVector<std::unique_ptr<llvm::SmallPtrSet<size_t, 3>>, 3>
+        condCache;
     condCache.reserve(emptyResults.size());
     for (auto ores : emptyResults) {
       auto ba = op.getCond().front().getArgument(ores);
@@ -4162,7 +4163,9 @@ struct WhileDeadResults final
 
     llvm::SmallPtrSet<size_t, 3> nonPure;
 
-    SmallVector<std::pair<Operation *, std::unique_ptr<llvm::SmallPtrSet<size_t, 3>>>> opUsers;
+    SmallVector<
+        std::pair<Operation *, std::unique_ptr<llvm::SmallPtrSet<size_t, 3>>>>
+        opUsers;
     for (auto &sop : op.getCond().front().without_terminator()) {
       auto setP = std::make_unique<llvm::SmallPtrSet<size_t, 3>>();
       auto &set = *setP;
@@ -4210,7 +4213,7 @@ struct WhileDeadResults final
           nonPure.insert(arg);
       }
       for (auto res : sop.getResults())
-	if (!res.use_empty())
+        if (!res.use_empty())
           users.try_emplace(res, &set);
       opUsers.emplace_back(&sop, std::move(setP));
     }
@@ -4236,12 +4239,16 @@ struct WhileDeadResults final
       return failure();
     }
 
-    DenseMap<Value, llvm::SmallPtrSet<size_t, 3>*> usersBody(emptyNonPure.size() + op.getBody().front().getOperations().size());
-    SmallVector<std::pair<Operation *, std::unique_ptr<llvm::SmallPtrSet<size_t, 3>>>> opUsersBody;
+    DenseMap<Value, llvm::SmallPtrSet<size_t, 3> *> usersBody(
+        emptyNonPure.size() + op.getBody().front().getOperations().size());
+    SmallVector<
+        std::pair<Operation *, std::unique_ptr<llvm::SmallPtrSet<size_t, 3>>>>
+        opUsersBody;
     terminatorUsers.clear();
     nonPure.clear();
 
-    llvm::SmallVector<std::unique_ptr<llvm::SmallPtrSet<size_t, 3>>, 3> bodyCache;
+    llvm::SmallVector<std::unique_ptr<llvm::SmallPtrSet<size_t, 3>>, 3>
+        bodyCache;
     bodyCache.reserve(emptyNonPure.size());
     for (auto ores : emptyNonPure) {
       auto ba = op.getBody().front().getArgument(ores);
@@ -4300,24 +4307,24 @@ struct WhileDeadResults final
           nonPure2.insert(arg);
       }
       for (auto res : sop.getResults())
-	if (!res.use_empty())
-	  usersBody.try_emplace(res, &set);
+        if (!res.use_empty())
+          usersBody.try_emplace(res, &set);
       opUsersBody.emplace_back(&sop, std::move(setP));
     }
 
     llvm::SmallPtrSet<size_t, 3> emptyNonPure2;
     if (isTotalPure)
-	emptyNonPure2.insert(emptyNonPure.begin(), emptyNonPure.end());
+      emptyNonPure2.insert(emptyNonPure.begin(), emptyNonPure.end());
     else {
-    for (auto ores : emptyNonPure) {
-      if (nonPure2.count(ores)) {
-        continue;
+      for (auto ores : emptyNonPure) {
+        if (nonPure2.count(ores)) {
+          continue;
+        }
+        emptyNonPure2.insert(ores);
       }
-      emptyNonPure2.insert(ores);
-    }
-    if (emptyNonPure2.size() == 0) {
-      return failure();
-    }
+      if (emptyNonPure2.size() == 0) {
+        return failure();
+      }
     }
 
     llvm::BitVector removedResults(NumResults, true);
@@ -4327,7 +4334,7 @@ struct WhileDeadResults final
     for (size_t residx = 0; residx < NumResults; residx++) {
       if (!emptyNonPure2.count(residx)) {
         todo.push_back(residx);
-	seen.set(residx);
+        seen.set(residx);
       }
     }
 
@@ -4339,22 +4346,22 @@ struct WhileDeadResults final
       auto v = op.getBody().front().getTerminator()->getOperands()[cur];
       auto found = usersBody.find(v);
       if (found != usersBody.end()) {
-	if (isTotalPure) {
+        if (isTotalPure) {
           for (auto arg : *found->second) {
             if (!seen.test(arg)) {
               todo.push_back(arg);
               seen.set(arg);
-	    }
-	  }
-	} else {
+            }
+          }
+        } else {
           for (auto arg : *found->second) {
             if (emptyNonPure2.contains(arg)) {
-            if (!seen.test(arg)) {
-              todo.push_back(arg);
-              seen.set(arg);
-	    }
-	  }
-	  }
+              if (!seen.test(arg)) {
+                todo.push_back(arg);
+                seen.set(arg);
+              }
+            }
+          }
         }
       }
     }
@@ -4364,7 +4371,7 @@ struct WhileDeadResults final
     for (size_t residx = 0; residx < NumResults; residx++) {
       if (!emptyNonPure2.count(residx)) {
         todo.set(residx);
-	if (residx < start) start = residx;
+        if (residx < start) start = residx;
       }
     }
 
@@ -4379,22 +4386,22 @@ struct WhileDeadResults final
       auto v = op.getBody().front().getTerminator()->getOperands()[cur];
       auto found = usersBody.find(v);
       if (found != usersBody.end()) {
-	if (isTotalPure) {
+        if (isTotalPure) {
           for (auto arg : found->second) {
             if (!removedResults.test(arg))
               continue;
-	    todo.set(arg);
-	    if (arg < start) start = arg;
-	  }
-	} else {
+            todo.set(arg);
+            if (arg < start) start = arg;
+          }
+        } else {
           for (auto arg : found->second) {
             if (emptyNonPure2.contains(arg)) {
               if (!removedResults.test(arg))
                 continue;
               todo.set(arg);
-	      if (arg < start) start = arg;
-	    }
-	  }
+              if (arg < start) start = arg;
+            }
+          }
         }
       }
     }
@@ -4414,9 +4421,9 @@ struct WhileDeadResults final
       auto v = op.getBody().front().getTerminator()->getOperands()[cur];
       auto found = usersBody.find(v);
       if (found != usersBody.end()) {
-	if (isTotalPure)
-	  todo.append(found->second.begin(), found->second.end());
-	else
+        if (isTotalPure)
+          todo.append(found->second.begin(), found->second.end());
+        else
           for (auto arg : found->second) {
             if (emptyNonPure2.contains(arg))
               todo.push_back(arg);
@@ -4424,12 +4431,13 @@ struct WhileDeadResults final
       }
     }
     */
-    
+
     if (!removedResults.any())
       return failure();
 
     SmallVector<int64_t> deadResults;
-    for (auto cur = removedResults.find_first(); cur != -1; cur = removedResults.find_next(cur)) {
+    for (auto cur = removedResults.find_first(); cur != -1;
+         cur = removedResults.find_next(cur)) {
       deadResults.push_back(cur);
     }
 
@@ -4438,22 +4446,24 @@ struct WhileDeadResults final
     for (auto &cop : llvm::reverse(opUsers)) {
       bool hasDead = false;
       for (int64_t i : deadResults) {
-	if (cop.second->count(i)) {
-	  hasDead = true;
-	  break;
-	}
+        if (cop.second->count(i)) {
+          hasDead = true;
+          break;
+        }
       }
-      if (hasDead) rewriter.eraseOp(cop.first);
+      if (hasDead)
+        rewriter.eraseOp(cop.first);
     }
     for (auto &cop : llvm::reverse(opUsersBody)) {
       bool hasDead = false;
       for (int64_t i : deadResults) {
-	if (cop.second->count(i)) {
-	  hasDead = true;
-	  break;
-	}
+        if (cop.second->count(i)) {
+          hasDead = true;
+          break;
+        }
       }
-      if (hasDead) rewriter.eraseOp(cop.first);
+      if (hasDead)
+        rewriter.eraseOp(cop.first);
     }
 
     SmallVector<Value> operands;
