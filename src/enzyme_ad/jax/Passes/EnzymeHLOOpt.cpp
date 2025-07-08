@@ -4153,7 +4153,7 @@ struct WhileDeadResults final
     }
     llvm::SmallPtrSet<BlockArgument, 3> nonPure;
 
-    DenseMap<Operation *, llvm::SmallPtrSet<BlockArgument, 3>> opUsers;
+    SmallVector<std::pair<Operation *, llvm::SmallPtrSet<BlockArgument, 3>>> opUsers;
     for (auto &sop : op.getCond().front().without_terminator()) {
       llvm::SmallPtrSet<BlockArgument, 3> set;
       for (auto operand : sop.getOperands()) {
@@ -4201,7 +4201,7 @@ struct WhileDeadResults final
       }
       for (auto res : sop.getResults())
         users[res] = set;
-      opUsers[&sop] = set;
+      opUsers.emplace_back(&sop, set);
     }
     llvm::SmallPtrSet<BlockArgument, 3> terminatorUsers;
     for (auto v : op.getCond().front().getTerminator()->getOperands()) {
@@ -4227,7 +4227,7 @@ struct WhileDeadResults final
     }
 
     DenseMap<Value, llvm::SmallPtrSet<BlockArgument, 3>> usersBody;
-    DenseMap<Operation *, llvm::SmallPtrSet<BlockArgument, 3>> opUsersBody;
+    SmallVector<std::pair<Operation *, llvm::SmallPtrSet<BlockArgument, 3>>> opUsersBody;
     terminatorUsers.clear();
     nonPure.clear();
 
@@ -4284,7 +4284,7 @@ struct WhileDeadResults final
       }
       for (auto res : sop.getResults())
         usersBody[res] = set;
-      opUsersBody[&sop] = set;
+      opUsersBody.emplace_back(&sop, set);
     }
 
     llvm::SmallPtrSet<OpResult, 3> emptyNonPure2;
@@ -4341,20 +4341,28 @@ struct WhileDeadResults final
 
     replaceTerminator(rewriter, op.getBody(), deadResults);
 
-    for (int64_t i : deadResults) {
-      auto arg = op.getCond().getArgument(i);
-      auto ty = arg.getType();
-      auto cst = rewriter.create<stablehlo::ConstantOp>(
-          arg.getLoc(), ty, cast<ElementsAttr>(rewriter.getZeroAttr(ty)));
-      rewriter.replaceAllUsesWith(arg, cst);
+    for (auto &cop : llvm::reverse(opUsers)) {
+      bool hasDead = false;
+      for (int64_t i : deadResults) {
+        auto arg = op.getCond().getArgument(i);
+	if (cop.second.count(arg)) {
+	  hasDead = true;
+	  break;
+	}
+      }
+      if (hasDead) rewriter.eraseOp(cop.first);
     }
+    for (auto &cop : llvm::reverse(opUsersBody)) {
+      bool hasDead = false;
       for (int64_t i : deadResults) {
         auto arg = op.getBody().getArgument(i);
-        auto ty = arg.getType();
-        auto cst = rewriter.create<stablehlo::ConstantOp>(
-            arg.getLoc(), ty, cast<ElementsAttr>(rewriter.getZeroAttr(ty)));
-        rewriter.replaceAllUsesWith(arg, cst);
+	if (cop.second.count(arg)) {
+	  hasDead = true;
+	  break;
+	}
       }
+      if (hasDead) rewriter.eraseOp(cop.first);
+    }
 
     SmallVector<Value> operands;
     SmallVector<Type> resultTypes;
