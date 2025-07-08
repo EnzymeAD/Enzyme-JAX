@@ -31,6 +31,15 @@ namespace enzyme {
 using namespace mlir;
 using namespace mlir::enzyme;
 
+// Forward declarations for Enzyme probabilistic programming ops/types that are
+// generated via TableGen but may not be visible to clang-tidy.
+namespace mlir {
+namespace enzyme {
+class GetSampleFromConstraintOp;
+class ConstraintType;
+} // namespace enzyme
+} // namespace mlir
+
 template <typename T> Attribute makeAttr(mlir::Type elemType, T val) {
   if (auto TT = dyn_cast<RankedTensorType>(elemType))
     return SplatElementsAttr::get(
@@ -703,6 +712,211 @@ struct UnrealizedConversionCastOpConversion
   }
 };
 
+struct GetSampleFromConstraintOpConversion
+    : public OpConversionPattern<enzyme::GetSampleFromConstraintOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  std::string backend;
+  GetSampleFromConstraintOpConversion(std::string backend,
+                                      TypeConverter &typeConverter,
+                                      MLIRContext *context,
+                                      PatternBenefit benefit = 1)
+      : OpConversionPattern(typeConverter, context, benefit), backend(backend) {
+  }
+
+  LogicalResult
+  matchAndRewrite(enzyme::GetSampleFromConstraintOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto ctx = op->getContext();
+
+    Value constraint = adaptor.getConstraint();
+    auto outputs = op.getOutputs();
+
+    auto symbolWrappedAttr = op.getSymbolAttr();
+    if (!symbolWrappedAttr) {
+      return rewriter.notifyMatchFailure(op, "Missing symbol attribute");
+    }
+
+    uint64_t symbolValue = symbolWrappedAttr.getPtr();
+
+    size_t numOutputs = outputs.size();
+    if (numOutputs == 0)
+      return rewriter.notifyMatchFailure(
+          op, "GetSampleFromConstraintOp has no outputs");
+
+    if (backend == "cpu") {
+      auto moduleOp = op->getParentOfType<ModuleOp>();
+      static int64_t fnNum = 0;
+
+      auto llvmPtrType = LLVM::LLVMPointerType::get(ctx);
+      auto llvmVoidType = LLVM::LLVMVoidType::get(ctx);
+      auto llvmI64Type = IntegerType::get(ctx, 64);
+
+      std::string getSampleFn = "enzyme_probprog_get_sample_from_constraint";
+      std::string wrapperFn =
+          getSampleFn + "_wrapper_" + std::to_string(fnNum++);
+
+      auto i64TensorType = RankedTensorType::get({}, llvmI64Type);
+      auto symbolConst = rewriter.create<stablehlo::ConstantOp>(
+          op.getLoc(), i64TensorType,
+          cast<ElementsAttr>(makeAttr(i64TensorType, symbolValue)));
+
+      SmallVector<Type> llvmArgTypes; // (constraint, symbol, out_ptrs...)
+      llvmArgTypes.push_back(llvmPtrType);
+      llvmArgTypes.push_back(llvmPtrType);
+      llvmArgTypes.append(numOutputs, llvmPtrType); // one per output tensor
+
+      auto funcType = LLVM::LLVMFunctionType::get(llvmVoidType, llvmArgTypes,
+                                                  /*isVarArg=*/false);
+
+      {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+        auto func =
+            rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), wrapperFn, funcType);
+
+        rewriter.setInsertionPointToStart(func.addEntryBlock(rewriter));
+
+        auto oneConst = rewriter.create<LLVM::ConstantOp>(
+            op.getLoc(), llvmI64Type, rewriter.getIntegerAttr(llvmI64Type, 1));
+
+        auto numOutputsConst = rewriter.create<LLVM::ConstantOp>(
+            op.getLoc(), llvmI64Type,
+            rewriter.getIntegerAttr(llvmI64Type, numOutputs));
+
+        auto numOutputsAlloca = rewriter.create<LLVM::AllocaOp>(
+            op.getLoc(), llvmPtrType, llvmI64Type, oneConst);
+        rewriter.create<LLVM::StoreOp>(op.getLoc(), numOutputsConst,
+                                       numOutputsAlloca);
+
+        auto samplePtrArrayAlloca = rewriter.create<LLVM::AllocaOp>(
+            op.getLoc(), llvmPtrType, llvmPtrType, numOutputsConst);
+        auto numDimsArrayAlloca = rewriter.create<LLVM::AllocaOp>(
+            op.getLoc(), llvmPtrType, llvmI64Type, numOutputsConst);
+        auto shapePtrArrayAlloca = rewriter.create<LLVM::AllocaOp>(
+            op.getLoc(), llvmPtrType, llvmPtrType, numOutputsConst);
+        auto dtypeWidthArrayAlloca = rewriter.create<LLVM::AllocaOp>(
+            op.getLoc(), llvmPtrType, llvmI64Type, numOutputsConst);
+
+        for (size_t i = 0; i < numOutputs; ++i) {
+          auto outType = cast<RankedTensorType>(outputs[i].getType());
+          auto outShape = outType.getShape();
+          size_t outNumDims = outShape.size();
+          size_t outWidth = outType.getElementType().getIntOrFloatBitWidth();
+
+          auto ptrGEP = rewriter.create<LLVM::GEPOp>(
+              op.getLoc(), llvmPtrType, llvmI64Type, samplePtrArrayAlloca,
+              ValueRange{rewriter.create<LLVM::ConstantOp>(
+                  op.getLoc(), llvmI64Type,
+                  rewriter.getIntegerAttr(llvmI64Type, i))});
+          rewriter.create<LLVM::StoreOp>(op.getLoc(), func.getArgument(2 + i),
+                                         ptrGEP);
+
+          auto numDimsConst = rewriter.create<LLVM::ConstantOp>(
+              op.getLoc(), llvmI64Type,
+              rewriter.getIntegerAttr(llvmI64Type, outNumDims));
+          auto numDimsGEP = rewriter.create<LLVM::GEPOp>(
+              op.getLoc(), llvmPtrType, llvmI64Type, numDimsArrayAlloca,
+              ValueRange{rewriter.create<LLVM::ConstantOp>(
+                  op.getLoc(), llvmI64Type,
+                  rewriter.getIntegerAttr(llvmI64Type, i))});
+          rewriter.create<LLVM::StoreOp>(op.getLoc(), numDimsConst, numDimsGEP);
+
+          auto widthConst = rewriter.create<LLVM::ConstantOp>(
+              op.getLoc(), llvmI64Type,
+              rewriter.getIntegerAttr(llvmI64Type, outWidth));
+          auto widthGEP = rewriter.create<LLVM::GEPOp>(
+              op.getLoc(), llvmPtrType, llvmI64Type, dtypeWidthArrayAlloca,
+              ValueRange{rewriter.create<LLVM::ConstantOp>(
+                  op.getLoc(), llvmI64Type,
+                  rewriter.getIntegerAttr(llvmI64Type, i))});
+          rewriter.create<LLVM::StoreOp>(op.getLoc(), widthConst, widthGEP);
+
+          auto shapeSizeConst = rewriter.create<LLVM::ConstantOp>(
+              op.getLoc(), llvmI64Type,
+              rewriter.getIntegerAttr(llvmI64Type, outNumDims));
+          auto shapeArrAlloca = rewriter.create<LLVM::AllocaOp>(
+              op.getLoc(), llvmPtrType, llvmI64Type, shapeSizeConst);
+
+          for (size_t j = 0; j < outNumDims; ++j) {
+            auto dimConst = rewriter.create<LLVM::ConstantOp>(
+                op.getLoc(), llvmI64Type,
+                rewriter.getIntegerAttr(llvmI64Type, outShape[j]));
+            auto dimGEP = rewriter.create<LLVM::GEPOp>(
+                op.getLoc(), llvmPtrType, llvmI64Type, shapeArrAlloca,
+                ValueRange{rewriter.create<LLVM::ConstantOp>(
+                    op.getLoc(), llvmI64Type,
+                    rewriter.getIntegerAttr(llvmI64Type, j))});
+            rewriter.create<LLVM::StoreOp>(op.getLoc(), dimConst, dimGEP);
+          }
+
+          auto shapePtrGEP = rewriter.create<LLVM::GEPOp>(
+              op.getLoc(), llvmPtrType, llvmI64Type, shapePtrArrayAlloca,
+              ValueRange{rewriter.create<LLVM::ConstantOp>(
+                  op.getLoc(), llvmI64Type,
+                  rewriter.getIntegerAttr(llvmI64Type, i))});
+          rewriter.create<LLVM::StoreOp>(op.getLoc(), shapeArrAlloca,
+                                         shapePtrGEP);
+        }
+
+        rewriter.create<LLVM::CallOp>(
+            op.getLoc(), TypeRange{}, SymbolRefAttr::get(ctx, getSampleFn),
+            ValueRange{func.getArgument(0), func.getArgument(1),
+                       samplePtrArrayAlloca, numOutputsAlloca,
+                       numDimsArrayAlloca, shapePtrArrayAlloca,
+                       dtypeWidthArrayAlloca});
+
+        rewriter.create<LLVM::ReturnOp>(op.getLoc(), ValueRange{});
+      }
+
+      if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(getSampleFn)) {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(moduleOp.getBody());
+        auto funcTypeExt = LLVM::LLVMFunctionType::get(
+            llvmVoidType,
+            {llvmPtrType, llvmPtrType, llvmPtrType, llvmPtrType, llvmPtrType,
+             llvmPtrType, llvmPtrType},
+            /*isVarArg=*/false);
+        rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), getSampleFn, funcTypeExt,
+                                          LLVM::Linkage::External);
+      }
+
+      SmallVector<Value> jitOperands;
+      jitOperands.push_back(constraint);
+      jitOperands.push_back(symbolConst);
+
+      for (size_t i = 0; i < numOutputs; ++i) {
+        auto outType = outputs[i].getType();
+        auto bufConst = rewriter.create<stablehlo::ConstantOp>(
+            op.getLoc(), outType, cast<ElementsAttr>(makeAttr(outType, 0)));
+        jitOperands.push_back(bufConst);
+      }
+
+      SmallVector<Attribute> aliases;
+      for (size_t i = 0; i < numOutputs; ++i) {
+        aliases.push_back(stablehlo::OutputOperandAliasAttr::get(
+            ctx, std::vector<int64_t>{}, /*operand_index=*/2 + i,
+            std::vector<int64_t>{}));
+      }
+
+      auto jitCall = rewriter.create<enzymexla::JITCallOp>(
+          op.getLoc(), op->getResultTypes(),
+          mlir::FlatSymbolRefAttr::get(ctx, wrapperFn), jitOperands,
+          rewriter.getStringAttr(""),
+          /*operand_layouts=*/nullptr, /*result_layouts=*/nullptr,
+          /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
+          /*xla_side_effect_free=*/nullptr);
+
+      rewriter.replaceOp(op, jitCall.getResults());
+
+      return success();
+    }
+
+    return rewriter.notifyMatchFailure(op, "Unknown backend" + backend);
+  }
+};
+
 struct LowerEnzymeProbProgPass
     : public enzyme::impl::LowerEnzymeProbProgPassBase<
           LowerEnzymeProbProgPass> {
@@ -714,6 +928,11 @@ struct LowerEnzymeProbProgPass
     TypeConverter typeConverter;
     typeConverter.addConversion([](Type t) { return t; });
     typeConverter.addConversion([&](enzyme::TraceType t) {
+      return RankedTensorType::get(
+          {},
+          IntegerType::get(context, /*bitwidth=*/64, IntegerType::Unsigned));
+    });
+    typeConverter.addConversion([&](enzyme::ConstraintType t) {
       return RankedTensorType::get(
           {},
           IntegerType::get(context, /*bitwidth=*/64, IntegerType::Unsigned));
@@ -731,6 +950,7 @@ struct LowerEnzymeProbProgPass
     target.addIllegalOp<enzyme::AddSubtraceOp>();
     target.addIllegalOp<enzyme::AddWeightToTraceOp>();
     target.addIllegalOp<enzyme::AddRetvalToTraceOp>();
+    target.addIllegalOp<enzyme::GetSampleFromConstraintOp>();
 
     target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp f) {
       return typeConverter.isSignatureLegal(f.getFunctionType());
@@ -753,11 +973,12 @@ struct LowerEnzymeProbProgPass
     populateCallOpTypeConversionPattern(patterns, typeConverter);
     populateReturnOpTypeConversionPattern(patterns, typeConverter);
 
-    patterns.add<InitTraceOpConversion, AddSampleToTraceOpConversion,
-                 AddSubtraceOpConversion, AddWeightToTraceOpConversion,
-                 AddRetvalToTraceOpConversion,
-                 UnrealizedConversionCastOpConversion>(backend, typeConverter,
-                                                       context);
+    patterns
+        .add<InitTraceOpConversion, AddSampleToTraceOpConversion,
+             AddSubtraceOpConversion, AddWeightToTraceOpConversion,
+             AddRetvalToTraceOpConversion, GetSampleFromConstraintOpConversion,
+             UnrealizedConversionCastOpConversion>(backend, typeConverter,
+                                                   context);
 
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns)))) {
