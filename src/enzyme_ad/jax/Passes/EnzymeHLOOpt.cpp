@@ -39,6 +39,7 @@
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/SmallSet.h"
 
 #include "llvm/ADT/MapVector.h"
 #include <iterator>
@@ -4138,24 +4139,24 @@ struct WhileDeadResults final
     bool isTotalPure = isPure(op);
     std::map<int64_t, int> forwardIsPure;
     std::map<int64_t, std::set<int64_t>> backwardsUsesOfArguments;
-    SmallVector<OpResult> emptyResults;
+    SmallVector<size_t> emptyResults;
     for (OpResult result : op.getResults()) {
       if (result.use_empty())
-        emptyResults.push_back(result);
+        emptyResults.push_back(result.getResultNumber());
     }
     if (emptyResults.size() == 0)
       return failure();
 
-    DenseMap<Value, llvm::SmallPtrSet<BlockArgument, 3>> users;
+    DenseMap<Value, llvm::SmallSet<size_t, 3>> users;
     for (auto ores : emptyResults) {
-      auto ba = op.getCond().getArgument(ores.getResultNumber());
-      users[ba] = {ba};
+      auto ba = op.getCond().front().getArgument(ores);
+      users[ba] = {ores};
     }
-    llvm::SmallPtrSet<BlockArgument, 3> nonPure;
+    llvm::SmallPtrSet<size_t, 3> nonPure;
 
-    SmallVector<std::pair<Operation *, llvm::SmallPtrSet<BlockArgument, 3>>> opUsers;
+    SmallVector<std::pair<Operation *, llvm::SmallSet<size_t, 3>>> opUsers;
     for (auto &sop : op.getCond().front().without_terminator()) {
-      llvm::SmallPtrSet<BlockArgument, 3> set;
+      llvm::SmallSet<size_t, 3> set;
       for (auto operand : sop.getOperands()) {
         auto found = users.find(operand);
         if (found != users.end()) {
@@ -4203,7 +4204,7 @@ struct WhileDeadResults final
         users[res] = set;
       opUsers.emplace_back(&sop, set);
     }
-    llvm::SmallPtrSet<BlockArgument, 3> terminatorUsers;
+    llvm::SmallSet<size_t, 3> terminatorUsers;
     for (auto v : op.getCond().front().getTerminator()->getOperands()) {
       auto found = users.find(v);
       if (found != users.end()) {
@@ -4211,13 +4212,12 @@ struct WhileDeadResults final
       }
     }
 
-    SmallVector<OpResult> emptyNonPure;
+    SmallVector<size_t> emptyNonPure;
     for (auto ores : emptyResults) {
-      auto oarg = op.getCond().getArgument(ores.getResultNumber());
-      if (nonPure.count(oarg)) {
+      if (nonPure.count(ores)) {
         continue;
       }
-      if (terminatorUsers.count(oarg)) {
+      if (terminatorUsers.count(ores)) {
         continue;
       }
       emptyNonPure.push_back(ores);
@@ -4226,19 +4226,19 @@ struct WhileDeadResults final
       return failure();
     }
 
-    DenseMap<Value, llvm::SmallPtrSet<BlockArgument, 3>> usersBody;
-    SmallVector<std::pair<Operation *, llvm::SmallPtrSet<BlockArgument, 3>>> opUsersBody;
+    DenseMap<Value, llvm::SmallSet<size_t, 3>> usersBody;
+    SmallVector<std::pair<Operation *, llvm::SmallSet<size_t, 3>>> opUsersBody;
     terminatorUsers.clear();
     nonPure.clear();
 
     for (auto ores : emptyNonPure) {
-      auto ba = op.getBody().getArgument(ores.getResultNumber());
-      usersBody[ba] = {ba};
+      auto ba = op.getBody().front().getArgument(ores);
+      usersBody[ba] = {ores};
     }
-    llvm::SmallPtrSet<BlockArgument, 3> nonPure2;
+    llvm::SmallSet<size_t, 3> nonPure2;
 
     for (auto &sop : op.getBody().front().without_terminator()) {
-      llvm::SmallPtrSet<BlockArgument, 3> set;
+      llvm::SmallSet<size_t, 3> set;
       for (auto operand : sop.getOperands()) {
         auto found = usersBody.find(operand);
         if (found != usersBody.end()) {
@@ -4287,10 +4287,9 @@ struct WhileDeadResults final
       opUsersBody.emplace_back(&sop, set);
     }
 
-    llvm::SmallPtrSet<OpResult, 3> emptyNonPure2;
+    llvm::SmallPtrSet<size_t, 3> emptyNonPure2;
     for (auto ores : emptyNonPure) {
-      auto oarg = op.getBody().getArgument(ores.getResultNumber());
-      if (nonPure2.count(oarg)) {
+      if (nonPure2.count(ores)) {
         continue;
       }
       emptyNonPure2.insert(ores);
@@ -4299,24 +4298,24 @@ struct WhileDeadResults final
       return failure();
     }
 
-    SmallVector<llvm::SmallPtrSet<BlockArgument, 3>> terminatorArgUses;
+    SmallVector<llvm::SmallSet<size_t, 3>> terminatorArgUses;
     for (auto v : op.getBody().front().getTerminator()->getOperands()) {
       auto found = usersBody.find(v);
       auto &set = terminatorArgUses.emplace_back();
       if (found != usersBody.end()) {
         for (auto arg : found->second) {
-          if (emptyNonPure2.count(op->getResult(arg.getArgNumber())))
+          if (emptyNonPure2.count(arg))
             set.insert(arg);
         }
       }
     }
 
-    llvm::DenseSet<OpResult> removedResults;
-    SmallVector<OpResult> todo;
+    llvm::SmallSet<size_t, 3> removedResults;
+    SmallVector<size_t> todo;
     for (auto ores : op->getResults()) {
-      if (!emptyNonPure2.count(ores))
-        todo.push_back(ores);
-      removedResults.insert(ores);
+      if (!emptyNonPure2.count(ores.getResultNumber()))
+        todo.push_back(ores.getResultNumber());
+      removedResults.insert(ores.getResultNumber());
     }
 
     while (todo.size()) {
@@ -4324,15 +4323,14 @@ struct WhileDeadResults final
       if (!removedResults.count(cur))
         continue;
       removedResults.erase(cur);
-      for (auto arg : terminatorArgUses[cur.getResultNumber()]) {
-        auto res2 = op->getResult(arg.getArgNumber());
-        todo.push_back(res2);
+      for (auto argno : terminatorArgUses[cur]) {
+        todo.push_back(argno);
       }
     }
 
     SmallVector<int64_t> deadResults;
     for (auto ores : removedResults) {
-      deadResults.push_back(ores.getResultNumber());
+      deadResults.push_back(ores);
     }
     if (deadResults.size() == 0)
       return failure();
@@ -4344,8 +4342,7 @@ struct WhileDeadResults final
     for (auto &cop : llvm::reverse(opUsers)) {
       bool hasDead = false;
       for (int64_t i : deadResults) {
-        auto arg = op.getCond().getArgument(i);
-	if (cop.second.count(arg)) {
+	if (cop.second.count(i)) {
 	  hasDead = true;
 	  break;
 	}
@@ -4355,8 +4352,7 @@ struct WhileDeadResults final
     for (auto &cop : llvm::reverse(opUsersBody)) {
       bool hasDead = false;
       for (int64_t i : deadResults) {
-        auto arg = op.getBody().getArgument(i);
-	if (cop.second.count(arg)) {
+	if (cop.second.count(i)) {
 	  hasDead = true;
 	  break;
 	}
