@@ -4287,7 +4287,7 @@ struct WhileDeadResults final
       opUsersBody.emplace_back(&sop, set);
     }
 
-    llvm::SmallPtrSet<size_t, 3> emptyNonPure2;
+    llvm::SmallSet<size_t, 3> emptyNonPure2;
     for (auto ores : emptyNonPure) {
       if (nonPure2.count(ores)) {
         continue;
