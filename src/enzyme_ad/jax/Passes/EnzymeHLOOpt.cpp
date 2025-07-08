@@ -4305,6 +4305,85 @@ struct WhileDeadResults final
     }
 
     llvm::BitVector removedResults(NumResults, true);
+    llvm::BitVector seen(NumResults, false);
+    SmallVector<size_t> todo;
+    todo.reserve(NumResults);
+    for (size_t residx = 0; residx < NumResults; residx++) {
+      if (!emptyNonPure2.count(residx)) {
+        todo.push_back(residx);
+	seen.set(residx);
+      }
+    }
+
+    while (todo.size()) {
+      auto cur = todo.pop_back_val();
+      if (!removedResults[cur])
+        continue;
+      removedResults.reset(cur);
+      auto v = op.getBody().front().getTerminator()->getOperands()[cur];
+      auto found = usersBody.find(v);
+      if (found != usersBody.end()) {
+	if (isTotalPure) {
+          for (auto arg : found->second) {
+            if (!seen.test(arg)) {
+              todo.push_back(arg);
+              seen.set(arg);
+	    }
+	  }
+	} else {
+          for (auto arg : found->second) {
+            if (emptyNonPure2.contains(arg)) {
+            if (!seen.test(arg)) {
+              todo.push_back(arg);
+              seen.set(arg);
+	    }
+	  }
+	  }
+        }
+      }
+    }
+    /*
+    llvm::BitVector todo(NumResults, false);
+    int start = NumResults;
+    for (size_t residx = 0; residx < NumResults; residx++) {
+      if (!emptyNonPure2.count(residx)) {
+        todo.set(residx);
+	if (residx < start) start = residx;
+      }
+    }
+
+    while (true) {
+      auto cur = todo.find_first_in(start, NumResults);
+      if (cur == -1) break;
+      start = cur+1;
+      todo.reset(cur);
+      if (!removedResults.test(cur))
+        continue;
+      removedResults.reset(cur);
+      auto v = op.getBody().front().getTerminator()->getOperands()[cur];
+      auto found = usersBody.find(v);
+      if (found != usersBody.end()) {
+	if (isTotalPure) {
+          for (auto arg : found->second) {
+            if (!removedResults.test(arg))
+              continue;
+	    todo.set(arg);
+	    if (arg < start) start = arg;
+	  }
+	} else {
+          for (auto arg : found->second) {
+            if (emptyNonPure2.contains(arg)) {
+              if (!removedResults.test(arg))
+                continue;
+              todo.set(arg);
+	      if (arg < start) start = arg;
+	    }
+	  }
+        }
+      }
+    }
+    */
+    /*
     SmallVector<size_t> todo;
     for (size_t residx = 0; residx < NumResults; residx++) {
       if (!emptyNonPure2.count(residx))
@@ -4328,6 +4407,7 @@ struct WhileDeadResults final
         }
       }
     }
+    */
     
     if (!removedResults.any())
       return failure();
