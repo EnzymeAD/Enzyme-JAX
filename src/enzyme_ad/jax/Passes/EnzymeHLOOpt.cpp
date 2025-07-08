@@ -4140,6 +4140,7 @@ struct WhileDeadResults final
     std::map<int64_t, int> forwardIsPure;
     std::map<int64_t, std::set<int64_t>> backwardsUsesOfArguments;
     SmallVector<size_t> emptyResults;
+    size_t NumResults = op.getNumResults();
     for (OpResult result : op.getResults()) {
       if (result.use_empty())
         emptyResults.push_back(result.getResultNumber());
@@ -4147,16 +4148,17 @@ struct WhileDeadResults final
     if (emptyResults.size() == 0)
       return failure();
 
-    DenseMap<Value, llvm::SmallSet<size_t, 3>> users;
+
+    DenseMap<Value, llvm::SmallPtrSet<size_t, 3>> users(emptyResults.size() + op.getCond().front().getOperations().size());
     for (auto ores : emptyResults) {
       auto ba = op.getCond().front().getArgument(ores);
       users[ba] = {ores};
     }
     llvm::SmallPtrSet<size_t, 3> nonPure;
 
-    SmallVector<std::pair<Operation *, llvm::SmallSet<size_t, 3>>> opUsers;
+    SmallVector<std::pair<Operation *, llvm::SmallPtrSet<size_t, 3>>> opUsers;
     for (auto &sop : op.getCond().front().without_terminator()) {
-      llvm::SmallSet<size_t, 3> set;
+      llvm::SmallPtrSet<size_t, 3> set;
       for (auto operand : sop.getOperands()) {
         auto found = users.find(operand);
         if (found != users.end()) {
@@ -4201,10 +4203,10 @@ struct WhileDeadResults final
           nonPure.insert(arg);
       }
       for (auto res : sop.getResults())
-        users[res] = set;
-      opUsers.emplace_back(&sop, set);
+        users.try_emplace(res, set);
+      opUsers.emplace_back(&sop, std::move(set));
     }
-    llvm::SmallSet<size_t, 3> terminatorUsers;
+    llvm::SmallPtrSet<size_t, 3> terminatorUsers;
     for (auto v : op.getCond().front().getTerminator()->getOperands()) {
       auto found = users.find(v);
       if (found != users.end()) {
@@ -4226,8 +4228,8 @@ struct WhileDeadResults final
       return failure();
     }
 
-    DenseMap<Value, llvm::SmallSet<size_t, 3>> usersBody;
-    SmallVector<std::pair<Operation *, llvm::SmallSet<size_t, 3>>> opUsersBody;
+    DenseMap<Value, llvm::SmallPtrSet<size_t, 3>> usersBody(emptyNonPure.size() + op.getBody().front().getOperations().size());
+    SmallVector<std::pair<Operation *, llvm::SmallPtrSet<size_t, 3>>> opUsersBody;
     terminatorUsers.clear();
     nonPure.clear();
 
@@ -4238,7 +4240,7 @@ struct WhileDeadResults final
     llvm::SmallSet<size_t, 3> nonPure2;
 
     for (auto &sop : op.getBody().front().without_terminator()) {
-      llvm::SmallSet<size_t, 3> set;
+      llvm::SmallPtrSet<size_t, 3> set;
       for (auto operand : sop.getOperands()) {
         auto found = usersBody.find(operand);
         if (found != usersBody.end()) {
@@ -4283,11 +4285,14 @@ struct WhileDeadResults final
           nonPure2.insert(arg);
       }
       for (auto res : sop.getResults())
-        usersBody[res] = set;
-      opUsersBody.emplace_back(&sop, set);
+        usersBody.try_emplace(res, set);
+      opUsersBody.emplace_back(&sop, std::move(set));
     }
 
-    llvm::SmallSet<size_t, 3> emptyNonPure2;
+    llvm::SmallPtrSet<size_t, 3> emptyNonPure2;
+    if (isTotalPure)
+	emptyNonPure2.insert(emptyNonPure.begin(), emptyNonPure.end());
+    else {
     for (auto ores : emptyNonPure) {
       if (nonPure2.count(ores)) {
         continue;
@@ -4297,45 +4302,40 @@ struct WhileDeadResults final
     if (emptyNonPure2.size() == 0) {
       return failure();
     }
-
-    SmallVector<llvm::SmallSet<size_t, 3>> terminatorArgUses;
-    for (auto v : op.getBody().front().getTerminator()->getOperands()) {
-      auto found = usersBody.find(v);
-      auto &set = terminatorArgUses.emplace_back();
-      if (found != usersBody.end()) {
-        for (auto arg : found->second) {
-          if (emptyNonPure2.count(arg))
-            set.insert(arg);
-        }
-      }
     }
 
-    llvm::SmallSet<size_t, 3> removedResults;
+    llvm::BitVector removedResults(NumResults, true);
     SmallVector<size_t> todo;
-    for (auto ores : op->getResults()) {
-      if (!emptyNonPure2.count(ores.getResultNumber()))
-        todo.push_back(ores.getResultNumber());
-      removedResults.insert(ores.getResultNumber());
+    for (size_t residx = 0; residx < NumResults; residx++) {
+      if (!emptyNonPure2.count(residx))
+        todo.push_back(residx);
     }
 
     while (todo.size()) {
       auto cur = todo.pop_back_val();
-      if (!removedResults.count(cur))
+      if (!removedResults[cur])
         continue;
-      removedResults.erase(cur);
-      for (auto argno : terminatorArgUses[cur]) {
-        todo.push_back(argno);
+      removedResults.reset(cur);
+      auto v = op.getBody().front().getTerminator()->getOperands()[cur];
+      auto found = usersBody.find(v);
+      if (found != usersBody.end()) {
+	if (isTotalPure)
+	  todo.append(found->second.begin(), found->second.end());
+	else
+          for (auto arg : found->second) {
+            if (emptyNonPure2.contains(arg))
+              todo.push_back(arg);
+        }
       }
     }
-
-    SmallVector<int64_t> deadResults;
-    for (auto ores : removedResults) {
-      deadResults.push_back(ores);
-    }
-    if (deadResults.size() == 0)
+    
+    if (!removedResults.any())
       return failure();
 
-    llvm::sort(deadResults);
+    SmallVector<int64_t> deadResults;
+    for (auto cur = removedResults.find_first(); cur != -1; cur = removedResults.find_next(cur)) {
+      deadResults.push_back(cur);
+    }
 
     replaceTerminator(rewriter, op.getBody(), deadResults);
 
