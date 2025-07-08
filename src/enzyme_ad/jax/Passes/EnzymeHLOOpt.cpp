@@ -15504,9 +15504,13 @@ struct CommonCompareExpressionRewrite
 
     auto negDir = negatedComparisonDirection(op.getComparisonDirection());
 
-    for (int i = 0; i < op.getNumOperands(); ++i) {
-      auto opOperand = op.getOperand(i);
-      for (auto user : opOperand.getUsers()) {
+    // Check for equivalent users for the value with the fewest other users to check.
+    // For ease here we simplify just checking if not constant (since getNumUsers is O(n)).
+    auto userCheck = lhs;
+    if (matchPattern(userCheck, m_Constant()))
+	userCheck = rhs;
+
+      for (auto user : userCheck.getUsers()) {
         auto userCompareOp = dyn_cast<stablehlo::CompareOp>(user);
         if (!userCompareOp || userCompareOp.getComparisonDirection() != negDir)
           continue;
@@ -15528,7 +15532,6 @@ struct CommonCompareExpressionRewrite
           }
         }
       }
-    }
 
     return failure();
   }
