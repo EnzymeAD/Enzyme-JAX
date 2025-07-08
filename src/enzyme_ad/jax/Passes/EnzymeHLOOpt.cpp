@@ -15504,34 +15504,35 @@ struct CommonCompareExpressionRewrite
 
     auto negDir = negatedComparisonDirection(op.getComparisonDirection());
 
-    // Check for equivalent users for the value with the fewest other users to check.
-    // For ease here we simplify just checking if not constant (since getNumUsers is O(n)).
+    // Check for equivalent users for the value with the fewest other users to
+    // check. For ease here we simplify just checking if not constant (since
+    // getNumUsers is O(n)).
     auto userCheck = lhs;
     if (matchPattern(userCheck, m_Constant()))
-	userCheck = rhs;
+      userCheck = rhs;
 
-      for (auto user : userCheck.getUsers()) {
-        auto userCompareOp = dyn_cast<stablehlo::CompareOp>(user);
-        if (!userCompareOp || userCompareOp.getComparisonDirection() != negDir)
-          continue;
+    for (auto user : userCheck.getUsers()) {
+      auto userCompareOp = dyn_cast<stablehlo::CompareOp>(user);
+      if (!userCompareOp || userCompareOp.getComparisonDirection() != negDir)
+        continue;
 
-        if (user->getBlock() != op->getBlock())
-          continue;
+      if (user->getBlock() != op->getBlock())
+        continue;
 
-        if (userCompareOp.getLhs() == lhs && userCompareOp.getRhs() == rhs) {
-          if (user->isBeforeInBlock(op)) {
-            auto negatedCondition = rewriter.create<stablehlo::NotOp>(
-                op.getLoc(), userCompareOp.getResult());
-            rewriter.replaceOp(op, negatedCondition);
-            return success();
-          } else {
-            auto negatedCondition = rewriter.create<stablehlo::NotOp>(
-                userCompareOp.getLoc(), op.getResult());
-            rewriter.replaceOp(user, negatedCondition);
-            return success();
-          }
+      if (userCompareOp.getLhs() == lhs && userCompareOp.getRhs() == rhs) {
+        if (user->isBeforeInBlock(op)) {
+          auto negatedCondition = rewriter.create<stablehlo::NotOp>(
+              op.getLoc(), userCompareOp.getResult());
+          rewriter.replaceOp(op, negatedCondition);
+          return success();
+        } else {
+          auto negatedCondition = rewriter.create<stablehlo::NotOp>(
+              userCompareOp.getLoc(), op.getResult());
+          rewriter.replaceOp(user, negatedCondition);
+          return success();
         }
       }
+    }
 
     return failure();
   }
