@@ -4149,20 +4149,27 @@ struct WhileDeadResults final
       return failure();
 
 
-    DenseMap<Value, llvm::SmallPtrSet<size_t, 3>> users(emptyResults.size() + op.getCond().front().getOperations().size());
+    DenseMap<Value, llvm::SmallPtrSet<size_t, 3>*> users(emptyResults.size() + op.getCond().front().getOperations().size());
+    llvm::SmallVector<std::unique_ptr<llvm::SmallPtrSet<size_t, 3>>, 3> condCache;
+    condCache.reserve(emptyResults.size());
     for (auto ores : emptyResults) {
       auto ba = op.getCond().front().getArgument(ores);
-      users[ba] = {ores};
+      auto up = std::make_unique<llvm::SmallPtrSet<size_t, 3>>();
+      up->insert(ores);
+      users[ba] = up.get();
+      condCache.emplace_back(std::move(up));
     }
+
     llvm::SmallPtrSet<size_t, 3> nonPure;
 
-    SmallVector<std::pair<Operation *, llvm::SmallPtrSet<size_t, 3>>> opUsers;
+    SmallVector<std::pair<Operation *, std::unique_ptr<llvm::SmallPtrSet<size_t, 3>>>> opUsers;
     for (auto &sop : op.getCond().front().without_terminator()) {
-      llvm::SmallPtrSet<size_t, 3> set;
+      auto setP = std::make_unique<llvm::SmallPtrSet<size_t, 3>>();
+      auto &set = *setP;
       for (auto operand : sop.getOperands()) {
         auto found = users.find(operand);
         if (found != users.end()) {
-          set.insert(found->second.begin(), found->second.end());
+          set.insert(found->second->begin(), found->second->end());
         }
       }
       if (!(sop.getNumRegions() == 0 ||
@@ -4180,7 +4187,7 @@ struct WhileDeadResults final
           for (auto operand : cur->getOperands()) {
             auto found = users.find(operand);
             if (found != users.end()) {
-              set.insert(found->second.begin(), found->second.end());
+              set.insert(found->second->begin(), found->second->end());
             }
           }
           if (!(cur->getNumRegions() == 0 ||
@@ -4203,14 +4210,15 @@ struct WhileDeadResults final
           nonPure.insert(arg);
       }
       for (auto res : sop.getResults())
-        users.try_emplace(res, set);
-      opUsers.emplace_back(&sop, std::move(set));
+	if (!res.use_empty())
+          users.try_emplace(res, &set);
+      opUsers.emplace_back(&sop, std::move(setP));
     }
     llvm::SmallPtrSet<size_t, 3> terminatorUsers;
     for (auto v : op.getCond().front().getTerminator()->getOperands()) {
       auto found = users.find(v);
       if (found != users.end()) {
-        terminatorUsers.insert(found->second.begin(), found->second.end());
+        terminatorUsers.insert(found->second->begin(), found->second->end());
       }
     }
 
@@ -4228,23 +4236,30 @@ struct WhileDeadResults final
       return failure();
     }
 
-    DenseMap<Value, llvm::SmallPtrSet<size_t, 3>> usersBody(emptyNonPure.size() + op.getBody().front().getOperations().size());
-    SmallVector<std::pair<Operation *, llvm::SmallPtrSet<size_t, 3>>> opUsersBody;
+    DenseMap<Value, llvm::SmallPtrSet<size_t, 3>*> usersBody(emptyNonPure.size() + op.getBody().front().getOperations().size());
+    SmallVector<std::pair<Operation *, std::unique_ptr<llvm::SmallPtrSet<size_t, 3>>>> opUsersBody;
     terminatorUsers.clear();
     nonPure.clear();
 
+    llvm::SmallVector<std::unique_ptr<llvm::SmallPtrSet<size_t, 3>>, 3> bodyCache;
+    bodyCache.reserve(emptyNonPure.size());
     for (auto ores : emptyNonPure) {
       auto ba = op.getBody().front().getArgument(ores);
-      usersBody[ba] = {ores};
+      auto up = std::make_unique<llvm::SmallPtrSet<size_t, 3>>();
+      up->insert(ores);
+      usersBody[ba] = up.get();
+      bodyCache.emplace_back(std::move(up));
     }
+
     llvm::SmallSet<size_t, 3> nonPure2;
 
     for (auto &sop : op.getBody().front().without_terminator()) {
-      llvm::SmallPtrSet<size_t, 3> set;
+      auto setP = std::make_unique<llvm::SmallPtrSet<size_t, 3>>();
+      auto &set = *setP;
       for (auto operand : sop.getOperands()) {
         auto found = usersBody.find(operand);
         if (found != usersBody.end()) {
-          set.insert(found->second.begin(), found->second.end());
+          set.insert(found->second->begin(), found->second->end());
         }
       }
       if (!(sop.getNumRegions() == 0 ||
@@ -4262,7 +4277,7 @@ struct WhileDeadResults final
           for (auto operand : cur->getOperands()) {
             auto found = usersBody.find(operand);
             if (found != usersBody.end()) {
-              set.insert(found->second.begin(), found->second.end());
+              set.insert(found->second->begin(), found->second->end());
             }
           }
           if (!(cur->getNumRegions() == 0 ||
@@ -4285,8 +4300,9 @@ struct WhileDeadResults final
           nonPure2.insert(arg);
       }
       for (auto res : sop.getResults())
-        usersBody.try_emplace(res, set);
-      opUsersBody.emplace_back(&sop, std::move(set));
+	if (!res.use_empty())
+	  usersBody.try_emplace(res, &set);
+      opUsersBody.emplace_back(&sop, std::move(setP));
     }
 
     llvm::SmallPtrSet<size_t, 3> emptyNonPure2;
@@ -4324,14 +4340,14 @@ struct WhileDeadResults final
       auto found = usersBody.find(v);
       if (found != usersBody.end()) {
 	if (isTotalPure) {
-          for (auto arg : found->second) {
+          for (auto arg : *found->second) {
             if (!seen.test(arg)) {
               todo.push_back(arg);
               seen.set(arg);
 	    }
 	  }
 	} else {
-          for (auto arg : found->second) {
+          for (auto arg : *found->second) {
             if (emptyNonPure2.contains(arg)) {
             if (!seen.test(arg)) {
               todo.push_back(arg);
@@ -4422,7 +4438,7 @@ struct WhileDeadResults final
     for (auto &cop : llvm::reverse(opUsers)) {
       bool hasDead = false;
       for (int64_t i : deadResults) {
-	if (cop.second.count(i)) {
+	if (cop.second->count(i)) {
 	  hasDead = true;
 	  break;
 	}
@@ -4432,7 +4448,7 @@ struct WhileDeadResults final
     for (auto &cop : llvm::reverse(opUsersBody)) {
       bool hasDead = false;
       for (int64_t i : deadResults) {
-	if (cop.second.count(i)) {
+	if (cop.second->count(i)) {
 	  hasDead = true;
 	  break;
 	}
