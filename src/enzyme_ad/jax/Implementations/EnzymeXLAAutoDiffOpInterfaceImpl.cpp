@@ -24,6 +24,7 @@
 
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
 #include "src/enzyme_ad/jax/Implementations/XLADerivatives.h"
@@ -51,5 +52,6 @@ void mlir::enzyme::registerEnzymeXLADialectAutoDiffInterface(
       +[](MLIRContext *context, enzymexla::EnzymeXLADialect *) {
         registerInterfaces(context);
         context->loadDialect<stablehlo::StablehloDialect>();
+        context->loadDialect<chlo::ChloDialect>();
       });
 }
