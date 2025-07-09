@@ -36,19 +36,14 @@ def Sqrt : Inst<"SqrtOp", "stablehlo">;
 def Tanh : Inst<"TanhOp", "stablehlo">;
 
 def M_PI : SubRoutine<(Op $x),
-                  (SHLOConstantFP<"3.141592653589793238462643383279502884197169399375105820974944592307816406286198"> $x)>;
-
-def SqrtM_PI : SubRoutine<(Op $x), (Sqrt (M_PI $x))>;
+                        (SHLOConstantFP<"3.141592653589793238462643383279502884197169399375105820974944592307816406286198"> $x)>;
 
 def Sqrt2M_PI : SubRoutine<(Op $x),
-                  (Sqrt (Mul (M_PI $x), (SHLOConstantFP<"2"> $x)))>;
-
-def SqrtM_PI_2 : SubRoutine<(Op $x),
-                  (Sqrt (Mul (M_PI $x), (SHLOConstantFP<"0.5"> $x)))>;
+                  (SHLOConstantFP<"2.506628274631000502415765284811045253006986740609938316629923576342293654607848"> $x)>;
 
 /// sqrt(2 / pi)
 def RsqrtM_PI_2 : SubRoutine<(Op $x),
-                  (Rsqrt (Mul (M_PI $x), (SHLOConstantFP<"0.5"> $x)))>;
+                    (SHLOConstantFP<"0.7978845608028653558798921198687637369517172623298693153318516593413158517986017"> $x)>;
 
 def EQ : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::EQ">;
 def GE : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::GE">;
