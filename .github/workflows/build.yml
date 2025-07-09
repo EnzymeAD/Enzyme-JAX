@@ -51,7 +51,13 @@ jobs:
           - '3.12'
     env:
       HERMETIC_PYTHON_VERSION: ${{ matrix.python }}
-      BAZEL_FLAGS : ${{ startsWith(matrix.os, 'macOS-') && '--define using_clang=true' || '' }}
+      BAZEL_FLAGS : |
+        --copt=-Werror=unused-variable
+        --copt=-Werror=unused-result
+        --copt=-Werror=missing-braces
+        --copt=-Werror=unused-but-set-variable
+        --copt=-Werror=return-type
+        ${{ startsWith(matrix.os, 'macOS-') && '--define using_clang=true' || '' }}
     steps:
       - name: Make space on disk
         run: sudo rm -rf /opt/*
