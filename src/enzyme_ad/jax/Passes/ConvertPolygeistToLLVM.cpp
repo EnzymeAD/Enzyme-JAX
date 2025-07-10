@@ -760,6 +760,13 @@ public:
       rewriter.eraseOp(op);
       return success();
     }
+    if (backend == "cpu") {
+      dst = rewriter.create<LLVM::AddrSpaceCastOp>(op.getLoc(), LLVM::LLVMPointerType::get(op.getContext()), dst);
+      src = rewriter.create<LLVM::AddrSpaceCastOp>(op.getLoc(), LLVM::LLVMPointerType::get(op.getContext()), src);
+      rewriter.create<LLVM::MemcpyOp>(op.getLoc(), dst, src, size, false);
+      rewriter.eraseOp(op);
+      return success();
+    }
 
     int direction = 0;
     if (dstType.getMemorySpaceAsInt() == 0 &&
@@ -784,8 +791,9 @@ public:
                    LLVM::LLVMPointerType::get(op.getContext()), size.getType(),
                    rewriter.getIntegerType(32)};
     auto i32 = rewriter.getIntegerType(32);
+
     auto cudaMemcpyFn =
-        LLVM::lookupOrCreateFn(rewriter, moduleOp, "cudaMemcpy", tys, i32);
+        LLVM::lookupOrCreateFn(rewriter, moduleOp, backend.starts_with("xla") ? "xlaMemcpy" : "cudaMemcpy", tys, backend.starts_with("xla") ? LLVM::LLVMVoidType::get(i32.getType()), i32);
     if (failed(cudaMemcpyFn))
       return failure();
 
@@ -2219,13 +2227,16 @@ isAsyncWithNoDependency(ConversionPatternRewriter &rewriter,
 }
 
 /// A rewrite pattern to convert gpu.alloc operations into a GPU runtime
-/// call. Currently it supports CUDA and ROCm (HIP).
+/// call. Currently it supports CUDA, CPU, and XLA.
 template <bool cStyle>
 class ConvertAllocOpToGpuRuntimeCallPattern
     : public ConvertOpToGpuRuntimeCallPattern<gpu::AllocOp> {
 public:
-  ConvertAllocOpToGpuRuntimeCallPattern(LLVMTypeConverter &typeConverter)
-      : ConvertOpToGpuRuntimeCallPattern<gpu::AllocOp>(typeConverter) {}
+  /// The attribute name to use instead of `gpu.kernel`.
+  std::string backend;
+
+  ConvertAllocOpToGpuRuntimeCallPattern(LLVMTypeConverter &typeConverter, std::string backend)
+      : ConvertOpToGpuRuntimeCallPattern<gpu::AllocOp>(typeConverter), backend(backend) {}
 
 private:
   LogicalResult
@@ -2263,8 +2274,6 @@ private:
                        ? nullPtr
                        : adaptor.getAsyncDependencies().front();
 
-    auto isHostShared = rewriter.create<mlir::LLVM::ConstantOp>(
-        loc, llvmInt8Type, rewriter.getI8IntegerAttr(isShared));
 
     Value allocatedPtr;
     if (allocOp.getAsyncDependencies().size() == 0 &&
@@ -2275,29 +2284,111 @@ private:
 
       auto ptrty = LLVM::LLVMPointerType::get(rewriter.getContext());
       auto ptr1ty = LLVM::LLVMPointerType::get(rewriter.getContext(), 1);
-      auto one = rewriter.create<LLVM::ConstantOp>(
-          loc, i64, rewriter.getI64IntegerAttr(1));
 
-      auto ptr = rewriter.create<LLVM::AllocaOp>(loc, ptrty, ptr1ty, one);
-      Type tys[] = {ptrty, i64};
-      auto cudaMallocFn =
-          LLVM::lookupOrCreateFn(rewriter, moduleOp, "cudaMalloc", tys, i32);
-      if (failed(cudaMallocFn)) {
-        llvm::errs() << " cudamalloc already exists with different types\n";
-        return failure();
+      if (backend == "cuda") {
+        auto one = rewriter.create<LLVM::ConstantOp>(
+            loc, i64, rewriter.getI64IntegerAttr(1));
+
+        auto ptr = rewriter.create<LLVM::AllocaOp>(loc, ptrty, ptr1ty, one);
+        Type tys[] = {ptrty, i64};
+        auto cudaMallocFn =
+            LLVM::lookupOrCreateFn(rewriter, moduleOp, "cudaMalloc", tys, i32);
+        if (failed(cudaMallocFn)) {
+          llvm::errs() << " cudamalloc already exists with different types\n";
+          return failure();
+        }
+
+        Value args[] = {
+            ptr,
+            sizeBytes,
+        };
+        rewriter.create<LLVM::CallOp>(loc, cudaMallocFn.value(), args);
+        allocatedPtr = rewriter.create<LLVM::LoadOp>(loc, ptr1ty, ptr);
+      } else if (backend.starts_with("cpu")) {
+        Type convertedIndex = typeConverter->convertType(rewriter.getIndexType());
+
+        FailureOr<LLVM::LLVMFuncOp> mallocFunc =
+            LLVM::lookupOrCreateMallocFn(rewriter, moduleOp, convertedIndex);
+
+        if (failed(mallocFunc)) {
+          llvm::errs() << " cudamalloc already exists with different types\n";
+          return failure();
+        }
+
+        Value args[] = {
+            sizeBytes,
+        };
+        allocatedPtr = rewriter.create<LLVM::CallOp>(loc, mallocFunc.value(), args)->getResult(0);
+      } else if (backend.starts_with("xla")) {
+
+        auto zero = rewriter.create<LLVM::ConstantOp>(
+            loc, i64, rewriter.getI64IntegerAttr(0));
+
+        auto one = rewriter.create<LLVM::ConstantOp>(
+            loc, i64, rewriter.getI64IntegerAttr(1));
+
+        Type convertedIndex = typeConverter->convertType(rewriter.getIndexType());
+
+        auto shapeDim = rewriter.create<LLVM::ConstantOp>(
+            loc, i64, rewriter.getI64IntegerAttr(memRefType.getShape().getSize()));
+        
+        auto AT = LLVMArrayType::get(i64, shapeDim);
+
+        auto shapePtr = rewriter.create<LLVM::AllocaOp>(loc, ptrty, AT, one);
+
+        int dynIdx = 0
+        for (int i=0; i<shapeDim; i++) {
+          auto idx = rewriter.create<LLVM::ConstantOp>(
+            loc, i64, rewriter.getI64IntegerAttr(i));
+          Value idxs[] = {zero, idx, baseOffset};
+
+          auto gep = rewriter.create<LLVM::GEPOp>(loc, ptr.getType(), AT, shapePtr, idxs);
+
+          Value val;
+
+          if (memrefType.getShape()[i] == ShapedType::kDynamic) {
+            val = adaptor.getDynamicSizes()[dynIdx];
+            dynIdx++;
+          } else {
+            val = rewriter.create<LLVM::ConstantOp>(
+            loc, i64, rewriter.getI64IntegerAttr(memrefType.getShape()[i]));
+          }
+
+          rewriter.create<LLVM::StoreOp>(loc, val, gep);
+        }
+
+        // device id, type id, shape len, shape ptr
+        Type tys[] = {i64, i64, i64, ptrty};
+
+        auto xlaMallocFn =
+            LLVM::lookupOrCreateFn(rewriter, moduleOp, "xlaMalloc", tys, ptr);
+        if (failed(xlaMallocFn)) {
+          llvm::errs() << " xlaMalloc already exists with different types\n";
+          return failure();
+        }
+
+        auto one = rewriter.create<LLVM::ConstantOp>(
+            loc, i64, rewriter.getI64IntegerAttr(to_xla_type_id()));
+
+        Value args[] = {
+            zero,
+
+            sizeBytes,
+        };
+        allocatedPtr = rewriter.create<LLVM::CallOp>(loc, mallocFunc.value(), args)->getResult(0);
+
+      } else {
+        llvm_unreachable("unknown backend");
       }
+    } else {
 
-      Value args[] = {
-          ptr,
-          sizeBytes,
-      };
-      rewriter.create<LLVM::CallOp>(loc, cudaMallocFn.value(), args);
-      allocatedPtr = rewriter.create<LLVM::LoadOp>(loc, ptr1ty, ptr);
-    } else
+      auto isHostShared = rewriter.create<mlir::LLVM::ConstantOp>(
+          loc, llvmInt8Type, rewriter.getI8IntegerAttr(isShared));
       allocatedPtr =
           allocCallBuilder
               .create(loc, rewriter, {sizeBytes, stream, isHostShared})
               .getResult();
+    }
 
     // No alignment.
     Value alignedPtr = allocatedPtr;
@@ -2314,6 +2405,105 @@ private:
     } else {
       rewriter.replaceOp(allocOp, {memRefDescriptor});
     }
+
+    return success();
+  }
+};
+
+/// A rewrite pattern to convert gpu.alloc operations into a GPU runtime
+/// call. Currently it supports CUDA, CPU, and XLA.
+template <bool cStyle>
+class ConvertDeallocOpToGpuRuntimeCallPattern
+    : public ConvertOpToGpuRuntimeCallPattern<gpu::DeallocOp> {
+public:
+  /// The attribute name to use instead of `gpu.kernel`.
+  std::string backend;
+
+  ConvertDeallocOpToGpuRuntimeCallPattern(LLVMTypeConverter &typeConverter, std::string backend)
+      : ConvertOpToGpuRuntimeCallPattern<gpu::AllocOp>(typeConverter), backend(backend) {}
+
+private:
+  LogicalResult
+  matchAndRewrite(gpu::DeallocOp deallocOp, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    MemRefType memRefType = deallocOp.getOperand().getType();
+
+    if (failed(areAllLLVMTypes(deallocOp, adaptor.getOperands(), rewriter)) ||
+        !isConvertibleAndHasIdentityMaps(memRefType))
+      return failure();
+
+    auto loc = deallocOp.getLoc();
+
+    if (deallocOp.getAsyncToken())
+      return rewriter.notifyMatchFailure(
+          allocOp, "Async free not supported");
+    
+    auto ptr = adaptor.getOperand();
+
+    if (failed(isAsyncWithNoDependency(rewriter, deallocOp)))
+      return failure();
+
+      auto i64 = rewriter.getIntegerType(64);
+      auto i32 = rewriter.getIntegerType(32);
+      auto moduleOp = allocOp->getParentOfType<ModuleOp>();
+
+      auto ptr1ty = LLVM::LLVMPointerType::get(rewriter.getContext(), 1);
+
+      if (backend == "cuda") {
+        auto one = rewriter.create<LLVM::ConstantOp>(
+            loc, i64, rewriter.getI64IntegerAttr(1));
+
+        Type tys[] = {ptr1ty};
+        auto cudaFreeFn =
+            LLVM::lookupOrCreateFn(rewriter, moduleOp, "cudaFree", tys, i32);
+        if (failed(cudaFreeFn)) {
+          llvm::errs() << " cudafree already exists with different types\n";
+          return failure();
+        }
+
+        Value args[] = {
+            ptr,
+        };
+        rewriter.create<LLVM::CallOp>(loc, cudaFreeFn.value(), args);
+      } else if (backend.starts_with("cpu")) {
+
+        FailureOr<LLVM::LLVMFuncOp> freeFunc =
+            LLVM::lookupOrCreateFreeFn(rewriter, moduleOp);
+
+        if (failed(freeFunc)) {
+          llvm::errs() << " free already exists with different types\n";
+          return failure();
+        }
+
+        Value args[] = {
+            ptr,
+        };
+        rewriter.create<LLVM::CallOp>(loc, freeFunc.value(), args)->getResult(0);
+      } else if (backend.starts_with("xla")) {
+        auto zero = rewriter.create<LLVM::ConstantOp>(
+            loc, i64, rewriter.getI64IntegerAttr(0));
+
+        // device id, ptr
+        Type tys[] = {i64, ptrty};
+
+        auto xlaFreeFn =
+            LLVM::lookupOrCreateFn(rewriter, moduleOp, "xlaFree", tys, LLVM::LLVMVoidType::get(moduleOp->getContext()));
+        if (failed(xlaFreeFn)) {
+          llvm::errs() << " xlaMalloc already exists with different types\n";
+          return failure();
+        }
+
+        Value args[] = {
+          ptr
+        };
+
+        rewriter.create<LLVM::CallOp>(loc, freeFunc.value(), args)->getResult(0);
+      } else {
+        return rewriter.notifyMatchFailure("Unknown backend to lower deallocOp");
+      }
+
+    rewriter.eraseOp(deallocOp);
 
     return success();
   }
@@ -3170,9 +3360,12 @@ struct ConvertPolygeistToLLVMPass
       // patterns.add<LegalizeLaunchFuncOpPattern>(
       //     converter, /*kernelBarePtrCallConv*/ true,
       //     /*kernelIntersperseSizeCallConv*/ false);
-      patterns.add<ConvertAllocOpToGpuRuntimeCallPattern<true>>(converter);
-    } else
-      patterns.add<ConvertAllocOpToGpuRuntimeCallPattern<false>>(converter);
+      patterns.add<ConvertAllocOpToGpuRuntimeCallPattern<true>>(converter, gpuTarget);
+      patterns.add<ConvertDeallocOpToGpuRuntimeCallPattern<true>>(converter, gpuTarget);
+    } else {
+      patterns.add<ConvertAllocOpToGpuRuntimeCallPattern<false>>(converter, gpuTarget);
+      patterns.add<ConvertDeallocOpToGpuRuntimeCallPattern<false>>(converter, gpuTarget);
+    }
 
     patterns
         .add<LLVMOpLowering, GlobalOpTypeConversion, ReturnOpTypeConversion>(

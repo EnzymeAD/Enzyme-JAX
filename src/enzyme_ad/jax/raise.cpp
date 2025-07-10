@@ -97,6 +97,15 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       if (outfile.size() && getenv("EXPORT_REACTANT")) {
         pass_pipeline += ",print{filename="+outfile+".mlir}";
       }
+      pass_pipeline += "symbol-dce,lower-affine";
+      if (getenv("REACTANT_OMP")) {
+        pass_pipeline += ",convert-scf-to-openmp,";
+      } else {
+        pass_pipeline += ",parallel-serialization,";
+      }
+      pass_pipeline += "canonicalize,convert-polygeist-to-llvm{backend=";
+      pass_pipeline += backend;
+      pass_pipeline += "}";
   } else {
       if (outfile.size() && getenv("EXPORT_REACTANT")) {
         pass_pipeline += "print{filename="+outfile+".mlir},";
@@ -106,7 +115,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       if (getenv("REACTANT_OMP")) {
         pass_pipeline += ",convert-scf-to-openmp,";
       } else {
-	pass_pipeline += ",parallel-serialization,";
+	      pass_pipeline += ",parallel-serialization,";
       }
       pass_pipeline += "canonicalize,convert-polygeist-to-llvm{backend=";
       pass_pipeline += backend;
