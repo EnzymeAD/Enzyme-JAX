@@ -64,6 +64,9 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
   }
 
   std::string backend = "cuda";
+  if (auto xla = getenv("EXPORT_XLA")) {
+    backend = "xla-gpu";
+  }
   if (auto be = getenv("REACTANT_BACKEND")) {
     backend = be;
   }
@@ -97,7 +100,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       if (outfile.size() && getenv("EXPORT_REACTANT")) {
         pass_pipeline += ",print{filename="+outfile+".mlir}";
       }
-      pass_pipeline += "symbol-dce,lower-affine";
+      pass_pipeline += ",lower-affine";
       if (getenv("REACTANT_OMP")) {
         pass_pipeline += ",convert-scf-to-openmp,";
       } else {
@@ -117,7 +120,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       } else {
 	      pass_pipeline += ",parallel-serialization,";
       }
-      pass_pipeline += "canonicalize,convert-polygeist-to-llvm{backend=";
+      pass_pipeline += "canonicalize,print,convert-polygeist-to-llvm{backend=";
       pass_pipeline += backend;
       pass_pipeline += "},strip-"
       "gpu-info,gpu-"

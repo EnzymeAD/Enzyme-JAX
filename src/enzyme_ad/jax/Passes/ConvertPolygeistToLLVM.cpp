@@ -106,7 +106,7 @@ Type convertMemrefElementTypeForLLVMPointer(
   return converted;
 }
 
-static Value insertXLAInitDeinit(mlir::ModuleOp moduleOp, OpBuilder &rewriter) {
+static Value insertXLAInitDeinit(mlir::ModuleOp moduleOp, StringRef backend, OpBuilder &rewriter) {
   auto loc = moduleOp.getLoc();
   // TODO is it okay to be using OpBuilder's in op rewriter?
   // OpBuilder moduleBuilder(moduleOp.getBodyRegion());
@@ -163,7 +163,9 @@ static Value insertXLAInitDeinit(mlir::ModuleOp moduleOp, OpBuilder &rewriter) {
   }
 
   // device id, ptr
-  Type tys[] = {ptrty};
+  Type tys[] = {ptrty, ptrty};
+
+  Type tys2[] = {ptrty};
 
   auto xlaInitFn =
       LLVM::lookupOrCreateFn(rewriter, moduleOp, "reactantXLAInit", tys,
@@ -174,7 +176,7 @@ static Value insertXLAInitDeinit(mlir::ModuleOp moduleOp, OpBuilder &rewriter) {
   }
 
   auto xlaDeInitFn =
-      LLVM::lookupOrCreateFn(rewriter, moduleOp, "reactantXLADeInit", tys,
+      LLVM::lookupOrCreateFn(rewriter, moduleOp, "reactantXLADeInit", tys2,
                              LLVM::LLVMVoidType::get(moduleOp->getContext()));
   if (failed(xlaInitFn)) {
     llvm::errs() << " xlaExec already exists with different types\n";
@@ -184,10 +186,13 @@ static Value insertXLAInitDeinit(mlir::ModuleOp moduleOp, OpBuilder &rewriter) {
   {
     PatternRewriter::InsertionGuard B(rewriter);
     rewriter.setInsertionPointToEnd(ctor.addEntryBlock(rewriter));
+    
+    auto stringval = mlir::LLVM::createGlobalString(
+        loc, rewriter, "xlabackend", backend, LLVM::Linkage::Internal);
 
     auto glob =
         rewriter.create<LLVM::AddressOfOp>(loc, ptrty, data.getSymNameAttr());
-    Value args[] = {glob};
+    Value args[] = {glob, stringval};
     rewriter.create<LLVM::CallOp>(loc, xlaInitFn.value(), args);
     rewriter.create<LLVM::ReturnOp>(loc, ValueRange());
   }
@@ -922,7 +927,7 @@ public:
                                                          args[i]);
 
     if (backend.starts_with("xla")) {
-      auto xdata = insertXLAInitDeinit(moduleOp, rewriter);
+      auto xdata = insertXLAInitDeinit(moduleOp, backend, rewriter);
       args.insert(args.begin(), xdata);
     }
 
@@ -2503,7 +2508,7 @@ private:
           return failure();
         }
 
-        auto xdata = insertXLAInitDeinit(moduleOp, rewriter);
+        auto xdata = insertXLAInitDeinit(moduleOp, backend, rewriter);
         Value args[] = {zero, tyid, shapeDim, shapePtr};
         allocatedPtr =
             rewriter.create<LLVM::CallOp>(loc, xlaMallocFn.value(), args)
@@ -2629,7 +2634,7 @@ private:
         return failure();
       }
 
-      auto xdata = insertXLAInitDeinit(moduleOp, rewriter);
+      auto xdata = insertXLAInitDeinit(moduleOp, backend, rewriter);
 
       Value args[] = {xdata, zero, ptr};
 
@@ -2694,7 +2699,7 @@ private:
     SmallVector<Value> args = llvm::to_vector(adaptor.getInputs());
     args.insert(args.begin(), stringval);
 
-    auto xdata = insertXLAInitDeinit(moduleOp, rewriter);
+    auto xdata = insertXLAInitDeinit(moduleOp, backend, rewriter);
     args.insert(args.begin(), xdata);
 
     rewriter.create<LLVM::CallOp>(loc, xlaExecFn.value(), args)->getResult(0);
