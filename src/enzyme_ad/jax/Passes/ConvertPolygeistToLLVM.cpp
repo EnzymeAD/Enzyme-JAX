@@ -2498,8 +2498,8 @@ private:
           rewriter.create<LLVM::StoreOp>(loc, val, gep);
         }
 
-        // handle, device id, type id, shape len, shape ptr
-        Type tys[] = {ptrty, i64, i64, i64, ptrty};
+        // handle, type id, shape len, shape ptr
+        Type tys[] = {ptrty, i64, i64, ptrty};
 
         auto xlaMallocFn = LLVM::lookupOrCreateFn(
             rewriter, moduleOp, "reactantXLAMalloc", tys, ptrty);
@@ -2509,7 +2509,7 @@ private:
         }
 
         auto xdata = insertXLAInitDeinit(moduleOp, backend, rewriter);
-        Value args[] = {xdata, zero, tyid, shapeDim, shapePtr};
+        Value args[] = {xdata, tyid, shapeDim, shapePtr};
         allocatedPtr =
             rewriter.create<LLVM::CallOp>(loc, xlaMallocFn.value(), args)
                 ->getResult(0);
@@ -2623,11 +2623,9 @@ private:
       rewriter.create<LLVM::CallOp>(loc, freeFunc.value(), args)->getResult(0);
     } else if (backend.starts_with("xla")) {
       auto ptrty = LLVM::LLVMPointerType::get(rewriter.getContext());
-      auto zero = rewriter.create<LLVM::ConstantOp>(
-          loc, i64, rewriter.getI64IntegerAttr(0));
 
-      // handle, device id, ptr
-      Type tys[] = {ptrty, i64, ptrty};
+      // handle, ptr
+      Type tys[] = {ptrty, ptrty};
 
       auto xlaFreeFn = LLVM::lookupOrCreateFn(
           rewriter, moduleOp, "reactantXLAFree", tys,
@@ -2639,7 +2637,7 @@ private:
 
       auto xdata = insertXLAInitDeinit(moduleOp, backend, rewriter);
 
-      Value args[] = {xdata, zero, ptr};
+      Value args[] = {xdata, ptr};
 
       rewriter.create<LLVM::CallOp>(loc, xlaFreeFn.value(), args)->getResult(0);
     } else {
@@ -2677,6 +2675,8 @@ private:
 
     std::string str;
     llvm::raw_string_ostream stream(str);
+  
+    auto i64 = rewriter.getIntegerType(64);
 
     auto fn = cast<FunctionOpInterface>(
         SymbolTable::lookupNearestSymbolFrom(wrap, wrap.getFn()));
@@ -2686,24 +2686,45 @@ private:
         loc, rewriter, "xlamod", str, LLVM::Linkage::Internal);
 
     auto ptrty = LLVM::LLVMPointerType::get(rewriter.getContext());
+        
+    auto zero = rewriter.create<LLVM::ConstantOp>(
+            loc, i64, rewriter.getI64IntegerAttr(0));
 
-    // handle, module, args...
-    Type tys[] = {ptrty, ptrty};
+        auto one = rewriter.create<LLVM::ConstantOp>(
+            loc, i64, rewriter.getI64IntegerAttr(1));
+
+    auto nargs = rewriter.create<LLVM::ConstantOp>(
+            loc, i64, rewriter.getI64IntegerAttr(adaptor.getInputs().size()));
+
+    auto AT = LLVM::LLVMArrayType::get(i64, adaptor.getInputs().size());
+
+    auto argsPtr = rewriter.create<LLVM::AllocaOp>(loc, ptrty, AT, one);
+
+        for (int i = 0; i < adaptor.getInputs().size(); i++) {
+          auto idx = rewriter.create<LLVM::ConstantOp>(
+              loc, i64, rewriter.getI64IntegerAttr(i));
+          Value idxs[] = {zero, idx};
+
+          auto gep =
+              rewriter.create<LLVM::GEPOp>(loc, ptrty, AT, argsPtr, idxs);
+
+          rewriter.create<LLVM::StoreOp>(loc, adaptor.getInputs()[i], gep);
+        }
+
+    // handle, module, nargs, argptr
+    Type tys[] = {ptrty, ptrty, i64, ptrty};
 
     auto moduleOp = wrap->getParentOfType<ModuleOp>();
     auto xlaExecFn = LLVM::lookupOrCreateFn(
-        rewriter, moduleOp, "xlaExec", tys,
+        rewriter, moduleOp, "reactantXLAExec", tys,
         LLVM::LLVMVoidType::get(moduleOp->getContext()), true);
     if (failed(xlaExecFn)) {
-      llvm::errs() << " xlaExec already exists with different types\n";
+      llvm::errs() << " reactantXLAExec already exists with different types\n";
       return failure();
     }
 
-    SmallVector<Value> args = llvm::to_vector(adaptor.getInputs());
-    args.insert(args.begin(), stringval);
-
     auto xdata = insertXLAInitDeinit(moduleOp, backend, rewriter);
-    args.insert(args.begin(), xdata);
+    Value args[4] = { xdata, stringval, nargs, argsPtr }; 
 
     rewriter.create<LLVM::CallOp>(loc, xlaExecFn.value(), args);
 
