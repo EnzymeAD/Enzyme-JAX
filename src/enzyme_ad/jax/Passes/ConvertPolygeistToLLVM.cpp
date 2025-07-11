@@ -55,6 +55,8 @@
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include "xla/mlir/utils/type_util.h"
+
 #include "RuntimeWrapperUtils.h"
 
 #include <fstream>
@@ -102,6 +104,109 @@ Type convertMemrefElementTypeForLLVMPointer(
       converted = LLVM::LLVMArrayType::get(converted, size);
   }
   return converted;
+}
+
+static Value insertXLAInitDeinit(mlir::ModuleOp moduleOp, OpBuilder &rewriter) {
+  auto loc = moduleOp.getLoc();
+    // TODO is it okay to be using OpBuilder's in op rewriter?
+    // OpBuilder moduleBuilder(moduleOp.getBodyRegion());
+    SmallString<128> ctorNameBuffer("__reactant_xla_init");
+    LLVM::LLVMFuncOp ctor = dyn_cast_or_null<LLVM::LLVMFuncOp>(
+        SymbolTable::lookupSymbolIn(moduleOp, ctorNameBuffer));
+    SmallString<128> dtorNameBuffer("__reactant_xla_deinit");
+    LLVM::LLVMFuncOp dtor = dyn_cast_or_null<LLVM::LLVMFuncOp>(
+        SymbolTable::lookupSymbolIn(moduleOp, dtorNameBuffer));
+    
+    SmallString<128> dataNameBuffer("__reactant_xla_data");
+    LLVM::GlobalOp data = dyn_cast_or_null<LLVM::GlobalOp>(
+        SymbolTable::lookupSymbolIn(moduleOp, dataNameBuffer));
+    
+    auto ptrty = LLVM::LLVMPointerType::get(moduleOp->getContext());
+
+    if (ctor) {
+      assert(dtor &&
+             "xla module constructor does not exist but destructor does");
+      assert(data &&
+             "xla module constructor does not exist but data does");
+      return rewriter.create<LLVM::AddressOfOp>(loc, ptrty, data.getSymNameAttr());
+    }
+
+
+      {
+        PatternRewriter::InsertionGuard B(rewriter);
+        rewriter.setInsertionPointToEnd(moduleOp.getBody());
+        ctor = rewriter.create<LLVM::LLVMFuncOp>(
+            loc, ctorNameBuffer,
+            LLVM::LLVMFunctionType::get(
+                LLVM::LLVMVoidType::get(moduleOp.getContext()), {}),
+            LLVM::Linkage::Private);
+        dtor = rewriter.create<LLVM::LLVMFuncOp>(
+            loc, dtorNameBuffer,
+            LLVM::LLVMFunctionType::get(
+                LLVM::LLVMVoidType::get(moduleOp.getContext()), {}),
+            LLVM::Linkage::Private);
+      
+        auto ctorSymbol = FlatSymbolRefAttr::get(ctor);
+        rewriter.create<LLVM::GlobalCtorsOp>(
+            loc, rewriter.getArrayAttr({std::move(ctorSymbol)}),
+            rewriter.getI32ArrayAttr({65535}),
+            rewriter.getArrayAttr(
+                {LLVM::ZeroAttr::get(rewriter.getContext())}));
+        
+        auto dtorSymbol = FlatSymbolRefAttr::get(dtor);
+        rewriter.create<LLVM::GlobalDtorsOp>(
+            loc, rewriter.getArrayAttr({std::move(dtorSymbol)}),
+            rewriter.getI32ArrayAttr({65535}),
+            rewriter.getArrayAttr(
+                {LLVM::ZeroAttr::get(rewriter.getContext())}));
+          
+        data = rewriter.create<LLVM::GlobalOp>(
+              loc, ptrty, /*constant*/ false,
+              LLVM::Linkage::Internal,
+              dataNameBuffer,
+              /* initValue */ mlir::Attribute(),
+              /* alignment */ 8, /* addrSpace */ 0);
+      }
+
+        // device id, ptr
+        Type tys[] = {ptrty};
+
+        auto xlaInitFn =
+            LLVM::lookupOrCreateFn(rewriter, moduleOp, "reactantXLAInit", tys, LLVM::LLVMVoidType::get(moduleOp->getContext()));
+        if (failed(xlaInitFn)) {
+          llvm::errs() << " xlaExec already exists with different types\n";
+          return nullptr;
+        }
+
+        auto xlaDeInitFn =
+            LLVM::lookupOrCreateFn(rewriter, moduleOp, "reactantXLADeInit", tys, LLVM::LLVMVoidType::get(moduleOp->getContext()));
+        if (failed(xlaInitFn)) {
+          llvm::errs() << " xlaExec already exists with different types\n";
+          return nullptr;
+        }
+
+      {
+        PatternRewriter::InsertionGuard B(rewriter);
+            rewriter.setInsertionPointToEnd(ctor.addEntryBlock(rewriter));
+
+        auto glob = rewriter.create<LLVM::AddressOfOp>(loc, ptrty, data.getSymNameAttr());
+        Value args[] = {glob};
+        rewriter.create<LLVM::CallOp>(loc, xlaInitFn.value(), args);
+        rewriter.create<LLVM::ReturnOp>(loc, ValueRange());
+      }
+
+      {
+        PatternRewriter::InsertionGuard B(rewriter);
+            rewriter.setInsertionPointToEnd(dtor.addEntryBlock(rewriter));
+
+        auto glob = rewriter.create<LLVM::AddressOfOp>(loc, ptrty, data.getSymNameAttr());
+        Value args[] = {glob};
+        rewriter.create<LLVM::CallOp>(loc, xlaDeInitFn.value(), args);
+        rewriter.create<LLVM::ReturnOp>(loc, ValueRange());
+      }
+        
+      return rewriter.create<LLVM::AddressOfOp>(loc, ptrty, data.getSymNameAttr());
+
 }
 
 struct Memref2PointerOpLowering
@@ -714,7 +819,10 @@ public:
 
 struct CMemcpyOpLowering : public CLoadStoreOpLowering<enzymexla::MemcpyOp> {
 public:
-  using CLoadStoreOpLowering::CLoadStoreOpLowering;
+      StringRef backend;
+
+  CMemcpyOpLowering(LLVMTypeConverter &typeConverter, StringRef backend)
+      :  CLoadStoreOpLowering<enzymexla::MemcpyOp> (typeConverter), backend(backend) {}
 
   LogicalResult
   matchAndRewrite(enzymexla::MemcpyOp op, OpAdaptor adaptor,
@@ -787,23 +895,34 @@ public:
 
     auto moduleOp = op->getParentOfType<ModuleOp>();
 
-    Type tys[4] = {LLVM::LLVMPointerType::get(op.getContext()),
-                   LLVM::LLVMPointerType::get(op.getContext()), size.getType(),
+    auto ptrty = LLVM::LLVMPointerType::get(op.getContext());
+
+
+    SmallVector<Type> tys = {ptrty, ptrty, size.getType(),
                    rewriter.getIntegerType(32)};
+    if (backend.starts_with("xla")) { 
+      tys.insert(tys.begin(), ptrty);
+    }
     auto i32 = rewriter.getIntegerType(32);
 
     auto cudaMemcpyFn =
-        LLVM::lookupOrCreateFn(rewriter, moduleOp, backend.starts_with("xla") ? "xlaMemcpy" : "cudaMemcpy", tys, backend.starts_with("xla") ? LLVM::LLVMVoidType::get(i32.getType()), i32);
+        LLVM::lookupOrCreateFn(rewriter, moduleOp, backend.starts_with("xla") ? "xlaMemcpy" : "cudaMemcpy", tys, backend.starts_with("xla") ? (mlir::Type)LLVM::LLVMVoidType::get(rewriter.getContext()) : (mlir::Type)i32);
     if (failed(cudaMemcpyFn))
       return failure();
 
-    Value args[4] = {
+    SmallVector<Value> args = {
         dst, src, size,
         rewriter.create<LLVM::ConstantOp>(op.getLoc(), tys[3], direction)};
     for (int i = 0; i < 2; i++)
       if (args[i].getType() != tys[i])
         args[i] = rewriter.create<LLVM::AddrSpaceCastOp>(op.getLoc(), tys[i],
                                                          args[i]);
+    
+    if (backend.starts_with("xla")) { 
+      auto xdata = insertXLAInitDeinit(moduleOp, rewriter);
+      args.insert(args.begin(), xdata);
+    }
+
     rewriter.create<LLVM::CallOp>(op.getLoc(), cudaMemcpyFn.value(), args);
     rewriter.eraseOp(op);
     return success();
@@ -2226,6 +2345,9 @@ isAsyncWithNoDependency(ConversionPatternRewriter &rewriter,
   return success();
 }
 
+int64_t xla_type_id(mlir::Type T) {
+  return xla::ConvertMlirTypeToPrimitiveType(T);
+}
 /// A rewrite pattern to convert gpu.alloc operations into a GPU runtime
 /// call. Currently it supports CUDA, CPU, and XLA.
 template <bool cStyle>
@@ -2233,9 +2355,9 @@ class ConvertAllocOpToGpuRuntimeCallPattern
     : public ConvertOpToGpuRuntimeCallPattern<gpu::AllocOp> {
 public:
   /// The attribute name to use instead of `gpu.kernel`.
-  std::string backend;
+      StringRef backend;
 
-  ConvertAllocOpToGpuRuntimeCallPattern(LLVMTypeConverter &typeConverter, std::string backend)
+  ConvertAllocOpToGpuRuntimeCallPattern(LLVMTypeConverter &typeConverter, StringRef backend)
       : ConvertOpToGpuRuntimeCallPattern<gpu::AllocOp>(typeConverter), backend(backend) {}
 
 private:
@@ -2327,55 +2449,57 @@ private:
         auto one = rewriter.create<LLVM::ConstantOp>(
             loc, i64, rewriter.getI64IntegerAttr(1));
 
+        auto tyid = rewriter.create<LLVM::ConstantOp>(
+            loc, i64, rewriter.getI64IntegerAttr(xla_type_id(memRefType.getElementType())));
+
         Type convertedIndex = typeConverter->convertType(rewriter.getIndexType());
 
         auto shapeDim = rewriter.create<LLVM::ConstantOp>(
-            loc, i64, rewriter.getI64IntegerAttr(memRefType.getShape().getSize()));
+            loc, i64, rewriter.getI64IntegerAttr(memRefType.getShape().size()));
         
-        auto AT = LLVMArrayType::get(i64, shapeDim);
+        auto AT = LLVM::LLVMArrayType::get(i64, memRefType.getShape().size());
 
         auto shapePtr = rewriter.create<LLVM::AllocaOp>(loc, ptrty, AT, one);
 
-        int dynIdx = 0
-        for (int i=0; i<shapeDim; i++) {
+        int dynIdx = 0;
+        for (int i=0; i<memRefType.getShape().size(); i++) {
           auto idx = rewriter.create<LLVM::ConstantOp>(
             loc, i64, rewriter.getI64IntegerAttr(i));
-          Value idxs[] = {zero, idx, baseOffset};
+          Value idxs[] = {zero, idx};
 
-          auto gep = rewriter.create<LLVM::GEPOp>(loc, ptr.getType(), AT, shapePtr, idxs);
+          auto gep = rewriter.create<LLVM::GEPOp>(loc, ptrty, AT, shapePtr, idxs);
 
           Value val;
 
-          if (memrefType.getShape()[i] == ShapedType::kDynamic) {
+          if (memRefType.getShape()[i] == ShapedType::kDynamic) {
             val = adaptor.getDynamicSizes()[dynIdx];
             dynIdx++;
           } else {
             val = rewriter.create<LLVM::ConstantOp>(
-            loc, i64, rewriter.getI64IntegerAttr(memrefType.getShape()[i]));
+            loc, i64, rewriter.getI64IntegerAttr(memRefType.getShape()[i]));
           }
 
           rewriter.create<LLVM::StoreOp>(loc, val, gep);
         }
 
-        // device id, type id, shape len, shape ptr
-        Type tys[] = {i64, i64, i64, ptrty};
+        // handle, device id, type id, shape len, shape ptr
+        Type tys[] = {ptrty, i64, i64, i64, ptrty};
 
         auto xlaMallocFn =
-            LLVM::lookupOrCreateFn(rewriter, moduleOp, "xlaMalloc", tys, ptr);
+            LLVM::lookupOrCreateFn(rewriter, moduleOp, "xlaMalloc", tys, ptrty);
         if (failed(xlaMallocFn)) {
           llvm::errs() << " xlaMalloc already exists with different types\n";
           return failure();
         }
 
-        auto one = rewriter.create<LLVM::ConstantOp>(
-            loc, i64, rewriter.getI64IntegerAttr(to_xla_type_id()));
-
+        auto xdata = insertXLAInitDeinit(moduleOp, rewriter);
         Value args[] = {
             zero,
-
-            sizeBytes,
+            tyid,
+            shapeDim,
+            shapePtr
         };
-        allocatedPtr = rewriter.create<LLVM::CallOp>(loc, mallocFunc.value(), args)->getResult(0);
+        allocatedPtr = rewriter.create<LLVM::CallOp>(loc, xlaMallocFn.value(), args)->getResult(0);
 
       } else {
         llvm_unreachable("unknown backend");
@@ -2417,17 +2541,17 @@ class ConvertDeallocOpToGpuRuntimeCallPattern
     : public ConvertOpToGpuRuntimeCallPattern<gpu::DeallocOp> {
 public:
   /// The attribute name to use instead of `gpu.kernel`.
-  std::string backend;
+      StringRef backend;
 
-  ConvertDeallocOpToGpuRuntimeCallPattern(LLVMTypeConverter &typeConverter, std::string backend)
-      : ConvertOpToGpuRuntimeCallPattern<gpu::AllocOp>(typeConverter), backend(backend) {}
+  ConvertDeallocOpToGpuRuntimeCallPattern(LLVMTypeConverter &typeConverter, StringRef backend)
+      : ConvertOpToGpuRuntimeCallPattern<gpu::DeallocOp>(typeConverter), backend(backend) {}
 
 private:
   LogicalResult
   matchAndRewrite(gpu::DeallocOp deallocOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
 
-    MemRefType memRefType = deallocOp.getOperand().getType();
+    MemRefType memRefType = deallocOp.getMemref().getType();
 
     if (failed(areAllLLVMTypes(deallocOp, adaptor.getOperands(), rewriter)) ||
         !isConvertibleAndHasIdentityMaps(memRefType))
@@ -2437,16 +2561,16 @@ private:
 
     if (deallocOp.getAsyncToken())
       return rewriter.notifyMatchFailure(
-          allocOp, "Async free not supported");
+          deallocOp, "Async free not supported");
     
-    auto ptr = adaptor.getOperand();
+    auto ptr = adaptor.getMemref();
 
     if (failed(isAsyncWithNoDependency(rewriter, deallocOp)))
       return failure();
 
       auto i64 = rewriter.getIntegerType(64);
       auto i32 = rewriter.getIntegerType(32);
-      auto moduleOp = allocOp->getParentOfType<ModuleOp>();
+      auto moduleOp = deallocOp->getParentOfType<ModuleOp>();
 
       auto ptr1ty = LLVM::LLVMPointerType::get(rewriter.getContext(), 1);
 
@@ -2481,11 +2605,12 @@ private:
         };
         rewriter.create<LLVM::CallOp>(loc, freeFunc.value(), args)->getResult(0);
       } else if (backend.starts_with("xla")) {
+        auto ptrty = LLVM::LLVMPointerType::get(rewriter.getContext());
         auto zero = rewriter.create<LLVM::ConstantOp>(
             loc, i64, rewriter.getI64IntegerAttr(0));
 
-        // device id, ptr
-        Type tys[] = {i64, ptrty};
+        // handle, device id, ptr
+        Type tys[] = {ptrty, i64, ptrty};
 
         auto xlaFreeFn =
             LLVM::lookupOrCreateFn(rewriter, moduleOp, "xlaFree", tys, LLVM::LLVMVoidType::get(moduleOp->getContext()));
@@ -2494,16 +2619,76 @@ private:
           return failure();
         }
 
+        auto xdata = insertXLAInitDeinit(moduleOp, rewriter);
+
         Value args[] = {
+          xdata,
+          zero,
           ptr
         };
 
-        rewriter.create<LLVM::CallOp>(loc, freeFunc.value(), args)->getResult(0);
+        rewriter.create<LLVM::CallOp>(loc, xlaFreeFn.value(), args)->getResult(0);
       } else {
-        return rewriter.notifyMatchFailure("Unknown backend to lower deallocOp");
+          llvm::errs() <<" unknown backend: " << backend << "\n";
+          return failure();
       }
 
     rewriter.eraseOp(deallocOp);
+
+    return success();
+  }
+};
+
+template <bool cStyle>
+class ConvertXLAWrapperPattern
+    : public ConvertOpToGpuRuntimeCallPattern<enzymexla::XLAWrapperOp> {
+public:
+  /// The attribute name to use instead of `gpu.kernel`.
+      StringRef backend;
+
+  ConvertXLAWrapperPattern(LLVMTypeConverter &typeConverter, StringRef backend)
+      : ConvertOpToGpuRuntimeCallPattern<enzymexla::XLAWrapperOp>(typeConverter), backend(backend) {}
+
+private:
+  LogicalResult
+  matchAndRewrite(enzymexla::XLAWrapperOp wrap, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    if (failed(areAllLLVMTypes(wrap, adaptor.getOperands(), rewriter)))
+      return failure();
+
+    auto loc = wrap.getLoc();
+
+    std::string str;
+    llvm::raw_string_ostream stream(str);
+
+    auto fn = cast<FunctionOpInterface>(SymbolTable::lookupNearestSymbolFrom(wrap, wrap.getFn()));
+    stream << fn << "\n";
+
+    auto stringval = mlir::LLVM::createGlobalString(loc, rewriter, "xlamod", str, LLVM::Linkage::Internal);
+
+    auto ptrty = LLVM::LLVMPointerType::get(rewriter.getContext());
+
+        // handle, module, args...
+        Type tys[] = {ptrty, ptrty};
+
+    auto moduleOp = wrap->getParentOfType<ModuleOp>();
+        auto xlaExecFn =
+            LLVM::lookupOrCreateFn(rewriter, moduleOp, "xlaExec", tys, LLVM::LLVMVoidType::get(moduleOp->getContext()), true);
+        if (failed(xlaExecFn)) {
+          llvm::errs() << " xlaExec already exists with different types\n";
+          return failure();
+        }
+
+        SmallVector<Value> args = llvm::to_vector(adaptor.getInputs());
+        args.insert(args.begin(), stringval);
+
+        auto xdata = insertXLAInitDeinit(moduleOp, rewriter);
+        args.insert(args.begin(), xdata);
+
+        rewriter.create<LLVM::CallOp>(loc, xlaExecFn.value(), args)->getResult(0);
+
+    rewriter.eraseOp(wrap);
 
     return success();
   }
@@ -2918,12 +3103,12 @@ struct AllocaScopeOpLowering
 /// pointer to arrays of arrays.
 static void
 populateCStyleMemRefLoweringPatterns(RewritePatternSet &patterns,
-                                     LLVMTypeConverter &typeConverter) {
+                                     LLVMTypeConverter &typeConverter, StringRef backend) {
   patterns.add<CAllocaOpLowering, CAllocOpLowering, CDeallocOpLowering,
                GetGlobalOpLowering, GlobalOpLowering, CLoadOpLowering,
                CStoreOpLowering, AllocaScopeOpLowering, CAtomicRMWOpLowering>(
       typeConverter);
-  patterns.add<CMemcpyOpLowering>(typeConverter);
+  patterns.add<CMemcpyOpLowering>(typeConverter, backend);
 }
 
 struct GPUShuffleOpLowering : public ConvertOpToLLVMPattern<gpu::ShuffleOp> {
@@ -3331,7 +3516,7 @@ struct ConvertPolygeistToLLVMPass
     // populateForBreakToWhilePatterns(patterns);
     cf::populateControlFlowToLLVMConversionPatterns(converter, patterns);
     if (useCStyleMemRef) {
-      populateCStyleMemRefLoweringPatterns(patterns, converter);
+      populateCStyleMemRefLoweringPatterns(patterns, converter, backend);
       populateCStyleFuncLoweringPatterns(patterns, converter);
     } else {
       populateFinalizeMemRefToLLVMConversionPatterns(converter, patterns);
@@ -3362,9 +3547,11 @@ struct ConvertPolygeistToLLVMPass
       //     /*kernelIntersperseSizeCallConv*/ false);
       patterns.add<ConvertAllocOpToGpuRuntimeCallPattern<true>>(converter, gpuTarget);
       patterns.add<ConvertDeallocOpToGpuRuntimeCallPattern<true>>(converter, gpuTarget);
+      patterns.add<ConvertXLAWrapperPattern<true>>(converter, gpuTarget);
     } else {
       patterns.add<ConvertAllocOpToGpuRuntimeCallPattern<false>>(converter, gpuTarget);
       patterns.add<ConvertDeallocOpToGpuRuntimeCallPattern<false>>(converter, gpuTarget);
+      patterns.add<ConvertXLAWrapperPattern<false>>(converter, gpuTarget);
     }
 
     patterns
