@@ -909,22 +909,22 @@ public:
       tys.insert(tys.begin(), ptrty);
     }
     auto i32 = rewriter.getIntegerType(32);
+    bool xla = backend.starts_with("xla"); 
 
     auto cudaMemcpyFn = LLVM::lookupOrCreateFn(
         rewriter, moduleOp,
-        backend.starts_with("xla") ? "xlaMemcpy" : "cudaMemcpy", tys,
-        backend.starts_with("xla")
-            ? (mlir::Type)LLVM::LLVMVoidType::get(rewriter.getContext())
+        xla ? "reactantXLAMemcpy" : "cudaMemcpy", tys,
+        xla            ? (mlir::Type)LLVM::LLVMVoidType::get(rewriter.getContext())
             : (mlir::Type)i32);
     if (failed(cudaMemcpyFn))
       return failure();
 
     SmallVector<Value> args = {
         dst, src, size,
-        rewriter.create<LLVM::ConstantOp>(op.getLoc(), tys[3], direction)};
+        rewriter.create<LLVM::ConstantOp>(op.getLoc(), tys[3 + xla], direction)};
     for (int i = 0; i < 2; i++)
       if (args[i].getType() != tys[i])
-        args[i] = rewriter.create<LLVM::AddrSpaceCastOp>(op.getLoc(), tys[i],
+        args[i] = rewriter.create<LLVM::AddrSpaceCastOp>(op.getLoc(), tys[i + xla],
                                                          args[i]);
 
     if (backend.starts_with("xla")) {
@@ -2503,17 +2503,19 @@ private:
         Type tys[] = {ptrty, i64, i64, i64, ptrty};
 
         auto xlaMallocFn =
-            LLVM::lookupOrCreateFn(rewriter, moduleOp, "xlaMalloc", tys, ptrty);
+            LLVM::lookupOrCreateFn(rewriter, moduleOp, "reactantXLAMalloc", tys, ptrty);
         if (failed(xlaMallocFn)) {
           llvm::errs() << " xlaMalloc already exists with different types\n";
           return failure();
         }
 
         auto xdata = insertXLAInitDeinit(moduleOp, backend, rewriter);
-        Value args[] = {zero, tyid, shapeDim, shapePtr};
+        Value args[] = {xdata, zero, tyid, shapeDim, shapePtr};
         allocatedPtr =
             rewriter.create<LLVM::CallOp>(loc, xlaMallocFn.value(), args)
                 ->getResult(0);
+        
+        allocatedPtr = rewriter.create<LLVM::AddrSpaceCastOp>(loc, ptr1ty, allocatedPtr);
 
       } else {
         llvm_unreachable("unknown backend");
@@ -2628,7 +2630,7 @@ private:
       Type tys[] = {ptrty, i64, ptrty};
 
       auto xlaFreeFn = LLVM::lookupOrCreateFn(
-          rewriter, moduleOp, "xlaFree", tys,
+          rewriter, moduleOp, "reactantXLAFree", tys,
           LLVM::LLVMVoidType::get(moduleOp->getContext()));
       if (failed(xlaFreeFn)) {
         llvm::errs() << " xlaMalloc already exists with different types\n";
@@ -2703,9 +2705,22 @@ private:
     auto xdata = insertXLAInitDeinit(moduleOp, backend, rewriter);
     args.insert(args.begin(), xdata);
 
-    rewriter.create<LLVM::CallOp>(loc, xlaExecFn.value(), args)->getResult(0);
+    rewriter.create<LLVM::CallOp>(loc, xlaExecFn.value(), args);
+    
+    wrap.setFnAttr(FlatSymbolRefAttr::get(rewriter.getStringAttr("<undefined>")));
+  
+    bool baduser = false;
+    fn->getParentOp()->dump();
+    for (auto use : *SymbolTable::getSymbolUses(fn.getOperation(), fn->getParentOp())) {
+        if (use.getUser() == wrap) continue;
+        baduser = true;
+        llvm::errs() <<" bad use of fn: " << use.getUser() << "\n";
+    }
+    if (!baduser)
+        rewriter.eraseOp(fn.getOperation());
 
     rewriter.eraseOp(wrap);
+      
 
     return success();
   }
@@ -2911,6 +2926,20 @@ public:
   LogicalResult
   matchAndRewrite(func::FuncOp funcOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    bool anyStablehlo = funcOp->walk([](Operation* op) -> WalkResult {
+        if (op->getDialect()->getNamespace() == "stablehlo") 
+            return WalkResult::interrupt();
+        return WalkResult::advance();
+      }).wasInterrupted();
+
+    if (anyStablehlo) {
+      if (SymbolTable::symbolKnownUseEmpty(funcOp, funcOp->getParentOp())) {
+        rewriter.eraseOp(funcOp);
+        return success();
+      }
+      return failure();
+    }
+
     auto typePair = convertFunctionType(funcOp, *typeConverter);
     if (!typePair)
       return rewriter.notifyMatchFailure(funcOp->getLoc(),
@@ -3642,6 +3671,21 @@ struct ConvertPolygeistToLLVMPass
       if (failed(applyPatternsAndFoldGreedily(m, std::move(patterns)))) {
         signalPassFailure();
       }
+    }
+
+    if (StringRef(gpuTarget).starts_with("xla")) {
+      m->walk([](LLVM::CallOp call) {
+        if (auto callee = call.getCallee()) {
+          if (callee == "cudaDeviceSynchronize") {
+          call->erase();
+          }
+        }
+      });
+      m->walk([](LLVM::LLVMFuncOp call) {
+        if (call.getName() == "cudaDeviceSynchronize") {
+          call->erase();
+        }
+      });
     }
   }
 
