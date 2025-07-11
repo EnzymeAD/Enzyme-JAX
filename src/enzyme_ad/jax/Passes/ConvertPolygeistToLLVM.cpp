@@ -2711,13 +2711,11 @@ private:
         FlatSymbolRefAttr::get(rewriter.getStringAttr("<undefined>")));
 
     bool baduser = false;
-    fn->getParentOp()->dump();
     for (auto use :
          *SymbolTable::getSymbolUses(fn.getOperation(), fn->getParentOp())) {
       if (use.getUser() == wrap)
         continue;
       baduser = true;
-      llvm::errs() << " bad use of fn: " << use.getUser() << "\n";
     }
     if (!baduser)
       rewriter.eraseOp(fn.getOperation());
