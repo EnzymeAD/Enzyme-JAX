@@ -2675,7 +2675,7 @@ private:
 
     std::string str;
     llvm::raw_string_ostream stream(str);
-  
+
     auto i64 = rewriter.getIntegerType(64);
 
     auto fn = cast<FunctionOpInterface>(
@@ -2686,30 +2686,29 @@ private:
         loc, rewriter, "xlamod", str, LLVM::Linkage::Internal);
 
     auto ptrty = LLVM::LLVMPointerType::get(rewriter.getContext());
-        
-    auto zero = rewriter.create<LLVM::ConstantOp>(
-            loc, i64, rewriter.getI64IntegerAttr(0));
 
-        auto one = rewriter.create<LLVM::ConstantOp>(
-            loc, i64, rewriter.getI64IntegerAttr(1));
+    auto zero = rewriter.create<LLVM::ConstantOp>(
+        loc, i64, rewriter.getI64IntegerAttr(0));
+
+    auto one = rewriter.create<LLVM::ConstantOp>(loc, i64,
+                                                 rewriter.getI64IntegerAttr(1));
 
     auto nargs = rewriter.create<LLVM::ConstantOp>(
-            loc, i64, rewriter.getI64IntegerAttr(adaptor.getInputs().size()));
+        loc, i64, rewriter.getI64IntegerAttr(adaptor.getInputs().size()));
 
     auto AT = LLVM::LLVMArrayType::get(i64, adaptor.getInputs().size());
 
     auto argsPtr = rewriter.create<LLVM::AllocaOp>(loc, ptrty, AT, one);
 
-        for (int i = 0; i < adaptor.getInputs().size(); i++) {
-          auto idx = rewriter.create<LLVM::ConstantOp>(
-              loc, i64, rewriter.getI64IntegerAttr(i));
-          Value idxs[] = {zero, idx};
+    for (int i = 0; i < adaptor.getInputs().size(); i++) {
+      auto idx = rewriter.create<LLVM::ConstantOp>(
+          loc, i64, rewriter.getI64IntegerAttr(i));
+      Value idxs[] = {zero, idx};
 
-          auto gep =
-              rewriter.create<LLVM::GEPOp>(loc, ptrty, AT, argsPtr, idxs);
+      auto gep = rewriter.create<LLVM::GEPOp>(loc, ptrty, AT, argsPtr, idxs);
 
-          rewriter.create<LLVM::StoreOp>(loc, adaptor.getInputs()[i], gep);
-        }
+      rewriter.create<LLVM::StoreOp>(loc, adaptor.getInputs()[i], gep);
+    }
 
     // handle, module, nargs, argptr
     Type tys[] = {ptrty, ptrty, i64, ptrty};
@@ -2724,7 +2723,7 @@ private:
     }
 
     auto xdata = insertXLAInitDeinit(moduleOp, backend, rewriter);
-    Value args[4] = { xdata, stringval, nargs, argsPtr }; 
+    Value args[4] = {xdata, stringval, nargs, argsPtr};
 
     rewriter.create<LLVM::CallOp>(loc, xlaExecFn.value(), args);
 
