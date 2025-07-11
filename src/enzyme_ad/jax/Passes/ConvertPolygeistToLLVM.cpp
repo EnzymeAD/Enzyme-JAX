@@ -106,7 +106,8 @@ Type convertMemrefElementTypeForLLVMPointer(
   return converted;
 }
 
-static Value insertXLAInitDeinit(mlir::ModuleOp moduleOp, StringRef backend, OpBuilder &rewriter) {
+static Value insertXLAInitDeinit(mlir::ModuleOp moduleOp, StringRef backend,
+                                 OpBuilder &rewriter) {
   auto loc = moduleOp.getLoc();
   // TODO is it okay to be using OpBuilder's in op rewriter?
   // OpBuilder moduleBuilder(moduleOp.getBodyRegion());
@@ -186,7 +187,7 @@ static Value insertXLAInitDeinit(mlir::ModuleOp moduleOp, StringRef backend, OpB
   {
     PatternRewriter::InsertionGuard B(rewriter);
     rewriter.setInsertionPointToEnd(ctor.addEntryBlock(rewriter));
-    
+
     auto stringval = mlir::LLVM::createGlobalString(
         loc, rewriter, "xlabackend", backend, LLVM::Linkage::Internal);
 
