@@ -26,6 +26,7 @@ def Sqrt : Inst<"SqrtOp", "stablehlo">;
 def Pow : Inst<"PowOp", "stablehlo">;
 def Cos : Inst<"CosineOp", "stablehlo">;
 def Sin : Inst<"SineOp", "stablehlo">;
+def Exp : Inst<"ExpOp", "stablehlo">;
 
 // Operations
 /// CHLO - binary elementwise operations
@@ -119,7 +120,7 @@ def : HLODerivative<"ConjOp", (Op $z), [(Conj (DiffeRet))], (Conj (Shadow $z))>;
 
 def : HLODerivative<"CoshOp", (Op $x), [(Mul (DiffeRet), (Sinh $x))]>;
 
-def : HLODerivative<"DigammaOp", (Op $x), 
+def : HLODerivative<"DigammaOp", (Op $x),
                     [(Mul (DiffeRet), (Polygamma $x, (HLOConstantFP<"2"> $x)))],
                     (Mul (Shadow $x), (Polygamma $x, (HLOConstantFP<"2"> $x)))
 >;
@@ -141,4 +142,17 @@ def : HLODerivative<"SinhOp", (Op $x), [(Mul (DiffeRet), (Cosh $x))]>;
 
 def : HLODerivative<"TanOp", (Op $x), [
   (Div (DiffeRet), (Mul (Cos $x), (Cos $x)))
+]>;
+
+def M_PI : SubRoutine<(Op $x),
+                  (HLOConstantFP<"3.141592653589793238462643383279502884197169399375105820974944592307816406286198"> $x)>;
+
+def SqrtM_PI : SubRoutine<(Op $x), (Sqrt (M_PI $x))>;
+
+def : HLODerivative<"ErfOp", (Op $x), [
+  (
+    Mul
+    (DiffeRet),
+    (Mul (Div (HLOConstantFP<"2"> $x), (SqrtM_PI $x)), (Exp (Neg (Mul $x, $x))))
+  )
 ]>;
