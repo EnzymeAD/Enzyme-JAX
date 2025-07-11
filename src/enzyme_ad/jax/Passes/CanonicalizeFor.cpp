@@ -1109,6 +1109,40 @@ bool areValuesConnected(Value startVal, Value endVal,
 struct MoveDoWhileToFor : public OpRewritePattern<WhileOp> {
   using OpRewritePattern<WhileOp>::OpRewritePattern;
 
+  /* TODO: this looks like a bug
+    module @multiple_iter_args{
+      func.func @do_while() -> i32 {
+        %init_count = arith.constant 0 : i32
+        %init_sum = arith.constant 1 : i32
+        %c1 = arith.constant 1 : i32
+        %final_count, %final_sum = scf.while (%count = %init_count, %sum =
+%init_sum) : (i32, i32) -> (i32, i32) { %threshold = arith.constant 10 : i32
+          %sum2 = "before.keepalive"(%count, %sum) : (i32, i32) -> (i32)
+          %updated = arith.addi %count, %c1 : i32
+          %count_lt = arith.cmpi slt, %updated, %threshold : i32
+          scf.condition(%count_lt) %updated, %sum2 : i32, i32
+        } do {
+        ^bb0( %current_count: i32, %current_sum: i32):
+          scf.yield %current_count, %current_sum : i32, i32
+        }
+        return %final_sum : i32
+      }
+    }
+is transformed into
+    module @multiple_iter_args {
+      func.func @do_while() -> i32 {
+        %c10_i32 = arith.constant 10 : i32
+        %c0_i32 = arith.constant 0 : i32
+        %c1_i32 = arith.constant 1 : i32
+        %0 = ub.poison : i32
+        %1:2 = scf.for %arg0 = %c0_i32 to %c10_i32 step %c1_i32 iter_args(%arg1
+= %c1_i32, %arg2 = %0) -> (i32, i32)  : i32 { %2 = "before.keepalive"(%arg0,
+%arg1) : (i32, i32) -> i32 scf.yield %2, %2 : i32, i32
+        }
+        return %1#1 : i32
+      }
+    }
+*/
   // Helper function to generate a for loop
   scf::ForOp generateForLoop(WhileOp whileOp, Value lb, Value ub, Value step,
                              PatternRewriter &rewriter) const {
@@ -1172,77 +1206,37 @@ struct MoveDoWhileToFor : public OpRewritePattern<WhileOp> {
     return newLoop;
   }
 
-  // Helper function to execute the loop body once
-  SmallVector<Value> executeOnce(WhileOp whileOp,
-                                 PatternRewriter &rewriter) const {
-    Block &beforeBlock = whileOp.getBefore().front();
-    auto conditionOp = cast<ConditionOp>(beforeBlock.getTerminator());
-
-    // Copy region from while body to before forbody
-    IRMapping mapping;
-    for (auto [arg, init] :
-         llvm::zip(beforeBlock.getArguments(), whileOp.getOperands())) {
-      mapping.map(arg, init);
-    }
-    for (Operation &op : beforeBlock.without_terminator()) {
-      rewriter.clone(op, mapping);
-    }
-
-    // Extract conditionOp args to be used as results
-    SmallVector<Value> newResults;
-    for (auto arg : conditionOp.getArgs()) {
-      newResults.push_back(mapping.lookupOrDefault(arg));
-    }
-    return newResults;
-  }
-
   LogicalResult matchAndRewrite(WhileOp whileOp,
                                 PatternRewriter &rewriter) const override {
-    // 1. Analyze before region and extract scf.condition
-    // 2. From scf.condition obtain compareOp
-    // 3. Assumption that one of the values in compareOp is constant i.e is
-    // upperbound, and the other value (compareValue) is related to Induction
-    // Variable(IV)
-    // 4. Find index for IV from the iter_args based on use-def chain going from
-    //    iter_args of before region to the compareValue.
-    // 5. After IV index is found, use that to extract lowerBound from init
-    // values of before region, and IV itself from arg list.
-    // 6. Now from the use def chain connecting compareValue to yield of before
-    // region, we find the updatedIV index in scf.condition.
-    // 7. From the index we obtain the updated IV passed to after region.
-    // 8. We see the def of updatedIV to find the step size.
-    //    Currently only supporting AddIOp.
-    // 9. Check to see if LB, UB and STEP are constant.
-    // 10.Transfer before and after region to a new for loop.
-    // 11.Replace all uses of while loop with for loop.
-
     // Check to see if doBlock just has yield op
     Block &doBlock = whileOp.getAfter().front();
     if (!isa<scf::YieldOp>(doBlock.front()))
       return rewriter.notifyMatchFailure(whileOp, "non empty then block");
 
-    // Before block analysis
+    // 1. Analyze before region and extract scf.condition.
     Block &beforeBlock = whileOp.getBefore().front();
     auto conditionOp = dyn_cast<ConditionOp>(beforeBlock.getTerminator());
     Value conditionValue = conditionOp.getCondition();
 
-    Value upperBound;
-    Value compareValue;
+    // 2. From scf.condition obtain compareOp.
     arith::CmpIOp cmpOp = conditionValue.getDefiningOp<arith::CmpIOp>();
     if (!cmpOp) {
       return rewriter.notifyMatchFailure(whileOp, "cmp not arith.cmpIOp");
     }
 
-    // Determine which operand is the IV and which is the bound
-    // by checking which one is connected to the loop args
-    //
-    // Also find the IV index.
+    // 3. Determine which operand is related to the Induction Variable
+    // (compareValue) and which is the bound (upperBound) by checking
+    // which one is connected to the loop args. compareValue is the one
+    // connected to one of the iter_args of before region through a use-def
+    // chain. Obtain the iter_args index of the IV too.
     Value lhs = cmpOp.getLhs();
     Value rhs = cmpOp.getRhs();
 
     bool lhsIsIVConnected = false;
     bool rhsIsIVConnected = false;
 
+    Value upperBound;
+    Value compareValue;
     int IVIndex = 0;
     for (auto arg : beforeBlock.getArguments()) {
       llvm::SmallPtrSet<Value, 8> lhsVisited, rhsVisited;
@@ -1269,11 +1263,14 @@ struct MoveDoWhileToFor : public OpRewritePattern<WhileOp> {
       return rewriter.notifyMatchFailure(whileOp,
                                          "Could not identify IV in comparison");
 
-    // Extract IV and lowerBound based on IVIndex
+    // 4. After IV index is found, use that to extract lowerBound from init
+    // values of before region, and IV itself from arg list.
     Value IV = beforeBlock.getArgument(IVIndex);
     Value lowerBound = whileOp.getOperand(IVIndex);
 
-    // Extract step size
+    // 5. Extract step size by analyzing defining op of one of scf.condition's
+    // arguments that involves IV. Currently only defining op of type AddIOp is
+    // supported.
     Value stepSize = nullptr;
     arith::AddIOp addOp;
     for (auto arg : conditionOp.getArgs()) {
@@ -1303,7 +1300,7 @@ struct MoveDoWhileToFor : public OpRewritePattern<WhileOp> {
       return failure();
     }
 
-    // Uinsg WhileToForHelper to set up for loop structure
+    // Using WhileToForHelper to set up for loop structure
     WhileToForHelper helper;
     helper.initVariables();
 
@@ -1321,56 +1318,38 @@ struct MoveDoWhileToFor : public OpRewritePattern<WhileOp> {
     helper.checkNegativeStep();
     helper.prepareFor(rewriter);
 
-    rewriter.setInsertionPoint(whileOp);
+    // 6. Ensure the loop executes at least once by adjusting the upper bound
     APInt lbConstInt, ubConstInt;
-    if (matchPattern(lowerBound, m_ConstantInt(&lbConstInt)) &&
-        matchPattern(upperBound, m_ConstantInt(&ubConstInt))) {
+    bool negativeStep = step < 0;
+
+    rewriter.setInsertionPoint(whileOp);
+
+    // Constant bounds: new bounds can be computed at compile time
+    if (matchPattern(helper.lb, m_ConstantInt(&lbConstInt)) &&
+        matchPattern(helper.ub, m_ConstantInt(&ubConstInt))) {
       int lb = lbConstInt.getSExtValue();
       int ub = ubConstInt.getSExtValue();
 
-      // Check if we should optimize for single iteration (only for constant
-      // bounds)
-      bool shouldGenerateLoop =
-          ((lb + step < ub) && (step > 0)) || ((lb + step > ub) && (step < 0));
-
-      // If case: The do while loop executes more than once
-      if (shouldGenerateLoop) {
-        auto newLoop = generateForLoop(whileOp, helper.lb, helper.ub,
-                                       helper.step, rewriter);
-        rewriter.replaceOp(whileOp, newLoop.getResults().drop_front(
-                                        whileOp.getOperands().size()));
-
-        // Else case: The do while loop only executes once to before region.
-      } else {
-        auto results = executeOnce(whileOp, rewriter);
-        rewriter.replaceOp(whileOp, results);
+      if (step > 0 && (lb + step >= ub)) {
+        helper.ub = rewriter.create<arith::ConstantIndexOp>(whileOp.getLoc(),
+                                                            lb + step);
+      } else if (step < 0 && (lb + step <= ub)) {
+        helper.ub = rewriter.create<arith::ConstantIndexOp>(whileOp.getLoc(),
+                                                            lb + step);
       }
     } else {
-      // Dynamic bounds case - use runtime check
+      // Dynamic bound: adjusted ub = max(ub, lb + step)
       Value lbPlusStep = rewriter.create<arith::AddIOp>(whileOp.getLoc(),
                                                         helper.lb, helper.step);
-      Value shouldGenerateLoop = rewriter.create<arith::CmpIOp>(
-          whileOp.getLoc(),
-          helper.negativeStep ? arith::CmpIPredicate::sgt
-                              : arith::CmpIPredicate::slt,
-          lbPlusStep, helper.ub);
-
-      auto ifOp = rewriter.create<scf::IfOp>(
-          whileOp.getLoc(), shouldGenerateLoop,
-          [&](OpBuilder &b, Location loc) {
-            auto newLoop = generateForLoop(whileOp, helper.lb, helper.ub,
-                                           helper.step, rewriter);
-            b.setInsertionPointAfter(newLoop);
-            b.create<scf::YieldOp>(loc, newLoop.getResults().drop_front(
-                                            whileOp.getOperands().size()));
-          },
-          [&](OpBuilder &b, Location loc) {
-            auto results = executeOnce(whileOp, rewriter);
-            b.create<scf::YieldOp>(loc, results);
-          });
-
-      rewriter.replaceOp(whileOp, ifOp.getResults());
+      helper.ub = rewriter.create<arith::MaxSIOp>(whileOp.getLoc(), lbPlusStep,
+                                                  helper.ub);
     }
+
+    // 7. Generate for loop and replace do-while loop.
+    auto newLoop =
+        generateForLoop(whileOp, helper.lb, helper.ub, helper.step, rewriter);
+    rewriter.replaceOp(
+        whileOp, newLoop.getResults().drop_front(whileOp.getOperands().size()));
 
     return success();
   }
