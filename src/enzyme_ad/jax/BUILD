@@ -608,8 +608,8 @@ cc_library(
         "@stablehlo//:stablehlo_ops",
         "@stablehlo//:stablehlo_passes",
         "@stablehlo//:stablehlo_type_inference",
+        "@xla//xla/mlir/utils:type_util",
         "@xla//xla/mlir_hlo",
-        "@xla//xla/mlir/utils:type_util"
     ],
 )
 
@@ -704,6 +704,26 @@ cc_library(
 
         # Triton
         "@triton//:TritonDialects",
+        "@triton//:TritonGPUToLLVM",
+        "@triton//:TritonGPUTransforms",
+        "@triton//:TritonLLVMIR",
+        "@triton//:TritonNvidiaGPUTransforms",
+        "@triton//:TritonToTritonGPU",
+        "@triton//:TritonToTritonGPUPasses",
+        "@triton//:TritonTransforms",
+        "@triton//:WarpSpecialization",
+        "@triton//:triton_conversion_triton_to_triton_gpu_passes_inc_gen",
+        "@triton//:triton_nvidia_gpu_transforms_inc_gen",
+        "@triton//third_party/amd:TritonAMDGPU",
+        "@triton//third_party/amd:TritonAMDGPUToLLVM",
+        "@triton//third_party/amd:TritonAMDGPUTransforms",
+        "@triton//third_party/nvidia:NVGPUDialect",
+        "@triton//third_party/nvidia:NVGPUToLLVM",
+        "@triton//third_party/nvidia:NVHopperTransforms",
+        "@triton//third_party/nvidia:NVWSDialect",
+        "@triton//third_party/nvidia:NVWSTransforms",
+        "@triton//third_party/nvidia:TritonNVIDIAGPUToLLVM",
+        "@triton//third_party/proton:ProtonIRDialect",
 
         # Shardy stuff
         "@shardy//shardy/dialect/sdy/ir:dialect",

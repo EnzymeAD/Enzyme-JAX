@@ -99,7 +99,15 @@
 #include "xla/service/spmd/shardy/stablehlo_round_trip/stablehlo_export.h"
 #include "xla/service/spmd/shardy/stablehlo_round_trip/stablehlo_import.h"
 
+#include "triton/Conversion/TritonGPUToLLVM/Passes.h"
+#include "triton/Conversion/TritonToTritonGPU/Passes.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include "triton/Dialect/Triton/Transforms/Passes.h"
+#include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/Transforms/Passes.h"
+#include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonNvidiaGPU/Transforms/Passes.h"
+#include "triton/Target/LLVMIR/Passes.h"
 
 #include "src/enzyme_ad/jax/TransformOps/TransformOps.h"
 
@@ -196,6 +204,8 @@ void registerDialects(mlir::DialectRegistry &registry) {
   registry.insert<mlir::sdy::SdyDialect>();
   registry.insert<mlir::ub::UBDialect>();
   registry.insert<mlir::triton::TritonDialect>();
+  registry.insert<mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect>();
+  registry.insert<mlir::triton::gpu::TritonGPUDialect>();
 }
 
 void loadAllRegisteredDialects(mlir::MLIRContext &context) {
@@ -229,6 +239,8 @@ void loadAllRegisteredDialects(mlir::MLIRContext &context) {
   context.loadDialect<mlir::sdy::SdyDialect>();
   context.loadDialect<mlir::ub::UBDialect>();
   context.loadDialect<mlir::triton::TritonDialect>();
+  context.loadDialect<mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect>();
+  context.loadDialect<mlir::triton::gpu::TritonGPUDialect>();
 }
 
 void registerInterfaces(mlir::DialectRegistry &registry) {
@@ -334,6 +346,14 @@ void initializePasses() {
   mlir::tosa::registerStablehloPrepareForTosaPass();
   mlir::tosa::registerStablehloQuantLegalizeToTosaRescalePass();
   mlir::tosa::registerTosaRescaleLegalizeToStablehloPass();
+
+  // Triton passes
+  mlir::triton::registerTritonPasses();
+  mlir::triton::gpu::registerTritonGPUPasses();
+  mlir::triton::gpu::registerTritonGPUToLLVMPasses();
+  mlir::triton::nvidia_gpu::registerTritonNvidiaGPUPasses();
+  mlir::triton::registerTritonToTritonGPUPasses();
+  mlir::registerLLVMDIScopePass();
 }
 
 } // namespace enzyme
