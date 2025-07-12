@@ -1301,6 +1301,7 @@ is transformed into
     }
 
     // Using WhileToForHelper to set up for loop structure
+    bool negativeStep = step < 0;
     WhileToForHelper helper;
     helper.initVariables();
 
@@ -1311,7 +1312,7 @@ is transformed into
     helper.lb = lowerBound;
     helper.ub = upperBound;
     helper.indVar = mlir::cast<mlir::BlockArgument>(IV);
-    helper.negativeStep = step < 0;
+    helper.negativeStep = negativeStep;
 
     if (!helper.checkPredicate())
       return failure();
@@ -1320,7 +1321,6 @@ is transformed into
 
     // 6. Ensure the loop executes at least once by adjusting the upper bound
     APInt lbConstInt, ubConstInt;
-    bool negativeStep = step < 0;
 
     rewriter.setInsertionPoint(whileOp);
 
@@ -1330,10 +1330,7 @@ is transformed into
       int lb = lbConstInt.getSExtValue();
       int ub = ubConstInt.getSExtValue();
 
-      if (step > 0 && (lb + step >= ub)) {
-        helper.ub = rewriter.create<arith::ConstantIndexOp>(whileOp.getLoc(),
-                                                            lb + step);
-      } else if (step < 0 && (lb + step <= ub)) {
+      if ((step > 0 && (lb + step >= ub)) || (step < 0 && (lb + step <= ub))) {
         helper.ub = rewriter.create<arith::ConstantIndexOp>(whileOp.getLoc(),
                                                             lb + step);
       }
