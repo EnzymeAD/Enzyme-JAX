@@ -397,7 +397,7 @@ def QRFactorizationOp: EnzymeXLA_Op<"linalg.qr", [Pure]> {
   }];
 }
 
-def GEQRFOp : EnzymeXLA_Op<"lapack.geqrf", [Pure]> {
+def GeqrfOp : EnzymeXLA_Op<"lapack.geqrf", [Pure]> {
   let summary = "QR factorization operation (low-level op)";
 
   let description = [{
@@ -424,7 +424,7 @@ def GEQRFOp : EnzymeXLA_Op<"lapack.geqrf", [Pure]> {
   }];
 }
 
-def GEQRTOp : EnzymeXLA_Op<"lapack.geqrt", [Pure]> {
+def GeqrtOp : EnzymeXLA_Op<"lapack.geqrt", [Pure]> {
   let summary = "QR factorization operation (low-level op)";
 
   let description = [{
@@ -451,7 +451,7 @@ def GEQRTOp : EnzymeXLA_Op<"lapack.geqrt", [Pure]> {
   }];
 }
 
-def ORGQROp : EnzymeXLA_Op<"lapack.orgqr", [Pure]> {
+def OrgqrOp : EnzymeXLA_Op<"lapack.orgqr", [Pure]> {
   let summary = "Generate orthonormal/unitary matrix from a product of
     elementary Householder reflectors";
   let description = [{
@@ -472,7 +472,7 @@ def ORGQROp : EnzymeXLA_Op<"lapack.orgqr", [Pure]> {
   }];
 }
 
-def ORMQROp : EnzymeXLA_Op<"lapack.ormqr", [Pure]> {
+def OrmqrOp : EnzymeXLA_Op<"lapack.ormqr", [Pure]> {
   let summary = "Perform a matrix multiplication with the Q matrix from a QR
     decomposition, given only the householder reflections.";
 
