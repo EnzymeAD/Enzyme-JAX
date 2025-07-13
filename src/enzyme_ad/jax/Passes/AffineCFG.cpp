@@ -2088,10 +2088,10 @@ struct MoveExtToAffine : public OpRewritePattern<arith::ExtUIOp> {
                                   eqflags);
       fully2ComposeIntegerSetAndOperands(rewriter, &iset, &operands, DI);
       affine::canonicalizeSetAndOperands(&iset, &operands);
-      Value tval[1] = {rewriter.create<arith::ConstantIntOp>(ifOp.getLoc(),
-                                                             ifOp.getType(), 1)};
-      Value fval[1] = {rewriter.create<arith::ConstantIntOp>(ifOp.getLoc(),
-                                                             ifOp.getType(), 0)};
+      Value tval[1] = {rewriter.create<arith::ConstantIntOp>(
+          ifOp.getLoc(), ifOp.getType(), 1)};
+      Value fval[1] = {rewriter.create<arith::ConstantIntOp>(
+          ifOp.getLoc(), ifOp.getType(), 0)};
       affine::AffineIfOp affineIfOp = rewriter.create<affine::AffineIfOp>(
           ifOp.getLoc(), types, iset, operands,
           /*elseBlock=*/true);
@@ -4123,8 +4123,8 @@ struct SplitParallelInductions
                 auto replacement = rewriter.create<arith::MulIOp>(
                     UU->getLoc(), U->getResult(0),
                     rewriter.create<arith::ConstantIntOp>(
-                        UU->getLoc(), 
-                        U->getResult(0).getType(), base.i_val.getSExtValue()));
+                        UU->getLoc(), U->getResult(0).getType(),
+                        base.i_val.getSExtValue()));
                 replacement.setOverflowFlags(IntegerOverflowFlags::nuw);
                 rewriter.replaceOpWithNewOp<arith::DivUIOp>(UU, replacement,
                                                             UU->getOperand(1));
