@@ -98,7 +98,7 @@ module {
 // CHECK-NEXT:    llvm.call @reactantXLAMemcpy(%4, %24, %15, %7, %3) : (!llvm.ptr, !llvm.ptr, !llvm.ptr, i64, i32) -> ()
 // CHECK-NEXT:    llvm.call @reactantXLAMemcpy(%4, %27, %16, %7, %3) : (!llvm.ptr, !llvm.ptr, !llvm.ptr, i64, i32) -> ()
 // CHECK-NEXT:    llvm.call @reactantXLAMemcpy(%4, %31, %17, %7, %3) : (!llvm.ptr, !llvm.ptr, !llvm.ptr, i64, i32) -> ()
-// CHECK-NEXT:    %32 = llvm.getelementptr %2[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<573 x i8>
+// CHECK-NEXT:    %32 = llvm.getelementptr %2[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<574 x i8>
 // CHECK-NEXT:    %33 = llvm.alloca %6 x !llvm.array<2 x i64> : (i64) -> !llvm.ptr
 // CHECK-NEXT:    %34 = llvm.getelementptr %33[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<2 x i64>
 // CHECK-NEXT:    llvm.store %21, %34 : !llvm.ptr<1>, !llvm.ptr
