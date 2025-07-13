@@ -2088,10 +2088,10 @@ struct MoveExtToAffine : public OpRewritePattern<arith::ExtUIOp> {
                                   eqflags);
       fully2ComposeIntegerSetAndOperands(rewriter, &iset, &operands, DI);
       affine::canonicalizeSetAndOperands(&iset, &operands);
-      Value tval[1] = {rewriter.create<arith::ConstantIntOp>(ifOp.getLoc(), 1,
-                                                             ifOp.getType())};
-      Value fval[1] = {rewriter.create<arith::ConstantIntOp>(ifOp.getLoc(), 0,
-                                                             ifOp.getType())};
+      Value tval[1] = {rewriter.create<arith::ConstantIntOp>(
+          ifOp.getLoc(), ifOp.getType(), 1)};
+      Value fval[1] = {rewriter.create<arith::ConstantIntOp>(
+          ifOp.getLoc(), ifOp.getType(), 0)};
       affine::AffineIfOp affineIfOp = rewriter.create<affine::AffineIfOp>(
           ifOp.getLoc(), types, iset, operands,
           /*elseBlock=*/true);
@@ -2169,7 +2169,7 @@ struct CmpExt : public OpRewritePattern<arith::CmpIOp> {
     // ext (i1 -> i64) == 0, !%c
     if (cmpOp.getPredicate() == arith::CmpIPredicate::eq) {
       auto tval = rewriter.create<arith::ConstantIntOp>(
-          cmpOp.getLoc(), 1, ext.getOperand().getType());
+          cmpOp.getLoc(), ext.getOperand().getType(), 1);
       rewriter.replaceOpWithNewOp<arith::XOrIOp>(cmpOp, ext.getOperand(), tval);
       return success();
     }
@@ -2385,9 +2385,9 @@ struct MoveSelectToAffine : public OpRewritePattern<arith::SelectOp> {
           affine::canonicalizeSetAndOperands(&iset, &operands);
 
           Value tval[1] = {rewriter.create<arith::ConstantIntOp>(ifOp.getLoc(),
-                                                                 1, types[0])};
+                                                                 types[0], 1)};
           Value fval[1] = {rewriter.create<arith::ConstantIntOp>(ifOp.getLoc(),
-                                                                 0, types[0])};
+                                                                 types[0], 0)};
 
           affine::AffineIfOp affineIfOp = rewriter.create<affine::AffineIfOp>(
               ifOp.getLoc(), types, iset, operands,
@@ -2510,7 +2510,7 @@ struct ForOpRaising : public OpRewritePattern<scf::ForOp> {
                             ? rewriter.create<ConstantIndexOp>(loop.getLoc(), 1)
                                   .getResult()
                             : rewriter.create<ConstantIntOp>(
-                                  loop.getLoc(), 1, loop.getStep().getType()))
+                                  loop.getLoc(), loop.getStep().getType(), 1))
                     .getResult(),
                 rewriter.create<SubIOp>(loop.getLoc(), loop.getUpperBound(),
                                         loop.getLowerBound())),
@@ -4123,8 +4123,8 @@ struct SplitParallelInductions
                 auto replacement = rewriter.create<arith::MulIOp>(
                     UU->getLoc(), U->getResult(0),
                     rewriter.create<arith::ConstantIntOp>(
-                        UU->getLoc(), base.i_val.getSExtValue(),
-                        U->getResult(0).getType()));
+                        UU->getLoc(), U->getResult(0).getType(),
+                        base.i_val.getSExtValue()));
                 replacement.setOverflowFlags(IntegerOverflowFlags::nuw);
                 rewriter.replaceOpWithNewOp<arith::DivUIOp>(UU, replacement,
                                                             UU->getOperand(1));

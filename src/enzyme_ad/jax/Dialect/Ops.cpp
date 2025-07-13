@@ -743,16 +743,8 @@ public:
     Value c0 = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 0);
     Value c1 = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 1);
     SmallVector<Value> idxs;
-    Value val;
-
-    if (auto IT = dyn_cast<IntegerType>(elTy))
-      val =
-          rewriter.create<arith::ConstantIntOp>(op.getLoc(), 0, IT.getWidth());
-    else {
-      auto FT = cast<FloatType>(elTy);
-      val = rewriter.create<arith::ConstantFloatOp>(
-          op.getLoc(), APFloat(FT.getFloatSemantics(), "0"), FT);
-    }
+    Value val = cast<mlir::enzyme::AutoDiffTypeInterface>(elTy).createNullValue(
+        rewriter, op.getLoc());
 
     auto forOp = rewriter.create<scf::ForOp>(
         op.getLoc(), c0,

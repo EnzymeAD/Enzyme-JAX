@@ -2176,7 +2176,7 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
         blocks.insert(pred);
         rewriter.setInsertionPointToStart(pred);
         auto zero = rewriter.create<arith::ConstantIntOp>(
-            loc, 0, launchCall->getResultTypes()[0]);
+            loc, launchCall->getResultTypes()[0], 0);
         auto br = llvm::cast<mlir::BranchOpInterface>(pred->getTerminator());
         do {
           for (size_t i = 0; i < br->getNumSuccessors(); i++) {

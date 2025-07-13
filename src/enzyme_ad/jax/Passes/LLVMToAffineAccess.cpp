@@ -79,7 +79,7 @@ static mlir::Value createConstantInt(RewriterBase &rewriter, Location loc,
   if (ty.isIndex())
     return rewriter.create<arith::ConstantIndexOp>(loc, v);
   else
-    return rewriter.create<arith::ConstantIntOp>(loc, v, ty);
+    return rewriter.create<arith::ConstantIntOp>(loc, ty, v);
 }
 
 static std::optional<int64_t> getConstant(Operation *op) {
