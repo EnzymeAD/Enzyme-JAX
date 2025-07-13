@@ -743,7 +743,8 @@ public:
     Value c0 = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 0);
     Value c1 = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 1);
     SmallVector<Value> idxs;
-    Value val = cast<mlir::enzyme::AutoDiffTypeInterface>(elTy).createNullValue(rewriter, op.getLoc());
+    Value val = cast<mlir::enzyme::AutoDiffTypeInterface>(elTy).createNullValue(
+        rewriter, op.getLoc());
 
     auto forOp = rewriter.create<scf::ForOp>(
         op.getLoc(), c0,

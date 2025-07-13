@@ -1063,8 +1063,8 @@ struct WhileToForHelper {
         }
       } else {
         auto cop = step.getDefiningOp<ConstantIntOp>();
-        step = rewriter.create<ConstantIntOp>(cop.getLoc(), 
-                                              cop.getType(), -cop.value());
+        step = rewriter.create<ConstantIntOp>(cop.getLoc(), cop.getType(),
+                                              -cop.value());
       }
     }
 
@@ -2484,8 +2484,8 @@ struct SubToAdd : public OpRewritePattern<SubIOp> {
     if (auto cop = op.getOperand(1).getDefiningOp<ConstantIntOp>()) {
       rewriter.replaceOpWithNewOp<AddIOp>(
           op, op.getOperand(0),
-          rewriter.create<ConstantIntOp>(cop.getLoc(),
-                                         cop.getType(), -cop.value()));
+          rewriter.create<ConstantIntOp>(cop.getLoc(), cop.getType(),
+                                         -cop.value()));
       return success();
     }
     return failure();
