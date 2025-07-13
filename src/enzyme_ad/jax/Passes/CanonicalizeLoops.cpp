@@ -854,8 +854,8 @@ public:
     Value cond = ifOp.getCondition();
     Value negatedCond = rewriter.create<arith::XOrIOp>(
         ifOp.getLoc(), cond,
-        rewriter.create<arith::ConstantIntOp>(ifOp.getLoc(), 1,
-                                              rewriter.getI1Type()));
+        rewriter.create<arith::ConstantIntOp>(ifOp.getLoc(),
+                                              rewriter.getI1Type(), 1));
 
     // Create new if operation with negated condition and no else region
     auto newIf = rewriter.create<scf::IfOp>(ifOp.getLoc(),
