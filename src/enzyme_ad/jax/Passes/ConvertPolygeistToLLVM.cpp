@@ -189,7 +189,7 @@ static Value insertXLAInitDeinit(mlir::ModuleOp moduleOp, StringRef backend,
     rewriter.setInsertionPointToEnd(ctor.addEntryBlock(rewriter));
 
     auto stringval = mlir::LLVM::createGlobalString(
-        loc, rewriter, "xlabackend", backend, LLVM::Linkage::Internal);
+        loc, rewriter, "xlabackend", backend + "\0", LLVM::Linkage::Internal);
 
     auto glob =
         rewriter.create<LLVM::AddressOfOp>(loc, ptrty, data.getSymNameAttr());
