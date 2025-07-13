@@ -2680,7 +2680,7 @@ private:
 
     auto fn = cast<FunctionOpInterface>(
         SymbolTable::lookupNearestSymbolFrom(wrap, wrap.getFn()));
-    stream << fn << "\n";
+    stream << fn << "\n\0";
 
     auto stringval = mlir::LLVM::createGlobalString(
         loc, rewriter, "xlamod", str, LLVM::Linkage::Internal);
