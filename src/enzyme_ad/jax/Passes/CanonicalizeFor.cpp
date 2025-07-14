@@ -1033,7 +1033,7 @@ struct WhileToForHelper {
 
     if (lb_addOne) {
       Value one =
-          rewriter.create<ConstantIntOp>(loop.getLoc(), 1, lb.getType());
+          rewriter.create<ConstantIntOp>(loop.getLoc(), lb.getType(), 1);
       lb = rewriter.create<AddIOp>(loop.getLoc(), lb, one);
     }
     if (ub_cloneMove) {
@@ -1045,7 +1045,7 @@ struct WhileToForHelper {
     }
     if (ub_addOne) {
       Value one =
-          rewriter.create<ConstantIntOp>(loop.getLoc(), 1, ub.getType());
+          rewriter.create<ConstantIntOp>(loop.getLoc(), ub.getType(), 1);
       ub = rewriter.create<AddIOp>(loop.getLoc(), ub, one);
     }
     auto modifyTypeToIndex = true;
@@ -1063,8 +1063,8 @@ struct WhileToForHelper {
         }
       } else {
         auto cop = step.getDefiningOp<ConstantIntOp>();
-        step = rewriter.create<ConstantIntOp>(cop.getLoc(), -cop.value(),
-                                              cop.getType());
+        step = rewriter.create<ConstantIntOp>(cop.getLoc(), cop.getType(),
+                                              -cop.value());
       }
     }
 
@@ -1301,6 +1301,7 @@ is transformed into
     }
 
     // Using WhileToForHelper to set up for loop structure
+    bool negativeStep = step < 0;
     WhileToForHelper helper;
     helper.initVariables();
 
@@ -1311,7 +1312,7 @@ is transformed into
     helper.lb = lowerBound;
     helper.ub = upperBound;
     helper.indVar = mlir::cast<mlir::BlockArgument>(IV);
-    helper.negativeStep = step < 0;
+    helper.negativeStep = negativeStep;
 
     if (!helper.checkPredicate())
       return failure();
@@ -1320,7 +1321,6 @@ is transformed into
 
     // 6. Ensure the loop executes at least once by adjusting the upper bound
     APInt lbConstInt, ubConstInt;
-    bool negativeStep = step < 0;
 
     rewriter.setInsertionPoint(whileOp);
 
@@ -1330,10 +1330,7 @@ is transformed into
       int lb = lbConstInt.getSExtValue();
       int ub = ubConstInt.getSExtValue();
 
-      if (step > 0 && (lb + step >= ub)) {
-        helper.ub = rewriter.create<arith::ConstantIndexOp>(whileOp.getLoc(),
-                                                            lb + step);
-      } else if (step < 0 && (lb + step <= ub)) {
+      if ((step > 0 && (lb + step >= ub)) || (step < 0 && (lb + step <= ub))) {
         helper.ub = rewriter.create<arith::ConstantIndexOp>(whileOp.getLoc(),
                                                             lb + step);
       }
@@ -1506,9 +1503,9 @@ struct MoveWhileAndDown : public OpRewritePattern<WhileOp> {
 
       SmallVector<Value, 2> nextInits(unrollYield.begin(), unrollYield.end());
       Value falsev =
-          rewriter.create<ConstantIntOp>(loop.getLoc(), 0, extraCmp.getType());
+          rewriter.create<ConstantIntOp>(loop.getLoc(), extraCmp.getType(), 0);
       Value truev =
-          rewriter.create<ConstantIntOp>(loop.getLoc(), 1, extraCmp.getType());
+          rewriter.create<ConstantIntOp>(loop.getLoc(), extraCmp.getType(), 1);
       nextInits.push_back(truev);
       nextInits.push_back(loop.getInits()[helper.indVar.getArgNumber()]);
 
@@ -2487,8 +2484,8 @@ struct SubToAdd : public OpRewritePattern<SubIOp> {
     if (auto cop = op.getOperand(1).getDefiningOp<ConstantIntOp>()) {
       rewriter.replaceOpWithNewOp<AddIOp>(
           op, op.getOperand(0),
-          rewriter.create<ConstantIntOp>(cop.getLoc(), -cop.value(),
-                                         cop.getType()));
+          rewriter.create<ConstantIntOp>(cop.getLoc(), cop.getType(),
+                                         -cop.value()));
       return success();
     }
     return failure();

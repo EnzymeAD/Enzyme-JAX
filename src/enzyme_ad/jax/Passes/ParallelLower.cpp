@@ -781,7 +781,7 @@ void FixGPUFunc::runOnOperation() {
 
 static void replaceCallWithSuccess(Operation *call, OpBuilder &bz) {
   call->replaceAllUsesWith(bz.create<ConstantIntOp>(
-      call->getLoc(), 0, call->getResult(0).getType()));
+      call->getLoc(), call->getResult(0).getType(), 0));
   call->erase();
 }
 

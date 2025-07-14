@@ -188,8 +188,11 @@ static Value insertXLAInitDeinit(mlir::ModuleOp moduleOp, StringRef backend,
     PatternRewriter::InsertionGuard B(rewriter);
     rewriter.setInsertionPointToEnd(ctor.addEntryBlock(rewriter));
 
+    std::string bstr;
+    llvm::raw_string_ostream stream(bstr);
+    stream << backend << '\0';
     auto stringval = mlir::LLVM::createGlobalString(
-        loc, rewriter, "xlabackend", backend, LLVM::Linkage::Internal);
+        loc, rewriter, "xlabackend", bstr, LLVM::Linkage::Internal);
 
     auto glob =
         rewriter.create<LLVM::AddressOfOp>(loc, ptrty, data.getSymNameAttr());
@@ -2176,7 +2179,7 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
         blocks.insert(pred);
         rewriter.setInsertionPointToStart(pred);
         auto zero = rewriter.create<arith::ConstantIntOp>(
-            loc, 0, launchCall->getResultTypes()[0]);
+            loc, launchCall->getResultTypes()[0], 0);
         auto br = llvm::cast<mlir::BranchOpInterface>(pred->getTerminator());
         do {
           for (size_t i = 0; i < br->getNumSuccessors(); i++) {
@@ -2680,7 +2683,7 @@ private:
 
     auto fn = cast<FunctionOpInterface>(
         SymbolTable::lookupNearestSymbolFrom(wrap, wrap.getFn()));
-    stream << fn << "\n";
+    stream << fn << "\n" << '\0';
 
     auto stringval = mlir::LLVM::createGlobalString(
         loc, rewriter, "xlamod", str, LLVM::Linkage::Internal);

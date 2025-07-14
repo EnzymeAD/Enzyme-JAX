@@ -99,7 +99,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       } else {
         pass_pipeline += ",parallel-serialization,";
       }
-      pass_pipeline += "canonicalize,print,convert-polygeist-to-llvm{backend=";
+      pass_pipeline += "canonicalize,convert-polygeist-to-llvm{backend=";
       pass_pipeline += backend;
       pass_pipeline += "}";
   } else {
