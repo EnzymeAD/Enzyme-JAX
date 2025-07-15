@@ -297,6 +297,32 @@ bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy, Type inTy);
 bool anyOperandIsConstant(mlir::Operation *op);
 bool allOperandsAreConstant(mlir::Operation *op);
 
+/// Swap side of predicate
+static arith::CmpIPredicate swapPredicate(arith::CmpIPredicate pred) {
+  switch (pred) {
+  case arith::CmpIPredicate::eq:
+  case arith::CmpIPredicate::ne:
+    return pred;
+  case arith::CmpIPredicate::slt:
+    return arith::CmpIPredicate::sgt;
+  case arith::CmpIPredicate::sle:
+    return arith::CmpIPredicate::sge;
+  case arith::CmpIPredicate::sgt:
+    return arith::CmpIPredicate::slt;
+  case arith::CmpIPredicate::sge:
+    return arith::CmpIPredicate::sle;
+  case arith::CmpIPredicate::ult:
+    return arith::CmpIPredicate::ugt;
+  case arith::CmpIPredicate::ule:
+    return arith::CmpIPredicate::uge;
+  case arith::CmpIPredicate::ugt:
+    return arith::CmpIPredicate::ult;
+  case arith::CmpIPredicate::uge:
+    return arith::CmpIPredicate::ule;
+  }
+  llvm_unreachable("unknown cmpi predicate kind");
+}
+
 } // namespace enzyme
 
 namespace stablehlo {
