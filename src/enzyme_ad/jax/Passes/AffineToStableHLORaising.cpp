@@ -2468,7 +2468,7 @@ struct AffineToStableHLORaisingPass
       SetVector<Value> operands0;
       getUsedValuesDefinedAbove(g->getRegion(0), operands0);
       
-      SmallPtrSet<Value, 1> buffered;
+      DenseMap<Value, Value> buffered;
       SmallVector<Operation*> loads;
 
       for (auto arg : operands0) {
@@ -2482,6 +2482,11 @@ struct AffineToStableHLORaisingPass
             OpBuilder b(g);
             b.setInsertionPointToStart(body);
             auto cl = b.clone(*ic);
+
+            auto found = buffered.find(ic.getOperand());
+            if (found != buffered.end()) {
+              cast<arith::IndexCastOp>(cl).setOperand(found->second);
+            }
 
              arg.replaceUsesWithIf(cl->getResult(0), [&](OpOperand &opOperand) {
                return g->isProperAncestor(opOperand.getOwner());
@@ -2519,15 +2524,16 @@ struct AffineToStableHLORaisingPass
 
             if (legal) {
               auto cl = b.create<enzymexla::Pointer2MemrefOp>(arg.getLoc(), T, arg);
-               arg.replaceUsesWithIf(cl->getResult(0), [&](OpOperand &opOperand) {
-                 return g->isProperAncestor(opOperand.getOwner());
-               });
-               operands.insert(cl);
+              for (auto U : llvm::make_early_inc_range(arg.getUsers())) {
+                U->replaceAllUsesWith(cl);
+                U->erase();
+              }
+              operands.insert(cl);
               continue;
             }
         }
 
-        if (buffered.contains(arg)) {
+        if (buffered.find(arg) != buffered.end()) {
           continue;
         }
 
@@ -2554,7 +2560,7 @@ struct AffineToStableHLORaisingPass
 
            b.setInsertionPointAfter(g);
            b.create<gpu::DeallocOp>(g.getLoc(), (mlir::Type)nullptr, ValueRange(), res);
-           buffered.insert(arg);
+           buffered[arg] = ld;
            operands.insert(res);
            continue;
         }
