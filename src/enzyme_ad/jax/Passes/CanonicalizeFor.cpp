@@ -1084,7 +1084,6 @@ struct WhileToForHelper {
       rewriter.notifyMatchFailure(loop, "Failed to find iv");
       return false;
     }
-    llvm::errs() << " comparingUpdated: " << comparingUpdated << "\n";
     assert(step);
     assert(addIOp);
 
@@ -1116,10 +1115,6 @@ struct WhileToForHelper {
 
   void prepareFor(PatternRewriter &rewriter) {
 
-    llvm::errs() << "lb: " << lb << "\n";
-    llvm::errs() << "lb_addOne: " << lb_addOne << "\n";
-    llvm::errs() << "lb_addStep: " << lb_addStep << "\n";
-
     if (lb_addOne) {
       Value one =
           rewriter.create<ConstantIntOp>(loop.getLoc(), lb.getType(), 1);
@@ -1133,11 +1128,6 @@ struct WhileToForHelper {
     if (lb_subStep) {
       lb = rewriter.create<SubIOp>(loop.getLoc(), lb, step);
     }
-
-
-    llvm::errs() << "ub: " << ub << "\n";
-    llvm::errs() << "ub_addOne: " << ub_addOne << "\n";
-    llvm::errs() << "ub_addStep: " << ub_addStep << "\n";
 
     if (ub_cloneMove) {
       auto *op = ub.getDefiningOp();
@@ -1541,14 +1531,12 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
     auto ub = helper.ub;
 
     if (doWhile) {
+      // we add step to force the extra iteration at the end, but also we need to max with lb + step
+      // to make sure one iteration runs at all. max(lb + step, ub + step) -> max(ub, lb) + step
+      ub = rewriter.create<arith::MaxSIOp>(loop.getLoc(), ub,
+                                                  helper.lb);
+
       ub = rewriter.create<arith::AddIOp>(loop.getLoc(), ub, helper.step);
-
-      // Dynamic bound: adjusted ub = max(ub, lb + step)
-      Value lbPlusStep = rewriter.create<arith::AddIOp>(loop.getLoc(),
-                                                        helper.lb, helper.step);
-
-      ub = rewriter.create<arith::MaxSIOp>(loop.getLoc(), lbPlusStep,
-                                                  ub);
     }
 
     auto forloop = rewriter.create<scf::ForOp>(loop.getLoc(), helper.lb,

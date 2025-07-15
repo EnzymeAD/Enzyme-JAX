@@ -357,10 +357,9 @@ module @test_dynamic_ub {
 // CHECK-LABEL: module @test_dynamic_ub {
 // CHECK:         func.func @do_while(%[[UB:.+]]: index) -> index {
 // CHECK-DAG:       %[[C1:.+]] = arith.constant 1 : index
-// CHECK-DAG:       %[[C2:.+]] = arith.constant 2 : index
 // CHECK-DAG:       %[[POISON:.+]] = ub.poison : index
-// CHECK-NEXT:      %[[UBP1:.+]] = arith.addi %[[UB]], %[[C1]] : index
-// CHECK-NEXT:      %[[ADJ_UB:.+]] = arith.maxsi %[[UBP1]], %[[C2]] : index
+// CHECK-NEXT:      %[[MAX1:.+]] = arith.maxsi %[[UB]], %[[C1]] : index
+// CHECK-NEXT:      %[[ADJ_UB:.+]] = arith.addi %[[MAX1]], %[[C1]] : index
 // CHECK-NEXT:      %[[FOR:.+]] = scf.for %[[IV:.+]] = %[[C1]] to %[[ADJ_UB]] step %[[C1]] iter_args(%{{.*}} = %[[POISON]]) -> (index) {
 // CHECK-NEXT:        %[[SUB:.+]] = arith.subi %[[IV]], %[[C1]] : index
 // CHECK-NEXT:        "before.keepalive"(%[[SUB]]) : (index) -> ()
@@ -395,9 +394,8 @@ module @test_fully_dynamic {
 // CHECK-DAG:       %[[C1:.+]] = arith.constant 1 : index
 // CHECK-DAG:       %[[POISON:.+]] = ub.poison : index
 // CHECK-NEXT:      %[[LBP1:.+]] = arith.addi %[[LB]], %[[C1]] : index
-// CHECK-NEXT:      %[[UBP1:.+]] = arith.addi %[[UB]], %[[C1]] : index
-// CHECK-NEXT:      %[[LBP2:.+]] = arith.addi %[[LBP1]], %[[C1]] : index
-// CHECK-NEXT:      %[[ADJ_UB:.+]] = arith.maxsi %[[LBP2]], %[[UBP1]] : index
+// CHECK-NEXT:      %[[maxi:.+]] = arith.maxsi %[[UB]], %[[LBP1]] : index
+// CHECK-NEXT:      %[[ADJ_UB:.+]] = arith.addi %[[maxi]], %[[C1]] : index
 // CHECK-NEXT:      %[[FOR:.+]] = scf.for %[[IV:.+]] = %[[LBP1]] to %[[ADJ_UB]] step %[[C1]] iter_args(%{{.*}} = %[[POISON]]) -> (index) 
 
 // CHECK-NEXT:        %[[a4:.+]] = arith.subi %[[IV]], %[[LBP1]] : index
@@ -435,15 +433,13 @@ module @test_negative_step_dynamic_ub {
 // CHECK-LABEL: module @test_negative_step_dynamic_ub {
 // CHECK:         func.func @do_while(%[[UB:.+]]: i32) -> i32 {
 // CHECK-DAG:       %[[C10:.+]] = arith.constant 10 : i32
-// CHECK-DAG:       %[[C11:.+]] = arith.constant 11 : i32
 // CHECK-DAG:       %[[C1:.+]] = arith.constant 1 : i32
 // CHECK-DAG:       %[[CM1:.+]] = arith.constant -1 : i32
 // CHECK-DAG:       %[[POISON:.+]] = ub.poison : i32
 
 // CHECK-NEXT:      %[[UBP1:.+]] = arith.addi %[[UB]], %[[C1]] : i32
-
-// CHECK-NEXT:      %[[UBP2:.+]] = arith.addi %[[UBP1]], %[[C1]] : i32
-// CHECK-NEXT:      %[[ADJ_UB:.+]] = arith.maxsi %[[UBP2]], %[[C11]] : i32
+// CHECK-NEXT:      %[[max:.+]] = arith.maxsi %[[UBP1]], %[[C10]] : i32
+// CHECK-NEXT:      %[[ADJ_UB:.+]] = arith.addi %[[max]], %[[C1]] : i32
 
 // CHECK-NEXT:      %[[FOR:.+]] = scf.for %[[IV:.+]] = %[[UBP1]] to %[[ADJ_UB]] step %[[C1]] iter_args(%{{.*}} = %[[POISON]]) -> (i32) : i32 {
 // CHECK-NEXT:        %[[VAL1:.+]] = arith.subi %[[IV]], %[[UBP1]] : i32
@@ -485,8 +481,8 @@ module @test_multiple_args_dynamic {
 // CHECK-DAG:       %[[C1:.+]] = arith.constant 1 : index
 // CHECK-DAG:       %[[C2:.+]] = arith.constant 2 : index
 // CHECK-DAG:       %[[POISON:.+]] = ub.poison : index
-// CHECK-NEXT:      %[[UBP1:.+]] = arith.addi %[[UB]], %[[C1]] : index
-// CHECK-NEXT:      %[[ADJ_UB:.+]] = arith.maxsi %[[UBP1]], %[[C2]] : index
+// CHECK-NEXT:      %[[max:.+]] = arith.maxsi %[[UB]], %[[C1]] : index
+// CHECK-NEXT:      %[[ADJ_UB:.+]] = arith.addi %[[max]], %[[C1]] : index
 // CHECK-NEXT:      %[[FOR:.+]]:2 = scf.for %[[IV:.+]] = %[[C1]] to %[[ADJ_UB]] step %[[C1]] iter_args(%{{.*}} = %[[POISON]], %{{.*}} = %[[POISON]]) -> (index, index) {
 // CHECK-NEXT:        %[[IV2:.+]] = arith.subi %[[IV]], %[[C1]] : index
 // CHECK-NEXT:        %[[SUM:.+]] = arith.muli %[[IV2]], %[[C2]] : index
