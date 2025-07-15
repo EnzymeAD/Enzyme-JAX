@@ -2525,6 +2525,7 @@ struct AffineToStableHLORaisingPass
             if (legal) {
               auto cl = b.create<enzymexla::Pointer2MemrefOp>(arg.getLoc(), T, arg);
               for (auto U : llvm::make_early_inc_range(arg.getUsers())) {
+                if (U == cl) continue;
                 U->replaceAllUsesWith(cl);
                 U->erase();
               }
