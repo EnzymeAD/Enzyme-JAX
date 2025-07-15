@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s  --canonicalize-scf-for --split-input-file | FileCheck %s
+// RUN: enzymexlamlir-opt %s  --canonicalize-scf-for --split-input-file  --allow-unregistered-dialect | FileCheck %s
 
 // Check that we correctly identify ambigous main IV
 
@@ -28,6 +28,7 @@ func.func @foo(%arg0: memref<1x104x194xf64, 1>, %arg1: memref<35xf64, 1>, %arg2:
     ^bb0(%arg5: f64, %arg6: i64):
       scf.yield %arg5, %arg6 : f64, i64
     }
+    "test.use"(%2#0, %2#1) : (f64, i64) -> ()
   }
   return
 }

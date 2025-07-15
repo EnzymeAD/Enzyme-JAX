@@ -1342,36 +1342,7 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
     auto tmp = lhs;
     lhs = rhs;
     rhs = tmp;
-    switch (pred) {
-    case CmpIPredicate::eq:
-    case CmpIPredicate::ne:
-      break;
-    case CmpIPredicate::slt:
-      pred = CmpIPredicate::sgt;
-      break;
-    case CmpIPredicate::sle:
-      pred = CmpIPredicate::sge;
-      break;
-    case CmpIPredicate::ult:
-      pred = CmpIPredicate::ugt;
-      break;
-    case CmpIPredicate::ule:
-      pred = CmpIPredicate::uge;
-      break;
-
-    case CmpIPredicate::sgt:
-      pred = CmpIPredicate::slt;
-      break;
-    case CmpIPredicate::sge:
-      pred = CmpIPredicate::sle;
-      break;
-    case CmpIPredicate::ugt:
-      pred = CmpIPredicate::ult;
-      break;
-    case CmpIPredicate::uge:
-      pred = CmpIPredicate::ule;
-      break;
-    }
+    pred = swapPredicate(pred);
   }
 
   if (rhs.size() == 1 && !rhs[0].isValue && rhs[0] == 1) {
