@@ -2982,7 +2982,7 @@ struct MaxSimplify : public OpRewritePattern<arith::MaxSIOp> {
                                 PatternRewriter &rewriter) const override {
     Operation *op = maxOp;
 
-    for (Operation *op = maxOp; op; op->getParentOp()) {
+    for (Operation *op = maxOp; op; op = op->getParentOp()) {
       auto ifOp = dyn_cast_or_null<scf::IfOp>(op->getParentOp());
       if (!ifOp)
         continue;

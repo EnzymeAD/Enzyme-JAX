@@ -87,7 +87,7 @@ module {
 // CHECK-DAG:           %[[c1:.*]] = arith.constant 1 : i32
 // CHECK:           %[[VAL_7:.*]] = arith.cmpi ugt, %[[VAL_0]], %[[c0]] : i32
 // CHECK:           %[[VAL_8:.*]]:2 = scf.if %[[VAL_7]] -> (i32, f32) {
-// CHECK:             %[[VAL_9:.*]]:4 = scf.for %[[arg:.+]] = %[[c0]] to %[[ub]] step %[[c1]] iter_args(%[[VAL_12:.*]] = %[[cst0]], %[[VAL_13:.*]] = %[[true]], %[[VAL_11:.*]] = %[[undef_i32]], %[[idx:.*]] = %[[undef_f32]]) -> (f32, i1, i32, f32)  : i32 {
+// CHECK:             %[[VAL_9:.*]]:4 = scf.for %[[arg:.+]] = %[[c0]] to %[[VAL_0]] step %[[c1]] iter_args(%[[VAL_12:.*]] = %[[cst0]], %[[VAL_13:.*]] = %[[true]], %[[VAL_11:.*]] = %[[undef_i32]], %[[idx:.*]] = %[[undef_f32]]) -> (f32, i1, i32, f32)  : i32 {
 // CHECK:               %[[VAL_14:.*]]:2 = scf.if %[[VAL_13]] -> (f32, i1) {
 // CHECK:                 %[[VAL_15:.*]] = "test.something"() : () -> i1
 // CHECK:                 %[[VAL_16:.*]] = scf.if %[[VAL_15]] -> (f32) {
@@ -142,7 +142,6 @@ module {
 // CHECK-DAG:           %[[c0_i32:.*]] = arith.constant 0 : i32
 // CHECK-DAG:           %[[undef_i32:.*]] = ub.poison : i32
 // CHECK:           %[[VAL_10:.*]] = arith.cmpi sgt, %[[ub]], %[[c0_i32]] : i32
-// CHECK:           %[[VAL_11:.*]] = scf.if %[[VAL_10]] -> (i32) {
 // CHECK:             %[[VAL_12:.*]]:3 = scf.for %[[arg:.*]] = %[[c0_i32]] to %[[ub]] step %[[c1_i32]] iter_args(%[[VAL_14:.*]] = %[[VAL_0]], %[[VAL_16:.*]] = %[[true]], %[[VAL_15:.*]] = %[[undef_i32]]) -> (i8, i1, i32)  : i32 {
 // CHECK:               %[[VAL_17:.*]]:2 = scf.if %[[VAL_16]] -> (i8, i1) {
 // CHECK:                 %[[VAL_19:.*]] = arith.cmpi ne, %[[arg]], %[[VAL_4]] : i32
@@ -152,6 +151,7 @@ module {
 // CHECK:               }
 // CHECK:               scf.yield %[[VAL_17]]#0, %[[VAL_17]]#1, %[[arg]] : i8, i1, i32
 // CHECK:             }
+// CHECK:           %[[VAL_11:.*]] = scf.if %[[VAL_10]] -> (i32) {
 // CHECK:             scf.yield %[[VAL_12]]#2 : i32
 // CHECK:           } else {
 // CHECK:             scf.yield %[[c0_i32]] : i32
