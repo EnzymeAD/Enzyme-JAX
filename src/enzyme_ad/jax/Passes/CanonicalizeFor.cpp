@@ -785,128 +785,134 @@ struct WhileToForHelper {
   bool comparingUpdated;
 
   bool checkPredicate(PatternRewriter &rewriter) {
-    auto cmpEnd = cmpIOp->getOperand(1-compareIndex);
+    auto cmpEnd = cmpIOp->getOperand(1 - compareIndex);
     auto cmpStart = loop.getInits()[indVar.getArgNumber()];
 
     if (!dominateWhile(cmpEnd, loop)) {
       auto *op = cmpIOp.getRhs().getDefiningOp();
-      if (!op || !canMoveOpOutsideWhile(op, loop) || (op->getNumResults() != 1)) {
+      if (!op || !canMoveOpOutsideWhile(op, loop) ||
+          (op->getNumResults() != 1)) {
         rewriter.notifyMatchFailure(loop, "Non-dominating rhs");
         return false;
       }
       ub_cloneMove = true;
     }
 
-      auto pred = cmpIOp.getPredicate();
-      if (compareIndex == 1) {
-        pred = swapPredicate(pred);
+    auto pred = cmpIOp.getPredicate();
+    if (compareIndex == 1) {
+      pred = swapPredicate(pred);
+    }
+    switch (pred) {
+    case CmpIPredicate::slt:
+    case CmpIPredicate::ult: {
+      lb = cmpStart;
+      ub = cmpEnd;
+      if (comparingUpdated) {
+        lb_addStep = true;
       }
-      switch (pred) {
-      case CmpIPredicate::slt:
-      case CmpIPredicate::ult: {
-        lb = cmpStart;
-        ub = cmpEnd;
-        if (comparingUpdated) {
-          lb_addStep = true;
-        }
-        break;
+      break;
+    }
+    case CmpIPredicate::ule:
+    case CmpIPredicate::sle: {
+      lb = cmpStart;
+      ub = cmpEnd;
+      if (comparingUpdated) {
+        lb_addStep = true;
       }
-      case CmpIPredicate::ule:
-      case CmpIPredicate::sle: {
-        lb = cmpStart;
-        ub = cmpEnd;
-        if (comparingUpdated) {
-          lb_addStep = true;
-        }
-        ub_addOne = true;
-        break;
+      ub_addOne = true;
+      break;
+    }
+    case CmpIPredicate::uge:
+    case CmpIPredicate::sge: {
+      ub = cmpStart;
+      lb = cmpEnd;
+      if (comparingUpdated) {
+        ub_addStep = true;
       }
-      case CmpIPredicate::uge:
-      case CmpIPredicate::sge: {
-        ub = cmpStart;
-        lb = cmpEnd;
-        if (comparingUpdated) {
-          ub_addStep = true;
-        }
-        break;
+      break;
+    }
+
+    case CmpIPredicate::ugt:
+    case CmpIPredicate::sgt: {
+      ub = cmpStart;
+      lb = cmpEnd;
+      lb_addOne = true;
+      if (comparingUpdated) {
+        ub_addStep = true;
       }
+      break;
+    }
 
-      case CmpIPredicate::ugt:
-      case CmpIPredicate::sgt: {
-        ub = cmpStart;
-        lb = cmpEnd;
-        lb_addOne = true;
-        if (comparingUpdated) {
-          ub_addStep = true;
+    case CmpIPredicate::ne: {
+      // Transform arith.cmpi NE to SLT /SGT
+      // 1. Check to see if step size is negative or positive to decide
+      // between SLT and SGT
+      // 2. Check to see if linearly scaling IV from init with step size can
+      // be equal to upperbound
+      // 3. If yes and step size is negative, then we need to transform the
+      // condition to SGT
+      // 4. If yes and step size is positive, then we need to transform the
+      // condition to SLT
+      APInt lbConstInt, ubConstInt, stepConstInt;
+      int lbInt, ubInt, stepInt;
+      bool constantBounds = false;
+      assert(step);
+      if (matchPattern(step, m_ConstantInt(&stepConstInt))) {
+        stepInt = stepConstInt.getSExtValue();
+        if (matchPattern(cmpStart, m_ConstantInt(&lbConstInt)) &&
+            matchPattern(cmpEnd, m_ConstantInt(&ubConstInt))) {
+          lbInt = lbConstInt.getSExtValue();
+          ubInt = ubConstInt.getSExtValue();
+          constantBounds = true;
         }
-        break;
-      }
-
-      case CmpIPredicate::ne: {
-        // Transform arith.cmpi NE to SLT /SGT
-        // 1. Check to see if step size is negative or positive to decide
-        // between SLT and SGT
-        // 2. Check to see if linearly scaling IV from init with step size can
-        // be equal to upperbound
-        // 3. If yes and step size is negative, then we need to transform the
-        // condition to SGT
-        // 4. If yes and step size is positive, then we need to transform the
-        // condition to SLT
-        APInt lbConstInt, ubConstInt, stepConstInt;
-        int lbInt, ubInt, stepInt;
-        bool constantBounds = false;
-        assert(step);
-        if (matchPattern(step, m_ConstantInt(&stepConstInt))) {
-          stepInt = stepConstInt.getSExtValue();
-          if (matchPattern(cmpStart, m_ConstantInt(&lbConstInt)) &&
-              matchPattern(cmpEnd, m_ConstantInt(&ubConstInt))) {
-            lbInt = lbConstInt.getSExtValue();
-            ubInt = ubConstInt.getSExtValue();
-            constantBounds = true;
-          }
-        } else {
-          rewriter.notifyMatchFailure(loop, "Predicate ne with non-constant step");
-          return false;
-        }
-
-        if (stepInt == 1 || stepInt == -1 || (ubInt - lbInt) % stepInt == 0) {
-
-          if ((stepInt < 0) &&  (!constantBounds || (ubInt < lbInt))) {
-            if (!constantBounds) {
-              llvm::errs() << " found loop with negative increment and non-constant bounds, assuming no wrap around\n";
-            }
-            lb = cmpEnd;
-            ub = cmpStart;
-
-            // add one only if we compare with the updated iv
-            lb_subStep = comparingUpdated;
-            ub_addOne = false;
-          } else if ((stepInt > 0) && (!constantBounds || (lbInt < ubInt))) {
-            if (!constantBounds) {
-              llvm::errs() << " found loop with positive increment and non-constant bounds, assuming no wrap around\n";
-            }
-            lb = cmpStart;
-            ub = cmpEnd;
-
-            // inclusive range if the cmpiop compares with the indVar, not the
-            // updated value
-            lb_addStep = comparingUpdated;
-          } else {
-            rewriter.notifyMatchFailure(loop, "Predicate ne with unhandled bounds");
-            return false;
-          }
-        } else {
-          rewriter.notifyMatchFailure(loop, "Predicate ne with non-divisible bounds");
-          return false; // If upperbound - lowerbound is not divisible by step
-                        // size, then we cannot transform the condition
-        }
-        break;
-      }
-      case CmpIPredicate::eq: {
-        rewriter.notifyMatchFailure(loop, "Predicate eq predicate unhandled");
+      } else {
+        rewriter.notifyMatchFailure(loop,
+                                    "Predicate ne with non-constant step");
         return false;
       }
+
+      if (stepInt == 1 || stepInt == -1 || (ubInt - lbInt) % stepInt == 0) {
+
+        if ((stepInt < 0) && (!constantBounds || (ubInt < lbInt))) {
+          if (!constantBounds) {
+            llvm::errs() << " found loop with negative increment and "
+                            "non-constant bounds, assuming no wrap around\n";
+          }
+          lb = cmpEnd;
+          ub = cmpStart;
+
+          // add one only if we compare with the updated iv
+          lb_subStep = comparingUpdated;
+          ub_addOne = false;
+        } else if ((stepInt > 0) && (!constantBounds || (lbInt < ubInt))) {
+          if (!constantBounds) {
+            llvm::errs() << " found loop with positive increment and "
+                            "non-constant bounds, assuming no wrap around\n";
+          }
+          lb = cmpStart;
+          ub = cmpEnd;
+
+          // inclusive range if the cmpiop compares with the indVar, not the
+          // updated value
+          lb_addStep = comparingUpdated;
+        } else {
+          rewriter.notifyMatchFailure(loop,
+                                      "Predicate ne with unhandled bounds");
+          return false;
+        }
+      } else {
+        rewriter.notifyMatchFailure(loop,
+                                    "Predicate ne with non-divisible bounds");
+        return false; // If upperbound - lowerbound is not divisible by step
+                      // size, then we cannot transform the condition
       }
+      break;
+    }
+    case CmpIPredicate::eq: {
+      rewriter.notifyMatchFailure(loop, "Predicate eq predicate unhandled");
+      return false;
+    }
+    }
 
     return lb && ub;
   }
@@ -944,49 +950,54 @@ struct WhileToForHelper {
   }
 
   // return true if legal
-  bool considerStep(BlockArgument beforeArg, Value steppingVal, bool inBefore, Value lookThrough) {
+  bool considerStep(BlockArgument beforeArg, Value steppingVal, bool inBefore,
+                    Value lookThrough) {
 
-  assert(steppingVal);
+    assert(steppingVal);
     bool negateLookThrough = false;
     if (lookThrough) {
-    while (auto neg = lookThrough.getDefiningOp<XOrIOp>())
-      if (matchPattern(neg.getOperand(1), m_One())) {
-        lookThrough = neg.getOperand(0);
-        negateLookThrough = !negateLookThrough;
-      }
-
-    if (auto ifOp = steppingVal.getDefiningOp<IfOp>()) {
-      Value condition = ifOp.getCondition();
-      while (auto neg = condition.getDefiningOp<XOrIOp>())
+      while (auto neg = lookThrough.getDefiningOp<XOrIOp>())
         if (matchPattern(neg.getOperand(1), m_One())) {
-          condition = neg.getOperand(0);
+          lookThrough = neg.getOperand(0);
           negateLookThrough = !negateLookThrough;
         }
-      if (ifOp.getCondition() == lookThrough && beforeArg) {
-        for (auto r : llvm::enumerate(ifOp.getResults())) {
-          if (r.value() == loop.getAfter().front().getTerminator()->getOperands()[beforeArg.getArgNumber()]) {
-            steppingVal = (negateLookThrough ? ifOp.elseYield() : ifOp.thenYield())
-                         .getOperand(r.index());
-            break;
+
+      if (auto ifOp = steppingVal.getDefiningOp<IfOp>()) {
+        Value condition = ifOp.getCondition();
+        while (auto neg = condition.getDefiningOp<XOrIOp>())
+          if (matchPattern(neg.getOperand(1), m_One())) {
+            condition = neg.getOperand(0);
+            negateLookThrough = !negateLookThrough;
+          }
+        if (ifOp.getCondition() == lookThrough && beforeArg) {
+          for (auto r : llvm::enumerate(ifOp.getResults())) {
+            if (r.value() == loop.getAfter()
+                                 .front()
+                                 .getTerminator()
+                                 ->getOperands()[beforeArg.getArgNumber()]) {
+              steppingVal =
+                  (negateLookThrough ? ifOp.elseYield() : ifOp.thenYield())
+                      .getOperand(r.index());
+              break;
+            }
           }
         }
+      } else if (auto selOp = steppingVal.getDefiningOp<SelectOp>()) {
+        Value condition = selOp.getCondition();
+        while (auto neg = condition.getDefiningOp<XOrIOp>())
+          if (matchPattern(neg.getOperand(1), m_One())) {
+            condition = neg.getOperand(0);
+            negateLookThrough = !negateLookThrough;
+          }
+        if (selOp.getCondition() == lookThrough)
+          steppingVal = (negateLookThrough ? selOp.getFalseValue()
+                                           : selOp.getTrueValue());
       }
-    } else if (auto selOp = steppingVal.getDefiningOp<SelectOp>()) {
-      Value condition = selOp.getCondition();
-      while (auto neg = condition.getDefiningOp<XOrIOp>())
-        if (matchPattern(neg.getOperand(1), m_One())) {
-          condition = neg.getOperand(0);
-          negateLookThrough = !negateLookThrough;
-        }
-      if (selOp.getCondition() == lookThrough)
-        steppingVal =
-            (negateLookThrough ? selOp.getFalseValue() : selOp.getTrueValue());
     }
-  }
 
-  assert(steppingVal);
+    assert(steppingVal);
     if (auto add = steppingVal.getDefiningOp<AddIOp>()) {
-      for (int j=0; j<2; j++) {
+      for (int j = 0; j < 2; j++) {
         BlockArgument arg = beforeArg;
         if (inBefore) {
           if (beforeArg) {
@@ -995,7 +1006,8 @@ struct WhileToForHelper {
             }
           } else {
             auto ba2 = dyn_cast<BlockArgument>(add->getOperand(j));
-            if (!ba2) continue;
+            if (!ba2)
+              continue;
             if (ba2.getOwner() != &loop.getBefore().front())
               continue;
             arg = ba2;
@@ -1003,12 +1015,14 @@ struct WhileToForHelper {
         } else {
           assert(beforeArg);
           auto ba2 = dyn_cast<BlockArgument>(add->getOperand(j));
-          if (!ba2) continue;
+          if (!ba2)
+            continue;
 
           if (ba2.getOwner() != &loop.getAfter().front())
             continue;
 
-          auto beforeYielded = loop.getConditionOp().getArgs()[ba2.getArgNumber()];
+          auto beforeYielded =
+              loop.getConditionOp().getArgs()[ba2.getArgNumber()];
           if (beforeYielded != beforeArg) {
             continue;
           }
@@ -1016,7 +1030,7 @@ struct WhileToForHelper {
 
         assert(arg);
         indVar = arg;
-        step = add->getOperand(1-j);
+        step = add->getOperand(1 - j);
         addIOp = add;
         return true;
       }
@@ -1024,7 +1038,8 @@ struct WhileToForHelper {
     return false;
   }
 
-  bool computeLegality(PatternRewriter &rewriter, bool sizeCheck, Value lookThrough = nullptr, bool doWhile = false) {
+  bool computeLegality(PatternRewriter &rewriter, bool sizeCheck,
+                       Value lookThrough = nullptr, bool doWhile = false) {
 
     initVariables();
 
@@ -1034,7 +1049,7 @@ struct WhileToForHelper {
     Type extType = nullptr;
     comparingUpdated = false;
 
-    for (int i=0; i<2; i++) {
+    for (int i = 0; i < 2; i++) {
       Value opVal = cmpIOp->getOperand(i);
       compareIndex = i;
 
@@ -1059,26 +1074,27 @@ struct WhileToForHelper {
 
           comparingUpdated = false;
           assert(condOp.getArgs()[afterArg.getArgNumber()]);
-          if (considerStep(arg, condOp.getArgs()[afterArg.getArgNumber()], /*inBefore*/true, lookThrough)) {   
+          if (considerStep(arg, condOp.getArgs()[afterArg.getArgNumber()],
+                           /*inBefore*/ true, lookThrough)) {
             goto endDetect;
           }
 
         } else {
           comparingUpdated = false;
-          if (considerStep(arg, pval, /*inBefore*/false, lookThrough)) {          
+          if (considerStep(arg, pval, /*inBefore*/ false, lookThrough)) {
             goto endDetect;
           }
         }
       } else {
         comparingUpdated = true;
         assert(opVal);
-        if (considerStep(nullptr, opVal, /*inBefore*/true, lookThrough)) {          
+        if (considerStep(nullptr, opVal, /*inBefore*/ true, lookThrough)) {
           goto endDetect;
         }
       }
     }
 
-    endDetect:;
+  endDetect:;
 
     if (!indVar) {
       rewriter.notifyMatchFailure(loop, "Failed to find iv");
@@ -1103,7 +1119,8 @@ struct WhileToForHelper {
       if (!sizeCheck)
         size--;
       if (size != 2) {
-        rewriter.notifyMatchFailure(loop, "Before region contains more than just comparison");
+        rewriter.notifyMatchFailure(
+            loop, "Before region contains more than just comparison");
         return false;
       }
     }
@@ -1120,7 +1137,6 @@ struct WhileToForHelper {
           rewriter.create<ConstantIntOp>(loop.getLoc(), lb.getType(), 1);
       lb = rewriter.create<AddIOp>(loop.getLoc(), lb, one);
     }
-
 
     if (lb_addStep) {
       lb = rewriter.create<AddIOp>(loop.getLoc(), lb, step);
@@ -1474,7 +1490,6 @@ is transformed into
 #endif
 
     return success();
-
   }
 };
 
@@ -1491,7 +1506,8 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
     if (!helper.cmpIOp) {
       return rewriter.notifyMatchFailure(loop, "No comparison found");
     }
-    if (!helper.computeLegality(rewriter, /*sizeCheck*/ true, /*lookThrough*/nullptr, /*doWhile*/true)) {
+    if (!helper.computeLegality(rewriter, /*sizeCheck*/ true,
+                                /*lookThrough*/ nullptr, /*doWhile*/ true)) {
       return failure();
     }
     helper.prepareFor(rewriter);
@@ -1501,28 +1517,29 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
     SmallVector<Value, 8> forArgs = llvm::to_vector(loop.getInits());
 
     for (Value arg : condOp.getArgs()) {
-      forArgs.push_back(rewriter.create<ub::PoisonOp>(arg.getLoc(), arg.getType()));
+      forArgs.push_back(
+          rewriter.create<ub::PoisonOp>(arg.getLoc(), arg.getType()));
     }
 
     bool doWhile = false;
     for (auto &blk : loop.getBefore()) {
       for (auto &op : blk) {
-      if (!mlir::isPure(&op)) {
-        doWhile = true;
-        break;
+        if (!mlir::isPure(&op)) {
+          doWhile = true;
+          break;
+        }
       }
-    }
     }
 
     bool mutableAfter = false;
     if (doWhile) {
       for (auto &blk : loop.getAfter()) {
         for (auto &op : blk) {
-        if (!mlir::isPure(&op)) {
-          mutableAfter = true;
-          break;
+          if (!mlir::isPure(&op)) {
+            mutableAfter = true;
+            break;
+          }
         }
-      }
       }
     }
 
@@ -1531,16 +1548,16 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
     auto ub = helper.ub;
 
     if (doWhile) {
-      // we add step to force the extra iteration at the end, but also we need to max with lb + step
-      // to make sure one iteration runs at all. max(lb + step, ub + step) -> max(ub, lb) + step
-      ub = rewriter.create<arith::MaxSIOp>(loop.getLoc(), ub,
-                                                  helper.lb);
+      // we add step to force the extra iteration at the end, but also we need
+      // to max with lb + step to make sure one iteration runs at all. max(lb +
+      // step, ub + step) -> max(ub, lb) + step
+      ub = rewriter.create<arith::MaxSIOp>(loop.getLoc(), ub, helper.lb);
 
       ub = rewriter.create<arith::AddIOp>(loop.getLoc(), ub, helper.step);
     }
 
-    auto forloop = rewriter.create<scf::ForOp>(loop.getLoc(), helper.lb,
-                                               ub, helper.step, forArgs);
+    auto forloop = rewriter.create<scf::ForOp>(loop.getLoc(), helper.lb, ub,
+                                               helper.step, forArgs);
 
     if (!forloop.getBody()->empty())
       rewriter.eraseOp(forloop.getBody()->getTerminator());
@@ -1550,8 +1567,8 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
            llvm::zip(loop.getAfter().getArguments(), condOp.getArgs())) {
         std::get<0>(pair).replaceAllUsesWith(std::get<1>(pair));
       }
-      for (auto pair :
-           llvm::zip(loop.getBefore().getArguments(), forloop.getRegionIterArgs())) {
+      for (auto pair : llvm::zip(loop.getBefore().getArguments(),
+                                 forloop.getRegionIterArgs())) {
         std::get<0>(pair).replaceAllUsesWith(std::get<1>(pair));
       }
     });
@@ -1564,7 +1581,7 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
 
     SmallVector<Value> newYields(forArgs.size());
 
-    for (size_t i=0; i<loop.getResults().size(); i++) {
+    for (size_t i = 0; i < loop.getResults().size(); i++) {
       newYields[loop.getInits().size() + i] = condOp.getArgs()[i];
     }
 
@@ -1573,9 +1590,13 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
       SmallVector<Type> initTypes;
       for (auto T : loop.getInits())
         initTypes.push_back(T.getType());
-      auto cond = rewriter.create<arith::CmpIOp>(forloop.getLoc(), helper.negativeStep ? arith::CmpIPredicate::sgt : arith::CmpIPredicate::slt, forloop.getInductionVar(), helper.ub);
-      auto ifOp = rewriter.create<scf::IfOp>(forloop.getLoc(), initTypes, cond, true);
-
+      auto cond = rewriter.create<arith::CmpIOp>(
+          forloop.getLoc(),
+          helper.negativeStep ? arith::CmpIPredicate::sgt
+                              : arith::CmpIPredicate::slt,
+          forloop.getInductionVar(), helper.ub);
+      auto ifOp =
+          rewriter.create<scf::IfOp>(forloop.getLoc(), initTypes, cond, true);
 
       rewriter.eraseBlock(&ifOp->getRegion(0).front());
       ifOp->getRegion(0).getBlocks().splice(
@@ -1588,11 +1609,12 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
       rewriter.setInsertionPointToEnd(&ifOp.getElseRegion().front());
       SmallVector<Value> nonArgs;
       for (auto A : loop.getInits()) {
-        nonArgs.push_back(rewriter.create<ub::PoisonOp>(loop.getLoc(), A.getType()));
+        nonArgs.push_back(
+            rewriter.create<ub::PoisonOp>(loop.getLoc(), A.getType()));
       }
       rewriter.create<scf::YieldOp>(loop.getLoc(), nonArgs);
 
-      for (size_t i=0; i<loop.getInits().size(); i++) {
+      for (size_t i = 0; i < loop.getInits().size(); i++) {
         newYields[i] = ifOp->getResult(i);
       }
 
@@ -1600,7 +1622,7 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
       forloop.getBody()->getOperations().splice(
           forloop.getBody()->getOperations().end(),
           loop.getAfter().front().getOperations());
-      for (size_t i=0; i<loop.getInits().size(); i++) {
+      for (size_t i = 0; i < loop.getInits().size(); i++) {
         newYields[i] = oldYield.getResults()[i];
       }
     }
@@ -1611,7 +1633,9 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
     rewriter.eraseOp(condOp);
     rewriter.eraseOp(oldYield);
 
-    rewriter.replaceOp(loop, forloop.getResults().slice(loop.getInits().size(), loop.getResults().size()));
+    rewriter.replaceOp(loop,
+                       forloop.getResults().slice(loop.getInits().size(),
+                                                  loop.getResults().size()));
     return success();
   }
 };
@@ -1644,7 +1668,6 @@ struct MoveWhileAndDown : public OpRewritePattern<WhileOp> {
       if (!helper.computeLegality(rewriter, /*sizeCheck*/ false, lookThrough)) {
         continue;
       }
-
 
       SmallVector<int> afterIndVars;
 
@@ -3219,7 +3242,7 @@ void CanonicalizeFor::runOnOperation() {
   mlir::RewritePatternSet rpl(getOperation()->getContext());
   populateSelectExtractPatterns(rpl);
   rpl.add<IfYieldMovementPattern, truncProp, ForOpInductionReplacement,
-          RemoveUnusedForResults, RemoveUnusedArgs, 
+          RemoveUnusedForResults, RemoveUnusedArgs,
           // MoveDoWhileToFor,
           MoveWhileToFor, RemoveWhileSelect, SelectTruncToTruncSelect,
           SelectI1Simplify,
