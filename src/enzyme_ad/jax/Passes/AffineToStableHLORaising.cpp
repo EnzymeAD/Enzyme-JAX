@@ -2469,6 +2469,7 @@ struct AffineToStableHLORaisingPass
       getUsedValuesDefinedAbove(g->getRegion(0), operands0);
       
       SmallPtrSet<Value, 1> buffered;
+      SmallVector<Operation*> loads;
 
       for (auto arg : operands0) {
 
@@ -2485,7 +2486,9 @@ struct AffineToStableHLORaisingPass
              arg.replaceUsesWithIf(cl->getResult(0), [&](OpOperand &opOperand) {
                return g->isProperAncestor(opOperand.getOwner());
              });
-            arg = cl->getResult(0);
+            arg = ic.getOperand();
+
+            llvm::errs() << " unfolded cast to index new arg: " << arg << ", old arg: " << ic << "\n";
           }
         }
 
@@ -2499,11 +2502,17 @@ struct AffineToStableHLORaisingPass
                 auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(U.getOwner());
                 if (!p2m) {
                   legal = false;
+                  llvm::errs() << " non pointermemref user of pointer arg in kernel: " << *U.getOwner() << "\n";
+                  break;
                 }
                 if (!T) {
                   T = p2m.getType();
                 } else {
-                  legal &= T == p2m.getType(); 
+                  if (T != p2m.getType()) {
+                    legal = false;
+                    llvm::errs() << " inconsistent pointer2memref type " << T << " and " << p2m << " \n";
+                    break;
+                  }
                 }
               }
             }
@@ -2513,6 +2522,8 @@ struct AffineToStableHLORaisingPass
                arg.replaceUsesWithIf(cl->getResult(0), [&](OpOperand &opOperand) {
                  return g->isProperAncestor(opOperand.getOwner());
                });
+               operands.insert(cl);
+              continue;
             }
         }
 
@@ -2531,12 +2542,12 @@ struct AffineToStableHLORaisingPass
                 (mlir::Type) nullptr, ValueRange(), ValueRange(), ValueRange())->getResult(0);
 
             auto res0 = b.create<memref::AllocaOp>(g.getLoc(), MT0);
-            b.create<affine::AffineStoreOp>(g.getLoc(), arg, res0, b.getMultiDimIdentityMap(1), ValueRange());
+            b.create<affine::AffineStoreOp>(g.getLoc(), arg, res0, b.getMultiDimIdentityMap(0), ValueRange());
             auto c1 = b.create<arith::ConstantIndexOp>(g.getLoc(), 1);
             b.create<enzymexla::MemcpyOp>(g.getLoc(), (mlir::Type)nullptr, ValueRange(), res, res0, c1);
             b.setInsertionPointToStart(body);
-            auto ld = b.create<affine::AffineLoadOp>(g.getLoc(), res, b.getMultiDimIdentityMap(1), ValueRange());
-
+            auto ld = b.create<affine::AffineLoadOp>(g.getLoc(), res, b.getMultiDimIdentityMap(0), ValueRange());
+            loads.push_back(ld);
              arg.replaceUsesWithIf(ld, [&](OpOperand &opOperand) {
                return g->isProperAncestor(opOperand.getOwner());
              });
@@ -2544,6 +2555,8 @@ struct AffineToStableHLORaisingPass
            b.setInsertionPointAfter(g);
            b.create<gpu::DeallocOp>(g.getLoc(), (mlir::Type)nullptr, ValueRange(), res);
            buffered.insert(arg);
+           operands.insert(res);
+           continue;
         }
 
         if (isa<MemRefType>(arg.getType())) {
@@ -2551,9 +2564,18 @@ struct AffineToStableHLORaisingPass
           continue;
         }
 
+        llvm::errs() << " faillback arg: " << arg << "\n";
         operands.insert(arg);
       }
+
+      for (auto ld : loads) {
+        if (ld != &body->front()) {
+          ld->moveBefore(&body->front());
+        }
       }
+      }
+
+      llvm::errs() << " g: " << g << "\n";
 
       SmallVector<Type> tensorTypes;
       bool failed = false;
