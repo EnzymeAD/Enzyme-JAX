@@ -881,7 +881,7 @@ struct WhileToForHelper {
             ub = cmpStart;
 
             // add one only if we compare with the updated iv
-            lb_addOne = comparingUpdated;
+            lb_addStep = comparingUpdated;
           } else if ((stepInt > 0) && (!constantBounds || (lbInt < ubInt))) {
             if (!constantBounds) {
               llvm::errs() << " found loop with positive increment and non-constant bounds, assuming no wrap around\n";
@@ -892,7 +892,7 @@ struct WhileToForHelper {
 
             // inclusive range if the cmpiop compares with the indVar, not the
             // updated value
-            ub_addOne = !comparingUpdated;
+            lb_addStep = comparingUpdated;
           } else {
             rewriter.notifyMatchFailure(loop, "Predicate ne with unhandled bounds");
             return false;
