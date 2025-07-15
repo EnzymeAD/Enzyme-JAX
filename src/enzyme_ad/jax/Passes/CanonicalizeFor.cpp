@@ -2963,7 +2963,8 @@ struct IfYieldMovementPattern : public OpRewritePattern<scf::IfOp> {
 
 bool isOneGreaterThan(Value v1, Value v2) {
   APInt i1, i2;
-  if (matchPattern(v1, m_ConstantInt(&i1)) && matchPattern(v2, m_ConstantInt(&i2)) ) {
+  if (matchPattern(v1, m_ConstantInt(&i1)) &&
+      matchPattern(v2, m_ConstantInt(&i2))) {
     return i1 == (i2 + 1);
   }
   if (auto add = v1.getDefiningOp<arith::AddIOp>()) {
@@ -2981,34 +2982,39 @@ struct MaxSimplify : public OpRewritePattern<arith::MaxSIOp> {
                                 PatternRewriter &rewriter) const override {
     Operation *op = maxOp;
 
-    for (Operation* op = maxOp; op; op->getParentOp()) {
+    for (Operation *op = maxOp; op; op->getParentOp()) {
       auto ifOp = dyn_cast_or_null<scf::IfOp>(op->getParentOp());
-      if (!ifOp) continue;
+      if (!ifOp)
+        continue;
       auto cmpOp = ifOp.getCondition().getDefiningOp<arith::CmpIOp>();
-      if (!cmpOp) continue;
-      for (int i=0; i<2; i++) {
-        for (int j=0; j<2; j++) {
+      if (!cmpOp)
+        continue;
+      for (int i = 0; i < 2; i++) {
+        for (int j = 0; j < 2; j++) {
           if (maxOp->getOperand(i) == cmpOp->getOperand(j)) {
             auto pred = cmpOp.getPredicate();
             if (j == 1)
               pred = swapPredicate(pred);
-            if (pred == arith::CmpIPredicate::sgt && isOneGreaterThan(maxOp->getOperand(1-i), cmpOp->getOperand(1-j))) {
+            if (pred == arith::CmpIPredicate::sgt &&
+                isOneGreaterThan(maxOp->getOperand(1 - i),
+                                 cmpOp->getOperand(1 - j))) {
               if (op->getParentRegion() == &ifOp.getThenRegion()) {
                 rewriter.replaceOp(maxOp, maxOp->getOperand(i));
                 return success();
               } else {
-                rewriter.replaceOp(maxOp, maxOp->getOperand(1-i));
-                return success();                
+                rewriter.replaceOp(maxOp, maxOp->getOperand(1 - i));
+                return success();
               }
             }
 
-            if (pred == arith::CmpIPredicate::sge && maxOp->getOperand(1-i) == cmpOp->getOperand(1-j)) {
+            if (pred == arith::CmpIPredicate::sge &&
+                maxOp->getOperand(1 - i) == cmpOp->getOperand(1 - j)) {
               if (op->getParentRegion() == &ifOp.getThenRegion()) {
                 rewriter.replaceOp(maxOp, maxOp->getOperand(i));
                 return success();
               } else {
-                rewriter.replaceOp(maxOp, maxOp->getOperand(1-i));
-                return success();                
+                rewriter.replaceOp(maxOp, maxOp->getOperand(1 - i));
+                return success();
               }
             }
           }
@@ -3017,11 +3023,8 @@ struct MaxSimplify : public OpRewritePattern<arith::MaxSIOp> {
     }
     return failure();
     // Ensure both regions exist and have single blocks
-
   }
 };
-
-
 
 struct ForBoundUnSwitch : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -3030,45 +3033,48 @@ struct ForBoundUnSwitch : public OpRewritePattern<scf::ForOp> {
                                 PatternRewriter &rewriter) const override {
 
     auto ifOp = dyn_cast<scf::IfOp>(loop->getParentOp());
-    if (!ifOp) return failure();
+    if (!ifOp)
+      return failure();
 
     auto cmpOp = ifOp.getCondition().getDefiningOp<arith::CmpIOp>();
-    if (!cmpOp) return failure();
+    if (!cmpOp)
+      return failure();
 
     Value niters = nullptr;
     if (matchPattern(loop.getLowerBound(), m_Zero())) {
       niters = loop.getUpperBound();
-    } else if (auto addOp = loop.getUpperBound().getDefiningOp<arith::AddIOp>()) {
-      for (int i=0; i<2; i++) {
+    } else if (auto addOp =
+                   loop.getUpperBound().getDefiningOp<arith::AddIOp>()) {
+      for (int i = 0; i < 2; i++) {
         if (addOp->getOperand(i) == loop.getLowerBound()) {
-          niters = addOp->getOperand(1-i);
+          niters = addOp->getOperand(1 - i);
           break;
         }
       }
     }
 
-    if (!niters) return failure();
-
+    if (!niters)
+      return failure();
 
     bool legal = false;
-    for (int j=0; j<2; j++) {
+    for (int j = 0; j < 2; j++) {
       if (niters == cmpOp->getOperand(j)) {
         auto pred = cmpOp.getPredicate();
         if (j == 1)
           pred = swapPredicate(pred);
-        if (pred == arith::CmpIPredicate::sgt && matchPattern(cmpOp->getOperand(1-j), m_Zero())) {
+        if (pred == arith::CmpIPredicate::sgt &&
+            matchPattern(cmpOp->getOperand(1 - j), m_Zero())) {
           legal = true;
           break;
         }
       }
     }
-    if (!legal) return failure();
+    if (!legal)
+      return failure();
     for (auto v : {loop.getLowerBound(), loop.getUpperBound()}) {
       if (auto op = v.getDefiningOp()) {
         if (op->getParentOp() == ifOp) {
-          rewriter.modifyOpInPlace(op, [&](){
-            op->moveBefore(ifOp);
-          });
+          rewriter.modifyOpInPlace(op, [&]() { op->moveBefore(ifOp); });
         }
       }
     }
@@ -3076,9 +3082,7 @@ struct ForBoundUnSwitch : public OpRewritePattern<scf::ForOp> {
     if (&ifOp.getThenRegion().front().front() != loop) {
       return failure();
     }
-    rewriter.modifyOpInPlace(loop, [&](){
-      loop->moveBefore(ifOp);
-    });
+    rewriter.modifyOpInPlace(loop, [&]() { loop->moveBefore(ifOp); });
     return success();
   }
 };
@@ -3087,11 +3091,9 @@ void CanonicalizeFor::runOnOperation() {
   mlir::RewritePatternSet rpl(getOperation()->getContext());
   populateSelectExtractPatterns(rpl);
   rpl.add<IfYieldMovementPattern, truncProp, ForOpInductionReplacement,
-          RemoveUnusedForResults, RemoveUnusedArgs,
-          MoveWhileToFor, RemoveWhileSelect, SelectTruncToTruncSelect,
-          MaxSimplify,
-          ForBoundUnSwitch,
-          SelectI1Simplify,
+          RemoveUnusedForResults, RemoveUnusedArgs, MoveWhileToFor,
+          RemoveWhileSelect, SelectTruncToTruncSelect, MaxSimplify,
+          ForBoundUnSwitch, SelectI1Simplify,
 
           MoveWhileDown, MoveWhileDown2,
 
