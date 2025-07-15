@@ -1054,7 +1054,7 @@ struct WhileToForHelper {
 
         if (auto afterArg = dyn_cast<BlockArgument>(pval)) {
 
-          if (arg.getOwner() != &loop.getAfter().front()) {
+          if (afterArg.getOwner() != &loop.getAfter().front()) {
             continue;
           }
 
@@ -1544,6 +1544,13 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
 
     if (doWhile) {
       ub = rewriter.create<arith::AddIOp>(loop.getLoc(), ub, helper.step);
+
+      // Dynamic bound: adjusted ub = max(ub, lb + step)
+      Value lbPlusStep = rewriter.create<arith::AddIOp>(loop.getLoc(),
+                                                        helper.lb, helper.step);
+
+      ub = rewriter.create<arith::MaxSIOp>(loop.getLoc(), lbPlusStep,
+                                                  ub);
     }
 
     auto forloop = rewriter.create<scf::ForOp>(loop.getLoc(), helper.lb,
@@ -1567,7 +1574,6 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
         forloop.getBody()->getOperations().begin(),
         loop.getBefore().front().getOperations());
 
-    // TODO erase condOp
     loop.getAfter().front().eraseArguments([](BlockArgument) { return true; });
 
     SmallVector<Value> newYields(forArgs.size());
