@@ -963,9 +963,9 @@ struct WhileToForHelper {
           condition = neg.getOperand(0);
           negateLookThrough = !negateLookThrough;
         }
-      if (ifOp.getCondition() == lookThrough) {
+      if (ifOp.getCondition() == lookThrough && beforeArg) {
         for (auto r : llvm::enumerate(ifOp.getResults())) {
-          if (r.value() == loop.getAfter().front().getTerminator()->getOperands()[indVar.getArgNumber()]) {
+          if (r.value() == loop.getAfter().front().getTerminator()->getOperands()[beforeArg.getArgNumber()]) {
             steppingVal = (negateLookThrough ? ifOp.elseYield() : ifOp.thenYield())
                          .getOperand(r.index());
             break;
