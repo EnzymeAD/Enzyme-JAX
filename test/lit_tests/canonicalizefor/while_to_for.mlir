@@ -37,20 +37,20 @@ func.func @foo(%arg0: memref<1x104x194xf64, 1>, %arg1: memref<35xf64, 1>, %arg2:
 // CHECK-SAME:                   %[[VAL_0:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: memref<1x104x194xf64, 1>,
 // CHECK-SAME:                   %[[VAL_1:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: memref<35xf64, 1>,
 // CHECK-SAME:                   %[[VAL_2:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: memref<34xf64, 1>) {
-// CHECK:           %[[VAL_3:.*]] = arith.constant 21 : i64
-// CHECK:           %[[VAL_4:.*]] = arith.constant 6 : index
-// CHECK:           %[[VAL_5:.*]] = arith.constant 7 : index
-// CHECK:           %[[VAL_6:.*]] = arith.constant 1 : i64
+// CHECK:           %[[c21:.*]] = arith.constant 21 : i64
+// CHECK:           %[[c6:.*]] = arith.constant 6 : index
+// CHECK:           %[[c7:.*]] = arith.constant 7 : index
+// CHECK:           %[[c1:.*]] = arith.constant 1 : i64
 // CHECK:           affine.parallel (%[[VAL_7:.*]], %[[VAL_8:.*]]) = (0, 0) to (90, 180) {
 // CHECK:             %[[VAL_9:.*]] = affine.load %[[VAL_0]][0, %[[VAL_7]] + 7, %[[VAL_8]] + 7] : memref<1x104x194xf64, 1>
 // CHECK:             %[[VAL_10:.*]] = affine.load %[[VAL_1]][7] : memref<35xf64, 1>
 // CHECK:             affine.store %[[VAL_10]], %[[VAL_0]][0, %[[VAL_7]] + 7, %[[VAL_8]] + 7] : memref<1x104x194xf64, 1>
-// CHECK:             %[[VAL_11:.*]] = scf.for %[[VAL_12:.*]] = %[[VAL_6]] to %[[VAL_3]] step %[[VAL_6]] iter_args(%[[VAL_13:.*]] = %[[VAL_10]]) -> (f64)  : i64 {
+// CHECK:             %[[VAL_11:.*]] = scf.for %[[VAL_12:.*]] = %[[c1]] to %[[c21]] step %[[c1]] iter_args(%[[VAL_13:.*]] = %[[VAL_10]]) -> (f64)  : i64 {
 // CHECK:               %[[VAL_14:.*]] = arith.index_cast %[[VAL_12]] : i64 to index
-// CHECK:               %[[VAL_15:.*]] = arith.addi %[[VAL_14]], %[[VAL_5]] : index
+// CHECK:               %[[VAL_15:.*]] = arith.addi %[[VAL_14]], %[[c7]] : index
 // CHECK:               %[[VAL_16:.*]] = memref.load %[[VAL_1]]{{\[}}%[[VAL_15]]] : memref<35xf64, 1>
 // CHECK:               %[[VAL_17:.*]] = arith.index_cast %[[VAL_12]] : i64 to index
-// CHECK:               %[[VAL_18:.*]] = arith.addi %[[VAL_17]], %[[VAL_4]] : index
+// CHECK:               %[[VAL_18:.*]] = arith.addi %[[VAL_17]], %[[c6]] : index
 // CHECK:               %[[VAL_19:.*]] = memref.load %[[VAL_2]]{{\[}}%[[VAL_18]]] : memref<34xf64, 1>
 // CHECK:               %[[VAL_20:.*]] = arith.cmpf ole, %[[VAL_19]], %[[VAL_9]] : f64
 // CHECK:               %[[VAL_21:.*]] = arith.select %[[VAL_20]], %[[VAL_16]], %[[VAL_13]] : f64

@@ -71,29 +71,30 @@ module {
   }
 }
 // CHECK-LABEL:   func.func @w2f(
-// CHECK-SAME:                   %[[VAL_0:.*]]: i32) -> (i32, f32) {
-// CHECK:           %[[VAL_1:.*]] = arith.constant true
-// CHECK:           %[[VAL_2:.*]] = arith.constant false
-// CHECK:           %[[VAL_3:.*]] = arith.constant 0.000000e+00 : f32
-// CHECK:           %[[VAL_4:.*]] = arith.constant 1.000000e+00 : f32
-// CHECK:           %[[VAL_5:.*]] = arith.constant 0 : i32
-// CHECK:           %[[VAL_6:.*]] = arith.constant 1 : i32
-// CHECK:           %[[VAL_7:.*]] = arith.cmpi ugt, %[[VAL_0]], %[[VAL_5]] : i32
+// CHECK-SAME:                   %[[ub:.*]]: i32) -> (i32, f32) {
+// CHECK-DAG:           %[[undef_f32:.+]] = ub.poison : f32
+// CHECK-DAG:           %[[undef_i32:.+]] = ub.poison : i32
+// CHECK-DAG:           %[[true:.*]] = arith.constant true
+// CHECK-DAG:           %[[false:.*]] = arith.constant false
+// CHECK-DAG:           %[[cst0:.*]] = arith.constant 0.000000e+00 : f32
+// CHECK-DAG:           %[[cst1:.*]] = arith.constant 1.000000e+00 : f32
+// CHECK-DAG:           %[[c0:.*]] = arith.constant 0 : i32
+// CHECK-DAG:           %[[c1:.*]] = arith.constant 1 : i32
+// CHECK:           %[[VAL_7:.*]] = arith.cmpi ugt, %[[VAL_0]], %[[c0]] : i32
 // CHECK:           %[[VAL_8:.*]]:2 = scf.if %[[VAL_7]] -> (i32, f32) {
-// CHECK:             %[[VAL_9:.*]]:3 = scf.for %[[VAL_10:.*]] = %[[VAL_5]] to %[[VAL_0]] step %[[VAL_6]] iter_args(%[[VAL_11:.*]] = %[[VAL_5]], %[[VAL_12:.*]] = %[[VAL_3]], %[[VAL_13:.*]] = %[[VAL_1]]) -> (i32, f32, i1)  : i32 {
-// CHECK:               %[[VAL_14:.*]]:3 = scf.if %[[VAL_13]] -> (i32, f32, i1) {
+// CHECK:             %[[VAL_9:.*]]:4 = scf.for %[[arg:.+]] = %[[c0]] to %[[ub]] step %[[c1]] iter_args(%[[VAL_12:.*]] = %[[cst0]], %[[VAL_13:.*]] = %[[true]], %[[VAL_11:.*]] = %[[undef_i32]], %[[idx:.*]] = %[[undef_f32]]) -> (f32, i1, i32, f32)  : i32 {
+// CHECK:               %[[VAL_14:.*]]:2 = scf.if %[[VAL_13]] -> (i32, f32, i1) {
 // CHECK:                 %[[VAL_15:.*]] = "test.something"() : () -> i1
-// CHECK:                 %[[VAL_16:.*]] = arith.addf %[[VAL_12]], %[[VAL_4]] : f32
-// CHECK:                 %[[VAL_17:.*]] = arith.addi %[[VAL_11]], %[[VAL_6]] : i32
-// CHECK:                 scf.yield %[[VAL_17]], %[[VAL_16]], %[[VAL_15]] : i32, f32, i1
+// CHECK:                 %[[VAL_16:.*]] = arith.addf %[[VAL_12]], %[[cst1]] : f32
+// CHECK:                 scf.yield %[[VAL_16]], %[[VAL_15]] : f32, i1
 // CHECK:               } else {
-// CHECK:                 scf.yield %[[VAL_11]], %[[VAL_12]], %[[VAL_2]] : i32, f32, i1
+// CHECK:                 scf.yield %[[VAL_12]], %[[false]] : f32, i1
 // CHECK:               }
-// CHECK:               scf.yield %[[VAL_18:.*]]#0, %[[VAL_18]]#1, %[[VAL_18]]#2 : i32, f32, i1
+// CHECK:               scf.yield %[[VAL_18]]#1, %[[VAL_18]]#2, %[[arg]], %[[VAL_12]] : f32, i1, i32, f32
 // CHECK:             }
-// CHECK:             scf.yield %[[VAL_19:.*]]#0, %[[VAL_19]]#1 : i32, f32
+// CHECK:             scf.yield %[[VAL_9]]#2, %[[VAL_9]]#3 : i32, f32
 // CHECK:           } else {
-// CHECK:             scf.yield %[[VAL_5]], %[[VAL_3]] : i32, f32
+// CHECK:             scf.yield %[[c0]], %[[cst0]] : i32, f32
 // CHECK:           }
 // CHECK:           return %[[VAL_20:.*]]#0, %[[VAL_20]]#1 : i32, f32
 // CHECK:         }
@@ -118,7 +119,7 @@ module {
 // CHECK:                 } else {
 // CHECK:                   scf.yield %[[VAL_11]], %[[VAL_12]] : i32, f32
 // CHECK:                 }
-// CHECK:                 scf.yield %[[VAL_19:.*]]#0, %[[VAL_19]]#1, %[[VAL_15]] : i32, f32, i1
+// CHECK:                 scf.yield %[[VAL_16]]#0, %[[VAL_16]]#1, %[[VAL_15]] : i32, f32, i1
 // CHECK:               } else {
 // CHECK:                 scf.yield %[[VAL_11]], %[[VAL_12]], %[[VAL_2]] : i32, f32, i1
 // CHECK:               }

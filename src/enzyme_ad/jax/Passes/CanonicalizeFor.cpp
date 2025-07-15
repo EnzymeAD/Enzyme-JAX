@@ -777,7 +777,6 @@ struct WhileToForHelper {
   bool negativeStep;
   AddIOp addIOp;
   BlockArgument indVar;
-  size_t afterArgIdx;
 
   // Index within the compare (e.g. cmpArg0 ?= cmpArg1 ) of the iter arg.
   int compareIndex;
@@ -1059,7 +1058,6 @@ struct WhileToForHelper {
           }
 
           comparingUpdated = false;
-          afterArgIdx = afterArg.getArgNumber();
           assert(condOp.getArgs()[afterArg.getArgNumber()]);
           if (considerStep(arg, condOp.getArgs()[afterArg.getArgNumber()], /*inBefore*/true, lookThrough)) {   
             goto endDetect;
@@ -1659,6 +1657,15 @@ struct MoveWhileAndDown : public OpRewritePattern<WhileOp> {
         continue;
       }
 
+
+      SmallVector<int> afterIndVars;
+
+      for (auto en : llvm::enumerate(condOp.getArgs())) {
+        if (en.value() == helper.indVar) {
+          afterIndVars.push_back(en.index());
+        }
+      }
+
       SmallVector<BlockArgument, 2> origBeforeArgs(
           loop.getBeforeArguments().begin(), loop.getBeforeArguments().end());
 
@@ -1775,9 +1782,17 @@ struct MoveWhileAndDown : public OpRewritePattern<WhileOp> {
       SmallVector<Value> postAfter(guard.getResults());
       IRMapping postMap;
       postMap.map(helper.indVar, trueInd);
-      postMap.map(postElseYields[helper.afterArgIdx], trueInd);
-      assert(helper.addIOp.getLhs() == postElseYields[helper.afterArgIdx] ||
-             helper.addIOp.getRhs() == postElseYields[helper.afterArgIdx]);
+      for (auto idx : afterIndVars)
+        postMap.map(postElseYields[idx], trueInd);
+
+      bool legal = false;
+      for (auto idx : afterIndVars) {
+        legal |= helper.addIOp.getLhs() == postElseYields[idx] ||
+                 helper.addIOp.getRhs() == postElseYields[idx];
+      }
+      assert(legal);
+      (void)legal;
+
       postAfter.push_back(
           cast<AddIOp>(rewriter.clone(*helper.addIOp, postMap)));
       rewriter.create<YieldOp>(loop.getLoc(), postAfter);
