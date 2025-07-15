@@ -2499,7 +2499,7 @@ struct AffineToStableHLORaisingPass
 
         if (isa<LLVM::LLVMPointerType>(arg.getType())) {
             OpBuilder b(g);
-            b.setInsertionPointToStart(body);
+            b.setInsertionPoint(g);
             bool legal = true;
             MemRefType T = nullptr;
             for (auto &U : arg.getUses()) {
@@ -2525,6 +2525,7 @@ struct AffineToStableHLORaisingPass
             if (legal) {
               auto cl = b.create<enzymexla::Pointer2MemrefOp>(arg.getLoc(), T, arg);
               for (auto U : llvm::make_early_inc_range(arg.getUsers())) {
+                if (!g->isProperAncestor(U)) continue;
                 if (U == cl) continue;
                 U->replaceAllUsesWith(cl);
                 U->erase();
@@ -2571,7 +2572,6 @@ struct AffineToStableHLORaisingPass
           continue;
         }
 
-        llvm::errs() << " faillback arg: " << arg << "\n";
         operands.insert(arg);
       }
 
@@ -2581,8 +2581,6 @@ struct AffineToStableHLORaisingPass
         }
       }
       }
-
-      llvm::errs() << " g: " << g << "\n";
 
       SmallVector<Type> tensorTypes;
       bool failed = false;
