@@ -19440,6 +19440,7 @@ struct TransposeBatchNormTraining final
     auto permutation = op.getPermutation();
     auto newFeatureIndex = permutation[batchnormTrainingOp.getFeatureIndex()];
 
+    rewriter.setInsertionPoint(batchnormTrainingOp);
     auto newTransposeOp = rewriter.create<stablehlo::TransposeOp>(
         op.getLoc(), batchnormTrainingOp.getOperand(), permutation);
     auto newBatchNormOp = rewriter.create<stablehlo::BatchNormTrainingOp>(
@@ -19504,6 +19505,7 @@ struct TransposeBatchNormGrad final
     auto permutation = op.getPermutation();
     auto newFeatureIndex = permutation[batchnormGradOp.getFeatureIndex()];
 
+    rewriter.setInsertionPoint(batchnormGradOp);
     auto transposeOperand = rewriter.create<stablehlo::TransposeOp>(
         op.getLoc(), batchnormGradOp.getOperand(), permutation);
     auto transposeGradOutput = rewriter.create<stablehlo::TransposeOp>(
