@@ -20,14 +20,13 @@ module @simple{
 }
 
 // CHECK:  func.func @do_while(%arg0: f64) -> (index, f64) {
-// CHECK-NEXT:    %c0 = arith.constant 0 : index
-// CHECK-NEXT:    %c1 = arith.constant 1 : index
-// CHECK-NEXT:    %c5 = arith.constant 5 : index
-// CHECK-NEXT:    %0 = ub.poison : index
-// CHECK-NEXT:    %1 = scf.for %arg1 = %c0 to %c5 step %c1 iter_args(%arg2 = %0) -> (index) {
-// CHECK-NEXT:      "before.keepalive"(%arg1) : (index) -> ()
-// CHECK-NEXT:      %2 = arith.addi %arg1, %c1 : index
-// CHECK-NEXT:      scf.yield %2 : index
+// CHECK-DAG:    %c1 = arith.constant 1 : index
+// CHECK-DAG:    %c6 = arith.constant 6 : index
+// CHECK-DAg:    %0 = ub.poison : index
+// CHECK-NEXT:    %1 = scf.for %arg1 = %c1 to %c6 step %c1 iter_args(%arg2 = %0) -> (index) {
+// CHECK-NEXT:      %[[iv:.+]] = arith.subi %arg1, %c1 : inde
+// CHECK-NEXT:      "before.keepalive"(%[[iv]]) : (index) -> ()
+// CHECK-NEXT:      scf.yield %arg1 : index
 // CHECK-NEXT:    }
 // CHECK-NEXT:    return %1, %arg0 : index, f64
 // CHECK-NEXT:  }
