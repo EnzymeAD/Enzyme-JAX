@@ -1216,283 +1216,6 @@ bool areValuesConnected(Value startVal, Value endVal,
   return false;
 }
 
-// This works for any doWhile loop with any number of iter_args
-// Checks to see if loop iter_count > 1 for do_while
-struct MoveDoWhileToFor : public OpRewritePattern<WhileOp> {
-  using OpRewritePattern<WhileOp>::OpRewritePattern;
-
-  /* TODO: this looks like a bug
-    module @multiple_iter_args{
-      func.func @do_while() -> i32 {
-        %init_count = arith.constant 0 : i32
-        %init_sum = arith.constant 1 : i32
-        %c1 = arith.constant 1 : i32
-        %final_count, %final_sum = scf.while (%count = %init_count, %sum =
-%init_sum) : (i32, i32) -> (i32, i32) { %threshold = arith.constant 10 : i32
-          %sum2 = "before.keepalive"(%count, %sum) : (i32, i32) -> (i32)
-          %updated = arith.addi %count, %c1 : i32
-          %count_lt = arith.cmpi slt, %updated, %threshold : i32
-          scf.condition(%count_lt) %updated, %sum2 : i32, i32
-        } do {
-        ^bb0( %current_count: i32, %current_sum: i32):
-          scf.yield %current_count, %current_sum : i32, i32
-        }
-        return %final_sum : i32
-      }
-    }
-is transformed into
-    module @multiple_iter_args {
-      func.func @do_while() -> i32 {
-        %c10_i32 = arith.constant 10 : i32
-        %c0_i32 = arith.constant 0 : i32
-        %c1_i32 = arith.constant 1 : i32
-        %0 = ub.poison : i32
-        %1:2 = scf.for %arg0 = %c0_i32 to %c10_i32 step %c1_i32 iter_args(%arg1
-= %c1_i32, %arg2 = %0) -> (i32, i32)  : i32 { %2 = "before.keepalive"(%arg0,
-%arg1) : (i32, i32) -> i32 scf.yield %2, %2 : i32, i32
-        }
-        return %1#1 : i32
-      }
-    }
-*/
-  // Helper function to generate a for loop
-  scf::ForOp generateForLoop(WhileOp whileOp, Value lb, Value ub, Value step,
-                             PatternRewriter &rewriter) const {
-    // Copy region from while body to for body
-    SmallVector<Value> newInitOperands;
-    for (auto operand : whileOp.getOperands())
-      newInitOperands.push_back(operand);
-    for (auto resTy : whileOp.getResultTypes()) {
-      newInitOperands.push_back(
-          rewriter.create<ub::PoisonOp>(whileOp.getLoc(), resTy));
-    }
-
-    auto newLoop = rewriter.create<scf::ForOp>(whileOp.getLoc(), lb, ub, step,
-                                               newInitOperands);
-    newLoop->setAttrs(whileOp.getOperation()->getAttrs());
-
-    Block &newBlock = newLoop.getRegion().front();
-    rewriter.setInsertionPointToStart(&newBlock);
-
-    // Copy from before region to for body
-    Block &beforeBlock = whileOp.getBefore().front();
-    auto conditionOp = cast<ConditionOp>(beforeBlock.getTerminator());
-    IRMapping mappingBeforeBlock;
-    for (auto [arg, init] :
-         llvm::zip(beforeBlock.getArguments(),
-                   newBlock.getArguments().drop_front().drop_back(
-                       whileOp.getResultTypes().size()))) {
-      mappingBeforeBlock.map(arg, init);
-    }
-    for (Operation &op : beforeBlock.without_terminator()) {
-      rewriter.clone(op, mappingBeforeBlock);
-    }
-
-    // Extract conditionOp args to be used for after region
-    SmallVector<Value> remappedConditionOpArgs;
-    for (auto arg : conditionOp.getArgs()) {
-      remappedConditionOpArgs.push_back(
-          mappingBeforeBlock.lookupOrDefault(arg));
-    }
-
-    // Copy from after region to for body
-    Block &afterBlock = whileOp.getAfter().front();
-    IRMapping mappingAfterBlock;
-    for (auto [arg, init] :
-         llvm::zip(afterBlock.getArguments(), remappedConditionOpArgs)) {
-      mappingAfterBlock.map(arg, init);
-    }
-    for (Operation &op : afterBlock.without_terminator()) {
-      rewriter.clone(op, mappingAfterBlock);
-    }
-
-    // Yield results
-    SmallVector<Value> toYield;
-    for (auto val : afterBlock.getTerminator()->getOperands()) {
-      toYield.push_back(mappingAfterBlock.lookupOrDefault(val));
-    }
-    toYield.append(remappedConditionOpArgs);
-    rewriter.create<scf::YieldOp>(afterBlock.getTerminator()->getLoc(),
-                                  toYield);
-
-    return newLoop;
-  }
-
-  LogicalResult matchAndRewrite(WhileOp whileOp,
-                                PatternRewriter &rewriter) const override {
-#if 0
-    // Check to see if doBlock just has yield op
-    Block &doBlock = whileOp.getAfter().front();
-
-    // 1. Analyze before region and extract scf.condition.
-    Block &beforeBlock = whileOp.getBefore().front();
-    auto conditionOp = dyn_cast<ConditionOp>(beforeBlock.getTerminator());
-
-
-    Value conditionValue = conditionOp.getCondition();
-
-    // 2. From scf.condition obtain compareOp.
-    arith::CmpIOp cmpOp = conditionValue.getDefiningOp<arith::CmpIOp>();
-    if (!cmpOp) {
-      return rewriter.notifyMatchFailure(whileOp, "cmp not arith.cmpIOp");
-    }
-
-    // The IV (in before region)
-    BlockArgument iv = nullptr;
-
-    // Upper bound of subsequent for loop
-    Value upperBound = nullptr;
-
-    arith::AddIOp addOp = nullptr;
-
-    // Step
-    Value step = nullptr;
-
-    // Whether the comparison is against the updated value
-    bool comparingUpdated = false;
-
-    // Whether the update is int he after region
-    bool updateInAfter = false;
-
-    for (int i=0; i<2; i++) {
-      if (auto arg = dyn_cast<BlockArgument>(cmpOp->getOperand(i))) {
-        
-        auto pval = doYield.getOperand(arg.getArgNumber());
-
-        if (auto afterArg = dyn_cast<BlockArgument>(pval)) {
-          auto stepOp = conditionOp.getArgs()[afterArg.getArgNumber()];
-
-          if (auto add = dyn_cast<AddIOp>(stepOp)) {
-            for (int j=0; j<2; j++) {
-              if (add->getOperand(j) == arg) {
-                iv = arg;
-                comparingUpdated = false;
-                updateInAfter = false;
-                step = add->getOperand(1-j);
-                upperBound = cmpOp->getOperand(1-i);
-                addOp = add;
-                goto endDetect;
-              }
-            }
-          }
-
-        } else if (auto stepOp = afterArg.getDefiningOp()) {
-
-          if (auto add = dyn_cast_or_null<AddIOp>(stepOp)) {
-            for (int j=0; j<2; j++) {
-              auto ba2 = dyn_cast<BlockArgument>(add->getOperand(j));
-              if (!ba2) continue;
-
-              if (conditionOp.getArgs()[ba2.getArgNumber()] == arg) {
-                iv = arg;
-                comparingUpdated = false;
-                updateInAfter = true;
-                step = add->getOperand(1-j);
-                upperBound = cmpOp->getOperand(1-i);
-                addOp = add;
-                goto endDetect;
-              }
-            }
-          }
-        }
-      } else if (auto add = cmp->getOperand(i)->getDefiningOp<arith::AddIOp>()) {
-
-        for (int j=0; j<2; j++) {
-          if (add->getOperand(j) == arg) {
-            iv = arg;
-            comparingUpdated = true;
-            updateInAfter = false;
-            step = add->getOperand(1-j);
-            upperBound = cmpOp->getOperand(1-i);
-            addOp = add;
-            goto endDetect;
-          }
-        }
-
-      }
-    }
-
-    endDetect:;
-    if (!iv) {
-      return rewriter.notifyMatchFailure(whileOp, "No valid inductive var found");
-    }
-
-    // Currently only support constant step
-    APInt stepConstInt;
-    int step;
-    if (matchPattern(stepSize, m_ConstantInt(&stepConstInt))) {
-      step = stepConstInt.getSExtValue();
-
-      if (step == 0)
-        return rewriter.notifyMatchFailure(whileOp, "step size cannot be zero");
-    } else {
-      return failure();
-    }
-
-    // 4. After IV index is found, use that to extract lowerBound from init
-    // values of before region, and IV itself from arg list.
-    Value lowerBound = whileOp.getOperand(IVIndex);
-
-    if (!stepSize) {
-
-      if (!isa<scf::YieldOp>(doBlock.front())) {
-        return rewriter.notifyMatchFailure(whileOp, "non empty then block");
-      }
-    }
-
-    if (!stepSize)
-      return rewriter.notifyMatchFailure(whileOp, "step size not found");
-
-
-    // Using WhileToForHelper to set up for loop structure
-    bool negativeStep = step < 0;
-    WhileToForHelper helper;
-    helper.initVariables();
-
-    helper.loop = whileOp;
-    helper.cmpIOp = cmpOp;
-    helper.addIOp = addOp;
-    helper.step = stepSize;
-    helper.lb = lowerBound;
-    helper.ub = upperBound;
-    helper.indVar = iv;
-    helper.negativeStep = negativeStep;
-
-    if (!helper.checkPredicate())
-      return failure();
-
-    helper.checkNegativeStep();
-    helper.prepareFor(rewriter);
-
-    // 6. Ensure the loop executes at least once by adjusting the upper bound
-    APInt lbConstInt, ubConstInt;
-
-    rewriter.setInsertionPoint(whileOp);
-
-
-    // Dynamic bound: adjusted ub = max(ub, lb + step)
-    Value lbPlusStep = rewriter.create<arith::AddIOp>(whileOp.getLoc(),
-                                                      helper.lb, helper.step);
-    if (!helper.negativeStep)
-      helper.ub = rewriter.create<arith::MaxSIOp>(whileOp.getLoc(), lbPlusStep,
-                                                  helper.ub);
-    else
-      helper.ub = rewriter.create<arith::MinSIOp>(whileOp.getLoc(), lbPlusStep,
-                                                  helper.ub);
-
-    // 7. Generate for loop and replace do-while loop.
-    auto newLoop =
-        generateForLoop(whileOp, helper.lb, helper.ub, helper.step, rewriter);
-
-    SmallVector<Value> replacements = llvm::to_vector(newLoop.getResults().drop_front(whileOp.getOperands().size()));
-
-    rewriter.replaceOp(whileOp, replacements);
-#endif
-
-    return success();
-  }
-};
-
 struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
   using OpRewritePattern<WhileOp>::OpRewritePattern;
 
@@ -3238,13 +2961,136 @@ struct IfYieldMovementPattern : public OpRewritePattern<scf::IfOp> {
   }
 };
 
+bool isOneGreaterThan(Value v1, Value v2) {
+  APInt i1, i2;
+  if (matchPattern(v1, m_ConstantInt(&i1)) && matchPattern(v2, m_ConstantInt(&i2)) ) {
+    return i1 == (i2 + 1);
+  }
+  if (auto add = v1.getDefiningOp<arith::AddIOp>()) {
+    if (add.getLhs() == v2 && matchPattern(add.getRhs(), m_One()))
+      return true;
+  }
+
+  return false;
+}
+
+struct MaxSimplify : public OpRewritePattern<arith::MaxSIOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::MaxSIOp maxOp,
+                                PatternRewriter &rewriter) const override {
+    Operation *op = maxOp;
+
+    for (Operation* op = maxOp; op; op->getParentOp()) {
+      auto ifOp = dyn_cast_or_null<scf::IfOp>(op->getParentOp());
+      if (!ifOp) continue;
+      auto cmpOp = ifOp.getCondition().getDefiningOp<arith::CmpIOp>();
+      if (!cmpOp) continue;
+      for (int i=0; i<2; i++) {
+        for (int j=0; j<2; j++) {
+          if (maxOp->getOperand(i) == cmpOp->getOperand(j)) {
+            auto pred = cmpOp.getPredicate();
+            if (j == 1)
+              pred = swapPredicate(pred);
+            if (pred == arith::CmpIPredicate::sgt && isOneGreaterThan(maxOp->getOperand(1-i), cmpOp->getOperand(1-j))) {
+              if (op->getParentRegion() == &ifOp.getThenRegion()) {
+                rewriter.replaceOp(maxOp, maxOp->getOperand(i));
+                return success();
+              } else {
+                rewriter.replaceOp(maxOp, maxOp->getOperand(1-i));
+                return success();                
+              }
+            }
+
+            if (pred == arith::CmpIPredicate::sge && maxOp->getOperand(1-i) == cmpOp->getOperand(1-j)) {
+              if (op->getParentRegion() == &ifOp.getThenRegion()) {
+                rewriter.replaceOp(maxOp, maxOp->getOperand(i));
+                return success();
+              } else {
+                rewriter.replaceOp(maxOp, maxOp->getOperand(1-i));
+                return success();                
+              }
+            }
+          }
+        }
+      }
+    }
+    return failure();
+    // Ensure both regions exist and have single blocks
+
+  }
+};
+
+
+
+struct ForBoundUnSwitch : public OpRewritePattern<scf::ForOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::ForOp loop,
+                                PatternRewriter &rewriter) const override {
+
+    auto ifOp = dyn_cast<scf::IfOp>(loop->getParentOp());
+    if (!ifOp) return failure();
+
+    auto cmpOp = ifOp.getCondition().getDefiningOp<arith::CmpIOp>();
+    if (!cmpOp) return failure();
+
+    Value niters = nullptr;
+    if (matchPattern(loop.getLowerBound(), m_Zero())) {
+      niters = loop.getUpperBound();
+    } else if (auto addOp = loop.getUpperBound().getDefiningOp<arith::AddIOp>()) {
+      for (int i=0; i<2; i++) {
+        if (addOp->getOperand(i) == loop.getLowerBound()) {
+          niters = addOp->getOperand(1-i);
+          break;
+        }
+      }
+    }
+
+    if (!niters) return failure();
+
+
+    bool legal = false;
+    for (int j=0; j<2; j++) {
+      if (niters == cmpOp->getOperand(j)) {
+        auto pred = cmpOp.getPredicate();
+        if (j == 1)
+          pred = swapPredicate(pred);
+        if (pred == arith::CmpIPredicate::sgt && matchPattern(cmpOp->getOperand(1-j), m_Zero())) {
+          legal = true;
+          break;
+        }
+      }
+    }
+    if (!legal) return failure();
+    for (auto v : {loop.getLowerBound(), loop.getUpperBound()}) {
+      if (auto op = v.getDefiningOp()) {
+        if (op->getParentOp() == ifOp) {
+          rewriter.modifyOpInPlace(op, [&](){
+            op->moveBefore(ifOp);
+          });
+        }
+      }
+    }
+
+    if (&ifOp.getThenRegion().front().front() != loop) {
+      return failure();
+    }
+    rewriter.modifyOpInPlace(loop, [&](){
+      loop->moveBefore(ifOp);
+    });
+    return success();
+  }
+};
+
 void CanonicalizeFor::runOnOperation() {
   mlir::RewritePatternSet rpl(getOperation()->getContext());
   populateSelectExtractPatterns(rpl);
   rpl.add<IfYieldMovementPattern, truncProp, ForOpInductionReplacement,
           RemoveUnusedForResults, RemoveUnusedArgs,
-          // MoveDoWhileToFor,
           MoveWhileToFor, RemoveWhileSelect, SelectTruncToTruncSelect,
+          MaxSimplify,
+          ForBoundUnSwitch,
           SelectI1Simplify,
 
           MoveWhileDown, MoveWhileDown2,
