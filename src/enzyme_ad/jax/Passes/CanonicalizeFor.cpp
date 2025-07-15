@@ -769,6 +769,7 @@ struct WhileToForHelper {
   Value lb;
   bool lb_addOne;
   bool lb_addStep;
+  bool lb_subStep;
   Value ub;
   bool ub_addOne;
   bool ub_addStep;
@@ -777,7 +778,6 @@ struct WhileToForHelper {
   AddIOp addIOp;
   BlockArgument indVar;
   size_t afterArgIdx;
-  int updateCmpNeOp; // 0: no update, 1: update to SGT, 2: update to SLT
 
   // Index within the compare (e.g. cmpArg0 ?= cmpArg1 ) of the iter arg.
   int compareIndex;
@@ -876,17 +876,16 @@ struct WhileToForHelper {
             if (!constantBounds) {
               llvm::errs() << " found loop with negative increment and non-constant bounds, assuming no wrap around\n";
             }
-            updateCmpNeOp = 1; // update to SGT
             lb = cmpEnd;
             ub = cmpStart;
 
             // add one only if we compare with the updated iv
-            lb_addStep = comparingUpdated;
+            lb_subStep = comparingUpdated;
+            ub_addOne = false;
           } else if ((stepInt > 0) && (!constantBounds || (lbInt < ubInt))) {
             if (!constantBounds) {
               llvm::errs() << " found loop with positive increment and non-constant bounds, assuming no wrap around\n";
             }
-            updateCmpNeOp = 2; // update to SLT
             lb = cmpStart;
             ub = cmpEnd;
 
@@ -937,6 +936,7 @@ struct WhileToForHelper {
     lb = nullptr;
     lb_addOne = false;
     lb_addStep = false;
+    lb_subStep = false;
     ub = nullptr;
     ub_addOne = false;
     ub_addStep = false;
@@ -1117,21 +1117,6 @@ struct WhileToForHelper {
   }
 
   void prepareFor(PatternRewriter &rewriter) {
-    if (updateCmpNeOp == 1) {
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPoint(cmpIOp);
-      Value newCmp = rewriter.create<arith::CmpIOp>(
-          cmpIOp.getLoc(), arith::CmpIPredicate::sgt, cmpIOp.getLhs(),
-          cmpIOp.getRhs());
-      rewriter.replaceOp(cmpIOp, newCmp);
-    } else if (updateCmpNeOp == 2) {
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPoint(cmpIOp);
-      Value newCmp = rewriter.create<arith::CmpIOp>(
-          cmpIOp.getLoc(), arith::CmpIPredicate::slt, cmpIOp.getLhs(),
-          cmpIOp.getRhs());
-      rewriter.replaceOp(cmpIOp, newCmp);
-    }
 
     llvm::errs() << "lb: " << lb << "\n";
     llvm::errs() << "lb_addOne: " << lb_addOne << "\n";
@@ -1146,6 +1131,9 @@ struct WhileToForHelper {
 
     if (lb_addStep) {
       lb = rewriter.create<AddIOp>(loop.getLoc(), lb, step);
+    }
+    if (lb_subStep) {
+      lb = rewriter.create<SubIOp>(loop.getLoc(), lb, step);
     }
 
 

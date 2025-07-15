@@ -204,14 +204,13 @@ module @cmpi_ne{
 }
 // CHECK-LABEL:   module @cmpi_ne {
 // CHECK:           func.func @do_while() -> index {
-// CHECK-DAG:             %[[c0:.*]] = arith.constant 0 : index
 // CHECK-DAG:             %[[c1:.*]] = arith.constant 1 : index
-// CHECK-DAG:             %[[c5:.*]] = arith.constant 5 : index
+// CHECK-DAG:             %[[c6:.*]] = arith.constant 6 : index
 // CHECK-DAG:             %[[ub:.+]] = ub.poison : index
-// CHECK:             %[[f3:.+]] = scf.for %[[VAL_3:.*]] = %[[c0]] to %[[c5]] step %[[c1]] iter_args(%arg1 = %0) -> (index) {
-// CHECK:               "before.keepalive"(%[[VAL_3]]) : (index) -> ()
-// CHECK:                %[[a2:.+]] = arith.addi %[[VAL_3]], %[[VAL_1]] : index
-// CHECK:                scf.yield %[[a2]] : index
+// CHECK:             %[[f3:.+]] = scf.for %[[arg:.*]] = %[[c1]] to %[[c6]] step %[[c1]] iter_args(%arg1 = %0) -> (index) {
+// CHECK:               %[[RES:.*]] = arith.subi %[[arg]], %[[c1]] : index
+// CHECK:               "before.keepalive"(%[[RES]]) : (index) -> ()
+// CHECK:                scf.yield %[[arg]] : index
 // CHECK:             }
 // CHECK:             return %[[f3]] : index
 // CHECK:           }
@@ -241,16 +240,16 @@ module @cmpi_ne_neg{
 
 // CHECK-LABEL:   module @cmpi_ne_neg {
 // CHECK:           func.func @do_while2() -> i32 {
-// CHECK-DAG:             %[[VAL_1:.*]] = arith.constant 4 : i32
-// CHECK-DAG:             %[[VAL_2:.*]] = arith.constant -4 : i32
-// CHECK-DAG:             %[[VAL_3:.*]] = arith.constant 1 : i32
-// CHECK-DAG:             %[[VAL_4:.*]] = arith.constant -1 : i32
-// CHECK:             %[[ub:.+]] = ub.poison : i32
-// CHECK:             %[[f4:.+]] = scf.for %[[VAL_5:.*]] = %[[VAL_2]] to %[[VAL_3]] step %[[VAL_3]] iter_args(%arg1 = %[[ub]]) -> (i32) : i32
-// CHECK-NEXT:               %[[VAL_6:.*]] = arith.addi %[[VAL_5]], %[[VAL_1]] : i32
-// CHECK-NEXT:               %[[VAL_7:.*]] = arith.muli %[[VAL_6]], %[[VAL_4]] : i32
+// CHECK-DAG:             %[[c4:.*]] = arith.constant 4 : i32
+// CHECK-DAG:             %[[cm4:.*]] = arith.constant -4 : i32
+// CHECK-DAG:             %[[c1:.*]] = arith.constant 1 : i32
+// CHECK-DAG:             %[[cm1:.*]] = arith.constant -1 : i32
+// CHECK-DAG:             %[[ub:.+]] = ub.poison : i32
+// CHECK:             %[[f4:.+]] = scf.for %[[arg:.*]] = %[[cm4]] to %[[c1]] step %[[c1]] iter_args(%arg1 = %[[ub]]) -> (i32) : i32
+// CHECK-NEXT:               %[[VAL_6:.*]] = arith.addi %[[arg]], %[[c4]] : i32
+// CHECK-NEXT:               %[[VAL_7:.*]] = arith.muli %[[VAL_6]], %[[cm1]] : i32
 // CHECK-NEXT:               "before.keepalive"(%[[VAL_7]]) : (i32) -> ()
-// CHECK-NEXT:               %[[i4:.+]] = arith.addi %[[VAL_7]], %[[VAL_4]] : i32
+// CHECK-NEXT:               %[[i4:.+]] = arith.addi %[[VAL_7]], %[[cm1]] : i32
 // CHECK-NEXT:               scf.yield %[[i4]] : i32
 // CHECK-NEXT:             }
 // CHECK:             return %[[f4]] : i32
@@ -281,17 +280,17 @@ module @cmpi_ne_neg_step{
 
 // CHECK-LABEL:   module @cmpi_ne_neg_step {
 // CHECK:           func.func @do_while2() -> i32 {
-// CHECK-DAG:             %[[VAL_1:.*]] = arith.constant 49 : i32
-// CHECK-DAG:             %[[VAL_2:.*]] = arith.constant -1 : i32
-// CHECK-DAG:             %[[VAL_3:.*]] = arith.constant 1 : i32
-// CHECK-DAG:             %[[VAL_4:.*]] = arith.constant 50 : i32
+// CHECK-DAG:             %[[c49:.*]] = arith.constant 49 : i32
+// CHECK-DAG:             %[[cm1:.*]] = arith.constant -1 : i32
+// CHECK-DAG:             %[[c1:.*]] = arith.constant 1 : i32
+// CHECK-DAG:             %[[c50:.*]] = arith.constant 50 : i32
 // CHECK:             %[[ub:.+]] = ub.poison : i32
-// CHECK:             %[[f4:.+]] = scf.for %[[VAL_5:.*]] = %[[VAL_3]] to %[[VAL_4]] step %[[VAL_3]] iter_args(%arg1 = %[[ub]]) -> (i32) : i32
-// CHECK-NEXT:               %[[VAL_6:.*]] = arith.addi %[[VAL_5]], %[[VAL_2]] : i32
-// CHECK-NEXT:               %[[VAL_7:.*]] = arith.muli %[[VAL_6]], %[[VAL_2]] : i32
-// CHECK-NEXT:               %[[VAL_8:.*]] = arith.addi %[[VAL_7]], %[[VAL_1]] : i32
+// CHECK:             %[[f4:.+]] = scf.for %[[VAL_5:.*]] = %[[c1]] to %[[c50]] step %[[c1]] iter_args(%arg1 = %[[ub]]) -> (i32) : i32
+// CHECK-NEXT:               %[[VAL_6:.*]] = arith.addi %[[VAL_5]], %[[cm1]] : i32
+// CHECK-NEXT:               %[[VAL_7:.*]] = arith.muli %[[VAL_6]], %[[cm1]] : i32
+// CHECK-NEXT:               %[[VAL_8:.*]] = arith.addi %[[VAL_7]], %[[c49]] : i32
 // CHECK-NEXT:               "before.keepalive"(%[[VAL_8]]) : (i32) -> ()
-// CHECK-NEXT:               %[[i4:.+]] = arith.addi %[[VAL_8]], %[[VAL_2]] : i32
+// CHECK-NEXT:               %[[i4:.+]] = arith.addi %[[VAL_8]], %[[cm1]] : i32
 // CHECK-NEXT:               scf.yield %[[i4]] : i32
 // CHECK-NEXT:             }
 // CHECK:             return %[[f4]] : i32
