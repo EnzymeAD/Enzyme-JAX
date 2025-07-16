@@ -1068,19 +1068,21 @@ void removeRedundantBlockArgs(
     }
   }
 }
-      
-      
+
 Value castToType(Type elType, Value val, Operation *op) {
-  if (val.getType() == elType) return val;
-  
+  if (val.getType() == elType)
+    return val;
+
   OpBuilder b(op);
   b.setInsertionPoint(op);
   if (isa<IntegerType>(val.getType()) && isa<LLVM::LLVMPointerType>(elType)) {
     return b.create<LLVM::IntToPtrOp>(val.getLoc(), elType, val);
-  } else if (isa<LLVM::LLVMPointerType>(val.getType()) && isa<IntegerType>(elType)) {
+  } else if (isa<LLVM::LLVMPointerType>(val.getType()) &&
+             isa<IntegerType>(elType)) {
     return b.create<LLVM::PtrToIntOp>(val.getLoc(), elType, val);
   }
-  llvm::errs() << " mismatched load type, needed: " << elType << " found " << val << "\n";
+  llvm::errs() << " mismatched load type, needed: " << elType << " found "
+               << val << "\n";
   llvm_unreachable("mismatched type");
 }
 
@@ -1441,8 +1443,8 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
       changed = true;
       assert(orig != replacement->val);
       auto castVal = castToType(elType, replacement->val, orig.getDefiningOp());
-      LLVM_DEBUG(llvm::dbgs() << " replaced " << orig << " with "
-                              << castVal << "\n");
+      LLVM_DEBUG(llvm::dbgs()
+                 << " replaced " << orig << " with " << castVal << "\n");
       metaMap.replaceValue(orig, castVal);
       // Record this to erase later.
       loadOpsToErase.push_back(orig.getDefiningOp());
