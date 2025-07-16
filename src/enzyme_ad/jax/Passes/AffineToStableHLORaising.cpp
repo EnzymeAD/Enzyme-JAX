@@ -30,6 +30,8 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
+
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/SmallSet.h"
@@ -2460,8 +2462,143 @@ struct AffineToStableHLORaisingPass
 
       IRMapping mapping;
       mapping.map(body, newBlock);
+
       SetVector<Value> operands;
-      getUsedValuesDefinedAbove(g->getRegion(0), operands);
+      {
+        SetVector<Value> operands0;
+        getUsedValuesDefinedAbove(g->getRegion(0), operands0);
+
+        DenseMap<Value, Value> buffered;
+        SmallVector<Operation *> loads;
+
+        for (auto arg : operands0) {
+
+          if (matchPattern(arg, m_Constant())) {
+            continue;
+          }
+
+          if (auto ic = arg.getDefiningOp<arith::IndexCastOp>()) {
+            if (arg.getType().isIndex()) {
+              OpBuilder b(g);
+              b.setInsertionPointToStart(body);
+              auto cl = b.clone(*ic);
+
+              auto found = buffered.find(ic.getOperand());
+              if (found != buffered.end()) {
+                cast<arith::IndexCastOp>(cl).setOperand(found->second);
+              }
+
+              arg.replaceUsesWithIf(
+                  cl->getResult(0), [&](OpOperand &opOperand) {
+                    return g->isProperAncestor(opOperand.getOwner());
+                  });
+              arg = ic.getOperand();
+
+              llvm::errs() << " unfolded cast to index new arg: " << arg
+                           << ", old arg: " << ic << "\n";
+            }
+          }
+
+          if (isa<LLVM::LLVMPointerType>(arg.getType())) {
+            OpBuilder b(g);
+            b.setInsertionPoint(g);
+            bool legal = true;
+            MemRefType T = nullptr;
+            for (auto &U : arg.getUses()) {
+              if (g->isProperAncestor(U.getOwner())) {
+                auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(U.getOwner());
+                if (!p2m) {
+                  legal = false;
+                  llvm::errs()
+                      << " non pointermemref user of pointer arg in kernel: "
+                      << *U.getOwner() << "\n";
+                  break;
+                }
+                if (!T) {
+                  T = p2m.getType();
+                } else {
+                  if (T != p2m.getType()) {
+                    legal = false;
+                    llvm::errs() << " inconsistent pointer2memref type " << T
+                                 << " and " << p2m << " \n";
+                    break;
+                  }
+                }
+              }
+            }
+
+            if (legal) {
+              auto cl =
+                  b.create<enzymexla::Pointer2MemrefOp>(arg.getLoc(), T, arg);
+              for (auto U : llvm::make_early_inc_range(arg.getUsers())) {
+                if (!g->isProperAncestor(U))
+                  continue;
+                if (U == cl)
+                  continue;
+                U->replaceAllUsesWith(cl);
+                U->erase();
+              }
+              operands.insert(cl);
+              continue;
+            }
+          }
+
+          if (buffered.find(arg) != buffered.end()) {
+            continue;
+          }
+
+          if (isa<IntegerType, FloatType>(arg.getType())) {
+            OpBuilder b(g);
+            b.setInsertionPoint(g);
+            auto MT0 =
+                MemRefType::get({}, arg.getType(), MemRefLayoutAttrInterface{},
+                                b.getI64IntegerAttr(0));
+            auto MT =
+                MemRefType::get({}, arg.getType(), MemRefLayoutAttrInterface{},
+                                b.getI64IntegerAttr(1));
+
+            auto res =
+                b.create<gpu::AllocOp>(g.getLoc(), MT, (mlir::Type) nullptr,
+                                       ValueRange(), ValueRange(), ValueRange())
+                    ->getResult(0);
+
+            auto res0 = b.create<memref::AllocaOp>(g.getLoc(), MT0);
+            b.create<affine::AffineStoreOp>(g.getLoc(), arg, res0,
+                                            b.getMultiDimIdentityMap(0),
+                                            ValueRange());
+            auto c1 = b.create<arith::ConstantIndexOp>(g.getLoc(), 1);
+            b.create<enzymexla::MemcpyOp>(g.getLoc(), (mlir::Type) nullptr,
+                                          ValueRange(), res, res0, c1);
+            b.setInsertionPointToStart(body);
+            auto ld = b.create<affine::AffineLoadOp>(
+                g.getLoc(), res, b.getMultiDimIdentityMap(0), ValueRange());
+            loads.push_back(ld);
+            arg.replaceUsesWithIf(ld, [&](OpOperand &opOperand) {
+              return g->isProperAncestor(opOperand.getOwner());
+            });
+
+            b.setInsertionPointAfter(g);
+            b.create<gpu::DeallocOp>(g.getLoc(), (mlir::Type) nullptr,
+                                     ValueRange(), res);
+            buffered[arg] = ld;
+            operands.insert(res);
+            continue;
+          }
+
+          if (isa<MemRefType>(arg.getType())) {
+            operands.insert(arg);
+            continue;
+          }
+
+          operands.insert(arg);
+        }
+
+        for (auto ld : loads) {
+          if (ld != &body->front()) {
+            ld->moveBefore(&body->front());
+          }
+        }
+      }
 
       SmallVector<Type> tensorTypes;
       bool failed = false;
