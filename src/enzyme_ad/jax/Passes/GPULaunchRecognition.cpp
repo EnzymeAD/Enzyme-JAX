@@ -24,7 +24,6 @@ namespace enzyme {
 using namespace mlir;
 
 constexpr char gpuModuleName[] = "__mlir_gpu_module";
-constexpr char kernelPrefix[] = "__mlir_launch_kernel_";
 
 struct GPULaunchRecognitionPass
     : public enzyme::impl::GPULaunchRecognitionBase<GPULaunchRecognitionPass> {
@@ -34,7 +33,7 @@ struct GPULaunchRecognitionPass
     llvm::SmallVector<LLVM::LLVMFuncOp> launchFuncs;
     getOperation()->walk([&](LLVM::LLVMFuncOp funcOp) {
       auto symName = funcOp.getName();
-      if (symName.starts_with(kernelPrefix))
+      if (symName == "__mlir_cuda_caller_phase3")
         launchFuncs.push_back(funcOp);
     });
 
