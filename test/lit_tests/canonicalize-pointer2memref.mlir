@@ -50,16 +50,17 @@ func.func @dynamic_load_idx(%idx1: i64, %idx2: i32, %idx3: i8, %load_idx: index)
 
   // CHECK: %[[IDX_CAST1:.*]] = arith.index_cast %[[IDX1]]
   // CHECK: %[[SCALED1:.*]] = arith.muli %[[IDX_CAST1]], %[[C2]] : index
-  // CHECK: %[[OFFSET1:.*]] = arith.addi %[[LOAD_IDX]], %[[SCALED1]] : index
 
   // CHECK: %[[IDX_CAST2:.*]] = arith.index_cast %[[IDX2]]
-  // CHECK: %[[OFFSET2:.*]] = arith.addi %[[OFFSET1]], %[[IDX_CAST2]] : index
+  // CHECK: %[[OFFSET2:.*]] = arith.addi %[[SCALED1]], %[[IDX_CAST2]] : index
 
   // CHECK: %[[IDX_CAST3:.*]] = arith.index_cast %[[IDX3]]
   // CHECK: %[[SCALED3:.*]] = arith.divui %[[IDX_CAST3]], %[[C2]] : index
   // CHECK: %[[OFFSET3:.*]] = arith.addi %[[OFFSET2]], %[[SCALED3]] : index
+  
+  // CHECK: %[[EIDX:.*]] = arith.addi %[[LOAD_IDX]], %[[OFFSET3]] : index
 
-  // CHECK: memref.load %[[MEMREF]][%[[OFFSET3]]] : memref<?xf16>
+  // CHECK: memref.load %[[MEMREF]][%[[EIDX]]] : memref<?xf16>
   %val = memref.load %memref[%load_idx] : memref<?xf16>
 
   func.return %val : f16
