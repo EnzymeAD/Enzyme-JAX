@@ -1054,7 +1054,7 @@ struct WhileToForHelper {
       compareIndex = i;
 
       if (auto ext = opVal.getDefiningOp<ExtSIOp>()) {
-        opVal = dyn_cast<BlockArgument>(ext.getIn());
+        opVal = ext.getIn();
         extType = ext.getType();
       }
 
