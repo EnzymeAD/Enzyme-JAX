@@ -642,6 +642,7 @@ cc_library(
 
         # MHLO stuff.
         "@xla//xla/mlir_hlo",
+        "@xla//xla/mlir_hlo:stablehlo_extension_passes",
         "@xla//xla/hlo/translate/mhlo_to_hlo:mlir_hlo_to_hlo",
         "@xla//xla/hlo/ir:hlo",
 
