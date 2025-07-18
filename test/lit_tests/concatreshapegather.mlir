@@ -28,11 +28,7 @@ module @reactant_batched... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
   }
 }
 
-// CHECK: func.func private [[FN_NAME:@.*]](%arg0: tensor<3x4x5xf64>, %arg1: tensor<7x2xi64>) -> tensor<7x5xf64> {
-// CHECK-NEXT:     %0 = "stablehlo.gather"(%arg0, %arg1) <{dimension_numbers = #stablehlo.gather<offset_dims = [1], collapsed_slice_dims = [0, 1], start_index_map = [0, 1], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1, 5>}> : (tensor<3x4x5xf64>, tensor<7x2xi64>) -> tensor<7x5xf64>
-// CHECK-NEXT:     return %0 : tensor<7x5xf64>
-// CHECK-NEXT:   }
-// CHECK-NEXT:   func.func @main(%arg0: tensor<5x4x3xf64>, %arg1: tensor<7xi64>) -> tensor<5x4x7xf64> {
+// CHECK:   func.func @main(%arg0: tensor<5x4x3xf64>, %arg1: tensor<7xi64>) -> tensor<5x4x7xf64> {
 // CHECK-NEXT:     %c = stablehlo.constant dense<3> : tensor<i64>
 // CHECK-NEXT:     %c_0 = stablehlo.constant dense<2> : tensor<i64>
 // CHECK-NEXT:     %c_1 = stablehlo.constant dense<1> : tensor<i64>
@@ -55,8 +51,12 @@ module @reactant_batched... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
 // CHECK-NEXT:     %14 = stablehlo.reshape %5 : (tensor<7x2xi64>) -> tensor<1x7x2xi64>
 // CHECK-NEXT:     %15 = stablehlo.reshape %6 : (tensor<7x2xi64>) -> tensor<1x7x2xi64>
 // CHECK-NEXT:     %16 = stablehlo.concatenate %12, %13, %14, %15, dim = 0 : (tensor<1x7x2xi64>, tensor<1x7x2xi64>, tensor<1x7x2xi64>, tensor<1x7x2xi64>) -> tensor<4x7x2xi64>
-// CHECK-NEXT:     %17 = enzyme.batch [[FN_NAME]](%11, %16) {batch_shape = array<i64: 4>} : (tensor<4x3x4x5xf64>, tensor<4x7x2xi64>) -> tensor<4x7x5xf64>
+// CHECK-NEXT:     %17 = call [[FN_NAME:@.*]](%11, %16) : (tensor<4x3x4x5xf64>, tensor<4x7x2xi64>) -> tensor<4x7x5xf64>
 // CHECK-NEXT:     %18 = stablehlo.transpose %17, dims = [1, 0, 2] : (tensor<4x7x5xf64>) -> tensor<7x4x5xf64>
 // CHECK-NEXT:     %19 = stablehlo.transpose %18, dims = [2, 1, 0] : (tensor<7x4x5xf64>) -> tensor<5x4x7xf64>
 // CHECK-NEXT:     return %19 : tensor<5x4x7xf64>
+// CHECK-NEXT:   }
+// CHECK-NEXT: func.func private [[FN_NAME]](%arg0: tensor<4x3x4x5xf64>, %arg1: tensor<4x7x2xi64>) -> tensor<4x7x5xf64> {
+// CHECK-NEXT:     %0 = "stablehlo.gather"(%arg0, %arg1) <{dimension_numbers = #stablehlo.gather<offset_dims = [2], collapsed_slice_dims = [1, 2], operand_batching_dims = [0], start_indices_batching_dims = [0], start_index_map = [1, 2], index_vector_dim = 2>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1, 1, 5>}> : (tensor<4x3x4x5xf64>, tensor<4x7x2xi64>) -> tensor<4x7x5xf64>
+// CHECK-NEXT:     return %0 : tensor<4x7x5xf64>
 // CHECK-NEXT:   }
