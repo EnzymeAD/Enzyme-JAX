@@ -68,7 +68,7 @@ static std::string getOrCreateWrapper(const std::string &baseFnName,
   for (Type t : originalTypes) {
     signature += "_" + getTensorSignature(t);
   }
-  llvm::errs() << "signature: " << signature << "\n";
+
   static llvm::StringMap<std::string> signatureToWrapper;
   auto it = signatureToWrapper.find(signature);
   if (it != signatureToWrapper.end()) {
