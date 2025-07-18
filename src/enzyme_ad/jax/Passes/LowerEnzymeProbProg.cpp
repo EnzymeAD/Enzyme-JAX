@@ -9,6 +9,7 @@
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/DynamicAPInt.h"
 #include "llvm/ADT/SetVector.h"
@@ -40,14 +41,45 @@ class ConstraintType;
 } // namespace enzyme
 } // namespace mlir
 
-template <typename T> Attribute makeAttr(mlir::Type elemType, T val) {
-  if (auto TT = dyn_cast<RankedTensorType>(elemType))
-    return SplatElementsAttr::get(
-        TT, ArrayRef(makeAttr<T>(TT.getElementType(), val)));
-  if (isa<FloatType>(elemType))
-    return FloatAttr::get(elemType, val);
-  else
-    return IntegerAttr::get(elemType, val);
+static std::string getTensorSignature(Type tensorType) {
+  if (auto rankedType = dyn_cast<RankedTensorType>(tensorType)) {
+    std::string sig;
+
+    for (auto dim : rankedType.getShape()) {
+      sig += std::to_string(dim) + "x";
+    }
+
+    auto elemType = rankedType.getElementType();
+    if (elemType.isF32())
+      sig += "f32";
+    else if (elemType.isF64())
+      sig += "f64";
+    else
+      llvm_unreachable("Unsupported tensor element type");
+
+    return sig;
+  }
+  return "ptr";
+}
+
+static std::string getOrCreateWrapper(const std::string &baseFnName,
+                                      ArrayRef<Type> originalTypes = {}) {
+  std::string signature = baseFnName;
+  for (Type t : originalTypes) {
+    signature += "_" + getTensorSignature(t);
+  }
+  llvm::errs() << "signature: " << signature << "\n";
+  static llvm::StringMap<std::string> signatureToWrapper;
+  auto it = signatureToWrapper.find(signature);
+  if (it != signatureToWrapper.end()) {
+    return it->second;
+  }
+
+  static llvm::StringMap<int64_t> fnCounters;
+  int64_t fnNum = fnCounters[baseFnName]++;
+  std::string wrapperName = baseFnName + "_wrapper_" + std::to_string(fnNum);
+  signatureToWrapper[signature] = wrapperName;
+  return wrapperName;
 }
 
 struct InitTraceOpConversion : public OpConversionPattern<enzyme::InitTraceOp> {
@@ -66,7 +98,6 @@ struct InitTraceOpConversion : public OpConversionPattern<enzyme::InitTraceOp> {
 
     if (backend == "cpu") {
       auto moduleOp = op->getParentOfType<ModuleOp>();
-      static int64_t fnNum = 0;
 
       auto llvmVoidType = LLVM::LLVMVoidType::get(ctx);
       auto llvmPtrType = LLVM::LLVMPointerType::get(ctx);
@@ -77,15 +108,14 @@ struct InitTraceOpConversion : public OpConversionPattern<enzyme::InitTraceOp> {
           cast<ElementsAttr>(makeAttr(loweredTraceType, 0)));
 
       std::string initTraceFn = "enzyme_probprog_init_trace";
-      std::string wrapperFn =
-          initTraceFn + "_wrapper_" + std::to_string(fnNum++);
+      auto funcType =
+          LLVM::LLVMFunctionType::get(llvmVoidType, {llvmPtrType}, false);
+      std::string wrapperFn = getOrCreateWrapper(initTraceFn);
 
-      {
+      if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapperFn)) {
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(moduleOp.getBody());
 
-        auto funcType =
-            LLVM::LLVMFunctionType::get(llvmVoidType, {llvmPtrType}, false);
         auto func =
             rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), wrapperFn, funcType);
         rewriter.setInsertionPointToStart(func.addEntryBlock(rewriter));
@@ -164,7 +194,6 @@ struct AddSampleToTraceOpConversion
 
     if (backend == "cpu") {
       auto moduleOp = op->getParentOfType<ModuleOp>();
-      static int64_t fnNum = 0;
 
       auto llvmPtrType = LLVM::LLVMPointerType::get(ctx);
       auto llvmVoidType = LLVM::LLVMVoidType::get(ctx);
@@ -188,10 +217,15 @@ struct AddSampleToTraceOpConversion
       auto funcType = LLVM::LLVMFunctionType::get(llvmVoidType, llvmArgTypes,
                                                   /*isVarArg=*/false);
 
-      std::string wrapperFn =
-          addSampleToTraceFn + "_wrapper_" + std::to_string(fnNum++);
+      SmallVector<Type> originalTypes;
+      for (auto s : sample) {
+        originalTypes.push_back(s.getType());
+      }
 
-      {
+      std::string wrapperFn =
+          getOrCreateWrapper(addSampleToTraceFn, originalTypes);
+
+      if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapperFn)) {
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(moduleOp.getBody());
         auto func =
@@ -236,7 +270,8 @@ struct AddSampleToTraceOpConversion
           rewriter.create<LLVM::StoreOp>(op.getLoc(), func.getArgument(2 + i),
                                          samplePtrGEP);
 
-          // 2. Store `numDims` in `numDimsArrayAlloca` for each sampled value.
+          // 2. Store `numDims` in `numDimsArrayAlloca` for each sampled
+          // value.
           auto numDimsConst = rewriter.create<LLVM::ConstantOp>(
               op.getLoc(), llvmI64Type,
               rewriter.getIntegerAttr(llvmI64Type, sampleNumDims));
@@ -366,7 +401,6 @@ struct AddSubtraceOpConversion
 
     if (backend == "cpu") {
       auto moduleOp = op->getParentOfType<ModuleOp>();
-      static int64_t fnNum = 0;
 
       auto llvmPtrType = LLVM::LLVMPointerType::get(ctx);
       auto llvmVoidType = LLVM::LLVMVoidType::get(ctx);
@@ -376,14 +410,13 @@ struct AddSubtraceOpConversion
           {}, IntegerType::get(ctx, 64, IntegerType::Unsigned));
 
       std::string addSubtraceFn = "enzyme_probprog_add_subtrace";
-      std::string wrapperFn =
-          addSubtraceFn + "_wrapper_" + std::to_string(fnNum++);
+      std::string wrapperFn = getOrCreateWrapper(addSubtraceFn);
 
       auto symbolConst = rewriter.create<stablehlo::ConstantOp>(
           op.getLoc(), i64TensorType,
           cast<ElementsAttr>(makeAttr(i64TensorType, symbolPtr)));
 
-      {
+      if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapperFn)) {
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(moduleOp.getBody());
 
@@ -455,7 +488,6 @@ struct AddWeightToTraceOpConversion
 
     if (backend == "cpu") {
       auto moduleOp = op->getParentOfType<ModuleOp>();
-      static int64_t fnNum = 0;
 
       auto llvmPtrType = LLVM::LLVMPointerType::get(ctx);
       auto llvmVoidType = LLVM::LLVMVoidType::get(ctx);
@@ -463,10 +495,10 @@ struct AddWeightToTraceOpConversion
           {}, IntegerType::get(ctx, 64, IntegerType::Unsigned));
 
       std::string addWeightFn = "enzyme_probprog_add_weight_to_trace";
-      std::string wrapperFn =
-          addWeightFn + "_wrapper_" + std::to_string(fnNum++);
+      SmallVector<Type> originalTypes = {weight.getType()};
+      std::string wrapperFn = getOrCreateWrapper(addWeightFn, originalTypes);
 
-      {
+      if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapperFn)) {
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(moduleOp.getBody());
 
@@ -537,7 +569,6 @@ struct AddRetvalToTraceOpConversion
 
     if (backend == "cpu") {
       auto moduleOp = op->getParentOfType<ModuleOp>();
-      static int64_t fnNum = 0;
 
       auto llvmPtrType = LLVM::LLVMPointerType::get(ctx);
       auto llvmVoidType = LLVM::LLVMVoidType::get(ctx);
@@ -546,8 +577,6 @@ struct AddRetvalToTraceOpConversion
           {}, IntegerType::get(ctx, 64, IntegerType::Unsigned));
 
       std::string addRetvalFn = "enzyme_probprog_add_retval_to_trace";
-      std::string wrapperFn =
-          addRetvalFn + "_wrapper_" + std::to_string(fnNum++);
 
       SmallVector<Type> llvmArgTypes;
       llvmArgTypes.push_back(llvmPtrType);
@@ -556,7 +585,14 @@ struct AddRetvalToTraceOpConversion
       auto funcType =
           LLVM::LLVMFunctionType::get(llvmVoidType, llvmArgTypes, false);
 
-      {
+      SmallVector<Type> originalTypes;
+      for (auto rv : retvalVals) {
+        originalTypes.push_back(rv.getType());
+      }
+
+      std::string wrapperFn = getOrCreateWrapper(addRetvalFn, originalTypes);
+
+      if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapperFn)) {
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(moduleOp.getBody());
         auto func =
@@ -706,9 +742,20 @@ struct UnrealizedConversionCastOpConversion
   LogicalResult
   matchAndRewrite(UnrealizedConversionCastOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    rewriter.replaceOp(op, adaptor.getOperands());
+    if (op.getOperandTypes().size() == 1 && op.getResultTypes().size() == 1) {
+      auto operandType = op.getOperandTypes().front();
+      auto resultType = op.getResultTypes().front();
 
-    return success();
+      if (isa<enzyme::TraceType>(operandType) ||
+          isa<enzyme::TraceType>(resultType) ||
+          isa<enzyme::ConstraintType>(operandType) ||
+          isa<enzyme::ConstraintType>(resultType)) {
+        rewriter.replaceOp(op, adaptor.getOperands());
+        return success();
+      }
+    }
+
+    return failure();
   }
 };
 
@@ -746,15 +793,12 @@ struct GetSampleFromConstraintOpConversion
 
     if (backend == "cpu") {
       auto moduleOp = op->getParentOfType<ModuleOp>();
-      static int64_t fnNum = 0;
 
       auto llvmPtrType = LLVM::LLVMPointerType::get(ctx);
       auto llvmVoidType = LLVM::LLVMVoidType::get(ctx);
       auto llvmI64Type = IntegerType::get(ctx, 64);
 
       std::string getSampleFn = "enzyme_probprog_get_sample_from_constraint";
-      std::string wrapperFn =
-          getSampleFn + "_wrapper_" + std::to_string(fnNum++);
 
       auto i64TensorType = RankedTensorType::get({}, llvmI64Type);
       auto symbolConst = rewriter.create<stablehlo::ConstantOp>(
@@ -769,7 +813,14 @@ struct GetSampleFromConstraintOpConversion
       auto funcType = LLVM::LLVMFunctionType::get(llvmVoidType, llvmArgTypes,
                                                   /*isVarArg=*/false);
 
-      {
+      SmallVector<Type> originalTypes;
+      for (auto output : outputs) {
+        originalTypes.push_back(output.getType());
+      }
+
+      std::string wrapperFn = getOrCreateWrapper(getSampleFn, originalTypes);
+
+      if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapperFn)) {
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(moduleOp.getBody());
 
