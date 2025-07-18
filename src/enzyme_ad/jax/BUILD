@@ -245,6 +245,7 @@ cc_library(
         ":TransformOpsImplIncGen",
         ":TransformOpsIncGen",
         ":XLADerivatives",
+        "@enzyme//:EnzymeMLIR",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:LinalgTransformOps",
