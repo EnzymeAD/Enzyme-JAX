@@ -12,6 +12,7 @@
 
 #include "Enzyme/MLIR/Dialect/Dialect.h"
 #include "Enzyme/MLIR/Dialect/Ops.h"
+#include "Enzyme/MLIR/Passes/EnzymeBatchPass.h"
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Analysis/TopologicalSortUtils.h"
 #include "mlir/Dialect/CommonFolders.h"
@@ -20858,7 +20859,6 @@ private:
   }
 };
 
-=======
 template <typename OpTy>
 LogicalResult generalConcatReshapeOpToBatch(stablehlo::ConcatenateOp concatOp,
                                             PatternRewriter &rewriter) {
@@ -20938,6 +20938,7 @@ LogicalResult generalConcatReshapeOpToBatch(stablehlo::ConcatenateOp concatOp,
   StringRef wrapperFuncName = "enzymexla_unbatched_concatReshapeOpToBatch_" +
                               (std::to_string(concatReshapeToBatchCounter++));
 
+  func::FuncOp func;
   {
     OpBuilder::InsertionGuard guard(rewriter);
     auto modOp = concatOp->getParentOfType<ModuleOp>();
@@ -20968,8 +20969,8 @@ LogicalResult generalConcatReshapeOpToBatch(stablehlo::ConcatenateOp concatOp,
         RankedTensorType::get(retShape, concatType.getElementType());
 
     FunctionType calleeType = rewriter.getFunctionType(argTypes, {retType});
-    auto func = rewriter.create<func::FuncOp>(concatOp.getLoc(),
-                                              wrapperFuncName, calleeType);
+    func = rewriter.create<func::FuncOp>(concatOp.getLoc(), wrapperFuncName,
+                                         calleeType);
     func.setPrivate();
 
     auto &entryBlock = *func.addEntryBlock();
@@ -21007,7 +21008,12 @@ LogicalResult generalConcatReshapeOpToBatch(stablehlo::ConcatenateOp concatOp,
 
   rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(
       concatOp, batchOp->getResult(0), permutation);
-  return success();
+
+  std::map<enzyme::batchutils::BatchCacheKey, FunctionOpInterface>
+      batchedFunctionCache;
+  return enzyme::batchutils::batchOperation(
+      batchOp, cast<FunctionOpInterface>(func.getOperation()),
+      batchedFunctionCache);
 };
 
 template <typename OpTy>
