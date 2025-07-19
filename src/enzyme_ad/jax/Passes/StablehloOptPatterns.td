@@ -10,7 +10,7 @@ include "mlir/IR/OpBase.td"
 include "stablehlo/dialect/StablehloOps.td"
 
 ////////
-// Mul/Div || Add/Sub - constant computation lifting
+// Mul/Div || Add/Sub - constant computation lifting 
 
 // For ops with same precedenct, we can leverage op relationships (commutative,
 // associative, inverse properties) to lift constant computations.
@@ -18,63 +18,44 @@ include "stablehlo/dialect/StablehloOps.td"
 // folding applied after.
 
 // Pattern: op(op(X, cstA), cstB) -> op(X, op(cstA, cstB))
-class BinOpLiftConstantComputation<
-    Op OpTypeA, Op OpTypeB, Op ResOpTypeA = OpTypeA, Op ResOpTypeB = OpTypeB>
-    : Pat<(OpTypeA
-           : $opA(OpTypeB
-                  : $opB $lhsB, (StableHLO_ConstantOp
-                                 : $rhsB $valueB)),
-             (StableHLO_ConstantOp
-              : $rhsA $valueA)),
-          (ResOpTypeA $lhsB, (ResOpTypeB $rhsB, $rhsA))>;
+class BinOpLiftConstantComputation<Op OpTypeA, Op OpTypeB,
+                                   Op ResOpTypeA = OpTypeA, Op ResOpTypeB = OpTypeB>
+  : Pat<(OpTypeA:$opA
+          (OpTypeB:$opB $lhsB, (StableHLO_ConstantOp:$rhsB $valueB)),
+          (StableHLO_ConstantOp:$rhsA $valueA)),
+        (ResOpTypeA $lhsB, (ResOpTypeB $rhsB, $rhsA))>;
 
 // Flip the order of the constants, useful for divide and subtract.
 // Pattern: op(op(X, cstA), cstB) -> op(X, op(cstB, cstA))
-class BinOpLiftConstantComputationFlip<
-    Op OpTypeA, Op OpTypeB, Op ResOpTypeA = OpTypeA, Op ResOpTypeB = OpTypeB>
-    : Pat<(OpTypeA
-           : $opA(OpTypeB
-                  : $opB $lhsB, (StableHLO_ConstantOp
-                                 : $rhsB $valueB)),
-             (StableHLO_ConstantOp
-              : $rhsA $valueA)),
-          (ResOpTypeA $lhsB, (ResOpTypeB $rhsA, $rhsB))>;
+class BinOpLiftConstantComputationFlip<Op OpTypeA, Op OpTypeB,
+                                       Op ResOpTypeA = OpTypeA, Op ResOpTypeB = OpTypeB>
+  : Pat<(OpTypeA:$opA
+          (OpTypeB:$opB $lhsB, (StableHLO_ConstantOp:$rhsB $valueB)),
+          (StableHLO_ConstantOp:$rhsA $valueA)),
+        (ResOpTypeA $lhsB, (ResOpTypeB $rhsA, $rhsB))>;
 
 // Naming convention: `<RootOp><ChildOp>Const`:
 
 // Pattern: (x / cst_1) * cst_2 -> x * (cst_2 / cst_1)
-def MulDivConst
-    : BinOpLiftConstantComputationFlip<StableHLO_MulOp, StableHLO_DivOp>;
+def MulDivConst : BinOpLiftConstantComputationFlip<StableHLO_MulOp, StableHLO_DivOp>;
 
 // Pattern: (x * cst_1) * cst_2 -> x * (cst_1 * cst_2)
-def MulMulConst
-    : BinOpLiftConstantComputation<StableHLO_MulOp, StableHLO_MulOp>;
+def MulMulConst : BinOpLiftConstantComputation<StableHLO_MulOp, StableHLO_MulOp>;
 
 // Pattern: (x * cst_1) / cst_2 -> x * (cst_1 / cst_2)
-def DivMulConst
-    : BinOpLiftConstantComputation<StableHLO_DivOp, StableHLO_MulOp,
-                                   StableHLO_MulOp, StableHLO_DivOp>;
+def DivMulConst : BinOpLiftConstantComputation<StableHLO_DivOp, StableHLO_MulOp, StableHLO_MulOp, StableHLO_DivOp>;
 
 // Pattern: (x / cst_1) / cst_2 -> x / (cst_1 * cst_2)
-def DivDivConst
-    : BinOpLiftConstantComputation<StableHLO_DivOp, StableHLO_DivOp,
-                                   StableHLO_DivOp, StableHLO_MulOp>;
+def DivDivConst : BinOpLiftConstantComputation<StableHLO_DivOp, StableHLO_DivOp, StableHLO_DivOp, StableHLO_MulOp>;
 
 // Pattern: (x + cst_1) + cst_2 -> x + (cst_1 + cst_2)
-def AddAddConst
-    : BinOpLiftConstantComputation<StableHLO_AddOp, StableHLO_AddOp>;
+def AddAddConst : BinOpLiftConstantComputation<StableHLO_AddOp, StableHLO_AddOp>;
 
 // Pattern: (x - cst_1) + cst_2 -> x + (cst_2 - cst_1)
-def AddSubConst
-    : BinOpLiftConstantComputationFlip<StableHLO_AddOp, StableHLO_SubtractOp,
-                                       StableHLO_AddOp, StableHLO_SubtractOp>;
+def AddSubConst : BinOpLiftConstantComputationFlip<StableHLO_AddOp, StableHLO_SubtractOp, StableHLO_AddOp, StableHLO_SubtractOp>;
 
 // Pattern: (x - cst_1) - cst_2 -> x - (cst_1 + cst_2)
-def SubSubConst
-    : BinOpLiftConstantComputation<StableHLO_SubtractOp, StableHLO_SubtractOp,
-                                   StableHLO_SubtractOp, StableHLO_AddOp>;
+def SubSubConst : BinOpLiftConstantComputation<StableHLO_SubtractOp, StableHLO_SubtractOp, StableHLO_SubtractOp, StableHLO_AddOp>;
 
 // Pattern: (x + cst_1) - cst_2 -> x + (cst_1 - cst_2)
-def SubAddConst
-    : BinOpLiftConstantComputation<StableHLO_SubtractOp, StableHLO_AddOp,
-                                   StableHLO_AddOp, StableHLO_SubtractOp>;
+def SubAddConst : BinOpLiftConstantComputation<StableHLO_SubtractOp, StableHLO_AddOp, StableHLO_AddOp, StableHLO_SubtractOp>;
