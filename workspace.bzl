@@ -1,7 +1,7 @@
 JAX_COMMIT = "9c3085ba5c2c29d25383f96bfcb60630453baa20"
 JAX_SHA256 = ""
 
-ENZYME_COMMIT = "911783d7c5a0abfcea9c29a87bf3e329b815c482"
+ENZYME_COMMIT = "72a111b2ca04877bc7cd51640f61c8880dab8309"
 ENZYME_SHA256 = ""
 
 # If the empty string this will automatically use the commit above
