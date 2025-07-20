@@ -3889,6 +3889,7 @@ struct ConcatWrap final
 
     SmallVector<Value> newOperands;
 
+    bool changed = false;
     for (int i = 0, e = op->getNumOperands(); i < e; ++i) {
       auto operand = op->getOperand(i);
       auto wrap = operand.getDefiningOp<enzymexla::WrapOp>();
@@ -3909,6 +3910,7 @@ struct ConcatWrap final
           wrap = rewriter.create<enzymexla::WrapOp>(
               wrap->getLoc(), subConcat, wrap.getLhs(), wrap.getRhs(),
               wrap.getDimension());
+	  changed = true;
           i++;
         } else
           break;
@@ -3917,7 +3919,7 @@ struct ConcatWrap final
       newOperands.push_back(wrap.getResult());
     }
 
-    if (newOperands.size() == op->getNumOperands())
+    if (!changed)
       return failure();
 
     rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(op, newOperands, dim);
