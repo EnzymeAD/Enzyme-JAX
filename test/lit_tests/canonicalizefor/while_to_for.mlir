@@ -37,7 +37,6 @@ func.func @foo(%arg0: memref<1x104x194xf64, 1>, %arg1: memref<35xf64, 1>, %arg2:
 // CHECK-SAME:                   %[[VAL_0:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: memref<1x104x194xf64, 1>,
 // CHECK-SAME:                   %[[VAL_1:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: memref<35xf64, 1>,
 // CHECK-SAME:                   %[[VAL_2:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: memref<34xf64, 1>) {
-// CHECK-DAG:           %[[undef_i64:.+]] = ub.poison : i64
 // CHECK-DAG:           %[[undef_f64:.+]] = ub.poison : f64
 // CHECK-DAG:           %[[c21:.*]] = arith.constant 21 : i64
 // CHECK-DAG:           %[[c6:.*]] = arith.constant 6 : index
@@ -47,7 +46,7 @@ func.func @foo(%arg0: memref<1x104x194xf64, 1>, %arg1: memref<35xf64, 1>, %arg2:
 // CHECK:             %[[VAL_9:.*]] = affine.load %[[VAL_0]][0, %[[VAL_7]] + 7, %[[VAL_8]] + 7] : memref<1x104x194xf64, 1>
 // CHECK:             %[[VAL_10:.*]] = affine.load %[[VAL_1]][7] : memref<35xf64, 1>
 // CHECK:             affine.store %[[VAL_10]], %[[VAL_0]][0, %[[VAL_7]] + 7, %[[VAL_8]] + 7] : memref<1x104x194xf64, 1>
-// CHECK:             %[[VAL_11:.*]]:3 = scf.for %[[VAL_12:.*]] = %[[c1]] to %[[c21]] step %[[c1]] iter_args(%[[VAL_13:.*]] = %[[VAL_10]], %[[arg7:.+]] = %[[undef_f64]], %[[arg8:.+]] = %[[undef_i64]]) -> (f64, f64, i64)  : i64 {
+// CHECK:             %[[VAL_11:.*]]:2 = scf.for %[[VAL_12:.*]] = %[[c1]] to %[[c21]] step %[[c1]] iter_args(%[[VAL_13:.*]] = %[[VAL_10]], %[[arg7:.+]] = %[[undef_f64]]) -> (f64, f64)  : i64 {
 // CHECK:               %[[VAL_14:.*]] = arith.index_cast %[[VAL_12]] : i64 to index
 // CHECK:               %[[VAL_15:.*]] = arith.addi %[[VAL_14]], %[[c7]] : index
 // CHECK:               %[[VAL_16:.*]] = memref.load %[[VAL_1]]{{\[}}%[[VAL_15]]] : memref<35xf64, 1>
@@ -57,10 +56,9 @@ func.func @foo(%arg0: memref<1x104x194xf64, 1>, %arg1: memref<35xf64, 1>, %arg2:
 // CHECK:               %[[VAL_20:.*]] = arith.cmpf ole, %[[VAL_19]], %[[VAL_9]] : f64
 // CHECK:               %[[VAL_21:.*]] = arith.select %[[VAL_20]], %[[VAL_16]], %[[VAL_13]] : f64
 // CHECK:               affine.store %[[VAL_21]], %[[VAL_0]][0, %[[VAL_7]] + 7, %[[VAL_8]] + 7] : memref<1x104x194xf64, 1>
-// CHECK:               %[[add:.+]] = arith.addi %[[VAL_12]], %[[c1]] : i64
-// CHECK:               scf.yield %[[VAL_21]], %[[VAL_21]], %[[add]] : f64, f64, i64
+// CHECK:               scf.yield %[[VAL_21]], %[[VAL_21]] : f64, f64
 // CHECK:             }
-// CHECK:             "test.use"(%[[VAL_11]]#1, %[[VAL_11]]#2) : (f64, i64) -> ()
+// CHECK:             "test.use"(%[[VAL_11]]#1, %[[c21]]) : (f64, i64) -> ()
 // CHECK:           }
 // CHECK:           return
 // CHECK:         }
