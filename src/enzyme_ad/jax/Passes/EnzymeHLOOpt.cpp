@@ -12723,6 +12723,7 @@ bool isLegalConcatToOneDimDUS(stablehlo::ConcatenateOp outer,
         return false;
       }
     }
+    rhs = rhsSlice;
   }
 
   if (!lhs && !rhs) {
