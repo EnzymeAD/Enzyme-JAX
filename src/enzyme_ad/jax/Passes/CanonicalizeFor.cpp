@@ -1406,12 +1406,12 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
         helper.cmpIOp = andOp->getOperand(i).getDefiningOp<CmpIOp>();
         if (!helper.cmpIOp)
           continue;
+        lookThrough = andOp->getOperand(1 - i);
         if (!helper.computeLegality(rewriter, /*sizeCheck*/ true, lookThrough,
                                     /*doWhile*/ true)) {
           continue;
         }
         legal = true;
-        lookThrough = andOp->getOperand(1 - i);
         assert(helper.lb);
         assert(helper.ub);
       }
