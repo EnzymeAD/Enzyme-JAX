@@ -1482,8 +1482,12 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
       for (auto pair : llvm::zip(loop.getBefore().getArguments(),
                                  forloop.getRegionIterArgs())) {
         std::get<0>(pair).replaceAllUsesWith(std::get<1>(pair));
+	if (lookThrough == std::get<0>(pair))
+	  lookThrough = std::get<1>(pair);
       }
     });
+      
+    loop.getBefore().front().eraseArguments([](BlockArgument) { return true; });
 
     if (lookThrough) {
       rewriter.setInsertionPointToEnd(forloop.getBody());
@@ -1492,7 +1496,7 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
 
       auto ifOp =
           rewriter.create<scf::IfOp>(forloop.getLoc(), resTys, forloop.getRegionIterArgs().back(), true);
-
+    
       rewriter.eraseBlock(&ifOp->getRegion(0).front());
       ifOp->getRegion(0).getBlocks().splice(
           ifOp->getRegion(0).getBlocks().begin(),
@@ -1540,6 +1544,10 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
 
     SmallVector<Value> newYields(forArgs.size());
 
+    llvm::errs() <<" forargs.size() : " << forArgs.size() << "\n";
+    llvm::errs() << " loop.getInits().size(): " << loop.getInits().size() << "\n";
+    llvm::errs() << " loop.getResults().size(): " << loop.getResults().size() << "\n";
+
     for (size_t i = 0; i < loop.getResults().size(); i++) {
       newYields[loop.getInits().size() + i] = condOp.getArgs()[i];
     }
@@ -1566,7 +1574,7 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
           loop->getRegion(1).getBlocks());
 
       rewriter.setInsertionPointToEnd(&ifOp.getThenRegion().front());
-      rewriter.create<scf::YieldOp>(loop.getLoc(), condOp.getArgs());
+      rewriter.create<scf::YieldOp>(loop.getLoc(), oldYield.getResults());
 
       rewriter.setInsertionPointToEnd(&ifOp.getElseRegion().front());
       SmallVector<Value> nonArgs;
@@ -1580,7 +1588,7 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
         newYields[i] = ifOp->getResult(i);
       }
       if (lookThrough) {
-        newYields.push_back(nextLookThrough);
+        newYields[newYields.size()-1] = nextLookThrough;
       }
     } else {
       forloop.getBody()->getOperations().splice(
@@ -1590,6 +1598,7 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
         newYields[i] = oldYield.getResults()[i];
       }
     }
+    llvm::errs() <<" forloop: " << forloop << "\n";
 
     rewriter.setInsertionPointToEnd(forloop.getBody());
     rewriter.create<scf::YieldOp>(loop.getLoc(), newYields);
