@@ -17,6 +17,25 @@ def CanonicalizeLoopsPass : InterfacePass<"canonicalize-loops",
   let dependentDialects = ["affine::AffineDialect"];
 }
 
+def DialectCanonicalize : Pass<"dialect-canonicalize"> {
+  let summary = "Canonicalize specific dialects listed in options";
+  let options = [
+    ListOption<"dialects", "dialects", "std::string",
+               "List of dialects to fetch canonicalization patterns from">,
+    Option<"maxNumRewrites", "max-num-rewrites", "uint64_t",
+           /*default=*/"static_cast<uint64_t>(-1)",
+           "Maximum number of rewrites to apply (default -1: unlimited)">,
+    Option<"maxIterations", "max-iterations", "uint64_t",
+           /*default=*/"static_cast<uint64_t>(-1)",
+           "Maximum number of times a pattern can be applied (default -1: "
+           "inherit from the driver)">,
+    Option<"enableFolding", "enable-folding", "bool", "true",
+           "Perform folding">,
+    Option<"enableConstantCSE", "enable-constant-cse", "bool", "true",
+           "Deduplicate constants">,
+  ];
+}
+
 def RemoveDuplicateFuncDefPass
     : Pass<"remove-duplicate-func-def", "mlir::ModuleOp"> {
   let summary = "Remove duplicate function definitions";
