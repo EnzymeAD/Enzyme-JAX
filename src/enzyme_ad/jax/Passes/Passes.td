@@ -837,4 +837,19 @@ def StripGPUInfo : Pass<"strip-gpu-info"> {
   let dependentDialects = ["gpu::GPUDialect"];
 }
 
+def TritonSimplify : Pass<"enzymexla-triton-simplify"> {
+  let summary = "Simplifications for Triton";
+  let dependentDialects = [
+    "triton::TritonDialect",
+  ];
+}
+
+def StableHLOToArithmetic : Pass<"enzymexla-stablehlo-to-arithmetic"> {
+  let summary = "Convert stablehlo to arithmetic";
+  let dependentDialects = [
+    "arith::ArithDialect",
+    "stablehlo::StablehloDialect",
+  ];
+}
+
 #endif
