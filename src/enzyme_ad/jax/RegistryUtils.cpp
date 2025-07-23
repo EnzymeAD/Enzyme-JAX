@@ -77,6 +77,8 @@
 #include "stablehlo/transforms/Passes.h"
 #include "stablehlo/transforms/optimization/Passes.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
+#include "xla/mlir_hlo/mhlo/transforms/passes.h"
+#include "xla/mlir_hlo/stablehlo_ext/transforms/passes.h"
 
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMIRToLLVMTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
@@ -320,7 +322,7 @@ void initializePasses() {
   xla::sdy::registerStablehloImportPipeline();
   xla::sdy::registerStablehloImportShardingsPass();
 
-  // SHLO passes
+  // SHLO / MHLO passes
   stablehlo::registerStablehloAggressiveSimplificationPass();
   stablehlo::registerStablehloAggressiveFolderPass();
   stablehlo::registerStablehloTargetIndependentOptimizationPass();
@@ -346,6 +348,8 @@ void initializePasses() {
   mlir::tosa::registerStablehloPrepareForTosaPass();
   mlir::tosa::registerStablehloQuantLegalizeToTosaRescalePass();
   mlir::tosa::registerTosaRescaleLegalizeToStablehloPass();
+  stablehlo_ext::registerPasses();
+  mlir::mhlo::registerAllMhloPasses();
 
   // Triton passes
   mlir::triton::registerTritonPasses();

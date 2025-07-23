@@ -772,6 +772,7 @@ def ParallelLower : Pass<"parallel-lower"> {
   let summary = "Lower gpu launch op to parallel ops";
   let dependentDialects = [
     "scf::SCFDialect",
+    "async::AsyncDialect",
     "enzymexla::EnzymeXLADialect",
     "cf::ControlFlowDialect",
     "memref::MemRefDialect",

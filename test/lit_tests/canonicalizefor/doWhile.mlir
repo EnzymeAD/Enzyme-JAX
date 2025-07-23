@@ -323,13 +323,10 @@ module @cmpi_ne_i{
 // CHECK:    func.func @do_while2() -> i32 {
 // CHECK-DAG:      %[[ONE:.+]] = arith.constant 1 : i32
 // CHECK-DAG:      %[[C50:.+]] = arith.constant 50 : i32
-// CHECK-DAG:      %[[UB:.+]] = ub.poison : i32
-// CHECK-NEXT:      %[[i4:.+]] = scf.for %[[IV:.+]] = %[[ONE]] to %[[C50]] step %[[ONE]] iter_args(%[[VAL:.+]] = %[[UB]]) -> (i32)  : i32 {
+// CHECK-NEXT:      scf.for %[[IV:.+]] = %[[ONE]] to %[[C50]] step %[[ONE]] : i32 {
 // CHECK-NEXT:        "before.keepalive"(%[[IV]]) : (i32) -> ()
-// CHECK-NEXT:        %[[NEW:.+]] = arith.addi %[[IV]], %[[ONE]] : i32
-// CHECK-NEXT:        scf.yield %[[NEW]] : i32
 // CHECK-NEXT:      }
-// CHECK-NEXT:      return %[[i4:.+]] : i32
+// CHECK-NEXT:      return %[[C50]] : i32
 // CHECK-NEXT:    }
 // CHECK-NEXT:  }
 
