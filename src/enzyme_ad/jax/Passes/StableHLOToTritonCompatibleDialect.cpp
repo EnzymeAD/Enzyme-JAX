@@ -12,6 +12,7 @@
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Utils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
@@ -33,6 +34,28 @@ namespace enzyme {
 using namespace mlir;
 using namespace mlir::enzyme;
 
+struct ConstantOpToArithmetic : public OpRewritePattern<stablehlo::ConstantOp> {
+  using OpRewritePattern<stablehlo::ConstantOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::ConstantOp op,
+                                PatternRewriter &rewriter) const override {
+    auto denseAttr = dyn_cast<DenseElementsAttr>(op.getValue());
+    if (!denseAttr || !denseAttr.isSplat())
+      return failure();
+
+    auto splatValue = denseAttr.getSplatValue<Attribute>();
+    if (!splatValue)
+      return failure();
+
+    auto elementType = cast<RankedTensorType>(op.getType()).getElementType();
+    if (dyn_cast<ComplexType>(elementType))
+      return failure();
+
+    rewriter.replaceOpWithNewOp<arith::ConstantOp>(op, op.getType(), denseAttr);
+    return success();
+  }
+};
+
 struct StableHLOToTritonCompatibleDialectPass
     : public enzyme::impl::StableHLOToTritonCompatibleDialectBase<
           StableHLOToTritonCompatibleDialectPass> {
@@ -41,6 +64,17 @@ struct StableHLOToTritonCompatibleDialectPass
   void runOnOperation() override {
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
+
+    // Arithmetic dialect
+    patterns.add<ConstantOpToArithmetic>(context);
+
+    // Math dialect
+
+    // Control flow dialect
+
+    // Structured control flow dialect
+
+    // Triton dialect
 
     GreedyRewriteConfig config;
     if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
