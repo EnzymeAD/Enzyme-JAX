@@ -844,9 +844,9 @@ def TritonSimplify : Pass<"enzymexla-triton-simplify"> {
   ];
 }
 
+// TODO: rename to HLOToTritonCompatibleDialect
 def StableHLOToTritonCompatibleDialect : Pass<"enzymexla-stablehlo-to-triton-compatible-dialect"> {
   let summary = "Convert stablehlo to dialect compatible with triton";
-  // TODO: add options for controlling with dialects to lower to
   let dependentDialects = [
     "arith::ArithDialect",
     "math::MathDialect",
@@ -854,6 +854,7 @@ def StableHLOToTritonCompatibleDialect : Pass<"enzymexla-stablehlo-to-triton-com
     "cf::ControlFlowDialect",
     "stablehlo::StablehloDialect",
     "triton::TritonDialect",
+    "mhlo::MhloDialect",
   ];
 }
 

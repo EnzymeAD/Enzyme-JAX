@@ -1,4 +1,6 @@
 #include "mhlo/IR/hlo_ops.h"
+#include "mhlo/transforms/map_mhlo_to_scalar_op.h"
+#include "mhlo/transforms/rewriters.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/DynamicAPInt.h"
 #include "llvm/ADT/SetVector.h"
@@ -14,6 +16,7 @@
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Utils.h"
 
+#include "mhlo/IR/hlo_ops.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -52,6 +55,54 @@ struct ConstantOpToArithmetic : public OpRewritePattern<stablehlo::ConstantOp> {
       return failure();
 
     rewriter.replaceOpWithNewOp<arith::ConstantOp>(op, op.getType(), denseAttr);
+    return success();
+  }
+};
+
+// TODO: handle the simpler iota case as well
+struct ConstantOpToTritonMakeRange
+    : public OpRewritePattern<stablehlo::ConstantOp> {
+  using OpRewritePattern<stablehlo::ConstantOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::ConstantOp op,
+                                PatternRewriter &rewriter) const override {
+    auto tensorType = cast<RankedTensorType>(op.getType());
+    if (tensorType.getRank() != 1)
+      return failure();
+
+    // Get the DenseElementsAttr value of the constant
+    auto denseAttr = dyn_cast<DenseElementsAttr>(op.getValue());
+    if (!denseAttr)
+      return failure();
+
+    // Ensure that the values are integers (we assume tt.make_range works for
+    // integers)
+    auto elementType = tensorType.getElementType();
+    if (!isa<IntegerType>(elementType) ||
+        dyn_cast<IntegerType>(elementType).isSigned())
+      return failure();
+
+    SmallVector<uint32_t> values;
+    for (auto value : denseAttr.getValues<APInt>())
+      values.push_back(value.getZExtValue());
+
+    // Check if it's a contiguous range; e.g., [0, 1, 2, ..., n-1]
+    for (size_t i = 1; i < values.size(); ++i) {
+      if (values[i] != values[i - 1] + 1)
+        return failure();
+    }
+
+    auto rangeOp = rewriter.create<triton::MakeRangeOp>(
+        op.getLoc(),
+        RankedTensorType::get({static_cast<int64_t>(values.size())},
+                              rewriter.getI32Type()),
+        values[0], values[values.size() - 1] + 1);
+    if (elementType.getIntOrFloatBitWidth() == 32) {
+      rewriter.replaceOp(op, rangeOp.getResult());
+    } else {
+      rewriter.replaceOpWithNewOp<stablehlo::ConvertOp>(op, op.getType(),
+                                                        rangeOp.getResult());
+    }
     return success();
   }
 };
@@ -125,6 +176,13 @@ struct StableHLOToTritonCompatibleDialectPass
     // Structured control flow dialect
 
     // Triton dialect
+    patterns.add<ConstantOpToTritonMakeRange>(context);
+
+    // XXX: Reuse upstream conversion patterns from xla. Debug segfaults?
+    // We can't directly use the pass since those are restricted to func.func
+    // auto linalgTypeConverter = mhlo::createHloToLinalgTypeConverter();
+    // mhlo::populateHloToLinalgConversionPattern(context, *linalgTypeConverter,
+    //                                            &patterns, false);
 
     GreedyRewriteConfig config;
     if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
