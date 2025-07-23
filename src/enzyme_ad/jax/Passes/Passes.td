@@ -844,11 +844,16 @@ def TritonSimplify : Pass<"enzymexla-triton-simplify"> {
   ];
 }
 
-def StableHLOToArithmetic : Pass<"enzymexla-stablehlo-to-arithmetic"> {
-  let summary = "Convert stablehlo to arithmetic";
+def StableHLOToTritonCompatibleDialect : Pass<"enzymexla-stablehlo-to-triton-compatible-dialect"> {
+  let summary = "Convert stablehlo to dialect compatible with triton";
+  // TODO: add options for controlling with dialects to lower to
   let dependentDialects = [
     "arith::ArithDialect",
+    "math::MathDialect",
+    "scf::SCFDialect",
+    "cf::ControlFlowDialect",
     "stablehlo::StablehloDialect",
+    "triton::TritonDialect",
   ];
 }
 

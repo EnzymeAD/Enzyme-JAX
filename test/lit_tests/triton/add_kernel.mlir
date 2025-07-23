@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(enzymexla-triton-simplify,enzymexla-stablehlo-to-arithmetic)" %s | FileCheck %s
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(enzymexla-triton-simplify,enzymexla-stablehlo-to-triton-compatible-dialect)" %s | FileCheck %s
 
 tt.func @"add_kernel!_lattice_kernel"(%arg0: !tt.ptr<f32>, %arg1: !tt.ptr<f32>, %arg2: !tt.ptr<f32>) {
     %c = stablehlo.constant dense<[0, 1, 2, 3, 4, 5, 6, 7]> : tensor<8xi64>

@@ -1,11 +1,5 @@
 #include "mhlo/IR/hlo_ops.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
-#include "src/enzyme_ad/jax/Dialect/Dialect.h"
-#include "src/enzyme_ad/jax/Dialect/Ops.h"
-#include "src/enzyme_ad/jax/Passes/Passes.h"
-#include "stablehlo/dialect/StablehloOps.h"
-#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "llvm/ADT/DynamicAPInt.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
@@ -15,11 +9,23 @@
 #include <algorithm>
 #include <cstdint>
 
-#define DEBUG_TYPE "enzymexla-stablehlo-to-arithmetic"
+#include "src/enzyme_ad/jax/Dialect/Dialect.h"
+#include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "src/enzyme_ad/jax/Passes/Passes.h"
+
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "stablehlo/dialect/StablehloOps.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
+
+#define DEBUG_TYPE "enzymexla-stablehlo-to-triton-compatible-dialect"
 
 namespace mlir {
 namespace enzyme {
-#define GEN_PASS_DEF_STABLEHLOTOARITHMETIC
+#define GEN_PASS_DEF_STABLEHLOTOTRITONCOMPATIBLEDIALECT
 #include "src/enzyme_ad/jax/Passes/Passes.h.inc"
 } // namespace enzyme
 } // namespace mlir
@@ -27,9 +33,9 @@ namespace enzyme {
 using namespace mlir;
 using namespace mlir::enzyme;
 
-
-struct StableHLOToArithmeticPass
-    : public enzyme::impl::StableHLOToArithmeticBase<StableHLOToArithmeticPass> {
+struct StableHLOToTritonCompatibleDialectPass
+    : public enzyme::impl::StableHLOToTritonCompatibleDialectBase<
+          StableHLOToTritonCompatibleDialectPass> {
   using Base::Base;
 
   void runOnOperation() override {

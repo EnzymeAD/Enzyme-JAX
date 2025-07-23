@@ -25,7 +25,35 @@ namespace enzyme {
 
 using namespace mlir;
 using namespace mlir::enzyme;
+using namespace mlir::triton;
 
+struct ChainedSplatOpMerge : public OpRewritePattern<triton::SplatOp> {
+  using OpRewritePattern<triton::SplatOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(triton::SplatOp op,
+                                PatternRewriter &rewriter) const override {
+    auto operandSplatOp = op.getOperand().getDefiningOp<triton::SplatOp>();
+    if (!operandSplatOp)
+      return failure();
+
+    auto operandRank =
+        cast<RankedTensorType>(operandSplatOp.getType()).getRank();
+    if (operandRank != 0)
+      return failure();
+
+    auto originalScalar = operandSplatOp.getOperand();
+    // Check that the original input is actually a scalar (not a tensor)
+    if (isa<TensorType>(originalScalar.getType()))
+      return failure();
+
+    // Replace the chained splats with a single splat from scalar to final
+    // tensor type
+    rewriter.replaceOpWithNewOp<triton::SplatOp>(op, op.getType(),
+                                                 originalScalar);
+
+    return success();
+  }
+};
 
 struct TritonSimplifyPass
     : public enzyme::impl::TritonSimplifyBase<TritonSimplifyPass> {
@@ -34,6 +62,8 @@ struct TritonSimplifyPass
   void runOnOperation() override {
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
+
+    patterns.add<ChainedSplatOpMerge>(context);
 
     GreedyRewriteConfig config;
     if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
