@@ -56,6 +56,56 @@ struct ConstantOpToArithmetic : public OpRewritePattern<stablehlo::ConstantOp> {
   }
 };
 
+struct ConvertOpToArithmetic : public OpRewritePattern<stablehlo::ConvertOp> {
+  using OpRewritePattern<stablehlo::ConvertOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::ConvertOp op,
+                                PatternRewriter &rewriter) const override {
+    auto inputType = op.getOperand().getType();
+    auto outputType = op.getType();
+
+    auto inputElementType = getElementTypeOrSelf(inputType);
+    auto outputElementType = getElementTypeOrSelf(outputType);
+
+    auto inputBitWidth = inputElementType.getIntOrFloatBitWidth();
+    auto outputBitWidth = outputElementType.getIntOrFloatBitWidth();
+
+    if (isa<FloatType>(inputElementType) && isa<FloatType>(outputElementType)) {
+      if (inputBitWidth == outputBitWidth) {
+        rewriter.replaceOp(op, op.getOperand());
+      } else if (inputBitWidth > outputBitWidth) {
+        rewriter.replaceOpWithNewOp<arith::TruncFOp>(op, outputType,
+                                                     op.getOperand());
+      } else {
+        rewriter.replaceOpWithNewOp<arith::ExtFOp>(op, outputType,
+                                                   op.getOperand());
+      }
+      return success();
+    }
+
+    if (isa<IntegerType>(inputElementType) &&
+        isa<IntegerType>(outputElementType)) {
+      if (inputBitWidth == outputBitWidth) {
+        rewriter.replaceOp(op, op.getOperand());
+      } else if (inputBitWidth > outputBitWidth) {
+        rewriter.replaceOpWithNewOp<arith::TruncIOp>(op, outputType,
+                                                     op.getOperand());
+      } else {
+        if (cast<IntegerType>(outputElementType).isSigned()) {
+          rewriter.replaceOpWithNewOp<arith::ExtSIOp>(op, outputType,
+                                                      op.getOperand());
+        } else {
+          rewriter.replaceOpWithNewOp<arith::ExtUIOp>(op, outputType,
+                                                      op.getOperand());
+        }
+      }
+      return success();
+    }
+
+    return failure();
+  }
+};
+
 struct StableHLOToTritonCompatibleDialectPass
     : public enzyme::impl::StableHLOToTritonCompatibleDialectBase<
           StableHLOToTritonCompatibleDialectPass> {
@@ -66,7 +116,7 @@ struct StableHLOToTritonCompatibleDialectPass
     RewritePatternSet patterns(context);
 
     // Arithmetic dialect
-    patterns.add<ConstantOpToArithmetic>(context);
+    patterns.add<ConstantOpToArithmetic, ConvertOpToArithmetic>(context);
 
     // Math dialect
 
