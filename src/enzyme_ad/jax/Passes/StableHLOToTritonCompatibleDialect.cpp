@@ -37,6 +37,10 @@ namespace enzyme {
 using namespace mlir;
 using namespace mlir::enzyme;
 
+bool isPowerOfTwo(uint64_t n) {
+  return (n & (n - 1)) == 0;
+}
+
 struct ConstantOpToArithmetic : public OpRewritePattern<stablehlo::ConstantOp> {
   using OpRewritePattern<stablehlo::ConstantOp>::OpRewritePattern;
 
@@ -59,7 +63,23 @@ struct ConstantOpToArithmetic : public OpRewritePattern<stablehlo::ConstantOp> {
   }
 };
 
-// TODO: handle the simpler iota case as well
+void replaceWithTritonMakeRange(PatternRewriter &rewriter, uint32_t start,
+                                uint32_t end, Type resultElementType,
+                                Operation *op) {
+  auto rangeOp = rewriter.create<triton::MakeRangeOp>(
+      op->getLoc(),
+      RankedTensorType::get({static_cast<int64_t>(end - start)},
+                            rewriter.getI32Type()),
+      start, end);
+  if (resultElementType.getIntOrFloatBitWidth() == 32) {
+    rewriter.replaceOp(op, rangeOp.getResult());
+  } else {
+    rewriter.replaceOpWithNewOp<stablehlo::ConvertOp>(op, op->getResult(0).getType(),
+                                                      rangeOp.getResult());
+  }
+  return;
+}
+
 struct ConstantOpToTritonMakeRange
     : public OpRewritePattern<stablehlo::ConstantOp> {
   using OpRewritePattern<stablehlo::ConstantOp>::OpRewritePattern;
@@ -92,17 +112,34 @@ struct ConstantOpToTritonMakeRange
         return failure();
     }
 
-    auto rangeOp = rewriter.create<triton::MakeRangeOp>(
-        op.getLoc(),
-        RankedTensorType::get({static_cast<int64_t>(values.size())},
-                              rewriter.getI32Type()),
-        values[0], values[values.size() - 1] + 1);
-    if (elementType.getIntOrFloatBitWidth() == 32) {
-      rewriter.replaceOp(op, rangeOp.getResult());
-    } else {
-      rewriter.replaceOpWithNewOp<stablehlo::ConvertOp>(op, op.getType(),
-                                                        rangeOp.getResult());
-    }
+    if (!isPowerOfTwo(values.size()))
+      return failure();
+
+    replaceWithTritonMakeRange(rewriter, values[0], values[values.size() - 1] + 1,
+                               elementType, op);
+    return success();
+  }
+};
+
+struct IotaOpToTritonMakeRange : public OpRewritePattern<stablehlo::IotaOp> {
+  using OpRewritePattern<stablehlo::IotaOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::IotaOp op,
+                                PatternRewriter &rewriter) const override {
+    auto tensorType = cast<RankedTensorType>(op.getType());
+    auto length = tensorType.getDimSize(0);
+    if (tensorType.getRank() != 1)
+      return failure();
+
+    auto elementType = tensorType.getElementType();
+    if (!isa<IntegerType>(elementType) ||
+        dyn_cast<IntegerType>(elementType).isSigned())
+      return failure();
+
+    if (!isPowerOfTwo(length))
+      return failure();
+
+    replaceWithTritonMakeRange(rewriter, 0, length, elementType, op);
     return success();
   }
 };
@@ -176,7 +213,7 @@ struct StableHLOToTritonCompatibleDialectPass
     // Structured control flow dialect
 
     // Triton dialect
-    patterns.add<ConstantOpToTritonMakeRange>(context);
+    patterns.add<ConstantOpToTritonMakeRange, IotaOpToTritonMakeRange>(context);
 
     // XXX: Reuse upstream conversion patterns from xla. Debug segfaults?
     // We can't directly use the pass since those are restricted to func.func
