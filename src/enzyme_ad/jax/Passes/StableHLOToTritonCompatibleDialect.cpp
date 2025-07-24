@@ -37,9 +37,7 @@ namespace enzyme {
 using namespace mlir;
 using namespace mlir::enzyme;
 
-bool isPowerOfTwo(uint64_t n) {
-  return (n & (n - 1)) == 0;
-}
+bool isPowerOfTwo(uint64_t n) { return (n & (n - 1)) == 0; }
 
 struct ConstantOpToArithmetic : public OpRewritePattern<stablehlo::ConstantOp> {
   using OpRewritePattern<stablehlo::ConstantOp>::OpRewritePattern;
@@ -74,8 +72,8 @@ void replaceWithTritonMakeRange(PatternRewriter &rewriter, uint32_t start,
   if (resultElementType.getIntOrFloatBitWidth() == 32) {
     rewriter.replaceOp(op, rangeOp.getResult());
   } else {
-    rewriter.replaceOpWithNewOp<stablehlo::ConvertOp>(op, op->getResult(0).getType(),
-                                                      rangeOp.getResult());
+    rewriter.replaceOpWithNewOp<stablehlo::ConvertOp>(
+        op, op->getResult(0).getType(), rangeOp.getResult());
   }
   return;
 }
@@ -115,8 +113,8 @@ struct ConstantOpToTritonMakeRange
     if (!isPowerOfTwo(values.size()))
       return failure();
 
-    replaceWithTritonMakeRange(rewriter, values[0], values[values.size() - 1] + 1,
-                               elementType, op);
+    replaceWithTritonMakeRange(rewriter, values[0],
+                               values[values.size() - 1] + 1, elementType, op);
     return success();
   }
 };
@@ -194,6 +192,53 @@ struct ConvertOpToArithmetic : public OpRewritePattern<stablehlo::ConvertOp> {
   }
 };
 
+struct BcastInDimToTritonBroadcast
+    : public OpRewritePattern<stablehlo::BroadcastInDimOp> {
+  using OpRewritePattern<stablehlo::BroadcastInDimOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::BroadcastInDimOp op,
+                                PatternRewriter &rewriter) const override {
+    // bcast_in_dim -> tt.broadcast(tt.trans(tt.reshape))
+    auto loc = op.getLoc();
+
+    auto input = op.getOperand();
+    auto broadcastDims = op.getBroadcastDimensions();
+    auto inputType = cast<RankedTensorType>(input.getType());
+    auto inputShape = inputType.getShape();
+    auto outputType = cast<RankedTensorType>(op.getType());
+    auto outputShape = outputType.getShape();
+
+    auto inputElementType = getElementTypeOrSelf(inputType);
+    SmallVector<int64_t> reshapeOutputShape;
+    for (auto dim : inputShape)
+      reshapeOutputShape.push_back(dim);
+    for (int i = 0; i < outputType.getRank() - inputType.getRank(); ++i)
+      reshapeOutputShape.push_back(1);
+    auto reshapeOutputType =
+        RankedTensorType::get(reshapeOutputShape, inputElementType);
+
+    auto reshapeOp =
+        rewriter.create<triton::ReshapeOp>(loc, reshapeOutputType, input);
+
+    SmallVector<int32_t> permutation(outputType.getRank(), -1);
+    int32_t mapped = broadcastDims.size();
+    for (int i = 0; i < outputType.getRank(); ++i) {
+      auto found = std::find(broadcastDims.begin(), broadcastDims.end(), i);
+      if (found != broadcastDims.end()) {
+        permutation[i] = std::distance(broadcastDims.begin(), found);
+      } else {
+        permutation[i] = mapped++;
+      }
+    }
+    auto transposeOp = rewriter.create<triton::TransOp>(
+        loc, reshapeOp, rewriter.getDenseI32ArrayAttr(permutation));
+
+    rewriter.replaceOpWithNewOp<triton::BroadcastOp>(op, outputType,
+                                                     transposeOp);
+    return success();
+  }
+};
+
 struct StableHLOToTritonCompatibleDialectPass
     : public enzyme::impl::StableHLOToTritonCompatibleDialectBase<
           StableHLOToTritonCompatibleDialectPass> {
@@ -213,7 +258,8 @@ struct StableHLOToTritonCompatibleDialectPass
     // Structured control flow dialect
 
     // Triton dialect
-    patterns.add<ConstantOpToTritonMakeRange, IotaOpToTritonMakeRange>(context);
+    patterns.add<ConstantOpToTritonMakeRange, IotaOpToTritonMakeRange,
+                 BcastInDimToTritonBroadcast>(context);
 
     // XXX: Reuse upstream conversion patterns from xla. Debug segfaults?
     // We can't directly use the pass since those are restricted to func.func
