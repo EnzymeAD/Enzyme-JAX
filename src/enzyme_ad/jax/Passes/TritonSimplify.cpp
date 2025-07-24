@@ -55,6 +55,34 @@ struct ChainedSplatOpMerge : public OpRewritePattern<triton::SplatOp> {
   }
 };
 
+struct BroadcastReshapeToSplat : public OpRewritePattern<triton::BroadcastOp> {
+  using OpRewritePattern<triton::BroadcastOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(triton::BroadcastOp op,
+                                PatternRewriter &rewriter) const override {
+    auto input = op.getOperand();
+    auto inputType = cast<RankedTensorType>(input.getType());
+
+    auto reshapeOp = input.getDefiningOp<triton::ReshapeOp>();
+    if (!reshapeOp)
+      return failure();
+
+    auto inputNumElements = inputType.getNumElements();
+    if (inputNumElements != 1)
+      return failure();
+
+    auto reshapedInputType =
+        cast<RankedTensorType>(reshapeOp.getOperand().getType());
+    auto reshapedInputRank = reshapedInputType.getRank();
+    if (reshapedInputRank != 0 && reshapedInputRank != 1)
+      return failure();
+
+    rewriter.replaceOpWithNewOp<triton::SplatOp>(op, op.getType(),
+                                                 reshapeOp.getOperand());
+    return success();
+  }
+};
+
 struct TritonSimplifyPass
     : public enzyme::impl::TritonSimplifyBase<TritonSimplifyPass> {
   using Base::Base;
@@ -63,7 +91,7 @@ struct TritonSimplifyPass
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
 
-    patterns.add<ChainedSplatOpMerge>(context);
+    patterns.add<ChainedSplatOpMerge, BroadcastReshapeToSplat>(context);
 
     GreedyRewriteConfig config;
     if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
