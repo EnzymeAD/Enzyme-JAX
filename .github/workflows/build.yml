@@ -51,13 +51,19 @@ jobs:
           - '3.12'
     env:
       HERMETIC_PYTHON_VERSION: ${{ matrix.python }}
-      BAZEL_FLAGS : ${{ startsWith(matrix.os, 'macOS-') && '--define using_clang=true' || '' }}
     steps:
       - name: Make space on disk
         run: sudo rm -rf /opt/*
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+      - name: Set environment variables
+        run: |
+          if [[ ${{ runner.os }} == "macOS" ]]; then
+              echo "BAZEL_FLAGS=--define using_clang=true" >> "${GITHUB_ENV}"
+          elif [[ "${{ runner.arch }}-${{ runner.os }}" == "ARM64-Linux" ]]; then
+              echo "BAZEL_FLAGS=--linkopt=-fuse-ld=lld" >> "${GITHUB_ENV}"
+          fi
       - uses: bazel-contrib/setup-bazel@0.15.0
         name: Set up Bazel
         with:
@@ -80,7 +86,6 @@ jobs:
           retention-days: 90
       - name: Build wheel
         timeout-minutes: 240
-        if: ${{ !endsWith(matrix.os, 'arm') }}
         run: |
           bazel build $BAZEL_FLAGS --color=yes :wheel --test_output=errors
       - name: Build
