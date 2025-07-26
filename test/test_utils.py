@@ -26,6 +26,8 @@ def fix_paths():
     runfiles = os.path.dirname(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     )
+    os.system("find " + runfiles)
+
     # https://jax.readthedocs.io/en/latest/gpu_memory_allocation.html
     # os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
 
