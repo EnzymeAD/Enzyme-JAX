@@ -38,6 +38,8 @@ jobs:
   build:
     name: Build - ${{ matrix.os }} - python ${{ matrix.python }}
     runs-on: ${{ matrix.os }}
+    container: ${{ (contains(matrix.runner, 'linux-x86') && 'us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest') ||
+               (contains(matrix.runner, 'linux-arm64') && 'us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-arm64:latest') }}
     strategy:
       fail-fast: false
       matrix:
