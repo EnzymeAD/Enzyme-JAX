@@ -40,7 +40,8 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     container:
-      image: ghcr.io/enzymead/reactant-docker-images@sha256:6e09eb1b3fda69b2d994da36f060b224e6c3a494ea02316831f7b2392885f57b
+      image: ${{ (contains(matrix.runner, 'a100') && 'ghcr.io/enzymead/reactant-docker-images-cuda') ||
+                 'ghcr.io/enzymead/reactant-docker-images@sha256:6e09eb1b3fda69b2d994da36f060b224e6c3a494ea02316831f7b2392885f57b' }}
 
     # container:
     #   image: us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest
