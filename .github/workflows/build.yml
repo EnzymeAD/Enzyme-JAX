@@ -58,8 +58,6 @@ jobs:
       BAZEL_FLAGS : ${{ startsWith(matrix.os, 'macOS-') && '--define using_clang=true' || '' }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       - name: Build enzymexlamlir-opt
         timeout-minutes: 180
         run: |
