@@ -58,6 +58,16 @@ jobs:
       BAZEL_FLAGS : ${{ startsWith(matrix.os, 'macOS-') && '--define using_clang=true' || '' }}
     steps:
       - uses: actions/checkout@v4
+      - uses: bazel-contrib/setup-bazel@0.15.0
+        name: Set up Bazel
+        with:
+          # Avoid downloading Bazel every time.
+          bazelisk-cache: true
+          # Store build cache per workflow.
+          disk-cache: ${{ github.workflow }}-${{ matrix.os }}-${{ matrix.python }}
+          # Share repository cache between workflows.
+          repository-cache: true
+          bazelisk-version: 1.x
       - name: Build enzymexlamlir-opt
         timeout-minutes: 180
         run: |
