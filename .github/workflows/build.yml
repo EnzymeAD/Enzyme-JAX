@@ -41,11 +41,11 @@ jobs:
 
     container:
       image: ${{ (contains(matrix.os, 'a100') && 'ghcr.io/enzymead/reactant-docker-images-cuda') ||
-                 (contains(matrix.os, 'linux') && 'ghcr.io/enzymead/reactant-docker-images@sha256:6e09eb1b3fda69b2d994da36f060b224e6c3a494ea02316831f7b2392885f57b') || '' }}
+                 (contains(matrix.os, 'linux') && 'ghcr.io/enzymead/reactant-docker-images@sha256:974f34dac1542d07bda791eb37322d5c1955c1133a98a90c6e2d4cffbfcfcfd3') || '' }}
 
     # container:
     #   image: us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest
-    
+
     # container:
     #   image: ${{ (contains(matrix.runner, 'a100') && 'us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda12.8-cudnn9.8:latest') ||
     #            (contains(matrix.runner, 'linux-x86') && 'us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest') ||
@@ -63,8 +63,19 @@ jobs:
           - '3.12'
     env:
       HERMETIC_PYTHON_VERSION: ${{ matrix.python }}
-      BAZEL_FLAGS : ${{ startsWith(matrix.os, 'macOS-') && '--define using_clang=true' || '' }}
     steps:
+      - name: Set BAZEL_FLAGS
+        shell: bash
+        run: |
+          set -e
+          BAZEL_FLAGS=""
+          if [ ${{ runner.os }} == macOS ]; then
+             BAZEL_FLAGS="${BAZEL_FLAGS} --define using_clang=true"
+          fi
+          if [ ${{ runner.arch }} == ARM64 ] && [ ${{ runner.os }} == Linux ]; then
+              BAZEL_FLAGS="${BAZEL_FLAGS} --linkopt=-fuse-ld=lld"
+          fi
+          echo "BAZEL_FLAGS=${BAZEL_FLAGS}" >> "${GITHUB_ENV}"
       - uses: actions/checkout@v4
       - uses: bazel-contrib/setup-bazel@0.15.0
         name: Set up Bazel
@@ -116,7 +127,7 @@ jobs:
           bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/...
       - name: Upload test results
         uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }} 
+        if: ${{ !cancelled() }}
         with:
           name: Enzyme-JAX-tests-${{ matrix.os }}-${{ matrix.python }}
           path: |
