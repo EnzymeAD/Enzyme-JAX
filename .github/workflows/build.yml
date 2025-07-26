@@ -38,7 +38,8 @@ jobs:
   build:
     name: Build - ${{ matrix.os }} - python ${{ matrix.python }}
     runs-on: ${{ matrix.os }}
-    container: ${{ (contains(matrix.runner, 'linux-x86') && 'us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest') ||
+    container: ${{ (contains(matrix.runner, 'a100') && 'us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda12.8-cudnn9.8:latest') ||
+               (contains(matrix.runner, 'linux-x86') && 'us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest') ||
                (contains(matrix.runner, 'linux-arm64') && 'us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-arm64:latest') }}
     strategy:
       fail-fast: false
@@ -48,6 +49,69 @@ jobs:
           - linux-arm64-c4a-32
           - linux-x86-ct6e-180-4tpu
           - linux-x86-a2-48-a100-4gpu
+        python:
+          - '3.12'
+    env:
+      HERMETIC_PYTHON_VERSION: ${{ matrix.python }}
+      BAZEL_FLAGS : ${{ startsWith(matrix.os, 'macOS-') && '--define using_clang=true' || '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Build enzymexlamlir-opt
+        timeout-minutes: 180
+        run: |
+          bazel build $BAZEL_FLAGS --color=yes //:enzymexlamlir-opt --test_output=errors
+      - name: Upload enzymexlamlir-opt
+        uses: actions/upload-artifact@v4
+        with:
+          name: enzymexlamlir-opt-${{ matrix.os }}-${{ matrix.python }}
+          path: "bazel-bin/enzymexlamlir-opt"
+          retention-days: 90
+      - name: Build wheel
+        timeout-minutes: 240
+        if: ${{ !endsWith(matrix.os, 'arm') }}
+        run: |
+          bazel build $BAZEL_FLAGS --color=yes :wheel --test_output=errors
+      - name: Build
+        timeout-minutes: 240
+        if: ${{ endsWith(matrix.os, 'arm') }}
+        run: |
+          bazel build $BAZEL_FLAGS --color=yes :enzymexlamlir-opt --test_output=errors
+      - name: Upload wheel
+        uses: actions/upload-artifact@v4
+        if: ${{ !endsWith(matrix.os, 'arm') }}
+        with:
+          name: Enzyme-JAX-Wheel-${{ matrix.os }}-${{ matrix.python }}
+          path: "bazel-bin/*.whl"
+          retention-days: 90
+      - name: Update Python requirements files
+        run: |
+          bazel run $BAZEL_FLAGS --color=yes //builddeps:requirements.update
+      - name: Run tests
+        if: ${{ !startsWith(matrix.os, 'ubuntu-') }}
+        run: |
+          bazel test $BAZEL_FLAGS --color=yes --test_output=errors --test_verbose_timeout_warnings //test/...
+      - name: Run lit tests
+        if: ${{ startsWith(matrix.os, 'ubuntu-') }}
+        run: |
+          bazel test $BAZEL_FLAGS --color=yes --test_output=errors --test_verbose_timeout_warnings $(find test/ -name '*.mlir' | awk '{print $1 ".test"}')
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }} 
+        with:
+          name: Enzyme-JAX-tests-${{ matrix.os }}-${{ matrix.python }}
+          path: |
+            bazel-out/**/test.log
+          retention-days: 90
+
+  build-macos:
+    name: Build - ${{ matrix.os }} - python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
           - macOS-latest
         python:
           - '3.12'
