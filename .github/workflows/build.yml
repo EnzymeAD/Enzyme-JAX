@@ -40,8 +40,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     container:
-      image: ${{ (contains(matrix.os, 'a100') && 'ghcr.io/enzymead/reactant-docker-images-cuda') ||
-                 (contains(matrix.os, 'linux') && 'ghcr.io/enzymead/reactant-docker-images@sha256:974f34dac1542d07bda791eb37322d5c1955c1133a98a90c6e2d4cffbfcfcfd3') || '' }}
+      image: ${{ (contains(matrix.os, 'linux') && 'ghcr.io/enzymead/reactant-docker-images@sha256:974f34dac1542d07bda791eb37322d5c1955c1133a98a90c6e2d4cffbfcfcfd3') || '' }}
 
     # container:
     #   image: us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest
@@ -64,6 +63,10 @@ jobs:
     env:
       HERMETIC_PYTHON_VERSION: ${{ matrix.python }}
     steps:
+      - name: Check GPUs
+        if: ${{ contains(matrix.os, 'a100') }}
+        run: |
+          nvidia-smi
       - name: Set BAZEL_FLAGS
         shell: bash
         run: |
