@@ -38,11 +38,11 @@ jobs:
   build:
     name: Build - ${{ matrix.os }} - python ${{ matrix.python }}
     runs-on: ${{ matrix.os }}
-    # container: ${{ (contains(matrix.runner, 'a100') && 'us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda12.8-cudnn9.8:latest') ||
-    #            (contains(matrix.runner, 'linux-x86') && 'us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest') ||
-    #            (contains(matrix.runner, 'linux-arm64') && 'us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-arm64:latest') }}
-    container:
-      image: ubuntu:24.04
+    container: ${{ (contains(matrix.runner, 'a100') && 'us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda12.8-cudnn9.8:latest') ||
+               (contains(matrix.runner, 'linux-x86') && 'us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest') ||
+               (contains(matrix.runner, 'linux-arm64') && 'us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-arm64:latest') }}
+    # container:
+    #   image: ubuntu:24.04
     strategy:
       fail-fast: false
       matrix:
