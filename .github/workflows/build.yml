@@ -38,9 +38,13 @@ jobs:
   build:
     name: Build - ${{ matrix.os }} - python ${{ matrix.python }}
     runs-on: ${{ matrix.os }}
-    container: ${{ (contains(matrix.runner, 'a100') && 'us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda12.8-cudnn9.8:latest') ||
-               (contains(matrix.runner, 'linux-x86') && 'us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest') ||
-               (contains(matrix.runner, 'linux-arm64') && 'us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-arm64:latest') }}
+    
+    container:
+      image: us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest
+    
+    # container: ${{ (contains(matrix.runner, 'a100') && 'us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda12.8-cudnn9.8:latest') ||
+    #            (contains(matrix.runner, 'linux-x86') && 'us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest') ||
+    #            (contains(matrix.runner, 'linux-arm64') && 'us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-arm64:latest') }}
     # container:
     #   image: ubuntu:24.04
     strategy:
@@ -48,9 +52,9 @@ jobs:
       matrix:
         os:
           - linux-x86-n2-32
-          - linux-arm64-c4a-32
-          - linux-x86-ct6e-180-4tpu
-          - linux-x86-a2-48-a100-4gpu
+          # - linux-arm64-c4a-32
+          # - linux-x86-ct6e-180-4tpu
+          # - linux-x86-a2-48-a100-4gpu
         python:
           - '3.12'
     env:
