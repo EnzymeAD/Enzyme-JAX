@@ -75,7 +75,7 @@ jobs:
           repository-cache: true
           bazelisk-version: 1.x
       - name: Update TPU
-        if: ${{ !contains(matrix.os, 'tpu') }}
+        if: ${{ contains(matrix.os, 'tpu') }}
         run: |
           sed -i.bak0 "s/jax/jax\[tpu\]/g" builddeps/test-requirements.txt
           sed -i.bak0 "/cuda12/d" builddeps/test-requirements.txt
