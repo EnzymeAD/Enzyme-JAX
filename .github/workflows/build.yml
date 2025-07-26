@@ -38,9 +38,12 @@ jobs:
   build:
     name: Build - ${{ matrix.os }} - python ${{ matrix.python }}
     runs-on: ${{ matrix.os }}
-    
+
     container:
-      image: us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest
+      image: ghcr.io/enzymead/reactant-docker-images:main
+
+    # container:
+    #   image: us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest
     
     # container:
     #   image: ${{ (contains(matrix.runner, 'a100') && 'us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda12.8-cudnn9.8:latest') ||
