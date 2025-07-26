@@ -12743,8 +12743,15 @@ bool isLegalConcatToOneDimDUS(stablehlo::ConcatenateOp outer,
   if (lhs && rhs && outer.getOperands().size() == 2) {
     return false;
   }
-  if (lhs && rhs && lhs.getOperand() != rhs.getOperand()) {
-    return false;
+  if (lhs && rhs) {
+    if (lhs.getOperand() != rhs.getOperand()) {
+      return false;
+    }
+    if (cast<RankedTensorType>(lhs.getOperand().getType())
+            .getShape()[outer.getDimension()] !=
+        outer.getType().getShape()[outer.getDimension()]) {
+      return false;
+    }
   }
   if (lhsP)
     *lhsP = lhs;
