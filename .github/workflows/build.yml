@@ -77,8 +77,9 @@ jobs:
       - name: Update TPU
         if: ${{ contains(matrix.os, 'tpu') }}
         run: |
-          sed -i.bak0 "s/jax/jax\[tpu\]/g" builddeps/test-requirements.txt
+          sed -i.bak0 "s/jax\$/jax\[tpu\]/g" builddeps/test-requirements.txt
           sed -i.bak0 "/cuda12/d" builddeps/test-requirements.txt
+          cat builddeps/test-requirements.txt
       - name: Update Python requirements files
         run: |
           bazel run $BAZEL_FLAGS --color=yes //builddeps:requirements.update
