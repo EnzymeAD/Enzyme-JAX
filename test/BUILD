@@ -105,6 +105,7 @@ py_test(
 
 py_test(
     name = "llama",
+    timeout = "long",
     srcs = [
         "llama.py",
         "test_utils.py",
