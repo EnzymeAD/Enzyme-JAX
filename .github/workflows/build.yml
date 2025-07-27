@@ -136,7 +136,7 @@ jobs:
           retention-days: 90
       - name: Run lit tests
         run: |
-          bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings $(find test/ -name '*.mlir' | awk '{print $1 ".test"}')
+          bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/lit_tests/...          
       - name: Run tests
         run: |
           bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/...
