@@ -242,6 +242,21 @@ def fix_paths():
 
         ctypes.cdll.LoadLibrary(cusolver_path)
 
+    cupti_path = os.path.join(
+        runfiles,
+        "pypi_nvidia_cuda_cupti_cu12",
+        "site-packages",
+        "nvidia",
+        "cuda_cupti",
+        "lib",
+        "libcupti.so.12",
+    )
+
+    if os.path.exists(cupti_path):
+        import ctypes
+
+        ctypes.cdll.LoadLibrary(cupti_path)
+
 
 from absl.testing import absltest
 
