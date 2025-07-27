@@ -5962,17 +5962,23 @@ struct ReplaceNegAddWithSubtract
 
   LogicalResult matchAndRewriteImpl(stablehlo::AddOp op,
                                     PatternRewriter &rewriter) const {
-    auto negateOp = op.getRhs().getDefiningOp<stablehlo::NegOp>();
+    if (auto rhsNegateOp = op.getRhs().getDefiningOp<stablehlo::NegOp>()) {
+      if (llvm::hasSingleElement(rhsNegateOp->getUsers())) {
+        rewriter.replaceOpWithNewOp<stablehlo::SubtractOp>(
+            op, op.getLhs(), rhsNegateOp.getOperand());
+        return success();
+      }
+    }
 
-    if (!negateOp)
-      return failure();
+    if (auto lhsNegateOp = op.getLhs().getDefiningOp<stablehlo::NegOp>()) {
+      if (llvm::hasSingleElement(lhsNegateOp->getUsers())) {
+        rewriter.replaceOpWithNewOp<stablehlo::SubtractOp>(
+            op, op.getRhs(), lhsNegateOp.getOperand());
+        return success();
+      }
+    }
 
-    if (!llvm::hasSingleElement(negateOp->getUsers()))
-      return failure();
-
-    rewriter.replaceOpWithNewOp<stablehlo::SubtractOp>(op, op.getLhs(),
-                                                       negateOp.getOperand());
-    return success();
+    return failure();
   }
 };
 
@@ -6142,6 +6148,20 @@ struct MulSimplify
       return success();
     }
 
+    // x * -1 -> negate x
+    if (matchPattern(op.getRhs(), m_NegOne()) ||
+        matchPattern(op.getRhs(), m_NegOneFloat())) {
+      rewriter.replaceOpWithNewOp<stablehlo::NegOp>(op, op.getLhs());
+      return success();
+    }
+
+    // -1 * x -> negate x
+    if (matchPattern(op.getLhs(), m_NegOne()) ||
+        matchPattern(op.getLhs(), m_NegOneFloat())) {
+      rewriter.replaceOpWithNewOp<stablehlo::NegOp>(op, op.getRhs());
+      return success();
+    }
+
     return failure();
   }
 };
@@ -6158,6 +6178,13 @@ struct DivSimplify
     if (matchPattern(op.getRhs(), m_OneFloat()) ||
         matchPattern(op.getRhs(), m_One())) {
       rewriter.replaceOp(op, op.getLhs());
+      return success();
+    }
+
+    // x / -1 -> negate x
+    if (matchPattern(op.getRhs(), m_NegOneFloat()) ||
+        matchPattern(op.getRhs(), m_NegOne())) {
+      rewriter.replaceOpWithNewOp<stablehlo::NegOp>(op, op.getLhs());
       return success();
     }
 
