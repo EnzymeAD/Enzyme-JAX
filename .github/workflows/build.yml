@@ -93,6 +93,7 @@ jobs:
       - name: Update TPU
         if: ${{ contains(matrix.os, 'tpu') }}
         run: |
+          env
           sed -i.bak0 "s/cuda12/tpu/g" builddeps/test-requirements.txt
           sed -i.bak0 "s/pypi_jax_cuda12_plugin/pypi_libtpu/g" test/BUILD
       - name: Only test CUDA on GPU
