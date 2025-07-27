@@ -117,8 +117,8 @@ class JAXMD(EnzymeJaxTest):
         # self.revfilter = justjax
         self.mlirad_rev = False
 
-        # TODO: Reduction-region must take 2 parameters, but takes 4 parameter(s)
-        # self.mlirad_fwd = False
+        # TODO: This is horribly slow for reasons which are unknown.
+        self.mlirad_fwd = False
 
         self.tol = 5e-4
 
