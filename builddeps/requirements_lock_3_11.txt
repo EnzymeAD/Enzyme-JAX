@@ -30,8 +30,8 @@ absl-py==2.1.0 \
     #   tensorflow
     #   tensorflow-datasets
     #   tensorflow-metadata
-    #   tensorflow-probability
     #   tfds-nightly
+    #   tfp-nightly
 aiohappyeyeballs==2.4.4 \
     --hash=sha256:5fdd7d87889c63183afc18ce9271f9b0a7d32c2303e394468dd45d514a757745 \
     --hash=sha256:a980909d50efcd44795c4afeca523296716d50cd756ddca6af8c65b996e27de8
@@ -281,11 +281,15 @@ chex==0.1.87 \
 click==8.1.8 \
     --hash=sha256:63c132bbbed01578a06712a2d1f497bb62d9c1c0d329b7903a866228027263b2 \
     --hash=sha256:ed53c9d8990d83c2a27deae68e4ee337473f6330c040a31d4225c9574d16096a
-    # via tensorflow-datasets
+    # via
+    #   dask
+    #   tensorflow-datasets
 cloudpickle==3.1.0 \
     --hash=sha256:81a929b6e3c7335c863c771d673d105f02efdb89dfaba0c90495d1c64796601b \
     --hash=sha256:fe11acda67f61aaaec473e3afe030feb131d78a43461b718185363384f1ba12e
-    # via tensorflow-probability
+    # via
+    #   dask
+    #   tfp-nightly
 clu==0.0.12 \
     --hash=sha256:0d183e7d25f7dd0700444510a264e24700e2f068bdabd199ed22866f7e54edba \
     --hash=sha256:f71eaa1afbd30f57f7709257ba7e1feb8ad5c1c3dcae3606672a138678bb3ce4
@@ -380,24 +384,29 @@ coverage==7.10.1 \
     --hash=sha256:fc0e46d86905ddd16b85991f1f4919028092b4e511689bbdaff0876bd8aab3dd \
     --hash=sha256:fefe31d61d02a8b2c419700b1fade9784a43d726de26495f243b663cd9fe1513
     # via google-jetstream
+dask==2025.7.0 \
+    --hash=sha256:073c29c4e99c2400a39a8a67874f35c1d15bf7af9ae3d0c30af3c7c1199f24ae \
+    --hash=sha256:c3a0d4e78882e85ea81dbc71e6459713e45676e2d17e776c2f3f19848039e4cf
+    # via dinosaur
 decorator==5.1.1 \
     --hash=sha256:637996211036b6385ef91435e4fae22989472f9d571faba8927ba8253acbc330 \
     --hash=sha256:b8c3f85900b9dc423225913c5aace94729fe1fa9763b38939a95226f02d37186
     # via
     #   gcsfs
-    #   tensorflow-probability
+    #   tfp-nightly
 dill==0.4.0 \
     --hash=sha256:0633f1d2df477324f53a895b02c901fb961bdbf65a17122586ea7019292cbcf0 \
     --hash=sha256:44f54bf6412c2c8464c14e8243eb163690a9800dbe2c367330883b19c7561049
     # via pylint
-dinosaur-dycore==1.0.0 \
-    --hash=sha256:0ea3807a83d0c5220ff7a1cd548c11d82091d455d17d8f7697b985b6283d2ef9 \
-    --hash=sha256:3505d59eb9d90ad58572f93fa87db5536b9df0663f95701d50c8ccb027e767e1
+dinosaur==1.3.4 \
+    --hash=sha256:704581cb169dc3fa558be8c12cc7a5719332f077ff6e123b42ea5629b5830686 \
+    --hash=sha256:93b28ae70a96fcd67bf2b886c38c1e14c701b31ef50d17ee21d163682933b64d
     # via neuralgcm
-dm-haiku==0.0.12 \
-    --hash=sha256:7448a43a6486bff95253f84e18eacc607d9c1256592573117a9d1d23e2780706 \
-    --hash=sha256:ba0b3acf71433156737fe342c486da11727e5e6c9e054245f4f9b8f0b53eb608
+dm-haiku==0.0.14 \
+    --hash=sha256:0c1d56ef20e1e04d8551f788ff8964167092c5d8051b7c17ed3f9ce60c0b0a59 \
+    --hash=sha256:79f2fc2bf2985f99687209b72a193769ba2bcfde471ce7746cd36a64ea9ce74a
     # via
+    #   -r /home/wmoses/.cache/bazel/_bazel_wmoses/5d297ebbef9074123114ecedd7ac7300/execroot/__main__/bazel-out/k8-opt-ST-259defaf8903/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
     #   jax-md
     #   neuralgcm
 dm-tree==0.1.8 \
@@ -450,8 +459,8 @@ dm-tree==0.1.8 \
     # via
     #   keras-core
     #   tensorflow-datasets
-    #   tensorflow-probability
     #   tfds-nightly
+    #   tfp-nightly
 docstring-parser==0.16 \
     --hash=sha256:538beabd0af1e2db0146b6bd3caa526c35a34d61af9fd2887f3a8a27a739aa6e \
     --hash=sha256:bf0a1387354d3691d102edef7ec124f219ef639982d096e26e3b60aeffa90637
@@ -569,7 +578,6 @@ flatbuffers==25.2.10 \
 flax @ git+https://github.com/wsmoses/flax@d854bf3c29c5048c1f2265d3659ba995bf218476
     # via
     #   clu
-    #   dm-haiku
     #   google-jetstream
     #   jax-md
     #   maxtext
@@ -722,7 +730,8 @@ fsspec==2024.9.0 \
     --hash=sha256:4b0afb90c2f21832df142f292649035d80b421f60a9e1c027802e5a0da2b04e8 \
     --hash=sha256:a0947d552d8a6efa72cc2c730b12c41d043509156966cca4fb157b0f2a0c574b
     # via
-    #   dinosaur-dycore
+    #   dask
+    #   dinosaur
     #   etils
     #   gcsfs
     #   huggingface-hub
@@ -731,7 +740,7 @@ gast==0.6.0 \
     --hash=sha256:88fc5300d32c7ac6ca7b515310862f71e6fdf2c029bbec7c66c0f5dd47b6b1fb
     # via
     #   tensorflow
-    #   tensorflow-probability
+    #   tfp-nightly
 gcsfs==2024.9.0.post1 ; sys_platform == "linux" \
     --hash=sha256:7ca70ee9d7c7dbce1a3e36b4883e14102c2d7b4284f49e242843a437bc684684 \
     --hash=sha256:f3ab9d3bedc45da8cf40baed7c3a1e1694e8f599160d9138d78f0ef25e4a3ca1
@@ -941,6 +950,10 @@ importlab==0.8.1 \
     --hash=sha256:124cfa00e8a34fefe8aac1a5e94f56c781b178c9eb61a1d3f60f7e03b77338d3 \
     --hash=sha256:b3893853b1f6eb027da509c3b40e6787e95dd66b4b66f1b3613aad77556e1465
     # via pytype
+importlib-metadata==8.7.0 \
+    --hash=sha256:d13b81ad223b890aa16c5471f2ac3056cf76c5f10f82d6f9292f0b415f389000 \
+    --hash=sha256:e5dd1551894c77868a30651cef00984d50e1002d06942a7101d34870c5f02afd
+    # via dask
 importlib-resources==6.4.5 \
     --hash=sha256:980862a1d16c9e147a59603677fa2aa5fd82b87f223b6cb870695bcfce830065 \
     --hash=sha256:ac29d5f956f01d5e4bb63102a5a19957f1b9175e45649977264a1416783bb717
@@ -961,7 +974,7 @@ jax[cuda12]==0.7.0 ; sys_platform == "linux" \
     #   -r builddeps/requirements.in
     #   chex
     #   clu
-    #   dinosaur-dycore
+    #   dinosaur
     #   e3nn-jax
     #   flax
     #   google-jetstream
@@ -972,6 +985,7 @@ jax[cuda12]==0.7.0 ; sys_platform == "linux" \
     #   optax
     #   orbax-checkpoint
     #   seqio
+    #   tfp-nightly
     #   tree-math
 jax-cuda12-pjrt==0.7.0 \
     --hash=sha256:742cc260d697771cb883084398748a007d233286aa3fe5fc152a74c073d59a24 \
@@ -1010,7 +1024,7 @@ jaxlib==0.7.0 \
     #   -r builddeps/requirements.in
     #   chex
     #   clu
-    #   dinosaur-dycore
+    #   dinosaur
     #   e3nn-jax
     #   google-jetstream
     #   jax
@@ -1021,6 +1035,7 @@ jaxlib==0.7.0 \
     #   optax
     #   orbax-checkpoint
     #   seqio
+    #   tfp-nightly
 jinja2==3.1.6 \
     --hash=sha256:0137fb05990d35f1275a587e9aee6d56da821fc83491a0fb838183be43f66d6d \
     --hash=sha256:85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67
@@ -1135,6 +1150,10 @@ libcst==1.8.2 \
     --hash=sha256:f74b0bc7378ad5afcf25ac9d0367b4dbba50f6f6468faa41f5dfddcf8bf9c0f8 \
     --hash=sha256:fa3b807c2d2b34397c135d19ad6abb20c47a2ddb7bf65d90455f2040f7797e1e
     # via pytype
+locket==1.0.0 \
+    --hash=sha256:5c0d4c052a8bbbf750e056a8e65ccd309086f4f0f18a2eac306a8dfa4112a632 \
+    --hash=sha256:b6c819a722f7b6bd955b80781788e4a66a55628b858d347536b7e81325a3a5e3
+    # via partd
 lxml==6.0.0 \
     --hash=sha256:013090383863b72c62a702d07678b658fa2567aa58d373d963cca245b017e065 \
     --hash=sha256:032e65120339d44cdc3efc326c9f660f5f7205f3a535c1fdbf898b29ea01fb72 \
@@ -1575,9 +1594,8 @@ networkx==3.5 \
     # via
     #   importlab
     #   pytype
-neuralgcm==1.0.0 \
-    --hash=sha256:28f42b73188df92e35d5e187ef9ebd2b2a9922cfc46e05e0ae5202f451ef7c18 \
-    --hash=sha256:e75889894e8948211cec9bf18c89df5e223ef5a6d9a6444bb42f4b36143a5c27
+neuralgcm @ https://github.com/wsmoses/neuralgcm/archive/d2412377026f41baaec35510423c69657dbcde2c.tar.gz \
+    --hash=sha256:ebc4318f8d087db500d422839465423542b436161aad00108f1d3742e847766b
     # via -r /home/wmoses/.cache/bazel/_bazel_wmoses/5d297ebbef9074123114ecedd7ac7300/execroot/__main__/bazel-out/k8-opt-ST-259defaf8903/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
 ninja==1.11.1.4 \
     --hash=sha256:055f386fb550c2c9d6157e45e20a84d29c47968876b9c5794ae2aec46f952306 \
@@ -1658,7 +1676,7 @@ numpy==1.26.4 \
     #   -r /home/wmoses/.cache/bazel/_bazel_wmoses/5d297ebbef9074123114ecedd7ac7300/execroot/__main__/bazel-out/k8-opt-ST-259defaf8903/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
     #   chex
     #   clu
-    #   dinosaur-dycore
+    #   dinosaur
     #   dm-haiku
     #   e3nn-jax
     #   etils
@@ -1687,9 +1705,9 @@ numpy==1.26.4 \
     #   tensorboard
     #   tensorflow
     #   tensorflow-datasets
-    #   tensorflow-probability
     #   tensorstore
     #   tfds-nightly
+    #   tfp-nightly
     #   transformers
     #   xarray
     #   xarray-tensorstore
@@ -1870,6 +1888,7 @@ packaging==24.1 \
     --hash=sha256:5b8f2217dbdbd2f7f384c41c628544e6d52f2d0f53c6d0c3ea61aa5d1d7ff124
     # via
     #   clu
+    #   dask
     #   huggingface-hub
     #   kagglehub
     #   keras
@@ -1925,17 +1944,21 @@ pandas==2.2.3 \
     --hash=sha256:f3a255b2c19987fbbe62a9dfd6cff7ff2aa9ccab3fc75218fd4b7530f01efa24 \
     --hash=sha256:fffb8ae78d8af97f849404f21411c95062db1496aeb3e56f146f0355c9989319
     # via
-    #   dinosaur-dycore
+    #   dinosaur
     #   neuralgcm
     #   xarray
 parameterized==0.9.0 \
     --hash=sha256:4e0758e3d41bea3bbd05ec14fc2c24736723f243b28d702081aef438c9372b1b \
     --hash=sha256:7fc905272cefa4f364c1a3429cbbe9c0f98b793988efb5bf90aac80f08db09b1
     # via google-jetstream
+partd==1.4.2 \
+    --hash=sha256:978e4ac767ec4ba5b86c6eaa52e5a2a3bc748a2ca839e8cc798f1cc6ce6efb0f \
+    --hash=sha256:d022c33afbdc8405c226621b015e8067888173d85f7f5ecebb3cafed9a20f02c
+    # via dask
 pint==0.24.4 \
     --hash=sha256:35275439b574837a6cd3020a5a4a73645eb125ce4152a73a2f126bf164b91b80 \
     --hash=sha256:aa54926c8772159fcf65f82cc0d34de6768c151b32ad1deb0331291c38fe7659
-    # via dinosaur-dycore
+    # via dinosaur
 platformdirs==4.3.6 \
     --hash=sha256:357fb2acbc885b0419afd3ce3ed34564c13c9b95c89360cd9563f73aa5e2b907 \
     --hash=sha256:73e575e1408ab8103900836b97580d5307456908a03e92031bab39e4554cc3fb
@@ -2298,6 +2321,7 @@ pyyaml==6.0.2 \
     --hash=sha256:f753120cb8181e736c57ef7636e83f31b9c0d1722c516f7e86cf15b7aa57ff12 \
     --hash=sha256:ff3824dc5261f50c9b0dfb3be22b4567a6f938ccce4587b38952d85fd9e9afe4
     # via
+    #   dask
     #   flax
     #   huggingface-hub
     #   libcst
@@ -2480,7 +2504,7 @@ scikit-learn==1.5.2 \
     --hash=sha256:f763897fe92d0e903aa4847b0aec0e68cadfff77e8a0687cabd946c89d17e675 \
     --hash=sha256:f8b0ccd4a902836493e026c03256e8b206656f91fbcc4fde28c57a5b752561f1 \
     --hash=sha256:f932a02c3f4956dfb981391ab24bda1dbd90fe3d628e4b42caef3e041c67707a
-    # via dinosaur-dycore
+    # via dinosaur
 scipy==1.14.1 \
     --hash=sha256:0c2f95de3b04e26f5f3ad5bb05e74ba7f68b837133a4492414b3afd79dfe540e \
     --hash=sha256:1729560c906963fc8389f6aac023739ff3983e727b1a4d87696b7bf108316a79 \
@@ -2516,7 +2540,7 @@ scipy==1.14.1 \
     --hash=sha256:edaf02b82cd7639db00dbff629995ef185c8df4c3ffa71a5562a595765a06ce1 \
     --hash=sha256:fef8c87f8abfb884dac04e97824b61299880c43f4ce675dd2cbeadd3c9b466d2
     # via
-    #   dinosaur-dycore
+    #   dinosaur
     #   jax
     #   jaxlib
     #   scikit-learn
@@ -2586,7 +2610,7 @@ six==1.16.0 \
     #   python-dateutil
     #   tensorboard
     #   tensorflow
-    #   tensorflow-probability
+    #   tfp-nightly
 sympy==1.13.3 \
     --hash=sha256:54612cf55a62755ee71824ce692986f23c88ffa77207b30c1368eda4a7060f73 \
     --hash=sha256:b27fd2c6530e0ab39e275fc9b683895367e51d5da91baa8d3d64db2565fec4d9
@@ -2654,9 +2678,6 @@ tensorflow-metadata==1.16.1 \
     # via
     #   tensorflow-datasets
     #   tfds-nightly
-tensorflow-probability==0.25.0 \
-    --hash=sha256:f3f4d6431656c0122906888afe1b67b4400e82bd7f254b45b92e6c5b84ea8e3e
-    # via neuralgcm
 tensorflow-text==2.19.0 \
     --hash=sha256:01119fbf7836a50bf7beb118d4fba2211a5b4a1001c7118db2c0294b3f7772ad \
     --hash=sha256:23468daf9ccc8220317b0457e9a72e199a78894fda269dec68e5188e153887e6 \
@@ -2712,6 +2733,9 @@ tfds-nightly==4.9.9.dev202507270047 \
     --hash=sha256:627d20dbd302775694efabd0ff9d57bd57a275880026684cd0adc6d37ca992a6 \
     --hash=sha256:77b95d66863dcbc2cd56f85ae2f4b93974eca55b0b7afef175bf5c5d382789aa
     # via seqio
+tfp-nightly[jax]==0.26.0.dev20250727 \
+    --hash=sha256:395b90a97f496452368c47a7e40508d7316fbfd4b33ec8654bc7131c468115bc
+    # via neuralgcm
 threadpoolctl==3.5.0 \
     --hash=sha256:082433502dd922bf738de0d8bcc4fdcbf0979ff44c42bd40f5af8a282f6fa107 \
     --hash=sha256:56c1e26c150397e58c4926da8eeee87533b1e32bef131bd4bf6a2f45f3185467
@@ -2782,7 +2806,10 @@ tomlkit==0.13.3 \
 toolz==1.0.0 \
     --hash=sha256:292c8f1c4e7516bf9086f8850935c799a874039c8bcf959d47b600e4c44a6236 \
     --hash=sha256:2c86e3d9a04798ac556793bced838816296a2f085017664e4995cb40a1047a02
-    # via chex
+    # via
+    #   chex
+    #   dask
+    #   partd
 tqdm==4.67.1 \
     --hash=sha256:26445eca388f82e72884e0d580d5464cd801a3ea01e63e5601bdff9ba6a48de2 \
     --hash=sha256:f8aef9c52c08c13a65f30ea34f4e5aac3fd1a34959879d7e59e63027286627f2
@@ -2800,7 +2827,7 @@ transformers==4.54.0 \
 tree-math==0.2.1 \
     --hash=sha256:77613c2360e067b16c0738b32e7d64aa5e1167e609ca1a32b6fa05dcb0d330bb \
     --hash=sha256:80b01a5d29c1339db0cd8b465f9fad4f872adac117ed599b14f093a6c52821fe
-    # via dinosaur-dycore
+    # via dinosaur
 typing-extensions==4.12.2 \
     --hash=sha256:04e5ca0351e0f3f85c6853954072df659d0d13fac324d0072316b67d7794700d \
     --hash=sha256:1a7ead55c7e559dd4dee8856e3a88b41225abfe1ce8df57b7c13915fe121ffb8
@@ -2925,13 +2952,13 @@ xarray==2024.10.0 \
     --hash=sha256:ae1d38cb44a0324dfb61e492394158ae22389bf7de9f3c174309c17376df63a0 \
     --hash=sha256:e369e2bac430e418c2448e5b96f07da4635f98c1319aa23cfeb3fbcb9a01d2e0
     # via
-    #   dinosaur-dycore
+    #   dinosaur
     #   neuralgcm
     #   xarray-tensorstore
 xarray-tensorstore==0.1.4 \
     --hash=sha256:1dacec6376912373dbf9b239d96184090f400a49cd66017f5bf0c824793c9552 \
     --hash=sha256:de3558c08891c4a7524cf579cb271d6cc005962efd1b8601dd679b58b13a68c8
-    # via dinosaur-dycore
+    # via dinosaur
 yarl==1.18.3 \
     --hash=sha256:00e5a1fea0fd4f5bfa7440a47eff01d9822a65b4488f7cff83155a0f31a2ecba \
     --hash=sha256:02ddb6756f8f4517a2d5e99d8b2f272488e18dd0bfbc802f31c16c6c20f22193 \
@@ -3023,7 +3050,9 @@ zarr==2.18.3 \
 zipp==3.20.2 \
     --hash=sha256:a817ac80d6cf4b23bf7f2828b7cabf326f15a001bea8b1f9b49631780ba28350 \
     --hash=sha256:bc9eb26f4506fda01b81bcde0ca78103b6e62f991b381fec825435c836edbc29
-    # via etils
+    # via
+    #   etils
+    #   importlib-metadata
 
 # The following packages are considered to be unsafe in a requirements file:
 setuptools==80.9.0 \
