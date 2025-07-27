@@ -45,7 +45,7 @@ TEST_DEPS = [
         "@pypi_libtpu_nightly//:pkg",
         "@pypi_requests//:pkg",
     ],
-    "@bazel_tools//src/conditions:linux_x86_64": ["@pypi_jax_cuda12_plugin//:pkg"],
+    "@bazel_tools//src/conditions:linux_x86_64": [],
     "//conditions:default": [],
 })
 
