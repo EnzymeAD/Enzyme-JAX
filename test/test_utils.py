@@ -75,6 +75,18 @@ def fix_paths():
     LD_LIB = (
         os.path.join(
             runfiles,
+            "pypi_nvidia_cufft_cu12",
+            "site-packages",
+            "nvidia",
+            "cufft",
+            "lib",
+        )
+        + ":"
+        + LD_LIB
+    )
+    LD_LIB = (
+        os.path.join(
+            runfiles,
             "pypi_nvidia_cuda_cupti_cu12",
             "site-packages",
             "nvidia",
@@ -256,6 +268,21 @@ def fix_paths():
         import ctypes
 
         ctypes.cdll.LoadLibrary(cupti_path)
+
+    cufft_path = os.path.join(
+        runfiles,
+        "pypi_nvidia_cufft_cu12",
+        "site-packages",
+        "nvidia",
+        "cufft",
+        "lib",
+        "libcufft.so.11",
+    )
+
+    if os.path.exists(cufft_path):
+        import ctypes
+
+        ctypes.cdll.LoadLibrary(cufft_path)
 
 
 from absl.testing import absltest

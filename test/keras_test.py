@@ -113,7 +113,7 @@ if __name__ == "__main__":
     import platform
 
     # Deps not available on macos
-    if platform.system() != "Darwin" and platform.machine() == 'x86_64':
+    if platform.system() != "Darwin" and platform.machine() == "x86_64":
         from test_utils import fix_paths
 
         fix_paths()
