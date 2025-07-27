@@ -564,9 +564,9 @@ flatbuffers==25.2.10 \
     --hash=sha256:97e451377a41262f8d9bd4295cc836133415cc03d8cb966410a4af92eb00d26e \
     --hash=sha256:ebba5f4d5ea615af3f7fd70fc310636fbb2bbd1f566ac0a23d98dd412de50051
     # via tensorflow
-flax @ git+https://github.com/wsmoses/flax@d854bf3c29c5048c1f2265d3659ba995bf218476 \
-    --hash=sha256:12cd8f7162165ddd56877fb1cd9a4fcb47a31569e4c5343eeb59a36369fa2cfe \
-    --hash=sha256:8b7f361eed0f5324e81f9dc8d02ea53da5f993d7c2e37e7aa5b37d3f6331dd53
+# WARNING: pip install will require the following package to be hashed.
+# Consider using a hashable URL like https://github.com/jazzband/pip-tools/archive/SOMECOMMIT.zip
+flax @ git+https://github.com/wsmoses/flax@d854bf3c29c5048c1f2265d3659ba995bf218476
     # via
     #   clu
     #   dm-haiku

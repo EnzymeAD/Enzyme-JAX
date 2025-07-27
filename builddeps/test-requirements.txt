@@ -7,7 +7,7 @@ https://github.com/wsmoses/jax-md/archive/45059b8f63dad0b5cb171feafff71b82162487
 https://github.com/wsmoses/jraph/archive/b00d9a03db76c69a258a86df81638b9a2f28829f.tar.gz; sys_platform == 'linux'
 
 # maxtext can't be installed concurrently, but installing it fixes
-# https://github.com/wsmoses/maxtext/archive/bc50722be7d89e4003bd830b80e4ac968be658eb.tar.gz
+https://github.com/wsmoses/maxtext/archive/bc50722be7d89e4003bd830b80e4ac968be658eb.tar.gz
 
 jax[cuda12]; sys_platform == 'linux'
 
