@@ -122,14 +122,12 @@ jobs:
           name: Enzyme-JAX-Wheel-${{ matrix.os }}-${{ matrix.python }}
           path: "bazel-bin/*.whl"
           retention-days: 90
-      - name: Run tests
-        if: ${{ runner.os != 'Linux' }}
-        run: |
-          bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/...
       - name: Run lit tests
-        if: ${{ runner.os == 'Linux' }}
         run: |
           bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings $(find test/ -name '*.mlir' | awk '{print $1 ".test"}')
+      - name: Run tests
+        run: |
+          bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/...
       - name: Upload test results
         uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
