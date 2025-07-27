@@ -93,11 +93,12 @@ jobs:
       - name: Update TPU
         if: ${{ contains(matrix.os, 'tpu') }}
         run: |
-          # sed -i.bak0 "s/jax\$/jax\[tpu\]/g" builddeps/test-requirements.txt
-          sed -i.bak0 "/cuda12/d" builddeps/test-requirements.txt
+          sed -i.bak0 "s/cuda12/tpu/g" builddeps/test-requirements.txt
           sed -i.bak0 "s/pypi_jax_cuda12_plugin/pypi_libtpu/g" test/BUILD
-          echo libtpu==0.0.19 >> builddeps/test-requirements.txt
-          cat builddeps/test-requirements.txt
+      - name: Only test CUDA on GPU
+        if: ${{ !contains(matrix.os, 'a100') }}
+        run: |
+          sed -i.bak0 "/cuda12/d" builddeps/test-requirements.txt
       - name: Update Python requirements files
         run: |
           bazel run $BAZEL_FLAGS --color=yes //builddeps:requirements.update
