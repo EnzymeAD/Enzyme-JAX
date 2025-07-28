@@ -55,11 +55,12 @@ jobs:
         os:
           - linux-x86-n2-32
           - linux-arm64-c4a-32
-          - linux-x86-ct6e-180-4tpu
+            # TPU not recognized fully, temporarily disabling
+          # - linux-x86-ct6e-180-4tpu
           - linux-x86-a2-48-a100-4gpu
           - macOS-latest
         python:
-          - '3.12'
+          - '3.11'
     env:
       HERMETIC_PYTHON_VERSION: ${{ matrix.python }}
     steps:
@@ -78,6 +79,16 @@ jobs:
           if [ ${{ runner.arch }} == ARM64 ] && [ ${{ runner.os }} == Linux ]; then
               BAZEL_FLAGS="${BAZEL_FLAGS} --linkopt=-fuse-ld=lld"
           fi
+          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_TOPOLOGY_WRAP"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=CHIPS_PER_HOST_BOUNDS"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=ALT"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_WORKER_ID"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_WORKER_HOSTNAMES"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_ACCELERATOR_TYPE"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_TOPOLOGY"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_HOST_BOUNDS"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=WRAP"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_TOPOLOGY_ALT"
           echo "BAZEL_FLAGS=${BAZEL_FLAGS}" >> "${GITHUB_ENV}"
       - uses: actions/checkout@v4
       - uses: bazel-contrib/setup-bazel@0.15.0
@@ -93,11 +104,13 @@ jobs:
       - name: Update TPU
         if: ${{ contains(matrix.os, 'tpu') }}
         run: |
-          # sed -i.bak0 "s/jax\$/jax\[tpu\]/g" builddeps/test-requirements.txt
-          # sed -i.bak0 "/cuda12/d" builddeps/test-requirements.txt
+          env
+          sed -i.bak0 "s/cuda12/tpu/g" builddeps/test-requirements.txt
           sed -i.bak0 "s/pypi_jax_cuda12_plugin/pypi_libtpu/g" test/BUILD
-          echo libtpu==0.0.19 >> builddeps/test-requirements.txt
-          cat builddeps/test-requirements.txt
+      - name: Only test CUDA on GPU
+        if: ${{ !contains(matrix.os, 'a100') }}
+        run: |
+          sed -i.bak0 "/cuda12/d" builddeps/test-requirements.txt
       - name: Update Python requirements files
         run: |
           bazel run $BAZEL_FLAGS --color=yes //builddeps:requirements.update
@@ -122,14 +135,12 @@ jobs:
           name: Enzyme-JAX-Wheel-${{ matrix.os }}-${{ matrix.python }}
           path: "bazel-bin/*.whl"
           retention-days: 90
+      - name: Run lit tests
+        run: |
+          bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/lit_tests/...          
       - name: Run tests
-        if: ${{ runner.os != 'Linux' }}
         run: |
           bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/...
-      - name: Run lit tests
-        if: ${{ runner.os == 'Linux' }}
-        run: |
-          bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings $(find test/ -name '*.mlir' | awk '{print $1 ".test"}')
       - name: Upload test results
         uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
