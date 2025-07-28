@@ -67,7 +67,7 @@ def main(argv):
         ]
 
     # Too long for cpu ci
-    if jax.default_backend() != 'cpu':
+    if jax.default_backend() != "cpu":
         benchfns += [
             ("bert_predict", benchmark.bert.bert_predict_run, Both),
         ]
