@@ -26,6 +26,7 @@
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Passes/StructuredTensors.h"
 #include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/Base.h"
 #include "stablehlo/dialect/ChloOps.h"
@@ -10140,8 +10141,7 @@ struct DUSSliceSimplify final
         });
 
     LLVM_DEBUG(
-        for (auto [idx, operandSize, updateSize]
-             : llvm::zip_equal(
+        for (auto [idx, operandSize, updateSize] : llvm::zip_equal(
                  newDusIndices,
                  cast<RankedTensorType>(preSliceOperand.getType()).getShape(),
                  cast<RankedTensorType>(preSliceUpdate.getType()).getShape())) {
@@ -19819,28 +19819,20 @@ struct ScatterMultiplySimplify final
       }
     }
 
-    if (scatterOp.getInputs().size() != 1)
-      return rewriter.notifyMatchFailure(
-          op, "ScatterOp with more than one input not supported");
-
-    auto input = scatterOp.getInputs()[0];
-    if (!matchPattern(input, m_AnyZeroFloat()) &&
-        !matchPattern(input, m_Zero()))
-      return rewriter.notifyMatchFailure(op, "ScatterOp with non-zero input");
-
-    if (!scatterOp.getResult(0).hasOneUse())
-      return rewriter.notifyMatchFailure(op, "ScatterOp with multiple uses");
-
-    if (!isScatterSetindexOp(scatterOp))
-      return rewriter.notifyMatchFailure(op, "ScatterOp with non-setindex");
-
-    auto scatterDimNumbers = scatterOp.getScatterDimensionNumbers();
+    auto status =
+        detectConstantSetindexScatterOp(scatterOp, /*allowedMultipleUses*/
+                                        false,
+                                        /*onlyConstantZerosAllowed*/
+                                        true);
+    if (!status.ok())
+      return rewriter.notifyMatchFailure(op, status.status().message());
 
     SmallVector<int64_t> sliceSizes = computeGatherSliceSizes(scatterOp);
 
     auto gatheredValues = rewriter.create<stablehlo::GatherOp>(
         op.getLoc(), otherValue, scatterOp.getScatterIndices(),
-        getGatherDims(rewriter.getContext(), scatterDimNumbers),
+        getGatherDims(rewriter.getContext(),
+                      scatterOp.getScatterDimensionNumbers()),
         rewriter.getDenseI64ArrayAttr(sliceSizes),
         scatterOp.getIndicesAreSortedAttr());
 
@@ -19930,22 +19922,15 @@ struct UnaryElementwiseScatterSimplify final
     if (!scatterOp)
       return rewriter.notifyMatchFailure(op, "not a scatter op");
 
-    if (scatterOp.getInputs().size() != 1)
+    auto statusOrAttr = detectConstantSetindexScatterOp(
+        scatterOp, false, /*onlyConstantZerosAllowed*/false);
+    if (!statusOrAttr.ok()) {
       return rewriter.notifyMatchFailure(
-          op, "ScatterOp with more than one input not supported");
-
-    if (!scatterOp.getResult(0).hasOneUse())
-      return rewriter.notifyMatchFailure(op, "ScatterOp with multiple uses");
-
-    if (!isScatterSetindexOp(scatterOp))
-      return rewriter.notifyMatchFailure(op, "ScatterOp with non-setindex");
+          op, statusOrAttr.status().message());
+    }
 
     auto scatterInput = scatterOp.getInputs()[0];
-    DenseElementsAttr scatterInputAttr;
-    // In this case, we are will definitely increase the compute cost
-    if (!matchPattern(scatterInput, m_Constant(&scatterInputAttr)))
-      return rewriter.notifyMatchFailure(op,
-                                         "ScatterOp with non-constant input");
+    auto scatterInputAttr = statusOrAttr.value();
 
     auto elemType =
         cast<RankedTensorType>(op->getResult(0).getType()).getElementType();
