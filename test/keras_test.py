@@ -51,8 +51,7 @@ def main(argv):
             ),
         ]
 
-    # Uses too much ram on the 4070 in CI
-    if False:
+    if True:
         benchfns += [
             # Seems fine on gpu
             ("mistral_predict", benchmark.mistral.mistral_predict_run, Both),
