@@ -175,6 +175,6 @@ py_test(
     ],
     imports = ["."],
     deps = TEST_DEPS + ["@pypi_maxtext//:pkg"],
-    timeout='long'
+    timeout='long',
     tags = ["exclusive"]
 )
