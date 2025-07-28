@@ -10,6 +10,7 @@
 // ops.
 //===----------------------------------------------------------------------===//
 
+#include "absl/status/statusor.h"
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Analysis/TopologicalSortUtils.h"
 #include "mlir/Dialect/CommonFolders.h"
@@ -10141,7 +10142,8 @@ struct DUSSliceSimplify final
         });
 
     LLVM_DEBUG(
-        for (auto [idx, operandSize, updateSize] : llvm::zip_equal(
+        for (auto [idx, operandSize, updateSize]
+             : llvm::zip_equal(
                  newDusIndices,
                  cast<RankedTensorType>(preSliceOperand.getType()).getShape(),
                  cast<RankedTensorType>(preSliceUpdate.getType()).getShape())) {
@@ -19923,10 +19925,9 @@ struct UnaryElementwiseScatterSimplify final
       return rewriter.notifyMatchFailure(op, "not a scatter op");
 
     auto statusOrAttr = detectConstantSetindexScatterOp(
-        scatterOp, false, /*onlyConstantZerosAllowed*/false);
+        scatterOp, false, /*onlyConstantZerosAllowed*/ false);
     if (!statusOrAttr.ok()) {
-      return rewriter.notifyMatchFailure(
-          op, statusOrAttr.status().message());
+      return rewriter.notifyMatchFailure(op, statusOrAttr.status().message());
     }
 
     auto scatterInput = scatterOp.getInputs()[0];
@@ -20875,6 +20876,159 @@ private:
   }
 };
 
+struct DotGeneralReshape final
+    : public CheckedOpRewritePattern<stablehlo::DotGeneralOp,
+                                     DotGeneralReshape> {
+  using CheckedOpRewritePattern<stablehlo::DotGeneralOp,
+                                DotGeneralReshape>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp op,
+                                    PatternRewriter &rewriter) const {
+    auto lhsReshapeOp = op.getLhs().getDefiningOp<stablehlo::ReshapeOp>();
+    auto rhsReshapeOp = op.getRhs().getDefiningOp<stablehlo::ReshapeOp>();
+    if (!lhsReshapeOp && !rhsReshapeOp)
+      return failure();
+
+    auto dotGeneralDims = op.getDotDimensionNumbers();
+
+    auto lhsStatusOrDims =
+        canFuseOp(lhsReshapeOp, dotGeneralDims.getLhsBatchingDimensions(),
+                  dotGeneralDims.getLhsContractingDimensions());
+    bool canFuseLhs = lhsStatusOrDims.ok();
+    SmallVector<int64_t> lhsInsertionDims;
+    if (canFuseLhs)
+      lhsInsertionDims = lhsStatusOrDims.value();
+    Value newLhs =
+        lhsReshapeOp && canFuseLhs ? lhsReshapeOp.getOperand() : op.getLhs();
+
+    auto rhsStatusOrDims =
+        canFuseOp(rhsReshapeOp, dotGeneralDims.getRhsBatchingDimensions(),
+                  dotGeneralDims.getRhsContractingDimensions());
+    bool canFuseRhs = rhsStatusOrDims.ok();
+    SmallVector<int64_t> rhsInsertionDims;
+    if (canFuseRhs)
+      rhsInsertionDims = rhsStatusOrDims.value();
+    Value newRhs =
+        rhsReshapeOp && canFuseRhs ? rhsReshapeOp.getOperand() : op.getRhs();
+
+    if (!canFuseLhs && !canFuseRhs)
+      return failure();
+
+    SmallVector<int64_t> adjustedLhsBatchingDims, adjustedLhsContractingDims,
+        adjustedRhsBatchingDims, adjustedRhsContractingDims;
+
+    if (canFuseLhs) {
+      adjustedLhsBatchingDims = adjustDimsForInsertion(
+          dotGeneralDims.getLhsBatchingDimensions(), lhsInsertionDims);
+      adjustedLhsContractingDims = adjustDimsForInsertion(
+          dotGeneralDims.getLhsContractingDimensions(), lhsInsertionDims);
+    } else {
+      adjustedLhsBatchingDims =
+          llvm::to_vector(dotGeneralDims.getLhsBatchingDimensions());
+      adjustedLhsContractingDims =
+          llvm::to_vector(dotGeneralDims.getLhsContractingDimensions());
+    }
+
+    if (canFuseRhs) {
+      adjustedRhsBatchingDims = adjustDimsForInsertion(
+          dotGeneralDims.getRhsBatchingDimensions(), rhsInsertionDims);
+      adjustedRhsContractingDims = adjustDimsForInsertion(
+          dotGeneralDims.getRhsContractingDimensions(), rhsInsertionDims);
+    } else {
+      adjustedRhsBatchingDims =
+          llvm::to_vector(dotGeneralDims.getRhsBatchingDimensions());
+      adjustedRhsContractingDims =
+          llvm::to_vector(dotGeneralDims.getRhsContractingDimensions());
+    }
+
+    auto lhsShape = cast<RankedTensorType>(newLhs.getType()).getShape();
+    auto rhsShape = cast<RankedTensorType>(newRhs.getType()).getShape();
+    SmallVector<int64_t> newShape;
+    for (int64_t idx : adjustedLhsBatchingDims)
+      newShape.push_back(lhsShape[idx]);
+    for (auto [idx, dim] : llvm::enumerate(lhsShape)) {
+      if (std::find(adjustedLhsContractingDims.begin(),
+                    adjustedLhsContractingDims.end(),
+                    idx) != adjustedLhsContractingDims.end() ||
+          std::find(adjustedRhsBatchingDims.begin(),
+                    adjustedRhsBatchingDims.end(),
+                    idx) != adjustedRhsBatchingDims.end())
+        continue;
+      newShape.push_back(dim);
+    }
+    for (auto [idx, dim] : llvm::enumerate(rhsShape)) {
+      if (std::find(adjustedRhsContractingDims.begin(),
+                    adjustedRhsContractingDims.end(),
+                    idx) != adjustedRhsContractingDims.end() ||
+          std::find(adjustedLhsBatchingDims.begin(),
+                    adjustedLhsBatchingDims.end(),
+                    idx) != adjustedLhsBatchingDims.end())
+        continue;
+      newShape.push_back(dim);
+    }
+
+    auto newDotGeneral = rewriter.create<stablehlo::DotGeneralOp>(
+        op.getLoc(),
+        RankedTensorType::get(
+            newShape,
+            cast<RankedTensorType>(newLhs.getType()).getElementType()),
+        newLhs, newRhs,
+        stablehlo::DotDimensionNumbersAttr::get(
+            rewriter.getContext(), adjustedLhsBatchingDims,
+            adjustedRhsBatchingDims, adjustedLhsContractingDims,
+            adjustedRhsContractingDims),
+        op.getPrecisionConfigAttr(), op.getAlgorithmAttr());
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
+                                                      newDotGeneral);
+    return success();
+  }
+
+private:
+  absl::StatusOr<SmallVector<int64_t>>
+  canFuseOp(stablehlo::ReshapeOp op, ArrayRef<int64_t> batchingDims,
+            ArrayRef<int64_t> contractingDims) const {
+    if (!op)
+      return absl::FailedPreconditionError("ReshapeOp is null");
+
+    SmallVector<int64_t> insertionDims = findReshapeInsertionDims(
+        cast<RankedTensorType>(op.getOperand().getType()),
+        cast<RankedTensorType>(op.getType()));
+
+    bool found = false;
+    for (auto dim : insertionDims) {
+      if (std::find(batchingDims.begin(), batchingDims.end(), dim) !=
+          batchingDims.end()) {
+        return absl::InvalidArgumentError("dim present in batching dims.");
+      }
+      if (std::find(contractingDims.begin(), contractingDims.end(), dim) !=
+          contractingDims.end()) {
+        return absl::InvalidArgumentError("dim present in contracting dims.");
+      }
+    }
+
+    return insertionDims;
+  }
+
+  SmallVector<int64_t>
+  adjustDimsForInsertion(ArrayRef<int64_t> dims,
+                         ArrayRef<int64_t> insertionDims) const {
+    SmallVector<int64_t> adjustedDims;
+    adjustedDims.reserve(dims.size());
+
+    for (int64_t dim : dims) {
+      int64_t adjustedDim = dim;
+      for (int64_t insertionDim : insertionDims) {
+        if (insertionDim <= adjustedDim) {
+          adjustedDim--;
+        }
+      }
+      adjustedDims.push_back(adjustedDim);
+    }
+
+    return adjustedDims;
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -21101,23 +21255,24 @@ struct EnzymeHLOOptPass
     patterns.add<TransposeExtend>(context);
     patterns.add<TransposeRotate>(context);
 
-    patterns.add<
-        AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
-        OrSimplify, XorSimplify, MulSimplify, DivSimplify, RemSimplify,
-        PowSimplify, NoopSlice, NoopReverse, SliceSlice, LogSimplify,
-        ShiftRightLogicalSimplify, NegativePadToSlice, SliceSimplify,
-        ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
-        DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
-        BroadcastToReshape, ReshapeEmptyBroadcast, BroadcastReshape,
-        ConstPropThroughBarrier, ReplaceNegAddWithSubtract, SignAbsSimplify,
-        AbsPositiveSimplify, SimplifyBoundary<enzymexla::ExtendOp>,
-        SimplifyBoundary<enzymexla::WrapOp>,
-        SimplifyBoundary<enzymexla::RotateOp>, TransposeReshapeToBroadcast,
-        ReshapeTransposeToBroadcast, SelectBroadcastInDim, PowerMultiplyToPower,
-        NegMulConstSimplify, NegDivConstSimplify,
-        ReshapeDeletionsBroadcastInDimSimplify,
-        ReshapeInsertionsBroadcastInDimSimplify>(context,
-                                                 PatternBenefit(65000));
+    patterns
+        .add<AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
+             OrSimplify, XorSimplify, MulSimplify, DivSimplify, RemSimplify,
+             PowSimplify, NoopSlice, NoopReverse, SliceSlice, LogSimplify,
+             ShiftRightLogicalSimplify, NegativePadToSlice, SliceSimplify,
+             ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
+             DotGeneralReshape, DynamicSliceToStatic, DynamicUpdateSliceElim,
+             ReduceToReshape, BroadcastToReshape, ReshapeEmptyBroadcast,
+             BroadcastReshape, ConstPropThroughBarrier,
+             ReplaceNegAddWithSubtract, SignAbsSimplify, AbsPositiveSimplify,
+             SimplifyBoundary<enzymexla::ExtendOp>,
+             SimplifyBoundary<enzymexla::WrapOp>,
+             SimplifyBoundary<enzymexla::RotateOp>, TransposeReshapeToBroadcast,
+             ReshapeTransposeToBroadcast, SelectBroadcastInDim,
+             PowerMultiplyToPower, NegMulConstSimplify, NegDivConstSimplify,
+             ReshapeDeletionsBroadcastInDimSimplify,
+             ReshapeInsertionsBroadcastInDimSimplify>(context,
+                                                      PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,
                  DynamicUpdateSliceConstProp, PadSimplify>(
