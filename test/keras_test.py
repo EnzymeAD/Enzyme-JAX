@@ -53,8 +53,11 @@ def main(argv):
 
     if True:
         benchfns += [
-            # Seems fine on gpu
             ("mistral_predict", benchmark.mistral.mistral_predict_run, Both),
+        ]
+    # TODO some inferencfe issue?
+    if False:
+        benchfns += [
             ("mistral_fit", benchmark.mistral.mistral_fit_run, Both),
         ]
 
