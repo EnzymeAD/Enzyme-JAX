@@ -98,6 +98,10 @@ def main(argv):
                 if bname == "bert_predict" and name == "IPartOpt":
                     continue
 
+                # Oom's the gpu ci
+                if bname == "stable_diffusion_predict" and name == "PartOpt":
+                    continue
+
                 os.environ.pop("ENZYME_JAX", None)
                 os.environ.pop("ENZYME_JAX_PRE", None)
                 if pipe is not None:
