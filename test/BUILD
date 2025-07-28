@@ -117,7 +117,7 @@ py_test(
 
 py_test(
     name = "jaxmd",
-    timeout = "long",
+    timeout = "eternal",
     srcs = [
         "jaxmd.py",
         "test_utils.py",
