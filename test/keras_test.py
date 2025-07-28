@@ -77,8 +77,7 @@ def main(argv):
         benchfns += [
             ("bert_fit", benchmark.bert.bert_fit_run, Both),
         ]
-    # also oom
-    if False:
+    if True:
         benchfns += [
             ("sam_predict", benchmark.sam.sam_predict_run, Both),
             ("sam_fit", benchmark.sam.sam_fit_run, Both),
