@@ -2433,7 +2433,7 @@ struct AffineToStableHLORaisingPass
       if (FT &&
           llvm::all_of(FT.getInputs(),
                        [](Type argTy) { return isa<MemRefType>(argTy); }) &&
-          FT.getNumResults() == 0) {
+          FT.getNumResults() == 0 && FT.getNumInputs() != 0) {
         funcs.push_back(func);
       }
     });
