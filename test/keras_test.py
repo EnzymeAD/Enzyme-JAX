@@ -37,7 +37,7 @@ def main(argv):
     benchfns = []
 
     # breaks on gpu =/
-    if False:
+    if True:
         benchfns += [
             (
                 "stable_diffusion_predict",
