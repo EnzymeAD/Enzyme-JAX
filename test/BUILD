@@ -168,13 +168,13 @@ py_test(
     }),
 )
 
-# py_test(
-#     name = "maxtext",
-#     srcs = [
-#         "maxtext.py",
-#     ],
-#     imports = ["."],
-#     deps = TEST_DEPS + ["@pypi_maxtext//:pkg"],
-#     timeout='long'
-#     tags = ["exclusive"]
-# )
+py_test(
+    name = "maxtext",
+    srcs = [
+        "maxtext.py",
+    ],
+    imports = ["."],
+    deps = TEST_DEPS + ["@pypi_maxtext//:pkg"],
+    timeout='long'
+    tags = ["exclusive"]
+)
