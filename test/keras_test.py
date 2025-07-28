@@ -66,7 +66,8 @@ def main(argv):
             ("gemma_fit", benchmark.gemma.gemma_fit_run, Both),
         ]
 
-    if True:
+    # Too long for cpu ci
+    if jax.default_backend() != 'cpu':
         benchfns += [
             ("bert_predict", benchmark.bert.bert_predict_run, Both),
         ]

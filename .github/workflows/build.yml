@@ -55,7 +55,8 @@ jobs:
         os:
           - linux-x86-n2-32
           - linux-arm64-c4a-32
-          - linux-x86-ct6e-180-4tpu
+            # TPU not recognized fully, temporarily disabling
+          # - linux-x86-ct6e-180-4tpu
           - linux-x86-a2-48-a100-4gpu
           - macOS-latest
         python:
