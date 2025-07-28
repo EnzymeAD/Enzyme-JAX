@@ -72,8 +72,7 @@ def main(argv):
             ("bert_predict", benchmark.bert.bert_predict_run, Both),
         ]
 
-    # OOM's the 4070 :'(
-    if False:
+    if True:
         benchfns += [
             ("bert_fit", benchmark.bert.bert_fit_run, Both),
         ]
