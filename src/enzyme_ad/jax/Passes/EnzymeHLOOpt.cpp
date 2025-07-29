@@ -10,7 +10,6 @@
 // ops.
 //===----------------------------------------------------------------------===//
 
-#include "absl/status/statusor.h"
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Analysis/TopologicalSortUtils.h"
 #include "mlir/Dialect/CommonFolders.h"
@@ -20891,23 +20890,15 @@ struct DotGeneralReshape final
 
     auto dotGeneralDims = op.getDotDimensionNumbers();
 
-    auto lhsStatusOrDims =
+    auto [canFuseLhs, lhsInsertionDims] =
         canFuseOp(lhsReshapeOp, dotGeneralDims.getLhsBatchingDimensions(),
                   dotGeneralDims.getLhsContractingDimensions());
-    bool canFuseLhs = lhsStatusOrDims.ok();
-    SmallVector<int64_t> lhsInsertionDims;
-    if (canFuseLhs)
-      lhsInsertionDims = lhsStatusOrDims.value();
     Value newLhs =
         lhsReshapeOp && canFuseLhs ? lhsReshapeOp.getOperand() : op.getLhs();
 
-    auto rhsStatusOrDims =
+    auto [canFuseRhs, rhsInsertionDims] =
         canFuseOp(rhsReshapeOp, dotGeneralDims.getRhsBatchingDimensions(),
                   dotGeneralDims.getRhsContractingDimensions());
-    bool canFuseRhs = rhsStatusOrDims.ok();
-    SmallVector<int64_t> rhsInsertionDims;
-    if (canFuseRhs)
-      rhsInsertionDims = rhsStatusOrDims.value();
     Value newRhs =
         rhsReshapeOp && canFuseRhs ? rhsReshapeOp.getOperand() : op.getRhs();
 
@@ -20984,29 +20975,33 @@ struct DotGeneralReshape final
   }
 
 private:
-  absl::StatusOr<SmallVector<int64_t>>
+  std::tuple<bool, SmallVector<int64_t>>
   canFuseOp(stablehlo::ReshapeOp op, ArrayRef<int64_t> batchingDims,
             ArrayRef<int64_t> contractingDims) const {
+    SmallVector<int64_t> insertionDims;
     if (!op)
-      return absl::FailedPreconditionError("ReshapeOp is null");
+      return std::make_tuple(false, insertionDims);
 
-    SmallVector<int64_t> insertionDims = findReshapeInsertionDims(
+    insertionDims = findReshapeInsertionDims(
         cast<RankedTensorType>(op.getOperand().getType()),
         cast<RankedTensorType>(op.getType()));
+
+    if (insertionDims.empty())
+      return std::make_tuple(false, insertionDims);
 
     bool found = false;
     for (auto dim : insertionDims) {
       if (std::find(batchingDims.begin(), batchingDims.end(), dim) !=
           batchingDims.end()) {
-        return absl::InvalidArgumentError("dim present in batching dims.");
+        return std::make_tuple(false, insertionDims);
       }
       if (std::find(contractingDims.begin(), contractingDims.end(), dim) !=
           contractingDims.end()) {
-        return absl::InvalidArgumentError("dim present in contracting dims.");
+        return std::make_tuple(false, insertionDims);
       }
     }
 
-    return insertionDims;
+    return std::make_tuple(true, insertionDims);
   }
 
   SmallVector<int64_t>
