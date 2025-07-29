@@ -2123,3 +2123,11 @@ def ApplyTransposeFFT : EnzymeHLOPatternOp<"transpose_fft"> {
 def ApplyTransposeReshapePatterns : EnzymeHLOPatternOp<"transpose_reshape"> {
   let patterns = ["TransposeReshape"];
 }
+
+def ApplyDotGeneralReshapePatterns : EnzymeHLOPatternOp<"dot_general_reshape"> {
+  let patterns = ["DotGeneralReshape"];
+}
+
+def ApplyDiagonalTensorDotGeneralRewritePatterns : EnzymeHLOPatternOp<"diagonal_tensor_dot_general_rewrite"> {
+  let patterns = ["DiagonalTensorDotGeneralRewrite"];
+}

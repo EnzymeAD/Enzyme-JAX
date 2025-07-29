@@ -26,6 +26,7 @@
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Passes/StructuredTensors.h"
 #include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/Base.h"
 #include "stablehlo/dialect/ChloOps.h"
@@ -19819,28 +19820,20 @@ struct ScatterMultiplySimplify final
       }
     }
 
-    if (scatterOp.getInputs().size() != 1)
-      return rewriter.notifyMatchFailure(
-          op, "ScatterOp with more than one input not supported");
-
-    auto input = scatterOp.getInputs()[0];
-    if (!matchPattern(input, m_AnyZeroFloat()) &&
-        !matchPattern(input, m_Zero()))
-      return rewriter.notifyMatchFailure(op, "ScatterOp with non-zero input");
-
-    if (!scatterOp.getResult(0).hasOneUse())
-      return rewriter.notifyMatchFailure(op, "ScatterOp with multiple uses");
-
-    if (!isScatterSetindexOp(scatterOp))
-      return rewriter.notifyMatchFailure(op, "ScatterOp with non-setindex");
-
-    auto scatterDimNumbers = scatterOp.getScatterDimensionNumbers();
+    auto status =
+        detectConstantSetindexScatterOp(scatterOp, /*allowedMultipleUses*/
+                                        false,
+                                        /*onlyConstantZerosAllowed*/
+                                        true, nullptr);
+    if (!status.ok())
+      return rewriter.notifyMatchFailure(op, status.message());
 
     SmallVector<int64_t> sliceSizes = computeGatherSliceSizes(scatterOp);
 
     auto gatheredValues = rewriter.create<stablehlo::GatherOp>(
         op.getLoc(), otherValue, scatterOp.getScatterIndices(),
-        getGatherDims(rewriter.getContext(), scatterDimNumbers),
+        getGatherDims(rewriter.getContext(),
+                      scatterOp.getScatterDimensionNumbers()),
         rewriter.getDenseI64ArrayAttr(sliceSizes),
         scatterOp.getIndicesAreSortedAttr());
 
@@ -19930,22 +19923,15 @@ struct UnaryElementwiseScatterSimplify final
     if (!scatterOp)
       return rewriter.notifyMatchFailure(op, "not a scatter op");
 
-    if (scatterOp.getInputs().size() != 1)
-      return rewriter.notifyMatchFailure(
-          op, "ScatterOp with more than one input not supported");
-
-    if (!scatterOp.getResult(0).hasOneUse())
-      return rewriter.notifyMatchFailure(op, "ScatterOp with multiple uses");
-
-    if (!isScatterSetindexOp(scatterOp))
-      return rewriter.notifyMatchFailure(op, "ScatterOp with non-setindex");
+    DenseElementsAttr scatterInputAttr;
+    auto status = detectConstantSetindexScatterOp(
+        scatterOp, false, /*onlyConstantZerosAllowed*/ false,
+        &scatterInputAttr);
+    if (!status.ok()) {
+      return rewriter.notifyMatchFailure(op, status.message());
+    }
 
     auto scatterInput = scatterOp.getInputs()[0];
-    DenseElementsAttr scatterInputAttr;
-    // In this case, we are will definitely increase the compute cost
-    if (!matchPattern(scatterInput, m_Constant(&scatterInputAttr)))
-      return rewriter.notifyMatchFailure(op,
-                                         "ScatterOp with non-constant input");
 
     auto elemType =
         cast<RankedTensorType>(op->getResult(0).getType()).getElementType();
@@ -20890,6 +20876,206 @@ private:
   }
 };
 
+struct DotGeneralReshape final
+    : public CheckedOpRewritePattern<stablehlo::DotGeneralOp,
+                                     DotGeneralReshape> {
+  using CheckedOpRewritePattern<stablehlo::DotGeneralOp,
+                                DotGeneralReshape>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp op,
+                                    PatternRewriter &rewriter) const {
+    auto lhsReshapeOp = op.getLhs().getDefiningOp<stablehlo::ReshapeOp>();
+    auto rhsReshapeOp = op.getRhs().getDefiningOp<stablehlo::ReshapeOp>();
+    if (!lhsReshapeOp && !rhsReshapeOp)
+      return failure();
+
+    auto dotGeneralDims = op.getDotDimensionNumbers();
+
+    auto [canFuseLhs, lhsInsertionDims] =
+        canFuseOp(lhsReshapeOp, dotGeneralDims.getLhsBatchingDimensions(),
+                  dotGeneralDims.getLhsContractingDimensions());
+    Value newLhs =
+        lhsReshapeOp && canFuseLhs ? lhsReshapeOp.getOperand() : op.getLhs();
+
+    auto [canFuseRhs, rhsInsertionDims] =
+        canFuseOp(rhsReshapeOp, dotGeneralDims.getRhsBatchingDimensions(),
+                  dotGeneralDims.getRhsContractingDimensions());
+    Value newRhs =
+        rhsReshapeOp && canFuseRhs ? rhsReshapeOp.getOperand() : op.getRhs();
+
+    if (!canFuseLhs && !canFuseRhs)
+      return failure();
+
+    SmallVector<int64_t> adjustedLhsBatchingDims, adjustedLhsContractingDims,
+        adjustedRhsBatchingDims, adjustedRhsContractingDims;
+
+    if (canFuseLhs) {
+      adjustedLhsBatchingDims = adjustDimsForInsertion(
+          dotGeneralDims.getLhsBatchingDimensions(), lhsInsertionDims);
+      adjustedLhsContractingDims = adjustDimsForInsertion(
+          dotGeneralDims.getLhsContractingDimensions(), lhsInsertionDims);
+    } else {
+      adjustedLhsBatchingDims =
+          llvm::to_vector(dotGeneralDims.getLhsBatchingDimensions());
+      adjustedLhsContractingDims =
+          llvm::to_vector(dotGeneralDims.getLhsContractingDimensions());
+    }
+
+    if (canFuseRhs) {
+      adjustedRhsBatchingDims = adjustDimsForInsertion(
+          dotGeneralDims.getRhsBatchingDimensions(), rhsInsertionDims);
+      adjustedRhsContractingDims = adjustDimsForInsertion(
+          dotGeneralDims.getRhsContractingDimensions(), rhsInsertionDims);
+    } else {
+      adjustedRhsBatchingDims =
+          llvm::to_vector(dotGeneralDims.getRhsBatchingDimensions());
+      adjustedRhsContractingDims =
+          llvm::to_vector(dotGeneralDims.getRhsContractingDimensions());
+    }
+
+    auto lhsShape = cast<RankedTensorType>(newLhs.getType()).getShape();
+    auto rhsShape = cast<RankedTensorType>(newRhs.getType()).getShape();
+    SmallVector<int64_t> newShape;
+    for (int64_t idx : adjustedLhsBatchingDims)
+      newShape.push_back(lhsShape[idx]);
+    for (auto [idx, dim] : llvm::enumerate(lhsShape)) {
+      if (std::find(adjustedLhsContractingDims.begin(),
+                    adjustedLhsContractingDims.end(),
+                    idx) != adjustedLhsContractingDims.end() ||
+          std::find(adjustedRhsBatchingDims.begin(),
+                    adjustedRhsBatchingDims.end(),
+                    idx) != adjustedRhsBatchingDims.end())
+        continue;
+      newShape.push_back(dim);
+    }
+    for (auto [idx, dim] : llvm::enumerate(rhsShape)) {
+      if (std::find(adjustedRhsContractingDims.begin(),
+                    adjustedRhsContractingDims.end(),
+                    idx) != adjustedRhsContractingDims.end() ||
+          std::find(adjustedLhsBatchingDims.begin(),
+                    adjustedLhsBatchingDims.end(),
+                    idx) != adjustedLhsBatchingDims.end())
+        continue;
+      newShape.push_back(dim);
+    }
+
+    auto newDotGeneral = rewriter.create<stablehlo::DotGeneralOp>(
+        op.getLoc(),
+        RankedTensorType::get(
+            newShape,
+            cast<RankedTensorType>(newLhs.getType()).getElementType()),
+        newLhs, newRhs,
+        stablehlo::DotDimensionNumbersAttr::get(
+            rewriter.getContext(), adjustedLhsBatchingDims,
+            adjustedRhsBatchingDims, adjustedLhsContractingDims,
+            adjustedRhsContractingDims),
+        op.getPrecisionConfigAttr(), op.getAlgorithmAttr());
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
+                                                      newDotGeneral);
+    return success();
+  }
+
+private:
+  std::tuple<bool, SmallVector<int64_t>>
+  canFuseOp(stablehlo::ReshapeOp op, ArrayRef<int64_t> batchingDims,
+            ArrayRef<int64_t> contractingDims) const {
+    SmallVector<int64_t> insertionDims;
+    if (!op)
+      return std::make_tuple(false, insertionDims);
+
+    insertionDims = findReshapeInsertionDims(
+        cast<RankedTensorType>(op.getOperand().getType()),
+        cast<RankedTensorType>(op.getType()));
+
+    if (insertionDims.empty())
+      return std::make_tuple(false, insertionDims);
+
+    bool found = false;
+    for (auto dim : insertionDims) {
+      if (std::find(batchingDims.begin(), batchingDims.end(), dim) !=
+          batchingDims.end()) {
+        return std::make_tuple(false, insertionDims);
+      }
+      if (std::find(contractingDims.begin(), contractingDims.end(), dim) !=
+          contractingDims.end()) {
+        return std::make_tuple(false, insertionDims);
+      }
+    }
+
+    return std::make_tuple(true, insertionDims);
+  }
+
+  SmallVector<int64_t>
+  adjustDimsForInsertion(ArrayRef<int64_t> dims,
+                         ArrayRef<int64_t> insertionDims) const {
+    SmallVector<int64_t> adjustedDims;
+    adjustedDims.reserve(dims.size());
+
+    for (int64_t dim : dims) {
+      int64_t adjustedDim = dim;
+      for (int64_t insertionDim : insertionDims) {
+        if (insertionDim <= adjustedDim) {
+          adjustedDim--;
+        }
+      }
+      adjustedDims.push_back(adjustedDim);
+    }
+
+    return adjustedDims;
+  }
+};
+
+struct DiagonalTensorDotGeneralRewrite final
+    : public CheckedOpRewritePattern<stablehlo::DotGeneralOp,
+                                     DiagonalTensorDotGeneralRewrite> {
+  using CheckedOpRewritePattern<
+      stablehlo::DotGeneralOp,
+      DiagonalTensorDotGeneralRewrite>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp op,
+                                    PatternRewriter &rewriter) const {
+    {
+      // LHS Diagonal Matrix Multiply: Scale rows by diagonal elements
+      mlir::Value diagonalTensor;
+      if (auto scatterOp = op.getLhs().getDefiningOp<stablehlo::ScatterOp>()) {
+        auto status = detectDiagonalTensor(scatterOp, &diagonalTensor);
+        if (status.ok()) {
+          // TODO: support batched diagonal tensor
+          if (cast<RankedTensorType>(diagonalTensor.getType()).getRank() == 1) {
+            auto scaling = rewriter.create<stablehlo::BroadcastInDimOp>(
+                op.getLoc(), op.getRhs().getType(), diagonalTensor,
+                ArrayRef<int64_t>({0}));
+            rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, scaling,
+                                                          op.getRhs());
+            return success();
+          }
+        }
+      }
+    }
+
+    {
+      // RHS Diagonal Matrix Multiply: Scale columns by diagonal elements
+      mlir::Value diagonalTensor;
+      if (auto scatterOp = op.getRhs().getDefiningOp<stablehlo::ScatterOp>()) {
+        auto status = detectDiagonalTensor(scatterOp, &diagonalTensor);
+        if (status.ok()) {
+          // TODO: support batched diagonal tensor
+          if (cast<RankedTensorType>(diagonalTensor.getType()).getRank() == 1) {
+            auto scaling = rewriter.create<stablehlo::BroadcastInDimOp>(
+                op.getLoc(), op.getLhs().getType(), diagonalTensor,
+                ArrayRef<int64_t>({1}));
+            rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, op.getLhs(),
+                                                          scaling);
+            return success();
+          }
+        }
+      }
+    }
+
+    return failure();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -21122,6 +21308,7 @@ struct EnzymeHLOOptPass
         PowSimplify, NoopSlice, NoopReverse, SliceSlice, LogSimplify,
         ShiftRightLogicalSimplify, NegativePadToSlice, SliceSimplify,
         ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
+        DotGeneralReshape, DiagonalTensorDotGeneralRewrite,
         DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
         BroadcastToReshape, ReshapeEmptyBroadcast, BroadcastReshape,
         ConstPropThroughBarrier, ReplaceNegAddWithSubtract, SignAbsSimplify,
