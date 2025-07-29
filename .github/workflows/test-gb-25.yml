@@ -83,7 +83,7 @@ jobs:
           # TODO: change the commit hash of Enzyme-JAX to use the trigger of
           # this job
           julia --project --color=yes -e 'using Pkg; Pkg.instantiate()'
-          julia --project --color=yes -O0 build_local.jl
+          julia --project --color=yes -O0 build_local.jl --gcc_host_compiler_path=
         working-directory: ${{ env.REACTANT_DIR }}/deps
       - name: Setup tmate session
         uses: mxschmitt/action-tmate@v3
