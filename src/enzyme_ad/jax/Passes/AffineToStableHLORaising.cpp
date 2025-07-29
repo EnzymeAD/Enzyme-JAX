@@ -1634,7 +1634,6 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
                         ParallelContext pc) {
 
 
-    llvm::errs() <<" op: " << *op << "\n";
   // Affine load inside a loop becomes a slice
   if (auto loadOp = dyn_cast<affine::AffineLoadOp>(op)) {
     affine::MemRefAccess access(loadOp);
@@ -2725,7 +2724,6 @@ struct AffineToStableHLORaisingPass
 
       bool anyFailed = false;
 
-      llvm::errs() << " body: " << *body << "\n";
       ParallelContext emptyPc = ParallelContext::getEmpty(options);
       for (auto &it : body->without_terminator()) {
         anyFailed =
