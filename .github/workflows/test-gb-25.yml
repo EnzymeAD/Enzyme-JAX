@@ -54,11 +54,11 @@ jobs:
         name: Set up Bazel
         with:
           # Avoid downloading Bazel every time.
-          bazelisk-cache: false
+          bazelisk-cache: true
           # Store build cache per workflow.
           disk-cache: gb-25-${{ github.workflow }}-${{ matrix.os }}-${{ matrix.julia_version }}
           # Share repository cache between workflows.
-          repository-cache: false
+          repository-cache: true
           bazelisk-version: 1.x
       - uses: actions/checkout@v4
         with:
