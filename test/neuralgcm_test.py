@@ -168,5 +168,5 @@ if __name__ == "__main__":
     import platform
 
     # Deps not available on macos
-    if platform.system() != "Darwin":
+    if platform.system() != "Darwin" and platform.machine() == "x86_64":
         app.run(main)

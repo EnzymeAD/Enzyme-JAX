@@ -2424,7 +2424,8 @@ public:
     auto scatterOp = cast<ScatterOp>(op);
 
     if (!stablehlo::isScatterSetindexOp(scatterOp)) {
-      op->emitError("AutoDiffScatterRev only supports Setindex operations");
+      op->emitError("AutoDiffScatterRev only supports Setindex operations")
+          << *op;
       return failure();
     }
 

@@ -7,20 +7,23 @@ https://github.com/wsmoses/jax-md/archive/45059b8f63dad0b5cb171feafff71b82162487
 https://github.com/wsmoses/jraph/archive/b00d9a03db76c69a258a86df81638b9a2f28829f.tar.gz; sys_platform == 'linux'
 
 # maxtext can't be installed concurrently, but installing it fixes
-# https://github.com/wsmoses/maxtext/archive/bc50722be7d89e4003bd830b80e4ac968be658eb.tar.gz
+https://github.com/wsmoses/maxtext/archive/bc50722be7d89e4003bd830b80e4ac968be658eb.tar.gz
 
-jax-cuda12-plugin[with_cuda]; sys_platform == 'linux'
+jax[cuda12]; sys_platform == 'linux'
 
-neuralgcm
+https://github.com/wsmoses/neuralgcm/archive/d2412377026f41baaec35510423c69657dbcde2c.tar.gz
+dm-haiku >= 0.0.14
 
 gcsfs; sys_platform == 'linux'
 requests; sys_platform == 'linux'
 
 https://github.com/avik-pal/keras/archive/7344964561c15611dd2d734a2bdd6b872a07709d.tar.gz; sys_platform == 'linux'
-https://github.com/wsmoses/keras-benchmarks/archive/7d8df90ce7d2c2be2541148070cc368281ac15a5.tar.gz; sys_platform == 'linux'
-tf_keras; sys_platform == 'linux'
-keras-nlp >= 0.17; sys_platform == 'linux'
+https://github.com/wsmoses/keras-benchmarks/archive/9caedf38085b7fd23cef19e75ab9b7ab31ae99b0.tar.gz; sys_platform == 'linux'
+
+#tf_keras; sys_platform == 'linux'
+keras-hub[nlp]; sys_platform == 'linux'
 keras-cv; sys_platform == 'linux'
+
 # tensorflow-cpu-datasets; sys_platform == 'linux'
 
 # -f https://storage.googleapis.com/jax-releases/libtpu_releases.html

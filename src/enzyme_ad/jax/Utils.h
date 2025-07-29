@@ -126,6 +126,14 @@ inline constant_complex_predicate_matcher m_AnyZeroImagComplex() {
   }};
 }
 
+inline ::mlir::detail::constant_int_predicate_matcher m_NegOne() {
+  return {[](const APInt &value) { return value == -1; }};
+}
+
+inline ::mlir::detail::constant_float_predicate_matcher m_NegOneFloat() {
+  return {[](const APFloat &value) { return value.isExactlyValue(-1.0); }};
+}
+
 static inline mlir::scf::IfOp cloneWithResults(mlir::scf::IfOp op,
                                                mlir::OpBuilder &rewriter,
                                                mlir::IRMapping mapping = {}) {

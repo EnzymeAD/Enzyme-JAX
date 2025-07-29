@@ -399,6 +399,148 @@ struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
   }
 };
 
+struct RemoveInductionVarRelated : public OpRewritePattern<ForOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::ForOp op,
+                                PatternRewriter &rewriter) const override {
+    // TODO: generalize this into some affine expr of inductionVar instead of
+    // just inductionVar + step
+    // Check if any yielded value is inductionVar + step
+    auto yieldOp = cast<scf::YieldOp>(op.getBody()->getTerminator());
+    for (auto [idx, yieldVal] : llvm::enumerate(yieldOp.getOperands())) {
+      auto addOp = yieldVal.getDefiningOp<arith::AddIOp>();
+      if (!addOp)
+        continue;
+
+      Value inductionVar = op.getInductionVar();
+      Value step = op.getStep();
+
+      // Check if this is inductionVar + step.
+      if ((addOp.getLhs() == inductionVar && addOp.getRhs() == step) ||
+          (addOp.getRhs() == inductionVar && addOp.getLhs() == step)) {
+        return rewriteLoop(op, idx, rewriter);
+      }
+    }
+    return failure();
+  }
+
+  LogicalResult rewriteLoop(scf::ForOp forOp, unsigned inductionVarResultIdx,
+                            PatternRewriter &rewriter) const {
+    Value inductionVar = forOp.getInductionVar();
+    Value step = forOp.getStep();
+    Value lb = forOp.getLowerBound();
+    Value initVal = forOp.getInitArgs()[inductionVarResultIdx];
+    BlockArgument iterArg = forOp.getRegionIterArg(inductionVarResultIdx);
+    Location loc = forOp.getLoc();
+
+    // Step 1: Replace uses of the iter_arg inside the loop by
+    // select(arg == lb, init, arg - step)
+    for (OpOperand &use : llvm::make_early_inc_range(iterArg.getUses())) {
+      rewriter.setInsertionPoint(use.getOwner());
+      Value cmp = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
+                                                 inductionVar, lb);
+      Value sub = rewriter.create<arith::SubIOp>(loc, inductionVar, step);
+      Value newVal = rewriter.create<arith::SelectOp>(loc, cmp, initVal, sub);
+      rewriter.replaceAllUsesWith(use.get(), newVal);
+    }
+
+    // Step 2: Create new for loop without the induction var tracking
+    SmallVector<Value> newIterArgs;
+    for (auto [idx, iterArg] : llvm::enumerate(forOp.getInitArgs())) {
+      if (idx != inductionVarResultIdx)
+        newIterArgs.push_back(iterArg);
+    }
+
+    rewriter.setInsertionPointAfter(forOp);
+    auto newForOp = rewriter.create<scf::ForOp>(loc, lb, forOp.getUpperBound(),
+                                                step, newIterArgs);
+
+    // Move body blocks to the new for op (excluding the iter_arg we removed)
+    Block *newBody = newForOp.getBody();
+    Block *oldBody = forOp.getBody();
+
+    // Map old block args to new ones, skipping our removed arg
+    IRMapping mapping;
+    for (unsigned i = 0, j = 0; i < oldBody->getNumArguments(); ++i) {
+      if (i == inductionVarResultIdx + 1)
+        continue; // +1 for induction var
+      mapping.map(oldBody->getArgument(i), newBody->getArgument(j++));
+    }
+
+    // Move all operations, remapping any operands that might refer to old block
+    // arguments.
+    Block::iterator it = newIterArgs.empty()
+                             ? newBody->getTerminator()->getIterator()
+                             : newBody->end();
+    for (auto &op : oldBody->getOperations()) {
+      if (isa<scf::YieldOp>(op))
+        continue;
+      Operation *newOp = rewriter.clone(op, mapping);
+      rewriter.moveOpBefore(newOp, newBody, it);
+    }
+
+    // Update the yield op to not yield the induction var
+    auto oldYieldOp = cast<scf::YieldOp>(oldBody->getTerminator());
+    SmallVector<Value> newYieldVals;
+    for (auto [idx, val] : llvm::enumerate(oldYieldOp.getOperands())) {
+      if (idx != inductionVarResultIdx)
+        newYieldVals.push_back(mapping.lookup(val));
+    }
+    rewriter.setInsertionPointToEnd(newBody);
+    if (!newYieldVals.empty())
+      rewriter.create<scf::YieldOp>(oldYieldOp.getLoc(), newYieldVals);
+    rewriter.eraseOp(oldYieldOp);
+
+    // Step 3: Replace old loop uses.
+
+    // Replace induction var result with
+    // select(ub <= lb, init, last_value)
+    // with last_value = lb + step * floor((ub - lb - 1) / step) + step
+    if (!forOp.getResult(inductionVarResultIdx).use_empty()) {
+      rewriter.setInsertionPointAfter(newForOp);
+      Value ub = forOp.getUpperBound();
+      auto computeLastValue = [&]() -> Value {
+        Value diff = rewriter.create<arith::SubIOp>(loc, ub, lb);
+        Value one = rewriter.create<arith::ConstantOp>(
+            loc, rewriter.getIntegerAttr(lb.getType(), 1));
+        Value diffMinus1 = rewriter.create<arith::SubIOp>(loc, diff, one);
+        Value iterations =
+            rewriter.create<arith::DivUIOp>(loc, diffMinus1, step);
+        Value stepTimesIters =
+            rewriter.create<arith::MulIOp>(loc, step, iterations);
+        Value lastValue =
+            rewriter.create<arith::AddIOp>(loc, step, stepTimesIters);
+        return rewriter.create<arith::AddIOp>(loc, lb, lastValue);
+      };
+      Value lastValue = computeLastValue();
+      // TODO: handle negative step
+      Value cmp = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ule,
+                                                 ub, lb);
+
+      Value newVal =
+          rewriter.create<arith::SelectOp>(loc, cmp, initVal, lastValue);
+      rewriter.replaceAllUsesWith(forOp.getResult(inductionVarResultIdx),
+                                  newVal);
+    }
+
+    // Replace other results
+    for (unsigned i = 0; i < forOp.getNumResults(); ++i) {
+      if (i != inductionVarResultIdx) {
+        unsigned newResultIdx = i > inductionVarResultIdx ? i - 1 : i;
+        rewriter.replaceAllUsesWith(forOp.getResult(i),
+                                    newForOp.getResult(newResultIdx));
+      }
+    }
+
+    // Finally erase the old loop.
+    rewriter.eraseOp(forOp);
+
+    // newForOp->getParentOp()->dump();
+    return success();
+  }
+};
+
 struct RemoveUnusedForResults : public OpRewritePattern<ForOp> {
   using OpRewritePattern<ForOp>::OpRewritePattern;
 
@@ -3093,7 +3235,7 @@ void CanonicalizeFor::runOnOperation() {
   rpl.add<IfYieldMovementPattern, truncProp, ForOpInductionReplacement,
           RemoveUnusedForResults, RemoveUnusedArgs, MoveWhileToFor,
           RemoveWhileSelect, SelectTruncToTruncSelect, MaxSimplify,
-          ForBoundUnSwitch, SelectI1Simplify,
+          ForBoundUnSwitch, SelectI1Simplify, RemoveInductionVarRelated,
 
           MoveWhileDown, MoveWhileDown2,
 
