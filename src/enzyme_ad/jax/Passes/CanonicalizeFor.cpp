@@ -536,7 +536,6 @@ struct RemoveInductionVarRelated : public OpRewritePattern<ForOp> {
     // Finally erase the old loop.
     rewriter.eraseOp(forOp);
 
-    // newForOp->getParentOp()->dump();
     return success();
   }
 };
@@ -1495,12 +1494,13 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
 
     loop.getBefore().front().eraseArguments([](BlockArgument) { return true; });
 
+    scf::IfOp ifOp;
     if (lookThrough) {
       rewriter.setInsertionPointToEnd(forloop.getBody());
       SmallVector<Type> resTys = llvm::to_vector(loop.getResultTypes());
       resTys.push_back(rewriter.getI1Type());
 
-      auto ifOp = rewriter.create<scf::IfOp>(
+      ifOp = rewriter.create<scf::IfOp>(
           forloop.getLoc(), resTys, forloop.getRegionIterArgs().back(), true);
 
       rewriter.eraseBlock(&ifOp->getRegion(0).front());
@@ -1552,14 +1552,9 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
 
     SmallVector<Value> newYields(forArgs.size());
 
-    llvm::errs() << " forargs.size() : " << forArgs.size() << "\n";
-    llvm::errs() << " loop.getInits().size(): " << loop.getInits().size()
-                 << "\n";
-    llvm::errs() << " loop.getResults().size(): " << loop.getResults().size()
-                 << "\n";
-
     for (size_t i = 0; i < loop.getResults().size(); i++) {
-      newYields[loop.getInits().size() + i] = condOp.getArgs()[i];
+      newYields[loop.getInits().size() + i] =
+          lookThrough ? ifOp->getResults()[i] : condOp.getArgs()[i];
     }
 
     if (lookThrough || (doWhile && loop.getInits().size() && mutableAfter)) {
@@ -1595,7 +1590,7 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
       rewriter.create<scf::YieldOp>(loop.getLoc(), nonArgs);
 
       for (size_t i = 0; i < loop.getInits().size(); i++) {
-        newYields[i] = ifOp->getResult(i);
+        newYields[i] = ifOp->getResults()[i];
       }
       if (lookThrough) {
         newYields[newYields.size() - 1] = nextLookThrough;
@@ -1608,7 +1603,6 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
         newYields[i] = oldYield.getResults()[i];
       }
     }
-    llvm::errs() << " forloop: " << forloop << "\n";
 
     rewriter.setInsertionPointToEnd(forloop.getBody());
     rewriter.create<scf::YieldOp>(loop.getLoc(), newYields);
@@ -1659,6 +1653,7 @@ struct RotateWhileAnd : public OpRewritePattern<WhileOp> {
     SmallVector<Value> andValues;
     SmallVector<Value> negatedValues;
 
+    auto func = loop->getParentOp();
     todo.emplace_back(condOp.getCondition(), false);
     while (todo.size()) {
       auto &&[operand, negated] = todo.pop_back_val();
@@ -1715,7 +1710,7 @@ struct RotateWhileAnd : public OpRewritePattern<WhileOp> {
         if (current == nullptr) {
           current = aval;
         } else {
-          current = rewriter.create<AddIOp>(loop.getLoc(), current, aval);
+          current = rewriter.create<AndIOp>(loop.getLoc(), current, aval);
         }
       }
       for (auto aval : negatedValues) {
@@ -1725,7 +1720,7 @@ struct RotateWhileAnd : public OpRewritePattern<WhileOp> {
         if (current == nullptr) {
           current = aval;
         } else {
-          current = rewriter.create<AddIOp>(loop.getLoc(), current, aval);
+          current = rewriter.create<AndIOp>(loop.getLoc(), current, aval);
         }
       }
       for (auto &&[aval, negated] : todo) {
@@ -1736,7 +1731,7 @@ struct RotateWhileAnd : public OpRewritePattern<WhileOp> {
         if (current == nullptr) {
           current = aval;
         } else {
-          current = rewriter.create<AddIOp>(loop.getLoc(), current, aval);
+          current = rewriter.create<AndIOp>(loop.getLoc(), current, aval);
         }
       }
 
