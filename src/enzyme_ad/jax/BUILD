@@ -510,6 +510,8 @@ cc_library(
         ":mhlo-derivatives",
         ":stablehlo-derivatives",
         "//src/external/isl:Isl",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
         "@enzyme//:EnzymeMLIR",
         "@llvm-project//llvm:Core",
         "@llvm-project//llvm:ExecutionEngine",
