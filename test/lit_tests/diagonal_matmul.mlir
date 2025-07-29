@@ -28,3 +28,37 @@ func.func @main1(%arg0: tensor<50xf64> {tf.aliasing_output = 0 : i32}, %arg1: te
 // CHECK-NEXT:     %3 = stablehlo.multiply %arg3, %2 : tensor<8000xf64>
 // CHECK-NEXT:     return %0, %2, %3 : tensor<50xf64>, tensor<8000xf64>, tensor<8000xf64>
 // CHECK-NEXT: }
+
+func.func @main2(%arg0: tensor<8000x8000xf64>, %arg1: tensor<8000xf64>) -> tensor<8000x8000xf64> {
+    %cst = stablehlo.constant dense<0.000000e+00> : tensor<8000x8000xf64>
+    %0 = stablehlo.iota dim = 0 : tensor<8000x2xi64>
+    %1 = "stablehlo.scatter"(%cst, %0, %arg1) <{scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>}> ({
+    ^bb0(%arg2: tensor<f64>, %arg3: tensor<f64>):
+      stablehlo.return %arg3 : tensor<f64>
+    }) : (tensor<8000x8000xf64>, tensor<8000x2xi64>, tensor<8000xf64>) -> tensor<8000x8000xf64>
+    %2 = stablehlo.dot_general %1, %arg0, contracting_dims = [0] x [0], precision = [DEFAULT, DEFAULT] : (tensor<8000x8000xf64>, tensor<8000x8000xf64>) -> tensor<8000x8000xf64>
+    return %2 : tensor<8000x8000xf64>
+}
+
+// CHECK: func.func @main2(%arg0: tensor<8000x8000xf64>, %arg1: tensor<8000xf64>) -> tensor<8000x8000xf64> {
+// CHECK-NEXT:     %0 = stablehlo.broadcast_in_dim %arg1, dims = [0] : (tensor<8000xf64>) -> tensor<8000x8000xf64>
+// CHECK-NEXT:     %1 = stablehlo.multiply %0, %arg0 : tensor<8000x8000xf64>
+// CHECK-NEXT:     return %1 : tensor<8000x8000xf64>
+// CHECK-NEXT: }
+
+func.func @main3(%arg0: tensor<8000xf64>, %arg1: tensor<8000x8000xf64>) -> tensor<8000x8000xf64> {
+    %cst = stablehlo.constant dense<0.000000e+00> : tensor<8000x8000xf64>
+    %0 = stablehlo.iota dim = 0 : tensor<8000x2xi64>
+    %1 = "stablehlo.scatter"(%cst, %0, %arg0) <{scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>}> ({
+    ^bb0(%arg2: tensor<f64>, %arg3: tensor<f64>):
+      stablehlo.return %arg3 : tensor<f64>
+    }) : (tensor<8000x8000xf64>, tensor<8000x2xi64>, tensor<8000xf64>) -> tensor<8000x8000xf64>
+    %2 = stablehlo.dot_general %arg1, %1, contracting_dims = [1] x [1], precision = [DEFAULT, DEFAULT] : (tensor<8000x8000xf64>, tensor<8000x8000xf64>) -> tensor<8000x8000xf64>
+    return %2 : tensor<8000x8000xf64>
+}
+
+// CHECK: func.func @main3(%arg0: tensor<8000xf64>, %arg1: tensor<8000x8000xf64>) -> tensor<8000x8000xf64> {
+// CHECK-NEXT:     %0 = stablehlo.broadcast_in_dim %arg0, dims = [1] : (tensor<8000xf64>) -> tensor<8000x8000xf64>
+// CHECK-NEXT:     %1 = stablehlo.multiply %arg1, %0 : tensor<8000x8000xf64>
+// CHECK-NEXT:     return %1 : tensor<8000x8000xf64>
+// CHECK-NEXT: }
