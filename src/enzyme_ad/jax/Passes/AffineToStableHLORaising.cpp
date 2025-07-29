@@ -1650,9 +1650,25 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     SmallVector<int64_t> reverseDims;
 
     if (affineMapToSlice(accessValueMap, strides, reverseDims, pc).failed()) {
-      LLVM_DEBUG(llvm::dbgs()
-                 << "Failed to affine map to slice: " << *op << "\n");
-      return failure();
+      SmallVector<Value> lIndices;
+      for (auto E : accessValueMap.getAffineMap().getResults()) {
+        auto [idx, idxMap] = expandAffineExpr(
+            builder, op->getLoc(), E, accessValueMap.getOperands(), mapping,
+            accessValueMap.getAffineMap().getNumDims(), pc);
+        maps[idx] = idxMap;
+        lIndices.push_back(idx);
+      }
+
+      Value res =
+          emitLoadAsGather(op->getLoc(), inputTen, lIndices, builder, maps);
+      if (!res) {
+        LLVM_DEBUG(llvm::dbgs()
+                   << "failed to raise load (indices of rank > 1): " << *op
+                   << "\n");
+        return failure();
+      }
+      mapping.map(loadOp.getResult(), res);
+      return success();
     }
 
     bool dynIndices = llvm::any_of(accessValueMap.getOperands(), [](Value iv) {
@@ -1798,9 +1814,35 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     SmallVector<int64_t> reverseDims;
 
     if (affineMapToSlice(accessValueMap, strides, reverseDims, pc).failed()) {
-      LLVM_DEBUG(llvm::dbgs()
-                 << "Failed to affine map to slice: " << *op << "\n");
-      return failure();
+      SmallVector<Value> sIndices;
+      for (auto E : accessValueMap.getAffineMap().getResults()) {
+        auto [expandedIndex, indexMap] = expandAffineExpr(
+            builder, op->getLoc(), E, accessValueMap.getOperands(), mapping,
+            accessValueMap.getAffineMap().getNumDims(), pc);
+        maps[expandedIndex] = indexMap;
+        sIndices.push_back(expandedIndex);
+      }
+
+      Value res = emitStoreAsScatter(op->getLoc(), update, operand, sIndices,
+                                     builder, maps);
+      if (!res) {
+        LLVM_DEBUG(llvm::dbgs() << "affine.store (scatter) is dependent on "
+                                   "less dims than stored value: "
+                                << *op << "\n";
+                   auto flags = OpPrintingFlags();
+                   for (auto iv
+                        : accessValueMap.getOperands()) {
+                     iv.printAsOperand(llvm::dbgs(), flags);
+                     llvm::dbgs() << ", ";
+                   } llvm::dbgs()
+                   << "\n";
+                   accessValueMap.getAffineMap().dump();
+
+        );
+        return failure();
+      }
+      mapping.map(storeOp.getMemref(), res);
+      return success();
     }
 
     bool emitAsScatter =
@@ -2045,7 +2087,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   }
 
   // Identity
-  if (isa<arith::IndexCastUIOp, arith::IndexCastOp>(op)) {
+  if (isa<arith::IndexCastUIOp, arith::IndexCastOp,
+          enzymexla::Memref2PointerOp>(op)) {
     Value operand = op->getOperand(0), result = op->getResult(0);
     mapping.map(result, mapping.lookup(operand));
     return success();
@@ -2060,6 +2103,17 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         avm.getOperands(), mapping, avm.getAffineMap().getNumDims(), pc);
     mapping.map(apply.getResult(), expanded);
     maps[expanded] = expandedMap;
+    return success();
+  }
+
+  if (auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(op)) {
+    Value operand = op->getOperand(0), result = op->getResult(0);
+    auto input = mapping.lookup(operand);
+    auto MT = p2m.getType();
+    auto TT = RankedTensorType::get(MT.getShape(), MT.getElementType());
+    auto res =
+        builder.create<stablehlo::BitcastConvertOp>(p2m.getLoc(), TT, input);
+    mapping.map(result, res);
     return success();
   }
 
@@ -2461,6 +2515,7 @@ struct AffineToStableHLORaisingPass
       Block *newBlock = new Block();
 
       IRMapping mapping;
+      llvm::DenseMap<Value, affine::AffineValueMap> maps;
       mapping.map(body, newBlock);
 
       SetVector<Value> operands;
@@ -2473,7 +2528,28 @@ struct AffineToStableHLORaisingPass
 
         for (auto arg : operands0) {
 
-          if (matchPattern(arg, m_Constant())) {
+          Attribute attr;
+          if (matchPattern(arg, m_Constant(&attr))) {
+            affine::AffineValueMap accessMap(AffineMap::get(arg.getContext()),
+                                             {});
+
+            auto isIndex = isa<IndexType>(arg.getType());
+            auto ET = isIndex ? IntegerType::get(arg.getContext(), 64)
+                              : arg.getType();
+            auto unrankedTensorType = RankedTensorType::get({}, ET);
+            OpBuilder builder(arg.getContext());
+            builder.setInsertionPointToEnd(newBlock);
+            auto newConst = builder.create<stablehlo::ConstantOp>(
+                arg.getLoc(), unrankedTensorType,
+                SplatElementsAttr::get(
+                    unrankedTensorType,
+                    ArrayRef<Attribute>(
+                        isIndex ? IntegerAttr::get(
+                                      ET, cast<IntegerAttr>(attr).getValue())
+                                : attr)));
+            auto newVal = newConst.getResult();
+            mapping.map(arg, newVal);
+            maps[newVal] = accessMap;
             continue;
           }
 
@@ -2518,6 +2594,13 @@ struct AffineToStableHLORaisingPass
                   T = p2m.getType();
                 } else {
                   if (T != p2m.getType()) {
+                    if (T.getElementType().isInteger(8)) {
+                      T = p2m.getType();
+                      continue;
+                    }
+                    if (p2m.getType().getElementType().isInteger(8)) {
+                      continue;
+                    }
                     legal = false;
                     llvm::errs() << " inconsistent pointer2memref type " << T
                                  << " and " << p2m << " \n";
@@ -2535,8 +2618,14 @@ struct AffineToStableHLORaisingPass
                   continue;
                 if (U == cl)
                   continue;
-                U->replaceAllUsesWith(cl);
-                U->erase();
+                if (U->getResult(0).getType() == T) {
+                  U->replaceAllUsesWith(cl);
+                  U->erase();
+                } else {
+                  OpBuilder B(U);
+                  U->setOperand(0, B.create<enzymexla::Memref2PointerOp>(
+                                       arg.getLoc(), arg.getType(), cl));
+                }
               }
               operands.insert(cl);
               continue;
@@ -2636,8 +2725,6 @@ struct AffineToStableHLORaisingPass
       OpBuilder builder(newBlock, newBlock->end());
 
       bool anyFailed = false;
-
-      llvm::DenseMap<Value, affine::AffineValueMap> maps;
 
       ParallelContext emptyPc = ParallelContext::getEmpty(options);
       for (auto &it : body->without_terminator()) {
