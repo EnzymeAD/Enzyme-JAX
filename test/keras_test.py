@@ -51,10 +51,12 @@ def main(argv):
             ),
         ]
 
-    if True:
+    # Too long for cpu ci
+    if jax.default_backend() != "cpu":
         benchfns += [
             ("mistral_predict", benchmark.mistral.mistral_predict_run, Both),
         ]
+
     # TODO some inferencfe issue?
     if False:
         benchfns += [
