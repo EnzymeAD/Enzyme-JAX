@@ -90,3 +90,11 @@ jobs:
           julia --project --color=yes -e 'using Pkg; Pkg.instantiate()'
           julia --project --color=yes -O0 build_local.jl
         working-directory: ${{ env.REACTANT_DIR }}/deps
+      - name: Upload Reactant build directory
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Enzyme-JAX-gb-25-${{ matrix.os }}-${{ matrix.julia_version }}
+          path: |
+            ${{ env.REACTANT_DIR }}/deps
+          retention-days: 90
