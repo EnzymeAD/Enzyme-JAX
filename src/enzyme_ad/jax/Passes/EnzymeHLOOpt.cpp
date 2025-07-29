@@ -10142,8 +10142,7 @@ struct DUSSliceSimplify final
         });
 
     LLVM_DEBUG(
-        for (auto [idx, operandSize, updateSize]
-             : llvm::zip_equal(
+        for (auto [idx, operandSize, updateSize] : llvm::zip_equal(
                  newDusIndices,
                  cast<RankedTensorType>(preSliceOperand.getType()).getShape(),
                  cast<RankedTensorType>(preSliceUpdate.getType()).getShape())) {
@@ -19825,9 +19824,9 @@ struct ScatterMultiplySimplify final
         detectConstantSetindexScatterOp(scatterOp, /*allowedMultipleUses*/
                                         false,
                                         /*onlyConstantZerosAllowed*/
-                                        true);
+                                        true, nullptr);
     if (!status.ok())
-      return rewriter.notifyMatchFailure(op, status.status().message());
+      return rewriter.notifyMatchFailure(op, status.message());
 
     SmallVector<int64_t> sliceSizes = computeGatherSliceSizes(scatterOp);
 
@@ -19924,14 +19923,15 @@ struct UnaryElementwiseScatterSimplify final
     if (!scatterOp)
       return rewriter.notifyMatchFailure(op, "not a scatter op");
 
-    auto statusOrAttr = detectConstantSetindexScatterOp(
-        scatterOp, false, /*onlyConstantZerosAllowed*/ false);
-    if (!statusOrAttr.ok()) {
-      return rewriter.notifyMatchFailure(op, statusOrAttr.status().message());
+    DenseElementsAttr scatterInputAttr;
+    auto status = detectConstantSetindexScatterOp(
+        scatterOp, false, /*onlyConstantZerosAllowed*/ false,
+        &scatterInputAttr);
+    if (!status.ok()) {
+      return rewriter.notifyMatchFailure(op, status.message());
     }
 
     auto scatterInput = scatterOp.getInputs()[0];
-    auto scatterInputAttr = statusOrAttr.value();
 
     auto elemType =
         cast<RankedTensorType>(op->getResult(0).getType()).getElementType();
@@ -21029,6 +21029,57 @@ private:
   }
 };
 
+struct DiagonalTensorDotGeneralRewrite final
+    : public CheckedOpRewritePattern<stablehlo::DotGeneralOp,
+                                     DiagonalTensorDotGeneralRewrite> {
+  using CheckedOpRewritePattern<
+      stablehlo::DotGeneralOp,
+      DiagonalTensorDotGeneralRewrite>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp op,
+                                    PatternRewriter &rewriter) const {
+    {
+      // LHS Diagonal Matrix Multiply: Scale rows by diagonal elements
+      mlir::Value diagonalTensor;
+      if (auto scatterOp = op.getLhs().getDefiningOp<stablehlo::ScatterOp>()) {
+        auto status = detectDiagonalTensor(scatterOp, &diagonalTensor);
+        if (status.ok()) {
+          // TODO: support batched diagonal tensor
+          if (cast<RankedTensorType>(diagonalTensor.getType()).getRank() == 1) {
+            auto scaling = rewriter.create<stablehlo::BroadcastInDimOp>(
+                op.getLoc(), op.getRhs().getType(), diagonalTensor,
+                ArrayRef<int64_t>({0}));
+            rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, scaling,
+                                                          op.getRhs());
+            return success();
+          }
+        }
+      }
+    }
+
+    {
+      // RHS Diagonal Matrix Multiply: Scale columns by diagonal elements
+      mlir::Value diagonalTensor;
+      if (auto scatterOp = op.getRhs().getDefiningOp<stablehlo::ScatterOp>()) {
+        auto status = detectDiagonalTensor(scatterOp, &diagonalTensor);
+        if (status.ok()) {
+          // TODO: support batched diagonal tensor
+          if (cast<RankedTensorType>(diagonalTensor.getType()).getRank() == 1) {
+            auto scaling = rewriter.create<stablehlo::BroadcastInDimOp>(
+                op.getLoc(), op.getLhs().getType(), diagonalTensor,
+                ArrayRef<int64_t>({1}));
+            rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, op.getLhs(),
+                                                          scaling);
+            return success();
+          }
+        }
+      }
+    }
+
+    return failure();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -21255,24 +21306,24 @@ struct EnzymeHLOOptPass
     patterns.add<TransposeExtend>(context);
     patterns.add<TransposeRotate>(context);
 
-    patterns
-        .add<AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
-             OrSimplify, XorSimplify, MulSimplify, DivSimplify, RemSimplify,
-             PowSimplify, NoopSlice, NoopReverse, SliceSlice, LogSimplify,
-             ShiftRightLogicalSimplify, NegativePadToSlice, SliceSimplify,
-             ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
-             DotGeneralReshape, DynamicSliceToStatic, DynamicUpdateSliceElim,
-             ReduceToReshape, BroadcastToReshape, ReshapeEmptyBroadcast,
-             BroadcastReshape, ConstPropThroughBarrier,
-             ReplaceNegAddWithSubtract, SignAbsSimplify, AbsPositiveSimplify,
-             SimplifyBoundary<enzymexla::ExtendOp>,
-             SimplifyBoundary<enzymexla::WrapOp>,
-             SimplifyBoundary<enzymexla::RotateOp>, TransposeReshapeToBroadcast,
-             ReshapeTransposeToBroadcast, SelectBroadcastInDim,
-             PowerMultiplyToPower, NegMulConstSimplify, NegDivConstSimplify,
-             ReshapeDeletionsBroadcastInDimSimplify,
-             ReshapeInsertionsBroadcastInDimSimplify>(context,
-                                                      PatternBenefit(65000));
+    patterns.add<
+        AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
+        OrSimplify, XorSimplify, MulSimplify, DivSimplify, RemSimplify,
+        PowSimplify, NoopSlice, NoopReverse, SliceSlice, LogSimplify,
+        ShiftRightLogicalSimplify, NegativePadToSlice, SliceSimplify,
+        ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
+        DotGeneralReshape, DiagonalTensorDotGeneralRewrite,
+        DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
+        BroadcastToReshape, ReshapeEmptyBroadcast, BroadcastReshape,
+        ConstPropThroughBarrier, ReplaceNegAddWithSubtract, SignAbsSimplify,
+        AbsPositiveSimplify, SimplifyBoundary<enzymexla::ExtendOp>,
+        SimplifyBoundary<enzymexla::WrapOp>,
+        SimplifyBoundary<enzymexla::RotateOp>, TransposeReshapeToBroadcast,
+        ReshapeTransposeToBroadcast, SelectBroadcastInDim, PowerMultiplyToPower,
+        NegMulConstSimplify, NegDivConstSimplify,
+        ReshapeDeletionsBroadcastInDimSimplify,
+        ReshapeInsertionsBroadcastInDimSimplify>(context,
+                                                 PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,
                  DynamicUpdateSliceConstProp, PadSimplify>(

@@ -2127,3 +2127,7 @@ def ApplyTransposeReshapePatterns : EnzymeHLOPatternOp<"transpose_reshape"> {
 def ApplyDotGeneralReshapePatterns : EnzymeHLOPatternOp<"dot_general_reshape"> {
   let patterns = ["DotGeneralReshape"];
 }
+
+def ApplyDiagonalTensorDotGeneralRewritePatterns : EnzymeHLOPatternOp<"diagonal_tensor_dot_general_rewrite"> {
+  let patterns = ["DiagonalTensorDotGeneralRewrite"];
+}
