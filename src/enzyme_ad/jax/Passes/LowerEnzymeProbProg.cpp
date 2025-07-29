@@ -968,6 +968,105 @@ struct GetSampleFromConstraintOpConversion
   }
 };
 
+struct GetSubconstraintOpConversion
+    : public OpConversionPattern<enzyme::GetSubconstraintOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  std::string backend;
+  GetSubconstraintOpConversion(std::string backend,
+                               TypeConverter &typeConverter,
+                               MLIRContext *context, PatternBenefit benefit = 1)
+      : OpConversionPattern(typeConverter, context, benefit), backend(backend) {
+  }
+
+  LogicalResult
+  matchAndRewrite(enzyme::GetSubconstraintOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto ctx = op->getContext();
+
+    Value constraint = adaptor.getConstraint();
+
+    auto symbolAttr = op.getSymbolAttr();
+    if (!symbolAttr) {
+      return rewriter.notifyMatchFailure(op, "Missing symbol attribute");
+    }
+
+    uint64_t symbolValue = symbolAttr.getPtr();
+
+    if (backend == "cpu") {
+      auto moduleOp = op->getParentOfType<ModuleOp>();
+
+      auto llvmPtrType = LLVM::LLVMPointerType::get(ctx);
+      auto llvmVoidType = LLVM::LLVMVoidType::get(ctx);
+      auto llvmI64Type = IntegerType::get(ctx, 64);
+      auto loweredConstraintType = RankedTensorType::get(
+          {}, IntegerType::get(ctx, 64, IntegerType::Unsigned));
+
+      std::string getSubconstraintFn = "enzyme_probprog_get_subconstraint";
+
+      auto i64TensorType = RankedTensorType::get({}, llvmI64Type);
+      auto symbolConst = rewriter.create<stablehlo::ConstantOp>(
+          op.getLoc(), i64TensorType,
+          cast<ElementsAttr>(makeAttr(i64TensorType, symbolValue)));
+
+      auto subconstraintPtr = rewriter.create<stablehlo::ConstantOp>(
+          op.getLoc(), loweredConstraintType,
+          cast<ElementsAttr>(makeAttr(loweredConstraintType, 0)));
+
+      std::string wrapperFn = getOrCreateWrapper(getSubconstraintFn);
+
+      if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapperFn)) {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+        auto funcType = LLVM::LLVMFunctionType::get(
+            llvmVoidType, {llvmPtrType, llvmPtrType, llvmPtrType},
+            /*isVarArg=*/false);
+        auto func =
+            rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), wrapperFn, funcType);
+
+        rewriter.setInsertionPointToStart(func.addEntryBlock(rewriter));
+        rewriter.create<LLVM::CallOp>(
+            op.getLoc(), TypeRange{},
+            SymbolRefAttr::get(ctx, getSubconstraintFn),
+            ValueRange{func.getArgument(0), func.getArgument(1),
+                       func.getArgument(2)});
+        rewriter.create<LLVM::ReturnOp>(op.getLoc(), ValueRange{});
+      }
+
+      if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(getSubconstraintFn)) {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(moduleOp.getBody());
+        auto funcType = LLVM::LLVMFunctionType::get(
+            llvmVoidType, {llvmPtrType, llvmPtrType, llvmPtrType},
+            /*isVarArg=*/false);
+        rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), getSubconstraintFn,
+                                          funcType, LLVM::Linkage::External);
+      }
+
+      SmallVector<Attribute> aliases;
+      aliases.push_back(stablehlo::OutputOperandAliasAttr::get(
+          ctx, std::vector<int64_t>{}, 2, std::vector<int64_t>{}));
+
+      auto jitCall = rewriter.create<enzymexla::JITCallOp>(
+          op.getLoc(), TypeRange{loweredConstraintType},
+          mlir::FlatSymbolRefAttr::get(ctx, wrapperFn),
+          ValueRange{constraint, symbolConst, subconstraintPtr},
+          rewriter.getStringAttr(""),
+          /*operand_layouts=*/nullptr,
+          /*result_layouts=*/nullptr,
+          /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
+          /*xla_side_effect_free=*/nullptr);
+
+      rewriter.replaceOp(op, jitCall.getResults());
+
+      return success();
+    }
+
+    return rewriter.notifyMatchFailure(op, "Unknown backend " + backend);
+  }
+};
+
 struct LowerEnzymeProbProgPass
     : public enzyme::impl::LowerEnzymeProbProgPassBase<
           LowerEnzymeProbProgPass> {
@@ -1002,6 +1101,7 @@ struct LowerEnzymeProbProgPass
     target.addIllegalOp<enzyme::AddWeightToTraceOp>();
     target.addIllegalOp<enzyme::AddRetvalToTraceOp>();
     target.addIllegalOp<enzyme::GetSampleFromConstraintOp>();
+    target.addIllegalOp<enzyme::GetSubconstraintOp>();
 
     target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp f) {
       return typeConverter.isSignatureLegal(f.getFunctionType());
@@ -1024,12 +1124,12 @@ struct LowerEnzymeProbProgPass
     populateCallOpTypeConversionPattern(patterns, typeConverter);
     populateReturnOpTypeConversionPattern(patterns, typeConverter);
 
-    patterns
-        .add<InitTraceOpConversion, AddSampleToTraceOpConversion,
-             AddSubtraceOpConversion, AddWeightToTraceOpConversion,
-             AddRetvalToTraceOpConversion, GetSampleFromConstraintOpConversion,
-             UnrealizedConversionCastOpConversion>(backend, typeConverter,
-                                                   context);
+    patterns.add<
+        InitTraceOpConversion, AddSampleToTraceOpConversion,
+        AddSubtraceOpConversion, AddWeightToTraceOpConversion,
+        AddRetvalToTraceOpConversion, GetSampleFromConstraintOpConversion,
+        GetSubconstraintOpConversion, UnrealizedConversionCastOpConversion>(
+        backend, typeConverter, context);
 
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns)))) {
