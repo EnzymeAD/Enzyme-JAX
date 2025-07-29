@@ -88,6 +88,6 @@ jobs:
         working-directory: ${{ env.REACTANT_DIR }}/deps
       - name: Setup tmate session
         uses: mxschmitt/action-tmate@v3
-        if: ${{ !cancelled() }}
+        if: ${{ failure() }}
         with:
           limit-access-to-actor: false
