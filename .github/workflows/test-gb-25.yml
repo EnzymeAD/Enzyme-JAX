@@ -58,7 +58,7 @@ jobs:
           # Store build cache per workflow.
           disk-cache: gb-25-${{ github.workflow }}-${{ matrix.os }}-${{ matrix.julia_version }}
           # Share repository cache between workflows.
-          repository-cache: true
+          repository-cache: false
           bazelisk-version: 1.x
       - uses: actions/checkout@v4
         with:
