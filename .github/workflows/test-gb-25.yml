@@ -50,15 +50,20 @@ jobs:
         if: ${{ contains(matrix.os, 'a100') }}
         run: |
           nvidia-smi
+      - name: Setup upterm session
+        uses: lhotari/action-upterm@v1
+        with:
+          ## limits ssh access and adds the ssh public keys of the listed GitHub users
+          limit-access-to-users: wsmoses,giordano
       - uses: bazel-contrib/setup-bazel@0.15.0
         name: Set up Bazel
         with:
           # Avoid downloading Bazel every time.
-          bazelisk-cache: true
+          bazelisk-cache: false
           # Store build cache per workflow.
           disk-cache: gb-25-${{ github.workflow }}-${{ matrix.os }}-${{ matrix.julia_version }}
           # Share repository cache between workflows.
-          repository-cache: true
+          repository-cache: false
           bazelisk-version: 1.x
       - uses: actions/checkout@v4
         with:
@@ -85,11 +90,3 @@ jobs:
           julia --project --color=yes -e 'using Pkg; Pkg.instantiate()'
           julia --project --color=yes -O0 build_local.jl
         working-directory: ${{ env.REACTANT_DIR }}/deps
-      - name: Upload Reactant build directory
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: Enzyme-JAX-gb-25-${{ matrix.os }}-${{ matrix.julia_version }}
-          path: |
-            ${{ env.REACTANT_DIR }}/deps
-          retention-days: 90
