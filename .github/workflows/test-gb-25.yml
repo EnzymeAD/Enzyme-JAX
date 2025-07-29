@@ -50,12 +50,6 @@ jobs:
         if: ${{ contains(matrix.os, 'a100') }}
         run: |
           nvidia-smi
-          apt install sudo
-      - name: Setup upterm session
-        uses: lhotari/action-upterm@v1
-        with:
-          ## limits ssh access and adds the ssh public keys of the listed GitHub users
-          limit-access-to-users: wsmoses,giordano
       - uses: bazel-contrib/setup-bazel@0.15.0
         name: Set up Bazel
         with:
@@ -91,3 +85,8 @@ jobs:
           julia --project --color=yes -e 'using Pkg; Pkg.instantiate()'
           julia --project --color=yes -O0 build_local.jl
         working-directory: ${{ env.REACTANT_DIR }}/deps
+      - name: Setup tmate session
+        uses: mxschmitt/action-tmate@v3
+        if: ${{ !cancelled() }}
+        with:
+          limit-access-to-actor: false
