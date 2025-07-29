@@ -82,7 +82,6 @@ jobs:
         run: |
           # Modify commit Enzyme-JAX commit
           sed -i.bak 's/ENZYMEXLA_COMMIT = ".*"/ENZYMEXLA_COMMIT = "${{ github.sha }}"/' ReactantExtra/WORKSPACE
-
           julia --project --color=yes -e 'using Pkg; Pkg.instantiate()'
           julia --project --color=yes -O0 build_local.jl --gcc_host_compiler_path=  --cc= 
         working-directory: ${{ env.REACTANT_DIR }}/deps
