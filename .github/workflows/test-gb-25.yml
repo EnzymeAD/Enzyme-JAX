@@ -34,6 +34,7 @@ jobs:
   test-gb-25:
     name: Test GB-25 - ${{ matrix.os }} - julia ${{ matrix.julia_version }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
 
     container:
       image: ${{ (contains(matrix.os, 'linux') && 'ghcr.io/enzymead/reactant-docker-images@sha256:14f2f7ae6eff98a0a8e37e9b84542c068eafa0ab4360a8fb08d306c2486cd169' ) || '' }}
@@ -80,6 +81,7 @@ jobs:
           version: ${{ matrix.julia_version }}
       - uses: julia-actions/cache@v2
       - name: Build local libReactant
+        timeout-minutes: 60
         run: |
           # Modify commit Enzyme-JAX commit
           sed -i.bak 's/ENZYMEXLA_COMMIT = ".*"/ENZYMEXLA_COMMIT = "${{ github.sha }}"/' ReactantExtra/WORKSPACE
@@ -103,11 +105,7 @@ jobs:
           ls -lhrt "${GB25_DIR}"
           echo "GB25_DIR=${GB25_DIR}" >> ${GITHUB_ENV}
       - name: Instantiate GB-25 environment
-        run: |
-          cp ${{ env.REACTANT_DIR }}/LocalPreferences.toml ${{ env.GB25_DIR }}/LocalPreferences.toml
-          julia --project --color=yes -e 'using Pkg; Pkg.instantiate()'
-        working-directory: ${{ env.GB25_DIR }}
-      - name: Instantiate GB-25 environment
+        timeout-minutes: 20
         run: |
           cp ${{ env.REACTANT_DIR }}/LocalPreferences.toml ${{ env.GB25_DIR }}/LocalPreferences.toml
           julia --project --color=yes -e 'using Pkg; Pkg.instantiate()'
@@ -119,7 +117,8 @@ jobs:
           echo "${MPIEXECJL_DIR}" >> "${GITHUB_PATH}"
         working-directory: ${{ env.GB25_DIR }}
       - name: Run GB-25 simulation
+        timeout-minutes: 45
         run: |
           earlyoom -m 10 -s 100 -r 120 --prefer 'julia' &
-          timeout --signal=TERM --verbose 180m mpiexecjl -np 1 julia --color=yes --project -O0 sharding/sharded_baroclinic_instability_simulation_run.jl
+          timeout --signal=TERM --verbose 40m mpiexecjl -np 1 julia --color=yes --project -O0 sharding/sharded_baroclinic_instability_simulation_run.jl
         working-directory: ${{ env.GB25_DIR }}
