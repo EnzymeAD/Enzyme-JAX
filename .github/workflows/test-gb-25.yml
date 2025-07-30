@@ -87,7 +87,7 @@ jobs:
           sed -i.bak 's/ENZYMEXLA_COMMIT = ".*"/ENZYMEXLA_COMMIT = "${{ github.sha }}"/' ReactantExtra/WORKSPACE
 
           # Modify XLA commit
-          # sed -E -i.bak -e 's/(# )?XLA_COMMIT = ".*"/XLA_COMMIT = "0123456789abcdef0123456789abcdef01234567"/' -e 's/(# )?XLA_SHA256 = ""/XLA_SHA256 = ""/' ReactantExtra/WORKSPACE
+          # sed -E -i.bak -e 's?load\("@jax//third_party/xla:revision.bzl", "XLA_COMMIT", "XLA_SHA256"\)??' -e 's/(# )?XLA_COMMIT = ".*"/XLA_COMMIT = "0123456789abcdef0123456789abcdef01234567"/' -e 's/(# )?XLA_SHA256 = ""/XLA_SHA256 = ""/' ReactantExtra/WORKSPACE
 
           julia --project --color=yes -e 'using Pkg; Pkg.instantiate()'
           julia --project --color=yes -O0 build_local.jl --cc=clang --gcc_host_compiler_path=
