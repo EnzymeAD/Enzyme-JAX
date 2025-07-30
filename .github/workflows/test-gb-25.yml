@@ -36,7 +36,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     container:
-      image: ${{ (contains(matrix.os, 'linux') && 'ghcr.io/enzymead/reactant-docker-images@sha256:f73d1ee3790e5d1d33d26cae83a6b70f9c68be45406068b202c76cbb4b34c89f' ) || '' }}
+      image: ${{ (contains(matrix.os, 'linux') && 'ghcr.io/enzymead/reactant-docker-images@sha256:14f2f7ae6eff98a0a8e37e9b84542c068eafa0ab4360a8fb08d306c2486cd169' ) || '' }}
 
     strategy:
       fail-fast: false
@@ -106,5 +106,20 @@ jobs:
         run: |
           cp ${{ env.REACTANT_DIR }}/LocalPreferences.toml ${{ env.GB25_DIR }}/LocalPreferences.toml
           julia --project --color=yes -e 'using Pkg; Pkg.instantiate()'
-          julia --project --color=yes -e 'using Reactant_jll; @show Reactant_jll.libReactantExtra_path'
+        working-directory: ${{ env.GB25_DIR }}
+      - name: Instantiate GB-25 environment
+        run: |
+          cp ${{ env.REACTANT_DIR }}/LocalPreferences.toml ${{ env.GB25_DIR }}/LocalPreferences.toml
+          julia --project --color=yes -e 'using Pkg; Pkg.instantiate()'
+        working-directory: ${{ env.GB25_DIR }}
+      - name: Install mpiexecjl
+        run: |
+          MPIEXECJL_DIR="${GITHUB_WORKSPACE}/bin"
+          julia --project --color=yes -e "using MPI; MPI.install_mpiexecjl(; destdir=\"${MPIEXECJL_DIR}\")"
+          echo "${MPIEXECJL_DIR}" >> "${GITHUB_PATH}"
+        working-directory: ${{ env.GB25_DIR }}
+      - name: Run GB-25 simulation
+        run: |
+          earlyoom -m 10 -s 100 -r 120 --prefer 'julia' &
+          timeout --signal=TERM --verbose 180m mpiexecjl -np 1 julia --color=yes --project -O0 sharding/sharded_baroclinic_instability_simulation_run.jl
         working-directory: ${{ env.GB25_DIR }}
