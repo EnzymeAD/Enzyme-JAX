@@ -119,6 +119,5 @@ jobs:
       - name: Run GB-25 simulation
         timeout-minutes: 45
         run: |
-          earlyoom -m 10 -s 100 -r 120 --prefer 'julia' &
           timeout --signal=TERM --verbose 40m mpiexecjl -np 1 julia --color=yes --project -O0 sharding/sharded_baroclinic_instability_simulation_run.jl
         working-directory: ${{ env.GB25_DIR }}
