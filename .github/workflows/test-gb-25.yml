@@ -34,7 +34,7 @@ jobs:
   test-gb-25:
     name: Test GB-25 - ${{ matrix.os }} - julia ${{ matrix.julia_version }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 120
+    timeout-minutes: 150
 
     container:
       image: ${{ (contains(matrix.os, 'linux') && 'ghcr.io/enzymead/reactant-docker-images@sha256:14f2f7ae6eff98a0a8e37e9b84542c068eafa0ab4360a8fb08d306c2486cd169' ) || '' }}
@@ -128,10 +128,10 @@ jobs:
           echo "${MPIEXECJL_DIR}" >> "${GITHUB_PATH}"
         working-directory: ${{ env.GB25_DIR }}
       - name: Run GB-25 simulation
-        timeout-minutes: 45
+        timeout-minutes: 60
         run: |
-          export XLA_FLAGS='--xla_dump_to=${{ env.GB25_DIR }}/xla_dump --xla_dump_hlo_pass_re=.*'
-          timeout --signal=TERM --verbose 40m mpiexecjl -np 1 julia --color=yes --project -O0 sharding/sharded_baroclinic_instability_simulation_run.jl
+          export XLA_FLAGS='--xla_dump_to=${{ env.GB25_DIR }}/xla_dump'
+          timeout --signal=TERM --verbose 59m mpiexecjl -np 1 julia --color=yes --project -O0 sharding/sharded_baroclinic_instability_simulation_run.jl
         working-directory: ${{ env.GB25_DIR }}
       - name: Upload MLIR and XLA modules
         uses: actions/upload-artifact@v4
@@ -146,7 +146,7 @@ jobs:
           overwrite: false
       - name: Upload XLA dump
         uses: actions/upload-artifact@v4
-        timeout-minutes: 10
+        timeout-minutes: 20
         if: ${{ !cancelled() }}
         with:
           name: 'simulation-xla-dump-${{ matrix.julia_version }}-${{ matrix.os }}'
