@@ -32,7 +32,7 @@ concurrency:
 
 jobs:
   test-gb-25:
-    name: Test GB-25 - ${{ matrix.os }} - julia ${{ matrix.julia_version }}
+    name: 'Test GB-25 - ${{ matrix.os }} - julia ${{ matrix.julia_version }} - XLA ${{ matrix.xla_commit }} - GB-25 ${{ matrix.gb25_commit }}- Reactant ${{ matrix.reactant_commit }}'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 150
 
@@ -46,6 +46,16 @@ jobs:
           - linux-x86-a2-48-a100-4gpu
         julia_version:
           - '1.11'
+        xla_commit:
+          - ''
+          # - '0123456789abcdef0123456789abcdef01234567'
+        gb25_commit:
+          - 'main'
+          # - '0123456789abcdef0123456789abcdef01234567'
+        reactant_commit:
+          - ''
+          # - '0123456789abcdef0123456789abcdef01234567'
+
     steps:
       - name: Check GPUs
         if: ${{ contains(matrix.os, 'a100') }}
@@ -57,7 +67,7 @@ jobs:
           # Avoid downloading Bazel every time.
           bazelisk-cache: true
           # Store build cache per workflow.
-          disk-cache: gb-25-${{ github.workflow }}-${{ matrix.os }}-${{ matrix.julia_version }}
+          disk-cache: gb-25-${{ github.workflow }}-${{ matrix.os }}-${{ matrix.julia_version }}-${{ matrix.xla_commit }}-${{ matrix.gb25_commit }}-${{ matrix.reactant_commit }}
           # Share repository cache between workflows.
           repository-cache: true
           bazelisk-version: 1.x
@@ -87,7 +97,13 @@ jobs:
           sed -i.bak 's/ENZYMEXLA_COMMIT = ".*"/ENZYMEXLA_COMMIT = "${{ github.sha }}"/' ReactantExtra/WORKSPACE
 
           # Modify XLA commit
-          # sed -E -i.bak -e 's?load\("@jax//third_party/xla:revision.bzl", "XLA_COMMIT", "XLA_SHA256"\)??' -e 's/(# )?XLA_COMMIT = ".*"/XLA_COMMIT = "0123456789abcdef0123456789abcdef01234567"/' -e 's/(# )?XLA_SHA256 = ""/XLA_SHA256 = ""/' ReactantExtra/WORKSPACE
+          if [[ -n "${{ matrix.xla_commit }}" ]]; then
+              sed -E -i.bak \
+                  -e 's?load\("@jax//third_party/xla:revision.bzl", "XLA_COMMIT", "XLA_SHA256"\)??' \
+                  -e 's/(# )?XLA_COMMIT = ".*"/XLA_COMMIT = "0123456789abcdef0123456789abcdef01234567"/' \
+                  -e 's/(# )?XLA_SHA256 = ""/XLA_SHA256 = ""/' \
+                  ReactantExtra/WORKSPACE
+          fi
 
           julia --project --color=yes -e 'using Pkg; Pkg.instantiate()'
           julia --project --color=yes -O0 build_local.jl --cc=clang --gcc_host_compiler_path=
@@ -96,7 +112,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: 'PRONTOLab/GB-25'
-          ref: 'main'
+          ref: ${{ matrix.gb25_commit }}
           path: 'GB-25'
       - name: Set GB25_DIR
         # We have to use `${GITHUB_WORKSPACE}` instead of `github.workspace` because GitHub
@@ -109,16 +125,29 @@ jobs:
           echo "GB25_DIR=${GB25_DIR}" >> ${GITHUB_ENV}
       - name: Instantiate GB-25 environment
         timeout-minutes: 20
+        shell: julia --project --color=yes {0}
         run: |
-          cp ${{ env.REACTANT_DIR }}/LocalPreferences.toml ${{ env.GB25_DIR }}/LocalPreferences.toml
-          julia --project --color=yes -e 'using Pkg; Pkg.instantiate()'
+          # Copy preference file to point to newly built libReactant
+          cp("${{ env.REACTANT_DIR }}/LocalPreferences.toml", "${{ env.GB25_DIR }}/LocalPreferences.toml")
+
+          using Pkg
+          if !isempty("${{ matrix.reactant_commit }}")
+              # Install specific commit of Reactant, if necessary
+              Pkg.add([
+                  PackageSpec(; name="Reactant", rev="${{ matrix.reactant_commit }}"),
+              ])
+          end
+          # Instantiate environment
+          Pkg.instantiate()
+          # Cleanup depot if possible
+          Pkg.gc()
         working-directory: ${{ env.GB25_DIR }}
       - name: Upload Julia project environment
         uses: actions/upload-artifact@v4
         timeout-minutes: 10
         if: ${{ always() }}
         with:
-          name: 'julia-environment-${{ matrix.julia_version }}-${{ matrix.os }}'
+          name: 'julia-environment-${{ matrix.julia_version }}-${{ matrix.os }}-${{ matrix.xla_commit }}-${{ matrix.gb25_commit }}-${{ matrix.reactant_commit }}'
           path: |
             ${{ env.GB25_DIR }}/Manifest.toml
             ${{ env.GB25_DIR }}/Project.toml
@@ -141,7 +170,7 @@ jobs:
         timeout-minutes: 10
         if: ${{ !cancelled() }}
         with:
-          name: 'simulation-mlir-${{ matrix.julia_version }}-${{ matrix.os }}'
+          name: 'simulation-mlir-${{ matrix.julia_version }}-${{ matrix.os }}-${{ matrix.xla_commit }}-${{ matrix.gb25_commit }}-${{ matrix.reactant_commit }}'
           path: |
             **/*.mlir
             **/optimised_*.xla
@@ -152,7 +181,7 @@ jobs:
         timeout-minutes: 20
         if: ${{ !cancelled() }}
         with:
-          name: 'simulation-xla-dump-${{ matrix.julia_version }}-${{ matrix.os }}'
+          name: 'simulation-xla-dump-${{ matrix.julia_version }}-${{ matrix.os }}-${{ matrix.xla_commit }}-${{ matrix.gb25_commit }}-${{ matrix.reactant_commit }}'
           path: '**/xla_dump'
           retention-days: 90
           overwrite: false
@@ -161,7 +190,7 @@ jobs:
         timeout-minutes: 10
         if: ${{ !cancelled() }}
         with:
-          name: 'simulation-xla-profile-${{ matrix.julia_version }}-${{ matrix.os }}'
+          name: 'simulation-xla-profile-${{ matrix.julia_version }}-${{ matrix.os }}-${{ matrix.xla_commit }}-${{ matrix.gb25_commit }}-${{ matrix.reactant_commit }}'
           path: '**/plugins'
           retention-days: 90
           overwrite: false
