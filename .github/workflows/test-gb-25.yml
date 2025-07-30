@@ -130,6 +130,7 @@ jobs:
       - name: Run GB-25 simulation
         timeout-minutes: 45
         run: |
+          export XLA_FLAGS='--xla_dump_to=${{ env.GB25_DIR }}/xla_dump --xla_dump_hlo_pass_re=.*'
           timeout --signal=TERM --verbose 40m mpiexecjl -np 1 julia --color=yes --project -O0 sharding/sharded_baroclinic_instability_simulation_run.jl
         working-directory: ${{ env.GB25_DIR }}
       - name: Upload MLIR and XLA modules
