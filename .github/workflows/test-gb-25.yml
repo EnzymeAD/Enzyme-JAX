@@ -106,4 +106,4 @@ jobs:
         run: |
           julia --project --color=yes -e 'using Pkg; Pkg.add(; path="${{ env.REACTANT_DIR }}"); Pkg.instantiate'
           julia --project --color=yes -e 'using Reactant_jll; @show Reactant_jll.libReactantExtra_path'
-        working-directory: ${{ env.REACTANT_DIR }}
+        working-directory: ${{ env.GB25_DIR }}
