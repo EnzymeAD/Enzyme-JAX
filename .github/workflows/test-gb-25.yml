@@ -60,7 +60,8 @@ jobs:
           # Share repository cache between workflows.
           repository-cache: true
           bazelisk-version: 1.x
-      - uses: actions/checkout@v4
+      - name: Checkout Reactant.jl
+        uses: actions/checkout@v4
         with:
           repository: 'EnzymeAD/Reactant.jl'
           ref: 'main'
@@ -86,8 +87,23 @@ jobs:
           julia --project --color=yes -e 'using Pkg; Pkg.instantiate()'
           julia --project --color=yes -O0 build_local.jl --cc=clang --gcc_host_compiler_path=
         working-directory: ${{ env.REACTANT_DIR }}/deps
-      - name: Setup tmate session
-        uses: mxschmitt/action-tmate@v3
-        if: ${{ failure() }}
+      - name: Checkout GB-25
+        uses: actions/checkout@v4
         with:
-          limit-access-to-actor: false
+          repository: 'PRONTOLab/GB-25'
+          ref: 'main'
+          path: 'GB-25'
+      - name: Set GB25_DIR
+        # We have to use `${GITHUB_WORKSPACE}` instead of `github.workspace` because GitHub
+        # is terrible and the two don't match inside containers:
+        # https://github.com/actions/runner/issues/2058
+        run: |
+          GB25_DIR=${GITHUB_WORKSPACE}/GB-25
+          # Make sure this directory exists, for good measure
+          ls -lhrt "${GB25_DIR}"
+          echo "GB25_DIR=${GB25_DIR}" >> ${GITHUB_ENV}
+      - name: Instantiate GB-25 environment
+        run: |
+          julia --project --color=yes -e 'using Pkg; Pkg.add(; path="${{ env.REACTANT_DIR }}"); Pkg.instantiate'
+          julia --project --color=yes -e 'using Reactant_jll; @show Reactant_jll.libReactantExtra_path'
+        working-directory: ${{ env.REACTANT_DIR }}
