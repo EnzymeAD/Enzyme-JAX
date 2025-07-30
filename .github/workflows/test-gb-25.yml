@@ -110,6 +110,17 @@ jobs:
           cp ${{ env.REACTANT_DIR }}/LocalPreferences.toml ${{ env.GB25_DIR }}/LocalPreferences.toml
           julia --project --color=yes -e 'using Pkg; Pkg.instantiate()'
         working-directory: ${{ env.GB25_DIR }}
+      - name: Upload Julia project environment
+        uses: actions/upload-artifact@v4
+        timeout-minutes: 10
+        if: ${{ always() }}
+        with:
+          name: 'julia-environment-${{ matrix.julia_version }}-${{ matrix.os }}'
+          path: |
+            ${{ env.GB25_DIR }}/Manifest.toml
+            ${{ env.GB25_DIR }}/Project.toml
+          retention-days: 90
+          overwrite: false
       - name: Install mpiexecjl
         run: |
           MPIEXECJL_DIR="${GITHUB_WORKSPACE}/bin"
@@ -121,3 +132,32 @@ jobs:
         run: |
           timeout --signal=TERM --verbose 40m mpiexecjl -np 1 julia --color=yes --project -O0 sharding/sharded_baroclinic_instability_simulation_run.jl
         working-directory: ${{ env.GB25_DIR }}
+      - name: Upload MLIR and XLA modules
+        uses: actions/upload-artifact@v4
+        timeout-minutes: 10
+        if: ${{ !cancelled() }}
+        with:
+          name: 'simulation-mlir-${{ matrix.julia_version }}-${{ matrix.os }}'
+          path: |
+            **/*.mlir
+            **/optimised_*.xla
+          retention-days: 90
+          overwrite: false
+      - name: Upload XLA dump
+        uses: actions/upload-artifact@v4
+        timeout-minutes: 10
+        if: ${{ !cancelled() }}
+        with:
+          name: 'simulation-xla-dump-${{ matrix.julia_version }}-${{ matrix.os }}'
+          path: '**/xla_dump'
+          retention-days: 90
+          overwrite: false
+      - name: Upload XLA profiler traces
+        uses: actions/upload-artifact@v4
+        timeout-minutes: 10
+        if: ${{ !cancelled() }}
+        with:
+          name: 'simulation-xla-profile-${{ matrix.julia_version }}-${{ matrix.os }}'
+          path: '**/plugins'
+          retention-days: 90
+          overwrite: false
