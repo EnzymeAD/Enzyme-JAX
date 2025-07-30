@@ -104,6 +104,7 @@ jobs:
           echo "GB25_DIR=${GB25_DIR}" >> ${GITHUB_ENV}
       - name: Instantiate GB-25 environment
         run: |
-          julia --project --color=yes -e 'using Pkg; Pkg.add(; path="${{ env.REACTANT_DIR }}"); Pkg.instantiate'
+          cp ${{ env.REACTANT_DIR }}/LocalPreferences.toml ${{ env.GB25_DIR }}/LocalPreferences.toml
+          julia --project --color=yes -e 'using Pkg; Pkg.instantiate'
           julia --project --color=yes -e 'using Reactant_jll; @show Reactant_jll.libReactantExtra_path'
         working-directory: ${{ env.GB25_DIR }}
