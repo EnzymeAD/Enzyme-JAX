@@ -172,8 +172,8 @@ jobs:
         with:
           name: 'simulation-mlir-${{ matrix.julia_version }}-${{ matrix.os }}-${{ matrix.xla_commit }}-${{ matrix.gb25_commit }}-${{ matrix.reactant_commit }}'
           path: |
-            **/*.mlir
-            **/optimised_*.xla
+            ${{ env.GB25_DIR }}/**/*.mlir
+            ${{ env.GB25_DIR }}/**/optimised_*.xla
           retention-days: 90
           overwrite: false
       - name: Upload XLA dump
@@ -182,7 +182,7 @@ jobs:
         if: ${{ !cancelled() }}
         with:
           name: 'simulation-xla-dump-${{ matrix.julia_version }}-${{ matrix.os }}-${{ matrix.xla_commit }}-${{ matrix.gb25_commit }}-${{ matrix.reactant_commit }}'
-          path: '**/xla_dump'
+          path: '${{ env.GB25_DIR }}/**/xla_dump'
           retention-days: 90
           overwrite: false
       - name: Upload XLA profiler traces
@@ -191,6 +191,6 @@ jobs:
         if: ${{ !cancelled() }}
         with:
           name: 'simulation-xla-profile-${{ matrix.julia_version }}-${{ matrix.os }}-${{ matrix.xla_commit }}-${{ matrix.gb25_commit }}-${{ matrix.reactant_commit }}'
-          path: '**/plugins'
+          path: '${{ env.GB25_DIR }}/**/plugins'
           retention-days: 90
           overwrite: false
