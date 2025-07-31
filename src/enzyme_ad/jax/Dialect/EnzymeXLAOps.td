@@ -367,7 +367,47 @@ def LUFactorizationOp: EnzymeXLA_Op<"linalg.lu", [Pure]> {
 }
 
 def QRFactorizationOp: EnzymeXLA_Op<"linalg.qr", [Pure]> {
-  let summary = "QR factorization operation.";
+  let summary = "QR factorization operation (high-level op)";
+
+  let description = [{
+    This operation computes the QR factorization of a matrix using Householder 
+    reflections. Mathematically, it decomposes A into the product of an 
+    orthogonal (unitary if complex) matrix Q and an upper triangular matrix R, 
+    such that A = QR.
+
+    If A has size m x n and m > n, Q is an m x n isometric matrix. If m < n, R
+    will be a m x n trapezoidal matrix.
+
+    This operation is modeled after the mathematical formulation of the QR 
+    factorization, and not after LAPACK's compact formats.
+  }];
+
+  let arguments = (ins
+    HLO_Tensor:$input
+    DefaultValuedAttr<EnzymeXLA_QrAlgorithmAttr, "geqrf">:$algorithm,
+  );
+
+  let results = (outs
+    HLO_Tensor:$Q,
+    HLO_Tensor:$R,
+  );
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
+def GeqrfOp : EnzymeXLA_Op<"lapack.geqrf", [Pure]> {
+  let summary = "QR factorization operation (low-level op)";
+
+  let description = [{
+    This operation computes the QR factorization of a matrix using Householder 
+    reflections. Mathematically, it decomposes A into the product of an 
+    orthogonal matrix Q and an upper triangular matrix R, such that A = QR.
+
+    This operation is modeled after LAPACK's *GEQRF routines, which returns the 
+    result in the QR packed format.
+  }];
 
   let arguments = (ins
     HLO_Tensor:$input
@@ -384,6 +424,78 @@ def QRFactorizationOp: EnzymeXLA_Op<"linalg.qr", [Pure]> {
   }];
 }
 
+def GeqrtOp : EnzymeXLA_Op<"lapack.geqrt", [Pure]> {
+  let summary = "QR factorization operation (low-level op)";
+
+  let description = [{
+    This operation computes the QR factorization of a matrix using Householder 
+    reflections. Mathematically, it decomposes A into the product of an 
+    orthogonal matrix Q and an upper triangular matrix R, such that A = QR.
+
+    This operation is modeled after LAPACK's *GEQRT routines, which returns the 
+    result in the QR CompactWY format.
+  }];
+
+  let arguments = (ins
+    HLO_Tensor:$input
+  );
+
+  let results = (outs
+    HLO_Tensor:$output,
+    HLO_Tensor:$T,
+    HLO_Tensor:$info
+  );
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
+def OrgqrOp : EnzymeXLA_Op<"lapack.orgqr", [Pure]> {
+  let summary = "Generate orthonormal/unitary matrix from a product of
+    elementary Householder reflectors";
+  let description = [{
+    This operation is modeled after LAPACK's *ORGQR/*UNGQR routines.
+  }];
+
+  let arguments = (ins
+    HLO_Tensor:$input,
+    HLO_Tensor:$tau
+  );
+
+  let results = (outs
+    HLO_Tensor:$output
+  );
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
+def OrmqrOp : EnzymeXLA_Op<"lapack.ormqr", [Pure]> {
+  let summary = "Perform a matrix multiplication with the Q matrix from a QR
+    decomposition, given only the householder reflections.";
+
+  let description = [{
+    This operation is modeled after LAPACK's *ORMQR routines.
+  }];
+
+  let argumetns = (ins
+    HLO_Tensor:$lhs,
+    HLO_Tensor:$rhs,
+    HLO_Tensor:$tau,
+    EnzymeXLA_LapackSide:$side,
+    DefaultValuedAttr<BoolAttr, "false">:$transpose // true if apply Q^T?
+  );
+
+  let results = (outs
+    HLO_Tensor:$output
+  );
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
 
 def SVDFactorizationOp : EnzymeXLA_Op<"linalg.svd", [Pure]> {
   let summary = "Singular Value Decomposition (SVD) factorization operation.";
