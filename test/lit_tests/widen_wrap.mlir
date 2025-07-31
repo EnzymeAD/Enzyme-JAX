@@ -26,7 +26,11 @@ module @"reactant_loop!" {
   }
 }
 
-// CHECK:    func.func @main() -> tensor<1x8x96xf64> {
-// CHECK-NEXT:      %cst = stablehlo.constant dense<3.000000e+00> : tensor<1x8x96xf64>
-// CHECK-NEXT:      stablehlo.return %cst : tensor<1x8x96xf64>
-// CHECK-NEXT:    }
+// CHECK:  func.func @main(%arg0: tensor<1x1536x3072xf64>, %arg1: tensor<1x1520x3056xf64>) -> tensor<1x1536x3072xf64> {
+// CHECK-NEXT:    %0 = "enzymexla.extend"(%arg1) <{dimension = 1 : i64, lhs = 1 : i64, rhs = 1 : i64}> : (tensor<1x1520x3056xf64>) -> tensor<1x1522x3056xf64>
+// CHECK-NEXT:    %1 = stablehlo.slice %arg0 [0:1, 0:7, 8:3064] : (tensor<1x1536x3072xf64>) -> tensor<1x7x3056xf64>
+// CHECK-NEXT:    %2 = stablehlo.slice %arg0 [0:1, 1529:1536, 8:3064] : (tensor<1x1536x3072xf64>) -> tensor<1x7x3056xf64>
+// CHECK-NEXT:    %3 = stablehlo.concatenate %1, %0, %2, dim = 1 : (tensor<1x7x3056xf64>, tensor<1x1522x3056xf64>, tensor<1x7x3056xf64>) -> tensor<1x1536x3056xf64>
+// CHECK-NEXT:    %4 = "enzymexla.wrap"(%3) <{dimension = 2 : i64, lhs = 8 : i64, rhs = 8 : i64}> : (tensor<1x1536x3056xf64>) -> tensor<1x1536x3072xf64>
+// CHECK-NEXT:    stablehlo.return %4 : tensor<1x1536x3072xf64>
+// CHECK-NEXT:  }
