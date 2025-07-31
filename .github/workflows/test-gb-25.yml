@@ -48,7 +48,7 @@ jobs:
           - '1.11'
         xla_commit:
           - ''
-          - 'b25f3cbed2bc88c8ffef85f6a5319e2cf7b0454c'
+          # - 'b25f3cbed2bc88c8ffef85f6a5319e2cf7b0454c'
         gb25_commit:
           - 'main'
           # - '0123456789abcdef0123456789abcdef01234567'
