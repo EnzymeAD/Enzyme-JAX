@@ -1871,6 +1871,11 @@ def ConcatWrap : EnzymeHLOPatternOp<
   let patterns = ["ConcatWrap"];
 }
 
+def WidenWrap : EnzymeHLOPatternOp<
+    "widen_wrap"> {
+  let patterns = ["WidenWrap"];
+}
+
 def ConcatConcatAxisSwap : EnzymeHLOPatternOp<
     "concat_concat_axis_swap"> {
   let patterns = ["ConcatConcatAxisSwap"];
