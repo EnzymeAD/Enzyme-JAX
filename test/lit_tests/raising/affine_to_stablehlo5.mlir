@@ -15,8 +15,8 @@ module {
 }
 
 // CHECK:  func.func private @main_raised(%arg0: tensor<180xf32>, %arg1: tensor<180xf32>, %arg2: tensor<180xf32>) -> (tensor<180xf32>, tensor<180xf32>, tensor<180xf32>) {
-// CHECK-NEXT:    %0 = stablehlo.slice %arg1 [0:91] : (tensor<180xf32>) -> tensor<91xf32> 
-// CHECK-NEXT:    %1 = stablehlo.slice %arg0 [91:180] : (tensor<180xf32>) -> tensor<89xf32>
-// CHECK-NEXT:    %2 = stablehlo.concatenate %0, %1, dim = 0 : (tensor<91xf32>, tensor<89xf32>) -> tensor<180xf32> 
-// CHECK-NEXT:    return %arg0, %arg1, %2 : tensor<180xf32>, tensor<180xf32>, tensor<180xf32> 
+// CHECK-DAG:    %[[s0:.+]] = stablehlo.slice %arg1 [0:91] : (tensor<180xf32>) -> tensor<91xf32>
+// CHECK-DAG:    %[[s1:.+]] = stablehlo.slice %arg0 [91:180] : (tensor<180xf32>) -> tensor<89xf32>
+// CHECK:    %[[concat:.+]] = stablehlo.concatenate %[[s0]], %[[s1]], dim = 0 : (tensor<91xf32>, tensor<89xf32>) -> tensor<180xf32>
+// CHECK-NEXT:    return %arg0, %arg1, %[[concat]] : tensor<180xf32>, tensor<180xf32>, tensor<180xf32>
 // CHECK-NEXT:  }

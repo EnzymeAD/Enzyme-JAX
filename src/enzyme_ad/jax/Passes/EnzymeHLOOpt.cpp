@@ -21096,6 +21096,48 @@ struct DiagonalTensorDotGeneralRewrite final
   }
 };
 
+// pred ? trues : falses --> pred
+// pred ? falses : trues --> !pred
+struct SelectSimplify
+    : public CheckedOpRewritePattern<stablehlo::SelectOp, SelectSimplify> {
+  using CheckedOpRewritePattern<stablehlo::SelectOp,
+                                SelectSimplify>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SelectOp op,
+                                    PatternRewriter &rewriter) const {
+    if (!cast<ShapedType>(op.getType()).getElementType().isInteger(1))
+      return failure();
+
+    auto predType = cast<RankedTensorType>(op.getPred().getType());
+    bool needsBroadcast = predType.getRank() == 0;
+
+    if (matchPattern(op.getOnTrue(), m_One()) &&
+        matchPattern(op.getOnFalse(), m_Zero())) {
+      if (needsBroadcast) {
+        rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+            op, op.getType(), op.getPred(), ArrayRef<int64_t>({}));
+      } else {
+        rewriter.replaceAllUsesWith(op, op.getPred());
+      }
+      return success();
+    }
+
+    if (matchPattern(op.getOnTrue(), m_Zero()) &&
+        matchPattern(op.getOnFalse(), m_One())) {
+      auto notOp = rewriter.create<stablehlo::NotOp>(op.getLoc(), op.getPred());
+      if (needsBroadcast) {
+        rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+            op, op.getType(), notOp, ArrayRef<int64_t>({}));
+      } else {
+        rewriter.replaceAllUsesWith(op, notOp);
+      }
+      return success();
+    }
+
+    return failure();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -21339,7 +21381,8 @@ struct EnzymeHLOOptPass
         NegMulConstSimplify, NegDivConstSimplify,
         ReshapeDeletionsBroadcastInDimSimplify,
         ReshapeInsertionsBroadcastInDimSimplify, CompareIotaConstSimplify,
-        CompareNegateConstSimplify>(context, PatternBenefit(65000));
+        CompareNegateConstSimplify, SelectSimplify>(context,
+                                                    PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,
                  DynamicUpdateSliceConstProp, PadSimplify>(

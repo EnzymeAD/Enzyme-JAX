@@ -1,5 +1,5 @@
-// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td=patterns=compare_negate_const_simplify --transform-interpreter --enzyme-hlo-remove-transform | FileCheck %s --CHECK-PREFIX=PARTIAL
-// RUN: enzymexlamlir-opt %s --enzyme-hlo-opt | FileCheck %s --CHECK-PREFIX=FULL
+// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td=patterns=compare_negate_const_simplify --transform-interpreter --enzyme-hlo-remove-transform | FileCheck %s --check-prefix=PARTIAL
+// RUN: enzymexlamlir-opt %s --enzyme-hlo-opt | FileCheck %s --check-prefix=FULL
 
 func.func @compare_neg_iota_const_ge() -> tensor<1520xi1> {
     %c = stablehlo.constant dense<-1518> : tensor<1520xi64>

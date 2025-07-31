@@ -2137,3 +2137,7 @@ def ApplyDotGeneralReshapePatterns : EnzymeHLOPatternOp<"dot_general_reshape"> {
 def ApplyDiagonalTensorDotGeneralRewritePatterns : EnzymeHLOPatternOp<"diagonal_tensor_dot_general_rewrite"> {
   let patterns = ["DiagonalTensorDotGeneralRewrite"];
 }
+
+def ApplySelectSimplifyPatterns : EnzymeHLOPatternOp<"select_simplify"> {
+  let patterns = ["SelectSimplify"];
+}
