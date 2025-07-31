@@ -7023,10 +7023,14 @@ struct CompareNegateConstSimplify
     auto lhsNegate = cmpOp.getLhs().getDefiningOp<stablehlo::NegOp>();
     auto rhsNegate = cmpOp.getRhs().getDefiningOp<stablehlo::NegOp>();
 
+    auto shardingAttr = sdy::getShardingPerValue(cmpOp);
+
     if (lhsNegate && rhsNegate) {
-      rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
+      auto newOp = rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
           cmpOp, rhsNegate.getOperand(), lhsNegate.getOperand(),
           cmpOp.getComparisonDirection(), cmpOp.getCompareTypeAttr());
+      if (shardingAttr)
+        sdy::setShardings(newOp, shardingAttr);
       return success();
     }
 
@@ -7042,9 +7046,13 @@ struct CompareNegateConstSimplify
             ->hasTrait<mlir::OpTrait::ConstantLike>()) {
       auto negConst =
           rewriter.create<stablehlo::NegOp>(cmpOp.getLoc(), cmpOp.getRhs());
-      rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
+      auto newOp = rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
           cmpOp, lhsNegate.getOperand(), negConst,
           cmpOp.getComparisonDirection(), cmpOp.getCompareTypeAttr());
+      if (shardingAttr) {
+        sdy::setShardings(newOp, shardingAttr);
+        sdy::setShardings(negConst, shardingAttr);
+      }
       return success();
     }
 
@@ -7057,10 +7065,14 @@ struct CompareNegateConstSimplify
             ->hasTrait<mlir::OpTrait::ConstantLike>()) {
       auto negConst =
           rewriter.create<stablehlo::NegOp>(cmpOp.getLoc(), cmpOp.getLhs());
-      rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
+      auto newOp = rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
           cmpOp, negConst, rhsNegate.getOperand(),
           negatedComparisonDirection(cmpOp.getComparisonDirection()),
           cmpOp.getCompareTypeAttr());
+      if (shardingAttr) {
+        sdy::setShardings(newOp, shardingAttr);
+        sdy::setShardings(negConst, shardingAttr);
+      }
       return success();
     }
 
@@ -21108,14 +21120,18 @@ struct SelectSimplify
     if (!cast<ShapedType>(op.getType()).getElementType().isInteger(1))
       return failure();
 
+    auto shardingAttr = sdy::getShardingPerValue(op);
+
     auto predType = cast<RankedTensorType>(op.getPred().getType());
     bool needsBroadcast = predType.getRank() == 0;
 
     if (matchPattern(op.getOnTrue(), m_One()) &&
         matchPattern(op.getOnFalse(), m_Zero())) {
       if (needsBroadcast) {
-        rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+        auto bcast = rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
             op, op.getType(), op.getPred(), ArrayRef<int64_t>({}));
+        if (shardingAttr)
+          sdy::setShardings(bcast, shardingAttr);
       } else {
         rewriter.replaceAllUsesWith(op, op.getPred());
       }
@@ -21125,9 +21141,14 @@ struct SelectSimplify
     if (matchPattern(op.getOnTrue(), m_Zero()) &&
         matchPattern(op.getOnFalse(), m_One())) {
       auto notOp = rewriter.create<stablehlo::NotOp>(op.getLoc(), op.getPred());
+      if (shardingAttr)
+        sdy::setShardings(notOp, shardingAttr);
+
       if (needsBroadcast) {
-        rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+        auto bcast = rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
             op, op.getType(), notOp, ArrayRef<int64_t>({}));
+        if (shardingAttr)
+          sdy::setShardings(bcast, shardingAttr);
       } else {
         rewriter.replaceAllUsesWith(op, notOp);
       }
