@@ -165,6 +165,11 @@ jobs:
           export XLA_FLAGS='--xla_dump_to=${{ env.GB25_DIR }}/xla_dump'
           timeout --signal=TERM --verbose 59m mpiexecjl -np 1 julia --color=yes --project -O0 sharding/sharded_baroclinic_instability_simulation_run.jl
         working-directory: ${{ env.GB25_DIR }}
+      - name: Test correctness in GB-25 code
+        timeout-minutes: 20
+        run: |
+          timeout --signal=TERM --verbose 19m mpiexecjl -np 1 julia --color=yes --project -O0 correctness/correctness_sharded_baroclinic_instability_simulation_run.jl
+        working-directory: ${{ env.GB25_DIR }}
       - name: Upload MLIR and XLA modules
         uses: actions/upload-artifact@v4
         timeout-minutes: 10
