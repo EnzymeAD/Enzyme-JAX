@@ -3946,7 +3946,7 @@ bool isSliceOf(Value wrapOperand, Value widenOperand, int dim, bool widenOperand
       }
     }
 
-    for (int j = 0; j < sl0.getType().getShape().size(); j++) {
+    for (int j = 0; j < wrapType.getShape().size(); j++) {
       if (j != dim) {
         if (sliceWiden.getStartIndices()[j] != wrapStarts[j]) {
           return false;
@@ -4023,7 +4023,7 @@ struct WidenWrap final
           newOperands.pop_back();
           newOperands.push_back(newWrap);
           changed = true;
-          continue
+          continue;
         }
       }
 
@@ -4034,7 +4034,7 @@ struct WidenWrap final
           newOperands.push_back(newWrap);
           i++;
           changed = true;
-          continue
+          continue;
         }
       }
 
