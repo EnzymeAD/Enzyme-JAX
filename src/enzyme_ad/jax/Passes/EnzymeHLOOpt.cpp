@@ -3926,7 +3926,8 @@ struct ConcatWrap final
   }
 };
 
-bool isSliceOf(Value wrapOperand, Value widenOperand, int dim, bool widenOperandOnLeft, int existingOffset) {
+bool isSliceOf(Value wrapOperand, Value widenOperand, int dim,
+               bool widenOperandOnLeft, int existingOffset) {
   auto wrapType = cast<RankedTensorType>(wrapOperand.getType());
 
   if (auto sliceWiden = widenOperand.getDefiningOp<stablehlo::SliceOp>()) {
@@ -3965,12 +3966,14 @@ bool isSliceOf(Value wrapOperand, Value widenOperand, int dim, bool widenOperand
       }
 
       if (widenOperandOnLeft) {
-        // widenOperand[B-lhs-existing:B-existing], wrap(wrapOperand[A:B], lhs=existingOffset)
+        // widenOperand[B-lhs-existing:B-existing], wrap(wrapOperand[A:B],
+        // lhs=existingOffset)
         if (sliceWiden.getLimitIndices()[j] + existingOffset != wrapLimits[j]) {
           return false;
         }
       } else {
-        // wrap(wrapOperand[A:B], rhs=existing), widenOperand[A+existing:A+rhs+existing]
+        // wrap(wrapOperand[A:B], rhs=existing),
+        // widenOperand[A+existing:A+rhs+existing]
         if (sliceWiden.getStartIndices()[j] != wrapStarts[j] + existingOffset) {
           return false;
         }
@@ -3980,11 +3983,17 @@ bool isSliceOf(Value wrapOperand, Value widenOperand, int dim, bool widenOperand
     return true;
   }
 
-  if (auto concatWiden = widenOperand.getDefiningOp<stablehlo::ConcatenateOp>()) {
-    if (auto concatWrap = wrapOperand.getDefiningOp<stablehlo::ConcatenateOp>()) {
-      if (concatWrap.getDimension() == concatWiden.getDimension() && concatWrap.getDimension() != dim && concatWiden.getOperands().size() == concatWrap.getOperands().size()) {
-        for (auto &&[newWrap, newWiden] : llvm::zip_equal(concatWrap.getOperands(), concatWiden.getOperands())) {
-          if (!isSliceOf(newWrap, newWiden, dim, widenOperandOnLeft, existingOffset)) {
+  if (auto concatWiden =
+          widenOperand.getDefiningOp<stablehlo::ConcatenateOp>()) {
+    if (auto concatWrap =
+            wrapOperand.getDefiningOp<stablehlo::ConcatenateOp>()) {
+      if (concatWrap.getDimension() == concatWiden.getDimension() &&
+          concatWrap.getDimension() != dim &&
+          concatWiden.getOperands().size() == concatWrap.getOperands().size()) {
+        for (auto &&[newWrap, newWiden] : llvm::zip_equal(
+                 concatWrap.getOperands(), concatWiden.getOperands())) {
+          if (!isSliceOf(newWrap, newWiden, dim, widenOperandOnLeft,
+                         existingOffset)) {
             return false;
           }
         }
@@ -4018,8 +4027,13 @@ struct WidenWrap final
 
       if (newOperands.size()) {
         auto prev = newOperands.back();
-        if (isSliceOf(wrap.getOperand(), prev, dim, /*widenOperandOnLeft*/true, wrap.getLhs())) {
-          auto newWrap = rewriter.create<enzymexla::WrapOp>(wrap.getLoc(), wrap.getOperand(), wrap.getLhs() + cast<RankedTensorType>(prev.getType()).getShape()[dim], wrap.getRhs(), wrap.getDimension());
+        if (isSliceOf(wrap.getOperand(), prev, dim, /*widenOperandOnLeft*/ true,
+                      wrap.getLhs())) {
+          auto newWrap = rewriter.create<enzymexla::WrapOp>(
+              wrap.getLoc(), wrap.getOperand(),
+              wrap.getLhs() +
+                  cast<RankedTensorType>(prev.getType()).getShape()[dim],
+              wrap.getRhs(), wrap.getDimension());
           newOperands.pop_back();
           newOperands.push_back(newWrap);
           changed = true;
@@ -4028,9 +4042,14 @@ struct WidenWrap final
       }
 
       if (i + 1 < e) {
-        auto prev = op->getOperand(i+1);
-        if (isSliceOf(wrap.getOperand(), prev, dim, /*widenOperandOnLeft*/false, wrap.getRhs())) {
-          auto newWrap = rewriter.create<enzymexla::WrapOp>(wrap.getLoc(), wrap.getOperand(), wrap.getLhs(), wrap.getRhs() + cast<RankedTensorType>(prev.getType()).getShape()[dim], wrap.getDimension());
+        auto prev = op->getOperand(i + 1);
+        if (isSliceOf(wrap.getOperand(), prev, dim,
+                      /*widenOperandOnLeft*/ false, wrap.getRhs())) {
+          auto newWrap = rewriter.create<enzymexla::WrapOp>(
+              wrap.getLoc(), wrap.getOperand(), wrap.getLhs(),
+              wrap.getRhs() +
+                  cast<RankedTensorType>(prev.getType()).getShape()[dim],
+              wrap.getDimension());
           newOperands.push_back(newWrap);
           i++;
           changed = true;
@@ -21455,9 +21474,9 @@ struct EnzymeHLOOptPass
                  GammaConstProp, ConcatFuse, ConcatToBroadcast, PadPad,
                  PadReshapePad, ConcatPushBinop<stablehlo::AddOp>,
                  ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
-                 ReduceConcat, ConcatSlice, ConcatMultiPad, ConcatWrap, WidenWrap,
-                 ConcatConcatAxisSwap, SliceConcat, SliceIf, SliceReshapeConcat,
-                 BinBroadcastSplat<stablehlo::AddOp>,
+                 ReduceConcat, ConcatSlice, ConcatMultiPad, ConcatWrap,
+                 WidenWrap, ConcatConcatAxisSwap, SliceConcat, SliceIf,
+                 SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
                  BinBroadcastSplat<stablehlo::SubtractOp>,
                  BinBroadcastSplat<stablehlo::DivOp>,
                  BinBroadcastSplat<stablehlo::MulOp>, RotatePad, ConjReal>(
