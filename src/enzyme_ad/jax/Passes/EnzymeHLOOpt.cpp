@@ -21576,6 +21576,8 @@ struct ConcatenateBroadcastInDim
     if (operands.size() == 1)
       return failure();
 
+    llvm::errs() << op->getParentOfType<FunctionOpInterface>() << "\n";
+    llvm::errs() << " op: " << *op <<"\n";
     SmallVector<Value> operandOperands;
     for (auto operand : operands) {
       if (auto broadcastInDimOp =
