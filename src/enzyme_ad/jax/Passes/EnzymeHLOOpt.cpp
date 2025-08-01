@@ -17873,6 +17873,10 @@ bool isWrapLike(int dim, Value lhs, Value mid, Value rhs,
   if (sl0.getOperand() != sl1.getOperand())
     return false;
 
+  if (lhs == mid || mid == rhs) {
+    return false;
+  }
+
   if (sl0P)
     *sl0P = sl0;
   if (sl1P)
