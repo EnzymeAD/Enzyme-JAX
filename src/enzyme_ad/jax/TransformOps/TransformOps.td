@@ -1323,6 +1323,12 @@ def CompareIotaConstSimplifyPatterns : EnzymeHLOPatternOp<
   let patterns = ["CompareIotaConstSimplify"];
 }
 
+def CompareNegateConstSimplifyPatterns : EnzymeHLOPatternOp<
+  "compare_negate_const_simplify"
+> {
+  let patterns = ["CompareNegateConstSimplify"];
+}
+
 def BroadcastIotaSimplifyPatterns : EnzymeHLOPatternOp<
   "broadcast_iota_simplify"
 > {
@@ -2130,4 +2136,8 @@ def ApplyDotGeneralReshapePatterns : EnzymeHLOPatternOp<"dot_general_reshape"> {
 
 def ApplyDiagonalTensorDotGeneralRewritePatterns : EnzymeHLOPatternOp<"diagonal_tensor_dot_general_rewrite"> {
   let patterns = ["DiagonalTensorDotGeneralRewrite"];
+}
+
+def ApplySelectSimplifyPatterns : EnzymeHLOPatternOp<"select_simplify"> {
+  let patterns = ["SelectSimplify"];
 }

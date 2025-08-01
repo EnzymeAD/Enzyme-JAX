@@ -352,6 +352,12 @@ stablehlo::ConstantOp createConstantOpFromScalar(PatternRewriter &rewriter,
           mlir::enzyme::makeAttr(op->getResult(0).getType(), value)));
 }
 
+stablehlo::ComparisonDirection
+reversedComparisonDirection(stablehlo::ComparisonDirection direction);
+
+stablehlo::ComparisonDirection
+negatedComparisonDirection(stablehlo::ComparisonDirection direction);
+
 } // namespace stablehlo
 
 } // namespace mlir
