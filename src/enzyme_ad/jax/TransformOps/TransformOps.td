@@ -2141,3 +2141,7 @@ def ApplyDiagonalTensorDotGeneralRewritePatterns : EnzymeHLOPatternOp<"diagonal_
 def ApplySelectSimplifyPatterns : EnzymeHLOPatternOp<"select_simplify"> {
   let patterns = ["SelectSimplify"];
 }
+
+def ApplyElementwisePadPatterns : EnzymeHLOPatternOp<"elementwise_pad"> {
+  let patterns = ["ElementwisePad"];
+}

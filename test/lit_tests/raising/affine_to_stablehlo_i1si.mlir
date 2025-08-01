@@ -32,13 +32,11 @@ module {
 // CHECK:  func.func private @si_raised(%arg0: tensor<1x78x78xf32>) -> tensor<1x78x78xf32> {
 // CHECK-NEXT:    %c = stablehlo.constant dense<8> : tensor<i64>
 // CHECK-NEXT:    %c_0 = stablehlo.constant dense<0> : tensor<i64>
-// CHECK-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
-// CHECK-NEXT:    %cst_1 = stablehlo.constant dense<1.000000e+00> : tensor<1xf32>
-// CHECK-NEXT:    %0 = stablehlo.pad %cst_1, %cst, low = [0], high = [61], interior = [0] : (tensor<1xf32>, tensor<f32>) -> tensor<62xf32>
-// CHECK-NEXT:    %1 = stablehlo.negate %0 : tensor<62xf32>
-// CHECK-NEXT:    %2 = stablehlo.broadcast_in_dim %1, dims = [1] : (tensor<62xf32>) -> tensor<1x62x62xf32>
-// CHECK-NEXT:    %3 = stablehlo.dynamic_update_slice %arg0, %2, %c_0, %c, %c : (tensor<1x78x78xf32>, tensor<1x62x62xf32>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<1x78x78xf32>
-// CHECK-NEXT:    return %3 : tensor<1x78x78xf32>
+// CHECK-NEXT:    %cst = stablehlo.constant dense<-0.000000e+00> : tensor<f32>
+// CHECK-NEXT:    %cst_1 = stablehlo.constant dense<-1.000000e+00> : tensor<1x1x62xf32>
+// CHECK-NEXT:    %0 = stablehlo.pad %cst_1, %cst, low = [0, 0, 0], high = [0, 61, 0], interior = [0, 0, 0] : (tensor<1x1x62xf32>, tensor<f32>) -> tensor<1x62x62xf32>
+// CHECK-NEXT:    %1 = stablehlo.dynamic_update_slice %arg0, %0, %c_0, %c, %c : (tensor<1x78x78xf32>, tensor<1x62x62xf32>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<1x78x78xf32>
+// CHECK-NEXT:    return %1 : tensor<1x78x78xf32>
 // CHECK-NEXT:  }
 
 // CHECK:  func.func private @ui_raised(%arg0: tensor<1x78x78xf32>) -> tensor<1x78x78xf32> {
