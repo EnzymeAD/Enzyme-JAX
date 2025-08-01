@@ -54,7 +54,7 @@ jobs:
           # - '0123456789abcdef0123456789abcdef01234567'
         reactant_commit:
           # - ''
-          - '363b2eaf6c5b65fb28bae92c14798d2c4318c67d'
+          - '14cda3642fb6e3b633d3700d85a5ed589885e718'
 
     steps:
       - name: Check GPUs
