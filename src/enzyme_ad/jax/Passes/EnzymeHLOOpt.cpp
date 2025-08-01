@@ -21576,6 +21576,7 @@ struct ConcatenateBroadcastInDim
     if (operands.size() == 1)
       return failure();
 
+    int input_dim = 0;
     SmallVector<Value> operandOperands;
     for (auto operand : operands) {
       if (auto broadcastInDimOp =
@@ -21583,7 +21584,7 @@ struct ConcatenateBroadcastInDim
         auto bcastInDimDimensions = broadcastInDimOp.getBroadcastDimensions();
         if (bcastInDimDimensions.size() != 1)
           return failure();
-        if (bcastInDimDimensions[0] != op.getDimension())
+        if (bcastInDimDimensions[input_dim] != op.getDimension())
           return failure();
         operandOperands.push_back(broadcastInDimOp.getOperand());
         continue;
@@ -21592,7 +21593,7 @@ struct ConcatenateBroadcastInDim
     }
 
     auto newConcatOp = rewriter.create<stablehlo::ConcatenateOp>(
-        op.getLoc(), ValueRange(operandOperands), op.getDimension());
+        op.getLoc(), ValueRange(operandOperands), input_dim);
     rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
         op, op.getType(), newConcatOp,
         ArrayRef<int64_t>({static_cast<int64_t>(op.getDimension())}));
