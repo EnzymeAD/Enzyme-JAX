@@ -21557,6 +21557,43 @@ struct ConcatenateSubtractToSubtractPad
   }
 };
 
+struct ConcatenateBroadcastInDim
+    : public CheckedOpRewritePattern<stablehlo::ConcatenateOp,
+                                     ConcatenateBroadcastInDim> {
+  using CheckedOpRewritePattern<
+      stablehlo::ConcatenateOp,
+      ConcatenateBroadcastInDim>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
+                                    PatternRewriter &rewriter) const {
+    auto operands = op.getOperands();
+    if (operands.size() == 1)
+      return failure();
+
+    SmallVector<Value> operandOperands;
+    for (auto operand : operands) {
+      if (auto broadcastInDimOp =
+              operand.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+        auto bcastInDimDimensions = broadcastInDimOp.getBroadcastDimensions();
+        if (bcastInDimDimensions.size() != 1)
+          return failure();
+        if (bcastInDimDimensions[0] != op.getDimension())
+          return failure();
+        operandOperands.push_back(broadcastInDimOp.getOperand());
+        continue;
+      }
+      return failure();
+    }
+
+    auto newConcatOp = rewriter.create<stablehlo::ConcatenateOp>(
+        op.getLoc(), ValueRange(operandOperands), op.getDimension());
+    rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+        op, op.getType(), newConcatOp,
+        ArrayRef<int64_t>({static_cast<int64_t>(op.getDimension())}));
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -22110,7 +22147,8 @@ struct EnzymeHLOOptPass
         UnaryElementwiseScatterSimplify,
         GatherElementwise,
         ElementwisePad,
-        ConcatenateSubtractToSubtractPad
+        ConcatenateSubtractToSubtractPad,
+        ConcatenateBroadcastInDim
       >(context);
 
     patterns.add<SumToReduceWindow<stablehlo::AddOp>,

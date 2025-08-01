@@ -2159,3 +2159,7 @@ def ApplyElementwisePadPatterns : EnzymeHLOPatternOp<"elementwise_pad"> {
 def ApplyConcatenateSubtractToSubtractPadPatterns : EnzymeHLOPatternOp<"concatenate_subtract_to_subtract_pad"> {
   let patterns = ["ConcatenateSubtractToSubtractPad"];
 }
+
+def ApplyConcatenateBroadcastInDimPatterns : EnzymeHLOPatternOp<"concatenate_broadcast_in_dim"> {
+  let patterns = ["ConcatenateBroadcastInDim"];
+}
