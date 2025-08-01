@@ -17096,6 +17096,12 @@ struct SumToReductionBase
         seen.insert(sub);
         continue;
       }
+      if (auto neg = cur.term.getDefiningOp<stablehlo::NegOp>()) {
+        todo.emplace_back(-cur.constantFactor, cur.valFactor, neg.getOperand());
+        intermediates.push_back(neg);
+        seen.insert(neg);
+        continue;
+      }
       if (auto mul = cur.term.getDefiningOp<stablehlo::MulOp>()) {
         bool legal = false;
         for (int i = 0; i < 2; i++) {
