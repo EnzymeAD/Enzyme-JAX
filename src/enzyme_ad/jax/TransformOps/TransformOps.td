@@ -2155,3 +2155,7 @@ def ApplySelectSimplifyPatterns : EnzymeHLOPatternOp<"select_simplify"> {
 def ApplyElementwisePadPatterns : EnzymeHLOPatternOp<"elementwise_pad"> {
   let patterns = ["ElementwisePad"];
 }
+
+def ApplyConcatenateSubtractToSubtractPadPatterns : EnzymeHLOPatternOp<"concatenate_subtract_to_subtract_pad"> {
+  let patterns = ["ConcatenateSubtractToSubtractPad"];
+}
