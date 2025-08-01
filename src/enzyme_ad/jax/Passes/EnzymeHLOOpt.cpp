@@ -21494,6 +21494,112 @@ struct ElementwisePad
   }
 };
 
+// See https://github.com/EnzymeAD/Enzyme-JAX/issues/1204 for details
+struct ConcatenateSubtractToSubtractPad
+    : public CheckedOpRewritePattern<stablehlo::ConcatenateOp,
+                                     ConcatenateSubtractToSubtractPad> {
+  using CheckedOpRewritePattern<
+      stablehlo::ConcatenateOp,
+      ConcatenateSubtractToSubtractPad>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
+                                    PatternRewriter &rewriter) const {
+    auto operands = op.getOperands();
+    if (operands.size() != 3)
+      return failure();
+
+    auto left = operands[0];
+    auto mid = operands[1];
+    auto right = operands[2];
+    auto concatDim = op.getDimension();
+
+    auto midSubtractOp = mid.getDefiningOp<stablehlo::SubtractOp>();
+    if (!midSubtractOp)
+      return failure();
+
+    auto rightNegateOp = right.getDefiningOp<stablehlo::NegOp>();
+    if (!rightNegateOp)
+      return failure();
+
+    auto outputShape = cast<ShapedType>(op.getType()).getShape();
+    auto opRank = outputShape.size();
+
+    auto zeroType = RankedTensorType::get(
+        {}, cast<ShapedType>(op.getType()).getElementType());
+    auto zero = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), zeroType, cast<ElementsAttr>(makeAttr(zeroType, 0)));
+
+    auto newLhsPrePadding = rewriter.create<stablehlo::ConcatenateOp>(
+        op.getLoc(), ValueRange({left, midSubtractOp.getLhs()}), concatDim);
+
+    SmallVector<int64_t> lhsPadLow(opRank, 0);
+    SmallVector<int64_t> lhsPadHigh(opRank, 0);
+    lhsPadHigh[concatDim] =
+        outputShape[concatDim] -
+        cast<ShapedType>(newLhsPrePadding.getType()).getShape()[concatDim];
+    SmallVector<int64_t> lhsPadInner(opRank, 0);
+    auto fullNewLhs =
+        rewriter.create<stablehlo::PadOp>(op.getLoc(), newLhsPrePadding, zero,
+                                          lhsPadLow, lhsPadHigh, lhsPadInner);
+
+    auto newRhsPrePadding = rewriter.create<stablehlo::ConcatenateOp>(
+        op.getLoc(),
+        ValueRange({midSubtractOp.getRhs(), rightNegateOp.getOperand()}),
+        concatDim);
+
+    SmallVector<int64_t> rhsPadLow(opRank, 0);
+    rhsPadLow[concatDim] =
+        outputShape[concatDim] -
+        cast<ShapedType>(newRhsPrePadding.getType()).getShape()[concatDim];
+    SmallVector<int64_t> rhsPadHigh(opRank, 0);
+    SmallVector<int64_t> rhsPadInner(opRank, 0);
+    auto fullNewRhs =
+        rewriter.create<stablehlo::PadOp>(op.getLoc(), newRhsPrePadding, zero,
+                                          rhsPadLow, rhsPadHigh, rhsPadInner);
+
+    rewriter.replaceOpWithNewOp<stablehlo::SubtractOp>(op, fullNewLhs,
+                                                       fullNewRhs);
+    return success();
+  }
+};
+
+struct ConcatenateBroadcastInDim
+    : public CheckedOpRewritePattern<stablehlo::ConcatenateOp,
+                                     ConcatenateBroadcastInDim> {
+  using CheckedOpRewritePattern<
+      stablehlo::ConcatenateOp,
+      ConcatenateBroadcastInDim>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
+                                    PatternRewriter &rewriter) const {
+    auto operands = op.getOperands();
+    if (operands.size() == 1)
+      return failure();
+
+    SmallVector<Value> operandOperands;
+    for (auto operand : operands) {
+      if (auto broadcastInDimOp =
+              operand.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+        auto bcastInDimDimensions = broadcastInDimOp.getBroadcastDimensions();
+        if (bcastInDimDimensions.size() != 1)
+          return failure();
+        if (bcastInDimDimensions[0] != op.getDimension())
+          return failure();
+        operandOperands.push_back(broadcastInDimOp.getOperand());
+        continue;
+      }
+      return failure();
+    }
+
+    auto newConcatOp = rewriter.create<stablehlo::ConcatenateOp>(
+        op.getLoc(), ValueRange(operandOperands), op.getDimension());
+    rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+        op, op.getType(), newConcatOp,
+        ArrayRef<int64_t>({static_cast<int64_t>(op.getDimension())}));
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -22046,7 +22152,9 @@ struct EnzymeHLOOptPass
         ScatterMultiplySimplify,
         UnaryElementwiseScatterSimplify,
         GatherElementwise,
-        ElementwisePad
+        ElementwisePad,
+        ConcatenateSubtractToSubtractPad,
+        ConcatenateBroadcastInDim
       >(context);
 
     patterns.add<SumToReduceWindow<stablehlo::AddOp>,
