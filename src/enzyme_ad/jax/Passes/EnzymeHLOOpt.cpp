@@ -21447,6 +21447,47 @@ struct SelectSimplify
   }
 };
 
+struct ElementwisePad
+    : public CheckedOpTraitRewritePattern<OpTrait::Elementwise,
+                                          ElementwisePad> {
+  using CheckedOpTraitRewritePattern<
+      OpTrait::Elementwise, ElementwisePad>::CheckedOpTraitRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(Operation *op,
+                                    PatternRewriter &rewriter) const {
+    if (op->getNumOperands() != 1)
+      return failure();
+
+    auto elemType =
+        cast<RankedTensorType>(op->getOperand(0).getType()).getElementType();
+
+    auto operand = op->getOperand(0);
+    auto padOp = operand.getDefiningOp<stablehlo::PadOp>();
+    if (!padOp)
+      return failure();
+    if (!llvm::hasSingleElement(padOp->getUsers()))
+      return failure();
+
+    auto padOperand = padOp.getOperand();
+    auto padValue = padOp.getPaddingValue();
+
+    auto elemOperand = rewriter.create(
+        op->getLoc(), op->getName().getIdentifier(), ValueRange(padOperand),
+        TypeRange{RankedTensorType::get(
+            cast<RankedTensorType>(padOperand.getType()).getShape(), elemType)},
+        op->getAttrs(), {}, {});
+    auto elemPadValue = rewriter.create(
+        op->getLoc(), op->getName().getIdentifier(), ValueRange(padValue),
+        TypeRange{RankedTensorType::get({}, elemType)}, op->getAttrs(), {}, {});
+
+    rewriter.replaceOpWithNewOp<stablehlo::PadOp>(
+        op, elemOperand->getResult(0), elemPadValue->getResult(0),
+        padOp.getEdgePaddingLow(), padOp.getEdgePaddingHigh(),
+        padOp.getInteriorPadding());
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -21998,7 +22039,8 @@ struct EnzymeHLOOptPass
         SplitConvolutionIntoReverseConvolution,
         ScatterMultiplySimplify,
         UnaryElementwiseScatterSimplify,
-        GatherElementwise
+        GatherElementwise,
+        ElementwisePad
       >(context);
 
     patterns.add<SumToReduceWindow<stablehlo::AddOp>,
