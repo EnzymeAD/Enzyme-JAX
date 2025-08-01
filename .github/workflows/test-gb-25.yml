@@ -53,7 +53,8 @@ jobs:
           - 'main'
           # - '0123456789abcdef0123456789abcdef01234567'
         reactant_commit:
-          - 'main'
+          # - 'main'
+          - '05e5c8d12052f35be10c58ea55d3230cef8ad1d3'
           # - '12896f896a4adef841a3261e9e004ce0ff051686'
 
     steps:
