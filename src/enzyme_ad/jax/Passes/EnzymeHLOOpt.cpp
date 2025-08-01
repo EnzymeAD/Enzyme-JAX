@@ -21507,128 +21507,49 @@ struct ConcatenateSubtractToSubtractPad
     auto right = operands[2];
     auto concatDim = op.getDimension();
 
-    auto leftSliceOp = left.getDefiningOp<stablehlo::SliceOp>();
-    if (!leftSliceOp)
-      return failure();
-
     auto midSubtractOp = mid.getDefiningOp<stablehlo::SubtractOp>();
     if (!midSubtractOp)
-      return failure();
-
-    auto midSubtractLhsSliceOp =
-        midSubtractOp.getLhs().getDefiningOp<stablehlo::SliceOp>();
-    if (!midSubtractLhsSliceOp)
-      return failure();
-    if (midSubtractLhsSliceOp.getOperand() != leftSliceOp.getOperand())
-      return failure();
-
-    auto lhsStartIndicesLeft = leftSliceOp.getStartIndices();
-    auto lhsLimitIndicesLeft = leftSliceOp.getLimitIndices();
-    auto lhsStridesLeft = leftSliceOp.getStrides();
-    auto lhsStartIndicesMid = midSubtractLhsSliceOp.getStartIndices();
-    auto lhsLimitIndicesMid = midSubtractLhsSliceOp.getLimitIndices();
-    auto lhsStridesMid = midSubtractLhsSliceOp.getStrides();
-
-    SmallVector<int64_t> lhsStartIndices(lhsStartIndicesLeft.size());
-    SmallVector<int64_t> lhsLimitIndices(lhsLimitIndicesLeft.size());
-    SmallVector<int64_t> lhsStrides(lhsStridesLeft.size());
-
-    for (int64_t i = 0; i < lhsStartIndicesLeft.size(); ++i) {
-      if (i == concatDim) {
-        if (lhsLimitIndicesLeft[i] != lhsStartIndicesMid[i] ||
-            lhsStridesLeft[i] != lhsStridesMid[i])
-          return failure();
-        lhsStartIndices[i] = lhsStartIndicesLeft[i];
-        lhsLimitIndices[i] = lhsLimitIndicesMid[i];
-        lhsStrides[i] = lhsStridesLeft[i];
-      } else {
-        if (lhsStartIndicesLeft[i] != lhsStartIndicesMid[i] ||
-            lhsLimitIndicesLeft[i] != lhsLimitIndicesMid[i] ||
-            lhsStridesLeft[i] != lhsStridesMid[i])
-          return failure();
-        lhsStartIndices[i] = lhsStartIndicesLeft[i];
-        lhsLimitIndices[i] = lhsLimitIndicesLeft[i];
-        lhsStrides[i] = lhsStridesLeft[i];
-      }
-    }
-
-    auto midSubtractRhsSlideOp =
-        midSubtractOp.getRhs().getDefiningOp<stablehlo::SliceOp>();
-    if (!midSubtractRhsSlideOp)
       return failure();
 
     auto rightNegateOp = right.getDefiningOp<stablehlo::NegOp>();
     if (!rightNegateOp)
       return failure();
-    auto rightSliceOp =
-        rightNegateOp.getOperand().getDefiningOp<stablehlo::SliceOp>();
-    if (!rightSliceOp)
-      return failure();
-    if (rightSliceOp.getOperand() != midSubtractRhsSlideOp.getOperand())
-      return failure();
-
-    auto rhsStartIndicesMid = midSubtractRhsSlideOp.getStartIndices();
-    auto rhsLimitIndicesMid = midSubtractRhsSlideOp.getLimitIndices();
-    auto rhsStridesMid = midSubtractRhsSlideOp.getStrides();
-    auto rhsStartIndicesRight = rightSliceOp.getStartIndices();
-    auto rhsLimitIndicesRight = rightSliceOp.getLimitIndices();
-    auto rhsStridesRight = rightSliceOp.getStrides();
-
-    SmallVector<int64_t> rhsStartIndices(rhsStartIndicesMid.size());
-    SmallVector<int64_t> rhsLimitIndices(rhsLimitIndicesMid.size());
-    SmallVector<int64_t> rhsStrides(rhsStridesMid.size());
-
-    for (int64_t i = 0; i < rhsStartIndicesMid.size(); ++i) {
-      if (i == concatDim) {
-        if (rhsLimitIndicesMid[i] != rhsStartIndicesRight[i] ||
-            rhsStridesMid[i] != rhsStridesRight[i])
-          return failure();
-        rhsStartIndices[i] = rhsStartIndicesMid[i];
-        rhsLimitIndices[i] = rhsLimitIndicesRight[i];
-        rhsStrides[i] = rhsStridesMid[i];
-      } else {
-        if (rhsStartIndicesMid[i] != rhsStartIndicesRight[i] ||
-            rhsLimitIndicesMid[i] != rhsLimitIndicesRight[i] ||
-            rhsStridesMid[i] != rhsStridesRight[i])
-          return failure();
-        rhsStartIndices[i] = rhsStartIndicesMid[i];
-        rhsLimitIndices[i] = rhsLimitIndicesMid[i];
-        rhsStrides[i] = rhsStridesMid[i];
-      }
-    }
 
     auto outputShape = cast<ShapedType>(op.getType()).getShape();
+    auto opRank = outputShape.size();
 
     auto zeroType = RankedTensorType::get(
         {}, cast<ShapedType>(op.getType()).getElementType());
     auto zero = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), zeroType, cast<ElementsAttr>(makeAttr(zeroType, 0)));
 
-    auto newLhsSliceOp = rewriter.create<stablehlo::SliceOp>(
-        op.getLoc(), leftSliceOp.getOperand(), lhsStartIndices, lhsLimitIndices,
-        lhsStrides);
+    auto newLhsPrePadding = rewriter.create<stablehlo::ConcatenateOp>(
+        op.getLoc(), ValueRange({left, midSubtractOp.getLhs()}), concatDim);
 
-    SmallVector<int64_t> lhsPadLow(lhsStartIndices.size(), 0);
-    SmallVector<int64_t> lhsPadHigh(lhsLimitIndices.size(), 0);
+    SmallVector<int64_t> lhsPadLow(opRank, 0);
+    SmallVector<int64_t> lhsPadHigh(opRank, 0);
     lhsPadHigh[concatDim] =
         outputShape[concatDim] -
-        (lhsLimitIndices[concatDim] - lhsStartIndices[concatDim]);
-    SmallVector<int64_t> lhsPadInner(rhsStartIndices.size(), 0);
-    auto fullNewLhs = rewriter.create<stablehlo::PadOp>(
-        op.getLoc(), newLhsSliceOp, zero, lhsPadLow, lhsPadHigh, lhsPadInner);
+        cast<ShapedType>(newLhsPrePadding.getType()).getShape()[concatDim];
+    SmallVector<int64_t> lhsPadInner(opRank, 0);
+    auto fullNewLhs =
+        rewriter.create<stablehlo::PadOp>(op.getLoc(), newLhsPrePadding, zero,
+                                          lhsPadLow, lhsPadHigh, lhsPadInner);
 
-    auto newRhsSliceOp = rewriter.create<stablehlo::SliceOp>(
-        op.getLoc(), rightSliceOp.getOperand(), rhsStartIndices,
-        rhsLimitIndices, rhsStrides);
+    auto newRhsPrePadding = rewriter.create<stablehlo::ConcatenateOp>(
+        op.getLoc(),
+        ValueRange({midSubtractOp.getRhs(), rightNegateOp.getOperand()}),
+        concatDim);
 
-    SmallVector<int64_t> rhsPadLow(rhsStartIndices.size(), 0);
+    SmallVector<int64_t> rhsPadLow(opRank, 0);
     rhsPadLow[concatDim] =
         outputShape[concatDim] -
-        (rhsLimitIndices[concatDim] - rhsStartIndices[concatDim]);
-    SmallVector<int64_t> rhsPadHigh(rhsLimitIndices.size(), 0);
-    SmallVector<int64_t> rhsPadInner(lhsStartIndices.size(), 0);
-    auto fullNewRhs = rewriter.create<stablehlo::PadOp>(
-        op.getLoc(), newRhsSliceOp, zero, rhsPadLow, rhsPadHigh, rhsPadInner);
+        cast<ShapedType>(newRhsPrePadding.getType()).getShape()[concatDim];
+    SmallVector<int64_t> rhsPadHigh(opRank, 0);
+    SmallVector<int64_t> rhsPadInner(opRank, 0);
+    auto fullNewRhs =
+        rewriter.create<stablehlo::PadOp>(op.getLoc(), newRhsPrePadding, zero,
+                                          rhsPadLow, rhsPadHigh, rhsPadInner);
 
     rewriter.replaceOpWithNewOp<stablehlo::SubtractOp>(op, fullNewLhs,
                                                        fullNewRhs);

@@ -20,5 +20,3 @@ func.func @main1(%arg0: tensor<1520x3056xf64>, %arg1: tensor<1520x3056xf64>) -> 
 // CHECK-NEXT:     %4 = stablehlo.subtract %1, %3 : tensor<1520x3056xf64>
 // CHECK-NEXT:     return %4 : tensor<1520x3056xf64>
 // CHECK-NEXT: }
-
-// TODO: do the more general case with multiplication in between
