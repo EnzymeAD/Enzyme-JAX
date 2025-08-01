@@ -659,6 +659,42 @@ SmallVector<int64_t> computeGatherSliceSizes(stablehlo::ScatterOp &scatterOp) {
   return sliceSizes;
 }
 
+stablehlo::ComparisonDirection
+reversedComparisonDirection(stablehlo::ComparisonDirection direction) {
+  switch (direction) {
+  case stablehlo::ComparisonDirection::EQ:
+    return stablehlo::ComparisonDirection::EQ;
+  case stablehlo::ComparisonDirection::NE:
+    return stablehlo::ComparisonDirection::NE;
+  case stablehlo::ComparisonDirection::GE:
+    return stablehlo::ComparisonDirection::LE;
+  case stablehlo::ComparisonDirection::GT:
+    return stablehlo::ComparisonDirection::LT;
+  case stablehlo::ComparisonDirection::LE:
+    return stablehlo::ComparisonDirection::GE;
+  case stablehlo::ComparisonDirection::LT:
+    return stablehlo::ComparisonDirection::GT;
+  }
+}
+
+stablehlo::ComparisonDirection
+negatedComparisonDirection(stablehlo::ComparisonDirection direction) {
+  switch (direction) {
+  case stablehlo::ComparisonDirection::EQ:
+    return stablehlo::ComparisonDirection::NE;
+  case stablehlo::ComparisonDirection::NE:
+    return stablehlo::ComparisonDirection::EQ;
+  case stablehlo::ComparisonDirection::GE:
+    return stablehlo::ComparisonDirection::LT;
+  case stablehlo::ComparisonDirection::GT:
+    return stablehlo::ComparisonDirection::LE;
+  case stablehlo::ComparisonDirection::LE:
+    return stablehlo::ComparisonDirection::GT;
+  case stablehlo::ComparisonDirection::LT:
+    return stablehlo::ComparisonDirection::GE;
+  }
+}
+
 } // namespace stablehlo
 
 } // namespace mlir
