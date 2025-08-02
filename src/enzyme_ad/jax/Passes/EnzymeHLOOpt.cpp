@@ -21470,7 +21470,7 @@ struct ElementwisePad
       return failure();
 
     auto elemType =
-        cast<RankedTensorType>(op->getOperand(0).getType()).getElementType();
+        cast<RankedTensorType>(op->getResultTypes()[0]).getElementType();
 
     auto operand = op->getOperand(0);
     auto padOp = operand.getDefiningOp<stablehlo::PadOp>();
