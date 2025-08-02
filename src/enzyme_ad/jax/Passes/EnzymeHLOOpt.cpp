@@ -7336,7 +7336,8 @@ struct CompareNegateConstSimplify
           rewriter.create<stablehlo::NegOp>(cmpOp.getLoc(), cmpOp.getRhs());
       auto newOp = rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
           cmpOp, lhsNegate.getOperand(), negConst,
-          cmpOp.getComparisonDirection(), cmpOp.getCompareTypeAttr());
+          reversedComparisonDirection(cmpOp.getComparisonDirection()),
+          cmpOp.getCompareTypeAttr());
       if (shardingAttr) {
         sdy::setShardings(newOp, shardingAttr);
         sdy::setShardings(negConst, shardingAttr);
@@ -7355,7 +7356,7 @@ struct CompareNegateConstSimplify
           rewriter.create<stablehlo::NegOp>(cmpOp.getLoc(), cmpOp.getLhs());
       auto newOp = rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
           cmpOp, negConst, rhsNegate.getOperand(),
-          negatedComparisonDirection(cmpOp.getComparisonDirection()),
+          reversedComparisonDirection(cmpOp.getComparisonDirection()),
           cmpOp.getCompareTypeAttr());
       if (shardingAttr) {
         sdy::setShardings(newOp, shardingAttr);
