@@ -21961,16 +21961,14 @@ struct ElementwiseExtend
 };
 
 
-// TODO: This can probably done using SumToReduceWindowBase??
-struct SubtractRotateToReduceWindow
-    : public CheckedOpRewritePattern<stablehlo::SubtractOp,
-                                     SubtractRotateToReduceWindow> {
+template <typename OpTy>
+struct ElementwiseRotateToReduceWindow
+    : public CheckedOpRewritePattern<OpTy,
+                                     ElementwiseRotateToReduceWindow<OpTy>> {
   using CheckedOpRewritePattern<
-      stablehlo::SubtractOp,
-      SubtractRotateToReduceWindow>::CheckedOpRewritePattern;
+      OpTy, ElementwiseRotateToReduceWindow<OpTy>>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewriteImpl(stablehlo::SubtractOp op,
-                                    PatternRewriter &rewriter) const {
+  LogicalResult matchAndRewriteImpl(OpTy op, PatternRewriter &rewriter) const {
     auto outType = cast<RankedTensorType>(op.getType());
     auto outShape = outType.getShape();
     auto outRank = outType.getRank();
@@ -21985,10 +21983,11 @@ struct SubtractRotateToReduceWindow
     // Try to find the rotate pattern
     int64_t dim = -1, amount = -1;
     Value operand;
-    bool negate = false;
+    bool flippedOrdering = false;
 
     // Check if lhs base is rotate of rhs base
-    if (auto rotateOp = lhsInfo.base.getDefiningOp<enzymexla::RotateOp>()) {
+    if (auto rotateOp =
+            lhsInfo.base.template getDefiningOp<enzymexla::RotateOp>()) {
       if (rotateOp.getOperand() == rhsInfo.base) {
         dim = rotateOp.getDimension();
         amount = rotateOp.getAmount();
@@ -21998,12 +21997,13 @@ struct SubtractRotateToReduceWindow
 
     // Check if rhs base is rotate of lhs base
     if (dim == -1) {
-      if (auto rotateOp = rhsInfo.base.getDefiningOp<enzymexla::RotateOp>()) {
+      if (auto rotateOp =
+              rhsInfo.base.template getDefiningOp<enzymexla::RotateOp>()) {
         if (rotateOp.getOperand() == lhsInfo.base) {
           dim = rotateOp.getDimension();
           amount = rotateOp.getAmount();
           operand = lhsInfo.base;
-          negate = true; // subtract is reversed
+          flippedOrdering = true;
         }
       }
     }
@@ -22060,13 +22060,13 @@ struct SubtractRotateToReduceWindow
                     ArrayRef(rhsInfo.multiplier.value())))));
       }
 
-      if (negate) {
+      if (flippedOrdering) {
         lhsVal, rhsVal = rhsVal, lhsVal;
       }
 
-      auto subtractOp =
-          rewriter.create<stablehlo::SubtractOp>(op.getLoc(), lhsVal, rhsVal);
-      rewriter.create<stablehlo::ReturnOp>(op.getLoc(), ValueRange(subtractOp));
+      rewriter.create<stablehlo::ReturnOp>(
+          op.getLoc(),
+          ValueRange(rewriter.create<OpTy>(op.getLoc(), lhsVal, rhsVal)));
     }
 
     return success();
@@ -22675,12 +22675,17 @@ struct EnzymeHLOOptPass
         ConcatenateSubtractToSubtractPad,
         ConcatenateBroadcastInDim,
 <<<<<<< HEAD
+<<<<<<< HEAD
         ElementwiseRotate,
         ElementwiseWrap,
         ElementwiseExtend
 =======
         SubtractRotateToReduceWindow
 >>>>>>> 52cb4124 (feat: rewrite subtract rotate as reduce window)
+=======
+        ElementwiseRotateToReduceWindow<stablehlo::SubtractOp>,
+        ElementwiseRotateToReduceWindow<stablehlo::AddOp>
+>>>>>>> 739ff019 (feat: add rotate to reduce window)
       >(context);
 
     patterns.add<SumToReduceWindow<stablehlo::AddOp>,
