@@ -21979,7 +21979,8 @@ struct SubtractRotateToReduceWindow
     auto outShape = outType.getShape();
     auto outRank = outType.getRank();
 
-    // TODO: we match only for constant multiply but it can work for bcast(scalar) as well
+    // TODO: we match only for constant multiply but it can work for
+    // bcast(scalar) as well
 
     Value lhsMul, rhsMul;
     bool matched = false;
@@ -22042,8 +22043,7 @@ struct SubtractRotateToReduceWindow
           rhsId = 0;
         }
         rewriter.create<stablehlo::ReturnOp>(
-            op.getLoc(), ValueRange(
-                rewriter.create<stablehlo::SubtractOp>(
+            op.getLoc(), ValueRange(rewriter.create<stablehlo::SubtractOp>(
                              op.getLoc(), block->getArgument(lhsId),
                              block->getArgument(rhsId))));
       }
