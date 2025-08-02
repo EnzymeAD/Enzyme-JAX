@@ -21606,6 +21606,100 @@ struct ConcatenateBroadcastInDim
   }
 };
 
+// TODO: This can probably done using SumToReduceWindowBase??
+struct SubtractRotateToReduceWindow
+    : public CheckedOpRewritePattern<stablehlo::SubtractOp,
+                                     SubtractRotateToReduceWindow> {
+  using CheckedOpRewritePattern<
+      stablehlo::SubtractOp,
+      SubtractRotateToReduceWindow>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SubtractOp op,
+                                    PatternRewriter &rewriter) const {
+    auto outType = cast<RankedTensorType>(op.getType());
+    // TODO: allow other types
+    if (!outType.getElementType().isa<FloatType>())
+      return failure();
+
+    auto outShape = outType.getShape();
+    auto outRank = outType.getRank();
+
+    // TODO: we match only for constant multiply but it can work for
+    // bcast(scalar) as well
+
+    Value lhsMul, rhsMul;
+    bool matched = false;
+    bool negate = false;
+    int64_t dim, amount;
+    Value operand;
+    if (auto lhsRotateOp = op.getLhs().getDefiningOp<enzymexla::RotateOp>()) {
+      if (lhsRotateOp.getOperand() == op.getRhs()) {
+        matched = true;
+        dim = lhsRotateOp.getDimension();
+        amount = lhsRotateOp.getAmount();
+        operand = op.getRhs();
+      }
+    }
+
+    if (auto rhsRotateOp = op.getRhs().getDefiningOp<enzymexla::RotateOp>()) {
+      if (rhsRotateOp.getOperand() == op.getLhs()) {
+        negate = true;
+        matched = true;
+        dim = rhsRotateOp.getDimension();
+        amount = rhsRotateOp.getAmount();
+        operand = op.getLhs();
+      }
+    }
+
+    if (matched) {
+      auto wrapOp = rewriter.create<enzymexla::WrapOp>(op.getLoc(), operand,
+                                                       amount, 0, dim);
+
+      SmallVector<int64_t> windowDims(outRank, 1);
+      windowDims[dim] = 2;
+      SmallVector<int64_t> windowDilations(outRank, 1);
+      windowDilations[dim] = amount;
+
+      auto zeroType = RankedTensorType::get({}, outType.getElementType());
+      auto zero = rewriter.create<stablehlo::ConstantOp>(
+          op.getLoc(), zeroType, cast<ElementsAttr>(makeAttr(zeroType, 0)));
+
+      auto reduceWindowOp =
+          rewriter.replaceOpWithNewOp<stablehlo::ReduceWindowOp>(
+              op, TypeRange(outType), ValueRange(wrapOp), ValueRange(zero),
+              rewriter.getDenseI64ArrayAttr(windowDims), DenseI64ArrayAttr(),
+              DenseI64ArrayAttr(),
+              rewriter.getDenseI64ArrayAttr(windowDilations),
+              DenseIntElementsAttr());
+
+      {
+        auto *block = rewriter.createBlock(&reduceWindowOp.getBody());
+        auto argType = RankedTensorType::get({}, outType.getElementType());
+        block->addArgument(argType, op.getLoc());
+        block->addArgument(argType, op.getLoc());
+        rewriter.setInsertionPointToStart(block);
+
+        int64_t lhsId, rhsId;
+        if (negate) {
+          lhsId = 0;
+          rhsId = 1;
+        } else {
+          lhsId = 1;
+          rhsId = 0;
+        }
+        rewriter.create<stablehlo::ReturnOp>(
+            op.getLoc(), ValueRange(rewriter.create<stablehlo::SubtractOp>(
+                             op.getLoc(), block->getArgument(lhsId),
+                             block->getArgument(rhsId))));
+      }
+
+      return success();
+    }
+
+    return failure();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -22160,7 +22254,8 @@ struct EnzymeHLOOptPass
         GatherElementwise,
         ElementwisePad,
         ConcatenateSubtractToSubtractPad,
-        ConcatenateBroadcastInDim
+        ConcatenateBroadcastInDim,
+        SubtractRotateToReduceWindow
       >(context);
 
     patterns.add<SumToReduceWindow<stablehlo::AddOp>,
