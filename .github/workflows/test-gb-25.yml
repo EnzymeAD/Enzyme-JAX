@@ -53,8 +53,8 @@ jobs:
           - 'main'
           # - '0123456789abcdef0123456789abcdef01234567'
         reactant_commit:
-          # - ''
-          - '14cda3642fb6e3b633d3700d85a5ed589885e718'
+          - 'main'
+          # - '14cda3642fb6e3b633d3700d85a5ed589885e718'
 
     steps:
       - name: Check GPUs
@@ -89,7 +89,9 @@ jobs:
       - uses: julia-actions/setup-julia@v2
         with:
           version: ${{ matrix.julia_version }}
-      - uses: julia-actions/cache@v2
+      - name: Load Julia packages from cache
+        id: julia-cache
+        uses: julia-actions/cache@v2
       - name: Build local libReactant
         timeout-minutes: 60
         run: |
@@ -199,3 +201,11 @@ jobs:
           path: '${{ env.GB25_DIR }}/**/plugins'
           retention-days: 90
           overwrite: false
+      - name: Save Julia depot cache on cancel or failure
+        id: julia-cache-save
+        if: cancelled() || failure()
+        uses: actions/cache/save@v4
+        with: 
+          path: |
+            ${{ steps.julia-cache.outputs.cache-paths }}
+          key: ${{ steps.julia-cache.outputs.cache-key }}
