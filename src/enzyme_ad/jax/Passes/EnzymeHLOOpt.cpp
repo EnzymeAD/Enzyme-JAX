@@ -21972,9 +21972,16 @@ struct SubtractRotateToReduceWindow
   LogicalResult matchAndRewriteImpl(stablehlo::SubtractOp op,
                                     PatternRewriter &rewriter) const {
     auto outType = cast<RankedTensorType>(op.getType());
+    // TODO: allow other types
+    if (!outType.getElementType().isa<FloatType>())
+      return failure();
+
     auto outShape = outType.getShape();
     auto outRank = outType.getRank();
 
+    // TODO: we match only for constant multiply but it can work for bcast(scalar) as well
+
+    Value lhsMul, rhsMul;
     bool matched = false;
     bool negate = false;
     int64_t dim, amount;
