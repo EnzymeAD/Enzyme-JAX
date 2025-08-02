@@ -22044,20 +22044,14 @@ struct ElementwiseRotateToReduceWindow
         lhsVal = rewriter.create<stablehlo::MulOp>(
             op.getLoc(), lhsVal,
             rewriter.create<stablehlo::ConstantOp>(
-                op.getLoc(), lhsVal.getType(),
-                cast<ElementsAttr>(SplatElementsAttr::get(
-                    cast<RankedTensorType>(lhsVal.getType()),
-                    ArrayRef(lhsInfo.multiplier.value())))));
+                op.getLoc(), lhsVal.getType(), lhsInfo.multiplier.value()));
       }
 
       if (rhsInfo.multiplier.has_value()) {
         rhsVal = rewriter.create<stablehlo::MulOp>(
             op.getLoc(), rhsVal,
             rewriter.create<stablehlo::ConstantOp>(
-                op.getLoc(), rhsVal.getType(),
-                cast<ElementsAttr>(SplatElementsAttr::get(
-                    cast<RankedTensorType>(rhsVal.getType()),
-                    ArrayRef(rhsInfo.multiplier.value())))));
+                op.getLoc(), rhsVal.getType(), rhsInfo.multiplier.value()));
       }
 
       if (flippedOrdering) {
@@ -22075,14 +22069,16 @@ struct ElementwiseRotateToReduceWindow
 private:
   struct OperandInfo {
     Value base;
-    std::optional<Attribute> multiplier;
+    std::optional<ElementsAttr> multiplier;
   };
 
-  std::optional<Attribute> checkConstant(Value val) const {
+  std::optional<ElementsAttr> checkConstant(Value val) const {
     if (auto constOp = val.getDefiningOp<stablehlo::ConstantOp>()) {
       auto attr = constOp.getValue();
       if (attr.isSplat()) {
-        return attr.getSplatValue<Attribute>();
+        return cast<ElementsAttr>(
+            cast<SplatElementsAttr>(attr).resizeSplat(RankedTensorType::get(
+                {}, cast<RankedTensorType>(val.getType()).getElementType())));
       }
     }
     return std::nullopt;
