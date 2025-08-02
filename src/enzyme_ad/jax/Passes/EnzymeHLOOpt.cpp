@@ -21972,86 +21972,132 @@ struct SubtractRotateToReduceWindow
   LogicalResult matchAndRewriteImpl(stablehlo::SubtractOp op,
                                     PatternRewriter &rewriter) const {
     auto outType = cast<RankedTensorType>(op.getType());
-    // TODO: allow other types
-    if (!outType.getElementType().isa<FloatType>())
-      return failure();
-
     auto outShape = outType.getShape();
     auto outRank = outType.getRank();
 
     // TODO: we match only for constant multiply but it can work for
     // bcast(scalar) as well
 
-    Value lhsMul, rhsMul;
-    bool matched = false;
-    bool negate = false;
-    int64_t dim, amount;
+    // Extract info about both operands
+    auto lhsInfo = extractOperandInfo(op.getLhs());
+    auto rhsInfo = extractOperandInfo(op.getRhs());
+
+    // Try to find the rotate pattern
+    int64_t dim = -1, amount = -1;
     Value operand;
-    if (auto lhsRotateOp = op.getLhs().getDefiningOp<enzymexla::RotateOp>()) {
-      if (lhsRotateOp.getOperand() == op.getRhs()) {
-        matched = true;
-        dim = lhsRotateOp.getDimension();
-        amount = lhsRotateOp.getAmount();
-        operand = op.getRhs();
+    bool negate = false;
+
+    // Check if lhs base is rotate of rhs base
+    if (auto rotateOp = lhsInfo.base.getDefiningOp<enzymexla::RotateOp>()) {
+      if (rotateOp.getOperand() == rhsInfo.base) {
+        dim = rotateOp.getDimension();
+        amount = rotateOp.getAmount();
+        operand = rhsInfo.base;
       }
     }
 
-    if (auto rhsRotateOp = op.getRhs().getDefiningOp<enzymexla::RotateOp>()) {
-      if (rhsRotateOp.getOperand() == op.getLhs()) {
-        negate = true;
-        matched = true;
-        dim = rhsRotateOp.getDimension();
-        amount = rhsRotateOp.getAmount();
-        operand = op.getLhs();
-      }
-    }
-
-    if (matched) {
-      auto wrapOp = rewriter.create<enzymexla::WrapOp>(op.getLoc(), operand,
-                                                       amount, 0, dim);
-
-      SmallVector<int64_t> windowDims(outRank, 1);
-      windowDims[dim] = 2;
-      SmallVector<int64_t> windowDilations(outRank, 1);
-      windowDilations[dim] = amount;
-
-      auto zeroType = RankedTensorType::get({}, outType.getElementType());
-      auto zero = rewriter.create<stablehlo::ConstantOp>(
-          op.getLoc(), zeroType, cast<ElementsAttr>(makeAttr(zeroType, 0)));
-
-      auto reduceWindowOp =
-          rewriter.replaceOpWithNewOp<stablehlo::ReduceWindowOp>(
-              op, TypeRange(outType), ValueRange(wrapOp), ValueRange(zero),
-              rewriter.getDenseI64ArrayAttr(windowDims), DenseI64ArrayAttr(),
-              DenseI64ArrayAttr(),
-              rewriter.getDenseI64ArrayAttr(windowDilations),
-              DenseIntElementsAttr());
-
-      {
-        auto *block = rewriter.createBlock(&reduceWindowOp.getBody());
-        auto argType = RankedTensorType::get({}, outType.getElementType());
-        block->addArgument(argType, op.getLoc());
-        block->addArgument(argType, op.getLoc());
-        rewriter.setInsertionPointToStart(block);
-
-        int64_t lhsId, rhsId;
-        if (negate) {
-          lhsId = 0;
-          rhsId = 1;
-        } else {
-          lhsId = 1;
-          rhsId = 0;
+    // Check if rhs base is rotate of lhs base
+    if (dim == -1) {
+      if (auto rotateOp = rhsInfo.base.getDefiningOp<enzymexla::RotateOp>()) {
+        if (rotateOp.getOperand() == lhsInfo.base) {
+          dim = rotateOp.getDimension();
+          amount = rotateOp.getAmount();
+          operand = lhsInfo.base;
+          negate = true; // subtract is reversed
         }
-        rewriter.create<stablehlo::ReturnOp>(
-            op.getLoc(), ValueRange(rewriter.create<stablehlo::SubtractOp>(
-                             op.getLoc(), block->getArgument(lhsId),
-                             block->getArgument(rhsId))));
       }
-
-      return success();
     }
 
-    return failure();
+    if (dim == -1)
+      return failure();
+
+    auto wrapOp = rewriter.create<enzymexla::WrapOp>(op.getLoc(), operand,
+                                                     amount, 0, dim);
+
+    SmallVector<int64_t> windowDims(outRank, 1);
+    windowDims[dim] = 2;
+    SmallVector<int64_t> windowDilations(outRank, 1);
+    windowDilations[dim] = amount;
+
+    auto zeroType = RankedTensorType::get({}, outType.getElementType());
+    auto zero = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), zeroType, cast<ElementsAttr>(makeAttr(zeroType, 0)));
+
+    auto reduceWindowOp =
+        rewriter.replaceOpWithNewOp<stablehlo::ReduceWindowOp>(
+            op, TypeRange(outType), ValueRange(wrapOp), ValueRange(zero),
+            rewriter.getDenseI64ArrayAttr(windowDims), DenseI64ArrayAttr(),
+            DenseI64ArrayAttr(), rewriter.getDenseI64ArrayAttr(windowDilations),
+            DenseIntElementsAttr());
+
+    {
+      auto *block = rewriter.createBlock(&reduceWindowOp.getBody());
+      auto argType = RankedTensorType::get({}, outType.getElementType());
+      block->addArgument(argType, op.getLoc());
+      block->addArgument(argType, op.getLoc());
+      rewriter.setInsertionPointToStart(block);
+
+      Value lhsVal = block->getArgument(0);
+      Value rhsVal = block->getArgument(1);
+
+      if (lhsInfo.multiplier.has_value()) {
+        lhsVal = rewriter.create<stablehlo::MulOp>(
+            op.getLoc(), lhsVal,
+            rewriter.create<stablehlo::ConstantOp>(
+                op.getLoc(), lhsVal.getType(),
+                cast<ElementsAttr>(SplatElementsAttr::get(
+                    cast<RankedTensorType>(lhsVal.getType()),
+                    ArrayRef(lhsInfo.multiplier.value())))));
+      }
+
+      if (rhsInfo.multiplier.has_value()) {
+        rhsVal = rewriter.create<stablehlo::MulOp>(
+            op.getLoc(), rhsVal,
+            rewriter.create<stablehlo::ConstantOp>(
+                op.getLoc(), rhsVal.getType(),
+                cast<ElementsAttr>(SplatElementsAttr::get(
+                    cast<RankedTensorType>(rhsVal.getType()),
+                    ArrayRef(rhsInfo.multiplier.value())))));
+      }
+
+      if (negate) {
+        lhsVal, rhsVal = rhsVal, lhsVal;
+      }
+
+      auto subtractOp =
+          rewriter.create<stablehlo::SubtractOp>(op.getLoc(), lhsVal, rhsVal);
+      rewriter.create<stablehlo::ReturnOp>(op.getLoc(), ValueRange(subtractOp));
+    }
+
+    return success();
+  }
+
+private:
+  struct OperandInfo {
+    Value base;
+    std::optional<Attribute> multiplier;
+  };
+
+  std::optional<Attribute> checkConstant(Value val) const {
+    if (auto constOp = val.getDefiningOp<stablehlo::ConstantOp>()) {
+      auto attr = constOp.getValue();
+      if (attr.isSplat()) {
+        return attr.getSplatValue<Attribute>();
+      }
+    }
+    return std::nullopt;
+  }
+
+  OperandInfo extractOperandInfo(Value val) const {
+    if (auto mulOp = val.getDefiningOp<stablehlo::MulOp>()) {
+      if (auto lhsConst = checkConstant(mulOp.getLhs())) {
+        return {mulOp.getRhs(), lhsConst};
+      }
+      if (auto rhsConst = checkConstant(mulOp.getRhs())) {
+        return {mulOp.getLhs(), rhsConst};
+      }
+    }
+    return {val, std::nullopt};
   }
 };
 
