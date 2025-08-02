@@ -5459,17 +5459,33 @@ struct ConcatToBroadcast final
     for (auto opv : op->getOperands())
       if (opv != op->getOperand(0))
         return failure();
-    SmallVector<int64_t> bcast;
     if (cast<RankedTensorType>(op->getOperand(0).getType())
-            .getShape()[op.getDimension()] != 1)
-      return failure();
-    for (auto en : llvm::enumerate(op.getType().getShape())) {
-      bcast.push_back(en.index());
+            .getShape()[op.getDimension()] == 1) {
+      SmallVector<int64_t> bcast;
+      for (auto en : llvm::enumerate(op.getType().getShape())) {
+        bcast.push_back(en.index());
+      }
+      auto bcast2 = rewriter.getDenseI64ArrayAttr(bcast);
+      rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+          op, op.getType(), op->getOperand(0), bcast2);
+      return success();
+    } else {
+      SmallVector<int64_t> reshaped = llvm::to_vector(op.getType().getShape());
+      reshaped.insert(reshape.begin() + op.getDimension(), 1);
+      auto reshapeVal = rewriter.create<stablehlo::ReshapeOp>(op.getLoc(), RankedTensorType::get(op.getType().getElementType(), shape), op->getOperand(0));
+
+      SmallVector<int64_t> bcast;
+      for (auto en : llvm::enumerate(reshapeVal.getType().getShape())) {
+        bcast.push_back(en.index());
+      }
+      reshaped[op.getDimension()] = op->getNumOperands();
+      auto bcast2 = rewriter.getDenseI64ArrayAttr(bcast);
+      auto bcastVal = rewriter.createOp<stablehlo::BroadcastInDimOp>(
+          op.getLoc(), RankedTensorType::get(op.getType().getElementType(), reshaped), reshapeVal, bcast2);
+
+      rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(), bcastVal);
+      return success();
     }
-    auto bcast2 = rewriter.getDenseI64ArrayAttr(bcast);
-    rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
-        op, op.getType(), op->getOperand(0), bcast2);
-    return success();
   }
 };
 
