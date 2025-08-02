@@ -49,7 +49,6 @@ load("@xla//:workspace3.bzl", "xla_workspace3")
 
 xla_workspace3()
 
-
 load("//third_party/enzyme:workspace.bzl", enzyme_workspace = "repo")
 
 enzyme_workspace()
@@ -85,7 +84,6 @@ install_deps()
 
 load("@xla//third_party/llvm:workspace.bzl", llvm = "repo")
 load("//:workspace.bzl", "LLVM_TARGETS")
-
 load("@jax//third_party/flatbuffers:workspace.bzl", flatbuffers = "repo")
 
 flatbuffers()
