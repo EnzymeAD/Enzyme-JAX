@@ -50,8 +50,8 @@ jobs:
           - ''
           # - 'b25f3cbed2bc88c8ffef85f6a5319e2cf7b0454c'
         gb25_commit:
-          - 'main'
-          # - '0123456789abcdef0123456789abcdef01234567'
+          # - 'main'
+          - '7f596224736d3778a5da7b0d6bb7dadce355f285'
         reactant_commit:
           - 'main'
           # - '14cda3642fb6e3b633d3700d85a5ed589885e718'
@@ -165,6 +165,9 @@ jobs:
         timeout-minutes: 60
         run: |
           export XLA_FLAGS='--xla_dump_to=${{ env.GB25_DIR }}/xla_dump'
+          export GB25_GRID_X="6144"
+          export GB25_GRID_Y="1536"
+          export GB25_GRID_Z="4"
           timeout --signal=TERM --verbose 59m mpiexecjl -np 1 julia --color=yes --project -O0 sharding/sharded_baroclinic_instability_simulation_run.jl
         working-directory: ${{ env.GB25_DIR }}
       - name: Test correctness in GB-25 code
