@@ -21973,9 +21973,6 @@ struct ElementwiseRotateToReduceWindow
     auto outShape = outType.getShape();
     auto outRank = outType.getRank();
 
-    // TODO: we match only for constant multiply but it can work for
-    // bcast(scalar) as well
-
     // Extract info about both operands
     auto lhsInfo = extractOperandInfo(op.getLhs());
     auto rhsInfo = extractOperandInfo(op.getRhs());
@@ -22040,18 +22037,24 @@ struct ElementwiseRotateToReduceWindow
       Value lhsVal = block->getArgument(0);
       Value rhsVal = block->getArgument(1);
 
-      if (lhsInfo.multiplier.has_value()) {
+      if (lhsInfo.constantAttr.has_value()) {
         lhsVal = rewriter.create<stablehlo::MulOp>(
             op.getLoc(), lhsVal,
             rewriter.create<stablehlo::ConstantOp>(
-                op.getLoc(), lhsVal.getType(), lhsInfo.multiplier.value()));
+                op.getLoc(), lhsVal.getType(), lhsInfo.constantAttr.value()));
+      } else if (lhsInfo.constantScalar.has_value()) {
+        lhsVal = rewriter.create<stablehlo::MulOp>(
+            op.getLoc(), lhsVal, lhsInfo.constantScalar.value());
       }
 
-      if (rhsInfo.multiplier.has_value()) {
+      if (rhsInfo.constantAttr.has_value()) {
         rhsVal = rewriter.create<stablehlo::MulOp>(
             op.getLoc(), rhsVal,
             rewriter.create<stablehlo::ConstantOp>(
-                op.getLoc(), rhsVal.getType(), rhsInfo.multiplier.value()));
+                op.getLoc(), rhsVal.getType(), rhsInfo.constantAttr.value()));
+      } else if (rhsInfo.constantScalar.has_value()) {
+        rhsVal = rewriter.create<stablehlo::MulOp>(
+            op.getLoc(), rhsVal, rhsInfo.constantScalar.value());
       }
 
       if (flippedOrdering) {
@@ -22069,28 +22072,47 @@ struct ElementwiseRotateToReduceWindow
 private:
   struct OperandInfo {
     Value base;
-    std::optional<ElementsAttr> multiplier;
+    std::optional<ElementsAttr> constantAttr;
+    std::optional<Value> constantScalar;
   };
 
-  std::optional<ElementsAttr> checkConstant(Value val) const {
+  std::tuple<std::optional<ElementsAttr>, std::optional<Value>>
+  checkConstant(Value val) const {
+    if (auto bcastInDimOp = val.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+      auto operand = bcastInDimOp.getOperand();
+      if (cast<RankedTensorType>(operand.getType()).getRank() == 0) {
+        return std::make_tuple(std::nullopt, operand);
+      }
+    }
+
     if (auto constOp = val.getDefiningOp<stablehlo::ConstantOp>()) {
       auto attr = constOp.getValue();
       if (attr.isSplat()) {
-        return cast<ElementsAttr>(
-            cast<SplatElementsAttr>(attr).resizeSplat(RankedTensorType::get(
-                {}, cast<RankedTensorType>(val.getType()).getElementType())));
+        return std::make_tuple(
+            cast<ElementsAttr>(
+                cast<SplatElementsAttr>(attr).resizeSplat(RankedTensorType::get(
+                    {},
+                    cast<RankedTensorType>(val.getType()).getElementType()))),
+            std::nullopt);
       }
     }
-    return std::nullopt;
+    return std::make_tuple(std::nullopt, std::nullopt);
   }
 
   OperandInfo extractOperandInfo(Value val) const {
     if (auto mulOp = val.getDefiningOp<stablehlo::MulOp>()) {
-      if (auto lhsConst = checkConstant(mulOp.getLhs())) {
-        return {mulOp.getRhs(), lhsConst};
+      {
+        auto [constantAttr, constantScalar] = checkConstant(mulOp.getLhs());
+        if (constantAttr.has_value() || constantScalar.has_value()) {
+          return {mulOp.getRhs(), constantAttr, constantScalar};
+        }
       }
-      if (auto rhsConst = checkConstant(mulOp.getRhs())) {
-        return {mulOp.getLhs(), rhsConst};
+
+      {
+        auto [constantAttr, constantScalar] = checkConstant(mulOp.getRhs());
+        if (constantAttr.has_value() || constantScalar.has_value()) {
+          return {mulOp.getLhs(), constantAttr, constantScalar};
+        }
       }
     }
     return {val, std::nullopt};
