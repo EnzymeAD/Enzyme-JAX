@@ -2163,3 +2163,15 @@ def ApplyConcatenateSubtractToSubtractPadPatterns : EnzymeHLOPatternOp<"concaten
 def ApplyConcatenateBroadcastInDimPatterns : EnzymeHLOPatternOp<"concatenate_broadcast_in_dim"> {
   let patterns = ["ConcatenateBroadcastInDim"];
 }
+
+def ApplyElementwiseRotatePatterns : EnzymeHLOPatternOp<"elementwise_rotate"> {
+  let patterns = ["ElementwiseRotate"];
+}
+
+def ApplyElementwiseWrapPatterns : EnzymeHLOPatternOp<"elementwise_wrap"> {
+  let patterns = ["ElementwiseWrap"];
+}
+
+def ApplyElementwiseExtendPatterns : EnzymeHLOPatternOp<"elementwise_extend"> {
+  let patterns = ["ElementwiseExtend"];
+}
