@@ -7399,6 +7399,113 @@ struct CompareAbs
   }
 };
 
+struct CompareMul
+    : public CheckedOpRewritePattern<stablehlo::CompareOp, CompareMul> {
+  using CheckedOpRewritePattern<stablehlo::CompareOp,
+                                CompareMul>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::CompareOp cmpOp,
+                                    PatternRewriter &rewriter) const {
+    for (int i = 0; i < 2; i++) {
+      auto operand = cmpOp->getOperand(i);
+      auto mul = operand.getDefiningOp<stablehlo::MulOp>();
+      if (!mul)
+        continue;
+      if (!cast<mlir::enzyme::AutoDiffTypeInterface>(
+               cmpOp->getOperand(1 - i).getType())
+               .isZero(cmpOp->getOperand(1 - i)))
+        continue;
+
+      for (int j = 0; j < 2; j++) {
+        SplatElementsAttr splat;
+        if (!matchPattern(mul->getOperand(j), m_Constant(&splat))) {
+          continue;
+        }
+
+        bool isNegative = false;
+
+        auto attr = splat.getSplatValue<Attribute>();
+        if (auto fp = dyn_cast<FloatAttr>(attr)) {
+          if (fp.getValue().isZero())
+            continue;
+          isNegative = fp.getValue().isNegative();
+        } else if (auto fp = dyn_cast<IntegerAttr>(attr)) {
+          if (fp.getValue().isZero())
+            continue;
+          isNegative = fp.getValue().isNegative();
+        } else {
+          continue;
+        }
+        auto dir = cmpOp.getComparisonDirection();
+        if (i == 1) {
+          dir = reversedComparisonDirection(dir);
+        }
+
+        // now its always mul(x, cst) ?= 0
+
+        // mul(x, cst) < 0 ->
+        //    if cst > 0,   x < 0
+        //    elif cst < 0, x > 0
+        if (dir == stablehlo::ComparisonDirection::LT) {
+          rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
+              cmpOp, mul->getOperand(1 - j), cmpOp->getOperand(1 - i),
+              isNegative ? stablehlo::ComparisonDirection::GT
+                         : stablehlo::ComparisonDirection::LT);
+          return success();
+        }
+        // mul(x, cst) <= 0 ->
+        //    if cst > 0,   x <= 0
+        //    elif cst < 0, x >= 0
+        if (dir == stablehlo::ComparisonDirection::LE) {
+          rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
+              cmpOp, mul->getOperand(1 - j), cmpOp->getOperand(1 - i),
+              isNegative ? stablehlo::ComparisonDirection::GE
+                         : stablehlo::ComparisonDirection::LE);
+          return success();
+        }
+
+        // mul(x, cst) > 0 ->
+        //    if cst > 0,   x > 0
+        //    elif cst < 0, x < 0
+        if (dir == stablehlo::ComparisonDirection::GT) {
+          rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
+              cmpOp, mul->getOperand(1 - j), cmpOp->getOperand(1 - i),
+              isNegative ? stablehlo::ComparisonDirection::LT
+                         : stablehlo::ComparisonDirection::GT);
+          return success();
+        }
+        // mul(x, cst) <= 0 ->
+        //    if cst > 0,   x <= 0
+        //    elif cst < 0, x >= 0
+        if (dir == stablehlo::ComparisonDirection::GE) {
+          rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
+              cmpOp, mul->getOperand(1 - j), cmpOp->getOperand(1 - i),
+              isNegative ? stablehlo::ComparisonDirection::LE
+                         : stablehlo::ComparisonDirection::GE);
+          return success();
+        }
+
+        // mul(x, cst) == 0 -> x == 0
+        if (dir == stablehlo::ComparisonDirection::EQ) {
+          rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
+              cmpOp, mul->getOperand(1 - j), cmpOp->getOperand(1 - i),
+              stablehlo::ComparisonDirection::EQ);
+          return success();
+        }
+
+        // mul(x, cst) != 0 -> x != 0
+        if (dir == stablehlo::ComparisonDirection::NE) {
+          rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
+              cmpOp, mul->getOperand(1 - j), cmpOp->getOperand(1 - i),
+              stablehlo::ComparisonDirection::NE);
+          return success();
+        }
+      }
+    }
+    return failure();
+  }
+};
+
 struct CompareNegateConstSimplify
     : public CheckedOpRewritePattern<stablehlo::CompareOp,
                                      CompareNegateConstSimplify> {
@@ -22046,7 +22153,7 @@ struct EnzymeHLOOptPass
         NegMulConstSimplify, NegDivConstSimplify,
         ReshapeDeletionsBroadcastInDimSimplify,
         ReshapeInsertionsBroadcastInDimSimplify, CompareIotaConstSimplify,
-        CompareAbs, CompareNegateConstSimplify, SelectSimplify>(
+        CompareAbs, CompareMul, CompareNegateConstSimplify, SelectSimplify>(
         context, PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,

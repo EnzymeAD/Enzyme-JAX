@@ -891,6 +891,11 @@ def CompareAbs : EnzymeHLOPatternOp<
   let patterns = ["CompareAbs"];
 }
 
+def CompareMul : EnzymeHLOPatternOp<
+    "compare_mul"> {
+  let patterns = ["CompareMul"];
+}
+
 def CompareOpCanonPatterns : EnzymeHLOPatternOp<
     "compare_op_canon"> {
   let patterns = ["CompareOpCanon"];
