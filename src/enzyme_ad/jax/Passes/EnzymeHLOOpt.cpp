@@ -21628,6 +21628,105 @@ struct ConcatenateBroadcastInDim
   }
 };
 
+template <typename OpTy, typename Child>
+struct ElementwiseConcatLike
+    : public CheckedOpTraitRewritePattern<OpTrait::Elementwise,
+                                          ElementwiseConcatLike<OpTy, Child>> {
+  using CheckedOpTraitRewritePattern<
+      OpTrait::Elementwise,
+      ElementwiseConcatLike<OpTy, Child>>::CheckedOpTraitRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(Operation *op,
+                                    PatternRewriter &rewriter) const {
+    auto operands = op->getOperands();
+    if (operands.size() <= 1)
+      return failure();
+
+    SmallVector<Value> operandOperands;
+    SmallVector<Operation *> concatLikeOps;
+    for (auto operand : operands) {
+      if (auto concatLikeOp = operand.template getDefiningOp<OpTy>()) {
+        concatLikeOps.push_back(concatLikeOp);
+        operandOperands.push_back(concatLikeOp.getOperand());
+
+        if (!llvm::hasSingleElement(operand.getUsers())) {
+          return failure();
+        } else if (concatLikeOps.size() > 1) {
+          if (!OperationEquivalence::isEquivalentTo(
+                  concatLikeOps[0], concatLikeOp,
+                  OperationEquivalence::ignoreValueEquivalence, nullptr,
+                  OperationEquivalence::IgnoreLocations, nullptr)) {
+            return failure();
+          }
+        }
+      } else {
+        return failure();
+      }
+    }
+
+    // Do the elementwise first
+    auto newElem = rewriter.create(
+        op->getLoc(), op->getName().getIdentifier(),
+        ValueRange(operandOperands),
+        TypeRange{RankedTensorType::get(
+            cast<RankedTensorType>(operandOperands[0].getType()).getShape(),
+            cast<RankedTensorType>(op->getResultTypes()[0]).getElementType())},
+        op->getAttrs(), {}, {});
+
+    // Then the concatlike
+    ((Child *)this)
+        ->createSimilarConcatLike(rewriter, op, newElem->getResult(0),
+                                  concatLikeOps[0]);
+    return success();
+  }
+};
+
+struct ElementwiseRotate
+    : public ElementwiseConcatLike<enzymexla::RotateOp, ElementwiseRotate> {
+  using ElementwiseConcatLike<enzymexla::RotateOp,
+                              ElementwiseRotate>::ElementwiseConcatLike;
+
+  void createSimilarConcatLike(PatternRewriter &rewriter, Operation *op,
+                               Value elem, Operation *baseRotateOp) const {
+    auto rotateOp = dyn_cast<enzymexla::RotateOp>(baseRotateOp);
+    assert(rotateOp);
+    rewriter.replaceOpWithNewOp<enzymexla::RotateOp>(
+        op, elem, rotateOp.getAmount(), rotateOp.getDimension());
+    return;
+  }
+};
+
+struct ElementwiseWrap
+    : public ElementwiseConcatLike<enzymexla::WrapOp, ElementwiseWrap> {
+  using ElementwiseConcatLike<enzymexla::WrapOp,
+                              ElementwiseWrap>::ElementwiseConcatLike;
+
+  void createSimilarConcatLike(PatternRewriter &rewriter, Operation *op,
+                               Value elem, Operation *baseWrapOp) const {
+    auto wrapOp = dyn_cast<enzymexla::WrapOp>(baseWrapOp);
+    assert(wrapOp);
+    rewriter.replaceOpWithNewOp<enzymexla::WrapOp>(
+        op, elem, wrapOp.getLhs(), wrapOp.getRhs(), wrapOp.getDimension());
+    return;
+  }
+};
+
+struct ElementwiseExtend
+    : public ElementwiseConcatLike<enzymexla::ExtendOp, ElementwiseExtend> {
+  using ElementwiseConcatLike<enzymexla::ExtendOp,
+                              ElementwiseExtend>::ElementwiseConcatLike;
+
+  void createSimilarConcatLike(PatternRewriter &rewriter, Operation *op,
+                               Value elem, Operation *baseExtendOp) const {
+    auto extendOp = dyn_cast<enzymexla::ExtendOp>(baseExtendOp);
+    assert(extendOp);
+    rewriter.replaceOpWithNewOp<enzymexla::ExtendOp>(
+        op, elem, extendOp.getLhs(), extendOp.getRhs(),
+        extendOp.getDimension());
+    return;
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -22182,7 +22281,10 @@ struct EnzymeHLOOptPass
         GatherElementwise,
         ElementwisePad,
         ConcatenateSubtractToSubtractPad,
-        ConcatenateBroadcastInDim
+        ConcatenateBroadcastInDim,
+        ElementwiseRotate,
+        ElementwiseWrap,
+        ElementwiseExtend
       >(context);
 
     patterns.add<SumToReduceWindow<stablehlo::AddOp>,
