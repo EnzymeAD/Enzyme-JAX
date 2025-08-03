@@ -195,24 +195,18 @@ def NoopOp
 
 def GPUBlockOp : EnzymeXLA_Op<"gpu_block", [
   RecursiveMemoryEffects,
-  SingleBlockImplicitTerminator<"enzymexla::PolygeistYieldOp">]>,
-  Arguments<(ins Index:$blockIndexX, Index:$blockIndexY, Index:$blockIndexZ)> {
+  SingleBlockImplicitTerminator<"enzymexla::PolygeistYieldOp">]> {
+  let arguments = (ins Index:$blockIndexX, Index:$blockIndexY, Index:$blockIndexZ);
   let summary = "Wraps a GPU kernel block to prevent restructuring";
   let regions = (region SizedRegion<1>:$region);
-  let skipDefaultBuilders = 1;
-  let builders = [OpBuilder<(ins
-      "Value":$blockIndexX, "Value":$blockIndexY, "Value":$blockIndexZ)>];
 }
 
 def GPUThreadOp : EnzymeXLA_Op<"gpu_thread", [
   RecursiveMemoryEffects,
-  SingleBlockImplicitTerminator<"enzymexla::PolygeistYieldOp">]>,
-  Arguments<(ins Index:$threadIndexX, Index:$threadIndexY, Index:$threadIndexZ)> {
+  SingleBlockImplicitTerminator<"enzymexla::PolygeistYieldOp">]> {
+  let arguments = (ins Index:$threadIndexX, Index:$threadIndexY, Index:$threadIndexZ);
   let summary = "Wraps a GPU kernel thread to prevent restructuring";
   let regions = (region SizedRegion<1>:$region);
-  let skipDefaultBuilders = 1;
-  let builders = [OpBuilder<(ins
-      "Value":$threadIndexX, "Value":$threadIndexY, "Value":$threadIndexZ)>];
 }
 
 def BarrierOp

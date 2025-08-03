@@ -23,9 +23,9 @@ func.func @unaryscatter(%arg0: tensor<4xi64>, %arg1: tensor<6xi64>, %arg2: tenso
 // CHECK-NEXT:     %cst = stablehlo.constant dense<0.909297406> : tensor<24xf32>
 // CHECK-NEXT:     %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<1024x1024xf32>
 // CHECK-NEXT:     %c = stablehlo.constant dense<1> : tensor<24x2xi64>
-// CHECK-NEXT:     %0 = stablehlo.concatenate %arg0, %arg0, %arg0, %arg0, %arg0, %arg0, dim = 0 : (tensor<4xi64>, tensor<4xi64>, tensor<4xi64>, tensor<4xi64>, tensor<4xi64>, tensor<4xi64>) -> tensor<24xi64>
+// CHECK-NEXT:     %0 = stablehlo.broadcast_in_dim %arg0, dims = [1] : (tensor<4xi64>) -> tensor<6x4xi64>
 // CHECK-NEXT:     %1 = stablehlo.broadcast_in_dim %arg1, dims = [0] : (tensor<6xi64>) -> tensor<6x4xi64>
-// CHECK-NEXT:     %2 = stablehlo.reshape %0 : (tensor<24xi64>) -> tensor<24x1xi64>
+// CHECK-NEXT:     %2 = stablehlo.reshape %0 : (tensor<6x4xi64>) -> tensor<24x1xi64>
 // CHECK-NEXT:     %3 = stablehlo.reshape %1 : (tensor<6x4xi64>) -> tensor<24x1xi64>
 // CHECK-NEXT:     %4 = stablehlo.concatenate %2, %3, dim = 1 : (tensor<24x1xi64>, tensor<24x1xi64>) -> tensor<24x2xi64>
 // CHECK-NEXT:     %5 = stablehlo.subtract %4, %c : tensor<24x2xi64>
@@ -60,9 +60,9 @@ func.func @expscatter(%arg0: tensor<4xi64>, %arg1: tensor<6xi64>, %arg2: tensor<
 // CHECK-NEXT:     %cst = stablehlo.constant dense<7.3890562> : tensor<24xf32>
 // CHECK-NEXT:     %cst_0 = stablehlo.constant dense<1.000000e+00> : tensor<1024x1024xf32>
 // CHECK-NEXT:     %c = stablehlo.constant dense<1> : tensor<24x2xi64>
-// CHECK-NEXT:     %0 = stablehlo.concatenate %arg0, %arg0, %arg0, %arg0, %arg0, %arg0, dim = 0 : (tensor<4xi64>, tensor<4xi64>, tensor<4xi64>, tensor<4xi64>, tensor<4xi64>, tensor<4xi64>) -> tensor<24xi64>
+// CHECK-NEXT:     %0 = stablehlo.broadcast_in_dim %arg0, dims = [1] : (tensor<4xi64>) -> tensor<6x4xi64>
 // CHECK-NEXT:     %1 = stablehlo.broadcast_in_dim %arg1, dims = [0] : (tensor<6xi64>) -> tensor<6x4xi64>
-// CHECK-NEXT:     %2 = stablehlo.reshape %0 : (tensor<24xi64>) -> tensor<24x1xi64>
+// CHECK-NEXT:     %2 = stablehlo.reshape %0 : (tensor<6x4xi64>) -> tensor<24x1xi64>
 // CHECK-NEXT:     %3 = stablehlo.reshape %1 : (tensor<6x4xi64>) -> tensor<24x1xi64>
 // CHECK-NEXT:     %4 = stablehlo.concatenate %2, %3, dim = 1 : (tensor<24x1xi64>, tensor<24x1xi64>) -> tensor<24x2xi64>
 // CHECK-NEXT:     %5 = stablehlo.subtract %4, %c : tensor<24x2xi64>
