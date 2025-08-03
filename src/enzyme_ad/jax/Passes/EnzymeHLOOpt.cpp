@@ -39,6 +39,8 @@
 #include "stablehlo/transforms/Passes.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 
+#include "Interfaces/AutoDiffTypeInterface.h"
+
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallSet.h"
 
@@ -7319,6 +7321,80 @@ struct CompareIotaConstSimplify
       break;
     }
 
+    return failure();
+  }
+};
+
+struct CompareAbs
+    : public CheckedOpRewritePattern<stablehlo::CompareOp, CompareAbs> {
+  using CheckedOpRewritePattern<stablehlo::CompareOp,
+                                CompareAbs>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::CompareOp cmpOp,
+                                    PatternRewriter &rewriter) const {
+    for (int i = 0; i < 2; i++) {
+      auto operand = cmpOp->getOperand(i);
+      auto abs = operand.getDefiningOp<stablehlo::AbsOp>();
+      if (!abs)
+        continue;
+      if (!cast<mlir::enzyme::AutoDiffTypeInterface>(
+               cmpOp->getOperand(1 - i).getType())
+               .isZero(cmpOp->getOperand(1 - i)))
+        continue;
+
+      auto dir = cmpOp.getComparisonDirection();
+      if (i == 1) {
+        dir = reversedComparisonDirection(dir);
+      }
+      // now its always abs ?= 0
+
+      // abs(x) < 0 -> false
+      if (dir == stablehlo::ComparisonDirection::LT) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            cmpOp, cmpOp.getType(),
+            SplatElementsAttr::get(cmpOp.getType(),
+                                   rewriter.getBoolAttr(false)));
+        return success();
+      }
+      // abs(x) <= 0 -> x == 0
+      if (dir == stablehlo::ComparisonDirection::LE) {
+        rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
+            cmpOp, abs.getOperand(), cmpOp->getOperand(1 - i),
+            stablehlo::ComparisonDirection::EQ);
+        return success();
+      }
+      // abs(x) >= 0 -> true
+      if (dir == stablehlo::ComparisonDirection::GE) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            cmpOp, cmpOp.getType(),
+            SplatElementsAttr::get(cmpOp.getType(),
+                                   rewriter.getBoolAttr(true)));
+        return success();
+      }
+      // abs(x) > 0 -> x != 0
+      if (dir == stablehlo::ComparisonDirection::GT) {
+        rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
+            cmpOp, abs.getOperand(), cmpOp->getOperand(1 - i),
+            stablehlo::ComparisonDirection::NE);
+        return success();
+      }
+
+      // abs(x) == 0 -> x == 0
+      if (dir == stablehlo::ComparisonDirection::EQ) {
+        rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
+            cmpOp, abs.getOperand(), cmpOp->getOperand(1 - i),
+            stablehlo::ComparisonDirection::EQ);
+        return success();
+      }
+
+      // abs(x) != 0 -> x != 0
+      if (dir == stablehlo::ComparisonDirection::NE) {
+        rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
+            cmpOp, abs.getOperand(), cmpOp->getOperand(1 - i),
+            stablehlo::ComparisonDirection::NE);
+        return success();
+      }
+    }
     return failure();
   }
 };
@@ -21970,8 +22046,8 @@ struct EnzymeHLOOptPass
         NegMulConstSimplify, NegDivConstSimplify,
         ReshapeDeletionsBroadcastInDimSimplify,
         ReshapeInsertionsBroadcastInDimSimplify, CompareIotaConstSimplify,
-        CompareNegateConstSimplify, SelectSimplify>(context,
-                                                    PatternBenefit(65000));
+        CompareAbs, CompareNegateConstSimplify, SelectSimplify>(
+        context, PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,
                  DynamicUpdateSliceConstProp, PadSimplify>(
