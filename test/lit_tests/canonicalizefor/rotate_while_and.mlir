@@ -1,6 +1,6 @@
 // RUN: enzymexlamlir-opt --allow-unregistered-dialect --canonicalize-scf-for --split-input-file %s | FileCheck %s
 
-func.func private @"reduced_example"() {
+func.func @"reduced_example"() {
   %true = arith.constant true
   %c1_i64 = arith.constant 1 : i64
   %c30_i64 = arith.constant 30 : i64
@@ -67,7 +67,7 @@ func.func private @"reduced_example"() {
 
 // ----
 
-func.func private @"negative_step"() {
+func.func @"negative_step"() {
   %true = arith.constant true
   %c1_i64 = arith.constant 1 : i64
   %c30_i64 = arith.constant 30 : i64
@@ -123,7 +123,7 @@ func.func private @"negative_step"() {
 // CHECK:           } else {
 // CHECK:             scf.yield %[[ARG2]], %[[ARG3]], %[[FALSE]]
 // CHECK:           }
-// CHECK:           %[[BOUND_CHECK:.+]] = arith.cmpi slt, %[[I]], %[[C29]]
+// CHECK:           %[[BOUND_CHECK:.+]] = arith.cmpi sgt, %[[I]], %[[C29]]
 // CHECK:           %[[BREAK_COND:.+]] = arith.andi %[[BOUND_CHECK]], %[[IF1]]#2
 // CHECK:           %[[IF2:.+]] = scf.if %[[BREAK_COND]] -> (i64) {
 // CHECK:             scf.yield %[[IF1]]#0

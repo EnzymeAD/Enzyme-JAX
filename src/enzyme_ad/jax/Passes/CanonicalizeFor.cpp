@@ -1254,7 +1254,6 @@ struct WhileToForHelper {
       }
 
       if (auto arg = dyn_cast<BlockArgument>(opVal)) {
-
         if (arg.getOwner() != &loop.getBefore().front()) {
           continue;
         }
@@ -1273,7 +1272,27 @@ struct WhileToForHelper {
                            /*inBefore*/ true, lookThrough)) {
             goto endDetect;
           }
+        } else if (auto ifOp = pval.getDefiningOp<scf::IfOp>()) {
+          auto opResult = dyn_cast<OpResult>(pval);
 
+          unsigned resultNum = opResult.getResultNumber();
+          Value steppingVal;
+          auto thenYield =
+              cast<scf::YieldOp>(ifOp.getThenRegion().front().getTerminator());
+          auto elseYield =
+              cast<scf::YieldOp>(ifOp.getElseRegion().front().getTerminator());
+          if (thenYield.getOperand(resultNum).getDefiningOp<arith::AddIOp>())
+            steppingVal = thenYield.getOperand(resultNum);
+          else if (elseYield.getOperand(resultNum)
+                       .getDefiningOp<arith::AddIOp>())
+            steppingVal = elseYield.getOperand(resultNum);
+          else
+            goto endDetect;
+
+          comparingUpdated = false;
+          if (considerStep(arg, steppingVal, /*inBefore*/ false, lookThrough)) {
+            goto endDetect;
+          }
         } else {
           comparingUpdated = false;
           if (considerStep(arg, pval, /*inBefore*/ false, lookThrough)) {
@@ -1401,11 +1420,13 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
       assert(helper.ub);
     } else if (auto andOp = condOp.getCondition().getDefiningOp<AndIOp>()) {
       bool legal = false;
+
       for (int i = 0; i < 2; i++) {
         helper.cmpIOp = andOp->getOperand(i).getDefiningOp<CmpIOp>();
         if (!helper.cmpIOp)
           continue;
         lookThrough = andOp->getOperand(1 - i);
+
         if (!helper.computeLegality(rewriter, /*sizeCheck*/ true, lookThrough,
                                     /*doWhile*/ true)) {
           continue;
@@ -1653,7 +1674,6 @@ struct RotateWhileAnd : public OpRewritePattern<WhileOp> {
     SmallVector<Value> andValues;
     SmallVector<Value> negatedValues;
 
-    auto func = loop->getParentOp();
     todo.emplace_back(condOp.getCondition(), false);
     while (todo.size()) {
       auto &&[operand, negated] = todo.pop_back_val();
