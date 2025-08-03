@@ -39,6 +39,8 @@
 #include "stablehlo/transforms/Passes.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 
+#include "Interfaces/AutoDiffTypeInterface.h"
+
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallSet.h"
 
@@ -7335,7 +7337,7 @@ struct CompareAbs
       auto operand = cmpOp->getOperand(i);
       auto abs = operand.getDefiningOp<stablehlo::AbsOp>();
       if (!abs) continue;
-      if (!matchPattern(cmpOp->getOperand(1-i), m_Zero())) continue;
+      if (!cast<mlir::enzyme::AutoDiffTypeInterface>(cmpOp->getOperand(1-i).getType()).isZero(cmpOp->getOperand(1-i))) continue;
 
       auto dir = cmpOp.getComparisonDirection();
       if (i == 1) {
@@ -7350,7 +7352,7 @@ struct CompareAbs
       }
       // abs(x) <= 0 -> x == 0
       if (dir == stablehlo::ComparisonDirection::LE) {
-        rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(cmpOp, operand, cmpOp->getOperand(1-i), stablehlo::ComparisonDirection::EQ);
+        rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(cmpOp, abs.getOperand(), cmpOp->getOperand(1-i), stablehlo::ComparisonDirection::EQ);
         return success();
       }
       // abs(x) >= 0 -> true
@@ -7359,8 +7361,20 @@ struct CompareAbs
         return success();
       }
       // abs(x) > 0 -> x != 0
-      if (dir == stablehlo::ComparisonDirection::LE) {
-        rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(cmpOp, operand, cmpOp->getOperand(1-i), stablehlo::ComparisonDirection::NE);
+      if (dir == stablehlo::ComparisonDirection::GT) {
+        rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(cmpOp, abs.getOperand(), cmpOp->getOperand(1-i), stablehlo::ComparisonDirection::NE);
+        return success();
+      }
+      
+      // abs(x) == 0 -> x == 0
+      if (dir == stablehlo::ComparisonDirection::EQ) {
+        rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(cmpOp, abs.getOperand(), cmpOp->getOperand(1-i), stablehlo::ComparisonDirection::EQ);
+        return success();
+      }
+      
+      // abs(x) != 0 -> x != 0
+      if (dir == stablehlo::ComparisonDirection::NE) {
+        rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(cmpOp, abs.getOperand(), cmpOp->getOperand(1-i), stablehlo::ComparisonDirection::NE);
         return success();
       }
     }

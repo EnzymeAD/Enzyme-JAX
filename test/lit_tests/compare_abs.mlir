@@ -9,8 +9,8 @@ module {
   }
 }
 
-// CHECK:  func.func @main(%arg0: tensor<3xi1>, %arg1: tensor<3xi1>) -> (tensor<3xi1>, tensor<3xi1>, tensor<3xi1>) {
-// CHECK-NEXT:    %0 = stablehlo.not %arg0 : tensor<3xi1>
-// CHECK-NEXT:    %1 = stablehlo.and %arg0, %arg1 : tensor<3xi1>
-// CHECK-NEXT:    return %0, %arg0, %1 : tensor<3xi1>
+// CHECK:  func.func @main(%arg0: tensor<3056xf64>) -> tensor<3056xi1> {
+// CHECK-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<3056xf64>
+// CHECK-NEXT:    %0 = stablehlo.compare  NE, %arg0, %cst : (tensor<3056xf64>, tensor<3056xf64>) -> tensor<3056xi1>
+// CHECK-NEXT:    return %0 : tensor<3056xi1>
 // CHECK-NEXT:  }
