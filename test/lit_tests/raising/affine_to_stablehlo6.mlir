@@ -107,17 +107,18 @@ module {
 // CHECK-NEXT:    %c = stablehlo.constant dense<-93> : tensor<185xi64>
 // CHECK-NEXT:    %cst_1 = stablehlo.constant dense<708422877652.48376> : tensor<185xf64>
 // CHECK-NEXT:    %c_2 = stablehlo.constant dense<-91> : tensor<185xi64>
-// CHECK-NEXT:    %cst_3 = stablehlo.constant dense<5.000000e-01> : tensor<185xf64>
-// CHECK-NEXT:    %cst_4 = stablehlo.constant dense<0.000000e+00> : tensor<185xf64>
-// CHECK-NEXT:    %c_5 = stablehlo.constant dense<-92> : tensor<185xi64>
+// CHECK-NEXT:    %c_3 = stablehlo.constant dense<0> : tensor<185xi64>
+// CHECK-NEXT:    %cst_4 = stablehlo.constant dense<5.000000e-01> : tensor<185xf64>
+// CHECK-NEXT:    %cst_5 = stablehlo.constant dense<0.000000e+00> : tensor<185xf64>
+// CHECK-NEXT:    %c_6 = stablehlo.constant dense<-92> : tensor<185xi64>
 // CHECK-NEXT:    %0 = stablehlo.iota dim = 0 : tensor<185xi64>
-// CHECK-NEXT:    %1 = stablehlo.add %0, %c_5 : tensor<185xi64>
+// CHECK-NEXT:    %1 = stablehlo.add %0, %c_6 : tensor<185xi64>
 // CHECK-NEXT:    %2 = stablehlo.convert %1 : (tensor<185xi64>) -> tensor<185xf64>
-// CHECK-NEXT:    %3 = stablehlo.multiply %2, %cst_4 : tensor<185xf64>
+// CHECK-NEXT:    %3 = stablehlo.multiply %2, %cst_5 : tensor<185xf64>
 // CHECK-NEXT:    %4 = stablehlo.abs %2 : tensor<185xf64>
-// CHECK-NEXT:    %5 = stablehlo.compare  GE, %cst_3, %4,  FLOAT : (tensor<185xf64>, tensor<185xf64>) -> tensor<185xi1>
-// CHECK-NEXT:    %6 = stablehlo.select %5, %cst_3, %2 : tensor<185xi1>, tensor<185xf64>
-// CHECK-NEXT:    %7 = stablehlo.select %5, %2, %cst_3 : tensor<185xi1>, tensor<185xf64>
+// CHECK-NEXT:    %5 = stablehlo.compare  GE, %cst_4, %4,  FLOAT : (tensor<185xf64>, tensor<185xf64>) -> tensor<185xi1>
+// CHECK-NEXT:    %6 = stablehlo.select %5, %cst_4, %2 : tensor<185xi1>, tensor<185xf64>
+// CHECK-NEXT:    %7 = stablehlo.select %5, %2, %cst_4 : tensor<185xi1>, tensor<185xf64>
 // CHECK-NEXT:    %8 = stablehlo.add %6, %7 : tensor<185xf64>
 // CHECK-NEXT:    %9 = stablehlo.subtract %6, %8 : tensor<185xf64>
 // CHECK-NEXT:    %10 = stablehlo.add %7, %9 : tensor<185xf64>
@@ -128,9 +129,9 @@ module {
 // CHECK-NEXT:    %15 = stablehlo.multiply %14, %cst : tensor<185xf64>
 // CHECK-NEXT:    %16 = stablehlo.slice %arg0 [0:1] : (tensor<186xf64>) -> tensor<1xf64>
 // CHECK-NEXT:    %17 = stablehlo.concatenate %16, %15, dim = 0 : (tensor<1xf64>, tensor<185xf64>) -> tensor<186xf64>
-// CHECK-NEXT:    %18 = stablehlo.compare  EQ, %2, %cst_4 : (tensor<185xf64>, tensor<185xf64>) -> tensor<185xi1>
-// CHECK-NEXT:    %19 = stablehlo.select %18, %cst_4, %2 : tensor<185xi1>, tensor<185xf64>
-// CHECK-NEXT:    %20 = stablehlo.select %18, %2, %cst_4 : tensor<185xi1>, tensor<185xf64>
+// CHECK-NEXT:    %18 = stablehlo.compare  EQ, %1, %c_3 : (tensor<185xi64>, tensor<185xi64>) -> tensor<185xi1>
+// CHECK-NEXT:    %19 = stablehlo.select %18, %cst_5, %2 : tensor<185xi1>, tensor<185xf64>
+// CHECK-NEXT:    %20 = stablehlo.select %18, %2, %cst_5 : tensor<185xi1>, tensor<185xf64>
 // CHECK-NEXT:    %21 = stablehlo.add %19, %20 : tensor<185xf64>
 // CHECK-NEXT:    %22 = stablehlo.subtract %19, %21 : tensor<185xf64>
 // CHECK-NEXT:    %23 = stablehlo.add %20, %22 : tensor<185xf64>
@@ -147,10 +148,10 @@ module {
 // CHECK-NEXT:    %34 = stablehlo.concatenate %33, %15, dim = 0 : (tensor<1xf64>, tensor<185xf64>) -> tensor<186xf64>
 // CHECK-NEXT:    %35 = stablehlo.add %0, %c_2 : tensor<185xi64>
 // CHECK-NEXT:    %36 = stablehlo.convert %35 : (tensor<185xi64>) -> tensor<185xf64>
-// CHECK-NEXT:    %37 = stablehlo.multiply %36, %cst_4 : tensor<185xf64>
-// CHECK-NEXT:    %38 = stablehlo.compare  EQ, %36, %cst_4 : (tensor<185xf64>, tensor<185xf64>) -> tensor<185xi1>
-// CHECK-NEXT:    %39 = stablehlo.select %38, %cst_4, %36 : tensor<185xi1>, tensor<185xf64>
-// CHECK-NEXT:    %40 = stablehlo.select %38, %36, %cst_4 : tensor<185xi1>, tensor<185xf64>
+// CHECK-NEXT:    %37 = stablehlo.multiply %36, %cst_5 : tensor<185xf64>
+// CHECK-NEXT:    %38 = stablehlo.compare  EQ, %35, %c_3 : (tensor<185xi64>, tensor<185xi64>) -> tensor<185xi1>
+// CHECK-NEXT:    %39 = stablehlo.select %38, %cst_5, %36 : tensor<185xi1>, tensor<185xf64>
+// CHECK-NEXT:    %40 = stablehlo.select %38, %36, %cst_5 : tensor<185xi1>, tensor<185xf64>
 // CHECK-NEXT:    %41 = stablehlo.add %39, %40 : tensor<185xf64>
 // CHECK-NEXT:    %42 = stablehlo.subtract %39, %41 : tensor<185xf64>
 // CHECK-NEXT:    %43 = stablehlo.add %40, %42 : tensor<185xf64>
@@ -166,11 +167,11 @@ module {
 // CHECK-NEXT:    %53 = stablehlo.sine %13 : tensor<185xf64>
 // CHECK-NEXT:    %54 = stablehlo.add %0, %c : tensor<185xi64>
 // CHECK-NEXT:    %55 = stablehlo.convert %54 : (tensor<185xi64>) -> tensor<185xf64>
-// CHECK-NEXT:    %56 = stablehlo.multiply %55, %cst_4 : tensor<185xf64>
+// CHECK-NEXT:    %56 = stablehlo.multiply %55, %cst_5 : tensor<185xf64>
 // CHECK-NEXT:    %57 = stablehlo.abs %55 : tensor<185xf64>
-// CHECK-NEXT:    %58 = stablehlo.compare  GE, %cst_3, %57,  FLOAT : (tensor<185xf64>, tensor<185xf64>) -> tensor<185xi1>
-// CHECK-NEXT:    %59 = stablehlo.select %58, %cst_3, %55 : tensor<185xi1>, tensor<185xf64>
-// CHECK-NEXT:    %60 = stablehlo.select %58, %55, %cst_3 : tensor<185xi1>, tensor<185xf64>
+// CHECK-NEXT:    %58 = stablehlo.compare  GE, %cst_4, %57,  FLOAT : (tensor<185xf64>, tensor<185xf64>) -> tensor<185xi1>
+// CHECK-NEXT:    %59 = stablehlo.select %58, %cst_4, %55 : tensor<185xi1>, tensor<185xf64>
+// CHECK-NEXT:    %60 = stablehlo.select %58, %55, %cst_4 : tensor<185xi1>, tensor<185xf64>
 // CHECK-NEXT:    %61 = stablehlo.add %59, %60 : tensor<185xf64>
 // CHECK-NEXT:    %62 = stablehlo.subtract %59, %61 : tensor<185xf64>
 // CHECK-NEXT:    %63 = stablehlo.add %60, %62 : tensor<185xf64>
