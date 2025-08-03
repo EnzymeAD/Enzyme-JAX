@@ -7506,6 +7506,48 @@ struct CompareMul
   }
 };
 
+struct CompareConvert
+    : public CheckedOpRewritePattern<stablehlo::CompareOp, CompareConvert> {
+  using CheckedOpRewritePattern<stablehlo::CompareOp,
+                                CompareConvert>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::CompareOp cmpOp,
+                                    PatternRewriter &rewriter) const {
+    for (int i = 0; i < 2; i++) {
+      auto operand = cmpOp->getOperand(i);
+      auto conv = operand.getDefiningOp<stablehlo::ConvertOp>();
+      if (!conv)
+        continue;
+      if (!conv.getType().getElementType().isFloat())
+	     continue;
+      if (!conv.getOperand().getType().getElementType().isInteger())
+	     continue;
+
+      if (!cast<mlir::enzyme::AutoDiffTypeInterface>(
+               cmpOp->getOperand(1 - i).getType())
+               .isZero(cmpOp->getOperand(1 - i)))
+        continue;
+        
+      SplatElementsAttr splat;
+        if (!matchPattern(cmpOp->getOperand(1-i), m_Constant(&splat))) {
+          continue;
+        }
+
+        auto attr = splat.getSplatValue<FloatAttr>().getValue();
+	if (!attr.isInteger()) continue;
+
+	auto newCmp = rewriter.create<stablehlo::ConvertOp>(cmpOp.getLoc(), conv.getOperand().getType(), cmpOp->getOperand(1-i));
+
+	if (i == 0)
+      	rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(cmpOp, conv.getOperand(), newCmp, cmpOp.getComparisonDirection());
+	else
+      	rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(cmpOp, newCmp, conv.getOperand(), cmpOp.getComparisonDirection());
+      return success();
+     }
+    return failure();
+  }
+};
+
 struct CompareNegateConstSimplify
     : public CheckedOpRewritePattern<stablehlo::CompareOp,
                                      CompareNegateConstSimplify> {
@@ -22153,7 +22195,7 @@ struct EnzymeHLOOptPass
         NegMulConstSimplify, NegDivConstSimplify,
         ReshapeDeletionsBroadcastInDimSimplify,
         ReshapeInsertionsBroadcastInDimSimplify, CompareIotaConstSimplify,
-        CompareAbs, CompareMul, CompareNegateConstSimplify, SelectSimplify>(
+        CompareAbs, CompareMul, CompareConvert, CompareNegateConstSimplify, SelectSimplify>(
         context, PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,
