@@ -886,6 +886,11 @@ def ApplyCSEExtendPatterns : EnzymeHLOPatternOp<
   let patterns = ["CSE<enzymexla::ExtendOp>"];
 }
 
+def CompareAbs : EnzymeHLOPatternOp<
+    "compare_abs"> {
+  let patterns = ["CompareAbs"];
+}
+
 def CompareOpCanonPatterns : EnzymeHLOPatternOp<
     "compare_op_canon"> {
   let patterns = ["CompareOpCanon"];
