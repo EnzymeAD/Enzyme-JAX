@@ -102,6 +102,7 @@ def optimization_passes(
     *,
     inline: bool = True,
     no_nan: bool = False,
+    all_finite: bool = False,
     transpose_propagate: str = "up",
     reshape_propagate: str = "up",
     max_constant_threshold: int = 1024,
@@ -338,6 +339,18 @@ def optimization_passes(
         "neg_div_const_simplify",
         "reshape_deletions_broadcast_in_dim_simplify",
         "reshape_insertions_broadcast_in_dim_simplify",
+        "dot_general_reshape",
+        "diagonal_tensor_dot_general_rewrite",
+        "widen_wrap",
+        "widen_extend",
+        "elementwise_pad",
+        "compare_negate_const_simplify",
+        "select_simplify",
+        "concatenate_subtract_to_subtract_pad",
+        "concatenate_broadcast_in_dim",
+        "concat_reshape_dot_general",
+        "concat_reshape_gather",
+        "concat_reshape_iota",
     ]
 
     # constant propagation patterns
@@ -486,6 +499,14 @@ def optimization_passes(
             "no_nan_mul_simplify(0)",
             "no_nan_div_simplify(0)",
             # "no_nan_zero_base_pow_simplify(0)",
+        ]
+
+    if all_finite:
+        transform_passes_list += [
+            "all_finite_is_finite",
+            "all_finite_is_inf",
+            "all_finite_is_pos_inf",
+            "all_finite_is_neg_inf",
         ]
 
     transform_passes = ",".join(
