@@ -7519,31 +7519,36 @@ struct CompareConvert
       if (!conv)
         continue;
       if (!conv.getType().getElementType().isFloat())
-	     continue;
+        continue;
       if (!conv.getOperand().getType().getElementType().isInteger())
-	     continue;
+        continue;
 
       if (!cast<mlir::enzyme::AutoDiffTypeInterface>(
                cmpOp->getOperand(1 - i).getType())
                .isZero(cmpOp->getOperand(1 - i)))
         continue;
-        
+
       SplatElementsAttr splat;
-        if (!matchPattern(cmpOp->getOperand(1-i), m_Constant(&splat))) {
-          continue;
-        }
+      if (!matchPattern(cmpOp->getOperand(1 - i), m_Constant(&splat))) {
+        continue;
+      }
 
-        auto attr = splat.getSplatValue<FloatAttr>().getValue();
-	if (!attr.isInteger()) continue;
+      auto attr = splat.getSplatValue<FloatAttr>().getValue();
+      if (!attr.isInteger())
+        continue;
 
-	auto newCmp = rewriter.create<stablehlo::ConvertOp>(cmpOp.getLoc(), conv.getOperand().getType(), cmpOp->getOperand(1-i));
+      auto newCmp = rewriter.create<stablehlo::ConvertOp>(
+          cmpOp.getLoc(), conv.getOperand().getType(),
+          cmpOp->getOperand(1 - i));
 
-	if (i == 0)
-      	rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(cmpOp, conv.getOperand(), newCmp, cmpOp.getComparisonDirection());
-	else
-      	rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(cmpOp, newCmp, conv.getOperand(), cmpOp.getComparisonDirection());
+      if (i == 0)
+        rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
+            cmpOp, conv.getOperand(), newCmp, cmpOp.getComparisonDirection());
+      else
+        rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
+            cmpOp, newCmp, conv.getOperand(), cmpOp.getComparisonDirection());
       return success();
-     }
+    }
     return failure();
   }
 };
@@ -22195,8 +22200,8 @@ struct EnzymeHLOOptPass
         NegMulConstSimplify, NegDivConstSimplify,
         ReshapeDeletionsBroadcastInDimSimplify,
         ReshapeInsertionsBroadcastInDimSimplify, CompareIotaConstSimplify,
-        CompareAbs, CompareMul, CompareConvert, CompareNegateConstSimplify, SelectSimplify>(
-        context, PatternBenefit(65000));
+        CompareAbs, CompareMul, CompareConvert, CompareNegateConstSimplify,
+        SelectSimplify>(context, PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,
                  DynamicUpdateSliceConstProp, PadSimplify>(
