@@ -105,6 +105,7 @@ void run_pass_pipeline(mlir::Operation *mod, const std::string &pass_pipeline) {
   mlir::enzyme::registerDialects(registry);
   mlir::enzyme::registerInterfaces(registry);
   mod->getContext()->appendDialectRegistry(registry);
+  mlir::enzyme::loadAllRegisteredDialects(*mod->getContext());
 
   mlir::PassManager pm(mod->getContext());
   std::string error_message;
