@@ -44,6 +44,7 @@ jobs:
       matrix:
         os:
           - linux-x86-a2-48-a100-4gpu
+          - linux-x86-ct6e-180-4tpu
         julia_version:
           - '1.11'
         xla_commit:
@@ -54,8 +55,11 @@ jobs:
           # - '0123456789abcdef0123456789abcdef01234567'
         reactant_commit:
           # - 'main'
-          - '6bb1f30309ba401d4fdd654dafb48c08c73503f7'
-
+          # full
+          # - '6bb1f30309ba401d4fdd654dafb48c08c73503f7'
+          # no add select
+          - '02d2fe64bdf096e5a27b2daf7d60de6794cdbd1c'
+          
     steps:
       - name: Check GPUs
         if: ${{ contains(matrix.os, 'a100') }}
