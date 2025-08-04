@@ -40,6 +40,13 @@ using namespace mlir::arith;
 using namespace mlir::affine;
 using namespace mlir::enzyme;
 
+bool isDisjoint(Value v) {
+  if (auto op = v.getDefiningOp()) {
+    return op->hasAttr("isDisjoint");
+  }
+  return false;
+}
+
 void populateAffineParallelizationPattern(MLIRContext &context,
                                           RewritePatternSet &patterns);
 
@@ -72,6 +79,15 @@ bool isValidSymbolInt(Operation *defOp, bool recur) {
             return b;
           }))
         return true;
+    if (auto orOp = dyn_cast<OrIOp>(defOp)) {
+      if (isDisjoint(orOp) && isValidSymbolInt(orOp.getLhs(), recur) && isValidSymbolInt(orOp.getRhs(), recur))
+        return true;
+    }
+    if (auto shiftOp = dyn_cast<ShLIOp>(defOp)) {
+      APInt intValue;
+      if (isValidSymbolInt(shiftOp.getLhs(), recur) && matchPattern(shiftOp.getRhs(), m_ConstantInt(&intValue)))
+        return true;
+    }
     if (auto ifOp = dyn_cast<scf::IfOp>(defOp)) {
       if (isValidSymbolInt(ifOp.getCondition(), recur)) {
         if (llvm::all_of(
@@ -167,12 +183,17 @@ static bool legalCondition(Value en, bool dim = false) {
   while (auto ic = en.getDefiningOp<IndexCastUIOp>())
     en = ic.getIn();
 
+  APInt intValue;
   if ((en.getDefiningOp<AddIOp>() || en.getDefiningOp<SubIOp>() ||
        en.getDefiningOp<MulIOp>() || en.getDefiningOp<RemUIOp>() ||
-       en.getDefiningOp<RemSIOp>()) &&
-      (en.getDefiningOp()->getOperand(1).getDefiningOp<ConstantIntOp>() ||
-       en.getDefiningOp()->getOperand(1).getDefiningOp<ConstantIndexOp>()))
+       en.getDefiningOp<RemSIOp>() || en.getDefiningOp<ShLIOp>()) && matchPattern(en.getDefiningOp()->getOperand(1), m_ConstantInt(&intValue)))
     return true;
+
+  if (auto orOp = en.getDefiningOp<OrIOp>()) {
+    if (isDisjoint(orOp) && matchPattern(orOp.getRhs(), m_ConstantInt(&intValue)))
+      return true;
+  }
+
   // if (auto IC = dyn_cast_or_null<IndexCastOp>(en.getDefiningOp())) {
   //	if (!outer || legalCondition(IC.getOperand(), false)) return true;
   //}
@@ -436,6 +457,7 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
 
     if (((!isValidSymbolInt(t, /*recur*/ false) &&
           (t.getDefiningOp<AddIOp>() || t.getDefiningOp<SubIOp>() ||
+            (t.getDefiningOp<OrIOp>() && isDisjoint(t)) ||
            (t.getDefiningOp<MulIOp>() &&
             ((isValidIndex(t.getDefiningOp()->getOperand(0)) &&
               isValidSymbolInt(t.getDefiningOp()->getOperand(1))) ||
@@ -483,6 +505,14 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
       // llvm::dbgs() << "\nop to start: " << t << "\n";
 
       if (auto op = t.getDefiningOp<AddIOp>()) {
+        affineApplyMap =
+            AffineMap::get(0, 2,
+                           getAffineSymbolExpr(0, op.getContext()) +
+                               getAffineSymbolExpr(1, op.getContext()));
+        affineApplyOperands.push_back(op.getLhs());
+        affineApplyOperands.push_back(op.getRhs());
+      } else if (auto op = t.getDefiningOp<OrIOp>()) {
+        assert(isDisjoint(t));
         affineApplyMap =
             AffineMap::get(0, 2,
                            getAffineSymbolExpr(0, op.getContext()) +
@@ -1169,6 +1199,9 @@ bool isValidIndex(Value val) {
 
   if (auto bop = val.getDefiningOp<AddIOp>())
     return isValidIndex(bop.getOperand(0)) && isValidIndex(bop.getOperand(1));
+
+  if (auto bop = val.getDefiningOp<OrIOp>())
+    return isDisjoint(bop) && isValidIndex(bop.getOperand(0)) && isValidIndex(bop.getOperand(1));
 
   if (auto bop = val.getDefiningOp<MulIOp>())
     return (isValidIndex(bop.getOperand(0)) &&
