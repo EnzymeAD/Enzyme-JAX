@@ -392,7 +392,7 @@ struct GeqrtOpLowering : public OpRewritePattern<enzymexla::GeqrtOp> {
   // TODO rewrite for geqrt
   // TODO get matrix sizes dynamically so that we don't need to create a
   // function wrapper for each op instance
-  LogicalResult matchAndRewrite_cpu(enzymexla::GeqrfOp op,
+  LogicalResult matchAndRewrite_cpu(enzymexla::GeqrtOp op,
                                     PatternRewriter &rewriter) const {
     auto ctx = op->getContext();
     LLVMTypeConverter typeConverter(ctx);
@@ -565,7 +565,7 @@ struct GeqrtOpLowering : public OpRewritePattern<enzymexla::GeqrtOp> {
 
     return success();
   }
-}
+};
 
 struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
   std::string backend;
@@ -578,8 +578,8 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
 
   LogicalResult matchAndRewrite(enzymexla::OrgqrOp op,
                                 PatternRewriter &rewriter) const override {
-    if (backend == "cpu")
-      return this->matchAndRewrite_cpu(op, rewriter);
+    // if (backend == "cpu")
+    //   return this->matchAndRewrite_cpu(op, rewriter);
 
     // else if (backend == "cuda")
     //   return this->matchAndRewrite_cuda(op, rewriter);
@@ -587,14 +587,14 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
     // else if (backend == "tpu")
     //   return this->matchAndRewrite_tpu(op, rewriter);
 
-    else
+    // else
       return rewriter.notifyMatchFailure(op, "Unknown backend: \"" + backend +
                                                  "\"");
   }
 
   // TODO for TPU, use `@ProductOfElementaryHouseholderReflectors`
   // https://github.com/openxla/xla/blob/6b3ac21e936757fe8073073bef5ad4145d5e2c06/xla/hlo/builder/lib/qr.h#L44C7-L44C47
-}
+};
 
 struct OrmqrOpLowering : public OpRewritePattern<enzymexla::OrmqrOp> {
   std::string backend;
@@ -620,7 +620,7 @@ struct OrmqrOpLowering : public OpRewritePattern<enzymexla::OrmqrOp> {
       return rewriter.notifyMatchFailure(op, "Unknown backend: \"" + backend +
                                                  "\"");
   }
-}
+};
 
 struct LowerEnzymeXLALapackPass
     : public enzyme::impl::LowerEnzymeXLALapackPassBase<

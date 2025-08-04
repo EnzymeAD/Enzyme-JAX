@@ -383,13 +383,13 @@ def QRFactorizationOp: EnzymeXLA_Op<"linalg.qr", [Pure]> {
   }];
 
   let arguments = (ins
-    HLO_Tensor:$input
-    DefaultValuedAttr<EnzymeXLA_QrAlgorithmAttr, "geqrf">:$algorithm,
+    HLO_Tensor:$input,
+    DefaultValuedAttr<EnzymeXLA_QrAlgorithmAttr, "mlir::enzymexla::QrAlgorithm::geqrf">:$algorithm
   );
 
   let results = (outs
     HLO_Tensor:$Q,
-    HLO_Tensor:$R,
+    HLO_Tensor:$R
   );
 
   let assemblyFormat = [{
@@ -453,8 +453,11 @@ def GeqrtOp : EnzymeXLA_Op<"lapack.geqrt", [Pure]> {
 }
 
 def OrgqrOp : EnzymeXLA_Op<"lapack.orgqr", [Pure]> {
-  let summary = "Generate orthonormal/unitary matrix from a product of
-    elementary Householder reflectors";
+  let summary = [{
+    Generate orthonormal/unitary matrix from a product of
+    elementary Householder reflectors
+  }];
+
   let description = [{
     This operation is modeled after LAPACK's *ORGQR/*UNGQR routines.
   }];
@@ -469,23 +472,25 @@ def OrgqrOp : EnzymeXLA_Op<"lapack.orgqr", [Pure]> {
   );
 
   let assemblyFormat = [{
-    $input attr-dict `:` functional-type($input, results)
+    $input `,` $tau attr-dict `:` functional-type(operands, results)
   }];
 }
 
 def OrmqrOp : EnzymeXLA_Op<"lapack.ormqr", [Pure]> {
-  let summary = "Perform a matrix multiplication with the Q matrix from a QR
-    decomposition, given only the householder reflections.";
+  let summary = [{
+    Perform a matrix multiplication with the Q matrix from a QR
+    decomposition, given only the householder reflections.
+  }];
 
   let description = [{
     This operation is modeled after LAPACK's *ORMQR routines.
   }];
 
-  let argumetns = (ins
+  let arguments = (ins
     HLO_Tensor:$lhs,
     HLO_Tensor:$rhs,
     HLO_Tensor:$tau,
-    EnzymeXLA_LapackSide:$side,
+    EnzymeXLA_LapackSideAttr:$side,
     DefaultValuedAttr<BoolAttr, "false">:$transpose // true if apply Q^T?
   );
 
@@ -494,7 +499,7 @@ def OrmqrOp : EnzymeXLA_Op<"lapack.ormqr", [Pure]> {
   );
 
   let assemblyFormat = [{
-    $input attr-dict `:` functional-type($input, results)
+    $lhs `,` $rhs `,` $tau attr-dict `:` functional-type(operands, results)
   }];
 }
 
