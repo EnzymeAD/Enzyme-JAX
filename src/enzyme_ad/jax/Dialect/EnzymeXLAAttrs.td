@@ -14,6 +14,7 @@ def EnzymeXLA_LapackLayout : I32EnumAttr<"LapackLayout",
       I32EnumAttrCase<"col_major", 0>,
       I32EnumAttrCase<"row_major", 1>
     ]> {
+  let genSpecializedAttr = 0;
   let cppNamespace = "::mlir::enzymexla";
 }
 
@@ -26,6 +27,7 @@ def EnzymeXLA_LapackSide : I32EnumAttr<"LapackSide",
       I32EnumAttrCase<"left", 0>,
       I32EnumAttrCase<"right", 1>
     ]> {
+  let genSpecializedAttr = 0;
   let cppNamespace = "::mlir::enzymexla";
 }
 
@@ -38,6 +40,7 @@ def EnzymeXLA_QrAlgorithm : I32EnumAttr<"QrAlgorithm",
       I32EnumAttrCase<"geqrf", 0>,
       I32EnumAttrCase<"geqrt", 1>
     ]> {
+  let genSpecializedAttr = 0;
   let cppNamespace = "::mlir::enzymexla";
 }
 
