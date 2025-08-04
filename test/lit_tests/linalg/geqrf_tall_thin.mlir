@@ -1,6 +1,6 @@
-// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-enzymexla-linalg{backend=cpu blas_int_width=64},enzyme-hlo-opt)" %s | FileCheck %s --check-prefix=CPU
-// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-enzymexla-linalg{backend=cuda},enzyme-hlo-opt)" %s | FileCheck %s --check-prefix=CUDA
-// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-enzymexla-linalg{backend=tpu},enzyme-hlo-opt)" %s | FileCheck %s --check-prefix=TPU
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-enzymexla-lapack{backend=cpu blas_int_width=64},enzyme-hlo-opt)" %s | FileCheck %s --check-prefix=CPU
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-enzymexla-lapack{backend=cuda},enzyme-hlo-opt)" %s | FileCheck %s --check-prefix=CUDA
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-enzymexla-lapack{backend=tpu},enzyme-hlo-opt)" %s | FileCheck %s --check-prefix=TPU
 
 module {
   func.func @main(%arg0: tensor<64x32xf32>) -> (tensor<64x32xf32>, tensor<32xf32>, tensor<i64>) {
@@ -12,8 +12,9 @@ module {
 // CPU:  llvm.func @enzymexla_wrapper_lapacke_sgeqrf_[[WRAPPER_ID:[0-9]+]](%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr) {
 // CPU-NEXT:    %0 = llvm.mlir.constant(101 : i64) : i64
 // CPU-NEXT:    %1 = llvm.mlir.constant(64 : i64) : i64
-// CPU-NEXT:    %2 = llvm.call @enzymexla_lapacke_sgeqrf_(%0, %1, %1, %arg0, %1, %arg1) : (i64, i64, i64, !llvm.ptr, i64, !llvm.ptr) -> i64
-// CPU-NEXT:    llvm.store %2, %arg2 : i64, !llvm.ptr
+// CPU-NEXT:    %2 = llvm.mlir.constant(32 : i64) : i64
+// CPU-NEXT:    %3 = llvm.call @enzymexla_lapacke_sgeqrf_(%0, %1, %2, %arg0, %1, %arg1) : (i64, i64, i64, !llvm.ptr, i64, !llvm.ptr) -> i64
+// CPU-NEXT:    llvm.store %3, %arg2 : i64, !llvm.ptr
 // CPU-NEXT:    llvm.return
 // CPU-NEXT:  }
 // CPU-NEXT:  llvm.func @enzymexla_lapacke_sgeqrf_(i64, i64, i64, !llvm.ptr, i64, !llvm.ptr) -> i64
