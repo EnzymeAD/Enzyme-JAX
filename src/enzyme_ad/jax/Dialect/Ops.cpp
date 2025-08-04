@@ -944,7 +944,7 @@ public:
       // Then divide if needed
       Value elemOffset =
           (scaledElement != 1)
-              ? rewriter.create<arith::DivUIOp>(
+              ? rewriter.create<arith::DivSIOp>(
                     loc, scaledIdx,
                     rewriter.create<arith::ConstantIndexOp>(loc, scaledElement))
               : scaledIdx;
