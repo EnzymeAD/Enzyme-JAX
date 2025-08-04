@@ -437,7 +437,8 @@ def GeqrtOp : EnzymeXLA_Op<"lapack.geqrt", [Pure]> {
   }];
 
   let arguments = (ins
-    HLO_Tensor:$input
+    HLO_Tensor:$input,
+    OptionalAttr<I64Attr>:$blocksize // nb argument, min(m,n) >= nb >= 1
   );
 
   let results = (outs
