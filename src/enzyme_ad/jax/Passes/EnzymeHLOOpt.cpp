@@ -7554,17 +7554,22 @@ struct CompareConvert
 };
 
 bool isAddOfSelects(Value lhs, Value rhs, Value &tval, Value &fval) {
-    auto sel1 = lhs.getDefiningOp<stablehlo::SelectOp>();
-    if (!sel1) return false;
-    auto sel2 = rhs.getDefiningOp<stablehlo::SelectOp>();
-    if (!sel2) return false;
+  auto sel1 = lhs.getDefiningOp<stablehlo::SelectOp>();
+  if (!sel1)
+    return false;
+  auto sel2 = rhs.getDefiningOp<stablehlo::SelectOp>();
+  if (!sel2)
+    return false;
 
-    if (sel1.getPred() != sel2.getPred()) return false;
-    if (sel1.getOnTrue() != sel2.getOnFalse() || sel1.getOnFalse() != sel2.getOnTrue()) return false;
+  if (sel1.getPred() != sel2.getPred())
+    return false;
+  if (sel1.getOnTrue() != sel2.getOnFalse() ||
+      sel1.getOnFalse() != sel2.getOnTrue())
+    return false;
 
-    tval = sel1.getOnTrue();
-    fval = sel2.getOnTrue();
-    return true;
+  tval = sel1.getOnTrue();
+  fval = sel2.getOnTrue();
+  return true;
 }
 
 struct AddSelects
@@ -7576,19 +7581,23 @@ struct AddSelects
                                     PatternRewriter &rewriter) const {
     Value tval, fval;
     if (isAddOfSelects(addOp.getLhs(), addOp.getRhs(), tval, fval)) {
-    rewriter.modifyOpInPlace(addOp, [&](){
-		    addOp.getLhsMutable().assign(tval);
-		    addOp.getRhsMutable().assign(fval);
-		    });
-    return success();
+      rewriter.modifyOpInPlace(addOp, [&]() {
+        addOp.getLhsMutable().assign(tval);
+        addOp.getRhsMutable().assign(fval);
+      });
+      return success();
     }
-    for (int i=0; i<2; i++) {
-      if (auto sub = addOp->getOperand(i).getDefiningOp<stablehlo::SubtractOp>()) {
-        if (isAddOfSelects(sub.getLhs(), addOp->getOperand(1-i), tval, fval)) {
-	  auto newAdd = rewriter.create<stablehlo::AddOp>(addOp.getLoc(), tval, fval);
-	  rewriter.replaceOpWithNewOp<stablehlo::SubtractOp>(addOp, newAdd, sub.getRhs());
-	  return success();
-	}
+    for (int i = 0; i < 2; i++) {
+      if (auto sub =
+              addOp->getOperand(i).getDefiningOp<stablehlo::SubtractOp>()) {
+        if (isAddOfSelects(sub.getLhs(), addOp->getOperand(1 - i), tval,
+                           fval)) {
+          auto newAdd =
+              rewriter.create<stablehlo::AddOp>(addOp.getLoc(), tval, fval);
+          rewriter.replaceOpWithNewOp<stablehlo::SubtractOp>(addOp, newAdd,
+                                                             sub.getRhs());
+          return success();
+        }
       }
     }
     return failure();
@@ -22242,8 +22251,9 @@ struct EnzymeHLOOptPass
         NegMulConstSimplify, NegDivConstSimplify,
         ReshapeDeletionsBroadcastInDimSimplify,
         ReshapeInsertionsBroadcastInDimSimplify, CompareIotaConstSimplify,
-        CompareAbs, CompareMul, CompareConvert, AddSelects, CompareNegateConstSimplify,
-        SelectSimplify>(context, PatternBenefit(65000));
+        CompareAbs, CompareMul, CompareConvert, AddSelects,
+        CompareNegateConstSimplify, SelectSimplify>(context,
+                                                    PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,
                  DynamicUpdateSliceConstProp, PadSimplify>(
