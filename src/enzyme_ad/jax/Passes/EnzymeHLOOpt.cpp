@@ -22691,18 +22691,11 @@ struct EnzymeHLOOptPass
         ElementwisePad,
         ConcatenateSubtractToSubtractPad,
         ConcatenateBroadcastInDim,
-<<<<<<< HEAD
-<<<<<<< HEAD
         ElementwiseRotate,
         ElementwiseWrap,
-        ElementwiseExtend
-=======
-        SubtractRotateToReduceWindow
->>>>>>> 52cb4124 (feat: rewrite subtract rotate as reduce window)
-=======
+        ElementwiseExtend,
         ElementwiseRotateToReduceWindow<stablehlo::SubtractOp>,
         ElementwiseRotateToReduceWindow<stablehlo::AddOp>
->>>>>>> 739ff019 (feat: add rotate to reduce window)
       >(context);
 
     patterns.add<SumToReduceWindow<stablehlo::AddOp>,
