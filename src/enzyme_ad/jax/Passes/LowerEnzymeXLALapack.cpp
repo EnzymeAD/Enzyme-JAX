@@ -325,7 +325,6 @@ struct GeqrtOpLowering : public OpRewritePattern<enzymexla::GeqrtOp> {
                                                  "\"");
   }
 
-  // TODO rewrite for geqrt
   // TODO get matrix sizes dynamically so that we don't need to create a
   // function wrapper for each op instance
   LogicalResult matchAndRewrite_cpu(enzymexla::GeqrtOp op,
@@ -394,6 +393,7 @@ struct GeqrtOpLowering : public OpRewritePattern<enzymexla::GeqrtOp> {
     fn_counter++;
 
     wrapper_fn += std::to_string(fn_counter);
+    int64_t ldt_value = 0;
     {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(moduleOp.getBody());
@@ -422,20 +422,22 @@ struct GeqrtOpLowering : public OpRewritePattern<enzymexla::GeqrtOp> {
           rewriter.getIntegerAttr(type_lapack_int, inputShape[1]));
       auto lda = m;
 
-      IntegerAttr nb_attr;
+      int64_t nb_value = 0;
       if (op.getBlocksize()) {
-        auto nb_value = op.getBlocksize().value();
+        nb_value = op.getBlocksize().value();
         assert(std::min(inputShape[0], inputShape[1]) >= nb_value &&
                "Block size must be less than or equal to min(m, n)");
         assert(nb_value >= 1 && "Block size must be greater than or equal to 1");
-        nb_attr = rewriter.getI64IntegerAttr(nb_value);
       } else {
         // default block size is min(m, n)
-        nb_attr = rewriter.getI64IntegerAttr(std::min(inputShape[0], inputShape[1]));
+        nb_value = std::min(inputShape[0], inputShape[1]);
       }
-      auto nb = rewriter.create<LLVM::ConstantOp>(
+      auto nb_attr = rewriter.getI64IntegerAttr(nb_value);
+      auto nb_op = rewriter.create<LLVM::ConstantOp>(
         op.getLoc(), type_llvm_lapack_int, nb_attr);
-      auto ldt = nb;
+      // can reuse nb = ldt
+      ldt_value = nb_value;
+      auto ldt_op = nb_op;
 
       auto A = func.getArgument(0);
       auto T = func.getArgument(1);
@@ -449,11 +451,11 @@ struct GeqrtOpLowering : public OpRewritePattern<enzymexla::GeqrtOp> {
                                                    layout.getResult(),
                                                    m.getResult(),
                                                    n.getResult(),
-                                                   nb.getResult(),
+                                                   nb_op.getResult(),
                                                    A,
                                                    lda.getResult(),
                                                    T,
-                                                   ldt.getResult(),
+                                                   ldt_op.getResult(),
                                                });
 
       rewriter.create<LLVM::StoreOp>(op.getLoc(), res.getResult(), info);
@@ -465,8 +467,7 @@ struct GeqrtOpLowering : public OpRewritePattern<enzymexla::GeqrtOp> {
     auto info = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_info, cast<ElementsAttr>(makeAttr(type_info, -1)));
 
-    auto tsize = std::min(inputShape.front(), inputShape.back());
-    auto type_T = RankedTensorType::get({tsize}, inputElementType);
+    auto type_T = RankedTensorType::get({ldt_value, std::min(inputShape[1], inputShape[2])}, inputElementType);
     auto T = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_T, cast<ElementsAttr>(makeAttr(type_T, 0)));
 
