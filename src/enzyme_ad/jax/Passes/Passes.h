@@ -53,7 +53,7 @@ void fully2ComposeAffineMapAndOperands(
     llvm::SmallVectorImpl<mlir::Value> *operands, mlir::DominanceInfo &DI,
     mlir::Region *scope,
     llvm::SmallVectorImpl<mlir::Operation *> *insertedOps = nullptr);
-bool isValidIndex(mlir::Value val, mlir::Region* scope);
+bool isValidIndex(mlir::Value val, mlir::Region *scope);
 mlir::Region *getLocalAffineScope(mlir::Operation *op);
 
 struct ValueOrInt {

@@ -80,34 +80,41 @@ bool isValidSymbolInt(Operation *defOp, bool recur, Region *scope) {
           }))
         return true;
     if (auto orOp = dyn_cast<OrIOp>(defOp)) {
-      if (isDisjoint(orOp) && isValidSymbolInt(orOp.getLhs(), recur, scope) && isValidSymbolInt(orOp.getRhs(), recur, scope))
+      if (isDisjoint(orOp) && isValidSymbolInt(orOp.getLhs(), recur, scope) &&
+          isValidSymbolInt(orOp.getRhs(), recur, scope))
         return true;
     }
     if (auto shiftOp = dyn_cast<ShLIOp>(defOp)) {
       APInt intValue;
-      if (isValidSymbolInt(shiftOp.getLhs(), recur, scope) && matchPattern(shiftOp.getRhs(), m_ConstantInt(&intValue)))
+      if (isValidSymbolInt(shiftOp.getLhs(), recur, scope) &&
+          matchPattern(shiftOp.getRhs(), m_ConstantInt(&intValue)))
         return true;
     }
     if (auto ifOp = dyn_cast<scf::IfOp>(defOp)) {
       if (isValidSymbolInt(ifOp.getCondition(), recur, scope)) {
-        if (llvm::all_of(
-                ifOp.thenBlock()->without_terminator(),
-                [&](Operation &o) { return isValidSymbolInt(&o, recur, scope); }) &&
-            llvm::all_of(
-                ifOp.elseBlock()->without_terminator(),
-                [&](Operation &o) { return isValidSymbolInt(&o, recur, scope); }))
+        if (llvm::all_of(ifOp.thenBlock()->without_terminator(),
+                         [&](Operation &o) {
+                           return isValidSymbolInt(&o, recur, scope);
+                         }) &&
+            llvm::all_of(ifOp.elseBlock()->without_terminator(),
+                         [&](Operation &o) {
+                           return isValidSymbolInt(&o, recur, scope);
+                         }))
           return true;
       }
     }
     if (auto ifOp = dyn_cast<affine::AffineIfOp>(defOp)) {
-      if (llvm::all_of(ifOp.getOperands(),
-                       [&](Value o) { return isValidSymbolInt(o, recur, scope); }))
-        if (llvm::all_of(
-                ifOp.getThenBlock()->without_terminator(),
-                [&](Operation &o) { return isValidSymbolInt(&o, recur, scope); }) &&
-            llvm::all_of(
-                ifOp.getElseBlock()->without_terminator(),
-                [&](Operation &o) { return isValidSymbolInt(&o, recur, scope); }))
+      if (llvm::all_of(ifOp.getOperands(), [&](Value o) {
+            return isValidSymbolInt(o, recur, scope);
+          }))
+        if (llvm::all_of(ifOp.getThenBlock()->without_terminator(),
+                         [&](Operation &o) {
+                           return isValidSymbolInt(&o, recur, scope);
+                         }) &&
+            llvm::all_of(ifOp.getElseBlock()->without_terminator(),
+                         [&](Operation &o) {
+                           return isValidSymbolInt(&o, recur, scope);
+                         }))
           return true;
     }
   }
@@ -115,8 +122,9 @@ bool isValidSymbolInt(Operation *defOp, bool recur, Region *scope) {
 }
 
 // isValidSymbol, even if not index
-bool isValidSymbolInt(Value value, bool recur, Region* scope) {
-  // Check that the value is a top level value, reimplemented from affine::isTopLevelValue to check ancestry.
+bool isValidSymbolInt(Value value, bool recur, Region *scope) {
+  // Check that the value is a top level value, reimplemented from
+  // affine::isTopLevelValue to check ancestry.
   assert(scope);
   if (auto arg = dyn_cast<BlockArgument>(value)) {
     if (arg.getParentRegion()->isAncestor(scope))
@@ -137,7 +145,8 @@ bool isValidSymbolInt(Value value, bool recur, Region* scope) {
 
 struct AffineApplyNormalizer {
   AffineApplyNormalizer(AffineMap map, ArrayRef<Value> operands,
-                        PatternRewriter *rewriter, DominanceInfo *DI, Region *scope);
+                        PatternRewriter *rewriter, DominanceInfo *DI,
+                        Region *scope);
 
   /// Returns the AffineMap resulting from normalization.
   AffineMap getAffineMap() { return affineMap; }
@@ -178,7 +187,8 @@ static bool legalCondition(Value en, bool dim, Region *scope) {
     return true;
 
   if (!dim && !isValidSymbolInt(en, /*recur*/ false, scope)) {
-    if (isValidIndex(en, scope) || isValidSymbolInt(en, /*recur*/ true, scope)) {
+    if (isValidIndex(en, scope) ||
+        isValidSymbolInt(en, /*recur*/ true, scope)) {
       return true;
     }
   }
@@ -192,11 +202,13 @@ static bool legalCondition(Value en, bool dim, Region *scope) {
   APInt intValue;
   if ((en.getDefiningOp<AddIOp>() || en.getDefiningOp<SubIOp>() ||
        en.getDefiningOp<MulIOp>() || en.getDefiningOp<RemUIOp>() ||
-       en.getDefiningOp<RemSIOp>() || en.getDefiningOp<ShLIOp>()) && matchPattern(en.getDefiningOp()->getOperand(1), m_ConstantInt(&intValue)))
+       en.getDefiningOp<RemSIOp>() || en.getDefiningOp<ShLIOp>()) &&
+      matchPattern(en.getDefiningOp()->getOperand(1), m_ConstantInt(&intValue)))
     return true;
 
   if (auto orOp = en.getDefiningOp<OrIOp>()) {
-    if (isDisjoint(orOp) && matchPattern(orOp.getRhs(), m_ConstantInt(&intValue)))
+    if (isDisjoint(orOp) &&
+        matchPattern(orOp.getRhs(), m_ConstantInt(&intValue)))
       return true;
   }
 
@@ -463,33 +475,40 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
 
     if (((!isValidSymbolInt(t, /*recur*/ false, scope) &&
           (t.getDefiningOp<AddIOp>() || t.getDefiningOp<SubIOp>() ||
-            (t.getDefiningOp<OrIOp>() && isDisjoint(t)) ||
+           (t.getDefiningOp<OrIOp>() && isDisjoint(t)) ||
            (t.getDefiningOp<MulIOp>() &&
             ((isValidIndex(t.getDefiningOp()->getOperand(0), scope) &&
-              isValidSymbolInt(t.getDefiningOp()->getOperand(1), /*recur*/true, scope)) ||
+              isValidSymbolInt(t.getDefiningOp()->getOperand(1), /*recur*/ true,
+                               scope)) ||
              (isValidIndex(t.getDefiningOp()->getOperand(1), scope) &&
-              isValidSymbolInt(t.getDefiningOp()->getOperand(0), /*recur*/true, scope))) &&
+              isValidSymbolInt(t.getDefiningOp()->getOperand(0), /*recur*/ true,
+                               scope))) &&
             !(fix(t.getDefiningOp()->getOperand(0), false) &&
               fix(t.getDefiningOp()->getOperand(1), false))
 
                 ) ||
            ((t.getDefiningOp<DivUIOp>() || t.getDefiningOp<DivSIOp>()) &&
             (isValidIndex(t.getDefiningOp()->getOperand(0), scope) &&
-             isValidSymbolInt(t.getDefiningOp()->getOperand(1), /*recur*/true, scope)) &&
+             isValidSymbolInt(t.getDefiningOp()->getOperand(1), /*recur*/ true,
+                              scope)) &&
             (!(fix(t.getDefiningOp()->getOperand(0), false) &&
                fix(t.getDefiningOp()->getOperand(1), false)))) ||
            (t.getDefiningOp<DivSIOp>() &&
             (isValidIndex(t.getDefiningOp()->getOperand(0), scope) &&
-             isValidSymbolInt(t.getDefiningOp()->getOperand(1), /*recur*/true, scope))) ||
+             isValidSymbolInt(t.getDefiningOp()->getOperand(1), /*recur*/ true,
+                              scope))) ||
            (t.getDefiningOp<DivUIOp>() &&
             (isValidIndex(t.getDefiningOp()->getOperand(0), scope) &&
-             isValidSymbolInt(t.getDefiningOp()->getOperand(1), /*recur*/true, scope))) ||
+             isValidSymbolInt(t.getDefiningOp()->getOperand(1), /*recur*/ true,
+                              scope))) ||
            (t.getDefiningOp<RemUIOp>() &&
             (isValidIndex(t.getDefiningOp()->getOperand(0), scope) &&
-             isValidSymbolInt(t.getDefiningOp()->getOperand(1), /*recur*/true, scope))) ||
+             isValidSymbolInt(t.getDefiningOp()->getOperand(1), /*recur*/ true,
+                              scope))) ||
            (t.getDefiningOp<RemSIOp>() &&
             (isValidIndex(t.getDefiningOp()->getOperand(0), scope) &&
-             isValidSymbolInt(t.getDefiningOp()->getOperand(1), /*recur*/true, scope))) ||
+             isValidSymbolInt(t.getDefiningOp()->getOperand(1), /*recur*/ true,
+                              scope))) ||
            t.getDefiningOp<ConstantIntOp>() ||
            t.getDefiningOp<ConstantIndexOp>())) ||
          ((decast.getDefiningOp<AddIOp>() || decast.getDefiningOp<SubIOp>() ||
@@ -792,7 +811,7 @@ bool need(AffineMap *map, SmallVectorImpl<Value> *operands, Region *scope) {
   }
   return false;
 }
-bool need(IntegerSet *map, SmallVectorImpl<Value> *operands, Region* scope) {
+bool need(IntegerSet *map, SmallVectorImpl<Value> *operands, Region *scope) {
   for (size_t i = 0; i < map->getNumInputs(); ++i) {
     auto v = (*operands)[i];
     if (legalCondition(v, i < map->getNumDims(), scope))
@@ -803,7 +822,8 @@ bool need(IntegerSet *map, SmallVectorImpl<Value> *operands, Region* scope) {
 
 void fully2ComposeAffineMapAndOperands(
     PatternRewriter *builder, AffineMap *map, SmallVectorImpl<Value> *operands,
-    DominanceInfo *DI, Region *scope, SmallVectorImpl<Operation *> *insertedOps = nullptr) {
+    DominanceInfo *DI, Region *scope,
+    SmallVectorImpl<Operation *> *insertedOps = nullptr) {
   IRMapping indexMap;
   if (builder)
     for (auto op : *operands) {
@@ -866,13 +886,16 @@ void fully2ComposeAffineMapAndOperands(
 
 void fully2ComposeAffineMapAndOperands(
     PatternRewriter &builder, AffineMap *map, SmallVectorImpl<Value> *operands,
-    DominanceInfo &DI, Region *scope, SmallVectorImpl<Operation *> *insertedOps) {
-  fully2ComposeAffineMapAndOperands(&builder, map, operands, &DI, scope, insertedOps);
+    DominanceInfo &DI, Region *scope,
+    SmallVectorImpl<Operation *> *insertedOps) {
+  fully2ComposeAffineMapAndOperands(&builder, map, operands, &DI, scope,
+                                    insertedOps);
 }
 
 void fully2ComposeIntegerSetAndOperands(
     PatternRewriter &builder, IntegerSet *set, SmallVectorImpl<Value> *operands,
-    DominanceInfo &DI, Region *scope, SmallVectorImpl<Operation *> *insertedOps = nullptr) {
+    DominanceInfo &DI, Region *scope,
+    SmallVectorImpl<Operation *> *insertedOps = nullptr) {
   IRMapping indexMap;
   for (auto op : *operands) {
     SmallVector<IndexCastOp> attempt;
@@ -1186,7 +1209,7 @@ bool isValidIndex(Value val, Region *scope) {
   if (val.getDefiningOp<affine::AffineApplyOp>())
     return true;
 
-  if (isValidSymbolInt(val, /*recur*/true, scope))
+  if (isValidSymbolInt(val, /*recur*/ true, scope))
     return true;
 
   if (auto cast = val.getDefiningOp<IndexCastOp>())
@@ -1205,24 +1228,26 @@ bool isValidIndex(Value val, Region *scope) {
     return isValidIndex(cast.getOperand(), scope);
 
   if (auto bop = val.getDefiningOp<AddIOp>())
-    return isValidIndex(bop.getOperand(0), scope) && isValidIndex(bop.getOperand(1), scope);
+    return isValidIndex(bop.getOperand(0), scope) &&
+           isValidIndex(bop.getOperand(1), scope);
 
   if (auto bop = val.getDefiningOp<OrIOp>())
-    return isDisjoint(bop) && isValidIndex(bop.getOperand(0), scope) && isValidIndex(bop.getOperand(1), scope);
+    return isDisjoint(bop) && isValidIndex(bop.getOperand(0), scope) &&
+           isValidIndex(bop.getOperand(1), scope);
 
   if (auto bop = val.getDefiningOp<MulIOp>())
     return (isValidIndex(bop.getOperand(0), scope) &&
-            isValidSymbolInt(bop.getOperand(1), /*recur*/true, scope)) ||
+            isValidSymbolInt(bop.getOperand(1), /*recur*/ true, scope)) ||
            (isValidIndex(bop.getOperand(1), scope) &&
-            isValidSymbolInt(bop.getOperand(0), /*recur*/true, scope));
+            isValidSymbolInt(bop.getOperand(0), /*recur*/ true, scope));
 
   if (auto bop = val.getDefiningOp<DivSIOp>())
     return (isValidIndex(bop.getOperand(0), scope) &&
-            isValidSymbolInt(bop.getOperand(1), /*recur*/true, scope));
+            isValidSymbolInt(bop.getOperand(1), /*recur*/ true, scope));
 
   if (auto bop = val.getDefiningOp<DivUIOp>())
     return (isValidIndex(bop.getOperand(0), scope) &&
-            isValidSymbolInt(bop.getOperand(1), /*recur*/true, scope));
+            isValidSymbolInt(bop.getOperand(1), /*recur*/ true, scope));
 
   if (auto bop = val.getDefiningOp<RemSIOp>()) {
     return (isValidIndex(bop.getOperand(0), scope) &&
@@ -1234,7 +1259,8 @@ bool isValidIndex(Value val, Region *scope) {
             bop.getOperand(1).getDefiningOp<arith::ConstantOp>());
 
   if (auto bop = val.getDefiningOp<SubIOp>())
-    return isValidIndex(bop.getOperand(0), scope) && isValidIndex(bop.getOperand(1), scope);
+    return isValidIndex(bop.getOperand(0), scope) &&
+           isValidIndex(bop.getOperand(1), scope);
 
   if (auto bop = val.getDefiningOp<ShRUIOp>()) {
     return (isValidIndex(bop.getOperand(0), scope) &&
@@ -1542,7 +1568,8 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
                                        exprTmp, b.getContext());
           SmallVector<Value> tmp = {lhspack.v_val};
 
-          fully2ComposeAffineMapAndOperands(nullptr, &mapTmp, &tmp, nullptr, scope);
+          fully2ComposeAffineMapAndOperands(nullptr, &mapTmp, &tmp, nullptr,
+                                            scope);
           mapTmp = recreateExpr(mapTmp);
           if (valueCmp(Cmp::GE, mapTmp.getResult(0), mapTmp.getNumDims(), tmp,
                        0)) {
@@ -1682,9 +1709,9 @@ struct MoveStoreToAffine : public OpRewritePattern<memref::StoreOp> {
                               rewriter.getContext());
     SmallVector<Value, 4> operands = store.getIndices();
 
-    llvm::errs() <<" store: " << *store << "\n";
+    llvm::errs() << " store: " << *store << "\n";
     auto *parentScope = scope->getParentOp();
-    llvm::errs() <<" scopeP: " << *parentScope << "\n";
+    llvm::errs() << " scopeP: " << *parentScope << "\n";
     DominanceInfo DI(parentScope);
 
     fully2ComposeAffineMapAndOperands(rewriter, &map, &operands, DI, scope);
@@ -1813,7 +1840,6 @@ struct CanonicalieForBounds : public OpRewritePattern<affine::AffineForOp> {
     // llvm::errs() << "*********\n";
     // ubMap.dump();
 
-
     auto scope = getLocalAffineScope(forOp);
     auto *parentScope = getLocalAffineScope(forOp)->getParentOp();
     DominanceInfo DI(parentScope);
@@ -1912,7 +1938,8 @@ struct MoveIfToAffine : public OpRewritePattern<scf::IfOp> {
         auto &&[cur, negated] = todo.front();
         todo.pop_front();
         if (auto cmpi = cur.getDefiningOp<CmpIOp>()) {
-          if (!handle(rewriter, cmpi, exprs, eqflags, applies, negated, scope)) {
+          if (!handle(rewriter, cmpi, exprs, eqflags, applies, negated,
+                      scope)) {
             legal = false;
             break;
           }
@@ -1941,7 +1968,8 @@ struct MoveIfToAffine : public OpRewritePattern<scf::IfOp> {
         }
         if (auto ifOp = cur.getDefiningOp<affine::AffineIfOp>()) {
           auto idx = cast<OpResult>(cur).getResultNumber();
-          if (!handle(rewriter, ifOp, idx, exprs, eqflags, applies, negated, scope)) {
+          if (!handle(rewriter, ifOp, idx, exprs, eqflags, applies, negated,
+                      scope)) {
             legal = false;
             break;
           }
@@ -2048,7 +2076,8 @@ struct MoveExtToAffine : public OpRewritePattern<arith::ExtUIOp> {
         auto &&[cur, negated] = todo.front();
         todo.pop_front();
         if (auto cmpi = cur.getDefiningOp<CmpIOp>()) {
-          if (!handle(rewriter, cmpi, exprs, eqflags, applies, negated, scope)) {
+          if (!handle(rewriter, cmpi, exprs, eqflags, applies, negated,
+                      scope)) {
             badcmp = true;
             break;
           }
@@ -2077,7 +2106,8 @@ struct MoveExtToAffine : public OpRewritePattern<arith::ExtUIOp> {
         }
         if (auto ifOp = cur.getDefiningOp<affine::AffineIfOp>()) {
           auto idx = cast<OpResult>(cur).getResultNumber();
-          if (!handle(rewriter, ifOp, idx, exprs, eqflags, applies, negated, scope)) {
+          if (!handle(rewriter, ifOp, idx, exprs, eqflags, applies, negated,
+                      scope)) {
             badcmp = true;
             break;
           }
@@ -2229,7 +2259,8 @@ struct MoveSelectToAffine : public OpRewritePattern<arith::SelectOp> {
         auto &&[cur, negated] = todo.front();
         todo.pop_front();
         if (auto cmpi = cur.getDefiningOp<CmpIOp>()) {
-          if (!handle(rewriter, cmpi, exprs, eqflags, applies, negated, scope)) {
+          if (!handle(rewriter, cmpi, exprs, eqflags, applies, negated,
+                      scope)) {
             badcmp = true;
             break;
           }
@@ -2258,7 +2289,8 @@ struct MoveSelectToAffine : public OpRewritePattern<arith::SelectOp> {
         }
         if (auto ifOp = cur.getDefiningOp<affine::AffineIfOp>()) {
           auto idx = cast<OpResult>(cur).getResultNumber();
-          if (!handle(rewriter, ifOp, idx, exprs, eqflags, applies, negated, scope)) {
+          if (!handle(rewriter, ifOp, idx, exprs, eqflags, applies, negated,
+                      scope)) {
             badcmp = true;
             break;
           }
@@ -2342,7 +2374,8 @@ struct MoveSelectToAffine : public OpRewritePattern<arith::SelectOp> {
             auto &&[cur, negated] = todo.front();
             todo.pop_front();
             if (auto cmpi = cur.getDefiningOp<CmpIOp>()) {
-              if (!handle(rewriter, cmpi, exprs, eqflags, applies, negated, scope)) {
+              if (!handle(rewriter, cmpi, exprs, eqflags, applies, negated,
+                          scope)) {
                 badcmp = true;
                 break;
               }
@@ -2371,8 +2404,8 @@ struct MoveSelectToAffine : public OpRewritePattern<arith::SelectOp> {
             }
             if (auto ifOp = cur.getDefiningOp<affine::AffineIfOp>()) {
               auto idx = cast<OpResult>(cur).getResultNumber();
-              if (!handle(rewriter, ifOp, idx, exprs, eqflags, applies,
-                          negated, scope)) {
+              if (!handle(rewriter, ifOp, idx, exprs, eqflags, applies, negated,
+                          scope)) {
                 badcmp = true;
                 break;
               }
@@ -2409,7 +2442,8 @@ struct MoveSelectToAffine : public OpRewritePattern<arith::SelectOp> {
 
           auto iset = IntegerSet::get(/*dim*/ 0, /*symbol*/ 2 * exprs.size(),
                                       exprs, eqflags);
-          fully2ComposeIntegerSetAndOperands(rewriter, &iset, &operands, DI, scope);
+          fully2ComposeIntegerSetAndOperands(rewriter, &iset, &operands, DI,
+                                             scope);
           affine::canonicalizeSetAndOperands(&iset, &operands);
 
           Value tval[1] = {rewriter.create<arith::ConstantIntOp>(ifOp.getLoc(),
@@ -4470,8 +4504,8 @@ struct MergeParallelInductions
                                     rewriter.getContext());
 
           operands = {addOp->getResult(0)};
-          fully2ComposeAffineMapAndOperands(rewriter, &map, &operands, DI, scope,
-                                            &insertedOps);
+          fully2ComposeAffineMapAndOperands(rewriter, &map, &operands, DI,
+                                            scope, &insertedOps);
 
           exprs.push_back(map.getResult(0));
           numDims = map.getNumDims();
