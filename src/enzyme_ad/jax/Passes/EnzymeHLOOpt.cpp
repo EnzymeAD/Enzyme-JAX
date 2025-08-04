@@ -7553,6 +7553,29 @@ struct CompareConvert
   }
 };
 
+struct AddSelects
+    : public CheckedOpRewritePattern<stablehlo::AddOp, AddSelects> {
+  using CheckedOpRewritePattern<stablehlo::AddOp,
+                                AddSelects>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::AddOp addOp,
+                                    PatternRewriter &rewriter) const {
+    auto sel1 = addOp.getLhs().getDefiningOp<stablehlo::SelectOp>();
+    if (!sel1) return failure();
+    auto sel2 = addOp.getRhs().getDefiningOp<stablehlo::SelectOp>();
+    if (!sel2) return failure();
+
+    if (sel1.getPred() != sel2.getPred()) return failure();
+    if (sel1.getOnTrue() != sel2.getOnFalse() || sel1.getOnFalse() != sel2.getOnTrue()) return failure();
+
+    rewriter.modifyOpInPlace(addOp, [&](){
+		    addOp.getLhsMutable().assign(sel1.getOnTrue());
+		    addOp.getRhsMutable().assign(sel2.getOnTrue());
+		    });
+    return success();
+  }
+};
+
 struct CompareNegateConstSimplify
     : public CheckedOpRewritePattern<stablehlo::CompareOp,
                                      CompareNegateConstSimplify> {
@@ -22200,7 +22223,7 @@ struct EnzymeHLOOptPass
         NegMulConstSimplify, NegDivConstSimplify,
         ReshapeDeletionsBroadcastInDimSimplify,
         ReshapeInsertionsBroadcastInDimSimplify, CompareIotaConstSimplify,
-        CompareAbs, CompareMul, CompareConvert, CompareNegateConstSimplify,
+        CompareAbs, CompareMul, CompareConvert, AddSelects, CompareNegateConstSimplify,
         SelectSimplify>(context, PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,
