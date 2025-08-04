@@ -378,7 +378,7 @@ def LowerEnzymeXLALinalgPass : Pass<"lower-enzymexla-linalg"> {
   ];
 }
 
-def LowerEnzymeXLALapack : Pass<"lower-enzymexla-lapack"> {
+def LowerEnzymeXLALapackPass : Pass<"lower-enzymexla-lapack"> {
   let summary = "Lower enzymexla.lapack ops to stablehlo";
   let dependentDialects = [
     "stablehlo::StablehloDialect",
