@@ -21960,7 +21960,6 @@ struct ElementwiseExtend
   }
 };
 
-
 template <typename OpTy>
 struct ElementwiseRotateToReduceWindow
     : public CheckedOpRewritePattern<OpTy,
