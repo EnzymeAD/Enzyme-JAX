@@ -51,8 +51,10 @@ void populateLLVMToControlFlowConversionPatterns(RewritePatternSet &patterns);
 void fully2ComposeAffineMapAndOperands(
     mlir::PatternRewriter &rewriter, mlir::AffineMap *map,
     llvm::SmallVectorImpl<mlir::Value> *operands, mlir::DominanceInfo &DI,
+    mlir::Region *scope,
     llvm::SmallVectorImpl<mlir::Operation *> *insertedOps = nullptr);
-bool isValidIndex(mlir::Value val);
+bool isValidIndex(mlir::Value val, mlir::Region *scope);
+mlir::Region *getLocalAffineScope(mlir::Operation *op);
 
 struct ValueOrInt {
   bool isValue;

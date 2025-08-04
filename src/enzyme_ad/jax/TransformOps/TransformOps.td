@@ -886,6 +886,26 @@ def ApplyCSEExtendPatterns : EnzymeHLOPatternOp<
   let patterns = ["CSE<enzymexla::ExtendOp>"];
 }
 
+def CompareAbs : EnzymeHLOPatternOp<
+    "compare_abs"> {
+  let patterns = ["CompareAbs"];
+}
+
+def CompareMul : EnzymeHLOPatternOp<
+    "compare_mul"> {
+  let patterns = ["CompareMul"];
+}
+
+def CompareConvert : EnzymeHLOPatternOp<
+    "compare_convert"> {
+  let patterns = ["CompareConvert"];
+}
+
+def AddSelects : EnzymeHLOPatternOp<
+    "add_selects"> {
+  let patterns = ["AddSelects"];
+}
+
 def CompareOpCanonPatterns : EnzymeHLOPatternOp<
     "compare_op_canon"> {
   let patterns = ["CompareOpCanon"];
@@ -2162,4 +2182,16 @@ def ApplyConcatenateSubtractToSubtractPadPatterns : EnzymeHLOPatternOp<"concaten
 
 def ApplyConcatenateBroadcastInDimPatterns : EnzymeHLOPatternOp<"concatenate_broadcast_in_dim"> {
   let patterns = ["ConcatenateBroadcastInDim"];
+}
+
+def ApplyElementwiseRotatePatterns : EnzymeHLOPatternOp<"elementwise_rotate"> {
+  let patterns = ["ElementwiseRotate"];
+}
+
+def ApplyElementwiseWrapPatterns : EnzymeHLOPatternOp<"elementwise_wrap"> {
+  let patterns = ["ElementwiseWrap"];
+}
+
+def ApplyElementwiseExtendPatterns : EnzymeHLOPatternOp<"elementwise_extend"> {
+  let patterns = ["ElementwiseExtend"];
 }

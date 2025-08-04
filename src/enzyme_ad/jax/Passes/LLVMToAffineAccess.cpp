@@ -584,9 +584,11 @@ struct MemrefLoadAffineApply : public OpRewritePattern<memref::LoadOp> {
 
     SmallVector<Value> operands;
     AffineExpr expr = rewriter.getAffineConstantExpr(0);
+    auto scope = getLocalAffineScope(ld);
+
     while (todo.size()) {
       auto cur = todo.pop_back_val();
-      if (isValidIndex(cur.second)) {
+      if (isValidIndex(cur.second, scope)) {
         auto d2 = rewriter.getAffineSymbolExpr(operands.size());
         operands.push_back(cur.second);
         if (cur.first)
@@ -615,10 +617,10 @@ struct MemrefLoadAffineApply : public OpRewritePattern<memref::LoadOp> {
     auto map = AffineMap::get(/*dimCount=*/0, /*symbolCount=*/operands.size(),
                               exprs, rewriter.getContext());
 
-    auto scope = ld->getParentOfType<FunctionOpInterface>();
-    DominanceInfo DI(scope);
+    auto parentScope = scope->getParentOp();
+    DominanceInfo DI(parentScope);
     assert(map.getNumInputs() == operands.size());
-    fully2ComposeAffineMapAndOperands(rewriter, &map, &operands, DI);
+    fully2ComposeAffineMapAndOperands(rewriter, &map, &operands, DI, scope);
     assert(map.getNumInputs() == operands.size());
     affine::canonicalizeMapAndOperands(&map, &operands);
     map = mlir::enzyme::recreateExpr(map);
