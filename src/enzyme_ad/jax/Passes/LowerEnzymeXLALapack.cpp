@@ -486,20 +486,20 @@ struct GeqrtOpLowering : public OpRewritePattern<enzymexla::GeqrtOp> {
           rewriter.getIntegerAttr(type_lapack_int, inputShape[1]));
       auto lda = m;
 
-      I64IntegerAttr nb;
+      IntegerAttr nb_attr;
       if (op.getBlocksize()) {
-        auto nb_value = op.getBlocksize().getValue()
+        auto nb_value = op.getBlocksize().value();
         assert(std::min(inputShape[0], inputShape[1]) >= nb_value &&
                "Block size must be less than or equal to min(m, n)");
         assert(nb_value >= 1 && "Block size must be greater than or equal to 1");
-        nb = rewriter.getI64IntegerAttr(op.getBlocksize().getValue());
+        nb_attr = rewriter.getI64IntegerAttr(nb_value);
       } else {
         // default block size is min(m, n)
-        nb = rewriter.getI64IntegerAttr(std::min(inputShape[0], inputShape[1]));
+        nb_attr = rewriter.getI64IntegerAttr(std::min(inputShape[0], inputShape[1]));
       }
-      auto ldt = rewriter.create<LLVM::ConstantOp>(
-          op.getLoc(), type_llvm_lapack_int,
-          rewriter.getIntegerAttr(type_lapack_int, nb));
+      auto nb = rewriter.create<LLVM::ConstantOp>(
+        op.getLoc(), type_llvm_lapack_int, nb_attr);
+      auto ldt = nb;
 
       auto A = func.getArgument(0);
       auto T = func.getArgument(1);
