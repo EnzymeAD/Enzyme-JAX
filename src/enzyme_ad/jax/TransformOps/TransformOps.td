@@ -901,6 +901,11 @@ def CompareConvert : EnzymeHLOPatternOp<
   let patterns = ["CompareConvert"];
 }
 
+def AddSelects : EnzymeHLOPatternOp<
+    "add_selects"> {
+  let patterns = ["AddSelects"];
+}
+
 def CompareOpCanonPatterns : EnzymeHLOPatternOp<
     "compare_op_canon"> {
   let patterns = ["CompareOpCanon"];
