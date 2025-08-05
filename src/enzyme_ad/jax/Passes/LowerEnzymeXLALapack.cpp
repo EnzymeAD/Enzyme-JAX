@@ -186,7 +186,7 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
     SmallVector<Attribute> aliases;
     for (int i = 0; i < 3; ++i) {
       aliases.push_back(stablehlo::OutputOperandAliasAttr::get(
-          ctx, std::vector<int64_t>{i}, i, std::vector<int64_t>{}));
+          ctx, {}, i, {}));
     }
 
     auto jit_call_op = rewriter.create<enzymexla::JITCallOp>(
@@ -223,7 +223,7 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
 
     // emit `stablehlo.custom_call` to `@cusolver_geqrf_ffi` kernel from jaxlib
     SmallVector<Attribute> aliases = {stablehlo::OutputOperandAliasAttr::get(
-        ctx, std::vector<int64_t>{0}, 0, std::vector<int64_t>{})};
+        ctx, {0}, 0, {})};
     SmallVector<int64_t> ranks_operands = {rank_input};
     SmallVector<int64_t> ranks_results = {rank_input, rank_tau};
     SmallVector<bool> isColMajorArrOperands = {true};
@@ -482,7 +482,7 @@ struct GeqrtOpLowering : public OpRewritePattern<enzymexla::GeqrtOp> {
     SmallVector<Attribute> aliases;
     for (int i = 0; i < 3; ++i) {
       aliases.push_back(stablehlo::OutputOperandAliasAttr::get(
-          ctx, std::vector<int64_t>{i}, i, std::vector<int64_t>{}));
+          ctx, {i}, i, {}));
     }
 
     auto jit_call_op = rewriter.create<enzymexla::JITCallOp>(
@@ -664,7 +664,7 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
 
     SmallVector<Attribute> aliases;
     aliases.push_back(stablehlo::OutputOperandAliasAttr::get(ctx,
-      std::vector<int64_t>{0}, 0, std::vector<int64_t>{}));
+      {0}, 0, {}));
 
     auto jit_call_op = rewriter.create<enzymexla::JITCallOp>(
         op.getLoc(), TypeRange{inputType},
@@ -699,11 +699,11 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
 
     // emit `stablehlo.custom_call` to `@cusolver_orgqr_ffi` kernel from jaxlib
     SmallVector<Attribute> aliases = {stablehlo::OutputOperandAliasAttr::get(
-        ctx, std::vector<int64_t>{0}, 0, std::vector<int64_t>{})};
+        ctx, {}, 0, {})};
     SmallVector<int64_t> ranks_operands = {rank_input, rank_tau};
     SmallVector<int64_t> ranks_results = {rank_input};
-    SmallVector<bool> isColMajorArrOperands = {true};
-    SmallVector<bool> isColMajorArrOutputs = {true, true};
+    SmallVector<bool> isColMajorArrOperands = {true, true};
+    SmallVector<bool> isColMajorArrOutputs = {true};
 
     auto cusolver_call_op = rewriter.create<stablehlo::CustomCallOp>(
         op.getLoc(), TypeRange{type_input}, ValueRange{input, tau},
@@ -739,7 +739,7 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
     auto tau = op.getOperand(1);
 
     auto custom_call_op = rewriter.create<stablehlo::CustomCallOp>(
-        op.getLoc(), TypeRange{type_input}, ValueRange{input},
+        op.getLoc(), TypeRange{type_input}, ValueRange{input, tau},
         rewriter.getStringAttr("ProductOfElementaryHouseholderReflectors"),
         /*has_side_effect*/ nullptr,
         /*backend_config*/ nullptr,
