@@ -503,6 +503,33 @@ def OrmqrOp : EnzymeXLA_Op<"lapack.ormqr", [Pure]> {
   }];
 }
 
+def GemqrOp : EnzymeXLA_Op<"lapack.gemqr", [Pure]> {
+  let summary = [{
+    Perform a matrix multiplication with the Q matrix from a QR
+    decomposition, given the WY decomposition (i.e. geqrt).
+  }];
+
+  let description = [{
+    This operation is modeled after LAPACK's *GEMQR routines.
+  }];
+
+  let arguments = (ins
+    HLO_Tensor:$lhs,
+    HLO_Tensor:$rhs,
+    HLO_Tensor:$tau,
+    EnzymeXLA_LapackSideAttr:$side,
+    DefaultValuedAttr<BoolAttr, "false">:$transpose // true if apply Q^T?
+  );
+
+  let results = (outs
+    HLO_Tensor:$output
+  );
+
+  let assemblyFormat = [{
+    $lhs `,` $rhs `,` $tau attr-dict `:` functional-type(operands, results)
+  }];
+}
+
 def SVDFactorizationOp : EnzymeXLA_Op<"linalg.svd", [Pure]> {
   let summary = "Singular Value Decomposition (SVD) factorization operation.";
 
