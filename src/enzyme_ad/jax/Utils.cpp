@@ -558,11 +558,11 @@ bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type Ty) {
 }
 
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type Ty,
-                          const SmallVector<Value> &operands) {
+                          mlir::Operation *op) {
   Ty = getElementTypeOrSelf(Ty);
   if (Ty.isInteger())
     return true;
-  return allowOnFloatingPointMath || guaranteedNoNanResult(operands);
+  return allowOnFloatingPointMath || guaranteedNoNanResult(op);
 }
 
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy,
@@ -575,24 +575,73 @@ bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy,
 }
 
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy, Type inTy,
-                          const SmallVector<Value> &operands) {
+                          mlir::Operation *op) {
   outTy = getElementTypeOrSelf(outTy);
   inTy = getElementTypeOrSelf(inTy);
   if (outTy.isInteger() && inTy.isInteger())
     return true;
-  return allowOnFloatingPointMath || guaranteedNoNanResult(operands);
+  return allowOnFloatingPointMath || guaranteedNoNanResult(op);
 }
 
-bool guaranteedNoNanResult(const SmallVector<Value> &operands) {
-  for (auto op : operands) {
-    if (!guaranteedNoNanResult(op)) {
-      return false;
+
+static bool isConstantNotNan(stablehlo::ConstantOp constOp) {
+  Attribute attr = constOp.getValue();
+
+  if (auto denseAttr = dyn_cast<DenseElementsAttr>(attr)) {
+    if (denseAttr.getType().getShape().size() && denseAttr.isSplat()) {
+      denseAttr = denseAttr.resizeSplat(
+          RankedTensorType::get({}, denseAttr.getType().getElementType()));
+    }
+    // For floating point values
+    if (denseAttr.getElementType().isF32() ||
+        denseAttr.getElementType().isF64()) {
+      for (auto element : denseAttr.getValues<APFloat>()) {
+        if (element.isNaN())
+          return false;
+      }
+      return true;
+    }
+
+    if (denseAttr.getElementType().isIntOrIndex()) {
+      return true;
     }
   }
-  return true;
+
+  return false;
 }
 
-bool guaranteedNoNanResult(Value op) { return false; }
+bool guaranteedNoNanResult(mlir::Value value) {
+  return guaranteedNoNanResult(value.getDefiningOp());
+}
+
+bool guaranteedNoNanResult(mlir::Operation *op) {
+  if (!op)
+    return false;
+
+  if (auto constantOp = dyn_cast<mlir::stablehlo::ConstantOp>(op)) {
+    return isConstantNotNan(constantOp);
+  }
+
+  if (op->hasTrait<OpTrait::Elementwise>()) {
+    for (auto operand : op->getOperands()) {
+      if (!guaranteedNoNanResult(operand)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  if (auto selectOp = dyn_cast<mlir::stablehlo::SelectOp>(op)) {
+    return guaranteedNoNanResult(selectOp.getOnTrue()) &&
+           guaranteedNoNanResult(selectOp.getOnFalse());
+  }
+
+  if (isa<stablehlo::IotaOp>(op)) {
+    return true;
+  }
+
+  return false;
+}
 
 bool anyOperandIsConstant(mlir::Operation *op) {
   DenseElementsAttr attr;

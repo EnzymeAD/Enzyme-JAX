@@ -6354,7 +6354,7 @@ struct NoNanSelfSubSimplify
                                     PatternRewriter &rewriter) const {
     if (op.getLhs() == op.getRhs()) {
       if (canApplyNoNanPattern(allowOnFloatingPointMath, op.getType(),
-                               op.getLhs().getType())) {
+                               op.getLhs().getType(), op)) {
         rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
             op, rewriter.getZeroAttr(op.getType()));
         return success();
@@ -6564,7 +6564,7 @@ struct NoNanDivSimplify final
 
   LogicalResult matchAndRewriteImpl(stablehlo::DivOp op,
                                     PatternRewriter &rewriter) const {
-    if (!canApplyNoNanPattern(allowOnFloatingPointMath, op.getType()))
+    if (!canApplyNoNanPattern(allowOnFloatingPointMath, op.getType(), op))
       return failure();
 
     // 0 / x -> 0
@@ -6682,7 +6682,7 @@ struct NoNanZeroBasePowSimplify final
 
   LogicalResult matchAndRewriteImpl(stablehlo::PowOp op,
                                     PatternRewriter &rewriter) const {
-    if (!canApplyNoNanPattern(allowOnFloatingPointMath, op.getType())) {
+    if (!canApplyNoNanPattern(allowOnFloatingPointMath, op.getType(), op)) {
       return failure();
     }
 
@@ -8108,7 +8108,7 @@ struct NoNanCompareSimplify
                                     PatternRewriter &rewriter) const {
     if (op.getLhs() == op.getRhs()) {
       if (canApplyNoNanPattern(allowOnFloatingPointMath, op.getType(),
-                               op.getLhs().getType())) {
+                               op.getLhs().getType(), op)) {
         if (op.getComparisonDirection() == stablehlo::ComparisonDirection::EQ) {
           rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
               op, op.getType(), cast<ElementsAttr>(makeAttr(op.getType(), 1)));
@@ -15961,7 +15961,7 @@ struct NoNanMulSimplify final
                                     PatternRewriter &rewriter) const {
     if (!canApplyNoNanPattern(allowOnFloatingPointMath,
                               op.getResult().getType(),
-                              op.getOperand(0).getType())) {
+                              op.getOperand(0).getType(), op)) {
       return failure();
     }
 
@@ -16003,7 +16003,7 @@ struct NoNanAddSubSimplify final
     // Check if LHS is defined by an AddOp
     if (auto lhsAddOp = lhs.getDefiningOp<stablehlo::AddOp>()) {
       auto addOutTy = lhsAddOp.getResult().getType();
-      if (!canApplyNoNanPattern(allowOnFloatingPointMath, addOutTy, subOutTy))
+      if (!canApplyNoNanPattern(allowOnFloatingPointMath, addOutTy, subOutTy, op))
         return failure();
 
       // Case: c = a + b; d = c - b -> d = a
@@ -16022,7 +16022,7 @@ struct NoNanAddSubSimplify final
     // Check if RHS is defined by an AddOp
     if (auto rhsAddOp = rhs.getDefiningOp<stablehlo::AddOp>()) {
       auto addOutTy = rhsAddOp.getResult().getType();
-      if (!canApplyNoNanPattern(allowOnFloatingPointMath, addOutTy, subOutTy))
+      if (!canApplyNoNanPattern(allowOnFloatingPointMath, addOutTy, subOutTy, op))
         return failure();
 
       // Case: c = a + b; d = b - c -> d = -a

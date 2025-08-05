@@ -301,13 +301,13 @@ bool mayAlias(mlir::MemoryEffects::EffectInstance a, mlir::Value b);
 
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type Ty);
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type Ty,
-                          const SmallVector<Value> &operands);
+                          mlir::Operation *op);
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy, Type inTy);
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy, Type inTy,
-                          const SmallVector<Value> &operands);
+                          mlir::Operation *op);
 
-bool guaranteedNoNanResult(const SmallVector<Value> &operands);
-bool guaranteedNoNanResult(Value op);
+bool guaranteedNoNanResult(mlir::Value value);
+bool guaranteedNoNanResult(mlir::Operation *op);
 
 bool anyOperandIsConstant(mlir::Operation *op);
 bool allOperandsAreConstant(mlir::Operation *op);
