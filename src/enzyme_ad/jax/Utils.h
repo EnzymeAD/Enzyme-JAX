@@ -310,6 +310,10 @@ bool guaranteedNoNanResult(stablehlo::ConstantOp constOp);
 bool guaranteedNoNanResult(mlir::Value value);
 bool guaranteedNoNanResult(mlir::Operation *op);
 
+bool guaranteedFiniteResult(stablehlo::ConstantOp constOp);
+bool guaranteedFiniteResult(mlir::Value value);
+bool guaranteedFiniteResult(mlir::Operation *op);
+
 bool guaranteedNonNegativeResult(stablehlo::ConstantOp constOp);
 bool guaranteedNonNegativeResult(mlir::Value value);
 bool guaranteedNonNegativeResult(Operation *op);
