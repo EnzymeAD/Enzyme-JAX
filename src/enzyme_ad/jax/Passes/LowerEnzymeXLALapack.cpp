@@ -766,8 +766,8 @@ struct OrmqrOpLowering : public OpRewritePattern<enzymexla::OrmqrOp> {
 
   LogicalResult matchAndRewrite(enzymexla::OrmqrOp op,
                                 PatternRewriter &rewriter) const override {
-    // if (backend == "cpu")
-    //   return this->matchAndRewrite_cpu(op, rewriter);
+    if (backend == "cpu")
+      return this->matchAndRewrite_cpu(op, rewriter);
 
     // else if (backend == "cuda")
     //   return this->matchAndRewrite_cuda(op, rewriter);
@@ -775,9 +775,215 @@ struct OrmqrOpLowering : public OpRewritePattern<enzymexla::OrmqrOp> {
     // else if (backend == "tpu")
     //   return this->matchAndRewrite_tpu(op, rewriter);
 
-    // else
+    else
       return rewriter.notifyMatchFailure(op, "Unknown backend: \"" + backend +
                                                  "\"");
+  }
+
+  // TODO get matrix sizes dynamically so that we don't need to create a
+  // function wrapper for each op instance
+  LogicalResult matchAndRewrite_cpu(enzymexla::OrmqrOp op,
+                                    PatternRewriter &rewriter) const {
+    auto ctx = op->getContext();
+    LLVMTypeConverter typeConverter(ctx);
+
+    auto A = op.getOperand(0);
+    auto A_type = cast<RankedTensorType>(A.getType());
+    auto A_shape = A_type.getShape();
+    auto A_rank = static_cast<int64_t>(A_shape.size());
+    auto A_eltype = A_type.getElementType();
+    
+    auto tau = op.getOperand(1);
+    auto tau_type = cast<RankedTensorType>(tau.getType());
+    auto tau_shape = tau_type.getShape();
+    auto tau_rank = tau_type.getRank();
+    auto tau_eltype = tau_type.getElementType();
+
+    auto C = op.getOperand(2);
+    auto C_type = cast<RankedTensorType>(C.getType());
+    auto C_shape = C_type.getShape();
+    auto C_rank = static_cast<int64_t>(C_shape.size());
+    auto C_eltype = C_type.getElementType();
+
+    auto output = op.getResult();
+    auto output_type = cast<RankedTensorType>(output.getType());
+    auto output_shape = output_type.getShape();
+    auto output_rank = static_cast<int64_t>(output_shape.size());
+    auto output_eltype = output_type.getElementType();
+
+    auto side_value = op.getSide() == enzymexla::LapackSide::left ? 'L' : 'R';
+    auto trans_value = op.getTranspose() ? 'T' : 'N';
+
+    auto m_value = output_shape[0];
+    auto n_value = output_shape[1];
+    auto k_value = tau_shape[0];
+
+    if (A_rank - 2 > 0 || C_rank - 2 > 0) {
+      return rewriter.notifyMatchFailure(
+          op, "`enzymexla.lapack.orgqr` with batch dimensions on CPU is not yet supported");
+    }
+
+    assert(A_eltype == C_eltype && A_type == tau_eltype &&
+      "`enzymexla.lapack.ormqr` requires the same element type for all operands");
+
+    assert(C_shape == output_shape && "`C` and `output` shapes must match");
+    assert(A_shape[1] == k_value && "`k` dimension doesn't match");
+
+    auto lda_value = A_shape[0];
+    auto ldc_value = C_shape[0];
+
+    auto type_lapack_int = rewriter.getIntegerType(blasIntWidth);
+    auto type_llvm_lapack_int = typeConverter.convertType(type_lapack_int);
+    auto type_llvm_ptr = LLVM::LLVMPointerType::get(ctx);
+    auto type_llvm_void = LLVM::LLVMVoidType::get(ctx);
+    auto type_llvm_char = rewriter.getIntegerType(8);
+
+    std::string fn = "mqr_";
+    if (auto prefix = lapack_precision_prefix(A_eltype)) {
+      if (prefix == "s" || prefix == "d")
+        fn = *prefix + "or" + fn;
+      else
+        fn = *prefix + "un" + fn;
+    } else {
+      op->emitOpError() << "Unsupported complex element type: "
+                        << A_eltype;
+      return rewriter.notifyMatchFailure(op,
+                                         "unsupported complex element type");
+    }
+
+    std::string bind_fn = "enzymexla_lapacke_" + fn;
+    std::string wrapper_fn = "enzymexla_wrapper_lapacke_" + fn;
+
+    // declare LAPACKE function declarations if not present
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(bind_fn)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+      auto func_type =
+          LLVM::LLVMFunctionType::get(type_llvm_lapack_int,
+            {
+                type_llvm_lapack_int, // matrix_layout
+                type_llvm_char,       // side
+                type_llvm_char,       // trans
+                type_llvm_lapack_int, // m
+                type_llvm_lapack_int, // n
+                type_llvm_lapack_int, // k
+                type_llvm_ptr,        // A
+                type_llvm_lapack_int, // lda
+                type_llvm_ptr,        // tau
+                type_llvm_ptr,        // C
+                type_llvm_lapack_int, // ldc
+            },
+            false);
+      rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), bind_fn, func_type,
+                                        LLVM::Linkage::External);
+    }
+
+    // WARN probably will need another function name encoding if we call to
+    // `geqrf`, `orgqr` or `ungqr` in other op insert wrapper function for
+    // `geqrf`
+    static int64_t fn_counter = 0;
+    fn_counter++;
+
+    wrapper_fn += std::to_string(fn_counter);
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      auto func_type = LLVM::LLVMFunctionType::get(type_llvm_void,
+                                                   {
+                                                       type_llvm_ptr, // A
+                                                       type_llvm_ptr, // tau
+                                                       type_llvm_ptr, // C
+                                                   },
+                                                   false);
+
+      auto func =
+          rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), wrapper_fn, func_type);
+      rewriter.setInsertionPointToStart(func.addEntryBlock(rewriter));
+
+      // `101` for row-major, `102` for col-major
+      auto layout = rewriter.create<LLVM::ConstantOp>(
+          op.getLoc(), type_llvm_lapack_int,
+          rewriter.getIntegerAttr(type_lapack_int, 101));
+
+      auto side = rewriter.create<LLVM::ConstantOp>(
+          op.getLoc(), type_llvm_char,
+          rewriter.getIntegerAttr(type_llvm_char, side_value));
+
+      auto trans = rewriter.create<LLVM::ConstantOp>(
+          op.getLoc(), type_llvm_char,
+          rewriter.getIntegerAttr(type_llvm_char, trans_value));
+
+      auto m = rewriter.create<LLVM::ConstantOp>(
+          op.getLoc(), type_llvm_lapack_int,
+          rewriter.getIntegerAttr(type_lapack_int, m_value));
+
+      auto n = rewriter.create<LLVM::ConstantOp>(
+          op.getLoc(), type_llvm_lapack_int,
+          rewriter.getIntegerAttr(type_lapack_int, n_value));
+
+      auto k = rewriter.create<LLVM::ConstantOp>(
+          op.getLoc(), type_llvm_lapack_int,
+          rewriter.getIntegerAttr(type_lapack_int, k_value));
+
+      auto lda = rewriter.create<LLVM::ConstantOp>(
+          op.getLoc(), type_llvm_lapack_int,
+          rewriter.getIntegerAttr(type_lapack_int, lda_value));
+
+      auto ldc = rewriter.create<LLVM::ConstantOp>(
+          op.getLoc(), type_llvm_lapack_int,
+          rewriter.getIntegerAttr(type_lapack_int, ldc_value));
+
+      // call to `lapacke_*(or|un)mqr*`
+      auto res = rewriter.create<LLVM::CallOp>(op.getLoc(),
+                                               TypeRange{type_llvm_lapack_int},
+                                               SymbolRefAttr::get(ctx, bind_fn),
+                                               ValueRange{
+                                                   layout.getResult(),
+                                                   side.getResult(),
+                                                   trans.getResult(),
+                                                   m.getResult(),
+                                                   n.getResult(),
+                                                   k.getResult(),
+                                                   func.getArgument(0),
+                                                   lda.getResult(),
+                                                   func.getArgument(1),
+                                                   func.getArgument(2),
+                                                   ldc.getResult(),
+                                               });
+
+      rewriter.create<LLVM::ReturnOp>(op.getLoc(), ValueRange{});
+    }
+
+    // emit the `enzymexla.jit_call` op to `(or|un)mqr` wrapper
+    SmallVector<bool> isColMajorArr = {true, true, true};
+    SmallVector<int64_t> operandRanks = {2, 1, 2};
+    SmallVector<int64_t> outputRanks = {2};
+    auto operandLayouts =
+        getSHLOLayout(rewriter, operandRanks, isColMajorArr, 2);
+    auto resultLayouts = getSHLOLayout(rewriter, outputRanks, isColMajorArr, 2);
+
+    SmallVector<Attribute> aliases;
+    aliases.push_back(stablehlo::OutputOperandAliasAttr::get(ctx,
+      {}, 2, {}));
+
+    auto jit_call_op = rewriter.create<enzymexla::JITCallOp>(
+        op.getLoc(), TypeRange{C_type},
+        mlir::FlatSymbolRefAttr::get(ctx, wrapper_fn),
+        ValueRange{A, tau, C},
+        rewriter.getStringAttr(""),
+        /*operand_layouts=*/operandLayouts,
+        /*result_layouts=*/resultLayouts,
+        /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
+        /*xla_side_effect_free=*/rewriter.getUnitAttr());
+
+    // replace enzymexla.lapack.geqrf with the jit_call
+    rewriter.replaceAllUsesWith(op.getResult(), jit_call_op.getResult(0));
+    rewriter.eraseOp(op);
+
+    return success();
   }
 };
 

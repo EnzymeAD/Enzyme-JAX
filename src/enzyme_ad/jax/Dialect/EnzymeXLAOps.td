@@ -487,9 +487,9 @@ def OrmqrOp : EnzymeXLA_Op<"lapack.ormqr", [Pure]> {
   }];
 
   let arguments = (ins
-    HLO_Tensor:$lhs,
-    HLO_Tensor:$rhs,
+    HLO_Tensor:$A,
     HLO_Tensor:$tau,
+    HLO_Tensor:$C,
     EnzymeXLA_LapackSideAttr:$side,
     DefaultValuedAttr<BoolAttr, "false">:$transpose // true if apply Q^T?
   );
@@ -499,7 +499,7 @@ def OrmqrOp : EnzymeXLA_Op<"lapack.ormqr", [Pure]> {
   );
 
   let assemblyFormat = [{
-    $lhs `,` $rhs `,` $tau attr-dict `:` functional-type(operands, results)
+    $A `,` $tau `,` $C attr-dict `:` functional-type(operands, results)
   }];
 }
 
