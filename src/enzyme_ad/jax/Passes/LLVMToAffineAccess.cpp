@@ -1621,7 +1621,7 @@ struct SimplifyDeadAlloc : public OpRewritePattern<T> {
       }
 
       if (auto cpy = dyn_cast<enzymexla::MemcpyOp>(op)) {
-        if (cpy.getTarget() == alloc->getResult(0))
+        if (cpy.getSource() == alloc->getResult(0))
           return failure();
         continue;
       }
