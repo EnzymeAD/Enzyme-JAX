@@ -32,7 +32,9 @@ def EnzymeXLA_LapackSide : I32EnumAttr<"LapackSide",
 }
 
 def EnzymeXLA_LapackSideAttr : EnumAttr<EnzymeXLA_Dialect,
-    EnzymeXLA_LapackSide, "side">;
+    EnzymeXLA_LapackSide, "side"> {
+  let assemblyFormat = "`<` $value `>`";
+}
 
 def EnzymeXLA_QrAlgorithm : I32EnumAttr<"QrAlgorithm",
     "Algorithm to use for the QR factorization",
@@ -45,7 +47,9 @@ def EnzymeXLA_QrAlgorithm : I32EnumAttr<"QrAlgorithm",
 }
 
 def EnzymeXLA_QrAlgorithmAttr : EnumAttr<EnzymeXLA_Dialect,
-  EnzymeXLA_QrAlgorithm, "qr_algorithm">;
+  EnzymeXLA_QrAlgorithm, "qr_algorithm"> {
+  let assemblyFormat = "`<` $value `>`";
+}
 
 // Machine Learning
 
