@@ -624,7 +624,8 @@ bool guaranteedNoNanResult(mlir::Operation *op) {
           stablehlo::AndOp, stablehlo::OrOp, stablehlo::XorOp, stablehlo::NotOp,
           stablehlo::AddOp, stablehlo::SubtractOp, stablehlo::MulOp,
           stablehlo::SineOp, stablehlo::CosineOp, stablehlo::ConvertOp,
-          stablehlo::SliceOp, stablehlo::ConcatenateOp>(op)) {
+          stablehlo::SliceOp, stablehlo::ConcatenateOp,
+          stablehlo::BroadcastInDimOp>(op)) {
     for (auto operand : op->getOperands()) {
       if (!guaranteedNoNanResult(operand)) {
         return false;
@@ -685,7 +686,8 @@ bool guaranteedNonNegativeResult(Operation *op) {
     return false;
 
   if (isa<stablehlo::AbsOp, stablehlo::SqrtOp, stablehlo::ExpOp,
-          stablehlo::IotaOp, stablehlo::AndOp, stablehlo::OrOp>(op))
+          stablehlo::IotaOp, stablehlo::AndOp, stablehlo::OrOp,
+          stablehlo::XorOp, stablehlo::NotOp>(op))
     return true;
 
   if (auto constOp = dyn_cast<stablehlo::ConstantOp>(op)) {
@@ -694,22 +696,28 @@ bool guaranteedNonNegativeResult(Operation *op) {
   }
 
   // Any non-negative operation that produces a non-negative result
-  if (auto maxOp = dyn_cast<stablehlo::MaxOp>(op)) {
-    for (auto operand : maxOp.getOperands()) {
-      if (auto operandOp = operand.getDefiningOp()) {
-        if (guaranteedNonNegativeResult(operandOp))
-          return true;
+  if (isa<stablehlo::MaxOp>(op)) {
+    for (auto operand : op->getOperands()) {
+      if (guaranteedNonNegativeResult(operand)) {
+        return true;
       }
     }
   }
 
   // All non-negative operations that produce a non-negative result
-  if (isa<stablehlo::MinOp, stablehlo::AddOp, stablehlo::MulOp>(op)) {
+  if (isa<stablehlo::MinOp, stablehlo::AddOp, stablehlo::MulOp,
+          stablehlo::ConcatenateOp, stablehlo::ReshapeOp,
+          stablehlo::TransposeOp, stablehlo::SliceOp,
+          stablehlo::DynamicUpdateSliceOp, stablehlo::BroadcastInDimOp>(op)) {
+    bool allNonNegative = true;
     for (auto operand : op->getOperands()) {
-      if (!guaranteedNonNegativeResult(operand))
-        return false;
+      if (!guaranteedNonNegativeResult(operand)) {
+        allNonNegative = false;
+        break;
+      }
     }
-    return true;
+    if (allNonNegative)
+      return true;
   }
 
   // (mul a a) is always non-negative
@@ -723,7 +731,6 @@ bool guaranteedNonNegativeResult(Operation *op) {
 
   if (auto clampOp = dyn_cast<stablehlo::ClampOp>(op)) {
     // Clamp is non-negative if the min operand is non-negative
-
     if (auto minOp = clampOp.getMin().getDefiningOp()) {
       if (guaranteedNonNegativeResult(minOp))
         return true;
@@ -736,22 +743,8 @@ bool guaranteedNonNegativeResult(Operation *op) {
   // TODO: Mul of 2 negative values is non-negative
 
   if (auto selectOp = dyn_cast<stablehlo::SelectOp>(op)) {
-    // Select produces non-negative results if both branches produce
-    // non-negative results
-    auto trueOp = selectOp.getOnTrue().getDefiningOp();
-    auto falseOp = selectOp.getOnFalse().getDefiningOp();
-
-    if (trueOp && falseOp) {
-      return guaranteedNonNegativeResult(trueOp) &&
-             guaranteedNonNegativeResult(falseOp);
-    }
-  }
-
-  // These operations preserve values, so result is non-negative if operand is
-  // non-negative
-  if (isa<stablehlo::ReshapeOp, stablehlo::TransposeOp>(op)) {
-    if (auto defOp = op->getOperand(0).getDefiningOp())
-      return guaranteedNonNegativeResult(defOp);
+    return guaranteedNonNegativeResult(selectOp.getOnTrue()) &&
+           guaranteedNonNegativeResult(selectOp.getOnFalse());
   }
 
   // Default: can't guarantee non-negative result
