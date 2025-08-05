@@ -6334,6 +6334,11 @@ struct NoNanSelfSubSimplify
   using CheckedOpRewritePattern<stablehlo::SubtractOp,
                                 NoNanSelfSubSimplify>::CheckedOpRewritePattern;
 
+  NoNanSelfSubSimplify(bool allowOnFloatingPointMath, MLIRContext *context,
+                       PatternBenefit benefit = 1)
+      : CheckedOpRewritePattern(context, benefit),
+        allowOnFloatingPointMath(allowOnFloatingPointMath) {}
+
   LogicalResult matchAndRewriteImpl(stablehlo::SubtractOp op,
                                     PatternRewriter &rewriter) const {
 
@@ -6345,6 +6350,8 @@ struct NoNanSelfSubSimplify
 
     return failure();
   }
+
+  bool allowOnFloatingPointMath;
 };
 
 struct AndSimplify
@@ -8096,9 +8103,16 @@ struct AllFiniteIsNegInf
   }
 };
 
-struct NoNan : public CheckedOpRewritePattern<stablehlo::CompareOp, NoNan> {
+struct NoNanCompareSimplify
+    : public CheckedOpRewritePattern<stablehlo::CompareOp,
+                                     NoNanCompareSimplify> {
   using CheckedOpRewritePattern<stablehlo::CompareOp,
-                                NoNan>::CheckedOpRewritePattern;
+                                NoNanCompareSimplify>::CheckedOpRewritePattern;
+
+  NoNanCompareSimplify(bool allowOnFloatingPointMath, MLIRContext *context,
+                       PatternBenefit benefit = 1)
+      : CheckedOpRewritePattern(context, benefit),
+        allowOnFloatingPointMath(allowOnFloatingPointMath) {}
 
   LogicalResult matchAndRewriteImpl(stablehlo::CompareOp op,
                                     PatternRewriter &rewriter) const {
@@ -8116,6 +8130,9 @@ struct NoNan : public CheckedOpRewritePattern<stablehlo::CompareOp, NoNan> {
     }
     return failure();
   }
+
+private:
+  bool allowOnFloatingPointMath;
 };
 
 struct TransposeTranspose
@@ -22132,6 +22149,22 @@ void mlir::transform::addNoNanAddSubSimplify(RewritePatternSet &patterns,
                                        benefit);
 }
 
+void mlir::transform::addNoNanCompareSimplify(RewritePatternSet &patterns,
+                                              bool allowOnFloatingPointMath,
+                                              MLIRContext &context,
+                                              PatternBenefit benefit) {
+  patterns.insert<NoNanCompareSimplify>(allowOnFloatingPointMath, &context,
+                                        benefit);
+}
+
+void mlir::transform::addNoNanSelfAddSimplify(RewritePatternSet &patterns,
+                                              bool allowOnFloatingPointMath,
+                                              MLIRContext &context,
+                                              PatternBenefit benefit) {
+  patterns.insert<NoNanSelfSubSimplify>(allowOnFloatingPointMath, &context,
+                                        benefit);
+}
+
 void mlir::transform::addNoNanMulSimplify(RewritePatternSet &patterns,
                                           bool allowOnFloatingPointMath,
                                           MLIRContext &context,
@@ -22485,9 +22518,9 @@ struct EnzymeHLOOptPass
     if (all_finite)
       patterns.add<AllFiniteIsFinite, AllFiniteIsInf, AllFiniteIsPosInf,
                    AllFiniteIsNegInf>(context);
-    if (no_nan || all_finite)
-      patterns.add<NoNan, NoNanSelfSubSimplify>(context);
-    patterns.add<NoNanAddSubSimplify, NoNanMulSimplify, NoNanDivSimplify>(
+
+    patterns.add<NoNanCompareSimplify, NoNanSelfSubSimplify,
+                 NoNanAddSubSimplify, NoNanMulSimplify, NoNanDivSimplify>(
         (no_nan || all_finite), context);
 
     // clang-format off

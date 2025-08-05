@@ -28,6 +28,14 @@ void ApplyPadDotGeneralPatterns::populatePatterns(RewritePatternSet &patterns) {
   addPadDotGeneral(patterns, getParameter(), *getContext(),
                    PatternBenefit(getBenefit().value_or(1)));
 }
+void ApplyNoNanCompareSimplify::populatePatterns(RewritePatternSet &patterns) {
+  addNoNanCompareSimplify(patterns, getParameter(), *getContext(),
+                          PatternBenefit(getBenefit().value_or(1)));
+}
+void ApplyNoNanSelfAddSimplify::populatePatterns(RewritePatternSet &patterns) {
+  addNoNanSelfAddSimplify(patterns, getParameter(), *getContext(),
+                          PatternBenefit(getBenefit().value_or(1)));
+}
 void ApplyNoNanAddSubSimplify::populatePatterns(RewritePatternSet &patterns) {
   addNoNanAddSubSimplify(patterns, getParameter(), *getContext(),
                          PatternBenefit(getBenefit().value_or(1)));
