@@ -17220,6 +17220,98 @@ struct PadConcatToConcatPad
   }
 };
 
+struct SelectPad final
+    : public CheckedOpRewritePattern<stablehlo::SelectOp, SelectPad> {
+  using CheckedOpRewritePattern<stablehlo::SelectOp, SelectPad>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SelectOp op,
+                                    PatternRewriter &rewriter) const {
+    // Get the two pad operations from the on_true and on_false branches.
+    auto padTrue = op.getOnTrue().getDefiningOp<stablehlo::PadOp>();
+    if (!padTrue || anyPadSizesNegative(padTrue))
+      return failure();
+
+    auto padFalse = op.getOnFalse().getDefiningOp<stablehlo::PadOp>();
+    if (!padFalse || anyPadSizesNegative(padFalse))
+      return failure();
+
+    // Ensure the padding configurations are identical.
+    if (padTrue.getEdgePaddingLow() != padFalse.getEdgePaddingLow() ||
+        padTrue.getEdgePaddingHigh() != padFalse.getEdgePaddingHigh() ||
+        padTrue.getInteriorPadding() != padFalse.getInteriorPadding()) {
+      return rewriter.notifyMatchFailure(op, "padding configurations mismatch");
+    }
+
+    // Only proceed if the pad ops have a single user.
+    if (!padTrue->hasOneUse() || !padFalse->hasOneUse()) {
+        return rewriter.notifyMatchFailure(op, "pad op has multiple users");
+    }
+
+    auto operandTrue = padTrue.getOperand();
+    auto operandFalse = padFalse.getOperand();
+
+    auto pred = op.getPred();
+    auto predType = cast<RankedTensorType>(pred.getType());
+
+    Value newOperandSelect;
+    Value newPadValSelect;
+
+    // Case 1: Predicate is a scalar (0-rank tensor).
+    if (predType.getRank() == 0) {
+        newOperandSelect = rewriter.create<stablehlo::SelectOp>(
+            op.getLoc(), pred, operandTrue, operandFalse);
+
+        auto padValTrue = padTrue.getPaddingValue();
+        auto padValFalse = padFalse.getPaddingValue();
+
+        newPadValSelect = rewriter.create<stablehlo::SelectOp>(
+            op.getLoc(), pred, padValTrue, padValFalse);
+
+    // Case 2: Predicate is a tensor, but padding values are identical.
+    } else {
+        auto padValTrue = padTrue.getPaddingValue();
+        auto padValFalse = padFalse.getPaddingValue();
+        if (padValTrue != padValFalse) {
+            return rewriter.notifyMatchFailure(op, "selecting different padding values with a tensor predicate is not supported");
+        }
+        newPadValSelect = padValTrue; // Use the common padding value.
+
+        // To create the new select for operands, the predicate needs to be "un-padded"
+        // to match the shape of the operands. This is only straightforward if
+        // interior padding is zero.
+        if (llvm::any_of(padTrue.getInteriorPadding(), [](int64_t p) { return p != 0; })) {
+            return rewriter.notifyMatchFailure(op, "interior padding is not supported for tensor predicates");
+        }
+
+        auto operandType = cast<RankedTensorType>(operandTrue.getType());
+        auto starts = padTrue.getEdgePaddingLow();
+        auto limits = llvm::to_vector(starts);
+        for (size_t i = 0; i < limits.size(); ++i) {
+            limits[i] += operandType.getShape()[i];
+        }
+        auto strides = SmallVector<int64_t>(operandType.getRank(), 1);
+
+        auto slicedPred = rewriter.create<stablehlo::SliceOp>(
+            op.getLoc(), pred, starts, limits, strides);
+
+        newOperandSelect = rewriter.create<stablehlo::SelectOp>(
+            op.getLoc(), slicedPred, operandTrue, operandFalse);
+    }
+
+    // Create the new pad operation.
+    rewriter.replaceOpWithNewOp<stablehlo::PadOp>(
+        op,
+        op.getType(),
+        newOperandSelect,
+        newPadValSelect,
+        padTrue.getEdgePaddingLowAttr(),
+        padTrue.getEdgePaddingHighAttr(),
+        padTrue.getInteriorPaddingAttr());
+
+    return success();
+  }
+};
+
 struct SliceSelect
     : public CheckedOpRewritePattern<stablehlo::SliceOp, SliceSelect> {
   using CheckedOpRewritePattern<stablehlo::SliceOp,
@@ -22233,6 +22325,7 @@ struct EnzymeHLOOptPass
     patterns.add<TransposeWrap>(context);
     patterns.add<TransposeExtend>(context);
     patterns.add<TransposeRotate>(context);
+    patterns.add<SelectPad>(context);
 
     patterns.add<
         AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
