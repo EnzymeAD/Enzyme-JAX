@@ -22,7 +22,7 @@ def EnzymeXLA_LapackLayoutAttr : EnumAttr<EnzymeXLA_Dialect,
     EnzymeXLA_LapackLayout, "layout">;
 
 def EnzymeXLA_LapackSide : I32EnumAttr<"LapackSide",
-    "Ordering of elements in matrix",
+    "Side of the matrix to apply the operation",
     [
       I32EnumAttrCase<"left", 0>,
       I32EnumAttrCase<"right", 1>
