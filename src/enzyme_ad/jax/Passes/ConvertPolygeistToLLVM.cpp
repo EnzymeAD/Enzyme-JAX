@@ -2119,8 +2119,8 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
     x = rewriter.create<LLVM::ZExtOp>(x.getLoc(), i64, x);
     y = rewriter.create<LLVM::ZExtOp>(y.getLoc(), i64, y);
 
-    x = rewriter.create<LLVM::ShlOp>(
-        x.getLoc(), x, rewriter.create<LLVM::ConstantOp>(x.getLoc(), i64, 32));
+    y = rewriter.create<LLVM::ShlOp>(
+        y.getLoc(), y, rewriter.create<LLVM::ConstantOp>(y.getLoc(), i64, 32));
     args.push_back(rewriter.create<LLVM::OrOp>(x.getLoc(), x, y));
     args.push_back(z);
   };
