@@ -116,19 +116,28 @@ jobs:
         if: ${{ !contains(matrix.os, 'a100') }}
         run: |
           sed -i.bak0 "/cuda12/d" builddeps/test-requirements.txt
-      - name: Update Python requirements files
-        run: |
-          bazel run $BAZEL_FLAGS --color=yes //builddeps:requirements.update
+      - name: Install debugging dependencies
+        run: lldb --version
       - name: Build enzymexlamlir-opt
         timeout-minutes: 180
         run: |
-          bazel build $BAZEL_FLAGS --color=yes //:enzymexlamlir-opt --test_output=errors
+          bazel build $BAZEL_FLAGS --color=yes -c dbg //:enzymexlamlir-opt --test_output=errors
+      - name: Run lit tests under lldb (macos segfault debugging)
+        if: ${{ contains(matrix.os, 'macos') }}
+        run: |
+          echo 'run' > lldb_cmds
+          echo 'bt' >> lldb_cmds
+          echo 'quit' >> lldb_cmds
+          lldb --batch -s lldb_cmds -- ./bazel-bin/enzymexlamlir-opt --enzyme-hlo-opt test/lit_tests/add_rotate.mlir
       - name: Upload enzymexlamlir-opt
         uses: actions/upload-artifact@v4
         with:
           name: enzymexlamlir-opt-${{ matrix.os }}-${{ matrix.python }}
           path: "bazel-bin/enzymexlamlir-opt"
           retention-days: 90
+      - name: Update Python requirements files
+        run: |
+          bazel run $BAZEL_FLAGS --color=yes //builddeps:requirements.update
       - name: Build wheel
         timeout-minutes: 240
         run: |
@@ -142,7 +151,7 @@ jobs:
           retention-days: 90
       - name: Run lit tests
         run: |
-          bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/lit_tests/...          
+          bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/lit_tests/...
       - name: Run tests
         run: |
           bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/...
