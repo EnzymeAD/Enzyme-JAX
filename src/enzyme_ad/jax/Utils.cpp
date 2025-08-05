@@ -806,11 +806,10 @@ bool guaranteedNonNegativeResult(Operation *op) {
 
   // Any non-negative operation that produces a non-negative result
   if (isa<stablehlo::MaxOp>(op)) {
-    for (auto operand : op->getOperands()) {
-      if (guaranteedNonNegativeResult(operand)) {
-        return true;
-      }
-    }
+    if (std::any_of(
+            op->getOperands().begin(), op->getOperands().end(),
+            [](mlir::Value v) { return guaranteedNonNegativeResult(v); }))
+      return true;
   }
 
   // All non-negative operations that produce a non-negative result
@@ -818,14 +817,9 @@ bool guaranteedNonNegativeResult(Operation *op) {
           stablehlo::ConcatenateOp, stablehlo::ReshapeOp,
           stablehlo::TransposeOp, stablehlo::SliceOp,
           stablehlo::DynamicUpdateSliceOp, stablehlo::BroadcastInDimOp>(op)) {
-    bool allNonNegative = true;
-    for (auto operand : op->getOperands()) {
-      if (!guaranteedNonNegativeResult(operand)) {
-        allNonNegative = false;
-        break;
-      }
-    }
-    if (allNonNegative)
+    if (std::all_of(
+            op->getOperands().begin(), op->getOperands().end(),
+            [](mlir::Value v) { return guaranteedNonNegativeResult(v); }))
       return true;
   }
 
@@ -840,10 +834,8 @@ bool guaranteedNonNegativeResult(Operation *op) {
 
   if (auto clampOp = dyn_cast<stablehlo::ClampOp>(op)) {
     // Clamp is non-negative if the min operand is non-negative
-    if (auto minOp = clampOp.getMin().getDefiningOp()) {
-      if (guaranteedNonNegativeResult(minOp))
-        return true;
-    }
+    if (guaranteedNonNegativeResult(clampOp.getMin()))
+      return true;
   }
 
   // TODO: For NegOp we need a check for if the operand is guaranteed to be
