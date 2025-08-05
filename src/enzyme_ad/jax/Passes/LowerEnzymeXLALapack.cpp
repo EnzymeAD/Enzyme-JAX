@@ -299,7 +299,6 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
   }
 };
 
-// TODO implement backends
 struct GeqrtOpLowering : public OpRewritePattern<enzymexla::GeqrtOp> {
   std::string backend;
   int64_t blasIntWidth;
@@ -467,7 +466,7 @@ struct GeqrtOpLowering : public OpRewritePattern<enzymexla::GeqrtOp> {
     auto info = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_info, cast<ElementsAttr>(makeAttr(type_info, -1)));
 
-    auto type_T = RankedTensorType::get({ldt_value, std::min(inputShape[1], inputShape[2])}, inputElementType);
+    auto type_T = RankedTensorType::get({ldt_value, std::min(inputShape[0], inputShape[1])}, inputElementType);
     auto T = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_T, cast<ElementsAttr>(makeAttr(type_T, 0)));
 
