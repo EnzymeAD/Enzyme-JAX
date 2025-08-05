@@ -823,7 +823,7 @@ struct OrmqrOpLowering : public OpRewritePattern<enzymexla::OrmqrOp> {
           op, "`enzymexla.lapack.orgqr` with batch dimensions on CPU is not yet supported");
     }
 
-    assert(A_eltype == C_eltype && A_type == tau_eltype &&
+    assert(A_eltype == C_eltype && A_eltype == tau_eltype &&
       "`enzymexla.lapack.ormqr` requires the same element type for all operands");
 
     assert(C_shape == output_shape && "`C` and `output` shapes must match");
