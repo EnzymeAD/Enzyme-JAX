@@ -22079,8 +22079,11 @@ private:
   checkConstant(Value val) const {
     if (auto bcastInDimOp = val.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
       auto operand = bcastInDimOp.getOperand();
-      if (cast<RankedTensorType>(operand.getType()).getRank() == 0) {
-        return std::make_tuple(std::nullopt, operand);
+      auto type = cast<RankedTensorType>(operand.getType());
+      if (type) {
+        if (type.getRank() == 0) {
+          return std::make_tuple(std::nullopt, operand);
+        }
       }
     }
 
