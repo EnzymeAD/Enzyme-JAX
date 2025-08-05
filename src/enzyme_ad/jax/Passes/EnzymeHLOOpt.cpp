@@ -17222,7 +17222,8 @@ struct PadConcatToConcatPad
 
 struct SelectPad final
     : public CheckedOpRewritePattern<stablehlo::SelectOp, SelectPad> {
-  using CheckedOpRewritePattern<stablehlo::SelectOp, SelectPad>::CheckedOpRewritePattern;
+  using CheckedOpRewritePattern<stablehlo::SelectOp,
+                                SelectPad>::CheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::SelectOp op,
                                     PatternRewriter &rewriter) const {
@@ -17244,7 +17245,7 @@ struct SelectPad final
 
     // Only proceed if the pad ops have a single user.
     if (!padTrue->hasOneUse() || !padFalse->hasOneUse()) {
-        return rewriter.notifyMatchFailure(op, "pad op has multiple users");
+      return rewriter.notifyMatchFailure(op, "pad op has multiple users");
     }
 
     auto operandTrue = padTrue.getOperand();
@@ -17258,54 +17259,54 @@ struct SelectPad final
 
     // Case 1: Predicate is a scalar (0-rank tensor).
     if (predType.getRank() == 0) {
-        newOperandSelect = rewriter.create<stablehlo::SelectOp>(
-            op.getLoc(), pred, operandTrue, operandFalse);
+      newOperandSelect = rewriter.create<stablehlo::SelectOp>(
+          op.getLoc(), pred, operandTrue, operandFalse);
 
-        auto padValTrue = padTrue.getPaddingValue();
-        auto padValFalse = padFalse.getPaddingValue();
+      auto padValTrue = padTrue.getPaddingValue();
+      auto padValFalse = padFalse.getPaddingValue();
 
-        newPadValSelect = rewriter.create<stablehlo::SelectOp>(
-            op.getLoc(), pred, padValTrue, padValFalse);
+      newPadValSelect = rewriter.create<stablehlo::SelectOp>(
+          op.getLoc(), pred, padValTrue, padValFalse);
 
-    // Case 2: Predicate is a tensor, but padding values are identical.
+      // Case 2: Predicate is a tensor, but padding values are identical.
     } else {
-        auto padValTrue = padTrue.getPaddingValue();
-        auto padValFalse = padFalse.getPaddingValue();
-        if (padValTrue != padValFalse) {
-            return rewriter.notifyMatchFailure(op, "selecting different padding values with a tensor predicate is not supported");
-        }
-        newPadValSelect = padValTrue; // Use the common padding value.
+      auto padValTrue = padTrue.getPaddingValue();
+      auto padValFalse = padFalse.getPaddingValue();
+      if (padValTrue != padValFalse) {
+        return rewriter.notifyMatchFailure(
+            op, "selecting different padding values with a tensor predicate is "
+                "not supported");
+      }
+      newPadValSelect = padValTrue; // Use the common padding value.
 
-        // To create the new select for operands, the predicate needs to be "un-padded"
-        // to match the shape of the operands. This is only straightforward if
-        // interior padding is zero.
-        if (llvm::any_of(padTrue.getInteriorPadding(), [](int64_t p) { return p != 0; })) {
-            return rewriter.notifyMatchFailure(op, "interior padding is not supported for tensor predicates");
-        }
+      // To create the new select for operands, the predicate needs to be
+      // "un-padded" to match the shape of the operands. This is only
+      // straightforward if interior padding is zero.
+      if (llvm::any_of(padTrue.getInteriorPadding(),
+                       [](int64_t p) { return p != 0; })) {
+        return rewriter.notifyMatchFailure(
+            op, "interior padding is not supported for tensor predicates");
+      }
 
-        auto operandType = cast<RankedTensorType>(operandTrue.getType());
-        auto starts = padTrue.getEdgePaddingLow();
-        auto limits = llvm::to_vector(starts);
-        for (size_t i = 0; i < limits.size(); ++i) {
-            limits[i] += operandType.getShape()[i];
-        }
-        auto strides = SmallVector<int64_t>(operandType.getRank(), 1);
+      auto operandType = cast<RankedTensorType>(operandTrue.getType());
+      auto starts = padTrue.getEdgePaddingLow();
+      auto limits = llvm::to_vector(starts);
+      for (size_t i = 0; i < limits.size(); ++i) {
+        limits[i] += operandType.getShape()[i];
+      }
+      auto strides = SmallVector<int64_t>(operandType.getRank(), 1);
 
-        auto slicedPred = rewriter.create<stablehlo::SliceOp>(
-            op.getLoc(), pred, starts, limits, strides);
+      auto slicedPred = rewriter.create<stablehlo::SliceOp>(
+          op.getLoc(), pred, starts, limits, strides);
 
-        newOperandSelect = rewriter.create<stablehlo::SelectOp>(
-            op.getLoc(), slicedPred, operandTrue, operandFalse);
+      newOperandSelect = rewriter.create<stablehlo::SelectOp>(
+          op.getLoc(), slicedPred, operandTrue, operandFalse);
     }
 
     // Create the new pad operation.
     rewriter.replaceOpWithNewOp<stablehlo::PadOp>(
-        op,
-        op.getType(),
-        newOperandSelect,
-        newPadValSelect,
-        padTrue.getEdgePaddingLowAttr(),
-        padTrue.getEdgePaddingHighAttr(),
+        op, op.getType(), newOperandSelect, newPadValSelect,
+        padTrue.getEdgePaddingLowAttr(), padTrue.getEdgePaddingHighAttr(),
         padTrue.getInteriorPaddingAttr());
 
     return success();
