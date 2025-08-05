@@ -467,7 +467,7 @@ def optimization_passes(
 
     if no_nan:
         transform_passes_list += [
-            "no_nan(1)",
+            "no_nan_compare_simplify(1)",
             "no_nan_self_sub_simplify(1)",
             "no_nan_add_sub_simplify(1)",
             "no_nan_mul_simplify(1)",
@@ -476,7 +476,7 @@ def optimization_passes(
         ]
     else:
         transform_passes_list += [
-            "no_nan(0)",
+            "no_nan_compare_simplify(0)",
             "no_nan_self_sub_simplify(0)",
             "no_nan_add_sub_simplify(0)",
             "no_nan_mul_simplify(0)",
