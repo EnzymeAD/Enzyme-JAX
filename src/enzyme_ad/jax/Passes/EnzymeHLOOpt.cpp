@@ -16003,7 +16003,8 @@ struct NoNanAddSubSimplify final
     // Check if LHS is defined by an AddOp
     if (auto lhsAddOp = lhs.getDefiningOp<stablehlo::AddOp>()) {
       auto addOutTy = lhsAddOp.getResult().getType();
-      if (!canApplyNoNanPattern(allowOnFloatingPointMath, addOutTy, subOutTy, op))
+      if (!canApplyNoNanPattern(allowOnFloatingPointMath, addOutTy, subOutTy,
+                                op))
         return failure();
 
       // Case: c = a + b; d = c - b -> d = a
@@ -16022,7 +16023,8 @@ struct NoNanAddSubSimplify final
     // Check if RHS is defined by an AddOp
     if (auto rhsAddOp = rhs.getDefiningOp<stablehlo::AddOp>()) {
       auto addOutTy = rhsAddOp.getResult().getType();
-      if (!canApplyNoNanPattern(allowOnFloatingPointMath, addOutTy, subOutTy, op))
+      if (!canApplyNoNanPattern(allowOnFloatingPointMath, addOutTy, subOutTy,
+                                op))
         return failure();
 
       // Case: c = a + b; d = b - c -> d = -a
@@ -16718,140 +16720,6 @@ struct SignAbsSimplify
   }
 };
 
-bool opResultIsAlwaysNonNegative(Operation *op);
-
-template <typename T>
-bool opResultNonNegativeIfAllElementsNonNegative(Operation *op) {
-  if (!op)
-    return false;
-
-  auto specificOp = dyn_cast<T>(op);
-  if (!specificOp)
-    return false;
-
-  auto lhsOp = specificOp.getLhs().getDefiningOp();
-  auto rhsOp = specificOp.getRhs().getDefiningOp();
-
-  if (lhsOp && rhsOp) {
-    bool lhsNonNeg = opResultIsAlwaysNonNegative(lhsOp);
-    bool rhsNonNeg = opResultIsAlwaysNonNegative(rhsOp);
-
-    if (lhsNonNeg && rhsNonNeg)
-      return true;
-  }
-
-  return false;
-}
-
-bool isConstantNonNegative(stablehlo::ConstantOp constOp) {
-  Attribute attr = constOp.getValue();
-
-  if (auto denseAttr = dyn_cast<DenseElementsAttr>(attr)) {
-    if (denseAttr.getType().getShape().size() && denseAttr.isSplat()) {
-      denseAttr = denseAttr.resizeSplat(
-          RankedTensorType::get({}, denseAttr.getType().getElementType()));
-    }
-    // For floating point values
-    if (denseAttr.getElementType().isF32() ||
-        denseAttr.getElementType().isF64()) {
-      for (auto element : denseAttr.getValues<APFloat>()) {
-        if (element.isNegative())
-          return false;
-      }
-      return true;
-    }
-
-    // For integer values
-    if (denseAttr.getElementType().isIntOrIndex()) {
-      for (auto element : denseAttr.getValues<APInt>()) {
-        if (element.isNegative())
-          return false;
-      }
-      return true;
-    }
-  }
-
-  // Default: can't guarantee all elements are non-negative
-  return false;
-}
-
-bool opResultIsAlwaysNonNegative(Operation *op) {
-  if (!op)
-    return false;
-
-  if (isa<stablehlo::AbsOp, stablehlo::SqrtOp, stablehlo::ExpOp,
-          stablehlo::IotaOp, stablehlo::AndOp, stablehlo::OrOp>(op))
-    return true;
-
-  if (auto constOp = dyn_cast<stablehlo::ConstantOp>(op)) {
-    // Constant is non-negative if all its elements are non-negative
-    return isConstantNonNegative(constOp);
-  }
-
-  // Any non-negative operation that produces a non-negative result
-  if (auto maxOp = dyn_cast<stablehlo::MaxOp>(op)) {
-    for (auto operand : maxOp.getOperands()) {
-      if (auto operandOp = operand.getDefiningOp()) {
-        if (opResultIsAlwaysNonNegative(operandOp))
-          return true;
-      }
-    }
-  }
-
-  // All non-negative operations that produce a non-negative result
-  if (isa<stablehlo::MinOp, stablehlo::AddOp, stablehlo::MulOp>(op)) {
-    if (opResultNonNegativeIfAllElementsNonNegative<stablehlo::MinOp>(op) ||
-        opResultNonNegativeIfAllElementsNonNegative<stablehlo::AddOp>(op) ||
-        opResultNonNegativeIfAllElementsNonNegative<stablehlo::MulOp>(op))
-      return true;
-  }
-
-  // (mul a a) is always non-negative
-  if (auto mulOp = dyn_cast<stablehlo::MulOp>(op)) {
-    auto lhsOp = mulOp.getLhs().getDefiningOp();
-    auto rhsOp = mulOp.getRhs().getDefiningOp();
-
-    if (lhsOp == rhsOp)
-      return true;
-  }
-
-  if (auto clampOp = dyn_cast<stablehlo::ClampOp>(op)) {
-    // Clamp is non-negative if the min operand is non-negative
-
-    if (auto minOp = clampOp.getMin().getDefiningOp()) {
-      if (opResultIsAlwaysNonNegative(minOp))
-        return true;
-    }
-  }
-
-  // TODO: For NegOp we need a check for if the operand is guaranteed to be
-  // non-positive
-
-  // TODO: Mul of 2 negative values is non-negative
-
-  if (auto selectOp = dyn_cast<stablehlo::SelectOp>(op)) {
-    // Select produces non-negative results if both branches produce
-    // non-negative results
-    auto trueOp = selectOp.getOnTrue().getDefiningOp();
-    auto falseOp = selectOp.getOnFalse().getDefiningOp();
-
-    if (trueOp && falseOp) {
-      return opResultIsAlwaysNonNegative(trueOp) &&
-             opResultIsAlwaysNonNegative(falseOp);
-    }
-  }
-
-  // These operations preserve values, so result is non-negative if operand is
-  // non-negative
-  if (isa<stablehlo::ReshapeOp, stablehlo::TransposeOp>(op)) {
-    if (auto defOp = op->getOperand(0).getDefiningOp())
-      return opResultIsAlwaysNonNegative(defOp);
-  }
-
-  // Default: can't guarantee non-negative result
-  return false;
-}
-
 struct AbsPositiveSimplify
     : public CheckedOpRewritePattern<stablehlo::AbsOp, AbsPositiveSimplify> {
   using CheckedOpRewritePattern<stablehlo::AbsOp,
@@ -16864,7 +16732,7 @@ struct AbsPositiveSimplify
     if (isa<ComplexType>(operand.getType().getElementType()))
       return failure();
 
-    if (opResultIsAlwaysNonNegative(operand.getDefiningOp())) {
+    if (guaranteedNonNegativeResult(operand.getDefiningOp())) {
       rewriter.replaceOp(op, op.getOperand());
       return success();
     }

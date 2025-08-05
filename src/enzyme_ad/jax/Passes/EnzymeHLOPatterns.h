@@ -22,11 +22,11 @@ void addSumToConv(RewritePatternSet &patterns, bool collapseDims,
 void addPadDotGeneral(RewritePatternSet &patterns, bool postPad,
                       MLIRContext &context, PatternBenefit benefit);
 void addNoNanCompareSimplify(RewritePatternSet &patterns,
-                             bool allowOnFloatingPointMath, MLIRContext &context,
-                             PatternBenefit benefit);
+                             bool allowOnFloatingPointMath,
+                             MLIRContext &context, PatternBenefit benefit);
 void addNoNanSelfAddSimplify(RewritePatternSet &patterns,
-                             bool allowOnFloatingPointMath, MLIRContext &context,
-                             PatternBenefit benefit);
+                             bool allowOnFloatingPointMath,
+                             MLIRContext &context, PatternBenefit benefit);
 void addNoNanAddSubSimplify(RewritePatternSet &patterns,
                             bool allowOnFloatingPointMath, MLIRContext &context,
                             PatternBenefit benefit);

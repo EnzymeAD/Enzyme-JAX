@@ -306,8 +306,13 @@ bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy, Type inTy);
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy, Type inTy,
                           mlir::Operation *op);
 
+bool guaranteedNoNanResult(stablehlo::ConstantOp constOp);
 bool guaranteedNoNanResult(mlir::Value value);
 bool guaranteedNoNanResult(mlir::Operation *op);
+
+bool guaranteedNonNegativeResult(stablehlo::ConstantOp constOp);
+bool guaranteedNonNegativeResult(mlir::Value value);
+bool guaranteedNonNegativeResult(Operation *op);
 
 bool anyOperandIsConstant(mlir::Operation *op);
 bool allOperandsAreConstant(mlir::Operation *op);
