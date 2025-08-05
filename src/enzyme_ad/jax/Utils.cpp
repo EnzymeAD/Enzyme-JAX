@@ -557,6 +557,14 @@ bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type Ty) {
   return allowOnFloatingPointMath;
 }
 
+bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type Ty,
+                          const SmallVector<Value> &operands) {
+  Ty = getElementTypeOrSelf(Ty);
+  if (Ty.isInteger())
+    return true;
+  return allowOnFloatingPointMath || guaranteedNoNanResult(operands);
+}
+
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy,
                           Type inTy) {
   outTy = getElementTypeOrSelf(outTy);
@@ -565,6 +573,26 @@ bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy,
     return true;
   return allowOnFloatingPointMath;
 }
+
+bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy, Type inTy,
+                          const SmallVector<Value> &operands) {
+  outTy = getElementTypeOrSelf(outTy);
+  inTy = getElementTypeOrSelf(inTy);
+  if (outTy.isInteger() && inTy.isInteger())
+    return true;
+  return allowOnFloatingPointMath || guaranteedNoNanResult(operands);
+}
+
+bool guaranteedNoNanResult(const SmallVector<Value> &operands) {
+  for (auto op : operands) {
+    if (!guaranteedNoNanResult(op)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool guaranteedNoNanResult(Value op) { return false; }
 
 bool anyOperandIsConstant(mlir::Operation *op) {
   DenseElementsAttr attr;
