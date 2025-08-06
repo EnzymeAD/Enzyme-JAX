@@ -4,9 +4,9 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "src/enzyme_ad/jax/Passes/LinalgUtils.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Utils.h"
-#include "src/enzyme_ad/jax/Passes/LinalgUtils.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/DynamicAPInt.h"
 #include "llvm/ADT/SetVector.h"
@@ -34,7 +34,7 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
   int64_t blasIntWidth;
 
   GeqrfOpLowering(std::string backend, int64_t blasIntWidth,
-                            MLIRContext *context, PatternBenefit benefit = 1)
+                  MLIRContext *context, PatternBenefit benefit = 1)
       : OpRewritePattern(context, benefit), backend(backend),
         blasIntWidth(blasIntWidth) {}
 
@@ -52,7 +52,7 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
     else
       return rewriter.notifyMatchFailure(op, "Unknown backend: \"" + backend +
                                                  "\"");
-    }
+  }
 
   // TODO get matrix sizes dynamically so that we don't need to create a
   // function wrapper for each op instance
@@ -185,8 +185,7 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
 
     SmallVector<Attribute> aliases;
     for (int i = 0; i < 3; ++i) {
-      aliases.push_back(stablehlo::OutputOperandAliasAttr::get(
-          ctx, {}, i, {}));
+      aliases.push_back(stablehlo::OutputOperandAliasAttr::get(ctx, {}, i, {}));
     }
 
     auto jit_call_op = rewriter.create<enzymexla::JITCallOp>(
@@ -222,8 +221,8 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
     auto rank_tau = type_tau.getRank();
 
     // emit `stablehlo.custom_call` to `@cusolver_geqrf_ffi` kernel from jaxlib
-    SmallVector<Attribute> aliases = {stablehlo::OutputOperandAliasAttr::get(
-        ctx, {0}, 0, {})};
+    SmallVector<Attribute> aliases = {
+        stablehlo::OutputOperandAliasAttr::get(ctx, {0}, 0, {})};
     SmallVector<int64_t> ranks_operands = {rank_input};
     SmallVector<int64_t> ranks_results = {rank_input, rank_tau};
     SmallVector<bool> isColMajorArrOperands = {true};
@@ -306,7 +305,7 @@ struct GeqrtOpLowering : public OpRewritePattern<enzymexla::GeqrtOp> {
   int64_t blasIntWidth;
 
   GeqrtOpLowering(std::string backend, int64_t blasIntWidth,
-                            MLIRContext *context, PatternBenefit benefit = 1)
+                  MLIRContext *context, PatternBenefit benefit = 1)
       : OpRewritePattern(context, benefit), backend(backend),
         blasIntWidth(blasIntWidth) {}
 
@@ -428,14 +427,15 @@ struct GeqrtOpLowering : public OpRewritePattern<enzymexla::GeqrtOp> {
         nb_value = op.getBlocksize().value();
         assert(std::min(inputShape[0], inputShape[1]) >= nb_value &&
                "Block size must be less than or equal to min(m, n)");
-        assert(nb_value >= 1 && "Block size must be greater than or equal to 1");
+        assert(nb_value >= 1 &&
+               "Block size must be greater than or equal to 1");
       } else {
         // default block size is min(m, n)
         nb_value = std::min(inputShape[0], inputShape[1]);
       }
       auto nb_attr = rewriter.getI64IntegerAttr(nb_value);
       auto nb_op = rewriter.create<LLVM::ConstantOp>(
-        op.getLoc(), type_llvm_lapack_int, nb_attr);
+          op.getLoc(), type_llvm_lapack_int, nb_attr);
       // can reuse nb = ldt
       ldt_value = nb_value;
       auto ldt_op = nb_op;
@@ -468,7 +468,8 @@ struct GeqrtOpLowering : public OpRewritePattern<enzymexla::GeqrtOp> {
     auto info = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_info, cast<ElementsAttr>(makeAttr(type_info, -1)));
 
-    auto type_T = RankedTensorType::get({ldt_value, std::min(inputShape[0], inputShape[1])}, inputElementType);
+    auto type_T = RankedTensorType::get(
+        {ldt_value, std::min(inputShape[0], inputShape[1])}, inputElementType);
     auto T = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_T, cast<ElementsAttr>(makeAttr(type_T, 0)));
 
@@ -481,8 +482,8 @@ struct GeqrtOpLowering : public OpRewritePattern<enzymexla::GeqrtOp> {
 
     SmallVector<Attribute> aliases;
     for (int i = 0; i < 3; ++i) {
-      aliases.push_back(stablehlo::OutputOperandAliasAttr::get(
-          ctx, {i}, i, {}));
+      aliases.push_back(
+          stablehlo::OutputOperandAliasAttr::get(ctx, {i}, i, {}));
     }
 
     auto jit_call_op = rewriter.create<enzymexla::JITCallOp>(
@@ -510,7 +511,7 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
   int64_t blasIntWidth;
 
   OrgqrOpLowering(std::string backend, int64_t blasIntWidth,
-                            MLIRContext *context, PatternBenefit benefit = 1)
+                  MLIRContext *context, PatternBenefit benefit = 1)
       : OpRewritePattern(context, benefit), backend(backend),
         blasIntWidth(blasIntWidth) {}
 
@@ -551,7 +552,8 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
 
     if (numBatchDims > 0) {
       return rewriter.notifyMatchFailure(
-          op, "`enzymexla.lapack.orgqr` with batch dimensions on CPU is not yet supported");
+          op, "`enzymexla.lapack.orgqr` with batch dimensions on CPU is not "
+              "yet supported");
     }
 
     auto type_lapack_int = rewriter.getIntegerType(blasIntWidth);
@@ -663,13 +665,11 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
     auto resultLayouts = getSHLOLayout(rewriter, outputRanks, isColMajorArr, 2);
 
     SmallVector<Attribute> aliases;
-    aliases.push_back(stablehlo::OutputOperandAliasAttr::get(ctx,
-      {0}, 0, {}));
+    aliases.push_back(stablehlo::OutputOperandAliasAttr::get(ctx, {0}, 0, {}));
 
     auto jit_call_op = rewriter.create<enzymexla::JITCallOp>(
         op.getLoc(), TypeRange{inputType},
-        mlir::FlatSymbolRefAttr::get(ctx, wrapper_fn),
-        ValueRange{input, tau},
+        mlir::FlatSymbolRefAttr::get(ctx, wrapper_fn), ValueRange{input, tau},
         rewriter.getStringAttr(""),
         /*operand_layouts=*/operandLayouts,
         /*result_layouts=*/resultLayouts,
@@ -698,8 +698,8 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
     auto rank_tau = type_tau.getRank();
 
     // emit `stablehlo.custom_call` to `@cusolver_orgqr_ffi` kernel from jaxlib
-    SmallVector<Attribute> aliases = {stablehlo::OutputOperandAliasAttr::get(
-        ctx, {}, 0, {})};
+    SmallVector<Attribute> aliases = {
+        stablehlo::OutputOperandAliasAttr::get(ctx, {}, 0, {})};
     SmallVector<int64_t> ranks_operands = {rank_input, rank_tau};
     SmallVector<int64_t> ranks_results = {rank_input};
     SmallVector<bool> isColMajorArrOperands = {true, true};
@@ -760,7 +760,7 @@ struct OrmqrOpLowering : public OpRewritePattern<enzymexla::OrmqrOp> {
   int64_t blasIntWidth;
 
   OrmqrOpLowering(std::string backend, int64_t blasIntWidth,
-                            MLIRContext *context, PatternBenefit benefit = 1)
+                  MLIRContext *context, PatternBenefit benefit = 1)
       : OpRewritePattern(context, benefit), backend(backend),
         blasIntWidth(blasIntWidth) {}
 
@@ -792,7 +792,7 @@ struct OrmqrOpLowering : public OpRewritePattern<enzymexla::OrmqrOp> {
     auto A_shape = A_type.getShape();
     auto A_rank = static_cast<int64_t>(A_shape.size());
     auto A_eltype = A_type.getElementType();
-    
+
     auto tau = op.getOperand(1);
     auto tau_type = cast<RankedTensorType>(tau.getType());
     auto tau_shape = tau_type.getShape();
@@ -813,22 +813,23 @@ struct OrmqrOpLowering : public OpRewritePattern<enzymexla::OrmqrOp> {
 
     auto side_value = op.getSide() == enzymexla::LapackSide::left ? 'L' : 'R';
     char trans_value = 'N';
-    switch(op.getTranspose()) {
-      case enzymexla::LapackTranspose::none:
-        trans_value = 'N';
-        break;
-      case enzymexla::LapackTranspose::transpose:
-        trans_value = 'T';
-        break;
-      case enzymexla::LapackTranspose::adjoint:
-        trans_value = 'C';
-        break;
+    switch (op.getTranspose()) {
+    case enzymexla::LapackTranspose::none:
+      trans_value = 'N';
+      break;
+    case enzymexla::LapackTranspose::transpose:
+      trans_value = 'T';
+      break;
+    case enzymexla::LapackTranspose::adjoint:
+      trans_value = 'C';
+      break;
     }
 
-    assert(output_shape == C_shape &&
-      "`enzymexla.lapack.ormqr` requires `C` and `output` to have the same shape");
+    assert(output_shape == C_shape && "`enzymexla.lapack.ormqr` requires `C` "
+                                      "and `output` to have the same shape");
     assert(A_eltype == C_eltype && A_eltype == tau_eltype &&
-      "`enzymexla.lapack.ormqr` requires the same element type for all operands");
+           "`enzymexla.lapack.ormqr` requires the same element type for all "
+           "operands");
 
     auto mA = A_shape[0];
     auto mC = C_shape[0];
@@ -837,23 +838,24 @@ struct OrmqrOpLowering : public OpRewritePattern<enzymexla::OrmqrOp> {
 
     if (A_rank - 2 > 0 || C_rank - 2 > 0) {
       return rewriter.notifyMatchFailure(
-          op, "`enzymexla.lapack.orgqr` with batch dimensions on CPU is not yet supported");
+          op, "`enzymexla.lapack.orgqr` with batch dimensions on CPU is not "
+              "yet supported");
     }
 
     assert(A_shape[0] >= A_shape[1] &&
-      "`lapack.ormqr` with wide QR not yet supported. use `stablehlo.dynamic_update_slice` first");
-    assert(A_shape[1] == k_value && "second dimension of A and dimension of tau must match");
+           "`lapack.ormqr` with wide QR not yet supported. use "
+           "`stablehlo.dynamic_update_slice` first");
+    assert(A_shape[1] == k_value &&
+           "second dimension of A and dimension of tau must match");
 
     if (side_value == 'L') {
-      assert(mC == mA &&
-        "for a left-sided multiplication, the first dimension of C, must equal the first dimension of A");
-      assert(mC >= k_value &&
-        "invalid number of reflectors: k should be <= m");
+      assert(mC == mA && "for a left-sided multiplication, the first dimension "
+                         "of C, must equal the first dimension of A");
+      assert(mC >= k_value && "invalid number of reflectors: k should be <= m");
     } else { // side_value == 'R'
-      assert(nC == mA &&
-        "for a right-sided multiplication, the second dimension of C, must equal the first dimension of A");
-      assert(nC >= k_value &&
-        "invalid number of reflectors: k should be <= n");
+      assert(nC == mA && "for a right-sided multiplication, the second "
+                         "dimension of C, must equal the first dimension of A");
+      assert(nC >= k_value && "invalid number of reflectors: k should be <= n");
     }
 
     auto lda_value = A_shape[0];
@@ -872,8 +874,7 @@ struct OrmqrOpLowering : public OpRewritePattern<enzymexla::OrmqrOp> {
       else
         fn = *prefix + "un" + fn;
     } else {
-      op->emitOpError() << "Unsupported complex element type: "
-                        << A_eltype;
+      op->emitOpError() << "Unsupported complex element type: " << A_eltype;
       return rewriter.notifyMatchFailure(op,
                                          "unsupported complex element type");
     }
@@ -889,20 +890,20 @@ struct OrmqrOpLowering : public OpRewritePattern<enzymexla::OrmqrOp> {
       rewriter.setInsertionPointToStart(moduleOp.getBody());
       auto func_type =
           LLVM::LLVMFunctionType::get(type_llvm_lapack_int,
-            {
-                type_llvm_lapack_int, // matrix_layout
-                type_llvm_char,       // side
-                type_llvm_char,       // trans
-                type_llvm_lapack_int, // m
-                type_llvm_lapack_int, // n
-                type_llvm_lapack_int, // k
-                type_llvm_ptr,        // A
-                type_llvm_lapack_int, // lda
-                type_llvm_ptr,        // tau
-                type_llvm_ptr,        // C
-                type_llvm_lapack_int, // ldc
-            },
-            false);
+                                      {
+                                          type_llvm_lapack_int, // matrix_layout
+                                          type_llvm_char,       // side
+                                          type_llvm_char,       // trans
+                                          type_llvm_lapack_int, // m
+                                          type_llvm_lapack_int, // n
+                                          type_llvm_lapack_int, // k
+                                          type_llvm_ptr,        // A
+                                          type_llvm_lapack_int, // lda
+                                          type_llvm_ptr,        // tau
+                                          type_llvm_ptr,        // C
+                                          type_llvm_lapack_int, // ldc
+                                      },
+                                      false);
       rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), bind_fn, func_type,
                                         LLVM::Linkage::External);
     }
@@ -993,13 +994,11 @@ struct OrmqrOpLowering : public OpRewritePattern<enzymexla::OrmqrOp> {
     auto resultLayouts = getSHLOLayout(rewriter, outputRanks, isColMajorArr, 2);
 
     SmallVector<Attribute> aliases;
-    aliases.push_back(stablehlo::OutputOperandAliasAttr::get(ctx,
-      {}, 2, {}));
+    aliases.push_back(stablehlo::OutputOperandAliasAttr::get(ctx, {}, 2, {}));
 
     auto jit_call_op = rewriter.create<enzymexla::JITCallOp>(
         op.getLoc(), TypeRange{C_type},
-        mlir::FlatSymbolRefAttr::get(ctx, wrapper_fn),
-        ValueRange{A, tau, C},
+        mlir::FlatSymbolRefAttr::get(ctx, wrapper_fn), ValueRange{A, tau, C},
         rewriter.getStringAttr(""),
         /*operand_layouts=*/operandLayouts,
         /*result_layouts=*/resultLayouts,
