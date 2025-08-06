@@ -662,16 +662,14 @@ bool guaranteedNoNanResult(mlir::Operation *op) {
     auto lhsFinite = guaranteedFiniteResult(op->getOperand(0));
     auto rhsFinite = guaranteedFiniteResult(op->getOperand(1));
 
-    if (!lhsFinite || !rhsFinite) {
-      return false;
-    }
+    if (lhsFinite || rhsFinite)
+      return true;
 
-    auto lhsNan = guaranteedNoNanResult(op->getOperand(0));
-    auto rhsNan = guaranteedNoNanResult(op->getOperand(1));
+    auto lhsNoNan = guaranteedNoNanResult(op->getOperand(0));
+    auto rhsNoNan = guaranteedNoNanResult(op->getOperand(1));
 
-    if (lhsNan && rhsNan) {
+    if (lhsNoNan && rhsNoNan)
       return false;
-    }
   }
 
   // guaranteed if operands are all finite
