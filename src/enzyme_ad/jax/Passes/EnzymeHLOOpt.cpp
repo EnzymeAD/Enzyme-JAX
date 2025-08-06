@@ -20426,6 +20426,79 @@ struct SplitConvolutionIntoReverseConvolution final
   }
 };
 
+// partial workaround for: https://github.com/openxla/xla/issues/29362
+struct SplitMultiResultScatter
+    : public CheckedOpRewritePattern<stablehlo::ScatterOp,
+                                     SplitMultiResultScatter> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ScatterOp op,
+                                    PatternRewriter &rewriter) const {
+    // This pattern is for scatters with multiple independent results.
+    if (op.getNumResults() <= 1) {
+      return rewriter.notifyMatchFailure(
+          op, "scatter does not have multiple results");
+    }
+
+    // The body of the scatter should perform an independent update.
+    // This means the returned values are just the update arguments.
+    Block &body = op.getUpdateComputation().front();
+    auto returnOp = dyn_cast<stablehlo::ReturnOp>(body.getTerminator());
+    if (!returnOp || returnOp.getNumOperands() != op.getNumResults()) {
+      return rewriter.notifyMatchFailure(
+          op, "scatter body does not have a suitable return op");
+    }
+
+    // The arguments to the body are first the operands, then the updates.
+    // We expect the return op to return the update arguments.
+    size_t numInputs = op.getInputs().size();
+    for (size_t i = 0; i < returnOp.getNumOperands(); ++i) {
+      auto returnedVal = dyn_cast<BlockArgument>(returnOp.getOperand(i));
+      if (!returnedVal || returnedVal.getArgNumber() != numInputs + i) {
+        return rewriter.notifyMatchFailure(
+            op, "scatter body does not simply return update values");
+      }
+    }
+
+    // If we reached here, the pattern matches. Now, rewrite.
+    SmallVector<Value> newResults;
+    for (unsigned i = 0; i < op.getNumResults(); ++i) {
+      auto newScatterOp = rewriter.create<stablehlo::ScatterOp>(
+          op.getLoc(), op.getResult(i).getType(), op.getInputs()[i],
+          op.getScatterIndices(), op.getUpdates()[i],
+          op.getScatterDimensionNumbersAttr(), op.getIndicesAreSortedAttr(),
+          op.getUniqueIndicesAttr());
+
+      {
+        // Use an InsertionGuard to scope the rewriter's insertion point
+        // when populating the new scatter's region.
+        OpBuilder::InsertionGuard guard(rewriter);
+
+        // Create the new computation block for the single-result scatter.
+        Block *newBlock =
+            rewriter.createBlock(&newScatterOp.getUpdateComputation());
+
+        // Get the correct 0-d tensor types from the original scatter's body.
+        Type operandArgType = body.getArgument(i).getType();
+        Type updateArgType = body.getArgument(numInputs + i).getType();
+        newBlock->addArgument(operandArgType, op.getLoc());
+        newBlock->addArgument(updateArgType, op.getLoc());
+
+        // Return the update value.
+        rewriter.setInsertionPointToEnd(newBlock);
+        rewriter.create<stablehlo::ReturnOp>(op.getLoc(),
+                                             newBlock->getArgument(1));
+      } // InsertionGuard restores the insertion point here.
+
+      newResults.push_back(newScatterOp.getResult(0));
+    }
+
+    rewriter.replaceOp(op, newResults);
+
+    return success();
+  }
+};
+
 struct ScatterMultiplySimplify final
     : public CheckedOpRewritePattern<stablehlo::MulOp,
                                      ScatterMultiplySimplify> {
@@ -22233,6 +22306,7 @@ struct EnzymeHLOOptPass
     patterns.add<TransposeWrap>(context);
     patterns.add<TransposeExtend>(context);
     patterns.add<TransposeRotate>(context);
+    patterns.add<SplitMultiResultScatter>(context);
 
     patterns.add<
         AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
