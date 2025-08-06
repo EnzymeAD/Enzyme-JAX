@@ -6,10 +6,10 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "Ops.h"
 #include "../Utils.h"
 #include "Dialect.h"
 #include "Interfaces/AutoDiffTypeInterface.h"
-#include "Ops.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
@@ -743,16 +743,8 @@ public:
     Value c0 = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 0);
     Value c1 = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 1);
     SmallVector<Value> idxs;
-    Value val;
-
-    if (auto IT = dyn_cast<IntegerType>(elTy))
-      val =
-          rewriter.create<arith::ConstantIntOp>(op.getLoc(), 0, IT.getWidth());
-    else {
-      auto FT = cast<FloatType>(elTy);
-      val = rewriter.create<arith::ConstantFloatOp>(
-          op.getLoc(), APFloat(FT.getFloatSemantics(), "0"), FT);
-    }
+    Value val = cast<mlir::enzyme::AutoDiffTypeInterface>(elTy).createNullValue(
+        rewriter, op.getLoc());
 
     auto forOp = rewriter.create<scf::ForOp>(
         op.getLoc(), c0,
@@ -852,18 +844,28 @@ public:
 };
 
 /// Simplify load(pointer2memref(gep(...(x)))) to load(x, idx)
-class LoadPointer2MemrefGEP final : public OpRewritePattern<memref::LoadOp> {
+template <typename T>
+class LoadStorePointer2MemrefGEP final : public OpRewritePattern<T> {
 public:
-  using OpRewritePattern<memref::LoadOp>::OpRewritePattern;
+  using OpRewritePattern<T>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(memref::LoadOp op,
+  SmallVector<Value> newIndex(T op, Value toAdd,
+                              PatternRewriter &rewriter) const;
+
+  void createNewOp(T op, Value baseMemref, SmallVector<Value> vals,
+                   PatternRewriter &rewriter) const;
+
+  Value getMemref(T op) const;
+
+  LogicalResult matchAndRewrite(T op,
                                 PatternRewriter &rewriter) const override {
     // FIXME: Only handle memref.load with single index for now
     if (op.getIndices().size() != 1)
       return failure();
 
     // Match pointer2memref -> load pattern
-    auto src = op.getMemref().getDefiningOp<Pointer2MemrefOp>();
+    auto src =
+        getMemref(op).template getDefiningOp<enzymexla::Pointer2MemrefOp>();
     if (!src)
       return failure();
 
@@ -903,7 +905,7 @@ public:
         loc, cast<MemRefType>(src.getType()), ptr);
 
     // Start with the original load offset
-    Value finalIndex = op.getIndices()[0];
+    Value finalIndex = nullptr;
     // Process GEPs in reverse order
     for (auto [gep, gepElemSize] : llvm::reverse(gepOps)) {
       PointerUnion<IntegerAttr, Value> rawIdx = gep.getIndices()[0];
@@ -942,21 +944,128 @@ public:
       // Then divide if needed
       Value elemOffset =
           (scaledElement != 1)
-              ? rewriter.create<arith::DivUIOp>(
+              ? rewriter.create<arith::DivSIOp>(
                     loc, scaledIdx,
                     rewriter.create<arith::ConstantIndexOp>(loc, scaledElement))
               : scaledIdx;
 
       // Add to total offset
-      finalIndex = rewriter.create<arith::AddIOp>(loc, finalIndex, elemOffset);
+      if (finalIndex)
+        finalIndex =
+            rewriter.create<arith::AddIOp>(loc, finalIndex, elemOffset);
+      else
+        finalIndex = elemOffset;
     }
 
     // Replace the load with a direct load from the base memref
-    rewriter.replaceOpWithNewOp<memref::LoadOp>(op, baseMemref,
-                                                ValueRange{finalIndex});
+    createNewOp(op, baseMemref, newIndex(op, finalIndex, rewriter), rewriter);
     return success();
   }
 };
+
+template <>
+Value LoadStorePointer2MemrefGEP<memref::LoadOp>::getMemref(
+    memref::LoadOp op) const {
+  return op.getMemref();
+}
+
+template <>
+Value LoadStorePointer2MemrefGEP<memref::StoreOp>::getMemref(
+    memref::StoreOp op) const {
+  return op.getMemref();
+}
+
+template <>
+Value LoadStorePointer2MemrefGEP<affine::AffineLoadOp>::getMemref(
+    affine::AffineLoadOp op) const {
+  return op.getMemref();
+}
+
+template <>
+Value LoadStorePointer2MemrefGEP<affine::AffineStoreOp>::getMemref(
+    affine::AffineStoreOp op) const {
+  return op.getMemref();
+}
+
+template <>
+SmallVector<Value> LoadStorePointer2MemrefGEP<memref::LoadOp>::newIndex(
+    memref::LoadOp op, Value finalIndex, PatternRewriter &rewriter) const {
+  auto operands = llvm::to_vector(op.getIndices());
+  operands[0] =
+      rewriter.create<arith::AddIOp>(op.getLoc(), operands[0], finalIndex);
+  return operands;
+}
+
+template <>
+SmallVector<Value> LoadStorePointer2MemrefGEP<affine::AffineLoadOp>::newIndex(
+    affine::AffineLoadOp op, Value finalIndex,
+    PatternRewriter &rewriter) const {
+  auto map = op.getAffineMap();
+  auto apply = rewriter.create<affine::AffineApplyOp>(
+      op.getLoc(), op.getAffineMap(), op.getMapOperands());
+
+  SmallVector<Value> operands;
+  for (auto op : apply->getResults())
+    operands.push_back(op);
+  operands[0] =
+      rewriter.create<arith::AddIOp>(op.getLoc(), operands[0], finalIndex);
+  return operands;
+}
+
+template <>
+SmallVector<Value> LoadStorePointer2MemrefGEP<memref::StoreOp>::newIndex(
+    memref::StoreOp op, Value finalIndex, PatternRewriter &rewriter) const {
+  auto operands = llvm::to_vector(op.getIndices());
+  operands[0] =
+      rewriter.create<arith::AddIOp>(op.getLoc(), operands[0], finalIndex);
+  return operands;
+}
+
+template <>
+SmallVector<Value> LoadStorePointer2MemrefGEP<affine::AffineStoreOp>::newIndex(
+    affine::AffineStoreOp op, Value finalIndex,
+    PatternRewriter &rewriter) const {
+  auto map = op.getAffineMap();
+  auto apply = rewriter.create<affine::AffineApplyOp>(
+      op.getLoc(), op.getAffineMap(), op.getMapOperands());
+
+  SmallVector<Value> operands;
+  for (auto op : apply->getResults())
+    operands.push_back(op);
+  operands[0] =
+      rewriter.create<arith::AddIOp>(op.getLoc(), operands[0], finalIndex);
+  return operands;
+}
+
+template <>
+void LoadStorePointer2MemrefGEP<memref::LoadOp>::createNewOp(
+    memref::LoadOp op, Value baseMemref, SmallVector<Value> idxs,
+    PatternRewriter &rewriter) const {
+  rewriter.replaceOpWithNewOp<memref::LoadOp>(op, baseMemref, idxs);
+}
+
+template <>
+void LoadStorePointer2MemrefGEP<affine::AffineLoadOp>::createNewOp(
+    affine::AffineLoadOp op, Value baseMemref, SmallVector<Value> idxs,
+    PatternRewriter &rewriter) const {
+  rewriter.replaceOpWithNewOp<memref::LoadOp>(op, baseMemref, idxs);
+}
+
+template <>
+void LoadStorePointer2MemrefGEP<memref::StoreOp>::createNewOp(
+    memref::StoreOp op, Value baseMemref, SmallVector<Value> idxs,
+    PatternRewriter &rewriter) const {
+  rewriter.replaceOpWithNewOp<memref::StoreOp>(op, op.getValue(), baseMemref,
+                                               idxs);
+}
+
+template <>
+void LoadStorePointer2MemrefGEP<affine::AffineStoreOp>::createNewOp(
+    affine::AffineStoreOp op, Value baseMemref, SmallVector<Value> idxs,
+    PatternRewriter &rewriter) const {
+  rewriter.replaceOpWithNewOp<memref::StoreOp>(op, op.getValue(), baseMemref,
+                                               idxs);
+}
 
 /// Simplify load (pointer2memref(x)) to llvm.load x
 template <typename Op>
@@ -1092,7 +1201,10 @@ void MetaPointer2Memref<affine::AffineStoreOp>::rewriteInternal(
 void Pointer2MemrefOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                                    MLIRContext *context) {
   results.insert<Pointer2MemrefCast, Pointer2Memref2PointerCast,
-                 LoadPointer2MemrefGEP>(context);
+                 LoadStorePointer2MemrefGEP<memref::LoadOp>,
+                 LoadStorePointer2MemrefGEP<affine::AffineLoadOp>,
+                 LoadStorePointer2MemrefGEP<memref::StoreOp>,
+                 LoadStorePointer2MemrefGEP<affine::AffineStoreOp>>(context);
   /*
   results.insert<Pointer2MemrefCast, Pointer2Memref2PointerCast,
                  MetaPointer2Memref<memref::LoadOp>,

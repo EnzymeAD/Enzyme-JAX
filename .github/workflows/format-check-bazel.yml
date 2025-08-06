@@ -1,6 +1,22 @@
 name: Bazel files check
 
-on: [push]
+on:
+  push:
+    branches:
+    - main
+    paths:
+      - '.github/workflows/format-check-bazel.yml'
+      - '**/BUILD'
+      - '**/WORKSPACE'
+      - '**/*.bzl'
+  pull_request:
+    branches:
+    - main
+    paths:
+      - '.github/workflows/format-check-bazel.yml'
+      - '**/BUILD'
+      - '**/WORKSPACE'
+      - '**/*.bzl'
 
 jobs:
   formatting-check:

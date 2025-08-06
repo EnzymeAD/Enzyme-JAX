@@ -1,21 +1,3 @@
-# add support for generating compile_commands
-load("//third_party/hedron_compile_commands:workspace.bzl", hedron_compile_commands_workspace = "repo")
-
-hedron_compile_commands_workspace()
-
-load("@hedron_compile_commands//:workspace_setup.bzl", "hedron_compile_commands_setup")
-load("@hedron_compile_commands//:workspace_setup_transitive.bzl", "hedron_compile_commands_setup_transitive")
-load("@hedron_compile_commands//:workspace_setup_transitive_transitive.bzl", "hedron_compile_commands_setup_transitive_transitive")
-load("@hedron_compile_commands//:workspace_setup_transitive_transitive_transitive.bzl", "hedron_compile_commands_setup_transitive_transitive_transitive")
-
-hedron_compile_commands_setup()
-
-hedron_compile_commands_setup_transitive()
-
-hedron_compile_commands_setup_transitive_transitive()
-
-hedron_compile_commands_setup_transitive_transitive_transitive()
-
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
 # LLVM_COMMIT = "1340ecf0ba4b38bae9de9781da72b9a72abd3fbe"
@@ -59,6 +41,14 @@ load("//third_party/xla:workspace.bzl", xla_workspace = "repo")
 
 xla_workspace()
 
+load("@xla//:workspace4.bzl", "xla_workspace4")
+
+xla_workspace4()
+
+load("@xla//:workspace3.bzl", "xla_workspace3")
+
+xla_workspace3()
+
 load("//third_party/enzyme:workspace.bzl", enzyme_workspace = "repo")
 
 enzyme_workspace()
@@ -94,6 +84,19 @@ install_deps()
 
 load("@xla//third_party/llvm:workspace.bzl", llvm = "repo")
 load("//:workspace.bzl", "LLVM_TARGETS")
+load("@jax//third_party/flatbuffers:workspace.bzl", flatbuffers = "repo")
+
+flatbuffers()
+
+load("@jax//:test_shard_count.bzl", "test_shard_count_repository")
+
+test_shard_count_repository(
+    name = "test_shard_count",
+)
+
+load("@xla//:workspace2.bzl", "xla_workspace2")
+
+xla_workspace2()
 
 llvm("llvm-raw")
 
@@ -103,22 +106,6 @@ llvm_configure(
     name = "llvm-project",
     targets = LLVM_TARGETS,
 )
-
-load("@jax//third_party/flatbuffers:workspace.bzl", flatbuffers = "repo")
-
-flatbuffers()
-
-load("@xla//:workspace4.bzl", "xla_workspace4")
-
-xla_workspace4()
-
-load("@xla//:workspace3.bzl", "xla_workspace3")
-
-xla_workspace3()
-
-load("@xla//:workspace2.bzl", "xla_workspace2")
-
-xla_workspace2()
 
 load("@xla//:workspace1.bzl", "xla_workspace1")
 
@@ -191,3 +178,21 @@ load(
 )
 
 nccl_configure(name = "local_config_nccl")
+
+# add support for generating compile_commands
+load("//third_party/hedron_compile_commands:workspace.bzl", hedron_compile_commands_workspace = "repo")
+
+hedron_compile_commands_workspace()
+
+load("@hedron_compile_commands//:workspace_setup.bzl", "hedron_compile_commands_setup")
+load("@hedron_compile_commands//:workspace_setup_transitive.bzl", "hedron_compile_commands_setup_transitive")
+load("@hedron_compile_commands//:workspace_setup_transitive_transitive.bzl", "hedron_compile_commands_setup_transitive_transitive")
+load("@hedron_compile_commands//:workspace_setup_transitive_transitive_transitive.bzl", "hedron_compile_commands_setup_transitive_transitive_transitive")
+
+hedron_compile_commands_setup()
+
+hedron_compile_commands_setup_transitive()
+
+hedron_compile_commands_setup_transitive_transitive()
+
+hedron_compile_commands_setup_transitive_transitive_transitive()

@@ -126,6 +126,14 @@ inline constant_complex_predicate_matcher m_AnyZeroImagComplex() {
   }};
 }
 
+inline ::mlir::detail::constant_int_predicate_matcher m_NegOne() {
+  return {[](const APInt &value) { return value == -1; }};
+}
+
+inline ::mlir::detail::constant_float_predicate_matcher m_NegOneFloat() {
+  return {[](const APFloat &value) { return value.isExactlyValue(-1.0); }};
+}
+
 static inline mlir::scf::IfOp cloneWithResults(mlir::scf::IfOp op,
                                                mlir::OpBuilder &rewriter,
                                                mlir::IRMapping mapping = {}) {
@@ -297,6 +305,32 @@ bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy, Type inTy);
 bool anyOperandIsConstant(mlir::Operation *op);
 bool allOperandsAreConstant(mlir::Operation *op);
 
+/// Swap side of predicate
+static arith::CmpIPredicate swapPredicate(arith::CmpIPredicate pred) {
+  switch (pred) {
+  case arith::CmpIPredicate::eq:
+  case arith::CmpIPredicate::ne:
+    return pred;
+  case arith::CmpIPredicate::slt:
+    return arith::CmpIPredicate::sgt;
+  case arith::CmpIPredicate::sle:
+    return arith::CmpIPredicate::sge;
+  case arith::CmpIPredicate::sgt:
+    return arith::CmpIPredicate::slt;
+  case arith::CmpIPredicate::sge:
+    return arith::CmpIPredicate::sle;
+  case arith::CmpIPredicate::ult:
+    return arith::CmpIPredicate::ugt;
+  case arith::CmpIPredicate::ule:
+    return arith::CmpIPredicate::uge;
+  case arith::CmpIPredicate::ugt:
+    return arith::CmpIPredicate::ult;
+  case arith::CmpIPredicate::uge:
+    return arith::CmpIPredicate::ule;
+  }
+  llvm_unreachable("unknown cmpi predicate kind");
+}
+
 } // namespace enzyme
 
 namespace stablehlo {
@@ -317,6 +351,12 @@ stablehlo::ConstantOp createConstantOpFromScalar(PatternRewriter &rewriter,
       cast<ElementsAttr>(
           mlir::enzyme::makeAttr(op->getResult(0).getType(), value)));
 }
+
+stablehlo::ComparisonDirection
+reversedComparisonDirection(stablehlo::ComparisonDirection direction);
+
+stablehlo::ComparisonDirection
+negatedComparisonDirection(stablehlo::ComparisonDirection direction);
 
 } // namespace stablehlo
 

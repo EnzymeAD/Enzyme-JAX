@@ -886,6 +886,26 @@ def ApplyCSEExtendPatterns : EnzymeHLOPatternOp<
   let patterns = ["CSE<enzymexla::ExtendOp>"];
 }
 
+def CompareAbs : EnzymeHLOPatternOp<
+    "compare_abs"> {
+  let patterns = ["CompareAbs"];
+}
+
+def CompareMul : EnzymeHLOPatternOp<
+    "compare_mul"> {
+  let patterns = ["CompareMul"];
+}
+
+def CompareConvert : EnzymeHLOPatternOp<
+    "compare_convert"> {
+  let patterns = ["CompareConvert"];
+}
+
+def AddSelects : EnzymeHLOPatternOp<
+    "add_selects"> {
+  let patterns = ["AddSelects"];
+}
+
 def CompareOpCanonPatterns : EnzymeHLOPatternOp<
     "compare_op_canon"> {
   let patterns = ["CompareOpCanon"];
@@ -1321,6 +1341,12 @@ def CompareIotaConstSimplifyPatterns : EnzymeHLOPatternOp<
   "compare_iota_const_simplify"
 > {
   let patterns = ["CompareIotaConstSimplify"];
+}
+
+def CompareNegateConstSimplifyPatterns : EnzymeHLOPatternOp<
+  "compare_negate_const_simplify"
+> {
+  let patterns = ["CompareNegateConstSimplify"];
 }
 
 def BroadcastIotaSimplifyPatterns : EnzymeHLOPatternOp<
@@ -1871,6 +1897,16 @@ def ConcatWrap : EnzymeHLOPatternOp<
   let patterns = ["ConcatWrap"];
 }
 
+def WidenWrap : EnzymeHLOPatternOp<
+    "widen_wrap"> {
+  let patterns = ["WidenWrap"];
+}
+
+def WidenExtend : EnzymeHLOPatternOp<
+    "widen_extend"> {
+  let patterns = ["WidenExtend"];
+}
+
 def ConcatConcatAxisSwap : EnzymeHLOPatternOp<
     "concat_concat_axis_swap"> {
   let patterns = ["ConcatConcatAxisSwap"];
@@ -2122,4 +2158,40 @@ def ApplyTransposeFFT : EnzymeHLOPatternOp<"transpose_fft"> {
 
 def ApplyTransposeReshapePatterns : EnzymeHLOPatternOp<"transpose_reshape"> {
   let patterns = ["TransposeReshape"];
+}
+
+def ApplyDotGeneralReshapePatterns : EnzymeHLOPatternOp<"dot_general_reshape"> {
+  let patterns = ["DotGeneralReshape"];
+}
+
+def ApplyDiagonalTensorDotGeneralRewritePatterns : EnzymeHLOPatternOp<"diagonal_tensor_dot_general_rewrite"> {
+  let patterns = ["DiagonalTensorDotGeneralRewrite"];
+}
+
+def ApplySelectSimplifyPatterns : EnzymeHLOPatternOp<"select_simplify"> {
+  let patterns = ["SelectSimplify"];
+}
+
+def ApplyElementwisePadPatterns : EnzymeHLOPatternOp<"elementwise_pad"> {
+  let patterns = ["ElementwisePad"];
+}
+
+def ApplyConcatenateSubtractToSubtractPadPatterns : EnzymeHLOPatternOp<"concatenate_subtract_to_subtract_pad"> {
+  let patterns = ["ConcatenateSubtractToSubtractPad"];
+}
+
+def ApplyConcatenateBroadcastInDimPatterns : EnzymeHLOPatternOp<"concatenate_broadcast_in_dim"> {
+  let patterns = ["ConcatenateBroadcastInDim"];
+}
+
+def ApplyElementwiseRotatePatterns : EnzymeHLOPatternOp<"elementwise_rotate"> {
+  let patterns = ["ElementwiseRotate"];
+}
+
+def ApplyElementwiseWrapPatterns : EnzymeHLOPatternOp<"elementwise_wrap"> {
+  let patterns = ["ElementwiseWrap"];
+}
+
+def ApplyElementwiseExtendPatterns : EnzymeHLOPatternOp<"elementwise_extend"> {
+  let patterns = ["ElementwiseExtend"];
 }

@@ -312,6 +312,8 @@ class ScatterSum(EnzymeJaxTest):
         self.ins = [jnp.array([2.0, 4.0, 6.0, 8.0])]
         self.dins = [jnp.array([2.7, 3.1, 5.9, 4.2])]
         self.douts = self.fn(*self.ins)
+        # XLA proper is broken, our derivative is correct: https://github.com/openxla/xla/issues/29362
+        self.fwdfilter = lambda _: []
         self.revfilter = lambda _: []
 
 

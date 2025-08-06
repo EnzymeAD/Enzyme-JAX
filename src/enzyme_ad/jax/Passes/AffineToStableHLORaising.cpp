@@ -30,6 +30,8 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
+
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/SmallSet.h"
@@ -1648,9 +1650,25 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     SmallVector<int64_t> reverseDims;
 
     if (affineMapToSlice(accessValueMap, strides, reverseDims, pc).failed()) {
-      LLVM_DEBUG(llvm::dbgs()
-                 << "Failed to affine map to slice: " << *op << "\n");
-      return failure();
+      SmallVector<Value> lIndices;
+      for (auto E : accessValueMap.getAffineMap().getResults()) {
+        auto [idx, idxMap] = expandAffineExpr(
+            builder, op->getLoc(), E, accessValueMap.getOperands(), mapping,
+            accessValueMap.getAffineMap().getNumDims(), pc);
+        maps[idx] = idxMap;
+        lIndices.push_back(idx);
+      }
+
+      Value res =
+          emitLoadAsGather(op->getLoc(), inputTen, lIndices, builder, maps);
+      if (!res) {
+        LLVM_DEBUG(llvm::dbgs()
+                   << "failed to raise load (indices of rank > 1): " << *op
+                   << "\n");
+        return failure();
+      }
+      mapping.map(loadOp.getResult(), res);
+      return success();
     }
 
     bool dynIndices = llvm::any_of(accessValueMap.getOperands(), [](Value iv) {
@@ -1796,9 +1814,35 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     SmallVector<int64_t> reverseDims;
 
     if (affineMapToSlice(accessValueMap, strides, reverseDims, pc).failed()) {
-      LLVM_DEBUG(llvm::dbgs()
-                 << "Failed to affine map to slice: " << *op << "\n");
-      return failure();
+      SmallVector<Value> sIndices;
+      for (auto E : accessValueMap.getAffineMap().getResults()) {
+        auto [expandedIndex, indexMap] = expandAffineExpr(
+            builder, op->getLoc(), E, accessValueMap.getOperands(), mapping,
+            accessValueMap.getAffineMap().getNumDims(), pc);
+        maps[expandedIndex] = indexMap;
+        sIndices.push_back(expandedIndex);
+      }
+
+      Value res = emitStoreAsScatter(op->getLoc(), update, operand, sIndices,
+                                     builder, maps);
+      if (!res) {
+        LLVM_DEBUG(llvm::dbgs() << "affine.store (scatter) is dependent on "
+                                   "less dims than stored value: "
+                                << *op << "\n";
+                   auto flags = OpPrintingFlags();
+                   for (auto iv
+                        : accessValueMap.getOperands()) {
+                     iv.printAsOperand(llvm::dbgs(), flags);
+                     llvm::dbgs() << ", ";
+                   } llvm::dbgs()
+                   << "\n";
+                   accessValueMap.getAffineMap().dump();
+
+        );
+        return failure();
+      }
+      mapping.map(storeOp.getMemref(), res);
+      return success();
     }
 
     bool emitAsScatter =
@@ -2043,7 +2087,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   }
 
   // Identity
-  if (isa<arith::IndexCastUIOp, arith::IndexCastOp>(op)) {
+  if (isa<arith::IndexCastUIOp, arith::IndexCastOp,
+          enzymexla::Memref2PointerOp>(op)) {
     Value operand = op->getOperand(0), result = op->getResult(0);
     mapping.map(result, mapping.lookup(operand));
     return success();
@@ -2058,6 +2103,17 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         avm.getOperands(), mapping, avm.getAffineMap().getNumDims(), pc);
     mapping.map(apply.getResult(), expanded);
     maps[expanded] = expandedMap;
+    return success();
+  }
+
+  if (auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(op)) {
+    Value operand = op->getOperand(0), result = op->getResult(0);
+    auto input = mapping.lookup(operand);
+    auto MT = p2m.getType();
+    auto TT = RankedTensorType::get(MT.getShape(), MT.getElementType());
+    auto res =
+        builder.create<stablehlo::BitcastConvertOp>(p2m.getLoc(), TT, input);
+    mapping.map(result, res);
     return success();
   }
 
@@ -2431,7 +2487,7 @@ struct AffineToStableHLORaisingPass
       if (FT &&
           llvm::all_of(FT.getInputs(),
                        [](Type argTy) { return isa<MemRefType>(argTy); }) &&
-          FT.getNumResults() == 0) {
+          FT.getNumResults() == 0 && FT.getNumInputs() != 0) {
         funcs.push_back(func);
       }
     });
@@ -2459,9 +2515,179 @@ struct AffineToStableHLORaisingPass
       Block *newBlock = new Block();
 
       IRMapping mapping;
+      llvm::DenseMap<Value, affine::AffineValueMap> maps;
       mapping.map(body, newBlock);
+
       SetVector<Value> operands;
-      getUsedValuesDefinedAbove(g->getRegion(0), operands);
+      {
+        SetVector<Value> operands0;
+        getUsedValuesDefinedAbove(g->getRegion(0), operands0);
+
+        DenseMap<Value, Value> buffered;
+        SmallVector<Operation *> loads;
+
+        for (auto arg : operands0) {
+
+          Attribute attr;
+          if (matchPattern(arg, m_Constant(&attr))) {
+            affine::AffineValueMap accessMap(AffineMap::get(arg.getContext()),
+                                             {});
+
+            auto isIndex = isa<IndexType>(arg.getType());
+            auto ET = isIndex ? IntegerType::get(arg.getContext(), 64)
+                              : arg.getType();
+            auto unrankedTensorType = RankedTensorType::get({}, ET);
+            OpBuilder builder(arg.getContext());
+            builder.setInsertionPointToEnd(newBlock);
+            auto newConst = builder.create<stablehlo::ConstantOp>(
+                arg.getLoc(), unrankedTensorType,
+                SplatElementsAttr::get(
+                    unrankedTensorType,
+                    ArrayRef<Attribute>(
+                        isIndex ? IntegerAttr::get(
+                                      ET, cast<IntegerAttr>(attr).getValue())
+                                : attr)));
+            auto newVal = newConst.getResult();
+            mapping.map(arg, newVal);
+            maps[newVal] = accessMap;
+            continue;
+          }
+
+          if (auto ic = arg.getDefiningOp<arith::IndexCastOp>()) {
+            if (arg.getType().isIndex()) {
+              OpBuilder b(g);
+              b.setInsertionPointToStart(body);
+              auto cl = b.clone(*ic);
+
+              auto found = buffered.find(ic.getOperand());
+              if (found != buffered.end()) {
+                cast<arith::IndexCastOp>(cl).setOperand(found->second);
+              }
+
+              arg.replaceUsesWithIf(
+                  cl->getResult(0), [&](OpOperand &opOperand) {
+                    return g->isProperAncestor(opOperand.getOwner());
+                  });
+              arg = ic.getOperand();
+
+              llvm::errs() << " unfolded cast to index new arg: " << arg
+                           << ", old arg: " << ic << "\n";
+            }
+          }
+
+          if (isa<LLVM::LLVMPointerType>(arg.getType())) {
+            OpBuilder b(g);
+            b.setInsertionPoint(g);
+            bool legal = true;
+            MemRefType T = nullptr;
+            for (auto &U : arg.getUses()) {
+              if (g->isProperAncestor(U.getOwner())) {
+                auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(U.getOwner());
+                if (!p2m) {
+                  legal = false;
+                  llvm::errs()
+                      << " non pointermemref user of pointer arg in kernel: "
+                      << *U.getOwner() << "\n";
+                  break;
+                }
+                if (!T) {
+                  T = p2m.getType();
+                } else {
+                  if (T != p2m.getType()) {
+                    if (T.getElementType().isInteger(8)) {
+                      T = p2m.getType();
+                      continue;
+                    }
+                    if (p2m.getType().getElementType().isInteger(8)) {
+                      continue;
+                    }
+                    legal = false;
+                    llvm::errs() << " inconsistent pointer2memref type " << T
+                                 << " and " << p2m << " \n";
+                    break;
+                  }
+                }
+              }
+            }
+
+            if (legal) {
+              auto cl =
+                  b.create<enzymexla::Pointer2MemrefOp>(arg.getLoc(), T, arg);
+              for (auto U : llvm::make_early_inc_range(arg.getUsers())) {
+                if (!g->isProperAncestor(U))
+                  continue;
+                if (U == cl)
+                  continue;
+                if (U->getResult(0).getType() == T) {
+                  U->replaceAllUsesWith(cl);
+                  U->erase();
+                } else {
+                  OpBuilder B(U);
+                  U->setOperand(0, B.create<enzymexla::Memref2PointerOp>(
+                                       arg.getLoc(), arg.getType(), cl));
+                }
+              }
+              operands.insert(cl);
+              continue;
+            }
+          }
+
+          if (buffered.find(arg) != buffered.end()) {
+            continue;
+          }
+
+          if (isa<IntegerType, FloatType>(arg.getType())) {
+            OpBuilder b(g);
+            b.setInsertionPoint(g);
+            auto MT0 =
+                MemRefType::get({}, arg.getType(), MemRefLayoutAttrInterface{},
+                                b.getI64IntegerAttr(0));
+            auto MT =
+                MemRefType::get({}, arg.getType(), MemRefLayoutAttrInterface{},
+                                b.getI64IntegerAttr(1));
+
+            auto res =
+                b.create<gpu::AllocOp>(g.getLoc(), MT, (mlir::Type) nullptr,
+                                       ValueRange(), ValueRange(), ValueRange())
+                    ->getResult(0);
+
+            auto res0 = b.create<memref::AllocaOp>(g.getLoc(), MT0);
+            b.create<affine::AffineStoreOp>(g.getLoc(), arg, res0,
+                                            b.getMultiDimIdentityMap(0),
+                                            ValueRange());
+            auto c1 = b.create<arith::ConstantIndexOp>(g.getLoc(), 1);
+            b.create<enzymexla::MemcpyOp>(g.getLoc(), (mlir::Type) nullptr,
+                                          ValueRange(), res, res0, c1);
+            b.setInsertionPointToStart(body);
+            auto ld = b.create<affine::AffineLoadOp>(
+                g.getLoc(), res, b.getMultiDimIdentityMap(0), ValueRange());
+            loads.push_back(ld);
+            arg.replaceUsesWithIf(ld, [&](OpOperand &opOperand) {
+              return g->isProperAncestor(opOperand.getOwner());
+            });
+
+            b.setInsertionPointAfter(g);
+            b.create<gpu::DeallocOp>(g.getLoc(), (mlir::Type) nullptr,
+                                     ValueRange(), res);
+            buffered[arg] = ld;
+            operands.insert(res);
+            continue;
+          }
+
+          if (isa<MemRefType>(arg.getType())) {
+            operands.insert(arg);
+            continue;
+          }
+
+          operands.insert(arg);
+        }
+
+        for (auto ld : loads) {
+          if (ld != &body->front()) {
+            ld->moveBefore(&body->front());
+          }
+        }
+      }
 
       SmallVector<Type> tensorTypes;
       bool failed = false;
@@ -2499,8 +2725,6 @@ struct AffineToStableHLORaisingPass
       OpBuilder builder(newBlock, newBlock->end());
 
       bool anyFailed = false;
-
-      llvm::DenseMap<Value, affine::AffineValueMap> maps;
 
       ParallelContext emptyPc = ParallelContext::getEmpty(options);
       for (auto &it : body->without_terminator()) {

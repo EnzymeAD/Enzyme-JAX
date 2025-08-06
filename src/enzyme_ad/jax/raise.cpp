@@ -29,7 +29,8 @@
 #include "mlir/Target/LLVMIR/Dialect/NVVM/NVVMToLLVMIRTranslation.h"
 
 extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
-                                              std::string outfile) {
+                                              std::string outfile,
+                                              std::string backend) {
   llvm::LLVMContext Context;
   Context.setDiscardValueNames(false);
   llvm::SMDiagnostic Err;
@@ -63,10 +64,6 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
     llvm::errs() << " imported mlir mod: " << *mod << "\n";
   }
 
-  std::string backend = "cuda";
-  if (auto be = getenv("REACTANT_BACKEND")) {
-    backend = be;
-  }
   using namespace llvm;
   using namespace mlir;
   // clang-format off
@@ -89,14 +86,22 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       "affine-cfg,canonicalize,llvm-to-affine-access,canonicalize,"
       "func.func(affine-loop-invariant-code-motion),"
       "canonicalize,sort-memory,";
-  auto xla = getenv("EXPORT_XLA");
-  if (xla) {
+  if (StringRef(backend).starts_with("xla")) {
       pass_pipeline += "raise-affine-to-stablehlo{prefer_while_raising=false "
       "dump_failed_lockstep=true},canonicalize,arith-raise{stablehlo=true},"
       "symbol-dce";
       if (outfile.size() && getenv("EXPORT_REACTANT")) {
         pass_pipeline += ",print{filename="+outfile+".mlir}";
       }
+      pass_pipeline += ",lower-affine";
+      if (getenv("REACTANT_OMP")) {
+        pass_pipeline += ",convert-scf-to-openmp,";
+      } else {
+        pass_pipeline += ",parallel-serialization,";
+      }
+      pass_pipeline += "canonicalize,convert-polygeist-to-llvm{backend=";
+      pass_pipeline += backend;
+      pass_pipeline += "}";
   } else {
       if (outfile.size() && getenv("EXPORT_REACTANT")) {
         pass_pipeline += "print{filename="+outfile+".mlir},";
@@ -106,7 +111,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       if (getenv("REACTANT_OMP")) {
         pass_pipeline += ",convert-scf-to-openmp,";
       } else {
-	pass_pipeline += ",parallel-serialization,";
+	      pass_pipeline += ",parallel-serialization,";
       }
       pass_pipeline += "canonicalize,convert-polygeist-to-llvm{backend=";
       pass_pipeline += backend;
