@@ -1,9 +1,8 @@
 // RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=split_multi_result_scatter" --transform-interpreter --enzyme-hlo-remove-transform %s | FileCheck %s
 
-
 // CHECK:      func.func private @main_2(%arg0: tensor<2xf32>, %arg1: tensor<2xf32>) -> (tensor<3xf32>, tensor<3xf32>) {
 // CHECK-NEXT:   %cst = stablehlo.constant dense<0.000000e+00> : tensor<3xf32>
-// CHECK-NEXT:   %c = stablehlo.constant dense<[[0], [1]]> : tensor<2x1xi32>
+// CHECK-NEXT:   %c = stablehlo.constant dense<{{\[}}{{\[}}0], [1]]> : tensor<2x1xi32>
 // CHECK-NEXT:   %0 = "stablehlo.scatter"(%cst, %c, %arg0) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0], index_vector_dim = 1>, unique_indices = true}> ({
 // CHECK-NEXT:   ^bb0(%arg2: tensor<f32>, %arg3: tensor<f32>):
 // CHECK-NEXT:     stablehlo.return %arg3 : tensor<f32>
