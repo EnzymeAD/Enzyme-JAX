@@ -24,7 +24,7 @@ void addPadDotGeneral(RewritePatternSet &patterns, bool postPad,
 void addNoNanCompareSimplify(RewritePatternSet &patterns,
                              bool allowOnFloatingPointMath,
                              MLIRContext &context, PatternBenefit benefit);
-void addNoNanSelfAddSimplify(RewritePatternSet &patterns,
+void addNoNanSelfSubSimplify(RewritePatternSet &patterns,
                              bool allowOnFloatingPointMath,
                              MLIRContext &context, PatternBenefit benefit);
 void addNoNanAddSubSimplify(RewritePatternSet &patterns,

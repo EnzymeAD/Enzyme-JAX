@@ -501,8 +501,8 @@ def ApplyNoNanCompareSimplify : EnzymeHLOParameterizedPatternOp<
   }];
 }
 
-def ApplyNoNanSelfAddSimplify : EnzymeHLOParameterizedPatternOp<
-    "no_nan_self_add_simplify"> {
+def ApplyNoNanSelfSubSimplify : EnzymeHLOParameterizedPatternOp<
+    "no_nan_self_sub_simplify"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
   let assemblyFormat = "attr-dict";
   // TODO: this should be made better searchable.

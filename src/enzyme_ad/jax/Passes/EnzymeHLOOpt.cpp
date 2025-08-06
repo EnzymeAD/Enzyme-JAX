@@ -21999,7 +21999,7 @@ void mlir::transform::addNoNanCompareSimplify(RewritePatternSet &patterns,
                                         benefit);
 }
 
-void mlir::transform::addNoNanSelfAddSimplify(RewritePatternSet &patterns,
+void mlir::transform::addNoNanSelfSubSimplify(RewritePatternSet &patterns,
                                               bool allowOnFloatingPointMath,
                                               MLIRContext &context,
                                               PatternBenefit benefit) {
