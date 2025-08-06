@@ -557,6 +557,14 @@ bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type Ty) {
   return allowOnFloatingPointMath;
 }
 
+bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type Ty,
+                          mlir::Operation *op) {
+  Ty = getElementTypeOrSelf(Ty);
+  if (Ty.isInteger())
+    return true;
+  return allowOnFloatingPointMath || guaranteedNoNanResult(op);
+}
+
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy,
                           Type inTy) {
   outTy = getElementTypeOrSelf(outTy);
@@ -564,6 +572,302 @@ bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy,
   if (outTy.isInteger() && inTy.isInteger())
     return true;
   return allowOnFloatingPointMath;
+}
+
+bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy, Type inTy,
+                          mlir::Operation *op) {
+  outTy = getElementTypeOrSelf(outTy);
+  inTy = getElementTypeOrSelf(inTy);
+  if (outTy.isInteger() && inTy.isInteger())
+    return true;
+  return allowOnFloatingPointMath || guaranteedNoNanResult(op);
+}
+
+bool elementwiseConstantOpCheck(
+    stablehlo::ConstantOp constOp,
+    std::function<bool(DenseElementsAttr)> floatCheck,
+    std::function<bool(DenseElementsAttr)> intCheck) {
+  Attribute attr = constOp.getValue();
+
+  if (auto denseAttr = dyn_cast<DenseElementsAttr>(attr)) {
+    if (denseAttr.getType().getShape().size() && denseAttr.isSplat()) {
+      denseAttr = denseAttr.resizeSplat(
+          RankedTensorType::get({}, denseAttr.getType().getElementType()));
+    }
+
+    // For floating point values
+    if (isa<FloatType>(denseAttr.getElementType())) {
+      return floatCheck(denseAttr);
+    }
+
+    // For integer values
+    if (isa<IntegerType>(denseAttr.getElementType())) {
+      return intCheck(denseAttr);
+    }
+  }
+
+  return false;
+}
+
+bool guaranteedNoNanResult(stablehlo::ConstantOp constOp) {
+  return elementwiseConstantOpCheck(
+      constOp,
+      [](DenseElementsAttr attr) {
+        return !std::any_of(attr.getValues<APFloat>().begin(),
+                            attr.getValues<APFloat>().end(),
+                            [](APFloat elem) { return elem.isNaN(); });
+      },
+      [](DenseElementsAttr attr) { return true; });
+}
+
+bool guaranteedNoNanResult(mlir::Value value) {
+  return guaranteedNoNanResult(value.getDefiningOp());
+}
+
+bool guaranteedNoNanResult(mlir::Operation *op) {
+  if (!op)
+    return false;
+
+  if (auto constantOp = dyn_cast<mlir::stablehlo::ConstantOp>(op)) {
+    return guaranteedNoNanResult(constantOp);
+  }
+
+  // data movement ops
+  if (isa<stablehlo::SliceOp, stablehlo::ConcatenateOp,
+          stablehlo::BroadcastInDimOp, stablehlo::ReshapeOp,
+          stablehlo::TransposeOp>(op)) {
+    if (std::all_of(op->getOperands().begin(), op->getOperands().end(),
+                    [](mlir::Value v) { return guaranteedNoNanResult(v); }))
+      return true;
+  }
+
+  // integer ops
+  if (isa<stablehlo::AndOp, stablehlo::OrOp, stablehlo::XorOp, stablehlo::NotOp,
+          stablehlo::IotaOp>(op)) {
+    return true;
+  }
+
+  // elementwise ops that are no-nan if all operands are not nan
+  if (isa<stablehlo::AbsOp, stablehlo::ExpOp, stablehlo::ConvertOp,
+          stablehlo::CompareOp, stablehlo::TanhOp, stablehlo::LogisticOp,
+          stablehlo::FloorOp, stablehlo::CeilOp>(op)) {
+    if (std::all_of(op->getOperands().begin(), op->getOperands().end(),
+                    [](mlir::Value v) { return guaranteedNoNanResult(v); }))
+      return true;
+  }
+
+  if (isa<stablehlo::AddOp, stablehlo::SubtractOp>(op)) {
+    // If any one of the operands is a Inf, the result is Inf. If both are Inf,
+    // the result is NaN.
+    auto lhsFinite = guaranteedFiniteResult(op->getOperand(0));
+    auto rhsFinite = guaranteedFiniteResult(op->getOperand(1));
+
+    if (lhsFinite || rhsFinite)
+      return true;
+
+    auto lhsNoNan = guaranteedNoNanResult(op->getOperand(0));
+    auto rhsNoNan = guaranteedNoNanResult(op->getOperand(1));
+
+    if (lhsNoNan && rhsNoNan)
+      return false;
+  }
+
+  // guaranteed if operands are all finite
+  if (isa<stablehlo::SineOp, stablehlo::CosineOp>(op)) {
+    if (std::all_of(op->getOperands().begin(), op->getOperands().end(),
+                    [](mlir::Value v) {
+                      return guaranteedFiniteResult(v) &&
+                             guaranteedNoNanResult(v);
+                    }))
+      return true;
+  }
+
+  if (auto mulOp = dyn_cast<stablehlo::MulOp>(op)) {
+    auto lhsNoNan = guaranteedNoNanResult(mulOp.getLhs());
+    auto rhsNoNan = guaranteedNoNanResult(mulOp.getRhs());
+
+    // if lhs is Inf & rhs is 0 or the other way around, mul is going to be NaN
+    if (lhsNoNan && rhsNoNan) {
+      // TODO: If one is inf check if the other is zero. We can significantly
+      // relax this check if we can prove that the other is not zero.
+      if (guaranteedFiniteResult(mulOp.getLhs()) &&
+          guaranteedFiniteResult(mulOp.getRhs())) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // TODO: once we have not zero check, we can add sqrt, div, rsqrt, etc.
+
+  if (auto selectOp = dyn_cast<mlir::stablehlo::SelectOp>(op)) {
+    return guaranteedNoNanResult(selectOp.getOnTrue()) &&
+           guaranteedNoNanResult(selectOp.getOnFalse());
+  }
+
+  return false;
+}
+
+bool guaranteedFiniteResult(mlir::Value value) {
+  return guaranteedFiniteResult(value.getDefiningOp());
+}
+
+bool guaranteedFiniteResult(stablehlo::ConstantOp constOp) {
+  return elementwiseConstantOpCheck(
+      constOp,
+      [](DenseElementsAttr attr) {
+        return std::all_of(attr.getValues<APFloat>().begin(),
+                           attr.getValues<APFloat>().end(),
+                           [](APFloat elem) { return elem.isFinite(); });
+      },
+      [](DenseElementsAttr attr) { return true; });
+}
+
+bool guaranteedFiniteResult(mlir::Operation *op) {
+  if (!op)
+    return false;
+
+  if (auto constantOp = dyn_cast<stablehlo::ConstantOp>(op)) {
+    return guaranteedFiniteResult(constantOp);
+  }
+
+  // data movement ops
+  if (isa<stablehlo::SliceOp, stablehlo::ConcatenateOp,
+          stablehlo::BroadcastInDimOp, stablehlo::ReshapeOp,
+          stablehlo::TransposeOp>(op)) {
+    return std::all_of(
+        op->getOperands().begin(), op->getOperands().end(), [](mlir::Value v) {
+          return guaranteedFiniteResult(v) && guaranteedNoNanResult(v);
+        });
+  }
+
+  // integer ops
+  if (isa<stablehlo::AndOp, stablehlo::OrOp, stablehlo::XorOp, stablehlo::NotOp,
+          stablehlo::IotaOp>(op)) {
+    return true;
+  }
+
+  // elementwise ops that are finite if all operands are not nan and finite
+  if (isa<stablehlo::AddOp, stablehlo::SubtractOp, stablehlo::AbsOp,
+          stablehlo::ExpOp, stablehlo::ConvertOp, stablehlo::CompareOp>(op)) {
+    return std::all_of(
+        op->getOperands().begin(), op->getOperands().end(), [](mlir::Value v) {
+          return guaranteedFiniteResult(v) && guaranteedNoNanResult(v);
+        });
+  }
+
+  // guaranteed finite if operands are not nan
+  if (isa<stablehlo::TanhOp, stablehlo::LogisticOp>(op)) {
+    return std::all_of(op->getOperands().begin(), op->getOperands().end(),
+                       [](mlir::Value v) { return guaranteedNoNanResult(v); });
+  }
+
+  // guaranteed if operands are all finite
+  if (isa<stablehlo::SineOp, stablehlo::CosineOp>(op)) {
+    return std::all_of(
+        op->getOperands().begin(), op->getOperands().end(), [](mlir::Value v) {
+          return guaranteedFiniteResult(v) && guaranteedNoNanResult(v);
+        });
+  }
+
+  if (auto mulOp = dyn_cast<stablehlo::MulOp>(op)) {
+    auto lhsFinite = guaranteedFiniteResult(mulOp.getLhs());
+    auto rhsFinite = guaranteedFiniteResult(mulOp.getRhs());
+
+    if (!lhsFinite || !rhsFinite) {
+      return false;
+    }
+
+    return guaranteedNoNanResult(op);
+  }
+
+  if (auto selectOp = dyn_cast<mlir::stablehlo::SelectOp>(op)) {
+    return guaranteedFiniteResult(selectOp.getOnTrue()) &&
+           guaranteedFiniteResult(selectOp.getOnFalse());
+  }
+
+  return false;
+}
+
+bool guaranteedNonNegativeResult(mlir::Value value) {
+  return guaranteedNonNegativeResult(value.getDefiningOp());
+}
+
+bool guaranteedNonNegativeResult(stablehlo::ConstantOp constOp) {
+  return elementwiseConstantOpCheck(
+      constOp,
+      [](DenseElementsAttr attr) {
+        return !std::any_of(attr.getValues<APFloat>().begin(),
+                            attr.getValues<APFloat>().end(),
+                            [](APFloat elem) { return elem.isNegative(); });
+      },
+      [](DenseElementsAttr attr) {
+        return !std::any_of(attr.getValues<APInt>().begin(),
+                            attr.getValues<APInt>().end(),
+                            [](APInt elem) { return elem.isNegative(); });
+      });
+}
+
+bool guaranteedNonNegativeResult(Operation *op) {
+  if (!op)
+    return false;
+
+  if (isa<stablehlo::AbsOp, stablehlo::SqrtOp, stablehlo::ExpOp,
+          stablehlo::IotaOp, stablehlo::AndOp, stablehlo::OrOp,
+          stablehlo::XorOp, stablehlo::NotOp>(op))
+    return true;
+
+  if (auto constOp = dyn_cast<stablehlo::ConstantOp>(op)) {
+    // Constant is non-negative if all its elements are non-negative
+    return guaranteedNonNegativeResult(constOp);
+  }
+
+  // Any non-negative operation that produces a non-negative result
+  if (isa<stablehlo::MaxOp>(op)) {
+    if (std::any_of(
+            op->getOperands().begin(), op->getOperands().end(),
+            [](mlir::Value v) { return guaranteedNonNegativeResult(v); }))
+      return true;
+  }
+
+  // All non-negative operations that produce a non-negative result
+  if (isa<stablehlo::MinOp, stablehlo::AddOp, stablehlo::MulOp,
+          stablehlo::ConcatenateOp, stablehlo::ReshapeOp,
+          stablehlo::TransposeOp, stablehlo::SliceOp,
+          stablehlo::DynamicUpdateSliceOp, stablehlo::BroadcastInDimOp>(op)) {
+    if (std::all_of(
+            op->getOperands().begin(), op->getOperands().end(),
+            [](mlir::Value v) { return guaranteedNonNegativeResult(v); }))
+      return true;
+  }
+
+  // (mul a a) is always non-negative
+  if (auto mulOp = dyn_cast<stablehlo::MulOp>(op)) {
+    auto lhsOp = mulOp.getLhs().getDefiningOp();
+    auto rhsOp = mulOp.getRhs().getDefiningOp();
+
+    if (lhsOp == rhsOp)
+      return true;
+  }
+
+  if (auto clampOp = dyn_cast<stablehlo::ClampOp>(op)) {
+    // Clamp is non-negative if the min operand is non-negative
+    if (guaranteedNonNegativeResult(clampOp.getMin()))
+      return true;
+  }
+
+  // TODO: For NegOp we need a check for if the operand is guaranteed to be
+  // non-positive
+
+  // TODO: Mul of 2 negative values is non-negative
+
+  if (auto selectOp = dyn_cast<stablehlo::SelectOp>(op)) {
+    return guaranteedNonNegativeResult(selectOp.getOnTrue()) &&
+           guaranteedNonNegativeResult(selectOp.getOnFalse());
+  }
+
+  // Default: can't guarantee non-negative result
+  return false;
 }
 
 bool anyOperandIsConstant(mlir::Operation *op) {
