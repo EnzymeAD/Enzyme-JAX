@@ -300,7 +300,23 @@ bool mayAlias(mlir::MemoryEffects::EffectInstance a,
 bool mayAlias(mlir::MemoryEffects::EffectInstance a, mlir::Value b);
 
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type Ty);
+bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type Ty,
+                          mlir::Operation *op);
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy, Type inTy);
+bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy, Type inTy,
+                          mlir::Operation *op);
+
+bool guaranteedNoNanResult(stablehlo::ConstantOp constOp);
+bool guaranteedNoNanResult(mlir::Value value);
+bool guaranteedNoNanResult(mlir::Operation *op);
+
+bool guaranteedFiniteResult(stablehlo::ConstantOp constOp);
+bool guaranteedFiniteResult(mlir::Value value);
+bool guaranteedFiniteResult(mlir::Operation *op);
+
+bool guaranteedNonNegativeResult(stablehlo::ConstantOp constOp);
+bool guaranteedNonNegativeResult(mlir::Value value);
+bool guaranteedNonNegativeResult(Operation *op);
 
 bool anyOperandIsConstant(mlir::Operation *op);
 bool allOperandsAreConstant(mlir::Operation *op);

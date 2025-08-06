@@ -156,7 +156,9 @@ LogicalResult parseTransform(OpBuilder &builder, Location loc,
           opName == "extend_unary_elementwise" ||
           opName == "wrap_unary_elementwise" ||
           opName == "no_nan_mul_simplify" || opName == "no_nan_div_simplify" ||
-          opName == "no_nan_zero_base_pow_simplify")
+          opName == "no_nan_zero_base_pow_simplify" ||
+          opName == "no_nan_self_sub_simplify" ||
+          opName == "no_nan_compare_simplify")
         state.addAttribute("parameter", builder.getBoolAttr(parameter));
       else
         state.addAttribute("parameter", builder.getI64IntegerAttr(parameter));

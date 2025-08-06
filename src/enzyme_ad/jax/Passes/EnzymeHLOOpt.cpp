@@ -383,6 +383,21 @@ struct CheckedOpTraitRewritePattern : public OpTraitRewritePattern<TraitType> {
   bool supportsDynamicShapes() { return false; }
 };
 
+template <typename OpTy, typename Child>
+struct NoNanCheckedOpRewritePattern
+    : public CheckedOpRewritePattern<OpTy, Child> {
+  using Base = CheckedOpRewritePattern<OpTy, Child>;
+  using Base::Base;
+
+  NoNanCheckedOpRewritePattern(bool allowOnFloatingPointMath, MLIRContext *ctx,
+                               PatternBenefit benefit = 1)
+      : Base(ctx, benefit), allowOnFloatingPointMath(allowOnFloatingPointMath) {
+  }
+
+protected:
+  bool allowOnFloatingPointMath;
+};
+
 struct NoopSlice final
     : CheckedOpRewritePattern<stablehlo::SliceOp, NoopSlice> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -6329,18 +6344,21 @@ struct SubSimplify
 };
 
 struct NoNanSelfSubSimplify
-    : public CheckedOpRewritePattern<stablehlo::SubtractOp,
-                                     NoNanSelfSubSimplify> {
-  using CheckedOpRewritePattern<stablehlo::SubtractOp,
-                                NoNanSelfSubSimplify>::CheckedOpRewritePattern;
+    : public NoNanCheckedOpRewritePattern<stablehlo::SubtractOp,
+                                          NoNanSelfSubSimplify> {
+  using NoNanCheckedOpRewritePattern<
+      stablehlo::SubtractOp,
+      NoNanSelfSubSimplify>::NoNanCheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::SubtractOp op,
                                     PatternRewriter &rewriter) const {
-
     if (op.getLhs() == op.getRhs()) {
-      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-          op, rewriter.getZeroAttr(op.getType()));
-      return success();
+      if (canApplyNoNanPattern(allowOnFloatingPointMath, op.getType(),
+                               op.getLhs().getType(), op)) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            op, rewriter.getZeroAttr(op.getType()));
+        return success();
+      }
     }
 
     return failure();
@@ -6540,18 +6558,13 @@ struct DivSimplify
 };
 
 struct NoNanDivSimplify final
-    : public CheckedOpRewritePattern<stablehlo::DivOp, NoNanDivSimplify> {
-  using CheckedOpRewritePattern<stablehlo::DivOp,
-                                NoNanDivSimplify>::CheckedOpRewritePattern;
-
-  NoNanDivSimplify(bool allowOnFloatingPointMath, MLIRContext *context,
-                   PatternBenefit benefit = 1)
-      : CheckedOpRewritePattern(context, benefit),
-        allowOnFloatingPointMath(allowOnFloatingPointMath) {}
+    : public NoNanCheckedOpRewritePattern<stablehlo::DivOp, NoNanDivSimplify> {
+  using NoNanCheckedOpRewritePattern<
+      stablehlo::DivOp, NoNanDivSimplify>::NoNanCheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::DivOp op,
                                     PatternRewriter &rewriter) const {
-    if (!canApplyNoNanPattern(allowOnFloatingPointMath, op.getType()))
+    if (!canApplyNoNanPattern(allowOnFloatingPointMath, op.getType(), op))
       return failure();
 
     // 0 / x -> 0
@@ -6570,9 +6583,6 @@ struct NoNanDivSimplify final
 
     return failure();
   }
-
-private:
-  bool allowOnFloatingPointMath;
 };
 
 struct RemSimplify
@@ -6665,19 +6675,14 @@ struct PowSimplify
 };
 
 struct NoNanZeroBasePowSimplify final
-    : public CheckedOpRewritePattern<stablehlo::PowOp,
-                                     NoNanZeroBasePowSimplify> {
-  using CheckedOpRewritePattern<
-      stablehlo::PowOp, NoNanZeroBasePowSimplify>::CheckedOpRewritePattern;
-
-  NoNanZeroBasePowSimplify(bool allowOnFloatingPointMath, MLIRContext *context,
-                           PatternBenefit benefit = 1)
-      : CheckedOpRewritePattern(context, benefit),
-        allowOnFloatingPointMath(allowOnFloatingPointMath) {}
+    : public NoNanCheckedOpRewritePattern<stablehlo::PowOp,
+                                          NoNanZeroBasePowSimplify> {
+  using NoNanCheckedOpRewritePattern<
+      stablehlo::PowOp, NoNanZeroBasePowSimplify>::NoNanCheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::PowOp op,
                                     PatternRewriter &rewriter) const {
-    if (!canApplyNoNanPattern(allowOnFloatingPointMath, op.getType())) {
+    if (!canApplyNoNanPattern(allowOnFloatingPointMath, op.getType(), op)) {
       return failure();
     }
 
@@ -6715,9 +6720,6 @@ struct NoNanZeroBasePowSimplify final
 
     return failure();
   }
-
-private:
-  bool allowOnFloatingPointMath;
 };
 
 bool is_broadcastable_compare(Value operand) {
@@ -8096,22 +8098,27 @@ struct AllFiniteIsNegInf
   }
 };
 
-struct NoNan : public CheckedOpRewritePattern<stablehlo::CompareOp, NoNan> {
-  using CheckedOpRewritePattern<stablehlo::CompareOp,
-                                NoNan>::CheckedOpRewritePattern;
+struct NoNanCompareSimplify
+    : public NoNanCheckedOpRewritePattern<stablehlo::CompareOp,
+                                          NoNanCompareSimplify> {
+  using NoNanCheckedOpRewritePattern<
+      stablehlo::CompareOp, NoNanCompareSimplify>::NoNanCheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::CompareOp op,
                                     PatternRewriter &rewriter) const {
     if (op.getLhs() == op.getRhs()) {
-      if (op.getComparisonDirection() == stablehlo::ComparisonDirection::EQ) {
-        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-            op, op.getType(), cast<ElementsAttr>(makeAttr(op.getType(), 1)));
-        return success();
-      }
-      if (op.getComparisonDirection() == stablehlo::ComparisonDirection::NE) {
-        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-            op, op.getType(), cast<ElementsAttr>(makeAttr(op.getType(), 0)));
-        return success();
+      if (canApplyNoNanPattern(allowOnFloatingPointMath, op.getType(),
+                               op.getLhs().getType(), op)) {
+        if (op.getComparisonDirection() == stablehlo::ComparisonDirection::EQ) {
+          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+              op, op.getType(), cast<ElementsAttr>(makeAttr(op.getType(), 1)));
+          return success();
+        }
+        if (op.getComparisonDirection() == stablehlo::ComparisonDirection::NE) {
+          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+              op, op.getType(), cast<ElementsAttr>(makeAttr(op.getType(), 0)));
+          return success();
+        }
       }
     }
     return failure();
@@ -15946,20 +15953,15 @@ struct ReorderElementwiseAndShapeOp final
 };
 
 struct NoNanMulSimplify final
-    : public CheckedOpRewritePattern<stablehlo::MulOp, NoNanMulSimplify> {
-  using CheckedOpRewritePattern<stablehlo::MulOp,
-                                NoNanMulSimplify>::CheckedOpRewritePattern;
-
-  NoNanMulSimplify(bool allowOnFloatingPointMath, MLIRContext *context,
-                   PatternBenefit benefit = 1)
-      : CheckedOpRewritePattern(context, benefit),
-        allowOnFloatingPointMath(allowOnFloatingPointMath) {}
+    : public NoNanCheckedOpRewritePattern<stablehlo::MulOp, NoNanMulSimplify> {
+  using NoNanCheckedOpRewritePattern<
+      stablehlo::MulOp, NoNanMulSimplify>::NoNanCheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::MulOp op,
                                     PatternRewriter &rewriter) const {
     if (!canApplyNoNanPattern(allowOnFloatingPointMath,
                               op.getResult().getType(),
-                              op.getOperand(0).getType())) {
+                              op.getOperand(0).getType(), op)) {
       return failure();
     }
 
@@ -15982,23 +15984,15 @@ struct NoNanMulSimplify final
 
     return failure();
   }
-
-private:
-  bool allowOnFloatingPointMath;
 };
 
 // c = a + b; d = c - b => d = a
 // c = a + b; d = b - c => d = -a
 struct NoNanAddSubSimplify final
-    : public CheckedOpRewritePattern<stablehlo::SubtractOp,
-                                     NoNanAddSubSimplify> {
-  using CheckedOpRewritePattern<stablehlo::SubtractOp,
-                                NoNanAddSubSimplify>::CheckedOpRewritePattern;
-
-  NoNanAddSubSimplify(bool allowOnFloatingPointMath, MLIRContext *context,
-                      PatternBenefit benefit = 1)
-      : CheckedOpRewritePattern(context, benefit),
-        allowOnFloatingPointMath(allowOnFloatingPointMath) {}
+    : public NoNanCheckedOpRewritePattern<stablehlo::SubtractOp,
+                                          NoNanAddSubSimplify> {
+  using NoNanCheckedOpRewritePattern<
+      stablehlo::SubtractOp, NoNanAddSubSimplify>::NoNanCheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::SubtractOp op,
                                     PatternRewriter &rewriter) const {
@@ -16009,7 +16003,8 @@ struct NoNanAddSubSimplify final
     // Check if LHS is defined by an AddOp
     if (auto lhsAddOp = lhs.getDefiningOp<stablehlo::AddOp>()) {
       auto addOutTy = lhsAddOp.getResult().getType();
-      if (!canApplyNoNanPattern(allowOnFloatingPointMath, addOutTy, subOutTy))
+      if (!canApplyNoNanPattern(allowOnFloatingPointMath, addOutTy, subOutTy,
+                                op))
         return failure();
 
       // Case: c = a + b; d = c - b -> d = a
@@ -16028,7 +16023,8 @@ struct NoNanAddSubSimplify final
     // Check if RHS is defined by an AddOp
     if (auto rhsAddOp = rhs.getDefiningOp<stablehlo::AddOp>()) {
       auto addOutTy = rhsAddOp.getResult().getType();
-      if (!canApplyNoNanPattern(allowOnFloatingPointMath, addOutTy, subOutTy))
+      if (!canApplyNoNanPattern(allowOnFloatingPointMath, addOutTy, subOutTy,
+                                op))
         return failure();
 
       // Case: c = a + b; d = b - c -> d = -a
@@ -16047,9 +16043,6 @@ struct NoNanAddSubSimplify final
     // No simplification pattern matched
     return failure();
   }
-
-private:
-  bool allowOnFloatingPointMath = false;
 };
 
 // a > b ? a : b or a >= b ? a : b ---> maximum(a, b)
@@ -16727,140 +16720,6 @@ struct SignAbsSimplify
   }
 };
 
-bool opResultIsAlwaysNonNegative(Operation *op);
-
-template <typename T>
-bool opResultNonNegativeIfAllElementsNonNegative(Operation *op) {
-  if (!op)
-    return false;
-
-  auto specificOp = dyn_cast<T>(op);
-  if (!specificOp)
-    return false;
-
-  auto lhsOp = specificOp.getLhs().getDefiningOp();
-  auto rhsOp = specificOp.getRhs().getDefiningOp();
-
-  if (lhsOp && rhsOp) {
-    bool lhsNonNeg = opResultIsAlwaysNonNegative(lhsOp);
-    bool rhsNonNeg = opResultIsAlwaysNonNegative(rhsOp);
-
-    if (lhsNonNeg && rhsNonNeg)
-      return true;
-  }
-
-  return false;
-}
-
-bool isConstantNonNegative(stablehlo::ConstantOp constOp) {
-  Attribute attr = constOp.getValue();
-
-  if (auto denseAttr = dyn_cast<DenseElementsAttr>(attr)) {
-    if (denseAttr.getType().getShape().size() && denseAttr.isSplat()) {
-      denseAttr = denseAttr.resizeSplat(
-          RankedTensorType::get({}, denseAttr.getType().getElementType()));
-    }
-    // For floating point values
-    if (denseAttr.getElementType().isF32() ||
-        denseAttr.getElementType().isF64()) {
-      for (auto element : denseAttr.getValues<APFloat>()) {
-        if (element.isNegative())
-          return false;
-      }
-      return true;
-    }
-
-    // For integer values
-    if (denseAttr.getElementType().isIntOrIndex()) {
-      for (auto element : denseAttr.getValues<APInt>()) {
-        if (element.isNegative())
-          return false;
-      }
-      return true;
-    }
-  }
-
-  // Default: can't guarantee all elements are non-negative
-  return false;
-}
-
-bool opResultIsAlwaysNonNegative(Operation *op) {
-  if (!op)
-    return false;
-
-  if (isa<stablehlo::AbsOp, stablehlo::SqrtOp, stablehlo::ExpOp,
-          stablehlo::IotaOp, stablehlo::AndOp, stablehlo::OrOp>(op))
-    return true;
-
-  if (auto constOp = dyn_cast<stablehlo::ConstantOp>(op)) {
-    // Constant is non-negative if all its elements are non-negative
-    return isConstantNonNegative(constOp);
-  }
-
-  // Any non-negative operation that produces a non-negative result
-  if (auto maxOp = dyn_cast<stablehlo::MaxOp>(op)) {
-    for (auto operand : maxOp.getOperands()) {
-      if (auto operandOp = operand.getDefiningOp()) {
-        if (opResultIsAlwaysNonNegative(operandOp))
-          return true;
-      }
-    }
-  }
-
-  // All non-negative operations that produce a non-negative result
-  if (isa<stablehlo::MinOp, stablehlo::AddOp, stablehlo::MulOp>(op)) {
-    if (opResultNonNegativeIfAllElementsNonNegative<stablehlo::MinOp>(op) ||
-        opResultNonNegativeIfAllElementsNonNegative<stablehlo::AddOp>(op) ||
-        opResultNonNegativeIfAllElementsNonNegative<stablehlo::MulOp>(op))
-      return true;
-  }
-
-  // (mul a a) is always non-negative
-  if (auto mulOp = dyn_cast<stablehlo::MulOp>(op)) {
-    auto lhsOp = mulOp.getLhs().getDefiningOp();
-    auto rhsOp = mulOp.getRhs().getDefiningOp();
-
-    if (lhsOp == rhsOp)
-      return true;
-  }
-
-  if (auto clampOp = dyn_cast<stablehlo::ClampOp>(op)) {
-    // Clamp is non-negative if the min operand is non-negative
-
-    if (auto minOp = clampOp.getMin().getDefiningOp()) {
-      if (opResultIsAlwaysNonNegative(minOp))
-        return true;
-    }
-  }
-
-  // TODO: For NegOp we need a check for if the operand is guaranteed to be
-  // non-positive
-
-  // TODO: Mul of 2 negative values is non-negative
-
-  if (auto selectOp = dyn_cast<stablehlo::SelectOp>(op)) {
-    // Select produces non-negative results if both branches produce
-    // non-negative results
-    auto trueOp = selectOp.getOnTrue().getDefiningOp();
-    auto falseOp = selectOp.getOnFalse().getDefiningOp();
-
-    if (trueOp && falseOp) {
-      return opResultIsAlwaysNonNegative(trueOp) &&
-             opResultIsAlwaysNonNegative(falseOp);
-    }
-  }
-
-  // These operations preserve values, so result is non-negative if operand is
-  // non-negative
-  if (isa<stablehlo::ReshapeOp, stablehlo::TransposeOp>(op)) {
-    if (auto defOp = op->getOperand(0).getDefiningOp())
-      return opResultIsAlwaysNonNegative(defOp);
-  }
-
-  // Default: can't guarantee non-negative result
-  return false;
-}
-
 struct AbsPositiveSimplify
     : public CheckedOpRewritePattern<stablehlo::AbsOp, AbsPositiveSimplify> {
   using CheckedOpRewritePattern<stablehlo::AbsOp,
@@ -16873,7 +16732,7 @@ struct AbsPositiveSimplify
     if (isa<ComplexType>(operand.getType().getElementType()))
       return failure();
 
-    if (opResultIsAlwaysNonNegative(operand.getDefiningOp())) {
+    if (guaranteedNonNegativeResult(operand.getDefiningOp())) {
       rewriter.replaceOp(op, op.getOperand());
       return success();
     }
@@ -22225,6 +22084,22 @@ void mlir::transform::addNoNanAddSubSimplify(RewritePatternSet &patterns,
                                        benefit);
 }
 
+void mlir::transform::addNoNanCompareSimplify(RewritePatternSet &patterns,
+                                              bool allowOnFloatingPointMath,
+                                              MLIRContext &context,
+                                              PatternBenefit benefit) {
+  patterns.insert<NoNanCompareSimplify>(allowOnFloatingPointMath, &context,
+                                        benefit);
+}
+
+void mlir::transform::addNoNanSelfSubSimplify(RewritePatternSet &patterns,
+                                              bool allowOnFloatingPointMath,
+                                              MLIRContext &context,
+                                              PatternBenefit benefit) {
+  patterns.insert<NoNanSelfSubSimplify>(allowOnFloatingPointMath, &context,
+                                        benefit);
+}
+
 void mlir::transform::addNoNanMulSimplify(RewritePatternSet &patterns,
                                           bool allowOnFloatingPointMath,
                                           MLIRContext &context,
@@ -22579,9 +22454,9 @@ struct EnzymeHLOOptPass
     if (all_finite)
       patterns.add<AllFiniteIsFinite, AllFiniteIsInf, AllFiniteIsPosInf,
                    AllFiniteIsNegInf>(context);
-    if (no_nan || all_finite)
-      patterns.add<NoNan, NoNanSelfSubSimplify>(context);
-    patterns.add<NoNanAddSubSimplify, NoNanMulSimplify, NoNanDivSimplify>(
+
+    patterns.add<NoNanCompareSimplify, NoNanSelfSubSimplify,
+                 NoNanAddSubSimplify, NoNanMulSimplify, NoNanDivSimplify>(
         (no_nan || all_finite), context);
 
     // clang-format off
