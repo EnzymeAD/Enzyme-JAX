@@ -636,8 +636,9 @@ bool guaranteedNoNanResult(mlir::Operation *op) {
   if (isa<stablehlo::SliceOp, stablehlo::ConcatenateOp,
           stablehlo::BroadcastInDimOp, stablehlo::ReshapeOp,
           stablehlo::TransposeOp>(op)) {
-    return std::all_of(op->getOperands().begin(), op->getOperands().end(),
-                       [](mlir::Value v) { return guaranteedNoNanResult(v); });
+    if (std::all_of(op->getOperands().begin(), op->getOperands().end(),
+                    [](mlir::Value v) { return guaranteedNoNanResult(v); }))
+      return true;
   }
 
   // integer ops
@@ -647,29 +648,48 @@ bool guaranteedNoNanResult(mlir::Operation *op) {
   }
 
   // elementwise ops that are no-nan if all operands are not nan
-  if (isa<stablehlo::AddOp, stablehlo::SubtractOp, stablehlo::AbsOp,
-          stablehlo::ExpOp, stablehlo::ConvertOp, stablehlo::CompareOp,
-          stablehlo::TanhOp, stablehlo::LogisticOp, stablehlo::FloorOp,
-          stablehlo::CeilOp>(op)) {
-    return std::all_of(op->getOperands().begin(), op->getOperands().end(),
-                       [](mlir::Value v) { return guaranteedNoNanResult(v); });
+  if (isa<stablehlo::AbsOp, stablehlo::ExpOp, stablehlo::ConvertOp,
+          stablehlo::CompareOp, stablehlo::TanhOp, stablehlo::LogisticOp,
+          stablehlo::FloorOp, stablehlo::CeilOp>(op)) {
+    if (std::all_of(op->getOperands().begin(), op->getOperands().end(),
+                    [](mlir::Value v) { return guaranteedNoNanResult(v); }))
+      return true;
+  }
+
+  if (isa<stablehlo::AddOp, stablehlo::SubtractOp>(op)) {
+    // If any one of the operands is a Inf, the result is Inf. If both are Inf,
+    // the result is NaN.
+    auto lhsFinite = guaranteedFiniteResult(op->getOperand(0));
+    auto rhsFinite = guaranteedFiniteResult(op->getOperand(1));
+
+    if (!lhsFinite || !rhsFinite) {
+      return false;
+    }
+
+    auto lhsNan = guaranteedNoNanResult(op->getOperand(0));
+    auto rhsNan = guaranteedNoNanResult(op->getOperand(1));
+
+    if (lhsNan && rhsNan) {
+      return false;
+    }
   }
 
   // guaranteed if operands are all finite
   if (isa<stablehlo::SineOp, stablehlo::CosineOp>(op)) {
-    return std::all_of(
-        op->getOperands().begin(), op->getOperands().end(), [](mlir::Value v) {
-          return guaranteedFiniteResult(v) && guaranteedNoNanResult(v);
-        });
+    if (std::all_of(op->getOperands().begin(), op->getOperands().end(),
+                    [](mlir::Value v) {
+                      return guaranteedFiniteResult(v) &&
+                             guaranteedNoNanResult(v);
+                    }))
+      return true;
   }
 
   if (auto mulOp = dyn_cast<stablehlo::MulOp>(op)) {
     auto lhsNoNan = guaranteedNoNanResult(mulOp.getLhs());
     auto rhsNoNan = guaranteedNoNanResult(mulOp.getRhs());
 
+    // if lhs is Inf & rhs is 0 or the other way around, mul is going to be NaN
     if (lhsNoNan && rhsNoNan) {
-      // if lhs is Inf & rhs is 0 or the other way around, mul is going to be
-      // NaN
       // TODO: If one is inf check if the other is zero. We can significantly
       // relax this check if we can prove that the other is not zero.
       if (guaranteedFiniteResult(mulOp.getLhs()) &&
