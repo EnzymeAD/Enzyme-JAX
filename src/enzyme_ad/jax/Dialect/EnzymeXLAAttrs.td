@@ -21,6 +21,22 @@ def EnzymeXLA_LapackLayout : I32EnumAttr<"LapackLayout",
 def EnzymeXLA_LapackLayoutAttr : EnumAttr<EnzymeXLA_Dialect,
     EnzymeXLA_LapackLayout, "layout">;
 
+def EnzymeXLA_LapackTranspose : I32EnumAttr<"LapackTranspose",
+    "Whether to transpose the matrix",
+    [
+      I32EnumAttrCase<"none", 0>,
+      I32EnumAttrCase<"transpose", 1>,
+      I32EnumAttrCase<"adjoint", 2>
+    ]> {
+  let genSpecializedAttr = 0;
+  let cppNamespace = "::mlir::enzymexla";
+}
+
+def EnzymeXLA_LapackTransposeAttr : EnumAttr<EnzymeXLA_Dialect,
+    EnzymeXLA_LapackTranspose, "transpose"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
 def EnzymeXLA_LapackSide : I32EnumAttr<"LapackSide",
     "Side of the matrix to apply the operation",
     [

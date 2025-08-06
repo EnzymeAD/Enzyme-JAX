@@ -623,15 +623,15 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
       auto layout = rewriter.create<LLVM::ConstantOp>(
           op.getLoc(), type_llvm_lapack_int,
           rewriter.getIntegerAttr(type_lapack_int, 101));
-      auto m_value = inputShape[0];
+      auto mC = inputShape[0];
       auto m = rewriter.create<LLVM::ConstantOp>(
           op.getLoc(), type_llvm_lapack_int,
-          rewriter.getIntegerAttr(type_lapack_int, m_value));
-      auto n_value = inputShape[1];
+          rewriter.getIntegerAttr(type_lapack_int, mC));
+      auto nC = inputShape[1];
       auto n = rewriter.create<LLVM::ConstantOp>(
           op.getLoc(), type_llvm_lapack_int,
-          rewriter.getIntegerAttr(type_lapack_int, n_value));
-      auto k_value = n_value;
+          rewriter.getIntegerAttr(type_lapack_int, nC));
+      auto k_value = nC;
       auto k = rewriter.create<LLVM::ConstantOp>(
           op.getLoc(), type_llvm_lapack_int,
           rewriter.getIntegerAttr(type_lapack_int, k_value));
@@ -812,10 +812,27 @@ struct OrmqrOpLowering : public OpRewritePattern<enzymexla::OrmqrOp> {
     auto output_eltype = output_type.getElementType();
 
     auto side_value = op.getSide() == enzymexla::LapackSide::left ? 'L' : 'R';
-    auto trans_value = op.getTranspose() ? 'T' : 'N';
+    char trans_value = 'N';
+    switch(op.getTranspose()) {
+      case enzymexla::LapackTranspose::none:
+        trans_value = 'N';
+        break;
+      case enzymexla::LapackTranspose::transpose:
+        trans_value = 'T';
+        break;
+      case enzymexla::LapackTranspose::adjoint:
+        trans_value = 'C';
+        break;
+    }
 
-    auto m_value = output_shape[0];
-    auto n_value = output_shape[1];
+    assert(output_shape == C_shape &&
+      "`enzymexla.lapack.ormqr` requires `C` and `output` to have the same shape");
+    assert(A_eltype == C_eltype && A_eltype == tau_eltype &&
+      "`enzymexla.lapack.ormqr` requires the same element type for all operands");
+
+    auto mA = A_shape[0];
+    auto mC = C_shape[0];
+    auto nC = C_shape[1];
     auto k_value = tau_shape[0];
 
     if (A_rank - 2 > 0 || C_rank - 2 > 0) {
@@ -823,11 +840,21 @@ struct OrmqrOpLowering : public OpRewritePattern<enzymexla::OrmqrOp> {
           op, "`enzymexla.lapack.orgqr` with batch dimensions on CPU is not yet supported");
     }
 
-    assert(A_eltype == C_eltype && A_eltype == tau_eltype &&
-      "`enzymexla.lapack.ormqr` requires the same element type for all operands");
+    assert(A_shape[0] >= A_shape[1] &&
+      "`lapack.ormqr` with wide QR not yet supported. use `stablehlo.dynamic_update_slice` first");
+    assert(A_shape[1] == k_value && "second dimension of A and dimension of tau must match");
 
-    assert(C_shape == output_shape && "`C` and `output` shapes must match");
-    assert(A_shape[1] == k_value && "`k` dimension doesn't match");
+    if (side_value == 'L') {
+      assert(mC == mA &&
+        "for a left-sided multiplication, the first dimension of C, must equal the first dimension of A");
+      assert(mC >= k_value &&
+        "invalid number of reflectors: k should be <= m");
+    } else { // side_value == 'R'
+      assert(nC == mA &&
+        "for a right-sided multiplication, the second dimension of C, must equal the first dimension of A");
+      assert(nC >= k_value &&
+        "invalid number of reflectors: k should be <= n");
+    }
 
     auto lda_value = A_shape[0];
     auto ldc_value = C_shape[0];
@@ -918,11 +945,11 @@ struct OrmqrOpLowering : public OpRewritePattern<enzymexla::OrmqrOp> {
 
       auto m = rewriter.create<LLVM::ConstantOp>(
           op.getLoc(), type_llvm_lapack_int,
-          rewriter.getIntegerAttr(type_lapack_int, m_value));
+          rewriter.getIntegerAttr(type_lapack_int, mC));
 
       auto n = rewriter.create<LLVM::ConstantOp>(
           op.getLoc(), type_llvm_lapack_int,
-          rewriter.getIntegerAttr(type_lapack_int, n_value));
+          rewriter.getIntegerAttr(type_lapack_int, nC));
 
       auto k = rewriter.create<LLVM::ConstantOp>(
           op.getLoc(), type_llvm_lapack_int,
