@@ -2223,10 +2223,10 @@ def ApplyElementwiseExtendPatterns : EnzymeHLOPatternOp<"elementwise_extend"> {
   let patterns = ["ElementwiseExtend"];
 }
 
-def ApplySubtractRotateToReduceWindowPatterns : EnzymeHLOPatternOp<"subtract_rotate_to_reduce_window"> {
-  let patterns = ["ElementwiseRotateToReduceWindow<stablehlo::SubtractOp>"];
+def ApplySubtractRotateToReduceWindowPatterns : EnzymeHLOPatternOp<"self_subtract_to_reduce_window"> {
+  let patterns = ["SelfElementwiseToConvolutionLike<stablehlo::SubtractOp>"];
 }
 
-def ApplyAddRotateToReduceWindowPatterns : EnzymeHLOPatternOp<"add_rotate_to_reduce_window"> {
-  let patterns = ["ElementwiseRotateToReduceWindow<stablehlo::AddOp>"];
+def ApplyAddRotateToReduceWindowPatterns : EnzymeHLOPatternOp<"self_add_to_reduce_window"> {
+  let patterns = ["SelfElementwiseToConvolutionLike<stablehlo::AddOp>"];
 }
