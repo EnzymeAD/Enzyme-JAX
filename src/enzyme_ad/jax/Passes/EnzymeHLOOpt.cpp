@@ -22019,6 +22019,7 @@ struct ElementwiseRotateToReduceWindow
     auto zero = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), zeroType, cast<ElementsAttr>(makeAttr(zeroType, 0)));
 
+    auto loc = op.getLoc();
     auto reduceWindowOp =
         rewriter.replaceOpWithNewOp<stablehlo::ReduceWindowOp>(
             op, TypeRange(outType), ValueRange(wrapOp), ValueRange(zero),
@@ -22029,8 +22030,8 @@ struct ElementwiseRotateToReduceWindow
     {
       auto *block = rewriter.createBlock(&reduceWindowOp.getBody());
       auto argType = RankedTensorType::get({}, outType.getElementType());
-      block->addArgument(argType, op.getLoc());
-      block->addArgument(argType, op.getLoc());
+      block->addArgument(argType, loc);
+      block->addArgument(argType, loc);
       rewriter.setInsertionPointToStart(block);
 
       Value lhsVal = block->getArgument(0);
@@ -22038,22 +22039,22 @@ struct ElementwiseRotateToReduceWindow
 
       if (lhsInfo.constantAttr.has_value()) {
         lhsVal = rewriter.create<stablehlo::MulOp>(
-            op.getLoc(), lhsVal,
+            loc, lhsVal,
             rewriter.create<stablehlo::ConstantOp>(
-                op.getLoc(), lhsVal.getType(), lhsInfo.constantAttr.value()));
+                loc, lhsVal.getType(), lhsInfo.constantAttr.value()));
       } else if (lhsInfo.constantScalar.has_value()) {
         lhsVal = rewriter.create<stablehlo::MulOp>(
-            op.getLoc(), lhsVal, lhsInfo.constantScalar.value());
+            loc, lhsVal, lhsInfo.constantScalar.value());
       }
 
       if (rhsInfo.constantAttr.has_value()) {
         rhsVal = rewriter.create<stablehlo::MulOp>(
-            op.getLoc(), rhsVal,
+            loc, rhsVal,
             rewriter.create<stablehlo::ConstantOp>(
-                op.getLoc(), rhsVal.getType(), rhsInfo.constantAttr.value()));
+                loc, rhsVal.getType(), rhsInfo.constantAttr.value()));
       } else if (rhsInfo.constantScalar.has_value()) {
         rhsVal = rewriter.create<stablehlo::MulOp>(
-            op.getLoc(), rhsVal, rhsInfo.constantScalar.value());
+            loc, rhsVal, rhsInfo.constantScalar.value());
       }
 
       if (flippedOrdering) {
@@ -22061,8 +22062,8 @@ struct ElementwiseRotateToReduceWindow
       }
 
       rewriter.create<stablehlo::ReturnOp>(
-          op.getLoc(),
-          ValueRange(rewriter.create<OpTy>(op.getLoc(), lhsVal, rhsVal)));
+          loc,
+          ValueRange(rewriter.create<OpTy>(loc, lhsVal, rhsVal)));
     }
 
     return success();
