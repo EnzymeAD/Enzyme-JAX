@@ -83,10 +83,10 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
     if (auto prefix = lapack_precision_prefix(inputElementType)) {
       fn = *prefix + fn;
     } else {
-      op->emitOpError() << "Unsupported complex element type: "
+      op->emitOpError() << "Unsupported element type: "
                         << inputElementType;
       return rewriter.notifyMatchFailure(op,
-                                         "unsupported complex element type");
+                                         "unsupported element type");
     }
 
     std::string bind_fn = "enzymexla_lapacke_" + fn;
@@ -354,10 +354,10 @@ struct GeqrtOpLowering : public OpRewritePattern<enzymexla::GeqrtOp> {
     if (auto prefix = lapack_precision_prefix(inputElementType)) {
       fn = *prefix + fn;
     } else {
-      op->emitOpError() << "Unsupported complex element type: "
+      op->emitOpError() << "Unsupported element type: "
                         << inputElementType;
       return rewriter.notifyMatchFailure(op,
-                                         "unsupported complex element type");
+                                         "unsupported element type");
     }
 
     std::string bind_fn = "enzymexla_lapacke_" + fn;
@@ -568,10 +568,10 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
       else
         fn = *prefix + "un" + fn;
     } else {
-      op->emitOpError() << "Unsupported complex element type: "
+      op->emitOpError() << "Unsupported element type: "
                         << inputElementType;
       return rewriter.notifyMatchFailure(op,
-                                         "unsupported complex element type");
+                                         "unsupported element type");
     }
 
     std::string bind_fn = "enzymexla_lapacke_" + fn;
@@ -874,9 +874,9 @@ struct OrmqrOpLowering : public OpRewritePattern<enzymexla::OrmqrOp> {
       else
         fn = *prefix + "un" + fn;
     } else {
-      op->emitOpError() << "Unsupported complex element type: " << A_eltype;
+      op->emitOpError() << "Unsupported element type: " << A_eltype;
       return rewriter.notifyMatchFailure(op,
-                                         "unsupported complex element type");
+                                         "unsupported element type");
     }
 
     std::string bind_fn = "enzymexla_lapacke_" + fn;
