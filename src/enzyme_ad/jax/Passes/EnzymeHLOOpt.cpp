@@ -22052,6 +22052,167 @@ struct SubtractMultiplyConstToAddMulConst
   }
 };
 
+template <typename OpTy>
+struct ElementwiseRotateToReduceWindow
+    : public CheckedOpRewritePattern<OpTy,
+                                     ElementwiseRotateToReduceWindow<OpTy>> {
+  using CheckedOpRewritePattern<
+      OpTy, ElementwiseRotateToReduceWindow<OpTy>>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(OpTy op, PatternRewriter &rewriter) const {
+    auto outType = cast<RankedTensorType>(op.getType());
+    auto outShape = outType.getShape();
+    auto outRank = outType.getRank();
+
+    // Extract info about both operands
+    auto lhsInfo = extractOperandInfo(op.getLhs());
+    auto rhsInfo = extractOperandInfo(op.getRhs());
+
+    // Try to find the rotate pattern
+    int64_t dim = -1, amount = -1;
+    Value operand;
+    bool flippedOrdering = false;
+
+    // Check if lhs base is rotate of rhs base
+    if (auto rotateOp =
+            lhsInfo.base.template getDefiningOp<enzymexla::RotateOp>()) {
+      if (rotateOp.getOperand() == rhsInfo.base) {
+        dim = rotateOp.getDimension();
+        amount = rotateOp.getAmount();
+        operand = rhsInfo.base;
+      }
+    }
+
+    // Check if rhs base is rotate of lhs base
+    if (dim == -1) {
+      if (auto rotateOp =
+              rhsInfo.base.template getDefiningOp<enzymexla::RotateOp>()) {
+        if (rotateOp.getOperand() == lhsInfo.base) {
+          dim = rotateOp.getDimension();
+          amount = rotateOp.getAmount();
+          operand = lhsInfo.base;
+          flippedOrdering = true;
+        }
+      }
+    }
+
+    if (dim == -1)
+      return failure();
+
+    auto wrapOp = rewriter.create<enzymexla::WrapOp>(op.getLoc(), operand,
+                                                     amount, 0, dim);
+
+    SmallVector<int64_t> windowDims(outRank, 1);
+    windowDims[dim] = 2;
+    SmallVector<int64_t> windowDilations(outRank, 1);
+    windowDilations[dim] = amount;
+
+    auto zeroType = RankedTensorType::get({}, outType.getElementType());
+    auto zero = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), zeroType, cast<ElementsAttr>(makeAttr(zeroType, 0)));
+
+    auto loc = op.getLoc();
+    auto reduceWindowOp =
+        rewriter.replaceOpWithNewOp<stablehlo::ReduceWindowOp>(
+            op, TypeRange(outType), ValueRange(wrapOp), ValueRange(zero),
+            rewriter.getDenseI64ArrayAttr(windowDims), DenseI64ArrayAttr(),
+            DenseI64ArrayAttr(), rewriter.getDenseI64ArrayAttr(windowDilations),
+            DenseIntElementsAttr());
+
+    {
+      auto *block = rewriter.createBlock(&reduceWindowOp.getBody());
+      auto argType = RankedTensorType::get({}, outType.getElementType());
+      block->addArgument(argType, loc);
+      block->addArgument(argType, loc);
+      rewriter.setInsertionPointToStart(block);
+
+      Value lhsVal = block->getArgument(0);
+      Value rhsVal = block->getArgument(1);
+
+      if (lhsInfo.constantAttr.has_value()) {
+        lhsVal = rewriter.create<stablehlo::MulOp>(
+            loc, lhsVal,
+            rewriter.create<stablehlo::ConstantOp>(
+                loc, lhsVal.getType(), lhsInfo.constantAttr.value()));
+      } else if (lhsInfo.constantScalar.has_value()) {
+        lhsVal = rewriter.create<stablehlo::MulOp>(
+            loc, lhsVal, lhsInfo.constantScalar.value());
+      }
+
+      if (rhsInfo.constantAttr.has_value()) {
+        rhsVal = rewriter.create<stablehlo::MulOp>(
+            loc, rhsVal,
+            rewriter.create<stablehlo::ConstantOp>(
+                loc, rhsVal.getType(), rhsInfo.constantAttr.value()));
+      } else if (rhsInfo.constantScalar.has_value()) {
+        rhsVal = rewriter.create<stablehlo::MulOp>(
+            loc, rhsVal, rhsInfo.constantScalar.value());
+      }
+
+      if (flippedOrdering) {
+        lhsVal, rhsVal = rhsVal, lhsVal;
+      }
+
+      rewriter.create<stablehlo::ReturnOp>(
+          loc, ValueRange(rewriter.create<OpTy>(loc, lhsVal, rhsVal)));
+    }
+
+    return success();
+  }
+
+private:
+  struct OperandInfo {
+    Value base;
+    std::optional<ElementsAttr> constantAttr;
+    std::optional<Value> constantScalar;
+  };
+
+  std::tuple<std::optional<ElementsAttr>, std::optional<Value>>
+  checkConstant(Value val) const {
+    if (auto bcastInDimOp = val.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+      auto operand = bcastInDimOp.getOperand();
+      auto type = cast<RankedTensorType>(operand.getType());
+      if (type) {
+        if (type.getRank() == 0) {
+          return std::make_tuple(std::nullopt, operand);
+        }
+      }
+    }
+
+    if (auto constOp = val.getDefiningOp<stablehlo::ConstantOp>()) {
+      auto attr = constOp.getValue();
+      if (attr.isSplat()) {
+        return std::make_tuple(
+            cast<ElementsAttr>(
+                cast<SplatElementsAttr>(attr).resizeSplat(RankedTensorType::get(
+                    {},
+                    cast<RankedTensorType>(val.getType()).getElementType()))),
+            std::nullopt);
+      }
+    }
+    return std::make_tuple(std::nullopt, std::nullopt);
+  }
+
+  OperandInfo extractOperandInfo(Value val) const {
+    if (auto mulOp = val.getDefiningOp<stablehlo::MulOp>()) {
+      {
+        auto [constantAttr, constantScalar] = checkConstant(mulOp.getLhs());
+        if (constantAttr.has_value() || constantScalar.has_value()) {
+          return {mulOp.getRhs(), constantAttr, constantScalar};
+        }
+      }
+
+      {
+        auto [constantAttr, constantScalar] = checkConstant(mulOp.getRhs());
+        if (constantAttr.has_value() || constantScalar.has_value()) {
+          return {mulOp.getLhs(), constantAttr, constantScalar};
+        }
+      }
+    }
+    return {val, std::nullopt};
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -22629,7 +22790,9 @@ struct EnzymeHLOOptPass
         ElementwiseRotate,
         ElementwiseWrap,
         ElementwiseExtend,
-        SubtractMultiplyConstToAddMulConst
+        SubtractMultiplyConstToAddMulConst,
+        ElementwiseRotateToReduceWindow<stablehlo::SubtractOp>,
+        ElementwiseRotateToReduceWindow<stablehlo::AddOp>
       >(context);
 
     patterns.add<SumToReduceWindow<stablehlo::AddOp>,
