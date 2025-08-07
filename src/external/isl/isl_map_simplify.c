@@ -30,6 +30,8 @@
 #include <set_to_map.c>
 #include <set_from_map.c>
 
+#include <strings.h>
+
 /* Mark "bmap" as having one or more inequality constraints modified.
  * If "equivalent" is set, then this modification was done based
  * on an equality constraint already available in "bmap".
