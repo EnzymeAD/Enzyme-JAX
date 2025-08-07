@@ -497,7 +497,7 @@ def OrmqrOp : EnzymeXLA_Op<"lapack.ormqr", [Pure]> {
   }];
 }
 
-def GemqrOp : EnzymeXLA_Op<"lapack.gemqr", [Pure]> {
+def GemqrtOp : EnzymeXLA_Op<"lapack.gemqrt", [Pure]> {
   let summary = [{
     Perform a matrix multiplication with the Q matrix from a QR
     decomposition, given the WY decomposition (i.e. geqrt).
@@ -508,11 +508,12 @@ def GemqrOp : EnzymeXLA_Op<"lapack.gemqr", [Pure]> {
   }];
 
   let arguments = (ins
-    HLO_Tensor:$lhs,
-    HLO_Tensor:$rhs,
-    HLO_Tensor:$tau,
+    HLO_Tensor:$V,
+    HLO_Tensor:$T,
+    HLO_Tensor:$C,
     EnzymeXLA_LapackSideAttr:$side,
-    DefaultValuedAttr<EnzymeXLA_LapackTransposeAttr, "::mlir::enzymexla::LapackTranspose::none">:$transpose // true if apply Q^T?
+    DefaultValuedAttr<EnzymeXLA_LapackTransposeAttr, "::mlir::enzymexla::LapackTranspose::none">:$transpose, // true if apply Q^T
+    OptionalAttr<I64Attr>:$blocksize // nb argument, min(m,n) >= nb >= 1
   );
 
   let results = (outs
@@ -520,7 +521,7 @@ def GemqrOp : EnzymeXLA_Op<"lapack.gemqr", [Pure]> {
   );
 
   let assemblyFormat = [{
-    $lhs `,` $rhs `,` $tau attr-dict `:` functional-type(operands, results)
+    $V `,` $T `,` $C attr-dict `:` functional-type(operands, results)
   }];
 }
 
