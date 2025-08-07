@@ -6,6 +6,7 @@
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/Types.h"
 #include "llvm/ADT/APFloat.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -306,6 +307,23 @@ bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy, Type inTy);
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy, Type inTy,
                           mlir::Operation *op);
 
+class GuaranteedResultKindBase {
+protected:
+  llvm::DenseMap<mlir::Value, bool> valueCache;
+  llvm::DenseMap<mlir::Operation *, bool> opCache;
+
+  virtual bool constantFloatCheck(DenseElementsAttr attr) = 0;
+  virtual bool constantIntCheck(DenseElementsAttr attr) = 0;
+  virtual bool guaranteedImpl(mlir::Operation *op) = 0;
+
+  bool guaranteedImpl(stablehlo::ConstantOp constOp);
+
+public:
+  bool guaranteed(mlir::Value value);
+  bool guaranteed(mlir::Operation *op);
+  bool guaranteed(stablehlo::ConstantOp constOp);
+};
+
 bool guaranteedNoNanResult(stablehlo::ConstantOp constOp);
 bool guaranteedNoNanResult(mlir::Value value);
 bool guaranteedNoNanResult(mlir::Operation *op);
@@ -314,9 +332,19 @@ bool guaranteedFiniteResult(stablehlo::ConstantOp constOp);
 bool guaranteedFiniteResult(mlir::Value value);
 bool guaranteedFiniteResult(mlir::Operation *op);
 
-bool guaranteedNonNegativeResult(stablehlo::ConstantOp constOp);
-bool guaranteedNonNegativeResult(mlir::Value value);
-bool guaranteedNonNegativeResult(Operation *op);
+class GuaranteedNonNegativeResult : public GuaranteedResultKindBase {
+public:
+  bool constantFloatCheck(DenseElementsAttr attr) override;
+  bool constantIntCheck(DenseElementsAttr attr) override;
+  bool guaranteedImpl(mlir::Operation *op) override;
+};
+
+inline bool guaranteedNonNegativeResult(mlir::Value value) {
+  return GuaranteedNonNegativeResult().guaranteed(value);
+}
+inline bool guaranteedNonNegativeResult(Operation *op) {
+  return GuaranteedNonNegativeResult().guaranteed(op);
+}
 
 bool anyOperandIsConstant(mlir::Operation *op);
 bool allOperandsAreConstant(mlir::Operation *op);

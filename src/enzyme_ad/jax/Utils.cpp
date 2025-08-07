@@ -583,6 +583,65 @@ bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy, Type inTy,
   return allowOnFloatingPointMath || guaranteedNoNanResult(op);
 }
 
+bool GuaranteedResultKindBase::guaranteedImpl(stablehlo::ConstantOp constOp) {
+  Attribute attr = constOp.getValue();
+
+  if (auto denseAttr = dyn_cast<DenseElementsAttr>(attr)) {
+    if (denseAttr.getType().getShape().size() && denseAttr.isSplat()) {
+      denseAttr = denseAttr.resizeSplat(
+          RankedTensorType::get({}, denseAttr.getType().getElementType()));
+    }
+
+    // For floating point values
+    if (isa<FloatType>(denseAttr.getElementType())) {
+      return constantFloatCheck(denseAttr);
+    }
+
+    // For integer values
+    if (isa<IntegerType>(denseAttr.getElementType())) {
+      return constantIntCheck(denseAttr);
+    }
+  }
+
+  return false;
+}
+
+bool GuaranteedResultKindBase::guaranteed(mlir::Value value) {
+  auto it = valueCache.find(value);
+  if (it != valueCache.end())
+    return it->second;
+
+  bool result = guaranteed(value.getDefiningOp());
+  valueCache[value] = result;
+  return result;
+}
+
+bool GuaranteedResultKindBase::guaranteed(mlir::Operation *op) {
+  if (!op)
+    return false;
+
+  auto it = opCache.find(op);
+  if (it != opCache.end())
+    return it->second;
+
+  bool result = guaranteedImpl(op);
+  opCache[op] = result;
+  return result;
+}
+
+bool GuaranteedResultKindBase::guaranteed(stablehlo::ConstantOp constOp) {
+  if (!constOp)
+    return false;
+
+  auto it = opCache.find(constOp);
+  if (it != opCache.end())
+    return it->second;
+
+  bool result = guaranteedImpl(constOp);
+  opCache[constOp] = result;
+  return result;
+}
+
 bool elementwiseConstantOpCheck(
     stablehlo::ConstantOp constOp,
     std::function<bool(DenseElementsAttr)> floatCheck,
@@ -789,29 +848,19 @@ bool guaranteedFiniteResult(mlir::Operation *op) {
   return false;
 }
 
-bool guaranteedNonNegativeResult(mlir::Value value) {
-  return guaranteedNonNegativeResult(value.getDefiningOp());
+bool GuaranteedNonNegativeResult::constantIntCheck(DenseElementsAttr attr) {
+  return !std::any_of(attr.getValues<APInt>().begin(),
+                      attr.getValues<APInt>().end(),
+                      [](APInt elem) { return elem.isNegative(); });
 }
 
-bool guaranteedNonNegativeResult(stablehlo::ConstantOp constOp) {
-  return elementwiseConstantOpCheck(
-      constOp,
-      [](DenseElementsAttr attr) {
-        return !std::any_of(attr.getValues<APFloat>().begin(),
-                            attr.getValues<APFloat>().end(),
-                            [](APFloat elem) { return elem.isNegative(); });
-      },
-      [](DenseElementsAttr attr) {
-        return !std::any_of(attr.getValues<APInt>().begin(),
-                            attr.getValues<APInt>().end(),
-                            [](APInt elem) { return elem.isNegative(); });
-      });
+bool GuaranteedNonNegativeResult::constantFloatCheck(DenseElementsAttr attr) {
+  return !std::any_of(attr.getValues<APFloat>().begin(),
+                      attr.getValues<APFloat>().end(),
+                      [](APFloat elem) { return elem.isNegative(); });
 }
 
-bool guaranteedNonNegativeResult(Operation *op) {
-  if (!op)
-    return false;
-
+bool GuaranteedNonNegativeResult::guaranteedImpl(Operation *op) {
   if (isa<stablehlo::AbsOp, stablehlo::SqrtOp, stablehlo::ExpOp,
           stablehlo::IotaOp, stablehlo::AndOp, stablehlo::OrOp,
           stablehlo::XorOp, stablehlo::NotOp>(op))
@@ -819,14 +868,13 @@ bool guaranteedNonNegativeResult(Operation *op) {
 
   if (auto constOp = dyn_cast<stablehlo::ConstantOp>(op)) {
     // Constant is non-negative if all its elements are non-negative
-    return guaranteedNonNegativeResult(constOp);
+    return guaranteed(constOp);
   }
 
   // Any non-negative operation that produces a non-negative result
   if (isa<stablehlo::MaxOp>(op)) {
-    if (std::any_of(
-            op->getOperands().begin(), op->getOperands().end(),
-            [](mlir::Value v) { return guaranteedNonNegativeResult(v); }))
+    if (std::any_of(op->getOperands().begin(), op->getOperands().end(),
+                    [this](mlir::Value v) { return guaranteed(v); }))
       return true;
   }
 
@@ -835,9 +883,8 @@ bool guaranteedNonNegativeResult(Operation *op) {
           stablehlo::ConcatenateOp, stablehlo::ReshapeOp,
           stablehlo::TransposeOp, stablehlo::SliceOp,
           stablehlo::DynamicUpdateSliceOp, stablehlo::BroadcastInDimOp>(op)) {
-    if (std::all_of(
-            op->getOperands().begin(), op->getOperands().end(),
-            [](mlir::Value v) { return guaranteedNonNegativeResult(v); }))
+    if (std::all_of(op->getOperands().begin(), op->getOperands().end(),
+                    [this](mlir::Value v) { return guaranteed(v); }))
       return true;
   }
 
@@ -852,7 +899,7 @@ bool guaranteedNonNegativeResult(Operation *op) {
 
   if (auto clampOp = dyn_cast<stablehlo::ClampOp>(op)) {
     // Clamp is non-negative if the min operand is non-negative
-    if (guaranteedNonNegativeResult(clampOp.getMin()))
+    if (guaranteed(clampOp.getMin()))
       return true;
   }
 
@@ -862,8 +909,8 @@ bool guaranteedNonNegativeResult(Operation *op) {
   // TODO: Mul of 2 negative values is non-negative
 
   if (auto selectOp = dyn_cast<stablehlo::SelectOp>(op)) {
-    return guaranteedNonNegativeResult(selectOp.getOnTrue()) &&
-           guaranteedNonNegativeResult(selectOp.getOnFalse());
+    return guaranteed(selectOp.getOnTrue()) &&
+           guaranteed(selectOp.getOnFalse());
   }
 
   // Default: can't guarantee non-negative result
