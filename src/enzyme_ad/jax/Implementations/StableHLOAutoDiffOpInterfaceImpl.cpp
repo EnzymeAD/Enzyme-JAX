@@ -2427,9 +2427,10 @@ public:
     auto checkCommonScatterOp =
         mlir::stablehlo::CheckCommonScatterOp(scatterOp);
 
-    if (!checkCommonScatterOp.isSetindexScatter) {
-      // TODO: add / subtract support
-      op->emitError("AutoDiffScatterRev only supports Setindex operations")
+    if (!checkCommonScatterOp.isSetindexScatter &&
+        !checkCommonScatterOp.isAddScatter) {
+      op->emitError("AutoDiffScatterRev only supports Setindex "
+                    "operations");
       return failure();
     }
 
@@ -2513,7 +2514,7 @@ public:
         for (auto [i, operand] : llvm::enumerate(scatterOp.getInputs())) {
           if (!gutils->isConstantValue(operand)) {
             gutils->addToDiffe(operand, newScatterOp.getResult(counter++),
-                              builder);
+                               builder);
           }
         }
       }
@@ -2749,9 +2750,9 @@ private:
       OP,
     } type;
 
-    Node(Operation *O) : O(O), type(OP){};
-    Node(Value V) : V(V), type(VAL){};
-    Node() : type(NONE){};
+    Node(Operation *O) : O(O), type(OP) {};
+    Node(Value V) : V(V), type(VAL) {};
+    Node() : type(NONE) {};
 
     bool operator<(const Node N) const {
       if (type != N.type)
