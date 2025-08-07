@@ -26,6 +26,7 @@
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Passes/StructuredTensors.h"
 #include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/Base.h"
 #include "stablehlo/dialect/ChloOps.h"
@@ -37,6 +38,11 @@
 #include "stablehlo/transforms/PassUtils.h"
 #include "stablehlo/transforms/Passes.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
+
+#include "Interfaces/AutoDiffTypeInterface.h"
+
+#include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/SmallSet.h"
 
 #include "llvm/ADT/MapVector.h"
 #include <iterator>
@@ -65,6 +71,14 @@ bool anyPadSizesNegative(stablehlo::PadOp pad) {
 }
 
 namespace {
+
+llvm::SmallVector<int64_t> getInversePermutation(ArrayRef<int64_t> perm) {
+  llvm::SmallVector<int64_t> inversePerm(perm.size(), -1);
+  for (int64_t i = 0; i < perm.size(); ++i) {
+    inversePerm[perm[i]] = i;
+  }
+  return inversePerm;
+}
 
 class ReshapeDimMapping {
 public:
@@ -367,6 +381,21 @@ struct CheckedOpTraitRewritePattern : public OpTraitRewritePattern<TraitType> {
   }
 
   bool supportsDynamicShapes() { return false; }
+};
+
+template <typename OpTy, typename Child>
+struct NoNanCheckedOpRewritePattern
+    : public CheckedOpRewritePattern<OpTy, Child> {
+  using Base = CheckedOpRewritePattern<OpTy, Child>;
+  using Base::Base;
+
+  NoNanCheckedOpRewritePattern(bool allowOnFloatingPointMath, MLIRContext *ctx,
+                               PatternBenefit benefit = 1)
+      : Base(ctx, benefit), allowOnFloatingPointMath(allowOnFloatingPointMath) {
+  }
+
+protected:
+  bool allowOnFloatingPointMath;
 };
 
 struct NoopSlice final
@@ -2923,6 +2952,10 @@ struct TransposeAllUsersSlice final
 
   LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
                                     PatternRewriter &rewriter) const {
+    if (llvm::hasSingleElement(op->getUsers()))
+      return rewriter.notifyMatchFailure(op,
+                                         "should be handled by SliceTranspose");
+
     SmallVector<stablehlo::SliceOp> sliceOps;
     for (auto user : op->getUsers()) {
       auto sliceOp = dyn_cast<stablehlo::SliceOp>(user);
@@ -2940,7 +2973,7 @@ struct TransposeAllUsersSlice final
       sliceOps.push_back(sliceOp);
     }
 
-    SmallVector<int64_t> permutation = llvm::to_vector(op.getPermutation());
+    auto mapping = getInversePermutation(op.getPermutation());
 
     for (int64_t i = 0; i < sliceOps.size(); ++i) {
       auto origSlice = sliceOps[i];
@@ -2956,8 +2989,8 @@ struct TransposeAllUsersSlice final
       SmallVector<int64_t> newLimitIndices;
       SmallVector<int64_t> newStrides;
 
-      for (size_t j = 0; j < permutation.size(); ++j) {
-        size_t permIndex = permutation[j];
+      for (size_t j = 0; j < mapping.size(); ++j) {
+        size_t permIndex = mapping[j];
         newStartIndices.push_back(originalStartIndices[permIndex]);
         newLimitIndices.push_back(originalLimitIndices[permIndex]);
         newStrides.push_back(originalStrides[permIndex]);
@@ -2969,7 +3002,7 @@ struct TransposeAllUsersSlice final
           rewriter.getDenseI64ArrayAttr(newLimitIndices),
           rewriter.getDenseI64ArrayAttr(newStrides));
       rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(origSlice, newSlice,
-                                                          permutation);
+                                                          op.getPermutation());
     }
 
     rewriter.eraseOp(op);
@@ -3910,6 +3943,294 @@ struct ConcatWrap final
   }
 };
 
+bool isSliceOf(Value wrapOperand, Value widenOperand, int dim,
+               bool widenOperandOnLeft, int existingOffset) {
+  auto wrapType = cast<RankedTensorType>(wrapOperand.getType());
+
+  if (auto sliceWiden = widenOperand.getDefiningOp<stablehlo::SliceOp>()) {
+
+    SmallVector<int64_t> wrapStarts(wrapType.getShape().size(), 0);
+    SmallVector<int64_t> wrapLimits = llvm::to_vector(wrapType.getShape());
+    SmallVector<int64_t> wrapStrides(wrapType.getShape().size(), 1);
+
+    if (sliceWiden.getOperand() != wrapOperand) {
+      if (auto sliceWrap = wrapOperand.getDefiningOp<stablehlo::SliceOp>()) {
+        wrapStarts = llvm::to_vector(sliceWrap.getStartIndices());
+        wrapLimits = llvm::to_vector(sliceWrap.getLimitIndices());
+        wrapStrides = llvm::to_vector(sliceWrap.getStrides());
+        if (sliceWiden.getOperand() != sliceWrap.getOperand()) {
+          return false;
+        }
+      }
+    }
+
+    for (int j = 0; j < wrapType.getShape().size(); j++) {
+      if (j != dim) {
+        if (sliceWiden.getStartIndices()[j] != wrapStarts[j]) {
+          return false;
+        }
+        if (sliceWiden.getLimitIndices()[j] != wrapLimits[j]) {
+          return false;
+        }
+        if (sliceWiden.getStrides()[j] != wrapStrides[j]) {
+          return false;
+        }
+        continue;
+      }
+
+      if (sliceWiden.getStrides()[j] != 1 || wrapStrides[j] != 1) {
+        return false;
+      }
+
+      if (widenOperandOnLeft) {
+        // widenOperand[B-lhs-existing:B-existing], wrap(wrapOperand[A:B],
+        // lhs=existingOffset)
+        if (sliceWiden.getLimitIndices()[j] + existingOffset != wrapLimits[j]) {
+          return false;
+        }
+      } else {
+        // wrap(wrapOperand[A:B], rhs=existing),
+        // widenOperand[A+existing:A+rhs+existing]
+        if (sliceWiden.getStartIndices()[j] != wrapStarts[j] + existingOffset) {
+          return false;
+        }
+      }
+    }
+
+    return true;
+  }
+
+  if (auto concatWiden =
+          widenOperand.getDefiningOp<stablehlo::ConcatenateOp>()) {
+    if (auto concatWrap =
+            wrapOperand.getDefiningOp<stablehlo::ConcatenateOp>()) {
+      if (concatWrap.getDimension() == concatWiden.getDimension() &&
+          concatWrap.getDimension() != dim &&
+          concatWiden.getOperands().size() == concatWrap.getOperands().size()) {
+        for (auto &&[newWrap, newWiden] : llvm::zip_equal(
+                 concatWrap.getOperands(), concatWiden.getOperands())) {
+          if (!isSliceOf(newWrap, newWiden, dim, widenOperandOnLeft,
+                         existingOffset)) {
+            return false;
+          }
+        }
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+bool isExtendOf(Value extendOperand, Value widenOperand, int dim,
+                bool widenOperandOnLeft) {
+  auto extendType = cast<RankedTensorType>(extendOperand.getType());
+
+  if (auto sliceWiden = widenOperand.getDefiningOp<stablehlo::SliceOp>()) {
+
+    SmallVector<int64_t> extendStarts(extendType.getShape().size(), 0);
+    SmallVector<int64_t> extendLimits = llvm::to_vector(extendType.getShape());
+    SmallVector<int64_t> extendStrides(extendType.getShape().size(), 1);
+
+    if (sliceWiden.getOperand() != extendOperand) {
+      if (auto sliceExtend =
+              extendOperand.getDefiningOp<stablehlo::SliceOp>()) {
+        extendStarts = llvm::to_vector(sliceExtend.getStartIndices());
+        extendLimits = llvm::to_vector(sliceExtend.getLimitIndices());
+        extendStrides = llvm::to_vector(sliceExtend.getStrides());
+        if (sliceWiden.getOperand() != sliceExtend.getOperand()) {
+          return false;
+        }
+      }
+    }
+
+    for (int j = 0; j < extendType.getShape().size(); j++) {
+      if (j != dim) {
+        if (sliceWiden.getStartIndices()[j] != extendStarts[j]) {
+          return false;
+        }
+        if (sliceWiden.getLimitIndices()[j] != extendLimits[j]) {
+          return false;
+        }
+        if (sliceWiden.getStrides()[j] != extendStrides[j]) {
+          return false;
+        }
+        continue;
+      }
+
+      if (sliceWiden.getStrides()[j] != 1 || extendStrides[j] != 1) {
+        return false;
+      }
+
+      if (cast<RankedTensorType>(widenOperand.getType()).getShape()[j] != 1) {
+        return false;
+      }
+
+      if (widenOperandOnLeft) {
+        // widenOperand[A:A+1], extend(extendOperand[A:B])
+        if (sliceWiden.getStartIndices()[j] != extendStarts[j]) {
+          return false;
+        }
+      } else {
+        // extend(extendOperand[A:B]), widenOperand[B-1:B]
+        if (sliceWiden.getLimitIndices()[j] != extendLimits[j]) {
+          return false;
+        }
+      }
+    }
+
+    return true;
+  }
+
+  if (auto concatWiden =
+          widenOperand.getDefiningOp<stablehlo::ConcatenateOp>()) {
+    if (auto concatExtend =
+            extendOperand.getDefiningOp<stablehlo::ConcatenateOp>()) {
+      if (concatExtend.getDimension() == concatWiden.getDimension() &&
+          concatExtend.getDimension() != dim &&
+          concatWiden.getOperands().size() ==
+              concatExtend.getOperands().size()) {
+        for (auto &&[newExtend, newWiden] : llvm::zip_equal(
+                 concatExtend.getOperands(), concatWiden.getOperands())) {
+          if (!isExtendOf(newExtend, newWiden, dim, widenOperandOnLeft)) {
+            return false;
+          }
+        }
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+struct WidenWrap final
+    : CheckedOpRewritePattern<stablehlo::ConcatenateOp, WidenWrap> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
+                                    PatternRewriter &rewriter) const {
+    auto dim = op.getDimension();
+
+    SmallVector<Value> newOperands;
+    bool changed = false;
+
+    for (int i = 0, e = op->getNumOperands(); i < e; ++i) {
+      auto operand = op->getOperand(i);
+      auto wrap = operand.getDefiningOp<enzymexla::WrapOp>();
+
+      if (!wrap || wrap.getDimension() != dim) {
+        newOperands.push_back(operand);
+        continue;
+      }
+
+      if (newOperands.size()) {
+        auto prev = newOperands.back();
+        if (isSliceOf(wrap.getOperand(), prev, dim, /*widenOperandOnLeft*/ true,
+                      wrap.getLhs())) {
+          auto newWrap = rewriter.create<enzymexla::WrapOp>(
+              wrap.getLoc(), wrap.getOperand(),
+              wrap.getLhs() +
+                  cast<RankedTensorType>(prev.getType()).getShape()[dim],
+              wrap.getRhs(), wrap.getDimension());
+          newOperands.pop_back();
+          newOperands.push_back(newWrap);
+          changed = true;
+          continue;
+        }
+      }
+
+      if (i + 1 < e) {
+        auto prev = op->getOperand(i + 1);
+        if (isSliceOf(wrap.getOperand(), prev, dim,
+                      /*widenOperandOnLeft*/ false, wrap.getRhs())) {
+          auto newWrap = rewriter.create<enzymexla::WrapOp>(
+              wrap.getLoc(), wrap.getOperand(), wrap.getLhs(),
+              wrap.getRhs() +
+                  cast<RankedTensorType>(prev.getType()).getShape()[dim],
+              wrap.getDimension());
+          newOperands.push_back(newWrap);
+          i++;
+          changed = true;
+          continue;
+        }
+      }
+
+      newOperands.push_back(operand);
+      continue;
+    }
+
+    if (!changed)
+      return failure();
+
+    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(op, newOperands, dim);
+    return success();
+  }
+};
+
+struct WidenExtend final
+    : CheckedOpRewritePattern<stablehlo::ConcatenateOp, WidenExtend> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
+                                    PatternRewriter &rewriter) const {
+    auto dim = op.getDimension();
+
+    SmallVector<Value> newOperands;
+    bool changed = false;
+
+    for (int i = 0, e = op->getNumOperands(); i < e; ++i) {
+      auto operand = op->getOperand(i);
+      auto extend = operand.getDefiningOp<enzymexla::ExtendOp>();
+
+      if (!extend || extend.getDimension() != dim) {
+        newOperands.push_back(operand);
+        continue;
+      }
+
+      if (newOperands.size()) {
+        auto prev = newOperands.back();
+        if (isExtendOf(extend.getOperand(), prev, dim,
+                       /*widenOperandOnLeft*/ true)) {
+          auto newExtend = rewriter.create<enzymexla::ExtendOp>(
+              extend.getLoc(), extend.getOperand(),
+              extend.getLhs() +
+                  cast<RankedTensorType>(prev.getType()).getShape()[dim],
+              extend.getRhs(), extend.getDimension());
+          newOperands.pop_back();
+          newOperands.push_back(newExtend);
+          changed = true;
+          continue;
+        }
+      }
+
+      if (i + 1 < e) {
+        auto prev = op->getOperand(i + 1);
+        if (isExtendOf(extend.getOperand(), prev, dim,
+                       /*widenOperandOnLeft*/ false)) {
+          auto newExtend = rewriter.create<enzymexla::ExtendOp>(
+              extend.getLoc(), extend.getOperand(), extend.getLhs(),
+              extend.getRhs() +
+                  cast<RankedTensorType>(prev.getType()).getShape()[dim],
+              extend.getDimension());
+          newOperands.push_back(newExtend);
+          i++;
+          changed = true;
+          continue;
+        }
+      }
+
+      newOperands.push_back(operand);
+      continue;
+    }
+
+    if (!changed)
+      return failure();
+
+    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(op, newOperands, dim);
+    return success();
+  }
+};
+
 struct SliceConcat final
     : CheckedOpRewritePattern<stablehlo::SliceOp, SliceConcat> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -4105,77 +4426,6 @@ struct WhileDeadResults final
     : CheckedOpRewritePattern<stablehlo::WhileOp, WhileDeadResults> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  bool isLoopResultDead(OpResult result, ArrayRef<int64_t> deadResults,
-                        bool &retryIfNewDead) const {
-    // Not dead if the result is in use.
-    if (!result.use_empty())
-      return false;
-
-    // Or if the corresponding argument is being used in computing the
-    // condition.
-    auto whileOp = cast<stablehlo::WhileOp>(result.getOwner());
-    Value condArgument =
-        whileOp.getCond().getArgument(result.getResultNumber());
-    SetVector<Operation *> forwardSlice;
-    getForwardSlice(condArgument, &forwardSlice);
-    if (!llvm::all_of(forwardSlice, mlir::isPure))
-      return false;
-    if (forwardSlice.contains(whileOp.getCond().front().getTerminator()))
-      return false;
-
-    // Or in computing another result. We first do a fast-path check of having
-    // the argument not influencing the terminator operation, before going into
-    // finer-grain analysis.
-    //
-    // TODO: it is possible that this argument does influence another terminator
-    // operand, but that operand in turn corresponds to a dead value, but
-    // handling that would require more complex logic of detecting dead cycles
-    // of value chains.
-    forwardSlice.clear();
-    assert(llvm::hasSingleElement(whileOp.getBody()));
-    Value bodyArgument =
-        whileOp.getBody().getArgument(result.getResultNumber());
-    getForwardSlice(bodyArgument, &forwardSlice);
-    if (!llvm::all_of(forwardSlice, mlir::isPure))
-      return false;
-
-    Operation *bodyTerminator = whileOp.getBody().front().getTerminator();
-    if (!forwardSlice.contains(bodyTerminator))
-      return true;
-
-    for (OpOperand &terminatorOperand : bodyTerminator->getOpOperands()) {
-      if (terminatorOperand.getOperandNumber() == result.getResultNumber())
-        continue;
-
-      if (llvm::is_contained(deadResults, terminatorOperand.getOperandNumber()))
-        continue;
-      // We directly yield an argument from a different index (since we skip
-      // the return of the given result).
-      if (auto ba = dyn_cast<BlockArgument>(terminatorOperand.get())) {
-        if (ba.getOwner()->getParentOp() == whileOp) {
-          if (terminatorOperand.get() == bodyArgument) {
-            retryIfNewDead = true;
-            return false;
-          } else {
-            continue;
-          }
-        }
-      }
-
-      SetVector<Operation *> backwardSlice;
-      BackwardSliceOptions options;
-      options.omitBlockArguments = true;
-      getBackwardSlice(terminatorOperand.get(), &backwardSlice, options);
-      for (Operation *op : backwardSlice) {
-        if (llvm::is_contained(op->getOperands(), bodyArgument)) {
-          retryIfNewDead = true;
-          return false;
-        }
-      }
-    }
-    return true;
-  }
-
   void replaceTerminator(PatternRewriter &rewriter, Region &region,
                          ArrayRef<int64_t> deadResults) const {
     Operation *terminator = region.front().getTerminator();
@@ -4190,70 +4440,336 @@ struct WhileDeadResults final
         terminator, TypeRange(), terminatorOperands, terminator->getAttrs());
   }
 
-  static bool hasReturn(const SetVector<Operation *> &ops) {
-    for (auto op : ops)
-      if (isa<stablehlo::ReturnOp>(op))
-        return true;
-    return false;
-  }
-
   LogicalResult matchAndRewriteImpl(stablehlo::WhileOp op,
                                     PatternRewriter &rewriter) const {
-    SmallVector<int64_t> deadResults;
-    do {
-      bool newDead = false;
-      bool retry = false;
-      for (OpResult result : op.getResults()) {
-        if (llvm::is_contained(deadResults, result.getResultNumber()))
-          continue;
-        if (!isLoopResultDead(result, deadResults, retry))
-          continue;
-        deadResults.push_back(result.getResultNumber());
-        newDead = true;
-      }
-      if (newDead && retry)
-        continue;
-    } while (false);
-    if (deadResults.empty())
+    bool isTotalPure = isPure(op);
+    std::map<int64_t, int> forwardIsPure;
+    std::map<int64_t, std::set<int64_t>> backwardsUsesOfArguments;
+    SmallVector<size_t> emptyResults;
+    size_t NumResults = op.getNumResults();
+    for (OpResult result : op.getResults()) {
+      if (result.use_empty())
+        emptyResults.push_back(result.getResultNumber());
+    }
+    if (emptyResults.size() == 0)
       return failure();
 
-    llvm::sort(deadResults);
-
-    SetVector<Operation *> condSlice, bodySlice;
-    for (int64_t i : deadResults) {
-      getForwardSlice(op.getCond().getArgument(i), &condSlice);
-      getForwardSlice(op.getBody().getArgument(i), &bodySlice);
+    DenseMap<Value, llvm::SmallPtrSet<size_t, 3> *> users(
+        emptyResults.size() + op.getCond().front().getOperations().size());
+    llvm::SmallVector<std::unique_ptr<llvm::SmallPtrSet<size_t, 3>>, 3>
+        condCache;
+    condCache.reserve(emptyResults.size());
+    for (auto ores : emptyResults) {
+      auto ba = op.getCond().front().getArgument(ores);
+      auto up = std::make_unique<llvm::SmallPtrSet<size_t, 3>>();
+      up->insert(ores);
+      users[ba] = up.get();
+      condCache.emplace_back(std::move(up));
     }
-    condSlice.remove(op.getCond().front().getTerminator());
-    bodySlice.remove(op.getBody().front().getTerminator());
+
+    llvm::SmallPtrSet<size_t, 3> nonPure;
+
+    SmallVector<
+        std::pair<Operation *, std::unique_ptr<llvm::SmallPtrSet<size_t, 3>>>>
+        opUsers;
+    for (auto &sop : op.getCond().front().without_terminator()) {
+      auto setP = std::make_unique<llvm::SmallPtrSet<size_t, 3>>();
+      auto &set = *setP;
+      for (auto operand : sop.getOperands()) {
+        auto found = users.find(operand);
+        if (found != users.end()) {
+          set.insert(found->second->begin(), found->second->end());
+        }
+      }
+      if (!(sop.getNumRegions() == 0 ||
+            sop.hasTrait<OpTrait::IsIsolatedFromAbove>())) {
+        SmallVector<Operation *> todo;
+        for (auto &reg : sop.getRegions()) {
+          for (auto &blk : reg) {
+            for (auto &mop : blk) {
+              todo.push_back(&mop);
+            }
+          }
+        }
+        while (todo.size()) {
+          auto cur = todo.pop_back_val();
+          for (auto operand : cur->getOperands()) {
+            auto found = users.find(operand);
+            if (found != users.end()) {
+              set.insert(found->second->begin(), found->second->end());
+            }
+          }
+          if (!(cur->getNumRegions() == 0 ||
+                cur->hasTrait<OpTrait::IsIsolatedFromAbove>())) {
+            for (auto &reg : cur->getRegions()) {
+              for (auto &blk : reg) {
+                for (auto &mop : blk) {
+                  todo.push_back(&mop);
+                }
+              }
+            }
+          }
+        }
+      }
+      if (set.size() == 0)
+        continue;
+
+      if (!isTotalPure && !mlir::isPure(&sop)) {
+        for (auto arg : set)
+          nonPure.insert(arg);
+      }
+      for (auto res : sop.getResults())
+        if (!res.use_empty())
+          users.try_emplace(res, &set);
+      opUsers.emplace_back(&sop, std::move(setP));
+    }
+    llvm::SmallPtrSet<size_t, 3> terminatorUsers;
+    for (auto v : op.getCond().front().getTerminator()->getOperands()) {
+      auto found = users.find(v);
+      if (found != users.end()) {
+        terminatorUsers.insert(found->second->begin(), found->second->end());
+      }
+    }
+
+    SmallVector<size_t> emptyNonPure;
+    for (auto ores : emptyResults) {
+      if (nonPure.count(ores)) {
+        continue;
+      }
+      if (terminatorUsers.count(ores)) {
+        continue;
+      }
+      emptyNonPure.push_back(ores);
+    }
+    if (emptyNonPure.size() == 0) {
+      return failure();
+    }
+
+    DenseMap<Value, llvm::SmallPtrSet<size_t, 3> *> usersBody(
+        emptyNonPure.size() + op.getBody().front().getOperations().size());
+    SmallVector<
+        std::pair<Operation *, std::unique_ptr<llvm::SmallPtrSet<size_t, 3>>>>
+        opUsersBody;
+    terminatorUsers.clear();
+    nonPure.clear();
+
+    llvm::SmallVector<std::unique_ptr<llvm::SmallPtrSet<size_t, 3>>, 3>
+        bodyCache;
+    bodyCache.reserve(emptyNonPure.size());
+    for (auto ores : emptyNonPure) {
+      auto ba = op.getBody().front().getArgument(ores);
+      auto up = std::make_unique<llvm::SmallPtrSet<size_t, 3>>();
+      up->insert(ores);
+      usersBody[ba] = up.get();
+      bodyCache.emplace_back(std::move(up));
+    }
+
+    llvm::SmallSet<size_t, 3> nonPure2;
+
+    for (auto &sop : op.getBody().front().without_terminator()) {
+      auto setP = std::make_unique<llvm::SmallPtrSet<size_t, 3>>();
+      auto &set = *setP;
+      for (auto operand : sop.getOperands()) {
+        auto found = usersBody.find(operand);
+        if (found != usersBody.end()) {
+          set.insert(found->second->begin(), found->second->end());
+        }
+      }
+      if (!(sop.getNumRegions() == 0 ||
+            sop.hasTrait<OpTrait::IsIsolatedFromAbove>())) {
+        SmallVector<Operation *> todo;
+        for (auto &reg : sop.getRegions()) {
+          for (auto &blk : reg) {
+            for (auto &mop : blk) {
+              todo.push_back(&mop);
+            }
+          }
+        }
+        while (todo.size()) {
+          auto cur = todo.pop_back_val();
+          for (auto operand : cur->getOperands()) {
+            auto found = usersBody.find(operand);
+            if (found != usersBody.end()) {
+              set.insert(found->second->begin(), found->second->end());
+            }
+          }
+          if (!(cur->getNumRegions() == 0 ||
+                cur->hasTrait<OpTrait::IsIsolatedFromAbove>())) {
+            for (auto &reg : cur->getRegions()) {
+              for (auto &blk : reg) {
+                for (auto &mop : blk) {
+                  todo.push_back(&mop);
+                }
+              }
+            }
+          }
+        }
+      }
+      if (set.size() == 0)
+        continue;
+
+      if (!isTotalPure && !mlir::isPure(&sop)) {
+        for (auto arg : set)
+          nonPure2.insert(arg);
+      }
+      for (auto res : sop.getResults())
+        if (!res.use_empty())
+          usersBody.try_emplace(res, &set);
+      opUsersBody.emplace_back(&sop, std::move(setP));
+    }
+
+    llvm::SmallPtrSet<size_t, 3> emptyNonPure2;
+    if (isTotalPure)
+      emptyNonPure2.insert(emptyNonPure.begin(), emptyNonPure.end());
+    else {
+      for (auto ores : emptyNonPure) {
+        if (nonPure2.count(ores)) {
+          continue;
+        }
+        emptyNonPure2.insert(ores);
+      }
+      if (emptyNonPure2.size() == 0) {
+        return failure();
+      }
+    }
+
+    llvm::BitVector removedResults(NumResults, true);
+    llvm::BitVector seen(NumResults, false);
+    SmallVector<size_t> todo;
+    todo.reserve(NumResults);
+    for (size_t residx = 0; residx < NumResults; residx++) {
+      if (!emptyNonPure2.count(residx)) {
+        todo.push_back(residx);
+        seen.set(residx);
+      }
+    }
+
+    while (todo.size()) {
+      auto cur = todo.pop_back_val();
+      if (!removedResults[cur])
+        continue;
+      removedResults.reset(cur);
+      auto v = op.getBody().front().getTerminator()->getOperands()[cur];
+      auto found = usersBody.find(v);
+      if (found != usersBody.end()) {
+        if (isTotalPure) {
+          for (auto arg : *found->second) {
+            if (!seen.test(arg)) {
+              todo.push_back(arg);
+              seen.set(arg);
+            }
+          }
+        } else {
+          for (auto arg : *found->second) {
+            if (emptyNonPure2.contains(arg)) {
+              if (!seen.test(arg)) {
+                todo.push_back(arg);
+                seen.set(arg);
+              }
+            }
+          }
+        }
+      }
+    }
+    /*
+    llvm::BitVector todo(NumResults, false);
+    int start = NumResults;
+    for (size_t residx = 0; residx < NumResults; residx++) {
+      if (!emptyNonPure2.count(residx)) {
+        todo.set(residx);
+        if (residx < start) start = residx;
+      }
+    }
+
+    while (true) {
+      auto cur = todo.find_first_in(start, NumResults);
+      if (cur == -1) break;
+      start = cur+1;
+      todo.reset(cur);
+      if (!removedResults.test(cur))
+        continue;
+      removedResults.reset(cur);
+      auto v = op.getBody().front().getTerminator()->getOperands()[cur];
+      auto found = usersBody.find(v);
+      if (found != usersBody.end()) {
+        if (isTotalPure) {
+          for (auto arg : found->second) {
+            if (!removedResults.test(arg))
+              continue;
+            todo.set(arg);
+            if (arg < start) start = arg;
+          }
+        } else {
+          for (auto arg : found->second) {
+            if (emptyNonPure2.contains(arg)) {
+              if (!removedResults.test(arg))
+                continue;
+              todo.set(arg);
+              if (arg < start) start = arg;
+            }
+          }
+        }
+      }
+    }
+    */
+    /*
+    SmallVector<size_t> todo;
+    for (size_t residx = 0; residx < NumResults; residx++) {
+      if (!emptyNonPure2.count(residx))
+        todo.push_back(residx);
+    }
+
+    while (todo.size()) {
+      auto cur = todo.pop_back_val();
+      if (!removedResults[cur])
+        continue;
+      removedResults.reset(cur);
+      auto v = op.getBody().front().getTerminator()->getOperands()[cur];
+      auto found = usersBody.find(v);
+      if (found != usersBody.end()) {
+        if (isTotalPure)
+          todo.append(found->second.begin(), found->second.end());
+        else
+          for (auto arg : found->second) {
+            if (emptyNonPure2.contains(arg))
+              todo.push_back(arg);
+        }
+      }
+    }
+    */
+
+    if (!removedResults.any())
+      return failure();
+
+    SmallVector<int64_t> deadResults;
+    for (auto cur = removedResults.find_first(); cur != -1;
+         cur = removedResults.find_next(cur)) {
+      deadResults.push_back(cur);
+    }
+
     replaceTerminator(rewriter, op.getBody(), deadResults);
 
-    condSlice = mlir::topologicalSort(condSlice);
-    bodySlice = mlir::topologicalSort(bodySlice);
-
-    if (hasReturn(condSlice)) {
+    for (auto &cop : llvm::reverse(opUsers)) {
+      bool hasDead = false;
       for (int64_t i : deadResults) {
-        auto arg = op.getCond().getArgument(i);
-        auto ty = arg.getType();
-        auto cst = rewriter.create<stablehlo::ConstantOp>(
-            arg.getLoc(), ty, cast<ElementsAttr>(rewriter.getZeroAttr(ty)));
-        rewriter.replaceAllUsesWith(arg, cst);
+        if (cop.second->count(i)) {
+          hasDead = true;
+          break;
+        }
       }
-    } else {
-      for (Operation *erasable : llvm::reverse(condSlice))
-        rewriter.eraseOp(erasable);
+      if (hasDead)
+        rewriter.eraseOp(cop.first);
     }
-    if (hasReturn(bodySlice)) {
+    for (auto &cop : llvm::reverse(opUsersBody)) {
+      bool hasDead = false;
       for (int64_t i : deadResults) {
-        auto arg = op.getBody().getArgument(i);
-        auto ty = arg.getType();
-        auto cst = rewriter.create<stablehlo::ConstantOp>(
-            arg.getLoc(), ty, cast<ElementsAttr>(rewriter.getZeroAttr(ty)));
-        rewriter.replaceAllUsesWith(arg, cst);
+        if (cop.second->count(i)) {
+          hasDead = true;
+          break;
+        }
       }
-    } else {
-      for (Operation *erasable : llvm::reverse(bodySlice))
-        rewriter.eraseOp(erasable);
+      if (hasDead)
+        rewriter.eraseOp(cop.first);
     }
 
     SmallVector<Value> operands;
@@ -4960,17 +5476,39 @@ struct ConcatToBroadcast final
     for (auto opv : op->getOperands())
       if (opv != op->getOperand(0))
         return failure();
-    SmallVector<int64_t> bcast;
-    if (cast<RankedTensorType>(op->getOperand(0).getType())
-            .getShape()[op.getDimension()] != 1)
-      return failure();
-    for (auto en : llvm::enumerate(op.getType().getShape())) {
-      bcast.push_back(en.index());
+    auto InTy = cast<RankedTensorType>(op->getOperand(0).getType());
+    if (InTy.getShape()[op.getDimension()] == 1) {
+      SmallVector<int64_t> bcast;
+      for (auto en : llvm::enumerate(op.getType().getShape())) {
+        bcast.push_back(en.index());
+      }
+      auto bcast2 = rewriter.getDenseI64ArrayAttr(bcast);
+      rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+          op, op.getType(), op->getOperand(0), bcast2);
+      return success();
+    } else {
+      SmallVector<int64_t> reshaped = llvm::to_vector(InTy.getShape());
+      reshaped.insert(reshaped.begin() + op.getDimension(), 1);
+      auto reshapeVal = rewriter.create<stablehlo::ReshapeOp>(
+          op.getLoc(),
+          RankedTensorType::get(reshaped, op.getType().getElementType()),
+          op->getOperand(0));
+
+      SmallVector<int64_t> bcast;
+      for (auto en : llvm::enumerate(reshapeVal.getType().getShape())) {
+        bcast.push_back(en.index());
+      }
+      reshaped[op.getDimension()] = op->getNumOperands();
+      auto bcast2 = rewriter.getDenseI64ArrayAttr(bcast);
+      auto bcastVal = rewriter.create<stablehlo::BroadcastInDimOp>(
+          op.getLoc(),
+          RankedTensorType::get(reshaped, op.getType().getElementType()),
+          reshapeVal, bcast2);
+
+      rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
+                                                        bcastVal);
+      return success();
     }
-    auto bcast2 = rewriter.getDenseI64ArrayAttr(bcast);
-    rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
-        op, op.getType(), op->getOperand(0), bcast2);
-    return success();
   }
 };
 
@@ -5624,14 +6162,6 @@ bool isOnlyUsedInOperation(Operation *operation, Operation *parentOp) {
   return true;
 }
 
-llvm::SmallVector<int64_t> getInversePermutation(ArrayRef<int64_t> perm) {
-  llvm::SmallVector<int64_t> inversePerm(perm.size(), -1);
-  for (int64_t i = 0; i < perm.size(); ++i) {
-    inversePerm[perm[i]] = i;
-  }
-  return inversePerm;
-}
-
 template <typename OpType>
 LogicalResult simplifyBinaryOpWithTranspose(OpType op,
                                             PatternRewriter &rewriter) {
@@ -5760,17 +6290,23 @@ struct ReplaceNegAddWithSubtract
 
   LogicalResult matchAndRewriteImpl(stablehlo::AddOp op,
                                     PatternRewriter &rewriter) const {
-    auto negateOp = op.getRhs().getDefiningOp<stablehlo::NegOp>();
+    if (auto rhsNegateOp = op.getRhs().getDefiningOp<stablehlo::NegOp>()) {
+      if (llvm::hasSingleElement(rhsNegateOp->getUsers())) {
+        rewriter.replaceOpWithNewOp<stablehlo::SubtractOp>(
+            op, op.getLhs(), rhsNegateOp.getOperand());
+        return success();
+      }
+    }
 
-    if (!negateOp)
-      return failure();
+    if (auto lhsNegateOp = op.getLhs().getDefiningOp<stablehlo::NegOp>()) {
+      if (llvm::hasSingleElement(lhsNegateOp->getUsers())) {
+        rewriter.replaceOpWithNewOp<stablehlo::SubtractOp>(
+            op, op.getRhs(), lhsNegateOp.getOperand());
+        return success();
+      }
+    }
 
-    if (!llvm::hasSingleElement(negateOp->getUsers()))
-      return failure();
-
-    rewriter.replaceOpWithNewOp<stablehlo::SubtractOp>(op, op.getLhs(),
-                                                       negateOp.getOperand());
-    return success();
+    return failure();
   }
 };
 
@@ -5808,18 +6344,21 @@ struct SubSimplify
 };
 
 struct NoNanSelfSubSimplify
-    : public CheckedOpRewritePattern<stablehlo::SubtractOp,
-                                     NoNanSelfSubSimplify> {
-  using CheckedOpRewritePattern<stablehlo::SubtractOp,
-                                NoNanSelfSubSimplify>::CheckedOpRewritePattern;
+    : public NoNanCheckedOpRewritePattern<stablehlo::SubtractOp,
+                                          NoNanSelfSubSimplify> {
+  using NoNanCheckedOpRewritePattern<
+      stablehlo::SubtractOp,
+      NoNanSelfSubSimplify>::NoNanCheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::SubtractOp op,
                                     PatternRewriter &rewriter) const {
-
     if (op.getLhs() == op.getRhs()) {
-      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-          op, rewriter.getZeroAttr(op.getType()));
-      return success();
+      if (canApplyNoNanPattern(allowOnFloatingPointMath, op.getType(),
+                               op.getLhs().getType(), op)) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            op, rewriter.getZeroAttr(op.getType()));
+        return success();
+      }
     }
 
     return failure();
@@ -5940,6 +6479,20 @@ struct MulSimplify
       return success();
     }
 
+    // x * -1 -> negate x
+    if (matchPattern(op.getRhs(), m_NegOne()) ||
+        matchPattern(op.getRhs(), m_NegOneFloat())) {
+      rewriter.replaceOpWithNewOp<stablehlo::NegOp>(op, op.getLhs());
+      return success();
+    }
+
+    // -1 * x -> negate x
+    if (matchPattern(op.getLhs(), m_NegOne()) ||
+        matchPattern(op.getLhs(), m_NegOneFloat())) {
+      rewriter.replaceOpWithNewOp<stablehlo::NegOp>(op, op.getRhs());
+      return success();
+    }
+
     return failure();
   }
 };
@@ -5952,17 +6505,79 @@ struct DivSimplify
   LogicalResult matchAndRewriteImpl(stablehlo::DivOp op,
                                     PatternRewriter &rewriter) const {
 
-    // 0 / x -> 0 [assume non nan here]
+    // x / 1 -> x
+    if (matchPattern(op.getRhs(), m_OneFloat()) ||
+        matchPattern(op.getRhs(), m_One())) {
+      rewriter.replaceOp(op, op.getLhs());
+      return success();
+    }
+
+    // x / -1 -> negate x
+    if (matchPattern(op.getRhs(), m_NegOneFloat()) ||
+        matchPattern(op.getRhs(), m_NegOne())) {
+      rewriter.replaceOpWithNewOp<stablehlo::NegOp>(op, op.getLhs());
+      return success();
+    }
+
+    // x / const -> x * (1 / const)
+    if (isa<FloatType>(op.getType().getElementType())) {
+      DenseElementsAttr rhsAttr;
+      if (matchPattern(op.getRhs(), m_Constant(&rhsAttr))) {
+        {
+          DenseElementsAttr lhsAttr;
+          if (matchPattern(op.getLhs(), m_Constant(&lhsAttr)))
+            return failure(); // const prop will evaluate this
+        }
+
+        auto ty = op.getType();
+        if (rhsAttr.isSplat()) {
+          ty = RankedTensorType::get(
+              {}, cast<ShapedType>(op->getResultTypes()[0]).getElementType());
+          rhsAttr = rhsAttr.resizeSplat(ty);
+        }
+
+        auto rhsTen = stablehlo::constantOp(rhsAttr);
+        auto oneTen =
+            stablehlo::constantOp(cast<ElementsAttr>(makeAttr(ty, 1)));
+        auto out = fromTensor(stablehlo::divideOp(oneTen, rhsTen, ty));
+
+        if (ty != op.getType()) {
+          out = out.resizeSplat(op.getType());
+        }
+
+        rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
+            op, op.getLhs(),
+            rewriter.create<stablehlo::ConstantOp>(op.getLoc(), op.getType(),
+                                                   out));
+        return success();
+      }
+    }
+
+    return failure();
+  }
+};
+
+struct NoNanDivSimplify final
+    : public NoNanCheckedOpRewritePattern<stablehlo::DivOp, NoNanDivSimplify> {
+  using NoNanCheckedOpRewritePattern<
+      stablehlo::DivOp, NoNanDivSimplify>::NoNanCheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DivOp op,
+                                    PatternRewriter &rewriter) const {
+    if (!canApplyNoNanPattern(allowOnFloatingPointMath, op.getType(), op))
+      return failure();
+
+    // 0 / x -> 0
     if (matchPattern(op.getLhs(), m_AnyZeroFloat()) ||
         matchPattern(op.getLhs(), m_Zero())) {
       rewriter.replaceOp(op, op.getLhs());
       return success();
     }
 
-    // x / 1 -> x
-    if (matchPattern(op.getRhs(), m_OneFloat()) ||
-        matchPattern(op.getRhs(), m_One())) {
-      rewriter.replaceOp(op, op.getLhs());
+    // x / x -> 1
+    if (op.getLhs() == op.getRhs()) {
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, op.getType(), cast<ElementsAttr>(makeAttr(op.getType(), 1)));
       return success();
     }
 
@@ -5995,30 +6610,112 @@ struct PowSimplify
 
   LogicalResult matchAndRewriteImpl(stablehlo::PowOp op,
                                     PatternRewriter &rewriter) const {
+    // pow(x, 1) -> x
+    if (matchPattern(op.getRhs(), m_One()) ||
+        matchPattern(op.getRhs(), m_OneFloat())) {
+      rewriter.replaceAllUsesWith(op, op.getLhs());
+      return success();
+    }
 
-    SmallVector<Attribute> constants;
-    constants.assign(op->getNumOperands(), Attribute());
-    for (unsigned i = 0, e = op->getNumOperands(); i != e; ++i)
-      matchPattern(op->getOperand(i), m_Constant(&constants[i]));
+    // pow(x, 0) -> 1 || pow(1, x) -> 1
+    if ((matchPattern(op.getRhs(), m_Zero()) ||
+         matchPattern(op.getRhs(), m_AnyZeroFloat())) ||
+        (matchPattern(op.getLhs(), m_One()) ||
+         matchPattern(op.getLhs(), m_OneFloat()))) {
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, op.getType(), cast<ElementsAttr>(makeAttr(op.getType(), 1)));
+      return success();
+    }
 
     if (isa<FloatType>(op.getType().getElementType())) {
-      // pow(X, 0.5) -> sqrt(X)
-      {
-        DenseFPElementsAttr rhs;
-        if (matchPattern(op.getRhs(), m_Constant(&rhs))) {
-          bool allHalf = true;
-          for (auto v : rhs) {
-            if (!v.isExactlyValue(0.5)) {
-              allHalf = false;
-              break;
-            }
-          }
-          if (allHalf) {
-            rewriter.replaceOpWithNewOp<stablehlo::SqrtOp>(op, op.getLhs());
-            return success();
-          }
+      DenseFPElementsAttr rhs;
+      if (matchPattern(op.getRhs(), m_Constant(&rhs))) {
+        bool allHalf = true, allNegOne = true, allNegHalf = true, allTwo = true;
+        for (auto v : rhs) {
+          allHalf &= v.isExactlyValue(0.5);
+          allNegOne &= v.isExactlyValue(-1.0);
+          allNegHalf &= v.isExactlyValue(-0.5);
+          allTwo &= v.isExactlyValue(2.0);
+        }
+
+        // pow(X, -1) -> 1 / X
+        if (allNegOne) {
+          rewriter.replaceOpWithNewOp<stablehlo::DivOp>(
+              op,
+              rewriter.create<stablehlo::ConstantOp>(
+                  op.getLoc(), op.getType(),
+                  cast<ElementsAttr>(makeAttr(op.getType(), 1))),
+              op.getLhs());
+          return success();
+        }
+
+        // pow(X, -0.5) -> rsqrt(X)
+        if (allNegHalf) {
+          rewriter.replaceOpWithNewOp<stablehlo::RsqrtOp>(op, op.getLhs());
+          return success();
+        }
+
+        // pow(X, 0.5) -> sqrt(X)
+        if (allHalf) {
+          rewriter.replaceOpWithNewOp<stablehlo::SqrtOp>(op, op.getLhs());
+          return success();
+        }
+
+        // pow(X, 2) -> X * X
+        if (allTwo) {
+          rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, op.getLhs(),
+                                                        op.getLhs());
+          return success();
         }
       }
+    }
+
+    return failure();
+  }
+};
+
+struct NoNanZeroBasePowSimplify final
+    : public NoNanCheckedOpRewritePattern<stablehlo::PowOp,
+                                          NoNanZeroBasePowSimplify> {
+  using NoNanCheckedOpRewritePattern<
+      stablehlo::PowOp, NoNanZeroBasePowSimplify>::NoNanCheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::PowOp op,
+                                    PatternRewriter &rewriter) const {
+    if (!canApplyNoNanPattern(allowOnFloatingPointMath, op.getType(), op)) {
+      return failure();
+    }
+
+    if (matchPattern(op.getLhs(), m_Zero()) ||
+        matchPattern(op.getLhs(), m_AnyZeroFloat())) {
+
+      DenseElementsAttr attr;
+      if (matchPattern(op.getRhs(), m_Constant(&attr)))
+        return failure(); // let constant propagation handle this
+
+      // 0 ^ x => x == 0 ? 1 : (x > 0 ? 0 : Inf)
+      auto zero = rewriter.create<stablehlo::ConstantOp>(
+          op.getLoc(), rewriter.getZeroAttr(op.getType()));
+      auto nonZeroCase = rewriter.create<stablehlo::SelectOp>(
+          op.getLoc(),
+          rewriter.create<stablehlo::CompareOp>(
+              op.getLoc(), op.getRhs(), zero,
+              stablehlo::ComparisonDirection::GT),
+          zero,
+          rewriter.create<stablehlo::ConstantOp>(
+              op.getLoc(), op.getType(),
+              cast<ElementsAttr>(makeAttr(
+                  op.getType(), std::numeric_limits<float>::infinity()))));
+      rewriter.replaceOpWithNewOp<stablehlo::SelectOp>(
+          op,
+          rewriter.create<stablehlo::CompareOp>(
+              op.getLoc(), op.getRhs(), zero,
+              stablehlo::ComparisonDirection::EQ),
+          rewriter.create<stablehlo::ConstantOp>(
+              op.getLoc(), op.getType(),
+              cast<ElementsAttr>(makeAttr(op.getType(), 1))),
+          nonZeroCase);
+      return success();
     }
 
     return failure();
@@ -6426,24 +7123,6 @@ struct BroadcastInDimSimplify
   }
 };
 
-stablehlo::ComparisonDirection
-reversedComparisonDirection(stablehlo::ComparisonDirection direction) {
-  switch (direction) {
-  case stablehlo::ComparisonDirection::EQ:
-    return stablehlo::ComparisonDirection::EQ;
-  case stablehlo::ComparisonDirection::NE:
-    return stablehlo::ComparisonDirection::NE;
-  case stablehlo::ComparisonDirection::GE:
-    return stablehlo::ComparisonDirection::LE;
-  case stablehlo::ComparisonDirection::GT:
-    return stablehlo::ComparisonDirection::LT;
-  case stablehlo::ComparisonDirection::LE:
-    return stablehlo::ComparisonDirection::GE;
-  case stablehlo::ComparisonDirection::LT:
-    return stablehlo::ComparisonDirection::GT;
-  }
-}
-
 struct CompareIotaConstSimplify
     : public CheckedOpRewritePattern<stablehlo::CompareOp,
                                      CompareIotaConstSimplify> {
@@ -6642,6 +7321,353 @@ struct CompareIotaConstSimplify
     default:
       // TODO: other directions
       break;
+    }
+
+    return failure();
+  }
+};
+
+struct CompareAbs
+    : public CheckedOpRewritePattern<stablehlo::CompareOp, CompareAbs> {
+  using CheckedOpRewritePattern<stablehlo::CompareOp,
+                                CompareAbs>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::CompareOp cmpOp,
+                                    PatternRewriter &rewriter) const {
+    for (int i = 0; i < 2; i++) {
+      auto operand = cmpOp->getOperand(i);
+      auto abs = operand.getDefiningOp<stablehlo::AbsOp>();
+      if (!abs)
+        continue;
+      if (!cast<mlir::enzyme::AutoDiffTypeInterface>(
+               cmpOp->getOperand(1 - i).getType())
+               .isZero(cmpOp->getOperand(1 - i)))
+        continue;
+
+      auto dir = cmpOp.getComparisonDirection();
+      if (i == 1) {
+        dir = reversedComparisonDirection(dir);
+      }
+      // now its always abs ?= 0
+
+      // abs(x) < 0 -> false
+      if (dir == stablehlo::ComparisonDirection::LT) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            cmpOp, cmpOp.getType(),
+            SplatElementsAttr::get(cmpOp.getType(),
+                                   rewriter.getBoolAttr(false)));
+        return success();
+      }
+      // abs(x) <= 0 -> x == 0
+      if (dir == stablehlo::ComparisonDirection::LE) {
+        rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
+            cmpOp, abs.getOperand(), cmpOp->getOperand(1 - i),
+            stablehlo::ComparisonDirection::EQ);
+        return success();
+      }
+      // abs(x) >= 0 -> true
+      if (dir == stablehlo::ComparisonDirection::GE) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            cmpOp, cmpOp.getType(),
+            SplatElementsAttr::get(cmpOp.getType(),
+                                   rewriter.getBoolAttr(true)));
+        return success();
+      }
+      // abs(x) > 0 -> x != 0
+      if (dir == stablehlo::ComparisonDirection::GT) {
+        rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
+            cmpOp, abs.getOperand(), cmpOp->getOperand(1 - i),
+            stablehlo::ComparisonDirection::NE);
+        return success();
+      }
+
+      // abs(x) == 0 -> x == 0
+      if (dir == stablehlo::ComparisonDirection::EQ) {
+        rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
+            cmpOp, abs.getOperand(), cmpOp->getOperand(1 - i),
+            stablehlo::ComparisonDirection::EQ);
+        return success();
+      }
+
+      // abs(x) != 0 -> x != 0
+      if (dir == stablehlo::ComparisonDirection::NE) {
+        rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
+            cmpOp, abs.getOperand(), cmpOp->getOperand(1 - i),
+            stablehlo::ComparisonDirection::NE);
+        return success();
+      }
+    }
+    return failure();
+  }
+};
+
+struct CompareMul
+    : public CheckedOpRewritePattern<stablehlo::CompareOp, CompareMul> {
+  using CheckedOpRewritePattern<stablehlo::CompareOp,
+                                CompareMul>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::CompareOp cmpOp,
+                                    PatternRewriter &rewriter) const {
+    for (int i = 0; i < 2; i++) {
+      auto operand = cmpOp->getOperand(i);
+      auto mul = operand.getDefiningOp<stablehlo::MulOp>();
+      if (!mul)
+        continue;
+      if (!cast<mlir::enzyme::AutoDiffTypeInterface>(
+               cmpOp->getOperand(1 - i).getType())
+               .isZero(cmpOp->getOperand(1 - i)))
+        continue;
+
+      for (int j = 0; j < 2; j++) {
+        SplatElementsAttr splat;
+        if (!matchPattern(mul->getOperand(j), m_Constant(&splat))) {
+          continue;
+        }
+
+        bool isNegative = false;
+
+        auto attr = splat.getSplatValue<Attribute>();
+        if (auto fp = dyn_cast<FloatAttr>(attr)) {
+          if (fp.getValue().isZero())
+            continue;
+          isNegative = fp.getValue().isNegative();
+        } else if (auto fp = dyn_cast<IntegerAttr>(attr)) {
+          if (fp.getValue().isZero())
+            continue;
+          isNegative = fp.getValue().isNegative();
+        } else {
+          continue;
+        }
+        auto dir = cmpOp.getComparisonDirection();
+        if (i == 1) {
+          dir = reversedComparisonDirection(dir);
+        }
+
+        // now its always mul(x, cst) ?= 0
+
+        // mul(x, cst) < 0 ->
+        //    if cst > 0,   x < 0
+        //    elif cst < 0, x > 0
+        if (dir == stablehlo::ComparisonDirection::LT) {
+          rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
+              cmpOp, mul->getOperand(1 - j), cmpOp->getOperand(1 - i),
+              isNegative ? stablehlo::ComparisonDirection::GT
+                         : stablehlo::ComparisonDirection::LT);
+          return success();
+        }
+        // mul(x, cst) <= 0 ->
+        //    if cst > 0,   x <= 0
+        //    elif cst < 0, x >= 0
+        if (dir == stablehlo::ComparisonDirection::LE) {
+          rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
+              cmpOp, mul->getOperand(1 - j), cmpOp->getOperand(1 - i),
+              isNegative ? stablehlo::ComparisonDirection::GE
+                         : stablehlo::ComparisonDirection::LE);
+          return success();
+        }
+
+        // mul(x, cst) > 0 ->
+        //    if cst > 0,   x > 0
+        //    elif cst < 0, x < 0
+        if (dir == stablehlo::ComparisonDirection::GT) {
+          rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
+              cmpOp, mul->getOperand(1 - j), cmpOp->getOperand(1 - i),
+              isNegative ? stablehlo::ComparisonDirection::LT
+                         : stablehlo::ComparisonDirection::GT);
+          return success();
+        }
+        // mul(x, cst) <= 0 ->
+        //    if cst > 0,   x <= 0
+        //    elif cst < 0, x >= 0
+        if (dir == stablehlo::ComparisonDirection::GE) {
+          rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
+              cmpOp, mul->getOperand(1 - j), cmpOp->getOperand(1 - i),
+              isNegative ? stablehlo::ComparisonDirection::LE
+                         : stablehlo::ComparisonDirection::GE);
+          return success();
+        }
+
+        // mul(x, cst) == 0 -> x == 0
+        if (dir == stablehlo::ComparisonDirection::EQ) {
+          rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
+              cmpOp, mul->getOperand(1 - j), cmpOp->getOperand(1 - i),
+              stablehlo::ComparisonDirection::EQ);
+          return success();
+        }
+
+        // mul(x, cst) != 0 -> x != 0
+        if (dir == stablehlo::ComparisonDirection::NE) {
+          rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
+              cmpOp, mul->getOperand(1 - j), cmpOp->getOperand(1 - i),
+              stablehlo::ComparisonDirection::NE);
+          return success();
+        }
+      }
+    }
+    return failure();
+  }
+};
+
+struct CompareConvert
+    : public CheckedOpRewritePattern<stablehlo::CompareOp, CompareConvert> {
+  using CheckedOpRewritePattern<stablehlo::CompareOp,
+                                CompareConvert>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::CompareOp cmpOp,
+                                    PatternRewriter &rewriter) const {
+    for (int i = 0; i < 2; i++) {
+      auto operand = cmpOp->getOperand(i);
+      auto conv = operand.getDefiningOp<stablehlo::ConvertOp>();
+      if (!conv)
+        continue;
+      if (!conv.getType().getElementType().isFloat())
+        continue;
+      if (!conv.getOperand().getType().getElementType().isInteger())
+        continue;
+
+      if (!cast<mlir::enzyme::AutoDiffTypeInterface>(
+               cmpOp->getOperand(1 - i).getType())
+               .isZero(cmpOp->getOperand(1 - i)))
+        continue;
+
+      SplatElementsAttr splat;
+      if (!matchPattern(cmpOp->getOperand(1 - i), m_Constant(&splat))) {
+        continue;
+      }
+
+      auto attr = splat.getSplatValue<FloatAttr>().getValue();
+      if (!attr.isInteger())
+        continue;
+
+      auto newCmp = rewriter.create<stablehlo::ConvertOp>(
+          cmpOp.getLoc(), conv.getOperand().getType(),
+          cmpOp->getOperand(1 - i));
+
+      if (i == 0)
+        rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
+            cmpOp, conv.getOperand(), newCmp, cmpOp.getComparisonDirection());
+      else
+        rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
+            cmpOp, newCmp, conv.getOperand(), cmpOp.getComparisonDirection());
+      return success();
+    }
+    return failure();
+  }
+};
+
+bool isAddOfSelects(Value lhs, Value rhs, Value &tval, Value &fval) {
+  auto sel1 = lhs.getDefiningOp<stablehlo::SelectOp>();
+  if (!sel1)
+    return false;
+  auto sel2 = rhs.getDefiningOp<stablehlo::SelectOp>();
+  if (!sel2)
+    return false;
+
+  if (sel1.getPred() != sel2.getPred())
+    return false;
+  if (sel1.getOnTrue() != sel2.getOnFalse() ||
+      sel1.getOnFalse() != sel2.getOnTrue())
+    return false;
+
+  tval = sel1.getOnTrue();
+  fval = sel2.getOnTrue();
+  return true;
+}
+
+struct AddSelects
+    : public CheckedOpRewritePattern<stablehlo::AddOp, AddSelects> {
+  using CheckedOpRewritePattern<stablehlo::AddOp,
+                                AddSelects>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::AddOp addOp,
+                                    PatternRewriter &rewriter) const {
+    Value tval, fval;
+    if (isAddOfSelects(addOp.getLhs(), addOp.getRhs(), tval, fval)) {
+      rewriter.modifyOpInPlace(addOp, [&]() {
+        addOp.getLhsMutable().assign(tval);
+        addOp.getRhsMutable().assign(fval);
+      });
+      return success();
+    }
+    for (int i = 0; i < 2; i++) {
+      if (auto sub =
+              addOp->getOperand(i).getDefiningOp<stablehlo::SubtractOp>()) {
+        if (isAddOfSelects(sub.getLhs(), addOp->getOperand(1 - i), tval,
+                           fval)) {
+          auto newAdd =
+              rewriter.create<stablehlo::AddOp>(addOp.getLoc(), tval, fval);
+          rewriter.replaceOpWithNewOp<stablehlo::SubtractOp>(addOp, newAdd,
+                                                             sub.getRhs());
+          return success();
+        }
+      }
+    }
+    return failure();
+  }
+};
+
+struct CompareNegateConstSimplify
+    : public CheckedOpRewritePattern<stablehlo::CompareOp,
+                                     CompareNegateConstSimplify> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::CompareOp cmpOp,
+                                    PatternRewriter &rewriter) const {
+    auto lhsNegate = cmpOp.getLhs().getDefiningOp<stablehlo::NegOp>();
+    auto rhsNegate = cmpOp.getRhs().getDefiningOp<stablehlo::NegOp>();
+
+    auto shardingAttr = sdy::getShardingPerValue(cmpOp);
+
+    if (lhsNegate && rhsNegate) {
+      auto newOp = rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
+          cmpOp, rhsNegate.getOperand(), lhsNegate.getOperand(),
+          cmpOp.getComparisonDirection(), cmpOp.getCompareTypeAttr());
+      if (shardingAttr)
+        sdy::setShardings(newOp, shardingAttr);
+      return success();
+    }
+
+    if (!lhsNegate && !rhsNegate)
+      return failure();
+
+    if (lhsNegate &&
+        !lhsNegate.getOperand()
+             .getDefiningOp()
+             ->hasTrait<mlir::OpTrait::ConstantLike>() &&
+        cmpOp.getRhs()
+            .getDefiningOp()
+            ->hasTrait<mlir::OpTrait::ConstantLike>()) {
+      auto negConst =
+          rewriter.create<stablehlo::NegOp>(cmpOp.getLoc(), cmpOp.getRhs());
+      auto newOp = rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
+          cmpOp, lhsNegate.getOperand(), negConst,
+          reversedComparisonDirection(cmpOp.getComparisonDirection()),
+          cmpOp.getCompareTypeAttr());
+      if (shardingAttr) {
+        sdy::setShardings(newOp, shardingAttr);
+        sdy::setShardings(negConst, shardingAttr);
+      }
+      return success();
+    }
+
+    if (rhsNegate &&
+        !rhsNegate.getOperand()
+             .getDefiningOp()
+             ->hasTrait<mlir::OpTrait::ConstantLike>() &&
+        cmpOp.getLhs()
+            .getDefiningOp()
+            ->hasTrait<mlir::OpTrait::ConstantLike>()) {
+      auto negConst =
+          rewriter.create<stablehlo::NegOp>(cmpOp.getLoc(), cmpOp.getLhs());
+      auto newOp = rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
+          cmpOp, negConst, rhsNegate.getOperand(),
+          reversedComparisonDirection(cmpOp.getComparisonDirection()),
+          cmpOp.getCompareTypeAttr());
+      if (shardingAttr) {
+        sdy::setShardings(newOp, shardingAttr);
+        sdy::setShardings(negConst, shardingAttr);
+      }
+      return success();
     }
 
     return failure();
@@ -7020,10 +8046,10 @@ struct BinBroadcastSplat final
   }
 };
 
-struct AllFinite
-    : public CheckedOpRewritePattern<stablehlo::IsFiniteOp, AllFinite> {
+struct AllFiniteIsFinite
+    : public CheckedOpRewritePattern<stablehlo::IsFiniteOp, AllFiniteIsFinite> {
   using CheckedOpRewritePattern<stablehlo::IsFiniteOp,
-                                AllFinite>::CheckedOpRewritePattern;
+                                AllFiniteIsFinite>::CheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::IsFiniteOp op,
                                     PatternRewriter &rewriter) const {
@@ -7033,22 +8059,66 @@ struct AllFinite
   }
 };
 
-struct NoNan : public CheckedOpRewritePattern<stablehlo::CompareOp, NoNan> {
-  using CheckedOpRewritePattern<stablehlo::CompareOp,
-                                NoNan>::CheckedOpRewritePattern;
+struct AllFiniteIsInf
+    : public CheckedOpRewritePattern<chlo::IsInfOp, AllFiniteIsInf> {
+  using CheckedOpRewritePattern<chlo::IsInfOp,
+                                AllFiniteIsInf>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(chlo::IsInfOp op,
+                                    PatternRewriter &rewriter) const {
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+        op, rewriter.getZeroAttr(op.getType()));
+    return success();
+  }
+};
+
+struct AllFiniteIsPosInf
+    : public CheckedOpRewritePattern<chlo::IsPosInfOp, AllFiniteIsPosInf> {
+  using CheckedOpRewritePattern<chlo::IsPosInfOp,
+                                AllFiniteIsPosInf>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(chlo::IsPosInfOp op,
+                                    PatternRewriter &rewriter) const {
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+        op, rewriter.getZeroAttr(op.getType()));
+    return success();
+  }
+};
+
+struct AllFiniteIsNegInf
+    : public CheckedOpRewritePattern<chlo::IsNegInfOp, AllFiniteIsNegInf> {
+  using CheckedOpRewritePattern<chlo::IsNegInfOp,
+                                AllFiniteIsNegInf>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(chlo::IsNegInfOp op,
+                                    PatternRewriter &rewriter) const {
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+        op, rewriter.getZeroAttr(op.getType()));
+    return success();
+  }
+};
+
+struct NoNanCompareSimplify
+    : public NoNanCheckedOpRewritePattern<stablehlo::CompareOp,
+                                          NoNanCompareSimplify> {
+  using NoNanCheckedOpRewritePattern<
+      stablehlo::CompareOp, NoNanCompareSimplify>::NoNanCheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::CompareOp op,
                                     PatternRewriter &rewriter) const {
     if (op.getLhs() == op.getRhs()) {
-      if (op.getComparisonDirection() == stablehlo::ComparisonDirection::EQ) {
-        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-            op, op.getType(), cast<ElementsAttr>(makeAttr(op.getType(), 1)));
-        return success();
-      }
-      if (op.getComparisonDirection() == stablehlo::ComparisonDirection::NE) {
-        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-            op, op.getType(), cast<ElementsAttr>(makeAttr(op.getType(), 0)));
-        return success();
+      if (canApplyNoNanPattern(allowOnFloatingPointMath, op.getType(),
+                               op.getLhs().getType(), op)) {
+        if (op.getComparisonDirection() == stablehlo::ComparisonDirection::EQ) {
+          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+              op, op.getType(), cast<ElementsAttr>(makeAttr(op.getType(), 1)));
+          return success();
+        }
+        if (op.getComparisonDirection() == stablehlo::ComparisonDirection::NE) {
+          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+              op, op.getType(), cast<ElementsAttr>(makeAttr(op.getType(), 0)));
+          return success();
+        }
       }
     }
     return failure();
@@ -9477,43 +10547,6 @@ bool is_iota(ArrayRef<int64_t> idx) {
   return true;
 }
 
-/// Converts gather ops to slice ops in case we have a single set of constant
-/// indices.
-struct GatherSimplify final
-    : CheckedOpRewritePattern<stablehlo::GatherOp, GatherSimplify> {
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::GatherOp op,
-                                    PatternRewriter &rewriter) const {
-    DenseIntElementsAttr startIndicesCst;
-    if (!matchPattern(op.getStartIndices(), m_Constant(&startIndicesCst)))
-      return failure();
-
-    {
-      DenseIntElementsAttr operandVals;
-      if (matchPattern(op.getOperand(), m_Constant(&operandVals))) {
-        auto out = stablehlo::gatherOp(
-            stablehlo::constantOp(operandVals),
-            stablehlo::constantOp(startIndicesCst),
-            stablehlo::Axes(op.getDimensionNumbers().getOffsetDims()),
-            stablehlo::Axes(op.getDimensionNumbers().getCollapsedSliceDims()),
-            stablehlo::Axes(op.getDimensionNumbers().getOperandBatchingDims()),
-            stablehlo::Axes(
-                op.getDimensionNumbers().getStartIndicesBatchingDims()),
-            stablehlo::Axes(op.getDimensionNumbers().getStartIndexMap()),
-            stablehlo::Axis(op.getDimensionNumbers().getIndexVectorDim()),
-            stablehlo::Sizes(op.getSliceSizes()), op.getIndicesAreSorted(),
-            op.getType());
-
-        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(),
-                                                           fromTensor(out));
-        return success();
-      }
-    }
-    return failure();
-  }
-};
-
 struct CSEIota : CheckedOpRewritePattern<stablehlo::IotaOp, CSEIota> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
@@ -10287,24 +11320,6 @@ struct CompareExt final
     return failure();
   }
 };
-
-stablehlo::ComparisonDirection
-negatedComparisonDirection(stablehlo::ComparisonDirection direction) {
-  switch (direction) {
-  case stablehlo::ComparisonDirection::EQ:
-    return stablehlo::ComparisonDirection::NE;
-  case stablehlo::ComparisonDirection::NE:
-    return stablehlo::ComparisonDirection::EQ;
-  case stablehlo::ComparisonDirection::GE:
-    return stablehlo::ComparisonDirection::LT;
-  case stablehlo::ComparisonDirection::GT:
-    return stablehlo::ComparisonDirection::LE;
-  case stablehlo::ComparisonDirection::LE:
-    return stablehlo::ComparisonDirection::GT;
-  case stablehlo::ComparisonDirection::LT:
-    return stablehlo::ComparisonDirection::GE;
-  }
-}
 
 struct SelectCompIotaConstSimplify final
     : CheckedOpRewritePattern<stablehlo::SelectOp,
@@ -12366,6 +13381,7 @@ bool isLegalConcatToOneDimDUS(stablehlo::ConcatenateOp outer,
         return false;
       }
     }
+    rhs = rhsSlice;
   }
 
   if (!lhs && !rhs) {
@@ -12385,8 +13401,15 @@ bool isLegalConcatToOneDimDUS(stablehlo::ConcatenateOp outer,
   if (lhs && rhs && outer.getOperands().size() == 2) {
     return false;
   }
-  if (lhs && rhs && lhs.getOperand() != rhs.getOperand()) {
-    return false;
+  if (lhs && rhs) {
+    if (lhs.getOperand() != rhs.getOperand()) {
+      return false;
+    }
+    if (cast<RankedTensorType>(lhs.getOperand().getType())
+            .getShape()[outer.getDimension()] !=
+        outer.getType().getShape()[outer.getDimension()]) {
+      return false;
+    }
   }
   if (lhsP)
     *lhsP = lhs;
@@ -14930,30 +15953,15 @@ struct ReorderElementwiseAndShapeOp final
 };
 
 struct NoNanMulSimplify final
-    : public CheckedOpRewritePattern<stablehlo::MulOp, NoNanMulSimplify> {
-  using CheckedOpRewritePattern<stablehlo::MulOp,
-                                NoNanMulSimplify>::CheckedOpRewritePattern;
-
-  NoNanMulSimplify(bool allowOnFloatingPointMath, MLIRContext *context,
-                   PatternBenefit benefit = 1)
-      : CheckedOpRewritePattern(context, benefit),
-        allowOnFloatingPointMath(allowOnFloatingPointMath) {}
-
-  // Apply the pattern only if the output types are integers or if the pattern
-  // is allowed on floating point math.
-  bool canApplyPattern(bool allowOnFloatingPointMath, Type mulOutTy,
-                       Type mulInTy) const {
-    mulOutTy = getElementTypeOrSelf(mulOutTy);
-    mulInTy = getElementTypeOrSelf(mulInTy);
-    if (mulOutTy.isInteger() && mulInTy.isInteger())
-      return true;
-    return allowOnFloatingPointMath;
-  }
+    : public NoNanCheckedOpRewritePattern<stablehlo::MulOp, NoNanMulSimplify> {
+  using NoNanCheckedOpRewritePattern<
+      stablehlo::MulOp, NoNanMulSimplify>::NoNanCheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::MulOp op,
                                     PatternRewriter &rewriter) const {
-    if (!canApplyPattern(allowOnFloatingPointMath, op.getResult().getType(),
-                         op.getOperand(0).getType())) {
+    if (!canApplyNoNanPattern(allowOnFloatingPointMath,
+                              op.getResult().getType(),
+                              op.getOperand(0).getType(), op)) {
       return failure();
     }
 
@@ -14976,34 +15984,15 @@ struct NoNanMulSimplify final
 
     return failure();
   }
-
-private:
-  bool allowOnFloatingPointMath;
 };
 
 // c = a + b; d = c - b => d = a
 // c = a + b; d = b - c => d = -a
 struct NoNanAddSubSimplify final
-    : public CheckedOpRewritePattern<stablehlo::SubtractOp,
-                                     NoNanAddSubSimplify> {
-  using CheckedOpRewritePattern<stablehlo::SubtractOp,
-                                NoNanAddSubSimplify>::CheckedOpRewritePattern;
-
-  NoNanAddSubSimplify(bool allowOnFloatingPointMath, MLIRContext *context,
-                      PatternBenefit benefit = 1)
-      : CheckedOpRewritePattern(context, benefit),
-        allowOnFloatingPointMath(allowOnFloatingPointMath) {}
-
-  // Apply the pattern only if the output types are integers or if the pattern
-  // is allowed on floating point math.
-  bool canApplyPattern(bool allowOnFloatingPointMath, Type addOutTy,
-                       Type subOutTy) const {
-    addOutTy = getElementTypeOrSelf(addOutTy);
-    subOutTy = getElementTypeOrSelf(subOutTy);
-    if (addOutTy.isInteger() && subOutTy.isInteger())
-      return true;
-    return allowOnFloatingPointMath;
-  }
+    : public NoNanCheckedOpRewritePattern<stablehlo::SubtractOp,
+                                          NoNanAddSubSimplify> {
+  using NoNanCheckedOpRewritePattern<
+      stablehlo::SubtractOp, NoNanAddSubSimplify>::NoNanCheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::SubtractOp op,
                                     PatternRewriter &rewriter) const {
@@ -15014,7 +16003,8 @@ struct NoNanAddSubSimplify final
     // Check if LHS is defined by an AddOp
     if (auto lhsAddOp = lhs.getDefiningOp<stablehlo::AddOp>()) {
       auto addOutTy = lhsAddOp.getResult().getType();
-      if (!canApplyPattern(allowOnFloatingPointMath, addOutTy, subOutTy))
+      if (!canApplyNoNanPattern(allowOnFloatingPointMath, addOutTy, subOutTy,
+                                op))
         return failure();
 
       // Case: c = a + b; d = c - b -> d = a
@@ -15033,7 +16023,8 @@ struct NoNanAddSubSimplify final
     // Check if RHS is defined by an AddOp
     if (auto rhsAddOp = rhs.getDefiningOp<stablehlo::AddOp>()) {
       auto addOutTy = rhsAddOp.getResult().getType();
-      if (!canApplyPattern(allowOnFloatingPointMath, addOutTy, subOutTy))
+      if (!canApplyNoNanPattern(allowOnFloatingPointMath, addOutTy, subOutTy,
+                                op))
         return failure();
 
       // Case: c = a + b; d = b - c -> d = -a
@@ -15052,9 +16043,6 @@ struct NoNanAddSubSimplify final
     // No simplification pattern matched
     return failure();
   }
-
-private:
-  bool allowOnFloatingPointMath = false;
 };
 
 // a > b ? a : b or a >= b ? a : b ---> maximum(a, b)
@@ -15146,7 +16134,8 @@ struct NotCompare
 
     rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
         op, cmp.getLhs(), cmp.getRhs(),
-        negatedComparisonDirection(cmp.getComparisonDirection()));
+        negatedComparisonDirection(cmp.getComparisonDirection()),
+        cmp.getCompareTypeAttr());
 
     rewriter.eraseOp(cmp);
 
@@ -15168,28 +16157,32 @@ struct CommonCompareExpressionRewrite
 
     auto negDir = negatedComparisonDirection(op.getComparisonDirection());
 
-    for (int i = 0; i < op.getNumOperands(); ++i) {
-      auto opOperand = op.getOperand(i);
-      for (auto user : opOperand.getUsers()) {
-        auto userCompareOp = dyn_cast<stablehlo::CompareOp>(user);
-        if (!userCompareOp || userCompareOp.getComparisonDirection() != negDir)
-          continue;
+    // Check for equivalent users for the value with the fewest other users to
+    // check. For ease here we simplify just checking if not constant (since
+    // getNumUsers is O(n)).
+    auto userCheck = lhs;
+    if (matchPattern(userCheck, m_Constant()))
+      userCheck = rhs;
 
-        if (user->getBlock() != op->getBlock())
-          continue;
+    for (auto user : userCheck.getUsers()) {
+      auto userCompareOp = dyn_cast<stablehlo::CompareOp>(user);
+      if (!userCompareOp || userCompareOp.getComparisonDirection() != negDir)
+        continue;
 
-        if (userCompareOp.getLhs() == lhs && userCompareOp.getRhs() == rhs) {
-          if (user->isBeforeInBlock(op)) {
-            auto negatedCondition = rewriter.create<stablehlo::NotOp>(
-                op.getLoc(), userCompareOp.getResult());
-            rewriter.replaceOp(op, negatedCondition);
-            return success();
-          } else {
-            auto negatedCondition = rewriter.create<stablehlo::NotOp>(
-                userCompareOp.getLoc(), op.getResult());
-            rewriter.replaceOp(user, negatedCondition);
-            return success();
-          }
+      if (user->getBlock() != op->getBlock())
+        continue;
+
+      if (userCompareOp.getLhs() == lhs && userCompareOp.getRhs() == rhs) {
+        if (user->isBeforeInBlock(op)) {
+          auto negatedCondition = rewriter.create<stablehlo::NotOp>(
+              op.getLoc(), userCompareOp.getResult());
+          rewriter.replaceOp(op, negatedCondition);
+          return success();
+        } else {
+          auto negatedCondition = rewriter.create<stablehlo::NotOp>(
+              userCompareOp.getLoc(), op.getResult());
+          rewriter.replaceOp(user, negatedCondition);
+          return success();
         }
       }
     }
@@ -15399,38 +16392,77 @@ struct ScatterIndicesAreUnique
       if (shape.empty())
         return failure();
 
-      int64_t numTuples = 1;
-      for (int64_t i = 0; i < shape.size() - 1; ++i) {
-        numTuples *= shape[i];
+      auto dimNumbers = op.getScatterDimensionNumbers();
+      int64_t indexVectorDim = dimNumbers.getIndexVectorDim();
+
+      int64_t tupleSize = shape[indexVectorDim];
+
+      SmallVector<int64_t> strides(shape.size());
+      strides[shape.size() - 1] = 1;
+      for (int64_t i = shape.size() - 2; i >= 0; --i) {
+        strides[i] = strides[i + 1] * shape[i + 1];
       }
-      int64_t tupleSize = shape.back();
+
+      SmallVector<int64_t> nonIndexVectorShape;
+      for (int64_t i = 0; i < shape.size(); ++i) {
+        if (i != indexVectorDim) {
+          nonIndexVectorShape.push_back(shape[i]);
+        }
+      }
 
       // Iterate over the scatter indices tensor to extract tuples
       SmallVector<SmallVector<int64_t>> indexTuples;
       auto values = denseAttr.getValues<APInt>();
-      auto it = values.begin();
-      for (int64_t i = 0; i < numTuples; ++i) {
-        SmallVector<int64_t> indexTuple;
-        for (int64_t j = 0; j < tupleSize; ++j) {
-          if (it == values.end()) {
-            return failure(); // Unexpected end of values
-          }
-          indexTuple.push_back((*it).getSExtValue());
-          ++it;
-        }
-        indexTuples.push_back(indexTuple);
-      }
 
-      if (areIndexTuplesUnique(indexTuples)) {
-        auto newOp = rewriter.create<stablehlo::ScatterOp>(
-            op.getLoc(), op.getResultTypes(), op.getInputs(),
-            op.getScatterIndices(), op.getUpdates(),
-            op.getScatterDimensionNumbers(), op.getIndicesAreSortedAttr(),
-            rewriter.getBoolAttr(true));
-        newOp.getUpdateComputation().takeBody(op.getUpdateComputation());
-        rewriter.replaceOp(op, newOp);
-        return success();
-      }
+      std::function<void(SmallVector<int64_t>, int64_t)> extractTuples =
+          [&](SmallVector<int64_t> currentIndices, int64_t dim) {
+            if (dim == nonIndexVectorShape.size()) {
+              SmallVector<int64_t> indexTuple;
+              for (int64_t component = 0; component < tupleSize; ++component) {
+                // Build full multi-dimensional index
+                SmallVector<int64_t> fullIndex;
+                int64_t nonIndexDim = 0;
+                for (int64_t d = 0; d < shape.size(); ++d) {
+                  if (d == indexVectorDim) {
+                    fullIndex.push_back(component);
+                  } else {
+                    fullIndex.push_back(currentIndices[nonIndexDim++]);
+                  }
+                }
+
+                // Convert to linear index
+                int64_t linearIdx = 0;
+                for (int64_t d = 0; d < shape.size(); ++d) {
+                  linearIdx += fullIndex[d] * strides[d];
+                }
+
+                auto it = values.begin();
+                std::advance(it, linearIdx);
+                indexTuple.push_back((*it).getSExtValue());
+              }
+              indexTuples.push_back(indexTuple);
+              return;
+            }
+
+            for (int64_t i = 0; i < nonIndexVectorShape[dim]; ++i) {
+              SmallVector<int64_t> newIndices = currentIndices;
+              newIndices.push_back(i);
+              extractTuples(newIndices, dim + 1);
+            }
+          };
+
+      extractTuples({}, 0);
+
+      bool uniqueIndices = areIndexTuplesUnique(indexTuples);
+      if (!uniqueIndices && !op.getUniqueIndices())
+        return failure();
+      auto newOp = rewriter.create<stablehlo::ScatterOp>(
+          op.getLoc(), op.getResultTypes(), op.getInputs(), scatterIndices,
+          op.getUpdates(), dimNumbers, op.getIndicesAreSortedAttr(),
+          rewriter.getBoolAttr(uniqueIndices));
+      newOp.getUpdateComputation().takeBody(op.getUpdateComputation());
+      rewriter.replaceOp(op, newOp);
+      return success();
     }
 
     return failure();
@@ -15439,17 +16471,13 @@ struct ScatterIndicesAreUnique
 private:
   bool areIndexTuplesUnique(
       const SmallVector<SmallVector<int64_t>> &indexTuples) const {
-    bool hasUnique = true;
-    for (int64_t i = 0; i < indexTuples.size() && hasUnique; ++i) {
-      for (int64_t j = i + 1; j < indexTuples.size() && hasUnique; ++j) {
-        if (std::equal(indexTuples[i].begin(), indexTuples[i].end(),
-                       indexTuples[j].begin(), indexTuples[j].end())) {
-          hasUnique = false;
-          break;
-        }
+    std::set<SmallVector<int64_t>> uniqueSet;
+    for (const auto &tuple : indexTuples) {
+      if (!uniqueSet.insert(tuple).second) {
+        return false; // Duplicate found
       }
     }
-    return hasUnique;
+    return true;
   }
 };
 
@@ -15518,6 +16546,7 @@ struct AssociativeBinaryOpReordering
   using CheckedOpRewritePattern<
       Op, AssociativeBinaryOpReordering<Op>>::CheckedOpRewritePattern;
 
+  // TODO: generalize to the case where lhs is an Op
   LogicalResult matchAndRewriteImpl(Op op, PatternRewriter &rewriter) const {
     auto lhs = op.getLhs();
     auto rhsOp = op.getRhs().template getDefiningOp<Op>();
@@ -15691,136 +16720,6 @@ struct SignAbsSimplify
   }
 };
 
-bool opResultIsAlwaysNonNegative(Operation *op);
-
-template <typename T>
-bool opResultNonNegativeIfAllElementsNonNegative(Operation *op) {
-  if (!op)
-    return false;
-
-  auto specificOp = dyn_cast<T>(op);
-  if (!specificOp)
-    return false;
-
-  auto lhsOp = specificOp.getLhs().getDefiningOp();
-  auto rhsOp = specificOp.getRhs().getDefiningOp();
-
-  if (lhsOp && rhsOp) {
-    bool lhsNonNeg = opResultIsAlwaysNonNegative(lhsOp);
-    bool rhsNonNeg = opResultIsAlwaysNonNegative(rhsOp);
-
-    if (lhsNonNeg && rhsNonNeg)
-      return true;
-  }
-
-  return false;
-}
-
-bool isConstantNonNegative(stablehlo::ConstantOp constOp) {
-  Attribute attr = constOp.getValue();
-
-  if (auto denseAttr = dyn_cast<DenseElementsAttr>(attr)) {
-    // For floating point values
-    if (denseAttr.getElementType().isF32() ||
-        denseAttr.getElementType().isF64()) {
-      for (auto element : denseAttr.getValues<APFloat>()) {
-        if (element.isNegative())
-          return false;
-      }
-      return true;
-    }
-
-    // For integer values
-    if (denseAttr.getElementType().isIntOrIndex()) {
-      for (auto element : denseAttr.getValues<APInt>()) {
-        if (element.isNegative())
-          return false;
-      }
-      return true;
-    }
-  }
-
-  // Default: can't guarantee all elements are non-negative
-  return false;
-}
-
-bool opResultIsAlwaysNonNegative(Operation *op) {
-  if (!op)
-    return false;
-
-  if (isa<stablehlo::AbsOp, stablehlo::SqrtOp, stablehlo::ExpOp,
-          stablehlo::IotaOp, stablehlo::AndOp, stablehlo::OrOp>(op))
-    return true;
-
-  if (auto constOp = dyn_cast<stablehlo::ConstantOp>(op)) {
-    // Constant is non-negative if all its elements are non-negative
-    return isConstantNonNegative(constOp);
-  }
-
-  // Any non-negative operation that produces a non-negative result
-  if (auto maxOp = dyn_cast<stablehlo::MaxOp>(op)) {
-    for (auto operand : maxOp.getOperands()) {
-      if (auto operandOp = operand.getDefiningOp()) {
-        if (opResultIsAlwaysNonNegative(operandOp))
-          return true;
-      }
-    }
-  }
-
-  // All non-negative operations that produce a non-negative result
-  if (isa<stablehlo::MinOp, stablehlo::AddOp, stablehlo::MulOp>(op)) {
-    if (opResultNonNegativeIfAllElementsNonNegative<stablehlo::MinOp>(op) ||
-        opResultNonNegativeIfAllElementsNonNegative<stablehlo::AddOp>(op) ||
-        opResultNonNegativeIfAllElementsNonNegative<stablehlo::MulOp>(op))
-      return true;
-  }
-
-  // (mul a a) is always non-negative
-  if (auto mulOp = dyn_cast<stablehlo::MulOp>(op)) {
-    auto lhsOp = mulOp.getLhs().getDefiningOp();
-    auto rhsOp = mulOp.getRhs().getDefiningOp();
-
-    if (lhsOp == rhsOp)
-      return true;
-  }
-
-  if (auto clampOp = dyn_cast<stablehlo::ClampOp>(op)) {
-    // Clamp is non-negative if the min operand is non-negative
-
-    if (auto minOp = clampOp.getMin().getDefiningOp()) {
-      if (opResultIsAlwaysNonNegative(minOp))
-        return true;
-    }
-  }
-
-  // TODO: For NegOp we need a check for if the operand is guaranteed to be
-  // non-positive
-
-  // TODO: Mul of 2 negative values is non-negative
-
-  if (auto selectOp = dyn_cast<stablehlo::SelectOp>(op)) {
-    // Select produces non-negative results if both branches produce
-    // non-negative results
-    auto trueOp = selectOp.getOnTrue().getDefiningOp();
-    auto falseOp = selectOp.getOnFalse().getDefiningOp();
-
-    if (trueOp && falseOp) {
-      return opResultIsAlwaysNonNegative(trueOp) &&
-             opResultIsAlwaysNonNegative(falseOp);
-    }
-  }
-
-  // These operations preserve values, so result is non-negative if operand is
-  // non-negative
-  if (isa<stablehlo::ReshapeOp, stablehlo::TransposeOp>(op)) {
-    if (auto defOp = op->getOperand(0).getDefiningOp())
-      return opResultIsAlwaysNonNegative(defOp);
-  }
-
-  // Default: can't guarantee non-negative result
-  return false;
-}
-
 struct AbsPositiveSimplify
     : public CheckedOpRewritePattern<stablehlo::AbsOp, AbsPositiveSimplify> {
   using CheckedOpRewritePattern<stablehlo::AbsOp,
@@ -15833,7 +16732,7 @@ struct AbsPositiveSimplify
     if (isa<ComplexType>(operand.getType().getElementType()))
       return failure();
 
-    if (opResultIsAlwaysNonNegative(operand.getDefiningOp())) {
+    if (guaranteedNonNegativeResult(operand.getDefiningOp())) {
       rewriter.replaceOp(op, op.getOperand());
       return success();
     }
@@ -16180,6 +17079,99 @@ struct PadConcatToConcatPad
   }
 };
 
+struct SelectPad final
+    : public CheckedOpRewritePattern<stablehlo::SelectOp, SelectPad> {
+  using CheckedOpRewritePattern<stablehlo::SelectOp,
+                                SelectPad>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SelectOp op,
+                                    PatternRewriter &rewriter) const {
+    // Get the two pad operations from the on_true and on_false branches.
+    auto padTrue = op.getOnTrue().getDefiningOp<stablehlo::PadOp>();
+    if (!padTrue || anyPadSizesNegative(padTrue))
+      return failure();
+
+    auto padFalse = op.getOnFalse().getDefiningOp<stablehlo::PadOp>();
+    if (!padFalse || anyPadSizesNegative(padFalse))
+      return failure();
+
+    // Ensure the padding configurations are identical.
+    if (padTrue.getEdgePaddingLow() != padFalse.getEdgePaddingLow() ||
+        padTrue.getEdgePaddingHigh() != padFalse.getEdgePaddingHigh() ||
+        padTrue.getInteriorPadding() != padFalse.getInteriorPadding()) {
+      return rewriter.notifyMatchFailure(op, "padding configurations mismatch");
+    }
+
+    // Only proceed if the pad ops have a single user.
+    if (!padTrue->hasOneUse() || !padFalse->hasOneUse()) {
+      return rewriter.notifyMatchFailure(op, "pad op has multiple users");
+    }
+
+    auto operandTrue = padTrue.getOperand();
+    auto operandFalse = padFalse.getOperand();
+
+    auto pred = op.getPred();
+    auto predType = cast<RankedTensorType>(pred.getType());
+
+    Value newOperandSelect;
+    Value newPadValSelect;
+
+    // Case 1: Predicate is a scalar (0-rank tensor).
+    if (predType.getRank() == 0) {
+      newOperandSelect = rewriter.create<stablehlo::SelectOp>(
+          op.getLoc(), pred, operandTrue, operandFalse);
+
+      auto padValTrue = padTrue.getPaddingValue();
+      auto padValFalse = padFalse.getPaddingValue();
+
+      newPadValSelect = rewriter.create<stablehlo::SelectOp>(
+          op.getLoc(), pred, padValTrue, padValFalse);
+
+      // Case 2: Predicate is a tensor, but padding values are identical.
+    } else {
+      auto padValTrue = padTrue.getPaddingValue();
+      auto padValFalse = padFalse.getPaddingValue();
+      if (padValTrue != padValFalse) {
+        return rewriter.notifyMatchFailure(
+            op, "selecting different padding values with a tensor predicate is "
+                "not supported");
+      }
+      newPadValSelect = padValTrue; // Use the common padding value.
+
+      // To create the new select for operands, the predicate needs to be
+      // "un-padded" to match the shape of the operands. This is only
+      // straightforward if interior padding is zero.
+      if (llvm::any_of(padTrue.getInteriorPadding(),
+                       [](int64_t p) { return p != 0; })) {
+        return rewriter.notifyMatchFailure(
+            op, "interior padding is not supported for tensor predicates");
+      }
+
+      auto operandType = cast<RankedTensorType>(operandTrue.getType());
+      auto starts = padTrue.getEdgePaddingLow();
+      auto limits = llvm::to_vector(starts);
+      for (size_t i = 0; i < limits.size(); ++i) {
+        limits[i] += operandType.getShape()[i];
+      }
+      auto strides = SmallVector<int64_t>(operandType.getRank(), 1);
+
+      auto slicedPred = rewriter.create<stablehlo::SliceOp>(
+          op.getLoc(), pred, starts, limits, strides);
+
+      newOperandSelect = rewriter.create<stablehlo::SelectOp>(
+          op.getLoc(), slicedPred, operandTrue, operandFalse);
+    }
+
+    // Create the new pad operation.
+    rewriter.replaceOpWithNewOp<stablehlo::PadOp>(
+        op, op.getType(), newOperandSelect, newPadValSelect,
+        padTrue.getEdgePaddingLowAttr(), padTrue.getEdgePaddingHighAttr(),
+        padTrue.getInteriorPaddingAttr());
+
+    return success();
+  }
+};
+
 struct SliceSelect
     : public CheckedOpRewritePattern<stablehlo::SliceOp, SliceSelect> {
   using CheckedOpRewritePattern<stablehlo::SliceOp,
@@ -16358,6 +17350,12 @@ struct SumToReductionBase
         todo.emplace_back(-cur.constantFactor, cur.valFactor, sub.getRhs());
         intermediates.push_back(sub);
         seen.insert(sub);
+        continue;
+      }
+      if (auto neg = cur.term.getDefiningOp<stablehlo::NegOp>()) {
+        todo.emplace_back(-cur.constantFactor, cur.valFactor, neg.getOperand());
+        intermediates.push_back(neg);
+        seen.insert(neg);
         continue;
       }
       if (auto mul = cur.term.getDefiningOp<stablehlo::MulOp>()) {
@@ -17130,6 +18128,10 @@ bool isWrapLike(int dim, Value lhs, Value mid, Value rhs,
     return false;
   if (sl0.getOperand() != sl1.getOperand())
     return false;
+
+  if (lhs == mid || mid == rhs) {
+    return false;
+  }
 
   if (sl0P)
     *sl0P = sl0;
@@ -18881,6 +19883,9 @@ struct ReduceReduce final
       return rewriter.notifyMatchFailure(
           op, "reduce op has more than one input. not yet supported");
 
+    if (!llvm::hasSingleElement(op.getInputs()[0].getUses()))
+      return failure();
+
     if (!OperationEquivalence::isEquivalentTo(
             redOp.getInitValues()[0].getDefiningOp(),
             op.getInitValues()[0].getDefiningOp(),
@@ -18923,6 +19928,7 @@ struct ReduceReduce final
     rewriter.inlineRegionBefore(redOp.getBody(), newReduceOp.getBody(),
                                 newReduceOp.getBody().end());
     rewriter.replaceOp(op, newReduceOp.getResult(0));
+    rewriter.eraseOp(redOp);
     return success();
   }
 };
@@ -19056,6 +20062,7 @@ struct TransposeBatchNormTraining final
     auto permutation = op.getPermutation();
     auto newFeatureIndex = permutation[batchnormTrainingOp.getFeatureIndex()];
 
+    rewriter.setInsertionPoint(batchnormTrainingOp);
     auto newTransposeOp = rewriter.create<stablehlo::TransposeOp>(
         op.getLoc(), batchnormTrainingOp.getOperand(), permutation);
     auto newBatchNormOp = rewriter.create<stablehlo::BatchNormTrainingOp>(
@@ -19120,6 +20127,7 @@ struct TransposeBatchNormGrad final
     auto permutation = op.getPermutation();
     auto newFeatureIndex = permutation[batchnormGradOp.getFeatureIndex()];
 
+    rewriter.setInsertionPoint(batchnormGradOp);
     auto transposeOperand = rewriter.create<stablehlo::TransposeOp>(
         op.getLoc(), batchnormGradOp.getOperand(), permutation);
     auto transposeGradOutput = rewriter.create<stablehlo::TransposeOp>(
@@ -19332,6 +20340,1626 @@ struct ConjComplexSimplify final
   }
 };
 
+// workaround for https://github.com/openxla/xla/issues/27446
+struct SplitConvolutionIntoReverseConvolution final
+    : public CheckedOpRewritePattern<stablehlo::ConvolutionOp,
+                                     SplitConvolutionIntoReverseConvolution> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConvolutionOp op,
+                                    PatternRewriter &rewriter) const {
+    auto windowReversal = op.getWindowReversal();
+    if (!windowReversal)
+      return rewriter.notifyMatchFailure(op, "no window reversal");
+
+    if (!llvm::any_of(windowReversal.value(), [](bool b) { return b; }))
+      return rewriter.notifyMatchFailure(op, "all window reversals are false");
+
+    auto convDims = op.getDimensionNumbers();
+
+    SmallVector<int64_t> reversalDims;
+    for (auto [dim, reversal] : llvm::zip(convDims.getKernelSpatialDimensions(),
+                                          windowReversal.value())) {
+      if (reversal) {
+        reversalDims.push_back(dim);
+      }
+    }
+
+    auto reverseOp = rewriter.create<stablehlo::ReverseOp>(
+        op.getLoc(), op.getRhs(), reversalDims);
+
+    rewriter.replaceOpWithNewOp<stablehlo::ConvolutionOp>(
+        op, op.getType(), op.getLhs(), reverseOp.getResult(),
+        op.getWindowStridesAttr(), op.getPaddingAttr(), op.getLhsDilationAttr(),
+        op.getRhsDilationAttr(), nullptr, op.getDimensionNumbersAttr(),
+        op.getFeatureGroupCountAttr(), op.getBatchGroupCountAttr(),
+        op.getPrecisionConfigAttr());
+    return success();
+  }
+};
+
+struct ScatterMultiplySimplify final
+    : public CheckedOpRewritePattern<stablehlo::MulOp,
+                                     ScatterMultiplySimplify> {
+  using CheckedOpRewritePattern<
+      stablehlo::MulOp, ScatterMultiplySimplify>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::MulOp op,
+                                    PatternRewriter &rewriter) const {
+    auto lhs = op.getLhs();
+    auto rhs = op.getRhs();
+
+    stablehlo::ScatterOp scatterOp;
+    mlir::Value otherValue;
+
+    auto lhsScatterOp = lhs.getDefiningOp<stablehlo::ScatterOp>();
+    auto rhsScatterOp = rhs.getDefiningOp<stablehlo::ScatterOp>();
+    if (!lhsScatterOp && !rhsScatterOp) {
+      return failure();
+    } else {
+      if (lhsScatterOp) {
+        scatterOp = lhsScatterOp;
+        otherValue = rhs;
+      } else {
+        scatterOp = rhsScatterOp;
+        otherValue = lhs;
+      }
+    }
+
+    auto status =
+        detectConstantSetindexScatterOp(scatterOp, /*allowedMultipleUses*/
+                                        false,
+                                        /*onlyConstantZerosAllowed*/
+                                        true, nullptr);
+    if (!status.ok())
+      return rewriter.notifyMatchFailure(op, status.message());
+
+    SmallVector<int64_t> sliceSizes = computeGatherSliceSizes(scatterOp);
+
+    auto gatheredValues = rewriter.create<stablehlo::GatherOp>(
+        op.getLoc(), otherValue, scatterOp.getScatterIndices(),
+        getGatherDims(rewriter.getContext(),
+                      scatterOp.getScatterDimensionNumbers()),
+        rewriter.getDenseI64ArrayAttr(sliceSizes),
+        scatterOp.getIndicesAreSortedAttr());
+
+    auto newUpdates = rewriter.create<stablehlo::MulOp>(
+        op.getLoc(), gatheredValues, scatterOp.getUpdates()[0]);
+
+    auto newScatterOp = rewriter.create<stablehlo::ScatterOp>(
+        op.getLoc(), scatterOp.getResultTypes(), scatterOp.getInputs(),
+        scatterOp.getScatterIndices(), ValueRange(newUpdates),
+        scatterOp.getScatterDimensionNumbersAttr(),
+        scatterOp.getIndicesAreSortedAttr(), scatterOp.getUniqueIndicesAttr());
+    newScatterOp.getUpdateComputation().takeBody(
+        scatterOp.getUpdateComputation());
+    rewriter.replaceOp(op, newScatterOp);
+
+    return success();
+  }
+};
+
+struct GatherConstProp final
+    : public CheckedOpRewritePattern<stablehlo::GatherOp, GatherConstProp> {
+  using CheckedOpRewritePattern<stablehlo::GatherOp,
+                                GatherConstProp>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::GatherOp op,
+                                    PatternRewriter &rewriter) const {
+    DenseElementsAttr operandAttr;
+    if (!matchPattern(op.getOperand(), m_Constant(&operandAttr)))
+      return rewriter.notifyMatchFailure(op,
+                                         "GatherOp with non-constant input");
+
+    if (operandAttr.isSplat()) {
+      // In this case the indices don't matter and we can construct a new
+      // splatted result
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, op.getType(), operandAttr.resizeSplat(op.getType()));
+      return success();
+    }
+
+    DenseElementsAttr startIndicesAttr;
+    if (!matchPattern(op.getStartIndices(), m_Constant(&startIndicesAttr))) {
+      return rewriter.notifyMatchFailure(
+          op, "GatherOp with non-constant start indices and unsplatted input");
+    }
+
+    stablehlo::Tensor operandTensor = stablehlo::constantOp(operandAttr);
+    stablehlo::Tensor startIndicesTensor =
+        stablehlo::constantOp(startIndicesAttr);
+    auto gatherDims = op.getDimensionNumbers();
+
+    auto sliceSizes = op.getSliceSizes();
+    auto elementType = rewriter.getIntegerType(64);
+    auto attrType =
+        RankedTensorType::get({(int64_t)sliceSizes.size()}, elementType);
+    auto sliceSizesAttr = DenseElementsAttr::get(attrType, sliceSizes);
+
+    auto result = stablehlo::gatherOp(
+        operandTensor, startIndicesTensor,
+        stablehlo::Axes(gatherDims.getOffsetDims()),
+        stablehlo::Axes(gatherDims.getCollapsedSliceDims()),
+        stablehlo::Axes(gatherDims.getOperandBatchingDims()),
+        stablehlo::Axes(gatherDims.getStartIndicesBatchingDims()),
+        stablehlo::Axes(gatherDims.getStartIndexMap()),
+        stablehlo::Axis(gatherDims.getIndexVectorDim()),
+        stablehlo::makeSizes(stablehlo::constantOp(sliceSizesAttr)),
+        op.getIndicesAreSorted(), op.getType());
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(),
+                                                       fromTensor(result));
+    return success();
+  }
+};
+
+struct UnaryElementwiseScatterSimplify final
+    : public CheckedOpTraitRewritePattern<OpTrait::Elementwise,
+                                          UnaryElementwiseScatterSimplify> {
+  using CheckedOpTraitRewritePattern<
+      OpTrait::Elementwise,
+      UnaryElementwiseScatterSimplify>::CheckedOpTraitRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(Operation *op,
+                                    PatternRewriter &rewriter) const {
+    if (op->getNumOperands() != 1)
+      return rewriter.notifyMatchFailure(op, "not a unary elementwise op");
+
+    auto input = op->getOperand(0);
+    auto scatterOp = input.getDefiningOp<stablehlo::ScatterOp>();
+    if (!scatterOp)
+      return rewriter.notifyMatchFailure(op, "not a scatter op");
+
+    DenseElementsAttr scatterInputAttr;
+    auto status = detectConstantSetindexScatterOp(
+        scatterOp, false, /*onlyConstantZerosAllowed*/ false,
+        &scatterInputAttr);
+    if (!status.ok()) {
+      return rewriter.notifyMatchFailure(op, status.message());
+    }
+
+    auto scatterInput = scatterOp.getInputs()[0];
+
+    auto elemType =
+        cast<RankedTensorType>(op->getResult(0).getType()).getElementType();
+
+    // should get constant propagated
+    auto scatterInputElem = rewriter.create(
+        op->getLoc(), op->getName().getIdentifier(), ValueRange(scatterInput),
+        TypeRange{RankedTensorType::get(
+            cast<RankedTensorType>(scatterInput.getType()).getShape(),
+            elemType)},
+        op->getAttrs(), {}, {});
+
+    auto scatterUpdatesElem = rewriter.create(
+        op->getLoc(), op->getName().getIdentifier(),
+        ValueRange(scatterOp.getUpdates()),
+        TypeRange{RankedTensorType::get(
+            cast<RankedTensorType>(scatterOp.getUpdates()[0].getType())
+                .getShape(),
+            elemType)},
+        op->getAttrs(), {}, {});
+
+    auto resultType = RankedTensorType::get(
+        cast<RankedTensorType>(scatterOp.getResultTypes()[0]).getShape(),
+        elemType);
+
+    auto newScatterOp = rewriter.create<stablehlo::ScatterOp>(
+        op->getLoc(), TypeRange(resultType),
+        ValueRange(scatterInputElem->getResult(0)),
+        scatterOp.getScatterIndices(),
+        ValueRange(scatterUpdatesElem->getResult(0)),
+        scatterOp.getScatterDimensionNumbersAttr(),
+        scatterOp.getIndicesAreSortedAttr(), scatterOp.getUniqueIndicesAttr());
+
+    auto &updateRegion = newScatterOp.getUpdateComputation();
+    auto *block = rewriter.createBlock(&updateRegion);
+    auto argType = RankedTensorType::get({}, elemType);
+    block->addArgument(argType, op->getLoc());
+    block->addArgument(argType, op->getLoc());
+    rewriter.setInsertionPointToStart(block);
+    rewriter.create<stablehlo::ReturnOp>(op->getLoc(), block->getArgument(1));
+
+    rewriter.replaceOp(op, newScatterOp->getResult(0));
+    return success();
+  }
+};
+
+struct GatherElementwise
+    : public CheckedOpRewritePattern<stablehlo::GatherOp, GatherElementwise> {
+  using CheckedOpRewritePattern<stablehlo::GatherOp,
+                                GatherElementwise>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::GatherOp op,
+                                    PatternRewriter &rewriter) const {
+    auto gatherInput = op.getOperand();
+    auto defOp = gatherInput.getDefiningOp();
+    if (!defOp || !defOp->hasTrait<mlir::OpTrait::Elementwise>())
+      return rewriter.notifyMatchFailure(op,
+                                         "GatherOp with non-elementwise input");
+
+    if (!isOnlyUsedInOperation(defOp, op))
+      return failure();
+
+    int64_t outElemCount = 1, inElemCount = 1;
+    for (auto dim : cast<RankedTensorType>(op.getType()).getShape())
+      outElemCount *= dim;
+    for (auto dim : cast<RankedTensorType>(gatherInput.getType()).getShape())
+      inElemCount *= dim;
+
+    if (outElemCount >= inElemCount)
+      return rewriter.notifyMatchFailure(
+          op, "GatherOp has more output elements than input elements");
+
+    SmallVector<Value> newElementwiseInputs;
+    for (auto input : defOp->getOperands()) {
+      auto neeGatherOp = rewriter.create<stablehlo::GatherOp>(
+          op.getLoc(), input, op.getStartIndices(),
+          op.getDimensionNumbersAttr(), op.getSliceSizesAttr(),
+          op.getIndicesAreSortedAttr());
+      newElementwiseInputs.push_back(neeGatherOp->getResult(0));
+    }
+
+    auto newElemOp = rewriter.create(
+        op.getLoc(), defOp->getName().getIdentifier(),
+        ValueRange(newElementwiseInputs), TypeRange{op.getResult().getType()},
+        defOp->getAttrs(), {}, {});
+    rewriter.replaceOp(op, newElemOp->getResult(0));
+    return success();
+  }
+};
+
+struct ChainedMultiplyToPower final
+    : public CheckedOpRewritePattern<stablehlo::MulOp, ChainedMultiplyToPower> {
+  using CheckedOpRewritePattern<
+      stablehlo::MulOp, ChainedMultiplyToPower>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::MulOp op,
+                                    PatternRewriter &rewriter) const {
+    auto lhs = op.getLhs();
+    auto rhs = op.getRhs();
+
+    auto lhsDefOp = lhs.getDefiningOp<stablehlo::MulOp>();
+    auto rhsDefOp = rhs.getDefiningOp<stablehlo::MulOp>();
+
+    if (lhsDefOp && isOnlyUsedInOperation(lhsDefOp, op)) {
+      auto lhsLhs = lhsDefOp.getLhs();
+      auto lhsRhs = lhsDefOp.getRhs();
+      if (lhsLhs == lhsRhs) {
+        if (rhsDefOp && isOnlyUsedInOperation(rhsDefOp, op)) {
+          auto rhsLhs = rhsDefOp.getLhs();
+          auto rhsRhs = rhsDefOp.getRhs();
+          if (rhsLhs == rhsRhs &&
+              rhsLhs == lhsRhs) { // (mul (mul x x) (mul x x))
+            auto powType = RankedTensorType::get(
+                cast<RankedTensorType>(lhs.getType()).getShape(),
+                lhs.getType().getElementType());
+            auto powVal = rewriter.create<stablehlo::ConstantOp>(
+                op.getLoc(), powType, cast<ElementsAttr>(makeAttr(powType, 4)));
+            rewriter.replaceOpWithNewOp<stablehlo::PowOp>(op, rhsLhs, powVal);
+            return success();
+          }
+        }
+
+        if (lhsLhs == rhs) { // (mul (mul x x) x)
+          auto powType = RankedTensorType::get(
+              cast<RankedTensorType>(rhs.getType()).getShape(),
+              rhs.getType().getElementType());
+          auto powVal = rewriter.create<stablehlo::ConstantOp>(
+              op.getLoc(), powType, cast<ElementsAttr>(makeAttr(powType, 3)));
+          rewriter.replaceOpWithNewOp<stablehlo::PowOp>(op, rhs, powVal);
+          return success();
+        }
+      }
+    }
+
+    if (rhsDefOp && isOnlyUsedInOperation(rhsDefOp, op)) { // mul x (mul x x)
+      auto rhsLhs = rhsDefOp.getLhs();
+      auto rhsRhs = rhsDefOp.getRhs();
+      if (rhsLhs == rhsRhs) {
+        if (rhsLhs == lhs) {
+          auto powType = RankedTensorType::get(
+              cast<RankedTensorType>(lhs.getType()).getShape(),
+              lhs.getType().getElementType());
+          auto powVal = rewriter.create<stablehlo::ConstantOp>(
+              op.getLoc(), powType, cast<ElementsAttr>(makeAttr(powType, 3)));
+          rewriter.replaceOpWithNewOp<stablehlo::PowOp>(op, lhs, powVal);
+          return success();
+        }
+      }
+    }
+
+    return failure();
+  }
+};
+
+struct PowerMultiplyToPower final
+    : public CheckedOpRewritePattern<stablehlo::MulOp, PowerMultiplyToPower> {
+  using CheckedOpRewritePattern<stablehlo::MulOp,
+                                PowerMultiplyToPower>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::MulOp op,
+                                    PatternRewriter &rewriter) const {
+    auto lhs = op.getLhs();
+    auto rhs = op.getRhs();
+
+    auto lhsDefOp = lhs.getDefiningOp<stablehlo::PowOp>();
+    auto rhsDefOp = rhs.getDefiningOp<stablehlo::PowOp>();
+
+    auto rType = cast<RankedTensorType>(op.getType());
+
+    if (lhsDefOp && isOnlyUsedInOperation(lhsDefOp, op)) {
+      auto lhsLhs = lhsDefOp.getLhs();
+
+      if (rhsDefOp && isOnlyUsedInOperation(rhsDefOp, op)) {
+        auto rhsLhs = rhsDefOp.getLhs();
+
+        if (lhsLhs ==
+            rhsLhs) { // (mul (pow a b) (pow a c)) => (pow a (add b c))
+          auto newPowVal = rewriter.create<stablehlo::AddOp>(
+              op.getLoc(), lhsDefOp.getRhs(), rhsDefOp.getRhs());
+          rewriter.replaceOpWithNewOp<stablehlo::PowOp>(op, lhsLhs, newPowVal);
+          return success();
+        }
+      }
+
+      auto rhsMulDefOp = rhs.getDefiningOp<stablehlo::MulOp>();
+      if (rhsMulDefOp && isOnlyUsedInOperation(rhsMulDefOp, op)) {
+        auto rhsMulLhs = rhsMulDefOp.getLhs();
+        auto rhsMulRhs = rhsMulDefOp.getRhs();
+
+        if (rhsMulLhs == rhsMulRhs &&
+            rhsMulLhs ==
+                lhsLhs) { // (mul (pow a b) (mul a a)) => (pow a (add b 2))
+          auto newPowVal = rewriter.create<stablehlo::AddOp>(
+              op.getLoc(), lhsDefOp.getRhs(),
+              rewriter.create<stablehlo::ConstantOp>(
+                  op.getLoc(), rType, cast<ElementsAttr>(makeAttr(rType, 2))));
+          rewriter.replaceOpWithNewOp<stablehlo::PowOp>(op, lhsLhs, newPowVal);
+          return success();
+        }
+      }
+
+      if (lhsLhs == rhs) { // (mul (pow x y) x) => (pow x (add y 1))
+        auto newPowVal = rewriter.create<stablehlo::AddOp>(
+            op.getLoc(), lhsDefOp.getRhs(),
+            rewriter.create<stablehlo::ConstantOp>(
+                op.getLoc(), rType, cast<ElementsAttr>(makeAttr(rType, 1))));
+        rewriter.replaceOpWithNewOp<stablehlo::PowOp>(op, lhsLhs, newPowVal);
+        return success();
+      }
+    }
+
+    if (rhsDefOp && isOnlyUsedInOperation(rhsDefOp, op)) {
+      auto rhsLhs = rhsDefOp.getLhs();
+
+      if (rhsLhs == lhs) { // (mul x (pow x y)) => (pow x (add y 1))
+        auto newPowVal = rewriter.create<stablehlo::AddOp>(
+            op.getLoc(), rhsDefOp.getRhs(),
+            rewriter.create<stablehlo::ConstantOp>(
+                op.getLoc(), rType, cast<ElementsAttr>(makeAttr(rType, 1))));
+        rewriter.replaceOpWithNewOp<stablehlo::PowOp>(op, rhsLhs, newPowVal);
+        return success();
+      }
+
+      auto lhsMulDefOp = lhs.getDefiningOp<stablehlo::MulOp>();
+      if (lhsMulDefOp && isOnlyUsedInOperation(lhsMulDefOp, op)) {
+        auto lhsMulLhs = lhsMulDefOp.getLhs();
+        auto lhsMulRhs = lhsMulDefOp.getRhs();
+
+        if (lhsMulLhs == lhsMulRhs &&
+            lhsMulLhs ==
+                rhsLhs) { // (mul (mul a a) (pow a b)) => (pow a (add b 2))
+          auto newPowVal = rewriter.create<stablehlo::AddOp>(
+              op.getLoc(), rhsDefOp.getRhs(),
+              rewriter.create<stablehlo::ConstantOp>(
+                  op.getLoc(), rType, cast<ElementsAttr>(makeAttr(rType, 2))));
+          rewriter.replaceOpWithNewOp<stablehlo::PowOp>(op, rhsLhs, newPowVal);
+          return success();
+        }
+      }
+    }
+
+    return failure();
+  }
+};
+
+template <typename Op>
+struct CommonAssociativeCommutativeOpReorder final
+    : public CheckedOpRewritePattern<
+          Op, CommonAssociativeCommutativeOpReorder<Op>> {
+  using CheckedOpRewritePattern<
+      Op, CommonAssociativeCommutativeOpReorder<Op>>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(Op op, PatternRewriter &rewriter) const {
+    auto lhs = op.getLhs();
+    auto rhs = op.getRhs();
+
+    if (lhs == rhs)
+      return failure(); // already in a good form
+
+    DenseFPElementsAttr constAttr;
+    if (matchPattern(lhs, m_Constant(&constAttr)) &&
+        matchPattern(rhs, m_Constant(&constAttr)))
+      return rewriter.notifyMatchFailure(op, "const prop has higher priority");
+
+    auto lhsDefOp = lhs.template getDefiningOp<Op>();
+    auto rhsDefOp = rhs.template getDefiningOp<Op>();
+
+    if (lhsDefOp && isOnlyUsedInOperation(lhsDefOp, op)) {
+      auto lhsLhs = lhsDefOp.getLhs();
+      auto lhsRhs = lhsDefOp.getRhs();
+
+      if (lhsLhs == lhsRhs)
+        return failure(); // already in a good form
+
+      if (matchPattern(lhsRhs, m_Constant(&constAttr)) &&
+          matchPattern(lhsLhs, m_Constant(&constAttr)))
+        return rewriter.notifyMatchFailure(op,
+                                           "const prop has higher priority");
+
+      if (rhsDefOp && isOnlyUsedInOperation(rhsDefOp, op)) {
+        auto rhsLhs = rhsDefOp.getLhs();
+        auto rhsRhs = rhsDefOp.getRhs();
+
+        if (rhsLhs == rhsRhs)
+          return failure(); // already in a good form
+
+        if (matchPattern(rhsRhs, m_Constant(&constAttr)) &&
+            matchPattern(rhsLhs, m_Constant(&constAttr)))
+          return rewriter.notifyMatchFailure(op,
+                                             "const prop has higher priority");
+
+        Value commonOperand, otherOperand1, otherOperand2;
+        bool foundCommonOperand = false;
+
+        if (lhsLhs ==
+            rhsLhs) { // (op (op x y) (op x z)) => (op (op x x) (op y z))
+          if (lhsRhs == rhsRhs)
+            return failure(); // we can CSE this case
+          commonOperand = lhsLhs;
+          otherOperand1 = lhsRhs;
+          otherOperand2 = rhsRhs;
+          foundCommonOperand = true;
+        }
+
+        if (!foundCommonOperand &&
+            lhsLhs == rhsRhs) { // (op (op x y) (op z x)) => (op (op x x)
+                                // (op y z))
+          if (lhsRhs == rhsLhs)
+            return failure(); // we can CSE this case
+          commonOperand = lhsLhs;
+          otherOperand1 = rhsLhs;
+          otherOperand2 = lhsRhs;
+          foundCommonOperand = true;
+        }
+
+        if (!foundCommonOperand &&
+            lhsRhs == rhsLhs) { // (op (op y x) (op x z)) => (op (op x x)
+                                // (op y z))
+          if (lhsLhs == rhsRhs)
+            return failure(); // we can CSE this case
+          commonOperand = lhsRhs;
+          otherOperand1 = lhsLhs;
+          otherOperand2 = rhsRhs;
+          foundCommonOperand = true;
+        }
+
+        if (!foundCommonOperand &&
+            lhsRhs == rhsRhs) { // (op (op y x) (op z x)) => (op (op x x)
+                                // (op y z))
+          if (lhsLhs == rhsLhs)
+            return failure(); // we can CSE this case
+          commonOperand = lhsRhs;
+          otherOperand1 = rhsLhs;
+          otherOperand2 = lhsLhs;
+          foundCommonOperand = true;
+        }
+
+        if (foundCommonOperand) {
+          rewriter.replaceOpWithNewOp<Op>(
+              op,
+              rewriter.create<Op>(op.getLoc(), commonOperand, commonOperand),
+              rewriter.create<Op>(op.getLoc(), otherOperand1, otherOperand2));
+          return success();
+        }
+      }
+
+      if (lhsLhs == rhs) { // (op (op x y) x) => (op (op x x) y)
+        rewriter.replaceOpWithNewOp<Op>(
+            op, rewriter.create<Op>(op.getLoc(), lhsLhs, lhsLhs), lhsRhs);
+        return success();
+      }
+
+      if (lhsRhs == rhs) { // (op (op y x) x) => (op y (op x x))
+        rewriter.replaceOpWithNewOp<Op>(
+            op, lhsLhs, rewriter.create<Op>(op.getLoc(), lhsRhs, lhsRhs));
+        return success();
+      }
+    }
+
+    if (rhsDefOp && isOnlyUsedInOperation(rhsDefOp, op)) {
+      auto rhsLhs = rhsDefOp.getLhs();
+      auto rhsRhs = rhsDefOp.getRhs();
+
+      if (rhsLhs == rhsRhs)
+        return failure(); // already in a good form
+
+      if (matchPattern(rhsRhs, m_Constant(&constAttr)) &&
+          matchPattern(rhsLhs, m_Constant(&constAttr)))
+        return rewriter.notifyMatchFailure(op,
+                                           "const prop has higher priority");
+
+      if (rhsLhs == lhs) { // (op x (op x y)) => (op (op x x) y)
+        rewriter.replaceOpWithNewOp<Op>(
+            op, rewriter.create<Op>(op.getLoc(), rhsLhs, rhsLhs), rhsRhs);
+        return success();
+      }
+
+      if (rhsRhs == lhs) { // (op x (op y x)) => (op y (op x x))
+        rewriter.replaceOpWithNewOp<Op>(
+            op, rhsLhs, rewriter.create<Op>(op.getLoc(), rhsRhs, rhsRhs));
+        return success();
+      }
+    }
+
+    return failure();
+  }
+};
+
+struct LogSimplify final
+    : public CheckedOpRewritePattern<stablehlo::LogOp, LogSimplify> {
+  using CheckedOpRewritePattern<stablehlo::LogOp,
+                                LogSimplify>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::LogOp op,
+                                    PatternRewriter &rewriter) const {
+    { // log(exp(x)) -> x
+      auto defOp = op.getOperand().getDefiningOp<stablehlo::ExpOp>();
+      if (defOp) {
+        rewriter.replaceAllUsesWith(op.getResult(), defOp.getOperand());
+        return success();
+      }
+    }
+
+    { // log(pow(x, y)) -> y * log(x)
+      auto defOp = op.getOperand().getDefiningOp<stablehlo::PowOp>();
+      if (defOp) {
+        rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
+            op, defOp.getRhs(),
+            rewriter.create<stablehlo::LogOp>(op.getLoc(), defOp.getLhs()));
+        return success();
+      }
+    }
+
+    {
+      auto defOp = op.getOperand().getDefiningOp<stablehlo::MulOp>();
+      if (defOp) {
+        auto lhs = defOp.getLhs();
+        auto rhs = defOp.getRhs();
+        if (lhs == rhs) { // log(mul(a, a)) -> 2 * log(a)
+          rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
+              op,
+              rewriter.create<stablehlo::ConstantOp>(
+                  op.getLoc(), lhs.getType(),
+                  cast<ElementsAttr>(makeAttr(lhs.getType(), 2))),
+              rewriter.create<stablehlo::LogOp>(op.getLoc(), lhs));
+          return success();
+        }
+
+        if (anyOperandIsConstant(defOp) &&
+            !allOperandsAreConstant(defOp)) { // log(mul(a, b)) -> log(a) +
+                                              // log(b) if a or b is constant
+          rewriter.replaceOpWithNewOp<stablehlo::AddOp>(
+              op, rewriter.create<stablehlo::LogOp>(op.getLoc(), lhs),
+              rewriter.create<stablehlo::LogOp>(op.getLoc(), rhs));
+          return success();
+        }
+      }
+    }
+
+    {
+      auto defOp = op.getOperand().getDefiningOp<stablehlo::AddOp>();
+      if (defOp) {
+        auto lhs = defOp.getLhs();
+        auto rhs = defOp.getRhs();
+        if (lhs == rhs) { // log(add(a, a)) -> log(2) + log(a)
+          rewriter.replaceOpWithNewOp<stablehlo::AddOp>(
+              op,
+              rewriter.create<stablehlo::LogOp>(
+                  op.getLoc(),
+                  rewriter.create<stablehlo::ConstantOp>(
+                      op.getLoc(), lhs.getType(),
+                      cast<ElementsAttr>(makeAttr(lhs.getType(), 2)))),
+              rewriter.create<stablehlo::LogOp>(op.getLoc(), lhs));
+          return success();
+        }
+      }
+    }
+
+    {
+      auto defOp = op.getOperand().getDefiningOp<stablehlo::DivOp>();
+      if (defOp) {
+        auto lhs = defOp.getLhs();
+        auto rhs = defOp.getRhs();
+
+        if (anyOperandIsConstant(defOp) &&
+            !allOperandsAreConstant(defOp)) { // log(div(a, b)) -> log(a) -
+                                              // log(b) if a or b is constant
+          rewriter.replaceOpWithNewOp<stablehlo::SubtractOp>(
+              op, rewriter.create<stablehlo::LogOp>(op.getLoc(), lhs),
+              rewriter.create<stablehlo::LogOp>(op.getLoc(), rhs));
+          return success();
+        }
+      }
+    }
+
+    {
+      auto defOp = op.getOperand().getDefiningOp<stablehlo::SqrtOp>();
+      if (defOp &&
+          isOnlyUsedInOperation(defOp, op)) { // log(sqrt(x)) -> log(x) / 2
+        rewriter.replaceOpWithNewOp<stablehlo::DivOp>(
+            op,
+            rewriter.create<stablehlo::LogOp>(op.getLoc(), defOp.getOperand()),
+            rewriter.create<stablehlo::ConstantOp>(
+                op.getLoc(), defOp.getType(),
+                cast<ElementsAttr>(makeAttr(defOp.getType(), 2))));
+        return success();
+      }
+    }
+
+    {
+      auto defOp = op.getOperand().getDefiningOp<stablehlo::CbrtOp>();
+      if (defOp &&
+          isOnlyUsedInOperation(defOp, op)) { // log(cbrt(x)) -> log(x) / 3
+        rewriter.replaceOpWithNewOp<stablehlo::DivOp>(
+            op,
+            rewriter.create<stablehlo::LogOp>(op.getLoc(), defOp.getOperand()),
+            rewriter.create<stablehlo::ConstantOp>(
+                op.getLoc(), defOp.getType(),
+                cast<ElementsAttr>(makeAttr(defOp.getType(), 3))));
+        return success();
+      }
+    }
+
+    {
+      auto defOp = op.getOperand().getDefiningOp<stablehlo::RsqrtOp>();
+      if (defOp &&
+          isOnlyUsedInOperation(defOp, op)) { // log(rsqrt(x)) -> -log(x) / 2
+        rewriter.replaceOpWithNewOp<stablehlo::DivOp>(
+            op,
+            rewriter.create<stablehlo::LogOp>(op.getLoc(), defOp.getOperand()),
+            rewriter.create<stablehlo::ConstantOp>(
+                op.getLoc(), defOp.getType(),
+                cast<ElementsAttr>(makeAttr(defOp.getType(), -2))));
+        return success();
+      }
+    }
+
+    return failure();
+  }
+};
+
+struct NegMulConstSimplify final
+    : public CheckedOpRewritePattern<stablehlo::NegOp, NegMulConstSimplify> {
+  using CheckedOpRewritePattern<stablehlo::NegOp,
+                                NegMulConstSimplify>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::NegOp op,
+                                    PatternRewriter &rewriter) const {
+    auto mulOp = op.getOperand().getDefiningOp<stablehlo::MulOp>();
+    if (!mulOp)
+      return failure();
+
+    auto lhs = mulOp.getLhs();
+    auto rhs = mulOp.getRhs();
+
+    DenseElementsAttr lhsAttr;
+    bool lhsIsConst = matchPattern(lhs, m_Constant(&lhsAttr));
+
+    DenseElementsAttr rhsAttr;
+    bool rhsIsConst = matchPattern(rhs, m_Constant(&rhsAttr));
+
+    if (lhsIsConst && rhsIsConst)
+      return failure(); // const prop will evaluate this
+
+    if (lhsIsConst) {
+      rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
+          op, rewriter.create<stablehlo::NegOp>(op.getLoc(), lhs), rhs);
+      return success();
+    }
+
+    if (rhsIsConst) {
+      rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
+          op, lhs, rewriter.create<stablehlo::NegOp>(op.getLoc(), rhs));
+      return success();
+    }
+
+    return failure();
+  }
+};
+
+struct NegDivConstSimplify final
+    : public CheckedOpRewritePattern<stablehlo::NegOp, NegDivConstSimplify> {
+  using CheckedOpRewritePattern<stablehlo::NegOp,
+                                NegDivConstSimplify>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::NegOp op,
+                                    PatternRewriter &rewriter) const {
+    auto divOp = op.getOperand().getDefiningOp<stablehlo::DivOp>();
+    if (!divOp)
+      return failure();
+
+    auto lhs = divOp.getLhs();
+    auto rhs = divOp.getRhs();
+
+    DenseElementsAttr lhsAttr;
+    bool lhsIsConst = matchPattern(lhs, m_Constant(&lhsAttr));
+
+    DenseElementsAttr rhsAttr;
+    bool rhsIsConst = matchPattern(rhs, m_Constant(&rhsAttr));
+
+    if (lhsIsConst && rhsIsConst)
+      return failure(); // const prop will evaluate this
+
+    if (lhsIsConst) {
+      rewriter.replaceOpWithNewOp<stablehlo::DivOp>(
+          op, rewriter.create<stablehlo::NegOp>(op.getLoc(), lhs), rhs);
+      return success();
+    }
+
+    if (rhsIsConst) {
+      rewriter.replaceOpWithNewOp<stablehlo::DivOp>(
+          op, lhs, rewriter.create<stablehlo::NegOp>(op.getLoc(), rhs));
+      return success();
+    }
+
+    return failure();
+  }
+};
+
+struct ReshapeDeletionsBroadcastInDimSimplify final
+    : public CheckedOpRewritePattern<stablehlo::ReshapeOp,
+                                     ReshapeDeletionsBroadcastInDimSimplify> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
+                                    PatternRewriter &rewriter) const {
+    auto bcastInDimOp =
+        op.getOperand().getDefiningOp<stablehlo::BroadcastInDimOp>();
+    if (!bcastInDimOp)
+      return failure();
+
+    if (!isOnlyUsedInOperation(bcastInDimOp, op))
+      return failure();
+
+    auto deletionDims =
+        findReshapeInsertionDims(op.getType(), op.getOperand().getType());
+    if (deletionDims.empty())
+      return failure();
+
+    SmallVector<int64_t> newBcastDims;
+    for (auto dim : bcastInDimOp.getBroadcastDimensions()) {
+      int64_t nDeleted = 0;
+      for (auto delDim : deletionDims) {
+        if (delDim == dim)
+          return failure();
+        if (delDim < dim)
+          nDeleted++;
+      }
+      int64_t newDim = dim - nDeleted;
+      if (newDim < 0)
+        return failure(); // this should not happen
+      newBcastDims.push_back(newDim);
+    }
+
+    rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+        op, op.getType(), bcastInDimOp.getOperand(), newBcastDims);
+    return success();
+  }
+};
+
+struct ReshapeInsertionsBroadcastInDimSimplify final
+    : public CheckedOpRewritePattern<stablehlo::ReshapeOp,
+                                     ReshapeInsertionsBroadcastInDimSimplify> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
+                                    PatternRewriter &rewriter) const {
+    auto bcastInDimOp =
+        op.getOperand().getDefiningOp<stablehlo::BroadcastInDimOp>();
+    if (!bcastInDimOp)
+      return failure();
+
+    if (!isOnlyUsedInOperation(bcastInDimOp, op))
+      return failure();
+
+    auto insertionDims =
+        findReshapeInsertionDims(op.getOperand().getType(), op.getType());
+    if (insertionDims.empty())
+      return failure();
+
+    SmallVector<int64_t> newPositions;
+    for (int i = 0; i < cast<ShapedType>(op.getType()).getRank(); i++) {
+      if (!llvm::is_contained(insertionDims, i))
+        newPositions.push_back(i);
+    }
+
+    SmallVector<int64_t> newBcastDims;
+    for (auto dim : bcastInDimOp.getBroadcastDimensions()) {
+      if (dim >= newPositions.size())
+        return failure(); // this should not happen
+      newBcastDims.push_back(newPositions[dim]);
+    }
+
+    rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+        op, op.getType(), bcastInDimOp.getOperand(), newBcastDims);
+    return success();
+  }
+};
+
+struct TransposeFFT final
+    : public CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeFFT> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
+                                    PatternRewriter &rewriter) const {
+    auto fftOp = op.getOperand().getDefiningOp<stablehlo::FftOp>();
+    if (!fftOp)
+      return failure();
+
+    auto fftLength = llvm::to_vector(fftOp.getFftLength());
+
+    auto [preTransposePerm, postTransposePerm, newFftLength, needsPostTranspose,
+          invalidMove] =
+        splitPermutation(op.getPermutation(),
+                         cast<ShapedType>(op.getOperand().getType()).getRank(),
+                         fftLength.size(), fftOp.getFftType(), fftLength);
+
+    if (invalidMove)
+      return rewriter.notifyMatchFailure(fftOp,
+                                         "Can't move transpose above FFT");
+
+    auto preTransposeOp = rewriter.create<stablehlo::TransposeOp>(
+        op.getLoc(), fftOp.getOperand(),
+        rewriter.getDenseI64ArrayAttr(preTransposePerm));
+    auto newFftOp = rewriter.create<stablehlo::FftOp>(
+        fftOp.getLoc(), preTransposeOp.getResult(), fftOp.getFftType(),
+        newFftLength);
+
+    if (needsPostTranspose) {
+      rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(
+          op, newFftOp.getResult(),
+          rewriter.getDenseI64ArrayAttr(postTransposePerm));
+    } else {
+      rewriter.replaceOp(op, newFftOp.getResult());
+    }
+
+    return success();
+  }
+
+private:
+  bool isIotaVector(SmallVector<int64_t> v) const {
+    for (int64_t i = 0; i < v.size(); ++i) {
+      if (v[i] != i)
+        return false;
+    }
+    return true;
+  }
+
+  std::tuple<SmallVector<int64_t>, SmallVector<int64_t>, SmallVector<int64_t>,
+             bool, bool>
+  splitPermutation(ArrayRef<int64_t> permutation, int64_t rank, int64_t nDimFft,
+                   stablehlo::FftType fftType,
+                   SmallVector<int64_t> fftLength) const {
+    SmallVector<int64_t> preTransposePerm(rank), postTransposePerm(rank);
+    bool needsPostTranspose = false, invalidMove = false;
+    SmallVector<int64_t> newFftLength(fftLength.size());
+
+    std::iota(preTransposePerm.begin(), preTransposePerm.end(), 0);
+    std::iota(postTransposePerm.begin(), postTransposePerm.end(), 0);
+
+    int64_t nonFftDims = rank - nDimFft;
+
+    for (int64_t i = 0; i < rank; ++i) {
+      int64_t target = permutation[i];
+      bool sourceIsNonFft = (i < nonFftDims);
+      bool targetIsNonFft = (target < nonFftDims);
+
+      if (sourceIsNonFft != targetIsNonFft) {
+        // Cross-boundary permutation - this is not a valid move
+        invalidMove = true;
+        break;
+      }
+    }
+
+    if (invalidMove)
+      return {preTransposePerm, postTransposePerm, newFftLength,
+              needsPostTranspose, invalidMove};
+
+    SmallVector<int64_t> nonFftTargets, nonFftSources;
+    for (int64_t i = 0; i < nonFftDims; i++) {
+      int64_t target = permutation[i];
+      if (target < nonFftDims) {
+        nonFftTargets.push_back(target);
+        nonFftSources.push_back(i);
+      }
+    }
+
+    for (size_t i = 0; i < nonFftSources.size(); ++i) {
+      preTransposePerm[nonFftTargets[i]] = nonFftSources[i];
+    }
+
+    if (fftType == stablehlo::FftType::FFT ||
+        fftType == stablehlo::FftType::IFFT) { // can permute fft dims without
+                                               // restriction
+      for (int64_t i = 0; i < nDimFft; ++i) {
+        int64_t fftDimIdx = nonFftDims + i;
+        if (permutation[fftDimIdx] != fftDimIdx) {
+          preTransposePerm[fftDimIdx] = permutation[fftDimIdx];
+          newFftLength[i] = fftLength[permutation[fftDimIdx] - nonFftDims];
+        } else {
+          newFftLength[i] = fftLength[i];
+        }
+      }
+    } else { // for IRFFT & RFFT we can't move the last dim
+      for (int64_t i = 0; i < nDimFft - 1; ++i) {
+        int64_t fftDimIdx = nonFftDims + i;
+        if (permutation[fftDimIdx] != fftDimIdx) {
+          preTransposePerm[fftDimIdx] = permutation[fftDimIdx];
+          newFftLength[i] = fftLength[permutation[fftDimIdx] - nonFftDims];
+        } else {
+          newFftLength[i] = fftLength[i];
+        }
+      }
+
+      int64_t lastDimIdx = nonFftDims + nDimFft - 1;
+      newFftLength[nDimFft - 1] = fftLength[nDimFft - 1];
+      if (permutation[lastDimIdx] != lastDimIdx) {
+        needsPostTranspose = true;
+        postTransposePerm[lastDimIdx] = permutation[lastDimIdx];
+      }
+    }
+
+    // If we determined iota then we can't move the transpose above the FFT
+    invalidMove = invalidMove || isIotaVector(preTransposePerm);
+    // Adding a couple of sanity checks below to ensure that the permutation
+    // is valid
+    if (!invalidMove) {
+      SmallVector<int64_t> preTransposePerm2(preTransposePerm.size());
+      for (int i = 0; i < preTransposePerm.size(); ++i) {
+        preTransposePerm2[i] = preTransposePerm[i];
+      }
+      std::sort(preTransposePerm2.begin(), preTransposePerm2.end());
+      invalidMove = !isIotaVector(preTransposePerm2);
+    }
+    if (!invalidMove) {
+      SmallVector<int64_t> postTransposePerm2(postTransposePerm.size());
+      for (int i = 0; i < postTransposePerm.size(); ++i) {
+        postTransposePerm2[i] = postTransposePerm[i];
+      }
+      std::sort(postTransposePerm2.begin(), postTransposePerm2.end());
+      invalidMove = !isIotaVector(postTransposePerm2);
+    }
+
+    return {preTransposePerm, postTransposePerm, newFftLength,
+            needsPostTranspose, invalidMove};
+  }
+};
+
+// This applies if reshape expands certain dimensions and transpose doesn't move
+// those dimensions around. See lit_tests/transpose_reshape.mlir for examples of
+// where this is applicable
+struct TransposeReshape final
+    : public CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeReshape> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
+                                    PatternRewriter &rewriter) const {
+    auto reshapeOp = op.getOperand().getDefiningOp<stablehlo::ReshapeOp>();
+    if (!reshapeOp)
+      return failure();
+
+    auto inputShape = llvm::to_vector(
+        cast<RankedTensorType>(reshapeOp.getOperand().getType()).getShape());
+    auto outputShape =
+        llvm::to_vector(cast<RankedTensorType>(reshapeOp.getType()).getShape());
+
+    auto [validExpansion, dimOrdering, outputIdxStarts, extrasList] =
+        dimOrderingToPreserve(inputShape, outputShape);
+
+    if (!validExpansion)
+      return rewriter.notifyMatchFailure(op, "Invalid expansion for reshape");
+
+    auto permutation = op.getPermutation();
+    SmallVector<int64_t> newPermutation(inputShape.size(), -1);
+
+    if (dimOrdering.size() != inputShape.size())
+      return rewriter.notifyMatchFailure(op, "Invalid dimOrdering");
+
+    for (auto [i, dimList] : llvm::enumerate(dimOrdering)) {
+      if (dimList.size() == 0)
+        return rewriter.notifyMatchFailure(op,
+                                           "Empty dimList. Should not happen!");
+
+      auto firstDim = dimList[0];
+      auto idx = std::find(permutation.begin(), permutation.end(), firstDim);
+      if (idx == permutation.end())
+        return rewriter.notifyMatchFailure(op, "Invalid permutation");
+
+      int64_t index = std::distance(permutation.begin(), idx);
+
+      for (int i = 1; i < dimList.size(); ++i) {
+        if (i + index >= permutation.size() ||
+            permutation[i + index] != dimList[i])
+          return rewriter.notifyMatchFailure(op, "unsupported permutation");
+      }
+    }
+
+    int64_t outputIdx = 0;
+    for (int i = 0; i < inputShape.size(); ++i) {
+      auto transposeIdx = permutation[outputIdx];
+
+      auto idx = std::find(outputIdxStarts.begin(), outputIdxStarts.end(),
+                           transposeIdx);
+      auto index = std::distance(outputIdxStarts.begin(), idx);
+
+      newPermutation[i] = transposeIdx - extrasList[index];
+
+      for (int j = 0; j < dimOrdering.size(); ++j) {
+        if (dimOrdering[j][0] == transposeIdx) {
+          outputIdx += dimOrdering[j].size();
+          break;
+        }
+      }
+    }
+
+    auto newTranspose = rewriter.create<stablehlo::TransposeOp>(
+        op.getLoc(), reshapeOp.getOperand(),
+        rewriter.getDenseI64ArrayAttr(newPermutation));
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
+                                                      newTranspose.getResult());
+    return success();
+  }
+
+private:
+  std::tuple<bool, SmallVector<SmallVector<int64_t>>, SmallVector<int64_t>,
+             SmallVector<int64_t>>
+  dimOrderingToPreserve(SmallVector<int64_t> inputShape,
+                        SmallVector<int64_t> outputShape) const {
+    SmallVector<SmallVector<int64_t>> dimOrdering;
+    SmallVector<int64_t> outputIdxStarts, extrasList;
+    bool validExpansion = true;
+
+    int64_t outputIdx = 0, i = 0, extras = 0;
+    for (; i < inputShape.size() && validExpansion &&
+           outputIdx < outputShape.size();
+         ++i) {
+      int64_t outputSize = 1;
+      SmallVector<int64_t> dims;
+
+      outputIdxStarts.push_back(outputIdx);
+      extrasList.push_back(extras);
+
+      do {
+        outputSize *= outputShape[outputIdx];
+        dims.push_back(outputIdx);
+        outputIdx++;
+      } while (outputIdx < outputShape.size() && outputSize < inputShape[i]);
+
+      if (outputSize != inputShape[i]) {
+        validExpansion = false;
+        break;
+      }
+
+      dimOrdering.push_back(dims);
+      extras += dims.size() - 1;
+    }
+
+    if (i != inputShape.size() || outputIdx != outputShape.size())
+      validExpansion = false;
+
+    return {validExpansion, dimOrdering, outputIdxStarts, extrasList};
+  }
+};
+
+struct DotGeneralReshape final
+    : public CheckedOpRewritePattern<stablehlo::DotGeneralOp,
+                                     DotGeneralReshape> {
+  using CheckedOpRewritePattern<stablehlo::DotGeneralOp,
+                                DotGeneralReshape>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp op,
+                                    PatternRewriter &rewriter) const {
+    auto lhsReshapeOp = op.getLhs().getDefiningOp<stablehlo::ReshapeOp>();
+    auto rhsReshapeOp = op.getRhs().getDefiningOp<stablehlo::ReshapeOp>();
+    if (!lhsReshapeOp && !rhsReshapeOp)
+      return failure();
+
+    auto dotGeneralDims = op.getDotDimensionNumbers();
+
+    auto [canFuseLhs, lhsInsertionDims] =
+        canFuseOp(lhsReshapeOp, dotGeneralDims.getLhsBatchingDimensions(),
+                  dotGeneralDims.getLhsContractingDimensions());
+    Value newLhs =
+        lhsReshapeOp && canFuseLhs ? lhsReshapeOp.getOperand() : op.getLhs();
+
+    auto [canFuseRhs, rhsInsertionDims] =
+        canFuseOp(rhsReshapeOp, dotGeneralDims.getRhsBatchingDimensions(),
+                  dotGeneralDims.getRhsContractingDimensions());
+    Value newRhs =
+        rhsReshapeOp && canFuseRhs ? rhsReshapeOp.getOperand() : op.getRhs();
+
+    if (!canFuseLhs && !canFuseRhs)
+      return failure();
+
+    SmallVector<int64_t> adjustedLhsBatchingDims, adjustedLhsContractingDims,
+        adjustedRhsBatchingDims, adjustedRhsContractingDims;
+
+    if (canFuseLhs) {
+      adjustedLhsBatchingDims = adjustDimsForInsertion(
+          dotGeneralDims.getLhsBatchingDimensions(), lhsInsertionDims);
+      adjustedLhsContractingDims = adjustDimsForInsertion(
+          dotGeneralDims.getLhsContractingDimensions(), lhsInsertionDims);
+    } else {
+      adjustedLhsBatchingDims =
+          llvm::to_vector(dotGeneralDims.getLhsBatchingDimensions());
+      adjustedLhsContractingDims =
+          llvm::to_vector(dotGeneralDims.getLhsContractingDimensions());
+    }
+
+    if (canFuseRhs) {
+      adjustedRhsBatchingDims = adjustDimsForInsertion(
+          dotGeneralDims.getRhsBatchingDimensions(), rhsInsertionDims);
+      adjustedRhsContractingDims = adjustDimsForInsertion(
+          dotGeneralDims.getRhsContractingDimensions(), rhsInsertionDims);
+    } else {
+      adjustedRhsBatchingDims =
+          llvm::to_vector(dotGeneralDims.getRhsBatchingDimensions());
+      adjustedRhsContractingDims =
+          llvm::to_vector(dotGeneralDims.getRhsContractingDimensions());
+    }
+
+    auto lhsShape = cast<RankedTensorType>(newLhs.getType()).getShape();
+    auto rhsShape = cast<RankedTensorType>(newRhs.getType()).getShape();
+    SmallVector<int64_t> newShape;
+    for (int64_t idx : adjustedLhsBatchingDims)
+      newShape.push_back(lhsShape[idx]);
+    for (auto [idx, dim] : llvm::enumerate(lhsShape)) {
+      if (std::find(adjustedLhsContractingDims.begin(),
+                    adjustedLhsContractingDims.end(),
+                    idx) != adjustedLhsContractingDims.end() ||
+          std::find(adjustedRhsBatchingDims.begin(),
+                    adjustedRhsBatchingDims.end(),
+                    idx) != adjustedRhsBatchingDims.end())
+        continue;
+      newShape.push_back(dim);
+    }
+    for (auto [idx, dim] : llvm::enumerate(rhsShape)) {
+      if (std::find(adjustedRhsContractingDims.begin(),
+                    adjustedRhsContractingDims.end(),
+                    idx) != adjustedRhsContractingDims.end() ||
+          std::find(adjustedLhsBatchingDims.begin(),
+                    adjustedLhsBatchingDims.end(),
+                    idx) != adjustedLhsBatchingDims.end())
+        continue;
+      newShape.push_back(dim);
+    }
+
+    auto newDotGeneral = rewriter.create<stablehlo::DotGeneralOp>(
+        op.getLoc(),
+        RankedTensorType::get(
+            newShape,
+            cast<RankedTensorType>(newLhs.getType()).getElementType()),
+        newLhs, newRhs,
+        stablehlo::DotDimensionNumbersAttr::get(
+            rewriter.getContext(), adjustedLhsBatchingDims,
+            adjustedRhsBatchingDims, adjustedLhsContractingDims,
+            adjustedRhsContractingDims),
+        op.getPrecisionConfigAttr(), op.getAlgorithmAttr());
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
+                                                      newDotGeneral);
+    return success();
+  }
+
+private:
+  std::tuple<bool, SmallVector<int64_t>>
+  canFuseOp(stablehlo::ReshapeOp op, ArrayRef<int64_t> batchingDims,
+            ArrayRef<int64_t> contractingDims) const {
+    SmallVector<int64_t> insertionDims;
+    if (!op)
+      return std::make_tuple(false, insertionDims);
+
+    insertionDims = findReshapeInsertionDims(
+        cast<RankedTensorType>(op.getOperand().getType()),
+        cast<RankedTensorType>(op.getType()));
+
+    if (insertionDims.empty())
+      return std::make_tuple(false, insertionDims);
+
+    bool found = false;
+    for (auto dim : insertionDims) {
+      if (std::find(batchingDims.begin(), batchingDims.end(), dim) !=
+          batchingDims.end()) {
+        return std::make_tuple(false, insertionDims);
+      }
+      if (std::find(contractingDims.begin(), contractingDims.end(), dim) !=
+          contractingDims.end()) {
+        return std::make_tuple(false, insertionDims);
+      }
+    }
+
+    return std::make_tuple(true, insertionDims);
+  }
+
+  SmallVector<int64_t>
+  adjustDimsForInsertion(ArrayRef<int64_t> dims,
+                         ArrayRef<int64_t> insertionDims) const {
+    SmallVector<int64_t> adjustedDims;
+    adjustedDims.reserve(dims.size());
+
+    for (int64_t dim : dims) {
+      int64_t adjustedDim = dim;
+      for (int64_t insertionDim : insertionDims) {
+        if (insertionDim <= adjustedDim) {
+          adjustedDim--;
+        }
+      }
+      adjustedDims.push_back(adjustedDim);
+    }
+
+    return adjustedDims;
+  }
+};
+
+struct DiagonalTensorDotGeneralRewrite final
+    : public CheckedOpRewritePattern<stablehlo::DotGeneralOp,
+                                     DiagonalTensorDotGeneralRewrite> {
+  using CheckedOpRewritePattern<
+      stablehlo::DotGeneralOp,
+      DiagonalTensorDotGeneralRewrite>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp op,
+                                    PatternRewriter &rewriter) const {
+    {
+      // LHS Diagonal Matrix Multiply: Scale rows by diagonal elements
+      mlir::Value diagonalTensor;
+      if (auto scatterOp = op.getLhs().getDefiningOp<stablehlo::ScatterOp>()) {
+        auto status = detectDiagonalTensor(scatterOp, &diagonalTensor);
+        if (status.ok()) {
+          // TODO: support batched diagonal tensor
+          if (cast<RankedTensorType>(diagonalTensor.getType()).getRank() == 1) {
+            auto scaling = rewriter.create<stablehlo::BroadcastInDimOp>(
+                op.getLoc(), op.getRhs().getType(), diagonalTensor,
+                ArrayRef<int64_t>({0}));
+            rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, scaling,
+                                                          op.getRhs());
+            return success();
+          }
+        }
+      }
+    }
+
+    {
+      // RHS Diagonal Matrix Multiply: Scale columns by diagonal elements
+      mlir::Value diagonalTensor;
+      if (auto scatterOp = op.getRhs().getDefiningOp<stablehlo::ScatterOp>()) {
+        auto status = detectDiagonalTensor(scatterOp, &diagonalTensor);
+        if (status.ok()) {
+          // TODO: support batched diagonal tensor
+          if (cast<RankedTensorType>(diagonalTensor.getType()).getRank() == 1) {
+            auto scaling = rewriter.create<stablehlo::BroadcastInDimOp>(
+                op.getLoc(), op.getLhs().getType(), diagonalTensor,
+                ArrayRef<int64_t>({1}));
+            rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, op.getLhs(),
+                                                          scaling);
+            return success();
+          }
+        }
+      }
+    }
+
+    return failure();
+  }
+};
+
+// pred ? trues : falses --> pred
+// pred ? falses : trues --> !pred
+struct SelectSimplify
+    : public CheckedOpRewritePattern<stablehlo::SelectOp, SelectSimplify> {
+  using CheckedOpRewritePattern<stablehlo::SelectOp,
+                                SelectSimplify>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SelectOp op,
+                                    PatternRewriter &rewriter) const {
+    if (!cast<ShapedType>(op.getType()).getElementType().isInteger(1))
+      return failure();
+
+    auto shardingAttr = sdy::getShardingPerValue(op);
+
+    auto predType = cast<RankedTensorType>(op.getPred().getType());
+    bool needsBroadcast = predType.getRank() == 0;
+
+    if (matchPattern(op.getOnTrue(), m_One()) &&
+        matchPattern(op.getOnFalse(), m_Zero())) {
+      if (needsBroadcast) {
+        auto bcast = rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+            op, op.getType(), op.getPred(), ArrayRef<int64_t>({}));
+        if (shardingAttr)
+          sdy::setShardings(bcast, shardingAttr);
+      } else {
+        rewriter.replaceAllUsesWith(op, op.getPred());
+      }
+      return success();
+    }
+
+    if (matchPattern(op.getOnTrue(), m_Zero()) &&
+        matchPattern(op.getOnFalse(), m_One())) {
+      auto notOp = rewriter.create<stablehlo::NotOp>(op.getLoc(), op.getPred());
+      if (shardingAttr)
+        sdy::setShardings(notOp, shardingAttr);
+
+      if (needsBroadcast) {
+        auto bcast = rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+            op, op.getType(), notOp, ArrayRef<int64_t>({}));
+        if (shardingAttr)
+          sdy::setShardings(bcast, shardingAttr);
+      } else {
+        rewriter.replaceAllUsesWith(op, notOp);
+      }
+      return success();
+    }
+
+    return failure();
+  }
+};
+
+struct ElementwisePad
+    : public CheckedOpTraitRewritePattern<OpTrait::Elementwise,
+                                          ElementwisePad> {
+  using CheckedOpTraitRewritePattern<
+      OpTrait::Elementwise, ElementwisePad>::CheckedOpTraitRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(Operation *op,
+                                    PatternRewriter &rewriter) const {
+    if (op->getNumOperands() != 1)
+      return failure();
+
+    auto elemType =
+        cast<RankedTensorType>(op->getResultTypes()[0]).getElementType();
+
+    auto operand = op->getOperand(0);
+    auto padOp = operand.getDefiningOp<stablehlo::PadOp>();
+    if (!padOp)
+      return failure();
+    if (!llvm::hasSingleElement(padOp->getUsers()))
+      return failure();
+
+    auto padOperand = padOp.getOperand();
+    auto padValue = padOp.getPaddingValue();
+
+    auto elemOperand = rewriter.create(
+        op->getLoc(), op->getName().getIdentifier(), ValueRange(padOperand),
+        TypeRange{RankedTensorType::get(
+            cast<RankedTensorType>(padOperand.getType()).getShape(), elemType)},
+        op->getAttrs(), {}, {});
+    auto elemPadValue = rewriter.create(
+        op->getLoc(), op->getName().getIdentifier(), ValueRange(padValue),
+        TypeRange{RankedTensorType::get({}, elemType)}, op->getAttrs(), {}, {});
+
+    rewriter.replaceOpWithNewOp<stablehlo::PadOp>(
+        op, elemOperand->getResult(0), elemPadValue->getResult(0),
+        padOp.getEdgePaddingLow(), padOp.getEdgePaddingHigh(),
+        padOp.getInteriorPadding());
+    return success();
+  }
+};
+
+// See https://github.com/EnzymeAD/Enzyme-JAX/issues/1204 for details
+struct ConcatenateSubtractToSubtractPad
+    : public CheckedOpRewritePattern<stablehlo::ConcatenateOp,
+                                     ConcatenateSubtractToSubtractPad> {
+  using CheckedOpRewritePattern<
+      stablehlo::ConcatenateOp,
+      ConcatenateSubtractToSubtractPad>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
+                                    PatternRewriter &rewriter) const {
+    auto operands = op.getOperands();
+    if (operands.size() != 3)
+      return failure();
+
+    auto left = operands[0];
+    auto mid = operands[1];
+    auto right = operands[2];
+    auto concatDim = op.getDimension();
+
+    auto midSubtractOp = mid.getDefiningOp<stablehlo::SubtractOp>();
+    if (!midSubtractOp)
+      return failure();
+
+    auto rightNegateOp = right.getDefiningOp<stablehlo::NegOp>();
+    if (!rightNegateOp)
+      return failure();
+
+    auto outputShape = cast<ShapedType>(op.getType()).getShape();
+    auto opRank = outputShape.size();
+
+    auto zeroType = RankedTensorType::get(
+        {}, cast<ShapedType>(op.getType()).getElementType());
+    auto zero = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), zeroType, cast<ElementsAttr>(makeAttr(zeroType, 0)));
+
+    auto newLhsPrePadding = rewriter.create<stablehlo::ConcatenateOp>(
+        op.getLoc(), ValueRange({left, midSubtractOp.getLhs()}), concatDim);
+
+    SmallVector<int64_t> lhsPadLow(opRank, 0);
+    SmallVector<int64_t> lhsPadHigh(opRank, 0);
+    lhsPadHigh[concatDim] =
+        outputShape[concatDim] -
+        cast<ShapedType>(newLhsPrePadding.getType()).getShape()[concatDim];
+    SmallVector<int64_t> lhsPadInner(opRank, 0);
+    auto fullNewLhs =
+        rewriter.create<stablehlo::PadOp>(op.getLoc(), newLhsPrePadding, zero,
+                                          lhsPadLow, lhsPadHigh, lhsPadInner);
+
+    auto newRhsPrePadding = rewriter.create<stablehlo::ConcatenateOp>(
+        op.getLoc(),
+        ValueRange({midSubtractOp.getRhs(), rightNegateOp.getOperand()}),
+        concatDim);
+
+    SmallVector<int64_t> rhsPadLow(opRank, 0);
+    rhsPadLow[concatDim] =
+        outputShape[concatDim] -
+        cast<ShapedType>(newRhsPrePadding.getType()).getShape()[concatDim];
+    SmallVector<int64_t> rhsPadHigh(opRank, 0);
+    SmallVector<int64_t> rhsPadInner(opRank, 0);
+    auto fullNewRhs =
+        rewriter.create<stablehlo::PadOp>(op.getLoc(), newRhsPrePadding, zero,
+                                          rhsPadLow, rhsPadHigh, rhsPadInner);
+
+    rewriter.replaceOpWithNewOp<stablehlo::SubtractOp>(op, fullNewLhs,
+                                                       fullNewRhs);
+    return success();
+  }
+};
+
+struct ConcatenateBroadcastInDim
+    : public CheckedOpRewritePattern<stablehlo::ConcatenateOp,
+                                     ConcatenateBroadcastInDim> {
+  using CheckedOpRewritePattern<
+      stablehlo::ConcatenateOp,
+      ConcatenateBroadcastInDim>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
+                                    PatternRewriter &rewriter) const {
+    auto operands = op.getOperands();
+    if (operands.size() == 1)
+      return failure();
+
+    int input_dim = 0;
+    SmallVector<Value> operandOperands;
+    for (auto operand : operands) {
+      if (auto broadcastInDimOp =
+              operand.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+        auto bcastInDimDimensions = broadcastInDimOp.getBroadcastDimensions();
+        if (bcastInDimDimensions.size() != 1)
+          return failure();
+        if (bcastInDimDimensions[input_dim] != op.getDimension())
+          return failure();
+        operandOperands.push_back(broadcastInDimOp.getOperand());
+        continue;
+      }
+      return failure();
+    }
+
+    auto newConcatOp = rewriter.create<stablehlo::ConcatenateOp>(
+        op.getLoc(), ValueRange(operandOperands), input_dim);
+    rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+        op, op.getType(), newConcatOp,
+        ArrayRef<int64_t>({static_cast<int64_t>(op.getDimension())}));
+    return success();
+  }
+};
+
+template <typename OpTy, typename Child>
+struct ElementwiseConcatLike
+    : public CheckedOpTraitRewritePattern<OpTrait::Elementwise,
+                                          ElementwiseConcatLike<OpTy, Child>> {
+  using CheckedOpTraitRewritePattern<
+      OpTrait::Elementwise,
+      ElementwiseConcatLike<OpTy, Child>>::CheckedOpTraitRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(Operation *op,
+                                    PatternRewriter &rewriter) const {
+    auto operands = op->getOperands();
+    if (operands.size() <= 1)
+      return failure();
+
+    SmallVector<Value> operandOperands;
+    SmallVector<Operation *> concatLikeOps;
+    for (auto operand : operands) {
+      if (auto concatLikeOp = operand.template getDefiningOp<OpTy>()) {
+        concatLikeOps.push_back(concatLikeOp);
+        operandOperands.push_back(concatLikeOp.getOperand());
+
+        if (!llvm::hasSingleElement(operand.getUsers())) {
+          return failure();
+        } else if (concatLikeOps.size() > 1) {
+          if (!OperationEquivalence::isEquivalentTo(
+                  concatLikeOps[0], concatLikeOp,
+                  OperationEquivalence::ignoreValueEquivalence, nullptr,
+                  OperationEquivalence::IgnoreLocations, nullptr)) {
+            return failure();
+          }
+        }
+      } else {
+        return failure();
+      }
+    }
+
+    // Do the elementwise first
+    auto newElem = rewriter.create(
+        op->getLoc(), op->getName().getIdentifier(),
+        ValueRange(operandOperands),
+        TypeRange{RankedTensorType::get(
+            cast<RankedTensorType>(operandOperands[0].getType()).getShape(),
+            cast<RankedTensorType>(op->getResultTypes()[0]).getElementType())},
+        op->getAttrs(), {}, {});
+
+    // Then the concatlike
+    ((Child *)this)
+        ->createSimilarConcatLike(rewriter, op, newElem->getResult(0),
+                                  concatLikeOps[0]);
+    return success();
+  }
+};
+
+struct ElementwiseRotate
+    : public ElementwiseConcatLike<enzymexla::RotateOp, ElementwiseRotate> {
+  using ElementwiseConcatLike<enzymexla::RotateOp,
+                              ElementwiseRotate>::ElementwiseConcatLike;
+
+  void createSimilarConcatLike(PatternRewriter &rewriter, Operation *op,
+                               Value elem, Operation *baseRotateOp) const {
+    auto rotateOp = dyn_cast<enzymexla::RotateOp>(baseRotateOp);
+    assert(rotateOp);
+    rewriter.replaceOpWithNewOp<enzymexla::RotateOp>(
+        op, elem, rotateOp.getAmount(), rotateOp.getDimension());
+    return;
+  }
+};
+
+struct ElementwiseWrap
+    : public ElementwiseConcatLike<enzymexla::WrapOp, ElementwiseWrap> {
+  using ElementwiseConcatLike<enzymexla::WrapOp,
+                              ElementwiseWrap>::ElementwiseConcatLike;
+
+  void createSimilarConcatLike(PatternRewriter &rewriter, Operation *op,
+                               Value elem, Operation *baseWrapOp) const {
+    auto wrapOp = dyn_cast<enzymexla::WrapOp>(baseWrapOp);
+    assert(wrapOp);
+    rewriter.replaceOpWithNewOp<enzymexla::WrapOp>(
+        op, elem, wrapOp.getLhs(), wrapOp.getRhs(), wrapOp.getDimension());
+    return;
+  }
+};
+
+struct ElementwiseExtend
+    : public ElementwiseConcatLike<enzymexla::ExtendOp, ElementwiseExtend> {
+  using ElementwiseConcatLike<enzymexla::ExtendOp,
+                              ElementwiseExtend>::ElementwiseConcatLike;
+
+  void createSimilarConcatLike(PatternRewriter &rewriter, Operation *op,
+                               Value elem, Operation *baseExtendOp) const {
+    auto extendOp = dyn_cast<enzymexla::ExtendOp>(baseExtendOp);
+    assert(extendOp);
+    rewriter.replaceOpWithNewOp<enzymexla::ExtendOp>(
+        op, elem, extendOp.getLhs(), extendOp.getRhs(),
+        extendOp.getDimension());
+    return;
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -19456,12 +22084,44 @@ void mlir::transform::addNoNanAddSubSimplify(RewritePatternSet &patterns,
                                        benefit);
 }
 
+void mlir::transform::addNoNanCompareSimplify(RewritePatternSet &patterns,
+                                              bool allowOnFloatingPointMath,
+                                              MLIRContext &context,
+                                              PatternBenefit benefit) {
+  patterns.insert<NoNanCompareSimplify>(allowOnFloatingPointMath, &context,
+                                        benefit);
+}
+
+void mlir::transform::addNoNanSelfSubSimplify(RewritePatternSet &patterns,
+                                              bool allowOnFloatingPointMath,
+                                              MLIRContext &context,
+                                              PatternBenefit benefit) {
+  patterns.insert<NoNanSelfSubSimplify>(allowOnFloatingPointMath, &context,
+                                        benefit);
+}
+
 void mlir::transform::addNoNanMulSimplify(RewritePatternSet &patterns,
                                           bool allowOnFloatingPointMath,
                                           MLIRContext &context,
                                           PatternBenefit benefit) {
   patterns.insert<NoNanMulSimplify>(allowOnFloatingPointMath, &context,
                                     benefit);
+}
+
+void mlir::transform::addNoNanDivSimplify(RewritePatternSet &patterns,
+                                          bool allowOnFloatingPointMath,
+                                          MLIRContext &context,
+                                          PatternBenefit benefit) {
+  patterns.insert<NoNanDivSimplify>(allowOnFloatingPointMath, &context,
+                                    benefit);
+}
+
+void mlir::transform::addNoNanZeroBasePowSimplify(RewritePatternSet &patterns,
+                                                  bool allowOnFloatingPointMath,
+                                                  MLIRContext &context,
+                                                  PatternBenefit benefit) {
+  patterns.insert<NoNanZeroBasePowSimplify>(allowOnFloatingPointMath, &context,
+                                            benefit);
 }
 
 void mlir::transform::addBroadcastInDimSimplify(RewritePatternSet &patterns,
@@ -19541,40 +22201,45 @@ struct EnzymeHLOOptPass
     patterns.add<TransposeWrap>(context);
     patterns.add<TransposeExtend>(context);
     patterns.add<TransposeRotate>(context);
+    patterns.add<SelectPad>(context);
 
-    patterns
-        .add<AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
-             OrSimplify, XorSimplify, MulSimplify, DivSimplify, RemSimplify,
-             PowSimplify, NoopSlice, NoopReverse, SliceSlice, PadSimplify,
-             ShiftRightLogicalSimplify, NegativePadToSlice, SliceSimplify,
-             ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
-             DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
-             BroadcastToReshape, GatherSimplify, ReshapeEmptyBroadcast,
-             BroadcastReshape, ConstPropThroughBarrier,
-             ReplaceNegAddWithSubtract, SignAbsSimplify, AbsPositiveSimplify,
-             SimplifyBoundary<enzymexla::ExtendOp>,
-             SimplifyBoundary<enzymexla::WrapOp>,
-             SimplifyBoundary<enzymexla::RotateOp>, TransposeReshapeToBroadcast,
-             ReshapeTransposeToBroadcast, SelectBroadcastInDim>(
-            context, PatternBenefit(65000));
+    patterns.add<
+        AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
+        OrSimplify, XorSimplify, MulSimplify, DivSimplify, RemSimplify,
+        PowSimplify, NoopSlice, NoopReverse, SliceSlice, LogSimplify,
+        ShiftRightLogicalSimplify, NegativePadToSlice, SliceSimplify,
+        ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
+        DotGeneralReshape, DiagonalTensorDotGeneralRewrite,
+        DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
+        BroadcastToReshape, ReshapeEmptyBroadcast, BroadcastReshape,
+        ConstPropThroughBarrier, ReplaceNegAddWithSubtract, SignAbsSimplify,
+        AbsPositiveSimplify, SimplifyBoundary<enzymexla::ExtendOp>,
+        SimplifyBoundary<enzymexla::WrapOp>,
+        SimplifyBoundary<enzymexla::RotateOp>, TransposeReshapeToBroadcast,
+        ReshapeTransposeToBroadcast, SelectBroadcastInDim, PowerMultiplyToPower,
+        NegMulConstSimplify, NegDivConstSimplify,
+        ReshapeDeletionsBroadcastInDimSimplify,
+        ReshapeInsertionsBroadcastInDimSimplify, CompareIotaConstSimplify,
+        CompareAbs, CompareMul, CompareConvert, AddSelects,
+        CompareNegateConstSimplify, SelectSimplify>(context,
+                                                    PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,
                  DynamicUpdateSliceConstProp, PadSimplify>(
         max_constant_expansion, context, PatternBenefit(65000));
 
-    patterns.add<ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
-                 SliceElementwise, SliceReshapeElementwise, SlicePad,
-                 SliceReshapePad, DotReshapeDot, ChloInfConstProp,
-                 GammaConstProp, ConcatFuse, ConcatToBroadcast, PadPad,
-                 PadReshapePad, ConcatPushBinop<stablehlo::AddOp>,
-                 ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
-                 ReduceConcat, ConcatSlice, ConcatMultiPad, ConcatWrap,
-                 ConcatConcatAxisSwap, SliceConcat, SliceIf, SliceReshapeConcat,
-                 BinBroadcastSplat<stablehlo::AddOp>,
-                 BinBroadcastSplat<stablehlo::SubtractOp>,
-                 BinBroadcastSplat<stablehlo::DivOp>,
-                 BinBroadcastSplat<stablehlo::MulOp>, RotatePad, ConjReal>(
-        context);
+    patterns.add<
+        ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
+        SliceElementwise, SliceReshapeElementwise, SlicePad, SliceReshapePad,
+        DotReshapeDot, ChloInfConstProp, GammaConstProp, ConcatFuse,
+        ConcatToBroadcast, PadPad, PadReshapePad,
+        ConcatPushBinop<stablehlo::AddOp>, ConcatPushBinop<stablehlo::MulOp>,
+        ScatterToDynamicUpdateSlice, ReduceConcat, ConcatSlice, ConcatMultiPad,
+        ConcatWrap, WidenWrap, WidenExtend, ConcatConcatAxisSwap, SliceConcat,
+        SliceIf, SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
+        BinBroadcastSplat<stablehlo::SubtractOp>,
+        BinBroadcastSplat<stablehlo::DivOp>,
+        BinBroadcastSplat<stablehlo::MulOp>, RotatePad, ConjReal>(context);
 
     // Unary constant propagation patterns
     patterns.add<UnaryConstProp<stablehlo::NotOp, stablehlo::notOp>,
@@ -19618,6 +22283,8 @@ struct EnzymeHLOOptPass
                  BinaryConstProp<stablehlo::SubtractOp, stablehlo::subtractOp>,
                  BinaryConstProp<stablehlo::XorOp, stablehlo::xorOp>>(context);
 
+    patterns.add<GatherConstProp>(context);
+
     patterns.add<BinaryOpTransposeSimplify<stablehlo::AddOp>,
                  BinaryOpTransposeSimplify<stablehlo::SubtractOp>,
                  BinaryOpTransposeSimplify<stablehlo::MulOp>,
@@ -19648,7 +22315,16 @@ struct EnzymeHLOOptPass
                  AssociativeBinaryOpReordering<stablehlo::MinOp>,
                  AssociativeBinaryOpReordering<stablehlo::MaxOp>,
                  AssociativeBinaryOpReordering<stablehlo::AndOp>,
-                 AssociativeBinaryOpReordering<stablehlo::OrOp>>(context);
+                 AssociativeBinaryOpReordering<stablehlo::OrOp>,
+                 AssociativeBinaryOpReordering<stablehlo::XorOp>,
+                 CommonAssociativeCommutativeOpReorder<stablehlo::AddOp>,
+                 CommonAssociativeCommutativeOpReorder<stablehlo::MulOp>,
+                 CommonAssociativeCommutativeOpReorder<stablehlo::MinOp>,
+                 CommonAssociativeCommutativeOpReorder<stablehlo::MaxOp>,
+                 CommonAssociativeCommutativeOpReorder<stablehlo::AndOp>,
+                 CommonAssociativeCommutativeOpReorder<stablehlo::OrOp>,
+                 CommonAssociativeCommutativeOpReorder<stablehlo::XorOp>>(
+        context);
 
     patterns.add<BinopPadToConcat<stablehlo::AddOp>,
                  BinopPadToConcat<stablehlo::MulOp>, ConcatPad,
@@ -19737,12 +22413,12 @@ struct EnzymeHLOOptPass
     }
 
     if (passses & (2048 * 32)) {
-      patterns
-          .add<TransposeWhile, TransposeSlice, TransposeConcat, TransposeDUS,
-               TransposeIota, TransposeReduceWindow, TransposeReduce,
-               TransposeSelect, TransposeDynamicSlice, TransposeReverse,
-               TransposeBatchNormTraining, TransposeBatchNormInference,
-               TransposeBatchNormGrad, TransposeIf>(context);
+      patterns.add<TransposeWhile, TransposeSlice, TransposeConcat,
+                   TransposeDUS, TransposeIota, TransposeReduceWindow,
+                   TransposeReduce, TransposeSelect, TransposeDynamicSlice,
+                   TransposeReverse, TransposeBatchNormTraining,
+                   TransposeBatchNormInference, TransposeBatchNormGrad,
+                   TransposeIf, TransposeFFT, TransposeReshape>(context);
       patterns.add<TransposeElementwise>(true, context);
     }
 
@@ -19776,12 +22452,12 @@ struct EnzymeHLOOptPass
     }
 
     if (all_finite)
-      patterns.add<AllFinite>(context);
-    if (no_nan || all_finite) {
-      patterns.add<NoNan, NoNanSelfSubSimplify>(context);
-    }
-    patterns.add<NoNanAddSubSimplify, NoNanMulSimplify>((no_nan || all_finite),
-                                                        context);
+      patterns.add<AllFiniteIsFinite, AllFiniteIsInf, AllFiniteIsPosInf,
+                   AllFiniteIsNegInf>(context);
+
+    patterns.add<NoNanCompareSimplify, NoNanSelfSubSimplify,
+                 NoNanAddSubSimplify, NoNanMulSimplify, NoNanDivSimplify>(
+        (no_nan || all_finite), context);
 
     // clang-format off
     patterns.add<
@@ -19849,7 +22525,17 @@ struct EnzymeHLOOptPass
         InvolutionSimplify<stablehlo::NotOp>,
         InvolutionSimplify<chlo::ConjOp>,
         RealConjSimplify,
-        ConjComplexSimplify
+        ConjComplexSimplify,
+        SplitConvolutionIntoReverseConvolution,
+        ScatterMultiplySimplify,
+        UnaryElementwiseScatterSimplify,
+        GatherElementwise,
+        ElementwisePad,
+        ConcatenateSubtractToSubtractPad,
+        ConcatenateBroadcastInDim,
+        ElementwiseRotate,
+        ElementwiseWrap,
+        ElementwiseExtend
       >(context);
 
     patterns.add<SumToReduceWindow<stablehlo::AddOp>,

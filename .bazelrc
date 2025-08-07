@@ -6,6 +6,14 @@ common --noincompatible_enable_cc_toolchain_resolution
 
 common --announce_rc
 
+common --repo_env=USE_PYWRAP_RULES=True
+common --copt=-DGRPC_BAZEL_BUILD
+common --host_copt=-DGRPC_BAZEL_BUILD
+common --action_env=GRPC_BAZEL_RUNTIME=1
+common --repo_env=PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=upb
+common --action_env=PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=upb
+common --repo_env=RULES_PYTHON_ENABLE_PYSTAR=0
+
 common --experimental_repo_remote_exec
 common --cxxopt=-std=c++17 --host_cxxopt=-std=c++17
 common --cxxopt=-w --host_cxxopt=-w
@@ -16,7 +24,6 @@ common --define open_source_build=true
 common
 common --define framework_shared_object=true
 common --define tsl_protobuf_header_only=true
-common --define=use_fast_cpp_protos=true
 common --define=allow_oversize_protos=true
 
 build -c opt

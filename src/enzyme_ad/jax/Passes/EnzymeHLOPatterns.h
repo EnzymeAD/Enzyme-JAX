@@ -21,12 +21,24 @@ void addSumToConv(RewritePatternSet &patterns, bool collapseDims,
                   MLIRContext &context, PatternBenefit benefit);
 void addPadDotGeneral(RewritePatternSet &patterns, bool postPad,
                       MLIRContext &context, PatternBenefit benefit);
+void addNoNanCompareSimplify(RewritePatternSet &patterns,
+                             bool allowOnFloatingPointMath,
+                             MLIRContext &context, PatternBenefit benefit);
+void addNoNanSelfSubSimplify(RewritePatternSet &patterns,
+                             bool allowOnFloatingPointMath,
+                             MLIRContext &context, PatternBenefit benefit);
 void addNoNanAddSubSimplify(RewritePatternSet &patterns,
                             bool allowOnFloatingPointMath, MLIRContext &context,
                             PatternBenefit benefit);
 void addNoNanMulSimplify(RewritePatternSet &patterns,
                          bool allowOnFloatingPointMath, MLIRContext &context,
                          PatternBenefit benefit);
+void addNoNanDivSimplify(RewritePatternSet &patterns,
+                         bool allowOnFloatingPointMath, MLIRContext &context,
+                         PatternBenefit benefit);
+void addNoNanZeroBasePowSimplify(RewritePatternSet &patterns,
+                                 bool allowOnFloatingPointMath,
+                                 MLIRContext &context, PatternBenefit benefit);
 void addIotaSimplify(RewritePatternSet &patterns, int64_t maxConstantExpansion,
                      MLIRContext &context, PatternBenefit benefit);
 void addConcatConstProp(RewritePatternSet &patterns,

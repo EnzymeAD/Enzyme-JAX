@@ -29,7 +29,15 @@ steps:
       echo "openssl md5 | cut -d' ' -f2" > .local/bin/md5
       chmod +x .local/bin/md5
 
+      BAZEL_BUILD_FLAGS+=()
+
       if [ "{{matrix.os}}" == "macos" ]; then
+        export MACOSX_DEPLOYMENT_TARGET=11.3
+        BAZEL_BUILD_FLAGS+=(--macos_minimum_os=\${MACOSX_DEPLOYMENT_TARGET})
+        BAZEL_BUILD_FLAGS+=(--action_env=MACOSX_DEPLOYMENT_TARGET=\${MACOSX_DEPLOYMENT_TARGET})
+        BAZEL_BUILD_FLAGS+=(--host_action_env=MACOSX_DEPLOYMENT_TARGET=\${MACOSX_DEPLOYMENT_TARGET})
+        BAZEL_BUILD_FLAGS+=(--repo_env=MACOSX_DEPLOYMENT_TARGET=\${MACOSX_DEPLOYMENT_TARGET})
+        BAZEL_BUILD_FLAGS+=(--test_env=MACOSX_DEPLOYMENT_TARGET=\${MACOSX_DEPLOYMENT_TARGET})
         curl -fLO "https://github.com/bazelbuild/bazelisk/releases/download/v1.19.0/bazelisk-darwin"
         mv bazelisk-darwin .local/bin/bazel
         chmod +x .local/bin/bazel
@@ -62,9 +70,9 @@ steps:
       mkdir baztmp
       export TAG=`echo $BUILDKITE_TAG | cut -c2-`
       sed -i.bak "s~version = \"[0-9.]*\"~version = \"\$TAG\"~g" BUILD
-      HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/baztmp build @llvm-project//llvm:FileCheck
+      HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/baztmp build \${BAZEL_BUILD_FLAGS[@]} @llvm-project//llvm:FileCheck
       rm -f bazel-bin/*.whl
-      HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/baztmp build :wheel
+      HERMETIC_PYTHON_VERSION={{matrix.python}} bazel --output_user_root=`pwd`/baztmp build \${BAZEL_BUILD_FLAGS[@]} :wheel
       cp bazel-bin/*.whl .
       python -m pip install *.whl
       python -m pip install --user twine

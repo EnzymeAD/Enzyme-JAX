@@ -11,7 +11,9 @@
 
 include "Enzyme/MLIR/Dialect/Dialect.td"
 include "Dialect.td"
+include "EnzymeXLAAttrs.td"
 
+include "mlir/Interfaces/CopyOpInterface.td"
 include "mlir/Interfaces/ViewLikeInterface.td"
 include "mlir/IR/SymbolInterfaces.td"
 include "mlir/IR/EnumAttr.td"
@@ -26,6 +28,8 @@ include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Interfaces/CallInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "stablehlo/dialect/Base.td"
+include "mlir/Dialect/GPU/IR/GPUBase.td"
+include "mlir/Dialect/LLVMIR/LLVMOpBase.td"
 
 def TensorI64 : Type<CPred<"::llvm::isa<::mlir::TensorType>($_self) && ::llvm::cast<::mlir::TensorType>($_self).getShape().size() == 0 && ::llvm::cast<::mlir::TensorType>($_self).getElementType().isSignlessInteger(64)">, "tensor<i64>",
                  "::mlir::TensorType">,
@@ -62,6 +66,43 @@ def KernelCallOp: EnzymeXLA_Op<"kernel_call", [DeclareOpInterfaceMethods<SymbolU
   let hasCanonicalizer = 1;
 }
 
+def MemcpyOp : EnzymeXLA_Op<"memcpy", [CopyOpInterface]> {
+
+  let summary = "GPU memcpy operation";
+
+  let description = [{
+    The `gpu.memcpy` operation copies the content of one memref to another.
+
+    The op does not execute before all async dependencies have finished
+    executing.
+
+    If the `async` keyword is present, the op is executed asynchronously (i.e.
+    it does not block until the execution has finished on the device). In
+    that case, it returns a !gpu.async.token.
+
+    Example:
+
+    ```mlir
+    %token = gpu.memcpy async [%dep] %dst, %src : memref<?xf32, 1>, memref<?xf32>
+    ```
+  }];
+
+  let arguments = (ins Variadic<GPU_AsyncToken>:$asyncDependencies,
+                   Arg<AnyMemRef, "", [MemWriteAt<0, FullEffect>]>:$target,
+                   Arg<AnyMemRef, "", [MemReadAt<0, FullEffect>]>:$source,
+		   Index:$size
+		);
+  let results = (outs Optional<GPU_AsyncToken>:$asyncToken);
+
+  let assemblyFormat = [{
+    custom<AsyncDependencies>(type($asyncToken), $asyncDependencies)
+    $target`,` $source `,` $size `:` type($target)`,` type($source) attr-dict
+  }];
+  let hasFolder = 1;
+  let hasVerifier = 1;
+  let hasCanonicalizer = 1;
+}
+
 def JITCallOp: EnzymeXLA_Op<"jit_call", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, DeclareOpInterfaceMethods<CallOpInterface>, DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "JIT Call operation";
 
@@ -92,13 +133,113 @@ def GetStreamOp : EnzymeXLA_Op<"get_stream", [Pure]> {
   let results = (outs AnyType:$result);
 }
 
+
+def GPUWrapperOp : EnzymeXLA_Op<"gpu_wrapper", [
+  RecursiveMemoryEffects,
+  AffineScope,
+  AutomaticAllocationScope,
+  SingleBlockImplicitTerminator<"enzymexla::PolygeistYieldOp">]> {
+  let arguments = (ins Variadic<Index>:$blockDims);
+  let summary = "Indicates the region contained must be executed on the GPU";
+  let description = [{
+    The optional arguments to this operation are suggestions about what block
+    dimensions this gpu kernel should have - usually taken from kernel launch
+    params
+  }];
+  let results = (outs Index : $result);
+  let regions = (region SizedRegion<1>:$region);
+  let skipDefaultBuilders = 1;
+  let builders = [
+      OpBuilder<(ins "ValueRange":$blockSizes)>,
+      OpBuilder<(ins)>];
+}
+
+def XLAWrapperOp: EnzymeXLA_Op<"xla_wrapper", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, DeclareOpInterfaceMethods<CallOpInterface>, DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "XLA Call operation";
+
+  let arguments = (ins
+    SymbolRefAttr:$fn,
+    Variadic<AnyType>:$inputs
+  );
+
+  let assemblyFormat = [{
+    $fn ` ` `(` $inputs `)` attr-dict `:` functional-type($inputs, results)
+  }];
+
+}
+
+def GPUErrorOp : EnzymeXLA_Op<"gpu_error", [
+  RecursiveMemoryEffects,
+  SingleBlockImplicitTerminator<"enzymexla::PolygeistYieldOp">]>,
+  Arguments<(ins)> {
+  let summary = "Gets the error returned by the gpu operation inside";
+  // TODO should be i32, not index
+  let results = (outs Index : $result);
+  let regions = (region SizedRegion<1>:$region);
+  let skipDefaultBuilders = 1;
+  let builders = [OpBuilder<(ins)>];
+
+}
+
+def NoopOp
+    : EnzymeXLA_Op<"noop",
+                   [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "Noop for preventing folding or transformations";
+  let arguments = (ins Variadic<Index>:$blockDims);
+  let skipDefaultBuilders = 1;
+  let builders = [
+      OpBuilder<(ins "ValueRange":$indices)>];
+  let description = [{}];
+}
+
+
+def GPUBlockOp : EnzymeXLA_Op<"gpu_block", [
+  RecursiveMemoryEffects,
+  SingleBlockImplicitTerminator<"enzymexla::PolygeistYieldOp">]> {
+  let arguments = (ins Index:$blockIndexX, Index:$blockIndexY, Index:$blockIndexZ);
+  let summary = "Wraps a GPU kernel block to prevent restructuring";
+  let regions = (region SizedRegion<1>:$region);
+}
+
+def GPUThreadOp : EnzymeXLA_Op<"gpu_thread", [
+  RecursiveMemoryEffects,
+  SingleBlockImplicitTerminator<"enzymexla::PolygeistYieldOp">]> {
+  let arguments = (ins Index:$threadIndexX, Index:$threadIndexY, Index:$threadIndexZ);
+  let summary = "Wraps a GPU kernel thread to prevent restructuring";
+  let regions = (region SizedRegion<1>:$region);
+}
+
+def BarrierOp
+    : EnzymeXLA_Op<"barrier",
+                   [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+
+  let arguments = (ins Variadic<Index>:$indices);
+  let summary = "barrier for parallel loops";
+  let description = [{}];
+  let hasCanonicalizer = true;
+}
+
+def PolygeistYieldOp : EnzymeXLA_Op<"polygeist_yield", [Pure, ReturnLike, Terminator]> {
+    //ParentOneOf<["AlternativesOp", "GPUWrapperOp", "GPUErrorOp", "GPUBlockOp", "GPUThreadOp"]>]> {
+  let summary = "Polygeist ops terminator";
+}
+
+def StreamToTokenOp : EnzymeXLA_Op<"stream2token", [
+  Pure
+]> {
+  let summary = "Extract an async stream from a cuda stream";
+
+  let arguments = (ins AnyType : $source);
+  let results = (outs AnyType : $result);
+}
+
 def Memref2PointerOp : EnzymeXLA_Op<"memref2pointer", [
   ViewLikeOpInterface, Pure
 ]> {
   let summary = "Extract and LLVM pointer from a MemRef";
 
   let arguments = (ins AnyMemRef : $source);
-  let results = (outs AnyType:$result);
+  let results = (outs LLVM_AnyPointer:$result);
 
   let hasFolder = 1;
   let hasCanonicalizer = 1;
@@ -113,7 +254,7 @@ def Pointer2MemrefOp : EnzymeXLA_Op<"pointer2memref", [
 ]> {
   let summary = "Upgrade a pointer to a memref";
 
-  let arguments = (ins AnyType:$source);
+  let arguments = (ins LLVM_AnyPointer:$source);
   let results = (outs AnyMemRef : $result);
 
   let hasFolder = 1;
@@ -122,6 +263,15 @@ def Pointer2MemrefOp : EnzymeXLA_Op<"pointer2memref", [
   let extraClassDeclaration = [{
     ::mlir::Value getViewSource() { return getSource(); }
   }];
+}
+
+def AlternativesOp : EnzymeXLA_Op<"alternatives", [
+  RecursiveMemoryEffects]> {
+  let summary = "Provides several alternatives kernels for gpu code";
+  let regions = (region VariadicRegion<SizedRegion<1>>:$regions);
+  let skipDefaultBuilders = 1;
+  let builders = [OpBuilder<(ins "int":$regionNum)>];
+  let hasCanonicalizer = 1;
 }
 
 def AffineScopeOp : EnzymeXLA_Op<"scope", [
@@ -189,6 +339,8 @@ def CommRegionOp : EnzymeXLA_Op<"comm_region", [
   );
 }
 
+// Linear Algebra Ops
+
 def LUFactorizationOp: EnzymeXLA_Op<"linalg.lu", [Pure]> {
   let summary = "LU factorization operation with RowMaximum pivoting.";
 
@@ -202,6 +354,76 @@ def LUFactorizationOp: EnzymeXLA_Op<"linalg.lu", [Pure]> {
     HLO_Tensor:$permutation,
     HLO_Tensor:$info
   );
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
+def QRFactorizationOp: EnzymeXLA_Op<"linalg.qr", [Pure]> {
+  let summary = "QR factorization operation.";
+
+  let arguments = (ins
+    HLO_Tensor:$input
+  );
+
+  let results = (outs
+    HLO_Tensor:$output,
+    HLO_Tensor:$tau,
+    HLO_Tensor:$info
+  );
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
+
+def SVDFactorizationOp : EnzymeXLA_Op<"linalg.svd", [Pure]> {
+  let summary = "Singular Value Decomposition (SVD) factorization operation.";
+
+  let arguments = (ins
+    HLO_Tensor:$input,
+    DefaultValuedAttr<BoolAttr, "false">:$full
+  );
+
+  let results = (outs
+    HLO_Tensor:$U,
+    HLO_Tensor:$S,
+    HLO_Tensor:$Vt,
+    HLO_Tensor:$info
+  );
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
+// Machine Learning Ops
+
+def GeluOp: EnzymeXLA_Op<"ml.gelu", [Pure, SameOperandsAndResultType, Elementwise]> {
+  let summary = "Computes the GELU activation function";
+
+  let arguments = (ins
+    HLO_Tensor:$input,
+    EnzymeXLA_GeluApproximationAttr:$gelu_approximation
+  );
+
+  let results = (outs HLO_Tensor:$result);
+
+  let assemblyFormat = [{
+    $input `,` `approximation``=`$gelu_approximation attr-dict `:` functional-type($input, results)
+  }];
+}
+
+def ReluOp: EnzymeXLA_Op<"ml.relu", [Pure, SameOperandsAndResultType, Elementwise]> {
+  let summary = "Computes the RELU activation function";
+
+  let arguments = (ins
+    HLO_Tensor:$input
+  );
+
+  let results = (outs HLO_Tensor:$result);
 
   let assemblyFormat = [{
     $input attr-dict `:` functional-type($input, results)

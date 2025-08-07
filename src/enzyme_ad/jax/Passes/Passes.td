@@ -17,6 +17,25 @@ def CanonicalizeLoopsPass : InterfacePass<"canonicalize-loops",
   let dependentDialects = ["affine::AffineDialect"];
 }
 
+def DialectCanonicalize : Pass<"dialect-canonicalize"> {
+  let summary = "Canonicalize specific dialects listed in options";
+  let options = [
+    ListOption<"dialects", "dialects", "std::string",
+               "List of dialects to fetch canonicalization patterns from">,
+    Option<"maxNumRewrites", "max-num-rewrites", "uint64_t",
+           /*default=*/"static_cast<uint64_t>(-1)",
+           "Maximum number of rewrites to apply (default -1: unlimited)">,
+    Option<"maxIterations", "max-iterations", "uint64_t",
+           /*default=*/"static_cast<uint64_t>(-1)",
+           "Maximum number of times a pattern can be applied (default -1: "
+           "inherit from the driver)">,
+    Option<"enableFolding", "enable-folding", "bool", "true",
+           "Perform folding">,
+    Option<"enableConstantCSE", "enable-constant-cse", "bool", "true",
+           "Deduplicate constants">,
+  ];
+}
+
 def RemoveDuplicateFuncDefPass
     : Pass<"remove-duplicate-func-def", "mlir::ModuleOp"> {
   let summary = "Remove duplicate function definitions";
@@ -158,6 +177,11 @@ def PrintPass : Pass<"print"> {
       /*type=*/"bool",
       /*default=*/"false",
       /*description=*/"Whether to print to generic mlir form">,
+      Option</*C++ variable name=*/"filename",
+      /*CLI argument=*/"filename",
+      /*type=*/"std::string",
+      /*default=*/"",
+      /*description=*/"If not-empty, will print the module to a file">,
       ];
 }
 
@@ -220,6 +244,12 @@ def SROAWrappersPass : Pass<"sroa-wrappers", "mlir::ModuleOp"> {
         /*default=*/"true",
         /*description=*/"Whether to run instsimplify">,
     Option<
+        /*C++ variable name=*/"set_private",
+        /*CLI argument=*/"set_private",
+        /*type=*/"bool",
+        /*default=*/"true",
+        /*description=*/"Whether to run instsimplify">,
+    Option<
         /*C++ variable name=*/"attributor",
         /*CLI argument=*/"attributor",
         /*type=*/"bool",
@@ -233,6 +263,7 @@ def LibDeviceFuncsRaisingPass : Pass<"libdevice-funcs-raise"> {
   let dependentDialects = [
     "arith::ArithDialect",
     "math::MathDialect",
+    "gpu::GPUDialect",
   ];
   let options = [
     Option<
@@ -301,7 +332,13 @@ def ConvertPolygeistToLLVM
     Option<"useCStyleMemRef", "use-c-style-memref", "bool",
            /*default=*/"true",
            "Use C-style nested-array lowering of memref instead of "
-           "the default MLIR descriptor structure">
+           "the default MLIR descriptor structure">,
+    Option<
+        /*C++ variable name=*/"backend",
+        /*CLI argument=*/"backend",
+        /*type=*/"std::string",
+        /*default=*/"\"cpu\"",
+        /*description=*/"HW backend">
   ];
 }
 
@@ -357,6 +394,15 @@ def LowerEnzymeXLALinalgPass : Pass<"lower-enzymexla-linalg"> {
         /*type=*/"int",
         /*default=*/"64",
         /*description=*/"Blas int width (32 or 64). Only used for CPU backend.">,
+  ];
+}
+
+def LowerEnzymeXLAMLPass : Pass<"lower-enzymexla-ml"> {
+  let summary = "Lower enzymexla mlops to stablehlo";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "chlo::ChloDialect",
+    "enzymexla::EnzymeXLADialect",
   ];
 }
 
@@ -568,6 +614,51 @@ def CuDNNHLOOpt : Pass<"enzymexla-cudnn-hlo-opt"> {
   ];
 }
 
+def GPULaunchRecognition : Pass<"gpu-launch-recognition"> {
+  let summary = "Optimize stablehlo to emit cuDNN specific optimizations";
+  let dependentDialects = [
+    "enzymexla::EnzymeXLADialect",
+    "arith::ArithDialect", 
+    "gpu::GPUDialect",
+    "mlir::NVVM::NVVMDialect",
+    "mlir::DLTIDialect"
+  ];
+  let options = [Option<
+       /*C++ variable name=*/"use_launch_func",
+       /*CLI argument=*/"use_launch_func",
+       /*type=*/"bool",
+       /*default=*/"false",
+       /*description=*/"Convert Periodic Concat to Manual Computation with CollectivePermute">];
+}
+
+def MergeGPUModulesPass : Pass<"merge-gpu-modules", "mlir::ModuleOp"> {
+  let summary = "Merge all gpu modules into one";
+  let dependentDialects = ["func::FuncDialect", "LLVM::LLVMDialect", "gpu::GPUDialect"];
+}
+
+def ConvertParallelToGPU1 : Pass<"convert-parallel-to-gpu1"> {
+  let summary = "Convert parallel loops to gpu";
+  let dependentDialects = ["func::FuncDialect", "LLVM::LLVMDialect", "memref::MemRefDialect", "gpu::GPUDialect", "scf::SCFDialect"];
+  let options = [
+  Option<"arch", "arch", "std::string", /*default=*/"\"sm_60\"", "Target GPU architecture">
+  ];
+}
+
+def ConvertParallelToGPU2 : Pass<"convert-parallel-to-gpu2"> {
+  let summary = "Convert parallel loops to gpu";
+  let dependentDialects = ["func::FuncDialect", "LLVM::LLVMDialect", "memref::MemRefDialect", "gpu::GPUDialect", "mlir::NVVM::NVVMDialect"];
+  let options = [Option<
+       /*C++ variable name=*/"emitGPUKernelLaunchBounds",
+       /*CLI argument=*/"emitGPUKernelLaunchBounds",
+       /*type=*/"bool",
+       /*default=*/"false",
+       /*description=*/"Convert Periodic Concat to Manual Computation with CollectivePermute">];
+}
+
+def PolygeistMem2Reg : Pass<"polygeist-mem2reg"> {
+  let summary = "Replace scf.if and similar with affine.if";
+}
+
 def OptimizeCommunication : Pass<"optimize-communication"> {
   let summary = "Optimize communication";
   let dependentDialects = [
@@ -696,5 +787,54 @@ def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
   ];
 }
 
+def ParallelLower : Pass<"parallel-lower"> {
+  let summary = "Lower gpu launch op to parallel ops";
+  let dependentDialects = [
+    "scf::SCFDialect",
+    "async::AsyncDialect",
+    "enzymexla::EnzymeXLADialect",
+    "cf::ControlFlowDialect",
+    "memref::MemRefDialect",
+    "func::FuncDialect",
+    "LLVM::LLVMDialect",
+  ];
+  let options =
+      [Option<
+           /*C++ variable name=*/"wrapParallelOps",
+           /*CLI argument=*/"wrapParallelOps",
+           /*type=*/"bool",
+           /*default=*/"false",
+           /*description=*/"Whether to throw a pass error if not fully raised">,
+  ];
+}
+
+def SCFParallelLoopUnroll : Pass<"scf-parallel-loop-unroll"> {
+  let summary = "Unroll and interleave scf parallel loops";
+  let dependentDialects = [
+    "scf::SCFDialect",
+    "arith::ArithDialect",
+  ];
+  let options = [
+  Option<"unrollFactor", "unrollFactor", "int", /*default=*/"2", "Unroll factor">
+  ];
+}
+
+def ParallelLICM : Pass<"parallel-licm"> {
+  let summary = "Perform LICM on known parallel (and serial) loops";
+}
+
+def SCFParallelSerialization : Pass<"parallel-serialization"> {
+  let summary = "Serialize SCF parallel loops";
+}
+
+def FixGPUFunc : Pass<"fix-gpu-func", "mlir::gpu::GPUModuleOp"> {
+  let summary = "Fix nested calls to gpu functions we generate in the frontend";
+  let dependentDialects = ["func::FuncDialect", "LLVM::LLVMDialect", "gpu::GPUDialect"];
+}
+
+def StripGPUInfo : Pass<"strip-gpu-info"> {
+  let summary = "Stirng GPU Debug info";
+  let dependentDialects = ["gpu::GPUDialect"];
+}
 
 #endif

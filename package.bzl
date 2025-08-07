@@ -30,7 +30,7 @@ List of Python packages to include in the distribution.
 Sub-packages are automatically included.
 """,
         ),
-    }
+    },
 )
 
 py_package = rule(

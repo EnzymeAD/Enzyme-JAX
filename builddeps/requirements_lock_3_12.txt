@@ -8,8 +8,8 @@ absl-py==2.1.0 \
     --hash=sha256:526a04eadab8b4ee719ce68f204172ead1027549089702d99b9059f129ff1308 \
     --hash=sha256:7820790efbb316739cde8b4e19357243fc3608a152024288513dd968d7d959ff
     # via
+    #   -r /home/avik-pal/.cache/bazel/_bazel_avik-pal/d9a72a0440fb4d9f7b86a76cae59d72a/execroot/__main__/bazel-out/k8-opt-ST-db0c31ca184a/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
     #   -r builddeps/requirements.in
-    #   -r builddeps/test-requirements.txt
     #   array-record
     #   chex
     #   dm-haiku
@@ -18,113 +18,111 @@ absl-py==2.1.0 \
     #   keras
     #   keras-core
     #   keras-cv
-    #   keras-nightly
+    #   keras-hub
     #   ml-collections
     #   optax
     #   orbax-checkpoint
-    #   tb-nightly
     #   tensorboard
     #   tensorflow
     #   tensorflow-datasets
     #   tensorflow-metadata
     #   tensorflow-probability
-    #   tf-nightly
 aiohappyeyeballs==2.4.3 \
     --hash=sha256:75cf88a15106a5002a8eb1dab212525c00d1f4c0fa96e551c9fbe6f09a621586 \
     --hash=sha256:8a7a83727b2756f394ab2895ea0765a0a8c475e3c71e98d43d76f22b4b435572
     # via aiohttp
-aiohttp==3.10.10 \
-    --hash=sha256:007ec22fbc573e5eb2fb7dec4198ef8f6bf2fe4ce20020798b2eb5d0abda6138 \
-    --hash=sha256:00819de9e45d42584bed046314c40ea7e9aea95411b38971082cad449392b08c \
-    --hash=sha256:01948b1d570f83ee7bbf5a60ea2375a89dfb09fd419170e7f5af029510033d24 \
-    --hash=sha256:038f514fe39e235e9fef6717fbf944057bfa24f9b3db9ee551a7ecf584b5b480 \
-    --hash=sha256:03a42ac7895406220124c88911ebee31ba8b2d24c98507f4a8bf826b2937c7f2 \
-    --hash=sha256:05646ebe6b94cc93407b3bf34b9eb26c20722384d068eb7339de802154d61bc5 \
-    --hash=sha256:0631dd7c9f0822cc61c88586ca76d5b5ada26538097d0f1df510b082bad3411a \
-    --hash=sha256:0b00807e2605f16e1e198f33a53ce3c4523114059b0c09c337209ae55e3823a8 \
-    --hash=sha256:0e1b370d8007c4ae31ee6db7f9a2fe801a42b146cec80a86766e7ad5c4a259cf \
-    --hash=sha256:15ecd889a709b0080f02721255b3f80bb261c2293d3c748151274dfea93ac871 \
-    --hash=sha256:1b66ccafef7336a1e1f0e389901f60c1d920102315a56df85e49552308fc0486 \
-    --hash=sha256:1bbb122c557a16fafc10354b9d99ebf2f2808a660d78202f10ba9d50786384b9 \
-    --hash=sha256:1eb89d3d29adaf533588f209768a9c02e44e4baf832b08118749c5fad191781d \
-    --hash=sha256:258c5dd01afc10015866114e210fb7365f0d02d9d059c3c3415382ab633fcbcb \
-    --hash=sha256:2609e9ab08474702cc67b7702dbb8a80e392c54613ebe80db7e8dbdb79837c68 \
-    --hash=sha256:274cfa632350225ce3fdeb318c23b4a10ec25c0e2c880eff951a3842cf358ac1 \
-    --hash=sha256:28529e08fde6f12eba8677f5a8608500ed33c086f974de68cc65ab218713a59d \
-    --hash=sha256:2b606353da03edcc71130b52388d25f9a30a126e04caef1fd637e31683033abd \
-    --hash=sha256:30ca7c3b94708a9d7ae76ff281b2f47d8eaf2579cd05971b5dc681db8caac6e1 \
-    --hash=sha256:333cf6cf8e65f6a1e06e9eb3e643a0c515bb850d470902274239fea02033e9a8 \
-    --hash=sha256:3455522392fb15ff549d92fbf4b73b559d5e43dc522588f7eb3e54c3f38beee7 \
-    --hash=sha256:362f641f9071e5f3ee6f8e7d37d5ed0d95aae656adf4ef578313ee585b585959 \
-    --hash=sha256:3bcd391d083f636c06a68715e69467963d1f9600f85ef556ea82e9ef25f043f7 \
-    --hash=sha256:3dffb610a30d643983aeb185ce134f97f290f8935f0abccdd32c77bed9388b42 \
-    --hash=sha256:3fe407bf93533a6fa82dece0e74dbcaaf5d684e5a51862887f9eaebe6372cd79 \
-    --hash=sha256:413251f6fcf552a33c981c4709a6bba37b12710982fec8e558ae944bfb2abd38 \
-    --hash=sha256:438cd072f75bb6612f2aca29f8bd7cdf6e35e8f160bc312e49fbecab77c99e3a \
-    --hash=sha256:4470c73c12cd9109db8277287d11f9dd98f77fc54155fc71a7738a83ffcc8ea8 \
-    --hash=sha256:45c3b868724137f713a38376fef8120c166d1eadd50da1855c112fe97954aed8 \
-    --hash=sha256:486f7aabfa292719a2753c016cc3a8f8172965cabb3ea2e7f7436c7f5a22a151 \
-    --hash=sha256:4f05e9727ce409358baa615dbeb9b969db94324a79b5a5cea45d39bdb01d82e6 \
-    --hash=sha256:50aed5155f819873d23520919e16703fc8925e509abbb1a1491b0087d1cd969e \
-    --hash=sha256:50edbcad60d8f0e3eccc68da67f37268b5144ecc34d59f27a02f9611c1d4eec7 \
-    --hash=sha256:54ca74df1be3c7ca1cf7f4c971c79c2daf48d9aa65dea1a662ae18926f5bc8ce \
-    --hash=sha256:578a4b875af3e0daaf1ac6fa983d93e0bbfec3ead753b6d6f33d467100cdc67b \
-    --hash=sha256:597a079284b7ee65ee102bc3a6ea226a37d2b96d0418cc9047490f231dc09fe8 \
-    --hash=sha256:59bb3c54aa420521dc4ce3cc2c3fe2ad82adf7b09403fa1f48ae45c0cbde6628 \
-    --hash=sha256:5c6a5b8c7926ba5d8545c7dd22961a107526562da31a7a32fa2456baf040939f \
-    --hash=sha256:64f6c17757251e2b8d885d728b6433d9d970573586a78b78ba8929b0f41d045a \
-    --hash=sha256:679abe5d3858b33c2cf74faec299fda60ea9de62916e8b67e625d65bf069a3b7 \
-    --hash=sha256:741a46d58677d8c733175d7e5aa618d277cd9d880301a380fd296975a9cdd7bc \
-    --hash=sha256:7789050d9e5d0c309c706953e5e8876e38662d57d45f936902e176d19f1c58ab \
-    --hash=sha256:77abf6665ae54000b98b3c742bc6ea1d1fb31c394bcabf8b5d2c1ac3ebfe7f3b \
-    --hash=sha256:79019094f87c9fb44f8d769e41dbb664d6e8fcfd62f665ccce36762deaa0e911 \
-    --hash=sha256:7b06b7843929e41a94ea09eb1ce3927865387e3e23ebe108e0d0d09b08d25be9 \
-    --hash=sha256:7e338c0523d024fad378b376a79faff37fafb3c001872a618cde1d322400a572 \
-    --hash=sha256:7ea7ffc6d6d6f8a11e6f40091a1040995cdff02cfc9ba4c2f30a516cb2633554 \
-    --hash=sha256:8105fd8a890df77b76dd3054cddf01a879fc13e8af576805d667e0fa0224c35d \
-    --hash=sha256:84afcdea18eda514c25bc68b9af2a2b1adea7c08899175a51fe7c4fb6d551257 \
-    --hash=sha256:9294bbb581f92770e6ed5c19559e1e99255e4ca604a22c5c6397b2f9dd3ee42c \
-    --hash=sha256:93429602396f3383a797a2a70e5f1de5df8e35535d7806c9f91df06f297e109b \
-    --hash=sha256:9627cc1a10c8c409b5822a92d57a77f383b554463d1884008e051c32ab1b3742 \
-    --hash=sha256:998f3bd3cfc95e9424a6acd7840cbdd39e45bc09ef87533c006f94ac47296090 \
-    --hash=sha256:9c72109213eb9d3874f7ac8c0c5fa90e072d678e117d9061c06e30c85b4cf0e6 \
-    --hash=sha256:9fc1500fd2a952c5c8e3b29aaf7e3cc6e27e9cfc0a8819b3bce48cc1b849e4cc \
-    --hash=sha256:a3f00003de6eba42d6e94fabb4125600d6e484846dbf90ea8e48a800430cc142 \
-    --hash=sha256:a45d85cf20b5e0d0aa5a8dca27cce8eddef3292bc29d72dcad1641f4ed50aa16 \
-    --hash=sha256:a7d8d14fe962153fc681f6366bdec33d4356f98a3e3567782aac1b6e0e40109a \
-    --hash=sha256:a8fa23fe62c436ccf23ff930149c047f060c7126eae3ccea005f0483f27b2e28 \
-    --hash=sha256:aa6658732517ddabe22c9036479eabce6036655ba87a0224c612e1ae6af2087e \
-    --hash=sha256:aafc8ee9b742ce75044ae9a4d3e60e3d918d15a4c2e08a6c3c3e38fa59b92d94 \
-    --hash=sha256:ab5a5a0c7a7991d90446a198689c0535be89bbd6b410a1f9a66688f0880ec026 \
-    --hash=sha256:acd48d5b80ee80f9432a165c0ac8cbf9253eaddb6113269a5e18699b33958dbb \
-    --hash=sha256:ad7593bb24b2ab09e65e8a1d385606f0f47c65b5a2ae6c551db67d6653e78c28 \
-    --hash=sha256:baa42524a82f75303f714108fea528ccacf0386af429b69fff141ffef1c534f9 \
-    --hash=sha256:bdfcf6443637c148c4e1a20c48c566aa694fa5e288d34b20fcdc58507882fed3 \
-    --hash=sha256:be7443669ae9c016b71f402e43208e13ddf00912f47f623ee5994e12fc7d4b3f \
-    --hash=sha256:c02a30b904282777d872266b87b20ed8cc0d1501855e27f831320f471d54d983 \
-    --hash=sha256:c1277cd707c465cd09572a774559a3cc7c7a28802eb3a2a9472588f062097205 \
-    --hash=sha256:c30a0eafc89d28e7f959281b58198a9fa5e99405f716c0289b7892ca345fe45f \
-    --hash=sha256:c5ce2ce7c997e1971b7184ee37deb6ea9922ef5163c6ee5aa3c274b05f9e12fa \
-    --hash=sha256:c823bc3971c44ab93e611ab1a46b1eafeae474c0c844aff4b7474287b75fe49c \
-    --hash=sha256:ce0cdc074d540265bfeb31336e678b4e37316849d13b308607efa527e981f5c2 \
-    --hash=sha256:d1720b4f14c78a3089562b8875b53e36b51c97c51adc53325a69b79b4b48ebcb \
-    --hash=sha256:d183cf9c797a5291e8301790ed6d053480ed94070637bfaad914dd38b0981f67 \
-    --hash=sha256:d9010c31cd6fa59438da4e58a7f19e4753f7f264300cd152e7f90d4602449762 \
-    --hash=sha256:d9e5e4a85bdb56d224f412d9c98ae4cbd032cc4f3161818f692cd81766eee65a \
-    --hash=sha256:da1dee8948d2137bb51fbb8a53cce6b1bcc86003c6b42565f008438b806cccd8 \
-    --hash=sha256:df9270660711670e68803107d55c2b5949c2e0f2e4896da176e1ecfc068b974a \
-    --hash=sha256:e00e3505cd80440f6c98c6d69269dcc2a119f86ad0a9fd70bccc59504bebd68a \
-    --hash=sha256:e48d5021a84d341bcaf95c8460b152cfbad770d28e5fe14a768988c461b821bc \
-    --hash=sha256:e7f8b04d83483577fd9200461b057c9f14ced334dcb053090cea1da9c8321a91 \
-    --hash=sha256:edfe3341033a6b53a5c522c802deb2079eee5cbfbb0af032a55064bd65c73a23 \
-    --hash=sha256:ef9c33cc5cbca35808f6c74be11eb7f5f6b14d2311be84a15b594bd3e58b5527 \
-    --hash=sha256:f2d4324a98062be0525d16f768a03e0bbb3b9fe301ceee99611dc9a7953124e6 \
-    --hash=sha256:f3935f82f6f4a3820270842e90456ebad3af15810cf65932bd24da4463bc0a4c \
-    --hash=sha256:f614ab0c76397661b90b6851a030004dac502e48260ea10f2441abd2207fbcc7 \
-    --hash=sha256:f7db54c7914cc99d901d93a34704833568d86c20925b2762f9fa779f9cd2e70f \
-    --hash=sha256:fbc6264158392bad9df19537e872d476f7c57adf718944cc1e4495cbabf38e2a \
-    --hash=sha256:fe2fb38c2ed905a2582948e2de560675e9dfbee94c6d5ccdb1301c6d0a5bf092 \
-    --hash=sha256:ffe595f10566f8276b76dc3a11ae4bb7eba1aac8ddd75811736a15b0d5311414
+aiohttp==3.10.11 \
+    --hash=sha256:0316e624b754dbbf8c872b62fe6dcb395ef20c70e59890dfa0de9eafccd2849d \
+    --hash=sha256:099fd126bf960f96d34a760e747a629c27fb3634da5d05c7ef4d35ef4ea519fc \
+    --hash=sha256:0acafb350cfb2eba70eb5d271f55e08bd4502ec35e964e18ad3e7d34d71f7261 \
+    --hash=sha256:0c5580f3c51eea91559db3facd45d72e7ec970b04528b4709b1f9c2555bd6d0b \
+    --hash=sha256:0f449a50cc33f0384f633894d8d3cd020e3ccef81879c6e6245c3c375c448625 \
+    --hash=sha256:14cdc8c1810bbd4b4b9f142eeee23cda528ae4e57ea0923551a9af4820980e39 \
+    --hash=sha256:1dc0f4ca54842173d03322793ebcf2c8cc2d34ae91cc762478e295d8e361e03f \
+    --hash=sha256:1e7b825da878464a252ccff2958838f9caa82f32a8dbc334eb9b34a026e2c636 \
+    --hash=sha256:20063c7acf1eec550c8eb098deb5ed9e1bb0521613b03bb93644b810986027ac \
+    --hash=sha256:20b3d9e416774d41813bc02fdc0663379c01817b0874b932b81c7f777f67b217 \
+    --hash=sha256:22b7c540c55909140f63ab4f54ec2c20d2635c0289cdd8006da46f3327f971b9 \
+    --hash=sha256:236b28ceb79532da85d59aa9b9bf873b364e27a0acb2ceaba475dc61cffb6f3f \
+    --hash=sha256:249c8ff8d26a8b41a0f12f9df804e7c685ca35a207e2410adbd3e924217b9006 \
+    --hash=sha256:25fd5470922091b5a9aeeb7e75be609e16b4fba81cdeaf12981393fb240dd10e \
+    --hash=sha256:29103f9099b6068bbdf44d6a3d090e0a0b2be6d3c9f16a070dd9d0d910ec08f9 \
+    --hash=sha256:2b943011b45ee6bf74b22245c6faab736363678e910504dd7531a58c76c9015a \
+    --hash=sha256:2c8f96e9ee19f04c4914e4e7a42a60861066d3e1abf05c726f38d9d0a466e695 \
+    --hash=sha256:2dfb612dcbe70fb7cdcf3499e8d483079b89749c857a8f6e80263b021745c730 \
+    --hash=sha256:2e4e18a0a2d03531edbc06c366954e40a3f8d2a88d2b936bbe78a0c75a3aab3e \
+    --hash=sha256:2ea224cf7bc2d8856d6971cea73b1d50c9c51d36971faf1abc169a0d5f85a382 \
+    --hash=sha256:30283f9d0ce420363c24c5c2421e71a738a2155f10adbb1a11a4d4d6d2715cfc \
+    --hash=sha256:38e3c4f80196b4f6c3a85d134a534a56f52da9cb8d8e7af1b79a32eefee73a00 \
+    --hash=sha256:3bf6d027d9d1d34e1c2e1645f18a6498c98d634f8e373395221121f1c258ace8 \
+    --hash=sha256:459f0f32c8356e8125f45eeff0ecf2b1cb6db1551304972702f34cd9e6c44658 \
+    --hash=sha256:473aebc3b871646e1940c05268d451f2543a1d209f47035b594b9d4e91ce8339 \
+    --hash=sha256:489cced07a4c11488f47aab1f00d0c572506883f877af100a38f1fedaa884c3a \
+    --hash=sha256:48bc1d924490f0d0b3658fe5c4b081a4d56ebb58af80a6729d4bd13ea569797a \
+    --hash=sha256:4996ff1345704ffdd6d75fb06ed175938c133425af616142e7187f28dc75f14e \
+    --hash=sha256:4e8d8aad9402d3aa02fdc5ca2fe68bcb9fdfe1f77b40b10410a94c7f408b664d \
+    --hash=sha256:5077b1a5f40ffa3ba1f40d537d3bec4383988ee51fbba6b74aa8fb1bc466599e \
+    --hash=sha256:5a5f7ab8baf13314e6b2485965cbacb94afff1e93466ac4d06a47a81c50f9cca \
+    --hash=sha256:5ab2328a61fdc86424ee540d0aeb8b73bbcad7351fb7cf7a6546fc0bcffa0038 \
+    --hash=sha256:5f0463bf8b0754bc744e1feb61590706823795041e63edf30118a6f0bf577461 \
+    --hash=sha256:686b03196976e327412a1b094f4120778c7c4b9cff9bce8d2fdfeca386b89829 \
+    --hash=sha256:6cd3f10b01f0c31481fba8d302b61603a2acb37b9d30e1d14e0f5a58b7b18a31 \
+    --hash=sha256:6ce66780fa1a20e45bc753cda2a149daa6dbf1561fc1289fa0c308391c7bc0a4 \
+    --hash=sha256:703938e22434d7d14ec22f9f310559331f455018389222eed132808cd8f44127 \
+    --hash=sha256:72b191cdf35a518bfc7ca87d770d30941decc5aaf897ec8b484eb5cc8c7706f3 \
+    --hash=sha256:7400a93d629a0608dc1d6c55f1e3d6e07f7375745aaa8bd7f085571e4d1cee97 \
+    --hash=sha256:7480519f70e32bfb101d71fb9a1f330fbd291655a4c1c922232a48c458c52710 \
+    --hash=sha256:74baf1a7d948b3d640badeac333af581a367ab916b37e44cf90a0334157cdfd2 \
+    --hash=sha256:778cbd01f18ff78b5dd23c77eb82987ee4ba23408cbed233009fd570dda7e674 \
+    --hash=sha256:7b26b1551e481012575dab8e3727b16fe7dd27eb2711d2e63ced7368756268fb \
+    --hash=sha256:7ce6a51469bfaacff146e59e7fb61c9c23006495d11cc24c514a455032bcfa03 \
+    --hash=sha256:80ff08556c7f59a7972b1e8919f62e9c069c33566a6d28586771711e0eea4f07 \
+    --hash=sha256:82052be3e6d9e0c123499127782a01a2b224b8af8c62ab46b3f6197035ad94e9 \
+    --hash=sha256:8663f7777ce775f0413324be0d96d9730959b2ca73d9b7e2c2c90539139cbdd6 \
+    --hash=sha256:878ca6a931ee8c486a8f7b432b65431d095c522cbeb34892bee5be97b3481d0f \
+    --hash=sha256:8d6a14a4d93b5b3c2891fca94fa9d41b2322a68194422bef0dd5ec1e57d7d298 \
+    --hash=sha256:9208299251370ee815473270c52cd3f7069ee9ed348d941d574d1457d2c73e8b \
+    --hash=sha256:968b8fb2a5eee2770eda9c7b5581587ef9b96fbdf8dcabc6b446d35ccc69df01 \
+    --hash=sha256:971aa438a29701d4b34e4943e91b5e984c3ae6ccbf80dd9efaffb01bd0b243a9 \
+    --hash=sha256:9a309c5de392dfe0f32ee57fa43ed8fc6ddf9985425e84bd51ed66bb16bce3a7 \
+    --hash=sha256:9bc50b63648840854e00084c2b43035a62e033cb9b06d8c22b409d56eb098413 \
+    --hash=sha256:9c6e0ffd52c929f985c7258f83185d17c76d4275ad22e90aa29f38e211aacbec \
+    --hash=sha256:9dc2b8f3dcab2e39e0fa309c8da50c3b55e6f34ab25f1a71d3288f24924d33a7 \
+    --hash=sha256:9ec1628180241d906a0840b38f162a3215114b14541f1a8711c368a8739a9be4 \
+    --hash=sha256:a919c8957695ea4c0e7a3e8d16494e3477b86f33067478f43106921c2fef15bb \
+    --hash=sha256:aa93063d4af05c49276cf14e419550a3f45258b6b9d1f16403e777f1addf4519 \
+    --hash=sha256:aad3cd91d484d065ede16f3cf15408254e2469e3f613b241a1db552c5eb7ab7d \
+    --hash=sha256:b3e70f24e7d0405be2348da9d5a7836936bf3a9b4fd210f8c37e8d48bc32eca6 \
+    --hash=sha256:b5e29706e6389a2283a91611c91bf24f218962717c8f3b4e528ef529d112ee27 \
+    --hash=sha256:bbde2ca67230923a42161b1f408c3992ae6e0be782dca0c44cb3206bf330dee1 \
+    --hash=sha256:bc6f1ab987a27b83c5268a17218463c2ec08dbb754195113867a27b166cd6087 \
+    --hash=sha256:bcaf2d79104d53d4dcf934f7ce76d3d155302d07dae24dff6c9fffd217568067 \
+    --hash=sha256:c13ed0c779911c7998a58e7848954bd4d63df3e3575f591e321b19a2aec8df9f \
+    --hash=sha256:c2f746a6968c54ab2186574e15c3f14f3e7f67aef12b761e043b33b89c5b5f95 \
+    --hash=sha256:c73c4d3dae0b4644bc21e3de546530531d6cdc88659cdeb6579cd627d3c206aa \
+    --hash=sha256:c891011e76041e6508cbfc469dd1a8ea09bc24e87e4c204e05f150c4c455a5fa \
+    --hash=sha256:ca117819d8ad113413016cb29774b3f6d99ad23c220069789fc050267b786c16 \
+    --hash=sha256:cdc493a2e5d8dc79b2df5bec9558425bcd39aff59fc949810cbd0832e294b106 \
+    --hash=sha256:d110cabad8360ffa0dec8f6ec60e43286e9d251e77db4763a87dcfe55b4adb92 \
+    --hash=sha256:d97187de3c276263db3564bb9d9fad9e15b51ea10a371ffa5947a5ba93ad6777 \
+    --hash=sha256:db9503f79e12d5d80b3efd4d01312853565c05367493379df76d2674af881caa \
+    --hash=sha256:deef4362af9493d1382ef86732ee2e4cbc0d7c005947bd54ad1a9a16dd59298e \
+    --hash=sha256:e0099c7d5d7afff4202a0c670e5b723f7718810000b4abcbc96b064129e64bc7 \
+    --hash=sha256:e12eb3f4b1f72aaaf6acd27d045753b18101524f72ae071ae1c91c1cd44ef115 \
+    --hash=sha256:e1ffa713d3ea7cdcd4aea9cddccab41edf6882fa9552940344c44e59652e1120 \
+    --hash=sha256:e5358addc8044ee49143c546d2182c15b4ac3a60be01c3209374ace05af5733d \
+    --hash=sha256:ea9b3bab329aeaa603ed3bf605f1e2a6f36496ad7e0e1aa42025f368ee2dc07b \
+    --hash=sha256:f14ebc419a568c2eff3c1ed35f634435c24ead2fe19c07426af41e7adb68713a \
+    --hash=sha256:f34b97e4b11b8d4eb2c3a4f975be626cc8af99ff479da7de49ac2c6d02d35725 \
+    --hash=sha256:f4df4b8ca97f658c880fb4b90b1d1ec528315d4030af1ec763247ebfd33d8b9a \
+    --hash=sha256:f65267266c9aeb2287a6622ee2bb39490292552f9fbf851baabc04c9f84e048d \
+    --hash=sha256:f6c6dec398ac5a87cb3a407b068e1106b20ef001c344e34154616183fe684288 \
+    --hash=sha256:f9b615d3da0d60e7d53c62e22b4fd1c70f4ae5993a44687b011ea3a2e49051b8 \
+    --hash=sha256:f9f92a344c50b9667827da308473005f34767b6a2a60d9acff56ae94f895f385 \
+    --hash=sha256:fb8601394d537da9221947b5d6e62b064c9a43e88a1ecd7414d21a1a6fba9c24 \
+    --hash=sha256:fc31820cfc3b2863c6e95e14fcf815dc7afe52480b4dc03393c4873bb5599f71 \
+    --hash=sha256:fdf6429f0caabfd8a30c4e2eaecb547b3c340e4730ebfe25139779b9815ba138 \
+    --hash=sha256:ffbfde2443696345e23a3c597049b1dd43049bb65337837574205e7368472177
     # via gcsfs
 aiosignal==1.3.1 \
     --hash=sha256:54cd96e15e1649b75d6c87526a6ff0b6c1b0dd3459f43d9ca11d48c339b68cfc \
@@ -146,9 +144,7 @@ asciitree==0.3.3 \
 astunparse==1.6.3 \
     --hash=sha256:5ad93a8456f0d084c3456d059fd9a92cce667963232cbf763eac3bc5b7940872 \
     --hash=sha256:c2652417f2c8b5bb325c885ae329bdf3f86424075c4fd1a128674bc6fba4b8e8
-    # via
-    #   tensorflow
-    #   tf-nightly
+    # via tensorflow
 attrs==24.2.0 \
     --hash=sha256:5cfb1b9148b5b086569baec03f20d7b6bf3bcacc9a42bebf87ffaaca362f6346 \
     --hash=sha256:81921eb96de3191c8258c199618104dd27ac608d9366f5e35d011eae1867ede2
@@ -157,7 +153,7 @@ attrs==24.2.0 \
     #   e3nn-jax
 benchmark @ https://github.com/wsmoses/keras-benchmarks/archive/7d8df90ce7d2c2be2541148070cc368281ac15a5.tar.gz \
     --hash=sha256:9f8dce282a50e40e50c95d26e83c1af81f95e14b44cc2b089a85532a6b856ad7
-    # via -r builddeps/test-requirements.txt
+    # via -r /home/avik-pal/.cache/bazel/_bazel_avik-pal/d9a72a0440fb4d9f7b86a76cae59d72a/execroot/__main__/bazel-out/k8-opt-ST-db0c31ca184a/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
 cachetools==5.5.0 \
     --hash=sha256:02134e8439cdc2ffb62023ce1debca2944c3f289d66bb17ead3ab3dede74b292 \
     --hash=sha256:2cc24fb4cbe39633fb7badd9db9ca6295d766d9c2995f245725a46715d050f2a
@@ -368,9 +364,7 @@ fasteners==0.19 \
 flatbuffers==24.3.25 \
     --hash=sha256:8dbdec58f935f3765e4f7f3cf635ac3a77f83568138d6a2311f524ec96364812 \
     --hash=sha256:de2ec5b203f21441716617f38443e0a8ebf3d25bf0d9c0bb0ce68fa00ad546a4
-    # via
-    #   tensorflow
-    #   tf-nightly
+    # via tensorflow
 flax==0.9.0 \
     --hash=sha256:12cd8f7162165ddd56877fb1cd9a4fcb47a31569e4c5343eeb59a36369fa2cfe \
     --hash=sha256:8b7f361eed0f5324e81f9dc8d02ea53da5f993d7c2e37e7aa5b37d3f6331dd53
@@ -529,11 +523,10 @@ gast==0.6.0 \
     # via
     #   tensorflow
     #   tensorflow-probability
-    #   tf-nightly
-gcsfs==2024.9.0.post1 \
+gcsfs==2024.9.0.post1 ; sys_platform == "linux" \
     --hash=sha256:7ca70ee9d7c7dbce1a3e36b4883e14102c2d7b4284f49e242843a437bc684684 \
     --hash=sha256:f3ab9d3bedc45da8cf40baed7c3a1e1694e8f599160d9138d78f0ef25e4a3ca1
-    # via -r builddeps/test-requirements.txt
+    # via -r /home/avik-pal/.cache/bazel/_bazel_avik-pal/d9a72a0440fb4d9f7b86a76cae59d72a/execroot/__main__/bazel-out/k8-opt-ST-db0c31ca184a/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
 gin-config==0.5.0 \
     --hash=sha256:0c6ea5026ded927c8c93c990b01c695257c1df446e45e549a158cfbc79e19ed6 \
     --hash=sha256:bddb7ca221ea2b46cdb59321e79fecf02d6e3b728906047fcd4076c297609fd6
@@ -600,9 +593,7 @@ google-pasta==0.2.0 \
     --hash=sha256:4612951da876b1a10fe3960d7226f0c7682cf901e16ac06e473b267a5afa8954 \
     --hash=sha256:b32482794a366b5366a32c92a9a9201b107821889935a02b3e51f6b432ea84ed \
     --hash=sha256:c9f2c8dfc8f96d0d5808299920721be30c9eec37f2389f28904f454565c8a16e
-    # via
-    #   tensorflow
-    #   tf-nightly
+    # via tensorflow
 google-resumable-media==2.7.2 \
     --hash=sha256:3ce7551e9fe6d99e9a126101d2536612bb73486721951e9562fee0f90c6ababa \
     --hash=sha256:5280aed4629f2b60b847b0d42f9857fd4935c11af266744df33d8074cae92fe0
@@ -670,10 +661,8 @@ grpcio==1.67.1 \
     --hash=sha256:f9fff78ba10d4250bfc07a01bd6254a6d87dc67f9627adece85c0b2ed754fa96 \
     --hash=sha256:fa0c739ad8b1996bd24823950e3cb5152ae91fca1c09cc791190bf1627ffefba
     # via
-    #   tb-nightly
     #   tensorboard
     #   tensorflow
-    #   tf-nightly
 h5py==3.12.1 \
     --hash=sha256:018a4597f35092ae3fb28ee851fdc756d2b88c96336b8480e124ce1ac6fb9166 \
     --hash=sha256:050a4f2c9126054515169c49cb900949814987f0c7ae74c341b0c9f9b5056834 \
@@ -704,9 +693,7 @@ h5py==3.12.1 \
     # via
     #   keras
     #   keras-core
-    #   keras-nightly
     #   tensorflow
-    #   tf-nightly
 humanize==4.11.0 \
     --hash=sha256:b53caaec8532bcb2fff70c8826f904c35943f8cecaca29d272d9df38092736c0 \
     --hash=sha256:e66f36020a2d5a974c504bd2555cf770621dbdbb6d82f94a6857c0b1ea2608be
@@ -729,8 +716,8 @@ jax==0.4.31 \
     --hash=sha256:5688703735133d0dc537e99a1d646198a49c9d472d4715fde4bd437c44151bd7 \
     --hash=sha256:fd2d470643a0073d822737f0788f71391656af7e62cc5b2e7995ee390ceac287
     # via
+    #   -r /home/avik-pal/.cache/bazel/_bazel_avik-pal/d9a72a0440fb4d9f7b86a76cae59d72a/execroot/__main__/bazel-out/k8-opt-ST-db0c31ca184a/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
     #   -r builddeps/requirements.in
-    #   -r builddeps/test-requirements.txt
     #   chex
     #   dinosaur-dycore
     #   e3nn-jax
@@ -752,10 +739,10 @@ jax-cuda12-plugin[with-cuda,with_cuda]==0.4.31 ; sys_platform == "linux" \
     --hash=sha256:7a179e5e80dd9890972d777d597f3c902c6876e42bcf2edcfe4f3ec5a610472e \
     --hash=sha256:a3727a332fbeac625ab6d5ae63d0ed9e62d1e0b5011f72130c9bc96e797395d5 \
     --hash=sha256:cdb6d0c4009438a6a6bd7997ab8a1194beda9ae7322b8d265eea9e551b6c2b4e
-    # via -r builddeps/test-requirements.txt
+    # via -r /home/avik-pal/.cache/bazel/_bazel_avik-pal/d9a72a0440fb4d9f7b86a76cae59d72a/execroot/__main__/bazel-out/k8-opt-ST-db0c31ca184a/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
 jax-md @ https://github.com/wsmoses/jax-md/archive/45059b8f63dad0b5cb171feafff71b82162487e7.tar.gz \
     --hash=sha256:79b17dc0ce546574d4eda57c5b933ff93177fd19887ccf44a318ec8cb9c620df
-    # via -r builddeps/test-requirements.txt
+    # via -r /home/avik-pal/.cache/bazel/_bazel_avik-pal/d9a72a0440fb4d9f7b86a76cae59d72a/execroot/__main__/bazel-out/k8-opt-ST-db0c31ca184a/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
 jaxlib==0.4.31 \
     --hash=sha256:185fb615ab6bd95315fbcbd951d84e71f9835d603db8c03c91faee98ce95ff4d \
     --hash=sha256:1b8e9e6970ecc08bd8b4d80c03d882f4dcd4ac119cb2959811ebc58fce1c263d \
@@ -773,8 +760,8 @@ jaxlib==0.4.31 \
     --hash=sha256:d019023f71dba65127a3016ddc755de4b30f5bc9bd5b632a716a5fb3b00c5e53 \
     --hash=sha256:d3540a557c188d23ef93760da482b158ca910124a0445263c3b17c09c114538a
     # via
+    #   -r /home/avik-pal/.cache/bazel/_bazel_avik-pal/d9a72a0440fb4d9f7b86a76cae59d72a/execroot/__main__/bazel-out/k8-opt-ST-db0c31ca184a/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
     #   -r builddeps/requirements.in
-    #   -r builddeps/test-requirements.txt
     #   chex
     #   dinosaur-dycore
     #   e3nn-jax
@@ -794,15 +781,18 @@ joblib==1.4.2 \
     # via scikit-learn
 jraph @ https://github.com/wsmoses/jraph/archive/b00d9a03db76c69a258a86df81638b9a2f28829f.tar.gz \
     --hash=sha256:d996f47fff8c6ac8f5572e4220e3193f2542e9d3d6bc1defc16ac22dadd74dd4
-    # via -r builddeps/test-requirements.txt
+    # via -r /home/avik-pal/.cache/bazel/_bazel_avik-pal/d9a72a0440fb4d9f7b86a76cae59d72a/execroot/__main__/bazel-out/k8-opt-ST-db0c31ca184a/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
 kagglehub==0.3.3 \
     --hash=sha256:0777d4d1ee1e59d4125b14ba62a46b2eadedb68bc6517479f6fb02a522a262f8 \
     --hash=sha256:5370acde855d04b6d8a7bc242edff339266913fffc8b198d31859b25b7d095f7
-    # via keras-cv
-keras @ https://github.com/wsmoses/keras/archive/f9d90db8797661ac9710e3acdcc1850ba94ab2fc.tar.gz \
-    --hash=sha256:ef27009bbc43079946e44688d19db625f2e3c3ef07ee27a5837240ef4320ce44
     # via
-    #   -r builddeps/test-requirements.txt
+    #   keras-cv
+    #   keras-hub
+keras @ https://github.com/avik-pal/keras/archive/7344964561c15611dd2d734a2bdd6b872a07709d.tar.gz \
+    --hash=sha256:9b91264f19392dd2f3930b7626f1ce9217396cdc5c89276992771ec665ed86b5
+    # via
+    #   -r /home/avik-pal/.cache/bazel/_bazel_avik-pal/d9a72a0440fb4d9f7b86a76cae59d72a/execroot/__main__/bazel-out/k8-opt-ST-db0c31ca184a/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
+    #   keras-hub
     #   tensorflow
 keras-core==0.1.7 \
     --hash=sha256:01f9f322d4b7e6e0a64d9cc3de022144ddf82ff88a0ac2b68e49f1a67d4a7ff0 \
@@ -811,15 +801,15 @@ keras-core==0.1.7 \
 keras-cv==0.9.0 ; sys_platform == "linux" \
     --hash=sha256:507f0214cfba0a30e4c914d10bfac9b8ab39faeb30d4196993ddd02e31fccd7b \
     --hash=sha256:678e3447fdc0834d736b4bde8ef5950d53a1af4dd0c841f00edd8f8cd6e8e42f
-    # via -r builddeps/test-requirements.txt
-keras-nightly==3.7.0.dev2024110706 \
-    --hash=sha256:98e6ecc708ada6cfd1594feb622c8a0989e0b71d7a57b3b118be017ed91c535b \
-    --hash=sha256:d5238a0ebcaf4cc90a4ca216b17c5c16e9fe48c5464c9c70f81abd38148efe2e
-    # via tf-nightly
-keras-nlp==0.0.2 ; sys_platform == "linux" \
-    --hash=sha256:89cd9dea54bc7ee795bc2e45005fd37bc2d0fb5b92dd44fb6407af04e3e50d63 \
-    --hash=sha256:b447ee877fefdefb3ae3dd7f5563835a6bc2cd89b5266715097bad86de0c961b
-    # via -r builddeps/test-requirements.txt
+    # via -r /home/avik-pal/.cache/bazel/_bazel_avik-pal/d9a72a0440fb4d9f7b86a76cae59d72a/execroot/__main__/bazel-out/k8-opt-ST-db0c31ca184a/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
+keras-hub==0.21.1 \
+    --hash=sha256:3f128d3de56e9eec6a1ede3bdf09cfe0b6aefc1236edf00844fa0bf734fd90e7 \
+    --hash=sha256:7f34477ad3417bd727660f847cca24cb23641e9b965537362bf3067951afd187
+    # via keras-nlp
+keras-nlp==0.21.1 ; sys_platform == "linux" \
+    --hash=sha256:abd8188ac1f29c06a17625620f8a044d63f1af3d52ab0895d2e8fc55793ce5e6 \
+    --hash=sha256:fa1db82c29034c9865831f1712a9b3e45d7530c47eada483dbacdd250e541907
+    # via -r /home/avik-pal/.cache/bazel/_bazel_avik-pal/d9a72a0440fb4d9f7b86a76cae59d72a/execroot/__main__/bazel-out/k8-opt-ST-db0c31ca184a/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
 libclang==18.1.1 \
     --hash=sha256:0b2e143f0fac830156feb56f9231ff8338c20aecfe72b4ffe96f19e5a1dbb69a \
     --hash=sha256:3f0e1f49f04d3cd198985fea0511576b0aee16f9ff0e0f0cad7f9c57ec3c20e8 \
@@ -831,15 +821,11 @@ libclang==18.1.1 \
     --hash=sha256:a1214966d08d73d971287fc3ead8dfaf82eb07fb197680d8b3859dbbbbf78250 \
     --hash=sha256:c533091d8a3bbf7460a00cb6c1a71da93bffe148f172c7d03b1c31fbf8aa2a0b \
     --hash=sha256:cf4a99b05376513717ab5d82a0db832c56ccea4fd61a69dbb7bccf2dfb207dbe
-    # via
-    #   tensorflow
-    #   tf-nightly
+    # via tensorflow
 markdown==3.7 \
     --hash=sha256:2ae2471477cfd02dbbf038d5d9bc226d40def84b4fe2986e49b59b6b472bbed2 \
     --hash=sha256:7eb6df5690b81a1d7942992c97fad2938e956e79df20cbc6186e9c3a77b1c803
-    # via
-    #   tb-nightly
-    #   tensorboard
+    # via tensorboard
 markdown-it-py==3.0.0 \
     --hash=sha256:355216845c60bd96232cd8d8c40e8f9765cc86f46880e43a8fd22dc1a1a8cab1 \
     --hash=sha256:e3f60a94fa066dc52ec76661e37c851cb232d92f9886b15cb560aaada2df8feb
@@ -936,10 +922,8 @@ ml-dtypes==0.4.0 \
     #   jax
     #   jaxlib
     #   keras
-    #   keras-nightly
     #   tensorflow
     #   tensorstore
-    #   tf-nightly
 mpmath==1.3.0 \
     --hash=sha256:7a28eb2a9774d00c7bc92411c19a89209d5da7c4c9a9e227be8330a23a25b91f \
     --hash=sha256:a0b2b9fe80bbcd81a6647ff13108738cfb482d481d826cc0e02f5b35e5c88d2c
@@ -1114,7 +1098,6 @@ namex==0.0.8 \
     # via
     #   keras
     #   keras-core
-    #   keras-nightly
 nest-asyncio==1.6.0 \
     --hash=sha256:6f172d5449aca15afd6c646851f4e31e02c598d553a667e38cafa997cfec55fe \
     --hash=sha256:87af6efd6b5e897c81050477ef65c62e2b2f35d51703cae01aff2905b1852e1c
@@ -1122,7 +1105,7 @@ nest-asyncio==1.6.0 \
 neuralgcm==1.0.0 \
     --hash=sha256:28f42b73188df92e35d5e187ef9ebd2b2a9922cfc46e05e0ae5202f451ef7c18 \
     --hash=sha256:e75889894e8948211cec9bf18c89df5e223ef5a6d9a6444bb42f4b36143a5c27
-    # via -r builddeps/test-requirements.txt
+    # via -r /home/avik-pal/.cache/bazel/_bazel_avik-pal/d9a72a0440fb4d9f7b86a76cae59d72a/execroot/__main__/bazel-out/k8-opt-ST-db0c31ca184a/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
 numcodecs==0.13.1 \
     --hash=sha256:233bc7f26abce24d57e44ea8ebeb5cd17084690b4e7409dd470fdb75528d615f \
     --hash=sha256:237b7171609e868a20fd313748494444458ccd696062f67e198f7f8f52000c15 \
@@ -1180,7 +1163,7 @@ numpy==1.26.4 \
     --hash=sha256:f870204a840a60da0b12273ef34f7051e98c3b5961b61b0c2c1be6dfd64fbcd3 \
     --hash=sha256:ffa75af20b44f8dba823498024771d5ac50620e6915abac414251bd971b4529f
     # via
-    #   -r builddeps/test-requirements.txt
+    #   -r /home/avik-pal/.cache/bazel/_bazel_avik-pal/d9a72a0440fb4d9f7b86a76cae59d72a/execroot/__main__/bazel-out/k8-opt-ST-db0c31ca184a/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
     #   chex
     #   dinosaur-dycore
     #   dm-haiku
@@ -1195,8 +1178,7 @@ numpy==1.26.4 \
     #   jraph
     #   keras
     #   keras-core
-    #   keras-nightly
-    #   keras-nlp
+    #   keras-hub
     #   ml-dtypes
     #   neuralgcm
     #   numcodecs
@@ -1206,13 +1188,11 @@ numpy==1.26.4 \
     #   pandas
     #   scikit-learn
     #   scipy
-    #   tb-nightly
     #   tensorboard
     #   tensorflow
     #   tensorflow-datasets
     #   tensorflow-probability
     #   tensorstore
-    #   tf-nightly
     #   xarray
     #   xarray-tensorstore
     #   zarr
@@ -1284,7 +1264,6 @@ opt-einsum==3.3.0 \
     # via
     #   jax
     #   tensorflow
-    #   tf-nightly
 optax==0.2.3 \
     --hash=sha256:083e603dcd731d7e74d99f71c12f77937dd53f79001b4c09c290e4f47dd2e94f \
     --hash=sha256:ec7ab925440b0c5a512e1f24fba0fb3e7d760a7fd5d2496d7a691e9d37da01d9
@@ -1381,9 +1360,7 @@ optree==0.13.0 \
     --hash=sha256:fbc884f3eab894126398c120b7f92a72a5b9f92db6d8c27d39087da871c642cd \
     --hash=sha256:fc90a5373c92f4a9babb4c40fe148516f52160c0ba803bc9b2f936367f2f7437 \
     --hash=sha256:fe9fd84b7d87f365f720699dedd254882ba7e5ef927d3ba1e13413d45963b691
-    # via
-    #   keras
-    #   keras-nightly
+    # via keras
 orbax-checkpoint==0.6.4 \
     --hash=sha256:366b4d528a7322e1b3d9ddcaed45c8515add0d2fc69c8975c30d98638543240f \
     --hash=sha256:b4f2608ee4d1da67f7619fc35ff9c928ecdf4ccf7546eeb43ecf38c2608b6dea
@@ -1395,11 +1372,9 @@ packaging==24.1 \
     #   kagglehub
     #   keras
     #   keras-cv
-    #   keras-nightly
-    #   tb-nightly
+    #   keras-hub
     #   tensorboard
     #   tensorflow
-    #   tf-nightly
     #   xarray
 pandas==2.2.3 \
     --hash=sha256:062309c1b9ea12a50e8ce661145c6aab431b1e99530d3cd60640e255778bd43a \
@@ -1563,29 +1538,27 @@ proto-plus==1.25.0 \
     --hash=sha256:c91fc4a65074ade8e458e95ef8bac34d4008daa7cce4a12d6707066fca648961 \
     --hash=sha256:fbb17f57f7bd05a68b7707e745e26528b0b3c34e378db91eef93912c54982d91
     # via google-api-core
-protobuf==5.28.2 \
-    --hash=sha256:2c69461a7fcc8e24be697624c09a839976d82ae75062b11a0972e41fd2cd9132 \
-    --hash=sha256:35cfcb15f213449af7ff6198d6eb5f739c37d7e4f1c09b5d0641babf2cc0c68f \
-    --hash=sha256:52235802093bd8a2811abbe8bf0ab9c5f54cca0a751fdd3f6ac2a21438bffece \
-    --hash=sha256:59379674ff119717404f7454647913787034f03fe7049cbef1d74a97bb4593f0 \
-    --hash=sha256:5e8a95246d581eef20471b5d5ba010d55f66740942b95ba9b872d918c459452f \
-    --hash=sha256:87317e9bcda04a32f2ee82089a204d3a2f0d3c8aeed16568c7daf4756e4f1fe0 \
-    --hash=sha256:8ddc60bf374785fb7cb12510b267f59067fa10087325b8e1855b898a0d81d276 \
-    --hash=sha256:a8b9403fc70764b08d2f593ce44f1d2920c5077bf7d311fefec999f8c40f78b7 \
-    --hash=sha256:c0ea0123dac3399a2eeb1a1443d82b7afc9ff40241433296769f7da42d142ec3 \
-    --hash=sha256:ca53faf29896c526863366a52a8f4d88e69cd04ec9571ed6082fa117fac3ab36 \
-    --hash=sha256:eeea10f3dc0ac7e6b4933d32db20662902b4ab81bf28df12218aa389e9c2102d
+protobuf==5.29.5 \
+    --hash=sha256:3f1c6468a2cfd102ff4703976138844f78ebd1fb45f49011afc5139e9e283079 \
+    --hash=sha256:3f76e3a3675b4a4d867b52e4a5f5b78a2ef9565549d4037e06cf7b0942b1d3fc \
+    --hash=sha256:470f3af547ef17847a28e1f47200a1cbf0ba3ff57b7de50d22776607cd2ea353 \
+    --hash=sha256:63848923da3325e1bf7e9003d680ce6e14b07e55d0473253a690c3a8b8fd6e61 \
+    --hash=sha256:6cf42630262c59b2d8de33954443d94b746c952b01434fc58a417fdbd2e84bd5 \
+    --hash=sha256:6f642dc9a61782fa72b90878af134c5afe1917c89a568cd3476d758d3c3a0736 \
+    --hash=sha256:7318608d56b6402d2ea7704ff1e1e4597bee46d760e7e4dd42a3d45e24b87f2e \
+    --hash=sha256:bc1463bafd4b0929216c35f437a8e28731a2b7fe3d98bb77a600efced5a15c84 \
+    --hash=sha256:e38c5add5a311f2a6eb0340716ef9b039c1dfa428b28f25a7838ac329204a671 \
+    --hash=sha256:ef91363ad4faba7b25d844ef1ada59ff1604184c0bcd8b39b8a6bef15e1af238 \
+    --hash=sha256:fa18533a299d7ab6c55a238bf8629311439995f2e7eca5caaff08663606e9015
     # via
     #   google-api-core
     #   googleapis-common-protos
     #   orbax-checkpoint
     #   proto-plus
-    #   tb-nightly
     #   tensorboard
     #   tensorflow
     #   tensorflow-datasets
     #   tensorflow-metadata
-    #   tf-nightly
 psutil==6.1.0 \
     --hash=sha256:000d1d1ebd634b4efb383f4034437384e44a6d455260aaee2eca1e9c1b55f047 \
     --hash=sha256:045f00a43c737f960d273a83973b2511430d61f283a44c96bf13a6e829ba8fdc \
@@ -1824,12 +1797,14 @@ regex==2024.11.6 \
     --hash=sha256:fdabbfc59f2c6edba2a6622c647b716e34e8e3867e0ab975412c5c2f79b82da2 \
     --hash=sha256:fdd6028445d2460f33136c55eeb1f601ab06d74cb3347132e1c24250187500d9 \
     --hash=sha256:ff590880083d60acc0433f9c3f713c51f7ac6ebb9adf889c79a261ecf541aa91
-    # via keras-cv
-requests==2.32.3 ; sys_platform == "linux" \
-    --hash=sha256:55365417734eb18255590a9ff9eb97e9e1da868d4ccd6402399eaf68af20a760 \
-    --hash=sha256:70761cfe03c773ceb22aa2f671b4757976145175cdfca038c02654d061d6dcc6
     # via
-    #   -r builddeps/test-requirements.txt
+    #   keras-cv
+    #   keras-hub
+requests==2.32.4 ; sys_platform == "linux" \
+    --hash=sha256:27babd3cda2a6d50b30443204ee89830707d396671944c998b5975b031ac2b2c \
+    --hash=sha256:27d0316682c8a29834d3264820024b62a36942083d52caf2f14c0591336d3422
+    # via
+    #   -r /home/avik-pal/.cache/bazel/_bazel_avik-pal/d9a72a0440fb4d9f7b86a76cae59d72a/execroot/__main__/bazel-out/k8-opt-ST-db0c31ca184a/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
     #   gcsfs
     #   google-api-core
     #   google-cloud-storage
@@ -1837,7 +1812,6 @@ requests==2.32.3 ; sys_platform == "linux" \
     #   requests-oauthlib
     #   tensorflow
     #   tensorflow-datasets
-    #   tf-nightly
 requests-oauthlib==2.0.0 \
     --hash=sha256:7dd8a5c40426b779b0868c404bdef9768deccf22749cde15852df527e6269b36 \
     --hash=sha256:b3dffaebd884d8cd778494369603a9e7b58d29111bf6b41bdc2dcd87203af4e9
@@ -1849,7 +1823,7 @@ rich==13.9.2 \
     #   flax
     #   keras
     #   keras-core
-    #   keras-nightly
+    #   keras-hub
 rsa==4.9 \
     --hash=sha256:90260d9058e514786967344d0ef75fa8727eed8a7d2e43ce9f4bcf1b536174f7 \
     --hash=sha256:e38464a49c6c85d7f1351b0126661487a7e0a14a50f1675ec50eb34d4f20ef21
@@ -1934,11 +1908,9 @@ six==1.16.0 \
     #   ml-collections
     #   promise
     #   python-dateutil
-    #   tb-nightly
     #   tensorboard
     #   tensorflow
     #   tensorflow-probability
-    #   tf-nightly
 sympy==1.13.3 \
     --hash=sha256:54612cf55a62755ee71824ce692986f23c88ffa77207b30c1368eda4a7060f73 \
     --hash=sha256:b27fd2c6530e0ab39e275fc9b683895367e51d5da91baa8d3d64db2565fec4d9
@@ -1947,9 +1919,6 @@ tabulate==0.9.0 \
     --hash=sha256:0095b12bf5966de529c0feb1fa08671671b3368eec77d7ef7ab114be2c068b3c \
     --hash=sha256:024ca478df22e9340661486f85298cff5f6dcdba14f3813e8830015b9ed1948f
     # via dm-haiku
-tb-nightly==2.19.0a20241107 \
-    --hash=sha256:1784dca7af8a2600008401b21c381feaf1f052f3ed93624b58354d2e267f7b66
-    # via tf-nightly
 tensorboard==2.18.0 \
     --hash=sha256:107ca4821745f73e2aefa02c50ff70a9b694f39f790b11e6f682f7d326745eab
     # via tensorflow
@@ -1957,9 +1926,7 @@ tensorboard-data-server==0.7.2 \
     --hash=sha256:7e0610d205889588983836ec05dc098e80f97b7e7bbff7e994ebb78f578d0ddb \
     --hash=sha256:9fe5d24221b29625dbc7328b0436ca7fc1c23de4acf4d272f1180856e32f9f60 \
     --hash=sha256:ef687163c24185ae9754ed5650eb5bc4d84ff257aabdc33f0cc6f74d8ba54530
-    # via
-    #   tb-nightly
-    #   tensorboard
+    # via tensorboard
 tensorflow==2.18.0 \
     --hash=sha256:1eb77fae50d699442726d1b23c7512c97cd688cc7d857b028683d4535bbf3709 \
     --hash=sha256:336cace378c129c20fee6292f6a541165073d153a9a4c9cf4f14478a81895776 \
@@ -1977,7 +1944,9 @@ tensorflow==2.18.0 \
     --hash=sha256:bfdd65ea7e064064283dd78d529dd621257ee617218f63681935fd15817c6286 \
     --hash=sha256:ec4133a215c59314e929e7cbe914579d3afbc7874d9fa924873ee633fe4f71d0 \
     --hash=sha256:f8c946df1cb384504578fac1c199a95322373b8e04abd88aa8ae01301df469ea
-    # via tf-keras
+    # via
+    #   tensorflow-text
+    #   tf-keras
 tensorflow-datasets==4.9.7 \
     --hash=sha256:948d7a68ee693d9709cbfe955f97344b98647e5512e0e42dd2a61f3e7925d68b \
     --hash=sha256:f6fdfe745b5df2a37bde8bb2ef149188ebbca4af546226b461f3bad26bc42875
@@ -1988,6 +1957,20 @@ tensorflow-metadata==1.16.1 \
 tensorflow-probability==0.25.0 \
     --hash=sha256:f3f4d6431656c0122906888afe1b67b4400e82bd7f254b45b92e6c5b84ea8e3e
     # via neuralgcm
+tensorflow-text==2.18.1 \
+    --hash=sha256:07f112bbdfb3769827eef10d29670f84271bcc870990e1a0f4dd5e442ca2bcc7 \
+    --hash=sha256:0e273f3329bbff34cc4498e16ad0434d50ffe64371fdab058b5714f2d544d4ec \
+    --hash=sha256:17600dca16c8546005872613fa45b02f24de0cd65ab530b3121f718e41ae3a2a \
+    --hash=sha256:295a7d405692841767ca02cef3c5bf266c9e6e25b3a77d001a554bb4d40e649a \
+    --hash=sha256:6581d24298f5fafe510d5783609a14fe12b5b1a7134c7306358382e86dd6e85f \
+    --hash=sha256:67e687625f8fe175beacad9e63b13d0ddbd79f771d6e0d2014ae629fa40131e2 \
+    --hash=sha256:69f2b880e7d188c8bbba476404de05c9b774a02fffcde043433bdae85ad02e42 \
+    --hash=sha256:6daf2e9c654a60308c8d5d8a612182be90d0d5c8843da25175ab0ad0a5b8ecf5 \
+    --hash=sha256:76cc429c7a8a4ddf587b4d316e4945b066c3f852f358eede70b58a1845fc801c \
+    --hash=sha256:a037754fa3bac551594a049d3a17a64ea61cb4e121c9ef09906ad1a9bd542895 \
+    --hash=sha256:b59ed1e0f524652eb19e282f85f1bbeb9779a27208499848532f2bb80496bdd1 \
+    --hash=sha256:f4f3d3a1ec6bc8f2c98008e0c73926497685ed227816fb279ad4f8868807c5e8
+    # via keras-hub
 tensorstore==0.1.66 \
     --hash=sha256:0261b1b7121186ac4898c9b4e29289c46754f9d7d73e906620e9a21386fe564e \
     --hash=sha256:06f7dba630d75f65201b1c021fcd89e5f8538506b444b5dd712f35c11b812fc8 \
@@ -2020,29 +2003,10 @@ termcolor==2.5.0 \
     # via
     #   tensorflow
     #   tensorflow-datasets
-    #   tf-nightly
 tf-keras==2.18.0 ; sys_platform == "linux" \
     --hash=sha256:c431d04027eef790fcd3261cf7fdf93eb74f3cb32e05078b57b7f5a54bd53262 \
     --hash=sha256:ebf744519b322afead33086a2aba872245473294affd40973694f3eb7c7ad77d
-    # via -r builddeps/test-requirements.txt
-tf-nightly==2.19.0.dev20241107 \
-    --hash=sha256:1ad569f20b994d5a2c540aef53236b757e177dac51030daea23f9b82e72d0a78 \
-    --hash=sha256:39d2aa890c7f40dc5044891c8dfc6d4c2d189157279b31a235dfbb207286c47f \
-    --hash=sha256:3a7ad907e6594aec2d65c200b188ef7b8f9ee3879afef0ca60d5c24652d94a29 \
-    --hash=sha256:6d335c9406c571843b35add5cc61d70bbeade27ab037ca53ae82b8f59f3ee4a8 \
-    --hash=sha256:738610ca0632b23ba0be7bcf8d7c46f965d6c0a6864d6d20ae6c0ef7bc2ba0b1 \
-    --hash=sha256:797b7194d4fbe340f856fd139e4ab8ae156f39d9060618157659ca6ad5468ef2 \
-    --hash=sha256:96d2dd99b0b4c3eadfe65de3488ead87f24ed27470796debb3b95a90a2fa917b \
-    --hash=sha256:a507cf038bbd6ba2b8487554049f7718507fab7e567ec83796a9196ad4be416d \
-    --hash=sha256:a5640530df56a1edb32d02f5c23feb20c5c9fbcd6a9c22c6a864011d194115c6 \
-    --hash=sha256:c6afee9a5ee04abc69ce0f40ded310956ef1fe5c931316b99f1f1561acc27355 \
-    --hash=sha256:cc59489f1df1e4c9ec54cd51cf5a55f0a1e1c858d6d278ed862f174efedca7de \
-    --hash=sha256:cc7a21490ed5d44518ccaab36e5c7d778b767bb112a69ecc854dd1ae671b22e3 \
-    --hash=sha256:ccfe73ae5d4203f743b23378f09fbf3b7a0074764af0f61320ad3fe6bc49aa6a \
-    --hash=sha256:e1ad165a69cd1e0ec48b337c53c21433a11c169db5b2d134c573774564d331b1 \
-    --hash=sha256:f11f3d48b182017162dac56e644c637072e9bac30fec13e17c2dad86004a1cc2 \
-    --hash=sha256:f9a5986e1df102ba381334713bbd9f58ae0ee865a267074fcaa9affba8778be7
-    # via keras-nlp
+    # via -r /home/avik-pal/.cache/bazel/_bazel_avik-pal/d9a72a0440fb4d9f7b86a76cae59d72a/execroot/__main__/bazel-out/k8-opt-ST-db0c31ca184a/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
 threadpoolctl==3.5.0 \
     --hash=sha256:082433502dd922bf738de0d8bcc4fdcbf0979ff44c42bd40f5af8a282f6fa107 \
     --hash=sha256:56c1e26c150397e58c4926da8eeee87533b1e32bef131bd4bf6a2f45f3185467
@@ -2080,7 +2044,6 @@ typing-extensions==4.12.2 \
     #   pint
     #   simple-parsing
     #   tensorflow
-    #   tf-nightly
 tzdata==2024.2 \
     --hash=sha256:7d85cc416e9382e69095b7bdf4afd9e3880418a2413feec7069d533d6b4e31cc \
     --hash=sha256:a48093786cdcde33cad18c2555e8532f34422074448fbc874186f0abd79565cd
@@ -2092,9 +2055,7 @@ urllib3==2.2.2 \
 werkzeug==3.1.2 \
     --hash=sha256:4f7d1a5de312c810a8a2c6f0b47e9f6a7cffb7c8322def35e4d4d9841ff85597 \
     --hash=sha256:f471a4cd167233077e9d2a8190c3471c5bc520c636a9e3c1e9300c33bced03bc
-    # via
-    #   tb-nightly
-    #   tensorboard
+    # via tensorboard
 wheel==0.44.0 \
     --hash=sha256:2376a90c98cc337d18623527a97c31797bd02bad0033d41547043a1cbfbe448f \
     --hash=sha256:a29c3f2817e95ab89aa4660681ad547c0e9547f20e75b0562fe7723c9a2a9d49
@@ -2173,7 +2134,6 @@ wrapt==1.16.0 \
     # via
     #   tensorflow
     #   tensorflow-datasets
-    #   tf-nightly
 xarray==2024.10.0 \
     --hash=sha256:ae1d38cb44a0324dfb61e492394158ae22389bf7de9f3c174309c17376df63a0 \
     --hash=sha256:e369e2bac430e418c2448e5b96f07da4635f98c1319aa23cfeb3fbcb9a01d2e0
@@ -2284,7 +2244,5 @@ setuptools==78.1.1 \
     --hash=sha256:fcc17fd9cd898242f6b4adfaca46137a9edef687f43e6f78469692a5e70d851d
     # via
     #   chex
-    #   tb-nightly
     #   tensorboard
     #   tensorflow
-    #   tf-nightly

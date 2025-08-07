@@ -38,26 +38,64 @@ jobs:
   build:
     name: Build - ${{ matrix.os }} - python ${{ matrix.python }}
     runs-on: ${{ matrix.os }}
+
+    container:
+      image: ${{ (contains(matrix.os, 'linux') && 'ghcr.io/enzymead/reactant-docker-images@sha256:91e1edb7a7c869d5a70db06e417f22907be0e67ca86641d48adcea221fedc674' ) || '' }}
+
+    # container:
+    #   image: us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest
+
+    # container:
+    #   image: ${{ (contains(matrix.runner, 'a100') && 'us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda12.8-cudnn9.8:latest') ||
+    #            (contains(matrix.runner, 'linux-x86') && 'us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest') ||
+    #            (contains(matrix.runner, 'linux-arm64') && 'us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-arm64:latest') }}
     strategy:
       fail-fast: false
       matrix:
         os:
-          - ubuntu-latest
-          # `ubuntu-22.04-arm` is considered more stable than `ubuntu-24.04-arm`:
-          # <https://github.com/orgs/community/discussions/148648#discussioncomment-12099554>.
-          - ubuntu-22.04-arm
+          - linux-x86-n2-32
+          - linux-arm64-c4a-32
+          - linux-x86-ct6e-180-4tpu
+          - linux-x86-a2-48-a100-4gpu
           - macOS-latest
         python:
-          - '3.12'
+          - '3.11'
     env:
       HERMETIC_PYTHON_VERSION: ${{ matrix.python }}
-      BAZEL_FLAGS : ${{ startsWith(matrix.os, 'macOS-') && '--define using_clang=true' || '' }}
     steps:
-      - name: Make space on disk
-        run: sudo rm -rf /opt/*
+      - name: Check GPUs
+        if: ${{ contains(matrix.os, 'a100') }}
+        run: |
+          nvidia-smi
+      - name: Set BAZEL_FLAGS
+        shell: bash
+        run: |
+          set -e
+          BAZEL_FLAGS=""
+          if [ ${{ runner.os }} == macOS ]; then
+             BAZEL_FLAGS="${BAZEL_FLAGS} --define using_clang=true"
+          fi
+          if [ ${{ runner.arch }} == ARM64 ] && [ ${{ runner.os }} == Linux ]; then
+              BAZEL_FLAGS="${BAZEL_FLAGS} --linkopt=-fuse-ld=lld"
+          fi
+
+          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_TOPOLOGY"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_WORKER_ID"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_SKIP_MDS_QUERY=true"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_TOPOLOGY_WRAP"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_CHIPS_PER_HOST_BOUNDS"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_ACCELERATOR_TYPE"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_RUNTIME_METRICS_PORTS"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_TOPOLOGY_ALT"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_HOST_BOUNDS"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_WORKER_HOSTNAMES"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=CHIPS_PER_HOST_BOUNDS"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=HOST_BOUNDS"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=ALT=false"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=WRAP"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=VBAR_CONTROL_SERVICE_URL"
+          echo "BAZEL_FLAGS=${BAZEL_FLAGS}" >> "${GITHUB_ENV}"
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       - uses: bazel-contrib/setup-bazel@0.15.0
         name: Set up Bazel
         with:
@@ -68,6 +106,19 @@ jobs:
           # Share repository cache between workflows.
           repository-cache: true
           bazelisk-version: 1.x
+      - name: Update TPU
+        if: ${{ contains(matrix.os, 'tpu') }}
+        run: |
+          env
+          sed -i.bak0 "s/cuda12/tpu/g" builddeps/test-requirements.txt
+          sed -i.bak0 "s/pypi_jax_cuda12_plugin/pypi_libtpu/g" test/BUILD
+      - name: Only test CUDA on GPU
+        if: ${{ !contains(matrix.os, 'a100') }}
+        run: |
+          sed -i.bak0 "/cuda12/d" builddeps/test-requirements.txt
+      - name: Update Python requirements files
+        run: |
+          bazel run $BAZEL_FLAGS --color=yes //builddeps:requirements.update
       - name: Build enzymexlamlir-opt
         timeout-minutes: 180
         run: |
@@ -84,24 +135,20 @@ jobs:
           bazel build $BAZEL_FLAGS --color=yes :wheel --test_output=errors
       - name: Upload wheel
         uses: actions/upload-artifact@v4
+        if: ${{ !endsWith(matrix.os, 'arm') }}
         with:
           name: Enzyme-JAX-Wheel-${{ matrix.os }}-${{ matrix.python }}
           path: "bazel-bin/*.whl"
           retention-days: 90
-      - name: Update Python requirements files
-        run: |
-          bazel run $BAZEL_FLAGS --color=yes //builddeps:requirements.update
-      - name: Run tests
-        if: ${{ !startsWith(matrix.os, 'ubuntu-') }}
-        run: |
-          bazel test $BAZEL_FLAGS --color=yes --test_output=errors --test_verbose_timeout_warnings //test/...
       - name: Run lit tests
-        if: ${{ startsWith(matrix.os, 'ubuntu-') }}
         run: |
-          bazel test $BAZEL_FLAGS --color=yes --test_output=errors --test_verbose_timeout_warnings $(find test/ -name '*.mlir' | awk '{print $1 ".test"}')
+          bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/lit_tests/...          
+      - name: Run tests
+        run: |
+          bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/...
       - name: Upload test results
         uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }} 
+        if: ${{ !cancelled() }}
         with:
           name: Enzyme-JAX-tests-${{ matrix.os }}-${{ matrix.python }}
           path: |

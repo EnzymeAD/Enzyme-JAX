@@ -1,0 +1,33 @@
+name: Bazel files check
+
+on:
+  push:
+    branches:
+    - main
+    paths:
+      - '.github/workflows/format-check-bazel.yml'
+      - '**/BUILD'
+      - '**/WORKSPACE'
+      - '**/*.bzl'
+  pull_request:
+    branches:
+    - main
+    paths:
+      - '.github/workflows/format-check-bazel.yml'
+      - '**/BUILD'
+      - '**/WORKSPACE'
+      - '**/*.bzl'
+
+jobs:
+  formatting-check:
+    name: Formatting Bazel files check
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup buildifier
+      uses: jbajic/setup-buildifier@v1
+
+    - name: Run buildifier
+      run: |
+        buildifier -mode check -r .

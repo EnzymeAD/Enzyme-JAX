@@ -199,18 +199,18 @@ bool CompileGPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   auto idx = builder.getIntegerType(64);
   auto i32 = builder.getIntegerType(32);
   gpu::KernelDim3 gridSize{
-      builder.create<arith::ConstantIntOp>(loc, gridx, idx),
-      builder.create<arith::ConstantIntOp>(loc, gridy, idx),
-      builder.create<arith::ConstantIntOp>(loc, gridz, idx),
+      builder.create<arith::ConstantIntOp>(loc, idx, gridx),
+      builder.create<arith::ConstantIntOp>(loc, idx, gridy),
+      builder.create<arith::ConstantIntOp>(loc, idx, gridz),
   };
 
   gpu::KernelDim3 blockSize{
-      builder.create<arith::ConstantIntOp>(loc, blockx, idx),
-      builder.create<arith::ConstantIntOp>(loc, blocky, idx),
-      builder.create<arith::ConstantIntOp>(loc, blockz, idx),
+      builder.create<arith::ConstantIntOp>(loc, idx, blockx),
+      builder.create<arith::ConstantIntOp>(loc, idx, blocky),
+      builder.create<arith::ConstantIntOp>(loc, idx, blockz),
   };
 
-  auto dynshmem = builder.create<arith::ConstantIntOp>(loc, shmem, i32);
+  auto dynshmem = builder.create<arith::ConstantIntOp>(loc, i32, shmem);
 
   Value stream = builder.create<enzymexla::GetStreamOp>(
       loc, gpu::AsyncTokenType::get(kcall.getContext()));
@@ -344,6 +344,19 @@ bool CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
     idxOp.replaceAllUsesWith(rep.getResult());
     idxOp.erase();
   });
+  executeRegion->walk([&](gpu::BlockIdOp idxOp) {
+    Value val = nullptr;
+    if (idxOp.getDimension() == gpu::Dimension::x)
+      val = par.getIVs()[0];
+    else if (idxOp.getDimension() == gpu::Dimension::y)
+      val = par.getIVs()[1];
+    else if (idxOp.getDimension() == gpu::Dimension::z)
+      val = par.getIVs()[2];
+    else
+      llvm_unreachable("illegal dimension");
+    idxOp.replaceAllUsesWith(val);
+    idxOp.erase();
+  });
 
   // thread idx
   executeRegion->walk([&](NVVM::ThreadIdXOp idxOp) {
@@ -365,6 +378,19 @@ bool CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
     auto rep = rewriter.create<arith::IndexCastUIOp>(
         op.getLoc(), idxOp.getType(), par.getIVs()[5]);
     idxOp.replaceAllUsesWith(rep.getResult());
+    idxOp.erase();
+  });
+  executeRegion->walk([&](gpu::ThreadIdOp idxOp) {
+    Value val = nullptr;
+    if (idxOp.getDimension() == gpu::Dimension::x)
+      val = par.getIVs()[3];
+    else if (idxOp.getDimension() == gpu::Dimension::y)
+      val = par.getIVs()[4];
+    else if (idxOp.getDimension() == gpu::Dimension::z)
+      val = par.getIVs()[5];
+    else
+      llvm_unreachable("illegal dimension");
+    idxOp.replaceAllUsesWith(val);
     idxOp.erase();
   });
 

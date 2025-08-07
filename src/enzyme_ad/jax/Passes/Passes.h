@@ -50,8 +50,11 @@ void populateLLVMToControlFlowConversionPatterns(RewritePatternSet &patterns);
 
 void fully2ComposeAffineMapAndOperands(
     mlir::PatternRewriter &rewriter, mlir::AffineMap *map,
-    llvm::SmallVectorImpl<mlir::Value> *operands, mlir::DominanceInfo &DI);
-bool isValidIndex(mlir::Value val);
+    llvm::SmallVectorImpl<mlir::Value> *operands, mlir::DominanceInfo &DI,
+    mlir::Region *scope,
+    llvm::SmallVectorImpl<mlir::Operation *> *insertedOps = nullptr);
+bool isValidIndex(mlir::Value val, mlir::Region *scope);
+mlir::Region *getLocalAffineScope(mlir::Operation *op);
 
 struct ValueOrInt {
   bool isValue;
@@ -156,8 +159,5 @@ bool valueCmp(Cmp cmp, ValueOrInt bval, int64_t val);
 bool valueCmp(Cmp cmp, mlir::Value bval, ValueOrInt val);
 
 bool valueCmp(Cmp cmp, llvm::APInt bval, ValueOrInt val);
-
-bool isReadOnly(mlir::Operation *);
-bool isReadNone(mlir::Operation *);
 
 #endif // ENZYMEXLA_PASSES_H

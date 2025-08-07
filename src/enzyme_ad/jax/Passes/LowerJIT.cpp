@@ -237,9 +237,10 @@ bool initJIT() {
                 [](llvm::orc::ExecutionSession &ES)
                     -> llvm::Expected<std::unique_ptr<llvm::orc::ObjectLayer>> {
                   auto obj = std::make_unique<
-                      llvm::orc::RTDyldObjectLinkingLayer>(ES, []() {
-                    return std::make_unique<llvm::SectionMemoryManager>();
-                  });
+                      llvm::orc::RTDyldObjectLinkingLayer>(
+                      ES, [](const llvm::MemoryBuffer &) {
+                        return std::make_unique<llvm::SectionMemoryManager>();
+                      });
                   if (getenv("ENABLE_GDBLISTENER")) {
                     auto list =
                         llvm::JITEventListener::createGDBRegistrationListener();
@@ -624,15 +625,17 @@ void rewriteKernelCallABI(
   });
 }
 
-CallInfo
-CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
-            FunctionOpInterface op, bool jit, enzymexla::JITCallOp jcall,
-            bool openmp, size_t cuResultHandlerPtr,
-            size_t cuStreamSynchronizePtr, int indexBitWidth,
-            const std::string &cubinTriple, const std::string &cubinChip,
-            const std::string &cubinFeatures, const std::string &cubinFormat,
-            int cuOptLevel, const std::string &toolkitPath,
-            const llvm::SmallVectorImpl<std::string> &linkFiles, bool debug) {
+CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
+                     FunctionOpInterface op, bool jit,
+                     enzymexla::JITCallOp jcall, bool openmp,
+                     size_t cuResultHandlerPtr, size_t cuStreamSynchronizePtr,
+                     int indexBitWidth, const std::string &cubinTriple,
+                     const std::string &cubinChip,
+                     const std::string &cubinFeatures,
+                     const std::string &cubinFormat, int cuOptLevel,
+                     const std::string &toolkitPath,
+                     const llvm::SmallVectorImpl<std::string> &linkFiles,
+                     bool debug, bool returnPtr) {
 
   OpBuilder builder(op);
 
@@ -720,7 +723,11 @@ CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
     intys.push_back(ptrty);
     intys.push_back(ptrty);
   }
-  FunctionType calleeType = builder.getFunctionType(intys, {});
+  SmallVector<mlir::Type> rettys;
+  if (returnPtr) {
+    rettys.push_back(ptrty);
+  }
+  FunctionType calleeType = builder.getFunctionType(intys, rettys);
   auto func = builder.create<func::FuncOp>(loc, "entry", calleeType);
 
   auto &entryBlock = *func.addEntryBlock();
@@ -969,11 +976,20 @@ struct LowerJITPass
         return;
       }
 
-      CallInfo cdata =
-          CompileCall(symbolTable, op.getLoc(), fn, jit, op, openmp,
-                      cuResultHandlerPtr, cuStreamSynchronizePtr, indexBitWidth,
-                      cubinTriple, cubinChip, cubinFeatures, cubinFormat,
-                      cuOptLevel, toolkitPath, linkFilesArray, debug);
+      bool hasReturn = false;
+      if (auto llvmfnty =
+              dyn_cast<LLVM::LLVMFunctionType>(fn.getFunctionType())) {
+        hasReturn = llvmfnty.getReturnType() !=
+                    LLVM::LLVMVoidType::get(op.getContext());
+      } else if (auto fnty = dyn_cast<FunctionType>(fn.getFunctionType())) {
+        hasReturn = !fnty.getResults().empty();
+      }
+
+      CallInfo cdata = CompileCall(
+          symbolTable, op.getLoc(), fn, jit, op, openmp, cuResultHandlerPtr,
+          cuStreamSynchronizePtr, indexBitWidth, cubinTriple, cubinChip,
+          cubinFeatures, cubinFormat, cuOptLevel, toolkitPath, linkFilesArray,
+          debug, hasReturn);
 
       std::string backendinfo((char *)&cdata, sizeof(CallInfo));
       if (jit) {
@@ -994,14 +1010,16 @@ struct LowerJITPass
       if (op.getXlaSideEffectFreeAttr()) {
         hasSideEffectAttr = rewriter.getBoolAttr(false);
       } else { // use our analysis if no attribute is provided
-        rewriter.getBoolAttr(!isMemoryEffectFree(op));
+        hasSideEffectAttr = rewriter.getBoolAttr(!isMemoryEffectFree(op));
       }
 
       Operation *replacement;
       if (backend == "cuda")
         replacement = rewriter.create<stablehlo::CustomCallOp>(
             op.getLoc(), op.getResultTypes(), op.getInputs(),
-            rewriter.getStringAttr("enzymexla_compile_gpu"),
+            hasReturn
+                ? rewriter.getStringAttr("enzymexla_compile_gpu_with_error")
+                : rewriter.getStringAttr("enzymexla_compile_gpu"),
             /* has_side_effect*/ hasSideEffectAttr,
             /*backend_config*/ dattr,
             /* api_version*/
@@ -1013,7 +1031,9 @@ struct LowerJITPass
       else if (backend == "cpu")
         replacement = rewriter.create<stablehlo::CustomCallOp>(
             op.getLoc(), op.getResultTypes(), op.getInputs(),
-            rewriter.getStringAttr("enzymexla_compile_cpu"),
+            hasReturn
+                ? rewriter.getStringAttr("enzymexla_compile_cpu_with_error")
+                : rewriter.getStringAttr("enzymexla_compile_cpu"),
             /* has_side_effect*/ hasSideEffectAttr,
             /*backend_config*/ backendstr,
             /* api_version*/

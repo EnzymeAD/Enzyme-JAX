@@ -33,7 +33,7 @@ module {
 }
 
 // CHECK:  func.func private @kernel_raised(%arg0: tensor<26x1x1xf64>, %arg1: tensor<1x32x48xf64>) -> (tensor<26x1x1xf64>, tensor<1x32x48xf64>) {
-// CHECK-NEXT:    %cst = stablehlo.constant dense<3.100000e+01> : tensor<f64>
+// CHECK-NEXT:    %cst = stablehlo.constant dense<0.032258064516129031> : tensor<f64>
 // CHECK-NEXT:    %0 = stablehlo.slice %arg1 [0:1, 8:9, 8:9] : (tensor<1x32x48xf64>) -> tensor<1x1x1xf64>
 // CHECK-NEXT:    %1 = stablehlo.reshape %0 : (tensor<1x1x1xf64>) -> tensor<f64>
 // CHECK-NEXT:    %2 = stablehlo.slice %arg1 [0:1, 8:9, 9:10] : (tensor<1x32x48xf64>) -> tensor<1x1x1xf64>
@@ -126,7 +126,7 @@ module {
 // CHECK-NEXT:    %89 = stablehlo.slice %arg1 [0:1, 8:9, 38:39] : (tensor<1x32x48xf64>) -> tensor<1x1x1xf64>
 // CHECK-NEXT:    %90 = stablehlo.reshape %89 : (tensor<1x1x1xf64>) -> tensor<f64>
 // CHECK-NEXT:    %91 = stablehlo.add %88, %90 : tensor<f64>
-// CHECK-NEXT:    %92 = stablehlo.divide %91, %cst : tensor<f64>
+// CHECK-NEXT:    %92 = stablehlo.multiply %91, %cst : tensor<f64>
 // CHECK-NEXT:    %93 = stablehlo.reshape %92 : (tensor<f64>) -> tensor<1x1x1xf64>
 // CHECK-NEXT:    %94 = stablehlo.slice %arg0 [0:18, 0:1, 0:1] : (tensor<26x1x1xf64>) -> tensor<18x1x1xf64>
 // CHECK-NEXT:    %95 = stablehlo.slice %arg0 [19:26, 0:1, 0:1] : (tensor<26x1x1xf64>) -> tensor<7x1x1xf64>

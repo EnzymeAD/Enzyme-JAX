@@ -23,6 +23,7 @@
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Passes/SelectPatterns.h"
 
+#include "src/enzyme_ad/jax/Utils.h"
 #include "llvm/ADT/MapVector.h"
 
 namespace mlir {
@@ -398,6 +399,148 @@ struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
   }
 };
 
+struct RemoveInductionVarRelated : public OpRewritePattern<ForOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::ForOp op,
+                                PatternRewriter &rewriter) const override {
+    // TODO: generalize this into some affine expr of inductionVar instead of
+    // just inductionVar + step
+    // Check if any yielded value is inductionVar + step
+    auto yieldOp = cast<scf::YieldOp>(op.getBody()->getTerminator());
+    for (auto [idx, yieldVal] : llvm::enumerate(yieldOp.getOperands())) {
+      auto addOp = yieldVal.getDefiningOp<arith::AddIOp>();
+      if (!addOp)
+        continue;
+
+      Value inductionVar = op.getInductionVar();
+      Value step = op.getStep();
+
+      // Check if this is inductionVar + step.
+      if ((addOp.getLhs() == inductionVar && addOp.getRhs() == step) ||
+          (addOp.getRhs() == inductionVar && addOp.getLhs() == step)) {
+        return rewriteLoop(op, idx, rewriter);
+      }
+    }
+    return failure();
+  }
+
+  LogicalResult rewriteLoop(scf::ForOp forOp, unsigned inductionVarResultIdx,
+                            PatternRewriter &rewriter) const {
+    Value inductionVar = forOp.getInductionVar();
+    Value step = forOp.getStep();
+    Value lb = forOp.getLowerBound();
+    Value initVal = forOp.getInitArgs()[inductionVarResultIdx];
+    BlockArgument iterArg = forOp.getRegionIterArg(inductionVarResultIdx);
+    Location loc = forOp.getLoc();
+
+    // Step 1: Replace uses of the iter_arg inside the loop by
+    // select(arg == lb, init, arg - step)
+    for (OpOperand &use : llvm::make_early_inc_range(iterArg.getUses())) {
+      rewriter.setInsertionPoint(use.getOwner());
+      Value cmp = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
+                                                 inductionVar, lb);
+      Value sub = rewriter.create<arith::SubIOp>(loc, inductionVar, step);
+      Value newVal = rewriter.create<arith::SelectOp>(loc, cmp, initVal, sub);
+      rewriter.replaceAllUsesWith(use.get(), newVal);
+    }
+
+    // Step 2: Create new for loop without the induction var tracking
+    SmallVector<Value> newIterArgs;
+    for (auto [idx, iterArg] : llvm::enumerate(forOp.getInitArgs())) {
+      if (idx != inductionVarResultIdx)
+        newIterArgs.push_back(iterArg);
+    }
+
+    rewriter.setInsertionPointAfter(forOp);
+    auto newForOp = rewriter.create<scf::ForOp>(loc, lb, forOp.getUpperBound(),
+                                                step, newIterArgs);
+
+    // Move body blocks to the new for op (excluding the iter_arg we removed)
+    Block *newBody = newForOp.getBody();
+    Block *oldBody = forOp.getBody();
+
+    // Map old block args to new ones, skipping our removed arg
+    IRMapping mapping;
+    for (unsigned i = 0, j = 0; i < oldBody->getNumArguments(); ++i) {
+      if (i == inductionVarResultIdx + 1)
+        continue; // +1 for induction var
+      mapping.map(oldBody->getArgument(i), newBody->getArgument(j++));
+    }
+
+    // Move all operations, remapping any operands that might refer to old block
+    // arguments.
+    Block::iterator it = newIterArgs.empty()
+                             ? newBody->getTerminator()->getIterator()
+                             : newBody->end();
+    for (auto &op : oldBody->getOperations()) {
+      if (isa<scf::YieldOp>(op))
+        continue;
+      Operation *newOp = rewriter.clone(op, mapping);
+      rewriter.moveOpBefore(newOp, newBody, it);
+    }
+
+    // Update the yield op to not yield the induction var
+    auto oldYieldOp = cast<scf::YieldOp>(oldBody->getTerminator());
+    SmallVector<Value> newYieldVals;
+    for (auto [idx, val] : llvm::enumerate(oldYieldOp.getOperands())) {
+      if (idx != inductionVarResultIdx)
+        newYieldVals.push_back(mapping.lookup(val));
+    }
+    rewriter.setInsertionPointToEnd(newBody);
+    if (!newYieldVals.empty())
+      rewriter.create<scf::YieldOp>(oldYieldOp.getLoc(), newYieldVals);
+    rewriter.eraseOp(oldYieldOp);
+
+    // Step 3: Replace old loop uses.
+
+    // Replace induction var result with
+    // select(ub <= lb, init, last_value)
+    // with last_value = lb + step * floor((ub - lb - 1) / step) + step
+    if (!forOp.getResult(inductionVarResultIdx).use_empty()) {
+      rewriter.setInsertionPointAfter(newForOp);
+      Value ub = forOp.getUpperBound();
+      auto computeLastValue = [&]() -> Value {
+        Value diff = rewriter.create<arith::SubIOp>(loc, ub, lb);
+        Value one = rewriter.create<arith::ConstantOp>(
+            loc, rewriter.getIntegerAttr(lb.getType(), 1));
+        Value diffMinus1 = rewriter.create<arith::SubIOp>(loc, diff, one);
+        Value iterations =
+            rewriter.create<arith::DivUIOp>(loc, diffMinus1, step);
+        Value stepTimesIters =
+            rewriter.create<arith::MulIOp>(loc, step, iterations);
+        Value lastValue =
+            rewriter.create<arith::AddIOp>(loc, step, stepTimesIters);
+        return rewriter.create<arith::AddIOp>(loc, lb, lastValue);
+      };
+      Value lastValue = computeLastValue();
+      // TODO: handle negative step
+      Value cmp = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ule,
+                                                 ub, lb);
+
+      Value newVal =
+          rewriter.create<arith::SelectOp>(loc, cmp, initVal, lastValue);
+      rewriter.replaceAllUsesWith(forOp.getResult(inductionVarResultIdx),
+                                  newVal);
+    }
+
+    // Replace other results
+    for (unsigned i = 0; i < forOp.getNumResults(); ++i) {
+      if (i != inductionVarResultIdx) {
+        unsigned newResultIdx = i > inductionVarResultIdx ? i - 1 : i;
+        rewriter.replaceAllUsesWith(forOp.getResult(i),
+                                    newForOp.getResult(newResultIdx));
+      }
+    }
+
+    // Finally erase the old loop.
+    rewriter.eraseOp(forOp);
+
+    // newForOp->getParentOp()->dump();
+    return success();
+  }
+};
+
 struct RemoveUnusedForResults : public OpRewritePattern<ForOp> {
   using OpRewritePattern<ForOp>::OpRewritePattern;
 
@@ -767,97 +910,150 @@ struct WhileToForHelper {
   Value step;
   Value lb;
   bool lb_addOne;
+  bool lb_addStep;
+  bool lb_subStep;
   Value ub;
   bool ub_addOne;
+  bool ub_addStep;
   bool ub_cloneMove;
   bool negativeStep;
   AddIOp addIOp;
   BlockArgument indVar;
-  size_t afterArgIdx;
-  int updateCmpNeOp; // 0: no update, 1: update to SGT, 2: update to SLT
 
-  bool checkPredicate() {
-    auto cmpRhs = cmpIOp.getRhs();
-    if (dominateWhile(cmpRhs, loop)) {
-      switch (cmpIOp.getPredicate()) {
-      case CmpIPredicate::slt:
-      case CmpIPredicate::ult: {
-        ub = cmpRhs;
-        break;
-      }
-      case CmpIPredicate::ule:
-      case CmpIPredicate::sle: {
-        ub = cmpRhs;
-        ub_addOne = true;
-        break;
-      }
-      case CmpIPredicate::uge:
-      case CmpIPredicate::sge: {
-        lb = cmpRhs;
-        break;
-      }
+  // Index within the compare (e.g. cmpArg0 ?= cmpArg1 ) of the iter arg.
+  int compareIndex;
 
-      case CmpIPredicate::ugt:
-      case CmpIPredicate::sgt: {
-        lb = cmpRhs;
-        lb_addOne = true;
-        break;
+  // Comparing against the updated value instead of the iter arg.
+  bool comparingUpdated;
+
+  bool checkPredicate(PatternRewriter &rewriter) {
+    auto cmpEnd = cmpIOp->getOperand(1 - compareIndex);
+    auto cmpStart = loop.getInits()[indVar.getArgNumber()];
+
+    if (!dominateWhile(cmpEnd, loop)) {
+      auto *op = cmpIOp.getRhs().getDefiningOp();
+      if (!op || !canMoveOpOutsideWhile(op, loop) ||
+          (op->getNumResults() != 1)) {
+        rewriter.notifyMatchFailure(loop, "Non-dominating rhs");
+        return false;
       }
-      case CmpIPredicate::ne: {
-        // Transform arith.cmpi NE to SLT /SGT
-        // 1. Check to see if step size is negative or positive to decide
-        // between SLT and SGT
-        // 2. Check to see if linearly scaling IV from init with step size can
-        // be equal to upperbound
-        // 3. If yes and step size is negative, then we need to transform the
-        // condition to SGT
-        // 4. If yes and step size is positive, then we need to transform the
-        // condition to SLT
-        APInt lbConstInt, ubConstInt, stepConstInt;
-        int lbInt, ubInt, stepInt;
-        if (matchPattern(lb, m_ConstantInt(&lbConstInt)) &&
-            matchPattern(ub, m_ConstantInt(&ubConstInt)) &&
-            matchPattern(step, m_ConstantInt(&stepConstInt))) {
+      ub_cloneMove = true;
+    }
+
+    auto pred = cmpIOp.getPredicate();
+    if (compareIndex == 1) {
+      pred = swapPredicate(pred);
+    }
+    switch (pred) {
+    case CmpIPredicate::slt:
+    case CmpIPredicate::ult: {
+      lb = cmpStart;
+      ub = cmpEnd;
+      if (comparingUpdated) {
+        lb_addStep = true;
+      }
+      break;
+    }
+    case CmpIPredicate::ule:
+    case CmpIPredicate::sle: {
+      lb = cmpStart;
+      ub = cmpEnd;
+      if (comparingUpdated) {
+        lb_addStep = true;
+      }
+      ub_addOne = true;
+      break;
+    }
+    case CmpIPredicate::uge:
+    case CmpIPredicate::sge: {
+      ub = cmpStart;
+      lb = cmpEnd;
+      if (comparingUpdated) {
+        ub_addStep = true;
+      }
+      break;
+    }
+
+    case CmpIPredicate::ugt:
+    case CmpIPredicate::sgt: {
+      ub = cmpStart;
+      lb = cmpEnd;
+      lb_addOne = true;
+      if (comparingUpdated) {
+        ub_addStep = true;
+      }
+      break;
+    }
+
+    case CmpIPredicate::ne: {
+      // Transform arith.cmpi NE to SLT /SGT
+      // 1. Check to see if step size is negative or positive to decide
+      // between SLT and SGT
+      // 2. Check to see if linearly scaling IV from init with step size can
+      // be equal to upperbound
+      // 3. If yes and step size is negative, then we need to transform the
+      // condition to SGT
+      // 4. If yes and step size is positive, then we need to transform the
+      // condition to SLT
+      APInt lbConstInt, ubConstInt, stepConstInt;
+      int lbInt, ubInt, stepInt;
+      bool constantBounds = false;
+      assert(step);
+      if (matchPattern(step, m_ConstantInt(&stepConstInt))) {
+        stepInt = stepConstInt.getSExtValue();
+        if (matchPattern(cmpStart, m_ConstantInt(&lbConstInt)) &&
+            matchPattern(cmpEnd, m_ConstantInt(&ubConstInt))) {
           lbInt = lbConstInt.getSExtValue();
           ubInt = ubConstInt.getSExtValue();
-          stepInt = stepConstInt.getSExtValue();
+          constantBounds = true;
+        }
+      } else {
+        rewriter.notifyMatchFailure(loop,
+                                    "Predicate ne with non-constant step");
+        return false;
+      }
+
+      if (stepInt == 1 || stepInt == -1 || (ubInt - lbInt) % stepInt == 0) {
+
+        if ((stepInt < 0) && (!constantBounds || (ubInt < lbInt))) {
+          if (!constantBounds) {
+            llvm::errs() << " found loop with negative increment and "
+                            "non-constant bounds, assuming no wrap around\n";
+          }
+          lb = cmpEnd;
+          ub = cmpStart;
+
+          // add one only if we compare with the updated iv
+          lb_subStep = comparingUpdated;
+          ub_addOne = false;
+        } else if ((stepInt > 0) && (!constantBounds || (lbInt < ubInt))) {
+          if (!constantBounds) {
+            llvm::errs() << " found loop with positive increment and "
+                            "non-constant bounds, assuming no wrap around\n";
+          }
+          lb = cmpStart;
+          ub = cmpEnd;
+
+          // inclusive range if the cmpiop compares with the indVar, not the
+          // updated value
+          lb_addStep = comparingUpdated;
         } else {
+          rewriter.notifyMatchFailure(loop,
+                                      "Predicate ne with unhandled bounds");
           return false;
         }
-
-        if ((ubInt - lbInt) % stepInt == 0) {
-          if ((stepInt < 0) && (ubInt < lbInt)) {
-            updateCmpNeOp = 1; // update to SGT
-            lb = cmpRhs;
-
-            // add one only if we compare with the updated iv
-            lb_addOne = cmpIOp.getLhs().getDefiningOp() == addIOp;
-          } else if ((stepInt > 0) && (lbInt < ubInt)) {
-            updateCmpNeOp = 2; // update to SLT
-            ub = cmpRhs;
-
-            // inclusive range if the cmpiop compares with the indVar, not the
-            // updated value
-            ub_addOne = cmpIOp.getLhs().getDefiningOp() != addIOp;
-          } else
-            return false;
-        } else
-          return false; // If upperbound - lowerbound is not divisible by step
-                        // size, then we cannot transform the condition
-        break;
+      } else {
+        rewriter.notifyMatchFailure(loop,
+                                    "Predicate ne with non-divisible bounds");
+        return false; // If upperbound - lowerbound is not divisible by step
+                      // size, then we cannot transform the condition
       }
-      case CmpIPredicate::eq: {
-        return false;
-      }
-      }
-    } else {
-      if (negativeStep)
-        return false;
-      auto *op = cmpIOp.getRhs().getDefiningOp();
-      if (!op || !canMoveOpOutsideWhile(op, loop) || (op->getNumResults() != 1))
-        return false;
-      ub = cmpIOp.getRhs();
-      ub_cloneMove = true;
+      break;
+    }
+    case CmpIPredicate::eq: {
+      rewriter.notifyMatchFailure(loop, "Predicate eq predicate unhandled");
+      return false;
+    }
     }
 
     return lb && ub;
@@ -886,87 +1082,49 @@ struct WhileToForHelper {
     step = nullptr;
     lb = nullptr;
     lb_addOne = false;
+    lb_addStep = false;
+    lb_subStep = false;
     ub = nullptr;
     ub_addOne = false;
+    ub_addStep = false;
     ub_cloneMove = false;
     negativeStep = false;
   }
 
-  bool computeLegality(bool sizeCheck, Value lookThrough = nullptr) {
+  // return true if legal
+  bool considerStep(BlockArgument beforeArg, Value steppingVal, bool inBefore,
+                    Value lookThrough) {
 
-    initVariables();
-
-    auto condOp = loop.getConditionOp();
-    indVar = dyn_cast<BlockArgument>(cmpIOp.getLhs());
-    Type extType = nullptr;
-    // todo handle ext
-    if (auto ext = cmpIOp.getLhs().getDefiningOp<ExtSIOp>()) {
-      indVar = dyn_cast<BlockArgument>(ext.getIn());
-      extType = ext.getType();
-    }
-
-    // Condition is not the same as an induction variable
-    {
-      if (!indVar) {
-        return false;
-      }
-
-      if (indVar.getOwner() != &loop.getBefore().front())
-        return false;
-    }
-
-    // Before region contains more than just the comparison
-    {
-      size_t size = loop.getBefore().front().getOperations().size();
-      if (extType)
-        size--;
-      if (!sizeCheck)
-        size--;
-      if (size != 2) {
-        return false;
-      }
-    }
-
-    SmallVector<size_t, 2> afterArgs;
-    for (auto pair : llvm::enumerate(condOp.getArgs())) {
-      if (pair.value() == indVar)
-        afterArgs.push_back(pair.index());
-    }
-
-    auto endYield = cast<YieldOp>(loop.getAfter().back().getTerminator());
-
-    // Check that the block argument is actually an induction var:
-    //   Namely, its next value adds to the previous with an invariant step.
-    addIOp =
-        endYield.getResults()[indVar.getArgNumber()].getDefiningOp<AddIOp>();
-    if (!addIOp && lookThrough) {
-      bool negateLookThrough = false;
+    assert(steppingVal);
+    bool negateLookThrough = false;
+    if (lookThrough) {
       while (auto neg = lookThrough.getDefiningOp<XOrIOp>())
         if (matchPattern(neg.getOperand(1), m_One())) {
           lookThrough = neg.getOperand(0);
           negateLookThrough = !negateLookThrough;
         }
 
-      if (auto ifOp = endYield.getResults()[indVar.getArgNumber()]
-                          .getDefiningOp<IfOp>()) {
+      if (auto ifOp = steppingVal.getDefiningOp<IfOp>()) {
         Value condition = ifOp.getCondition();
         while (auto neg = condition.getDefiningOp<XOrIOp>())
           if (matchPattern(neg.getOperand(1), m_One())) {
             condition = neg.getOperand(0);
             negateLookThrough = !negateLookThrough;
           }
-        if (ifOp.getCondition() == lookThrough) {
+        if (ifOp.getCondition() == lookThrough && beforeArg) {
           for (auto r : llvm::enumerate(ifOp.getResults())) {
-            if (r.value() == endYield.getResults()[indVar.getArgNumber()]) {
-              addIOp = (negateLookThrough ? ifOp.elseYield() : ifOp.thenYield())
-                           .getOperand(r.index())
-                           .getDefiningOp<AddIOp>();
+            if (r.value() == loop.getAfter()
+                                 .front()
+                                 .getTerminator()
+                                 ->getOperands()[beforeArg.getArgNumber()]) {
+              steppingVal =
+                  (negateLookThrough ? ifOp.elseYield() : ifOp.thenYield())
+                      .getOperand(r.index());
               break;
             }
           }
         }
-      } else if (auto selOp = endYield.getResults()[indVar.getArgNumber()]
-                                  .getDefiningOp<SelectOp>()) {
+      } else if (auto selOp = steppingVal.getDefiningOp<SelectOp>()) {
         Value condition = selOp.getCondition();
         while (auto neg = condition.getDefiningOp<XOrIOp>())
           if (matchPattern(neg.getOperand(1), m_One())) {
@@ -974,67 +1132,161 @@ struct WhileToForHelper {
             negateLookThrough = !negateLookThrough;
           }
         if (selOp.getCondition() == lookThrough)
-          addIOp =
-              (negateLookThrough ? selOp.getFalseValue() : selOp.getTrueValue())
-                  .getDefiningOp<AddIOp>();
-      }
-    }
-    if (!addIOp) {
-      return false;
-    }
-
-    for (auto afterArg : afterArgs) {
-      auto arg = loop.getAfter().getArgument(afterArg);
-      if (addIOp.getOperand(0) == arg) {
-        step = addIOp.getOperand(1);
-        afterArgIdx = afterArg;
-        break;
-      }
-      if (addIOp.getOperand(1) == arg) {
-        step = addIOp.getOperand(0);
-        afterArgIdx = afterArg;
-        break;
+          steppingVal = (negateLookThrough ? selOp.getFalseValue()
+                                           : selOp.getTrueValue());
       }
     }
 
-    if (!step) {
+    assert(steppingVal);
+    if (auto add = steppingVal.getDefiningOp<AddIOp>()) {
+      for (int j = 0; j < 2; j++) {
+        BlockArgument arg = beforeArg;
+        if (inBefore) {
+          if (beforeArg) {
+            if (add->getOperand(j) != beforeArg) {
+              continue;
+            }
+          } else {
+            auto ba2 = dyn_cast<BlockArgument>(add->getOperand(j));
+            if (!ba2)
+              continue;
+            if (ba2.getOwner() != &loop.getBefore().front())
+              continue;
+            arg = ba2;
+          }
+        } else {
+          assert(beforeArg);
+          auto ba2 = dyn_cast<BlockArgument>(add->getOperand(j));
+          if (!ba2)
+            continue;
+
+          if (ba2.getOwner() != &loop.getAfter().front())
+            continue;
+
+          auto beforeYielded =
+              loop.getConditionOp().getArgs()[ba2.getArgNumber()];
+          if (beforeYielded != beforeArg) {
+            continue;
+          }
+        }
+
+        assert(arg);
+        indVar = arg;
+        step = add->getOperand(1 - j);
+        addIOp = add;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  bool computeLegality(PatternRewriter &rewriter, bool sizeCheck,
+                       Value lookThrough = nullptr, bool doWhile = false) {
+
+    initVariables();
+
+    auto condOp = loop.getConditionOp();
+    auto doYield = cast<scf::YieldOp>(loop.getAfter().front().getTerminator());
+
+    Type extType = nullptr;
+    comparingUpdated = false;
+
+    for (int i = 0; i < 2; i++) {
+      Value opVal = cmpIOp->getOperand(i);
+      compareIndex = i;
+
+      if (auto ext = opVal.getDefiningOp<ExtSIOp>()) {
+        opVal = ext.getIn();
+        extType = ext.getType();
+      }
+
+      if (auto arg = dyn_cast<BlockArgument>(opVal)) {
+
+        if (arg.getOwner() != &loop.getBefore().front()) {
+          continue;
+        }
+
+        auto pval = doYield.getOperand(arg.getArgNumber());
+
+        if (auto afterArg = dyn_cast<BlockArgument>(pval)) {
+
+          if (afterArg.getOwner() != &loop.getAfter().front()) {
+            continue;
+          }
+
+          comparingUpdated = false;
+          assert(condOp.getArgs()[afterArg.getArgNumber()]);
+          if (considerStep(arg, condOp.getArgs()[afterArg.getArgNumber()],
+                           /*inBefore*/ true, lookThrough)) {
+            goto endDetect;
+          }
+
+        } else {
+          comparingUpdated = false;
+          if (considerStep(arg, pval, /*inBefore*/ false, lookThrough)) {
+            goto endDetect;
+          }
+        }
+      } else {
+        comparingUpdated = true;
+        assert(opVal);
+        if (considerStep(nullptr, opVal, /*inBefore*/ true, lookThrough)) {
+          goto endDetect;
+        }
+      }
+    }
+
+  endDetect:;
+
+    if (!indVar) {
+      rewriter.notifyMatchFailure(loop, "Failed to find iv");
       return false;
     }
+    assert(step);
+    assert(addIOp);
 
     // Cannot transform for if step is not loop-invariant
     if (auto *op = step.getDefiningOp()) {
       if (loop->isAncestor(op)) {
+        rewriter.notifyMatchFailure(loop, "Step is not loop invariant");
+        return false;
+      }
+    }
+
+    // Before region contains more than just the comparison
+    if (!doWhile) {
+      size_t size = loop.getBefore().front().getOperations().size();
+      if (extType)
+        size--;
+      if (!sizeCheck)
+        size--;
+      if (size != 2) {
+        rewriter.notifyMatchFailure(
+            loop, "Before region contains more than just comparison");
         return false;
       }
     }
 
     checkNegativeStep();
 
-    return checkPredicate();
+    return checkPredicate(rewriter);
   }
 
   void prepareFor(PatternRewriter &rewriter) {
-    if (updateCmpNeOp == 1) {
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPoint(cmpIOp);
-      Value newCmp = rewriter.create<arith::CmpIOp>(
-          cmpIOp.getLoc(), arith::CmpIPredicate::sgt, cmpIOp.getLhs(),
-          cmpIOp.getRhs());
-      rewriter.replaceOp(cmpIOp, newCmp);
-    } else if (updateCmpNeOp == 2) {
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPoint(cmpIOp);
-      Value newCmp = rewriter.create<arith::CmpIOp>(
-          cmpIOp.getLoc(), arith::CmpIPredicate::slt, cmpIOp.getLhs(),
-          cmpIOp.getRhs());
-      rewriter.replaceOp(cmpIOp, newCmp);
-    }
 
     if (lb_addOne) {
       Value one =
-          rewriter.create<ConstantIntOp>(loop.getLoc(), 1, lb.getType());
+          rewriter.create<ConstantIntOp>(loop.getLoc(), lb.getType(), 1);
       lb = rewriter.create<AddIOp>(loop.getLoc(), lb, one);
     }
+
+    if (lb_addStep) {
+      lb = rewriter.create<AddIOp>(loop.getLoc(), lb, step);
+    }
+    if (lb_subStep) {
+      lb = rewriter.create<SubIOp>(loop.getLoc(), lb, step);
+    }
+
     if (ub_cloneMove) {
       auto *op = ub.getDefiningOp();
       assert(op);
@@ -1044,8 +1296,11 @@ struct WhileToForHelper {
     }
     if (ub_addOne) {
       Value one =
-          rewriter.create<ConstantIntOp>(loop.getLoc(), 1, ub.getType());
+          rewriter.create<ConstantIntOp>(loop.getLoc(), ub.getType(), 1);
       ub = rewriter.create<AddIOp>(loop.getLoc(), ub, one);
+    }
+    if (ub_addStep) {
+      ub = rewriter.create<AddIOp>(loop.getLoc(), ub, step);
     }
     auto modifyTypeToIndex = true;
     if ((step.getType() == lb.getType()) && (ub.getType() == lb.getType())) {
@@ -1062,8 +1317,8 @@ struct WhileToForHelper {
         }
       } else {
         auto cop = step.getDefiningOp<ConstantIntOp>();
-        step = rewriter.create<ConstantIntOp>(cop.getLoc(), -cop.value(),
-                                              cop.getType());
+        step = rewriter.create<ConstantIntOp>(cop.getLoc(), cop.getType(),
+                                              -cop.value());
       }
     }
 
@@ -1103,219 +1358,6 @@ bool areValuesConnected(Value startVal, Value endVal,
   return false;
 }
 
-// This works for any doWhile loop with any number of iter_args
-// Checks to see if loop iter_count > 1 for do_while
-struct MoveDoWhileToFor : public OpRewritePattern<WhileOp> {
-  using OpRewritePattern<WhileOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(WhileOp whileOp,
-                                PatternRewriter &rewriter) const override {
-    // 1. Analyze before region and extract scf.condition
-    // 2. From scf.condition obtain compareOp
-    // 3. Assumption that one of the values in compareOp is constant i.e is
-    // upperbound, and the other value (compareValue) is related to Induction
-    // Variable(IV)
-    // 4. Find index for IV from the iter_args based on use-def chain going from
-    //    iter_args of before region to the compareValue.
-    // 5. After IV index is found, use that to extract lowerBound from init
-    // values of before region, and IV itself from arg list.
-    // 6. Now from the use def chain connecting compareValue to yield of before
-    // region, we find the updatedIV index in scf.condition.
-    // 7. From the index we obtain the updated IV passed to after region.
-    // 8. We see the def of updatedIV to find the step size.
-    //    Currently only supporting AddIOp.
-    // 9. Check to see if LB, UB and STEP are constant.
-    // 10.Transfer before and after region to a new for loop.
-    // 11.Replace all uses of while loop with for loop.
-
-    // Check to see if doBlock just has yield op
-    Block &doBlock = whileOp.getAfter().front();
-    if (!isa<scf::YieldOp>(doBlock.front()))
-      return rewriter.notifyMatchFailure(whileOp, "non empty then block");
-
-    // Before block analysis
-    Block &beforeBlock = whileOp.getBefore().front();
-    auto conditionOp = dyn_cast<ConditionOp>(beforeBlock.getTerminator());
-    Value conditionValue = conditionOp.getCondition();
-
-    Value upperBound;
-    Value compareValue;
-    arith::CmpIOp cmpOp;
-    if ((cmpOp = conditionValue.getDefiningOp<arith::CmpIOp>())) {
-      // We need to check for is that one of the lhs or rhs is a constant, and
-      // extract the value as upper bound.
-      if (cmpOp.getRhs().getDefiningOp<arith::ConstantOp>()) {
-        upperBound = cmpOp.getRhs();
-        compareValue = cmpOp.getLhs();
-      } else if (cmpOp.getLhs().getDefiningOp<arith::ConstantOp>()) {
-        upperBound = cmpOp.getLhs();
-        compareValue = cmpOp.getRhs();
-      } else
-        return rewriter.notifyMatchFailure(whileOp, "cmp against non constant");
-    } else {
-      // Currently only supporting arith.cmpIOp
-      return rewriter.notifyMatchFailure(whileOp, "cmp not arith.cmpIOp");
-    }
-
-    // Get condition op args and find IV index
-    int IVIndex = 0;
-    bool indexFound = false;
-    for (auto arg : beforeBlock.getArguments()) {
-      llvm::SmallPtrSet<Value, 8> visited;
-      if (areValuesConnected(arg, compareValue, visited)) {
-        indexFound = true;
-        break;
-      }
-      IVIndex++;
-    }
-    if (!indexFound)
-      return rewriter.notifyMatchFailure(whileOp, "Did not find index");
-
-    // Extract IV and lowerBound based on IVIndex
-    Value IV = beforeBlock.getArgument(IVIndex);
-    Value lowerBound = whileOp.getOperand(IVIndex);
-
-    // UpdatedIV index
-    Value stepSize;
-    Value updatedIV = nullptr;
-    arith::AddIOp addOp;
-    for (auto arg : conditionOp.getArgs()) {
-      addOp = arg.getDefiningOp<arith::AddIOp>();
-      if (addOp) {
-        if (addOp.getLhs() == IV) {
-          stepSize = addOp.getRhs();
-        } else if (addOp.getRhs() == IV) {
-          stepSize = addOp.getLhs();
-        } else {
-          continue;
-        }
-        updatedIV = arg;
-        break;
-      } else {
-        continue;
-      }
-    }
-    if (!updatedIV)
-      return rewriter.notifyMatchFailure(whileOp, "updated IV not found");
-
-    // Check if loop iter_count is > 1 i.e lb + step < ub else return failure
-    APInt lbConstInt, ubConstInt, stepConstInt;
-    int lb, ub, step;
-    if (matchPattern(lowerBound, m_ConstantInt(&lbConstInt)) &&
-        matchPattern(upperBound, m_ConstantInt(&ubConstInt)) &&
-        matchPattern(stepSize, m_ConstantInt(&stepConstInt))) {
-      lb = lbConstInt.getSExtValue();
-      ub = ubConstInt.getSExtValue();
-      step = stepConstInt.getSExtValue();
-      if (step == 0)
-        return failure();
-    } else {
-      return failure();
-    }
-
-    // Uinsg WhileToForHelper to set up for loop structure
-    WhileToForHelper helper;
-    helper.initVariables();
-
-    helper.loop = whileOp;
-    helper.cmpIOp = conditionOp.getCondition().getDefiningOp<CmpIOp>();
-    helper.addIOp = addOp;
-    helper.step = stepSize;
-    helper.lb = lowerBound;
-    helper.ub = upperBound;
-    helper.indVar = mlir::cast<mlir::BlockArgument>(IV);
-    helper.negativeStep = step < 0;
-
-    if (!helper.checkPredicate())
-      return failure();
-    helper.checkNegativeStep();
-    helper.prepareFor(rewriter);
-
-    rewriter.setInsertionPoint(whileOp);
-    // If case: The do while loop executes more than once
-    if (((lb + step < ub) && (step > 0)) || ((lb + step > ub) && (step < 0))) {
-      // Copy region from while body to for body
-      SmallVector<Value> newInitOperands;
-      for (auto operand : whileOp.getOperands())
-        newInitOperands.push_back(operand);
-      for (auto resTy : whileOp.getResultTypes()) {
-        newInitOperands.push_back(
-            rewriter.create<ub::PoisonOp>(whileOp.getLoc(), resTy));
-      }
-
-      scf::ForOp newLoop = rewriter.create<scf::ForOp>(
-          whileOp.getLoc(), helper.lb, helper.ub, helper.step, newInitOperands);
-      newLoop->setAttrs(whileOp.getOperation()->getAttrs());
-
-      Block &newBlock = newLoop.getRegion().front();
-      rewriter.setInsertionPointToStart(&newBlock);
-
-      // Copy from before region to for body
-      IRMapping mappingBeforeBlock;
-      for (auto [arg, init] :
-           llvm::zip(beforeBlock.getArguments(),
-                     newBlock.getArguments().drop_front().drop_back(
-                         whileOp.getResultTypes().size()))) {
-        mappingBeforeBlock.map(arg, init);
-      }
-      for (Operation &op : beforeBlock.without_terminator()) {
-        rewriter.clone(op, mappingBeforeBlock);
-      }
-
-      // Extract conditionOp args to be used for after region
-      SmallVector<Value> remappedConditionOpArgs;
-      for (auto arg : conditionOp.getArgs()) {
-        remappedConditionOpArgs.push_back(
-            mappingBeforeBlock.lookupOrDefault(arg));
-      }
-
-      // Copy from after region to for body
-      Block &afterBlock = whileOp.getAfter().front();
-      IRMapping mappingAfterBlock;
-      for (auto [arg, init] :
-           llvm::zip(afterBlock.getArguments(), remappedConditionOpArgs)) {
-        mappingAfterBlock.map(arg, init);
-      }
-      for (Operation &op : afterBlock.without_terminator()) {
-        rewriter.clone(op, mappingAfterBlock);
-      }
-
-      SmallVector<Value> toYield;
-      for (auto val : afterBlock.getTerminator()->getOperands()) {
-        toYield.push_back(mappingAfterBlock.lookupOrDefault(val));
-      }
-      toYield.append(remappedConditionOpArgs);
-      rewriter.create<scf::YieldOp>(afterBlock.getTerminator()->getLoc(),
-                                    toYield);
-
-      rewriter.replaceOp(whileOp, newLoop.getResults().drop_front(
-                                      whileOp.getOperands().size()));
-
-      // Else case: The do while loop only executes once to before region.
-    } else {
-      // Copy region from while body to before forbody
-      IRMapping mapping;
-      for (auto [arg, init] :
-           llvm::zip(beforeBlock.getArguments(), whileOp.getOperands())) {
-        mapping.map(arg, init);
-      }
-      for (Operation &op : beforeBlock.without_terminator()) {
-        rewriter.clone(op, mapping);
-      }
-
-      // Extract conditionOp args to be used as results
-      SmallVector<Value> newResults;
-      for (auto arg : conditionOp.getArgs()) {
-        newResults.push_back(mapping.lookupOrDefault(arg));
-      }
-
-      rewriter.replaceOp(whileOp, newResults);
-    }
-
-    return success();
-  }
-};
-
 struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
   using OpRewritePattern<WhileOp>::OpRewritePattern;
 
@@ -1327,82 +1369,138 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
     helper.loop = loop;
     helper.cmpIOp = condOp.getCondition().getDefiningOp<CmpIOp>();
     if (!helper.cmpIOp) {
+      return rewriter.notifyMatchFailure(loop, "No comparison found");
+    }
+    if (!helper.computeLegality(rewriter, /*sizeCheck*/ true,
+                                /*lookThrough*/ nullptr, /*doWhile*/ true)) {
       return failure();
     }
-    if (!helper.computeLegality(/*sizeCheck*/ true))
-      return failure();
     helper.prepareFor(rewriter);
 
     // input of the for goes the input of the scf::while plus the output taken
     // from the conditionOp.
-    SmallVector<Value, 8> forArgs;
-    forArgs.append(loop.getInits().begin(), loop.getInits().end());
+    SmallVector<Value, 8> forArgs = llvm::to_vector(loop.getInits());
 
     for (Value arg : condOp.getArgs()) {
-      Type cst = nullptr;
-      if (auto idx = arg.getDefiningOp<IndexCastOp>()) {
-        cst = idx.getType();
-        arg = idx.getIn();
-      }
-      Value res;
-      if (isTopLevelArgValue(arg, &loop.getBefore())) {
-        auto blockArg = cast<BlockArgument>(arg);
-        auto pos = blockArg.getArgNumber();
-        res = loop.getInits()[pos];
-      } else
-        res = arg;
-      if (cst) {
-        res = rewriter.create<IndexCastOp>(res.getLoc(), cst, res);
-      }
-      forArgs.push_back(res);
+      forArgs.push_back(
+          rewriter.create<ub::PoisonOp>(arg.getLoc(), arg.getType()));
     }
 
-    auto forloop = rewriter.create<scf::ForOp>(loop.getLoc(), helper.lb,
-                                               helper.ub, helper.step, forArgs);
+    bool doWhile = false;
+    for (auto &blk : loop.getBefore()) {
+      for (auto &op : blk) {
+        if (!mlir::isPure(&op)) {
+          doWhile = true;
+          break;
+        }
+      }
+    }
+
+    bool mutableAfter = false;
+    if (doWhile) {
+      for (auto &blk : loop.getAfter()) {
+        for (auto &op : blk) {
+          if (!mlir::isPure(&op)) {
+            mutableAfter = true;
+            break;
+          }
+        }
+      }
+    }
+
+    auto oldYield = cast<scf::YieldOp>(loop.getAfter().front().getTerminator());
+
+    auto ub = helper.ub;
+
+    if (doWhile) {
+      // we add step to force the extra iteration at the end, but also we need
+      // to max with lb + step to make sure one iteration runs at all. max(lb +
+      // step, ub + step) -> max(ub, lb) + step
+      ub = rewriter.create<arith::MaxSIOp>(loop.getLoc(), ub, helper.lb);
+
+      ub = rewriter.create<arith::AddIOp>(loop.getLoc(), ub, helper.step);
+    }
+
+    auto forloop = rewriter.create<scf::ForOp>(loop.getLoc(), helper.lb, ub,
+                                               helper.step, forArgs);
 
     if (!forloop.getBody()->empty())
       rewriter.eraseOp(forloop.getBody()->getTerminator());
-
-    auto oldYield = cast<scf::YieldOp>(loop.getAfter().front().getTerminator());
 
     rewriter.modifyOpInPlace(loop, [&] {
       for (auto pair :
            llvm::zip(loop.getAfter().getArguments(), condOp.getArgs())) {
         std::get<0>(pair).replaceAllUsesWith(std::get<1>(pair));
       }
-    });
-    loop.getAfter().front().eraseArguments([](BlockArgument) { return true; });
-
-    SmallVector<Value, 2> yieldOperands;
-    for (auto oldYieldArg : oldYield.getResults())
-      yieldOperands.push_back(oldYieldArg);
-
-    IRMapping outmap;
-    outmap.map(loop.getBefore().getArguments(), yieldOperands);
-    for (auto arg : condOp.getArgs())
-      yieldOperands.push_back(outmap.lookupOrDefault(arg));
-
-    rewriter.setInsertionPoint(oldYield);
-    rewriter.replaceOpWithNewOp<scf::YieldOp>(oldYield, yieldOperands);
-
-    size_t pos = loop.getInits().size();
-
-    rewriter.modifyOpInPlace(loop, [&] {
       for (auto pair : llvm::zip(loop.getBefore().getArguments(),
-                                 forloop.getRegionIterArgs().drop_back(pos))) {
+                                 forloop.getRegionIterArgs())) {
         std::get<0>(pair).replaceAllUsesWith(std::get<1>(pair));
       }
     });
 
     forloop.getBody()->getOperations().splice(
         forloop.getBody()->getOperations().begin(),
-        loop.getAfter().front().getOperations());
+        loop.getBefore().front().getOperations());
 
-    SmallVector<Value, 2> replacements;
-    replacements.append(forloop.getResults().begin() + pos,
-                        forloop.getResults().end());
+    loop.getAfter().front().eraseArguments([](BlockArgument) { return true; });
 
-    rewriter.replaceOp(loop, replacements);
+    SmallVector<Value> newYields(forArgs.size());
+
+    for (size_t i = 0; i < loop.getResults().size(); i++) {
+      newYields[loop.getInits().size() + i] = condOp.getArgs()[i];
+    }
+
+    if (doWhile && loop.getInits().size() && mutableAfter) {
+      rewriter.setInsertionPointToEnd(forloop.getBody());
+      SmallVector<Type> initTypes;
+      for (auto T : loop.getInits())
+        initTypes.push_back(T.getType());
+      auto cond = rewriter.create<arith::CmpIOp>(
+          forloop.getLoc(),
+          helper.negativeStep ? arith::CmpIPredicate::sgt
+                              : arith::CmpIPredicate::slt,
+          forloop.getInductionVar(), helper.ub);
+      auto ifOp =
+          rewriter.create<scf::IfOp>(forloop.getLoc(), initTypes, cond, true);
+
+      rewriter.eraseBlock(&ifOp->getRegion(0).front());
+      ifOp->getRegion(0).getBlocks().splice(
+          ifOp->getRegion(0).getBlocks().begin(),
+          loop->getRegion(1).getBlocks());
+
+      rewriter.setInsertionPointToEnd(&ifOp.getThenRegion().front());
+      rewriter.create<scf::YieldOp>(loop.getLoc(), condOp.getArgs());
+
+      rewriter.setInsertionPointToEnd(&ifOp.getElseRegion().front());
+      SmallVector<Value> nonArgs;
+      for (auto A : loop.getInits()) {
+        nonArgs.push_back(
+            rewriter.create<ub::PoisonOp>(loop.getLoc(), A.getType()));
+      }
+      rewriter.create<scf::YieldOp>(loop.getLoc(), nonArgs);
+
+      for (size_t i = 0; i < loop.getInits().size(); i++) {
+        newYields[i] = ifOp->getResult(i);
+      }
+
+    } else {
+      forloop.getBody()->getOperations().splice(
+          forloop.getBody()->getOperations().end(),
+          loop.getAfter().front().getOperations());
+      for (size_t i = 0; i < loop.getInits().size(); i++) {
+        newYields[i] = oldYield.getResults()[i];
+      }
+    }
+
+    rewriter.setInsertionPointToEnd(forloop.getBody());
+    rewriter.create<scf::YieldOp>(loop.getLoc(), newYields);
+
+    rewriter.eraseOp(condOp);
+    rewriter.eraseOp(oldYield);
+
+    rewriter.replaceOp(loop,
+                       forloop.getResults().slice(loop.getInits().size(),
+                                                  loop.getResults().size()));
     return success();
   }
 };
@@ -1432,8 +1530,16 @@ struct MoveWhileAndDown : public OpRewritePattern<WhileOp> {
       if (auto BA = dyn_cast<BlockArgument>(extraCmp)) {
         lookThrough = oldYield.getOperand(BA.getArgNumber());
       }
-      if (!helper.computeLegality(/*sizeCheck*/ false, lookThrough)) {
+      if (!helper.computeLegality(rewriter, /*sizeCheck*/ false, lookThrough)) {
         continue;
+      }
+
+      SmallVector<int> afterIndVars;
+
+      for (auto en : llvm::enumerate(condOp.getArgs())) {
+        if (en.value() == helper.indVar) {
+          afterIndVars.push_back(en.index());
+        }
       }
 
       SmallVector<BlockArgument, 2> origBeforeArgs(
@@ -1467,9 +1573,9 @@ struct MoveWhileAndDown : public OpRewritePattern<WhileOp> {
 
       SmallVector<Value, 2> nextInits(unrollYield.begin(), unrollYield.end());
       Value falsev =
-          rewriter.create<ConstantIntOp>(loop.getLoc(), 0, extraCmp.getType());
+          rewriter.create<ConstantIntOp>(loop.getLoc(), extraCmp.getType(), 0);
       Value truev =
-          rewriter.create<ConstantIntOp>(loop.getLoc(), 1, extraCmp.getType());
+          rewriter.create<ConstantIntOp>(loop.getLoc(), extraCmp.getType(), 1);
       nextInits.push_back(truev);
       nextInits.push_back(loop.getInits()[helper.indVar.getArgNumber()]);
 
@@ -1552,9 +1658,17 @@ struct MoveWhileAndDown : public OpRewritePattern<WhileOp> {
       SmallVector<Value> postAfter(guard.getResults());
       IRMapping postMap;
       postMap.map(helper.indVar, trueInd);
-      postMap.map(postElseYields[helper.afterArgIdx], trueInd);
-      assert(helper.addIOp.getLhs() == postElseYields[helper.afterArgIdx] ||
-             helper.addIOp.getRhs() == postElseYields[helper.afterArgIdx]);
+      for (auto idx : afterIndVars)
+        postMap.map(postElseYields[idx], trueInd);
+
+      bool legal = false;
+      for (auto idx : afterIndVars) {
+        legal |= helper.addIOp.getLhs() == postElseYields[idx] ||
+                 helper.addIOp.getRhs() == postElseYields[idx];
+      }
+      assert(legal);
+      (void)legal;
+
       postAfter.push_back(
           cast<AddIOp>(rewriter.clone(*helper.addIOp, postMap)));
       rewriter.create<YieldOp>(loop.getLoc(), postAfter);
@@ -1683,9 +1797,9 @@ struct MoveWhileDown : public OpRewritePattern<WhileOp> {
 struct MoveWhileDown2 : public OpRewritePattern<WhileOp> {
   using OpRewritePattern<WhileOp>::OpRewritePattern;
 
-  /// Populates `crossing` with values (op results) that are defined in the same
-  /// block as `op` and above it, and used by at least one op in the same block
-  /// below `op`. Uses may be in nested regions.
+  /// Populates `crossing` with values (op results) that are defined in the
+  /// same block as `op` and above it, and used by at least one op in the same
+  /// block below `op`. Uses may be in nested regions.
   static void findValuesUsedBelow(IfOp op, llvm::SetVector<Value> &crossing) {
     for (Operation *it = op->getPrevNode(); it != nullptr;
          it = it->getPrevNode()) {
@@ -1781,8 +1895,9 @@ struct MoveWhileDown2 : public OpRewritePattern<WhileOp> {
               }
             return failure();
           }
-          // If the value yielded from then then is defined in the while before
-          // but not being moved down with the if, don't change anything.
+          // If the value yielded from then then is defined in the while
+          // before but not being moved down with the if, don't change
+          // anything.
           if (!ifOp.getThenRegion().isAncestor(thenYielded.getParentRegion()) &&
               op.getBefore().isAncestor(thenYielded.getParentRegion())) {
             prevResults.push_back(std::get<0>(pair));
@@ -2447,8 +2562,8 @@ struct SubToAdd : public OpRewritePattern<SubIOp> {
     if (auto cop = op.getOperand(1).getDefiningOp<ConstantIntOp>()) {
       rewriter.replaceOpWithNewOp<AddIOp>(
           op, op.getOperand(0),
-          rewriter.create<ConstantIntOp>(cop.getLoc(), -cop.value(),
-                                         cop.getType()));
+          rewriter.create<ConstantIntOp>(cop.getLoc(), cop.getType(),
+                                         -cop.value()));
       return success();
     }
     return failure();
@@ -2717,8 +2832,8 @@ struct SelectI1Simplify : public OpRewritePattern<arith::SelectOp> {
 // 3. If there is only 1 unique user of op
 // 4. If the if and else operands are not of the same operation
 // 5. If the operands are not readnone
-// In any of these cases we can't propagate the operand outside the if operation
-// and are yielded instead
+// In any of these cases we can't propagate the operand outside the if
+// operation and are yielded instead
 bool isLegalToSinkYieldedValue(Value thenOperand, Value elseOperand,
                                scf::IfOp ifOp) {
   if (thenOperand.getType() != elseOperand.getType())
@@ -2825,8 +2940,8 @@ std::pair<Value, size_t> checkOperands(
 // Algorithm:
 // 1. Extract yield operations from both regions
 // 2. Check if yield operations match in if and else region
-// 3. If match, recursively check their operands to see if they can be moved as
-// well
+// 3. If match, recursively check their operands to see if they can be moved
+// as well
 // 4. Track all ops which can be moved outside the if op
 // 5. Track yiels ops which didn't change and the ones which changed.
 // 6. Create a new if operation with updated yields
@@ -2862,9 +2977,9 @@ struct IfYieldMovementPattern : public OpRewritePattern<scf::IfOp> {
                     std::pair<Value, SmallVector<std::pair<Value, size_t>>>>
         opsToMoveAfterIf;
 
-    // A list of operands defined within the if block, which have been promoted
-    // to be yielded from the if statement. The size_t argument denotes the
-    // index of the new if result which contains the value
+    // A list of operands defined within the if block, which have been
+    // promoted to be yielded from the if statement. The size_t argument
+    // denotes the index of the new if result which contains the value
     DenseMap<std::pair<Value, Value>, size_t> thenOperationsToYieldIndex;
 
     bool changed = false;
@@ -2878,8 +2993,9 @@ struct IfYieldMovementPattern : public OpRewritePattern<scf::IfOp> {
                         thenOperationsToYieldIndex, rewriter);
 
       originalYields.emplace_back(yld);
-      if (yld.first)
+      if (yld.first) {
         changed = true;
+      }
     }
 
     // If no changes to yield operands, return failure
@@ -2977,7 +3093,7 @@ struct IfYieldMovementPattern : public OpRewritePattern<scf::IfOp> {
       if (!pair.first) {
         newResults.push_back(newIfOp.getResult(pair.second));
       } else {
-        newResults.push_back(mappingAfterIf.lookup(pair.first));
+        newResults.push_back(mappingAfterIf.lookupOrDefault(pair.first));
       }
     }
 
@@ -2987,13 +3103,139 @@ struct IfYieldMovementPattern : public OpRewritePattern<scf::IfOp> {
   }
 };
 
+bool isOneGreaterThan(Value v1, Value v2) {
+  APInt i1, i2;
+  if (matchPattern(v1, m_ConstantInt(&i1)) &&
+      matchPattern(v2, m_ConstantInt(&i2))) {
+    return i1 == (i2 + 1);
+  }
+  if (auto add = v1.getDefiningOp<arith::AddIOp>()) {
+    if (add.getLhs() == v2 && matchPattern(add.getRhs(), m_One()))
+      return true;
+  }
+
+  return false;
+}
+
+struct MaxSimplify : public OpRewritePattern<arith::MaxSIOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::MaxSIOp maxOp,
+                                PatternRewriter &rewriter) const override {
+    Operation *op = maxOp;
+
+    for (Operation *op = maxOp; op; op = op->getParentOp()) {
+      auto ifOp = dyn_cast_or_null<scf::IfOp>(op->getParentOp());
+      if (!ifOp)
+        continue;
+      auto cmpOp = ifOp.getCondition().getDefiningOp<arith::CmpIOp>();
+      if (!cmpOp)
+        continue;
+      for (int i = 0; i < 2; i++) {
+        for (int j = 0; j < 2; j++) {
+          if (maxOp->getOperand(i) == cmpOp->getOperand(j)) {
+            auto pred = cmpOp.getPredicate();
+            if (j == 1)
+              pred = swapPredicate(pred);
+            if (pred == arith::CmpIPredicate::sgt &&
+                isOneGreaterThan(maxOp->getOperand(1 - i),
+                                 cmpOp->getOperand(1 - j))) {
+              if (op->getParentRegion() == &ifOp.getThenRegion()) {
+                rewriter.replaceOp(maxOp, maxOp->getOperand(i));
+                return success();
+              } else {
+                rewriter.replaceOp(maxOp, maxOp->getOperand(1 - i));
+                return success();
+              }
+            }
+
+            if (pred == arith::CmpIPredicate::sge &&
+                maxOp->getOperand(1 - i) == cmpOp->getOperand(1 - j)) {
+              if (op->getParentRegion() == &ifOp.getThenRegion()) {
+                rewriter.replaceOp(maxOp, maxOp->getOperand(i));
+                return success();
+              } else {
+                rewriter.replaceOp(maxOp, maxOp->getOperand(1 - i));
+                return success();
+              }
+            }
+          }
+        }
+      }
+    }
+    return failure();
+    // Ensure both regions exist and have single blocks
+  }
+};
+
+struct ForBoundUnSwitch : public OpRewritePattern<scf::ForOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::ForOp loop,
+                                PatternRewriter &rewriter) const override {
+
+    auto ifOp = dyn_cast<scf::IfOp>(loop->getParentOp());
+    if (!ifOp)
+      return failure();
+
+    auto cmpOp = ifOp.getCondition().getDefiningOp<arith::CmpIOp>();
+    if (!cmpOp)
+      return failure();
+
+    Value niters = nullptr;
+    if (matchPattern(loop.getLowerBound(), m_Zero())) {
+      niters = loop.getUpperBound();
+    } else if (auto addOp =
+                   loop.getUpperBound().getDefiningOp<arith::AddIOp>()) {
+      for (int i = 0; i < 2; i++) {
+        if (addOp->getOperand(i) == loop.getLowerBound()) {
+          niters = addOp->getOperand(1 - i);
+          break;
+        }
+      }
+    }
+
+    if (!niters)
+      return failure();
+
+    bool legal = false;
+    for (int j = 0; j < 2; j++) {
+      if (niters == cmpOp->getOperand(j)) {
+        auto pred = cmpOp.getPredicate();
+        if (j == 1)
+          pred = swapPredicate(pred);
+        if (pred == arith::CmpIPredicate::sgt &&
+            matchPattern(cmpOp->getOperand(1 - j), m_Zero())) {
+          legal = true;
+          break;
+        }
+      }
+    }
+    if (!legal)
+      return failure();
+    for (auto v : {loop.getLowerBound(), loop.getUpperBound()}) {
+      if (auto op = v.getDefiningOp()) {
+        if (op->getParentOp() == ifOp) {
+          rewriter.modifyOpInPlace(op, [&]() { op->moveBefore(ifOp); });
+        }
+      }
+    }
+
+    if (&ifOp.getThenRegion().front().front() != loop) {
+      return failure();
+    }
+    rewriter.modifyOpInPlace(loop, [&]() { loop->moveBefore(ifOp); });
+    return success();
+  }
+};
+
 void CanonicalizeFor::runOnOperation() {
   mlir::RewritePatternSet rpl(getOperation()->getContext());
   populateSelectExtractPatterns(rpl);
   rpl.add<IfYieldMovementPattern, truncProp, ForOpInductionReplacement,
-          RemoveUnusedForResults, RemoveUnusedArgs, MoveDoWhileToFor,
-          MoveWhileToFor, RemoveWhileSelect, SelectTruncToTruncSelect,
-          SelectI1Simplify,
+          RemoveUnusedForResults, RemoveUnusedArgs, MoveWhileToFor,
+          RemoveWhileSelect, SelectTruncToTruncSelect, MaxSimplify,
+          ForBoundUnSwitch, SelectI1Simplify, RemoveInductionVarRelated,
 
           MoveWhileDown, MoveWhileDown2,
 

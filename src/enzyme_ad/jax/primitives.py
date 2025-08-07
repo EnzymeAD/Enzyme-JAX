@@ -98,231 +98,458 @@ class JaXPipeline:
         return self.passes.count("enzyme-wrap")
 
 
-def hlo_opts():
-    return """enzyme-hlo-generate-td{
-            patterns=compare_op_canon<16>;
-broadcast_in_dim_op_canon<16>;
-convert_op_canon<16>;
-dynamic_broadcast_in_dim_op_not_actually_dynamic<16>;
-chained_dynamic_broadcast_in_dim_canonicalization<16>;
-dynamic_broadcast_in_dim_all_dims_non_expanding<16>;
-noop_reduce_op_canon<16>;
-empty_reduce_op_canon<16>;
-dynamic_reshape_op_canon<16>;
-get_tuple_element_op_canon<16>;
-real_op_canon<16>;
-imag_op_canon<16>;
-conj_complex_negate<16>;
-get_dimension_size_op_canon<16>;
-gather_op_canon<16>;
-reshape_op_canon<16>;
-merge_consecutive_reshapes<16>;
-transpose_is_reshape<16>;
-zero_extent_tensor_canon<16>;
-reorder_elementwise_and_shape_op<16>;
-dynamic_gather_op_is_not_dynamic<16>;
-divide_sqrt_to_multiply_rsqrt<16>;
-transpose_broadcast_in_dim_to_broadcast_in_dim<16>;
+def optimization_passes(
+    *,
+    inline: bool = True,
+    no_nan: bool = False,
+    transpose_propagate: str = "up",
+    reshape_propagate: str = "up",
+    max_constant_threshold: int = 1024,
+):
+    transform_passes_list = [
+        "compare_op_canon<16>",
+        "transpose_transpose<16>",
+        "broadcast_in_dim_op_canon<16>",
+        "convert_op_canon<16>",
+        "dynamic_broadcast_in_dim_op_not_actually_dynamic<16>",
+        "chained_dynamic_broadcast_in_dim_canonicalization<16>",
+        "dynamic_broadcast_in_dim_all_dims_non_expanding<16>",
+        "noop_reduce_op_canon<16>",
+        "empty_reduce_op_canon<16>",
+        "dynamic_reshape_op_canon<16>",
+        "get_tuple_element_op_canon<16>",
+        "real_op_canon<16>",
+        "imag_op_canon<16>",
+        "conj_complex_negate<16>",
+        "get_dimension_size_op_canon<16>",
+        "gather_op_canon<16>",
+        "reshape_op_canon<16>",
+        "merge_consecutive_reshapes<16>",
+        "transpose_is_reshape<16>",
+        "zero_extent_tensor_canon<16>",
+        "cse_broadcast_in_dim<16>",
+        "cse_slice<16>",
+        "cse_transpose<16>",
+        "cse_convert<16>",
+        "cse_pad<16>",
+        "cse_dot_general<16>",
+        "cse_reshape<16>",
+        "cse_mul<16>",
+        "cse_div<16>",
+        "cse_add<16>",
+        "cse_subtract<16>",
+        "cse_min<16>",
+        "cse_max<16>",
+        "cse_neg<16>",
+        "cse_abs<16>",
+        "cse_concatenate<16>",
+        f"concatenate_op_canon<16>({max_constant_threshold})",
+        f"select_op_canon<16>({max_constant_threshold})",
+        "add_simplify<16>",
+        "sub_simplify<16>",
+        "and_simplify<16>",
+        "max_simplify<16>",
+        "min_simplify<16>",
+        "or_simplify<16>",
+        "xor_simplify<16>",
+        "mul_simplify<16>",
+        "div_simplify<16>",
+        "rem_simplify<16>",
+        "pow_simplify<16>",
+        "simplify_extend<16>",
+        "simplify_wrap<16>",
+        "simplify_rotate<16>",
+        "noop_slice<16>",
+        "noop_reverse<16>",
+        "slice_slice<16>",
+        "shift_right_logical_simplify<16>",
+        f"pad_simplify<16>({max_constant_threshold})",
+        "select_pad_to_dus<1>",
+        "and_pad_pad<1>",
+        "negative_pad_to_slice<16>",
+        "slice_simplify<16>",
+        "convert_simplify<16>",
+        "dynamic_slice_to_static<16>",
+        "dynamic_update_slice_elim<16>",
+        "concat_to_broadcast<16>",
+        "reduce_to_reshape<16>",
+        "broadcast_to_reshape<16>",
+        "slice_internal",
+        f"iota_simplify<16>({max_constant_threshold})",
+        f"broadcast_in_dim_simplify<16>({max_constant_threshold})",
+        "convert_concat<1>",
+        "dynamic_update_to_concat<1>",
+        "slice_of_dynamic_update<1>",
+        "slice_elementwise<1>",
+        "slice_pad<1>",
+        "dot_reshape_dot<1>",
+        "concat_fuse<1>",
+        "pad_reshape_pad<1>",
+        "pad_pad<1>",
+        "concat_push_binop_add<1>",
+        "concat_push_binop_mul<1>",
+        "scatter_to_dynamic_update_slice<1>",
+        "reduce_concat<1>",
+        "slice_concat<1>",
+        "concat_slice<1>",
+        "select_op_used_within_if<1>",
+        "bin_broadcast_splat_add<1>",
+        "bin_broadcast_splat_subtract<1>",
+        "bin_broadcast_splat_div<1>",
+        "bin_broadcast_splat_mul<1>",
+        "dot_general_simplify<16>",
+        "transpose_simplify<16>",
+        "reshape_empty_broadcast<1>",
+        "add_pad_pad_to_concat<1>",
+        "broadcast_reshape<1>",
+        "concat_pad<1>",
+        "reduce_pad<1>",
+        "broadcast_pad<1>",
+        "zero_product_reshape_pad<1>",
+        "mul_zero_pad<1>",
+        "div_zero_pad<1>",
+        "binop_const_reshape_pad<1>",
+        "binop_const_pad_add<1>",
+        "binop_const_pad_subtract<1>",
+        "binop_const_pad_mul<1>",
+        "binop_const_pad_div<1>",
+        "binop_binop_pad_pad_add<1>",
+        "binop_binop_pad_pad_mul<1>",
+        "binop_pad_pad_add<1>",
+        "binop_pad_pad_subtract<1>",
+        "binop_pad_pad_mul<1>",
+        "binop_pad_pad_div<1>",
+        "binop_pad_pad_min<1>",
+        "binop_pad_pad_max<1>",
+        "unary_pad_push_convert<1>",
+        "unary_pad_push_tanh<1>",
+        "unary_pad_push_exp<1>",
+        "transpose_dot_reorder<1>",
+        "dot_transpose<1>",
+        "transpose_convolution<1>",
+        "convolution_transpose<1>",
+        "convert_convert_float<1>",
+        "concat_to_pad<1>",
+        "reshape_iota<1>",
+        "broadcast_reduce<1>",
+        "slice_dot_general<1>",
+        "if_inline<1>",
+        "if_to_select<1>",
+        "dynamic_gather_op_is_not_dynamic<16>",
+        "divide_sqrt_to_multiply_rsqrt<16>",
+        "associative_binary_op_reordering<1>",
+        "transpose_broadcast_in_dim_to_broadcast_in_dim<16>",
+        "scatter_indices_are_unique",
+        "replace_neg_add_with_subtract",
+        "binop_const_simplify",
+        "not_select_simplify",
+        "common_compare_expression_rewrite",
+        "compare_select_simplify",
+        "while_simplify<1>(1)",
+        "if_remove_unused",
+        "transpose_reshape_to_broadcast",
+        "reshape_transpose_to_broadcast",
+        "dus_dus",
+        "dus_dus_concat",
+        "abs_positive_simplify",
+        "transpose_unary_transpose_abs",
+        "transpose_unary_transpose_neg",
+        "transpose_unary_transpose_sqrt",
+        "transpose_unary_transpose_rsqrt",
+        "transpose_unary_transpose_ceil",
+        "transpose_unary_transpose_convert",
+        "transpose_unary_transpose_cosine",
+        "transpose_unary_transpose_exp",
+        "transpose_unary_transpose_expm1",
+        "transpose_unary_transpose_log",
+        "transpose_unary_transpose_log1p",
+        "transpose_unary_transpose_sign",
+        "transpose_unary_transpose_sine",
+        "transpose_unary_transpose_tanh",
+        "select_comp_iota_const_simplify<1>",
+        "sign_abs_simplify<1>",
+        "broadcastindim_is_reshape",
+        "slice_reduce_window<1>",
+        "while_deadresult",
+        "while_dus",
+        "dus_licm(0)",
+        "while_op_induction_replacement",
+        "dus_pad",
+        "dus_concat",
+        "slice_dus_to_concat",
+        "while_induction_reduction",
+        "slice_licm(0)",
+        "pad_licm(0)",
+        "elementwise_licm(0)",
+        "concatenate_licm(0)",
+        "slice_broadcast",
+        "while_pad_induction_reduction",
+        "while_licm<1>(1)",
+        "associative_common_mul_op_reordering",
+        "slice_select_to_select_slice",
+        "pad_concat_to_concat_pad",
+        "slice_if",
+        "dus_to_i32",
+        "rotate_pad",
+        "slice_extend",
+        "concat_wrap",
+        "cse_extend<16>",
+        "cse_wrap<16>",
+        "cse_rotate<16>",
+        "cse_rotate<16>",
+        "concat_concat_axis_swap",
+        "concat_multipad",
+        "concat_concat_to_dus",
+        "speculate_if_pad_to_select",
+        "broadcast_iota_simplify",
+        "select_comp_iota_to_dus",
+        "compare_cleanup",
+        "broadcast_compare",
+        "not_compare",
+        "broadcast_iota",
+        "cse_iota",
+        "compare_iota_const_simplify",
+        "reshuffle_ands_compares",
+        "square_abs_simplify",
+        "divide_divide_simplify",
+        "concat_reshape_slice",
+        "full_reduce_reshape_or_transpose",
+        "concat_reshape_reduce",
+        "concat_elementwise",
+        "reduce_reduce",
+        "conj_real",
+        "select_broadcast_in_dim",
+        "if_op_lift_common_ops",
+        "involution_neg_simplify",
+        "involution_conj_simplify",
+        "involution_not_simplify",
+        "real_conj_simplify",
+        "conj_complex_simplify",
+        "split_convolution_into_reverse_convolution",
+        # TODO we want to enable but may cause an infinite compile time
+        # "concat_to_onedim_dusslice",
+        "scatter_multiply_simplify",
+        "unary_elementwise_scatter_simplify",
+        # "chained_multiply_to_power", # TODO: make it into an optional pass
+        "power_multiply_to_power",
+        "common_associative_commutative_op_reorder",
+        "log_simplify",
+        "neg_mul_const_simplify",
+        "neg_div_const_simplify",
+        "reshape_deletions_broadcast_in_dim_simplify",
+        "reshape_insertions_broadcast_in_dim_simplify",
+    ]
 
-cse_broadcast_in_dim<16>;
-cse_slice<16>;
-cse_transpose<16>;
-cse_convert<16>;
-cse_pad<16>;
-cse_dot_general<16>;
-cse_reshape<16>;
-cse_mul<16>;
-cse_div<16>;
-cse_add<16>;
-cse_subtract<16>;
-cse_min<16>;
-cse_max<16>;
-cse_neg<16>;
-cse_concatenate<16>;
+    # constant propagation patterns
+    transform_passes_list += [
+        # unary constant propagation
+        "chlo_inf_const_prop<16>",
+        "gamma_const_prop<16>",
+        "abs_const_prop<16>",
+        "log_const_prop<1>",
+        "log_plus_one_const_prop<1>",
+        "is_finite_const_prop",
+        "not_const_prop",
+        "neg_const_prop",
+        "sqrt_const_prop",
+        "rsqrt_const_prop",
+        "cos_const_prop",
+        "sin_const_prop",
+        "exp_const_prop",
+        "expm1_const_prop",
+        "tanh_const_prop",
+        "logistic_const_prop",
+        "conj_const_prop",
+        "ceil_const_prop",
+        "cbrt_const_prop",
+        "real_const_prop",
+        "imag_const_prop",
+        "round_const_prop",
+        "round_nearest_even_const_prop",
+        "sign_const_prop",
+        "floor_const_prop",
+        "tan_const_prop",
+        # binary constant propagation
+        "add_const_prop",
+        "and_const_prop",
+        "atan2_const_prop",
+        "complex_const_prop",
+        "div_const_prop",
+        "max_const_prop",
+        "min_const_prop",
+        "mul_const_prop",
+        "or_const_prop",
+        "pow_const_prop",
+        "rem_const_prop",
+        "sub_const_prop",
+        "xor_const_prop",
+        # other constant propagations
+        "const_prop_through_barrier<16>",
+        f"concat_const_prop<1>({max_constant_threshold})",
+        f"dynamic_update_slice_const_prop({max_constant_threshold})",
+        "scatter_update_computation_const_prop",
+        "gather_const_prop",
+    ]
 
-concatenate_op_canon<16>(1024);
-select_op_canon<16>(1024);
-add_simplify<16>;
-sub_simplify<16>;
-and_simplify<16>;
-max_simplify<16>;
-min_simplify<16>;
-or_simplify<16>;
-mul_simplify<16>;
-div_simplify<16>;
-rem_simplify<16>;
-pow_simplify<16>;
-noop_slice<16>;
-noop_reverse<16>;
-const_prop_through_barrier<16>;
-slice_slice<16>;
-shift_right_logical_simplify<16>;
-pad_simplify<16>(1024);
-negative_pad_to_slice<16>;
-slice_simplify<16>;
-convert_simplify<16>;
-dynamic_slice_to_static<16>;
-dynamic_update_slice_elim<16>;
-concat_to_broadcast<16>;
-reduce_to_reshape<16>;
-broadcast_to_reshape<16>;
-gather_simplify<16>;
-iota_simplify<16>(1024);
-broadcast_in_dim_simplify<16>(1024);
-convert_concat<1>;
-dynamic_update_to_concat<1>;
-slice_of_dynamic_update<1>;
-slice_elementwise<1>;
-slice_pad<1>;
-slice_reduce_window<1>;
-pad_reduce_window<1>;
-dot_reshape_dot<1>;
-concat_const_prop<1>(1024);
-dynamic_update_slice_const_prop<1>(1024);
-log_const_prop<1>;
-log_plus_one_const_prop<1>;
-chlo_inf_const_prop<1>;
-gamma_const_prop<1>;
-concat_fuse<1>;
-pad_reshape_pad<1>;
-pad_pad<1>;
-concat_push_binop_add<1>;
-concat_push_binop_mul<1>;
-scatter_to_dynamic_update_slice<1>;
-reduce_concat<1>;
-slice_concat<1>;
-concat_slice<1>;
-select_comp_iota_const_simplify;
-select_op_used_within_if<1>;
-dus_dus<1>;
-dus_dus_concat<1>;
-transpose_dus<1>;
-replace_neg_add_with_subtract<16>;
-sign_abs_simplify<1>;
-abs_positive_simplify<1>;
+    if reshape_propagate == "up":
+        transform_passes_list += [
+            "reshape_concat",
+            "reshape_dus",
+            "dot_reshape_pad<1>",
+            "pad_dot_general<1>(0)",
+            "pad_dot_general<1>(1)",
+            "reshape_pad",
+            "reshape_wrap",
+            "reshape_rotate",
+            "reshape_extend",
+        ]
+    elif reshape_propagate == "down":
+        transform_passes_list += [
+            "concat_appending_reshape",
+            "slice_reshape",
+            "slice_reshape_slice<1>",
+            "slice_reshape_concat<1>",
+            "slice_reshape_elementwise<1>",
+            "slice_reshape_dot_general<1>",
+            "slice_reshape_pad<1>",
+            "elementwise_reshape_like",
+        ]
+    else:
+        raise ValueError("Invalid value for reshape_propagate")
 
-bin_broadcast_splat_add<1>;
-bin_broadcast_splat_subtract<1>;
-bin_broadcast_splat_div<1>;
-bin_broadcast_splat_mul<1>;
-reshape_iota<16>;
-slice_reshape_slice<1>;
-dot_general_simplify<16>;
-transpose_simplify<16>;
-reshape_empty_broadcast<1>;
-add_pad_pad_to_concat<1>;
-broadcast_reshape<1>;
-broadcast_iota_simplify;
+    if transpose_propagate == "up":
+        transform_passes_list += [
+            "transpose_select",
+            "transpose_while",
+            "transpose_slice",
+            "transpose_concat",
+            "transpose_iota",
+            "transpose_reduce",
+            "transpose_reduce_window",
+            "transpose_dus",
+            "transpose_pad<1>",
+            "transpose_einsum<1>",
+            "transpose_wrap",
+            "transpose_extend",
+            "transpose_rotate",
+            "transpose_dynamic_slice",
+            "transpose_reverse",
+            "transpose_batch_norm_training",
+            "transpose_batch_norm_inference",
+            "transpose_batch_norm_grad",
+            "transpose_if",
+            "transpose_fft",
+            "transpose_reshape",
+        ]
+    elif transpose_propagate == "down":
+        transform_passes_list += [
+            "reorder_elementwise_and_shape_op<16>",
+            "binary_op_transpose_simplify_add",
+            "binary_op_transpose_simplify_sub",
+            "binary_op_transpose_simplify_mul",
+            "binary_op_transpose_simplify_div",
+            "binary_op_transpose_simplify_min",
+            "binary_op_transpose_simplify_max",
+            "binary_op_transpose_simplify_pow",
+            "binary_op_transpose_simplify_rem",
+            "binary_op_transpose_simplify_or",
+            "binary_op_transpose_simplify_and",
+            "binary_op_transpose_simplify_xor",
+            "slice_transpose",
+            "einsum_transpose<1>",
+            "slice_reshape_transpose<1>",
+            "reduce_transpose_simplify",
+            "reverse_transpose",
+            "transpose_all_users_slice",
+        ]
+    else:
+        raise ValueError("Invalid value for transpose_propagate")
 
-binary_op_transpose_simplify_add<1>;
-binary_op_transpose_simplify_sub<1>;
-binary_op_transpose_simplify_mul<1>;
-binary_op_transpose_simplify_div<1>;
-binary_op_transpose_simplify_min<1>;
-binary_op_transpose_simplify_max<1>;
-binary_op_transpose_simplify_pow<1>;
-binary_op_transpose_simplify_and<1>;
-binary_op_transpose_simplify_or<1>;
-binary_op_transpose_simplify_xor<1>;
-binary_op_transpose_simplify_rem<1>;
-associative_binary_op_reordering<1>;
+    if no_nan:
+        transform_passes_list += [
+            "no_nan_compare_simplify(1)",
+            "no_nan_self_sub_simplify(1)",
+            "no_nan_add_sub_simplify(1)",
+            "no_nan_mul_simplify(1)",
+            "no_nan_div_simplify(1)",
+            # "no_nan_zero_base_pow_simplify(1)",
+        ]
+    else:
+        transform_passes_list += [
+            "no_nan_compare_simplify(0)",
+            "no_nan_self_sub_simplify(0)",
+            "no_nan_add_sub_simplify(0)",
+            "no_nan_mul_simplify(0)",
+            "no_nan_div_simplify(0)",
+            # "no_nan_zero_base_pow_simplify(0)",
+        ]
 
-binop_const_simplify<1>;
-compare_select_simplify;
-common_compare_expression_rewrite;
-not_select_simplify;
-scatter_update_computation_const_prop;
-scatter_indices_are_unique;
-reduce_transpose_simplify;
+    transform_passes = ",".join(
+        [
+            "enzyme-hlo-generate-td{patterns=" + ";".join(transform_passes_list) + "}",
+            "transform-interpreter",
+            "enzyme-hlo-remove-transform",
+        ]
+    )
 
-transpose_unary_transpose_abs<1>;
-transpose_unary_transpose_neg<1>;
-transpose_unary_transpose_sqrt<1>;
-transpose_unary_transpose_rsqrt<1>;
-transpose_unary_transpose_ceil<1>;
-transpose_unary_transpose_convert<1>;
-transpose_unary_transpose_cosine<1>;
-transpose_unary_transpose_exp<1>;
-transpose_unary_transpose_expm1<1>;
-transpose_unary_transpose_log<1>;
-transpose_unary_transpose_log1p<1>;
-transpose_unary_transpose_sign<1>;
-transpose_unary_transpose_sine<1>;
-transpose_unary_transpose_tanh<1>;
+    func_passes = ",".join(["canonicalize", "cse", "canonicalize", transform_passes])
 
-slice_reshape_concat<1>;
-slice_reshape_elementwise<1>;
-slice_reshape_transpose<1>;
-slice_reshape_dot_general<1>;
-concat_pad<1>;
+    if inline:
+        func_passes = (
+            "inline{default-pipeline=canonicalize max-iterations=4}" + "," + func_passes
+        )
+    return func_passes
 
-reduce_pad<1>;
-broadcast_pad<1>;
 
-zero_product_reshape_pad<1>;
-mul_zero_pad<1>;
-div_zero_pad<1>;
+# TODO: implement options similar to ones in Reactant for benchmarking
+#       currently we mimic the `:all` option from Reactant
+def full_optimization_pass_pipeline(
+    *,
+    inline: bool = True,
+    no_nan: bool = False,
+    transpose_propagate: str = "up",
+    reshape_propagate: str = "up",
+    max_constant_threshold: int = 1024,
+):
+    opt_passes = optimization_passes(
+        inline=inline,
+        no_nan=no_nan,
+        transpose_propagate=transpose_propagate,
+        reshape_propagate=reshape_propagate,
+        max_constant_threshold=max_constant_threshold,
+    )
 
-binop_const_reshape_pad<1>;
-binop_const_pad_add<1>;
-binop_const_pad_subtract<1>;
-binop_const_pad_mul<1>;
-binop_const_pad_div<1>;
+    enzyme_pass = 'enzyme{postpasses="arith-raise{stablehlo=true},canonicalize,cse,canonicalize,remove-unnecessary-enzyme-ops,enzyme-simplify-math,canonicalize,cse,canonicalize"}'
 
-slice_reshape_pad<1>;
-binop_binop_pad_pad_add<1>;
-binop_binop_pad_pad_mul<1>;
-binop_pad_pad_add<1>;
-binop_pad_pad_subtract<1>;
-binop_pad_pad_mul<1>;
-binop_pad_pad_div<1>;
-binop_pad_pad_min<1>;
-binop_pad_pad_max<1>;
+    propagate_down_passes = ""
+    if transpose_propagate == "up" or reshape_propagate == "up":
+        propagate_down_passes = optimization_passes(
+            inline=inline,
+            no_nan=no_nan,
+            transpose_propagate=transpose_propagate,
+            reshape_propagate=reshape_propagate,
+            max_constant_threshold=max_constant_threshold,
+        )
 
-unary_pad_push_convert<1>;
-unary_pad_push_tanh<1>;
-unary_pad_push_exp<1>;
-
-transpose_pad<1>;
-
-transpose_dot_reorder<1>;
-dot_transpose<1>;
-convert_convert_float<1>;
-concat_to_pad<1>;
-concat_appending_reshape<1>;
-reshape_iota<1>;
-
-broadcast_reduce<1>;
-slice_dot_general<1>;
-
-dot_reshape_pad<1>;
-pad_dot_general<1>(0);
-
-if_remove_unused<1>;
-if_inline<1>;
-if_to_select<1>;
-if_pred_propagation<1>;
-while_simplify<1>(0);
-while_deadresult<1>;
-
-broadcastindim_is_reshape<1>;
-
-dot_reshape_pad<1>;
-pad_dot_general<1>(1);
-
-reshape_reduce_window<1>;
-            },
-            transform-interpreter,
-            enzyme-hlo-remove-transform
-        """
+    return ",".join(
+        [
+            "mark-func-memory-effects",
+            opt_passes,
+            "enzyme-batch",
+            opt_passes,
+            enzyme_pass,
+            opt_passes,
+            "canonicalize",
+            "remove-unnecessary-enzyme-ops",
+            "enzyme-simplify-math",
+            opt_passes,
+            propagate_down_passes,
+        ]
+    )
 
 
 DefaultCPPPipeline = XLAPipeline()
-DefaultJaXPipeline = JaXPipeline(
-    "inline{default-pipeline=canonicalize max-iterations=4},canonicalize,cse,enzyme-hlo-unroll,canonicalize,cse,"
-    + hlo_opts()
-    + ", cse"
-)
+DefaultJaXPipeline = JaXPipeline(full_optimization_pass_pipeline())
 
 
 def pass_pipeline(options):
@@ -377,13 +604,7 @@ def cflags():
 
 def optimize_module(mod, pipeline=None):
     if pipeline is None:
-        pipeline = (
-            """
-            inline{default-pipeline=canonicalize max-iterations=4},
-            canonicalize,cse,
-            canonicalize,"""
-            + hlo_opts()
-        )
+        pipeline = full_optimization_pass_pipeline()
     enzyme_call.optimize_module(mod, pipeline)
     return
 
@@ -518,6 +739,7 @@ def _enzyme_aug_abstract_eval(
         if "print_mlir" in jit_options:
             del jit_options["print_mlir"]
         (avals_in, avals_inkw) = jax.tree_util.tree_unflatten(in_tree, args_flat)
+        jit_options = dict(jit_options)
         lowered_func = lower(jax.jit(mfunc, **jit_options), avals_in, kwargs=avals_inkw)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
         source = mhlo.operation.get_asm(enable_debug_info=True)
@@ -645,6 +867,9 @@ def _enzyme_primal_lowering(
 
     if lang == LANG_MHLO:
         (in_tree, in_idx_map, out_idx_map, mfunc, jit_options) = source
+        in_idx_map = dict(in_idx_map)
+        out_idx_map = dict(out_idx_map)
+        jit_options = dict(jit_options)
         print_mlir = False
         if "print_mlir" in jit_options:
             print_mlir = jit_options["print_mlir"]
@@ -878,6 +1103,7 @@ def _enzyme_fwd_lowering(
         (avals_in, avals_inkw) = jax.tree_util.tree_unflatten(
             in_tree, ctx.avals_in[::2]
         )
+        jit_options = dict(jit_options)
         lowered_func = lower(jax.jit(mfunc, **jit_options), avals_in, kwargs=avals_inkw)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
         source = mhlo.operation.get_asm(enable_debug_info=True)
@@ -949,6 +1175,7 @@ def _enzyme_aug_lowering(
         if "print_mlir" in jit_options:
             del jit_options["print_mlir"]
         (avals_in, avals_inkw) = jax.tree_util.tree_unflatten(in_tree, ctx.avals_in)
+        jit_options = dict(jit_options)
         lowered_func = lower(jax.jit(mfunc, **jit_options), avals_in, kwargs=avals_inkw)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
         source = mhlo.operation.get_asm(enable_debug_info=True)
@@ -1025,6 +1252,7 @@ def _enzyme_rev_lowering(
         if "print_mlir" in jit_options:
             del jit_options["print_mlir"]
         (avals_in, avals_inkw) = jax.tree_util.tree_unflatten(in_tree, ctx.avals_out)
+        jit_options = dict(jit_options)
         lowered_func = lower(jax.jit(mfunc, **jit_options), avals_in, kwargs=avals_inkw)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
         source = mhlo.operation.get_asm(enable_debug_info=True)
@@ -1096,7 +1324,7 @@ def ffi_call(
         source=source,
         fn=fn,
         argv=argv,
-        out_shapes=out_shapes,
+        out_shapes=tuple(out_shapes),
         lang=lang,
         pipeline_options=pipeline_options,
     )
@@ -1157,10 +1385,16 @@ def hlo_call(
 
     return _enzyme_primal_p.bind(
         *args,
-        source=(in_tree, in_idx_map, out_idx_map, mfunc, jit_options),
+        source=(
+            in_tree,
+            tuple(in_idx_map.items()),
+            tuple(out_idx_map.items()),
+            mfunc,
+            tuple(jit_options.items()),
+        ),
         fn=fn,
         argv=argv,
-        out_shapes=out_shapes,
+        out_shapes=tuple(out_shapes),
         lang=LANG_MHLO,
         pipeline_options=JaXPipeline(passes),
     )
@@ -1212,6 +1446,8 @@ def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
     shadconv = None
     if pipeline_options.mlir_ad() and kwargs["lang"] == LANG_MHLO:
         (in_tree, in_idx_map, out_idx_map, mfunc, jit_options) = kwargs["source"]
+        in_idx_map = dict(in_idx_map)
+        out_idx_map = dict(out_idx_map)
         act_tup = []
         args = []
 
@@ -1232,10 +1468,14 @@ def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
 
         outshapes = kwargs["out_shapes"]
         ret_act_tup = ",".join(["enzyme_dup"] * len(outshapes))
-        afterad = "arith-raise{stablehlo=true}, " + hlo_opts() + ", cse, canonicalize"
+        afterad = (
+            "arith-raise{stablehlo=true}, "
+            + optimization_passes()
+            + ", cse, canonicalize"
+        )
         newpasses = (
             "inline{default-pipeline=canonicalize max-iterations=4},"
-            + hlo_opts()
+            + optimization_passes()
             + ", cse,enzyme-wrap{infn=main outfn= retTys="
             + ret_act_tup
             + " argTys="
@@ -1260,7 +1500,13 @@ def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
         out_idx_map2 = {2 * k: v for k, v in out_idx_map.items()} | {
             2 * k + 1: v for k, v in out_idx_map.items()
         }
-        source = (in_tree, avals, out_idx_map2, mfunc, jit_options)
+        source = (
+            in_tree,
+            tuple(avals.items()),
+            tuple(out_idx_map2.items()),
+            mfunc,
+            jit_options,
+        )
         shadconv = ffi_call(
             *args,
             out_shapes=outshapes2,
@@ -1365,7 +1611,8 @@ def primal_partial_eval(trace, *args, **kwargs):
     _, acts, _ = arg_activity_from_pipeline(pipeline_options.pass_pipeline())
 
     (in_tree, in_idx_map, out_idx_map, mfunc, jit_options) = kwargs["source"]
-
+    in_idx_map = dict(in_idx_map)
+    out_idx_map = dict(out_idx_map)
     primals = []
     tangents = []
     avals = {}
@@ -1402,7 +1649,7 @@ def primal_partial_eval(trace, *args, **kwargs):
     pipeline_options = JaXPipeline(newpasses)
 
     outmap2 = {k // 2: v for k, v in out_idx_map.items() if k % 2 == 0}
-    source = (in_tree, avals, outmap2, mfunc, jit_options)
+    source = (in_tree, tuple(avals.items()), tuple(outmap2.items()), mfunc, jit_options)
 
     primalret = trace.default_process_primitive(
         _enzyme_primal_p,
@@ -1461,7 +1708,7 @@ def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
             prev_passes
             + ad_pass
             + ",arith-raise{stablehlo=true},canonicalize, remove-unnecessary-enzyme-ops, enzyme-simplify-math, "
-            + hlo_opts()
+            + optimization_passes()
             + ", canonicalize, cse"
             + post_passes
         )
@@ -1469,6 +1716,7 @@ def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
         pipeline_options = JaXPipeline(newpasses)
 
         (in_tree, in_idx_map, out_idx_map, mfunc, jit_options) = kwargs["source"]
+        in_idx_map = dict(in_idx_map)
 
         prim_args = prim_args[: len(acts)]
 
@@ -1494,12 +1742,18 @@ def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
             if v == "enzyme_dup":
                 argidx += 1
 
-        source = (in_tree, avals, outmap, mfunc, jit_options)
+        source = (
+            in_tree,
+            tuple(avals.items()),
+            tuple(outmap.items()),
+            mfunc,
+            jit_options,
+        )
 
         assert len(outmap) == len(out_shapes2)
         shadconv = _enzyme_primal_p.bind(
             *(prim_args + tuple(shadow_rets2)),
-            out_shapes=out_shapes2,
+            out_shapes=tuple(out_shapes2),
             source=source,
             fn=kwargs["fn"],
             argv=kwargs["argv"],
@@ -1611,7 +1865,13 @@ def enzyme_jax_ir(
 
             out_flat = ffi_call(
                 *args_flat,
-                source=(in_tree, in_idxs, out_idxs, func, jit_options),
+                source=(
+                    in_tree,
+                    tuple(in_idxs.items()),
+                    tuple(out_idxs.items()),
+                    func,
+                    tuple(jit_options.items()),
+                ),
                 fn="",
                 out_shapes=out_shape_flat,
                 argv=argv,

@@ -1,5 +1,4 @@
-//===- EnzymeXLAOps.cpp - EnzymeXLA dialect ops -----------------------*- C++
-//-*-===//
+//===- EnzymeXLAOps.cpp - EnzymeXLA dialect ops -----------------*- C++ -*-===//
 //
 // This file is licensed under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -8,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Ops.h"
+#include "../Utils.h"
 #include "Dialect.h"
 #include "Interfaces/AutoDiffTypeInterface.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -18,6 +18,9 @@
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/MemorySlotInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "llvm/Support/CommandLine.h"
+
+#include "mlir/Analysis/DataLayoutAnalysis.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/Utils/Utils.h"
@@ -35,6 +38,8 @@
 
 #include "llvm/ADT/TypeSwitch.h"
 
+#include <numeric>
+
 #define DEBUG_TYPE "enzymexla"
 
 using namespace mlir;
@@ -43,6 +48,25 @@ using namespace mlir::arith;
 
 using namespace mlir::LLVM;
 using namespace mlir::stablehlo;
+
+static std::optional<int64_t> getConstant(Operation *op) {
+  if (auto cst = dyn_cast_or_null<arith::ConstantIntOp>(op)) {
+    return cst.value();
+  } else if (auto cst = dyn_cast_or_null<arith::ConstantIndexOp>(op)) {
+    return cst.value();
+  } else if (auto cst = dyn_cast_or_null<LLVM::ConstantOp>(op)) {
+    if (auto intAttr = dyn_cast<IntegerAttr>(cst.getValue()))
+      return intAttr.getValue().getSExtValue();
+  }
+  return {};
+}
+
+static std::optional<int64_t> getConstant(Value v) {
+  Operation *op = v.getDefiningOp();
+  if (op)
+    return getConstant(op);
+  return {};
+}
 
 LogicalResult
 KernelCallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
@@ -719,16 +743,8 @@ public:
     Value c0 = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 0);
     Value c1 = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 1);
     SmallVector<Value> idxs;
-    Value val;
-
-    if (auto IT = dyn_cast<IntegerType>(elTy))
-      val =
-          rewriter.create<arith::ConstantIntOp>(op.getLoc(), 0, IT.getWidth());
-    else {
-      auto FT = cast<FloatType>(elTy);
-      val = rewriter.create<arith::ConstantFloatOp>(
-          op.getLoc(), APFloat(FT.getFloatSemantics(), "0"), FT);
-    }
+    Value val = cast<mlir::enzyme::AutoDiffTypeInterface>(elTy).createNullValue(
+        rewriter, op.getLoc());
 
     auto forOp = rewriter.create<scf::ForOp>(
         op.getLoc(), c0,
@@ -826,6 +842,230 @@ public:
     return success();
   }
 };
+
+/// Simplify load(pointer2memref(gep(...(x)))) to load(x, idx)
+template <typename T>
+class LoadStorePointer2MemrefGEP final : public OpRewritePattern<T> {
+public:
+  using OpRewritePattern<T>::OpRewritePattern;
+
+  SmallVector<Value> newIndex(T op, Value toAdd,
+                              PatternRewriter &rewriter) const;
+
+  void createNewOp(T op, Value baseMemref, SmallVector<Value> vals,
+                   PatternRewriter &rewriter) const;
+
+  Value getMemref(T op) const;
+
+  LogicalResult matchAndRewrite(T op,
+                                PatternRewriter &rewriter) const override {
+    // FIXME: Only handle memref.load with single index for now
+    if (op.getIndices().size() != 1)
+      return failure();
+
+    // Match pointer2memref -> load pattern
+    auto src =
+        getMemref(op).template getDefiningOp<enzymexla::Pointer2MemrefOp>();
+    if (!src)
+      return failure();
+
+    // Get the element type and size of the final memref
+    Type elementType = op.getMemRefType().getElementType();
+    unsigned elementSize = elementType.isIntOrFloat()
+                               ? elementType.getIntOrFloatBitWidth() / 8
+                               : 0;
+    if (elementSize == 0)
+      return failure();
+
+    // Collect all GEPs in the chain
+    SmallVector<std::pair<LLVM::GEPOp, unsigned>> gepOps;
+    Value ptr = src.getSource();
+
+    while (auto gep = ptr.getDefiningOp<LLVM::GEPOp>()) {
+      // FIXME: Only handle GEPs with single index for now
+      if (gep.getIndices().size() != 1)
+        return failure();
+
+      // Get element type size in bytes
+      unsigned gepElemSize = 1;
+      auto elemTy = gep.getElemType();
+      if (elemTy.isIntOrFloat()) {
+        gepElemSize = elemTy.getIntOrFloatBitWidth() / 8;
+      }
+
+      gepOps.emplace_back(gep, gepElemSize);
+      ptr = gep.getBase();
+    }
+
+    if (gepOps.empty())
+      return failure();
+
+    Location loc = op.getLoc();
+    auto baseMemref = rewriter.create<Pointer2MemrefOp>(
+        loc, cast<MemRefType>(src.getType()), ptr);
+
+    // Start with the original load offset
+    Value finalIndex = nullptr;
+    // Process GEPs in reverse order
+    for (auto [gep, gepElemSize] : llvm::reverse(gepOps)) {
+      PointerUnion<IntegerAttr, Value> rawIdx = gep.getIndices()[0];
+      Value idx = dyn_cast_if_present<Value>(rawIdx);
+      if (!idx)
+        idx = rewriter.create<arith::ConstantIndexOp>(
+            loc, cast<IntegerAttr>(rawIdx).getValue().getSExtValue());
+      // TODO: verify the total byte offset will be element-aligned for dynamic
+      // indices by inserting runtime check
+      if (auto constIdx = idx.getDefiningOp<arith::ConstantIndexOp>()) {
+        // For constant indices, static check and reject unaligned access
+        if ((constIdx.value() * gepElemSize) % elementSize != 0) {
+          return failure();
+        }
+      }
+
+      // Convert index to the right type if needed
+      if (!idx.getType().isIndex()) {
+        idx = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(),
+                                                  idx);
+      }
+
+      // Calculate byte offset: idx * gepElemSize / elementSize
+      unsigned gcd = std::gcd(gepElemSize, elementSize);
+      unsigned scaledGep = gepElemSize / gcd;
+      unsigned scaledElement = elementSize / gcd;
+
+      // Multiply first if needed
+      Value scaledIdx =
+          (scaledGep != 1)
+              ? rewriter.create<arith::MulIOp>(
+                    loc, idx,
+                    rewriter.create<arith::ConstantIndexOp>(loc, scaledGep))
+              : idx;
+
+      // Then divide if needed
+      Value elemOffset =
+          (scaledElement != 1)
+              ? rewriter.create<arith::DivSIOp>(
+                    loc, scaledIdx,
+                    rewriter.create<arith::ConstantIndexOp>(loc, scaledElement))
+              : scaledIdx;
+
+      // Add to total offset
+      if (finalIndex)
+        finalIndex =
+            rewriter.create<arith::AddIOp>(loc, finalIndex, elemOffset);
+      else
+        finalIndex = elemOffset;
+    }
+
+    // Replace the load with a direct load from the base memref
+    createNewOp(op, baseMemref, newIndex(op, finalIndex, rewriter), rewriter);
+    return success();
+  }
+};
+
+template <>
+Value LoadStorePointer2MemrefGEP<memref::LoadOp>::getMemref(
+    memref::LoadOp op) const {
+  return op.getMemref();
+}
+
+template <>
+Value LoadStorePointer2MemrefGEP<memref::StoreOp>::getMemref(
+    memref::StoreOp op) const {
+  return op.getMemref();
+}
+
+template <>
+Value LoadStorePointer2MemrefGEP<affine::AffineLoadOp>::getMemref(
+    affine::AffineLoadOp op) const {
+  return op.getMemref();
+}
+
+template <>
+Value LoadStorePointer2MemrefGEP<affine::AffineStoreOp>::getMemref(
+    affine::AffineStoreOp op) const {
+  return op.getMemref();
+}
+
+template <>
+SmallVector<Value> LoadStorePointer2MemrefGEP<memref::LoadOp>::newIndex(
+    memref::LoadOp op, Value finalIndex, PatternRewriter &rewriter) const {
+  auto operands = llvm::to_vector(op.getIndices());
+  operands[0] =
+      rewriter.create<arith::AddIOp>(op.getLoc(), operands[0], finalIndex);
+  return operands;
+}
+
+template <>
+SmallVector<Value> LoadStorePointer2MemrefGEP<affine::AffineLoadOp>::newIndex(
+    affine::AffineLoadOp op, Value finalIndex,
+    PatternRewriter &rewriter) const {
+  auto map = op.getAffineMap();
+  auto apply = rewriter.create<affine::AffineApplyOp>(
+      op.getLoc(), op.getAffineMap(), op.getMapOperands());
+
+  SmallVector<Value> operands;
+  for (auto op : apply->getResults())
+    operands.push_back(op);
+  operands[0] =
+      rewriter.create<arith::AddIOp>(op.getLoc(), operands[0], finalIndex);
+  return operands;
+}
+
+template <>
+SmallVector<Value> LoadStorePointer2MemrefGEP<memref::StoreOp>::newIndex(
+    memref::StoreOp op, Value finalIndex, PatternRewriter &rewriter) const {
+  auto operands = llvm::to_vector(op.getIndices());
+  operands[0] =
+      rewriter.create<arith::AddIOp>(op.getLoc(), operands[0], finalIndex);
+  return operands;
+}
+
+template <>
+SmallVector<Value> LoadStorePointer2MemrefGEP<affine::AffineStoreOp>::newIndex(
+    affine::AffineStoreOp op, Value finalIndex,
+    PatternRewriter &rewriter) const {
+  auto map = op.getAffineMap();
+  auto apply = rewriter.create<affine::AffineApplyOp>(
+      op.getLoc(), op.getAffineMap(), op.getMapOperands());
+
+  SmallVector<Value> operands;
+  for (auto op : apply->getResults())
+    operands.push_back(op);
+  operands[0] =
+      rewriter.create<arith::AddIOp>(op.getLoc(), operands[0], finalIndex);
+  return operands;
+}
+
+template <>
+void LoadStorePointer2MemrefGEP<memref::LoadOp>::createNewOp(
+    memref::LoadOp op, Value baseMemref, SmallVector<Value> idxs,
+    PatternRewriter &rewriter) const {
+  rewriter.replaceOpWithNewOp<memref::LoadOp>(op, baseMemref, idxs);
+}
+
+template <>
+void LoadStorePointer2MemrefGEP<affine::AffineLoadOp>::createNewOp(
+    affine::AffineLoadOp op, Value baseMemref, SmallVector<Value> idxs,
+    PatternRewriter &rewriter) const {
+  rewriter.replaceOpWithNewOp<memref::LoadOp>(op, baseMemref, idxs);
+}
+
+template <>
+void LoadStorePointer2MemrefGEP<memref::StoreOp>::createNewOp(
+    memref::StoreOp op, Value baseMemref, SmallVector<Value> idxs,
+    PatternRewriter &rewriter) const {
+  rewriter.replaceOpWithNewOp<memref::StoreOp>(op, op.getValue(), baseMemref,
+                                               idxs);
+}
+
+template <>
+void LoadStorePointer2MemrefGEP<affine::AffineStoreOp>::createNewOp(
+    affine::AffineStoreOp op, Value baseMemref, SmallVector<Value> idxs,
+    PatternRewriter &rewriter) const {
+  rewriter.replaceOpWithNewOp<memref::StoreOp>(op, op.getValue(), baseMemref,
+                                               idxs);
+}
 
 /// Simplify load (pointer2memref(x)) to llvm.load x
 template <typename Op>
@@ -960,7 +1200,11 @@ void MetaPointer2Memref<affine::AffineStoreOp>::rewriteInternal(
 
 void Pointer2MemrefOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                                    MLIRContext *context) {
-  results.insert<Pointer2MemrefCast, Pointer2Memref2PointerCast>(context);
+  results.insert<Pointer2MemrefCast, Pointer2Memref2PointerCast,
+                 LoadStorePointer2MemrefGEP<memref::LoadOp>,
+                 LoadStorePointer2MemrefGEP<affine::AffineLoadOp>,
+                 LoadStorePointer2MemrefGEP<memref::StoreOp>,
+                 LoadStorePointer2MemrefGEP<affine::AffineStoreOp>>(context);
   /*
   results.insert<Pointer2MemrefCast, Pointer2Memref2PointerCast,
                  MetaPointer2Memref<memref::LoadOp>,
@@ -1060,4 +1304,598 @@ void CommRegionOp::getSuccessorRegions(
 
   // Otherwise, the region branches back to the parent operation.
   regions.push_back(RegionSuccessor(getResults()));
+}
+
+LogicalResult enzymexla::MemcpyOp::verify() {
+  auto srcType = getSource().getType();
+  auto dstType = getTarget().getType();
+
+  if (getElementTypeOrSelf(srcType) != getElementTypeOrSelf(dstType))
+    return emitOpError("arguments have incompatible element type");
+
+  return success();
+}
+
+namespace {
+
+/// Erases a common case of copy ops where a destination value is used only by
+/// the copy op, alloc and dealloc ops.
+struct EraseTrivialCopyOp : public OpRewritePattern<enzymexla::MemcpyOp> {
+  using OpRewritePattern<enzymexla::MemcpyOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::MemcpyOp op,
+                                PatternRewriter &rewriter) const override {
+    Value dest = op.getTarget();
+    Operation *destDefOp = dest.getDefiningOp();
+    // `dest` must be defined by an op having Allocate memory effect in order to
+    // perform the folding.
+    if (!destDefOp ||
+        !hasSingleEffect<MemoryEffects::Allocate>(destDefOp, dest))
+      return failure();
+    // We can erase `op` iff `dest` has no other use apart from its
+    // use by `op` and dealloc ops.
+    if (llvm::any_of(dest.getUsers(), [op, dest](Operation *user) {
+          return user != op &&
+                 !hasSingleEffect<MemoryEffects::Free>(user, dest);
+        }))
+      return failure();
+    // We can perform the folding if and only if op has a single async
+    // dependency and produces an async token as result, or if it does not have
+    // any async dependency and does not produce any async token result.
+    if (op.getAsyncDependencies().size() > 1 ||
+        ((op.getAsyncDependencies().empty() && op.getAsyncToken()) ||
+         (!op.getAsyncDependencies().empty() && !op.getAsyncToken())))
+      return failure();
+    rewriter.replaceOp(op, op.getAsyncDependencies());
+    return success();
+  }
+};
+
+struct CopyWithTypes : public OpRewritePattern<enzymexla::MemcpyOp> {
+  using OpRewritePattern<enzymexla::MemcpyOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::MemcpyOp op,
+                                PatternRewriter &rewriter) const override {
+    Value vals[2];
+    MemRefType tys[2];
+    for (int i = 0; i < 2; i++) {
+      auto v = op->getOperand(i);
+      if (auto p2m = v.getDefiningOp<enzymexla::Pointer2MemrefOp>()) {
+        if (auto m2p =
+                p2m.getSource().getDefiningOp<enzymexla::Memref2PointerOp>()) {
+          if (p2m.getType().getMemorySpace() ==
+              m2p.getSource().getType().getMemorySpace())
+            v = m2p.getSource();
+        }
+      }
+      vals[i] = v;
+      tys[i] = cast<MemRefType>(v.getType());
+    }
+
+    MemRefType finalType = tys[0];
+
+    if (tys[0].getElementType() != tys[1].getElementType()) {
+      if (tys[0].getElementType().isInteger(8)) {
+        finalType = tys[1];
+      } else if (tys[1].getElementType().isInteger(8)) {
+        finalType = tys[0];
+      } else {
+        return failure();
+      }
+    }
+
+    if (finalType.getElementType() == op.getTarget().getType().getElementType())
+      return failure();
+
+    DataLayoutAnalysis dataLayoutAnalysis(op);
+    auto &dataLayout = dataLayoutAnalysis.getAtOrAbove(op);
+    int64_t elNum =
+        dataLayout.getTypeSize(op.getTarget().getType().getElementType());
+
+    Value sz = op.getSize();
+    APInt copySize;
+    if (matchPattern(sz, m_ConstantInt(&copySize))) {
+      elNum *= (copySize.getSExtValue());
+    } else {
+      size_t num = 1;
+      size_t den = 1;
+      Value op = sz;
+      while (true) {
+        if (auto icast = op.getDefiningOp<arith::IndexCastOp>()) {
+          op = icast.getOperand();
+          continue;
+        }
+        if (auto icast = op.getDefiningOp<arith::IndexCastUIOp>()) {
+          op = icast.getOperand();
+          continue;
+        }
+        if (auto shr = op.getDefiningOp<arith::ShRSIOp>()) {
+          if (auto cst = getConstant(shr.getRhs())) {
+            auto val = 1ULL << *cst;
+            if (num % val == 0) {
+              num /= val;
+              op = shr.getLhs();
+              continue;
+            } else if (val != 0 && val % num == 0) {
+              den *= (val / num);
+              num = 1;
+              op = shr.getLhs();
+              continue;
+            }
+          }
+        }
+        if (auto shr = op.getDefiningOp<arith::ShRUIOp>()) {
+          if (auto cst = getConstant(shr.getRhs())) {
+            auto val = 1ULL << *cst;
+            if (num % val == 0) {
+              num /= val;
+              op = shr.getLhs();
+              continue;
+            } else if (val != 0 && val % num == 0) {
+              den *= (val / num);
+              num = 1;
+              op = shr.getLhs();
+              continue;
+            }
+          }
+        }
+        if (auto shl = op.getDefiningOp<arith::ShLIOp>()) {
+          if (auto cst = getConstant(shl.getRhs())) {
+            auto val = 1ULL << *cst;
+            if (den % val == 0) {
+              den /= val;
+              op = shl.getLhs();
+              continue;
+            } else if (val != 0 && val % den == 0) {
+              num *= (val / den);
+              den = 1;
+              op = shl.getLhs();
+              continue;
+            }
+          }
+        }
+        LLVM_DEBUG(llvm::dbgs() << "could not deduce size of copy due to " << op
+                                << " num=" << num << " den=" << den << "\n");
+        break;
+      }
+      assert(den == 1);
+      if (den == 1) {
+        elNum *= num;
+      } else {
+        return failure();
+      }
+    }
+
+    auto newElSize = dataLayout.getTypeSize(finalType.getElementType());
+
+    int64_t newElnum = elNum / newElSize;
+    if (newElSize * newElnum != elNum) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "non divisible size: newElSize " << newElSize << " elNum "
+                 << elNum << " newElnum: " << newElnum << "\n");
+      return failure();
+    }
+
+    SmallVector<int64_t, 1> sizes = {newElnum};
+    for (int i = 0; i < 2; i++) {
+      auto MT = cast<MemRefType>(vals[i].getType());
+      if (MT.getElementType() == finalType.getElementType())
+        continue;
+      vals[i] = rewriter.create<enzymexla::Memref2PointerOp>(
+          op.getLoc(),
+          LLVM::LLVMPointerType::get(vals[i].getContext(),
+                                     MT.getMemorySpaceAsInt()),
+          vals[i]);
+      auto shape2 = llvm::to_vector(MT.getShape());
+      if (shape2.size() > 0)
+        shape2[shape2.size() - 1] = ShapedType::kDynamic;
+      vals[i] = rewriter.create<enzymexla::Pointer2MemrefOp>(
+          op.getLoc(),
+          MemRefType::get(shape2, finalType.getElementType(), MT.getLayout(),
+                          MT.getMemorySpace()),
+          vals[i]);
+    }
+
+    rewriter.modifyOpInPlace(op, [&]() {
+      op.getTargetMutable().set(vals[0]);
+      op.getSourceMutable().set(vals[1]);
+    });
+    return success();
+  }
+};
+
+} // end anonymous namespace
+
+void enzymexla::MemcpyOp::getCanonicalizationPatterns(
+    RewritePatternSet &results, MLIRContext *context) {
+  results.add<EraseTrivialCopyOp, CopyWithTypes>(context);
+}
+
+LogicalResult
+enzymexla::MemcpyOp::fold(FoldAdaptor adaptor,
+                          SmallVectorImpl<::mlir::OpFoldResult> &results) {
+  return memref::foldMemRefCast(*this);
+}
+
+using namespace mlir::enzyme;
+llvm::cl::opt<bool> BarrierOpt("barrier-opt", llvm::cl::init(true),
+                               llvm::cl::desc("Optimize barriers"));
+
+class BarrierHoist final : public OpRewritePattern<BarrierOp> {
+public:
+  using OpRewritePattern<BarrierOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(BarrierOp barrier,
+                                PatternRewriter &rewriter) const override {
+    if (!BarrierOpt)
+      return failure();
+    if (isa<scf::IfOp, affine::AffineIfOp>(barrier->getParentOp())) {
+
+      bool below = true;
+      for (Operation *it = barrier->getNextNode(); it != nullptr;
+           it = it->getNextNode()) {
+        if (!isReadNone(it)) {
+          below = false;
+          break;
+        }
+      }
+      if (below) {
+        rewriter.setInsertionPoint(barrier->getParentOp()->getNextNode());
+        rewriter.create<BarrierOp>(barrier.getLoc(), barrier.getOperands());
+        rewriter.eraseOp(barrier);
+        return success();
+      }
+      bool above = true;
+      for (Operation *it = barrier->getPrevNode(); it != nullptr;
+           it = it->getPrevNode()) {
+        if (!isReadNone(it)) {
+          above = false;
+          break;
+        }
+      }
+      if (above) {
+        rewriter.setInsertionPoint(barrier->getParentOp());
+        rewriter.create<BarrierOp>(barrier.getLoc(), barrier.getOperands());
+        rewriter.eraseOp(barrier);
+        return success();
+      }
+    }
+    // Move barrier into after region and after loop, if possible
+    if (auto whileOp = dyn_cast<scf::WhileOp>(barrier->getParentOp())) {
+      if (barrier->getParentRegion() == &whileOp.getBefore()) {
+        auto cond = whileOp.getBefore().front().getTerminator();
+
+        bool above = true;
+        for (Operation *it = cond; it != nullptr; it = it->getPrevNode()) {
+          if (it == barrier)
+            break;
+          if (!isReadNone(it)) {
+            above = false;
+            break;
+          }
+        }
+        if (above) {
+          rewriter.setInsertionPointToStart(&whileOp.getAfter().front());
+          rewriter.create<BarrierOp>(barrier.getLoc(), barrier.getOperands());
+          rewriter.setInsertionPoint(whileOp->getNextNode());
+          rewriter.create<BarrierOp>(barrier.getLoc(), barrier.getOperands());
+          rewriter.eraseOp(barrier);
+          return success();
+        }
+      }
+    }
+    return failure();
+  }
+};
+
+void BarrierOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+
+  // If this doesn't synchronize any values, it has no effects.
+  if (llvm::all_of(getOperands(), [](Value v) {
+        IntegerAttr constValue;
+        return matchPattern(v, m_Constant(&constValue));
+      }))
+    return;
+
+  Operation *op = getOperation();
+
+  if (!getEffectsBefore(op, effects, /*stopAtBarrier*/ true))
+    return;
+
+  if (!getEffectsAfter(op, effects, /*stopAtBarrier*/ true))
+    return;
+}
+
+void BarrierOp::getCanonicalizationPatterns(RewritePatternSet &results,
+                                            MLIRContext *context) {
+  results.insert<BarrierHoist>(context);
+  // results.insert<BarrierHoist, BarrierElim</*TopLevelOnly*/ false>>(context);
+}
+
+void GPUWrapperOp::build(OpBuilder &builder, OperationState &result,
+                         ValueRange blockSizes) {
+  result.addTypes(builder.getIndexType());
+  result.addOperands(blockSizes);
+  OpBuilder::InsertionGuard g(builder);
+  Region *bodyRegion = result.addRegion();
+  builder.createBlock(bodyRegion);
+  GPUWrapperOp::ensureTerminator(*bodyRegion, builder, result.location);
+}
+
+void GPUWrapperOp::build(OpBuilder &builder, OperationState &result) {
+  result.addTypes(builder.getIndexType());
+  OpBuilder::InsertionGuard g(builder);
+  Region *bodyRegion = result.addRegion();
+  builder.createBlock(bodyRegion);
+  GPUWrapperOp::ensureTerminator(*bodyRegion, builder, result.location);
+}
+
+LogicalResult fixupGetFunc(LLVM::CallOp op, OpBuilder &rewriter,
+                           SmallVectorImpl<Value> &vals) {
+  if (op.getCallee())
+    return failure();
+
+  Value pval = op.getOperand(0);
+
+  auto FT = op.getCalleeFunctionType();
+
+  if (FT.isVarArg())
+    return failure();
+
+  while (true) {
+    if (auto bc = pval.getDefiningOp<LLVM::BitcastOp>())
+      pval = bc.getOperand();
+    else if (auto mt = pval.getDefiningOp<Memref2PointerOp>())
+      pval = mt.getOperand();
+    else if (auto mt = pval.getDefiningOp<Pointer2MemrefOp>())
+      pval = mt.getOperand();
+    else
+      break;
+  }
+
+  return failure();
+#if 0
+  auto gfn = pval.getDefiningOp<GetFuncOp>();
+  if (!gfn)
+    return failure();
+
+  LLVM::LLVMFunctionType FT2;
+  if (auto fn =
+          gfn->getParentOfType<ModuleOp>().lookupSymbol(gfn.getNameAttr())) {
+    if (auto funcOp = dyn_cast<LLVM::LLVMFuncOp>(fn))
+      FT2 = funcOp.getFunctionType();
+    else if (auto funcOp = dyn_cast<func::FuncOp>(fn))
+      FT2 = LLVM::LLVMFunctionType::get(
+          rewriter.getContext(),
+          op.getResultTypes().empty()
+              ? LLVM::LLVMVoidType::get(rewriter.getContext())
+              : funcOp.getResultTypes().front(),
+          funcOp.getArgumentTypes(), /*isVarArg=*/false);
+    else
+      return failure();
+  } else {
+    return failure();
+  }
+
+  if (FT2.getParams().size() != FT.getParams().size())
+    return failure();
+
+  SmallVector<Value> args(op.getArgOperands());
+  for (unsigned i = 0; i < args.size(); i++) {
+    if (FT2.getParams()[i] != args[i].getType()) {
+      if (!FT2.getParams()[i].isa<MemRefType>() ||
+          !args[i].getType().isa<LLVM::LLVMPointerType>())
+        return failure();
+      args[i] = rewriter.create<polygeist::Pointer2MemrefOp>(
+          op.getLoc(), FT2.getParams()[i], args[i]);
+    }
+  }
+
+  if (op.getResultTypes().size() &&
+      (!op.getResultTypes()[0].isa<LLVM::LLVMPointerType>() ||
+       !FT2.getReturnType().isa<MemRefType>()))
+    return failure();
+
+  auto res = rewriter
+                 .create<func::CallOp>(op.getLoc(), gfn.getNameAttr(),
+                                       op.getResultTypes(), args)
+                 .getResults();
+  for (Value r : res) {
+    if (r.getType() != FT.getReturnType())
+      r = rewriter.create<polygeist::Memref2PointerOp>(op.getLoc(),
+                                                       FT.getReturnType(), r);
+    vals.push_back(r);
+  }
+  return success();
+#endif
+}
+
+struct NoopResource : public SideEffects::Resource::Base<NoopResource> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(NoopResource)
+
+  StringRef getName() final { return "<NoopResource>"; }
+};
+
+void NoopOp::build(OpBuilder &builder, OperationState &result,
+                   ValueRange indices) {
+  result.addOperands(indices);
+}
+
+void NoopOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  // TODO CHECK is it okay to ::get() a new resource every time?
+  SideEffects::Resource *resource = NoopResource::get();
+  MemoryEffects::Effect *effect =
+      MemoryEffects::Effect::get<MemoryEffects::Write>();
+  effects.emplace_back(effect, resource);
+}
+
+void GPUErrorOp::build(OpBuilder &builder, OperationState &result) {
+  result.addTypes(builder.getIndexType());
+  OpBuilder::InsertionGuard g(builder);
+  Region *bodyRegion = result.addRegion();
+  builder.createBlock(bodyRegion);
+  GPUErrorOp::ensureTerminator(*bodyRegion, builder, result.location);
+}
+
+LogicalResult
+XLAWrapperOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
+  // TODO: Verify that the result type is same as the type of the referenced
+  // func.func op.
+  auto global = symbolTable.lookupNearestSymbolFrom<FunctionOpInterface>(
+      *this, getFnAttr());
+  if (!global)
+    return emitOpError("'")
+           << getFn() << "' does not reference a valid global funcOp";
+
+  return success();
+}
+
+void XLAWrapperOp::setCalleeFromCallable(CallInterfaceCallable callee) {
+  auto symbol = cast<SymbolRefAttr>(callee);
+  setFnAttr(cast<FlatSymbolRefAttr>(symbol));
+}
+
+CallInterfaceCallable XLAWrapperOp::getCallableForCallee() { return getFn(); }
+
+MutableOperandRange XLAWrapperOp::getArgOperandsMutable() {
+  return getInputsMutable();
+}
+
+Operation::operand_range XLAWrapperOp::getArgOperands() { return getInputs(); }
+
+ArrayAttr XLAWrapperOp::getArgAttrsAttr() { return nullptr; }
+
+void XLAWrapperOp::setArgAttrsAttr(mlir::ArrayAttr attr) { (void)attr; }
+
+ArrayAttr XLAWrapperOp::getResAttrsAttr() { return nullptr; }
+
+void XLAWrapperOp::setResAttrsAttr(ArrayAttr attr) { (void)attr; }
+
+Attribute XLAWrapperOp::removeArgAttrsAttr() { return nullptr; }
+
+Attribute XLAWrapperOp::removeResAttrsAttr() { return nullptr; }
+
+void XLAWrapperOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Read>());
+  effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Write>());
+}
+
+//===----------------------------------------------------------------------===//
+// AlternativesOp
+//===----------------------------------------------------------------------===//
+
+void AlternativesOp::build(OpBuilder &builder, OperationState &result,
+                           int regionNum) {
+  OpBuilder::InsertionGuard g(builder);
+  for (int i = 0; i < regionNum; i++) {
+    Region *bodyRegion = result.addRegion();
+    Block *block = builder.createBlock(bodyRegion);
+    builder.setInsertionPointToEnd(block);
+    builder.create<PolygeistYieldOp>(result.location);
+  }
+}
+
+class HoistSingleAlternative final : public OpRewritePattern<AlternativesOp> {
+public:
+  using OpRewritePattern<AlternativesOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(AlternativesOp aop,
+                                PatternRewriter &rewriter) const override {
+    assert(aop->getNumRegions() > 0);
+    if (aop->getNumRegions() > 1) {
+      return failure();
+    }
+    auto block = &*aop->getRegions()[0].begin();
+    rewriter.eraseOp(block->getTerminator());
+    rewriter.inlineBlockBefore(block, aop);
+    rewriter.eraseOp(aop);
+    return success();
+  }
+};
+
+class FlattenAlternatives final : public OpRewritePattern<AlternativesOp> {
+public:
+  using OpRewritePattern<AlternativesOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(AlternativesOp aop,
+                                PatternRewriter &rewriter) const override {
+    // Ignore nested alternatives ops
+    if (aop->getParentOfType<AlternativesOp>())
+      return failure();
+
+    AlternativesOp innerAop = nullptr;
+    unsigned regionId = 0;
+    for (auto &region : aop->getRegions()) {
+      for (auto &op : region.getOps()) {
+        if (auto aop = dyn_cast<AlternativesOp>(&op)) {
+          innerAop = aop;
+          break;
+        }
+      }
+      if (innerAop)
+        break;
+      regionId++;
+    }
+    if (!innerAop)
+      return failure();
+
+    // TODO use block insertion etc for better performance
+    auto newAop = rewriter.create<enzymexla::AlternativesOp>(
+        aop->getLoc(), innerAop->getNumRegions() + aop->getNumRegions() - 1);
+    newAop->setAttrs(aop->getAttrs());
+    auto outerDescs = aop->getAttrOfType<ArrayAttr>("alternatives.descs");
+    auto innerDescs = innerAop->getAttrOfType<ArrayAttr>("alternatives.descs");
+    std::vector<Attribute> configs;
+    unsigned curRegion = 0;
+    for (; curRegion < innerAop->getNumRegions(); curRegion++) {
+      IRMapping mapping;
+      auto block = &*newAop->getRegion(curRegion).begin();
+      rewriter.setInsertionPointToStart(block);
+      for (auto &op : *innerAop->getBlock()) {
+        if (&op == innerAop.getOperation()) {
+          for (auto &op : innerAop->getRegion(curRegion).getOps())
+            if (!isa<PolygeistYieldOp>(&op))
+              rewriter.clone(op, mapping);
+        } else {
+          if (!isa<PolygeistYieldOp>(&op))
+            rewriter.clone(op, mapping);
+        }
+      }
+      configs.push_back(rewriter.getStringAttr(
+          cast<StringAttr>(outerDescs[regionId]).str() +
+          cast<StringAttr>(innerDescs[curRegion]).str()));
+    }
+
+    unsigned oldRegion = 0;
+    for (; oldRegion < aop->getNumRegions(); oldRegion++) {
+      auto &srcRegion = aop->getRegion(oldRegion);
+      if (innerAop->getBlock()->getParent() == &srcRegion) {
+        assert(oldRegion == regionId);
+        continue;
+      }
+      auto block = &*newAop->getRegion(curRegion).begin();
+      rewriter.setInsertionPointToStart(block);
+      IRMapping mapping;
+      for (auto &op : srcRegion.getOps())
+        if (!isa<PolygeistYieldOp>(&op))
+          rewriter.clone(op, mapping);
+      configs.push_back(rewriter.getStringAttr(
+          cast<StringAttr>(outerDescs[oldRegion]).str()));
+      curRegion++;
+    }
+    newAop->setAttr("alternatives.descs", rewriter.getArrayAttr(configs));
+
+    rewriter.eraseOp(aop);
+
+    return success();
+  }
+};
+
+void AlternativesOp::getCanonicalizationPatterns(RewritePatternSet &results,
+                                                 MLIRContext *context) {
+  results.insert<HoistSingleAlternative, FlattenAlternatives>(context);
 }

@@ -175,15 +175,17 @@ GetLLVMFromJob(std::string filename, std::string filecontents, bool cpp,
   const char *binary = cpp ? "clang++" : "clang";
   // Buffer diagnostics from argument parsing so that we can output them using a
   // well formed diagnostic object.
-  IntrusiveRefCntPtr<DiagnosticOptions> DiagOpts = new DiagnosticOptions();
+  DiagnosticOptions DiagOpts;
   TextDiagnosticBuffer *DiagsBuffer = new TextDiagnosticBuffer;
   auto *DiagsBuffer0 = new IgnoringDiagConsumer;
 
   IntrusiveRefCntPtr<DiagnosticIDs> DiagID(new DiagnosticIDs());
-  DiagnosticsEngine Diags(DiagID, &*DiagOpts, DiagsBuffer);
-  IntrusiveRefCntPtr<DiagnosticOptions> DiagOpts0 = new DiagnosticOptions();
+  DiagnosticsEngine Diags(DiagID, DiagOpts, DiagsBuffer);
+
+  DiagnosticOptions DiagOpts0;
   IntrusiveRefCntPtr<DiagnosticIDs> DiagID0(new DiagnosticIDs());
-  DiagnosticsEngine Diags0(DiagID0, &*DiagOpts0, DiagsBuffer0);
+  DiagnosticsEngine Diags0(DiagID0, DiagOpts0, DiagsBuffer0);
+
   const std::unique_ptr<clang::driver::Driver> driver(new clang::driver::Driver(
       binary, llvm::sys::getDefaultTargetTriple(), Diags0));
   ArgumentList Argv;

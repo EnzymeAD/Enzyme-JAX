@@ -10,7 +10,6 @@ def main(argv):
 
     import os
 
-    os.environ["TF_USE_LEGACY_KERAS"] = "1"
     os.environ["KERAS_BACKEND"] = "jax"
 
     cwd = os.getcwd()
@@ -67,7 +66,8 @@ def main(argv):
             ("gemma_fit", benchmark.gemma.gemma_fit_run, Both),
         ]
 
-    if True:
+    # Too long for cpu ci
+    if jax.default_backend() != "cpu":
         benchfns += [
             ("bert_predict", benchmark.bert.bert_predict_run, Both),
         ]
@@ -84,7 +84,7 @@ def main(argv):
             ("sam_fit", benchmark.sam.sam_fit_run, Both),
         ]
 
-    num_tests = 5
+    # num_tests = 5
     num_tests = 1
 
     for bname, bench, ADs in benchfns:
@@ -114,7 +114,7 @@ if __name__ == "__main__":
     import platform
 
     # Deps not available on macos
-    if platform.system() != "Darwin":
+    if platform.system() != "Darwin" and platform.machine() == "x86_64":
         from test_utils import fix_paths
 
         fix_paths()

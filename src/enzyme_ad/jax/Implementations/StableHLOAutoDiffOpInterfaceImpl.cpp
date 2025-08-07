@@ -18,6 +18,7 @@
 #include "Enzyme/MLIR/Passes/RemovalUtils.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/Support/LogicalResult.h"
+#include "mlir/Transforms/RegionUtils.h"
 
 #include "Dialect/Ops.h"
 #include "mlir/IR/TypeSupport.h"
@@ -564,10 +565,280 @@ public:
 class AutoDiffWhileRev
     : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffWhileRev,
                                                        WhileOp> {
+
+  enum ReverseMode { CONSTANT, CONSTANT_CHECKPOINTING, UNKNOWN };
+  struct ReverseModeInfo {
+    enum ReverseMode mode = UNKNOWN;
+    WhileLoopInfo info;
+
+    ReverseModeInfo(stablehlo::WhileOp op) : info(op) {}
+  };
+
+  static struct ReverseModeInfo getReverseMode(Operation *orig) {
+    struct ReverseModeInfo revInfo(cast<stablehlo::WhileOp>(orig));
+
+    if (revInfo.info.computeInfo().succeeded() && revInfo.info.isValid() &&
+        revInfo.info.isConstant()) {
+      const char *checkpointAttrName = "enzymexla.enable_checkpointing";
+      auto enableCheckpointing =
+          orig->getAttrOfType<BoolAttr>(checkpointAttrName);
+      if (enableCheckpointing && enableCheckpointing.getValue())
+        revInfo.mode = CONSTANT_CHECKPOINTING;
+      else
+        revInfo.mode = CONSTANT;
+    }
+
+    return revInfo;
+  }
+
+  static stablehlo::WhileOp makeForLoop(OpBuilder &builder, Location loc,
+                                        int64_t start, int64_t limit,
+                                        int64_t step, ValueRange operands) {
+    return makeForLoop(builder, loc, makeI64Constant(loc, builder, start),
+                       makeI64Constant(loc, builder, limit),
+                       makeI64Constant(loc, builder, step), operands);
+  }
+
+  static stablehlo::WhileOp makeForLoop(OpBuilder &builder, Location loc,
+                                        Value start, Value limit, Value step,
+                                        ValueRange operands) {
+    OpBuilder::InsertionGuard guard(builder);
+
+    SmallVector<Value> operandsWithInduction{start};
+    operandsWithInduction.append(operands.begin(), operands.end());
+
+    auto types = ValueRange(operandsWithInduction).getTypes();
+    auto whileOp =
+        builder.create<stablehlo::WhileOp>(loc, types, operandsWithInduction);
+
+    SmallVector<Location> locs{loc};
+    locs.reserve(operands.size() + 1);
+    for (Value val : operands)
+      locs.push_back(val.getLoc());
+
+    Block *cond = builder.createBlock(&whileOp.getCond(), {}, types, locs);
+    Value cmp = builder.create<stablehlo::CompareOp>(
+        loc, cond->getArgument(0), limit, ComparisonDirection::LT);
+    builder.create<stablehlo::ReturnOp>(loc, cmp);
+
+    Block *body = builder.createBlock(&whileOp.getBody(), {}, types, locs);
+    Value newVal =
+        builder.create<stablehlo::AddOp>(loc, body->getArgument(0), step);
+    operandsWithInduction.assign(body->getArguments().begin(),
+                                 body->getArguments().end());
+    operandsWithInduction[0] = newVal;
+    builder.create<stablehlo::ReturnOp>(loc, operandsWithInduction);
+
+    return whileOp;
+  }
+
+  static LogicalResult reverseWithCheckpointing(stablehlo::WhileOp orig,
+                                                struct ReverseModeInfo revInfo,
+                                                OpBuilder &builder,
+                                                MGradientUtilsReverse *gutils,
+                                                SmallVector<Value> caches,
+                                                ArrayRef<bool> operandsActive) {
+    int64_t numIters = revInfo.info.getConstantNumIters();
+    int64_t nInner = std::sqrt(numIters);
+    int64_t nOuter = nInner;
+    if (nInner * nOuter != revInfo.info.getConstantNumIters()) {
+      orig->emitError()
+          << "Non square number of iterations for checkpointing, nInner="
+          << nInner << " nOuter=" << nOuter
+          << " iters=" << revInfo.info.getConstantNumIters() << "\n";
+      return failure();
+    }
+
+    SetVector<Value> outsideRefs;
+    getUsedValuesDefinedAbove(orig->getRegions(), outsideRefs);
+
+    int numOutsideRefs = outsideRefs.size();
+    int nargs = caches.size() + 1;
+    int nrets = nargs - numOutsideRefs;
+
+    SmallVector<Value> operands;
+    for (auto [active, res] : llvm::zip(operandsActive, orig->getResults())) {
+      if (active) {
+        operands.push_back(gutils->diffe(res, builder));
+        if (!gutils->isConstantValue(res))
+          gutils->zeroDiffe(res, builder);
+      }
+    }
+
+    OpBuilder::InsertionGuard guard(builder);
+
+    stablehlo::WhileOp revOuter =
+        makeForLoop(builder, orig.getLoc(), 0, nOuter, 1, operands);
+
+    auto parentFn = revOuter->getParentOfType<FunctionOpInterface>();
+
+    Block *revOuterBody = &revOuter.getBody().front();
+    builder.setInsertionPointToStart(revOuterBody);
+
+    Value outerStep = builder.create<stablehlo::SubtractOp>(
+        orig.getLoc(), makeI64Constant(orig.getLoc(), builder, nOuter - 1),
+        revOuterBody->getArgument(0));
+    Value outerStart = builder.create<stablehlo::MulOp>(
+        orig.getLoc(), makeI64Constant(orig.getLoc(), builder, nInner),
+        outerStep);
+
+    Value lastCache = nullptr;
+
+    SmallVector<Value> cacheVals(nargs - 1, nullptr);
+    for (int i = 0; i < nrets - 1; ++i)
+      lastCache = cacheVals[i] = gutils->popCache(caches[i], builder);
+
+    builder.setInsertionPoint(revOuter);
+
+    IRMapping mapping;
+
+    for (int i = nrets - 1, refIdx = 0; i < nargs - 1; ++i) {
+      Value cached = cacheVals[i] = gutils->popCache(caches[i], builder);
+      mapping.map(outsideRefs[refIdx], cached);
+      refIdx++;
+    }
+
+    if (lastCache)
+      builder.setInsertionPointAfterValue(lastCache);
+    else
+      builder.setInsertionPointToStart(revOuterBody);
+
+    SmallVector<Value> carried;
+    for (int i = 0; i < nrets - 1; i++) {
+      carried.push_back(cacheVals[i]);
+    }
+
+    auto revInner = makeForLoop(builder, orig.getLoc(), 0, nInner, 1, carried);
+    Block *revInnerBody = &revInner.getBody().front();
+
+    revInner->setAttrs(orig->getAttrs());
+    revInner->removeAttr("enzymexla.enable_checkpointing");
+
+    auto revLoop = makeForLoop(builder, orig.getLoc(), 0, nInner, 1,
+                               revOuterBody->getArguments().drop_front());
+    Block *revLoopBody = &revLoop.getBody().front();
+
+    builder.setInsertionPointToStart(revInnerBody);
+
+    Value innerIV = builder.create<stablehlo::SubtractOp>(
+        orig.getLoc(), makeI64Constant(orig.getLoc(), builder, nInner - 1),
+        revInnerBody->getArgument(0));
+
+    Value currentStep =
+        builder.create<stablehlo::AddOp>(orig.getLoc(), outerStart, innerIV);
+    Value currentIV = builder.create<stablehlo::AddOp>(
+        orig.getLoc(),
+        makeI64Constant(orig.getLoc(), builder,
+                        revInfo.info.getConstantStart().value()),
+        builder.create<stablehlo::MulOp>(
+            orig.getLoc(),
+            makeI64Constant(orig.getLoc(), builder,
+                            revInfo.info.getConstantStep().value()),
+            currentStep));
+
+    Block *origBody = &orig.getBody().front();
+    for (auto &&[origarg, revinnerarg] : llvm::zip_equal(
+             origBody->getArguments(), revInnerBody->getArguments())) {
+      mapping.map(origarg, revinnerarg);
+      gutils->originalToNewFn.map(origarg, revinnerarg);
+    }
+    mapping.map(origBody->getArgument(0), currentIV);
+    gutils->originalToNewFn.map(origBody->getArgument(0), currentIV);
+
+    for (Operation &op : origBody->without_terminator()) {
+      auto newOp = builder.clone(op, mapping);
+      gutils->originalToNewFnOps[&op] = newOp;
+      for (auto &&[oldv, newv] :
+           llvm::zip(op.getResults(), newOp->getResults())) {
+        gutils->originalToNewFn.map(oldv, newv);
+      }
+    }
+    {
+      auto oldTerm = cast<stablehlo::ReturnOp>(origBody->getTerminator());
+      auto newTerm = cast<stablehlo::ReturnOp>(revInnerBody->getTerminator());
+      SmallVector<Value> vals;
+      for (auto v : oldTerm.getResults().drop_front()) {
+        vals.push_back(mapping.lookupOrDefault(v));
+      }
+      newTerm.getResultsMutable()
+          .slice(1, newTerm.getResultsMutable().size() - 1)
+          .assign(vals);
+    }
+
+    gutils->originalToNewFnOps[orig] = revInner;
+
+    builder.setInsertionPointToStart(revLoopBody);
+
+    int revIdx = 1;
+    for (auto &&[active, operand] : llvm::zip_equal(
+             operandsActive, origBody->getTerminator()->getOperands())) {
+      if (active) {
+        gutils->addToDiffe(operand, revLoopBody->getArgument(revIdx), builder);
+        revIdx++;
+      }
+    }
+
+    bool anyFailed = false;
+
+    {
+      OpBuilder cacheBuilder(revInner);
+      auto loc = orig->getLoc();
+      auto cacheCreator = [&](Type t) {
+        Value cache = cacheBuilder.create<enzyme::InitOp>(loc, t);
+        return std::make_pair(cache, cache);
+      };
+      gutils->registerCacheCreatorHook(cacheCreator);
+
+      auto rstart = origBody->rbegin(), rend = origBody->rend();
+      rstart++;
+      for (auto it = rstart; it != rend; it++) {
+        Operation *op = &*it;
+        anyFailed |= gutils->Logic.visitChild(op, builder, gutils).failed();
+      }
+      gutils->deregisterCacheCreatorHook(cacheCreator);
+    }
+
+    SmallVector<Value> newResults;
+    for (auto &&[active, arg] :
+         llvm::zip_equal(operandsActive, origBody->getArguments())) {
+      if (active) {
+        newResults.push_back(gutils->diffe(arg, builder));
+        if (!gutils->isConstantValue(arg))
+          gutils->zeroDiffe(arg, builder);
+      }
+    }
+
+    cast<stablehlo::ReturnOp>(revLoopBody->getTerminator())
+        .getResultsMutable()
+        .slice(1, revLoop.getNumResults() - 1)
+        .assign(newResults);
+
+    cast<stablehlo::ReturnOp>(revOuterBody->getTerminator())
+        .getResultsMutable()
+        .slice(1, revOuter.getNumResults() - 1)
+        .assign(revLoop.getResults().drop_front());
+
+    builder.setInsertionPointAfter(revOuter);
+
+    revIdx = 1;
+    for (auto &&[active, arg] :
+         llvm::zip_equal(operandsActive, orig->getOperands())) {
+      if (active) {
+        if (!gutils->isConstantValue(arg)) {
+          gutils->addToDiffe(arg, revOuter->getResult(revIdx), builder);
+        }
+        revIdx++;
+      }
+    }
+
+    return success(!anyFailed);
+  }
+
 public:
   LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
                                          MGradientUtilsReverse *gutils,
                                          SmallVector<Value> caches) const {
+    auto whileOp = cast<WhileOp>(orig);
     // While op has the same number of results and operands.
     // if the while is not executed (i.e. the condition is false on the first
     // evaluation), then the arguments are returned. This means that we need to
@@ -575,23 +846,27 @@ public:
     // operands.
     SmallVector<bool> operandsActive(orig->getNumOperands(), false);
     for (int i = 0; i < operandsActive.size(); ++i) {
-      operandsActive[i] = !gutils->isConstantValue(orig->getOperand(i)) ||
-                          !gutils->isConstantValue(orig->getResult(i));
+      operandsActive[i] =
+          !gutils->isConstantValue(orig->getOperand(i)) ||
+          !gutils->isConstantValue(whileOp.getCond().front().getArgument(i)) ||
+          !gutils->isConstantValue(whileOp.getBody().front().getArgument(i)) ||
+          !gutils->isConstantValue(orig->getResult(i));
     }
+
+    auto revInfo = getReverseMode(orig);
 
     // The reverse of the while loop is a for loop where the number
     // of iterations is either known or cached from the augmented primal.
     Value numIters;
-    if (caches.empty()) {
-      WhileLoopInfo info(cast<stablehlo::WhileOp>(orig));
-      bool res = info.computeInfo().succeeded();
-      assert(res && info.isValid() && info.isConstant());
-      (void)res;
-
+    if (revInfo.mode == CONSTANT_CHECKPOINTING) {
+      return reverseWithCheckpointing(cast<stablehlo::WhileOp>(orig), revInfo,
+                                      builder, gutils, caches, operandsActive);
+    } else if (revInfo.mode == CONSTANT) {
       auto iterType = orig->getOperand(0).getType();
       numIters = builder.create<stablehlo::ConstantOp>(
           orig->getLoc(), iterType,
-          cast<ElementsAttr>(makeAttr(iterType, info.getConstantNumIters())));
+          cast<ElementsAttr>(
+              makeAttr(iterType, revInfo.info.getConstantNumIters())));
     } else
       numIters = gutils->popCache(caches[0], builder);
 
@@ -699,10 +974,7 @@ public:
       for (auto &&[active, operand] :
            llvm::zip(operandsActive, term->getOperands())) {
         if (active) {
-          // Set diffe here, not add because it should not accumulate across
-          // iterations. Instead the new gradient for this operand is passed in
-          // the return of the reverse while body.
-          gutils->setDiffe(operand, body->getArgument(revIdx), bodyBuilder);
+          gutils->addToDiffe(operand, body->getArgument(revIdx), bodyBuilder);
           revIdx++;
         }
       }
@@ -759,8 +1031,111 @@ public:
     WhileLoopInfo info(newWhile);
     if (info.computeInfo().succeeded()) {
       // no need to cache number of iterations if it is a known constant.
-      if (info.isValid() && info.isConstant())
+      if (info.isValid() && info.isConstant()) {
+
+        // for any value that is a reference from the outside we can hoist the
+        // push/pop from outside the outer really.
+
+        if (getReverseMode(orig).mode == CONSTANT_CHECKPOINTING) {
+          OpBuilder builder(newWhile);
+
+          SetVector<Value> outsideRefs;
+          getUsedValuesDefinedAbove(orig->getRegions(), outsideRefs);
+          SmallVector<Value> caches;
+
+          // sqrt scheme
+          int64_t nInner = std::sqrt(info.getConstantNumIters());
+          int64_t nOuter = nInner;
+
+          if (nInner * nOuter != info.getConstantNumIters()) {
+            orig->emitError()
+                << "Non square number of iterations for checkpointing, nInner="
+                << nInner << " nOuter=" << nOuter
+                << " iters=" << info.getConstantNumIters() << "\n";
+          } else {
+            auto outer = makeForLoop(builder, orig->getLoc(), 0, nOuter, 1,
+                                     newWhile->getOperands().slice(
+                                         1, newWhile->getNumOperands() - 1));
+
+            Block *outerBody = &outer.getBody().front();
+            builder.setInsertionPointToStart(outerBody);
+
+            Value outerIV = builder.create<stablehlo::MulOp>(
+                newWhile.getLoc(), outerBody->getArgument(0),
+                makeI64Constant(newWhile.getLoc(), builder, nOuter));
+
+            for (auto arg : outerBody->getArguments().slice(1)) {
+              caches.push_back(gutils->initAndPushCache(arg, builder));
+            }
+
+            builder.setInsertionPoint(outer);
+
+            for (auto ref : outsideRefs) {
+              caches.push_back(gutils->initAndPushCache(
+                  gutils->getNewFromOriginal(ref), builder));
+            }
+
+            builder.setInsertionPointAfterValue(outerIV);
+
+            SmallVector<Value> operands(
+                outerBody->getArguments().slice(1).begin(),
+                outerBody->getArguments().slice(1).end());
+            auto inner =
+                makeForLoop(builder, orig->getLoc(), 0, nInner, 1, operands);
+
+            outerBody->getTerminator()->setOperands(
+                1, inner.getNumResults() - 1,
+                inner.getResults().slice(1, inner.getNumResults() - 1));
+
+            Block *innerBody = &inner.getBody().front();
+            Block *oldInnerBody = &newWhile.getBody().front();
+            builder.setInsertionPointToStart(innerBody);
+
+            IRMapping mapping;
+
+            for (auto [oldArg, newArg] : llvm::zip_equal(
+                     oldInnerBody->getArguments(), innerBody->getArguments())) {
+              mapping.map(oldArg, newArg);
+            }
+
+            Value oldIV = oldInnerBody->getArgument(0);
+            Value newIV = builder.create<stablehlo::AddOp>(
+                oldIV.getLoc(), innerBody->getArgument(0), outerIV);
+
+            mapping.map(oldIV, newIV);
+
+            for (Operation &innerOp : oldInnerBody->without_terminator()) {
+              builder.clone(innerOp, mapping);
+            }
+
+            SmallVector<Value> newReturns;
+            for (auto oldRes :
+                 oldInnerBody->getTerminator()->getOperands().slice(
+                     1, oldInnerBody->getTerminator()->getNumOperands() - 1)) {
+              newReturns.push_back(mapping.lookupOrDefault(oldRes));
+            }
+            Operation *term = innerBody->getTerminator();
+            term->setOperands(1, term->getNumOperands() - 1, newReturns);
+
+            builder.setInsertionPointAfter(outer);
+            SmallVector<Value> newResults{makeI64Constant(
+                oldIV.getLoc(), builder, *info.getConstantLimit())};
+            newResults.append(
+                outer->getResults()
+                    .slice(1, outer->getNumResults() - 1)
+                    .begin(),
+                outer->getResults().slice(1, outer->getNumResults() - 1).end());
+
+            gutils->replaceOrigOpWith(orig, newResults);
+            gutils->erase(newWhile);
+            gutils->originalToNewFnOps[orig] = outer;
+
+            return caches;
+          }
+        }
+
         return {};
+      }
 
       numIters = info.getNumIters(revBuilder);
     }
@@ -956,89 +1331,6 @@ public:
   SmallVector<Value> cacheValues(Operation *orig,
                                  MGradientUtilsReverse *gutils) const {
     return {};
-  }
-
-  void createShadowValues(Operation *op, OpBuilder &builder,
-                          MGradientUtilsReverse *gutils) const {}
-};
-
-class AutoDiffDynamicSliceUpdateRev
-    : public ReverseAutoDiffOpInterface::ExternalModel<
-          AutoDiffDynamicSliceUpdateRev, DynamicUpdateSliceOp> {
-public:
-  LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
-                                         MGradientUtilsReverse *gutils,
-                                         SmallVector<Value> caches) const {
-    auto op = cast<DynamicUpdateSliceOp>(orig);
-    auto operand = op.getOperand();
-    auto update = op.getUpdate();
-
-    SmallVector<Value> startIndices;
-
-    Value diffe;
-    if (!gutils->isConstantValue(operand)) {
-
-      for (auto cache : caches) {
-        startIndices.push_back(gutils->popCache(cache, builder));
-      }
-
-      diffe = gutils->diffe(orig->getResult(0), builder);
-      auto operandDiffe = builder.create<DynamicUpdateSliceOp>(
-          orig->getLoc(), diffe,
-          cast<AutoDiffTypeInterface>(update.getType())
-              .createNullValue(builder, orig->getLoc()),
-          startIndices);
-
-      gutils->addToDiffe(operand, operandDiffe, builder);
-    }
-
-    if (!gutils->isConstantValue(update)) {
-      if (startIndices.size() != caches.size()) {
-        for (auto cache : caches) {
-          startIndices.push_back(gutils->popCache(cache, builder));
-        }
-      }
-
-      if (!diffe)
-        diffe = gutils->diffe(orig->getResult(0), builder);
-
-      auto sliceSizes = builder.getDenseI64ArrayAttr(
-          cast<TensorType>(update.getType()).getShape());
-      auto updateDiffe = builder.create<DynamicSliceOp>(
-          orig->getLoc(), diffe, startIndices, sliceSizes);
-
-      gutils->addToDiffe(update, updateDiffe, builder);
-    }
-
-    if (diffe)
-      gutils->zeroDiffe(op, builder);
-
-    return success();
-  }
-
-  SmallVector<Value> cacheValues(Operation *orig,
-                                 MGradientUtilsReverse *gutils) const {
-    auto op = cast<DynamicUpdateSliceOp>(orig);
-
-    if (gutils->isConstantValue(op.getOperand()) &&
-        gutils->isConstantValue(op.getUpdate()))
-      return {};
-
-    Operation *newOp = gutils->getNewFromOriginal(orig);
-    OpBuilder cacheBuilder(newOp);
-
-    auto startIndices = op.getStartIndices();
-
-    SmallVector<Value> caches;
-    caches.reserve(startIndices.size());
-
-    for (auto startIndex : startIndices) {
-      Value predCache = gutils->initAndPushCache(
-          gutils->getNewFromOriginal(startIndex), cacheBuilder);
-      caches.push_back(predCache);
-    }
-
-    return caches;
   }
 
   void createShadowValues(Operation *op, OpBuilder &builder,
@@ -1913,9 +2205,13 @@ struct ADDataFlowWhileOp
     if (&srt.getCond() == term->getParentRegion())
       return {};
     SmallVector<Value> sv;
-    for (auto &&[res, arg] : llvm::zip(srt.getResults(), term->getOperands())) {
-      if (arg == v)
+    for (auto &&[res, arg, barg] :
+         llvm::zip(srt.getResults(), term->getOperands(),
+                   srt.getBody().front().getArguments())) {
+      if (arg == v) {
         sv.push_back(res);
+        sv.push_back(barg);
+      }
     }
     return sv;
   }
@@ -1999,8 +2295,8 @@ struct ADDataFlowScatterOp
   }
 };
 
-class AutoDiffScatter
-    : public AutoDiffOpInterface::ExternalModel<AutoDiffScatter, ScatterOp> {
+class AutoDiffScatterFwd
+    : public AutoDiffOpInterface::ExternalModel<AutoDiffScatterFwd, ScatterOp> {
 public:
   LogicalResult createForwardModeTangent(Operation *op, OpBuilder &builder,
                                          MGradientUtils *gutils) const {
@@ -2115,6 +2411,149 @@ public:
     gutils->erase(newOp);
     gutils->originalToNewFnOps[op] = replacement;
     return success();
+  }
+};
+
+class AutoDiffScatterRev
+    : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffScatterRev,
+                                                       ScatterOp> {
+public:
+  LogicalResult createReverseModeAdjoint(Operation *op, OpBuilder &builder,
+                                         MGradientUtilsReverse *gutils,
+                                         SmallVector<Value> caches) const {
+    auto scatterOp = cast<ScatterOp>(op);
+
+    if (!stablehlo::isScatterSetindexOp(scatterOp)) {
+      op->emitError("AutoDiffScatterRev only supports Setindex operations")
+          << *op;
+      return failure();
+    }
+
+    SmallVector<Value> outputDiffe;
+    outputDiffe.reserve(scatterOp.getNumResults());
+    for (int i = 0; i < scatterOp.getNumResults(); i++) {
+      outputDiffe.push_back(gutils->diffe(scatterOp.getResult(i), builder));
+      gutils->zeroDiffe(scatterOp.getResult(i), builder);
+    }
+
+    auto scatterIndices = gutils->popCache(caches[0], builder);
+
+    auto gatherDims = stablehlo::getGatherDims(
+        scatterOp->getContext(), scatterOp.getScatterDimensionNumbers());
+    auto gatherSliceSizes = builder.getDenseI64ArrayAttr(
+        stablehlo::computeGatherSliceSizes(scatterOp));
+
+    auto zeroUpdateType = scatterOp.getUpdates()[0].getType();
+    auto zeroUpdate = builder.create<stablehlo::ConstantOp>(
+        op->getLoc(), zeroUpdateType,
+        cast<ElementsAttr>(makeAttr(zeroUpdateType, 0)));
+
+    auto elemType = cast<RankedTensorType>(zeroUpdateType).getElementType();
+    auto zeroScaler = builder.create<stablehlo::ConstantOp>(
+        op->getLoc(), RankedTensorType::get({}, elemType),
+        cast<ElementsAttr>(makeAttr(RankedTensorType::get({}, elemType), 0)));
+
+    // gradient of the inputs
+    SmallVector<Value> selectedOutputDiffe, newScatterUpdates;
+    SmallVector<Type> selectedOutputTypes;
+    for (auto [i, operand] : llvm::enumerate(scatterOp.getInputs())) {
+      if (!gutils->isConstantValue(operand)) {
+        selectedOutputDiffe.push_back(outputDiffe[i]);
+        newScatterUpdates.push_back(zeroUpdate);
+        selectedOutputTypes.push_back(
+            cast<RankedTensorType>(outputDiffe[i].getType()));
+      }
+    }
+    int64_t nNonConsts = selectedOutputDiffe.size();
+
+    if (nNonConsts > 0) {
+      auto newScatterOp = builder.create<stablehlo::ScatterOp>(
+          op->getLoc(), selectedOutputTypes, selectedOutputDiffe,
+          scatterIndices, newScatterUpdates,
+          scatterOp.getScatterDimensionNumbersAttr(),
+          scatterOp.getIndicesAreSortedAttr(),
+          scatterOp.getUniqueIndicesAttr());
+
+      auto &updateRegion = newScatterOp.getUpdateComputation();
+      auto *block = builder.createBlock(&updateRegion);
+      auto argType = RankedTensorType::get({}, elemType);
+
+      for (int i = 0; i < 2 * nNonConsts; i++)
+        block->addArgument(argType, op->getLoc());
+
+      {
+        OpBuilder::InsertionGuard guard(builder);
+        builder.setInsertionPointToStart(block);
+
+        SmallVector<Value> returnValues;
+        for (int i = nNonConsts; i < 2 * nNonConsts; i++)
+          returnValues.push_back(zeroScaler);
+
+        builder.create<stablehlo::ReturnOp>(op->getLoc(), returnValues);
+      }
+
+      builder.setInsertionPointAfter(newScatterOp);
+
+      int64_t counter = 0;
+      for (auto [i, operand] : llvm::enumerate(scatterOp.getInputs())) {
+        if (!gutils->isConstantValue(operand)) {
+          gutils->addToDiffe(operand, newScatterOp.getResult(counter++),
+                             builder);
+        }
+      }
+    }
+
+    // gradient of the updates
+    for (auto [i, update] : llvm::enumerate(scatterOp.getUpdates())) {
+      if (!gutils->isConstantValue(update)) {
+        auto updateDiffe = builder.create<stablehlo::GatherOp>(
+            op->getLoc(), outputDiffe[i], scatterIndices, gatherDims,
+            gatherSliceSizes, scatterOp.getIndicesAreSortedAttr());
+        gutils->addToDiffe(update, updateDiffe, builder);
+      }
+    }
+
+    return success();
+  }
+
+  void createShadowValues(Operation *op, OpBuilder &builder,
+                          MGradientUtilsReverse *gutils) const {}
+
+  SmallVector<Value> cacheValues(Operation *orig,
+                                 MGradientUtilsReverse *gutils) const {
+    auto scatterOp = cast<ScatterOp>(orig);
+
+    bool anyNonConst = false;
+
+    for (auto input : scatterOp.getInputs()) {
+      if (!gutils->isConstantValue(input)) {
+        anyNonConst = true;
+        break;
+      }
+    }
+
+    for (auto update : scatterOp.getUpdates()) {
+      if (!gutils->isConstantValue(update)) {
+        anyNonConst = true;
+        break;
+      }
+    }
+
+    if (anyNonConst) {
+      SmallVector<Value> caches;
+
+      Operation *newOp = gutils->getNewFromOriginal(scatterOp);
+      OpBuilder cacheBuilder(newOp);
+
+      Value scatterIndicesCached = gutils->initAndPushCache(
+          gutils->getNewFromOriginal(scatterOp.getScatterIndices()),
+          cacheBuilder);
+      caches.push_back(scatterIndicesCached);
+
+      return caches;
+    }
+
+    return {};
   }
 };
 
@@ -2615,33 +3054,8 @@ private:
     llvm::sort(newCacheVec.begin(), newCacheVec.end(), valueCmp);
 
     for (Value newCache : newCacheVec) {
-      SetVector<Value> candidates;
-
       worklist.clear();
       worklist.push_back(newCache);
-
-      while (!worklist.empty()) {
-        Value candidate = worklist.pop_back_val();
-
-        auto C = revGraph.find(Node(candidate));
-        if (C == revGraph.end())
-          continue;
-
-        if (C->second.size() > 1)
-          continue;
-
-        if (candidate.getParentBlock() == reverse)
-          continue; // TODO: support this
-
-        candidates.insert(candidate);
-        for (auto &N : C->second) {
-          // not eligible
-          if (N.O->getNumResults() > 1)
-            continue;
-
-          worklist.append(N.O->getResults().begin(), N.O->getResults().end());
-        }
-      }
 
       auto computeSizeOfType = [](Value val) -> int64_t {
         auto T = cast<RankedTensorType>(val.getType());
@@ -2656,7 +3070,20 @@ private:
       Value picked = newCache;
       int64_t curSize = computeSizeOfType(picked),
               curRank = cast<RankedTensorType>(picked.getType()).getRank();
-      for (Value candidate : candidates) {
+
+      while (!worklist.empty()) {
+        Value candidate = worklist.pop_back_val();
+
+        auto C = revGraph.find(Node(candidate));
+        if (C == revGraph.end())
+          continue;
+
+        if (C->second.size() > 1)
+          continue;
+
+        if (candidate.getParentBlock() == reverse)
+          continue; // TODO: support this
+
         int64_t newSize = computeSizeOfType(candidate),
                 newRank = cast<RankedTensorType>(candidate.getType()).getRank();
         if (newSize < curSize || (newSize == curSize && newRank < curRank) ||
@@ -2664,6 +3091,14 @@ private:
           curSize = newSize;
           curRank = newRank;
           picked = candidate;
+        }
+
+        for (auto &N : C->second) {
+          // not eligible
+          if (N.O->getNumResults() > 1)
+            continue;
+
+          worklist.append(N.O->getResults().begin(), N.O->getResults().end());
         }
       }
 
@@ -2818,9 +3253,34 @@ public:
     Block *cond = &whileOp.getCond().front();
 
     // Gradients whose values need to be passed as iteration variables.
-    llvm::SmallDenseSet<Value> updatedGradients;
+    llvm::SetVector<Value> updatedGradients;
 
     llvm::MapVector<Value, CacheInfo> cachesMap;
+
+    if (op->walk([&](enzyme::SetOp sub) {
+            if (sub->getParentOp() != op) {
+              llvm::errs() << " paren: " << *sub->getParentOp() << "\n";
+              llvm::errs() << "op: " << *op << "\n";
+              llvm::errs() << "sub: " << sub << "\n";
+              return WalkResult::interrupt();
+            }
+            return WalkResult::advance();
+          }).wasInterrupted()) {
+      return rewriter.notifyMatchFailure(
+          op, "had set op which was not a direct descendant");
+    }
+    if (op->walk([&](enzyme::GetOp sub) {
+            if (sub->getParentOp() != op) {
+              llvm::errs() << " paren: " << *sub->getParentOp() << "\n";
+              llvm::errs() << "op: " << *op << "\n";
+              llvm::errs() << "sub: " << sub << "\n";
+              return WalkResult::interrupt();
+            }
+            return WalkResult::advance();
+          }).wasInterrupted()) {
+      return rewriter.notifyMatchFailure(
+          op, "had get op which was not a direct descendant");
+    }
 
     for (auto &it : *body) {
       Operation *op = &it;
@@ -2867,12 +3327,20 @@ public:
           op, "WhileOp does not have static iteration count for cache removal");
     }
 
+    DenseMap<Value, SmallVector<Operation *>> updatedGradientUsers;
+
     // 1. Move enzyme.get outside the body if the variable is not used outside
     // the loop
     for (auto &it : *body) {
       Operation *op = &it;
 
       auto getOp = dyn_cast<enzyme::GetOp>(op);
+      if (getOp && updatedGradients.contains(getOp.getGradient())) {
+        updatedGradientUsers[getOp.getGradient()].push_back(getOp);
+      } else if (auto setOp = dyn_cast<enzyme::SetOp>(op)) {
+        updatedGradientUsers[setOp.getGradient()].push_back(setOp);
+      }
+
       if (!getOp || updatedGradients.contains(getOp.getGradient()))
         continue;
 
@@ -2901,15 +3369,20 @@ public:
 
       {
         OpBuilder::InsertionGuard guard(rewriter);
+        // here we do a primitive form of mem2reg within the loop. We have a
+        // sorted (by instruction number) list of all users of the instruction.
+        Value val = newArg;
+        for (auto user : updatedGradientUsers[grad]) {
+          if (auto getOp = dyn_cast<enzyme::GetOp>(user)) {
+            rewriter.replaceOp(getOp, val);
+          } else {
+            auto setOp = cast<enzyme::SetOp>(user);
+            val = setOp.getValue();
+            rewriter.eraseOp(setOp);
+          }
+        }
 
-        rewriter.setInsertionPointToStart(body);
-        rewriter.create<enzyme::SetOp>(grad.getLoc(), grad, newArg);
-
-        rewriter.setInsertionPoint(term);
-
-        auto outputVal =
-            rewriter.create<enzyme::GetOp>(grad.getLoc(), Ty, grad).getResult();
-        term->insertOperands(term->getNumOperands(), ValueRange(outputVal));
+        term->insertOperands(term->getNumOperands(), ValueRange(val));
       }
     }
 
@@ -2964,27 +3437,6 @@ public:
       if (!inductionVariable) {
         return rewriter.notifyMatchFailure(
             op, "WhileOp does not have induction variable for cache removal");
-
-        // TODO: support adding an induction variable if not present
-
-        // Value zero = rewriter.create<arith::ConstantOp>(whileOp->getLoc(),
-        //                                                rewriter.getIndexAttr(0));
-        // newOperands.push_back(zero);
-
-        // inductionVariable = body->addArgument(zero.getType(),
-        // whileOp->getLoc());
-        //  cond->addArgument(zero.getType(), whileOp->getLoc());
-        // {
-        //   OpBuilder::InsertionGuard guard(rewriter);
-        //   rewriter.setInsertionPoint(term);
-
-        //   auto one = rewriter.create<arith::ConstantOp>(whileOp->getLoc(),
-        //                                                rewriter.getIndexAttr(1));
-        //   auto newInductionVar = rewriter.create<arith::AddIOp>(
-        //       whileOp->getLoc(), inductionVariable, one);
-        //   term->insertOperands(term->getNumOperands(),
-        //                        ValueRange(newInductionVar));
-        // }
       }
 
       auto newType =
@@ -3052,8 +3504,8 @@ public:
     }
 
     // 4. On the other while op (the one containing the pops), we add an
-    // induction variable and replace pops with slice from the tensor version of
-    // the cache.
+    // induction variable and replace pops with slice from the tensor version
+    // of the cache.
     if (inductionVariable && caches.size() != 0) {
       if (isa<BlockArgument>(inductionVariable) &&
           cast<BlockArgument>(inductionVariable).getArgNumber() != 0)
@@ -3249,7 +3701,7 @@ struct IfOpEnzymeOpsRemover
     //
     //  if %pred {
     //    enzyme.set %grad, %2
-    //  } else {
+    //  } else {
     //  }
     //
     //  %0 = enzyme.get %grad
@@ -3886,7 +4338,8 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     CaseOp::attachInterface<RegionBranchCaseOp>(*context);
 
     ScatterOp::attachInterface<ScatterActivity>(*context);
-    ScatterOp::attachInterface<AutoDiffScatter>(*context);
+    ScatterOp::attachInterface<AutoDiffScatterFwd>(*context);
+    ScatterOp::attachInterface<AutoDiffScatterRev>(*context);
 
     ReturnOp::attachInterface<AutoDiffHLOReturn>(*context);
 
@@ -3901,8 +4354,6 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     WhileOp::attachInterface<AutoDiffReduceCF<WhileOp>>(*context);
     BroadcastInDimOp::attachInterface<AutoDiffBroadcastInDimRev>(*context);
     SliceOp::attachInterface<AutoDiffSliceRev>(*context);
-    DynamicUpdateSliceOp::attachInterface<AutoDiffDynamicSliceUpdateRev>(
-        *context);
     ReduceOp::attachInterface<AutoDiffReduceRev>(*context);
     ReduceWindowOp::attachInterface<AutoDiffReduceWindowRev>(*context);
     ConcatenateOp::attachInterface<AutoDiffConcatenateRev>(*context);
