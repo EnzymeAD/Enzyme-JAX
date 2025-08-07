@@ -596,9 +596,11 @@ bool NoNanResultAnalysis::constantIntCheck(DenseElementsAttr attr) {
 }
 
 bool NoNanResultAnalysis::constantFloatCheck(DenseElementsAttr attr) {
-  return !std::any_of(attr.getValues<APFloat>().begin(),
-                      attr.getValues<APFloat>().end(),
-                      [](APFloat elem) { return elem.isNaN(); });
+  for (auto elem : attr.getValues<APFloat>()) {
+    if (elem.isNaN())
+      return false;
+  }
+  return true;
 }
 
 bool NoNanResultAnalysis::guaranteedImpl(Operation *op) {
@@ -613,8 +615,12 @@ bool NoNanResultAnalysis::guaranteedImpl(Operation *op) {
   if (isa<stablehlo::SliceOp, stablehlo::ConcatenateOp,
           stablehlo::BroadcastInDimOp, stablehlo::ReshapeOp,
           stablehlo::TransposeOp>(op)) {
-    if (std::all_of(op->getOperands().begin(), op->getOperands().end(),
-                    [this](mlir::Value v) { return guaranteed(v); }))
+    bool allOperandsGuaranteed = true;
+    for (auto operand : op->getOperands()) {
+      if (!guaranteed(operand))
+        allOperandsGuaranteed = false;
+    }
+    if (allOperandsGuaranteed)
       return true;
   }
 
@@ -628,8 +634,12 @@ bool NoNanResultAnalysis::guaranteedImpl(Operation *op) {
   if (isa<stablehlo::AbsOp, stablehlo::ExpOp, stablehlo::ConvertOp,
           stablehlo::CompareOp, stablehlo::TanhOp, stablehlo::LogisticOp,
           stablehlo::FloorOp, stablehlo::CeilOp>(op)) {
-    if (std::all_of(op->getOperands().begin(), op->getOperands().end(),
-                    [this](mlir::Value v) { return guaranteed(v); }))
+    bool allOperandsGuaranteed = true;
+    for (auto operand : op->getOperands()) {
+      if (!guaranteed(operand))
+        allOperandsGuaranteed = false;
+    }
+    if (allOperandsGuaranteed)
       return true;
   }
 
@@ -651,11 +661,8 @@ bool NoNanResultAnalysis::guaranteedImpl(Operation *op) {
 
   // guaranteed if operands are all finite
   if (isa<stablehlo::SineOp, stablehlo::CosineOp>(op)) {
-    if (std::all_of(op->getOperands().begin(), op->getOperands().end(),
-                    [this](mlir::Value v) {
-                      return finiteResultAnalysis->guaranteed(v) &&
-                             guaranteed(v);
-                    }))
+    if (guaranteed(op->getOperand(0)) &&
+        finiteResultAnalysis->guaranteed(op->getOperand(0)))
       return true;
   }
 
@@ -694,9 +701,11 @@ FiniteResultAnalysis initFiniteResultAnalysis() {
 }
 
 bool FiniteResultAnalysis::constantFloatCheck(DenseElementsAttr attr) {
-  return std::all_of(attr.getValues<APFloat>().begin(),
-                     attr.getValues<APFloat>().end(),
-                     [](APFloat elem) { return elem.isFinite(); });
+  for (auto elem : attr.getValues<APFloat>()) {
+    if (!elem.isFinite())
+      return false;
+  }
+  return true;
 }
 
 bool FiniteResultAnalysis::constantIntCheck(DenseElementsAttr attr) {
@@ -715,11 +724,13 @@ bool FiniteResultAnalysis::guaranteedImpl(mlir::Operation *op) {
   if (isa<stablehlo::SliceOp, stablehlo::ConcatenateOp,
           stablehlo::BroadcastInDimOp, stablehlo::ReshapeOp,
           stablehlo::TransposeOp>(op)) {
-    return std::all_of(op->getOperands().begin(), op->getOperands().end(),
-                       [this](mlir::Value v) {
-                         return guaranteed(v) &&
-                                noNanResultAnalysis->guaranteed(v);
-                       });
+    bool allOperandsGuaranteed = true;
+    for (auto operand : op->getOperands()) {
+      if (!guaranteed(operand) || !noNanResultAnalysis->guaranteed(operand))
+        allOperandsGuaranteed = false;
+    }
+    if (allOperandsGuaranteed)
+      return true;
   }
 
   // integer ops
@@ -731,25 +742,25 @@ bool FiniteResultAnalysis::guaranteedImpl(mlir::Operation *op) {
   // elementwise ops that are finite if all operands are not nan and finite
   if (isa<stablehlo::AddOp, stablehlo::SubtractOp, stablehlo::AbsOp,
           stablehlo::ExpOp, stablehlo::ConvertOp, stablehlo::CompareOp>(op)) {
-    return std::all_of(
-        op->getOperands().begin(), op->getOperands().end(), [&](mlir::Value v) {
-          return guaranteed(v) && noNanResultAnalysis->guaranteed(v);
-        });
+    bool allOperandsGuaranteed = true;
+    for (auto operand : op->getOperands()) {
+      if (!guaranteed(operand) || !noNanResultAnalysis->guaranteed(operand))
+        allOperandsGuaranteed = false;
+    }
+    if (allOperandsGuaranteed)
+      return true;
   }
 
   // guaranteed finite if operands are not nan
-  if (isa<stablehlo::TanhOp, stablehlo::LogisticOp>(op)) {
-    return std::all_of(
-        op->getOperands().begin(), op->getOperands().end(),
-        [&](mlir::Value v) { return noNanResultAnalysis->guaranteed(v); });
-  }
-
-  // guaranteed if operands are all finite
-  if (isa<stablehlo::SineOp, stablehlo::CosineOp>(op)) {
-    return std::all_of(
-        op->getOperands().begin(), op->getOperands().end(), [&](mlir::Value v) {
-          return guaranteed(v) && noNanResultAnalysis->guaranteed(v);
-        });
+  if (isa<stablehlo::TanhOp, stablehlo::LogisticOp, stablehlo::SineOp,
+          stablehlo::CosineOp>(op)) {
+    bool allOperandsGuaranteed = true;
+    for (auto operand : op->getOperands()) {
+      if (!noNanResultAnalysis->guaranteed(operand))
+        allOperandsGuaranteed = false;
+    }
+    if (allOperandsGuaranteed)
+      return true;
   }
 
   if (auto mulOp = dyn_cast<stablehlo::MulOp>(op)) {
@@ -772,15 +783,19 @@ bool FiniteResultAnalysis::guaranteedImpl(mlir::Operation *op) {
 }
 
 bool NonNegativeResultAnalysis::constantIntCheck(DenseElementsAttr attr) {
-  return !std::any_of(attr.getValues<APInt>().begin(),
-                      attr.getValues<APInt>().end(),
-                      [](APInt elem) { return elem.isNegative(); });
+  for (auto elem : attr.getValues<APInt>()) {
+    if (elem.isNegative())
+      return false;
+  }
+  return true;
 }
 
 bool NonNegativeResultAnalysis::constantFloatCheck(DenseElementsAttr attr) {
-  return !std::any_of(attr.getValues<APFloat>().begin(),
-                      attr.getValues<APFloat>().end(),
-                      [](APFloat elem) { return elem.isNegative(); });
+  for (auto elem : attr.getValues<APFloat>()) {
+    if (elem.isNegative())
+      return false;
+  }
+  return true;
 }
 
 bool NonNegativeResultAnalysis::guaranteedImpl(Operation *op) {
@@ -799,8 +814,7 @@ bool NonNegativeResultAnalysis::guaranteedImpl(Operation *op) {
 
   // Any non-negative operation that produces a non-negative result
   if (isa<stablehlo::MaxOp>(op)) {
-    if (std::any_of(op->getOperands().begin(), op->getOperands().end(),
-                    [this](mlir::Value v) { return guaranteed(v); }))
+    if (guaranteed(op->getOperand(0)) || guaranteed(op->getOperand(1)))
       return true;
   }
 
@@ -809,8 +823,12 @@ bool NonNegativeResultAnalysis::guaranteedImpl(Operation *op) {
           stablehlo::ConcatenateOp, stablehlo::ReshapeOp,
           stablehlo::TransposeOp, stablehlo::SliceOp,
           stablehlo::DynamicUpdateSliceOp, stablehlo::BroadcastInDimOp>(op)) {
-    if (std::all_of(op->getOperands().begin(), op->getOperands().end(),
-                    [this](mlir::Value v) { return guaranteed(v); }))
+    bool allOperandsGuaranteed = true;
+    for (auto operand : op->getOperands()) {
+      if (!guaranteed(operand))
+        allOperandsGuaranteed = false;
+    }
+    if (allOperandsGuaranteed)
       return true;
   }
 
