@@ -307,43 +307,135 @@ bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy, Type inTy);
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy, Type inTy,
                           mlir::Operation *op);
 
-class GuaranteedResultKindBase {
+template <typename Child> class GuaranteedResultAnalysisBase {
 protected:
   llvm::DenseMap<mlir::Value, bool> valueCache;
   llvm::DenseMap<mlir::Operation *, bool> opCache;
 
-  virtual bool constantFloatCheck(DenseElementsAttr attr) = 0;
-  virtual bool constantIntCheck(DenseElementsAttr attr) = 0;
-  virtual bool guaranteedImpl(mlir::Operation *op) = 0;
-
-  bool guaranteedImpl(stablehlo::ConstantOp constOp);
-
 public:
-  bool guaranteed(mlir::Value value);
-  bool guaranteed(mlir::Operation *op);
-  bool guaranteed(stablehlo::ConstantOp constOp);
+  bool guaranteed(mlir::Value value) {
+    auto it = valueCache.find(value);
+    if (it != valueCache.end())
+      return it->second;
+
+    bool result = ((Child *)this)->guaranteedImpl(value.getDefiningOp());
+    valueCache[value] = result;
+    return result;
+  }
+
+  bool guaranteed(mlir::Operation *op) {
+    if (!op)
+      return false;
+
+    auto it = opCache.find(op);
+    if (it != opCache.end())
+      return it->second;
+
+    bool result = ((Child *)this)->guaranteedImpl(op);
+    opCache[op] = result;
+    return result;
+  }
+
+  bool guaranteed(stablehlo::ConstantOp constOp) {
+    if (!constOp)
+      return false;
+
+    auto it = opCache.find(constOp);
+    if (it != opCache.end())
+      return it->second;
+
+    Attribute attr = constOp.getValue();
+
+    bool guaranteedResult = false;
+    if (auto denseAttr = dyn_cast<DenseElementsAttr>(attr)) {
+      if (denseAttr.getType().getShape().size() && denseAttr.isSplat()) {
+        denseAttr = denseAttr.resizeSplat(
+            RankedTensorType::get({}, denseAttr.getType().getElementType()));
+      }
+
+      // For floating point values
+      if (isa<FloatType>(denseAttr.getElementType())) {
+        if (((Child *)this)->constantFloatCheck(denseAttr)) {
+          guaranteedResult = true;
+        }
+      }
+
+      // For integer values
+      if (isa<IntegerType>(denseAttr.getElementType())) {
+        if (((Child *)this)->constantIntCheck(denseAttr)) {
+          guaranteedResult = true;
+        }
+      }
+    }
+
+    opCache[constOp] = guaranteedResult;
+    return guaranteedResult;
+  }
 };
 
-bool guaranteedNoNanResult(stablehlo::ConstantOp constOp);
-bool guaranteedNoNanResult(mlir::Value value);
-bool guaranteedNoNanResult(mlir::Operation *op);
+class FiniteResultAnalysis;
+class NoNanResultAnalysis;
 
-bool guaranteedFiniteResult(stablehlo::ConstantOp constOp);
-bool guaranteedFiniteResult(mlir::Value value);
-bool guaranteedFiniteResult(mlir::Operation *op);
+class NoNanResultAnalysis
+    : public GuaranteedResultAnalysisBase<NoNanResultAnalysis> {
+private:
+  std::shared_ptr<FiniteResultAnalysis> finiteResultAnalysis = nullptr;
 
-class GuaranteedNonNegativeResult : public GuaranteedResultKindBase {
 public:
-  bool constantFloatCheck(DenseElementsAttr attr) override;
-  bool constantIntCheck(DenseElementsAttr attr) override;
-  bool guaranteedImpl(mlir::Operation *op) override;
+  bool constantFloatCheck(DenseElementsAttr attr);
+  bool constantIntCheck(DenseElementsAttr attr);
+  bool guaranteedImpl(mlir::Operation *op);
+
+  void setFiniteResultAnalysis(std::shared_ptr<FiniteResultAnalysis> analysis) {
+    finiteResultAnalysis = analysis;
+  }
+};
+
+class FiniteResultAnalysis
+    : public GuaranteedResultAnalysisBase<FiniteResultAnalysis> {
+private:
+  std::shared_ptr<NoNanResultAnalysis> noNanResultAnalysis = nullptr;
+
+public:
+  bool constantFloatCheck(DenseElementsAttr attr);
+  bool constantIntCheck(DenseElementsAttr attr);
+  bool guaranteedImpl(mlir::Operation *op);
+
+  void setNoNanResultAnalysis(std::shared_ptr<NoNanResultAnalysis> analysis) {
+    noNanResultAnalysis = analysis;
+  }
+};
+
+NoNanResultAnalysis initNoNanResultAnalysis();
+FiniteResultAnalysis initFiniteResultAnalysis();
+
+inline bool guaranteedNoNanResult(mlir::Value value) {
+  return initNoNanResultAnalysis().guaranteed(value);
+}
+inline bool guaranteedNoNanResult(Operation *op) {
+  return initNoNanResultAnalysis().guaranteed(op);
+}
+
+inline bool guaranteedFiniteResult(mlir::Value value) {
+  return initFiniteResultAnalysis().guaranteed(value);
+}
+inline bool guaranteedFiniteResult(Operation *op) {
+  return initFiniteResultAnalysis().guaranteed(op);
+}
+
+class NonNegativeResultAnalysis
+    : public GuaranteedResultAnalysisBase<NonNegativeResultAnalysis> {
+public:
+  bool constantFloatCheck(DenseElementsAttr attr);
+  bool constantIntCheck(DenseElementsAttr attr);
+  bool guaranteedImpl(mlir::Operation *op);
 };
 
 inline bool guaranteedNonNegativeResult(mlir::Value value) {
-  return GuaranteedNonNegativeResult().guaranteed(value);
+  return NonNegativeResultAnalysis().guaranteed(value);
 }
 inline bool guaranteedNonNegativeResult(Operation *op) {
-  return GuaranteedNonNegativeResult().guaranteed(op);
+  return NonNegativeResultAnalysis().guaranteed(op);
 }
 
 bool anyOperandIsConstant(mlir::Operation *op);
