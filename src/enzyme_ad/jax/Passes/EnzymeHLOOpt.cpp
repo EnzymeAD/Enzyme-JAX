@@ -22053,13 +22053,16 @@ struct SubtractMultiplyConstToAddMulConst
 };
 
 template <typename OpTy>
-struct ElementwiseRotateToReduceWindow
+struct SelfElementwiseToConvolutionLike
     : public CheckedOpRewritePattern<OpTy,
-                                     ElementwiseRotateToReduceWindow<OpTy>> {
+                                     SelfElementwiseToConvolutionLike<OpTy>> {
   using CheckedOpRewritePattern<
-      OpTy, ElementwiseRotateToReduceWindow<OpTy>>::CheckedOpRewritePattern;
+      OpTy, SelfElementwiseToConvolutionLike<OpTy>>::CheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(OpTy op, PatternRewriter &rewriter) const {
+    if (op->getNumOperands() != 2)
+      return rewriter.notifyMatchFailure(op, "expected two operands");
+
     auto outType = cast<RankedTensorType>(op.getType());
     auto outShape = outType.getShape();
     auto outRank = outType.getRank();
@@ -22068,93 +22071,109 @@ struct ElementwiseRotateToReduceWindow
     auto lhsInfo = extractOperandInfo(op.getLhs());
     auto rhsInfo = extractOperandInfo(op.getRhs());
 
-    // Try to find the rotate pattern
-    int64_t dim = -1, amount = -1;
-    Value operand;
-    bool flippedOrdering = false;
-
-    // Check if lhs base is rotate of rhs base
-    if (auto rotateOp =
-            lhsInfo.base.template getDefiningOp<enzymexla::RotateOp>()) {
-      if (rotateOp.getOperand() == rhsInfo.base) {
-        dim = rotateOp.getDimension();
-        amount = rotateOp.getAmount();
-        operand = rhsInfo.base;
+    // For reduce_window, we need the following:
+    //   - op is commutative and associative
+    //   - *.constantScalar & *.constantAttr must be empty
+    bool canEmitReduceWindow = false;
+    bool isCommutative =
+        op->template hasTrait<mlir::hlo::OpTrait::IsCommutative>() ||
+        op->template hasTrait<mlir::OpTrait::IsCommutative>();
+    // mlir has no trait for isAssociative??
+    bool isAssociative = false;
+    if constexpr (std::is_base_of_v<stablehlo::AddOp, OpTy> ||
+                  std::is_base_of_v<stablehlo::MulOp, OpTy>) {
+      isAssociative = true;
+    }
+    if (isAssociative && isCommutative) {
+      if (!lhsInfo.constantAttr.has_value() &&
+          !rhsInfo.constantAttr.has_value() &&
+          !lhsInfo.constantScalar.has_value() &&
+          !rhsInfo.constantScalar.has_value()) {
+        canEmitReduceWindow = true;
       }
     }
 
-    // Check if rhs base is rotate of lhs base
-    if (dim == -1) {
-      if (auto rotateOp =
-              rhsInfo.base.template getDefiningOp<enzymexla::RotateOp>()) {
-        if (rotateOp.getOperand() == lhsInfo.base) {
-          dim = rotateOp.getDimension();
-          amount = rotateOp.getAmount();
-          operand = lhsInfo.base;
-          flippedOrdering = true;
-        }
+    if (!canEmitReduceWindow)
+      if constexpr (std::is_base_of_v<stablehlo::MulOp, OpTy>) {
+        return rewriter.notifyMatchFailure(
+            op, "MulOp is only supported if we can emit a reduce window.");
       }
+
+    if (!canEmitReduceWindow) {
+      return rewriter.notifyMatchFailure(op, "TODO: emit conv");
     }
 
-    if (dim == -1)
-      return failure();
-
-    auto wrapOp = rewriter.create<enzymexla::WrapOp>(op.getLoc(), operand,
-                                                     amount, 0, dim);
-
-    SmallVector<int64_t> windowDims(outRank, 1);
-    windowDims[dim] = 2;
-    SmallVector<int64_t> windowDilations(outRank, 1);
-    windowDilations[dim] = amount;
-
-    auto zeroType = RankedTensorType::get({}, outType.getElementType());
-    auto zero = rewriter.create<stablehlo::ConstantOp>(
-        op.getLoc(), zeroType, cast<ElementsAttr>(makeAttr(zeroType, 0)));
-
-    auto loc = op.getLoc();
-    auto reduceWindowOp =
-        rewriter.replaceOpWithNewOp<stablehlo::ReduceWindowOp>(
-            op, TypeRange(outType), ValueRange(wrapOp), ValueRange(zero),
-            rewriter.getDenseI64ArrayAttr(windowDims), DenseI64ArrayAttr(),
-            DenseI64ArrayAttr(), rewriter.getDenseI64ArrayAttr(windowDilations),
-            DenseIntElementsAttr());
+    Operation *newBaseOp = nullptr;
+    int64_t windowDilation = -1, dimension = -1;
 
     {
-      auto *block = rewriter.createBlock(&reduceWindowOp.getBody());
-      auto argType = RankedTensorType::get({}, outType.getElementType());
-      block->addArgument(argType, loc);
-      block->addArgument(argType, loc);
-      rewriter.setInsertionPointToStart(block);
+      // Try to see if the parent op is a rotate
+      bool matched = false;
+      Value operand;
 
-      Value lhsVal = block->getArgument(0);
-      Value rhsVal = block->getArgument(1);
-
-      if (lhsInfo.constantAttr.has_value()) {
-        lhsVal = rewriter.create<stablehlo::MulOp>(
-            loc, lhsVal,
-            rewriter.create<stablehlo::ConstantOp>(
-                loc, lhsVal.getType(), lhsInfo.constantAttr.value()));
-      } else if (lhsInfo.constantScalar.has_value()) {
-        lhsVal = rewriter.create<stablehlo::MulOp>(
-            loc, lhsVal, lhsInfo.constantScalar.value());
+      // TODO: generalize the pattern. We can deal with both branches being a
+      // rotate
+      if (auto lhsRotateOp =
+              lhsInfo.base.template getDefiningOp<enzymexla::RotateOp>()) {
+        if (lhsRotateOp.getOperand() == rhsInfo.base) {
+          dimension = lhsRotateOp.getDimension();
+          windowDilation = lhsRotateOp.getAmount();
+          operand = rhsInfo.base;
+          matched = true;
+        }
       }
 
-      if (rhsInfo.constantAttr.has_value()) {
-        rhsVal = rewriter.create<stablehlo::MulOp>(
-            loc, rhsVal,
-            rewriter.create<stablehlo::ConstantOp>(
-                loc, rhsVal.getType(), rhsInfo.constantAttr.value()));
-      } else if (rhsInfo.constantScalar.has_value()) {
-        rhsVal = rewriter.create<stablehlo::MulOp>(
-            loc, rhsVal, rhsInfo.constantScalar.value());
+      if (!matched) {
+        if (auto rhsRotateOp =
+                rhsInfo.base.template getDefiningOp<enzymexla::RotateOp>()) {
+          if (rhsRotateOp.getOperand() == lhsInfo.base) {
+            dimension = rhsRotateOp.getDimension();
+            windowDilation = rhsRotateOp.getAmount();
+            operand = lhsInfo.base;
+            matched = true;
+          }
+        }
       }
 
-      if (flippedOrdering) {
-        lhsVal, rhsVal = rhsVal, lhsVal;
-      }
+      if (matched)
+        newBaseOp = rewriter.create<enzymexla::WrapOp>(
+            op.getLoc(), operand, windowDilation, 0, dimension);
+    }
 
-      rewriter.create<stablehlo::ReturnOp>(
-          loc, ValueRange(rewriter.create<OpTy>(loc, lhsVal, rhsVal)));
+    if (!newBaseOp || windowDilation < 0 || dimension < 0)
+      return rewriter.notifyMatchFailure(
+          op, "None of the parent op conditions match.");
+
+    if (canEmitReduceWindow) {
+      SmallVector<int64_t> windowDims(outRank, 1);
+      windowDims[dimension] = 2;
+      SmallVector<int64_t> windowDilations(outRank, 1);
+      windowDilations[dimension] = windowDilation;
+
+      auto zeroType = RankedTensorType::get({}, outType.getElementType());
+      auto zero = rewriter.create<stablehlo::ConstantOp>(
+          op.getLoc(), zeroType, cast<ElementsAttr>(makeAttr(zeroType, 0)));
+
+      auto loc = op.getLoc();
+      auto reduceWindowOp =
+          rewriter.replaceOpWithNewOp<stablehlo::ReduceWindowOp>(
+              op, TypeRange(outType), ValueRange(newBaseOp->getResult(0)),
+              ValueRange(zero), rewriter.getDenseI64ArrayAttr(windowDims),
+              DenseI64ArrayAttr(), DenseI64ArrayAttr(),
+              rewriter.getDenseI64ArrayAttr(windowDilations),
+              DenseIntElementsAttr());
+
+      {
+        auto *block = rewriter.createBlock(&reduceWindowOp.getBody());
+        auto argType = RankedTensorType::get({}, outType.getElementType());
+        block->addArgument(argType, loc);
+        block->addArgument(argType, loc);
+        rewriter.setInsertionPointToStart(block);
+
+        rewriter.create<stablehlo::ReturnOp>(
+            loc, ValueRange(rewriter.create<OpTy>(loc, block->getArgument(0),
+                                                  block->getArgument(1))));
+      }
     }
 
     return success();
@@ -22791,8 +22810,9 @@ struct EnzymeHLOOptPass
         ElementwiseWrap,
         ElementwiseExtend,
         SubtractMultiplyConstToAddMulConst,
-        ElementwiseRotateToReduceWindow<stablehlo::SubtractOp>,
-        ElementwiseRotateToReduceWindow<stablehlo::AddOp>
+        SelfElementwiseToConvolutionLike<stablehlo::SubtractOp>,
+        SelfElementwiseToConvolutionLike<stablehlo::AddOp>,
+        SelfElementwiseToConvolutionLike<stablehlo::MulOp>
       >(context);
 
     patterns.add<SumToReduceWindow<stablehlo::AddOp>,
