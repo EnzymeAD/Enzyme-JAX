@@ -389,8 +389,6 @@ def optimization_passes(
         f"dynamic_update_slice_const_prop({max_constant_threshold})",
         "scatter_update_computation_const_prop",
         "gather_const_prop",
-        "subtract_rotate_to_reduce_window",
-        "add_rotate_to_reduce_window",
     ]
 
     if reshape_propagate == "up":
