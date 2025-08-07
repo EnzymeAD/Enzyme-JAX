@@ -22062,8 +22062,7 @@ struct ElementwiseRotateToReduceWindow
       }
 
       rewriter.create<stablehlo::ReturnOp>(
-          loc,
-          ValueRange(rewriter.create<OpTy>(loc, lhsVal, rhsVal)));
+          loc, ValueRange(rewriter.create<OpTy>(loc, lhsVal, rhsVal)));
     }
 
     return success();
