@@ -2424,8 +2424,9 @@ public:
     auto scatterOp = cast<ScatterOp>(op);
     Operation &innerOp = scatterOp.getUpdateComputation().front().front();
 
-    if (!stablehlo::isScatterSetindexOp(scatterOp) && !isa<AddOp>(innerOp) && !isa<SubtractOp>(innerOp)) {
-      op->emitError("AutoDiffScatterRev only supports Setindex, Add and Substract operations");
+    if (!stablehlo::isScatterSetindexOp(scatterOp) && !isa<AddOp>(innerOp)) {
+      op->emitError("AutoDiffScatterRev only supports Setindex and Add operations")
+          << *op;
       return failure();
     }
 
@@ -2443,7 +2444,7 @@ public:
     auto gatherSliceSizes = builder.getDenseI64ArrayAttr(
         stablehlo::computeGatherSliceSizes(scatterOp));
 
-    if (isa<AddOp>(innerOp) || isa<SubtractOp>(innerOp)) {
+    if (isa<AddOp>(innerOp)) {
       // gradient of the inputs
       for (auto [i, operand] : llvm::enumerate(scatterOp.getInputs())) {
         if (!gutils->isConstantValue(operand)) {
