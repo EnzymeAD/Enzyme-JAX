@@ -2447,7 +2447,7 @@ public:
     auto gatherSliceSizes = builder.getDenseI64ArrayAttr(
         stablehlo::computeGatherSliceSizes(scatterOp));
 
-    if (isa<AddOp>(innerOp) || isa<SubtractOp>(innerOp)) {
+    if (isa<AddOp>(innerOp)) {
       // gradient of the inputs
       for (auto [i, operand] : llvm::enumerate(scatterOp.getInputs())) {
         if (!gutils->isConstantValue(operand)) {
