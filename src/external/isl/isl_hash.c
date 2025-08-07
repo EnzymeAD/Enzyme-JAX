@@ -8,6 +8,7 @@
  */
 
 #include <stdlib.h>
+#include <strings.h>
 #include <isl_hash_private.h>
 #include <isl/ctx.h>
 #include "isl_config.h"
