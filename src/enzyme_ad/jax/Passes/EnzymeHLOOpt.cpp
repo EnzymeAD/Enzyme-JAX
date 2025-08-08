@@ -22139,6 +22139,78 @@ struct SelfElementwiseToConvolutionLike
             op.getLoc(), operand, windowDilation, 0, dimension);
     }
 
+    if (!newBaseOp) {
+      // TODO: generalize to match when we have padding on both sides as well
+      // try to match pad
+      auto lhsPadOp = lhsInfo.base.template getDefiningOp<stablehlo::PadOp>();
+      auto rhsPadOp = rhsInfo.base.template getDefiningOp<stablehlo::PadOp>();
+      bool matched = false;
+      windowDilation = -1;
+      dimension = -1;
+
+      if (lhsPadOp && rhsPadOp) {
+        if (lhsPadOp.getOperand() == rhsPadOp.getOperand() &&
+            lhsPadOp.getPaddingValue() == rhsPadOp.getPaddingValue()) {
+          auto lhsLowPadding = lhsPadOp.getEdgePaddingLow();
+          auto rhsLowPadding = rhsPadOp.getEdgePaddingLow();
+          auto lhsHighPadding = lhsPadOp.getEdgePaddingHigh();
+          auto rhsHighPadding = rhsPadOp.getEdgePaddingHigh();
+          auto lhsInteriorPadding = lhsPadOp.getInteriorPadding();
+          auto rhsInteriorPadding = rhsPadOp.getInteriorPadding();
+
+          int64_t counter = 0;
+          for (auto [lL, rL, lH, rH, lI, rI] : llvm::zip(
+                   lhsLowPadding, rhsLowPadding, lhsHighPadding, rhsHighPadding,
+                   lhsInteriorPadding, rhsInteriorPadding)) {
+            // all interior paddings must be zero
+            if (lI != 0 || rI != 0) {
+              matched = false;
+              break;
+            }
+
+            // if lL is non zero, corresponding rL must be non zero. All others
+            // must be zero
+            if (lL != 0) {
+              if (lL != rH || lH != 0 || rL != 0 || dimension != -1) {
+                matched = false;
+                break;
+              }
+              dimension = counter;
+              windowDilation = lL;
+              matched = true;
+            }
+
+            // if rL is non zero, corresponding lL must be non zero. All others
+            // must be zero
+            if (rL != 0) {
+              if (lH != rL || lL != 0 || rH != 0 || dimension != -1) {
+                matched = false;
+                break;
+              }
+              dimension = counter;
+              windowDilation = rL;
+              matched = true;
+              flipped = true;
+            }
+
+            counter++;
+          }
+        }
+      }
+
+      if (matched) {
+        SmallVector<int64_t> paddingLow(outRank, 0);
+        SmallVector<int64_t> paddingHigh(outRank, 0);
+        SmallVector<int64_t> paddingInterior(outRank, 0);
+        paddingLow[dimension] = windowDilation;
+        paddingHigh[dimension] = windowDilation;
+
+        newBaseOp = rewriter.create<stablehlo::PadOp>(
+            op.getLoc(), lhsPadOp.getOperand(), lhsPadOp.getPaddingValue(),
+            paddingLow, paddingHigh, paddingInterior);
+      }
+    }
+
     if (!newBaseOp || windowDilation < 0 || dimension < 0)
       return rewriter.notifyMatchFailure(
           op, "None of the parent op conditions match.");
