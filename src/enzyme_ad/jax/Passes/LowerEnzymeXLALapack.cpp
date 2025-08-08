@@ -1096,8 +1096,12 @@ struct GemqrtOpLowering : public OpRewritePattern<enzymexla::GemqrtOp> {
       nb_value = k_value;
     }
 
+    assert(V_rank == 2 && "`enzymexla.lapack.gemqrt` requires `V` to be a matrix");
+    assert(T_rank == 2 && "`enzymexla.lapack.gemqrt` requires `T` to be a matrix");
+    assert(C_rank == 2 && "`enzymexla.lapack.gemqrt` requires `C` to be a matrix");
     assert(output_shape == C_shape && "`enzymexla.lapack.gemqrt` requires `C` "
                                       "and `output` to have the same shape");
+
     assert(V_eltype == C_eltype && V_eltype == T_eltype &&
            "`enzymexla.lapack.gemqrt` requires the same element type for all "
            "operands");
@@ -1116,11 +1120,11 @@ struct GemqrtOpLowering : public OpRewritePattern<enzymexla::GemqrtOp> {
 
     assert(ldt_value >= nb_value && "ldt must be >= nb");
     if (side_value == 'L') {
-      assert(ldv_value == C_shape[1] && "on left-sided muliplication, the first dimension "
+      assert(ldv_value == C_shape[0] && "on left-sided muliplication, the first dimension "
         "of V must equal the first dimension of C");
       assert(C_shape[0] >= k_value && "invalid number of reflectors: k should be <= m");
     } else { // side_value == 'R'
-      assert(ldv_value == C_shape[2] && "on right-sided multiplication, the first dimension"
+      assert(ldv_value == C_shape[1] && "on right-sided multiplication, the first dimension"
         "of V must equal the second dimension of C");
       assert(C_shape[1] >= k_value && "invalid number of reflectors: k should be <= n");
     }
