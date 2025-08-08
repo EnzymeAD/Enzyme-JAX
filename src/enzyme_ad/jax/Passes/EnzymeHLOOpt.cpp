@@ -20452,12 +20452,53 @@ struct SplitMultiResultScatter
     // The arguments to the body are first the operands, then the updates.
     // We expect the return op to return the update arguments.
     size_t numInputs = op.getInputs().size();
-    for (size_t i = 0; i < returnOp.getNumOperands(); ++i) {
-      auto returnedVal = dyn_cast<BlockArgument>(returnOp.getOperand(i));
-      if (!returnedVal || returnedVal.getArgNumber() != numInputs + i) {
-        return rewriter.notifyMatchFailure(
-            op, "scatter body does not simply return update values");
-      }
+    // Map from a value to the set of block argument indices it depends on.
+    llvm::DenseMap<Value, llvm::SmallSet<unsigned, 4>> dependencyMap;
+
+    // Initialize dependencies for block arguments.
+    for (unsigned i = 0; i < body.getNumArguments(); ++i) {
+        dependencyMap[body.getArgument(i)].insert(i);
+    }
+
+    // Propagate dependencies through the operations in the body.
+    for (Operation &opInBody : body.without_terminator()) {
+        llvm::SmallSet<unsigned, 4> opDependencies;
+        for (Value operand : opInBody.getOperands()) {
+            if (auto blockArg = dyn_cast<BlockArgument>(operand)) {
+                if (blockArg.getOwner() == &body) {
+                    opDependencies.insert(blockArg.getArgNumber());
+                }
+            } else if (dependencyMap.count(operand)) {
+                opDependencies.insert(dependencyMap[operand].begin(), dependencyMap[operand].end());
+            }
+        }
+        for (Value result : opInBody.getResults()) {
+            dependencyMap[result] = opDependencies;
+        }
+    }
+
+    // Check dependencies for each returned value.
+    for (unsigned i = 0; i < returnOp.getNumOperands(); ++i) {
+        Value returnedVal = returnOp.getOperand(i);
+        llvm::SmallSet<unsigned, 4> dependencies;
+
+        if (auto blockArg = dyn_cast<BlockArgument>(returnedVal)) {
+             if (blockArg.getOwner() == &body) {
+                dependencies.insert(blockArg.getArgNumber());
+             }
+        } else if (dependencyMap.count(returnedVal)) {
+            dependencies = dependencyMap[returnedVal];
+        }
+
+        for (unsigned depIndex : dependencies) {
+            bool isCurrentInput = depIndex == i;
+            bool isCurrentUpdate = depIndex == (numInputs + i);
+            if (!isCurrentInput && !isCurrentUpdate) {
+                return rewriter.notifyMatchFailure(
+                    op, "computation for result " + std::to_string(i) +
+                        " has an invalid dependency on argument " + std::to_string(depIndex));
+            }
+        }
     }
 
     // If we reached here, the pattern matches. Now, rewrite.
@@ -20470,25 +20511,44 @@ struct SplitMultiResultScatter
           op.getUniqueIndicesAttr());
 
       {
-        // Use an InsertionGuard to scope the rewriter's insertion point
-        // when populating the new scatter's region.
         OpBuilder::InsertionGuard guard(rewriter);
+        IRMapping mapper;
+        Block *newBlock = rewriter.createBlock(&newScatterOp.getUpdateComputation());
 
-        // Create the new computation block for the single-result scatter.
-        Block *newBlock =
-            rewriter.createBlock(&newScatterOp.getUpdateComputation());
-
-        // Get the correct 0-d tensor types from the original scatter's body.
         Type operandArgType = body.getArgument(i).getType();
         Type updateArgType = body.getArgument(numInputs + i).getType();
         newBlock->addArgument(operandArgType, op.getLoc());
         newBlock->addArgument(updateArgType, op.getLoc());
 
-        // Return the update value.
+        mapper.map(body.getArgument(i), newBlock->getArgument(0));
+        mapper.map(body.getArgument(numInputs + i), newBlock->getArgument(1));
+
+        for(Operation &opInBody : body.without_terminator()) {
+            // Only clone operations that are relevant for the current result.
+            // We check if any of the op's results are in the dependency map.
+            bool isRelevant = false;
+            for (Value result : opInBody.getResults()) {
+                if (dependencyMap.count(result)) {
+                    const auto& deps = dependencyMap[result];
+                    for(unsigned dep : deps) {
+                        if (dep == i || dep == numInputs + i) {
+                            isRelevant = true;
+                            break;
+                        }
+                    }
+                }
+                if (isRelevant) break;
+            }
+
+            if (isRelevant) {
+                rewriter.clone(opInBody, mapper);
+            }
+        }
+
+        Value returnedVal = returnOp.getOperand(i);
         rewriter.setInsertionPointToEnd(newBlock);
-        rewriter.create<stablehlo::ReturnOp>(op.getLoc(),
-                                             newBlock->getArgument(1));
-      } // InsertionGuard restores the insertion point here.
+        rewriter.create<stablehlo::ReturnOp>(op.getLoc(), mapper.lookup(returnedVal));
+      }
 
       newResults.push_back(newScatterOp.getResult(0));
     }
