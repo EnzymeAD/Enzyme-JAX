@@ -30,7 +30,8 @@
 
 extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
                                               std::string outfile,
-                                              std::string backend) {
+                                              std::string backend,
+                                              std::string library) {
   llvm::LLVMContext Context;
   Context.setDiscardValueNames(false);
   llvm::SMDiagnostic Err;
@@ -118,6 +119,11 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       pass_pipeline += "},strip-"
       "gpu-info,gpu-"
       "module-to-binary";
+      if (!library.empty()) {
+        pass_pipeline += "{l=";
+        pass_pipeline += library;
+        pass_pipeline += "}";
+      }
   }
 
   // clang-format on
