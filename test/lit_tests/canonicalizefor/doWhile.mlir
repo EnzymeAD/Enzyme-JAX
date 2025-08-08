@@ -491,3 +491,61 @@ module @test_multiple_args_dynamic {
 // CHECK-NEXT:      return %[[FOR]]#0, %[[FOR]]#1 : index, index
 // CHECK-NEXT:    }
 // CHECK-NEXT:  }
+
+//----
+
+// Loop condition is an and expression
+module @test_and_condition {
+  func.func @do_while(%ub : i32) -> (i32, f32) {
+    %cst = arith.constant 0.000000e+00 : f32
+    %cst1 = arith.constant 1.000000e+00 : f32
+    %c0_i32 = arith.constant 0 : i32
+    %c1_i32 = arith.constant 1 : i32
+    %true = arith.constant true
+    %2:3 = scf.while (%arg10 = %c0_i32, %arg12 = %cst, %ac = %true) : (i32, f32, i1) -> (i32, f32, i1) {
+      %3 = arith.cmpi ult, %arg10, %ub : i32
+      %a = arith.andi %3, %ac : i1
+      %p = arith.addi %arg10, %c1_i32 : i32
+      %c = "test.something"() : () -> (i1)
+      %4 = arith.addf %arg12, %cst1 : f32
+      scf.condition(%a) %p, %4, %c : i32, f32, i1
+    } do {
+    ^bb0(%arg10: i32, %arg12: f32, %ac: i1):
+      scf.yield %arg10, %arg12, %ac : i32, f32, i1
+    }
+    return %2#0, %2#1 : i32, f32
+  }
+}
+
+// CHECK-LABEL: module @test_and_condition {
+// CHECK:         func.func @do_while(%[[UB:.+]]: i32) -> (i32, f32) {
+// CHECK-DAG:       %[[C0:.+]] = arith.constant 0 : i32
+// CHECK-DAG:       %[[C1:.+]] = arith.constant 1 : i32
+// CHECK-DAG:       %[[FALSE:.+]] = arith.constant false
+// CHECK-DAG:       %[[TRUE:.+]] = arith.constant true
+// CHECK-DAG:       %[[CST0:.+]] = arith.constant 0.000000e+00 : f32
+// CHECK-DAG:       %[[CST1:.+]] = arith.constant 1.000000e+00 : f32
+// CHECK-DAG:       %[[UNDEF_I32:.+]] = ub.poison : i32
+// CHECK-DAG:       %[[UNDEF_F32:.+]] = ub.poison : f32
+// CHECK-DAG:       %[[UNDEF_I1:.+]] = ub.poison : i1
+// CHECK-NEXT:      %[[MAX:.+]] = arith.maxsi %[[UB]], %[[C0]] : i32
+// CHECK-NEXT:      %[[ADJ_UB:.+]] = arith.addi %[[MAX]], %[[C1]] : i32
+// CHECK-NEXT:      %[[FOR:.+]]:7 = scf.for %[[IV:.+]] = %[[C0]] to %[[ADJ_UB]] step %[[C1]] iter_args(%[[ARG0:.+]] = %[[C0]], %[[ARG1:.+]] = %[[CST0]], %[[ARG2:.+]] = %[[TRUE]], %[[ARG3:.+]] = %[[UNDEF_I32]], %[[ARG4:.+]] = %[[UNDEF_F32]], %[[ARG5:.+]] = %[[UNDEF_I1]], %[[ARG6:.+]] = %[[TRUE]]) -> (i32, f32, i1, i32, f32, i1, i1)  : i32 {
+// CHECK-NEXT:        %[[IF1:.+]]:4 = scf.if %[[ARG6]] -> (i32, f32, i1, i1) {
+// CHECK-NEXT:          %[[ADDI:.+]] = arith.addi %[[ARG0]], %[[C1]] : i32
+// CHECK-NEXT:          %[[VAL:.+]] = "test.something"() : () -> i1
+// CHECK-NEXT:          %[[ADDF:.+]] = arith.addf %[[ARG1]], %[[CST1]] : f32
+// CHECK-NEXT:          scf.yield %[[ADDI]], %[[ADDF]], %[[VAL]], %[[ARG2]] : i32, f32, i1, i1
+// CHECK-NEXT:        } else {
+// CHECK-NEXT:          scf.yield %[[ARG3]], %[[ARG4]], %[[ARG5]], %[[FALSE]] : i32, f32, i1, i1
+// CHECK-NEXT:        }
+// CHECK-NEXT:        %[[CMP:.+]] = arith.cmpi slt, %[[IV]], %[[UB]] : i32
+// CHECK-NEXT:        %[[COND:.+]] = arith.andi %[[CMP]], %[[IF1]]#3 : i1
+// CHECK-NEXT:        %[[IF2:.+]]:3 = scf.if %[[COND]] -> (i32, f32, i1) {
+// CHECK-NEXT:          scf.yield %[[IF1]]#0, %[[IF1]]#1, %[[IF1]]#2 : i32, f32, i1
+// CHECK-NEXT:        } else {
+// CHECK-NEXT:          scf.yield %[[UNDEF_I32]], %[[UNDEF_F32]], %[[UNDEF_I1]] : i32, f32, i1
+// CHECK-NEXT:        }
+// CHECK-NEXT:      scf.yield %[[IF2]]#0, %[[IF2]]#1, %[[IF2]]#2, %[[IF1]]#0, %[[IF1]]#1, %[[IF1]]#2, %[[IF1]]#3 : i32, f32, i1, i32, f32, i1, i1
+// CHECK-NEXT:    }
+// CHECK-NEXT:    return %[[FOR]]#3, %[[FOR]]#4 : i32, f32
