@@ -300,7 +300,7 @@ enzymexla::KernelCallOp ReadOnlyArg<enzymexla::KernelCallOp>::create(
       launchOp.getBlocky(), launchOp.getBlockz(), launchOp.getShmem(),
       launchOp.getInputs(), launchOp.getBackendConfigAttr(),
       launchOp.getOperandLayoutsAttr(), /*resultLayouts*/ nullptr,
-      launchOp.getArgAttrs(), launchOp.getResAttrs(),
+      launchOp.getArgAttrsAttr(), launchOp.getResAttrsAttr(),
       outputAliases, launchOp.getXlaSideEffectFreeAttr());
 }
 
@@ -312,7 +312,7 @@ enzymexla::JITCallOp ReadOnlyArg<enzymexla::JITCallOp>::create(
       launchOp.getLoc(), resTys, launchOp.getFn(), launchOp.getInputs(),
       launchOp.getBackendConfigAttr(), launchOp.getOperandLayoutsAttr(),
       /*resultLayouts*/ nullptr,
-      launchOp.getArgAttrs(), launchOp.getResAttrs(),
+      launchOp.getArgAttrsAttr(), launchOp.getResAttrsAttr(),
       outputAliases,
       launchOp.getXlaSideEffectFreeAttr());
 }
