@@ -8,7 +8,7 @@ JAX_PATCHES = [
     sed -i.bak0 "s/\\/\\/jaxlib\\/.../public/g" jaxlib/symlink_files.bzl
     """,
     """
-    sed -i.bak0 "s/jaxlib\\/experimental:mosaic_users/visibility:public/g" jaxlib/mosaic/BUILD
+    sed -i.bak0 "s/jax\\/experimental:mosaic_users/visibility:public/g" jaxlib/mosaic/BUILD
     """,
 ]
 
