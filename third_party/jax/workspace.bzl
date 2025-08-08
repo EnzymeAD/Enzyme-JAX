@@ -5,7 +5,7 @@ load("//:workspace.bzl", "JAX_COMMIT", "JAX_SHA256")
 
 JAX_PATCHES = [
     """
-    sed -i.bak0 "s/\\/\\/:jaxlib\\/.../public/g" jaxlib/symlink_files.bzl
+    sed -i.bak0 "s/\\/\\/jaxlib\\/.../public/g" jaxlib/symlink_files.bzl
     """,
     """
     sed -i.bak0 "s/jaxlib\\/experimental:mosaic_users/visibility:public/g" jaxlib/mosaic/BUILD
