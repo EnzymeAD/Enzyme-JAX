@@ -13,7 +13,7 @@ module {
 // CPU-NEXT:    %2 = llvm.mlir.constant(78 : i8) : i8
 // CPU-NEXT:    %3 = llvm.mlir.constant(64 : i64) : i64
 // CPU-NEXT:    %4 = llvm.mlir.constant(48 : i64) : i64
-// CPU-NEXT:    %5 = llvm.call  @enzymexla_lapacke_sgemqrt_(%0, %1, %2, %3, %4, %3, %3, %arg0, %3, %arg1, %3, %arg2, %3) : (i64, i8, i8, i64, i64, i64, i64, !llvm.ptr, i64, !llvm.ptr, i64, !llvm.ptr, i64) -> i64
+// CPU-NEXT:    %5 = llvm.call @enzymexla_lapacke_sgemqrt_(%0, %1, %2, %3, %4, %3, %3, %arg0, %3, %arg1, %3, %arg2, %3) : (i64, i8, i8, i64, i64, i64, i64, !llvm.ptr, i64, !llvm.ptr, i64, !llvm.ptr, i64) -> i64
 // CPU-NEXT:    llvm.return
 // CPU-NEXT:  }
 // CPU-NEXT:  llvm.func @enzymexla_lapacke_sgemqrt_(i64, i8, i8, i64, i64, i64, i64, !llvm.ptr, i64, !llvm.ptr, i64, !llvm.ptr, i64) -> i64
