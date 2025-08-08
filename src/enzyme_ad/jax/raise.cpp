@@ -156,6 +156,10 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
   llvm::LLVMContext llvmContext;
   llvmContext.setDiscardValueNames(false);
   auto outModule = translateModuleToLLVMIR(*mod, llvmContext);
+  if (!outModule) {
+    llvm::errs() << "failed to translate MLIR to LLVM IR\n";
+    return "";
+  }
 
   if (auto F = outModule->getFunction("mgpuModuleLoad")) {
     for (auto U : llvm::make_early_inc_range(F->users())) {
