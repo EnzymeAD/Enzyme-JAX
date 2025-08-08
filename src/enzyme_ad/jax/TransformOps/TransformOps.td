@@ -465,14 +465,6 @@ def ApplyAllFiniteIsNegInfPatterns : EnzymeHLOPatternOp<
     "all_finite_is_neg_inf"> {
   let patterns = ["AllFiniteIsNegInf"];
 }
-def ApplyNoNanPatterns : EnzymeHLOPatternOp<
-    "no_nan"> {
-  let patterns = ["NoNan"];
-}
-def ApplyNoNanSelfSubSimplify : EnzymeHLOPatternOp<
-    "no_nan_self_sub_simplify"> {
-  let patterns = ["NoNanSelfSubSimplify"];
-}
 
 def ApplyConcatReshapeSlicePatterns : EnzymeHLOPatternOp<
     "concat_reshape_slice"> {
@@ -492,6 +484,36 @@ def ApplyConcatElementwisePatterns : EnzymeHLOPatternOp<
 def ApplyConcatReshapeElementwisePatterns : EnzymeHLOPatternOp<
     "concat_reshape_elementwise"> {
   let patterns = ["ConcatReshapeElementwise"];
+}
+
+def ApplyNoNanCompareSimplify : EnzymeHLOParameterizedPatternOp<
+    "no_nan_compare_simplify"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
+def ApplyNoNanSelfSubSimplify : EnzymeHLOParameterizedPatternOp<
+    "no_nan_self_sub_simplify"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
 }
 
 // benefit 65k + max_constant_expansion flag
@@ -1880,6 +1902,11 @@ def TransposeExtend : EnzymeHLOPatternOp<
 def TransposeRotate : EnzymeHLOPatternOp<
     "transpose_rotate"> {
   let patterns = ["TransposeRotate"];
+}
+
+def SelectPad : EnzymeHLOPatternOp<
+    "select_pad"> {
+  let patterns = ["SelectPad"];
 }
 
 def LowerExtend : EnzymeHLOPatternOp<
