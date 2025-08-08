@@ -22102,6 +22102,7 @@ struct SelfElementwiseToConvolutionLike
 
     Operation *newBaseOp = nullptr;
     int64_t windowDilation = -1, dimension = -1;
+    bool flipped = false;
 
     {
       // Try to see if the parent op is a rotate
@@ -22128,6 +22129,7 @@ struct SelfElementwiseToConvolutionLike
             windowDilation = rhsRotateOp.getAmount();
             operand = lhsInfo.base;
             matched = true;
+            flipped = true;
           }
         }
       }
@@ -22231,9 +22233,12 @@ struct SelfElementwiseToConvolutionLike
               RankedTensorType::get({}, outType.getElementType()), 1)));
     }
 
-    // TODO: flip direction
     if constexpr (std::is_base_of_v<stablehlo::SubtractOp, OpTy>) {
-      secondElement = rewriter.create<stablehlo::NegOp>(loc, secondElement);
+      if (flipped) {
+        secondElement = rewriter.create<stablehlo::NegOp>(loc, secondElement);
+      } else {
+        firstElement = rewriter.create<stablehlo::NegOp>(loc, firstElement);
+      }
     }
 
     firstElement = rewriter.create<stablehlo::ReshapeOp>(
