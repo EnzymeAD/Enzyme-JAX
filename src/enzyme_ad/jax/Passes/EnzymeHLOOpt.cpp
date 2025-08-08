@@ -22093,14 +22093,11 @@ struct SelfElementwiseToConvolutionLike
       }
     }
 
-    if (!canEmitReduceWindow)
+    if (!canEmitReduceWindow) {
       if constexpr (std::is_base_of_v<stablehlo::MulOp, OpTy>) {
         return rewriter.notifyMatchFailure(
             op, "MulOp is only supported if we can emit a reduce window.");
       }
-
-    if (!canEmitReduceWindow) {
-      return rewriter.notifyMatchFailure(op, "TODO: emit conv");
     }
 
     Operation *newBaseOp = nullptr;
@@ -22144,17 +22141,18 @@ struct SelfElementwiseToConvolutionLike
       return rewriter.notifyMatchFailure(
           op, "None of the parent op conditions match.");
 
+    auto loc = op.getLoc();
+    SmallVector<int64_t> windowDilations(outRank, 1);
+    windowDilations[dimension] = windowDilation;
+
     if (canEmitReduceWindow) {
       SmallVector<int64_t> windowDims(outRank, 1);
       windowDims[dimension] = 2;
-      SmallVector<int64_t> windowDilations(outRank, 1);
-      windowDilations[dimension] = windowDilation;
 
       auto zeroType = RankedTensorType::get({}, outType.getElementType());
       auto zero = rewriter.create<stablehlo::ConstantOp>(
           op.getLoc(), zeroType, cast<ElementsAttr>(makeAttr(zeroType, 0)));
 
-      auto loc = op.getLoc();
       auto reduceWindowOp =
           rewriter.replaceOpWithNewOp<stablehlo::ReduceWindowOp>(
               op, TypeRange(outType), ValueRange(newBaseOp->getResult(0)),
@@ -22174,8 +22172,106 @@ struct SelfElementwiseToConvolutionLike
             loc, ValueRange(rewriter.create<OpTy>(loc, block->getArgument(0),
                                                   block->getArgument(1))));
       }
+
+      return success();
     }
 
+    // We need to reshape the base op to have 2 additional dimensions in the
+    // beginning
+    auto lhsBaseType =
+        cast<RankedTensorType>(newBaseOp->getResult(0).getType());
+    auto lhsBaseShape = lhsBaseType.getShape();
+
+    SmallVector<int64_t> spatialDims(outRank, 1);
+    for (int64_t i = 0; i < outRank; ++i)
+      spatialDims[i] = i + 2;
+
+    SmallVector<int64_t> newShape(2, 1);
+    SmallVector<int64_t> newOutShape(2, 1);
+    for (int64_t i = 0; i < outRank; ++i) {
+      newShape.push_back(lhsBaseShape[i]);
+      newOutShape.push_back(outShape[i]);
+    }
+    auto convOutType =
+        RankedTensorType::get(newOutShape, outType.getElementType());
+
+    auto convLhs = rewriter.create<stablehlo::ReshapeOp>(
+        loc, RankedTensorType::get(newShape, outType.getElementType()),
+        newBaseOp->getResult(0));
+
+    // construct the conv rhs
+    SmallVector<int64_t> filterShape(outRank + 2, 1);
+
+    // filter value
+    Value firstElement, secondElement;
+
+    if (lhsInfo.constantAttr.has_value()) {
+      firstElement = rewriter.create<stablehlo::ConstantOp>(
+          loc, RankedTensorType::get({}, outType.getElementType()),
+          lhsInfo.constantAttr.value());
+    } else if (lhsInfo.constantScalar.has_value()) {
+      firstElement = lhsInfo.constantScalar.value();
+    } else {
+      firstElement = rewriter.create<stablehlo::ConstantOp>(
+          loc, RankedTensorType::get({}, outType.getElementType()),
+          cast<ElementsAttr>(makeAttr(
+              RankedTensorType::get({}, outType.getElementType()), 1)));
+    }
+
+    if (rhsInfo.constantAttr.has_value()) {
+      secondElement = rewriter.create<stablehlo::ConstantOp>(
+          loc, RankedTensorType::get({}, outType.getElementType()),
+          rhsInfo.constantAttr.value());
+    } else if (rhsInfo.constantScalar.has_value()) {
+      secondElement = rhsInfo.constantScalar.value();
+    } else {
+      secondElement = rewriter.create<stablehlo::ConstantOp>(
+          loc, RankedTensorType::get({}, outType.getElementType()),
+          cast<ElementsAttr>(makeAttr(
+              RankedTensorType::get({}, outType.getElementType()), 1)));
+    }
+
+    // TODO: flip direction
+    if constexpr (std::is_base_of_v<stablehlo::SubtractOp, OpTy>) {
+      secondElement = rewriter.create<stablehlo::NegOp>(loc, secondElement);
+    }
+
+    firstElement = rewriter.create<stablehlo::ReshapeOp>(
+        loc, RankedTensorType::get(filterShape, outType.getElementType()),
+        firstElement);
+    secondElement = rewriter.create<stablehlo::ReshapeOp>(
+        loc, RankedTensorType::get(filterShape, outType.getElementType()),
+        secondElement);
+
+    auto filter = rewriter.create<stablehlo::ConcatenateOp>(
+        loc, ValueRange{firstElement, secondElement},
+        rewriter.getI64IntegerAttr(dimension + 2));
+
+    auto convDims = stablehlo::ConvDimensionNumbersAttr::get(
+        rewriter.getContext(),
+        /*input_batch_dimension=*/0,
+        /*input_feature_dimension=*/1,
+        /*input_spatial_dimensions=*/spatialDims,
+        /*kernel_input_feature_dimension=*/0,
+        /*kernel_output_feature_dimension=*/1,
+        /*kernel_spatial_dimensions=*/spatialDims,
+        /*output_batch_dimension=*/0,
+        /*output_feature_dimension=*/1,
+        /*output_spatial_dimensions=*/spatialDims);
+
+    auto conv = rewriter.create<stablehlo::ConvolutionOp>(
+        loc, convOutType, convLhs, filter,
+        /*window_strides=*/nullptr,
+        /*padding=*/nullptr,
+        /*lhs_dilation=*/nullptr,
+        /*rhs_dilation=*/rewriter.getDenseI64ArrayAttr(windowDilations),
+        /*window_reversal=*/nullptr,
+        /*conv_dimension_numbers=*/convDims,
+        /*feature_group_count=*/rewriter.getI64IntegerAttr(1),
+        /*batch_group_count=*/rewriter.getI64IntegerAttr(1),
+        /*precision_config=*/nullptr);
+
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(), conv);
     return success();
   }
 
