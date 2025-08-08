@@ -7,11 +7,11 @@
  * Computerwetenschappen, Celestijnenlaan 200A, B-3001 Leuven, Belgium
  */
 
+#include "isl_config.h"
+#include <isl/ctx.h>
+#include <isl_hash_private.h>
 #include <stdlib.h>
 #include <strings.h>
-#include <isl_hash_private.h>
-#include <isl/ctx.h>
-#include "isl_config.h"
 
 uint32_t isl_hash_string(uint32_t hash, const char *s)
 {
@@ -50,8 +50,8 @@ int isl_hash_table_init(struct isl_ctx *ctx, struct isl_hash_table *table,
 
 	if (min_size < 2)
 		min_size = 2;
-	table->bits = __builtin_ffs(round_up(4 * (min_size + 1) / 3 - 1)) - 1;
-	table->n = 0;
+        table->bits = __builtin_ffs(round_up(4 * (min_size + 1) / 3 - 1)) - 1;
+        table->n = 0;
 
 	size = 1 << table->bits;
 	table->entries = isl_calloc_array(ctx, struct isl_hash_table_entry,
