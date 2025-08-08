@@ -5,7 +5,10 @@ load("//:workspace.bzl", "JAX_COMMIT", "JAX_SHA256")
 
 JAX_PATCHES = [
     """
-    sed -i.bak0 "s/\\/\\/jaxlib\\/.../public/g" jaxlib/symlink_files.bzl
+    sed -i.bak0 "s/\\/\\/:jaxlib\\/.../public/g" jaxlib/symlink_files.bzl
+    """,
+    """
+    sed -i.bak0 "s/jaxlib\\/experimental:mosaic_users/visibility:public/g" jaxlib/mosaic/BUILD
     """,
 ]
 
@@ -15,7 +18,5 @@ def repo():
         sha256 = JAX_SHA256,
         strip_prefix = "jax-" + JAX_COMMIT,
         urls = ["https://github.com/google/jax/archive/{commit}.tar.gz".format(commit = JAX_COMMIT)],
-        patch_args = ["-p1"],
-        patches = ["//:patches/jax.patch"],
         patch_cmds = JAX_PATCHES,
     )
