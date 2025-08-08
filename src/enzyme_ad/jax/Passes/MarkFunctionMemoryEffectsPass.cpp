@@ -47,18 +47,18 @@ struct MarkFunctionMemoryEffectsPass
   }
 
   void
-  insertMemoryEffects(SmallVector<u_int8_t, 4> &effects,
+  insertMemoryEffects(SmallVector<uint8_t, 4> &effects,
                       SmallVector<MemoryEffects::EffectInstance> memEffects) {
     for (auto &effect : memEffects)
       insertMemoryEffects(effects, effect);
   }
 
-  void insertMemoryEffects(SmallVector<u_int8_t, 4> &effects) {
+  void insertMemoryEffects(SmallVector<uint8_t, 4> &effects) {
     for (int i = 0; i < effects.size(); i++)
       effects[i] = 1;
   }
 
-  void insertMemoryEffects(SmallVector<u_int8_t, 4> &effects,
+  void insertMemoryEffects(SmallVector<uint8_t, 4> &effects,
                            MemoryEffects::EffectInstance effect) {
     if (effect.getEffect() == MemoryEffects::Read::get()) {
       effects[0] = 1;
@@ -73,7 +73,7 @@ struct MarkFunctionMemoryEffectsPass
     }
   }
 
-  int64_t getNumEffects(SmallVector<u_int8_t, 4> &effects) {
+  int64_t getNumEffects(SmallVector<uint8_t, 4> &effects) {
     int64_t numEffects = 0;
     for (int i = 0; i < effects.size(); i++) {
       if (effects[i])
@@ -87,7 +87,7 @@ struct MarkFunctionMemoryEffectsPass
     auto *ctx = module->getContext();
     OpBuilder builder(ctx);
 
-    DenseMap<SymbolRefAttr, SmallVector<u_int8_t, 4>> funcEffects;
+    DenseMap<SymbolRefAttr, SmallVector<uint8_t, 4>> funcEffects;
 
     CallGraph callGraph(module);
 
@@ -111,7 +111,7 @@ struct MarkFunctionMemoryEffectsPass
       if (!funcOp)
         return signalPassFailure();
 
-      SmallVector<u_int8_t, 4> effects(4, 0);
+      SmallVector<uint8_t, 4> effects(4, 0);
 
       funcOp.walk([&](Operation *op) {
         if (op->hasTrait<OpTrait::HasRecursiveMemoryEffects>()) {
@@ -142,7 +142,7 @@ struct MarkFunctionMemoryEffectsPass
     }
 
     auto propagate = [&](FunctionOpInterface funcOp,
-                         SmallVector<u_int8_t, 4> &effects) {
+                         SmallVector<uint8_t, 4> &effects) {
       funcOp.walk([&](Operation *op) {
         if (auto callOp = dyn_cast<CallOpInterface>(op)) {
           if (auto calleeAttr = callOp.getCallableForCallee()) {

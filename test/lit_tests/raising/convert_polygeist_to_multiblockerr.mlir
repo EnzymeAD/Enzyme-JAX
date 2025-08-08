@@ -80,15 +80,15 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
 // CHECK-NEXT:    %32 = llvm.trunc %arg3 : i64 to i32
 // CHECK-NEXT:    %33 = llvm.zext %30 : i32 to i64
 // CHECK-NEXT:    %34 = llvm.zext %31 : i32 to i64
-// CHECK-NEXT:    %35 = llvm.shl %33, %1 : i64
-// CHECK-NEXT:    %36 = llvm.or %35, %34 : i64
+// CHECK-NEXT:    %35 = llvm.shl %34, %1 : i64
+// CHECK-NEXT:    %36 = llvm.or %33, %35 : i64
 // CHECK-NEXT:    %37 = llvm.trunc %arg4 : i64 to i32
 // CHECK-NEXT:    %38 = llvm.trunc %arg5 : i64 to i32
 // CHECK-NEXT:    %39 = llvm.trunc %arg6 : i64 to i32
 // CHECK-NEXT:    %40 = llvm.zext %37 : i32 to i64
 // CHECK-NEXT:    %41 = llvm.zext %38 : i32 to i64
-// CHECK-NEXT:    %42 = llvm.shl %40, %1 : i64
-// CHECK-NEXT:    %43 = llvm.or %42, %41 : i64
+// CHECK-NEXT:    %42 = llvm.shl %41, %1 : i64
+// CHECK-NEXT:    %43 = llvm.or %40, %42 : i64
 // CHECK-NEXT:    %44 = llvm.call @cudaLaunchKernel(%5, %36, %32, %43, %39, %8, %0, %4) : (!llvm.ptr, i64, i32, i64, i32, !llvm.ptr, i64, !llvm.ptr) -> i32
 // CHECK-NEXT:    llvm.br ^bb3(%44 : i32)
 // CHECK-NEXT:  ^bb3(%45: i32):  // 2 preds: ^bb1, ^bb2

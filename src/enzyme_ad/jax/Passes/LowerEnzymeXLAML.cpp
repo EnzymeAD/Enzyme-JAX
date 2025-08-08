@@ -1,3 +1,6 @@
+// This must come first for windows builds
+#define _USE_MATH_DEFINES
+
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"

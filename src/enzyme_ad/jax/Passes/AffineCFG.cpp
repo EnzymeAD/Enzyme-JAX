@@ -1709,9 +1709,9 @@ struct MoveStoreToAffine : public OpRewritePattern<memref::StoreOp> {
                               rewriter.getContext());
     SmallVector<Value, 4> operands = store.getIndices();
 
-    llvm::errs() << " store: " << *store << "\n";
+    // llvm::errs() << " store: " << *store << "\n";
     auto *parentScope = scope->getParentOp();
-    llvm::errs() << " scopeP: " << *parentScope << "\n";
+    // llvm::errs() << " scopeP: " << *parentScope << "\n";
     DominanceInfo DI(parentScope);
 
     fully2ComposeAffineMapAndOperands(rewriter, &map, &operands, DI, scope);
