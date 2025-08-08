@@ -165,7 +165,7 @@ def XLAWrapperOp: EnzymeXLA_Op<"xla_wrapper", [DeclareOpInterfaceMethods<SymbolU
     SymbolRefAttr:$fn,
     Variadic<AnyType>:$inputs,
     OptionalAttr<DictArrayAttr>:$arg_attrs,
-    OptionalAttr<DictArrayAttr>:$res_attrs,
+    OptionalAttr<DictArrayAttr>:$res_attrs
   );
 
   let assemblyFormat = [{
