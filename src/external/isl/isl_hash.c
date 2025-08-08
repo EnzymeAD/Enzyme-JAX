@@ -50,7 +50,7 @@ int isl_hash_table_init(struct isl_ctx *ctx, struct isl_hash_table *table,
 
 	if (min_size < 2)
 		min_size = 2;
-	table->bits = ffs(round_up(4 * (min_size + 1) / 3 - 1)) - 1;
+	table->bits = __builtin_ffs(round_up(4 * (min_size + 1) / 3 - 1)) - 1;
 	table->n = 0;
 
 	size = 1 << table->bits;
