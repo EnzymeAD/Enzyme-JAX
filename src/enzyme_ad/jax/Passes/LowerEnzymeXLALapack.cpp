@@ -1083,19 +1083,6 @@ struct GemqrtOpLowering : public OpRewritePattern<enzymexla::GemqrtOp> {
       break;
     }
 
-    auto k_value = V_shape[1];
-    int64_t nb_value = 0;
-    if (op.getBlocksize()) {
-      nb_value = op.getBlocksize().value();
-      assert(k_value >= nb_value &&
-              "Block size must be less than or equal to min(m, n)");
-      assert(nb_value >= 1 &&
-              "Block size must be greater than or equal to 1");
-    } else {
-      // default block size is min(m, n)
-      nb_value = k_value;
-    }
-
     assert(V_rank == 2 && "`enzymexla.lapack.gemqrt` requires `V` to be a matrix");
     assert(T_rank == 2 && "`enzymexla.lapack.gemqrt` requires `T` to be a matrix");
     assert(C_rank == 2 && "`enzymexla.lapack.gemqrt` requires `C` to be a matrix");
@@ -1112,7 +1099,13 @@ struct GemqrtOpLowering : public OpRewritePattern<enzymexla::GemqrtOp> {
               "yet supported");
     }
 
-    assert(T_shape[1] == k_value && "invalid number of reflectors (k) on T");
+    auto nb_value = T_shape[0];
+    auto k_value = T_shape[1];
+    assert(k_value >= nb_value &&
+            "Block size must be less than or equal to min(m, n)");
+    assert(nb_value >= 1 &&
+            "Block size must be greater than or equal to 1");
+    assert(V_shape[1] == k_value && "invalid number of reflectors (k) on T");
 
     auto ldv_value = V_shape[0];
     auto ldt_value = T_shape[0];

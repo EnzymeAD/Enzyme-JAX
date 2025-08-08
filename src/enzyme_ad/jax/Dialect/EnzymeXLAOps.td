@@ -512,8 +512,7 @@ def GemqrtOp : EnzymeXLA_Op<"lapack.gemqrt", [Pure]> {
     HLO_Tensor:$T,
     HLO_Tensor:$C,
     EnzymeXLA_LapackSideAttr:$side,
-    DefaultValuedAttr<EnzymeXLA_LapackTransposeAttr, "::mlir::enzymexla::LapackTranspose::none">:$transpose, // true if apply Q^T
-    OptionalAttr<I64Attr>:$blocksize // nb argument, min(m,n) >= nb >= 1
+    DefaultValuedAttr<EnzymeXLA_LapackTransposeAttr, "::mlir::enzymexla::LapackTranspose::none">:$transpose // true if apply Q^T
   );
 
   let results = (outs
