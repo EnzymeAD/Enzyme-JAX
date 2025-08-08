@@ -794,8 +794,8 @@ static isl_stat create_constraint_index(struct isl_constraint_index *ci,
 	if (bmap->n_ineq == 0)
 		return isl_stat_ok;
 	ci->size = round_up(4 * (bmap->n_ineq + 1) / 3 - 1);
-	ci->bits = __builtin_ffs(ci->size) - 1;
-	ctx = isl_basic_map_get_ctx(bmap);
+        ci->bits = __builtin_ffs(ci->size) - 1;
+        ctx = isl_basic_map_get_ctx(bmap);
 	ci->index = isl_calloc_array(ctx, isl_int **, ci->size);
 	if (!ci->index)
 		return isl_stat_error;
@@ -926,8 +926,8 @@ static __isl_give isl_basic_map *remove_duplicate_divs(
 	if (size == 0)
 		return bmap;
 	elim_for = isl_calloc_array(ctx, int, bmap->n_div);
-	bits = __builtin_ffs(size) - 1;
-	index = isl_calloc_array(ctx, int, size);
+        bits = __builtin_ffs(size) - 1;
+        index = isl_calloc_array(ctx, int, size);
 	if (!elim_for || !index)
 		goto out;
 	eq = isl_blk_alloc(ctx, 1+total);
