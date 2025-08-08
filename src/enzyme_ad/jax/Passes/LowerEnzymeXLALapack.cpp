@@ -83,10 +83,8 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
     if (auto prefix = lapack_precision_prefix(inputElementType)) {
       fn = *prefix + fn;
     } else {
-      op->emitOpError() << "Unsupported element type: "
-                        << inputElementType;
-      return rewriter.notifyMatchFailure(op,
-                                         "unsupported element type");
+      op->emitOpError() << "Unsupported element type: " << inputElementType;
+      return rewriter.notifyMatchFailure(op, "unsupported element type");
     }
 
     std::string bind_fn = "enzymexla_lapacke_" + fn;
@@ -354,10 +352,8 @@ struct GeqrtOpLowering : public OpRewritePattern<enzymexla::GeqrtOp> {
     if (auto prefix = lapack_precision_prefix(inputElementType)) {
       fn = *prefix + fn;
     } else {
-      op->emitOpError() << "Unsupported element type: "
-                        << inputElementType;
-      return rewriter.notifyMatchFailure(op,
-                                         "unsupported element type");
+      op->emitOpError() << "Unsupported element type: " << inputElementType;
+      return rewriter.notifyMatchFailure(op, "unsupported element type");
     }
 
     std::string bind_fn = "enzymexla_lapacke_" + fn;
@@ -568,10 +564,8 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
       else
         fn = *prefix + "un" + fn;
     } else {
-      op->emitOpError() << "Unsupported element type: "
-                        << inputElementType;
-      return rewriter.notifyMatchFailure(op,
-                                         "unsupported element type");
+      op->emitOpError() << "Unsupported element type: " << inputElementType;
+      return rewriter.notifyMatchFailure(op, "unsupported element type");
     }
 
     std::string bind_fn = "enzymexla_lapacke_" + fn;
@@ -875,8 +869,7 @@ struct OrmqrOpLowering : public OpRewritePattern<enzymexla::OrmqrOp> {
         fn = *prefix + "un" + fn;
     } else {
       op->emitOpError() << "Unsupported element type: " << A_eltype;
-      return rewriter.notifyMatchFailure(op,
-                                         "unsupported element type");
+      return rewriter.notifyMatchFailure(op, "unsupported element type");
     }
 
     std::string bind_fn = "enzymexla_lapacke_" + fn;
@@ -1018,7 +1011,7 @@ struct GemqrtOpLowering : public OpRewritePattern<enzymexla::GemqrtOp> {
   int64_t blasIntWidth;
 
   GemqrtOpLowering(std::string backend, int64_t blasIntWidth,
-                  MLIRContext *context, PatternBenefit benefit = 1)
+                   MLIRContext *context, PatternBenefit benefit = 1)
       : OpRewritePattern(context, benefit), backend(backend),
         blasIntWidth(blasIntWidth) {}
 
@@ -1083,9 +1076,12 @@ struct GemqrtOpLowering : public OpRewritePattern<enzymexla::GemqrtOp> {
       break;
     }
 
-    assert(V_rank == 2 && "`enzymexla.lapack.gemqrt` requires `V` to be a matrix");
-    assert(T_rank == 2 && "`enzymexla.lapack.gemqrt` requires `T` to be a matrix");
-    assert(C_rank == 2 && "`enzymexla.lapack.gemqrt` requires `C` to be a matrix");
+    assert(V_rank == 2 &&
+           "`enzymexla.lapack.gemqrt` requires `V` to be a matrix");
+    assert(T_rank == 2 &&
+           "`enzymexla.lapack.gemqrt` requires `T` to be a matrix");
+    assert(C_rank == 2 &&
+           "`enzymexla.lapack.gemqrt` requires `C` to be a matrix");
     assert(output_shape == C_shape && "`enzymexla.lapack.gemqrt` requires `C` "
                                       "and `output` to have the same shape");
 
@@ -1093,7 +1089,7 @@ struct GemqrtOpLowering : public OpRewritePattern<enzymexla::GemqrtOp> {
            "`enzymexla.lapack.gemqrt` requires the same element type for all "
            "operands");
 
-    if (V_rank - 2 > 0 || T_rank -2 > 0 || C_rank - 2 > 0) {
+    if (V_rank - 2 > 0 || T_rank - 2 > 0 || C_rank - 2 > 0) {
       return rewriter.notifyMatchFailure(
           op, "`enzymexla.lapack.orgqr` with batch dimensions on CPU is not "
               "yet supported");
@@ -1102,9 +1098,8 @@ struct GemqrtOpLowering : public OpRewritePattern<enzymexla::GemqrtOp> {
     auto nb_value = T_shape[0];
     auto k_value = T_shape[1];
     assert(k_value >= nb_value &&
-            "Block size must be less than or equal to min(m, n)");
-    assert(nb_value >= 1 &&
-            "Block size must be greater than or equal to 1");
+           "Block size must be less than or equal to min(m, n)");
+    assert(nb_value >= 1 && "Block size must be greater than or equal to 1");
     assert(V_shape[1] == k_value && "invalid number of reflectors (k) on T");
 
     auto ldv_value = V_shape[0];
@@ -1113,13 +1108,17 @@ struct GemqrtOpLowering : public OpRewritePattern<enzymexla::GemqrtOp> {
 
     assert(ldt_value >= nb_value && "ldt must be >= nb");
     if (side_value == 'L') {
-      assert(ldv_value == C_shape[0] && "on left-sided muliplication, the first dimension "
-        "of V must equal the first dimension of C");
-      assert(C_shape[0] >= k_value && "invalid number of reflectors: k should be <= m");
+      assert(ldv_value == C_shape[0] &&
+             "on left-sided muliplication, the first dimension "
+             "of V must equal the first dimension of C");
+      assert(C_shape[0] >= k_value &&
+             "invalid number of reflectors: k should be <= m");
     } else { // side_value == 'R'
-      assert(ldv_value == C_shape[1] && "on right-sided multiplication, the first dimension"
-        "of V must equal the second dimension of C");
-      assert(C_shape[1] >= k_value && "invalid number of reflectors: k should be <= n");
+      assert(ldv_value == C_shape[1] &&
+             "on right-sided multiplication, the first dimension"
+             "of V must equal the second dimension of C");
+      assert(C_shape[1] >= k_value &&
+             "invalid number of reflectors: k should be <= n");
     }
 
     auto type_lapack_int = rewriter.getIntegerType(blasIntWidth);
@@ -1132,10 +1131,8 @@ struct GemqrtOpLowering : public OpRewritePattern<enzymexla::GemqrtOp> {
     if (auto prefix = lapack_precision_prefix(C_eltype)) {
       fn = *prefix + fn;
     } else {
-      op->emitOpError() << "Unsupported element type: "
-                        << C_eltype;
-      return rewriter.notifyMatchFailure(op,
-                                         "unsupported element type");
+      op->emitOpError() << "Unsupported element type: " << C_eltype;
+      return rewriter.notifyMatchFailure(op, "unsupported element type");
     }
 
     std::string bind_fn = "enzymexla_lapacke_" + fn;
@@ -1283,7 +1280,6 @@ struct GemqrtOpLowering : public OpRewritePattern<enzymexla::GemqrtOp> {
     return success();
   }
 };
-
 
 struct LowerEnzymeXLALapackPass
     : public enzyme::impl::LowerEnzymeXLALapackPassBase<
