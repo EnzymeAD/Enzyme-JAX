@@ -96,18 +96,6 @@ MutableOperandRange KernelCallOp::getArgOperandsMutable() {
   return getInputsMutable();
 }
 
-ArrayAttr KernelCallOp::getArgAttrsAttr() { return nullptr; }
-
-void KernelCallOp::setArgAttrsAttr(ArrayAttr attr) { (void)attr; }
-
-ArrayAttr KernelCallOp::getResAttrsAttr() { return nullptr; }
-
-void KernelCallOp::setResAttrsAttr(ArrayAttr attr) { (void)attr; }
-
-Attribute KernelCallOp::removeArgAttrsAttr() { return nullptr; }
-
-Attribute KernelCallOp::removeResAttrsAttr() { return nullptr; }
-
 static void addMemoryEffectsFromAttr(
     SmallVectorImpl<MemoryEffects::EffectInstance> &effects,
     ArrayAttr effectsAttr) {
@@ -183,18 +171,6 @@ MutableOperandRange JITCallOp::getArgOperandsMutable() {
 }
 
 Operation::operand_range JITCallOp::getArgOperands() { return getInputs(); }
-
-ArrayAttr JITCallOp::getArgAttrsAttr() { return nullptr; }
-
-void JITCallOp::setArgAttrsAttr(mlir::ArrayAttr attr) { (void)attr; }
-
-ArrayAttr JITCallOp::getResAttrsAttr() { return nullptr; }
-
-void JITCallOp::setResAttrsAttr(ArrayAttr attr) { (void)attr; }
-
-Attribute JITCallOp::removeArgAttrsAttr() { return nullptr; }
-
-Attribute JITCallOp::removeResAttrsAttr() { return nullptr; }
 
 void JITCallOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
@@ -1767,18 +1743,6 @@ MutableOperandRange XLAWrapperOp::getArgOperandsMutable() {
 }
 
 Operation::operand_range XLAWrapperOp::getArgOperands() { return getInputs(); }
-
-ArrayAttr XLAWrapperOp::getArgAttrsAttr() { return nullptr; }
-
-void XLAWrapperOp::setArgAttrsAttr(mlir::ArrayAttr attr) { (void)attr; }
-
-ArrayAttr XLAWrapperOp::getResAttrsAttr() { return nullptr; }
-
-void XLAWrapperOp::setResAttrsAttr(ArrayAttr attr) { (void)attr; }
-
-Attribute XLAWrapperOp::removeArgAttrsAttr() { return nullptr; }
-
-Attribute XLAWrapperOp::removeResAttrsAttr() { return nullptr; }
 
 void XLAWrapperOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
