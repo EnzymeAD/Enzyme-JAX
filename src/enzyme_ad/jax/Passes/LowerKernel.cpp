@@ -232,6 +232,7 @@ bool CompileGPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
       mlir::FlatSymbolRefAttr::get(kcall.getContext(), callName),
       kcall.getInputs(), kcall.getBackendConfigAttr(),
       kcall.getOperandLayoutsAttr(), kcall.getResultLayoutsAttr(),
+      kcall.getArgAttrs(), kcall.getResAttrs(),
       kcall.getOutputOperandAliasesAttr(), kcall.getXlaSideEffectFreeAttr());
   kcall.replaceAllUsesWith(replacement);
   kcall.erase();

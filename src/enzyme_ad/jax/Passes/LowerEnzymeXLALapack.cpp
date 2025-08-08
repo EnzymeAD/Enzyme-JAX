@@ -193,6 +193,8 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
         rewriter.getStringAttr(""),
         /*operand_layouts=*/operandLayouts,
         /*result_layouts=*/resultLayouts,
+	/*arg_attrs=*/nullptr,
+              /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
         /*xla_side_effect_free=*/rewriter.getUnitAttr());
 
@@ -489,6 +491,8 @@ struct GeqrtOpLowering : public OpRewritePattern<enzymexla::GeqrtOp> {
         rewriter.getStringAttr(""),
         /*operand_layouts=*/operandLayouts,
         /*result_layouts=*/resultLayouts,
+	/*arg_attrs=*/nullptr,
+              /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
         /*xla_side_effect_free=*/rewriter.getUnitAttr());
 
@@ -667,6 +671,8 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
         rewriter.getStringAttr(""),
         /*operand_layouts=*/operandLayouts,
         /*result_layouts=*/resultLayouts,
+	/*arg_attrs=*/nullptr,
+              /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
         /*xla_side_effect_free=*/rewriter.getUnitAttr());
 
@@ -995,6 +1001,8 @@ struct OrmqrOpLowering : public OpRewritePattern<enzymexla::OrmqrOp> {
         rewriter.getStringAttr(""),
         /*operand_layouts=*/operandLayouts,
         /*result_layouts=*/resultLayouts,
+	/*arg_attrs=*/nullptr,
+              /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
         /*xla_side_effect_free=*/rewriter.getUnitAttr());
 
@@ -1270,6 +1278,8 @@ struct GemqrtOpLowering : public OpRewritePattern<enzymexla::GemqrtOp> {
         rewriter.getStringAttr(""),
         /*operand_layouts=*/operandLayouts,
         /*result_layouts=*/resultLayouts,
+	/*arg_attrs=*/nullptr,
+              /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
         /*xla_side_effect_free=*/rewriter.getUnitAttr());
 
