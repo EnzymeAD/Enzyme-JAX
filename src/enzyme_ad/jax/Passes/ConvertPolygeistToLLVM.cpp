@@ -3511,6 +3511,24 @@ populateCStyleFuncLoweringPatterns(RewritePatternSet &patterns,
   patterns.add<CallOpLowering, FuncOpLowering, ReturnOpLowering>(typeConverter);
 }
 
+static void removeUnsupportedLifeTimes(mlir::Operation *root) {
+  llvm::SmallVector<mlir::Operation *> toErase;
+  root->walk([&](mlir::Operation *op) {
+    if (auto lifetimeStart = llvm::dyn_cast<mlir::LLVM::LifetimeStartOp>(op)) {
+      if (!llvm::isa_and_nonnull<mlir::LLVM::AllocaOp, mlir::LLVM::PoisonOp>(
+              lifetimeStart.getPtr().getDefiningOp()))
+        toErase.push_back(op);
+    } else if (auto lifetimeEnd =
+                   llvm::dyn_cast<mlir::LLVM::LifetimeEndOp>(op)) {
+      if (!llvm::isa_and_nonnull<mlir::LLVM::AllocaOp, mlir::LLVM::PoisonOp>(
+              lifetimeEnd.getPtr().getDefiningOp()))
+        toErase.push_back(op);
+    }
+  });
+  for (mlir::Operation *op : toErase)
+    op->erase();
+}
+
 //===-----------------------------------------------------------------------===/
 
 namespace {
@@ -3713,6 +3731,8 @@ struct ConvertPolygeistToLLVMPass
         }
       });
     }
+
+    removeUnsupportedLifeTimes(m);
   }
 
   void runOnOperation() override {
