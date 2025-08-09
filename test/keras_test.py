@@ -77,8 +77,7 @@ def main(argv):
         benchfns += [
             ("bert_fit", benchmark.bert.bert_fit_run, Both),
         ]
-    # also oom
-    if False:
+    if True:
         benchfns += [
             ("sam_predict", benchmark.sam.sam_predict_run, Both),
             ("sam_fit", benchmark.sam.sam_fit_run, Both),
@@ -96,6 +95,10 @@ def main(argv):
                     continue
                 # Oom's the gpu ci
                 if bname == "bert_predict" and name == "IPartOpt":
+                    continue
+
+                # Oom's the gpu ci
+                if bname == "sam_predict" and name == "JaXPipe":
                     continue
 
                 os.environ.pop("ENZYME_JAX", None)
