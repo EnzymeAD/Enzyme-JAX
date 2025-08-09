@@ -1451,21 +1451,23 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
     SmallVector<Value, 8> forArgs = llvm::to_vector(loop.getInits());
 
     for (Value arg : condOp.getArgs()) {
-      Value newArg = rewriter.create<ub::PoisonOp>(arg.getLoc(), arg.getType());
+      Value newArg = nullptr;
       if (auto blockArg = dyn_cast<BlockArgument>(arg)) {
         if (blockArg.getOwner() == &condOp->getParentRegion()->front()) {
           newArg = loop.getOperand(blockArg.getArgNumber());
         }
       } else if (auto selectOp = arg.getDefiningOp<arith::SelectOp>()) {
-        auto trueBlockArg = dyn_cast<BlockArgument>(selectOp.getTrueValue());
-        auto falseBlockArg = dyn_cast<BlockArgument>(selectOp.getFalseValue());
 
-        if (trueBlockArg && !falseBlockArg) {
+        if (auto trueBlockArg =
+                dyn_cast<BlockArgument>(selectOp.getTrueValue())) {
           newArg = loop.getOperand(trueBlockArg.getArgNumber());
-        } else if (!trueBlockArg && falseBlockArg) {
+        } else if (auto falseBlockArg =
+                       dyn_cast<BlockArgument>(selectOp.getFalseValue())) {
           newArg = loop.getOperand(falseBlockArg.getArgNumber());
         }
       }
+      if (!newArg)
+        newArg = rewriter.create<ub::PoisonOp>(arg.getLoc(), arg.getType());
       forArgs.push_back(newArg);
     }
 
