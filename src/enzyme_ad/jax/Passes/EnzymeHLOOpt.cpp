@@ -6908,6 +6908,55 @@ struct PadReduceWindow
   }
 };
 
+// conv(pad(x, lo, hi, 0)) -> conv(x, pad_lo=lo, pad_hi=hi)
+struct ConvolutionPad
+    : public CheckedOpRewritePattern<stablehlo::ConvolutionOp, ConvolutionPad> {
+  using CheckedOpRewritePattern<stablehlo::ConvolutionOp,
+                                ConvolutionPad>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConvolutionOp op,
+                                    PatternRewriter &rewriter) const {
+    auto padOp = op.getLhs().getDefiningOp<stablehlo::PadOp>();
+    if (!padOp || !llvm::all_of(padOp.getInteriorPadding(),
+                                [](int64_t pad) { return pad == 0; }))
+      return failure();
+
+    if (!matchPattern(padOp.getPaddingValue(), m_Zero()) &&
+        !matchPattern(padOp.getPaddingValue(), m_AnyZeroFloat()))
+      return failure();
+
+    auto paddingLow = padOp.getEdgePaddingLow();
+    auto paddingHigh = padOp.getEdgePaddingHigh();
+
+    auto convDims = op.getDimensionNumbers();
+    int64_t inputBatchDim = convDims.getInputBatchDimension();
+    int64_t inputFeatureDim = convDims.getInputFeatureDimension();
+    if (paddingLow[inputBatchDim] != 0 || paddingHigh[inputBatchDim] != 0 ||
+        paddingLow[inputFeatureDim] != 0 || paddingHigh[inputFeatureDim] != 0)
+      return failure();
+
+    auto inputSpatialDims = convDims.getInputSpatialDimensions();
+    int64_t N = paddingLow.size();
+    SmallVector<int64_t> newPaddingValues(2 * (N - 2), 0);
+    for (auto [i, dim] : llvm::enumerate(inputSpatialDims)) {
+      newPaddingValues[2 * i] = paddingLow[dim];
+      newPaddingValues[2 * i + 1] = paddingHigh[dim];
+    }
+    auto paddingType =
+        mlir::RankedTensorType::get({N - 2, 2}, rewriter.getI64Type());
+    auto newPaddingAttr =
+        mlir::DenseIntElementsAttr::get(paddingType, newPaddingValues);
+
+    rewriter.replaceOpWithNewOp<stablehlo::ConvolutionOp>(
+        op, op.getType(), padOp.getOperand(), op.getRhs(),
+        op.getWindowStridesAttr(), newPaddingAttr, op.getLhsDilationAttr(),
+        op.getRhsDilationAttr(), op.getWindowReversalAttr(), convDims,
+        op.getFeatureGroupCountAttr(), op.getBatchGroupCountAttr(),
+        op.getPrecisionConfigAttr());
+    return success();
+  }
+};
+
 struct ConcatPad
     : public CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatPad> {
   using CheckedOpRewritePattern<stablehlo::ConcatenateOp,
@@ -22328,7 +22377,8 @@ struct EnzymeHLOOptPass
 
     patterns.add<BinopPadToConcat<stablehlo::AddOp>,
                  BinopPadToConcat<stablehlo::MulOp>, ConcatPad,
-                 PadConcatToConcatPad, SliceSelect, PadReduceWindow>(context);
+                 PadConcatToConcatPad, SliceSelect, PadReduceWindow,
+                 ConvolutionPad>(context);
 
     if (passses & 512) {
       patterns.add<TransposeDotReorder, DotTranspose, ConvolutionTranspose,
