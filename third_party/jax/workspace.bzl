@@ -12,11 +12,16 @@ JAX_PATCHES = [
     """,
 ]
 
-def repo():
+def repo(extra_patches = [], override_commit = ""):
+    commit = JAX_COMMIT
+    sha = JAX_SHA256
+    if len(override_commit):
+        commit = override_commit
+        sha = ""
     http_archive(
         name = "jax",
-        sha256 = JAX_SHA256,
-        strip_prefix = "jax-" + JAX_COMMIT,
-        urls = ["https://github.com/google/jax/archive/{commit}.tar.gz".format(commit = JAX_COMMIT)],
-        patch_cmds = JAX_PATCHES,
+        sha256 = sha,
+        strip_prefix = "jax-" + commit,
+        urls = ["https://github.com/google/jax/archive/{commit}.tar.gz".format(commit = commit)],
+        patch_cmds = JAX_PATCHES + extra_patches,
     )
