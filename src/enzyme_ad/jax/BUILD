@@ -981,6 +981,7 @@ pybind_extension(
         "@llvm-project//mlir:UBToLLVM",
         "@llvm-project//mlir:VectorDialect",
         "@llvm-project//mlir:VectorToLLVM",
+        "@llvm-project//mlir:BufferizationTransforms",
         "@nanobind",
         "@shardy//shardy/dialect/sdy/ir:dialect",
         "@shardy//shardy/dialect/sdy/transforms/propagation:op_sharding_rule_builder",
