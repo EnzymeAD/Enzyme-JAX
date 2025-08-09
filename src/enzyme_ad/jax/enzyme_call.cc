@@ -47,11 +47,11 @@
 #include "mlir/CAPI/IR.h"
 #include "mlir/Conversion/Passes.h"
 #include "mlir/Dialect/Arith/Transforms/Passes.h"
+#include "mlir/Dialect/Async/Passes.h"
 #include "mlir/Dialect/Bufferization/Pipelines/Passes.h"
 #include "mlir/Dialect/Bufferization/Transforms/Passes.h"
 #include "mlir/Dialect/MemRef/Transforms/Passes.h"
 #include "mlir/Dialect/Shape/Transforms/Passes.h"
-#include "mlir/Dialect/Async/Passes.h"
 
 #include "mlir/Dialect/Linalg/Passes.h"
 
