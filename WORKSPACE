@@ -101,7 +101,6 @@ nvidia_wheel_versions_repository(
     versions_source = "@jax//build:nvidia-requirements.txt",
 )
 
-
 load("@xla//:workspace2.bzl", "xla_workspace2")
 
 xla_workspace2()
