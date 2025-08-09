@@ -183,7 +183,8 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
 
     SmallVector<Attribute> aliases;
     for (int i = 0; i < 3; ++i) {
-      aliases.push_back(stablehlo::OutputOperandAliasAttr::get(ctx, {i}, i, {}));
+      aliases.push_back(
+          stablehlo::OutputOperandAliasAttr::get(ctx, {i}, i, {}));
     }
 
     auto jit_call_op = rewriter.create<enzymexla::JITCallOp>(
