@@ -21960,6 +21960,359 @@ struct ElementwiseExtend
   }
 };
 
+template <typename OpTy>
+struct SelfElementwiseToConvolutionLike
+    : public CheckedOpRewritePattern<OpTy,
+                                     SelfElementwiseToConvolutionLike<OpTy>> {
+  using CheckedOpRewritePattern<
+      OpTy, SelfElementwiseToConvolutionLike<OpTy>>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(OpTy op, PatternRewriter &rewriter) const {
+    if (op->getNumOperands() != 2)
+      return rewriter.notifyMatchFailure(op, "expected two operands");
+
+    auto outType = cast<RankedTensorType>(op.getType());
+    auto outShape = outType.getShape();
+    auto outRank = outType.getRank();
+
+    // Extract info about both operands
+    auto lhsInfo = extractOperandInfo(op.getLhs());
+    auto rhsInfo = extractOperandInfo(op.getRhs());
+
+    // For reduce_window, we need the following:
+    //   - op is commutative and associative
+    //   - *.constantScalar & *.constantAttr must be empty
+    bool canEmitReduceWindow = false;
+    bool isCommutative =
+        op->template hasTrait<mlir::hlo::OpTrait::IsCommutative>() ||
+        op->template hasTrait<mlir::OpTrait::IsCommutative>();
+    // mlir has no trait for isAssociative??
+    bool isAssociative = false;
+    if constexpr (std::is_base_of_v<stablehlo::AddOp, OpTy> ||
+                  std::is_base_of_v<stablehlo::MulOp, OpTy>) {
+      isAssociative = true;
+    }
+    if (isAssociative && isCommutative) {
+      if (!lhsInfo.constantAttr.has_value() &&
+          !rhsInfo.constantAttr.has_value() &&
+          !lhsInfo.constantScalar.has_value() &&
+          !rhsInfo.constantScalar.has_value()) {
+        canEmitReduceWindow = true;
+      }
+    }
+
+    if (!canEmitReduceWindow) {
+      if constexpr (std::is_base_of_v<stablehlo::MulOp, OpTy>) {
+        return rewriter.notifyMatchFailure(
+            op, "MulOp is only supported if we can emit a reduce window.");
+      }
+    }
+
+    Operation *newBaseOp = nullptr;
+    int64_t windowDilation = -1, dimension = -1;
+    bool flipped = false;
+
+    {
+      // Try to see if the parent op is a rotate
+      bool matched = false;
+      Value operand;
+
+      // TODO: generalize the pattern. We can deal with both branches being a
+      // rotate
+      if (auto lhsRotateOp =
+              lhsInfo.base.template getDefiningOp<enzymexla::RotateOp>()) {
+        if (lhsRotateOp.getOperand() == rhsInfo.base) {
+          dimension = lhsRotateOp.getDimension();
+          windowDilation = lhsRotateOp.getAmount();
+          operand = rhsInfo.base;
+          matched = true;
+        }
+      }
+
+      if (!matched) {
+        if (auto rhsRotateOp =
+                rhsInfo.base.template getDefiningOp<enzymexla::RotateOp>()) {
+          if (rhsRotateOp.getOperand() == lhsInfo.base) {
+            dimension = rhsRotateOp.getDimension();
+            windowDilation = rhsRotateOp.getAmount();
+            operand = lhsInfo.base;
+            matched = true;
+            flipped = true;
+          }
+        }
+      }
+
+      if (matched)
+        newBaseOp = rewriter.create<enzymexla::WrapOp>(
+            op.getLoc(), operand, windowDilation, 0, dimension);
+    }
+
+    if (!newBaseOp) {
+      // TODO: generalize to match when we have padding on both sides as well
+      // try to match pad
+      auto lhsPadOp = lhsInfo.base.template getDefiningOp<stablehlo::PadOp>();
+      auto rhsPadOp = rhsInfo.base.template getDefiningOp<stablehlo::PadOp>();
+      bool matched = false;
+      windowDilation = -1;
+      dimension = -1;
+
+      if (lhsPadOp && rhsPadOp) {
+        if (lhsPadOp.getOperand() == rhsPadOp.getOperand() &&
+            lhsPadOp.getPaddingValue() == rhsPadOp.getPaddingValue()) {
+          auto lhsLowPadding = lhsPadOp.getEdgePaddingLow();
+          auto rhsLowPadding = rhsPadOp.getEdgePaddingLow();
+          auto lhsHighPadding = lhsPadOp.getEdgePaddingHigh();
+          auto rhsHighPadding = rhsPadOp.getEdgePaddingHigh();
+          auto lhsInteriorPadding = lhsPadOp.getInteriorPadding();
+          auto rhsInteriorPadding = rhsPadOp.getInteriorPadding();
+
+          int64_t counter = 0;
+          for (auto [lL, rL, lH, rH, lI, rI] : llvm::zip(
+                   lhsLowPadding, rhsLowPadding, lhsHighPadding, rhsHighPadding,
+                   lhsInteriorPadding, rhsInteriorPadding)) {
+            // all interior paddings must be zero
+            if (lI != 0 || rI != 0) {
+              matched = false;
+              break;
+            }
+
+            // if lL is non zero, corresponding rL must be non zero. All others
+            // must be zero
+            if (lL != 0) {
+              if (lL != rH || lH != 0 || rL != 0 || dimension != -1) {
+                matched = false;
+                break;
+              }
+              dimension = counter;
+              windowDilation = lL;
+              matched = true;
+            }
+
+            // if rL is non zero, corresponding lL must be non zero. All others
+            // must be zero
+            if (rL != 0) {
+              if (lH != rL || lL != 0 || rH != 0 || dimension != -1) {
+                matched = false;
+                break;
+              }
+              dimension = counter;
+              windowDilation = rL;
+              matched = true;
+              flipped = true;
+            }
+
+            counter++;
+          }
+        }
+      }
+
+      if (matched) {
+        SmallVector<int64_t> paddingLow(outRank, 0);
+        SmallVector<int64_t> paddingHigh(outRank, 0);
+        SmallVector<int64_t> paddingInterior(outRank, 0);
+        paddingLow[dimension] = windowDilation;
+        paddingHigh[dimension] = windowDilation;
+
+        newBaseOp = rewriter.create<stablehlo::PadOp>(
+            op.getLoc(), lhsPadOp.getOperand(), lhsPadOp.getPaddingValue(),
+            paddingLow, paddingHigh, paddingInterior);
+      }
+    }
+
+    if (!newBaseOp || windowDilation < 0 || dimension < 0)
+      return rewriter.notifyMatchFailure(
+          op, "None of the parent op conditions match.");
+
+    auto loc = op.getLoc();
+    SmallVector<int64_t> windowDilations(outRank, 1);
+    windowDilations[dimension] = windowDilation;
+
+    if (canEmitReduceWindow) {
+      SmallVector<int64_t> windowDims(outRank, 1);
+      windowDims[dimension] = 2;
+
+      auto zeroType = RankedTensorType::get({}, outType.getElementType());
+      auto zero = rewriter.create<stablehlo::ConstantOp>(
+          op.getLoc(), zeroType, cast<ElementsAttr>(makeAttr(zeroType, 0)));
+
+      auto reduceWindowOp =
+          rewriter.replaceOpWithNewOp<stablehlo::ReduceWindowOp>(
+              op, TypeRange(outType), ValueRange(newBaseOp->getResult(0)),
+              ValueRange(zero), rewriter.getDenseI64ArrayAttr(windowDims),
+              DenseI64ArrayAttr(), DenseI64ArrayAttr(),
+              rewriter.getDenseI64ArrayAttr(windowDilations),
+              DenseIntElementsAttr());
+
+      {
+        auto *block = rewriter.createBlock(&reduceWindowOp.getBody());
+        auto argType = RankedTensorType::get({}, outType.getElementType());
+        block->addArgument(argType, loc);
+        block->addArgument(argType, loc);
+        rewriter.setInsertionPointToStart(block);
+
+        rewriter.create<stablehlo::ReturnOp>(
+            loc, ValueRange(rewriter.create<OpTy>(loc, block->getArgument(0),
+                                                  block->getArgument(1))));
+      }
+
+      return success();
+    }
+
+    // We need to reshape the base op to have 2 additional dimensions in the
+    // beginning
+    auto lhsBaseType =
+        cast<RankedTensorType>(newBaseOp->getResult(0).getType());
+    auto lhsBaseShape = lhsBaseType.getShape();
+
+    SmallVector<int64_t> spatialDims(outRank, 1);
+    for (int64_t i = 0; i < outRank; ++i)
+      spatialDims[i] = i + 2;
+
+    SmallVector<int64_t> newShape(2, 1);
+    SmallVector<int64_t> newOutShape(2, 1);
+    for (int64_t i = 0; i < outRank; ++i) {
+      newShape.push_back(lhsBaseShape[i]);
+      newOutShape.push_back(outShape[i]);
+    }
+    auto convOutType =
+        RankedTensorType::get(newOutShape, outType.getElementType());
+
+    auto convLhs = rewriter.create<stablehlo::ReshapeOp>(
+        loc, RankedTensorType::get(newShape, outType.getElementType()),
+        newBaseOp->getResult(0));
+
+    // construct the conv rhs
+    SmallVector<int64_t> filterShape(outRank + 2, 1);
+
+    // filter value
+    Value firstElement, secondElement;
+
+    if (lhsInfo.constantAttr.has_value()) {
+      firstElement = rewriter.create<stablehlo::ConstantOp>(
+          loc, RankedTensorType::get({}, outType.getElementType()),
+          lhsInfo.constantAttr.value());
+    } else if (lhsInfo.constantScalar.has_value()) {
+      firstElement = lhsInfo.constantScalar.value();
+    } else {
+      firstElement = rewriter.create<stablehlo::ConstantOp>(
+          loc, RankedTensorType::get({}, outType.getElementType()),
+          cast<ElementsAttr>(makeAttr(
+              RankedTensorType::get({}, outType.getElementType()), 1)));
+    }
+
+    if (rhsInfo.constantAttr.has_value()) {
+      secondElement = rewriter.create<stablehlo::ConstantOp>(
+          loc, RankedTensorType::get({}, outType.getElementType()),
+          rhsInfo.constantAttr.value());
+    } else if (rhsInfo.constantScalar.has_value()) {
+      secondElement = rhsInfo.constantScalar.value();
+    } else {
+      secondElement = rewriter.create<stablehlo::ConstantOp>(
+          loc, RankedTensorType::get({}, outType.getElementType()),
+          cast<ElementsAttr>(makeAttr(
+              RankedTensorType::get({}, outType.getElementType()), 1)));
+    }
+
+    if constexpr (std::is_base_of_v<stablehlo::SubtractOp, OpTy>) {
+      if (flipped) {
+        secondElement = rewriter.create<stablehlo::NegOp>(loc, secondElement);
+      } else {
+        firstElement = rewriter.create<stablehlo::NegOp>(loc, firstElement);
+      }
+    }
+
+    firstElement = rewriter.create<stablehlo::ReshapeOp>(
+        loc, RankedTensorType::get(filterShape, outType.getElementType()),
+        firstElement);
+    secondElement = rewriter.create<stablehlo::ReshapeOp>(
+        loc, RankedTensorType::get(filterShape, outType.getElementType()),
+        secondElement);
+
+    auto filter = rewriter.create<stablehlo::ConcatenateOp>(
+        loc, ValueRange{firstElement, secondElement},
+        rewriter.getI64IntegerAttr(dimension + 2));
+
+    auto convDims = stablehlo::ConvDimensionNumbersAttr::get(
+        rewriter.getContext(),
+        /*input_batch_dimension=*/0,
+        /*input_feature_dimension=*/1,
+        /*input_spatial_dimensions=*/spatialDims,
+        /*kernel_input_feature_dimension=*/0,
+        /*kernel_output_feature_dimension=*/1,
+        /*kernel_spatial_dimensions=*/spatialDims,
+        /*output_batch_dimension=*/0,
+        /*output_feature_dimension=*/1,
+        /*output_spatial_dimensions=*/spatialDims);
+
+    auto conv = rewriter.create<stablehlo::ConvolutionOp>(
+        loc, convOutType, convLhs, filter,
+        /*window_strides=*/nullptr,
+        /*padding=*/nullptr,
+        /*lhs_dilation=*/nullptr,
+        /*rhs_dilation=*/rewriter.getDenseI64ArrayAttr(windowDilations),
+        /*window_reversal=*/nullptr,
+        /*conv_dimension_numbers=*/convDims,
+        /*feature_group_count=*/rewriter.getI64IntegerAttr(1),
+        /*batch_group_count=*/rewriter.getI64IntegerAttr(1),
+        /*precision_config=*/nullptr);
+
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(), conv);
+    return success();
+  }
+
+private:
+  struct OperandInfo {
+    Value base;
+    std::optional<ElementsAttr> constantAttr;
+    std::optional<Value> constantScalar;
+  };
+
+  std::tuple<std::optional<ElementsAttr>, std::optional<Value>>
+  checkConstant(Value val) const {
+    if (auto bcastInDimOp = val.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+      auto operand = bcastInDimOp.getOperand();
+      auto type = cast<RankedTensorType>(operand.getType());
+      if (type) {
+        if (type.getRank() == 0) {
+          return std::make_tuple(std::nullopt, operand);
+        }
+      }
+    }
+
+    if (auto constOp = val.getDefiningOp<stablehlo::ConstantOp>()) {
+      auto attr = constOp.getValue();
+      if (attr.isSplat()) {
+        return std::make_tuple(
+            cast<ElementsAttr>(
+                cast<SplatElementsAttr>(attr).resizeSplat(RankedTensorType::get(
+                    {},
+                    cast<RankedTensorType>(val.getType()).getElementType()))),
+            std::nullopt);
+      }
+    }
+    return std::make_tuple(std::nullopt, std::nullopt);
+  }
+
+  OperandInfo extractOperandInfo(Value val) const {
+    if (auto mulOp = val.getDefiningOp<stablehlo::MulOp>()) {
+      {
+        auto [constantAttr, constantScalar] = checkConstant(mulOp.getLhs());
+        if (constantAttr.has_value() || constantScalar.has_value()) {
+          return {mulOp.getRhs(), constantAttr, constantScalar};
+        }
+      }
+
+      {
+        auto [constantAttr, constantScalar] = checkConstant(mulOp.getRhs());
+        if (constantAttr.has_value() || constantScalar.has_value()) {
+          return {mulOp.getLhs(), constantAttr, constantScalar};
+        }
+      }
+    }
+    return {val, std::nullopt};
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -22535,7 +22888,10 @@ struct EnzymeHLOOptPass
         ConcatenateBroadcastInDim,
         ElementwiseRotate,
         ElementwiseWrap,
-        ElementwiseExtend
+        ElementwiseExtend,
+        SelfElementwiseToConvolutionLike<stablehlo::SubtractOp>,
+        SelfElementwiseToConvolutionLike<stablehlo::AddOp>,
+        SelfElementwiseToConvolutionLike<stablehlo::MulOp>
       >(context);
 
     patterns.add<SumToReduceWindow<stablehlo::AddOp>,
