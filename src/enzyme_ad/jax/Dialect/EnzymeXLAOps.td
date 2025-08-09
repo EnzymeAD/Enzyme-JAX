@@ -550,6 +550,41 @@ def SVDFactorizationOp : EnzymeXLA_Op<"linalg.svd", [Pure]> {
   }];
 }
 
+def GesvdOp : EnzymeXLA_Op<"lapack.gesvd", [Pure]> {
+  let summary = "Perform Singular Value Decomposition (SVD) factorization using QR iteration."
+
+  let arguments = (ins
+    HLO_Tensor:$input,
+    EnzymeXLA_LapackJobAttr:$jobu,
+    EnzymeXLA_LapackJobAttr:$jobvt
+  );
+
+  let results = (outs
+    Variadic<HLO_Tensor>:$outputs
+  );
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
+def GesddOp : EnzymeXLA_Op<"lapack.gesdd", [Pure]> {
+  let summary = "Singular Value Decomposition (SVD) using divide-and-conquer strategy.";
+
+  let arguments = (ins
+    HLO_Tensor:$input,
+    EnzymeXLA_LapackJobAttr:$jobz
+  );
+
+  let results = (outs
+    Variadic<HLO_Tensor>:$outputs
+  );
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
 // Machine Learning Ops
 
 def GeluOp: EnzymeXLA_Op<"ml.gelu", [Pure, SameOperandsAndResultType, Elementwise]> {
