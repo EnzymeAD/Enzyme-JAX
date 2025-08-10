@@ -980,6 +980,15 @@ pybind_extension(
         "@llvm-project//mlir:TensorDialect",
         "@llvm-project//mlir:TransformDialect",
         "@llvm-project//mlir:UBDialect",
+
+        "@llvm-project//mlir:ConversionPasses",
+        "@llvm-project//mlir:ArithTransforms",
+        "@llvm-project//mlir:BufferizationTransforms",
+        "@llvm-project//mlir:MemRefTransforms",
+        "@llvm-project//mlir:ShapeTransforms",
+        "@llvm-project//mlir:LinalgTransforms",
+
+
         "@llvm-project//mlir:UBToLLVM",
         "@llvm-project//mlir:VectorDialect",
         "@llvm-project//mlir:VectorToLLVM",
