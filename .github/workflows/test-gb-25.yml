@@ -54,7 +54,7 @@ jobs:
           # - '0123456789abcdef0123456789abcdef01234567'
         reactant_commit:
           # - 'main'
-          - "bde0d3b2349cbaa2790b3edd5da21be55b943586"
+          - "ap/updated_no_nan"
 
     steps:
       - name: Check GPUs
