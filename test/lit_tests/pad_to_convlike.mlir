@@ -44,7 +44,7 @@ func.func @main3(%arg0: tensor<1520x3056xf64>, %arg1: tensor<f64>) -> tensor<152
 }
 
 // CHECK: func.func @main3(%arg0: tensor<1520x3056xf64>, %arg1: tensor<f64>) -> tensor<1520x3080xf64> {
-// CHECK-NEXT{LITERAL}:     %cst = stablehlo.constant dense<[[[[-1.000000e+00, 1.000000e+00]]]]> : tensor<1x1x1x2xf64>
+// CHECK-NEXT{LITERAL}:     %cst = stablehlo.constant dense<[[[[1.000000e+00, -1.000000e+00]]]]> : tensor<1x1x1x2xf64>
 // CHECK-NEXT:     %0 = stablehlo.reshape %arg0 : (tensor<1520x3056xf64>) -> tensor<1x1x1520x3056xf64>
 // CHECK-NEXT:     %1 = stablehlo.pad %0, %arg1, low = [0, 0, 0, 24], high = [0, 0, 0, 24], interior = [0, 0, 0, 0] : (tensor<1x1x1520x3056xf64>, tensor<f64>) -> tensor<1x1x1520x3104xf64>
 // CHECK-NEXT:     %2 = stablehlo.convolution(%1, %cst) dim_numbers = [b, f, 0, 1]x[i, o, 0, 1]->[b, f, 0, 1], window = {rhs_dilate = [1, 24]} {batch_group_count = 1 : i64, feature_group_count = 1 : i64} : (tensor<1x1x1520x3104xf64>, tensor<1x1x1x2xf64>) -> tensor<1x1x1520x3080xf64>
@@ -60,7 +60,7 @@ func.func @main4(%arg0: tensor<1520x3056xf64>, %arg1: tensor<f64>) -> tensor<152
 }
 
 // CHECK: func.func @main4(%arg0: tensor<1520x3056xf64>, %arg1: tensor<f64>) -> tensor<1520x3080xf64> {
-// CHECK-NEXT{LITERAL}:     %cst = stablehlo.constant dense<[[[[1.000000e+00, -1.000000e+00]]]]> : tensor<1x1x1x2xf64>
+// CHECK-NEXT{LITERAL}:     %cst = stablehlo.constant dense<[[[[-1.000000e+00, 1.000000e+00]]]]> : tensor<1x1x1x2xf64>
 // CHECK-NEXT:     %0 = stablehlo.reshape %arg0 : (tensor<1520x3056xf64>) -> tensor<1x1x1520x3056xf64>
 // CHECK-NEXT:     %1 = stablehlo.pad %0, %arg1, low = [0, 0, 0, 24], high = [0, 0, 0, 24], interior = [0, 0, 0, 0] : (tensor<1x1x1520x3056xf64>, tensor<f64>) -> tensor<1x1x1520x3104xf64>
 // CHECK-NEXT:     %2 = stablehlo.convolution(%1, %cst) dim_numbers = [b, f, 0, 1]x[i, o, 0, 1]->[b, f, 0, 1], window = {rhs_dilate = [1, 24]} {batch_group_count = 1 : i64, feature_group_count = 1 : i64} : (tensor<1x1x1520x3104xf64>, tensor<1x1x1x2xf64>) -> tensor<1x1x1520x3080xf64>
