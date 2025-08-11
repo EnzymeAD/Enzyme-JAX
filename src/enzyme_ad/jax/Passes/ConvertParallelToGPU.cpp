@@ -510,7 +510,7 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       emitAlternative(atoi(blockSizeStr), alternativesOp);
       alternativesOp->setAttr("alternatives.descs",
                               rewriter.getArrayAttr(descs));
-    } else if (shouldEmitAlternatives(pop)) {
+    } else if (alternatives && shouldEmitAlternatives(pop)) {
       auto alternativesOp = rewriter.create<enzymexla::AlternativesOp>(
           loc, ALTERNATIVE_KERNEL_BLOCK_SIZES.size() +
                    (pop.getUpperBound().size() == 6 &&
