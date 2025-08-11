@@ -22223,14 +22223,19 @@ struct SelfElementwiseToConvolutionLike
       SmallVector<int64_t> windowDims(outRank, 1);
       windowDims[dimension] = 2;
 
-      auto zeroType = RankedTensorType::get({}, outType.getElementType());
-      auto zero = rewriter.create<stablehlo::ConstantOp>(
-          op.getLoc(), zeroType, cast<ElementsAttr>(makeAttr(zeroType, 0)));
+      int64_t initScalar = 0;
+      if constexpr (std::is_same_v<OpTy, stablehlo::MulOp>) {
+        initScalar = 1;
+      }
+
+      auto scalarType = RankedTensorType::get({}, outType.getElementType());
+      auto initVal = rewriter.create<stablehlo::ConstantOp>(
+          op.getLoc(), scalarType, cast<ElementsAttr>(makeAttr(scalarType, initScalar)));
 
       auto reduceWindowOp =
           rewriter.replaceOpWithNewOp<stablehlo::ReduceWindowOp>(
               op, TypeRange(outType), ValueRange(newBaseOp->getResult(0)),
-              ValueRange(zero), rewriter.getDenseI64ArrayAttr(windowDims),
+              ValueRange(initVal), rewriter.getDenseI64ArrayAttr(windowDims),
               DenseI64ArrayAttr(), DenseI64ArrayAttr(),
               rewriter.getDenseI64ArrayAttr(windowDilations),
               DenseIntElementsAttr());
