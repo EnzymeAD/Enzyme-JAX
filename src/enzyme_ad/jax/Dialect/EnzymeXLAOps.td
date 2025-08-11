@@ -51,6 +51,8 @@ def KernelCallOp: EnzymeXLA_Op<"kernel_call", [DeclareOpInterfaceMethods<SymbolU
     DefaultValuedStrAttr<StrAttr, "">:$backend_config,
     OptionalAttr<AnyAttr>:$operand_layouts,
     OptionalAttr<AnyAttr>:$result_layouts,
+    OptionalAttr<DictArrayAttr>:$arg_attrs,
+    OptionalAttr<DictArrayAttr>:$res_attrs,
     DefaultValuedOptionalAttr<
         ArrayAttr, "{}">:$output_operand_aliases,
     OptionalAttr<UnitAttr>:$xla_side_effect_free
@@ -112,6 +114,8 @@ def JITCallOp: EnzymeXLA_Op<"jit_call", [DeclareOpInterfaceMethods<SymbolUserOpI
     DefaultValuedStrAttr<StrAttr, "">:$backend_config,
     OptionalAttr<AnyAttr>:$operand_layouts,
     OptionalAttr<AnyAttr>:$result_layouts,
+    OptionalAttr<DictArrayAttr>:$arg_attrs,
+    OptionalAttr<DictArrayAttr>:$res_attrs,
     DefaultValuedOptionalAttr<
         ArrayAttr, "{}">:$output_operand_aliases,
     OptionalAttr<UnitAttr>:$xla_side_effect_free
@@ -159,7 +163,9 @@ def XLAWrapperOp: EnzymeXLA_Op<"xla_wrapper", [DeclareOpInterfaceMethods<SymbolU
 
   let arguments = (ins
     SymbolRefAttr:$fn,
-    Variadic<AnyType>:$inputs
+    Variadic<AnyType>:$inputs,
+    OptionalAttr<DictArrayAttr>:$arg_attrs,
+    OptionalAttr<DictArrayAttr>:$res_attrs
   );
 
   let assemblyFormat = [{

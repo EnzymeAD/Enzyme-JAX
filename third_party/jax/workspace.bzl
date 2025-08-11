@@ -7,15 +7,24 @@ JAX_PATCHES = [
     """
     sed -i.bak0 "s/\\/\\/jaxlib\\/.../public/g" jaxlib/symlink_files.bzl
     """,
+    """
+    sed -i.bak0 "s/jax\\/experimental:mosaic_users/visibility:public/g" jaxlib/mosaic/BUILD
+    """,
+    """
+    sed -i.bak0 "s/#include \\"jaxlib\\/mosaic\\/dialect\\/tpu\\/tpu_enums.h.inc/#undef ARG_MAX\\n#include \\"jaxlib\\/mosaic\\/dialect\\/tpu\\/tpu_enums.h.inc/g" jaxlib/mosaic/dialect/tpu/tpu_dialect.h
+    """,
 ]
 
-def repo():
+def repo(extra_patches = [], override_commit = ""):
+    commit = JAX_COMMIT
+    sha = JAX_SHA256
+    if len(override_commit):
+        commit = override_commit
+        sha = ""
     http_archive(
         name = "jax",
-        sha256 = JAX_SHA256,
-        strip_prefix = "jax-" + JAX_COMMIT,
-        urls = ["https://github.com/google/jax/archive/{commit}.tar.gz".format(commit = JAX_COMMIT)],
-        patch_args = ["-p1"],
-        patches = ["//:patches/jax.patch"],
-        patch_cmds = JAX_PATCHES,
+        sha256 = sha,
+        strip_prefix = "jax-" + commit,
+        urls = ["https://github.com/google/jax/archive/{commit}.tar.gz".format(commit = commit)],
+        patch_cmds = JAX_PATCHES + extra_patches,
     )

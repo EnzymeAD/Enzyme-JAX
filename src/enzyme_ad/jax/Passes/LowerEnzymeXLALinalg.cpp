@@ -275,6 +275,8 @@ struct LUFactorizationOpLowering
               rewriter.getStringAttr(""),
               /*operand_layouts=*/operandLayouts,
               /*result_layouts=*/resultLayouts,
+              /*arg_attrs=*/nullptr,
+              /*res_attrs=*/nullptr,
               /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
               /*xla_side_effect_free=*/rewriter.getUnitAttr());
 
@@ -330,6 +332,8 @@ struct LUFactorizationOpLowering
             ValueRange{input, pivot, info}, rewriter.getStringAttr(""),
             /*operand_layouts=*/operandLayouts,
             /*result_layouts=*/resultLayouts,
+            /*arg_attrs=*/nullptr,
+            /*res_attrs=*/nullptr,
             /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
             /*xla_side_effect_free=*/rewriter.getUnitAttr());
 
@@ -909,6 +913,8 @@ struct SVDFactorizationOpLowering
         rewriter.getStringAttr(""),
         /*operand_layouts=*/operandLayouts,
         /*result_layouts=*/resultLayouts,
+        /*arg_attrs=*/nullptr,
+        /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
         /*xla_side_effect_free=*/rewriter.getUnitAttr());
 
