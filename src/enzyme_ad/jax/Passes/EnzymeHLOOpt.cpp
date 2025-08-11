@@ -22376,11 +22376,6 @@ struct SelfElementwiseToConvolutionLike
               RankedTensorType::get({}, outType.getElementType()), 1)));
     }
 
-
-    llvm::dbgs() << "--------------------\n";
-    llvm::dbgs() << "lhsElement: " << lhsElement << "\n";
-    llvm::dbgs() << "rhsElement: " << rhsElement << "\n";
-
     if constexpr (std::is_base_of_v<stablehlo::SubtractOp, OpTy>) {
       // todo: verify
       rhsElement = rewriter.create<stablehlo::NegOp>(loc, rhsElement);
@@ -22393,10 +22388,6 @@ struct SelfElementwiseToConvolutionLike
       firstElement = lhsElement;
       secondElement = rhsElement;
     }
-
-    llvm::dbgs() << "firstElement: " << firstElement << "\n";
-    llvm::dbgs() << "secondElement: " << secondElement << "\n";
-    llvm::dbgs() << "--------------------\n";
 
     firstElement = rewriter.create<stablehlo::ReshapeOp>(
         loc, RankedTensorType::get(filterShape, outType.getElementType()),
