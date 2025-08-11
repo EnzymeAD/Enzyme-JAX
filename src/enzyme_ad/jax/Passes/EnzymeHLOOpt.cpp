@@ -18791,29 +18791,32 @@ struct ExtendSlice final
     int64_t limit_d = limits[d];
     int64_t size_d = originalShape[d];
 
-    // Calculate the parameters for the new slice operation on the original operand.
-    // The new slice covers the part of the original tensor that is visible in the final output.
+    // Calculate the parameters for the new slice operation on the original
+    // operand. The new slice covers the part of the original tensor that is
+    // visible in the final output.
     new_starts[d] = std::max((int64_t)0, start_d - lhs);
     new_limits[d] = std::min(size_d, limit_d - lhs);
 
     // Calculate the new padding amounts for the extend operation.
-    // new_lhs is the size of the overlap between the slice and the prepended padding.
+    // new_lhs is the size of the overlap between the slice and the prepended
+    // padding.
     int64_t new_lhs = std::max((int64_t)0, std::min(limit_d, lhs) - start_d);
-    // new_rhs is the size of the overlap between the slice and the appended padding.
-    int64_t new_rhs = std::max((int64_t)0, limit_d - std::max(start_d, lhs + size_d));
+    // new_rhs is the size of the overlap between the slice and the appended
+    // padding.
+    int64_t new_rhs =
+        std::max((int64_t)0, limit_d - std::max(start_d, lhs + size_d));
 
     // Create the new slice on the original tensor.
     auto newSlice = rewriter.create<stablehlo::SliceOp>(
         op.getLoc(), operand, new_starts, new_limits, new_strides);
 
     // Create the new extend on the newly sliced tensor.
-    rewriter.replaceOpWithNewOp<enzymexla::ExtendOp>(
-        op, op.getType(), newSlice, new_lhs, new_rhs, d);
+    rewriter.replaceOpWithNewOp<enzymexla::ExtendOp>(op, op.getType(), newSlice,
+                                                     new_lhs, new_rhs, d);
 
     return success();
   }
 };
-
 
 struct SliceExtend final
     : CheckedOpRewritePattern<enzymexla::ExtendOp, SliceExtend> {
