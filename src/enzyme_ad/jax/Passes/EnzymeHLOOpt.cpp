@@ -22107,6 +22107,9 @@ struct SelfElementwiseToConvolutionLike
     {
       // Try to see if the parent op is a rotate
       bool matched = false;
+      flipped = false;
+      windowDilation = -1;
+      dimension = -1;
       Value operand;
 
       // TODO: generalize the pattern. We can deal with both branches being a
@@ -22140,11 +22143,11 @@ struct SelfElementwiseToConvolutionLike
     }
 
     if (!newBaseOp) {
-      // TODO: generalize to match when we have padding on both sides as well
-      // try to match pad
+      // match pads to convolutions. see pad_to_convlike.mlir
       auto lhsPadOp = lhsInfo.base.template getDefiningOp<stablehlo::PadOp>();
       auto rhsPadOp = rhsInfo.base.template getDefiningOp<stablehlo::PadOp>();
       bool matched = false;
+      flipped = false;
       windowDilation = -1;
       dimension = -1;
 
@@ -22211,6 +22214,66 @@ struct SelfElementwiseToConvolutionLike
       }
     }
 
+    if (!newBaseOp) {
+      // matching slice to convolution. see slice_to_convlike.mlir for example
+      auto lhsSliceOp =
+          lhsInfo.base.template getDefiningOp<stablehlo::SliceOp>();
+      auto rhsSliceOp =
+          rhsInfo.base.template getDefiningOp<stablehlo::SliceOp>();
+      SmallVector<int64_t> newSliceStarts(outRank, -1),
+          newSliceLimits(outRank, -1), newSliceStrides(outRank, 1);
+      bool matched = false;
+      flipped = false;
+      windowDilation = -1;
+      dimension = -1;
+
+      if (lhsSliceOp && rhsSliceOp &&
+          lhsSliceOp.getOperand() == rhsSliceOp.getOperand()) {
+        auto lhsSliceStarts = lhsSliceOp.getStartIndices();
+        auto lhsSliceLimits = lhsSliceOp.getLimitIndices();
+
+        auto rhsSliceStarts = rhsSliceOp.getStartIndices();
+        auto rhsSliceLimits = rhsSliceOp.getLimitIndices();
+
+        // for now we don't support strided slices
+        if (llvm::all_of(lhsSliceOp.getStrides(),
+                         [](int64_t i) { return i == 1; }) &&
+            llvm::all_of(rhsSliceOp.getStrides(),
+                         [](int64_t i) { return i == 1; })) {
+          for (int i = 0; i < outRank; ++i) {
+            if (lhsSliceStarts[i] == rhsSliceStarts[i] &&
+                lhsSliceLimits[i] == rhsSliceLimits[i]) {
+              newSliceStarts[i] = lhsSliceStarts[i];
+              newSliceLimits[i] = lhsSliceLimits[i];
+            } else if (matched) {
+              // If we have already matched, we can't match anymore.
+              matched = false;
+              break;
+            } else {
+              if (lhsSliceStarts[i] > rhsSliceStarts[i]) {
+                windowDilation = lhsSliceStarts[i] - rhsSliceStarts[i];
+                flipped = true;
+              } else {
+                windowDilation = rhsSliceStarts[i] - lhsSliceStarts[i];
+              }
+              dimension = i;
+              newSliceStarts[i] =
+                  std::min(lhsSliceStarts[i], rhsSliceStarts[i]);
+              newSliceLimits[i] =
+                  std::max(lhsSliceLimits[i], rhsSliceLimits[i]);
+              matched = true;
+            }
+          }
+        }
+      }
+
+      if (matched) {
+        newBaseOp = rewriter.create<stablehlo::SliceOp>(
+            op.getLoc(), lhsSliceOp.getOperand(), newSliceStarts,
+            newSliceLimits, newSliceStrides);
+      }
+    }
+
     if (!newBaseOp || windowDilation < 0 || dimension < 0)
       return rewriter.notifyMatchFailure(
           op, "None of the parent op conditions match.");
@@ -22230,14 +22293,17 @@ struct SelfElementwiseToConvolutionLike
 
       auto scalarType = RankedTensorType::get({}, outType.getElementType());
       auto initVal = rewriter.create<stablehlo::ConstantOp>(
-          op.getLoc(), scalarType, cast<ElementsAttr>(makeAttr(scalarType, initScalar)));
+          op.getLoc(), scalarType,
+          cast<ElementsAttr>(makeAttr(scalarType, initScalar)));
 
       auto reduceWindowOp =
           rewriter.replaceOpWithNewOp<stablehlo::ReduceWindowOp>(
               op, TypeRange(outType), ValueRange(newBaseOp->getResult(0)),
               ValueRange(initVal), rewriter.getDenseI64ArrayAttr(windowDims),
               DenseI64ArrayAttr(), DenseI64ArrayAttr(),
-              rewriter.getDenseI64ArrayAttr(windowDilations),
+              llvm::all_of(windowDilations, [](int64_t i) { return i == 1; })
+                  ? DenseI64ArrayAttr()
+                  : rewriter.getDenseI64ArrayAttr(windowDilations),
               DenseIntElementsAttr());
 
       {
@@ -22282,41 +22348,55 @@ struct SelfElementwiseToConvolutionLike
     SmallVector<int64_t> filterShape(outRank + 2, 1);
 
     // filter value
-    Value firstElement, secondElement;
+    Value firstElement, secondElement, lhsElement, rhsElement;
 
     if (lhsInfo.constantAttr.has_value()) {
-      firstElement = rewriter.create<stablehlo::ConstantOp>(
+      lhsElement = rewriter.create<stablehlo::ConstantOp>(
           loc, RankedTensorType::get({}, outType.getElementType()),
           lhsInfo.constantAttr.value());
     } else if (lhsInfo.constantScalar.has_value()) {
-      firstElement = lhsInfo.constantScalar.value();
+      lhsElement = lhsInfo.constantScalar.value();
     } else {
-      firstElement = rewriter.create<stablehlo::ConstantOp>(
+      lhsElement = rewriter.create<stablehlo::ConstantOp>(
           loc, RankedTensorType::get({}, outType.getElementType()),
           cast<ElementsAttr>(makeAttr(
               RankedTensorType::get({}, outType.getElementType()), 1)));
     }
 
     if (rhsInfo.constantAttr.has_value()) {
-      secondElement = rewriter.create<stablehlo::ConstantOp>(
+      rhsElement = rewriter.create<stablehlo::ConstantOp>(
           loc, RankedTensorType::get({}, outType.getElementType()),
           rhsInfo.constantAttr.value());
     } else if (rhsInfo.constantScalar.has_value()) {
-      secondElement = rhsInfo.constantScalar.value();
+      rhsElement = rhsInfo.constantScalar.value();
     } else {
-      secondElement = rewriter.create<stablehlo::ConstantOp>(
+      rhsElement = rewriter.create<stablehlo::ConstantOp>(
           loc, RankedTensorType::get({}, outType.getElementType()),
           cast<ElementsAttr>(makeAttr(
               RankedTensorType::get({}, outType.getElementType()), 1)));
     }
 
+
+    llvm::dbgs() << "--------------------\n";
+    llvm::dbgs() << "lhsElement: " << lhsElement << "\n";
+    llvm::dbgs() << "rhsElement: " << rhsElement << "\n";
+
     if constexpr (std::is_base_of_v<stablehlo::SubtractOp, OpTy>) {
-      if (flipped) {
-        secondElement = rewriter.create<stablehlo::NegOp>(loc, secondElement);
-      } else {
-        firstElement = rewriter.create<stablehlo::NegOp>(loc, firstElement);
-      }
+      // todo: verify
+      rhsElement = rewriter.create<stablehlo::NegOp>(loc, rhsElement);
     }
+
+    if (flipped) {
+      firstElement = rhsElement;
+      secondElement = lhsElement;
+    } else {
+      firstElement = lhsElement;
+      secondElement = rhsElement;
+    }
+
+    llvm::dbgs() << "firstElement: " << firstElement << "\n";
+    llvm::dbgs() << "secondElement: " << secondElement << "\n";
+    llvm::dbgs() << "--------------------\n";
 
     firstElement = rewriter.create<stablehlo::ReshapeOp>(
         loc, RankedTensorType::get(filterShape, outType.getElementType()),
@@ -22341,12 +22421,16 @@ struct SelfElementwiseToConvolutionLike
         /*output_feature_dimension=*/1,
         /*output_spatial_dimensions=*/spatialDims);
 
+    // we do the additional checks here for pretty printing
     auto conv = rewriter.create<stablehlo::ConvolutionOp>(
         loc, convOutType, convLhs, filter,
         /*window_strides=*/nullptr,
         /*padding=*/nullptr,
         /*lhs_dilation=*/nullptr,
-        /*rhs_dilation=*/rewriter.getDenseI64ArrayAttr(windowDilations),
+        /*rhs_dilation=*/
+        llvm::all_of(windowDilations, [](int64_t i) { return i == 1; })
+            ? nullptr
+            : rewriter.getDenseI64ArrayAttr(windowDilations),
         /*window_reversal=*/nullptr,
         /*conv_dimension_numbers=*/convDims,
         /*feature_group_count=*/rewriter.getI64IntegerAttr(1),
