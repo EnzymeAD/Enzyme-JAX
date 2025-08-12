@@ -2759,9 +2759,9 @@ struct AffineToStableHLORaisingPass
 
       {
         OpBuilder builder(g);
-        builder.create<enzymexla::XLAWrapperOp>(g->getLoc(),
-                                                SymbolRefAttr::get(newFunc),
-                                                llvm::to_vector(operands));
+        builder.create<enzymexla::XLAWrapperOp>(
+            g->getLoc(), SymbolRefAttr::get(newFunc), llvm::to_vector(operands),
+            nullptr, nullptr);
         g->erase();
         anyRaised = true;
       }

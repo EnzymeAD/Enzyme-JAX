@@ -45,6 +45,16 @@
 #include "mlir-c/Support.h"
 #include "mlir/Bindings/Python/PybindAdaptors.h"
 #include "mlir/CAPI/IR.h"
+#include "mlir/Conversion/Passes.h"
+#include "mlir/Dialect/Arith/Transforms/Passes.h"
+#include "mlir/Dialect/Async/Passes.h"
+#include "mlir/Dialect/Bufferization/Pipelines/Passes.h"
+#include "mlir/Dialect/Bufferization/Transforms/Passes.h"
+#include "mlir/Dialect/MemRef/Transforms/Passes.h"
+#include "mlir/Dialect/Shape/Transforms/Passes.h"
+
+#include "mlir/Dialect/Linalg/Passes.h"
+
 #include "mlir/InitAllPasses.h"
 #include "xla/mlir_hlo/deallocation/transforms/passes.h"
 #include "xla/mlir_hlo/mhlo/transforms/passes.h"

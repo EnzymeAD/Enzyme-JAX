@@ -285,6 +285,10 @@ def ApplyPadReduceWindowPatterns : EnzymeHLOPatternOp<
     "pad_reduce_window"> {
   let patterns = ["PadReduceWindow"];
 }
+def ApplyConvolutionPadPatterns : EnzymeHLOPatternOp<
+    "convolution_pad"> {
+  let patterns = ["ConvolutionPad"];
+}
 def ReshapeEmptyBroadcastPatterns : EnzymeHLOPatternOp<
     "reshape_empty_broadcast"> {
   let patterns = ["ReshapeEmptyBroadcast"];
