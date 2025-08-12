@@ -53,8 +53,8 @@ jobs:
           - 'main'
           # - '0123456789abcdef0123456789abcdef01234567'
         reactant_commit:
-          - 'ap/persistent_compile_cache'
-          # - "ap/updated_no_nan"
+          # - 'main'
+          - "ap/updated_no_nan"
 
     steps:
       - name: Check GPUs
