@@ -22009,6 +22009,49 @@ struct ElementwiseExtend
   }
 };
 
+struct SubtractMultiplyConstToAddMulConst
+    : public CheckedOpRewritePattern<stablehlo::SubtractOp,
+                                     SubtractMultiplyConstToAddMulConst> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SubtractOp op,
+                                    PatternRewriter &rewriter) const {
+    auto rhsMulOp = op.getRhs().getDefiningOp<stablehlo::MulOp>();
+    if (!rhsMulOp)
+      return failure();
+
+    DenseElementsAttr rhsMulLhsConstant, rhsMulRhsConstant;
+    bool isRhsMulLhsConstant =
+        matchPattern(rhsMulOp.getLhs(), m_Constant(&rhsMulLhsConstant));
+    bool isRhsMulRhsConstant =
+        matchPattern(rhsMulOp.getRhs(), m_Constant(&rhsMulRhsConstant));
+
+    if (isRhsMulLhsConstant && isRhsMulRhsConstant) {
+      return failure(); // constant prop will handle this
+    }
+
+    if (isRhsMulLhsConstant) {
+      rewriter.replaceOpWithNewOp<stablehlo::AddOp>(
+          op, op.getLhs(),
+          rewriter.create<stablehlo::MulOp>(
+              op.getLoc(),
+              rewriter.create<stablehlo::NegOp>(op.getLoc(), rhsMulOp.getLhs()),
+              rhsMulOp.getRhs()));
+      return success();
+    } else if (isRhsMulRhsConstant) {
+      rewriter.replaceOpWithNewOp<stablehlo::AddOp>(
+          op, op.getLhs(),
+          rewriter.create<stablehlo::MulOp>(
+              op.getLoc(), rhsMulOp.getLhs(),
+              rewriter.create<stablehlo::NegOp>(op.getLoc(),
+                                                rhsMulOp.getRhs())));
+      return success();
+    }
+
+    return failure();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -22585,7 +22628,8 @@ struct EnzymeHLOOptPass
         ConcatenateBroadcastInDim,
         ElementwiseRotate,
         ElementwiseWrap,
-        ElementwiseExtend
+        ElementwiseExtend,
+        SubtractMultiplyConstToAddMulConst
       >(context);
 
     patterns.add<SumToReduceWindow<stablehlo::AddOp>,
