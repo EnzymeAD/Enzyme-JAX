@@ -2231,14 +2231,44 @@ def ApplySubtractMultiplyConstToAddMulConstPatterns : EnzymeHLOPatternOp<"subtra
   let patterns = ["SubtractMultiplyConstToAddMulConst"];
 }
 
-def ApplySelfSubtractToConvolutionLikePatterns : EnzymeHLOPatternOp<"self_subtract_to_convolution_like"> {
-  let patterns = ["SelfElementwiseToConvolutionLike<stablehlo::SubtractOp>"];
+def ApplySelfSubtractToConvolutionLikePatterns : EnzymeHLOParameterizedPatternOp<"self_subtract_to_convolution_like"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
 }
 
-def ApplySelfAddToConvolutionLikePatterns : EnzymeHLOPatternOp<"self_add_to_convolution_like"> {
-  let patterns = ["SelfElementwiseToConvolutionLike<stablehlo::AddOp>"];
+def ApplySelfAddToConvolutionLikePatterns : EnzymeHLOParameterizedPatternOp<"self_add_to_convolution_like"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
 }
 
-def ApplySelfMulToConvolutionLikePatterns : EnzymeHLOPatternOp<"self_mul_to_convolution_like"> {
-  let patterns = ["SelfElementwiseToConvolutionLike<stablehlo::MulOp>"];
+def ApplySelfMulToConvolutionLikePatterns : EnzymeHLOParameterizedPatternOp<"self_mul_to_convolution_like"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
 }
