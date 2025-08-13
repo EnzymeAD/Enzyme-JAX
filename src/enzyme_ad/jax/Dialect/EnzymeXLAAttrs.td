@@ -52,6 +52,23 @@ def EnzymeXLA_LapackSideAttr : EnumAttr<EnzymeXLA_Dialect,
   let assemblyFormat = "`<` $value `>`";
 }
 
+def EnzymeXLA_LapackJob : I32EnumAttr<"Job",
+    "Job to perform in the SVD factorization",
+    [
+      I32EnumAttrCase<"none", 0>,
+      I32EnumAttrCase<"all", 1>,
+      I32EnumAttrCase<"overwrite", 2>,
+      I32EnumAttrCase<"some", 3>
+    ]> {
+  let genSpecializedAttr = 0;
+  let cppNamespace = "::mlir::enzymexla";
+}
+
+def EnzymeXLA_LapackJobAttr : EnumAttr<EnzymeXLA_Dialect,
+    EnzymeXLA_LapackJob, "job"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
 def EnzymeXLA_QrAlgorithm : I32EnumAttr<"QrAlgorithm",
     "Algorithm to use for the QR factorization",
     [
