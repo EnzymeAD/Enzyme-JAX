@@ -1,4 +1,4 @@
-JAX_COMMIT = "593f07f94b570309b1be1193e12e3f98e1b89ef1"
+JAX_COMMIT = "26f0d12968135c45cfcbf270aea9bd6183add14f"
 JAX_SHA256 = ""
 
 ENZYME_COMMIT = "375a6412d2d35144124da59587279631030e18ae"
@@ -12,6 +12,9 @@ HEDRON_COMPILE_COMMANDS_COMMIT = "4f28899228fb3ad0126897876f147ca15026151e"
 HEDRON_COMPILE_COMMANDS_SHA256 = ""
 
 XLA_PATCHES = [
+    """
+    sed -i.bak0 "s/e07debd5e257ec1e118f18c54068977b89f03b2f/9018c682b99eb20d5874a4e38271ce63d7393879/g" third_party/stablehlo/workspace.bzl
+    """,
     """
     sed -i.bak0 "s/\\/\\/third_party:repo.bzl/@bazel_tools\\/\\/tools\\/build_defs\\/repo:http.bzl/g" third_party/llvm/workspace.bzl
     """,

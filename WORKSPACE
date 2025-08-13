@@ -39,7 +39,7 @@ jax_workspace()
 
 load("//third_party/xla:workspace.bzl", xla_workspace = "repo")
 
-xla_workspace()
+xla_workspace([], "a886954aa588d4deea8991f614dc27575553a7e8")
 
 load("@xla//:workspace4.bzl", "xla_workspace4")
 
