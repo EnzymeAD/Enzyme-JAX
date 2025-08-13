@@ -22056,8 +22056,14 @@ template <typename OpTy>
 struct SelfElementwiseToConvolutionLike
     : public CheckedOpRewritePattern<OpTy,
                                      SelfElementwiseToConvolutionLike<OpTy>> {
-  using CheckedOpRewritePattern<
-      OpTy, SelfElementwiseToConvolutionLike<OpTy>>::CheckedOpRewritePattern;
+  using Base =
+      CheckedOpRewritePattern<OpTy, SelfElementwiseToConvolutionLike<OpTy>>;
+  using Base::Base;
+
+  SelfElementwiseToConvolutionLike<OpTy>(bool allowEmitConvolution,
+                                         MLIRContext *ctx,
+                                         PatternBenefit benefit = 1)
+      : Base(ctx, benefit), allowEmitConvolution(allowEmitConvolution) {}
 
   LogicalResult matchAndRewriteImpl(OpTy op, PatternRewriter &rewriter) const {
     if (op->getNumOperands() != 2)
@@ -22097,6 +22103,11 @@ struct SelfElementwiseToConvolutionLike
       if constexpr (std::is_base_of_v<stablehlo::MulOp, OpTy>) {
         return rewriter.notifyMatchFailure(
             op, "MulOp is only supported if we can emit a reduce window.");
+      }
+
+      if (allowEmitConvolution) {
+        return rewriter.notifyMatchFailure(
+            op, "Emitting Convolution is not Allowed.");
       }
     }
 
@@ -22377,7 +22388,6 @@ struct SelfElementwiseToConvolutionLike
     }
 
     if constexpr (std::is_base_of_v<stablehlo::SubtractOp, OpTy>) {
-      // todo: verify
       rhsElement = rewriter.create<stablehlo::NegOp>(loc, rhsElement);
     }
 
@@ -22483,6 +22493,8 @@ private:
     }
     return {val, std::nullopt};
   }
+
+  bool allowEmitConvolution;
 };
 
 ///////////////  End Imported from stablehlo
@@ -22647,6 +22659,29 @@ void mlir::transform::addNoNanZeroBasePowSimplify(RewritePatternSet &patterns,
                                                   PatternBenefit benefit) {
   patterns.insert<NoNanZeroBasePowSimplify>(allowOnFloatingPointMath, &context,
                                             benefit);
+}
+
+void mlir::transform::addSelfSubtractToConvolutionLike(
+    RewritePatternSet &patterns, bool allowEmitConvolution,
+    MLIRContext &context, PatternBenefit benefit) {
+  patterns.insert<SelfElementwiseToConvolutionLike<stablehlo::SubtractOp>>(
+      allowEmitConvolution, &context, benefit);
+}
+
+void mlir::transform::addSelfAddToConvolutionLike(RewritePatternSet &patterns,
+                                                  bool allowEmitConvolution,
+                                                  MLIRContext &context,
+                                                  PatternBenefit benefit) {
+  patterns.insert<SelfElementwiseToConvolutionLike<stablehlo::AddOp>>(
+      allowEmitConvolution, &context, benefit);
+}
+
+void mlir::transform::addSelfMulToConvolutionLike(RewritePatternSet &patterns,
+                                                  bool allowEmitConvolution,
+                                                  MLIRContext &context,
+                                                  PatternBenefit benefit) {
+  patterns.insert<SelfElementwiseToConvolutionLike<stablehlo::MulOp>>(
+      allowEmitConvolution, &context, benefit);
 }
 
 void mlir::transform::addBroadcastInDimSimplify(RewritePatternSet &patterns,
@@ -23062,11 +23097,14 @@ struct EnzymeHLOOptPass
         ElementwiseRotate,
         ElementwiseWrap,
         ElementwiseExtend,
-        SubtractMultiplyConstToAddMulConst,
+        SubtractMultiplyConstToAddMulConst
+      >(context);
+
+    patterns.add<
         SelfElementwiseToConvolutionLike<stablehlo::SubtractOp>,
         SelfElementwiseToConvolutionLike<stablehlo::AddOp>,
         SelfElementwiseToConvolutionLike<stablehlo::MulOp>
-      >(context);
+      >(enable_convert_to_convolution, context);
 
     patterns.add<SumToReduceWindow<stablehlo::AddOp>,
     SumToReduceWindow<stablehlo::SubtractOp>>(context);
