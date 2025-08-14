@@ -4,6 +4,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "src/enzyme_ad/jax/Passes/LinalgUtils.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/StablehloOps.h"
@@ -27,71 +28,6 @@ namespace enzyme {
 
 using namespace mlir;
 using namespace mlir::enzyme;
-
-// https://github.com/jax-ml/jax/blob/48001a24cb74f311b51d8bcf0891437069db6b95/jax/_src/lax/linalg.py#L2792
-SmallVector<int64_t> columnMajorMatrixLayout(int64_t ndim) {
-  SmallVector<int64_t> layout = {ndim - 2, ndim - 1};
-  for (int64_t i = ndim - 3; i >= 0; i--) {
-    layout.push_back(i);
-  }
-  return layout;
-}
-
-SmallVector<int64_t> rowMajorMatrixLayout(int64_t ndim) {
-  SmallVector<int64_t> layout;
-  for (int64_t i = ndim - 1; i >= 0; i--) {
-    layout.push_back(i);
-  }
-  return layout;
-}
-
-mlir::Attribute getSHLOLayout(PatternRewriter &rewriter, int64_t ndim,
-                              bool isColMajor, int64_t maxNumDims) {
-  if (isColMajor && ndim == maxNumDims) {
-    return rewriter.getIndexTensorAttr(columnMajorMatrixLayout(ndim));
-  }
-  return rewriter.getIndexTensorAttr(rowMajorMatrixLayout(ndim));
-}
-
-mlir::ArrayAttr getSHLOLayout(PatternRewriter &rewriter,
-                              SmallVector<int64_t> ndims,
-                              SmallVector<bool> isColMajorArr,
-                              int64_t maxNumDims) {
-  SmallVector<mlir::Attribute> attrs;
-  for (auto [ndim, isColMajor] : llvm::zip(ndims, isColMajorArr)) {
-    attrs.push_back(getSHLOLayout(rewriter, ndim, isColMajor, maxNumDims));
-  }
-  return rewriter.getArrayAttr(attrs);
-}
-
-std::optional<std::string> lapack_precision_prefix(Type elementType) {
-
-  // single-precision float
-  if (elementType.isF32()) {
-    return "s";
-
-    // double-precision float
-  } else if (elementType.isF64()) {
-    return "d";
-
-  } else if (auto complexType = dyn_cast<ComplexType>(elementType)) {
-    auto elem = complexType.getElementType();
-
-    // single-precision complex
-    if (elem.isF32()) {
-      return "c";
-
-      // double-precision complex
-    } else if (elem.isF64()) {
-      return "z";
-
-    } else {
-      return std::nullopt;
-    }
-  } else {
-    return std::nullopt;
-  }
-}
 
 struct LUFactorizationOpLowering
     : public OpRewritePattern<enzymexla::LUFactorizationOp> {
@@ -339,6 +275,8 @@ struct LUFactorizationOpLowering
               rewriter.getStringAttr(""),
               /*operand_layouts=*/operandLayouts,
               /*result_layouts=*/resultLayouts,
+              /*arg_attrs=*/nullptr,
+              /*res_attrs=*/nullptr,
               /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
               /*xla_side_effect_free=*/rewriter.getUnitAttr());
 
@@ -394,6 +332,8 @@ struct LUFactorizationOpLowering
             ValueRange{input, pivot, info}, rewriter.getStringAttr(""),
             /*operand_layouts=*/operandLayouts,
             /*result_layouts=*/resultLayouts,
+            /*arg_attrs=*/nullptr,
+            /*res_attrs=*/nullptr,
             /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
             /*xla_side_effect_free=*/rewriter.getUnitAttr());
 
@@ -748,278 +688,6 @@ struct LUFactorizationOpLowering
   }
 };
 
-struct QRFactorizationOpLowering
-    : public OpRewritePattern<enzymexla::QRFactorizationOp> {
-  std::string backend;
-  int64_t blasIntWidth;
-
-  QRFactorizationOpLowering(std::string backend, int64_t blasIntWidth,
-                            MLIRContext *context, PatternBenefit benefit = 1)
-      : OpRewritePattern(context, benefit), backend(backend),
-        blasIntWidth(blasIntWidth) {}
-
-  LogicalResult matchAndRewrite(enzymexla::QRFactorizationOp op,
-                                PatternRewriter &rewriter) const override {
-    if (backend == "cpu")
-      return this->matchAndRewrite_cpu(op, rewriter);
-
-    else if (backend == "cuda")
-      return this->matchAndRewrite_cuda(op, rewriter);
-
-    else if (backend == "tpu")
-      return this->matchAndRewrite_tpu(op, rewriter);
-
-    else
-      return rewriter.notifyMatchFailure(op, "Unknown backend: \"" + backend +
-                                                 "\"");
-  }
-
-  // TODO get matrix sizes dynamically so that we don't need to create a
-  // function wrapper for each op instance
-  LogicalResult matchAndRewrite_cpu(enzymexla::QRFactorizationOp op,
-                                    PatternRewriter &rewriter) const {
-    auto ctx = op->getContext();
-    LLVMTypeConverter typeConverter(ctx);
-
-    auto input = op.getOperand();
-    auto inputType = cast<RankedTensorType>(input.getType());
-    auto inputShape = inputType.getShape();
-    auto inputRank = static_cast<int64_t>(inputShape.size());
-    auto inputElementType = inputType.getElementType();
-
-    const int64_t numBatchDims = inputRank - 2;
-
-    if (numBatchDims > 0) {
-      return rewriter.notifyMatchFailure(
-          op, "QR factorization with batch dimensions is not yet supported");
-    }
-
-    auto type_lapack_int = rewriter.getIntegerType(blasIntWidth);
-    auto type_llvm_lapack_int = typeConverter.convertType(type_lapack_int);
-    auto type_llvm_ptr = LLVM::LLVMPointerType::get(ctx);
-    auto type_llvm_void = LLVM::LLVMVoidType::get(ctx);
-
-    // TODO change QR method with attributes
-    std::string fn = "geqrf_";
-    if (auto prefix = lapack_precision_prefix(inputElementType)) {
-      fn = *prefix + fn;
-    } else {
-      op->emitOpError() << "Unsupported complex element type: "
-                        << inputElementType;
-      return rewriter.notifyMatchFailure(op,
-                                         "unsupported complex element type");
-    }
-
-    std::string bind_fn = "enzymexla_lapacke_" + fn;
-    std::string wrapper_fn = "enzymexla_wrapper_lapacke_" + fn;
-
-    // declare LAPACKE function declarations if not present
-    auto moduleOp = op->getParentOfType<ModuleOp>();
-
-    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(bind_fn)) {
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPointToStart(moduleOp.getBody());
-      auto func_type =
-          LLVM::LLVMFunctionType::get(type_llvm_lapack_int,
-                                      {
-                                          type_llvm_lapack_int, // matrix_layout
-                                          type_llvm_lapack_int, // m
-                                          type_llvm_lapack_int, // n
-                                          type_llvm_ptr,        // A
-                                          type_llvm_lapack_int, // lda
-                                          type_llvm_ptr         // tau
-                                      },
-                                      false);
-      rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), bind_fn, func_type,
-                                        LLVM::Linkage::External);
-    }
-
-    // WARN probably will need another function name encoding if we call to
-    // `geqrf`, `orgqr` or `ungqr` in other op insert wrapper function for
-    // `geqrf`
-    static int64_t fn_counter = 0;
-    fn_counter++;
-
-    wrapper_fn += std::to_string(fn_counter);
-    {
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPointToStart(moduleOp.getBody());
-
-      auto func_type = LLVM::LLVMFunctionType::get(type_llvm_void,
-                                                   {
-                                                       type_llvm_ptr, // A
-                                                       type_llvm_ptr, // tau
-                                                       type_llvm_ptr, // info
-                                                   },
-                                                   false);
-
-      auto func =
-          rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), wrapper_fn, func_type);
-      rewriter.setInsertionPointToStart(func.addEntryBlock(rewriter));
-
-      // `101` for row-major, `102` for col-major
-      auto layout = rewriter.create<LLVM::ConstantOp>(
-          op.getLoc(), type_llvm_lapack_int,
-          rewriter.getIntegerAttr(type_lapack_int, 101));
-      auto m = rewriter.create<LLVM::ConstantOp>(
-          op.getLoc(), type_llvm_lapack_int,
-          rewriter.getIntegerAttr(type_lapack_int, inputShape[0]));
-      auto n = rewriter.create<LLVM::ConstantOp>(
-          op.getLoc(), type_llvm_lapack_int,
-          rewriter.getIntegerAttr(type_lapack_int, inputShape[1]));
-      auto lda = m;
-
-      // call to `lapacke_*geqrf*`
-      auto res = rewriter.create<LLVM::CallOp>(op.getLoc(),
-                                               TypeRange{type_llvm_lapack_int},
-                                               SymbolRefAttr::get(ctx, bind_fn),
-                                               ValueRange{
-                                                   layout.getResult(),
-                                                   m.getResult(),
-                                                   n.getResult(),
-                                                   func.getArgument(0),
-                                                   lda.getResult(),
-                                                   func.getArgument(1),
-                                               });
-
-      rewriter.create<LLVM::StoreOp>(op.getLoc(), res.getResult(),
-                                     func.getArgument(2));
-      rewriter.create<LLVM::ReturnOp>(op.getLoc(), ValueRange{});
-    }
-
-    // emit the `enzymexla.jit_call` op to `geqrf` wrapper
-    auto type_info = RankedTensorType::get({}, type_lapack_int);
-    auto info = rewriter.create<stablehlo::ConstantOp>(
-        op.getLoc(), type_info, cast<ElementsAttr>(makeAttr(type_info, -1)));
-
-    auto tsize = std::min(inputShape.front(), inputShape.back());
-    auto type_tau = RankedTensorType::get({tsize}, inputElementType);
-    auto tau = rewriter.create<stablehlo::ConstantOp>(
-        op.getLoc(), type_tau, cast<ElementsAttr>(makeAttr(type_tau, 0)));
-
-    SmallVector<bool> isColMajorArr = {true, true, true};
-    SmallVector<int64_t> operandRanks = {2, 1, 0};
-    SmallVector<int64_t> outputRanks = {2, 1, 0};
-    auto operandLayouts =
-        getSHLOLayout(rewriter, operandRanks, isColMajorArr, 2);
-    auto resultLayouts = getSHLOLayout(rewriter, outputRanks, isColMajorArr, 2);
-
-    SmallVector<Attribute> aliases;
-    for (int i = 0; i < 3; ++i) {
-      aliases.push_back(stablehlo::OutputOperandAliasAttr::get(
-          ctx, std::vector<int64_t>{i}, i, std::vector<int64_t>{}));
-    }
-
-    auto jit_call_op = rewriter.create<enzymexla::JITCallOp>(
-        op.getLoc(), TypeRange{inputType, type_tau, type_info},
-        mlir::FlatSymbolRefAttr::get(ctx, wrapper_fn),
-        ValueRange{input, tau.getResult(), info.getResult()},
-        rewriter.getStringAttr(""),
-        /*operand_layouts=*/operandLayouts,
-        /*result_layouts=*/resultLayouts,
-        /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
-        /*xla_side_effect_free=*/rewriter.getUnitAttr());
-
-    // replace enzymexla.linalg.qr with the jit_call
-    rewriter.replaceAllUsesWith(op.getResult(0), jit_call_op.getResult(0));
-    rewriter.replaceAllUsesWith(op.getResult(1), jit_call_op.getResult(1));
-    rewriter.replaceAllUsesWith(op.getResult(2), jit_call_op.getResult(2));
-    rewriter.eraseOp(op);
-
-    return success();
-  }
-
-  LogicalResult matchAndRewrite_cuda(enzymexla::QRFactorizationOp op,
-                                     PatternRewriter &rewriter) const {
-    auto ctx = op->getContext();
-    LLVMTypeConverter typeConverter(ctx);
-
-    auto input = op.getOperand();
-    auto type_input = cast<RankedTensorType>(input.getType());
-    auto shape_input = type_input.getShape();
-    auto rank_input = static_cast<int64_t>(shape_input.size());
-
-    auto type_tau = cast<RankedTensorType>(op.getResult(1).getType());
-    auto rank_tau = type_tau.getRank();
-
-    // emit `stablehlo.custom_call` to `@cusolver_geqrf_ffi` kernel from jaxlib
-    SmallVector<Attribute> aliases = {stablehlo::OutputOperandAliasAttr::get(
-        ctx, std::vector<int64_t>{0}, 0, std::vector<int64_t>{})};
-    SmallVector<int64_t> ranks_operands = {rank_input};
-    SmallVector<int64_t> ranks_results = {rank_input, rank_tau};
-    SmallVector<bool> isColMajorArrOperands = {true};
-    SmallVector<bool> isColMajorArrOutputs = {true, true};
-
-    auto cusolver_call_op = rewriter.create<stablehlo::CustomCallOp>(
-        op.getLoc(), TypeRange{type_input, type_tau}, ValueRange{input},
-        rewriter.getStringAttr("cusolver_geqrf_ffi"),
-        /*has_side_effect*/ nullptr,
-        /*backend_config*/ nullptr,
-        /*api_version*/
-        stablehlo::CustomCallApiVersionAttr::get(
-            rewriter.getContext(),
-            mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
-        /*calledcomputations*/ nullptr,
-        /*operand_layouts*/
-        getSHLOLayout(rewriter, ranks_operands, isColMajorArrOperands,
-                      rank_input),
-        /*result_layouts*/
-        getSHLOLayout(rewriter, ranks_results, isColMajorArrOutputs,
-                      rank_input),
-        /*output_operand_aliases*/ rewriter.getArrayAttr(aliases));
-
-    rewriter.replaceAllUsesWith(op.getResult(0), cusolver_call_op.getResult(0));
-    rewriter.replaceAllUsesWith(op.getResult(1), cusolver_call_op.getResult(1));
-
-    // Netlib's LAPACK returns `info`, but cuSOLVER doesn't
-    // TODO what does JAX do?
-    auto type_info =
-        RankedTensorType::get({}, rewriter.getIntegerType(blasIntWidth));
-    auto info_op = rewriter.create<stablehlo::ConstantOp>(
-        op.getLoc(), type_info, cast<ElementsAttr>(makeAttr(type_info, 0)));
-    rewriter.replaceAllUsesWith(op.getResult(2), info_op.getResult());
-
-    rewriter.eraseOp(op);
-
-    return success();
-  }
-
-  LogicalResult matchAndRewrite_tpu(enzymexla::QRFactorizationOp op,
-                                    PatternRewriter &rewriter) const {
-    auto ctx = op->getContext();
-    LLVMTypeConverter typeConverter(ctx);
-
-    auto input = op.getOperand();
-    auto type_input = cast<RankedTensorType>(input.getType());
-
-    // emit `stablehlo.custom_call` to `@Qr` kernel from XLA
-    auto type_tau = cast<RankedTensorType>(op.getResult(1).getType());
-
-    auto custom_call_op = rewriter.create<stablehlo::CustomCallOp>(
-        op.getLoc(), TypeRange{type_input, type_tau}, ValueRange{input},
-        rewriter.getStringAttr("Qr"),
-        /*has_side_effect*/ nullptr,
-        /*backend_config*/ nullptr,
-        /*api_version*/ nullptr,
-        /*calledcomputations*/ nullptr,
-        /*operand_layouts*/ nullptr,
-        /*result_layouts*/ nullptr,
-        /*output_operand_aliases*/ nullptr);
-
-    rewriter.replaceAllUsesWith(op.getResult(0), custom_call_op.getResult(0));
-    rewriter.replaceAllUsesWith(op.getResult(1), custom_call_op.getResult(1));
-
-    // Netlib's LAPACK returns `info`, but TPU kernel doesn't
-    auto type_info =
-        RankedTensorType::get({}, rewriter.getIntegerType(blasIntWidth));
-    auto info_op = rewriter.create<stablehlo::ConstantOp>(
-        op.getLoc(), type_info, cast<ElementsAttr>(makeAttr(type_info, 0)));
-    rewriter.replaceAllUsesWith(op.getResult(2), info_op.getResult());
-
-    return success();
-  }
-};
-
 struct SVDFactorizationOpLowering
     : public OpRewritePattern<enzymexla::SVDFactorizationOp> {
   std::string backend;
@@ -1245,6 +913,8 @@ struct SVDFactorizationOpLowering
         rewriter.getStringAttr(""),
         /*operand_layouts=*/operandLayouts,
         /*result_layouts=*/resultLayouts,
+        /*arg_attrs=*/nullptr,
+        /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
         /*xla_side_effect_free=*/rewriter.getUnitAttr());
 
@@ -1392,7 +1062,6 @@ struct LowerEnzymeXLALinalgPass
     RewritePatternSet patterns(context);
 
     patterns.add<LUFactorizationOpLowering>(backend, blasIntWidth, context);
-    patterns.add<QRFactorizationOpLowering>(backend, blasIntWidth, context);
     patterns.add<SVDFactorizationOpLowering>(backend, blasIntWidth, context);
 
     GreedyRewriteConfig config;

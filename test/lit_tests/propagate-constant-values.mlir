@@ -231,11 +231,9 @@ module {
     %0 = llvm.mlir.constant(1 : i32) : i32
     %1 = llvm.mlir.addressof @mlir.llvm.nameless_global_0 : !llvm.ptr
     %2 = llvm.alloca %0 x !llvm.struct<"printf_args.0", (i64)> {alignment = 8 : i64} : (i32) -> !llvm.ptr
-    llvm.intr.lifetime.start 8, %2 : !llvm.ptr
     %3 = llvm.getelementptr inbounds %2[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"printf_args.0", (i64)>
     llvm.store %arg0, %3 {alignment = 8 : i64} : i64, !llvm.ptr
     %4 = llvm.call @vprintf(%1, %2) : (!llvm.ptr, !llvm.ptr) -> i32
-    llvm.intr.lifetime.end 8, %2 : !llvm.ptr
     llvm.return
   }
   llvm.func local_unnamed_addr @jl_float64_type() -> !llvm.ptr attributes {sym_visibility = "private"}

@@ -383,6 +383,21 @@ struct CheckedOpTraitRewritePattern : public OpTraitRewritePattern<TraitType> {
   bool supportsDynamicShapes() { return false; }
 };
 
+template <typename OpTy, typename Child>
+struct NoNanCheckedOpRewritePattern
+    : public CheckedOpRewritePattern<OpTy, Child> {
+  using Base = CheckedOpRewritePattern<OpTy, Child>;
+  using Base::Base;
+
+  NoNanCheckedOpRewritePattern(bool allowOnFloatingPointMath, MLIRContext *ctx,
+                               PatternBenefit benefit = 1)
+      : Base(ctx, benefit), allowOnFloatingPointMath(allowOnFloatingPointMath) {
+  }
+
+protected:
+  bool allowOnFloatingPointMath;
+};
+
 struct NoopSlice final
     : CheckedOpRewritePattern<stablehlo::SliceOp, NoopSlice> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -6329,18 +6344,21 @@ struct SubSimplify
 };
 
 struct NoNanSelfSubSimplify
-    : public CheckedOpRewritePattern<stablehlo::SubtractOp,
-                                     NoNanSelfSubSimplify> {
-  using CheckedOpRewritePattern<stablehlo::SubtractOp,
-                                NoNanSelfSubSimplify>::CheckedOpRewritePattern;
+    : public NoNanCheckedOpRewritePattern<stablehlo::SubtractOp,
+                                          NoNanSelfSubSimplify> {
+  using NoNanCheckedOpRewritePattern<
+      stablehlo::SubtractOp,
+      NoNanSelfSubSimplify>::NoNanCheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::SubtractOp op,
                                     PatternRewriter &rewriter) const {
-
     if (op.getLhs() == op.getRhs()) {
-      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-          op, rewriter.getZeroAttr(op.getType()));
-      return success();
+      if (canApplyNoNanPattern(allowOnFloatingPointMath, op.getType(),
+                               op.getLhs().getType(), op)) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            op, rewriter.getZeroAttr(op.getType()));
+        return success();
+      }
     }
 
     return failure();
@@ -6540,18 +6558,13 @@ struct DivSimplify
 };
 
 struct NoNanDivSimplify final
-    : public CheckedOpRewritePattern<stablehlo::DivOp, NoNanDivSimplify> {
-  using CheckedOpRewritePattern<stablehlo::DivOp,
-                                NoNanDivSimplify>::CheckedOpRewritePattern;
-
-  NoNanDivSimplify(bool allowOnFloatingPointMath, MLIRContext *context,
-                   PatternBenefit benefit = 1)
-      : CheckedOpRewritePattern(context, benefit),
-        allowOnFloatingPointMath(allowOnFloatingPointMath) {}
+    : public NoNanCheckedOpRewritePattern<stablehlo::DivOp, NoNanDivSimplify> {
+  using NoNanCheckedOpRewritePattern<
+      stablehlo::DivOp, NoNanDivSimplify>::NoNanCheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::DivOp op,
                                     PatternRewriter &rewriter) const {
-    if (!canApplyNoNanPattern(allowOnFloatingPointMath, op.getType()))
+    if (!canApplyNoNanPattern(allowOnFloatingPointMath, op.getType(), op))
       return failure();
 
     // 0 / x -> 0
@@ -6570,9 +6583,6 @@ struct NoNanDivSimplify final
 
     return failure();
   }
-
-private:
-  bool allowOnFloatingPointMath;
 };
 
 struct RemSimplify
@@ -6665,19 +6675,14 @@ struct PowSimplify
 };
 
 struct NoNanZeroBasePowSimplify final
-    : public CheckedOpRewritePattern<stablehlo::PowOp,
-                                     NoNanZeroBasePowSimplify> {
-  using CheckedOpRewritePattern<
-      stablehlo::PowOp, NoNanZeroBasePowSimplify>::CheckedOpRewritePattern;
-
-  NoNanZeroBasePowSimplify(bool allowOnFloatingPointMath, MLIRContext *context,
-                           PatternBenefit benefit = 1)
-      : CheckedOpRewritePattern(context, benefit),
-        allowOnFloatingPointMath(allowOnFloatingPointMath) {}
+    : public NoNanCheckedOpRewritePattern<stablehlo::PowOp,
+                                          NoNanZeroBasePowSimplify> {
+  using NoNanCheckedOpRewritePattern<
+      stablehlo::PowOp, NoNanZeroBasePowSimplify>::NoNanCheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::PowOp op,
                                     PatternRewriter &rewriter) const {
-    if (!canApplyNoNanPattern(allowOnFloatingPointMath, op.getType())) {
+    if (!canApplyNoNanPattern(allowOnFloatingPointMath, op.getType(), op)) {
       return failure();
     }
 
@@ -6715,9 +6720,6 @@ struct NoNanZeroBasePowSimplify final
 
     return failure();
   }
-
-private:
-  bool allowOnFloatingPointMath;
 };
 
 bool is_broadcastable_compare(Value operand) {
@@ -6902,6 +6904,55 @@ struct PadReduceWindow
 
     rewriter.replaceOp(op, newOp);
 
+    return success();
+  }
+};
+
+// conv(pad(x, lo, hi, 0)) -> conv(x, pad_lo=lo, pad_hi=hi)
+struct ConvolutionPad
+    : public CheckedOpRewritePattern<stablehlo::ConvolutionOp, ConvolutionPad> {
+  using CheckedOpRewritePattern<stablehlo::ConvolutionOp,
+                                ConvolutionPad>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConvolutionOp op,
+                                    PatternRewriter &rewriter) const {
+    auto padOp = op.getLhs().getDefiningOp<stablehlo::PadOp>();
+    if (!padOp || !llvm::all_of(padOp.getInteriorPadding(),
+                                [](int64_t pad) { return pad == 0; }))
+      return failure();
+
+    if (!matchPattern(padOp.getPaddingValue(), m_Zero()) &&
+        !matchPattern(padOp.getPaddingValue(), m_AnyZeroFloat()))
+      return failure();
+
+    auto paddingLow = padOp.getEdgePaddingLow();
+    auto paddingHigh = padOp.getEdgePaddingHigh();
+
+    auto convDims = op.getDimensionNumbers();
+    int64_t inputBatchDim = convDims.getInputBatchDimension();
+    int64_t inputFeatureDim = convDims.getInputFeatureDimension();
+    if (paddingLow[inputBatchDim] != 0 || paddingHigh[inputBatchDim] != 0 ||
+        paddingLow[inputFeatureDim] != 0 || paddingHigh[inputFeatureDim] != 0)
+      return failure();
+
+    auto inputSpatialDims = convDims.getInputSpatialDimensions();
+    int64_t N = paddingLow.size();
+    SmallVector<int64_t> newPaddingValues(2 * (N - 2), 0);
+    for (auto [i, dim] : llvm::enumerate(inputSpatialDims)) {
+      newPaddingValues[2 * i] = paddingLow[dim];
+      newPaddingValues[2 * i + 1] = paddingHigh[dim];
+    }
+    auto paddingType =
+        mlir::RankedTensorType::get({N - 2, 2}, rewriter.getI64Type());
+    auto newPaddingAttr =
+        mlir::DenseIntElementsAttr::get(paddingType, newPaddingValues);
+
+    rewriter.replaceOpWithNewOp<stablehlo::ConvolutionOp>(
+        op, op.getType(), padOp.getOperand(), op.getRhs(),
+        op.getWindowStridesAttr(), newPaddingAttr, op.getLhsDilationAttr(),
+        op.getRhsDilationAttr(), op.getWindowReversalAttr(), convDims,
+        op.getFeatureGroupCountAttr(), op.getBatchGroupCountAttr(),
+        op.getPrecisionConfigAttr());
     return success();
   }
 };
@@ -8096,22 +8147,27 @@ struct AllFiniteIsNegInf
   }
 };
 
-struct NoNan : public CheckedOpRewritePattern<stablehlo::CompareOp, NoNan> {
-  using CheckedOpRewritePattern<stablehlo::CompareOp,
-                                NoNan>::CheckedOpRewritePattern;
+struct NoNanCompareSimplify
+    : public NoNanCheckedOpRewritePattern<stablehlo::CompareOp,
+                                          NoNanCompareSimplify> {
+  using NoNanCheckedOpRewritePattern<
+      stablehlo::CompareOp, NoNanCompareSimplify>::NoNanCheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::CompareOp op,
                                     PatternRewriter &rewriter) const {
     if (op.getLhs() == op.getRhs()) {
-      if (op.getComparisonDirection() == stablehlo::ComparisonDirection::EQ) {
-        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-            op, op.getType(), cast<ElementsAttr>(makeAttr(op.getType(), 1)));
-        return success();
-      }
-      if (op.getComparisonDirection() == stablehlo::ComparisonDirection::NE) {
-        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-            op, op.getType(), cast<ElementsAttr>(makeAttr(op.getType(), 0)));
-        return success();
+      if (canApplyNoNanPattern(allowOnFloatingPointMath, op.getType(),
+                               op.getLhs().getType(), op)) {
+        if (op.getComparisonDirection() == stablehlo::ComparisonDirection::EQ) {
+          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+              op, op.getType(), cast<ElementsAttr>(makeAttr(op.getType(), 1)));
+          return success();
+        }
+        if (op.getComparisonDirection() == stablehlo::ComparisonDirection::NE) {
+          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+              op, op.getType(), cast<ElementsAttr>(makeAttr(op.getType(), 0)));
+          return success();
+        }
       }
     }
     return failure();
@@ -15946,20 +16002,15 @@ struct ReorderElementwiseAndShapeOp final
 };
 
 struct NoNanMulSimplify final
-    : public CheckedOpRewritePattern<stablehlo::MulOp, NoNanMulSimplify> {
-  using CheckedOpRewritePattern<stablehlo::MulOp,
-                                NoNanMulSimplify>::CheckedOpRewritePattern;
-
-  NoNanMulSimplify(bool allowOnFloatingPointMath, MLIRContext *context,
-                   PatternBenefit benefit = 1)
-      : CheckedOpRewritePattern(context, benefit),
-        allowOnFloatingPointMath(allowOnFloatingPointMath) {}
+    : public NoNanCheckedOpRewritePattern<stablehlo::MulOp, NoNanMulSimplify> {
+  using NoNanCheckedOpRewritePattern<
+      stablehlo::MulOp, NoNanMulSimplify>::NoNanCheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::MulOp op,
                                     PatternRewriter &rewriter) const {
     if (!canApplyNoNanPattern(allowOnFloatingPointMath,
                               op.getResult().getType(),
-                              op.getOperand(0).getType())) {
+                              op.getOperand(0).getType(), op)) {
       return failure();
     }
 
@@ -15982,23 +16033,15 @@ struct NoNanMulSimplify final
 
     return failure();
   }
-
-private:
-  bool allowOnFloatingPointMath;
 };
 
 // c = a + b; d = c - b => d = a
 // c = a + b; d = b - c => d = -a
 struct NoNanAddSubSimplify final
-    : public CheckedOpRewritePattern<stablehlo::SubtractOp,
-                                     NoNanAddSubSimplify> {
-  using CheckedOpRewritePattern<stablehlo::SubtractOp,
-                                NoNanAddSubSimplify>::CheckedOpRewritePattern;
-
-  NoNanAddSubSimplify(bool allowOnFloatingPointMath, MLIRContext *context,
-                      PatternBenefit benefit = 1)
-      : CheckedOpRewritePattern(context, benefit),
-        allowOnFloatingPointMath(allowOnFloatingPointMath) {}
+    : public NoNanCheckedOpRewritePattern<stablehlo::SubtractOp,
+                                          NoNanAddSubSimplify> {
+  using NoNanCheckedOpRewritePattern<
+      stablehlo::SubtractOp, NoNanAddSubSimplify>::NoNanCheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::SubtractOp op,
                                     PatternRewriter &rewriter) const {
@@ -16009,7 +16052,8 @@ struct NoNanAddSubSimplify final
     // Check if LHS is defined by an AddOp
     if (auto lhsAddOp = lhs.getDefiningOp<stablehlo::AddOp>()) {
       auto addOutTy = lhsAddOp.getResult().getType();
-      if (!canApplyNoNanPattern(allowOnFloatingPointMath, addOutTy, subOutTy))
+      if (!canApplyNoNanPattern(allowOnFloatingPointMath, addOutTy, subOutTy,
+                                op))
         return failure();
 
       // Case: c = a + b; d = c - b -> d = a
@@ -16028,7 +16072,8 @@ struct NoNanAddSubSimplify final
     // Check if RHS is defined by an AddOp
     if (auto rhsAddOp = rhs.getDefiningOp<stablehlo::AddOp>()) {
       auto addOutTy = rhsAddOp.getResult().getType();
-      if (!canApplyNoNanPattern(allowOnFloatingPointMath, addOutTy, subOutTy))
+      if (!canApplyNoNanPattern(allowOnFloatingPointMath, addOutTy, subOutTy,
+                                op))
         return failure();
 
       // Case: c = a + b; d = b - c -> d = -a
@@ -16047,9 +16092,6 @@ struct NoNanAddSubSimplify final
     // No simplification pattern matched
     return failure();
   }
-
-private:
-  bool allowOnFloatingPointMath = false;
 };
 
 // a > b ? a : b or a >= b ? a : b ---> maximum(a, b)
@@ -16727,140 +16769,6 @@ struct SignAbsSimplify
   }
 };
 
-bool opResultIsAlwaysNonNegative(Operation *op);
-
-template <typename T>
-bool opResultNonNegativeIfAllElementsNonNegative(Operation *op) {
-  if (!op)
-    return false;
-
-  auto specificOp = dyn_cast<T>(op);
-  if (!specificOp)
-    return false;
-
-  auto lhsOp = specificOp.getLhs().getDefiningOp();
-  auto rhsOp = specificOp.getRhs().getDefiningOp();
-
-  if (lhsOp && rhsOp) {
-    bool lhsNonNeg = opResultIsAlwaysNonNegative(lhsOp);
-    bool rhsNonNeg = opResultIsAlwaysNonNegative(rhsOp);
-
-    if (lhsNonNeg && rhsNonNeg)
-      return true;
-  }
-
-  return false;
-}
-
-bool isConstantNonNegative(stablehlo::ConstantOp constOp) {
-  Attribute attr = constOp.getValue();
-
-  if (auto denseAttr = dyn_cast<DenseElementsAttr>(attr)) {
-    if (denseAttr.getType().getShape().size() && denseAttr.isSplat()) {
-      denseAttr = denseAttr.resizeSplat(
-          RankedTensorType::get({}, denseAttr.getType().getElementType()));
-    }
-    // For floating point values
-    if (denseAttr.getElementType().isF32() ||
-        denseAttr.getElementType().isF64()) {
-      for (auto element : denseAttr.getValues<APFloat>()) {
-        if (element.isNegative())
-          return false;
-      }
-      return true;
-    }
-
-    // For integer values
-    if (denseAttr.getElementType().isIntOrIndex()) {
-      for (auto element : denseAttr.getValues<APInt>()) {
-        if (element.isNegative())
-          return false;
-      }
-      return true;
-    }
-  }
-
-  // Default: can't guarantee all elements are non-negative
-  return false;
-}
-
-bool opResultIsAlwaysNonNegative(Operation *op) {
-  if (!op)
-    return false;
-
-  if (isa<stablehlo::AbsOp, stablehlo::SqrtOp, stablehlo::ExpOp,
-          stablehlo::IotaOp, stablehlo::AndOp, stablehlo::OrOp>(op))
-    return true;
-
-  if (auto constOp = dyn_cast<stablehlo::ConstantOp>(op)) {
-    // Constant is non-negative if all its elements are non-negative
-    return isConstantNonNegative(constOp);
-  }
-
-  // Any non-negative operation that produces a non-negative result
-  if (auto maxOp = dyn_cast<stablehlo::MaxOp>(op)) {
-    for (auto operand : maxOp.getOperands()) {
-      if (auto operandOp = operand.getDefiningOp()) {
-        if (opResultIsAlwaysNonNegative(operandOp))
-          return true;
-      }
-    }
-  }
-
-  // All non-negative operations that produce a non-negative result
-  if (isa<stablehlo::MinOp, stablehlo::AddOp, stablehlo::MulOp>(op)) {
-    if (opResultNonNegativeIfAllElementsNonNegative<stablehlo::MinOp>(op) ||
-        opResultNonNegativeIfAllElementsNonNegative<stablehlo::AddOp>(op) ||
-        opResultNonNegativeIfAllElementsNonNegative<stablehlo::MulOp>(op))
-      return true;
-  }
-
-  // (mul a a) is always non-negative
-  if (auto mulOp = dyn_cast<stablehlo::MulOp>(op)) {
-    auto lhsOp = mulOp.getLhs().getDefiningOp();
-    auto rhsOp = mulOp.getRhs().getDefiningOp();
-
-    if (lhsOp == rhsOp)
-      return true;
-  }
-
-  if (auto clampOp = dyn_cast<stablehlo::ClampOp>(op)) {
-    // Clamp is non-negative if the min operand is non-negative
-
-    if (auto minOp = clampOp.getMin().getDefiningOp()) {
-      if (opResultIsAlwaysNonNegative(minOp))
-        return true;
-    }
-  }
-
-  // TODO: For NegOp we need a check for if the operand is guaranteed to be
-  // non-positive
-
-  // TODO: Mul of 2 negative values is non-negative
-
-  if (auto selectOp = dyn_cast<stablehlo::SelectOp>(op)) {
-    // Select produces non-negative results if both branches produce
-    // non-negative results
-    auto trueOp = selectOp.getOnTrue().getDefiningOp();
-    auto falseOp = selectOp.getOnFalse().getDefiningOp();
-
-    if (trueOp && falseOp) {
-      return opResultIsAlwaysNonNegative(trueOp) &&
-             opResultIsAlwaysNonNegative(falseOp);
-    }
-  }
-
-  // These operations preserve values, so result is non-negative if operand is
-  // non-negative
-  if (isa<stablehlo::ReshapeOp, stablehlo::TransposeOp>(op)) {
-    if (auto defOp = op->getOperand(0).getDefiningOp())
-      return opResultIsAlwaysNonNegative(defOp);
-  }
-
-  // Default: can't guarantee non-negative result
-  return false;
-}
-
 struct AbsPositiveSimplify
     : public CheckedOpRewritePattern<stablehlo::AbsOp, AbsPositiveSimplify> {
   using CheckedOpRewritePattern<stablehlo::AbsOp,
@@ -16873,7 +16781,7 @@ struct AbsPositiveSimplify
     if (isa<ComplexType>(operand.getType().getElementType()))
       return failure();
 
-    if (opResultIsAlwaysNonNegative(operand.getDefiningOp())) {
+    if (guaranteedNonNegativeResult(operand.getDefiningOp())) {
       rewriter.replaceOp(op, op.getOperand());
       return success();
     }
@@ -17216,6 +17124,99 @@ struct PadConcatToConcatPad
         commonHighPadding, interiorPadding);
 
     rewriter.replaceOp(concatOp, result);
+    return success();
+  }
+};
+
+struct SelectPad final
+    : public CheckedOpRewritePattern<stablehlo::SelectOp, SelectPad> {
+  using CheckedOpRewritePattern<stablehlo::SelectOp,
+                                SelectPad>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SelectOp op,
+                                    PatternRewriter &rewriter) const {
+    // Get the two pad operations from the on_true and on_false branches.
+    auto padTrue = op.getOnTrue().getDefiningOp<stablehlo::PadOp>();
+    if (!padTrue || anyPadSizesNegative(padTrue))
+      return failure();
+
+    auto padFalse = op.getOnFalse().getDefiningOp<stablehlo::PadOp>();
+    if (!padFalse || anyPadSizesNegative(padFalse))
+      return failure();
+
+    // Ensure the padding configurations are identical.
+    if (padTrue.getEdgePaddingLow() != padFalse.getEdgePaddingLow() ||
+        padTrue.getEdgePaddingHigh() != padFalse.getEdgePaddingHigh() ||
+        padTrue.getInteriorPadding() != padFalse.getInteriorPadding()) {
+      return rewriter.notifyMatchFailure(op, "padding configurations mismatch");
+    }
+
+    // Only proceed if the pad ops have a single user.
+    if (!padTrue->hasOneUse() || !padFalse->hasOneUse()) {
+      return rewriter.notifyMatchFailure(op, "pad op has multiple users");
+    }
+
+    auto operandTrue = padTrue.getOperand();
+    auto operandFalse = padFalse.getOperand();
+
+    auto pred = op.getPred();
+    auto predType = cast<RankedTensorType>(pred.getType());
+
+    Value newOperandSelect;
+    Value newPadValSelect;
+
+    // Case 1: Predicate is a scalar (0-rank tensor).
+    if (predType.getRank() == 0) {
+      newOperandSelect = rewriter.create<stablehlo::SelectOp>(
+          op.getLoc(), pred, operandTrue, operandFalse);
+
+      auto padValTrue = padTrue.getPaddingValue();
+      auto padValFalse = padFalse.getPaddingValue();
+
+      newPadValSelect = rewriter.create<stablehlo::SelectOp>(
+          op.getLoc(), pred, padValTrue, padValFalse);
+
+      // Case 2: Predicate is a tensor, but padding values are identical.
+    } else {
+      auto padValTrue = padTrue.getPaddingValue();
+      auto padValFalse = padFalse.getPaddingValue();
+      if (padValTrue != padValFalse) {
+        return rewriter.notifyMatchFailure(
+            op, "selecting different padding values with a tensor predicate is "
+                "not supported");
+      }
+      newPadValSelect = padValTrue; // Use the common padding value.
+
+      // To create the new select for operands, the predicate needs to be
+      // "un-padded" to match the shape of the operands. This is only
+      // straightforward if interior padding is zero.
+      if (llvm::any_of(padTrue.getInteriorPadding(),
+                       [](int64_t p) { return p != 0; })) {
+        return rewriter.notifyMatchFailure(
+            op, "interior padding is not supported for tensor predicates");
+      }
+
+      auto operandType = cast<RankedTensorType>(operandTrue.getType());
+      auto starts = padTrue.getEdgePaddingLow();
+      auto limits = llvm::to_vector(starts);
+      for (size_t i = 0; i < limits.size(); ++i) {
+        limits[i] += operandType.getShape()[i];
+      }
+      auto strides = SmallVector<int64_t>(operandType.getRank(), 1);
+
+      auto slicedPred = rewriter.create<stablehlo::SliceOp>(
+          op.getLoc(), pred, starts, limits, strides);
+
+      newOperandSelect = rewriter.create<stablehlo::SelectOp>(
+          op.getLoc(), slicedPred, operandTrue, operandFalse);
+    }
+
+    // Create the new pad operation.
+    rewriter.replaceOpWithNewOp<stablehlo::PadOp>(
+        op, op.getType(), newOperandSelect, newPadValSelect,
+        padTrue.getEdgePaddingLowAttr(), padTrue.getEdgePaddingHighAttr(),
+        padTrue.getInteriorPaddingAttr());
+
     return success();
   }
 };
@@ -22068,6 +22069,49 @@ struct ElementwiseExtend
   }
 };
 
+struct SubtractMultiplyConstToAddMulConst
+    : public CheckedOpRewritePattern<stablehlo::SubtractOp,
+                                     SubtractMultiplyConstToAddMulConst> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SubtractOp op,
+                                    PatternRewriter &rewriter) const {
+    auto rhsMulOp = op.getRhs().getDefiningOp<stablehlo::MulOp>();
+    if (!rhsMulOp)
+      return failure();
+
+    DenseElementsAttr rhsMulLhsConstant, rhsMulRhsConstant;
+    bool isRhsMulLhsConstant =
+        matchPattern(rhsMulOp.getLhs(), m_Constant(&rhsMulLhsConstant));
+    bool isRhsMulRhsConstant =
+        matchPattern(rhsMulOp.getRhs(), m_Constant(&rhsMulRhsConstant));
+
+    if (isRhsMulLhsConstant && isRhsMulRhsConstant) {
+      return failure(); // constant prop will handle this
+    }
+
+    if (isRhsMulLhsConstant) {
+      rewriter.replaceOpWithNewOp<stablehlo::AddOp>(
+          op, op.getLhs(),
+          rewriter.create<stablehlo::MulOp>(
+              op.getLoc(),
+              rewriter.create<stablehlo::NegOp>(op.getLoc(), rhsMulOp.getLhs()),
+              rhsMulOp.getRhs()));
+      return success();
+    } else if (isRhsMulRhsConstant) {
+      rewriter.replaceOpWithNewOp<stablehlo::AddOp>(
+          op, op.getLhs(),
+          rewriter.create<stablehlo::MulOp>(
+              op.getLoc(), rhsMulOp.getLhs(),
+              rewriter.create<stablehlo::NegOp>(op.getLoc(),
+                                                rhsMulOp.getRhs())));
+      return success();
+    }
+
+    return failure();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -22192,6 +22236,22 @@ void mlir::transform::addNoNanAddSubSimplify(RewritePatternSet &patterns,
                                        benefit);
 }
 
+void mlir::transform::addNoNanCompareSimplify(RewritePatternSet &patterns,
+                                              bool allowOnFloatingPointMath,
+                                              MLIRContext &context,
+                                              PatternBenefit benefit) {
+  patterns.insert<NoNanCompareSimplify>(allowOnFloatingPointMath, &context,
+                                        benefit);
+}
+
+void mlir::transform::addNoNanSelfSubSimplify(RewritePatternSet &patterns,
+                                              bool allowOnFloatingPointMath,
+                                              MLIRContext &context,
+                                              PatternBenefit benefit) {
+  patterns.insert<NoNanSelfSubSimplify>(allowOnFloatingPointMath, &context,
+                                        benefit);
+}
+
 void mlir::transform::addNoNanMulSimplify(RewritePatternSet &patterns,
                                           bool allowOnFloatingPointMath,
                                           MLIRContext &context,
@@ -22294,6 +22354,7 @@ struct EnzymeHLOOptPass
     patterns.add<TransposeWrap>(context);
     patterns.add<TransposeExtend>(context);
     patterns.add<TransposeRotate>(context);
+    patterns.add<SelectPad>(context);
 
     patterns.add<
         AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
@@ -22420,7 +22481,8 @@ struct EnzymeHLOOptPass
 
     patterns.add<BinopPadToConcat<stablehlo::AddOp>,
                  BinopPadToConcat<stablehlo::MulOp>, ConcatPad,
-                 PadConcatToConcatPad, SliceSelect, PadReduceWindow>(context);
+                 PadConcatToConcatPad, SliceSelect, PadReduceWindow,
+                 ConvolutionPad>(context);
 
     if (passses & 512) {
       patterns.add<TransposeDotReorder, DotTranspose, ConvolutionTranspose,
@@ -22546,9 +22608,9 @@ struct EnzymeHLOOptPass
     if (all_finite)
       patterns.add<AllFiniteIsFinite, AllFiniteIsInf, AllFiniteIsPosInf,
                    AllFiniteIsNegInf>(context);
-    if (no_nan || all_finite)
-      patterns.add<NoNan, NoNanSelfSubSimplify>(context);
-    patterns.add<NoNanAddSubSimplify, NoNanMulSimplify, NoNanDivSimplify>(
+
+    patterns.add<NoNanCompareSimplify, NoNanSelfSubSimplify,
+                 NoNanAddSubSimplify, NoNanMulSimplify, NoNanDivSimplify>(
         (no_nan || all_finite), context);
 
     // clang-format off
@@ -22627,7 +22689,8 @@ struct EnzymeHLOOptPass
         ConcatenateBroadcastInDim,
         ElementwiseRotate,
         ElementwiseWrap,
-        ElementwiseExtend
+        ElementwiseExtend,
+        SubtractMultiplyConstToAddMulConst
       >(context);
 
     patterns.add<SumToReduceWindow<stablehlo::AddOp>,
