@@ -43,7 +43,6 @@ func.func @f(%119: memref<?xf64>, %arg0: i32 {llvm.noundef}, %arg1: i32 {llvm.no
   %7 = llvm.alloca %c1_i32 x !llvm.ptr {alignment = 8 : i64} : (i32) -> !llvm.ptr
   %8 = llvm.alloca %c1_i32 x f64 {alignment = 8 : i64} : (i32) -> !llvm.ptr
   %9 = llvm.alloca %c1_i32 x f64 {alignment = 8 : i64} : (i32) -> !llvm.ptr
-  llvm.intr.lifetime.start 8, %7 : !llvm.ptr
   %10 = "enzymexla.pointer2memref"(%7) : (!llvm.ptr) -> memref<?x!llvm.ptr>
   affine.store %4, %10[0] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "p1 _ZTS13cublasContext", members = {<#llvm.tbaa_type_desc<id = "any pointer", members = {<#llvm.tbaa_type_desc<id = "omnipotent char", members = {<#llvm.tbaa_root<id = "Simple C++ TBAA">, 0>}>, 0>}>, 0>}>, access_type = <id = "p1 _ZTS13cublasContext", members = {<#llvm.tbaa_type_desc<id = "any pointer", members = {<#llvm.tbaa_type_desc<id = "omnipotent char", members = {<#llvm.tbaa_root<id = "Simple C++ TBAA">, 0>}>, 0>}>, 0>}>, offset = 0>]} : memref<?x!llvm.ptr>
   %11 = arith.cmpi eq, %arg2, %c0_i32 : i32
@@ -135,7 +134,6 @@ func.func @f(%119: memref<?xf64>, %arg0: i32 {llvm.noundef}, %arg1: i32 {llvm.no
 // CHECK-NEXT:    %c1_i32 = arith.constant 1 : i32
 // CHECK-NEXT:    %c-1_i64 = arith.constant -1 : i64
 // CHECK-NEXT:    %1 = llvm.alloca %c1_i32 x !llvm.ptr {alignment = 8 : i64} : (i32) -> !llvm.ptr
-// CHECK-NEXT:    llvm.intr.lifetime.start 8, %1 : !llvm.ptr
 // CHECK-NEXT:    %2 = "enzymexla.pointer2memref"(%1) : (!llvm.ptr) -> memref<?x!llvm.ptr>
 // CHECK-NEXT:    affine.store %0, %2[0] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag1]} : memref<?x!llvm.ptr>
 // CHECK-NEXT:    %3 = arith.extui %arg1 {nonNeg} : i32 to i64

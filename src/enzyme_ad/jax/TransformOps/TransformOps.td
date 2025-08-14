@@ -285,6 +285,10 @@ def ApplyPadReduceWindowPatterns : EnzymeHLOPatternOp<
     "pad_reduce_window"> {
   let patterns = ["PadReduceWindow"];
 }
+def ApplyConvolutionPadPatterns : EnzymeHLOPatternOp<
+    "convolution_pad"> {
+  let patterns = ["ConvolutionPad"];
+}
 def ReshapeEmptyBroadcastPatterns : EnzymeHLOPatternOp<
     "reshape_empty_broadcast"> {
   let patterns = ["ReshapeEmptyBroadcast"];
@@ -2221,4 +2225,8 @@ def ApplyElementwiseWrapPatterns : EnzymeHLOPatternOp<"elementwise_wrap"> {
 
 def ApplyElementwiseExtendPatterns : EnzymeHLOPatternOp<"elementwise_extend"> {
   let patterns = ["ElementwiseExtend"];
+}
+
+def ApplySubtractMultiplyConstToAddMulConstPatterns : EnzymeHLOPatternOp<"subtract_multiply_const_to_add_mul_const"> {
+  let patterns = ["SubtractMultiplyConstToAddMulConst"];
 }
