@@ -13,7 +13,8 @@ def repo(extra_patches = [], override_commit = ""):
     http_archive(
         name = "xla",
         sha256 = sha,
-        strip_prefix = "xla-" + commit,
-        urls = ["https://github.com/wsmoses/xla/archive/{commit}.tar.gz".format(commit = commit)],
+        type = "tar.gz",
+	strip_prefix = "openxla-xla-{commit}".format(commit = XLA_COMMIT[:7]),
+        urls = ["https://api.github.com/repos/openxla/xla/tarball/{commit}".format(commit = XLA_COMMIT)],
         patch_cmds = XLA_PATCHES + extra_patches,
     )
