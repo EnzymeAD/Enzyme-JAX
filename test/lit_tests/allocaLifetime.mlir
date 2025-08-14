@@ -20,9 +20,9 @@ func.func @simple_with_lifetime() {
     %c7_i64 = arith.constant 7 : i64
     %1 = llvm.alloca %c1_i32 x !llvm.array<7 x i8> {alignment = 1 : i64} : (i32) -> !llvm.ptr
     %2 = llvm.alloca %c1_i32 x !llvm.array<7 x i8> {alignment = 1 : i64} : (i32) -> !llvm.ptr
-    llvm.intr.lifetime.start 7, %2 : !llvm.ptr
+    llvm.intr.lifetime.start %2 : !llvm.ptr
     "llvm.intr.memcpy"(%2, %1, %c7_i64) <{isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i64) -> ()
-    llvm.intr.lifetime.end 7, %2 : !llvm.ptr
+    llvm.intr.lifetime.end %2 : !llvm.ptr
     "Just.keepalive"(%c1_i32) : (i32) -> ()
     return
 }
@@ -36,9 +36,9 @@ func.func @no_canonicalize(%1: !llvm.ptr) {
     %c1_i32 = arith.constant 1 : i32
     %c7_i64 = arith.constant 7 : i64
     %2 = llvm.alloca %c1_i32 x !llvm.array<7 x i8> {alignment = 1 : i64} : (i32) -> !llvm.ptr
-    llvm.intr.lifetime.start 7, %2 : !llvm.ptr
+    llvm.intr.lifetime.start %2 : !llvm.ptr
     "llvm.intr.memcpy"(%2, %1, %c7_i64) <{isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i64) -> ()
-    llvm.intr.lifetime.end 7, %2 : !llvm.ptr
+    llvm.intr.lifetime.end %2 : !llvm.ptr
     "Just.keepalive"(%c1_i32) : (i32) -> ()
     return
 }
@@ -47,9 +47,9 @@ func.func @no_canonicalize(%1: !llvm.ptr) {
 // CHECK:           %[[VAL_1:.*]] = arith.constant 1 : i32
 // CHECK:           %[[VAL_2:.*]] = arith.constant 7 : i64
 // CHECK:           %[[VAL_3:.*]] = llvm.alloca %[[VAL_1]] x !llvm.array<7 x i8> {alignment = 1 : i64} : (i32) -> !llvm.ptr
-// CHECK:           llvm.intr.lifetime.start 7, %[[VAL_3]] : !llvm.ptr
+// CHECK:           llvm.intr.lifetime.start %[[VAL_3]] : !llvm.ptr
 // CHECK:           "llvm.intr.memcpy"(%[[VAL_3]], %[[VAL_0]], %[[VAL_2]]) <{isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i64) -> ()
-// CHECK:           llvm.intr.lifetime.end 7, %[[VAL_3]] : !llvm.ptr
+// CHECK:           llvm.intr.lifetime.end %[[VAL_3]] : !llvm.ptr
 // CHECK:           "Just.keepalive"(%[[VAL_1]]) : (i32) -> ()
 // CHECK:           return
 // CHECK:         }
@@ -61,15 +61,15 @@ func.func @allocaLifetime_oceans() {
     %2 = llvm.alloca %c1_i32 x !llvm.array<7 x i8> {alignment = 1 : i64} : (i32) -> !llvm.ptr
     %3 = llvm.alloca %c1_i32 x !llvm.array<7 x i8> {alignment = 1 : i64} : (i32) -> !llvm.ptr
     %4 = llvm.alloca %c1_i32 x !llvm.array<7 x i8> {alignment = 1 : i64} : (i32) -> !llvm.ptr
-    llvm.intr.lifetime.start 7, %2 : !llvm.ptr
+    llvm.intr.lifetime.start %2 : !llvm.ptr
     "llvm.intr.memcpy"(%2, %4, %c7_i64) <{isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i64) -> ()
     "llvm.intr.memcpy"(%3, %2, %c7_i64) <{isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i64) -> ()
-    llvm.intr.lifetime.end 7, %2 : !llvm.ptr
+    llvm.intr.lifetime.end %2 : !llvm.ptr
 
-    llvm.intr.lifetime.start 7, %2 : !llvm.ptr
+    llvm.intr.lifetime.start %2 : !llvm.ptr
     "llvm.intr.memcpy"(%2, %1, %c7_i64) <{isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i64) -> ()
     "llvm.intr.memcpy"(%3, %2, %c7_i64) <{isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i64) -> ()
-    llvm.intr.lifetime.end 7, %2 : !llvm.ptr
+    llvm.intr.lifetime.end %2 : !llvm.ptr
 
     "Just.keepalive"(%c1_i32) : (i32) -> ()
     return
@@ -91,15 +91,15 @@ func.func @allocaLifetime_memset() {
 
     "llvm.intr.memset"(%4, %c0_i8, %c7_i64) <{isVolatile = false}> : (!llvm.ptr, i8, i64) -> ()
 
-    llvm.intr.lifetime.start 7, %2 : !llvm.ptr
+    llvm.intr.lifetime.start %2 : !llvm.ptr
     "llvm.intr.memcpy"(%2, %4, %c7_i64) <{isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i64) -> ()
     "llvm.intr.memcpy"(%3, %2, %c7_i64) <{isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i64) -> ()
-    llvm.intr.lifetime.end 7, %2 : !llvm.ptr
+    llvm.intr.lifetime.end %2 : !llvm.ptr
 
-    llvm.intr.lifetime.start 7, %2 : !llvm.ptr
+    llvm.intr.lifetime.start %2 : !llvm.ptr
     "llvm.intr.memcpy"(%2, %1, %c7_i64) <{isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i64) -> ()
     "llvm.intr.memcpy"(%3, %2, %c7_i64) <{isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i64) -> ()
-    llvm.intr.lifetime.end 7, %2 : !llvm.ptr
+    llvm.intr.lifetime.end %2 : !llvm.ptr
 
     "Just.keepalive"(%c1_i32) : (i32) -> ()
     return
@@ -112,13 +112,13 @@ func.func @allocaLifetime_memset() {
 // CHECK:           %[[VAL_4:.*]] = llvm.alloca %[[VAL_0]] x !llvm.array<7 x i8> {alignment = 1 : i64} : (i32) -> !llvm.ptr
 // CHECK:           %[[VAL_5:.*]] = llvm.alloca %[[VAL_0]] x !llvm.array<7 x i8> {alignment = 1 : i64} : (i32) -> !llvm.ptr
 // CHECK:           "llvm.intr.memset"(%[[VAL_5]], %[[VAL_2]], %[[VAL_1]]) <{isVolatile = false}> : (!llvm.ptr, i8, i64) -> ()
-// CHECK:           llvm.intr.lifetime.start 7, %[[VAL_3]] : !llvm.ptr
+// CHECK:           llvm.intr.lifetime.start %[[VAL_3]] : !llvm.ptr
 // CHECK:           "llvm.intr.memcpy"(%[[VAL_3]], %[[VAL_5]], %[[VAL_1]]) <{isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i64) -> ()
 // CHECK:           "llvm.intr.memcpy"(%[[VAL_4]], %[[VAL_3]], %[[VAL_1]]) <{isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i64) -> ()
-// CHECK:           llvm.intr.lifetime.end 7, %[[VAL_3]] : !llvm.ptr
-// CHECK:           llvm.intr.lifetime.start 7, %[[VAL_3]] : !llvm.ptr
+// CHECK:           llvm.intr.lifetime.end %[[VAL_3]] : !llvm.ptr
+// CHECK:           llvm.intr.lifetime.start %[[VAL_3]] : !llvm.ptr
 // CHECK:           "llvm.intr.memcpy"(%[[VAL_4]], %[[VAL_3]], %[[VAL_1]]) <{isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i64) -> ()
-// CHECK:           llvm.intr.lifetime.end 7, %[[VAL_3]] : !llvm.ptr
+// CHECK:           llvm.intr.lifetime.end %[[VAL_3]] : !llvm.ptr
 // CHECK:           "Just.keepalive"(%[[VAL_0]]) : (i32) -> ()
 // CHECK:           return
 // CHECK:         }
@@ -130,11 +130,11 @@ func.func @no_alloca() {
   
   %ptr = llvm.alloca %c1_i32 x !llvm.array<10 x i8> {alignment = 1 : i64} : (i32) -> !llvm.ptr
   
-  llvm.intr.lifetime.start 10, %ptr : !llvm.ptr
+  llvm.intr.lifetime.start %ptr : !llvm.ptr
   
   "llvm.intr.memset"(%ptr, %c42_i8, %c10_i64) <{isVolatile = false}> : (!llvm.ptr, i8, i64) -> ()
   
-  llvm.intr.lifetime.end 10, %ptr : !llvm.ptr
+  llvm.intr.lifetime.end %ptr : !llvm.ptr
   
   return
 }
@@ -143,8 +143,8 @@ func.func @no_alloca() {
 // CHECK:           %[[VAL_1:.*]] = arith.constant 42 : i8
 // CHECK:           %[[VAL_2:.*]] = arith.constant 10 : i64
 // CHECK:           %[[VAL_3:.*]] = llvm.alloca %[[VAL_0]] x !llvm.array<10 x i8> {alignment = 1 : i64} : (i32) -> !llvm.ptr
-// CHECK:           llvm.intr.lifetime.start 10, %[[VAL_3]] : !llvm.ptr
+// CHECK:           llvm.intr.lifetime.start %[[VAL_3]] : !llvm.ptr
 // CHECK:           "llvm.intr.memset"(%[[VAL_3]], %[[VAL_1]], %[[VAL_2]]) <{isVolatile = false}> : (!llvm.ptr, i8, i64) -> ()
-// CHECK:           llvm.intr.lifetime.end 10, %[[VAL_3]] : !llvm.ptr
+// CHECK:           llvm.intr.lifetime.end %[[VAL_3]] : !llvm.ptr
 // CHECK:           return
 // CHECK:         }
