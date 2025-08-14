@@ -8,10 +8,8 @@ module {
     affine.parallel (%arg0, %arg1, %arg2) = (0, 0, 0) to (15, 64, 64) {
       %0 = llvm.alloca %c1_i32 x f32 {alignment = 4 : i64} : (i32) -> !llvm.ptr
       affine.if #set(%arg1, %arg2) {
-        llvm.intr.lifetime.start 1, %0 : !llvm.ptr
         %1 = "enzymexla.pointer2memref"(%0) : (!llvm.ptr) -> memref<?xf32>
         affine.store %cst, %1[0] {alignment = 4 : i64, ordering = 5 : i64} : memref<?xf32>
-        llvm.intr.lifetime.end 1, %0 : !llvm.ptr
         "llvm.intr.trap"() : () -> ()
       }
     }
@@ -25,10 +23,8 @@ module {
 // CHECK-NEXT:    affine.parallel (%arg0, %arg1, %arg2) = (0, 0, 0) to (15, 64, 64) {
 // CHECK-NEXT:      %0 = llvm.alloca %c1_i32 x f32 {alignment = 4 : i64} : (i32) -> !llvm.ptr
 // CHECK-NEXT:      affine.if #set(%arg1, %arg2) {
-// CHECK-NEXT:        llvm.intr.lifetime.start 1, %0 : !llvm.ptr
 // CHECK-NEXT:        %1 = "enzymexla.pointer2memref"(%0) : (!llvm.ptr) -> memref<?xf32>
 // CHECK-NEXT:        affine.store %cst, %1[0] {alignment = 4 : i64, ordering = 5 : i64} : memref<?xf32>
-// CHECK-NEXT:        llvm.intr.lifetime.end 1, %0 : !llvm.ptr
 // CHECK-NEXT:        "llvm.intr.trap"() : () -> ()
 // CHECK-NEXT:      }
 // CHECK-NEXT:    }
