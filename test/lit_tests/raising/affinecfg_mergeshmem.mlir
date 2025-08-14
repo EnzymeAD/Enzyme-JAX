@@ -47,7 +47,6 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
     %7 = llvm.alloca %c1_i32 x !llvm.ptr {alignment = 8 : i64} : (i32) -> !llvm.ptr
     %8 = llvm.call tail @_Znam(%c8388608_i64) : (i64 {llvm.noundef}) -> (!llvm.ptr {llvm.dereferenceable = 8388608 : i64, llvm.noalias, llvm.nonnull, llvm.noundef})
     %9 = llvm.call tail @_Znam(%c8388608_i64) : (i64 {llvm.noundef}) -> (!llvm.ptr {llvm.dereferenceable = 8388608 : i64, llvm.noalias, llvm.nonnull, llvm.noundef})
-    llvm.intr.lifetime.start 8, %4 : !llvm.ptr
     llvm.store %cst, %4 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : f64, !llvm.ptr
     scf.for %arg0 = %c0_i64 to %c1048576_i64 step %c1_i64  : i64 {
       %20 = llvm.getelementptr inbounds|nuw %8[%arg0] : (!llvm.ptr, i64) -> !llvm.ptr, f64
@@ -55,9 +54,6 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
       %21 = llvm.getelementptr inbounds|nuw %9[%arg0] : (!llvm.ptr, i64) -> !llvm.ptr, f64
       llvm.store %cst_1, %21 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : f64, !llvm.ptr
     }
-    llvm.intr.lifetime.start 8, %5 : !llvm.ptr
-    llvm.intr.lifetime.start 8, %6 : !llvm.ptr
-    llvm.intr.lifetime.start 8, %7 : !llvm.ptr
     %memref = gpu.alloc  (%c8388608) : memref<?xi8, 1>
     %10 = "enzymexla.memref2pointer"(%memref) : (memref<?xi8, 1>) -> !llvm.ptr
     llvm.store %10, %5 : !llvm.ptr, !llvm.ptr
@@ -149,10 +145,6 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
       %20 = llvm.call @cudaGetErrorString(%17) : (i32 {llvm.noundef}) -> !llvm.ptr
       %21 = llvm.call @printf(%0, %20) vararg(!llvm.func<i32 (ptr, ...)>) {no_unwind} : (!llvm.ptr {llvm.dereferenceable = 1 : i64, llvm.nonnull, llvm.noundef}, !llvm.ptr {llvm.noundef}) -> i32
     }
-    llvm.intr.lifetime.end 8, %7 : !llvm.ptr
-    llvm.intr.lifetime.end 8, %6 : !llvm.ptr
-    llvm.intr.lifetime.end 8, %5 : !llvm.ptr
-    llvm.intr.lifetime.end 8, %4 : !llvm.ptr
     llvm.return %19 : i32
   }
   llvm.func local_unnamed_addr @_Znam(i64 {llvm.noundef}) -> (!llvm.ptr {llvm.nonnull, llvm.noundef}) attributes {passthrough = ["nobuiltin", ["allocsize", "4294967295"], ["no-trapping-math", "true"], ["stack-protector-buffer-size", "8"], ["target-cpu", "x86-64"]], sym_visibility = "private", target_cpu = "x86-64", target_features = #llvm.target_features<["+cmov", "+cx8", "+fxsr", "+mmx", "+sse", "+sse2", "+x87"]>}
@@ -259,7 +251,6 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
 // CHECK-NEXT:    %7 = llvm.alloca %c1_i32 x !llvm.ptr {alignment = 8 : i64} : (i32) -> !llvm.ptr
 // CHECK-NEXT:    %8 = llvm.call tail @_Znam(%c8388608_i64) : (i64 {llvm.noundef}) -> (!llvm.ptr {llvm.dereferenceable = 8388608 : i64, llvm.noalias, llvm.nonnull, llvm.noundef})
 // CHECK-NEXT:    %9 = llvm.call tail @_Znam(%c8388608_i64) : (i64 {llvm.noundef}) -> (!llvm.ptr {llvm.dereferenceable = 8388608 : i64, llvm.noalias, llvm.nonnull, llvm.noundef})
-// CHECK-NEXT:    llvm.intr.lifetime.start 8, %4 : !llvm.ptr
 // CHECK-NEXT:    llvm.store %cst, %4 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : f64, !llvm.ptr
 // CHECK-NEXT:    affine.for %arg0 = 0 to 1048576 {
 // CHECK-NEXT:      %20 = arith.index_cast %arg0 : index to i64
@@ -268,9 +259,6 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
 // CHECK-NEXT:      %22 = llvm.getelementptr inbounds|nuw %9[%20] : (!llvm.ptr, i64) -> !llvm.ptr, f64
 // CHECK-NEXT:      llvm.store %cst_1, %22 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : f64, !llvm.ptr
 // CHECK-NEXT:    }
-// CHECK-NEXT:    llvm.intr.lifetime.start 8, %5 : !llvm.ptr
-// CHECK-NEXT:    llvm.intr.lifetime.start 8, %6 : !llvm.ptr
-// CHECK-NEXT:    llvm.intr.lifetime.start 8, %7 : !llvm.ptr
 // CHECK-NEXT:    %memref = gpu.alloc  (%c8388608) : memref<?xi8, 1>
 // CHECK-NEXT:    %10 = "enzymexla.memref2pointer"(%memref) : (memref<?xi8, 1>) -> !llvm.ptr
 // CHECK-NEXT:    llvm.store %10, %5 : !llvm.ptr, !llvm.ptr
@@ -356,9 +344,5 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
 // CHECK-NEXT:      %20 = llvm.call @cudaGetErrorString(%17) : (i32 {llvm.noundef}) -> !llvm.ptr
 // CHECK-NEXT:      %21 = llvm.call @printf(%0, %20) vararg(!llvm.func<i32 (ptr, ...)>) {no_unwind} : (!llvm.ptr {llvm.dereferenceable = 1 : i64, llvm.nonnull, llvm.noundef}, !llvm.ptr {llvm.noundef}) -> i32
 // CHECK-NEXT:    }
-// CHECK-NEXT:    llvm.intr.lifetime.end 8, %7 : !llvm.ptr
-// CHECK-NEXT:    llvm.intr.lifetime.end 8, %6 : !llvm.ptr
-// CHECK-NEXT:    llvm.intr.lifetime.end 8, %5 : !llvm.ptr
-// CHECK-NEXT:    llvm.intr.lifetime.end 8, %4 : !llvm.ptr
 // CHECK-NEXT:    llvm.return %19 : i32
 // CHECK-NEXT:  }

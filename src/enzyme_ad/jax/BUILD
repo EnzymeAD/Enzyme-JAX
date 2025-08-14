@@ -980,6 +980,7 @@ pybind_extension(
         "@llvm-project//mlir:OpenMPDialect",
         "@llvm-project//mlir:OpenMPToLLVM",
         "@llvm-project//mlir:OpenMPToLLVMIRTranslation",
+        "@llvm-project//mlir:RegisterAllPasses",
         "@llvm-project//mlir:SCFDialect",
         "@llvm-project//mlir:ShapeTransforms",
         "@llvm-project//mlir:SparseTensorDialect",
