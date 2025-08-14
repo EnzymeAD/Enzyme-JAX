@@ -3329,9 +3329,8 @@ enum class IntrType : uint32_t {
 // `indexBitwidth`, sign-extend or truncate the resulting value to match the
 // bitwidth expected by the consumers of the value.
 template <typename Op, typename XOp, typename YOp, typename ZOp>
-struct OpLowering : public OpRewritePattern<Op> {
+struct OpLowering : public OpConversionPattern<Op> {
 private:
-  const LLVMTypeConverter &converter;
   unsigned indexBitwidth;
   IndexKind indexKind;
   IntrType intrType;
@@ -3339,22 +3338,23 @@ private:
 public:
   explicit OpLowering(const LLVMTypeConverter &typeConverter,
                       PatternBenefit benefit = 1)
-      : OpRewritePattern<Op>(&typeConverter.getContext(), benefit),
-        converter(typeConverter),
+      : OpConversionPattern<Op>(typeConverter, &typeConverter.getContext(),
+                                benefit),
         indexBitwidth(typeConverter.getIndexTypeBitwidth()),
         indexKind(IndexKind::Other), intrType(IntrType::None) {}
 
   explicit OpLowering(const LLVMTypeConverter &typeConverter,
                       IndexKind indexKind, IntrType intrType,
                       PatternBenefit benefit = 1)
-      : OpRewritePattern<Op>(&typeConverter.getContext(), benefit),
-        converter(typeConverter),
+      : OpConversionPattern<Op>(typeConverter, &typeConverter.getContext(),
+                                benefit),
         indexBitwidth(typeConverter.getIndexTypeBitwidth()),
         indexKind(indexKind), intrType(intrType) {}
 
   // Convert the kernel arguments to an LLVM type, preserve the rest.
-  LogicalResult matchAndRewrite(Op op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult
+  matchAndRewrite(Op op, typename OpConversionPattern<Op>::OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
     auto loc = op->getLoc();
     MLIRContext *context = rewriter.getContext();
     Operation *newOp;
@@ -3566,16 +3566,28 @@ struct ConvertPolygeistToLLVMPass
     for (auto mod : gmods) {
       RewritePatternSet patterns(&getContext());
 
-      GreedyRewriteConfig config;
-
       // Insert our custom version of GPUFuncLowering
+      ConversionTarget target(*mod->getContext());
       if (useCStyleMemRef) {
         populateCStyleGPUFuncLoweringPatterns(patterns, converter, backend,
                                               false);
+        if (backend == "cuda") {
+          target.addIllegalDialect<gpu::GPUDialect>();
+          target.addLegalOp<gpu::GPUModuleOp, gpu::GPUFuncOp, gpu::ReturnOp>();
+          target.addLegalDialect<NVVM::NVVMDialect, LLVM::LLVMDialect>();
+          target.addLegalOp<UnrealizedConversionCastOp>();
+        }
       }
-      if (failed(
-              applyPatternsAndFoldGreedily(mod, std::move(patterns), config))) {
-        signalPassFailure();
+
+      ConversionConfig conversionConfig;
+      if (failed(applyPartialConversion(mod, target, std::move(patterns),
+                                        conversionConfig))) {
+        mod->emitError() << "failed to apply conversion patterns";
+        return signalPassFailure();
+      }
+      if (failed(applyPatternsAndFoldGreedily(mod, {}))) {
+        mod->emitError() << "failed to apply folding";
+        return signalPassFailure();
       }
     };
 
