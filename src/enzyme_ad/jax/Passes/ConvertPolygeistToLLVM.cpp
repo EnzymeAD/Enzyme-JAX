@@ -1954,8 +1954,8 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
               rewriter.create<LLVM::ReturnOp>(loc, ValueRange());
             }
             auto aoo = ctorBuilder.create<LLVM::AddressOfOp>(loc, stub);
-            auto bitcast =
-                ctorBuilder.create<LLVM::AddrSpaceCastOp>(loc, llvmPointerType, aoo);
+            auto bitcast = ctorBuilder.create<LLVM::AddrSpaceCastOp>(
+                loc, llvmPointerType, aoo);
 
             Type tys[] = {llvmPointerType, llvmPointerType, llvmPointerType,
                           llvmPointerType, llvmInt32Type,   llvmPointerType,
@@ -2003,8 +2003,8 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
             auto stub = moduleOp.lookupSymbol<LLVM::GlobalOp>(g.getName());
             assert(stub);
             auto aoo = ctorBuilder.create<LLVM::AddressOfOp>(loc, stub);
-            auto bitcast =
-                ctorBuilder.create<LLVM::AddrSpaceCastOp>(loc, llvmPointerType, aoo);
+            auto bitcast = ctorBuilder.create<LLVM::AddrSpaceCastOp>(
+                loc, llvmPointerType, aoo);
             auto globalTy = stub.getGlobalType();
             // TODO This should actually be the GPUModuleOp's data layout I
             // believe, there were problems with assigning the data layout to
@@ -2094,7 +2094,8 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
       SymbolTable::lookupSymbolIn(moduleOp, funcStubName));
   assert(!!stub);
   auto aoo = rewriter.create<LLVM::AddressOfOp>(loc, stub);
-  auto bitcast = rewriter.create<LLVM::AddrSpaceCastOp>(loc, llvmPointerType, aoo);
+  auto bitcast =
+      rewriter.create<LLVM::AddrSpaceCastOp>(loc, llvmPointerType, aoo);
 
   Value zero = rewriter.create<LLVM::ConstantOp>(loc, llvmInt32Type, 0);
   auto nullpointer = rewriter.create<LLVM::ZeroOp>(loc, llvmPointerType);
@@ -3109,7 +3110,8 @@ struct ReconcileUnrealizedPointerCasts
     if (!(isa<LLVM::LLVMPointerType>(inputTy) &&
           isa<LLVM::LLVMPointerType>(outputTy)))
       return failure();
-    rewriter.replaceOpWithNewOp<LLVM::AddrSpaceCastOp>(ucc, outputTy, inputs[0]);
+    rewriter.replaceOpWithNewOp<LLVM::AddrSpaceCastOp>(ucc, outputTy,
+                                                       inputs[0]);
     return success();
   }
 };
