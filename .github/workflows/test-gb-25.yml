@@ -109,7 +109,7 @@ jobs:
           if [[ -n "${{ matrix.xla_commit }}" ]]; then
               sed -E -i.bak \
                   -e 's?load\("@jax//third_party/xla:revision.bzl", "XLA_COMMIT", "XLA_SHA256"\)??' \
-                  -e 's/(# )?XLA_COMMIT = ".*"/XLA_COMMIT = "0123456789abcdef0123456789abcdef01234567"/' \
+                  -e 's/(# )?XLA_COMMIT = ".*"/XLA_COMMIT = "${{ matrix.xla_commit }}"/' \
                   -e 's/(# )?XLA_SHA256 = ""/XLA_SHA256 = ""/' \
                   ReactantExtra/WORKSPACE
           fi
