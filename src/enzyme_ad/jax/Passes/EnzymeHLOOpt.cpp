@@ -18759,66 +18759,6 @@ bool isAxisFusible(int dimension, ArrayRef<Value> vals) {
   return false;
 }
 
-// slice(extend x) -> extend(slice x)
-// This pattern pushes a slice operation through an extend operation.
-struct ExtendSlice final
-    : CheckedOpRewritePattern<stablehlo::SliceOp, ExtendSlice> {
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
-                                    PatternRewriter &rewriter) const {
-    auto extendOp = op.getOperand().getDefiningOp<enzymexla::ExtendOp>();
-    if (!extendOp)
-      return rewriter.notifyMatchFailure(op, "Operand is not an ExtendOp");
-
-    // This transformation is simplified if strides are 1.
-    if (llvm::any_of(op.getStrides(), [](int64_t s) { return s != 1; }))
-      return rewriter.notifyMatchFailure(op, "Requires strides of 1");
-
-    Value operand = extendOp.getOperand();
-    auto originalShape = cast<RankedTensorType>(operand.getType()).getShape();
-    int64_t d = extendOp.getDimension();
-    int64_t lhs = extendOp.getLhs();
-    int64_t rhs = extendOp.getRhs();
-
-    auto starts = op.getStartIndices();
-    auto limits = op.getLimitIndices();
-
-    SmallVector<int64_t> new_starts = llvm::to_vector(starts);
-    SmallVector<int64_t> new_limits = llvm::to_vector(limits);
-    SmallVector<int64_t> new_strides = llvm::to_vector(op.getStrides());
-
-    int64_t start_d = starts[d];
-    int64_t limit_d = limits[d];
-    int64_t size_d = originalShape[d];
-
-    // Calculate the parameters for the new slice operation on the original
-    // operand. The new slice covers the part of the original tensor that is
-    // visible in the final output.
-    new_starts[d] = std::max((int64_t)0, start_d - lhs);
-    new_limits[d] = std::min(size_d, limit_d - lhs);
-
-    // Calculate the new padding amounts for the extend operation.
-    // new_lhs is the size of the overlap between the slice and the prepended
-    // padding.
-    int64_t new_lhs = std::max((int64_t)0, std::min(limit_d, lhs) - start_d);
-    // new_rhs is the size of the overlap between the slice and the appended
-    // padding.
-    int64_t new_rhs =
-        std::max((int64_t)0, limit_d - std::max(start_d, lhs + size_d));
-
-    // Create the new slice on the original tensor.
-    auto newSlice = rewriter.create<stablehlo::SliceOp>(
-        op.getLoc(), operand, new_starts, new_limits, new_strides);
-
-    // Create the new extend on the newly sliced tensor.
-    rewriter.replaceOpWithNewOp<enzymexla::ExtendOp>(op, op.getType(), newSlice,
-                                                     new_lhs, new_rhs, d);
-
-    return success();
-  }
-};
-
 struct SliceExtend final
     : CheckedOpRewritePattern<enzymexla::ExtendOp, SliceExtend> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -22345,7 +22285,6 @@ struct EnzymeHLOOptPass
     mlir::enzyme::populateWithGenerated(patterns);
 
     patterns.add<SliceExtend>(context);
-    patterns.add<ExtendSlice>(context);
     patterns.add<SliceRotate>(context);
     patterns.add<SliceWrap>(context);
     patterns.add<ReshapeWrap>(context);
