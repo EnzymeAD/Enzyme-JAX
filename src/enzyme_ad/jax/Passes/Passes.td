@@ -262,6 +262,7 @@ def LibDeviceFuncsRaisingPass : Pass<"libdevice-funcs-raise"> {
   let summary = "Raise libdevice function calls to arith/math operations";
   let dependentDialects = [
     "arith::ArithDialect",
+    "enzyme::EnzymeDialect",
     "math::MathDialect",
     "gpu::GPUDialect",
   ];

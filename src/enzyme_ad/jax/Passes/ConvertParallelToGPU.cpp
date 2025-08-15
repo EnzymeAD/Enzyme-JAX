@@ -2429,10 +2429,10 @@ gdgo->erase();
         if (!gmod.getTargetsAttr()) {
           auto chip = sm;
           if (chip.size() == 0)
-            chip = "sm_50";
+            chip = "sm_80";
           auto features = feat;
           if (features.size() == 0)
-            features = "+ptx60";
+            features = "+ptx73";
           auto target = NVVM::NVVMTargetAttr::get(
               gmod.getContext(), /*optLevel*/ 2,
               /*triple*/ "nvptx64-nvidia-cuda", chip, features);
