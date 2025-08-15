@@ -50,7 +50,7 @@ jobs:
           - '38285eb34756919913c5e575b12403f4a1c5e0e0'
           # - 'b25f3cbed2bc88c8ffef85f6a5319e2cf7b0454c'
         gb25_commit:
-          - '7f596224736d3778a5da7b0d6bb7dadce355f28'
+          - 'mg/sharded-factors'
           # - '0123456789abcdef0123456789abcdef01234567'
         reactant_commit:
           - 'main'
