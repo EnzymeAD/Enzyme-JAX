@@ -99,21 +99,28 @@ jobs:
       - name: Load Julia packages from cache
         id: julia-cache
         uses: julia-actions/cache@v2
+      - name: Modify Enzyme-JAX commit
+        timeout-minutes: 1
+        run: |
+          sed -i.bak 's/ENZYMEXLA_COMMIT = ".*"/ENZYMEXLA_COMMIT = "${{ github.sha }}"/' ReactantExtra/WORKSPACE
+
+          cat ReactantExtra/WORKSPACE
+        working-directory: ${{ env.REACTANT_DIR }}/deps
+      - name: Modify XLA commit
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          if [[ -n "${{ matrix.xla_commit }}" ]]; then
+              sed -E -i.bak \
+                  -e 's/xla_workspace\(NEW_XLA_PATCHES(, .*)?\)/xla_workspace(NEW_XLA_PATCHES, "${{ matrix.xla_commit }}")/' \
+                  ReactantExtra/WORKSPACE
+
+              cat ReactantExtra/WORKSPACE
+          fi
+        working-directory: ${{ env.REACTANT_DIR }}/deps
       - name: Build local libReactant
         timeout-minutes: 60
         run: |
-          # Modify commit Enzyme-JAX commit
-          sed -i.bak 's/ENZYMEXLA_COMMIT = ".*"/ENZYMEXLA_COMMIT = "${{ github.sha }}"/' ReactantExtra/WORKSPACE
-
-          # Modify XLA commit
-          if [[ -n "${{ matrix.xla_commit }}" ]]; then
-              sed -E -i.bak \
-                  -e 's?load\("@jax//third_party/xla:revision.bzl", "XLA_COMMIT", "XLA_SHA256"\)??' \
-                  -e 's/(# )?XLA_COMMIT = ".*"/XLA_COMMIT = "0123456789abcdef0123456789abcdef01234567"/' \
-                  -e 's/(# )?XLA_SHA256 = ""/XLA_SHA256 = ""/' \
-                  ReactantExtra/WORKSPACE
-          fi
-
           julia --project --color=yes -e 'using Pkg; Pkg.instantiate()'
           julia --project --color=yes -O0 build_local.jl --cc=clang --gcc_host_compiler_path=
         working-directory: ${{ env.REACTANT_DIR }}/deps
