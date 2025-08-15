@@ -1063,7 +1063,7 @@ NB_MODULE(enzyme_call, m) {
   mlir::registerAsyncPasses();
   mlir::arith::registerArithPasses();
   mlir::memref::registerMemRefPasses();
-  mlir::registerenzymePasses();
+  mlir::enzyme::registerenzymePasses();
   mlir::enzyme::registerenzymexlaPasses();
   mlir::enzyme::registerGenerateApplyPatternsPass();
   mlir::enzyme::registerRemoveTransformPass();

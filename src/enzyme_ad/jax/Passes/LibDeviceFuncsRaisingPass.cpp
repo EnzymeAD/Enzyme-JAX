@@ -16,7 +16,12 @@
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Passes/SelectPatterns.h"
 
+#include "Enzyme/MLIR/Dialect/Dialect.h"
+#include "Enzyme/MLIR/Dialect/Ops.h"
+
 #include "mlir/Conversion/LLVMCommon/VectorPattern.h"
+
+#include "llvm/ADT/TypeSwitch.h"
 
 namespace mlir {
 namespace enzyme {
@@ -177,6 +182,123 @@ public:
 
 private:
   StringAttr funcName;
+};
+
+// Given an LLVM dialect __enzyme_* call with optional enzyme_const/dup/active
+// configurations, recover:
+//    1) the actual arguments to go into the enzyme.*diff op
+//    2) the activities (annotated or inferred) for the arguments and return
+//       value(s)
+void parseEnzymeCall(FunctionOpInterface funcToDiff, ValueRange eoperands,
+                     SmallVectorImpl<Value> &arguments,
+                     SmallVectorImpl<enzyme::Activity> &argActivities,
+                     SmallVectorImpl<enzyme::Activity> &retActivities) {
+  // The first eoperand is a pointer to funcToDiff, so we skip over it.
+  for (unsigned argIdx = 1; argIdx < eoperands.size(); ++argIdx) {
+    Value autodiffArg = eoperands[argIdx];
+    if (auto loadOp =
+            dyn_cast_if_present<LLVM::LoadOp>(autodiffArg.getDefiningOp())) {
+      Value address = loadOp.getAddr();
+      if (auto castOp = dyn_cast_if_present<LLVM::AddrSpaceCastOp>(
+              address.getDefiningOp()))
+        address = castOp.getArg();
+
+      if (auto addressOf =
+              dyn_cast_if_present<LLVM::AddressOfOp>(address.getDefiningOp())) {
+        if (addressOf.getGlobalName() == "enzyme_const") {
+          argActivities.push_back(enzyme::Activity::enzyme_const);
+          arguments.push_back(eoperands[argIdx + 1]);
+          argIdx += 1;
+        } else if (addressOf.getGlobalName() == "enzyme_dup") {
+          argActivities.push_back(enzyme::Activity::enzyme_dup);
+          arguments.push_back(eoperands[argIdx + 1]);
+          arguments.push_back(eoperands[argIdx + 2]);
+          argIdx += 2;
+        } else if (addressOf.getGlobalName() == "enzyme_dupnoneed") {
+          argActivities.push_back(enzyme::Activity::enzyme_dupnoneed);
+          arguments.push_back(eoperands[argIdx + 1]);
+          arguments.push_back(eoperands[argIdx + 2]);
+          argIdx += 2;
+        }
+      }
+    } else {
+      // Use default activities based on the types
+      arguments.push_back(autodiffArg);
+      argActivities.push_back(
+          llvm::TypeSwitch<Type, enzyme::Activity>(autodiffArg.getType())
+              .Case<FloatType, ComplexType>(
+                  [](auto type) { return enzyme::Activity::enzyme_active; })
+              .Case<LLVM::LLVMPointerType, MemRefType>([&](auto type) {
+                // Skip the shadow
+                arguments.push_back(eoperands[argIdx + 1]);
+                argIdx += 1;
+                return enzyme::Activity::enzyme_dup;
+              })
+              .Default(
+                  [](Type type) { return enzyme::Activity::enzyme_const; }));
+    }
+  }
+
+  for (const auto &[i, retType] :
+       llvm::enumerate(funcToDiff.getResultTypes())) {
+    retActivities.push_back(
+        llvm::TypeSwitch<Type, enzyme::Activity>(retType)
+            .Case<FloatType, ComplexType>(
+                [](auto type) { return enzyme::Activity::enzyme_active; })
+            .Default([](Type type) { return enzyme::Activity::enzyme_const; }));
+  }
+}
+
+ArrayAttr getActivityArrayAttr(MLIRContext *ctx,
+                               ArrayRef<enzyme::Activity> activities) {
+  auto attrs = llvm::map_to_vector<8>(
+      activities, [ctx](enzyme::Activity actv) -> Attribute {
+        return enzyme::ActivityAttr::get(ctx, actv);
+      });
+  return ArrayAttr::get(ctx, attrs);
+}
+
+class EnzymeAutodiffOpRaising : public OpRewritePattern<LLVM::CallOp> {
+public:
+  using OpRewritePattern<LLVM::CallOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(LLVM::CallOp op,
+                                PatternRewriter &rewriter) const override {
+    CallInterfaceCallable callable = op.getCallableForCallee();
+    auto callee = dyn_cast<SymbolRefAttr>(callable);
+    if (!callee)
+      return failure();
+    if (!callee.getLeafReference().strref().contains("__enzyme_autodiff"))
+      return failure();
+    Operation::operand_range operands = op.getArgOperands();
+    auto targetAddr = dyn_cast_if_present<LLVM::AddressOfOp>(
+        operands.front().getDefiningOp());
+    if (!targetAddr) {
+      op.emitError() << "first operand of __enzyme_autodiff was not an "
+                        "llvm.mlir.addressof op";
+      return failure();
+    }
+
+    FlatSymbolRefAttr funcToDiffSymbol = targetAddr.getGlobalNameAttr();
+    auto mod = op->getParentOfType<ModuleOp>();
+    auto funcToDiff =
+        cast<FunctionOpInterface>(mod.lookupSymbol(funcToDiffSymbol));
+
+    // Infer the argument activities
+    SmallVector<Value> arguments;
+    SmallVector<enzyme::Activity> argActivities, retActivities;
+    argActivities.reserve(funcToDiff.getNumArguments());
+    retActivities.reserve(funcToDiff.getNumResults());
+    parseEnzymeCall(funcToDiff, operands, arguments, argActivities,
+                    retActivities);
+    MLIRContext *ctx = rewriter.getContext();
+    rewriter.replaceOpWithNewOp<enzyme::AutoDiffOp>(
+        op, op.getResultTypes(), funcToDiffSymbol.getValue(), arguments,
+        getActivityArrayAttr(ctx, argActivities),
+        getActivityArrayAttr(ctx, retActivities),
+        /*width=*/1, /*strong_zero=*/false);
+    return success();
+  }
 };
 
 template <typename TargetOp>
@@ -763,6 +885,7 @@ struct LibDeviceFuncsRaisingPass
     populateLibDeviceFuncsToOpsPatterns(getOperation()->getContext(), patterns);
     if (remove_freeze)
       patterns.add<RemoveFreeze>(getOperation()->getContext());
+    patterns.add<EnzymeAutodiffOpRaising>(getOperation()->getContext());
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns)))) {
       emitError(getOperation()->getLoc()) << "failed to raise __nv functions";
       return signalPassFailure();

@@ -1456,6 +1456,15 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
         if (blockArg.getOwner() == &condOp->getParentRegion()->front()) {
           newArg = loop.getOperand(blockArg.getArgNumber());
         }
+      } else if (auto selectOp = arg.getDefiningOp<arith::SelectOp>()) {
+        auto trueBlockArg = dyn_cast<BlockArgument>(selectOp.getTrueValue());
+        auto falseBlockArg = dyn_cast<BlockArgument>(selectOp.getFalseValue());
+
+        if (trueBlockArg && !falseBlockArg) {
+          newArg = loop.getOperand(trueBlockArg.getArgNumber());
+        } else if (!trueBlockArg && falseBlockArg) {
+          newArg = loop.getOperand(falseBlockArg.getArgNumber());
+        }
       }
       forArgs.push_back(newArg);
     }
