@@ -81,10 +81,10 @@ def MarkFunctionMemoryEffectsPass : Pass<"mark-func-memory-effects", "ModuleOp">
 def ArithRaisingPass : Pass<"arith-raise"> {
   let summary = "Raise Arith to mhlo";
   let dependentDialects = [
-    "arith::ArithDialect", 
-    "mhlo::MhloDialect", 
+    "arith::ArithDialect",
+    "mhlo::MhloDialect",
     "stablehlo::StablehloDialect",
-    "chlo::ChloDialect", 
+    "chlo::ChloDialect",
     "enzyme::EnzymeDialect"
   ];
   let options = [Option<
@@ -105,8 +105,13 @@ def ConsumingInterpreterPass : Pass<"enzyme-consuming-transform-interpreter"> {
 
 def EnzymeHLOOptPass : Pass<"enzyme-hlo-opt"> {
   let summary = "Optimize stablehlo";
-  let dependentDialects =
-      ["stablehlo::StablehloDialect", "tensor::TensorDialect", "enzymexla::EnzymeXLADialect", "chlo::ChloDialect"];
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "tensor::TensorDialect",
+    "enzyme::EnzymeDialect",
+    "enzymexla::EnzymeXLADialect",
+    "chlo::ChloDialect"
+  ];
   let options = [
     Option<
         /*C++ variable name=*/"all_finite",
