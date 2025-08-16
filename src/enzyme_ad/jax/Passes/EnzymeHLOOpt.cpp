@@ -7397,8 +7397,7 @@ struct CompareAbs
         continue;
       if (!cast<mlir::enzyme::AutoDiffTypeInterface>(
                cmpOp->getOperand(1 - i).getType())
-               .isZero(cmpOp->getOperand(1 - i))
-               .succeeded())
+               .isZero(cmpOp->getOperand(1 - i)))
         continue;
 
       auto dir = cmpOp.getComparisonDirection();
@@ -7472,8 +7471,7 @@ struct CompareMul
         continue;
       if (!cast<mlir::enzyme::AutoDiffTypeInterface>(
                cmpOp->getOperand(1 - i).getType())
-               .isZero(cmpOp->getOperand(1 - i))
-               .succeeded())
+               .isZero(cmpOp->getOperand(1 - i)))
         continue;
 
       for (int j = 0; j < 2; j++) {
@@ -7585,8 +7583,7 @@ struct CompareConvert
 
       if (!cast<mlir::enzyme::AutoDiffTypeInterface>(
                cmpOp->getOperand(1 - i).getType())
-               .isZero(cmpOp->getOperand(1 - i))
-               .succeeded())
+               .isZero(cmpOp->getOperand(1 - i)))
         continue;
 
       SplatElementsAttr splat;
