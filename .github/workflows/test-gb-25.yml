@@ -47,8 +47,7 @@ jobs:
         julia_version:
           - '1.11'
         xla_commit:
-          - ''
-          - '38285eb34756919913c5e575b12403f4a1c5e0e0'
+          - '1ac176a9b8b4800bc2753d944eec62a39e6189b8'
         gb25_commit:
           - 'mg/sharded-factors'
           # - '0123456789abcdef0123456789abcdef01234567'
@@ -178,9 +177,6 @@ jobs:
       - name: Run GB-25 simulation
         timeout-minutes: 60
         run: |
-          export GB25_GRID_X="6144"
-          export GB25_GRID_Y="1536"
-          export GB25_GRID_Z="4"
           export XLA_FLAGS='--xla_dump_to=${{ env.GB25_DIR }}/xla_dump'
           timeout --signal=TERM --verbose 59m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_run.jl
         working-directory: ${{ env.GB25_DIR }}
