@@ -2344,7 +2344,7 @@ struct MoveSelectToAffine : public OpRewritePattern<arith::SelectOp> {
 
     bool changed = false;
     auto condOp = ifOp.getCondition().getDefiningOp();
-    if (isa<AndIOp, OrIOp>(condOp)) {
+    if (condOp && isa<AndIOp, OrIOp>(condOp)) {
       // condition, Negated
 
       for (auto &opv : condOp->getOpOperands()) {
