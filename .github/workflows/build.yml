@@ -63,6 +63,15 @@ jobs:
     env:
       HERMETIC_PYTHON_VERSION: ${{ matrix.python }}
     steps:
+      - name: Free Disk Space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+        if: ${{ startsWith(matrix.os, 'ubuntu-') }}
+        continue-on-error: true
+      - name: Clean `/opt`
+        run: sudo rm -rf /opt/*
+        continue-on-error: true
       - name: Check GPUs
         if: ${{ contains(matrix.os, 'a100') }}
         run: |
@@ -119,7 +128,23 @@ jobs:
       - name: Build enzymexlamlir-opt
         timeout-minutes: 180
         run: |
-          bazel build $BAZEL_FLAGS --color=yes //:enzymexlamlir-opt --test_output=errors
+          bazel build $BAZEL_FLAGS --color=yes -c dbg //:enzymexlamlir-opt --test_output=errors
+      - name: Run lit tests under lldb (macos segfault debugging)
+        if: ${{ contains(matrix.os, 'macos') }}
+        run: |
+          echo 'run' > lldb_cmds
+          echo 'bt' >> lldb_cmds
+          echo 'quit' >> lldb_cmds
+          lldb --batch -s lldb_cmds -- ./bazel-bin/enzymexlamlir-opt  --pass-pipeline="builtin.module(enzyme-hlo-generate-td{patterns=concat_reshape_dot_general},transform-interpreter,enzyme-hlo-remove-transform)" test/lit_tests/concatreshapedotgeneral.mlir
+        continue-on-error: true
+      - name: Run lit tests under lldb 2 (macos segfault debugging)
+        if: ${{ contains(matrix.os, 'macos') }}
+        run: |
+          echo 'run' > lldb_cmds
+          echo 'bt' >> lldb_cmds
+          echo 'quit' >> lldb_cmds
+          lldb --batch -s lldb_cmds -- ./bazel-bin/enzymexlamlir-opt --pass-pipeline="builtin.module(enzyme-hlo-generate-td{patterns=concat_reshape_gather},transform-interpreter,enzyme-hlo-remove-transform)" test/lit_tests/concatreshapegather.mlir
+        continue-on-error: true
       - name: Upload enzymexlamlir-opt
         uses: actions/upload-artifact@v4
         with:
