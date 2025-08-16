@@ -7397,7 +7397,8 @@ struct CompareAbs
         continue;
       if (!cast<mlir::enzyme::AutoDiffTypeInterface>(
                cmpOp->getOperand(1 - i).getType())
-               .isZero(cmpOp->getOperand(1 - i)))
+               .isZero(cmpOp->getOperand(1 - i))
+               .succeeded())
         continue;
 
       auto dir = cmpOp.getComparisonDirection();
@@ -7471,7 +7472,8 @@ struct CompareMul
         continue;
       if (!cast<mlir::enzyme::AutoDiffTypeInterface>(
                cmpOp->getOperand(1 - i).getType())
-               .isZero(cmpOp->getOperand(1 - i)))
+               .isZero(cmpOp->getOperand(1 - i))
+               .succeeded())
         continue;
 
       for (int j = 0; j < 2; j++) {
@@ -7583,7 +7585,8 @@ struct CompareConvert
 
       if (!cast<mlir::enzyme::AutoDiffTypeInterface>(
                cmpOp->getOperand(1 - i).getType())
-               .isZero(cmpOp->getOperand(1 - i)))
+               .isZero(cmpOp->getOperand(1 - i))
+               .succeeded())
         continue;
 
       SplatElementsAttr splat;
@@ -22603,8 +22606,8 @@ LogicalResult generalConcatReshapeOpToBatch(stablehlo::ConcatenateOp concatOp,
   }
 
   static int64_t concatReshapeToBatchCounter = 0;
-  StringRef wrapperFuncName = "enzymexla_unbatched_concatReshapeOpToBatch_" +
-                              (std::to_string(concatReshapeToBatchCounter++));
+  std::string wrapperFuncName = "enzymexla_unbatched_concatReshapeOpToBatch_" +
+                                (std::to_string(concatReshapeToBatchCounter++));
 
   func::FuncOp func;
   {
