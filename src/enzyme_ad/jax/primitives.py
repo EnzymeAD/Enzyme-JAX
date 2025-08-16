@@ -864,6 +864,16 @@ def ret_activity_from_pipeline(pass_pipeline):
     return pre_act, acts, post_act
 
 
+def _get_symname(f):
+    if hasattr(f, "sym_name") and f.sym_name is not None:
+        try:
+            if hasattr(f.sym_name, "value") and f.sym_name.value is not None:
+                return str(f.sym_name.value)
+        except:
+            pass
+    return None
+
+
 def _enzyme_primal_lowering(
     ctx: jax_mlir.LoweringRuleContext,
     *args_flat: ir.Value,
@@ -969,11 +979,13 @@ def _enzyme_primal_lowering(
             fn = None
             pushtop = []
             for f in nmod.body:
-                if "top_k_gt" in f.sym_name.value:
-                    pushtop.append(f)
+                val = _get_symname(f)
+                if val:
+                    if "top_k_gt" in val:
+                        pushtop.append(f)
+                    if val == name:
+                        fn = f
                 mod.regions[0].blocks[0].append(f)
-                if f.sym_name.value == name:
-                    fn = f
             if fn is None:
                 raise AssertionError(
                     "Could not find function named "
