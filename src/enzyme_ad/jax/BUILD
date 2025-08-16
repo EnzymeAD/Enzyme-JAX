@@ -26,6 +26,7 @@ cc_library(
     srcs = ["gpu.cc"],
     copts = ["-Wno-vla-cxx-extension"],
     deps = [
+        "@llvm-project//mlir:CAPIIR",
         "@xla//xla/ffi:ffi_api",
         "@xla//xla/ffi/api:ffi",
     ],
@@ -35,6 +36,7 @@ cc_library(
     name = "cpu",
     srcs = ["cpu.cc"],
     deps = [
+        "@llvm-project//mlir:CAPIIR",
         "@xla//xla/service:custom_call_status",
         "@xla//xla/service:custom_call_target_registry",
     ],

@@ -2,6 +2,8 @@
 #include "xla/service/custom_call_target_registry.h"
 #include <cstring>
 
+#include "mlir-c/Support.h"
+
 template <bool withError> struct CallInfo;
 
 template <> struct CallInfo<false> {
@@ -28,7 +30,7 @@ void forwarding_custom_call(void *out, const void **in, const void *opaque_ptr,
   }
 }
 
-extern "C" void RegisterEnzymeXLACPUHandler() {
+extern "C" MLIR_CAPI_EXPORTED void RegisterEnzymeXLACPUHandler() {
   xla::CustomCallTargetRegistry::Global()->Register(
       "enzymexla_compile_cpu", (void *)&forwarding_custom_call<false>, "Host");
   xla::CustomCallTargetRegistry::Global()->Register(
