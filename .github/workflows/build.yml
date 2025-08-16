@@ -156,9 +156,6 @@ jobs:
           name: Enzyme-JAX-Wheel-${{ matrix.os }}-${{ matrix.python }}
           path: "bazel-bin/*.whl"
           retention-days: 90
-      - name: Setup upterm session
-        uses: lhotari/action-upterm@v1
-        if: ${{ contains(matrix.os, 'macOS') }}
       - name: Run lit tests
         run: |
           bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/lit_tests/...
