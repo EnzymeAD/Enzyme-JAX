@@ -1,6 +1,8 @@
 #include "xla/ffi/api/ffi.h"
 #include "xla/ffi/ffi_api.h"
 
+#include "mlir-c/Support.h"
+
 template <bool withError> struct CallInfo;
 
 template <> struct CallInfo<false> {
@@ -138,7 +140,7 @@ XLA_FFI_Error *execute(XLA_FFI_CallFrame *call_frame) {
   return nullptr;
 }
 
-extern "C" void RegisterEnzymeXLAGPUHandler() {
+extern "C" MLIR_CAPI_EXPORTED void RegisterEnzymeXLAGPUHandler() {
   XLA_FFI_Handler_Bundle bundle = {instantiate, prepare, initialize<false>,
                                    execute<false>};
 
