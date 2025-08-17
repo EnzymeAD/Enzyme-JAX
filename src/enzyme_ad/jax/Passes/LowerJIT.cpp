@@ -276,7 +276,8 @@ bool initJIT() {
   return true;
 }
 
-extern "C" MLIR_CAPI_EXPORTED void EnzymeJaXMapSymbol(const char *name, void *symbol) {
+extern "C" MLIR_CAPI_EXPORTED void EnzymeJaXMapSymbol(const char *name,
+                                                      void *symbol) {
   initJIT();
   MappedSymbols[JIT->mangleAndIntern(name)] = llvm::orc::ExecutorSymbolDef(
       llvm::orc::ExecutorAddr::fromPtr(symbol), llvm::JITSymbolFlags());
