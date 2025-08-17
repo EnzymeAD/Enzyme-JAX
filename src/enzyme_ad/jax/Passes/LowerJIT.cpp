@@ -80,6 +80,8 @@
 
 #include "mlir/Target/LLVMIR/Export.h"
 
+#include "mlir-c/Support.h"
+
 #define DEBUG_TYPE "lower-jit"
 
 namespace mlir {
@@ -274,7 +276,7 @@ bool initJIT() {
   return true;
 }
 
-extern "C" void EnzymeJaXMapSymbol(const char *name, void *symbol) {
+extern "C" MLIR_CAPI_EXPORTED void EnzymeJaXMapSymbol(const char *name, void *symbol) {
   initJIT();
   MappedSymbols[JIT->mangleAndIntern(name)] = llvm::orc::ExecutorSymbolDef(
       llvm::orc::ExecutorAddr::fromPtr(symbol), llvm::JITSymbolFlags());
