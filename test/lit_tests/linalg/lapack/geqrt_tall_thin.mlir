@@ -8,7 +8,7 @@ module {
 }
 
 // CPU:  llvm.func @enzymexla_wrapper_lapacke_sgeqrt_[[WRAPPER_ID:[0-9]+]](%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr) {
-// CPU-NEXT:    %0 = llvm.mlir.constant(101 : i64) : i64
+// CPU-NEXT:    %0 = llvm.mlir.constant(102 : i64) : i64
 // CPU-NEXT:    %1 = llvm.mlir.constant(64 : i64) : i64
 // CPU-NEXT:    %2 = llvm.mlir.constant(32 : i64) : i64
 // CPU-NEXT:    %3 = llvm.call @enzymexla_lapacke_sgeqrt_(%0, %1, %2, %2, %arg0, %1, %arg1, %2) : (i64, i64, i64, i64, !llvm.ptr, i64, !llvm.ptr, i64) -> i64
