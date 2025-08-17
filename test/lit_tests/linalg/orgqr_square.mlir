@@ -17,7 +17,7 @@ module {
 // CPU-NEXT:  }
 // CPU-NEXT:  llvm.func @enzymexla_lapacke_sorgqr_(i64, i64, i64, i64, !llvm.ptr, i64, !llvm.ptr) -> i64
 // CPU-NEXT:  func.func @main(%arg0: tensor<64x64xf32>, %arg1: tensor<64xf32>) -> tensor<64x64xf32> {
-// CPU-NEXT:    %0 = enzymexla.jit_call @enzymexla_wrapper_lapacke_sorgqr_[[WRAPPER_ID]] (%arg0, %arg1) {operand_layouts = [dense<[0, 1]> : tensor<2xindex>, dense<0> : tensor<1xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 0, operand_tuple_indices = []>], result_layouts = [dense<[0, 1]> : tensor<2xindex>], xla_side_effect_free} : (tensor<64x64xf32>, tensor<64xf32>) -> tensor<64x64xf32>
+// CPU-NEXT:    %0 = enzymexla.jit_call @enzymexla_wrapper_lapacke_sorgqr_[[WRAPPER_ID]] (%arg0, %arg1) {operand_layouts = [dense<[0, 1]> : tensor<2xindex>, dense<0> : tensor<1xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>], result_layouts = [dense<[0, 1]> : tensor<2xindex>], xla_side_effect_free} : (tensor<64x64xf32>, tensor<64xf32>) -> tensor<64x64xf32>
 // CPU-NEXT:    return %0 : tensor<64x64xf32>
 // CPU-NEXT:  }
 
