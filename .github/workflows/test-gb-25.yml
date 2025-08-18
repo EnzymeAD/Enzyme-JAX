@@ -67,7 +67,7 @@ jobs:
           # Artifact names cannot include forward slashes and some other characters, here we
           # do some sanitisation.
           ARTIFACT_INDEX=${{ matrix.julia_version }}-${{ matrix.xla_commit }}-${{ matrix.gb25_commit }}-${{ matrix.reactant_commit }}
-          echo "ARTIFACT_INDEX=${ARTIFACT_INDEX/\//_}" >> "${GITHUB_ENV}"
+          echo "ARTIFACT_INDEX=${ARTIFACT_INDEX//\//_}" >> "${GITHUB_ENV}"
       - uses: bazel-contrib/setup-bazel@0.15.0
         name: Set up Bazel
         with:
