@@ -285,6 +285,10 @@ def ApplyPadReduceWindowPatterns : EnzymeHLOPatternOp<
     "pad_reduce_window"> {
   let patterns = ["PadReduceWindow"];
 }
+def ApplyConvolutionPadPatterns : EnzymeHLOPatternOp<
+    "convolution_pad"> {
+  let patterns = ["ConvolutionPad"];
+}
 def ReshapeEmptyBroadcastPatterns : EnzymeHLOPatternOp<
     "reshape_empty_broadcast"> {
   let patterns = ["ReshapeEmptyBroadcast"];
@@ -465,14 +469,6 @@ def ApplyAllFiniteIsNegInfPatterns : EnzymeHLOPatternOp<
     "all_finite_is_neg_inf"> {
   let patterns = ["AllFiniteIsNegInf"];
 }
-def ApplyNoNanPatterns : EnzymeHLOPatternOp<
-    "no_nan"> {
-  let patterns = ["NoNan"];
-}
-def ApplyNoNanSelfSubSimplify : EnzymeHLOPatternOp<
-    "no_nan_self_sub_simplify"> {
-  let patterns = ["NoNanSelfSubSimplify"];
-}
 
 def ApplyConcatReshapeSlicePatterns : EnzymeHLOPatternOp<
     "concat_reshape_slice"> {
@@ -492,6 +488,36 @@ def ApplyConcatElementwisePatterns : EnzymeHLOPatternOp<
 def ApplyConcatReshapeElementwisePatterns : EnzymeHLOPatternOp<
     "concat_reshape_elementwise"> {
   let patterns = ["ConcatReshapeElementwise"];
+}
+
+def ApplyNoNanCompareSimplify : EnzymeHLOParameterizedPatternOp<
+    "no_nan_compare_simplify"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
+def ApplyNoNanSelfSubSimplify : EnzymeHLOParameterizedPatternOp<
+    "no_nan_self_sub_simplify"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
 }
 
 // benefit 65k + max_constant_expansion flag
@@ -884,6 +910,26 @@ def ApplyCSERotatePatterns : EnzymeHLOPatternOp<
 def ApplyCSEExtendPatterns : EnzymeHLOPatternOp<
     "cse_extend"> {
   let patterns = ["CSE<enzymexla::ExtendOp>"];
+}
+
+def CompareAbs : EnzymeHLOPatternOp<
+    "compare_abs"> {
+  let patterns = ["CompareAbs"];
+}
+
+def CompareMul : EnzymeHLOPatternOp<
+    "compare_mul"> {
+  let patterns = ["CompareMul"];
+}
+
+def CompareConvert : EnzymeHLOPatternOp<
+    "compare_convert"> {
+  let patterns = ["CompareConvert"];
+}
+
+def AddSelects : EnzymeHLOPatternOp<
+    "add_selects"> {
+  let patterns = ["AddSelects"];
 }
 
 def CompareOpCanonPatterns : EnzymeHLOPatternOp<
@@ -1321,6 +1367,12 @@ def CompareIotaConstSimplifyPatterns : EnzymeHLOPatternOp<
   "compare_iota_const_simplify"
 > {
   let patterns = ["CompareIotaConstSimplify"];
+}
+
+def CompareNegateConstSimplifyPatterns : EnzymeHLOPatternOp<
+  "compare_negate_const_simplify"
+> {
+  let patterns = ["CompareNegateConstSimplify"];
 }
 
 def BroadcastIotaSimplifyPatterns : EnzymeHLOPatternOp<
@@ -1856,6 +1908,11 @@ def TransposeRotate : EnzymeHLOPatternOp<
   let patterns = ["TransposeRotate"];
 }
 
+def SelectPad : EnzymeHLOPatternOp<
+    "select_pad"> {
+  let patterns = ["SelectPad"];
+}
+
 def LowerExtend : EnzymeHLOPatternOp<
     "lower_extend"> {
   let patterns = ["LowerExtend"];
@@ -1869,6 +1926,16 @@ def ConcatMultiPad : EnzymeHLOPatternOp<
 def ConcatWrap : EnzymeHLOPatternOp<
     "concat_wrap"> {
   let patterns = ["ConcatWrap"];
+}
+
+def WidenWrap : EnzymeHLOPatternOp<
+    "widen_wrap"> {
+  let patterns = ["WidenWrap"];
+}
+
+def WidenExtend : EnzymeHLOPatternOp<
+    "widen_extend"> {
+  let patterns = ["WidenExtend"];
 }
 
 def ConcatConcatAxisSwap : EnzymeHLOPatternOp<
@@ -2130,4 +2197,36 @@ def ApplyDotGeneralReshapePatterns : EnzymeHLOPatternOp<"dot_general_reshape"> {
 
 def ApplyDiagonalTensorDotGeneralRewritePatterns : EnzymeHLOPatternOp<"diagonal_tensor_dot_general_rewrite"> {
   let patterns = ["DiagonalTensorDotGeneralRewrite"];
+}
+
+def ApplySelectSimplifyPatterns : EnzymeHLOPatternOp<"select_simplify"> {
+  let patterns = ["SelectSimplify"];
+}
+
+def ApplyElementwisePadPatterns : EnzymeHLOPatternOp<"elementwise_pad"> {
+  let patterns = ["ElementwisePad"];
+}
+
+def ApplyConcatenateSubtractToSubtractPadPatterns : EnzymeHLOPatternOp<"concatenate_subtract_to_subtract_pad"> {
+  let patterns = ["ConcatenateSubtractToSubtractPad"];
+}
+
+def ApplyConcatenateBroadcastInDimPatterns : EnzymeHLOPatternOp<"concatenate_broadcast_in_dim"> {
+  let patterns = ["ConcatenateBroadcastInDim"];
+}
+
+def ApplyElementwiseRotatePatterns : EnzymeHLOPatternOp<"elementwise_rotate"> {
+  let patterns = ["ElementwiseRotate"];
+}
+
+def ApplyElementwiseWrapPatterns : EnzymeHLOPatternOp<"elementwise_wrap"> {
+  let patterns = ["ElementwiseWrap"];
+}
+
+def ApplyElementwiseExtendPatterns : EnzymeHLOPatternOp<"elementwise_extend"> {
+  let patterns = ["ElementwiseExtend"];
+}
+
+def ApplySubtractMultiplyConstToAddMulConstPatterns : EnzymeHLOPatternOp<"subtract_multiply_const_to_add_mul_const"> {
+  let patterns = ["SubtractMultiplyConstToAddMulConst"];
 }

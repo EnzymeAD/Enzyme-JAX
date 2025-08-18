@@ -2,6 +2,22 @@
 #include "xla/service/custom_call_target_registry.h"
 #include <cstring>
 
+#if (defined(_WIN32) || defined(__CYGWIN__)) &&                                \
+    !defined(MLIR_CAPI_ENABLE_WINDOWS_DLL_DECLSPEC)
+// Visibility annotations disabled.
+#define MLIR_CAPI_EXPORTED
+#elif defined(_WIN32) || defined(__CYGWIN__)
+// Windows visibility declarations.
+#if MLIR_CAPI_BUILDING_LIBRARY
+#define MLIR_CAPI_EXPORTED __declspec(dllexport)
+#else
+#define MLIR_CAPI_EXPORTED __declspec(dllimport)
+#endif
+#else
+// Non-windows: use visibility attributes.
+#define MLIR_CAPI_EXPORTED __attribute__((visibility("default")))
+#endif
+
 template <bool withError> struct CallInfo;
 
 template <> struct CallInfo<false> {
@@ -28,7 +44,7 @@ void forwarding_custom_call(void *out, const void **in, const void *opaque_ptr,
   }
 }
 
-extern "C" void RegisterEnzymeXLACPUHandler() {
+extern "C" MLIR_CAPI_EXPORTED void RegisterEnzymeXLACPUHandler() {
   xla::CustomCallTargetRegistry::Global()->Register(
       "enzymexla_compile_cpu", (void *)&forwarding_custom_call<false>, "Host");
   xla::CustomCallTargetRegistry::Global()->Register(

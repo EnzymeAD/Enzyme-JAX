@@ -30,6 +30,7 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
+#include "Interfaces/AutoDiffTypeInterface.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
@@ -2529,6 +2530,7 @@ struct AffineToStableHLORaisingPass
         for (auto arg : operands0) {
 
           Attribute attr;
+
           if (matchPattern(arg, m_Constant(&attr))) {
             affine::AffineValueMap accessMap(AffineMap::get(arg.getContext()),
                                              {});
@@ -2539,15 +2541,21 @@ struct AffineToStableHLORaisingPass
             auto unrankedTensorType = RankedTensorType::get({}, ET);
             OpBuilder builder(arg.getContext());
             builder.setInsertionPointToEnd(newBlock);
-            auto newConst = builder.create<stablehlo::ConstantOp>(
-                arg.getLoc(), unrankedTensorType,
-                SplatElementsAttr::get(
-                    unrankedTensorType,
-                    ArrayRef<Attribute>(
-                        isIndex ? IntegerAttr::get(
-                                      ET, cast<IntegerAttr>(attr).getValue())
-                                : attr)));
-            auto newVal = newConst.getResult();
+            Value newVal;
+            if (arg.getDefiningOp<ub::PoisonOp>()) {
+              newVal = cast<mlir::enzyme::AutoDiffTypeInterface>(arg.getType())
+                           .createNullValue(builder, arg.getLoc());
+            } else {
+              auto newConst = builder.create<stablehlo::ConstantOp>(
+                  arg.getLoc(), unrankedTensorType,
+                  SplatElementsAttr::get(
+                      unrankedTensorType,
+                      ArrayRef<Attribute>(
+                          isIndex ? IntegerAttr::get(
+                                        ET, cast<IntegerAttr>(attr).getValue())
+                                  : attr)));
+              newVal = newConst.getResult();
+            }
             mapping.map(arg, newVal);
             maps[newVal] = accessMap;
             continue;
@@ -2759,9 +2767,9 @@ struct AffineToStableHLORaisingPass
 
       {
         OpBuilder builder(g);
-        builder.create<enzymexla::XLAWrapperOp>(g->getLoc(),
-                                                SymbolRefAttr::get(newFunc),
-                                                llvm::to_vector(operands));
+        builder.create<enzymexla::XLAWrapperOp>(
+            g->getLoc(), SymbolRefAttr::get(newFunc), llvm::to_vector(operands),
+            nullptr, nullptr);
         g->erase();
         anyRaised = true;
       }

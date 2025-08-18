@@ -1891,7 +1891,7 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
 
         auto addressOfWrapper =
             ctorBuilder.create<LLVM::AddressOfOp>(loc, fatBinWrapper);
-        auto bitcastOfWrapper = ctorBuilder.create<LLVM::BitcastOp>(
+        auto bitcastOfWrapper = ctorBuilder.create<LLVM::AddrSpaceCastOp>(
             loc, llvmPointerType, addressOfWrapper);
 
         auto cudaRegisterFatbinFn = LLVM::lookupOrCreateFn(
@@ -1954,8 +1954,8 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
               rewriter.create<LLVM::ReturnOp>(loc, ValueRange());
             }
             auto aoo = ctorBuilder.create<LLVM::AddressOfOp>(loc, stub);
-            auto bitcast =
-                ctorBuilder.create<LLVM::BitcastOp>(loc, llvmPointerType, aoo);
+            auto bitcast = ctorBuilder.create<LLVM::AddrSpaceCastOp>(
+                loc, llvmPointerType, aoo);
 
             Type tys[] = {llvmPointerType, llvmPointerType, llvmPointerType,
                           llvmPointerType, llvmInt32Type,   llvmPointerType,
@@ -2003,8 +2003,8 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
             auto stub = moduleOp.lookupSymbol<LLVM::GlobalOp>(g.getName());
             assert(stub);
             auto aoo = ctorBuilder.create<LLVM::AddressOfOp>(loc, stub);
-            auto bitcast =
-                ctorBuilder.create<LLVM::BitcastOp>(loc, llvmPointerType, aoo);
+            auto bitcast = ctorBuilder.create<LLVM::AddrSpaceCastOp>(
+                loc, llvmPointerType, aoo);
             auto globalTy = stub.getGlobalType();
             // TODO This should actually be the GPUModuleOp's data layout I
             // believe, there were problems with assigning the data layout to
@@ -2094,7 +2094,8 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
       SymbolTable::lookupSymbolIn(moduleOp, funcStubName));
   assert(!!stub);
   auto aoo = rewriter.create<LLVM::AddressOfOp>(loc, stub);
-  auto bitcast = rewriter.create<LLVM::BitcastOp>(loc, llvmPointerType, aoo);
+  auto bitcast =
+      rewriter.create<LLVM::AddrSpaceCastOp>(loc, llvmPointerType, aoo);
 
   Value zero = rewriter.create<LLVM::ConstantOp>(loc, llvmInt32Type, 0);
   auto nullpointer = rewriter.create<LLVM::ZeroOp>(loc, llvmPointerType);
@@ -2119,8 +2120,8 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
     x = rewriter.create<LLVM::ZExtOp>(x.getLoc(), i64, x);
     y = rewriter.create<LLVM::ZExtOp>(y.getLoc(), i64, y);
 
-    x = rewriter.create<LLVM::ShlOp>(
-        x.getLoc(), x, rewriter.create<LLVM::ConstantOp>(x.getLoc(), i64, 32));
+    y = rewriter.create<LLVM::ShlOp>(
+        y.getLoc(), y, rewriter.create<LLVM::ConstantOp>(y.getLoc(), i64, 32));
     args.push_back(rewriter.create<LLVM::OrOp>(x.getLoc(), x, y));
     args.push_back(z);
   };
@@ -3109,7 +3110,8 @@ struct ReconcileUnrealizedPointerCasts
     if (!(isa<LLVM::LLVMPointerType>(inputTy) &&
           isa<LLVM::LLVMPointerType>(outputTy)))
       return failure();
-    rewriter.replaceOpWithNewOp<LLVM::BitcastOp>(ucc, outputTy, inputs[0]);
+    rewriter.replaceOpWithNewOp<LLVM::AddrSpaceCastOp>(ucc, outputTy,
+                                                       inputs[0]);
     return success();
   }
 };
@@ -3329,9 +3331,8 @@ enum class IntrType : uint32_t {
 // `indexBitwidth`, sign-extend or truncate the resulting value to match the
 // bitwidth expected by the consumers of the value.
 template <typename Op, typename XOp, typename YOp, typename ZOp>
-struct OpLowering : public OpRewritePattern<Op> {
+struct OpLowering : public OpConversionPattern<Op> {
 private:
-  const LLVMTypeConverter &converter;
   unsigned indexBitwidth;
   IndexKind indexKind;
   IntrType intrType;
@@ -3339,22 +3340,23 @@ private:
 public:
   explicit OpLowering(const LLVMTypeConverter &typeConverter,
                       PatternBenefit benefit = 1)
-      : OpRewritePattern<Op>(&typeConverter.getContext(), benefit),
-        converter(typeConverter),
+      : OpConversionPattern<Op>(typeConverter, &typeConverter.getContext(),
+                                benefit),
         indexBitwidth(typeConverter.getIndexTypeBitwidth()),
         indexKind(IndexKind::Other), intrType(IntrType::None) {}
 
   explicit OpLowering(const LLVMTypeConverter &typeConverter,
                       IndexKind indexKind, IntrType intrType,
                       PatternBenefit benefit = 1)
-      : OpRewritePattern<Op>(&typeConverter.getContext(), benefit),
-        converter(typeConverter),
+      : OpConversionPattern<Op>(typeConverter, &typeConverter.getContext(),
+                                benefit),
         indexBitwidth(typeConverter.getIndexTypeBitwidth()),
         indexKind(indexKind), intrType(intrType) {}
 
   // Convert the kernel arguments to an LLVM type, preserve the rest.
-  LogicalResult matchAndRewrite(Op op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult
+  matchAndRewrite(Op op, typename OpConversionPattern<Op>::OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
     auto loc = op->getLoc();
     MLIRContext *context = rewriter.getContext();
     Operation *newOp;
@@ -3511,6 +3513,24 @@ populateCStyleFuncLoweringPatterns(RewritePatternSet &patterns,
   patterns.add<CallOpLowering, FuncOpLowering, ReturnOpLowering>(typeConverter);
 }
 
+static void removeUnsupportedLifeTimes(mlir::Operation *root) {
+  llvm::SmallVector<mlir::Operation *> toErase;
+  root->walk([&](mlir::Operation *op) {
+    if (auto lifetimeStart = llvm::dyn_cast<mlir::LLVM::LifetimeStartOp>(op)) {
+      if (!llvm::isa_and_nonnull<mlir::LLVM::AllocaOp, mlir::LLVM::PoisonOp>(
+              lifetimeStart.getPtr().getDefiningOp()))
+        toErase.push_back(op);
+    } else if (auto lifetimeEnd =
+                   llvm::dyn_cast<mlir::LLVM::LifetimeEndOp>(op)) {
+      if (!llvm::isa_and_nonnull<mlir::LLVM::AllocaOp, mlir::LLVM::PoisonOp>(
+              lifetimeEnd.getPtr().getDefiningOp()))
+        toErase.push_back(op);
+    }
+  });
+  for (mlir::Operation *op : toErase)
+    op->erase();
+}
+
 //===-----------------------------------------------------------------------===/
 
 namespace {
@@ -3566,16 +3586,28 @@ struct ConvertPolygeistToLLVMPass
     for (auto mod : gmods) {
       RewritePatternSet patterns(&getContext());
 
-      GreedyRewriteConfig config;
-
       // Insert our custom version of GPUFuncLowering
+      ConversionTarget target(*mod->getContext());
       if (useCStyleMemRef) {
         populateCStyleGPUFuncLoweringPatterns(patterns, converter, backend,
                                               false);
+        if (backend == "cuda") {
+          target.addIllegalDialect<gpu::GPUDialect>();
+          target.addLegalOp<gpu::GPUModuleOp, gpu::GPUFuncOp, gpu::ReturnOp>();
+          target.addLegalDialect<NVVM::NVVMDialect, LLVM::LLVMDialect>();
+          target.addLegalOp<UnrealizedConversionCastOp>();
+        }
       }
-      if (failed(
-              applyPatternsAndFoldGreedily(mod, std::move(patterns), config))) {
-        signalPassFailure();
+
+      ConversionConfig conversionConfig;
+      if (failed(applyPartialConversion(mod, target, std::move(patterns),
+                                        conversionConfig))) {
+        mod->emitError() << "failed to apply conversion patterns";
+        return signalPassFailure();
+      }
+      if (failed(applyPatternsAndFoldGreedily(mod, {}))) {
+        mod->emitError() << "failed to apply folding";
+        return signalPassFailure();
       }
     };
 
@@ -3713,6 +3745,8 @@ struct ConvertPolygeistToLLVMPass
         }
       });
     }
+
+    removeUnsupportedLifeTimes(m);
   }
 
   void runOnOperation() override {

@@ -557,6 +557,14 @@ bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type Ty) {
   return allowOnFloatingPointMath;
 }
 
+bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type Ty,
+                          mlir::Operation *op) {
+  Ty = getElementTypeOrSelf(Ty);
+  if (Ty.isInteger())
+    return true;
+  return allowOnFloatingPointMath || guaranteedNoNanResult(op);
+}
+
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy,
                           Type inTy) {
   outTy = getElementTypeOrSelf(outTy);
@@ -564,6 +572,293 @@ bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy,
   if (outTy.isInteger() && inTy.isInteger())
     return true;
   return allowOnFloatingPointMath;
+}
+
+bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy, Type inTy,
+                          mlir::Operation *op) {
+  outTy = getElementTypeOrSelf(outTy);
+  inTy = getElementTypeOrSelf(inTy);
+  if (outTy.isInteger() && inTy.isInteger())
+    return true;
+  return allowOnFloatingPointMath || guaranteedNoNanResult(op);
+}
+
+NoNanResultAnalysis initNoNanResultAnalysis() {
+  auto finiteAnalysis = std::make_shared<FiniteResultAnalysis>();
+  auto noNanAnalysis = std::make_shared<NoNanResultAnalysis>();
+  noNanAnalysis->setFiniteResultAnalysis(finiteAnalysis);
+  finiteAnalysis->setNoNanResultAnalysis(noNanAnalysis);
+  return *noNanAnalysis;
+}
+
+bool NoNanResultAnalysis::constantIntCheck(DenseElementsAttr attr) {
+  return true;
+}
+
+bool NoNanResultAnalysis::constantFloatCheck(DenseElementsAttr attr) {
+  for (auto elem : attr.getValues<APFloat>()) {
+    if (elem.isNaN())
+      return false;
+  }
+  return true;
+}
+
+bool NoNanResultAnalysis::guaranteedImpl(Operation *op) {
+  if (!op)
+    return false;
+
+  if (auto constantOp = dyn_cast<stablehlo::ConstantOp>(op)) {
+    return guaranteed(constantOp);
+  }
+
+  // data movement ops
+  if (isa<stablehlo::SliceOp, stablehlo::ConcatenateOp,
+          stablehlo::BroadcastInDimOp, stablehlo::ReshapeOp,
+          stablehlo::TransposeOp>(op)) {
+    bool allOperandsGuaranteed = true;
+    for (auto operand : op->getOperands()) {
+      if (!guaranteed(operand))
+        allOperandsGuaranteed = false;
+    }
+    if (allOperandsGuaranteed)
+      return true;
+  }
+
+  // integer ops
+  if (isa<stablehlo::AndOp, stablehlo::OrOp, stablehlo::XorOp, stablehlo::NotOp,
+          stablehlo::IotaOp>(op)) {
+    return true;
+  }
+
+  // elementwise ops that are no-nan if all operands are not nan
+  if (isa<stablehlo::AbsOp, stablehlo::ExpOp, stablehlo::ConvertOp,
+          stablehlo::CompareOp, stablehlo::TanhOp, stablehlo::LogisticOp,
+          stablehlo::FloorOp, stablehlo::CeilOp>(op)) {
+    bool allOperandsGuaranteed = true;
+    for (auto operand : op->getOperands()) {
+      if (!guaranteed(operand))
+        allOperandsGuaranteed = false;
+    }
+    if (allOperandsGuaranteed)
+      return true;
+  }
+
+  if (isa<stablehlo::AddOp, stablehlo::SubtractOp>(op)) {
+    // If any one of the operands is a Inf, the result is Inf. If both are Inf,
+    // the result is NaN.
+    auto lhsFinite = finiteResultAnalysis->guaranteed(op->getOperand(0));
+    auto rhsFinite = finiteResultAnalysis->guaranteed(op->getOperand(1));
+
+    if (lhsFinite || rhsFinite)
+      return true;
+
+    auto lhsNoNan = guaranteed(op->getOperand(0));
+    auto rhsNoNan = guaranteed(op->getOperand(1));
+
+    if (lhsNoNan && rhsNoNan)
+      return false;
+  }
+
+  // guaranteed if operands are all finite
+  if (isa<stablehlo::SineOp, stablehlo::CosineOp>(op)) {
+    if (guaranteed(op->getOperand(0)) &&
+        finiteResultAnalysis->guaranteed(op->getOperand(0)))
+      return true;
+  }
+
+  if (auto mulOp = dyn_cast<stablehlo::MulOp>(op)) {
+    auto lhsNoNan = guaranteed(mulOp.getLhs());
+    auto rhsNoNan = guaranteed(mulOp.getRhs());
+
+    // if lhs is Inf & rhs is 0 or the other way around, mul is going to be NaN
+    if (lhsNoNan && rhsNoNan) {
+      // TODO: If one is inf check if the other is zero. We can significantly
+      // relax this check if we can prove that the other is not zero.
+      if (finiteResultAnalysis->guaranteed(mulOp.getLhs()) &&
+          finiteResultAnalysis->guaranteed(mulOp.getRhs())) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // TODO: once we have not zero check, we can add sqrt, div, rsqrt, etc.
+
+  if (auto selectOp = dyn_cast<mlir::stablehlo::SelectOp>(op)) {
+    return guaranteed(selectOp.getOnTrue()) &&
+           guaranteed(selectOp.getOnFalse());
+  }
+
+  return false;
+}
+
+FiniteResultAnalysis initFiniteResultAnalysis() {
+  auto noNanAnalysis = std::make_shared<NoNanResultAnalysis>();
+  auto finiteAnalysis = std::make_shared<FiniteResultAnalysis>();
+  noNanAnalysis->setFiniteResultAnalysis(finiteAnalysis);
+  finiteAnalysis->setNoNanResultAnalysis(noNanAnalysis);
+  return *finiteAnalysis;
+}
+
+bool FiniteResultAnalysis::constantFloatCheck(DenseElementsAttr attr) {
+  for (auto elem : attr.getValues<APFloat>()) {
+    if (!elem.isFinite())
+      return false;
+  }
+  return true;
+}
+
+bool FiniteResultAnalysis::constantIntCheck(DenseElementsAttr attr) {
+  return true;
+}
+
+bool FiniteResultAnalysis::guaranteedImpl(mlir::Operation *op) {
+  if (!op)
+    return false;
+
+  if (auto constantOp = dyn_cast<stablehlo::ConstantOp>(op)) {
+    return guaranteed(constantOp);
+  }
+
+  // data movement ops
+  if (isa<stablehlo::SliceOp, stablehlo::ConcatenateOp,
+          stablehlo::BroadcastInDimOp, stablehlo::ReshapeOp,
+          stablehlo::TransposeOp>(op)) {
+    bool allOperandsGuaranteed = true;
+    for (auto operand : op->getOperands()) {
+      if (!guaranteed(operand) || !noNanResultAnalysis->guaranteed(operand))
+        allOperandsGuaranteed = false;
+    }
+    if (allOperandsGuaranteed)
+      return true;
+  }
+
+  // integer ops
+  if (isa<stablehlo::AndOp, stablehlo::OrOp, stablehlo::XorOp, stablehlo::NotOp,
+          stablehlo::IotaOp>(op)) {
+    return true;
+  }
+
+  // elementwise ops that are finite if all operands are not nan and finite
+  if (isa<stablehlo::AddOp, stablehlo::SubtractOp, stablehlo::AbsOp,
+          stablehlo::ExpOp, stablehlo::ConvertOp, stablehlo::CompareOp>(op)) {
+    bool allOperandsGuaranteed = true;
+    for (auto operand : op->getOperands()) {
+      if (!guaranteed(operand) || !noNanResultAnalysis->guaranteed(operand))
+        allOperandsGuaranteed = false;
+    }
+    if (allOperandsGuaranteed)
+      return true;
+  }
+
+  // guaranteed finite if operands are not nan
+  if (isa<stablehlo::TanhOp, stablehlo::LogisticOp, stablehlo::SineOp,
+          stablehlo::CosineOp>(op)) {
+    bool allOperandsGuaranteed = true;
+    for (auto operand : op->getOperands()) {
+      if (!noNanResultAnalysis->guaranteed(operand))
+        allOperandsGuaranteed = false;
+    }
+    if (allOperandsGuaranteed)
+      return true;
+  }
+
+  if (auto mulOp = dyn_cast<stablehlo::MulOp>(op)) {
+    auto lhsFinite = guaranteed(mulOp.getLhs());
+    auto rhsFinite = guaranteed(mulOp.getRhs());
+
+    if (!lhsFinite || !rhsFinite) {
+      return false;
+    }
+
+    return noNanResultAnalysis->guaranteed(op);
+  }
+
+  if (auto selectOp = dyn_cast<mlir::stablehlo::SelectOp>(op)) {
+    return guaranteed(selectOp.getOnTrue()) &&
+           guaranteed(selectOp.getOnFalse());
+  }
+
+  return false;
+}
+
+bool NonNegativeResultAnalysis::constantIntCheck(DenseElementsAttr attr) {
+  for (auto elem : attr.getValues<APInt>()) {
+    if (elem.isNegative())
+      return false;
+  }
+  return true;
+}
+
+bool NonNegativeResultAnalysis::constantFloatCheck(DenseElementsAttr attr) {
+  for (auto elem : attr.getValues<APFloat>()) {
+    if (elem.isNegative())
+      return false;
+  }
+  return true;
+}
+
+bool NonNegativeResultAnalysis::guaranteedImpl(Operation *op) {
+  if (!op)
+    return false;
+
+  if (isa<stablehlo::AbsOp, stablehlo::SqrtOp, stablehlo::ExpOp,
+          stablehlo::IotaOp, stablehlo::AndOp, stablehlo::OrOp,
+          stablehlo::XorOp, stablehlo::NotOp>(op))
+    return true;
+
+  if (auto constOp = dyn_cast<stablehlo::ConstantOp>(op)) {
+    // Constant is non-negative if all its elements are non-negative
+    return guaranteed(constOp);
+  }
+
+  // Any non-negative operation that produces a non-negative result
+  if (isa<stablehlo::MaxOp>(op)) {
+    if (guaranteed(op->getOperand(0)) || guaranteed(op->getOperand(1)))
+      return true;
+  }
+
+  // All non-negative operations that produce a non-negative result
+  if (isa<stablehlo::MinOp, stablehlo::AddOp, stablehlo::MulOp,
+          stablehlo::ConcatenateOp, stablehlo::ReshapeOp,
+          stablehlo::TransposeOp, stablehlo::SliceOp,
+          stablehlo::DynamicUpdateSliceOp, stablehlo::BroadcastInDimOp>(op)) {
+    bool allOperandsGuaranteed = true;
+    for (auto operand : op->getOperands()) {
+      if (!guaranteed(operand))
+        allOperandsGuaranteed = false;
+    }
+    if (allOperandsGuaranteed)
+      return true;
+  }
+
+  // (mul a a) is always non-negative
+  if (auto mulOp = dyn_cast<stablehlo::MulOp>(op)) {
+    auto lhsOp = mulOp.getLhs().getDefiningOp();
+    auto rhsOp = mulOp.getRhs().getDefiningOp();
+
+    if (lhsOp == rhsOp)
+      return true;
+  }
+
+  if (auto clampOp = dyn_cast<stablehlo::ClampOp>(op)) {
+    // Clamp is non-negative if the min operand is non-negative
+    if (guaranteed(clampOp.getMin()))
+      return true;
+  }
+
+  // TODO: For NegOp we need a check for if the operand is guaranteed to be
+  // non-positive
+
+  // TODO: Mul of 2 negative values is non-negative
+
+  if (auto selectOp = dyn_cast<stablehlo::SelectOp>(op)) {
+    return guaranteed(selectOp.getOnTrue()) &&
+           guaranteed(selectOp.getOnFalse());
+  }
+
+  // Default: can't guarantee non-negative result
+  return false;
 }
 
 bool anyOperandIsConstant(mlir::Operation *op) {
@@ -657,6 +952,42 @@ SmallVector<int64_t> computeGatherSliceSizes(stablehlo::ScatterOp &scatterOp) {
   }
 
   return sliceSizes;
+}
+
+stablehlo::ComparisonDirection
+reversedComparisonDirection(stablehlo::ComparisonDirection direction) {
+  switch (direction) {
+  case stablehlo::ComparisonDirection::EQ:
+    return stablehlo::ComparisonDirection::EQ;
+  case stablehlo::ComparisonDirection::NE:
+    return stablehlo::ComparisonDirection::NE;
+  case stablehlo::ComparisonDirection::GE:
+    return stablehlo::ComparisonDirection::LE;
+  case stablehlo::ComparisonDirection::GT:
+    return stablehlo::ComparisonDirection::LT;
+  case stablehlo::ComparisonDirection::LE:
+    return stablehlo::ComparisonDirection::GE;
+  case stablehlo::ComparisonDirection::LT:
+    return stablehlo::ComparisonDirection::GT;
+  }
+}
+
+stablehlo::ComparisonDirection
+negatedComparisonDirection(stablehlo::ComparisonDirection direction) {
+  switch (direction) {
+  case stablehlo::ComparisonDirection::EQ:
+    return stablehlo::ComparisonDirection::NE;
+  case stablehlo::ComparisonDirection::NE:
+    return stablehlo::ComparisonDirection::EQ;
+  case stablehlo::ComparisonDirection::GE:
+    return stablehlo::ComparisonDirection::LT;
+  case stablehlo::ComparisonDirection::GT:
+    return stablehlo::ComparisonDirection::LE;
+  case stablehlo::ComparisonDirection::LE:
+    return stablehlo::ComparisonDirection::GT;
+  case stablehlo::ComparisonDirection::LT:
+    return stablehlo::ComparisonDirection::GE;
+  }
 }
 
 } // namespace stablehlo

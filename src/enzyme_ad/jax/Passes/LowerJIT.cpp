@@ -80,6 +80,22 @@
 
 #include "mlir/Target/LLVMIR/Export.h"
 
+#if (defined(_WIN32) || defined(__CYGWIN__)) &&                                \
+    !defined(MLIR_CAPI_ENABLE_WINDOWS_DLL_DECLSPEC)
+// Visibility annotations disabled.
+#define MLIR_CAPI_EXPORTED
+#elif defined(_WIN32) || defined(__CYGWIN__)
+// Windows visibility declarations.
+#if MLIR_CAPI_BUILDING_LIBRARY
+#define MLIR_CAPI_EXPORTED __declspec(dllexport)
+#else
+#define MLIR_CAPI_EXPORTED __declspec(dllimport)
+#endif
+#else
+// Non-windows: use visibility attributes.
+#define MLIR_CAPI_EXPORTED __attribute__((visibility("default")))
+#endif
+
 #define DEBUG_TYPE "lower-jit"
 
 namespace mlir {
@@ -274,7 +290,8 @@ bool initJIT() {
   return true;
 }
 
-extern "C" void EnzymeJaXMapSymbol(const char *name, void *symbol) {
+extern "C" MLIR_CAPI_EXPORTED void EnzymeJaXMapSymbol(const char *name,
+                                                      void *symbol) {
   initJIT();
   MappedSymbols[JIT->mangleAndIntern(name)] = llvm::orc::ExecutorSymbolDef(
       llvm::orc::ExecutorAddr::fromPtr(symbol), llvm::JITSymbolFlags());

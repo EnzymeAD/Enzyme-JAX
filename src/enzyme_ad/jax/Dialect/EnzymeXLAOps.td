@@ -51,6 +51,8 @@ def KernelCallOp: EnzymeXLA_Op<"kernel_call", [DeclareOpInterfaceMethods<SymbolU
     DefaultValuedStrAttr<StrAttr, "">:$backend_config,
     OptionalAttr<AnyAttr>:$operand_layouts,
     OptionalAttr<AnyAttr>:$result_layouts,
+    OptionalAttr<DictArrayAttr>:$arg_attrs,
+    OptionalAttr<DictArrayAttr>:$res_attrs,
     DefaultValuedOptionalAttr<
         ArrayAttr, "{}">:$output_operand_aliases,
     OptionalAttr<UnitAttr>:$xla_side_effect_free
@@ -112,6 +114,8 @@ def JITCallOp: EnzymeXLA_Op<"jit_call", [DeclareOpInterfaceMethods<SymbolUserOpI
     DefaultValuedStrAttr<StrAttr, "">:$backend_config,
     OptionalAttr<AnyAttr>:$operand_layouts,
     OptionalAttr<AnyAttr>:$result_layouts,
+    OptionalAttr<DictArrayAttr>:$arg_attrs,
+    OptionalAttr<DictArrayAttr>:$res_attrs,
     DefaultValuedOptionalAttr<
         ArrayAttr, "{}">:$output_operand_aliases,
     OptionalAttr<UnitAttr>:$xla_side_effect_free
@@ -159,7 +163,9 @@ def XLAWrapperOp: EnzymeXLA_Op<"xla_wrapper", [DeclareOpInterfaceMethods<SymbolU
 
   let arguments = (ins
     SymbolRefAttr:$fn,
-    Variadic<AnyType>:$inputs
+    Variadic<AnyType>:$inputs,
+    OptionalAttr<DictArrayAttr>:$arg_attrs,
+    OptionalAttr<DictArrayAttr>:$res_attrs
   );
 
   let assemblyFormat = [{
@@ -195,24 +201,18 @@ def NoopOp
 
 def GPUBlockOp : EnzymeXLA_Op<"gpu_block", [
   RecursiveMemoryEffects,
-  SingleBlockImplicitTerminator<"enzymexla::PolygeistYieldOp">]>,
-  Arguments<(ins Index:$blockIndexX, Index:$blockIndexY, Index:$blockIndexZ)> {
+  SingleBlockImplicitTerminator<"enzymexla::PolygeistYieldOp">]> {
+  let arguments = (ins Index:$blockIndexX, Index:$blockIndexY, Index:$blockIndexZ);
   let summary = "Wraps a GPU kernel block to prevent restructuring";
   let regions = (region SizedRegion<1>:$region);
-  let skipDefaultBuilders = 1;
-  let builders = [OpBuilder<(ins
-      "Value":$blockIndexX, "Value":$blockIndexY, "Value":$blockIndexZ)>];
 }
 
 def GPUThreadOp : EnzymeXLA_Op<"gpu_thread", [
   RecursiveMemoryEffects,
-  SingleBlockImplicitTerminator<"enzymexla::PolygeistYieldOp">]>,
-  Arguments<(ins Index:$threadIndexX, Index:$threadIndexY, Index:$threadIndexZ)> {
+  SingleBlockImplicitTerminator<"enzymexla::PolygeistYieldOp">]> {
+  let arguments = (ins Index:$threadIndexX, Index:$threadIndexY, Index:$threadIndexZ);
   let summary = "Wraps a GPU kernel thread to prevent restructuring";
   let regions = (region SizedRegion<1>:$region);
-  let skipDefaultBuilders = 1;
-  let builders = [OpBuilder<(ins
-      "Value":$threadIndexX, "Value":$threadIndexY, "Value":$threadIndexZ)>];
 }
 
 def BarrierOp
@@ -367,7 +367,47 @@ def LUFactorizationOp: EnzymeXLA_Op<"linalg.lu", [Pure]> {
 }
 
 def QRFactorizationOp: EnzymeXLA_Op<"linalg.qr", [Pure]> {
-  let summary = "QR factorization operation.";
+  let summary = "QR factorization operation (high-level op)";
+
+  let description = [{
+    This operation computes the QR factorization of a matrix using Householder 
+    reflections. Mathematically, it decomposes A into the product of an 
+    orthogonal (unitary if complex) matrix Q and an upper triangular matrix R, 
+    such that A = QR.
+
+    If A has size m x n and m > n, Q is an m x n isometric matrix. If m < n, R
+    will be a m x n trapezoidal matrix.
+
+    This operation is modeled after the mathematical formulation of the QR 
+    factorization, and not after LAPACK's compact formats.
+  }];
+
+  let arguments = (ins
+    HLO_Tensor:$input,
+    DefaultValuedAttr<EnzymeXLA_QrAlgorithmAttr, "mlir::enzymexla::QrAlgorithm::geqrf">:$algorithm
+  );
+
+  let results = (outs
+    HLO_Tensor:$Q,
+    HLO_Tensor:$R
+  );
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
+def GeqrfOp : EnzymeXLA_Op<"lapack.geqrf", [Pure]> {
+  let summary = "QR factorization operation (low-level op)";
+
+  let description = [{
+    This operation computes the QR factorization of a matrix using Householder 
+    reflections. Mathematically, it decomposes A into the product of an 
+    orthogonal matrix Q and an upper triangular matrix R, such that A = QR.
+
+    This operation is modeled after LAPACK's *GEQRF routines, which returns the 
+    result in the QR packed format.
+  }];
 
   let arguments = (ins
     HLO_Tensor:$input
@@ -384,6 +424,111 @@ def QRFactorizationOp: EnzymeXLA_Op<"linalg.qr", [Pure]> {
   }];
 }
 
+def GeqrtOp : EnzymeXLA_Op<"lapack.geqrt", [Pure]> {
+  let summary = "QR factorization operation (low-level op)";
+
+  let description = [{
+    This operation computes the QR factorization of a matrix using Householder 
+    reflections. Mathematically, it decomposes A into the product of an 
+    orthogonal matrix Q and an upper triangular matrix R, such that A = QR.
+
+    This operation is modeled after LAPACK's *GEQRT routines, which returns the 
+    result in the QR CompactWY format.
+  }];
+
+  let arguments = (ins
+    HLO_Tensor:$input,
+    OptionalAttr<I64Attr>:$blocksize // nb argument, min(m,n) >= nb >= 1
+  );
+
+  let results = (outs
+    HLO_Tensor:$output,
+    HLO_Tensor:$T,
+    HLO_Tensor:$info
+  );
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
+def OrgqrOp : EnzymeXLA_Op<"lapack.orgqr", [Pure]> {
+  let summary = [{
+    Generate orthonormal/unitary matrix from a product of
+    elementary Householder reflectors
+  }];
+
+  let description = [{
+    This operation is modeled after LAPACK's *ORGQR/*UNGQR routines.
+  }];
+
+  let arguments = (ins
+    HLO_Tensor:$input,
+    HLO_Tensor:$tau
+  );
+
+  let results = (outs
+    HLO_Tensor:$output
+  );
+
+  let assemblyFormat = [{
+    $input `,` $tau attr-dict `:` functional-type(operands, results)
+  }];
+}
+
+def OrmqrOp : EnzymeXLA_Op<"lapack.ormqr", [Pure]> {
+  let summary = [{
+    Perform a matrix multiplication with the Q matrix from a QR
+    decomposition, given only the householder reflections.
+  }];
+
+  let description = [{
+    This operation is modeled after LAPACK's *ORMQR routines.
+  }];
+
+  let arguments = (ins
+    HLO_Tensor:$A,
+    HLO_Tensor:$tau,
+    HLO_Tensor:$C,
+    EnzymeXLA_LapackSideAttr:$side,
+    DefaultValuedAttr<EnzymeXLA_LapackTransposeAttr, "::mlir::enzymexla::LapackTranspose::none">:$transpose // true if apply Q^T
+  );
+
+  let results = (outs
+    HLO_Tensor:$output
+  );
+
+  let assemblyFormat = [{
+    $A `,` $tau `,` $C attr-dict `:` functional-type(operands, results)
+  }];
+}
+
+def GemqrtOp : EnzymeXLA_Op<"lapack.gemqrt", [Pure]> {
+  let summary = [{
+    Perform a matrix multiplication with the Q matrix from a QR
+    decomposition, given the WY decomposition (i.e. geqrt).
+  }];
+
+  let description = [{
+    This operation is modeled after LAPACK's *GEMQR routines.
+  }];
+
+  let arguments = (ins
+    HLO_Tensor:$V,
+    HLO_Tensor:$T,
+    HLO_Tensor:$C,
+    EnzymeXLA_LapackSideAttr:$side,
+    DefaultValuedAttr<EnzymeXLA_LapackTransposeAttr, "::mlir::enzymexla::LapackTranspose::none">:$transpose // true if apply Q^T
+  );
+
+  let results = (outs
+    HLO_Tensor:$output
+  );
+
+  let assemblyFormat = [{
+    $V `,` $T `,` $C attr-dict `:` functional-type(operands, results)
+  }];
+}
 
 def SVDFactorizationOp : EnzymeXLA_Op<"linalg.svd", [Pure]> {
   let summary = "Singular Value Decomposition (SVD) factorization operation.";
