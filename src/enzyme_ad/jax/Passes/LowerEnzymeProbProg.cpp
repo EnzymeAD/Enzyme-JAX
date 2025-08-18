@@ -150,6 +150,8 @@ struct InitTraceOpConversion : public OpConversionPattern<enzyme::InitTraceOp> {
           rewriter.getArrayAttr({rewriter.getIndexTensorAttr({})}),
           /*result_layouts=*/
           rewriter.getArrayAttr({rewriter.getIndexTensorAttr({})}),
+          /*arg_attrs=*/nullptr,
+          /*res_attrs=*/nullptr,
           /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
           /*xla_side_effect_free=*/nullptr);
 
@@ -363,6 +365,8 @@ struct AddSampleToTraceOpConversion
           rewriter.getStringAttr(""),
           /*operand_layouts=*/nullptr,
           /*result_layouts=*/nullptr,
+          /*arg_attrs=*/nullptr,
+          /*res_attrs=*/nullptr,
           /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
           /*xla_side_effect_free=*/nullptr);
 
@@ -455,6 +459,8 @@ struct AddSubtraceOpConversion
           ValueRange{trace, symbolConst, subtrace}, rewriter.getStringAttr(""),
           /*operand_layouts=*/nullptr,
           /*result_layouts=*/nullptr,
+          /*arg_attrs=*/nullptr,
+          /*res_attrs=*/nullptr,
           /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
           /*xla_side_effect_free=*/nullptr);
 
@@ -532,6 +538,7 @@ struct AddWeightToTraceOpConversion
           mlir::FlatSymbolRefAttr::get(ctx, wrapperFn),
           ValueRange{trace, weight}, rewriter.getStringAttr(""),
           /*operand_layouts=*/nullptr, /*result_layouts=*/nullptr,
+          /*arg_attrs=*/nullptr, /*res_attrs=*/nullptr,
           /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
           /*xla_side_effect_free=*/nullptr);
 
@@ -715,6 +722,7 @@ struct AddRetvalToTraceOpConversion
           mlir::FlatSymbolRefAttr::get(ctx, wrapperFn), jitOperands,
           rewriter.getStringAttr(""), /*operand_layouts=*/nullptr,
           /*result_layouts=*/nullptr,
+          /*arg_attrs=*/nullptr, /*res_attrs=*/nullptr,
           /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
           /*xla_side_effect_free=*/nullptr);
 
@@ -956,6 +964,7 @@ struct GetSampleFromConstraintOpConversion
           mlir::FlatSymbolRefAttr::get(ctx, wrapperFn), jitOperands,
           rewriter.getStringAttr(""),
           /*operand_layouts=*/nullptr, /*result_layouts=*/nullptr,
+          /*arg_attrs=*/nullptr, /*res_attrs=*/nullptr,
           /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
           /*xla_side_effect_free=*/nullptr);
 
@@ -1055,6 +1064,8 @@ struct GetSubconstraintOpConversion
           rewriter.getStringAttr(""),
           /*operand_layouts=*/nullptr,
           /*result_layouts=*/nullptr,
+          /*arg_attrs=*/nullptr,
+          /*res_attrs=*/nullptr,
           /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
           /*xla_side_effect_free=*/nullptr);
 
