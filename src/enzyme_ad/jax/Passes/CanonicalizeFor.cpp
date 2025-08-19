@@ -3332,6 +3332,58 @@ struct ForBoundUnSwitch : public OpRewritePattern<scf::ForOp> {
   }
 };
 
+struct ForLoopApplyEnzymeAttributes
+    : public OpRewritePattern<LLVM::LLVMFuncOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(LLVM::LLVMFuncOp func,
+                                PatternRewriter &rewriter) const override {
+    if (!func.getBody().empty())
+      return failure();
+
+    auto name = func.getSymName();
+
+    bool isCheckpointingAttr = name.contains("__enzyme_set_checkpointing"),
+         isMincutAttr = name.contains("__enzyme_set_mincut");
+
+    if (!isCheckpointingAttr && !isMincutAttr)
+      return failure();
+
+    auto modOp = func->getParentOfType<ModuleOp>();
+    auto uses = func.getSymbolUses(modOp);
+
+    if (!uses) {
+      rewriter.eraseOp(func);
+      return success();
+    }
+
+    bool anyErased = false;
+
+    for (auto use : *uses) {
+      auto user = use.getUser();
+      assert(isa<LLVM::CallOp>(user));
+
+      bool enable = matchPattern(user->getOperand(0), m_One());
+      auto forOp = user->getParentOfType<scf::ForOp>();
+      if (forOp) {
+        forOp->setAttr(isCheckpointingAttr ? "enzyme_enable_checkpointing"
+                                           : "enzyme_enable_mincut",
+                       rewriter.getBoolAttr(enable));
+      } else {
+        // llvm::errs() << "invalid use of enzyme_set_checkpointing\n" <<
+        // *user->getParentOfType<mlir::LLVM::LLVMFuncOp>();
+        return success(anyErased);
+      }
+      rewriter.eraseOp(user);
+      anyErased = true;
+    }
+
+    rewriter.eraseOp(func);
+
+    return success();
+  }
+};
+
 void CanonicalizeFor::runOnOperation() {
   mlir::RewritePatternSet rpl(getOperation()->getContext());
   populateSelectExtractPatterns(rpl);
@@ -3346,6 +3398,8 @@ void CanonicalizeFor::runOnOperation() {
           WhileShiftToInduction,
 
           ForBreakAddUpgrade, RemoveUnusedResults,
+
+          ForLoopApplyEnzymeAttributes,
 
           // MoveWhileDown3 Infinite loops on current kernel code, disabling
           // [and should fix] MoveWhileDown3,
