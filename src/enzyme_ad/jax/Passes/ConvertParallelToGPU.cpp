@@ -1740,39 +1740,46 @@ struct AsyncGPULaunch : public OpRewritePattern<async::ExecuteOp> {
   LogicalResult matchAndRewrite(async::ExecuteOp async,
                                 PatternRewriter &rewriter) const override {
     for (auto res : async.getResults()) {
-      if (!res.use_empty()) return failure();
+      if (!res.use_empty())
+        return failure();
     }
-	   for (auto dep : async.getDependencies()) {
-	     if (!dep.getDefiningOp<enzymexla::StreamToTokenOp>()) return failure();
-	   }
+    for (auto dep : async.getDependencies()) {
+      if (!dep.getDefiningOp<enzymexla::StreamToTokenOp>())
+        return failure();
+    }
     SmallVector<gpu::LaunchFuncOp> launches;
-    if (async->walk( [&](Operation* op) {
-	if (auto launch = dyn_cast<gpu::LaunchFuncOp>(op)) {
-	  launches.push_back(launch);
-	  return WalkResult::advance();
-	}
-        if (op->hasTrait<OpTrait::HasRecursiveMemoryEffects>()) {
-	  return WalkResult::advance();
-        }
-	if (isPure(op)) return WalkResult::advance();
-	return WalkResult::interrupt();
-		    }).wasInterrupted())
+    if (async
+            ->walk([&](Operation *op) {
+              if (auto launch = dyn_cast<gpu::LaunchFuncOp>(op)) {
+                launches.push_back(launch);
+                return WalkResult::advance();
+              }
+              if (op->hasTrait<OpTrait::HasRecursiveMemoryEffects>()) {
+                return WalkResult::advance();
+              }
+              if (isPure(op))
+                return WalkResult::advance();
+              return WalkResult::interrupt();
+            })
+            .wasInterrupted())
       return failure();
 
     SmallVector<Value> gpudeps;
-	   for (auto dep : async.getDependencies()) {
-	     gpudeps.push_back(rewriter.create<enzymexla::StreamToTokenOp>(dep.getLoc(), rewriter.getType<gpu::AsyncTokenType>(), dep.getDefiningOp<enzymexla::StreamToTokenOp>().getOperand()));
-	   }
-
-    for (auto launch : launches) {
-      rewriter.modifyOpInPlace(launch, [&](){
-	launch.getAsyncDependenciesMutable().append(gpudeps);
-		      });
+    for (auto dep : async.getDependencies()) {
+      gpudeps.push_back(rewriter.create<enzymexla::StreamToTokenOp>(
+          dep.getLoc(), rewriter.getType<gpu::AsyncTokenType>(),
+          dep.getDefiningOp<enzymexla::StreamToTokenOp>().getOperand()));
     }
 
-      rewriter.eraseOp(async.getBody()->getTerminator());
-      rewriter.inlineBlockBefore(async.getBody(), async);
-      rewriter.eraseOp(async);
+    for (auto launch : launches) {
+      rewriter.modifyOpInPlace(launch, [&]() {
+        launch.getAsyncDependenciesMutable().append(gpudeps);
+      });
+    }
+
+    rewriter.eraseOp(async.getBody()->getTerminator());
+    rewriter.inlineBlockBefore(async.getBody(), async);
+    rewriter.eraseOp(async);
 
     return success();
   }

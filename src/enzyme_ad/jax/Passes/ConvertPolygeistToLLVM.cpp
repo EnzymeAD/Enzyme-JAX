@@ -1739,8 +1739,7 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
   auto kernelModule = SymbolTable::lookupNearestSymbolFrom<gpu::GPUModuleOp>(
       launchOp, launchOp.getKernelModuleName());
   if (!kernelModule)
-    return rewriter.notifyMatchFailure(
-        launchOp, "Expected a kernel module");
+    return rewriter.notifyMatchFailure(launchOp, "Expected a kernel module");
 
   auto getFuncStubName = [](StringRef moduleName, StringRef name) {
     return std::string(
@@ -2103,7 +2102,7 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
   Value stream = adaptor.getAsyncDependencies().empty()
                      ? nullpointer
                      : adaptor.getAsyncDependencies().front();
-  
+
   // Create array of pointers to kernel arguments.
   auto kernelParams =
       generateParamsArray(launchOp, adaptor, rewriter, allocaBlock);
@@ -2157,41 +2156,46 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
 
   if (errOp) {
     rewriter.setInsertionPoint(errOp);
-    auto reg = rewriter.create<scf::ExecuteRegionOp>(errOp.getLoc(), launchCall->getResultTypes()[0]);
-    rewriter.inlineRegionBefore(errOp.getRegion(), reg.getRegion(), reg.getRegion().begin());
+    auto reg = rewriter.create<scf::ExecuteRegionOp>(
+        errOp.getLoc(), launchCall->getResultTypes()[0]);
+    rewriter.inlineRegionBefore(errOp.getRegion(), reg.getRegion(),
+                                reg.getRegion().begin());
     rewriter.createBlock(&errOp.getRegion());
 
     rewriter.setInsertionPointToStart(allocaBlock);
 
     auto ptrty = LLVM::LLVMPointerType::get(rewriter.getContext());
 
-          auto one = rewriter.create<LLVM::ConstantOp>(
-            loc, i64, rewriter.getI64IntegerAttr(1));
+    auto one = rewriter.create<LLVM::ConstantOp>(loc, i64,
+                                                 rewriter.getI64IntegerAttr(1));
 
-auto alloca = rewriter.create<LLVM::AllocaOp>(launchOp.getLoc(), ptrty, launchCall->getResultTypes()[0], one);
-        auto zero = rewriter.create<arith::ConstantIntOp>(
-            loc, launchCall->getResultTypes()[0], 0);
+    auto alloca = rewriter.create<LLVM::AllocaOp>(
+        launchOp.getLoc(), ptrty, launchCall->getResultTypes()[0], one);
+    auto zero = rewriter.create<arith::ConstantIntOp>(
+        loc, launchCall->getResultTypes()[0], 0);
 
-        rewriter.setInsertionPoint(errOp);
-        rewriter.create<LLVM::StoreOp>(launchOp.getLoc(), zero, alloca);
+    rewriter.setInsertionPoint(errOp);
+    rewriter.create<LLVM::StoreOp>(launchOp.getLoc(), zero, alloca);
 
-        rewriter.setInsertionPointAfter(launchCall);
-        rewriter.create<LLVM::StoreOp>(launchOp.getLoc(),
-                                       launchCall->getResult(0), alloca);
+    rewriter.setInsertionPointAfter(launchCall);
+    rewriter.create<LLVM::StoreOp>(launchOp.getLoc(), launchCall->getResult(0),
+                                   alloca);
 
-        for (auto &block : reg.getRegion()) {
-	  if (auto terminator =
-                dyn_cast<enzymexla::PolygeistYieldOp>(block.getTerminator())) {
-            rewriter.setInsertionPointToEnd(&block);
-            auto load = rewriter.create<LLVM::LoadOp>(launchOp.getLoc(), launchCall->getResultTypes()[0], alloca);
-	    rewriter.replaceOpWithNewOp<scf::YieldOp>(terminator, load->getResults());
-	  }
-	}
+    for (auto &block : reg.getRegion()) {
+      if (auto terminator =
+              dyn_cast<enzymexla::PolygeistYieldOp>(block.getTerminator())) {
+        rewriter.setInsertionPointToEnd(&block);
+        auto load = rewriter.create<LLVM::LoadOp>(
+            launchOp.getLoc(), launchCall->getResultTypes()[0], alloca);
+        rewriter.replaceOpWithNewOp<scf::YieldOp>(terminator,
+                                                  load->getResults());
+      }
+    }
 
-	rewriter.setInsertionPointAfter(errOp);
-      auto cast = rewriter.create<arith::IndexCastOp>(
-          loc, rewriter.getIndexType(), reg->getResult(0));
-      rewriter.replaceOp(errOp, cast->getResults());
+    rewriter.setInsertionPointAfter(errOp);
+    auto cast = rewriter.create<arith::IndexCastOp>(
+        loc, rewriter.getIndexType(), reg->getResult(0));
+    rewriter.replaceOp(errOp, cast->getResults());
   }
 
   return success();
