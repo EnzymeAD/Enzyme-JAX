@@ -47,7 +47,7 @@ jobs:
         julia_version:
           - '1.11'
         xla_commit:
-          - '1ac176a9b8b4800bc2753d944eec62a39e6189b8'
+          - '125d623a83cb2bf32aa8a20909aae84991ad9b91'
         gb25_commit:
           - 'mg/sharded-factors'
           # - '0123456789abcdef0123456789abcdef01234567'
