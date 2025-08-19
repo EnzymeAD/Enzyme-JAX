@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --enzyme-hlo-opt %s | FileCheck %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-opt="enable_convert_to_convolution=true" %s | FileCheck %s
 
 func.func @main_add1(%arg0: tensor<4x1534x3070xf64>) -> tensor<3x1520x3056xf64> {
     %cst_0 = stablehlo.constant dense<2.000000e+00> : tensor<3x1520x3056xf64>
@@ -15,8 +15,7 @@ func.func @main_add1(%arg0: tensor<4x1534x3070xf64>) -> tensor<3x1520x3056xf64> 
 // CHECK-NEXT{LITERAL}:     %cst = stablehlo.constant dense<[[[[[3.000000e+00, 2.000000e+00]]]]]> : tensor<1x1x1x1x2xf64>
 // CHECK-NEXT:     %0 = stablehlo.slice %arg0 [0:3, 7:1527, 5:3062] : (tensor<4x1534x3070xf64>) -> tensor<3x1520x3057xf64>
 // CHECK-NEXT:     %1 = stablehlo.reshape %0 : (tensor<3x1520x3057xf64>) -> tensor<1x1x3x1520x3057xf64>
-// CHECK-NEXT:     %2 = stablehlo.convolution(%1, %cst) dim_numbers = [b, f, 0, 1, 2]x[i, o, 0, 1, 2]->[b, f, 0, 1, 2], window = {} {batch_group_count = 1 : i64, feature_group_count = 1 : i64} : (tensor<1x1x3x1520x3057xf64>, tensor<1x1x1x1x2xf64>) -> tensor<1x1x3x1520x
-// CHECK-NEXT: 3056xf64>
+// CHECK-NEXT:     %2 = stablehlo.convolution(%1, %cst) dim_numbers = [b, f, 0, 1, 2]x[i, o, 0, 1, 2]->[b, f, 0, 1, 2], window = {} {batch_group_count = 1 : i64, feature_group_count = 1 : i64} : (tensor<1x1x3x1520x3057xf64>, tensor<1x1x1x1x2xf64>) -> tensor<1x1x3x1520x3056xf64>
 // CHECK-NEXT:     %3 = stablehlo.reshape %2 : (tensor<1x1x3x1520x3056xf64>) -> tensor<3x1520x3056xf64>
 // CHECK-NEXT:     return %3 : tensor<3x1520x3056xf64>
 // CHECK-NEXT: }

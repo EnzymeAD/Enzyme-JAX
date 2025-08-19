@@ -154,7 +154,7 @@ def EnzymeHLOOptPass : Pass<"enzyme-hlo-opt"> {
         /*C++ variable name=*/"enable_convert_to_convolution",
         /*CLI argument=*/"enable_convert_to_convolution",
         /*type=*/"bool",
-        /*default=*/"true",
+        /*default=*/"false",
         /*description=*/"Enable convert to convolution">,
   ];
 }

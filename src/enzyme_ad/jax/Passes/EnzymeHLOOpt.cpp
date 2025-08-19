@@ -22105,7 +22105,7 @@ struct SelfElementwiseToConvolutionLike
             op, "MulOp is only supported if we can emit a reduce window.");
       }
 
-      if (allowEmitConvolution) {
+      if (!allowEmitConvolution) {
         return rewriter.notifyMatchFailure(
             op, "Emitting Convolution is not Allowed.");
       }
@@ -22132,6 +22132,7 @@ struct SelfElementwiseToConvolutionLike
           windowDilation = lhsRotateOp.getAmount();
           operand = rhsInfo.base;
           matched = true;
+          flipped = true;
         }
       }
 
@@ -22143,14 +22144,13 @@ struct SelfElementwiseToConvolutionLike
             windowDilation = rhsRotateOp.getAmount();
             operand = lhsInfo.base;
             matched = true;
-            flipped = true;
           }
         }
       }
 
       if (matched)
         newBaseOp = rewriter.create<enzymexla::WrapOp>(
-            op.getLoc(), operand, windowDilation, 0, dimension);
+            op.getLoc(), operand, 0, windowDilation, dimension);
     }
 
     if (!newBaseOp) {
