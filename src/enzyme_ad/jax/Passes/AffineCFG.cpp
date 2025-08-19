@@ -2603,6 +2603,7 @@ struct ForOpRaising : public OpRewritePattern<scf::ForOp> {
       affine::AffineForOp affineLoop = rewriter.create<affine::AffineForOp>(
           loop.getLoc(), lbs, lbMap, ubs, ubMap, getStep(loop.getStep()),
           loop.getInits());
+      affineLoop->setAttrs(loop->getAttrs());
 
       auto mergedYieldOp =
           cast<scf::YieldOp>(loop.getRegion().front().getTerminator());
@@ -5689,6 +5690,7 @@ struct AffineForReductionIter : public OpRewritePattern<affine::AffineForOp> {
         forOp.getLoc(), forOp.getLowerBoundOperands(), forOp.getLowerBoundMap(),
         forOp.getUpperBoundOperands(), forOp.getUpperBoundMap(),
         forOp.getStep().getSExtValue(), newIterArgs);
+    newForOp->setAttrs(forOp->getAttrs());
 
     // remove load operation inside the for.
     size_t i = 0;
