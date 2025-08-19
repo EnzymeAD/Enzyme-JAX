@@ -18771,6 +18771,10 @@ struct ExtendSlice final
     if (!extendOp)
       return rewriter.notifyMatchFailure(op, "Operand is not an ExtendOp");
 
+    if (extendOp.getResult().getNumUses() > 1)
+      return rewriter.notifyMatchFailure(
+          op, "ExtendOp result is used multiple times");
+
     // This transformation is simplified if strides are 1.
     if (llvm::any_of(op.getStrides(), [](int64_t s) { return s != 1; }))
       return rewriter.notifyMatchFailure(op, "Requires strides of 1");
