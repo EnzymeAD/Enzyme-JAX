@@ -125,7 +125,8 @@ class JAXMD(EnzymeJaxTest):
         # GPU CI reverse mode needs loose, merits future investigation
         self.tol = 1e-2
 
-        self.tol = 0.04
+        # CPU backend needs loose tolerance, see #1289
+        self.tol = 0.07
 
 
 if __name__ == "__main__":
