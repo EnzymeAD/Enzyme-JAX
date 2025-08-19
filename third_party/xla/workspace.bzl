@@ -14,7 +14,7 @@ def repo(extra_patches = [], override_commit = ""):
         name = "xla",
         sha256 = sha,
         type = "tar.gz",
-        strip_prefix = "openxla-xla-{commit}".format(commit = XLA_COMMIT[:7]),
-        urls = ["https://api.github.com/repos/openxla/xla/tarball/{commit}".format(commit = XLA_COMMIT)],
+        strip_prefix = "openxla-xla-{commit}".format(commit = commit[:7]),
+        urls = ["https://api.github.com/repos/openxla/xla/tarball/{commit}".format(commit = commit)],
         patch_cmds = XLA_PATCHES + extra_patches,
     )
