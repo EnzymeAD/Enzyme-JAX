@@ -22679,7 +22679,7 @@ LogicalResult generalConcatReshapeOpToBatch(stablehlo::ConcatenateOp concatOp,
   std::map<enzyme::batchutils::BatchCacheKey, FunctionOpInterface>
       batchedFunctionCache;
   return enzyme::batchutils::batchOperation(
-      batchOp, cast<FunctionOpInterface>(func.getOperation()),
+      rewriter, batchOp, cast<FunctionOpInterface>(func.getOperation()),
       batchedFunctionCache);
 };
 
