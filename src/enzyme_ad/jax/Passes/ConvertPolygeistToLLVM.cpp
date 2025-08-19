@@ -55,6 +55,10 @@
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include "mlir/Transforms/DialectConversion.h"
+
+#include "mlir/Dialect/Async/IR/Async.h"
+
 #include "xla/mlir/utils/type_util.h"
 
 #include "RuntimeWrapperUtils.h"
@@ -1698,48 +1702,24 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
   if (!launchOp.getAsyncToken() && !launchOp.getAsyncDependencies().empty())
     return rewriter.notifyMatchFailure(
         launchOp, "Cannot convert non-async op with async dependencies.");
+  
+  ModuleOp moduleOp = launchOp->getParentOfType<ModuleOp>();
+  
+  llvm::errs() << " pre mod" << *moduleOp << "\n";
 
   Location loc = launchOp.getLoc();
 
-  GPUErrorOp errOp = nullptr;
-  Block *remainingOpsBlock = nullptr;
-  if ((errOp = dyn_cast<GPUErrorOp>(launchOp->getParentOp()))) {
-    rewriter.setInsertionPoint(errOp);
-    if (errOp->getRegions()[0].hasOneBlock()) {
-      rewriter.eraseOp(errOp.getBody()->getTerminator());
-      rewriter.inlineBlockBefore(errOp.getBody(), errOp);
-      rewriter.setInsertionPoint(errOp);
-    } else {
-      auto *condBlock = rewriter.getInsertionBlock();
-      auto opPosition = rewriter.getInsertionPoint();
-      remainingOpsBlock = rewriter.splitBlock(condBlock, opPosition);
-
-      auto &region = errOp.getRegion();
-      rewriter.setInsertionPointToEnd(condBlock);
-      rewriter.create<cf::BranchOp>(errOp.getLoc(), &region.front());
-
-      for (Block &block : errOp->getRegions()[0]) {
-        if (auto terminator =
-                dyn_cast<enzymexla::PolygeistYieldOp>(block.getTerminator())) {
-          ValueRange terminatorOperands = terminator->getOperands();
-          rewriter.setInsertionPointToEnd(&block);
-          rewriter.create<cf::BranchOp>(errOp.getLoc(), remainingOpsBlock,
-                                        terminatorOperands);
-          rewriter.eraseOp(terminator);
-        }
-      }
-
-      rewriter.inlineRegionBefore(region, remainingOpsBlock);
-
-      rewriter.setInsertionPoint(launchOp);
-    }
-  }
+  GPUErrorOp errOp = dyn_cast<GPUErrorOp>(launchOp->getParentOp());
+ 
+  llvm::errs() << " go mod" << *moduleOp << "\n";
 
   // Create an LLVM global with CUBIN extracted from the kernel annotation and
   // obtain a pointer to the first byte in it.
   auto kernelModule = SymbolTable::lookupNearestSymbolFrom<gpu::GPUModuleOp>(
       launchOp, launchOp.getKernelModuleName());
-  assert(kernelModule && "expected a kernel module");
+  if (!kernelModule)
+    return rewriter.notifyMatchFailure(
+        launchOp, "Expected a kernel module");
 
   auto getFuncStubName = [](StringRef moduleName, StringRef name) {
     return std::string(
@@ -1751,7 +1731,9 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
   // };
 
   // Build module constructor and destructor
-  ModuleOp moduleOp = launchOp->getParentOfType<ModuleOp>();
+  
+  llvm::errs() << " mid mod" << *moduleOp << "\n";
+  
   {
     auto loc = moduleOp.getLoc();
     // TODO is it okay to be using OpBuilder's in op rewriter?
@@ -2085,6 +2067,8 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
       }
     }
   }
+  
+  llvm::errs() << " reg mod" << *moduleOp << "\n";
 
   std::string funcStubName =
       getFuncStubName(launchOp.getKernelModuleName().getValue(),
@@ -2102,6 +2086,7 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
   Value stream = adaptor.getAsyncDependencies().empty()
                      ? nullpointer
                      : adaptor.getAsyncDependencies().front();
+  
   // Create array of pointers to kernel arguments.
   auto kernelParams = generateParamsArray(launchOp, adaptor, rewriter);
   Value dynamicSharedMemorySize = launchOp.getDynamicSharedMemorySize()
@@ -2143,6 +2128,8 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
     return failure();
   }
 
+  llvm::errs() << " b mod" << *moduleOp << "\n";
+  
   auto launchCall =
       rewriter.create<LLVM::CallOp>(loc, cudaLaunchFn.value(), args);
   if (launchOp.getAsyncToken()) {
@@ -2152,56 +2139,43 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
     rewriter.eraseOp(launchOp);
   }
 
-  if (errOp) {
-    if (remainingOpsBlock) {
-      auto parent = launchCall->getBlock();
-      assert(parent->getNumSuccessors() == 1);
-      auto resBlk = parent->getSuccessor(0);
-      auto arg = resBlk->addArgument(launchCall->getResultTypes()[0], loc);
-      auto parentBr =
-          llvm::cast<mlir::BranchOpInterface>(parent->getTerminator());
-      do {
-        for (size_t i = 0; i < parentBr->getNumSuccessors(); i++) {
-          if (parentBr->getSuccessor(i) != resBlk)
-            continue;
-          Value rng[] = {launchCall->getResult(0)};
-          parentBr.getSuccessorOperands(i).append(rng);
-        }
-        parentBr = llvm::dyn_cast_or_null<mlir::BranchOpInterface>(
-            parentBr->getPrevNode());
-      } while (parentBr);
+  llvm::errs() << " pre launch: " << *launchCall->getParentOfType<FunctionOpInterface>() << "\n";
 
-      DenseSet<Block *> blocks;
-      for (auto pred : resBlk->getPredecessors()) {
-        if (pred == parent)
-          continue;
-        if (blocks.contains(pred))
-          continue;
-        blocks.insert(pred);
-        rewriter.setInsertionPointToStart(pred);
+  if (errOp) {
+    rewriter.setInsertionPoint(errOp);
+    auto reg = rewriter.create<scf::ExecuteRegionOp>(errOp.getLoc(), launchCall->getResultTypes()[0]);
+    rewriter.inlineRegionBefore(errOp.getRegion(), reg.getRegion(), reg.getRegion().begin());
+	  
+    rewriter.setInsertionPointToStart(&reg.getRegion().front());
+	  
+    auto ptrty = LLVM::LLVMPointerType::get(rewriter.getContext());
+          auto one = rewriter.create<LLVM::ConstantOp>(
+            loc, i64, rewriter.getI64IntegerAttr(1));
+
+auto alloca = rewriter.create<LLVM::AllocaOp>(launchOp.getLoc(), ptrty, launchCall->getResultTypes()[0], one);
         auto zero = rewriter.create<arith::ConstantIntOp>(
             loc, launchCall->getResultTypes()[0], 0);
-        auto br = llvm::cast<mlir::BranchOpInterface>(pred->getTerminator());
-        do {
-          for (size_t i = 0; i < br->getNumSuccessors(); i++) {
-            if (br->getSuccessor(i) != resBlk)
-              continue;
-            br.getSuccessorOperands(i).append(zero->getResults());
-          }
-          br = llvm::dyn_cast_or_null<mlir::BranchOpInterface>(
-              br->getPrevNode());
-        } while (br);
-      }
-      rewriter.setInsertionPointToStart(resBlk);
+	rewriter.create<LLVM::StoreOp>(launchOp.getLoc(), alloca, zero);
+	  
+	rewriter.setInsertionPointAfter(launchCall);
+	rewriter.create<LLVM::StoreOp>(launchOp.getLoc(), alloca, launchCall->getResult(0));
+
+	for (auto &block : reg.getRegion()) {
+	  if (auto terminator =
+                dyn_cast<enzymexla::PolygeistYieldOp>(block.getTerminator())) {
+	    rewriter.setInsertionPoint(terminator);
+	    auto load = rewriter.create<LLVM::LoadOp>(launchOp.getLoc(), launchCall->getResultTypes()[0], alloca);
+	    rewriter.replaceOpWithNewOp<scf::YieldOp>(terminator, load->getResults());
+	  }
+	}
+
+	rewriter.setInsertionPointAfter(errOp);
       auto cast = rewriter.create<arith::IndexCastOp>(
-          loc, rewriter.getIndexType(), arg);
+          loc, rewriter.getIndexType(), reg->getResult(0));
       rewriter.replaceOp(errOp, cast->getResults());
-    } else {
-      auto cast = rewriter.create<arith::IndexCastOp>(
-          loc, rewriter.getIndexType(), launchCall->getResult(0));
-      rewriter.replaceOp(errOp, cast->getResults());
-    }
   }
+  
+  llvm::errs() << " post launch: " << *launchCall->getParentOfType<FunctionOpInterface>() << "\n";
 
   return success();
 }
