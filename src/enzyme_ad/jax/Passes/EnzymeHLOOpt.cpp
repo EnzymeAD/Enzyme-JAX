@@ -18771,10 +18771,6 @@ struct ExtendSlice final
     if (!extendOp)
       return rewriter.notifyMatchFailure(op, "Operand is not an ExtendOp");
 
-    if (extendOp.getResult().getNumUses() > 1)
-      return rewriter.notifyMatchFailure(
-          op, "ExtendOp result is used multiple times");
-
     // This transformation is simplified if strides are 1.
     if (llvm::any_of(op.getStrides(), [](int64_t s) { return s != 1; }))
       return rewriter.notifyMatchFailure(op, "Requires strides of 1");
@@ -18810,6 +18806,17 @@ struct ExtendSlice final
     // padding.
     int64_t new_rhs =
         std::max((int64_t)0, limit_d - std::max(start_d, lhs + size_d));
+
+    if (new_lhs == 0 && new_rhs == 0) {
+      auto newSlice = rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
+          op, op.getType(), operand, new_starts, new_limits, new_strides);
+      return success();
+    }
+
+    if (extendOp.getResult().getNumUses() > 1) {
+      return rewriter.notifyMatchFailure(
+          op, "ExtendOp result is used multiple times");
+    }
 
     // Create the new slice on the original tensor.
     auto newSlice = rewriter.create<stablehlo::SliceOp>(
