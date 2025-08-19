@@ -219,6 +219,17 @@ static Value insertXLAInitDeinit(mlir::ModuleOp moduleOp, StringRef backend,
   return rewriter.create<LLVM::AddressOfOp>(loc, ptrty, data.getSymNameAttr());
 }
 
+struct Stream2TokenOpLowering : public ConvertOpToLLVMPattern<StreamToTokenOp> {
+  using ConvertOpToLLVMPattern<StreamToTokenOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(StreamToTokenOp op, OpAdaptor transformed,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOp(op, {transformed.getSource()});
+    return success();
+  }
+};
+
 struct Memref2PointerOpLowering
     : public ConvertOpToLLVMPattern<Memref2PointerOp> {
   using ConvertOpToLLVMPattern<Memref2PointerOp>::ConvertOpToLLVMPattern;
@@ -327,6 +338,7 @@ void populatePolygeistToLLVMConversionPatterns(LLVMTypeConverter &converter,
   //patterns.add<TypeAlignOpLowering>(converter);
   //patterns.add<UndefLowering>(converter);
   //patterns.add<SubIndexOpLowering>(converter);
+  patterns.add<Stream2TokenOpLowering>(converter);
   patterns.add<Memref2PointerOpLowering>(converter);
   patterns.add<Pointer2MemrefOpLowering>(converter);
   // clang-format on
@@ -1104,7 +1116,7 @@ public:
 
 private:
   Value generateParamsArray(gpu::LaunchFuncOp launchOp, OpAdaptor adaptor,
-                            OpBuilder &builder) const;
+                            OpBuilder &builder, Block *allocaBlock) const;
   Value generateKernelNameConstant(StringRef moduleName, StringRef name,
                                    Location loc, OpBuilder &builder) const;
 
@@ -1599,7 +1611,8 @@ struct LowerGPUAlternativesOp
 //   llvm.store %fieldPtr, %elementPtr
 // return %array
 Value ConvertLaunchFuncOpToGpuRuntimeCallPattern::generateParamsArray(
-    gpu::LaunchFuncOp launchOp, OpAdaptor adaptor, OpBuilder &builder) const {
+    gpu::LaunchFuncOp launchOp, OpAdaptor adaptor, OpBuilder &builder,
+    Block *allocaBlock) const {
   auto loc = launchOp.getLoc();
   auto numKernelOperands = launchOp.getNumKernelOperands();
   SmallVector<Value, 4> arguments =
@@ -1611,14 +1624,20 @@ Value ConvertLaunchFuncOpToGpuRuntimeCallPattern::generateParamsArray(
     argumentTypes.push_back(argument.getType());
   auto structType = LLVM::LLVMStructType::getNewIdentified(context, StringRef(),
                                                            argumentTypes);
-  auto one = builder.create<LLVM::ConstantOp>(loc, llvmInt32Type, 1);
-  auto structPtr = builder.create<LLVM::AllocaOp>(
-      loc, LLVM::LLVMPointerType::get(builder.getContext()), structType, one,
-      /*alignment=*/0);
-  auto arraySize =
-      builder.create<LLVM::ConstantOp>(loc, llvmInt32Type, numArguments);
-  auto arrayPtr = builder.create<LLVM::AllocaOp>(
-      loc, llvmPointerPointerType, llvmPointerType, arraySize, /*alignment=*/0);
+  Value structPtr, arrayPtr;
+  {
+    PatternRewriter::InsertionGuard B(builder);
+    builder.setInsertionPointToStart(allocaBlock);
+    auto one = builder.create<LLVM::ConstantOp>(loc, llvmInt32Type, 1);
+    structPtr = builder.create<LLVM::AllocaOp>(
+        loc, LLVM::LLVMPointerType::get(builder.getContext()), structType, one,
+        /*alignment=*/0);
+    auto arraySize =
+        builder.create<LLVM::ConstantOp>(loc, llvmInt32Type, numArguments);
+    arrayPtr = builder.create<LLVM::AllocaOp>(loc, llvmPointerPointerType,
+                                              llvmPointerType, arraySize,
+                                              /*alignment=*/0);
+  }
   for (const auto &en : llvm::enumerate(arguments)) {
     auto fieldPtr = builder.create<LLVM::GEPOp>(
         loc, LLVM::LLVMPointerType::get(builder.getContext()), structType,
@@ -1696,22 +1715,24 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
     return rewriter.notifyMatchFailure(
         launchOp, "Cannot convert with more than one async dependency.");
 
-  // Fail when the synchronous version of the op has async dependencies. The
-  // lowering destroys the stream, and we do not want to check that there is no
-  // use of the stream after this op.
-  if (!launchOp.getAsyncToken() && !launchOp.getAsyncDependencies().empty())
-    return rewriter.notifyMatchFailure(
-        launchOp, "Cannot convert non-async op with async dependencies.");
-  
+  Block *allocaBlock = nullptr;
+  {
+    Operation *currentOp = launchOp;
+    while (Operation *parentOp = currentOp->getParentOp()) {
+      if (parentOp->mightHaveTrait<OpTrait::IsIsolatedFromAbove>() ||
+          parentOp->mightHaveTrait<OpTrait::AutomaticAllocationScope>()) {
+        allocaBlock = &currentOp->getParentRegion()->front();
+        break;
+      }
+      currentOp = parentOp;
+    }
+  }
+
   ModuleOp moduleOp = launchOp->getParentOfType<ModuleOp>();
-  
-  llvm::errs() << " pre mod" << *moduleOp << "\n";
 
   Location loc = launchOp.getLoc();
 
   GPUErrorOp errOp = dyn_cast<GPUErrorOp>(launchOp->getParentOp());
- 
-  llvm::errs() << " go mod" << *moduleOp << "\n";
 
   // Create an LLVM global with CUBIN extracted from the kernel annotation and
   // obtain a pointer to the first byte in it.
@@ -1731,9 +1752,7 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
   // };
 
   // Build module constructor and destructor
-  
-  llvm::errs() << " mid mod" << *moduleOp << "\n";
-  
+
   {
     auto loc = moduleOp.getLoc();
     // TODO is it okay to be using OpBuilder's in op rewriter?
@@ -2067,8 +2086,6 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
       }
     }
   }
-  
-  llvm::errs() << " reg mod" << *moduleOp << "\n";
 
   std::string funcStubName =
       getFuncStubName(launchOp.getKernelModuleName().getValue(),
@@ -2088,7 +2105,8 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
                      : adaptor.getAsyncDependencies().front();
   
   // Create array of pointers to kernel arguments.
-  auto kernelParams = generateParamsArray(launchOp, adaptor, rewriter);
+  auto kernelParams =
+      generateParamsArray(launchOp, adaptor, rewriter, allocaBlock);
   Value dynamicSharedMemorySize = launchOp.getDynamicSharedMemorySize()
                                       ? launchOp.getDynamicSharedMemorySize()
                                       : zero;
@@ -2128,8 +2146,6 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
     return failure();
   }
 
-  llvm::errs() << " b mod" << *moduleOp << "\n";
-  
   auto launchCall =
       rewriter.create<LLVM::CallOp>(loc, cudaLaunchFn.value(), args);
   if (launchOp.getAsyncToken()) {
@@ -2139,32 +2155,35 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
     rewriter.eraseOp(launchOp);
   }
 
-  llvm::errs() << " pre launch: " << *launchCall->getParentOfType<FunctionOpInterface>() << "\n";
-
   if (errOp) {
     rewriter.setInsertionPoint(errOp);
     auto reg = rewriter.create<scf::ExecuteRegionOp>(errOp.getLoc(), launchCall->getResultTypes()[0]);
     rewriter.inlineRegionBefore(errOp.getRegion(), reg.getRegion(), reg.getRegion().begin());
-	  
-    rewriter.setInsertionPointToStart(&reg.getRegion().front());
-	  
+    rewriter.createBlock(&errOp.getRegion());
+
+    rewriter.setInsertionPointToStart(allocaBlock);
+
     auto ptrty = LLVM::LLVMPointerType::get(rewriter.getContext());
+
           auto one = rewriter.create<LLVM::ConstantOp>(
             loc, i64, rewriter.getI64IntegerAttr(1));
 
 auto alloca = rewriter.create<LLVM::AllocaOp>(launchOp.getLoc(), ptrty, launchCall->getResultTypes()[0], one);
         auto zero = rewriter.create<arith::ConstantIntOp>(
             loc, launchCall->getResultTypes()[0], 0);
-	rewriter.create<LLVM::StoreOp>(launchOp.getLoc(), alloca, zero);
-	  
-	rewriter.setInsertionPointAfter(launchCall);
-	rewriter.create<LLVM::StoreOp>(launchOp.getLoc(), alloca, launchCall->getResult(0));
 
-	for (auto &block : reg.getRegion()) {
+        rewriter.setInsertionPoint(errOp);
+        rewriter.create<LLVM::StoreOp>(launchOp.getLoc(), zero, alloca);
+
+        rewriter.setInsertionPointAfter(launchCall);
+        rewriter.create<LLVM::StoreOp>(launchOp.getLoc(),
+                                       launchCall->getResult(0), alloca);
+
+        for (auto &block : reg.getRegion()) {
 	  if (auto terminator =
                 dyn_cast<enzymexla::PolygeistYieldOp>(block.getTerminator())) {
-	    rewriter.setInsertionPoint(terminator);
-	    auto load = rewriter.create<LLVM::LoadOp>(launchOp.getLoc(), launchCall->getResultTypes()[0], alloca);
+            rewriter.setInsertionPointToEnd(&block);
+            auto load = rewriter.create<LLVM::LoadOp>(launchOp.getLoc(), launchCall->getResultTypes()[0], alloca);
 	    rewriter.replaceOpWithNewOp<scf::YieldOp>(terminator, load->getResults());
 	  }
 	}
@@ -2174,8 +2193,6 @@ auto alloca = rewriter.create<LLVM::AllocaOp>(launchOp.getLoc(), ptrty, launchCa
           loc, rewriter.getIndexType(), reg->getResult(0));
       rewriter.replaceOp(errOp, cast->getResults());
   }
-  
-  llvm::errs() << " post launch: " << *launchCall->getParentOfType<FunctionOpInterface>() << "\n";
 
   return success();
 }
@@ -3505,6 +3522,13 @@ static void removeUnsupportedLifeTimes(mlir::Operation *root) {
     op->erase();
 }
 
+template <typename T>
+static void addOpaquePointerConversion(LLVMTypeConverter &converter) {
+  converter.addConversion([&converter](T) -> Type {
+    return LLVM::LLVMPointerType::get(&converter.getContext());
+  });
+}
+
 //===-----------------------------------------------------------------------===/
 
 namespace {
@@ -3553,6 +3577,7 @@ struct ConvertPolygeistToLLVMPass
                                           type.getMemorySpaceAsInt());
       });
     }
+    addOpaquePointerConversion<gpu::AsyncTokenType>(converter);
 
     SmallVector<Operation *> gmods;
     m->walk([&](gpu::GPUModuleOp mod) { gmods.push_back(mod); });
