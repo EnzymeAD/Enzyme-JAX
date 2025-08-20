@@ -1105,6 +1105,35 @@ static constexpr const char *kGpuBinaryStorageSuffix = "_gpubin_cst";
 static constexpr const char *kGpuModuleCtorSuffix = "_gpubin_ctor";
 static constexpr const char *kGpuModuleDtorSuffix = "_gpubin_dtor";
 
+// Generates an LLVM IR dialect global that contains the name of the given
+// kernel function as a C string, and returns a pointer to its beginning.
+// The code is essentially:
+//
+// llvm.global constant @kernel_name("function_name\00")
+// func(...) {
+//   %0 = llvm.addressof @kernel_name
+//   %1 = llvm.constant (0 : index)
+//   %2 = llvm.getelementptr %0[%1, %1] : !llvm<"i8*">
+// }
+static Value generateKernelNameConstant(
+    StringRef moduleName, StringRef name, Location loc,
+    OpBuilder &builder) {
+  // Make sure the trailing zero is included in the constant.
+  std::vector<char> kernelName(name.begin(), name.end());
+  kernelName.push_back('\0');
+
+  std::string globalName =
+      std::string(llvm::formatv("{0}_{1}_kernel_name", moduleName, name));
+  return LLVM::createGlobalString(
+      loc, builder, globalName, StringRef(kernelName.data(), kernelName.size()),
+      LLVM::Linkage::Internal);
+}
+
+static std::string getFuncStubName(StringRef moduleName, StringRef name) {
+  return std::string(
+      llvm::formatv("__polygeist_{0}_{1}_device_stub", moduleName, name));
+};
+
 class ConvertLaunchFuncOpToGpuRuntimeCallPattern
     : public ConvertOpToGpuRuntimeCallPattern<gpu::LaunchFuncOp> {
 public:
@@ -1117,8 +1146,6 @@ public:
 private:
   Value generateParamsArray(gpu::LaunchFuncOp launchOp, OpAdaptor adaptor,
                             OpBuilder &builder, Block *allocaBlock) const;
-  Value generateKernelNameConstant(StringRef moduleName, StringRef name,
-                                   Location loc, OpBuilder &builder) const;
 
   LogicalResult
   matchAndRewrite(gpu::LaunchFuncOp launchOp, OpAdaptor adaptor,
@@ -1672,30 +1699,6 @@ Value ConvertLaunchFuncOpToGpuRuntimeCallPattern::generateParamsArray(
   return arrayPtr;
 }
 
-// Generates an LLVM IR dialect global that contains the name of the given
-// kernel function as a C string, and returns a pointer to its beginning.
-// The code is essentially:
-//
-// llvm.global constant @kernel_name("function_name\00")
-// func(...) {
-//   %0 = llvm.addressof @kernel_name
-//   %1 = llvm.constant (0 : index)
-//   %2 = llvm.getelementptr %0[%1, %1] : !llvm<"i8*">
-// }
-Value ConvertLaunchFuncOpToGpuRuntimeCallPattern::generateKernelNameConstant(
-    StringRef moduleName, StringRef name, Location loc,
-    OpBuilder &builder) const {
-  // Make sure the trailing zero is included in the constant.
-  std::vector<char> kernelName(name.begin(), name.end());
-  kernelName.push_back('\0');
-
-  std::string globalName =
-      std::string(llvm::formatv("{0}_{1}_kernel_name", moduleName, name));
-  return LLVM::createGlobalString(
-      loc, builder, globalName, StringRef(kernelName.data(), kernelName.size()),
-      LLVM::Linkage::Internal);
-}
-
 // Returns whether all operands are of LLVM type.
 static LogicalResult areAllLLVMTypes(Operation *op, ValueRange operands,
                                      ConversionPatternRewriter &rewriter) {
@@ -1754,7 +1757,7 @@ LogicalResult ConvertGPUModuleOp::matchAndRewrite(
     }
 */
 
-      auto moduleName = launchOp.getKernelModuleName().getValue();
+      auto moduleName = kernelModule.getName();
       LLVM::GlobalOp moduleGlobal = nullptr;
 
       {
@@ -1887,7 +1890,7 @@ LogicalResult ConvertGPUModuleOp::matchAndRewrite(
             if (!f->getAttr("gpu.kernel"))
               continue;
             auto kernelName = generateKernelNameConstant(
-                launchOp.getKernelModuleName().getValue(), f.getName(), loc,
+                kernelModule.getName(), f.getName(), loc,
                 ctorBuilder);
 
             auto nullPtr =
@@ -2044,7 +2047,6 @@ LogicalResult ConvertGPUModuleOp::matchAndRewrite(
         }
       }
     }
-  }
   return success();
 }
 
@@ -2101,10 +2103,6 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
   if (!kernelModule)
     return rewriter.notifyMatchFailure(launchOp, "Expected a kernel module");
 
-  auto getFuncStubName = [](StringRef moduleName, StringRef name) {
-    return std::string(
-        llvm::formatv("__polygeist_{0}_{1}_device_stub", moduleName, name));
-  };
   // auto getFuncGlobalName = [](StringRef moduleName, StringRef name) {
   //   return std::string(
   //       llvm::formatv("__polygeist_{0}_{1}_fun_ptr", moduleName, name));
