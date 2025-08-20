@@ -314,6 +314,21 @@ struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
           sameValue |= rattr.zext(maxWidth) == sattr.zext(maxWidth);
         }
 
+      // Helper function to cast value to target type
+      auto castValue = [&](Value value, Value target, Location loc) -> Value {
+	Type valueType = value.getType();
+	Type targetType = target.getType();
+        if (valueType == targetType) return value;
+
+        if (targetType.isIndex() || value.getType().isIndex()) {
+          return rewriter.create<IndexCastOp>(loc, targetType, value);
+        } else if (targetType.getIntOrFloatBitWidth() > valueType.getIntOrFloatBitWidth()) {
+          return rewriter.create<arith::ExtSIOp>(loc, targetType, value);
+        } else {
+          return rewriter.create<arith::TruncIOp>(loc, targetType, value);
+        }
+      };
+
       if (!iterarg.use_empty()) {
         Value init = outiter;
         rewriter.setInsertionPointToStart(&forOp.getRegion().front());
@@ -344,34 +359,12 @@ struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
               rewriter.create<MulIOp>(forOp.getLoc(), replacement, step);
         }
 
-        if (init.getType() != replacement.getType()) {
-          if (replacement.getType().isIndex() || init.getType().isIndex())
-            init = rewriter.create<IndexCastOp>(forOp.getLoc(),
-                                                replacement.getType(), init);
-          else if (replacement.getType().getIntOrFloatBitWidth() >
-                   init.getType().getIntOrFloatBitWidth())
-            init = rewriter.create<arith::ExtSIOp>(forOp.getLoc(),
-                                                   replacement.getType(), init);
-          else
-            init = rewriter.create<arith::TruncIOp>(
-                forOp.getLoc(), replacement.getType(), init);
-        }
+	init = castValue(init, replacement, forOp.getLoc());
 
         replacement =
             rewriter.create<AddIOp>(forOp.getLoc(), init, replacement);
 
-        if (iterarg.getType() != replacement.getType()) {
-          if (replacement.getType().isIndex() || iterarg.getType().isIndex())
-            replacement = rewriter.create<IndexCastOp>(
-                forOp.getLoc(), iterarg.getType(), replacement);
-          else if (iterarg.getType().getIntOrFloatBitWidth() >
-                   replacement.getType().getIntOrFloatBitWidth())
-            replacement = rewriter.create<arith::ExtSIOp>(
-                forOp.getLoc(), iterarg.getType(), replacement);
-          else
-            replacement = rewriter.create<arith::TruncIOp>(
-                forOp.getLoc(), iterarg.getType(), replacement);
-        }
+	replacement = castValue(replacement, iterarg, forOp.getLoc());
 
         rewriter.modifyOpInPlace(
             forOp, [&] { iterarg.replaceAllUsesWith(replacement); });
@@ -391,51 +384,18 @@ struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
         if (!sameValue) {
           Value step = addOp.getOperand(1);
 
-          if (step.getType() != replacement.getType()) {
-            if (replacement.getType().isIndex() || step.getType().isIndex())
-              step = rewriter.create<IndexCastOp>(forOp.getLoc(),
-                                                  replacement.getType(), step);
-            else if (replacement.getType().getIntOrFloatBitWidth() >
-                     step.getType().getIntOrFloatBitWidth())
-              step = rewriter.create<arith::ExtSIOp>(
-                  forOp.getLoc(), replacement.getType(), step);
-            else
-              step = rewriter.create<arith::TruncIOp>(
-                  forOp.getLoc(), replacement.getType(), step);
-          }
+	  step = castValue(step, replacement, forOp.getLoc());
 
           replacement =
               rewriter.create<MulIOp>(forOp.getLoc(), replacement, step);
         }
 
-        if (init.getType() != replacement.getType()) {
-          if (replacement.getType().isIndex() || init.getType().isIndex())
-            init = rewriter.create<IndexCastOp>(forOp.getLoc(),
-                                                replacement.getType(), init);
-          else if (replacement.getType().getIntOrFloatBitWidth() >
-                   init.getType().getIntOrFloatBitWidth())
-            init = rewriter.create<arith::ExtSIOp>(forOp.getLoc(),
-                                                   replacement.getType(), init);
-          else
-            init = rewriter.create<arith::TruncIOp>(
-                forOp.getLoc(), replacement.getType(), init);
-        }
+	init = castValue(init, replacement, forOp.getLoc());
 
         replacement =
             rewriter.create<AddIOp>(forOp.getLoc(), init, replacement);
 
-        if (iterarg.getType() != replacement.getType()) {
-          if (replacement.getType().isIndex() || iterarg.getType().isIndex())
-            replacement = rewriter.create<IndexCastOp>(
-                forOp.getLoc(), iterarg.getType(), replacement);
-          else if (iterarg.getType().getIntOrFloatBitWidth() >
-                   replacement.getType().getIntOrFloatBitWidth())
-            replacement = rewriter.create<arith::ExtSIOp>(
-                forOp.getLoc(), iterarg.getType(), replacement);
-          else
-            replacement = rewriter.create<arith::TruncIOp>(
-                forOp.getLoc(), iterarg.getType(), replacement);
-        }
+	replacement = castValue(replacement, iterarg, forOp.getLoc());
 
         rewriter.modifyOpInPlace(forOp,
                                  [&] { res.replaceAllUsesWith(replacement); });
