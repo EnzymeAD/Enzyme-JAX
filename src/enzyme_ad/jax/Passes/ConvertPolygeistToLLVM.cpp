@@ -1923,9 +1923,6 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
           if (auto f = dyn_cast<FunctionOpInterface>(op)) {
             if (!f->getAttr("gpu.kernel"))
               continue;
-            auto symbolUses = SymbolTable::getSymbolUses(&op, moduleOp);
-            if (symbolUses && symbolUses->empty())
-              continue;
             auto kernelName = generateKernelNameConstant(
                 launchOp.getKernelModuleName().getValue(), f.getName(), loc,
                 ctorBuilder);
