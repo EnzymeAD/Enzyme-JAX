@@ -1128,6 +1128,25 @@ private:
   std::string gpuTarget;
 };
 
+class ConvertGPUModuleOp
+    : public ConvertOpToGpuRuntimeCallPattern<gpu::GPUModuleOp> {
+public:
+  ConvertGPUModuleOp(LLVMTypeConverter &typeConverter,
+                                             StringRef gpuBinaryAnnotation,
+                                             std::string gpuTarget)
+      : ConvertOpToGpuRuntimeCallPattern<gpu::GPUModuleOp>(typeConverter),
+        gpuBinaryAnnotation(gpuBinaryAnnotation), gpuTarget(gpuTarget) {}
+
+private:
+
+  LogicalResult
+  matchAndRewrite(gpu::GPUModuleOp launchOp, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override;
+
+  llvm::SmallString<32> gpuBinaryAnnotation;
+  std::string gpuTarget;
+};
+
 // tuple helpers
 template <typename Tuple> constexpr auto pop_front(Tuple tuple) {
   static_assert(std::tuple_size<Tuple>::value > 0,
@@ -1688,72 +1707,16 @@ static LogicalResult areAllLLVMTypes(Operation *op, ValueRange operands,
   return success();
 }
 
-// Emits LLVM IR to launch a kernel function. Expects the module that contains
-// the compiled kernel function as a cubin in the 'nvvm.cubin' attribute, or a
-// hsaco in the 'rocdl.hsaco' attribute of the kernel function in the IR.
-//
-// %0 = call %binarygetter
-// %1 = call %moduleLoad(%0)
-// %2 = <see generateKernelNameConstant>
-// %3 = call %moduleGetFunction(%1, %2)
-// %4 = call %streamCreate()
-// %5 = <see generateParamsArray>
-// call %launchKernel(%3, <launchOp operands 0..5>, 0, %4, %5, nullptr)
-// call %streamSynchronize(%4)
-// call %streamDestroy(%4)
-// call %moduleUnload(%1)
-//
-// If the op is async, the stream corresponds to the (single) async dependency
-// as well as the async token the op produces.
-LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
-    gpu::LaunchFuncOp launchOp, OpAdaptor adaptor,
+LogicalResult ConvertGPUModuleOp::matchAndRewrite(
+    gpu::GPUModuleOp kernelModule, OpAdaptor adaptor,
     ConversionPatternRewriter &rewriter) const {
-  if (failed(areAllLLVMTypes(launchOp, adaptor.getOperands(), rewriter)))
+
+  if (kernelModule->hasAttr("polygeist_stubs"))
     return failure();
+  
+  ModuleOp moduleOp = kernelModule->getParentOfType<ModuleOp>();
 
-  if (launchOp.getAsyncDependencies().size() > 1)
-    return rewriter.notifyMatchFailure(
-        launchOp, "Cannot convert with more than one async dependency.");
-
-  Block *allocaBlock = nullptr;
-  {
-    Operation *currentOp = launchOp;
-    while (Operation *parentOp = currentOp->getParentOp()) {
-      if (parentOp->mightHaveTrait<OpTrait::IsIsolatedFromAbove>() ||
-          parentOp->mightHaveTrait<OpTrait::AutomaticAllocationScope>()) {
-        allocaBlock = &currentOp->getParentRegion()->front();
-        break;
-      }
-      currentOp = parentOp;
-    }
-  }
-
-  ModuleOp moduleOp = launchOp->getParentOfType<ModuleOp>();
-
-  Location loc = launchOp.getLoc();
-
-  GPUErrorOp errOp = dyn_cast<GPUErrorOp>(launchOp->getParentOp());
-
-  // Create an LLVM global with CUBIN extracted from the kernel annotation and
-  // obtain a pointer to the first byte in it.
-  auto kernelModule = SymbolTable::lookupNearestSymbolFrom<gpu::GPUModuleOp>(
-      launchOp, launchOp.getKernelModuleName());
-  if (!kernelModule)
-    return rewriter.notifyMatchFailure(launchOp, "Expected a kernel module");
-
-  auto getFuncStubName = [](StringRef moduleName, StringRef name) {
-    return std::string(
-        llvm::formatv("__polygeist_{0}_{1}_device_stub", moduleName, name));
-  };
-  // auto getFuncGlobalName = [](StringRef moduleName, StringRef name) {
-  //   return std::string(
-  //       llvm::formatv("__polygeist_{0}_{1}_fun_ptr", moduleName, name));
-  // };
-
-  // Build module constructor and destructor
-
-  if (kernelModule->hasAttr("polygeist_stubs")) {
-    auto loc = moduleOp.getLoc();
+    auto loc = kernelModule.getLoc();
     rewriter.modifyOpInPlace(kernelModule, [&](){
 	kernelModule->setAttr("polygeist_stubs", rewriter.getUnitAttr());
 		    }
@@ -2082,7 +2045,72 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
       }
     }
   }
+  return success();
+}
 
+// Emits LLVM IR to launch a kernel function. Expects the module that contains
+// the compiled kernel function as a cubin in the 'nvvm.cubin' attribute, or a
+// hsaco in the 'rocdl.hsaco' attribute of the kernel function in the IR.
+//
+// %0 = call %binarygetter
+// %1 = call %moduleLoad(%0)
+// %2 = <see generateKernelNameConstant>
+// %3 = call %moduleGetFunction(%1, %2)
+// %4 = call %streamCreate()
+// %5 = <see generateParamsArray>
+// call %launchKernel(%3, <launchOp operands 0..5>, 0, %4, %5, nullptr)
+// call %streamSynchronize(%4)
+// call %streamDestroy(%4)
+// call %moduleUnload(%1)
+//
+// If the op is async, the stream corresponds to the (single) async dependency
+// as well as the async token the op produces.
+LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
+    gpu::LaunchFuncOp launchOp, OpAdaptor adaptor,
+    ConversionPatternRewriter &rewriter) const {
+  if (failed(areAllLLVMTypes(launchOp, adaptor.getOperands(), rewriter)))
+    return failure();
+
+  if (launchOp.getAsyncDependencies().size() > 1)
+    return rewriter.notifyMatchFailure(
+        launchOp, "Cannot convert with more than one async dependency.");
+
+  Block *allocaBlock = nullptr;
+  {
+    Operation *currentOp = launchOp;
+    while (Operation *parentOp = currentOp->getParentOp()) {
+      if (parentOp->mightHaveTrait<OpTrait::IsIsolatedFromAbove>() ||
+          parentOp->mightHaveTrait<OpTrait::AutomaticAllocationScope>()) {
+        allocaBlock = &currentOp->getParentRegion()->front();
+        break;
+      }
+      currentOp = parentOp;
+    }
+  }
+
+  ModuleOp moduleOp = launchOp->getParentOfType<ModuleOp>();
+
+  Location loc = launchOp.getLoc();
+
+  GPUErrorOp errOp = dyn_cast<GPUErrorOp>(launchOp->getParentOp());
+
+  // Create an LLVM global with CUBIN extracted from the kernel annotation and
+  // obtain a pointer to the first byte in it.
+  auto kernelModule = SymbolTable::lookupNearestSymbolFrom<gpu::GPUModuleOp>(
+      launchOp, launchOp.getKernelModuleName());
+  if (!kernelModule)
+    return rewriter.notifyMatchFailure(launchOp, "Expected a kernel module");
+
+  auto getFuncStubName = [](StringRef moduleName, StringRef name) {
+    return std::string(
+        llvm::formatv("__polygeist_{0}_{1}_device_stub", moduleName, name));
+  };
+  // auto getFuncGlobalName = [](StringRef moduleName, StringRef name) {
+  //   return std::string(
+  //       llvm::formatv("__polygeist_{0}_{1}_fun_ptr", moduleName, name));
+  // };
+
+  // Build module constructor and destructor
   std::string funcStubName =
       getFuncStubName(launchOp.getKernelModuleName().getValue(),
                       launchOp.getKernelName().getValue());
@@ -3642,6 +3670,9 @@ struct ConvertPolygeistToLLVMPass
     if (useCStyleMemRef) {
       patterns.add<ConvertLaunchFuncOpToGpuRuntimeCallPattern>(
           converter, "gpu.binary", gpuTarget);
+      
+      patterns.add<ConvertGPUModuleOp>(
+          converter, "gpu.binary", gpuTarget);
       // patterns.add<LegalizeLaunchFuncOpPattern>(
       //     converter, /*kernelBarePtrCallConv*/ true,
       //     /*kernelIntersperseSizeCallConv*/ false);
@@ -3692,6 +3723,12 @@ struct ConvertPolygeistToLLVMPass
     target.addDynamicallyLegalOp<LLVM::GlobalOp>(
         [&](LLVM::GlobalOp op) -> std::optional<bool> {
           if (converter.convertType(op.getGlobalType()) == op.getGlobalType())
+            return true;
+          return std::nullopt;
+        });
+    target.addDynamicallyLegalOp<gpu::GPUModuleOp>(
+        [&](gpu::GPUModuleOp op) -> std::optional<bool> {
+          if (op->hasAttr("polygeist_stubs"))
             return true;
           return std::nullopt;
         });
