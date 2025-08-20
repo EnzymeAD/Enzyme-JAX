@@ -197,7 +197,7 @@ jobs:
           curl -LsSf https://astral.sh/uv/install.sh | sh
       - name: Extract and combine benchmark results
         run: |
-          uv run --no-project .github/scripts/process_benchmark_results.py --artifact_dir=benchmark-results --markdown_file=body.md
+          uv run --no-project test/process_benchmark_results.py --artifact_dir=benchmark-results --markdown_file=body.md
       - name: Find Comment
         uses: peter-evans/find-comment@v3
         id: fcbenchmark
