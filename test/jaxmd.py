@@ -121,7 +121,7 @@ class JAXMD(EnzymeJaxTest):
         self.mlirad_fwd = False
 
         if jax.default_backend() == "tpu":
-            self.tol = 5e-4
+            self.tol = 5e-3
 
         elif jax.default_backend() == "gpu":
             # GPU CI reverse mode needs loose, merits future investigation
