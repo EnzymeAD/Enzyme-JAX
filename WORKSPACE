@@ -9,7 +9,7 @@ load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 #     strip_prefix = "llvm-project-" + LLVM_COMMIT,
 #     urls = ["https://github.com/llvm/llvm-project/archive/{commit}.tar.gz".format(commit = LLVM_COMMIT)],
 # )
-# 
+#
 # load("@bazel_tools//tools/build_defs/repo:utils.bzl", "maybe")
 # maybe(
 #     http_archive,
@@ -21,7 +21,7 @@ load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 #         "https://github.com/zlib-ng/zlib-ng/archive/refs/tags/2.0.7.zip",
 #     ],
 # )
-# 
+#
 # maybe(
 #     http_archive,
 #     name = "llvm_zstd",
