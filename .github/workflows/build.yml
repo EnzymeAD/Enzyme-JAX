@@ -68,6 +68,11 @@ jobs:
         if: ${{ contains(matrix.os, 'a100') }}
         run: |
           nvidia-smi
+      - name: Install bazel deps for tests
+        run: |
+          apt update
+          apt install -y zip file
+        if: ${{ !contains(matrix.os, 'macOS') }}
       - name: Set BAZEL_FLAGS
         shell: bash
         run: |
