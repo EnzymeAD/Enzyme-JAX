@@ -2156,15 +2156,9 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
 
   auto ptrty = LLVM::LLVMPointerType::get(rewriter.getContext());
   Type tys[] = {ptrty, i64, i32, i64, i32, ptrty, i64, ptrty};
-  auto cudaLaunchFn =
-      LLVM::lookupOrCreateFn(rewriter, moduleOp, "cudaLaunchKernel", tys, i32);
-  if (failed(cudaLaunchFn)) {
-    llvm::errs() << " cudamalloc already exists with different types\n";
-    return failure();
-  }
 
   auto launchCall =
-      rewriter.create<LLVM::CallOp>(loc, cudaLaunchFn.value(), args);
+      rewriter.create<LLVM::CallOp>(loc, TypeRange(i32), "cudaLaunchKernel", args); // FlatSymbolRefAttr::get(rewriter.getStringAttr("cudaLaunchKernel")), args);
   if (launchOp.getAsyncToken()) {
     // Async launch: make dependent ops use the same stream.
     rewriter.replaceOp(launchOp, {stream});
@@ -3603,6 +3597,15 @@ struct ConvertPolygeistToLLVMPass
 
     SmallVector<Operation *> gmods;
     m->walk([&](gpu::GPUModuleOp mod) { gmods.push_back(mod); });
+
+    if (backend == "cuda" && gmods.size()) {
+      OpBuilder rewriter(m);
+	  auto i32 = rewriter.getIntegerType(32);
+	  auto i64 = rewriter.getIntegerType(64);
+	  auto ptrty = LLVM::LLVMPointerType::get(rewriter.getContext());
+	  Type tys[] = {ptrty, i64, i32, i64, i32, ptrty, i64, ptrty};
+	  LLVM::lookupOrCreateFn(rewriter, m, "cudaLaunchKernel", tys, i32);
+    }
 
     for (auto mod : gmods) {
       RewritePatternSet patterns(&getContext());
