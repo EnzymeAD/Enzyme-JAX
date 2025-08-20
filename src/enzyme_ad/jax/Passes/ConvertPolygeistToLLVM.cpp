@@ -1752,21 +1752,21 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
 
   // Build module constructor and destructor
 
-  {
+  if (kernelModule->hasAttr("polygeist_stubs")) {
     auto loc = moduleOp.getLoc();
+    rewriter.modifyOpInPlace(kernelModule, [&](){
+	kernelModule->setAttr("polygeist_stubs", rewriter.getUnitAttr());
+		    }
+		    );
     // TODO is it okay to be using OpBuilder's in op rewriter?
     // OpBuilder moduleBuilder(moduleOp.getBodyRegion());
     SmallString<128> ctorNameBuffer(kernelModule.getName());
     ctorNameBuffer.append(kGpuModuleCtorSuffix);
-    LLVM::LLVMFuncOp ctor = dyn_cast_or_null<LLVM::LLVMFuncOp>(
-        SymbolTable::lookupSymbolIn(moduleOp, ctorNameBuffer));
     SmallString<128> dtorNameBuffer(kernelModule.getName());
     dtorNameBuffer.append(kGpuModuleDtorSuffix);
-    LLVM::LLVMFuncOp dtor = dyn_cast_or_null<LLVM::LLVMFuncOp>(
-        SymbolTable::lookupSymbolIn(moduleOp, dtorNameBuffer));
-    if (!ctor) {
-      assert(!dtor &&
-             "gpu module constructor does not exist but destructor does");
+    LLVM::LLVMFuncOp ctor;
+    LLVM::LLVMFuncOp dtor;
+    {
       {
         PatternRewriter::InsertionGuard B(rewriter);
         rewriter.setInsertionPointToEnd(moduleOp.getBody());
@@ -2087,12 +2087,7 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
       getFuncStubName(launchOp.getKernelModuleName().getValue(),
                       launchOp.getKernelName().getValue());
 
-  auto stub = dyn_cast_or_null<LLVM::LLVMFuncOp>(
-      SymbolTable::lookupSymbolIn(moduleOp, funcStubName));
-  assert(!!stub);
-  auto aoo = rewriter.create<LLVM::AddressOfOp>(loc, stub);
-  auto bitcast =
-      rewriter.create<LLVM::AddrSpaceCastOp>(loc, llvmPointerType, aoo);
+  auto bitcast = rewriter.create<LLVM::AddressOfOp>(loc, llvmPointerType, funcStubName);
 
   Value zero = rewriter.create<LLVM::ConstantOp>(loc, llvmInt32Type, 0);
   auto nullpointer = rewriter.create<LLVM::ZeroOp>(loc, llvmPointerType);
