@@ -63,6 +63,13 @@ jobs:
     env:
       HERMETIC_PYTHON_VERSION: ${{ matrix.python }}
     steps:
+      # - name: Free Disk Space
+      #   uses: jlumbroso/free-disk-space@main
+      #   with:
+      #     tool-cache: false
+      #   if: ${{ startsWith(matrix.os, 'ubuntu-') }}
+      # - name: Clean `/opt`
+      #   run: sudo rm -rf /opt/*
       - name: Check GPUs
         if: ${{ contains(matrix.os, 'a100') }}
         run: |
@@ -116,9 +123,6 @@ jobs:
         if: ${{ !contains(matrix.os, 'a100') }}
         run: |
           sed -i.bak0 "/cuda12/d" builddeps/test-requirements.txt
-      - name: Update Python requirements files
-        run: |
-          bazel run $BAZEL_FLAGS --color=yes //builddeps:requirements.update
       - name: Build enzymexlamlir-opt
         timeout-minutes: 180
         run: |
@@ -129,6 +133,9 @@ jobs:
           name: enzymexlamlir-opt-${{ matrix.os }}-${{ matrix.python }}
           path: "bazel-bin/enzymexlamlir-opt"
           retention-days: 90
+      - name: Update Python requirements files
+        run: |
+          bazel run $BAZEL_FLAGS --color=yes //builddeps:requirements.update
       - name: Build wheel
         timeout-minutes: 240
         run: |
@@ -142,7 +149,7 @@ jobs:
           retention-days: 90
       - name: Run lit tests
         run: |
-          bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/lit_tests/...          
+          bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/lit_tests/...
       - name: Run tests
         run: |
           bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/...
