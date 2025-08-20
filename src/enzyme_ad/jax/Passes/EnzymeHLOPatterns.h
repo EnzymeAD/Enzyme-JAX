@@ -88,5 +88,15 @@ void addExtendUnaryElementwise(RewritePatternSet &patterns, bool onlySingleUser,
                                MLIRContext &context, PatternBenefit benefit);
 void addWrapUnaryElementwise(RewritePatternSet &patterns, bool onlySingleUser,
                              MLIRContext &context, PatternBenefit benefit);
+void addSelfAddToConvolutionLike(RewritePatternSet &patterns,
+                                 bool allowEmitConvolution,
+                                 MLIRContext &context, PatternBenefit benefit);
+void addSelfSubtractToConvolutionLike(RewritePatternSet &patterns,
+                                      bool allowEmitConvolution,
+                                      MLIRContext &context,
+                                      PatternBenefit benefit);
+void addSelfMulToConvolutionLike(RewritePatternSet &patterns,
+                                 bool allowEmitConvolution,
+                                 MLIRContext &context, PatternBenefit benefit);
 
 } // namespace mlir::transform
