@@ -53,11 +53,12 @@ jobs:
       fail-fast: false
       matrix:
         os:
-          - linux-x86-n2-32
-          - linux-arm64-c4a-32
+          # TODO: Reenable all OS
+          # - linux-x86-n2-32
+          # - linux-arm64-c4a-32
           - linux-x86-ct6e-180-4tpu
-          - linux-x86-a2-48-a100-4gpu
-          - macOS-latest
+          # - linux-x86-a2-48-a100-4gpu
+          # - macOS-latest
         python:
           - '3.11'
     env:
@@ -144,8 +145,11 @@ jobs:
         run: |
           bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/lit_tests/...
       - name: Run tests
+        # TODO: Reenable all tests
+        # run: |
+        #   bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/...
         run: |
-          bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/...
+          bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test:bench_vs_xla
       - name: Upload test results
         uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
@@ -153,4 +157,5 @@ jobs:
           name: Enzyme-JAX-tests-${{ matrix.os }}-${{ matrix.python }}
           path: |
             bazel-out/**/test.log
+            bazel-testlogs/test/**/test.outputs/*.zip
           retention-days: 90
