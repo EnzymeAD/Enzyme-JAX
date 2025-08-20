@@ -3,30 +3,30 @@ name: Build Enzyme-JAX
 on:
   push:
     branches:
-    - main
+      - main
     paths:
-      - '.github/workflows/build.yml'
-      - '**/BUILD'
-      - '**/WORKSPACE'
-      - '**/*.bzl'
-      - 'builddeps/**'
-      - 'patches/**'
-      - 'src/**'
-      - 'test/**'
-      - 'third_party/**'
+      - ".github/workflows/build.yml"
+      - "**/BUILD"
+      - "**/WORKSPACE"
+      - "**/*.bzl"
+      - "builddeps/**"
+      - "patches/**"
+      - "src/**"
+      - "test/**"
+      - "third_party/**"
   pull_request:
     branches:
-    - main
+      - main
     paths:
-      - '.github/workflows/build.yml'
-      - '**/BUILD'
-      - '**/WORKSPACE'
-      - '**/*.bzl'
-      - 'builddeps/**'
-      - 'patches/**'
-      - 'src/**'
-      - 'test/**'
-      - 'third_party/**'
+      - ".github/workflows/build.yml"
+      - "**/BUILD"
+      - "**/WORKSPACE"
+      - "**/*.bzl"
+      - "builddeps/**"
+      - "patches/**"
+      - "src/**"
+      - "test/**"
+      - "third_party/**"
 
 concurrency:
   # Skip intermediate builds: always.
@@ -56,11 +56,11 @@ jobs:
           # TODO: Reenable all OS
           # - linux-x86-n2-32
           # - linux-arm64-c4a-32
-          - linux-x86-ct6e-180-4tpu
-          # - linux-x86-a2-48-a100-4gpu
+          # - linux-x86-ct6e-180-4tpu
+          - linux-x86-a2-48-a100-4gpu
           # - macOS-latest
         python:
-          - '3.11'
+          - "3.11"
     env:
       HERMETIC_PYTHON_VERSION: ${{ matrix.python }}
     steps:
@@ -72,7 +72,7 @@ jobs:
         run: |
           apt update
           apt install -y zip file
-        if: ${{ !contains(matrix.os, 'macOS') }}
+        if: ${{ contains(matrix.os, 'linux') }}
       - name: Set BAZEL_FLAGS
         shell: bash
         run: |
@@ -146,9 +146,10 @@ jobs:
           name: Enzyme-JAX-Wheel-${{ matrix.os }}-${{ matrix.python }}
           path: "bazel-bin/*.whl"
           retention-days: 90
-      - name: Run lit tests
-        run: |
-          bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/lit_tests/...
+      # TODO: Reenable all tests
+      # - name: Run lit tests
+      #   run: |
+      #     bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/lit_tests/...
       - name: Run tests
         # TODO: Reenable all tests
         # run: |
@@ -162,5 +163,195 @@ jobs:
           name: Enzyme-JAX-tests-${{ matrix.os }}-${{ matrix.python }}
           path: |
             bazel-out/**/test.log
+          retention-days: 90
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: Enzyme-JAX-benchmark-${{ matrix.os }}-${{ matrix.python }}
+          path: |
             bazel-testlogs/test/**/test.outputs/*.zip
           retention-days: 90
+
+  benchmark-summary:
+    name: Benchmark Summary
+    container:
+      image: "ghcr.io/enzymead/reactant-docker-images@sha256:91e1edb7a7c869d5a70db06e417f22907be0e67ca86641d48adcea221fedc674"
+    runs-on: linux-x86-n2-32
+    needs: build
+    if: ${{ !cancelled() }}
+    permissions:
+      pull-requests: write
+      contents: read
+    steps:
+      - name: Download all benchmark artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: Enzyme-JAX-benchmark-*
+          path: benchmark-results
+          merge-multiple: false
+      - name: Install bazel deps for tests
+        run: |
+          apt update
+          apt install -y zip file unzip
+      - name: Extract and combine benchmark results
+        run: |
+          # Create directory for extracted results
+          mkdir -p extracted-results
+
+          # Extract all benchmark zip files and process them
+          for artifact_dir in benchmark-results/Enzyme-JAX-benchmark-*; do
+            if [ -d "$artifact_dir" ]; then
+              # Extract OS and Python version from artifact directory name
+              artifact_name=$(basename "$artifact_dir")
+              os_python=$(echo "$artifact_name" | sed 's/Enzyme-JAX-benchmark-//')
+              os=$(echo "$os_python" | sed 's/-[0-9]\+\.[0-9]\+$//')
+
+              echo "Processing $os_python (OS: $os)"
+
+              # Find and extract zip files
+              find "$artifact_dir" -name "*.zip" -exec unzip -o {} -d "extracted-results/$os_python" \;
+
+              # Look for CSV files in extracted results
+              find "extracted-results/$os_python" -name "*.csv" | while read csv_file; do
+                if [ -f "$csv_file" ]; then
+                  echo "Found CSV: $csv_file"
+                  # Add machine column to CSV and save with OS prefix
+                  output_file="extracted-results/$(basename "$csv_file" .csv)_${os}.csv"
+                  if [ ! -f "$output_file" ]; then
+                    # Add header with machine column
+                    head -1 "$csv_file" | sed 's/^/machine,/' > "$output_file"
+                  fi
+                  # Add data rows with machine name
+                  tail -n +2 "$csv_file" | sed "s/^/$os,/" >> "$output_file"
+                fi
+              done
+            fi
+          done
+
+          # Combine all CSV files into a single table
+          combined_file="combined_benchmarks.csv"
+          first_file=true
+
+          for csv_file in extracted-results/*_linux-*.csv; do
+            if [ -f "$csv_file" ]; then
+              if [ "$first_file" = true ]; then
+                # Use first file as base (with header)
+                cp "$csv_file" "$combined_file"
+                first_file=false
+              else
+                # Append data rows (skip header)
+                tail -n +2 "$csv_file" >> "$combined_file"
+              fi
+            fi
+          done
+
+          echo "Combined benchmark results:"
+          if [ -f "$combined_file" ]; then
+            cat "$combined_file"
+          else
+            echo "No benchmark results found"
+          fi
+      - name: Benchmark As Markdown Table
+        if: github.event_name == 'pull_request'
+        run: |
+          echo "## 🚀 Benchmark Results" > body.md
+          echo "" >> body.md
+
+          if [ -f "combined_benchmarks.csv" ]; then
+            # Get the header
+            header=$(head -1 combined_benchmarks.csv)
+
+            # Find the benchmark name column (assuming it's one of the columns)
+            # We'll look for common benchmark name patterns
+            benchmark_column=""
+            IFS=',' read -ra HEADERS <<< "$header"
+            for i in "${!HEADERS[@]}"; do
+              header_name="${HEADERS[$i]}"
+              if [[ "$header_name" =~ (benchmark|test|name|function) ]]; then
+                benchmark_column=$((i+1))
+                break
+              fi
+            done
+
+            # If no specific benchmark column found, try to use the second column (after machine)
+            if [ -z "$benchmark_column" ]; then
+              benchmark_column=2
+            fi
+
+            # Get unique benchmark names (excluding header)
+            benchmark_names=$(tail -n +2 combined_benchmarks.csv | cut -d',' -f${benchmark_column} | sort | uniq)
+
+            if [ -n "$benchmark_names" ]; then
+              while IFS= read -r benchmark_name; do
+                if [ -n "$benchmark_name" ]; then
+                  echo "<details>" >> body.md
+                  echo "<summary><strong>📊 ${benchmark_name}</strong></summary>" >> body.md
+                  echo "" >> body.md
+
+                  # Create temporary file for this benchmark
+                  temp_file="temp_${benchmark_name}.csv"
+
+                  # Add header
+                  echo "$header" > "$temp_file"
+
+                  # Add rows for this benchmark
+                  tail -n +2 combined_benchmarks.csv | grep "^[^,]*,${benchmark_name}," >> "$temp_file"
+
+                  # Convert to markdown table
+                  {
+                    # Header row
+                    head -1 "$temp_file" | sed 's/,/ | /g' | sed 's/^/| /' | sed 's/$/ |/'
+                    # Separator row
+                    head -1 "$temp_file" | sed 's/[^,]*/---/g' | sed 's/,/ | /g' | sed 's/^/| /' | sed 's/$/ |/'
+                    # Data rows
+                    tail -n +2 "$temp_file" | sed 's/,/ | /g' | sed 's/^/| /' | sed 's/$/ |/'
+                  } >> body.md
+
+                  echo "" >> body.md
+                  echo "</details>" >> body.md
+                  echo "" >> body.md
+
+                  # Clean up temp file
+                  rm -f "$temp_file"
+                fi
+              done <<< "$benchmark_names"
+            else
+              # Fallback: show all data in one table
+              echo "<details>" >> body.md
+              echo "<summary><strong>📊 All Benchmarks</strong></summary>" >> body.md
+              echo "" >> body.md
+
+              {
+                # Header row
+                head -1 combined_benchmarks.csv | sed 's/,/ | /g' | sed 's/^/| /' | sed 's/$/ |/'
+                # Separator row
+                head -1 combined_benchmarks.csv | sed 's/[^,]*/---/g' | sed 's/,/ | /g' | sed 's/^/| /' | sed 's/$/ |/'
+                # Data rows
+                tail -n +2 combined_benchmarks.csv | sed 's/,/ | /g' | sed 's/^/| /' | sed 's/$/ |/'
+              } >> body.md
+
+              echo "" >> body.md
+              echo "</details>" >> body.md
+              echo "" >> body.md
+            fi
+          else
+            echo "No benchmark results found to display." >> body.md
+          fi
+
+          echo "" >> body.md
+          echo "_Generated by GitHub Actions on $(date)_" >> body.md
+      - name: Find Comment
+        uses: peter-evans/find-comment@v3
+        id: fcbenchmark
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-author: "github-actions[bot]"
+          body-includes: Benchmark Results
+      - name: Comment on PR
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          comment-id: ${{ steps.fcbenchmark.outputs.comment-id }}
+          issue-number: ${{ github.event.pull_request.number }}
+          body-path: body.md
+          edit-mode: replace

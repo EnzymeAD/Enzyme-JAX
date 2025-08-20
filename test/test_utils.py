@@ -624,11 +624,13 @@ class EnzymeJaxTest(absltest.TestCase):
         self.results = []
 
     def pretty_print_table(self, name, pname, backend, key, time):
-        str = "{:<20}\t{:<20}\t{:<15}\t{:<10}\t{:<15.8f}".format(
+        print_str = "{:<20}\t{:<20}\t{:<15}\t{:<10}\t{:<15.8f}".format(
             name, pname, backend, key, time
         )
-        self.results.append(str)
-        print(str)
+        print(print_str)
+
+        result_str = "{}\t{}\t{}\t{}\t{}".format(name, pname, backend, key, time)
+        self.results.append(result_str)
 
     def write_results_csv(self, filename=""):
         import os, csv
