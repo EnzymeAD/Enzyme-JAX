@@ -895,24 +895,6 @@ getGatherDims(mlir::MLIRContext *ctx,
       scatterDimNumbers.getIndexVectorDim());
 }
 
-bool isScatterSetindexOp(stablehlo::ScatterOp &scatterOp) {
-  auto &updateComputation = scatterOp.getUpdateComputation();
-
-  if (!updateComputation.hasOneBlock())
-    return false;
-
-  return isSetindexBlock(&updateComputation.front());
-}
-
-template <typename T> bool isScatterCommutativeOp(stablehlo::ScatterOp &op) {
-  auto &updateComputation = op.getUpdateComputation();
-
-  if (!updateComputation.hasOneBlock())
-    return false;
-
-  return isCommutativeOpBlock<T>(&updateComputation.front());
-}
-
 bool isSetindexBlock(mlir::Block *block) {
   if (block->getNumArguments() != 2)
     return false;

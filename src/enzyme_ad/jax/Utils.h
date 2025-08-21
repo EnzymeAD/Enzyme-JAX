@@ -475,10 +475,6 @@ stablehlo::GatherDimensionNumbersAttr
 getGatherDims(mlir::MLIRContext *ctx,
               stablehlo::ScatterDimensionNumbersAttr scatterDimNumbers);
 
-bool isScatterSetindexOp(stablehlo::ScatterOp &op);
-
-template <typename T> bool isScatterCommutativeOp(stablehlo::ScatterOp &op);
-
 bool isSetindexBlock(mlir::Block *block);
 
 template <typename T> bool isCommutativeOpBlock(mlir::Block *block) {
@@ -539,6 +535,26 @@ public:
 
   bool isCommonReduce() {
     return isAddReduce || isMinReduce || isMaxReduce || isMulReduce;
+  }
+};
+
+struct CheckCommonScatterOp {
+public:
+  bool isSetindexScatter;
+  bool isAddScatter;
+
+  CheckCommonScatterOp(stablehlo::ScatterOp op) {
+    auto &updateComputation = op.getUpdateComputation();
+
+    if (!updateComputation.hasOneBlock()) {
+      isSetindexScatter = false;
+      isAddScatter = false;
+      return;
+    }
+
+    auto &block = updateComputation.front();
+    isSetindexScatter = isSetindexBlock(&block);
+    isAddScatter = isCommutativeOpBlock<stablehlo::AddOp>(&block);
   }
 };
 
