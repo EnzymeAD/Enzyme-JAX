@@ -129,7 +129,6 @@ LogicalResult RemoveIVs::matchAndRewrite(scf::ForOp forOp,
     }
   }
 
-  forOp->getParentOp()->dump();
   rewriter.eraseOp(forOp);
 
   return success();
