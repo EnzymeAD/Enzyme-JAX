@@ -93,8 +93,9 @@ module attributes {gpu.container_module} {
 // CHECK-NEXT:    llvm.store %43, %10 : i32, !llvm.ptr
 // CHECK-NEXT:    llvm.br ^bb3
 // CHECK-NEXT:  ^bb3:  // 2 preds: ^bb1, ^bb2
-// CHECK-NEXT:    llvm.br ^bb4
-// CHECK-NEXT:  ^bb4:  // pred: ^bb3
+// CHECK-NEXT:    %44 = llvm.load %10 : !llvm.ptr -> i32
+// CHECK-NEXT:    llvm.br ^bb4(%44 : i32)
+// CHECK-NEXT:  ^bb4(%45: i32):  // pred: ^bb3
 // CHECK-NEXT:    llvm.store %8, %10 : i32, !llvm.ptr
 // CHECK-NEXT:    llvm.unreachable
 // CHECK-NEXT:  }
