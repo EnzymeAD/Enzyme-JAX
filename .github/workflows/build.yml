@@ -53,12 +53,11 @@ jobs:
       fail-fast: false
       matrix:
         os:
-          # TODO: Reenable all OS
-          # - linux-x86-n2-32
-          # - linux-arm64-c4a-32
-          # - linux-x86-ct6e-180-4tpu
+          - linux-x86-n2-32
+          - linux-arm64-c4a-32
+          - linux-x86-ct6e-180-4tpu
           - linux-x86-a2-48-a100-4gpu
-          # - macOS-latest
+          - macOS-latest
         python:
           - "3.11"
     env:
@@ -146,16 +145,12 @@ jobs:
           name: Enzyme-JAX-Wheel-${{ matrix.os }}-${{ matrix.python }}
           path: "bazel-bin/*.whl"
           retention-days: 90
-      # TODO: Reenable all tests
-      # - name: Run lit tests
-      #   run: |
-      #     bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/lit_tests/...
-      - name: Run tests
-        # TODO: Reenable all tests
-        # run: |
-        #   bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/...
+      - name: Run lit tests
         run: |
-          bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test:bench_vs_xla
+          bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/lit_tests/...
+      - name: Run tests
+        run: |
+          bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/...
       - name: Upload test results
         uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
