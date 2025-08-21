@@ -271,15 +271,13 @@ struct ForBreakAddUpgrade : public OpRewritePattern<scf::ForOp> {
   }
 };
 
-
 // Helper function to cast value to target type
-static Value castValue(PatternRewriter &rewriter,
-	       	       Value value,
-		       Value target,
-		       Location loc) {
+static Value castValue(PatternRewriter &rewriter, Value value, Value target,
+                       Location loc) {
   Type valueType = value.getType();
   Type targetType = target.getType();
-  if (valueType == targetType) return value;
+  if (valueType == targetType)
+    return value;
 
   if (targetType.isIndex() || value.getType().isIndex()) {
     return rewriter.create<IndexCastOp>(loc, targetType, value);
@@ -364,12 +362,12 @@ struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
               rewriter.create<MulIOp>(forOp.getLoc(), replacement, step);
         }
 
-	init = castValue(rewriter, init, replacement, forOp.getLoc());
+        init = castValue(rewriter, init, replacement, forOp.getLoc());
 
         replacement =
             rewriter.create<AddIOp>(forOp.getLoc(), init, replacement);
 
-	replacement = castValue(rewriter, replacement, iterarg, forOp.getLoc());
+        replacement = castValue(rewriter, replacement, iterarg, forOp.getLoc());
 
         rewriter.modifyOpInPlace(
             forOp, [&] { iterarg.replaceAllUsesWith(replacement); });
@@ -389,18 +387,18 @@ struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
         if (!sameValue) {
           Value step = addOp.getOperand(1);
 
-	  step = castValue(rewriter, step, replacement, forOp.getLoc());
+          step = castValue(rewriter, step, replacement, forOp.getLoc());
 
           replacement =
               rewriter.create<MulIOp>(forOp.getLoc(), replacement, step);
         }
 
-	init = castValue(rewriter, init, replacement, forOp.getLoc());
+        init = castValue(rewriter, init, replacement, forOp.getLoc());
 
         replacement =
             rewriter.create<AddIOp>(forOp.getLoc(), init, replacement);
 
-	replacement = castValue(rewriter, replacement, iterarg, forOp.getLoc());
+        replacement = castValue(rewriter, replacement, iterarg, forOp.getLoc());
 
         rewriter.modifyOpInPlace(forOp,
                                  [&] { res.replaceAllUsesWith(replacement); });
