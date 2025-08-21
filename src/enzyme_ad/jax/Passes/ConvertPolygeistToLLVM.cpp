@@ -2147,8 +2147,9 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
   Type tys[] = {ptrty, i64, i32, i64, i32, ptrty, i64, ptrty};
 
   auto launchCall = rewriter.create<LLVM::CallOp>(
-      loc, TypeRange(i32), "cudaLaunchKernel", args); // FlatSymbolRefAttr::get(rewriter.getStringAttr("cudaLaunchKernel")),
-                                                      // args);
+      loc, TypeRange(i32), "cudaLaunchKernel",
+      args); // FlatSymbolRefAttr::get(rewriter.getStringAttr("cudaLaunchKernel")),
+             // args);
   if (launchOp.getAsyncToken()) {
     // Async launch: make dependent ops use the same stream.
     rewriter.replaceOp(launchOp, {stream});
