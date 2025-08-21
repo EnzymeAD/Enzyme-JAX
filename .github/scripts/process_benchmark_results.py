@@ -51,7 +51,7 @@ def main(_) -> None:
     # Merge the CSVs into a single dataframe
     combined_dfs = collections.defaultdict(list)
     for file in glob.glob(f"{tempdir_results.name}/*/results_*.csv"):
-        machine_name = os.path.basename(os.path.dirname(file))
+        machine_name = get_machine_name(os.path.basename(os.path.dirname(file)))
         expt = os.path.basename(file).replace("results_", "").replace(".csv", "")
 
         df = pd.read_csv(file)
