@@ -36,36 +36,14 @@ def get_machine_name(filename: str) -> str:
     raise ValueError(f"Could not find machine name in filename: {filename}")
 
 
-def find_all_zip_files(artifact_dir: str) -> list[str]:
-    results = []
-    for file in glob.glob(f"{artifact_dir}/**/*.zip", recursive=True):
-        filename = os.path.basename(file)
-        if filename.startswith("Enzyme-JAX-benchmark-"):
-            logging.info("Found zip file: %s", file)
-            results.append(file)
-    return results
-
-
 def main(_) -> None:
-    all_zip_files = find_all_zip_files(_ARTIFACT_DIR.value)
-
-    # This will extract the bazel-testlogs directory to a temporary directory
-    temp_dir = tempfile.TemporaryDirectory(delete=True)
-    logging.info("Extracting test logs to %s", temp_dir.name)
-    for zip_file in all_zip_files:
-        machine_name = get_machine_name(zip_file)
-        logging.info("Processing %s...", zip_file)
-
-        with zipfile.ZipFile(zip_file, "r") as zip_ref:
-            zip_ref.extractall(os.path.join(temp_dir.name, machine_name))
-
-    # Now we need to unzip the outputs.zip
+    # unzip the outputs.zip
     tempdir_results = tempfile.TemporaryDirectory(delete=False)
     logging.info("Extracting outputs to %s", tempdir_results.name)
 
-    for file in glob.glob(f"{temp_dir.name}/**/outputs.zip", recursive=True):
+    for file in glob.glob(f"{_ARTIFACT_DIR.value}/**/outputs.zip", recursive=True):
         logging.info("Unzipping %s...", file)
-        machine_name = file.strip(f"{temp_dir.name}/").split("/")[0]
+        machine_name = file.strip(f"{_ARTIFACT_DIR.value}/").split("/")[0]
 
         with zipfile.ZipFile(file, "r") as zip_ref:
             zip_ref.extractall(os.path.join(tempdir_results.name, machine_name))
