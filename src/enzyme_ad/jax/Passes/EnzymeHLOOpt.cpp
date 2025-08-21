@@ -3341,8 +3341,11 @@ struct ReducePad
       return rewriter.notifyMatchFailure(
           op, "only single-operand single-init reduce is supported");
     }
+
+    auto checkCommonReduce = mlir::stablehlo::CheckCommonReduceOp(op);
+
     // TODO: min/max can also be an option since they are dropped
-    if (!isa<stablehlo::AddOp>(op.getRegion().getBlocks().front().front())) {
+    if (!checkCommonReduce.isAddReduce) {
       return rewriter.notifyMatchFailure(op, "only add is currently supported");
     }
 
@@ -3470,19 +3473,20 @@ struct ReduceConcat final
 
     Value prev = op.getInitValues()[0];
 
-    Operation &innerOp = op.getBody().front().front();
+    auto checkCommonReduce = mlir::stablehlo::CheckCommonReduceOp(op);
 
     Value identity = nullptr;
-    if (isa<stablehlo::AddOp>(&innerOp)) {
+    if (checkCommonReduce.isAddReduce) {
       identity = rewriter.create<stablehlo::ConstantOp>(
           op.getLoc(), prev.getType(),
           cast<ElementsAttr>(makeAttr(prev.getType(), 0)));
-    } else if (isa<stablehlo::MaxOp>(&innerOp) ||
-               isa<stablehlo::MinOp>(&innerOp))
+    } else if (checkCommonReduce.isMinReduce || checkCommonReduce.isMaxReduce) {
       identity = prev;
-    else {
+    } else {
       return failure();
     }
+
+    Operation &innerOp = op.getBody().front().front();
 
     if (prev.getType() != op.getResultTypes()[0]) {
       prev = rewriter.create<stablehlo::BroadcastInDimOp>(
@@ -8697,9 +8701,13 @@ struct BroadcastReduce
       return rewriter.notifyMatchFailure(
           op, "only single-operand single-init reduce is supported");
     }
-    // TODO: min/max can also be an option since they are dropped
-    if (!isa<stablehlo::AddOp>(op.getRegion().getBlocks().front().front())) {
-      return rewriter.notifyMatchFailure(op, "only add is currently supported");
+
+    auto checkCommonReduce = mlir::stablehlo::CheckCommonReduceOp(op);
+
+    if (!checkCommonReduce.isCommonReduce()) {
+      return rewriter.notifyMatchFailure(
+          op, "only common reduce ops like add, mul, max, min are currently "
+              "supported");
     }
 
     Value input = op.getInputs()[0];
@@ -8794,15 +8802,34 @@ struct BroadcastReduce
     newReduction.getRegion().takeBody(op.getRegion());
 
     auto newResultType = cast<TensorType>(newReduction.getResult(0).getType());
-    auto constantInt = rewriter.create<stablehlo::ConstantOp>(
-        op.getLoc(),
-        makeAttr(newResultType.clone(rewriter.getI64Type()), size));
-    auto converted = rewriter.create<stablehlo::ConvertOp>(
-        op.getLoc(), constantInt, newResultType.getElementType());
-    assert(op.getType(0) == newReduction.getResult(0).getType());
-    assert(op.getType(0) == converted.getType());
-    rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, newReduction.getResult(0),
-                                                  converted.getResult());
+
+    if (checkCommonReduce.isAddReduce) {
+      auto constantInt = rewriter.create<stablehlo::ConstantOp>(
+          op.getLoc(),
+          makeAttr(newResultType.clone(rewriter.getI64Type()), size));
+      auto converted = rewriter.create<stablehlo::ConvertOp>(
+          op.getLoc(), constantInt, newResultType.getElementType());
+      assert(op.getType(0) == newReduction.getResult(0).getType());
+      assert(op.getType(0) == converted.getType());
+      rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
+          op, newReduction.getResult(0), converted.getResult());
+    } else if (checkCommonReduce.isMinReduce || checkCommonReduce.isMaxReduce) {
+      rewriter.replaceAllUsesWith(op.getResult(0), newReduction.getResult(0));
+    } else if (checkCommonReduce.isMulReduce) {
+      auto constantInt = rewriter.create<stablehlo::ConstantOp>(
+          op.getLoc(),
+          makeAttr(newResultType.clone(rewriter.getI64Type()), size));
+      auto converted = rewriter.create<stablehlo::ConvertOp>(
+          op.getLoc(), constantInt, newResultType.getElementType());
+      assert(op.getType(0) == newReduction.getResult(0).getType());
+      assert(op.getType(0) == converted.getType());
+      rewriter.replaceOpWithNewOp<stablehlo::PowOp>(
+          op, newReduction.getResult(0), converted.getResult());
+    } else {
+      assert(
+          false &&
+          "probably missed out on a new reduction check introduced elsewhere.");
+    }
 
     return success();
   }

@@ -477,6 +477,71 @@ getGatherDims(mlir::MLIRContext *ctx,
 
 bool isScatterSetindexOp(stablehlo::ScatterOp &op);
 
+template <typename T> bool isScatterCommutativeOp(stablehlo::ScatterOp &op);
+
+bool isSetindexBlock(mlir::Block *block);
+
+template <typename T> bool isCommutativeOpBlock(mlir::Block *block) {
+  if (block->getNumArguments() != 2)
+    return false;
+
+  if (!hasSingleElement(block->without_terminator()))
+    return false;
+
+  auto op = dyn_cast<T>(block->front());
+  if (!op)
+    return false;
+
+  if (op.getNumOperands() != 2)
+    return false;
+
+  if (!(op->getOperand(0) == block->getArgument(0) &&
+        op->getOperand(1) == block->getArgument(1)) &&
+      !(op->getOperand(0) == block->getArgument(1) &&
+        op->getOperand(1) == block->getArgument(0)))
+    return false;
+
+  auto returnOp = block->getTerminator();
+  auto stablehloReturnOp = dyn_cast<stablehlo::ReturnOp>(returnOp);
+  if (!stablehloReturnOp)
+    return false;
+
+  if (stablehloReturnOp.getNumOperands() != 1)
+    return false;
+
+  // The returned value should be the result of the addition
+  return stablehloReturnOp.getOperand(0) == op.getResult();
+}
+
+struct CheckCommonReduceOp {
+public:
+  bool isAddReduce;
+  bool isMinReduce;
+  bool isMaxReduce;
+  bool isMulReduce;
+
+  CheckCommonReduceOp(stablehlo::ReduceOp op) {
+    auto &region = op.getRegion();
+    if (region.getBlocks().size() != 1) {
+      isAddReduce = false;
+      isMinReduce = false;
+      isMaxReduce = false;
+      isMulReduce = false;
+      return;
+    }
+
+    auto &block = region.getBlocks().front();
+    isAddReduce = isCommutativeOpBlock<stablehlo::AddOp>(&block);
+    isMinReduce = isCommutativeOpBlock<stablehlo::MinOp>(&block);
+    isMaxReduce = isCommutativeOpBlock<stablehlo::MaxOp>(&block);
+    isMulReduce = isCommutativeOpBlock<stablehlo::MulOp>(&block);
+  }
+
+  bool isCommonReduce() {
+    return isAddReduce || isMinReduce || isMaxReduce || isMulReduce;
+  }
+};
+
 SmallVector<int64_t> computeGatherSliceSizes(stablehlo::ScatterOp &scatterOp);
 
 template <typename T>

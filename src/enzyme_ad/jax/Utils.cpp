@@ -901,26 +901,38 @@ bool isScatterSetindexOp(stablehlo::ScatterOp &scatterOp) {
   if (!updateComputation.hasOneBlock())
     return false;
 
-  auto &block = updateComputation.front();
-  if (block.getNumArguments() != 2)
+  return isSetindexBlock(&updateComputation.front());
+}
+
+template <typename T> bool isScatterCommutativeOp(stablehlo::ScatterOp &op) {
+  auto &updateComputation = op.getUpdateComputation();
+
+  if (!updateComputation.hasOneBlock())
     return false;
 
-  auto updateValue = block.getArgument(1);
+  return isCommutativeOpBlock<T>(&updateComputation.front());
+}
+
+bool isSetindexBlock(mlir::Block *block) {
+  if (block->getNumArguments() != 2)
+    return false;
+
+  auto updateValue = block->getArgument(1);
 
   // The block should have exactly one operation (the return)
-  if (block.getOperations().size() != 1)
+  if (block->getOperations().size() != 1)
     return false;
 
-  auto &returnOp = block.front();
-  auto stablehloReturn = dyn_cast<stablehlo::ReturnOp>(returnOp);
-  if (!stablehloReturn)
+  auto &returnOp = block->front();
+  auto stablehloReturnOp = dyn_cast<stablehlo::ReturnOp>(returnOp);
+  if (!stablehloReturnOp)
     return false;
 
-  if (stablehloReturn.getNumOperands() != 1)
+  if (stablehloReturnOp.getNumOperands() != 1)
     return false;
 
   // The returned value should be the update value (second argument)
-  return stablehloReturn.getOperand(0) == updateValue;
+  return stablehloReturnOp.getOperand(0) == updateValue;
 }
 
 SmallVector<int64_t> computeGatherSliceSizes(stablehlo::ScatterOp &scatterOp) {
