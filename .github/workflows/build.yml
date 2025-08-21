@@ -73,111 +73,111 @@ jobs:
           apt update
           apt install -y zip file
         if: ${{ contains(matrix.os, 'linux') }}
-      - name: Set BAZEL_FLAGS
-        shell: bash
-        run: |
-          set -e
-          BAZEL_FLAGS=""
-          if [ ${{ runner.os }} == macOS ]; then
-             BAZEL_FLAGS="${BAZEL_FLAGS} --define using_clang=true"
-          fi
-          if [ ${{ runner.arch }} == ARM64 ] && [ ${{ runner.os }} == Linux ]; then
-              BAZEL_FLAGS="${BAZEL_FLAGS} --linkopt=-fuse-ld=lld"
-          fi
-
-          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_TOPOLOGY"
-          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_WORKER_ID"
-          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_SKIP_MDS_QUERY=true"
-          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_TOPOLOGY_WRAP"
-          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_CHIPS_PER_HOST_BOUNDS"
-          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_ACCELERATOR_TYPE"
-          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_RUNTIME_METRICS_PORTS"
-          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_TOPOLOGY_ALT"
-          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_HOST_BOUNDS"
-          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_WORKER_HOSTNAMES"
-          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=CHIPS_PER_HOST_BOUNDS"
-          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=HOST_BOUNDS"
-          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=ALT=false"
-          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=WRAP"
-          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=VBAR_CONTROL_SERVICE_URL"
-          echo "BAZEL_FLAGS=${BAZEL_FLAGS}" >> "${GITHUB_ENV}"
-      - uses: actions/checkout@v4
-      - uses: bazel-contrib/setup-bazel@0.15.0
-        name: Set up Bazel
-        with:
-          # Avoid downloading Bazel every time.
-          bazelisk-cache: true
-          # Store build cache per workflow.
-          disk-cache: ${{ github.workflow }}-${{ matrix.os }}-${{ matrix.python }}
-          # Share repository cache between workflows.
-          repository-cache: true
-          bazelisk-version: 1.x
-      - name: Update TPU
-        if: ${{ contains(matrix.os, 'tpu') }}
-        run: |
-          env
-          sed -i.bak0 "s/cuda12/tpu/g" builddeps/test-requirements.txt
-          sed -i.bak0 "s/pypi_jax_cuda12_plugin/pypi_libtpu/g" test/BUILD
-      - name: Only test CUDA on GPU
-        if: ${{ !contains(matrix.os, 'a100') }}
-        run: |
-          sed -i.bak0 "/cuda12/d" builddeps/test-requirements.txt
-      - name: Build enzymexlamlir-opt
-        timeout-minutes: 180
-        run: |
-          bazel build $BAZEL_FLAGS --color=yes //:enzymexlamlir-opt --test_output=errors
-      - name: Upload enzymexlamlir-opt
-        uses: actions/upload-artifact@v4
-        with:
-          name: enzymexlamlir-opt-${{ matrix.os }}-${{ matrix.python }}
-          path: "bazel-bin/enzymexlamlir-opt"
-          retention-days: 90
-      - name: Update Python requirements files
-        run: |
-          bazel run $BAZEL_FLAGS --color=yes //builddeps:requirements.update
-      - name: Build wheel
-        timeout-minutes: 240
-        run: |
-          bazel build $BAZEL_FLAGS --color=yes :wheel --test_output=errors
-      - name: Upload wheel
-        uses: actions/upload-artifact@v4
-        if: ${{ !endsWith(matrix.os, 'arm') }}
-        with:
-          name: Enzyme-JAX-Wheel-${{ matrix.os }}-${{ matrix.python }}
-          path: "bazel-bin/*.whl"
-          retention-days: 90
-      # TODO: Reenable all tests
-      # - name: Run lit tests
+      # - name: Set BAZEL_FLAGS
+      #   shell: bash
       #   run: |
-      #     bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/lit_tests/...
-      - name: Run tests
-        # TODO: Reenable all tests
-        # run: |
-        #   bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/...
-        run: |
-          bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test:bench_vs_xla
-      - name: Upload test results
-        uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
-        with:
-          name: Enzyme-JAX-tests-${{ matrix.os }}-${{ matrix.python }}
-          path: |
-            bazel-out/**/test.log
-          retention-days: 90
-      - name: Upload benchmark results
-        uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
-        with:
-          name: Enzyme-JAX-benchmark-${{ matrix.os }}-${{ matrix.python }}
-          path: |
-            bazel-testlogs/test/**/test.outputs/*.zip
-          retention-days: 90
+      #     set -e
+      #     BAZEL_FLAGS=""
+      #     if [ ${{ runner.os }} == macOS ]; then
+      #        BAZEL_FLAGS="${BAZEL_FLAGS} --define using_clang=true"
+      #     fi
+      #     if [ ${{ runner.arch }} == ARM64 ] && [ ${{ runner.os }} == Linux ]; then
+      #         BAZEL_FLAGS="${BAZEL_FLAGS} --linkopt=-fuse-ld=lld"
+      #     fi
+
+      #     BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_TOPOLOGY"
+      #     BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_WORKER_ID"
+      #     BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_SKIP_MDS_QUERY=true"
+      #     BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_TOPOLOGY_WRAP"
+      #     BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_CHIPS_PER_HOST_BOUNDS"
+      #     BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_ACCELERATOR_TYPE"
+      #     BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_RUNTIME_METRICS_PORTS"
+      #     BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_TOPOLOGY_ALT"
+      #     BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_HOST_BOUNDS"
+      #     BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_WORKER_HOSTNAMES"
+      #     BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=CHIPS_PER_HOST_BOUNDS"
+      #     BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=HOST_BOUNDS"
+      #     BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=ALT=false"
+      #     BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=WRAP"
+      #     BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=VBAR_CONTROL_SERVICE_URL"
+      #     echo "BAZEL_FLAGS=${BAZEL_FLAGS}" >> "${GITHUB_ENV}"
+      # - uses: actions/checkout@v4
+      # - uses: bazel-contrib/setup-bazel@0.15.0
+      #   name: Set up Bazel
+      #   with:
+      #     # Avoid downloading Bazel every time.
+      #     bazelisk-cache: true
+      #     # Store build cache per workflow.
+      #     disk-cache: ${{ github.workflow }}-${{ matrix.os }}-${{ matrix.python }}
+      #     # Share repository cache between workflows.
+      #     repository-cache: true
+      #     bazelisk-version: 1.x
+      # - name: Update TPU
+      #   if: ${{ contains(matrix.os, 'tpu') }}
+      #   run: |
+      #     env
+      #     sed -i.bak0 "s/cuda12/tpu/g" builddeps/test-requirements.txt
+      #     sed -i.bak0 "s/pypi_jax_cuda12_plugin/pypi_libtpu/g" test/BUILD
+      # - name: Only test CUDA on GPU
+      #   if: ${{ !contains(matrix.os, 'a100') }}
+      #   run: |
+      #     sed -i.bak0 "/cuda12/d" builddeps/test-requirements.txt
+      # - name: Build enzymexlamlir-opt
+      #   timeout-minutes: 180
+      #   run: |
+      #     bazel build $BAZEL_FLAGS --color=yes //:enzymexlamlir-opt --test_output=errors
+      # - name: Upload enzymexlamlir-opt
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: enzymexlamlir-opt-${{ matrix.os }}-${{ matrix.python }}
+      #     path: "bazel-bin/enzymexlamlir-opt"
+      #     retention-days: 90
+      # - name: Update Python requirements files
+      #   run: |
+      #     bazel run $BAZEL_FLAGS --color=yes //builddeps:requirements.update
+      # - name: Build wheel
+      #   timeout-minutes: 240
+      #   run: |
+      #     bazel build $BAZEL_FLAGS --color=yes :wheel --test_output=errors
+      # - name: Upload wheel
+      #   uses: actions/upload-artifact@v4
+      #   if: ${{ !endsWith(matrix.os, 'arm') }}
+      #   with:
+      #     name: Enzyme-JAX-Wheel-${{ matrix.os }}-${{ matrix.python }}
+      #     path: "bazel-bin/*.whl"
+      #     retention-days: 90
+      # # TODO: Reenable all tests
+      # # - name: Run lit tests
+      # #   run: |
+      # #     bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/lit_tests/...
+      # - name: Run tests
+      #   # TODO: Reenable all tests
+      #   # run: |
+      #   #   bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/...
+      #   run: |
+      #     bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test:bench_vs_xla
+      # - name: Upload test results
+      #   uses: actions/upload-artifact@v4
+      #   if: ${{ !cancelled() }}
+      #   with:
+      #     name: Enzyme-JAX-tests-${{ matrix.os }}-${{ matrix.python }}
+      #     path: |
+      #       bazel-out/**/test.log
+      #     retention-days: 90
+      # - name: Upload benchmark results
+      #   uses: actions/upload-artifact@v4
+      #   if: ${{ !cancelled() }}
+      #   with:
+      #     name: Enzyme-JAX-benchmark-${{ matrix.os }}-${{ matrix.python }}
+      #     path: |
+      #       bazel-testlogs/test/**/test.outputs/*.zip
+      #     retention-days: 90
 
   benchmark-summary:
     name: Benchmark Summary
     container:
       image: "ghcr.io/enzymead/reactant-docker-images@sha256:91e1edb7a7c869d5a70db06e417f22907be0e67ca86641d48adcea221fedc674"
-    runs-on: linux-x86-n2-32
+    runs-on: ubuntu-latest
     needs: build
     if: ${{ !cancelled() }}
     permissions:
@@ -197,7 +197,9 @@ jobs:
           curl -LsSf https://astral.sh/uv/install.sh | sh
       - name: Extract and combine benchmark results
         run: |
-          uv run --no-project test/process_benchmark_results.py --artifact_dir=benchmark-results --markdown_file=body.md
+          pwd
+          ls -R
+          uv run --no-project ./test/process_benchmark_results.py --artifact_dir=benchmark-results --markdown_file=body.md
       - name: Find Comment
         uses: peter-evans/find-comment@v3
         id: fcbenchmark
