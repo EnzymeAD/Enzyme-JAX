@@ -3589,7 +3589,10 @@ struct ConvertPolygeistToLLVMPass
     SmallVector<Operation *> gmods;
     m->walk([&](gpu::GPUModuleOp mod) { gmods.push_back(mod); });
 
-    if (backend == "cuda" && gmods.size()) {
+    bool hasLaunch = m->walk([](gpu::LaunchFuncOp) {
+                        return WalkResult::interrupt();
+                      }).wasInterrupted();
+    if (hasLaunch) {
       OpBuilder rewriter(m);
       auto i32 = rewriter.getIntegerType(32);
       auto i64 = rewriter.getIntegerType(64);
@@ -3744,15 +3747,26 @@ struct ConvertPolygeistToLLVMPass
         */
 
     // target.addIllegalOp<UnrealizedConversionCastOp>();
-    if (failed(applyPartialConversion(m, target, std::move(patterns))))
+    if (failed(applyPartialConversion(m, target, std::move(patterns)))) {
+      llvm::errs() << " failed to apply conversion\n";
+      llvm::errs() << *m << "\n";
       signalPassFailure();
+      return;
+    }
+
     {
       RewritePatternSet patterns(&getContext());
       patterns.insert<ReconcileUnrealizedPointerCasts>(&getContext());
-      if (failed(applyPatternsAndFoldGreedily(m, std::move(patterns)))) {
+      if (failed(applyPatternsGreedily(
+              m, std::move(patterns),
+              GreedyRewriteConfig()
+                  .setRegionSimplificationLevel(
+                      mlir::GreedySimplifyRegionLevel::Disabled)
+                  .enableFolding(true)))) {
         llvm::errs() << " failed to reconcile unrealized pointer casts\n";
         llvm::errs() << *m << "\n";
         signalPassFailure();
+        return;
       }
     }
 
