@@ -96,9 +96,9 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
 // CHECK-NEXT:    llvm.br ^bb3
 // CHECK-NEXT:  ^bb3:  // 2 preds: ^bb1, ^bb2
 // CHECK-NEXT:    %47 = llvm.load %8 : !llvm.ptr -> i32
-// CHECK-NEXT:    llvm.br ^bb4
-// CHECK-NEXT:  ^bb4:  // pred: ^bb3
+// CHECK-NEXT:    llvm.br ^bb4(%47 : i32)
+// CHECK-NEXT:  ^bb4(%48: i32):  // pred: ^bb3
 // CHECK-NEXT:    llvm.store %6, %8 : i32, !llvm.ptr
-// CHECK-NEXT:    %48 = llvm.sext %47 : i32 to i64
-// CHECK-NEXT:    llvm.return %48 : i64
+// CHECK-NEXT:    %49 = llvm.sext %48 : i32 to i64
+// CHECK-NEXT:    llvm.return %49 : i64
 // CHECK-NEXT:  }
