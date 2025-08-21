@@ -1757,6 +1757,9 @@ struct AsyncGPULaunch : public OpRewritePattern<async::ExecuteOp> {
               if (op->hasTrait<OpTrait::HasRecursiveMemoryEffects>()) {
                 return WalkResult::advance();
               }
+	      if (isa<enzymexla::AlternativesOp>(op)) {
+                return WalkResult::advance();
+	      }
               if (isPure(op))
                 return WalkResult::advance();
               return WalkResult::interrupt();

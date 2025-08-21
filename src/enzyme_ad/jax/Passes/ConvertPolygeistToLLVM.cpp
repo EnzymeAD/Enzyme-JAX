@@ -3760,6 +3760,8 @@ struct ConvertPolygeistToLLVMPass
       RewritePatternSet patterns(&getContext());
       patterns.insert<ReconcileUnrealizedPointerCasts>(&getContext());
       if (failed(applyPatternsAndFoldGreedily(m, std::move(patterns)))) {
+	llvm::errs() << " failed to reconcile unrealized pointer casts\n";
+	llvm::errs() << *m << "\n";
         signalPassFailure();
       }
     }
