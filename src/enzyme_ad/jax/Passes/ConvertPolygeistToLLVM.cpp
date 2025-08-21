@@ -2082,7 +2082,7 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
 
   Location loc = launchOp.getLoc();
 
-  GPUErrorOp errOp = dyn_cast<GPUErrorOp>(launchOp->getParentOp());
+  GPUErrorOp errOp = launchOp->getParentOfType<GPUErrorOp>();
 
   // Create an LLVM global with CUBIN extracted from the kernel annotation and
   // obtain a pointer to the first byte in it.
