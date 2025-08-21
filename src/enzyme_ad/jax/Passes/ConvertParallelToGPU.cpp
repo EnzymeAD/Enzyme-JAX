@@ -1740,21 +1740,31 @@ struct AsyncGPULaunch : public OpRewritePattern<async::ExecuteOp> {
   LogicalResult matchAndRewrite(async::ExecuteOp async,
                                 PatternRewriter &rewriter) const override {
     for (auto res : async.getResults()) {
-      if (!res.use_empty())
+      if (!res.use_empty()) {
         return failure();
+      }
     }
     for (auto dep : async.getDependencies()) {
-      if (!dep.getDefiningOp<enzymexla::StreamToTokenOp>())
+      if (!dep.getDefiningOp<enzymexla::StreamToTokenOp>()) {
         return failure();
+      }
     }
     SmallVector<gpu::LaunchFuncOp> launches;
+    SmallVector<gpu::LaunchOp> launches2;
     if (async
-            ->walk([&](Operation *op) {
+            ->walk<WalkOrder::PreOrder>([&](Operation *op) {
               if (auto launch = dyn_cast<gpu::LaunchFuncOp>(op)) {
                 launches.push_back(launch);
-                return WalkResult::advance();
+                return WalkResult::skip();
+              }
+              if (auto launch = dyn_cast<gpu::LaunchOp>(op)) {
+                launches2.push_back(launch);
+                return WalkResult::skip();
               }
               if (op->hasTrait<OpTrait::HasRecursiveMemoryEffects>()) {
+                return WalkResult::advance();
+              }
+              if (isa<enzymexla::AlternativesOp>(op)) {
                 return WalkResult::advance();
               }
               if (isPure(op))
@@ -1772,6 +1782,12 @@ struct AsyncGPULaunch : public OpRewritePattern<async::ExecuteOp> {
     }
 
     for (auto launch : launches) {
+      rewriter.modifyOpInPlace(launch, [&]() {
+        launch.getAsyncDependenciesMutable().append(gpudeps);
+      });
+    }
+
+    for (auto launch : launches2) {
       rewriter.modifyOpInPlace(launch, [&]() {
         launch.getAsyncDependenciesMutable().append(gpudeps);
       });
@@ -2365,7 +2381,20 @@ struct ConvertParallelToGPU1Pass
       RewritePatternSet patterns(&getContext());
       // clang-format off
       patterns.insert<
-        ParallelToGPULaunch,
+        ParallelToGPULaunch
+        >(&getContext());
+      // clang-format on
+      GreedyRewriteConfig config;
+      if (failed(
+              applyPatternsAndFoldGreedily(m, std::move(patterns), config))) {
+        signalPassFailure();
+        return;
+      }
+    }
+    {
+      RewritePatternSet patterns(&getContext());
+      // clang-format off
+      patterns.insert<
 	AsyncGPULaunch
         >(&getContext());
       // clang-format on
