@@ -3883,29 +3883,8 @@ struct SHLOReduceOpBatchInterface
         src->getLoc(), resultTypes, newReduceInputs, newReduceInits,
         reduceDims);
 
-    {
-      OpBuilder::InsertionGuard guard(builder);
-
-      Block &oldBlock = reduceOp.getBody().front();
-      Block *newBlock = new Block();
-
-      for (BlockArgument arg : oldBlock.getArguments()) {
-        newBlock->addArgument(arg.getType(), arg.getLoc());
-      }
-
-      IRMapping regionMapper;
-      for (auto [oldArg, newArg] :
-           llvm::zip(oldBlock.getArguments(), newBlock->getArguments())) {
-        regionMapper.map(oldArg, newArg);
-      }
-
-      for (Operation &op : oldBlock) {
-        builder.setInsertionPointToEnd(newBlock);
-        builder.clone(op, regionMapper);
-      }
-
-      newReduceOp.getBody().push_back(newBlock);
-    }
+    IRMapping regionMapper;
+    reduceOp.getRegion().cloneInto(&newReduceOp.getRegion(), regionMapper);
 
     for (int i = 0; i < reduceOp.getResults().size(); i++) {
       mapper.map(src->getResult(i), newReduceOp.getResult(i));
