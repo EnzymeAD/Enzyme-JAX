@@ -2227,19 +2227,19 @@ def ApplyElementwiseExtendPatterns : EnzymeHLOPatternOp<"elementwise_extend"> {
   let patterns = ["ElementwiseExtend"];
 }
 
-def ApplyConcatReshapeDotGeneralPatterns : EnzymeHLOPatternOp<
-    "concat_reshape_dot_general"> {
-  let patterns = ["ConcatReshapeOpToBatch<stablehlo::DotGeneralOp>"];
+def ApplyConcatInsertDimDotGeneralPatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_dot_general"> {
+  let patterns = ["ConcatInsertDimToBatch<stablehlo::DotGeneralOp>"];
 }
 
-def ApplyConcatReshapeGatherPatterns : EnzymeHLOPatternOp<
-    "concat_reshape_gather"> {
-  let patterns = ["ConcatReshapeOpToBatch<stablehlo::GatherOp>"];
+def ApplyConcatInsertDimGatherPatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_gather"> {
+  let patterns = ["ConcatInsertDimToBatch<stablehlo::GatherOp>"];
 }
 
-def ApplyConcatReshapeIotaPatterns : EnzymeHLOPatternOp<
-    "concat_reshape_iota"> {
-  let patterns = ["ConcatReshapeOpToBatch<stablehlo::IotaOp>"];
+def ApplyConcatInsertDimIotaPatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_iota"> {
+  let patterns = ["ConcatInsertDimToBatch<stablehlo::IotaOp>"];
 }
 
 def ApplySubtractMultiplyConstToAddMulConstPatterns : EnzymeHLOPatternOp<"subtract_multiply_const_to_add_mul_const"> {

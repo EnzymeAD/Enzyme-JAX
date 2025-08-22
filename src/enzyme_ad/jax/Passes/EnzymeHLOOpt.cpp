@@ -22527,8 +22527,46 @@ private:
   bool allowEmitConvolution;
 };
 
+bool validReshapeOpInsertDimForBatching(Operation *op, int64_t dim) {
+  auto reshapeOp = dyn_cast<stablehlo::ReshapeOp>(op);
+  if (!reshapeOp)
+    return false;
+
+  auto inputType = cast<RankedTensorType>(reshapeOp.getOperand().getType());
+  auto outputType = cast<RankedTensorType>(reshapeOp.getResult().getType());
+
+  SmallVector<int64_t> insertionDims =
+      findReshapeInsertionDims(inputType, outputType);
+
+  return insertionDims.size() == 1 && insertionDims[0] == dim;
+}
+
+bool validBroadcastInDimOpInsertDimForBatching(Operation *op, int64_t dim) {
+  auto broadcastInDimOp = dyn_cast<stablehlo::BroadcastInDimOp>(op);
+  if (!broadcastInDimOp)
+    return false;
+
+  auto inputType =
+      cast<RankedTensorType>(broadcastInDimOp.getOperand().getType());
+  auto outputType =
+      cast<RankedTensorType>(broadcastInDimOp.getResult().getType());
+
+  // single insert dim
+  if (inputType.getRank() != outputType.getRank() - 1)
+    return false;
+
+  // If concat dim is present in broadcast dims, then it is not a valid insert
+  for (auto bDim : broadcastInDimOp.getBroadcastDimensions()) {
+    if (bDim == dim)
+      return false;
+  }
+
+  // insert dim must be of size 1
+  return outputType.getShape()[dim] == 1;
+}
+
 template <typename OpTy>
-LogicalResult generalConcatReshapeOpToBatch(stablehlo::ConcatenateOp concatOp,
+LogicalResult generalConcatInsertDimToBatch(stablehlo::ConcatenateOp concatOp,
                                             PatternRewriter &rewriter) {
   if (concatOp.getNumOperands() <= 1)
     return failure();
@@ -22540,25 +22578,22 @@ LogicalResult generalConcatReshapeOpToBatch(stablehlo::ConcatenateOp concatOp,
   SmallVector<Operation *> concatOpOperands;
 
   for (auto [i, v] : llvm::enumerate(concatOp.getOperands())) {
-    auto reshapeOp = v.template getDefiningOp<stablehlo::ReshapeOp>();
-    if (!reshapeOp)
-      return rewriter.notifyMatchFailure(concatOp, "not a reshape op");
+    auto definingOp = v.getDefiningOp();
+    if (!definingOp)
+      return rewriter.notifyMatchFailure(concatOp, "operand is not a valid op");
 
-    RankedTensorType reshapeOpInputType = reshapeOp.getOperand().getType();
-    RankedTensorType reshapeOpOutputType = reshapeOp.getResult().getType();
+    bool isReshapeOpInsertDim =
+        validReshapeOpInsertDimForBatching(definingOp, concatDim);
 
-    SmallVector<int64_t> insertionDims =
-        findReshapeInsertionDims(reshapeOpInputType, reshapeOpOutputType);
+    bool isBroadcastInDimOpInsertDim = false;
+    if (!isReshapeOpInsertDim)
+      isBroadcastInDimOpInsertDim =
+          validBroadcastInDimOpInsertDimForBatching(definingOp, concatDim);
 
-    if (insertionDims.size() != 1)
-      return rewriter.notifyMatchFailure(
-          concatOp, "reshape op has more than one insertion dim");
+    if (!isReshapeOpInsertDim && !isBroadcastInDimOpInsertDim)
+      return rewriter.notifyMatchFailure(concatOp, "operand is not a valid op");
 
-    if (insertionDims[0] != concatDim)
-      return rewriter.notifyMatchFailure(
-          concatOp, "concat dim is not same as insertion dim");
-
-    auto vdefOp = reshapeOp.getOperand().template getDefiningOp<OpTy>();
+    auto vdefOp = definingOp->getOperand(0).template getDefiningOp<OpTy>();
     if (!vdefOp)
       return rewriter.notifyMatchFailure(concatOp, "not a valid target op");
 
@@ -22571,7 +22606,7 @@ LogicalResult generalConcatReshapeOpToBatch(stablehlo::ConcatenateOp concatOp,
                                            "op is not equivalent to first");
     }
 
-    if (!isOnlyUsedInOperation(vdefOp, reshapeOp))
+    if (!isOnlyUsedInOperation(vdefOp, definingOp))
       return rewriter.notifyMatchFailure(concatOp,
                                          "op is not only used in reshape op");
 
@@ -22603,7 +22638,7 @@ LogicalResult generalConcatReshapeOpToBatch(stablehlo::ConcatenateOp concatOp,
   }
 
   static int64_t concatReshapeToBatchCounter = 0;
-  std::string wrapperFuncName = "enzymexla_unbatched_concatReshapeOpToBatch_" +
+  std::string wrapperFuncName = "enzymexla_unbatched_ConcatInsertDimToBatch_" +
                                 (std::to_string(concatReshapeToBatchCounter++));
 
   func::FuncOp func;
@@ -22684,16 +22719,16 @@ LogicalResult generalConcatReshapeOpToBatch(stablehlo::ConcatenateOp concatOp,
 };
 
 template <typename OpTy>
-struct ConcatReshapeOpToBatch
+struct ConcatInsertDimToBatch
     : public CheckedOpRewritePattern<stablehlo::ConcatenateOp,
-                                     ConcatReshapeOpToBatch<OpTy>> {
+                                     ConcatInsertDimToBatch<OpTy>> {
   using CheckedOpRewritePattern<
       stablehlo::ConcatenateOp,
-      ConcatReshapeOpToBatch<OpTy>>::CheckedOpRewritePattern;
+      ConcatInsertDimToBatch<OpTy>>::CheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp concatOp,
                                     PatternRewriter &rewriter) const {
-    return generalConcatReshapeOpToBatch<OpTy>(concatOp, rewriter);
+    return generalConcatInsertDimToBatch<OpTy>(concatOp, rewriter);
   }
 };
 
@@ -23298,11 +23333,11 @@ struct EnzymeHLOOptPass
         ElementwiseWrap,
         ElementwiseExtend,
         SubtractMultiplyConstToAddMulConst,
-        ConcatReshapeOpToBatch<stablehlo::DotGeneralOp>,
-        ConcatReshapeOpToBatch<stablehlo::GatherOp>,
-        ConcatReshapeOpToBatch<stablehlo::IotaOp>
-        // ConcatReshapeOpToBatch<stablehlo::ScatterOp>, after batch op interface is implemented
-        // ConcatReshapeOpToBatch<stablehlo::SortOp>, after batch op interface is implemented
+        ConcatInsertDimToBatch<stablehlo::DotGeneralOp>,
+        ConcatInsertDimToBatch<stablehlo::GatherOp>,
+        ConcatInsertDimToBatch<stablehlo::IotaOp>
+        // ConcatInsertDimToBatch<stablehlo::ScatterOp>, after batch op interface is implemented
+        // ConcatInsertDimToBatch<stablehlo::SortOp>, after batch op interface is implemented
       >(context);
 
     patterns.add<

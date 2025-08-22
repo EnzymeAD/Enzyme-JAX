@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(enzyme-hlo-generate-td{patterns=concat_reshape_gather},transform-interpreter,enzyme-hlo-remove-transform)" %s | FileCheck %s
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(enzyme-hlo-generate-td{patterns=concat_insert_dim_gather},transform-interpreter,enzyme-hlo-remove-transform)" %s | FileCheck %s
 
 module @reactant_batched... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas = 1 : i64} {
   func.func @main(%arg0: tensor<5x4x3xf64>, %arg1: tensor<7xi64>) -> tensor<5x4x7xf64> {
