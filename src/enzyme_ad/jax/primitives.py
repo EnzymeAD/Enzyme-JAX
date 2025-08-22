@@ -348,9 +348,9 @@ def optimization_passes(
         "select_simplify",
         "concatenate_subtract_to_subtract_pad",
         "concatenate_broadcast_in_dim",
-        "concat_reshape_dot_general",
-        "concat_reshape_gather",
-        "concat_reshape_iota",
+        "concat_insert_dim_dot_general",
+        "concat_insert_dim_gather",
+        "concat_insert_dim_iota",
     ]
 
     # constant propagation patterns
