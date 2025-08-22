@@ -3822,6 +3822,27 @@ struct IfOpEnzymeOpsRemover
   }
 };
 
+Value getScalarInitValue(Operation *op, OpBuilder &builder) {
+  // Splatted Constant
+  SplatElementsAttr elems;
+  if (matchPattern(op, m_Constant(&elems))) {
+    auto scalarElemType = RankedTensorType::get(
+        {}, cast<TensorType>(op->getResult(0).getType()).getElementType());
+    auto constInit = builder.create<ConstantOp>(
+        op->getLoc(), scalarElemType, elems.resizeSplat(scalarElemType));
+    return constInit;
+  }
+
+  // BroadcastInDim / Reshape
+  if (isa<stablehlo::BroadcastInDimOp, stablehlo::ReshapeOp>(op)) {
+    if (cast<RankedTensorType>(op->getOperand(0).getType()).getRank() == 0) {
+      return op->getOperand(0);
+    }
+  }
+
+  return nullptr;
+}
+
 struct SHLOReduceOpBatchInterface
     : public BatchOpInterface::ExternalModel<SHLOReduceOpBatchInterface,
                                              ReduceOp> {
@@ -3854,24 +3875,13 @@ struct SHLOReduceOpBatchInterface
     newReduceInits.reserve(reduceOp.getInitValues().size());
     for (auto opValue : reduceOp.getInitValues()) {
       auto batchedInit = mapper.lookup(opValue);
-
-      SmallVector<int64_t> sliceStrides(batchSizes.size(), 1);
-      SmallVector<int64_t> sliceStarts(batchSizes.size());
-      SmallVector<int64_t> sliceLimits(batchSizes.size());
-      for (int i = 0; i < batchSizes.size(); i++) {
-        sliceStarts[i] = batchSizes[i] - 1;
-        sliceLimits[i] = batchSizes[i];
+      auto scalarInit =
+          getScalarInitValue(batchedInit.getDefiningOp(), builder);
+      if (!scalarInit) {
+        // TODO: we need to support broadcasting inits, or do we?
+        return failure();
       }
-
-      auto elemType =
-          cast<RankedTensorType>(batchedInit.getType()).getElementType();
-      auto slicedInit = builder.create<SliceOp>(
-          batchedInit.getLoc(), RankedTensorType::get(sliceStrides, elemType),
-          batchedInit, sliceStarts, sliceLimits, sliceStrides);
-      auto reshapedInit = builder.create<ReshapeOp>(
-          batchedInit.getLoc(), RankedTensorType::get({}, elemType),
-          slicedInit);
-      newReduceInits.push_back(reshapedInit->getResult(0));
+      newReduceInits.push_back(scalarInit);
     }
 
     SmallVector<int64_t> reduceDims = llvm::to_vector(reduceOp.getDimensions());
@@ -3926,26 +3936,13 @@ struct SHLOReduceWindowOpBatchInterface
     newReduceWindowInits.reserve(reduceWindowOp.getInitValues().size());
     for (auto opValue : reduceWindowOp.getInitValues()) {
       auto batchedInit = mapper.lookup(opValue);
-
-      llvm::errs() << "init: " << batchedInit << "\n";
-
-      SmallVector<int64_t> sliceStrides(batchSizes.size(), 1);
-      SmallVector<int64_t> sliceStarts(batchSizes.size());
-      SmallVector<int64_t> sliceLimits(batchSizes.size());
-      for (int i = 0; i < batchSizes.size(); i++) {
-        sliceStarts[i] = batchSizes[i] - 1;
-        sliceLimits[i] = batchSizes[i];
+      auto scalarInit =
+          getScalarInitValue(batchedInit.getDefiningOp(), builder);
+      if (!scalarInit) {
+        // TODO: we need to support broadcasting inits, or do we?
+        return failure();
       }
-
-      auto elemType =
-          cast<RankedTensorType>(batchedInit.getType()).getElementType();
-      auto slicedInit = builder.create<SliceOp>(
-          batchedInit.getLoc(), RankedTensorType::get(sliceStrides, elemType),
-          batchedInit, sliceStarts, sliceLimits, sliceStrides);
-      auto reshapedInit = builder.create<ReshapeOp>(
-          batchedInit.getLoc(), RankedTensorType::get({}, elemType),
-          slicedInit);
-      newReduceWindowInits.push_back(reshapedInit->getResult(0));
+      newReduceWindowInits.push_back(scalarInit);
     }
 
     SmallVector<int64_t> windowDims(batchSizes.size(), 1);
