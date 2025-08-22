@@ -271,6 +271,24 @@ struct ForBreakAddUpgrade : public OpRewritePattern<scf::ForOp> {
   }
 };
 
+// Helper function to cast value to target type
+static Value castValue(PatternRewriter &rewriter, Value value, Value target,
+                       Location loc) {
+  Type valueType = value.getType();
+  Type targetType = target.getType();
+  if (valueType == targetType)
+    return value;
+
+  if (targetType.isIndex() || value.getType().isIndex()) {
+    return rewriter.create<IndexCastOp>(loc, targetType, value);
+  } else if (targetType.getIntOrFloatBitWidth() >
+             valueType.getIntOrFloatBitWidth()) {
+    return rewriter.create<arith::ExtSIOp>(loc, targetType, value);
+  } else {
+    return rewriter.create<arith::TruncIOp>(loc, targetType, value);
+  }
+};
+
 struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
 
@@ -327,27 +345,29 @@ struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
         if (!sameValue) {
           Value step = addOp.getOperand(1);
 
-          if (!isa<IndexType>(step.getType())) {
-            step = rewriter.create<IndexCastOp>(forOp.getLoc(),
-                                                replacement.getType(), step);
+          if (step.getType() != replacement.getType()) {
+            if (replacement.getType().isIndex() || step.getType().isIndex())
+              step = rewriter.create<IndexCastOp>(forOp.getLoc(),
+                                                  replacement.getType(), step);
+            else if (replacement.getType().getIntOrFloatBitWidth() >
+                     step.getType().getIntOrFloatBitWidth())
+              step = rewriter.create<arith::ExtSIOp>(
+                  forOp.getLoc(), replacement.getType(), step);
+            else
+              step = rewriter.create<arith::TruncIOp>(
+                  forOp.getLoc(), replacement.getType(), step);
           }
 
           replacement =
               rewriter.create<MulIOp>(forOp.getLoc(), replacement, step);
         }
 
-        if (init.getType() != replacement.getType()) {
-          init = rewriter.create<IndexCastOp>(forOp.getLoc(),
-                                              replacement.getType(), init);
-        }
+        init = castValue(rewriter, init, replacement, forOp.getLoc());
 
         replacement =
             rewriter.create<AddIOp>(forOp.getLoc(), init, replacement);
 
-        if (iterarg.getType() != replacement.getType()) {
-          replacement = rewriter.create<IndexCastOp>(
-              forOp.getLoc(), iterarg.getType(), replacement);
-        }
+        replacement = castValue(rewriter, replacement, iterarg, forOp.getLoc());
 
         rewriter.modifyOpInPlace(
             forOp, [&] { iterarg.replaceAllUsesWith(replacement); });
@@ -367,27 +387,18 @@ struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
         if (!sameValue) {
           Value step = addOp.getOperand(1);
 
-          if (!isa<IndexType>(step.getType())) {
-            step = rewriter.create<IndexCastOp>(forOp.getLoc(),
-                                                replacement.getType(), step);
-          }
+          step = castValue(rewriter, step, replacement, forOp.getLoc());
 
           replacement =
               rewriter.create<MulIOp>(forOp.getLoc(), replacement, step);
         }
 
-        if (init.getType() != replacement.getType()) {
-          init = rewriter.create<IndexCastOp>(forOp.getLoc(),
-                                              replacement.getType(), init);
-        }
+        init = castValue(rewriter, init, replacement, forOp.getLoc());
 
         replacement =
             rewriter.create<AddIOp>(forOp.getLoc(), init, replacement);
 
-        if (iterarg.getType() != replacement.getType()) {
-          replacement = rewriter.create<IndexCastOp>(
-              forOp.getLoc(), iterarg.getType(), replacement);
-        }
+        replacement = castValue(rewriter, replacement, iterarg, forOp.getLoc());
 
         rewriter.modifyOpInPlace(forOp,
                                  [&] { res.replaceAllUsesWith(replacement); });
@@ -1453,21 +1464,23 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
     SmallVector<Value, 8> forArgs = llvm::to_vector(loop.getInits());
 
     for (Value arg : condOp.getArgs()) {
-      Value newArg = rewriter.create<ub::PoisonOp>(arg.getLoc(), arg.getType());
+      Value newArg = nullptr;
       if (auto blockArg = dyn_cast<BlockArgument>(arg)) {
         if (blockArg.getOwner() == &condOp->getParentRegion()->front()) {
           newArg = loop.getOperand(blockArg.getArgNumber());
         }
       } else if (auto selectOp = arg.getDefiningOp<arith::SelectOp>()) {
-        auto trueBlockArg = dyn_cast<BlockArgument>(selectOp.getTrueValue());
-        auto falseBlockArg = dyn_cast<BlockArgument>(selectOp.getFalseValue());
 
-        if (trueBlockArg && !falseBlockArg) {
+        if (auto trueBlockArg =
+                dyn_cast<BlockArgument>(selectOp.getTrueValue())) {
           newArg = loop.getOperand(trueBlockArg.getArgNumber());
-        } else if (!trueBlockArg && falseBlockArg) {
+        } else if (auto falseBlockArg =
+                       dyn_cast<BlockArgument>(selectOp.getFalseValue())) {
           newArg = loop.getOperand(falseBlockArg.getArgNumber());
         }
       }
+      if (!newArg)
+        newArg = rewriter.create<ub::PoisonOp>(arg.getLoc(), arg.getType());
       forArgs.push_back(newArg);
     }
 

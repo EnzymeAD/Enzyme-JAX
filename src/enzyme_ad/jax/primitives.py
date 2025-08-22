@@ -389,6 +389,10 @@ def optimization_passes(
         f"dynamic_update_slice_const_prop({max_constant_threshold})",
         "scatter_update_computation_const_prop",
         "gather_const_prop",
+        # TODO: parameterize based on the device
+        "self_subtract_to_convolution_like(0)",
+        "self_add_to_convolution_like(0)",
+        "self_mul_to_convolution_like(0)",
     ]
 
     if reshape_propagate == "up":
