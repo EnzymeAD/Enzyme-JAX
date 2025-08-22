@@ -3893,6 +3893,119 @@ struct SHLOReduceOpBatchInterface
   }
 };
 
+struct SHLOReduceWindowOpBatchInterface
+    : public BatchOpInterface::ExternalModel<SHLOReduceWindowOpBatchInterface,
+                                             ReduceWindowOp> {
+
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    SmallVector<Type> resultTypes(src->getResultTypes().begin(),
+                                  src->getResultTypes().end());
+    for (auto &Ty : resultTypes) {
+      auto T = cast<TensorType>(Ty);
+      SmallVector<int64_t> shape(batchSizes.begin(), batchSizes.end());
+      shape.append(T.getShape().begin(), T.getShape().end());
+      Ty = T.clone(shape);
+    }
+
+    stablehlo::ReduceWindowOp reduceWindowOp =
+        cast<stablehlo::ReduceWindowOp>(src);
+    if (!reduceWindowOp)
+      return failure();
+
+    // Remap the operands
+    SmallVector<Value, 8> newReduceWindowInputs;
+    newReduceWindowInputs.reserve(reduceWindowOp.getInputs().size());
+    for (auto opValue : reduceWindowOp.getInputs())
+      newReduceWindowInputs.push_back(mapper.lookup(opValue));
+
+    // The init value would have been batched already, we need to slice it.
+    // Constant Folding will fix it up later.
+    SmallVector<Value, 8> newReduceWindowInits;
+    newReduceWindowInits.reserve(reduceWindowOp.getInitValues().size());
+    for (auto opValue : reduceWindowOp.getInitValues()) {
+      auto batchedInit = mapper.lookup(opValue);
+
+      llvm::errs() << "init: " << batchedInit << "\n";
+
+      SmallVector<int64_t> sliceStrides(batchSizes.size(), 1);
+      SmallVector<int64_t> sliceStarts(batchSizes.size());
+      SmallVector<int64_t> sliceLimits(batchSizes.size());
+      for (int i = 0; i < batchSizes.size(); i++) {
+        sliceStarts[i] = batchSizes[i] - 1;
+        sliceLimits[i] = batchSizes[i];
+      }
+
+      auto elemType =
+          cast<RankedTensorType>(batchedInit.getType()).getElementType();
+      auto slicedInit = builder.create<SliceOp>(
+          batchedInit.getLoc(), RankedTensorType::get(sliceStrides, elemType),
+          batchedInit, sliceStarts, sliceLimits, sliceStrides);
+      auto reshapedInit = builder.create<ReshapeOp>(
+          batchedInit.getLoc(), RankedTensorType::get({}, elemType),
+          slicedInit);
+      newReduceWindowInits.push_back(reshapedInit->getResult(0));
+    }
+
+    SmallVector<int64_t> windowDims(batchSizes.size(), 1);
+    windowDims.append(reduceWindowOp.getWindowDimensions().begin(),
+                      reduceWindowOp.getWindowDimensions().end());
+
+    DenseI64ArrayAttr windowStridesAttr;
+    if (reduceWindowOp.getWindowStrides()) {
+      SmallVector<int64_t> windowStrides(batchSizes.size(), 1);
+      windowStrides.append(reduceWindowOp.getWindowStrides()->begin(),
+                           reduceWindowOp.getWindowStrides()->end());
+      windowStridesAttr = builder.getDenseI64ArrayAttr(windowStrides);
+    }
+
+    DenseI64ArrayAttr baseDilationsAttr;
+    if (reduceWindowOp.getBaseDilations()) {
+      SmallVector<int64_t> baseDilations(batchSizes.size(), 1);
+      baseDilations.append(reduceWindowOp.getBaseDilations()->begin(),
+                           reduceWindowOp.getBaseDilations()->end());
+      baseDilationsAttr = builder.getDenseI64ArrayAttr(baseDilations);
+    }
+
+    DenseI64ArrayAttr windowDilationsAttr;
+    if (reduceWindowOp.getWindowDilations()) {
+      SmallVector<int64_t> windowDilations(batchSizes.size(), 1);
+      windowDilations.append(reduceWindowOp.getWindowDilations()->begin(),
+                             reduceWindowOp.getWindowDilations()->end());
+      windowDilationsAttr = builder.getDenseI64ArrayAttr(windowDilations);
+    }
+
+    DenseIntElementsAttr newPaddingAttr;
+    if (reduceWindowOp.getPadding()) {
+      auto paddingOriginal =
+          llvm::to_vector(reduceWindowOp.getPadding()->getValues<int64_t>());
+      auto paddingType = RankedTensorType::get(
+          {static_cast<int64_t>(batchSizes.size() + paddingOriginal.size() / 2),
+           2},
+          builder.getI64Type());
+
+      SmallVector<int64_t> newPadding(2 * batchSizes.size(), 0);
+      newPadding.append(paddingOriginal.begin(), paddingOriginal.end());
+      newPaddingAttr = mlir::DenseIntElementsAttr::get(paddingType, newPadding);
+    }
+
+    auto newReduceWindowOp = builder.create<stablehlo::ReduceWindowOp>(
+        src->getLoc(), resultTypes, newReduceWindowInputs, newReduceWindowInits,
+        windowDims, windowStridesAttr, baseDilationsAttr, windowDilationsAttr,
+        newPaddingAttr);
+
+    IRMapping regionMapper;
+    reduceWindowOp.getRegion().cloneInto(&newReduceWindowOp.getRegion(),
+                                         regionMapper);
+
+    for (int i = 0; i < reduceWindowOp.getResults().size(); i++) {
+      mapper.map(src->getResult(i), newReduceWindowOp.getResult(i));
+    }
+    return success();
+  }
+};
+
 struct SHLODotGeneralOpBatchInterface
     : public BatchOpInterface::ExternalModel<SHLODotGeneralOpBatchInterface,
                                              DotGeneralOp> {
@@ -4373,6 +4486,7 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     IfOp::attachInterface<SHLOGenericBatchOpInterface<IfOp>>(*context);
     WhileOp::attachInterface<SHLOGenericBatchOpInterface<WhileOp>>(*context);
     ReduceOp::attachInterface<SHLOReduceOpBatchInterface>(*context);
+    ReduceWindowOp::attachInterface<SHLOReduceWindowOpBatchInterface>(*context);
     DotGeneralOp::attachInterface<SHLODotGeneralOpBatchInterface>(*context);
     BroadcastInDimOp::attachInterface<SHLOBroadcastInDimOpBatchInterface>(
         *context);
