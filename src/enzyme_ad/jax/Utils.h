@@ -196,7 +196,8 @@ cloneWithoutResults(mlir::affine::AffineForOp op,
   auto newFor = rewriter.create<affine::AffineForOp>(
       op.getLoc(), lower, op.getLowerBoundMap(), upper, op.getUpperBoundMap(),
       op.getStepAsInt());
-  newFor->setAttrs(op->getAttrs());
+  for (auto attr : op->getDiscardableAttrs())
+    newFor->setAttr(attr.getName(), attr.getValue());
   return newFor;
 }
 
