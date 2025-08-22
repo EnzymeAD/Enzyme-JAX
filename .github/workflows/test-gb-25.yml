@@ -53,8 +53,7 @@ jobs:
           - 'main'
           # - '0123456789abcdef0123456789abcdef01234567'
         reactant_commit:
-          # - 'main'
-          - "ap/updated_no_nan"
+          - 'main'
 
     steps:
       - name: Check GPUs
@@ -124,6 +123,15 @@ jobs:
           julia --project --color=yes -e 'using Pkg; Pkg.instantiate()'
           julia --project --color=yes -O0 build_local.jl --cc=clang --gcc_host_compiler_path=
         working-directory: ${{ env.REACTANT_DIR }}/deps
+      - name: Copy libdevice
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          if [[ ! -e bazel-bin/cuda/nvvm/libdevice/libdevice.10.bc ]]; then
+              mkdir -pv bazel-bin/cuda/nvvm/libdevice
+              cp -v bazel-bin/libReactantExtra.so.runfiles/cuda_nvcc/nvvm/libdevice/libdevice.10.bc bazel-bin/cuda/nvvm/libdevice/libdevice.10.bc
+          fi
+        working-directory: ${{ env.REACTANT_DIR }}/deps/ReactantExtra
       - name: Checkout GB-25
         uses: actions/checkout@v4
         with:
