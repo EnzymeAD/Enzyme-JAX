@@ -4226,6 +4226,35 @@ struct SHLOIotaOpBatchInterface
   }
 };
 
+struct SHLOSortOpBatchInterface
+    : public BatchOpInterface::ExternalModel<SHLOSortOpBatchInterface,
+                                             stablehlo::SortOp> {
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto op = cast<stablehlo::SortOp>(src);
+
+    SmallVector<Value> newOperands;
+    newOperands.reserve(op.getNumOperands());
+    for (auto operand : op.getOperands()) {
+      newOperands.push_back(mapper.lookup(operand));
+    }
+
+    auto newSortOp = builder.create<stablehlo::SortOp>(
+        op.getLoc(), ValueRange(newOperands),
+        builder.getI64IntegerAttr(op.getDimension() + batchSizes.size()),
+        op.getIsStableAttr());
+
+    IRMapping regionMapper;
+    op.getComparator().cloneInto(&newSortOp.getComparator(), regionMapper);
+
+    for (int i = 0; i < newSortOp.getNumResults(); i++) {
+      mapper.map(src->getResult(i), newSortOp.getResult(i));
+    }
+    return success();
+  }
+};
+
 struct SHLOSelectOpBatchInterface
     : public BatchOpInterface::ExternalModel<SHLOSelectOpBatchInterface,
                                              stablehlo::SelectOp> {
@@ -4378,6 +4407,7 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
         *context);
     IotaOp::attachInterface<SHLOIotaOpBatchInterface>(*context);
     SelectOp::attachInterface<SHLOSelectOpBatchInterface>(*context);
+    SortOp::attachInterface<SHLOSortOpBatchInterface>(*context);
 
     ReverseOp::attachInterface<SHLOGenericBatchOpInterface<ReverseOp>>(
         *context); // TODO: simpler version with newly named dims
