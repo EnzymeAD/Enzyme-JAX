@@ -23335,7 +23335,8 @@ struct EnzymeHLOOptPass
         SubtractMultiplyConstToAddMulConst,
         ConcatInsertDimToBatch<stablehlo::DotGeneralOp>,
         ConcatInsertDimToBatch<stablehlo::GatherOp>,
-        ConcatInsertDimToBatch<stablehlo::IotaOp>
+        ConcatInsertDimToBatch<stablehlo::IotaOp>,
+        ConcatInsertDimToBatch<stablehlo::ReduceOp>
         // ConcatInsertDimToBatch<stablehlo::ScatterOp>, after batch op interface is implemented
         // ConcatInsertDimToBatch<stablehlo::SortOp>, after batch op interface is implemented
       >(context);

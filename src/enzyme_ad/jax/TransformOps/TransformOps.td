@@ -2246,6 +2246,11 @@ def ApplySubtractMultiplyConstToAddMulConstPatterns : EnzymeHLOPatternOp<"subtra
   let patterns = ["SubtractMultiplyConstToAddMulConst"];
 }
 
+def ApplyConcatInsertDimReducePatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_reduce"> {
+  let patterns = ["ConcatInsertDimToBatch<stablehlo::ReduceOp>"];
+}
+
 def ApplySelfSubtractToConvolutionLikePatterns : EnzymeHLOParameterizedPatternOp<"self_subtract_to_convolution_like"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
   let assemblyFormat = "attr-dict";
