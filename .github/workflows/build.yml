@@ -69,11 +69,6 @@ jobs:
         if: ${{ contains(matrix.os, 'a100') }}
         run: |
           nvidia-smi
-      - name: Install bazel deps for tests
-        run: |
-          apt update
-          apt install -y zip file
-        if: ${{ contains(matrix.os, 'linux') }}
       - name: Set BAZEL_FLAGS
         shell: bash
         run: |
@@ -181,8 +176,6 @@ jobs:
     steps:
       - name: Install Dependencies
         run: |
-          apt update
-          apt install -y zip file unzip curl
           curl -LsSf https://astral.sh/uv/install.sh | sh
       - uses: actions/checkout@v5
       - name: Download all benchmark artifacts
@@ -193,7 +186,6 @@ jobs:
           merge-multiple: false
       - name: Extract and combine benchmark results
         run: |
-          ls -R
           uv run --no-project .github/scripts/process_benchmark_results.py \
             --artifact_dir=benchmark-results \
             --markdown_file=body.md \
