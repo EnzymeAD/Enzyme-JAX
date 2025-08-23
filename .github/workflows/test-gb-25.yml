@@ -80,8 +80,8 @@ jobs:
       - name: Checkout Reactant.jl
         uses: actions/checkout@v4
         with:
-          repository: 'EnzymeAD/Reactant.jl'
-          ref: 'main'
+          repository: 'giordano/Reactant.jl'
+          ref: 'mg/libdevice'
           path: 'Reactant.jl'
       - name: Set REACTANT_DIR
         # We have to use `${GITHUB_WORKSPACE}` instead of `github.workspace` because GitHub
