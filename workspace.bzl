@@ -22,7 +22,7 @@ XLA_PATCHES = [
     sed -i.bak0 "s/patch_file/patch_args = [\\\"-p1\\\"],patches/g" third_party/llvm/workspace.bzl
     """,
     """
-    sed -i.bak0 "s/patches = [/ patches = [\\\"patches/llvm.patch\\\",/g" third_party/llvm/workspace.bzl
+    sed -i.bak0 "s/patches = \\[/ patches = \\[\\\"patches\\/llvm.patch\\\",/g" third_party/llvm/workspace.bzl
     """,
     """
     sed -i.bak0 "/link_file/d" third_party/llvm/workspace.bzl
