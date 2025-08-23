@@ -3786,6 +3786,19 @@ struct ConvertPolygeistToLLVMPass
     }
 
     removeUnsupportedLifeTimes(m);
+    if (m->walk<WalkOrder::PreOrder>([](Operation *op){
+		    if (isa<gpu::GPUModuleOp>(op)) 
+                return WalkResult::skip();
+		if (isa<gpu::ThreadIdOp, gpu::BlockIdOp, gpu::BlockDimOp, gpu::GridDimOp>(op)) { 
+                op->emitError() << " GPU instruction outside of gpu module op\n";
+		return WalkResult::interrupt();
+	      }
+
+                return WalkResult::advance();
+		    }).wasInterrupted()) {
+			    signalPassFailure();
+        return;
+		    }
   }
 
   void runOnOperation() override {
