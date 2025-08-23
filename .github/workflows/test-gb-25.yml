@@ -128,7 +128,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: 'PRONTOLab/GB-25'
-          ref: ${{ matrix.gb25_commit }}
+          ref: 'mg/oom-reproducer'
           path: 'GB-25'
       - name: Set GB25_DIR
         # We have to use `${GITHUB_WORKSPACE}` instead of `github.workspace` because GitHub
