@@ -106,7 +106,7 @@ def main(_) -> None:
                 sharey=False,
                 margin_titles=True,
             )
-            g.set(yscale="log")
+            # g.set(yscale="log")
             plot_file_pdf = os.path.join(_PLOTS_DIRECTORY.value, f"{expt}.pdf")
             plot_file = os.path.join(_PLOTS_DIRECTORY.value, f"{expt}.png")
             g.savefig(plot_file)
