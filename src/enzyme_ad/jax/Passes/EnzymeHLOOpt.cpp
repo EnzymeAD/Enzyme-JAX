@@ -23336,9 +23336,10 @@ struct EnzymeHLOOptPass
         ConcatInsertDimToBatch<stablehlo::DotGeneralOp>,
         ConcatInsertDimToBatch<stablehlo::GatherOp>,
         ConcatInsertDimToBatch<stablehlo::IotaOp>,
-        ConcatInsertDimToBatch<stablehlo::ReduceOp>
+        ConcatInsertDimToBatch<stablehlo::ReduceOp>,
         // ConcatInsertDimToBatch<stablehlo::ScatterOp>, after batch op interface is implemented
-        // ConcatInsertDimToBatch<stablehlo::SortOp>, after batch op interface is implemented
+        ConcatInsertDimToBatch<stablehlo::SortOp>,
+        ConcatInsertDimToBatch<stablehlo::ReduceWindowOp>
       >(context);
 
     patterns.add<

@@ -351,6 +351,9 @@ def optimization_passes(
         "concat_insert_dim_dot_general",
         "concat_insert_dim_gather",
         "concat_insert_dim_iota",
+        "concat_insert_dim_reduce",
+        "concat_insert_dim_sort",
+        "concat_insert_dim_reduce_window",
     ]
 
     # constant propagation patterns
