@@ -2423,7 +2423,10 @@ public:
                                          SmallVector<Value> caches) const {
     auto scatterOp = cast<ScatterOp>(op);
 
-    if (!stablehlo::isScatterSetindexOp(scatterOp)) {
+    auto checkCommonScatterOp =
+        mlir::stablehlo::CheckCommonScatterOp(scatterOp);
+
+    if (!checkCommonScatterOp.isSetindexScatter) {
       op->emitError("AutoDiffScatterRev only supports Setindex operations")
           << *op;
       return failure();
