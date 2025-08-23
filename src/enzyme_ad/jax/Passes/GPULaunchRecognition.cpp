@@ -10,6 +10,7 @@
 #include "mlir/IR/IRMapping.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/SmallSet.h"
 
 #define DEBUG_TYPE "gpu-launch-recognition"
@@ -245,7 +246,8 @@ struct GPULaunchRecognitionPass
       getOperation()->setAttr("gpu.container_module",
                               OpBuilder(ctx).getUnitAttr());
 
-    getOperation()->walk([](LLVM::CallOp call) {
+    StringSet<>  seenErrors;
+    getOperation()->walk([&](LLVM::CallOp call) {
       auto callee = call.getCallee();
       OpBuilder builder(call);
       auto i8 = builder.getIntegerType(8);
@@ -273,12 +275,14 @@ struct GPULaunchRecognitionPass
         return;
       }
       if (callee == "cudaOccupancyMaxActiveBlocksPerMultiprocessorWithFlags" || callee == "cudaFuncGetAttributes" || callee == "cudaFuncSetCacheConfig") {
-        call->emitError() << " Unsupported runtime function";
+	      if (!seenErrors.count(*callee))
+        call->emitWarning() << " Unsupported runtime function";
+	      seenErrors.insert(*callee);
         auto replace =
             builder.create<LLVM::ZeroOp>(call.getLoc(), call.getType(0));
         call->replaceAllUsesWith(replace);
         call->erase();
-        return
+        return;
       }
       if (callee == "cudaMemcpy") {
         APInt directionA;
