@@ -184,7 +184,7 @@ jobs:
           apt update
           apt install -y zip file unzip curl
           curl -LsSf https://astral.sh/uv/install.sh | sh
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Download all benchmark artifacts
         uses: actions/download-artifact@v4
         with:
