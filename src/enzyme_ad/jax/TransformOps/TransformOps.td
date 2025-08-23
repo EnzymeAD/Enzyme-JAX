@@ -2227,8 +2227,38 @@ def ApplyElementwiseExtendPatterns : EnzymeHLOPatternOp<"elementwise_extend"> {
   let patterns = ["ElementwiseExtend"];
 }
 
+def ApplyConcatInsertDimDotGeneralPatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_dot_general"> {
+  let patterns = ["ConcatInsertDimToBatch<stablehlo::DotGeneralOp>"];
+}
+
+def ApplyConcatInsertDimGatherPatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_gather"> {
+  let patterns = ["ConcatInsertDimToBatch<stablehlo::GatherOp>"];
+}
+
+def ApplyConcatInsertDimIotaPatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_iota"> {
+  let patterns = ["ConcatInsertDimToBatch<stablehlo::IotaOp>"];
+}
+
 def ApplySubtractMultiplyConstToAddMulConstPatterns : EnzymeHLOPatternOp<"subtract_multiply_const_to_add_mul_const"> {
   let patterns = ["SubtractMultiplyConstToAddMulConst"];
+}
+
+def ApplyConcatInsertDimReducePatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_reduce"> {
+  let patterns = ["ConcatInsertDimToBatch<stablehlo::ReduceOp>"];
+}
+
+def ApplyConcatInsertDimSortPatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_sort"> {
+  let patterns = ["ConcatInsertDimToBatch<stablehlo::SortOp>"];
+}
+
+def ApplyConcatInsertDimReduceWindowPatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_reduce_window"> {
+  let patterns = ["ConcatInsertDimToBatch<stablehlo::ReduceWindowOp>"];
 }
 
 def ApplySelfSubtractToConvolutionLikePatterns : EnzymeHLOParameterizedPatternOp<"self_subtract_to_convolution_like"> {
