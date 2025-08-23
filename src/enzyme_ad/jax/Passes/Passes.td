@@ -149,7 +149,13 @@ def EnzymeHLOOptPass : Pass<"enzyme-hlo-opt"> {
         /*CLI argument=*/"passses",
         /*type=*/"uint64_t",
         /*default=*/"24575",
-        /*description=*/"Additional optimization passes">
+        /*description=*/"Additional optimization passes">,
+    Option<
+        /*C++ variable name=*/"enable_convert_to_convolution",
+        /*CLI argument=*/"enable_convert_to_convolution",
+        /*type=*/"bool",
+        /*default=*/"false",
+        /*description=*/"Enable convert to convolution">,
   ];
 }
 
