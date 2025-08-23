@@ -194,7 +194,20 @@ jobs:
       - name: Extract and combine benchmark results
         run: |
           ls -R
-          uv run --no-project .github/scripts/process_benchmark_results.py --artifact_dir=benchmark-results --markdown_file=body.md
+          uv run --no-project .github/scripts/process_benchmark_results.py \
+            --artifact_dir=benchmark-results \
+            --markdown_file=body.md \
+            --csv_file=combined_results.csv \
+            --plots_directory=benchmark_plots
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: Enzyme-JAX-combined-benchmark-results
+          path: |
+            combined_results.csv
+            benchmark_plots/**/*.pdf
+          retention-days: 90
       - name: Write to job summary
         shell: bash
         run: cat body.md >> "$GITHUB_STEP_SUMMARY"
