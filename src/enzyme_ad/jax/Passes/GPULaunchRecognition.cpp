@@ -272,6 +272,14 @@ struct GPULaunchRecognitionPass
         call->erase();
         return;
       }
+      if (callee == "cudaOccupancyMaxActiveBlocksPerMultiprocessorWithFlags" || callee == "cudaFuncGetAttributes" || callee == "cudaFuncSetCacheConfig") {
+        call->emitError() << " Unsupported runtime function";
+        auto replace =
+            builder.create<LLVM::ZeroOp>(call.getLoc(), call.getType(0));
+        call->replaceAllUsesWith(replace);
+        call->erase();
+        return
+      }
       if (callee == "cudaMemcpy") {
         APInt directionA;
 
