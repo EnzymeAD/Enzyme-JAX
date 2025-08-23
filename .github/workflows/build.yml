@@ -170,8 +170,6 @@ jobs:
 
   benchmark-summary:
     name: Benchmark Summary
-    container:
-      image: "ghcr.io/enzymead/reactant-docker-images@sha256:91e1edb7a7c869d5a70db06e417f22907be0e67ca86641d48adcea221fedc674"
     runs-on: ubuntu-latest
     needs: build
     if: ${{ !cancelled() }}
