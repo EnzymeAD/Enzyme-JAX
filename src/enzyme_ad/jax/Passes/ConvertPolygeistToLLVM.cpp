@@ -3512,6 +3512,262 @@ populateCStyleFuncLoweringPatterns(RewritePatternSet &patterns,
   patterns.add<CallOpLowering, FuncOpLowering, ReturnOpLowering>(typeConverter);
 }
 
+static LLVM::LLVMFuncOp addMocCUDAFunction(ModuleOp module, Type streamTy) {
+  const char fname[] = "fake_cuda_dispatch";
+
+  MLIRContext *ctx = module.getContext();
+  auto loc = module.getLoc();
+  auto moduleBuilder = ImplicitLocOpBuilder::atBlockEnd(loc, module.getBody());
+
+  for (auto fn : module.getBody()->getOps<LLVM::LLVMFuncOp>()) {
+    if (fn.getName() == fname)
+      return fn;
+  }
+
+  auto voidTy = LLVM::LLVMVoidType::get(ctx);
+  auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+
+  auto resumeOp = moduleBuilder.create<LLVM::LLVMFuncOp>(
+      fname, LLVM::LLVMFunctionType::get(voidTy, {ptrTy, ptrTy, streamTy}));
+  resumeOp.setPrivate();
+
+  return resumeOp;
+}
+
+struct NoAsyncOpLowering : public ConvertOpToLLVMPattern<async::ExecuteOp> {
+  using ConvertOpToLLVMPattern<async::ExecuteOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(async::ExecuteOp execute, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto exec =
+        rewriter.create<scf::ExecuteRegionOp>(execute->getLoc(), TypeRange());
+    rewriter.inlineRegionBefore(execute.getRegion(), exec.getRegion(),
+                                exec.getRegion().begin());
+    for (auto &blk : exec.getRegion()) {
+      auto yld = dyn_cast_or_null<async::YieldOp>(blk.getTerminator());
+      rewriter.setInsertionPointAfter(yld);
+      rewriter.replaceOpWithNewOp<scf::YieldOp>(yld);
+    }
+    rewriter.eraseOp(execute);
+    return success();
+  }
+};
+
+struct AsyncOpLowering : public ConvertOpToLLVMPattern<async::ExecuteOp> {
+  using ConvertOpToLLVMPattern<async::ExecuteOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(async::ExecuteOp execute, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    ModuleOp module = execute->getParentOfType<ModuleOp>();
+
+    MLIRContext *ctx = module.getContext();
+    Location loc = execute.getLoc();
+
+    auto voidTy = LLVM::LLVMVoidType::get(ctx);
+    Type voidPtr = LLVM::LLVMPointerType::get(ctx);
+
+    // Make sure that all constants will be inside the outlined async function
+    // to reduce the number of function arguments.
+    Region &execReg = execute.getBodyRegion();
+
+    // Collect all outlined function inputs.
+    SetVector<mlir::Value> functionInputs;
+
+    getUsedValuesDefinedAbove(execute.getBodyRegion(), execReg, functionInputs);
+    SmallVector<Value> toErase;
+    for (auto a : functionInputs) {
+      Operation *op = a.getDefiningOp();
+      if (op && op->hasTrait<OpTrait::ConstantLike>())
+        toErase.push_back(a);
+    }
+    for (auto a : toErase) {
+      functionInputs.remove(a);
+    }
+
+    // Collect types for the outlined function inputs and outputs.
+    const TypeConverter *converter = getTypeConverter();
+    auto typesRange = llvm::map_range(functionInputs, [&](Value value) {
+      return converter->convertType(value.getType());
+    });
+    SmallVector<Type, 4> inputTypes(typesRange.begin(), typesRange.end());
+
+    Type ftypes[] = {voidPtr};
+    auto funcType = LLVM::LLVMFunctionType::get(voidTy, ftypes);
+
+    // TODO: Derive outlined function name from the parent FuncOp (support
+    // multiple nested async.execute operations).
+    LLVM::LLVMFuncOp func;
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToEnd(module.getBody());
+      static int off = 0;
+      off++;
+      func = rewriter.create<LLVM::LLVMFuncOp>(
+          execute.getLoc(),
+          "kernelbody." + std::to_string((long long int)&execute) + "." +
+              std::to_string(off),
+          funcType);
+    }
+
+    rewriter.setInsertionPointToStart(func.addEntryBlock(rewriter));
+    IRMapping valueMapping;
+    for (Value capture : toErase) {
+      Operation *op = capture.getDefiningOp();
+      for (auto r :
+           llvm::zip(op->getResults(),
+                     rewriter.clone(*op, valueMapping)->getResults())) {
+        valueMapping.map(rewriter.getRemappedValue(std::get<0>(r)),
+                         std::get<1>(r));
+      }
+    }
+    // Prepare for coroutine conversion by creating the body of the function.
+    {
+      // Map from function inputs defined above the execute op to the function
+      // arguments.
+      auto arg = func.getArgument(0);
+
+      if (functionInputs.size() == 0) {
+      } else if (functionInputs.size() == 1 &&
+                 isa<LLVM::LLVMPointerType>(
+                     converter->convertType(functionInputs[0].getType()))) {
+        valueMapping.map(
+            functionInputs[0],
+            rewriter.create<LLVM::BitcastOp>(
+                execute.getLoc(),
+                converter->convertType(functionInputs[0].getType()), arg));
+      } else if (functionInputs.size() == 1 &&
+                 isa<IntegerType>(
+                     converter->convertType(functionInputs[0].getType()))) {
+        valueMapping.map(
+            functionInputs[0],
+            rewriter.create<LLVM::PtrToIntOp>(
+                execute.getLoc(),
+                converter->convertType(functionInputs[0].getType()), arg));
+      } else {
+        SmallVector<Type> types;
+        for (auto v : functionInputs)
+          types.push_back(converter->convertType(v.getType()));
+        auto ST = LLVM::LLVMStructType::getLiteral(ctx, types);
+        auto alloc = rewriter.create<LLVM::BitcastOp>(
+            execute.getLoc(), LLVM::LLVMPointerType::get(ctx), arg);
+        for (auto idx : llvm::enumerate(functionInputs)) {
+
+          mlir::Value idxs[] = {
+              rewriter.create<arith::ConstantIntOp>(loc, 0, 32),
+              rewriter.create<arith::ConstantIntOp>(loc, idx.index(), 32),
+          };
+          Value next =
+              rewriter.create<LLVM::GEPOp>(loc, LLVM::LLVMPointerType::get(ctx),
+                                           idx.value().getType(), alloc, idxs);
+          valueMapping.map(idx.value(), rewriter.create<LLVM::LoadOp>(
+                                            loc, idx.value().getType(), next));
+        }
+        auto freef = getTypeConverter()->getOptions().useGenericFunctions
+                         ? LLVM::lookupOrCreateGenericFreeFn(rewriter, module)
+                         : LLVM::lookupOrCreateFreeFn(rewriter, module);
+        Value args[] = {arg};
+        rewriter.create<LLVM::CallOp>(loc, freef.value(), args);
+      }
+
+      // Clone all operations from the execute operation body into the outlined
+      // function body.
+      rewriter.cloneRegionBefore(execute.getBodyRegion(), func.getRegion(),
+                                 func.getRegion().end(), valueMapping);
+      rewriter.create<LLVM::BrOp>(execute.getLoc(), ValueRange(),
+                                  &*std::next(func.getRegion().begin()));
+      for (Block &b : func.getRegion()) {
+        auto term = b.getTerminator();
+        if (isa<async::YieldOp>(term)) {
+          rewriter.setInsertionPointToEnd(&b);
+          rewriter.replaceOpWithNewOp<LLVM::ReturnOp>(term, ValueRange());
+        }
+      }
+    }
+
+    // Replace the original `async.execute` with a call to outlined function.
+    {
+      rewriter.setInsertionPoint(execute);
+      SmallVector<Value> crossing;
+      for (auto tup : llvm::zip(functionInputs, inputTypes)) {
+        Value val = std::get<0>(tup);
+        crossing.push_back(val);
+      }
+
+      SmallVector<Value> vals;
+      if (crossing.size() == 0) {
+        vals.push_back(
+            rewriter.create<LLVM::ZeroOp>(execute.getLoc(), voidPtr));
+      } else if (crossing.size() == 1 &&
+                 isa<LLVM::LLVMPointerType>(
+                     converter->convertType(crossing[0].getType()))) {
+        vals.push_back(rewriter.create<LLVM::BitcastOp>(execute.getLoc(),
+                                                        voidPtr, crossing[0]));
+      } else if (crossing.size() == 1 &&
+                 isa<IntegerType>(
+                     converter->convertType(crossing[0].getType()))) {
+        vals.push_back(rewriter.create<LLVM::IntToPtrOp>(execute.getLoc(),
+                                                         voidPtr, crossing[0]));
+      } else {
+        SmallVector<Type> types;
+        for (auto v : crossing)
+          types.push_back(v.getType());
+        auto ST = LLVM::LLVMStructType::getLiteral(ctx, types);
+        if (!LLVM::isCompatibleType(ST)) {
+          return failure();
+        }
+
+        DataLayout DLI(execute->getParentOfType<ModuleOp>());
+
+        Value arg = rewriter.create<arith::ConstantIntOp>(
+            loc, rewriter.getI64Type(), DLI.getTypeSize(ST));
+        auto mallocFunc =
+            LLVM::lookupOrCreateMallocFn(rewriter, module, getIndexType());
+        mlir::Value alloc =
+            rewriter.create<LLVM::CallOp>(loc, mallocFunc.value(), arg)
+                .getResult();
+        rewriter.setInsertionPoint(execute);
+        for (auto idx : llvm::enumerate(crossing)) {
+
+          mlir::Value idxs[] = {
+              rewriter.create<arith::ConstantIntOp>(loc, 0, 32),
+              rewriter.create<arith::ConstantIntOp>(loc, idx.index(), 32),
+          };
+          Value next = rewriter.create<LLVM::GEPOp>(
+              loc, LLVM::LLVMPointerType::get(rewriter.getContext()),
+              idx.value().getType(), alloc, idxs);
+          rewriter.create<LLVM::StoreOp>(loc, idx.value(), next);
+        }
+        vals.push_back(
+            rewriter.create<LLVM::BitcastOp>(execute.getLoc(), voidPtr, alloc));
+      }
+      vals.push_back(rewriter.create<LLVM::BitcastOp>(
+          execute.getLoc(), voidPtr,
+          rewriter.create<LLVM::AddressOfOp>(execute.getLoc(), func)));
+      for (auto dep : execute.getDependencies()) {
+        auto src = dep.getDefiningOp<enzymexla::StreamToTokenOp>().getSource();
+        if (auto MT = dyn_cast<MemRefType>(src.getType()))
+          src = rewriter.create<enzymexla::Memref2PointerOp>(
+              dep.getDefiningOp()->getLoc(),
+              LLVM::LLVMPointerType::get(rewriter.getContext(),
+                                         MT.getMemorySpaceAsInt()),
+              src);
+        vals.push_back(src);
+      }
+      assert(vals.size() == 3);
+
+      auto f = addMocCUDAFunction(execute->getParentOfType<ModuleOp>(),
+                                  vals.back().getType());
+
+      rewriter.create<LLVM::CallOp>(execute.getLoc(), f, vals);
+      rewriter.eraseOp(execute);
+    }
+
+    return success();
+  }
+};
+
 static void removeUnsupportedLifeTimes(mlir::Operation *root) {
   llvm::SmallVector<mlir::Operation *> toErase;
   root->walk([&](mlir::Operation *op) {
@@ -3662,6 +3918,12 @@ struct ConvertPolygeistToLLVMPass
       populateCStyleGPUFuncLoweringPatterns(patterns, converter, backend, true);
     }
 
+    if (backend == "cpu") {
+      if (use_async)
+        patterns.add<AsyncOpLowering>(converter);
+      else
+        patterns.add<NoAsyncOpLowering>(converter);
+    }
     // Our custom versions of the gpu patterns
     if (useCStyleMemRef) {
       patterns.add<ConvertLaunchFuncOpToGpuRuntimeCallPattern>(
