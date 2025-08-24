@@ -71,7 +71,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
   std::string pass_pipeline =
       "inline{default-pipeline=canonicalize "
       "max-iterations=4},sroa-wrappers{set_private=false attributor=false},gpu-launch-"
-      "recognition,canonicalize,libdevice-funcs-raise,canonicalize,parallel-"
+      "recognition,canonicalize,libdevice-funcs-raise,canonicalize,symbol-dce,parallel-"
       "lower{wrapParallelOps=true},llvm-to-"
       "memref-access,polygeist-mem2reg,canonicalize,convert-llvm-to-cf,"
       "canonicalize,polygeist-mem2reg,canonicalize,enzyme-lift-cf-to-scf,"
@@ -107,7 +107,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       if (outfile.size() && getenv("EXPORT_REACTANT")) {
         pass_pipeline += "print{filename="+outfile+".mlir},";
       }
-      pass_pipeline += "symbol-dce,lower-affine,convert-parallel-to-gpu1,gpu-kernel-outlining,canonicalize,"
+      pass_pipeline += "symbol-dce,enzyme,lower-affine,convert-parallel-to-gpu1,gpu-kernel-outlining,canonicalize,"
       "convert-parallel-to-gpu2,lower-affine";
       if (getenv("REACTANT_OMP")) {
         pass_pipeline += ",convert-scf-to-openmp,";
