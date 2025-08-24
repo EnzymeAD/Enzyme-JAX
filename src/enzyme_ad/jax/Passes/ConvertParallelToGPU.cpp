@@ -502,6 +502,47 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
         curRegion++;
       }
     };
+    auto exactMatch = [&](enzymexla::AlternativesOp alternativesOp) {
+      auto block = &*alternativesOp->getRegion(curRegion).begin();
+      rewriter.setInsertionPointToStart(block);
+      // TODO not very efficient...
+      auto newWrapper = cast<enzymexla::GPUWrapperOp>(
+          rewriter.clone(*wrapper.getOperation()));
+      scf::ParallelOp pop =
+          getDirectlyNestedSingleParallel(newWrapper.getBody());
+      auto loc = pop->getLoc();
+
+      auto upperBounds = getUpperBounds<6>(pop);
+      int totalDims = upperBounds.size();
+
+      mlir::OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPoint(pop);
+      auto gridPop = rewriter.create<scf::ParallelOp>(
+          loc, pop.getLowerBound().slice(0, 3), pop.getUpperBound().slice(0, 3),
+          pop.getStep().slice(0, 3));
+      rewriter.setInsertionPointToStart(gridPop.getBody());
+      auto blockPop = rewriter.create<scf::ParallelOp>(
+          loc, pop.getLowerBound().slice(3, 3), pop.getUpperBound().slice(3, 3),
+          pop.getStep().slice(3, 3));
+      rewriter.setInsertionPointToStart(blockPop.getBody());
+
+      IRMapping mapping;
+      for (unsigned i = 0; i < 3; i++)
+        mapping.map(pop.getBody()->getArgument(i),
+                    gridPop.getBody()->getArgument(i));
+      for (unsigned i = 0; i < 3; i++)
+        mapping.map(pop.getBody()->getArgument(i + 3),
+                    blockPop.getBody()->getArgument(i));
+
+      rewriter.eraseOp(pop.getBody()->getTerminator());
+      for (auto &op : *pop.getBody())
+        rewriter.clone(op, mapping);
+      rewriter.eraseOp(pop);
+      emittedBlockSizes.insert(-1);
+      descs.push_back(rewriter.getStringAttr(
+          std::string("block_size=" + std::to_string(-1) + ",")));
+      curRegion++;
+    };
 
     if (char *blockSizeStr = getenv("POLYGEIST_GPU_KERNEL_BLOCK_SIZE")) {
       auto alternativesOp = rewriter.create<enzymexla::AlternativesOp>(loc, 1);
@@ -510,6 +551,13 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       llvm::errs() << "Emitting kernel with " << atoi(blockSizeStr)
                    << " threads\n";
       emitAlternative(atoi(blockSizeStr), alternativesOp);
+      if (curRegion == 0) {
+        llvm::errs() << " Failed to make kernel with exact dimension\n";
+        assert(wrapper.getOperands().size() == 6);
+        assert(pop.getUpperBound().size() == 6 &&
+               pop.getUpperBound() == wrapper.getOperands());
+        exactMatch(alternativesOp);
+      }
       alternativesOp->setAttr("alternatives.descs",
                               rewriter.getArrayAttr(descs));
     } else if (shouldEmitAlternatives(pop)) {
@@ -525,45 +573,7 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       assert(wrapper.getOperands().size() == 6);
       if (pop.getUpperBound().size() == 6 &&
           pop.getUpperBound() == wrapper.getOperands()) {
-        auto block = &*alternativesOp->getRegion(curRegion).begin();
-        rewriter.setInsertionPointToStart(block);
-        // TODO not very efficient...
-        auto newWrapper = cast<enzymexla::GPUWrapperOp>(
-            rewriter.clone(*wrapper.getOperation()));
-        scf::ParallelOp pop =
-            getDirectlyNestedSingleParallel(newWrapper.getBody());
-        auto loc = pop->getLoc();
-
-        auto upperBounds = getUpperBounds<6>(pop);
-        int totalDims = upperBounds.size();
-
-        mlir::OpBuilder::InsertionGuard guard(rewriter);
-        rewriter.setInsertionPoint(pop);
-        auto gridPop = rewriter.create<scf::ParallelOp>(
-            loc, pop.getLowerBound().slice(0, 3),
-            pop.getUpperBound().slice(0, 3), pop.getStep().slice(0, 3));
-        rewriter.setInsertionPointToStart(gridPop.getBody());
-        auto blockPop = rewriter.create<scf::ParallelOp>(
-            loc, pop.getLowerBound().slice(3, 3),
-            pop.getUpperBound().slice(3, 3), pop.getStep().slice(3, 3));
-        rewriter.setInsertionPointToStart(blockPop.getBody());
-
-        IRMapping mapping;
-        for (unsigned i = 0; i < 3; i++)
-          mapping.map(pop.getBody()->getArgument(i),
-                      gridPop.getBody()->getArgument(i));
-        for (unsigned i = 0; i < 3; i++)
-          mapping.map(pop.getBody()->getArgument(i + 3),
-                      blockPop.getBody()->getArgument(i));
-
-        rewriter.eraseOp(pop.getBody()->getTerminator());
-        for (auto &op : *pop.getBody())
-          rewriter.clone(op, mapping);
-        rewriter.eraseOp(pop);
-        emittedBlockSizes.insert(-1);
-        descs.push_back(rewriter.getStringAttr(
-            std::string("block_size=" + std::to_string(-1) + ",")));
-        curRegion++;
+        exactMatch(alternativesOp);
       }
       alternativesOp->setAttr("alternatives.descs",
                               rewriter.getArrayAttr(descs));
