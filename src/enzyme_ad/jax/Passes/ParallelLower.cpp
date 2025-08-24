@@ -744,15 +744,21 @@ void ParallelLower::runOnOperation() {
         if (symbolUserMap.useEmpty(sym)) {
           sym->erase();
         } else {
-	  llvm::errs() << *symbolUserMap.getUsers(sym)[0]->getParentOfType<FunctionOpInterface>() << "\n";
-	  if (auto addr = dyn_cast<LLVM::AddressOfOp>(symbolUserMap.getUsers(sym)[0])) {
-	    assert(!addr.use_empty());
-	    llvm::errs() << "addr user: " << ( ** addr->getResult(0).user_begin() ) << "\n";
-			  }
-          symbolUserMap.getUsers(sym)[0]->emitError() << " Could not erase function with gpu-specific instruction due to this use\n";
-	  signalPassFailure();
-	 return;
-       }
+          llvm::errs() << *symbolUserMap.getUsers(sym)[0]
+                               ->getParentOfType<FunctionOpInterface>()
+                       << "\n";
+          if (auto addr =
+                  dyn_cast<LLVM::AddressOfOp>(symbolUserMap.getUsers(sym)[0])) {
+            assert(!addr.use_empty());
+            llvm::errs() << "addr user: " << (**addr->getResult(0).user_begin())
+                         << "\n";
+          }
+          symbolUserMap.getUsers(sym)[0]->emitError()
+              << " Could not erase function with gpu-specific instruction due "
+                 "to this use\n";
+          signalPassFailure();
+          return;
+        }
       }
     }
   }
