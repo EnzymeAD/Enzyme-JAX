@@ -1902,7 +1902,8 @@ ConvertGPUModuleOp::matchAndRewrite(gpu::GPUModuleOp kernelModule,
             rewriter.setInsertionPointToEnd(moduleOp.getBody());
             stub = rewriter.create<LLVM::LLVMFuncOp>(
                 loc, getFuncStubName(moduleName, f.getName()),
-                LLVM::LLVMFunctionType::get(llvmVoidType, {}));
+                LLVM::LLVMFunctionType::get(llvmVoidType, {}),
+                LLVM::Linkage::Internal);
           }
           {
             OpBuilder::InsertionGuard guard(rewriter);
