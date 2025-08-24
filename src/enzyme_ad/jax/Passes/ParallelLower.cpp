@@ -714,29 +714,45 @@ void ParallelLower::runOnOperation() {
   }
 
   {
-
-    SymbolUserMap symbolUserMap(symbolTable, getOperation());
-    for (auto callable : replacedCallables) {
-      auto sym = cast<SymbolOpInterface>(callable);
-      assert(sym.canDiscardOnUseEmpty());
-      assert(sym.isPrivate());
-      if (symbolUserMap.useEmpty(sym)) {
-        sym->erase();
-      } else {
-        llvm::errs() << *symbolUserMap.getUsers(sym)[0]
-                             ->getParentOfType<FunctionOpInterface>()
-                     << "\n";
-        if (auto addr =
-                dyn_cast<LLVM::AddressOfOp>(symbolUserMap.getUsers(sym)[0])) {
-          assert(!addr.use_empty());
-          llvm::errs() << "addr user: " << (**addr->getResult(0).user_begin())
-                       << "\n";
+    SmallVector<Operation *> remaining(replacedCallables.begin(),
+                                       replacedCallables.end());
+    do {
+      SmallVector<Operation *> remaining2;
+      SymbolUserMap symbolUserMap(symbolTable, getOperation());
+      bool changed = false;
+      for (auto callable : remaining) {
+        auto sym = cast<SymbolOpInterface>(callable);
+        assert(sym.canDiscardOnUseEmpty());
+        assert(sym.isPrivate());
+        if (symbolUserMap.useEmpty(sym)) {
+          sym->erase();
+          changed = true;
+        } else {
+          remaining2.push_back(callable);
         }
-        symbolUserMap.getUsers(sym)[0]->emitError()
-            << " Could not erase function with gpu-specific instruction due to "
-               "this use\n";
-        signalPassFailure();
-        return;
+      }
+      remaining = std::move(remaining2);
+      if (!changed)
+        break;
+    } while (true);
+    if (remaining.size()) {
+      SymbolUserMap symbolUserMap(symbolTable, getOperation());
+      for (auto callable : remaining) {
+        auto sym = cast<SymbolOpInterface>(callable);
+        assert(sym.canDiscardOnUseEmpty());
+        assert(sym.isPrivate());
+        if (symbolUserMap.useEmpty(sym)) {
+          sym->erase();
+        } else {
+	  llvm::errs() << *symbolUserMap.getUsers(sym)[0]->getParentOfType<FunctionOpInterface>() << "\n";
+	  if (auto addr = dyn_cast<LLVM::AddressOfOp>(symbolUserMap.getUsers(sym)[0])) {
+	    assert(!addr.use_empty());
+	    llvm::errs() << "addr user: " << ( ** addr->getResult(0).user_begin() ) << "\n";
+			  }
+          symbolUserMap.getUsers(sym)[0]->emitError() << " Could not erase function with gpu-specific instruction due to this use\n";
+	  signalPassFailure();
+	 return;
+       }
       }
     }
   }
