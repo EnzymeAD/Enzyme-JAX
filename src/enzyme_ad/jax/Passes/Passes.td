@@ -433,6 +433,24 @@ def LowerEnzymeXLALapackPass : Pass<"lower-enzymexla-lapack"> {
   ];
 }
 
+def LowerEnzymeProbProgPass : Pass<"lower-enzyme-probprog"> {
+  let summary = "Lower enzyme probprog ops";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "enzymexla::EnzymeXLADialect",
+    "LLVM::LLVMDialect",
+  ];
+
+  let options = [
+    Option<
+        /*C++ variable name=*/"backend",
+        /*CLI argument=*/"backend",
+        /*type=*/"std::string",
+        /*default=*/"\"cpu\"",
+        /*description=*/"HW backend">,
+  ];
+}
+
 def LowerEnzymeXLAMLPass : Pass<"lower-enzymexla-ml"> {
   let summary = "Lower enzymexla mlops to stablehlo";
   let dependentDialects = [
