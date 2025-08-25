@@ -466,6 +466,7 @@ struct RemoveInductionVarRelated : public OpRewritePattern<ForOp> {
     rewriter.setInsertionPointAfter(forOp);
     auto newForOp = rewriter.create<scf::ForOp>(loc, lb, forOp.getUpperBound(),
                                                 step, newIterArgs);
+    newForOp->setAttrs(forOp->getAttrs());
 
     // Move body blocks to the new for op (excluding the iter_arg we removed)
     Block *newBody = newForOp.getBody();
@@ -622,6 +623,7 @@ struct RemoveUnusedArgs : public OpRewritePattern<ForOp> {
     auto newForOp =
         rewriter.create<ForOp>(op.getLoc(), op.getLowerBound(),
                                op.getUpperBound(), op.getStep(), usedOperands);
+    newForOp->setAttrs(op->getAttrs());
 
     if (!newForOp.getBody()->empty())
       rewriter.eraseOp(newForOp.getBody()->getTerminator());
@@ -1525,6 +1527,7 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
 
     auto forloop = rewriter.create<scf::ForOp>(loop.getLoc(), helper.lb, ub,
                                                helper.step, forArgs);
+    forloop->setAttrs(loop->getAttrs());
 
     if (!forloop.getBody()->empty())
       rewriter.eraseOp(forloop.getBody()->getTerminator());
@@ -1880,7 +1883,8 @@ struct MoveWhileDown : public OpRewritePattern<WhileOp> {
       for (auto a : args)
         tys.push_back(a.getType());
 
-      auto op2 = rewriter.create<WhileOp>(op.getLoc(), tys, op.getInits());
+      auto op2 = rewriter.create<WhileOp>(op.getLoc(), tys, op.getInits(),
+                                          op->getAttrs());
       op2.getBefore().takeBody(op.getBefore());
       op2.getAfter().takeBody(op.getAfter());
       SmallVector<Value, 4> replacements;
@@ -2080,8 +2084,8 @@ struct MoveWhileDown2 : public OpRewritePattern<WhileOp> {
       }
 
       rewriter.setInsertionPoint(op);
-      auto nop =
-          rewriter.create<WhileOp>(op.getLoc(), resultTypes, op.getInits());
+      auto nop = rewriter.create<WhileOp>(op.getLoc(), resultTypes,
+                                          op.getInits(), op->getAttrs());
       nop.getBefore().takeBody(op.getBefore());
       nop.getAfter().takeBody(op.getAfter());
 
@@ -2316,8 +2320,8 @@ struct RemoveWhileSelect : public OpRewritePattern<WhileOp> {
     for (auto v : newYields) {
       resultTypes.push_back(v.getType());
     }
-    auto nop =
-        rewriter.create<WhileOp>(loop.getLoc(), resultTypes, loop.getInits());
+    auto nop = rewriter.create<WhileOp>(loop.getLoc(), resultTypes,
+                                        loop.getInits(), loop->getAttrs());
 
     nop.getBefore().takeBody(loop.getBefore());
 
@@ -2413,8 +2417,8 @@ struct MoveWhileDown3 : public OpRewritePattern<WhileOp> {
     for (auto v : condOps) {
       resultTypes.push_back(v.getType());
     }
-    auto nop =
-        rewriter.create<WhileOp>(op.getLoc(), resultTypes, op.getInits());
+    auto nop = rewriter.create<WhileOp>(op.getLoc(), resultTypes, op.getInits(),
+                                        op->getAttrs());
 
     nop.getBefore().takeBody(op.getBefore());
     nop.getAfter().takeBody(op.getAfter());
@@ -2608,7 +2612,8 @@ struct RemoveUnusedCondVar : public OpRewritePattern<WhileOp> {
                                                     conds);
 
       rewriter.setInsertionPoint(op);
-      auto op2 = rewriter.create<WhileOp>(op.getLoc(), tys, op.getInits());
+      auto op2 = rewriter.create<WhileOp>(op.getLoc(), tys, op.getInits(),
+                                          op->getAttrs());
 
       op2.getBefore().takeBody(op.getBefore());
       op2.getAfter().takeBody(op.getAfter());
@@ -2653,7 +2658,8 @@ struct MoveSideEffectFreeWhile : public OpRewritePattern<WhileOp> {
       for (auto arg : conds) {
         tys.push_back(arg.getType());
       }
-      auto op2 = rewriter.create<WhileOp>(op.getLoc(), tys, op.getInits());
+      auto op2 = rewriter.create<WhileOp>(op.getLoc(), tys, op.getInits(),
+                                          op->getAttrs());
       op2.getBefore().takeBody(op.getBefore());
       op2.getAfter().takeBody(op.getAfter());
       unsigned j = 0;
@@ -2860,7 +2866,8 @@ struct WhileShiftToInduction : public OpRewritePattern<WhileOp> {
     SmallVector<Type> postTys(loop.getResultTypes());
     postTys.push_back(rewriter.getIndexType());
 
-    auto newWhile = rewriter.create<WhileOp>(loop.getLoc(), postTys, newInits);
+    auto newWhile = rewriter.create<WhileOp>(loop.getLoc(), postTys, newInits,
+                                             loop->getAttrs());
     rewriter.createBlock(&newWhile.getBefore());
 
     IRMapping map;
@@ -3345,6 +3352,60 @@ struct ForBoundUnSwitch : public OpRewritePattern<scf::ForOp> {
   }
 };
 
+struct ForLoopApplyEnzymeAttributes
+    : public OpRewritePattern<LLVM::LLVMFuncOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(LLVM::LLVMFuncOp func,
+                                PatternRewriter &rewriter) const override {
+    if (!func.getBody().empty())
+      return failure();
+
+    auto name = func.getSymName();
+
+    bool isCheckpointingAttr = name.contains("__enzyme_set_checkpointing"),
+         isMincutAttr = name.contains("__enzyme_set_mincut");
+
+    if (!isCheckpointingAttr && !isMincutAttr)
+      return failure();
+
+    auto modOp = func->getParentOfType<ModuleOp>();
+    auto uses = func.getSymbolUses(modOp);
+
+    if (!uses) {
+      rewriter.eraseOp(func);
+      return success();
+    }
+
+    bool anyErased = false;
+
+    for (auto use : *uses) {
+      auto user = use.getUser();
+      assert(isa<LLVM::CallOp>(user));
+
+      bool enable = matchPattern(user->getOperand(0), m_One());
+
+      Operation *loop = user->getParentOp();
+      while (loop && !isa<scf::ForOp, scf::WhileOp>(loop)) {
+        loop = loop->getParentOp();
+      }
+
+      if (loop && isa<scf::ForOp, scf::WhileOp>(loop)) {
+        loop->setAttr(isCheckpointingAttr ? "enzyme_enable_checkpointing"
+                                          : "enzyme_enable_mincut",
+                      rewriter.getBoolAttr(enable));
+      }
+
+      rewriter.eraseOp(user);
+      anyErased = true;
+    }
+
+    rewriter.eraseOp(func);
+
+    return success();
+  }
+};
+
 void CanonicalizeFor::runOnOperation() {
   mlir::RewritePatternSet rpl(getOperation()->getContext());
   populateSelectExtractPatterns(rpl);
@@ -3359,6 +3420,8 @@ void CanonicalizeFor::runOnOperation() {
           WhileShiftToInduction,
 
           ForBreakAddUpgrade, RemoveUnusedResults,
+
+          ForLoopApplyEnzymeAttributes,
 
           // MoveWhileDown3 Infinite loops on current kernel code, disabling
           // [and should fix] MoveWhileDown3,

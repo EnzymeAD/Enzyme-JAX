@@ -61,6 +61,12 @@ Region *getLocalAffineScope(Operation *op) {
   return nullptr;
 }
 
+static void preserveDiscardableAttributes(Operation *newOp, Operation *oldOp) {
+  for (auto attr : oldOp->getDiscardableAttrs()) {
+    newOp->setAttr(attr.getName(), attr.getValue());
+  }
+}
+
 bool isValidSymbolInt(Value value, bool recur, Region *scope);
 bool isValidSymbolInt(Operation *defOp, bool recur, Region *scope) {
   Attribute operandCst;
@@ -2603,6 +2609,7 @@ struct ForOpRaising : public OpRewritePattern<scf::ForOp> {
       affine::AffineForOp affineLoop = rewriter.create<affine::AffineForOp>(
           loop.getLoc(), lbs, lbMap, ubs, ubMap, getStep(loop.getStep()),
           loop.getInits());
+      preserveDiscardableAttributes(affineLoop, loop);
 
       auto mergedYieldOp =
           cast<scf::YieldOp>(loop.getRegion().front().getTerminator());
@@ -5689,6 +5696,7 @@ struct AffineForReductionIter : public OpRewritePattern<affine::AffineForOp> {
         forOp.getLoc(), forOp.getLowerBoundOperands(), forOp.getLowerBoundMap(),
         forOp.getUpperBoundOperands(), forOp.getUpperBoundMap(),
         forOp.getStep().getSExtValue(), newIterArgs);
+    preserveDiscardableAttributes(newForOp, forOp);
 
     // remove load operation inside the for.
     size_t i = 0;
