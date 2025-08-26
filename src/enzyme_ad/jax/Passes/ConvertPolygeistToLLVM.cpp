@@ -2456,6 +2456,9 @@ private:
         allocatedPtr =
             rewriter.create<LLVM::CallOp>(loc, mallocFunc.value(), args)
                 ->getResult(0);
+
+        allocatedPtr =
+            rewriter.create<LLVM::AddrSpaceCastOp>(loc, ptr1ty, allocatedPtr);
       } else if (backend.starts_with("xla")) {
 
         auto zero = rewriter.create<LLVM::ConstantOp>(
