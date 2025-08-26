@@ -2456,6 +2456,9 @@ private:
         allocatedPtr =
             rewriter.create<LLVM::CallOp>(loc, mallocFunc.value(), args)
                 ->getResult(0);
+
+        allocatedPtr =
+            rewriter.create<LLVM::AddrSpaceCastOp>(loc, ptr1ty, allocatedPtr);
       } else if (backend.starts_with("xla")) {
 
         auto zero = rewriter.create<LLVM::ConstantOp>(
@@ -3534,8 +3537,8 @@ static LLVM::LLVMFuncOp addMocCUDAFunction(ModuleOp module, Type streamTy) {
   return resumeOp;
 }
 
-struct NoAsyncOpLowering : public ConvertOpToLLVMPattern<async::ExecuteOp> {
-  using ConvertOpToLLVMPattern<async::ExecuteOp>::ConvertOpToLLVMPattern;
+struct NoAsyncOpLowering : public OpConversionPattern<async::ExecuteOp> {
+  using OpConversionPattern<async::ExecuteOp>::OpConversionPattern;
 
   LogicalResult
   matchAndRewrite(async::ExecuteOp execute, OpAdaptor adaptor,
@@ -3922,7 +3925,7 @@ struct ConvertPolygeistToLLVMPass
       if (use_async)
         patterns.add<AsyncOpLowering>(converter);
       else
-        patterns.add<NoAsyncOpLowering>(converter);
+        patterns.add<NoAsyncOpLowering>(patterns.getContext());
     }
     // Our custom versions of the gpu patterns
     if (useCStyleMemRef) {
@@ -4059,6 +4062,14 @@ struct ConvertPolygeistToLLVMPass
            }
 
            return WalkResult::advance();
+         }).wasInterrupted()) {
+      signalPassFailure();
+      return;
+    }
+
+    if (m->walk([](UnrealizedConversionCastOp op) {
+           op->emitError() << "Unhandled unrealized conversion cast\n";
+           return WalkResult::interrupt();
          }).wasInterrupted()) {
       signalPassFailure();
       return;
