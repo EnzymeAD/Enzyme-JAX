@@ -3534,8 +3534,8 @@ static LLVM::LLVMFuncOp addMocCUDAFunction(ModuleOp module, Type streamTy) {
   return resumeOp;
 }
 
-struct NoAsyncOpLowering : public ConvertOpToLLVMPattern<async::ExecuteOp> {
-  using ConvertOpToLLVMPattern<async::ExecuteOp>::ConvertOpToLLVMPattern;
+struct NoAsyncOpLowering : public OpConversionPattern<async::ExecuteOp> {
+  using OpConversionPattern<async::ExecuteOp>::OpConversionPattern;
 
   LogicalResult
   matchAndRewrite(async::ExecuteOp execute, OpAdaptor adaptor,
@@ -3922,7 +3922,7 @@ struct ConvertPolygeistToLLVMPass
       if (use_async)
         patterns.add<AsyncOpLowering>(converter);
       else
-        patterns.add<NoAsyncOpLowering>(converter);
+        patterns.add<NoAsyncOpLowering>(patterns.getContext());
     }
     // Our custom versions of the gpu patterns
     if (useCStyleMemRef) {
