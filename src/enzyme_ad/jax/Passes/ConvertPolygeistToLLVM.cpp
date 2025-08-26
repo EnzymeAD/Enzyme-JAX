@@ -4066,6 +4066,14 @@ struct ConvertPolygeistToLLVMPass
       signalPassFailure();
       return;
     }
+
+    if (m->walk([](UnrealizedConversionCastOp op) {
+           op->emitError() << "Unhandled unrealized conversion cast\n";
+           return WalkResult::interrupt();
+         }).wasInterrupted()) {
+      signalPassFailure();
+      return;
+    }
   }
 
   void runOnOperation() override {
