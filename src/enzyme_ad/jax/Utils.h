@@ -193,9 +193,12 @@ cloneWithoutResults(mlir::affine::AffineForOp op,
   SmallVector<Value> upper;
   for (auto o : op.getUpperBoundOperands())
     upper.push_back(mapping.lookupOrDefault(o));
-  return rewriter.create<affine::AffineForOp>(
+  auto newFor = rewriter.create<affine::AffineForOp>(
       op.getLoc(), lower, op.getLowerBoundMap(), upper, op.getUpperBoundMap(),
       op.getStepAsInt());
+  for (auto attr : op->getDiscardableAttrs())
+    newFor->setAttr(attr.getName(), attr.getValue());
+  return newFor;
 }
 
 static inline void clearBlock(mlir::Block *block,
