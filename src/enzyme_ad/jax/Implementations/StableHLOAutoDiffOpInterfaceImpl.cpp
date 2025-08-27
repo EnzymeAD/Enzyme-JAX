@@ -3826,6 +3826,11 @@ struct IfOpEnzymeOpsRemover
 };
 
 Value getScalarInitValue(Operation *op, OpBuilder &builder) {
+  // Check for null operation
+  if (!op) {
+    return nullptr;
+  }
+  
   // Splatted Constant
   SplatElementsAttr elems;
   if (matchPattern(op, m_Constant(&elems))) {
