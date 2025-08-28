@@ -1,0 +1,47 @@
+name: Open PR with latest JAX commit
+
+on:
+  schedule:
+    - cron: '19 22 * * *'
+  workflow_dispatch:
+    inputs:
+      jax_commit:
+        default: ''
+        type: 'string'
+
+concurrency:
+  # Skip intermediate builds: always.
+  # Cancel intermediate builds: only if it is a pull request build.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+
+jobs:
+  pr-latest-jax:
+    name: 'Test latest'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v5
+      - name: Get JAX commit
+        shell: bash
+        run: |
+          if [[ -n '${{ inputs.jax_commit }}' ]]; then
+              JAX_COMMIT="${{ inputs.jax_commit }}"
+          else
+              JAX_COMMIT="$(git ls-remote https://github.com/jax-ml/jax.git main | awk '{print $1}')"
+          fi
+          echo "JAX_COMMIT=${JAX_COMMIT}" >> "${GITHUB_ENV}"
+      - name: Modify JAX commit
+        run: |
+          sed -i 's/JAX_COMMIT = ".*"/JAX_COMMIT = "${{ env.JAX_COMMIT }}"/' workspace.bzl
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.JAX_LATEST_COMMIT }}
+          commit-message: 'Update JAX to commit ${{ env.JAX_COMMIT }}'
+          branch: jax-latest-commit
+          title: 'Update JAX to commit ${{ env.JAX_COMMIT }}'
+          delete-branch: true
+          draft: false
+          author: 'enzyme-ci-bot[bot] <78882869+enzyme-ci-bot[bot]@users.noreply.github.com>'
