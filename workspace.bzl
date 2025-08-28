@@ -27,6 +27,10 @@ XLA_PATCHES = [
     """
     sed -i.bak0 "s/patches = \\[/ patches = \\[\\\"\\/\\/:patches\\/llvm2.patch\\\",/g" third_party/llvm/workspace.bzl
     """,
+    # TODO remove 
+    """
+    sed -i.bak0 "s/DCHECK_NE(runtime, nullptr/DCHECK_NE(runtime.get(), nullptr/g" xla/backends/cpu/runtime/xnnpack/xnn_fusion_thunk.cc
+    """,
     """
     sed -i.bak0 "/link_file/d" third_party/llvm/workspace.bzl
     """,
