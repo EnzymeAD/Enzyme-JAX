@@ -81,10 +81,10 @@ def MarkFunctionMemoryEffectsPass : Pass<"mark-func-memory-effects", "ModuleOp">
 def ArithRaisingPass : Pass<"arith-raise"> {
   let summary = "Raise Arith to mhlo";
   let dependentDialects = [
-    "arith::ArithDialect", 
-    "mhlo::MhloDialect", 
+    "arith::ArithDialect",
+    "mhlo::MhloDialect",
     "stablehlo::StablehloDialect",
-    "chlo::ChloDialect", 
+    "chlo::ChloDialect",
     "enzyme::EnzymeDialect"
   ];
   let options = [Option<
@@ -105,8 +105,13 @@ def ConsumingInterpreterPass : Pass<"enzyme-consuming-transform-interpreter"> {
 
 def EnzymeHLOOptPass : Pass<"enzyme-hlo-opt"> {
   let summary = "Optimize stablehlo";
-  let dependentDialects =
-      ["stablehlo::StablehloDialect", "tensor::TensorDialect", "enzymexla::EnzymeXLADialect", "chlo::ChloDialect"];
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "tensor::TensorDialect",
+    "enzyme::EnzymeDialect",
+    "enzymexla::EnzymeXLADialect",
+    "chlo::ChloDialect"
+  ];
   let options = [
     Option<
         /*C++ variable name=*/"all_finite",
@@ -149,7 +154,13 @@ def EnzymeHLOOptPass : Pass<"enzyme-hlo-opt"> {
         /*CLI argument=*/"passses",
         /*type=*/"uint64_t",
         /*default=*/"24575",
-        /*description=*/"Additional optimization passes">
+        /*description=*/"Additional optimization passes">,
+    Option<
+        /*C++ variable name=*/"enable_convert_to_convolution",
+        /*CLI argument=*/"enable_convert_to_convolution",
+        /*type=*/"bool",
+        /*default=*/"false",
+        /*description=*/"Enable convert to convolution">,
   ];
 }
 
@@ -332,6 +343,10 @@ def ConvertPolygeistToLLVM
            "expected on the produced module">,
     Option<"useCStyleMemRef", "use-c-style-memref", "bool",
            /*default=*/"true",
+           "Use C-style nested-array lowering of memref instead of "
+           "the default MLIR descriptor structure">,
+    Option<"use_async", "use_async", "bool",
+           /*default=*/"false",
            "Use C-style nested-array lowering of memref instead of "
            "the default MLIR descriptor structure">,
     Option<

@@ -32,6 +32,8 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallSet.h"
 
+#include "mlir/Dialect/Async/IR/Async.h"
+
 #include <llvm/ADT/StringRef.h>
 #include <optional>
 
@@ -500,6 +502,47 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
         curRegion++;
       }
     };
+    auto exactMatch = [&](enzymexla::AlternativesOp alternativesOp) {
+      auto block = &*alternativesOp->getRegion(curRegion).begin();
+      rewriter.setInsertionPointToStart(block);
+      // TODO not very efficient...
+      auto newWrapper = cast<enzymexla::GPUWrapperOp>(
+          rewriter.clone(*wrapper.getOperation()));
+      scf::ParallelOp pop =
+          getDirectlyNestedSingleParallel(newWrapper.getBody());
+      auto loc = pop->getLoc();
+
+      auto upperBounds = getUpperBounds<6>(pop);
+      int totalDims = upperBounds.size();
+
+      mlir::OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPoint(pop);
+      auto gridPop = rewriter.create<scf::ParallelOp>(
+          loc, pop.getLowerBound().slice(0, 3), pop.getUpperBound().slice(0, 3),
+          pop.getStep().slice(0, 3));
+      rewriter.setInsertionPointToStart(gridPop.getBody());
+      auto blockPop = rewriter.create<scf::ParallelOp>(
+          loc, pop.getLowerBound().slice(3, 3), pop.getUpperBound().slice(3, 3),
+          pop.getStep().slice(3, 3));
+      rewriter.setInsertionPointToStart(blockPop.getBody());
+
+      IRMapping mapping;
+      for (unsigned i = 0; i < 3; i++)
+        mapping.map(pop.getBody()->getArgument(i),
+                    gridPop.getBody()->getArgument(i));
+      for (unsigned i = 0; i < 3; i++)
+        mapping.map(pop.getBody()->getArgument(i + 3),
+                    blockPop.getBody()->getArgument(i));
+
+      rewriter.eraseOp(pop.getBody()->getTerminator());
+      for (auto &op : *pop.getBody())
+        rewriter.clone(op, mapping);
+      rewriter.eraseOp(pop);
+      emittedBlockSizes.insert(-1);
+      descs.push_back(rewriter.getStringAttr(
+          std::string("block_size=" + std::to_string(-1) + ",")));
+      curRegion++;
+    };
 
     if (char *blockSizeStr = getenv("POLYGEIST_GPU_KERNEL_BLOCK_SIZE")) {
       auto alternativesOp = rewriter.create<enzymexla::AlternativesOp>(loc, 1);
@@ -508,6 +551,13 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       llvm::errs() << "Emitting kernel with " << atoi(blockSizeStr)
                    << " threads\n";
       emitAlternative(atoi(blockSizeStr), alternativesOp);
+      if (curRegion == 0) {
+        llvm::errs() << " Failed to make kernel with exact dimension\n";
+        assert(wrapper.getOperands().size() == 6);
+        assert(pop.getUpperBound().size() == 6 &&
+               pop.getUpperBound() == wrapper.getOperands());
+        exactMatch(alternativesOp);
+      }
       alternativesOp->setAttr("alternatives.descs",
                               rewriter.getArrayAttr(descs));
     } else if (shouldEmitAlternatives(pop)) {
@@ -523,45 +573,7 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       assert(wrapper.getOperands().size() == 6);
       if (pop.getUpperBound().size() == 6 &&
           pop.getUpperBound() == wrapper.getOperands()) {
-        auto block = &*alternativesOp->getRegion(curRegion).begin();
-        rewriter.setInsertionPointToStart(block);
-        // TODO not very efficient...
-        auto newWrapper = cast<enzymexla::GPUWrapperOp>(
-            rewriter.clone(*wrapper.getOperation()));
-        scf::ParallelOp pop =
-            getDirectlyNestedSingleParallel(newWrapper.getBody());
-        auto loc = pop->getLoc();
-
-        auto upperBounds = getUpperBounds<6>(pop);
-        int totalDims = upperBounds.size();
-
-        mlir::OpBuilder::InsertionGuard guard(rewriter);
-        rewriter.setInsertionPoint(pop);
-        auto gridPop = rewriter.create<scf::ParallelOp>(
-            loc, pop.getLowerBound().slice(0, 3),
-            pop.getUpperBound().slice(0, 3), pop.getStep().slice(0, 3));
-        rewriter.setInsertionPointToStart(gridPop.getBody());
-        auto blockPop = rewriter.create<scf::ParallelOp>(
-            loc, pop.getLowerBound().slice(3, 3),
-            pop.getUpperBound().slice(3, 3), pop.getStep().slice(3, 3));
-        rewriter.setInsertionPointToStart(blockPop.getBody());
-
-        IRMapping mapping;
-        for (unsigned i = 0; i < 3; i++)
-          mapping.map(pop.getBody()->getArgument(i),
-                      gridPop.getBody()->getArgument(i));
-        for (unsigned i = 0; i < 3; i++)
-          mapping.map(pop.getBody()->getArgument(i + 3),
-                      blockPop.getBody()->getArgument(i));
-
-        rewriter.eraseOp(pop.getBody()->getTerminator());
-        for (auto &op : *pop.getBody())
-          rewriter.clone(op, mapping);
-        rewriter.eraseOp(pop);
-        emittedBlockSizes.insert(-1);
-        descs.push_back(rewriter.getStringAttr(
-            std::string("block_size=" + std::to_string(-1) + ",")));
-        curRegion++;
+        exactMatch(alternativesOp);
       }
       alternativesOp->setAttr("alternatives.descs",
                               rewriter.getArrayAttr(descs));
@@ -1733,6 +1745,72 @@ struct ParallelToGPULaunch : public OpRewritePattern<enzymexla::GPUWrapperOp> {
   }
 };
 
+struct AsyncGPULaunch : public OpRewritePattern<async::ExecuteOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(async::ExecuteOp async,
+                                PatternRewriter &rewriter) const override {
+    for (auto res : async.getResults()) {
+      if (!res.use_empty()) {
+        return failure();
+      }
+    }
+    for (auto dep : async.getDependencies()) {
+      if (!dep.getDefiningOp<enzymexla::StreamToTokenOp>()) {
+        return failure();
+      }
+    }
+    SmallVector<gpu::LaunchFuncOp> launches;
+    SmallVector<gpu::LaunchOp> launches2;
+    if (async
+            ->walk<WalkOrder::PreOrder>([&](Operation *op) {
+              if (auto launch = dyn_cast<gpu::LaunchFuncOp>(op)) {
+                launches.push_back(launch);
+                return WalkResult::skip();
+              }
+              if (auto launch = dyn_cast<gpu::LaunchOp>(op)) {
+                launches2.push_back(launch);
+                return WalkResult::skip();
+              }
+              if (op->hasTrait<OpTrait::HasRecursiveMemoryEffects>()) {
+                return WalkResult::advance();
+              }
+              if (isa<enzymexla::AlternativesOp>(op)) {
+                return WalkResult::advance();
+              }
+              if (isPure(op))
+                return WalkResult::advance();
+              return WalkResult::interrupt();
+            })
+            .wasInterrupted())
+      return failure();
+
+    SmallVector<Value> gpudeps;
+    for (auto dep : async.getDependencies()) {
+      gpudeps.push_back(rewriter.create<enzymexla::StreamToTokenOp>(
+          dep.getLoc(), rewriter.getType<gpu::AsyncTokenType>(),
+          dep.getDefiningOp<enzymexla::StreamToTokenOp>().getOperand()));
+    }
+
+    for (auto launch : launches) {
+      rewriter.modifyOpInPlace(launch, [&]() {
+        launch.getAsyncDependenciesMutable().append(gpudeps);
+      });
+    }
+
+    for (auto launch : launches2) {
+      rewriter.modifyOpInPlace(launch, [&]() {
+        launch.getAsyncDependenciesMutable().append(gpudeps);
+      });
+    }
+
+    rewriter.eraseOp(async.getBody()->getTerminator());
+    rewriter.inlineBlockBefore(async.getBody(), async);
+    rewriter.eraseOp(async);
+
+    return success();
+  }
+};
+
 uint64_t getSharedMemUsage(scf::ParallelOp pop) {
   uint64_t shmem = 0;
   ModuleOp moduleOp = pop->getParentOfType<ModuleOp>();
@@ -2314,6 +2392,20 @@ struct ConvertParallelToGPU1Pass
       // clang-format off
       patterns.insert<
         ParallelToGPULaunch
+        >(&getContext());
+      // clang-format on
+      GreedyRewriteConfig config;
+      if (failed(
+              applyPatternsAndFoldGreedily(m, std::move(patterns), config))) {
+        signalPassFailure();
+        return;
+      }
+    }
+    {
+      RewritePatternSet patterns(&getContext());
+      // clang-format off
+      patterns.insert<
+	AsyncGPULaunch
         >(&getContext());
       // clang-format on
       GreedyRewriteConfig config;

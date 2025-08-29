@@ -1,0 +1,13 @@
+diff --git a/mlir/lib/Target/LLVM/NVVM/Target.cpp b/mlir/lib/Target/LLVM/NVVM/Target.cpp
+index 62eaadb3d16b..8760ea8588e2 100644
+--- a/mlir/lib/Target/LLVM/NVVM/Target.cpp
++++ b/mlir/lib/Target/LLVM/NVVM/Target.cpp
+@@ -267,6 +267,8 @@ NVPTXSerializer::NVPTXSerializer(Operation &module, NVVMTargetAttr target,
+ std::optional<NVPTXSerializer::TmpFile>
+ NVPTXSerializer::createTemp(StringRef name, StringRef suffix) {
+   llvm::SmallString<128> filename;
++  if (name.size() > 80)
++    name = name.substr(0, 80);
+   std::error_code ec =
+       llvm::sys::fs::createTemporaryFile(name, suffix, filename);
+   if (ec) {

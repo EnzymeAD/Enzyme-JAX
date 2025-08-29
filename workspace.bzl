@@ -1,7 +1,7 @@
-JAX_COMMIT = "63f228139e0af4c75626ebcc68936eee44f97ca5"
+JAX_COMMIT = "11788091197b643a3fd41d329458a7c9c8cf5735"
 JAX_SHA256 = ""
 
-ENZYME_COMMIT = "30735308bbcf50124107ca8204b08ef6dc28fbc6"
+ENZYME_COMMIT = "4ec5801f3c56ce1b26f9ce68ea5ca20bbb8bbd00"
 ENZYME_SHA256 = ""
 
 # If the empty string this will automatically use the commit above
@@ -20,6 +20,20 @@ XLA_PATCHES = [
     """,
     """
     sed -i.bak0 "s/patch_file/patch_args = [\\\"-p1\\\"],patches/g" third_party/llvm/workspace.bzl
+    """,
+    """
+    sed -i.bak0 "s/patches = \\[/ patches = \\[\\\"\\/\\/:patches\\/llvm.patch\\\",/g" third_party/llvm/workspace.bzl
+    """,
+    """
+    sed -i.bak0 "s/patches = \\[/ patches = \\[\\\"\\/\\/:patches\\/llvm2.patch\\\",/g" third_party/llvm/workspace.bzl
+    """,
+    # TODO remove
+    """
+    sed -i.bak0 "s/DCHECK_NE(runtime, nullptr/DCHECK_NE(runtime.get(), nullptr/g" xla/backends/cpu/runtime/xnnpack/xnn_fusion_thunk.cc
+    """,
+    # TODO remove
+    """
+    sed -i.bak0 "s/^bool IsSupportedType/static inline bool IsSupportedType/g" xla/backends/cpu/runtime/convolution_lib.cc
     """,
     """
     sed -i.bak0 "/link_file/d" third_party/llvm/workspace.bzl
