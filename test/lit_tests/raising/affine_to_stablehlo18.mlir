@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --raise-affine-to-stablehlo=prefer_while_raising=false --canonicalize --arith-raise --enzyme-hlo-opt=max_constant_expansion=0 | FileCheck %s
+// RUN: enzymexlamlir-opt %s --raise-affine-to-stablehlo=prefer_while_raising=false | FileCheck %s
 
 #map = affine_map<(d0) -> (d0 - 32)>
 module {
