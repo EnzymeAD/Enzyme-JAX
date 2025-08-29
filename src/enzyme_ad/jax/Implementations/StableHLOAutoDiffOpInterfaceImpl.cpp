@@ -3946,7 +3946,8 @@ struct SHLOReduceWindowOpBatchInterface
       auto scalarInit =
           getScalarInitValue(batchedInit.getDefiningOp(), builder);
       if (!scalarInit) {
-        src->emitError("Unsupported reduce window init for batched reduce window");
+        src->emitError(
+            "Unsupported reduce window init for batched reduce window");
         // TODO: we need to support broadcasting inits, or do we?
         return failure();
       }
