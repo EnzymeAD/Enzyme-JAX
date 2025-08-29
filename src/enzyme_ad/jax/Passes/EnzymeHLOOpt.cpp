@@ -22615,6 +22615,10 @@ LogicalResult generalConcatInsertDimToBatch(stablehlo::ConcatenateOp concatOp,
 
   SmallVector<Value> batchOpOperands;
 
+  // TODO: instead of concatenating all of the operands, we need to:
+  //       1. find which values are non-equivalent
+  //       2. concatenate the non-equivalent values
+  //       3. directly insert the equivalent values in the function body
   for (int i = 0; i < concatOpOperands[0]->getNumOperands(); i++) {
     SmallVector<Value> newConcatOperands;
     for (auto v : concatOpOperands) {
@@ -22679,13 +22683,18 @@ LogicalResult generalConcatInsertDimToBatch(stablehlo::ConcatenateOp concatOp,
     auto &entryBlock = *func.addEntryBlock();
     rewriter.setInsertionPointToStart(&entryBlock);
 
-    auto unbatchedOp = rewriter.create(
-        concatOp.getLoc(), concatOpOperands[0]->getName().getIdentifier(),
-        ValueRange(entryBlock.getArguments()), TypeRange({retType}),
-        concatOpOperands[0]->getAttrs(), {}, {});
+    IRMapping mapper;
+    for (auto [oldArg, newArg] : llvm::zip(concatOpOperands[0]->getOperands(),
+                                           entryBlock.getArguments())) {
+      mapper.map(oldArg, newArg);
+    }
+    auto unbatchedOp = rewriter.clone(*concatOpOperands[0], mapper);
+
     rewriter.create<func::ReturnOp>(concatOp.getLoc(),
                                     ValueRange(unbatchedOp->getResult(0)));
   }
+
+  llvm::errs() << "func: " << func << "\n";
 
   SmallVector<int64_t> outputShape;
   outputShape.push_back(concatShape[concatDim]);
@@ -22701,6 +22710,8 @@ LogicalResult generalConcatInsertDimToBatch(stablehlo::ConcatenateOp concatOp,
       mlir::FlatSymbolRefAttr::get(concatOp.getContext(), wrapperFuncName),
       ValueRange(batchOpOperands),
       rewriter.getDenseI64ArrayAttr({concatShape[concatDim]}));
+
+  llvm::errs() << "batchOp: " << batchOp << "\n";
 
   SmallVector<int64_t> permutation;
   for (int i = 1; i <= concatDim; i++)
