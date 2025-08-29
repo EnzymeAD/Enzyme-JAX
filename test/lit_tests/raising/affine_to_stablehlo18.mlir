@@ -104,7 +104,7 @@ module {
 // CHECK-NEXT:    %40 = stablehlo.broadcast_in_dim %12, dims = [0] : (tensor<4xi64>) -> tensor<4x198x102xi64>
 // CHECK-NEXT:    %41 = stablehlo.broadcast_in_dim %cst, dims = [] : (tensor<f64>) -> tensor<4x198x102xf64>
 // CHECK-NEXT:    %cst_14 = stablehlo.constant dense<0.000000e+00> : tensor<f64>
-// CHECK-NEXT:    %42 = "stablehlo.reduce_window"(%39, %cst_14) <{base_dilations = array<i64: 1, 1, 1>, padding = dense<[[3, 0], [0, 0], [0, 0]]> : tensor<3x2xi64>, window_dilations = array<i64: 1, 1, 1>, window_dimensions = array<i64: 4, 1, 1>, window_strides = array<i64: 1, 1, 1>}> ({
+// CHECK-NEXT{LITERAL}:    %42 = "stablehlo.reduce_window"(%39, %cst_14) <{base_dilations = array<i64: 1, 1, 1>, padding = dense<[[3, 0], [0, 0], [0, 0]]> : tensor<3x2xi64>, window_dilations = array<i64: 1, 1, 1>, window_dimensions = array<i64: 4, 1, 1>, window_strides = array<i64: 1, 1, 1>}> ({
 // CHECK-NEXT:    ^bb0(%arg2: tensor<f64>, %arg3: tensor<f64>):
 // CHECK-NEXT:      %48 = stablehlo.add %arg2, %arg3 : tensor<f64>
 // CHECK-NEXT:      stablehlo.return %48 : tensor<f64>
