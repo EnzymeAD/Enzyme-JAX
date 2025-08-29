@@ -3826,6 +3826,9 @@ struct IfOpEnzymeOpsRemover
 };
 
 Value getScalarInitValue(Operation *op, OpBuilder &builder) {
+  if (!op)
+    return nullptr;
+
   // Splatted Constant
   SplatElementsAttr elems;
   if (matchPattern(op, m_Constant(&elems))) {
@@ -3882,6 +3885,7 @@ struct SHLOReduceOpBatchInterface
           getScalarInitValue(batchedInit.getDefiningOp(), builder);
       if (!scalarInit) {
         // TODO: we need to support broadcasting inits, or do we?
+        src->emitError("Unsupported reduce init for batched reduce");
         return failure();
       }
       newReduceInits.push_back(scalarInit);
@@ -3942,6 +3946,8 @@ struct SHLOReduceWindowOpBatchInterface
       auto scalarInit =
           getScalarInitValue(batchedInit.getDefiningOp(), builder);
       if (!scalarInit) {
+        src->emitError(
+            "Unsupported reduce window init for batched reduce window");
         // TODO: we need to support broadcasting inits, or do we?
         return failure();
       }
