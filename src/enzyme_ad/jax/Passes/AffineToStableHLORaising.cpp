@@ -620,7 +620,7 @@ expandAffineExpr(OpBuilder &builder, Location loc, AffineExpr expr,
   if (auto dimExpr = dyn_cast<AffineDimExpr>(expr)) {
     Value dim = operands[dimExpr.getPosition()];
 
-    if (affine::isAffineForInductionVar(dim)) {
+    if (!pc.isParallelIV(dim)) {
       return {mapping.lookup(dim),
               affine::AffineValueMap(AffineMap::get(dim.getContext()), {})};
     }
