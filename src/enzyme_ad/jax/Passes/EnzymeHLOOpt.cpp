@@ -22614,31 +22614,71 @@ LogicalResult generalConcatInsertDimToBatch(stablehlo::ConcatenateOp concatOp,
   }
 
   SmallVector<Value> batchOpOperands;
+  SmallVector<Value> constantOperands; // Store constant values to inline
+  SmallVector<int32_t>
+      operandIndexMap; // Map from original operand index to batch operand index
 
-  // TODO: instead of concatenating all of the operands, we need to:
-  //       1. find which values are non-equivalent
-  //       2. concatenate the non-equivalent values
-  //       3. directly insert the equivalent values in the function body
+  // Analyze operands to find equivalences
   for (int i = 0; i < concatOpOperands[0]->getNumOperands(); i++) {
-    SmallVector<Value> newConcatOperands;
+    SmallVector<Value> currentOperands;
+    bool allEquivalent = true;
+    Value firstOperand = concatOpOperands[0]->getOperand(i);
+
+    // Check if this operand is equivalent across all operations
     for (auto v : concatOpOperands) {
-      auto inputOp = v->getOperand(i);
+      Value currentOperand = v->getOperand(i);
+      currentOperands.push_back(currentOperand);
 
-      auto inputType = cast<RankedTensorType>(inputOp.getType());
-      auto inputShape = inputType.getShape();
-      SmallVector<int64_t> outputShape;
-      outputShape.push_back(1);
-      outputShape.append(inputShape.begin(), inputShape.end());
-
-      auto newReshapeOp = rewriter.create<stablehlo::ReshapeOp>(
-          concatOp.getLoc(),
-          RankedTensorType::get(outputShape, inputType.getElementType()),
-          inputOp);
-      newConcatOperands.push_back(newReshapeOp.getResult());
+      // Check equivalence with first operand
+      if (auto firstDefOp = firstOperand.getDefiningOp()) {
+        if (auto currentDefOp = currentOperand.getDefiningOp()) {
+          if (!OperationEquivalence::isEquivalentTo(
+                  firstDefOp, currentDefOp,
+                  OperationEquivalence::ignoreValueEquivalence, nullptr,
+                  OperationEquivalence::IgnoreLocations, nullptr)) {
+            allEquivalent = false;
+          }
+        } else {
+          allEquivalent = false;
+        }
+      } else {
+        // Handle block arguments or other cases
+        if (firstOperand != currentOperand) {
+          allEquivalent = false;
+        }
+      }
     }
-    auto newConcatOp = rewriter.create<stablehlo::ConcatenateOp>(
-        concatOp.getLoc(), newConcatOperands, 0);
-    batchOpOperands.push_back(newConcatOp.getResult());
+
+    auto constOp = firstOperand.getDefiningOp<stablehlo::ConstantOp>();
+    if (allEquivalent && constOp) {
+      // All operands at this position are equivalent
+      // Check if it's a constant we can inline
+      constantOperands.push_back(firstOperand);
+      // Mark as constant (no batch operand needed)
+      operandIndexMap.push_back(-1);
+    } else {
+      // Non-equivalent operands - need to concatenate them
+      SmallVector<Value> newConcatOperands;
+      for (Value operand : currentOperands) {
+        auto inputType = cast<RankedTensorType>(operand.getType());
+        auto inputShape = inputType.getShape();
+        SmallVector<int64_t> outputShape;
+        outputShape.push_back(1);
+        outputShape.append(inputShape.begin(), inputShape.end());
+
+        auto newReshapeOp = rewriter.create<stablehlo::ReshapeOp>(
+            concatOp.getLoc(),
+            RankedTensorType::get(outputShape, inputType.getElementType()),
+            operand);
+        newConcatOperands.push_back(newReshapeOp.getResult());
+      }
+
+      auto newConcatOp = rewriter.create<stablehlo::ConcatenateOp>(
+          concatOp.getLoc(), newConcatOperands, 0);
+
+      operandIndexMap.push_back(batchOpOperands.size());
+      batchOpOperands.push_back(newConcatOp.getResult());
+    }
   }
 
   static int64_t concatReshapeToBatchCounter = 0;
@@ -22684,17 +22724,27 @@ LogicalResult generalConcatInsertDimToBatch(stablehlo::ConcatenateOp concatOp,
     rewriter.setInsertionPointToStart(&entryBlock);
 
     IRMapping mapper;
-    for (auto [oldArg, newArg] : llvm::zip(concatOpOperands[0]->getOperands(),
-                                           entryBlock.getArguments())) {
-      mapper.map(oldArg, newArg);
-    }
-    auto unbatchedOp = rewriter.clone(*concatOpOperands[0], mapper);
+    int batchArgIndex = 0;
+    // Map operands: use function arguments for batched operands, constants for
+    // equivalent constants
+    for (int i = 0; i < concatOpOperands[0]->getNumOperands(); i++) {
+      Value originalOperand = concatOpOperands[0]->getOperand(i);
 
+      auto copyConstOp = originalOperand.getDefiningOp<stablehlo::ConstantOp>();
+      if (operandIndexMap[i] == -1 && copyConstOp) {
+        // This is a constant - clone it directly in the function
+        auto clonedConst = rewriter.clone(*copyConstOp);
+        mapper.map(originalOperand, clonedConst->getResult(0));
+      } else {
+        // Map to corresponding function argument
+        mapper.map(originalOperand, entryBlock.getArguments()[batchArgIndex++]);
+      }
+    }
+
+    auto unbatchedOp = rewriter.clone(*concatOpOperands[0], mapper);
     rewriter.create<func::ReturnOp>(concatOp.getLoc(),
                                     ValueRange(unbatchedOp->getResult(0)));
   }
-
-  llvm::errs() << "func: " << func << "\n";
 
   SmallVector<int64_t> outputShape;
   outputShape.push_back(concatShape[concatDim]);
@@ -22710,8 +22760,6 @@ LogicalResult generalConcatInsertDimToBatch(stablehlo::ConcatenateOp concatOp,
       mlir::FlatSymbolRefAttr::get(concatOp.getContext(), wrapperFuncName),
       ValueRange(batchOpOperands),
       rewriter.getDenseI64ArrayAttr({concatShape[concatDim]}));
-
-  llvm::errs() << "batchOp: " << batchOp << "\n";
 
   SmallVector<int64_t> permutation;
   for (int i = 1; i <= concatDim; i++)
