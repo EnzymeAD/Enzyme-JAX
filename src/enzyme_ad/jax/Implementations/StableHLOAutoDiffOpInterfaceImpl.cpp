@@ -2426,9 +2426,10 @@ public:
     auto checkCommonScatterOp =
         mlir::stablehlo::CheckCommonScatterOp(scatterOp);
 
-    if (!checkCommonScatterOp.isSetindexScatter) {
-      op->emitError("AutoDiffScatterRev only supports Setindex operations")
-          << *op;
+    if (!checkCommonScatterOp.isSetindexScatter &&
+        !checkCommonScatterOp.isAddScatter) {
+      op->emitError("AutoDiffScatterRev only supports Setindex "
+                    "and AddScatter operations");
       return failure();
     }
 
@@ -2446,14 +2447,53 @@ public:
     auto gatherSliceSizes = builder.getDenseI64ArrayAttr(
         stablehlo::computeGatherSliceSizes(scatterOp));
 
+    if (checkCommonScatterOp.isAddScatter) {
+      createScatterAddGradientInputs(scatterOp, gutils, scatterIndices,
+                                     gatherDims, gatherSliceSizes, outputDiffe,
+                                     builder);
+    } else {
+      createScatterSetindexGradientInputs(scatterOp, gutils, scatterIndices,
+                                          gatherDims, gatherSliceSizes,
+                                          outputDiffe, builder);
+    }
+
+    createGradientUpdates(scatterOp, gutils, scatterIndices, gatherDims,
+                          gatherSliceSizes, outputDiffe, builder);
+    return success();
+  }
+
+  void createScatterAddGradientInputs(
+      stablehlo::ScatterOp scatterOp, MGradientUtilsReverse *gutils,
+      Value scatterIndices,
+      stablehlo::GatherDimensionNumbersAttr gatherDimNumbers,
+      DenseI64ArrayAttr gatherSliceSizes, SmallVector<Value> outputDiffe,
+      OpBuilder &builder) const {
+    for (auto [i, operand] : llvm::enumerate(scatterOp.getInputs())) {
+      if (!gutils->isConstantValue(operand)) {
+        auto updateDiffe = builder.create<stablehlo::GatherOp>(
+            scatterOp.getLoc(), outputDiffe[i], scatterIndices,
+            gatherDimNumbers, gatherSliceSizes,
+            scatterOp.getIndicesAreSortedAttr());
+        gutils->addToDiffe(operand, updateDiffe, builder);
+      }
+    }
+    return;
+  }
+
+  void createScatterSetindexGradientInputs(
+      stablehlo::ScatterOp scatterOp, MGradientUtilsReverse *gutils,
+      Value scatterIndices,
+      stablehlo::GatherDimensionNumbersAttr gatherDimNumbers,
+      DenseI64ArrayAttr gatherSliceSizes, SmallVector<Value> outputDiffe,
+      OpBuilder &builder) const {
     auto zeroUpdateType = scatterOp.getUpdates()[0].getType();
     auto zeroUpdate = builder.create<stablehlo::ConstantOp>(
-        op->getLoc(), zeroUpdateType,
+        scatterOp.getLoc(), zeroUpdateType,
         cast<ElementsAttr>(makeAttr(zeroUpdateType, 0)));
 
     auto elemType = cast<RankedTensorType>(zeroUpdateType).getElementType();
-    auto zeroScaler = builder.create<stablehlo::ConstantOp>(
-        op->getLoc(), RankedTensorType::get({}, elemType),
+    auto zeroScalar = builder.create<stablehlo::ConstantOp>(
+        scatterOp.getLoc(), RankedTensorType::get({}, elemType),
         cast<ElementsAttr>(makeAttr(RankedTensorType::get({}, elemType), 0)));
 
     // gradient of the inputs
@@ -2471,7 +2511,7 @@ public:
 
     if (nNonConsts > 0) {
       auto newScatterOp = builder.create<stablehlo::ScatterOp>(
-          op->getLoc(), selectedOutputTypes, selectedOutputDiffe,
+          scatterOp.getLoc(), selectedOutputTypes, selectedOutputDiffe,
           scatterIndices, newScatterUpdates,
           scatterOp.getScatterDimensionNumbersAttr(),
           scatterOp.getIndicesAreSortedAttr(),
@@ -2482,7 +2522,7 @@ public:
       auto argType = RankedTensorType::get({}, elemType);
 
       for (int i = 0; i < 2 * nNonConsts; i++)
-        block->addArgument(argType, op->getLoc());
+        block->addArgument(argType, scatterOp.getLoc());
 
       {
         OpBuilder::InsertionGuard guard(builder);
@@ -2490,9 +2530,9 @@ public:
 
         SmallVector<Value> returnValues;
         for (int i = nNonConsts; i < 2 * nNonConsts; i++)
-          returnValues.push_back(zeroScaler);
+          returnValues.push_back(zeroScalar);
 
-        builder.create<stablehlo::ReturnOp>(op->getLoc(), returnValues);
+        builder.create<stablehlo::ReturnOp>(scatterOp.getLoc(), returnValues);
       }
 
       builder.setInsertionPointAfter(newScatterOp);
@@ -2505,18 +2545,26 @@ public:
         }
       }
     }
+    return;
+  }
 
-    // gradient of the updates
+  void
+  createGradientUpdates(stablehlo::ScatterOp scatterOp,
+                        MGradientUtilsReverse *gutils, Value scatterIndices,
+                        stablehlo::GatherDimensionNumbersAttr gatherDimNumbers,
+                        DenseI64ArrayAttr gatherSliceSizes,
+                        SmallVector<Value> outputDiffe,
+                        OpBuilder &builder) const {
     for (auto [i, update] : llvm::enumerate(scatterOp.getUpdates())) {
       if (!gutils->isConstantValue(update)) {
         auto updateDiffe = builder.create<stablehlo::GatherOp>(
-            op->getLoc(), outputDiffe[i], scatterIndices, gatherDims,
-            gatherSliceSizes, scatterOp.getIndicesAreSortedAttr());
+            scatterOp.getLoc(), outputDiffe[i], scatterIndices,
+            gatherDimNumbers, gatherSliceSizes,
+            scatterOp.getIndicesAreSortedAttr());
         gutils->addToDiffe(update, updateDiffe, builder);
       }
     }
-
-    return success();
+    return;
   }
 
   void createShadowValues(Operation *op, OpBuilder &builder,
