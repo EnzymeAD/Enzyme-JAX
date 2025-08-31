@@ -2429,7 +2429,7 @@ public:
     if (!checkCommonScatterOp.isSetindexScatter &&
         !checkCommonScatterOp.isAddScatter) {
       op->emitError("AutoDiffScatterRev only supports Setindex "
-                    "operations");
+                    "and AddScatter operations");
       return failure();
     }
 
