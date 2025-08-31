@@ -13,11 +13,11 @@ module {
   }
 }
 
-// REVERSE: func.func @main(%arg0: tensor<2x5xf32>, %arg1: tensor<2x5xf32>, %arg2: tensor<2x5xf32>, %arg3: tensor<2x5xf32>) -> tensor<2x5xf32> { 
+// REVERSE: func.func @main(%arg0: tensor<2x5xf32>, %arg1: tensor<2x5xf32>, %arg2: tensor<2x5xf32>, %arg3: tensor<2x5xf32>) -> tensor<2x5xf32> {
 // REVERSE-NEXT:    %c = stablehlo.constant dense<{{\[\[}}3, 1, 0, 4, 2{{\]\]}}> : tensor<1x5xi32>
-// REVERSE-NEXT:    %cst = arith.constant dense<0.000000e+00> : tensor<2x5xf32> 
-// REVERSE-NEXT:    %0 = arith.addf %arg3, %cst : tensor<2x5xf32> 
-// REVERSE-NEXT:    %1 = "stablehlo.gather"(%0, %c) <{dimension_numbers = #stablehlo.gather<offset_dims = [0], collapsed_slice_dims = [1], start_index_map = [1]>, slice_sizes = array<i64: 2, 1>}> : (tensor<2x5xf32>, tensor<1x5xi32>) -> tensor<2x5xf32> 
-// REVERSE-NEXT:      %2 = arith.addf %1, %cst : tensor<2x5xf32> 
-// REVERSE-NEXT:      return %2 : tensor<2x5xf32> 
+// REVERSE-NEXT:    %cst = arith.constant dense<0.000000e+00> : tensor<2x5xf32>
+// REVERSE-NEXT:    %0 = arith.addf %arg3, %cst : tensor<2x5xf32>
+// REVERSE-NEXT:    %1 = "stablehlo.gather"(%0, %c) <{dimension_numbers = #stablehlo.gather<offset_dims = [0], collapsed_slice_dims = [1], start_index_map = [1]>, slice_sizes = array<i64: 2, 1>}> : (tensor<2x5xf32>, tensor<1x5xi32>) -> tensor<2x5xf32>
+// REVERSE-NEXT:      %2 = arith.addf %1, %cst : tensor<2x5xf32>
+// REVERSE-NEXT:      return %2 : tensor<2x5xf32>
 // REVERSE-NEXT:    }
