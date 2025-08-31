@@ -29,6 +29,8 @@ jobs:
           - '1.11'
     steps:
       - uses: actions/checkout@v4
+        with:
+          repository: JuliaPackaging/BinaryBuilderBase.jl
       - uses: julia-actions/setup-julia@v2
         with:
           version: ${{ matrix.julia_version }}
@@ -37,16 +39,23 @@ jobs:
         uses: julia-actions/cache@v2
       - name: Install BinaryBuilderBase
         timeout-minutes: 20
-        shell: julia --project --color=yes {0}
+        shell: julia --project=@. --color=yes {0}
         run: |
           using Pkg
-          Pkg.add("BinaryBuilderBase")
+          Pkg.instantiate()
+      - name: System info
+        run: |
+          julia --check-bounds=yes --color=yes --depwarn=yes --inline=yes --project=@. -e "using BinaryBuilderBase; BinaryBuilderBase.versioninfo()"
       - name: Test BinaryBuilderBase
         timeout-minutes: 60
-        shell: julia --project --color=yes {0}
         run: |
-          using Pkg
-          Pkg.test("BinaryBuilderBase")
+          eval `ssh-agent`
+          chmod 0600 test/id_ecdsa_deploy_helloworld_c_jll_read_only
+          mkdir -p ~/.ssh
+          touch ~/.ssh/known_hosts
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+          ssh-add test/id_ecdsa_deploy_helloworld_c_jll_read_only
+          julia --check-bounds=yes --color=yes --depwarn=yes --inline=yes --project=@. -e 'using Pkg; Pkg.instantiate(); Pkg.test(coverage=true)'
       - name: Save Julia depot cache on cancel or failure
         id: julia-cache-save
         if: cancelled() || failure()
