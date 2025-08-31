@@ -1,0 +1,56 @@
+name: Test BinaryBuilderBase
+
+on:
+  pull_request:
+    branches:
+    - main
+
+concurrency:
+  # Skip intermediate builds: always.
+  # Cancel intermediate builds: only if it is a pull request build.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+
+jobs:
+  test-bbb:
+    name: BinaryBuilderBase - ${{ matrix.os }} - Julia ${{ matrix.julia_version }}
+    runs-on: ${{ matrix.os }}
+
+    container:
+      image: ${{ (contains(matrix.os, 'linux') && 'ghcr.io/enzymead/reactant-docker-images@sha256:91e1edb7a7c869d5a70db06e417f22907be0e67ca86641d48adcea221fedc674' ) || '' }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - linux-x86-n2-32
+        julia_version:
+          - '1.11'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: ${{ matrix.julia_version }}
+      - name: Load Julia packages from cache
+        id: julia-cache
+        uses: julia-actions/cache@v2
+      - name: Install BinaryBuilderBase
+        timeout-minutes: 20
+        shell: julia --project --color=yes {0}
+        run: |
+          using Pkg
+          Pkg.add("BinaryBuilderBase")
+      - name: Test BinaryBuilderBase
+        timeout-minutes: 60
+        shell: julia --project --color=yes {0}
+        run: |
+          using Pkg
+          Pkg.test("BinaryBuilderBase")
+      - name: Save Julia depot cache on cancel or failure
+        id: julia-cache-save
+        if: cancelled() || failure()
+        uses: actions/cache/save@v4
+        with: 
+          path: |
+            ${{ steps.julia-cache.outputs.cache-paths }}
+          key: ${{ steps.julia-cache.outputs.cache-key }}
