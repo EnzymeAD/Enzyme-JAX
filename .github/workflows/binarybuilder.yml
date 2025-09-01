@@ -27,6 +27,10 @@ jobs:
           - linux-x86-n2-32
         julia_version:
           - '1.11'
+
+    env:
+      FORCE_SANDBOX_MODE: unprivileged
+
     steps:
       - uses: actions/checkout@v4
         with:
