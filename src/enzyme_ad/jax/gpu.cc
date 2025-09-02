@@ -1,6 +1,22 @@
 #include "xla/ffi/api/ffi.h"
 #include "xla/ffi/ffi_api.h"
 
+#if (defined(_WIN32) || defined(__CYGWIN__)) &&                                \
+    !defined(MLIR_CAPI_ENABLE_WINDOWS_DLL_DECLSPEC)
+// Visibility annotations disabled.
+#define MLIR_CAPI_EXPORTED
+#elif defined(_WIN32) || defined(__CYGWIN__)
+// Windows visibility declarations.
+#if MLIR_CAPI_BUILDING_LIBRARY
+#define MLIR_CAPI_EXPORTED __declspec(dllexport)
+#else
+#define MLIR_CAPI_EXPORTED __declspec(dllimport)
+#endif
+#else
+// Non-windows: use visibility attributes.
+#define MLIR_CAPI_EXPORTED __attribute__((visibility("default")))
+#endif
+
 template <bool withError> struct CallInfo;
 
 template <> struct CallInfo<false> {
@@ -138,7 +154,7 @@ XLA_FFI_Error *execute(XLA_FFI_CallFrame *call_frame) {
   return nullptr;
 }
 
-extern "C" void RegisterEnzymeXLAGPUHandler() {
+extern "C" MLIR_CAPI_EXPORTED void RegisterEnzymeXLAGPUHandler() {
   XLA_FFI_Handler_Bundle bundle = {instantiate, prepare, initialize<false>,
                                    execute<false>};
 

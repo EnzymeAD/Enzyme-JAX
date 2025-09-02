@@ -187,6 +187,7 @@ void ParallelLower::runOnOperation() {
   symbolTable.getSymbolTable(getOperation());
 
   std::function<void(LLVM::CallOp)> LLVMcallInliner;
+  SmallPtrSet<Operation *, 1> replacedCallables;
   std::function<void(CallOp)> callInliner = [&](CallOp caller) {
     // Build the inliner interface.
     AlwaysInlinerInterface interface(&getContext());
@@ -229,6 +230,7 @@ void ParallelLower::runOnOperation() {
                    /*shouldCloneInlinedRegion=*/true)
             .succeeded()) {
       caller.erase();
+      replacedCallables.insert(callableOp);
     }
     b.setInsertionPointToEnd(&allocScope.getRegion().front());
     b.create<memref::AllocaScopeReturnOp>(allocScope.getLoc(),
@@ -276,6 +278,7 @@ void ParallelLower::runOnOperation() {
                    /*shouldCloneInlinedRegion=*/true)
             .succeeded()) {
       caller.erase();
+      replacedCallables.insert(callableOp);
     }
     b.setInsertionPointToEnd(&allocScope.getRegion().front());
     b.create<memref::AllocaScopeReturnOp>(allocScope.getLoc(),
@@ -708,6 +711,74 @@ void ParallelLower::runOnOperation() {
     mlir::RewritePatternSet rpl(getOperation()->getContext());
     GreedyRewriteConfig config;
     (void)applyPatternsAndFoldGreedily(getOperation(), std::move(rpl), config);
+  }
+
+  {
+    SmallVector<Operation *> remaining(replacedCallables.begin(),
+                                       replacedCallables.end());
+    do {
+      SmallVector<Operation *> remaining2;
+      SymbolUserMap symbolUserMap(symbolTable, getOperation());
+      bool changed = false;
+      for (auto callable : remaining) {
+        auto sym = cast<SymbolOpInterface>(callable);
+        assert(sym.canDiscardOnUseEmpty());
+        assert(sym.isPrivate());
+        if (symbolUserMap.useEmpty(sym)) {
+          sym->erase();
+          changed = true;
+        } else {
+          remaining2.push_back(callable);
+        }
+      }
+      remaining = std::move(remaining2);
+      if (!changed)
+        break;
+    } while (true);
+    if (remaining.size()) {
+      SymbolUserMap symbolUserMap(symbolTable, getOperation());
+      for (auto callable : remaining) {
+        auto sym = cast<SymbolOpInterface>(callable);
+        assert(sym.canDiscardOnUseEmpty());
+        assert(sym.isPrivate());
+        if (symbolUserMap.useEmpty(sym)) {
+          sym->erase();
+        } else {
+          llvm::errs() << *symbolUserMap.getUsers(sym)[0]
+                               ->getParentOfType<FunctionOpInterface>()
+                       << "\n";
+          if (auto addr =
+                  dyn_cast<LLVM::AddressOfOp>(symbolUserMap.getUsers(sym)[0])) {
+            assert(!addr.use_empty());
+            llvm::errs() << "addr user: " << (**addr->getResult(0).user_begin())
+                         << "\n";
+          }
+          symbolUserMap.getUsers(sym)[0]->emitError()
+              << " Could not erase function with gpu-specific instruction due "
+                 "to this use\n";
+          signalPassFailure();
+          return;
+        }
+      }
+    }
+  }
+  if (getOperation()
+          ->walk<WalkOrder::PreOrder>([](Operation *op) {
+            if (isa<gpu::GPUModuleOp>(op))
+              return WalkResult::skip();
+            if (isa<gpu::ThreadIdOp, gpu::BlockIdOp, gpu::BlockDimOp,
+                    gpu::GridDimOp>(op)) {
+              llvm::errs() << *op->getParentOfType<FunctionOpInterface>()
+                           << "\n";
+              op->emitError() << " GPU instruction outside of gpu module op\n";
+              return WalkResult::interrupt();
+            }
+
+            return WalkResult::advance();
+          })
+          .wasInterrupted()) {
+    signalPassFailure();
+    return;
   }
 }
 

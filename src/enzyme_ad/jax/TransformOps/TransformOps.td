@@ -2227,6 +2227,78 @@ def ApplyElementwiseExtendPatterns : EnzymeHLOPatternOp<"elementwise_extend"> {
   let patterns = ["ElementwiseExtend"];
 }
 
+def ApplyConcatInsertDimDotGeneralPatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_dot_general"> {
+  let patterns = ["ConcatInsertDimToBatch<stablehlo::DotGeneralOp>"];
+}
+
+def ApplyConcatInsertDimGatherPatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_gather"> {
+  let patterns = ["ConcatInsertDimToBatch<stablehlo::GatherOp>"];
+}
+
+def ApplyConcatInsertDimIotaPatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_iota"> {
+  let patterns = ["ConcatInsertDimToBatch<stablehlo::IotaOp>"];
+}
+
 def ApplySubtractMultiplyConstToAddMulConstPatterns : EnzymeHLOPatternOp<"subtract_multiply_const_to_add_mul_const"> {
   let patterns = ["SubtractMultiplyConstToAddMulConst"];
+}
+
+def ApplyConcatInsertDimReducePatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_reduce"> {
+  let patterns = ["ConcatInsertDimToBatch<stablehlo::ReduceOp>"];
+}
+
+def ApplyConcatInsertDimSortPatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_sort"> {
+  let patterns = ["ConcatInsertDimToBatch<stablehlo::SortOp>"];
+}
+
+def ApplyConcatInsertDimReduceWindowPatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_reduce_window"> {
+  let patterns = ["ConcatInsertDimToBatch<stablehlo::ReduceWindowOp>"];
+}
+
+def ApplySelfSubtractToConvolutionLikePatterns : EnzymeHLOParameterizedPatternOp<"self_subtract_to_convolution_like"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
+def ApplySelfAddToConvolutionLikePatterns : EnzymeHLOParameterizedPatternOp<"self_add_to_convolution_like"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
+def ApplySelfMulToConvolutionLikePatterns : EnzymeHLOParameterizedPatternOp<"self_mul_to_convolution_like"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
 }

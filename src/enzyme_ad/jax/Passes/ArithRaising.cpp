@@ -293,14 +293,16 @@ struct ArithRaisingPass
     op->walk([=](arith::ConstantOp constOp) {
       if (!use_stablehlo || !isa<RankedTensorType>(constOp.getType()))
         return;
-      auto CT = constOp.getType();
-      if (isa<TensorType>(CT)) {
-        OpBuilder builder(constOp);
-        Value newConstOp = builder.create<stablehlo::ConstantOp>(
-            constOp.getLoc(), constOp.getValueAttr());
-        constOp.replaceAllUsesWith(newConstOp);
-        constOp.erase();
-      }
+
+      auto valueAttr = constOp.getValueAttr();
+      if (!isa<ElementsAttr>(valueAttr))
+        return;
+
+      OpBuilder builder(constOp);
+      Value newConstOp =
+          builder.create<stablehlo::ConstantOp>(constOp.getLoc(), valueAttr);
+      constOp.replaceAllUsesWith(newConstOp);
+      constOp.erase();
     });
     op->walk([=](arith::FPToSIOp addOp) {
       if (!use_stablehlo || !isa<RankedTensorType>(addOp->getResultTypes()[0]))
