@@ -6,6 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       jax_commit:
+        description: 'The JAX commit to update to (optional)'
         default: ''
         type: 'string'
 
@@ -26,22 +27,31 @@ jobs:
       - name: Get JAX commit
         shell: bash
         run: |
+          OLD_JAX_COMMIT=$(grep 'JAX_COMMIT = ".*"' workspace.bzl | sed -E 's/JAX_COMMIT = "(.*)"/\1/')
+
           if [[ -n '${{ inputs.jax_commit }}' ]]; then
-              JAX_COMMIT="${{ inputs.jax_commit }}"
+              NEW_JAX_COMMIT="${{ inputs.jax_commit }}"
           else
-              JAX_COMMIT="$(git ls-remote https://github.com/jax-ml/jax.git main | awk '{print $1}')"
+              NEW_JAX_COMMIT="$(git ls-remote https://github.com/jax-ml/jax.git main | awk '{print $1}')"
           fi
-          echo "JAX_COMMIT=${JAX_COMMIT}" >> "${GITHUB_ENV}"
+
+          echo "OLD_JAX_COMMIT=${OLD_JAX_COMMIT}" >> "${GITHUB_ENV}"
+          echo "NEW_JAX_COMMIT=${NEW_JAX_COMMIT}" >> "${GITHUB_ENV}"
+          echo "DIFF_MSG=Diff: https://github.com/jax-ml/jax/compare/${OLD_JAX_COMMIT}...${NEW_JAX_COMMIT}" >> "${GITHUB_ENV}"
       - name: Modify JAX commit
         run: |
-          sed -i 's/JAX_COMMIT = ".*"/JAX_COMMIT = "${{ env.JAX_COMMIT }}"/' workspace.bzl
+          sed -i 's/JAX_COMMIT = ".*"/JAX_COMMIT = "${{ env.NEW_JAX_COMMIT }}"/' workspace.bzl
       - name: Create Pull Request
         uses: peter-evans/create-pull-request@v7
         with:
           token: ${{ secrets.JAX_LATEST_COMMIT }}
-          commit-message: 'Update JAX to commit ${{ env.JAX_COMMIT }}'
+          commit-message: |
+            Update JAX to commit ${{ env.NEW_JAX_COMMIT }}
+
+            ${{ env.DIFF_MSG }}
+          body: ${{ env.DIFF_MSG }}
           branch: jax-latest-commit
-          title: 'Update JAX to commit ${{ env.JAX_COMMIT }}'
+          title: 'Update JAX to commit ${{ env.NEW_JAX_COMMIT }}'
           delete-branch: true
           draft: false
           author: 'enzyme-ci-bot[bot] <78882869+enzyme-ci-bot[bot]@users.noreply.github.com>'
