@@ -24,7 +24,8 @@ jobs:
       fail-fast: false
       matrix:
         os:
-          - linux-x86-n2-32
+          - jll
+          # - linux-x86-n2-32
         julia_version:
           - '1.11'
 
