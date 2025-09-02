@@ -31,6 +31,7 @@ jobs:
 
     env:
       # FORCE_SANDBOX_MODE: unprivileged
+      BINARYBUILDER_RUNNER: privileged
       BINARYBUILDER_AUTOMATIC_APPLE: true
 
     steps:
