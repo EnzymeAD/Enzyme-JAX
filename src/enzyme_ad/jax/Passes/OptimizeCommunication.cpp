@@ -668,7 +668,7 @@ bool isZero(Value v) {
 }
 
 SplatElementsAttr isSplat(ElementsAttr v) {
-  return dyn-cast<SplatElementsAttr>(v);
+  return dyn_cast<SplatElementsAttr>(v);
 }
 
 SplatElementsAttr isSplat(Value v) {
@@ -677,7 +677,7 @@ SplatElementsAttr isSplat(Value v) {
     return elem;
   }
   if (auto sdyConstant = v.getDefiningOp<sdy::ConstantOp>()) {
-    return isZero(sdyConstant.getValue());
+    return isSplat(sdyConstant.getValue());
   }
   return nullptr;
 }
@@ -2253,7 +2253,8 @@ struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
 
 
     auto updateType = cast<RankedTensorType>(update.getType());
-    auto updateI1Type = RankedTensorType::Get(updateType.getShape(), rewriter.getI1Type());
+    auto updateI1Type =
+        RankedTensorType::get(updateType.getShape(), rewriter.getI1Type());
     auto zeroAttr =
         DenseElementsAttr::get(updateI1Type, rewriter.getZeroAttr(rewriter.getI1Type()));
     auto zeroUpdateOp = rewriter.create<stablehlo::ConstantOp>(
@@ -2267,18 +2268,22 @@ struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
     Value resultV = nullptr;
     if (splatOperand) {
       auto padTy = RankedTensorType::get({}, operand.getType().getElementType());
-      auto newOperand = rewriter.create<stablehlo::ConstantOp>(padTy, splatOperand.resizeSplat(padTy));
-      auto maskedOperandOp = newOperand.create<stablehlo::PadOp>(
-        dus.getLoc(), update, newUpdate, updatePadLow, updatePadHigh,
-        padInner);
+      auto newOperand = rewriter.create<stablehlo::ConstantOp>(
+          dus.getLoc(), padTy, splatOperand.resizeSplat(padTy));
+      auto maskedOperandOp = rewriter.create<stablehlo::PadOp>(
+          dus.getLoc(), update, newOperand, updatePadLow, updatePadHigh,
+          padInner);
       sdy::setSharding(maskedOperandOp, sharding);
     } {
       Value newUpdate;
       if (splatUpdate) {
-        newUpdate = rewriter.create<stablehlo::ConstantOp>(operand.getType(), splatUpdate.resizeSplat(operand.getType()));
+        newUpdate = rewriter.create<stablehlo::ConstantOp>(
+            dus.getLoc(), operand.getType(),
+            splatUpdate.resizeSplat(operand.getType()));
       } else {
-        auto newUpdateOp = rewriter.create<stablehlo::PadOp>(operand.getType(), update, zero, updatePadLow, updatePadHigh,
-          padInner);
+        auto newUpdateOp = rewriter.create<stablehlo::PadOp>(
+            dus.getLoc(), operand.getType(), update, zero, updatePadLow,
+            updatePadHigh, padInner);
         sdy::setSharding(newUpdateOp, sharding);
         newUpdate = newUpdateOp;
       }
