@@ -22,7 +22,9 @@ absl::Status detectConstantSetindexScatterOp(stablehlo::ScatterOp scatterOp,
         "ScatterOp has multiple uses, not supported.");
   }
 
-  if (!isScatterSetindexOp(scatterOp)) {
+  auto checkCommonScatterOp = mlir::stablehlo::CheckCommonScatterOp(scatterOp);
+
+  if (!checkCommonScatterOp.isSetindexScatter) {
     return absl::InvalidArgumentError("ScatterOp is not a setindex op.");
   }
 

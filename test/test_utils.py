@@ -331,7 +331,7 @@ def AllPipelines():
     return [
         ("JaX  ", None, AllBackends),
         ("JaXPipe", JaXPipeline(), AllBackends),
-        ("XLA", XLAPipeline(), ["cpu"]),
+        # ("XLA", XLAPipeline(), ["cpu"]),
     ]
 
 

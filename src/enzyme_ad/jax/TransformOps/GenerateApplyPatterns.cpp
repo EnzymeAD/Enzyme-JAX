@@ -6,6 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "Enzyme/MLIR/Dialect/Dialect.h"
+#include "Enzyme/MLIR/Dialect/Ops.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/TransformOps/LinalgTransformOps.h"
 #include "mlir/Dialect/Transform/IR/TransformDialect.h"
@@ -158,7 +160,10 @@ LogicalResult parseTransform(OpBuilder &builder, Location loc,
           opName == "no_nan_mul_simplify" || opName == "no_nan_div_simplify" ||
           opName == "no_nan_zero_base_pow_simplify" ||
           opName == "no_nan_self_sub_simplify" ||
-          opName == "no_nan_compare_simplify")
+          opName == "no_nan_compare_simplify" ||
+          opName == "self_subtract_to_convolution_like" ||
+          opName == "self_add_to_convolution_like" ||
+          opName == "self_mul_to_convolution_like")
         state.addAttribute("parameter", builder.getBoolAttr(parameter));
       else
         state.addAttribute("parameter", builder.getI64IntegerAttr(parameter));
@@ -183,6 +188,7 @@ public:
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<transform::TransformDialect>();
     registry.insert<enzymexla::EnzymeXLADialect>();
+    registry.insert<enzyme::EnzymeDialect>();
   }
 
   void runOnOperation() override {
