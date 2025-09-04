@@ -21443,19 +21443,20 @@ struct TransposeReshape final
     auto outputShape =
         llvm::to_vector(cast<RankedTensorType>(reshapeOp.getType()).getShape());
 
-    auto [validExpansion, dimOrdering, outputIdxStarts, extrasList] =
-        dimOrderingToPreserve(inputShape, outputShape);
+    auto dimOrdering = dimOrderingToPreserve(inputShape, outputShape);
 
-    if (!validExpansion)
+    if (!dimOrdering.valid)
       return rewriter.notifyMatchFailure(op, "Invalid expansion for reshape");
 
     auto permutation = op.getPermutation();
-    SmallVector<int64_t> newPermutation(inputShape.size(), -1);
+    SmallVector<int64_t> newPermutation;
 
-    if (dimOrdering.size() != inputShape.size())
+    if (dimOrdering.dimOrdering.size() +
+            dimOrdering.singletonCollapsedDims.size() !=
+        inputShape.size())
       return rewriter.notifyMatchFailure(op, "Invalid dimOrdering");
 
-    for (auto [i, dimList] : llvm::enumerate(dimOrdering)) {
+    for (auto [i, dimList] : llvm::enumerate(dimOrdering.dimOrdering)) {
       if (dimList.size() == 0)
         return rewriter.notifyMatchFailure(op,
                                            "Empty dimList. Should not happen!");
@@ -21468,28 +21469,39 @@ struct TransposeReshape final
       int64_t index = std::distance(permutation.begin(), idx);
 
       for (int i = 1; i < dimList.size(); ++i) {
-        if (i + index >= permutation.size() ||
+        if (i + index > permutation.size() ||
             permutation[i + index] != dimList[i])
           return rewriter.notifyMatchFailure(op, "unsupported permutation");
       }
     }
 
     int64_t outputIdx = 0;
-    for (int i = 0; i < inputShape.size(); ++i) {
+    for (int i = 0; i < dimOrdering.dimOrdering.size(); ++i) {
       auto transposeIdx = permutation[outputIdx];
 
-      auto idx = std::find(outputIdxStarts.begin(), outputIdxStarts.end(),
-                           transposeIdx);
-      auto index = std::distance(outputIdxStarts.begin(), idx);
+      auto idx = std::find(dimOrdering.outputIdxStarts.begin(),
+                           dimOrdering.outputIdxStarts.end(), transposeIdx);
+      auto index = std::distance(dimOrdering.outputIdxStarts.begin(), idx);
 
-      newPermutation[i] = transposeIdx - extrasList[index];
+      auto permVal = transposeIdx - dimOrdering.extrasList[index];
+      for (int j = 0; j < dimOrdering.singletonCollapsedDims.size(); ++j) {
+        if (dimOrdering.singletonCollapsedDims[j] <= transposeIdx) {
+          permVal++;
+        }
+      }
+      newPermutation.push_back(permVal);
 
-      for (int j = 0; j < dimOrdering.size(); ++j) {
-        if (dimOrdering[j][0] == transposeIdx) {
-          outputIdx += dimOrdering[j].size();
+      for (int j = 0; j < dimOrdering.dimOrdering.size(); ++j) {
+        if (dimOrdering.dimOrdering[j][0] == transposeIdx) {
+          outputIdx += dimOrdering.dimOrdering[j].size();
           break;
         }
       }
+    }
+
+    for (int i = 0; i < dimOrdering.singletonCollapsedDims.size(); ++i) {
+      auto dim = dimOrdering.singletonCollapsedDims[i];
+      newPermutation.insert(newPermutation.begin() + dim, dim);
     }
 
     auto newTranspose = rewriter.create<stablehlo::TransposeOp>(
@@ -21501,20 +21513,30 @@ struct TransposeReshape final
   }
 
 private:
-  std::tuple<bool, SmallVector<SmallVector<int64_t>>, SmallVector<int64_t>,
-             SmallVector<int64_t>>
-  dimOrderingToPreserve(SmallVector<int64_t> inputShape,
-                        SmallVector<int64_t> outputShape) const {
+  struct DimOrdering {
+    SmallVector<int64_t> outputIdxStarts;
+    SmallVector<int64_t> extrasList;
+    bool valid;
     SmallVector<SmallVector<int64_t>> dimOrdering;
-    SmallVector<int64_t> outputIdxStarts, extrasList;
-    bool validExpansion = true;
+    SmallVector<int64_t> singletonCollapsedDims;
+  };
+
+  DimOrdering dimOrderingToPreserve(SmallVector<int64_t> inputShape,
+                                    SmallVector<int64_t> outputShape) const {
+    SmallVector<SmallVector<int64_t>> dimOrdering;
+    SmallVector<int64_t> outputIdxStarts, extrasList, singletonCollapsedDims;
+    bool valid = true;
 
     int64_t outputIdx = 0, i = 0, extras = 0;
-    for (; i < inputShape.size() && validExpansion &&
-           outputIdx < outputShape.size();
+    for (; i < inputShape.size() && valid && outputIdx < outputShape.size();
          ++i) {
       int64_t outputSize = 1;
       SmallVector<int64_t> dims;
+
+      if (inputShape[i] == 1 && outputShape[outputIdx] != 1) {
+        singletonCollapsedDims.push_back(i);
+        continue;
+      }
 
       outputIdxStarts.push_back(outputIdx);
       extrasList.push_back(extras);
@@ -21526,7 +21548,7 @@ private:
       } while (outputIdx < outputShape.size() && outputSize < inputShape[i]);
 
       if (outputSize != inputShape[i]) {
-        validExpansion = false;
+        valid = false;
         break;
       }
 
@@ -21534,10 +21556,21 @@ private:
       extras += dims.size() - 1;
     }
 
-    if (i != inputShape.size() || outputIdx != outputShape.size())
-      validExpansion = false;
+    if (outputIdx != outputShape.size())
+      valid = false;
 
-    return {validExpansion, dimOrdering, outputIdxStarts, extrasList};
+    if (valid && i != inputShape.size()) {
+      for (; i < inputShape.size(); ++i) {
+        if (inputShape[i] != 1) {
+          valid = false;
+          break;
+        }
+        singletonCollapsedDims.push_back(i);
+      }
+    }
+
+    return DimOrdering{outputIdxStarts, extrasList, valid, dimOrdering,
+                       singletonCollapsedDims};
   }
 };
 
