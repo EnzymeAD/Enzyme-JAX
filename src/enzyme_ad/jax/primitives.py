@@ -230,6 +230,7 @@ def optimization_passes(
         "transpose_convolution<1>",
         "convolution_transpose<1>",
         "convert_convert_float<1>",
+        "convert_convert_int<1>",
         "concat_to_pad<1>",
         "reshape_iota<1>",
         "broadcast_reduce<1>",
