@@ -3453,6 +3453,37 @@ struct ConvertConvertFloat final
   }
 };
 
+struct ConvertConvertInt final
+    : CheckedOpRewritePattern<stablehlo::ConvertOp, ConvertConvertInt> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConvertOp op,
+                                    PatternRewriter &rewriter) const {
+    auto conv0 = op.getOperand().getDefiningOp<stablehlo::ConvertOp>();
+    if (!conv0)
+      return failure();
+
+    auto prev = conv0.getOperand();
+    if (isa<IntegerType>(prev.getType().getElementType()) &&
+        isa<IntegerType>(op.getType().getElementType()) &&
+        isa<IntegerType>(conv0.getType().getElementType())) {
+      // we only do the elimination if we go from low bitwidth to high bitwidth
+      auto prevwidth = prev.getType().getElementType().getIntOrFloatBitWidth();
+      auto midwidth = conv0.getType().getElementType().getIntOrFloatBitWidth();
+      if (prevwidth > midwidth)
+        return rewriter.notifyMatchFailure(op, "prevwidth > midwidth");
+
+      if (prev.getType() == op.getType()) {
+        rewriter.replaceOp(op, prev);
+        return success();
+      }
+      rewriter.replaceOpWithNewOp<stablehlo::ConvertOp>(op, op.getType(), prev);
+      return success();
+    }
+    return failure();
+  }
+};
+
 struct ReduceConcat final
     : CheckedOpRewritePattern<stablehlo::ReduceOp, ReduceConcat> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -23221,9 +23252,10 @@ struct EnzymeHLOOptPass
     if (passses & 512) {
       patterns.add<TransposeDotReorder, DotTranspose, ConvolutionTranspose,
                    TransposeConvolution, EinsumTranspose, TransposeEinsum,
-                   ConvertConvertFloat, ConcatToPad, ConcatAppendingReshape,
-                   ReshapeIota, DUSDUS, DUSDUSConcat, DUSConcat, DUSPad,
-                   SliceDUSToConcat, ConcatConcatToDUS>(context);
+                   ConvertConvertFloat, ConvertConvertInt, ConcatToPad,
+                   ConcatAppendingReshape, ReshapeIota, DUSDUS, DUSDUSConcat,
+                   DUSConcat, DUSPad, SliceDUSToConcat, ConcatConcatToDUS>(
+          context);
       patterns.add<LICM<stablehlo::DynamicUpdateSliceOp>>(false, context);
     }
 

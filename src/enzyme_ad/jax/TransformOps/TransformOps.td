@@ -381,6 +381,10 @@ def ApplyConvertConvertFloatPatterns : EnzymeHLOPatternOp<
     "convert_convert_float"> {
   let patterns = ["ConvertConvertFloat"];
 }
+def ApplyConvertConvertIntPatterns : EnzymeHLOPatternOp<
+    "convert_convert_int"> {
+  let patterns = ["ConvertConvertInt"];
+}
 def ApplyConcatToPadPatterns : EnzymeHLOPatternOp<
     "concat_to_pad"> {
   let patterns = ["ConcatToPad"];
