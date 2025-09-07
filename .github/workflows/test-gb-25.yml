@@ -159,6 +159,8 @@ jobs:
               # Install specific commit of Reactant, if necessary
               Pkg.add([
                   PackageSpec(; name="Reactant", rev="${{ matrix.reactant_commit }}"),
+                  # Temporary work around for <https://github.com/JuliaGPU/CUDA.jl/issues/2879>.
+                  PackageSpec(; name="CUDA", version=v"5.8.2"),
               ])
           end
           # Instantiate environment
