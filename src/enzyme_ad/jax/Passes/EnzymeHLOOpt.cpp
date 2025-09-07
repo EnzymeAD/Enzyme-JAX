@@ -22872,6 +22872,71 @@ struct ConcatInsertDimToBatch
   }
 };
 
+// Applies distributive property to op(dot_general(a, b), dot_general(a, c))
+// operations and converts them to dot_general(a, op(b, c)) or
+// dot_general(op(b, c), a)
+template <typename OpTy>
+LogicalResult dotGeneralDistributiveSimplify(OpTy op,
+                                             PatternRewriter &rewriter) {
+  // TODO: generalize this to handle cases where the dot general dim numbers are
+  // different but the ops can still be distributed
+  if (op.getNumOperands() != 2)
+    return failure();
+
+  auto lhsDotGeneralOp =
+      op.getLhs().template getDefiningOp<stablehlo::DotGeneralOp>();
+  auto rhsDotGeneralOp =
+      op.getRhs().template getDefiningOp<stablehlo::DotGeneralOp>();
+  if (!lhsDotGeneralOp || !rhsDotGeneralOp)
+    return failure();
+
+  if (!OperationEquivalence::isEquivalentTo(
+          lhsDotGeneralOp, rhsDotGeneralOp,
+          OperationEquivalence::ignoreValueEquivalence, nullptr,
+          OperationEquivalence::IgnoreLocations, nullptr))
+    return failure();
+
+  auto lhsDotGeneralLhs = lhsDotGeneralOp.getLhs();
+  auto rhsDotGeneralLhs = rhsDotGeneralOp.getLhs();
+
+  if (lhsDotGeneralLhs == rhsDotGeneralLhs) {
+    auto newDotRhs = rewriter.create<OpTy>(
+        op.getLoc(), lhsDotGeneralOp.getRhs(), rhsDotGeneralOp.getRhs());
+    rewriter.replaceOpWithNewOp<stablehlo::DotGeneralOp>(
+        op, TypeRange{op.getType()},
+        ValueRange{lhsDotGeneralLhs, newDotRhs.getResult()},
+        lhsDotGeneralOp->getAttrs());
+    return success();
+  }
+
+  auto lhsDotGeneralRhs = lhsDotGeneralOp.getRhs();
+  auto rhsDotGeneralRhs = rhsDotGeneralOp.getRhs();
+
+  if (lhsDotGeneralRhs == rhsDotGeneralRhs) {
+    auto newDotLhs = rewriter.create<OpTy>(
+        op.getLoc(), lhsDotGeneralOp.getLhs(), rhsDotGeneralOp.getLhs());
+    rewriter.replaceOpWithNewOp<stablehlo::DotGeneralOp>(
+        op, TypeRange{op.getType()},
+        ValueRange{newDotLhs.getResult(), rhsDotGeneralRhs},
+        lhsDotGeneralOp->getAttrs());
+    return success();
+  }
+
+  return failure();
+}
+
+template <typename OpTy>
+struct DotGeneralDistributiveSimplify
+    : public CheckedOpRewritePattern<OpTy,
+                                     DotGeneralDistributiveSimplify<OpTy>> {
+  using CheckedOpRewritePattern<
+      OpTy, DotGeneralDistributiveSimplify<OpTy>>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(OpTy op, PatternRewriter &rewriter) const {
+    return dotGeneralDistributiveSimplify<OpTy>(op, rewriter);
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -23480,7 +23545,9 @@ struct EnzymeHLOOptPass
         ConcatInsertDimToBatch<stablehlo::ReduceOp>,
         // ConcatInsertDimToBatch<stablehlo::ScatterOp>, after batch op interface is implemented
         ConcatInsertDimToBatch<stablehlo::SortOp>,
-        ConcatInsertDimToBatch<stablehlo::ReduceWindowOp>
+        ConcatInsertDimToBatch<stablehlo::ReduceWindowOp>,
+        DotGeneralDistributiveSimplify<stablehlo::AddOp>,
+        DotGeneralDistributiveSimplify<stablehlo::SubtractOp>
       >(context);
 
     patterns.add<

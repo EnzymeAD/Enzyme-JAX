@@ -2265,6 +2265,16 @@ def ApplyConcatInsertDimReduceWindowPatterns : EnzymeHLOPatternOp<
   let patterns = ["ConcatInsertDimToBatch<stablehlo::ReduceWindowOp>"];
 }
 
+def ApplyDotGeneralAddDistributiveSimplifyPatterns : EnzymeHLOPatternOp<
+    "dot_general_add_distributive_simplify"> {
+  let patterns = ["DotGeneralDistributiveSimplify<stablehlo::AddOp>"];
+}
+
+def ApplyDotGeneralSubtractDistributiveSimplifyPatterns : EnzymeHLOPatternOp<
+    "dot_general_subtract_distributive_simplify"> {
+  let patterns = ["DotGeneralDistributiveSimplify<stablehlo::SubtractOp>"];
+}
+
 def ApplySelfSubtractToConvolutionLikePatterns : EnzymeHLOParameterizedPatternOp<"self_subtract_to_convolution_like"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
   let assemblyFormat = "attr-dict";
