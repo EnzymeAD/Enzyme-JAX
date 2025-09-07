@@ -21500,7 +21500,7 @@ struct TransposeReshape final
       int64_t index = std::distance(permutation.begin(), idx);
 
       for (int i = 1; i < dimList.size(); ++i) {
-        if (i + index > permutation.size() ||
+        if (i + index >= permutation.size() ||
             permutation[i + index] != dimList[i])
           return rewriter.notifyMatchFailure(op, "unsupported permutation");
       }
