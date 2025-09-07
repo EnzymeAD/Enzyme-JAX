@@ -21500,7 +21500,7 @@ struct TransposeReshape final
       int64_t index = std::distance(permutation.begin(), idx);
 
       for (int i = 1; i < dimList.size(); ++i) {
-        if (i + index > permutation.size() ||
+        if (i + index >= permutation.size() ||
             permutation[i + index] != dimList[i])
           return rewriter.notifyMatchFailure(op, "unsupported permutation");
       }
@@ -21516,7 +21516,7 @@ struct TransposeReshape final
 
       auto permVal = transposeIdx - dimOrdering.extrasList[index];
       for (int j = 0; j < dimOrdering.singletonCollapsedDims.size(); ++j) {
-        if (dimOrdering.singletonCollapsedDims[j] <= transposeIdx) {
+        if (dimOrdering.singletonCollapsedDims[j] <= permVal) {
           permVal++;
         }
       }
@@ -21535,6 +21535,9 @@ struct TransposeReshape final
       newPermutation.insert(newPermutation.begin() + dim, dim);
     }
 
+    if (!isValidPermutation(newPermutation))
+      return rewriter.notifyMatchFailure(op, "Invalid permutation");
+
     auto newTranspose = rewriter.create<stablehlo::TransposeOp>(
         op.getLoc(), reshapeOp.getOperand(),
         rewriter.getDenseI64ArrayAttr(newPermutation));
@@ -21544,6 +21547,20 @@ struct TransposeReshape final
   }
 
 private:
+  bool isValidPermutation(const SmallVector<int64_t> permutation) const {
+    const size_t n = permutation.size();
+    SmallVector<bool> seen(n, false);
+
+    for (int64_t v : permutation) {
+      if (v < 0 || v >= static_cast<int64_t>(n))
+        return false;
+      if (seen[v])
+        return false;
+      seen[v] = true;
+    }
+    return true;
+  }
+
   struct DimOrdering {
     SmallVector<int64_t> outputIdxStarts;
     SmallVector<int64_t> extrasList;
