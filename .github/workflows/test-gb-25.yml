@@ -81,7 +81,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: 'EnzymeAD/Reactant.jl'
-          ref: 'main'
+          ref: 'mg/update-jax'
           path: 'Reactant.jl'
       - name: Set REACTANT_DIR
         # We have to use `${GITHUB_WORKSPACE}` instead of `github.workspace` because GitHub
