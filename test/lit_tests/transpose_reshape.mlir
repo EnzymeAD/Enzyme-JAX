@@ -72,6 +72,18 @@ func.func @main6(%arg0: tensor<6x1x3x1x35x1x1xf32>) -> tensor<5x7x3x1x6xf32> {
 // CHECK-NEXT:     return %1 : tensor<5x7x3x1x6xf32>
 // CHECK-NEXT: }
 
+func.func @main7(%arg0: tensor<256x1x1x2x1x64x1x64xf32>) -> tensor<64x64x2x256xf32> {
+    %0 = stablehlo.reshape %arg0 : (tensor<256x1x1x2x1x64x1x64xf32>) -> tensor<256x2x64x64xf32>
+    %1 = stablehlo.transpose %0, dims = [3, 2, 1, 0] : (tensor<256x2x64x64xf32>) -> tensor<64x64x2x256xf32>
+    return %1 : tensor<64x64x2x256xf32>
+}
+
+// CHECK: func.func @main7(%arg0: tensor<256x1x1x2x1x64x1x64xf32>) -> tensor<64x64x2x256xf32> {
+// CHECK-NEXT:     %0 = stablehlo.transpose %arg0, dims = [7, 1, 2, 5, 4, 3, 6, 0] : (tensor<256x1x1x2x1x64x1x64xf32>) -> tensor<64x1x1x64x1x2x1x256xf32>
+// CHECK-NEXT:     %1 = stablehlo.reshape %0 : (tensor<64x1x1x64x1x2x1x256xf32>) -> tensor<64x64x2x256xf32>
+// CHECK-NEXT:     return %1 : tensor<64x64x2x256xf32>
+// CHECK-NEXT: }
+
 func.func @fail1(%arg0: tensor<1x2x20x3xf32>) -> tensor<2x1x4x3x5xf32> {
     %0 = stablehlo.reshape %arg0 : (tensor<1x2x20x3xf32>) -> tensor<1x2x4x5x3xf32>
     %1 = stablehlo.transpose %0, dims = [1, 0, 2, 4, 3] : (tensor<1x2x4x5x3xf32>) -> tensor<2x1x4x3x5xf32>
