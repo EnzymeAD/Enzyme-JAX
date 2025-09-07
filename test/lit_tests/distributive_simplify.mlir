@@ -36,3 +36,43 @@ func.func @main1(%arg0: tensor<2x4xf64>, %arg1: tensor<2xf64>, %arg2: tensor<2xf
 // CHECK-NEXT:     %9 = stablehlo.dot_general %arg0, %8, contracting_dims = [0] x [0], precision = [DEFAULT, DEFAULT] : (tensor<2x4xf64>, tensor<2xf64>) -> tensor<4xf64>
 // CHECK-NEXT:     return %9 : tensor<4xf64>
 // CHECK-NEXT: }
+
+func.func @main2(%arg0: tensor<2x4xf64>, %arg1: tensor<2xf64>, %arg2: tensor<2xf64>, %arg3: tensor<2xf64>) -> tensor<4xf64> {
+    %0 = stablehlo.dot_general %arg0, %arg1, contracting_dims = [0] x [0], precision = [DEFAULT, DEFAULT] : (tensor<2x4xf64>, tensor<2xf64>) -> tensor<4xf64>
+    %1 = stablehlo.dot_general %arg0, %arg2, contracting_dims = [0] x [0], precision = [DEFAULT, DEFAULT] : (tensor<2x4xf64>, tensor<2xf64>) -> tensor<4xf64>
+    %2 = stablehlo.subtract %0, %1 : tensor<4xf64>
+    %3 = stablehlo.dot_general %arg0, %arg3, contracting_dims = [0] x [0], precision = [DEFAULT, DEFAULT] : (tensor<2x4xf64>, tensor<2xf64>) -> tensor<4xf64>
+    %4 = stablehlo.subtract %2, %3 : tensor<4xf64>
+    return %4 : tensor<4xf64>
+}
+
+// CHECK: func.func @main2(%arg0: tensor<2x4xf64>, %arg1: tensor<2xf64>, %arg2: tensor<2xf64>, %arg3: tensor<2xf64>) -> tensor<4xf64> {
+// CHECK-NEXT:     %0 = stablehlo.subtract %arg1, %arg2 : tensor<2xf64>
+// CHECK-NEXT:     %1 = stablehlo.subtract %0, %arg3 : tensor<2xf64>
+// CHECK-NEXT:     %2 = stablehlo.dot_general %arg0, %1, contracting_dims = [0] x [0], precision = [DEFAULT, DEFAULT] : (tensor<2x4xf64>, tensor<2xf64>) -> tensor<4xf64>
+// CHECK-NEXT:     return %2 : tensor<4xf64>
+// CHECK-NEXT: }
+
+func.func @main3(%arg0: tensor<4x2xf64>, %arg1: tensor<2x1xf64>, %arg2: tensor<2x1xf64>, %arg3: tensor<2x1xf64>) -> tensor<4x1xf64> {
+    %0 = stablehlo.reshape %arg1 : (tensor<2x1xf64>) -> tensor<1x2xf64>
+    %1 = stablehlo.reshape %arg2 : (tensor<2x1xf64>) -> tensor<1x2xf64>
+    %2 = stablehlo.reshape %arg3 : (tensor<2x1xf64>) -> tensor<1x2xf64>
+    %3 = stablehlo.dot_general %0, %arg0, contracting_dims = [1] x [1], precision = [DEFAULT, DEFAULT] : (tensor<1x2xf64>, tensor<4x2xf64>) -> tensor<1x4xf64>
+    %4 = stablehlo.dot_general %1, %arg0, contracting_dims = [1] x [1], precision = [DEFAULT, DEFAULT] : (tensor<1x2xf64>, tensor<4x2xf64>) -> tensor<1x4xf64>
+    %5 = stablehlo.dot_general %2, %arg0, contracting_dims = [1] x [1], precision = [DEFAULT, DEFAULT] : (tensor<1x2xf64>, tensor<4x2xf64>) -> tensor<1x4xf64>
+    %6 = stablehlo.add %3, %4 : tensor<1x4xf64>
+    %7 = stablehlo.add %6, %5 : tensor<1x4xf64>
+    %8 = stablehlo.reshape %7 : (tensor<1x4xf64>) -> tensor<4x1xf64>
+    return %8 : tensor<4x1xf64>
+}
+
+// CHECK: func.func @main3(%arg0: tensor<4x2xf64>, %arg1: tensor<2x1xf64>, %arg2: tensor<2x1xf64>, %arg3: tensor<2x1xf64>) -> tensor<4x1xf64> {
+// CHECK-NEXT:     %0 = stablehlo.reshape %arg1 : (tensor<2x1xf64>) -> tensor<1x2xf64>
+// CHECK-NEXT:     %1 = stablehlo.reshape %arg2 : (tensor<2x1xf64>) -> tensor<1x2xf64>
+// CHECK-NEXT:     %2 = stablehlo.reshape %arg3 : (tensor<2x1xf64>) -> tensor<1x2xf64>
+// CHECK-NEXT:     %3 = stablehlo.add %0, %1 : tensor<1x2xf64>
+// CHECK-NEXT:     %4 = stablehlo.add %3, %2 : tensor<1x2xf64>
+// CHECK-NEXT:     %5 = stablehlo.dot_general %4, %arg0, contracting_dims = [1] x [1], precision = [DEFAULT, DEFAULT] : (tensor<1x2xf64>, tensor<4x2xf64>) -> tensor<1x4xf64>
+// CHECK-NEXT:     %6 = stablehlo.reshape %5 : (tensor<1x4xf64>) -> tensor<4x1xf64>
+// CHECK-NEXT:     return %6 : tensor<4x1xf64>
+// CHECK-NEXT: }
