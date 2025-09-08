@@ -52,34 +52,28 @@ module {
 // REVERSE:  func.func private @diffemaxpool(%arg0: tensor<3xf32>, %arg1: tensor<1xf32>) -> (tensor<1xf32>, tensor<3xf32>) {
 // REVERSE-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
 // REVERSE-NEXT:    %cst_0 = stablehlo.constant dense<0xFF800000> : tensor<f32>
-// REVERSE-NEXT:    %0 = "stablehlo.reduce_window"(%arg0, %cst_0) <{padding = dense<0> : tensor<1x2xi64>, window_dilations = array<i64: 1>, window_dimensions = array<i64: 3>, window_strides = array<i64: 1>}> ({
+// REVERSE-NEXT:    %0 = stablehlo.reduce(%arg0 init: %cst_0) applies stablehlo.maximum across dimensions = [0] : (tensor<3xf32>, tensor<f32>) -> tensor<f32>
+// REVERSE-NEXT:    %1 = stablehlo.reshape %0 : (tensor<f32>) -> tensor<1xf32>
+// REVERSE-NEXT:    %2 = "stablehlo.select_and_scatter"(%arg0, %arg1, %cst) <{padding = dense<0> : tensor<1x2xi64>, window_dimensions = array<i64: 3>, window_strides = array<i64: 1>}> ({
 // REVERSE-NEXT:    ^bb0(%arg2: tensor<f32>, %arg3: tensor<f32>):
-// REVERSE-NEXT:      %2 = stablehlo.maximum %arg2, %arg3 : tensor<f32>
-// REVERSE-NEXT:      stablehlo.return %2 : tensor<f32>
-// REVERSE-NEXT:    }) : (tensor<3xf32>, tensor<f32>) -> tensor<1xf32>
-// REVERSE-NEXT:    %1 = "stablehlo.select_and_scatter"(%arg0, %arg1, %cst) <{padding = dense<0> : tensor<1x2xi64>, window_dimensions = array<i64: 3>, window_strides = array<i64: 1>}> ({
-// REVERSE-NEXT:    ^bb0(%arg2: tensor<f32>, %arg3: tensor<f32>):
-// REVERSE-NEXT:      %2 = stablehlo.compare  GE, %arg2, %arg3 : (tensor<f32>, tensor<f32>) -> tensor<i1>
-// REVERSE-NEXT:      stablehlo.return %2 : tensor<i1>
+// REVERSE-NEXT:      %3 = stablehlo.compare  GE, %arg2, %arg3 : (tensor<f32>, tensor<f32>) -> tensor<i1>
+// REVERSE-NEXT:      stablehlo.return %3 : tensor<i1>
 // REVERSE-NEXT:    }, {
 // REVERSE-NEXT:    ^bb0(%arg2: tensor<f32>, %arg3: tensor<f32>):
-// REVERSE-NEXT:      %2 = stablehlo.add %arg2, %arg3 : tensor<f32>
-// REVERSE-NEXT:      stablehlo.return %2 : tensor<f32>
+// REVERSE-NEXT:      %3 = stablehlo.add %arg2, %arg3 : tensor<f32>
+// REVERSE-NEXT:      stablehlo.return %3 : tensor<f32>
 // REVERSE-NEXT:    }) : (tensor<3xf32>, tensor<1xf32>, tensor<f32>) -> tensor<3xf32>
-// REVERSE-NEXT:    return %0, %1 : tensor<1xf32>, tensor<3xf32>
+// REVERSE-NEXT:    return %1, %2 : tensor<1xf32>, tensor<3xf32>
 // REVERSE-NEXT:  }
 
 // REVERSE:  func.func private @diffemeanpool(%arg0: tensor<3xf32>, %arg1: tensor<1xf32>) -> (tensor<1xf32>, tensor<3xf32>) {
 // REVERSE-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
-// REVERSE-NEXT:    %0 = "stablehlo.reduce_window"(%arg0, %cst) <{padding = dense<0> : tensor<1x2xi64>, window_dilations = array<i64: 1>, window_dimensions = array<i64: 3>, window_strides = array<i64: 1>}> ({
+// REVERSE-NEXT:    %0 = stablehlo.reduce(%arg0 init: %cst) applies stablehlo.add across dimensions = [0] : (tensor<3xf32>, tensor<f32>) -> tensor<f32>
+// REVERSE-NEXT:    %1 = stablehlo.reshape %0 : (tensor<f32>) -> tensor<1xf32>
+// REVERSE-NEXT:    %2 = "stablehlo.reduce_window"(%arg1, %cst) <{base_dilations = array<i64: 1>, padding = dense<2> : tensor<1x2xi64>, window_dilations = array<i64: 1>, window_dimensions = array<i64: 3>}> ({
 // REVERSE-NEXT:    ^bb0(%arg2: tensor<f32>, %arg3: tensor<f32>):
-// REVERSE-NEXT:      %2 = stablehlo.add %arg2, %arg3 : tensor<f32>
-// REVERSE-NEXT:      stablehlo.return %2 : tensor<f32>
-// REVERSE-NEXT:    }) : (tensor<3xf32>, tensor<f32>) -> tensor<1xf32>
-// REVERSE-NEXT:    %1 = "stablehlo.reduce_window"(%arg1, %cst) <{base_dilations = array<i64: 1>, padding = dense<2> : tensor<1x2xi64>, window_dilations = array<i64: 1>, window_dimensions = array<i64: 3>}> ({
-// REVERSE-NEXT:    ^bb0(%arg2: tensor<f32>, %arg3: tensor<f32>):
-// REVERSE-NEXT:      %2 = stablehlo.add %arg2, %arg3 : tensor<f32>
-// REVERSE-NEXT:      stablehlo.return %2 : tensor<f32>
+// REVERSE-NEXT:      %3 = stablehlo.add %arg2, %arg3 : tensor<f32>
+// REVERSE-NEXT:      stablehlo.return %3 : tensor<f32>
 // REVERSE-NEXT:    }) : (tensor<1xf32>, tensor<f32>) -> tensor<3xf32>
-// REVERSE-NEXT:    return %0, %1 : tensor<1xf32>, tensor<3xf32>
+// REVERSE-NEXT:    return %1, %2 : tensor<1xf32>, tensor<3xf32>
 // REVERSE-NEXT:  }

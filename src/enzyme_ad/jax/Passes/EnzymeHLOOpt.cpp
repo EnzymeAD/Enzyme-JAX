@@ -22937,6 +22937,102 @@ struct DotGeneralDistributiveSimplify
   }
 };
 
+struct TrivialReduceWindowToReduceOp
+    : public CheckedOpRewritePattern<stablehlo::ReduceWindowOp,
+                                     TrivialReduceWindowToReduceOp> {
+  using CheckedOpRewritePattern<
+      stablehlo::ReduceWindowOp,
+      TrivialReduceWindowToReduceOp>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceWindowOp op,
+                                    PatternRewriter &rewriter) const {
+    auto operandType = cast<RankedTensorType>(op.getOperand(0).getType());
+    if (!operandType)
+      return failure();
+
+    ArrayRef<int64_t> operandShape = operandType.getShape();
+    int64_t rank = operandShape.size();
+
+    // window dims should either be 1 or have size same as that dim size
+    auto windowDims = llvm::to_vector(op.getWindowDimensions());
+    if (windowDims.size() != rank)
+      return failure();
+
+    SmallVector<int64_t> reductionDims;
+    SetVector<int64_t> reductionDimsSet;
+    for (int64_t i = 0; i < rank; i++) {
+      int64_t windowDim = windowDims[i];
+      if (windowDim == 1) {
+        continue;
+      } else if (windowDim == operandShape[i]) {
+        reductionDims.push_back(i);
+        reductionDimsSet.insert(i);
+      } else {
+        return failure();
+      }
+    }
+
+    if (reductionDims.empty())
+      return failure();
+
+    auto windowStrides = op.getWindowStrides();
+    if (windowStrides.has_value()) {
+      for (auto stride : windowStrides.value()) {
+        if (stride != 1)
+          return failure();
+      }
+    }
+
+    auto baseDilations = op.getBaseDilations();
+    if (baseDilations.has_value()) {
+      for (auto dilation : baseDilations.value()) {
+        if (dilation != 1)
+          return failure();
+      }
+    }
+
+    auto windowDilations = op.getWindowDilations();
+    if (windowDilations.has_value()) {
+      for (auto dilation : windowDilations.value()) {
+        if (dilation != 1)
+          return failure();
+      }
+    }
+
+    auto padding = op.getPadding();
+    if (padding.has_value()) {
+      for (auto pad : padding.value()) {
+        if (pad != 0)
+          return failure();
+      }
+    }
+
+    SmallVector<Type> resultTypes;
+    for (int64_t i = 0; i < op.getNumResults(); i++) {
+      auto origType = cast<RankedTensorType>(op.getType(i));
+      SmallVector<int64_t> newShape;
+      auto oldShape = origType.getShape();
+      for (int64_t j = 0; j < origType.getRank(); j++) {
+        if (!reductionDimsSet.contains(j))
+          newShape.push_back(oldShape[j]);
+      }
+      resultTypes.push_back(RankedTensorType::get(newShape, origType.getElementType()));
+    }
+
+    auto newReduceOp = rewriter.create<stablehlo::ReduceOp>(
+        op.getLoc(), TypeRange{resultTypes}, op.getInputs(), op.getInitValues(),
+        rewriter.getDenseI64ArrayAttr(reductionDims));
+    newReduceOp.getRegion().takeBody(op.getRegion());
+
+    for (int64_t i = 0; i < op.getNumResults(); i++) {
+      auto newReshape = rewriter.create<stablehlo::ReshapeOp>(
+          op.getLoc(), op.getType(i), newReduceOp.getResults()[i]);
+      rewriter.replaceAllUsesWith(op.getResult(i), newReshape.getResult());
+    }
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -23547,7 +23643,8 @@ struct EnzymeHLOOptPass
         ConcatInsertDimToBatch<stablehlo::SortOp>,
         ConcatInsertDimToBatch<stablehlo::ReduceWindowOp>,
         DotGeneralDistributiveSimplify<stablehlo::AddOp>,
-        DotGeneralDistributiveSimplify<stablehlo::SubtractOp>
+        DotGeneralDistributiveSimplify<stablehlo::SubtractOp>,
+        TrivialReduceWindowToReduceOp
       >(context);
 
     patterns.add<
