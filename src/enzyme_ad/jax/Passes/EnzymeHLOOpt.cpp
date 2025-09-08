@@ -23016,7 +23016,8 @@ struct TrivialReduceWindowToReduceOp
         if (!reductionDimsSet.contains(j))
           newShape.push_back(oldShape[j]);
       }
-      resultTypes.push_back(RankedTensorType::get(newShape, origType.getElementType()));
+      resultTypes.push_back(
+          RankedTensorType::get(newShape, origType.getElementType()));
     }
 
     auto newReduceOp = rewriter.create<stablehlo::ReduceOp>(
