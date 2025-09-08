@@ -2321,3 +2321,20 @@ def ApplySelfMulToConvolutionLikePatterns : EnzymeHLOParameterizedPatternOp<"sel
     }
   }];
 }
+
+def ApplyAddReduceSliceFusionPatterns : EnzymeHLOPatternOp<
+    "add_reduce_slice_fusion"> {
+  let patterns = ["AddReduceSliceFusion"];
+}
+def ApplyMulReduceSliceFusionPatterns : EnzymeHLOPatternOp<
+    "mul_reduce_slice_fusion"> {
+  let patterns = ["MulReduceSliceFusion"];
+}
+def ApplyMinReduceSliceFusionPatterns : EnzymeHLOPatternOp<
+    "min_reduce_slice_fusion"> {
+  let patterns = ["MinReduceSliceFusion"];
+}
+def ApplyMaxReduceSliceFusionPatterns : EnzymeHLOPatternOp<
+    "max_reduce_slice_fusion"> {
+  let patterns = ["MaxReduceSliceFusion"];
+}
