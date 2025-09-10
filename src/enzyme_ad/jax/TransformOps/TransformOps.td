@@ -381,6 +381,10 @@ def ApplyConvertConvertFloatPatterns : EnzymeHLOPatternOp<
     "convert_convert_float"> {
   let patterns = ["ConvertConvertFloat"];
 }
+def ApplyConvertConvertIntPatterns : EnzymeHLOPatternOp<
+    "convert_convert_int"> {
+  let patterns = ["ConvertConvertInt"];
+}
 def ApplyConcatToPadPatterns : EnzymeHLOPatternOp<
     "concat_to_pad"> {
   let patterns = ["ConcatToPad"];
@@ -2261,6 +2265,21 @@ def ApplyConcatInsertDimReduceWindowPatterns : EnzymeHLOPatternOp<
   let patterns = ["ConcatInsertDimToBatch<stablehlo::ReduceWindowOp>"];
 }
 
+def ApplyDotGeneralAddDistributiveSimplifyPatterns : EnzymeHLOPatternOp<
+    "dot_general_add_distributive_simplify"> {
+  let patterns = ["DotGeneralDistributiveSimplify<stablehlo::AddOp>"];
+}
+
+def ApplyDotGeneralSubtractDistributiveSimplifyPatterns : EnzymeHLOPatternOp<
+    "dot_general_subtract_distributive_simplify"> {
+  let patterns = ["DotGeneralDistributiveSimplify<stablehlo::SubtractOp>"];
+}
+
+def ApplyTrivialReduceWindowToReduceOpPatterns : EnzymeHLOPatternOp<
+    "trivial_reduce_window_to_reduce_op"> {
+  let patterns = ["TrivialReduceWindowToReduceOp"];
+}
+
 def ApplySelfSubtractToConvolutionLikePatterns : EnzymeHLOParameterizedPatternOp<"self_subtract_to_convolution_like"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
   let assemblyFormat = "attr-dict";
@@ -2301,4 +2320,21 @@ def ApplySelfMulToConvolutionLikePatterns : EnzymeHLOParameterizedPatternOp<"sel
                                        builder.getBoolAttr(true)))};
     }
   }];
+}
+
+def ApplyAddReduceSliceFusionPatterns : EnzymeHLOPatternOp<
+    "add_reduce_slice_fusion"> {
+  let patterns = ["AddReduceSliceFusion"];
+}
+def ApplyMulReduceSliceFusionPatterns : EnzymeHLOPatternOp<
+    "mul_reduce_slice_fusion"> {
+  let patterns = ["MulReduceSliceFusion"];
+}
+def ApplyMinReduceSliceFusionPatterns : EnzymeHLOPatternOp<
+    "min_reduce_slice_fusion"> {
+  let patterns = ["MinReduceSliceFusion"];
+}
+def ApplyMaxReduceSliceFusionPatterns : EnzymeHLOPatternOp<
+    "max_reduce_slice_fusion"> {
+  let patterns = ["MaxReduceSliceFusion"];
 }

@@ -149,7 +149,7 @@ jobs:
           ls -lhrt "${GB25_DIR}"
           echo "GB25_DIR=${GB25_DIR}" >> ${GITHUB_ENV}
       - name: Instantiate GB-25 environment
-        timeout-minutes: 20
+        timeout-minutes: 40
         shell: julia --project --color=yes {0}
         run: |
           # Copy preference file to point to newly built libReactant
