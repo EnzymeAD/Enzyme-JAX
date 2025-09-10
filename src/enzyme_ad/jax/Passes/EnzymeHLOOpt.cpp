@@ -22937,6 +22937,469 @@ struct DotGeneralDistributiveSimplify
   }
 };
 
+struct TrivialReduceWindowToReduceOp
+    : public CheckedOpRewritePattern<stablehlo::ReduceWindowOp,
+                                     TrivialReduceWindowToReduceOp> {
+  using CheckedOpRewritePattern<
+      stablehlo::ReduceWindowOp,
+      TrivialReduceWindowToReduceOp>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceWindowOp op,
+                                    PatternRewriter &rewriter) const {
+    auto operandType = cast<RankedTensorType>(op.getOperand(0).getType());
+    if (!operandType)
+      return failure();
+
+    ArrayRef<int64_t> operandShape = operandType.getShape();
+    int64_t rank = operandShape.size();
+
+    // window dims should either be 1 or have size same as that dim size
+    auto windowDims = llvm::to_vector(op.getWindowDimensions());
+    if (windowDims.size() != rank)
+      return failure();
+
+    SmallVector<int64_t> reductionDims;
+    SetVector<int64_t> reductionDimsSet;
+    for (int64_t i = 0; i < rank; i++) {
+      int64_t windowDim = windowDims[i];
+      if (windowDim == 1) {
+        continue;
+      } else if (windowDim == operandShape[i]) {
+        reductionDims.push_back(i);
+        reductionDimsSet.insert(i);
+      } else {
+        return failure();
+      }
+    }
+
+    if (reductionDims.empty())
+      return failure();
+
+    auto windowStrides = op.getWindowStrides();
+    if (windowStrides.has_value()) {
+      for (auto stride : windowStrides.value()) {
+        if (stride != 1)
+          return failure();
+      }
+    }
+
+    auto baseDilations = op.getBaseDilations();
+    if (baseDilations.has_value()) {
+      for (auto dilation : baseDilations.value()) {
+        if (dilation != 1)
+          return failure();
+      }
+    }
+
+    auto windowDilations = op.getWindowDilations();
+    if (windowDilations.has_value()) {
+      for (auto dilation : windowDilations.value()) {
+        if (dilation != 1)
+          return failure();
+      }
+    }
+
+    auto padding = op.getPadding();
+    if (padding.has_value()) {
+      for (auto pad : padding.value()) {
+        if (pad != 0)
+          return failure();
+      }
+    }
+
+    SmallVector<Type> resultTypes;
+    for (int64_t i = 0; i < op.getNumResults(); i++) {
+      auto origType = cast<RankedTensorType>(op.getType(i));
+      SmallVector<int64_t> newShape;
+      auto oldShape = origType.getShape();
+      for (int64_t j = 0; j < origType.getRank(); j++) {
+        if (!reductionDimsSet.contains(j))
+          newShape.push_back(oldShape[j]);
+      }
+      resultTypes.push_back(
+          RankedTensorType::get(newShape, origType.getElementType()));
+    }
+
+    auto newReduceOp = rewriter.create<stablehlo::ReduceOp>(
+        op.getLoc(), TypeRange{resultTypes}, op.getInputs(), op.getInitValues(),
+        rewriter.getDenseI64ArrayAttr(reductionDims));
+    newReduceOp.getRegion().takeBody(op.getRegion());
+
+    for (int64_t i = 0; i < op.getNumResults(); i++) {
+      auto newReshape = rewriter.create<stablehlo::ReshapeOp>(
+          op.getLoc(), op.getType(i), newReduceOp.getResults()[i]);
+      rewriter.replaceAllUsesWith(op.getResult(i), newReshape.getResult());
+    }
+    return success();
+  }
+};
+
+template <typename BinaryOpType, typename Child>
+struct ReduceSliceFusionBase
+    : public CheckedOpRewritePattern<
+          BinaryOpType, ReduceSliceFusionBase<BinaryOpType, Child>> {
+  using CheckedOpRewritePattern<
+      BinaryOpType,
+      ReduceSliceFusionBase<BinaryOpType, Child>>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(BinaryOpType binaryOp,
+                                    PatternRewriter &rewriter) const {
+    SmallVector<SliceInfo> slices;
+    if (!collectSlicesInChain(binaryOp, slices))
+      return failure();
+
+    if (!areSlicesContiguous(slices))
+      return failure();
+
+    return createFusedReduce(rewriter, binaryOp, slices);
+  };
+
+private:
+  struct SliceInfo {
+    stablehlo::SliceOp sliceOp;
+    SmallVector<int64_t> startIndices;
+    SmallVector<int64_t> endIndices;
+    SmallVector<int64_t> strides;
+    int64_t sliceDim;
+    int64_t sliceStart;
+    int64_t sliceEnd;
+    Value initValue;
+  };
+
+  std::tuple<bool, SliceInfo>
+  matchReshapeReduceSlice(stablehlo::ReshapeOp reshapeOp) const {
+    auto inputType = cast<RankedTensorType>(reshapeOp.getOperand().getType());
+    auto outputType = cast<RankedTensorType>(reshapeOp.getType());
+
+    SmallVector<int64_t> insertionDims =
+        findReshapeInsertionDims(inputType, outputType);
+    if (insertionDims.size() != 1) {
+      return std::make_tuple(false, SliceInfo());
+    }
+
+    auto reduce =
+        reshapeOp.getOperand().template getDefiningOp<stablehlo::ReduceOp>();
+    if (!reduce) {
+      return std::make_tuple(false, SliceInfo());
+    }
+
+    if (reduce.getInputs().size() != 1 || reduce.getDimensions().size() != 1 ||
+        reduce.getDimensions()[0] != insertionDims[0]) {
+      return std::make_tuple(false, SliceInfo());
+    }
+
+    if (!((Child *)this)->isCompatibleReduction(reduce)) {
+      return std::make_tuple(false, SliceInfo());
+    }
+
+    auto slice =
+        reduce.getInputs()[0].template getDefiningOp<stablehlo::SliceOp>();
+    if (!slice) {
+      return std::make_tuple(false, SliceInfo());
+    }
+    SliceInfo info = extractSliceInfo(slice);
+    info.initValue = reduce.getInitValues()[0];
+
+    return std::make_tuple(info.sliceDim == insertionDims[0], info);
+  }
+
+  bool matchingSourceOperand(SmallVector<SliceInfo> &slices,
+                             stablehlo::SliceOp slice) const {
+    if (!slice)
+      return false;
+    if (slices.size() == 0)
+      return true;
+    return slices[0].sliceOp.getOperand() == slice.getOperand();
+  }
+
+  // Collect all slices in the binary operation chain
+  bool collectSlicesInChain(BinaryOpType startOp,
+                            SmallVector<SliceInfo> &slices) const {
+    // Use a worklist to traverse the binary operation chain
+    SmallVector<Value> worklist;
+    DenseSet<Value> visited;
+
+    worklist.push_back(startOp.getResult());
+
+    while (!worklist.empty()) {
+      Value current = worklist.pop_back_val();
+
+      if (visited.contains(current)) {
+        continue;
+      }
+      visited.insert(current);
+
+      if (auto binaryOp = current.template getDefiningOp<BinaryOpType>()) {
+        worklist.push_back(binaryOp.getLhs());
+        worklist.push_back(binaryOp.getRhs());
+      } else if (auto reshape =
+                     current.template getDefiningOp<stablehlo::ReshapeOp>()) {
+        auto [isMatch, info] = matchReshapeReduceSlice(reshape);
+        if (isMatch && matchingSourceOperand(slices, info.sliceOp)) {
+          slices.push_back(info);
+        } else {
+          return false;
+        }
+      } else if (auto slice =
+                     current.template getDefiningOp<stablehlo::SliceOp>()) {
+        if (matchingSourceOperand(slices, slice)) {
+          SliceInfo info = extractSliceInfo(slice);
+          if (info.sliceOp) {
+            slices.push_back(info);
+          } else {
+            return false;
+          }
+        }
+      } else {
+        return false;
+      }
+    }
+
+    return slices.size() > 1;
+  }
+
+  // Extract slice information
+  SliceInfo extractSliceInfo(stablehlo::SliceOp slice) const {
+    SliceInfo info;
+    info.sliceOp = slice;
+
+    auto startIndices = llvm::to_vector(slice.getStartIndices());
+    auto limitIndices = llvm::to_vector(slice.getLimitIndices());
+    auto strides = llvm::to_vector(slice.getStrides());
+
+    for (auto [start, end, stride] :
+         llvm::zip(startIndices, limitIndices, strides)) {
+      info.startIndices.push_back(start);
+      info.endIndices.push_back(end);
+      info.strides.push_back(stride);
+    }
+
+    // Find the dimension being sliced (where start != 0 or end != full size)
+    auto inputType = cast<RankedTensorType>(slice.getOperand().getType());
+    ArrayRef<int64_t> inputShape = inputType.getShape();
+
+    for (size_t i = 0; i < info.startIndices.size(); ++i) {
+      if (info.startIndices[i] != 0 || info.endIndices[i] != inputShape[i]) {
+        info.sliceDim = i;
+        info.sliceStart = info.startIndices[i];
+        info.sliceEnd = info.endIndices[i];
+        break;
+      }
+    }
+
+    return info;
+  }
+
+  bool areSlicesContiguous(SmallVector<SliceInfo> &slices) const {
+    if (slices.empty())
+      return false;
+
+    // All slices should be on the same dimension
+    int64_t sliceDim = slices[0].sliceDim;
+    for (const auto &slice : slices) {
+      if (slice.sliceDim != sliceDim) {
+        return false;
+      }
+    }
+
+    // Sort slices by start index
+    llvm::sort(slices, [](const SliceInfo &a, const SliceInfo &b) {
+      return a.sliceStart < b.sliceStart;
+    });
+
+    // Check contiguity
+    int64_t expectedStart = slices[0].sliceStart;
+    for (const auto &slice : slices) {
+      if (slice.sliceStart != expectedStart) {
+        return false;
+      }
+      expectedStart = slice.sliceEnd;
+    }
+
+    return true;
+  }
+
+  // Create the fused reduce operation
+  LogicalResult createFusedReduce(PatternRewriter &rewriter,
+                                  BinaryOpType binaryOp,
+                                  SmallVector<SliceInfo> &slices) const {
+    Value sourceOperand = slices[0].sliceOp.getOperand();
+
+    int64_t sliceDim = slices[0].sliceDim;
+    int64_t minStart = slices[0].sliceStart;
+    int64_t maxEnd = slices.back().sliceEnd;
+
+    auto sourceType = cast<RankedTensorType>(sourceOperand.getType());
+    ArrayRef<int64_t> sourceShape = sourceType.getShape();
+
+    // Check if we're covering the full dimension
+    if (minStart != 0 || maxEnd != sourceShape[sliceDim]) {
+      SmallVector<int64_t> newStartIndices, newLimitIndices, newStrides;
+      for (int64_t i = 0; i < sourceShape.size(); i++) {
+        if (i == sliceDim) {
+          newStartIndices.push_back(minStart);
+          newLimitIndices.push_back(maxEnd);
+          newStrides.push_back(1);
+        } else {
+          newStartIndices.push_back(0);
+          newLimitIndices.push_back(sourceShape[i]);
+          newStrides.push_back(1);
+        }
+      }
+      sourceOperand = rewriter.create<stablehlo::SliceOp>(
+          binaryOp.getLoc(), sourceOperand, newStartIndices, newLimitIndices,
+          newStrides);
+    }
+
+    Value initValue;
+    for (auto sliceInfo : slices) {
+      if (sliceInfo.initValue) {
+        if (!initValue) {
+          initValue = sliceInfo.initValue;
+        } else {
+          if (sliceInfo.initValue != initValue) {
+            return rewriter.notifyMatchFailure(binaryOp,
+                                               "init values are not the same");
+          }
+        }
+      }
+    }
+
+    auto elemType = cast<ShapedType>(binaryOp.getType()).getElementType();
+    if (!initValue) {
+      initValue = ((Child *)this)
+                      ->getIdentityValue(rewriter, binaryOp.getLoc(), elemType);
+      if (!initValue) {
+        return rewriter.notifyMatchFailure(
+            binaryOp, "could not find identity value for element type");
+      }
+    }
+
+    SmallVector<int64_t> newShape;
+    for (int64_t i = 0; i < sourceShape.size(); i++) {
+      if (i != sliceDim) {
+        newShape.push_back(sourceShape[i]);
+      }
+    }
+
+    auto newReduce = rewriter.create<stablehlo::ReduceOp>(
+        binaryOp.getLoc(), TypeRange{RankedTensorType::get(newShape, elemType)},
+        ValueRange{sourceOperand}, ValueRange{initValue},
+        ArrayRef<int64_t>{sliceDim});
+
+    auto scalarType = RankedTensorType::get({}, elemType);
+    Block *block = rewriter.createBlock(&newReduce.getBody());
+    block->addArgument(scalarType, binaryOp.getLoc());
+    block->addArgument(scalarType, binaryOp.getLoc());
+
+    {
+      IRRewriter::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(block);
+      auto elemOp = rewriter.template create<BinaryOpType>(
+          binaryOp.getLoc(), block->getArgument(0), block->getArgument(1));
+      rewriter.create<stablehlo::ReturnOp>(binaryOp.getLoc(),
+                                           elemOp.getResult());
+    }
+
+    auto binaryResultType =
+        cast<RankedTensorType>(binaryOp.getResult().getType());
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(
+        binaryOp, binaryResultType, newReduce.getResult(0));
+    return success();
+  }
+};
+
+struct AddReduceSliceFusion
+    : public ReduceSliceFusionBase<stablehlo::AddOp, AddReduceSliceFusion> {
+  using ReduceSliceFusionBase<stablehlo::AddOp,
+                              AddReduceSliceFusion>::ReduceSliceFusionBase;
+
+  bool isCompatibleReduction(stablehlo::ReduceOp reduceOp) const {
+    return mlir::stablehlo::CheckCommonReduceOp(reduceOp).isAddReduce;
+  }
+
+  Value getIdentityValue(PatternRewriter &rewriter, Location loc,
+                         Type elementType) {
+    return rewriter.create<stablehlo::ConstantOp>(
+        loc, rewriter.getZeroAttr(elementType));
+  }
+};
+
+struct MulReduceSliceFusion
+    : public ReduceSliceFusionBase<stablehlo::MulOp, MulReduceSliceFusion> {
+  using ReduceSliceFusionBase<stablehlo::MulOp,
+                              MulReduceSliceFusion>::ReduceSliceFusionBase;
+
+  bool isCompatibleReduction(stablehlo::ReduceOp reduceOp) const {
+    return mlir::stablehlo::CheckCommonReduceOp(reduceOp).isMulReduce;
+  }
+
+  Value getIdentityValue(PatternRewriter &rewriter, Location loc,
+                         Type elementType) {
+    if (isa<FloatType>(elementType)) {
+      return rewriter.create<stablehlo::ConstantOp>(
+          loc, rewriter.getFloatAttr(elementType, 1.0));
+    } else if (isa<IntegerType>(elementType)) {
+      return rewriter.create<stablehlo::ConstantOp>(
+          loc, rewriter.getIntegerAttr(elementType, 1));
+    } else {
+      return nullptr;
+    }
+  }
+};
+
+struct MinReduceSliceFusion
+    : public ReduceSliceFusionBase<stablehlo::MinOp, MinReduceSliceFusion> {
+  using ReduceSliceFusionBase<stablehlo::MinOp,
+                              MinReduceSliceFusion>::ReduceSliceFusionBase;
+
+  bool isCompatibleReduction(stablehlo::ReduceOp reduceOp) const {
+    return mlir::stablehlo::CheckCommonReduceOp(reduceOp).isMinReduce;
+  }
+
+  Value getIdentityValue(PatternRewriter &rewriter, Location loc,
+                         Type elementType) {
+    if (auto floatType = dyn_cast<FloatType>(elementType)) {
+      auto negInf =
+          APFloat::getInf(floatType.getFloatSemantics(), /*negative=*/false);
+      auto attr = rewriter.getFloatAttr(elementType, negInf);
+      return rewriter.create<stablehlo::ConstantOp>(loc, attr);
+    } else if (auto intType = dyn_cast<IntegerType>(elementType)) {
+      auto minVal = APInt::getSignedMaxValue(intType.getWidth());
+      auto attr = rewriter.getIntegerAttr(elementType, minVal);
+      return rewriter.create<stablehlo::ConstantOp>(loc, attr);
+    } else {
+      return nullptr;
+    }
+  }
+};
+
+struct MaxReduceSliceFusion
+    : public ReduceSliceFusionBase<stablehlo::MaxOp, MaxReduceSliceFusion> {
+  using ReduceSliceFusionBase<stablehlo::MaxOp,
+                              MaxReduceSliceFusion>::ReduceSliceFusionBase;
+
+  bool isCompatibleReduction(stablehlo::ReduceOp reduceOp) const {
+    return mlir::stablehlo::CheckCommonReduceOp(reduceOp).isMaxReduce;
+  }
+
+  Value getIdentityValue(PatternRewriter &rewriter, Location loc,
+                         Type elementType) {
+    if (auto floatType = dyn_cast<FloatType>(elementType)) {
+      auto posInf =
+          APFloat::getInf(floatType.getFloatSemantics(), /*negative=*/true);
+      auto attr = rewriter.getFloatAttr(elementType, posInf);
+      return rewriter.create<stablehlo::ConstantOp>(loc, attr);
+    } else if (auto intType = dyn_cast<IntegerType>(elementType)) {
+      auto maxVal = APInt::getSignedMinValue(intType.getWidth());
+      auto attr = rewriter.getIntegerAttr(elementType, maxVal);
+      return rewriter.create<stablehlo::ConstantOp>(loc, attr);
+    } else {
+      return nullptr;
+    }
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -23547,7 +24010,12 @@ struct EnzymeHLOOptPass
         ConcatInsertDimToBatch<stablehlo::SortOp>,
         ConcatInsertDimToBatch<stablehlo::ReduceWindowOp>,
         DotGeneralDistributiveSimplify<stablehlo::AddOp>,
-        DotGeneralDistributiveSimplify<stablehlo::SubtractOp>
+        DotGeneralDistributiveSimplify<stablehlo::SubtractOp>,
+        TrivialReduceWindowToReduceOp,
+        AddReduceSliceFusion,
+        MulReduceSliceFusion,
+        MinReduceSliceFusion,
+        MaxReduceSliceFusion
       >(context);
 
     patterns.add<
