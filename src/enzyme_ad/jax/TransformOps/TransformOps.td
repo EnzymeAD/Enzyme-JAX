@@ -2338,3 +2338,28 @@ def ApplyMaxReduceSliceFusionPatterns : EnzymeHLOPatternOp<
     "max_reduce_slice_fusion"> {
   let patterns = ["MaxReduceSliceFusion"];
 }
+
+def ApplySliceToBatchDotGeneral : EnzymeHLOPatternOp<
+    "slice_to_batch_dotgeneral"> {
+  let patterns = ["SliceToBatch<stablehlo::DotGeneralOp>"];
+}
+def ApplySliceToBatchGather : EnzymeHLOPatternOp<
+    "slice_to_batch_gather"> {
+  let patterns = ["SliceToBatch<stablehlo::GatherOp>"];
+}
+def ApplySliceToBatchIota : EnzymeHLOPatternOp<
+    "slice_to_batch_iota"> {
+  let patterns = ["SliceToBatch<stablehlo::IotaOp>"];
+}
+def ApplySliceToBatchReduceWindow : EnzymeHLOPatternOp<
+    "slice_to_batch_reducewindow"> {
+  let patterns = ["SliceToBatch<stablehlo::ReduceWindowOp>"];
+}
+def ApplySliceToBatchReduce : EnzymeHLOPatternOp<
+    "slice_to_batch_reduce"> {
+  let patterns = ["SliceToBatch<stablehlo::ReduceOp>"];
+}
+def ApplySliceToBatchSort : EnzymeHLOPatternOp<
+    "slice_to_batch_sort"> {
+  let patterns = ["SliceToBatch<stablehlo::SortOp>"];
+}
