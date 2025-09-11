@@ -1,0 +1,41 @@
+name: "Build Reactant_jll"
+
+on:
+  # push:
+  #   branches:
+  #   - main
+  #   paths:
+  #     - '.github/workflows/build-reactantjll.yml'
+  #     - '**/BUILD'
+  #     - '**/WORKSPACE'
+  #     - '**/*.bzl'
+  #     - 'patches/**'
+  #     - 'src/**'
+  #     - 'third_party/**'
+  pull_request:
+    branches:
+    - main
+    paths:
+      - '.github/workflows/build-reactantjll.yml'
+      - '**/BUILD'
+      - '**/WORKSPACE'
+      - '**/*.bzl'
+      - 'patches/**'
+      - 'src/**'
+      - 'third_party/**'
+
+concurrency:
+  # Skip intermediate builds: always.
+  # Cancel intermediate builds: only if it is a pull request build.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+
+jobs:
+  build-jll:
+    name: Build Reactant_jll
+    strategy:
+      fail-fast: false
+    uses: EnzymeAD/ReactantBuilder/.github/workflows/build-reactant-reusable.yml@main
+    with:
+      reactantbuilder_ref: 'main'
+      enzyme_jax_commit: ${{ github.sha }}
