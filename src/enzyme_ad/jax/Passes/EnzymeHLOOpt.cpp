@@ -22612,11 +22612,11 @@ private:
   bool allowEmitConvolution;
 };
 
-func::FuncOp createWrapperUnbatchedFunction(
-    PatternRewriter &rewriter, const std::string &funcName,
-    ArrayRef<Value> operands, ArrayRef<int32_t> operandIndexMap,
-    Operation *templateOp, ArrayRef<int64_t> returnShape, int32_t batchDim,
-    Type retElemType) {
+func::FuncOp createWrapperUnbatchedFunction(PatternRewriter &rewriter,
+                                            const std::string &funcName,
+                                            ArrayRef<Value> operands,
+                                            ArrayRef<int32_t> operandIndexMap,
+                                            Operation *templateOp) {
   OpBuilder::InsertionGuard guard(rewriter);
   auto modOp = templateOp->getParentOfType<ModuleOp>();
   if (!modOp)
@@ -22633,15 +22633,8 @@ func::FuncOp createWrapperUnbatchedFunction(
     argTypes.push_back(RankedTensorType::get(argShape, vType.getElementType()));
   }
 
-  SmallVector<int64_t> retShape;
-  for (int i = 0; i < returnShape.size(); i++) {
-    if (i == batchDim)
-      continue;
-    retShape.push_back(returnShape[i]);
-  }
-  RankedTensorType retType = RankedTensorType::get(retShape, retElemType);
-
-  FunctionType calleeType = rewriter.getFunctionType(argTypes, {retType});
+  FunctionType calleeType =
+      rewriter.getFunctionType(argTypes, {templateOp->getResult(0).getType()});
   func::FuncOp func =
       rewriter.create<func::FuncOp>(templateOp->getLoc(), funcName, calleeType);
   func.setPrivate();
@@ -22673,9 +22666,10 @@ func::FuncOp createWrapperUnbatchedFunction(
 }
 
 std::tuple<SmallVector<Value>, SmallVector<int32_t>>
-constructAndExtractBatchOperands(PatternRewriter &rewriter, ArrayRef<Operation *> batchOps,
-                                 bool batchDimCollapsed, int32_t batchDim,
-                                 Location loc) {
+constructAndExtractBatchOperands(PatternRewriter &rewriter,
+                                 ArrayRef<Operation *> batchOps, Location loc,
+                                 int64_t specialSliceOperand,
+                                 int64_t sliceDim, int64_t nbatches) {
   SmallVector<Value> operands;
   SmallVector<int32_t> operandIndexMap;
 
@@ -22684,13 +22678,14 @@ constructAndExtractBatchOperands(PatternRewriter &rewriter, ArrayRef<Operation *
     SmallVector<Value> currentOperands;
     bool allEquivalent = true;
     auto firstOperand = batchOps[0]->getOperand(i);
+    auto firstDefOp = firstOperand.getDefiningOp();
 
     for (auto v : batchOps) {
       auto currentOperand = v->getOperand(i);
       currentOperands.push_back(currentOperand);
 
       // Check equivalence with first operand
-      if (auto firstDefOp = firstOperand.getDefiningOp()) {
+      if (!firstDefOp) {
         if (auto currentDefOp = currentOperand.getDefiningOp()) {
           if (!OperationEquivalence::isEquivalentTo(
                   firstDefOp, currentDefOp,
@@ -22713,6 +22708,31 @@ constructAndExtractBatchOperands(PatternRewriter &rewriter, ArrayRef<Operation *
     if (allEquivalent && constOp) {
       // Mark as constant (no batch operand needed)
       operandIndexMap.push_back(-1);
+    } else if (i == specialSliceOperand) {
+      auto sliceOp = firstOperand.getDefiningOp<stablehlo::SliceOp>();
+      assert(sliceOp);
+      assert(sliceDim >= 0);
+      auto sliceOpType = cast<RankedTensorType>(sliceOp.getResult().getType());
+      auto sliceOpShape = sliceOpType.getShape();
+      assert(sliceOpShape[sliceDim] == 1);
+      SmallVector<int64_t> bcastShape;
+      SmallVector<int64_t> mapping(sliceOpShape.size(), -1);
+      bcastShape.push_back(nbatches);
+      for (int i = 0; i < sliceOpShape.size(); i++) {
+        if (i != sliceDim) {
+          bcastShape.push_back(sliceOpShape[i]);
+          mapping[i] = i + 1;
+        } else {
+          bcastShape.push_back(1);
+          mapping[i] = 0;
+        }
+      }
+      auto bcastOp = rewriter.create<stablehlo::BroadcastInDimOp>(
+          sliceOp.getLoc(),
+          RankedTensorType::get(bcastShape, sliceOpType.getElementType()),
+          sliceOp.getOperand(), rewriter.getDenseI64ArrayAttr(mapping));
+      operandIndexMap.push_back(operands.size());
+      operands.push_back(bcastOp.getResult());
     } else {
       // Non-equivalent operands - need to concatenate them
       SmallVector<Value> newConcatOperands;
@@ -22722,11 +22742,7 @@ constructAndExtractBatchOperands(PatternRewriter &rewriter, ArrayRef<Operation *
 
         SmallVector<int64_t> outputShape;
         outputShape.push_back(1);
-        for (int i = 0; i < inputShape.size(); i++) {
-          if (i == batchDim && !batchDimCollapsed)
-            continue;
-          outputShape.push_back(inputShape[i]);
-        }
+        outputShape.append(inputShape.begin(), inputShape.end());
 
         // expand the batch dim (== 0) or move the batch dim from `batchDim` to
         // `0`
@@ -22805,8 +22821,7 @@ struct ConcatInsertDimToBatch
     }
 
     auto [batchOpOperands, operandIndexMap] = constructAndExtractBatchOperands(
-        rewriter, concatOpOperands, /*batchDimCollapsed*/ true,
-        /*batchDim*/ concatDim, concatOp.getLoc());
+        rewriter, concatOpOperands, concatOp.getLoc(), -1, -1, -1);
 
     static int64_t concatReshapeToBatchCounter = 0;
     std::string wrapperFuncName =
@@ -22815,11 +22830,10 @@ struct ConcatInsertDimToBatch
 
     func::FuncOp func = createWrapperUnbatchedFunction(
         rewriter, wrapperFuncName, batchOpOperands, operandIndexMap,
-        concatOpOperands[0], concatShape, concatDim,
-        concatType.getElementType());
+        concatOpOperands[0]);
     if (!func)
-      return rewriter.notifyMatchFailure(
-          concatOp, "failed to create wrapper function");
+      return rewriter.notifyMatchFailure(concatOp,
+                                         "failed to create wrapper function");
 
     SmallVector<int64_t> outputShape;
     outputShape.push_back(concatShape[concatDim]);
@@ -22867,7 +22881,8 @@ private:
     return insertionDims.size() == 1 && insertionDims[0] == dim;
   }
 
-  bool validBroadcastInDimOpInsertDimForBatching(Operation *op, int64_t dim) const {
+  bool validBroadcastInDimOpInsertDimForBatching(Operation *op,
+                                                 int64_t dim) const {
     auto broadcastInDimOp = dyn_cast<stablehlo::BroadcastInDimOp>(op);
     if (!broadcastInDimOp)
       return false;
@@ -22893,10 +22908,11 @@ private:
 };
 
 template <typename OpTy>
-struct SliceToBatch
-    : public CheckedOpRewritePattern<stablehlo::SliceOp, SliceToBatch<OpTy>> {
-  using CheckedOpRewritePattern<stablehlo::SliceOp,
-                                SliceToBatch<OpTy>>::CheckedOpRewritePattern;
+struct SliceToBatchBase
+    : public CheckedOpRewritePattern<stablehlo::SliceOp,
+                                     SliceToBatchBase<OpTy>> {
+  using CheckedOpRewritePattern<
+      stablehlo::SliceOp, SliceToBatchBase<OpTy>>::CheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
                                     PatternRewriter &rewriter) const {
@@ -22913,7 +22929,7 @@ struct SliceToBatch
 
     // Find all slices of the same input that feed into equivalent operations
     SmallVector<SliceInfo> relatedSlices;
-    SmallVector<OpTy> relatedOps;
+    SmallVector<Operation *> relatedOps;
 
     // Build worklist of all slice operations on the same input
     for (auto user : sliceInput.getUsers()) {
@@ -22936,6 +22952,14 @@ struct SliceToBatch
       relatedOps.push_back(candidateTargetOp);
     }
 
+    int64_t sliceOperandIndex = -1;
+    for (int i = 0; i < relatedOps[0]->getNumOperands(); i++) {
+      if (relatedOps[0]->getOperand(i) == relatedSlices[0].sliceOp) {
+        sliceOperandIndex = i;
+        break;
+      }
+    }
+
     if (relatedSlices.size() <= 1)
       return rewriter.notifyMatchFailure(sliceOp, "no related slices found");
 
@@ -22944,7 +22968,68 @@ struct SliceToBatch
       return rewriter.notifyMatchFailure(sliceOp,
                                          "slices not compatible for batching");
 
-    return failure();
+    mlir::Operation *lastOp = relatedOps[0];
+    for (mlir::Operation *op : relatedOps) {
+      if (op->isBeforeInBlock(lastOp))
+        continue;
+      else
+        lastOp = op;
+    }
+    rewriter.setInsertionPoint(lastOp);
+
+    auto [batchOpOperands, operandIndexMap] = constructAndExtractBatchOperands(
+        rewriter, relatedOps, sliceOp.getLoc(), sliceOperandIndex,
+        relatedSlices[0].sliceDim, static_cast<int64_t>(relatedSlices.size()));
+
+    static int64_t sliceToBatchCount = 0;
+    std::string sliceToBatchName = "enzymexla_unbatched_SliceToBatch_" +
+                                   std::to_string(sliceToBatchCount++);
+
+    SmallVector<int64_t> retShape;
+
+    func::FuncOp func = createWrapperUnbatchedFunction(
+        rewriter, sliceToBatchName, batchOpOperands, operandIndexMap,
+        relatedOps[0]);
+    if (!func)
+      return rewriter.notifyMatchFailure(sliceOp, "failed to create function");
+
+    SmallVector<int64_t> outputShape;
+    outputShape.push_back(relatedSlices.size());
+    auto relatedOpsType =
+        cast<RankedTensorType>(relatedOps[0]->getResult(0).getType());
+    auto funcRetShape = relatedOpsType.getShape();
+    outputShape.append(funcRetShape.begin(), funcRetShape.end());
+
+    auto batchOp = rewriter.create<enzyme::BatchOp>(
+        sliceOp.getLoc(),
+        RankedTensorType::get(outputShape, relatedOpsType.getElementType()),
+        mlir::FlatSymbolRefAttr::get(sliceOp.getContext(), sliceToBatchName),
+        ValueRange(batchOpOperands),
+        rewriter.getDenseI64ArrayAttr(
+            {static_cast<int64_t>(relatedSlices.size())}));
+
+    SmallVector<int64_t> startIndices(outputShape.size(), 0);
+    SmallVector<int64_t> endIndices;
+    endIndices.append(outputShape.begin(), outputShape.end());
+    SmallVector<int64_t> strides(outputShape.size(), 1);
+    for (auto [sliceInfo, otherOp] : llvm::zip(relatedSlices, relatedOps)) {
+      startIndices[sliceInfo.sliceDim] = sliceInfo.sliceStart;
+      endIndices[sliceInfo.sliceDim] = sliceInfo.sliceStart + 1;
+
+      auto slicedOp = rewriter.create<stablehlo::SliceOp>(
+          sliceOp.getLoc(), batchOp->getResult(0),
+          rewriter.getDenseI64ArrayAttr(startIndices),
+          rewriter.getDenseI64ArrayAttr(endIndices),
+          rewriter.getDenseI64ArrayAttr(strides));
+      rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(
+          otherOp, otherOp->getResult(0).getType(), slicedOp);
+    }
+
+    std::map<enzyme::batchutils::BatchCacheKey, FunctionOpInterface>
+        batchedFunctionCache;
+    return enzyme::batchutils::batchOperation(
+        rewriter, batchOp, cast<FunctionOpInterface>(func.getOperation()),
+        batchedFunctionCache);
   }
 
 private:
@@ -22982,6 +23067,7 @@ private:
     bool supported;
     int64_t sliceDim, sliceStart;
 
+    // TODO: do we need to check for full slices? maybe we should??
     for (size_t i = 0; i < infoStartIndices.size(); ++i) {
       if (infoStartIndices[i] == infoEndIndices[i] - 1 &&
           !(infoStartIndices[i] == 0 && infoEndIndices[i] == inputShape[i])) {
@@ -22997,11 +23083,11 @@ private:
       }
     }
 
-    return SliceInfo{slice, infoStartIndices, infoEndIndices, infoStrides,
-                     sliceDim, sliceStart, supported};
+    return SliceInfo{slice,    infoStartIndices, infoEndIndices, infoStrides,
+                     sliceDim, sliceStart,       supported};
   }
 
-  bool areSlicesContiguous(ArrayRef<SliceInfo> slices) const {
+  bool areSlicesContiguous(SmallVector<SliceInfo> &slices) const {
     if (slices.empty())
       return false;
 
@@ -23010,12 +23096,15 @@ private:
       if (slice.sliceDim != sliceDim) {
         return false;
       }
+      if (!slice.supported) {
+        return false;
+      }
     }
 
-    // // Sort slices by start index
-    // llvm::sort(slices, [](const SliceInfo &a, const SliceInfo &b) {
-    //   return a.sliceStart < b.sliceStart;
-    // });
+    // Sort slices by start index
+    llvm::sort(slices, [](const SliceInfo &a, const SliceInfo &b) {
+      return a.sliceStart < b.sliceStart;
+    });
 
     int64_t expectedStart = slices[0].sliceStart;
     for (const auto &slice : slices) {
@@ -24166,12 +24255,12 @@ struct EnzymeHLOOptPass
         // ConcatInsertDimToBatch<stablehlo::ScatterOp>, after batch op interface is implemented
         ConcatInsertDimToBatch<stablehlo::SortOp>,
         ConcatInsertDimToBatch<stablehlo::ReduceWindowOp>,
-        SliceToBatch<stablehlo::DotGeneralOp>,
-        SliceToBatch<stablehlo::GatherOp>,
-        SliceToBatch<stablehlo::IotaOp>,
-        SliceToBatch<stablehlo::ReduceOp>,
-        SliceToBatch<stablehlo::SortOp>,
-        SliceToBatch<stablehlo::ReduceWindowOp>,
+        SliceToBatchBase<stablehlo::DotGeneralOp>,
+        SliceToBatchBase<stablehlo::GatherOp>,
+        SliceToBatchBase<stablehlo::IotaOp>,
+        SliceToBatchBase<stablehlo::ReduceOp>,
+        SliceToBatchBase<stablehlo::SortOp>,
+        SliceToBatchBase<stablehlo::ReduceWindowOp>,
         DotGeneralDistributiveSimplify<stablehlo::AddOp>,
         DotGeneralDistributiveSimplify<stablehlo::SubtractOp>,
         TrivialReduceWindowToReduceOp,
