@@ -3371,11 +3371,9 @@ public:
 
     WhileLoopInfo info(whileOp);
 
-    // TODO: support non-constant loops by using a dynamic dimension
-    // ...   should we fail ? i.e. return failure();
-    if (info.computeInfo().failed() || !info.isValid() || !info.isConstant()) {
+    if (info.computeInfo().failed() || !info.isValid()) {
       return rewriter.notifyMatchFailure(
-          op, "WhileOp does not have static iteration count for cache removal");
+          op, "WhileOp does not have known iteration count for cache removal");
     }
 
     DenseMap<Value, SmallVector<Operation *>> updatedGradientUsers;
@@ -3441,7 +3439,8 @@ public:
     // while loop with N iterations. For each of these cache, generate a
     // batched tensor with N prepended. Cache pushes become
     // dynamic_update_slice and cache pops become dynamic_slice.
-    auto numIters = info.getConstantNumIters();
+    auto numIters =
+        info.isConstant() ? info.getConstantNumIters() : ShapedType::kDynamic;
 
     Value inductionVariable; // [0,..., N - 1] counter from within the loop
 
@@ -3459,27 +3458,29 @@ public:
       minCutCache(forward, reverse, caches, rewriter);
     }
 
-    for (auto &info : caches) {
-      Value cache = info.initOp.getResult();
+    Value itersV = nullptr;
+
+    for (auto &cinfo : caches) {
+      Value cache = cinfo.initOp.getResult();
 
       // push does not depend on a value inside the loop, we can hoist the
       // push/pop before the for loops.
-      if (info.pushedValue().getParentRegion() != whileOp.getBody()) {
+      if (cinfo.pushedValue().getParentRegion() != whileOp.getBody()) {
         auto newPush = rewriter.create<enzyme::PushOp>(cache.getLoc(), cache,
-                                                       info.pushedValue());
-        rewriter.eraseOp(info.pushOp);
-        info.pushOp = newPush;
+                                                       cinfo.pushedValue());
+        rewriter.eraseOp(cinfo.pushOp);
+        cinfo.pushOp = newPush;
 
         {
           OpBuilder::InsertionGuard guard(rewriter);
-          rewriter.setInsertionPoint(info.popOp->getParentOp());
+          rewriter.setInsertionPoint(cinfo.popOp->getParentOp());
 
-          auto popVal = info.popOp.getResult();
+          auto popVal = cinfo.popOp.getResult();
           auto newPop = rewriter.create<enzyme::PopOp>(cache.getLoc(),
                                                        popVal.getType(), cache);
           rewriter.replaceAllUsesWith(popVal, newPop.getResult());
-          rewriter.eraseOp(info.popOp);
-          info.popOp = newPop;
+          rewriter.eraseOp(cinfo.popOp);
+          cinfo.popOp = newPop;
         }
 
         continue;
@@ -3491,23 +3492,67 @@ public:
       }
 
       auto newType =
-          cast<ShapedType>(cast<AutoDiffTypeInterface>(info.cachedType())
+          cast<ShapedType>(cast<AutoDiffTypeInterface>(cinfo.cachedType())
                                .getShadowType(numIters));
 
-      Value initValue = cast<AutoDiffTypeInterface>(newType).createNullValue(
-          rewriter, info.initOp->getLoc());
+      Value initValue;
+      if (info.isConstant()) {
+        initValue = cast<AutoDiffTypeInterface>(newType).createNullValue(
+            rewriter, cinfo.initOp->getLoc());
+      } else {
+        if (!itersV)
+          itersV = info.getNumIters(rewriter);
+        SmallVector<int64_t> zeros = llvm::to_vector(newType.getShape());
+        for (auto &v : zeros) {
+          if (v == ShapedType::kDynamic)
+            v = 0;
+        }
+        auto op = cast<AutoDiffTypeInterface>(
+                      RankedTensorType::get(zeros, newType.getElementType()))
+                      .createNullValue(rewriter, cinfo.initOp->getLoc());
+
+        auto zeroOp = cast<AutoDiffTypeInterface>(
+                          RankedTensorType::get(ArrayRef<int64_t>(),
+                                                newType.getElementType()))
+                          .createNullValue(rewriter, cinfo.initOp->getLoc());
+
+        auto zeroInt = rewriter.create<stablehlo::ConstantOp>(
+            cinfo.initOp->getLoc(), itersV.getType(),
+            cast<ElementsAttr>(makeAttr(itersV.getType(), 0)));
+
+        auto ST = RankedTensorType::get(
+            zeros.size(),
+            cast<RankedTensorType>(itersV.getType()).getElementType());
+        auto starts = rewriter.create<stablehlo::ConstantOp>(
+            cinfo.initOp->getLoc(), ST, cast<ElementsAttr>(makeAttr(ST, 0)));
+        auto ints = starts;
+
+        int64_t padStart[] = {0};
+        int64_t padEnd[] = {(int64_t)zeros.size() - 1};
+        auto iterRS = rewriter.create<stablehlo::ReshapeOp>(
+            cinfo.initOp->getLoc(),
+            RankedTensorType::get(
+                {1}, cast<TensorType>(itersV.getType()).getElementType()),
+            itersV);
+        Value ends = rewriter.create<stablehlo::PadOp>(
+            cinfo.initOp->getLoc(), starts.getType(), iterRS, zeroInt, padStart,
+            padEnd, padStart);
+
+        initValue = rewriter.create<stablehlo::DynamicPadOp>(
+            cinfo.initOp->getLoc(), newType, op, zeroOp, starts, ends, ints);
+      }
 
       newOperands.push_back(initValue);
 
-      auto cacheValue = body->addArgument(newType, info.pushOp->getLoc());
-      cond->addArgument(newType, info.pushOp->getLoc());
+      auto cacheValue = body->addArgument(newType, cinfo.pushOp->getLoc());
+      cond->addArgument(newType, cinfo.pushOp->getLoc());
 
       {
         OpBuilder::InsertionGuard guard(rewriter);
-        rewriter.setInsertionPoint(info.pushOp);
+        rewriter.setInsertionPoint(cinfo.pushOp);
 
         Value newCacheValue;
-        if (auto TT = dyn_cast<TensorType>(info.cachedType())) {
+        if (auto TT = dyn_cast<TensorType>(cinfo.cachedType())) {
           auto shape = TT.getShape();
 
           SmallVector<Value> startIndices(shape.size() + 1, zero);
@@ -3517,11 +3562,11 @@ public:
           updateShape.push_back(1);
           updateShape.append(shape.begin(), shape.end());
           Value reshapedUpdate = rewriter.create<stablehlo::ReshapeOp>(
-              info.pushOp->getLoc(), TT.clone(updateShape),
-              info.pushOp.getValue());
+              cinfo.pushOp->getLoc(), TT.clone(updateShape),
+              cinfo.pushOp.getValue());
 
           newCacheValue = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
-              info.pushOp->getLoc(), cacheValue, reshapedUpdate, startIndices);
+              cinfo.pushOp->getLoc(), cacheValue, reshapedUpdate, startIndices);
         } else {
           assert(false && "todo");
           // newCacheValue = rewriter.create<tensor::InsertOp>(
@@ -3566,14 +3611,24 @@ public:
       rewriter.setInsertionPoint(otherWhileOp);
       SmallVector<Value> operands(otherWhileOp->getOperands().begin(),
                                   otherWhileOp->getOperands().end());
-      operands.push_back(
-          makeI64Constant(otherWhileOp->getLoc(), rewriter, numIters - 1));
+      if (info.isConstant()) {
+        operands.push_back(
+            makeI64Constant(otherWhileOp->getLoc(), rewriter, numIters - 1));
+      } else {
+        if (!itersV)
+          itersV = info.getNumIters(rewriter);
+        auto one = rewriter.create<stablehlo::ConstantOp>(
+            otherWhileOp->getLoc(), itersV.getType(),
+            cast<ElementsAttr>(makeAttr(itersV.getType(), 1)));
+        auto sub = rewriter.create<stablehlo::SubtractOp>(
+            otherWhileOp->getLoc(), itersV, one);
+        operands.push_back(sub);
+      }
 
       Block *otherBody = &otherWhileOp.getBody().front();
       Block *otherCond = &otherWhileOp.getCond().front();
       Value otherInductionVariable = otherBody->addArgument(
-          RankedTensorType::get({}, rewriter.getI64Type()),
-          otherWhileOp->getLoc());
+          operands.back().getType(), otherWhileOp->getLoc());
       otherCond->addArgument(otherInductionVariable.getType(),
                              otherWhileOp->getLoc());
       auto otherTerm = otherBody->getTerminator();
@@ -3584,7 +3639,10 @@ public:
           rewriter
               .create<stablehlo::SubtractOp>(
                   otherWhileOp->getLoc(), otherInductionVariable,
-                  makeI64Constant(otherWhileOp->getLoc(), rewriter, 1))
+                  rewriter.create<stablehlo::ConstantOp>(
+                      otherWhileOp->getLoc(), otherInductionVariable.getType(),
+                      cast<ElementsAttr>(
+                          makeAttr(otherInductionVariable.getType(), 1))))
               .getResult();
       otherTerm->insertOperands(otherTerm->getNumOperands(),
                                 ValueRange(otherInductionVariable));
