@@ -36,6 +36,9 @@ XLA_PATCHES = [
     sed -i.bak0 "s/^bool IsSupportedType/static inline bool IsSupportedType/g" xla/backends/cpu/runtime/convolution_lib.cc
     """,
     """
+    sed -i.bak0 "s/Node::Leaf(std::forward<decltype(value)>/Node::Leaf(std::forward<T>/g" xla/tuple_tree.h
+    """,
+    """
     sed -i.bak0 "/link_file/d" third_party/llvm/workspace.bzl
     """,
     """
