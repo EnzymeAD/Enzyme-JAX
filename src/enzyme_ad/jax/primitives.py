@@ -963,6 +963,8 @@ def _enzyme_primal_lowering(
             for f in mod.regions[0].blocks[0]:
                 fns.append(f.sym_name.value)
 
+            if len(pass_pipeline) > 0:
+                pass_pipeline = pass_pipeline + ",tensor-empty-raise"
             name, nmod = enzyme_call.run_pass_pipeline(fns, source, pass_pipeline)
             if print_mlir:
                 if type(print_mlir) != type(True):
