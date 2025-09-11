@@ -35,7 +35,7 @@ jobs:
     name: Build Reactant_jll
     strategy:
       fail-fast: false
-    uses: EnzymeAD/ReactantBuilder/.github/workflows/build-reactant-reusable.yml@mg/ci
+    uses: EnzymeAD/ReactantBuilder/.github/workflows/build-reactant-reusable.yml@main
     with:
       reactantbuilder_ref: 'main'
       enzyme_jax_commit: ${{ github.sha }}
