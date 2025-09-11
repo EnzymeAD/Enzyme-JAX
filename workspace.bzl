@@ -1,4 +1,4 @@
-JAX_COMMIT = "a4c1bee798901d5ee39c9645b090542fed8c5576"
+JAX_COMMIT = "f74467851b1186b434d4b538d0be419378a47a69"
 JAX_SHA256 = ""
 
 ENZYME_COMMIT = "4ec5801f3c56ce1b26f9ce68ea5ca20bbb8bbd00"
@@ -20,12 +20,6 @@ XLA_PATCHES = [
     """,
     """
     sed -i.bak0 "s/patch_file/patch_args = [\\\"-p1\\\"],patches/g" third_party/llvm/workspace.bzl
-    """,
-    """
-    sed -i.bak0 "s/patches = \\[/ patches = \\[\\\"\\/\\/:patches\\/llvm.patch\\\",/g" third_party/llvm/workspace.bzl
-    """,
-    """
-    sed -i.bak0 "s/patches = \\[/ patches = \\[\\\"\\/\\/:patches\\/llvm2.patch\\\",/g" third_party/llvm/workspace.bzl
     """,
     # TODO remove
     """
