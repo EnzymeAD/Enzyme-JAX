@@ -3617,6 +3617,8 @@ public:
         operands.push_back(
             makeI64Constant(otherWhileOp->getLoc(), rewriter, numIters - 1));
       } else {
+        if (!itersV)
+          itersV = info.getNumIters(rewriter);
         auto one = rewriter.create<stablehlo::ConstantOp>(
             otherWhileOp->getLoc(), itersV.getType(),
             cast<ElementsAttr>(makeAttr(itersV.getType(), 1)));
