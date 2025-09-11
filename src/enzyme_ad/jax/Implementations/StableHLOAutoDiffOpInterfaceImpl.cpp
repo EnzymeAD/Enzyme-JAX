@@ -3630,8 +3630,7 @@ public:
       Block *otherBody = &otherWhileOp.getBody().front();
       Block *otherCond = &otherWhileOp.getCond().front();
       Value otherInductionVariable = otherBody->addArgument(
-          RankedTensorType::get({}, rewriter.getI64Type()),
-          otherWhileOp->getLoc());
+          operands.back().getType(), otherWhileOp->getLoc());
       otherCond->addArgument(otherInductionVariable.getType(),
                              otherWhileOp->getLoc());
       auto otherTerm = otherBody->getTerminator();
@@ -3642,7 +3641,9 @@ public:
           rewriter
               .create<stablehlo::SubtractOp>(
                   otherWhileOp->getLoc(), otherInductionVariable,
-                  makeI64Constant(otherWhileOp->getLoc(), rewriter, 1))
+                  rewriter.create<stablehlo::ConstantOp>(
+                      otherWhileOp->getLoc(), otherInductionVariable.getType(),
+                      cast<ElementsAttr>(makeAttr(itersV.getType(), 1))))
               .getResult();
       otherTerm->insertOperands(otherTerm->getNumOperands(),
                                 ValueRange(otherInductionVariable));
