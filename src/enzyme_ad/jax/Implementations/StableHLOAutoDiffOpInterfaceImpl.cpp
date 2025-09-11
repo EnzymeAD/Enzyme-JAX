@@ -3371,8 +3371,6 @@ public:
 
     WhileLoopInfo info(whileOp);
 
-    // TODO: support non-constant loops by using a dynamic dimension
-    // ...   should we fail ? i.e. return failure();
     if (info.computeInfo().failed() || !info.isValid()) {
       return rewriter.notifyMatchFailure(
           op, "WhileOp does not have known iteration count for cache removal");
@@ -3643,7 +3641,8 @@ public:
                   otherWhileOp->getLoc(), otherInductionVariable,
                   rewriter.create<stablehlo::ConstantOp>(
                       otherWhileOp->getLoc(), otherInductionVariable.getType(),
-                      cast<ElementsAttr>(makeAttr(itersV.getType(), 1))))
+                      cast<ElementsAttr>(
+                          makeAttr(otherInductionVariable.getType(), 1))))
               .getResult();
       otherTerm->insertOperands(otherTerm->getNumOperands(),
                                 ValueRange(otherInductionVariable));
