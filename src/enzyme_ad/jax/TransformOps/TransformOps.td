@@ -2341,25 +2341,25 @@ def ApplyMaxReduceSliceFusionPatterns : EnzymeHLOPatternOp<
 
 def ApplySliceToBatchDotGeneral : EnzymeHLOPatternOp<
     "slice_to_batch_dotgeneral"> {
-  let patterns = ["SliceToBatch<stablehlo::DotGeneralOp>"];
+  let patterns = ["SliceToBatchBase<stablehlo::DotGeneralOp>"];
 }
 def ApplySliceToBatchGather : EnzymeHLOPatternOp<
     "slice_to_batch_gather"> {
-  let patterns = ["SliceToBatch<stablehlo::GatherOp>"];
+  let patterns = ["SliceToBatchBase<stablehlo::GatherOp>"];
 }
 def ApplySliceToBatchIota : EnzymeHLOPatternOp<
     "slice_to_batch_iota"> {
-  let patterns = ["SliceToBatch<stablehlo::IotaOp>"];
+  let patterns = ["SliceToBatchBase<stablehlo::IotaOp>"];
 }
 def ApplySliceToBatchReduceWindow : EnzymeHLOPatternOp<
     "slice_to_batch_reducewindow"> {
-  let patterns = ["SliceToBatch<stablehlo::ReduceWindowOp>"];
+  let patterns = ["SliceToBatchBase<stablehlo::ReduceWindowOp>"];
 }
 def ApplySliceToBatchReduce : EnzymeHLOPatternOp<
     "slice_to_batch_reduce"> {
-  let patterns = ["SliceToBatch<stablehlo::ReduceOp>"];
+  let patterns = ["SliceToBatchBase<stablehlo::ReduceOp>"];
 }
 def ApplySliceToBatchSort : EnzymeHLOPatternOp<
     "slice_to_batch_sort"> {
-  let patterns = ["SliceToBatch<stablehlo::SortOp>"];
+  let patterns = ["SliceToBatchBase<stablehlo::SortOp>"];
 }
