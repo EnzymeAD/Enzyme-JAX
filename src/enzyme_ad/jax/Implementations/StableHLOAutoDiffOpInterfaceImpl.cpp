@@ -3530,7 +3530,7 @@ public:
         auto ints = starts;
 
         int64_t padStart[] = {0};
-        int64_t padEnd[] = {zeros.size() - 1};
+        int64_t padEnd[] = {(int64_t)zeros.size() - 1};
         auto iterRS = rewriter.create<stablehlo::ReshapeOp>(
             cinfo.initOp->getLoc(),
             RankedTensorType::get(
