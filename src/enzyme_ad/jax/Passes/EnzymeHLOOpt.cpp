@@ -22668,8 +22668,8 @@ func::FuncOp createWrapperUnbatchedFunction(PatternRewriter &rewriter,
 std::tuple<SmallVector<Value>, SmallVector<int32_t>>
 constructAndExtractBatchOperands(PatternRewriter &rewriter,
                                  ArrayRef<Operation *> batchOps, Location loc,
-                                 int64_t specialSliceOperand,
-                                 int64_t sliceDim, int64_t nbatches) {
+                                 int64_t specialSliceOperand, int64_t sliceDim,
+                                 int64_t nbatches) {
   SmallVector<Value> operands;
   SmallVector<int32_t> operandIndexMap;
 
