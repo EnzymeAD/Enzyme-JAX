@@ -4,11 +4,11 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
-#include "src/enzyme_ad/jax/Passes/Passes.h"
-#include "src/enzyme_ad/jax/Utils.h"
 
 #define DEBUG_TYPE "auto-batching"
 
@@ -319,7 +319,7 @@ struct SliceToBatchBase : public OpRewritePattern<stablehlo::SliceOp> {
   using OpRewritePattern<stablehlo::SliceOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(stablehlo::SliceOp sliceOp,
-                                    PatternRewriter &rewriter) const override {
+                                PatternRewriter &rewriter) const override {
     Value sliceInput = sliceOp.getOperand();
 
     // Check if slice is used by target OpTy
@@ -542,8 +542,7 @@ struct AutoBatchingPass
     }
 
     if (slice_to_batch_passes) {
-      patterns.add<
-                   SliceToBatchBase<stablehlo::DotGeneralOp>,
+      patterns.add<SliceToBatchBase<stablehlo::DotGeneralOp>,
                    SliceToBatchBase<stablehlo::GatherOp>,
                    SliceToBatchBase<stablehlo::IotaOp>,
                    SliceToBatchBase<stablehlo::ReduceOp>,

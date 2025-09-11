@@ -879,9 +879,8 @@ bool allOperandsAreConstant(mlir::Operation *op) {
   return true;
 }
 
-SmallVector<int64_t>
-findReshapeInsertionDims(RankedTensorType inputType,
-                         RankedTensorType outputType) {
+SmallVector<int64_t> findReshapeInsertionDims(RankedTensorType inputType,
+                                              RankedTensorType outputType) {
   if (inputType.getRank() >= outputType.getRank())
     return {}; // trivial no insertion case
 
