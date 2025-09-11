@@ -879,6 +879,50 @@ bool allOperandsAreConstant(mlir::Operation *op) {
   return true;
 }
 
+SmallVector<int64_t>
+findReshapeInsertionDims(RankedTensorType inputType,
+                         RankedTensorType outputType) {
+  if (inputType.getRank() >= outputType.getRank())
+    return {}; // trivial no insertion case
+
+  SmallVector<int64_t> insertionDims;
+  size_t inputDimIndex = 0;
+
+  for (size_t i = 0; i < outputType.getRank(); ++i) {
+    auto dim = outputType.getShape()[i];
+    if (inputDimIndex < inputType.getRank() &&
+        dim == inputType.getShape()[inputDimIndex]) {
+      ++inputDimIndex;
+    } else if (dim == 1 && (inputDimIndex >= inputType.getShape().size() ||
+                            dim != inputType.getShape()[inputDimIndex])) {
+      // Singleton dimension inserted by reshape.
+      insertionDims.push_back(i);
+    } else {
+      // Reshape modifies existing dimensions, which we don't handle here.
+      return {};
+    }
+  }
+
+  // If we haven't seen all of the input dimensions, we don't have a valid
+  // insertion point.
+  if (inputDimIndex != inputType.getRank())
+    return {};
+
+  return insertionDims;
+}
+
+bool isOnlyUsedInOperation(Operation *operation, Operation *parentOp) {
+  if (!operation || !parentOp)
+    return false;
+
+  for (Operation *user : operation->getUsers()) {
+    if (user != parentOp)
+      return false;
+  }
+
+  return true;
+}
+
 } // namespace enzyme
 
 namespace stablehlo {

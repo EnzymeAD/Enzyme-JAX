@@ -349,12 +349,6 @@ def optimization_passes(
         "select_simplify",
         "concatenate_subtract_to_subtract_pad",
         "concatenate_broadcast_in_dim",
-        "concat_insert_dim_dot_general",
-        "concat_insert_dim_gather",
-        "concat_insert_dim_iota",
-        "concat_insert_dim_reduce",
-        "concat_insert_dim_sort",
-        "concat_insert_dim_reduce_window",
     ]
 
     # constant propagation patterns
@@ -564,14 +558,18 @@ def full_optimization_pass_pipeline(
         [
             "mark-func-memory-effects",
             opt_passes,
+            "auto-batching",
             "enzyme-batch",
             opt_passes,
+            "auto-batching",
             enzyme_pass,
             opt_passes,
+            "auto-batching",
             "canonicalize",
             "remove-unnecessary-enzyme-ops",
             "enzyme-simplify-math",
             opt_passes,
+            "auto-batching",
             propagate_down_passes,
         ]
     )
