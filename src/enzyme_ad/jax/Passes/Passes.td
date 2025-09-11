@@ -95,6 +95,14 @@ def ArithRaisingPass : Pass<"arith-raise"> {
       /*description=*/"Whether to raise to stablehlo vs mhlo">];
 }
 
+def TensorEmptyOpRaisingPass : Pass<"tensor-empty-raise"> {
+  let summary = "Raise tensor.empty ops";
+  let dependentDialects = [
+    "tensor::TensorDialect",
+    "stablehlo::StablehloDialect"
+  ];
+}
+
 def ConsumingInterpreterPass : Pass<"enzyme-consuming-transform-interpreter"> {
   let summary = "Run the transform interpreter and remove the script";
   let description =
