@@ -224,7 +224,7 @@ jobs:
         if: ${{ !cancelled() }}
         with:
           name: 'simulation-xla-dump-${{ env.ARTIFACT_INDEX }}'
-          path: '${{ env.GB25_DIR }}/**/xla_dump'
+          path: '${{ env.GB25_DIR }}/**/xla_dump*'
           retention-days: 90
           overwrite: false
       - name: Upload XLA profiler traces
