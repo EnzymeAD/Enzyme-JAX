@@ -1,5 +1,9 @@
 name: Build Enzyme-JAX
 
+permissions:
+  contents: write
+  deployments: write
+
 on:
   push:
     branches:
