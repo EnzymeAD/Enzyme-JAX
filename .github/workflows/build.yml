@@ -213,7 +213,5 @@ jobs:
           summary-always: true
           alert-threshold: "150%"
           fail-on-alert: false
-          # XXX: re-enable before merging
-          # auto-push: ${{ github.event_name != 'pull_request' }}
-          auto-push: true
+          auto-push: ${{ github.event_name != 'pull_request' }}
           max-items-in-chart: 50
