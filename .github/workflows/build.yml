@@ -97,7 +97,7 @@ jobs:
           BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=WRAP"
           BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=VBAR_CONTROL_SERVICE_URL"
           echo "BAZEL_FLAGS=${BAZEL_FLAGS}" >> "${GITHUB_ENV}"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: bazel-contrib/setup-bazel@0.15.0
         name: Set up Bazel
         with:
