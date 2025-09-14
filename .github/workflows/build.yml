@@ -1,5 +1,11 @@
 name: Build Enzyme-JAX
 
+permissions:
+  contents: write # contents permission to update benchmark contents in gh-pages branch
+  statuses: read
+  deployments: write # deployments permission to deploy GitHub pages website
+  pull-requests: write
+
 on:
   push:
     branches:
