@@ -22,6 +22,9 @@ namespace enzyme {
 using namespace mlir;
 using namespace mlir::enzyme;
 
+static int64_t concatReshapeToBatchCounter = 0;
+static int64_t sliceToBatchCount = 0;
+
 bool anyOpsAreDataDependent(ArrayRef<Operation *> ops) {
   if (ops.size() <= 1)
     return false;
@@ -316,7 +319,6 @@ struct ConcatInsertDimToBatch
         rewriter, concatOpOperands, concatOp.getLoc(),
         BatchOperandConstructionInfo{nullptr, -1, -1, -1, false});
 
-    static int64_t concatReshapeToBatchCounter = 0;
     std::string wrapperFuncName =
         "enzymexla_unbatched_ConcatInsertDimToBatch_" +
         (std::to_string(concatReshapeToBatchCounter++));
@@ -423,8 +425,6 @@ struct SliceToBatchBase : public OpRewritePattern<stablehlo::SliceOp> {
       auto sliceInfo = extractSliceInfo(candidateSlice);
 
       Operation *onlyUser = *candidateSlice.getResult().getUsers().begin();
-
-      // TODO: we should also check for intermediate bcast/transpose ops
 
       bool isIntermediateReshape = false;
       auto candidateTargetOp = dyn_cast<OpTy>(onlyUser);
@@ -541,7 +541,6 @@ struct SliceToBatchBase : public OpRewritePattern<stablehlo::SliceOp> {
             static_cast<int32_t>(relatedSlices[0].sliceDim),
             static_cast<int32_t>(relatedSlices.size()), intermediateReshape});
 
-    static int64_t sliceToBatchCount = 0;
     std::string sliceToBatchName = "enzymexla_unbatched_SliceToBatch_" +
                                    std::to_string(sliceToBatchCount++);
 
@@ -712,6 +711,8 @@ struct AutoBatchingPass
                    SliceToBatchBase<stablehlo::IotaOp>,
                    SliceToBatchBase<stablehlo::ReduceOp>,
                    SliceToBatchBase<stablehlo::SortOp>,
+                   SliceToBatchBase<stablehlo::TransposeOp>,
+                   SliceToBatchBase<stablehlo::BroadcastInDimOp>,
                    SliceToBatchBase<stablehlo::ReduceWindowOp>>(context);
     }
 
