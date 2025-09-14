@@ -428,6 +428,7 @@ struct SliceToBatchBase : public OpRewritePattern<stablehlo::SliceOp> {
 
       bool isIntermediateReshape = false;
       auto candidateTargetOp = ((Child *)this)->isValidTargetOp(onlyUser);
+
       Operation *preceedingOp = candidateSlice;
       if (!candidateTargetOp) {
         // check for reshape
@@ -458,17 +459,7 @@ struct SliceToBatchBase : public OpRewritePattern<stablehlo::SliceOp> {
         preceedingOp = intermediateReshape;
       }
 
-      if (idx == 0) {
-        for (auto [i, opOperand] :
-             llvm::enumerate(candidateTargetOp->getOperands())) {
-          if (opOperand == preceedingOp->getResult(0)) {
-            sliceOperandIndex = i;
-            break;
-          }
-        }
-      }
-
-      if (idx != 0) {
+      if (targetOp) {
         if (!OperationEquivalence::isEquivalentTo(
                 targetOp, candidateTargetOp,
                 OperationEquivalence::ignoreValueEquivalence, nullptr,
@@ -476,6 +467,13 @@ struct SliceToBatchBase : public OpRewritePattern<stablehlo::SliceOp> {
           continue;
         }
       } else {
+        for (auto [i, opOperand] :
+             llvm::enumerate(candidateTargetOp->getOperands())) {
+          if (opOperand == preceedingOp->getResult(0)) {
+            sliceOperandIndex = i;
+            break;
+          }
+        }
         targetOp = candidateTargetOp;
       }
 
