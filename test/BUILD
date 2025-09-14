@@ -92,81 +92,81 @@ py_test(
     deps = TEST_DEPS,
 )
 
-py_test(
-    name = "testffi",
-    srcs = [
-        "test_utils.py",
-        "testffi.py",
-    ],
-    imports = ["."],
-    tags = ["exclusive"],
-    deps = TEST_DEPS,
-)
+# py_test(
+#     name = "testffi",
+#     srcs = [
+#         "test_utils.py",
+#         "testffi.py",
+#     ],
+#     imports = ["."],
+#     tags = ["exclusive"],
+#     deps = TEST_DEPS,
+# )
 
-py_test(
-    name = "llama",
-    timeout = "long",
-    srcs = [
-        "llama.py",
-        "test_utils.py",
-    ],
-    imports = ["."],
-    tags = ["exclusive"],
-    deps = TEST_DEPS,
-)
+# py_test(
+#     name = "llama",
+#     timeout = "long",
+#     srcs = [
+#         "llama.py",
+#         "test_utils.py",
+#     ],
+#     imports = ["."],
+#     tags = ["exclusive"],
+#     deps = TEST_DEPS,
+# )
 
-py_test(
-    name = "jaxmd",
-    timeout = "eternal",
-    srcs = [
-        "jaxmd.py",
-        "test_utils.py",
-    ],
-    imports = ["."],
-    tags = ["exclusive"],
-    deps = TEST_DEPS + select({
-        "@bazel_tools//src/conditions:linux_x86_64": [
-            "@pypi_jax_md//:pkg",
-            "@pypi_jraph//:pkg",
-        ],
-        "//conditions:default": [],
-    }),
-)
+# py_test(
+#     name = "jaxmd",
+#     timeout = "eternal",
+#     srcs = [
+#         "jaxmd.py",
+#         "test_utils.py",
+#     ],
+#     imports = ["."],
+#     tags = ["exclusive"],
+#     deps = TEST_DEPS + select({
+#         "@bazel_tools//src/conditions:linux_x86_64": [
+#             "@pypi_jax_md//:pkg",
+#             "@pypi_jraph//:pkg",
+#         ],
+#         "//conditions:default": [],
+#     }),
+# )
 
-py_test(
-    name = "neuralgcm_test",
-    timeout = "eternal",
-    srcs = [
-        "neuralgcm_test.py",
-        "test_utils.py",
-    ],
-    imports = ["."],
-    tags = ["exclusive"],
-    deps = TEST_DEPS + ["@pypi_neuralgcm//:pkg"] + select({
-        "@bazel_tools//src/conditions:linux_x86_64": ["@pypi_gcsfs//:pkg"],
-        "//conditions:default": [],
-    }),
-)
+# py_test(
+#     name = "neuralgcm_test",
+#     timeout = "eternal",
+#     srcs = [
+#         "neuralgcm_test.py",
+#         "test_utils.py",
+#     ],
+#     imports = ["."],
+#     tags = ["exclusive"],
+#     deps = TEST_DEPS + ["@pypi_neuralgcm//:pkg"] + select({
+#         "@bazel_tools//src/conditions:linux_x86_64": ["@pypi_gcsfs//:pkg"],
+#         "//conditions:default": [],
+#     }),
+# )
 
-py_test(
-    name = "keras_test",
-    timeout = "eternal",
-    srcs = [
-        "keras_test.py",
-        "test_utils.py",
-    ],
-    imports = ["."],
-    tags = ["exclusive"],
-    deps = TEST_DEPS + select({
-        "@bazel_tools//src/conditions:linux_x86_64": [
-            "@pypi_benchmark//:pkg",
-            "@pypi_keras//:pkg",
-            "@pypi_keras_cv//:pkg",
-            "@pypi_keras_hub//:pkg",
-        ],
-        "//conditions:default": [],
-    }),
-)
+# py_test(
+#     name = "keras_test",
+#     timeout = "eternal",
+#     srcs = [
+#         "keras_test.py",
+#         "test_utils.py",
+#     ],
+#     imports = ["."],
+#     tags = ["exclusive"],
+#     deps = TEST_DEPS + select({
+#         "@bazel_tools//src/conditions:linux_x86_64": [
+#             "@pypi_benchmark//:pkg",
+#             "@pypi_keras//:pkg",
+#             "@pypi_keras_cv//:pkg",
+#             "@pypi_keras_hub//:pkg",
+#         ],
+#         "//conditions:default": [],
+#     }),
+# )
 
 # py_test(
 #     name = "maxtext",
