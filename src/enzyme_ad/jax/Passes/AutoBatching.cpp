@@ -25,56 +25,60 @@ using namespace mlir::enzyme;
 static int64_t concatReshapeToBatchCounter = 0;
 static int64_t sliceToBatchCount = 0;
 
+// This function checks if any 2 ops in the list are data-dependent on each
+// other. We exploit the fact that while traversing the dep graph if we are at a
+// position before the other ops in the set, we know that the other ops are not
+// data dependent.
 bool anyOpsAreDataDependent(ArrayRef<Operation *> ops) {
   if (ops.size() <= 1)
     return false;
 
   SmallPtrSet<Operation *, 8> subsetOps(ops.begin(), ops.end());
-
   Block *parentBlock = ops[0]->getBlock();
 
-  DenseMap<Value, Operation *> valueToOp;
-  for (Operation &op : parentBlock->getOperations()) {
-    for (Value v : op.getResults()) {
-      valueToOp[v] = &op;
-    }
-  }
+  SmallVector<Operation *> sortedOps(ops.begin(), ops.end());
+  std::sort(sortedOps.begin(), sortedOps.end(),
+            [](Operation *a, Operation *b) { return a->isBeforeInBlock(b); });
 
-  // compute direct dependencies
-  llvm::DenseMap<Operation *, llvm::SmallPtrSet<Operation *, 8>> depGraph;
-  for (Operation &opA : parentBlock->getOperations()) {
-    for (Operation &opB : parentBlock->getOperations()) {
-      if (&opA == &opB)
-        continue;
-      for (Value operand : opB.getOperands()) {
-        auto it = valueToOp.find(operand);
-        if (it != valueToOp.end() && it->second == &opA) {
-          depGraph[&opA].insert(&opB);
-          break;
+  // For each op, we only need to check if it depends on any earlier op in our
+  // subset We can use a worklist approach but only traverse backwards in
+  // program order
+  for (int i = 1; i < sortedOps.size(); ++i) {
+    Operation *laterOp = sortedOps[i];
+
+    // Track all operations this op transitively depends on
+    SmallPtrSet<Operation *, 16> dependencies;
+    SmallVector<Operation *> worklist;
+
+    // Start with direct operands
+    for (Value operand : laterOp->getOperands()) {
+      Operation *definingOp = operand.getDefiningOp();
+      if (definingOp && definingOp->getBlock() == parentBlock) {
+        if (dependencies.insert(definingOp).second) {
+          worklist.push_back(definingOp);
         }
       }
     }
-  }
 
-  // Now check transitive dependencies between ops in our subset
-  for (Operation *opA : ops) {
-    SmallPtrSet<Operation *, 8> visited;
-    SmallVector<Operation *> worklist;
-
-    worklist.push_back(opA);
-    visited.insert(opA);
-
+    // Expand transitively, but only for ops that come before laterOp
     while (!worklist.empty()) {
       Operation *curr = worklist.pop_back_val();
 
-      for (Operation *succ : depGraph[curr]) {
-        if (visited.insert(succ).second) {
-          worklist.push_back(succ);
-          // If successor is in our subset AND different from opA, we found a
-          // dependency
-          if (subsetOps.contains(succ) && succ != opA) {
-            return true;
-          }
+      // Early termination: if we found a dependency in our subset, we're done
+      if (subsetOps.contains(curr)) {
+        return true;
+      }
+
+      // Only explore dependencies of operations that come before laterOp
+      if (!curr->isBeforeInBlock(laterOp))
+        continue;
+
+      for (Value operand : curr->getOperands()) {
+        Operation *definingOp = operand.getDefiningOp();
+        if (definingOp && definingOp->getBlock() == parentBlock &&
+            definingOp->isBeforeInBlock(laterOp) &&
+            dependencies.insert(definingOp).second) {
+          worklist.push_back(definingOp);
         }
       }
     }
@@ -490,14 +494,17 @@ struct SliceToBatchBase : public OpRewritePattern<stablehlo::SliceOp> {
       return rewriter.notifyMatchFailure(sliceOp,
                                          "slices not compatible for batching");
 
-    if (anyOpsAreDataDependent(relatedOps))
-      return rewriter.notifyMatchFailure(sliceOp, "ops are data dependent");
+    if (!allOpsAreUnique(relatedOps))
+      return rewriter.notifyMatchFailure(sliceOp, "ops are not unique");
 
     auto [validReshapes, intermediateReshape] =
         allSameBool(allHaveIntermediateReshapes);
     if (!validReshapes)
       return rewriter.notifyMatchFailure(
           sliceOp, "not all ops have same intermediate reshape");
+
+    if (anyOpsAreDataDependent(relatedOps))
+      return rewriter.notifyMatchFailure(sliceOp, "ops are data dependent");
 
     assert(sliceOperandIndex >= 0);
 
@@ -684,6 +691,15 @@ private:
     }
     return {true, first};
   }
+
+  bool allOpsAreUnique(const SmallVector<Operation *> &ops) const {
+    SmallPtrSet<Operation *, 8> seen;
+    for (auto op : ops) {
+      if (!seen.insert(op).second)
+        return false;
+    }
+    return true;
+  }
 };
 
 template <typename OpTy>
@@ -735,6 +751,8 @@ struct AutoBatchingPass
     }
 
     GreedyRewriteConfig config;
+    config.setMaxIterations(max_iterations);
+    config.setUseTopDownTraversal(top_down);
     if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
                                             config))) {
       signalPassFailure();

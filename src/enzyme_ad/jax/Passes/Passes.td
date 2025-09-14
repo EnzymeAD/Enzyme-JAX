@@ -923,6 +923,18 @@ def AutoBatchingPass : Pass<"auto-batching"> {
       /*type=*/"bool",
       /*default=*/"true",
       /*description=*/"Whether to run slice to batch passes">,
+    Option<
+        /*C++ variable name=*/"max_iterations",
+        /*CLI argument=*/"max_iterations",
+        /*type=*/"int64_t",
+        /*default=*/"4",
+        /*description=*/"Maximum number of pattern iterations">,
+    Option<
+        /*C++ variable name=*/"top_down",
+        /*CLI argument=*/"top_down",
+        /*type=*/"bool",
+        /*default=*/"false",
+        /*description=*/"Use top down traversal">,
   ];
 }
 
