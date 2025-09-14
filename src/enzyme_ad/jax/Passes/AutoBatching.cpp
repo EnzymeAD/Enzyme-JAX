@@ -402,7 +402,7 @@ private:
   }
 };
 
-template <typename OpTy>
+template <typename Child>
 struct SliceToBatchBase : public OpRewritePattern<stablehlo::SliceOp> {
   using OpRewritePattern<stablehlo::SliceOp>::OpRewritePattern;
 
@@ -427,7 +427,7 @@ struct SliceToBatchBase : public OpRewritePattern<stablehlo::SliceOp> {
       Operation *onlyUser = *candidateSlice.getResult().getUsers().begin();
 
       bool isIntermediateReshape = false;
-      auto candidateTargetOp = dyn_cast<OpTy>(onlyUser);
+      auto candidateTargetOp = ((Child *)this)->isValidTargetOp(onlyUser);
       Operation *preceedingOp = candidateSlice;
       if (!candidateTargetOp) {
         // check for reshape
@@ -449,8 +449,8 @@ struct SliceToBatchBase : public OpRewritePattern<stablehlo::SliceOp> {
           continue;
 
         isIntermediateReshape = true;
-        candidateTargetOp =
-            dyn_cast<OpTy>(*intermediateReshape.getResult().getUsers().begin());
+        candidateTargetOp = ((Child *)this)->isValidTargetOp(
+            *intermediateReshape.getResult().getUsers().begin());
         if (!candidateTargetOp)
           continue;
         preceedingOp = intermediateReshape;
@@ -686,6 +686,25 @@ private:
   }
 };
 
+template <typename OpTy>
+struct SliceToBatch : public SliceToBatchBase<SliceToBatch<OpTy>> {
+  using SliceToBatchBase<SliceToBatch<OpTy>>::SliceToBatchBase;
+
+  Operation *isValidTargetOp(Operation *op) const {
+    return dyn_cast<OpTy>(op);
+  }
+};
+
+struct SliceToBatchElementwise : public SliceToBatchBase<SliceToBatchElementwise> {
+  using SliceToBatchBase<SliceToBatchElementwise>::SliceToBatchBase;
+
+  Operation *isValidTargetOp(Operation *op) const {
+    if (op->hasTrait<mlir::OpTrait::Elementwise>())
+      return op;
+    return nullptr;
+  }
+};
+
 struct AutoBatchingPass
     : public enzyme::impl::AutoBatchingPassBase<AutoBatchingPass> {
   using Base::Base;
@@ -706,14 +725,15 @@ struct AutoBatchingPass
     }
 
     if (slice_to_batch_passes) {
-      patterns.add<SliceToBatchBase<stablehlo::DotGeneralOp>,
-                   SliceToBatchBase<stablehlo::GatherOp>,
-                   SliceToBatchBase<stablehlo::IotaOp>,
-                   SliceToBatchBase<stablehlo::ReduceOp>,
-                   SliceToBatchBase<stablehlo::SortOp>,
-                   SliceToBatchBase<stablehlo::TransposeOp>,
-                   SliceToBatchBase<stablehlo::BroadcastInDimOp>,
-                   SliceToBatchBase<stablehlo::ReduceWindowOp>>(context);
+      patterns.add<SliceToBatch<stablehlo::DotGeneralOp>,
+                   SliceToBatch<stablehlo::GatherOp>,
+                   SliceToBatch<stablehlo::IotaOp>,
+                   SliceToBatch<stablehlo::ReduceOp>,
+                   SliceToBatch<stablehlo::SortOp>,
+                   SliceToBatch<stablehlo::TransposeOp>,
+                   SliceToBatch<stablehlo::BroadcastInDimOp>,
+                   SliceToBatch<stablehlo::ReduceWindowOp>,
+                   SliceToBatchElementwise>(context);
     }
 
     GreedyRewriteConfig config;
