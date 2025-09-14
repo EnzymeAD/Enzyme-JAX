@@ -607,14 +607,6 @@ def recursive_check(tester, lhs, rhs, tol=1e-6, pname=None):
     tester.assertTrue(False)
 
 
-def pretty_print_table(name, pname, backend, key, time):
-    print(
-        "{:<20}\t{:<20}\t{:<15}\t{:<10}\t{:<15.8f}".format(
-            name, pname, backend, key, time
-        )
-    )
-
-
 class EnzymeJaxTest(absltest.TestCase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -629,6 +621,33 @@ class EnzymeJaxTest(absltest.TestCase):
         self.tol = 1e-6
         self.mlirad_fwd = True
         self.mlirad_rev = True
+        self.results = []
+
+    def pretty_print_table(self, name, pname, backend, key, time):
+        print_str = "{:<20}\t{:<20}\t{:<15}\t{:<10}\t{:<15.8f}".format(
+            name, pname, backend, key, time
+        )
+        print(print_str)
+
+        result_str = "{}\t{}\t{}\t{}\t{}".format(name, pname, backend, key, time)
+        self.results.append(result_str)
+
+    def write_results_csv(self, filename=""):
+        import os, csv
+
+        if filename == "":
+            filename = f"results_{self.__class__.__name__}.csv"
+
+        outdir = os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR", ".")
+        outfile = os.path.join(outdir, filename)
+        with open(outfile, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(
+                ["Benchmark Name", "Pass Pipeline", "Backend", "Key", "Time"]
+            )
+            for line in self.results:
+                writer.writerow(line.split("\t"))
+        print(f"Results written to {outfile}")
 
     def setUp(self):
         self.name = None
@@ -638,6 +657,7 @@ class EnzymeJaxTest(absltest.TestCase):
             return
         setup_backends()
         self.harness(self.name, self.fn, self.ins, self.dins, self.douts)
+        self.write_results_csv()
 
     def harness(self, name, in_fn, ins, dins, douts):
         import timeit
@@ -732,7 +752,7 @@ class EnzymeJaxTest(absltest.TestCase):
                     else:
                         recursive_check(self, ao, primres, self.tol, "Primal " + pname)
 
-                    pretty_print_table(
+                    self.pretty_print_table(
                         name,
                         pname,
                         backend,
@@ -780,7 +800,7 @@ class EnzymeJaxTest(absltest.TestCase):
                                 self, tangents, fwdres, self.tol, "Forward " + pname
                             )
 
-                        pretty_print_table(
+                        self.pretty_print_table(
                             name,
                             pname,
                             backend,
@@ -836,7 +856,7 @@ class EnzymeJaxTest(absltest.TestCase):
                                     self, grads, revres, self.tol, "Reverse " + pname
                                 )
 
-                            pretty_print_table(
+                            self.pretty_print_table(
                                 name,
                                 pname,
                                 backend,
@@ -879,7 +899,7 @@ class EnzymeJaxTest(absltest.TestCase):
                         else:
                             recursive_check(self, grads, revres, self.tol)
 
-                        pretty_print_table(
+                        self.pretty_print_table(
                             name,
                             pname,
                             backend,
@@ -929,7 +949,7 @@ class EnzymeJaxTest(absltest.TestCase):
                         else:
                             recursive_check(self, grads, revres, self.tol)
 
-                        pretty_print_table(
+                        self.pretty_print_table(
                             name,
                             pname,
                             backend,
