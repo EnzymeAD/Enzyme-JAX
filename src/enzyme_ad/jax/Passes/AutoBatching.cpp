@@ -633,7 +633,7 @@ private:
     bool supported;
     int64_t sliceDim, sliceStart;
 
-    // TODO: do we need to check for full slices? maybe we should??
+    supported = true;
     for (size_t i = 0; i < infoStartIndices.size(); ++i) {
       if (infoStartIndices[i] == infoEndIndices[i] - 1 &&
           !(infoStartIndices[i] == 0 && infoEndIndices[i] == inputShape[i])) {
@@ -645,8 +645,16 @@ private:
         sliceDim = i;
         sliceStart = infoStartIndices[i];
         found = true;
-        supported = true;
+      } else { // For all other dims, must be a full slice
+        if (!(infoStartIndices[i] == 0 && infoEndIndices[i] == inputShape[i] &&
+              infoStrides[i] == 1)) {
+          supported = false;
+          break;
+        }
       }
+    }
+    if (!found) { // If no singleton found, not supported
+      supported = false;
     }
 
     return SliceInfo{slice,    infoStartIndices, infoEndIndices, infoStrides,
