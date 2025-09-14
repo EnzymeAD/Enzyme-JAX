@@ -53,7 +53,8 @@ jobs:
           - 'main'
           # - '0123456789abcdef0123456789abcdef01234567'
         reactant_commit:
-          - 'main'
+          # - 'main'
+          - 'ap/batching_passes'
 
     steps:
       - name: Check GPUs
