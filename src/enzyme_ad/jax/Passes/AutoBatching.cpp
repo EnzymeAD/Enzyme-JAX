@@ -22,6 +22,64 @@ namespace enzyme {
 using namespace mlir;
 using namespace mlir::enzyme;
 
+bool anyOpsAreDataDependent(ArrayRef<Operation *> ops) {
+  if (ops.size() <= 1)
+    return false;
+
+  SmallPtrSet<Operation *, 8> subsetOps(ops.begin(), ops.end());
+
+  Block *parentBlock = ops[0]->getBlock();
+
+  DenseMap<Value, Operation *> valueToOp;
+  for (Operation &op : parentBlock->getOperations()) {
+    for (Value v : op.getResults()) {
+      valueToOp[v] = &op;
+    }
+  }
+
+  // compute direct dependencies
+  llvm::DenseMap<Operation *, llvm::SmallPtrSet<Operation *, 8>> depGraph;
+  for (Operation &opA : parentBlock->getOperations()) {
+    for (Operation &opB : parentBlock->getOperations()) {
+      if (&opA == &opB)
+        continue;
+      for (Value operand : opB.getOperands()) {
+        auto it = valueToOp.find(operand);
+        if (it != valueToOp.end() && it->second == &opA) {
+          depGraph[&opA].insert(&opB);
+          break;
+        }
+      }
+    }
+  }
+
+  // Now check transitive dependencies between ops in our subset
+  for (Operation *opA : ops) {
+    SmallPtrSet<Operation *, 8> visited;
+    SmallVector<Operation *> worklist;
+
+    worklist.push_back(opA);
+    visited.insert(opA);
+
+    while (!worklist.empty()) {
+      Operation *curr = worklist.pop_back_val();
+
+      for (Operation *succ : depGraph[curr]) {
+        if (visited.insert(succ).second) {
+          worklist.push_back(succ);
+          // If successor is in our subset AND different from opA, we found a
+          // dependency
+          if (subsetOps.contains(succ) && succ != opA) {
+            return true;
+          }
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
 func::FuncOp createWrapperUnbatchedFunction(PatternRewriter &rewriter,
                                             const std::string &funcName,
                                             ArrayRef<Value> operands,
@@ -95,7 +153,7 @@ constructAndExtractBatchOperands(PatternRewriter &rewriter,
       currentOperands.push_back(currentOperand);
 
       // Check equivalence with first operand
-      if (!firstDefOp) {
+      if (firstDefOp) {
         if (auto currentDefOp = currentOperand.getDefiningOp()) {
           if (!OperationEquivalence::isEquivalentTo(
                   firstDefOp, currentDefOp,
@@ -341,6 +399,7 @@ struct SliceToBatchBase : public OpRewritePattern<stablehlo::SliceOp> {
       if (!candidateSlice || !candidateSlice.getResult().hasOneUse())
         continue;
 
+      // TODO: we should also check for intermediate reshape/bcast ops
       auto candidateTargetOp =
           dyn_cast<OpTy>(*candidateSlice.getResult().getUsers().begin());
       if (!candidateTargetOp)
@@ -372,14 +431,41 @@ struct SliceToBatchBase : public OpRewritePattern<stablehlo::SliceOp> {
       return rewriter.notifyMatchFailure(sliceOp,
                                          "slices not compatible for batching");
 
-    mlir::Operation *lastOp = relatedOps[0];
-    for (mlir::Operation *op : relatedOps) {
-      if (op->isBeforeInBlock(lastOp))
-        continue;
-      else
-        lastOp = op;
+    if (anyOpsAreDataDependent(relatedOps))
+      return rewriter.notifyMatchFailure(sliceOp, "ops are data dependent");
+
+    // move all the related ops and their operands (and theirs) s.t they are
+    // together
+    Operation *firstRelatedOp = relatedOps[0];
+    for (auto &op : relatedOps) {
+      if (op->isBeforeInBlock(firstRelatedOp))
+        firstRelatedOp = op;
     }
-    rewriter.setInsertionPoint(lastOp);
+    for (auto &op : relatedOps) {
+      if (op == firstRelatedOp)
+        continue;
+      SmallVector<Operation *> opsToMove;
+      opsToMove.push_back(op);
+      while (!opsToMove.empty()) {
+        auto currOp = opsToMove.pop_back_val();
+        rewriter.moveOpAfter(currOp, firstRelatedOp);
+        for (auto operand : currOp->getOperands()) {
+          if (auto operandOp = operand.getDefiningOp()) {
+            if (!operandOp->isBeforeInBlock(firstRelatedOp)) {
+              opsToMove.push_back(operandOp);
+            }
+          }
+        }
+      }
+    }
+
+    Operation *insertionPoint = relatedOps[0];
+    for (auto &op : relatedOps) {
+      if (op->isBeforeInBlock(insertionPoint))
+        continue;
+      insertionPoint = op;
+    }
+    rewriter.setInsertionPoint(insertionPoint);
 
     auto [batchOpOperands, operandIndexMap] = constructAndExtractBatchOperands(
         rewriter, relatedOps, sliceOp.getLoc(), sliceOperandIndex,
