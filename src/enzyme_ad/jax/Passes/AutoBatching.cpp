@@ -449,8 +449,10 @@ struct SliceToBatchBase : public OpRewritePattern<stablehlo::SliceOp> {
           continue;
 
         isIntermediateReshape = true;
-        candidateTargetOp = ((Child *)this)->isValidTargetOp(
-            *intermediateReshape.getResult().getUsers().begin());
+        candidateTargetOp =
+            ((Child *)this)
+                ->isValidTargetOp(
+                    *intermediateReshape.getResult().getUsers().begin());
         if (!candidateTargetOp)
           continue;
         preceedingOp = intermediateReshape;
@@ -690,12 +692,11 @@ template <typename OpTy>
 struct SliceToBatch : public SliceToBatchBase<SliceToBatch<OpTy>> {
   using SliceToBatchBase<SliceToBatch<OpTy>>::SliceToBatchBase;
 
-  Operation *isValidTargetOp(Operation *op) const {
-    return dyn_cast<OpTy>(op);
-  }
+  Operation *isValidTargetOp(Operation *op) const { return dyn_cast<OpTy>(op); }
 };
 
-struct SliceToBatchElementwise : public SliceToBatchBase<SliceToBatchElementwise> {
+struct SliceToBatchElementwise
+    : public SliceToBatchBase<SliceToBatchElementwise> {
   using SliceToBatchBase<SliceToBatchElementwise>::SliceToBatchBase;
 
   Operation *isValidTargetOp(Operation *op) const {
@@ -725,15 +726,14 @@ struct AutoBatchingPass
     }
 
     if (slice_to_batch_passes) {
-      patterns.add<SliceToBatch<stablehlo::DotGeneralOp>,
-                   SliceToBatch<stablehlo::GatherOp>,
-                   SliceToBatch<stablehlo::IotaOp>,
-                   SliceToBatch<stablehlo::ReduceOp>,
-                   SliceToBatch<stablehlo::SortOp>,
-                   SliceToBatch<stablehlo::TransposeOp>,
-                   SliceToBatch<stablehlo::BroadcastInDimOp>,
-                   SliceToBatch<stablehlo::ReduceWindowOp>,
-                   SliceToBatchElementwise>(context);
+      patterns.add<
+          SliceToBatch<stablehlo::DotGeneralOp>,
+          SliceToBatch<stablehlo::GatherOp>, SliceToBatch<stablehlo::IotaOp>,
+          SliceToBatch<stablehlo::ReduceOp>, SliceToBatch<stablehlo::SortOp>,
+          SliceToBatch<stablehlo::TransposeOp>,
+          SliceToBatch<stablehlo::BroadcastInDimOp>,
+          SliceToBatch<stablehlo::ReduceWindowOp>, SliceToBatchElementwise>(
+          context);
     }
 
     GreedyRewriteConfig config;
