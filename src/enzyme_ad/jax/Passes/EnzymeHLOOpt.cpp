@@ -22799,6 +22799,27 @@ private:
     return std::make_tuple(info.sliceDim == insertionDims[0], info);
   }
 
+  std::tuple<bool, SliceInfo>
+  matchReshapeSlice(stablehlo::ReshapeOp reshapeOp) const {
+    auto inputType = cast<RankedTensorType>(reshapeOp.getOperand().getType());
+    auto outputType = cast<RankedTensorType>(reshapeOp.getType());
+
+    SmallVector<int64_t> deletionDims =
+        findReshapeInsertionDims(outputType, inputType);
+    if (deletionDims.size() != 1) {
+      return std::make_tuple(false, SliceInfo());
+    }
+
+    auto slice =
+        reshapeOp.getOperand().template getDefiningOp<stablehlo::SliceOp>();
+    if (!slice) {
+      return std::make_tuple(false, SliceInfo());
+    }
+    SliceInfo info = extractSliceInfo(slice);
+
+    return std::make_tuple(info.sliceDim == deletionDims[0], info);
+  }
+
   bool matchingSourceOperand(SmallVector<SliceInfo> &slices,
                              stablehlo::SliceOp slice) const {
     if (!slice)
@@ -22830,11 +22851,16 @@ private:
         worklist.push_back(binaryOp.getRhs());
       } else if (auto reshape =
                      current.template getDefiningOp<stablehlo::ReshapeOp>()) {
-        auto [isMatch, info] = matchReshapeReduceSlice(reshape);
-        if (isMatch && matchingSourceOperand(slices, info.sliceOp)) {
-          slices.push_back(info);
+        auto [isMatchRRS, infoRRS] = matchReshapeReduceSlice(reshape);
+        if (isMatchRRS && matchingSourceOperand(slices, infoRRS.sliceOp)) {
+          slices.push_back(infoRRS);
         } else {
-          return false;
+          auto [isMatchRS, infoRS] = matchReshapeSlice(reshape);
+          if (isMatchRS && matchingSourceOperand(slices, infoRS.sliceOp)) {
+            slices.push_back(infoRS);
+          } else {
+            return false;
+          }
         }
       } else if (auto slice =
                      current.template getDefiningOp<stablehlo::SliceOp>()) {
