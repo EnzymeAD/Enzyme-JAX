@@ -13,6 +13,9 @@ JAX_PATCHES = [
     """
     sed -i.bak0 "s/#include \\"jaxlib\\/mosaic\\/dialect\\/tpu\\/tpu_enums.h.inc/#undef ARG_MAX\\n#include \\"jaxlib\\/mosaic\\/dialect\\/tpu\\/tpu_enums.h.inc/g" jaxlib/mosaic/dialect/tpu/tpu_dialect.h
     """,
+    """
+    sed -i.bak0 "s/if (is_batched_syev_supported) {/if constexpr (false) {/g" jaxlib/gpu/solver_kernels_ffi.cc
+    """,
 ]
 
 def repo(extra_patches = [], override_commit = ""):
