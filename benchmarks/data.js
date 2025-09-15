@@ -22,167 +22,167 @@ window.BENCHMARK_DATA = {
         "tool": "customSmallerIsBetter",
         "benches": [
           {
-            "name": "llama | JaXPipe | gpu | Primal",
+            "name": "llama / JaXPipe / gpu / Primal",
             "value": 0.0004344111899845,
             "unit": "s"
           },
           {
-            "name": "llama | JaX   | gpu | Primal",
+            "name": "llama / JaX   / gpu / Primal",
             "value": 0.0004282654961571,
             "unit": "s"
           },
           {
-            "name": "llama | HLOOpt | gpu | Primal",
+            "name": "llama / HLOOpt / gpu / Primal",
             "value": 0.000469818778336,
             "unit": "s"
           },
           {
-            "name": "llama | PartOpt | gpu | Primal",
+            "name": "llama / PartOpt / gpu / Primal",
             "value": 0.0004497790057212,
             "unit": "s"
           },
           {
-            "name": "llama | DefOpt | gpu | Primal",
+            "name": "llama / DefOpt / gpu / Primal",
             "value": 0.0004368150499649,
             "unit": "s"
           },
           {
-            "name": "llama | IPartOpt | gpu | Primal",
+            "name": "llama / IPartOpt / gpu / Primal",
             "value": 0.0004489341657608,
             "unit": "s"
           },
           {
-            "name": "llama | IDefOpt | gpu | Primal",
+            "name": "llama / IDefOpt / gpu / Primal",
             "value": 0.0004335953178815,
             "unit": "s"
           },
           {
-            "name": "llama | JaXPipe | gpu | Forward",
+            "name": "llama / JaXPipe / gpu / Forward",
             "value": 0.0006589205716736,
             "unit": "s"
           },
           {
-            "name": "llama | JaX   | gpu | Forward",
+            "name": "llama / JaX   / gpu / Forward",
             "value": 0.0007246910799294,
             "unit": "s"
           },
           {
-            "name": "llama | HLOOpt | gpu | Forward",
+            "name": "llama / HLOOpt / gpu / Forward",
             "value": 0.0006657511638477,
             "unit": "s"
           },
           {
-            "name": "llama | PartOpt | gpu | Forward",
+            "name": "llama / PartOpt / gpu / Forward",
             "value": 0.0006777411559596,
             "unit": "s"
           },
           {
-            "name": "llama | DefOpt | gpu | Forward",
+            "name": "llama / DefOpt / gpu / Forward",
             "value": 0.000686295970343,
             "unit": "s"
           },
           {
-            "name": "llama | IPartOpt | gpu | Forward",
+            "name": "llama / IPartOpt / gpu / Forward",
             "value": 0.0006931095239706,
             "unit": "s"
           },
           {
-            "name": "llama | IDefOpt | gpu | Forward",
+            "name": "llama / IDefOpt / gpu / Forward",
             "value": 0.0006581645738333,
             "unit": "s"
           },
           {
-            "name": "llama | JaXPipe | gpu | PreRev",
+            "name": "llama / JaXPipe / gpu / PreRev",
             "value": 0.0007443773499689,
             "unit": "s"
           },
           {
-            "name": "llama | JaXPipe | gpu | PostRev",
+            "name": "llama / JaXPipe / gpu / PostRev",
             "value": 0.0007914565880782,
             "unit": "s"
           },
           {
-            "name": "llama | JaXPipe | gpu | BothRev",
+            "name": "llama / JaXPipe / gpu / BothRev",
             "value": 0.0007634187699295,
             "unit": "s"
           },
           {
-            "name": "llama | JaX   | gpu | BothRev",
+            "name": "llama / JaX   / gpu / BothRev",
             "value": 0.0008147609601728,
             "unit": "s"
           },
           {
-            "name": "llama | HLOOpt | gpu | PreRev",
+            "name": "llama / HLOOpt / gpu / PreRev",
             "value": 0.0007182033942081,
             "unit": "s"
           },
           {
-            "name": "llama | HLOOpt | gpu | PostRev",
+            "name": "llama / HLOOpt / gpu / PostRev",
             "value": 0.0007387852296233,
             "unit": "s"
           },
           {
-            "name": "llama | HLOOpt | gpu | BothRev",
+            "name": "llama / HLOOpt / gpu / BothRev",
             "value": 0.0007285504061728,
             "unit": "s"
           },
           {
-            "name": "llama | PartOpt | gpu | PreRev",
+            "name": "llama / PartOpt / gpu / PreRev",
             "value": 0.0007493118182756,
             "unit": "s"
           },
           {
-            "name": "llama | PartOpt | gpu | PostRev",
+            "name": "llama / PartOpt / gpu / PostRev",
             "value": 0.0007944224160164,
             "unit": "s"
           },
           {
-            "name": "llama | PartOpt | gpu | BothRev",
+            "name": "llama / PartOpt / gpu / BothRev",
             "value": 0.0007640524581074,
             "unit": "s"
           },
           {
-            "name": "llama | DefOpt | gpu | PreRev",
+            "name": "llama / DefOpt / gpu / PreRev",
             "value": 0.0007796842781826,
             "unit": "s"
           },
           {
-            "name": "llama | DefOpt | gpu | PostRev",
+            "name": "llama / DefOpt / gpu / PostRev",
             "value": 0.0007235774742439,
             "unit": "s"
           },
           {
-            "name": "llama | DefOpt | gpu | BothRev",
+            "name": "llama / DefOpt / gpu / BothRev",
             "value": 0.000737684987951,
             "unit": "s"
           },
           {
-            "name": "llama | IPartOpt | gpu | PreRev",
+            "name": "llama / IPartOpt / gpu / PreRev",
             "value": 0.0007458704919554,
             "unit": "s"
           },
           {
-            "name": "llama | IPartOpt | gpu | PostRev",
+            "name": "llama / IPartOpt / gpu / PostRev",
             "value": 0.0007781549342907,
             "unit": "s"
           },
           {
-            "name": "llama | IPartOpt | gpu | BothRev",
+            "name": "llama / IPartOpt / gpu / BothRev",
             "value": 0.0007724612099118,
             "unit": "s"
           },
           {
-            "name": "llama | IDefOpt | gpu | PreRev",
+            "name": "llama / IDefOpt / gpu / PreRev",
             "value": 0.0007425641082227,
             "unit": "s"
           },
           {
-            "name": "llama | IDefOpt | gpu | PostRev",
+            "name": "llama / IDefOpt / gpu / PostRev",
             "value": 0.0007770732138305,
             "unit": "s"
           },
           {
-            "name": "llama | IDefOpt | gpu | BothRev",
+            "name": "llama / IDefOpt / gpu / BothRev",
             "value": 0.0007557548424229,
             "unit": "s"
           }
@@ -211,167 +211,167 @@ window.BENCHMARK_DATA = {
         "tool": "customSmallerIsBetter",
         "benches": [
           {
-            "name": "llama | JaXPipe | gpu | Primal",
+            "name": "llama / JaXPipe / gpu / Primal",
             "value": 0.0004344111899845,
             "unit": "s"
           },
           {
-            "name": "llama | JaX   | gpu | Primal",
+            "name": "llama / JaX   / gpu / Primal",
             "value": 0.0004282654961571,
             "unit": "s"
           },
           {
-            "name": "llama | HLOOpt | gpu | Primal",
+            "name": "llama / HLOOpt / gpu / Primal",
             "value": 0.000469818778336,
             "unit": "s"
           },
           {
-            "name": "llama | PartOpt | gpu | Primal",
+            "name": "llama / PartOpt / gpu / Primal",
             "value": 0.0004497790057212,
             "unit": "s"
           },
           {
-            "name": "llama | DefOpt | gpu | Primal",
+            "name": "llama / DefOpt / gpu / Primal",
             "value": 0.0004368150499649,
             "unit": "s"
           },
           {
-            "name": "llama | IPartOpt | gpu | Primal",
+            "name": "llama / IPartOpt / gpu / Primal",
             "value": 0.0004489341657608,
             "unit": "s"
           },
           {
-            "name": "llama | IDefOpt | gpu | Primal",
+            "name": "llama / IDefOpt / gpu / Primal",
             "value": 0.0004335953178815,
             "unit": "s"
           },
           {
-            "name": "llama | JaXPipe | gpu | Forward",
+            "name": "llama / JaXPipe / gpu / Forward",
             "value": 0.0006589205716736,
             "unit": "s"
           },
           {
-            "name": "llama | JaX   | gpu | Forward",
+            "name": "llama / JaX   / gpu / Forward",
             "value": 0.0007246910799294,
             "unit": "s"
           },
           {
-            "name": "llama | HLOOpt | gpu | Forward",
+            "name": "llama / HLOOpt / gpu / Forward",
             "value": 0.0006657511638477,
             "unit": "s"
           },
           {
-            "name": "llama | PartOpt | gpu | Forward",
+            "name": "llama / PartOpt / gpu / Forward",
             "value": 0.0006777411559596,
             "unit": "s"
           },
           {
-            "name": "llama | DefOpt | gpu | Forward",
+            "name": "llama / DefOpt / gpu / Forward",
             "value": 0.000686295970343,
             "unit": "s"
           },
           {
-            "name": "llama | IPartOpt | gpu | Forward",
+            "name": "llama / IPartOpt / gpu / Forward",
             "value": 0.0006931095239706,
             "unit": "s"
           },
           {
-            "name": "llama | IDefOpt | gpu | Forward",
+            "name": "llama / IDefOpt / gpu / Forward",
             "value": 0.0006581645738333,
             "unit": "s"
           },
           {
-            "name": "llama | JaXPipe | gpu | PreRev",
+            "name": "llama / JaXPipe / gpu / PreRev",
             "value": 0.0007443773499689,
             "unit": "s"
           },
           {
-            "name": "llama | JaXPipe | gpu | PostRev",
+            "name": "llama / JaXPipe / gpu / PostRev",
             "value": 0.0007914565880782,
             "unit": "s"
           },
           {
-            "name": "llama | JaXPipe | gpu | BothRev",
+            "name": "llama / JaXPipe / gpu / BothRev",
             "value": 0.0007634187699295,
             "unit": "s"
           },
           {
-            "name": "llama | JaX   | gpu | BothRev",
+            "name": "llama / JaX   / gpu / BothRev",
             "value": 0.0008147609601728,
             "unit": "s"
           },
           {
-            "name": "llama | HLOOpt | gpu | PreRev",
+            "name": "llama / HLOOpt / gpu / PreRev",
             "value": 0.0007182033942081,
             "unit": "s"
           },
           {
-            "name": "llama | HLOOpt | gpu | PostRev",
+            "name": "llama / HLOOpt / gpu / PostRev",
             "value": 0.0007387852296233,
             "unit": "s"
           },
           {
-            "name": "llama | HLOOpt | gpu | BothRev",
+            "name": "llama / HLOOpt / gpu / BothRev",
             "value": 0.0007285504061728,
             "unit": "s"
           },
           {
-            "name": "llama | PartOpt | gpu | PreRev",
+            "name": "llama / PartOpt / gpu / PreRev",
             "value": 0.0007493118182756,
             "unit": "s"
           },
           {
-            "name": "llama | PartOpt | gpu | PostRev",
+            "name": "llama / PartOpt / gpu / PostRev",
             "value": 0.0007944224160164,
             "unit": "s"
           },
           {
-            "name": "llama | PartOpt | gpu | BothRev",
+            "name": "llama / PartOpt / gpu / BothRev",
             "value": 0.0007640524581074,
             "unit": "s"
           },
           {
-            "name": "llama | DefOpt | gpu | PreRev",
+            "name": "llama / DefOpt / gpu / PreRev",
             "value": 0.0007796842781826,
             "unit": "s"
           },
           {
-            "name": "llama | DefOpt | gpu | PostRev",
+            "name": "llama / DefOpt / gpu / PostRev",
             "value": 0.0007235774742439,
             "unit": "s"
           },
           {
-            "name": "llama | DefOpt | gpu | BothRev",
+            "name": "llama / DefOpt / gpu / BothRev",
             "value": 0.000737684987951,
             "unit": "s"
           },
           {
-            "name": "llama | IPartOpt | gpu | PreRev",
+            "name": "llama / IPartOpt / gpu / PreRev",
             "value": 0.0007458704919554,
             "unit": "s"
           },
           {
-            "name": "llama | IPartOpt | gpu | PostRev",
+            "name": "llama / IPartOpt / gpu / PostRev",
             "value": 0.0007781549342907,
             "unit": "s"
           },
           {
-            "name": "llama | IPartOpt | gpu | BothRev",
+            "name": "llama / IPartOpt / gpu / BothRev",
             "value": 0.0007724612099118,
             "unit": "s"
           },
           {
-            "name": "llama | IDefOpt | gpu | PreRev",
+            "name": "llama / IDefOpt / gpu / PreRev",
             "value": 0.0007425641082227,
             "unit": "s"
           },
           {
-            "name": "llama | IDefOpt | gpu | PostRev",
+            "name": "llama / IDefOpt / gpu / PostRev",
             "value": 0.0007770732138305,
             "unit": "s"
           },
           {
-            "name": "llama | IDefOpt | gpu | BothRev",
+            "name": "llama / IDefOpt / gpu / BothRev",
             "value": 0.0007557548424229,
             "unit": "s"
           }
