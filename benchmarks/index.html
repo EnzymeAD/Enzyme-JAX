@@ -237,7 +237,7 @@
                 label: passesName,
                 data: passesData.map((d) => {
                   // Only time plot
-                  const val = d.bench.value / 1e6;
+                  const val = d.bench.value;
                   if (val < minY) minY = val;
                   return val;
                 }),
@@ -301,7 +301,7 @@
                     const datasetIndex = item.datasetIndex;
                     const passesName = passesIndices.get(datasetIndex);
                     let label = passesName + ": " + item.value;
-                    label += " ms";
+                    label += " s";
                     return label;
                   },
                   afterLabel: function(item) {
