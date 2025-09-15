@@ -404,6 +404,11 @@ def optimization_passes(
         "self_subtract_to_convolution_like(0)",
         "self_add_to_convolution_like(0)",
         "self_mul_to_convolution_like(0)",
+        "add_reduce_slice_fusion",
+        "mul_reduce_slice_fusion",
+        "min_reduce_slice_fusion",
+        "max_reduce_slice_fusion",
+        "trivial_reduce_window_to_reduce_op",
     ]
 
     if reshape_propagate == "up":
