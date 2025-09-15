@@ -79,7 +79,7 @@ def main(_) -> None:
 
     records = [
         {
-            "name": f"{row['Benchmark Name']} | {row['Pass Pipeline']} | {row['Backend']} | {row['Key']}",
+            "name": f"{row['Benchmark Name']} / {row['Pass Pipeline']} / {row['Backend']} / {row['Key']}",
             "unit": "s",
             "value": row["Time"],
         }
