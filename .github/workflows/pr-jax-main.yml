@@ -44,7 +44,8 @@ jobs:
           sed -i 's/JAX_COMMIT = ".*"/JAX_COMMIT = "${{ env.NEW_JAX_COMMIT }}"/' workspace.bzl
       - name: Run git log
         run: |
-          git log -10
+          git log --oneline
+          git log --oneline | wc -l
       # - name: Create Pull Request
       #   uses: peter-evans/create-pull-request@v7
       #   with:
