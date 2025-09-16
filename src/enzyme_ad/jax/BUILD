@@ -1,7 +1,13 @@
 load("@jax//jaxlib:symlink_files.bzl", "symlink_inputs")
 load("@llvm-project//mlir:tblgen.bzl", "gentbl_cc_library", "td_library")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_python//python:py_library.bzl", "py_library")
 load("@xla//xla/tsl:tsl.bzl", pybind_extension = "tsl_pybind_extension_opensource")
+
+package(
+    default_visibility = ["//:__subpackages__"],
+    features = ["layering_check"],
+)
 
 exports_files([
     "enzymexlamlir-opt.cpp",
@@ -14,11 +20,6 @@ licenses(["notice"])
 config_setting(
     name = "is_clang_build",
     define_values = {"using_clang": "true"},
-)
-
-package(
-    default_visibility = ["//:__subpackages__"],
-    features = ["layering_check"],
 )
 
 cc_library(
@@ -361,7 +362,6 @@ td_library(
     ],
 )
 
-
 gentbl_cc_library(
     name = "EnzymeXLAAttrsIncGen",
     tbl_outs = {
@@ -477,14 +477,14 @@ td_library(
     name = "DistributedDialectFiles",
     srcs = [
         "Dialect/Distributed/Dialect.td",
-        "Dialect/Distributed/Types.td",
-        "Dialect/Distributed/Ops.td",
         "Dialect/Distributed/Interfaces.td",
+        "Dialect/Distributed/Ops.td",
+        "Dialect/Distributed/Types.td",
     ],
     deps = [
-        "@llvm-project//mlir:OpBaseTdFiles",
         "@llvm-project//mlir:BuiltinDialectTdFiles",
-    ]
+        "@llvm-project//mlir:OpBaseTdFiles",
+    ],
 )
 
 gentbl_cc_library(
@@ -597,6 +597,9 @@ cc_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
+        ":DistributedDialectIncGen",
+        ":DistributedOpsIncGen",
+        ":DistributedTypesIncGen",
         ":EnzymeHLOPatternsIncGen",
         ":EnzymeXLAAttrsIncGen",
         ":EnzymeXLAOpsIncGen",
@@ -606,9 +609,6 @@ cc_library(
         ":RaisingTransformOpsIncGen",
         ":RaisingTransformPatternsIncGen",
         ":StablehloOptPatternsIncGen",
-        ":DistributedDialectIncGen",
-        ":DistributedTypesIncGen",
-        ":DistributedOpsIncGen",
         ":chlo-derivatives",
         ":mhlo-derivatives",
         ":stablehlo-derivatives",
