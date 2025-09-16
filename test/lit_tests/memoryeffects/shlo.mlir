@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt. %s | FileCheck %s --check-prefix=ASSUME
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(mark-func-memory-effects{assume_no_memory_effects=true})" %s | FileCheck %s --check-prefix=ASSUME
 // RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(mark-func-memory-effects{assume_no_memory_effects=false})" %s | FileCheck %s --check-prefix=NOASSUME
 
 module {
