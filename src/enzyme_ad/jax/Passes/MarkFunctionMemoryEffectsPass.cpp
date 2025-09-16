@@ -6,6 +6,9 @@
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Pass/Pass.h"
 
+#include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "stablehlo/dialect/StablehloOps.h"
+
 namespace mlir {
 namespace enzyme {
 #define GEN_PASS_DEF_MARKFUNCTIONMEMORYEFFECTSPASS
@@ -115,17 +118,31 @@ struct MarkFunctionMemoryEffectsPass
 
       funcOp.walk([&](Operation *op) {
         if (op->hasTrait<OpTrait::HasRecursiveMemoryEffects>()) {
-          auto maybeEffects = getEffectsRecursively(op);
-          if (maybeEffects.has_value()) {
-            insertMemoryEffects(effects, maybeEffects.value());
+          return WalkResult::advance();
+        }
+
+        if (op == funcOp)
+          return WalkResult::advance();
+
+        if (auto jitcall = dyn_cast<enzymexla::JITCallOp>(op)) {
+          if (jitcall.getXlaSideEffectFreeAttr()) {
+            return WalkResult::advance();
+          } else if (!assume_no_memory_effects) {
+            insertMemoryEffects(effects);
+          }
+        } else if (auto kcall = dyn_cast<enzymexla::KernelCallOp>(op)) {
+          if (kcall.getXlaSideEffectFreeAttr()) {
+            return WalkResult::advance();
           } else {
             insertMemoryEffects(effects);
           }
-
-          return WalkResult::skip();
-        }
-
-        if (auto memOp = dyn_cast<MemoryEffectOpInterface>(op)) {
+        } else if (auto ccall = dyn_cast<stablehlo::CustomCallOp>(op)) {
+          if (!ccall.getHasSideEffect()) {
+            return WalkResult::advance();
+          } else {
+            insertMemoryEffects(effects);
+          }
+        } else if (auto memOp = dyn_cast<MemoryEffectOpInterface>(op)) {
           SmallVector<MemoryEffects::EffectInstance> memEffects;
           memOp.getEffects(memEffects);
           insertMemoryEffects(effects, memEffects);
