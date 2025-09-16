@@ -361,6 +361,7 @@ td_library(
     ],
 )
 
+
 gentbl_cc_library(
     name = "EnzymeXLAAttrsIncGen",
     tbl_outs = {
@@ -472,12 +473,109 @@ td_library(
     ],
 )
 
+td_library(
+    name = "DistributedDialectFiles",
+    srcs = [
+        "Dialect/Distributed/Dialect.td",
+        "Dialect/Distributed/Types.td",
+        "Dialect/Distributed/Ops.td",
+        "Dialect/Distributed/Interfaces.td",
+    ],
+    deps = [
+        "@llvm-project//mlir:OpBaseTdFiles",
+        "@llvm-project//mlir:BuiltinDialectTdFiles",
+    ]
+)
+
+gentbl_cc_library(
+    name = "DistributedDialectIncGen",
+    tbl_outs = [
+        (
+            [
+                "-gen-dialect-decls",
+                "-dialect=distributed",
+            ],
+            "Dialect/Distributed/DistributedDialect.h.inc",
+        ),
+        (
+            [
+                "-gen-dialect-defs",
+                "-dialect=distributed",
+            ],
+            "Dialect/Distributed/DistributedDialect.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/Distributed/Dialect.td",
+    deps = [
+        ":DistributedDialectFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "DistributedOpsIncGen",
+    tbl_outs = [
+        (
+            ["-gen-op-decls"],
+            "Dialect/Distributed/DistributedOps.h.inc",
+        ),
+        (
+            ["-gen-op-defs"],
+            "Dialect/Distributed/DistributedOps.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/Distributed/Ops.td",
+    deps = [
+        ":DistributedDialectFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "DistributedTypesIncGen",
+    tbl_outs = [
+        (
+            ["--gen-typedef-decls"],
+            "Dialect/Distributed/DistributedTypes.h.inc",
+        ),
+        (
+            ["--gen-typedef-defs"],
+            "Dialect/Distributed/DistributedTypes.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/Distributed/Types.td",
+    deps = [
+        ":DistributedDialectFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "DistributedInterfacesIncGen",
+    tbl_outs = [
+        (
+            ["--gen-interface-decls"],
+            "Dialect/Distributed/DistributedInterfaces.h.inc",
+        ),
+        (
+            ["--gen-interface-defs"],
+            "Dialect/Distributed/DistributedInterfaces.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/Distributed/Interfaces.td",
+    deps = [
+        ":DistributedDialectFiles",
+    ],
+)
+
 cc_library(
     name = "XLADerivatives",
     srcs = glob([
         "Implementations/*.cpp",
         "Passes/*.cpp",
         "Dialect/*.cpp",
+        "Dialect/Distributed/*.cpp",
     ]) + [
         "Utils.cpp",
     ],
@@ -485,6 +583,7 @@ cc_library(
         "Implementations/*.h",
         "Passes/*.h",
         "Dialect/*.h",
+        "Dialect/Distributed/*.h",
     ]) + [
         "Utils.h",
     ],
@@ -507,6 +606,9 @@ cc_library(
         ":RaisingTransformOpsIncGen",
         ":RaisingTransformPatternsIncGen",
         ":StablehloOptPatternsIncGen",
+        ":DistributedDialectIncGen",
+        ":DistributedTypesIncGen",
+        ":DistributedOpsIncGen",
         ":chlo-derivatives",
         ":mhlo-derivatives",
         ":stablehlo-derivatives",
