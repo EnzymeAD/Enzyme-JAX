@@ -9,6 +9,7 @@ on:
         description: 'The JAX commit to update to (optional)'
         default: ''
         type: 'string'
+  push:
 
 concurrency:
   # Skip intermediate builds: always.
@@ -41,17 +42,20 @@ jobs:
       - name: Modify JAX commit
         run: |
           sed -i 's/JAX_COMMIT = ".*"/JAX_COMMIT = "${{ env.NEW_JAX_COMMIT }}"/' workspace.bzl
-      - name: Create Pull Request
-        uses: peter-evans/create-pull-request@v7
-        with:
-          token: ${{ secrets.JAX_LATEST_COMMIT }}
-          commit-message: |
-            Update JAX to commit ${{ env.NEW_JAX_COMMIT }}
+      - name: Run git log
+        run: |
+          git log -10
+      # - name: Create Pull Request
+      #   uses: peter-evans/create-pull-request@v7
+      #   with:
+      #     token: ${{ secrets.JAX_LATEST_COMMIT }}
+      #     commit-message: |
+      #       Update JAX to commit ${{ env.NEW_JAX_COMMIT }}
 
-            ${{ env.DIFF_MSG }}
-          body: ${{ env.DIFF_MSG }}
-          branch: jax-latest-commit
-          title: 'Update JAX to commit ${{ env.NEW_JAX_COMMIT }}'
-          delete-branch: true
-          draft: false
-          author: 'enzyme-ci-bot[bot] <78882869+enzyme-ci-bot[bot]@users.noreply.github.com>'
+      #       ${{ env.DIFF_MSG }}
+      #     body: ${{ env.DIFF_MSG }}
+      #     branch: jax-latest-commit
+      #     title: 'Update JAX to commit ${{ env.NEW_JAX_COMMIT }}'
+      #     delete-branch: true
+      #     draft: false
+      #     author: 'enzyme-ci-bot[bot] <78882869+enzyme-ci-bot[bot]@users.noreply.github.com>'
