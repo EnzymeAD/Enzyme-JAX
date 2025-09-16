@@ -17,7 +17,7 @@ llvm::LogicalResult checkSymbolIsA(::mlir::SymbolTableCollection &symbol_table,
                                    mlir::SymbolRefAttr attr) {
   auto loc = owning_op->getLoc();
   Operation *symOp = symbol_table.lookupNearestSymbolFrom(owning_op, attr);
-  if (!symOp || !isa<T>(symOp)) {
+  if (dyn_cast_or_null<T>(symOp) == nullptr) {
     mlir::emitError(loc) << "invalid symbol reference or symbol type: " << attr;
     return mlir::failure();
   }
