@@ -209,8 +209,8 @@ jobs:
           output-file-path: combined_results.json
           benchmark-data-dir-path: "benchmarks"
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          comment-always: true
-          summary-always: true
+          comment-always: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+          summary-always: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
           alert-threshold: "150%"
           fail-on-alert: false
           auto-push: ${{ github.event_name != 'pull_request' }}
