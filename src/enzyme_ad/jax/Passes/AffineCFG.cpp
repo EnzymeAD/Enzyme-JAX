@@ -4757,6 +4757,9 @@ bool isLegalToSinkYieldedValue(Value thenOperand, Value elseOperand,
   return true;
 }
 
+const size_t AFFINE_IF_SAME_YIELDS = 0xbadbeef;
+const size_t AFFINE_IF_UNSUPPORTED_YIELDS = 0xdeadbeef;
+
 std::pair<Value, size_t> checkOperands(
     affine::AffineIfOp ifOp, Value operandIf, Value operandElse,
     llvm::MapVector<Operation *,
@@ -4767,7 +4770,7 @@ std::pair<Value, size_t> checkOperands(
     PatternRewriter &rewriter) {
 
   if (operandIf == operandElse)
-    return std::pair<Value, size_t>(operandIf, 0xdeadbeef);
+    return std::pair<Value, size_t>(operandIf, AFFINE_IF_SAME_YIELDS);
 
   std::pair<Value, Value> key = {operandIf, operandElse};
   if (!isLegalToSinkYieldedValue(operandIf, operandElse, ifOp)) {
@@ -4786,7 +4789,7 @@ std::pair<Value, size_t> checkOperands(
     // We don't currently support the same if operand being moved after the if
     // when paired with a different instruction for the else
     if (foundAfterIf->second.first == operandElse)
-      return std::pair<Value, size_t>(operandIf, 0xdeadbeef);
+      return std::pair<Value, size_t>(operandIf, AFFINE_IF_UNSUPPORTED_YIELDS);
     else {
       if (!thenOperationsToYieldIndex.contains(key)) {
         thenOperationsToYieldIndex[key] = ifYieldOperands.size();
@@ -4813,7 +4816,7 @@ std::pair<Value, size_t> checkOperands(
 
   opsToMoveAfterIf[opToMove].second = std::move(newresults);
 
-  return std::pair<Value, size_t>(operandIf, 0xdeadbeef);
+  return std::pair<Value, size_t>(operandIf, AFFINE_IF_UNSUPPORTED_YIELDS);
 }
 
 // Forked from CanonicalizeFor
@@ -4865,6 +4868,10 @@ struct AffineIfYieldMovementPattern
       originalYields.emplace_back(yld);
       if (yld.first)
         changed = true;
+
+      if (yld.second == AFFINE_IF_UNSUPPORTED_YIELDS) {
+        LLVM_DEBUG(llvm::dbgs() << "unsupported yields in " << ifOp << "\n");
+      }
     }
 
     // If no changes to yield operands, return failure
@@ -4963,6 +4970,8 @@ struct AffineIfYieldMovementPattern
     for (auto [idx, pair] : llvm::enumerate(originalYields)) {
       if (!pair.first) {
         newResults.push_back(newIfOp.getResult(pair.second));
+      } else if (pair.second == AFFINE_IF_SAME_YIELDS) {
+        newResults.push_back(pair.first);
       } else {
         newResults.push_back(mappingAfterIf.lookup(pair.first));
       }
