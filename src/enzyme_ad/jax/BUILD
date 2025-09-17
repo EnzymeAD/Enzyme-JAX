@@ -1,7 +1,13 @@
 load("@jax//jaxlib:symlink_files.bzl", "symlink_inputs")
 load("@llvm-project//mlir:tblgen.bzl", "gentbl_cc_library", "td_library")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_python//python:py_library.bzl", "py_library")
 load("@xla//xla/tsl:tsl.bzl", pybind_extension = "tsl_pybind_extension_opensource")
+
+package(
+    default_visibility = ["//:__subpackages__"],
+    features = ["layering_check"],
+)
 
 exports_files([
     "enzymexlamlir-opt.cpp",
@@ -14,11 +20,6 @@ licenses(["notice"])
 config_setting(
     name = "is_clang_build",
     define_values = {"using_clang": "true"},
-)
-
-package(
-    default_visibility = ["//:__subpackages__"],
-    features = ["layering_check"],
 )
 
 cc_library(
@@ -472,12 +473,109 @@ td_library(
     ],
 )
 
+td_library(
+    name = "DistributedDialectFiles",
+    srcs = [
+        "Dialect/Distributed/Dialect.td",
+        "Dialect/Distributed/Interfaces.td",
+        "Dialect/Distributed/Ops.td",
+        "Dialect/Distributed/Types.td",
+    ],
+    deps = [
+        "@llvm-project//mlir:BuiltinDialectTdFiles",
+        "@llvm-project//mlir:OpBaseTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "DistributedDialectIncGen",
+    tbl_outs = [
+        (
+            [
+                "-gen-dialect-decls",
+                "-dialect=distributed",
+            ],
+            "Dialect/Distributed/DistributedDialect.h.inc",
+        ),
+        (
+            [
+                "-gen-dialect-defs",
+                "-dialect=distributed",
+            ],
+            "Dialect/Distributed/DistributedDialect.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/Distributed/Dialect.td",
+    deps = [
+        ":DistributedDialectFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "DistributedOpsIncGen",
+    tbl_outs = [
+        (
+            ["-gen-op-decls"],
+            "Dialect/Distributed/DistributedOps.h.inc",
+        ),
+        (
+            ["-gen-op-defs"],
+            "Dialect/Distributed/DistributedOps.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/Distributed/Ops.td",
+    deps = [
+        ":DistributedDialectFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "DistributedTypesIncGen",
+    tbl_outs = [
+        (
+            ["--gen-typedef-decls"],
+            "Dialect/Distributed/DistributedTypes.h.inc",
+        ),
+        (
+            ["--gen-typedef-defs"],
+            "Dialect/Distributed/DistributedTypes.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/Distributed/Types.td",
+    deps = [
+        ":DistributedDialectFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "DistributedInterfacesIncGen",
+    tbl_outs = [
+        (
+            ["--gen-interface-decls"],
+            "Dialect/Distributed/DistributedInterfaces.h.inc",
+        ),
+        (
+            ["--gen-interface-defs"],
+            "Dialect/Distributed/DistributedInterfaces.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/Distributed/Interfaces.td",
+    deps = [
+        ":DistributedDialectFiles",
+    ],
+)
+
 cc_library(
     name = "XLADerivatives",
     srcs = glob([
         "Implementations/*.cpp",
         "Passes/*.cpp",
         "Dialect/*.cpp",
+        "Dialect/Distributed/*.cpp",
     ]) + [
         "Utils.cpp",
     ],
@@ -485,6 +583,7 @@ cc_library(
         "Implementations/*.h",
         "Passes/*.h",
         "Dialect/*.h",
+        "Dialect/Distributed/*.h",
     ]) + [
         "Utils.h",
     ],
@@ -498,6 +597,9 @@ cc_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
+        ":DistributedDialectIncGen",
+        ":DistributedOpsIncGen",
+        ":DistributedTypesIncGen",
         ":EnzymeHLOPatternsIncGen",
         ":EnzymeXLAAttrsIncGen",
         ":EnzymeXLAOpsIncGen",
