@@ -111,18 +111,42 @@ GroupSplitOp::verifySymbolUses(::mlir::SymbolTableCollection &symbol_table) {
                                        getDeviceGroupAttr());
 }
 
-LogicalResult
-SplitBranchOp::verifySymbolUses(::mlir::SymbolTableCollection &symbol_table) {
-  // Split branches have programs for individual devices or channels
-  Operation *dev_or_chan =
-      symbol_table.lookupNearestSymbolFrom(*this, getDeviceOrChannelAttr());
-  if (!dev_or_chan || !(dev_or_chan->hasTrait<DeviceDefTrait>() ||
-                        dev_or_chan->hasTrait<ChannelDefTrait>())) {
-    mlir::emitError(getLoc())
-        << "branches must reference a valid device or channel";
-    return mlir::failure();
+// Printer/parser for GroupsplitOp branches
+mlir::ParseResult parseSplitBranches(
+    OpAsmParser &parser, mlir::ArrayAttr &branchAssignments,
+    llvm::SmallVector<std::unique_ptr<::mlir::Region>, 2> &branchesRegions) {
+  // Expect 0 or more `branch` $symbol_name $symbol_region
+  // While next token is `branch`:
+  llvm::SmallVector<mlir::Attribute, 2> assignment_symbols;
+  while (parser.parseOptionalKeyword("branch").succeeded()) {
+    // Parse symbol name
+    mlir::SymbolRefAttr sym;
+    auto sym_parse_failed = parser.parseAttribute<mlir::SymbolRefAttr>(sym);
+    if (sym_parse_failed)
+      return mlir::failure();
+    assignment_symbols.push_back(sym);
+
+    // Put placeholder region in list and parse into it
+    branchesRegions.push_back(std::make_unique<mlir::Region>());
+    auto parse_region_failed = parser.parseRegion(*branchesRegions.back());
+    if (parse_region_failed)
+      return mlir::failure();
   }
+
+  branchAssignments = mlir::ArrayAttr::get(parser.getBuilder().getContext(),
+                                           assignment_symbols);
   return mlir::success();
+}
+
+void printSplitBranches(OpAsmPrinter &printer, const GroupSplitOp &op,
+                        const mlir::ArrayAttr branchAssignments,
+                        const llvm::MutableArrayRef<mlir::Region> branches) {
+  // Print each branch as `branch` $symbol_name $symbol_region
+  for (size_t i = 0; i < branches.size(); i++) {
+    printer << " branch ";
+    printer.printAttribute(branchAssignments[i]);
+    printer.printRegion(branches[i]);
+  }
 }
 
 LogicalResult
