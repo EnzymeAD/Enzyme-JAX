@@ -2308,3 +2308,66 @@ def ApplyMaxReduceSliceFusionPatterns : EnzymeHLOPatternOp<
     "max_reduce_slice_fusion"> {
   let patterns = ["MaxReduceSliceFusion"];
 }
+
+def ApplyConcatInsertDimDotGeneralPatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_dot_general"> {
+  let patterns = ["ConcatInsertDimToBatch<stablehlo::DotGeneralOp>"];
+}
+def ApplyConcatInsertDimGatherPatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_gather"> {
+  let patterns = ["ConcatInsertDimToBatch<stablehlo::GatherOp>"];
+}
+def ApplyConcatInsertDimIotaPatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_iota"> {
+  let patterns = ["ConcatInsertDimToBatch<stablehlo::IotaOp>"];
+}
+def ApplyConcatInsertDimReducePatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_reduce"> {
+  let patterns = ["ConcatInsertDimToBatch<stablehlo::ReduceOp>"];
+}
+def ApplyConcatInsertDimSortPatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_sort"> {
+  let patterns = ["ConcatInsertDimToBatch<stablehlo::SortOp>"];
+}
+def ApplyConcatInsertDimReduceWindowPatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_reduce_window"> {
+  let patterns = ["ConcatInsertDimToBatch<stablehlo::ReduceWindowOp>"];
+}
+
+def ApplyDotGeneralSliceToBatchPatterns : EnzymeHLOPatternOp<
+    "dot_general_slice_to_batch"> {
+  let patterns = ["SliceToBatch<stablehlo::DotGeneralOp>"];
+}
+def ApplyGatherSliceToBatchPatterns : EnzymeHLOPatternOp<
+    "gather_slice_to_batch"> {
+  let patterns = ["SliceToBatch<stablehlo::GatherOp>"];
+}
+def ApplyIotaSliceToBatchPatterns : EnzymeHLOPatternOp<
+    "iota_slice_to_batch"> {
+  let patterns = ["SliceToBatch<stablehlo::IotaOp>"];
+}
+def ApplyReduceSliceToBatchPatterns : EnzymeHLOPatternOp<
+    "reduce_slice_to_batch"> {
+  let patterns = ["SliceToBatch<stablehlo::ReduceOp>"];
+}
+def ApplySortSliceToBatchPatterns : EnzymeHLOPatternOp<
+    "sort_slice_to_batch"> {
+  let patterns = ["SliceToBatch<stablehlo::SortOp>"];
+}
+def ApplyTransposeSliceToBatchPatterns : EnzymeHLOPatternOp<
+    "transpose_slice_to_batch"> {
+  let patterns = ["SliceToBatch<stablehlo::TransposeOp>"];
+}
+def ApplyBroadcastInDimSliceToBatchPatterns : EnzymeHLOPatternOp<
+    "broadcastindim_slice_to_batch"> {
+  let patterns = ["SliceToBatch<stablehlo::BroadcastInDimOp>"];
+}
+def ApplyReduceWindowSliceToBatchPatterns : EnzymeHLOPatternOp<
+    "reducewindow_slice_to_batch"> {
+  let patterns = ["SliceToBatch<stablehlo::ReduceWindowOp>"];
+}
+
+def ApplyElementwiseSliceToBatchPatterns : EnzymeHLOPatternOp<
+    "elementwise_slice_to_batch"> {
+  let patterns = ["SliceToBatchElementwise"];
+}

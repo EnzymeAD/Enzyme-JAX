@@ -106,6 +106,7 @@ def optimization_passes(
     transpose_propagate: str = "up",
     reshape_propagate: str = "up",
     max_constant_threshold: int = 1024,
+    enable_batching_passes: bool = True,
 ):
     transform_passes_list = [
         "compare_op_canon<16>",
@@ -404,12 +405,31 @@ def optimization_passes(
         "self_subtract_to_convolution_like(0)",
         "self_add_to_convolution_like(0)",
         "self_mul_to_convolution_like(0)",
-        "add_reduce_slice_fusion",
-        "mul_reduce_slice_fusion",
-        "min_reduce_slice_fusion",
-        "max_reduce_slice_fusion",
         "trivial_reduce_window_to_reduce_op",
     ]
+
+    if enable_batching_passes:
+        transform_passes_list += [
+            "add_reduce_slice_fusion",
+            "mul_reduce_slice_fusion",
+            "min_reduce_slice_fusion",
+            "max_reduce_slice_fusion",
+            "concat_insert_dim_dot_general",
+            "concat_insert_dim_gather",
+            "concat_insert_dim_iota",
+            "concat_insert_dim_reduce",
+            "concat_insert_dim_sort",
+            "concat_insert_dim_reduce_window",
+            "dot_general_slice_to_batch",
+            "gather_slice_to_batch",
+            "iota_slice_to_batch",
+            "reduce_slice_to_batch",
+            "sort_slice_to_batch",
+            "transpose_slice_to_batch",
+            "broadcastindim_slice_to_batch",
+            "reducewindow_slice_to_batch",
+            "elementwise_slice_to_batch",
+        ]
 
     if reshape_propagate == "up":
         transform_passes_list += [
@@ -538,6 +558,7 @@ def full_optimization_pass_pipeline(
     transpose_propagate: str = "up",
     reshape_propagate: str = "up",
     max_constant_threshold: int = 1024,
+    enable_batching_passes: bool = True,
 ):
     opt_passes = optimization_passes(
         inline=inline,
@@ -545,6 +566,7 @@ def full_optimization_pass_pipeline(
         transpose_propagate=transpose_propagate,
         reshape_propagate=reshape_propagate,
         max_constant_threshold=max_constant_threshold,
+        enable_batching_passes=enable_batching_passes,
     )
 
     enzyme_pass = 'enzyme{postpasses="arith-raise{stablehlo=true},canonicalize,cse,canonicalize,remove-unnecessary-enzyme-ops,enzyme-simplify-math,canonicalize,cse,canonicalize"}'
@@ -563,18 +585,14 @@ def full_optimization_pass_pipeline(
         [
             "mark-func-memory-effects",
             opt_passes,
-            "auto-batching",
             "enzyme-batch",
             opt_passes,
-            "auto-batching",
             enzyme_pass,
             opt_passes,
-            "auto-batching",
             "canonicalize",
             "remove-unnecessary-enzyme-ops",
             "enzyme-simplify-math",
             opt_passes,
-            "auto-batching",
             propagate_down_passes,
         ]
     )

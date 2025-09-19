@@ -23131,6 +23131,8 @@ namespace enzyme {
 }; // namespace enzyme
 }; // namespace mlir
 
+#include "src/enzyme_ad/jax/Passes/AutoBatching.h"
+
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.cpp.inc"
 // clang-format on
 
