@@ -59,25 +59,16 @@ def MeshForOp : DistributedOp<"MeshFor", [DeclareOpInterfaceMethods<SymbolUserOp
     let assemblyFormat = "$mesh $body attr-dict";
 }
 
-def GroupSplitOp : DistributedOp<"GroupSplit", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, NoTerminator, SingleBlock]>{
+def GroupSplitOp : DistributedOp<"GroupSplit", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, NoTerminator]>{
     let arguments = (ins
-        SymbolRefAttr:$device_group // TODO: verify it's a group
+        SymbolRefAttr:$device_group,
+        ArrayAttr:$branch_assignments // Symbols mapping to each branch region
     );
-    let regions = (region SizedRegion<1>:$declarations); // Takes as args the devices and channels in the group
+    // TODO check that declarations only declares tokens.
+    let regions = (region VariadicRegion<SizedRegion<1>>:$branches);
     let results = (outs ); // TODO
     // let hasVerifier = 1; // TODO
-    // let hasCanonicalizer = 1; // TODO: token declarations up front, followed by device and channel branches in order of listing in the group
-    let assemblyFormat = "$device_group $declarations  attr-dict";
-}
-
-def SplitBranchOp : DistributedOp<"SplitBranch", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, NoTerminator, SingleBlock]>{
-    let arguments = (ins
-        SymbolRefAttr:$device_or_channel // TODO: verify it's a device or channel
-        );
-    let regions = (region MaxSizedRegion<1>:$body); // Takes as args the device or channel
-    let results = (outs ); // TODO
-    // let hasVerifier = 1; // TODO: parent is a groupsplitop
-    let assemblyFormat = "$device_or_channel $body attr-dict";
+    let assemblyFormat = "$device_group custom<SplitBranches>($branch_assignments, $branches) attr-dict";
 }
 
 def DefineTokenOp : DistributedOp<"DefineToken", [DeclareOpInterfaceMethods<SymbolUserOpInterface>]>{
