@@ -46,7 +46,7 @@ struct ConcatInsertDimToBatch : public ConcatInsertDimToBatchBase {
             [](mlir::Operation *op) -> mlir::Operation * {
               if (!op)
                 return nullptr;
-              return dyn_cast<OpTy>(op);
+              return llvm::dyn_cast<OpTy>(op);
             },
             ctx, benefit) {}
 };
@@ -94,7 +94,7 @@ template <typename OpTy> struct SliceToBatch : public SliceToBatchBase {
             [](mlir::Operation *op) -> mlir::Operation * {
               if (!op)
                 return nullptr;
-              return dyn_cast<OpTy>(op);
+              return llvm::dyn_cast<OpTy>(op);
             },
             ctx, benefit) {}
 };
