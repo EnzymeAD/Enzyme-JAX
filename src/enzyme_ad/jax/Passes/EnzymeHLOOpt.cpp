@@ -7717,44 +7717,48 @@ struct CompareNegateConstSimplify
     if (!lhsNegate && !rhsNegate)
       return failure();
 
-    if (lhsNegate &&
-        !lhsNegate.getOperand()
-             .getDefiningOp()
-             ->hasTrait<mlir::OpTrait::ConstantLike>() &&
-        cmpOp.getRhs()
-            .getDefiningOp()
-            ->hasTrait<mlir::OpTrait::ConstantLike>()) {
-      auto negConst =
-          rewriter.create<stablehlo::NegOp>(cmpOp.getLoc(), cmpOp.getRhs());
-      auto newOp = rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
-          cmpOp, lhsNegate.getOperand(), negConst,
-          reversedComparisonDirection(cmpOp.getComparisonDirection()),
-          cmpOp.getCompareTypeAttr());
-      if (shardingAttr) {
-        sdy::setShardings(newOp, shardingAttr);
-        sdy::setShardings(negConst, shardingAttr);
+    if (lhsNegate) {
+      if (auto lhsNegateOp = lhsNegate.getOperand().getDefiningOp()) {
+        if (!lhsNegateOp->hasTrait<mlir::OpTrait::ConstantLike>()) {
+          if (auto cmpRhsOp = cmpOp.getRhs().getDefiningOp()) {
+            if (cmpRhsOp->hasTrait<mlir::OpTrait::ConstantLike>()) {
+              auto negConst = rewriter.create<stablehlo::NegOp>(cmpOp.getLoc(),
+                                                                cmpOp.getRhs());
+              auto newOp = rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
+                  cmpOp, lhsNegate.getOperand(), negConst,
+                  reversedComparisonDirection(cmpOp.getComparisonDirection()),
+                  cmpOp.getCompareTypeAttr());
+              if (shardingAttr) {
+                sdy::setShardings(newOp, shardingAttr);
+                sdy::setShardings(negConst, shardingAttr);
+              }
+              return success();
+            }
+          }
+        }
       }
-      return success();
     }
 
-    if (rhsNegate &&
-        !rhsNegate.getOperand()
-             .getDefiningOp()
-             ->hasTrait<mlir::OpTrait::ConstantLike>() &&
-        cmpOp.getLhs()
-            .getDefiningOp()
-            ->hasTrait<mlir::OpTrait::ConstantLike>()) {
-      auto negConst =
-          rewriter.create<stablehlo::NegOp>(cmpOp.getLoc(), cmpOp.getLhs());
-      auto newOp = rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
-          cmpOp, negConst, rhsNegate.getOperand(),
-          reversedComparisonDirection(cmpOp.getComparisonDirection()),
-          cmpOp.getCompareTypeAttr());
-      if (shardingAttr) {
-        sdy::setShardings(newOp, shardingAttr);
-        sdy::setShardings(negConst, shardingAttr);
+    if (rhsNegate) {
+      if (auto rhsNegateOp = rhsNegate.getOperand().getDefiningOp()) {
+        if (!rhsNegateOp->hasTrait<mlir::OpTrait::ConstantLike>()) {
+          if (auto cmpLhsOp = cmpOp.getLhs().getDefiningOp()) {
+            if (cmpLhsOp->hasTrait<mlir::OpTrait::ConstantLike>()) {
+              auto negConst = rewriter.create<stablehlo::NegOp>(cmpOp.getLoc(),
+                                                                cmpOp.getLhs());
+              auto newOp = rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
+                  cmpOp, negConst, rhsNegate.getOperand(),
+                  reversedComparisonDirection(cmpOp.getComparisonDirection()),
+                  cmpOp.getCompareTypeAttr());
+              if (shardingAttr) {
+                sdy::setShardings(newOp, shardingAttr);
+                sdy::setShardings(negConst, shardingAttr);
+              }
+              return success();
+            }
+          }
+        }
       }
-      return success();
     }
 
     return failure();
