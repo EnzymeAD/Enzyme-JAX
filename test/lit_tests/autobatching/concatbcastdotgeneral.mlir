@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --enzyme-hlo-opt --inline %s | FileCheck %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-opt --auto-batching --inline --enzyme-hlo-opt %s | FileCheck %s
 
 module @reactant_updates2 attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas = 1 : i64} {
   func.func @main(%arg0: tensor<3x32x32xf32>, %arg1: tensor<3x32x32xf32>, %arg2: tensor<3x32x32xf32>) -> (tensor<3x32x32xf32>, tensor<3x32x32xf32>, tensor<3x32x32xf32>) {

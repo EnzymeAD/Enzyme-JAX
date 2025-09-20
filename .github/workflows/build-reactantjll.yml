@@ -33,8 +33,7 @@ concurrency:
 jobs:
   build-jll:
     name: Build Reactant_jll
-    strategy:
-      fail-fast: false
+    if: github.event.pull_request.draft == false
     uses: EnzymeAD/ReactantBuilder/.github/workflows/build-reactant-reusable.yml@main
     with:
       reactantbuilder_ref: 'main'

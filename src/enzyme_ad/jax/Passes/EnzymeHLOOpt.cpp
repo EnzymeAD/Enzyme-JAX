@@ -6188,18 +6188,6 @@ struct ScatterToDynamicUpdateSlice final
   }
 };
 
-bool isOnlyUsedInOperation(Operation *operation, Operation *parentOp) {
-  if (!operation || !parentOp)
-    return false;
-
-  for (Operation *user : operation->getUsers()) {
-    if (user != parentOp)
-      return false;
-  }
-
-  return true;
-}
-
 template <typename OpType>
 LogicalResult simplifyBinaryOpWithTranspose(OpType op,
                                             PatternRewriter &rewriter) {
@@ -16854,38 +16842,6 @@ struct AbsPositiveSimplify
   }
 };
 
-static SmallVector<int64_t>
-findReshapeInsertionDims(RankedTensorType inputType,
-                         RankedTensorType outputType) {
-  if (inputType.getRank() >= outputType.getRank())
-    return {}; // trivial no insertion case
-
-  SmallVector<int64_t> insertionDims;
-  size_t inputDimIndex = 0;
-
-  for (size_t i = 0; i < outputType.getRank(); ++i) {
-    auto dim = outputType.getShape()[i];
-    if (inputDimIndex < inputType.getRank() &&
-        dim == inputType.getShape()[inputDimIndex]) {
-      ++inputDimIndex;
-    } else if (dim == 1 && (inputDimIndex >= inputType.getShape().size() ||
-                            dim != inputType.getShape()[inputDimIndex])) {
-      // Singleton dimension inserted by reshape.
-      insertionDims.push_back(i);
-    } else {
-      // Reshape modifies existing dimensions, which we don't handle here.
-      return {};
-    }
-  }
-
-  // If we haven't seen all of the input dimensions, we don't have a valid
-  // insertion point.
-  if (inputDimIndex != inputType.getRank())
-    return {};
-
-  return insertionDims;
-}
-
 struct TransposeReshapeToBroadcast final
     : CheckedOpRewritePattern<stablehlo::TransposeOp,
                               TransposeReshapeToBroadcast> {
@@ -22612,270 +22568,6 @@ private:
   bool allowEmitConvolution;
 };
 
-bool validReshapeOpInsertDimForBatching(Operation *op, int64_t dim) {
-  auto reshapeOp = dyn_cast<stablehlo::ReshapeOp>(op);
-  if (!reshapeOp)
-    return false;
-
-  auto inputType = cast<RankedTensorType>(reshapeOp.getOperand().getType());
-  auto outputType = cast<RankedTensorType>(reshapeOp.getResult().getType());
-
-  SmallVector<int64_t> insertionDims =
-      findReshapeInsertionDims(inputType, outputType);
-
-  return insertionDims.size() == 1 && insertionDims[0] == dim;
-}
-
-bool validBroadcastInDimOpInsertDimForBatching(Operation *op, int64_t dim) {
-  auto broadcastInDimOp = dyn_cast<stablehlo::BroadcastInDimOp>(op);
-  if (!broadcastInDimOp)
-    return false;
-
-  auto inputType =
-      cast<RankedTensorType>(broadcastInDimOp.getOperand().getType());
-  auto outputType =
-      cast<RankedTensorType>(broadcastInDimOp.getResult().getType());
-
-  // single insert dim
-  if (inputType.getRank() != outputType.getRank() - 1)
-    return false;
-
-  // If concat dim is present in broadcast dims, then it is not a valid insert
-  for (auto bDim : broadcastInDimOp.getBroadcastDimensions()) {
-    if (bDim == dim)
-      return false;
-  }
-
-  // insert dim must be of size 1
-  return outputType.getShape()[dim] == 1;
-}
-
-template <typename OpTy>
-LogicalResult generalConcatInsertDimToBatch(stablehlo::ConcatenateOp concatOp,
-                                            PatternRewriter &rewriter) {
-  if (concatOp.getNumOperands() <= 1)
-    return failure();
-
-  auto concatDim = concatOp.getDimension();
-  auto concatType = cast<RankedTensorType>(concatOp.getResult().getType());
-  auto concatShape = concatType.getShape();
-
-  SmallVector<Operation *> concatOpOperands;
-
-  for (auto [i, v] : llvm::enumerate(concatOp.getOperands())) {
-    auto definingOp = v.getDefiningOp();
-    if (!definingOp)
-      return rewriter.notifyMatchFailure(concatOp, "operand is not a valid op");
-
-    bool isReshapeOpInsertDim =
-        validReshapeOpInsertDimForBatching(definingOp, concatDim);
-
-    bool isBroadcastInDimOpInsertDim = false;
-    if (!isReshapeOpInsertDim)
-      isBroadcastInDimOpInsertDim =
-          validBroadcastInDimOpInsertDimForBatching(definingOp, concatDim);
-
-    if (!isReshapeOpInsertDim && !isBroadcastInDimOpInsertDim)
-      return rewriter.notifyMatchFailure(concatOp, "operand is not a valid op");
-
-    auto vdefOp = definingOp->getOperand(0).template getDefiningOp<OpTy>();
-    if (!vdefOp)
-      return rewriter.notifyMatchFailure(concatOp, "not a valid target op");
-
-    if (concatOpOperands.size() != 0) {
-      if (!OperationEquivalence::isEquivalentTo(
-              concatOpOperands[0], vdefOp,
-              OperationEquivalence::ignoreValueEquivalence, nullptr,
-              OperationEquivalence::IgnoreLocations, nullptr))
-        return rewriter.notifyMatchFailure(concatOp,
-                                           "op is not equivalent to first");
-    }
-
-    if (!isOnlyUsedInOperation(vdefOp, definingOp))
-      return rewriter.notifyMatchFailure(concatOp,
-                                         "op is not only used in reshape op");
-
-    concatOpOperands.push_back(vdefOp);
-  }
-
-  SmallVector<Value> batchOpOperands;
-  SmallVector<Value> constantOperands; // Store constant values to inline
-  SmallVector<int32_t>
-      operandIndexMap; // Map from original operand index to batch operand index
-
-  // Analyze operands to find equivalences
-  for (int i = 0; i < concatOpOperands[0]->getNumOperands(); i++) {
-    SmallVector<Value> currentOperands;
-    bool allEquivalent = true;
-    Value firstOperand = concatOpOperands[0]->getOperand(i);
-
-    // Check if this operand is equivalent across all operations
-    for (auto v : concatOpOperands) {
-      Value currentOperand = v->getOperand(i);
-      currentOperands.push_back(currentOperand);
-
-      // Check equivalence with first operand
-      if (auto firstDefOp = firstOperand.getDefiningOp()) {
-        if (auto currentDefOp = currentOperand.getDefiningOp()) {
-          if (!OperationEquivalence::isEquivalentTo(
-                  firstDefOp, currentDefOp,
-                  OperationEquivalence::ignoreValueEquivalence, nullptr,
-                  OperationEquivalence::IgnoreLocations, nullptr)) {
-            allEquivalent = false;
-          }
-        } else {
-          allEquivalent = false;
-        }
-      } else {
-        // Handle block arguments or other cases
-        if (firstOperand != currentOperand) {
-          allEquivalent = false;
-        }
-      }
-    }
-
-    auto constOp = firstOperand.getDefiningOp<stablehlo::ConstantOp>();
-    if (allEquivalent && constOp) {
-      // All operands at this position are equivalent
-      // Check if it's a constant we can inline
-      constantOperands.push_back(firstOperand);
-      // Mark as constant (no batch operand needed)
-      operandIndexMap.push_back(-1);
-    } else {
-      // Non-equivalent operands - need to concatenate them
-      SmallVector<Value> newConcatOperands;
-      for (Value operand : currentOperands) {
-        auto inputType = cast<RankedTensorType>(operand.getType());
-        auto inputShape = inputType.getShape();
-        SmallVector<int64_t> outputShape;
-        outputShape.push_back(1);
-        outputShape.append(inputShape.begin(), inputShape.end());
-
-        auto newReshapeOp = rewriter.create<stablehlo::ReshapeOp>(
-            concatOp.getLoc(),
-            RankedTensorType::get(outputShape, inputType.getElementType()),
-            operand);
-        newConcatOperands.push_back(newReshapeOp.getResult());
-      }
-
-      auto newConcatOp = rewriter.create<stablehlo::ConcatenateOp>(
-          concatOp.getLoc(), newConcatOperands, 0);
-
-      operandIndexMap.push_back(batchOpOperands.size());
-      batchOpOperands.push_back(newConcatOp.getResult());
-    }
-  }
-
-  static int64_t concatReshapeToBatchCounter = 0;
-  std::string wrapperFuncName = "enzymexla_unbatched_ConcatInsertDimToBatch_" +
-                                (std::to_string(concatReshapeToBatchCounter++));
-
-  func::FuncOp func;
-  {
-    OpBuilder::InsertionGuard guard(rewriter);
-    auto modOp = concatOp->getParentOfType<ModuleOp>();
-    if (!modOp)
-      return rewriter.notifyMatchFailure(concatOp, "parent module not found");
-
-    rewriter.setInsertionPointToStart(modOp.getBody());
-
-    SmallVector<Type> argTypes;
-    for (auto v : batchOpOperands) {
-      auto vType = cast<RankedTensorType>(v.getType());
-      auto shape = vType.getShape();
-      SmallVector<int64_t> argShape;
-      for (int i = 1; i < shape.size(); i++)
-        argShape.push_back(shape[i]);
-
-      argTypes.push_back(
-          RankedTensorType::get(argShape, vType.getElementType()));
-    }
-
-    SmallVector<int64_t> retShape;
-    for (int i = 0; i < concatShape.size(); i++) {
-      if (i == concatDim)
-        continue;
-      retShape.push_back(concatShape[i]);
-    }
-    RankedTensorType retType =
-        RankedTensorType::get(retShape, concatType.getElementType());
-
-    FunctionType calleeType = rewriter.getFunctionType(argTypes, {retType});
-    func = rewriter.create<func::FuncOp>(concatOp.getLoc(), wrapperFuncName,
-                                         calleeType);
-    func.setPrivate();
-
-    auto &entryBlock = *func.addEntryBlock();
-    rewriter.setInsertionPointToStart(&entryBlock);
-
-    IRMapping mapper;
-    int batchArgIndex = 0;
-    // Map operands: use function arguments for batched operands, constants for
-    // equivalent constants
-    for (int i = 0; i < concatOpOperands[0]->getNumOperands(); i++) {
-      Value originalOperand = concatOpOperands[0]->getOperand(i);
-
-      auto copyConstOp = originalOperand.getDefiningOp<stablehlo::ConstantOp>();
-      if (operandIndexMap[i] == -1 && copyConstOp) {
-        // This is a constant - clone it directly in the function
-        auto clonedConst = rewriter.clone(*copyConstOp);
-        mapper.map(originalOperand, clonedConst->getResult(0));
-      } else {
-        // Map to corresponding function argument
-        mapper.map(originalOperand, entryBlock.getArguments()[batchArgIndex++]);
-      }
-    }
-
-    auto unbatchedOp = rewriter.clone(*concatOpOperands[0], mapper);
-    rewriter.create<func::ReturnOp>(concatOp.getLoc(),
-                                    ValueRange(unbatchedOp->getResult(0)));
-  }
-
-  SmallVector<int64_t> outputShape;
-  outputShape.push_back(concatShape[concatDim]);
-  for (int i = 0; i < concatShape.size(); i++) {
-    if (i == concatDim)
-      continue;
-    outputShape.push_back(concatShape[i]);
-  }
-
-  auto batchOp = rewriter.create<enzyme::BatchOp>(
-      concatOp.getLoc(),
-      RankedTensorType::get(outputShape, concatType.getElementType()),
-      mlir::FlatSymbolRefAttr::get(concatOp.getContext(), wrapperFuncName),
-      ValueRange(batchOpOperands),
-      rewriter.getDenseI64ArrayAttr({concatShape[concatDim]}));
-
-  SmallVector<int64_t> permutation;
-  for (int i = 1; i <= concatDim; i++)
-    permutation.push_back(i);
-  permutation.push_back(0);
-  for (int i = concatDim + 1; i < concatShape.size(); i++)
-    permutation.push_back(i);
-
-  rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(
-      concatOp, batchOp->getResult(0), permutation);
-  std::map<enzyme::batchutils::BatchCacheKey, FunctionOpInterface>
-      batchedFunctionCache;
-  return enzyme::batchutils::batchOperation(
-      rewriter, batchOp, cast<FunctionOpInterface>(func.getOperation()),
-      batchedFunctionCache);
-};
-
-template <typename OpTy>
-struct ConcatInsertDimToBatch
-    : public CheckedOpRewritePattern<stablehlo::ConcatenateOp,
-                                     ConcatInsertDimToBatch<OpTy>> {
-  using CheckedOpRewritePattern<
-      stablehlo::ConcatenateOp,
-      ConcatInsertDimToBatch<OpTy>>::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp concatOp,
-                                    PatternRewriter &rewriter) const {
-    return generalConcatInsertDimToBatch<OpTy>(concatOp, rewriter);
-  }
-};
-
 // Applies distributive property to op(dot_general(a, b), dot_general(a, c))
 // operations and converts them to dot_general(a, op(b, c)) or
 // dot_general(op(b, c), a)
@@ -23107,6 +22799,27 @@ private:
     return std::make_tuple(info.sliceDim == insertionDims[0], info);
   }
 
+  std::tuple<bool, SliceInfo>
+  matchReshapeSlice(stablehlo::ReshapeOp reshapeOp) const {
+    auto inputType = cast<RankedTensorType>(reshapeOp.getOperand().getType());
+    auto outputType = cast<RankedTensorType>(reshapeOp.getType());
+
+    SmallVector<int64_t> deletionDims =
+        findReshapeInsertionDims(outputType, inputType);
+    if (deletionDims.size() != 1) {
+      return std::make_tuple(false, SliceInfo());
+    }
+
+    auto slice =
+        reshapeOp.getOperand().template getDefiningOp<stablehlo::SliceOp>();
+    if (!slice) {
+      return std::make_tuple(false, SliceInfo());
+    }
+    SliceInfo info = extractSliceInfo(slice);
+
+    return std::make_tuple(info.sliceDim == deletionDims[0], info);
+  }
+
   bool matchingSourceOperand(SmallVector<SliceInfo> &slices,
                              stablehlo::SliceOp slice) const {
     if (!slice)
@@ -23138,11 +22851,16 @@ private:
         worklist.push_back(binaryOp.getRhs());
       } else if (auto reshape =
                      current.template getDefiningOp<stablehlo::ReshapeOp>()) {
-        auto [isMatch, info] = matchReshapeReduceSlice(reshape);
-        if (isMatch && matchingSourceOperand(slices, info.sliceOp)) {
-          slices.push_back(info);
+        auto [isMatchRRS, infoRRS] = matchReshapeReduceSlice(reshape);
+        if (isMatchRRS && matchingSourceOperand(slices, infoRRS.sliceOp)) {
+          slices.push_back(infoRRS);
         } else {
-          return false;
+          auto [isMatchRS, infoRS] = matchReshapeSlice(reshape);
+          if (isMatchRS && matchingSourceOperand(slices, infoRS.sliceOp)) {
+            slices.push_back(infoRS);
+          } else {
+            return false;
+          }
         }
       } else if (auto slice =
                      current.template getDefiningOp<stablehlo::SliceOp>()) {
@@ -23412,6 +23130,8 @@ namespace enzyme {
 #include "src/enzyme_ad/jax/Passes/StablehloOptPatterns.cpp.inc"
 }; // namespace enzyme
 }; // namespace mlir
+
+#include "src/enzyme_ad/jax/Passes/AutoBatching.h"
 
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.cpp.inc"
 // clang-format on
@@ -24006,13 +23726,6 @@ struct EnzymeHLOOptPass
         ElementwiseWrap,
         ElementwiseExtend,
         SubtractMultiplyConstToAddMulConst,
-        ConcatInsertDimToBatch<stablehlo::DotGeneralOp>,
-        ConcatInsertDimToBatch<stablehlo::GatherOp>,
-        ConcatInsertDimToBatch<stablehlo::IotaOp>,
-        ConcatInsertDimToBatch<stablehlo::ReduceOp>,
-        // ConcatInsertDimToBatch<stablehlo::ScatterOp>, after batch op interface is implemented
-        ConcatInsertDimToBatch<stablehlo::SortOp>,
-        ConcatInsertDimToBatch<stablehlo::ReduceWindowOp>,
         DotGeneralDistributiveSimplify<stablehlo::AddOp>,
         DotGeneralDistributiveSimplify<stablehlo::SubtractOp>,
         TrivialReduceWindowToReduceOp,
