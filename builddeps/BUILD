@@ -1,4 +1,4 @@
-load("@python//:defs.bzl", "compile_pip_requirements")
+load("@rules_python//python:pip.bzl", "compile_pip_requirements")
 load("@python_version_repo//:py_version.bzl", "REQUIREMENTS")
 
 licenses(["notice"])
