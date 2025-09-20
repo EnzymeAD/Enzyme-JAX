@@ -205,7 +205,7 @@ constructAndExtractBatchOperands(PatternRewriter &rewriter,
             permutation[0] = i;
         }
         auto transposeOp = rewriter.create<stablehlo::TransposeOp>(
-            sliceOp.getLoc(), sliceOp.getOperand(),
+            loc, sliceOp.getOperand(),
             rewriter.getDenseI64ArrayAttr(permutation));
         operands.push_back(transposeOp.getResult());
       } else {
@@ -222,7 +222,7 @@ constructAndExtractBatchOperands(PatternRewriter &rewriter,
           }
         }
         auto bcastOp = rewriter.create<stablehlo::BroadcastInDimOp>(
-            sliceOp.getLoc(),
+            loc,
             RankedTensorType::get(bcastShape, sliceOpType.getElementType()),
             sliceOp.getOperand(), rewriter.getDenseI64ArrayAttr(mapping));
         operands.push_back(bcastOp.getResult());
@@ -660,6 +660,12 @@ bool SliceToBatchBase::areSlicesContiguous(
     }
     expectedStart++;
   }
+
+  // TODO: we should support cases where the entire batch is not being sliced
+  //       but introducing an intermediate slice.
+  if (expectedStart !=
+      slices[0].sliceOp.getOperand().getType().getShape()[sliceDim])
+    return false;
 
   return true;
 }
