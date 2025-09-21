@@ -76,7 +76,6 @@ sed -i.bak0 "s/patch_file = \\[\\"\\/\\/third_party\\/protobuf:protobuf.patch\\"
 sed -i.bak0 "s/tf_http_archive(/http_archive(/g" third_party/py/python_init_rules.bzl
 
 """,
-
     """
 sed -i.bak0 "s/def main():/def main():\\n  if TMPDIR: os.environ['TMPDIR'] = TMPDIR/g" third_party/gpus/crosstool/clang/bin/crosstool_wrapper_driver_is_not_gcc.tpl
 """,
