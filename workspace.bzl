@@ -72,9 +72,9 @@ echo "" >> third_party/proto.patch
 echo " #ifndef bswap_16" >> third_party/proto.patch
 echo " static inline uint16_t bswap_16(uint16_t x) {" >> third_party/proto.patch
 sed -i.bak0 "s/protobuf.patch\\"/protobuf.patch\\", \\":proto.patch\\"/g" workspace2.bzl
-sed -i.bak0 "s/patch_file = \\[\\"\\/\\/third_party\\/protobuf:protobuf.patch\\"/patches = \\[Label(\\"\\/\\/third_party\\/protobuf:protobuf.patch\\"), Label(\\"\\/\\/third_party:proto.patc
-\\"\\)], patch_args = \\[\\"-p1\\"/g" third_party/py/python_init_rules.bzl
+sed -i.bak0 "s/patch_file = \\[\\"\\/\\/third_party\\/protobuf:protobuf.patch\\"/patches = \\[Label(\\"\\/\\/third_party\\/protobuf:protobuf.patch\\"), Label(\\"\\/\\/third_party:proto.patch\\"\\)], patch_args = \\[\\"-p1\\"/g" third_party/py/python_init_rules.bzl
 sed -i.bak0 "s/tf_http_archive(/http_archive(/g" third_party/py/python_init_rules.bzl
+
 """,
 
     """
