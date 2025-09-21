@@ -49,10 +49,6 @@ load("@xla//:workspace3.bzl", "xla_workspace3")
 
 xla_workspace3()
 
-load("//third_party/enzyme:workspace.bzl", enzyme_workspace = "repo")
-
-enzyme_workspace()
-
 load("@xla//third_party/py:python_init_rules.bzl", "python_init_rules")
 
 python_init_rules()
@@ -187,6 +183,10 @@ nccl_configure(name = "local_config_nccl")
 
 # add support for generating compile_commands
 load("//third_party/hedron_compile_commands:workspace.bzl", hedron_compile_commands_workspace = "repo")
+
+load("//third_party/enzyme:workspace.bzl", enzyme_workspace = "repo")
+
+enzyme_workspace()
 
 hedron_compile_commands_workspace()
 
