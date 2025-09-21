@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1758492407436,
+  "lastUpdate": 1758498773796,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
@@ -2854,6 +2854,195 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/edaef4cac440e24fc6609aaf7b4dc2e7819114a0"
         },
         "date": 1758492406958,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "llama / JaXPipe / gpu / Primal",
+            "value": 0.0004550768220797,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaX   / gpu / Primal",
+            "value": 0.0004341619946062,
+            "unit": "s"
+          },
+          {
+            "name": "llama / HLOOpt / gpu / Primal",
+            "value": 0.0004531232323497,
+            "unit": "s"
+          },
+          {
+            "name": "llama / PartOpt / gpu / Primal",
+            "value": 0.0004480943195521,
+            "unit": "s"
+          },
+          {
+            "name": "llama / DefOpt / gpu / Primal",
+            "value": 0.000442945966497,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IPartOpt / gpu / Primal",
+            "value": 0.0004402433559298,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IDefOpt / gpu / Primal",
+            "value": 0.0004484025938436,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaXPipe / gpu / Forward",
+            "value": 0.0007525664046406,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaX   / gpu / Forward",
+            "value": 0.0007415851419791,
+            "unit": "s"
+          },
+          {
+            "name": "llama / HLOOpt / gpu / Forward",
+            "value": 0.0007465295018628,
+            "unit": "s"
+          },
+          {
+            "name": "llama / PartOpt / gpu / Forward",
+            "value": 0.0007462691115215,
+            "unit": "s"
+          },
+          {
+            "name": "llama / DefOpt / gpu / Forward",
+            "value": 0.0007539085419848,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IPartOpt / gpu / Forward",
+            "value": 0.000747726727277,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IDefOpt / gpu / Forward",
+            "value": 0.0007327055577188,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaXPipe / gpu / PreRev",
+            "value": 0.0008366110594943,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaXPipe / gpu / PostRev",
+            "value": 0.0008001493038609,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaXPipe / gpu / BothRev",
+            "value": 0.000812932359986,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaX   / gpu / BothRev",
+            "value": 0.0008421674137935,
+            "unit": "s"
+          },
+          {
+            "name": "llama / HLOOpt / gpu / PreRev",
+            "value": 0.0007998904660344,
+            "unit": "s"
+          },
+          {
+            "name": "llama / HLOOpt / gpu / PostRev",
+            "value": 0.0008114084620028,
+            "unit": "s"
+          },
+          {
+            "name": "llama / HLOOpt / gpu / BothRev",
+            "value": 0.0008046367401257,
+            "unit": "s"
+          },
+          {
+            "name": "llama / PartOpt / gpu / PreRev",
+            "value": 0.0008025103798136,
+            "unit": "s"
+          },
+          {
+            "name": "llama / PartOpt / gpu / PostRev",
+            "value": 0.0008191408617421,
+            "unit": "s"
+          },
+          {
+            "name": "llama / PartOpt / gpu / BothRev",
+            "value": 0.0008317378098145,
+            "unit": "s"
+          },
+          {
+            "name": "llama / DefOpt / gpu / PreRev",
+            "value": 0.0007906445292755,
+            "unit": "s"
+          },
+          {
+            "name": "llama / DefOpt / gpu / PostRev",
+            "value": 0.0007819799501448,
+            "unit": "s"
+          },
+          {
+            "name": "llama / DefOpt / gpu / BothRev",
+            "value": 0.0007984885722398,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IPartOpt / gpu / PreRev",
+            "value": 0.00082982886862,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IPartOpt / gpu / PostRev",
+            "value": 0.0007802986958995,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IPartOpt / gpu / BothRev",
+            "value": 0.0008505585463717,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IDefOpt / gpu / PreRev",
+            "value": 0.0008385251397266,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IDefOpt / gpu / PostRev",
+            "value": 0.000801190928556,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IDefOpt / gpu / BothRev",
+            "value": 0.0008391594095155,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "wmoses@google.com",
+            "name": "William Moses",
+            "username": "wsmoses"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9e7bfe9bdd702b6369e18591e955d93a6fd65647",
+          "message": "Remove D_FORTIFY_SOURCE from multiple files",
+          "timestamp": "2025-09-21T15:58:02-05:00",
+          "tree_id": "baa3a8213cb18610454683abbf4fe327496e5d83",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/9e7bfe9bdd702b6369e18591e955d93a6fd65647"
+        },
+        "date": 1758498773314,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
