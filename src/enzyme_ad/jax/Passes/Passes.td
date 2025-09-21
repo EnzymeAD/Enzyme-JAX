@@ -903,4 +903,39 @@ def StripGPUInfo : Pass<"strip-gpu-info"> {
   let dependentDialects = ["gpu::GPUDialect"];
 }
 
+def AutoBatchingPass : Pass<"auto-batching"> {
+  let summary = "Check if a sequence of ops can be fused into a single batch op";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "func::FuncDialect",
+    "enzyme::EnzymeDialect",
+  ];
+  let options = [
+    Option<
+      /*C++ variable name=*/"concat_insert_dim_passes",
+      /*CLI argument=*/"concat_insert_dim_passes",
+      /*type=*/"bool",
+      /*default=*/"true",
+      /*description=*/"Whether to run concat insert dim passes">,
+    Option<
+      /*C++ variable name=*/"slice_to_batch_passes",
+      /*CLI argument=*/"slice_to_batch_passes",
+      /*type=*/"bool",
+      /*default=*/"true",
+      /*description=*/"Whether to run slice to batch passes">,
+    Option<
+        /*C++ variable name=*/"max_iterations",
+        /*CLI argument=*/"max_iterations",
+        /*type=*/"int64_t",
+        /*default=*/"4",
+        /*description=*/"Maximum number of pattern iterations">,
+    Option<
+        /*C++ variable name=*/"top_down",
+        /*CLI argument=*/"top_down",
+        /*type=*/"bool",
+        /*default=*/"false",
+        /*description=*/"Use top down traversal">,
+  ];
+}
+
 #endif
