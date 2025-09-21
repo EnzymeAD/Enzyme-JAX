@@ -4,11 +4,11 @@
 #
 #    bazel run //builddeps:requirements.update
 #
-absl-py==2.1.0 \
-    --hash=sha256:526a04eadab8b4ee719ce68f204172ead1027549089702d99b9059f129ff1308 \
-    --hash=sha256:7820790efbb316739cde8b4e19357243fc3608a152024288513dd968d7d959ff
+absl-py==2.3.1 \
+    --hash=sha256:a97820526f7fbfd2ec1bce83f3f25e3a14840dac0d8e02a0b71cd75db3f77fc9 \
+    --hash=sha256:eeecf07f0c2a93ace0772c92e596ace6d3d3996c042b2128459aaae2a76de11d
     # via
-    #   -r /home/wmoses/.cache/bazel/_bazel_wmoses/5d297ebbef9074123114ecedd7ac7300/execroot/__main__/bazel-out/k8-opt-ST-259defaf8903/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
+    #   -r /mnt3/wmoses/.cache/bazel/_bazel_wmoses/1c1e1690f1f86a43a5b66cdfb155c300/execroot/__main__/bazel-out/k8-opt/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
     #   -r builddeps/requirements.in
     #   array-record
     #   chex
@@ -167,7 +167,7 @@ attrs==24.3.0 \
     #   pytype
 benchmark @ https://github.com/wsmoses/keras-benchmarks/archive/9caedf38085b7fd23cef19e75ab9b7ab31ae99b0.tar.gz \
     --hash=sha256:89e6317f1fa09dfe91e4a3239f82476d4578b59e51edf06453453f9549554527
-    # via -r /home/wmoses/.cache/bazel/_bazel_wmoses/5d297ebbef9074123114ecedd7ac7300/execroot/__main__/bazel-out/k8-opt-ST-259defaf8903/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
+    # via -r /mnt3/wmoses/.cache/bazel/_bazel_wmoses/1c1e1690f1f86a43a5b66cdfb155c300/execroot/__main__/bazel-out/k8-opt/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
 blobfile==3.0.0 \
     --hash=sha256:32ec777414de7bb2a76ca812a838f0d33327ca28ae844a253503cde625cdf2f1 \
     --hash=sha256:48ecc3307e622804bd8fe13bf6f40e6463c4439eba7a1f9ad49fd78aa63cc658
@@ -406,7 +406,7 @@ dm-haiku==0.0.14 \
     --hash=sha256:0c1d56ef20e1e04d8551f788ff8964167092c5d8051b7c17ed3f9ce60c0b0a59 \
     --hash=sha256:79f2fc2bf2985f99687209b72a193769ba2bcfde471ce7746cd36a64ea9ce74a
     # via
-    #   -r /home/wmoses/.cache/bazel/_bazel_wmoses/5d297ebbef9074123114ecedd7ac7300/execroot/__main__/bazel-out/k8-opt-ST-259defaf8903/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
+    #   -r /mnt3/wmoses/.cache/bazel/_bazel_wmoses/1c1e1690f1f86a43a5b66cdfb155c300/execroot/__main__/bazel-out/k8-opt/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
     #   jax-md
     #   neuralgcm
 dm-tree==0.1.8 \
@@ -744,7 +744,7 @@ gast==0.6.0 \
 gcsfs==2024.9.0.post1 ; sys_platform == "linux" \
     --hash=sha256:7ca70ee9d7c7dbce1a3e36b4883e14102c2d7b4284f49e242843a437bc684684 \
     --hash=sha256:f3ab9d3bedc45da8cf40baed7c3a1e1694e8f599160d9138d78f0ef25e4a3ca1
-    # via -r /home/wmoses/.cache/bazel/_bazel_wmoses/5d297ebbef9074123114ecedd7ac7300/execroot/__main__/bazel-out/k8-opt-ST-259defaf8903/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
+    # via -r /mnt3/wmoses/.cache/bazel/_bazel_wmoses/1c1e1690f1f86a43a5b66cdfb155c300/execroot/__main__/bazel-out/k8-opt/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
 gin-config==0.5.0 \
     --hash=sha256:0c6ea5026ded927c8c93c990b01c695257c1df446e45e549a158cfbc79e19ed6 \
     --hash=sha256:bddb7ca221ea2b46cdb59321e79fecf02d6e3b728906047fcd4076c297609fd6
@@ -970,7 +970,7 @@ jax[cuda12]==0.7.0 ; sys_platform == "linux" \
     --hash=sha256:4dd8924f171ed73a4f1a6191e2f800ae1745069989b69fabc45593d6b6504003 \
     --hash=sha256:62833036cbaf4641d66ae94c61c0446890a91b2c0d153946583a0ebe04877a76
     # via
-    #   -r /home/wmoses/.cache/bazel/_bazel_wmoses/5d297ebbef9074123114ecedd7ac7300/execroot/__main__/bazel-out/k8-opt-ST-259defaf8903/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
+    #   -r /mnt3/wmoses/.cache/bazel/_bazel_wmoses/1c1e1690f1f86a43a5b66cdfb155c300/execroot/__main__/bazel-out/k8-opt/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
     #   -r builddeps/requirements.in
     #   chex
     #   clu
@@ -1003,7 +1003,7 @@ jax-cuda12-plugin[with-cuda]==0.7.0 \
     # via jax
 jax-md @ https://github.com/wsmoses/jax-md/archive/45059b8f63dad0b5cb171feafff71b82162487e7.tar.gz \
     --hash=sha256:79b17dc0ce546574d4eda57c5b933ff93177fd19887ccf44a318ec8cb9c620df
-    # via -r /home/wmoses/.cache/bazel/_bazel_wmoses/5d297ebbef9074123114ecedd7ac7300/execroot/__main__/bazel-out/k8-opt-ST-259defaf8903/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
+    # via -r /mnt3/wmoses/.cache/bazel/_bazel_wmoses/1c1e1690f1f86a43a5b66cdfb155c300/execroot/__main__/bazel-out/k8-opt/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
 jaxlib==0.7.0 \
     --hash=sha256:005213b6dcbd20b0bd65580b740255950150b489e1a5306f65d8e49f9114ab85 \
     --hash=sha256:074a025664cf439b5965dccaaf20c4aae6cc955dddd74e85342568aba40dda47 \
@@ -1020,7 +1020,7 @@ jaxlib==0.7.0 \
     --hash=sha256:e6f06c5050803f9d149c3ba4fdf85a62e1dae78a31ecb6f25744004977b492a9 \
     --hash=sha256:ffcb4b1e3e012106f43b306d70d0f6a36262824a324f89f7f22bf28867fbe81c
     # via
-    #   -r /home/wmoses/.cache/bazel/_bazel_wmoses/5d297ebbef9074123114ecedd7ac7300/execroot/__main__/bazel-out/k8-opt-ST-259defaf8903/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
+    #   -r /mnt3/wmoses/.cache/bazel/_bazel_wmoses/1c1e1690f1f86a43a5b66cdfb155c300/execroot/__main__/bazel-out/k8-opt/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
     #   -r builddeps/requirements.in
     #   chex
     #   clu
@@ -1050,7 +1050,7 @@ joblib==1.4.2 \
     # via scikit-learn
 jraph @ https://github.com/wsmoses/jraph/archive/b00d9a03db76c69a258a86df81638b9a2f28829f.tar.gz \
     --hash=sha256:d996f47fff8c6ac8f5572e4220e3193f2542e9d3d6bc1defc16ac22dadd74dd4
-    # via -r /home/wmoses/.cache/bazel/_bazel_wmoses/5d297ebbef9074123114ecedd7ac7300/execroot/__main__/bazel-out/k8-opt-ST-259defaf8903/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
+    # via -r /mnt3/wmoses/.cache/bazel/_bazel_wmoses/1c1e1690f1f86a43a5b66cdfb155c300/execroot/__main__/bazel-out/k8-opt/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
 kagglehub==0.3.6 \
     --hash=sha256:3e9485f8ff59d87d1055f1cb22369ffd943826492ff586368ba1934a58c11291 \
     --hash=sha256:fac03aeb53cb75ab1d0ed464eb2198d022548c0589983d2e061323db5816ff52
@@ -1060,7 +1060,7 @@ kagglehub==0.3.6 \
 keras @ https://github.com/avik-pal/keras/archive/7344964561c15611dd2d734a2bdd6b872a07709d.tar.gz \
     --hash=sha256:9b91264f19392dd2f3930b7626f1ce9217396cdc5c89276992771ec665ed86b5
     # via
-    #   -r /home/wmoses/.cache/bazel/_bazel_wmoses/5d297ebbef9074123114ecedd7ac7300/execroot/__main__/bazel-out/k8-opt-ST-259defaf8903/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
+    #   -r /mnt3/wmoses/.cache/bazel/_bazel_wmoses/1c1e1690f1f86a43a5b66cdfb155c300/execroot/__main__/bazel-out/k8-opt/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
     #   keras-hub
     #   tensorflow
 keras-core==0.1.7 \
@@ -1070,11 +1070,11 @@ keras-core==0.1.7 \
 keras-cv==0.9.0 ; sys_platform == "linux" \
     --hash=sha256:507f0214cfba0a30e4c914d10bfac9b8ab39faeb30d4196993ddd02e31fccd7b \
     --hash=sha256:678e3447fdc0834d736b4bde8ef5950d53a1af4dd0c841f00edd8f8cd6e8e42f
-    # via -r /home/wmoses/.cache/bazel/_bazel_wmoses/5d297ebbef9074123114ecedd7ac7300/execroot/__main__/bazel-out/k8-opt-ST-259defaf8903/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
+    # via -r /mnt3/wmoses/.cache/bazel/_bazel_wmoses/1c1e1690f1f86a43a5b66cdfb155c300/execroot/__main__/bazel-out/k8-opt/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
 keras-hub[nlp]==0.21.1 ; sys_platform == "linux" \
     --hash=sha256:3f128d3de56e9eec6a1ede3bdf09cfe0b6aefc1236edf00844fa0bf734fd90e7 \
     --hash=sha256:7f34477ad3417bd727660f847cca24cb23641e9b965537362bf3067951afd187
-    # via -r /home/wmoses/.cache/bazel/_bazel_wmoses/5d297ebbef9074123114ecedd7ac7300/execroot/__main__/bazel-out/k8-opt-ST-259defaf8903/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
+    # via -r /mnt3/wmoses/.cache/bazel/_bazel_wmoses/1c1e1690f1f86a43a5b66cdfb155c300/execroot/__main__/bazel-out/k8-opt/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
 libclang==18.1.1 \
     --hash=sha256:0b2e143f0fac830156feb56f9231ff8338c20aecfe72b4ffe96f19e5a1dbb69a \
     --hash=sha256:3f0e1f49f04d3cd198985fea0511576b0aee16f9ff0e0f0cad7f9c57ec3c20e8 \
@@ -1325,7 +1325,7 @@ markupsafe==3.0.2 \
     #   werkzeug
 maxtext @ https://github.com/wsmoses/maxtext/archive/bc50722be7d89e4003bd830b80e4ac968be658eb.tar.gz \
     --hash=sha256:417a114c26d37f1a131479710799597662879cbd1def5c07589848a9b324b27e
-    # via -r /home/wmoses/.cache/bazel/_bazel_wmoses/5d297ebbef9074123114ecedd7ac7300/execroot/__main__/bazel-out/k8-opt-ST-259defaf8903/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
+    # via -r /mnt3/wmoses/.cache/bazel/_bazel_wmoses/1c1e1690f1f86a43a5b66cdfb155c300/execroot/__main__/bazel-out/k8-opt/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
 mccabe==0.7.0 \
     --hash=sha256:348e0240c33b60bbdf4e523192ef919f28cb2c3d7d5c7794f74009290f236325 \
     --hash=sha256:6c2d30ab6be0e4a46919781807b4f0d834ebdd6c6e3dca0bda5a15f863427b6e
@@ -1596,7 +1596,7 @@ networkx==3.5 \
     #   pytype
 neuralgcm @ https://github.com/wsmoses/neuralgcm/archive/d2412377026f41baaec35510423c69657dbcde2c.tar.gz \
     --hash=sha256:ebc4318f8d087db500d422839465423542b436161aad00108f1d3742e847766b
-    # via -r /home/wmoses/.cache/bazel/_bazel_wmoses/5d297ebbef9074123114ecedd7ac7300/execroot/__main__/bazel-out/k8-opt-ST-259defaf8903/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
+    # via -r /mnt3/wmoses/.cache/bazel/_bazel_wmoses/1c1e1690f1f86a43a5b66cdfb155c300/execroot/__main__/bazel-out/k8-opt/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
 ninja==1.11.1.4 \
     --hash=sha256:055f386fb550c2c9d6157e45e20a84d29c47968876b9c5794ae2aec46f952306 \
     --hash=sha256:096487995473320de7f65d622c3f1d16c3ad174797602218ca8c967f51ec38a0 \
@@ -1673,7 +1673,7 @@ numpy==1.26.4 \
     --hash=sha256:f870204a840a60da0b12273ef34f7051e98c3b5961b61b0c2c1be6dfd64fbcd3 \
     --hash=sha256:ffa75af20b44f8dba823498024771d5ac50620e6915abac414251bd971b4529f
     # via
-    #   -r /home/wmoses/.cache/bazel/_bazel_wmoses/5d297ebbef9074123114ecedd7ac7300/execroot/__main__/bazel-out/k8-opt-ST-259defaf8903/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
+    #   -r /mnt3/wmoses/.cache/bazel/_bazel_wmoses/1c1e1690f1f86a43a5b66cdfb155c300/execroot/__main__/bazel-out/k8-opt/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
     #   chex
     #   clu
     #   dinosaur
@@ -2432,7 +2432,7 @@ requests==2.32.4 ; sys_platform == "linux" \
     --hash=sha256:27babd3cda2a6d50b30443204ee89830707d396671944c998b5975b031ac2b2c \
     --hash=sha256:27d0316682c8a29834d3264820024b62a36942083d52caf2f14c0591336d3422
     # via
-    #   -r /home/wmoses/.cache/bazel/_bazel_wmoses/5d297ebbef9074123114ecedd7ac7300/execroot/__main__/bazel-out/k8-opt-ST-259defaf8903/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
+    #   -r /mnt3/wmoses/.cache/bazel/_bazel_wmoses/1c1e1690f1f86a43a5b66cdfb155c300/execroot/__main__/bazel-out/k8-opt/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
     #   gcsfs
     #   google-api-core
     #   google-cloud-storage
