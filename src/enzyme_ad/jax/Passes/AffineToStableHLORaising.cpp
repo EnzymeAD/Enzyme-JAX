@@ -891,41 +891,37 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
     auto idxMap = maps.lookup(raisedIdx);
 
     auto Ty = cast<RankedTensorType>(raisedIdx.getType());
-    SmallVector<int64_t> indicesShape(Ty.getShape().begin(),
-                                      Ty.getShape().end());
-    indicesShape.push_back(1);
+
+    int64_t numIndices = 1;
+    for (auto s : Ty.getShape())
+      numIndices *= s;
 
     int64_t rank = Ty.getShape().size();
-    if (rank > 1)
-      return nullptr;
 
     scatterDimsToOperandDims.push_back(i);
 
-    if (rank == 0) {
-      indicesShape.push_back(1);
-    } else {
-      auto iv = getIVForExpr(idxMap, idxMap.getAffineMap().getResult(0));
+    auto S = Ty.getShape();
+    updateShape.append(S.begin(), S.end());
 
-      updateShape.push_back(
-          cast<RankedTensorType>(raisedIdx.getType()).getShape()[0]);
-
+    for (auto [j, ex] : llvm::enumerate(idxMap.getAffineMap().getResults())) {
+      auto iv = getIVForExpr(idxMap, ex);
       for (auto [updateIdx, E] :
            llvm::enumerate(updateValueMap.getAffineMap().getResults())) {
-        Value updateIv = getIVForExpr(updateValueMap, E);
-        if (updateIv == iv) {
+        Value updateIV = getIVForExpr(updateValueMap, E);
+        if (updateIV == iv) {
           if (broadcastDims[updateIdx] != -1) {
             LLVM_DEBUG(llvm::dbgs()
-                       << "todo: multiple ivs in different indices for load\n");
+                       << "todo: same iv in different indices for load\n");
             return nullptr;
           }
 
-          broadcastDims[updateIdx] = (updateShape.size() - 1);
+          broadcastDims[updateIdx] = (updateShape.size() - (1 + j));
         }
       }
     }
 
     raisedIdx = builder.create<stablehlo::ReshapeOp>(
-        loc, Ty.clone(indicesShape), raisedIdx); // tensor<?x1xi64>
+        loc, Ty.clone({numIndices, 1}), raisedIdx); // tensor<?x1xi64>
 
     if (indices) {
       int64_t indicesSize =
