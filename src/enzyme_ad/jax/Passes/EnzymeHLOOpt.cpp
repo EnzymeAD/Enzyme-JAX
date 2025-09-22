@@ -2973,11 +2973,13 @@ struct TransposeAllUsersSlice final
           continue;
         } else if (auto reshapeOp =
                        dyn_cast<stablehlo::ReshapeOp>(downstreamUser)) {
-          auto inputType = cast<RankedTensorType>(reshapeOp.getOperand().getType());
-          auto outputType = cast<RankedTensorType>(reshapeOp.getResult().getType());
+          auto inputType =
+              cast<RankedTensorType>(reshapeOp.getOperand().getType());
+          auto outputType =
+              cast<RankedTensorType>(reshapeOp.getResult().getType());
 
           auto insertionDims = findReshapeInsertionDims(inputType, outputType);
-          if (!insertionDims.empty())  // fused to a broadcast_in_dim
+          if (!insertionDims.empty()) // fused to a broadcast_in_dim
             continue;
 
           if (reshapeIsTranspose(reshapeOp)) // transpose_tranpose elimination
@@ -19535,9 +19537,11 @@ struct ConcatReshapeSlice
       sliceOps.push_back(slice);
     }
 
-    SmallVector<int64_t> sliceStrides(ndims, 1);
-    SmallVector<int64_t> sliceStarts, sliceLimits;
+    SmallVector<int64_t> sliceStarts, sliceLimits, insertionDims, deletionDims;
+    bool insertions = false, deletions = false;
     int64_t srcSliceDim = -1;
+    auto sourceShape =
+        cast<RankedTensorType>(sourceTensor.getType()).getShape();
 
     for (int i = 0; i < sliceOps.size(); i++) {
       auto sliceOp = sliceOps[i];
@@ -19545,16 +19549,15 @@ struct ConcatReshapeSlice
 
       auto sliceShape =
           cast<RankedTensorType>(sliceOp.getResult().getType()).getShape();
+      auto curSliceStarts = llvm::to_vector(sliceOp.getStartIndices());
+      auto curSliceLimits = llvm::to_vector(sliceOp.getLimitIndices());
       auto reshapeShape =
           cast<RankedTensorType>(reshapeOp.getResult().getType()).getShape();
 
-      if (sliceShape.size() != reshapeShape.size())
-        return failure();
-
-      int64_t singletonSliceDim = -1;
-      int64_t nSingletonSlices = 0;
+      int64_t singletonSliceDim = -1, nSingletonSlices = 0;
       for (int64_t i = 0; i < sliceShape.size(); i++) {
-        if (sliceShape[i] == 1) {
+        if (sliceShape[i] == 1 &&
+            !(curSliceStarts[i] == 0 && curSliceLimits[i] == sourceShape[i])) {
           singletonSliceDim = i;
           nSingletonSlices++;
         }
@@ -19565,8 +19568,8 @@ struct ConcatReshapeSlice
 
       if (srcSliceDim == -1) {
         srcSliceDim = singletonSliceDim;
-        sliceStarts = llvm::to_vector(sliceOp.getStartIndices());
-        sliceLimits = llvm::to_vector(sliceOp.getLimitIndices());
+        sliceStarts = std::move(curSliceStarts);
+        sliceLimits = std::move(curSliceLimits);
       } else {
         if (!canMergeSlicesAlongAxis(srcSliceDim, sliceOps[i - 1], sliceOp))
           return failure();
@@ -19585,10 +19588,45 @@ struct ConcatReshapeSlice
         dstNoSingleton.push_back(reshapeShape[i]);
       }
 
-      if (srcNoSingleton != dstNoSingleton)
-        return failure();
+      if (srcNoSingleton != dstNoSingleton) {
+        auto curInsertionDims =
+            findReshapeInsertionDims(srcNoSingleton, dstNoSingleton);
+        auto curDeletionDims =
+            findReshapeInsertionDims(dstNoSingleton, srcNoSingleton);
+        if (curInsertionDims.empty() && curDeletionDims.empty())
+          return failure();
+
+        if (i > 0) {
+          if (insertions) {
+            if (!curDeletionDims.empty())
+              return failure();
+            if (insertionDims != curInsertionDims)
+              return failure();
+          } else {
+            if (!curInsertionDims.empty())
+              return failure();
+            if (deletionDims != curDeletionDims)
+              return failure();
+          }
+        } else {
+          if (!curInsertionDims.empty()) {
+            insertions = true;
+            insertionDims = std::move(curInsertionDims);
+          } else {
+            deletions = true;
+            deletionDims = std::move(curDeletionDims);
+          }
+        }
+      }
     }
 
+    int64_t ndimsCorrected = ndims;
+    if (insertions)
+      ndimsCorrected -= insertionDims.size();
+    if (deletions)
+      ndimsCorrected += deletionDims.size();
+
+    SmallVector<int64_t> sliceStrides(ndimsCorrected, 1);
     int64_t startIndex = sliceOps[0].getStartIndices()[srcSliceDim];
     int64_t limitIndex =
         sliceOps[sliceOps.size() - 1].getLimitIndices()[srcSliceDim];
@@ -19599,10 +19637,8 @@ struct ConcatReshapeSlice
         concatOp.getLoc(), sourceTensor, sliceStarts, sliceLimits,
         sliceStrides);
 
-    SmallVector<int64_t> mapping(ndims, 0);
-    for (int64_t i = 0; i < ndims; i++) {
-      mapping[i] = i;
-    }
+    SmallVector<int64_t> mapping(ndimsCorrected, 0);
+    std::iota(mapping.begin(), mapping.end(), 0);
     mapping[srcSliceDim] = concatDim;
     if (srcSliceDim > concatDim) {
       for (int64_t i = concatDim; i < srcSliceDim; i++) { // shift right
@@ -19614,13 +19650,20 @@ struct ConcatReshapeSlice
       }
     }
 
-    SmallVector<int64_t> permutation(ndims, 0);
-    for (int64_t i = 0; i < ndims; i++) {
+    SmallVector<int64_t> permutation(mapping.size(), 0);
+    for (int64_t i = 0; i < mapping.size(); i++) {
       permutation[mapping[i]] = i;
     }
 
-    rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(concatOp, newSlice,
-                                                        permutation);
+    auto transposeOp = rewriter.create<stablehlo::TransposeOp>(
+        concatOp.getLoc(), newSlice, permutation);
+    if (!insertions && !deletions) {
+      rewriter.replaceOp(concatOp, transposeOp.getResult());
+    } else {
+      // restore the original shape due to the insertion dims
+      rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(
+          concatOp, concatOp.getResult().getType(), transposeOp);
+    }
     return success();
   }
 };

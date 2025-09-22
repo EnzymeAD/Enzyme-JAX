@@ -472,6 +472,8 @@ static arith::CmpIPredicate swapPredicate(arith::CmpIPredicate pred) {
 
 SmallVector<int64_t> findReshapeInsertionDims(RankedTensorType inputType,
                                               RankedTensorType outputType);
+SmallVector<int64_t> findReshapeInsertionDims(ArrayRef<int64_t> inputShape,
+                                              ArrayRef<int64_t> outputShape);
 
 bool areValidInsertionDims(RankedTensorType inputType,
                            RankedTensorType outputType,
