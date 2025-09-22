@@ -715,7 +715,8 @@ struct AutoBatchingPass
           SliceToBatch<stablehlo::ReduceOp>, SliceToBatch<stablehlo::SortOp>,
           SliceToBatch<stablehlo::TransposeOp>,
           SliceToBatch<stablehlo::BroadcastInDimOp>,
-          SliceToBatch<stablehlo::ReduceWindowOp>, SliceToBatchReshape,
+          SliceToBatch<stablehlo::ReduceWindowOp>,
+          // SliceToBatchReshape,
           SliceToBatchElementwise>(context);
     }
 
