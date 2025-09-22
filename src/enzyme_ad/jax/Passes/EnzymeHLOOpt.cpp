@@ -2968,9 +2968,25 @@ struct TransposeAllUsersSlice final
       // only propagate down if we know a different optimization will clean this
       // up
       for (auto downstreamUser : sliceOp->getUsers()) {
-        if (!isa<stablehlo::TransposeOp, stablehlo::BroadcastInDimOp,
-                 stablehlo::DotGeneralOp>(downstreamUser))
+        if (isa<stablehlo::TransposeOp, stablehlo::BroadcastInDimOp,
+                stablehlo::DotGeneralOp>(downstreamUser)) {
+          continue;
+        } else if (auto reshapeOp =
+                       dyn_cast<stablehlo::ReshapeOp>(downstreamUser)) {
+          auto inputType = cast<RankedTensorType>(reshapeOp.getOperand().getType());
+          auto outputType = cast<RankedTensorType>(reshapeOp.getResult().getType());
+
+          auto insertionDims = findReshapeInsertionDims(inputType, outputType);
+          if (!insertionDims.empty())  // fused to a broadcast_in_dim
+            continue;
+
+          if (reshapeIsTranspose(reshapeOp)) // transpose_tranpose elimination
+            continue;
+
           return failure();
+        } else {
+          return failure();
+        }
       }
 
       sliceOps.push_back(sliceOp);
