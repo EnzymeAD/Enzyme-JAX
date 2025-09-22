@@ -48,5 +48,5 @@ module {
 // CHECK-NEXT:    %12 = stablehlo.reshape %11 : (tensor<1x4xf32>) -> tensor<4xf32>
 // CHECK-NEXT:    %13 = stablehlo.slice %2 [5:6, 0:4] : (tensor<6x4xf32>) -> tensor<1x4xf32>
 // CHECK-NEXT:    %14 = stablehlo.reshape %13 : (tensor<1x4xf32>) -> tensor<4xf32>
-// CHECK-NEXT:    return %4, %6, %8, %10, %12, %14 : tensor<4xf32>, tensor<4xf32>, tensor<4xf32>, tensor<4xf32>, tensor<4xf32>, tensor<4xf32>
+// CHECK-NEXT:    return %14, %12, %10, %8, %6, %4 : tensor<4xf32>, tensor<4xf32>, tensor<4xf32>, tensor<4xf32>, tensor<4xf32>, tensor<4xf32>
 // CHECK-NEXT:  }
