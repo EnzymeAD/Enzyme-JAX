@@ -654,6 +654,10 @@ bool SliceToBatchBase::areSlicesContiguous(
   });
 
   int64_t expectedStart = slices[0].sliceStart;
+  // TODO: partial slice support
+  if (expectedStart != 0)
+    return false;
+
   for (const auto &slice : slices) {
     if (slice.sliceStart != expectedStart) {
       return false;
