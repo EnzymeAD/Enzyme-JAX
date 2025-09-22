@@ -160,7 +160,7 @@ module @reactant_f_gener... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
 // CHECK-NEXT:      %15 = stablehlo.reshape %14 : (tensor<1x1x2xf32>) -> tensor<1x2xf32>
 // CHECK-NEXT:      %16 = stablehlo.slice %5 [5:6, 0:1, 0:2] : (tensor<6x1x2xf32>) -> tensor<1x1x2xf32>
 // CHECK-NEXT:      %17 = stablehlo.reshape %16 : (tensor<1x1x2xf32>) -> tensor<1x2xf32>
-// CHECK-NEXT:      %18 = stablehlo.reshape %17 : (tensor<1x2xf32>) -> tensor<2xf32>
+// CHECK-NEXT:      %18 = stablehlo.reshape %7 : (tensor<1x2xf32>) -> tensor<2xf32>
 // CHECK-NEXT:      %19 = stablehlo.transpose %18, dims = [0] : (tensor<2xf32>) -> tensor<2xf32>
 // CHECK-NEXT:      %20 = stablehlo.transpose %19, dims = [0] : (tensor<2xf32>) -> tensor<2xf32>
 // CHECK-NEXT:      %21 = stablehlo.reshape %20 : (tensor<2xf32>) -> tensor<1x2xf32>
@@ -173,7 +173,7 @@ module @reactant_f_gener... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
 // CHECK-NEXT:      %28 = stablehlo.transpose %27, dims = [1, 0] : (tensor<4x1xf32>) -> tensor<1x4xf32>
 // CHECK-NEXT:      %29 = stablehlo.reshape %28 : (tensor<1x4xf32>) -> tensor<4xf32>
 // CHECK-NEXT:      %30 = stablehlo.transpose %29, dims = [0] : (tensor<4xf32>) -> tensor<4xf32>
-// CHECK-NEXT:      %31 = stablehlo.reshape %15 : (tensor<1x2xf32>) -> tensor<2xf32>
+// CHECK-NEXT:      %31 = stablehlo.reshape %9 : (tensor<1x2xf32>) -> tensor<2xf32>
 // CHECK-NEXT:      %32 = stablehlo.transpose %31, dims = [0] : (tensor<2xf32>) -> tensor<2xf32>
 // CHECK-NEXT:      %33 = stablehlo.transpose %32, dims = [0] : (tensor<2xf32>) -> tensor<2xf32>
 // CHECK-NEXT:      %34 = stablehlo.reshape %33 : (tensor<2xf32>) -> tensor<1x2xf32>
@@ -186,7 +186,7 @@ module @reactant_f_gener... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
 // CHECK-NEXT:      %41 = stablehlo.transpose %40, dims = [1, 0] : (tensor<4x1xf32>) -> tensor<1x4xf32>
 // CHECK-NEXT:      %42 = stablehlo.reshape %41 : (tensor<1x4xf32>) -> tensor<4xf32>
 // CHECK-NEXT:      %43 = stablehlo.transpose %42, dims = [0] : (tensor<4xf32>) -> tensor<4xf32>
-// CHECK-NEXT:      %44 = stablehlo.reshape %13 : (tensor<1x2xf32>) -> tensor<2xf32>
+// CHECK-NEXT:      %44 = stablehlo.reshape %11 : (tensor<1x2xf32>) -> tensor<2xf32>
 // CHECK-NEXT:      %45 = stablehlo.transpose %44, dims = [0] : (tensor<2xf32>) -> tensor<2xf32>
 // CHECK-NEXT:      %46 = stablehlo.transpose %45, dims = [0] : (tensor<2xf32>) -> tensor<2xf32>
 // CHECK-NEXT:      %47 = stablehlo.reshape %46 : (tensor<2xf32>) -> tensor<1x2xf32>
@@ -199,7 +199,7 @@ module @reactant_f_gener... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
 // CHECK-NEXT:      %54 = stablehlo.transpose %53, dims = [1, 0] : (tensor<4x1xf32>) -> tensor<1x4xf32>
 // CHECK-NEXT:      %55 = stablehlo.reshape %54 : (tensor<1x4xf32>) -> tensor<4xf32>
 // CHECK-NEXT:      %56 = stablehlo.transpose %55, dims = [0] : (tensor<4xf32>) -> tensor<4xf32>
-// CHECK-NEXT:      %57 = stablehlo.reshape %11 : (tensor<1x2xf32>) -> tensor<2xf32>
+// CHECK-NEXT:      %57 = stablehlo.reshape %13 : (tensor<1x2xf32>) -> tensor<2xf32>
 // CHECK-NEXT:      %58 = stablehlo.transpose %57, dims = [0] : (tensor<2xf32>) -> tensor<2xf32>
 // CHECK-NEXT:      %59 = stablehlo.transpose %58, dims = [0] : (tensor<2xf32>) -> tensor<2xf32>
 // CHECK-NEXT:      %60 = stablehlo.reshape %59 : (tensor<2xf32>) -> tensor<1x2xf32>
@@ -212,7 +212,7 @@ module @reactant_f_gener... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
 // CHECK-NEXT:      %67 = stablehlo.transpose %66, dims = [1, 0] : (tensor<4x1xf32>) -> tensor<1x4xf32>
 // CHECK-NEXT:      %68 = stablehlo.reshape %67 : (tensor<1x4xf32>) -> tensor<4xf32>
 // CHECK-NEXT:      %69 = stablehlo.transpose %68, dims = [0] : (tensor<4xf32>) -> tensor<4xf32>
-// CHECK-NEXT:      %70 = stablehlo.reshape %9 : (tensor<1x2xf32>) -> tensor<2xf32>
+// CHECK-NEXT:      %70 = stablehlo.reshape %15 : (tensor<1x2xf32>) -> tensor<2xf32>
 // CHECK-NEXT:      %71 = stablehlo.transpose %70, dims = [0] : (tensor<2xf32>) -> tensor<2xf32>
 // CHECK-NEXT:      %72 = stablehlo.transpose %71, dims = [0] : (tensor<2xf32>) -> tensor<2xf32>
 // CHECK-NEXT:      %73 = stablehlo.reshape %72 : (tensor<2xf32>) -> tensor<1x2xf32>
@@ -225,7 +225,7 @@ module @reactant_f_gener... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
 // CHECK-NEXT:      %80 = stablehlo.transpose %79, dims = [1, 0] : (tensor<4x1xf32>) -> tensor<1x4xf32>
 // CHECK-NEXT:      %81 = stablehlo.reshape %80 : (tensor<1x4xf32>) -> tensor<4xf32>
 // CHECK-NEXT:      %82 = stablehlo.transpose %81, dims = [0] : (tensor<4xf32>) -> tensor<4xf32>
-// CHECK-NEXT:      %83 = stablehlo.reshape %7 : (tensor<1x2xf32>) -> tensor<2xf32>
+// CHECK-NEXT:      %83 = stablehlo.reshape %17 : (tensor<1x2xf32>) -> tensor<2xf32>
 // CHECK-NEXT:      %84 = stablehlo.transpose %83, dims = [0] : (tensor<2xf32>) -> tensor<2xf32>
 // CHECK-NEXT:      %85 = stablehlo.transpose %84, dims = [0] : (tensor<2xf32>) -> tensor<2xf32>
 // CHECK-NEXT:      %86 = stablehlo.reshape %85 : (tensor<2xf32>) -> tensor<1x2xf32>

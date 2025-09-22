@@ -38,15 +38,11 @@ bool anyOpsAreDataDependent(ArrayRef<Operation *> ops) {
   SmallPtrSet<Operation *, 8> subsetOps(ops.begin(), ops.end());
   Block *parentBlock = ops[0]->getBlock();
 
-  SmallVector<Operation *> sortedOps(ops.begin(), ops.end());
-  std::sort(sortedOps.begin(), sortedOps.end(),
-            [](Operation *a, Operation *b) { return a->isBeforeInBlock(b); });
-
   // For each op, we only need to check if it depends on any earlier op in our
   // subset We can use a worklist approach but only traverse backwards in
   // program order
-  for (int i = 1; i < sortedOps.size(); ++i) {
-    Operation *laterOp = sortedOps[i];
+  for (int i = 1; i < ops.size(); ++i) {
+    Operation *laterOp = ops[i];
 
     // Track all operations this op transitively depends on
     SmallPtrSet<Operation *, 16> dependencies;
@@ -464,6 +460,29 @@ SliceToBatchBase::matchAndRewrite(stablehlo::SliceOp sliceOp,
 
   if (relatedSlices.size() <= 1)
     return rewriter.notifyMatchFailure(sliceOp, "no related slices found");
+
+  // Sort all three vectors together based on sliceStart
+  SmallVector<size_t> indices(relatedSlices.size());
+  std::iota(indices.begin(), indices.end(), 0);
+
+  std::sort(indices.begin(), indices.end(), [&](size_t i, size_t j) {
+    return relatedSlices[i].sliceStart < relatedSlices[j].sliceStart;
+  });
+
+  // Reorder all three vectors according to the sorted indices
+  SmallVector<SliceInfo> sortedSlices;
+  SmallVector<Operation *> sortedOps;
+  SmallVector<bool> sortedReshapes;
+
+  for (size_t idx : indices) {
+    sortedSlices.push_back(relatedSlices[idx]);
+    sortedOps.push_back(relatedOps[idx]);
+    sortedReshapes.push_back(allHaveIntermediateReshapes[idx]);
+  }
+
+  relatedSlices = std::move(sortedSlices);
+  relatedOps = std::move(sortedOps);
+  allHaveIntermediateReshapes = std::move(sortedReshapes);
 
   // Validate that slices are compatible for batching
   if (!areSlicesContiguous(relatedSlices))
