@@ -881,19 +881,23 @@ bool allOperandsAreConstant(mlir::Operation *op) {
 
 SmallVector<int64_t> findReshapeInsertionDims(RankedTensorType inputType,
                                               RankedTensorType outputType) {
-  if (inputType.getRank() >= outputType.getRank())
+  return findReshapeInsertionDims(inputType.getShape(), outputType.getShape());
+}
+
+SmallVector<int64_t> findReshapeInsertionDims(ArrayRef<int64_t> inputShape,
+                                              ArrayRef<int64_t> outputShape) {
+  if (inputShape.size() >= outputShape.size())
     return {}; // trivial no insertion case
 
   SmallVector<int64_t> insertionDims;
   size_t inputDimIndex = 0;
 
-  for (size_t i = 0; i < outputType.getRank(); ++i) {
-    auto dim = outputType.getShape()[i];
-    if (inputDimIndex < inputType.getRank() &&
-        dim == inputType.getShape()[inputDimIndex]) {
+  for (size_t i = 0; i < outputShape.size(); ++i) {
+    auto dim = outputShape[i];
+    if (inputDimIndex < inputShape.size() && dim == inputShape[inputDimIndex]) {
       ++inputDimIndex;
-    } else if (dim == 1 && (inputDimIndex >= inputType.getShape().size() ||
-                            dim != inputType.getShape()[inputDimIndex])) {
+    } else if (dim == 1 && (inputDimIndex >= inputShape.size() ||
+                            dim != inputShape[inputDimIndex])) {
       // Singleton dimension inserted by reshape.
       insertionDims.push_back(i);
     } else {
@@ -904,7 +908,7 @@ SmallVector<int64_t> findReshapeInsertionDims(RankedTensorType inputType,
 
   // If we haven't seen all of the input dimensions, we don't have a valid
   // insertion point.
-  if (inputDimIndex != inputType.getRank())
+  if (inputDimIndex != inputShape.size())
     return {};
 
   return insertionDims;
