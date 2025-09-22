@@ -358,13 +358,9 @@ bool ConcatInsertDimToBatchBase::validReshapeOpInsertDimForBatching(
   if (!reshapeOp)
     return false;
 
-  auto inputType = cast<RankedTensorType>(reshapeOp.getOperand().getType());
-  auto outputType = cast<RankedTensorType>(reshapeOp.getResult().getType());
-
-  SmallVector<int64_t> insertionDims =
-      findReshapeInsertionDims(inputType, outputType);
-
-  return insertionDims.size() == 1 && insertionDims[0] == dim;
+  return areValidInsertionDims(
+      cast<RankedTensorType>(reshapeOp.getOperand().getType()),
+      cast<RankedTensorType>(reshapeOp.getResult().getType()), {dim});
 }
 
 bool ConcatInsertDimToBatchBase::validBroadcastInDimOpInsertDimForBatching(
@@ -423,14 +419,13 @@ SliceToBatchBase::matchAndRewrite(stablehlo::SliceOp sliceOp,
       if (!intermediateReshape)
         continue;
 
-      auto reshapeInputType =
+      auto reshapeInputShape =
           cast<RankedTensorType>(intermediateReshape.getOperand().getType());
-      auto reshapeOutputType =
+      auto reshapeOutputShape =
           cast<RankedTensorType>(intermediateReshape.getResult().getType());
 
-      auto deletionDim =
-          findReshapeInsertionDims(reshapeOutputType, reshapeInputType);
-      if (!(deletionDim.size() == 1 && deletionDim[0] == sliceInfo.sliceDim))
+      if (!areValidInsertionDims(reshapeOutputShape, reshapeInputShape,
+                                 {sliceInfo.sliceDim}))
         continue;
 
       if (!intermediateReshape.getResult().hasOneUse())
@@ -720,8 +715,8 @@ struct AutoBatchingPass
           SliceToBatch<stablehlo::ReduceOp>, SliceToBatch<stablehlo::SortOp>,
           SliceToBatch<stablehlo::TransposeOp>,
           SliceToBatch<stablehlo::BroadcastInDimOp>,
-          SliceToBatch<stablehlo::ReduceWindowOp>, SliceToBatchElementwise>(
-          context);
+          SliceToBatch<stablehlo::ReduceWindowOp>, SliceToBatchReshape,
+          SliceToBatchElementwise>(context);
     }
 
     GreedyRewriteConfig config;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "mlir/IR/PatternMatch.h"
+#include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/SmallVector.h"
 #include <tuple>
@@ -95,6 +96,21 @@ template <typename OpTy> struct SliceToBatch : public SliceToBatchBase {
               if (!op)
                 return nullptr;
               return llvm::dyn_cast<OpTy>(op);
+            },
+            ctx, benefit) {}
+};
+
+struct SliceToBatchReshape : public SliceToBatchBase {
+  SliceToBatchReshape(mlir::MLIRContext *ctx, mlir::PatternBenefit benefit = 1)
+      : SliceToBatchBase(
+            [](mlir::Operation *op) -> mlir::Operation * {
+              if (!op)
+                return nullptr;
+              if (auto reshapeOp = dyn_cast<mlir::stablehlo::ReshapeOp>(op)) {
+                if (reshapeIsTranspose(reshapeOp))
+                  return op;
+              }
+              return nullptr;
             },
             ctx, benefit) {}
 };
