@@ -100,20 +100,43 @@ template <typename OpTy> struct SliceToBatch : public SliceToBatchBase {
             ctx, benefit) {}
 };
 
-struct SliceToBatchReshape : public SliceToBatchBase {
-  SliceToBatchReshape(mlir::MLIRContext *ctx, mlir::PatternBenefit benefit = 1)
-      : SliceToBatchBase(
-            [](mlir::Operation *op) -> mlir::Operation * {
-              if (!op)
-                return nullptr;
-              if (auto reshapeOp = dyn_cast<mlir::stablehlo::ReshapeOp>(op)) {
-                if (reshapeIsTranspose(reshapeOp))
-                  return op;
-              }
-              return nullptr;
-            },
-            ctx, benefit) {}
-};
+// TODO: we need to be a bit more smart about this pattern. Everytime this
+// pattern is applied we increase the dimension of the tensor by 1. struct
+// SliceToBatchReshape : public SliceToBatchBase {
+//   SliceToBatchReshape(mlir::MLIRContext *ctx, mlir::PatternBenefit benefit =
+//   1)
+//       : SliceToBatchBase(
+//             [](mlir::Operation *op) -> mlir::Operation * {
+//               if (!op)
+//                 return nullptr;
+//               if (auto reshapeOp = dyn_cast<mlir::stablehlo::ReshapeOp>(op))
+//               {
+//                 if (reshapeIsTranspose(reshapeOp))
+//                   return op;
+
+//                 auto inputType = cast<mlir::RankedTensorType>(
+//                     reshapeOp.getOperand().getType());
+//                 auto outputType = cast<mlir::RankedTensorType>(
+//                     reshapeOp.getResult().getType());
+
+//                 auto insertionDims = mlir::enzyme::findReshapeInsertionDims(
+//                     inputType, outputType);
+//                 if (!insertionDims.empty())
+//                   return op;
+
+//                 // We need to be a bit careful about deletions to prevent an
+//                 infinite
+//                 // loop of insertions and deletions.
+//                 // auto deletionDims =
+//                 mlir::enzyme::findReshapeInsertionDims(
+//                 //     outputType, inputType);
+//                 // if (!deletionDims.empty())
+//                 //   return op;
+//               }
+//               return nullptr;
+//             },
+//             ctx, benefit) {}
+// };
 
 struct SliceToBatchElementwise : public SliceToBatchBase {
   SliceToBatchElementwise(mlir::MLIRContext *ctx,
