@@ -2,9 +2,9 @@
 
 module {
   func.func @main(%arg0: memref<100xf32>, %arg1: memref<100xf32>) {
-    affine.parallel (%i, %j) = (0, 0) to (100, 10) step (10, 1) {
-      %0 = affine.load %arg1[%i + %j] : memref<100xf32>
-      affine.store %0, %arg0[%i + %j] : memref<100xf32>
+    affine.parallel (%i, %j) = (0, 0) to (10, 10) step (1, 1) {
+      %0 = affine.load %arg1[%i * 10 + %j] : memref<100xf32>
+      affine.store %0, %arg0[%i * 10 + %j] : memref<100xf32>
     }
     return
   }
