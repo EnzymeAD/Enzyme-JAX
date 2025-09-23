@@ -519,11 +519,6 @@ SliceToBatchBase::matchAndRewrite(stablehlo::SliceOp sliceOp,
     return rewriter.notifyMatchFailure(
         sliceOp, "not all ops have same intermediate reshape");
 
-  for (auto op : relatedOps) {
-    llvm::errs() << "op: " << *op << "\n";
-  }
-  llvm::errs() << "\n";
-
   if (anyOpsAreDataDependent(relatedOps))
     return rewriter.notifyMatchFailure(sliceOp, "ops are data dependent");
 
