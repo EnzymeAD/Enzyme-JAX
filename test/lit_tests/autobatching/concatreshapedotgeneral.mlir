@@ -1,5 +1,5 @@
 // RUN: enzymexlamlir-opt --auto-batching %s | FileCheck %s
-// RUN: enzymexlamlir-opt --auto-batching --inline --enzyme-hlo-opt %s | FileCheck %s --check-prefix=FULL
+// RUN: enzymexlamlir-opt --auto-batching --inline --enzyme-hlo-opt="passses=65536" --enzyme-hlo-opt %s | FileCheck %s --check-prefix=FULL
 
 module @reactant_batched... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas = 1 : i64} {
   func.func @main(%arg0: tensor<5x4x3xf64>, %arg1: tensor<7x4xf64>) -> tensor<5x7x3xf64> {
