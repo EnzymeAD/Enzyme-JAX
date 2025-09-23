@@ -6473,9 +6473,9 @@ struct XorSimplify
     }
 
     // true ^ x -> not x
-    for (auto v : op.getOperands()) {
-      if (matchPattern(v, m_One())) {
-        rewriter.replaceOpWithNewOp<stablehlo::NotOp>(op, v);
+    for (int i = 0; i < 2; i++) {
+      if (matchPattern(op.getOperand(i), m_One())) {
+        rewriter.replaceOpWithNewOp<stablehlo::NotOp>(op, op.getOperand(1 - i));
         return success();
       }
     }
