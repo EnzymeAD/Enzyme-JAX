@@ -8,6 +8,8 @@
 #define GET_TYPEDEF_CLASSES
 #include "src/enzyme_ad/jax/Dialect/Distributed/DistributedTypes.cpp.inc"
 
+#include "src/enzyme_ad/jax/Dialect/Distributed/DistributedInterfaces.cpp.inc"
+
 // Initialize the dialect
 void mlir::enzyme::distributed::DistributedDialect::initialize() {
   addTypes<
