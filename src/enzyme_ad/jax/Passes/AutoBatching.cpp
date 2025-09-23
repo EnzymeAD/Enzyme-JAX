@@ -35,14 +35,20 @@ bool anyOpsAreDataDependent(ArrayRef<Operation *> ops) {
   if (ops.size() <= 1)
     return false;
 
+  // ops are sorted based on ordering of slices. we need to sort here based on
+  // op ordering
+  SmallVector<Operation *> sortedOps(ops.begin(), ops.end());
+  std::sort(sortedOps.begin(), sortedOps.end(),
+            [](Operation *a, Operation *b) { return a->isBeforeInBlock(b); });
+
   SmallPtrSet<Operation *, 8> subsetOps(ops.begin(), ops.end());
   Block *parentBlock = ops[0]->getBlock();
 
   // For each op, we only need to check if it depends on any earlier op in our
   // subset We can use a worklist approach but only traverse backwards in
   // program order
-  for (int i = 1; i < ops.size(); ++i) {
-    Operation *laterOp = ops[i];
+  for (int i = 1; i < sortedOps.size(); ++i) {
+    Operation *laterOp = sortedOps[i];
 
     // Track all operations this op transitively depends on
     SmallPtrSet<Operation *, 16> dependencies;
@@ -461,6 +467,21 @@ SliceToBatchBase::matchAndRewrite(stablehlo::SliceOp sliceOp,
   if (relatedSlices.size() <= 1)
     return rewriter.notifyMatchFailure(sliceOp, "no related slices found");
 
+  // Check that all related slices and ops are in the same block
+  // TODO: we can run this pass by constructing common subsets and optimizing
+  // each of those
+  Block *commonBlock = relatedSlices[0].sliceOp->getBlock();
+  for (const auto &sliceInfo : relatedSlices) {
+    if (sliceInfo.sliceOp->getBlock() != commonBlock)
+      return rewriter.notifyMatchFailure(
+          sliceOp, "not all related slices in same block");
+  }
+  for (Operation *op : relatedOps) {
+    if (op->getBlock() != commonBlock)
+      return rewriter.notifyMatchFailure(sliceOp,
+                                         "not all related ops in same block");
+  }
+
   // Sort all three vectors together based on sliceStart
   SmallVector<size_t> indices(relatedSlices.size());
   std::iota(indices.begin(), indices.end(), 0);
@@ -498,6 +519,11 @@ SliceToBatchBase::matchAndRewrite(stablehlo::SliceOp sliceOp,
     return rewriter.notifyMatchFailure(
         sliceOp, "not all ops have same intermediate reshape");
 
+  for (auto op : relatedOps) {
+    llvm::errs() << "op: " << *op << "\n";
+  }
+  llvm::errs() << "\n";
+
   if (anyOpsAreDataDependent(relatedOps))
     return rewriter.notifyMatchFailure(sliceOp, "ops are data dependent");
 
@@ -510,6 +536,8 @@ SliceToBatchBase::matchAndRewrite(stablehlo::SliceOp sliceOp,
     if (op->isBeforeInBlock(firstRelatedOp))
       firstRelatedOp = op;
   }
+  // if we have to move around too many ops we avoid applying this pattern
+  llvm::SmallSetVector<Operation *, 8> opsToMoveWorklist;
   for (auto &op : relatedOps) {
     if (op == firstRelatedOp)
       continue;
@@ -517,15 +545,27 @@ SliceToBatchBase::matchAndRewrite(stablehlo::SliceOp sliceOp,
     opsToMove.push_back(op);
     while (!opsToMove.empty()) {
       auto currOp = opsToMove.pop_back_val();
-      rewriter.moveOpAfter(currOp, firstRelatedOp);
-      for (auto operand : currOp->getOperands()) {
-        if (auto operandOp = operand.getDefiningOp()) {
-          if (!operandOp->isBeforeInBlock(firstRelatedOp)) {
-            opsToMove.push_back(operandOp);
+      bool notSeen = opsToMoveWorklist.insert(currOp);
+      if (notSeen) {
+        for (auto operand : currOp->getOperands()) {
+          if (auto operandOp = operand.getDefiningOp()) {
+            if (!operandOp->isBeforeInBlock(firstRelatedOp)) {
+              opsToMove.push_back(operandOp);
+            }
           }
         }
       }
     }
+  }
+
+  SmallVector<Operation *> opsToMoveWorklistVec(opsToMoveWorklist.begin(),
+                                                opsToMoveWorklist.end());
+
+  std::sort(opsToMoveWorklistVec.begin(), opsToMoveWorklistVec.end(),
+            [](Operation *a, Operation *b) { return a->isBeforeInBlock(b); });
+  for (auto op : opsToMoveWorklistVec) {
+    rewriter.moveOpAfter(op, firstRelatedOp);
+    firstRelatedOp = op;
   }
 
   Operation *insertionPoint = relatedOps[0];
