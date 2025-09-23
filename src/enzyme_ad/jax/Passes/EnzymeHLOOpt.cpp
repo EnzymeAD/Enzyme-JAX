@@ -23181,6 +23181,39 @@ struct MaxReduceSliceFusion
   }
 };
 
+struct CaseToIf : public CheckedOpRewritePattern<stablehlo::CaseOp, CaseToIf> {
+  using CheckedOpRewritePattern<stablehlo::CaseOp,
+                                CaseToIf>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::CaseOp caseOp,
+                                    PatternRewriter &rewriter) const {
+    if (caseOp.getBranches().size() != 2)
+      return rewriter.notifyMatchFailure(caseOp,
+                                         "case op does not have 2 branches");
+
+    auto index = caseOp.getIndex();
+    auto convertOp = index.getDefiningOp<stablehlo::ConvertOp>();
+    if (!convertOp)
+      return rewriter.notifyMatchFailure(caseOp, "index is not a convert op");
+    auto boolValue = convertOp.getOperand();
+    auto boolType = cast<RankedTensorType>(boolValue.getType());
+    if (!boolType || !boolType.getElementType().isInteger(1) ||
+        boolType.getRank() != 0)
+      return rewriter.notifyMatchFailure(caseOp,
+                                         "index is not a boolean tensor");
+
+    auto ifOp = rewriter.create<stablehlo::IfOp>(
+        caseOp.getLoc(), caseOp.getResultTypes(), boolValue);
+
+    // true -> 1 and false -> 0
+    ifOp.getTrueBranch().takeBody(caseOp.getBranches()[1]);
+    ifOp.getFalseBranch().takeBody(caseOp.getBranches()[0]);
+    rewriter.replaceOp(caseOp, ifOp.getResults());
+
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -23791,7 +23824,8 @@ struct EnzymeHLOOptPass
         AddReduceSliceFusion,
         MulReduceSliceFusion,
         MinReduceSliceFusion,
-        MaxReduceSliceFusion
+        MaxReduceSliceFusion,
+        CaseToIf
       >(context);
 
     patterns.add<
