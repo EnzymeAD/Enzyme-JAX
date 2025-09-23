@@ -3,8 +3,7 @@
 namespace mlir {
 namespace enzymexla {
 
-llvm::cl::opt<bool> BarrierOpt("barrier-opt",
-                               llvm::cl::init(true),
+llvm::cl::opt<bool> BarrierOpt("barrier-opt", llvm::cl::init(true),
                                llvm::cl::desc("Optimize barriers"));
 
 } // namespace enzymexla
