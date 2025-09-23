@@ -632,4 +632,37 @@ def ReluOp: EnzymeXLA_Op<"ml.relu", [Pure, SameOperandsAndResultType, Elementwis
   }];
 }
 
+def CacheLoad : EnzymeXLA_Op<"cacheload"> {
+  let arguments = (ins Arg<AnyMemRef, "the reference to load from",
+                           [MemRead]>:$memref,
+                       Variadic<Index>:$indices);
+  let results = (outs AnyType:$result);
+  let builders = [
+    OpBuilder<(ins "Value":$memref, CArg<"ValueRange", "{}">:$indices), [{
+      auto memrefType = llvm::cast<MemRefType>(memref.getType());
+      $_state.addOperands(memref);
+      $_state.addOperands(indices);
+      $_state.types.push_back(memrefType.getElementType());
+    }]>];
+  let summary = "load from cross barier cache";
+  let description = [{}];
+}
+
+
+def SubIndexOp : EnzymeXLA_Op<"subindex", [
+  ViewLikeOpInterface, Pure
+]> {
+  let summary = "memref subview operation";
+
+  let arguments = (ins AnyMemRef : $source, Index : $index);
+  let results = (outs AnyMemRef : $result);
+
+  let hasFolder = 1;
+  let hasCanonicalizer = 1;
+
+  let extraClassDeclaration = [{
+    ::mlir::Value getViewSource() { return getSource(); }
+  }];
+}
+
 #endif // ENZYMEXLA_OPS
