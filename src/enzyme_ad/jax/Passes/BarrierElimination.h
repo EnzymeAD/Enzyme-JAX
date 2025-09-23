@@ -69,7 +69,8 @@ public:
 
     {
       SmallVector<mlir::MemoryEffects::EffectInstance> beforeEffects;
-      mlir::enzyme::getEffectsBefore(op, beforeEffects, /*stopAtBarrier*/ false);
+      mlir::enzyme::getEffectsBefore(op, beforeEffects,
+                                     /*stopAtBarrier*/ false);
 
       SmallVector<mlir::MemoryEffects::EffectInstance> afterEffects;
       mlir::enzyme::getEffectsAfter(op, afterEffects, /*stopAtBarrier*/ true);
@@ -99,7 +100,7 @@ public:
     return failure();
   }
 };
-} // namespace enzymexla  
+} // namespace enzymexla
 } // namespace mlir
 
 #endif
