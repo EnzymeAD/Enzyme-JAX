@@ -14,6 +14,7 @@
 #include "mlir/Dialect/OpenMP/OpenMPDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/Passes.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/ImplicitLocOpBuilder.h"
@@ -22,20 +23,17 @@
 #include "mlir/Support/LLVM.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
-#include "mlir/Dialect/UB/IR/UBOps.h"
 
 #include <cmath>
 #include <deque>
 #include <set>
 
-
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "src/enzyme_ad/jax/Passes/BarrierElimination.h"
+#include "src/enzyme_ad/jax/Passes/BarrierUtils.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Utils.h"
-#include "src/enzyme_ad/jax/Passes/BarrierUtils.h"
-#include "src/enzyme_ad/jax/Passes/BarrierElimination.h"
-
 
 namespace mlir {
 namespace enzyme {
@@ -53,8 +51,7 @@ using namespace mlir::enzyme;
 
 static bool isUndef(Value v) {
   return v.getDefiningOp<LLVM::UndefOp>() ||
-         v.getDefiningOp<LLVM::PoisonOp>() ||
-         v.getDefiningOp<ub::PoisonOp>();
+         v.getDefiningOp<LLVM::PoisonOp>() || v.getDefiningOp<ub::PoisonOp>();
 }
 
 static bool couldWrite(Operation *op) {
@@ -89,19 +86,11 @@ struct Node {
   }
   void dump() const {
     if (type == VAL)
-      llvm::errs() << "[" << V << ", "
-                   << "Value"
-                   << "]\n";
+      llvm::errs() << "[" << V << ", " << "Value" << "]\n";
     else if (type == OP)
-      llvm::errs() << "[" << *O << ", "
-                   << "Operation"
-                   << "]\n";
+      llvm::errs() << "[" << *O << ", " << "Operation" << "]\n";
     else
-      llvm::errs() << "["
-                   << "NULL"
-                   << ", "
-                   << "None"
-                   << "]\n";
+      llvm::errs() << "[" << "NULL" << ", " << "None" << "]\n";
   }
 };
 
@@ -558,7 +547,8 @@ struct NormalizeParallel : public OpRewritePattern<scf::ParallelOp> {
 };
 
 LogicalResult splitSubLoop(scf::ParallelOp op, PatternRewriter &rewriter,
-                           enzymexla::BarrierOp barrier, SmallVector<Value> &iterCounts,
+                           enzymexla::BarrierOp barrier,
+                           SmallVector<Value> &iterCounts,
                            scf::ParallelOp &preLoop, scf::ParallelOp &postLoop,
                            Block *&outerBlock, scf::ParallelOp &outerLoop,
                            memref::AllocaScopeOp &outerEx) {
@@ -615,11 +605,13 @@ LogicalResult splitSubLoop(scf::ParallelOp op, PatternRewriter &rewriter,
   return success();
 }
 
-LogicalResult splitSubLoop(
-    affine::AffineParallelOp op, PatternRewriter &rewriter, enzymexla::BarrierOp barrier,
-    SmallVector<Value> &iterCounts, affine::AffineParallelOp &preLoop,
-    affine::AffineParallelOp &postLoop, Block *&outerBlock,
-    affine::AffineParallelOp &outerLoop, memref::AllocaScopeOp &outerEx) {
+LogicalResult
+splitSubLoop(affine::AffineParallelOp op, PatternRewriter &rewriter,
+             enzymexla::BarrierOp barrier, SmallVector<Value> &iterCounts,
+             affine::AffineParallelOp &preLoop,
+             affine::AffineParallelOp &postLoop, Block *&outerBlock,
+             affine::AffineParallelOp &outerLoop,
+             memref::AllocaScopeOp &outerEx) {
 
   SmallVector<AffineMap> outerLower;
   SmallVector<AffineMap> outerUpper;
@@ -904,7 +896,8 @@ static LogicalResult distributeAroundBarrier(T op, enzymexla::BarrierOp barrier,
                                           ao.getLoc(), sz.getType(), idx));
         SmallVector<Value> vec = {idx};
         auto elementType = rewriter.getI8Type();
-        u.set(rewriter.create<LLVM::GEPOp>(ao.getLoc(), ao.getType(), elementType, alloc, ValueRange{idx}));
+        u.set(rewriter.create<LLVM::GEPOp>(
+            ao.getLoc(), ao.getType(), elementType, alloc, ValueRange{idx}));
         // u.set(rewriter.create<LLVM::GEPOp>(ao.getLoc(), ao.getType(), alloc,
         //                                    idx));
       }
@@ -1105,9 +1098,9 @@ static LogicalResult wrapWithBarriers(T op, PatternRewriter &rewriter,
 }
 
 template <typename T, bool UseMinCut>
-static LogicalResult distributeAfterWrap(Operation *pop, enzymexla::BarrierOp barrier,
-                                         PatternRewriter &rewriter,
-                                         Operation **postPop = nullptr) {
+static LogicalResult
+distributeAfterWrap(Operation *pop, enzymexla::BarrierOp barrier,
+                    PatternRewriter &rewriter, Operation **postPop = nullptr) {
   if (!barrier)
     return failure();
   if (!pop)
@@ -1240,7 +1233,7 @@ static void insertRecomputables(PatternRewriter &rewriter, T oldParallel,
        ++it) {
     auto newOp = rewriter.clone(*it, mapping);
     rewriter.replaceOpUsesWithinBlock(&*it, newOp->getResults(),
-                                  newParallel.getBody());
+                                      newParallel.getBody());
   }
 }
 
@@ -1346,7 +1339,8 @@ static void moveBodiesFor(PatternRewriter &rewriter, T op, ForType forLoop,
   for (auto it = op.getBody()->begin(); dyn_cast<ForType>(*it) != forLoop;
        ++it) {
     auto newOp = rewriter.clone(*it, mapping);
-    rewriter.replaceOpUsesWithinBlock(&*it, newOp->getResults(), forLoop.getBody());
+    rewriter.replaceOpUsesWithinBlock(&*it, newOp->getResults(),
+                                      forLoop.getBody());
   }
   rewriter.setInsertionPointToEnd(newParallel.getBody());
   rewriter.clone(*op.getBody()->getTerminator());
@@ -1909,8 +1903,8 @@ void distributeBlockAroundBarrier(mlir::PatternRewriter &rewriter,
                                   llvm::SetVector<Operation *> &preserveAllocas,
                                   llvm::SetVector<Value> &crossingCache,
                                   Block *original, Block *pre, Block *post,
-                                  enzymexla::BarrierOp barrier, Operation *beforeBlocks,
-                                  IRMapping mapping) {
+                                  enzymexla::BarrierOp barrier,
+                                  Operation *beforeBlocks, IRMapping mapping) {
 
   // Remove already created yields if they exist
   clearBlock(pre, rewriter);
@@ -2729,8 +2723,8 @@ struct SCFCPUifyPass : public enzyme::impl::SCFCPUifyBase<SCFCPUifyPass> {
           addPatterns<true>(patterns, method);
         else
           addPatterns<false>(patterns, method);
-        //GreedyRewriteConfig config;
-        // config.maxIterations = 142;
+        // GreedyRewriteConfig config;
+        //  config.maxIterations = 142;
         mlir::GreedyRewriteConfig config;
         config.setMaxIterations(142);
         if (failed(applyPatternsAndFoldGreedily(getOperation(),

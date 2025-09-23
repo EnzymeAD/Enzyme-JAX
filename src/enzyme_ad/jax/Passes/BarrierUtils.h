@@ -56,7 +56,7 @@ allocateTemporaryBuffer(mlir::OpBuilder &rewriter, mlir::Value value,
   return rewriter.create<T>(value.getLoc(), type, iterationCounts);
 }
 
-}
-}
+} // namespace enzyme
+} // namespace mlir
 
 #endif
