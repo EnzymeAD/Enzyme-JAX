@@ -156,6 +156,20 @@ DefineTokenOp::verifySymbolUses(::mlir::SymbolTableCollection &symbol_table) {
                                               getChannelAttr());
 }
 
+llvm::ArrayRef<mlir::TypedValue<WriteTokenType>> SendOp::getWriteTokens() {
+  return llvm::SmallVector<mlir::TypedValue<WriteTokenType>, 1>{getToken()};
+}
+llvm::ArrayRef<mlir::Type> SendOp::getWriteTokenTypes() {
+  return llvm::SmallVector<mlir::Type, 1>{getValue().getType()};
+}
+
+llvm::ArrayRef<mlir::TypedValue<ReadTokenType>> RecvOp::getReadTokens() {
+  return llvm::SmallVector<mlir::TypedValue<ReadTokenType>, 1>{getToken()};
+}
+llvm::ArrayRef<mlir::Type> RecvOp::getReadTokenTypes() {
+  return llvm::SmallVector<mlir::Type, 1>{getValue().getType()};
+}
+
 } // namespace mlir::enzyme::distributed
 #define GET_OP_CLASSES
 #include "src/enzyme_ad/jax/Dialect/Distributed/DistributedOps.cpp.inc"

@@ -75,9 +75,24 @@ def DefineTokenOp : DistributedOp<"DefineToken", [DeclareOpInterfaceMethods<Symb
     let arguments = (ins
             SymbolRefAttr:$channel
         );
-    let results = (outs TokenType:$token_out);
+    let results = (outs ReadTokenType:$read_token, WriteTokenType:$write_token);
     // let hasVerifier = 1; // TODO: verify writers and readers are connected to the channel
     let assemblyFormat = "$channel attr-dict";
+}
+
+def SendOp : DistributedOp<"Send", [DeclareOpInterfaceMethods<TokenWriterOpInterface>]>{
+    let arguments = (ins
+        WriteTokenType:$token,
+        // value to send
+        AnyType:$value);
+    let assemblyFormat = "$token type($value) $value attr-dict";
+}
+
+def RecvOp : DistributedOp<"Recv", [DeclareOpInterfaceMethods<TokenReaderOpInterface>]>{
+    let arguments = (ins
+        ReadTokenType:$token);
+    let results = (outs AnyType:$value);
+    let assemblyFormat = "$token type($value) attr-dict";
 }
 
 #endif // ENZYME_AD_JAX_DIALECT_DISTRIBUTED_OPS_TD
