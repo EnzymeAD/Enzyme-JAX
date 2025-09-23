@@ -2366,6 +2366,9 @@ def ApplyReduceWindowSliceToBatchPatterns : EnzymeHLOPatternOp<
     "reducewindow_slice_to_batch"> {
   let patterns = ["SliceToBatch<stablehlo::ReduceWindowOp>"];
 }
+// def ApplyReshapeSliceToBatchPatterns : EnzymeHLOPatternOp<"reshape_slice_to_batch"> {
+//   let patterns = ["SliceToBatchReshape"];
+// }
 
 def ApplyElementwiseSliceToBatchPatterns : EnzymeHLOPatternOp<
     "elementwise_slice_to_batch"> {

@@ -35,12 +35,14 @@ bool anyOpsAreDataDependent(ArrayRef<Operation *> ops) {
   if (ops.size() <= 1)
     return false;
 
-  SmallPtrSet<Operation *, 8> subsetOps(ops.begin(), ops.end());
-  Block *parentBlock = ops[0]->getBlock();
-
+  // ops are sorted based on ordering of slices. we need to sort here based on
+  // op ordering
   SmallVector<Operation *> sortedOps(ops.begin(), ops.end());
   std::sort(sortedOps.begin(), sortedOps.end(),
             [](Operation *a, Operation *b) { return a->isBeforeInBlock(b); });
+
+  SmallPtrSet<Operation *, 8> subsetOps(ops.begin(), ops.end());
+  Block *parentBlock = ops[0]->getBlock();
 
   // For each op, we only need to check if it depends on any earlier op in our
   // subset We can use a worklist approach but only traverse backwards in
@@ -358,13 +360,9 @@ bool ConcatInsertDimToBatchBase::validReshapeOpInsertDimForBatching(
   if (!reshapeOp)
     return false;
 
-  auto inputType = cast<RankedTensorType>(reshapeOp.getOperand().getType());
-  auto outputType = cast<RankedTensorType>(reshapeOp.getResult().getType());
-
-  SmallVector<int64_t> insertionDims =
-      findReshapeInsertionDims(inputType, outputType);
-
-  return insertionDims.size() == 1 && insertionDims[0] == dim;
+  return areValidInsertionDims(
+      cast<RankedTensorType>(reshapeOp.getOperand().getType()),
+      cast<RankedTensorType>(reshapeOp.getResult().getType()), {dim});
 }
 
 bool ConcatInsertDimToBatchBase::validBroadcastInDimOpInsertDimForBatching(
@@ -423,14 +421,13 @@ SliceToBatchBase::matchAndRewrite(stablehlo::SliceOp sliceOp,
       if (!intermediateReshape)
         continue;
 
-      auto reshapeInputType =
+      auto reshapeInputShape =
           cast<RankedTensorType>(intermediateReshape.getOperand().getType());
-      auto reshapeOutputType =
+      auto reshapeOutputShape =
           cast<RankedTensorType>(intermediateReshape.getResult().getType());
 
-      auto deletionDim =
-          findReshapeInsertionDims(reshapeOutputType, reshapeInputType);
-      if (!(deletionDim.size() == 1 && deletionDim[0] == sliceInfo.sliceDim))
+      if (!areValidInsertionDims(reshapeOutputShape, reshapeInputShape,
+                                 {sliceInfo.sliceDim}))
         continue;
 
       if (!intermediateReshape.getResult().hasOneUse())
@@ -470,6 +467,44 @@ SliceToBatchBase::matchAndRewrite(stablehlo::SliceOp sliceOp,
   if (relatedSlices.size() <= 1)
     return rewriter.notifyMatchFailure(sliceOp, "no related slices found");
 
+  // Check that all related slices and ops are in the same block
+  // TODO: we can run this pass by constructing common subsets and optimizing
+  // each of those
+  Block *commonBlock = relatedSlices[0].sliceOp->getBlock();
+  for (const auto &sliceInfo : relatedSlices) {
+    if (sliceInfo.sliceOp->getBlock() != commonBlock)
+      return rewriter.notifyMatchFailure(
+          sliceOp, "not all related slices in same block");
+  }
+  for (Operation *op : relatedOps) {
+    if (op->getBlock() != commonBlock)
+      return rewriter.notifyMatchFailure(sliceOp,
+                                         "not all related ops in same block");
+  }
+
+  // Sort all three vectors together based on sliceStart
+  SmallVector<size_t> indices(relatedSlices.size());
+  std::iota(indices.begin(), indices.end(), 0);
+
+  std::sort(indices.begin(), indices.end(), [&](size_t i, size_t j) {
+    return relatedSlices[i].sliceStart < relatedSlices[j].sliceStart;
+  });
+
+  // Reorder all three vectors according to the sorted indices
+  SmallVector<SliceInfo> sortedSlices;
+  SmallVector<Operation *> sortedOps;
+  SmallVector<bool> sortedReshapes;
+
+  for (size_t idx : indices) {
+    sortedSlices.push_back(relatedSlices[idx]);
+    sortedOps.push_back(relatedOps[idx]);
+    sortedReshapes.push_back(allHaveIntermediateReshapes[idx]);
+  }
+
+  relatedSlices = std::move(sortedSlices);
+  relatedOps = std::move(sortedOps);
+  allHaveIntermediateReshapes = std::move(sortedReshapes);
+
   // Validate that slices are compatible for batching
   if (!areSlicesContiguous(relatedSlices))
     return rewriter.notifyMatchFailure(sliceOp,
@@ -496,6 +531,8 @@ SliceToBatchBase::matchAndRewrite(stablehlo::SliceOp sliceOp,
     if (op->isBeforeInBlock(firstRelatedOp))
       firstRelatedOp = op;
   }
+  // if we have to move around too many ops we avoid applying this pattern
+  llvm::SmallSetVector<Operation *, 8> opsToMoveWorklist;
   for (auto &op : relatedOps) {
     if (op == firstRelatedOp)
       continue;
@@ -503,15 +540,27 @@ SliceToBatchBase::matchAndRewrite(stablehlo::SliceOp sliceOp,
     opsToMove.push_back(op);
     while (!opsToMove.empty()) {
       auto currOp = opsToMove.pop_back_val();
-      rewriter.moveOpAfter(currOp, firstRelatedOp);
-      for (auto operand : currOp->getOperands()) {
-        if (auto operandOp = operand.getDefiningOp()) {
-          if (!operandOp->isBeforeInBlock(firstRelatedOp)) {
-            opsToMove.push_back(operandOp);
+      bool notSeen = opsToMoveWorklist.insert(currOp);
+      if (notSeen) {
+        for (auto operand : currOp->getOperands()) {
+          if (auto operandOp = operand.getDefiningOp()) {
+            if (!operandOp->isBeforeInBlock(firstRelatedOp)) {
+              opsToMove.push_back(operandOp);
+            }
           }
         }
       }
     }
+  }
+
+  SmallVector<Operation *> opsToMoveWorklistVec(opsToMoveWorklist.begin(),
+                                                opsToMoveWorklist.end());
+
+  std::sort(opsToMoveWorklistVec.begin(), opsToMoveWorklistVec.end(),
+            [](Operation *a, Operation *b) { return a->isBeforeInBlock(b); });
+  for (auto op : opsToMoveWorklistVec) {
+    rewriter.moveOpAfter(op, firstRelatedOp);
+    firstRelatedOp = op;
   }
 
   Operation *insertionPoint = relatedOps[0];
@@ -720,8 +769,9 @@ struct AutoBatchingPass
           SliceToBatch<stablehlo::ReduceOp>, SliceToBatch<stablehlo::SortOp>,
           SliceToBatch<stablehlo::TransposeOp>,
           SliceToBatch<stablehlo::BroadcastInDimOp>,
-          SliceToBatch<stablehlo::ReduceWindowOp>, SliceToBatchElementwise>(
-          context);
+          SliceToBatch<stablehlo::ReduceWindowOp>,
+          // SliceToBatchReshape,
+          SliceToBatchElementwise>(context);
     }
 
     GreedyRewriteConfig config;
