@@ -75,7 +75,7 @@ def DefineTokenOp : DistributedOp<"DefineToken", [DeclareOpInterfaceMethods<Symb
     let arguments = (ins
             SymbolRefAttr:$channel
         );
-    let results = (outs ReadTokenType:$read_token, WriteTokenType:$write_token);
+    let results = (outs TokenType:$token);
     // let hasVerifier = 1; // TODO: verify writers and readers are connected to the channel
     let assemblyFormat = "$channel attr-dict";
 }
@@ -90,7 +90,7 @@ def SendOp : DistributedOp<"Send", [DeclareOpInterfaceMethods<TokenWriterOpInter
 
 def RecvOp : DistributedOp<"Recv", [DeclareOpInterfaceMethods<TokenReaderOpInterface>]>{
     let arguments = (ins
-        ReadTokenType:$token);
+        TokenType:$token);
     let results = (outs AnyType:$value);
     let assemblyFormat = "$token type($value) attr-dict";
 }
