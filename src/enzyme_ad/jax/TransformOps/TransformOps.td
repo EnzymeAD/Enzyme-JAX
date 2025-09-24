@@ -2374,3 +2374,7 @@ def ApplyElementwiseSliceToBatchPatterns : EnzymeHLOPatternOp<
     "elementwise_slice_to_batch"> {
   let patterns = ["SliceToBatchElementwise"];
 }
+
+def ApplyCaseToIfPatterns : EnzymeHLOPatternOp<"case_to_if"> {
+  let patterns = ["CaseToIf"];
+}

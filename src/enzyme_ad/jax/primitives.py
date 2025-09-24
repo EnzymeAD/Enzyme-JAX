@@ -350,6 +350,7 @@ def optimization_passes(
         "select_simplify",
         "concatenate_subtract_to_subtract_pad",
         "concatenate_broadcast_in_dim",
+        "case_to_if",
     ]
 
     # constant propagation patterns
