@@ -29,6 +29,7 @@ on:
       - "src/**"
       - "test/**"
       - "third_party/**"
+  merge_group:
 
 concurrency:
   # Skip intermediate builds: always.
