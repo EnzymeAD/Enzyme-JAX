@@ -2137,6 +2137,13 @@ def ApplySplitConvolutionIntoReverseConvolution : EnzymeHLOPatternOp<
   ];
 }
 
+def ApplySplitMultiResultScatter : EnzymeHLOPatternOp<
+  "split_multi_result_scatter"> {
+  let patterns = [
+    "SplitMultiResultScatter"
+  ];
+}
+
 def ApplyScatterMultiplySimplify : EnzymeHLOPatternOp<"scatter_multiply_simplify"> {
   let patterns = [
     "ScatterMultiplySimplify"
