@@ -3,7 +3,6 @@
 
 include "Dialect.td"
 
-def ReadTokenType : DistributedType<"ReadToken", "read_token">;
-def WriteTokenType : DistributedType<"WriteToken", "write_token">;
+def TokenType : DistributedType<"Token", "token">;
 
 #endif // ENZYME_DISTRIBUTED_DIALECT_TYPES_H

@@ -13,7 +13,7 @@ def TokenReaderOpInterface : OpInterface<"TokenReaderOpInterface"> {
         Ops may read from multiple channels.
     }];
     let methods = [
-        InterfaceMethod<"Returns the SSA values of tokens read from this op.", "::llvm::ArrayRef<::mlir::TypedValue<::mlir::enzyme::distributed::ReadTokenType>>", "getReadTokens">,
+        InterfaceMethod<"Returns the SSA values of tokens read from this op.", "::llvm::ArrayRef<::mlir::TypedValue<::mlir::enzyme::distributed::TokenType>>", "getReadTokens">,
         InterfaceMethod<"Returns the types of tokens read from this op, parallel to getReadTokens.", "::llvm::ArrayRef<::mlir::Type>", "getReadTokenTypes">
     ];
 }
@@ -25,7 +25,7 @@ def TokenWriterOpInterface : OpInterface<"TokenWriterOpInterface"> {
         Ops may write to multiple channels.
     }];
     let methods = [
-        InterfaceMethod<"Returns the SSA values of tokens written from this op.", "::llvm::ArrayRef<::mlir::TypedValue<::mlir::enzyme::distributed::WriteTokenType>>", "getWriteTokens">,
+        InterfaceMethod<"Returns the SSA values of tokens written from this op.", "::llvm::ArrayRef<::mlir::TypedValue<::mlir::enzyme::distributed::TokenType>>", "getWriteTokens">,
         InterfaceMethod<"Returns the types of tokens written from this op, parallel to getWriteTokens.", "::llvm::ArrayRef<::mlir::Type>", "getWriteTokenTypes">
     ];
 }
