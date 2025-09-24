@@ -523,6 +523,6 @@ struct ArithRaisingPass
       cmpOp.erase();
     });
   }
-}; // namespace
+};
 
 } // end anonymous namespace

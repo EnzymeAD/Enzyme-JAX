@@ -12,7 +12,6 @@ common --host_copt=-DGRPC_BAZEL_BUILD
 common --action_env=GRPC_BAZEL_RUNTIME=1
 common --repo_env=PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=upb
 common --action_env=PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=upb
-common --repo_env=RULES_PYTHON_ENABLE_PYSTAR=0
 
 common --experimental_repo_remote_exec
 common --cxxopt=-std=c++17 --host_cxxopt=-std=c++17
@@ -25,5 +24,12 @@ common
 common --define framework_shared_object=true
 common --define tsl_protobuf_header_only=true
 common --define=allow_oversize_protos=true
+
+
+# Some targets have the same py source file, but use different
+# configurations via `requires-` tags. This results in an action
+# conflict when precompiling. Disable to avoid that problem.
+# See https://github.com/bazel-contrib/rules_python/issues/2445
+build --@rules_python//python/config_settings:precompile=force_disabled
 
 build -c opt

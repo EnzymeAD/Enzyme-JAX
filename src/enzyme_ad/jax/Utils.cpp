@@ -879,6 +879,83 @@ bool allOperandsAreConstant(mlir::Operation *op) {
   return true;
 }
 
+SmallVector<int64_t> findReshapeInsertionDims(RankedTensorType inputType,
+                                              RankedTensorType outputType) {
+  return findReshapeInsertionDims(inputType.getShape(), outputType.getShape());
+}
+
+SmallVector<int64_t> findReshapeInsertionDims(ArrayRef<int64_t> inputShape,
+                                              ArrayRef<int64_t> outputShape) {
+  if (inputShape.size() >= outputShape.size())
+    return {}; // trivial no insertion case
+
+  SmallVector<int64_t> insertionDims;
+  size_t inputDimIndex = 0;
+
+  for (size_t i = 0; i < outputShape.size(); ++i) {
+    auto dim = outputShape[i];
+    if (inputDimIndex < inputShape.size() && dim == inputShape[inputDimIndex]) {
+      ++inputDimIndex;
+    } else if (dim == 1 && (inputDimIndex >= inputShape.size() ||
+                            dim != inputShape[inputDimIndex])) {
+      // Singleton dimension inserted by reshape.
+      insertionDims.push_back(i);
+    } else {
+      // Reshape modifies existing dimensions, which we don't handle here.
+      return {};
+    }
+  }
+
+  // If we haven't seen all of the input dimensions, we don't have a valid
+  // insertion point.
+  if (inputDimIndex != inputShape.size())
+    return {};
+
+  return insertionDims;
+}
+
+bool areValidInsertionDims(RankedTensorType inputType,
+                           RankedTensorType outputType,
+                           SmallVector<int64_t> insertionDims) {
+  if (insertionDims.size() != outputType.getRank() - inputType.getRank())
+    return false;
+
+  auto inputShape = inputType.getShape();
+  auto outputShape = outputType.getShape();
+
+  for (auto dim : insertionDims) {
+    if (dim >= outputType.getRank() || dim < 0 || outputShape[dim] != 1)
+      return false;
+  }
+
+  SmallVector<int64_t> outShapeAfterDeletion;
+  outShapeAfterDeletion.reserve(outputShape.size() - insertionDims.size());
+  for (size_t i = 0; i < outputShape.size(); ++i) {
+    if (llvm::is_contained(insertionDims, i))
+      continue;
+    outShapeAfterDeletion.push_back(outputShape[i]);
+  }
+
+  for (auto [inDim, outDim] : llvm::zip(inputShape, outShapeAfterDeletion)) {
+    if (inDim != outDim)
+      return false;
+  }
+
+  return true;
+}
+
+bool isOnlyUsedInOperation(Operation *operation, Operation *parentOp) {
+  if (!operation || !parentOp)
+    return false;
+
+  for (Operation *user : operation->getUsers()) {
+    if (user != parentOp)
+      return false;
+  }
+
+  return true;
+}
+
 } // namespace enzyme
 
 namespace stablehlo {
@@ -982,6 +1059,58 @@ negatedComparisonDirection(stablehlo::ComparisonDirection direction) {
   case stablehlo::ComparisonDirection::LT:
     return stablehlo::ComparisonDirection::GE;
   }
+}
+
+bool reshapeIsTranspose(stablehlo::ReshapeOp reshapeOp) {
+  auto input = reshapeOp.getOperand();
+  auto output = reshapeOp.getResult();
+
+  auto inputType = dyn_cast<RankedTensorType>(input.getType());
+  auto outputType = dyn_cast<RankedTensorType>(output.getType());
+
+  if (!inputType || !outputType)
+    return false;
+
+  auto inputShape = inputType.getShape();
+  auto outputShape = outputType.getShape();
+
+  // If the number of dimensions is different, it cannot be a simple transpose
+  if (inputShape.size() != outputShape.size())
+    return false;
+
+  // for each input dim find the next output dim that is of same size.
+  // if there are any non-1 dims, it cannot be a simple transpose
+  size_t j = 0, i = 0;
+  for (; i < inputShape.size(); ++i) {
+    auto insz = inputShape[i];
+    if (insz == 1)
+      continue;
+
+    bool found = false;
+    while (j < outputShape.size()) {
+      auto outsz = outputShape[j];
+      ++j;
+      if (outsz == 1)
+        continue;
+      if (insz == outsz) {
+        found = true;
+        break;
+      }
+      if (insz != outsz)
+        return false;
+    }
+
+    if (!found)
+      return false;
+  }
+
+  for (; j < outputShape.size(); ++j) {
+    if (outputShape[j] != 1) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 } // namespace stablehlo

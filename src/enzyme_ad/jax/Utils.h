@@ -470,6 +470,17 @@ static arith::CmpIPredicate swapPredicate(arith::CmpIPredicate pred) {
   llvm_unreachable("unknown cmpi predicate kind");
 }
 
+SmallVector<int64_t> findReshapeInsertionDims(RankedTensorType inputType,
+                                              RankedTensorType outputType);
+SmallVector<int64_t> findReshapeInsertionDims(ArrayRef<int64_t> inputShape,
+                                              ArrayRef<int64_t> outputShape);
+
+bool areValidInsertionDims(RankedTensorType inputType,
+                           RankedTensorType outputType,
+                           SmallVector<int64_t> insertionDims);
+
+bool isOnlyUsedInOperation(Operation *operation, Operation *parentOp);
+
 } // namespace enzyme
 
 namespace stablehlo {
@@ -577,6 +588,8 @@ reversedComparisonDirection(stablehlo::ComparisonDirection direction);
 
 stablehlo::ComparisonDirection
 negatedComparisonDirection(stablehlo::ComparisonDirection direction);
+
+bool reshapeIsTranspose(stablehlo::ReshapeOp reshapeOp);
 
 } // namespace stablehlo
 
