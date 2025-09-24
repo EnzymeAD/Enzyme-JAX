@@ -11,7 +11,7 @@ module {
 }
 
 // CPU:  llvm.func @enzymexla_wrapper_lapacke_sormqr_[[WRAPPER_ID:[0-9]+]](%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr) {
-// CPU-NEXT:    %0 = llvm.mlir.constant(101 : i64) : i64
+// CPU-NEXT:    %0 = llvm.mlir.constant(102 : i64) : i64
 // CPU-NEXT:    %1 = llvm.mlir.constant(76 : i8) : i8
 // CPU-NEXT:    %2 = llvm.mlir.constant(78 : i8) : i8
 // CPU-NEXT:    %3 = llvm.mlir.constant(32 : i64) : i64
@@ -35,7 +35,7 @@ module {
 }
 
 // CPU:  llvm.func @enzymexla_wrapper_lapacke_sormqr_[[WRAPPER_ID:[0-9]+]](%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr) {
-// CPU-NEXT:    %0 = llvm.mlir.constant(101 : i64) : i64
+// CPU-NEXT:    %0 = llvm.mlir.constant(102 : i64) : i64
 // CPU-NEXT:    %1 = llvm.mlir.constant(76 : i8) : i8
 // CPU-NEXT:    %2 = llvm.mlir.constant(84 : i8) : i8
 // CPU-NEXT:    %3 = llvm.mlir.constant(32 : i64) : i64
@@ -59,7 +59,7 @@ module {
 }
 
 // CPU:  llvm.func @enzymexla_wrapper_lapacke_sormqr_[[WRAPPER_ID:[0-9]+]](%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr) {
-// CPU-NEXT:    %0 = llvm.mlir.constant(101 : i64) : i64
+// CPU-NEXT:    %0 = llvm.mlir.constant(102 : i64) : i64
 // CPU-NEXT:    %1 = llvm.mlir.constant(82 : i8) : i8
 // CPU-NEXT:    %2 = llvm.mlir.constant(78 : i8) : i8
 // CPU-NEXT:    %3 = llvm.mlir.constant(64 : i64) : i64
@@ -83,7 +83,7 @@ module {
 }
 
 // CPU:  llvm.func @enzymexla_wrapper_lapacke_sormqr_[[WRAPPER_ID:[0-9]+]](%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr) {
-// CPU-NEXT:    %0 = llvm.mlir.constant(101 : i64) : i64
+// CPU-NEXT:    %0 = llvm.mlir.constant(102 : i64) : i64
 // CPU-NEXT:    %1 = llvm.mlir.constant(82 : i8) : i8
 // CPU-NEXT:    %2 = llvm.mlir.constant(84 : i8) : i8
 // CPU-NEXT:    %3 = llvm.mlir.constant(64 : i64) : i64
