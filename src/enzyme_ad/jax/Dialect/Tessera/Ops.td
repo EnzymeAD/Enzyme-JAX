@@ -13,8 +13,6 @@ include "mlir/Interfaces/SideEffectInterfaces.td"
 
 
 include "Dialect.td"
-include "Types.td"
-include "Interfaces.td"
 
 //===----------------------------------------------------------------------===//
 // DefineOp

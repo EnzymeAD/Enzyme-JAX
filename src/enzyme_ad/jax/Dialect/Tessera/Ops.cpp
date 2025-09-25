@@ -2,8 +2,15 @@
 #include "llvm/ADT/TypeSwitch.h"
 
 #include "Dialect.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
+#include "mlir/Interfaces/FunctionImplementation.h"
+#include "mlir/IR/IRMapping.h"
+
+using namespace mlir;
+using namespace mlir::enzyme::tessera;
 
 namespace mlir::enzyme::tessera {
+
 } // namespace mlir::enzyme::tessera
 
 
@@ -169,7 +176,7 @@ LogicalResult CallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   auto fnAttr = (*this)->getAttrOfType<FlatSymbolRefAttr>("callee");
   if (!fnAttr)
     return emitOpError("requires a 'callee' symbol reference attribute");
-  FuncOp fn = symbolTable.lookupNearestSymbolFrom<FuncOp>(*this, fnAttr);
+  DefineOp fn = symbolTable.lookupNearestSymbolFrom<DefineOp>(*this, fnAttr);
   if (!fn)
     return emitOpError() << "'" << fnAttr.getValue()
                          << "' does not reference a valid function";

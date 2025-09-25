@@ -13,9 +13,12 @@ include "mlir/IR/OpBase.td"
 def TesseraDialect : Dialect {
     let name = "tessera";
     let summary = "A dialect for custom operations and scientific optimizations";
-    let description = [{}];
+    let description = [{
+        Tessera enables users to mark certain functions in their source code to have defined
+        semantics and thus enable user-defined optimizations on the DSL their code represents.
+    }];
     let cppNamespace = "::mlir::enzyme::tessera";
-    let useDefaultTypePrinterParser = 1; // type or attribute?
+    // let useDefaultTypePrinterParser = 1; // type or attribute?
 }
 
 //===----------------------------------------------------------------------===//
