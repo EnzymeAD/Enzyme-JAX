@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1758820496334,
+  "lastUpdate": 1758840929673,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
@@ -4575,6 +4575,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001559779517119,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "avikpal@mit.edu",
+            "name": "Avik Pal",
+            "username": "avik-pal"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "af9e57232c00e747106420cb486718502ebeb8ee",
+          "message": "fix: support partial slice elem to reduce correctly (#1421)",
+          "timestamp": "2025-09-25T13:33:40-05:00",
+          "tree_id": "ddc6f20be4d2d1d39a6098bfe167821ac44ffe83",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/af9e57232c00e747106420cb486718502ebeb8ee"
+        },
+        "date": 1758840928639,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004203735990449786,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004273098916746676,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001417810230981,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001422699250979,
             "unit": "s"
           }
         ]
