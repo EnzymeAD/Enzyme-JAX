@@ -585,6 +585,31 @@ gentbl_cc_library(
 )
 
 td_library(
+    name = "DistributedPassesTdFiles",
+    srcs = [
+    ],
+    deps = [
+        "@llvm-project//mlir:PassBaseTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "DistributedPassesIncGen",
+    tbl_outs = [
+        (
+            [
+                "-gen-pass-decls",
+                "-name=distributed",
+            ],
+            "Passes/Distributed/Passes.h.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Passes/Distributed/Passes.td",
+    deps = [":DistributedPassesTdFiles"],
+)
+
+td_library(
     name = "TesseraDialectTdFiles",
     srcs = [
         "Dialect/Tessera/Dialect.td",
@@ -715,6 +740,7 @@ cc_library(
     srcs = glob([
         "Implementations/*.cpp",
         "Passes/*.cpp",
+        "Passes/Distributed/*.cpp",
         "Dialect/*.cpp",
         "Dialect/Distributed/*.cpp",
         "Dialect/Tessera/*.cpp",
@@ -724,6 +750,7 @@ cc_library(
     hdrs = glob([
         "Implementations/*.h",
         "Passes/*.h",
+        "Passes/Distributed/*.h",
         "Dialect/*.h",
         "Dialect/Distributed/*.h",
         "Dialect/Tessera/*.h",
@@ -744,6 +771,7 @@ cc_library(
         ":DistributedDialectIncGen",
         ":DistributedInterfacesIncGen",
         ":DistributedOpsIncGen",
+        ":DistributedPassesIncGen",
         ":DistributedTypesIncGen",
         ":EnzymeHLOPatternsIncGen",
         ":EnzymeXLAAttrsIncGen",
