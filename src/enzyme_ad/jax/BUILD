@@ -568,6 +568,67 @@ gentbl_cc_library(
     ],
 )
 
+td_library(
+    name = "TesseraDialectTdFiles",
+    srcs = [
+        "Dialect/Tessera/Dialect.td",
+        "Dialect/Tessera/Ops.td",
+    ],
+    deps = [
+        "@llvm-project//mlir:BuiltinDialectTdFiles",
+        "@llvm-project//mlir:CallOpInterfaces",
+        "@llvm-project//mlir:ControlFlowInterfacesTdFiles",
+        "@llvm-project//mlir:FunctionInterfacesTdFiles",
+        "@llvm-project//mlir:InferTypeOpInterfaceTdFiles",
+        "@llvm-project//mlir:SideEffectInterfacesTdFiles",
+        "@llvm-project//mlir:OpBaseTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "TesseraDialectIncGen",
+    tbl_outs = [
+        (
+            [
+                "-gen-dialect-decls",
+                "-dialect=tessera",
+            ],
+            "Dialect/Tessera/TesseraDialect.h.inc",
+        ),
+        (
+            [
+                "-gen-dialect-defs",
+                "-dialect=tessera",
+            ],
+            "Dialect/Tessera/TesseraDialect.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/Tessera/Dialect.td",
+    deps = [
+        ":TesseraDialectTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "TesseraOpsIncGen",
+    tbl_outs = [
+        (
+            ["-gen-op-decls"],
+            "Dialect/Tessera/TesseraOps.h.inc",
+        ),
+        (
+            ["-gen-op-defs"],
+            "Dialect/Tessera/TesseraOps.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/Tessera/Ops.td",
+    deps = [
+        ":TesseraDialectTdFiles",
+    ],
+)
+
 cc_library(
     name = "XLADerivatives",
     srcs = glob([
@@ -575,6 +636,7 @@ cc_library(
         "Passes/*.cpp",
         "Dialect/*.cpp",
         "Dialect/Distributed/*.cpp",
+        "Dialect/Tessera/*.cpp",
     ]) + [
         "Utils.cpp",
     ],
@@ -583,6 +645,7 @@ cc_library(
         "Passes/*.h",
         "Dialect/*.h",
         "Dialect/Distributed/*.h",
+        "Dialect/Tessera/*.h",
     ]) + [
         "Utils.h",
     ],
@@ -599,6 +662,8 @@ cc_library(
         ":DistributedDialectIncGen",
         ":DistributedOpsIncGen",
         ":DistributedTypesIncGen",
+        ":TesseraDialectIncGen",
+        ":TesseraOpsIncGen",
         ":EnzymeHLOPatternsIncGen",
         ":EnzymeXLAAttrsIncGen",
         ":EnzymeXLAOpsIncGen",

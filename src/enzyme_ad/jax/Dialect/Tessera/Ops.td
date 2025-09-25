@@ -16,15 +16,18 @@ include "Dialect.td"
 include "Types.td"
 include "Interfaces.td"
 
-// Device definition ops
+//===----------------------------------------------------------------------===//
+// DefineOp
+//===----------------------------------------------------------------------===//
 
 def DefineOp : TesseraOp<"define", [
   AffineScope, AutomaticAllocationScope,
   FunctionOpInterface, IsolatedFromAbove, OpAsmOpInterface
 ]> {
-  let summary = "TODO";
+  let summary = "define operation";
   let description = [{
-    TODO
+    The 'tessera.define' operation represents a custom operation defined by the user, 
+    defining its signature, attributes, and body, similar to the FuncOp in the Func Dialect.
   }];
 
   let arguments = (ins SymbolNameAttr:$sym_name,
@@ -85,7 +88,7 @@ def DefineOp : TesseraOp<"define", [
     //===------------------------------------------------------------------===//
 
     /// Allow the dialect prefix to be omitted.
-    static StringRef getDefaultDialect() { return "func"; }
+    static StringRef getDefaultDialect() { return "tessera"; }
 
     //===------------------------------------------------------------------===//
     // SymbolOpInterface Methods
@@ -97,35 +100,15 @@ def DefineOp : TesseraOp<"define", [
 }
 
 //===----------------------------------------------------------------------===//
-// ReturnOp
+// CallOp
 //===----------------------------------------------------------------------===//
 
-def ReturnOp : TesseraOp<"return", [Pure, HasParent<"DefineOp">, ReturnLike, Terminator]> {
-  let summary = "Function return operation";
-  let description = [{
-    TODO
-  }];
-
-  let arguments = (ins Variadic<AnyType>:$operands);
-
-  let builders = [OpBuilder<(ins), [{
-    build($_builder, $_state, {});
-  }]>];
-
-  let assemblyFormat = "attr-dict ($operands^ `:` type($operands))?";
-  let hasVerifier = 1;
-}
-
-
-def CallOp : Func_Op<"call",
+def CallOp : TesseraOp<"call",
     [CallOpInterface, MemRefsNormalizable,
      DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
   let summary = "call operation";
   let description = [{
-    Tessera enables users to mark certain functions in their source code to have defined
-    semantics and thus enable user-defined optimizations on the DSL their code represents.
-    
-    This operation represents a call to the custom operation defined by the user.
+    The 'tessera.call' operation represents a call to the custom operation defined by the user.
   }];
 
   let arguments = (ins
@@ -197,6 +180,26 @@ def CallOp : Func_Op<"call",
     }
   }];
 
+}
+
+//===----------------------------------------------------------------------===//
+// ReturnOp
+//===----------------------------------------------------------------------===//
+
+def ReturnOp : TesseraOp<"return", [Pure, HasParent<"DefineOp">, ReturnLike, Terminator]> {
+  let summary = "return operation";
+  let description = [{
+    The 'tessera.return' operation represents a custom return operation defined by the user.
+  }];
+
+  let arguments = (ins Variadic<AnyType>:$operands);
+
+  let builders = [OpBuilder<(ins), [{
+    build($_builder, $_state, {});
+  }]>];
+
+  let assemblyFormat = "attr-dict ($operands^ `:` type($operands))?";
+  let hasVerifier = 1;
 }
 
 
