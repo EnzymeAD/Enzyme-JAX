@@ -2,6 +2,7 @@
 #include "llvm/ADT/TypeSwitch.h"
 
 #include "Dialect.h"
+#include "Utils.h"
 
 using mlir::OpTrait::enzyme::distributed::ChannelDefTrait;
 using mlir::OpTrait::enzyme::distributed::DeviceDefTrait;
@@ -98,21 +99,60 @@ DeviceMeshOp::verifySymbolUses(::mlir::SymbolTableCollection &symbol_table) {
                                              getDeviceType());
 }
 
-LogicalResult
-MeshForOp::verifySymbolUses(::mlir::SymbolTableCollection &symbol_table) {
-  // Mesh for ops apply only to meshes
-  return checkSymbolIsA<DeviceMeshOp>(symbol_table, *this, getMeshAttr());
+Operation *DeviceParallelOp::getEnclosingDeviceOp() {
+  return mlir::SymbolTable::lookupNearestSymbolFrom(*this,
+                                                    getEnclosingDeviceAttr());
 }
 
-LogicalResult
-GroupSplitOp::verifySymbolUses(::mlir::SymbolTableCollection &symbol_table) {
-  // Group splits apply only to device groups
-  return checkSymbolIsA<DeviceGroupOp>(symbol_table, *this,
-                                       getDeviceGroupAttr());
+LogicalResult DeviceParallelOp::verifySymbolUses(
+    ::mlir::SymbolTableCollection &symbol_table) {
+  Operation *device_op = this->getEnclosingDeviceOp();
+  if (isa<DeviceGroupOp>(device_op) || isa<DeviceMeshOp>(device_op)) {
+    return mlir::success();
+  }
+  return emitOpError()
+         << "enclosing device symbol must refer to a device group or mesh";
 }
 
-// Printer/parser for GroupsplitOp branches
-mlir::ParseResult parseSplitBranches(
+LogicalResult DeviceParallelOp::verify() {
+  // Check number of branches matches number of assignments
+
+  if (getNumRegions() != getBranchAssignments().size()) {
+    return emitOpError()
+           << "number of regions must match number of branch assignments";
+  }
+
+  // Look at device type to determine number of branches
+  auto device_op = mlir::SymbolTable::lookupNearestSymbolFrom(
+      *this, getEnclosingDeviceAttr());
+  if (!device_op) {
+    return emitOpError() << "could not find enclosing device symbol";
+  }
+
+  if (DeviceGroupOp deviceGroup = dyn_cast<DeviceGroupOp>(device_op)) {
+    // Device group: number of branches must match number of devices in group
+    auto devices = deviceGroup.getDevices();
+    auto channels = deviceGroup.getChannels();
+    if (getNumRegions() != devices.size() + channels.size()) {
+      return emitOpError() << "number of regions must match number of devices "
+                              "and channels in device group";
+    }
+  } else if (DeviceMeshOp mesh = dyn_cast<DeviceMeshOp>(device_op)) {
+    // Exactly one branch for the mesth type
+    if (getNumRegions() != 1) {
+      return emitOpError()
+             << "device mesh must have exactly one region for its single type";
+    }
+  } else {
+    return emitOpError()
+           << "enclosing device symbol must refer to a device group or mesh";
+  }
+
+  return mlir::success();
+}
+
+// Printer/parser for subdevice branches
+mlir::ParseResult parseDeviceBranches(
     OpAsmParser &parser, mlir::ArrayAttr &branchAssignments,
     llvm::SmallVector<std::unique_ptr<::mlir::Region>, 2> &branchesRegions) {
   // Expect 0 or more `branch` $symbol_name $symbol_region
@@ -138,22 +178,15 @@ mlir::ParseResult parseSplitBranches(
   return mlir::success();
 }
 
-void printSplitBranches(OpAsmPrinter &printer, const GroupSplitOp &op,
-                        const mlir::ArrayAttr branchAssignments,
-                        const llvm::MutableArrayRef<mlir::Region> branches) {
+void printDeviceBranches(OpAsmPrinter &printer, const DeviceParallelOp &op,
+                         const mlir::ArrayAttr branchAssignments,
+                         const llvm::MutableArrayRef<mlir::Region> branches) {
   // Print each branch as `branch` $symbol_name $symbol_region
   for (size_t i = 0; i < branches.size(); i++) {
     printer << " branch ";
     printer.printAttribute(branchAssignments[i]);
     printer.printRegion(branches[i]);
   }
-}
-
-LogicalResult
-DefineTokenOp::verifySymbolUses(::mlir::SymbolTableCollection &symbol_table) {
-  // Tokens need to indicate which channel they communicate over
-  return checkSymbolHasTrait<ChannelDefTrait>(symbol_table, *this,
-                                              getChannelAttr());
 }
 
 llvm::ArrayRef<mlir::TypedValue<TokenType>> SendOp::getWriteTokens() {

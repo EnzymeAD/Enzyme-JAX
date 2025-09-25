@@ -1,19 +1,30 @@
 // RUN: enzymexlamlir-opt %s | FileCheck %s
-distributed.LeafDevice @myGpu
-distributed.DeviceMesh @gpuMesh @myGpu [2, 2]
-distributed.LeafDevice @myCpu
-distributed.Channel @chan1 [@myCpu, @gpuMesh] [@gpuMesh, @myCpu]
-distributed.DeviceGroup @gpusWithHost [@myGpu, @myCpu] [@chan1]
+distributed.leaf_device @myGpu
+distributed.device_mesh @gpuMesh @myGpu [2, 2]
+distributed.leaf_device @myCpu
+distributed.channel @chan1 [@myCpu, @gpuMesh] [@gpuMesh, @myCpu]
+distributed.device_group @gpusWithHost [@myGpu, @myCpu] [@chan1]
 
 func.func @foo() {
-    distributed.GroupSplit @gpusWithHost 
+   distributed.device_parallel @gpusWithHost {
        branch @myGpu {
-               distributed.MeshFor @gpuMesh {
+            ^entry():
+               distributed.device_parallel @gpuMesh {
+                  branch @myGpu {
+                    ^entry():
+                        distributed.noop
+                  }
                }
-       }
+               }
        branch @myCpu {
-          distributed.DefineToken @chan1
+            ^entry():
+            distributed.noop
        }
+       branch @chan1 {
+            ^entry():
+            distributed.noop
+       }
+   }
 
     func.return
 }
