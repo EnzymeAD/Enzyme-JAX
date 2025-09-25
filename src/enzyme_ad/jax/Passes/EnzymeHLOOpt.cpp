@@ -23082,6 +23082,7 @@ private:
                                            elemOp.getResult());
     }
 
+    rewriter.setInsertionPointAfter(newReduce);
     auto binaryResultType =
         cast<RankedTensorType>(binaryOp.getResult().getType());
     rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(
