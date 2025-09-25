@@ -47,13 +47,16 @@ jobs:
       - name: Modify JAX commit
         run: |
           sed -i 's/JAX_COMMIT = ".*"/JAX_COMMIT = "${{ env.NEW_JAX_COMMIT }}"/' workspace.bzl
-      - name: Get latest commit
-        run: |
-          echo "LATEST_COMMIT_MESSAGE=$(curl -s -H 'Authorization: token ${{ secrets.GITHUB_TOKEN }}' 'https://api.github.com/repos/${{ github.repository }}/commits/${{ env.BRANCH_NAME }}' | jq -r '.commit.message')" >> "${GITHUB_ENV}"
       - name: Decide whether to open the pull request
         id: decide
         run: |
-          if [[ "${{ env.LATEST_COMMIT_MESSAGE }}" == "null" || "${{ env.LATEST_COMMIT_MESSAGE }}" == "${{ env.COMMIT_MSG_PREFIX }}"* ]]; then
+          # Fetch latest commit on the branch
+          LATEST_COMMIT_MESSAGE="$(curl -s -H 'Authorization: token ${{ secrets.GITHUB_TOKEN }}' 'https://api.github.com/repos/${{ github.repository }}/commits/${{ env.BRANCH_NAME }}' | jq -r '.commit.message')"
+          echo "Latest commit message on the branch '${{ env.BRANCH_NAME }}' is:"
+          echo "----------"
+          echo "${LATEST_COMMIT_MESSAGE}"
+          echo "----------"
+          if [[ "${LATEST_COMMIT_MESSAGE}" == "null" || "${LATEST_COMMIT_MESSAGE}" == "${{ env.COMMIT_MSG_PREFIX }}"* ]]; then
               # Open the PR only if the target branch doesn't exist or latest commit message
               # starts with the expected prefix.
               echo "We're going to open the pull request..."
