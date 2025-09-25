@@ -137,6 +137,14 @@ def GetStreamOp : EnzymeXLA_Op<"get_stream", [Pure]> {
 }
 
 
+def GPUOccupancyOp : EnzymeXLA_Op<"gpu_occupancy", [Pure, DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
+  let arguments = (ins
+	SymbolRefAttr:$fn,
+	AnyType:$blockSize,
+	AnyType:$dynamicSMemSize);
+  let results = (outs AnyType : $result);
+}
+
 def GPUWrapperOp : EnzymeXLA_Op<"gpu_wrapper", [
   RecursiveMemoryEffects,
   AffineScope,
