@@ -9,39 +9,35 @@
 using namespace mlir;
 using namespace mlir::enzyme::tessera;
 
-namespace mlir::enzyme::tessera {
-
-} // namespace mlir::enzyme::tessera
-
-
+namespace mlir::enzyme::tessera {} // namespace mlir::enzyme::tessera
 
 //===----------------------------------------------------------------------===//
 // DefineOp
 //===----------------------------------------------------------------------===//
 
 DefineOp DefineOp::create(Location location, StringRef name, FunctionType type,
-                      ArrayRef<NamedAttribute> attrs) {
+                          ArrayRef<NamedAttribute> attrs) {
   OpBuilder builder(location->getContext());
   OperationState state(location, getOperationName());
   DefineOp::build(builder, state, name, type, attrs);
   return cast<DefineOp>(Operation::create(state));
 }
 DefineOp DefineOp::create(Location location, StringRef name, FunctionType type,
-                      Operation::dialect_attr_range attrs) {
+                          Operation::dialect_attr_range attrs) {
   SmallVector<NamedAttribute, 8> attrRef(attrs);
   return create(location, name, type, llvm::ArrayRef(attrRef));
 }
 DefineOp DefineOp::create(Location location, StringRef name, FunctionType type,
-                      ArrayRef<NamedAttribute> attrs,
-                      ArrayRef<DictionaryAttr> argAttrs) {
+                          ArrayRef<NamedAttribute> attrs,
+                          ArrayRef<DictionaryAttr> argAttrs) {
   DefineOp func = create(location, name, type, attrs);
   func.setAllArgAttrs(argAttrs);
   return func;
 }
 
 void DefineOp::build(OpBuilder &builder, OperationState &state, StringRef name,
-                   FunctionType type, ArrayRef<NamedAttribute> attrs,
-                   ArrayRef<DictionaryAttr> argAttrs) {
+                     FunctionType type, ArrayRef<NamedAttribute> attrs,
+                     ArrayRef<DictionaryAttr> argAttrs) {
   state.addAttribute(SymbolTable::getSymbolAttrName(),
                      builder.getStringAttr(name));
   state.addAttribute(getFunctionTypeAttrName(state.name), TypeAttr::get(type));
@@ -161,8 +157,8 @@ LogicalResult ReturnOp::verify() {
       return emitError() << "type of return operand " << i << " ("
                          << getOperand(i).getType()
                          << ") doesn't match function result type ("
-                         << results[i] << ")"
-                         << " in function @" << function.getName();
+                         << results[i] << ")" << " in function @"
+                         << function.getName();
 
   return success();
 }

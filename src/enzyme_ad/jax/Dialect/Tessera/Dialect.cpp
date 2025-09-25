@@ -5,7 +5,6 @@
 
 #include "src/enzyme_ad/jax/Dialect/Tessera/TesseraDialect.cpp.inc"
 
-
 // Initialize the dialect
 void mlir::enzyme::tessera::TesseraDialect::initialize() {
   addOperations<

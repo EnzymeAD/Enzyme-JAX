@@ -580,8 +580,8 @@ td_library(
         "@llvm-project//mlir:ControlFlowInterfacesTdFiles",
         "@llvm-project//mlir:FunctionInterfacesTdFiles",
         "@llvm-project//mlir:InferTypeOpInterfaceTdFiles",
-        "@llvm-project//mlir:SideEffectInterfacesTdFiles",
         "@llvm-project//mlir:OpBaseTdFiles",
+        "@llvm-project//mlir:SideEffectInterfacesTdFiles",
     ],
 )
 
@@ -662,8 +662,6 @@ cc_library(
         ":DistributedDialectIncGen",
         ":DistributedOpsIncGen",
         ":DistributedTypesIncGen",
-        ":TesseraDialectIncGen",
-        ":TesseraOpsIncGen",
         ":EnzymeHLOPatternsIncGen",
         ":EnzymeXLAAttrsIncGen",
         ":EnzymeXLAOpsIncGen",
@@ -673,6 +671,8 @@ cc_library(
         ":RaisingTransformOpsIncGen",
         ":RaisingTransformPatternsIncGen",
         ":StablehloOptPatternsIncGen",
+        ":TesseraDialectIncGen",
+        ":TesseraOpsIncGen",
         ":chlo-derivatives",
         ":mhlo-derivatives",
         ":stablehlo-derivatives",
