@@ -23006,31 +23006,31 @@ private:
                                   SmallVector<SliceInfo> &slices) const {
     Value sourceOperand = slices[0].sliceOp.getOperand();
 
-    int64_t sliceDim = slices[0].sliceDim;
+    auto sliceInfo = slices[0];
+    auto commonStartIndices = sliceInfo.sliceOp.getStartIndices();
+    auto commonLimitIndices = sliceInfo.sliceOp.getLimitIndices();
+    int64_t sliceDim = sliceInfo.sliceDim;
     int64_t minStart = slices[0].sliceStart;
     int64_t maxEnd = slices.back().sliceEnd;
 
     auto sourceType = cast<RankedTensorType>(sourceOperand.getType());
-    ArrayRef<int64_t> sourceShape = sourceType.getShape();
 
-    // Check if we're covering the full dimension
-    if (minStart != 0 || maxEnd != sourceShape[sliceDim]) {
-      SmallVector<int64_t> newStartIndices, newLimitIndices, newStrides;
-      for (int64_t i = 0; i < sourceShape.size(); i++) {
-        if (i == sliceDim) {
-          newStartIndices.push_back(minStart);
-          newLimitIndices.push_back(maxEnd);
-          newStrides.push_back(1);
-        } else {
-          newStartIndices.push_back(0);
-          newLimitIndices.push_back(sourceShape[i]);
-          newStrides.push_back(1);
-        }
-      }
+    // insert the slice always. if not needed we will remove it later
+    {
+      SmallVector<int64_t> newStartIndices =
+          llvm::to_vector(commonStartIndices);
+      newStartIndices[sliceDim] = minStart;
+      SmallVector<int64_t> newLimitIndices =
+          llvm::to_vector(commonLimitIndices);
+      newLimitIndices[sliceDim] = maxEnd;
+      SmallVector<int64_t> newStrides(sourceType.getRank(), 1);
       sourceOperand = rewriter.create<stablehlo::SliceOp>(
           binaryOp.getLoc(), sourceOperand, newStartIndices, newLimitIndices,
           newStrides);
     }
+
+    ArrayRef<int64_t> sourceShape =
+        cast<RankedTensorType>(sourceOperand.getType()).getShape();
 
     Value initValue;
     for (auto sliceInfo : slices) {
