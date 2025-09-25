@@ -69,6 +69,33 @@ static std::optional<int64_t> getConstant(Value v) {
   return {};
 }
 
+LogicalResult TritonCallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
+  // TODO: Verify that the result type is same as the type of the referenced
+  // tt.func op.
+  auto global = symbolTable.lookupNearestSymbolFrom<FunctionOpInterface>(
+      *this, getFnAttr());
+  if (!global)
+    return emitOpError("'")
+           << getFn() << "' does not reference a valid global funcOp";
+
+  return success();
+}
+
+void TritonCallOp::setCalleeFromCallable(CallInterfaceCallable callee) {
+  auto symbol = cast<SymbolRefAttr>(callee);
+  setFnAttr(cast<FlatSymbolRefAttr>(symbol));
+}
+
+CallInterfaceCallable TritonCallOp::getCallableForCallee() {
+  return SymbolRefAttr::get(getContext(), getFn());
+}
+
+Operation::operand_range TritonCallOp::getArgOperands() { return getInputs(); }
+
+MutableOperandRange TritonCallOp::getArgOperandsMutable() {
+  return getInputsMutable();
+}
+
 LogicalResult
 GPUOccupancyOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   // TODO: Verify that the result type is same as the type of the referenced
@@ -152,6 +179,25 @@ addAllMemoryEffects(SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
   effects.emplace_back(MemoryEffects::Free::get());
   effects.emplace_back(MemoryEffects::Write::get());
   effects.emplace_back(MemoryEffects::Read::get());
+}
+
+void TritonCallOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  ModuleOp moduleOp = (*this)->getParentOfType<ModuleOp>();
+  assert(moduleOp && "TritonCallOp must be inside a ModuleOp");
+
+  auto callee =
+      moduleOp.lookupSymbol<FunctionOpInterface>(getFnAttr().getAttr());
+  assert(callee && "TritonCallOp must have a valid function");
+
+  auto effectsAttr =
+      callee->getAttrOfType<ArrayAttr>("enzymexla.memory_effects");
+  if (!effectsAttr) {
+    addAllMemoryEffects(effects);
+    return;
+  }
+
+  addMemoryEffectsFromAttr(effects, effectsAttr);
 }
 
 void KernelCallOp::getEffects(
@@ -344,6 +390,19 @@ enzymexla::JITCallOp ReadOnlyArg<enzymexla::JITCallOp>::create(
       launchOp.getXlaSideEffectFreeAttr());
 }
 
+template <>
+enzymexla::TritonCallOp ReadOnlyArg<enzymexla::TritonCallOp>::create(
+    PatternRewriter &rewriter, enzymexla::TritonCallOp launchOp,
+    ArrayRef<Type> resTys, ArrayAttr outputAliases) const {
+  return rewriter.create<enzymexla::TritonCallOp>(
+      launchOp.getLoc(), resTys, launchOp.getFn(), launchOp.getGridx(),
+      launchOp.getGridy(), launchOp.getGridz(), launchOp.getShmem(),
+      launchOp.getInputs(), launchOp.getBackendConfigAttr(),
+      launchOp.getOperandLayoutsAttr(), /*resultLayouts*/ nullptr,
+      launchOp.getArgAttrsAttr(), launchOp.getResAttrsAttr(), outputAliases,
+      launchOp.getXlaSideEffectFreeAttr());
+}
+
 template <typename OpTy>
 class ReadNoneArg final : public OpRewritePattern<OpTy> {
 public:
@@ -491,6 +550,11 @@ void KernelCallOp::getCanonicalizationPatterns(RewritePatternSet &results,
 void JITCallOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                             MLIRContext *context) {
   results.insert<ReadOnlyArg<JITCallOp>, ReadNoneArg<JITCallOp>>(context);
+}
+
+void TritonCallOp::getCanonicalizationPatterns(RewritePatternSet &results,
+                                               MLIRContext *context) {
+  results.insert<ReadOnlyArg<TritonCallOp>, ReadNoneArg<TritonCallOp>>(context);
 }
 
 /// Simplify pointer2memref(memref2pointer(x)) to cast(x)

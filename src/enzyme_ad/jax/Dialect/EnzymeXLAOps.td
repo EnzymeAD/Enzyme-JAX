@@ -99,6 +99,36 @@ def KernelCallOp : EnzymeXLA_Op<"kernel_call", [
   let hasCanonicalizer = 1;
 }
 
+def TritonCallOp : EnzymeXLA_Op<"triton_call", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, DeclareOpInterfaceMethods<CallOpInterface>, DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "Triton Call operation";
+
+  let arguments = (ins
+    FlatSymbolRefAttr:$fn,
+    TensorI64:$gridx,
+    TensorI64:$gridy,
+    TensorI64:$gridz,
+    TensorI64:$shmem,
+    Variadic<AnyType>:$inputs,
+    DefaultValuedStrAttr<StrAttr, "">:$backend_config,
+    OptionalAttr<AnyAttr>:$operand_layouts,
+    OptionalAttr<AnyAttr>:$result_layouts,
+    OptionalAttr<DictArrayAttr>:$arg_attrs,
+    OptionalAttr<DictArrayAttr>:$res_attrs,
+    DefaultValuedOptionalAttr<
+        ArrayAttr, "{}">:$output_operand_aliases,
+    OptionalAttr<UnitAttr>:$xla_side_effect_free
+  );
+
+  let results = (outs Variadic<AnyType>);
+
+
+  let assemblyFormat = [{
+    $fn ` ` `blocks` `in` `(` $gridx `,` $gridy `,` $gridz `)` ` ` `shmem` `=` $shmem ` ` `(` $inputs `)` attr-dict `:` functional-type($inputs, results)
+  }];
+
+  let hasCanonicalizer = 1;
+}
+
 def MemcpyOp : EnzymeXLA_Op<"memcpy"> {
 
   let summary = "GPU memcpy operation";
