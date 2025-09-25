@@ -151,3 +151,21 @@ struct SliceToBatchElementwise : public SliceToBatchBase {
             },
             ctx, benefit) {}
 };
+
+struct GreedyWhileLoopBatchFission
+    : public mlir::OpRewritePattern<mlir::stablehlo::WhileOp> {
+  using Base = mlir::OpRewritePattern<mlir::stablehlo::WhileOp>;
+  using Base::Base;
+
+  mlir::LogicalResult
+  matchAndRewrite(mlir::stablehlo::WhileOp whileOp,
+                  mlir::PatternRewriter &rewriter) const override;
+
+private:
+  bool isDirectDescendantOfInductionVar(mlir::Value value,
+                                        mlir::Value inductionVar);
+
+  bool isDynamicSliceValidForBatching(mlir::stablehlo::DynamicSliceOp sliceOp,
+                                      mlir::Value inductionVar, int64_t limit,
+                                      mlir::Block &whileBody);
+};
