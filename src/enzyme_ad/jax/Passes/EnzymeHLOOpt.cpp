@@ -23215,6 +23215,7 @@ struct CaseToIf : public CheckedOpRewritePattern<stablehlo::CaseOp, CaseToIf> {
   }
 };
 
+// TODO: make generating a dynamic pad for non-constant padding optional
 struct DUSToDynamicPad
     : public CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp,
                                      DUSToDynamicPad> {
