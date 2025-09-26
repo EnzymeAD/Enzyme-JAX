@@ -17,6 +17,8 @@
 #include "Enzyme/MLIR/Interfaces/GradientUtilsReverse.h"
 #include "Enzyme/MLIR/Passes/RemovalUtils.h"
 
+#include "mlir/Analysis/TopologicalSortUtils.h"
+
 #include "llvm/ADT/PointerUnion.h"
 
 #include "mlir/IR/DialectRegistry.h"
@@ -2836,10 +2838,8 @@ private:
         continue;
 
       for (const auto &v : found->second) {
-        if (parent.find(v) == parent.end()) {
-          if (parent.try_emplace(v, u).second) {
-            q.push_back(v);
-          }
+        if (parent.try_emplace(v, u).second) {
+          q.push_back(v);
         }
       }
     }
@@ -2891,6 +2891,96 @@ private:
 
     return revGraph;
   }
+
+  static bool inBlockCmp(Operation *a, Operation *b) {
+	  if (a == b)
+    return false;
+
+    return a->isBeforeInBlock(b);
+  }
+    
+  static void reorderCloned(SetVector<Operation*> && cloned) {
+    SmallVector<std::pair<Operation*, Operation*>> nextMove;
+    DenseMap<Operation*, SmallPtrSet<Operation*, 1>> predMap;
+    DenseMap<Operation*, SmallVector<Operation*, 1>> dependencies;
+    for (auto newO : cloned) {
+        Operation *lastValOp = nullptr;
+	SmallPtrSet<Operation*, 1> preds;
+        for (Value operand : newO->getOperands()) {
+          Operation *mappedOp = operand.getDefiningOp();
+          if (!mappedOp)
+            continue;
+	  
+	  if (cloned.contains(mappedOp)) {
+	    dependencies[mappedOp].push_back(newO);
+	    preds.insert(mappedOp);
+	    continue;
+	  }
+          if (!lastValOp) {
+            lastValOp = mappedOp;
+            continue;
+          }
+          if (lastValOp->isBeforeInBlock(mappedOp)) {
+            lastValOp = mappedOp;
+            continue;
+          }
+        }
+	if (lastValOp) {
+	  nextMove.emplace_back(newO, lastValOp);
+	}
+	predMap[newO] = preds;
+    }
+
+    for (auto &&pair : nextMove) {
+      pair.first->moveAfter(pair.second);
+    }
+
+    SmallVector<Operation*> order(cloned.getArrayRef().begin(), cloned.getArrayRef().end());
+
+    llvm::sort(order.begin(), order.end(), inBlockCmp);
+    DenseMap<Operation*, size_t> idx;
+    for (size_t i=0; i<order.size(); i++) {
+      idx[order[i]] = i;
+    }
+    
+    std::deque<Operation*> todo(order.begin(), order.end());
+    while (todo.size()) {
+	auto cur = todo.front();
+	todo.pop_front();
+      Operation *last = nullptr;
+      auto pfound = predMap.find(cur);
+      assert(pfound != predMap.end());
+      for (auto prev : pfound->second) {
+         if (!last) {
+	   last = prev;
+	 } else {
+	   if (idx[prev] > idx[last]) {
+	     last = prev;
+	   }
+	 }
+      }
+      if (last && idx[last] > idx[cur]) {
+	 // cur is currently before last
+	 //   cur, A, B, C, last
+	 //    A, B,  C, last, cur    
+         cur->moveAfter(last);
+	 auto curidx = idx[cur];
+	 auto lastidx = idx[last];
+	 for (auto i = curidx; i<lastidx; i++) {
+	    auto op = order[i+1];
+	    order[i] = op;
+	    idx[op]--;
+	 }
+	 order[lastidx] = cur;
+	 idx[cur] = lastidx;
+	 auto dfound = dependencies.find(cur);
+	 assert(dfound != dependencies.end());
+	 for (auto &user : dfound->second) {
+	   todo.push_back(user);
+	 }
+      }
+    }
+    }
 
   // Given the full forward/backward compute graph, the push/pop can be seen
   // as a special cut of this graph. This function tries to modifies the
@@ -3265,87 +3355,9 @@ private:
       }
     }
 
-    {
-    SmallVector<std::pair<Operation*, Operation*>> nextMove;
-    DenseMap<Operation*, SmallPtrSet<Operation*, 1>> predMap;
-    DenseMap<Operation*, SmallVector<Operation*, 1>> dependencies;
-    for (auto newO : cloned) {
-        Operation *lastValOp = nullptr;
-	SmallPtrSet<Operation*, 1> preds;
-        for (Value operand : newO->getOperands()) {
-          Operation *mappedOp = operand.getDefiningOp();
-          if (!mappedOp)
-            continue;
-	  
-	  if (cloned.contains(mappedOp)) {
-	    dependencies[mappedOp].push_back(newO);
-	    preds.insert(mappedOp);
-	    continue;
-	  }
-          if (!lastValOp) {
-            lastValOp = mappedOp;
-            continue;
-          }
-          if (lastValOp->isBeforeInBlock(mappedOp)) {
-            lastValOp = mappedOp;
-            continue;
-          }
-        }
-	if (lastValOp) {
-	  nextMove.emplace_back(newO, lastValOp);
-	}
-	predMap[newO] = preds;
+    if (cloned.size()) {
+      mlir::sortTopologically(cloned[0]->getBlock());
     }
-
-    for (auto &&pair : nextMove) {
-      pair.first->moveAfter(pair.second);
-    }
-
-    SmallVector<Operation*> order;
-
-    for (auto &pair : predMap) {
-      order.push_back(pair.first);
-    }
-    llvm::sort(order.begin(), order.end(), opCmp);
-    DenseMap<Operation*, size_t> idx;
-    for (size_t i=0; i<order.size(); i++) {
-      idx[order[i]] = i;
-    }
-    std::deque<Operation*> todo(order.begin(), order.end());
-    while (todo.size()) {
-	auto cur = todo.front();
-	todo.pop_front();
-      Operation *last = nullptr;
-      for (auto prev : predMap[cur]) {
-         if (!last) {
-	   last = prev;
-	 } else {
-	   if (idx[prev] > idx[last]) {
-	     last = prev;
-	   }
-	 }
-      }
-      if (last && idx[last] > idx[cur]) {
-	 // cur is currently before last
-	 //   cur, A, B, C, last
-	 //    A, B,  C, last, cur    
-         cur->moveAfter(last);
-	 auto curidx = idx[cur];
-	 auto lastidx = idx[last];
-	 for (auto i = curidx; i<lastidx; i++) {
-	    auto op = order[i+1];
-	    order[i] = op;
-	    idx[op]--;
-	 }
-	 order[lastidx] = cur;
-	 idx[cur] = lastidx;
-	 for (auto &user : dependencies[cur]) {
-	   todo.push_back(user);
-	 }
-      }
-    }
-    }
-
 
 
 
