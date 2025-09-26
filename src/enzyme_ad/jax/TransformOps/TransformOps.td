@@ -2378,3 +2378,8 @@ def ApplyElementwiseSliceToBatchPatterns : EnzymeHLOPatternOp<
 def ApplyCaseToIfPatterns : EnzymeHLOPatternOp<"case_to_if"> {
   let patterns = ["CaseToIf"];
 }
+
+def ApplyRemoveNoOpsFromWhileLoopPatterns : EnzymeHLOPatternOp<
+    "remove_no_ops_from_while_loop"> {
+  let patterns = ["RemoveNoOpsFromWhileLoop"];
+}

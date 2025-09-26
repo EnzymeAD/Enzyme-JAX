@@ -831,7 +831,8 @@ bool GreedyWhileLoopBatchFission::liftElementwiseOp(
   if (elem->getNumOperands() != 1) {
     // For non-unary elementwise ops, we can
     //   1. lift operands if they are produced by DSs in the list
-    //   2. defined outside the loop body, in which case we simply do a broadcast_in_dim
+    //   2. defined outside the loop body, in which case we simply do a
+    //   broadcast_in_dim
     return false;
   }
 
