@@ -3210,6 +3210,8 @@ private:
     worklist.clear();
     worklist.assign(newCaches.begin(), newCaches.end());
 
+    SetVector<Operation*> cloned;
+
     // Clone ops in the reverse graph to make sure all edges have been mapped.
     while (!worklist.empty()) {
       Value todo = worklist.pop_back_val();
@@ -3243,28 +3245,10 @@ private:
 
         Value lastVal = mapping.lookup(todo);
         Operation *lastValOp = lastVal.getDefiningOp();
-
-        for (Value operand : N.get<Operation *>()->getOperands()) {
-          Value mapped = mapping.lookup(operand);
-          Operation *mappedOp = mapped.getDefiningOp();
-          if (!mappedOp)
-            continue;
-
-          if (!lastValOp) {
-            lastValOp = mappedOp;
-            lastVal = mapped;
-            continue;
-          }
-
-          if (lastValOp->isBeforeInBlock(mappedOp)) {
-            lastValOp = mappedOp;
-            lastVal = mapped;
-            continue;
-          }
-        }
-
+        
         rewriter.setInsertionPointAfterValue(lastVal);
         Operation *newO = rewriter.clone(*N.get<Operation *>(), mapping);
+	cloned.insert(newO);
 
         for (auto [oldRes, newRes] : llvm::zip_equal(
                  N.get<Operation *>()->getResults(), newO->getResults()))
@@ -3280,6 +3264,92 @@ private:
         }
       }
     }
+
+    {
+    SmallVector<std::pair<Operation*, Operation*>> nextMove;
+    DenseMap<Operation*, SmallPtrSet<Operation*, 1>> predMap;
+    DenseMap<Operation*, SmallVector<Operation*, 1>> dependencies;
+    for (auto newO : cloned) {
+        Operation *lastValOp = nullptr;
+	SmallPtrSet<Operation*, 1> preds;
+        for (Value operand : newO->getOperands()) {
+          Operation *mappedOp = operand.getDefiningOp();
+          if (!mappedOp)
+            continue;
+	  
+	  if (cloned.contains(mappedOp)) {
+	    dependencies[mappedOp].push_back(newO);
+	    preds.insert(mappedOp);
+	    continue;
+	  }
+          if (!lastValOp) {
+            lastValOp = mappedOp;
+            continue;
+          }
+          if (lastValOp->isBeforeInBlock(mappedOp)) {
+            lastValOp = mappedOp;
+            continue;
+          }
+        }
+	if (lastValOp) {
+	  nextMove.emplace_back(newO, lastValOp);
+	}
+	predMap[newO] = preds;
+    }
+
+    for (auto &&pair : nextMove) {
+      pair.first->moveAfter(pair.second);
+    }
+
+    SmallVector<Operation*> order;
+
+    for (auto &pair : predMap) {
+      order.push_back(pair.first);
+    }
+    llvm::sort(order.begin(), order.end(), opCmp);
+    DenseMap<Operation*, size_t> idx;
+    for (size_t i=0; i<order.size(); i++) {
+      idx[order[i]] = i;
+    }
+    std::deque<Operation*> todo(order.begin(), order.end());
+    while (todo.size()) {
+	auto cur = todo.front();
+	todo.pop_front();
+      Operation *last = nullptr;
+      for (auto prev : predMap[cur]) {
+         if (!last) {
+	   last = prev;
+	 } else {
+	   if (idx[prev] > idx[last]) {
+	     last = prev;
+	   }
+	 }
+      }
+      if (last && idx[last] > idx[cur]) {
+	 // cur is currently before last
+	 //   cur, A, B, C, last
+	 //    A, B,  C, last, cur    
+         cur->moveAfter(last);
+	 auto curidx = idx[cur];
+	 auto lastidx = idx[last];
+	 for (auto i = curidx; i<lastidx; i++) {
+	    auto op = order[i+1];
+	    order[i] = op;
+	    idx[op]--;
+	 }
+	 order[lastidx] = cur;
+	 idx[cur] = lastidx;
+	 for (auto &user : dependencies[cur]) {
+	   todo.push_back(user);
+	 }
+      }
+    }
+    }
+
+
+
+
+    // TODO do all the moves for existing ops, then do the ones within dependencies here
 
     // Remove old caches
     for (auto &info : caches) {
