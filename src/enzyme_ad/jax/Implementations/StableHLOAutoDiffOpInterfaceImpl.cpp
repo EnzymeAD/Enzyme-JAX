@@ -2822,12 +2822,19 @@ private:
     }
 
     // Standard BFS Loop
+
+    SmallPtrSet<Node, 2> done;
+
     while (!q.empty()) {
       auto u = q.front();
       q.pop_front();
       auto found = G.find(u);
       if (found == G.end())
         continue;
+
+      if (!done.insert(u).second)
+        continue;
+
       for (const auto &v : found->second) {
         if (parent.find(v) == parent.end()) {
           if (parent.try_emplace(v, u).second) {
@@ -2855,32 +2862,29 @@ private:
       }
     }
 
-    std::deque<Value> worklist(sinks.getArrayRef().begin(),
-                               sinks.getArrayRef().end());
+    std::deque<Node> worklist;
+    for (auto snk : sinks) {
+      worklist.emplace_back(snk);
+    }
 
-    SmallPtrSet<Value, 2> done(sources.getArrayRef().begin(),
-                               sources.getArrayRef().end());
+    SmallPtrSet<Node, 2> done;
+    for (auto src : sources) {
+      done.insert(src);
+    }
 
     while (!worklist.empty()) {
-      Value todo = worklist.front();
+      Node N = worklist.front();
       worklist.pop_front();
 
-      if (done.contains(todo))
+      if (!done.insert(N).second)
         continue;
 
-      done.insert(todo);
-
-      Node N(todo);
       auto pair = inverted.find(N);
       for (const auto &NN : pair->second) {
-        assert(NN.is<Operation *>());
 
         revGraph[NN].insert(N);
-        auto found = inverted.find(NN);
-        assert(found != inverted.end());
-        for (const auto &NNN : found->second) {
-          revGraph[NNN].insert(NN);
-          worklist.push_back(NNN.get<Value>());
+        if (!done.contains(NN)) {
+          worklist.push_back(NN);
         }
       }
     }
