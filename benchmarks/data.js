@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1758845117946,
+  "lastUpdate": 1758910674775,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
@@ -4663,6 +4663,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001432681385893,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "wmoses@google.com",
+            "name": "William Moses",
+            "username": "wsmoses"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6e440d069c188b61d035a7c8c8d29002795b907f",
+          "message": "Switch to densemap (#1427)\n\n* Switch to densemap\n\n* fix\n\n* f\n\n* fmt",
+          "timestamp": "2025-09-26T12:10:06-05:00",
+          "tree_id": "a3b7a9d3bf73ee0349f739847d27925bdeb76803",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/6e440d069c188b61d035a7c8c8d29002795b907f"
+        },
+        "date": 1758910673614,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004440454998984933,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.0000044020789908245205,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001652849035104,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001648352316115,
             "unit": "s"
           }
         ]
