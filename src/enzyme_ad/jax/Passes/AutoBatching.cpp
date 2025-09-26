@@ -807,7 +807,10 @@ GreedyWhileLoopBatchFission::matchAndRewrite(stablehlo::WhileOp whileOp,
   bool wasLifted = false;
   for (auto ds : candidateSlices) {
     for (auto op : ds->getUsers()) {
+      // TODO: handle intermediate reshapes
+
       llvm::errs() << "trying to lift op: " << *op << "\n";
+
       if (op->hasTrait<OpTrait::Elementwise>() &&
           liftElementwiseOp(rewriter, whileOp, ds, op)) {
         wasLifted = true;
@@ -822,12 +825,17 @@ GreedyWhileLoopBatchFission::matchAndRewrite(stablehlo::WhileOp whileOp,
 bool GreedyWhileLoopBatchFission::liftElementwiseOp(
     PatternRewriter &rewriter, stablehlo::WhileOp whileOp,
     stablehlo::DynamicSliceOp sliceOp, Operation *elem) const {
-  // TODO: support non-unary elementwise ops
-  if (elem->getNumOperands() != 1)
-    return false;
-
   IRRewriter::InsertionGuard guard(rewriter);
 
+  // TODO: support non-unary elementwise ops
+  if (elem->getNumOperands() != 1) {
+    // For non-unary elementwise ops, we can
+    //   1. lift operands if they are produced by DSs in the list
+    //   2. defined outside the loop body, in which case we simply do a broadcast_in_dim
+    return false;
+  }
+
+  // unary ops are simpler, so we special case them
   auto sliceOperand = sliceOp.getOperand();
 
   rewriter.setInsertionPoint(whileOp);
