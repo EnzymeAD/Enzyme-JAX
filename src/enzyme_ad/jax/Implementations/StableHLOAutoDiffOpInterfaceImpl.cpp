@@ -2855,13 +2855,20 @@ private:
       }
     }
 
-    SmallVector<Value> worklist(sinks.getArrayRef().begin(),
-                                sinks.getArrayRef().end());
-    while (!worklist.empty()) {
-      Value todo = worklist.pop_back_val();
+    std::deque<Value> worklist(sinks.getArrayRef().begin(),
+                               sinks.getArrayRef().end());
 
-      if (sources.contains(todo))
+    SmallPtrSet<Value, 2> done(sources.getArrayRef().begin(),
+                               sources.getArrayRef().end());
+
+    while (!worklist.empty()) {
+      Value todo = worklist.front();
+      worklist.pop_front();
+
+      if (done.contains(todo))
         continue;
+
+      done.insert(todo);
 
       Node N(todo);
       auto pair = inverted.find(N);
