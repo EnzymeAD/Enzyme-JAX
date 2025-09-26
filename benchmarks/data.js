@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1758840929673,
+  "lastUpdate": 1758845117946,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
@@ -4619,6 +4619,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001422699250979,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "144174576+jessicacotturone21@users.noreply.github.com",
+            "name": "jessicacotturone21",
+            "username": "jessicacotturone21"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6a8fec3671b4624b36985c6d61baed97a9effb5e",
+          "message": "Tessera Dialect (#1422)\n\n* Created Tessera dialect files\n\n* Registered Tessera dialect with Enzyme and defined Bazel build targets\n\n* Added missing files\n\n* Fmt1\n\n* more format\n\n* fmt3",
+          "timestamp": "2025-09-25T16:14:41-05:00",
+          "tree_id": "f3354bec5b50769ad39de390bacd9ecc2150d969",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/6a8fec3671b4624b36985c6d61baed97a9effb5e"
+        },
+        "date": 1758845116790,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004267043014988303,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.0000043392709922045465,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001528746286174,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001432681385893,
             "unit": "s"
           }
         ]
