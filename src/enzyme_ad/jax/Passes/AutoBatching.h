@@ -8,6 +8,14 @@
 #include <tuple>
 #include <vector>
 
+// Loading the header causes a bunch of ambiguous errors
+// #include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
+namespace mlir {
+namespace enzyme {
+struct WhileLoopInfo;
+}; // namespace enzyme
+}; // namespace mlir
+
 struct BatchOperandConstructionInfo {
   mlir::stablehlo::SliceOp sliceOp;
   int32_t sliceOperandIndex;
@@ -182,6 +190,11 @@ struct GreedyWhileLoopBatchFission
                   mlir::PatternRewriter &rewriter) const override;
 
 private:
+  struct DynamicSliceInfo {
+    mlir::stablehlo::DynamicSliceOp sliceOp;
+    int64_t inductionVarDimension;
+  };
+
   bool isDirectDescendantOfInductionVar(mlir::Value value,
                                         mlir::Value inductionVar) const;
 
@@ -190,13 +203,13 @@ private:
   bool isChainOfAddSubtractConverts(mlir::Value value,
                                     mlir::Value inductionVar) const;
 
-  bool isDynamicSliceValidForBatching(mlir::stablehlo::DynamicSliceOp sliceOp,
-                                      mlir::Value inductionVar, int64_t limit,
-                                      mlir::Block &whileBody,
-                                      mlir::Block *parentBlock) const;
+  int64_t isDynamicSliceValidForBatching(
+      mlir::stablehlo::DynamicSliceOp sliceOp, mlir::Value inductionVar,
+      int64_t limit, mlir::Block &whileBody, mlir::Block *parentBlock) const;
 
   bool liftElementwiseOp(mlir::PatternRewriter &rewriter,
                          mlir::stablehlo::WhileOp whileOp,
-                         mlir::stablehlo::DynamicSliceOp sliceOp,
-                         mlir::Operation *op) const;
+                         llvm::ArrayRef<DynamicSliceInfo> sliceOps,
+                         mlir::Operation *op,
+                         mlir::enzyme::WhileLoopInfo info) const;
 };
