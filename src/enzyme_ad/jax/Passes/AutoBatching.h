@@ -163,9 +163,20 @@ struct GreedyWhileLoopBatchFission
 
 private:
   bool isDirectDescendantOfInductionVar(mlir::Value value,
-                                        mlir::Value inductionVar);
+                                        mlir::Value inductionVar) const;
+
+  bool isInductionVar(mlir::Value value, mlir::Value inductionVar) const;
+
+  bool isChainOfAddSubtractConverts(mlir::Value value,
+                                    mlir::Value inductionVar) const;
 
   bool isDynamicSliceValidForBatching(mlir::stablehlo::DynamicSliceOp sliceOp,
                                       mlir::Value inductionVar, int64_t limit,
-                                      mlir::Block &whileBody);
+                                      mlir::Block &whileBody,
+                                      mlir::Block *parentBlock) const;
+
+  bool liftElementwiseOp(mlir::PatternRewriter &rewriter,
+                         mlir::stablehlo::WhileOp whileOp,
+                         mlir::stablehlo::DynamicSliceOp sliceOp,
+                         mlir::Operation *op) const;
 };

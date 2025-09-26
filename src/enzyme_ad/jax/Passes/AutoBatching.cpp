@@ -3,6 +3,8 @@
 #include "Enzyme/MLIR/Dialect/Dialect.h"
 #include "Enzyme/MLIR/Passes/EnzymeBatchPass.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -744,68 +746,6 @@ bool SliceToBatchBase::allOpsAreUnique(
   return true;
 }
 
-// Helper function to check if a dynamic slice is valid for batching
-bool GreedyWhileLoopBatchFission::isDynamicSliceValidForBatching(
-    stablehlo::DynamicSliceOp sliceOp, Value inductionVar, int64_t limit,
-    Block &whileBody) {
-  // Get the start indices of the dynamic slice
-  auto startIndices = sliceOp.getStartIndices();
-  auto sliceSizes = sliceOp.getSliceSizes();
-
-  // Track which start index corresponds to the induction variable descendant
-  int inductionVarDimension = -1;
-  int indicesFromBody = 0;
-
-  for (int i = 0; i < startIndices.size(); i++) {
-    Value startIndex = startIndices[i];
-    Operation *definingOp = startIndex.getDefiningOp();
-
-    // Check if this start index is defined within the loop body
-    if (definingOp && definingOp->getBlock() == &whileBody) {
-      indicesFromBody++;
-
-      // Check if this is a direct descendant of the induction variable
-      if (isDirectDescendantOfInductionVar(startIndex, inductionVar)) {
-        if (inductionVarDimension != -1) {
-          // Multiple dimensions are descendants of induction var - invalid
-          return false;
-        }
-        inductionVarDimension = i;
-
-        // Check if the slice size in this dimension equals the limit
-        if (i < sliceSizes.size() && sliceSizes[i] != limit) {
-          return false;
-        }
-      }
-    }
-  }
-
-  // We should have exactly one index from the body, and it should be
-  // a descendant of the induction variable
-  return (indicesFromBody == 1 && inductionVarDimension != -1);
-}
-
-// Helper function to check if a value is a direct descendant of the induction
-// variable
-bool GreedyWhileLoopBatchFission::isDirectDescendantOfInductionVar(
-    Value value, Value inductionVar) {
-  Operation *definingOp = value.getDefiningOp();
-  if (!definingOp) {
-    return false;
-  }
-
-  // Check if any operand of the defining operation is the induction variable
-  for (Value operand : definingOp->getOperands()) {
-    if (operand == inductionVar) {
-      return true;
-    }
-  }
-
-  // For more complex patterns, we might need to traverse deeper, but for now
-  // we only check direct usage
-  return false;
-}
-
 LogicalResult
 GreedyWhileLoopBatchFission::matchAndRewrite(stablehlo::WhileOp whileOp,
                                              PatternRewriter &rewriter) const {
@@ -814,10 +754,7 @@ GreedyWhileLoopBatchFission::matchAndRewrite(stablehlo::WhileOp whileOp,
   if (computeInfoSuccess.failed())
     return computeInfoSuccess;
 
-  if (!info.isValid())
-    return failure();
-
-  if (!info.isConstant())
+  if (!info.isValid() || !info.isConstant())
     return failure();
 
   auto numIters = info.getConstantNumIters();
@@ -831,7 +768,7 @@ GreedyWhileLoopBatchFission::matchAndRewrite(stablehlo::WhileOp whileOp,
   if (start != 0 || step != 1)
     return failure();
 
-  auto &parentBlock = whileOp.getBody().front().getParentBlock();
+  auto parentBlock = whileOp->getBlock();
   auto &whileBody = whileOp.getBody().front();
   auto inductionVar = whileBody.getArgument(0);
 
@@ -852,8 +789,8 @@ GreedyWhileLoopBatchFission::matchAndRewrite(stablehlo::WhileOp whileOp,
 
   whileBody.walk([&](stablehlo::DynamicSliceOp sliceOp) {
     // Check if this dynamic slice meets our criteria
-    if (isDynamicSliceValidForBatching(sliceOp, inductionVar, limit,
-                                       whileBody)) {
+    if (isDynamicSliceValidForBatching(sliceOp, inductionVar, limit, whileBody,
+                                       parentBlock)) {
       candidateSlices.push_back(sliceOp);
       llvm::errs() << "Found candidate dynamic slice: " << sliceOp << "\n";
     }
@@ -867,8 +804,146 @@ GreedyWhileLoopBatchFission::matchAndRewrite(stablehlo::WhileOp whileOp,
   llvm::errs() << "Found " << candidateSlices.size()
                << " candidate dynamic slices\n";
 
-  return failure();
+  bool wasLifted = false;
+  for (auto ds : candidateSlices) {
+    for (auto op : ds->getUsers()) {
+      llvm::errs() << "trying to lift op: " << *op << "\n";
+      if (op->hasTrait<OpTrait::Elementwise>() &&
+          liftElementwiseOp(rewriter, whileOp, ds, op)) {
+        wasLifted = true;
+        continue;
+      }
+    }
+  }
+
+  return wasLifted ? success() : failure();
 };
+
+bool GreedyWhileLoopBatchFission::liftElementwiseOp(
+    PatternRewriter &rewriter, stablehlo::WhileOp whileOp,
+    stablehlo::DynamicSliceOp sliceOp, Operation *elem) const {
+  // TODO: support non-unary elementwise ops
+  if (elem->getNumOperands() != 1)
+    return false;
+
+  IRRewriter::InsertionGuard guard(rewriter);
+
+  auto sliceOperand = sliceOp.getOperand();
+
+  rewriter.setInsertionPoint(whileOp);
+  auto newOp = rewriter.create(elem->getLoc(), elem->getName().getIdentifier(),
+                               ValueRange({sliceOperand}),
+                               TypeRange({sliceOperand.getType()}),
+                               elem->getAttrs(), {}, {});
+
+  rewriter.setInsertionPoint(sliceOp);
+  rewriter.replaceOpWithNewOp<stablehlo::DynamicSliceOp>(
+      elem, newOp->getResult(0), sliceOp.getStartIndices(),
+      sliceOp.getSliceSizes());
+  return true;
+}
+
+bool GreedyWhileLoopBatchFission::isDynamicSliceValidForBatching(
+    stablehlo::DynamicSliceOp sliceOp, Value inductionVar, int64_t limit,
+    Block &whileBody, Block *parentBlock) const {
+  // Get the start indices of the dynamic slice
+  auto startIndices = sliceOp.getStartIndices();
+  auto sliceSizes = sliceOp.getSliceSizes();
+  auto operand = sliceOp.getOperand();
+  auto operandShape = cast<RankedTensorType>(operand.getType()).getShape();
+
+  if (operand.getParentBlock() != parentBlock)
+    return false;
+
+  // Track which start index corresponds to the induction variable descendant
+  int32_t inductionVarDimension = -1, indicesFromBody = 0;
+
+  for (int32_t i = 0; i < startIndices.size(); i++) {
+    Value startIndex = startIndices[i];
+    Operation *definingOp = startIndex.getDefiningOp();
+    if (!definingOp)
+      return false;
+
+    // Check if this start index is defined within the loop body
+    if (definingOp->getBlock() == &whileBody) {
+      indicesFromBody++;
+
+      // Check if this is a direct descendant of the induction variable
+      if (isDirectDescendantOfInductionVar(startIndex, inductionVar)) {
+        // Multiple dimensions are descendants of induction var - invalid
+        if (inductionVarDimension != -1)
+          return false;
+        inductionVarDimension = i;
+
+        // Check if the slice size in this dimension equals the limit
+        if (operandShape[i] != limit || sliceSizes[i] != 1)
+          return false;
+      }
+    } else {
+      // TODO: ensure we are doing a full slice for now
+      if (!matchPattern(definingOp, m_Zero()))
+        return false;
+
+      if (sliceSizes[i] != operandShape[i])
+        return false;
+    }
+  }
+
+  // We should have exactly one index from the body, and it should be
+  // a descendant of the induction variable
+  return (indicesFromBody == 1 && inductionVarDimension != -1);
+}
+
+bool GreedyWhileLoopBatchFission::isDirectDescendantOfInductionVar(
+    Value value, Value inductionVar) const {
+  return (isInductionVar(value, inductionVar) ||
+          isChainOfAddSubtractConverts(value, inductionVar));
+}
+
+// dynamic_slice %arg0, _, _, %ind_var, _
+bool GreedyWhileLoopBatchFission::isInductionVar(Value value,
+                                                 Value inductionVar) const {
+  while (auto convertOp = value.getDefiningOp<stablehlo::ConvertOp>()) {
+    value = convertOp.getOperand();
+  }
+  return value == inductionVar;
+}
+
+// {
+//   %1 = ind_var + 1
+//   %2 = convert %1
+//   %3 = ind_var - 1
+//   %4 = dynamic_slice %arg0, _, _, %3, _
+// }
+// TODO: we can generalize this to track and see if the value simplifies to
+// the induction variable.
+bool GreedyWhileLoopBatchFission::isChainOfAddSubtractConverts(
+    Value value, Value inductionVar) const {
+  auto subOp = value.getDefiningOp<stablehlo::SubtractOp>();
+  if (!subOp)
+    return false;
+
+  if (!matchPattern(subOp.getRhs(), m_One()))
+    return false;
+
+  Value operand = subOp.getLhs();
+
+  while (auto convertOp = operand.getDefiningOp<stablehlo::ConvertOp>()) {
+    operand = convertOp.getOperand();
+  }
+
+  auto addOp = operand.getDefiningOp<stablehlo::AddOp>();
+  if (!addOp)
+    return false;
+
+  if (matchPattern(addOp.getRhs(), m_One())) {
+    return addOp.getLhs() == inductionVar;
+  } else if (matchPattern(addOp.getLhs(), m_One())) {
+    return addOp.getRhs() == inductionVar;
+  }
+
+  return false;
+}
 
 struct AutoBatchingPass
     : public enzyme::impl::AutoBatchingPassBase<AutoBatchingPass> {
