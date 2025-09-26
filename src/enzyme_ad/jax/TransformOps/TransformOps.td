@@ -2382,3 +2382,6 @@ def ApplyCaseToIfPatterns : EnzymeHLOPatternOp<"case_to_if"> {
 def DUSToDynamicPad : EnzymeHLOPatternOp<"dus_to_dynamic_pad"> {
   let patterns = ["DUSToDynamicPad"];
 }
+def DynamicPadToPad : EnzymeHLOPatternOp<"dynamic_pad_to_pad"> {
+  let patterns = ["DynamicPadToPad"];
+}

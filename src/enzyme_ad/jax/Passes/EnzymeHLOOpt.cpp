@@ -23271,8 +23271,8 @@ struct DUSToDynamicPad
     llvm::errs() << "interiorPadding: " << interiorPadding << "\n";
 
     rewriter.replaceOpWithNewOp<stablehlo::DynamicPadOp>(
-        op, op.getType(), update, scalarOperand, edgePaddingLow, edgePaddingHigh,
-        interiorPadding);
+        op, op.getType(), update, scalarOperand, edgePaddingLow,
+        edgePaddingHigh, interiorPadding);
     return success();
   }
 
@@ -23311,6 +23311,46 @@ private:
 
     return rewriter.create<stablehlo::ConstantOp>(
         operand.getLoc(), splatAttr.getSplatValue<Attribute>());
+  }
+};
+
+struct DynamicPadToPad
+    : public CheckedOpRewritePattern<stablehlo::DynamicPadOp, DynamicPadToPad> {
+  using CheckedOpRewritePattern<stablehlo::DynamicPadOp,
+                                DynamicPadToPad>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DynamicPadOp op,
+                                    PatternRewriter &rewriter) const {
+    auto operand = op.getOperand();
+    auto paddingValue = op.getPaddingValue();
+    auto edgePaddingLow = op.getEdgePaddingLow();
+    auto edgePaddingHigh = op.getEdgePaddingHigh();
+    auto interiorPadding = op.getInteriorPadding();
+
+    DenseIntElementsAttr edgePaddingLowAttr;
+    DenseIntElementsAttr edgePaddingHighAttr;
+    DenseIntElementsAttr interiorPaddingAttr;
+    if (!matchPattern(edgePaddingLow, m_Constant(&edgePaddingLowAttr)) ||
+        !matchPattern(edgePaddingHigh, m_Constant(&edgePaddingHighAttr)) ||
+        !matchPattern(interiorPadding, m_Constant(&interiorPaddingAttr)))
+      return rewriter.notifyMatchFailure(op, "edge padding is not a constant");
+
+    rewriter.replaceOpWithNewOp<stablehlo::PadOp>(
+        op, op.getType(), operand, paddingValue,
+        convertToDenseI64ArrayAttr(edgePaddingLowAttr),
+        convertToDenseI64ArrayAttr(edgePaddingHighAttr),
+        convertToDenseI64ArrayAttr(interiorPaddingAttr));
+    return success();
+  }
+
+private:
+  DenseI64ArrayAttr
+  convertToDenseI64ArrayAttr(DenseIntElementsAttr attr) const {
+    auto values = attr.getValues<APInt>();
+    llvm::SmallVector<int64_t> denseValues;
+    for (auto value : values)
+      denseValues.push_back(value.getSExtValue());
+    return DenseI64ArrayAttr::get(attr.getContext(), denseValues);
   }
 };
 
@@ -23926,7 +23966,8 @@ struct EnzymeHLOOptPass
         MinReduceSliceFusion,
         MaxReduceSliceFusion,
         CaseToIf,
-        DUSToDynamicPad
+        DUSToDynamicPad,
+        DynamicPadToPad
       >(context);
 
     patterns.add<
