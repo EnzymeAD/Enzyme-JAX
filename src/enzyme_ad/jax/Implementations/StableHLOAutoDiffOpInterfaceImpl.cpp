@@ -2824,8 +2824,9 @@ static void dump(Graph &G) {
           continue;
         for (const auto &v : found->second) {
           if (parent.find(v) == parent.end()) {
-            q.push_back(v);
-            parent.emplace_or_assign(v, u);
+            if (parent.try_emplace(v, u).second) {
+              q.push_back(v);
+	    }
           }
         }
       }
@@ -2834,7 +2835,7 @@ static void dump(Graph &G) {
     // Whether or not an operation can be moved from the forward region to the
     // reverse region or vice-versa.
     static inline bool isMovable(Operation *op) {
-      return mlir::isPure(op) && op->getNumRegions() == 0;
+      return op->getNumRegions() == 0 && mlir::isPure(op);
     }
 
     static Graph reverseGraph(const Graph &Orig,
