@@ -937,6 +937,8 @@ int64_t GreedyWhileLoopBatchFission::isDynamicSliceValidForBatching(
   auto operand = sliceOp.getOperand();
   auto operandShape = cast<RankedTensorType>(operand.getType()).getShape();
 
+  // TODO: it doesn't need to be in the parent block, rather it needs to be
+  //       accessible from the parent block
   if (operand.getParentBlock() != parentBlock)
     return -1;
 
