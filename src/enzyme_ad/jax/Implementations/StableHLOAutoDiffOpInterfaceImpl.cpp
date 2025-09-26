@@ -2860,13 +2860,13 @@ static void dump(Graph &G) {
 
         Node N(todo);
         auto pair = inverted.find(N);
-        for (auto NN : pair->second) {
+        for (const auto &NN : pair->second) {
           assert(NN.is<Operation *>());
 
           revGraph[NN].insert(N);
           auto found = inverted.find(NN);
           assert(found != inverted.end());
-          for (auto NNN : found->second) {
+          for (const auto &NNN : found->second) {
             revGraph[NNN].insert(NN);
             worklist.push_back(NNN.get<Value>());
           }
