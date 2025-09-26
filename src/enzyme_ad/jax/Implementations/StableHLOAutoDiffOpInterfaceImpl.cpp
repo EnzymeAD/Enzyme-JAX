@@ -3210,7 +3210,7 @@ private:
     worklist.clear();
     worklist.assign(newCaches.begin(), newCaches.end());
 
-    SetVector<Operation*> cloned;
+    SetVector<Operation *> cloned;
 
     // Clone ops in the reverse graph to make sure all edges have been mapped.
     while (!worklist.empty()) {
@@ -3245,10 +3245,10 @@ private:
 
         Value lastVal = mapping.lookup(todo);
         Operation *lastValOp = lastVal.getDefiningOp();
-        
+
         rewriter.setInsertionPointAfterValue(lastVal);
         Operation *newO = rewriter.clone(*N.get<Operation *>(), mapping);
-	cloned.insert(newO);
+        cloned.insert(newO);
 
         for (auto [oldRes, newRes] : llvm::zip_equal(
                  N.get<Operation *>()->getResults(), newO->getResults()))
@@ -3269,9 +3269,8 @@ private:
       mlir::sortTopologically(cloned[0]->getBlock());
     }
 
-
-
-    // TODO do all the moves for existing ops, then do the ones within dependencies here
+    // TODO do all the moves for existing ops, then do the ones within
+    // dependencies here
 
     // Remove old caches
     for (auto &info : caches) {
