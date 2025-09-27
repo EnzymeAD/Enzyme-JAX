@@ -69,7 +69,8 @@ static std::optional<int64_t> getConstant(Value v) {
   return {};
 }
 
-LogicalResult TritonCallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
+LogicalResult
+TritonCallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   // TODO: Verify that the result type is same as the type of the referenced
   // tt.func op.
   auto global = symbolTable.lookupNearestSymbolFrom<FunctionOpInterface>(
