@@ -17,6 +17,8 @@
 #include "Enzyme/MLIR/Interfaces/GradientUtilsReverse.h"
 #include "Enzyme/MLIR/Passes/RemovalUtils.h"
 
+#include "mlir/Analysis/TopologicalSortUtils.h"
+
 #include "llvm/ADT/PointerUnion.h"
 
 #include "mlir/IR/DialectRegistry.h"
@@ -2822,17 +2824,22 @@ private:
     }
 
     // Standard BFS Loop
+
+    SmallPtrSet<Node, 2> done;
+
     while (!q.empty()) {
       auto u = q.front();
       q.pop_front();
       auto found = G.find(u);
       if (found == G.end())
         continue;
+
+      if (!done.insert(u).second)
+        continue;
+
       for (const auto &v : found->second) {
-        if (parent.find(v) == parent.end()) {
-          if (parent.try_emplace(v, u).second) {
-            q.push_back(v);
-          }
+        if (parent.try_emplace(v, u).second) {
+          q.push_back(v);
         }
       }
     }
@@ -2855,25 +2862,29 @@ private:
       }
     }
 
-    SmallVector<Value> worklist(sinks.getArrayRef().begin(),
-                                sinks.getArrayRef().end());
-    while (!worklist.empty()) {
-      Value todo = worklist.pop_back_val();
+    std::deque<Node> worklist;
+    for (auto snk : sinks) {
+      worklist.emplace_back(snk);
+    }
 
-      if (sources.contains(todo))
+    SmallPtrSet<Node, 2> done;
+    for (auto src : sources) {
+      done.insert(src);
+    }
+
+    while (!worklist.empty()) {
+      Node N = worklist.front();
+      worklist.pop_front();
+
+      if (!done.insert(N).second)
         continue;
 
-      Node N(todo);
       auto pair = inverted.find(N);
       for (const auto &NN : pair->second) {
-        assert(NN.is<Operation *>());
 
         revGraph[NN].insert(N);
-        auto found = inverted.find(NN);
-        assert(found != inverted.end());
-        for (const auto &NNN : found->second) {
-          revGraph[NNN].insert(NN);
-          worklist.push_back(NNN.get<Value>());
+        if (!done.contains(NN)) {
+          worklist.push_back(NN);
         }
       }
     }
@@ -3199,6 +3210,8 @@ private:
     worklist.clear();
     worklist.assign(newCaches.begin(), newCaches.end());
 
+    SetVector<Operation *> cloned;
+
     // Clone ops in the reverse graph to make sure all edges have been mapped.
     while (!worklist.empty()) {
       Value todo = worklist.pop_back_val();
@@ -3233,27 +3246,9 @@ private:
         Value lastVal = mapping.lookup(todo);
         Operation *lastValOp = lastVal.getDefiningOp();
 
-        for (Value operand : N.get<Operation *>()->getOperands()) {
-          Value mapped = mapping.lookup(operand);
-          Operation *mappedOp = mapped.getDefiningOp();
-          if (!mappedOp)
-            continue;
-
-          if (!lastValOp) {
-            lastValOp = mappedOp;
-            lastVal = mapped;
-            continue;
-          }
-
-          if (lastValOp->isBeforeInBlock(mappedOp)) {
-            lastValOp = mappedOp;
-            lastVal = mapped;
-            continue;
-          }
-        }
-
         rewriter.setInsertionPointAfterValue(lastVal);
         Operation *newO = rewriter.clone(*N.get<Operation *>(), mapping);
+        cloned.insert(newO);
 
         for (auto [oldRes, newRes] : llvm::zip_equal(
                  N.get<Operation *>()->getResults(), newO->getResults()))
@@ -3269,6 +3264,13 @@ private:
         }
       }
     }
+
+    if (cloned.size()) {
+      mlir::sortTopologically(cloned[0]->getBlock());
+    }
+
+    // TODO do all the moves for existing ops, then do the ones within
+    // dependencies here
 
     // Remove old caches
     for (auto &info : caches) {
