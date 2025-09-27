@@ -215,6 +215,7 @@ def optimization_passes(
         "binop_const_pad_subtract<1>",
         "binop_const_pad_mul<1>",
         "binop_const_pad_div<1>",
+        "clamp_const_prop<1>",
         "binop_binop_pad_pad_add<1>",
         "binop_binop_pad_pad_mul<1>",
         "binop_pad_pad_add<1>",
@@ -351,6 +352,8 @@ def optimization_passes(
         "concatenate_subtract_to_subtract_pad",
         "concatenate_broadcast_in_dim",
         "case_to_if",
+        "dus_to_dynamic_pad",
+        "dynamic_pad_to_pad",
     ]
 
     # constant propagation patterns
