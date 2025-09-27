@@ -630,6 +630,15 @@ gentbl_cc_library(
 )
 
 cc_library(
+    name = "CheckedRewrite",
+    hdrs = ["CheckedRewrite.h"],
+    deps = [
+        "@llvm-project//mlir:FunctionInterfaces",
+        "@llvm-project//mlir:IR",
+    ],
+)
+
+cc_library(
     name = "XLADerivatives",
     srcs = glob([
         "Implementations/*.cpp",
@@ -659,6 +668,7 @@ cc_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
+        ":CheckedRewrite",
         ":DistributedDialectIncGen",
         ":DistributedOpsIncGen",
         ":DistributedTypesIncGen",
@@ -787,8 +797,9 @@ cc_library(
     hdrs = glob([
         "Implementations/*.h",
         "Passes/*.h",
+    ]) + [
         "RegistryUtils.h",
-    ]),
+    ],
     deps = [
         ":TransformOps",
         ":XLADerivatives",

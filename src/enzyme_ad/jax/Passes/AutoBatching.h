@@ -1,6 +1,7 @@
 #pragma once
 
 #include "mlir/IR/PatternMatch.h"
+#include "src/enzyme_ad/jax/CheckedRewrite.h"
 #include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/SmallVector.h"
@@ -16,8 +17,11 @@ struct BatchOperandConstructionInfo {
 };
 
 struct ConcatInsertDimToBatchBase
-    : public mlir::OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
-  using Base = mlir::OpRewritePattern<mlir::stablehlo::ConcatenateOp>;
+    : public mlir::enzyme::CheckedOpRewritePattern<
+          mlir::stablehlo::ConcatenateOp, ConcatInsertDimToBatchBase> {
+  using Base =
+      mlir::enzyme::CheckedOpRewritePattern<mlir::stablehlo::ConcatenateOp,
+                                            ConcatInsertDimToBatchBase>;
   using Base::Base;
 
   ConcatInsertDimToBatchBase(
@@ -26,8 +30,8 @@ struct ConcatInsertDimToBatchBase
       : Base(ctx, benefit), isValidTargetOp(isValidTargetOp) {}
 
   llvm::LogicalResult
-  matchAndRewrite(mlir::stablehlo::ConcatenateOp concatOp,
-                  mlir::PatternRewriter &rewriter) const override;
+  matchAndRewriteImpl(mlir::stablehlo::ConcatenateOp concatOp,
+                      mlir::PatternRewriter &rewriter) const;
 
 protected:
   std::function<mlir::Operation *(mlir::Operation *)> isValidTargetOp;
@@ -67,8 +71,10 @@ struct ConcatInsertDimElementwiseToBatch : public ConcatInsertDimToBatchBase {
 };
 
 struct SliceToBatchBase
-    : public mlir::OpRewritePattern<mlir::stablehlo::SliceOp> {
-  using Base = mlir::OpRewritePattern<mlir::stablehlo::SliceOp>;
+    : public mlir::enzyme::CheckedOpRewritePattern<mlir::stablehlo::SliceOp,
+                                                   SliceToBatchBase> {
+  using Base = mlir::enzyme::CheckedOpRewritePattern<mlir::stablehlo::SliceOp,
+                                                     SliceToBatchBase>;
   using Base::Base;
 
   SliceToBatchBase(
@@ -77,8 +83,8 @@ struct SliceToBatchBase
       : Base(ctx, benefit), isValidTargetOp(isValidTargetOp) {}
 
   llvm::LogicalResult
-  matchAndRewrite(mlir::stablehlo::SliceOp sliceOp,
-                  mlir::PatternRewriter &rewriter) const override;
+  matchAndRewriteImpl(mlir::stablehlo::SliceOp sliceOp,
+                      mlir::PatternRewriter &rewriter) const;
 
 private:
   struct SliceInfo {
