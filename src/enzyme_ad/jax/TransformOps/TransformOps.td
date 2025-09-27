@@ -2334,6 +2334,11 @@ def ApplyConcatInsertDimReduceWindowPatterns : EnzymeHLOPatternOp<
   let patterns = ["ConcatInsertDimToBatch<stablehlo::ReduceWindowOp>"];
 }
 
+def ApplyConcatInsertDimElementwisePatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_elementwise"> {
+  let patterns = ["ConcatInsertDimElementwiseToBatch"];
+}
+
 def ApplyDotGeneralSliceToBatchPatterns : EnzymeHLOPatternOp<
     "dot_general_slice_to_batch"> {
   let patterns = ["SliceToBatch<stablehlo::DotGeneralOp>"];

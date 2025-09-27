@@ -52,6 +52,20 @@ struct ConcatInsertDimToBatch : public ConcatInsertDimToBatchBase {
             ctx, benefit) {}
 };
 
+struct ConcatInsertDimElementwiseToBatch : public ConcatInsertDimToBatchBase {
+  ConcatInsertDimElementwiseToBatch(mlir::MLIRContext *ctx,
+                                    mlir::PatternBenefit benefit = 1)
+      : ConcatInsertDimToBatchBase(
+            [](mlir::Operation *op) -> mlir::Operation * {
+              if (!op)
+                return nullptr;
+              if (op->hasTrait<mlir::OpTrait::Elementwise>())
+                return op;
+              return nullptr;
+            },
+            ctx, benefit) {}
+};
+
 struct SliceToBatchBase
     : public mlir::OpRewritePattern<mlir::stablehlo::SliceOp> {
   using Base = mlir::OpRewritePattern<mlir::stablehlo::SliceOp>;
