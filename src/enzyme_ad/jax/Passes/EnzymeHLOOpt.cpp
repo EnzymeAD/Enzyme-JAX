@@ -5764,6 +5764,52 @@ struct UnaryConstProp final
   }
 };
 
+struct ClampConstProp final
+    : CheckedOpRewritePattern<stablehlo::ClampOp, ClampConstProp> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ClampOp op,
+                                    PatternRewriter &rewriter) const {
+    DenseElementsAttr minAttr, inputAttr, maxAttr;
+    if (!matchPattern(op.getMin(), m_Constant(&minAttr)) ||
+        !matchPattern(op.getOperand(), m_Constant(&inputAttr)) ||
+        !matchPattern(op.getMax(), m_Constant(&maxAttr)))
+      return failure();
+
+    // TODO: for only min or max with input being constant we can convert this
+    // to a min/max op
+    stablehlo::Tensor minTen, maxTen, inputTen;
+    bool splattedVersion = false;
+    RankedTensorType ty = cast<RankedTensorType>(op->getResultTypes()[0]);
+    if (minAttr.isSplat() && maxAttr.isSplat() && inputAttr.isSplat()) {
+      splattedVersion = true;
+      ty = RankedTensorType::get(
+          {}, cast<ShapedType>(op->getResultTypes()[0]).getElementType());
+      auto inputTy = RankedTensorType::get(
+          {}, cast<ShapedType>(op->getOperand(0).getType()).getElementType());
+      minTen = stablehlo::makeTensor(minAttr.resizeSplat(inputTy));
+      maxTen = stablehlo::makeTensor(maxAttr.resizeSplat(inputTy));
+      inputTen = stablehlo::makeTensor(inputAttr.resizeSplat(inputTy));
+    } else {
+      minTen = stablehlo::constantOp(minAttr);
+      maxTen = stablehlo::constantOp(maxAttr);
+      inputTen = stablehlo::constantOp(inputAttr);
+    }
+
+    auto out =
+        fromTensor(clampOp(inputTen, minTen, maxTen, cast<ShapedType>(ty)));
+
+    if (splattedVersion) {
+      out = out.resizeSplat(cast<ShapedType>(op->getResultTypes()[0]));
+    }
+    // Replace with new constant op containing the computed result
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+        op, op->getResultTypes()[0], out);
+
+    return success();
+  }
+};
+
 struct ChloInfConstProp final
     : CheckedOpRewritePattern<chlo::IsInfOp, ChloInfConstProp> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -23215,7 +23261,6 @@ struct CaseToIf : public CheckedOpRewritePattern<stablehlo::CaseOp, CaseToIf> {
   }
 };
 
-// TODO: make generating a dynamic pad for non-constant padding optional
 struct DUSToDynamicPad
     : public CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp,
                                      DUSToDynamicPad> {
@@ -23228,24 +23273,40 @@ struct DUSToDynamicPad
     auto update = op.getUpdate();
     auto indices = op.getStartIndices();
 
+    for (auto [i, index] : llvm::enumerate(indices)) {
+      if (!matchPattern(index, m_Constant())) {
+        return rewriter.notifyMatchFailure(
+            op, "not all indices are constant. currently we don't support this "
+                "case");
+      }
+    }
+
     Value scalarOperand = getScalarPadValue(rewriter, operand);
     if (!scalarOperand)
       return rewriter.notifyMatchFailure(op, "operand is not a scalar pad");
 
-    llvm::errs() << "operand: " << operand << "\n";
-    llvm::errs() << "scalarOperand: " << scalarOperand << "\n";
-
-    // TODO: clamp the update
     auto updateShape = cast<RankedTensorType>(update.getType()).getShape();
     auto operandShape = cast<RankedTensorType>(operand.getType()).getShape();
 
     SmallVector<Value> edgePaddingLowValues, edgePaddingHighValues;
     for (auto [i, index] : llvm::enumerate(indices)) {
+      auto cType = RankedTensorType::get(
+          {}, cast<RankedTensorType>(index.getType()).getElementType());
+      auto clampedIndex = rewriter.create<stablehlo::ClampOp>(
+          op.getLoc(),
+          rewriter.create<stablehlo::ConstantOp>(
+              op.getLoc(), cType, cast<ElementsAttr>(makeAttr(cType, 0))),
+          index,
+          rewriter.create<stablehlo::ConstantOp>(
+              op.getLoc(), cType,
+              cast<ElementsAttr>(
+                  makeAttr(cType, operandShape[i] - updateShape[i]))));
+
       auto reshapedIndex = rewriter.create<stablehlo::ReshapeOp>(
           op.getLoc(),
           RankedTensorType::get(
               {1}, cast<RankedTensorType>(index.getType()).getElementType()),
-          index);
+          clampedIndex);
       edgePaddingLowValues.push_back(reshapedIndex.getResult());
 
       auto iType = RankedTensorType::get(
@@ -23266,10 +23327,6 @@ struct DUSToDynamicPad
     auto interiorPadding = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), edgePaddingLow.getType(),
         cast<ElementsAttr>(makeAttr(edgePaddingLow.getType(), 0)));
-
-    llvm::errs() << "edgePaddingLow: " << edgePaddingLow << "\n";
-    llvm::errs() << "edgePaddingHigh: " << edgePaddingHigh << "\n";
-    llvm::errs() << "interiorPadding: " << interiorPadding << "\n";
 
     rewriter.replaceOpWithNewOp<stablehlo::DynamicPadOp>(
         op, op.getType(), update, scalarOperand, edgePaddingLow,
@@ -23328,9 +23385,8 @@ struct DynamicPadToPad
     auto edgePaddingHigh = op.getEdgePaddingHigh();
     auto interiorPadding = op.getInteriorPadding();
 
-    DenseIntElementsAttr edgePaddingLowAttr;
-    DenseIntElementsAttr edgePaddingHighAttr;
-    DenseIntElementsAttr interiorPaddingAttr;
+    DenseIntElementsAttr edgePaddingLowAttr, edgePaddingHighAttr,
+        interiorPaddingAttr;
     if (!matchPattern(edgePaddingLow, m_Constant(&edgePaddingLowAttr)) ||
         !matchPattern(edgePaddingHigh, m_Constant(&edgePaddingHighAttr)) ||
         !matchPattern(interiorPadding, m_Constant(&interiorPaddingAttr)))
@@ -23703,7 +23759,7 @@ struct EnzymeHLOOptPass
                  BinaryConstProp<stablehlo::SubtractOp, stablehlo::subtractOp>,
                  BinaryConstProp<stablehlo::XorOp, stablehlo::xorOp>>(context);
 
-    patterns.add<GatherConstProp>(context);
+    patterns.add<GatherConstProp, ClampConstProp>(context);
 
     patterns.add<BinaryOpTransposeSimplify<stablehlo::AddOp>,
                  BinaryOpTransposeSimplify<stablehlo::SubtractOp>,
