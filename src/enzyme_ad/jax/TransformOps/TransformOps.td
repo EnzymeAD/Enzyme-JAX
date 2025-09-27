@@ -2385,3 +2385,7 @@ def DUSToDynamicPad : EnzymeHLOPatternOp<"dus_to_dynamic_pad"> {
 def DynamicPadToPad : EnzymeHLOPatternOp<"dynamic_pad_to_pad"> {
   let patterns = ["DynamicPadToPad"];
 }
+
+def ApplyClampConstPropPatterns : EnzymeHLOPatternOp<"clamp_const_prop"> {
+  let patterns = ["ClampConstProp"];
+}
