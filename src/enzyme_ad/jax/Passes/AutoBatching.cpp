@@ -759,7 +759,8 @@ struct AutoBatchingPass
                    // ConcatInsertDimToBatch<stablehlo::ScatterOp>, after batch
                    // op interface is implemented
                    ConcatInsertDimToBatch<stablehlo::SortOp>,
-                   ConcatInsertDimToBatch<stablehlo::ReduceWindowOp>>(context);
+                   ConcatInsertDimToBatch<stablehlo::ReduceWindowOp>,
+                   ConcatInsertDimElementwiseToBatch>(context);
     }
 
     if (slice_to_batch_passes) {
