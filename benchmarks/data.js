@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1758951496632,
+  "lastUpdate": 1758959252071,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
@@ -4751,6 +4751,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001403685068013,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "wmoses@google.com",
+            "name": "William Moses",
+            "username": "wsmoses"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2a2f7b833596f3a0ff90eddd73838defc58b4243",
+          "message": "ReverseCache: use bfs/cache (#1429)\n\n* ReverseCache: use bfs/cache\n\n* fix\n\n* more work\n\n* topo\n\n* fix\n\n* fix",
+          "timestamp": "2025-09-26T21:02:19-05:00",
+          "tree_id": "b7da5ffb0e67c133121b659b5a6f87e53ed13f42",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/2a2f7b833596f3a0ff90eddd73838defc58b4243"
+        },
+        "date": 1758959251588,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004358400008641183,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004314248892478645,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001527166346786,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001537285756086,
             "unit": "s"
           }
         ]
