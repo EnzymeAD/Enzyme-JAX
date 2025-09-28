@@ -162,9 +162,8 @@ static TargetMachine *GetTargetMachine(llvm::Triple TheTriple, StringRef CPUStr,
   }
 
   return TheTarget->createTargetMachine(
-      TheTriple.getTriple(), codegen::getCPUStr(), codegen::getFeaturesStr(),
-      Options, codegen::getExplicitRelocModel(),
-      codegen::getExplicitCodeModel(), level);
+      TheTriple, codegen::getCPUStr(), codegen::getFeaturesStr(), Options,
+      codegen::getExplicitRelocModel(), codegen::getExplicitCodeModel(), level);
 }
 
 std::unique_ptr<llvm::Module>
