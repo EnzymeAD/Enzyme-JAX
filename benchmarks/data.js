@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1759093522780,
+  "lastUpdate": 1759100422476,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
@@ -4971,6 +4971,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001460785379022,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "wmoses@google.com",
+            "name": "William Moses",
+            "username": "wsmoses"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ccfcd699469d7244f103ef678cd9ed663bb24fd0",
+          "message": "Speed up local nan (#1437)",
+          "timestamp": "2025-09-28T17:02:02-05:00",
+          "tree_id": "003115868532e4d210deff171c9fec4828c30855",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/ccfcd699469d7244f103ef678cd9ed663bb24fd0"
+        },
+        "date": 1759100421974,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004269564000423998,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004272056900663301,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001412289372005,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001434171072003,
             "unit": "s"
           }
         ]
