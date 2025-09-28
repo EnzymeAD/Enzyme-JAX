@@ -16,6 +16,8 @@
 
 #include "stablehlo/dialect/StablehloOps.h"
 
+#include <deque>
+
 namespace mlir {
 namespace enzyme {
 
@@ -321,22 +323,142 @@ public:
     if (it != valueCache.end())
       return it->second;
 
-    bool result = ((Child *)this)->guaranteedImpl(value.getDefiningOp());
+    bool result = guaranteed(value.getDefiningOp());
     valueCache[value] = result;
     return result;
   }
 
-  bool guaranteed(mlir::Operation *op) {
+  enum class State {
+    // We know this is _not_ guaranteed.
+    NOTGUARANTEED = 0,
+    // We know this is guaranteed.
+    GUARANTEED = 1,
+    // This is guarnateed, pending the results of the new Operations.
+    PENDING = 2
+  };
+
+  bool guaranteed(Operation *op) {
     if (!op)
       return false;
 
-    auto it = opCache.find(op);
-    if (it != opCache.end())
-      return it->second;
+    // Map of operations we need to still check. If all of these are no-nan
+    // we therefore know that the operation `op` is no nan.
+    std::deque<Operation *> todo = {op};
 
-    bool result = ((Child *)this)->guaranteedImpl(op);
-    opCache[op] = result;
-    return result;
+    // Map of operations we have seen before. The target of the map[o] is a list
+    // of sub-queries, that if all true prove that `o` is no-nan.
+    DenseMap<Operation *, SmallPtrSet<Operation *, 2>> seen;
+
+    // Inverse of seen. A map of operations `p` we still need to prove, to a
+    // list of values that require `p` to be proven.
+    DenseMap<Operation *, SmallVector<Operation *, 2>> reverseSeen;
+
+    while (!todo.empty()) {
+      auto cur = todo.front();
+      todo.pop_front();
+
+      SmallVector<Operation *, 2> localtodo;
+      State status;
+
+      {
+        auto found = opCache.find(cur);
+        if (found != opCache.end()) {
+          if (found->second) {
+            status = State::GUARANTEED;
+          } else {
+            status = State::NOTGUARANTEED;
+          }
+        } else {
+          status = ((Child *)this)->localGuaranteed(cur, localtodo);
+        }
+      }
+
+      switch (status) {
+      case State::NOTGUARANTEED: {
+        SmallVector<Operation *, 2> rtodo{cur};
+        while (!rtodo.empty()) {
+          auto rcur = rtodo.pop_back_val();
+          if (opCache.find(rcur) != opCache.end()) {
+            continue;
+          }
+          opCache[rcur] = false;
+          auto rfound = reverseSeen.find(rcur);
+          if (rfound != reverseSeen.end()) {
+            for (auto next : rfound->second) {
+              rtodo.push_back(next);
+            }
+            reverseSeen.erase(rfound);
+          }
+        }
+        return false;
+      }
+
+      case State::GUARANTEED: {
+        // Operations which are now guaranteed
+        SmallVector<Operation *, 2> rtodo = {cur};
+
+        while (!rtodo.empty()) {
+
+          auto rcur = rtodo.pop_back_val();
+          if (opCache.find(rcur) != opCache.end()) {
+            continue;
+          }
+
+          {
+            auto rfound = seen.find(rcur);
+            if (rfound != seen.end()) {
+              seen.erase(rfound);
+            }
+          }
+
+          // This is now an operation we have not previously marked as
+          // guaranteed
+          opCache[rcur] = true;
+
+          // Look if this is one we have previously visited this operation as a
+          // pending value, and if so, remove the corresponding pending
+          // dependencies
+
+          auto rfound = reverseSeen.find(rcur);
+          if (rfound == reverseSeen.end()) {
+            continue;
+          }
+
+          for (auto next : rfound->second) {
+            auto bfound = seen.find(next);
+            assert(bfound != seen.end());
+            bfound->second.erase(rcur);
+            if (bfound->second.empty())
+              rtodo.push_back(next);
+          }
+
+          reverseSeen.erase(rcur);
+        }
+        break;
+      }
+      case State::PENDING: {
+        assert(localtodo.size());
+        assert(seen.find(cur) == seen.end());
+        SmallPtrSet<Operation *, 2> set(localtodo.begin(), localtodo.end());
+        for (auto v : set) {
+          reverseSeen[v].push_back(cur);
+        }
+        seen[cur] = std::move(set);
+        break;
+      }
+      }
+    }
+
+    // We have checked all recursive dependencies, and found no values which
+    // would invalidate. Therefore all seen operations [including op] are known
+    // to be guaranteed.
+    for (auto &sval : seen) {
+      opCache[sval.first] = true;
+    }
+
+    assert(opCache.find(op) != opCache.end());
+
+    return true;
   }
 
   bool guaranteed(stablehlo::ConstantOp constOp) {
@@ -385,9 +507,10 @@ private:
   std::shared_ptr<FiniteResultAnalysis> finiteResultAnalysis = nullptr;
 
 public:
+  State localGuaranteed(Operation *op, SmallVectorImpl<Operation *> &localtodo);
+
   bool constantFloatCheck(DenseElementsAttr attr);
   bool constantIntCheck(DenseElementsAttr attr);
-  bool guaranteedImpl(mlir::Operation *op);
 
   void setFiniteResultAnalysis(std::shared_ptr<FiniteResultAnalysis> analysis) {
     finiteResultAnalysis = analysis;
@@ -402,7 +525,8 @@ private:
 public:
   bool constantFloatCheck(DenseElementsAttr attr);
   bool constantIntCheck(DenseElementsAttr attr);
-  bool guaranteedImpl(mlir::Operation *op);
+
+  State localGuaranteed(Operation *op, SmallVectorImpl<Operation *> &localtodo);
 
   void setNoNanResultAnalysis(std::shared_ptr<NoNanResultAnalysis> analysis) {
     noNanResultAnalysis = analysis;
@@ -431,7 +555,8 @@ class NonNegativeResultAnalysis
 public:
   bool constantFloatCheck(DenseElementsAttr attr);
   bool constantIntCheck(DenseElementsAttr attr);
-  bool guaranteedImpl(mlir::Operation *op);
+
+  State localGuaranteed(Operation *op, SmallVectorImpl<Operation *> &localtodo);
 };
 
 inline bool guaranteedNonNegativeResult(mlir::Value value) {
