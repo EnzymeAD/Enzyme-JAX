@@ -385,7 +385,6 @@ private:
   std::shared_ptr<FiniteResultAnalysis> finiteResultAnalysis = nullptr;
 
 public:
-
   enum class State {
     // We know this is _not_ guaranteed.
     NOTGUARANTEED = 0,
@@ -395,7 +394,8 @@ public:
     PENDING = 2
   }
 
-  State localGuaranteed(Operation *op, SmallVectorImpl<Operation*> &localtodo);
+  State
+  localGuaranteed(Operation *op, SmallVectorImpl<Operation *> &localtodo);
 
   bool constantFloatCheck(DenseElementsAttr attr);
   bool constantIntCheck(DenseElementsAttr attr);

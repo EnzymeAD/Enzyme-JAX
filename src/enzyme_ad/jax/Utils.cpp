@@ -603,7 +603,9 @@ bool NoNanResultAnalysis::constantFloatCheck(DenseElementsAttr attr) {
   return true;
 }
 
-NoNanResultAnalysis::State NoNanResultAnalysis::localGuaranteed(Operation *op, SmallVectorImpl<Operation*> localtodo) {
+NoNanResultAnalysis::State
+NoNanResultAnalysis::localGuaranteed(Operation *op,
+                                     SmallVectorImpl<Operation *> localtodo) {
   assert(op);
 
   if (auto constantOp = dyn_cast<stablehlo::ConstantOp>(op)) {
@@ -628,8 +630,8 @@ NoNanResultAnalysis::State NoNanResultAnalysis::localGuaranteed(Operation *op, S
     // data movement ops
     recursiveCheck = true;
   } else if (isa<stablehlo::AbsOp, stablehlo::ExpOp, stablehlo::ConvertOp,
-          stablehlo::CompareOp, stablehlo::TanhOp, stablehlo::LogisticOp,
-          stablehlo::FloorOp, stablehlo::CeilOp>(op)) {
+                 stablehlo::CompareOp, stablehlo::TanhOp, stablehlo::LogisticOp,
+                 stablehlo::FloorOp, stablehlo::CeilOp>(op)) {
     // elementwise ops that are no-nan if all operands are not nan
     recursiveCheck = true;
   } else if (isa<stablehlo::AddOp, stablehlo::SubtractOp>(op)) {
@@ -684,7 +686,8 @@ NoNanResultAnalysis::State NoNanResultAnalysis::localGuaranteed(Operation *op, S
         }
       }
       auto dop = operand.getDefiningOp();
-      if (!dop) return State::NOTGUARANTEED;
+      if (!dop)
+        return State::NOTGUARANTEED;
 
       {
         auto found = opCache.find(operand);
@@ -716,22 +719,21 @@ bool NoNanResultAnalysis::guaranteedImpl(Operation *op) {
 
   // Map of operations we need to still check. If all of these are no-nan
   // we therefore know that the operation `op` is no nan.
-  std::deque<Operation*> todo = { op };
+  std::deque<Operation *> todo = {op};
 
   // Map of operations we have seen before. The target of the map[o] is a list
   // of sub-queries, that if all true prove that `o` is no-nan.
-  DenseMap<Operation*, SmallPtrSet<Operation*, 2>> seen;
+  DenseMap<Operation *, SmallPtrSet<Operation *, 2>> seen;
 
   // Inverse of seen. A map of operations `p` we still need to prove, to a list
   // of values that require `p` to be proven.
-  DenseMap<Operation*, SmallVector<Operation*, 2>> reverseSeen;
+  DenseMap<Operation *, SmallVector<Operation *, 2>> reverseSeen;
 
   while (!todo.empty()) {
     auto cur = todo.front();
     todo.pop_front();
-    
 
-    SmallVector<Operation*, 2> localtodo;
+    SmallVector<Operation *, 2> localtodo;
     Status status;
 
     {
@@ -749,7 +751,7 @@ bool NoNanResultAnalysis::guaranteedImpl(Operation *op) {
 
     switch (status) {
     case State::NOTGUARANTEED: {
-      SmallVector<Operation*, 2> rtodo = { cur };
+      SmallVector<Operation *, 2> rtodo = {cur};
       while (!rtodo.empty()) {
         auto rcur = rtodo.pop_back_val();
         if (opCache.find(rcur) != opCache.end()) {
@@ -769,7 +771,7 @@ bool NoNanResultAnalysis::guaranteedImpl(Operation *op) {
 
     case State::GUARANTEED: {
       // Operations which are now guaranteed
-      SmallVector<Operation*, 2> rtodo = { cur };
+      SmallVector<Operation *, 2> rtodo = {cur};
 
       while (!rtodo.empty()) {
 
@@ -788,8 +790,9 @@ bool NoNanResultAnalysis::guaranteedImpl(Operation *op) {
         // This is now an operation we have not previously marked as guaranteed
         opCache[rcur] = true;
 
-        // Look if this is one we have previously visited this operation as a pending
-        // value, and if so, remove the corresponding pending dependencies
+        // Look if this is one we have previously visited this operation as a
+        // pending value, and if so, remove the corresponding pending
+        // dependencies
 
         auto rfound = reverseSeen.find(rcur);
         if (rfound == reverseSeen.end()) {
@@ -808,24 +811,22 @@ bool NoNanResultAnalysis::guaranteedImpl(Operation *op) {
       }
       break;
     }
-    case State::PENDING:{
+    case State::PENDING: {
       assert(localtodo.size());
       assert(seen.find(rcur) == seen.end());
-      SmallPtrSet<Operation*, 2> set(localtodo.begin(), localtodo.end())
-      for (auto v : set) {
+      SmallPtrSet<Operation *, 2> set(localtodo.begin(),
+                                      localtodo.end()) for (auto v : set) {
         reverseSeen[v].push_back(rcur);
       }
       seen[rcur] = std::move(set);
       break;
     }
-
     }
-
-
   }
 
-  // We have checked all recursive dependencies, and found no values which would invalidate.
-  // Therefore all seen operations [including op] are known to be guaranteed.
+  // We have checked all recursive dependencies, and found no values which would
+  // invalidate. Therefore all seen operations [including op] are known to be
+  // guaranteed.
   for (auto &sval : seen) {
     opCache[sval.first] = true;
   }
