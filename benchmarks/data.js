@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1758984407460,
+  "lastUpdate": 1759025503277,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
@@ -4839,6 +4839,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001406824400997,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "avikpal@mit.edu",
+            "name": "Avik Pal",
+            "username": "avik-pal"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c8efb465dfeeb6577a4a0dc60cf2b42eb1e5d55f",
+          "message": "feat: update AutoBatching passes to be CheckedRewrite (#1434)",
+          "timestamp": "2025-09-27T21:14:14-04:00",
+          "tree_id": "bc5f5264036addbf4096d12bbb140d4973761443",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/c8efb465dfeeb6577a4a0dc60cf2b42eb1e5d55f"
+        },
+        "date": 1759025502544,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.0000041507179994368925,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004372967997915112,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001458673020999,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001442531612003,
             "unit": "s"
           }
         ]
