@@ -5685,6 +5685,52 @@ struct UnaryConstProp final
   }
 };
 
+struct ClampConstProp final
+    : CheckedOpRewritePattern<stablehlo::ClampOp, ClampConstProp> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ClampOp op,
+                                    PatternRewriter &rewriter) const {
+    DenseElementsAttr minAttr, inputAttr, maxAttr;
+    if (!matchPattern(op.getMin(), m_Constant(&minAttr)) ||
+        !matchPattern(op.getOperand(), m_Constant(&inputAttr)) ||
+        !matchPattern(op.getMax(), m_Constant(&maxAttr)))
+      return failure();
+
+    // TODO: for only min or max with input being constant we can convert this
+    // to a min/max op
+    stablehlo::Tensor minTen, maxTen, inputTen;
+    bool splattedVersion = false;
+    RankedTensorType ty = cast<RankedTensorType>(op->getResultTypes()[0]);
+    if (minAttr.isSplat() && maxAttr.isSplat() && inputAttr.isSplat()) {
+      splattedVersion = true;
+      ty = RankedTensorType::get(
+          {}, cast<ShapedType>(op->getResultTypes()[0]).getElementType());
+      auto inputTy = RankedTensorType::get(
+          {}, cast<ShapedType>(op->getOperand(0).getType()).getElementType());
+      minTen = stablehlo::makeTensor(minAttr.resizeSplat(inputTy));
+      maxTen = stablehlo::makeTensor(maxAttr.resizeSplat(inputTy));
+      inputTen = stablehlo::makeTensor(inputAttr.resizeSplat(inputTy));
+    } else {
+      minTen = stablehlo::constantOp(minAttr);
+      maxTen = stablehlo::constantOp(maxAttr);
+      inputTen = stablehlo::constantOp(inputAttr);
+    }
+
+    auto out =
+        fromTensor(clampOp(inputTen, minTen, maxTen, cast<ShapedType>(ty)));
+
+    if (splattedVersion) {
+      out = out.resizeSplat(cast<ShapedType>(op->getResultTypes()[0]));
+    }
+    // Replace with new constant op containing the computed result
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+        op, op->getResultTypes()[0], out);
+
+    return success();
+  }
+};
+
 struct ChloInfConstProp final
     : CheckedOpRewritePattern<chlo::IsInfOp, ChloInfConstProp> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -23136,6 +23182,156 @@ struct CaseToIf : public CheckedOpRewritePattern<stablehlo::CaseOp, CaseToIf> {
   }
 };
 
+struct DUSToDynamicPad
+    : public CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp,
+                                     DUSToDynamicPad> {
+  using CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp,
+                                DUSToDynamicPad>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DynamicUpdateSliceOp op,
+                                    PatternRewriter &rewriter) const {
+    auto operand = op.getOperand();
+    auto update = op.getUpdate();
+    auto indices = op.getStartIndices();
+
+    for (auto [i, index] : llvm::enumerate(indices)) {
+      if (!matchPattern(index, m_Constant())) {
+        return rewriter.notifyMatchFailure(
+            op, "not all indices are constant. currently we don't support this "
+                "case");
+      }
+    }
+
+    Value scalarOperand = getScalarPadValue(rewriter, operand);
+    if (!scalarOperand)
+      return rewriter.notifyMatchFailure(op, "operand is not a scalar pad");
+
+    auto updateShape = cast<RankedTensorType>(update.getType()).getShape();
+    auto operandShape = cast<RankedTensorType>(operand.getType()).getShape();
+
+    SmallVector<Value> edgePaddingLowValues, edgePaddingHighValues;
+    for (auto [i, index] : llvm::enumerate(indices)) {
+      auto cType = RankedTensorType::get(
+          {}, cast<RankedTensorType>(index.getType()).getElementType());
+      auto clampedIndex = rewriter.create<stablehlo::ClampOp>(
+          op.getLoc(),
+          rewriter.create<stablehlo::ConstantOp>(
+              op.getLoc(), cType, cast<ElementsAttr>(makeAttr(cType, 0))),
+          index,
+          rewriter.create<stablehlo::ConstantOp>(
+              op.getLoc(), cType,
+              cast<ElementsAttr>(
+                  makeAttr(cType, operandShape[i] - updateShape[i]))));
+
+      auto reshapedIndex = rewriter.create<stablehlo::ReshapeOp>(
+          op.getLoc(),
+          RankedTensorType::get(
+              {1}, cast<RankedTensorType>(index.getType()).getElementType()),
+          clampedIndex);
+      edgePaddingLowValues.push_back(reshapedIndex.getResult());
+
+      auto iType = RankedTensorType::get(
+          {1}, cast<RankedTensorType>(index.getType()).getElementType());
+      auto tmp = rewriter.create<stablehlo::ConstantOp>(
+          op.getLoc(), iType,
+          cast<ElementsAttr>(
+              makeAttr(iType, operandShape[i] - updateShape[i])));
+      auto paddingHigh = rewriter.create<stablehlo::SubtractOp>(
+          op.getLoc(), tmp, reshapedIndex);
+      edgePaddingHighValues.push_back(paddingHigh);
+    }
+
+    auto edgePaddingLow = rewriter.create<stablehlo::ConcatenateOp>(
+        op.getLoc(), edgePaddingLowValues, 0);
+    auto edgePaddingHigh = rewriter.create<stablehlo::ConcatenateOp>(
+        op.getLoc(), edgePaddingHighValues, 0);
+    auto interiorPadding = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), edgePaddingLow.getType(),
+        cast<ElementsAttr>(makeAttr(edgePaddingLow.getType(), 0)));
+
+    rewriter.replaceOpWithNewOp<stablehlo::DynamicPadOp>(
+        op, op.getType(), update, scalarOperand, edgePaddingLow,
+        edgePaddingHigh, interiorPadding);
+    return success();
+  }
+
+private:
+  Value getScalarPadValue(PatternRewriter &rewriter, Value operand) const {
+    Value scalarOperand = getScalarPadValueViaBcastInDim(rewriter, operand);
+    if (scalarOperand)
+      return scalarOperand;
+
+    scalarOperand = getScalarPadValueViaSplattedConstant(rewriter, operand);
+    if (scalarOperand)
+      return scalarOperand;
+
+    return nullptr;
+  }
+
+  Value getScalarPadValueViaBcastInDim(PatternRewriter &rewriter,
+                                       Value operand) const {
+    auto bcastInDimOp = operand.getDefiningOp<stablehlo::BroadcastInDimOp>();
+    if (!bcastInDimOp)
+      return nullptr;
+
+    auto bcastOperand = bcastInDimOp.getOperand();
+    auto bcastOperandType = cast<RankedTensorType>(bcastOperand.getType());
+    if (bcastOperandType.getRank() != 0)
+      return nullptr;
+
+    return bcastOperand;
+  }
+
+  Value getScalarPadValueViaSplattedConstant(PatternRewriter &rewriter,
+                                             Value operand) const {
+    SplatElementsAttr splatAttr;
+    if (!matchPattern(operand, m_Constant(&splatAttr)))
+      return nullptr;
+
+    return rewriter.create<stablehlo::ConstantOp>(
+        operand.getLoc(), splatAttr.getSplatValue<Attribute>());
+  }
+};
+
+struct DynamicPadToPad
+    : public CheckedOpRewritePattern<stablehlo::DynamicPadOp, DynamicPadToPad> {
+  using CheckedOpRewritePattern<stablehlo::DynamicPadOp,
+                                DynamicPadToPad>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DynamicPadOp op,
+                                    PatternRewriter &rewriter) const {
+    auto operand = op.getOperand();
+    auto paddingValue = op.getPaddingValue();
+    auto edgePaddingLow = op.getEdgePaddingLow();
+    auto edgePaddingHigh = op.getEdgePaddingHigh();
+    auto interiorPadding = op.getInteriorPadding();
+
+    DenseIntElementsAttr edgePaddingLowAttr, edgePaddingHighAttr,
+        interiorPaddingAttr;
+    if (!matchPattern(edgePaddingLow, m_Constant(&edgePaddingLowAttr)) ||
+        !matchPattern(edgePaddingHigh, m_Constant(&edgePaddingHighAttr)) ||
+        !matchPattern(interiorPadding, m_Constant(&interiorPaddingAttr)))
+      return rewriter.notifyMatchFailure(op, "edge padding is not a constant");
+
+    rewriter.replaceOpWithNewOp<stablehlo::PadOp>(
+        op, op.getType(), operand, paddingValue,
+        convertToDenseI64ArrayAttr(edgePaddingLowAttr),
+        convertToDenseI64ArrayAttr(edgePaddingHighAttr),
+        convertToDenseI64ArrayAttr(interiorPaddingAttr));
+    return success();
+  }
+
+private:
+  DenseI64ArrayAttr
+  convertToDenseI64ArrayAttr(DenseIntElementsAttr attr) const {
+    auto values = attr.getValues<APInt>();
+    llvm::SmallVector<int64_t> denseValues;
+    for (auto value : values)
+      denseValues.push_back(value.getSExtValue());
+    return DenseI64ArrayAttr::get(attr.getContext(), denseValues);
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -23484,7 +23680,7 @@ struct EnzymeHLOOptPass
                  BinaryConstProp<stablehlo::SubtractOp, stablehlo::subtractOp>,
                  BinaryConstProp<stablehlo::XorOp, stablehlo::xorOp>>(context);
 
-    patterns.add<GatherConstProp>(context);
+    patterns.add<GatherConstProp, ClampConstProp>(context);
 
     patterns.add<BinaryOpTransposeSimplify<stablehlo::AddOp>,
                  BinaryOpTransposeSimplify<stablehlo::SubtractOp>,
@@ -23747,7 +23943,9 @@ struct EnzymeHLOOptPass
         MulReduceSliceFusion,
         MinReduceSliceFusion,
         MaxReduceSliceFusion,
-        CaseToIf
+        CaseToIf,
+        DUSToDynamicPad,
+        DynamicPadToPad
       >(context);
 
     patterns.add<
