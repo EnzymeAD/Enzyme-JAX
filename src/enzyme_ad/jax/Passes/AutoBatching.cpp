@@ -261,9 +261,8 @@ constructAndExtractBatchOperands(PatternRewriter &rewriter,
   return std::make_tuple(operands, operandIndexMap);
 }
 
-LogicalResult
-ConcatInsertDimToBatchBase::matchAndRewrite(stablehlo::ConcatenateOp concatOp,
-                                            PatternRewriter &rewriter) const {
+LogicalResult ConcatInsertDimToBatchBase::matchAndRewriteImpl(
+    stablehlo::ConcatenateOp concatOp, PatternRewriter &rewriter) const {
   if (concatOp.getNumOperands() <= 1)
     return failure();
 
@@ -391,8 +390,8 @@ bool ConcatInsertDimToBatchBase::validBroadcastInDimOpInsertDimForBatching(
 }
 
 LogicalResult
-SliceToBatchBase::matchAndRewrite(stablehlo::SliceOp sliceOp,
-                                  PatternRewriter &rewriter) const {
+SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
+                                      PatternRewriter &rewriter) const {
   Value sliceInput = sliceOp.getOperand();
   // Find all slices of the same input that feed into equivalent operations
   SmallVector<SliceInfo> relatedSlices;
