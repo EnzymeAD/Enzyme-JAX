@@ -2880,6 +2880,9 @@ private:
         continue;
 
       auto pair = inverted.find(N);
+      if (pair == inverted.end()) {
+        continue;
+      }
       for (const auto &NN : pair->second) {
 
         revGraph[NN].insert(N);
