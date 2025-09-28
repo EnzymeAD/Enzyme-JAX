@@ -394,8 +394,7 @@ public:
     PENDING = 2
   };
 
-  State
-  localGuaranteed(Operation *op, SmallVectorImpl<Operation *> &localtodo);
+  State localGuaranteed(Operation *op, SmallVectorImpl<Operation *> &localtodo);
 
   bool constantFloatCheck(DenseElementsAttr attr);
   bool constantIntCheck(DenseElementsAttr attr);
