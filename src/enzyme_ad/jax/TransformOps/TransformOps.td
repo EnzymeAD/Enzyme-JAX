@@ -2383,3 +2383,14 @@ def ApplyElementwiseSliceToBatchPatterns : EnzymeHLOPatternOp<
 def ApplyCaseToIfPatterns : EnzymeHLOPatternOp<"case_to_if"> {
   let patterns = ["CaseToIf"];
 }
+
+def DUSToDynamicPad : EnzymeHLOPatternOp<"dus_to_dynamic_pad"> {
+  let patterns = ["DUSToDynamicPad"];
+}
+def DynamicPadToPad : EnzymeHLOPatternOp<"dynamic_pad_to_pad"> {
+  let patterns = ["DynamicPadToPad"];
+}
+
+def ApplyClampConstPropPatterns : EnzymeHLOPatternOp<"clamp_const_prop"> {
+  let patterns = ["ClampConstProp"];
+}
