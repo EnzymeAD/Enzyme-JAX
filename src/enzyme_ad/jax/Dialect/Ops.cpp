@@ -69,42 +69,27 @@ static std::optional<int64_t> getConstant(Value v) {
   return {};
 }
 
-static FunctionOpInterface lookupNestedFunc(SymbolTableCollection *symbolTable,
-                                            Operation *root,
-                                            FlatSymbolRefAttr fn) {
-  // Search current scope
-  if (auto f =
-          symbolTable->lookupNearestSymbolFrom<FunctionOpInterface>(root, fn))
-    return f;
-
-  // Recurse into nested symbol tables (e.g. builtin.module, ModuleOp)
-  for (Operation &nested : root->getRegion(0).front()) {
-    if (nested.hasTrait<OpTrait::SymbolTable>()) {
-      if (auto f = lookupNestedFunc(symbolTable, &nested, fn))
-        return f;
-    }
-  }
-  return nullptr;
-}
-
 LogicalResult
 TritonCallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
-  auto global = lookupNestedFunc(
-      &symbolTable, getOperation()->getParentOp()->getParentOfType<ModuleOp>(),
-      getFnAttr());
+  // TODO: Verify that the result type is same as the type of the referenced
+  // tt.func op.
+  auto global = symbolTable.lookupNearestSymbolFrom<FunctionOpInterface>(
+      *this, getFnAttr());
   if (!global)
-    return emitOpError() << "'" << getFn()
-                         << "' does not reference a valid funcOp";
+    return emitOpError("'")
+           << getFn() << "' does not reference a valid global funcOp";
+
   return success();
 }
 
 void TritonCallOp::setCalleeFromCallable(CallInterfaceCallable callee) {
-  auto symbol = cast<SymbolRefAttr>(callee);
-  setFnAttr(cast<FlatSymbolRefAttr>(symbol));
+  setFnAttr(cast<SymbolRefAttr>(callee));
 }
 
 CallInterfaceCallable TritonCallOp::getCallableForCallee() {
-  return SymbolRefAttr::get(getContext(), getFn());
+  auto attr = getFnAttr();
+  return SymbolRefAttr::get(getContext(), attr.getRootReference(),
+                            attr.getNestedReferences());
 }
 
 Operation::operand_range TritonCallOp::getArgOperands() { return getInputs(); }
@@ -203,8 +188,7 @@ void TritonCallOp::getEffects(
   ModuleOp moduleOp = (*this)->getParentOfType<ModuleOp>();
   assert(moduleOp && "TritonCallOp must be inside a ModuleOp");
 
-  auto callee =
-      moduleOp.lookupSymbol<FunctionOpInterface>(getFnAttr().getAttr());
+  auto callee = moduleOp.lookupSymbol<FunctionOpInterface>(getFnAttr());
   assert(callee && "TritonCallOp must have a valid function");
 
   auto effectsAttr =
