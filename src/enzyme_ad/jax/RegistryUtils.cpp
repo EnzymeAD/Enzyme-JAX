@@ -312,6 +312,10 @@ void initializePasses() {
   mlir::arith::registerArithPasses();
 
   mlir::registerSCFToControlFlowPass();
+  mlir::registerConvertControlFlowToLLVMPass();
+  mlir::registerConvertIndexToLLVMPass();
+  mlir::registerArithToLLVMConversionPass();
+  mlir::registerConvertNVVMToLLVMPass();
 
   mlir::registerGPUPasses();
 
