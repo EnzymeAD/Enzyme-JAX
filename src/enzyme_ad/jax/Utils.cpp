@@ -764,8 +764,8 @@ bool NoNanResultAnalysis::guaranteedImpl(Operation *op) {
           for (auto next : rfound->second) {
             rtodo.push_back(next);
           }
+          reverseSeen.erase(rfound);
         }
-        reverseSeen.erase(rfound);
       }
       return false;
     }
