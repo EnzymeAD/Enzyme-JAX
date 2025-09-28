@@ -103,7 +103,7 @@ def TritonCallOp : EnzymeXLA_Op<"triton_call", [DeclareOpInterfaceMethods<Symbol
   let summary = "Triton Call operation";
 
   let arguments = (ins
-    FlatSymbolRefAttr:$fn,
+    SymbolRefAttr:$fn,
     TensorI64:$gridx,
     TensorI64:$gridy,
     TensorI64:$gridz,
