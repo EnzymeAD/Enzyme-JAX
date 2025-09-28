@@ -392,7 +392,7 @@ public:
     GUARANTEED = 1,
     // This is guarnateed, pending the results of the new Operations.
     PENDING = 2
-  }
+  };
 
   State
   localGuaranteed(Operation *op, SmallVectorImpl<Operation *> &localtodo);
