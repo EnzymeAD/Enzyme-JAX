@@ -385,6 +385,18 @@ private:
   std::shared_ptr<FiniteResultAnalysis> finiteResultAnalysis = nullptr;
 
 public:
+
+  enum class State {
+    // We know this is _not_ guaranteed.
+    NOTGUARANTEED = 0,
+    // We know this is guaranteed.
+    GUARANTEED = 1,
+    // This is guarnateed, pending the results of the new Operations.
+    PENDING = 2
+  }
+
+  State localGuaranteed(Operation *op, SmallVectorImpl<Operation*> &localtodo);
+
   bool constantFloatCheck(DenseElementsAttr attr);
   bool constantIntCheck(DenseElementsAttr attr);
   bool guaranteedImpl(mlir::Operation *op);
