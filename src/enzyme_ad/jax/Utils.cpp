@@ -32,8 +32,8 @@
 
 #include "stablehlo/dialect/StablehloOps.h"
 
-#include <set>
 #include <deque>
+#include <set>
 
 using namespace mlir;
 using namespace mlir::enzyme;
@@ -691,7 +691,7 @@ NoNanResultAnalysis::localGuaranteed(Operation *op,
         return State::NOTGUARANTEED;
 
       {
-        auto found = opCache.find(operand);
+        auto found = opCache.find(dop);
         if (found != opCache.end()) {
           if (found->second) {
             continue;
@@ -752,7 +752,7 @@ bool NoNanResultAnalysis::guaranteedImpl(Operation *op) {
 
     switch (status) {
     case State::NOTGUARANTEED: {
-      SmallVector<Operation *, 2> rtodo {cur};
+      SmallVector<Operation *, 2> rtodo{cur};
       while (!rtodo.empty()) {
         auto rcur = rtodo.pop_back_val();
         if (opCache.find(rcur) != opCache.end()) {
@@ -815,8 +815,7 @@ bool NoNanResultAnalysis::guaranteedImpl(Operation *op) {
     case State::PENDING: {
       assert(localtodo.size());
       assert(seen.find(rcur) == seen.end());
-      SmallPtrSet<Operation *, 2> set(localtodo.begin(),
-                                      localtodo.end());
+      SmallPtrSet<Operation *, 2> set(localtodo.begin(), localtodo.end());
       for (auto v : set) {
         reverseSeen[v].push_back(rcur);
       }
