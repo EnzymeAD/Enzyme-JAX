@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1759025503277,
+  "lastUpdate": 1759086063738,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
@@ -4883,6 +4883,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001442531612003,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "avikpal@mit.edu",
+            "name": "Avik Pal",
+            "username": "avik-pal"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "14bfc935f481d25da64cdd680bf831cbb19ef65b",
+          "message": "feat: dus to dynamic_pad + dynamic_pad to pad (#1430)\n\n* feat: dus to dynamic_pad\n\n* feat: dynamic_pad to pad\n\n* chore: comments\n\n* test: restrict applicability\n\n* feat: add to primitives",
+          "timestamp": "2025-09-28T13:58:26-04:00",
+          "tree_id": "a08f416c464c826dc7c72aa4624afe4883605dba",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/14bfc935f481d25da64cdd680bf831cbb19ef65b"
+        },
+        "date": 1759086063094,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004376951899030246,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004339134899782948,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001438124105974,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001403865636006,
             "unit": "s"
           }
         ]
