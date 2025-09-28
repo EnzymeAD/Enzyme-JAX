@@ -32,7 +32,6 @@
 
 #include "stablehlo/dialect/StablehloOps.h"
 
-#include <deque>
 #include <set>
 
 using namespace mlir;
@@ -714,129 +713,6 @@ NoNanResultAnalysis::localGuaranteed(Operation *op,
   }
 }
 
-bool NoNanResultAnalysis::guaranteedImpl(Operation *op) {
-  if (!op)
-    return false;
-
-  // Map of operations we need to still check. If all of these are no-nan
-  // we therefore know that the operation `op` is no nan.
-  std::deque<Operation *> todo = {op};
-
-  // Map of operations we have seen before. The target of the map[o] is a list
-  // of sub-queries, that if all true prove that `o` is no-nan.
-  DenseMap<Operation *, SmallPtrSet<Operation *, 2>> seen;
-
-  // Inverse of seen. A map of operations `p` we still need to prove, to a list
-  // of values that require `p` to be proven.
-  DenseMap<Operation *, SmallVector<Operation *, 2>> reverseSeen;
-
-  while (!todo.empty()) {
-    auto cur = todo.front();
-    todo.pop_front();
-
-    SmallVector<Operation *, 2> localtodo;
-    State status;
-
-    {
-      auto found = opCache.find(cur);
-      if (found != opCache.end()) {
-        if (found->second) {
-          status = State::GUARANTEED;
-        } else {
-          status = State::NOTGUARANTEED;
-        }
-      } else {
-        status = localGuaranteed(cur, localtodo);
-      }
-    }
-
-    switch (status) {
-    case State::NOTGUARANTEED: {
-      SmallVector<Operation *, 2> rtodo{cur};
-      while (!rtodo.empty()) {
-        auto rcur = rtodo.pop_back_val();
-        if (opCache.find(rcur) != opCache.end()) {
-          continue;
-        }
-        opCache[rcur] = false;
-        auto rfound = reverseSeen.find(rcur);
-        if (rfound != reverseSeen.end()) {
-          for (auto next : rfound->second) {
-            rtodo.push_back(next);
-          }
-          reverseSeen.erase(rfound);
-        }
-      }
-      return false;
-    }
-
-    case State::GUARANTEED: {
-      // Operations which are now guaranteed
-      SmallVector<Operation *, 2> rtodo = {cur};
-
-      while (!rtodo.empty()) {
-
-        auto rcur = rtodo.pop_back_val();
-        if (opCache.find(rcur) != opCache.end()) {
-          continue;
-        }
-
-        {
-          auto rfound = seen.find(rcur);
-          if (rfound != seen.end()) {
-            seen.erase(rfound);
-          }
-        }
-
-        // This is now an operation we have not previously marked as guaranteed
-        opCache[rcur] = true;
-
-        // Look if this is one we have previously visited this operation as a
-        // pending value, and if so, remove the corresponding pending
-        // dependencies
-
-        auto rfound = reverseSeen.find(rcur);
-        if (rfound == reverseSeen.end()) {
-          continue;
-        }
-
-        for (auto next : rfound->second) {
-          auto bfound = seen.find(next);
-          assert(bfound != seen.end());
-          bfound->second.erase(rcur);
-          if (bfound->second.empty())
-            rtodo.push_back(next);
-        }
-
-        reverseSeen.erase(rcur);
-      }
-      break;
-    }
-    case State::PENDING: {
-      assert(localtodo.size());
-      assert(seen.find(cur) == seen.end());
-      SmallPtrSet<Operation *, 2> set(localtodo.begin(), localtodo.end());
-      for (auto v : set) {
-        reverseSeen[v].push_back(cur);
-      }
-      seen[cur] = std::move(set);
-      break;
-    }
-    }
-  }
-
-  // We have checked all recursive dependencies, and found no values which would
-  // invalidate. Therefore all seen operations [including op] are known to be
-  // guaranteed.
-  for (auto &sval : seen) {
-    opCache[sval.first] = true;
-  }
-
-  assert(opCache.find(op) != opCache.end());
-
-  return true;
-}
-
 FiniteResultAnalysis initFiniteResultAnalysis() {
   auto noNanAnalysis = std::make_shared<NoNanResultAnalysis>();
   auto finiteAnalysis = std::make_shared<FiniteResultAnalysis>();
@@ -857,74 +733,92 @@ bool FiniteResultAnalysis::constantIntCheck(DenseElementsAttr attr) {
   return true;
 }
 
-bool FiniteResultAnalysis::guaranteedImpl(mlir::Operation *op) {
-  if (!op)
-    return false;
+FiniteResultAnalysis::State
+FiniteResultAnalysis::localGuaranteed(Operation *op,
+                                      SmallVectorImpl<Operation *> &localtodo) {
+
+  assert(op);
 
   if (auto constantOp = dyn_cast<stablehlo::ConstantOp>(op)) {
-    return guaranteed(constantOp);
-  }
-
-  // data movement ops
-  if (isa<stablehlo::SliceOp, stablehlo::ConcatenateOp,
-          stablehlo::BroadcastInDimOp, stablehlo::ReshapeOp,
-          stablehlo::TransposeOp>(op)) {
-    bool allOperandsGuaranteed = true;
-    for (auto operand : op->getOperands()) {
-      if (!guaranteed(operand) || !noNanResultAnalysis->guaranteed(operand))
-        allOperandsGuaranteed = false;
+    if (guaranteed(constantOp)) {
+      return State::GUARANTEED;
+    } else {
+      return State::NOTGUARANTEED;
     }
-    if (allOperandsGuaranteed)
-      return true;
   }
 
   // integer ops
   if (isa<stablehlo::AndOp, stablehlo::OrOp, stablehlo::XorOp, stablehlo::NotOp,
           stablehlo::IotaOp>(op)) {
-    return true;
+    return State::GUARANTEED;
   }
 
-  // elementwise ops that are finite if all operands are not nan and finite
-  if (isa<stablehlo::AddOp, stablehlo::SubtractOp, stablehlo::AbsOp,
-          stablehlo::ExpOp, stablehlo::ConvertOp, stablehlo::CompareOp>(op)) {
+  bool recursiveCheck = false;
+
+  if (isa<stablehlo::SliceOp, stablehlo::ConcatenateOp,
+          stablehlo::BroadcastInDimOp, stablehlo::ReshapeOp,
+          stablehlo::TransposeOp>(op)) {
+    // data movement ops
+    recursiveCheck = true;
+  } else if (isa<stablehlo::AddOp, stablehlo::SubtractOp, stablehlo::MulOp,
+                 stablehlo::AbsOp, stablehlo::ExpOp, stablehlo::ConvertOp,
+                 stablehlo::CompareOp>(op)) {
+    // if both finite [but possibly nan], the result is finite, or nan
+
+    recursiveCheck = true;
+  } else if (isa<stablehlo::TanhOp, stablehlo::LogisticOp, stablehlo::SineOp,
+                 stablehlo::CosineOp>(op)) {
+    // guaranteed finite or nan result, always
+    return State::GUARANTEED;
+  } else if (isa<mlir::stablehlo::SelectOp>(op)) {
+    recursiveCheck = true;
+  }
+
+  if (recursiveCheck) {
     bool allOperandsGuaranteed = true;
     for (auto operand : op->getOperands()) {
-      if (!guaranteed(operand) || !noNanResultAnalysis->guaranteed(operand))
-        allOperandsGuaranteed = false;
+      if (auto TT = dyn_cast<TensorType>(operand.getType())) {
+        if (TT.getElementType().isInteger())
+          continue;
+      }
+
+      {
+        auto found = valueCache.find(operand);
+        if (found != valueCache.end()) {
+          if (found->second) {
+            continue;
+          } else {
+            return State::NOTGUARANTEED;
+          }
+        }
+      }
+
+      auto dop = operand.getDefiningOp();
+      if (!dop)
+        return State::NOTGUARANTEED;
+
+      {
+        auto found = opCache.find(dop);
+        if (found != opCache.end()) {
+          if (found->second) {
+            continue;
+          } else {
+            return State::NOTGUARANTEED;
+          }
+        }
+      }
+
+      localtodo.push_back(dop);
+      allOperandsGuaranteed = false;
     }
+
     if (allOperandsGuaranteed)
-      return true;
+      return State::GUARANTEED;
+    else
+      return State::PENDING;
+  } else {
+    return State::NOTGUARANTEED;
   }
-
-  // guaranteed finite if operands are not nan
-  if (isa<stablehlo::TanhOp, stablehlo::LogisticOp, stablehlo::SineOp,
-          stablehlo::CosineOp>(op)) {
-    bool allOperandsGuaranteed = true;
-    for (auto operand : op->getOperands()) {
-      if (!noNanResultAnalysis->guaranteed(operand))
-        allOperandsGuaranteed = false;
-    }
-    if (allOperandsGuaranteed)
-      return true;
-  }
-
-  if (auto mulOp = dyn_cast<stablehlo::MulOp>(op)) {
-    auto lhsFinite = guaranteed(mulOp.getLhs());
-    auto rhsFinite = guaranteed(mulOp.getRhs());
-
-    if (!lhsFinite || !rhsFinite) {
-      return false;
-    }
-
-    return noNanResultAnalysis->guaranteed(op);
-  }
-
-  if (auto selectOp = dyn_cast<mlir::stablehlo::SelectOp>(op)) {
-    return guaranteed(selectOp.getOnTrue()) &&
-           guaranteed(selectOp.getOnFalse());
-  }
-
-  return false;
 }
 
 bool NonNegativeResultAnalysis::constantIntCheck(DenseElementsAttr attr) {
@@ -943,38 +837,61 @@ bool NonNegativeResultAnalysis::constantFloatCheck(DenseElementsAttr attr) {
   return true;
 }
 
-bool NonNegativeResultAnalysis::guaranteedImpl(Operation *op) {
-  if (!op)
-    return false;
+NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
+    Operation *op, SmallVectorImpl<Operation *> &localtodo) {
 
+  assert(op);
+
+  if (auto constantOp = dyn_cast<stablehlo::ConstantOp>(op)) {
+    if (guaranteed(constantOp)) {
+      return State::GUARANTEED;
+    } else {
+      return State::NOTGUARANTEED;
+    }
+  }
+
+  // integer ops
   if (isa<stablehlo::AbsOp, stablehlo::SqrtOp, stablehlo::ExpOp,
           stablehlo::IotaOp, stablehlo::AndOp, stablehlo::OrOp,
           stablehlo::XorOp, stablehlo::NotOp>(op))
-    return true;
-
-  if (auto constOp = dyn_cast<stablehlo::ConstantOp>(op)) {
-    // Constant is non-negative if all its elements are non-negative
-    return guaranteed(constOp);
-  }
+    return State::GUARANTEED;
 
   // Any non-negative operation that produces a non-negative result
+  // Here we recur on the rhs, as that is more likely to be a constant.
   if (isa<stablehlo::MaxOp>(op)) {
-    if (guaranteed(op->getOperand(0)) || guaranteed(op->getOperand(1)))
-      return true;
-  }
+    if (guaranteed(op->getOperand(1)))
+      return State::GUARANTEED;
 
-  // All non-negative operations that produce a non-negative result
-  if (isa<stablehlo::MinOp, stablehlo::AddOp, stablehlo::MulOp,
-          stablehlo::ConcatenateOp, stablehlo::ReshapeOp,
-          stablehlo::TransposeOp, stablehlo::SliceOp,
-          stablehlo::DynamicUpdateSliceOp, stablehlo::BroadcastInDimOp>(op)) {
-    bool allOperandsGuaranteed = true;
-    for (auto operand : op->getOperands()) {
-      if (!guaranteed(operand))
-        allOperandsGuaranteed = false;
+    auto operand = op->getOperand(0);
+
+    {
+      auto found = valueCache.find(operand);
+      if (found != valueCache.end()) {
+        if (found->second) {
+          return State::GUARANTEED;
+        } else {
+          return State::NOTGUARANTEED;
+        }
+      }
     }
-    if (allOperandsGuaranteed)
-      return true;
+
+    auto dop = operand.getDefiningOp();
+    if (!dop)
+      return State::NOTGUARANTEED;
+
+    {
+      auto found = opCache.find(dop);
+      if (found != opCache.end()) {
+        if (found->second) {
+          return State::GUARANTEED;
+        } else {
+          return State::NOTGUARANTEED;
+        }
+      }
+    }
+
+    localtodo.push_back(dop);
+    return State::PENDING;
   }
 
   // (mul a a) is always non-negative
@@ -983,27 +900,100 @@ bool NonNegativeResultAnalysis::guaranteedImpl(Operation *op) {
     auto rhsOp = mulOp.getRhs().getDefiningOp();
 
     if (lhsOp == rhsOp)
-      return true;
+      return State::GUARANTEED;
   }
 
   if (auto clampOp = dyn_cast<stablehlo::ClampOp>(op)) {
     // Clamp is non-negative if the min operand is non-negative
-    if (guaranteed(clampOp.getMin()))
-      return true;
+    auto operand = clampOp.getMin();
+
+    {
+      auto found = valueCache.find(operand);
+      if (found != valueCache.end()) {
+        if (found->second) {
+          return State::GUARANTEED;
+        } else {
+          return State::NOTGUARANTEED;
+        }
+      }
+    }
+
+    auto dop = operand.getDefiningOp();
+    if (!dop)
+      return State::NOTGUARANTEED;
+
+    {
+      auto found = opCache.find(dop);
+      if (found != opCache.end()) {
+        if (found->second) {
+          return State::GUARANTEED;
+        } else {
+          return State::NOTGUARANTEED;
+        }
+      }
+    }
+
+    localtodo.push_back(dop);
+    return State::PENDING;
   }
 
-  // TODO: For NegOp we need a check for if the operand is guaranteed to be
-  // non-positive
+  bool recursiveCheck = false;
 
-  // TODO: Mul of 2 negative values is non-negative
-
-  if (auto selectOp = dyn_cast<stablehlo::SelectOp>(op)) {
-    return guaranteed(selectOp.getOnTrue()) &&
-           guaranteed(selectOp.getOnFalse());
+  if (isa<stablehlo::MinOp, stablehlo::AddOp, stablehlo::MulOp,
+          stablehlo::ConcatenateOp, stablehlo::ReshapeOp,
+          stablehlo::TransposeOp, stablehlo::SliceOp,
+          stablehlo::DynamicUpdateSliceOp, stablehlo::BroadcastInDimOp>(op)) {
+    // All non-negative operations that produce a non-negative result
+    recursiveCheck = true;
+  } else if (isa<mlir::stablehlo::SelectOp>(op)) {
+    recursiveCheck = true;
   }
 
-  // Default: can't guarantee non-negative result
-  return false;
+  if (recursiveCheck) {
+    bool allOperandsGuaranteed = true;
+    size_t idx = 0;
+    for (auto operand : op->getOperands()) {
+      if (idx == 0 && isa<mlir::stablehlo::SelectOp>(op))
+        continue;
+      idx++;
+
+      {
+        auto found = valueCache.find(operand);
+        if (found != valueCache.end()) {
+          if (found->second) {
+            continue;
+          } else {
+            return State::NOTGUARANTEED;
+          }
+        }
+      }
+
+      auto dop = operand.getDefiningOp();
+      if (!dop)
+        return State::NOTGUARANTEED;
+
+      {
+        auto found = opCache.find(dop);
+        if (found != opCache.end()) {
+          if (found->second) {
+            continue;
+          } else {
+            return State::NOTGUARANTEED;
+          }
+        }
+      }
+
+      localtodo.push_back(dop);
+      allOperandsGuaranteed = false;
+    }
+
+    if (allOperandsGuaranteed)
+      return State::GUARANTEED;
+    else
+      return State::PENDING;
+  } else {
+    return State::NOTGUARANTEED;
+  }
 }
 
 bool anyOperandIsConstant(mlir::Operation *op) {
