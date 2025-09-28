@@ -251,6 +251,22 @@ struct MarkFunctionMemoryEffectsPass
             valueToArgIndex[result] = argIndex;
             worklist.push(result);
           }
+      }
+    }
+  }
+
+  void collectAllFunctions(
+      Operation *op,
+      DenseMap<SymbolRefAttr, FunctionOpInterface> &symbolToFunc) {
+    if (auto funcOp = dyn_cast<FunctionOpInterface>(op)) {
+      // Create the symbol reference for this function
+      auto symbolRef = SymbolRefAttr::get(funcOp.getOperation());
+      symbolToFunc[symbolRef] = funcOp;
+    }
+    for (Region &region : op->getRegions()) {
+      for (Block &block : region) {
+        for (Operation &childOp : block) {
+          collectAllFunctions(&childOp, symbolToFunc);
         }
       }
     }
@@ -263,6 +279,10 @@ struct MarkFunctionMemoryEffectsPass
 
     DenseMap<SymbolRefAttr, BitVector> funcEffects;
     DenseMap<SymbolRefAttr, SmallVector<BitVector>> funcArgEffects;
+    DenseMap<SymbolRefAttr, FunctionOpInterface> symbolToFunc;
+
+    // Collect all functions from the module and nested modules
+    collectAllFunctions(module, symbolToFunc);
 
     CallGraph callGraph(module);
 
@@ -309,6 +329,12 @@ struct MarkFunctionMemoryEffectsPass
           }
         } else if (auto kcall = dyn_cast<enzymexla::KernelCallOp>(op)) {
           if (kcall.getXlaSideEffectFreeAttr()) {
+            return WalkResult::advance();
+          } else {
+            insertMemoryEffects(effects);
+          }
+        } else if (auto tcall = dyn_cast<enzymexla::TritonCallOp>(op)) {
+          if (tcall.getXlaSideEffectFreeAttr()) {
             return WalkResult::advance();
           } else {
             insertMemoryEffects(effects);
@@ -413,10 +439,10 @@ struct MarkFunctionMemoryEffectsPass
 
     // Finally, attach attributes
     for (auto &[symbol, effectsSet] : funcEffects) {
-      auto funcOp = dyn_cast_or_null<FunctionOpInterface>(
-          module.lookupSymbol(symbol.getLeafReference()));
-      if (!funcOp)
+      auto it = symbolToFunc.find(symbol);
+      if (it == symbolToFunc.end())
         continue;
+      auto funcOp = it->second;
 
       auto funcEffectInfo = getEffectInfo(builder, effectsSet);
       funcOp->setAttr("enzymexla.memory_effects",
