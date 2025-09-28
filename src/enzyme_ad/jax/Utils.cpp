@@ -671,7 +671,7 @@ NoNanResultAnalysis::localGuaranteed(Operation *op,
   if (recursiveCheck) {
     bool allOperandsGuaranteed = true;
     for (auto operand : op->getOperands()) {
-      if (auto TT = dyn_cast<TensorType>(operand)) {
+      if (auto TT = dyn_cast<TensorType>(operand.getType())) {
         if (TT.getElementType().isInteger())
           continue;
       }
@@ -708,7 +708,7 @@ NoNanResultAnalysis::localGuaranteed(Operation *op,
     if (allOperandsGuaranteed)
       return State::GUARANTEED;
     else
-      return PENDING;
+      return State::PENDING;
   } else {
     return State::NOTGUARANTEED;
   }
@@ -804,7 +804,7 @@ bool NoNanResultAnalysis::guaranteedImpl(Operation *op) {
           auto bfound = seen.find(next);
           assert(bfound != seen.end());
           bfound->second.erase(rcur);
-          if (bfound.second->empty())
+          if (bfound->second.empty())
             rtodo.push_back(next);
         }
 
@@ -814,12 +814,12 @@ bool NoNanResultAnalysis::guaranteedImpl(Operation *op) {
     }
     case State::PENDING: {
       assert(localtodo.size());
-      assert(seen.find(rcur) == seen.end());
+      assert(seen.find(cur) == seen.end());
       SmallPtrSet<Operation *, 2> set(localtodo.begin(), localtodo.end());
       for (auto v : set) {
-        reverseSeen[v].push_back(rcur);
+        reverseSeen[v].push_back(cur);
       }
-      seen[rcur] = std::move(set);
+      seen[cur] = std::move(set);
       break;
     }
     }
@@ -832,7 +832,7 @@ bool NoNanResultAnalysis::guaranteedImpl(Operation *op) {
     opCache[sval.first] = true;
   }
 
-  assert(opCache.find(cur) != opCache.end());
+  assert(opCache.find(op) != opCache.end());
 
   return true;
 }
