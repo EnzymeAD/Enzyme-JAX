@@ -252,6 +252,22 @@ struct MarkFunctionMemoryEffectsPass
             valueToArgIndex[result] = argIndex;
             worklist.push(result);
           }
+      }
+    }
+  }
+
+  void collectAllFunctions(
+      Operation *op,
+      DenseMap<SymbolRefAttr, FunctionOpInterface> &symbolToFunc) {
+    if (auto funcOp = dyn_cast<FunctionOpInterface>(op)) {
+      // Create the symbol reference for this function
+      auto symbolRef = SymbolRefAttr::get(funcOp.getOperation());
+      symbolToFunc[symbolRef] = funcOp;
+    }
+    for (Region &region : op->getRegions()) {
+      for (Block &block : region) {
+        for (Operation &childOp : block) {
+          collectAllFunctions(&childOp, symbolToFunc);
         }
       }
     }
@@ -326,6 +342,12 @@ struct MarkFunctionMemoryEffectsPass
           }
         } else if (auto kcall = dyn_cast<enzymexla::KernelCallOp>(op)) {
           if (kcall.getXlaSideEffectFreeAttr()) {
+            return WalkResult::advance();
+          } else {
+            insertMemoryEffects(effects);
+          }
+        } else if (auto tcall = dyn_cast<enzymexla::TritonCallOp>(op)) {
+          if (tcall.getXlaSideEffectFreeAttr()) {
             return WalkResult::advance();
           } else {
             insertMemoryEffects(effects);
