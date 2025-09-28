@@ -33,6 +33,7 @@
 #include "stablehlo/dialect/StablehloOps.h"
 
 #include <set>
+#include <deque>
 
 using namespace mlir;
 using namespace mlir::enzyme;
@@ -605,7 +606,7 @@ bool NoNanResultAnalysis::constantFloatCheck(DenseElementsAttr attr) {
 
 NoNanResultAnalysis::State
 NoNanResultAnalysis::localGuaranteed(Operation *op,
-                                     SmallVectorImpl<Operation *> localtodo) {
+                                     SmallVectorImpl<Operation *> &localtodo) {
   assert(op);
 
   if (auto constantOp = dyn_cast<stablehlo::ConstantOp>(op)) {
@@ -734,7 +735,7 @@ bool NoNanResultAnalysis::guaranteedImpl(Operation *op) {
     todo.pop_front();
 
     SmallVector<Operation *, 2> localtodo;
-    Status status;
+    State status;
 
     {
       auto found = opCache.find(cur);
@@ -751,7 +752,7 @@ bool NoNanResultAnalysis::guaranteedImpl(Operation *op) {
 
     switch (status) {
     case State::NOTGUARANTEED: {
-      SmallVector<Operation *, 2> rtodo = {cur};
+      SmallVector<Operation *, 2> rtodo {cur};
       while (!rtodo.empty()) {
         auto rcur = rtodo.pop_back_val();
         if (opCache.find(rcur) != opCache.end()) {
@@ -803,7 +804,7 @@ bool NoNanResultAnalysis::guaranteedImpl(Operation *op) {
           auto bfound = seen.find(next);
           assert(bfound != seen.end());
           bfound->second.erase(rcur);
-          if (bfound.second.empty())
+          if (bfound.second->empty())
             rtodo.push_back(next);
         }
 
@@ -815,7 +816,8 @@ bool NoNanResultAnalysis::guaranteedImpl(Operation *op) {
       assert(localtodo.size());
       assert(seen.find(rcur) == seen.end());
       SmallPtrSet<Operation *, 2> set(localtodo.begin(),
-                                      localtodo.end()) for (auto v : set) {
+                                      localtodo.end());
+      for (auto v : set) {
         reverseSeen[v].push_back(rcur);
       }
       seen[rcur] = std::move(set);
