@@ -248,6 +248,7 @@ void loadAllRegisteredDialects(mlir::MLIRContext &context) {
   context.loadDialect<mlir::sdy::SdyDialect>();
   context.loadDialect<mlir::ub::UBDialect>();
   context.loadDialect<mlir::triton::TritonDialect>();
+  context.loadDialect<mlir::enzyme::triton_ext::TritonExtDialect>();
   context.loadDialect<mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect>();
   context.loadDialect<mlir::triton::gpu::TritonGPUDialect>();
 }
