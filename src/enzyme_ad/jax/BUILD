@@ -645,6 +645,114 @@ gentbl_cc_library(
     ],
 )
 
+td_library(
+    name = "TritonExtDialectTdFiles",
+    srcs = [
+        "Dialect/TritonExt/Dialect.td",
+        "Dialect/TritonExt/Ops.td",
+    ],
+    deps = [
+        "@llvm-project//mlir:BuiltinDialectTdFiles",
+        "@llvm-project//mlir:CallOpInterfaces",
+        "@llvm-project//mlir:ControlFlowInterfacesTdFiles",
+        "@llvm-project//mlir:FunctionInterfacesTdFiles",
+        "@llvm-project//mlir:InferTypeOpInterfaceTdFiles",
+        "@llvm-project//mlir:OpBaseTdFiles",
+        "@llvm-project//mlir:SideEffectInterfacesTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "TritonExtDialectIncGen",
+    tbl_outs = [
+        (
+            [
+                "-gen-dialect-decls",
+                "-dialect=triton_ext",
+            ],
+            "Dialect/TritonExt/TritonExtDialect.h.inc",
+        ),
+        (
+            [
+                "-gen-dialect-defs",
+                "-dialect=triton_ext",
+            ],
+            "Dialect/TritonExt/TritonExtDialect.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/TritonExt/Dialect.td",
+    deps = [
+        ":TritonExtDialectTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "TritonExtOpsIncGen",
+    tbl_outs = [
+        (
+            ["-gen-op-decls"],
+            "Dialect/TritonExt/TritonExtOps.h.inc",
+        ),
+        (
+            ["-gen-op-defs"],
+            "Dialect/TritonExt/TritonExtOps.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/TritonExt/Ops.td",
+    deps = [
+        ":TritonExtDialectTdFiles",
+    ],
+)
+
+cc_library(
+    name = "TritonExtDialect",
+    srcs = [
+        "Dialect/TritonExt/Dialect.cpp",
+        "Dialect/TritonExt/Ops.cpp",
+    ],
+    hdrs = [
+        "Dialect/TritonExt/Dialect.h",
+        "Dialect/TritonExt/Ops.h",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":CommonOpCanonicalizers",
+        ":CommonOpHelpers",
+        ":TritonExtDialectIncGen",
+        ":TritonExtOpsIncGen",
+        "@llvm-project//mlir:CallOpInterfaces",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:LLVMDialect",
+        "@llvm-project//mlir:SideEffectInterfaces",
+        "@stablehlo//:stablehlo_ops",
+        "@triton//:TritonDialects",
+    ],
+)
+
+cc_library(
+    name = "CommonOpHelpers",
+    srcs = [],
+    hdrs = ["Dialect/Utils.h"],
+    deps = [
+        "@llvm-project//mlir:SideEffectInterfaces",
+    ],
+)
+
+cc_library(
+    name = "CommonOpCanonicalizers",
+    srcs = [],
+    hdrs = [
+        "Dialect/CommonCanonicalizers.h",
+    ],
+    deps = [
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:LLVMDialect",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
 cc_library(
     name = "CheckedRewrite",
     hdrs = ["CheckedRewrite.h"],
@@ -743,6 +851,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":CheckedRewrite",
+        ":CommonOpCanonicalizers",
         ":DistributedDialectIncGen",
         ":DistributedOpsIncGen",
         ":DistributedTypesIncGen",
@@ -757,6 +866,7 @@ cc_library(
         ":StablehloOptPatternsIncGen",
         ":TesseraDialectIncGen",
         ":TesseraOpsIncGen",
+        ":TritonExtDialect",
         ":chlo-derivatives",
         ":enzymexla-derivatives",
         ":mhlo-derivatives",
@@ -880,6 +990,7 @@ cc_library(
     deps = [
         ":TransformOps",
         ":XLADerivatives",
+        ":TritonExtDialect",
         ":EnzymeXLAPassesIncGen",
         "@com_google_protobuf//:protobuf",
         "@tsl//tsl/platform:env",
