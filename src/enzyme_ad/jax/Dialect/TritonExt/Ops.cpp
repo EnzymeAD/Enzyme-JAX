@@ -39,9 +39,11 @@ TritonCallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
            << getFn() << "' does not reference a valid global funcOp";
 
   // Verify that the referenced symbol is specifically a tt.func operation
-  if (global->getName().getStringRef() != "tt.func")
+  auto fnKind = global->getName().getStringRef();
+  if (fnKind != "tt.func" && fnKind != "llvm.func")
     return emitOpError("'")
-           << getFn() << "' does not reference a valid tt.func operation, got: "
+           << getFn()
+           << "' does not reference a valid tt.func/llvm.func operation, got: "
            << global->getName();
 
   return success();
