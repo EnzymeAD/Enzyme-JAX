@@ -16,9 +16,9 @@ def TensorI64
            "tensor<i64>", "::mlir::TensorType">,
       BuildableType<"RankedTensorType::get({}, $_builder.getIntegerType(64))">;
 
-def TritonModuleOp
-    : TritonExtOp<"module",
-                  [IsolatedFromAbove, NoRegionArguments, SymbolTable, Symbol]> {
+def TritonModuleOp : TritonExtOp<"module", [
+  IsolatedFromAbove, NoRegionArguments, SymbolTable, Symbol, NoTerminator
+]> {
   let summary = "Triton Module operation";
 
   let arguments = (ins SymbolNameAttr : $sym_name);
