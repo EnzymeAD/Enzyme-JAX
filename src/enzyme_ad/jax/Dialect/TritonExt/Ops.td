@@ -21,7 +21,7 @@ def TritonModuleOp
                   [IsolatedFromAbove, NoRegionArguments, SymbolTable, Symbol]> {
   let summary = "Triton Module operation";
 
-  let arguments = (ins SymbolRefAttr : $sym_name);
+  let arguments = (ins SymbolNameAttr : $sym_name);
   let regions = (region SizedRegion<1> : $bodyRegion);
 
   // clang-format off
