@@ -105,6 +105,8 @@
 #include "xla/service/spmd/shardy/stablehlo_round_trip/stablehlo_export.h"
 #include "xla/service/spmd/shardy/stablehlo_round_trip/stablehlo_import.h"
 
+#include "nvidia/include/NVGPUToLLVM/Passes.h"
+#include "nvidia/include/TritonNVIDIAGPUToLLVM/Passes.h"
 #include "triton/Conversion/TritonGPUToLLVM/Passes.h"
 #include "triton/Conversion/TritonToTritonGPU/Passes.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -370,6 +372,9 @@ void initializePasses() {
   mlir::triton::gpu::registerTritonGPUToLLVMPasses();
   mlir::triton::nvidia_gpu::registerTritonNvidiaGPUPasses();
   mlir::triton::registerTritonToTritonGPUPasses();
+  mlir::triton::registerConvertWarpSpecializeToLLVM();
+  mlir::triton::registerConvertTritonGPUToLLVMPass();
+  mlir::triton::registerConvertNVGPUToLLVMPass();
   mlir::registerLLVMDIScopePass();
 }
 
