@@ -85,7 +85,10 @@ void TritonCallOp::getEffects(
 
 void TritonCallOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                                MLIRContext *context) {
-  results.insert<ReadOnlyArg<TritonCallOp>, ReadNoneArg<TritonCallOp>>(context);
+  // for llvm.func triton updates the function signature, so arguments and
+  // such need to be updated. for now disable the canonicalization
+  // results.insert<ReadOnlyArg<TritonCallOp>, ReadNoneArg<TritonCallOp>>(
+  //   context);
 }
 
 } // namespace triton_ext
