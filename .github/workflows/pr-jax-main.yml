@@ -24,6 +24,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+      - name: Set branch name
+        run: |
+          echo "BRANCH_NAME=jax-latest-commit" >> "${GITHUB_ENV}"
+      - name: Prepare commit message
+        run: |
+          echo "COMMIT_MSG_PREFIX=Update JAX to commit " >> "${GITHUB_ENV}"
       - name: Get JAX commit
         shell: bash
         run: |
@@ -41,17 +47,38 @@ jobs:
       - name: Modify JAX commit
         run: |
           sed -i 's/JAX_COMMIT = ".*"/JAX_COMMIT = "${{ env.NEW_JAX_COMMIT }}"/' workspace.bzl
+      - name: Decide whether to open the pull request
+        id: decide
+        run: |
+          # Fetch latest commit on the branch
+          LATEST_COMMIT_MESSAGE="$(curl -s -H 'Authorization: token ${{ secrets.GITHUB_TOKEN }}' 'https://api.github.com/repos/${{ github.repository }}/commits/${{ env.BRANCH_NAME }}' | jq -r '.commit.message')"
+          echo "Latest commit message on the branch '${{ env.BRANCH_NAME }}' is:"
+          echo "----------"
+          echo "${LATEST_COMMIT_MESSAGE}"
+          echo "----------"
+          if [[ "${LATEST_COMMIT_MESSAGE}" == "null" || "${LATEST_COMMIT_MESSAGE}" == "${{ env.COMMIT_MSG_PREFIX }}"* ]]; then
+              # Open the PR only if the target branch doesn't exist or latest commit message
+              # starts with the expected prefix.
+              echo "We're going to open the pull request..."
+              echo "should_pr=true" >> "${GITHUB_OUTPUT}"
+          else
+              # Otherwise there are other commits to the branch and we don't want to
+              # override them!
+              echo "There seem to be extra commits, we won't open the pull request"
+              echo "should_pr=false" >> "${GITHUB_OUTPUT}"
+          fi
       - name: Create Pull Request
+        if: ${{ steps.decide.outputs.should_pr == 'true' }}
         uses: peter-evans/create-pull-request@v7
         with:
           token: ${{ secrets.JAX_LATEST_COMMIT }}
           commit-message: |
-            Update JAX to commit ${{ env.NEW_JAX_COMMIT }}
+            ${{ env.COMMIT_MSG_PREFIX }}${{ env.NEW_JAX_COMMIT }}
 
             ${{ env.DIFF_MSG }}
           body: ${{ env.DIFF_MSG }}
-          branch: jax-latest-commit
-          title: 'Update JAX to commit ${{ env.NEW_JAX_COMMIT }}'
+          branch: ${{ env.BRANCH_NAME }}
+          title: '${{ env.COMMIT_MSG_PREFIX }}${{ env.NEW_JAX_COMMIT }}'
           delete-branch: true
           draft: false
           author: 'enzyme-ci-bot[bot] <78882869+enzyme-ci-bot[bot]@users.noreply.github.com>'

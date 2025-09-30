@@ -3,7 +3,7 @@ numpy
 jax
 jaxlib
 
-https://github.com/wsmoses/jax-md/archive/45059b8f63dad0b5cb171feafff71b82162487e7.tar.gz; sys_platform == 'linux'
+https://github.com/jax-md/jax-md/archive/6c96978f8412214d842fb52e9a6f259ac0cefd3e.tar.gz; sys_platform == 'linux'
 https://github.com/wsmoses/jraph/archive/b00d9a03db76c69a258a86df81638b9a2f28829f.tar.gz; sys_platform == 'linux'
 
 # maxtext can't be installed concurrently, but installing it fixes
