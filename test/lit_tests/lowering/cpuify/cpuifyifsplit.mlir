@@ -1,5 +1,5 @@
-// RUN: polygeist-opt --cpuify="method=distribute.mincut.ifhoist" --split-input-file %s | FileCheck %s
-// RUN: polygeist-opt --cpuify="method=distribute.mincut.ifsplit" --split-input-file %s | FileCheck %s -check-prefix=IFSPLIT
+// RUN: enzymexlamlir-opt --cpuify="method=distribute.mincut.ifhoist" --split-input-file %s | FileCheck %s
+// RUN: enzymexlamlir-opt --cpuify="method=distribute.mincut.ifsplit" --split-input-file %s | FileCheck %s -check-prefix=IFSPLIT
 
 
 module {
@@ -19,14 +19,14 @@ module {
         %v = func.call @get() : () -> i32
         %alloc = memref.alloca() : memref<i32>
         memref.store %v, %alloc[] : memref<i32>
-        "polygeist.barrier"(%arg4) : (index) -> ()
+        "enzymexla.barrier"(%arg4) : (index) -> ()
         %load = memref.load %alloc[] : memref<i32>
         func.call @use(%load) : (i32) -> ()
         func.call @use(%v) : (i32) -> ()
         scf.yield
       }
       func.call @usei(%arg4) : (index) -> ()
-      scf.yield
+      scf.reduce
     }
     return
   }
@@ -43,14 +43,14 @@ module {
         %v = func.call @get() : () -> i32
         %alloc = memref.alloca() : memref<i32>
         memref.store %v, %alloc[] : memref<i32>
-        "polygeist.barrier"(%arg4) : (index) -> ()
+        "enzymexla.barrier"(%arg4) : (index) -> ()
         %load = memref.load %alloc[] : memref<i32>
         func.call @use(%load) : (i32) -> ()
         func.call @use(%v) : (i32) -> ()
         scf.yield
       }
       func.call @usei(%arg4) : (index) -> ()
-      scf.yield
+      scf.reduce
     }
     return
   }
@@ -63,13 +63,13 @@ module {
         %v = func.call @get() : () -> i32
         %alloc = memref.alloca() : memref<i32>
         memref.store %v, %alloc[] : memref<i32>
-        "polygeist.barrier"(%arg4) : (index) -> ()
+        "enzymexla.barrier"(%arg4) : (index) -> ()
         %load = memref.load %alloc[] : memref<i32>
         func.call @use(%load) : (i32) -> ()
         func.call @use(%v) : (i32) -> ()
         scf.yield
       }
-      scf.yield
+      scf.reduce
     }
     return
   }
@@ -81,7 +81,7 @@ module {
       func.call @usei(%arg4) : (index) -> ()
       %res = scf.if %arg -> i32 {
         %v = func.call @get() : () -> i32
-        "polygeist.barrier"(%arg4) : (index) -> ()
+        "enzymexla.barrier"(%arg4) : (index) -> ()
         func.call @use(%v) : (i32) -> ()
         scf.yield %v : i32
       } else {
@@ -90,7 +90,7 @@ module {
         scf.yield %v : i32
       }
       func.call @use(%res) : (i32) -> ()
-      scf.yield
+      scf.reduce
     }
     return
   }
@@ -102,7 +102,7 @@ module {
   //    func.call @usei(%[[arg4:.+]]) : (index) -> ()
   //    %[[res:.+]] = scf.if %[[arg]] -> index {
   //      %v = func.call @geti() : () -> index
-  //      "polygeist.barrier"(%[[arg4]]) : (index) -> ()
+  //      "enzymexla.barrier"(%[[arg4]]) : (index) -> ()
   //      func.call @usei(%v) : (index) -> ()
   //      scf.yield %v : index
   //    } else {
@@ -131,18 +131,18 @@ module {
 // CHECK-NEXT:          func.call @usei(%[[arg3:.+]]) : (index) -> ()
 // CHECK-NEXT:          %[[V2:.+]] = func.call @get() : () -> i32
 // CHECK-NEXT:          memref.store %[[V2]], %[[V0]][%[[arg3]]] : memref<?xi32>
-// CHECK-NEXT:          %[[V3:.+]] = "polygeist.subindex"(%[[V1]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
+// CHECK-NEXT:          %[[V3:.+]] = "enzymexla.subindex"(%[[V1]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
 // CHECK-NEXT:          memref.store %[[V2]], %[[V3]][] : memref<i32>
-// CHECK-NEXT:          scf.yield
+// CHECK-NEXT:          scf.reduce
 // CHECK-NEXT:        }
 // CHECK-NEXT:        scf.parallel (%[[arg3:.+]]) = (%[[c0]]) to (%[[c9]]) step (%[[c1]]) {
 // CHECK-NEXT:          %[[V2:.+]] = memref.load %[[V0]][%[[arg3]]] : memref<?xi32>
-// CHECK-NEXT:          %[[V3:.+]] = "polygeist.subindex"(%[[V1]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
+// CHECK-NEXT:          %[[V3:.+]] = "enzymexla.subindex"(%[[V1]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
 // CHECK-NEXT:          %[[V4:.+]] = memref.load %[[V3]][] : memref<i32>
 // CHECK-NEXT:          func.call @use(%[[V4:.+]]) : (i32) -> ()
 // CHECK-NEXT:          func.call @use(%[[V2:.+]]) : (i32) -> ()
 // CHECK-NEXT:          func.call @usei(%[[arg3:.+]]) : (index) -> ()
-// CHECK-NEXT:          scf.yield
+// CHECK-NEXT:          scf.reduce
 // CHECK-NEXT:        }
 // CHECK-NEXT:      }
 // CHECK-NEXT:    } else {
@@ -161,17 +161,17 @@ module {
 // CHECK-NEXT:        scf.parallel (%[[arg3:.+]]) = (%[[c0]]) to (%[[c9]]) step (%[[c1]]) {
 // CHECK-NEXT:          %[[V2:.+]] = func.call @get() : () -> i32
 // CHECK-NEXT:          memref.store %[[V2]], %[[V0]][%[[arg3]]] : memref<?xi32>
-// CHECK-NEXT:          %[[V3:.+]] = "polygeist.subindex"(%[[V1]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
+// CHECK-NEXT:          %[[V3:.+]] = "enzymexla.subindex"(%[[V1]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
 // CHECK-NEXT:          memref.store %[[V2]], %[[V3]][] : memref<i32>
-// CHECK-NEXT:          scf.yield
+// CHECK-NEXT:          scf.reduce
 // CHECK-NEXT:        }
 // CHECK-NEXT:        scf.parallel (%[[arg3:.+]]) = (%[[c0]]) to (%[[c9]]) step (%[[c1]]) {
 // CHECK-NEXT:          %[[V2:.+]] = memref.load %[[V0]][%[[arg3]]] : memref<?xi32>
-// CHECK-NEXT:          %[[V3:.+]] = "polygeist.subindex"(%[[V1]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
+// CHECK-NEXT:          %[[V3:.+]] = "enzymexla.subindex"(%[[V1]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
 // CHECK-NEXT:          %[[V4:.+]] = memref.load %[[V3]][] : memref<i32>
 // CHECK-NEXT:          func.call @use(%[[V4:.+]]) : (i32) -> ()
 // CHECK-NEXT:          func.call @use(%[[V2:.+]]) : (i32) -> ()
-// CHECK-NEXT:          scf.yield
+// CHECK-NEXT:          scf.reduce
 // CHECK-NEXT:        }
 // CHECK-NEXT:      }
 // CHECK-NEXT:    } else {
@@ -192,17 +192,17 @@ module {
 // CHECK-NEXT:          func.call @usei(%[[arg3:.+]]) : (index) -> ()
 // CHECK-NEXT:          %[[V2:.+]] = func.call @get() : () -> i32
 // CHECK-NEXT:          memref.store %[[V2]], %[[V0]][%[[arg3]]] : memref<?xi32>
-// CHECK-NEXT:          scf.yield
+// CHECK-NEXT:          scf.reduce
 // CHECK-NEXT:        }
 // CHECK-NEXT:        scf.parallel (%[[arg3:.+]]) = (%[[c0]]) to (%[[c9]]) step (%[[c1]]) {
 // CHECK-NEXT:          %[[V2:.+]] = memref.load %[[V0]][%[[arg3]]] : memref<?xi32>
 // CHECK-NEXT:          func.call @use(%[[V2:.+]]) : (i32) -> ()
-// CHECK-NEXT:          %[[V3:.+]] = "polygeist.subindex"(%[[V1]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
+// CHECK-NEXT:          %[[V3:.+]] = "enzymexla.subindex"(%[[V1]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
 // CHECK-NEXT:          memref.store %[[V2]], %[[V3]][] : memref<i32>
-// CHECK-NEXT:          %[[V4:.+]] = "polygeist.subindex"(%[[V1]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
+// CHECK-NEXT:          %[[V4:.+]] = "enzymexla.subindex"(%[[V1]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
 // CHECK-NEXT:          %[[V5:.+]] = memref.load %[[V4]][] : memref<i32>
 // CHECK-NEXT:          func.call @use(%[[V5:.+]]) : (i32) -> ()
-// CHECK-NEXT:          scf.yield
+// CHECK-NEXT:          scf.reduce
 // CHECK-NEXT:        }
 // CHECK-NEXT:      }
 // CHECK-NEXT:    } else {
@@ -214,7 +214,7 @@ module {
 // CHECK-NEXT:        memref.store %[[V1]], %[[V0]][] : memref<i32>
 // CHECK-NEXT:        %[[V2:.+]] = memref.load %[[V0]][] : memref<i32>
 // CHECK-NEXT:        func.call @use(%[[V2:.+]]) : (i32) -> ()
-// CHECK-NEXT:        scf.yield
+// CHECK-NEXT:        scf.reduce
 // CHECK-NEXT:      }
 // CHECK-NEXT:    }
 // CHECK-NEXT:    return
@@ -231,26 +231,26 @@ module {
 // IFSPLIT-NEXT:        func.call @usei(%[[arg3:.+]]) : (index) -> ()
 // IFSPLIT-NEXT:        scf.if %[[arg0]] {
 // IFSPLIT-NEXT:          %[[V2:.+]] = func.call @get() : () -> i32
-// IFSPLIT-NEXT:          %[[V3:.+]] = "polygeist.subindex"(%[[V1]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
+// IFSPLIT-NEXT:          %[[V3:.+]] = "enzymexla.subindex"(%[[V1]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
 // IFSPLIT-NEXT:          memref.store %[[V2]], %[[V3]][] : memref<i32>
-// IFSPLIT-NEXT:          %[[V4:.+]] = "polygeist.subindex"(%[[V0]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
+// IFSPLIT-NEXT:          %[[V4:.+]] = "enzymexla.subindex"(%[[V0]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
 // IFSPLIT-NEXT:          memref.store %[[V2]], %[[V4]][] : memref<i32>
 // IFSPLIT-NEXT:        } else {
 // IFSPLIT-NEXT:        }
-// IFSPLIT-NEXT:        scf.yield
+// IFSPLIT-NEXT:        scf.reduce
 // IFSPLIT-NEXT:      }
 // IFSPLIT-NEXT:      scf.parallel (%[[arg3:.+]]) = (%[[c0]]) to (%[[c9]]) step (%[[c1]]) {
 // IFSPLIT-NEXT:        scf.if %[[arg0]] {
-// IFSPLIT-NEXT:          %[[V2:.+]] = "polygeist.subindex"(%[[V1]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
+// IFSPLIT-NEXT:          %[[V2:.+]] = "enzymexla.subindex"(%[[V1]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
 // IFSPLIT-NEXT:          %[[V3:.+]] = memref.load %[[V2]][] : memref<i32>
-// IFSPLIT-NEXT:          %[[V4:.+]] = "polygeist.subindex"(%[[V0]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
+// IFSPLIT-NEXT:          %[[V4:.+]] = "enzymexla.subindex"(%[[V0]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
 // IFSPLIT-NEXT:          %[[V5:.+]] = memref.load %[[V4]][] : memref<i32>
 // IFSPLIT-NEXT:          func.call @use(%[[V5:.+]]) : (i32) -> ()
 // IFSPLIT-NEXT:          func.call @use(%[[V3:.+]]) : (i32) -> ()
 // IFSPLIT-NEXT:        } else {
 // IFSPLIT-NEXT:        }
 // IFSPLIT-NEXT:        func.call @usei(%[[arg3:.+]]) : (index) -> ()
-// IFSPLIT-NEXT:        scf.yield
+// IFSPLIT-NEXT:        scf.reduce
 // IFSPLIT-NEXT:      }
 // IFSPLIT-NEXT:    }
 // IFSPLIT-NEXT:    return
@@ -268,26 +268,26 @@ module {
 // IFSPLIT-NEXT:        func.call @usei(%[[arg3:.+]]) : (index) -> ()
 // IFSPLIT-NEXT:        scf.if %[[true]] {
 // IFSPLIT-NEXT:          %[[V2:.+]] = func.call @get() : () -> i32
-// IFSPLIT-NEXT:          %[[V3:.+]] = "polygeist.subindex"(%[[V1]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
+// IFSPLIT-NEXT:          %[[V3:.+]] = "enzymexla.subindex"(%[[V1]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
 // IFSPLIT-NEXT:          memref.store %[[V2]], %[[V3]][] : memref<i32>
-// IFSPLIT-NEXT:          %[[V4:.+]] = "polygeist.subindex"(%[[V0]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
+// IFSPLIT-NEXT:          %[[V4:.+]] = "enzymexla.subindex"(%[[V0]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
 // IFSPLIT-NEXT:          memref.store %[[V2]], %[[V4]][] : memref<i32>
 // IFSPLIT-NEXT:        } else {
 // IFSPLIT-NEXT:        }
-// IFSPLIT-NEXT:        scf.yield
+// IFSPLIT-NEXT:        scf.reduce
 // IFSPLIT-NEXT:      }
 // IFSPLIT-NEXT:      scf.parallel (%[[arg3:.+]]) = (%[[c0]]) to (%[[c9]]) step (%[[c1]]) {
 // IFSPLIT-NEXT:        scf.if %[[true]] {
-// IFSPLIT-NEXT:          %[[V2:.+]] = "polygeist.subindex"(%[[V1]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
+// IFSPLIT-NEXT:          %[[V2:.+]] = "enzymexla.subindex"(%[[V1]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
 // IFSPLIT-NEXT:          %[[V3:.+]] = memref.load %[[V2]][] : memref<i32>
-// IFSPLIT-NEXT:          %[[V4:.+]] = "polygeist.subindex"(%[[V0]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
+// IFSPLIT-NEXT:          %[[V4:.+]] = "enzymexla.subindex"(%[[V0]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
 // IFSPLIT-NEXT:          %[[V5:.+]] = memref.load %[[V4]][] : memref<i32>
 // IFSPLIT-NEXT:          func.call @use(%[[V5:.+]]) : (i32) -> ()
 // IFSPLIT-NEXT:          func.call @use(%[[V3:.+]]) : (i32) -> ()
 // IFSPLIT-NEXT:        } else {
 // IFSPLIT-NEXT:        }
 // IFSPLIT-NEXT:        func.call @usei(%[[arg3:.+]]) : (index) -> ()
-// IFSPLIT-NEXT:        scf.yield
+// IFSPLIT-NEXT:        scf.reduce
 // IFSPLIT-NEXT:      }
 // IFSPLIT-NEXT:    }
 // IFSPLIT-NEXT:    return
@@ -303,17 +303,17 @@ module {
 // IFSPLIT-NEXT:        scf.parallel (%[[arg3:.+]]) = (%[[c0]]) to (%[[c9]]) step (%[[c1]]) {
 // IFSPLIT-NEXT:          %[[V2:.+]] = func.call @get() : () -> i32
 // IFSPLIT-NEXT:          memref.store %[[V2]], %[[V0]][%[[arg3]]] : memref<?xi32>
-// IFSPLIT-NEXT:          %[[V3:.+]] = "polygeist.subindex"(%[[V1]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
+// IFSPLIT-NEXT:          %[[V3:.+]] = "enzymexla.subindex"(%[[V1]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
 // IFSPLIT-NEXT:          memref.store %[[V2]], %[[V3]][] : memref<i32>
-// IFSPLIT-NEXT:          scf.yield
+// IFSPLIT-NEXT:          scf.reduce
 // IFSPLIT-NEXT:        }
 // IFSPLIT-NEXT:        scf.parallel (%[[arg3:.+]]) = (%[[c0]]) to (%[[c9]]) step (%[[c1]]) {
 // IFSPLIT-NEXT:          %[[V2:.+]] = memref.load %[[V0]][%[[arg3]]] : memref<?xi32>
-// IFSPLIT-NEXT:          %[[V3:.+]] = "polygeist.subindex"(%[[V1]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
+// IFSPLIT-NEXT:          %[[V3:.+]] = "enzymexla.subindex"(%[[V1]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
 // IFSPLIT-NEXT:          %[[V4:.+]] = memref.load %[[V3]][] : memref<i32>
 // IFSPLIT-NEXT:          func.call @use(%[[V4:.+]]) : (i32) -> ()
 // IFSPLIT-NEXT:          func.call @use(%[[V2:.+]]) : (i32) -> ()
-// IFSPLIT-NEXT:          scf.yield
+// IFSPLIT-NEXT:          scf.reduce
 // IFSPLIT-NEXT:        }
 // IFSPLIT-NEXT:      }
 // IFSPLIT-NEXT:    } else {
@@ -332,29 +332,29 @@ module {
 // IFSPLIT-NEXT:        func.call @usei(%[[arg3:.+]]) : (index) -> ()
 // IFSPLIT-NEXT:        scf.if %[[arg0]] {
 // IFSPLIT-NEXT:          %[[V2:.+]] = func.call @get() : () -> i32
-// IFSPLIT-NEXT:          %[[V3:.+]] = "polygeist.subindex"(%[[V1]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
+// IFSPLIT-NEXT:          %[[V3:.+]] = "enzymexla.subindex"(%[[V1]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
 // IFSPLIT-NEXT:          memref.store %[[V2]], %[[V3]][] : memref<i32>
 // IFSPLIT-NEXT:        } else {
 // IFSPLIT-NEXT:          %[[V2:.+]] = func.call @get2() : () -> i32
 // IFSPLIT-NEXT:          func.call @use(%[[V2:.+]]) : (i32) -> ()
-// IFSPLIT-NEXT:          %[[V3:.+]] = "polygeist.subindex"(%[[V0]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
+// IFSPLIT-NEXT:          %[[V3:.+]] = "enzymexla.subindex"(%[[V0]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
 // IFSPLIT-NEXT:          memref.store %[[V2]], %[[V3]][] : memref<i32>
 // IFSPLIT-NEXT:        }
-// IFSPLIT-NEXT:        scf.yield
+// IFSPLIT-NEXT:        scf.reduce
 // IFSPLIT-NEXT:      }
 // IFSPLIT-NEXT:      scf.parallel (%[[arg3:.+]]) = (%[[c0]]) to (%[[c9]]) step (%[[c1]]) {
 // IFSPLIT-NEXT:        scf.if %[[arg0]] {
-// IFSPLIT-NEXT:          %[[V4:.+]] = "polygeist.subindex"(%[[V1]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
+// IFSPLIT-NEXT:          %[[V4:.+]] = "enzymexla.subindex"(%[[V1]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
 // IFSPLIT-NEXT:          %[[V5:.+]] = memref.load %[[V4]][] : memref<i32>
 // IFSPLIT-NEXT:          func.call @use(%[[V5:.+]]) : (i32) -> ()
-// IFSPLIT-NEXT:          %[[V6:.+]] = "polygeist.subindex"(%[[V0]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
+// IFSPLIT-NEXT:          %[[V6:.+]] = "enzymexla.subindex"(%[[V0]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
 // IFSPLIT-NEXT:          memref.store %[[V5]], %[[V6]][] : memref<i32>
 // IFSPLIT-NEXT:        } else {
 // IFSPLIT-NEXT:        }
-// IFSPLIT-NEXT:        %[[V2:.+]] = "polygeist.subindex"(%[[V0]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
+// IFSPLIT-NEXT:        %[[V2:.+]] = "enzymexla.subindex"(%[[V0]], %[[arg3]]) : (memref<?xi32>, index) -> memref<i32>
 // IFSPLIT-NEXT:        %[[V3:.+]] = memref.load %[[V2]][] : memref<i32>
 // IFSPLIT-NEXT:        func.call @use(%[[V3:.+]]) : (i32) -> ()
-// IFSPLIT-NEXT:        scf.yield
+// IFSPLIT-NEXT:        scf.reduce
 // IFSPLIT-NEXT:      }
 // IFSPLIT-NEXT:    }
 // IFSPLIT-NEXT:    return

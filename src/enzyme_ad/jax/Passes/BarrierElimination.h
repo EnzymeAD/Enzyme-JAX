@@ -4,7 +4,6 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
-#include "src/enzyme_ad/jax/Passes/BarrierOpt.h"
 #include "src/enzyme_ad/jax/Utils.h"
 
 namespace mlir {
