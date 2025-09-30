@@ -1,7 +1,7 @@
-// RUN: polygeist-opt --cpuify="method=distribute.mincut" --split-input-file %s | FileCheck %s
+// RUN: enzymexlamlir-opt --cpuify="method=distribute.mincut" --split-input-file %s | FileCheck %s
 
 // CHECK: module
-// CHECK-NOT: polygeist.barrier
+// CHECK-NOT: enzymexla.barrier
 module {
   func.func @t(%arg0: memref<?xf32>, %arg1: memref<?xmemref<?xf32>>, %arg2: i32, %arg3: i32, %arg4: i32, %arg5: i32, %arg6: i32, %arg7: i32, %arg8: i32, %arg9: i32) -> i32 attributes {llvm.linkage = #llvm.linkage<external>} {
     %true = arith.constant true
@@ -133,7 +133,7 @@ module {
               }
             }
           }
-          "polygeist.barrier"(%arg15, %arg16, %c0) : (index, index, index) -> ()
+          "enzymexla.barrier"(%arg15, %arg16, %c0) : (index, index, index) -> ()
           %83 = scf.if %71 -> (i32) {
             %105 = arith.subi %c0_i32, %63 : i32
             scf.yield %105 : i32
@@ -262,7 +262,7 @@ module {
             } else {
               scf.yield %c0_i8 : i8
             }
-            "polygeist.barrier"(%arg15, %arg16, %c0) : (index, index, index) -> ()
+            "enzymexla.barrier"(%arg15, %arg16, %c0) : (index, index, index) -> ()
             %108 = arith.cmpi ne, %arg18, %54 : i32
             %109 = scf.if %108 -> (i32) {
               %110 = arith.cmpi ne, %107, %c0_i8 : i8
@@ -270,7 +270,7 @@ module {
                 %111 = memref.load %58[%arg16, %arg15] : memref<16x16xf32>
                 memref.store %111, %56[%arg16, %arg15] : memref<16x16xf32>
               }
-              "polygeist.barrier"(%arg15, %arg16, %c0) : (index, index, index) -> ()
+              "enzymexla.barrier"(%arg15, %arg16, %c0) : (index, index, index) -> ()
               scf.yield %105 : i32
             } else {
               scf.yield %arg18 : i32
@@ -283,9 +283,9 @@ module {
             %106 = arith.addi %81, %80 : index
             memref.store %105, %48[%106] : memref<?xf32>
           }
-          scf.yield
+          scf.reduce
         }
-        scf.yield
+        scf.reduce
       }
       %55 = arith.addf %arg12, %27 : f32
       scf.yield %arg11, %arg10, %55 : i32, i32, f32

@@ -1,7 +1,7 @@
-// RUN: polygeist-opt --cpuify="method=distribute.mincut" --split-input-file %s | FileCheck %s
+// RUN: enzymexlamlir-opt --cpuify="method=distribute.mincut" --split-input-file %s | FileCheck %s
 
 // CHECK: module
-// CHECK-NOT: polygeist.barrier
+// CHECK-NOT: enzymexla.barrier
 module attributes {llvm.data_layout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128", llvm.target_triple = "x86_64-unknown-linux-gnu"} {
   func.func @_Z11bpnnwrapperiPfiS_iS_S_(%arg0: i32, %arg1: memref<?xf32>, %arg2: i32, %arg3: memref<?xf32>, %arg4: i32, %arg5: memref<?xf32>, %arg6: memref<?xf32>) attributes {llvm.linkage = #llvm.linkage<external>} {
     %c16 = arith.constant 16 : index
@@ -52,7 +52,7 @@ module attributes {llvm.data_layout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i6
       %38 = arith.addf %34, %37 : f64
       %39 = arith.truncf %38 : f64 to f32
       memref.store %39, %arg6[%13] : memref<?xf32>
-      "polygeist.barrier"(%arg8, %arg9, %c0) : (index, index, index) -> ()
+      "enzymexla.barrier"(%arg8, %arg9, %c0) : (index, index, index) -> ()
       %40 = arith.cmpi eq, %5, %c0_i32 : i32
       scf.if %40 {
         %41 = arith.cmpi eq, %4, %c0_i32 : i32
@@ -79,7 +79,7 @@ module attributes {llvm.data_layout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i6
           memref.store %59, %arg6[%14] : memref<?xf32>
         }
       }
-      scf.yield
+      scf.reduce
     }
     return
   }
@@ -115,16 +115,16 @@ module attributes {llvm.data_layout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i6
           %24 = memref.load %arg1[%23] : memref<?xf32>
           memref.store %24, %4[%arg9] : memref<16xf32>
         }
-        "polygeist.barrier"(%arg8, %arg9, %c0) : (index, index, index) -> ()
+        "enzymexla.barrier"(%arg8, %arg9, %c0) : (index, index, index) -> ()
         %16 = arith.addi %13, %2 : index
         %17 = memref.load %arg3[%16] : memref<?xf32>
         memref.store %17, %5[%arg9, %arg8] : memref<16x16xf32>
-        "polygeist.barrier"(%arg8, %arg9, %c0) : (index, index, index) -> ()
+        "enzymexla.barrier"(%arg8, %arg9, %c0) : (index, index, index) -> ()
         %18 = memref.load %5[%arg9, %arg8] : memref<16x16xf32>
         %19 = memref.load %4[%arg9] : memref<16xf32>
         %20 = arith.mulf %18, %19 : f32
         memref.store %20, %5[%arg9, %arg8] : memref<16x16xf32>
-        "polygeist.barrier"(%arg8, %arg9, %c0) : (index, index, index) -> ()
+        "enzymexla.barrier"(%arg8, %arg9, %c0) : (index, index, index) -> ()
         %21 = scf.while (%arg10 = %c1_i32) : (i32) -> i32 {
           %23 = arith.sitofp %arg10 : i32 to f32
           %24 = arith.cmpf ule, %23, %cst_0 : f32
@@ -145,22 +145,22 @@ module attributes {llvm.data_layout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i6
             %34 = arith.addf %30, %33 : f32
             memref.store %34, %5[%arg9, %arg8] : memref<16x16xf32>
           }
-          "polygeist.barrier"(%arg8, %arg9, %c0) : (index, index, index) -> ()
+          "enzymexla.barrier"(%arg8, %arg9, %c0) : (index, index, index) -> ()
           %29 = arith.addi %arg10, %c1_i32 : i32
           scf.yield %29 : i32
         }
         %22 = memref.load %5[%arg9, %arg8] : memref<16x16xf32>
         memref.store %22, %arg3[%16] : memref<?xf32>
-        "polygeist.barrier"(%arg8, %arg9, %c0) : (index, index, index) -> ()
+        "enzymexla.barrier"(%arg8, %arg9, %c0) : (index, index, index) -> ()
         scf.if %15 {
           %23 = memref.load %5[%arg8, %arg9] : memref<16x16xf32>
           %24 = arith.muli %arg7, %0 : index
           %25 = arith.addi %arg9, %24 : index
           memref.store %23, %arg4[%25] : memref<?xf32>
         }
-        scf.yield
+        scf.reduce
       }
-      scf.yield
+      scf.reduce
     }
     return
   }
