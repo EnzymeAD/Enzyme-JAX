@@ -76,19 +76,11 @@ struct Node {
   }
   void dump() const {
     if (type == VAL)
-      llvm::errs() << "[" << V << ", "
-                   << "Value"
-                   << "]\n";
+      llvm::errs() << "[" << V << ", " << "Value" << "]\n";
     else if (type == OP)
-      llvm::errs() << "[" << *O << ", "
-                   << "Operation"
-                   << "]\n";
+      llvm::errs() << "[" << *O << ", " << "Operation" << "]\n";
     else
-      llvm::errs() << "["
-                   << "NULL"
-                   << ", "
-                   << "None"
-                   << "]\n";
+      llvm::errs() << "[" << "NULL" << ", " << "None" << "]\n";
   }
 };
 
