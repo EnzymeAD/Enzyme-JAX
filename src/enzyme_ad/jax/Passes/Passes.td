@@ -939,7 +939,7 @@ def AutoBatchingPass : Pass<"auto-batching"> {
 }
 
 def SCFCPUify : Pass<"cpuify"> {
-  let summary = "remove scf.barrier";
+  let summary = "remove barrier ig";
   let dependentDialects =
       ["memref::MemRefDialect", "func::FuncDialect", "LLVM::LLVMDialect"];
   let options = [

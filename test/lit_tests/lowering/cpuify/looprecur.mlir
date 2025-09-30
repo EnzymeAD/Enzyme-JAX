@@ -1,4 +1,4 @@
-// RUN: polygeist-opt --cpuify="method=distribute" -allow-unregistered-dialect -canonicalize --split-input-file %s | FileCheck %s
+// RUN: enzymexlamlir-opt --cpuify="method=distribute" -allow-unregistered-dialect -canonicalize --split-input-file %s | FileCheck %s
 
 module {
   func.func private @use(%a : i1) -> ()
@@ -17,7 +17,7 @@ module {
           %r = scf.for %arg1 = %c0 to %c10 step %c1 iter_args(%arg2 = %false) -> (i1) {
             %s = scf.if %cond -> (i1) {
               %m = arith.xori %arg2, %true : i1
-              "polygeist.barrier"(%arg4) : (index) -> ()
+              "enzymexla.barrier"(%arg4) : (index) -> ()
               "test.something"() : () -> ()
               scf.yield %m : i1
             } else {
@@ -26,7 +26,7 @@ module {
             scf.yield %s : i1
           }
           func.call @use(%r) : (i1) -> ()
-          scf.yield
+          scf.reduce
       }
     return
   }
@@ -42,7 +42,7 @@ module {
 // CHECK-NEXT:     %[[V0:.+]] = memref.alloca() : memref<9xi1>
 // CHECK-NEXT:     scf.parallel (%[[arg4:.+]]) = (%[[c0]]) to (%[[c9]]) step (%[[c1]]) {
 // CHECK-NEXT:       memref.store %[[false]], %[[V0]][%[[arg4]]] : memref<9xi1>
-// CHECK-NEXT:       scf.yield
+// CHECK-NEXT:       scf.reduce
 // CHECK-NEXT:     }
 //    TODO don't need this cache during parallel split
 // CHECK-NEXT:     %[[V1:.+]] = memref.alloca() : memref<9xi1>
