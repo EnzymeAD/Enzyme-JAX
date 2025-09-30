@@ -252,6 +252,7 @@ struct MarkFunctionMemoryEffectsPass
             valueToArgIndex[result] = argIndex;
             worklist.push(result);
           }
+        }
       }
     }
   }
