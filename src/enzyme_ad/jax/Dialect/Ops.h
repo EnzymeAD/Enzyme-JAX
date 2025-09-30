@@ -10,7 +10,6 @@
 #ifndef ENZYMEXLAOPS_H
 #define ENZYMEXLAOPS_H
 
-#include "llvm/Support/CommandLine.h"
 #include "mlir/Bytecode/BytecodeOpInterface.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/Dialect/Quant/IR/QuantTypes.h"
@@ -25,6 +24,7 @@
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "stablehlo/dialect/Base.h"
+#include "llvm/Support/CommandLine.h"
 
 extern llvm::cl::opt<bool> BarrierOpt;
 
