@@ -13,7 +13,6 @@ include "Enzyme/MLIR/Dialect/Dialect.td"
 include "Dialect.td"
 include "EnzymeXLAAttrs.td"
 
-include "mlir/Interfaces/CopyOpInterface.td"
 include "mlir/Interfaces/ViewLikeInterface.td"
 include "mlir/IR/SymbolInterfaces.td"
 include "mlir/IR/EnumAttr.td"
@@ -68,7 +67,7 @@ def KernelCallOp: EnzymeXLA_Op<"kernel_call", [DeclareOpInterfaceMethods<SymbolU
   let hasCanonicalizer = 1;
 }
 
-def MemcpyOp : EnzymeXLA_Op<"memcpy", [CopyOpInterface]> {
+def MemcpyOp : EnzymeXLA_Op<"memcpy"> {
 
   let summary = "GPU memcpy operation";
 

@@ -16,6 +16,11 @@
 #include "Enzyme/MLIR/Interfaces/GradientUtils.h"
 #include "Enzyme/MLIR/Interfaces/GradientUtilsReverse.h"
 #include "Enzyme/MLIR/Passes/RemovalUtils.h"
+
+#include "mlir/Analysis/TopologicalSortUtils.h"
+
+#include "llvm/ADT/PointerUnion.h"
+
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/RegionUtils.h"
@@ -2766,6 +2771,37 @@ public:
                           MGradientUtilsReverse *gutils) const {}
 };
 
+typedef llvm::PointerUnion<Operation *, Value> Node;
+
+void dump(const Node &n) {
+  if (n.is<Value>())
+    llvm::errs() << "[" << n.get<Value>() << ", "
+                 << "Value"
+                 << "]\n";
+  else if (n.is<Operation *>())
+    llvm::errs() << "[" << *n.get<Operation *>() << ", "
+                 << "Operation"
+                 << "]\n";
+  else
+    llvm::errs() << "["
+                 << "NULL"
+                 << ", "
+                 << "None"
+                 << "]\n";
+}
+
+typedef DenseMap<Node, SmallPtrSet<Node, 2>> Graph;
+
+static void dump(Graph &G) {
+  for (auto &pair : G) {
+    dump(pair.first);
+    for (const auto &N : pair.second) {
+      llvm::errs() << "\t";
+      dump(N);
+    }
+  }
+}
+
 struct WhileOpEnzymeOpsRemover
     : public EnzymeOpsRemoverOpInterface::ExternalModel<WhileOpEnzymeOpsRemover,
                                                         stablehlo::WhileOp> {
@@ -2775,81 +2811,35 @@ private:
   // A node in the compute graph.
   // Operation nodes have outgoing edges to value nodes that they produce and
   // incoming nodes from values they take as operands.
-  struct Node {
-    Operation *O;
-    Value V;
-    enum Type {
-      NONE,
-      VAL,
-      OP,
-    } type;
-
-    Node(Operation *O) : O(O), type(OP){};
-    Node(Value V) : V(V), type(VAL){};
-    Node() : type(NONE){};
-
-    bool operator<(const Node N) const {
-      if (type != N.type)
-        return type < N.type;
-      else if (type == OP)
-        return O < N.O;
-      else if (type == VAL)
-        return V.getAsOpaquePointer() < N.V.getAsOpaquePointer();
-      else
-        return true;
-    }
-    void dump() const {
-      if (type == VAL)
-        llvm::errs() << "[" << V << ", "
-                     << "Value"
-                     << "]\n";
-      else if (type == OP)
-        llvm::errs() << "[" << *O << ", "
-                     << "Operation"
-                     << "]\n";
-      else
-        llvm::errs() << "["
-                     << "NULL"
-                     << ", "
-                     << "None"
-                     << "]\n";
-    }
-  };
-
-  typedef std::map<Node, std::set<Node>> Graph;
-
-  static void dump(Graph &G) {
-    for (auto &pair : G) {
-      pair.first.dump();
-      for (const auto &N : pair.second) {
-        llvm::errs() << "\t";
-        N.dump();
-      }
-    }
-  }
 
   // parent is populated with a path from each connected leaf node of G to one
   // of the Value in Source.
   static inline void bfs(const Graph &G, const llvm::SetVector<Value> &Sources,
-                         std::map<Node, Node> &parent) {
+                         DenseMap<Node, Node> &parent) {
     std::deque<Node> q;
-    for (auto V : Sources) {
+    for (const auto &V : Sources) {
       Node N(V);
-      parent.emplace(N, Node());
+      parent.try_emplace(N, Node());
       q.push_back(N);
     }
 
     // Standard BFS Loop
+
+    SmallPtrSet<Node, 2> done;
+
     while (!q.empty()) {
       auto u = q.front();
       q.pop_front();
       auto found = G.find(u);
       if (found == G.end())
         continue;
-      for (auto v : found->second) {
-        if (parent.find(v) == parent.end()) {
+
+      if (!done.insert(u).second)
+        continue;
+
+      for (const auto &v : found->second) {
+        if (parent.try_emplace(v, u).second) {
           q.push_back(v);
-          parent.emplace(v, u);
         }
       }
     }
@@ -2858,7 +2848,7 @@ private:
   // Whether or not an operation can be moved from the forward region to the
   // reverse region or vice-versa.
   static inline bool isMovable(Operation *op) {
-    return mlir::isPure(op) && op->getNumRegions() == 0;
+    return op->getNumRegions() == 0 && mlir::isPure(op);
   }
 
   static Graph reverseGraph(const Graph &Orig, const SetVector<Value> &sources,
@@ -2872,24 +2862,32 @@ private:
       }
     }
 
-    SmallVector<Value> worklist(sinks.getArrayRef().begin(),
-                                sinks.getArrayRef().end());
-    while (!worklist.empty()) {
-      Value todo = worklist.pop_back_val();
+    std::deque<Node> worklist;
+    for (auto snk : sinks) {
+      worklist.emplace_back(snk);
+    }
 
-      if (sources.contains(todo))
+    SmallPtrSet<Node, 2> done;
+    for (auto src : sources) {
+      done.insert(src);
+    }
+
+    while (!worklist.empty()) {
+      Node N = worklist.front();
+      worklist.pop_front();
+
+      if (!done.insert(N).second)
         continue;
 
-      Node N(todo);
       auto pair = inverted.find(N);
-      for (auto NN : pair->second) {
-        assert(NN.type == Node::OP);
+      if (pair == inverted.end()) {
+        continue;
+      }
+      for (const auto &NN : pair->second) {
 
         revGraph[NN].insert(N);
-
-        for (auto NNN : inverted.find(NN)->second) {
-          revGraph[NNN].insert(NN);
-          worklist.push_back(NNN.V);
+        if (!done.contains(NN)) {
+          worklist.push_back(NN);
         }
       }
     }
@@ -2897,10 +2895,10 @@ private:
     return revGraph;
   }
 
-  // Given the full forward/backward compute graph, the push/pop can be seen as
-  // a special cut of this graph. This function tries to modifies the boundary
-  // of the push/pop to minimize the amount of memory that is live across
-  // different loops.
+  // Given the full forward/backward compute graph, the push/pop can be seen
+  // as a special cut of this graph. This function tries to modifies the
+  // boundary of the push/pop to minimize the amount of memory that is live
+  // across different loops.
   static void minCutCache(Block *forward, Block *reverse,
                           SmallVector<CacheInfo> &caches,
                           PatternRewriter &rewriter) {
@@ -3022,7 +3020,7 @@ private:
 
     // Augment the flow while there is a path from source to sink
     while (1) {
-      std::map<Node, Node> parent;
+      DenseMap<Node, Node> parent;
       bfs(G, roots, parent);
       Node end;
       for (auto req : Required) {
@@ -3031,7 +3029,7 @@ private:
           break;
         }
       }
-      if (end.type == Node::NONE)
+      if (end.isNull())
         break;
       // update residual capacities of the edges and reverse edges
       // along the path
@@ -3039,19 +3037,19 @@ private:
       while (1) {
         assert(parent.find(v) != parent.end());
         Node u = parent.find(v)->second;
-        assert(u.type != Node::NONE);
+        assert(!u.isNull());
         assert(G[u].count(v) == 1);
         assert(G[v].count(u) == 0);
         G[u].erase(v);
         G[v].insert(u);
-        if (u.type == Node::VAL && roots.contains(u.V))
+        if (u.is<Value>() && roots.contains(u.get<Value>()))
           break;
         v = u;
       }
     }
     // Flow is maximum now, find vertices reachable from s
 
-    std::map<Node, Node> parent;
+    DenseMap<Node, Node> parent;
     bfs(G, roots, parent);
 
     LLVM_DEBUG(llvm::dbgs() << "residual graph: \n";);
@@ -3060,12 +3058,13 @@ private:
     // Those are the new values to cache
     SetVector<Value> newCaches;
 
-    // All edges that are from a reachable vertex to non-reachable vertex in the
-    // original graph are edges for the minimum cut. The set of values to cache
-    // are the values transported along those edges (either. Value -> Operation
-    // or Operation -> Value).
+    // All edges that are from a reachable vertex to non-reachable vertex in
+    // the original graph are edges for the minimum cut. The set of values to
+    // cache are the values transported along those edges (either. Value ->
+    // Operation or Operation -> Value).
     //
-    // Note: we could use more heuristics here to select the actual cached value
+    // Note: we could use more heuristics here to select the actual cached
+    // value
     //       based on sizes, existing caches, number of users in the fwd as to
     //       not duplicate work, etc...
     for (auto &pair : Orig) {
@@ -3073,13 +3072,13 @@ private:
         for (auto N : pair.second) {
           if (parent.find(N) == parent.end()) {
             Value newCache;
-            if (pair.first.type == Node::VAL) {
-              assert(N.type == Node::OP);
-              newCache = pair.first.V;
+            if (pair.first.is<Value>()) {
+              assert(N.is<Operation *>());
+              newCache = pair.first.get<Value>();
             } else {
-              assert(pair.first.type == Node::OP);
-              assert(N.type == Node::VAL);
-              newCache = N.V;
+              assert(pair.first.is<Operation *>());
+              assert(N.is<Value>());
+              newCache = N.get<Value>();
             }
             newCaches.insert(newCache);
           }
@@ -3146,10 +3145,11 @@ private:
 
         for (auto &N : C->second) {
           // not eligible
-          if (N.O->getNumResults() > 1)
+          if (N.get<Operation *>()->getNumResults() > 1)
             continue;
 
-          worklist.append(N.O->getResults().begin(), N.O->getResults().end());
+          worklist.append(N.get<Operation *>()->getResults().begin(),
+                          N.get<Operation *>()->getResults().end());
         }
       }
 
@@ -3188,7 +3188,8 @@ private:
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointAfterValue(newCache);
 
-      // TODO: This newCache value might not be available here since it might be
+      // TODO: This newCache value might not be available here since it might
+      // be
       //       a part of the reverse. The operations needed to create newCache
       //       in the forward should be cloned from forward to reverse.
       assert(newCache.getParentBlock() != reverse && "todo");
@@ -3212,6 +3213,8 @@ private:
     worklist.clear();
     worklist.assign(newCaches.begin(), newCaches.end());
 
+    SetVector<Operation *> cloned;
+
     // Clone ops in the reverse graph to make sure all edges have been mapped.
     while (!worklist.empty()) {
       Value todo = worklist.pop_back_val();
@@ -3225,17 +3228,19 @@ private:
       assert(found != revGraph.end());
 
       for (auto N : found->second) {
-        assert(N.type == Node::OP);
+        assert(N.is<Operation *>());
 
         // Special case for across forward/reverse boundary.
-        if (isa<enzyme::PopOp>(N.O)) {
-          rewriter.replaceAllOpUsesWith(N.O, mapping.lookup(todo));
+        if (isa<enzyme::PopOp>(N.get<Operation *>())) {
+          rewriter.replaceAllOpUsesWith(N.get<Operation *>(),
+                                        mapping.lookup(todo));
           continue;
         }
 
-        if (!llvm::all_of(N.O->getOperands(), [&mapping](Value operand) {
-              return mapping.contains(operand);
-            })) {
+        if (!llvm::all_of(N.get<Operation *>()->getOperands(),
+                          [&mapping](Value operand) {
+                            return mapping.contains(operand);
+                          })) {
           continue;
         }
 
@@ -3244,30 +3249,12 @@ private:
         Value lastVal = mapping.lookup(todo);
         Operation *lastValOp = lastVal.getDefiningOp();
 
-        for (Value operand : N.O->getOperands()) {
-          Value mapped = mapping.lookup(operand);
-          Operation *mappedOp = mapped.getDefiningOp();
-          if (!mappedOp)
-            continue;
-
-          if (!lastValOp) {
-            lastValOp = mappedOp;
-            lastVal = mapped;
-            continue;
-          }
-
-          if (lastValOp->isBeforeInBlock(mappedOp)) {
-            lastValOp = mappedOp;
-            lastVal = mapped;
-            continue;
-          }
-        }
-
         rewriter.setInsertionPointAfterValue(lastVal);
-        Operation *newO = rewriter.clone(*N.O, mapping);
+        Operation *newO = rewriter.clone(*N.get<Operation *>(), mapping);
+        cloned.insert(newO);
 
-        for (auto [oldRes, newRes] :
-             llvm::zip_equal(N.O->getResults(), newO->getResults()))
+        for (auto [oldRes, newRes] : llvm::zip_equal(
+                 N.get<Operation *>()->getResults(), newO->getResults()))
           mapping.map(oldRes, newRes);
 
         auto pair = revGraph.find(N);
@@ -3275,11 +3262,18 @@ private:
           continue;
 
         for (auto NN : pair->second) {
-          assert(NN.type == Node::VAL);
-          worklist.push_back(NN.V);
+          assert(NN.is<Value>());
+          worklist.push_back(NN.get<Value>());
         }
       }
     }
+
+    if (cloned.size()) {
+      mlir::sortTopologically(cloned[0]->getBlock());
+    }
+
+    // TODO do all the moves for existing ops, then do the ones within
+    // dependencies here
 
     // Remove old caches
     for (auto &info : caches) {
@@ -3371,11 +3365,9 @@ public:
 
     WhileLoopInfo info(whileOp);
 
-    // TODO: support non-constant loops by using a dynamic dimension
-    // ...   should we fail ? i.e. return failure();
-    if (info.computeInfo().failed() || !info.isValid() || !info.isConstant()) {
+    if (info.computeInfo().failed() || !info.isValid()) {
       return rewriter.notifyMatchFailure(
-          op, "WhileOp does not have static iteration count for cache removal");
+          op, "WhileOp does not have known iteration count for cache removal");
     }
 
     DenseMap<Value, SmallVector<Operation *>> updatedGradientUsers;
@@ -3441,7 +3433,8 @@ public:
     // while loop with N iterations. For each of these cache, generate a
     // batched tensor with N prepended. Cache pushes become
     // dynamic_update_slice and cache pops become dynamic_slice.
-    auto numIters = info.getConstantNumIters();
+    auto numIters =
+        info.isConstant() ? info.getConstantNumIters() : ShapedType::kDynamic;
 
     Value inductionVariable; // [0,..., N - 1] counter from within the loop
 
@@ -3459,27 +3452,29 @@ public:
       minCutCache(forward, reverse, caches, rewriter);
     }
 
-    for (auto &info : caches) {
-      Value cache = info.initOp.getResult();
+    Value itersV = nullptr;
+
+    for (auto &cinfo : caches) {
+      Value cache = cinfo.initOp.getResult();
 
       // push does not depend on a value inside the loop, we can hoist the
       // push/pop before the for loops.
-      if (info.pushedValue().getParentRegion() != whileOp.getBody()) {
+      if (cinfo.pushedValue().getParentRegion() != whileOp.getBody()) {
         auto newPush = rewriter.create<enzyme::PushOp>(cache.getLoc(), cache,
-                                                       info.pushedValue());
-        rewriter.eraseOp(info.pushOp);
-        info.pushOp = newPush;
+                                                       cinfo.pushedValue());
+        rewriter.eraseOp(cinfo.pushOp);
+        cinfo.pushOp = newPush;
 
         {
           OpBuilder::InsertionGuard guard(rewriter);
-          rewriter.setInsertionPoint(info.popOp->getParentOp());
+          rewriter.setInsertionPoint(cinfo.popOp->getParentOp());
 
-          auto popVal = info.popOp.getResult();
+          auto popVal = cinfo.popOp.getResult();
           auto newPop = rewriter.create<enzyme::PopOp>(cache.getLoc(),
                                                        popVal.getType(), cache);
           rewriter.replaceAllUsesWith(popVal, newPop.getResult());
-          rewriter.eraseOp(info.popOp);
-          info.popOp = newPop;
+          rewriter.eraseOp(cinfo.popOp);
+          cinfo.popOp = newPop;
         }
 
         continue;
@@ -3491,23 +3486,67 @@ public:
       }
 
       auto newType =
-          cast<ShapedType>(cast<AutoDiffTypeInterface>(info.cachedType())
+          cast<ShapedType>(cast<AutoDiffTypeInterface>(cinfo.cachedType())
                                .getShadowType(numIters));
 
-      Value initValue = cast<AutoDiffTypeInterface>(newType).createNullValue(
-          rewriter, info.initOp->getLoc());
+      Value initValue;
+      if (info.isConstant()) {
+        initValue = cast<AutoDiffTypeInterface>(newType).createNullValue(
+            rewriter, cinfo.initOp->getLoc());
+      } else {
+        if (!itersV)
+          itersV = info.getNumIters(rewriter);
+        SmallVector<int64_t> zeros = llvm::to_vector(newType.getShape());
+        for (auto &v : zeros) {
+          if (v == ShapedType::kDynamic)
+            v = 0;
+        }
+        auto op = cast<AutoDiffTypeInterface>(
+                      RankedTensorType::get(zeros, newType.getElementType()))
+                      .createNullValue(rewriter, cinfo.initOp->getLoc());
+
+        auto zeroOp = cast<AutoDiffTypeInterface>(
+                          RankedTensorType::get(ArrayRef<int64_t>(),
+                                                newType.getElementType()))
+                          .createNullValue(rewriter, cinfo.initOp->getLoc());
+
+        auto zeroInt = rewriter.create<stablehlo::ConstantOp>(
+            cinfo.initOp->getLoc(), itersV.getType(),
+            cast<ElementsAttr>(makeAttr(itersV.getType(), 0)));
+
+        auto ST = RankedTensorType::get(
+            zeros.size(),
+            cast<RankedTensorType>(itersV.getType()).getElementType());
+        auto starts = rewriter.create<stablehlo::ConstantOp>(
+            cinfo.initOp->getLoc(), ST, cast<ElementsAttr>(makeAttr(ST, 0)));
+        auto ints = starts;
+
+        int64_t padStart[] = {0};
+        int64_t padEnd[] = {(int64_t)zeros.size() - 1};
+        auto iterRS = rewriter.create<stablehlo::ReshapeOp>(
+            cinfo.initOp->getLoc(),
+            RankedTensorType::get(
+                {1}, cast<TensorType>(itersV.getType()).getElementType()),
+            itersV);
+        Value ends = rewriter.create<stablehlo::PadOp>(
+            cinfo.initOp->getLoc(), starts.getType(), iterRS, zeroInt, padStart,
+            padEnd, padStart);
+
+        initValue = rewriter.create<stablehlo::DynamicPadOp>(
+            cinfo.initOp->getLoc(), newType, op, zeroOp, starts, ends, ints);
+      }
 
       newOperands.push_back(initValue);
 
-      auto cacheValue = body->addArgument(newType, info.pushOp->getLoc());
-      cond->addArgument(newType, info.pushOp->getLoc());
+      auto cacheValue = body->addArgument(newType, cinfo.pushOp->getLoc());
+      cond->addArgument(newType, cinfo.pushOp->getLoc());
 
       {
         OpBuilder::InsertionGuard guard(rewriter);
-        rewriter.setInsertionPoint(info.pushOp);
+        rewriter.setInsertionPoint(cinfo.pushOp);
 
         Value newCacheValue;
-        if (auto TT = dyn_cast<TensorType>(info.cachedType())) {
+        if (auto TT = dyn_cast<TensorType>(cinfo.cachedType())) {
           auto shape = TT.getShape();
 
           SmallVector<Value> startIndices(shape.size() + 1, zero);
@@ -3517,11 +3556,11 @@ public:
           updateShape.push_back(1);
           updateShape.append(shape.begin(), shape.end());
           Value reshapedUpdate = rewriter.create<stablehlo::ReshapeOp>(
-              info.pushOp->getLoc(), TT.clone(updateShape),
-              info.pushOp.getValue());
+              cinfo.pushOp->getLoc(), TT.clone(updateShape),
+              cinfo.pushOp.getValue());
 
           newCacheValue = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
-              info.pushOp->getLoc(), cacheValue, reshapedUpdate, startIndices);
+              cinfo.pushOp->getLoc(), cacheValue, reshapedUpdate, startIndices);
         } else {
           assert(false && "todo");
           // newCacheValue = rewriter.create<tensor::InsertOp>(
@@ -3566,14 +3605,24 @@ public:
       rewriter.setInsertionPoint(otherWhileOp);
       SmallVector<Value> operands(otherWhileOp->getOperands().begin(),
                                   otherWhileOp->getOperands().end());
-      operands.push_back(
-          makeI64Constant(otherWhileOp->getLoc(), rewriter, numIters - 1));
+      if (info.isConstant()) {
+        operands.push_back(
+            makeI64Constant(otherWhileOp->getLoc(), rewriter, numIters - 1));
+      } else {
+        if (!itersV)
+          itersV = info.getNumIters(rewriter);
+        auto one = rewriter.create<stablehlo::ConstantOp>(
+            otherWhileOp->getLoc(), itersV.getType(),
+            cast<ElementsAttr>(makeAttr(itersV.getType(), 1)));
+        auto sub = rewriter.create<stablehlo::SubtractOp>(
+            otherWhileOp->getLoc(), itersV, one);
+        operands.push_back(sub);
+      }
 
       Block *otherBody = &otherWhileOp.getBody().front();
       Block *otherCond = &otherWhileOp.getCond().front();
       Value otherInductionVariable = otherBody->addArgument(
-          RankedTensorType::get({}, rewriter.getI64Type()),
-          otherWhileOp->getLoc());
+          operands.back().getType(), otherWhileOp->getLoc());
       otherCond->addArgument(otherInductionVariable.getType(),
                              otherWhileOp->getLoc());
       auto otherTerm = otherBody->getTerminator();
@@ -3584,7 +3633,10 @@ public:
           rewriter
               .create<stablehlo::SubtractOp>(
                   otherWhileOp->getLoc(), otherInductionVariable,
-                  makeI64Constant(otherWhileOp->getLoc(), rewriter, 1))
+                  rewriter.create<stablehlo::ConstantOp>(
+                      otherWhileOp->getLoc(), otherInductionVariable.getType(),
+                      cast<ElementsAttr>(
+                          makeAttr(otherInductionVariable.getType(), 1))))
               .getResult();
       otherTerm->insertOperands(otherTerm->getNumOperands(),
                                 ValueRange(otherInductionVariable));

@@ -106,6 +106,7 @@ def optimization_passes(
     transpose_propagate: str = "up",
     reshape_propagate: str = "up",
     max_constant_threshold: int = 1024,
+    enable_batching_passes: bool = True,
 ):
     transform_passes_list = [
         "compare_op_canon<16>",
@@ -214,6 +215,7 @@ def optimization_passes(
         "binop_const_pad_subtract<1>",
         "binop_const_pad_mul<1>",
         "binop_const_pad_div<1>",
+        "clamp_const_prop<1>",
         "binop_binop_pad_pad_add<1>",
         "binop_binop_pad_pad_mul<1>",
         "binop_pad_pad_add<1>",
@@ -349,12 +351,9 @@ def optimization_passes(
         "select_simplify",
         "concatenate_subtract_to_subtract_pad",
         "concatenate_broadcast_in_dim",
-        "concat_insert_dim_dot_general",
-        "concat_insert_dim_gather",
-        "concat_insert_dim_iota",
-        "concat_insert_dim_reduce",
-        "concat_insert_dim_sort",
-        "concat_insert_dim_reduce_window",
+        "case_to_if",
+        "dus_to_dynamic_pad",
+        "dynamic_pad_to_pad",
     ]
 
     # constant propagation patterns
@@ -410,7 +409,32 @@ def optimization_passes(
         "self_subtract_to_convolution_like(0)",
         "self_add_to_convolution_like(0)",
         "self_mul_to_convolution_like(0)",
+        "trivial_reduce_window_to_reduce_op",
     ]
+
+    if enable_batching_passes:
+        transform_passes_list += [
+            "add_reduce_slice_fusion",
+            "mul_reduce_slice_fusion",
+            "min_reduce_slice_fusion",
+            "max_reduce_slice_fusion",
+            "concat_insert_dim_dot_general",
+            "concat_insert_dim_gather",
+            "concat_insert_dim_iota",
+            "concat_insert_dim_reduce",
+            "concat_insert_dim_sort",
+            "concat_insert_dim_reduce_window",
+            "concat_insert_dim_elementwise",
+            "dot_general_slice_to_batch",
+            "gather_slice_to_batch",
+            "iota_slice_to_batch",
+            "reduce_slice_to_batch",
+            "sort_slice_to_batch",
+            "transpose_slice_to_batch",
+            "broadcastindim_slice_to_batch",
+            "reducewindow_slice_to_batch",
+            "elementwise_slice_to_batch",
+        ]
 
     if reshape_propagate == "up":
         transform_passes_list += [
@@ -539,6 +563,7 @@ def full_optimization_pass_pipeline(
     transpose_propagate: str = "up",
     reshape_propagate: str = "up",
     max_constant_threshold: int = 1024,
+    enable_batching_passes: bool = True,
 ):
     opt_passes = optimization_passes(
         inline=inline,
@@ -546,6 +571,7 @@ def full_optimization_pass_pipeline(
         transpose_propagate=transpose_propagate,
         reshape_propagate=reshape_propagate,
         max_constant_threshold=max_constant_threshold,
+        enable_batching_passes=enable_batching_passes,
     )
 
     enzyme_pass = 'enzyme{postpasses="arith-raise{stablehlo=true},canonicalize,cse,canonicalize,remove-unnecessary-enzyme-ops,enzyme-simplify-math,canonicalize,cse,canonicalize"}'
@@ -963,6 +989,8 @@ def _enzyme_primal_lowering(
             for f in mod.regions[0].blocks[0]:
                 fns.append(f.sym_name.value)
 
+            if len(pass_pipeline) > 0:
+                pass_pipeline = pass_pipeline + ",tensor-empty-raise"
             name, nmod = enzyme_call.run_pass_pipeline(fns, source, pass_pipeline)
             if print_mlir:
                 if type(print_mlir) != type(True):

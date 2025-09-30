@@ -3,30 +3,33 @@ name: Build Enzyme-JAX
 on:
   push:
     branches:
-    - main
+      - main
     paths:
-      - '.github/workflows/build.yml'
-      - '**/BUILD'
-      - '**/WORKSPACE'
-      - '**/*.bzl'
-      - 'builddeps/**'
-      - 'patches/**'
-      - 'src/**'
-      - 'test/**'
-      - 'third_party/**'
+      - ".github/scripts/process_benchmark_results.py"
+      - ".github/workflows/build.yml"
+      - "**/BUILD"
+      - "**/WORKSPACE"
+      - "**/*.bzl"
+      - "builddeps/**"
+      - "patches/**"
+      - "src/**"
+      - "test/**"
+      - "third_party/**"
   pull_request:
     branches:
-    - main
+      - main
     paths:
-      - '.github/workflows/build.yml'
-      - '**/BUILD'
-      - '**/WORKSPACE'
-      - '**/*.bzl'
-      - 'builddeps/**'
-      - 'patches/**'
-      - 'src/**'
-      - 'test/**'
-      - 'third_party/**'
+      - ".github/scripts/process_benchmark_results.py"
+      - ".github/workflows/build.yml"
+      - "**/BUILD"
+      - "**/WORKSPACE"
+      - "**/*.bzl"
+      - "builddeps/**"
+      - "patches/**"
+      - "src/**"
+      - "test/**"
+      - "third_party/**"
+  merge_group:
 
 concurrency:
   # Skip intermediate builds: always.
@@ -40,7 +43,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     container:
-      image: ${{ (contains(matrix.os, 'linux') && 'ghcr.io/enzymead/reactant-docker-images@sha256:91e1edb7a7c869d5a70db06e417f22907be0e67ca86641d48adcea221fedc674' ) || '' }}
+      image: ${{ (contains(matrix.os, 'linux') && 'ghcr.io/enzymead/reactant-docker-images@sha256:7004a6ebbdd77bd047900b2bffc542e8576864056dc27a9c94d30666d6f7ea01' ) || '' }}
 
     # container:
     #   image: us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest
@@ -59,7 +62,7 @@ jobs:
           - linux-x86-a2-48-a100-4gpu
           - macOS-latest
         python:
-          - '3.11'
+          - "3.11"
     env:
       HERMETIC_PYTHON_VERSION: ${{ matrix.python }}
     steps:
@@ -95,7 +98,7 @@ jobs:
           BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=WRAP"
           BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=VBAR_CONTROL_SERVICE_URL"
           echo "BAZEL_FLAGS=${BAZEL_FLAGS}" >> "${GITHUB_ENV}"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: bazel-contrib/setup-bazel@0.15.0
         name: Set up Bazel
         with:
@@ -154,3 +157,62 @@ jobs:
           path: |
             bazel-out/**/test.log
           retention-days: 90
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: Enzyme-JAX-benchmark-${{ matrix.os }}-${{ matrix.python }}
+          path: |
+            bazel-testlogs/test/**/test.outputs/*.zip
+          retention-days: 90
+
+  benchmark-summary:
+    name: Benchmark Summary
+    runs-on: ubuntu-latest
+    needs: build
+    if: ${{ !cancelled() }}
+    permissions:
+      contents: write # contents permission to update benchmark contents in gh-pages branch
+      statuses: read
+      deployments: write # deployments permission to deploy GitHub pages website
+      pull-requests: write
+    steps:
+      - name: Install Dependencies
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+      - uses: actions/checkout@v5
+      - name: Download all benchmark artifacts
+        uses: actions/download-artifact@v5
+        with:
+          pattern: Enzyme-JAX-benchmark-*
+          path: benchmark-results
+          merge-multiple: false
+      - name: Extract and combine benchmark results
+        run: |
+          uv run --no-project .github/scripts/process_benchmark_results.py \
+            --artifact_dir=benchmark-results \
+            --csv_file=combined_results.csv \
+            --json_file=combined_results.json
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: Enzyme-JAX-combined-benchmark-results
+          path: |
+            combined_results.csv
+            combined_results.json
+          retention-days: 90
+      - name: Cache and upload benchmark results
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: EnzymeJAX Benchmarks
+          tool: "customSmallerIsBetter"
+          output-file-path: combined_results.json
+          benchmark-data-dir-path: "benchmarks"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          comment-always: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+          summary-always: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+          alert-threshold: "150%"
+          fail-on-alert: false
+          auto-push: ${{ github.event_name != 'pull_request' }}
+          max-items-in-chart: 50
