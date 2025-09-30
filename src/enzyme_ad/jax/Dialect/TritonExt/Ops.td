@@ -44,7 +44,9 @@ def TritonCallOp : TritonExtOp<"call", [
     TensorI64:$gridx,
     TensorI64:$gridy,
     TensorI64:$gridz,
-    TensorI64:$shmem,
+    TensorI64:$blockx,
+    TensorI64:$blocky,
+    TensorI64:$blockz,
     Variadic<AnyType>:$inputs,
     DefaultValuedStrAttr<StrAttr, "">:$backend_config,
     OptionalAttr<AnyAttr>:$operand_layouts,
@@ -60,7 +62,7 @@ def TritonCallOp : TritonExtOp<"call", [
 
   // clang-format off
   let assemblyFormat = [{
-    $fn ` ` `blocks` `in` `(` $gridx `,` $gridy `,` $gridz `)` ` ` `shmem` `=` $shmem ` ` `(` $inputs `)` attr-dict `:` functional-type($inputs, results)
+    $fn ` ` `blocks` `in` `(` $gridx `,` $gridy `,` $gridz `)` ` ` `threads` `in` `(` $blockx `,` $blocky `,` $blockz `)` ` ` `(` $inputs `)` attr-dict `:` functional-type($inputs, results)
   }];
   // clang-format on
 
