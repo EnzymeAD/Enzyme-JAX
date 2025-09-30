@@ -10,6 +10,7 @@
 #ifndef ENZYMEXLAOPS_H
 #define ENZYMEXLAOPS_H
 
+#include "llvm/Support/CommandLine.h"
 #include "mlir/Bytecode/BytecodeOpInterface.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/Dialect/Quant/IR/QuantTypes.h"
@@ -24,6 +25,8 @@
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "stablehlo/dialect/Base.h"
+
+extern llvm::cl::opt<bool> BarrierOpt;
 
 #define GET_ATTRDEF_CLASSES
 #include "src/enzyme_ad/jax/Dialect/EnzymeXLAAttrEnums.h.inc"

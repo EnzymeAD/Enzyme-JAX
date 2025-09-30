@@ -1,4 +1,4 @@
-// RUN: polygeist-opt --cpuify="method=distribute" --canonicalize-polygeist --split-input-file %s | FileCheck %s
+// RUN: enzymexlamlir-opt --cpuify="method=distribute" --canonicalize --split-input-file %s | FileCheck %s
 
 module {
   func.func private @use(%arg : i1)
@@ -8,7 +8,7 @@ module {
         affine.parallel (%arg15, %arg16) = (0, 0) to (16, 16) {
             %r = scf.for %arg17 = %c0 to %len step %c1 iter_args(%mid = %start) -> (i1) {
               affine.store %f, %arg0[%arg15] : memref<?xf32>
-              "polygeist.barrier"(%arg15, %arg16, %c0) : (index, index, index) -> ()
+              "enzymexla.barrier"(%arg15, %arg16, %c0) : (index, index, index) -> ()
               scf.yield %end : i1
             }
             func.call @use(%r) : (i1) -> ()

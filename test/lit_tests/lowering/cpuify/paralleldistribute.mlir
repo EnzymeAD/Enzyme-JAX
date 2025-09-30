@@ -1,4 +1,4 @@
-// RUN: polygeist-opt --cpuify="method=distribute" --allow-unregistered-dialect --canonicalize-polygeist --split-input-file %s | FileCheck %s
+// RUN: enzymexlamlir-opt --cpuify="method=distribute" --allow-unregistered-dialect --canonicalize --split-input-file %s | FileCheck %s
 
 module {
   func.func private @print()
@@ -20,17 +20,17 @@ module {
         } do {
         ^bb0(%arg4: i8):  // no predecessors
           llvm.store %c0_i8, %0 : i8, !llvm.ptr
-          "polygeist.barrier"(%arg3) : (index) -> ()
+          "enzymexla.barrier"(%arg3) : (index) -> ()
           scf.yield %c0_i8 : i8
         }
         %5 = arith.cmpi ne, %4, %c0_i8 : i8
         scf.if %5 {
           func.call @print() : () -> ()
         }
-        scf.yield
+        scf.reduce
       }
       "test.use"(%0) : (!llvm.ptr) -> ()
-      scf.yield
+      scf.reduce
     }
     return
   }
@@ -40,7 +40,7 @@ module {
         affine.parallel (%arg15, %arg16) = (0, 0) to (16, 16) {
             scf.for %arg17 = %c0 to %len step %c1 {
               affine.store %f, %arg0[%arg15] : memref<?xf32>
-              "polygeist.barrier"(%arg15, %arg16, %c0) : (index, index, index) -> ()
+              "enzymexla.barrier"(%arg15, %arg16, %c0) : (index, index, index) -> ()
             }
         }
     return
@@ -49,7 +49,7 @@ module {
 
 
 // CHECK-LABEL:   func.func @main() {
-// CHECK-NOT: polygeist.barrier
+// CHECK-NOT: enzymexla.barrier
 
 // CHECK-LABEL:   func.func @_Z17compute_tran_tempPfPS_iiiiiiii(
 // CHECK-SAME:                                                  %[[VAL_0:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: memref<?xf32>,
