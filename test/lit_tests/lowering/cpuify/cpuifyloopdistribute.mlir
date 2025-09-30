@@ -1,4 +1,4 @@
-// RUN: polygeist-opt --cpuify="method=distribute.mincut" --split-input-file %s | FileCheck %s
+// RUN: enzymexlamlir-opt --cpuify="method=distribute.mincut" --split-input-file %s | FileCheck %s
 
 module {
   func.func private @use(%arg0: i32)
@@ -9,9 +9,9 @@ module {
     %c9 = arith.constant 9 : index
     scf.parallel (%arg4) = (%c0) to (%c9) step (%c1) {
       %0 = arith.index_cast %arg4 : index to i32
-      "polygeist.barrier"(%arg4) : (index) -> ()
+      "enzymexla.barrier"(%arg4) : (index) -> ()
       func.call @use(%0) : (i32) -> ()
-      scf.yield
+      scf.reduce
     }
     return
   }
@@ -25,14 +25,14 @@ module {
       %b = memref.load %bmem[] : memref<i32>
       %mul = arith.muli %a, %b : i32
       func.call @use(%mul) : (i32) -> ()
-      "polygeist.barrier"(%arg4) : (index) -> ()
+      "enzymexla.barrier"(%arg4) : (index) -> ()
       scf.if %arg {
         func.call @use(%mul) : (i32) -> ()
-        "polygeist.barrier"(%arg4) : (index) -> ()
+        "enzymexla.barrier"(%arg4) : (index) -> ()
         func.call @use(%mul) : (i32) -> ()
         scf.yield
       }
-      scf.yield
+      scf.reduce
     }
     return
   }
@@ -47,14 +47,14 @@ module {
       %mul = arith.muli %a, %b : i32
       func.call @usememref(%amem) : (memref<i32>) -> ()
       func.call @use(%mul) : (i32) -> ()
-      "polygeist.barrier"(%arg4) : (index) -> ()
+      "enzymexla.barrier"(%arg4) : (index) -> ()
       scf.if %arg {
         func.call @use(%mul) : (i32) -> ()
-        "polygeist.barrier"(%arg4) : (index) -> ()
+        "enzymexla.barrier"(%arg4) : (index) -> ()
         func.call @use(%mul) : (i32) -> ()
         scf.yield
       }
-      scf.yield
+      scf.reduce
     }
     return
   }
@@ -72,17 +72,17 @@ module {
       %a2 = arith.addi %a, %i2 : i32
       %a3 = arith.addi %a, %i3 : i32
       func.call @use(%a) : (i32) -> ()
-      "polygeist.barrier"(%arg4) : (index) -> ()
+      "enzymexla.barrier"(%arg4) : (index) -> ()
       scf.for %forarg = %c0 to %bound step %c1 {
         func.call @use(%a1) : (i32) -> ()
         func.call @use(%a2) : (i32) -> ()
         func.call @use(%a3) : (i32) -> ()
-        "polygeist.barrier"(%arg4) : (index) -> ()
+        "enzymexla.barrier"(%arg4) : (index) -> ()
         func.call @use(%a1) : (i32) -> ()
         func.call @use(%a2) : (i32) -> ()
         scf.yield
       }
-      scf.yield
+      scf.reduce
     }
     return
   }
@@ -100,18 +100,18 @@ module {
       %a2 = arith.addi %a, %i2 : i32
       %a3 = arith.addi %a, %i3 : i32
       func.call @use(%a) : (i32) -> ()
-      "polygeist.barrier"(%arg4) : (index) -> ()
+      "enzymexla.barrier"(%arg4) : (index) -> ()
       scf.if %arg {
         func.call @use(%a1) : (i32) -> ()
         func.call @use(%a2) : (i32) -> ()
         func.call @use(%a3) : (i32) -> ()
-        "polygeist.barrier"(%arg4) : (index) -> ()
+        "enzymexla.barrier"(%arg4) : (index) -> ()
         func.call @use(%a1) : (i32) -> ()
         func.call @use(%a2) : (i32) -> ()
         func.call @use(%a3) : (i32) -> ()
         scf.yield
       }
-      scf.yield
+      scf.reduce
     }
     return
   }
@@ -129,11 +129,11 @@ module {
       %a2 = arith.addi %a, %i2 : i32
       %a3 = arith.addi %a, %i3 : i32
       func.call @use(%a) : (i32) -> ()
-      "polygeist.barrier"(%arg4) : (index) -> ()
+      "enzymexla.barrier"(%arg4) : (index) -> ()
       func.call @use(%a1) : (i32) -> ()
       func.call @use(%a2) : (i32) -> ()
       func.call @use(%a3) : (i32) -> ()
-      scf.yield
+      scf.reduce
     }
     return
   }
@@ -147,9 +147,9 @@ module {
       %b = memref.load %bmem[] : memref<i32>
       %mul = arith.muli %a, %b : i32
       func.call @use(%mul) : (i32) -> ()
-      "polygeist.barrier"(%arg4) : (index) -> ()
+      "enzymexla.barrier"(%arg4) : (index) -> ()
       func.call @use(%mul) : (i32) -> ()
-      scf.yield
+      scf.reduce
     }
     return
   }
@@ -179,9 +179,9 @@ module {
       %17 = memref.alloca() : memref<2x2xf32>
       %18 = arith.muli %arg8, %c2 : index
       %19 = arith.muli %18, %0 : index
-      %20 = "polygeist.subindex"(%arg2, %19) : (memref<?xf32>, index) -> memref<?xf32>
+      %20 = "enzymexla.subindex"(%arg2, %19) : (memref<?xf32>, index) -> memref<?xf32>
       %21 = arith.muli %arg7, %c2 : index
-      %22 = "polygeist.subindex"(%arg3, %21) : (memref<?xf32>, index) -> memref<?xf32>
+      %22 = "enzymexla.subindex"(%arg3, %21) : (memref<?xf32>, index) -> memref<?xf32>
       %23 = arith.muli %18, %1 : index
       %24 = arith.addi %21, %23 : index
       scf.parallel (%arg10, %arg11, %arg12) = (%c0, %c0, %c0) to (%11, %12, %13) step (%c1, %c1, %c1) {
@@ -194,7 +194,7 @@ module {
           memref.store %33, %16[%arg11, %arg10] : memref<2x2xf32>
           %34 = memref.load %arg15[%28] : memref<?xf32>
           memref.store %34, %17[%arg11, %arg10] : memref<2x2xf32>
-          "polygeist.barrier"(%arg10, %arg11, %arg12) : (index, index, index) -> ()
+          "enzymexla.barrier"(%arg10, %arg11, %arg12) : (index, index, index) -> ()
           %35:2 = scf.for %arg18 = %c0 to %c2 step %c1 iter_args(%arg19 = %arg14, %arg20 = %arg14) -> (f32, f32) {
             %38 = memref.load %16[%arg11, %arg18] : memref<2x2xf32>
             %39 = memref.load %17[%arg18, %arg10] : memref<2x2xf32>
@@ -202,18 +202,18 @@ module {
             %41 = arith.addf %arg19, %40 : f32
             scf.yield %41, %41 : f32, f32
           }
-          "polygeist.barrier"(%arg10, %arg11, %arg12) : (index, index, index) -> ()
-          %36 = "polygeist.subindex"(%arg16, %c2) : (memref<?xf32>, index) -> memref<?xf32>
-          %37 = "polygeist.subindex"(%arg15, %15) : (memref<?xf32>, index) -> memref<?xf32>
+          "enzymexla.barrier"(%arg10, %arg11, %arg12) : (index, index, index) -> ()
+          %36 = "enzymexla.subindex"(%arg16, %c2) : (memref<?xf32>, index) -> memref<?xf32>
+          %37 = "enzymexla.subindex"(%arg15, %15) : (memref<?xf32>, index) -> memref<?xf32>
           scf.yield %35#1, %37, %36, %35#1 : f32, memref<?xf32>, memref<?xf32>, f32
         }
         %30 = arith.muli %arg11, %1 : index
         %31 = arith.addi %arg10, %30 : index
         %32 = arith.addi %31, %24 : index
         memref.store %29#3, %arg4[%32] : memref<?xf32>
-        scf.yield
+        scf.reduce
       }
-      scf.yield
+      scf.reduce
     }
     return
   }
@@ -227,7 +227,7 @@ module {
 // CHECK:           scf.parallel (%[[VAL_5:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]) = (%[[VAL_2]]) to (%[[VAL_4]]) step (%[[VAL_3]]) {
 // CHECK:             %[[VAL_6:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]] = arith.index_cast %[[VAL_5]] : index to i32
 // CHECK:             func.call @use(%[[VAL_6]]) : (i32) -> ()
-// CHECK:             scf.yield
+// CHECK:             scf.reduce
 // CHECK:           }
 // CHECK:           return
 // CHECK:         }
@@ -244,19 +244,19 @@ module {
 // CHECK-NEXT:        %[[V3:.+]] = arith.muli %[[V1]], %[[V2]] : i32
 // CHECK-NEXT:        memref.store %[[V3]], %[[V0]][%[[arg3]]] : memref<?xi32>
 // CHECK-NEXT:        func.call @use(%[[V3:.+]]) : (i32) -> ()
-// CHECK-NEXT:        scf.yield
+// CHECK-NEXT:        scf.reduce
 // CHECK-NEXT:      }
 // CHECK-NEXT:      scf.if %[[arg0]] {
 // CHECK-NEXT:        memref.alloca_scope  {
 // CHECK-NEXT:          scf.parallel (%[[arg3:.+]]) = (%[[c0]]) to (%[[c9]]) step (%[[c1]]) {
 // CHECK-NEXT:            %[[V1:.+]] = memref.load %[[V0]][%[[arg3]]] : memref<?xi32>
 // CHECK-NEXT:            func.call @use(%[[V1:.+]]) : (i32) -> ()
-// CHECK-NEXT:            scf.yield
+// CHECK-NEXT:            scf.reduce
 // CHECK-NEXT:          }
 // CHECK-NEXT:          scf.parallel (%[[arg3:.+]]) = (%[[c0]]) to (%[[c9]]) step (%[[c1]]) {
 // CHECK-NEXT:            %[[V1:.+]] = memref.load %[[V0]][%[[arg3]]] : memref<?xi32>
 // CHECK-NEXT:            func.call @use(%[[V1:.+]]) : (i32) -> ()
-// CHECK-NEXT:            scf.yield
+// CHECK-NEXT:            scf.reduce
 // CHECK-NEXT:          }
 // CHECK-NEXT:        }
 // CHECK-NEXT:      } else {
@@ -277,7 +277,7 @@ module {
 // CHECK-NEXT:        %[[V1:.+]] = memref.load %[[arg0]][] : memref<i32>
 // CHECK-NEXT:        memref.store %[[V1]], %[[V0]][%[[arg3]]] : memref<?xi32>
 // CHECK-NEXT:        func.call @use(%[[V1:.+]]) : (i32) -> ()
-// CHECK-NEXT:        scf.yield
+// CHECK-NEXT:        scf.reduce
 // CHECK-NEXT:      }
 // CHECK-NEXT:      scf.for %[[arg3:.+]] = %[[c0]] to %[[arg2]] step %[[c1]] {
 // CHECK-NEXT:        memref.alloca_scope  {
@@ -289,7 +289,7 @@ module {
 // CHECK-NEXT:            func.call @use(%[[V4:.+]]) : (i32) -> ()
 // CHECK-NEXT:            func.call @use(%[[V3:.+]]) : (i32) -> ()
 // CHECK-NEXT:            func.call @use(%[[V2:.+]]) : (i32) -> ()
-// CHECK-NEXT:            scf.yield
+// CHECK-NEXT:            scf.reduce
 // CHECK-NEXT:          }
 // CHECK-NEXT:          scf.parallel (%[[arg4:.+]]) = (%[[c0]]) to (%[[c9]]) step (%[[c1]]) {
 // CHECK-NEXT:            %[[V1:.+]] = memref.load %[[V0]][%[[arg4]]] : memref<?xi32>
@@ -297,7 +297,7 @@ module {
 // CHECK-NEXT:            %[[V3:.+]] = arith.addi %[[V1]], %[[c2_i32]] : i32
 // CHECK-NEXT:            func.call @use(%[[V2:.+]]) : (i32) -> ()
 // CHECK-NEXT:            func.call @use(%[[V3:.+]]) : (i32) -> ()
-// CHECK-NEXT:            scf.yield
+// CHECK-NEXT:            scf.reduce
 // CHECK-NEXT:          }
 // CHECK-NEXT:        }
 // CHECK-NEXT:      }
@@ -317,7 +317,7 @@ module {
 // CHECK-NEXT:        %[[V1:.+]] = memref.load %[[arg0]][] : memref<i32>
 // CHECK-NEXT:        memref.store %[[V1]], %[[V0]][%[[arg2]]] : memref<?xi32>
 // CHECK-NEXT:        func.call @use(%[[V1:.+]]) : (i32) -> ()
-// CHECK-NEXT:        scf.yield
+// CHECK-NEXT:        scf.reduce
 // CHECK-NEXT:      }
 // CHECK-NEXT:      scf.if %[[arg1]] {
 // CHECK-NEXT:        memref.alloca_scope  {
@@ -329,7 +329,7 @@ module {
 // CHECK-NEXT:            func.call @use(%[[V4:.+]]) : (i32) -> ()
 // CHECK-NEXT:            func.call @use(%[[V3:.+]]) : (i32) -> ()
 // CHECK-NEXT:            func.call @use(%[[V2:.+]]) : (i32) -> ()
-// CHECK-NEXT:            scf.yield
+// CHECK-NEXT:            scf.reduce
 // CHECK-NEXT:          }
 // CHECK-NEXT:          scf.parallel (%[[arg2:.+]]) = (%[[c0]]) to (%[[c9]]) step (%[[c1]]) {
 // CHECK-NEXT:            %[[V1:.+]] = memref.load %[[V0]][%[[arg2]]] : memref<?xi32>
@@ -339,7 +339,7 @@ module {
 // CHECK-NEXT:            func.call @use(%[[V2:.+]]) : (i32) -> ()
 // CHECK-NEXT:            func.call @use(%[[V3:.+]]) : (i32) -> ()
 // CHECK-NEXT:            func.call @use(%[[V4:.+]]) : (i32) -> ()
-// CHECK-NEXT:            scf.yield
+// CHECK-NEXT:            scf.reduce
 // CHECK-NEXT:          }
 // CHECK-NEXT:        }
 // CHECK-NEXT:      } else {
@@ -360,7 +360,7 @@ module {
 // CHECK-NEXT:        %[[V1:.+]] = memref.load %[[arg0]][] : memref<i32>
 // CHECK-NEXT:        memref.store %[[V1]], %[[V0]][%[[arg2]]] : memref<?xi32>
 // CHECK-NEXT:        func.call @use(%[[V1:.+]]) : (i32) -> ()
-// CHECK-NEXT:        scf.yield
+// CHECK-NEXT:        scf.reduce
 // CHECK-NEXT:      }
 // CHECK-NEXT:      scf.parallel (%[[arg2:.+]]) = (%[[c0]]) to (%[[c9]]) step (%[[c1]]) {
 // CHECK-NEXT:        %[[V1:.+]] = memref.load %[[V0]][%[[arg2]]] : memref<?xi32>
@@ -370,7 +370,7 @@ module {
 // CHECK-NEXT:        func.call @use(%[[V4:.+]]) : (i32) -> ()
 // CHECK-NEXT:        func.call @use(%[[V3:.+]]) : (i32) -> ()
 // CHECK-NEXT:        func.call @use(%[[V2:.+]]) : (i32) -> ()
-// CHECK-NEXT:        scf.yield
+// CHECK-NEXT:        scf.reduce
 // CHECK-NEXT:      }
 // CHECK-NEXT:    }
 // CHECK-NEXT:    return
@@ -387,12 +387,12 @@ module {
 // CHECK-NEXT:        %[[V3:.+]] = arith.muli %[[V1]], %[[V2]] : i32
 // CHECK-NEXT:        memref.store %[[V3]], %[[V0]][%[[arg2]]] : memref<?xi32>
 // CHECK-NEXT:        func.call @use(%[[V3:.+]]) : (i32) -> ()
-// CHECK-NEXT:        scf.yield
+// CHECK-NEXT:        scf.reduce
 // CHECK-NEXT:      }
 // CHECK-NEXT:      scf.parallel (%[[arg2:.+]]) = (%[[c0]]) to (%[[c9]]) step (%[[c1]]) {
 // CHECK-NEXT:        %[[V1:.+]] = memref.load %[[V0]][%[[arg2]]] : memref<?xi32>
 // CHECK-NEXT:        func.call @use(%[[V1:.+]]) : (i32) -> ()
-// CHECK-NEXT:        scf.yield
+// CHECK-NEXT:        scf.reduce
 // CHECK-NEXT:      }
 // CHECK-NEXT:    }
 // CHECK-NEXT:    return
@@ -400,4 +400,4 @@ module {
 
 
 // CHECK-LABEL: matmul
-// CHECK-NOT: polygeist.barrier
+// CHECK-NOT: enzymexla.barrier
