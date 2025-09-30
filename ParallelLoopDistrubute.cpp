@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
+#include "PassDetails.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -14,7 +15,6 @@
 #include "mlir/Dialect/OpenMP/OpenMPDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/Passes.h"
-#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/ImplicitLocOpBuilder.h"
@@ -23,35 +23,25 @@
 #include "mlir/Support/LLVM.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "polygeist/BarrierUtils.h"
+#include "polygeist/Ops.h"
+#include "polygeist/Passes/Passes.h"
+#include "polygeist/Passes/Utils.h"
 
 #include <cmath>
 #include <deque>
 #include <set>
-
-#include "src/enzyme_ad/jax/Dialect/Dialect.h"
-#include "src/enzyme_ad/jax/Dialect/Ops.h"
-#include "src/enzyme_ad/jax/Passes/BarrierElimination.h"
-#include "src/enzyme_ad/jax/Passes/BarrierUtils.h"
-#include "src/enzyme_ad/jax/Passes/Passes.h"
-#include "src/enzyme_ad/jax/Utils.h"
-
-namespace mlir {
-namespace enzyme {
-#define GEN_PASS_DEF_SCFCPUIFY
-#include "src/enzyme_ad/jax/Passes/Passes.h.inc"
-} // namespace enzyme
-} // namespace mlir
 
 #define DEBUG_TYPE "cpuify"
 #define DBGS() ::llvm::dbgs() << "[" DEBUG_TYPE "] "
 
 using namespace mlir;
 using namespace mlir::arith;
-using namespace mlir::enzyme;
+using namespace polygeist;
 
 static bool isUndef(Value v) {
   return v.getDefiningOp<LLVM::UndefOp>() ||
-         v.getDefiningOp<LLVM::PoisonOp>() || v.getDefiningOp<ub::PoisonOp>();
+         v.getDefiningOp<polygeist::UndefOp>();
 }
 
 static bool couldWrite(Operation *op) {
@@ -86,11 +76,19 @@ struct Node {
   }
   void dump() const {
     if (type == VAL)
-      llvm::errs() << "[" << V << ", " << "Value" << "]\n";
+      llvm::errs() << "[" << V << ", "
+                   << "Value"
+                   << "]\n";
     else if (type == OP)
-      llvm::errs() << "[" << *O << ", " << "Operation" << "]\n";
+      llvm::errs() << "[" << *O << ", "
+                   << "Operation"
+                   << "]\n";
     else
-      llvm::errs() << "[" << "NULL" << ", " << "None" << "]\n";
+      llvm::errs() << "["
+                   << "NULL"
+                   << ", "
+                   << "None"
+                   << "]\n";
   }
 };
 
@@ -150,7 +148,7 @@ static void getIndVars(Operation *op, SmallPtrSet<Value, 3> &indVars) {
 static bool arePreceedingOpsFullyRecomputable(Operation *op,
                                               bool singleExecution) {
   SmallVector<MemoryEffects::EffectInstance> beforeEffects;
-  mlir::enzyme::getEffectsBefore(op, beforeEffects, /*stopAtBarrier*/ false);
+  getEffectsBefore(op, beforeEffects, /*stopAtBarrier*/ false);
 
   for (auto it : beforeEffects) {
     if (isa<MemoryEffects::Read>(it.getEffect())) {
@@ -167,13 +165,13 @@ static bool arePreceedingOpsFullyRecomputable(Operation *op,
 }
 
 static bool isRecomputableAfterDistribute(Operation *op,
-                                          enzymexla::BarrierOp barrier) {
+                                          polygeist::BarrierOp barrier) {
   // The below logic should not disagree with the logic in interchange and wrap,
   // otherwise we might cache unneeded results or wrap* will ask us to
   // distribute again if it thinks the ops we decide here are recomputable here
   // are not, resulting into an infinite loop
 
-  if (isa<enzymexla::BarrierOp>(op))
+  if (isa<polygeist::BarrierOp>(op))
     return false;
 
   SmallVector<MemoryEffects::EffectInstance> effects;
@@ -197,7 +195,7 @@ static bool isRecomputableAfterDistribute(Operation *op,
     if (begin == front)
       break;
     Operation *prev = begin->getPrevNode();
-    if (isa<enzymexla::BarrierOp>(prev))
+    if (isa<polygeist::BarrierOp>(prev))
       break;
     begin = prev;
   }
@@ -206,7 +204,7 @@ static bool isRecomputableAfterDistribute(Operation *op,
     end = end->getNextNode();
     if (end == nullptr)
       break;
-    if (isa<enzymexla::BarrierOp>(end))
+    if (isa<polygeist::BarrierOp>(end))
       break;
   }
 
@@ -220,7 +218,7 @@ static bool isRecomputableAfterDistribute(Operation *op,
   return true;
 }
 
-static void minCutCache(enzymexla::BarrierOp barrier,
+static void minCutCache(polygeist::BarrierOp barrier,
                         llvm::SetVector<Value> &Required,
                         llvm::SetVector<Value> &Cache) {
   Graph G;
@@ -319,7 +317,7 @@ bool isIfOp(Operation *op) { return isa<scf::IfOp, affine::AffineIfOp>(op); }
 /// Populates `crossing` with values (op results) that are defined in the same
 /// block as `op` and above it, and used by at least one op in the same block
 /// below `op`. Uses may be in nested regions.
-static void findValuesUsedBelow(enzymexla::BarrierOp op,
+static void findValuesUsedBelow(polygeist::BarrierOp op,
                                 llvm::SetVector<Value> &crossing,
                                 llvm::SetVector<Operation *> &preserveAllocas) {
   llvm::SetVector<Operation *> descendantsUsed;
@@ -393,7 +391,7 @@ static void findValuesUsedBelow(enzymexla::BarrierOp op,
 /// Returns `true` if the given operation has a BarrierOp transitively nested in
 /// one of its regions, but not within any nested ParallelOp.
 static bool hasNestedBarrier(Operation *op, SmallVector<BlockArgument> &vals) {
-  op->walk([&](enzymexla::BarrierOp barrier) {
+  op->walk([&](polygeist::BarrierOp barrier) {
     // If there is a `parallel` op nested inside the given op (alternatively,
     // the `parallel` op is not an ancestor of `op` or `op` itself), the
     // barrier is considered nested in that `parallel` op and _not_ in `op`.
@@ -420,7 +418,7 @@ static bool hasNestedBarrier(Operation *op, SmallVector<BlockArgument> &vals) {
   return vals.size();
 }
 
-// namespace {
+namespace {
 
 #if 0
 /// Returns `true` if the loop has a form expected by interchange patterns.
@@ -489,8 +487,7 @@ static bool isNormalized(scf::ParallelOp op) {
 }
 static bool isNormalized(affine::AffineParallelOp op) {
   auto isZero = [](AffineExpr v) {
-    // if (auto ce = v.dyn_cast<AffineConstantExpr>())
-    if (auto ce = dyn_cast<AffineConstantExpr>(v))
+    if (auto ce = v.dyn_cast<AffineConstantExpr>())
       return ce.getValue() == 0;
     return false;
   };
@@ -547,8 +544,7 @@ struct NormalizeParallel : public OpRewritePattern<scf::ParallelOp> {
 };
 
 LogicalResult splitSubLoop(scf::ParallelOp op, PatternRewriter &rewriter,
-                           enzymexla::BarrierOp barrier,
-                           SmallVector<Value> &iterCounts,
+                           BarrierOp barrier, SmallVector<Value> &iterCounts,
                            scf::ParallelOp &preLoop, scf::ParallelOp &postLoop,
                            Block *&outerBlock, scf::ParallelOp &outerLoop,
                            memref::AllocaScopeOp &outerEx) {
@@ -605,13 +601,11 @@ LogicalResult splitSubLoop(scf::ParallelOp op, PatternRewriter &rewriter,
   return success();
 }
 
-LogicalResult
-splitSubLoop(affine::AffineParallelOp op, PatternRewriter &rewriter,
-             enzymexla::BarrierOp barrier, SmallVector<Value> &iterCounts,
-             affine::AffineParallelOp &preLoop,
-             affine::AffineParallelOp &postLoop, Block *&outerBlock,
-             affine::AffineParallelOp &outerLoop,
-             memref::AllocaScopeOp &outerEx) {
+LogicalResult splitSubLoop(
+    affine::AffineParallelOp op, PatternRewriter &rewriter, BarrierOp barrier,
+    SmallVector<Value> &iterCounts, affine::AffineParallelOp &preLoop,
+    affine::AffineParallelOp &postLoop, Block *&outerBlock,
+    affine::AffineParallelOp &outerLoop, memref::AllocaScopeOp &outerEx) {
 
   SmallVector<AffineMap> outerLower;
   SmallVector<AffineMap> outerUpper;
@@ -699,7 +693,7 @@ splitSubLoop(affine::AffineParallelOp op, PatternRewriter &rewriter,
 }
 
 template <typename T, bool UseMinCut>
-static LogicalResult distributeAroundBarrier(T op, enzymexla::BarrierOp barrier,
+static LogicalResult distributeAroundBarrier(T op, BarrierOp barrier,
                                              T &preLoop, T &postLoop,
                                              PatternRewriter &rewriter,
                                              Operation **postPop = nullptr) {
@@ -772,9 +766,9 @@ static LogicalResult distributeAroundBarrier(T op, enzymexla::BarrierOp barrier,
         while (user->getBlock() != barrier->getBlock())
           user = user->getBlock()->getParentOp();
         if (barrier->isBeforeInBlock(user)) {
-          rewriter.startOpModification(user);
+          rewriter.startRootUpdate(user);
           u.set(mapping.lookup(v));
-          rewriter.finalizeOpModification(user);
+          rewriter.finalizeRootUpdate(user);
         }
       }
     }
@@ -830,7 +824,7 @@ static LogicalResult distributeAroundBarrier(T op, enzymexla::BarrierOp barrier,
   assert(mod);
   DataLayout DLI(mod);
   auto addToAllocations = [&](Value v, SmallVector<Value> &allocations) {
-    if (auto cl = v.getDefiningOp<enzymexla::CacheLoad>()) {
+    if (auto cl = v.getDefiningOp<polygeist::CacheLoad>()) {
       allocations.push_back(cl.getMemref());
     } else if (auto ao = v.getDefiningOp<LLVM::AllocaOp>()) {
       allocations.push_back(allocateTemporaryBuffer<LLVM::AllocaOp>(
@@ -854,8 +848,7 @@ static LogicalResult distributeAroundBarrier(T op, enzymexla::BarrierOp barrier,
         rewriter.setInsertionPoint(u.getOwner());
         auto buf = alloc;
         for (auto idx : preLoop.getBody()->getArguments()) {
-          // auto mt0 = buf.getType().cast<MemRefType>();
-          auto mt0 = llvm::cast<MemRefType>(buf.getType());
+          auto mt0 = buf.getType().cast<MemRefType>();
           std::vector<int64_t> shape(mt0.getShape());
           assert(shape.size() > 0);
           shape.erase(shape.begin());
@@ -863,7 +856,7 @@ static LogicalResult distributeAroundBarrier(T op, enzymexla::BarrierOp barrier,
                                     MemRefLayoutAttrInterface(),
                                     // mt0.getLayout(),
                                     mt0.getMemorySpace());
-          auto subidx = rewriter.create<enzymexla::SubIndexOp>(alloc.getLoc(),
+          auto subidx = rewriter.create<polygeist::SubIndexOp>(alloc.getLoc(),
                                                                mt, buf, idx);
           buf = subidx;
         }
@@ -895,11 +888,8 @@ static LogicalResult distributeAroundBarrier(T op, enzymexla::BarrierOp barrier,
                                       rewriter.create<arith::IndexCastOp>(
                                           ao.getLoc(), sz.getType(), idx));
         SmallVector<Value> vec = {idx};
-        auto elementType = rewriter.getI8Type();
-        u.set(rewriter.create<LLVM::GEPOp>(
-            ao.getLoc(), ao.getType(), elementType, alloc, ValueRange{idx}));
-        // u.set(rewriter.create<LLVM::GEPOp>(ao.getLoc(), ao.getType(), alloc,
-        //                                    idx));
+        u.set(rewriter.create<LLVM::GEPOp>(ao.getLoc(), ao.getType(), alloc,
+                                           idx));
       }
     } else {
       assert(false && "Wrong operation type in preserveAllocas");
@@ -913,7 +903,7 @@ static LogicalResult distributeAroundBarrier(T op, enzymexla::BarrierOp barrier,
     Value alloc = std::get<1>(pair);
 
     // No need to store cache loads
-    if (!isa<enzymexla::CacheLoad>(v.getDefiningOp())) {
+    if (!isa<polygeist::CacheLoad>(v.getDefiningOp())) {
       // Store
       rewriter.setInsertionPointAfter(v.getDefiningOp());
       rewriter.create<memref::StoreOp>(v.getLoc(), v, alloc,
@@ -921,7 +911,7 @@ static LogicalResult distributeAroundBarrier(T op, enzymexla::BarrierOp barrier,
     }
     // Reload
     rewriter.setInsertionPointAfter(barrier);
-    Value reloaded = rewriter.create<enzymexla::CacheLoad>(
+    Value reloaded = rewriter.create<polygeist::CacheLoad>(
         v.getLoc(), alloc, preLoop.getBody()->getArguments());
     for (auto &u : llvm::make_early_inc_range(v.getUses())) {
       auto *user = u.getOwner();
@@ -929,9 +919,9 @@ static LogicalResult distributeAroundBarrier(T op, enzymexla::BarrierOp barrier,
         user = user->getBlock()->getParentOp();
 
       if (barrier->isBeforeInBlock(user)) {
-        rewriter.startOpModification(user);
+        rewriter.startRootUpdate(user);
         u.set(reloaded);
-        rewriter.finalizeOpModification(user);
+        rewriter.finalizeRootUpdate(user);
       }
     }
   }
@@ -946,7 +936,7 @@ static LogicalResult distributeAroundBarrier(T op, enzymexla::BarrierOp barrier,
   rewriter.setInsertionPointToEnd(outerBlock);
   if (outerLoop) {
     if (isa<scf::ParallelOp>(outerLoop))
-      rewriter.create<scf::ReduceOp>(op.getLoc());
+      rewriter.create<scf::YieldOp>(op.getLoc());
     else {
       assert(isa<affine::AffineParallelOp>(outerLoop));
       rewriter.create<affine::AffineYieldOp>(op.getLoc());
@@ -976,20 +966,20 @@ static LogicalResult distributeAroundBarrier(T op, enzymexla::BarrierOp barrier,
   return success();
 }
 
-static enzymexla::BarrierOp getFirstBarrier(Block *block) {
+static BarrierOp getFirstBarrier(Block *block) {
   auto it = llvm::find_if(block->getOperations(), [](Operation &nested) {
-    return isa<enzymexla::BarrierOp>(nested);
+    return isa<polygeist::BarrierOp>(nested);
   });
   if (it == block->end()) {
     return nullptr;
   }
-  return cast<enzymexla::BarrierOp>(&*it);
+  return cast<BarrierOp>(&*it);
 }
 
 template <typename T, bool UseMinCut>
 static LogicalResult distributeAroundFirstBarrier(T op, T &preLoop, T &postLoop,
                                                   PatternRewriter &rewriter) {
-  enzymexla::BarrierOp barrier = getFirstBarrier(op.getBody());
+  BarrierOp barrier = getFirstBarrier(op.getBody());
   if (!barrier)
     return failure();
   return distributeAroundBarrier<T, UseMinCut>(op, barrier, preLoop, postLoop,
@@ -1039,7 +1029,7 @@ static LogicalResult canWrapWithBarriers(Operation *op,
 }
 
 bool isBarrierContainingAll(Operation *op, SmallVector<BlockArgument> &args) {
-  auto bar = dyn_cast<enzymexla::BarrierOp>(op);
+  auto bar = dyn_cast<polygeist::BarrierOp>(op);
   if (!bar)
     return false;
   SmallPtrSet<Value, 3> bargs(op->getOperands().begin(),
@@ -1058,7 +1048,7 @@ template <typename T>
 static LogicalResult
 wrapWithBarriers(T op, PatternRewriter &rewriter,
                  SmallVector<BlockArgument> &args, bool recomputable,
-                 enzymexla::BarrierOp &before, enzymexla::BarrierOp &after) {
+                 polygeist::BarrierOp &before, polygeist::BarrierOp &after) {
   Operation *prevOp = op->getPrevNode();
   Operation *nextOp = op->getNextNode();
   bool hasPrevBarrierLike =
@@ -1074,17 +1064,17 @@ wrapWithBarriers(T op, PatternRewriter &rewriter,
   SmallVector<Value> vargs(args.begin(), args.end());
 
   if (!hasPrevBarrierLike)
-    before = rewriter.create<enzymexla::BarrierOp>(op->getLoc(), vargs);
+    before = rewriter.create<polygeist::BarrierOp>(op->getLoc(), vargs);
 
   if (!hasNextBarrierLike) {
     OpBuilder::InsertionGuard guard(rewriter);
     rewriter.setInsertionPointAfter(op);
-    after = rewriter.create<enzymexla::BarrierOp>(op->getLoc(), vargs);
+    after = rewriter.create<polygeist::BarrierOp>(op->getLoc(), vargs);
   }
 
   // We don't actually change the op, but the pattern infra wants us to. Just
   // pretend we changed it in-place.
-  rewriter.modifyOpInPlace(op, [] {});
+  rewriter.updateRootInPlace(op, [] {});
   LLVM_DEBUG(DBGS() << "[wrap] wrapped '" << op->getName().getStringRef()
                     << "' with barriers\n");
   return success();
@@ -1093,14 +1083,14 @@ template <typename T>
 static LogicalResult wrapWithBarriers(T op, PatternRewriter &rewriter,
                                       SmallVector<BlockArgument> &args,
                                       bool recomputable) {
-  enzymexla::BarrierOp before, after;
+  polygeist::BarrierOp before, after;
   return wrapWithBarriers(op, rewriter, args, recomputable, before, after);
 }
 
 template <typename T, bool UseMinCut>
-static LogicalResult
-distributeAfterWrap(Operation *pop, enzymexla::BarrierOp barrier,
-                    PatternRewriter &rewriter, Operation **postPop = nullptr) {
+static LogicalResult distributeAfterWrap(Operation *pop, BarrierOp barrier,
+                                         PatternRewriter &rewriter,
+                                         Operation **postPop = nullptr) {
   if (!barrier)
     return failure();
   if (!pop)
@@ -1126,7 +1116,7 @@ static LogicalResult wrapAndDistribute(T op, bool singleExecution,
     return failure();
   }
 
-  enzymexla::BarrierOp before, after;
+  polygeist::BarrierOp before, after;
   if (failed(
           wrapWithBarriers(op, rewriter, vals, recomputable, before, after))) {
     return failure();
@@ -1232,8 +1222,8 @@ static void insertRecomputables(PatternRewriter &rewriter, T oldParallel,
   for (auto it = oldParallel.getBody()->begin(); dyn_cast<T2>(*it) != until;
        ++it) {
     auto newOp = rewriter.clone(*it, mapping);
-    rewriter.replaceOpUsesWithinBlock(&*it, newOp->getResults(),
-                                      newParallel.getBody());
+    rewriter.replaceOpWithinBlock(&*it, newOp->getResults(),
+                                  newParallel.getBody());
   }
 }
 
@@ -1242,7 +1232,7 @@ static void insertRecomputables(PatternRewriter &rewriter, T oldParallel,
 template <typename T, typename IfType>
 static void moveBodiesIf(PatternRewriter &rewriter, T op, IfType ifOp,
                          IfType newIf) {
-  rewriter.startOpModification(op);
+  rewriter.startRootUpdate(op);
   {
     OpBuilder::InsertionGuard guard(rewriter);
     rewriter.setInsertionPointToStart(getThenBlock(newIf));
@@ -1299,7 +1289,7 @@ static void moveBodiesIf(PatternRewriter &rewriter, T op, IfType ifOp,
 
   rewriter.eraseOp(ifOp);
   rewriter.eraseOp(op);
-  rewriter.finalizeOpModification(op);
+  rewriter.finalizeRootUpdate(op);
 }
 
 mlir::OperandRange getLowerBounds(scf::ParallelOp op,
@@ -1339,8 +1329,7 @@ static void moveBodiesFor(PatternRewriter &rewriter, T op, ForType forLoop,
   for (auto it = op.getBody()->begin(); dyn_cast<ForType>(*it) != forLoop;
        ++it) {
     auto newOp = rewriter.clone(*it, mapping);
-    rewriter.replaceOpUsesWithinBlock(&*it, newOp->getResults(),
-                                      forLoop.getBody());
+    rewriter.replaceOpWithinBlock(&*it, newOp->getResults(), forLoop.getBody());
   }
   rewriter.setInsertionPointToEnd(newParallel.getBody());
   rewriter.clone(*op.getBody()->getTerminator());
@@ -1460,8 +1449,7 @@ static std::pair<Block *, Block::iterator> getInsertionPointAfterDef(Value v) {
   if (Operation *op = v.getDefiningOp())
     return {op->getBlock(), std::next(Block::iterator(op))};
 
-  // BlockArgument blockArg = v.cast<BlockArgument>();
-  BlockArgument blockArg = llvm::cast<BlockArgument>(v);
+  BlockArgument blockArg = v.cast<BlockArgument>();
   return {blockArg.getParentBlock(), blockArg.getParentBlock()->begin()};
 }
 
@@ -1813,9 +1801,9 @@ struct HoistBarrierIf : public OpRewritePattern<IfType> {
   }
 };
 
-static enzymexla::BarrierOp getBarrierInBlock(Block *block) {
+static BarrierOp getBarrierInBlock(Block *block) {
   for (Operation &op : *block) {
-    if (auto barrier = dyn_cast<enzymexla::BarrierOp>(&op))
+    if (auto barrier = dyn_cast<BarrierOp>(&op))
       return barrier;
   }
   return nullptr;
@@ -1825,7 +1813,7 @@ template <bool UseMinCut>
 void getIfCrossingCache(mlir::PatternRewriter &rewriter, Block *original,
                         llvm::SetVector<Operation *> &preserveAllocas,
                         llvm::SetVector<Value> &crossingCache,
-                        enzymexla::BarrierOp barrier) {
+                        BarrierOp barrier) {
 
   llvm::SetVector<Value> usedBelow;
   findValuesUsedBelow(barrier, usedBelow, preserveAllocas);
@@ -1884,9 +1872,9 @@ void getIfCrossingCache(mlir::PatternRewriter &rewriter, Block *original,
         while (user->getBlock() != barrier->getBlock())
           user = user->getBlock()->getParentOp();
         if (barrier->isBeforeInBlock(user)) {
-          rewriter.startOpModification(user);
+          rewriter.startRootUpdate(user);
           u.set(mapping.lookup(v));
-          rewriter.finalizeOpModification(user);
+          rewriter.finalizeRootUpdate(user);
         }
       }
     }
@@ -1903,8 +1891,8 @@ void distributeBlockAroundBarrier(mlir::PatternRewriter &rewriter,
                                   llvm::SetVector<Operation *> &preserveAllocas,
                                   llvm::SetVector<Value> &crossingCache,
                                   Block *original, Block *pre, Block *post,
-                                  enzymexla::BarrierOp barrier,
-                                  Operation *beforeBlocks, IRMapping mapping) {
+                                  BarrierOp barrier, Operation *beforeBlocks,
+                                  IRMapping mapping) {
 
   // Remove already created yields if they exist
   clearBlock(pre, rewriter);
@@ -1964,7 +1952,7 @@ struct DistributeIfAroundBarrier : public OpRewritePattern<IfOpType> {
 
   static bool isRecomputableCond(Operation *op, IfOpType ifOp) {
 
-    if (isa<enzymexla::BarrierOp>(op))
+    if (isa<polygeist::BarrierOp>(op))
       return false;
 
     SmallVector<MemoryEffects::EffectInstance> effects;
@@ -1987,7 +1975,7 @@ struct DistributeIfAroundBarrier : public OpRewritePattern<IfOpType> {
       if (begin == front)
         break;
       Operation *prev = begin->getPrevNode();
-      if (isa<enzymexla::BarrierOp>(prev))
+      if (isa<polygeist::BarrierOp>(prev))
         break;
       begin = prev;
     }
@@ -1996,7 +1984,7 @@ struct DistributeIfAroundBarrier : public OpRewritePattern<IfOpType> {
       end = end->getNextNode();
       if (end == nullptr)
         break;
-      if (isa<enzymexla::BarrierOp>(end))
+      if (isa<polygeist::BarrierOp>(end))
         break;
     }
 
@@ -2021,8 +2009,8 @@ struct DistributeIfAroundBarrier : public OpRewritePattern<IfOpType> {
 
     Block *thenBlock = getThenBlock(ifOp);
     Block *elseBlock = getElseBlock(ifOp);
-    enzymexla::BarrierOp thenBarrier = nullptr;
-    enzymexla::BarrierOp elseBarrier = nullptr;
+    BarrierOp thenBarrier = nullptr;
+    BarrierOp elseBarrier = nullptr;
     if (thenBlock)
       thenBarrier = getBarrierInBlock(getThenBlock(ifOp));
     if (elseBlock)
@@ -2041,13 +2029,13 @@ struct DistributeIfAroundBarrier : public OpRewritePattern<IfOpType> {
 
     if (!thenBarrier) {
       rewriter.setInsertionPoint(getThenBlock(ifOp)->getTerminator());
-      thenBarrier = rewriter.create<enzymexla::BarrierOp>(
+      thenBarrier = rewriter.create<polygeist::BarrierOp>(
           ifOp->getLoc(), elseBarrier->getOperands());
     }
     if (elseBlock) {
       if (!elseBarrier) {
         rewriter.setInsertionPoint(getElseBlock(ifOp)->getTerminator());
-        elseBarrier = rewriter.create<enzymexla::BarrierOp>(
+        elseBarrier = rewriter.create<polygeist::BarrierOp>(
             ifOp->getLoc(), thenBarrier->getOperands());
       }
     }
@@ -2105,7 +2093,7 @@ struct DistributeIfAroundBarrier : public OpRewritePattern<IfOpType> {
     auto ifPost = cloneWithResults(ifOp, rewriter, mapping);
     mapping.clear();
 
-    auto handleCase = [&ifPre, &rewriter, &ifOp](enzymexla::BarrierOp barrier,
+    auto handleCase = [&ifPre, &rewriter, &ifOp](BarrierOp barrier,
                                                  Block *block, Block *preBlock,
                                                  Block *postBlock) {
       assert(barrier);
@@ -2132,7 +2120,7 @@ struct DistributeIfAroundBarrier : public OpRewritePattern<IfOpType> {
       assert(mod);
       DataLayout DLI(mod);
       for (Value v : crossingCache) {
-        if (auto cl = v.getDefiningOp<enzymexla::CacheLoad>()) {
+        if (auto cl = v.getDefiningOp<polygeist::CacheLoad>()) {
           cacheAllocations.push_back(cl.getMemref());
         } else {
           // allocations.push_back(allocateTemporaryBuffer<memref::AllocaOp>(rewriter,
@@ -2149,14 +2137,14 @@ struct DistributeIfAroundBarrier : public OpRewritePattern<IfOpType> {
         Value alloc = std::get<1>(pair);
 
         // No need to store cache loads
-        if (!isa<enzymexla::CacheLoad>(v.getDefiningOp())) {
+        if (!isa<polygeist::CacheLoad>(v.getDefiningOp())) {
           // Store
           rewriter.setInsertionPointAfter(v.getDefiningOp());
           rewriter.create<memref::StoreOp>(v.getLoc(), v, alloc, ValueRange());
         }
         // Reload
         rewriter.setInsertionPointAfter(barrier);
-        Value reloaded = rewriter.create<enzymexla::CacheLoad>(
+        Value reloaded = rewriter.create<polygeist::CacheLoad>(
             v.getLoc(), alloc, ValueRange());
         for (auto &u : llvm::make_early_inc_range(v.getUses())) {
           auto *user = u.getOwner();
@@ -2164,9 +2152,9 @@ struct DistributeIfAroundBarrier : public OpRewritePattern<IfOpType> {
             user = user->getBlock()->getParentOp();
 
           if (barrier->isBeforeInBlock(user)) {
-            rewriter.startOpModification(user);
+            rewriter.startRootUpdate(user);
             u.set(reloaded);
-            rewriter.finalizeOpModification(user);
+            rewriter.finalizeRootUpdate(user);
           }
         }
       }
@@ -2230,7 +2218,7 @@ struct Reg2MemFor : public OpRewritePattern<T> {
     SmallVector<Value> newRegionArguments;
     newRegionArguments.push_back(newOp.getInductionVar());
     if (UseMinCut)
-      loadValues<enzymexla::CacheLoad>(op.getLoc(), allocated, rewriter,
+      loadValues<polygeist::CacheLoad>(op.getLoc(), allocated, rewriter,
                                        newRegionArguments);
     else
       loadValues<memref::LoadOp>(op.getLoc(), allocated, rewriter,
@@ -2245,7 +2233,7 @@ struct Reg2MemFor : public OpRewritePattern<T> {
 
     Operation *IP = newOp.getBody()->getTerminator();
     while (IP != &IP->getBlock()->front()) {
-      if (isa<enzymexla::BarrierOp>(IP->getPrevNode())) {
+      if (isa<BarrierOp>(IP->getPrevNode())) {
         IP = IP->getPrevNode();
       }
       break;
@@ -2263,7 +2251,7 @@ struct Reg2MemFor : public OpRewritePattern<T> {
       if (UseMinCut)
         loaded.push_back(
             rewriter
-                .create<enzymexla::CacheLoad>(op.getLoc(), alloc, ValueRange())
+                .create<polygeist::CacheLoad>(op.getLoc(), alloc, ValueRange())
                 ->getResult(0));
       else
         loaded.push_back(
@@ -2280,8 +2268,8 @@ bool isEquivalent(Value a, Value b) {
     return true;
   if (a.getType() != b.getType())
     return false;
-  if (auto sa = a.getDefiningOp<enzymexla::SubIndexOp>()) {
-    if (auto sb = b.getDefiningOp<enzymexla::SubIndexOp>()) {
+  if (auto sa = a.getDefiningOp<polygeist::SubIndexOp>()) {
+    if (auto sb = b.getDefiningOp<polygeist::SubIndexOp>()) {
       return isEquivalent(sa.getSource(), sb.getSource()) &&
              isEquivalent(sa.getIndex(), sb.getIndex());
     }
@@ -2361,7 +2349,7 @@ struct Reg2MemIf : public OpRewritePattern<T> {
           }
           if (!usesMustStore) {
             Value val = std::get<1>(tup);
-            if (auto cl = val.getDefiningOp<enzymexla::CacheLoad>()) {
+            if (auto cl = val.getDefiningOp<polygeist::CacheLoad>()) {
               if (isEquivalent(cl.getMemref(), storeOp.getMemref()) &&
                   cl->getBlock() == storeOp->getBlock() &&
                   llvm::all_of(llvm::zip(cl.getIndices(), storeOp.getIndices()),
@@ -2382,7 +2370,7 @@ struct Reg2MemIf : public OpRewritePattern<T> {
               }
             }
             val = std::get<2>(tup);
-            if (auto cl = val.getDefiningOp<enzymexla::CacheLoad>()) {
+            if (auto cl = val.getDefiningOp<polygeist::CacheLoad>()) {
               if (isEquivalent(cl.getMemref(), storeOp.getMemref()) &&
                   cl->getBlock() == storeOp->getBlock() &&
                   llvm::all_of(llvm::zip(cl.getIndices(), storeOp.getIndices()),
@@ -2540,7 +2528,7 @@ struct Reg2MemIf : public OpRewritePattern<T> {
     rewriter.eraseOp(&getElseBlock(newOp)->back());
     rewriter.mergeBlocks(getElseBlock(op), getElseBlock(newOp));
 
-    rewriter.startOpModification(op);
+    rewriter.startRootUpdate(op);
     rewriter.setInsertionPoint(op);
     for (auto pair : llvm::zip(op->getResults(), allocated)) {
       auto alloc = std::get<1>(pair);
@@ -2549,7 +2537,7 @@ struct Reg2MemIf : public OpRewritePattern<T> {
         if (UseMinCut)
           std::get<0>(pair).replaceAllUsesWith(
               rewriter
-                  .create<enzymexla::CacheLoad>(op.getLoc(), alloc,
+                  .create<polygeist::CacheLoad>(op.getLoc(), alloc,
                                                 ValueRange())
                   ->getResult(0));
         else
@@ -2558,7 +2546,7 @@ struct Reg2MemIf : public OpRewritePattern<T> {
                   ->getResult(0));
       }
     }
-    rewriter.finalizeOpModification(op);
+    rewriter.finalizeRootUpdate(op);
     rewriter.eraseOp(op);
     return success();
   }
@@ -2619,7 +2607,7 @@ struct Reg2MemWhile : public OpRewritePattern<scf::WhileOp> {
     storeValues(op.getLoc(), beforeTerminator.getArgs(), afterAllocated,
                 rewriter);
 
-    rewriter.modifyOpInPlace(
+    rewriter.updateRootInPlace(
         beforeTerminator, [&] { beforeTerminator.getArgsMutable().clear(); });
 
     Block *newAfter =
@@ -2634,7 +2622,7 @@ struct Reg2MemWhile : public OpRewritePattern<scf::WhileOp> {
     storeValues(op.getLoc(), afterTerminator.getResults(), beforeAllocated,
                 rewriter);
 
-    rewriter.modifyOpInPlace(
+    rewriter.updateRootInPlace(
         afterTerminator, [&] { afterTerminator.getResultsMutable().clear(); });
 
     rewriter.setInsertionPointAfter(op);
@@ -2646,10 +2634,10 @@ struct Reg2MemWhile : public OpRewritePattern<scf::WhileOp> {
   }
 };
 
-struct LowerCacheLoad : public OpRewritePattern<enzymexla::CacheLoad> {
-  using OpRewritePattern<enzymexla::CacheLoad>::OpRewritePattern;
+struct LowerCacheLoad : public OpRewritePattern<polygeist::CacheLoad> {
+  using OpRewritePattern<polygeist::CacheLoad>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(enzymexla::CacheLoad op,
+  LogicalResult matchAndRewrite(polygeist::CacheLoad op,
                                 PatternRewriter &rewriter) const override {
     auto memrefLoad = rewriter.create<memref::LoadOp>(
         op.getLoc(), op.getMemref(), op.getIndices());
@@ -2658,11 +2646,11 @@ struct LowerCacheLoad : public OpRewritePattern<enzymexla::CacheLoad> {
   }
 };
 
-struct SCFCPUifyPass : public enzyme::impl::SCFCPUifyBase<SCFCPUifyPass> {
+struct CPUifyPass : public SCFCPUifyBase<CPUifyPass> {
   template <bool UseMinCut>
   void addPatterns(RewritePatternSet &patterns, StringRef method) {
     patterns.insert<
-        mlir::enzymexla::BarrierElim</*TopLevelOnly*/ false>, Reg2MemWhile,
+        BarrierElim</*TopLevelOnly*/ false>, Reg2MemWhile,
         Reg2MemFor<scf::ForOp, UseMinCut>,
         Reg2MemFor<affine::AffineForOp, UseMinCut>,
         Reg2MemIf<scf::IfOp, UseMinCut>,
@@ -2711,22 +2699,19 @@ struct SCFCPUifyPass : public enzyme::impl::SCFCPUifyBase<SCFCPUifyPass> {
         DistributeAroundBarrier<affine::AffineParallelOp, UseMinCut>>(
         &getContext());
   }
-  // CPUifyPass() = default;
-  // CPUifyPass(StringRef method) { this->method.setValue(method.str()); }
-  using SCFCPUifyBase::SCFCPUifyBase;
+  CPUifyPass() = default;
+  CPUifyPass(StringRef method) { this->method.setValue(method.str()); }
   void runOnOperation() override {
     StringRef method(this->method);
-    if (method.starts_with("distribute")) {
+    if (method.startswith("distribute")) {
       {
         RewritePatternSet patterns(&getContext());
         if (method.contains("mincut"))
           addPatterns<true>(patterns, method);
         else
           addPatterns<false>(patterns, method);
-        // GreedyRewriteConfig config;
-        //  config.maxIterations = 142;
-        mlir::GreedyRewriteConfig config;
-        config.setMaxIterations(142);
+        GreedyRewriteConfig config;
+        config.maxIterations = 142;
         if (failed(applyPatternsAndFoldGreedily(getOperation(),
                                                 std::move(patterns), config))) {
           signalPassFailure();
@@ -2744,9 +2729,9 @@ struct SCFCPUifyPass : public enzyme::impl::SCFCPUifyBase<SCFCPUifyPass> {
         }
       }
     } else if (method == "omp") {
-      SmallVector<enzymexla::BarrierOp> toReplace;
+      SmallVector<polygeist::BarrierOp> toReplace;
       getOperation()->walk(
-          [&](enzymexla::BarrierOp b) { toReplace.push_back(b); });
+          [&](polygeist::BarrierOp b) { toReplace.push_back(b); });
       for (auto b : toReplace) {
         OpBuilder Builder(b);
         Builder.create<omp::BarrierOp>(b.getLoc());
@@ -2759,6 +2744,12 @@ struct SCFCPUifyPass : public enzyme::impl::SCFCPUifyBase<SCFCPUifyPass> {
   }
 };
 
-// } // end namespace
+} // end namespace
 
-// } // namespace mlir
+namespace mlir {
+namespace polygeist {
+std::unique_ptr<Pass> createCPUifyPass(StringRef str) {
+  return std::make_unique<CPUifyPass>(str);
+}
+} // namespace polygeist
+} // namespace mlir
