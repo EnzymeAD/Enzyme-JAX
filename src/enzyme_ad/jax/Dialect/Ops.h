@@ -28,6 +28,7 @@
 
 extern llvm::cl::opt<bool> BarrierOpt;
 
+
 #define GET_ATTRDEF_CLASSES
 #include "src/enzyme_ad/jax/Dialect/EnzymeXLAAttrEnums.h.inc"
 
