@@ -17,10 +17,11 @@ triton_ext::TritonCallOp ReadOnlyArg<triton_ext::TritonCallOp>::create(
     ArrayRef<Type> resTys, ArrayAttr outputAliases) const {
   return rewriter.create<triton_ext::TritonCallOp>(
       launchOp.getLoc(), resTys, launchOp.getFn(), launchOp.getGridx(),
-      launchOp.getGridy(), launchOp.getGridz(), launchOp.getShmem(),
-      launchOp.getInputs(), launchOp.getBackendConfigAttr(),
-      launchOp.getOperandLayoutsAttr(), /*resultLayouts*/ nullptr,
-      launchOp.getArgAttrsAttr(), launchOp.getResAttrsAttr(), outputAliases,
+      launchOp.getGridy(), launchOp.getGridz(), launchOp.getBlockx(),
+      launchOp.getBlocky(), launchOp.getBlockz(), launchOp.getInputs(),
+      launchOp.getBackendConfigAttr(), launchOp.getOperandLayoutsAttr(),
+      /*resultLayouts*/ nullptr, launchOp.getArgAttrsAttr(),
+      launchOp.getResAttrsAttr(), outputAliases,
       launchOp.getXlaSideEffectFreeAttr());
 }
 
