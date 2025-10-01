@@ -81,7 +81,6 @@ GPUOccupancyOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   return success();
 }
 
-
 LogicalResult
 KernelCallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   // TODO: Verify that the result type is same as the type of the referenced

@@ -274,19 +274,26 @@ struct GPULaunchRecognitionPass
         call->erase();
         return;
       }
-      
+
       if (callee == "cudaOccupancyMaxActiveBlocksPerMultiprocessorWithFlags") {
         auto intType = call.getArgOperands()[2].getType();
-	
-	auto fnop = call.getArgOperands()[1].getDefiningOp<LLVM::AddressOfOp>();
-        if (!fnop) return;
+
+        auto fnop = call.getArgOperands()[1].getDefiningOp<LLVM::AddressOfOp>();
+        if (!fnop)
+          return;
 
         auto curfn = fnop.getFunction(symbolTable);
-        if (!curfn) return;
+        if (!curfn)
+          return;
 
-	auto repOp = builder.create<enzymexla::GPUOccupancyOp>(call.getLoc(), intType,mlir::SymbolRefAttr::get(curfn.getContext(), curfn.getSymName().str()), call.getArgOperands()[2], call.getArgOperands()[3]);
-        builder.create<LLVM::StoreOp>(call.getLoc(), call.getArgOperands()[0], repOp->getResult(0));	
-	auto replace =
+        auto repOp = builder.create<enzymexla::GPUOccupancyOp>(
+            call.getLoc(), intType,
+            mlir::SymbolRefAttr::get(curfn.getContext(),
+                                     curfn.getSymName().str()),
+            call.getArgOperands()[2], call.getArgOperands()[3]);
+        builder.create<LLVM::StoreOp>(call.getLoc(), call.getArgOperands()[0],
+                                      repOp->getResult(0));
+        auto replace =
             builder.create<LLVM::ZeroOp>(call.getLoc(), call.getType(0));
         call->replaceAllUsesWith(replace);
         call->erase();
