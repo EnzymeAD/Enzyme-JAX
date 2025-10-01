@@ -258,7 +258,7 @@ enum __device_builtin__ cudaMemcpyKind
           }
         }
       }
-      bool replacedFunc = false;
+      gpu::GPUFuncOp gpufunc = nullptr;
       for (auto cop : launch.second) {
         auto cur = launch.first;
 
@@ -278,10 +278,8 @@ enum __device_builtin__ cudaMemcpyKind
           }
         }
 
-        gpu::GPUFuncOp gpufunc;
         bool local_use_launch_func = use_launch_func || captured;
-        if (local_use_launch_func && !replacedFunc) {
-          replacedFunc = true;
+        if (local_use_launch_func && !gpufunc) {
           initGPUModule(gpuModule);
           builder.setInsertionPointToStart(&gpuModule.getBodyRegion().front());
           gpufunc = builder.create<gpu::GPUFuncOp>(cur->getLoc(), cur.getName(),
