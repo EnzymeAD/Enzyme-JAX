@@ -141,7 +141,9 @@ def GPUOccupancyOp : EnzymeXLA_Op<"gpu_occupancy", [Pure, DeclareOpInterfaceMeth
   let arguments = (ins
 	SymbolRefAttr:$fn,
 	AnyType:$blockSize,
-	AnyType:$dynamicSMemSize);
+	AnyType:$dynamicSMemSize,
+	AnyType:$flags
+);
   let results = (outs AnyType : $result);
 }
 
