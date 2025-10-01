@@ -258,6 +258,7 @@ enum __device_builtin__ cudaMemcpyKind
           }
         }
       }
+      bool replacedFunc = false;
       for (auto cop : launch.second) {
         auto cur = launch.first;
 
@@ -279,7 +280,8 @@ enum __device_builtin__ cudaMemcpyKind
 
         gpu::GPUFuncOp gpufunc;
         bool local_use_launch_func = use_launch_func || captured;
-        if (local_use_launch_func) {
+        if (local_use_launch_func && !replacedFunc) {
+          replacedFunc = true;
           initGPUModule(gpuModule);
           builder.setInsertionPointToStart(&gpuModule.getBodyRegion().front());
           gpufunc = builder.create<gpu::GPUFuncOp>(cur->getLoc(), cur.getName(),
@@ -320,6 +322,38 @@ enum __device_builtin__ cudaMemcpyKind
             else if (auto op2 = cop.getFunction(symbolTable))
               tocopy.insert(op2);
           });
+
+          auto kernelSymbol =
+              SymbolRefAttr::get(gpuModule.getNameAttr(),
+                                 {SymbolRefAttr::get(gpufunc.getNameAttr())});
+          for (auto use : *kernelUses) {
+            if (auto occ = dyn_cast<enzymexla::GPUOccupancyOp>(use.getUser())) {
+              occ.setFnAttr(kernelSymbol);
+              continue;
+            }
+            auto user = dyn_cast<LLVM::AddressOfOp>(use.getUser());
+            if (!user) {
+              llvm::errs()
+                  << " Error, could not replace kernel symbol in user: "
+                  << *use.getUser() << "\n";
+              continue;
+            }
+            for (auto user2 : user->getResult(0).getUsers()) {
+              auto user3 = dyn_cast<CallOpInterface>(user2);
+              if (!user3) {
+                llvm::errs()
+                    << " Error, could not replace kernel symbol in user: "
+                    << *user2 << "\n";
+                continue;
+              }
+              if (!llvm::is_contained(launch.second, user3)) {
+                llvm::errs()
+                    << " Error, could not replace kernel symbol in user: "
+                    << *user2 << "\n";
+                continue;
+              }
+            }
+          }
         }
 
         auto loc = cop->getLoc();

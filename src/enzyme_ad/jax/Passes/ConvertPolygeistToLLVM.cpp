@@ -2604,8 +2604,11 @@ private:
                                                  rewriter.getI64IntegerAttr(1));
 
     auto ptr = rewriter.create<LLVM::AllocaOp>(loc, ptrty, intty, one);
-    auto addr = rewriter.create<LLVM::AddressOfOp>(
-        loc, ptrty, cast<FlatSymbolRefAttr>(adaptor.getFn()));
+
+    std::string funcStubName =
+        getFuncStubName(op.getFn().getRootReference().getValue(),
+                        op.getFn().getLeafReference().getValue());
+    auto addr = rewriter.create<LLVM::AddressOfOp>(loc, ptrty, funcStubName);
     Value args[] = {ptr, addr, adaptor.getBlockSize(),
                     adaptor.getDynamicSMemSize(), adaptor.getFlags()};
     rewriter.create<LLVM::CallOp>(
