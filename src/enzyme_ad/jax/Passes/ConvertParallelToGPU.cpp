@@ -2529,6 +2529,29 @@ gdgo->erase();
               gmod.getContext(), /*optLevel*/ 2,
               /*triple*/ "nvptx64-nvidia-cuda", chip, features);
           gmod.setTargetsAttr(ArrayAttr::get(gmod.getContext(), target));
+
+          DataLayoutSpecInterface dataLayout = {};
+          // Set index type size to 32 bits
+          {
+            llvm::DenseMap<mlir::TypeAttr, mlir::DataLayoutEntryInterface>
+                typeEntries;
+            auto type = IndexType::get(ctx);
+            auto key = mlir::TypeAttr::get(type);
+            uint64_t size = 32;
+            auto params =
+                IntegerAttr::get(mlir::IntegerType::get(ctx, 64), size);
+            typeEntries.try_emplace(key,
+                                    DataLayoutEntryAttr::get(type, params));
+            SmallVector<DataLayoutEntryInterface> entries;
+            entries.reserve(typeEntries.size());
+            for (const auto &it : typeEntries)
+              entries.push_back(it.second);
+            dataLayout = DataLayoutSpecAttr::get(ctx, entries);
+          }
+          // gpuModule->setAttr(
+          //     LLVM::LLVMDialect::getDataLayoutAttrName(),
+          //     deviceModule->getAttr(LLVM::LLVMDialect::getDataLayoutAttrName()));
+          gpuModule->setAttr(DLTIDialect::kDataLayoutAttrName, dataLayout);
         }
       });
     });
