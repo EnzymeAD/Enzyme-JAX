@@ -284,7 +284,7 @@ struct GPULaunchRecognitionPass
         auto curfn = fnop.getFunction(symbolTable);
         if (!curfn) return;
 
-	auto repOp = builder.create<enzymexla::GPUOccupancyOp>(call.getLoc(), intType,mlir::SymbolRefAttr::get(curfn.getContext(), curfn.getSymName().str())), call.getArgOperands()[2], call.getArgOperands()[3]);
+	auto repOp = builder.create<enzymexla::GPUOccupancyOp>(call.getLoc(), intType,mlir::SymbolRefAttr::get(curfn.getContext(), curfn.getSymName().str()), call.getArgOperands()[2], call.getArgOperands()[3]);
         builder.create<LLVM::StoreOp>(call.getLoc(), call.getArgOperands()[0], repOp->getResult(0));	
 	auto replace =
             builder.create<LLVM::ZeroOp>(call.getLoc(), call.getType(0));
