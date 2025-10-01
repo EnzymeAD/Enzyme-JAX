@@ -332,7 +332,7 @@ enum __device_builtin__ cudaMemcpyKind
             auto user = dyn_cast<LLVM::AddressOfOp>(use.getUser());
             if (!user) {
               llvm::errs()
-                  << " Error, could not replace kernel symbol in user: "
+                  << " Error, could not replace kernel symbol in user(1): "
                   << *use.getUser() << "\n";
               continue;
             }
@@ -340,13 +340,13 @@ enum __device_builtin__ cudaMemcpyKind
               auto user3 = dyn_cast<CallOpInterface>(user2);
               if (!user3) {
                 llvm::errs()
-                    << " Error, could not replace kernel symbol in user: "
+                    << " Error, could not replace kernel symbol in user(2): "
                     << *user2 << "\n";
                 continue;
               }
               if (!llvm::is_contained(launch.second, user3)) {
                 llvm::errs()
-                    << " Error, could not replace kernel symbol in user: "
+                    << " Error, could not replace kernel symbol in user(3): "
                     << *user2 << "\n";
                 continue;
               }
@@ -398,6 +398,9 @@ enum __device_builtin__ cudaMemcpyKind
           }
         } else {
           if (local_use_launch_func) {
+            assert(isa<LLVM::LLVMPointerType>(stream.getType()));
+            stream = builder.create<enzymexla::StreamToTokenOp>(
+                loc, gpu::AsyncTokenType::get(ctx), stream);
             builder.create<gpu::LaunchFuncOp>(
                 loc, gpufunc, gpu::KernelDim3{grid[0], grid[1], grid[2]},
                 gpu::KernelDim3{block[0], block[1], block[2]}, shMemSize,
