@@ -108,12 +108,13 @@ KernelCallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
 }
 
 void KernelCallOp::setCalleeFromCallable(CallInterfaceCallable callee) {
-  auto symbol = cast<SymbolRefAttr>(callee);
-  setFnAttr(cast<FlatSymbolRefAttr>(symbol));
+  setFnAttr(cast<SymbolRefAttr>(callee));
 }
 
 CallInterfaceCallable KernelCallOp::getCallableForCallee() {
-  return SymbolRefAttr::get(getContext(), getFn());
+  auto attr = getFnAttr();
+  return SymbolRefAttr::get(getContext(), attr.getRootReference(),
+                            attr.getNestedReferences());
 }
 
 Operation::operand_range KernelCallOp::getArgOperands() { return getInputs(); }
@@ -157,8 +158,7 @@ void KernelCallOp::getEffects(
   ModuleOp moduleOp = (*this)->getParentOfType<ModuleOp>();
   assert(moduleOp && "KernelCallOp must be inside a ModuleOp");
 
-  auto callee =
-      moduleOp.lookupSymbol<FunctionOpInterface>(getFnAttr().getAttr());
+  auto callee = moduleOp.lookupSymbol<FunctionOpInterface>(getFnAttr());
   assert(callee && "KernelCallOp must have a valid function");
 
   auto effectsAttr =
@@ -184,12 +184,13 @@ LogicalResult JITCallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
 }
 
 void JITCallOp::setCalleeFromCallable(CallInterfaceCallable callee) {
-  auto symbol = cast<SymbolRefAttr>(callee);
-  setFnAttr(cast<FlatSymbolRefAttr>(symbol));
+  setFnAttr(cast<SymbolRefAttr>(callee));
 }
 
 CallInterfaceCallable JITCallOp::getCallableForCallee() {
-  return SymbolRefAttr::get(getContext(), getFn());
+  auto attr = getFnAttr();
+  return SymbolRefAttr::get(getContext(), attr.getRootReference(),
+                            attr.getNestedReferences());
 }
 
 MutableOperandRange JITCallOp::getArgOperandsMutable() {
@@ -204,8 +205,7 @@ void JITCallOp::getEffects(
   ModuleOp moduleOp = (*this)->getParentOfType<ModuleOp>();
   assert(moduleOp && "JITCallOp must be inside a ModuleOp");
 
-  auto callee =
-      moduleOp.lookupSymbol<FunctionOpInterface>(getFnAttr().getAttr());
+  auto callee = moduleOp.lookupSymbol<FunctionOpInterface>(getFnAttr());
   assert(callee && "JITCallOp must have a valid function");
 
   auto effectsAttr =
@@ -1757,8 +1757,7 @@ XLAWrapperOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
 }
 
 void XLAWrapperOp::setCalleeFromCallable(CallInterfaceCallable callee) {
-  auto symbol = cast<SymbolRefAttr>(callee);
-  setFnAttr(cast<FlatSymbolRefAttr>(symbol));
+  setFnAttr(cast<SymbolRefAttr>(callee));
 }
 
 CallInterfaceCallable XLAWrapperOp::getCallableForCallee() { return getFn(); }
