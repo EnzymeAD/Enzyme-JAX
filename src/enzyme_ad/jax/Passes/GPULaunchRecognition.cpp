@@ -430,7 +430,12 @@ enum __device_builtin__ cudaMemcpyKind
         if (done.count(cur))
           continue;
         done.insert(cur);
-        builder.clone(*cur);
+        auto cloned = builder.clone(*cur);
+        if (auto glob = dyn_cast<LLVM::GlobalOp>(cloned)) {
+          if (auto comdat = glob.getComdat()) {
+            glob.setComdatAttr({});
+          }
+        }
         cur->walk([&](CallOpInterface cop) {
           if (auto op2 = cop.resolveCallable())
             tocopy.insert(op2);
