@@ -30,7 +30,7 @@ struct GPULaunchRecognitionPass
     : public enzyme::impl::GPULaunchRecognitionBase<GPULaunchRecognitionPass> {
   using GPULaunchRecognitionBase::GPULaunchRecognitionBase;
 
-  void initGPUModule(gpu::GPUModuleOp &gpuModule) {
+  void initGPUModule(gpu::GPUModuleOp &gpuModule, LLVM::LLVMFuncOp func) {
     if (gpuModule)
       return;
     auto ctx = getOperation()->getContext();
@@ -38,9 +38,38 @@ struct GPULaunchRecognitionPass
         OpBuilder::atBlockBegin(cast<ModuleOp>(getOperation()).getBody());
     gpuModule = moduleBuilder.create<gpu::GPUModuleOp>(getOperation()->getLoc(),
                                                        gpuModuleName);
+
+    std::string sm;
+    if (auto attr = dyn_cast_or_null<ArrayAttr>(func.getPassthroughAttr())) {
+      for (auto a : attr) {
+        if (auto ar = dyn_cast<ArrayAttr>(a)) {
+          if (ar.size() != 2)
+            continue;
+          auto s0 = dyn_cast<StringAttr>(ar[0]);
+          auto s1 = dyn_cast<StringAttr>(ar[1]);
+          if (!s0 || !s1)
+            continue;
+          if (s0.getValue() == "target-cpu")
+            sm = s1.getValue();
+        }
+      }
+    }
+    std::string feat;
+    if (auto attr = dyn_cast_or_null<LLVM::TargetFeaturesAttr>(
+            func.getTargetFeaturesAttr())) {
+      feat = attr.getFeaturesString();
+    }
+
+    auto chip = sm;
+    if (chip.size() == 0)
+      chip = "sm_80";
+    auto features = feat;
+    if (features.size() == 0)
+      features = "+ptx73";
+
     // TODO get these target attrs from somewhere
     auto target = moduleBuilder.getAttr<NVVM::NVVMTargetAttr>(
-        /*optLevel=*/2, /*triple=*/"nvptx64-nvidia-cuda", "sm_80", "+ptx60",
+        /*optLevel=*/2, /*triple=*/"nvptx64-nvidia-cuda", chip, features,
         /*flags=*/nullptr,
         /*linkLibs=*/nullptr);
     gpuModule.setTargetsAttr(moduleBuilder.getArrayAttr({target}));
@@ -282,7 +311,7 @@ enum __device_builtin__ cudaMemcpyKind
 
         bool local_use_launch_func = use_launch_func || captured;
         if (local_use_launch_func && !gpufunc) {
-          initGPUModule(gpuModule);
+          initGPUModule(gpuModule, launch.first);
           builder.setInsertionPointToStart(&gpuModule.getBodyRegion().front());
           gpufunc = builder.create<gpu::GPUFuncOp>(cur->getLoc(), cur.getName(),
                                                    gpuTy0);
