@@ -2620,6 +2620,37 @@ private:
   }
 };
 
+class ConvertGPUKernelAddressOp
+    : public ConvertOpToGpuRuntimeCallPattern<enzymexla::GPUKernelAddressOp> {
+public:
+  /// The attribute name to use instead of `gpu.kernel`.
+  StringRef backend;
+
+  ConvertGPUKernelAddressOp(LLVMTypeConverter &typeConverter, StringRef backend)
+      : ConvertOpToGpuRuntimeCallPattern<enzymexla::GPUKernelAddressOp>(
+            typeConverter),
+        backend(backend) {}
+
+private:
+  LogicalResult
+  matchAndRewrite(enzymexla::GPUKernelAddressOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    if (backend != "cuda")
+      return rewriter.notifyMatchFailure(
+          op, "KernelAddress lowering only supported for CUDA");
+
+    std::string funcStubName =
+        getFuncStubName(op.getFn().getRootReference().getValue(),
+                        op.getFn().getLeafReference().getValue());
+
+    rewriter.replaceOpWithNewOp<LLVM::AddressOfOp>(op, op.getType(),
+                                                   funcStubName);
+
+    return success();
+  }
+};
+
 /// A rewrite pattern to convert gpu.alloc operations into a GPU runtime
 /// call. Currently it supports CUDA, CPU, and XLA.
 template <bool cStyle>
@@ -4003,6 +4034,8 @@ struct ConvertPolygeistToLLVMPass
       patterns.add<ConvertAllocOpToGpuRuntimeCallPattern<true>>(converter,
                                                                 gpuTarget);
       patterns.add<ConvertOccupancyOp>(converter, gpuTarget);
+
+      patterns.add<ConvertGPUKernelAddressOp>(converter, gpuTarget);
 
       patterns.add<ConvertDeallocOpToGpuRuntimeCallPattern<true>>(converter,
                                                                   gpuTarget);

@@ -147,6 +147,13 @@ def GPUOccupancyOp : EnzymeXLA_Op<"gpu_occupancy", [Pure, DeclareOpInterfaceMeth
   let results = (outs AnyType : $result);
 }
 
+def GPUKernelAddressOp : EnzymeXLA_Op<"gpu_kernel_address", [Pure, DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
+  let arguments = (ins
+	SymbolRefAttr:$fn
+  );
+  let results = (outs AnyType : $result);
+}
+
 def GPUWrapperOp : EnzymeXLA_Op<"gpu_wrapper", [
   RecursiveMemoryEffects,
   AffineScope,

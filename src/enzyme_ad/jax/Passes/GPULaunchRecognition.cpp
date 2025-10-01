@@ -124,6 +124,7 @@ struct GPULaunchRecognitionPass
         return;
       }
 
+      /*
       if (callee == "cudaFuncGetAttributes" ||
           callee == "cudaFuncSetCacheConfig") {
         if (!seenErrors.count(*callee))
@@ -136,6 +137,7 @@ struct GPULaunchRecognitionPass
         call->erase();
         return;
       }
+      */
       if (callee == "cudaMemcpy") {
         APInt directionA;
 
@@ -336,20 +338,15 @@ enum __device_builtin__ cudaMemcpyKind
                   << *use.getUser() << "\n";
               continue;
             }
-            for (auto user2 : user->getResult(0).getUsers()) {
-              auto user3 = dyn_cast<CallOpInterface>(user2);
-              if (!user3) {
-                llvm::errs()
-                    << " Error, could not replace kernel symbol in user(2): "
-                    << *user2 << "\n";
+            builder.setInsertionPoint(user);
+            auto k2 = builder.create<enzymexla::GPUKernelAddressOp>(
+                user->getLoc(), user.getType(), kernelSymbol);
+            for (auto &user2 : user->getResult(0).getUses()) {
+              auto user3 = dyn_cast<CallOpInterface>(user2.getOwner());
+              if (user3 && llvm::is_contained(launch.second, user3)) {
                 continue;
               }
-              if (!llvm::is_contained(launch.second, user3)) {
-                llvm::errs()
-                    << " Error, could not replace kernel symbol in user(3): "
-                    << *user2 << "\n";
-                continue;
-              }
+              user2.assign(k2);
             }
           }
         }
