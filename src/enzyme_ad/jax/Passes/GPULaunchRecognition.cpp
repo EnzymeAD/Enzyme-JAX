@@ -268,6 +268,35 @@ enum __device_builtin__ cudaMemcpyKind
       }
     }
 
+    // Map of runtime function, index of the entry fn
+    std::pair<const char *, int> runtime_fns[] = {
+        {"cudaOccupancyMaxActiveBlocksPerMultiprocessorWithFlags", 1},
+        {"cudaFuncGetAttributes", 1},
+        {"cudaFuncGetName", 1},
+        {"cudaFuncSetAttribute", 0},
+        {"cudaFuncSetCacheConfig", 0},
+    };
+    for (auto &pair : runtime_fns)
+      if (auto occupancy = symbolTable.getSymbolTable(getOperation())
+                               .lookup<LLVM::LLVMFuncOp>(pair.first)) {
+        auto launchFuncUses = occupancy.getSymbolUses(getOperation());
+        for (auto use : *launchFuncUses) {
+          if (auto cop = dyn_cast<CallOpInterface>(use.getUser())) {
+            if (cop.getArgOperands().size() < pair.second + 1)
+              continue;
+            auto argop = cop.getArgOperands()[pair.second]
+                             .getDefiningOp<LLVM::AddressOfOp>();
+            if (!argop)
+              continue;
+            auto cur = argop.getFunction(symbolTable);
+            if (!cur)
+              continue;
+
+            kernelLaunches[cur];
+          }
+        }
+      }
+
     SmallVector<Operation *> toErase;
     for (auto &launch : kernelLaunches) {
       bool captured = false;
