@@ -319,28 +319,26 @@ enum __device_builtin__ cudaMemcpyKind
           }
         }
       }
-      gpu::GPUFuncOp gpufunc = nullptr;
-      for (auto cop : launch.second) {
         auto cur = launch.first;
-
-        FunctionType gpuTy0 = dyn_cast<FunctionType>(cur.getFunctionType());
-        if (!gpuTy0) {
-          if (auto lty =
-                  dyn_cast<LLVM::LLVMFunctionType>(cur.getFunctionType())) {
-            SmallVector<Type> restys;
-            if (!isa<LLVM::LLVMVoidType>(lty.getReturnType()))
-              restys.push_back(lty.getReturnType());
-
-            gpuTy0 = builder.getFunctionType(lty.getParams(), restys);
-          } else {
-            cur.emitError("Require target operand to have functiontype or "
-                          "llvmfunctiontype");
-            continue;
-          }
-        }
-
+        gpu::GPUFuncOp gpufunc = nullptr;
         bool local_use_launch_func = use_launch_func || captured;
         if (local_use_launch_func && !gpufunc) {
+
+          FunctionType gpuTy0 = dyn_cast<FunctionType>(cur.getFunctionType());
+          if (!gpuTy0) {
+            if (auto lty =
+                    dyn_cast<LLVM::LLVMFunctionType>(cur.getFunctionType())) {
+              SmallVector<Type> restys;
+              if (!isa<LLVM::LLVMVoidType>(lty.getReturnType()))
+                restys.push_back(lty.getReturnType());
+
+              gpuTy0 = builder.getFunctionType(lty.getParams(), restys);
+            } else {
+              cur.emitError("Require target operand to have functiontype or "
+                            "llvmfunctiontype");
+              continue;
+            }
+          }
           initGPUModule(gpuModule, launch.first);
           builder.setInsertionPointToStart(&gpuModule.getBodyRegion().front());
           gpufunc = builder.create<gpu::GPUFuncOp>(cur->getLoc(), cur.getName(),
@@ -421,72 +419,73 @@ enum __device_builtin__ cudaMemcpyKind
           }
         }
 
-        auto loc = cop->getLoc();
-        builder.setInsertionPointAfter(cop);
+        for (auto cop : launch.second) {
+          auto loc = cop->getLoc();
+          builder.setInsertionPointAfter(cop);
 
-        auto shMemSize = builder.create<LLVM::TruncOp>(
-            loc, builder.getI32Type(), cop.getArgOperands()[7]);
-        auto stream = cop.getArgOperands()[8];
-        llvm::SmallVector<mlir::Value> args;
-        for (unsigned i = 9; i < cop.getArgOperands().size(); i++)
-          args.push_back(cop.getArgOperands()[i]);
+          auto shMemSize = builder.create<LLVM::TruncOp>(
+              loc, builder.getI32Type(), cop.getArgOperands()[7]);
+          auto stream = cop.getArgOperands()[8];
+          llvm::SmallVector<mlir::Value> args;
+          for (unsigned i = 9; i < cop.getArgOperands().size(); i++)
+            args.push_back(cop.getArgOperands()[i]);
 
-        Value grid[3];
-        for (int i = 0; i < 3; i++) {
-          if (local_use_launch_func)
-            grid[i] = builder.create<LLVM::SExtOp>(loc, builder.getI64Type(),
-                                                   cop.getArgOperands()[i + 1]);
-          else
-            grid[i] = builder.create<arith::IndexCastOp>(
-                loc, builder.getIndexType(), cop.getArgOperands()[i + 1]);
-        }
-        Value block[3];
-        for (int i = 0; i < 3; i++) {
-          if (local_use_launch_func)
-            block[i] = builder.create<LLVM::SExtOp>(
-                loc, builder.getI64Type(), cop.getArgOperands()[i + 4]);
-          else
-            block[i] = builder.create<arith::IndexCastOp>(
-                loc, builder.getIndexType(), cop.getArgOperands()[i + 4]);
-        }
-        if (stream.getDefiningOp<LLVM::ZeroOp>()) {
-          if (local_use_launch_func) {
-            builder.create<gpu::LaunchFuncOp>(
-                loc, gpufunc, gpu::KernelDim3{grid[0], grid[1], grid[2]},
-                gpu::KernelDim3{block[0], block[1], block[2]}, shMemSize,
-                ValueRange(args));
-          } else {
-            auto op = builder.create<mlir::gpu::LaunchOp>(
-                launch.first->getLoc(), grid[0], grid[1], grid[2], block[0],
-                block[1], block[2], shMemSize, nullptr, ValueRange());
-            builder.setInsertionPointToStart(&op.getRegion().front());
-            builder.create<LLVM::CallOp>(loc, cur, args);
-            builder.create<gpu::TerminatorOp>(loc);
+          Value grid[3];
+          for (int i = 0; i < 3; i++) {
+            if (local_use_launch_func)
+              grid[i] = builder.create<LLVM::SExtOp>(
+                  loc, builder.getI64Type(), cop.getArgOperands()[i + 1]);
+            else
+              grid[i] = builder.create<arith::IndexCastOp>(
+                  loc, builder.getIndexType(), cop.getArgOperands()[i + 1]);
           }
-        } else {
-          if (local_use_launch_func) {
-            assert(isa<LLVM::LLVMPointerType>(stream.getType()));
-            stream = builder.create<enzymexla::StreamToTokenOp>(
-                loc, gpu::AsyncTokenType::get(ctx), stream);
-            builder.create<gpu::LaunchFuncOp>(
-                loc, gpufunc, gpu::KernelDim3{grid[0], grid[1], grid[2]},
-                gpu::KernelDim3{block[0], block[1], block[2]}, shMemSize,
-                ValueRange(args), stream.getType(), ValueRange(stream));
-          } else {
-            assert(isa<LLVM::LLVMPointerType>(stream.getType()));
-            stream = builder.create<enzymexla::StreamToTokenOp>(
-                loc, gpu::AsyncTokenType::get(ctx), stream);
-            auto op = builder.create<mlir::gpu::LaunchOp>(
-                launch.first->getLoc(), grid[0], grid[1], grid[2], block[0],
-                block[1], block[2], shMemSize, stream.getType(),
-                ValueRange(stream));
-            builder.setInsertionPointToStart(&op.getRegion().front());
-            builder.create<LLVM::CallOp>(loc, cur, args);
-            builder.create<gpu::TerminatorOp>(loc);
+          Value block[3];
+          for (int i = 0; i < 3; i++) {
+            if (local_use_launch_func)
+              block[i] = builder.create<LLVM::SExtOp>(
+                  loc, builder.getI64Type(), cop.getArgOperands()[i + 4]);
+            else
+              block[i] = builder.create<arith::IndexCastOp>(
+                  loc, builder.getIndexType(), cop.getArgOperands()[i + 4]);
           }
+          if (stream.getDefiningOp<LLVM::ZeroOp>()) {
+            if (local_use_launch_func) {
+              builder.create<gpu::LaunchFuncOp>(
+                  loc, gpufunc, gpu::KernelDim3{grid[0], grid[1], grid[2]},
+                  gpu::KernelDim3{block[0], block[1], block[2]}, shMemSize,
+                  ValueRange(args));
+            } else {
+              auto op = builder.create<mlir::gpu::LaunchOp>(
+                  launch.first->getLoc(), grid[0], grid[1], grid[2], block[0],
+                  block[1], block[2], shMemSize, nullptr, ValueRange());
+              builder.setInsertionPointToStart(&op.getRegion().front());
+              builder.create<LLVM::CallOp>(loc, cur, args);
+              builder.create<gpu::TerminatorOp>(loc);
+            }
+          } else {
+            if (local_use_launch_func) {
+              assert(isa<LLVM::LLVMPointerType>(stream.getType()));
+              stream = builder.create<enzymexla::StreamToTokenOp>(
+                  loc, gpu::AsyncTokenType::get(ctx), stream);
+              builder.create<gpu::LaunchFuncOp>(
+                  loc, gpufunc, gpu::KernelDim3{grid[0], grid[1], grid[2]},
+                  gpu::KernelDim3{block[0], block[1], block[2]}, shMemSize,
+                  ValueRange(args), stream.getType(), ValueRange(stream));
+            } else {
+              assert(isa<LLVM::LLVMPointerType>(stream.getType()));
+              stream = builder.create<enzymexla::StreamToTokenOp>(
+                  loc, gpu::AsyncTokenType::get(ctx), stream);
+              auto op = builder.create<mlir::gpu::LaunchOp>(
+                  launch.first->getLoc(), grid[0], grid[1], grid[2], block[0],
+                  block[1], block[2], shMemSize, stream.getType(),
+                  ValueRange(stream));
+              builder.setInsertionPointToStart(&op.getRegion().front());
+              builder.create<LLVM::CallOp>(loc, cur, args);
+              builder.create<gpu::TerminatorOp>(loc);
+            }
+          }
+          cop->erase();
         }
-        cop->erase();
-      }
     }
 
     if (gpuModule) {
