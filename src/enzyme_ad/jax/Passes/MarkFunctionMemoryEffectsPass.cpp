@@ -437,10 +437,10 @@ struct MarkFunctionMemoryEffectsPass
             funcOp.setArgAttr(i, LLVM::LLVMDialect::getWriteOnlyAttrName(),
                               builder.getUnitAttr());
           }
-          if (argEffectInfo.readNone) {
-            funcOp.setArgAttr(i, LLVM::LLVMDialect::getReadnoneAttrName(),
-                              builder.getUnitAttr());
-          }
+          // if (argEffectInfo.readNone) {
+          //   funcOp.setArgAttr(i, LLVM::LLVMDialect::getReadnoneAttrName(),
+          //                     builder.getUnitAttr());
+          // }
           if (!argEffects[i][3]) {
             funcOp.setArgAttr(i, LLVM::LLVMDialect::getNoFreeAttrName(),
                               builder.getUnitAttr());
