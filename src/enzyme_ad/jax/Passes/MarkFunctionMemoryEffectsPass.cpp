@@ -449,18 +449,24 @@ struct MarkFunctionMemoryEffectsPass
                           argEffectInfo.enzymexlaEffects);
 
         if (isPointerType(funcOp.getArgument(i))) {
-          if (argEffectInfo.readOnly) {
+          llvm::dbgs() << "argEffectInfo.readOnly " << argEffectInfo.readOnly
+                       << " argEffectInfo.writeOnly " << argEffectInfo.writeOnly
+                       << " argEffectInfo.readNone " << argEffectInfo.readNone
+                       << "\n";
+          if (argEffectInfo.readOnly && !argEffectInfo.readNone) {
+            assert(!argEffectInfo.writeOnly && "readOnly and writeOnly?");
             funcOp.setArgAttr(i, LLVM::LLVMDialect::getReadonlyAttrName(),
                               builder.getUnitAttr());
           }
-          if (argEffectInfo.writeOnly) {
+          if (argEffectInfo.writeOnly && !argEffectInfo.readNone) {
+            assert(!argEffectInfo.readOnly && "writeOnly and readOnly?");
             funcOp.setArgAttr(i, LLVM::LLVMDialect::getWriteOnlyAttrName(),
                               builder.getUnitAttr());
           }
-          // if (argEffectInfo.readNone) {
-          //   funcOp.setArgAttr(i, LLVM::LLVMDialect::getReadnoneAttrName(),
-          //                     builder.getUnitAttr());
-          // }
+          if (argEffectInfo.readNone) {
+            funcOp.setArgAttr(i, LLVM::LLVMDialect::getReadnoneAttrName(),
+                              builder.getUnitAttr());
+          }
           if (!argEffects[i][3]) {
             funcOp.setArgAttr(i, LLVM::LLVMDialect::getNoFreeAttrName(),
                               builder.getUnitAttr());
