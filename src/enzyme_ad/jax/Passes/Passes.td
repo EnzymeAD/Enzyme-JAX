@@ -63,6 +63,9 @@ def PropagateConstantBoundsPass
 
 def MarkFunctionMemoryEffectsPass : Pass<"mark-func-memory-effects", "ModuleOp"> {
   let summary = "Attach enzymexla.memory_effects attribute summarizing memory access";
+  let dependentDialects = [
+    "mlir::LLVM::LLVMDialect"
+  ];
   let options = [
     Option<
       /*C++ variable name=*/"max_iterations",
@@ -76,14 +79,6 @@ def MarkFunctionMemoryEffectsPass : Pass<"mark-func-memory-effects", "ModuleOp">
       /*type=*/"bool",
       /*default=*/"false",
       /*description=*/"assume no memory effects for ops not implementing MemoryEffectOpInterface">];
-}
-
-def MarkFunctionArgumentsMemoryEffectsPass : InterfacePass<"mark-func-args-memory-effects",
-                                                           "mlir::FunctionOpInterface"> {
-  let summary = "Mark function arguments with enzymexla.memory_effects attribute";
-  let dependentDialects = [
-    "mlir::LLVM::LLVMDialect"
-  ];
 }
 
 def ArithRaisingPass : Pass<"arith-raise"> {
