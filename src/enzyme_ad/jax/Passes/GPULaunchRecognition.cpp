@@ -268,6 +268,7 @@ enum __device_builtin__ cudaMemcpyKind
       }
     }
 
+    SmallVector<Operation *> toErase;
     for (auto &launch : kernelLaunches) {
       bool captured = false;
       auto kernelUses = launch.first.getSymbolUses(getOperation());
@@ -387,7 +388,7 @@ enum __device_builtin__ cudaMemcpyKind
               }
               user2.assign(k2);
             }
-            user->erase();
+            toErase.push_back(user);
           }
         }
 
@@ -508,6 +509,9 @@ enum __device_builtin__ cudaMemcpyKind
         });
       }
     }
+
+    for (auto e : toErase)
+      e->erase();
 
     if (launchFuncs.size() && gpuModule)
       getOperation()->setAttr("gpu.container_module",
