@@ -1,5 +1,6 @@
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "llvm/ADT/BitVector.h"
@@ -22,11 +23,9 @@ namespace {
 using namespace mlir;
 using namespace mlir::enzyme;
 
-// TODO: rewrite using BitVector
-
-void setAllMemoryEffects(SmallVector<uint8_t, 4> &effects) {
+void setAllMemoryEffects(BitVector &effects) {
   for (int i = 0; i < effects.size(); i++) {
-    effects[i] = 1;
+    effects.set(i);
   }
 }
 
@@ -34,12 +33,12 @@ void setAllMemoryEffects(SmallVector<uint8_t, 4> &effects) {
 // callopinterfaces for now and assume those imply all memory effects. We should
 // revisit this later.
 void handleCallOpInterface(CallOpInterface callOp, OpOperand *operand,
-                           SmallVector<uint8_t, 4> &effects) {
+                           BitVector &effects) {
   setAllMemoryEffects(effects);
 }
 
 void analyzeMemoryEffects(Operation *op, OpOperand *operand,
-                          SmallVector<uint8_t, 4> &effects) {
+                          BitVector &effects) {
   auto memInterface = dyn_cast<MemoryEffectOpInterface>(op);
   if (!memInterface) {
     setAllMemoryEffects(effects);
@@ -52,13 +51,13 @@ void analyzeMemoryEffects(Operation *op, OpOperand *operand,
   for (const auto &effect : memEffects) {
     if (effect.getValue() && effect.getValue() == operand->get()) {
       if (isa<MemoryEffects::Read>(effect.getEffect())) {
-        effects[0] = 1;
+        effects.set(0);
       } else if (isa<MemoryEffects::Write>(effect.getEffect())) {
-        effects[1] = 1;
+        effects.set(1);
       } else if (isa<MemoryEffects::Allocate>(effect.getEffect())) {
-        effects[2] = 1;
+        effects.set(2);
       } else if (isa<MemoryEffects::Free>(effect.getEffect())) {
-        effects[3] = 1;
+        effects.set(3);
       } else {
         assert(false && "unknown memory effect");
       }
@@ -70,10 +69,10 @@ LogicalResult annotateFunctionArguments(FunctionOpInterface funcOp) {
   auto *ctx = funcOp->getContext();
   OpBuilder builder(ctx);
 
-  SmallVector<SmallVector<uint8_t, 4>, 4> argEffects;
+  SmallVector<BitVector, 4> argEffects;
   DenseMap<Value, unsigned> valueToArgIndex;
   for (unsigned i = 0; i < funcOp.getNumArguments(); i++) {
-    argEffects.push_back(SmallVector<uint8_t, 4>(4, 0));
+    argEffects.push_back(BitVector(4, 0));
     valueToArgIndex[funcOp.getArgument(i)] = i;
   }
 
@@ -116,16 +115,25 @@ LogicalResult annotateFunctionArguments(FunctionOpInterface funcOp) {
 
   for (unsigned i = 0; i < funcOp.getNumArguments(); i++) {
     auto effects = argEffects[i];
+
     SmallVector<Attribute> effectsAttrs;
+    bool readOnly = true;
+    bool writeOnly = true;
     for (int i = 0; i < effects.size(); i++) {
       if (effects[i]) {
         if (i == 0) {
+          writeOnly = false;
           effectsAttrs.push_back(builder.getStringAttr("read"));
         } else if (i == 1) {
+          readOnly = false;
           effectsAttrs.push_back(builder.getStringAttr("write"));
         } else if (i == 2) {
+          writeOnly = false;
+          readOnly = false;
           effectsAttrs.push_back(builder.getStringAttr("allocate"));
         } else if (i == 3) {
+          writeOnly = false;
+          readOnly = false;
           effectsAttrs.push_back(builder.getStringAttr("free"));
         } else {
           assert(false && "unknown memory effect");
@@ -135,6 +143,16 @@ LogicalResult annotateFunctionArguments(FunctionOpInterface funcOp) {
 
     funcOp.setArgAttr(i, "enzymexla.memory_effects",
                       builder.getArrayAttr(effectsAttrs));
+
+    // Set the llvm attributes
+    if (readOnly) {
+      funcOp.setArgAttr(i, LLVM::LLVMDialect::getReadonlyAttrName(),
+                        builder.getUnitAttr());
+    }
+    if (writeOnly) {
+      funcOp.setArgAttr(i, LLVM::LLVMDialect::getWriteOnlyAttrName(),
+                        builder.getUnitAttr());
+    }
   }
 
   return success();

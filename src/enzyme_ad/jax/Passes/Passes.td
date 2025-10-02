@@ -81,7 +81,9 @@ def MarkFunctionMemoryEffectsPass : Pass<"mark-func-memory-effects", "ModuleOp">
 def MarkFunctionArgumentsMemoryEffectsPass : InterfacePass<"mark-func-args-memory-effects",
                                                            "mlir::FunctionOpInterface"> {
   let summary = "Mark function arguments with enzymexla.memory_effects attribute";
-  let dependentDialects = [];
+  let dependentDialects = [
+    "mlir::LLVM::LLVMDialect"
+  ];
 }
 
 def ArithRaisingPass : Pass<"arith-raise"> {

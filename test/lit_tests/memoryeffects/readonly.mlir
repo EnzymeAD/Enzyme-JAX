@@ -25,7 +25,7 @@ module {
 }
 
 // CHECK: module {
-// CHECK-NEXT:   tt.func @main(%arg0: !tt.ptr<f32> {enzymexla.memory_effects = ["read"]}, %arg1: !tt.ptr<f32> {enzymexla.memory_effects = ["read"]}, %arg2: !tt.ptr<f32> {enzymexla.memory_effects = ["write"]}) attributes {noinline = false} {
+// CHECK-NEXT:   tt.func @main(%arg0: !tt.ptr<f32> {enzymexla.memory_effects = ["read"], llvm.readonly}, %arg1: !tt.ptr<f32> {enzymexla.memory_effects = ["read"], llvm.readonly}, %arg2: !tt.ptr<f32> {enzymexla.memory_effects = ["write"], llvm.writeonly}) attributes {noinline = false} {
 // CHECK-NEXT:     %cst = arith.constant dense<1024> : tensor<64xi32>
 // CHECK-NEXT:     %c64_i32 = arith.constant 64 : i32
 // CHECK-NEXT:     %0 = tt.get_program_id x : i32
