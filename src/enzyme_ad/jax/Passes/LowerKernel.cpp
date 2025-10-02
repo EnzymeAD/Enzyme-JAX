@@ -229,11 +229,11 @@ bool CompileGPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   OpBuilder rewriter(kcall);
   auto replacement = rewriter.create<enzymexla::JITCallOp>(
       kcall.getLoc(), kcall.getResultTypes(),
-      mlir::FlatSymbolRefAttr::get(kcall.getContext(), callName),
-      kcall.getInputs(), kcall.getBackendConfigAttr(),
-      kcall.getOperandLayoutsAttr(), kcall.getResultLayoutsAttr(),
-      kcall.getArgAttrsAttr(), kcall.getResAttrsAttr(),
-      kcall.getOutputOperandAliasesAttr(), kcall.getXlaSideEffectFreeAttr());
+      SymbolRefAttr::get(kcall.getContext(), callName, {}), kcall.getInputs(),
+      kcall.getBackendConfigAttr(), kcall.getOperandLayoutsAttr(),
+      kcall.getResultLayoutsAttr(), kcall.getArgAttrsAttr(),
+      kcall.getResAttrsAttr(), kcall.getOutputOperandAliasesAttr(),
+      kcall.getXlaSideEffectFreeAttr());
   kcall.replaceAllUsesWith(replacement);
   kcall.erase();
   return true;
@@ -398,11 +398,11 @@ bool CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   OpBuilder rewriter(kcall);
   auto replacement = rewriter.create<enzymexla::JITCallOp>(
       kcall.getLoc(), kcall.getResultTypes(),
-      mlir::FlatSymbolRefAttr::get(kcall.getContext(), callName),
-      kcall.getInputs(), kcall.getBackendConfigAttr(),
-      kcall.getOperandLayoutsAttr(), kcall.getResultLayoutsAttr(),
-      kcall.getArgAttrsAttr(), kcall.getResAttrsAttr(),
-      kcall.getOutputOperandAliasesAttr(), kcall.getXlaSideEffectFreeAttr());
+      SymbolRefAttr::get(kcall.getContext(), callName, {}), kcall.getInputs(),
+      kcall.getBackendConfigAttr(), kcall.getOperandLayoutsAttr(),
+      kcall.getResultLayoutsAttr(), kcall.getArgAttrsAttr(),
+      kcall.getResAttrsAttr(), kcall.getOutputOperandAliasesAttr(),
+      kcall.getXlaSideEffectFreeAttr());
   kcall.replaceAllUsesWith(replacement);
   kcall.erase();
   return true;
