@@ -319,174 +319,173 @@ enum __device_builtin__ cudaMemcpyKind
           }
         }
       }
-        auto cur = launch.first;
-        gpu::GPUFuncOp gpufunc = nullptr;
-        bool local_use_launch_func = use_launch_func || captured;
-        if (local_use_launch_func && !gpufunc) {
+      auto cur = launch.first;
+      gpu::GPUFuncOp gpufunc = nullptr;
+      bool local_use_launch_func = use_launch_func || captured;
+      if (local_use_launch_func && !gpufunc) {
 
-          FunctionType gpuTy0 = dyn_cast<FunctionType>(cur.getFunctionType());
-          if (!gpuTy0) {
-            if (auto lty =
-                    dyn_cast<LLVM::LLVMFunctionType>(cur.getFunctionType())) {
-              SmallVector<Type> restys;
-              if (!isa<LLVM::LLVMVoidType>(lty.getReturnType()))
-                restys.push_back(lty.getReturnType());
+        FunctionType gpuTy0 = dyn_cast<FunctionType>(cur.getFunctionType());
+        if (!gpuTy0) {
+          if (auto lty =
+                  dyn_cast<LLVM::LLVMFunctionType>(cur.getFunctionType())) {
+            SmallVector<Type> restys;
+            if (!isa<LLVM::LLVMVoidType>(lty.getReturnType()))
+              restys.push_back(lty.getReturnType());
 
-              gpuTy0 = builder.getFunctionType(lty.getParams(), restys);
-            } else {
-              cur.emitError("Require target operand to have functiontype or "
-                            "llvmfunctiontype");
-              continue;
-            }
-          }
-          initGPUModule(gpuModule, launch.first);
-          builder.setInsertionPointToStart(&gpuModule.getBodyRegion().front());
-          gpufunc = builder.create<gpu::GPUFuncOp>(cur->getLoc(), cur.getName(),
-                                                   gpuTy0);
-          auto entry = &gpufunc.getBody().front();
-          builder.setInsertionPointToEnd(entry);
-          IRMapping map;
-          gpufunc.getBody().getBlocks().clear();
-          cur.getFunctionBody().cloneInto(&gpufunc.getBody(), map);
-
-          if (auto comdat = cur.getComdat()) {
-            cur.setComdatAttr({});
-            auto comdatSelector =
-                SymbolTable::lookupNearestSymbolFrom(cur, *comdat);
-            if (auto cselect =
-                    dyn_cast<LLVM::ComdatSelectorOp>(comdatSelector)) {
-              cselect->erase();
-            }
-          }
-
-          gpufunc->setAttr("gpu.kernel", builder.getUnitAttr());
-
-          gpufunc->walk([](LLVM::ReturnOp op) {
-            OpBuilder rewriter(op);
-            rewriter.create<gpu::ReturnOp>(op.getLoc());
-            op.erase();
-          });
-
-          gpufunc->walk([](LLVM::UnreachableOp op) {
-            OpBuilder rewriter(op);
-            rewriter.create<gpu::ReturnOp>(op.getLoc());
-            op.erase();
-          });
-
-          gpufunc->walk([](func::ReturnOp op) {
-            OpBuilder rewriter(op);
-            rewriter.create<gpu::ReturnOp>(op.getLoc());
-            op.erase();
-          });
-
-          cur->walk([&](CallOpInterface cop) {
-            if (auto op2 = cop.resolveCallable())
-              tocopy.insert(op2);
-          });
-          cur->walk([&](LLVM::AddressOfOp cop) {
-            if (auto op2 = cop.getGlobal(symbolTable))
-              tocopy.insert(op2);
-            else if (auto op2 = cop.getFunction(symbolTable))
-              tocopy.insert(op2);
-          });
-
-          auto kernelSymbol =
-              SymbolRefAttr::get(gpuModule.getNameAttr(),
-                                 {SymbolRefAttr::get(gpufunc.getNameAttr())});
-          for (auto use : *kernelUses) {
-            if (auto occ = dyn_cast<enzymexla::GPUOccupancyOp>(use.getUser())) {
-              occ.setFnAttr(kernelSymbol);
-              continue;
-            }
-            auto user = dyn_cast<LLVM::AddressOfOp>(use.getUser());
-            if (!user) {
-              llvm::errs()
-                  << " Error, could not replace kernel symbol in user(1): "
-                  << *use.getUser() << "\n";
-              continue;
-            }
-            builder.setInsertionPoint(user);
-            auto k2 = builder.create<enzymexla::GPUKernelAddressOp>(
-                user->getLoc(), user.getType(), kernelSymbol);
-            for (auto &user2 :
-                 llvm::make_early_inc_range(user->getResult(0).getUses())) {
-              auto user3 = dyn_cast<CallOpInterface>(user2.getOwner());
-              if (user3 && llvm::is_contained(launch.second, user3)) {
-                continue;
-              }
-              user2.assign(k2);
-            }
-            toErase.push_back(user);
-          }
-        }
-
-        for (auto cop : launch.second) {
-          auto loc = cop->getLoc();
-          builder.setInsertionPointAfter(cop);
-
-          auto shMemSize = builder.create<LLVM::TruncOp>(
-              loc, builder.getI32Type(), cop.getArgOperands()[7]);
-          auto stream = cop.getArgOperands()[8];
-          llvm::SmallVector<mlir::Value> args;
-          for (unsigned i = 9; i < cop.getArgOperands().size(); i++)
-            args.push_back(cop.getArgOperands()[i]);
-
-          Value grid[3];
-          for (int i = 0; i < 3; i++) {
-            if (local_use_launch_func)
-              grid[i] = builder.create<LLVM::SExtOp>(
-                  loc, builder.getI64Type(), cop.getArgOperands()[i + 1]);
-            else
-              grid[i] = builder.create<arith::IndexCastOp>(
-                  loc, builder.getIndexType(), cop.getArgOperands()[i + 1]);
-          }
-          Value block[3];
-          for (int i = 0; i < 3; i++) {
-            if (local_use_launch_func)
-              block[i] = builder.create<LLVM::SExtOp>(
-                  loc, builder.getI64Type(), cop.getArgOperands()[i + 4]);
-            else
-              block[i] = builder.create<arith::IndexCastOp>(
-                  loc, builder.getIndexType(), cop.getArgOperands()[i + 4]);
-          }
-          if (stream.getDefiningOp<LLVM::ZeroOp>()) {
-            if (local_use_launch_func) {
-              builder.create<gpu::LaunchFuncOp>(
-                  loc, gpufunc, gpu::KernelDim3{grid[0], grid[1], grid[2]},
-                  gpu::KernelDim3{block[0], block[1], block[2]}, shMemSize,
-                  ValueRange(args));
-            } else {
-              auto op = builder.create<mlir::gpu::LaunchOp>(
-                  launch.first->getLoc(), grid[0], grid[1], grid[2], block[0],
-                  block[1], block[2], shMemSize, nullptr, ValueRange());
-              builder.setInsertionPointToStart(&op.getRegion().front());
-              builder.create<LLVM::CallOp>(loc, cur, args);
-              builder.create<gpu::TerminatorOp>(loc);
-            }
+            gpuTy0 = builder.getFunctionType(lty.getParams(), restys);
           } else {
-            if (local_use_launch_func) {
-              assert(isa<LLVM::LLVMPointerType>(stream.getType()));
-              stream = builder.create<enzymexla::StreamToTokenOp>(
-                  loc, gpu::AsyncTokenType::get(ctx), stream);
-              builder.create<gpu::LaunchFuncOp>(
-                  loc, gpufunc, gpu::KernelDim3{grid[0], grid[1], grid[2]},
-                  gpu::KernelDim3{block[0], block[1], block[2]}, shMemSize,
-                  ValueRange(args), stream.getType(), ValueRange(stream));
-            } else {
-              assert(isa<LLVM::LLVMPointerType>(stream.getType()));
-              stream = builder.create<enzymexla::StreamToTokenOp>(
-                  loc, gpu::AsyncTokenType::get(ctx), stream);
-              auto op = builder.create<mlir::gpu::LaunchOp>(
-                  launch.first->getLoc(), grid[0], grid[1], grid[2], block[0],
-                  block[1], block[2], shMemSize, stream.getType(),
-                  ValueRange(stream));
-              builder.setInsertionPointToStart(&op.getRegion().front());
-              builder.create<LLVM::CallOp>(loc, cur, args);
-              builder.create<gpu::TerminatorOp>(loc);
-            }
+            cur.emitError("Require target operand to have functiontype or "
+                          "llvmfunctiontype");
+            continue;
           }
-          cop->erase();
         }
+        initGPUModule(gpuModule, launch.first);
+        builder.setInsertionPointToStart(&gpuModule.getBodyRegion().front());
+        gpufunc = builder.create<gpu::GPUFuncOp>(cur->getLoc(), cur.getName(),
+                                                 gpuTy0);
+        auto entry = &gpufunc.getBody().front();
+        builder.setInsertionPointToEnd(entry);
+        IRMapping map;
+        gpufunc.getBody().getBlocks().clear();
+        cur.getFunctionBody().cloneInto(&gpufunc.getBody(), map);
+
+        if (auto comdat = cur.getComdat()) {
+          cur.setComdatAttr({});
+          auto comdatSelector =
+              SymbolTable::lookupNearestSymbolFrom(cur, *comdat);
+          if (auto cselect = dyn_cast<LLVM::ComdatSelectorOp>(comdatSelector)) {
+            cselect->erase();
+          }
+        }
+
+        gpufunc->setAttr("gpu.kernel", builder.getUnitAttr());
+
+        gpufunc->walk([](LLVM::ReturnOp op) {
+          OpBuilder rewriter(op);
+          rewriter.create<gpu::ReturnOp>(op.getLoc());
+          op.erase();
+        });
+
+        gpufunc->walk([](LLVM::UnreachableOp op) {
+          OpBuilder rewriter(op);
+          rewriter.create<gpu::ReturnOp>(op.getLoc());
+          op.erase();
+        });
+
+        gpufunc->walk([](func::ReturnOp op) {
+          OpBuilder rewriter(op);
+          rewriter.create<gpu::ReturnOp>(op.getLoc());
+          op.erase();
+        });
+
+        cur->walk([&](CallOpInterface cop) {
+          if (auto op2 = cop.resolveCallable())
+            tocopy.insert(op2);
+        });
+        cur->walk([&](LLVM::AddressOfOp cop) {
+          if (auto op2 = cop.getGlobal(symbolTable))
+            tocopy.insert(op2);
+          else if (auto op2 = cop.getFunction(symbolTable))
+            tocopy.insert(op2);
+        });
+
+        auto kernelSymbol =
+            SymbolRefAttr::get(gpuModule.getNameAttr(),
+                               {SymbolRefAttr::get(gpufunc.getNameAttr())});
+        for (auto use : *kernelUses) {
+          if (auto occ = dyn_cast<enzymexla::GPUOccupancyOp>(use.getUser())) {
+            occ.setFnAttr(kernelSymbol);
+            continue;
+          }
+          auto user = dyn_cast<LLVM::AddressOfOp>(use.getUser());
+          if (!user) {
+            llvm::errs()
+                << " Error, could not replace kernel symbol in user(1): "
+                << *use.getUser() << "\n";
+            continue;
+          }
+          builder.setInsertionPoint(user);
+          auto k2 = builder.create<enzymexla::GPUKernelAddressOp>(
+              user->getLoc(), user.getType(), kernelSymbol);
+          for (auto &user2 :
+               llvm::make_early_inc_range(user->getResult(0).getUses())) {
+            auto user3 = dyn_cast<CallOpInterface>(user2.getOwner());
+            if (user3 && llvm::is_contained(launch.second, user3)) {
+              continue;
+            }
+            user2.assign(k2);
+          }
+          toErase.push_back(user);
+        }
+      }
+
+      for (auto cop : launch.second) {
+        auto loc = cop->getLoc();
+        builder.setInsertionPointAfter(cop);
+
+        auto shMemSize = builder.create<LLVM::TruncOp>(
+            loc, builder.getI32Type(), cop.getArgOperands()[7]);
+        auto stream = cop.getArgOperands()[8];
+        llvm::SmallVector<mlir::Value> args;
+        for (unsigned i = 9; i < cop.getArgOperands().size(); i++)
+          args.push_back(cop.getArgOperands()[i]);
+
+        Value grid[3];
+        for (int i = 0; i < 3; i++) {
+          if (local_use_launch_func)
+            grid[i] = builder.create<LLVM::SExtOp>(loc, builder.getI64Type(),
+                                                   cop.getArgOperands()[i + 1]);
+          else
+            grid[i] = builder.create<arith::IndexCastOp>(
+                loc, builder.getIndexType(), cop.getArgOperands()[i + 1]);
+        }
+        Value block[3];
+        for (int i = 0; i < 3; i++) {
+          if (local_use_launch_func)
+            block[i] = builder.create<LLVM::SExtOp>(
+                loc, builder.getI64Type(), cop.getArgOperands()[i + 4]);
+          else
+            block[i] = builder.create<arith::IndexCastOp>(
+                loc, builder.getIndexType(), cop.getArgOperands()[i + 4]);
+        }
+        if (stream.getDefiningOp<LLVM::ZeroOp>()) {
+          if (local_use_launch_func) {
+            builder.create<gpu::LaunchFuncOp>(
+                loc, gpufunc, gpu::KernelDim3{grid[0], grid[1], grid[2]},
+                gpu::KernelDim3{block[0], block[1], block[2]}, shMemSize,
+                ValueRange(args));
+          } else {
+            auto op = builder.create<mlir::gpu::LaunchOp>(
+                launch.first->getLoc(), grid[0], grid[1], grid[2], block[0],
+                block[1], block[2], shMemSize, nullptr, ValueRange());
+            builder.setInsertionPointToStart(&op.getRegion().front());
+            builder.create<LLVM::CallOp>(loc, cur, args);
+            builder.create<gpu::TerminatorOp>(loc);
+          }
+        } else {
+          if (local_use_launch_func) {
+            assert(isa<LLVM::LLVMPointerType>(stream.getType()));
+            stream = builder.create<enzymexla::StreamToTokenOp>(
+                loc, gpu::AsyncTokenType::get(ctx), stream);
+            builder.create<gpu::LaunchFuncOp>(
+                loc, gpufunc, gpu::KernelDim3{grid[0], grid[1], grid[2]},
+                gpu::KernelDim3{block[0], block[1], block[2]}, shMemSize,
+                ValueRange(args), stream.getType(), ValueRange(stream));
+          } else {
+            assert(isa<LLVM::LLVMPointerType>(stream.getType()));
+            stream = builder.create<enzymexla::StreamToTokenOp>(
+                loc, gpu::AsyncTokenType::get(ctx), stream);
+            auto op = builder.create<mlir::gpu::LaunchOp>(
+                launch.first->getLoc(), grid[0], grid[1], grid[2], block[0],
+                block[1], block[2], shMemSize, stream.getType(),
+                ValueRange(stream));
+            builder.setInsertionPointToStart(&op.getRegion().front());
+            builder.create<LLVM::CallOp>(loc, cur, args);
+            builder.create<gpu::TerminatorOp>(loc);
+          }
+        }
+        cop->erase();
+      }
     }
 
     if (gpuModule) {
