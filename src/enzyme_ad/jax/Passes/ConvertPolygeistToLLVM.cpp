@@ -2556,6 +2556,101 @@ private:
   }
 };
 
+class ConvertOccupancyOp
+    : public ConvertOpToGpuRuntimeCallPattern<enzymexla::GPUOccupancyOp> {
+public:
+  /// The attribute name to use instead of `gpu.kernel`.
+  StringRef backend;
+
+  ConvertOccupancyOp(LLVMTypeConverter &typeConverter, StringRef backend)
+      : ConvertOpToGpuRuntimeCallPattern<enzymexla::GPUOccupancyOp>(
+            typeConverter),
+        backend(backend) {}
+
+private:
+  LogicalResult
+  matchAndRewrite(enzymexla::GPUOccupancyOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    if (failed(areAllLLVMTypes(op, adaptor.getOperands(), rewriter)))
+      return failure();
+
+    if (backend != "cuda")
+      return rewriter.notifyMatchFailure(
+          op, "Occupancy op lowering only supported for CUDA");
+
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+    auto i64 = rewriter.getIntegerType(64);
+    auto i32 = rewriter.getIntegerType(32);
+
+    auto intty = adaptor.getBlockSize().getType();
+    auto loc = op.getLoc();
+
+    auto ptrty = LLVM::LLVMPointerType::get(rewriter.getContext());
+    Type tys[] = {ptrty, ptrty, intty, adaptor.getDynamicSMemSize().getType(),
+                  adaptor.getFlags().getType()};
+
+    auto cudaOccupancyMaxActiveBlocksPerMultiprocessorWithFlagsFn =
+        LLVM::lookupOrCreateFn(
+            rewriter, moduleOp,
+            "cudaOccupancyMaxActiveBlocksPerMultiprocessorWithFlags", tys, i32);
+    if (failed(cudaOccupancyMaxActiveBlocksPerMultiprocessorWithFlagsFn)) {
+      llvm::errs() << " cudaOccupancyMaxActiveBlocksPerMultiprocessorWithFlags "
+                      "already exists with different types\n";
+      return failure();
+    }
+
+    auto one = rewriter.create<LLVM::ConstantOp>(loc, i64,
+                                                 rewriter.getI64IntegerAttr(1));
+
+    auto ptr = rewriter.create<LLVM::AllocaOp>(loc, ptrty, intty, one);
+
+    std::string funcStubName =
+        getFuncStubName(op.getFn().getRootReference().getValue(),
+                        op.getFn().getLeafReference().getValue());
+    auto addr = rewriter.create<LLVM::AddressOfOp>(loc, ptrty, funcStubName);
+    Value args[] = {ptr, addr, adaptor.getBlockSize(),
+                    adaptor.getDynamicSMemSize(), adaptor.getFlags()};
+    rewriter.create<LLVM::CallOp>(
+        loc, cudaOccupancyMaxActiveBlocksPerMultiprocessorWithFlagsFn.value(),
+        args);
+    rewriter.replaceOpWithNewOp<LLVM::LoadOp>(op, intty, ptr);
+
+    return success();
+  }
+};
+
+class ConvertGPUKernelAddressOp
+    : public ConvertOpToGpuRuntimeCallPattern<enzymexla::GPUKernelAddressOp> {
+public:
+  /// The attribute name to use instead of `gpu.kernel`.
+  StringRef backend;
+
+  ConvertGPUKernelAddressOp(LLVMTypeConverter &typeConverter, StringRef backend)
+      : ConvertOpToGpuRuntimeCallPattern<enzymexla::GPUKernelAddressOp>(
+            typeConverter),
+        backend(backend) {}
+
+private:
+  LogicalResult
+  matchAndRewrite(enzymexla::GPUKernelAddressOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    if (backend != "cuda")
+      return rewriter.notifyMatchFailure(
+          op, "KernelAddress lowering only supported for CUDA");
+
+    std::string funcStubName =
+        getFuncStubName(op.getFn().getRootReference().getValue(),
+                        op.getFn().getLeafReference().getValue());
+
+    rewriter.replaceOpWithNewOp<LLVM::AddressOfOp>(op, op.getType(),
+                                                   funcStubName);
+
+    return success();
+  }
+};
+
 /// A rewrite pattern to convert gpu.alloc operations into a GPU runtime
 /// call. Currently it supports CUDA, CPU, and XLA.
 template <bool cStyle>
@@ -3938,6 +4033,10 @@ struct ConvertPolygeistToLLVMPass
       //     /*kernelIntersperseSizeCallConv*/ false);
       patterns.add<ConvertAllocOpToGpuRuntimeCallPattern<true>>(converter,
                                                                 gpuTarget);
+      patterns.add<ConvertOccupancyOp>(converter, gpuTarget);
+
+      patterns.add<ConvertGPUKernelAddressOp>(converter, gpuTarget);
+
       patterns.add<ConvertDeallocOpToGpuRuntimeCallPattern<true>>(converter,
                                                                   gpuTarget);
       patterns.add<ConvertXLAWrapperPattern<true>>(converter, gpuTarget);
