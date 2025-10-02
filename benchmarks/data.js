@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1759436634842,
+  "lastUpdate": 1759445245867,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
@@ -5103,6 +5103,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001463136211037,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "avikpal@mit.edu",
+            "name": "Avik Pal",
+            "username": "avik-pal"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "67dc89667de4bdf4737b577f2bb29f32ef25c1db",
+          "message": "feat: allow symbolref for `kernel_call`/`jit_call` (#1438)\n\n* feat: allow symbolref for kernel_call/jit_call\n\n* chore: run fmt\n\n* test: use specific reactant branch",
+          "timestamp": "2025-10-02T17:50:02-04:00",
+          "tree_id": "d5e3c87b96052e04a120361790948efe8b0cf295",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/67dc89667de4bdf4737b577f2bb29f32ef25c1db"
+        },
+        "date": 1759445244750,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.00000435243200045079,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004385623894631863,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001425868527963,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001460132357897,
             "unit": "s"
           }
         ]
