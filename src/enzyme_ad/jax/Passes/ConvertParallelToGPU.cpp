@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -2529,6 +2530,30 @@ gdgo->erase();
               gmod.getContext(), /*optLevel*/ 2,
               /*triple*/ "nvptx64-nvidia-cuda", chip, features);
           gmod.setTargetsAttr(ArrayAttr::get(gmod.getContext(), target));
+
+          DataLayoutSpecInterface dataLayout = {};
+          // Set index type size to 32 bits
+          {
+            auto ctx = gmod.getContext();
+            llvm::DenseMap<mlir::TypeAttr, mlir::DataLayoutEntryInterface>
+                typeEntries;
+            auto type = IndexType::get(ctx);
+            auto key = mlir::TypeAttr::get(type);
+            uint64_t size = 32;
+            auto params =
+                IntegerAttr::get(mlir::IntegerType::get(ctx, 64), size);
+            typeEntries.try_emplace(key,
+                                    DataLayoutEntryAttr::get(type, params));
+            SmallVector<DataLayoutEntryInterface> entries;
+            entries.reserve(typeEntries.size());
+            for (const auto &it : typeEntries)
+              entries.push_back(it.second);
+            dataLayout = DataLayoutSpecAttr::get(ctx, entries);
+          }
+          // gpuModule->setAttr(
+          //     LLVM::LLVMDialect::getDataLayoutAttrName(),
+          //     deviceModule->getAttr(LLVM::LLVMDialect::getDataLayoutAttrName()));
+          gmod->setAttr(DLTIDialect::kDataLayoutAttrName, dataLayout);
         }
       });
     });

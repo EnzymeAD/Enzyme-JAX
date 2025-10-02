@@ -386,6 +386,22 @@ void ParallelLower::runOnOperation() {
   // Only supports single block functions at the moment.
 
   getOperation()->walk([&](gpu::LaunchFuncOp launchOp) {
+    auto kmod = SymbolTable::lookupNearestSymbolFrom<gpu::GPUModuleOp>(
+        launchOp, launchOp.getKernelModuleName());
+    auto fn = kmod.lookupSymbol<FunctionOpInterface>(launchOp.getKernelName());
+
+    bool captured = false;
+    auto kernelUses = fn.getSymbolUses(getOperation());
+    for (auto use : *kernelUses) {
+      auto user = dyn_cast<gpu::LaunchFuncOp>(use.getUser());
+      if (!user) {
+        captured = true;
+        break;
+      }
+    }
+    if (captured)
+      return;
+
     OpBuilder builder(launchOp);
     auto op = builder.create<mlir::gpu::LaunchOp>(
         launchOp.getLoc(), launchOp.getGridSizeX(), launchOp.getGridSizeY(),
@@ -397,6 +413,7 @@ void ParallelLower::runOnOperation() {
         /*workgroup*/ TypeRange(),
         /*private*/ TypeRange(), launchOp.getClusterSizeX(),
         launchOp.getClusterSizeY(), launchOp.getClusterSizeZ());
+
     builder.setInsertionPointToStart(&op.getRegion().front());
     builder.create<func::CallOp>(launchOp.getLoc(), launchOp.getKernel(),
                                  TypeRange(), launchOp.getKernelOperands());
