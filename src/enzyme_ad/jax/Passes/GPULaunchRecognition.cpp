@@ -387,6 +387,7 @@ enum __device_builtin__ cudaMemcpyKind
               }
               user2.assign(k2);
             }
+            user->erase();
           }
         }
 
