@@ -8,8 +8,10 @@
 #include "llvm/ADT/BitVector.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "stablehlo/dialect/StablehloOps.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include <queue>
 
@@ -139,8 +141,9 @@ struct MarkFunctionMemoryEffectsPass
   }
 
   int32_t getArgIndex(CallOpInterface callOp, OpOperand *operand) {
-    for (unsigned i = 0; i < callOp->getNumOperands(); i++) {
-      if (callOp->getOperand(i) == operand->get())
+    auto callOperands = callOp.getArgOperands();
+    for (unsigned i = 0; i < callOperands.size(); i++) {
+      if (callOperands[i] == operand->get())
         return i;
     }
     assert(false && "operand not found");
@@ -169,17 +172,21 @@ struct MarkFunctionMemoryEffectsPass
     }
   }
 
+  bool isPointerType(Value v) { return isPointerType(v.getType()); }
+
+  bool isPointerType(Type t) {
+    return isa<LLVM::LLVMPointerType, MemRefType, triton::PointerType>(t);
+  }
+
   void analyzeMemoryEffects(
       Operation *op, OpOperand *operand, BitVector &effects,
       DenseMap<SymbolRefAttr, SmallVector<BitVector>> &funcArgEffects) {
-    auto memInterface = dyn_cast<MemoryEffectOpInterface>(op);
-    if (!memInterface) {
+    auto memEffectsOrNothing = getEffectsRecursively(op);
+    if (!memEffectsOrNothing.has_value()) {
       insertMemoryEffects(effects);
       return;
     }
-
-    SmallVector<MemoryEffects::EffectInstance> memEffects;
-    memInterface.getEffects(memEffects);
+    auto &memEffects = memEffectsOrNothing.value();
 
     for (const auto &effect : memEffects) {
       if (effect.getValue() && effect.getValue() == operand->get()) {
@@ -420,21 +427,24 @@ struct MarkFunctionMemoryEffectsPass
         auto argEffectInfo = getEffectInfo(builder, argEffects[i]);
         funcOp.setArgAttr(i, "enzymexla.memory_effects",
                           argEffectInfo.enzymexlaEffects);
-        if (argEffectInfo.readOnly) {
-          funcOp.setArgAttr(i, LLVM::LLVMDialect::getReadonlyAttrName(),
-                            builder.getUnitAttr());
-        }
-        if (argEffectInfo.writeOnly) {
-          funcOp.setArgAttr(i, LLVM::LLVMDialect::getWriteOnlyAttrName(),
-                            builder.getUnitAttr());
-        }
-        if (argEffectInfo.readNone) {
-          funcOp.setArgAttr(i, LLVM::LLVMDialect::getReadnoneAttrName(),
-                            builder.getUnitAttr());
-        }
-        if (!argEffects[i][3]) {
-          funcOp.setArgAttr(i, LLVM::LLVMDialect::getNoFreeAttrName(),
-                            builder.getUnitAttr());
+
+        if (isPointerType(funcOp.getArgument(i))) {
+          if (argEffectInfo.readOnly) {
+            funcOp.setArgAttr(i, LLVM::LLVMDialect::getReadonlyAttrName(),
+                              builder.getUnitAttr());
+          }
+          if (argEffectInfo.writeOnly) {
+            funcOp.setArgAttr(i, LLVM::LLVMDialect::getWriteOnlyAttrName(),
+                              builder.getUnitAttr());
+          }
+          if (argEffectInfo.readNone) {
+            funcOp.setArgAttr(i, LLVM::LLVMDialect::getReadnoneAttrName(),
+                              builder.getUnitAttr());
+          }
+          if (!argEffects[i][3]) {
+            funcOp.setArgAttr(i, LLVM::LLVMDialect::getNoFreeAttrName(),
+                              builder.getUnitAttr());
+          }
         }
       }
     }
