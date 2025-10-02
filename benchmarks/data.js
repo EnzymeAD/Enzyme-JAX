@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1759100422476,
+  "lastUpdate": 1759389828829,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
@@ -5015,6 +5015,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001434171072003,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "wmoses@google.com",
+            "name": "William Moses",
+            "username": "wsmoses"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7f88655975c206c36b5749dbce31418b9e6b305e",
+          "message": "Polygeist: handle occupancy and related utilities (#1395)\n\n* WIP: occupance\n\n* wip\n\n* b\n\n* occ op\n\n* fmt\n\n* fix\n\n* fix\n\n* fix\n\n* fix\n\n* no comdat\n\n* More kernel support\n\n* fix\n\n* attr\n\n* Fix\n\n* fix\n\n* fix\n\n* fn attr\n\n* fix\n\n* fix\n\n* fix\n\n* fix",
+          "timestamp": "2025-10-01T22:54:15-05:00",
+          "tree_id": "bba1dbc0e65e9b510ab8dfc3d833c253475a9e42",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/7f88655975c206c36b5749dbce31418b9e6b305e"
+        },
+        "date": 1759389828201,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004144166014157235,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004226277908310294,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001389866188168,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001376257929019,
             "unit": "s"
           }
         ]
