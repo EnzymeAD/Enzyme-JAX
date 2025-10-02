@@ -67,7 +67,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
 // CHECK-NEXT:    %0 = llvm.mlir.constant(1 : i32) : i32
 // CHECK-NEXT:    %1 = llvm.mlir.constant(512 : i64) : i64
 // CHECK-NEXT:    %2 = llvm.mlir.constant(true) : i1
-// CHECK-NEXT:    %3 = llvm.mlir.addressof @reactant$_Z18__device_stub__fooPi : !llvm.ptr
+// CHECK-NEXT:    %3 = "enzymexla.gpu_kernel_address"() <{fn = @__mlir_gpu_module::@reactant$_Z18__device_stub__fooPi}> : () -> !llvm.ptr
 // CHECK-NEXT:    %4 = llvm.mlir.constant(128 : i32) : i32
 // CHECK-NEXT:    %5 = llvm.mlir.constant(0 : i64) : i64
 // CHECK-NEXT:    %6 = llvm.mlir.zero : !llvm.ptr
@@ -99,7 +99,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
 // CHECK-NEXT:  ^bb2:  // 2 preds: ^bb0, ^bb1
 // CHECK-NEXT:    llvm.intr.lifetime.start %12 : !llvm.ptr
 // CHECK-NEXT:    llvm.store %7, %12 {alignment = 4 : i64, tbaa = [#tbaa_tag]} : i32, !llvm.ptr
-// CHECK-NEXT:    %24 = "enzymexla.gpu_occupancy"(%0, %5, %7) <{fn = @reactant$_Z18__device_stub__fooPi}> : (i32, i64, i32) -> i32
+// CHECK-NEXT:    %24 = "enzymexla.gpu_occupancy"(%0, %5, %7) <{fn = @__mlir_gpu_module::@reactant$_Z18__device_stub__fooPi}> : (i32, i64, i32) -> i32
 // CHECK-NEXT:    llvm.store %24, %12 : i32, !llvm.ptr
 // CHECK-NEXT:    %25 = llvm.mlir.zero : i32
 // CHECK-NEXT:    %26 = llvm.load %12 {alignment = 4 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr -> i32
