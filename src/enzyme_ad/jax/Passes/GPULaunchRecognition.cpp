@@ -408,7 +408,8 @@ enum __device_builtin__ cudaMemcpyKind
             builder.setInsertionPoint(user);
             auto k2 = builder.create<enzymexla::GPUKernelAddressOp>(
                 user->getLoc(), user.getType(), kernelSymbol);
-            for (auto &user2 : user->getResult(0).getUses()) {
+            for (auto &user2 :
+                 llvm::make_early_inc_range(user->getResult(0).getUses())) {
               auto user3 = dyn_cast<CallOpInterface>(user2.getOwner());
               if (user3 && llvm::is_contained(launch.second, user3)) {
                 continue;
