@@ -321,6 +321,16 @@ enum __device_builtin__ cudaMemcpyKind
           gpufunc.getBody().getBlocks().clear();
           cur.getFunctionBody().cloneInto(&gpufunc.getBody(), map);
 
+          if (auto comdat = cur.getComdat()) {
+            cur.setComdatAttr({});
+            auto comdatSelector =
+                SymbolTable::lookupNearestSymbolFrom(cur, *comdat);
+            if (auto cselect =
+                    dyn_cast<LLVM::ComdatSelectorOp>(comdatSelector)) {
+              cselect->erase();
+            }
+          }
+
           gpufunc->setAttr("gpu.kernel", builder.getUnitAttr());
 
           gpufunc->walk([](LLVM::ReturnOp op) {
@@ -457,9 +467,32 @@ enum __device_builtin__ cudaMemcpyKind
           continue;
         done.insert(cur);
         auto cloned = builder.clone(*cur);
-        if (auto glob = dyn_cast<LLVM::GlobalOp>(cloned)) {
+        if (auto glob = dyn_cast<LLVM::GlobalOp>(cur)) {
           if (auto comdat = glob.getComdat()) {
             glob.setComdatAttr({});
+
+            auto comdatSelector =
+                SymbolTable::lookupNearestSymbolFrom(cur, *comdat);
+            if (auto cselect =
+                    dyn_cast<LLVM::ComdatSelectorOp>(comdatSelector)) {
+              cselect->erase();
+            }
+
+            cast<LLVM::GlobalOp>(cloned).setComdatAttr({});
+          }
+        }
+        if (auto glob = dyn_cast<LLVM::LLVMFuncOp>(cur)) {
+          if (auto comdat = glob.getComdat()) {
+            glob.setComdatAttr({});
+
+            auto comdatSelector =
+                SymbolTable::lookupNearestSymbolFrom(cur, *comdat);
+            if (auto cselect =
+                    dyn_cast<LLVM::ComdatSelectorOp>(comdatSelector)) {
+              cselect->erase();
+            }
+
+            cast<LLVM::LLVMFuncOp>(cloned).setComdatAttr({});
           }
         }
         cur->walk([&](CallOpInterface cop) {

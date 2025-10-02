@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -2533,6 +2534,7 @@ gdgo->erase();
           DataLayoutSpecInterface dataLayout = {};
           // Set index type size to 32 bits
           {
+            auto ctx = gmod.getContext();
             llvm::DenseMap<mlir::TypeAttr, mlir::DataLayoutEntryInterface>
                 typeEntries;
             auto type = IndexType::get(ctx);
@@ -2551,7 +2553,7 @@ gdgo->erase();
           // gpuModule->setAttr(
           //     LLVM::LLVMDialect::getDataLayoutAttrName(),
           //     deviceModule->getAttr(LLVM::LLVMDialect::getDataLayoutAttrName()));
-          gpuModule->setAttr(DLTIDialect::kDataLayoutAttrName, dataLayout);
+          gmod->setAttr(DLTIDialect::kDataLayoutAttrName, dataLayout);
         }
       });
     });
