@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1759389828829,
+  "lastUpdate": 1759436634842,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
@@ -5059,6 +5059,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001376257929019,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "avikpal@mit.edu",
+            "name": "Avik Pal",
+            "username": "avik-pal"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "936ed09be87374323f0d96f1041478262eeea274",
+          "message": "feat: function argument memory effects for kernels (#1439)\n\n* feat: function argument memory effects for kernels\n\n* chore: run fmt\n\n* feat: use llvm dialect attributes\n\n* feat: merge the arg effects pass into func effects\n\n* fix: correct use of CallOpInterface + only mark llvm attrs for ptrs\n\n* fix: avoid readnone for now (drop me)",
+          "timestamp": "2025-10-02T15:26:08-04:00",
+          "tree_id": "02accefac1a279e505c9944ac06b2191ea7116e9",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/936ed09be87374323f0d96f1041478262eeea274"
+        },
+        "date": 1759436634203,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004362944897729904,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004383776907343417,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001482813360053,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001463136211037,
             "unit": "s"
           }
         ]
