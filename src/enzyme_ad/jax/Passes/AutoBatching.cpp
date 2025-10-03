@@ -380,10 +380,16 @@ bool ConcatInsertDimToBatchBase::validBroadcastInDimOpInsertDimForBatching(
     return false;
 
   // If concat dim is present in broadcast dims, then it is not a valid insert
-  for (auto bDim : broadcastInDimOp.getBroadcastDimensions()) {
+  auto broadcastInDimOpDims =
+      llvm::to_vector(broadcastInDimOp.getBroadcastDimensions());
+  for (auto bDim : broadcastInDimOpDims) {
     if (bDim == dim)
       return false;
   }
+
+  // Broadcast dims must be sorted
+  if (!llvm::is_sorted(broadcastInDimOpDims))
+    return false;
 
   // insert dim must be of size 1
   return outputType.getShape()[dim] == 1;

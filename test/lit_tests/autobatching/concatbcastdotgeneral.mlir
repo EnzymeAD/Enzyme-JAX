@@ -40,8 +40,8 @@ module @reactant_updates2 attributes {mhlo.num_partitions = 1 : i64, mhlo.num_re
 
 // CHECK: module @reactant_updates2 attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas = 1 : i64} {
 // CHECK-NEXT:   func.func @main(%arg0: tensor<3x32x32xf32>, %arg1: tensor<3x32x32xf32>, %arg2: tensor<3x32x32xf32>) -> (tensor<3x32x32xf32>, tensor<3x32x32xf32>, tensor<3x32x32xf32>) {
-// CHECK-NEXT:     %0 = stablehlo.dot_general %arg0, %arg1, batching_dims = [0] x [0], contracting_dims = [1] x [2], precision = [DEFAULT, DEFAULT] : (tensor<3x32x32xf32>, tensor<3x32x32xf32>) -> tensor<3x32x32xf32>
-// CHECK-NEXT:     %1 = stablehlo.dot_general %arg0, %arg2, batching_dims = [0] x [0], contracting_dims = [1] x [2], precision = [DEFAULT, DEFAULT] : (tensor<3x32x32xf32>, tensor<3x32x32xf32>) -> tensor<3x32x32xf32>
+// CHECK-NEXT:     %0 = stablehlo.dot_general %arg1, %arg0, batching_dims = [0] x [0], contracting_dims = [2] x [1], precision = [DEFAULT, DEFAULT] : (tensor<3x32x32xf32>, tensor<3x32x32xf32>) -> tensor<3x32x32xf32>
+// CHECK-NEXT:     %1 = stablehlo.dot_general %arg2, %arg0, batching_dims = [0] x [0], contracting_dims = [2] x [1], precision = [DEFAULT, DEFAULT] : (tensor<3x32x32xf32>, tensor<3x32x32xf32>) -> tensor<3x32x32xf32>
 // CHECK-NEXT:     return %arg0, %0, %1 : tensor<3x32x32xf32>, tensor<3x32x32xf32>, tensor<3x32x32xf32>
 // CHECK-NEXT:   }
 // CHECK-NEXT: }
