@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1759445245867,
+  "lastUpdate": 1759517351859,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
@@ -5147,6 +5147,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001460132357897,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "avikpal@mit.edu",
+            "name": "Avik Pal",
+            "username": "avik-pal"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9b689ed3e1a8a2d21a43d489232cf3dbdbccab13",
+          "message": "fix: restrict broadcast in dim check for auto-batching (#1444)",
+          "timestamp": "2025-10-03T13:51:43-04:00",
+          "tree_id": "7f6986aa35ad0300c8f10ecd0abdf1808dc102fb",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/9b689ed3e1a8a2d21a43d489232cf3dbdbccab13"
+        },
+        "date": 1759517351220,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004480150900781155,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004280475992709399,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001693931275978,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001651718516135,
             "unit": "s"
           }
         ]
