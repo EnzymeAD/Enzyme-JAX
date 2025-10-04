@@ -257,21 +257,25 @@ struct MarkFunctionMemoryEffectsPass
     }
   }
 
-  void collectAllFunctions(
-      Operation *op,
-      DenseMap<SymbolRefAttr, FunctionOpInterface> &symbolToFunc) {
-    if (auto funcOp = dyn_cast<FunctionOpInterface>(op)) {
-      // Create the symbol reference for this function
-      auto symbolRef = SymbolRefAttr::get(funcOp.getOperation());
-      symbolToFunc[symbolRef] = funcOp;
-    }
-    for (Region &region : op->getRegions()) {
-      for (Block &block : region) {
-        for (Operation &childOp : block) {
-          collectAllFunctions(&childOp, symbolToFunc);
-        }
+  SymbolRefAttr getFullReference(FunctionOpInterface funcOp) {
+    SmallVector<StringRef> symbolPath;
+    auto ctx = funcOp.getOperation()->getContext();
+    auto op = funcOp.getOperation()->getParentOp();
+    while (op) {
+      if (auto symbolOp = dyn_cast<SymbolOpInterface>(op)) {
+        symbolPath.push_back(symbolOp.getName());
       }
+      op = op->getParentOp();
     }
+    if (symbolPath.empty()) {
+      return SymbolRefAttr::get(funcOp.getOperation());
+    }
+    SmallVector<FlatSymbolRefAttr> nestedRefs;
+    for (int i = 1; i < symbolPath.size(); i++) {
+      nestedRefs.push_back(FlatSymbolRefAttr::get(ctx, symbolPath[i]));
+    }
+    nestedRefs.push_back(FlatSymbolRefAttr::get(ctx, funcOp.getNameAttr()));
+    return SymbolRefAttr::get(ctx, symbolPath[0], nestedRefs);
   }
 
   void runOnOperation() override {
@@ -282,9 +286,6 @@ struct MarkFunctionMemoryEffectsPass
     DenseMap<SymbolRefAttr, BitVector> funcEffects;
     DenseMap<SymbolRefAttr, SmallVector<BitVector>> funcArgEffects;
     DenseMap<SymbolRefAttr, FunctionOpInterface> symbolToFunc;
-
-    // Collect all functions from the module and nested modules
-    collectAllFunctions(module, symbolToFunc);
 
     CallGraph callGraph(module);
 
@@ -353,9 +354,10 @@ struct MarkFunctionMemoryEffectsPass
         return WalkResult::advance();
       });
 
-      auto symRef = SymbolRefAttr::get(funcOp.getOperation());
+      auto symRef = getFullReference(funcOp);
       funcEffects[symRef] = std::move(effects);
       funcArgEffects[symRef] = std::move(argEffects);
+      symbolToFunc[symRef] = funcOp;
     }
 
     auto propagate = [&](FunctionOpInterface funcOp, BitVector &effects) {
@@ -396,7 +398,7 @@ struct MarkFunctionMemoryEffectsPass
           if (!funcOp)
             continue;
 
-          auto symRef = SymbolRefAttr::get(ctx, funcOp.getName());
+          auto symRef = getFullReference(funcOp);
           analyzeFunctionArgumentMemoryEffects(funcOp, funcArgEffects[symRef],
                                                funcArgEffects);
           auto &effects = funcEffects[symRef];
@@ -425,7 +427,7 @@ struct MarkFunctionMemoryEffectsPass
         if (!funcOp)
           continue;
 
-        auto symRef = SymbolRefAttr::get(ctx, funcOp.getName());
+        auto symRef = getFullReference(funcOp);
         analyzeFunctionArgumentMemoryEffects(funcOp, funcArgEffects[symRef],
                                              funcArgEffects);
         auto &effects = funcEffects[symRef];
@@ -435,11 +437,7 @@ struct MarkFunctionMemoryEffectsPass
 
     // Finally, attach attributes
     for (auto &[symbol, effectsSet] : funcEffects) {
-      auto it = symbolToFunc.find(symbol);
-      if (it == symbolToFunc.end())
-        continue;
-      auto &funcOp = it->second;
-
+      auto funcOp = symbolToFunc[symbol];
       auto funcEffectInfo = getEffectInfo(builder, effectsSet);
       funcOp->setAttr("enzymexla.memory_effects",
                       funcEffectInfo.enzymexlaEffects);
