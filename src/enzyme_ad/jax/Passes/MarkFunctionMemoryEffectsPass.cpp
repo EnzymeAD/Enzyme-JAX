@@ -298,12 +298,6 @@ struct MarkFunctionMemoryEffectsPass
     // First pass: collect direct effects
     for (CallGraphNode *node : topoOrder) {
       if (node->isExternal())
-        continue;
-
-      Region *region = node->getCallableRegion();
-      if (!region)
-        return signalPassFailure();
-
       Operation *parentOp = region->getParentOp();
       auto funcOp = dyn_cast<FunctionOpInterface>(parentOp);
       if (!funcOp)
@@ -438,6 +432,7 @@ struct MarkFunctionMemoryEffectsPass
     // Finally, attach attributes
     for (auto &[symbol, effectsSet] : funcEffects) {
       auto funcOp = symbolToFunc[symbol];
+
       auto funcEffectInfo = getEffectInfo(builder, effectsSet);
       funcOp->setAttr("enzymexla.memory_effects",
                       funcEffectInfo.enzymexlaEffects);
@@ -453,15 +448,7 @@ struct MarkFunctionMemoryEffectsPass
             funcOp.setArgAttr(i, LLVM::LLVMDialect::getReadonlyAttrName(),
                               builder.getUnitAttr());
           }
-          if (argEffectInfo.writeOnly) {
             funcOp.setArgAttr(i, LLVM::LLVMDialect::getWriteOnlyAttrName(),
-                              builder.getUnitAttr());
-          }
-          // if (argEffectInfo.readNone) {
-          //   funcOp.setArgAttr(i, LLVM::LLVMDialect::getReadnoneAttrName(),
-          //                     builder.getUnitAttr());
-          // }
-          if (!argEffects[i][3]) {
             funcOp.setArgAttr(i, LLVM::LLVMDialect::getNoFreeAttrName(),
                               builder.getUnitAttr());
           }
