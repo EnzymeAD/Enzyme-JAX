@@ -227,9 +227,18 @@ bool CompileGPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
                                UnitAttr::get(kcall.getContext()));
 
   OpBuilder rewriter(kcall);
+
+  auto rootRef = kcall.getFn().getRootReference();
+  SmallVector<FlatSymbolRefAttr> nestedRefs;
+  auto nestedRefsAttr = kcall.getFn().getNestedReferences();
+  for (int i = 0; i < nestedRefsAttr.size() - 1; i++) {
+    nestedRefs.push_back(nestedRefsAttr[i]);
+  }
+  nestedRefs.push_back(FlatSymbolRefAttr::get(kcall.getContext(), callName));
+  auto symRef = SymbolRefAttr::get(kcall.getContext(), rootRef, nestedRefs);
+
   auto replacement = rewriter.create<enzymexla::JITCallOp>(
-      kcall.getLoc(), kcall.getResultTypes(),
-      SymbolRefAttr::get(kcall.getContext(), callName, {}), kcall.getInputs(),
+      kcall.getLoc(), kcall.getResultTypes(), symRef, kcall.getInputs(),
       kcall.getBackendConfigAttr(), kcall.getOperandLayoutsAttr(),
       kcall.getResultLayoutsAttr(), kcall.getArgAttrsAttr(),
       kcall.getResAttrsAttr(), kcall.getOutputOperandAliasesAttr(),
@@ -395,10 +404,18 @@ bool CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
     idxOp.erase();
   });
 
+  auto rootRef = kcall.getFn().getRootReference();
+  SmallVector<FlatSymbolRefAttr> nestedRefs;
+  auto nestedRefsAttr = kcall.getFn().getNestedReferences();
+  for (int i = 0; i < nestedRefsAttr.size() - 1; i++) {
+    nestedRefs.push_back(nestedRefsAttr[i]);
+  }
+  nestedRefs.push_back(FlatSymbolRefAttr::get(kcall.getContext(), callName));
+  auto symRef = SymbolRefAttr::get(kcall.getContext(), rootRef, nestedRefs);
+
   OpBuilder rewriter(kcall);
   auto replacement = rewriter.create<enzymexla::JITCallOp>(
-      kcall.getLoc(), kcall.getResultTypes(),
-      SymbolRefAttr::get(kcall.getContext(), callName, {}), kcall.getInputs(),
+      kcall.getLoc(), kcall.getResultTypes(), symRef, kcall.getInputs(),
       kcall.getBackendConfigAttr(), kcall.getOperandLayoutsAttr(),
       kcall.getResultLayoutsAttr(), kcall.getArgAttrsAttr(),
       kcall.getResAttrsAttr(), kcall.getOutputOperandAliasesAttr(),
