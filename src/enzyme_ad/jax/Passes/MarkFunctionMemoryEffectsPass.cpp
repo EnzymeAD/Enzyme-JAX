@@ -432,7 +432,6 @@ struct MarkFunctionMemoryEffectsPass
     // Finally, attach attributes
     for (auto &[symbol, effectsSet] : funcEffects) {
       auto funcOp = symbolToFunc[symbol];
-
       auto funcEffectInfo = getEffectInfo(builder, effectsSet);
       funcOp->setAttr("enzymexla.memory_effects",
                       funcEffectInfo.enzymexlaEffects);
