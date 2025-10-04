@@ -363,6 +363,32 @@ def CommRegionOp : EnzymeXLA_Op<"comm_region", [
 
 // Linear Algebra Ops
 
+def SymmOp: EnzymeXLA_Op<"lapack.ssymm", [Pure]> {
+  let summary = "Multiplication involving a symmetric matrix";
+
+  let description = [{
+    C := alpha*A*B + beta*C, or C := alpha*B*A + beta*C, where alpha and beta are scalars,  A is a symmetric matrix"
+  }];
+
+  let arguments = (ins
+    HLO_Tensor:$A,
+    HLO_Tensor:$B,
+    HLO_Tensor:$C,
+    EnzymeXLA_LapackSideAttr:$side,
+    EnzymeXLA_LapackUploAttr:$uplo,
+    F64Attr:$alpha,
+    F64Attr:$beta
+  );
+
+  let results = (outs
+    HLO_Tensor: $output
+  );
+
+  let assemblyFormat = [{
+    $A `,` $B `,` $C attr-dict `:` functional-type(operands, results)
+  }];
+}
+
 def LUFactorizationOp: EnzymeXLA_Op<"linalg.lu", [Pure]> {
   let summary = "LU factorization operation with RowMaximum pivoting.";
 
