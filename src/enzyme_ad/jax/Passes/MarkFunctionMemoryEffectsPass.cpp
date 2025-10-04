@@ -449,10 +449,6 @@ struct MarkFunctionMemoryEffectsPass
                           argEffectInfo.enzymexlaEffects);
 
         if (isPointerType(funcOp.getArgument(i))) {
-          llvm::dbgs() << "argEffectInfo.readOnly " << argEffectInfo.readOnly
-                       << " argEffectInfo.writeOnly " << argEffectInfo.writeOnly
-                       << " argEffectInfo.readNone " << argEffectInfo.readNone
-                       << "\n";
           if (argEffectInfo.readOnly && !argEffectInfo.readNone) {
             assert(!argEffectInfo.writeOnly && "readOnly and writeOnly?");
             funcOp.setArgAttr(i, LLVM::LLVMDialect::getReadonlyAttrName(),
