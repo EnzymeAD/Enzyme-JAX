@@ -56,6 +56,12 @@ struct TritonCallOpLowering
                     "before invoking lower-triton pass.");
     }
 
+    auto ttModOP = wrappedMod->getParentOfType<triton_ext::TritonModuleOp>();
+    if (!ttModOP) {
+      op->emitWarning("No `triton_ext.module` found.");
+    }
+    ttModOP.setVisibility(SymbolTable::Visibility::Private);
+
     auto intAttr = wrappedMod->getAttrOfType<mlir::IntegerAttr>("ttg.shared");
     int64_t shared = intAttr.getInt();
 
