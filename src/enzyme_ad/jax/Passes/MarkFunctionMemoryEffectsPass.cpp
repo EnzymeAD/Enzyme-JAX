@@ -189,7 +189,8 @@ struct MarkFunctionMemoryEffectsPass
     auto &memEffects = memEffectsOrNothing.value();
 
     for (const auto &effect : memEffects) {
-      if (effect.getValue() && effect.getValue() == operand->get()) {
+      if (!effect.getValue() ||
+          (effect.getValue() && effect.getValue() == operand->get())) {
         if (isa<MemoryEffects::Read>(effect.getEffect())) {
           effects.set(0);
         } else if (isa<MemoryEffects::Write>(effect.getEffect())) {
