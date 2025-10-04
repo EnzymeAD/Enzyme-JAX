@@ -189,7 +189,8 @@ struct MarkFunctionMemoryEffectsPass
     auto &memEffects = memEffectsOrNothing.value();
 
     for (const auto &effect : memEffects) {
-      if (effect.getValue() && effect.getValue() == operand->get()) {
+      if (!effect.getValue() ||
+          (effect.getValue() && effect.getValue() == operand->get())) {
         if (isa<MemoryEffects::Read>(effect.getEffect())) {
           effects.set(0);
         } else if (isa<MemoryEffects::Write>(effect.getEffect())) {
@@ -256,6 +257,27 @@ struct MarkFunctionMemoryEffectsPass
     }
   }
 
+  SymbolRefAttr getFullReference(FunctionOpInterface funcOp) {
+    SmallVector<StringRef> symbolPath;
+    auto ctx = funcOp.getOperation()->getContext();
+    auto op = funcOp.getOperation()->getParentOp();
+    while (op) {
+      if (auto symbolOp = dyn_cast<SymbolOpInterface>(op)) {
+        symbolPath.push_back(symbolOp.getName());
+      }
+      op = op->getParentOp();
+    }
+    if (symbolPath.empty()) {
+      return SymbolRefAttr::get(funcOp.getOperation());
+    }
+    SmallVector<FlatSymbolRefAttr> nestedRefs;
+    for (int i = 1; i < symbolPath.size(); i++) {
+      nestedRefs.push_back(FlatSymbolRefAttr::get(ctx, symbolPath[i]));
+    }
+    nestedRefs.push_back(FlatSymbolRefAttr::get(ctx, funcOp.getNameAttr()));
+    return SymbolRefAttr::get(ctx, symbolPath[0], nestedRefs);
+  }
+
   void runOnOperation() override {
     ModuleOp module = getOperation();
     auto *ctx = module->getContext();
@@ -263,6 +285,7 @@ struct MarkFunctionMemoryEffectsPass
 
     DenseMap<SymbolRefAttr, BitVector> funcEffects;
     DenseMap<SymbolRefAttr, SmallVector<BitVector>> funcArgEffects;
+    DenseMap<SymbolRefAttr, FunctionOpInterface> symbolToFunc;
 
     CallGraph callGraph(module);
 
@@ -331,9 +354,10 @@ struct MarkFunctionMemoryEffectsPass
         return WalkResult::advance();
       });
 
-      auto symRef = SymbolRefAttr::get(funcOp.getOperation());
+      auto symRef = getFullReference(funcOp);
       funcEffects[symRef] = std::move(effects);
       funcArgEffects[symRef] = std::move(argEffects);
+      symbolToFunc[symRef] = funcOp;
     }
 
     auto propagate = [&](FunctionOpInterface funcOp, BitVector &effects) {
@@ -374,7 +398,7 @@ struct MarkFunctionMemoryEffectsPass
           if (!funcOp)
             continue;
 
-          auto symRef = SymbolRefAttr::get(ctx, funcOp.getName());
+          auto symRef = getFullReference(funcOp);
           analyzeFunctionArgumentMemoryEffects(funcOp, funcArgEffects[symRef],
                                                funcArgEffects);
           auto &effects = funcEffects[symRef];
@@ -403,7 +427,7 @@ struct MarkFunctionMemoryEffectsPass
         if (!funcOp)
           continue;
 
-        auto symRef = SymbolRefAttr::get(ctx, funcOp.getName());
+        auto symRef = getFullReference(funcOp);
         analyzeFunctionArgumentMemoryEffects(funcOp, funcArgEffects[symRef],
                                              funcArgEffects);
         auto &effects = funcEffects[symRef];
@@ -413,11 +437,7 @@ struct MarkFunctionMemoryEffectsPass
 
     // Finally, attach attributes
     for (auto &[symbol, effectsSet] : funcEffects) {
-      auto funcOp = dyn_cast_or_null<FunctionOpInterface>(
-          module.lookupSymbol(symbol.getLeafReference()));
-      if (!funcOp)
-        continue;
-
+      auto funcOp = symbolToFunc[symbol];
       auto funcEffectInfo = getEffectInfo(builder, effectsSet);
       funcOp->setAttr("enzymexla.memory_effects",
                       funcEffectInfo.enzymexlaEffects);
@@ -429,18 +449,20 @@ struct MarkFunctionMemoryEffectsPass
                           argEffectInfo.enzymexlaEffects);
 
         if (isPointerType(funcOp.getArgument(i))) {
-          if (argEffectInfo.readOnly) {
+          if (argEffectInfo.readOnly && !argEffectInfo.readNone) {
+            assert(!argEffectInfo.writeOnly && "readOnly and writeOnly?");
             funcOp.setArgAttr(i, LLVM::LLVMDialect::getReadonlyAttrName(),
                               builder.getUnitAttr());
           }
-          if (argEffectInfo.writeOnly) {
+          if (argEffectInfo.writeOnly && !argEffectInfo.readNone) {
+            assert(!argEffectInfo.readOnly && "writeOnly and readOnly?");
             funcOp.setArgAttr(i, LLVM::LLVMDialect::getWriteOnlyAttrName(),
                               builder.getUnitAttr());
           }
-          // if (argEffectInfo.readNone) {
-          //   funcOp.setArgAttr(i, LLVM::LLVMDialect::getReadnoneAttrName(),
-          //                     builder.getUnitAttr());
-          // }
+          if (argEffectInfo.readNone) {
+            funcOp.setArgAttr(i, LLVM::LLVMDialect::getReadnoneAttrName(),
+                              builder.getUnitAttr());
+          }
           if (!argEffects[i][3]) {
             funcOp.setArgAttr(i, LLVM::LLVMDialect::getNoFreeAttrName(),
                               builder.getUnitAttr());
