@@ -1,7 +1,7 @@
 // RUN: enzymexlamlir-opt --mark-func-memory-effects %s | FileCheck %s
 
 module {
-    // CHECK: llvm.func @add_kernel(%arg0: !llvm.ptr<1> {enzymexla.memory_effects = ["read", "write"], llvm.nofree}, %arg1: !llvm.ptr<1> {enzymexla.memory_effects = ["read", "write"], llvm.nofree}, %arg2: !llvm.ptr<1> {enzymexla.memory_effects = ["read", "write"], llvm.nofree}, %arg3: !llvm.ptr<1> {enzymexla.memory_effects = [], llvm.nofree}) attributes {enzymexla.memory_effects = ["read", "write", "allocate", "free"], noinline = false, nvvm.kernel = 1 : ui1, nvvm.reqntid = array<i32: 32>, ttg.global_scratch_memory_alignment = 1 : i32, ttg.global_scratch_memory_size = 0 : i32} {
+    // CHECK: llvm.func @add_kernel(%arg0: !llvm.ptr<1> {enzymexla.memory_effects = ["read", "write"], llvm.nofree}, %arg1: !llvm.ptr<1> {enzymexla.memory_effects = ["read", "write"], llvm.nofree}, %arg2: !llvm.ptr<1> {enzymexla.memory_effects = ["read", "write"], llvm.nofree}, %arg3: !llvm.ptr<1> {enzymexla.memory_effects = [], llvm.nofree, llvm.readnone}) attributes {enzymexla.memory_effects = ["read", "write", "allocate", "free"], noinline = false, nvvm.kernel = 1 : ui1, nvvm.reqntid = array<i32: 32>, ttg.global_scratch_memory_alignment = 1 : i32, ttg.global_scratch_memory_size = 0 : i32} {
     llvm.func @add_kernel(%arg0: !llvm.ptr<1>, %arg1: !llvm.ptr<1>, %arg2: !llvm.ptr<1>, %arg3: !llvm.ptr<1>) attributes {noinline = false, nvvm.kernel = 1 : ui1, nvvm.reqntid = array<i32: 32>, ttg.global_scratch_memory_alignment = 1 : i32, ttg.global_scratch_memory_size = 0 : i32} {
         %0 = llvm.mlir.undef : vector<1xf32>
         %1 = llvm.mlir.constant(0 : i32) : i32
