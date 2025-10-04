@@ -9667,12 +9667,15 @@ struct PadDotGeneral
       nextOtherArg = slice.getResult();
     }
 
+    auto lhs = otherIsLHS ? nextOtherArg : pad.getOperand();
+    auto rhs = otherIsLHS ? pad.getOperand() : nextOtherArg;
+    if (!areValidDotGeneralInputs(lhs, rhs, op.getDotDimensionNumbersAttr()))
+      return failure();
+
     Value res = rewriter.create<stablehlo::DotGeneralOp>(
         op.getLoc(),
-        RankedTensorType::get(resultShape, op.getType().getElementType()),
-        otherIsLHS ? nextOtherArg : pad.getOperand(),
-        otherIsLHS ? pad.getOperand() : nextOtherArg,
-        op.getDotDimensionNumbersAttr(), op.getPrecisionConfigAttr(),
+        RankedTensorType::get(resultShape, op.getType().getElementType()), lhs,
+        rhs, op.getDotDimensionNumbersAttr(), op.getPrecisionConfigAttr(),
         op.getAlgorithmAttr());
 
     if (!resultDimsToPad.empty()) {

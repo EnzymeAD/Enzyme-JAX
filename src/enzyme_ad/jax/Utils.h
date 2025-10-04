@@ -716,6 +716,9 @@ negatedComparisonDirection(stablehlo::ComparisonDirection direction);
 
 bool reshapeIsTranspose(stablehlo::ReshapeOp reshapeOp);
 
+bool areValidDotGeneralInputs(Value lhs, Value rhs,
+                              stablehlo::DotDimensionNumbersAttr dotDimNumbers);
+
 } // namespace stablehlo
 
 } // namespace mlir
