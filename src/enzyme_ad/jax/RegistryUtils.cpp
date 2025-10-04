@@ -308,6 +308,7 @@ void initializePasses() {
   mlir::registerStripDebugInfo();
   mlir::registerCanonicalizerPass();
   mlir::registerSymbolDCEPass();
+  mlir::registerSymbolPrivatizePass();
   mlir::registerLoopInvariantCodeMotionPass();
   mlir::registerConvertSCFToOpenMPPass();
   mlir::affine::registerAffinePasses();
