@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1759517351859,
+  "lastUpdate": 1759616327109,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
@@ -5191,6 +5191,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001651718516135,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "avikpal@mit.edu",
+            "name": "Avik Pal",
+            "username": "avik-pal"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "502d6b59542a6d739f0f42829b151bf2c1e3adb6",
+          "message": "fix: correctly set symrefattr for kernel/jit call (#1448)",
+          "timestamp": "2025-10-04T14:36:00-04:00",
+          "tree_id": "4cacf805b8f182707776ec46e1f9a3468ee15955",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/502d6b59542a6d739f0f42829b151bf2c1e3adb6"
+        },
+        "date": 1759616326076,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004412847000639886,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004364896903280169,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001575975034036,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001493998484918,
             "unit": "s"
           }
         ]
