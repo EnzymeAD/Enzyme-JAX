@@ -47,6 +47,23 @@ using namespace enzymexla;
 
 using namespace stablehlo;
 
+SymbolRefAttr SymRefAttrReplacingFunctionName(SymbolRefAttr origSymRef,
+                                              StringRef newName) {
+  auto newNameRef = FlatSymbolRefAttr::get(origSymRef.getContext(), newName);
+  auto nestedRefsAttr = origSymRef.getNestedReferences();
+  if (nestedRefsAttr.size() == 0) {
+    return newNameRef;
+  }
+
+  auto rootRef = origSymRef.getRootReference();
+  SmallVector<FlatSymbolRefAttr> nestedRefs;
+  for (int i = 0; i < nestedRefsAttr.size() - 1; i++) {
+    nestedRefs.push_back(nestedRefsAttr[i]);
+  }
+  nestedRefs.push_back(newNameRef);
+  return SymbolRefAttr::get(origSymRef.getContext(), rootRef, nestedRefs);
+}
+
 bool CompileGPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
                       FunctionOpInterface op, size_t gridx, size_t gridy,
                       size_t gridz, size_t blockx, size_t blocky, size_t blockz,
@@ -229,11 +246,11 @@ bool CompileGPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   OpBuilder rewriter(kcall);
   auto replacement = rewriter.create<enzymexla::JITCallOp>(
       kcall.getLoc(), kcall.getResultTypes(),
-      SymbolRefAttr::get(kcall.getContext(), callName, {}), kcall.getInputs(),
-      kcall.getBackendConfigAttr(), kcall.getOperandLayoutsAttr(),
-      kcall.getResultLayoutsAttr(), kcall.getArgAttrsAttr(),
-      kcall.getResAttrsAttr(), kcall.getOutputOperandAliasesAttr(),
-      kcall.getXlaSideEffectFreeAttr());
+      SymRefAttrReplacingFunctionName(kcall.getFn(), callName),
+      kcall.getInputs(), kcall.getBackendConfigAttr(),
+      kcall.getOperandLayoutsAttr(), kcall.getResultLayoutsAttr(),
+      kcall.getArgAttrsAttr(), kcall.getResAttrsAttr(),
+      kcall.getOutputOperandAliasesAttr(), kcall.getXlaSideEffectFreeAttr());
   kcall.replaceAllUsesWith(replacement);
   kcall.erase();
   return true;
@@ -398,11 +415,11 @@ bool CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   OpBuilder rewriter(kcall);
   auto replacement = rewriter.create<enzymexla::JITCallOp>(
       kcall.getLoc(), kcall.getResultTypes(),
-      SymbolRefAttr::get(kcall.getContext(), callName, {}), kcall.getInputs(),
-      kcall.getBackendConfigAttr(), kcall.getOperandLayoutsAttr(),
-      kcall.getResultLayoutsAttr(), kcall.getArgAttrsAttr(),
-      kcall.getResAttrsAttr(), kcall.getOutputOperandAliasesAttr(),
-      kcall.getXlaSideEffectFreeAttr());
+      SymRefAttrReplacingFunctionName(kcall.getFn(), callName),
+      kcall.getInputs(), kcall.getBackendConfigAttr(),
+      kcall.getOperandLayoutsAttr(), kcall.getResultLayoutsAttr(),
+      kcall.getArgAttrsAttr(), kcall.getResAttrsAttr(),
+      kcall.getOutputOperandAliasesAttr(), kcall.getXlaSideEffectFreeAttr());
   kcall.replaceAllUsesWith(replacement);
   kcall.erase();
   return true;
