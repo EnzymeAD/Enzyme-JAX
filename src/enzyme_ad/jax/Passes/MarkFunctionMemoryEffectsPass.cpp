@@ -258,23 +258,6 @@ struct MarkFunctionMemoryEffectsPass
     }
   }
 
-  void collectAllFunctions(
-      Operation *op,
-      DenseMap<SymbolRefAttr, FunctionOpInterface> &symbolToFunc) {
-    if (auto funcOp = dyn_cast<FunctionOpInterface>(op)) {
-      // Create the symbol reference for this function
-      auto symbolRef = SymbolRefAttr::get(funcOp.getOperation());
-      symbolToFunc[symbolRef] = funcOp;
-    }
-    for (Region &region : op->getRegions()) {
-      for (Block &block : region) {
-        for (Operation &childOp : block) {
-          collectAllFunctions(&childOp, symbolToFunc);
-        }
-      }
-    }
-  }
-
   SymbolRefAttr getFullReference(FunctionOpInterface funcOp) {
     SmallVector<StringRef> symbolPath;
     auto ctx = funcOp.getOperation()->getContext();
