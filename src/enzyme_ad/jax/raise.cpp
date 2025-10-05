@@ -64,6 +64,8 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
   mlir::OpPrintingFlags flags;
   if (getenv("DEBUG_REACTANT_INFO"))
     flags.enableDebugInfo(true, /*pretty*/ false);
+  else
+    flags.enableDebugInfo(false, /*pretty*/ false);
 
   if (getenv("DEBUG_REACTANT")) {
     llvm::errs() << " imported mlir mod: ";
