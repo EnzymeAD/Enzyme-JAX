@@ -23369,9 +23369,15 @@ struct RemoveNoOpsFromWhileLoop
 
     // Initialize bounds map with induction variable bounds
     DenseMap<Value, Bounds> boundsMap;
-    APInt minBound(bitWidth, std::min(start, limit), true);
-    APInt maxBound(bitWidth, std::max(start, limit), true);
-    boundsMap[inductionVar] = Bounds(minBound, maxBound);
+    if (step > 0) {
+      APInt minBound(bitWidth, start, true);
+      APInt maxBound(bitWidth, limit - 1, true);
+      boundsMap[inductionVar] = Bounds(minBound, maxBound);
+    } else {
+      APInt minBound(bitWidth, limit + 1, true);
+      APInt maxBound(bitWidth, start, true);
+      boundsMap[inductionVar] = Bounds(minBound, maxBound);
+    }
 
     // DFS to propagate bounds
     SmallVector<Value> worklist;
@@ -23432,6 +23438,7 @@ private:
 
   APInt min(APInt a, APInt b) const { return a.slt(b) ? a : b; }
   APInt max(APInt a, APInt b) const { return a.sgt(b) ? a : b; }
+  APInt abs(APInt a) const { return a.sgt(0) ? a : -a; }
 
   std::optional<Bounds> getBounds(const DenseMap<Value, Bounds> &boundsMap,
                                   Value value) const {
@@ -23540,8 +23547,10 @@ private:
     auto lhs_bounds = optional_lhs_bounds.value();
     auto rhs_bounds = optional_rhs_bounds.value();
 
-    if (lhs_bounds.min.sle(rhs_bounds.min) &&
-        rhs_bounds.max.sle(lhs_bounds.max)) {
+    auto rhs_abs_min = abs(rhs_bounds.min);
+    auto rhs_abs_max = abs(rhs_bounds.max);
+    auto minboth = min(rhs_abs_min, rhs_abs_max);
+    if (lhs_bounds.max.slt(minboth) && lhs_bounds.min.sgt(-minboth)) {
       auto lhs = remOp.getLhs();
       rewriter.replaceOp(remOp, lhs);
       return true;
