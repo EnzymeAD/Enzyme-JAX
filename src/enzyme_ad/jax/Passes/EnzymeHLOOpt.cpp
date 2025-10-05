@@ -23743,7 +23743,10 @@ private:
   APInt abs(APInt a) const { return a.sgt(0) ? a : -a; }
 
   std::optional<Bounds> getBounds(const DenseMap<Value, Bounds> &boundsMap,
+                                  Value value) const {
     if (boundsMap.contains(value)) {
+      return boundsMap.lookup(value);
+    }
     SplatElementsAttr splatAttr;
     if (matchPattern(value, m_Constant(&splatAttr))) {
       auto attr = splatAttr.getSplatValue<Attribute>();
@@ -23882,6 +23885,7 @@ private:
         return true;
       }
       // outside of range: lhs_max < rhs_min or rhs_max < lhs_min
+      if (lhs_bounds.max.slt(rhs_bounds.min) ||
           rhs_bounds.max.slt(lhs_bounds.min)) {
         rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
             compareOp, compareOp.getType(),
@@ -23964,6 +23968,23 @@ private:
       }
       break;
     }
+
+    return false;
+  };
+
+  bool rewriteAbsOp(PatternRewriter &rewriter, stablehlo::AbsOp absOp,
+                    const DenseMap<Value, Bounds> &boundsMap) const {
+    auto optional_bounds = getBounds(boundsMap, absOp.getOperand());
+    if (!optional_bounds.has_value())
+      return false;
+
+    auto bounds = optional_bounds.value();
+    APInt zero(bounds.min.getBitWidth(), 0, true);
+    if (bounds.min.sge(zero)) {
+      rewriter.replaceOp(absOp, absOp.getOperand());
+      return true;
+    }
+    return false;
   };
 
   bool rewriteClampOp(PatternRewriter &rewriter, stablehlo::ClampOp clampOp,
@@ -24419,460 +24440,1249 @@ void mlir::transform::addDUSLICM(RewritePatternSet &patterns, bool single_user,
                                  MLIRContext &context, PatternBenefit benefit) {
                                                          benefit);
 
-void mlir::transform::addSumToConv(RewritePatternSet &patterns,
-                                   PatternBenefit benefit) {
-  patterns
-      .insert<SumToConv<stablehlo::AddOp>, SumToConv<stablehlo::SubtractOp>>(
-          collapseDims, &context, benefit);
-}
+                                                         void mlir::transform::
+                                                             addSumToConv(
+                                                                 RewritePatternSet &
+                                                                     patterns,
+                                                                 PatternBenefit
+                                                                     benefit) {
+                                                           patterns.insert<
+                                                               SumToConv<
+                                                                   stablehlo::
+                                                                       AddOp>,
+                                                               SumToConv<
+                                                                   stablehlo::
+                                                                       SubtractOp>>(
+                                                               collapseDims,
+                                                               &context,
+                                                               benefit);
+                                                         }
 
-void mlir::transform::addPadLICM(RewritePatternSet &patterns, bool single_user,
-                                 MLIRContext &context, PatternBenefit benefit) {
-  patterns.insert<LICM<stablehlo::PadOp>>(single_user, &context, benefit);
-}
+                                                         void mlir::transform::
+                                                             addPadLICM(
+                                                                 RewritePatternSet &
+                                                                     patterns,
+                                                                 bool
+                                                                     single_user,
+                                                                 MLIRContext
+                                                                     &context,
+                                                                 PatternBenefit
+                                                                     benefit) {
+                                                           patterns.insert<
+                                                               LICM<stablehlo::
+                                                                        PadOp>>(
+                                                               single_user,
+                                                               &context,
+                                                               benefit);
+                                                         }
 
-void mlir::transform::addElementwiseLICM(RewritePatternSet &patterns,
-                                         bool single_user, MLIRContext &context,
-                                         PatternBenefit benefit) {
-  patterns.insert<LICMElementwise>(single_user, &context, benefit);
-}
+                                                         void mlir::transform::
+                                                             addElementwiseLICM(
+                                                                 RewritePatternSet &
+                                                                     patterns,
+                                                                 bool
+                                                                     single_user,
+                                                                 MLIRContext
+                                                                     &context,
+                                                                 PatternBenefit
+                                                                     benefit) {
+                                                           patterns.insert<
+                                                               LICMElementwise>(
+                                                               single_user,
+                                                               &context,
+                                                               benefit);
+                                                         }
 
-void mlir::transform::addConcatenateLICM(RewritePatternSet &patterns,
-                                         bool single_user, MLIRContext &context,
-                                         PatternBenefit benefit) {
-  patterns.insert<LICM<stablehlo::ConcatenateOp>>(single_user, &context,
-                                                  benefit);
-}
+                                                         void mlir::transform::
+                                                             addConcatenateLICM(
+                                                                 RewritePatternSet &
+                                                                     patterns,
+                                                                 bool
+                                                                     single_user,
+                                                                 MLIRContext
+                                                                     &context,
+                                                                 PatternBenefit
+                                                                     benefit) {
+                                                           patterns.insert<LICM<
+                                                               stablehlo::
+                                                                   ConcatenateOp>>(
+                                                               single_user,
+                                                               &context,
+                                                               benefit);
+                                                         }
 
-void mlir::transform::addBroadcastInDimLICM(RewritePatternSet &patterns,
-                                            bool single_user,
-                                            MLIRContext &context,
-                                            PatternBenefit benefit) {
-  patterns.insert<LICM<stablehlo::BroadcastInDimOp>>(single_user, &context,
-                                                     benefit);
-}
+                                                         void mlir::transform::
+                                                             addBroadcastInDimLICM(
+                                                                 RewritePatternSet &
+                                                                     patterns,
+                                                                 bool
+                                                                     single_user,
+                                                                 MLIRContext
+                                                                     &context,
+                                                                 PatternBenefit
+                                                                     benefit) {
+                                                           patterns.insert<LICM<
+                                                               stablehlo::
+                                                                   BroadcastInDimOp>>(
+                                                               single_user,
+                                                               &context,
+                                                               benefit);
+                                                         }
 
-void mlir::transform::addReshapeLICM(RewritePatternSet &patterns,
-                                     bool single_user, MLIRContext &context,
-                                     PatternBenefit benefit) {
-  patterns.insert<LICM<stablehlo::ReshapeOp>>(single_user, &context, benefit);
-}
+                                                         void mlir::transform::
+                                                             addReshapeLICM(
+                                                                 RewritePatternSet &
+                                                                     patterns,
+                                                                 bool
+                                                                     single_user,
+                                                                 MLIRContext
+                                                                     &context,
+                                                                 PatternBenefit
+                                                                     benefit) {
+                                                           patterns.insert<LICM<
+                                                               stablehlo::
+                                                                   ReshapeOp>>(
+                                                               single_user,
+                                                               &context,
+                                                               benefit);
+                                                         }
 
-void mlir::transform::addTransposeLICM(RewritePatternSet &patterns,
-                                       bool single_user, MLIRContext &context,
-                                       PatternBenefit benefit) {
-  patterns.insert<LICM<stablehlo::TransposeOp>>(single_user, &context, benefit);
-}
+                                                         void mlir::transform::
+                                                             addTransposeLICM(
+                                                                 RewritePatternSet &
+                                                                     patterns,
+                                                                 bool
+                                                                     single_user,
+                                                                 MLIRContext
+                                                                     &context,
+                                                                 PatternBenefit
+                                                                     benefit) {
+                                                           patterns.insert<LICM<
+                                                               stablehlo::
+                                                                   TransposeOp>>(
+                                                               single_user,
+                                                               &context,
+                                                               benefit);
+                                                         }
 
-void mlir::transform::addNoNanAddSubSimplify(RewritePatternSet &patterns,
-                                             bool allowOnFloatingPointMath,
-                                             MLIRContext &context,
-                                             PatternBenefit benefit) {
-  patterns.insert<NoNanAddSubSimplify>(allowOnFloatingPointMath, &context,
-                                       benefit);
-}
+                                                         void mlir::transform::
+                                                             addNoNanAddSubSimplify(
+                                                                 RewritePatternSet &
+                                                                     patterns,
+                                                                 bool
+                                                                     allowOnFloatingPointMath,
+                                                                 MLIRContext
+                                                                     &context,
+                                                                 PatternBenefit
+                                                                     benefit) {
+                                                           patterns.insert<
+                                                               NoNanAddSubSimplify>(
+                                                               allowOnFloatingPointMath,
+                                                               &context,
+                                                               benefit);
+                                                         }
 
-void mlir::transform::addNoNanCompareSimplify(RewritePatternSet &patterns,
-                                              bool allowOnFloatingPointMath,
-                                              MLIRContext &context,
-                                              PatternBenefit benefit) {
-  patterns.insert<NoNanCompareSimplify>(allowOnFloatingPointMath, &context,
-                                        benefit);
-}
+                                                         void mlir::transform::
+                                                             addNoNanCompareSimplify(
+                                                                 RewritePatternSet &
+                                                                     patterns,
+                                                                 bool
+                                                                     allowOnFloatingPointMath,
+                                                                 MLIRContext
+                                                                     &context,
+                                                                 PatternBenefit
+                                                                     benefit) {
+                                                           patterns.insert<
+                                                               NoNanCompareSimplify>(
+                                                               allowOnFloatingPointMath,
+                                                               &context,
+                                                               benefit);
+                                                         }
 
-void mlir::transform::addNoNanSelfSubSimplify(RewritePatternSet &patterns,
-                                              bool allowOnFloatingPointMath,
-                                              MLIRContext &context,
-                                              PatternBenefit benefit) {
-  patterns.insert<NoNanSelfSubSimplify>(allowOnFloatingPointMath, &context,
-                                        benefit);
-}
+                                                         void mlir::transform::
+                                                             addNoNanSelfSubSimplify(
+                                                                 RewritePatternSet &
+                                                                     patterns,
+                                                                 bool
+                                                                     allowOnFloatingPointMath,
+                                                                 MLIRContext
+                                                                     &context,
+                                                                 PatternBenefit
+                                                                     benefit) {
+                                                           patterns.insert<
+                                                               NoNanSelfSubSimplify>(
+                                                               allowOnFloatingPointMath,
+                                                               &context,
+                                                               benefit);
+                                                         }
 
-void mlir::transform::addNoNanMulSimplify(RewritePatternSet &patterns,
-                                          bool allowOnFloatingPointMath,
-                                          MLIRContext &context,
-                                          PatternBenefit benefit) {
-  patterns.insert<NoNanMulSimplify>(allowOnFloatingPointMath, &context,
-                                    benefit);
-}
+                                                         void mlir::transform::
+                                                             addNoNanMulSimplify(
+                                                                 RewritePatternSet &
+                                                                     patterns,
+                                                                 bool
+                                                                     allowOnFloatingPointMath,
+                                                                 MLIRContext
+                                                                     &context,
+                                                                 PatternBenefit
+                                                                     benefit) {
+                                                           patterns.insert<
+                                                               NoNanMulSimplify>(
+                                                               allowOnFloatingPointMath,
+                                                               &context,
+                                                               benefit);
+                                                         }
 
-void mlir::transform::addNoNanDivSimplify(RewritePatternSet &patterns,
-                                          bool allowOnFloatingPointMath,
-                                          MLIRContext &context,
-                                          PatternBenefit benefit) {
-  patterns.insert<NoNanDivSimplify>(allowOnFloatingPointMath, &context,
-                                    benefit);
-}
+                                                         void mlir::transform::
+                                                             addNoNanDivSimplify(
+                                                                 RewritePatternSet &
+                                                                     patterns,
+                                                                 bool
+                                                                     allowOnFloatingPointMath,
+                                                                 MLIRContext
+                                                                     &context,
+                                                                 PatternBenefit
+                                                                     benefit) {
+                                                           patterns.insert<
+                                                               NoNanDivSimplify>(
+                                                               allowOnFloatingPointMath,
+                                                               &context,
+                                                               benefit);
+                                                         }
 
-void mlir::transform::addNoNanZeroBasePowSimplify(RewritePatternSet &patterns,
-                                                  bool allowOnFloatingPointMath,
-                                                  MLIRContext &context,
-                                                  PatternBenefit benefit) {
-  patterns.insert<NoNanZeroBasePowSimplify>(allowOnFloatingPointMath, &context,
-                                            benefit);
-}
+                                                         void mlir::transform::
+                                                             addNoNanZeroBasePowSimplify(
+                                                                 RewritePatternSet &
+                                                                     patterns,
+                                                                 bool
+                                                                     allowOnFloatingPointMath,
+                                                                 MLIRContext
+                                                                     &context,
+                                                                 PatternBenefit
+                                                                     benefit) {
+                                                           patterns.insert<
+                                                               NoNanZeroBasePowSimplify>(
+                                                               allowOnFloatingPointMath,
+                                                               &context,
+                                                               benefit);
+                                                         }
 
-void mlir::transform::addSelfSubtractToConvolutionLike(
-    RewritePatternSet &patterns, bool allowEmitConvolution,
-    MLIRContext &context, PatternBenefit benefit) {
-  patterns.insert<SelfElementwiseToConvolutionLike<stablehlo::SubtractOp>>(
-      allowEmitConvolution, &context, benefit);
-}
+                                                         void mlir::transform::
+                                                             addSelfSubtractToConvolutionLike(
+                                                                 RewritePatternSet &
+                                                                     patterns,
+                                                                 bool
+                                                                     allowEmitConvolution,
+                                                                 MLIRContext
+                                                                     &context,
+                                                                 PatternBenefit
+                                                                     benefit) {
+                                                           patterns.insert<
+                                                               SelfElementwiseToConvolutionLike<
+                                                                   stablehlo::
+                                                                       SubtractOp>>(
+                                                               allowEmitConvolution,
+                                                               &context,
+                                                               benefit);
+                                                         }
 
-void mlir::transform::addSelfAddToConvolutionLike(RewritePatternSet &patterns,
-                                                  bool allowEmitConvolution,
-                                                  MLIRContext &context,
-                                                  PatternBenefit benefit) {
-  patterns.insert<SelfElementwiseToConvolutionLike<stablehlo::AddOp>>(
-      allowEmitConvolution, &context, benefit);
-}
+                                                         void mlir::transform::
+                                                             addSelfAddToConvolutionLike(
+                                                                 RewritePatternSet &
+                                                                     patterns,
+                                                                 bool
+                                                                     allowEmitConvolution,
+                                                                 MLIRContext
+                                                                     &context,
+                                                                 PatternBenefit
+                                                                     benefit) {
+                                                           patterns.insert<
+                                                               SelfElementwiseToConvolutionLike<
+                                                                   stablehlo::
+                                                                       AddOp>>(
+                                                               allowEmitConvolution,
+                                                               &context,
+                                                               benefit);
+                                                         }
 
-void mlir::transform::addSelfMulToConvolutionLike(RewritePatternSet &patterns,
-                                                  bool allowEmitConvolution,
-                                                  MLIRContext &context,
-                                                  PatternBenefit benefit) {
-  patterns.insert<SelfElementwiseToConvolutionLike<stablehlo::MulOp>>(
-      allowEmitConvolution, &context, benefit);
-}
+                                                         void mlir::transform::
+                                                             addSelfMulToConvolutionLike(
+                                                                 RewritePatternSet &
+                                                                     patterns,
+                                                                 bool
+                                                                     allowEmitConvolution,
+                                                                 MLIRContext
+                                                                     &context,
+                                                                 PatternBenefit
+                                                                     benefit) {
+                                                           patterns.insert<
+                                                               SelfElementwiseToConvolutionLike<
+                                                                   stablehlo::
+                                                                       MulOp>>(
+                                                               allowEmitConvolution,
+                                                               &context,
+                                                               benefit);
+                                                         }
 
-void mlir::transform::addBroadcastInDimSimplify(RewritePatternSet &patterns,
-                                                int64_t maxConstantExpansion,
-                                                MLIRContext &context,
-                                                PatternBenefit benefit) {
-  patterns.insert<BroadcastInDimSimplify>(maxConstantExpansion, &context,
-                                          benefit);
-}
+                                                         void mlir::transform::
+                                                             addBroadcastInDimSimplify(
+                                                                 RewritePatternSet &
+                                                                     patterns,
+                                                                 int64_t
+                                                                     maxConstantExpansion,
+                                                                 MLIRContext &
+                                                                     context,
+                                                                 PatternBenefit
+                                                                     benefit) {
+                                                           patterns.insert<
+                                                               BroadcastInDimSimplify>(
+                                                               maxConstantExpansion,
+                                                               &context,
+                                                               benefit);
+                                                         }
 
-void mlir::transform::addSelectOpCanon(RewritePatternSet &patterns,
-                                       int64_t maxConstantExpansion,
-                                       MLIRContext &context,
-                                       PatternBenefit benefit) {
-  patterns.insert<SelectOpCanon>(maxConstantExpansion, &context, benefit);
-}
+                                                         void mlir::transform::
+                                                             addSelectOpCanon(
+                                                                 RewritePatternSet &
+                                                                     patterns,
+                                                                 int64_t
+                                                                     maxConstantExpansion,
+                                                                 MLIRContext &
+                                                                     context,
+                                                                 PatternBenefit
+                                                                     benefit) {
+                                                           patterns.insert<
+                                                               SelectOpCanon>(
+                                                               maxConstantExpansion,
+                                                               &context,
+                                                               benefit);
+                                                         }
 
-void mlir::transform::addConcatenateOpCanon(RewritePatternSet &patterns,
-                                            int64_t maxConstantExpansion,
-                                            MLIRContext &context,
-                                            PatternBenefit benefit) {
-  patterns.insert<ConcatenateOpCanon>(maxConstantExpansion, &context, benefit);
-}
+                                                         void mlir::transform::
+                                                             addConcatenateOpCanon(
+                                                                 RewritePatternSet &
+                                                                     patterns,
+                                                                 int64_t
+                                                                     maxConstantExpansion,
+                                                                 MLIRContext &
+                                                                     context,
+                                                                 PatternBenefit
+                                                                     benefit) {
+                                                           patterns.insert<
+                                                               ConcatenateOpCanon>(
+                                                               maxConstantExpansion,
+                                                               &context,
+                                                               benefit);
+                                                         }
 
-void mlir::transform::addTransposeElementwise(RewritePatternSet &patterns,
-                                              bool onlySingleUser,
-                                              MLIRContext &context,
-                                              PatternBenefit benefit) {
-  patterns.insert<TransposeElementwise>(onlySingleUser, &context, benefit);
-}
+                                                         void mlir::transform::
+                                                             addTransposeElementwise(
+                                                                 RewritePatternSet &
+                                                                     patterns,
+                                                                 bool
+                                                                     onlySingleUser,
+                                                                 MLIRContext
+                                                                     &context,
+                                                                 PatternBenefit
+                                                                     benefit) {
+                                                           patterns.insert<
+                                                               TransposeElementwise>(
+                                                               onlySingleUser,
+                                                               &context,
+                                                               benefit);
+                                                         }
 
-void mlir::transform::addReshapeElementwise(RewritePatternSet &patterns,
-                                            bool onlySingleUser,
-                                            MLIRContext &context,
-                                            PatternBenefit benefit) {
-  patterns.insert<ReshapeElementwise>(onlySingleUser, &context, benefit);
-}
+                                                         void mlir::transform::
+                                                             addReshapeElementwise(
+                                                                 RewritePatternSet &
+                                                                     patterns,
+                                                                 bool
+                                                                     onlySingleUser,
+                                                                 MLIRContext
+                                                                     &context,
+                                                                 PatternBenefit
+                                                                     benefit) {
+                                                           patterns.insert<
+                                                               ReshapeElementwise>(
+                                                               onlySingleUser,
+                                                               &context,
+                                                               benefit);
+                                                         }
 
-void mlir::transform::addReshapeSlice(RewritePatternSet &patterns,
-                                      bool onlySingleUser, MLIRContext &context,
-                                      PatternBenefit benefit) {
-  patterns.insert<ReshapeSlice>(onlySingleUser, &context, benefit);
-}
+                                                         void mlir::transform::
+                                                             addReshapeSlice(
+                                                                 RewritePatternSet &
+                                                                     patterns,
+                                                                 bool
+                                                                     onlySingleUser,
+                                                                 MLIRContext
+                                                                     &context,
+                                                                 PatternBenefit
+                                                                     benefit) {
+                                                           patterns.insert<
+                                                               ReshapeSlice>(
+                                                               onlySingleUser,
+                                                               &context,
+                                                               benefit);
+                                                         }
 
-void mlir::transform::addExtendUnaryElementwise(RewritePatternSet &patterns,
-                                                bool onlySingleUser,
-                                                MLIRContext &context,
-                                                PatternBenefit benefit) {
-  patterns.insert<ExtendUnaryElementwise>(onlySingleUser, &context, benefit);
-}
+                                                         void mlir::transform::
+                                                             addExtendUnaryElementwise(
+                                                                 RewritePatternSet &
+                                                                     patterns,
+                                                                 bool
+                                                                     onlySingleUser,
+                                                                 MLIRContext
+                                                                     &context,
+                                                                 PatternBenefit
+                                                                     benefit) {
+                                                           patterns.insert<
+                                                               ExtendUnaryElementwise>(
+                                                               onlySingleUser,
+                                                               &context,
+                                                               benefit);
+                                                         }
 
-void mlir::transform::addWrapUnaryElementwise(RewritePatternSet &patterns,
-                                              bool onlySingleUser,
-                                              MLIRContext &context,
-                                              PatternBenefit benefit) {
-  patterns.insert<WrapUnaryElementwise>(onlySingleUser, &context, benefit);
-}
+                                                         void mlir::transform::
+                                                             addWrapUnaryElementwise(
+                                                                 RewritePatternSet &
+                                                                     patterns,
+                                                                 bool
+                                                                     onlySingleUser,
+                                                                 MLIRContext
+                                                                     &context,
+                                                                 PatternBenefit
+                                                                     benefit) {
+                                                           patterns.insert<
+                                                               WrapUnaryElementwise>(
+                                                               onlySingleUser,
+                                                               &context,
+                                                               benefit);
+                                                         }
 
-namespace {
+                                                         namespace {
 
-struct EnzymeHLOOptPass
-    : public enzyme::impl::EnzymeHLOOptPassBase<EnzymeHLOOptPass> {
-  using EnzymeHLOOptPassBase::EnzymeHLOOptPassBase;
+                                                         struct EnzymeHLOOptPass
+                                                             : public enzyme::impl::
+                                                                   EnzymeHLOOptPassBase<
+                                                                       EnzymeHLOOptPass> {
+                                                           using EnzymeHLOOptPassBase::
+                                                               EnzymeHLOOptPassBase;
 
-  void runOnOperation() override {
-    auto context = getOperation()->getContext();
+                                                           void runOnOperation()
+                                                               override {
+                                                             auto context =
+                                                                 getOperation()
+                                                                     ->getContext();
 
-    RewritePatternSet patterns(context);
-    mlir::enzyme::populateWithGenerated(patterns);
+                                                             RewritePatternSet
+                                                                 patterns(
+                                                                     context);
+                                                             mlir::enzyme::
+                                                                 populateWithGenerated(
+                                                                     patterns);
 
-    patterns.add<SliceExtend>(context);
-    patterns.add<SliceRotate>(context);
-    patterns.add<SliceWrap>(context);
-    patterns.add<ReshapeWrap>(context);
-    patterns.add<ReshapeExtend>(context);
-    patterns.add<ReshapeRotate>(context);
-    patterns.add<TransposeWrap>(context);
-    patterns.add<TransposeExtend>(context);
-    patterns.add<TransposeRotate>(context);
-    patterns.add<SelectPad>(context);
+                                                             patterns.add<
+                                                                 SliceExtend>(
+                                                                 context);
+                                                             patterns.add<
+                                                                 SliceRotate>(
+                                                                 context);
+                                                             patterns.add<
+                                                                 SliceWrap>(
+                                                                 context);
+                                                             patterns.add<
+                                                                 ReshapeWrap>(
+                                                                 context);
+                                                             patterns.add<
+                                                                 ReshapeExtend>(
+                                                                 context);
+                                                             patterns.add<
+                                                                 ReshapeRotate>(
+                                                                 context);
+                                                             patterns.add<
+                                                                 TransposeWrap>(
+                                                                 context);
+                                                             patterns.add<
+                                                                 TransposeExtend>(
+                                                                 context);
+                                                             patterns.add<
+                                                                 TransposeRotate>(
+                                                                 context);
+                                                             patterns.add<
+                                                                 SelectPad>(
+                                                                 context);
 
-    patterns.add<
-        AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
-        OrSimplify, XorSimplify, MulSimplify, DivSimplify, RemSimplify,
-        PowSimplify, NoopSlice, NoopReverse, SliceSlice, LogSimplify,
-        ShiftRightLogicalSimplify, NegativePadToSlice, SliceSimplify,
-        ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
-        DotGeneralReshape, DiagonalTensorDotGeneralRewrite,
-        DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
-        BroadcastToReshape, ReshapeEmptyBroadcast, BroadcastReshape,
-        ConstPropThroughBarrier, ReplaceNegAddWithSubtract, SignAbsSimplify,
-        AbsPositiveSimplify, SimplifyBoundary<enzymexla::ExtendOp>,
-        SimplifyBoundary<enzymexla::WrapOp>,
-        SimplifyBoundary<enzymexla::RotateOp>, TransposeReshapeToBroadcast,
-        ReshapeTransposeToBroadcast, SelectBroadcastInDim, PowerMultiplyToPower,
-        NegMulConstSimplify, NegDivConstSimplify,
-        ReshapeDeletionsBroadcastInDimSimplify,
-        ReshapeInsertionsBroadcastInDimSimplify, CompareIotaConstSimplify,
-        CompareAbs, CompareMul, CompareConvert, AddSelects,
-        CompareNegateConstSimplify, SelectSimplify>(context,
-                                                    PatternBenefit(65000));
+                                                             patterns.add<
+                                                                 AddSimplify,
+                                                                 SubSimplify,
+                                                                 AndSimplify,
+                                                                 MaxSimplify,
+                                                                 MinSimplify,
+                                                                 OrSimplify,
+                                                                 XorSimplify,
+                                                                 MulSimplify,
+                                                                 DivSimplify,
+                                                                 RemSimplify,
+                                                                 PowSimplify,
+                                                                 NoopSlice,
+                                                                 NoopReverse,
+                                                                 SliceSlice,
+                                                                 LogSimplify,
+                                                                 ShiftRightLogicalSimplify,
+                                                                 NegativePadToSlice,
+                                                                 SliceSimplify,
+                                                                 ConvertSimplify,
+                                                                 TransposeSimplify,
+                                                                 DotGeneralSimplify,
+                                                                 DotGeneralReshape,
+                                                                 DiagonalTensorDotGeneralRewrite,
+                                                                 DynamicSliceToStatic,
+                                                                 DynamicUpdateSliceElim,
+                                                                 ReduceToReshape,
+                                                                 BroadcastToReshape,
+                                                                 ReshapeEmptyBroadcast,
+                                                                 BroadcastReshape,
+                                                                 ConstPropThroughBarrier,
+                                                                 ReplaceNegAddWithSubtract,
+                                                                 SignAbsSimplify,
+                                                                 AbsPositiveSimplify,
+                                                                 SimplifyBoundary<
+                                                                     enzymexla::
+                                                                         ExtendOp>,
+                                                                 SimplifyBoundary<
+                                                                     enzymexla::
+                                                                         WrapOp>,
+                                                                 SimplifyBoundary<
+                                                                     enzymexla::
+                                                                         RotateOp>,
+                                                                 TransposeReshapeToBroadcast,
+                                                                 ReshapeTransposeToBroadcast,
+                                                                 SelectBroadcastInDim,
+                                                                 PowerMultiplyToPower,
+                                                                 NegMulConstSimplify,
+                                                                 NegDivConstSimplify,
+                                                                 ReshapeDeletionsBroadcastInDimSimplify,
+                                                                 ReshapeInsertionsBroadcastInDimSimplify,
+                                                                 CompareIotaConstSimplify,
+                                                                 CompareAbs,
+                                                                 CompareMul,
+                                                                 CompareConvert,
+                                                                 AddSelects,
+                                                                 CompareNegateConstSimplify,
+                                                                 SelectSimplify>(
+                                                                 context,
+                                                                 PatternBenefit(
+                                                                     65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,
                  DynamicUpdateSliceConstProp, PadSimplify, ScatterConstFold>(
         max_constant_expansion, context, PatternBenefit(65000));
 
-    patterns.add<
-        ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
-        SliceElementwise, SliceReshapeElementwise, SlicePad, SliceReshapePad,
-        DotReshapeDot, ChloInfConstProp, GammaConstProp, ConcatFuse,
-        ConcatToBroadcast, PadPad, PadReshapePad,
-        ConcatPushBinop<stablehlo::AddOp>, ConcatPushBinop<stablehlo::MulOp>,
-        ScatterToDynamicUpdateSlice, ReduceConcat, ConcatSlice, ConcatMultiPad,
-        ConcatWrap, WidenWrap, WidenExtend, ConcatConcatAxisSwap, SliceConcat,
-        SliceIf, SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
-        BinBroadcastSplat<stablehlo::SubtractOp>,
-        BinBroadcastSplat<stablehlo::DivOp>,
-        BinBroadcastSplat<stablehlo::MulOp>, RotatePad, ConjReal>(context);
+                                                             patterns.add<
+                                                                 ConvertConcat,
+                                                                 DynamicUpdateToConcat,
+                                                                 SliceOfDynamicUpdate,
+                                                                 SliceElementwise,
+                                                                 SliceReshapeElementwise,
+                                                                 SlicePad,
+                                                                 SliceReshapePad,
+                                                                 DotReshapeDot,
+                                                                 ChloInfConstProp,
+                                                                 GammaConstProp,
+                                                                 ConcatFuse,
+                                                                 ConcatToBroadcast,
+                                                                 PadPad,
+                                                                 PadReshapePad,
+                                                                 ConcatPushBinop<
+                                                                     stablehlo::
+                                                                         AddOp>,
+                                                                 ConcatPushBinop<
+                                                                     stablehlo::
+                                                                         MulOp>,
+                                                                 ScatterToDynamicUpdateSlice,
+                                                                 ReduceConcat,
+                                                                 ConcatSlice,
+                                                                 ConcatMultiPad,
+                                                                 ConcatWrap,
+                                                                 WidenWrap,
+                                                                 WidenExtend,
+                                                                 ConcatConcatAxisSwap,
+                                                                 SliceConcat,
+                                                                 SliceIf,
+                                                                 SliceReshapeConcat,
+                                                                 BinBroadcastSplat<
+                                                                     stablehlo::
+                                                                         AddOp>,
+                                                                 BinBroadcastSplat<
+                                                                     stablehlo::
+                                                                         SubtractOp>,
+                                                                 BinBroadcastSplat<
+                                                                     stablehlo::
+                                                                         DivOp>,
+                                                                 BinBroadcastSplat<
+                                                                     stablehlo::
+                                                                         MulOp>,
+                                                                 RotatePad,
+                                                                 ConjReal>(
+                                                                 context);
 
-    // Unary constant propagation patterns
-    patterns.add<UnaryConstProp<stablehlo::NotOp, stablehlo::notOp>,
-                 UnaryConstProp<stablehlo::IsFiniteOp, stablehlo::isFiniteOp>,
-                 UnaryConstProp<stablehlo::LogOp, stablehlo::logOp>,
-                 UnaryConstProp<stablehlo::Log1pOp, stablehlo::log1pOp>,
-                 UnaryConstProp<stablehlo::AbsOp, stablehlo::absOp>,
-                 UnaryConstProp<stablehlo::NegOp, stablehlo::negOp>,
-                 UnaryConstProp<stablehlo::SqrtOp, stablehlo::sqrtOp>,
-                 UnaryConstProp<stablehlo::RsqrtOp, stablehlo::rsqrtOp>,
-                 UnaryConstProp<stablehlo::CosineOp, stablehlo::cosineOp>,
-                 UnaryConstProp<stablehlo::SineOp, stablehlo::sineOp>,
-                 UnaryConstProp<stablehlo::ExpOp, stablehlo::exponentialOp>,
-                 UnaryConstProp<stablehlo::Expm1Op, stablehlo::expm1Op>,
-                 UnaryConstProp<stablehlo::TanhOp, stablehlo::tanhOp>,
-                 UnaryConstProp<stablehlo::LogisticOp, stablehlo::logisticOp>,
-                 UnaryConstProp<chlo::ConjOp, conjOp>,
-                 UnaryConstProp<stablehlo::CeilOp, stablehlo::ceilOp>,
-                 UnaryConstProp<stablehlo::CbrtOp, stablehlo::cbrtOp>,
-                 UnaryConstProp<stablehlo::RealOp, stablehlo::realOp>,
-                 UnaryConstProp<stablehlo::ImagOp, stablehlo::imagOp>,
-                 UnaryConstProp<stablehlo::RoundOp, stablehlo::roundOp>,
-                 UnaryConstProp<stablehlo::RoundNearestEvenOp,
-                                stablehlo::roundNearestEvenOp>,
-                 UnaryConstProp<stablehlo::SignOp, stablehlo::signOp>,
-                 UnaryConstProp<stablehlo::FloorOp, stablehlo::floorOp>,
-                 UnaryConstProp<stablehlo::TanOp, stablehlo::tanOp>>(context);
+                                                             // Unary constant
+                                                             // propagation
+                                                             // patterns
+                                                             patterns.add<
+                                                                 UnaryConstProp<
+                                                                     stablehlo::
+                                                                         NotOp,
+                                                                     stablehlo::
+                                                                         notOp>,
+                                                                 UnaryConstProp<
+                                                                     stablehlo::
+                                                                         IsFiniteOp,
+                                                                     stablehlo::
+                                                                         isFiniteOp>,
+                                                                 UnaryConstProp<
+                                                                     stablehlo::
+                                                                         LogOp,
+                                                                     stablehlo::
+                                                                         logOp>,
+                                                                 UnaryConstProp<
+                                                                     stablehlo::
+                                                                         Log1pOp,
+                                                                     stablehlo::
+                                                                         log1pOp>,
+                                                                 UnaryConstProp<
+                                                                     stablehlo::
+                                                                         AbsOp,
+                                                                     stablehlo::
+                                                                         absOp>,
+                                                                 UnaryConstProp<
+                                                                     stablehlo::
+                                                                         NegOp,
+                                                                     stablehlo::
+                                                                         negOp>,
+                                                                 UnaryConstProp<
+                                                                     stablehlo::
+                                                                         SqrtOp,
+                                                                     stablehlo::
+                                                                         sqrtOp>,
+                                                                 UnaryConstProp<
+                                                                     stablehlo::
+                                                                         RsqrtOp,
+                                                                     stablehlo::
+                                                                         rsqrtOp>,
+                                                                 UnaryConstProp<
+                                                                     stablehlo::
+                                                                         CosineOp,
+                                                                     stablehlo::
+                                                                         cosineOp>,
+                                                                 UnaryConstProp<
+                                                                     stablehlo::
+                                                                         SineOp,
+                                                                     stablehlo::
+                                                                         sineOp>,
+                                                                 UnaryConstProp<
+                                                                     stablehlo::
+                                                                         ExpOp,
+                                                                     stablehlo::
+                                                                         exponentialOp>,
+                                                                 UnaryConstProp<
+                                                                     stablehlo::
+                                                                         Expm1Op,
+                                                                     stablehlo::
+                                                                         expm1Op>,
+                                                                 UnaryConstProp<
+                                                                     stablehlo::
+                                                                         TanhOp,
+                                                                     stablehlo::
+                                                                         tanhOp>,
+                                                                 UnaryConstProp<
+                                                                     stablehlo::
+                                                                         LogisticOp,
+                                                                     stablehlo::
+                                                                         logisticOp>,
+                                                                 UnaryConstProp<
+                                                                     chlo::
+                                                                         ConjOp,
+                                                                     conjOp>,
+                                                                 UnaryConstProp<
+                                                                     stablehlo::
+                                                                         CeilOp,
+                                                                     stablehlo::
+                                                                         ceilOp>,
+                                                                 UnaryConstProp<
+                                                                     stablehlo::
+                                                                         CbrtOp,
+                                                                     stablehlo::
+                                                                         cbrtOp>,
+                                                                 UnaryConstProp<
+                                                                     stablehlo::
+                                                                         RealOp,
+                                                                     stablehlo::
+                                                                         realOp>,
+                                                                 UnaryConstProp<
+                                                                     stablehlo::
+                                                                         ImagOp,
+                                                                     stablehlo::
+                                                                         imagOp>,
+                                                                 UnaryConstProp<
+                                                                     stablehlo::
+                                                                         RoundOp,
+                                                                     stablehlo::
+                                                                         roundOp>,
+                                                                 UnaryConstProp<
+                                                                     stablehlo::
+                                                                         RoundNearestEvenOp,
+                                                                     stablehlo::
+                                                                         roundNearestEvenOp>,
+                                                                 UnaryConstProp<
+                                                                     stablehlo::
+                                                                         SignOp,
+                                                                     stablehlo::
+                                                                         signOp>,
+                                                                 UnaryConstProp<
+                                                                     stablehlo::
+                                                                         FloorOp,
+                                                                     stablehlo::
+                                                                         floorOp>,
+                                                                 UnaryConstProp<
+                                                                     stablehlo::
+                                                                         TanOp,
+                                                                     stablehlo::
+                                                                         tanOp>>(
+                                                                 context);
 
-    // binary constant propagation patterns
-    patterns.add<BinaryConstProp<stablehlo::AddOp, stablehlo::addOp>,
-                 BinaryConstProp<stablehlo::AndOp, stablehlo::andOp>,
-                 BinaryConstProp<stablehlo::Atan2Op, stablehlo::atan2Op>,
-                 BinaryConstProp<stablehlo::ComplexOp, stablehlo::complexOp>,
-                 BinaryConstProp<stablehlo::DivOp, stablehlo::divideOp>,
-                 BinaryConstProp<stablehlo::MaxOp, stablehlo::maxOp>,
-                 BinaryConstProp<stablehlo::MinOp, stablehlo::minOp>,
-                 BinaryConstProp<stablehlo::MulOp, stablehlo::multiplyOp>,
-                 BinaryConstProp<stablehlo::OrOp, stablehlo::orOp>,
-                 BinaryConstProp<stablehlo::PowOp, stablehlo::powerOp>,
-                 BinaryConstProp<stablehlo::RemOp, stablehlo::remOp>,
-                 BinaryConstProp<stablehlo::SubtractOp, stablehlo::subtractOp>,
-                 BinaryConstProp<stablehlo::XorOp, stablehlo::xorOp>>(context);
+                                                             // binary constant
+                                                             // propagation
+                                                             // patterns
+                                                             patterns.add<
+                                                                 BinaryConstProp<
+                                                                     stablehlo::
+                                                                         AddOp,
+                                                                     stablehlo::
+                                                                         addOp>,
+                                                                 BinaryConstProp<
+                                                                     stablehlo::
+                                                                         AndOp,
+                                                                     stablehlo::
+                                                                         andOp>,
+                                                                 BinaryConstProp<
+                                                                     stablehlo::
+                                                                         Atan2Op,
+                                                                     stablehlo::
+                                                                         atan2Op>,
+                                                                 BinaryConstProp<
+                                                                     stablehlo::
+                                                                         ComplexOp,
+                                                                     stablehlo::
+                                                                         complexOp>,
+                                                                 BinaryConstProp<
+                                                                     stablehlo::
+                                                                         DivOp,
+                                                                     stablehlo::
+                                                                         divideOp>,
+                                                                 BinaryConstProp<
+                                                                     stablehlo::
+                                                                         MaxOp,
+                                                                     stablehlo::
+                                                                         maxOp>,
+                                                                 BinaryConstProp<
+                                                                     stablehlo::
+                                                                         MinOp,
+                                                                     stablehlo::
+                                                                         minOp>,
+                                                                 BinaryConstProp<
+                                                                     stablehlo::
+                                                                         MulOp,
+                                                                     stablehlo::
+                                                                         multiplyOp>,
+                                                                 BinaryConstProp<
+                                                                     stablehlo::
+                                                                         OrOp,
+                                                                     stablehlo::
+                                                                         orOp>,
+                                                                 BinaryConstProp<
+                                                                     stablehlo::
+                                                                         PowOp,
+                                                                     stablehlo::
+                                                                         powerOp>,
+                                                                 BinaryConstProp<
+                                                                     stablehlo::
+                                                                         RemOp,
+                                                                     stablehlo::
+                                                                         remOp>,
+                                                                 BinaryConstProp<
+                                                                     stablehlo::
+                                                                         SubtractOp,
+                                                                     stablehlo::
+                                                                         subtractOp>,
+                                                                 BinaryConstProp<
+                                                                     stablehlo::
+                                                                         XorOp,
+                                                                     stablehlo::
+                                                                         xorOp>>(
+                                                                 context);
 
-    patterns.add<GatherConstProp, ClampConstProp>(context);
+                                                             patterns.add<
+                                                                 GatherConstProp,
+                                                                 ClampConstProp>(
+                                                                 context);
 
-    patterns.add<BinaryOpTransposeSimplify<stablehlo::AddOp>,
-                 BinaryOpTransposeSimplify<stablehlo::SubtractOp>,
-                 BinaryOpTransposeSimplify<stablehlo::MulOp>,
-                 BinaryOpTransposeSimplify<stablehlo::DivOp>,
-                 BinaryOpTransposeSimplify<stablehlo::MinOp>,
-                 BinaryOpTransposeSimplify<stablehlo::MaxOp>,
-                 BinaryOpTransposeSimplify<stablehlo::AndOp>,
-                 BinaryOpTransposeSimplify<stablehlo::OrOp>,
-                 BinaryOpTransposeSimplify<stablehlo::XorOp>,
-                 BinaryOpTransposeSimplify<stablehlo::PowOp>,
-                 BinaryOpTransposeSimplify<stablehlo::RemOp>,
-                 TransposeUnaryTransposeSimplify<stablehlo::AbsOp>,
-                 TransposeUnaryTransposeSimplify<stablehlo::CeilOp>,
-                 TransposeUnaryTransposeSimplify<stablehlo::ConvertOp>,
-                 TransposeUnaryTransposeSimplify<stablehlo::CosineOp>,
-                 TransposeUnaryTransposeSimplify<stablehlo::ExpOp>,
-                 TransposeUnaryTransposeSimplify<stablehlo::Expm1Op>,
-                 TransposeUnaryTransposeSimplify<stablehlo::LogOp>,
-                 TransposeUnaryTransposeSimplify<stablehlo::Log1pOp>,
-                 TransposeUnaryTransposeSimplify<stablehlo::NegOp>,
-                 TransposeUnaryTransposeSimplify<stablehlo::RsqrtOp>,
-                 TransposeUnaryTransposeSimplify<stablehlo::SignOp>,
-                 TransposeUnaryTransposeSimplify<stablehlo::SineOp>,
-                 TransposeUnaryTransposeSimplify<stablehlo::SqrtOp>,
-                 TransposeUnaryTransposeSimplify<stablehlo::TanhOp>,
-                 AssociativeBinaryOpReordering<stablehlo::AddOp>,
-                 AssociativeBinaryOpReordering<stablehlo::MulOp>,
-                 AssociativeBinaryOpReordering<stablehlo::MinOp>,
-                 AssociativeBinaryOpReordering<stablehlo::MaxOp>,
-                 AssociativeBinaryOpReordering<stablehlo::AndOp>,
-                 AssociativeBinaryOpReordering<stablehlo::OrOp>,
-                 AssociativeBinaryOpReordering<stablehlo::XorOp>,
-                 CommonAssociativeCommutativeOpReorder<stablehlo::AddOp>,
-                 CommonAssociativeCommutativeOpReorder<stablehlo::MulOp>,
-                 CommonAssociativeCommutativeOpReorder<stablehlo::MinOp>,
-                 CommonAssociativeCommutativeOpReorder<stablehlo::MaxOp>,
-                 CommonAssociativeCommutativeOpReorder<stablehlo::AndOp>,
-                 CommonAssociativeCommutativeOpReorder<stablehlo::OrOp>,
-                 CommonAssociativeCommutativeOpReorder<stablehlo::XorOp>>(
-        context);
+                                                             patterns.add<
+                                                                 BinaryOpTransposeSimplify<
+                                                                     stablehlo::
+                                                                         AddOp>,
+                                                                 BinaryOpTransposeSimplify<
+                                                                     stablehlo::
+                                                                         SubtractOp>,
+                                                                 BinaryOpTransposeSimplify<
+                                                                     stablehlo::
+                                                                         MulOp>,
+                                                                 BinaryOpTransposeSimplify<
+                                                                     stablehlo::
+                                                                         DivOp>,
+                                                                 BinaryOpTransposeSimplify<
+                                                                     stablehlo::
+                                                                         MinOp>,
+                                                                 BinaryOpTransposeSimplify<
+                                                                     stablehlo::
+                                                                         MaxOp>,
+                                                                 BinaryOpTransposeSimplify<
+                                                                     stablehlo::
+                                                                         AndOp>,
+                                                                 BinaryOpTransposeSimplify<
+                                                                     stablehlo::
+                                                                         OrOp>,
+                                                                 BinaryOpTransposeSimplify<
+                                                                     stablehlo::
+                                                                         XorOp>,
+                                                                 BinaryOpTransposeSimplify<
+                                                                     stablehlo::
+                                                                         PowOp>,
+                                                                 BinaryOpTransposeSimplify<
+                                                                     stablehlo::
+                                                                         RemOp>,
+                                                                 TransposeUnaryTransposeSimplify<
+                                                                     stablehlo::
+                                                                         AbsOp>,
+                                                                 TransposeUnaryTransposeSimplify<
+                                                                     stablehlo::
+                                                                         CeilOp>,
+                                                                 TransposeUnaryTransposeSimplify<
+                                                                     stablehlo::
+                                                                         ConvertOp>,
+                                                                 TransposeUnaryTransposeSimplify<
+                                                                     stablehlo::
+                                                                         CosineOp>,
+                                                                 TransposeUnaryTransposeSimplify<
+                                                                     stablehlo::
+                                                                         ExpOp>,
+                                                                 TransposeUnaryTransposeSimplify<
+                                                                     stablehlo::
+                                                                         Expm1Op>,
+                                                                 TransposeUnaryTransposeSimplify<
+                                                                     stablehlo::
+                                                                         LogOp>,
+                                                                 TransposeUnaryTransposeSimplify<
+                                                                     stablehlo::
+                                                                         Log1pOp>,
+                                                                 TransposeUnaryTransposeSimplify<
+                                                                     stablehlo::
+                                                                         NegOp>,
+                                                                 TransposeUnaryTransposeSimplify<
+                                                                     stablehlo::
+                                                                         RsqrtOp>,
+                                                                 TransposeUnaryTransposeSimplify<
+                                                                     stablehlo::
+                                                                         SignOp>,
+                                                                 TransposeUnaryTransposeSimplify<
+                                                                     stablehlo::
+                                                                         SineOp>,
+                                                                 TransposeUnaryTransposeSimplify<
+                                                                     stablehlo::
+                                                                         SqrtOp>,
+                                                                 TransposeUnaryTransposeSimplify<
+                                                                     stablehlo::
+                                                                         TanhOp>,
+                                                                 AssociativeBinaryOpReordering<
+                                                                     stablehlo::
+                                                                         AddOp>,
+                                                                 AssociativeBinaryOpReordering<
+                                                                     stablehlo::
+                                                                         MulOp>,
+                                                                 AssociativeBinaryOpReordering<
+                                                                     stablehlo::
+                                                                         MinOp>,
+                                                                 AssociativeBinaryOpReordering<
+                                                                     stablehlo::
+                                                                         MaxOp>,
+                                                                 AssociativeBinaryOpReordering<
+                                                                     stablehlo::
+                                                                         AndOp>,
+                                                                 AssociativeBinaryOpReordering<
+                                                                     stablehlo::
+                                                                         OrOp>,
+                                                                 AssociativeBinaryOpReordering<
+                                                                     stablehlo::
+                                                                         XorOp>,
+                                                                 CommonAssociativeCommutativeOpReorder<
+                                                                     stablehlo::
+                                                                         AddOp>,
+                                                                 CommonAssociativeCommutativeOpReorder<
+                                                                     stablehlo::
+                                                                         MulOp>,
+                                                                 CommonAssociativeCommutativeOpReorder<
+                                                                     stablehlo::
+                                                                         MinOp>,
+                                                                 CommonAssociativeCommutativeOpReorder<
+                                                                     stablehlo::
+                                                                         MaxOp>,
+                                                                 CommonAssociativeCommutativeOpReorder<
+                                                                     stablehlo::
+                                                                         AndOp>,
+                                                                 CommonAssociativeCommutativeOpReorder<
+                                                                     stablehlo::
+                                                                         OrOp>,
+                                                                 CommonAssociativeCommutativeOpReorder<
+                                                                     stablehlo::
+                                                                         XorOp>>(
+                                                                 context);
 
-    patterns.add<BinopPadToConcat<stablehlo::AddOp>,
-                 BinopPadToConcat<stablehlo::MulOp>, ConcatPad,
-                 PadConcatToConcatPad, SliceSelect, PadReduceWindow,
-                 ConvolutionPad>(context);
+                                                             patterns.add<
+                                                                 BinopPadToConcat<
+                                                                     stablehlo::
+                                                                         AddOp>,
+                                                                 BinopPadToConcat<
+                                                                     stablehlo::
+                                                                         MulOp>,
+                                                                 ConcatPad,
+                                                                 PadConcatToConcatPad,
+                                                                 SliceSelect,
+                                                                 PadReduceWindow,
+                                                                 ConvolutionPad>(
+                                                                 context);
 
-    if (passses & 512) {
-      patterns.add<TransposeDotReorder, DotTranspose, ConvolutionTranspose,
-                   TransposeConvolution, EinsumTranspose, TransposeEinsum,
-                   ConvertConvertFloat, ConvertConvertInt, ConcatToPad,
-                   ConcatAppendingReshape, ReshapeIota, DUSDUS, DUSDUSConcat,
-                   DUSConcat, DUSPad, SliceDUSToConcat, ConcatConcatToDUS>(
-          context);
-      patterns.add<LICM<stablehlo::DynamicUpdateSliceOp>>(false, context);
-    }
+                                                             if (passses &
+                                                                 512) {
+                                                               patterns.add<
+                                                                   TransposeDotReorder,
+                                                                   DotTranspose,
+                                                                   ConvolutionTranspose,
+                                                                   TransposeConvolution,
+                                                                   EinsumTranspose,
+                                                                   TransposeEinsum,
+                                                                   ConvertConvertFloat,
+                                                                   ConvertConvertInt,
+                                                                   ConcatToPad,
+                                                                   ConcatAppendingReshape,
+                                                                   ReshapeIota,
+                                                                   DUSDUS,
+                                                                   DUSDUSConcat,
+                                                                   DUSConcat,
+                                                                   DUSPad,
+                                                                   SliceDUSToConcat,
+                                                                   ConcatConcatToDUS>(
+                                                                   context);
+                                                               patterns.add<LICM<
+                                                                   stablehlo::
+                                                                       DynamicUpdateSliceOp>>(
+                                                                   false,
+                                                                   context);
+                                                             }
 
-    if (passses & 1024)
-      patterns.add<FullReduceReshapeOrTranspose>(context);
+                                                             if (passses & 1024)
+                                                               patterns.add<
+                                                                   FullReduceReshapeOrTranspose>(
+                                                                   context);
 
-    if (passses & 1)
-      patterns.add<SliceTranspose, SliceReshapeTranspose, SliceBroadcast,
-                   SliceReduceWindow>(context);
+                                                             if (passses & 1)
+                                                               patterns.add<
+                                                                   SliceTranspose,
+                                                                   SliceReshapeTranspose,
+                                                                   SliceBroadcast,
+                                                                   SliceReduceWindow>(
+                                                                   context);
 
-    if (passses & 2)
-      patterns.add<ReducePad, BroadcastPad>(context);
-    if (passses & 4)
-      patterns.add<MulZeroPad, DivZeroPad, ZeroProductReshapePad>(context);
-    if (passses & 8)
-      patterns.add<BinopConstReshapePad, BinopConstPad<stablehlo::AddOp>,
-                   BinopConstPad<stablehlo::SubtractOp>,
-                   BinopConstPad<stablehlo::MulOp>,
-                   BinopConstPad<stablehlo::DivOp>>(context);
+                                                             if (passses & 2)
+                                                               patterns.add<
+                                                                   ReducePad,
+                                                                   BroadcastPad>(
+                                                                   context);
+                                                             if (passses & 4)
+                                                               patterns.add<
+                                                                   MulZeroPad,
+                                                                   DivZeroPad,
+                                                                   ZeroProductReshapePad>(
+                                                                   context);
+                                                             if (passses & 8)
+                                                               patterns.add<
+                                                                   BinopConstReshapePad,
+                                                                   BinopConstPad<
+                                                                       stablehlo::
+                                                                           AddOp>,
+                                                                   BinopConstPad<
+                                                                       stablehlo::
+                                                                           SubtractOp>,
+                                                                   BinopConstPad<
+                                                                       stablehlo::
+                                                                           MulOp>,
+                                                                   BinopConstPad<
+                                                                       stablehlo::
+                                                                           DivOp>>(
+                                                                   context);
 
-    if (passses & 16)
-      patterns.add<
-          BinopBinopPadPad<stablehlo::AddOp>, AddPadPadToConcat,
-          BinopBinopPadPad<stablehlo::MulOp>, BinopPadPad<stablehlo::AddOp>,
-          BinopPadPad<stablehlo::SubtractOp>, BinopPadPad<stablehlo::MulOp>,
-          BinopPadPad<stablehlo::DivOp>, BinopPadPad<stablehlo::MinOp>,
-          BinopPadPad<stablehlo::MaxOp>>(context);
+                                                             if (passses & 16)
+                                                               patterns.add<
+                                                                   BinopBinopPadPad<
+                                                                       stablehlo::
+                                                                           AddOp>,
+                                                                   AddPadPadToConcat,
+                                                                   BinopBinopPadPad<
+                                                                       stablehlo::
+                                                                           MulOp>,
+                                                                   BinopPadPad<
+                                                                       stablehlo::
+                                                                           AddOp>,
+                                                                   BinopPadPad<
+                                                                       stablehlo::
+                                                                           SubtractOp>,
+                                                                   BinopPadPad<
+                                                                       stablehlo::
+                                                                           MulOp>,
+                                                                   BinopPadPad<
+                                                                       stablehlo::
+                                                                           DivOp>,
+                                                                   BinopPadPad<
+                                                                       stablehlo::
+                                                                           MinOp>,
+                                                                   BinopPadPad<
+                                                                       stablehlo::
+                                                                           MaxOp>>(
+                                                                   context);
 
-    if (passses & 32)
-      patterns
-          .add<UnaryPadPush<stablehlo::ConvertOp>,
-               UnaryPadPush<stablehlo::TanhOp>, UnaryPadPush<stablehlo::ExpOp>>(
-              context);
+                                                             if (passses & 32)
+                                                               patterns.add<
+                                                                   UnaryPadPush<
+                                                                       stablehlo::
+                                                                           ConvertOp>,
+                                                                   UnaryPadPush<
+                                                                       stablehlo::
+                                                                           TanhOp>,
+                                                                   UnaryPadPush<
+                                                                       stablehlo::
+                                                                           ExpOp>>(
+                                                                   context);
 
-    if (passses & 64)
-      patterns.add<TransposePad>(context);
+                                                             if (passses & 64)
+                                                               patterns.add<
+                                                                   TransposePad>(
+                                                                   context);
 
-    if (passses & 128)
-      patterns.add<ReshapePad>(context);
+                                                             if (passses & 128)
+                                                               patterns.add<
+                                                                   ReshapePad>(
+                                                                   context);
 
-    if (cse) {
-      patterns.add<CSE<stablehlo::BroadcastInDimOp>, CSE<stablehlo::SliceOp>,
-                   CSE<stablehlo::TransposeOp>, CSE<stablehlo::ConvertOp>,
-                   CSE<stablehlo::PadOp>, CSE<stablehlo::DotGeneralOp>,
-                   CSE<stablehlo::ReshapeOp>, CSE<stablehlo::MulOp>,
-                   CSE<stablehlo::DivOp>, CSE<stablehlo::AddOp>,
-                   CSE<stablehlo::SubtractOp>, CSE<stablehlo::MinOp>,
-                   CSE<stablehlo::ConcatenateOp>, CSE<stablehlo::MaxOp>,
-                   CSE<stablehlo::NegOp>, CSE<stablehlo::AbsOp>,
-                   CSE<enzymexla::RotateOp>, CSE<enzymexla::WrapOp>,
-                   CSE<enzymexla::ExtendOp>, CSEIota>(context,
-                                                      PatternBenefit(65000));
-    }
+                                                             if (cse) {
+                                                               patterns.add<
+                                                                   CSE<stablehlo::
+                                                                           BroadcastInDimOp>,
+                                                                   CSE<stablehlo::
+                                                                           SliceOp>,
+                                                                   CSE<stablehlo::
+                                                                           TransposeOp>,
+                                                                   CSE<stablehlo::
+                                                                           ConvertOp>,
+                                                                   CSE<stablehlo::
+                                                                           PadOp>,
+                                                                   CSE<stablehlo::
+                                                                           DotGeneralOp>,
+                                                                   CSE<stablehlo::
+                                                                           ReshapeOp>,
+                                                                   CSE<stablehlo::
+                                                                           MulOp>,
+                                                                   CSE<stablehlo::
+                                                                           DivOp>,
+                                                                   CSE<stablehlo::
+                                                                           AddOp>,
+                                                                   CSE<stablehlo::
+                                                                           SubtractOp>,
+                                                                   CSE<stablehlo::
+                                                                           MinOp>,
+                                                                   CSE<stablehlo::
+                                                                           ConcatenateOp>,
+                                                                   CSE<stablehlo::
+                                                                           MaxOp>,
+                                                                   CSE<stablehlo::
+                                                                           NegOp>,
+                                                                   CSE<stablehlo::
+                                                                           AbsOp>,
+                                                                   CSE<enzymexla::
+                                                                           RotateOp>,
+                                                                   CSE<enzymexla::
+                                                                           WrapOp>,
+                                                                   CSE<enzymexla::
+                                                                           ExtendOp>,
+                                                                   CSEIota>(
+                                                                   context,
+                                                                   PatternBenefit(
+                                                                       65000));
+                                                             }
 
-    if (passses & 256)
-      patterns.add<TransposeConvert>(context);
+                                                             if (passses & 256)
+                                                               patterns.add<
+                                                                   TransposeConvert>(
+                                                                   context);
 
-    if (passses & 2048)
-      patterns.add<TransposeTranspose>(context);
+                                                             if (passses & 2048)
+                                                               patterns.add<
+                                                                   TransposeTranspose>(
+                                                                   context);
 
-    if (passses & (2048 * 2))
-      patterns.add<BroadcastReduce, SliceDotGeneral, SliceReshapeDotGeneral>(
-          context);
+                                                             if (passses &
+                                                                 (2048 * 2))
+                                                               patterns.add<
+                                                                   BroadcastReduce,
+                                                                   SliceDotGeneral,
+                                                                   SliceReshapeDotGeneral>(
+                                                                   context);
 
-    if (passses & (2048 * 4)) {
-      patterns.add<PadDotGeneral>(false, context);
-      patterns.add<DotReshapePad>(context);
-    }
-    if (passses & (2048 * 8))
-      patterns.add<SliceReshape>(context);
+                                                             if (passses &
+                                                                 (2048 * 4)) {
+                                                               patterns.add<
+                                                                   PadDotGeneral>(
+                                                                   false,
+                                                                   context);
+                                                               patterns.add<
+                                                                   DotReshapePad>(
+                                                                   context);
+                                                             }
+                                                             if (passses &
+                                                                 (2048 * 8))
+                                                               patterns.add<
+                                                                   SliceReshape>(
+                                                                   context);
 
-    if (passses & (2048 * 16)) {
-      patterns.add<PadDotGeneral>(true, context);
-      patterns.add<DotReshapePad>(context);
-    }
+                                                             if (passses &
+                                                                 (2048 * 16)) {
+                                                               patterns.add<
+                                                                   PadDotGeneral>(
+                                                                   true,
+                                                                   context);
+                                                               patterns.add<
+                                                                   DotReshapePad>(
+                                                                   context);
+                                                             }
 
-    if (passses & (2048 * 32)) {
-      patterns.add<TransposeWhile, TransposeSlice, TransposeConcat,
-                   TransposeDUS, TransposeIota, TransposeReduceWindow,
-                   TransposeReduce, TransposeSelect, TransposeDynamicSlice,
-                   TransposeReverse, TransposeBatchNormTraining,
-                   TransposeBatchNormInference, TransposeBatchNormGrad,
-                   TransposeIf, TransposeFFT, TransposeReshape>(context);
-      patterns.add<TransposeElementwise>(true, context);
-    }
+                                                             if (passses &
+                                                                 (2048 * 32)) {
+                                                               patterns.add<
+                                                                   TransposeWhile,
+                                                                   TransposeSlice,
+                                                                   TransposeConcat,
+                                                                   TransposeDUS,
+                                                                   TransposeIota,
+                                                                   TransposeReduceWindow,
+                                                                   TransposeReduce,
+                                                                   TransposeSelect,
+                                                                   TransposeDynamicSlice,
+                                                                   TransposeReverse,
+                                                                   TransposeBatchNormTraining,
+                                                                   TransposeBatchNormInference,
+                                                                   TransposeBatchNormGrad,
+                                                                   TransposeIf,
+                                                                   TransposeFFT,
+                                                                   TransposeReshape>(
+                                                                   context);
+                                                               patterns.add<
+                                                                   TransposeElementwise>(
+                                                                   true,
+                                                                   context);
+                                                             }
 
-    if (passses & (2048 * 64)) {
-      // add reshape push up cases here
-      patterns.add<ReshapeElementwise, ReshapeSlice>(true, context);
-      patterns.add<ReshapeOfConcatToConcatOfReshape, ReshapeDUS, ReshapePad,
-                   ReshapeReduceWindow, ReshapeSelect>(context);
-    }
+                                                             if (passses &
+                                                                 (2048 * 64)) {
+                                                               // add reshape
+                                                               // push up cases
+                                                               // here
+                                                               patterns.add<
+                                                                   ReshapeElementwise,
+                                                                   ReshapeSlice>(
+                                                                   true,
+                                                                   context);
+                                                               patterns.add<
+                                                                   ReshapeOfConcatToConcatOfReshape,
+                                                                   ReshapeDUS,
+                                                                   ReshapePad,
+                                                                   ReshapeReduceWindow,
+                                                                   ReshapeSelect>(
+                                                                   context);
+                                                             }
 
-    if (passses & (2048 * 128)) {
-      // Conflicts with ConcatPad
-      patterns.add<ConstPadConcatToConcat>(context);
-    }
+                                                             if (passses &
+                                                                 (2048 * 128)) {
+                                                               // Conflicts with
+                                                               // ConcatPad
+                                                               patterns.add<
+                                                                   ConstPadConcatToConcat>(
+                                                                   context);
+                                                             }
 
-    if (passses & (2048 * 256)) {
-      patterns.add<RecognizeRotate, RecognizeWrap, RecognizeExtend>(context);
-    }
+                                                             if (passses &
+                                                                 (2048 * 256)) {
+                                                               patterns.add<
+                                                                   RecognizeRotate,
+                                                                   RecognizeWrap,
+                                                                   RecognizeExtend>(
+                                                                   context);
+                                                             }
 
-    if (passses & (2048 * 512)) {
-      patterns.add<LowerRotate, LowerWrap, LowerExtend>(context);
-    }
+                                                             if (passses &
+                                                                 (2048 * 512)) {
+                                                               patterns.add<
+                                                                   LowerRotate,
+                                                                   LowerWrap,
+                                                                   LowerExtend>(
+                                                                   context);
+                                                             }
 
-    if (passses & (2048 * 1024)) {
-      patterns.add<ConcatToOneDimDUS>(context);
-    }
+                                                             if (passses &
+                                                                 (2048 *
+                                                                  1024)) {
+                                                               patterns.add<
+                                                                   ConcatToOneDimDUS>(
+                                                                   context);
+                                                             }
 
-    if (passses & (2048 * 2048)) {
-      // push reshapes down
-      patterns.add<ElementwiseReshapeLike>(context);
-    }
+                                                             if (passses &
+                                                                 (2048 *
+                                                                  2048)) {
+                                                               // push reshapes
+                                                               // down
+                                                               patterns.add<
+                                                                   ElementwiseReshapeLike>(
+                                                                   context);
+                                                             }
 
-    if (all_finite)
-      patterns.add<AllFiniteIsFinite, AllFiniteIsInf, AllFiniteIsPosInf,
-                   AllFiniteIsNegInf>(context);
+                                                             if (all_finite)
+                                                               patterns.add<
+                                                                   AllFiniteIsFinite,
+                                                                   AllFiniteIsInf,
+                                                                   AllFiniteIsPosInf,
+                                                                   AllFiniteIsNegInf>(
+                                                                   context);
 
-    patterns.add<NoNanCompareSimplify, NoNanSelfSubSimplify,
-                 NoNanAddSubSimplify, NoNanMulSimplify, NoNanDivSimplify>(
-        (no_nan || all_finite), context);
+                                                             patterns.add<
+                                                                 NoNanCompareSimplify,
+                                                                 NoNanSelfSubSimplify,
+                                                                 NoNanAddSubSimplify,
+                                                                 NoNanMulSimplify,
+                                                                 NoNanDivSimplify>(
+                                                                 (no_nan ||
+                                                                  all_finite),
+                                                                 context);
 
-    // clang-format off
+                                                             // clang-format off
     patterns.add<
         WhileRepeatedInductionReduction,
         WhilePadInductionReduction,
@@ -24978,20 +25788,36 @@ struct EnzymeHLOOptPass
 
     patterns.add<WhileLICM>(false, context);
 
-    // clang-format on
-    patterns.add<SelectOpCanon>(max_constant_expansion, context,
-                                PatternBenefit(65000));
-    patterns.add<ConcatenateOpCanon>(max_constant_expansion, context,
-                                     PatternBenefit(65000));
+                                                             // clang-format on
+                                                             patterns.add<
+                                                                 SelectOpCanon>(
+                                                                 max_constant_expansion,
+                                                                 context,
+                                                                 PatternBenefit(
+                                                                     65000));
+                                                             patterns.add<
+                                                                 ConcatenateOpCanon>(
+                                                                 max_constant_expansion,
+                                                                 context,
+                                                                 PatternBenefit(
+                                                                     65000));
 
-    GreedyRewriteConfig config;
-    config.setMaxIterations(max_iterations);
-    config.setUseTopDownTraversal(top_down);
-    if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
-                                            config))) {
-      signalPassFailure();
-    }
-  }
-};
+                                                             GreedyRewriteConfig
+                                                                 config;
+                                                             config.setMaxIterations(
+                                                                 max_iterations);
+                                                             config
+                                                                 .setUseTopDownTraversal(
+                                                                     top_down);
+                                                             if (failed(applyPatternsAndFoldGreedily(
+                                                                     getOperation(),
+                                                                     std::move(
+                                                                         patterns),
+                                                                     config))) {
+                                                               signalPassFailure();
+                                                             }
+                                                           }
+                                                         };
 
-} // end anonymous namespace
+                                                         } // end anonymous
+                                                           // namespace
