@@ -188,7 +188,7 @@ void ParallelLower::runOnOperation() {
   SymbolTableCollection symbolTable;
   symbolTable.getSymbolTable(getOperation());
 
-  std::function<void(enzyme::AutodiffOp)> autodiffInliner;
+  std::function<void(enzyme::AutoDiffOp)> autodiffInliner;
   std::function<void(LLVM::CallOp)> LLVMcallInliner;
   SmallPtrSet<Operation *, 1> replacedCallables;
   std::function<void(CallOp)> callInliner = [&](CallOp caller) {
@@ -217,9 +217,9 @@ void ParallelLower::runOnOperation() {
         LLVMcallInliner(op);
     }
     {
-      SmallVector<enzyme::AutodiffOp> ops;
+      SmallVector<enzyme::AutoDiffOp> ops;
       callableOp.walk(
-          [&](enzyme::AutodiffOp caller) { ops.push_back(caller); });
+          [&](enzyme::AutoDiffOp caller) { ops.push_back(caller); });
       for (auto op : ops)
         autodiffInliner(op);
     }
@@ -272,9 +272,9 @@ void ParallelLower::runOnOperation() {
         LLVMcallInliner(op);
     }
     {
-      SmallVector<enzyme::AutodiffOp> ops;
+      SmallVector<enzyme::AutoDiffOp> ops;
       callableOp.walk(
-          [&](enzyme::AutodiffOp caller) { ops.push_back(caller); });
+          [&](enzyme::AutoDiffOp caller) { ops.push_back(caller); });
       for (auto op : ops)
         autodiffInliner(op);
     }
@@ -301,7 +301,7 @@ void ParallelLower::runOnOperation() {
     b.create<memref::AllocaScopeReturnOp>(allocScope.getLoc(),
                                           exOp.getResults());
   };
-  autodiffInliner = [&](enzyme::AutodiffOp caller) {
+  autodiffInliner = [&](enzyme::AutoDiffOp caller) {
     // Build the inliner interface.
     AlwaysInlinerInterface interface(&getContext());
 
@@ -325,14 +325,14 @@ void ParallelLower::runOnOperation() {
         LLVMcallInliner(op);
     }
     {
-      SmallVector<enzyme::AutodiffOp> ops;
+      SmallVector<enzyme::AutoDiffOp> ops;
       callableOp.walk(
-          [&](enzyme::AutodiffOp caller) { ops.push_back(caller); });
+          [&](enzyme::AutoDiffOp caller) { ops.push_back(caller); });
       for (auto op : ops)
         autodiffInliner(op);
     }
     IRRewriter b(caller);
-    auto inlinable = mlir::enzyme::inlineAutodiffOp(caller, b, symbolTable);
+    auto inlinable = mlir::enzyme::inlineAutoDiffOp(caller, b, symbolTable);
     if (!inlinable)
       return;
     replacedCallables.insert(callableOp);
@@ -382,14 +382,14 @@ void ParallelLower::runOnOperation() {
     for (auto F : toinl) {
       SmallVector<LLVM::CallOp> ltoinl;
       SmallVector<func::CallOp> mtoinl;
-      SmallVector<enzyme::AutodiffOp> atoinl;
+      SmallVector<enzyme::AutoDiffOp> atoinl;
       SymbolUserMap symbolUserMap(symbolTable, getOperation());
       for (Operation *m : symbolUserMap.getUsers(F)) {
         if (auto l = dyn_cast<LLVM::CallOp>(m))
           ltoinl.push_back(l);
         else if (auto mc = dyn_cast<func::CallOp>(m))
           mtoinl.push_back(mc);
-        else if (auto ac = dyn_cast<enzyme::AutodiffOp>(m))
+        else if (auto ac = dyn_cast<enzyme::AutoDiffOp>(m))
           atoinl.push_back(ac);
       }
       for (auto l : ltoinl) {
@@ -424,7 +424,7 @@ void ParallelLower::runOnOperation() {
             ltoinl.push_back(cop);
         } else if (auto cop = dyn_cast<func::CallOp>(u)) {
           mtoinl.push_back(cop);
-        } else if (auto aop = dyn_cast<enzyme::AutodiffOp>(u)) {
+        } else if (auto aop = dyn_cast<enzyme::AutoDiffOp>(u)) {
           atoinl.push_back(aop);
         } else {
           for (auto r : u->getResults())
@@ -501,8 +501,8 @@ void ParallelLower::runOnOperation() {
         callInliner(op);
     }
     {
-      SmallVector<enzyme::AutodiffOp> ops;
-      launchOp.walk([&](enzyme::AutodiffOp caller) { ops.push_back(caller); });
+      SmallVector<enzyme::AutoDiffOp> ops;
+      launchOp.walk([&](enzyme::AutoDiffOp caller) { ops.push_back(caller); });
       for (auto op : ops)
         autodiffInliner(op);
     }
