@@ -23550,81 +23550,81 @@ private:
     auto rhs_bounds = optional_rhs_bounds.value();
 
     switch (compareOp.getComparisonDirection()) {
-      case stablehlo::ComparisonDirection::EQ:
-        if (lhs_bounds.min == lhs_bounds.max &&
-            rhs_bounds.min == rhs_bounds.max &&
-            lhs_bounds.min == rhs_bounds.min) {
-          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-              compareOp, compareOp.getType(),
-              cast<ElementsAttr>(makeAttr(compareOp.getType(), true)));
-          return true;
-        }
-        break;
-      case stablehlo::ComparisonDirection::NE:
-        if (lhs_bounds.max.sle(rhs_bounds.min) ||
-            rhs_bounds.max.sle(lhs_bounds.min)) {
-          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-              compareOp, compareOp.getType(),
-              cast<ElementsAttr>(makeAttr(compareOp.getType(), false)));
-          return true;
-        }
-        break;
-      case stablehlo::ComparisonDirection::GE:
-        if (lhs_bounds.max.sle(rhs_bounds.min)) {
-          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-              compareOp, compareOp.getType(),
-              cast<ElementsAttr>(makeAttr(compareOp.getType(), false)));
-          return true;
-        }
-        if (lhs_bounds.min.sge(rhs_bounds.max)) {
-          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-              compareOp, compareOp.getType(),
-              cast<ElementsAttr>(makeAttr(compareOp.getType(), true)));
-          return true;
-        }
-        break;
-      case stablehlo::ComparisonDirection::GT:
-        if (lhs_bounds.max.slt(rhs_bounds.min)) {
-          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-              compareOp, compareOp.getType(),
-              cast<ElementsAttr>(makeAttr(compareOp.getType(), false)));
-          return true;
-        }
-        if (lhs_bounds.min.sgt(rhs_bounds.max)) {
-          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-              compareOp, compareOp.getType(),
-              cast<ElementsAttr>(makeAttr(compareOp.getType(), true)));
-          return true;
-        }
-        break;
-      case stablehlo::ComparisonDirection::LE:
-        if (rhs_bounds.max.sle(lhs_bounds.min)) {
-          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-              compareOp, compareOp.getType(),
-              cast<ElementsAttr>(makeAttr(compareOp.getType(), false)));
-          return true;
-        }
-        if (rhs_bounds.min.sge(lhs_bounds.max)) {
-          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-              compareOp, compareOp.getType(),
-              cast<ElementsAttr>(makeAttr(compareOp.getType(), true)));
-          return true;
-        }
-        break;
-      case stablehlo::ComparisonDirection::LT:
-        if (rhs_bounds.max.slt(lhs_bounds.min)) {
-          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-              compareOp, compareOp.getType(),
-              cast<ElementsAttr>(makeAttr(compareOp.getType(), false)));
-          return true;
-        }
-        if (rhs_bounds.min.sgt(lhs_bounds.max)) {
-          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-              compareOp, compareOp.getType(),
-              cast<ElementsAttr>(makeAttr(compareOp.getType(), true)));
-          return true;
-        }
-        break;
+    case stablehlo::ComparisonDirection::EQ:
+      if (lhs_bounds.min == lhs_bounds.max &&
+          rhs_bounds.min == rhs_bounds.max &&
+          lhs_bounds.min == rhs_bounds.min) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            compareOp, compareOp.getType(),
+            cast<ElementsAttr>(makeAttr(compareOp.getType(), true)));
+        return true;
+      }
+      break;
+    case stablehlo::ComparisonDirection::NE:
+      if (lhs_bounds.max.sle(rhs_bounds.min) ||
+          rhs_bounds.max.sle(lhs_bounds.min)) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            compareOp, compareOp.getType(),
+            cast<ElementsAttr>(makeAttr(compareOp.getType(), false)));
+        return true;
+      }
+      break;
+    case stablehlo::ComparisonDirection::GE:
+      if (lhs_bounds.max.sle(rhs_bounds.min)) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            compareOp, compareOp.getType(),
+            cast<ElementsAttr>(makeAttr(compareOp.getType(), false)));
+        return true;
+      }
+      if (lhs_bounds.min.sge(rhs_bounds.max)) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            compareOp, compareOp.getType(),
+            cast<ElementsAttr>(makeAttr(compareOp.getType(), true)));
+        return true;
+      }
+      break;
+    case stablehlo::ComparisonDirection::GT:
+      if (lhs_bounds.max.slt(rhs_bounds.min)) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            compareOp, compareOp.getType(),
+            cast<ElementsAttr>(makeAttr(compareOp.getType(), false)));
+        return true;
+      }
+      if (lhs_bounds.min.sgt(rhs_bounds.max)) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            compareOp, compareOp.getType(),
+            cast<ElementsAttr>(makeAttr(compareOp.getType(), true)));
+        return true;
+      }
+      break;
+    case stablehlo::ComparisonDirection::LE:
+      if (rhs_bounds.max.sle(lhs_bounds.min)) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            compareOp, compareOp.getType(),
+            cast<ElementsAttr>(makeAttr(compareOp.getType(), false)));
+        return true;
+      }
+      if (rhs_bounds.min.sge(lhs_bounds.max)) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            compareOp, compareOp.getType(),
+            cast<ElementsAttr>(makeAttr(compareOp.getType(), true)));
+        return true;
+      }
+      break;
+    case stablehlo::ComparisonDirection::LT:
+      if (rhs_bounds.max.slt(lhs_bounds.min)) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            compareOp, compareOp.getType(),
+            cast<ElementsAttr>(makeAttr(compareOp.getType(), false)));
+        return true;
+      }
+      if (rhs_bounds.min.sgt(lhs_bounds.max)) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            compareOp, compareOp.getType(),
+            cast<ElementsAttr>(makeAttr(compareOp.getType(), true)));
+        return true;
+      }
+      break;
     }
 
     return false;
@@ -23650,8 +23650,7 @@ private:
     auto optional_min_bounds = getBounds(boundsMap, clampOp.getMin());
     auto optional_max_bounds = getBounds(boundsMap, clampOp.getMax());
     auto optional_operand_bounds = getBounds(boundsMap, clampOp.getOperand());
-    if (!optional_min_bounds.has_value() ||
-        !optional_max_bounds.has_value() ||
+    if (!optional_min_bounds.has_value() || !optional_max_bounds.has_value() ||
         !optional_operand_bounds.has_value())
       return false;
 
