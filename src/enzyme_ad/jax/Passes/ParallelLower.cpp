@@ -31,6 +31,7 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringRef.h"
 
+#include "Enzyme/MLIR/Dialect/Ops.h"
 #include "Enzyme/MLIR/Passes/Passes.h"
 
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
@@ -306,10 +307,10 @@ void ParallelLower::runOnOperation() {
     AlwaysInlinerInterface interface(&getContext());
 
     FunctionOpInterface callableOp = dyn_cast_or_null<FunctionOpInterface>(
-        symbolTable.lookupNearestSymbolFrom(op, op.getFnAttr()));
+        symbolTable.lookupNearestSymbolFrom(caller, caller.getFnAttr()));
     if (!callableOp)
       return;
-    Region &targetRegion = fn.getFunctionBody();
+    Region &targetRegion = callableOp.getFunctionBody();
     if (targetRegion.empty())
       return;
     {
@@ -332,7 +333,7 @@ void ParallelLower::runOnOperation() {
         autodiffInliner(op);
     }
     IRRewriter b(caller);
-    auto inlinable = mlir::enzyme::inlineAutoDiffOp(caller, b, symbolTable);
+    auto inlinable = mlir::enzyme::inlineAutodiffOp(caller, b, symbolTable);
     if (!inlinable)
       return;
     replacedCallables.insert(callableOp);
@@ -399,7 +400,7 @@ void ParallelLower::runOnOperation() {
         callInliner(m);
       }
       for (auto a : atoinl) {
-        autodiffInliner(m);
+        autodiffInliner(a);
       }
     }
     while (toFollowOps.size()) {
@@ -407,6 +408,7 @@ void ParallelLower::runOnOperation() {
       toFollowOps.pop_back();
       SmallVector<LLVM::CallOp> ltoinl;
       SmallVector<func::CallOp> mtoinl;
+      SmallVector<enzyme::AutoDiffOp> atoinl;
       bool inlined = false;
       for (auto u : op.getUsers()) {
         if (auto cop = dyn_cast<LLVM::CallOp>(u)) {
