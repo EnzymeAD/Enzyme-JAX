@@ -31,6 +31,8 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringRef.h"
 
+#include "Enzyme/MLIR/Passes/Passes.h"
+
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
@@ -186,6 +188,7 @@ void ParallelLower::runOnOperation() {
   SymbolTableCollection symbolTable;
   symbolTable.getSymbolTable(getOperation());
 
+  std::function<void(enzyme::AutodiffOp)> autodiffInliner;
   std::function<void(LLVM::CallOp)> LLVMcallInliner;
   SmallPtrSet<Operation *, 1> replacedCallables;
   std::function<void(CallOp)> callInliner = [&](CallOp caller) {
@@ -212,6 +215,13 @@ void ParallelLower::runOnOperation() {
       callableOp.walk([&](LLVM::CallOp caller) { ops.push_back(caller); });
       for (auto op : ops)
         LLVMcallInliner(op);
+    }
+    {
+      SmallVector<enzyme::AutodiffOp> ops;
+      callableOp.walk(
+          [&](enzyme::AutodiffOp caller) { ops.push_back(caller); });
+      for (auto op : ops)
+        autodiffInliner(op);
     }
     OpBuilder b(caller);
     auto allocScope = b.create<memref::AllocaScopeOp>(caller.getLoc(),
@@ -261,6 +271,13 @@ void ParallelLower::runOnOperation() {
       for (auto op : ops)
         LLVMcallInliner(op);
     }
+    {
+      SmallVector<enzyme::AutodiffOp> ops;
+      callableOp.walk(
+          [&](enzyme::AutodiffOp caller) { ops.push_back(caller); });
+      for (auto op : ops)
+        autodiffInliner(op);
+    }
     OpBuilder b(caller);
     auto allocScope = b.create<memref::AllocaScopeOp>(caller.getLoc(),
                                                       caller.getResultTypes());
@@ -283,6 +300,42 @@ void ParallelLower::runOnOperation() {
     b.setInsertionPointToEnd(&allocScope.getRegion().front());
     b.create<memref::AllocaScopeReturnOp>(allocScope.getLoc(),
                                           exOp.getResults());
+  };
+  autodiffInliner = [&](enzyme::AutodiffOp caller) {
+    // Build the inliner interface.
+    AlwaysInlinerInterface interface(&getContext());
+
+    FunctionOpInterface callableOp = dyn_cast_or_null<FunctionOpInterface>(
+        symbolTable.lookupNearestSymbolFrom(op, op.getFnAttr()));
+    if (!callableOp)
+      return;
+    Region &targetRegion = fn.getFunctionBody();
+    if (targetRegion.empty())
+      return;
+    {
+      SmallVector<CallOp> ops;
+      callableOp.walk([&](CallOp caller) { ops.push_back(caller); });
+      for (auto op : ops)
+        callInliner(op);
+    }
+    {
+      SmallVector<LLVM::CallOp> ops;
+      callableOp.walk([&](LLVM::CallOp caller) { ops.push_back(caller); });
+      for (auto op : ops)
+        LLVMcallInliner(op);
+    }
+    {
+      SmallVector<enzyme::AutodiffOp> ops;
+      callableOp.walk(
+          [&](enzyme::AutodiffOp caller) { ops.push_back(caller); });
+      for (auto op : ops)
+        autodiffInliner(op);
+    }
+    IRRewriter b(caller);
+    auto inlinable = mlir::enzyme::inlineAutodiffOp(caller, b, symbolTable);
+    if (!inlinable)
+      return;
+    replacedCallables.insert(callableOp);
   };
 
   {
@@ -329,18 +382,24 @@ void ParallelLower::runOnOperation() {
     for (auto F : toinl) {
       SmallVector<LLVM::CallOp> ltoinl;
       SmallVector<func::CallOp> mtoinl;
+      SmallVector<enzyme::AutodiffOp> atoinl;
       SymbolUserMap symbolUserMap(symbolTable, getOperation());
       for (Operation *m : symbolUserMap.getUsers(F)) {
         if (auto l = dyn_cast<LLVM::CallOp>(m))
           ltoinl.push_back(l);
         else if (auto mc = dyn_cast<func::CallOp>(m))
           mtoinl.push_back(mc);
+        else if (auto ac = dyn_cast<enzyme::AutodiffOp>(m))
+          atoinl.push_back(ac);
       }
       for (auto l : ltoinl) {
         LLVMcallInliner(l);
       }
       for (auto m : mtoinl) {
         callInliner(m);
+      }
+      for (auto a : atoinl) {
+        autodiffInliner(m);
       }
     }
     while (toFollowOps.size()) {
@@ -365,6 +424,8 @@ void ParallelLower::runOnOperation() {
             ltoinl.push_back(cop);
         } else if (auto cop = dyn_cast<func::CallOp>(u)) {
           mtoinl.push_back(cop);
+        } else if (auto aop = dyn_cast<enzyme::AutodiffOp>(u)) {
+          atoinl.push_back(aop);
         } else {
           for (auto r : u->getResults())
             toFollowOps.push_back(r);
@@ -376,6 +437,10 @@ void ParallelLower::runOnOperation() {
       }
       for (auto m : mtoinl) {
         callInliner(m);
+        inlined = true;
+      }
+      for (auto a : atoinl) {
+        autodiffInliner(a);
         inlined = true;
       }
       if (inlined)
@@ -434,6 +499,12 @@ void ParallelLower::runOnOperation() {
       launchOp.walk([&](CallOp caller) { ops.push_back(caller); });
       for (auto op : ops)
         callInliner(op);
+    }
+    {
+      SmallVector<enzyme::AutodiffOp> ops;
+      launchOp.walk([&](enzyme::AutodiffOp caller) { ops.push_back(caller); });
+      for (auto op : ops)
+        autodiffInliner(op);
     }
     LLVM::LLVMFuncOp lfn = nullptr;
     {
@@ -787,7 +858,8 @@ void ParallelLower::runOnOperation() {
                     gpu::GridDimOp>(op)) {
               llvm::errs() << *op->getParentOfType<FunctionOpInterface>()
                            << "\n";
-              op->emitError() << " GPU instruction outside of gpu module op\n";
+              op->emitError() << " GPU instruction outside of gpu module op "
+                                 "(parallel lower)\n";
               return WalkResult::interrupt();
             }
 

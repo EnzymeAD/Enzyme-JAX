@@ -4151,7 +4151,8 @@ struct ConvertPolygeistToLLVMPass
              return WalkResult::skip();
            if (isa<gpu::ThreadIdOp, gpu::BlockIdOp, gpu::BlockDimOp,
                    gpu::GridDimOp>(op)) {
-             op->emitError() << " GPU instruction outside of gpu module op\n";
+             op->emitError() << " GPU instruction outside of gpu module op "
+                                "(convert-polygeist)\n";
              return WalkResult::interrupt();
            }
 
