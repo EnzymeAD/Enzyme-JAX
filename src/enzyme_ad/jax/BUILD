@@ -301,6 +301,22 @@ gentbl_cc_library(
 )
 
 gentbl_cc_library(
+    name = "enzymexla-derivatives",
+    tbl_outs = [(
+        ["-gen-mlir-derivatives"],
+        "Implementations/EnzymeXLADerivatives.inc",
+    )],
+    tblgen = "@enzyme//:enzyme-tblgen",
+    td_file = "Implementations/EnzymeXLADerivatives.td",
+    td_srcs = [
+        "Implementations/EnzymeXLADerivatives.td",
+    ],
+    deps = [
+        ":EnzymeImplementationsCommonTdFiles",
+    ],
+)
+
+gentbl_cc_library(
     name = "chlo-derivatives",
     tbl_outs = [(
         ["-gen-mlir-derivatives"],
@@ -684,6 +700,7 @@ cc_library(
         ":TesseraDialectIncGen",
         ":TesseraOpsIncGen",
         ":chlo-derivatives",
+        ":enzymexla-derivatives",
         ":mhlo-derivatives",
         ":stablehlo-derivatives",
         "//src/external/isl:Isl",
