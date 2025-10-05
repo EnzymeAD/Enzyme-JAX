@@ -377,10 +377,10 @@ def SymmOp: EnzymeXLA_Op<"lapack.ssymm", [Pure]> {
     HLO_Tensor:$A,
     HLO_Tensor:$B,
     HLO_Tensor:$C,
-    EnzymeXLA_LapackSideAttr:$side,
-    EnzymeXLA_LapackUploAttr:$uplo,
     TensorF64:$alpha,
-    TensorF64:$beta
+    TensorF64:$beta,
+    EnzymeXLA_LapackSideAttr:$side,
+    EnzymeXLA_LapackUploAttr:$uplo
   );
 
   let results = (outs
@@ -388,7 +388,7 @@ def SymmOp: EnzymeXLA_Op<"lapack.ssymm", [Pure]> {
   );
 
   let assemblyFormat = [{
-    $A `,` $B `,` $C attr-dict `:` functional-type(operands, results)
+    $A `,` $B `,` $C `,` $alpha `,` $beta attr-dict `:` functional-type(operands, results)
   }];
 }
 
