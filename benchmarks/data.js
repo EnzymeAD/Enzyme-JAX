@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1759616327109,
+  "lastUpdate": 1759636239717,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
@@ -5235,6 +5235,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001493998484918,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "avikpal@mit.edu",
+            "name": "Avik Pal",
+            "username": "avik-pal"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "42cde4f9e761a78fad169030c4895ab860fc872d",
+          "message": "fix: nested module mem effects + conservative effects (#1449)\n\n* fix: mark memory effects for nested modules correctly\n\n* fix: be conservative if effect getValue is null\n\n* fix: correctly use nested references",
+          "timestamp": "2025-10-04T21:11:43-04:00",
+          "tree_id": "42f38264163ddcc4023e5291f574860a0885c344",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/42cde4f9e761a78fad169030c4895ab860fc872d"
+        },
+        "date": 1759636239092,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004279392980970443,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004272616002708673,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.000151909063803,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001518488608067,
             "unit": "s"
           }
         ]
