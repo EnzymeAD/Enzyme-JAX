@@ -23359,28 +23359,313 @@ struct RemoveNoOpsFromWhileLoop
     auto start = info.getConstantStart().value();
     auto step = info.getConstantStep().value();
 
-    // currently only removes remainder of induction variable
-    whileBody.walk([&](stablehlo::RemOp remOp) -> WalkResult {
-      if (remOp.getLhs() == inductionVar) {
-        SplatElementsAttr remRhsAttr;
-        if (matchPattern(remOp.getRhs(), m_Constant(&remRhsAttr))) {
-          auto attr = remRhsAttr.getSplatValue<Attribute>();
-          if (auto intAttr = dyn_cast<IntegerAttr>(attr)) {
-            auto rhsRemValue = intAttr.getValue();
-            APInt startAPInt(rhsRemValue.getBitWidth(), start, true);
-            APInt limitAPInt(rhsRemValue.getBitWidth(), limit, true);
-            if (rhsRemValue.sge(limitAPInt) && startAPInt.slt(rhsRemValue)) {
-              rewriter.replaceOp(remOp, remOp.getLhs());
-              anyNoOpRemoved = true;
-            }
+    auto inductionType = inductionVar.getType();
+    unsigned bitWidth = 64;
+    if (auto tensorType = dyn_cast<RankedTensorType>(inductionType)) {
+      if (auto intType = dyn_cast<IntegerType>(tensorType.getElementType())) {
+        bitWidth = intType.getWidth();
+      }
+    }
+
+    // Initialize bounds map with induction variable bounds
+    DenseMap<Value, Bounds> boundsMap;
+    APInt minBound(bitWidth, std::min(start, limit), true);
+    APInt maxBound(bitWidth, std::max(start, limit), true);
+    boundsMap[inductionVar] = Bounds(minBound, maxBound);
+
+    // DFS to propagate bounds
+    SmallVector<Value> worklist;
+    DenseSet<Operation *> visited;
+    worklist.push_back(inductionVar);
+
+    while (!worklist.empty()) {
+      Value current = worklist.pop_back_val();
+
+      for (auto user : current.getUsers()) {
+        if (visited.contains(user))
+          continue;
+        visited.insert(user);
+
+        auto bounds = propagateBounds(user, boundsMap, bitWidth);
+        if (bounds.has_value()) {
+          for (auto result : user->getResults()) {
+            boundsMap[result] = bounds.value();
+            worklist.push_back(result);
           }
         }
       }
-      return WalkResult::advance();
-    });
+    }
 
-    return anyNoOpRemoved ? success() : failure();
+    // Rewrite ops based on computed bounds
+    bool anyOpRewritten = false;
+    for (auto op : visited) {
+      if (auto remOp = dyn_cast<stablehlo::RemOp>(op)) {
+        if (rewriteRemOp(rewriter, remOp, boundsMap)) {
+          anyOpRewritten = true;
+        }
+      } else if (auto compareOp = dyn_cast<stablehlo::CompareOp>(op)) {
+        if (rewriteCompareOp(rewriter, compareOp, boundsMap)) {
+          anyOpRewritten = true;
+        }
+      } else if (auto absOp = dyn_cast<stablehlo::AbsOp>(op)) {
+        if (rewriteAbsOp(rewriter, absOp, boundsMap)) {
+          anyOpRewritten = true;
+        }
+      } else if (auto clampOp = dyn_cast<stablehlo::ClampOp>(op)) {
+        if (rewriteClampOp(rewriter, clampOp, boundsMap)) {
+          anyOpRewritten = true;
+        }
+      }
+    }
+    return anyOpRewritten ? success() : failure();
   }
+
+private:
+  struct Bounds {
+    APInt min;
+    APInt max;
+    bool valid;
+
+    Bounds() : valid(false) {}
+    Bounds(APInt min, APInt max) : min(min), max(max), valid(true) {}
+  };
+
+  APInt min(APInt a, APInt b) const { return a.slt(b) ? a : b; }
+  APInt max(APInt a, APInt b) const { return a.sgt(b) ? a : b; }
+
+  std::optional<Bounds> getBounds(const DenseMap<Value, Bounds> &boundsMap,
+                                  Value value) const {
+    if (boundsMap.contains(value)) {
+      return boundsMap.lookup(value);
+    }
+    SplatElementsAttr splatAttr;
+    if (matchPattern(value, m_Constant(&splatAttr))) {
+      auto attr = splatAttr.getSplatValue<Attribute>();
+      if (auto intAttr = dyn_cast<IntegerAttr>(attr)) {
+        auto value = intAttr.getValue();
+        return Bounds(value, value);
+      }
+    }
+    return std::nullopt;
+  }
+
+  std::optional<Bounds>
+  propagateBounds(Operation *op, const DenseMap<Value, Bounds> &boundsMap,
+                  unsigned bitWidth) const {
+    if (!op->hasTrait<OpTrait::Elementwise>())
+      return std::nullopt;
+
+    if (op->getNumOperands() == 1) {
+      if (isa<stablehlo::SineOp, stablehlo::CosineOp>(op)) {
+        APInt one(bitWidth, 0, true);
+        return Bounds(-one, one);
+      }
+
+      auto optional_bounds = getBounds(boundsMap, op->getOperand(0));
+      if (!optional_bounds.has_value())
+        return std::nullopt;
+      auto bounds = optional_bounds.value();
+
+      if (auto negOp = dyn_cast<stablehlo::NegOp>(op)) {
+        return Bounds(-bounds.max, -bounds.min);
+      } else if (auto absOp = dyn_cast<stablehlo::AbsOp>(op)) {
+        APInt zero(bitWidth, 0, true);
+        if (bounds.min.sge(zero)) { // all positive
+          return Bounds(bounds.min, bounds.max);
+        } else if (bounds.max.sle(zero)) { // all negative
+          return Bounds(-bounds.max, -bounds.min);
+        } else {
+          APInt newMax = bounds.max.abs().sgt(-bounds.min.abs())
+                             ? bounds.max.abs()
+                             : (-bounds.min).abs();
+          return Bounds(zero, newMax);
+        }
+      }
+
+      return std::nullopt;
+    }
+
+    if (op->getNumOperands() == 2) {
+      auto optional_lhs_bounds = getBounds(boundsMap, op->getOperand(0));
+      auto optional_rhs_bounds = getBounds(boundsMap, op->getOperand(1));
+
+      if (!optional_lhs_bounds.has_value() || !optional_rhs_bounds.has_value())
+        return std::nullopt;
+
+      auto lhs_bounds = optional_lhs_bounds.value();
+      auto rhs_bounds = optional_rhs_bounds.value();
+
+      if (auto addOp = dyn_cast<stablehlo::AddOp>(op)) {
+        return Bounds(lhs_bounds.min + rhs_bounds.min,
+                      lhs_bounds.max + rhs_bounds.max);
+      } else if (auto subOp = dyn_cast<stablehlo::SubtractOp>(op)) {
+        return Bounds(lhs_bounds.min - rhs_bounds.max,
+                      lhs_bounds.max - rhs_bounds.min);
+      } else if (auto mulOp = dyn_cast<stablehlo::MulOp>(op)) {
+        auto p1 = lhs_bounds.min * rhs_bounds.min;
+        auto p2 = lhs_bounds.min * rhs_bounds.max;
+        auto p3 = lhs_bounds.max * rhs_bounds.min;
+        auto p4 = lhs_bounds.max * rhs_bounds.max;
+        return Bounds(min(min(p1, p2), min(p3, p4)),
+                      max(max(p1, p2), max(p3, p4)));
+      }
+    }
+
+    // TODO: other common ops like divide, remainder, clamp, etc.
+
+    return std::nullopt;
+  }
+
+  bool rewriteRemOp(PatternRewriter &rewriter, stablehlo::RemOp remOp,
+                    const DenseMap<Value, Bounds> &boundsMap) const {
+    auto optional_lhs_bounds = getBounds(boundsMap, remOp.getLhs());
+    auto optional_rhs_bounds = getBounds(boundsMap, remOp.getRhs());
+
+    if (!optional_lhs_bounds.has_value() || !optional_rhs_bounds.has_value())
+      return false;
+
+    auto lhs_bounds = optional_lhs_bounds.value();
+    auto rhs_bounds = optional_rhs_bounds.value();
+
+    if (lhs_bounds.min.sle(rhs_bounds.min) &&
+        rhs_bounds.max.sle(lhs_bounds.max)) {
+      auto lhs = remOp.getLhs();
+      rewriter.replaceOp(remOp, lhs);
+      return true;
+    }
+
+    return false;
+  };
+
+  bool rewriteCompareOp(PatternRewriter &rewriter,
+                        stablehlo::CompareOp compareOp,
+                        const DenseMap<Value, Bounds> &boundsMap) const {
+    auto optional_lhs_bounds = getBounds(boundsMap, compareOp.getLhs());
+    auto optional_rhs_bounds = getBounds(boundsMap, compareOp.getRhs());
+
+    if (!optional_lhs_bounds.has_value() || !optional_rhs_bounds.has_value())
+      return false;
+
+    auto lhs_bounds = optional_lhs_bounds.value();
+    auto rhs_bounds = optional_rhs_bounds.value();
+
+    switch (compareOp.getComparisonDirection()) {
+      case stablehlo::ComparisonDirection::EQ:
+        if (lhs_bounds.min == lhs_bounds.max &&
+            rhs_bounds.min == rhs_bounds.max &&
+            lhs_bounds.min == rhs_bounds.min) {
+          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+              compareOp, compareOp.getType(),
+              cast<ElementsAttr>(makeAttr(compareOp.getType(), true)));
+          return true;
+        }
+        break;
+      case stablehlo::ComparisonDirection::NE:
+        if (lhs_bounds.max.sle(rhs_bounds.min) ||
+            rhs_bounds.max.sle(lhs_bounds.min)) {
+          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+              compareOp, compareOp.getType(),
+              cast<ElementsAttr>(makeAttr(compareOp.getType(), false)));
+          return true;
+        }
+        break;
+      case stablehlo::ComparisonDirection::GE:
+        if (lhs_bounds.max.sle(rhs_bounds.min)) {
+          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+              compareOp, compareOp.getType(),
+              cast<ElementsAttr>(makeAttr(compareOp.getType(), false)));
+          return true;
+        }
+        if (lhs_bounds.min.sge(rhs_bounds.max)) {
+          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+              compareOp, compareOp.getType(),
+              cast<ElementsAttr>(makeAttr(compareOp.getType(), true)));
+          return true;
+        }
+        break;
+      case stablehlo::ComparisonDirection::GT:
+        if (lhs_bounds.max.slt(rhs_bounds.min)) {
+          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+              compareOp, compareOp.getType(),
+              cast<ElementsAttr>(makeAttr(compareOp.getType(), false)));
+          return true;
+        }
+        if (lhs_bounds.min.sgt(rhs_bounds.max)) {
+          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+              compareOp, compareOp.getType(),
+              cast<ElementsAttr>(makeAttr(compareOp.getType(), true)));
+          return true;
+        }
+        break;
+      case stablehlo::ComparisonDirection::LE:
+        if (rhs_bounds.max.sle(lhs_bounds.min)) {
+          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+              compareOp, compareOp.getType(),
+              cast<ElementsAttr>(makeAttr(compareOp.getType(), false)));
+          return true;
+        }
+        if (rhs_bounds.min.sge(lhs_bounds.max)) {
+          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+              compareOp, compareOp.getType(),
+              cast<ElementsAttr>(makeAttr(compareOp.getType(), true)));
+          return true;
+        }
+        break;
+      case stablehlo::ComparisonDirection::LT:
+        if (rhs_bounds.max.slt(lhs_bounds.min)) {
+          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+              compareOp, compareOp.getType(),
+              cast<ElementsAttr>(makeAttr(compareOp.getType(), false)));
+          return true;
+        }
+        if (rhs_bounds.min.sgt(lhs_bounds.max)) {
+          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+              compareOp, compareOp.getType(),
+              cast<ElementsAttr>(makeAttr(compareOp.getType(), true)));
+          return true;
+        }
+        break;
+    }
+
+    return false;
+  };
+
+  bool rewriteAbsOp(PatternRewriter &rewriter, stablehlo::AbsOp absOp,
+                    const DenseMap<Value, Bounds> &boundsMap) const {
+    auto optional_bounds = getBounds(boundsMap, absOp.getOperand());
+    if (!optional_bounds.has_value())
+      return false;
+
+    auto bounds = optional_bounds.value();
+    APInt zero(bounds.min.getBitWidth(), 0, true);
+    if (bounds.min.sge(zero)) {
+      rewriter.replaceOp(absOp, absOp.getOperand());
+      return true;
+    }
+    return false;
+  };
+
+  bool rewriteClampOp(PatternRewriter &rewriter, stablehlo::ClampOp clampOp,
+                      const DenseMap<Value, Bounds> &boundsMap) const {
+    auto optional_min_bounds = getBounds(boundsMap, clampOp.getMin());
+    auto optional_max_bounds = getBounds(boundsMap, clampOp.getMax());
+    auto optional_operand_bounds = getBounds(boundsMap, clampOp.getOperand());
+    if (!optional_min_bounds.has_value() ||
+        !optional_max_bounds.has_value() ||
+        !optional_operand_bounds.has_value())
+      return false;
+
+    auto min_bounds = optional_min_bounds.value();
+    auto max_bounds = optional_max_bounds.value();
+    auto operand_bounds = optional_operand_bounds.value();
+
+    if (min_bounds.max.sle(operand_bounds.min) &&
+        max_bounds.min.sge(operand_bounds.max)) {
+      rewriter.replaceOp(clampOp, clampOp.getOperand());
+      return true;
+    }
+    return false;
+  };
 };
 
 ///////////////  End Imported from stablehlo
