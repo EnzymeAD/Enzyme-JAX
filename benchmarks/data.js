@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1759636239717,
+  "lastUpdate": 1759639850237,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
@@ -5279,6 +5279,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001518488608067,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "avikpal@mit.edu",
+            "name": "Avik Pal",
+            "username": "avik-pal"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9861ed866a3c9a64c860a50583615d3846ea337f",
+          "message": "feat: drop unsupported attributes before XLA (#1452)",
+          "timestamp": "2025-10-04T21:39:00-04:00",
+          "tree_id": "ec3499402fb6245eb76873160a4c01b692939a07",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/9861ed866a3c9a64c860a50583615d3846ea337f"
+        },
+        "date": 1759639849650,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004414183995686472,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004328934894874692,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001604812095873,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001494624446844,
             "unit": "s"
           }
         ]
