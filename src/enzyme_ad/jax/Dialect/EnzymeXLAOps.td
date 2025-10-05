@@ -33,6 +33,9 @@ include "mlir/Dialect/LLVMIR/LLVMOpBase.td"
 def TensorI64 : Type<CPred<"::llvm::isa<::mlir::TensorType>($_self) && ::llvm::cast<::mlir::TensorType>($_self).getShape().size() == 0 && ::llvm::cast<::mlir::TensorType>($_self).getElementType().isSignlessInteger(64)">, "tensor<i64>",
                  "::mlir::TensorType">,
             BuildableType<"RankedTensorType::get({}, $_builder.getIntegerType(64))">;
+def TensorF64 : Type<CPred<"::llvm::isa<::mlir::TensorType>($_self) && ::llvm::cast<::mlir::TensorType>($_self).getShape().size() == 0 && ::llvm::cast<::mlir::TensorType>($_self).getElementType().isF64()">, "tensor<f64>",
+                 "::mlir::TensorType">,
+            BuildableType<"RankedTensorType::get({}, $_builder.getF64Type())">;
 
 def KernelCallOp: EnzymeXLA_Op<"kernel_call", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, DeclareOpInterfaceMethods<CallOpInterface>, DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "Kernel Call operation";
@@ -376,8 +379,8 @@ def SymmOp: EnzymeXLA_Op<"lapack.ssymm", [Pure]> {
     HLO_Tensor:$C,
     EnzymeXLA_LapackSideAttr:$side,
     EnzymeXLA_LapackUploAttr:$uplo,
-    F64Attr:$alpha,
-    F64Attr:$beta
+    TensorF64:$alpha,
+    TensorF64:$beta
   );
 
   let results = (outs
