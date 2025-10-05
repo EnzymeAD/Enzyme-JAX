@@ -23870,10 +23870,7 @@ private:
   APInt abs(APInt a) const { return a.sgt(0) ? a : -a; }
 
   std::optional<Bounds> getBounds(const DenseMap<Value, Bounds> &boundsMap,
-                                  Value value) const {
     if (boundsMap.contains(value)) {
-      return boundsMap.lookup(value);
-    }
     SplatElementsAttr splatAttr;
     if (matchPattern(value, m_Constant(&splatAttr))) {
       auto attr = splatAttr.getSplatValue<Attribute>();
@@ -24012,7 +24009,6 @@ private:
         return true;
       }
       // outside of range: lhs_max < rhs_min or rhs_max < lhs_min
-      if (lhs_bounds.max.slt(rhs_bounds.min) ||
           rhs_bounds.max.slt(lhs_bounds.min)) {
         rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
             compareOp, compareOp.getType(),
@@ -24095,23 +24091,6 @@ private:
       }
       break;
     }
-
-    return false;
-  };
-
-  bool rewriteAbsOp(PatternRewriter &rewriter, stablehlo::AbsOp absOp,
-                    const DenseMap<Value, Bounds> &boundsMap) const {
-    auto optional_bounds = getBounds(boundsMap, absOp.getOperand());
-    if (!optional_bounds.has_value())
-      return false;
-
-    auto bounds = optional_bounds.value();
-    APInt zero(bounds.min.getBitWidth(), 0, true);
-    if (bounds.min.sge(zero)) {
-      rewriter.replaceOp(absOp, absOp.getOperand());
-      return true;
-    }
-    return false;
   };
 
   bool rewriteClampOp(PatternRewriter &rewriter, stablehlo::ClampOp clampOp,
@@ -24667,12 +24646,9 @@ void mlir::transform::addSliceLICM(RewritePatternSet &patterns,
 
 void mlir::transform::addDUSLICM(RewritePatternSet &patterns, bool single_user,
                                  MLIRContext &context, PatternBenefit benefit) {
-  patterns.insert<LICM<stablehlo::DynamicUpdateSliceOp>>(single_user, &context,
                                                          benefit);
-}
 
 void mlir::transform::addSumToConv(RewritePatternSet &patterns,
-                                   bool collapseDims, MLIRContext &context,
                                    PatternBenefit benefit) {
   patterns
       .insert<SumToConv<stablehlo::AddOp>, SumToConv<stablehlo::SubtractOp>>(
