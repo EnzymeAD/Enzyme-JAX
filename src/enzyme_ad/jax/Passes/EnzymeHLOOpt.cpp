@@ -22,12 +22,14 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/IR/Visitors.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "shardy/dialect/sdy/ir/utils.h"
 #include "src/enzyme_ad/jax/CheckedRewrite.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Passes/StructuredTensors.h"
@@ -23332,6 +23334,55 @@ private:
   }
 };
 
+struct RemoveNoOpsFromWhileLoop
+    : public CheckedOpRewritePattern<stablehlo::WhileOp,
+                                     RemoveNoOpsFromWhileLoop> {
+  using CheckedOpRewritePattern<
+      stablehlo::WhileOp, RemoveNoOpsFromWhileLoop>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::WhileOp whileOp,
+                                    PatternRewriter &rewriter) const {
+    auto info = WhileLoopInfo(whileOp);
+    auto computeInfoSuccess = info.computeInfo();
+    if (computeInfoSuccess.failed())
+      return computeInfoSuccess;
+
+    if (!info.isValid() || !info.isConstant())
+      return failure();
+
+    auto &whileBody = whileOp.getBody().front();
+    auto inductionVar = whileBody.getArgument(0);
+
+    bool anyNoOpRemoved = false;
+
+    auto limit = info.getConstantLimit().value();
+    auto start = info.getConstantStart().value();
+    auto step = info.getConstantStep().value();
+
+    // currently only removes remainder of induction variable
+    whileBody.walk([&](stablehlo::RemOp remOp) -> WalkResult {
+      if (remOp.getLhs() == inductionVar) {
+        SplatElementsAttr remRhsAttr;
+        if (matchPattern(remOp.getRhs(), m_Constant(&remRhsAttr))) {
+          auto attr = remRhsAttr.getSplatValue<Attribute>();
+          if (auto intAttr = dyn_cast<IntegerAttr>(attr)) {
+            auto rhsRemValue = intAttr.getValue();
+            APInt startAPInt(rhsRemValue.getBitWidth(), start, true);
+            APInt limitAPInt(rhsRemValue.getBitWidth(), limit, true);
+            if (rhsRemValue.sge(limitAPInt) && startAPInt.slt(rhsRemValue)) {
+              rewriter.replaceOp(remOp, remOp.getLhs());
+              anyNoOpRemoved = true;
+            }
+          }
+        }
+      }
+      return WalkResult::advance();
+    });
+
+    return anyNoOpRemoved ? success() : failure();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -23945,7 +23996,8 @@ struct EnzymeHLOOptPass
         MaxReduceSliceFusion,
         CaseToIf,
         DUSToDynamicPad,
-        DynamicPadToPad
+        DynamicPadToPad,
+        RemoveNoOpsFromWhileLoop
       >(context);
 
     patterns.add<
