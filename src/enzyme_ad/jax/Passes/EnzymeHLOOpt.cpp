@@ -23508,10 +23508,23 @@ private:
         auto p4 = lhs_bounds.max * rhs_bounds.max;
         return Bounds(min(min(p1, p2), min(p3, p4)),
                       max(max(p1, p2), max(p3, p4)));
+      } else if (auto divOp = dyn_cast<stablehlo::DivOp>(op)) {
+        APInt zero(bitWidth, 0, true);
+        if (rhs_bounds.min.sle(zero) && rhs_bounds.max.sge(zero)) {
+          // Divisor range includes zero, cannot compute safe bounds
+          return std::nullopt;
+        }
+        auto d1 = lhs_bounds.min.sdiv(rhs_bounds.min);
+        auto d2 = lhs_bounds.min.sdiv(rhs_bounds.max);
+        auto d3 = lhs_bounds.max.sdiv(rhs_bounds.min);
+        auto d4 = lhs_bounds.max.sdiv(rhs_bounds.max);
+
+        return Bounds(min(min(d1, d2), min(d3, d4)),
+                      max(max(d1, d2), max(d3, d4)));
       }
     }
 
-    // TODO: other common ops like divide, remainder, clamp, etc.
+    // TODO: other common ops like remainder, clamp, etc.
 
     return std::nullopt;
   }
