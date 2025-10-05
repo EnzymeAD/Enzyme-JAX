@@ -23347,7 +23347,8 @@ struct RemoveNoOpsFromWhileLoop
     if (computeInfoSuccess.failed())
       return computeInfoSuccess;
 
-    if (!info.isValid() || !info.isConstant())
+    if (!info.isValid() || !info.isConstant() ||
+        info.getConstantNumIters().value() <= 0)
       return failure();
 
     auto &whileBody = whileOp.getBody().front();
