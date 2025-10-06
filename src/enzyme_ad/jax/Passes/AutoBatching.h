@@ -1,5 +1,6 @@
 #pragma once
 
+#include "mlir/IR/Dominance.h"
 #include "mlir/IR/PatternMatch.h"
 #include "src/enzyme_ad/jax/CheckedRewrite.h"
 #include "src/enzyme_ad/jax/Utils.h"
@@ -195,21 +196,17 @@ private:
     int64_t inductionVarDimension;
   };
 
-  bool isDirectDescendantOfInductionVar(mlir::Value value,
-                                        mlir::Value inductionVar) const;
-
-  bool isInductionVar(mlir::Value value, mlir::Value inductionVar) const;
-
-  bool isChainOfAddSubtractConverts(mlir::Value value,
-                                    mlir::Value inductionVar) const;
-
   int64_t isDynamicSliceValidForBatching(
-      mlir::stablehlo::DynamicSliceOp sliceOp, mlir::Value inductionVar,
-      int64_t limit, mlir::Block &whileBody, mlir::Block *parentBlock) const;
+      mlir::stablehlo::DynamicSliceOp sliceOp, mlir::Value iterVar,
+      int64_t limit, mlir::Block &whileBody, mlir::Block *parentBlock,
+      mlir::DominanceInfo &domInfo) const;
 
   bool liftElementwiseOp(mlir::PatternRewriter &rewriter,
                          mlir::stablehlo::WhileOp whileOp,
                          llvm::ArrayRef<DynamicSliceInfo> sliceOps,
                          mlir::Operation *op,
                          mlir::enzyme::WhileLoopInfo info) const;
+
+  bool isValueAccessibleFromBlock(mlir::DominanceInfo &domInfo,
+                                  mlir::Value value, mlir::Block *block) const;
 };
