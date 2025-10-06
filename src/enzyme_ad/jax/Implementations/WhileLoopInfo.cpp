@@ -118,3 +118,67 @@ Value WhileLoopInfo::getNumIters(mlir::OpBuilder &builder) {
 
   return numIters;
 }
+
+void WhileLoopInfo::propagateInductionVarOffsets() {
+  auto inductionVar = op.getBody().front().getArgument(0);
+
+  SmallVector<Value> worklist;
+  DenseSet<Value> visited;
+
+  worklist.push_back(inductionVar);
+
+  auto inductionType = inductionVar.getType();
+  unsigned bitWidth = 64;
+  if (auto tensorType = dyn_cast<RankedTensorType>(inductionType)) {
+    if (auto intType = dyn_cast<IntegerType>(tensorType.getElementType())) {
+      bitWidth = intType.getWidth();
+    }
+  }
+
+  inductionVarOffsets[inductionVar] = APInt(bitWidth, 0, true);
+
+  while (!worklist.empty()) {
+    auto cur = worklist.pop_back_val();
+    if (visited.contains(cur))
+      continue;
+    visited.insert(cur);
+
+    APInt curOffset = inductionVarOffsets[cur];
+
+    for (auto user : cur.getUsers()) {
+      APInt newOffset(bitWidth, 0, true);
+      Value result;
+
+      if (auto addOp = dyn_cast<stablehlo::AddOp>(user)) {
+        Value lhs = addOp.getLhs();
+        Value rhs = addOp.getRhs();
+        APInt constVal(bitWidth, 0, true);
+
+        if (matchPattern(lhs, m_ConstantInt(&constVal))) {
+          newOffset = updateOffset(curOffset, constVal);
+          result = addOp.getResult();
+        } else if (matchPattern(rhs, m_ConstantInt(&constVal))) {
+          newOffset = updateOffset(curOffset, constVal);
+          result = addOp.getResult();
+        }
+      } else if (auto subOp = dyn_cast<stablehlo::SubtractOp>(user)) {
+        Value lhs = subOp.getLhs();
+        Value rhs = subOp.getRhs();
+        APInt constVal(bitWidth, 0, true);
+
+        if (matchPattern(rhs, m_ConstantInt(&constVal))) {
+          newOffset = updateOffset(curOffset, -constVal);
+          result = subOp.getResult();
+        }
+      } else if (auto convertOp = dyn_cast<stablehlo::ConvertOp>(user)) {
+        newOffset = curOffset;
+        result = convertOp.getResult();
+      }
+
+      if (result && !inductionVarOffsets.contains(result)) {
+        inductionVarOffsets[result] = newOffset;
+        worklist.push_back(result);
+      }
+    }
+  }
+}
