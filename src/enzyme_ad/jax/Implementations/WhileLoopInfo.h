@@ -7,6 +7,8 @@
 //===----------------------------------------------------------------------===//
 #pragma once
 
+#include "llvm/ADT/DenseMap.h"
+
 #include "stablehlo/dialect/StablehloOps.h"
 
 using namespace mlir;
@@ -18,7 +20,7 @@ namespace enzyme {
 
 struct WhileLoopInfo {
   WhileOp op;
-
+  DenseMap<Value, APInt> inductionVarOffsets;
   mlir::Value start; // guaranteed to dominate the while op
   mlir::Value limit; // not guaranteed to dominate the while op
   mlir::Value step;  // not guaranteed to dominate the while op
@@ -39,6 +41,16 @@ struct WhileLoopInfo {
 
   int64_t getConstantNumIters();
   Value getNumIters(OpBuilder &builder);
+
+  void propagateInductionVarOffsets();
+  DenseMap<Value, APInt> getInductionVarOffsets() { return inductionVarOffsets; }
+
+private:
+  APInt updateOffset(APInt curOffset, APInt update) {
+    if (curOffset.getBitWidth() != update.getBitWidth())
+      update = update.sextOrTrunc(curOffset.getBitWidth());
+    return curOffset + update;
+  }
 };
 
 } // end namespace enzyme

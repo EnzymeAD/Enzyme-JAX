@@ -19,6 +19,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
@@ -23354,8 +23355,6 @@ struct RemoveNoOpsFromWhileLoop
     auto &whileBody = whileOp.getBody().front();
     auto inductionVar = whileBody.getArgument(0);
 
-    bool anyNoOpRemoved = false;
-
     auto limit = info.getConstantLimit().value();
     auto start = info.getConstantStart().value();
     auto step = info.getConstantStep().value();
@@ -23706,6 +23705,135 @@ private:
     }
     return false;
   };
+};
+
+struct WhileIsCopySimplify
+    : public CheckedOpRewritePattern<stablehlo::WhileOp, WhileIsCopySimplify> {
+  using CheckedOpRewritePattern<stablehlo::WhileOp,
+                                WhileIsCopySimplify>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::WhileOp whileOp,
+                                    PatternRewriter &rewriter) const {
+    auto info = WhileLoopInfo(whileOp);
+    auto computeInfoSuccess = info.computeInfo();
+    if (computeInfoSuccess.failed())
+      return computeInfoSuccess;
+
+    if (!info.isValid() || !info.isConstant() ||
+        info.getConstantNumIters() <= 0)
+      return failure();
+
+    auto &whileBody = whileOp.getBody().front();
+    auto inductionVar = whileBody.getArgument(0);
+    auto parentBlock = whileOp->getBlock();
+
+    auto limit = info.getConstantLimit().value();
+    auto start = info.getConstantStart().value();
+    auto step = info.getConstantStep().value();
+    info.propagateInductionVarOffsets();
+
+    if (start != 0 && step != 1)
+      return failure();
+
+    auto parentFunc = whileOp->getParentOp();
+    if (!parentFunc)
+      return failure();
+    DominanceInfo domInfo(parentFunc);
+
+    DenseMap<Value, APInt> inductionVarOffsets = info.getInductionVarOffsets();
+    DenseMap<unsigned, Value> indicesToReplace;
+
+    auto returnOp = dyn_cast<stablehlo::ReturnOp>(whileBody.getTerminator());
+    if (!returnOp)
+      return failure();
+
+    for (auto [idx, returnValue] : llvm::enumerate(returnOp.getOperands())) {
+      auto dusOp = returnValue.getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
+      if (!dusOp)
+        continue;
+
+      // check if operand is a loop caried variable
+      auto blockArg = dyn_cast<BlockArgument>(dusOp.getOperand());
+      if (!blockArg)
+        continue;
+
+      // check if update is a DS
+      auto sliceOp =
+          dusOp.getUpdate().getDefiningOp<stablehlo::DynamicSliceOp>();
+      if (!sliceOp)
+        continue;
+
+      Value sliceOperand = sliceOp.getOperand();
+      if (!isValueAccessibleFromBlock(domInfo, sliceOperand, parentBlock))
+        continue;
+
+      // TODO: support partial slices
+      // verify that this is a full slice
+      bool indicesMatch = true, foundInductionVar = false;
+      APInt startIndex;
+      auto dsShape = cast<ShapedType>(sliceOp.getType()).getShape();
+      auto sliceOperandShape =
+          cast<ShapedType>(sliceOperand.getType()).getShape();
+      for (size_t i = 0; i < sliceOp.getStartIndices().size(); i++) {
+        auto dsStartIndex = sliceOp.getStartIndices()[i];
+        auto dusStartIndex = dusOp.getStartIndices()[i];
+        if (dsStartIndex != dusStartIndex) {
+          indicesMatch = false;
+          break;
+        }
+
+        if (matchPattern(
+                dsStartIndex,
+                m_ConstantInt(&startIndex))) { // constant indices + full slice
+          if (!startIndex.isZero() || dsShape[i] != sliceOperandShape[i]) {
+            indicesMatch = false;
+            break;
+          }
+        } else {
+          if (foundInductionVar || // multiple indices with induction var
+              !inductionVarOffsets.contains(
+                  dusStartIndex)) { // no induction var
+            indicesMatch = false;
+            break;
+          }
+          foundInductionVar = true;
+          auto offset = inductionVarOffsets[dusStartIndex];
+          // TODO: support strided copy as well
+          if (!offset.isZero() || dsShape[i] != 1 ||
+              limit != sliceOperandShape[i]) {
+            indicesMatch = false;
+            break;
+          }
+        }
+      }
+
+      if (!indicesMatch)
+        continue;
+
+      indicesToReplace[idx] = sliceOperand;
+    }
+
+    if (indicesToReplace.empty())
+      return failure();
+
+    for (auto [idx, replacement] : indicesToReplace) {
+      // We don't need to rewrite the loop here. While dead args elimination
+      // will take care of it.
+      whileOp.getResult(idx).replaceAllUsesWith(replacement);
+    }
+    return success();
+  }
+
+private:
+  bool isValueAccessibleFromBlock(DominanceInfo &domInfo, Value value,
+                                  Block *block) const {
+    if (auto definingOp = value.getDefiningOp()) {
+      return domInfo.dominates(definingOp->getBlock(), block);
+    } else if (auto blockArg = dyn_cast<BlockArgument>(value)) {
+      return domInfo.dominates(blockArg.getOwner(), block);
+    }
+    return false;
+  }
 };
 
 ///////////////  End Imported from stablehlo
@@ -24322,7 +24450,8 @@ struct EnzymeHLOOptPass
         CaseToIf,
         DUSToDynamicPad,
         DynamicPadToPad,
-        RemoveNoOpsFromWhileLoop
+        RemoveNoOpsFromWhileLoop,
+        WhileIsCopySimplify
       >(context);
 
     patterns.add<
