@@ -23770,7 +23770,6 @@ struct WhileIsCopySimplify
       // TODO: support partial slices
       // verify that this is a full slice
       bool indicesMatch = true, foundInductionVar = false;
-      APInt startIndex;
       auto dsShape = cast<ShapedType>(sliceOp.getType()).getShape();
       auto sliceOperandShape =
           cast<ShapedType>(sliceOperand.getType()).getShape();
@@ -23782,10 +23781,8 @@ struct WhileIsCopySimplify
           break;
         }
 
-        if (matchPattern(
-                dsStartIndex,
-                m_ConstantInt(&startIndex))) { // constant indices + full slice
-          if (!startIndex.isZero() || dsShape[i] != sliceOperandShape[i]) {
+        if (matchPattern(dsStartIndex, m_Zero())) { // constant indices
+          if (dsShape[i] != sliceOperandShape[i]) { // full slice
             indicesMatch = false;
             break;
           }
