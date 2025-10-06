@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1759721874150,
+  "lastUpdate": 1759771908673,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
@@ -5455,6 +5455,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001333137927998,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "avikpal@mit.edu",
+            "name": "Avik Pal",
+            "username": "avik-pal"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e1a47537673d80f0717138b86b1be6b7025851a7",
+          "message": "feat: simplify copy-like dynamic_update_slice inside while loop (#1459)\n\n* feat: simplify copy-like dynamic_update_slice inside while loop\n\n* chore: run fmt\n\n* fix: simplify check",
+          "timestamp": "2025-10-06T12:17:43-04:00",
+          "tree_id": "8bd254a01f181515762b4e49ac0caf4d0e665a89",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/e1a47537673d80f0717138b86b1be6b7025851a7"
+        },
+        "date": 1759771908016,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004364686901681125,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004358776999288238,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001297847638023,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001297496418002,
             "unit": "s"
           }
         ]
