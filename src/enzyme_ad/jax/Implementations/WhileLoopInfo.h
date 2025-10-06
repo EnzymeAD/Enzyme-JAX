@@ -43,7 +43,9 @@ struct WhileLoopInfo {
   Value getNumIters(OpBuilder &builder);
 
   void propagateInductionVarOffsets();
-  DenseMap<Value, APInt> getInductionVarOffsets() { return inductionVarOffsets; }
+  DenseMap<Value, APInt> getInductionVarOffsets() {
+    return inductionVarOffsets;
+  }
 
 private:
   APInt updateOffset(APInt curOffset, APInt update) {
