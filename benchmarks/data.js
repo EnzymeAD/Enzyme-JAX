@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1759688142673,
+  "lastUpdate": 1759714868005,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
@@ -5367,6 +5367,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001425300647999,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "wmoses@google.com",
+            "name": "William Moses",
+            "username": "wsmoses"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "54edf3845b103a7bfcc335f186ee720a1953a65b",
+          "message": "SROA pass error (#1456)",
+          "timestamp": "2025-10-05T17:46:09-05:00",
+          "tree_id": "0b1c2f86927a1376b6cb355d567753e1cbb5e5a5",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/54edf3845b103a7bfcc335f186ee720a1953a65b"
+        },
+        "date": 1759714867513,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004485886999464128,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004439690998697188,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001577955517001,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001410659988992,
             "unit": "s"
           }
         ]
