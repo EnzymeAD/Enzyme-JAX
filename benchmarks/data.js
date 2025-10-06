@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1759714868005,
+  "lastUpdate": 1759721874150,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
@@ -5411,6 +5411,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001410659988992,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "avikpal@mit.edu",
+            "name": "Avik Pal",
+            "username": "avik-pal"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2064d83426f78d51611ab767deba28f500f5b1fc",
+          "message": "feat: propagate bounds in whileop (#1453)\n\n* feat: remove remainder in whileop\n\n* feat: propagate bounds and eliminate noops\n\n* chore: run fmt\n\n* feat: propagate div bounds\n\n* fix: remainder check\n\n* test: negative step\n\n* fix: add iteration count check\n\n* fix: value\n\n* chore: add some comment for each check",
+          "timestamp": "2025-10-05T20:58:37-04:00",
+          "tree_id": "1c7ef4d4bb5529ba8de488679bfddac0874e24d4",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/2064d83426f78d51611ab767deba28f500f5b1fc"
+        },
+        "date": 1759721873673,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004382277900003828,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004261513000528794,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001337104498001,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001333137927998,
             "unit": "s"
           }
         ]
