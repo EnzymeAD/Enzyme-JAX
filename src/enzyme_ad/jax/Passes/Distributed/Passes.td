@@ -9,7 +9,10 @@ def EliminateConstantCommunicationPass : Pass<"eliminate-constant-communication"
       This pass identifies send instructions with constant operands and replaces
       the corresponding receive instructions with local constants.
     }];
-    let dependentDialects = ["enzyme::distributed::DistributedDialect"];
+    let dependentDialects = [
+      "enzyme::distributed::DistributedDialect",
+      "stablehlo::StablehloDialect"
+    ];
 }
 
 #endif // ENZYMEXLA_DISTRIBUTED_PASSES
