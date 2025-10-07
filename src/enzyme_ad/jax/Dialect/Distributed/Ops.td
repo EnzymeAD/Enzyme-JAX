@@ -101,11 +101,4 @@ def RecvOp : DistributedOp<"recv", [DeclareOpInterfaceMethods<TokenReaderOpInter
     let assemblyFormat = "$token type($value) attr-dict";
 }
 
-def NoopOp : DistributedOp<"noop", []>{
-    let description = [{
-        A placeholder no-op.
-    }];
-    let assemblyFormat = "attr-dict";
-}
-
 #endif // ENZYME_AD_JAX_DIALECT_DISTRIBUTED_OPS_TD
