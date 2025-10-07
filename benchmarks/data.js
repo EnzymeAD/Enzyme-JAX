@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1759845992994,
+  "lastUpdate": 1759867079726,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
@@ -5587,6 +5587,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001692575248016,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "wmoses@google.com",
+            "name": "William Moses",
+            "username": "wsmoses"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "bb5eb26b2ddc5bbb77e8ff22b8ef2499473c5f5e",
+          "message": "calling conv fix (#1462)",
+          "timestamp": "2025-10-07T14:04:15-05:00",
+          "tree_id": "de512f8adba6e5b317c79c12b43ad86fd340edd7",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/bb5eb26b2ddc5bbb77e8ff22b8ef2499473c5f5e"
+        },
+        "date": 1759867079062,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.0000045103268988896165,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004478790998109616,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001281787919986,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001634209176001,
             "unit": "s"
           }
         ]
