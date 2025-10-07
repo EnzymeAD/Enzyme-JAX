@@ -34,6 +34,9 @@
 
 #include <set>
 
+#define DEBUG_TYPE "recomputable"
+#define DBGS() ::llvm::dbgs() << "[" DEBUG_TYPE "] "
+
 using namespace mlir;
 using namespace mlir::enzyme;
 using namespace mlir::arith;
@@ -54,8 +57,8 @@ bool collectEffects(Operation *op,
   // Ignore CacheLoads as they are already guaranteed to not have side effects
   // in the context of a parallel op, these only exist while we are in the
   // CPUifyPass
-  // if (isa<CacheLoad>(op))
-  //  return true;
+  if (isa<enzymexla::CacheLoad>(op))
+   return true;
 
   // Collect effect instances the operation. Note that the implementation of
   // getEffects erases all effect instances that have the type other than the
@@ -166,8 +169,11 @@ bool getEffectsBefore(Operation *op,
         else
           continue;
       }
-      if (!collectEffects(it, effects, /* ignoreBarriers */ true))
+      if (!collectEffects(it, effects, /* ignoreBarriers */ true)) {
+        LLVM_DEBUG(DBGS() << "colloectEffects 1 returns false\n");
         return false;
+      }
+        
     }
 
   bool conservative = false;
@@ -177,8 +183,11 @@ bool getEffectsBefore(Operation *op,
 
   // As we didn't hit another barrier, we must check the predecessors of this
   // operation.
-  if (!getEffectsBefore(op->getParentOp(), effects, stopAtBarrier))
+  if (!getEffectsBefore(op->getParentOp(), effects, stopAtBarrier)) {
+    LLVM_DEBUG(DBGS() << "getEffectsBefore returns false\n");
     return false;
+  }
+    
 
   // If the parent operation is not guaranteed to execute its (single-block)
   // region once, walk the block.
@@ -188,6 +197,7 @@ bool getEffectsBefore(Operation *op,
       if (conservative)
         return WalkResult::interrupt();
       if (!collectEffects(in, effects, /* ignoreBarriers */ true)) {
+        LLVM_DEBUG(DBGS() << "colloectEffects 2 returns false\n");
         conservative = true;
         return WalkResult::interrupt();
       }
@@ -501,6 +511,7 @@ bool mayAlias(MemoryEffects::EffectInstance a,
 }
 
 bool mayAlias(MemoryEffects::EffectInstance a, Value v2) {
+  llvm::errs() << " checking alias of a: " << a.getValue() << " v2: " << v2 << "\n";
   if (Value v = a.getValue()) {
     return mayAlias(v, v2);
   }
