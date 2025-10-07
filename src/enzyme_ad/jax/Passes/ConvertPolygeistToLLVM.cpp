@@ -975,6 +975,7 @@ static void filterFuncAttributes(func::FuncOp func, bool filterArgAndResAttrs,
 }
 
 static constexpr llvm::StringLiteral kLLVMLinkageAttrName = "llvm.linkage";
+static constexpr llvm::StringLiteral kLLVMCConvAttrName = "llvm.cconv";
 
 /// Convert function argument, operation and result attributes to the LLVM
 /// dialect. This identifies attributes known to contain types and converts
@@ -1042,7 +1043,13 @@ static SmallVector<NamedAttribute> convertFuncAttributes(
         funcOp.getArgAttrsAttrName(), rewriter.getArrayAttr(newArgAttrs)));
   }
   for (const auto &pair : llvm::enumerate(attributes)) {
-    if (pair.value().getName() == kLLVMLinkageAttrName) {
+    if (pair.value().getName() == "linkage") {
+      attributes.erase(attributes.begin() + pair.index());
+      break;
+    }
+  }
+  for (const auto &pair : llvm::enumerate(attributes)) {
+    if (pair.value().getName() == "CConv") {
       attributes.erase(attributes.begin() + pair.index());
       break;
     }
@@ -3074,10 +3081,15 @@ public:
           cast<mlir::LLVM::LinkageAttr>(funcOp->getAttr(kLLVMLinkageAttrName));
       linkage = attr.getLinkage();
     }
+    auto cconv = LLVM::CConv::C;
+    if (funcOp->hasAttr(kLLVMCConvAttrName)) {
+      auto attr =
+          cast<mlir::LLVM::CConvAttr>(funcOp->getAttr(kLLVMCConvAttrName));
+      cconv = attr.getCallingConv();
+    }
     auto newFuncOp = rewriter.create<LLVM::LLVMFuncOp>(
         funcOp.getLoc(), funcOp.getName(), convertedType, linkage,
-        /*dsoLocal=*/false, /*cconv=*/LLVM::CConv::C, /*comdat=*/nullptr,
-        attributes);
+        /*dsoLocal=*/false, /*cconv=*/cconv, /*comdat=*/nullptr, attributes);
     rewriter.inlineRegionBefore(funcOp.getBody(), newFuncOp.getBody(),
                                 newFuncOp.end());
     if (failed(rewriter.convertRegionTypes(&newFuncOp.getBody(), *typeConverter,
