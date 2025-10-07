@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1759818241075,
+  "lastUpdate": 1759845992994,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
@@ -5543,6 +5543,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001553631844988,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "avikpal@mit.edu",
+            "name": "Avik Pal",
+            "username": "avik-pal"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e63a3a3db90bd59b4e13e716283d1dccf6f19a12",
+          "message": "feat: generalize WhileIsCopy for partial slices (#1461)",
+          "timestamp": "2025-10-07T09:13:20-04:00",
+          "tree_id": "0e1642db6f135df8d641f7ce6d51dba581da93b7",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/e63a3a3db90bd59b4e13e716283d1dccf6f19a12"
+        },
+        "date": 1759845991874,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004341366098378785,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.0000042936721001751724,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001602961997006,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001692575248016,
             "unit": "s"
           }
         ]
