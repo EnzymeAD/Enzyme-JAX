@@ -1,5 +1,6 @@
 #pragma once
 
+#include "mlir/IR/Dominance.h"
 #include "mlir/IR/PatternMatch.h"
 #include "src/enzyme_ad/jax/CheckedRewrite.h"
 #include "src/enzyme_ad/jax/Utils.h"
@@ -7,6 +8,14 @@
 #include "llvm/ADT/SmallVector.h"
 #include <tuple>
 #include <vector>
+
+// Loading the header causes a bunch of ambiguous errors
+// #include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
+namespace mlir {
+namespace enzyme {
+struct WhileLoopInfo;
+}; // namespace enzyme
+}; // namespace mlir
 
 struct BatchOperandConstructionInfo {
   mlir::stablehlo::SliceOp sliceOp;
@@ -170,4 +179,34 @@ struct SliceToBatchElementwise : public SliceToBatchBase {
               return nullptr;
             },
             ctx, benefit) {}
+};
+
+struct GreedyWhileLoopBatchFission
+    : public mlir::OpRewritePattern<mlir::stablehlo::WhileOp> {
+  using Base = mlir::OpRewritePattern<mlir::stablehlo::WhileOp>;
+  using Base::Base;
+
+  mlir::LogicalResult
+  matchAndRewrite(mlir::stablehlo::WhileOp whileOp,
+                  mlir::PatternRewriter &rewriter) const override;
+
+private:
+  struct DynamicSliceInfo {
+    mlir::stablehlo::DynamicSliceOp sliceOp;
+    int64_t inductionVarDimension;
+  };
+
+  int64_t isDynamicSliceValidForBatching(
+      mlir::stablehlo::DynamicSliceOp sliceOp, mlir::Value iterVar,
+      int64_t limit, mlir::Block &whileBody, mlir::Block *parentBlock,
+      mlir::DominanceInfo &domInfo) const;
+
+  bool liftElementwiseOp(mlir::PatternRewriter &rewriter,
+                         mlir::stablehlo::WhileOp whileOp,
+                         llvm::ArrayRef<DynamicSliceInfo> sliceOps,
+                         mlir::Operation *op,
+                         mlir::enzyme::WhileLoopInfo info) const;
+
+  bool isValueAccessibleFromBlock(mlir::DominanceInfo &domInfo,
+                                  mlir::Value value, mlir::Block *block) const;
 };
