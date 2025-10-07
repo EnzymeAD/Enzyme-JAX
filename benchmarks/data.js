@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1759771908673,
+  "lastUpdate": 1759818241075,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
@@ -5499,6 +5499,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001297496418002,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "avikpal@mit.edu",
+            "name": "Avik Pal",
+            "username": "avik-pal"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c7e4ccff2a29ee37f1931f4048bdacadb1f707e9",
+          "message": "feat: CAPI to create attributes (#1460)\n\n* feat: CAPI to create attributes\n\n* chore: run formatter",
+          "timestamp": "2025-10-06T21:32:54-04:00",
+          "tree_id": "28563ad99cf4d9bd24205f43fcabf80d171e2448",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/c7e4ccff2a29ee37f1931f4048bdacadb1f707e9"
+        },
+        "date": 1759818240063,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004340586901525967,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004408594997948967,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001549135915993,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001553631844988,
             "unit": "s"
           }
         ]
