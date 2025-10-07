@@ -655,6 +655,62 @@ cc_library(
 )
 
 cc_library(
+    name = "EnzymeXLADialect",
+    srcs = [
+        "Dialect/Dialect.cpp",
+        "Dialect/Ops.cpp",
+        "Utils.cpp",
+    ],
+    hdrs = [
+        "Dialect/Dialect.h",
+        "Dialect/Ops.h",
+        "Utils.h",
+    ],
+    deps = [
+        ":EnzymeXLAAttrsIncGen",
+        ":EnzymeXLAOpsIncGen",
+        "@enzyme//:EnzymeMLIR",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:AffineDialect",
+        "@llvm-project//mlir:Analysis",
+        "@llvm-project//mlir:ArithDialect",
+        "@llvm-project//mlir:ArithUtils",
+        "@llvm-project//mlir:BytecodeOpInterface",
+        "@llvm-project//mlir:CallOpInterfaces",
+        "@llvm-project//mlir:ControlFlowInterfaces",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:GPUDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:InferTypeOpInterface",
+        "@llvm-project//mlir:InliningUtils",
+        "@llvm-project//mlir:LLVMDialect",
+        "@llvm-project//mlir:MemRefDialect",
+        "@llvm-project//mlir:MemorySlotInterfaces",
+        "@llvm-project//mlir:OpenMPDialect",
+        "@llvm-project//mlir:QuantOps",
+        "@llvm-project//mlir:SCFDialect",
+        "@llvm-project//mlir:SideEffectInterfaces",
+        "@llvm-project//mlir:Support",
+        "@llvm-project//mlir:ViewLikeInterface",
+        "@stablehlo//:base",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+cc_library(
+    name = "CInterface",
+    srcs = ["Integrations/c/EnzymeXLA.cpp"],
+    hdrs = ["Integrations/c/EnzymeXLA.h"],
+    deps = [
+        ":EnzymeXLADialect",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:CAPIIRObjects",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Support",
+    ],
+)
+
+cc_library(
     name = "XLADerivatives",
     srcs = glob([
         "Implementations/*.cpp",
