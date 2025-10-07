@@ -18,11 +18,11 @@ extern "C" {
 // Linear Algebra Ops
 //===----------------------------------------------------------------------===//
 
-MLIR_CAPI_EXPORTED MlirAttribute enzymexlaLapackLayoutAttrGet(MlirContext ctx,
-                                                              uint8_t col_major);
+MLIR_CAPI_EXPORTED MlirAttribute
+enzymexlaLapackLayoutAttrGet(MlirContext ctx, uint8_t col_major);
 
-MLIR_CAPI_EXPORTED MlirAttribute enzymexlaLapackTransposeAttrGet(MlirContext ctx,
-                                                                 int32_t mode);
+MLIR_CAPI_EXPORTED MlirAttribute
+enzymexlaLapackTransposeAttrGet(MlirContext ctx, int32_t mode);
 
 MLIR_CAPI_EXPORTED MlirAttribute enzymexlaLapackSideAttrGet(MlirContext ctx,
                                                             uint8_t left_side);
@@ -34,11 +34,11 @@ MLIR_CAPI_EXPORTED MlirAttribute enzymexlaQRAlgorithmAttrGet(MlirContext ctx,
 // Machine Learning Ops
 //===----------------------------------------------------------------------===//
 
-MLIR_CAPI_EXPORTED MlirAttribute enzymexlaGeluApproximationAttrGet(MlirContext ctx,
-                                                                   int32_t mode);
+MLIR_CAPI_EXPORTED MlirAttribute
+enzymexlaGeluApproximationAttrGet(MlirContext ctx, int32_t mode);
 
 #ifdef __cplusplus
-}  // extern "C"
+} // extern "C"
 #endif
 
-#endif  // ENZYMEXLA_INTEGRATIONS_C_ENZYMEXLA_H_
+#endif // ENZYMEXLA_INTEGRATIONS_C_ENZYMEXLA_H_

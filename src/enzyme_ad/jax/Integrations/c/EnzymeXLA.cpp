@@ -19,16 +19,17 @@ MlirAttribute enzymexlaLapackLayoutAttrGet(MlirContext ctx, uint8_t col_major) {
 MlirAttribute enzymexlaLapackTransposeAttrGet(MlirContext ctx, int32_t mode) {
   mlir::enzymexla::LapackTranspose transpose;
   switch (mode) {
-    case 0:
-      transpose = mlir::enzymexla::LapackTranspose::none;
-      break;
-    case 1:
-      transpose = mlir::enzymexla::LapackTranspose::transpose;
-      break;
-    case 2:
-      transpose = mlir::enzymexla::LapackTranspose::adjoint;
+  case 0:
+    transpose = mlir::enzymexla::LapackTranspose::none;
+    break;
+  case 1:
+    transpose = mlir::enzymexla::LapackTranspose::transpose;
+    break;
+  case 2:
+    transpose = mlir::enzymexla::LapackTranspose::adjoint;
   }
-  return wrap(mlir::enzymexla::LapackTransposeAttr::get(unwrap(ctx), transpose));
+  return wrap(
+      mlir::enzymexla::LapackTransposeAttr::get(unwrap(ctx), transpose));
 }
 
 MlirAttribute enzymexlaLapackSideAttrGet(MlirContext ctx, uint8_t left_side) {
@@ -44,11 +45,11 @@ MlirAttribute enzymexlaLapackSideAttrGet(MlirContext ctx, uint8_t left_side) {
 MlirAttribute enzymexlaQRAlgorithmAttrGet(MlirContext ctx, int32_t mode) {
   mlir::enzymexla::QrAlgorithm algorithm;
   switch (mode) {
-    case 0:
-      algorithm = mlir::enzymexla::QrAlgorithm::geqrf;
-      break;
-    case 1:
-      algorithm = mlir::enzymexla::QrAlgorithm::geqrt;
+  case 0:
+    algorithm = mlir::enzymexla::QrAlgorithm::geqrf;
+    break;
+  case 1:
+    algorithm = mlir::enzymexla::QrAlgorithm::geqrt;
   }
   return wrap(mlir::enzymexla::QrAlgorithmAttr::get(unwrap(ctx), algorithm));
 }
@@ -56,14 +57,15 @@ MlirAttribute enzymexlaQRAlgorithmAttrGet(MlirContext ctx, int32_t mode) {
 MlirAttribute enzymexlaGeluApproximationAttrGet(MlirContext ctx, int32_t mode) {
   mlir::enzymexla::GeluApproximation approximation;
   switch (mode) {
-    case 0:
-      approximation = mlir::enzymexla::GeluApproximation::NONE;
-      break;
-    case 1:
-      approximation = mlir::enzymexla::GeluApproximation::TANH;
-      break;
-    case 2:
-      approximation = mlir::enzymexla::GeluApproximation::SIGMOID;
+  case 0:
+    approximation = mlir::enzymexla::GeluApproximation::NONE;
+    break;
+  case 1:
+    approximation = mlir::enzymexla::GeluApproximation::TANH;
+    break;
+  case 2:
+    approximation = mlir::enzymexla::GeluApproximation::SIGMOID;
   }
-  return wrap(mlir::enzymexla::GeluApproximationAttr::get(unwrap(ctx), approximation));
+  return wrap(
+      mlir::enzymexla::GeluApproximationAttr::get(unwrap(ctx), approximation));
 }
