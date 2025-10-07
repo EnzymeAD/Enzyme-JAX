@@ -58,7 +58,7 @@ bool collectEffects(Operation *op,
   // in the context of a parallel op, these only exist while we are in the
   // CPUifyPass
   if (isa<enzymexla::CacheLoad>(op))
-   return true;
+    return true;
 
   // Collect effect instances the operation. Note that the implementation of
   // getEffects erases all effect instances that have the type other than the
@@ -173,7 +173,6 @@ bool getEffectsBefore(Operation *op,
         LLVM_DEBUG(DBGS() << "colloectEffects 1 returns false\n");
         return false;
       }
-        
     }
 
   bool conservative = false;
@@ -187,7 +186,6 @@ bool getEffectsBefore(Operation *op,
     LLVM_DEBUG(DBGS() << "getEffectsBefore returns false\n");
     return false;
   }
-    
 
   // If the parent operation is not guaranteed to execute its (single-block)
   // region once, walk the block.
@@ -511,7 +509,8 @@ bool mayAlias(MemoryEffects::EffectInstance a,
 }
 
 bool mayAlias(MemoryEffects::EffectInstance a, Value v2) {
-  llvm::errs() << " checking alias of a: " << a.getValue() << " v2: " << v2 << "\n";
+  llvm::errs() << " checking alias of a: " << a.getValue() << " v2: " << v2
+               << "\n";
   if (Value v = a.getValue()) {
     return mayAlias(v, v2);
   }
