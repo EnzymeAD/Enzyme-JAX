@@ -23732,7 +23732,7 @@ struct WhileIsCopySimplify
     auto step = info.getConstantStep().value();
     info.propagateInductionVarOffsets();
 
-    if (start != 0 && step != 1)
+    if (step != 1)
       return failure();
 
     auto parentFunc = whileOp->getParentOp();
@@ -23741,7 +23741,10 @@ struct WhileIsCopySimplify
     DominanceInfo domInfo(parentFunc);
 
     DenseMap<Value, APInt> inductionVarOffsets = info.getInductionVarOffsets();
-    DenseMap<unsigned, Value> indicesToReplace;
+    DenseMap<unsigned,
+             std::tuple<Value, SmallVector<int64_t>, SmallVector<int64_t>,
+                        SmallVector<int64_t>, unsigned>>
+        indicesToReplace;
 
     auto returnOp = dyn_cast<stablehlo::ReturnOp>(whileBody.getTerminator());
     if (!returnOp)
@@ -23767,56 +23770,96 @@ struct WhileIsCopySimplify
       if (!isValueAccessibleFromBlock(domInfo, sliceOperand, parentBlock))
         continue;
 
-      // TODO: support partial slices
-      // verify that this is a full slice
       bool indicesMatch = true, foundInductionVar = false;
       auto dsShape = cast<ShapedType>(sliceOp.getType()).getShape();
       auto sliceOperandShape =
           cast<ShapedType>(sliceOperand.getType()).getShape();
+
+      SmallVector<int64_t> sliceStartIndices(sliceOp.getStartIndices().size(),
+                                             -1);
+      SmallVector<int64_t> sliceSizes(sliceOp.getStartIndices().size(), -1);
+      SmallVector<int64_t> dusStartIndices(dusOp.getStartIndices().size(), -1);
+
       for (size_t i = 0; i < sliceOp.getStartIndices().size(); i++) {
         auto dsStartIndex = sliceOp.getStartIndices()[i];
         auto dusStartIndex = dusOp.getStartIndices()[i];
-        if (dsStartIndex != dusStartIndex) {
-          indicesMatch = false;
-          break;
-        }
 
-        if (matchPattern(dsStartIndex, m_Zero())) { // constant indices
-          if (dsShape[i] != sliceOperandShape[i]) { // full slice
+        APInt dsIdx, dusIdx;
+        if (matchPattern(dsStartIndex, m_ConstantInt(&dsIdx))) {
+          sliceStartIndices[i] = getInt(dsIdx);
+          sliceSizes[i] = dsShape[i];
+          if (matchPattern(dusStartIndex, m_ConstantInt(&dusIdx))) {
+            dusStartIndices[i] = getInt(dusIdx);
+          } else {
             indicesMatch = false;
             break;
           }
         } else {
+          if (dsStartIndex != dusStartIndex) {
+            indicesMatch = false;
+            break;
+          }
+
           if (foundInductionVar || // multiple indices with induction var
-              !inductionVarOffsets.contains(
-                  dusStartIndex)) { // no induction var
+              !inductionVarOffsets.contains(dsStartIndex)) { // no induction var
             indicesMatch = false;
             break;
           }
+
           foundInductionVar = true;
-          auto offset = inductionVarOffsets[dusStartIndex];
-          // TODO: support strided copy as well
-          if (!offset.isZero() || dsShape[i] != 1 ||
-              limit != sliceOperandShape[i]) {
+          auto offset = inductionVarOffsets[dsStartIndex];
+
+          if (dsShape[i] != 1) {
             indicesMatch = false;
             break;
           }
+          sliceStartIndices[i] = start + getInt(offset);
+          sliceSizes[i] = limit - start;
+          dusStartIndices[i] = start + getInt(offset);
         }
       }
 
-      if (!indicesMatch)
+      if (!indicesMatch) {
         continue;
+      }
 
-      indicesToReplace[idx] = sliceOperand;
+      auto result = std::make_tuple(sliceOperand, sliceStartIndices, sliceSizes,
+                                    dusStartIndices, blockArg.getArgNumber());
+      indicesToReplace[idx] = result;
     }
 
     if (indicesToReplace.empty())
       return failure();
 
-    for (auto [idx, replacement] : indicesToReplace) {
+    for (auto [idx, tup] : indicesToReplace) {
       // We don't need to rewrite the loop here. While dead args elimination
       // will take care of it.
-      whileOp.getResult(idx).replaceAllUsesWith(replacement);
+      auto [replacement, sliceStartIndices, sliceSizes, dusStartIndices,
+            argIdx] = tup;
+
+      SmallVector<int64_t> strides(sliceSizes.size(), 1);
+      SmallVector<int64_t> limits(sliceSizes.size());
+      for (size_t i = 0; i < sliceSizes.size(); i++) {
+        limits[i] = sliceSizes[i] + sliceStartIndices[i];
+      }
+      auto sliceOp = rewriter.create<stablehlo::SliceOp>(
+          whileOp.getLoc(), replacement,
+          rewriter.getDenseI64ArrayAttr(sliceStartIndices),
+          rewriter.getDenseI64ArrayAttr(limits),
+          rewriter.getDenseI64ArrayAttr(strides));
+
+      SmallVector<Value> dusStartIndicesValue;
+      auto type = RankedTensorType::get({}, rewriter.getI32Type());
+      for (auto dusStartIndex : dusStartIndices) {
+        dusStartIndicesValue.push_back(rewriter.create<stablehlo::ConstantOp>(
+            whileOp.getLoc(), type,
+            cast<ElementsAttr>(makeAttr(type, dusStartIndex))));
+      }
+      auto newDUSOp = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
+          whileOp.getLoc(), whileOp.getOperands()[argIdx], sliceOp.getResult(),
+          dusStartIndicesValue);
+
+      whileOp.getResult(idx).replaceAllUsesWith(newDUSOp->getResult(0));
     }
     return success();
   }
@@ -23830,6 +23873,13 @@ private:
       return domInfo.dominates(blockArg.getOwner(), block);
     }
     return false;
+  }
+
+  int64_t getInt(APInt value) const {
+    if (value.getBitWidth() != 64) {
+      value = value.sextOrTrunc(64);
+    }
+    return value.getSExtValue();
   }
 };
 
