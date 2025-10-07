@@ -227,7 +227,7 @@ module {
 // CHECK:           scf.parallel (%[[VAL_5:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]) = (%[[VAL_2]]) to (%[[VAL_4]]) step (%[[VAL_3]]) {
 // CHECK:             %[[VAL_6:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]] = arith.index_cast %[[VAL_5]] : index to i32
 // CHECK:             func.call @use(%[[VAL_6]]) : (i32) -> ()
-// CHECK:             scf.reduce
+// CHECK:             scf.yield
 // CHECK:           }
 // CHECK:           return
 // CHECK:         }
@@ -244,19 +244,19 @@ module {
 // CHECK-NEXT:        %[[V3:.+]] = arith.muli %[[V1]], %[[V2]] : i32
 // CHECK-NEXT:        memref.store %[[V3]], %[[V0]][%[[arg3]]] : memref<?xi32>
 // CHECK-NEXT:        func.call @use(%[[V3:.+]]) : (i32) -> ()
-// CHECK-NEXT:        scf.reduce
+// CHECK-NEXT:        scf.yield
 // CHECK-NEXT:      }
 // CHECK-NEXT:      scf.if %[[arg0]] {
 // CHECK-NEXT:        memref.alloca_scope  {
 // CHECK-NEXT:          scf.parallel (%[[arg3:.+]]) = (%[[c0]]) to (%[[c9]]) step (%[[c1]]) {
 // CHECK-NEXT:            %[[V1:.+]] = memref.load %[[V0]][%[[arg3]]] : memref<?xi32>
 // CHECK-NEXT:            func.call @use(%[[V1:.+]]) : (i32) -> ()
-// CHECK-NEXT:            scf.reduce
+// CHECK-NEXT:            scf.yield
 // CHECK-NEXT:          }
 // CHECK-NEXT:          scf.parallel (%[[arg3:.+]]) = (%[[c0]]) to (%[[c9]]) step (%[[c1]]) {
 // CHECK-NEXT:            %[[V1:.+]] = memref.load %[[V0]][%[[arg3]]] : memref<?xi32>
 // CHECK-NEXT:            func.call @use(%[[V1:.+]]) : (i32) -> ()
-// CHECK-NEXT:            scf.reduce
+// CHECK-NEXT:            scf.yield
 // CHECK-NEXT:          }
 // CHECK-NEXT:        }
 // CHECK-NEXT:      } else {
@@ -277,7 +277,7 @@ module {
 // CHECK-NEXT:        %[[V1:.+]] = memref.load %[[arg0]][] : memref<i32>
 // CHECK-NEXT:        memref.store %[[V1]], %[[V0]][%[[arg3]]] : memref<?xi32>
 // CHECK-NEXT:        func.call @use(%[[V1:.+]]) : (i32) -> ()
-// CHECK-NEXT:        scf.reduce
+// CHECK-NEXT:        scf.yield
 // CHECK-NEXT:      }
 // CHECK-NEXT:      scf.for %[[arg3:.+]] = %[[c0]] to %[[arg2]] step %[[c1]] {
 // CHECK-NEXT:        memref.alloca_scope  {
@@ -289,7 +289,7 @@ module {
 // CHECK-NEXT:            func.call @use(%[[V4:.+]]) : (i32) -> ()
 // CHECK-NEXT:            func.call @use(%[[V3:.+]]) : (i32) -> ()
 // CHECK-NEXT:            func.call @use(%[[V2:.+]]) : (i32) -> ()
-// CHECK-NEXT:            scf.reduce
+// CHECK-NEXT:            scf.yield
 // CHECK-NEXT:          }
 // CHECK-NEXT:          scf.parallel (%[[arg4:.+]]) = (%[[c0]]) to (%[[c9]]) step (%[[c1]]) {
 // CHECK-NEXT:            %[[V1:.+]] = memref.load %[[V0]][%[[arg4]]] : memref<?xi32>
@@ -297,7 +297,7 @@ module {
 // CHECK-NEXT:            %[[V3:.+]] = arith.addi %[[V1]], %[[c2_i32]] : i32
 // CHECK-NEXT:            func.call @use(%[[V2:.+]]) : (i32) -> ()
 // CHECK-NEXT:            func.call @use(%[[V3:.+]]) : (i32) -> ()
-// CHECK-NEXT:            scf.reduce
+// CHECK-NEXT:            scf.yield
 // CHECK-NEXT:          }
 // CHECK-NEXT:        }
 // CHECK-NEXT:      }
@@ -317,7 +317,7 @@ module {
 // CHECK-NEXT:        %[[V1:.+]] = memref.load %[[arg0]][] : memref<i32>
 // CHECK-NEXT:        memref.store %[[V1]], %[[V0]][%[[arg2]]] : memref<?xi32>
 // CHECK-NEXT:        func.call @use(%[[V1:.+]]) : (i32) -> ()
-// CHECK-NEXT:        scf.reduce
+// CHECK-NEXT:        scf.yield
 // CHECK-NEXT:      }
 // CHECK-NEXT:      scf.if %[[arg1]] {
 // CHECK-NEXT:        memref.alloca_scope  {
@@ -329,7 +329,7 @@ module {
 // CHECK-NEXT:            func.call @use(%[[V4:.+]]) : (i32) -> ()
 // CHECK-NEXT:            func.call @use(%[[V3:.+]]) : (i32) -> ()
 // CHECK-NEXT:            func.call @use(%[[V2:.+]]) : (i32) -> ()
-// CHECK-NEXT:            scf.reduce
+// CHECK-NEXT:            scf.yield
 // CHECK-NEXT:          }
 // CHECK-NEXT:          scf.parallel (%[[arg2:.+]]) = (%[[c0]]) to (%[[c9]]) step (%[[c1]]) {
 // CHECK-NEXT:            %[[V1:.+]] = memref.load %[[V0]][%[[arg2]]] : memref<?xi32>
@@ -339,7 +339,7 @@ module {
 // CHECK-NEXT:            func.call @use(%[[V2:.+]]) : (i32) -> ()
 // CHECK-NEXT:            func.call @use(%[[V3:.+]]) : (i32) -> ()
 // CHECK-NEXT:            func.call @use(%[[V4:.+]]) : (i32) -> ()
-// CHECK-NEXT:            scf.reduce
+// CHECK-NEXT:            scf.yield
 // CHECK-NEXT:          }
 // CHECK-NEXT:        }
 // CHECK-NEXT:      } else {
@@ -360,7 +360,7 @@ module {
 // CHECK-NEXT:        %[[V1:.+]] = memref.load %[[arg0]][] : memref<i32>
 // CHECK-NEXT:        memref.store %[[V1]], %[[V0]][%[[arg2]]] : memref<?xi32>
 // CHECK-NEXT:        func.call @use(%[[V1:.+]]) : (i32) -> ()
-// CHECK-NEXT:        scf.reduce
+// CHECK-NEXT:        scf.yield
 // CHECK-NEXT:      }
 // CHECK-NEXT:      scf.parallel (%[[arg2:.+]]) = (%[[c0]]) to (%[[c9]]) step (%[[c1]]) {
 // CHECK-NEXT:        %[[V1:.+]] = memref.load %[[V0]][%[[arg2]]] : memref<?xi32>
@@ -370,7 +370,7 @@ module {
 // CHECK-NEXT:        func.call @use(%[[V4:.+]]) : (i32) -> ()
 // CHECK-NEXT:        func.call @use(%[[V3:.+]]) : (i32) -> ()
 // CHECK-NEXT:        func.call @use(%[[V2:.+]]) : (i32) -> ()
-// CHECK-NEXT:        scf.reduce
+// CHECK-NEXT:        scf.yield
 // CHECK-NEXT:      }
 // CHECK-NEXT:    }
 // CHECK-NEXT:    return
@@ -387,12 +387,12 @@ module {
 // CHECK-NEXT:        %[[V3:.+]] = arith.muli %[[V1]], %[[V2]] : i32
 // CHECK-NEXT:        memref.store %[[V3]], %[[V0]][%[[arg2]]] : memref<?xi32>
 // CHECK-NEXT:        func.call @use(%[[V3:.+]]) : (i32) -> ()
-// CHECK-NEXT:        scf.reduce
+// CHECK-NEXT:        scf.yield
 // CHECK-NEXT:      }
 // CHECK-NEXT:      scf.parallel (%[[arg2:.+]]) = (%[[c0]]) to (%[[c9]]) step (%[[c1]]) {
 // CHECK-NEXT:        %[[V1:.+]] = memref.load %[[V0]][%[[arg2]]] : memref<?xi32>
 // CHECK-NEXT:        func.call @use(%[[V1:.+]]) : (i32) -> ()
-// CHECK-NEXT:        scf.reduce
+// CHECK-NEXT:        scf.yield
 // CHECK-NEXT:      }
 // CHECK-NEXT:    }
 // CHECK-NEXT:    return
