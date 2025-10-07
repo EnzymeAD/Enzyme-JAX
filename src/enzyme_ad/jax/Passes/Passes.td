@@ -943,4 +943,17 @@ def AutoBatchingPass : Pass<"auto-batching"> {
   ];
 }
 
+def DropUnsupportedAttributesPass : Pass<"drop-unsupported-attributes", "ModuleOp"> {
+  let summary = "Drop unsupported attributes for XLA";
+  let dependentDialects = [];
+  let options = [
+    Option<
+        /*C++ variable name=*/"enzymexla_memory_effects",
+        /*CLI argument=*/"enzymexla-memory-effects",
+        /*type=*/"bool",
+        /*default=*/"true",
+        /*description=*/"Drop enzymexla.memory_effects attribute">,
+  ];
+}
+
 #endif

@@ -19,15 +19,18 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/IR/Visitors.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "shardy/dialect/sdy/ir/utils.h"
 #include "src/enzyme_ad/jax/CheckedRewrite.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Passes/StructuredTensors.h"
@@ -23332,6 +23335,554 @@ private:
   }
 };
 
+struct RemoveNoOpsFromWhileLoop
+    : public CheckedOpRewritePattern<stablehlo::WhileOp,
+                                     RemoveNoOpsFromWhileLoop> {
+  using CheckedOpRewritePattern<
+      stablehlo::WhileOp, RemoveNoOpsFromWhileLoop>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::WhileOp whileOp,
+                                    PatternRewriter &rewriter) const {
+    auto info = WhileLoopInfo(whileOp);
+    auto computeInfoSuccess = info.computeInfo();
+    if (computeInfoSuccess.failed())
+      return computeInfoSuccess;
+
+    if (!info.isValid() || !info.isConstant() ||
+        info.getConstantNumIters() <= 0)
+      return failure();
+
+    auto &whileBody = whileOp.getBody().front();
+    auto inductionVar = whileBody.getArgument(0);
+
+    auto limit = info.getConstantLimit().value();
+    auto start = info.getConstantStart().value();
+    auto step = info.getConstantStep().value();
+
+    auto inductionType = inductionVar.getType();
+    unsigned bitWidth = 64;
+    if (auto tensorType = dyn_cast<RankedTensorType>(inductionType)) {
+      if (auto intType = dyn_cast<IntegerType>(tensorType.getElementType())) {
+        bitWidth = intType.getWidth();
+      }
+    }
+
+    // Initialize bounds map with induction variable bounds
+    DenseMap<Value, Bounds> boundsMap;
+    if (step > 0) {
+      APInt minBound(bitWidth, start, true);
+      APInt maxBound(bitWidth, limit - 1, true);
+      boundsMap[inductionVar] = Bounds(minBound, maxBound);
+    } else {
+      APInt minBound(bitWidth, limit + 1, true);
+      APInt maxBound(bitWidth, start, true);
+      boundsMap[inductionVar] = Bounds(minBound, maxBound);
+    }
+
+    // DFS to propagate bounds
+    SmallVector<Value> worklist;
+    DenseSet<Operation *> visited;
+    worklist.push_back(inductionVar);
+
+    while (!worklist.empty()) {
+      Value current = worklist.pop_back_val();
+
+      for (auto user : current.getUsers()) {
+        if (visited.contains(user))
+          continue;
+        visited.insert(user);
+
+        auto bounds = propagateBounds(user, boundsMap, bitWidth);
+        if (bounds.has_value()) {
+          for (auto result : user->getResults()) {
+            boundsMap[result] = bounds.value();
+            worklist.push_back(result);
+          }
+        }
+      }
+    }
+
+    // Rewrite ops based on computed bounds
+    bool anyOpRewritten = false;
+    for (auto op : visited) {
+      if (auto remOp = dyn_cast<stablehlo::RemOp>(op)) {
+        if (rewriteRemOp(rewriter, remOp, boundsMap)) {
+          anyOpRewritten = true;
+        }
+      } else if (auto compareOp = dyn_cast<stablehlo::CompareOp>(op)) {
+        if (rewriteCompareOp(rewriter, compareOp, boundsMap)) {
+          anyOpRewritten = true;
+        }
+      } else if (auto absOp = dyn_cast<stablehlo::AbsOp>(op)) {
+        if (rewriteAbsOp(rewriter, absOp, boundsMap)) {
+          anyOpRewritten = true;
+        }
+      } else if (auto clampOp = dyn_cast<stablehlo::ClampOp>(op)) {
+        if (rewriteClampOp(rewriter, clampOp, boundsMap)) {
+          anyOpRewritten = true;
+        }
+      }
+    }
+    return anyOpRewritten ? success() : failure();
+  }
+
+private:
+  struct Bounds {
+    APInt min;
+    APInt max;
+    bool valid;
+
+    Bounds() : valid(false) {}
+    Bounds(APInt min, APInt max) : min(min), max(max), valid(true) {}
+  };
+
+  APInt min(APInt a, APInt b) const { return a.slt(b) ? a : b; }
+  APInt max(APInt a, APInt b) const { return a.sgt(b) ? a : b; }
+  APInt abs(APInt a) const { return a.sgt(0) ? a : -a; }
+
+  std::optional<Bounds> getBounds(const DenseMap<Value, Bounds> &boundsMap,
+                                  Value value) const {
+    if (boundsMap.contains(value)) {
+      return boundsMap.lookup(value);
+    }
+    SplatElementsAttr splatAttr;
+    if (matchPattern(value, m_Constant(&splatAttr))) {
+      auto attr = splatAttr.getSplatValue<Attribute>();
+      if (auto intAttr = dyn_cast<IntegerAttr>(attr)) {
+        auto value = intAttr.getValue();
+        return Bounds(value, value);
+      }
+    }
+    return std::nullopt;
+  }
+
+  std::optional<Bounds>
+  propagateBounds(Operation *op, const DenseMap<Value, Bounds> &boundsMap,
+                  unsigned bitWidth) const {
+    if (!op->hasTrait<OpTrait::Elementwise>())
+      return std::nullopt;
+
+    if (op->getNumOperands() == 1) {
+      if (isa<stablehlo::SineOp, stablehlo::CosineOp>(op)) {
+        APInt one(bitWidth, 0, true);
+        return Bounds(-one, one);
+      }
+
+      auto optional_bounds = getBounds(boundsMap, op->getOperand(0));
+      if (!optional_bounds.has_value())
+        return std::nullopt;
+      auto bounds = optional_bounds.value();
+
+      if (auto negOp = dyn_cast<stablehlo::NegOp>(op)) {
+        return Bounds(-bounds.max, -bounds.min);
+      } else if (auto absOp = dyn_cast<stablehlo::AbsOp>(op)) {
+        APInt zero(bitWidth, 0, true);
+        if (bounds.min.sge(zero)) { // all positive
+          return Bounds(bounds.min, bounds.max);
+        } else if (bounds.max.sle(zero)) { // all negative
+          return Bounds(-bounds.max, -bounds.min);
+        } else {
+          APInt newMax = bounds.max.abs().sgt(-bounds.min.abs())
+                             ? bounds.max.abs()
+                             : (-bounds.min).abs();
+          return Bounds(zero, newMax);
+        }
+      }
+
+      return std::nullopt;
+    }
+
+    if (op->getNumOperands() == 2) {
+      auto optional_lhs_bounds = getBounds(boundsMap, op->getOperand(0));
+      auto optional_rhs_bounds = getBounds(boundsMap, op->getOperand(1));
+
+      if (!optional_lhs_bounds.has_value() || !optional_rhs_bounds.has_value())
+        return std::nullopt;
+
+      auto lhs_bounds = optional_lhs_bounds.value();
+      auto rhs_bounds = optional_rhs_bounds.value();
+
+      if (auto addOp = dyn_cast<stablehlo::AddOp>(op)) {
+        return Bounds(lhs_bounds.min + rhs_bounds.min,
+                      lhs_bounds.max + rhs_bounds.max);
+      } else if (auto subOp = dyn_cast<stablehlo::SubtractOp>(op)) {
+        return Bounds(lhs_bounds.min - rhs_bounds.max,
+                      lhs_bounds.max - rhs_bounds.min);
+      } else if (auto mulOp = dyn_cast<stablehlo::MulOp>(op)) {
+        auto p1 = lhs_bounds.min * rhs_bounds.min;
+        auto p2 = lhs_bounds.min * rhs_bounds.max;
+        auto p3 = lhs_bounds.max * rhs_bounds.min;
+        auto p4 = lhs_bounds.max * rhs_bounds.max;
+        return Bounds(min(min(p1, p2), min(p3, p4)),
+                      max(max(p1, p2), max(p3, p4)));
+      } else if (auto divOp = dyn_cast<stablehlo::DivOp>(op)) {
+        APInt zero(bitWidth, 0, true);
+        if (rhs_bounds.min.sle(zero) && rhs_bounds.max.sge(zero)) {
+          // Divisor range includes zero, cannot compute safe bounds
+          return std::nullopt;
+        }
+        auto d1 = lhs_bounds.min.sdiv(rhs_bounds.min);
+        auto d2 = lhs_bounds.min.sdiv(rhs_bounds.max);
+        auto d3 = lhs_bounds.max.sdiv(rhs_bounds.min);
+        auto d4 = lhs_bounds.max.sdiv(rhs_bounds.max);
+
+        return Bounds(min(min(d1, d2), min(d3, d4)),
+                      max(max(d1, d2), max(d3, d4)));
+      }
+    }
+
+    // TODO: other common ops like remainder, clamp, etc.
+
+    return std::nullopt;
+  }
+
+  bool rewriteRemOp(PatternRewriter &rewriter, stablehlo::RemOp remOp,
+                    const DenseMap<Value, Bounds> &boundsMap) const {
+    auto optional_lhs_bounds = getBounds(boundsMap, remOp.getLhs());
+    auto optional_rhs_bounds = getBounds(boundsMap, remOp.getRhs());
+
+    if (!optional_lhs_bounds.has_value() || !optional_rhs_bounds.has_value())
+      return false;
+
+    auto lhs_bounds = optional_lhs_bounds.value();
+    auto rhs_bounds = optional_rhs_bounds.value();
+
+    auto rhs_abs_min = abs(rhs_bounds.min);
+    auto rhs_abs_max = abs(rhs_bounds.max);
+    auto minboth = min(rhs_abs_min, rhs_abs_max);
+    if (lhs_bounds.max.slt(minboth) && lhs_bounds.min.sgt(-minboth)) {
+      auto lhs = remOp.getLhs();
+      rewriter.replaceOp(remOp, lhs);
+      return true;
+    }
+
+    return false;
+  };
+
+  bool rewriteCompareOp(PatternRewriter &rewriter,
+                        stablehlo::CompareOp compareOp,
+                        const DenseMap<Value, Bounds> &boundsMap) const {
+    auto optional_lhs_bounds = getBounds(boundsMap, compareOp.getLhs());
+    auto optional_rhs_bounds = getBounds(boundsMap, compareOp.getRhs());
+
+    if (!optional_lhs_bounds.has_value() || !optional_rhs_bounds.has_value())
+      return false;
+
+    auto lhs_bounds = optional_lhs_bounds.value();
+    auto rhs_bounds = optional_rhs_bounds.value();
+
+    switch (compareOp.getComparisonDirection()) {
+    case stablehlo::ComparisonDirection::EQ: // lhs == rhs
+      // all values are equal
+      if (lhs_bounds.min == lhs_bounds.max &&
+          rhs_bounds.min == rhs_bounds.max &&
+          lhs_bounds.min == rhs_bounds.min) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            compareOp, compareOp.getType(),
+            cast<ElementsAttr>(makeAttr(compareOp.getType(), true)));
+        return true;
+      }
+      // outside of range: lhs_max < rhs_min or rhs_max < lhs_min
+      if (lhs_bounds.max.slt(rhs_bounds.min) ||
+          rhs_bounds.max.slt(lhs_bounds.min)) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            compareOp, compareOp.getType(),
+            cast<ElementsAttr>(makeAttr(compareOp.getType(), false)));
+        return true;
+      }
+      break;
+    case stablehlo::ComparisonDirection::NE: // lhs != rhs
+      // outside of range: lhs_max < rhs_min or rhs_max < lhs_min
+      if (lhs_bounds.max.slt(rhs_bounds.min) ||
+          rhs_bounds.max.slt(lhs_bounds.min)) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            compareOp, compareOp.getType(),
+            cast<ElementsAttr>(makeAttr(compareOp.getType(), false)));
+        return true;
+      }
+      break;
+    case stablehlo::ComparisonDirection::GE: // lhs >= rhs
+      // lhs_max < rhs_min
+      if (lhs_bounds.max.slt(rhs_bounds.min)) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            compareOp, compareOp.getType(),
+            cast<ElementsAttr>(makeAttr(compareOp.getType(), false)));
+        return true;
+      }
+      // lhs_min >= rhs_max
+      if (lhs_bounds.min.sge(rhs_bounds.max)) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            compareOp, compareOp.getType(),
+            cast<ElementsAttr>(makeAttr(compareOp.getType(), true)));
+        return true;
+      }
+      break;
+    case stablehlo::ComparisonDirection::GT: // lhs > rhs
+      // lhs_max <= rhs_min
+      if (lhs_bounds.max.sle(rhs_bounds.min)) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            compareOp, compareOp.getType(),
+            cast<ElementsAttr>(makeAttr(compareOp.getType(), false)));
+        return true;
+      }
+      // lhs_min > rhs_max
+      if (lhs_bounds.min.sgt(rhs_bounds.max)) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            compareOp, compareOp.getType(),
+            cast<ElementsAttr>(makeAttr(compareOp.getType(), true)));
+        return true;
+      }
+      break;
+    case stablehlo::ComparisonDirection::LE: // lhs <= rhs
+      // rhs_max < lhs_min
+      if (rhs_bounds.max.slt(lhs_bounds.min)) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            compareOp, compareOp.getType(),
+            cast<ElementsAttr>(makeAttr(compareOp.getType(), false)));
+        return true;
+      }
+      // rhs_min >= lhs_max
+      if (rhs_bounds.min.sge(lhs_bounds.max)) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            compareOp, compareOp.getType(),
+            cast<ElementsAttr>(makeAttr(compareOp.getType(), true)));
+        return true;
+      }
+      break;
+    case stablehlo::ComparisonDirection::LT: // lhs < rhs
+      // rhs_max <= lhs_min
+      if (rhs_bounds.max.sle(lhs_bounds.min)) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            compareOp, compareOp.getType(),
+            cast<ElementsAttr>(makeAttr(compareOp.getType(), false)));
+        return true;
+      }
+      // rhs_min > lhs_max
+      if (rhs_bounds.min.sgt(lhs_bounds.max)) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            compareOp, compareOp.getType(),
+            cast<ElementsAttr>(makeAttr(compareOp.getType(), true)));
+        return true;
+      }
+      break;
+    }
+
+    return false;
+  };
+
+  bool rewriteAbsOp(PatternRewriter &rewriter, stablehlo::AbsOp absOp,
+                    const DenseMap<Value, Bounds> &boundsMap) const {
+    auto optional_bounds = getBounds(boundsMap, absOp.getOperand());
+    if (!optional_bounds.has_value())
+      return false;
+
+    auto bounds = optional_bounds.value();
+    APInt zero(bounds.min.getBitWidth(), 0, true);
+    if (bounds.min.sge(zero)) {
+      rewriter.replaceOp(absOp, absOp.getOperand());
+      return true;
+    }
+    return false;
+  };
+
+  bool rewriteClampOp(PatternRewriter &rewriter, stablehlo::ClampOp clampOp,
+                      const DenseMap<Value, Bounds> &boundsMap) const {
+    auto optional_min_bounds = getBounds(boundsMap, clampOp.getMin());
+    auto optional_max_bounds = getBounds(boundsMap, clampOp.getMax());
+    auto optional_operand_bounds = getBounds(boundsMap, clampOp.getOperand());
+    if (!optional_min_bounds.has_value() || !optional_max_bounds.has_value() ||
+        !optional_operand_bounds.has_value())
+      return false;
+
+    auto min_bounds = optional_min_bounds.value();
+    auto max_bounds = optional_max_bounds.value();
+    auto operand_bounds = optional_operand_bounds.value();
+
+    if (min_bounds.max.sle(operand_bounds.min) &&
+        max_bounds.min.sge(operand_bounds.max)) {
+      rewriter.replaceOp(clampOp, clampOp.getOperand());
+      return true;
+    }
+    return false;
+  };
+};
+
+struct WhileIsCopySimplify
+    : public CheckedOpRewritePattern<stablehlo::WhileOp, WhileIsCopySimplify> {
+  using CheckedOpRewritePattern<stablehlo::WhileOp,
+                                WhileIsCopySimplify>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::WhileOp whileOp,
+                                    PatternRewriter &rewriter) const {
+    auto info = WhileLoopInfo(whileOp);
+    auto computeInfoSuccess = info.computeInfo();
+    if (computeInfoSuccess.failed())
+      return computeInfoSuccess;
+
+    if (!info.isValid() || !info.isConstant() ||
+        info.getConstantNumIters() <= 0)
+      return failure();
+
+    auto &whileBody = whileOp.getBody().front();
+    auto inductionVar = whileBody.getArgument(0);
+    auto parentBlock = whileOp->getBlock();
+
+    auto limit = info.getConstantLimit().value();
+    auto start = info.getConstantStart().value();
+    auto step = info.getConstantStep().value();
+    info.propagateInductionVarOffsets();
+
+    if (step != 1)
+      return failure();
+
+    auto parentFunc = whileOp->getParentOp();
+    if (!parentFunc)
+      return failure();
+    DominanceInfo domInfo(parentFunc);
+
+    DenseMap<Value, APInt> inductionVarOffsets = info.getInductionVarOffsets();
+    DenseMap<unsigned,
+             std::tuple<Value, SmallVector<int64_t>, SmallVector<int64_t>,
+                        SmallVector<int64_t>, unsigned>>
+        indicesToReplace;
+
+    auto returnOp = dyn_cast<stablehlo::ReturnOp>(whileBody.getTerminator());
+    if (!returnOp)
+      return failure();
+
+    for (auto [idx, returnValue] : llvm::enumerate(returnOp.getOperands())) {
+      auto dusOp = returnValue.getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
+      if (!dusOp)
+        continue;
+
+      // check if operand is a loop caried variable
+      auto blockArg = dyn_cast<BlockArgument>(dusOp.getOperand());
+      if (!blockArg)
+        continue;
+
+      // check if update is a DS
+      auto sliceOp =
+          dusOp.getUpdate().getDefiningOp<stablehlo::DynamicSliceOp>();
+      if (!sliceOp)
+        continue;
+
+      Value sliceOperand = sliceOp.getOperand();
+      if (!isValueAccessibleFromBlock(domInfo, sliceOperand, parentBlock))
+        continue;
+
+      bool indicesMatch = true, foundInductionVar = false;
+      auto dsShape = cast<ShapedType>(sliceOp.getType()).getShape();
+      auto sliceOperandShape =
+          cast<ShapedType>(sliceOperand.getType()).getShape();
+
+      SmallVector<int64_t> sliceStartIndices(sliceOp.getStartIndices().size(),
+                                             -1);
+      SmallVector<int64_t> sliceSizes(sliceOp.getStartIndices().size(), -1);
+      SmallVector<int64_t> dusStartIndices(dusOp.getStartIndices().size(), -1);
+
+      for (size_t i = 0; i < sliceOp.getStartIndices().size(); i++) {
+        auto dsStartIndex = sliceOp.getStartIndices()[i];
+        auto dusStartIndex = dusOp.getStartIndices()[i];
+
+        APInt dsIdx, dusIdx;
+        if (matchPattern(dsStartIndex, m_ConstantInt(&dsIdx))) {
+          sliceStartIndices[i] = getInt(dsIdx);
+          sliceSizes[i] = dsShape[i];
+          if (matchPattern(dusStartIndex, m_ConstantInt(&dusIdx))) {
+            dusStartIndices[i] = getInt(dusIdx);
+          } else {
+            indicesMatch = false;
+            break;
+          }
+        } else {
+          if (dsStartIndex != dusStartIndex) {
+            indicesMatch = false;
+            break;
+          }
+
+          if (foundInductionVar || // multiple indices with induction var
+              !inductionVarOffsets.contains(dsStartIndex)) { // no induction var
+            indicesMatch = false;
+            break;
+          }
+
+          foundInductionVar = true;
+          auto offset = inductionVarOffsets[dsStartIndex];
+
+          if (dsShape[i] != 1) {
+            indicesMatch = false;
+            break;
+          }
+          sliceStartIndices[i] = start + getInt(offset);
+          sliceSizes[i] = limit - start;
+          dusStartIndices[i] = start + getInt(offset);
+        }
+      }
+
+      if (!indicesMatch) {
+        continue;
+      }
+
+      auto result = std::make_tuple(sliceOperand, sliceStartIndices, sliceSizes,
+                                    dusStartIndices, blockArg.getArgNumber());
+      indicesToReplace[idx] = result;
+    }
+
+    if (indicesToReplace.empty())
+      return failure();
+
+    for (auto [idx, tup] : indicesToReplace) {
+      // We don't need to rewrite the loop here. While dead args elimination
+      // will take care of it.
+      auto [replacement, sliceStartIndices, sliceSizes, dusStartIndices,
+            argIdx] = tup;
+
+      SmallVector<int64_t> strides(sliceSizes.size(), 1);
+      SmallVector<int64_t> limits(sliceSizes.size());
+      for (size_t i = 0; i < sliceSizes.size(); i++) {
+        limits[i] = sliceSizes[i] + sliceStartIndices[i];
+      }
+      auto sliceOp = rewriter.create<stablehlo::SliceOp>(
+          whileOp.getLoc(), replacement,
+          rewriter.getDenseI64ArrayAttr(sliceStartIndices),
+          rewriter.getDenseI64ArrayAttr(limits),
+          rewriter.getDenseI64ArrayAttr(strides));
+
+      SmallVector<Value> dusStartIndicesValue;
+      auto type = RankedTensorType::get({}, rewriter.getI32Type());
+      for (auto dusStartIndex : dusStartIndices) {
+        dusStartIndicesValue.push_back(rewriter.create<stablehlo::ConstantOp>(
+            whileOp.getLoc(), type,
+            cast<ElementsAttr>(makeAttr(type, dusStartIndex))));
+      }
+      auto newDUSOp = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
+          whileOp.getLoc(), whileOp.getOperands()[argIdx], sliceOp.getResult(),
+          dusStartIndicesValue);
+
+      whileOp.getResult(idx).replaceAllUsesWith(newDUSOp->getResult(0));
+    }
+    return success();
+  }
+
+private:
+  bool isValueAccessibleFromBlock(DominanceInfo &domInfo, Value value,
+                                  Block *block) const {
+    if (auto definingOp = value.getDefiningOp()) {
+      return domInfo.dominates(definingOp->getBlock(), block);
+    } else if (auto blockArg = dyn_cast<BlockArgument>(value)) {
+      return domInfo.dominates(blockArg.getOwner(), block);
+    }
+    return false;
+  }
+
+  int64_t getInt(APInt value) const {
+    if (value.getBitWidth() != 64) {
+      value = value.sextOrTrunc(64);
+    }
+    return value.getSExtValue();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -23945,7 +24496,9 @@ struct EnzymeHLOOptPass
         MaxReduceSliceFusion,
         CaseToIf,
         DUSToDynamicPad,
-        DynamicPadToPad
+        DynamicPadToPad,
+        RemoveNoOpsFromWhileLoop,
+        WhileIsCopySimplify
       >(context);
 
     patterns.add<

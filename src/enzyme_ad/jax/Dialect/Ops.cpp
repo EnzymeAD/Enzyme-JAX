@@ -7,9 +7,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "Ops.h"
-#include "../Utils.h"
 #include "Dialect.h"
 #include "Interfaces/AutoDiffTypeInterface.h"
+#include "src/enzyme_ad/jax/Utils.h"
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"

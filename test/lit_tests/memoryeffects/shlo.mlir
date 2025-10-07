@@ -34,8 +34,8 @@ module {
     return %0 : tensor<64xi64>
   }
 
-    // ASSUME: @main4(%arg0: tensor<64xi64> {enzymexla.memory_effects = []}) -> tensor<64xi64> attributes {enzymexla.memory_effects = ["read", "write", "allocate", "free"]} {
-    // NOASSUME: func.func @main4(%arg0: tensor<64xi64> {enzymexla.memory_effects = []}) -> tensor<64xi64> attributes {enzymexla.memory_effects = ["read", "write", "allocate", "free"]} {
+    // ASSUME: @main4(%arg0: tensor<64xi64> {enzymexla.memory_effects = ["read", "write", "allocate", "free"]}) -> tensor<64xi64> attributes {enzymexla.memory_effects = ["read", "write", "allocate", "free"]} {
+    // NOASSUME: func.func @main4(%arg0: tensor<64xi64> {enzymexla.memory_effects = ["read", "write", "allocate", "free"]}) -> tensor<64xi64> attributes {enzymexla.memory_effects = ["read", "write", "allocate", "free"]} {
 
   func.func @main5(%arg0: tensor<64xi64>) -> tensor<64xi64> {
     %0 = stablehlo.custom_call @mycall1(%arg0) {has_side_effect = false} : (tensor<64xi64>) -> tensor<64xi64>
@@ -44,9 +44,4 @@ module {
 
     // ASSUME: @main5(%arg0: tensor<64xi64> {enzymexla.memory_effects = []}) -> tensor<64xi64> attributes {enzymexla.memory_effects = []} {
     // NOASSUME: func.func @main5(%arg0: tensor<64xi64> {enzymexla.memory_effects = []}) -> tensor<64xi64> attributes {enzymexla.memory_effects = []} {
-
-
 }
-
-
-

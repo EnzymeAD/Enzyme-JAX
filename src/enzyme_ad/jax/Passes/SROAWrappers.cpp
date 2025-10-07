@@ -94,11 +94,16 @@ struct SROAWrappersPass
     pm.addPass(mlir::createConvertNVVMToLLVMPass());
     auto subres = pm.run(mToTranslate);
     if (!subres.succeeded()) {
+      signalPassFailure();
       return;
     }
 
     llvm::LLVMContext llvmCtx;
     auto llvmModule = mlir::translateModuleToLLVMIR(mToTranslate, llvmCtx);
+    if (!llvmModule) {
+      signalPassFailure();
+      return;
+    }
 
     if (dump_prellvm)
       llvm::errs() << "sroa pre llvm\n" << *llvmModule << "\n";
