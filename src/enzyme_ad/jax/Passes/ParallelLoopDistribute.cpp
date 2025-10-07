@@ -152,14 +152,19 @@ static bool arePreceedingOpsFullyRecomputable(Operation *op,
   SmallVector<MemoryEffects::EffectInstance> beforeEffects;
   mlir::enzyme::getEffectsBefore(op, beforeEffects, /*stopAtBarrier*/ false);
 
+
+  llvm::errs() << " checking if preceeding op is recomputable op: " << *op << " singleExecution: " << singleExecution << "\n";
   for (auto it : beforeEffects) {
     if (isa<MemoryEffects::Read>(it.getEffect())) {
       if (singleExecution)
         continue;
       if (Value v = it.getValue())
-        if (!mayWriteTo(op, v, /*ignoreBarrier*/ true))
+        if (!mayWriteTo(op, v, /*ignoreBarrier*/ true)) {
+          llvm::errs() << " may write to : " << *op << " in v " << v << "\n";
           continue;
+        }
     }
+    llvm::errs() << " not recomputable because of effect " << it.getEffect() << "\n";
     return false;
   }
 
@@ -322,7 +327,7 @@ bool isIfOp(Operation *op) { return isa<scf::IfOp, affine::AffineIfOp>(op); }
 static void findValuesUsedBelow(enzymexla::BarrierOp op,
                                 llvm::SetVector<Value> &crossing,
                                 llvm::SetVector<Operation *> &preserveAllocas) {
-  llvm::SetVector<Operation *> descendantsUsed;
+  // llvm::SetVector<Operation *> descendantsUsed;
 
   // A set of pre-barrier operations which are potentially captured by a
   // subsequent pre-barrier operation.
@@ -363,7 +368,6 @@ static void findValuesUsedBelow(enzymexla::BarrierOp op,
         Operation *origUser = user;
         while (user->getBlock() != op->getBlock())
           user = user->getBlock()->getParentOp();
-
         if (!op->isBeforeInBlock(user)) {
           if (couldWrite(origUser) ||
               origUser->hasTrait<OpTrait::IsTerminator>()) {
@@ -420,7 +424,7 @@ static bool hasNestedBarrier(Operation *op, SmallVector<BlockArgument> &vals) {
   return vals.size();
 }
 
-// namespace {
+namespace {
 
 #if 0
 /// Returns `true` if the loop has a form expected by interchange patterns.
@@ -742,7 +746,7 @@ static LogicalResult distributeAroundBarrier(T op, enzymexla::BarrierOp barrier,
 
       // We always have to recalculate operands of yields, otherwise check if we
       // don't already have the results
-      if (!isa<scf::YieldOp, affine::AffineYieldOp>(op) &&
+      if (!isa<scf::YieldOp, scf::ReduceOp, affine::AffineYieldOp>(op) &&
           llvm::all_of(op->getResults(),
                        [&mapping](Value v) { return mapping.contains(v); }))
         return;
@@ -983,6 +987,15 @@ static enzymexla::BarrierOp getFirstBarrier(Block *block) {
   if (it == block->end()) {
     return nullptr;
   }
+  // Do not return barrier if there is a barrier nested more deeply
+  /*
+  if (block->walk([=](enzymexla::BarrierOp op) {
+    if (op->getBlock() == block)
+      return WalkResult::advance();
+    return WalkResult::interrupt();
+  }).wasInterrupted()) {
+    return nullptr;
+  }*/
   return cast<enzymexla::BarrierOp>(&*it);
 }
 
@@ -1065,7 +1078,14 @@ wrapWithBarriers(T op, PatternRewriter &rewriter,
       prevOp == nullptr || isBarrierContainingAll(prevOp, args) || recomputable;
   bool hasNextBarrierLike =
       nextOp == &op->getBlock()->back() || isBarrierContainingAll(nextOp, args);
-
+  LLVM_DEBUG(DBGS() << "prevBarrierLike is" << hasPrevBarrierLike << "\n");
+  LLVM_DEBUG(DBGS() << "nextBarrierLike is" << hasNextBarrierLike << "\n");
+  LLVM_DEBUG(DBGS() << "prevOp is" << prevOp << "\n");
+  LLVM_DEBUG(DBGS() << "nextOp: " << *nextOp << "\n");
+  LLVM_DEBUG(DBGS() << "back: " << op->getBlock()->back() << "\n");
+  LLVM_DEBUG(DBGS() << "nextOp addr: " << nextOp << "\n");
+  LLVM_DEBUG(DBGS() << "back addr: " << &op->getBlock()->back() << "\n");
+  LLVM_DEBUG(DBGS() << "comparison: " << (nextOp == &op->getBlock()->back()) << "\n");
   if (hasPrevBarrierLike && hasNextBarrierLike) {
     LLVM_DEBUG(DBGS() << "[wrap] already has sufficient barriers\n");
     return failure();
@@ -1121,8 +1141,9 @@ static LogicalResult wrapAndDistribute(T op, bool singleExecution,
     return failure();
 
   bool recomputable = arePreceedingOpsFullyRecomputable(op, singleExecution);
+  LLVM_DEBUG(DBGS() << "Recomputable" << recomputable << "\n";);
   if (recomputable &&
-      isa<scf::YieldOp, affine::AffineYieldOp>(op->getNextNode())) {
+      isa<scf::ReduceOp, affine::AffineYieldOp>(op->getNextNode())) {
     return failure();
   }
 
@@ -1181,6 +1202,7 @@ struct WrapForWithBarrier : public OpRewritePattern<scf::ForOp> {
 
   LogicalResult matchAndRewrite(scf::ForOp op,
                                 PatternRewriter &rewriter) const override {
+    LLVM_DEBUG(DBGS() << "For wrapper" << "\n";); 
     return wrapAndDistribute<scf::ForOp, UseMinCut>(
         op, /* singleExecution */ false, rewriter);
   }
@@ -1854,7 +1876,7 @@ void getIfCrossingCache(mlir::PatternRewriter &rewriter, Block *original,
 
       // We always have to recalculate operands of yields, otherwise check if we
       // don't already have the results
-      if (!isa<scf::YieldOp, affine::AffineYieldOp>(op) &&
+      if (!isa<scf::YieldOp, scf::ReduceOp, affine::AffineYieldOp>(op) &&
           llvm::all_of(op->getResults(),
                        [&mapping](Value v) { return mapping.contains(v); }))
         return;
@@ -1915,7 +1937,12 @@ void distributeBlockAroundBarrier(mlir::PatternRewriter &rewriter,
 
   // Yield before the barrier
   rewriter.setInsertionPoint(barrier);
-  rewriter.create<scf::YieldOp>(beforeBlocks->getLoc(), ValueRange());
+  // rewriter.create<scf::YieldOp>(beforeBlocks->getLoc(), ValueRange());
+  if (isa<scf::ParallelOp>(beforeBlocks)) {
+    rewriter.create<scf::ReduceOp>(beforeBlocks->getLoc());
+  } else {
+    rewriter.create<scf::YieldOp>(beforeBlocks->getLoc(), ValueRange());
+  }
   Operation *postBarrier = barrier->getNextNode();
   rewriter.eraseOp(barrier);
 
@@ -2759,6 +2786,6 @@ struct SCFCPUifyPass : public enzyme::impl::SCFCPUifyBase<SCFCPUifyPass> {
   }
 };
 
-// } // end namespace
+} // end namespace
 
 // } // namespace mlir
