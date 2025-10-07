@@ -32,15 +32,6 @@ namespace enzyme {
 using namespace mlir;
 using namespace mlir::enzyme;
 
-// Forward declarations for Enzyme probabilistic programming ops/types that are
-// generated via TableGen but may not be visible to clang-tidy.
-namespace mlir {
-namespace enzyme {
-class GetSampleFromConstraintOp;
-class ConstraintType;
-} // namespace enzyme
-} // namespace mlir
-
 static std::string getTensorSignature(Type tensorType) {
   if (auto rankedType = dyn_cast<RankedTensorType>(tensorType)) {
     std::string sig;
