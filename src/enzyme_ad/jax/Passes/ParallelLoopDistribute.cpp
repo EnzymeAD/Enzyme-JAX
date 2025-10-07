@@ -152,8 +152,8 @@ static bool arePreceedingOpsFullyRecomputable(Operation *op,
   SmallVector<MemoryEffects::EffectInstance> beforeEffects;
   mlir::enzyme::getEffectsBefore(op, beforeEffects, /*stopAtBarrier*/ false);
 
-
-  llvm::errs() << " checking if preceeding op is recomputable op: " << *op << " singleExecution: " << singleExecution << "\n";
+  llvm::errs() << " checking if preceeding op is recomputable op: " << *op
+               << " singleExecution: " << singleExecution << "\n";
   for (auto it : beforeEffects) {
     if (isa<MemoryEffects::Read>(it.getEffect())) {
       if (singleExecution)
@@ -164,7 +164,8 @@ static bool arePreceedingOpsFullyRecomputable(Operation *op,
           continue;
         }
     }
-    llvm::errs() << " not recomputable because of effect " << it.getEffect() << "\n";
+    llvm::errs() << " not recomputable because of effect " << it.getEffect()
+                 << "\n";
     return false;
   }
 
@@ -1085,7 +1086,8 @@ wrapWithBarriers(T op, PatternRewriter &rewriter,
   LLVM_DEBUG(DBGS() << "back: " << op->getBlock()->back() << "\n");
   LLVM_DEBUG(DBGS() << "nextOp addr: " << nextOp << "\n");
   LLVM_DEBUG(DBGS() << "back addr: " << &op->getBlock()->back() << "\n");
-  LLVM_DEBUG(DBGS() << "comparison: " << (nextOp == &op->getBlock()->back()) << "\n");
+  LLVM_DEBUG(DBGS() << "comparison: " << (nextOp == &op->getBlock()->back())
+                    << "\n");
   if (hasPrevBarrierLike && hasNextBarrierLike) {
     LLVM_DEBUG(DBGS() << "[wrap] already has sufficient barriers\n");
     return failure();
@@ -1202,7 +1204,7 @@ struct WrapForWithBarrier : public OpRewritePattern<scf::ForOp> {
 
   LogicalResult matchAndRewrite(scf::ForOp op,
                                 PatternRewriter &rewriter) const override {
-    LLVM_DEBUG(DBGS() << "For wrapper" << "\n";); 
+    LLVM_DEBUG(DBGS() << "For wrapper" << "\n";);
     return wrapAndDistribute<scf::ForOp, UseMinCut>(
         op, /* singleExecution */ false, rewriter);
   }

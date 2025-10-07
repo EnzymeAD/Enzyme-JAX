@@ -32,4 +32,4 @@ common --define=allow_oversize_protos=true
 # See https://github.com/bazel-contrib/rules_python/issues/2445
 build --@rules_python//python/config_settings:precompile=force_disabled
 
-build -c opt
+build -c dbg
