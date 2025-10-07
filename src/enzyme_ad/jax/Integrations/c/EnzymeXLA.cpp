@@ -42,6 +42,16 @@ MlirAttribute enzymexlaLapackSideAttrGet(MlirContext ctx, uint8_t left_side) {
   return wrap(mlir::enzymexla::LapackSideAttr::get(unwrap(ctx), side));
 }
 
+MlirAttribute enzymexlaLapackUploAttrGet(MlirContext ctx, uint8_t up) {
+  mlir::enzymexla::LapackUplo uplo;
+  if (up) {
+    uplo = mlir::enzymexla::LapackUplo::U;
+  } else {
+    uplo = mlir::enzymexla::LapackUplo::L;
+  }
+  return wrap(mlir::enzymexla::LapackUploAttr::get(unwrap(ctx), uplo));
+}
+
 MlirAttribute enzymexlaQRAlgorithmAttrGet(MlirContext ctx, int32_t mode) {
   mlir::enzymexla::QrAlgorithm algorithm;
   switch (mode) {

@@ -52,6 +52,21 @@ def EnzymeXLA_LapackSideAttr : EnumAttr<EnzymeXLA_Dialect,
   let assemblyFormat = "`<` $value `>`";
 }
 
+def EnzymeXLA_LapackUplo : I32EnumAttr<"LapackUplo",
+    "Uplo of the matrix to apply the operation",
+    [
+      I32EnumAttrCase<"U", 0>,
+      I32EnumAttrCase<"L", 1>
+    ]> {
+  let genSpecializedAttr = 0;
+  let cppNamespace = "::mlir::enzymexla";
+}
+
+def EnzymeXLA_LapackUploAttr : EnumAttr<EnzymeXLA_Dialect,
+    EnzymeXLA_LapackUplo, "uplo"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
 def EnzymeXLA_QrAlgorithm : I32EnumAttr<"QrAlgorithm",
     "Algorithm to use for the QR factorization",
     [
