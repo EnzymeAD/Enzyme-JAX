@@ -61,8 +61,16 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
     exit(1);
   }
 
+  mlir::OpPrintingFlags flags;
+  if (getenv("DEBUG_REACTANT_INFO"))
+    flags.enableDebugInfo(true, /*pretty*/ false);
+  else
+    flags.enableDebugInfo(false, /*pretty*/ false);
+
   if (getenv("DEBUG_REACTANT")) {
-    llvm::errs() << " imported mlir mod: " << *mod << "\n";
+    llvm::errs() << " imported mlir mod: ";
+    mod->print(llvm::errs(), flags);
+    llvm::errs() << "\n";
   }
 
   using namespace llvm;
@@ -162,7 +170,9 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
   }
 
   if (getenv("DEBUG_REACTANT")) {
-    llvm::errs() << " final mlir mod: " << *mod << "\n";
+    llvm::errs() << " final mlir mod: ";
+    mod->print(llvm::errs(), flags);
+    llvm::errs() << "\n";
   }
 
   llvm::LLVMContext llvmContext;

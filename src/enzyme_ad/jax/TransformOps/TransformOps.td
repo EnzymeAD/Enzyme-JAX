@@ -2394,3 +2394,13 @@ def DynamicPadToPad : EnzymeHLOPatternOp<"dynamic_pad_to_pad"> {
 def ApplyClampConstPropPatterns : EnzymeHLOPatternOp<"clamp_const_prop"> {
   let patterns = ["ClampConstProp"];
 }
+
+def ApplyRemoveNoOpsFromWhileLoopPatterns : EnzymeHLOPatternOp<
+    "remove_no_ops_from_while_loop"> {
+  let patterns = ["RemoveNoOpsFromWhileLoop"];
+}
+
+def ApplyWhileIsCopySimplifyPatterns : EnzymeHLOPatternOp<
+    "while_is_copy_simplify"> {
+  let patterns = ["WhileIsCopySimplify"];
+}

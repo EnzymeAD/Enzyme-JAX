@@ -354,6 +354,8 @@ def optimization_passes(
         "case_to_if",
         "dus_to_dynamic_pad",
         "dynamic_pad_to_pad",
+        "remove_no_ops_from_while_loop",
+        "while_is_copy_simplify",
     ]
 
     # constant propagation patterns

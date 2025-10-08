@@ -38,7 +38,7 @@ def KernelCallOp: EnzymeXLA_Op<"kernel_call", [DeclareOpInterfaceMethods<SymbolU
   let summary = "Kernel Call operation";
 
   let arguments = (ins
-    FlatSymbolRefAttr:$fn,
+    SymbolRefAttr:$fn,
     TensorI64:$gridx,
     TensorI64:$gridy,
     TensorI64:$gridz,
@@ -108,7 +108,7 @@ def JITCallOp: EnzymeXLA_Op<"jit_call", [DeclareOpInterfaceMethods<SymbolUserOpI
   let summary = "JIT Call operation";
 
   let arguments = (ins
-    FlatSymbolRefAttr:$fn,
+    SymbolRefAttr:$fn,
     Variadic<AnyType>:$inputs,
     DefaultValuedStrAttr<StrAttr, "">:$backend_config,
     OptionalAttr<AnyAttr>:$operand_layouts,
@@ -136,6 +136,23 @@ def GetStreamOp : EnzymeXLA_Op<"get_stream", [Pure]> {
   let results = (outs AnyType:$result);
 }
 
+
+def GPUOccupancyOp : EnzymeXLA_Op<"gpu_occupancy", [Pure, DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
+  let arguments = (ins
+	SymbolRefAttr:$fn,
+	AnyType:$blockSize,
+	AnyType:$dynamicSMemSize,
+	AnyType:$flags
+);
+  let results = (outs AnyType : $result);
+}
+
+def GPUKernelAddressOp : EnzymeXLA_Op<"gpu_kernel_address", [Pure, DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
+  let arguments = (ins
+	SymbolRefAttr:$fn
+  );
+  let results = (outs AnyType : $result);
+}
 
 def GPUWrapperOp : EnzymeXLA_Op<"gpu_wrapper", [
   RecursiveMemoryEffects,
