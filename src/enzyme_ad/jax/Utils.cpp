@@ -509,8 +509,8 @@ bool mayAlias(MemoryEffects::EffectInstance a,
 }
 
 bool mayAlias(MemoryEffects::EffectInstance a, Value v2) {
-  llvm::errs() << " checking alias of a: " << a.getValue() << " v2: " << v2
-               << "\n";
+  // llvm::errs() << " checking alias of a: " << a.getValue() << " v2: " << v2
+  //              << "\n";
   if (Value v = a.getValue()) {
     return mayAlias(v, v2);
   }
