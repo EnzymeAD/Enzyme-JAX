@@ -17,6 +17,9 @@ struct WhileLoopInfo;
 }; // namespace enzyme
 }; // namespace mlir
 
+std::tuple<bool, bool> allSameBool(const llvm::SmallVector<bool> &bools);
+bool allOpsAreUnique(const llvm::SmallVector<mlir::Operation *> &ops);
+
 struct BatchOperandConstructionInfo {
   mlir::stablehlo::SliceOp sliceOp;
   int32_t sliceOperandIndex;
@@ -24,6 +27,27 @@ struct BatchOperandConstructionInfo {
   int32_t nbatches;
   bool intermediateReshape;
 };
+
+// TODO: update old code to use this new slice info
+template <typename OpTy> struct NewSliceInfo {
+  OpTy sliceOp;
+  llvm::SmallVector<mlir::Value> dynamicStartIndices;
+  llvm::SmallVector<int64_t> startIndices;
+  llvm::SmallVector<int64_t> sliceSizes;
+  int64_t sliceDim;
+  int64_t sliceStart;
+  bool supported;
+};
+
+NewSliceInfo<mlir::stablehlo::SliceOp>
+constructNewSliceInfo(mlir::stablehlo::SliceOp sliceOp);
+NewSliceInfo<mlir::stablehlo::DynamicSliceOp>
+constructNewSliceInfo(mlir::stablehlo::DynamicSliceOp sliceOp);
+
+bool areSlicesContiguous(
+    llvm::SmallVector<NewSliceInfo<mlir::stablehlo::SliceOp>> &slices);
+bool areSlicesContiguous(
+    llvm::SmallVector<NewSliceInfo<mlir::stablehlo::DynamicSliceOp>> &slices);
 
 struct ConcatInsertDimToBatchBase
     : public mlir::enzyme::CheckedOpRewritePattern<
@@ -108,11 +132,6 @@ private:
 
   SliceInfo extractSliceInfo(mlir::stablehlo::SliceOp slice) const;
   bool areSlicesContiguous(llvm::SmallVector<SliceInfo> &slices) const;
-  std::tuple<bool, bool>
-  allSameBool(const llvm::SmallVector<bool> &bools) const;
-  std::tuple<bool, bool>
-  allSameBool(const llvm::SmallVector<mlir::Operation *> &ops) const;
-  bool allOpsAreUnique(const llvm::SmallVector<mlir::Operation *> &ops) const;
 
 protected:
   std::function<mlir::Operation *(mlir::Operation *)> isValidTargetOp;
@@ -182,13 +201,16 @@ struct SliceToBatchElementwise : public SliceToBatchBase {
 };
 
 struct GreedyWhileLoopBatchFission
-    : public mlir::OpRewritePattern<mlir::stablehlo::WhileOp> {
-  using Base = mlir::OpRewritePattern<mlir::stablehlo::WhileOp>;
+    : public mlir::enzyme::CheckedOpRewritePattern<
+          mlir::stablehlo::WhileOp, GreedyWhileLoopBatchFission> {
+  using Base =
+      mlir::enzyme::CheckedOpRewritePattern<mlir::stablehlo::WhileOp,
+                                            GreedyWhileLoopBatchFission>;
   using Base::Base;
 
   mlir::LogicalResult
-  matchAndRewrite(mlir::stablehlo::WhileOp whileOp,
-                  mlir::PatternRewriter &rewriter) const override;
+  matchAndRewriteImpl(mlir::stablehlo::WhileOp whileOp,
+                      mlir::PatternRewriter &rewriter) const;
 
 private:
   struct DynamicSliceInfo {

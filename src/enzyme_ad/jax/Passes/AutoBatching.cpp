@@ -265,6 +265,19 @@ constructAndExtractBatchOperands(PatternRewriter &rewriter,
   return std::make_tuple(operands, operandIndexMap);
 }
 
+std::tuple<bool, bool> allSameBool(const SmallVector<bool> &bools) {
+  return {
+      llvm::all_of(bools, [&](bool b) { return b == bools.front(); }),
+      bools.front(),
+  };
+}
+
+bool allOpsAreUnique(const SmallVector<Operation *> &ops) {
+  SmallPtrSet<Operation *, 8> seen;
+  return llvm::all_of(ops,
+                      [&](Operation *op) { return seen.insert(op).second; });
+}
+
 LogicalResult ConcatInsertDimToBatchBase::matchAndRewriteImpl(
     stablehlo::ConcatenateOp concatOp, PatternRewriter &rewriter) const {
   if (concatOp.getNumOperands() <= 1)
@@ -732,29 +745,8 @@ bool SliceToBatchBase::areSlicesContiguous(
   return true;
 }
 
-std::tuple<bool, bool>
-SliceToBatchBase::allSameBool(const SmallVector<bool> &bools) const {
-  bool first = bools[0];
-  for (auto b : bools) {
-    if (b != first)
-      return {false, first};
-  }
-  return {true, first};
-}
-
-bool SliceToBatchBase::allOpsAreUnique(
-    const SmallVector<Operation *> &ops) const {
-  SmallPtrSet<Operation *, 8> seen;
-  for (auto op : ops) {
-    if (!seen.insert(op).second)
-      return false;
-  }
-  return true;
-}
-
-LogicalResult
-GreedyWhileLoopBatchFission::matchAndRewrite(stablehlo::WhileOp whileOp,
-                                             PatternRewriter &rewriter) const {
+LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
+    stablehlo::WhileOp whileOp, PatternRewriter &rewriter) const {
   auto info = WhileLoopInfo(whileOp);
   auto computeInfoSuccess = info.computeInfo();
   if (computeInfoSuccess.failed())
