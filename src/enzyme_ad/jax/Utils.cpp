@@ -34,6 +34,9 @@
 
 #include <set>
 
+#define DEBUG_TYPE "recomputable"
+#define DBGS() ::llvm::dbgs() << "[" DEBUG_TYPE "] "
+
 using namespace mlir;
 using namespace mlir::enzyme;
 using namespace mlir::arith;
@@ -54,8 +57,8 @@ bool collectEffects(Operation *op,
   // Ignore CacheLoads as they are already guaranteed to not have side effects
   // in the context of a parallel op, these only exist while we are in the
   // CPUifyPass
-  // if (isa<CacheLoad>(op))
-  //  return true;
+  if (isa<enzymexla::CacheLoad>(op))
+    return true;
 
   // Collect effect instances the operation. Note that the implementation of
   // getEffects erases all effect instances that have the type other than the
@@ -166,8 +169,10 @@ bool getEffectsBefore(Operation *op,
         else
           continue;
       }
-      if (!collectEffects(it, effects, /* ignoreBarriers */ true))
+      if (!collectEffects(it, effects, /* ignoreBarriers */ true)) {
+        LLVM_DEBUG(DBGS() << "colloectEffects 1 returns false\n");
         return false;
+      }
     }
 
   bool conservative = false;
@@ -177,8 +182,10 @@ bool getEffectsBefore(Operation *op,
 
   // As we didn't hit another barrier, we must check the predecessors of this
   // operation.
-  if (!getEffectsBefore(op->getParentOp(), effects, stopAtBarrier))
+  if (!getEffectsBefore(op->getParentOp(), effects, stopAtBarrier)) {
+    LLVM_DEBUG(DBGS() << "getEffectsBefore returns false\n");
     return false;
+  }
 
   // If the parent operation is not guaranteed to execute its (single-block)
   // region once, walk the block.
@@ -188,6 +195,7 @@ bool getEffectsBefore(Operation *op,
       if (conservative)
         return WalkResult::interrupt();
       if (!collectEffects(in, effects, /* ignoreBarriers */ true)) {
+        LLVM_DEBUG(DBGS() << "colloectEffects 2 returns false\n");
         conservative = true;
         return WalkResult::interrupt();
       }
@@ -501,6 +509,8 @@ bool mayAlias(MemoryEffects::EffectInstance a,
 }
 
 bool mayAlias(MemoryEffects::EffectInstance a, Value v2) {
+  // llvm::errs() << " checking alias of a: " << a.getValue() << " v2: " << v2
+  //              << "\n";
   if (Value v = a.getValue()) {
     return mayAlias(v, v2);
   }
@@ -1087,7 +1097,44 @@ bool isOnlyUsedInOperation(Operation *operation, Operation *parentOp) {
     if (user != parentOp)
       return false;
   }
+  return true;
+}
 
+bool mayReadFrom(Operation *op, Value val) {
+  bool hasRecursiveEffects = op->hasTrait<OpTrait::HasRecursiveMemoryEffects>();
+  if (hasRecursiveEffects) {
+    for (Region &region : op->getRegions()) {
+      for (auto &block : region) {
+        for (auto &nestedOp : block)
+          if (mayReadFrom(&nestedOp, val))
+            return true;
+      }
+    }
+    return false;
+  }
+
+  // If the op has memory effects, try to characterize them to see if the op
+  // is trivially dead here.
+  if (auto effectInterface = dyn_cast<MemoryEffectOpInterface>(op)) {
+    // Check to see if this op either has no effects, or only allocates/reads
+    // memory.
+    SmallVector<MemoryEffects::EffectInstance, 1> effects;
+    effectInterface.getEffects(effects);
+    for (auto it : effects) {
+      if (!isa<MemoryEffects::Read>(it.getEffect()))
+        continue;
+      if (mayAlias(it, val))
+        return true;
+    }
+    return false;
+  }
+  if (isa<LLVM::CallOp, func::CallOp>(op)) {
+    auto base = getBase(val);
+    bool seenuse = false;
+    if (isStackAlloca(base) && !isCaptured(base, op, &seenuse) && !seenuse) {
+      return false;
+    }
+  }
   return true;
 }
 
