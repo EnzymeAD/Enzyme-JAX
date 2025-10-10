@@ -40,6 +40,9 @@
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/dialect/TypeInference.h"
 #include "stablehlo/reference/Ops.h"
+#include "stablehlo/reference/Process.h"
+#include "stablehlo/reference/ProcessGrid.h"
+#include "stablehlo/reference/Scope.h"
 #include "stablehlo/reference/Types.h"
 #include "stablehlo/transforms/ChloDecompositionUtils.h"
 #include "stablehlo/transforms/PassUtils.h"
@@ -5869,6 +5872,109 @@ struct ConcatConstProp final
       return success();
     }
     return failure();
+  }
+};
+
+struct ScatterConstFold final
+    : CheckedOpRewritePattern<stablehlo::ScatterOp, ScatterConstFold> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+  size_t max_constant_expansion;
+
+  ScatterConstFold(size_t max_constant_expansion, MLIRContext *context,
+                   PatternBenefit benefit = 1,
+                   ArrayRef<StringRef> generatedNames = {})
+      : CheckedOpRewritePattern(context, benefit, generatedNames),
+        max_constant_expansion(max_constant_expansion) {}
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ScatterOp op,
+                                    PatternRewriter &rewriter) const {
+    SmallVector<stablehlo::Tensor> inputs, updates;
+    DenseElementsAttr attr;
+    for (auto input : op.getInputs()) {
+      if (matchPattern(input, m_Constant(&attr))) {
+        inputs.push_back(stablehlo::constantOp(attr));
+      } else {
+        return failure();
+      }
+    }
+    for (auto update : op.getUpdates()) {
+      if (matchPattern(update, m_Constant(&attr))) {
+        updates.push_back(stablehlo::constantOp(attr));
+      } else {
+        return failure();
+      }
+    }
+    stablehlo::Tensor scatterIndices;
+    if (matchPattern(op.getScatterIndices(), m_Constant(&attr))) {
+      scatterIndices = stablehlo::constantOp(attr);
+    } else {
+      return failure();
+    }
+
+    // construct the scope and add all live variables (accessible from update
+    // computation) to it. If any of the variables are defined outside the
+    // region but isn't constant, we cant constant fold.
+    Scope scope(nullptr);
+    auto &updateComputation = op.getUpdateComputation();
+
+    if (updateComputation.empty())
+      return failure();
+
+    llvm::SetVector<Value> liveValues;
+    Block &block = updateComputation.front();
+    for (auto &nestedOp : block.getOperations()) {
+      for (Value operand : nestedOp.getOperands()) {
+        if (operand.getParentRegion() != &updateComputation) {
+          liveValues.insert(operand);
+        }
+      }
+    }
+    for (Value liveValue : liveValues) {
+      if (matchPattern(liveValue, m_Constant(&attr))) {
+        auto tensor = stablehlo::constantOp(attr);
+        scope.add(liveValue, tensor);
+      } else {
+        return failure();
+      }
+    }
+
+    SmallVector<ShapedType> resultTypes(op->getResultTypes());
+    int totalResultSize = 1;
+    for (auto resultType : resultTypes) {
+      int resultSize = 1;
+      for (auto sidx : resultType.getShape()) {
+        resultSize *= sidx;
+      }
+      totalResultSize += resultSize;
+    }
+    if (totalResultSize > max_constant_expansion)
+      return rewriter.notifyMatchFailure(op, "result size too large");
+
+    auto scatterDimensionNumbers = op.getScatterDimensionNumbers();
+    stablehlo::Axes updateWindowDims(
+        scatterDimensionNumbers.getUpdateWindowDims());
+    stablehlo::Axes insertedWindowDims(
+        scatterDimensionNumbers.getInsertedWindowDims());
+    stablehlo::Axes inputBatchingDims(
+        scatterDimensionNumbers.getInputBatchingDims());
+    stablehlo::Axes scatterIndicesBatchingDims(
+        scatterDimensionNumbers.getScatterIndicesBatchingDims());
+    stablehlo::Axes scatterDimsToOperandDims(
+        scatterDimensionNumbers.getScatterDimsToOperandDims());
+    stablehlo::Axis indexVectorDim(scatterDimensionNumbers.getIndexVectorDim());
+
+    auto results = stablehlo::scatterOp(
+        inputs, scatterIndices, updates, updateWindowDims, insertedWindowDims,
+        inputBatchingDims, scatterIndicesBatchingDims, scatterDimsToOperandDims,
+        indexVectorDim, updateComputation, nullptr, scope, resultTypes);
+
+    for (auto [i, result] : llvm::enumerate(results)) {
+      auto constOp = rewriter.create<stablehlo::ConstantOp>(op.getLoc(),
+                                                            fromTensor(result));
+      rewriter.replaceAllUsesWith(op->getResult(0), constOp.getResult());
+    }
+
+    return success();
   }
 };
 
@@ -23917,6 +24023,13 @@ void mlir::transform::addConcatConstProp(RewritePatternSet &patterns,
   patterns.insert<ConcatConstProp>(maxConstantExpansion, &context, benefit);
 }
 
+void mlir::transform::addScatterConstFold(RewritePatternSet &patterns,
+                                          int64_t maxConstantExpansion,
+                                          MLIRContext &context,
+                                          PatternBenefit benefit) {
+  patterns.insert<ScatterConstFold>(maxConstantExpansion, &context, benefit);
+}
+
 void mlir::transform::addPadSimplify(RewritePatternSet &patterns,
                                      int64_t maxConstantExpansion,
                                      MLIRContext &context,
@@ -24173,7 +24286,7 @@ struct EnzymeHLOOptPass
                                                     PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,
-                 DynamicUpdateSliceConstProp, PadSimplify>(
+                 DynamicUpdateSliceConstProp, PadSimplify, ScatterConstFold>(
         max_constant_expansion, context, PatternBenefit(65000));
 
     patterns.add<
