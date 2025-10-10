@@ -40,8 +40,6 @@
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/dialect/TypeInference.h"
 #include "stablehlo/reference/Ops.h"
-#include "stablehlo/reference/Process.h"
-#include "stablehlo/reference/ProcessGrid.h"
 #include "stablehlo/reference/Scope.h"
 #include "stablehlo/reference/Types.h"
 #include "stablehlo/transforms/ChloDecompositionUtils.h"
