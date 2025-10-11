@@ -379,6 +379,17 @@ def DelinearizeIndexingPass : Pass<"delinearize-indexing"> {
   ];
 }
 
+def LowerTritonPass : Pass<"lower-triton"> {
+  let summary = "Lower Triton to kernel call";
+  let dependentDialects = [
+    "triton::TritonDialect",
+    "gpu::GPUDialect",
+    "enzymexla::EnzymeXLADialect",
+    "func::FuncDialect",
+    "triton_ext::TritonExtDialect",
+    "stablehlo::StablehloDialect",
+  ];
+}
 
 def LowerKernelPass : Pass<"lower-kernel"> {
   let summary = "Lower kernel to custom call";
