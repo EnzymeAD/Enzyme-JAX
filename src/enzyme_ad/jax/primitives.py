@@ -404,6 +404,7 @@ def optimization_passes(
         # other constant propagations
         "const_prop_through_barrier<16>",
         f"concat_const_prop<1>({max_constant_threshold})",
+        f"scatter_const_fold({max_constant_threshold})",
         f"dynamic_update_slice_const_prop({max_constant_threshold})",
         "scatter_update_computation_const_prop",
         "gather_const_prop",
