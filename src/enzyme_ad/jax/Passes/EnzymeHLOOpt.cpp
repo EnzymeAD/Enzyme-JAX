@@ -24005,7 +24005,6 @@ struct SplitVariadicScatterOp
           scatterOp, "invalid update computation for splitting");
 
     for (size_t i = 0; i < N; ++i) {
-      llvm::errs() << "here12\n";
       rewriter.setInsertionPoint(scatterOp);
       auto newScatterOp = rewriter.create<stablehlo::ScatterOp>(
           scatterOp.getLoc(), scatterOp.getInputs()[i].getType(),
@@ -24014,14 +24013,10 @@ struct SplitVariadicScatterOp
           scatterOp.getScatterDimensionNumbersAttr(),
           scatterOp.getIndicesAreSortedAttr(),
           scatterOp.getUniqueIndicesAttr());
-      llvm::errs() << "here21212\n";
       addUpdateComputationForIndex(newScatterOp, rewriter, scatterOp.getLoc(),
                                    region, i, N);
-      llvm::errs() << "here2\n";
       rewriter.replaceAllUsesWith(scatterOp.getResult(i),
                                   newScatterOp.getResult(0));
-
-      llvm::errs() << "newScatterOp(" << i << "): " << newScatterOp << "\n";
     }
     return success();
   }
