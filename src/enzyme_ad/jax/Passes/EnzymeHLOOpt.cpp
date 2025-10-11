@@ -23987,6 +23987,89 @@ private:
   }
 };
 
+struct SplitVariadicScatterOp
+    : public CheckedOpRewritePattern<stablehlo::ScatterOp,
+                                     SplitVariadicScatterOp> {
+  using CheckedOpRewritePattern<
+      stablehlo::ScatterOp, SplitVariadicScatterOp>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ScatterOp scatterOp,
+                                    PatternRewriter &rewriter) const {
+    size_t N = scatterOp.getInputs().size();
+    if (N <= 1)
+      return rewriter.notifyMatchFailure(scatterOp, "not variadic scatter");
+
+    Region &region = scatterOp.getUpdateComputation();
+    if (!isUpdateComputationValid(region, N))
+      return rewriter.notifyMatchFailure(
+          scatterOp, "invalid update computation for splitting");
+
+    // TODO: rewriting
+    llvm::errs() << "split variadic scatter\n";
+
+    return failure();
+  }
+
+private:
+  bool isUpdateComputationValid(Region &region, size_t numOperands) const {
+    if (region.empty())
+      return false;
+
+    Block &block = region.front();
+
+    if (block.getNumArguments() != numOperands * 2)
+      return false;
+
+    // Check if the computation mixes different operand indices
+    // A valid computation should only operate on corresponding pairs:
+    // (results[i], updates[i]) -> result[i]
+    Operation *terminator = block.getTerminator();
+    if (!terminator || terminator->getNumOperands() != numOperands)
+      return false;
+
+    // Trace data flow for each return value to ensure it only depends
+    // on the corresponding input pair
+    for (size_t i = 0; i < numOperands; ++i) {
+      Value returnVal = terminator->getOperand(i);
+
+      // Expected dependencies: args[i] and args[N+i]
+      llvm::SmallSet<size_t, 4> allowedArgIndices = {i, numOperands + i};
+
+      if (!checkValueDependencies(returnVal, block, allowedArgIndices)) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  // Check that a value only depends on allowed block arguments
+  bool checkValueDependencies(
+      Value val, Block &block,
+      const llvm::SmallSet<size_t, 4> &allowedArgIndices) const {
+    SmallVector<Value> worklist;
+    llvm::SmallSet<Value, 16> visited;
+
+    worklist.push_back(val);
+
+    while (!worklist.empty()) {
+      Value current = worklist.pop_back_val();
+      if (!visited.insert(current).second)
+        continue;
+
+      if (auto blockArg = dyn_cast<BlockArgument>(current)) {
+        if (blockArg.getOwner() != &block) {
+          Block *argBlock = blockArg.getOwner();
+          Region *argRegion = argBlock->getParent();
+
+          bool foundValidNesting = false;
+          Region *currentRegion = argRegion;
+        }
+      }
+    }
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -24609,7 +24692,8 @@ struct EnzymeHLOOptPass
         DUSToDynamicPad,
         DynamicPadToPad,
         RemoveNoOpsFromWhileLoop,
-        WhileIsCopySimplify
+        WhileIsCopySimplify,
+        SplitVariadicScatterOp
       >(context);
 
     patterns.add<

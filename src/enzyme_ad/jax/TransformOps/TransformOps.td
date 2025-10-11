@@ -2418,3 +2418,8 @@ def ApplyWhileIsCopySimplifyPatterns : EnzymeHLOPatternOp<
     "while_is_copy_simplify"> {
   let patterns = ["WhileIsCopySimplify"];
 }
+
+def ApplySplitVariadicScatterOpPatterns : EnzymeHLOPatternOp<
+    "split_variadic_scatter_op"> {
+  let patterns = ["SplitVariadicScatterOp"];
+}
