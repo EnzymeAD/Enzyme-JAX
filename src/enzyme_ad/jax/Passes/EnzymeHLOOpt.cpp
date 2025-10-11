@@ -24004,10 +24004,26 @@ struct SplitVariadicScatterOp
       return rewriter.notifyMatchFailure(
           scatterOp, "invalid update computation for splitting");
 
-    // TODO: rewriting
-    llvm::errs() << "split variadic scatter\n";
+    for (size_t i = 0; i < N; ++i) {
+      llvm::errs() << "here12\n";
+      rewriter.setInsertionPoint(scatterOp);
+      auto newScatterOp = rewriter.create<stablehlo::ScatterOp>(
+          scatterOp.getLoc(), scatterOp.getInputs()[i].getType(),
+          ValueRange{scatterOp.getInputs()[i]}, scatterOp.getScatterIndices(),
+          ValueRange{scatterOp.getUpdates()[i]},
+          scatterOp.getScatterDimensionNumbersAttr(),
+          scatterOp.getIndicesAreSortedAttr(),
+          scatterOp.getUniqueIndicesAttr());
+      llvm::errs() << "here21212\n";
+      addUpdateComputationForIndex(newScatterOp, rewriter, scatterOp.getLoc(),
+                                   region, i, N);
+      llvm::errs() << "here2\n";
+      rewriter.replaceAllUsesWith(scatterOp.getResult(i),
+                                  newScatterOp.getResult(0));
 
-    return failure();
+      llvm::errs() << "newScatterOp(" << i << "): " << newScatterOp << "\n";
+    }
+    return success();
   }
 
 private:
@@ -24058,14 +24074,98 @@ private:
         continue;
 
       if (auto blockArg = dyn_cast<BlockArgument>(current)) {
-        if (blockArg.getOwner() != &block) {
-          Block *argBlock = blockArg.getOwner();
-          Region *argRegion = argBlock->getParent();
+        if (blockArg.getOwner() != &block)
+          continue;
 
-          bool foundValidNesting = false;
-          Region *currentRegion = argRegion;
+        if (!allowedArgIndices.contains(blockArg.getArgNumber()))
+          return false;
+
+        continue;
+      }
+
+      Operation *defOp = current.getDefiningOp();
+      if (!defOp)
+        return false;
+
+      if (defOp->getBlock() != &block)
+        continue;
+
+      for (Value operand : defOp->getOperands()) {
+        worklist.push_back(operand);
+      }
+
+      // For operations with regions, add the region's results/yields to
+      // worklist
+      for (Region &region : defOp->getRegions()) {
+        for (Block &nestedBlock : region.getBlocks()) {
+          Operation *terminator = nestedBlock.getTerminator();
+          if (terminator) {
+            for (Value operand : terminator->getOperands()) {
+              worklist.push_back(operand);
+            }
+          }
         }
       }
+    }
+
+    return true;
+  }
+
+  void addUpdateComputationForIndex(stablehlo::ScatterOp newScatterOp,
+                                    PatternRewriter &rewriter, Location loc,
+                                    Region &origRegion, size_t index,
+                                    size_t numOperands) const {
+    Block &origBlock = origRegion.front();
+
+    // Create a new region for the single-operand update computation
+    Region &newRegion = newScatterOp.getUpdateComputation();
+    Block *newBlock = rewriter.createBlock(&newRegion);
+
+    // Add 2 block arguments: one from result, one from update
+    BlockArgument resultArg =
+        newBlock->addArgument(origBlock.getArgument(index).getType(), loc);
+    BlockArgument updateArg = newBlock->addArgument(
+        origBlock.getArgument(numOperands + index).getType(), loc);
+
+    // Map original arguments to new ones
+    IRMapping mapper;
+    mapper.map(origBlock.getArgument(index), resultArg);
+    mapper.map(origBlock.getArgument(numOperands + index), updateArg);
+
+    // Clone operations from original computation that affect this index
+    Operation *terminator = origBlock.getTerminator();
+
+    if (auto returnOp = dyn_cast<stablehlo::ReturnOp>(terminator)) {
+      // Extract the i-th return value's defining operations
+      Value returnVal = returnOp.getOperand(index);
+      cloneComputationSlice(rewriter, returnVal, mapper, newBlock);
+
+      // Create return with single value
+      rewriter.setInsertionPointToEnd(newBlock);
+      Value mappedResult = mapper.lookupOrDefault(returnVal);
+      rewriter.create<stablehlo::ReturnOp>(loc, mappedResult);
+    }
+  }
+
+  void cloneComputationSlice(PatternRewriter &rewriter, Value val,
+                             IRMapping &mapper, Block *targetBlock) const {
+    if (mapper.contains(val))
+      return;
+
+    Operation *defOp = val.getDefiningOp();
+    if (!defOp)
+      return;
+
+    for (Value operand : defOp->getOperands()) {
+      cloneComputationSlice(rewriter, operand, mapper, targetBlock);
+    }
+
+    rewriter.setInsertionPointToEnd(targetBlock);
+    Operation *clonedOp = rewriter.clone(*defOp, mapper);
+
+    for (auto [orig, cloned] :
+         llvm::zip(defOp->getResults(), clonedOp->getResults())) {
+      mapper.map(orig, cloned);
     }
   }
 };

@@ -30,6 +30,7 @@ module {
     %18 = stablehlo.add %16, %14 : tensor<3xf64>
     // This update computation is invalid, as it mixes different operand indices
     // We are testing that the pattern correctly detects this and doesn't split
+    // CHECK: %19:2 = "stablehlo.scatter"(%cst_2, %cst_2, %c_1, %18, %16)
     %19:2 = "stablehlo.scatter"(%cst, %cst, %c_0, %18, %17) <{scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>, unique_indices = true}> ({
     ^bb0(%arg3: tensor<f64>, %arg4: tensor<f64>, %arg5: tensor<f64>, %arg6: tensor<f64>):
       %add = stablehlo.add %arg3, %cst_0 : tensor<f64>
@@ -51,6 +52,18 @@ module {
     %29 = stablehlo.add %21, %27 : tensor<3xf64>
     %30 = stablehlo.add %28, %26 : tensor<3xf64>
     %31 = stablehlo.add %29, %27 : tensor<3xf64>
+    // CHECK: %32 = "stablehlo.scatter"(%19#0, %c, %31) <{scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>, unique_indices = true}> ({
+    // CHECK-NEXT:   ^bb0(%arg3: tensor<f64>, %arg4: tensor<f64>):
+    // CHECK-NEXT:     %36 = stablehlo.subtract %arg3, %cst_0 : tensor<f64>
+    // CHECK-NEXT:     %37 = stablehlo.subtract %36, %arg4 : tensor<f64>
+    // CHECK-NEXT:     stablehlo.return %37 : tensor<f64>
+    // CHECK-NEXT:   }) : (tensor<3x2xf64>, tensor<3x2xi64>, tensor<3xf64>) -> tensor<3x2xf64>
+    // CHECK-NEXT:  %33 = "stablehlo.scatter"(%19#1, %c, %29) <{scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>, unique_indices = true}> ({
+    // CHECK-NEXT:   ^bb0(%arg3: tensor<f64>, %arg4: tensor<f64>):
+    // CHECK-NEXT:     %36 = stablehlo.multiply %arg3, %cst : tensor<f64>
+    // CHECK-NEXT:     %37 = stablehlo.multiply %arg4, %36 : tensor<f64>
+    // CHECK-NEXT:     stablehlo.return %37 : tensor<f64>
+    // CHECK-NEXT:   }) : (tensor<3x2xf64>, tensor<3x2xi64>, tensor<3xf64>) -> tensor<3x2xf64>
     %32:2 = "stablehlo.scatter"(%19#0, %19#1, %c, %31, %30) <{scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>, unique_indices = true}> ({
     ^bb0(%arg3: tensor<f64>, %arg4: tensor<f64>, %arg5: tensor<f64>, %arg6: tensor<f64>):
       %sub = stablehlo.subtract %arg3, %cst_2 : tensor<f64>
@@ -61,8 +74,10 @@ module {
       stablehlo.return %neg_1, %mul_1 : tensor<f64>, tensor<f64>
     }) : (tensor<3x2xf64>, tensor<3x2xf64>, tensor<3x2xi64>, tensor<3xf64>, tensor<3xf64>) -> (tensor<3x2xf64>, tensor<3x2xf64>)
     %33 = stablehlo.transpose %32#1, dims = [1, 0] : (tensor<3x2xf64>) -> tensor<2x3xf64>
-    return %33 : tensor<2x3xf64>
+    %34 = stablehlo.transpose %32#0, dims = [1, 0] : (tensor<3x2xf64>) -> tensor<2x3xf64>
+    // CHECK: %34 = stablehlo.add %33, %32 : tensor<3x2xf64>
+    %35 = stablehlo.add %33, %34 : tensor<2x3xf64>
+    // CHECK: %35 = stablehlo.transpose %34, dims = [1, 0] : (tensor<3x2xf64>) -> tensor<2x3xf64>
+    return %35 : tensor<2x3xf64>
   }
 }
-
-
