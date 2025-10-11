@@ -7206,7 +7206,8 @@ struct SliceSimplify
       if (inp.isSplat()) {
         out = inp.resizeSplat(op.getType());
       } else {
-        // See https://github.com/EnzymeAD/Reactant.jl/pull/1740#issuecomment-3393612379
+        // See
+        // https://github.com/EnzymeAD/Reactant.jl/pull/1740#issuecomment-3393612379
         // for why this is commented out
         // bool contiguous = true;
         // size_t offset = 0;
