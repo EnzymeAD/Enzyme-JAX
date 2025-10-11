@@ -7206,40 +7206,43 @@ struct SliceSimplify
       if (inp.isSplat()) {
         out = inp.resizeSplat(op.getType());
       } else {
-        bool contiguous = true;
-        size_t offset = 0;
-        auto inshape = op.getOperand().getType().getShape();
-        auto outshape = op.getType().getShape();
-        size_t total = 1;
-        for (int i = 0; i < inshape.size(); i++) {
-          if (op.getStrides()[i] != 1) {
-            contiguous = false;
-          }
-          auto start = op.getStartIndices()[i];
-          auto lim = op.getLimitIndices()[i];
-          if (start != 0 || lim != inshape[i]) {
-            if (offset != 0) {
-              contiguous = false;
-            }
-          }
-          offset *= inshape[i];
-          offset += start;
-          total *= outshape[i];
-        }
-        auto elementType = op.getOperand().getType().getElementType();
-        auto bw = getDenseElementStorageWidth(elementType);
-        if (contiguous && bw != 1) {
-          const char *elementPtr = inp.getRawData().data() + (bw / 8) * offset;
+        // See https://github.com/EnzymeAD/Reactant.jl/pull/1740#issuecomment-3393612379
+        // for why this is commented out
+        // bool contiguous = true;
+        // size_t offset = 0;
+        // auto inshape = op.getOperand().getType().getShape();
+        // auto outshape = op.getType().getShape();
+        // size_t total = 1;
+        // for (int i = 0; i < inshape.size(); i++) {
+        //   if (op.getStrides()[i] != 1) {
+        //     contiguous = false;
+        //   }
+        //   auto start = op.getStartIndices()[i];
+        //   auto lim = op.getLimitIndices()[i];
+        //   if (start != 0 || lim != inshape[i]) {
+        //     if (offset != 0) {
+        //       contiguous = false;
+        //     }
+        //   }
+        //   offset *= inshape[i];
+        //   offset += start;
+        //   total *= outshape[i];
+        // }
+        // auto elementType = op.getOperand().getType().getElementType();
+        // auto bw = getDenseElementStorageWidth(elementType);
+        // if (contiguous && bw != 1) {
+        //   const char *elementPtr = inp.getRawData().data() + (bw / 8) *
+        //   offset;
 
-          auto values = ArrayRef((char *)elementPtr, (bw / 8) * total);
-          out =
-              DenseIntOrFPElementsAttr::getFromRawBuffer(op.getType(), values);
-        } else {
-          auto ten = stablehlo::constantOp(inp);
-          out = fromTensor(stablehlo::sliceOp(
-              ten, stablehlo::Sizes(op.getStartIndices()),
-              stablehlo::Sizes(op.getStrides()), op.getType()));
-        }
+        //   auto values = ArrayRef((char *)elementPtr, (bw / 8) * total);
+        //   out =
+        //       DenseIntOrFPElementsAttr::getFromRawBuffer(op.getType(),
+        //       values);
+        // } else {
+        out = fromTensor(stablehlo::sliceOp(
+            stablehlo::constantOp(inp), stablehlo::Sizes(op.getStartIndices()),
+            stablehlo::Sizes(op.getStrides()), op.getType()));
+        // }
       }
       rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(), out);
       return success();
