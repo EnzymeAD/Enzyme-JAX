@@ -7206,40 +7206,44 @@ struct SliceSimplify
       if (inp.isSplat()) {
         out = inp.resizeSplat(op.getType());
       } else {
-        bool contiguous = true;
-        size_t offset = 0;
-        auto inshape = op.getOperand().getType().getShape();
-        auto outshape = op.getType().getShape();
-        size_t total = 1;
-        for (int i = 0; i < inshape.size(); i++) {
-          if (op.getStrides()[i] != 1) {
-            contiguous = false;
-          }
-          auto start = op.getStartIndices()[i];
-          auto lim = op.getLimitIndices()[i];
-          if (start != 0 || lim != inshape[i]) {
-            if (offset != 0) {
-              contiguous = false;
-            }
-          }
-          offset *= inshape[i];
-          offset += start;
-          total *= outshape[i];
-        }
-        auto elementType = op.getOperand().getType().getElementType();
-        auto bw = getDenseElementStorageWidth(elementType);
-        if (contiguous && bw != 1) {
-          const char *elementPtr = inp.getRawData().data() + (bw / 8) * offset;
+        // See
+        // https://github.com/EnzymeAD/Reactant.jl/pull/1740#issuecomment-3393612379
+        // for why this is commented out
+        // bool contiguous = true;
+        // size_t offset = 0;
+        // auto inshape = op.getOperand().getType().getShape();
+        // auto outshape = op.getType().getShape();
+        // size_t total = 1;
+        // for (int i = 0; i < inshape.size(); i++) {
+        //   if (op.getStrides()[i] != 1) {
+        //     contiguous = false;
+        //   }
+        //   auto start = op.getStartIndices()[i];
+        //   auto lim = op.getLimitIndices()[i];
+        //   if (start != 0 || lim != inshape[i]) {
+        //     if (offset != 0) {
+        //       contiguous = false;
+        //     }
+        //   }
+        //   offset *= inshape[i];
+        //   offset += start;
+        //   total *= outshape[i];
+        // }
+        // auto elementType = op.getOperand().getType().getElementType();
+        // auto bw = getDenseElementStorageWidth(elementType);
+        // if (contiguous && bw != 1) {
+        //   const char *elementPtr = inp.getRawData().data() + (bw / 8) *
+        //   offset;
 
-          auto values = ArrayRef((char *)elementPtr, (bw / 8) * total);
-          out =
-              DenseIntOrFPElementsAttr::getFromRawBuffer(op.getType(), values);
-        } else {
-          auto ten = stablehlo::constantOp(inp);
-          out = fromTensor(stablehlo::sliceOp(
-              ten, stablehlo::Sizes(op.getStartIndices()),
-              stablehlo::Sizes(op.getStrides()), op.getType()));
-        }
+        //   auto values = ArrayRef((char *)elementPtr, (bw / 8) * total);
+        //   out =
+        //       DenseIntOrFPElementsAttr::getFromRawBuffer(op.getType(),
+        //       values);
+        // } else {
+        out = fromTensor(stablehlo::sliceOp(
+            stablehlo::constantOp(inp), stablehlo::Sizes(op.getStartIndices()),
+            stablehlo::Sizes(op.getStrides()), op.getType()));
+        // }
       }
       rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(), out);
       return success();
@@ -23987,6 +23991,184 @@ private:
   }
 };
 
+struct SplitVariadicScatterOp
+    : public CheckedOpRewritePattern<stablehlo::ScatterOp,
+                                     SplitVariadicScatterOp> {
+  using CheckedOpRewritePattern<
+      stablehlo::ScatterOp, SplitVariadicScatterOp>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ScatterOp scatterOp,
+                                    PatternRewriter &rewriter) const {
+    size_t N = scatterOp.getInputs().size();
+    if (N <= 1)
+      return rewriter.notifyMatchFailure(scatterOp, "not variadic scatter");
+
+    Region &region = scatterOp.getUpdateComputation();
+    if (!isUpdateComputationValid(region, N))
+      return rewriter.notifyMatchFailure(
+          scatterOp, "invalid update computation for splitting");
+
+    for (size_t i = 0; i < N; ++i) {
+      rewriter.setInsertionPoint(scatterOp);
+      auto newScatterOp = rewriter.create<stablehlo::ScatterOp>(
+          scatterOp.getLoc(), scatterOp.getInputs()[i].getType(),
+          ValueRange{scatterOp.getInputs()[i]}, scatterOp.getScatterIndices(),
+          ValueRange{scatterOp.getUpdates()[i]},
+          scatterOp.getScatterDimensionNumbersAttr(),
+          scatterOp.getIndicesAreSortedAttr(),
+          scatterOp.getUniqueIndicesAttr());
+      addUpdateComputationForIndex(newScatterOp, rewriter, scatterOp.getLoc(),
+                                   region, i, N);
+      rewriter.replaceAllUsesWith(scatterOp.getResult(i),
+                                  newScatterOp.getResult(0));
+    }
+    return success();
+  }
+
+private:
+  bool isUpdateComputationValid(Region &region, size_t numOperands) const {
+    if (region.empty())
+      return false;
+
+    Block &block = region.front();
+
+    if (block.getNumArguments() != numOperands * 2)
+      return false;
+
+    // Check if the computation mixes different operand indices
+    // A valid computation should only operate on corresponding pairs:
+    // (results[i], updates[i]) -> result[i]
+    Operation *terminator = block.getTerminator();
+    if (!terminator || terminator->getNumOperands() != numOperands)
+      return false;
+
+    // Trace data flow for each return value to ensure it only depends
+    // on the corresponding input pair
+    for (size_t i = 0; i < numOperands; ++i) {
+      Value returnVal = terminator->getOperand(i);
+
+      // Expected dependencies: args[i] and args[N+i]
+      llvm::SmallSet<size_t, 4> allowedArgIndices = {i, numOperands + i};
+
+      if (!checkValueDependencies(returnVal, block, allowedArgIndices)) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  // Check that a value only depends on allowed block arguments
+  bool checkValueDependencies(
+      Value val, Block &block,
+      const llvm::SmallSet<size_t, 4> &allowedArgIndices) const {
+    SmallVector<Value> worklist;
+    llvm::SmallSet<Value, 16> visited;
+
+    worklist.push_back(val);
+
+    while (!worklist.empty()) {
+      Value current = worklist.pop_back_val();
+      if (!visited.insert(current).second)
+        continue;
+
+      if (auto blockArg = dyn_cast<BlockArgument>(current)) {
+        if (blockArg.getOwner() != &block)
+          continue;
+
+        if (!allowedArgIndices.contains(blockArg.getArgNumber()))
+          return false;
+
+        continue;
+      }
+
+      Operation *defOp = current.getDefiningOp();
+      if (!defOp)
+        return false;
+
+      if (defOp->getBlock() != &block)
+        continue;
+
+      for (Value operand : defOp->getOperands()) {
+        worklist.push_back(operand);
+      }
+
+      // For operations with regions, add the region's results/yields to
+      // worklist
+      for (Region &region : defOp->getRegions()) {
+        for (Block &nestedBlock : region.getBlocks()) {
+          Operation *terminator = nestedBlock.getTerminator();
+          if (terminator) {
+            for (Value operand : terminator->getOperands()) {
+              worklist.push_back(operand);
+            }
+          }
+        }
+      }
+    }
+
+    return true;
+  }
+
+  void addUpdateComputationForIndex(stablehlo::ScatterOp newScatterOp,
+                                    PatternRewriter &rewriter, Location loc,
+                                    Region &origRegion, size_t index,
+                                    size_t numOperands) const {
+    Block &origBlock = origRegion.front();
+
+    // Create a new region for the single-operand update computation
+    Region &newRegion = newScatterOp.getUpdateComputation();
+    Block *newBlock = rewriter.createBlock(&newRegion);
+
+    // Add 2 block arguments: one from result, one from update
+    BlockArgument resultArg =
+        newBlock->addArgument(origBlock.getArgument(index).getType(), loc);
+    BlockArgument updateArg = newBlock->addArgument(
+        origBlock.getArgument(numOperands + index).getType(), loc);
+
+    // Map original arguments to new ones
+    IRMapping mapper;
+    mapper.map(origBlock.getArgument(index), resultArg);
+    mapper.map(origBlock.getArgument(numOperands + index), updateArg);
+
+    // Clone operations from original computation that affect this index
+    Operation *terminator = origBlock.getTerminator();
+
+    if (auto returnOp = dyn_cast<stablehlo::ReturnOp>(terminator)) {
+      // Extract the i-th return value's defining operations
+      Value returnVal = returnOp.getOperand(index);
+      cloneComputationSlice(rewriter, returnVal, mapper, newBlock);
+
+      // Create return with single value
+      rewriter.setInsertionPointToEnd(newBlock);
+      Value mappedResult = mapper.lookupOrDefault(returnVal);
+      rewriter.create<stablehlo::ReturnOp>(loc, mappedResult);
+    }
+  }
+
+  void cloneComputationSlice(PatternRewriter &rewriter, Value val,
+                             IRMapping &mapper, Block *targetBlock) const {
+    if (mapper.contains(val))
+      return;
+
+    Operation *defOp = val.getDefiningOp();
+    if (!defOp)
+      return;
+
+    for (Value operand : defOp->getOperands()) {
+      cloneComputationSlice(rewriter, operand, mapper, targetBlock);
+    }
+
+    rewriter.setInsertionPointToEnd(targetBlock);
+    Operation *clonedOp = rewriter.clone(*defOp, mapper);
+
+    for (auto [orig, cloned] :
+         llvm::zip(defOp->getResults(), clonedOp->getResults())) {
+      mapper.map(orig, cloned);
+    }
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -24609,7 +24791,8 @@ struct EnzymeHLOOptPass
         DUSToDynamicPad,
         DynamicPadToPad,
         RemoveNoOpsFromWhileLoop,
-        WhileIsCopySimplify
+        WhileIsCopySimplify,
+        SplitVariadicScatterOp
       >(context);
 
     patterns.add<
