@@ -8159,10 +8159,9 @@ struct DotGeneralSimplify
 
     Value reduceSumInput;
     SmallVector<int64_t> reduceDims, broadcastDims, broadcastShape;
-    bool oneSideOnes = false;
+    SplatElementsAttr splatElementsAttr;
 
-    if (matchPattern(op.getLhs(), m_OneFloat())) { // LHS is ones
-      oneSideOnes = true;
+    if (matchPattern(op.getLhs(), m_Constant(&splatElementsAttr))) {
       reduceDims = llvm::to_vector(rhsContractingDims);
       reduceSumInput = op.getRhs();
 
@@ -8190,8 +8189,7 @@ struct DotGeneralSimplify
           broadcastDims.push_back(dim);
         }
       }
-    } else if (matchPattern(op.getRhs(), m_OneFloat())) { // RHS is ones
-      oneSideOnes = true;
+    } else if (matchPattern(op.getRhs(), m_Constant(&splatElementsAttr))) {
       reduceDims = llvm::to_vector(lhsContractingDims);
       reduceSumInput = op.getLhs();
 
@@ -8221,7 +8219,7 @@ struct DotGeneralSimplify
       }
     }
 
-    if (oneSideOnes) {
+    if (splatElementsAttr) {
       auto inputType = cast<RankedTensorType>(reduceSumInput.getType());
       auto elemType = inputType.getElementType();
       auto rank0Type = RankedTensorType::get({}, elemType);
@@ -8244,9 +8242,15 @@ struct DotGeneralSimplify
         rewriter.create<stablehlo::ReturnOp>(op.getLoc(), sum);
       }
 
-      rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
-          op, RankedTensorType::get(broadcastShape, elemType),
+      auto bcastOp = rewriter.create<stablehlo::BroadcastInDimOp>(
+          op.getLoc(), RankedTensorType::get(broadcastShape, elemType),
           reduceOp.getResult(0), broadcastDims);
+
+      rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
+          op, bcastOp,
+          rewriter.create<stablehlo::ConstantOp>(
+              op.getLoc(), bcastOp.getType(),
+              splatElementsAttr.resizeSplat(bcastOp.getType())));
       return success();
     }
 
