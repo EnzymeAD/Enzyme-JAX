@@ -5886,28 +5886,49 @@ struct ScatterConstFold final
 
   LogicalResult matchAndRewriteImpl(stablehlo::ScatterOp op,
                                     PatternRewriter &rewriter) const {
-    SmallVector<stablehlo::Tensor> inputs, updates;
-    DenseElementsAttr attr;
+    // First we check that all inputs/updates are constants and then we
+    // materialize them using constantOp
+    SmallVector<DenseElementsAttr> inputConstants, updateConstants;
+    DenseElementsAttr scatterIndicesConstant;
     for (auto input : op.getInputs()) {
+      DenseElementsAttr attr;
       if (matchPattern(input, m_Constant(&attr))) {
-        inputs.push_back(stablehlo::constantOp(attr));
+        inputConstants.push_back(attr);
       } else {
         return failure();
       }
     }
     for (auto update : op.getUpdates()) {
+      DenseElementsAttr attr;
       if (matchPattern(update, m_Constant(&attr))) {
-        updates.push_back(stablehlo::constantOp(attr));
+        updateConstants.push_back(attr);
       } else {
         return failure();
       }
     }
-    stablehlo::Tensor scatterIndices;
-    if (matchPattern(op.getScatterIndices(), m_Constant(&attr))) {
-      scatterIndices = stablehlo::constantOp(attr);
-    } else {
+    if (!matchPattern(op.getScatterIndices(),
+                      m_Constant(&scatterIndicesConstant)))
       return failure();
+
+    SmallVector<ShapedType> resultTypes(op->getResultTypes());
+    int totalResultSize = 1;
+    for (auto resultType : resultTypes) {
+      int resultSize = 1;
+      for (auto sidx : resultType.getShape()) {
+        resultSize *= sidx;
+      }
+      totalResultSize += resultSize;
     }
+    if (totalResultSize > max_constant_expansion)
+      return rewriter.notifyMatchFailure(op, "result size too large");
+
+    SmallVector<stablehlo::Tensor> inputs, updates;
+    for (auto input : inputConstants)
+      inputs.push_back(stablehlo::constantOp(input));
+    for (auto update : updateConstants)
+      updates.push_back(stablehlo::constantOp(update));
+    stablehlo::Tensor scatterIndices =
+        stablehlo::constantOp(scatterIndicesConstant);
 
     // construct the scope and add all live variables (accessible from update
     // computation) to it. If any of the variables are defined outside the
@@ -5927,26 +5948,19 @@ struct ScatterConstFold final
         }
       }
     }
+    SmallVector<DenseElementsAttr> liveValuesAttr;
     for (Value liveValue : liveValues) {
+      DenseElementsAttr attr;
       if (matchPattern(liveValue, m_Constant(&attr))) {
-        auto tensor = stablehlo::constantOp(attr);
-        scope.add(liveValue, tensor);
+        liveValuesAttr.push_back(attr);
       } else {
         return failure();
       }
     }
-
-    SmallVector<ShapedType> resultTypes(op->getResultTypes());
-    int totalResultSize = 1;
-    for (auto resultType : resultTypes) {
-      int resultSize = 1;
-      for (auto sidx : resultType.getShape()) {
-        resultSize *= sidx;
-      }
-      totalResultSize += resultSize;
+    for (auto [liveValue, attr] : llvm::zip(liveValues, liveValuesAttr)) {
+      auto tensor = stablehlo::constantOp(attr);
+      scope.add(liveValue, tensor);
     }
-    if (totalResultSize > max_constant_expansion)
-      return rewriter.notifyMatchFailure(op, "result size too large");
 
     auto scatterDimensionNumbers = op.getScatterDimensionNumbers();
     stablehlo::Axes updateWindowDims(
@@ -21877,6 +21891,34 @@ struct DiagonalTensorDotGeneralRewrite final
 
   LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp op,
                                     PatternRewriter &rewriter) const {
+    auto rhsType = op.getRhs().getType();
+    auto lhsType = op.getLhs().getType();
+    auto dotDimNumbers = op.getDotDimensionNumbers();
+
+    if (dotDimNumbers.getLhsBatchingDimensions().size() != 0 ||
+        dotDimNumbers.getRhsBatchingDimensions().size() != 0) {
+      return rewriter.notifyMatchFailure(
+          op, "batching is not supported for diagonal tensor dot general");
+    }
+
+    int64_t rhsRank = cast<RankedTensorType>(rhsType).getRank();
+    int64_t lhsRank = cast<RankedTensorType>(lhsType).getRank();
+
+    // Support 2D x 2D, 2D x 1D, and 1D x 2D cases
+    if ((lhsRank != 2 && lhsRank != 1) || (rhsRank != 2 && rhsRank != 1)) {
+      return rewriter.notifyMatchFailure(op,
+                                         "only 1D and 2D tensors are supported "
+                                         "for diagonal tensor dot general");
+    }
+
+    if (lhsRank == 1 && rhsRank == 1) {
+      return rewriter.notifyMatchFailure(
+          op, "1D x 1D dot product not supported in this pattern");
+    }
+
+    int64_t lhsContractingDim = dotDimNumbers.getLhsContractingDimensions()[0];
+    int64_t rhsContractingDim = dotDimNumbers.getRhsContractingDimensions()[0];
+
     {
       // LHS Diagonal Matrix Multiply: Scale rows by diagonal elements
       mlir::Value diagonalTensor;
@@ -21885,11 +21927,24 @@ struct DiagonalTensorDotGeneralRewrite final
         if (status.ok()) {
           // TODO: support batched diagonal tensor
           if (cast<RankedTensorType>(diagonalTensor.getType()).getRank() == 1) {
-            auto scaling = rewriter.create<stablehlo::BroadcastInDimOp>(
-                op.getLoc(), op.getRhs().getType(), diagonalTensor,
-                ArrayRef<int64_t>({0}));
-            rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, scaling,
-                                                          op.getRhs());
+            // LHS is diagonal (2D), RHS can be 2D or 1D
+            if (rhsRank == 2) {
+              int64_t rhsNonContractingDim = 1 - rhsContractingDim;
+              auto scaling = rewriter.create<stablehlo::BroadcastInDimOp>(
+                  op.getLoc(), rhsType, diagonalTensor,
+                  ArrayRef<int64_t>({rhsContractingDim}));
+              auto result = rewriter.create<stablehlo::MulOp>(
+                  op.getLoc(), scaling, op.getRhs());
+              if (rhsNonContractingDim == 0) {
+                rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(
+                    op, op.getType(), result, ArrayRef<int64_t>({1, 0}));
+              } else {
+                rewriter.replaceOp(op, result);
+              }
+            } else {
+              rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, op.getRhs(),
+                                                            diagonalTensor);
+            }
             return success();
           }
         }
@@ -21904,11 +21959,24 @@ struct DiagonalTensorDotGeneralRewrite final
         if (status.ok()) {
           // TODO: support batched diagonal tensor
           if (cast<RankedTensorType>(diagonalTensor.getType()).getRank() == 1) {
-            auto scaling = rewriter.create<stablehlo::BroadcastInDimOp>(
-                op.getLoc(), op.getLhs().getType(), diagonalTensor,
-                ArrayRef<int64_t>({1}));
-            rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, op.getLhs(),
-                                                          scaling);
+            // RHS is diagonal (2D), LHS can be 2D or 1D
+            if (lhsRank == 2) {
+              int64_t lhsNonContractingDim = 1 - lhsContractingDim;
+              auto scaling = rewriter.create<stablehlo::BroadcastInDimOp>(
+                  op.getLoc(), lhsType, diagonalTensor,
+                  ArrayRef<int64_t>({lhsContractingDim}));
+              auto result = rewriter.create<stablehlo::MulOp>(
+                  op.getLoc(), scaling, op.getLhs());
+              if (lhsNonContractingDim == 1) {
+                rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(
+                    op, op.getType(), result, ArrayRef<int64_t>({1, 0}));
+              } else {
+                rewriter.replaceOp(op, result);
+              }
+            } else {
+              rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, op.getLhs(),
+                                                            diagonalTensor);
+            }
             return success();
           }
         }
