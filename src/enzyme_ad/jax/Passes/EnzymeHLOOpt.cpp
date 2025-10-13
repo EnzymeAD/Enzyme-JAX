@@ -8142,7 +8142,133 @@ struct DotGeneralSimplify
           op, rewriter.getZeroAttr(op.getType()));
       return success();
     }
+
+    auto dimNumbers = op.getDotDimensionNumbers();
+    auto lhsContractingDims = dimNumbers.getLhsContractingDimensions();
+    auto rhsContractingDims = dimNumbers.getRhsContractingDimensions();
+    auto lhsBatchingDims = dimNumbers.getLhsBatchingDimensions();
+    auto rhsBatchingDims = dimNumbers.getRhsBatchingDimensions();
+    auto lhsType = cast<RankedTensorType>(op.getLhs().getType());
+    auto rhsType = cast<RankedTensorType>(op.getRhs().getType());
+    auto lhsShape = lhsType.getShape();
+    auto rhsShape = rhsType.getShape();
+    auto lhsNonContractingDims = getNonContractingDims(
+        lhsBatchingDims, lhsContractingDims, lhsType.getRank());
+    auto rhsNonContractingDims = getNonContractingDims(
+        rhsBatchingDims, rhsContractingDims, rhsType.getRank());
+
+    Value reduceSumInput;
+    SmallVector<int64_t> reduceDims, broadcastDims, broadcastShape;
+    SplatElementsAttr splatElementsAttr;
+
+    if (matchPattern(op.getLhs(), m_Constant(&splatElementsAttr))) {
+      reduceDims = llvm::to_vector(rhsContractingDims);
+      reduceSumInput = op.getRhs();
+
+      SmallVector<int64_t> broadcastDimsTmp(rhsType.getRank(), -1);
+      broadcastShape = SmallVector<int64_t>(rhsType.getRank(), -1);
+
+      int64_t idx = 0;
+      for (auto dim : rhsBatchingDims) {
+        broadcastDimsTmp[dim] = idx;
+        broadcastShape[idx] = rhsShape[dim];
+        idx++;
+      }
+      for (auto dim : lhsNonContractingDims) {
+        broadcastShape[idx] = lhsShape[dim];
+        idx++;
+      }
+      for (auto dim : rhsNonContractingDims) {
+        broadcastDimsTmp[dim] = idx;
+        broadcastShape[idx] = rhsShape[dim];
+        idx++;
+      }
+
+      for (auto dim : broadcastDimsTmp) {
+        if (dim != -1) {
+          broadcastDims.push_back(dim);
+        }
+      }
+    } else if (matchPattern(op.getRhs(), m_Constant(&splatElementsAttr))) {
+      reduceDims = llvm::to_vector(lhsContractingDims);
+      reduceSumInput = op.getLhs();
+
+      SmallVector<int64_t> broadcastDimsTmp(lhsType.getRank(), -1);
+      broadcastShape = SmallVector<int64_t>(lhsType.getRank(), -1);
+
+      int64_t idx = 0;
+      for (auto dim : lhsBatchingDims) {
+        broadcastDimsTmp[dim] = idx;
+        broadcastShape[idx] = lhsShape[dim];
+        idx++;
+      }
+      for (auto dim : lhsNonContractingDims) {
+        broadcastDimsTmp[dim] = idx;
+        broadcastShape[idx] = lhsShape[dim];
+        idx++;
+      }
+      for (auto dim : rhsNonContractingDims) {
+        broadcastShape[idx] = rhsShape[dim];
+        idx++;
+      }
+
+      for (auto dim : broadcastDimsTmp) {
+        if (dim != -1) {
+          broadcastDims.push_back(dim);
+        }
+      }
+    }
+
+    if (splatElementsAttr) {
+      auto inputType = cast<RankedTensorType>(reduceSumInput.getType());
+      auto elemType = inputType.getElementType();
+      auto rank0Type = RankedTensorType::get({}, elemType);
+
+      auto zero = rewriter.create<stablehlo::ConstantOp>(
+          op.getLoc(), rewriter.getZeroAttr(rank0Type));
+      auto reduceOp = rewriter.create<stablehlo::ReduceOp>(
+          op.getLoc(), ValueRange{reduceSumInput}, ValueRange{zero},
+          rewriter.getDenseI64ArrayAttr(reduceDims));
+
+      Block &block = reduceOp.getBody().emplaceBlock();
+      BlockArgument arg0 = block.addArgument(rank0Type, op.getLoc());
+      BlockArgument arg1 = block.addArgument(rank0Type, op.getLoc());
+
+      {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(&block);
+
+        Value sum = rewriter.create<stablehlo::AddOp>(op.getLoc(), arg0, arg1);
+        rewriter.create<stablehlo::ReturnOp>(op.getLoc(), sum);
+      }
+
+      auto bcastOp = rewriter.create<stablehlo::BroadcastInDimOp>(
+          op.getLoc(), RankedTensorType::get(broadcastShape, elemType),
+          reduceOp.getResult(0), broadcastDims);
+
+      rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
+          op, bcastOp,
+          rewriter.create<stablehlo::ConstantOp>(
+              op.getLoc(), bcastOp.getType(),
+              splatElementsAttr.resizeSplat(bcastOp.getType())));
+      return success();
+    }
+
     return failure();
+  }
+
+private:
+  SmallVector<int64_t> getNonContractingDims(ArrayRef<int64_t> batchingDims,
+                                             ArrayRef<int64_t> contractingDims,
+                                             int64_t rank) const {
+    SmallVector<int64_t> nonContractingDims;
+    for (int i = 0; i < rank; i++) {
+      if (!llvm::is_contained(batchingDims, i) &&
+          !llvm::is_contained(contractingDims, i)) {
+        nonContractingDims.push_back(i);
+      }
+    }
+    return nonContractingDims;
   }
 };
 
