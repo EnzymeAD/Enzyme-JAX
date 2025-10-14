@@ -3288,62 +3288,177 @@ struct ReducePad
           op, "only single-operand single-init reduce is supported");
     }
 
-    auto checkCommonReduce = mlir::stablehlo::CheckCommonReduceOp(op);
-
-    // TODO: min/max can also be an option since they are dropped
-    if (!checkCommonReduce.isAddReduce) {
-      return rewriter.notifyMatchFailure(op, "only add is currently supported");
-    }
-
     Value input = op.getInputs()[0];
     auto pad = input.getDefiningOp<stablehlo::PadOp>();
-    if (!pad) {
+    if (!pad)
       return rewriter.notifyMatchFailure(op, "input source is not a pad op");
-    }
     if (anyPadSizesNegative(pad))
       return failure();
 
-    if (!matchPattern(pad.getPaddingValue(), m_AnyZeroFloat()))
-      return failure();
+    auto checkCommonReduce = mlir::stablehlo::CheckCommonReduceOp(op);
 
-    SmallVector<int64_t> shape;
+    if (checkCommonReduce.isAddReduce) {
+      return matchAndRewriteReduceAdd(op, rewriter, pad, input);
+    } else if (checkCommonReduce.isMinReduce) {
+      return matchAndRewriteReduceMin(op, rewriter, pad, input);
+    } else if (checkCommonReduce.isMaxReduce) {
+      return matchAndRewriteReduceMax(op, rewriter, pad, input);
+    } else if (checkCommonReduce.isMulReduce) {
+      return matchAndRewriteReduceMul(op, rewriter, pad, input);
+    }
 
+    return failure();
+  }
+
+private:
+  struct PostReduceInfo {
+    Value res;
     SmallVector<int64_t> low;
     SmallVector<int64_t> high;
     SmallVector<int64_t> inner;
+    bool needsPostPad;
+    int64_t numElementsReduced;
+  };
+
+  LogicalResult matchAndRewriteReduceMin(stablehlo::ReduceOp op,
+                                         PatternRewriter &rewriter,
+                                         stablehlo::PadOp pad,
+                                         Value input) const {
+    auto reduceInfo = matchAndRewriteReduce(op, rewriter, pad, input);
+    Value res = rewriter.create<stablehlo::MinOp>(
+        op.getLoc(), reduceInfo.res,
+        rewriter.create<stablehlo::BroadcastInDimOp>(
+            op.getLoc(), reduceInfo.res.getType(), pad.getPaddingValue(),
+            rewriter.getDenseI64ArrayAttr({})));
+
+    if (reduceInfo.needsPostPad) {
+      res = rewriter.create<stablehlo::PadOp>(
+          op.getLoc(), res, pad.getPaddingValue(), reduceInfo.low,
+          reduceInfo.high, reduceInfo.inner);
+    }
+    rewriter.replaceOp(op, res);
+    return success();
+  }
+
+  LogicalResult matchAndRewriteReduceMax(stablehlo::ReduceOp op,
+                                         PatternRewriter &rewriter,
+                                         stablehlo::PadOp pad,
+                                         Value input) const {
+    auto reduceInfo = matchAndRewriteReduce(op, rewriter, pad, input);
+    Value res = rewriter.create<stablehlo::MaxOp>(
+        op.getLoc(), reduceInfo.res,
+        rewriter.create<stablehlo::BroadcastInDimOp>(
+            op.getLoc(), reduceInfo.res.getType(), pad.getPaddingValue(),
+            rewriter.getDenseI64ArrayAttr({})));
+
+    if (reduceInfo.needsPostPad) {
+      res = rewriter.create<stablehlo::PadOp>(
+          op.getLoc(), res, pad.getPaddingValue(), reduceInfo.low,
+          reduceInfo.high, reduceInfo.inner);
+    }
+    rewriter.replaceOp(op, res);
+    return success();
+  }
+
+  LogicalResult matchAndRewriteReduceMul(stablehlo::ReduceOp op,
+                                         PatternRewriter &rewriter,
+                                         stablehlo::PadOp pad,
+                                         Value input) const {
+    auto reduceInfo = matchAndRewriteReduce(op, rewriter, pad, input);
+    Value res = reduceInfo.res;
+
+    // compute padValue ^ numElementsReduced and multiply this to the result
+    auto cType = RankedTensorType::get(
+        {}, cast<RankedTensorType>(pad.getPaddingValue().getType())
+                .getElementType());
+    auto mulConst = rewriter.create<stablehlo::PowOp>(
+        op.getLoc(), pad.getPaddingValue(),
+        rewriter.create<stablehlo::ConstantOp>(
+            op.getLoc(), cType,
+            cast<ElementsAttr>(
+                makeAttr(cType, reduceInfo.numElementsReduced))));
+    res = rewriter.create<stablehlo::MulOp>(
+        op.getLoc(), res,
+        rewriter.create<stablehlo::BroadcastInDimOp>(
+            op.getLoc(), res.getType(), mulConst,
+            rewriter.getDenseI64ArrayAttr({})));
+
+    if (reduceInfo.needsPostPad) {
+      res = rewriter.create<stablehlo::PadOp>(
+          op.getLoc(), res, pad.getPaddingValue(), reduceInfo.low,
+          reduceInfo.high, reduceInfo.inner);
+    }
+    rewriter.replaceOp(op, res);
+    return success();
+  }
+
+  LogicalResult matchAndRewriteReduceAdd(stablehlo::ReduceOp op,
+                                         PatternRewriter &rewriter,
+                                         stablehlo::PadOp pad,
+                                         Value input) const {
+    auto reduceInfo = matchAndRewriteReduce(op, rewriter, pad, input);
+    Value res = reduceInfo.res;
+
+    if (!matchPattern(pad.getPaddingValue(), m_AnyZeroFloat()) &&
+        !matchPattern(pad.getPaddingValue(), m_AnyZeroComplex()) &&
+        !matchPattern(pad.getPaddingValue(), m_Zero())) {
+      // compute padValue * numElementsReduced and add this to the result
+      auto cType = RankedTensorType::get(
+          {}, cast<RankedTensorType>(pad.getPaddingValue().getType())
+                  .getElementType());
+      auto mulConst = rewriter.create<stablehlo::MulOp>(
+          op.getLoc(), pad.getPaddingValue(),
+          rewriter.create<stablehlo::ConstantOp>(
+              op.getLoc(), cType,
+              cast<ElementsAttr>(
+                  makeAttr(cType, reduceInfo.numElementsReduced))));
+      res = rewriter.create<stablehlo::AddOp>(
+          op.getLoc(), res,
+          rewriter.create<stablehlo::BroadcastInDimOp>(
+              op.getLoc(), res.getType(), mulConst,
+              rewriter.getDenseI64ArrayAttr({})));
+    }
+
+    if (reduceInfo.needsPostPad) {
+      res = rewriter.create<stablehlo::PadOp>(
+          op.getLoc(), res, pad.getPaddingValue(), reduceInfo.low,
+          reduceInfo.high, reduceInfo.inner);
+    }
+    rewriter.replaceOp(op, res);
+    return success();
+  }
+
+  PostReduceInfo matchAndRewriteReduce(stablehlo::ReduceOp op,
+                                       PatternRewriter &rewriter,
+                                       stablehlo::PadOp pad,
+                                       Value input) const {
+    SmallVector<int64_t> low, high, inner;
+    int64_t numElementsReduced = 0;
     bool needsPostPad = false;
     for (auto en : llvm::enumerate(
              cast<RankedTensorType>(pad.getOperand().getType()).getShape())) {
-      if (llvm::is_contained(op.getDimensions(), en.index()))
+      int64_t lowPad = pad.getEdgePaddingLow()[en.index()];
+      int64_t highPad = pad.getEdgePaddingHigh()[en.index()];
+      int64_t interiorPad = pad.getInteriorPadding()[en.index()];
+      if (llvm::is_contained(op.getDimensions(), en.index())) {
+        numElementsReduced +=
+            lowPad + highPad +
+            std::max(static_cast<int32_t>(en.value() - 1), 0) * interiorPad;
         continue;
-      shape.push_back(en.value());
-      low.push_back(pad.getEdgePaddingLow()[en.index()]);
-      high.push_back(pad.getEdgePaddingHigh()[en.index()]);
-      inner.push_back(pad.getInteriorPadding()[en.index()]);
+      }
+      low.push_back(lowPad);
+      high.push_back(highPad);
+      inner.push_back(interiorPad);
       needsPostPad = true;
     }
 
     auto newReduction = rewriter.create<stablehlo::ReduceOp>(
-        op.getLoc(),
-        TypeRange(RankedTensorType::get(
-            shape,
-            cast<RankedTensorType>(op->getResultTypes()[0]).getElementType())),
-        ValueRange(pad.getOperand()), op.getInitValues(), op.getDimensions());
+        op.getLoc(), ValueRange(pad.getOperand()), op.getInitValues(),
+        op.getDimensions());
     newReduction.getRegion().takeBody(op.getRegion());
 
     Value res = newReduction->getResult(0);
-    if (needsPostPad) {
-      auto ctype = RankedTensorType::get(
-          {}, cast<RankedTensorType>(res.getType()).getElementType());
-      res = rewriter.create<stablehlo::PadOp>(
-          op.getLoc(), res,
-          rewriter.create<stablehlo::ConstantOp>(
-              op.getLoc(), ctype, cast<ElementsAttr>(makeAttr(ctype, 0))),
-          low, high, inner);
-    }
-
-    rewriter.replaceOp(op, res);
-    return success();
+    return {res, low, high, inner, needsPostPad, numElementsReduced};
   }
 };
 
