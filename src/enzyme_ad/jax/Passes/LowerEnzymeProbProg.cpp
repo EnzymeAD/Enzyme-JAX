@@ -1472,6 +1472,111 @@ struct GetSampleFromTraceOpConversion
   }
 };
 
+struct CholeskySolveOpConversion
+    : public OpConversionPattern<enzyme::CholeskySolveOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  std::string backend;
+  CholeskySolveOpConversion(std::string backend, TypeConverter &typeConverter,
+                            MLIRContext *context, PatternBenefit benefit = 1)
+      : OpConversionPattern(typeConverter, context, benefit), backend(backend) {
+  }
+
+  LogicalResult
+  matchAndRewrite(enzyme::CholeskySolveOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto lhs = adaptor.getLhs();
+    auto rhs = adaptor.getRhs();
+    auto resultType = cast<RankedTensorType>(op.getResult().getType());
+    auto lhsType = cast<RankedTensorType>(lhs.getType());
+    auto rhsType = cast<RankedTensorType>(rhs.getType());
+
+    // StableHLO triangular_solve requires both operands to have the same rank
+    Value rhsReshaped = rhs;
+    Type intermediateResultType = resultType;
+
+    if (rhsType.getRank() == 1) {
+      auto shape = rhsType.getShape();
+      auto reshapedType =
+          RankedTensorType::get({shape[0], 1}, rhsType.getElementType());
+      rhsReshaped =
+          rewriter.create<stablehlo::ReshapeOp>(op.getLoc(), reshapedType, rhs);
+      intermediateResultType = reshapedType;
+    }
+
+    // Cholesky decomposition: A = LL^T, A is symmetric positive definite
+    // Then solve: Ly = b, L^T x = y, where L is lower triangular
+    auto choleskyOp = rewriter.create<stablehlo::CholeskyOp>(
+        op.getLoc(), lhsType, lhs,
+        /*lower=*/rewriter.getBoolAttr(true));
+    Value L = choleskyOp.getResult();
+
+    // Forward substitution: solve Ly = b, where L is lower triangular
+    auto forwardSolve = rewriter.create<stablehlo::TriangularSolveOp>(
+        op.getLoc(), intermediateResultType,
+        /*a=*/L,
+        /*b=*/rhsReshaped,
+        /*left_side=*/true,
+        /*lower=*/true,
+        /*unit_diagonal=*/false,
+        /*transpose_a=*/stablehlo::Transpose::NO_TRANSPOSE);
+
+    // Backward substitution: solve L^T x = y, where L^T is upper triangular
+    auto backwardSolve = rewriter.create<stablehlo::TriangularSolveOp>(
+        op.getLoc(), intermediateResultType,
+        /*a=*/L,
+        /*b=*/forwardSolve.getResult(),
+        /*left_side=*/true,
+        /*lower=*/true,
+        /*unit_diagonal=*/false,
+        /*transpose_a=*/stablehlo::Transpose::TRANSPOSE);
+
+    // If we reshaped to column matrix, reshape back to vector
+    Value result = backwardSolve.getResult();
+    if (rhsType.getRank() == 1) {
+      result = rewriter.create<stablehlo::ReshapeOp>(op.getLoc(), resultType,
+                                                     result);
+    }
+
+    rewriter.replaceOp(op, result);
+    return success();
+  }
+};
+
+struct DotOpConversion : public OpConversionPattern<enzyme::DotOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  std::string backend;
+  DotOpConversion(std::string backend, TypeConverter &typeConverter,
+                  MLIRContext *context, PatternBenefit benefit = 1)
+      : OpConversionPattern(typeConverter, context, benefit), backend(backend) {
+  }
+
+  LogicalResult
+  matchAndRewrite(enzyme::DotOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto lhs = adaptor.getLhs();
+    auto rhs = adaptor.getRhs();
+    auto resultType = cast<RankedTensorType>(op.getResult().getType());
+    auto lhsType = cast<RankedTensorType>(lhs.getType());
+
+    auto dotDimensionNumbers = stablehlo::DotDimensionNumbersAttr::get(
+        rewriter.getContext(),
+        /*lhs_batching_dimensions=*/{},
+        /*rhs_batching_dimensions=*/{},
+        /*lhs_contracting_dimensions=*/{0},
+        /*rhs_contracting_dimensions=*/{0});
+
+    auto dotOp = rewriter.create<stablehlo::DotGeneralOp>(
+        op.getLoc(), resultType, lhs, rhs, dotDimensionNumbers,
+        /*precision_config=*/ArrayAttr(),
+        /*algorithm=*/stablehlo::DotAlgorithmAttr());
+
+    rewriter.replaceOp(op, dotOp.getResult());
+    return success();
+  }
+};
+
 struct RandomOpConversion : public OpConversionPattern<enzyme::RandomOp> {
   using OpConversionPattern::OpConversionPattern;
 
