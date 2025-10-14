@@ -19,6 +19,8 @@
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/Support/Debug.h"
 
+// #include "src/enzyme_ad/jax/Dialect/Ops.h"
+
 #include "src/enzyme_ad/jax/Utils.h"
 #include "llvm/ADT/MapVector.h"
 
@@ -6342,7 +6344,7 @@ bool valueCmp(Cmp cmp, AffineExpr expr, size_t numDim, ValueRange operands,
   return false;
 }
 
-// ------------------------- Vendored -------------------------
+// // ------------------------- Vendored -------------------------
 
 /// Returns true if `v` is allocated locally to `enclosingOp` -- i.e., it is
 /// allocated by an operation nested within `enclosingOp`.

@@ -399,7 +399,7 @@ bool isCaptured(Value v, Operation *potentialUser = nullptr,
 
 Value getBase(Value v) {
   while (true) {
-    // if (auto s = v.getDefiningOp<SubIndexOp>()) {
+    // if (auto s = v.getDefiningOp<enzymexla::SubIndexOp>()) {
     //   v = s.getSource();
     //   continue;
     // }

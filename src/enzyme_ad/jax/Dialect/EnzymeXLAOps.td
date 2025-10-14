@@ -630,4 +630,24 @@ def SubIndexOp : EnzymeXLA_Op<"subindex", [
   }];
 }
 
+def UndefOp
+    : EnzymeXLA_Op<"undef", [Pure]> {
+  let summary = "More flexible undef op";
+  let skipDefaultBuilders = 1;
+  let results = (outs AnyType:$result);
+  let builders = [
+    OpBuilder<(ins "Type":$type), [{
+      $_state.types.push_back(type);
+    }]>];
+  let hasCanonicalizer = true;
+}
+
+def TypeAlignOp : EnzymeXLA_Op<"typeAlign", [Pure]> {
+  let summary = "Get alignment of type";
+  let arguments = (ins TypeAttr : $source);
+  let results = (outs AnyType : $result);
+  let hasFolder = 1;
+  let hasCanonicalizer = 1;
+}
+
 #endif // ENZYMEXLA_OPS
