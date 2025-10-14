@@ -33,9 +33,13 @@ include "mlir/Dialect/LLVMIR/LLVMOpBase.td"
 def TensorI64 : Type<CPred<"::llvm::isa<::mlir::TensorType>($_self) && ::llvm::cast<::mlir::TensorType>($_self).getShape().size() == 0 && ::llvm::cast<::mlir::TensorType>($_self).getElementType().isSignlessInteger(64)">, "tensor<i64>",
                  "::mlir::TensorType">,
             BuildableType<"RankedTensorType::get({}, $_builder.getIntegerType(64))">;
-def TensorF64 : Type<CPred<"::llvm::isa<::mlir::TensorType>($_self) && ::llvm::cast<::mlir::TensorType>($_self).getShape().size() == 0 && ::llvm::cast<::mlir::TensorType>($_self).getElementType().isF64()">, "tensor<f64>",
-                 "::mlir::TensorType">,
-            BuildableType<"RankedTensorType::get({}, $_builder.getF64Type())">;
+
+def TensorFloat : Type<
+  CPred<"::llvm::isa<::mlir::TensorType>($_self) && "
+        "::llvm::cast<::mlir::TensorType>($_self).getShape().size() == 0 && "
+        "::llvm::isa<::mlir::FloatType>(::llvm::cast<::mlir::TensorType>($_self).getElementType())">,
+  "tensor<float scalar>",
+  "::mlir::TensorType">;
 
 def KernelCallOp: EnzymeXLA_Op<"kernel_call", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, DeclareOpInterfaceMethods<CallOpInterface>, DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "Kernel Call operation";
@@ -366,7 +370,7 @@ def CommRegionOp : EnzymeXLA_Op<"comm_region", [
 
 // Linear Algebra Ops
 
-def SymmOp: EnzymeXLA_Op<"lapack.symm", [Pure]> {
+def SymmOp: EnzymeXLA_Op<"lapack.symm", [Pure, SameOperandsAndResultElementType]> {
   let summary = "Multiplication involving a symmetric matrix";
 
   let description = [{
@@ -377,8 +381,8 @@ def SymmOp: EnzymeXLA_Op<"lapack.symm", [Pure]> {
     HLO_Tensor:$A,
     HLO_Tensor:$B,
     HLO_Tensor:$C,
-    TensorF64:$alpha,
-    TensorF64:$beta,
+    TensorFloat:$alpha,
+    TensorFloat:$beta,
     EnzymeXLA_LapackSideAttr:$side,
     EnzymeXLA_LapackUploAttr:$uplo
   );
