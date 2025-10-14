@@ -1744,6 +1744,128 @@ struct RandomOpConversion : public OpConversionPattern<enzyme::RandomOp> {
                    .create<stablehlo::MulOp>(op.getLoc(), rankedType, probit,
                                              sqrt2Const)
                    .getResult();
+    } else if (distribution == enzyme::RngDistribution::MULTINORMAL) {
+      // Multivariate normal: x ~ N(mean, cov)
+      // Algorithm: x = mean + chol(cov) * z, where z ~ N(0, I)
+
+      Value mean = adaptor.getA();
+      Value cov = adaptor.getB();
+
+      auto meanType = cast<RankedTensorType>(mean.getType());
+      auto covType = cast<RankedTensorType>(cov.getType());
+
+      bool scalarMean =
+          meanType.getShape().empty() ||
+          (meanType.getShape().size() == 1 && meanType.getShape()[0] == 1);
+
+      int64_t dim = covType.getShape()[0];
+      auto vectorType = RankedTensorType::get({dim}, elemType);
+
+      // Sample z ~ N(0, I)
+      unsigned mantissaBits;
+      if (nbits == 16)
+        mantissaBits = 10; // TODO bfloat16
+      else if (nbits == 32)
+        mantissaBits = 23;
+      else if (nbits == 64)
+        mantissaBits = 52;
+      else
+        return rewriter.notifyMatchFailure(
+            op, "Unsupported float type for MULTINORMAL");
+      auto uintVectorType = RankedTensorType::get({dim}, uintType);
+
+      auto shiftAmount = rewriter.create<stablehlo::ConstantOp>(
+          op.getLoc(), uintVectorType,
+          DenseElementsAttr::get(
+              uintVectorType,
+              rewriter.getIntegerAttr(uintType, nbits - mantissaBits)));
+      auto shiftedBits = rewriter.create<stablehlo::ShiftRightLogicalOp>(
+          op.getLoc(), uintVectorType, randomBits, shiftAmount);
+
+      uint64_t onePattern;
+      if (nbits == 16)
+        onePattern = 0x3C00;
+      else if (nbits == 32)
+        onePattern = 0x3F800000;
+      else if (nbits == 64)
+        onePattern = 0x3FF0000000000000ULL;
+      else
+        return rewriter.notifyMatchFailure(
+            op, "Unsupported float type for MULTINORMAL");
+
+      auto onePatternConst = rewriter.create<stablehlo::ConstantOp>(
+          op.getLoc(), uintVectorType,
+          DenseElementsAttr::get(
+              uintVectorType, rewriter.getIntegerAttr(uintType, onePattern)));
+      auto floatBits = rewriter.create<stablehlo::OrOp>(
+          op.getLoc(), uintVectorType, shiftedBits, onePatternConst);
+
+      Value randUniform = rewriter
+                              .create<stablehlo::BitcastConvertOp>(
+                                  op.getLoc(), vectorType, floatBits)
+                              .getResult();
+      auto oneConst = rewriter.create<stablehlo::ConstantOp>(
+          op.getLoc(), vectorType,
+          DenseElementsAttr::get(vectorType,
+                                 rewriter.getFloatAttr(elemType, 1.0)));
+      randUniform = rewriter
+                        .create<stablehlo::SubtractOp>(op.getLoc(), vectorType,
+                                                       randUniform, oneConst)
+                        .getResult();
+
+      auto twoConst = rewriter.create<stablehlo::ConstantOp>(
+          op.getLoc(), vectorType,
+          DenseElementsAttr::get(vectorType,
+                                 rewriter.getFloatAttr(elemType, 2.0)));
+      Value scaledUniform =
+          rewriter
+              .create<stablehlo::MulOp>(op.getLoc(), vectorType, randUniform,
+                                        twoConst)
+              .getResult();
+      scaledUniform = rewriter
+                          .create<stablehlo::SubtractOp>(
+                              op.getLoc(), vectorType, scaledUniform, oneConst)
+                          .getResult();
+
+      auto probit = rewriter.create<chlo::ErfInvOp>(op.getLoc(), vectorType,
+                                                    scaledUniform);
+
+      double sqrt2 = std::sqrt(2.0);
+      auto sqrt2Const = rewriter.create<stablehlo::ConstantOp>(
+          op.getLoc(), vectorType,
+          DenseElementsAttr::get(vectorType,
+                                 rewriter.getFloatAttr(elemType, sqrt2)));
+      Value z = rewriter
+                    .create<stablehlo::MulOp>(op.getLoc(), vectorType, probit,
+                                              sqrt2Const)
+                    .getResult();
+
+      auto choleskyOp = rewriter.create<stablehlo::CholeskyOp>(
+          op.getLoc(), covType, cov,
+          /*lower=*/rewriter.getBoolAttr(true));
+      Value L = choleskyOp.getResult();
+
+      auto dotDimensionNumbers = stablehlo::DotDimensionNumbersAttr::get(
+          rewriter.getContext(),
+          /*lhs_batching_dimensions=*/{},
+          /*rhs_batching_dimensions=*/{},
+          /*lhs_contracting_dimensions=*/{1},
+          /*rhs_contracting_dimensions=*/{0});
+
+      auto Lz = rewriter.create<stablehlo::DotGeneralOp>(
+          op.getLoc(), vectorType, L, z, dotDimensionNumbers,
+          /*precision_config=*/ArrayAttr(),
+          /*algorithm=*/stablehlo::DotAlgorithmAttr());
+
+      if (scalarMean) {
+        auto meanBroadcast = rewriter.create<stablehlo::BroadcastInDimOp>(
+            op.getLoc(), vectorType, mean, rewriter.getDenseI64ArrayAttr({}));
+        result = rewriter.create<stablehlo::AddOp>(op.getLoc(), vectorType,
+                                                   meanBroadcast, Lz);
+      } else {
+        result = rewriter.create<stablehlo::AddOp>(op.getLoc(), vectorType,
+                                                   mean, Lz);
+      }
     } else {
       return rewriter.notifyMatchFailure(op, "Unknown RNG distribution");
     }
