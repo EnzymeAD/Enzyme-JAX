@@ -8225,7 +8225,7 @@ struct DotGeneralSimplify
       auto rank0Type = RankedTensorType::get({}, elemType);
 
       auto zero = rewriter.create<stablehlo::ConstantOp>(
-          op.getLoc(), rewriter.getZeroAttr(rank0Type));
+          op.getLoc(), rank0Type, cast<ElementsAttr>(makeAttr(rank0Type, 0)));
       auto reduceOp = rewriter.create<stablehlo::ReduceOp>(
           op.getLoc(), ValueRange{reduceSumInput}, ValueRange{zero},
           rewriter.getDenseI64ArrayAttr(reduceDims));
