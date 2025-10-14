@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --arith-raise --lower-enzyme-probprog | FileCheck %s --check-prefix=CPU
+// RUN: enzymexlamlir-opt %s --arith-raise --lower-probprog-to-stablehlo --lower-probprog-trace-ops | FileCheck %s --check-prefix=CPU
 module {
   func.func private @model.regenerate(%arg0: !enzyme.Trace, %arg1: tensor<2xui64>) -> (!enzyme.Trace, tensor<f64>, tensor<2xui64>) {
     %cst = arith.constant dense<0.000000e+00> : tensor<f64>
@@ -29,8 +29,7 @@ module {
       %rng2, %uniform = enzyme.random %rng1, %zero, %one {rng_distribution = #enzyme<rng_distribution UNIFORM>} : (tensor<2xui64>, tensor<f64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
       %log_uniform = math.log %uniform : tensor<f64>
       %accept = arith.cmpf olt, %log_uniform, %log_alpha : tensor<f64>
-      %accept_extracted = tensor.extract %accept[] : tensor<i1>
-      %selected_trace = arith.select %accept_extracted, %new_trace, %old_trace : !enzyme.Trace
+      %selected_trace = enzyme.selectTrace %accept, %new_trace, %old_trace : tensor<i1>
       %selected_trace_ui64 = builtin.unrealized_conversion_cast %selected_trace : !enzyme.Trace to tensor<ui64>
       stablehlo.return %iter_next, %selected_trace_ui64, %rng2 : tensor<i64>, tensor<ui64>, tensor<2xui64>
     }
