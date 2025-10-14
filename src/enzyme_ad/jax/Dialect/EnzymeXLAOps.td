@@ -37,8 +37,10 @@ def TensorI64 : Type<CPred<"::llvm::isa<::mlir::TensorType>($_self) && ::llvm::c
 def TensorFloat : Type<
   CPred<"::llvm::isa<::mlir::TensorType>($_self) && "
         "::llvm::cast<::mlir::TensorType>($_self).getShape().size() == 0 && "
-        "::llvm::isa<::mlir::FloatType>(::llvm::cast<::mlir::TensorType>($_self).getElementType())">,
-  "tensor<float scalar>",
+        "(::llvm::isa<::mlir::FloatType>(::llvm::cast<::mlir::TensorType>($_self).getElementType()) || "
+        " (::llvm::isa<::mlir::ComplexType>(::llvm::cast<::mlir::TensorType>($_self).getElementType()) && "
+        "  ::llvm::isa<::mlir::FloatType>(::llvm::cast<::mlir::ComplexType>(::llvm::cast<::mlir::TensorType>($_self).getElementType()).getElementType())))">,
+  "tensor<float or complex<float> scalar>",
   "::mlir::TensorType">;
 
 def KernelCallOp: EnzymeXLA_Op<"kernel_call", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, DeclareOpInterfaceMethods<CallOpInterface>, DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
