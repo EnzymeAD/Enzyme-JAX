@@ -3290,11 +3290,15 @@ struct ReducePad
 
     auto checkCommonReduce = mlir::stablehlo::CheckCommonReduceOp(op);
 
-    // TODO: min/max can also be an option since they are dropped
-    if (!checkCommonReduce.isAddReduce) {
-      return rewriter.notifyMatchFailure(op, "only add is currently supported");
+    if (checkCommonReduce.isAddReduce) {
+      return matchAndRewriteReduceAdd(op, rewriter);
     }
 
+    return failure();
+  }
+
+  LogicalResult matchAndRewriteReduceAdd(stablehlo::ReduceOp op,
+                                         PatternRewriter &rewriter) const {
     Value input = op.getInputs()[0];
     auto pad = input.getDefiningOp<stablehlo::PadOp>();
     if (!pad) {
