@@ -1,197 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1760457123210,
+  "lastUpdate": 1760469089089,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "wmoses@google.com",
-            "name": "William Moses",
-            "username": "wsmoses"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "747db966d6cb5aa189544708ba5dc30fd64dc8e3",
-          "message": "Fix memory effect deducer (#1393)\n\n* Fix memory effect deducer\n\n* fix\n\n* fix\n\n* fx",
-          "timestamp": "2025-09-15T20:52:23-05:00",
-          "tree_id": "5cb0721bd801b4d3ce646ea81d3cb04d858415bd",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/747db966d6cb5aa189544708ba5dc30fd64dc8e3"
-        },
-        "date": 1758000336533,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "llama / JaXPipe / gpu / Primal",
-            "value": 0.0004322018320672,
-            "unit": "s"
-          },
-          {
-            "name": "llama / JaX   / gpu / Primal",
-            "value": 0.000434884769842,
-            "unit": "s"
-          },
-          {
-            "name": "llama / HLOOpt / gpu / Primal",
-            "value": 0.000440550154075,
-            "unit": "s"
-          },
-          {
-            "name": "llama / PartOpt / gpu / Primal",
-            "value": 0.0004464249080047,
-            "unit": "s"
-          },
-          {
-            "name": "llama / DefOpt / gpu / Primal",
-            "value": 0.0004355565798468,
-            "unit": "s"
-          },
-          {
-            "name": "llama / IPartOpt / gpu / Primal",
-            "value": 0.0004284851681441,
-            "unit": "s"
-          },
-          {
-            "name": "llama / IDefOpt / gpu / Primal",
-            "value": 0.0004654605877585,
-            "unit": "s"
-          },
-          {
-            "name": "llama / JaXPipe / gpu / Forward",
-            "value": 0.0006790914223529,
-            "unit": "s"
-          },
-          {
-            "name": "llama / JaX   / gpu / Forward",
-            "value": 0.0007409767541103,
-            "unit": "s"
-          },
-          {
-            "name": "llama / HLOOpt / gpu / Forward",
-            "value": 0.0006918264478445,
-            "unit": "s"
-          },
-          {
-            "name": "llama / PartOpt / gpu / Forward",
-            "value": 0.0006839487780816,
-            "unit": "s"
-          },
-          {
-            "name": "llama / DefOpt / gpu / Forward",
-            "value": 0.0006769501739181,
-            "unit": "s"
-          },
-          {
-            "name": "llama / IPartOpt / gpu / Forward",
-            "value": 0.0006727626160718,
-            "unit": "s"
-          },
-          {
-            "name": "llama / IDefOpt / gpu / Forward",
-            "value": 0.0006882122699171,
-            "unit": "s"
-          },
-          {
-            "name": "llama / JaXPipe / gpu / PreRev",
-            "value": 0.0007582503943704,
-            "unit": "s"
-          },
-          {
-            "name": "llama / JaXPipe / gpu / PostRev",
-            "value": 0.0008244460099376,
-            "unit": "s"
-          },
-          {
-            "name": "llama / JaXPipe / gpu / BothRev",
-            "value": 0.0007504631318151,
-            "unit": "s"
-          },
-          {
-            "name": "llama / JaX   / gpu / BothRev",
-            "value": 0.0007909941100515,
-            "unit": "s"
-          },
-          {
-            "name": "llama / HLOOpt / gpu / PreRev",
-            "value": 0.0007550392658449,
-            "unit": "s"
-          },
-          {
-            "name": "llama / HLOOpt / gpu / PostRev",
-            "value": 0.0007603277820162,
-            "unit": "s"
-          },
-          {
-            "name": "llama / HLOOpt / gpu / BothRev",
-            "value": 0.0007888095062226,
-            "unit": "s"
-          },
-          {
-            "name": "llama / PartOpt / gpu / PreRev",
-            "value": 0.0007342095659114,
-            "unit": "s"
-          },
-          {
-            "name": "llama / PartOpt / gpu / PostRev",
-            "value": 0.0007979044415988,
-            "unit": "s"
-          },
-          {
-            "name": "llama / PartOpt / gpu / BothRev",
-            "value": 0.0007689493661746,
-            "unit": "s"
-          },
-          {
-            "name": "llama / DefOpt / gpu / PreRev",
-            "value": 0.0007429059562273,
-            "unit": "s"
-          },
-          {
-            "name": "llama / DefOpt / gpu / PostRev",
-            "value": 0.0007434216062538,
-            "unit": "s"
-          },
-          {
-            "name": "llama / DefOpt / gpu / BothRev",
-            "value": 0.0007545991200022,
-            "unit": "s"
-          },
-          {
-            "name": "llama / IPartOpt / gpu / PreRev",
-            "value": 0.0007592876260168,
-            "unit": "s"
-          },
-          {
-            "name": "llama / IPartOpt / gpu / PostRev",
-            "value": 0.0008062453242018,
-            "unit": "s"
-          },
-          {
-            "name": "llama / IPartOpt / gpu / BothRev",
-            "value": 0.00075128132198,
-            "unit": "s"
-          },
-          {
-            "name": "llama / IDefOpt / gpu / PreRev",
-            "value": 0.0007677119760774,
-            "unit": "s"
-          },
-          {
-            "name": "llama / IDefOpt / gpu / PostRev",
-            "value": 0.0007403787123039,
-            "unit": "s"
-          },
-          {
-            "name": "llama / IDefOpt / gpu / BothRev",
-            "value": 0.0007966489037498,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -5099,6 +4910,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001480491947004,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "avikpal@mit.edu",
+            "name": "Avik Pal",
+            "username": "avik-pal"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c69b2705dde03bd34a671b67217b041d321c03bc",
+          "message": "feat: symm (#1479)\n\n* ssymm\n\n* change fattr to ftensor\n\n* add test\n\n* add cpp api\n\n* Apply suggestion from @avik-pal\n\n* fix: typo in name\n\n* fix: ensure types match\n\n* feat: support complex\n\n---------\n\nCo-authored-by: snonk <scq@mit.edu>",
+          "timestamp": "2025-10-14T13:29:05-04:00",
+          "tree_id": "8597a0ed82d796440a6b718c5a94e81b57b9f31d",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/c69b2705dde03bd34a671b67217b041d321c03bc"
+        },
+        "date": 1760469087991,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.0000043608139996649695,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004245785999228246,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001479420117015,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001517619816993,
             "unit": "s"
           }
         ]
