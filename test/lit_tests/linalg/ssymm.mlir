@@ -8,4 +8,4 @@ module {
     }
 }
 
-// CHECK: enzyme_xla.ssymm
+// CHECK: enzymexla.ssymm
