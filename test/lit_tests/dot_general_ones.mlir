@@ -39,3 +39,28 @@ func.func @main2(%arg0: tensor<1024xf32>, %arg1: tensor<1024x32xf32>, %arg2: ten
 // CHECK-NEXT:     %4 = stablehlo.multiply %3, %cst : tensor<24xf32>
 // CHECK-NEXT:     return %4, %2 : tensor<24xf32>, tensor<1024x32xf32>
 // CHECK-NEXT: }
+
+func.func @main3(%arg0: tensor<2x2xcomplex<f64>> {enzymexla.memory_effects = []}, %arg1: tensor<2x2xcomplex<f64>> {enzymexla.memory_effects = []}) -> (tensor<2x2xcomplex<f64>>, tensor<2x2xcomplex<f64>>, tensor<2x2xcomplex<f64>>) attributes {enzymexla.memory_effects = []} {
+    %cst = stablehlo.constant dense<(1.000000e+00,-0.000000e+00)> : tensor<2x2xcomplex<f64>>
+    %0 = stablehlo.dot_general %arg1, %arg0, contracting_dims = [1] x [0], precision = [DEFAULT, DEFAULT] : (tensor<2x2xcomplex<f64>>, tensor<2x2xcomplex<f64>>) -> tensor<2x2xcomplex<f64>>
+    %1 = stablehlo.dot_general %cst, %arg0, contracting_dims = [1] x [1], precision = [DEFAULT, DEFAULT] : (tensor<2x2xcomplex<f64>>, tensor<2x2xcomplex<f64>>) -> tensor<2x2xcomplex<f64>>
+    %2 = chlo.conj %1 : tensor<2x2xcomplex<f64>> -> tensor<2x2xcomplex<f64>>
+    %3 = stablehlo.dot_general %arg1, %cst, contracting_dims = [0] x [0], precision = [DEFAULT, DEFAULT] : (tensor<2x2xcomplex<f64>>, tensor<2x2xcomplex<f64>>) -> tensor<2x2xcomplex<f64>>
+    %4 = chlo.conj %3 : tensor<2x2xcomplex<f64>> -> tensor<2x2xcomplex<f64>>
+    return %4, %2, %0 : tensor<2x2xcomplex<f64>>, tensor<2x2xcomplex<f64>>, tensor<2x2xcomplex<f64>>
+}
+
+// CHECK: func.func @main3(%arg0: tensor<2x2xcomplex<f64>> {enzymexla.memory_effects = []}, %arg1: tensor<2x2xcomplex<f64>> {enzymexla.memory_effects = []}) -> (tensor<2x2xcomplex<f64>>, tensor<2x2xcomplex<f64>>, tensor<2x2xcomplex<f64>>) attributes {enzymexla.memory_effects = []} {
+// CHECK-NEXT:     %cst = stablehlo.constant dense<(1.000000e+00,-0.000000e+00)> : tensor<2xcomplex<f64>>
+// CHECK-NEXT:     %cst_0 = stablehlo.constant dense<(0.000000e+00,0.000000e+00)> : tensor<complex<f64>>
+// CHECK-NEXT:     %0 = stablehlo.dot_general %arg1, %arg0, contracting_dims = [1] x [0], precision = [DEFAULT, DEFAULT] : (tensor<2x2xcomplex<f64>>, tensor<2x2xcomplex<f64>>) -> tensor<2x2xcomplex<f64>>
+// CHECK-NEXT:     %1 = stablehlo.reduce(%arg0 init: %cst_0) applies stablehlo.add across dimensions = [1] : (tensor<2x2xcomplex<f64>>, tensor<complex<f64>>) -> tensor<2xcomplex<f64>>
+// CHECK-NEXT:     %2 = stablehlo.multiply %1, %cst : tensor<2xcomplex<f64>>
+// CHECK-NEXT:     %3 = stablehlo.broadcast_in_dim %2, dims = [1] : (tensor<2xcomplex<f64>>) -> tensor<2x2xcomplex<f64>>
+// CHECK-NEXT:     %4 = chlo.conj %3 : tensor<2x2xcomplex<f64>> -> tensor<2x2xcomplex<f64>>
+// CHECK-NEXT:     %5 = stablehlo.reduce(%arg1 init: %cst_0) applies stablehlo.add across dimensions = [0] : (tensor<2x2xcomplex<f64>>, tensor<complex<f64>>) -> tensor<2xcomplex<f64>>
+// CHECK-NEXT:     %6 = stablehlo.multiply %5, %cst : tensor<2xcomplex<f64>>
+// CHECK-NEXT:     %7 = stablehlo.broadcast_in_dim %6, dims = [0] : (tensor<2xcomplex<f64>>) -> tensor<2x2xcomplex<f64>>
+// CHECK-NEXT:     %8 = chlo.conj %7 : tensor<2x2xcomplex<f64>> -> tensor<2x2xcomplex<f64>>
+// CHECK-NEXT:     return %8, %4, %0 : tensor<2x2xcomplex<f64>>, tensor<2x2xcomplex<f64>>, tensor<2x2xcomplex<f64>>
+// CHECK-NEXT: }
