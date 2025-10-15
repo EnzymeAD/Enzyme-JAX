@@ -2536,6 +2536,133 @@ struct SelectOfSubIndex : public OpRewritePattern<mlir::arith::SelectOp> {
   }
 };
 
+OpFoldResult TypeAlignOp::fold(FoldAdaptor adaptor) {
+  Type T = getSourceAttr().getValue();
+  if (isa<IntegerType, FloatType>(T) || LLVM::isCompatibleType(T)) {
+    DataLayout DLI(((Operation *)*this)->getParentOfType<ModuleOp>());
+    return IntegerAttr::get(getResult().getType(),
+                            APInt(64, DLI.getTypeABIAlignment(T)));
+  }
+  return nullptr;
+}
+
+/// Given an operation, return whether this op is guaranteed to
+/// allocate an AutomaticAllocationScopeResource
+static bool isGuaranteedAutomaticAllocation(Operation *op) {
+  MemoryEffectOpInterface interface = dyn_cast<MemoryEffectOpInterface>(op);
+  if (!interface)
+    return false;
+  for (auto res : op->getResults()) {
+    if (auto effect =
+            interface.getEffectOnValue<MemoryEffects::Allocate>(res)) {
+      if (isa<SideEffects::AutomaticAllocationScopeResource>(
+              effect->getResource()))
+        return true;
+    }
+  }
+  return false;
+}
+
+template <typename T>
+struct AlwaysAllocaScopeHoister : public OpRewritePattern<T> {
+  using OpRewritePattern<T>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(T top,
+                                PatternRewriter &rewriter) const override {
+
+    Operation *op = top;
+    if (!op->getParentWithTrait<OpTrait::AutomaticAllocationScope>())
+      return failure();
+
+    Operation *lastParentWithoutScope =
+        op->hasTrait<OpTrait::AutomaticAllocationScope>() ? op
+                                                          : op->getParentOp();
+
+    if (!lastParentWithoutScope)
+      return failure();
+
+    while (!lastParentWithoutScope->getParentOp()
+                ->hasTrait<OpTrait::AutomaticAllocationScope>()) {
+      lastParentWithoutScope = lastParentWithoutScope->getParentOp();
+      if (!lastParentWithoutScope)
+        return failure();
+    }
+    assert(lastParentWithoutScope->getParentOp()
+               ->hasTrait<OpTrait::AutomaticAllocationScope>());
+
+    Region *containingRegion = nullptr;
+    if (lastParentWithoutScope == op)
+      containingRegion = &op->getRegion(0);
+    for (auto &r : lastParentWithoutScope->getRegions()) {
+      if (r.isAncestor(op->getParentRegion())) {
+        assert(containingRegion == nullptr &&
+               "only one region can contain the op");
+        containingRegion = &r;
+      }
+    }
+    assert(containingRegion && "op must be contained in a region");
+
+    SetVector<Operation *> toHoist;
+
+    op->walk<WalkOrder::PreOrder>([&](Operation *alloc) {
+      if (alloc != op && alloc->hasTrait<OpTrait::AutomaticAllocationScope>())
+        return WalkResult::skip();
+
+      if (!isGuaranteedAutomaticAllocation(alloc))
+        return WalkResult::advance();
+
+      SetVector<Operation *> subHoist;
+      std::function<bool(Value)> fix = [&](Value v) -> /*legal*/ bool {
+        if (!containingRegion->isAncestor(v.getParentRegion()))
+          return true;
+        auto *op = v.getDefiningOp();
+        if (toHoist.count(op))
+          return true;
+        if (subHoist.count(op))
+          return true;
+        if (!op)
+          return false;
+        if (!isReadNone(op))
+          return false;
+        for (auto o : op->getOperands()) {
+          if (!fix(o))
+            return false;
+        }
+        subHoist.insert(op);
+        return true;
+      };
+
+      // If any operand is not defined before the location of
+      // lastParentWithoutScope (i.e. where we would hoist to), skip.
+      if (llvm::any_of(alloc->getOperands(), [&](Value v) { return !fix(v); }))
+        return WalkResult::skip();
+      for (auto s : subHoist)
+        toHoist.insert(s);
+      toHoist.insert(alloc);
+      return WalkResult::advance();
+    });
+
+    if (toHoist.empty())
+      return failure();
+    rewriter.setInsertionPoint(lastParentWithoutScope);
+    IRMapping map;
+    for (auto *op : toHoist) {
+      auto *cloned = rewriter.clone(*op, map);
+      rewriter.replaceOp(op, cloned->getResults());
+    }
+    return success();
+  }
+};
+
+void TypeAlignOp::getCanonicalizationPatterns(RewritePatternSet &results,
+                                              MLIRContext *context) {
+  results.insert<
+      AlwaysAllocaScopeHoister<memref::AllocaScopeOp>,
+      AlwaysAllocaScopeHoister<scf::ForOp>,
+      AlwaysAllocaScopeHoister<affine::AffineForOp> 
+      >(context);
+}
+
 /// Simplify select subindex(x), subindex(y) to subindex(select x, y)
 template <typename T> struct LoadSelect : public OpRewritePattern<T> {
   using OpRewritePattern<T>::OpRewritePattern;

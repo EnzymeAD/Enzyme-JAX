@@ -665,4 +665,12 @@ def SubIndexOp : EnzymeXLA_Op<"subindex", [
   }];
 }
 
+def TypeAlignOp : EnzymeXLA_Op<"typeAlign", [Pure]> {
+  let summary = "Get alignment of type";
+  let arguments = (ins TypeAttr : $source);
+  let results = (outs AnyType : $result);
+  let hasFolder = 1;
+  let hasCanonicalizer = 1;
+}
+
 #endif // ENZYMEXLA_OPS
