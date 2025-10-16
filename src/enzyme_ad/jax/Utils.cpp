@@ -558,11 +558,11 @@ bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type Ty) {
 }
 
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type Ty,
-                          mlir::Operation *op) {
+                          mlir::Operation *op, PatternRewriter &rewriter) {
   Ty = getElementTypeOrSelf(Ty);
   if (Ty.isInteger())
     return true;
-  return allowOnFloatingPointMath || guaranteedNoNanResult(op);
+  return allowOnFloatingPointMath || guaranteedNoNanResult(op, rewriter);
 }
 
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy,
@@ -575,12 +575,12 @@ bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy,
 }
 
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy, Type inTy,
-                          mlir::Operation *op) {
+                          mlir::Operation *op, PatternRewriter &rewriter) {
   outTy = getElementTypeOrSelf(outTy);
   inTy = getElementTypeOrSelf(inTy);
   if (outTy.isInteger() && inTy.isInteger())
     return true;
-  return allowOnFloatingPointMath || guaranteedNoNanResult(op);
+  return allowOnFloatingPointMath || guaranteedNoNanResult(op, rewriter);
 }
 
 NoNanResultAnalysis initNoNanResultAnalysis() {
@@ -605,11 +605,19 @@ bool NoNanResultAnalysis::constantFloatCheck(DenseElementsAttr attr) {
 
 NoNanResultAnalysis::State
 NoNanResultAnalysis::localGuaranteed(Operation *op,
-                                     SmallVectorImpl<Operation *> &localtodo) {
+                                     SmallVectorImpl<Operation *> &localtodo,
+                                     PatternRewriter &rewriter) {
   assert(op);
 
+  if (auto boolAttr = op->getAttrOfType<BoolAttr>(getAttrName())) {
+    if (boolAttr.getValue())
+      return State::GUARANTEED;
+    else
+      return State::NOTGUARANTEED;
+  }
+
   if (auto constantOp = dyn_cast<stablehlo::ConstantOp>(op)) {
-    if (guaranteed(constantOp)) {
+    if (guaranteed(constantOp, rewriter)) {
       return State::GUARANTEED;
     } else {
       return State::NOTGUARANTEED;
@@ -638,16 +646,19 @@ NoNanResultAnalysis::localGuaranteed(Operation *op,
 
     // If any one of the operands is a Inf, the result is Inf. If both are Inf,
     // the result is NaN.
-    auto lhsFinite = finiteResultAnalysis->guaranteed(op->getOperand(0));
-    auto rhsFinite = finiteResultAnalysis->guaranteed(op->getOperand(1));
+    auto lhsFinite =
+        finiteResultAnalysis->guaranteed(op->getOperand(0), rewriter);
+    auto rhsFinite =
+        finiteResultAnalysis->guaranteed(op->getOperand(1), rewriter);
 
-    if (lhsFinite || rhsFinite)
+    if (lhsFinite && rhsFinite) {
       return State::GUARANTEED;
+    }
 
     recursiveCheck = true;
   } else if (isa<stablehlo::SineOp, stablehlo::CosineOp>(op)) {
 
-    if (!finiteResultAnalysis->guaranteed(op->getOperand(0))) {
+    if (!finiteResultAnalysis->guaranteed(op->getOperand(0), rewriter)) {
       return State::NOTGUARANTEED;
     }
 
@@ -657,8 +668,8 @@ NoNanResultAnalysis::localGuaranteed(Operation *op,
 
     // TODO: If one is inf check if the other is zero. We can significantly
     // relax this check if we can prove that the other is not zero.
-    if (!finiteResultAnalysis->guaranteed(mulOp.getLhs()) ||
-        !finiteResultAnalysis->guaranteed(mulOp.getRhs())) {
+    if (!finiteResultAnalysis->guaranteed(mulOp.getLhs(), rewriter) ||
+        !finiteResultAnalysis->guaranteed(mulOp.getRhs(), rewriter)) {
       return State::NOTGUARANTEED;
     }
 
@@ -704,10 +715,11 @@ NoNanResultAnalysis::localGuaranteed(Operation *op,
       allOperandsGuaranteed = false;
     }
 
-    if (allOperandsGuaranteed)
+    if (allOperandsGuaranteed) {
       return State::GUARANTEED;
-    else
+    } else {
       return State::PENDING;
+    }
   } else {
     return State::NOTGUARANTEED;
   }
@@ -735,12 +747,19 @@ bool FiniteResultAnalysis::constantIntCheck(DenseElementsAttr attr) {
 
 FiniteResultAnalysis::State
 FiniteResultAnalysis::localGuaranteed(Operation *op,
-                                      SmallVectorImpl<Operation *> &localtodo) {
-
+                                      SmallVectorImpl<Operation *> &localtodo,
+                                      PatternRewriter &rewriter) {
   assert(op);
 
+  if (auto boolAttr = op->getAttrOfType<BoolAttr>(getAttrName())) {
+    if (boolAttr.getValue())
+      return State::GUARANTEED;
+    else
+      return State::NOTGUARANTEED;
+  }
+
   if (auto constantOp = dyn_cast<stablehlo::ConstantOp>(op)) {
-    if (guaranteed(constantOp)) {
+    if (guaranteed(constantOp, rewriter)) {
       return State::GUARANTEED;
     } else {
       return State::NOTGUARANTEED;
@@ -794,8 +813,9 @@ FiniteResultAnalysis::localGuaranteed(Operation *op,
       }
 
       auto dop = operand.getDefiningOp();
-      if (!dop)
+      if (!dop) {
         return State::NOTGUARANTEED;
+      }
 
       {
         auto found = opCache.find(dop);
@@ -812,10 +832,11 @@ FiniteResultAnalysis::localGuaranteed(Operation *op,
       allOperandsGuaranteed = false;
     }
 
-    if (allOperandsGuaranteed)
+    if (allOperandsGuaranteed) {
       return State::GUARANTEED;
-    else
+    } else {
       return State::PENDING;
+    }
   } else {
     return State::NOTGUARANTEED;
   }
@@ -838,12 +859,19 @@ bool NonNegativeResultAnalysis::constantFloatCheck(DenseElementsAttr attr) {
 }
 
 NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
-    Operation *op, SmallVectorImpl<Operation *> &localtodo) {
-
+    Operation *op, SmallVectorImpl<Operation *> &localtodo,
+    PatternRewriter &rewriter) {
   assert(op);
 
+  if (auto boolAttr = op->getAttrOfType<BoolAttr>(getAttrName())) {
+    if (boolAttr.getValue())
+      return State::GUARANTEED;
+    else
+      return State::NOTGUARANTEED;
+  }
+
   if (auto constantOp = dyn_cast<stablehlo::ConstantOp>(op)) {
-    if (guaranteed(constantOp)) {
+    if (guaranteed(constantOp, rewriter)) {
       return State::GUARANTEED;
     } else {
       return State::NOTGUARANTEED;
@@ -853,14 +881,16 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
   // integer ops
   if (isa<stablehlo::AbsOp, stablehlo::SqrtOp, stablehlo::ExpOp,
           stablehlo::IotaOp, stablehlo::AndOp, stablehlo::OrOp,
-          stablehlo::XorOp, stablehlo::NotOp>(op))
+          stablehlo::XorOp, stablehlo::NotOp>(op)) {
     return State::GUARANTEED;
+  }
 
   // Any non-negative operation that produces a non-negative result
   // Here we recur on the rhs, as that is more likely to be a constant.
   if (isa<stablehlo::MaxOp>(op)) {
-    if (guaranteed(op->getOperand(1)))
+    if (guaranteed(op->getOperand(1), rewriter)) {
       return State::GUARANTEED;
+    }
 
     auto operand = op->getOperand(0);
 
@@ -876,8 +906,9 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
     }
 
     auto dop = operand.getDefiningOp();
-    if (!dop)
+    if (!dop) {
       return State::NOTGUARANTEED;
+    }
 
     {
       auto found = opCache.find(dop);
@@ -899,8 +930,9 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
     auto lhsOp = mulOp.getLhs().getDefiningOp();
     auto rhsOp = mulOp.getRhs().getDefiningOp();
 
-    if (lhsOp == rhsOp)
+    if (lhsOp == rhsOp) {
       return State::GUARANTEED;
+    }
   }
 
   if (auto clampOp = dyn_cast<stablehlo::ClampOp>(op)) {
@@ -919,8 +951,9 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
     }
 
     auto dop = operand.getDefiningOp();
-    if (!dop)
+    if (!dop) {
       return State::NOTGUARANTEED;
+    }
 
     {
       auto found = opCache.find(dop);
@@ -969,8 +1002,9 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
       }
 
       auto dop = operand.getDefiningOp();
-      if (!dop)
+      if (!dop) {
         return State::NOTGUARANTEED;
+      }
 
       {
         auto found = opCache.find(dop);
@@ -987,10 +1021,11 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
       allOperandsGuaranteed = false;
     }
 
-    if (allOperandsGuaranteed)
+    if (allOperandsGuaranteed) {
       return State::GUARANTEED;
-    else
+    } else {
       return State::PENDING;
+    }
   } else {
     return State::NOTGUARANTEED;
   }
