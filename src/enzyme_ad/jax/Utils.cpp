@@ -558,11 +558,11 @@ bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type Ty) {
 }
 
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type Ty,
-                          mlir::Operation *op) {
+                          mlir::Operation *op, PatternRewriter &rewriter) {
   Ty = getElementTypeOrSelf(Ty);
   if (Ty.isInteger())
     return true;
-  return allowOnFloatingPointMath || guaranteedNoNanResult(op);
+  return allowOnFloatingPointMath || guaranteedNoNanResult(op, rewriter);
 }
 
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy,
@@ -575,12 +575,12 @@ bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy,
 }
 
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy, Type inTy,
-                          mlir::Operation *op) {
+                          mlir::Operation *op, PatternRewriter &rewriter) {
   outTy = getElementTypeOrSelf(outTy);
   inTy = getElementTypeOrSelf(inTy);
   if (outTy.isInteger() && inTy.isInteger())
     return true;
-  return allowOnFloatingPointMath || guaranteedNoNanResult(op);
+  return allowOnFloatingPointMath || guaranteedNoNanResult(op, rewriter);
 }
 
 NoNanResultAnalysis initNoNanResultAnalysis() {
@@ -605,7 +605,8 @@ bool NoNanResultAnalysis::constantFloatCheck(DenseElementsAttr attr) {
 
 NoNanResultAnalysis::State
 NoNanResultAnalysis::localGuaranteed(Operation *op,
-                                     SmallVectorImpl<Operation *> &localtodo) {
+                                     SmallVectorImpl<Operation *> &localtodo,
+                                     PatternRewriter &rewriter) {
   assert(op);
 
   if (auto boolAttr = op->getAttrOfType<BoolAttr>(getAttrName())) {
@@ -616,11 +617,9 @@ NoNanResultAnalysis::localGuaranteed(Operation *op,
   }
 
   if (auto constantOp = dyn_cast<stablehlo::ConstantOp>(op)) {
-    if (guaranteed(constantOp)) {
-      op->setAttr(getAttrName(), BoolAttr::get(op->getContext(), true));
+    if (guaranteed(constantOp, rewriter)) {
       return State::GUARANTEED;
     } else {
-      op->setAttr(getAttrName(), BoolAttr::get(op->getContext(), false));
       return State::NOTGUARANTEED;
     }
   }
@@ -628,7 +627,6 @@ NoNanResultAnalysis::localGuaranteed(Operation *op,
   // integer ops
   if (isa<stablehlo::AndOp, stablehlo::OrOp, stablehlo::XorOp, stablehlo::NotOp,
           stablehlo::IotaOp>(op)) {
-    op->setAttr(getAttrName(), BoolAttr::get(op->getContext(), true));
     return State::GUARANTEED;
   }
 
@@ -648,19 +646,19 @@ NoNanResultAnalysis::localGuaranteed(Operation *op,
 
     // If any one of the operands is a Inf, the result is Inf. If both are Inf,
     // the result is NaN.
-    auto lhsFinite = finiteResultAnalysis->guaranteed(op->getOperand(0));
-    auto rhsFinite = finiteResultAnalysis->guaranteed(op->getOperand(1));
+    auto lhsFinite =
+        finiteResultAnalysis->guaranteed(op->getOperand(0), rewriter);
+    auto rhsFinite =
+        finiteResultAnalysis->guaranteed(op->getOperand(1), rewriter);
 
     if (lhsFinite && rhsFinite) {
-      op->setAttr(getAttrName(), BoolAttr::get(op->getContext(), true));
       return State::GUARANTEED;
     }
 
     recursiveCheck = true;
   } else if (isa<stablehlo::SineOp, stablehlo::CosineOp>(op)) {
 
-    if (!finiteResultAnalysis->guaranteed(op->getOperand(0))) {
-      op->setAttr(getAttrName(), BoolAttr::get(op->getContext(), false));
+    if (!finiteResultAnalysis->guaranteed(op->getOperand(0), rewriter)) {
       return State::NOTGUARANTEED;
     }
 
@@ -670,9 +668,8 @@ NoNanResultAnalysis::localGuaranteed(Operation *op,
 
     // TODO: If one is inf check if the other is zero. We can significantly
     // relax this check if we can prove that the other is not zero.
-    if (!finiteResultAnalysis->guaranteed(mulOp.getLhs()) ||
-        !finiteResultAnalysis->guaranteed(mulOp.getRhs())) {
-      op->setAttr(getAttrName(), BoolAttr::get(op->getContext(), false));
+    if (!finiteResultAnalysis->guaranteed(mulOp.getLhs(), rewriter) ||
+        !finiteResultAnalysis->guaranteed(mulOp.getRhs(), rewriter)) {
       return State::NOTGUARANTEED;
     }
 
@@ -695,7 +692,6 @@ NoNanResultAnalysis::localGuaranteed(Operation *op,
           if (found->second) {
             continue;
           } else {
-            op->setAttr(getAttrName(), BoolAttr::get(op->getContext(), false));
             return State::NOTGUARANTEED;
           }
         }
@@ -710,7 +706,6 @@ NoNanResultAnalysis::localGuaranteed(Operation *op,
           if (found->second) {
             continue;
           } else {
-            op->setAttr(getAttrName(), BoolAttr::get(op->getContext(), false));
             return State::NOTGUARANTEED;
           }
         }
@@ -721,13 +716,11 @@ NoNanResultAnalysis::localGuaranteed(Operation *op,
     }
 
     if (allOperandsGuaranteed) {
-      op->setAttr(getAttrName(), BoolAttr::get(op->getContext(), true));
       return State::GUARANTEED;
     } else {
       return State::PENDING;
     }
   } else {
-    op->setAttr(getAttrName(), BoolAttr::get(op->getContext(), false));
     return State::NOTGUARANTEED;
   }
 }
@@ -754,8 +747,8 @@ bool FiniteResultAnalysis::constantIntCheck(DenseElementsAttr attr) {
 
 FiniteResultAnalysis::State
 FiniteResultAnalysis::localGuaranteed(Operation *op,
-                                      SmallVectorImpl<Operation *> &localtodo) {
-
+                                      SmallVectorImpl<Operation *> &localtodo,
+                                      PatternRewriter &rewriter) {
   assert(op);
 
   if (auto boolAttr = op->getAttrOfType<BoolAttr>(getAttrName())) {
@@ -766,11 +759,9 @@ FiniteResultAnalysis::localGuaranteed(Operation *op,
   }
 
   if (auto constantOp = dyn_cast<stablehlo::ConstantOp>(op)) {
-    if (guaranteed(constantOp)) {
-      op->setAttr(getAttrName(), BoolAttr::get(op->getContext(), true));
+    if (guaranteed(constantOp, rewriter)) {
       return State::GUARANTEED;
     } else {
-      op->setAttr(getAttrName(), BoolAttr::get(op->getContext(), false));
       return State::NOTGUARANTEED;
     }
   }
@@ -778,7 +769,6 @@ FiniteResultAnalysis::localGuaranteed(Operation *op,
   // integer ops
   if (isa<stablehlo::AndOp, stablehlo::OrOp, stablehlo::XorOp, stablehlo::NotOp,
           stablehlo::IotaOp>(op)) {
-    op->setAttr(getAttrName(), BoolAttr::get(op->getContext(), true));
     return State::GUARANTEED;
   }
 
@@ -798,7 +788,6 @@ FiniteResultAnalysis::localGuaranteed(Operation *op,
   } else if (isa<stablehlo::TanhOp, stablehlo::LogisticOp, stablehlo::SineOp,
                  stablehlo::CosineOp>(op)) {
     // guaranteed finite or nan result, always
-    op->setAttr(getAttrName(), BoolAttr::get(op->getContext(), true));
     return State::GUARANTEED;
   } else if (isa<mlir::stablehlo::SelectOp>(op)) {
     recursiveCheck = true;
@@ -818,7 +807,6 @@ FiniteResultAnalysis::localGuaranteed(Operation *op,
           if (found->second) {
             continue;
           } else {
-            op->setAttr(getAttrName(), BoolAttr::get(op->getContext(), false));
             return State::NOTGUARANTEED;
           }
         }
@@ -826,7 +814,6 @@ FiniteResultAnalysis::localGuaranteed(Operation *op,
 
       auto dop = operand.getDefiningOp();
       if (!dop) {
-        op->setAttr(getAttrName(), BoolAttr::get(op->getContext(), false));
         return State::NOTGUARANTEED;
       }
 
@@ -836,7 +823,6 @@ FiniteResultAnalysis::localGuaranteed(Operation *op,
           if (found->second) {
             continue;
           } else {
-            op->setAttr(getAttrName(), BoolAttr::get(op->getContext(), false));
             return State::NOTGUARANTEED;
           }
         }
@@ -847,13 +833,11 @@ FiniteResultAnalysis::localGuaranteed(Operation *op,
     }
 
     if (allOperandsGuaranteed) {
-      op->setAttr(getAttrName(), BoolAttr::get(op->getContext(), true));
       return State::GUARANTEED;
     } else {
       return State::PENDING;
     }
   } else {
-    op->setAttr(getAttrName(), BoolAttr::get(op->getContext(), false));
     return State::NOTGUARANTEED;
   }
 }
@@ -875,8 +859,8 @@ bool NonNegativeResultAnalysis::constantFloatCheck(DenseElementsAttr attr) {
 }
 
 NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
-    Operation *op, SmallVectorImpl<Operation *> &localtodo) {
-
+    Operation *op, SmallVectorImpl<Operation *> &localtodo,
+    PatternRewriter &rewriter) {
   assert(op);
 
   if (auto boolAttr = op->getAttrOfType<BoolAttr>(getAttrName())) {
@@ -887,11 +871,9 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
   }
 
   if (auto constantOp = dyn_cast<stablehlo::ConstantOp>(op)) {
-    if (guaranteed(constantOp)) {
-      op->setAttr(getAttrName(), BoolAttr::get(op->getContext(), true));
+    if (guaranteed(constantOp, rewriter)) {
       return State::GUARANTEED;
     } else {
-      op->setAttr(getAttrName(), BoolAttr::get(op->getContext(), false));
       return State::NOTGUARANTEED;
     }
   }
@@ -900,15 +882,13 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
   if (isa<stablehlo::AbsOp, stablehlo::SqrtOp, stablehlo::ExpOp,
           stablehlo::IotaOp, stablehlo::AndOp, stablehlo::OrOp,
           stablehlo::XorOp, stablehlo::NotOp>(op)) {
-    op->setAttr(getAttrName(), BoolAttr::get(op->getContext(), true));
     return State::GUARANTEED;
   }
 
   // Any non-negative operation that produces a non-negative result
   // Here we recur on the rhs, as that is more likely to be a constant.
   if (isa<stablehlo::MaxOp>(op)) {
-    if (guaranteed(op->getOperand(1))) {
-      op->setAttr(getAttrName(), BoolAttr::get(op->getContext(), true));
+    if (guaranteed(op->getOperand(1), rewriter)) {
       return State::GUARANTEED;
     }
 
@@ -918,10 +898,8 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
       auto found = valueCache.find(operand);
       if (found != valueCache.end()) {
         if (found->second) {
-          op->setAttr(getAttrName(), BoolAttr::get(op->getContext(), true));
           return State::GUARANTEED;
         } else {
-          op->setAttr(getAttrName(), BoolAttr::get(op->getContext(), false));
           return State::NOTGUARANTEED;
         }
       }
@@ -929,7 +907,6 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
 
     auto dop = operand.getDefiningOp();
     if (!dop) {
-      op->setAttr(getAttrName(), BoolAttr::get(op->getContext(), false));
       return State::NOTGUARANTEED;
     }
 
@@ -937,10 +914,8 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
       auto found = opCache.find(dop);
       if (found != opCache.end()) {
         if (found->second) {
-          op->setAttr(getAttrName(), BoolAttr::get(op->getContext(), true));
           return State::GUARANTEED;
         } else {
-          op->setAttr(getAttrName(), BoolAttr::get(op->getContext(), false));
           return State::NOTGUARANTEED;
         }
       }
@@ -956,7 +931,6 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
     auto rhsOp = mulOp.getRhs().getDefiningOp();
 
     if (lhsOp == rhsOp) {
-      op->setAttr(getAttrName(), BoolAttr::get(op->getContext(), true));
       return State::GUARANTEED;
     }
   }
@@ -969,10 +943,8 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
       auto found = valueCache.find(operand);
       if (found != valueCache.end()) {
         if (found->second) {
-          op->setAttr(getAttrName(), BoolAttr::get(op->getContext(), true));
           return State::GUARANTEED;
         } else {
-          op->setAttr(getAttrName(), BoolAttr::get(op->getContext(), false));
           return State::NOTGUARANTEED;
         }
       }
@@ -980,7 +952,6 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
 
     auto dop = operand.getDefiningOp();
     if (!dop) {
-      op->setAttr(getAttrName(), BoolAttr::get(op->getContext(), false));
       return State::NOTGUARANTEED;
     }
 
@@ -988,10 +959,8 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
       auto found = opCache.find(dop);
       if (found != opCache.end()) {
         if (found->second) {
-          op->setAttr(getAttrName(), BoolAttr::get(op->getContext(), true));
           return State::GUARANTEED;
         } else {
-          op->setAttr(getAttrName(), BoolAttr::get(op->getContext(), false));
           return State::NOTGUARANTEED;
         }
       }
@@ -1027,7 +996,6 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
           if (found->second) {
             continue;
           } else {
-            op->setAttr(getAttrName(), BoolAttr::get(op->getContext(), false));
             return State::NOTGUARANTEED;
           }
         }
@@ -1035,7 +1003,6 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
 
       auto dop = operand.getDefiningOp();
       if (!dop) {
-        op->setAttr(getAttrName(), BoolAttr::get(op->getContext(), false));
         return State::NOTGUARANTEED;
       }
 
@@ -1045,7 +1012,6 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
           if (found->second) {
             continue;
           } else {
-            op->setAttr(getAttrName(), BoolAttr::get(op->getContext(), false));
             return State::NOTGUARANTEED;
           }
         }
@@ -1056,13 +1022,11 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
     }
 
     if (allOperandsGuaranteed) {
-      op->setAttr(getAttrName(), BoolAttr::get(op->getContext(), true));
       return State::GUARANTEED;
     } else {
       return State::PENDING;
     }
   } else {
-    op->setAttr(getAttrName(), BoolAttr::get(op->getContext(), false));
     return State::NOTGUARANTEED;
   }
 }

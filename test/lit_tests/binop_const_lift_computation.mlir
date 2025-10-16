@@ -82,7 +82,7 @@ func.func @addsubconst(%arg0: tensor<f64>) -> tensor<f64> {
 func.func @subsubconst(%arg0: tensor<f64>) -> tensor<f64> {
   // CHECK-LABEL: func @subsubconst
   // CHECK:      %[[CST:.*]] = stablehlo.constant dense<6.000000e+00> : tensor<f64>
-  // CHECK-NEXT: %[[RES:.*]] = stablehlo.subtract %arg0, %[[CST]] {enzymexla.guaranteed_no_nan = false} : tensor<f64>
+  // CHECK-NEXT: %[[RES:.*]] = stablehlo.subtract %arg0, %[[CST]] : tensor<f64>
   // CHECK-NEXT: return %[[RES]] : tensor<f64>
   %cst = stablehlo.constant dense<2.0> : tensor<f64>
   %cst_0 = stablehlo.constant dense<4.0> : tensor<f64>

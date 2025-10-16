@@ -23,7 +23,7 @@ module {
 // CHECK-NEXT:  }
 
 // CHECK:  func.func @main2(%arg0: tensor<185xi1>, %arg1: tensor<185xf64>, %arg2: tensor<185xf64>, %arg3: tensor<185xf64>) -> tensor<185xf64> {
-// CHECK-NEXT:    %0 = stablehlo.add %arg1, %arg2 {enzymexla.guaranteed_finite = false} : tensor<185xf64>
-// CHECK-NEXT:    %1 = stablehlo.subtract %0, %arg3 {enzymexla.guaranteed_no_nan = false} : tensor<185xf64>
+// CHECK-NEXT:    %0 = stablehlo.add %arg1, %arg2 : tensor<185xf64>
+// CHECK-NEXT:    %1 = stablehlo.subtract %0, %arg3 : tensor<185xf64>
 // CHECK-NEXT:    return %1 : tensor<185xf64>
 // CHECK-NEXT:  }
