@@ -6811,21 +6811,22 @@ struct NoNanDivSimplify final
 
   LogicalResult matchAndRewriteImpl(stablehlo::DivOp op,
                                     PatternRewriter &rewriter) const {
-    if (!canApplyNoNanPattern(allowOnFloatingPointMath, op.getType(), op))
-      return failure();
-
     // 0 / x -> 0
     if (matchPattern(op.getLhs(), m_AnyZeroFloat()) ||
         matchPattern(op.getLhs(), m_Zero())) {
-      rewriter.replaceOp(op, op.getLhs());
-      return success();
+      if (canApplyNoNanPattern(allowOnFloatingPointMath, op.getType(), op)) {
+        rewriter.replaceOp(op, op.getLhs());
+        return success();
+      }
     }
 
     // x / x -> 1
     if (op.getLhs() == op.getRhs()) {
-      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-          op, op.getType(), cast<ElementsAttr>(makeAttr(op.getType(), 1)));
-      return success();
+      if (canApplyNoNanPattern(allowOnFloatingPointMath, op.getType(), op)) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            op, op.getType(), cast<ElementsAttr>(makeAttr(op.getType(), 1)));
+        return success();
+      }
     }
 
     return failure();
@@ -6929,16 +6930,15 @@ struct NoNanZeroBasePowSimplify final
 
   LogicalResult matchAndRewriteImpl(stablehlo::PowOp op,
                                     PatternRewriter &rewriter) const {
-    if (!canApplyNoNanPattern(allowOnFloatingPointMath, op.getType(), op)) {
-      return failure();
-    }
-
     if (matchPattern(op.getLhs(), m_Zero()) ||
         matchPattern(op.getLhs(), m_AnyZeroFloat())) {
 
       DenseElementsAttr attr;
       if (matchPattern(op.getRhs(), m_Constant(&attr)))
         return failure(); // let constant propagation handle this
+
+      if (!canApplyNoNanPattern(allowOnFloatingPointMath, op.getType(), op))
+        return failure();
 
       // 0 ^ x => x == 0 ? 1 : (x > 0 ? 0 : Inf)
       auto zero = rewriter.create<stablehlo::ConstantOp>(
@@ -8537,14 +8537,17 @@ struct NoNanCompareSimplify
   LogicalResult matchAndRewriteImpl(stablehlo::CompareOp op,
                                     PatternRewriter &rewriter) const {
     if (op.getLhs() == op.getRhs()) {
-      if (canApplyNoNanPattern(allowOnFloatingPointMath, op.getType(),
-                               op.getLhs().getType(), op)) {
-        if (op.getComparisonDirection() == stablehlo::ComparisonDirection::EQ) {
+      if (op.getComparisonDirection() == stablehlo::ComparisonDirection::EQ) {
+        if (canApplyNoNanPattern(allowOnFloatingPointMath, op.getType(),
+                                 op.getLhs().getType(), op)) {
           rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
               op, op.getType(), cast<ElementsAttr>(makeAttr(op.getType(), 1)));
           return success();
         }
-        if (op.getComparisonDirection() == stablehlo::ComparisonDirection::NE) {
+      }
+      if (op.getComparisonDirection() == stablehlo::ComparisonDirection::NE) {
+        if (canApplyNoNanPattern(allowOnFloatingPointMath, op.getType(),
+                                 op.getLhs().getType(), op)) {
           rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
               op, op.getType(), cast<ElementsAttr>(makeAttr(op.getType(), 0)));
           return success();
@@ -16412,27 +16415,29 @@ struct NoNanMulSimplify final
 
   LogicalResult matchAndRewriteImpl(stablehlo::MulOp op,
                                     PatternRewriter &rewriter) const {
-    if (!canApplyNoNanPattern(allowOnFloatingPointMath,
-                              op.getResult().getType(),
-                              op.getOperand(0).getType(), op)) {
-      return failure();
-    }
-
     // 0 * x -> 0
     if (matchPattern(op.getLhs(), m_AnyZeroFloat()) ||
         matchPattern(op.getLhs(), m_Zero()) ||
         matchPattern(op.getLhs(), m_AnyZeroComplex())) {
-      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-          op, cast<ElementsAttr>(makeAttr(op.getType(), 0)));
-      return success();
+      if (canApplyNoNanPattern(allowOnFloatingPointMath,
+                               op.getResult().getType(),
+                               op.getOperand(0).getType(), op)) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            op, cast<ElementsAttr>(makeAttr(op.getType(), 0)));
+        return success();
+      }
     }
     // x * 0 -> 0
     if (matchPattern(op.getRhs(), m_AnyZeroFloat()) ||
         matchPattern(op.getRhs(), m_Zero()) ||
         matchPattern(op.getRhs(), m_AnyZeroComplex())) {
-      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-          op, cast<ElementsAttr>(makeAttr(op.getType(), 0)));
-      return success();
+      if (canApplyNoNanPattern(allowOnFloatingPointMath,
+                               op.getResult().getType(),
+                               op.getOperand(0).getType(), op)) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            op, cast<ElementsAttr>(makeAttr(op.getType(), 0)));
+        return success();
+      }
     }
 
     return failure();

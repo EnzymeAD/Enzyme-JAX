@@ -341,6 +341,13 @@ public:
     if (!op)
       return false;
 
+    auto attrName = ((Child *)this)->getAttrName();
+    if (auto boolAttr = op->getAttrOfType<BoolAttr>(attrName)) {
+      bool value = boolAttr.getValue();
+      opCache[op] = value;
+      return value;
+    }
+
     // Map of operations we need to still check. If all of these are no-nan
     // we therefore know that the operation `op` is no nan.
     std::deque<Operation *> todo = {op};
@@ -382,6 +389,8 @@ public:
             continue;
           }
           opCache[rcur] = false;
+          rcur->setAttr(attrName, BoolAttr::get(rcur->getContext(), false));
+
           auto rfound = reverseSeen.find(rcur);
           if (rfound != reverseSeen.end()) {
             for (auto next : rfound->second) {
@@ -390,6 +399,8 @@ public:
             reverseSeen.erase(rfound);
           }
         }
+
+        op->setAttr(attrName, BoolAttr::get(op->getContext(), false));
         return false;
       }
 
@@ -454,10 +465,13 @@ public:
     // to be guaranteed.
     for (auto &sval : seen) {
       opCache[sval.first] = true;
+      sval.first->setAttr(attrName,
+                          BoolAttr::get(sval.first->getContext(), true));
     }
 
     assert(opCache.find(op) != opCache.end());
 
+    op->setAttr(attrName, BoolAttr::get(op->getContext(), true));
     return true;
   }
 
@@ -512,6 +526,8 @@ public:
   bool constantFloatCheck(DenseElementsAttr attr);
   bool constantIntCheck(DenseElementsAttr attr);
 
+  StringRef getAttrName() const { return "enzymexla.guaranteed_no_nan"; }
+
   void setFiniteResultAnalysis(std::shared_ptr<FiniteResultAnalysis> analysis) {
     finiteResultAnalysis = analysis;
   }
@@ -525,6 +541,8 @@ private:
 public:
   bool constantFloatCheck(DenseElementsAttr attr);
   bool constantIntCheck(DenseElementsAttr attr);
+
+  StringRef getAttrName() const { return "enzymexla.guaranteed_finite"; }
 
   State localGuaranteed(Operation *op, SmallVectorImpl<Operation *> &localtodo);
 
@@ -555,6 +573,8 @@ class NonNegativeResultAnalysis
 public:
   bool constantFloatCheck(DenseElementsAttr attr);
   bool constantIntCheck(DenseElementsAttr attr);
+
+  StringRef getAttrName() const { return "enzymexla.guaranteed_non_negative"; }
 
   State localGuaranteed(Operation *op, SmallVectorImpl<Operation *> &localtodo);
 };
