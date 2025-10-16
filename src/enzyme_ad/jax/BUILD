@@ -645,6 +645,62 @@ gentbl_cc_library(
     ],
 )
 
+td_library(
+    name = "PerfifyDialectFiles",
+    srcs = [
+        "Dialect/Perfify/Dialect.td",
+        "Dialect/Perfify/Ops.td",
+    ],
+    deps = [
+        "@llvm-project//mlir:BuiltinDialectTdFiles",
+        "@llvm-project//mlir:OpBaseTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "PerfifyDialectIncGen",
+    tbl_outs = [
+        (
+            [
+                "-gen-dialect-decls",
+                "-dialect=perfify",
+            ],
+            "Dialect/Perfify/PerfifyDialect.h.inc",
+        ),
+        (
+            [
+                "-gen-dialect-defs",
+                "-dialect=perfify",
+            ],
+            "Dialect/Perfify/PerfifyDialect.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/Perfify/Dialect.td",
+    deps = [
+        ":PerfifyDialectFiles"
+    ],
+)
+
+gentbl_cc_library(
+    name = "PerfifyOpsIncGen",
+    tbl_outs = [
+        (
+            ["-gen-op-decls"],
+            "Dialect/Perfify/PerfifyOps.h.inc",
+        ),
+        (
+            ["-gen-op-defs"],
+            "Dialect/Perfify/PerfifyOps.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/Perfify/Ops.td",
+    deps = [
+        ":PerfifyDialectFiles"
+    ],
+)
+
 cc_library(
     name = "CheckedRewrite",
     hdrs = ["CheckedRewrite.h"],
@@ -718,6 +774,7 @@ cc_library(
         "Dialect/*.cpp",
         "Dialect/Distributed/*.cpp",
         "Dialect/Tessera/*.cpp",
+        "Dialect/Perfify/*.cpp",
     ]) + [
         "Utils.cpp",
     ],
@@ -727,6 +784,7 @@ cc_library(
         "Dialect/*.h",
         "Dialect/Distributed/*.h",
         "Dialect/Tessera/*.h",
+        "Dialect/Perfify/*.h",
     ]) + [
         "Utils.h",
     ],
@@ -755,6 +813,8 @@ cc_library(
         ":StablehloOptPatternsIncGen",
         ":TesseraDialectIncGen",
         ":TesseraOpsIncGen",
+        ":PerfifyDialectIncGen",
+        ":PerfifyOpsIncGen",
         ":chlo-derivatives",
         ":enzymexla-derivatives",
         ":mhlo-derivatives",
