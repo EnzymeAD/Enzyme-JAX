@@ -545,7 +545,7 @@ bool mayWriteTo(Operation *op, Value val, bool ignoreBarrier) {
 
   // Calls which do not use a derived pointer of a known alloca, which is not
   // captured can not write to said memory.
-  if (isa<LLVM::CallOp, func::CallOp>(op)) {
+  if (auto callOp = dyn_cast<CallOpInterface>(op)) {
     auto base = getBase(val);
     bool seenuse = false;
     if (isStackAlloca(base) && !isCaptured(base, op, &seenuse) && !seenuse) {
@@ -1158,7 +1158,7 @@ bool mayReadFrom(Operation *op, Value val) {
     }
     return false;
   }
-  if (isa<LLVM::CallOp, func::CallOp>(op)) {
+  if (auto callOp = dyn_cast<CallOpInterface>(op)) {
     auto base = getBase(val);
     bool seenuse = false;
     if (isStackAlloca(base) && !isCaptured(base, op, &seenuse) && !seenuse) {
