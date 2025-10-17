@@ -4,9 +4,9 @@ load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 load("//:workspace.bzl", "ML_TOOLCHAIN_COMMIT", "ML_TOOLCHAIN_SHA256")
 
 ML_TOOLCHAIN_PATCHES = [
-	"""
+    """
 	sed -i.bak0 "/D_FORTIFY_SOURCE/d" cc/features/BUILD third_party/gpus/crosstool/cc_toolchain_config.bzl.tpl
-	"""
+	""",
 ]
 
 def repo(extra_patches = [], override_commit = ""):
