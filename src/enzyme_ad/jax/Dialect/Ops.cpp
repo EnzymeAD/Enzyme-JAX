@@ -1907,13 +1907,9 @@ public:
     if (!subindexOp)
       return failure();
 
-    // if (castOp.getType().cast<MemRefType>().getShape().size() !=
-    //     subindexOp.getType().cast<MemRefType>().getShape().size())
     if (cast<MemRefType>(castOp.getType()).getShape().size() !=
         cast<MemRefType>(subindexOp.getType()).getShape().size())
       return failure();
-    // if (castOp.getType().cast<MemRefType>().getElementType() !=
-    //     subindexOp.getResult().getType().cast<MemRefType>().getElementType())
     if (cast<MemRefType>(castOp.getType()).getElementType() !=
         cast<MemRefType>(subindexOp.getResult().getType()).getElementType())
       return failure();
@@ -1937,9 +1933,6 @@ public:
     if (!prevOp)
       return failure();
 
-    // auto mt0 = prevOp.getSource().getType().cast<MemRefType>();
-    // auto mt1 = prevOp.getType().cast<MemRefType>();
-    // auto mt2 = subViewOp.getType().cast<MemRefType>();
     auto mt0 = cast<MemRefType>(prevOp.getSource().getType());
     auto mt1 = cast<MemRefType>(prevOp.getType());
     auto mt2 = cast<MemRefType>(subViewOp.getType());
@@ -1968,8 +1961,6 @@ public:
 
   LogicalResult matchAndRewrite(SubIndexOp subViewOp,
                                 PatternRewriter &rewriter) const override {
-    // auto prev = subViewOp.getSource().getType().cast<MemRefType>();
-    // auto post = subViewOp.getType().cast<MemRefType>();
     auto prev = cast<MemRefType>(subViewOp.getSource().getType());
     auto post = cast<MemRefType>(subViewOp.getType());
     bool legal = prev.getShape().size() == post.getShape().size();
@@ -1991,15 +1982,13 @@ public:
   }
 };
 
-// Simplify polygeist.subindex to memref.subview.
+// Simplify enzymexla.subindex to memref.subview.
 class SubToSubView final : public OpRewritePattern<SubIndexOp> {
 public:
   using OpRewritePattern<SubIndexOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(SubIndexOp op,
                                 PatternRewriter &rewriter) const override {
-    // auto srcMemRefType = op.getSource().getType().cast<MemRefType>();
-    // auto resMemRefType = op.getResult().getType().cast<MemRefType>();
     auto srcMemRefType = cast<MemRefType>(op.getSource().getType());
     auto resMemRefType = cast<MemRefType>(op.getResult().getType());
     auto dims = srcMemRefType.getShape().size();
@@ -2037,11 +2026,11 @@ public:
 
 // Simplify redundant dynamic subindex patterns which tries to represent
 // rank-reducing indexing:
-//   %3 = "polygeist.subindex"(%1, %arg0) : (memref<2x1000xi32>, index) ->
-//   memref<?x1000xi32> %4 = "polygeist.subindex"(%3, %c0) :
+//   %3 = "enzymexla.subindex"(%1, %arg0) : (memref<2x1000xi32>, index) ->
+//   memref<?x1000xi32> %4 = "enzymexla.subindex"(%3, %c0) :
 //   (memref<?x1000xi32>, index) -> memref<1000xi32>
 // simplifies to:
-//   %4 = "polygeist.subindex"(%1, %arg0) : (memref<2x1000xi32>, index) ->
+//   %4 = "enzymexla.subindex"(%1, %arg0) : (memref<2x1000xi32>, index) ->
 //   memref<1000xi32>
 
 class RedundantDynSubIndex final : public OpRewritePattern<SubIndexOp> {
@@ -2054,9 +2043,6 @@ public:
     if (!srcOp)
       return failure();
 
-    // auto preMemRefType = srcOp.getSource().getType().cast<MemRefType>();
-    // auto srcMemRefType = op.getSource().getType().cast<MemRefType>();
-    // auto resMemRefType = op.getResult().getType().cast<MemRefType>();
     auto preMemRefType = cast<MemRefType>(srcOp.getSource().getType());
     auto srcMemRefType = cast<MemRefType>(op.getSource().getType());
     auto resMemRefType = cast<MemRefType>(op.getResult().getType());
@@ -2100,12 +2086,7 @@ struct SimplifySubIndexUsers : public OpRewritePattern<SubIndexOp> {
       } else if (auto loadOp = dyn_cast<memref::LoadOp>(use.getOwner())) {
         if (loadOp.getMemref() == subindex) {
           SmallVector<Value, 4> indices = loadOp.getIndices();
-          // if (subindex.getType().cast<MemRefType>().getShape().size() ==
-          //     subindex.getSource()
-          //         .getType()
-          //         .cast<MemRefType>()
-          //         .getShape()
-          //         .size()) {
+
           if (cast<MemRefType>(subindex.getType()).getShape().size() ==
               cast<MemRefType>(subindex.getSource().getType())
                   .getShape()
@@ -2114,13 +2095,6 @@ struct SimplifySubIndexUsers : public OpRewritePattern<SubIndexOp> {
             indices[0] = rewriter.create<AddIOp>(subindex.getLoc(), indices[0],
                                                  subindex.getIndex());
           } else {
-            // assert(subindex.getType().cast<MemRefType>().getShape().size() +
-            //            1 ==
-            //        subindex.getSource()
-            //            .getType()
-            //            .cast<MemRefType>()
-            //            .getShape()
-            //            .size());
             assert(cast<MemRefType>(subindex.getType()).getShape().size() + 1 ==
                    cast<MemRefType>(subindex.getSource().getType())
                        .getShape()
@@ -2128,11 +2102,6 @@ struct SimplifySubIndexUsers : public OpRewritePattern<SubIndexOp> {
             indices.insert(indices.begin(), subindex.getIndex());
           }
 
-          // assert(subindex.getSource()
-          //            .getType()
-          //            .cast<MemRefType>()
-          //            .getShape()
-          //            .size() == indices.size());
           assert(cast<MemRefType>(subindex.getSource().getType())
                      .getShape()
                      .size() == indices.size());
@@ -2143,12 +2112,6 @@ struct SimplifySubIndexUsers : public OpRewritePattern<SubIndexOp> {
       } else if (auto storeOp = dyn_cast<memref::StoreOp>(use.getOwner())) {
         if (storeOp.getMemref() == subindex) {
           SmallVector<Value, 4> indices = storeOp.getIndices();
-          // if (subindex.getType().cast<MemRefType>().getShape().size() ==
-          //     subindex.getSource()
-          //         .getType()
-          //         .cast<MemRefType>()
-          //         .getShape()
-          //         .size()) {
           if (cast<MemRefType>(subindex.getType()).getShape().size() ==
               cast<MemRefType>(subindex.getSource().getType())
                   .getShape()
@@ -2157,24 +2120,12 @@ struct SimplifySubIndexUsers : public OpRewritePattern<SubIndexOp> {
             indices[0] = rewriter.create<AddIOp>(subindex.getLoc(), indices[0],
                                                  subindex.getIndex());
           } else {
-            // assert(subindex.getType().cast<MemRefType>().getShape().size() +
-            //            1 ==
-            //        subindex.getSource()
-            //            .getType()
-            //            .cast<MemRefType>()
-            //            .getShape()
-            //            .size());
             assert(cast<MemRefType>(subindex.getType()).getShape().size() + 1 ==
                    cast<MemRefType>(subindex.getSource().getType())
                        .getShape()
                        .size());
             indices.insert(indices.begin(), subindex.getIndex());
           }
-          // assert(subindex.getSource()
-          //            .getType()
-          //            .cast<MemRefType>()
-          //            .getShape()
-          //            .size() == indices.size());
           assert(cast<MemRefType>(subindex.getSource().getType())
                      .getShape()
                      .size() == indices.size());
@@ -2185,12 +2136,6 @@ struct SimplifySubIndexUsers : public OpRewritePattern<SubIndexOp> {
       } else if (auto storeOp = dyn_cast<memref::AtomicRMWOp>(use.getOwner())) {
         if (storeOp.getMemref() == subindex) {
           SmallVector<Value, 4> indices = storeOp.getIndices();
-          // if (subindex.getType().cast<MemRefType>().getShape().size() ==
-          //     subindex.getSource()
-          //         .getType()
-          //         .cast<MemRefType>()
-          //         .getShape()
-          //         .size()) {
           if (cast<MemRefType>(subindex.getType()).getShape().size() ==
               cast<MemRefType>(subindex.getSource().getType())
                   .getShape()
@@ -2199,24 +2144,12 @@ struct SimplifySubIndexUsers : public OpRewritePattern<SubIndexOp> {
             indices[0] = rewriter.create<AddIOp>(subindex.getLoc(), indices[0],
                                                  subindex.getIndex());
           } else {
-            // assert(subindex.getType().cast<MemRefType>().getShape().size() +
-            //            1 ==
-            //        subindex.getSource()
-            //            .getType()
-            //            .cast<MemRefType>()
-            //            .getShape()
-            //            .size());
             assert(cast<MemRefType>(subindex.getType()).getShape().size() + 1 ==
                    cast<MemRefType>(subindex.getSource().getType())
                        .getShape()
                        .size());
             indices.insert(indices.begin(), subindex.getIndex());
           }
-          // assert(subindex.getSource()
-          //            .getType()
-          //            .cast<MemRefType>()
-          //            .getShape()
-          //            .size() == indices.size());
           assert(cast<MemRefType>(subindex.getSource().getType())
                      .getShape()
                      .size() == indices.size());
@@ -2228,12 +2161,6 @@ struct SimplifySubIndexUsers : public OpRewritePattern<SubIndexOp> {
       } else if (auto storeOp =
                      dyn_cast<affine::AffineStoreOp>(use.getOwner())) {
         if (storeOp.getMemref() == subindex) {
-          // if (subindex.getType().cast<MemRefType>().getShape().size() + 1 ==
-          //     subindex.getSource()
-          //         .getType()
-          //         .cast<MemRefType>()
-          //         .getShape()
-          //         .size()) {
           if (cast<MemRefType>(subindex.getType()).getShape().size() + 1 ==
               cast<MemRefType>(subindex.getSource().getType())
                   .getShape()
@@ -2248,12 +2175,6 @@ struct SimplifySubIndexUsers : public OpRewritePattern<SubIndexOp> {
                   storeOp.getMapOperands());
               indices.push_back(apply->getResult(0));
             }
-
-            // assert(subindex.getSource()
-            //            .getType()
-            //            .cast<MemRefType>()
-            //            .getShape()
-            //            .size() == indices.size());
             assert(cast<MemRefType>(subindex.getSource().getType())
                        .getShape()
                        .size() == indices.size());
@@ -2265,12 +2186,6 @@ struct SimplifySubIndexUsers : public OpRewritePattern<SubIndexOp> {
       } else if (auto storeOp =
                      dyn_cast<affine::AffineLoadOp>(use.getOwner())) {
         if (storeOp.getMemref() == subindex) {
-          // if (subindex.getType().cast<MemRefType>().getShape().size() + 1 ==
-          //     subindex.getSource()
-          //         .getType()
-          //         .cast<MemRefType>()
-          //         .getShape()
-          //         .size()) {
           if (cast<MemRefType>(subindex.getType()).getShape().size() + 1 ==
               cast<MemRefType>(subindex.getSource().getType())
                   .getShape()
@@ -2285,11 +2200,6 @@ struct SimplifySubIndexUsers : public OpRewritePattern<SubIndexOp> {
                   storeOp.getMapOperands());
               indices.push_back(apply->getResult(0));
             }
-            // assert(subindex.getSource()
-            //            .getType()
-            //            .cast<MemRefType>()
-            //            .getShape()
-            //            .size() == indices.size());
             assert(cast<MemRefType>(subindex.getSource().getType())
                        .getShape()
                        .size() == indices.size());
@@ -2305,12 +2215,6 @@ struct SimplifySubIndexUsers : public OpRewritePattern<SubIndexOp> {
   }
 };
 
-/// Simplify all uses of subindex, specifically
-//    store subindex(x) = ...
-//    affine.store subindex(x) = ...
-//    load subindex(x)
-//    affine.load subindex(x)
-//    dealloc subindex(x)
 struct SimplifySubViewUsers : public OpRewritePattern<memref::SubViewOp> {
   using OpRewritePattern<memref::SubViewOp>::OpRewritePattern;
 
@@ -2345,12 +2249,6 @@ struct SimplifySubViewUsers : public OpRewritePattern<memref::SubViewOp> {
       } else if (auto loadOp = dyn_cast<memref::LoadOp>(use.getOwner())) {
         if (loadOp.getMemref() == subindex) {
           SmallVector<Value, 4> indices = loadOp.getIndices();
-          // if (subindex.getType().cast<MemRefType>().getShape().size() ==
-          //     subindex.getSource()
-          //         .getType()
-          //         .cast<MemRefType>()
-          //         .getShape()
-          //         .size()) {
           if (cast<MemRefType>(subindex.getType()).getShape().size() ==
               cast<MemRefType>(subindex.getSource().getType())
                   .getShape()
@@ -2359,13 +2257,6 @@ struct SimplifySubViewUsers : public OpRewritePattern<memref::SubViewOp> {
             indices[0] =
                 rewriter.create<AddIOp>(subindex.getLoc(), indices[0], off);
           } else {
-            // if (subindex.getType().cast<MemRefType>().getShape().size() + 1
-            // ==
-            //     subindex.getSource()
-            //         .getType()
-            //         .cast<MemRefType>()
-            //         .getShape()
-            //         .size())
             if (cast<MemRefType>(subindex.getType()).getShape().size() + 1 ==
                 cast<MemRefType>(subindex.getSource().getType())
                     .getShape()
@@ -2377,11 +2268,6 @@ struct SimplifySubViewUsers : public OpRewritePattern<memref::SubViewOp> {
             }
           }
 
-          // assert(subindex.getSource()
-          //            .getType()
-          //            .cast<MemRefType>()
-          //            .getShape()
-          //            .size() == indices.size());
           assert(cast<MemRefType>(subindex.getSource().getType())
                      .getShape()
                      .size() == indices.size());
@@ -2392,12 +2278,6 @@ struct SimplifySubViewUsers : public OpRewritePattern<memref::SubViewOp> {
       } else if (auto storeOp = dyn_cast<memref::StoreOp>(use.getOwner())) {
         if (storeOp.getMemref() == subindex) {
           SmallVector<Value, 4> indices = storeOp.getIndices();
-          // if (subindex.getType().cast<MemRefType>().getShape().size() ==
-          //     subindex.getSource()
-          //         .getType()
-          //         .cast<MemRefType>()
-          //         .getShape()
-          //         .size())
           if (cast<MemRefType>(subindex.getType()).getShape().size() ==
               cast<MemRefType>(subindex.getSource().getType())
                   .getShape()
@@ -2406,13 +2286,6 @@ struct SimplifySubViewUsers : public OpRewritePattern<memref::SubViewOp> {
             indices[0] =
                 rewriter.create<AddIOp>(subindex.getLoc(), indices[0], off);
           } else {
-            // if (subindex.getType().cast<MemRefType>().getShape().size() + 1
-            // ==
-            //     subindex.getSource()
-            //         .getType()
-            //         .cast<MemRefType>()
-            //         .getShape()
-            //         .size())
             if (cast<MemRefType>(subindex.getType()).getShape().size() + 1 ==
                 cast<MemRefType>(subindex.getSource().getType())
                     .getShape()
@@ -2428,22 +2301,12 @@ struct SimplifySubViewUsers : public OpRewritePattern<memref::SubViewOp> {
             }
           }
 
-          // if (subindex.getSource()
-          //         .getType()
-          //         .cast<MemRefType>()
-          //         .getShape()
-          //         .size() != indices.size()) {
           if (cast<MemRefType>(subindex.getSource().getType())
                   .getShape()
                   .size() != indices.size()) {
             llvm::errs() << " storeOp: " << storeOp << " - subidx: " << subindex
                          << "\n";
           }
-          // assert(subindex.getSource()
-          //            .getType()
-          //            .cast<MemRefType>()
-          //            .getShape()
-          //            .size() == indices.size());
           assert(cast<MemRefType>(subindex.getSource().getType())
                      .getShape()
                      .size() == indices.size());
@@ -2454,12 +2317,6 @@ struct SimplifySubViewUsers : public OpRewritePattern<memref::SubViewOp> {
       } else if (auto storeOp =
                      dyn_cast<affine::AffineStoreOp>(use.getOwner())) {
         if (storeOp.getMemref() == subindex) {
-          // if (subindex.getType().cast<MemRefType>().getShape().size() + 1 ==
-          //     subindex.getSource()
-          //         .getType()
-          //         .cast<MemRefType>()
-          //         .getShape()
-          //         .size()) {
           if (cast<MemRefType>(subindex.getType()).getShape().size() + 1 ==
               cast<MemRefType>(subindex.getSource().getType())
                   .getShape()
@@ -2474,12 +2331,6 @@ struct SimplifySubViewUsers : public OpRewritePattern<memref::SubViewOp> {
                   storeOp.getMapOperands());
               indices.push_back(apply->getResult(0));
             }
-
-            // assert(subindex.getSource()
-            //            .getType()
-            //            .cast<MemRefType>()
-            //            .getShape()
-            //            .size() == indices.size());
             assert(cast<MemRefType>(subindex.getSource().getType())
                        .getShape()
                        .size() == indices.size());
@@ -2491,12 +2342,6 @@ struct SimplifySubViewUsers : public OpRewritePattern<memref::SubViewOp> {
       } else if (auto storeOp =
                      dyn_cast<affine::AffineLoadOp>(use.getOwner())) {
         if (storeOp.getMemref() == subindex) {
-          // if (subindex.getType().cast<MemRefType>().getShape().size() + 1 ==
-          //     subindex.getSource()
-          //         .getType()
-          //         .cast<MemRefType>()
-          //         .getShape()
-          //         .size()) {
           if (cast<MemRefType>(subindex.getType()).getShape().size() + 1 ==
               cast<MemRefType>(subindex.getSource().getType())
                   .getShape()
@@ -2511,11 +2356,6 @@ struct SimplifySubViewUsers : public OpRewritePattern<memref::SubViewOp> {
                   storeOp.getMapOperands());
               indices.push_back(apply->getResult(0));
             }
-            // assert(subindex.getSource()
-            //            .getType()
-            //            .cast<MemRefType>()
-            //            .getShape()
-            //            .size() == indices.size());
             assert(cast<MemRefType>(subindex.getSource().getType())
                        .getShape()
                        .size() == indices.size());
