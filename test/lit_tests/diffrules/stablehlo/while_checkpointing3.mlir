@@ -9,7 +9,7 @@ module {
     %c_102 = stablehlo.constant dense<0> : tensor<i64>
     %c_103 = stablehlo.constant dense<1> : tensor<i64>
 
-    %7697:3 = stablehlo.while(%iterArg = %c_102, %iterArg_202 = %cst_121, %iterArg_203 = %arg0) : tensor<i64>, tensor<31xi64>, tensor<31xf64> attributes {enzymexla.disable_min_cut, enzymexla.enable_checkpointing = true}
+    %7697:3 = stablehlo.while(%iterArg = %c_102, %iterArg_202 = %cst_121, %iterArg_203 = %arg0) : tensor<i64>, tensor<31xi64>, tensor<31xf64> attributes {enzyme.disable_mincut, enzymexla.enable_checkpointing = true}
      cond {
       %23100 = stablehlo.compare  LT, %iterArg, %c_101 : (tensor<i64>, tensor<i64>) -> tensor<i1>
       stablehlo.return %23100 : tensor<i1>
@@ -72,11 +72,11 @@ module {
 // CHECK-NEXT:      %4 = stablehlo.compare  LT, %iterArg, %c_1 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:      stablehlo.return %4 : tensor<i1>
 // CHECK-NEXT:    } do {
-// CHECK-NEXT:      %4 = stablehlo.dynamic_slice %0#4, %iterArg_10, %c_3, sizes = [1, 31] : (tensor<4x31xf64>, tensor<i64>, tensor<i64>) -> tensor<1x31xf64>
-// CHECK-NEXT:      %5 = stablehlo.reshape %4 : (tensor<1x31xf64>) -> tensor<31xf64>
-// CHECK-NEXT:      %6 = stablehlo.dynamic_slice %0#3, %iterArg_10, %c_3, sizes = [1, 31] : (tensor<4x31xi64>, tensor<i64>, tensor<i64>) -> tensor<1x31xi64>
-// CHECK-NEXT:      %7 = stablehlo.reshape %6 : (tensor<1x31xi64>) -> tensor<31xi64>
-// CHECK-NEXT:      %8:4 = stablehlo.while(%iterArg_11 = %c_3, %iterArg_12 = %7, %iterArg_13 = %5, %iterArg_14 = %cst) : tensor<i64>, tensor<31xi64>, tensor<31xf64>, tensor<4x31xf64>
+// CHECK-NEXT:      %[[a6:.+]] = stablehlo.dynamic_slice %0#3, %iterArg_10, %c_3, sizes = [1, 31] : (tensor<4x31xi64>, tensor<i64>, tensor<i64>) -> tensor<1x31xi64>
+// CHECK-NEXT:      %[[a7:.+]] = stablehlo.reshape %[[a6]] : (tensor<1x31xi64>) -> tensor<31xi64>
+// CHECK-NEXT:      %[[a4:.+]] = stablehlo.dynamic_slice %0#4, %iterArg_10, %c_3, sizes = [1, 31] : (tensor<4x31xf64>, tensor<i64>, tensor<i64>) -> tensor<1x31xf64>
+// CHECK-NEXT:      %[[a5:.+]] = stablehlo.reshape %[[a4]] : (tensor<1x31xf64>) -> tensor<31xf64>
+// CHECK-NEXT:      %8:4 = stablehlo.while(%iterArg_11 = %c_3, %iterArg_12 = %[[a7]], %iterArg_13 = %[[a5]], %iterArg_14 = %cst) : tensor<i64>, tensor<31xi64>, tensor<31xf64>, tensor<4x31xf64>
 // CHECK-NEXT:       cond {
 // CHECK-NEXT:        %12 = stablehlo.compare  LT, %iterArg_11, %c_1 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:        stablehlo.return %12 : tensor<i1>

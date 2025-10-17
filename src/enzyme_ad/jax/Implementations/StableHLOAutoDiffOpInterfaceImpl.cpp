@@ -2832,11 +2832,13 @@ public:
     auto zero = makeI64Constant(whileOp->getLoc(), rewriter, 0);
 
     // Run min cut partitioning to limit the amount of values to be cached.
-    if (!caches.empty() && !whileOp->hasAttr("enzymexla.disable_min_cut")) {
+    if (hasMinCut(whileOp) && caches.size()) {
       Block *forward = &whileOp.getBody().front();
       Block *reverse = &otherWhileOp.getBody().front();
       Operation *lastFwd = nullptr;
       IRMapping fwdrevmap;
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(reverse);
       mlir::enzyme::minCutCache(forward, reverse, caches, rewriter, fwdrevmap, lastFwd);
     }
 
