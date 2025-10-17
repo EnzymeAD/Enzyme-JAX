@@ -2835,7 +2835,9 @@ public:
     if (!caches.empty() && !whileOp->hasAttr("enzymexla.disable_min_cut")) {
       Block *forward = &whileOp.getBody().front();
       Block *reverse = &otherWhileOp.getBody().front();
-      mlir::enzyme::minCutCache(forward, reverse, caches, rewriter);
+      Operation *lastFwd = nullptr;
+      IRMapping fwdrevmap;
+      mlir::enzyme::minCutCache(forward, reverse, caches, rewriter, fwdrevmap, lastFwd);
     }
 
     Value itersV = nullptr;
