@@ -170,7 +170,6 @@ bool getEffectsBefore(Operation *op,
           continue;
       }
       if (!collectEffects(it, effects, /* ignoreBarriers */ true)) {
-        LLVM_DEBUG(DBGS() << "colloectEffects 1 returns false\n");
         return false;
       }
     }
@@ -183,7 +182,6 @@ bool getEffectsBefore(Operation *op,
   // As we didn't hit another barrier, we must check the predecessors of this
   // operation.
   if (!getEffectsBefore(op->getParentOp(), effects, stopAtBarrier)) {
-    LLVM_DEBUG(DBGS() << "getEffectsBefore returns false\n");
     return false;
   }
 
@@ -195,7 +193,6 @@ bool getEffectsBefore(Operation *op,
       if (conservative)
         return WalkResult::interrupt();
       if (!collectEffects(in, effects, /* ignoreBarriers */ true)) {
-        LLVM_DEBUG(DBGS() << "colloectEffects 2 returns false\n");
         conservative = true;
         return WalkResult::interrupt();
       }
@@ -509,8 +506,6 @@ bool mayAlias(MemoryEffects::EffectInstance a,
 }
 
 bool mayAlias(MemoryEffects::EffectInstance a, Value v2) {
-  // llvm::errs() << " checking alias of a: " << a.getValue() << " v2: " << v2
-  //              << "\n";
   if (Value v = a.getValue()) {
     return mayAlias(v, v2);
   }
