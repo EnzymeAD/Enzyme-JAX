@@ -6,7 +6,7 @@ module {
     %c_0 = stablehlo.constant dense<0> : tensor<i64>
     %c_1 = stablehlo.constant dense<10> : tensor<i64>
     %c_2 = stablehlo.constant dense<1> : tensor<i64>
-    %0:2 = stablehlo.while(%iterArg = %c_0, %iterArg_3 = %arg0) : tensor<i64>, tensor<10xf32> attributes {enzymexla.disable_min_cut}
+    %0:2 = stablehlo.while(%iterArg = %c_0, %iterArg_3 = %arg0) : tensor<i64>, tensor<10xf32> attributes {enzyme.disable_mincut}
     cond {
       %1 = stablehlo.compare  LT, %iterArg, %c_1 : (tensor<i64>, tensor<i64>) -> tensor<i1>
       stablehlo.return %1 : tensor<i1>
@@ -32,7 +32,7 @@ module {
 // CHECK-NEXT:     %c_0 = stablehlo.constant dense<0> : tensor<i64>
 // CHECK-NEXT:     %c_1 = stablehlo.constant dense<10> : tensor<i64>
 // CHECK-NEXT:     %c_2 = stablehlo.constant dense<1> : tensor<i64>
-// CHECK-NEXT:     %0:2 = stablehlo.while(%iterArg = %c_0, %iterArg_3 = %arg0) : tensor<i64>, tensor<10xf32> attributes {enzymexla.disable_min_cut}
+// CHECK-NEXT:     %0:2 = stablehlo.while(%iterArg = %c_0, %iterArg_3 = %arg0) : tensor<i64>, tensor<10xf32> attributes {enzyme.disable_mincut}
 // CHECK-NEXT:     cond {
 // CHECK-NEXT:       %1 = stablehlo.compare  LT, %iterArg, %c_1 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:       stablehlo.return %1 : tensor<i1>
@@ -60,7 +60,7 @@ module {
     %c_6 = stablehlo.constant dense<0> : tensor<i64>
     %c_7 = stablehlo.constant dense<10> : tensor<i64>
     %c_8 = stablehlo.constant dense<1> : tensor<i64>
-    %0:2 = stablehlo.while(%iterArg = %c_6, %iterArg_9 = %arg0) : tensor<i64>, tensor<10xf32> attributes {enzymexla.disable_min_cut}
+    %0:2 = stablehlo.while(%iterArg = %c_6, %iterArg_9 = %arg0) : tensor<i64>, tensor<10xf32> attributes {enzyme.disable_mincut}
     cond {
       %1 = stablehlo.compare  LT, %iterArg, %c_7 : (tensor<i64>, tensor<i64>) -> tensor<i1>
       stablehlo.return %1 : tensor<i1>
@@ -97,7 +97,7 @@ module {
 // CHECK-NEXT:     %c_0 = stablehlo.constant dense<0> : tensor<i64>
 // CHECK-NEXT:     %c_1 = stablehlo.constant dense<10> : tensor<i64>
 // CHECK-NEXT:     %c_2 = stablehlo.constant dense<1> : tensor<i64>
-// CHECK-NEXT:     %0:2 = stablehlo.while(%iterArg = %c_0, %iterArg_3 = %arg0) : tensor<i64>, tensor<10xf32> attributes {enzymexla.disable_min_cut}
+// CHECK-NEXT:     %0:2 = stablehlo.while(%iterArg = %c_0, %iterArg_3 = %arg0) : tensor<i64>, tensor<10xf32> attributes {enzyme.disable_mincut}
 // CHECK-NEXT:     cond {
 // CHECK-NEXT:       %1 = stablehlo.compare  LT, %iterArg, %c_1 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:       stablehlo.return %1 : tensor<i1>
@@ -126,7 +126,7 @@ module @reactant_sine_lo... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
     %c_6 = stablehlo.constant dense<-1> : tensor<i64>
     %c_7 = stablehlo.constant dense<1> : tensor<i64>
     %c_8 = stablehlo.constant dense<10> : tensor<i64>
-    %0:2 = stablehlo.while(%iterArg = %c_5, %iterArg_9 = %arg0) : tensor<i64>, tensor<10xf32> attributes {enzymexla.disable_min_cut}
+    %0:2 = stablehlo.while(%iterArg = %c_5, %iterArg_9 = %arg0) : tensor<i64>, tensor<10xf32> attributes {enzyme.disable_mincut}
     cond {
       %1 = stablehlo.compare  LT, %iterArg, %c_8 : (tensor<i64>, tensor<i64>) -> tensor<i1>
       stablehlo.return %1 : tensor<i1>
@@ -165,7 +165,7 @@ module @reactant_sine_lo... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
 // CHECK-NEXT:       %c_0 = stablehlo.constant dense<0> : tensor<i64>
 // CHECK-NEXT:       %c_1 = stablehlo.constant dense<1> : tensor<i64>
 // CHECK-NEXT:       %c_2 = stablehlo.constant dense<10> : tensor<i64>
-// CHECK-NEXT:       %0:2 = stablehlo.while(%iterArg = %c_0, %iterArg_3 = %arg0) : tensor<i64>, tensor<10xf32> attributes {enzymexla.disable_min_cut}
+// CHECK-NEXT:       %0:2 = stablehlo.while(%iterArg = %c_0, %iterArg_3 = %arg0) : tensor<i64>, tensor<10xf32> attributes {enzyme.disable_mincut}
 // CHECK-NEXT:       cond {
 // CHECK-NEXT:         %1 = stablehlo.compare  LT, %iterArg, %c_2 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:         stablehlo.return %1 : tensor<i1>
