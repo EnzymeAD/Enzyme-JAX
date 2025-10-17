@@ -391,22 +391,14 @@ def LowerTritonPass : Pass<"lower-triton"> {
   ];
 }
 
-def PreserveTritonWarpsAndCtasPass : Pass<"preserve-triton-warps-ctas", "mlir::ModuleOp"> {
-  let summary = "Triton generally compiles a single kernel, so they can specify the number of ctas and warps. However, we want to be able to compile multiple kernels, and we want to preserve the number of ctas and warps specified by the user. This pass will save the ctas and warps attributes on the module, and restore them after `convert-triton-to-tritongpu` is run.";
+def ConvertTritonToTritonGPUPreservingModuleAttributesPass : Pass<
+    "convert-triton-to-triton-gpu-preserving-module-attributes", "mlir::ModuleOp"> {
+  let summary = "Triton generally compiles a single kernel, so they can specify the number of ctas and warps. However, we want to be able to compile multiple kernels. This pass will use the attributes from the module and use that to lower to TritonGPU.";
   let dependentDialects = [];
   let options = [
-      Option<
-           /*C++ variable name=*/"save",
-           /*CLI argument=*/"save",
-           /*type=*/"bool",
-           /*default=*/"true",
-           /*description=*/"Whether to preserve the warps and ctas attributes">,
-      Option<
-           /*C++ variable name=*/"restore",
-           /*CLI argument=*/"restore",
-           /*type=*/"bool",
-           /*default=*/"true",
-           /*description=*/"Whether to restore the warps and ctas attributes">,
+    Option<"target", "target",
+          "std::string", /*default*/"\"\"",
+          "the GPU target, e.g., cuda:80, hip:gfx942">
   ];
 }
 
