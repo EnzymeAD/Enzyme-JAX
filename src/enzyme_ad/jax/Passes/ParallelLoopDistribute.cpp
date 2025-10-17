@@ -86,11 +86,17 @@ struct Node {
   }
   void dump() const {
     if (type == VAL)
-      llvm::errs() << "[" << V << ", " << "Value" << "]\n";
+      llvm::errs() << "[" << V << ", " 
+                   << "Value" 
+                   << "]\n";
     else if (type == OP)
-      llvm::errs() << "[" << *O << ", " << "Operation" << "]\n";
+      llvm::errs() << "[" << *O << ", " 
+                   << "Operation" 
+                   << "]\n";
     else
-      llvm::errs() << "[" << "NULL" << ", " << "None" << "]\n";
+      llvm::errs() << "[" << "NULL" << ", " 
+                   << "None" 
+                   << "]\n";
   }
 };
 
@@ -1204,7 +1210,8 @@ struct WrapForWithBarrier : public OpRewritePattern<scf::ForOp> {
 
   LogicalResult matchAndRewrite(scf::ForOp op,
                                 PatternRewriter &rewriter) const override {
-    LLVM_DEBUG(DBGS() << "For wrapper" << "\n";);
+    LLVM_DEBUG(DBGS() << "For wrapper" 
+                      << "\n";);
     return wrapAndDistribute<scf::ForOp, UseMinCut>(
         op, /* singleExecution */ false, rewriter);
   }
