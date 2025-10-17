@@ -2684,11 +2684,9 @@ struct AlwaysAllocaScopeHoister : public OpRewritePattern<T> {
 
 void TypeAlignOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                               MLIRContext *context) {
-  results.insert<
-      AlwaysAllocaScopeHoister<memref::AllocaScopeOp>,
-      AlwaysAllocaScopeHoister<scf::ForOp>,
-      AlwaysAllocaScopeHoister<affine::AffineForOp> 
-      >(context);
+  results.insert<AlwaysAllocaScopeHoister<memref::AllocaScopeOp>,
+                 AlwaysAllocaScopeHoister<scf::ForOp>,
+                 AlwaysAllocaScopeHoister<affine::AffineForOp>>(context);
 }
 
 /// Simplify select subindex(x), subindex(y) to subindex(select x, y)
