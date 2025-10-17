@@ -79,6 +79,8 @@ struct TritonCallOpLowering
         op.getLoc(), shmemOpType,
         cast<ElementsAttr>(makeAttr(shmemOpType, 32)));
     inputs.push_back(shmemStack);
+    // XXX: I am not sure what is this argument for...
+    inputs.push_back(shmemStack);
 
     rewriter.replaceOpWithNewOp<enzymexla::KernelCallOp>(
         op, op.getResultTypes(), op.getFn(), op.getGridx(), op.getGridy(),
