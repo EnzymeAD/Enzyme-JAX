@@ -120,6 +120,11 @@ void ApplyConcatConstPropPatterns::populatePatterns(
   addConcatConstProp(patterns, getParameter(), *getContext(),
                      PatternBenefit(getBenefit().value_or(1)));
 }
+void ApplyScatterConstFoldPatterns::populatePatterns(
+    RewritePatternSet &patterns) {
+  addScatterConstFold(patterns, getParameter(), *getContext(),
+                      PatternBenefit(getBenefit().value_or(1)));
+}
 void ApplyPadSimplifyPatterns::populatePatterns(RewritePatternSet &patterns) {
   addPadSimplify(patterns, getParameter(), *getContext(),
                  PatternBenefit(getBenefit().value_or(1)));

@@ -44,6 +44,9 @@ void addIotaSimplify(RewritePatternSet &patterns, int64_t maxConstantExpansion,
 void addConcatConstProp(RewritePatternSet &patterns,
                         int64_t maxConstantExpansion, MLIRContext &context,
                         PatternBenefit benefit);
+void addScatterConstFold(RewritePatternSet &patterns,
+                         int64_t maxConstantExpansion, MLIRContext &context,
+                         PatternBenefit benefit);
 void addPadSimplify(RewritePatternSet &patterns, int64_t maxConstantExpansion,
                     MLIRContext &context, PatternBenefit benefit);
 void addDynamicUpdateSliceConstProp(RewritePatternSet &patterns,
