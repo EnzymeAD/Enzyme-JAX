@@ -2839,7 +2839,8 @@ public:
       IRMapping fwdrevmap;
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(reverse);
-      mlir::enzyme::minCutCache(forward, reverse, caches, rewriter, fwdrevmap, lastFwd);
+      mlir::enzyme::minCutCache(forward, reverse, caches, rewriter, fwdrevmap,
+                                lastFwd);
     }
 
     Value itersV = nullptr;
