@@ -16,6 +16,12 @@ HEDRON_COMPILE_COMMANDS_SHA256 = ""
 
 XLA_PATCHES = [
     """
+    sed -i.bak0 "s/\\\"\\/\\/xla\\/service\\/gpu\\/llvm_gpu_backend:amdgpu_backend\\\"/] + if_rocm_is_configured([\\0]) + [/g" xla/backends/gpu/codegen/triton/BUILD
+    """,
+    """
+    sed -i.bak0 "s/\\\"if_cuda_is_configured\\\",/\\0\\\"if_rocm_is_configured\\\",/g" xla/backends/gpu/codegen/triton/BUILD
+    """,
+    """
     sed -i.bak0 "s/e07debd5e257ec1e118f18c54068977b89f03b2f/9018c682b99eb20d5874a4e38271ce63d7393879/g" third_party/stablehlo/workspace.bzl
     """,
     """
