@@ -1,5 +1,6 @@
 #pragma once
 
+#include "mlir/IR/Dominance.h"
 #include "mlir/IR/PatternMatch.h"
 #include "src/enzyme_ad/jax/CheckedRewrite.h"
 #include "src/enzyme_ad/jax/Utils.h"
@@ -8,6 +9,17 @@
 #include <tuple>
 #include <vector>
 
+// Loading the header causes a bunch of ambiguous errors
+// #include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
+namespace mlir {
+namespace enzyme {
+struct WhileLoopInfo;
+}; // namespace enzyme
+}; // namespace mlir
+
+std::tuple<bool, bool> allSameBool(const llvm::SmallVector<bool> &bools);
+bool allOpsAreUnique(const llvm::SmallVector<mlir::Operation *> &ops);
+
 struct BatchOperandConstructionInfo {
   mlir::stablehlo::SliceOp sliceOp;
   int32_t sliceOperandIndex;
@@ -15,6 +27,27 @@ struct BatchOperandConstructionInfo {
   int32_t nbatches;
   bool intermediateReshape;
 };
+
+// TODO: update old code to use this new slice info
+template <typename OpTy> struct NewSliceInfo {
+  OpTy sliceOp;
+  llvm::SmallVector<mlir::Value> dynamicStartIndices;
+  llvm::SmallVector<int64_t> startIndices;
+  llvm::SmallVector<int64_t> sliceSizes;
+  int64_t sliceDim;
+  int64_t sliceStart;
+  bool supported;
+};
+
+NewSliceInfo<mlir::stablehlo::SliceOp>
+constructNewSliceInfo(mlir::stablehlo::SliceOp sliceOp);
+NewSliceInfo<mlir::stablehlo::DynamicSliceOp>
+constructNewSliceInfo(mlir::stablehlo::DynamicSliceOp sliceOp);
+
+bool areSlicesContiguous(
+    llvm::SmallVector<NewSliceInfo<mlir::stablehlo::SliceOp>> &slices);
+bool areSlicesContiguous(
+    llvm::SmallVector<NewSliceInfo<mlir::stablehlo::DynamicSliceOp>> &slices);
 
 struct ConcatInsertDimToBatchBase
     : public mlir::enzyme::CheckedOpRewritePattern<
@@ -99,11 +132,6 @@ private:
 
   SliceInfo extractSliceInfo(mlir::stablehlo::SliceOp slice) const;
   bool areSlicesContiguous(llvm::SmallVector<SliceInfo> &slices) const;
-  std::tuple<bool, bool>
-  allSameBool(const llvm::SmallVector<bool> &bools) const;
-  std::tuple<bool, bool>
-  allSameBool(const llvm::SmallVector<mlir::Operation *> &ops) const;
-  bool allOpsAreUnique(const llvm::SmallVector<mlir::Operation *> &ops) const;
 
 protected:
   std::function<mlir::Operation *(mlir::Operation *)> isValidTargetOp;
@@ -170,4 +198,37 @@ struct SliceToBatchElementwise : public SliceToBatchBase {
               return nullptr;
             },
             ctx, benefit) {}
+};
+
+struct GreedyWhileLoopBatchFission
+    : public mlir::enzyme::CheckedOpRewritePattern<
+          mlir::stablehlo::WhileOp, GreedyWhileLoopBatchFission> {
+  using Base =
+      mlir::enzyme::CheckedOpRewritePattern<mlir::stablehlo::WhileOp,
+                                            GreedyWhileLoopBatchFission>;
+  using Base::Base;
+
+  mlir::LogicalResult
+  matchAndRewriteImpl(mlir::stablehlo::WhileOp whileOp,
+                      mlir::PatternRewriter &rewriter) const;
+
+private:
+  struct DynamicSliceInfo {
+    mlir::stablehlo::DynamicSliceOp sliceOp;
+    int64_t inductionVarDimension;
+  };
+
+  int64_t isDynamicSliceValidForBatching(
+      mlir::stablehlo::DynamicSliceOp sliceOp, mlir::Value iterVar,
+      int64_t limit, mlir::Block &whileBody, mlir::Block *parentBlock,
+      mlir::DominanceInfo &domInfo) const;
+
+  bool liftElementwiseOp(mlir::PatternRewriter &rewriter,
+                         mlir::stablehlo::WhileOp whileOp,
+                         llvm::ArrayRef<DynamicSliceInfo> sliceOps,
+                         mlir::Operation *op,
+                         mlir::enzyme::WhileLoopInfo info) const;
+
+  bool isValueAccessibleFromBlock(mlir::DominanceInfo &domInfo,
+                                  mlir::Value value, mlir::Block *block) const;
 };
