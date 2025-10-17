@@ -10,6 +10,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "src/enzyme_ad/jax/Dialect/TritonExt/Ops.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
@@ -336,6 +337,12 @@ struct MarkFunctionMemoryEffectsPass
           } else {
             insertMemoryEffects(effects);
           }
+        } else if (auto tcall = dyn_cast<triton_ext::TritonCallOp>(op)) {
+          if (tcall.getXlaSideEffectFreeAttr()) {
+            return WalkResult::advance();
+          } else {
+            insertMemoryEffects(effects);
+          }
         } else if (auto ccall = dyn_cast<stablehlo::CustomCallOp>(op)) {
           if (!ccall.getHasSideEffect()) {
             return WalkResult::advance();
@@ -457,10 +464,6 @@ struct MarkFunctionMemoryEffectsPass
             funcOp.setArgAttr(i, LLVM::LLVMDialect::getWriteOnlyAttrName(),
                               builder.getUnitAttr());
           }
-          // if (argEffectInfo.readNone) {
-          //   funcOp.setArgAttr(i, LLVM::LLVMDialect::getReadnoneAttrName(),
-          //                     builder.getUnitAttr());
-          // }
           if (!argEffects[i][3]) {
             funcOp.setArgAttr(i, LLVM::LLVMDialect::getNoFreeAttrName(),
                               builder.getUnitAttr());
