@@ -17,7 +17,7 @@ HEDRON_COMPILE_COMMANDS_SHA256 = ""
 XLA_PATCHES = [
     # Bug in xla and gcc workaround
     """
-    sed -i.bak0 "s/protected/private/g" external/xla/xla/tsl/concurrency/future.h
+    sed -i.bak0 "s/protected/private/g" xla/tsl/concurrency/future.h
     """,
     """
     sed -i.bak0 "s/e07debd5e257ec1e118f18c54068977b89f03b2f/9018c682b99eb20d5874a4e38271ce63d7393879/g" third_party/stablehlo/workspace.bzl
