@@ -494,7 +494,6 @@ static bool isNormalized(scf::ParallelOp op) {
 }
 static bool isNormalized(affine::AffineParallelOp op) {
   auto isZero = [](AffineExpr v) {
-    // if (auto ce = v.dyn_cast<AffineConstantExpr>())
     if (auto ce = dyn_cast<AffineConstantExpr>(v))
       return ce.getValue() == 0;
     return false;
@@ -1079,15 +1078,6 @@ wrapWithBarriers(T op, PatternRewriter &rewriter,
       prevOp == nullptr || isBarrierContainingAll(prevOp, args) || recomputable;
   bool hasNextBarrierLike =
       nextOp == &op->getBlock()->back() || isBarrierContainingAll(nextOp, args);
-  LLVM_DEBUG(DBGS() << "prevBarrierLike is" << hasPrevBarrierLike << "\n");
-  LLVM_DEBUG(DBGS() << "nextBarrierLike is" << hasNextBarrierLike << "\n");
-  LLVM_DEBUG(DBGS() << "prevOp is" << prevOp << "\n");
-  LLVM_DEBUG(DBGS() << "nextOp: " << *nextOp << "\n");
-  LLVM_DEBUG(DBGS() << "back: " << op->getBlock()->back() << "\n");
-  LLVM_DEBUG(DBGS() << "nextOp addr: " << nextOp << "\n");
-  LLVM_DEBUG(DBGS() << "back addr: " << &op->getBlock()->back() << "\n");
-  LLVM_DEBUG(DBGS() << "comparison: " << (nextOp == &op->getBlock()->back())
-                    << "\n");
   if (hasPrevBarrierLike && hasNextBarrierLike) {
     LLVM_DEBUG(DBGS() << "[wrap] already has sufficient barriers\n");
     return failure();
