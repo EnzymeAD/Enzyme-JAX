@@ -1,8 +1,11 @@
-JAX_COMMIT = "45065d569064392cee45a066f9f788fe29ee2cd8"
+JAX_COMMIT = "3a22eea644237001df0f3dd42253225cc059b43c"
 JAX_SHA256 = ""
 
-ENZYME_COMMIT = "cdde777c6748f4b654d809876fc54903f7c3094a"
+ENZYME_COMMIT = "f10a216d9a40e2d85547572776a41cd9054fe49d"
 ENZYME_SHA256 = ""
+
+ML_TOOLCHAIN_COMMIT = "d8d8f49297a1e74fcceffc9ef6c7f8da9b0a0c53"
+ML_TOOLCHAIN_SHA256 = "4133c6c2045de5d7a133f6fc008ee6bd613af778f12143d09003e908dd541d8c"
 
 # If the empty string this will automatically use the commit above
 # otherwise this should be a path to the folder containing the BUILD file for enzyme
@@ -72,7 +75,7 @@ echo "" >> third_party/proto.patch
 echo " #ifndef bswap_16" >> third_party/proto.patch
 echo " static inline uint16_t bswap_16(uint16_t x) {" >> third_party/proto.patch
 sed -i.bak0 "s/protobuf.patch\\"/protobuf.patch\\", \\":proto.patch\\"/g" workspace2.bzl
-sed -i.bak0 "s/patch_file = \\[\\"\\/\\/third_party\\/protobuf:protobuf.patch\\"/patches = \\[Label(\\"\\/\\/third_party\\/protobuf:protobuf.patch\\"), Label(\\"\\/\\/third_party:proto.patch\\"\\)], patch_args = \\[\\"-p1\\"/g" third_party/py/python_init_rules.bzl
+sed -i.bak0 "s/patch_file = \\[\\"@xla\\/\\/third_party\\/protobuf:protobuf.patch\\"/patches = \\[Label(\\"@xla\\/\\/third_party\\/protobuf:protobuf.patch\\"), Label(\\"\\/\\/third_party:proto.patch\\"\\)], patch_args = \\[\\"-p1\\"/g" third_party/py/python_init_rules.bzl
 sed -i.bak0 "s/tf_http_archive(/http_archive(/g" third_party/py/python_init_rules.bzl
 
 """,
