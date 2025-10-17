@@ -34,9 +34,6 @@
 
 #include <set>
 
-#define DEBUG_TYPE "recomputable"
-#define DBGS() ::llvm::dbgs() << "[" DEBUG_TYPE "] "
-
 using namespace mlir;
 using namespace mlir::enzyme;
 using namespace mlir::arith;
