@@ -60,7 +60,7 @@ XLA_PATCHES = [
     sed -i.bak0 "s/tf_http_archive/http_archive/g" third_party/pthreadpool/workspace.bzl
     """,
     """
-    sed -i.bak0 "s/strip_prefix/patch_cmds = [\\\"find . -type f -name src/pthreads.c -exec sed -i.bak0 's\\/_MSC_VER\\/_WIN32\\/g' {} +\\\"], strip_prefix/g" third_party/pthreadpool/workspace.bzl
+    sed -i.bak0 "s/strip_prefix/patch_cmds = [\\\"find . -type f -name src\\/pthreads.c -exec sed -i.bak0 's\\/_MSC_VER\\/_WIN32\\/g' {} +\\\"], strip_prefix/g" third_party/pthreadpool/workspace.bzl
     """,
     """
     sed -i.bak0 "s/strip_prefix/patch_cmds = [\\\"find . -type f -name config.bzl -exec sed -i.bak0 's\\/HAVE_BACKTRACE=1\\/NO_HAVE_BACKTRACE=0\\/g' {} +\\\"], strip_prefix/g" third_party/llvm/workspace.bzl
