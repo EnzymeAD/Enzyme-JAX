@@ -43,7 +43,11 @@ def TensorFloat : Type<
   "tensor<float or complex<float> scalar>",
   "::mlir::TensorType">;
 
-def KernelCallOp: EnzymeXLA_Op<"kernel_call", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, DeclareOpInterfaceMethods<CallOpInterface>, DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+def KernelCallOp: EnzymeXLA_Op<"kernel_call", [
+    AttrSizedOperandSegments,
+    DeclareOpInterfaceMethods<SymbolUserOpInterface>,
+    DeclareOpInterfaceMethods<CallOpInterface>,
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "Kernel Call operation";
 
   let arguments = (ins
@@ -55,6 +59,9 @@ def KernelCallOp: EnzymeXLA_Op<"kernel_call", [DeclareOpInterfaceMethods<SymbolU
     TensorI64:$blocky,
     TensorI64:$blockz,
     TensorI64:$shmem,
+    Optional<TensorI64>:$clusterx,
+    Optional<TensorI64>:$clustery,
+    Optional<TensorI64>:$clusterz,
     Variadic<AnyType>:$inputs,
     DefaultValuedStrAttr<StrAttr, "">:$backend_config,
     OptionalAttr<AnyAttr>:$operand_layouts,
@@ -70,7 +77,13 @@ def KernelCallOp: EnzymeXLA_Op<"kernel_call", [DeclareOpInterfaceMethods<SymbolU
 
 
   let assemblyFormat = [{
-    $fn ` ` `blocks` `in` `(` $gridx `,` $gridy `,` $gridz `)` ` ` `threads` `in` `(` $blockx `,` $blocky `,` $blockz `)` ` ` `shmem` `=` $shmem ` ` `(` $inputs `)` attr-dict `:` functional-type($inputs, results)
+    $fn
+    ( `clusters` `in` `(` $clusterx^ `,` $clustery `,` $clusterz `)` )?
+    `blocks` `in` `(` $gridx `,` $gridy `,` $gridz `)`
+    `threads` `in` `(` $blockx `,` $blocky `,` $blockz `)`
+    `shmem` `=` $shmem ` `
+    `(` $inputs `)`
+    attr-dict `:` functional-type($inputs, results)
   }];
 
   let hasCanonicalizer = 1;
