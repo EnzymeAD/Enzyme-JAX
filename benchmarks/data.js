@@ -1,197 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1760714913811,
+  "lastUpdate": 1760787523646,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "naydex.mc+github@gmail.com",
-            "name": "Paul Berg",
-            "username": "Pangoraw"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "312ddbae85cb59b65b01c9b4278c3b6567cc12a2",
-          "message": "AffineCFG: fix crash in affine.if when two yields are the same (#1398)",
-          "timestamp": "2025-09-17T09:44:06-05:00",
-          "tree_id": "957257a16ce0095c16960d59a893f1b0574eb911",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/312ddbae85cb59b65b01c9b4278c3b6567cc12a2"
-        },
-        "date": 1758123399186,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "llama / JaXPipe / gpu / Primal",
-            "value": 0.0004301215214654,
-            "unit": "s"
-          },
-          {
-            "name": "llama / JaX   / gpu / Primal",
-            "value": 0.0004406686499714,
-            "unit": "s"
-          },
-          {
-            "name": "llama / HLOOpt / gpu / Primal",
-            "value": 0.0004419917920604,
-            "unit": "s"
-          },
-          {
-            "name": "llama / PartOpt / gpu / Primal",
-            "value": 0.000426869190298,
-            "unit": "s"
-          },
-          {
-            "name": "llama / DefOpt / gpu / Primal",
-            "value": 0.0004372650301083,
-            "unit": "s"
-          },
-          {
-            "name": "llama / IPartOpt / gpu / Primal",
-            "value": 0.0004328771103173,
-            "unit": "s"
-          },
-          {
-            "name": "llama / IDefOpt / gpu / Primal",
-            "value": 0.0004489347422495,
-            "unit": "s"
-          },
-          {
-            "name": "llama / JaXPipe / gpu / Forward",
-            "value": 0.0006696561258286,
-            "unit": "s"
-          },
-          {
-            "name": "llama / JaX   / gpu / Forward",
-            "value": 0.0007646444682031,
-            "unit": "s"
-          },
-          {
-            "name": "llama / HLOOpt / gpu / Forward",
-            "value": 0.0006908277822658,
-            "unit": "s"
-          },
-          {
-            "name": "llama / PartOpt / gpu / Forward",
-            "value": 0.000685450383462,
-            "unit": "s"
-          },
-          {
-            "name": "llama / DefOpt / gpu / Forward",
-            "value": 0.0006750241946429,
-            "unit": "s"
-          },
-          {
-            "name": "llama / IPartOpt / gpu / Forward",
-            "value": 0.0006588132921606,
-            "unit": "s"
-          },
-          {
-            "name": "llama / IDefOpt / gpu / Forward",
-            "value": 0.0006947783036157,
-            "unit": "s"
-          },
-          {
-            "name": "llama / JaXPipe / gpu / PreRev",
-            "value": 0.0007797249676659,
-            "unit": "s"
-          },
-          {
-            "name": "llama / JaXPipe / gpu / PostRev",
-            "value": 0.0008238102402538,
-            "unit": "s"
-          },
-          {
-            "name": "llama / JaXPipe / gpu / BothRev",
-            "value": 0.000715030173771,
-            "unit": "s"
-          },
-          {
-            "name": "llama / JaX   / gpu / BothRev",
-            "value": 0.0007928707972168,
-            "unit": "s"
-          },
-          {
-            "name": "llama / HLOOpt / gpu / PreRev",
-            "value": 0.0007810746096074,
-            "unit": "s"
-          },
-          {
-            "name": "llama / HLOOpt / gpu / PostRev",
-            "value": 0.0007877952121198,
-            "unit": "s"
-          },
-          {
-            "name": "llama / HLOOpt / gpu / BothRev",
-            "value": 0.0007423142064362,
-            "unit": "s"
-          },
-          {
-            "name": "llama / PartOpt / gpu / PreRev",
-            "value": 0.0007838368937373,
-            "unit": "s"
-          },
-          {
-            "name": "llama / PartOpt / gpu / PostRev",
-            "value": 0.0008159279096871,
-            "unit": "s"
-          },
-          {
-            "name": "llama / PartOpt / gpu / BothRev",
-            "value": 0.0007809283500537,
-            "unit": "s"
-          },
-          {
-            "name": "llama / DefOpt / gpu / PreRev",
-            "value": 0.0007628078637644,
-            "unit": "s"
-          },
-          {
-            "name": "llama / DefOpt / gpu / PostRev",
-            "value": 0.0007475677244365,
-            "unit": "s"
-          },
-          {
-            "name": "llama / DefOpt / gpu / BothRev",
-            "value": 0.0007519627260044,
-            "unit": "s"
-          },
-          {
-            "name": "llama / IPartOpt / gpu / PreRev",
-            "value": 0.0007550061475485,
-            "unit": "s"
-          },
-          {
-            "name": "llama / IPartOpt / gpu / PostRev",
-            "value": 0.0008287461400032,
-            "unit": "s"
-          },
-          {
-            "name": "llama / IPartOpt / gpu / BothRev",
-            "value": 0.0007672858582809,
-            "unit": "s"
-          },
-          {
-            "name": "llama / IDefOpt / gpu / PreRev",
-            "value": 0.0007863623276352,
-            "unit": "s"
-          },
-          {
-            "name": "llama / IDefOpt / gpu / PostRev",
-            "value": 0.0007922682138159,
-            "unit": "s"
-          },
-          {
-            "name": "llama / IDefOpt / gpu / BothRev",
-            "value": 0.0007849685223773,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -4499,6 +4310,70 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/6137ac98e710adf6f4e953bf441db4e25b2db40f"
         },
         "date": 1760714912713,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "add_two / JaX   / cpu / Primal",
+            "value": 0.0000038976957999693696,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / Primal",
+            "value": 0.00000598926249986107,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaX   / cpu / Forward",
+            "value": 0.000008238229199923807,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / Forward",
+            "value": 0.000008194375000130095,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaX   / cpu / BothRev",
+            "value": 0.000011886500000036904,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / PreRev",
+            "value": 0.000009867437499997322,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / PostRev",
+            "value": 0.000010835137499998382,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / BothRev",
+            "value": 0.000013692654199985554,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "wmoses@google.com",
+            "name": "William Moses",
+            "username": "wsmoses"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a7c38bce984c3adedafb8e03282c0e39640ab6f9",
+          "message": "attempt win fix (#1486)\n\n* attempt win fix\n\n* Update workspace.bzl\n\n* fix\n\n* more fix\n\n* more fix",
+          "timestamp": "2025-10-18T20:20:11+09:00",
+          "tree_id": "24b7fe86c7479eb770306f49263773806c3d2559",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/a7c38bce984c3adedafb8e03282c0e39640ab6f9"
+        },
+        "date": 1760787522907,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
