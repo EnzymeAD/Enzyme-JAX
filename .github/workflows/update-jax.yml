@@ -1,0 +1,27 @@
+name: "Open PR to update Enzyme commit"
+
+on:
+  schedule:
+    - cron: '19 22 * * *'
+  workflow_dispatch:
+    inputs:
+      jax_commit:
+        description: 'The JAX commit to update to (optional)'
+        default: ''
+        type: 'string'
+
+concurrency:
+  # Skip intermediate builds: always.
+  # Cancel intermediate builds: only if it is a pull request build.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+
+jobs:
+  pr-latest-jax:
+    name: "Update JAX"
+    uses: ./.github/workflows/update-dependency.yml
+    with:
+      upstream_repo: "jax-ml/jax"
+      upstream_commit: ${{ inputs.jax_commit }}
+      variable_name: "JAX_COMMIT"
+    secrets: inherit
