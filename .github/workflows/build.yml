@@ -99,7 +99,7 @@ jobs:
           BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=ALT=false"
           BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=WRAP"
           BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=VBAR_CONTROL_SERVICE_URL"
-          BAZEL_FLAGS="${BAZEL_FLAGS} --repo_env=CC=`which clang`
+          BAZEL_FLAGS="${BAZEL_FLAGS} --repo_env=CC=`which clang`"
           echo "BAZEL_FLAGS=${BAZEL_FLAGS}" >> "${GITHUB_ENV}"
       - uses: actions/checkout@v5
       - uses: bazel-contrib/setup-bazel@0.15.0
