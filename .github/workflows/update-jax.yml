@@ -1,4 +1,4 @@
-name: "Open PR to update Enzyme commit"
+name: "Open PR to update JAX commit"
 
 on:
   schedule:
