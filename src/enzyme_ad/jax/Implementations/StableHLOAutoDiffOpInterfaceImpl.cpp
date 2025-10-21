@@ -32,6 +32,8 @@
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
+#include "src/enzyme_ad/jax/Dialect/Dialect.h"
+#include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
 #include "src/enzyme_ad/jax/Implementations/XLADerivatives.h"
 #include "src/enzyme_ad/jax/Utils.h"
@@ -1692,8 +1694,9 @@ struct SHLOGetDimensionSizeOpBatchInterface
     auto bcastOp = BroadcastInDimOp::create(
         builder, src->getLoc(),
         RankedTensorType::get(
-            batchSizes, cast<RankedTensorType>(newOp->getResult(0).getType())
-                            .getElementType()),
+            batchSizes,
+            cast<RankedTensorType>(newOp->getResult(0).getType())
+                .getElementType()),
         newOp->getResult(0), builder.getDenseI64ArrayAttr({}));
     mapper.map(src->getResult(0), bcastOp->getResult(0));
     return success();
@@ -3946,6 +3949,8 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
         *context);
 
     ConstantOp::attachInterface<SHLOConstantOpBatchInterface>(*context);
+    GetDimensionSizeOp::attachInterface<SHLOGetDimensionSizeOpBatchInterface>(
+        *context);
     TransposeOp::attachInterface<SHLOTransposeOpBatchInterface>(*context);
     IfOp::attachInterface<SHLOGenericBatchOpInterface<IfOp>>(*context);
     WhileOp::attachInterface<SHLOGenericBatchOpInterface<WhileOp>>(*context);
@@ -3975,5 +3980,9 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
 
     AddOp::attachInterface<StablehloAddSimplifyMathInterface>(*context);
     SubtractOp::attachInterface<StablehloSubSimplifyMathInterface>(*context);
+
+    // TODO: move into its own file
+    enzymexla::JITCallOp::attachInterface<
+        SHLOGenericBatchOpInterface<enzymexla::JITCallOp>>(*context);
   });
 }

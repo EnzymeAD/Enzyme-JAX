@@ -80,7 +80,7 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
     auto type_llvm_void = LLVM::LLVMVoidType::get(ctx);
 
     std::string fn = "geqrf_";
-    if (auto prefix = lapack_precision_prefix(inputElementType)) {
+    if (auto prefix = lapackPrecisionPrefix(inputElementType)) {
       fn = *prefix + fn;
     } else {
       op->emitOpError() << "Unsupported element type: " << inputElementType;
@@ -355,7 +355,7 @@ struct GeqrtOpLowering : public OpRewritePattern<enzymexla::GeqrtOp> {
     auto type_llvm_void = LLVM::LLVMVoidType::get(ctx);
 
     std::string fn = "geqrt_";
-    if (auto prefix = lapack_precision_prefix(inputElementType)) {
+    if (auto prefix = lapackPrecisionPrefix(inputElementType)) {
       fn = *prefix + fn;
     } else {
       op->emitOpError() << "Unsupported element type: " << inputElementType;
@@ -567,7 +567,7 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
     auto type_llvm_void = LLVM::LLVMVoidType::get(ctx);
 
     std::string fn = "gqr_";
-    if (auto prefix = lapack_precision_prefix(inputElementType)) {
+    if (auto prefix = lapackPrecisionPrefix(inputElementType)) {
       if (prefix == "s" || prefix == "d")
         fn = *prefix + "or" + fn;
       else
@@ -873,7 +873,7 @@ struct OrmqrOpLowering : public OpRewritePattern<enzymexla::OrmqrOp> {
     auto type_llvm_char = rewriter.getIntegerType(8);
 
     std::string fn = "mqr_";
-    if (auto prefix = lapack_precision_prefix(A_eltype)) {
+    if (auto prefix = lapackPrecisionPrefix(A_eltype)) {
       if (prefix == "s" || prefix == "d")
         fn = *prefix + "or" + fn;
       else
@@ -1141,7 +1141,7 @@ struct GemqrtOpLowering : public OpRewritePattern<enzymexla::GemqrtOp> {
     auto type_llvm_char = rewriter.getIntegerType(8);
 
     std::string fn = "gemqrt_";
-    if (auto prefix = lapack_precision_prefix(C_eltype)) {
+    if (auto prefix = lapackPrecisionPrefix(C_eltype)) {
       fn = *prefix + fn;
     } else {
       op->emitOpError() << "Unsupported element type: " << C_eltype;
