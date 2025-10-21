@@ -130,7 +130,7 @@ jobs:
         run: |
           if [[ ! -e bazel-bin/cuda/nvvm/libdevice/libdevice.10.bc ]]; then
               mkdir -pv bazel-bin/cuda/nvvm/libdevice
-              cp -v bazel-bin/libReactantExtra.so.runfiles/cuda_nvcc/nvvm/libdevice/libdevice.10.bc bazel-bin/cuda/nvvm/libdevice/libdevice.10.bc
+              find bazel-bin/libReactantExtra.so.runfiles -name 'libdevice.*'
           fi
         working-directory: ${{ env.REACTANT_DIR }}/deps/ReactantExtra
       - name: Checkout GB-25
