@@ -10,7 +10,6 @@
 
 namespace mlir {
 namespace enzyme {
-void registerEnzymeXLADialectAutoDiffInterface(mlir::DialectRegistry &registry);
 void registerMHLODialectAutoDiffInterface(mlir::DialectRegistry &registry);
 void registerStableHLODialectAutoDiffInterface(mlir::DialectRegistry &registry);
 void registerCHLODialectAutoDiffInterface(mlir::DialectRegistry &registry);
@@ -19,7 +18,6 @@ void registerTritonDialectAutoDiffInterface(mlir::DialectRegistry &registry);
 
 static inline void
 registerXLAAutoDiffInterfaces(mlir::DialectRegistry &registry) {
-  registerEnzymeXLADialectAutoDiffInterface(registry);
   registerMHLODialectAutoDiffInterface(registry);
   registerStableHLODialectAutoDiffInterface(registry);
   registerCHLODialectAutoDiffInterface(registry);
