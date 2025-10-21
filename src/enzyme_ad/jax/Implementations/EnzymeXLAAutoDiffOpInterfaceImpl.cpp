@@ -16,6 +16,7 @@
 #include "Enzyme/MLIR/Interfaces/GradientUtils.h"
 #include "Enzyme/MLIR/Interfaces/GradientUtilsReverse.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/RegionUtils.h"
@@ -138,6 +139,91 @@ struct GPUWrapperOpEnzymeOpsRemover
 
       if (!definingOp)
         continue;
+
+      // Assume allocations and frees are legal to move
+      if (hasEffect<MemoryEffects::Read>(definingOp) ||
+          hasEffect<MemoryEffects::Write>(definingOp)) {
+        definingOp->emitError() << "cannot move op with side effects";
+        return failure();
+      }
+      opsToMove.insert(definingOp);
+
+      for (Value operand : definingOp->getOperands()) {
+        if (visited.contains(operand))
+          continue;
+
+        frontier.push_back(operand);
+        visited.insert(operand);
+      }
+    }
+
+    // Move the push and dependent values outside of the wrapper
+    OpBuilder::InsertionGuard guard(rewriter);
+    IRMapping map;
+    rewriter.setInsertionPoint(wrapOp);
+    for (Operation *toMove : llvm::reverse(opsToMove)) {
+      Operation *cloned = rewriter.clone(*toMove, map);
+      toMove->replaceAllUsesWith(cloned->getResults());
+
+      if (auto allocOp = dyn_cast<memref::AllocOp>(cloned)) {
+        // Assume GPU allocations need to be in address space 1
+        auto gpuAlloc = gpu::AllocOp::create(
+            rewriter, allocOp.getLoc(),
+            *allocOp.getType().clonePtrWith(rewriter.getI64IntegerAttr(1),
+                                            std::nullopt),
+            /*asyncDependencies=*/ValueRange(), allocOp.getDynamicSizes(),
+            /*symbolOperands=*/ValueRange());
+        allocOp.replaceAllUsesWith(gpuAlloc.getResult(0));
+        rewriter.eraseOp(allocOp);
+      }
+    }
+
+    for (auto &info : caches) {
+      rewriter.moveOpBefore(info.pushOp, wrapOp);
+      auto revWrapper = info.popOp->getParentOfType<enzymexla::GPUWrapperOp>();
+      assert(revWrapper && "failed to find reverse gpu_wrapper");
+      rewriter.moveOpBefore(info.popOp, revWrapper);
+
+      for (auto user : info.popOp.getResult().getUsers()) {
+        if (isa<memref::DeallocOp>(user)) {
+          rewriter.eraseOp(user);
+        }
+      }
+      rewriter.setInsertionPointAfter(revWrapper);
+      gpu::DeallocOp::create(rewriter, wrapOp.getLoc(), TypeRange(),
+                             info.popOp.getResult());
+    }
+
+    return success();
+    // TODO need to convert to gpu allocations and conversion/copy
+
+    /*
+    for (auto grad : gradients) {
+      auto trueValue = trueMapping.lookupOrNull(grad);
+      trueTerm->insertOperands(trueTerm->getNumOperands(),
+                               ValueRange(trueValue));
+
+    }
+    SmallVector<CacheInfo> caches =
+        llvm::map_to_vector(cachesMap, [](auto p) { return std::get<1>(p); });
+
+    if (caches.empty())
+      return success();
+
+    SetVector<Value> visited;
+    getUsedValuesDefinedAbove(wrapOp.getBodyRegion(), visited);
+    SmallVector<Value> frontier = llvm::map_to_vector(
+        caches, [](CacheInfo info) { return info.pushedValue(); });
+    SetVector<Operation *> opsToMove;
+    // Traverse backward from pushed values to find operations that the pushed
+    // value depends on
+    while (!frontier.empty()) {
+      Value v = frontier.back();
+      Operation *definingOp = v.getDefiningOp();
+      frontier.pop_back();
+
+      if (!definingOp)
+        continue;
       if (definingOp->getBlock() != &wrapOp.getBodyRegion().front())
         continue;
 
@@ -174,53 +260,53 @@ struct GPUWrapperOpEnzymeOpsRemover
             *allocOp.getType().clonePtrWith(globalMemSpace, std::nullopt),
             /*asyncDependencies=*/ValueRange(), allocOp.getDynamicSizes(),
             /*symbolOperands=*/ValueRange());
-        allocOp.replaceAllUsesWith(gpuAlloc.getResult(0));
-        rewriter.eraseOp(allocOp);
+    allocOp.replaceAllUsesWith(gpuAlloc.getResult(0));
+    rewriter.eraseOp(allocOp);
 
-        // Update the memory space of any users
-        SmallVector<Value> frontier{gpuAlloc.getResult(0)};
-        traverseDownDefUseChains(frontier, [globalMemSpace](Operation *op) {
-          if (auto pushOp = dyn_cast<enzyme::PushOp>(op)) {
-            Type newType =
-                updateMemorySpace(pushOp.getCache().getType(), globalMemSpace);
-            pushOp.getCache().setType(newType);
-          }
-          if (auto subviewOp = dyn_cast<memref::SubViewOp>(op)) {
-            auto newType = cast<MemRefType>(
-                updateMemorySpace(subviewOp.getType(), globalMemSpace));
-            subviewOp.getResult().setType(newType);
-          }
-        });
+    // Update the memory space of any users
+    SmallVector<Value> frontier{gpuAlloc.getResult(0)};
+    traverseDownDefUseChains(frontier, [globalMemSpace](Operation *op) {
+      if (auto pushOp = dyn_cast<enzyme::PushOp>(op)) {
+        Type newType =
+            updateMemorySpace(pushOp.getCache().getType(), globalMemSpace);
+        pushOp.getCache().setType(newType);
       }
-    }
-    for (auto &info : caches) {
-      rewriter.moveOpBefore(info.pushOp, wrapOp);
-      auto revWrapper = info.popOp->getParentOfType<enzymexla::GPUWrapperOp>();
-      assert(revWrapper && "failed to find reverse gpu_wrapper");
-      rewriter.moveOpBefore(info.popOp, revWrapper);
-
-      SmallVector<Value> frontier{info.popOp.getResult()};
-      traverseDownDefUseChains(frontier, [globalMemSpace](Operation *op) {
-        if (auto subviewOp = dyn_cast<memref::SubViewOp>(op)) {
-          auto newType = cast<MemRefType>(
-              updateMemorySpace(subviewOp.getType(), globalMemSpace));
-          subviewOp.getResult().setType(newType);
-        }
-      });
-
-      for (auto user : info.popOp.getResult().getUsers()) {
-        if (hasSingleEffect<MemoryEffects::Free>(user)) {
-          rewriter.setInsertionPointAfter(revWrapper);
-          gpu::DeallocOp::create(rewriter, wrapOp.getLoc(), TypeRange(),
-                                 info.popOp.getResult());
-          rewriter.eraseOp(user);
-        }
+      if (auto subviewOp = dyn_cast<memref::SubViewOp>(op)) {
+        auto newType = cast<MemRefType>(
+            updateMemorySpace(subviewOp.getType(), globalMemSpace));
+        subviewOp.getResult().setType(newType);
       }
-    }
-
-    return success();
+    });
   }
-};
+} for (auto &info : caches) {
+  rewriter.moveOpBefore(info.pushOp, wrapOp);
+  auto revWrapper = info.popOp->getParentOfType<enzymexla::GPUWrapperOp>();
+  assert(revWrapper && "failed to find reverse gpu_wrapper");
+  rewriter.moveOpBefore(info.popOp, revWrapper);
+
+  SmallVector<Value> frontier{info.popOp.getResult()};
+  traverseDownDefUseChains(frontier, [globalMemSpace](Operation *op) {
+    if (auto subviewOp = dyn_cast<memref::SubViewOp>(op)) {
+      auto newType = cast<MemRefType>(
+          updateMemorySpace(subviewOp.getType(), globalMemSpace));
+      subviewOp.getResult().setType(newType);
+    }
+  });
+
+  for (auto user : info.popOp.getResult().getUsers()) {
+    if (hasSingleEffect<MemoryEffects::Free>(user)) {
+      rewriter.setInsertionPointAfter(revWrapper);
+      gpu::DeallocOp::create(rewriter, wrapOp.getLoc(), TypeRange(),
+                             info.popOp.getResult());
+      rewriter.eraseOp(user);
+    }
+  }
+}
+
+return success();
+}
+}
+;
 
 // Reverse-mode adjoint for pure view-cast ops (Pointer2Memref /
 // Memref2Pointer). We only need to materialize the corresponding shadow view
@@ -342,7 +428,7 @@ public:
       Value dres = gutils->invertPointerM(p2m.getSource(), builder);
       Value shadow = builder.create<enzymexla::Pointer2MemrefOp>(
           p2m.getLoc(), p2m.getType(), dres);
-      gutils->setDiffe(p2m, shadow, builder);
+      gutils->setInvertedPointer(p2m, shadow);
     }
   }
 };
