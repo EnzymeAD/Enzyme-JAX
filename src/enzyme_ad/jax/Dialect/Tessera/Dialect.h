@@ -17,8 +17,4 @@
 // Include the dialect
 #include "src/enzyme_ad/jax/Dialect/Tessera/TesseraDialect.h.inc"
 
-// Operations
-#define GET_OP_CLASSES
-#include "src/enzyme_ad/jax/Dialect/Tessera/TesseraOps.h.inc"
-
 #endif // ENZYME_AD_JAX_DIALECT_TESSERA_DIALECT_H

@@ -2,9 +2,12 @@
 #include "llvm/ADT/TypeSwitch.h"
 
 #include "Dialect.h"
+#include "Ops.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Interfaces/FunctionImplementation.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
+#include "mlir/Interfaces/CallInterfaces.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 
 using namespace mlir;
 using namespace mlir::enzyme::tessera;

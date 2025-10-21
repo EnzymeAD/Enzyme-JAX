@@ -625,6 +625,10 @@ gentbl_cc_library(
     tblgen = "@llvm-project//mlir:mlir-tblgen",
     td_file = "Dialect/Tessera/Ops.td",
     deps = [
+        "@llvm-project//mlir:FunctionInterfacesTdFiles",
+        "@llvm-project//mlir:ControlFlowInterfaces",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:CallOpInterfaces",
         ":TesseraDialectTdFiles",
     ],
 )
@@ -651,7 +655,10 @@ gentbl_cc_library(
     ],
     tblgen = "@llvm-project//mlir:mlir-tblgen",
     td_file = "Passes/Tessera/Passes.td",
-    deps = [":TesseraPassesTdFiles"],
+    deps = [
+        "@llvm-project//mlir:FunctionInterfacesTdFiles",
+        ":TesseraPassesTdFiles",
+    ],
 )
 
 cc_library(

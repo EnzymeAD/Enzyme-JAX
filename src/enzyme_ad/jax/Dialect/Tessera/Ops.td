@@ -93,6 +93,7 @@ def DefineOp : TesseraOp<"define", [
     //===------------------------------------------------------------------===//
 
     bool isDeclaration() { return isExternal(); }
+
   }];
   let hasCustomAssemblyFormat = 1;
 }

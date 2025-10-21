@@ -5,14 +5,22 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Bytecode/BytecodeOpInterface.h"
+#include "src/enzyme_ad/jax/Dialect/Tessera/Ops.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/PatternMatch.h"
+#include "mlir/IR/IRMapping.h"
+#include "mlir/Transforms/DialectConversion.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
+#include "mlir/Interfaces/CallInterfaces.h"
+#include "mlir/Pass/Pass.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "src/enzyme_ad/jax/Dialect/Tessera/Dialect.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/Passes.h"
-#include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 using namespace mlir;
-using namespace mlir::enzyme::tessera;
+using namespace mlir::enzyme;
 
 namespace {
 } // namespace
@@ -47,22 +55,12 @@ public:
         funcOp->setAttr(namedAttr.getName(), namedAttr.getValue());
     }
 
-    // Add `extern` to specifiers if `tessera.define` is declaration only.
-    if (defineOp.isDeclaration()) {
-      ArrayAttr specifiers = rewriter.getStrArrayAttr({"extern"});
-      funcOp.setSpecifiersAttr(specifiers);
-    }
-
-    // Add `static` to specifiers if `tessera.define` is private but not a
-    // declaration.
-    if (defineOp.isPrivate() && !defineOp.isDeclaration()) {
-      ArrayAttr specifiers = rewriter.getStrArrayAttr({"static"});
-      funcOp.setSpecifiersAttr(specifiers);
-    }
-
-    if (!defineOp.isDeclaration()) {
+    // Clone body of function
+    if (!defineOp.isExternal()) {
+      IRMapping mapper;
       defineOp.getBody().cloneInto(&funcOp.getBody(),
-                                  funcOp.getBody().end());
+                            funcOp.getBody().end(),
+                            mapper);
     }
 
     rewriter.eraseOp(defineOp);
@@ -108,18 +106,24 @@ public:
 // Pass to convert Tessera operations into Func operations
 //===----------------------------------------------------------------------===//
 
+namespace mlir::enzyme::tessera {
+
 struct TesseraToFuncPass
   : public PassWrapper<TesseraToFuncPass, OperationPass<ModuleOp>> {
 
   void runOnOperation() override {
-    MLIRContext &ctx = patterns.getContext();
-    RewritePatternSet patterns(&ctx);
+  MLIRContext *ctx = &getContext();
+  RewritePatternSet patterns(ctx);
 
-    patterns.add<DefineOpRewrite, CallOpRewrite, ReturnOpRewrite>(&ctx);
+  patterns.add<DefineOpRewrite, CallOpRewrite, ReturnOpRewrite>(ctx);
 
-    if (failed(applyPatternsAndFoldGreedily(getOperation(),
-                                            std::move(patterns))))
-      signalPassFailure();
-  }
+  if (failed(applyPatternsAndFoldGreedily(getOperation(),
+                                          std::move(patterns))))
+    signalPassFailure();
+}
 };
 
+std::unique_ptr<mlir::Pass> createTesseraToFuncPass() {
+  return std::make_unique<TesseraToFuncPass>();
+}
+}

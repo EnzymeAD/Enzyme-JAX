@@ -295,7 +295,7 @@ void registerInterfaces(mlir::DialectRegistry &registry) {
 void initializePasses() {
   registerenzymePasses();
   enzyme::registerenzymexlaPasses();
-  enzyme::tessera::registerTesseraPasses();
+  mlir::enzyme::tessera::registertesseraPasses();
 
   // Register the standard passes we want.
   mlir::registerCSEPass();
