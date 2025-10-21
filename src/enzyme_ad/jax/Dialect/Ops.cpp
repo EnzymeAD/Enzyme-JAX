@@ -896,6 +896,9 @@ public:
       auto elemTy = gep.getElemType();
       if (elemTy.isIntOrFloat()) {
         gepElemSize = elemTy.getIntOrFloatBitWidth() / 8;
+      } else {
+        // Unknown type to get size from, bail early.
+        break;
       }
 
       gepOps.emplace_back(gep, gepElemSize);
