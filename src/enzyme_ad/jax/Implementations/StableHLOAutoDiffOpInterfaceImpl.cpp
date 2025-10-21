@@ -1962,6 +1962,30 @@ struct SHLOConstantOpBatchInterface
   }
 };
 
+struct SHLOGetDimensionSizeOpBatchInterface
+    : public BatchOpInterface::ExternalModel<
+          SHLOGetDimensionSizeOpBatchInterface, GetDimensionSizeOp> {
+
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto getDimSizeOp = cast<GetDimensionSizeOp>(src);
+
+    auto newOp = builder.create<GetDimensionSizeOp>(
+        src->getLoc(), mapper.lookup(getDimSizeOp.getOperand()),
+        cast<IntegerAttr>(getDimSizeOp.getDimensionAttr()).getInt() +
+            batchSizes.size());
+    auto bcastOp = builder.create<BroadcastInDimOp>(
+        src->getLoc(),
+        RankedTensorType::get(
+            batchSizes, cast<RankedTensorType>(newOp->getResult(0).getType())
+                            .getElementType()),
+        newOp->getResult(0), builder.getDenseI64ArrayAttr({}));
+    mapper.map(src->getResult(0), bcastOp->getResult(0));
+    return success();
+  }
+};
+
 struct SHLOTransposeOpBatchInterface
     : public BatchOpInterface::ExternalModel<SHLOTransposeOpBatchInterface,
                                              TransposeOp> {
@@ -3937,6 +3961,8 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     IotaOp::attachInterface<SHLOIotaOpBatchInterface>(*context);
     SelectOp::attachInterface<SHLOSelectOpBatchInterface>(*context);
     SortOp::attachInterface<SHLOSortOpBatchInterface>(*context);
+    GetDimensionSizeOp::attachInterface<SHLOGetDimensionSizeOpBatchInterface>(
+        *context);
 
     ReverseOp::attachInterface<SHLOGenericBatchOpInterface<ReverseOp>>(
         *context); // TODO: simpler version with newly named dims
