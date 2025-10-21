@@ -160,7 +160,7 @@ bool getEffectsBefore(Operation *op,
   if (!op->getParentOp()) {
     return true;
   }
-  
+
   if (op != &op->getBlock()->front())
     for (Operation *it = op->getPrevNode(); it != nullptr;
          it = it->getPrevNode()) {
