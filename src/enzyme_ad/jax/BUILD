@@ -701,6 +701,7 @@ cc_library(
     name = "CInterface",
     srcs = ["Integrations/c/EnzymeXLA.cpp"],
     hdrs = ["Integrations/c/EnzymeXLA.h"],
+    visibility = ["//visibility:public"],
     deps = [
         ":EnzymeXLADialect",
         "@llvm-project//llvm:Support",
@@ -708,6 +709,7 @@ cc_library(
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Support",
     ],
+    alwayslink = True,
 )
 
 cc_library(
