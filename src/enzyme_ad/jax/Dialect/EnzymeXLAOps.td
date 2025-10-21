@@ -34,11 +34,20 @@ def TensorI64 : Type<CPred<"::llvm::isa<::mlir::TensorType>($_self) && ::llvm::c
                  "::mlir::TensorType">,
             BuildableType<"RankedTensorType::get({}, $_builder.getIntegerType(64))">;
 
+def TensorFloat : Type<
+  CPred<"::llvm::isa<::mlir::TensorType>($_self) && "
+        "::llvm::cast<::mlir::TensorType>($_self).getShape().size() == 0 && "
+        "(::llvm::isa<::mlir::FloatType>(::llvm::cast<::mlir::TensorType>($_self).getElementType()) || "
+        " (::llvm::isa<::mlir::ComplexType>(::llvm::cast<::mlir::TensorType>($_self).getElementType()) && "
+        "  ::llvm::isa<::mlir::FloatType>(::llvm::cast<::mlir::ComplexType>(::llvm::cast<::mlir::TensorType>($_self).getElementType()).getElementType())))">,
+  "tensor<float or complex<float> scalar>",
+  "::mlir::TensorType">;
+
 def KernelCallOp: EnzymeXLA_Op<"kernel_call", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, DeclareOpInterfaceMethods<CallOpInterface>, DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "Kernel Call operation";
 
   let arguments = (ins
-    FlatSymbolRefAttr:$fn,
+    SymbolRefAttr:$fn,
     TensorI64:$gridx,
     TensorI64:$gridy,
     TensorI64:$gridz,
@@ -108,7 +117,7 @@ def JITCallOp: EnzymeXLA_Op<"jit_call", [DeclareOpInterfaceMethods<SymbolUserOpI
   let summary = "JIT Call operation";
 
   let arguments = (ins
-    FlatSymbolRefAttr:$fn,
+    SymbolRefAttr:$fn,
     Variadic<AnyType>:$inputs,
     DefaultValuedStrAttr<StrAttr, "">:$backend_config,
     OptionalAttr<AnyAttr>:$operand_layouts,
@@ -362,6 +371,32 @@ def CommRegionOp : EnzymeXLA_Op<"comm_region", [
 }
 
 // Linear Algebra Ops
+
+def SymmOp: EnzymeXLA_Op<"lapack.symm", [Pure, SameOperandsAndResultElementType]> {
+  let summary = "Multiplication involving a symmetric matrix";
+
+  let description = [{
+    C := alpha*A*B + beta*C, or C := alpha*B*A + beta*C, where alpha and beta are scalars,  A is a symmetric matrix"
+  }];
+
+  let arguments = (ins
+    HLO_Tensor:$A,
+    HLO_Tensor:$B,
+    HLO_Tensor:$C,
+    TensorFloat:$alpha,
+    TensorFloat:$beta,
+    EnzymeXLA_LapackSideAttr:$side,
+    EnzymeXLA_LapackUploAttr:$uplo
+  );
+
+  let results = (outs
+    HLO_Tensor: $output
+  );
+
+  let assemblyFormat = [{
+    $A `,` $B `,` $C `,` $alpha `,` $beta attr-dict `:` functional-type(operands, results)
+  }];
+}
 
 def LUFactorizationOp: EnzymeXLA_Op<"linalg.lu", [Pure]> {
   let summary = "LU factorization operation with RowMaximum pivoting.";

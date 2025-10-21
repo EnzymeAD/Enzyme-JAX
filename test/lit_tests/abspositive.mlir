@@ -11,7 +11,7 @@ func.func @test1() -> tensor<18500xi64> {
 // CHECK:  func.func @test1() -> tensor<18500xi64> {
 // CHECK-NEXT:    %c = stablehlo.constant dense<1> : tensor<18500xi64>
 // CHECK-NEXT:    %0 = stablehlo.iota dim = 0 : tensor<18500xi64>
-// CHECK-NEXT:    %1 = stablehlo.add %0, %c : tensor<18500xi64>
+// CHECK-NEXT:    %1 = stablehlo.add %0, %c {enzymexla.guaranteed_non_negative = true} : tensor<18500xi64>
 // CHECK-NEXT:    return %1 : tensor<18500xi64>
 // CHECK-NEXT:  }
 
@@ -22,7 +22,7 @@ func.func @test2(%arg0: tensor<12xf64>) -> tensor<12xf64> {
 }
 
 // CHECK:  func.func @test2(%arg0: tensor<12xf64>) -> tensor<12xf64> {
-// CHECK-NEXT:    %0 = stablehlo.abs %arg0 : tensor<12xf64>
+// CHECK-NEXT:    %0 = stablehlo.abs %arg0 {enzymexla.guaranteed_non_negative = true} : tensor<12xf64>
 // CHECK-NEXT:    return %0 : tensor<12xf64>
 // CHECK-NEXT:  }
 
@@ -33,7 +33,7 @@ func.func @test3(%arg0: tensor<12xf64>) -> tensor<12xf64> {
 }
 
 // CHECK:  func.func @test3(%arg0: tensor<12xf64>) -> tensor<12xf64> {
-// CHECK-NEXT:    %0 = stablehlo.multiply %arg0, %arg0 : tensor<12xf64>
+// CHECK-NEXT:    %0 = stablehlo.multiply %arg0, %arg0 {enzymexla.guaranteed_non_negative = true} : tensor<12xf64>
 // CHECK-NEXT:    return %0 : tensor<12xf64>
 // CHECK-NEXT:  }
 
@@ -46,6 +46,6 @@ func.func @test4(%arg0: tensor<12xf64>) -> tensor<4x3xf64> {
 
 // CHECK:  func.func @test4(%arg0: tensor<12xf64>) -> tensor<4x3xf64> {
 // CHECK-NEXT:    %0 = stablehlo.multiply %arg0, %arg0 : tensor<12xf64>
-// CHECK-NEXT:    %1 = stablehlo.reshape %0 : (tensor<12xf64>) -> tensor<4x3xf64>
+// CHECK-NEXT:    %1 = stablehlo.reshape %0 {enzymexla.guaranteed_non_negative = true} : (tensor<12xf64>) -> tensor<4x3xf64>
 // CHECK-NEXT:    return %1 : tensor<4x3xf64>
 // CHECK-NEXT:  }

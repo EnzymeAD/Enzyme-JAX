@@ -33,6 +33,10 @@ load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 #     ],
 # )
 
+load("//third_party/ml_toolchain:workspace.bzl", ml_toolchain_workspace = "repo")
+
+ml_toolchain_workspace()
+
 load("//third_party/jax:workspace.bzl", jax_workspace = "repo")
 
 jax_workspace()

@@ -1,8 +1,11 @@
-JAX_COMMIT = "4455434869812dfb7336b18f2e59a8690ba38e79"
+JAX_COMMIT = "3a22eea644237001df0f3dd42253225cc059b43c"
 JAX_SHA256 = ""
 
-ENZYME_COMMIT = "4be45037356c8152d5cf65e3f987f7051d090ef2"
+ENZYME_COMMIT = "bc11256dcf8d36887a80fe422dcb6c02b9a88bd8"
 ENZYME_SHA256 = ""
+
+ML_TOOLCHAIN_COMMIT = "d8d8f49297a1e74fcceffc9ef6c7f8da9b0a0c53"
+ML_TOOLCHAIN_SHA256 = "4133c6c2045de5d7a133f6fc008ee6bd613af778f12143d09003e908dd541d8c"
 
 # If the empty string this will automatically use the commit above
 # otherwise this should be a path to the folder containing the BUILD file for enzyme
@@ -12,6 +15,15 @@ HEDRON_COMPILE_COMMANDS_COMMIT = "d107d9c9025915902fd52346f1c6e18d87f7013a"
 HEDRON_COMPILE_COMMANDS_SHA256 = ""
 
 XLA_PATCHES = [
+    """
+	sed -i.bak0 "/amdgpu_backend/d" xla/backends/gpu/codegen/triton/BUILD
+    """,
+    """
+    	sed -i.bak0 "s/\\\"\\/\\/xla\\/service\\/gpu\\/llvm_gpu_backend:nvptx_backend\\\"/\\0]) + if_rocm_is_configured([\\\"\\/\\/xla\\/service\\/gpu\\/llvm_gpu_backend:amdgpu_backend\\\"/g" xla/backends/gpu/codegen/triton/BUILD
+    """,
+    """
+    sed -i.bak0 "s/load(\\\"\\/\\/xla\\/tsl:tsl.bzl\\\", \\\"if_google\\\")/\\0\\nload(\\\"@local_config_rocm\\/\\/rocm:build_defs.bzl\\\", \\\"if_rocm_is_configured\\\")/g" xla/backends/gpu/codegen/triton/BUILD
+    """,
     """
     sed -i.bak0 "s/e07debd5e257ec1e118f18c54068977b89f03b2f/9018c682b99eb20d5874a4e38271ce63d7393879/g" third_party/stablehlo/workspace.bzl
     """,
@@ -45,6 +57,15 @@ XLA_PATCHES = [
     sed -i.bak0 "s/tf_http_archive/http_archive/g" third_party/llvm/workspace.bzl
     """,
     """
+    sed -i.bak0 "s/def repo/load(\\\"@bazel_tools\\/\\/tools\\/build_defs\\/repo:http.bzl\\\", \\\"http_archive\\\")\\ndef repo/g" third_party/pthreadpool/workspace.bzl
+    """,
+    """
+    sed -i.bak0 "s/tf_http_archive(/http_archive(/g" third_party/pthreadpool/workspace.bzl
+    """,
+    """
+    sed -i.bak0 "s/strip_prefix/patch_cmds = [\\\"sed -i.bak0 's\\/_MSC_VER\\/_WIN32\\/g' src\\/pthreads.c\\\"], strip_prefix/g" third_party/pthreadpool/workspace.bzl
+    """,
+    """
     sed -i.bak0 "s/strip_prefix/patch_cmds = [\\\"find . -type f -name config.bzl -exec sed -i.bak0 's\\/HAVE_BACKTRACE=1\\/NO_HAVE_BACKTRACE=0\\/g' {} +\\\"], strip_prefix/g" third_party/llvm/workspace.bzl
     """,
     "find . -type f -name BUILD -exec sed -i.bak1 's/\\/\\/third_party\\/py\\/enzyme_ad\\/\\.\\.\\./public/g' {} +",
@@ -72,7 +93,7 @@ echo "" >> third_party/proto.patch
 echo " #ifndef bswap_16" >> third_party/proto.patch
 echo " static inline uint16_t bswap_16(uint16_t x) {" >> third_party/proto.patch
 sed -i.bak0 "s/protobuf.patch\\"/protobuf.patch\\", \\":proto.patch\\"/g" workspace2.bzl
-sed -i.bak0 "s/patch_file = \\[\\"\\/\\/third_party\\/protobuf:protobuf.patch\\"/patches = \\[Label(\\"\\/\\/third_party\\/protobuf:protobuf.patch\\"), Label(\\"\\/\\/third_party:proto.patch\\"\\)], patch_args = \\[\\"-p1\\"/g" third_party/py/python_init_rules.bzl
+sed -i.bak0 "s/patch_file = \\[\\"@xla\\/\\/third_party\\/protobuf:protobuf.patch\\"/patches = \\[Label(\\"@xla\\/\\/third_party\\/protobuf:protobuf.patch\\"), Label(\\"\\/\\/third_party:proto.patch\\"\\)], patch_args = \\[\\"-p1\\"/g" third_party/py/python_init_rules.bzl
 sed -i.bak0 "s/tf_http_archive(/http_archive(/g" third_party/py/python_init_rules.bzl
 
 """,

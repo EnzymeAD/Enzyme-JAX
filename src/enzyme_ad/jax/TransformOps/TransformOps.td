@@ -315,6 +315,20 @@ def ApplyConcatConstPropPatterns : EnzymeHLOParameterizedPatternOp<
     }
   }];
 }
+def ApplyScatterConstFoldPatterns : EnzymeHLOParameterizedPatternOp<
+    "scatter_const_fold"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, I64Attr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getI64IntegerAttr(1024)))};
+    }
+  }];
+}
 def ApplyDynamicUpdateSliceConstPropPatterns : EnzymeHLOParameterizedPatternOp<
     "dynamic_update_slice_const_prop"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, I64Attr:$parameter);
@@ -2393,4 +2407,19 @@ def DynamicPadToPad : EnzymeHLOPatternOp<"dynamic_pad_to_pad"> {
 
 def ApplyClampConstPropPatterns : EnzymeHLOPatternOp<"clamp_const_prop"> {
   let patterns = ["ClampConstProp"];
+}
+
+def ApplyRemoveNoOpsFromWhileLoopPatterns : EnzymeHLOPatternOp<
+    "remove_no_ops_from_while_loop"> {
+  let patterns = ["RemoveNoOpsFromWhileLoop"];
+}
+
+def ApplyWhileIsCopySimplifyPatterns : EnzymeHLOPatternOp<
+    "while_is_copy_simplify"> {
+  let patterns = ["WhileIsCopySimplify"];
+}
+
+def ApplySplitVariadicScatterOpPatterns : EnzymeHLOPatternOp<
+    "split_variadic_scatter_op"> {
+  let patterns = ["SplitVariadicScatterOp"];
 }

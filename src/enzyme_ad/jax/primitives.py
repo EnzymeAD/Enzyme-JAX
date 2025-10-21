@@ -354,6 +354,8 @@ def optimization_passes(
         "case_to_if",
         "dus_to_dynamic_pad",
         "dynamic_pad_to_pad",
+        "remove_no_ops_from_while_loop",
+        "while_is_copy_simplify",
     ]
 
     # constant propagation patterns
@@ -402,6 +404,7 @@ def optimization_passes(
         # other constant propagations
         "const_prop_through_barrier<16>",
         f"concat_const_prop<1>({max_constant_threshold})",
+        f"scatter_const_fold({max_constant_threshold})",
         f"dynamic_update_slice_const_prop({max_constant_threshold})",
         "scatter_update_computation_const_prop",
         "gather_const_prop",

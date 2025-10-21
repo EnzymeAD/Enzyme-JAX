@@ -480,7 +480,8 @@ struct tensor<T, n0, N...>
   fuseFS->pushOverlay(fs);
   fuseFS->pushOverlay(baseFS);
 
-  Clang->createFileManager(fuseFS);
+  Clang->createVirtualFileSystem(fuseFS);
+  Clang->createFileManager();
 
   bool Success = CompilerInvocation::CreateFromArgs(
       Clang->getInvocation(), Argv.getArguments(), Diags, binary);
@@ -492,7 +493,7 @@ struct tensor<T, n0, N...>
         CompilerInvocation::GetResourcesPath(binary, /*MainAddr*/ 0x0);
 
   // Create the actual diagnostics engine.
-  Clang->createDiagnostics(*fuseFS);
+  Clang->setDiagnostics(Clang->createDiagnostics(*fuseFS, DiagOpts));
   if (!Clang->hasDiagnostics()) {
     llvm::errs() << " failed create diag\n";
     return {};

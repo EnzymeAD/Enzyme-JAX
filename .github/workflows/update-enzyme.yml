@@ -1,0 +1,27 @@
+name: "Open PR to update Enzyme commit"
+
+on:
+  schedule:
+    - cron: '19 10 * * *'
+  workflow_dispatch:
+    inputs:
+      enzyme_commit:
+        description: 'The Enzyme commit to update to (optional)'
+        default: ''
+        type: 'string'
+
+concurrency:
+  # Skip intermediate builds: always.
+  # Cancel intermediate builds: only if it is a pull request build.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+
+jobs:
+  pr-latest-enzyme:
+    name: "Update Enzyme"
+    uses: ./.github/workflows/update-dependency.yml
+    with:
+      upstream_repo: "EnzymeAD/Enzyme"
+      upstream_commit: ${{ inputs.enzyme_commit }}
+      variable_name: "ENZYME_COMMIT"
+    secrets: inherit

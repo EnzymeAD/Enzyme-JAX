@@ -301,6 +301,22 @@ gentbl_cc_library(
 )
 
 gentbl_cc_library(
+    name = "enzymexla-derivatives",
+    tbl_outs = [(
+        ["-gen-mlir-derivatives"],
+        "Implementations/EnzymeXLADerivatives.inc",
+    )],
+    tblgen = "@enzyme//:enzyme-tblgen",
+    td_file = "Implementations/EnzymeXLADerivatives.td",
+    td_srcs = [
+        "Implementations/EnzymeXLADerivatives.td",
+    ],
+    deps = [
+        ":EnzymeImplementationsCommonTdFiles",
+    ],
+)
+
+gentbl_cc_library(
     name = "chlo-derivatives",
     tbl_outs = [(
         ["-gen-mlir-derivatives"],
@@ -671,6 +687,64 @@ cc_library(
 )
 
 cc_library(
+    name = "EnzymeXLADialect",
+    srcs = [
+        "Dialect/Dialect.cpp",
+        "Dialect/Ops.cpp",
+        "Utils.cpp",
+    ],
+    hdrs = [
+        "Dialect/Dialect.h",
+        "Dialect/Ops.h",
+        "Utils.h",
+    ],
+    deps = [
+        ":EnzymeXLAAttrsIncGen",
+        ":EnzymeXLAOpsIncGen",
+        "@enzyme//:EnzymeMLIR",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:AffineDialect",
+        "@llvm-project//mlir:Analysis",
+        "@llvm-project//mlir:ArithDialect",
+        "@llvm-project//mlir:ArithUtils",
+        "@llvm-project//mlir:BytecodeOpInterface",
+        "@llvm-project//mlir:CallOpInterfaces",
+        "@llvm-project//mlir:ControlFlowInterfaces",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:GPUDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:InferTypeOpInterface",
+        "@llvm-project//mlir:InliningUtils",
+        "@llvm-project//mlir:LLVMDialect",
+        "@llvm-project//mlir:MemRefDialect",
+        "@llvm-project//mlir:MemorySlotInterfaces",
+        "@llvm-project//mlir:OpenMPDialect",
+        "@llvm-project//mlir:QuantOps",
+        "@llvm-project//mlir:SCFDialect",
+        "@llvm-project//mlir:SideEffectInterfaces",
+        "@llvm-project//mlir:Support",
+        "@llvm-project//mlir:ViewLikeInterface",
+        "@stablehlo//:base",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+cc_library(
+    name = "CInterface",
+    srcs = ["Integrations/c/EnzymeXLA.cpp"],
+    hdrs = ["Integrations/c/EnzymeXLA.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":EnzymeXLADialect",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:CAPIIRObjects",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Support",
+    ],
+    alwayslink = True,
+)
+
+cc_library(
     name = "XLADerivatives",
     srcs = glob([
         "Implementations/*.cpp",
@@ -719,6 +793,7 @@ cc_library(
         ":TesseraOpsIncGen",
         ":TesseraPassesIncGen",
         ":chlo-derivatives",
+        ":enzymexla-derivatives",
         ":mhlo-derivatives",
         ":stablehlo-derivatives",
         "//src/external/isl:Isl",
@@ -817,10 +892,12 @@ cc_library(
         "@stablehlo//:base",
         "@stablehlo//:chlo_ops",
         "@stablehlo//:reference_ops",
+        "@stablehlo//:reference_scope",
         "@stablehlo//:reference_types",
         "@stablehlo//:stablehlo_ops",
         "@stablehlo//:stablehlo_passes",
         "@stablehlo//:stablehlo_type_inference",
+        "@triton//:TritonDialects",
         "@xla//xla/mlir/utils:type_util",
         "@xla//xla/mlir_hlo",
     ],
@@ -939,7 +1016,6 @@ cc_library(
         "@triton//third_party/nvidia:NVWSDialect",
         "@triton//third_party/nvidia:NVWSTransforms",
         "@triton//third_party/nvidia:TritonNVIDIAGPUToLLVM",
-        "@triton//third_party/proton:ProtonIRDialect",
 
         # Shardy stuff
         "@shardy//shardy/dialect/sdy/ir:dialect",

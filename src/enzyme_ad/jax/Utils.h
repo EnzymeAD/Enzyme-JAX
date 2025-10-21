@@ -307,10 +307,10 @@ bool mayAlias(mlir::MemoryEffects::EffectInstance a, mlir::Value b);
 
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type Ty);
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type Ty,
-                          mlir::Operation *op);
+                          mlir::Operation *op, PatternRewriter &rewriter);
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy, Type inTy);
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy, Type inTy,
-                          mlir::Operation *op);
+                          mlir::Operation *op, PatternRewriter &rewriter);
 
 template <typename Child> class GuaranteedResultAnalysisBase {
 protected:
@@ -318,12 +318,12 @@ protected:
   llvm::DenseMap<mlir::Operation *, bool> opCache;
 
 public:
-  bool guaranteed(mlir::Value value) {
+  bool guaranteed(mlir::Value value, PatternRewriter &rewriter) {
     auto it = valueCache.find(value);
     if (it != valueCache.end())
       return it->second;
 
-    bool result = guaranteed(value.getDefiningOp());
+    bool result = guaranteed(value.getDefiningOp(), rewriter);
     valueCache[value] = result;
     return result;
   }
@@ -337,9 +337,16 @@ public:
     PENDING = 2
   };
 
-  bool guaranteed(Operation *op) {
+  bool guaranteed(Operation *op, PatternRewriter &rewriter) {
     if (!op)
       return false;
+
+    auto attrName = ((Child *)this)->getAttrName();
+    if (auto boolAttr = op->getAttrOfType<BoolAttr>(attrName)) {
+      bool value = boolAttr.getValue();
+      opCache[op] = value;
+      return value;
+    }
 
     // Map of operations we need to still check. If all of these are no-nan
     // we therefore know that the operation `op` is no nan.
@@ -369,7 +376,7 @@ public:
             status = State::NOTGUARANTEED;
           }
         } else {
-          status = ((Child *)this)->localGuaranteed(cur, localtodo);
+          status = localGuaranteedWithSetAttr(cur, localtodo, rewriter);
         }
       }
 
@@ -382,6 +389,10 @@ public:
             continue;
           }
           opCache[rcur] = false;
+          rewriter.modifyOpInPlace(rcur, [&]() {
+            rcur->setAttr(attrName, BoolAttr::get(rcur->getContext(), false));
+          });
+
           auto rfound = reverseSeen.find(rcur);
           if (rfound != reverseSeen.end()) {
             for (auto next : rfound->second) {
@@ -390,6 +401,10 @@ public:
             reverseSeen.erase(rfound);
           }
         }
+
+        rewriter.modifyOpInPlace(op, [&]() {
+          op->setAttr(attrName, BoolAttr::get(op->getContext(), false));
+        });
         return false;
       }
 
@@ -454,16 +469,30 @@ public:
     // to be guaranteed.
     for (auto &sval : seen) {
       opCache[sval.first] = true;
+      rewriter.modifyOpInPlace(sval.first, [&]() {
+        sval.first->setAttr(attrName,
+                            BoolAttr::get(sval.first->getContext(), true));
+      });
     }
 
     assert(opCache.find(op) != opCache.end());
-
+    rewriter.modifyOpInPlace(op, [&]() {
+      op->setAttr(attrName, BoolAttr::get(op->getContext(), true));
+    });
     return true;
   }
 
-  bool guaranteed(stablehlo::ConstantOp constOp) {
+  bool guaranteed(stablehlo::ConstantOp constOp, PatternRewriter &rewriter) {
     if (!constOp)
       return false;
+
+    auto attrName = ((Child *)this)->getAttrName();
+    if (auto boolAttr = constOp->getAttrOfType<mlir::BoolAttr>(attrName)) {
+      if (boolAttr.getValue())
+        return true;
+      else
+        return false;
+    }
 
     auto it = opCache.find(constOp);
     if (it != opCache.end())
@@ -493,8 +522,32 @@ public:
       }
     }
 
+    rewriter.modifyOpInPlace(constOp, [&]() {
+      constOp->setAttr(attrName,
+                       BoolAttr::get(constOp.getContext(), guaranteedResult));
+    });
     opCache[constOp] = guaranteedResult;
     return guaranteedResult;
+  }
+
+  State localGuaranteedWithSetAttr(Operation *op,
+                                   SmallVectorImpl<Operation *> &localtodo,
+                                   PatternRewriter &rewriter) {
+    auto state = ((Child *)this)->localGuaranteed(op, localtodo, rewriter);
+    auto attrName = ((Child *)this)->getAttrName();
+    switch (state) {
+    case State::GUARANTEED:
+      rewriter.modifyOpInPlace(op, [&]() {
+        op->setAttr(attrName, BoolAttr::get(op->getContext(), true));
+      });
+      break;
+    case State::NOTGUARANTEED:
+      rewriter.modifyOpInPlace(op, [&]() {
+        op->setAttr(attrName, BoolAttr::get(op->getContext(), false));
+      });
+      break;
+    }
+    return state;
   }
 };
 
@@ -507,10 +560,13 @@ private:
   std::shared_ptr<FiniteResultAnalysis> finiteResultAnalysis = nullptr;
 
 public:
-  State localGuaranteed(Operation *op, SmallVectorImpl<Operation *> &localtodo);
+  State localGuaranteed(Operation *op, SmallVectorImpl<Operation *> &localtodo,
+                        PatternRewriter &rewriter);
 
   bool constantFloatCheck(DenseElementsAttr attr);
   bool constantIntCheck(DenseElementsAttr attr);
+
+  StringRef getAttrName() const { return "enzymexla.guaranteed_no_nan"; }
 
   void setFiniteResultAnalysis(std::shared_ptr<FiniteResultAnalysis> analysis) {
     finiteResultAnalysis = analysis;
@@ -526,7 +582,10 @@ public:
   bool constantFloatCheck(DenseElementsAttr attr);
   bool constantIntCheck(DenseElementsAttr attr);
 
-  State localGuaranteed(Operation *op, SmallVectorImpl<Operation *> &localtodo);
+  StringRef getAttrName() const { return "enzymexla.guaranteed_finite"; }
+
+  State localGuaranteed(Operation *op, SmallVectorImpl<Operation *> &localtodo,
+                        PatternRewriter &rewriter);
 
   void setNoNanResultAnalysis(std::shared_ptr<NoNanResultAnalysis> analysis) {
     noNanResultAnalysis = analysis;
@@ -536,18 +595,20 @@ public:
 NoNanResultAnalysis initNoNanResultAnalysis();
 FiniteResultAnalysis initFiniteResultAnalysis();
 
-inline bool guaranteedNoNanResult(mlir::Value value) {
-  return initNoNanResultAnalysis().guaranteed(value);
+inline bool guaranteedNoNanResult(mlir::Value value,
+                                  PatternRewriter &rewriter) {
+  return initNoNanResultAnalysis().guaranteed(value, rewriter);
 }
-inline bool guaranteedNoNanResult(Operation *op) {
-  return initNoNanResultAnalysis().guaranteed(op);
+inline bool guaranteedNoNanResult(Operation *op, PatternRewriter &rewriter) {
+  return initNoNanResultAnalysis().guaranteed(op, rewriter);
 }
 
-inline bool guaranteedFiniteResult(mlir::Value value) {
-  return initFiniteResultAnalysis().guaranteed(value);
+inline bool guaranteedFiniteResult(mlir::Value value,
+                                   PatternRewriter &rewriter) {
+  return initFiniteResultAnalysis().guaranteed(value, rewriter);
 }
-inline bool guaranteedFiniteResult(Operation *op) {
-  return initFiniteResultAnalysis().guaranteed(op);
+inline bool guaranteedFiniteResult(Operation *op, PatternRewriter &rewriter) {
+  return initFiniteResultAnalysis().guaranteed(op, rewriter);
 }
 
 class NonNegativeResultAnalysis
@@ -556,14 +617,19 @@ public:
   bool constantFloatCheck(DenseElementsAttr attr);
   bool constantIntCheck(DenseElementsAttr attr);
 
-  State localGuaranteed(Operation *op, SmallVectorImpl<Operation *> &localtodo);
+  StringRef getAttrName() const { return "enzymexla.guaranteed_non_negative"; }
+
+  State localGuaranteed(Operation *op, SmallVectorImpl<Operation *> &localtodo,
+                        PatternRewriter &rewriter);
 };
 
-inline bool guaranteedNonNegativeResult(mlir::Value value) {
-  return NonNegativeResultAnalysis().guaranteed(value);
+inline bool guaranteedNonNegativeResult(mlir::Value value,
+                                        PatternRewriter &rewriter) {
+  return NonNegativeResultAnalysis().guaranteed(value, rewriter);
 }
-inline bool guaranteedNonNegativeResult(Operation *op) {
-  return NonNegativeResultAnalysis().guaranteed(op);
+inline bool guaranteedNonNegativeResult(Operation *op,
+                                        PatternRewriter &rewriter) {
+  return NonNegativeResultAnalysis().guaranteed(op, rewriter);
 }
 
 bool anyOperandIsConstant(mlir::Operation *op);
