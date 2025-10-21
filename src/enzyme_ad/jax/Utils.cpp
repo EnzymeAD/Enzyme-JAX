@@ -157,6 +157,10 @@ bool collectEffects(Operation *op,
 bool getEffectsBefore(Operation *op,
                       SmallVectorImpl<MemoryEffects::EffectInstance> &effects,
                       bool stopAtBarrier) {
+  if (!op->getParentOp()) {
+    return true;
+  }
+  
   if (op != &op->getBlock()->front())
     for (Operation *it = op->getPrevNode(); it != nullptr;
          it = it->getPrevNode()) {
