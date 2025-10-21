@@ -1,12 +1,14 @@
 //===----------------------------------------------------------------------===//
 //
-// This file implements patterns to convert the Tessera dialect to the Func
-// dialect.
+// This file implements patterns to convert operations in the Tessera dialect to 
+// operations in the Func dialect.
 //
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "src/enzyme_ad/jax/Dialect/Tessera/Dialect.h"
+#include "src/enzyme_ad/jax/Passes/Tessera/Passes.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 
 using namespace mlir;
@@ -103,7 +105,7 @@ public:
 } // namespace
 
 //===----------------------------------------------------------------------===//
-// Pass to convert Func operations into Tessera operations
+// Pass to convert Tessera operations into Func operations
 //===----------------------------------------------------------------------===//
 
 struct TesseraToFuncPass
