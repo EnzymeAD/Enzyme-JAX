@@ -87,9 +87,9 @@ bool collectEffects(Operation *op,
         bool first = true;
         for (auto &arg : cop.getArgOperandsMutable()) {
           if (first)
-            effects.emplace_back(::mlir::MemoryEffects::Read::get(), arg);
+            effects.emplace_back(::mlir::MemoryEffects::Read::get(), &arg);
           else
-            effects.emplace_back(::mlir::MemoryEffects::Write::get(), arg,
+            effects.emplace_back(::mlir::MemoryEffects::Write::get(), &arg,
                                  ::mlir::SideEffects::DefaultResource::get());
           first = false;
         }
