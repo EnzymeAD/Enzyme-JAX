@@ -157,10 +157,7 @@ bool collectEffects(Operation *op,
 bool getEffectsBefore(Operation *op,
                       SmallVectorImpl<MemoryEffects::EffectInstance> &effects,
                       bool stopAtBarrier) {
-  if (!op->getParentOp()) {
-    return true;
-  }
-
+  if (!op) return true;
   if (op != &op->getBlock()->front())
     for (Operation *it = op->getPrevNode(); it != nullptr;
          it = it->getPrevNode()) {
@@ -185,7 +182,7 @@ bool getEffectsBefore(Operation *op,
   if (!getEffectsBefore(op->getParentOp(), effects, stopAtBarrier)) {
     return false;
   }
-
+  if (!op->getParentOp()) return true;
   // If the parent operation is not guaranteed to execute its (single-block)
   // region once, walk the block.
   if (!isa<scf::IfOp, affine::AffineIfOp, memref::AllocaScopeOp>(
