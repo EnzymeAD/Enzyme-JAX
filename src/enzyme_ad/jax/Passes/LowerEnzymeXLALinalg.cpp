@@ -159,6 +159,7 @@ private:
                         << inputElementType;
       return rewriter.notifyMatchFailure(op, "unsupported input element type");
     }
+    std::string lapackFnWrapper = lapackFn + "wrapper";
 
     // Insert function declaration if not already present
     if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(lapackFn)) {
@@ -173,6 +174,49 @@ private:
 
       rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), lapackFn, funcType,
                                         LLVM::Linkage::External);
+    }
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(lapackFnWrapper)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      auto funcType =
+          LLVM::LLVMFunctionType::get(llvmVoidPtrType,
+                                      {llvmPtrType, llvmPtrType, llvmPtrType,
+                                       llvmPtrType, llvmPtrType, llvmPtrType},
+                                      false);
+
+      auto funcOp = rewriter.create<LLVM::LLVMFuncOp>(
+          op.getLoc(), lapackFnWrapper, funcType, LLVM::Linkage::Private);
+      rewriter.setInsertionPointToStart(funcOp.addEntryBlock(rewriter));
+
+      funcOp.setArgAttr(0, LLVM::LLVMDialect::getReadonlyAttrName(),
+                        rewriter.getUnitAttr());
+      funcOp.setArgAttr(1, LLVM::LLVMDialect::getReadonlyAttrName(),
+                        rewriter.getUnitAttr());
+      // 2 is read + write
+      funcOp.setArgAttr(3, LLVM::LLVMDialect::getReadonlyAttrName(),
+                        rewriter.getUnitAttr());
+      funcOp.setArgAttr(4, LLVM::LLVMDialect::getWriteOnlyAttrName(),
+                        rewriter.getUnitAttr());
+      funcOp.setArgAttr(5, LLVM::LLVMDialect::getWriteOnlyAttrName(),
+                        rewriter.getUnitAttr());
+      for (int i = 0; i < 6; i++) {
+        funcOp.setArgAttr(i, LLVM::LLVMDialect::getNoFreeAttrName(),
+                          rewriter.getUnitAttr());
+      }
+
+      auto callOp = rewriter.create<LLVM::CallOp>(
+          op.getLoc(), TypeRange{}, SymbolRefAttr::get(ctx, lapackFn),
+          ValueRange{
+              funcOp.getArgument(0),
+              funcOp.getArgument(1),
+              funcOp.getArgument(2),
+              funcOp.getArgument(3),
+              funcOp.getArgument(4),
+              funcOp.getArgument(5),
+          });
+      rewriter.create<LLVM::ReturnOp>(op.getLoc(), ValueRange{});
     }
 
     // Call the LLVM function with enzymexla.jit_call
@@ -205,7 +249,7 @@ private:
     std::string wrapperFnName = lapackFn + std::to_string(fnNum++);
 
     func::FuncOp func = createWrapperFuncOpCPULapack(
-        rewriter, lapackFn, unbatchedInputType, unbatchedBLASPivotType,
+        rewriter, lapackFnWrapper, unbatchedInputType, unbatchedBLASPivotType,
         unbatchedBLASInfoType, blasIntType, wrapperFnName, op, operandLayouts,
         resultLayouts, rewriter.getArrayAttr(aliases));
     if (!func)
