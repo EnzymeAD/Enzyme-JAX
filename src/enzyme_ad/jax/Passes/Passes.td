@@ -959,6 +959,12 @@ def AutoBatchingPass : Pass<"auto-batching"> {
       /*default=*/"true",
       /*description=*/"Whether to run slice to batch passes">,
     Option<
+      /*C++ variable name=*/"while_loop_batching_mode",
+      /*CLI argument=*/"while_loop_batching_mode",
+      /*type=*/"std::string",
+      /*default=*/"\"greedy\"",
+      /*description=*/"Whether to run while loop batching passes (greedy, none)">,
+    Option<
         /*C++ variable name=*/"max_iterations",
         /*CLI argument=*/"max_iterations",
         /*type=*/"int64_t",
