@@ -27,7 +27,7 @@ common --define=allow_oversize_protos=true
 
 # See https://github.com/google/XNNPACK/issues/9000#issuecomment-3419074934
 common --define ynn_enable_x86_amx=false
-common --define ynn_enable_arm64_sme2=false
+common --define ynn_enable_arm64_sme=false
 
 # Some targets have the same py source file, but use different
 # configurations via `requires-` tags. This results in an action
