@@ -522,7 +522,7 @@ private:
 
     SmallVector<int64_t> permutationShape(inputShape.begin(),
                                           inputShape.end() - 2);
-    permutationShape.push_back(inputShape[0]);
+    permutationShape.push_back(inputShape[inputRank - 2]);
     auto permutationType =
         RankedTensorType::get(permutationShape, rewriter.getI32Type());
 
