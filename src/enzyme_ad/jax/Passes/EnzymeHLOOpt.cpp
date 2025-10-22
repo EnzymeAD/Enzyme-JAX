@@ -24170,10 +24170,7 @@ struct WhileIsCopySimplify
     DominanceInfo domInfo(parentFunc);
 
     DenseMap<Value, APInt> inductionVarOffsets = info.getInductionVarOffsets();
-    DenseMap<unsigned,
-             std::tuple<Value, SmallVector<int64_t>, SmallVector<int64_t>,
-                        SmallVector<int64_t>, unsigned>>
-        indicesToReplace;
+    SmallVector<CopyInfo, 8> indicesToReplace;
 
     auto returnOp = dyn_cast<stablehlo::ReturnOp>(whileBody.getTerminator());
     if (!returnOp)
@@ -24186,18 +24183,44 @@ struct WhileIsCopySimplify
 
       // check if operand is a loop caried variable
       auto blockArg = dyn_cast<BlockArgument>(dusOp.getOperand());
-      if (!blockArg)
+      if (!blockArg || blockArg.getOwner() != &whileBody ||
+          blockArg.getArgNumber() != idx)
         continue;
 
       // check if update is a DS
-      auto sliceOp =
-          dusOp.getUpdate().getDefiningOp<stablehlo::DynamicSliceOp>();
-      if (!sliceOp)
-        continue;
+      stablehlo::DynamicSliceOp sliceOp;
+      bool iotaMapping = false;
+      Value sliceOperand;
+      SmallVector<int64_t> mapDStoDUSDim;
 
-      Value sliceOperand = sliceOp.getOperand();
-      if (!isValueAccessibleFromBlock(domInfo, sliceOperand, parentBlock))
+      if (sliceOp =
+              dusOp.getUpdate().getDefiningOp<stablehlo::DynamicSliceOp>()) {
+        // simple case where we slice and update
+        iotaMapping = true;
+        mapDStoDUSDim = SmallVector<int64_t>(sliceOp.getStartIndices().size());
+        std::iota(mapDStoDUSDim.begin(), mapDStoDUSDim.end(), 0);
+        sliceOperand = sliceOp.getOperand();
+        if (!isValueAccessibleFromBlock(domInfo, sliceOperand, parentBlock))
+          continue;
+      } else if (auto transposeOp =
+                     dusOp.getUpdate()
+                         .getDefiningOp<stablehlo::TransposeOp>()) {
+        // slice => transpose => update
+        auto tperm = transposeOp.getPermutation();
+        mapDStoDUSDim = SmallVector<int64_t>(tperm.size());
+        for (int i = 0; i < tperm.size(); i++)
+          mapDStoDUSDim[tperm[i]] = i;
+
+        sliceOp =
+            transposeOp.getOperand().getDefiningOp<stablehlo::DynamicSliceOp>();
+        if (!sliceOp)
+          continue;
+        sliceOperand = sliceOp.getOperand();
+        if (!isValueAccessibleFromBlock(domInfo, sliceOperand, parentBlock))
+          continue;
+      } else {
         continue;
+      }
 
       bool indicesMatch = true, foundInductionVar = false;
       auto dsShape = cast<ShapedType>(sliceOp.getType()).getShape();
@@ -24210,90 +24233,115 @@ struct WhileIsCopySimplify
       SmallVector<int64_t> dusStartIndices(dusOp.getStartIndices().size(), -1);
 
       for (size_t i = 0; i < sliceOp.getStartIndices().size(); i++) {
+        int j = mapDStoDUSDim[i];
+
         auto dsStartIndex = sliceOp.getStartIndices()[i];
-        auto dusStartIndex = dusOp.getStartIndices()[i];
+        auto dusStartIndex = dusOp.getStartIndices()[j];
 
         APInt dsIdx, dusIdx;
+        // TODO: it doesn't need to be a constant, as long as it is a constant
+        // for the loop iteration we can do this
         if (matchPattern(dsStartIndex, m_ConstantInt(&dsIdx))) {
           sliceStartIndices[i] = getInt(dsIdx);
           sliceSizes[i] = dsShape[i];
           if (matchPattern(dusStartIndex, m_ConstantInt(&dusIdx))) {
-            dusStartIndices[i] = getInt(dusIdx);
+            dusStartIndices[j] = getInt(dusIdx);
           } else {
             indicesMatch = false;
             break;
           }
         } else {
-          if (dsStartIndex != dusStartIndex) {
-            indicesMatch = false;
-            break;
-          }
-
           if (foundInductionVar || // multiple indices with induction var
-              !inductionVarOffsets.contains(dsStartIndex)) { // no induction var
+              !inductionVarOffsets.contains(dsStartIndex) || // no induction var
+              !inductionVarOffsets.contains(dusStartIndex)) {
             indicesMatch = false;
             break;
           }
 
           foundInductionVar = true;
-          auto offset = inductionVarOffsets[dsStartIndex];
+          auto dsOffset = inductionVarOffsets[dsStartIndex];
+          auto dusOffset = inductionVarOffsets[dusStartIndex];
+
+          if (dsOffset != dusOffset) {
+            indicesMatch = false;
+            break;
+          }
 
           if (dsShape[i] != 1) {
             indicesMatch = false;
             break;
           }
-          sliceStartIndices[i] = start + getInt(offset);
+          sliceStartIndices[i] = start + getInt(dsOffset);
           sliceSizes[i] = limit - start;
-          dusStartIndices[i] = start + getInt(offset);
+          dusStartIndices[j] = start + getInt(dusOffset);
         }
       }
 
-      if (!indicesMatch) {
+      if (!indicesMatch)
         continue;
-      }
 
-      auto result = std::make_tuple(sliceOperand, sliceStartIndices, sliceSizes,
-                                    dusStartIndices, blockArg.getArgNumber());
-      indicesToReplace[idx] = result;
+      indicesToReplace.push_back(
+          CopyInfo{sliceOperand, sliceStartIndices, sliceSizes, dusStartIndices,
+                   iotaMapping, mapDStoDUSDim, blockArg.getArgNumber()});
     }
 
     if (indicesToReplace.empty())
       return failure();
 
-    for (auto [idx, tup] : indicesToReplace) {
+    for (auto copyInfo : indicesToReplace) {
       // We don't need to rewrite the loop here. While dead args elimination
       // will take care of it.
-      auto [replacement, sliceStartIndices, sliceSizes, dusStartIndices,
-            argIdx] = tup;
+      auto sliceSizes = copyInfo.sliceSizes;
 
       SmallVector<int64_t> strides(sliceSizes.size(), 1);
       SmallVector<int64_t> limits(sliceSizes.size());
       for (size_t i = 0; i < sliceSizes.size(); i++) {
-        limits[i] = sliceSizes[i] + sliceStartIndices[i];
+        limits[i] = sliceSizes[i] + copyInfo.sliceStartIndices[i];
       }
       auto sliceOp = rewriter.create<stablehlo::SliceOp>(
-          whileOp.getLoc(), replacement,
-          rewriter.getDenseI64ArrayAttr(sliceStartIndices),
+          whileOp.getLoc(), copyInfo.sliceOperand,
+          rewriter.getDenseI64ArrayAttr(copyInfo.sliceStartIndices),
           rewriter.getDenseI64ArrayAttr(limits),
           rewriter.getDenseI64ArrayAttr(strides));
 
+      auto dusUpdate = sliceOp.getResult();
+      if (!copyInfo.iotaMapping) {
+        SmallVector<int64_t> permutation(copyInfo.mapDStoDUSDim.size());
+        for (int i = 0; i < copyInfo.mapDStoDUSDim.size(); i++)
+          permutation[copyInfo.mapDStoDUSDim[i]] = i;
+        dusUpdate = rewriter.create<stablehlo::TransposeOp>(
+            whileOp.getLoc(), dusUpdate,
+            rewriter.getDenseI64ArrayAttr(permutation));
+      }
+
       SmallVector<Value> dusStartIndicesValue;
       auto type = RankedTensorType::get({}, rewriter.getI32Type());
-      for (auto dusStartIndex : dusStartIndices) {
+      for (auto dusStartIndex : copyInfo.dusStartIndices) {
         dusStartIndicesValue.push_back(rewriter.create<stablehlo::ConstantOp>(
             whileOp.getLoc(), type,
             cast<ElementsAttr>(makeAttr(type, dusStartIndex))));
       }
       auto newDUSOp = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
-          whileOp.getLoc(), whileOp.getOperands()[argIdx], sliceOp.getResult(),
+          whileOp.getLoc(), whileOp.getOperands()[copyInfo.blockArgIdx], dusUpdate,
           dusStartIndicesValue);
 
-      whileOp.getResult(idx).replaceAllUsesWith(newDUSOp->getResult(0));
+      whileOp.getResult(copyInfo.blockArgIdx)
+          .replaceAllUsesWith(newDUSOp->getResult(0));
     }
     return success();
   }
 
 private:
+  struct CopyInfo {
+    Value sliceOperand;
+    SmallVector<int64_t> sliceStartIndices;
+    SmallVector<int64_t> sliceSizes;
+    SmallVector<int64_t> dusStartIndices;
+    bool iotaMapping;
+    SmallVector<int64_t> mapDStoDUSDim;
+    unsigned blockArgIdx;
+  };
+
   bool isValueAccessibleFromBlock(DominanceInfo &domInfo, Value value,
                                   Block *block) const {
     if (auto definingOp = value.getDefiningOp()) {
