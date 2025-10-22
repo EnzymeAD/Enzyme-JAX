@@ -1692,9 +1692,8 @@ struct SHLOGetDimensionSizeOpBatchInterface
     auto bcastOp = BroadcastInDimOp::create(
         builder, src->getLoc(),
         RankedTensorType::get(
-            batchSizes,
-            cast<RankedTensorType>(newOp->getResult(0).getType())
-                .getElementType()),
+            batchSizes, cast<RankedTensorType>(newOp->getResult(0).getType())
+                            .getElementType()),
         newOp->getResult(0), builder.getDenseI64ArrayAttr({}));
     mapper.map(src->getResult(0), bcastOp->getResult(0));
     return success();
