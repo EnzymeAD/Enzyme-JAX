@@ -53,8 +53,8 @@ jobs:
           - 'main'
           # - '0123456789abcdef0123456789abcdef01234567'
         reactant_commit:
-          - 'main'
-          # - ap/symbol_ref_kernel_call
+          # - 'main'
+          - 'regenerate-mlir-bindings'
 
     steps:
       - name: Check GPUs
