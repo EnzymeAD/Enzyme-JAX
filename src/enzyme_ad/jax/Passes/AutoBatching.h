@@ -210,6 +210,13 @@ private:
   struct DynamicSliceInfo {
     mlir::stablehlo::DynamicSliceOp sliceOp;
     int64_t inductionVarDimension;
+    bool intermediateReshape;
+  };
+
+  enum class BatchLiftingMode {
+    DYNAMIC_SLICE,
+    DEFINED_OUTSIDE_WHILE,
+    CONSTANT,
   };
 
   int64_t isDynamicSliceValidForBatching(
@@ -222,6 +229,13 @@ private:
                          llvm::ArrayRef<DynamicSliceInfo> sliceOps,
                          mlir::Operation *op,
                          mlir::enzyme::WhileLoopInfo info) const;
+
+  bool liftOperationByBatching(mlir::PatternRewriter &rewriter,
+                               mlir::stablehlo::WhileOp whileOp,
+                               llvm::ArrayRef<DynamicSliceInfo> sliceOps,
+                               mlir::Operation *op,
+                               mlir::enzyme::WhileLoopInfo info,
+                               bool intermediateReshape) const;
 
   bool isValueAccessibleFromBlock(mlir::DominanceInfo &domInfo,
                                   mlir::Value value, mlir::Block *block) const;
