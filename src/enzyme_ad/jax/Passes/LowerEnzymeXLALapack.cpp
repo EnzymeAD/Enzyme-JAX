@@ -41,14 +41,11 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
   LogicalResult matchAndRewrite(enzymexla::GeqrfOp op,
                                 PatternRewriter &rewriter) const override {
     if (backend == "cpu")
-      return this->matchAndRewrite_cpu(op, rewriter);
-
+      return matchAndRewriteCPU(op, rewriter);
     else if (backend == "cuda")
-      return this->matchAndRewrite_cuda(op, rewriter);
-
+      return matchAndRewriteCUDA(op, rewriter);
     else if (backend == "tpu")
-      return this->matchAndRewrite_tpu(op, rewriter);
-
+      return matchAndRewriteTPU(op, rewriter);
     else
       return rewriter.notifyMatchFailure(op, "Unknown backend: \"" + backend +
                                                  "\"");
@@ -56,8 +53,8 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
 
   // TODO get matrix sizes dynamically so that we don't need to create a
   // function wrapper for each op instance
-  LogicalResult matchAndRewrite_cpu(enzymexla::GeqrfOp op,
-                                    PatternRewriter &rewriter) const {
+  LogicalResult matchAndRewriteCPU(enzymexla::GeqrfOp op,
+                                   PatternRewriter &rewriter) const {
     auto ctx = op->getContext();
     LLVMTypeConverter typeConverter(ctx);
 
@@ -209,8 +206,8 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
     return success();
   }
 
-  LogicalResult matchAndRewrite_cuda(enzymexla::GeqrfOp op,
-                                     PatternRewriter &rewriter) const {
+  LogicalResult matchAndRewriteCUDA(enzymexla::GeqrfOp op,
+                                    PatternRewriter &rewriter) const {
     auto ctx = op->getContext();
     LLVMTypeConverter typeConverter(ctx);
 
@@ -265,8 +262,8 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
     return success();
   }
 
-  LogicalResult matchAndRewrite_tpu(enzymexla::GeqrfOp op,
-                                    PatternRewriter &rewriter) const {
+  LogicalResult matchAndRewriteTPU(enzymexla::GeqrfOp op,
+                                   PatternRewriter &rewriter) const {
     auto ctx = op->getContext();
     LLVMTypeConverter typeConverter(ctx);
 
@@ -316,14 +313,11 @@ struct GeqrtOpLowering : public OpRewritePattern<enzymexla::GeqrtOp> {
   LogicalResult matchAndRewrite(enzymexla::GeqrtOp op,
                                 PatternRewriter &rewriter) const override {
     if (backend == "cpu")
-      return this->matchAndRewrite_cpu(op, rewriter);
-
+      return matchAndRewriteCPU(op, rewriter);
     // else if (backend == "cuda")
-    //   return this->matchAndRewrite_cuda(op, rewriter);
-
+    //   return matchAndRewriteCUDA(op, rewriter);
     // else if (backend == "tpu")
-    //   return this->matchAndRewrite_tpu(op, rewriter);
-
+    //   return matchAndRewriteTPU(op, rewriter);
     else
       return rewriter.notifyMatchFailure(op, "Unknown backend: \"" + backend +
                                                  "\"");
@@ -331,8 +325,8 @@ struct GeqrtOpLowering : public OpRewritePattern<enzymexla::GeqrtOp> {
 
   // TODO get matrix sizes dynamically so that we don't need to create a
   // function wrapper for each op instance
-  LogicalResult matchAndRewrite_cpu(enzymexla::GeqrtOp op,
-                                    PatternRewriter &rewriter) const {
+  LogicalResult matchAndRewriteCPU(enzymexla::GeqrtOp op,
+                                   PatternRewriter &rewriter) const {
     auto ctx = op->getContext();
     LLVMTypeConverter typeConverter(ctx);
 
@@ -523,14 +517,11 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
   LogicalResult matchAndRewrite(enzymexla::OrgqrOp op,
                                 PatternRewriter &rewriter) const override {
     if (backend == "cpu")
-      return this->matchAndRewrite_cpu(op, rewriter);
-
+      return matchAndRewriteCPU(op, rewriter);
     else if (backend == "cuda")
-      return this->matchAndRewrite_cuda(op, rewriter);
-
+      return matchAndRewriteCUDA(op, rewriter);
     else if (backend == "tpu")
-      return this->matchAndRewrite_tpu(op, rewriter);
-
+      return matchAndRewriteTPU(op, rewriter);
     else
       return rewriter.notifyMatchFailure(op, "Unknown backend: \"" + backend +
                                                  "\"");
@@ -538,8 +529,8 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
 
   // TODO get matrix sizes dynamically so that we don't need to create a
   // function wrapper for each op instance
-  LogicalResult matchAndRewrite_cpu(enzymexla::OrgqrOp op,
-                                    PatternRewriter &rewriter) const {
+  LogicalResult matchAndRewriteCPU(enzymexla::OrgqrOp op,
+                                   PatternRewriter &rewriter) const {
     auto ctx = op->getContext();
     LLVMTypeConverter typeConverter(ctx);
 
@@ -688,8 +679,8 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
     return success();
   }
 
-  LogicalResult matchAndRewrite_cuda(enzymexla::OrgqrOp op,
-                                     PatternRewriter &rewriter) const {
+  LogicalResult matchAndRewriteCUDA(enzymexla::OrgqrOp op,
+                                    PatternRewriter &rewriter) const {
     auto ctx = op->getContext();
     LLVMTypeConverter typeConverter(ctx);
 
@@ -734,8 +725,8 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
     return success();
   }
 
-  LogicalResult matchAndRewrite_tpu(enzymexla::OrgqrOp op,
-                                    PatternRewriter &rewriter) const {
+  LogicalResult matchAndRewriteTPU(enzymexla::OrgqrOp op,
+                                   PatternRewriter &rewriter) const {
     auto ctx = op->getContext();
     LLVMTypeConverter typeConverter(ctx);
 
@@ -772,14 +763,11 @@ struct OrmqrOpLowering : public OpRewritePattern<enzymexla::OrmqrOp> {
   LogicalResult matchAndRewrite(enzymexla::OrmqrOp op,
                                 PatternRewriter &rewriter) const override {
     if (backend == "cpu")
-      return this->matchAndRewrite_cpu(op, rewriter);
-
+      return matchAndRewriteCPU(op, rewriter);
     // else if (backend == "cuda")
-    //   return this->matchAndRewrite_cuda(op, rewriter);
-
+    //   return matchAndRewriteCUDA(op, rewriter);
     // else if (backend == "tpu")
-    //   return this->matchAndRewrite_tpu(op, rewriter);
-
+    //   return matchAndRewriteTPU(op, rewriter);
     else
       return rewriter.notifyMatchFailure(op, "Unknown backend: \"" + backend +
                                                  "\"");
@@ -787,8 +775,8 @@ struct OrmqrOpLowering : public OpRewritePattern<enzymexla::OrmqrOp> {
 
   // TODO get matrix sizes dynamically so that we don't need to create a
   // function wrapper for each op instance
-  LogicalResult matchAndRewrite_cpu(enzymexla::OrmqrOp op,
-                                    PatternRewriter &rewriter) const {
+  LogicalResult matchAndRewriteCPU(enzymexla::OrmqrOp op,
+                                   PatternRewriter &rewriter) const {
     auto ctx = op->getContext();
     LLVMTypeConverter typeConverter(ctx);
 
@@ -1031,14 +1019,11 @@ struct GemqrtOpLowering : public OpRewritePattern<enzymexla::GemqrtOp> {
   LogicalResult matchAndRewrite(enzymexla::GemqrtOp op,
                                 PatternRewriter &rewriter) const override {
     if (backend == "cpu")
-      return this->matchAndRewrite_cpu(op, rewriter);
-
+      return matchAndRewriteCPU(op, rewriter);
     // else if (backend == "cuda")
-    //   return this->matchAndRewrite_cuda(op, rewriter);
-
+    //   return matchAndRewriteCUDA(op, rewriter);
     // else if (backend == "tpu")
-    //   return this->matchAndRewrite_tpu(op, rewriter);
-
+    //   return matchAndRewriteTPU(op, rewriter);
     else
       return rewriter.notifyMatchFailure(op, "Unknown backend: \"" + backend +
                                                  "\"");
@@ -1046,8 +1031,8 @@ struct GemqrtOpLowering : public OpRewritePattern<enzymexla::GemqrtOp> {
 
   // TODO get matrix sizes dynamically so that we don't need to create a
   // function wrapper for each op instance
-  LogicalResult matchAndRewrite_cpu(enzymexla::GemqrtOp op,
-                                    PatternRewriter &rewriter) const {
+  LogicalResult matchAndRewriteCPU(enzymexla::GemqrtOp op,
+                                   PatternRewriter &rewriter) const {
     auto ctx = op->getContext();
     LLVMTypeConverter typeConverter(ctx);
 
