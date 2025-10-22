@@ -28,8 +28,7 @@ struct BatchOperandConstructionInfo {
   bool intermediateReshape;
 };
 
-// TODO: update old code to use this new slice info
-template <typename OpTy> struct NewSliceInfo {
+template <typename OpTy> struct SliceInfo {
   OpTy sliceOp;
   llvm::SmallVector<mlir::Value> dynamicStartIndices;
   llvm::SmallVector<int64_t> startIndices;
@@ -37,17 +36,26 @@ template <typename OpTy> struct NewSliceInfo {
   int64_t sliceDim;
   int64_t sliceStart;
   bool supported;
+
+  SliceInfo(OpTy sliceOp, llvm::SmallVector<mlir::Value> dynamicStartIndices,
+            llvm::SmallVector<int64_t> startIndices,
+            llvm::SmallVector<int64_t> sliceSizes, int64_t sliceDim,
+            int64_t sliceStart, bool supported)
+      : sliceOp(sliceOp), dynamicStartIndices(std::move(dynamicStartIndices)),
+        startIndices(std::move(startIndices)),
+        sliceSizes(std::move(sliceSizes)), sliceDim(sliceDim),
+        sliceStart(sliceStart), supported(supported) {}
 };
 
-NewSliceInfo<mlir::stablehlo::SliceOp>
-constructNewSliceInfo(mlir::stablehlo::SliceOp sliceOp);
-NewSliceInfo<mlir::stablehlo::DynamicSliceOp>
-constructNewSliceInfo(mlir::stablehlo::DynamicSliceOp sliceOp);
+SliceInfo<mlir::stablehlo::SliceOp>
+constructSliceInfo(mlir::stablehlo::SliceOp sliceOp);
+SliceInfo<mlir::stablehlo::DynamicSliceOp>
+constructSliceInfo(mlir::stablehlo::DynamicSliceOp sliceOp);
 
 bool areSlicesContiguous(
-    llvm::SmallVector<NewSliceInfo<mlir::stablehlo::SliceOp>> &slices);
+    llvm::SmallVector<SliceInfo<mlir::stablehlo::SliceOp>> &slices);
 bool areSlicesContiguous(
-    llvm::SmallVector<NewSliceInfo<mlir::stablehlo::DynamicSliceOp>> &slices);
+    llvm::SmallVector<SliceInfo<mlir::stablehlo::DynamicSliceOp>> &slices);
 
 struct ConcatInsertDimToBatchBase
     : public mlir::enzyme::CheckedOpRewritePattern<
@@ -118,20 +126,6 @@ struct SliceToBatchBase
   llvm::LogicalResult
   matchAndRewriteImpl(mlir::stablehlo::SliceOp sliceOp,
                       mlir::PatternRewriter &rewriter) const;
-
-private:
-  struct SliceInfo {
-    mlir::stablehlo::SliceOp sliceOp;
-    llvm::SmallVector<int64_t> startIndices;
-    llvm::SmallVector<int64_t> endIndices;
-    llvm::SmallVector<int64_t> strides;
-    int64_t sliceDim;
-    int64_t sliceStart;
-    bool supported;
-  };
-
-  SliceInfo extractSliceInfo(mlir::stablehlo::SliceOp slice) const;
-  bool areSlicesContiguous(llvm::SmallVector<SliceInfo> &slices) const;
 
 protected:
   std::function<mlir::Operation *(mlir::Operation *)> isValidTargetOp;

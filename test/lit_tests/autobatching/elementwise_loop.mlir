@@ -32,9 +32,9 @@ func.func @main(%arg0: tensor<10xf64>) -> tensor<10xf64> {
     return %0#1 : tensor<10xf64>
 }
 
-// CHECK: func.func @main(%arg0: tensor<10xf64>) -> tensor<10xf64> {
-// CHECK-NEXT:     %0 = stablehlo.sine %arg0 : tensor<10xf64>
-// CHECK-NEXT:     %1 = stablehlo.cosine %arg0 : tensor<10xf64>
-// CHECK-NEXT:     %2 = stablehlo.subtract %1, %0 : tensor<10xf64>
-// CHECK-NEXT:     return %2 : tensor<10xf64>
-// CHECK-NEXT: }
+// CHECK:  func.func @main(%arg0: tensor<10xf64>) -> tensor<10xf64> {
+// CHECK-DAG:    [[COS:%.*]] = stablehlo.cosine %arg0 : tensor<10xf64>
+// CHECK-DAG:    [[SIN:%.*]] = stablehlo.sine %arg0 : tensor<10xf64>
+// CHECK:    [[RES:%.*]] = stablehlo.subtract [[COS]], [[SIN]] : tensor<10xf64>
+// CHECK:    return [[RES]] : tensor<10xf64>
+// CHECK:  }

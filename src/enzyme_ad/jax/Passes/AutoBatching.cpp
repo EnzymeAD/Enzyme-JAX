@@ -278,6 +278,93 @@ bool allOpsAreUnique(const SmallVector<Operation *> &ops) {
                       [&](Operation *op) { return seen.insert(op).second; });
 }
 
+static SliceInfo<stablehlo::SliceOp>
+defaultUnsupportedSliceInfo(stablehlo::SliceOp sliceOp) {
+  return SliceInfo<stablehlo::SliceOp>(sliceOp, {}, {}, {}, -1, -1, false);
+}
+
+SliceInfo<stablehlo::SliceOp> constructSliceInfo(stablehlo::SliceOp sliceOp) {
+  auto startIndices = llvm::to_vector(sliceOp.getStartIndices());
+  auto limitIndices = llvm::to_vector(sliceOp.getLimitIndices());
+  auto strides = llvm::to_vector(sliceOp.getStrides());
+
+  if (!llvm::all_of(strides, [](int64_t i) { return i == 1; }))
+    return defaultUnsupportedSliceInfo(sliceOp);
+
+  auto inputType = cast<RankedTensorType>(sliceOp.getOperand().getType());
+  auto inputShape = llvm::to_vector(inputType.getShape());
+
+  bool supported = true, found = false;
+  int64_t sliceDim, sliceStart;
+
+  for (size_t i = 0; i < startIndices.size(); ++i) {
+    if (startIndices[i] == limitIndices[i] - 1 &&
+        !(startIndices[i] == 0 && limitIndices[i] == inputShape[i])) {
+      if (found) {
+        // multiple singleton slices not supported
+        supported = false;
+        break;
+      }
+      sliceDim = i;
+      sliceStart = startIndices[i];
+      found = true;
+    } else { // For all other dims, must be a full slice
+      if (!(startIndices[i] == 0 && limitIndices[i] == inputShape[i] &&
+            strides[i] == 1)) {
+        supported = false;
+        break;
+      }
+    }
+  }
+  if (!found) { // If no singleton found, not supported
+    supported = false;
+  }
+
+  if (!supported)
+    return defaultUnsupportedSliceInfo(sliceOp);
+
+  return SliceInfo<stablehlo::SliceOp>(sliceOp, {}, startIndices, inputShape,
+                                       sliceDim, sliceStart, true);
+}
+
+bool areSlicesContiguous(SmallVector<SliceInfo<stablehlo::SliceOp>> &slices) {
+  if (slices.empty())
+    return false;
+
+  int64_t sliceDim = slices[0].sliceDim;
+  for (const auto &slice : slices) {
+    if (slice.sliceDim != sliceDim)
+      return false;
+    if (!slice.supported)
+      return false;
+  }
+
+  // Sort slices by start index
+  llvm::sort(slices, [](const SliceInfo<stablehlo::SliceOp> &a,
+                        const SliceInfo<stablehlo::SliceOp> &b) {
+    return a.sliceStart < b.sliceStart;
+  });
+
+  int64_t expectedStart = slices[0].sliceStart;
+  // TODO: partial slice support
+  if (expectedStart != 0)
+    return false;
+
+  for (const auto &slice : slices) {
+    if (slice.sliceStart != expectedStart)
+      return false;
+    expectedStart++;
+  }
+
+  // TODO: we should support cases where the entire batch is not being sliced
+  //       but introducing an intermediate slice.
+  if (expectedStart !=
+      slices[0].sliceOp.getOperand().getType().getShape()[sliceDim])
+    return false;
+
+  return true;
+}
+
 LogicalResult ConcatInsertDimToBatchBase::matchAndRewriteImpl(
     stablehlo::ConcatenateOp concatOp, PatternRewriter &rewriter) const {
   if (concatOp.getNumOperands() <= 1)
@@ -417,7 +504,7 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
                                       PatternRewriter &rewriter) const {
   Value sliceInput = sliceOp.getOperand();
   // Find all slices of the same input that feed into equivalent operations
-  SmallVector<SliceInfo> relatedSlices;
+  SmallVector<SliceInfo<stablehlo::SliceOp>> relatedSlices;
   SmallVector<Operation *> relatedOps;
   SmallVector<bool> allHaveIntermediateReshapes;
   Operation *targetOp = nullptr;
@@ -429,7 +516,7 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
     if (!candidateSlice || !candidateSlice.getResult().hasOneUse())
       continue;
 
-    auto sliceInfo = extractSliceInfo(candidateSlice);
+    auto sliceInfo = constructSliceInfo(candidateSlice);
 
     Operation *onlyUser = *candidateSlice.getResult().getUsers().begin();
 
@@ -513,7 +600,7 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
   });
 
   // Reorder all three vectors according to the sorted indices
-  SmallVector<SliceInfo> sortedSlices;
+  SmallVector<SliceInfo<stablehlo::SliceOp>> sortedSlices;
   SmallVector<Operation *> sortedOps;
   SmallVector<bool> sortedReshapes;
 
@@ -648,101 +735,6 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
   return enzyme::batchutils::batchOperation(
       rewriter, batchOp, cast<FunctionOpInterface>(func.getOperation()),
       batchedFunctionCache);
-}
-
-SliceToBatchBase::SliceInfo
-SliceToBatchBase::extractSliceInfo(stablehlo::SliceOp slice) const {
-  auto startIndices = llvm::to_vector(slice.getStartIndices());
-  auto limitIndices = llvm::to_vector(slice.getLimitIndices());
-  auto strides = llvm::to_vector(slice.getStrides());
-
-  SmallVector<int64_t> infoStartIndices;
-  SmallVector<int64_t> infoEndIndices;
-  SmallVector<int64_t> infoStrides;
-
-  for (auto [start, end, stride] :
-       llvm::zip(startIndices, limitIndices, strides)) {
-    infoStartIndices.push_back(start);
-    infoEndIndices.push_back(end);
-    infoStrides.push_back(stride);
-  }
-
-  // Find the sliceDim
-  auto inputType = cast<RankedTensorType>(slice.getOperand().getType());
-  ArrayRef<int64_t> inputShape = inputType.getShape();
-
-  bool found = false;
-  bool supported;
-  int64_t sliceDim, sliceStart;
-
-  supported = true;
-  for (size_t i = 0; i < infoStartIndices.size(); ++i) {
-    if (infoStartIndices[i] == infoEndIndices[i] - 1 &&
-        !(infoStartIndices[i] == 0 && infoEndIndices[i] == inputShape[i])) {
-      if (found) {
-        // multiple singleton slices not supported
-        supported = false;
-        break;
-      }
-      sliceDim = i;
-      sliceStart = infoStartIndices[i];
-      found = true;
-    } else { // For all other dims, must be a full slice
-      if (!(infoStartIndices[i] == 0 && infoEndIndices[i] == inputShape[i] &&
-            infoStrides[i] == 1)) {
-        supported = false;
-        break;
-      }
-    }
-  }
-  if (!found) { // If no singleton found, not supported
-    supported = false;
-  }
-
-  return SliceToBatchBase::SliceInfo{
-      slice,    infoStartIndices, infoEndIndices, infoStrides,
-      sliceDim, sliceStart,       supported};
-}
-
-bool SliceToBatchBase::areSlicesContiguous(
-    SmallVector<SliceInfo> &slices) const {
-  if (slices.empty())
-    return false;
-
-  int64_t sliceDim = slices[0].sliceDim;
-  for (const auto &slice : slices) {
-    if (slice.sliceDim != sliceDim) {
-      return false;
-    }
-    if (!slice.supported) {
-      return false;
-    }
-  }
-
-  // Sort slices by start index
-  llvm::sort(slices, [](const SliceInfo &a, const SliceInfo &b) {
-    return a.sliceStart < b.sliceStart;
-  });
-
-  int64_t expectedStart = slices[0].sliceStart;
-  // TODO: partial slice support
-  if (expectedStart != 0)
-    return false;
-
-  for (const auto &slice : slices) {
-    if (slice.sliceStart != expectedStart) {
-      return false;
-    }
-    expectedStart++;
-  }
-
-  // TODO: we should support cases where the entire batch is not being sliced
-  //       but introducing an intermediate slice.
-  if (expectedStart !=
-      slices[0].sliceOp.getOperand().getType().getShape()[sliceDim])
-    return false;
-
-  return true;
 }
 
 LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
