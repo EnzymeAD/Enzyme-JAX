@@ -17,6 +17,7 @@
 #include "Enzyme/MLIR/Interfaces/GradientUtilsReverse.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/Support/LogicalResult.h"
+#include "src/enzyme_ad/jax/Implementations/SHLOGenericBatchOpInterface.h"
 
 #include "Dialect/Ops.h"
 #include "mlir/IR/TypeSupport.h"
@@ -200,6 +201,11 @@ void mlir::enzyme::registerEnzymeXLADialectAutoDiffInterface(
     registerInterfaces(context);
     GPUWrapperOp::attachInterface<GPUWrapperOpInterfaceReverse>(*context);
     GPUWrapperOp::attachInterface<GPUWrapperOpEnzymeOpsRemover>(*context);
+
+    // Register batching interfaces
+    JITCallOp::attachInterface<SHLOGenericBatchOpInterface<JITCallOp>>(
+        *context);
+
     context->loadDialect<stablehlo::StablehloDialect>();
   });
 }
