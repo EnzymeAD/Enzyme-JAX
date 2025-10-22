@@ -325,6 +325,7 @@ enzymexla::KernelCallOp ReadOnlyArg<enzymexla::KernelCallOp>::create(
       launchOp.getLoc(), resTys, launchOp.getFn(), launchOp.getGridx(),
       launchOp.getGridy(), launchOp.getGridz(), launchOp.getBlockx(),
       launchOp.getBlocky(), launchOp.getBlockz(), launchOp.getShmem(),
+      launchOp.getClusterx(), launchOp.getClustery(), launchOp.getClusterz(),
       launchOp.getInputs(), launchOp.getBackendConfigAttr(),
       launchOp.getOperandLayoutsAttr(), /*resultLayouts*/ nullptr,
       launchOp.getArgAttrsAttr(), launchOp.getResAttrsAttr(), outputAliases,
@@ -347,6 +348,9 @@ template <typename OpTy>
 class ReadNoneArg final : public OpRewritePattern<OpTy> {
 public:
   using OpRewritePattern<OpTy>::OpRewritePattern;
+
+  void updateOperandSegmentSizes(OpTy call, int32_t numLiveOperands,
+                                 PatternRewriter &rewriter) const;
 
   LogicalResult matchAndRewrite(OpTy launchOp,
                                 PatternRewriter &rewriter) const override {
@@ -429,6 +433,14 @@ public:
         nonLiveCallOperands.set(call.getInputs().getBeginOperandIndex() +
                                 index);
 
+      int32_t numLiveOperands = 0;
+      for (int32_t idx = call.getInputs().getBeginOperandIndex();
+           idx < nonLiveCallOperands.size(); idx++) {
+        if (nonLiveCallOperands[idx])
+          continue;
+        numLiveOperands++;
+      }
+
       SmallVector<Attribute> outputAliases;
       auto operand_aliases = call.getOutputOperandAliases();
 
@@ -447,6 +459,7 @@ public:
 
       rewriter.modifyOpInPlace(call, [&]() {
         call->eraseOperands(nonLiveCallOperands);
+        updateOperandSegmentSizes(call, numLiveOperands, rewriter);
         call.setOutputOperandAliasesAttr(
             ArrayAttr::get(call->getContext(), outputAliases));
       });
@@ -454,6 +467,21 @@ public:
     return success();
   }
 };
+
+template <>
+void ReadNoneArg<KernelCallOp>::updateOperandSegmentSizes(
+    KernelCallOp call, int32_t numLiveOperands,
+    PatternRewriter &rewriter) const {
+  call->setAttr("operandSegmentSizes",
+                rewriter.getDenseI32ArrayAttr(
+                    {1, 1, 1, 1, 1, 1, 1, call.getClusterx() ? 1 : 0,
+                     call.getClustery() ? 1 : 0, call.getClusterz() ? 1 : 0,
+                     numLiveOperands}));
+}
+
+template <>
+void ReadNoneArg<JITCallOp>::updateOperandSegmentSizes(
+    JITCallOp call, int32_t numLiveOperands, PatternRewriter &rewriter) const {}
 
 void KernelCallOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                                MLIRContext *context) {

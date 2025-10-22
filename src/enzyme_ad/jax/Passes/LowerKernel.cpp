@@ -67,7 +67,8 @@ SymbolRefAttr SymRefAttrReplacingFunctionName(SymbolRefAttr origSymRef,
 bool CompileGPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
                       FunctionOpInterface op, size_t gridx, size_t gridy,
                       size_t gridz, size_t blockx, size_t blocky, size_t blockz,
-                      size_t shmem, enzymexla::KernelCallOp kcall) {
+                      size_t shmem, size_t clusterx, size_t clustery,
+                      size_t clusterz, enzymexla::KernelCallOp kcall) {
 
   OpBuilder builder(op);
 
@@ -232,9 +233,21 @@ bool CompileGPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   Value stream = builder.create<enzymexla::GetStreamOp>(
       loc, gpu::AsyncTokenType::get(kcall.getContext()));
 
-  builder.create<gpu::LaunchFuncOp>(loc, gpufunc, gridSize, blockSize, dynshmem,
-                                    entryBlock.getArguments(), stream.getType(),
-                                    ValueRange(stream));
+  if (clusterx != 1 || clustery != 1 || clusterz != 1) {
+    gpu::KernelDim3 clusterSize{
+        builder.create<arith::ConstantIntOp>(loc, idx, clusterx),
+        builder.create<arith::ConstantIntOp>(loc, idx, clustery),
+        builder.create<arith::ConstantIntOp>(loc, idx, clusterz),
+    };
+
+    builder.create<gpu::LaunchFuncOp>(
+        loc, gpufunc, gridSize, blockSize, dynshmem, entryBlock.getArguments(),
+        stream.getType(), ValueRange(stream), clusterSize);
+  } else {
+    builder.create<gpu::LaunchFuncOp>(loc, gpufunc, gridSize, blockSize,
+                                      dynshmem, entryBlock.getArguments(),
+                                      stream.getType(), ValueRange(stream));
+  }
 
   builder.create<mlir::func::ReturnOp>(loc);
 
@@ -259,8 +272,14 @@ bool CompileGPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
 bool CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
                       FunctionOpInterface op, size_t gridx, size_t gridy,
                       size_t gridz, size_t blockx, size_t blocky, size_t blockz,
-                      size_t shmem, enzymexla::KernelCallOp kcall) {
+                      size_t shmem, size_t clusterx, size_t clustery,
+                      size_t clusterz, enzymexla::KernelCallOp kcall) {
   OpBuilder builder(op);
+
+  if (clusterx != 1 || clustery != 1 || clusterz != 1) {
+    op.emitError("CPU kernels do not support cluster");
+    return false;
+  }
 
   FunctionType gpuTy0 = dyn_cast<FunctionType>(op.getFunctionType());
   if (!gpuTy0) {
@@ -436,7 +455,7 @@ struct LowerKernelPass
     symbolTable.getSymbolTable(getOperation());
 
     getOperation()->walk([&](KernelCallOp op) {
-      size_t data[8];
+      size_t data[11];
 
       auto *symbolOp = symbolTable.lookupNearestSymbolFrom(op, op.getFnAttr());
       auto fn = cast<FunctionOpInterface>(symbolOp);
@@ -451,33 +470,55 @@ struct LowerKernelPass
                       op.getBlockx(), op.getBlocky(), op.getBlockz(),
                       op.getShmem()};
       for (auto en : llvm::enumerate(vals)) {
-        DenseIntElementsAttr stepAttr;
-        if (!matchPattern(en.value(), m_Constant(&stepAttr))) {
-          op->emitError() << "Cannot lower kernel with a grid/block size which "
-                             "is not a constant integer tensor";
+        auto val = getConstantValue(op, en.value(), 0);
+        if (val == -1)
           return;
-        }
-        if (stepAttr.size() != 1) {
-          op->emitError() << "Cannot lower kernel with a grid/block size which "
-                             "is not a constant integer tensor of size 1";
-          return;
-        }
-        auto val = (*stepAttr.begin()).getZExtValue();
         data[1 + en.index()] = val;
+      }
+
+      // Resolve the optional cluster dimensions
+      Value clusterVals[] = {op.getClusterx(), op.getClustery(),
+                             op.getClusterz()};
+      for (auto en : llvm::enumerate(clusterVals)) {
+        auto val = getConstantValue(op, en.value(), 1);
+        if (val == -1)
+          return;
+        data[8 + en.index()] = val;
       }
 
       // Compiled kernel goes here once ready
       if (backend == "cuda") {
         CompileGPUKernel(symbolTable, op.getLoc(), fn, data[1], data[2],
-                         data[3], data[4], data[5], data[6], data[7], op);
+                         data[3], data[4], data[5], data[6], data[7], data[8],
+                         data[9], data[10], op);
       } else if (backend == "cpu") {
         CompileCPUKernel(symbolTable, op.getLoc(), fn, data[1], data[2],
-                         data[3], data[4], data[5], data[6], data[7], op);
+                         data[3], data[4], data[5], data[6], data[7], data[8],
+                         data[9], data[10], op);
       } else {
         op->emitError() << "Cannot lower kernel to unknown backend \""
                         << backend << "\"";
       }
     });
+  }
+
+private:
+  size_t getConstantValue(KernelCallOp op, Value v, size_t defaultValue) {
+    if (!v)
+      return defaultValue;
+
+    DenseIntElementsAttr stepAttr;
+    if (!matchPattern(v, m_Constant(&stepAttr))) {
+      op->emitError() << "Cannot lower kernel with a value which "
+                         "is not a constant integer tensor";
+      return -1;
+    }
+    if (stepAttr.size() != 1) {
+      op->emitError() << "Cannot lower kernel with a value which "
+                         "is not a constant integer tensor of size 1";
+      return -1;
+    }
+    return (*stepAttr.begin()).getZExtValue();
   }
 };
 
