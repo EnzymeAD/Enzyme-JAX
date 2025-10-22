@@ -24227,10 +24227,9 @@ struct WhileIsCopySimplify
       auto sliceOperandShape =
           cast<ShapedType>(sliceOperand.getType()).getShape();
 
-      SmallVector<int64_t> sliceStartIndices(sliceOp.getStartIndices().size(),
-                                             -1);
+      SmallVector<Value> sliceStartIndices(sliceOp.getStartIndices().size());
       SmallVector<int64_t> sliceSizes(sliceOp.getStartIndices().size(), -1);
-      SmallVector<int64_t> dusStartIndices(dusOp.getStartIndices().size(), -1);
+      SmallVector<Value> dusStartIndices(dusOp.getStartIndices().size());
 
       for (size_t i = 0; i < sliceOp.getStartIndices().size(); i++) {
         int j = mapDStoDUSDim[i];
@@ -24238,14 +24237,11 @@ struct WhileIsCopySimplify
         auto dsStartIndex = sliceOp.getStartIndices()[i];
         auto dusStartIndex = dusOp.getStartIndices()[j];
 
-        APInt dsIdx, dusIdx;
-        // TODO: it doesn't need to be a constant, as long as it is a constant
-        // for the loop iteration we can do this
-        if (matchPattern(dsStartIndex, m_ConstantInt(&dsIdx))) {
-          sliceStartIndices[i] = getInt(dsIdx);
+        if (isConstantAcrossLoopIterations(dsStartIndex, whileOp)) {
+          sliceStartIndices[i] = dsStartIndex;
           sliceSizes[i] = dsShape[i];
-          if (matchPattern(dusStartIndex, m_ConstantInt(&dusIdx))) {
-            dusStartIndices[j] = getInt(dusIdx);
+          if (isConstantAcrossLoopIterations(dusStartIndex, whileOp)) {
+            dusStartIndices[j] = dusStartIndex;
           } else {
             indicesMatch = false;
             break;
@@ -24262,27 +24258,34 @@ struct WhileIsCopySimplify
           auto dsOffset = inductionVarOffsets[dsStartIndex];
           auto dusOffset = inductionVarOffsets[dusStartIndex];
 
-          if (dsOffset != dusOffset) {
+          if (dsOffset != dusOffset || dsShape[i] != 1) {
             indicesMatch = false;
             break;
           }
 
-          if (dsShape[i] != 1) {
-            indicesMatch = false;
-            break;
-          }
-          sliceStartIndices[i] = start + getInt(dsOffset);
+          // TODO: only construct when we know we can convert????
+          rewriter.setInsertionPoint(whileOp);
+
+          sliceStartIndices[i] = rewriter.create<stablehlo::ConstantOp>(
+              whileOp->getLoc(), info.start.getType(),
+              cast<ElementsAttr>(
+                  makeAttr(info.start.getType(),
+                           static_cast<int64_t>(start + getInt(dsOffset)))));
           sliceSizes[i] = limit - start;
-          dusStartIndices[j] = start + getInt(dusOffset);
+          dusStartIndices[j] = rewriter.create<stablehlo::ConstantOp>(
+              whileOp->getLoc(), info.start.getType(),
+              cast<ElementsAttr>(
+                  makeAttr(info.start.getType(),
+                           static_cast<int64_t>(start + getInt(dusOffset)))));
         }
       }
 
       if (!indicesMatch)
         continue;
 
-      indicesToReplace.push_back(
-          CopyInfo{sliceOperand, sliceStartIndices, sliceSizes, dusStartIndices,
-                   iotaMapping, mapDStoDUSDim, blockArg.getArgNumber()});
+      indicesToReplace.push_back(CopyInfo{
+          sliceOperand, sliceStartIndices, sliceSizes, dusStartIndices,
+          iotaMapping, mapDStoDUSDim, blockArg.getArgNumber()});
     }
 
     if (indicesToReplace.empty())
@@ -24291,18 +24294,12 @@ struct WhileIsCopySimplify
     for (auto copyInfo : indicesToReplace) {
       // We don't need to rewrite the loop here. While dead args elimination
       // will take care of it.
-      auto sliceSizes = copyInfo.sliceSizes;
+      rewriter.setInsertionPoint(whileOp);
 
-      SmallVector<int64_t> strides(sliceSizes.size(), 1);
-      SmallVector<int64_t> limits(sliceSizes.size());
-      for (size_t i = 0; i < sliceSizes.size(); i++) {
-        limits[i] = sliceSizes[i] + copyInfo.sliceStartIndices[i];
-      }
-      auto sliceOp = rewriter.create<stablehlo::SliceOp>(
+      auto sliceOp = rewriter.create<stablehlo::DynamicSliceOp>(
           whileOp.getLoc(), copyInfo.sliceOperand,
-          rewriter.getDenseI64ArrayAttr(copyInfo.sliceStartIndices),
-          rewriter.getDenseI64ArrayAttr(limits),
-          rewriter.getDenseI64ArrayAttr(strides));
+          promoteToLargestBitWidth(copyInfo.sliceStartIndices, rewriter),
+          rewriter.getDenseI64ArrayAttr(copyInfo.sliceSizes));
 
       auto dusUpdate = sliceOp.getResult();
       if (!copyInfo.iotaMapping) {
@@ -24314,16 +24311,10 @@ struct WhileIsCopySimplify
             rewriter.getDenseI64ArrayAttr(permutation));
       }
 
-      SmallVector<Value> dusStartIndicesValue;
-      auto type = RankedTensorType::get({}, rewriter.getI32Type());
-      for (auto dusStartIndex : copyInfo.dusStartIndices) {
-        dusStartIndicesValue.push_back(rewriter.create<stablehlo::ConstantOp>(
-            whileOp.getLoc(), type,
-            cast<ElementsAttr>(makeAttr(type, dusStartIndex))));
-      }
       auto newDUSOp = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
-          whileOp.getLoc(), whileOp.getOperands()[copyInfo.blockArgIdx], dusUpdate,
-          dusStartIndicesValue);
+          whileOp.getLoc(), whileOp.getOperands()[copyInfo.blockArgIdx],
+          dusUpdate,
+          promoteToLargestBitWidth(copyInfo.dusStartIndices, rewriter));
 
       whileOp.getResult(copyInfo.blockArgIdx)
           .replaceAllUsesWith(newDUSOp->getResult(0));
@@ -24334,13 +24325,23 @@ struct WhileIsCopySimplify
 private:
   struct CopyInfo {
     Value sliceOperand;
-    SmallVector<int64_t> sliceStartIndices;
+    SmallVector<Value> sliceStartIndices;
     SmallVector<int64_t> sliceSizes;
-    SmallVector<int64_t> dusStartIndices;
+    SmallVector<Value> dusStartIndices;
     bool iotaMapping;
     SmallVector<int64_t> mapDStoDUSDim;
     unsigned blockArgIdx;
   };
+
+  bool isConstantAcrossLoopIterations(Value value, WhileOp whileOp) const {
+    // defined outside the loop body
+    // even if it is currently not defined outside, licm should move it outside
+    // before we apply this pattern
+    if (value.getParentBlock() != &whileOp.getBody().front())
+      return true;
+
+    return false;
+  }
 
   bool isValueAccessibleFromBlock(DominanceInfo &domInfo, Value value,
                                   Block *block) const {
@@ -24357,6 +24358,39 @@ private:
       value = value.sextOrTrunc(64);
     }
     return value.getSExtValue();
+  }
+
+  SmallVector<Value> promoteToLargestBitWidth(SmallVector<Value> &values,
+                                              PatternRewriter &rewriter) const {
+    if (values.empty())
+      return {};
+
+    int64_t maxBitWidth = 0;
+    for (auto v : values) {
+      auto tensorTy = cast<RankedTensorType>(v.getType());
+      assert(tensorTy && tensorTy.getRank() == 0 && "Expected rank 0 tensor");
+      auto intTy = cast<IntegerType>(tensorTy.getElementType());
+      assert(intTy && "Expected integer type");
+      maxBitWidth =
+          std::max(maxBitWidth, static_cast<int64_t>(intTy.getWidth()));
+    }
+
+    SmallVector<Value> promotedValues(values.size());
+    for (size_t i = 0; i < values.size(); i++) {
+      auto tensorTy = cast<RankedTensorType>(values[i].getType());
+      auto intTy = cast<IntegerType>(tensorTy.getElementType());
+
+      if (intTy.getWidth() == maxBitWidth) {
+        promotedValues[i] = values[i];
+        continue;
+      }
+
+      promotedValues[i] = rewriter.create<stablehlo::ConvertOp>(
+          values[i].getLoc(),
+          RankedTensorType::get({}, rewriter.getIntegerType(maxBitWidth)),
+          values[i]);
+    }
+    return promotedValues;
   }
 };
 
