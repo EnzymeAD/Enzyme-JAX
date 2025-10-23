@@ -45,7 +45,7 @@ public:
 
     // Create the `tessera.define` op
     auto tesseraDefineOp = rewriter.create<tessera::DefineOp>(
-      funcOp.getLoc(), funcOp.getName(), fnType);
+        funcOp.getLoc(), funcOp.getName(), fnType);
 
     // Copy over all attributes other than the function name and type.
     for (const auto &namedAttr : funcOp->getAttrs()) {
