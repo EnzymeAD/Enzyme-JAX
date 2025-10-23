@@ -1080,8 +1080,14 @@ Value castToType(Type elType, Value val, Operation *op) {
   } else if (isa<LLVM::LLVMPointerType>(val.getType()) &&
              isa<IntegerType>(elType)) {
     return b.create<LLVM::PtrToIntOp>(val.getLoc(), elType, val);
-  } else if (val.getDefiningOp<LLVM::ZeroOp>()) {
-    return b.create<LLVM::ZeroOp>(val.getLoc(), elType);
+  } else if (auto ST = dyn_cast<LLVM::LLVMStructType>(elType)) {
+    if (ST.getBody().size() == 1) {
+      auto ud = b.create<LLVM::UndefOp>(val.getLoc(), elType);
+      auto c0 = castToType(ST.getBody()[0], val, op);
+      b.setInsertionPoint(op);
+      return b.create<LLVM::InsertValueOp>(val.getLoc(), ud, c0,
+                                           b.getDenseI64ArrayAttr({0}));
+    }
   }
   llvm::errs() << " mismatched load type, needed: " << elType << " found "
                << val << "\n";
