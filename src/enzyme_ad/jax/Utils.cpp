@@ -183,19 +183,40 @@ bool getEffectsBefore(Operation *op,
   }
   // If the parent operation is not guaranteed to execute its (single-block)
   // region once, walk the block.
+  // if (!isa<scf::IfOp, affine::AffineIfOp, memref::AllocaScopeOp>(
+  //         op->getParentOp()))
+  //   op->getParentOp()->walk([&](Operation *in) {
+  //     if (conservative)
+  //       return WalkResult::interrupt();
+  //     if (!collectEffects(in, effects, /* ignoreBarriers */ true)) {
+  //       conservative = true;
+  //       return WalkResult::interrupt();
+  //     }
+  //     return WalkResult::advance();
+  //   });
+
+  // return !conservative;
   if (!isa<scf::IfOp, affine::AffineIfOp, memref::AllocaScopeOp>(
-          op->getParentOp()))
+          op->getParentOp())) {
+    SmallVector<MemoryEffects::EffectInstance> walkEffects;
+    bool conservative = false;
+
     op->getParentOp()->walk([&](Operation *in) {
       if (conservative)
         return WalkResult::interrupt();
-      if (!collectEffects(in, effects, /* ignoreBarriers */ true)) {
+      if (!collectEffects(in, walkEffects, /* ignoreBarriers */ true)) {
         conservative = true;
         return WalkResult::interrupt();
       }
       return WalkResult::advance();
     });
 
-  return !conservative;
+    if (conservative)
+      return false;
+
+    effects.append(walkEffects.begin(), walkEffects.end());
+  }
+  return true;
 }
 bool getEffectsAfter(Operation *op,
                      SmallVectorImpl<MemoryEffects::EffectInstance> &effects,
