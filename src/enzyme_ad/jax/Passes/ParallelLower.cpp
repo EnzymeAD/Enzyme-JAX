@@ -183,9 +183,46 @@ mlir::LLVM::LLVMFuncOp GetOrCreateFreeFunction(ModuleOp module) {
 LogicalResult fixupGetFunc(LLVM::CallOp, OpBuilder &rewriter,
                            SmallVectorImpl<Value> &);
 
+// When we have code like:
+//
+// llvm.func @foo(%arg1 : !llvm.ptr { llvm.byval<type> }) {
+//   A(%arg1)
+// }
+// llvm.func (%arg1 : !llvm.ptr) {
+//   gpu.launch {
+//     llvm.call @foo(%arg1 : !llvm.ptr { llvm.byval<type> })
+//   }
+// }
+//
+// The LLVM inline implementation does something like this:
+//
+// llvm.func (%arg1 : !llvm.ptr) {
+//   %alloca = llvm.alloca type
+//   gpu.launch {
+//     llvm.intr.memcpy %alloca %arg1
+//     A(%alloca)
+//   }
+// }
+//
+// Which results in illegal access because we use the address of a host alloca
+// on the device. To avoid that, create a wrapper function which takes the
+// argument by value in turn calls the original function, we inline the original
+// function using the upstream infrastructure and then inline the region of that
+// llvm function into the gpu region, resulting in this:
+//
+// llvm.func (%arg1 : !llvm.ptr) {
+//   %val = llvm.load %arg1 : type
+//   gpu.launch {
+//     %alloca = llvm.alloca type
+//     llvm.store %val %alloca
+//     A(%alloca)
+//   }
+// }
+//
+// Which will correctly pass the contents of %arg1 by value from host to device.
 std::pair<LLVM::CallOp, LLVM::LLVMFuncOp>
-prepareForInline(LLVM::CallOp callOp, Operation *hostInsertionPoint,
-                 SymbolTableCollection &symbolTable) {
+prepareForGPUInline(LLVM::CallOp callOp, Operation *hostInsertionPoint,
+                    SymbolTableCollection &symbolTable) {
   auto lfn = dyn_cast_or_null<LLVM::LLVMFuncOp>(
       callOp.resolveCallableInTable(&symbolTable));
   assert(lfn);
@@ -411,7 +448,8 @@ void ParallelLower::runOnOperation() {
       return;
     }
     assert(gpuWrapper);
-    auto [callInGPU, lfn] = prepareForInline(caller, gpuWrapper, symbolTable);
+    auto [callInGPU, lfn] =
+        prepareForGPUInline(caller, gpuWrapper, symbolTable);
     LLVMcallInlinerImpl(callInGPU);
     OpBuilder b(caller);
     auto allocScope = b.create<memref::AllocaScopeOp>(caller.getLoc(),
