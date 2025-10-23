@@ -39,10 +39,6 @@ public:
   LogicalResult matchAndRewrite(func::FuncOp funcOp,
                                 PatternRewriter &rewriter) const override {
 
-    // Check if function has tessera custom attribute
-    if (!funcOp->hasAttr("tessera.custom_op"))
-      return rewriter.notifyMatchFailure(funcOp, "Not a Tessera custom op");
-
     FunctionType fnType = funcOp.getFunctionType();
 
     // Create the `tessera.define` op
@@ -146,7 +142,7 @@ struct FuncToTesseraPass
     target.addDynamicallyLegalOp<func::FuncOp>([](func::FuncOp op) {
       // Return true = legal (don't convert)
       // Return false = illegal (must convert)
-      return !op->hasAttr("tessera.custom_op");
+      return !op->hasAttr("tessera.convert");
     });
 
     target.addDynamicallyLegalOp<func::CallOp>([](func::CallOp op) {
