@@ -6,18 +6,18 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Bytecode/BytecodeOpInterface.h"
-#include "src/enzyme_ad/jax/Dialect/Tessera/Ops.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/IR/PatternMatch.h"
-#include "mlir/IR/IRMapping.h"
-#include "mlir/Transforms/DialectConversion.h"
-#include "mlir/Interfaces/FunctionInterfaces.h"
-#include "mlir/Interfaces/CallInterfaces.h"
-#include "mlir/Pass/Pass.h"
 #include "mlir/IR/BuiltinOps.h"
-#include "src/enzyme_ad/jax/Dialect/Tessera/Dialect.h"
-#include "src/enzyme_ad/jax/Passes/Tessera/Passes.h"
+#include "mlir/IR/IRMapping.h"
+#include "mlir/IR/PatternMatch.h"
+#include "mlir/Interfaces/CallInterfaces.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
+#include "mlir/Pass/Pass.h"
+#include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "src/enzyme_ad/jax/Dialect/Tessera/Dialect.h"
+#include "src/enzyme_ad/jax/Dialect/Tessera/Ops.h"
+#include "src/enzyme_ad/jax/Passes/Tessera/Passes.h"
 
 using namespace mlir;
 using namespace mlir::enzyme;
@@ -57,9 +57,8 @@ public:
     // Clone body of function
     if (!defineOp.isExternal()) {
       IRMapping mapper;
-      defineOp.getBody().cloneInto(&funcOp.getBody(),
-                            funcOp.getBody().end(),
-                            mapper);
+      defineOp.getBody().cloneInto(&funcOp.getBody(), funcOp.getBody().end(),
+                                   mapper);
     }
 
     rewriter.eraseOp(defineOp);
@@ -120,18 +119,18 @@ struct TesseraToFuncPass
   }
 
   void runOnOperation() override {
-  MLIRContext *ctx = &getContext();
-  RewritePatternSet patterns(ctx);
+    MLIRContext *ctx = &getContext();
+    RewritePatternSet patterns(ctx);
 
-  patterns.add<DefineOpRewrite, CallOpRewrite, ReturnOpRewrite>(ctx);
+    patterns.add<DefineOpRewrite, CallOpRewrite, ReturnOpRewrite>(ctx);
 
-  if (failed(applyPatternsAndFoldGreedily(getOperation(),
-                                          std::move(patterns))))
-    signalPassFailure();
-}
+    if (failed(
+            applyPatternsAndFoldGreedily(getOperation(), std::move(patterns))))
+      signalPassFailure();
+  }
 };
 
 std::unique_ptr<mlir::Pass> createTesseraToFuncPass() {
   return std::make_unique<TesseraToFuncPass>();
 }
-}
+} // namespace mlir::enzyme::tessera

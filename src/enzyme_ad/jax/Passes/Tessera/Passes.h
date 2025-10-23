@@ -1,8 +1,8 @@
 #ifndef TESSERA_PASSES_H
 #define TESSERA_PASSES_H
 
-#include "src/enzyme_ad/jax/Dialect/Tessera/Ops.h"
 #include "mlir/Pass/Pass.h"
+#include "src/enzyme_ad/jax/Dialect/Tessera/Ops.h"
 
 namespace mlir {
 namespace enzyme {

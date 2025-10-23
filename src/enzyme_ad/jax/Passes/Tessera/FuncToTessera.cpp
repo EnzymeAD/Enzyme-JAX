@@ -46,7 +46,7 @@ public:
     // Create the `tessera.define` op
     auto tesseraDefineOp = rewriter.create<tessera::DefineOp>(
       funcOp.getLoc(), funcOp.getName(), fnType);
-    
+
     // Copy over all attributes other than the function name and type.
     for (const auto &namedAttr : funcOp->getAttrs()) {
       if (namedAttr.getName() != funcOp.getFunctionTypeAttrName() &&
@@ -58,8 +58,7 @@ public:
     if (!funcOp.isExternal()) {
       IRMapping mapper;
       funcOp.getBody().cloneInto(&tesseraDefineOp.getBody(),
-                            tesseraDefineOp.getBody().end(),
-                            mapper);
+                                 tesseraDefineOp.getBody().end(), mapper);
 
       // Now walk through the cloned operations and convert func.return to
       // tessera.return
@@ -149,23 +148,24 @@ struct FuncToTesseraPass
   }
 
   void runOnOperation() override {
-  MLIRContext *ctx = &getContext();
+    MLIRContext *ctx = &getContext();
 
-  ConversionTarget target(*ctx);
-  target.addLegalDialect<tessera::TesseraDialect>();
-  target.addLegalDialect<BuiltinDialect>();
-  target.addIllegalDialect<func::FuncDialect>();
+    ConversionTarget target(*ctx);
+    target.addLegalDialect<tessera::TesseraDialect>();
+    target.addLegalDialect<BuiltinDialect>();
+    target.addIllegalDialect<func::FuncDialect>();
 
-  RewritePatternSet patterns(ctx);
+    RewritePatternSet patterns(ctx);
 
-  patterns.add<FuncOpRewrite, CallOpRewrite, ReturnOpRewrite>(ctx);
+    patterns.add<FuncOpRewrite, CallOpRewrite, ReturnOpRewrite>(ctx);
 
-  if (failed(applyFullConversion(getOperation(), target, std::move(patterns))))
-    signalPassFailure();
-}
+    if (failed(
+            applyFullConversion(getOperation(), target, std::move(patterns))))
+      signalPassFailure();
+  }
 };
 
 std::unique_ptr<mlir::Pass> createFuncToTesseraPass() {
   return std::make_unique<FuncToTesseraPass>();
 }
-}
+} // namespace mlir::enzyme::tessera
