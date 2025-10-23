@@ -787,26 +787,18 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
             sliceOp, value, limit, whileBody, parentBlock, domInfo);
         if (dim != -1) {
           candidateSlices.push_back(DynamicSliceInfo{sliceOp, dim, false});
-          llvm::errs() << "Found candidate dynamic slice: " << sliceOp << "\n";
         }
       }
     }
   }
 
-  if (candidateSlices.empty()) {
-    llvm::errs() << "No suitable dynamic slices found for batching\n";
+  if (candidateSlices.empty())
     return failure();
-  }
-
-  llvm::errs() << "Found " << candidateSlices.size()
-               << " candidate dynamic slices\n";
 
   // Create a map of user operations to their corresponding dynamic slices
   DenseMap<Operation *, SmallVector<DynamicSliceInfo>> userOpToSlicesMap;
   for (auto ds : candidateSlices) {
     for (auto op : ds.sliceOp->getUsers()) {
-      llvm::errs() << "mapping user op: " << *op << " to slice: " << ds.sliceOp
-                   << "\n";
       userOpToSlicesMap[op].push_back(ds);
 
       if (isa<stablehlo::ReshapeOp>(op)) {
@@ -818,9 +810,6 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
         }
 
         for (auto user : op->getUsers()) {
-          llvm::errs() << "mapping user op: " << *user
-                       << " to slice: " << ds.sliceOp
-                       << " via intermediate reshape\n";
           userOpToSlicesMap[user].push_back(
               DynamicSliceInfo{ds.sliceOp, ds.inductionVarDimension, true});
         }
@@ -828,12 +817,8 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
     }
   }
 
-  if (userOpToSlicesMap.empty()) {
+  if (userOpToSlicesMap.empty())
     return failure();
-  }
-
-  llvm::errs() << "Created map with " << userOpToSlicesMap.size()
-               << " user operations\n";
 
   bool wasLifted = false;
   for (auto &[op, slices] : userOpToSlicesMap) {
@@ -892,7 +877,6 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
     if (operand.getParentBlock() != &whileOp.getBody().front()) {
       batchLiftingModes[i] = BatchLiftingMode::DEFINED_OUTSIDE_WHILE;
       batchOperands[i] = operand;
-      llvm::errs() << "defined outside while\n";
       continue;
     }
 
@@ -910,10 +894,8 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
           batchLiftingModes[i] = BatchLiftingMode::DYNAMIC_SLICE;
           sliceDims[i] = itr->inductionVarDimension;
           batchOperands[i] = ds->getOperand(0);
-          llvm::errs() << "found dynamic slice\n";
           continue;
         } else {
-          llvm::errs() << "not a valid dynamic slice\n";
           return false;
         }
       }
@@ -1035,9 +1017,11 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
   rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(
       op, op->getResult(0).getType(), dynamicSlice);
 
-  // TODO: run batching pass
-
-  return true;
+  std::map<enzyme::batchutils::BatchCacheKey, FunctionOpInterface>
+      batchedFunctionCache;
+  return succeeded(enzyme::batchutils::batchOperation(
+      rewriter, batchOp, cast<FunctionOpInterface>(func.getOperation()),
+      batchedFunctionCache));
 }
 
 bool GreedyWhileLoopBatchFission::liftElementwiseOp(
