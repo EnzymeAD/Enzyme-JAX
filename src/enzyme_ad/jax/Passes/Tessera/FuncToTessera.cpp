@@ -6,18 +6,19 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Bytecode/BytecodeOpInterface.h"
-#include "src/enzyme_ad/jax/Dialect/Tessera/Ops.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/IR/PatternMatch.h"
-#include "mlir/IR/IRMapping.h"
-#include "mlir/Transforms/DialectConversion.h"
-#include "mlir/Interfaces/FunctionInterfaces.h"
-#include "mlir/Interfaces/CallInterfaces.h"
-#include "mlir/Pass/Pass.h"
+#include "mlir/IR/BuiltinDialect.h"
 #include "mlir/IR/BuiltinOps.h"
-#include "src/enzyme_ad/jax/Dialect/Tessera/Dialect.h"
-#include "src/enzyme_ad/jax/Passes/Tessera/Passes.h"
+#include "mlir/IR/IRMapping.h"
+#include "mlir/IR/PatternMatch.h"
+#include "mlir/Interfaces/CallInterfaces.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
+#include "mlir/Pass/Pass.h"
+#include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "src/enzyme_ad/jax/Dialect/Tessera/Dialect.h"
+#include "src/enzyme_ad/jax/Dialect/Tessera/Ops.h"
+#include "src/enzyme_ad/jax/Passes/Tessera/Passes.h"
 
 using namespace mlir;
 using namespace mlir::enzyme;
@@ -59,6 +60,22 @@ public:
       funcOp.getBody().cloneInto(&tesseraDefineOp.getBody(),
                             tesseraDefineOp.getBody().end(),
                             mapper);
+
+      // Now walk through the cloned operations and convert func.return to
+      // tessera.return
+      tesseraDefineOp.walk([&](func::ReturnOp returnOp) {
+        rewriter.setInsertionPoint(returnOp);
+        rewriter.replaceOpWithNewOp<tessera::ReturnOp>(returnOp,
+                                                       returnOp.getOperands());
+      });
+
+      // Convert func.call to tessera.call
+      tesseraDefineOp.walk([&](func::CallOp callOp) {
+        rewriter.setInsertionPoint(callOp);
+        rewriter.replaceOpWithNewOp<tessera::CallOp>(
+            callOp, callOp.getResultTypes(), callOp.getOperands(),
+            callOp->getAttrs());
+      });
     }
 
     rewriter.eraseOp(funcOp);
@@ -81,7 +98,7 @@ public:
     Operation *calleeOp = SymbolTable::lookupSymbolIn(moduleOp, calleeAttr);
     
     // Only convert if the callee is a Tessera DefineOp
-    if (isa<tessera::DefineOp>(calleeOp))
+    if (!isa<tessera::DefineOp>(calleeOp))
       return rewriter.notifyMatchFailure(callOp, "Callee is not a Tessera DefineOp");
     
       rewriter.replaceOpWithNewOp<tessera::CallOp>(callOp, callOp.getResultTypes(),
@@ -122,14 +139,28 @@ namespace mlir::enzyme::tessera {
 struct FuncToTesseraPass
   : public PassWrapper<FuncToTesseraPass, OperationPass<ModuleOp>> {
 
+  StringRef getArgument() const final { return "func-to-tessera"; }
+  StringRef getDescription() const final {
+    return "Convert func dialect to tessera dialect.";
+  }
+
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<tessera::TesseraDialect>();
+  }
+
   void runOnOperation() override {
   MLIRContext *ctx = &getContext();
+
+  ConversionTarget target(*ctx);
+  target.addLegalDialect<tessera::TesseraDialect>();
+  target.addLegalDialect<BuiltinDialect>();
+  target.addIllegalDialect<func::FuncDialect>();
+
   RewritePatternSet patterns(ctx);
 
   patterns.add<FuncOpRewrite, CallOpRewrite, ReturnOpRewrite>(ctx);
 
-  if (failed(applyPatternsAndFoldGreedily(getOperation(),
-                                          std::move(patterns))))
+  if (failed(applyFullConversion(getOperation(), target, std::move(patterns))))
     signalPassFailure();
 }
 };

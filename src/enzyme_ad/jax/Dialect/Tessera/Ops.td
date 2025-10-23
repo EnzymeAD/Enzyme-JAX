@@ -119,6 +119,10 @@ def CallOp : TesseraOp<"call",
 
   let results = (outs Variadic<AnyType>);
 
+  let assemblyFormat = [{
+    $callee `(` $operands `)` attr-dict `:` functional-type($operands, results)
+  }];
+  
   let builders = [
     OpBuilder<(ins "DefineOp":$callee, CArg<"ValueRange", "{}">:$operands), [{
       $_state.addOperands(operands);

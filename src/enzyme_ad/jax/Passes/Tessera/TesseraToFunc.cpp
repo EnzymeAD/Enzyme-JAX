@@ -44,9 +44,8 @@ public:
 
 
     // Create the `func.func` op
-    auto funcOp = rewriter.create<tessera::DefineOp>(
-      defineOp.getLoc(), defineOp.getName(), fnType);
-    
+    auto funcOp = rewriter.create<func::FuncOp>(defineOp.getLoc(),
+                                                defineOp.getName(), fnType);
 
     // Copy over all attributes other than the function name and type.
     for (const auto &namedAttr : defineOp->getAttrs()) {
@@ -110,6 +109,15 @@ namespace mlir::enzyme::tessera {
 
 struct TesseraToFuncPass
   : public PassWrapper<TesseraToFuncPass, OperationPass<ModuleOp>> {
+
+  StringRef getArgument() const final { return "tessera-to-func"; }
+  StringRef getDescription() const final {
+    return "Convert tessera dialect to func dialect.";
+  }
+
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<func::FuncDialect>();
+  }
 
   void runOnOperation() override {
   MLIRContext *ctx = &getContext();
