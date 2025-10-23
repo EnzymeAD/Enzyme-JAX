@@ -30,6 +30,7 @@
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/DebugLog.h"
 
 #include "Enzyme/MLIR/Dialect/Ops.h"
 #include "Enzyme/MLIR/Passes/Passes.h"
@@ -182,6 +183,98 @@ mlir::LLVM::LLVMFuncOp GetOrCreateFreeFunction(ModuleOp module) {
 LogicalResult fixupGetFunc(LLVM::CallOp, OpBuilder &rewriter,
                            SmallVectorImpl<Value> &);
 
+std::pair<LLVM::CallOp, LLVM::LLVMFuncOp>
+prepareForInline(LLVM::CallOp callOp, Operation *hostInsertionPoint,
+                 SymbolTableCollection &symbolTable) {
+  auto lfn = dyn_cast_or_null<LLVM::LLVMFuncOp>(
+      callOp.resolveCallableInTable(&symbolTable));
+  assert(lfn);
+  if (lfn->getAttr("enzyme.prepared_for_inline"))
+    return {callOp, lfn};
+
+  OpBuilder hostBuilder(hostInsertionPoint);
+
+  SmallVector<Value> newArgs;
+  SmallVector<DictionaryAttr> newArgAttrs;
+  std::optional<mlir::ArrayAttr> argAttrs = lfn.getArgAttrs();
+  assert(argAttrs);
+  SmallVector<std::function<Value(OpBuilder &, Value)>> prepArg;
+  for (auto [arg, argumentAttrsA] :
+       llvm::zip(callOp.getArgOperands(), argAttrs->getValue())) {
+    DictionaryAttr argumentAttrs = cast<DictionaryAttr>(argumentAttrsA);
+    if (std::optional<NamedAttribute> attr =
+            argumentAttrs.getNamed(LLVM::LLVMDialect::getByValAttrName())) {
+      Type elementType = cast<TypeAttr>(attr->getValue()).getValue();
+      Value newArg =
+          LLVM::LoadOp::create(hostBuilder, arg.getLoc(), elementType, arg);
+      newArgs.push_back(newArg);
+      newArgAttrs.push_back(
+          NamedAttrList().getDictionary(callOp->getContext()));
+      prepArg.push_back([=](OpBuilder &builder, Value v) {
+        DataLayout dataLayout = DataLayout::closest(callOp);
+        uint64_t minimumAlignment = dataLayout.getTypeABIAlignment(elementType);
+        uint64_t requestedAlignment = 1;
+        if (std::optional<NamedAttribute> alignAttr =
+                argumentAttrs.getNamed(LLVM::LLVMDialect::getAlignAttrName())) {
+          requestedAlignment = cast<IntegerAttr>(alignAttr->getValue())
+                                   .getValue()
+                                   .getLimitedValue();
+        }
+        uint64_t targetAlignment =
+            std::max(requestedAlignment, minimumAlignment);
+        // Since this is a static alloca, we can put it directly in the entry
+        // block, so they can be absorbed into the prologue/epilogue at code
+        // generation.
+        Value one =
+            LLVM::ConstantOp::create(builder, v.getLoc(), builder.getI64Type(),
+                                     builder.getI64IntegerAttr(1));
+        Value allocaOp =
+            LLVM::AllocaOp::create(builder, v.getLoc(), arg.getType(),
+                                   elementType, one, targetAlignment);
+        LLVM::StoreOp::create(builder, v.getLoc(), v, allocaOp);
+        return allocaOp;
+      });
+    } else {
+      newArgs.push_back(arg);
+      newArgAttrs.push_back(argumentAttrs);
+      prepArg.push_back([](OpBuilder &, Value v) { return v; });
+    }
+  }
+
+  SmallVector<Type> newTypes =
+      llvm::map_to_vector(newArgs, [&](auto arg) { return arg.getType(); });
+  SmallVector<Location> newLocs =
+      llvm::map_to_vector(newArgs, [&](auto arg) { return arg.getLoc(); });
+
+  OpBuilder moduleBuilder(callOp->getParentOfType<ModuleOp>().getBodyRegion());
+  auto oldFnTy = lfn.getFunctionType();
+  auto newFn = LLVM::LLVMFuncOp::create(
+      moduleBuilder, lfn->getLoc(),
+      std::string(lfn.getName()) + "$tmp_for_inline",
+      LLVM::LLVMFunctionType::get(oldFnTy.getReturnType(), newTypes,
+                                  oldFnTy.isVarArg()),
+      LLVM::Linkage::Private, /*dsoLocal=*/false, LLVM::cconv::CConv::C,
+      /*comdat=*/{}, /*attrs=*/{}, newArgAttrs);
+  newFn->setAttr("enzyme.prepared_for_inline", moduleBuilder.getUnitAttr());
+
+  callOp.setCallee(newFn.getName());
+  for (auto [i, arg] : llvm::enumerate(newArgs))
+    callOp.setOperand(i, arg);
+
+  OpBuilder fnBuilder(newFn->getContext());
+  Block *entry = fnBuilder.createBlock(
+      &newFn.getBody(), newFn.getBody().begin(), newTypes, newLocs);
+  SmallVector<Value> argsForCall;
+  for (auto [prep, arg] : llvm::zip(prepArg, entry->getArguments()))
+    argsForCall.push_back(prep(fnBuilder, arg));
+
+  auto nestedCallOp =
+      LLVM::CallOp::create(fnBuilder, callOp.getLoc(), lfn, argsForCall);
+  LLVM::ReturnOp::create(fnBuilder, callOp.getLoc(), nullptr);
+
+  return {nestedCallOp, newFn};
+}
+
 void ParallelLower::runOnOperation() {
   // The inliner should only be run on operations that define a symbol table,
   // as the callgraph will need to resolve references.
@@ -247,7 +340,7 @@ void ParallelLower::runOnOperation() {
     b.create<memref::AllocaScopeReturnOp>(allocScope.getLoc(),
                                           exOp.getResults());
   };
-  LLVMcallInliner = [&](LLVM::CallOp caller) {
+  auto LLVMcallInlinerImpl = [&](LLVM::CallOp caller) {
     // Build the inliner interface.
     AlwaysInlinerInterface interface(&getContext());
 
@@ -292,15 +385,59 @@ void ParallelLower::runOnOperation() {
     caller.replaceAllUsesWith(allocScope.getResults());
     b.setInsertionPointToEnd(blk);
     b.create<scf::YieldOp>(caller.getLoc(), caller.getResults());
-    if (inlineCall(interface, cloneCallback, caller, callableOp, targetRegion,
-                   /*shouldCloneInlinedRegion=*/true)
-            .succeeded()) {
-      caller.erase();
-      replacedCallables.insert(callableOp);
+    if (!callableOp
+             ->walk([](Operation *op) {
+               if (isa<GPUWrapperOp, gpu::LaunchOp>(op))
+                 return WalkResult::interrupt();
+               return WalkResult::advance();
+             })
+             .wasInterrupted()) {
+      if (inlineCall(interface, cloneCallback, caller, callableOp, targetRegion,
+                     /*shouldCloneInlinedRegion=*/true)
+              .succeeded()) {
+        caller.erase();
+        replacedCallables.insert(callableOp);
+      }
     }
     b.setInsertionPointToEnd(&allocScope.getRegion().front());
     b.create<memref::AllocaScopeReturnOp>(allocScope.getLoc(),
                                           exOp.getResults());
+  };
+  LLVMcallInliner = [&](LLVM::CallOp caller) {
+    Operation *gpuWrapper = nullptr;
+    if (!((gpuWrapper = caller->getParentOfType<GPUWrapperOp>()) ||
+          (gpuWrapper = caller->getParentOfType<gpu::LaunchOp>()))) {
+      LLVMcallInlinerImpl(caller);
+      return;
+    }
+    assert(gpuWrapper);
+    auto [callInGPU, lfn] = prepareForInline(caller, gpuWrapper, symbolTable);
+    LLVMcallInlinerImpl(callInGPU);
+    OpBuilder b(caller);
+    auto allocScope = b.create<memref::AllocaScopeOp>(caller.getLoc(),
+                                                      caller.getResultTypes());
+    allocScope.getRegion().push_back(new Block());
+    b.setInsertionPointToStart(&allocScope.getRegion().front());
+    auto exOp = b.create<scf::ExecuteRegionOp>(caller.getLoc(),
+                                               caller.getResultTypes());
+    Block *blk = new Block();
+    exOp.getRegion().push_back(blk);
+    b.cloneRegionBefore(lfn.getBody(), exOp.getRegion(),
+                        exOp.getRegion().end());
+    b.setInsertionPointToEnd(blk);
+    LLVM::BrOp::create(b, lfn.getLoc(), caller.getArgOperands(),
+                       blk->getNextNode());
+    caller.replaceAllUsesWith(allocScope.getResults());
+    caller->erase();
+    LLVM::ReturnOp ret = cast<LLVM::ReturnOp>(exOp.getRegion().back().back());
+    auto retVals = ret->getOperands();
+    ret.erase();
+    b.setInsertionPointToEnd(&exOp.getRegion().back());
+    b.create<scf::YieldOp>(caller.getLoc(), retVals);
+    b.setInsertionPointToEnd(&allocScope.getRegion().front());
+    b.create<memref::AllocaScopeReturnOp>(allocScope.getLoc(),
+                                          exOp.getResults());
+    lfn->erase();
   };
   autodiffInliner = [&](enzyme::AutoDiffOp caller) {
     // Build the inliner interface.
@@ -544,6 +681,7 @@ void ParallelLower::runOnOperation() {
       builder.setInsertionPointToStart(blockB);
     }
 
+    OpBuilder hostBuilder = builder;
     if (wrapParallelOps) {
       auto pw = builder.create<enzymexla::GPUWrapperOp>(
           loc,
