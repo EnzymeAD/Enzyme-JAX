@@ -64,3 +64,45 @@ func.func @main3(%arg0: tensor<2x2xcomplex<f64>> {enzymexla.memory_effects = []}
 // CHECK-NEXT:     %8 = chlo.conj %7 : tensor<2x2xcomplex<f64>> -> tensor<2x2xcomplex<f64>>
 // CHECK-NEXT:     return %8, %4, %0 : tensor<2x2xcomplex<f64>>, tensor<2x2xcomplex<f64>>, tensor<2x2xcomplex<f64>>
 // CHECK-NEXT: }
+
+func.func @main4(%arg0: tensor<2x16xf32> {enzymexla.memory_effects = []}, %arg1: tensor<16xf32> {enzymexla.memory_effects = []}, %arg2: tensor<16x16xf32> {enzymexla.memory_effects = []}, %arg3: tensor<16xf32> {enzymexla.memory_effects = []}, %arg4: tensor<16x1xf32> {enzymexla.memory_effects = []}, %arg5: tensor<1xf32> {enzymexla.memory_effects = []}, %arg6: tensor<2xf32> {enzymexla.memory_effects = []}) -> tensor<2xf32> attributes {enzymexla.memory_effects = []} {
+    %cst = stablehlo.constant dense<1.000000e+00> : tensor<1xf32>
+    %cst_0 = stablehlo.constant dense<1.000000e+00> : tensor<16xf32>
+    %0 = stablehlo.reshape %arg4 : (tensor<16x1xf32>) -> tensor<1x16xf32>
+    %1 = stablehlo.dot_general %arg0, %arg6, contracting_dims = [0] x [0], precision = [DEFAULT, DEFAULT] : (tensor<2x16xf32>, tensor<2xf32>) -> tensor<16xf32>
+    %2 = stablehlo.add %1, %arg1 : tensor<16xf32>
+    %3 = stablehlo.tanh %2 : tensor<16xf32>
+    %4 = stablehlo.dot_general %arg2, %3, contracting_dims = [0] x [0], precision = [DEFAULT, DEFAULT] : (tensor<16x16xf32>, tensor<16xf32>) -> tensor<16xf32>
+    %5 = stablehlo.add %4, %arg3 : tensor<16xf32>
+    %6 = stablehlo.dot_general %cst, %0, contracting_dims = [0] x [0], precision = [DEFAULT, DEFAULT] : (tensor<1xf32>, tensor<1x16xf32>) -> tensor<16xf32>
+    %7 = stablehlo.tanh %5 : tensor<16xf32>
+    %8 = stablehlo.multiply %7, %7 : tensor<16xf32>
+    %9 = stablehlo.subtract %cst_0, %8 : tensor<16xf32>
+    %10 = stablehlo.multiply %6, %9 : tensor<16xf32>
+    %11 = stablehlo.dot_general %10, %arg2, contracting_dims = [0] x [1], precision = [DEFAULT, DEFAULT] : (tensor<16xf32>, tensor<16x16xf32>) -> tensor<16xf32>
+    %12 = stablehlo.multiply %3, %3 : tensor<16xf32>
+    %13 = stablehlo.subtract %cst_0, %12 : tensor<16xf32>
+    %14 = stablehlo.multiply %11, %13 : tensor<16xf32>
+    %15 = stablehlo.dot_general %14, %arg0, contracting_dims = [0] x [1], precision = [DEFAULT, DEFAULT] : (tensor<16xf32>, tensor<2x16xf32>) -> tensor<2xf32>
+    return %15 : tensor<2xf32>
+}
+
+// CHECK: func.func @main4(%arg0: tensor<2x16xf32> {enzymexla.memory_effects = []}, %arg1: tensor<16xf32> {enzymexla.memory_effects = []}, %arg2: tensor<16x16xf32> {enzymexla.memory_effects = []}, %arg3: tensor<16xf32> {enzymexla.memory_effects = []}, %arg4: tensor<16x1xf32> {enzymexla.memory_effects = []}, %arg5: tensor<1xf32> {enzymexla.memory_effects = []}, %arg6: tensor<2xf32> {enzymexla.memory_effects = []}) -> tensor<2xf32> attributes {enzymexla.memory_effects = []} {
+// CHECK-NEXT:     %cst = stablehlo.constant dense<1.000000e+00> : tensor<16xf32>
+// CHECK-NEXT:     %0 = stablehlo.dot_general %arg0, %arg6, contracting_dims = [0] x [0], precision = [DEFAULT, DEFAULT] : (tensor<2x16xf32>, tensor<2xf32>) -> tensor<16xf32>
+// CHECK-NEXT:     %1 = stablehlo.add %0, %arg1 : tensor<16xf32>
+// CHECK-NEXT:     %2 = stablehlo.tanh %1 : tensor<16xf32>
+// CHECK-NEXT:     %3 = stablehlo.dot_general %arg2, %2, contracting_dims = [0] x [0], precision = [DEFAULT, DEFAULT] : (tensor<16x16xf32>, tensor<16xf32>) -> tensor<16xf32>
+// CHECK-NEXT:     %4 = stablehlo.add %3, %arg3 : tensor<16xf32>
+// CHECK-NEXT:     %5 = stablehlo.reshape %arg4 : (tensor<16x1xf32>) -> tensor<16xf32>
+// CHECK-NEXT:     %6 = stablehlo.tanh %4 : tensor<16xf32>
+// CHECK-NEXT:     %7 = stablehlo.multiply %6, %6 : tensor<16xf32>
+// CHECK-NEXT:     %8 = stablehlo.subtract %cst, %7 : tensor<16xf32>
+// CHECK-NEXT:     %9 = stablehlo.multiply %5, %8 : tensor<16xf32>
+// CHECK-NEXT:     %10 = stablehlo.dot_general %9, %arg2, contracting_dims = [0] x [1], precision = [DEFAULT, DEFAULT] : (tensor<16xf32>, tensor<16x16xf32>) -> tensor<16xf32>
+// CHECK-NEXT:     %11 = stablehlo.multiply %2, %2 : tensor<16xf32>
+// CHECK-NEXT:     %12 = stablehlo.subtract %cst, %11 : tensor<16xf32>
+// CHECK-NEXT:     %13 = stablehlo.multiply %10, %12 : tensor<16xf32>
+// CHECK-NEXT:     %14 = stablehlo.dot_general %13, %arg0, contracting_dims = [0] x [1], precision = [DEFAULT, DEFAULT] : (tensor<16xf32>, tensor<2x16xf32>) -> tensor<2xf32>
+// CHECK-NEXT:     return %14 : tensor<2xf32>
+// CHECK-NEXT: }

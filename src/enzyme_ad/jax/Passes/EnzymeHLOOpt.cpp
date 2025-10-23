@@ -8284,21 +8284,20 @@ struct DotGeneralSimplify
       reduceSumInput = op.getRhs();
 
       SmallVector<int64_t> broadcastDimsTmp(rhsType.getRank(), -1);
-      broadcastShape = SmallVector<int64_t>(rhsType.getRank(), -1);
 
       int64_t idx = 0;
       for (auto dim : rhsBatchingDims) {
         broadcastDimsTmp[dim] = idx;
-        broadcastShape[idx] = rhsShape[dim];
+        broadcastShape.push_back(rhsShape[dim]);
         idx++;
       }
       for (auto dim : lhsNonContractingDims) {
-        broadcastShape[idx] = lhsShape[dim];
+        broadcastShape.push_back(lhsShape[dim]);
         idx++;
       }
       for (auto dim : rhsNonContractingDims) {
         broadcastDimsTmp[dim] = idx;
-        broadcastShape[idx] = rhsShape[dim];
+        broadcastShape.push_back(rhsShape[dim]);
         idx++;
       }
 
@@ -8312,21 +8311,20 @@ struct DotGeneralSimplify
       reduceSumInput = op.getLhs();
 
       SmallVector<int64_t> broadcastDimsTmp(lhsType.getRank(), -1);
-      broadcastShape = SmallVector<int64_t>(lhsType.getRank(), -1);
 
       int64_t idx = 0;
       for (auto dim : lhsBatchingDims) {
         broadcastDimsTmp[dim] = idx;
-        broadcastShape[idx] = lhsShape[dim];
+        broadcastShape.push_back(lhsShape[dim]);
         idx++;
       }
       for (auto dim : lhsNonContractingDims) {
         broadcastDimsTmp[dim] = idx;
-        broadcastShape[idx] = lhsShape[dim];
+        broadcastShape.push_back(lhsShape[dim]);
         idx++;
       }
       for (auto dim : rhsNonContractingDims) {
-        broadcastShape[idx] = rhsShape[dim];
+        broadcastShape.push_back(rhsShape[dim]);
         idx++;
       }
 
