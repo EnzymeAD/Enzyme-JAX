@@ -38,11 +38,11 @@ public:
 
   LogicalResult matchAndRewrite(func::FuncOp funcOp,
                                 PatternRewriter &rewriter) const override {
-    
+
     // Check if function has tessera custom attribute
     if (!funcOp->hasAttr("tessera.custom_op"))
       return rewriter.notifyMatchFailure(funcOp, "Not a Tessera custom op");
-    
+
     FunctionType fnType = funcOp.getFunctionType();
 
     // Create the `tessera.define` op
@@ -142,19 +142,19 @@ struct FuncToTesseraPass
     target.addLegalDialect<BuiltinDialect>();
     target.addIllegalDialect<func::FuncDialect>();
 
-     // Define which func operations are legal/illegal
+    // Define which func operations are legal/illegal
     target.addDynamicallyLegalOp<func::FuncOp>([](func::FuncOp op) {
-    // Return true = legal (don't convert)
-    // Return false = illegal (must convert)
+      // Return true = legal (don't convert)
+      // Return false = illegal (must convert)
       return !op->hasAttr("tessera.custom_op");
     });
-  
+
     target.addDynamicallyLegalOp<func::CallOp>([](func::CallOp op) {
       auto module = op->getParentOfType<ModuleOp>();
       auto callee = SymbolTable::lookupSymbolIn(module, op.getCalleeAttr());
       return !isa_and_nonnull<tessera::DefineOp>(callee);
     });
-  
+
     target.addDynamicallyLegalOp<func::ReturnOp>([](func::ReturnOp op) {
       return !isa<tessera::DefineOp>(op->getParentOp());
     });
@@ -163,8 +163,8 @@ struct FuncToTesseraPass
 
     patterns.add<FuncOpRewrite, CallOpRewrite, ReturnOpRewrite>(ctx);
 
-    if (failed(
-            applyPartialConversion(getOperation(), target, std::move(patterns))))
+    if (failed(applyPartialConversion(getOperation(), target,
+                                      std::move(patterns))))
       signalPassFailure();
   }
 };
