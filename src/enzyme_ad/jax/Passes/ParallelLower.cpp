@@ -466,12 +466,13 @@ void ParallelLower::runOnOperation() {
     LLVM::BrOp::create(b, lfn.getLoc(), caller.getArgOperands(),
                        blk->getNextNode());
     caller.replaceAllUsesWith(allocScope.getResults());
+    auto callerLoc = caller.getLoc();
     caller->erase();
     LLVM::ReturnOp ret = cast<LLVM::ReturnOp>(exOp.getRegion().back().back());
     auto retVals = ret->getOperands();
     ret.erase();
     b.setInsertionPointToEnd(&exOp.getRegion().back());
-    b.create<scf::YieldOp>(caller.getLoc(), retVals);
+    b.create<scf::YieldOp>(callerLoc, retVals);
     b.setInsertionPointToEnd(&allocScope.getRegion().front());
     b.create<memref::AllocaScopeReturnOp>(allocScope.getLoc(),
                                           exOp.getResults());
