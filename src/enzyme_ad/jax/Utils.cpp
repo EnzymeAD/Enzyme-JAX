@@ -181,39 +181,20 @@ bool getEffectsBefore(Operation *op,
   if (!getEffectsBefore(op->getParentOp(), effects, stopAtBarrier)) {
     return false;
   }
-  // If the parent operation is not guaranteed to execute its (single-block)
-  // region once, walk the block.
-  // if (!isa<scf::IfOp, affine::AffineIfOp, memref::AllocaScopeOp>(
-  //         op->getParentOp()))
-  //   op->getParentOp()->walk([&](Operation *in) {
-  //     if (conservative)
-  //       return WalkResult::interrupt();
-  //     if (!collectEffects(in, effects, /* ignoreBarriers */ true)) {
-  //       conservative = true;
-  //       return WalkResult::interrupt();
-  //     }
-  //     return WalkResult::advance();
-  //   });
-
-  if (!isa<scf::IfOp, affine::AffineIfOp, memref::AllocaScopeOp>(
-          op->getParentOp())) {
-    SmallVector<Operation *> opsToProcess;
-    op->getParentOp()->walk([&](Operation *in) {
-      opsToProcess.push_back(in);
-      return WalkResult::advance();
-    });
-
-    std::stable_sort(opsToProcess.begin(), opsToProcess.end(),
-                     [](Operation *a, Operation *b) { return a < b; });
-
-    for (Operation *in : opsToProcess) {
-      if (!collectEffects(in, effects, /* ignoreBarriers */ true)) {
-        conservative = true;
-        break;
-      }
-    }
-  }
-
+  If the parent operation is not guaranteed to execute its(single - block)
+      region once,
+      walk the block
+          .if (!isa<scf::IfOp, affine::AffineIfOp, memref::AllocaScopeOp>(
+                   op->getParentOp())) op->getParentOp()
+          ->walk([&](Operation *in) {
+            if (conservative)
+              return WalkResult::interrupt();
+            if (!collectEffects(in, effects, /* ignoreBarriers */ true)) {
+              conservative = true;
+              return WalkResult::interrupt();
+            }
+            return WalkResult::advance();
+          });
   return !conservative;
 }
 bool getEffectsAfter(Operation *op,
