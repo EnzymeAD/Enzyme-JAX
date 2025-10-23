@@ -2423,3 +2423,8 @@ def ApplySplitVariadicScatterOpPatterns : EnzymeHLOPatternOp<
     "split_variadic_scatter_op"> {
   let patterns = ["SplitVariadicScatterOp"];
 }
+
+def ApplyDynamicSliceSimplifyPatterns : EnzymeHLOPatternOp<
+    "dynamic_slice_simplify"> {
+  let patterns = ["DynamicSliceSimplify"];
+}
