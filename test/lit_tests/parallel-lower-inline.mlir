@@ -18,18 +18,18 @@ module {
 }
 
 // CHECK:   llvm.func internal @bar(%arg0: i32, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: !llvm.ptr, %arg4: !llvm.ptr {llvm.noundef}, %arg5: !llvm.ptr {llvm.noundef}, %arg6: i32 {llvm.noundef}, %arg7: i64 {llvm.noundef}) attributes {sym_visibility = "private"} {
-// CHECK:     %[[.*:ld]] = llvm.load %arg1 : !llvm.ptr -> !llvm.struct<(i8)>
+// CHECK:     %[[ld:.*]] = llvm.load %arg1 : !llvm.ptr -> !llvm.struct<(i8)>
 // CHECK:       scf.parallel 
 // CHECK:         scf.parallel 
 // CHECK:           memref.alloca_scope  {
 // CHECK:             scf.execute_region {
-// CHECK-DAG:               %[[.*:a1]] = llvm.alloca %0 x !llvm.struct<(i8)> {alignment = 1 : i64} : (i64) -> !llvm.ptr
-// CHECK-DAG:               %[[.*:a2]] = llvm.alloca %0 x !llvm.struct<(i8)> {alignment = 1 : i64} : (i64) -> !llvm.ptr
+// CHECK-DAG:               %[[a1:.*]] = llvm.alloca %0 x !llvm.struct<(i8)> {alignment = 1 : i64} : (i64) -> !llvm.ptr
+// CHECK-DAG:               %[[a2:.*]] = llvm.alloca %0 x !llvm.struct<(i8)> {alignment = 1 : i64} : (i64) -> !llvm.ptr
 // CHECK:               llvm.store %[[ld]], %[[a2]] : !llvm.struct<(i8)>, !llvm.ptr
 // CHECK:               memref.alloca_scope  {
 // CHECK:                 scf.execute_region {
 // CHECK:                   "llvm.intr.memcpy"(%[[a1]], %[[a2]], %0) <{isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i64) -> ()
-// CHECK:                   %[[.*:rld]] = llvm.load %4 : !llvm.ptr -> !llvm.struct<(i8)>
+// CHECK:                   %[[rld:.*]] = llvm.load %4 : !llvm.ptr -> !llvm.struct<(i8)>
 // CHECK:                   llvm.store %6, %arg5 : !llvm.struct<(i8)>, !llvm.ptr
 // CHECK:                   scf.yield
 // CHECK:                 }
