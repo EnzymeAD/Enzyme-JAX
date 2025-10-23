@@ -1080,6 +1080,8 @@ Value castToType(Type elType, Value val, Operation *op) {
   } else if (isa<LLVM::LLVMPointerType>(val.getType()) &&
              isa<IntegerType>(elType)) {
     return b.create<LLVM::PtrToIntOp>(val.getLoc(), elType, val);
+  } else if (val.getDefiningOp<LLVM::ZeroOp>()) {
+    return b.create<LLVM::ZeroOp>(val.getLoc(), elType);
   }
   llvm::errs() << " mismatched load type, needed: " << elType << " found "
                << val << "\n";
