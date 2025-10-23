@@ -181,20 +181,19 @@ bool getEffectsBefore(Operation *op,
   if (!getEffectsBefore(op->getParentOp(), effects, stopAtBarrier)) {
     return false;
   }
-  If the parent operation is not guaranteed to execute its(single - block)
-      region once,
-      walk the block
-          .if (!isa<scf::IfOp, affine::AffineIfOp, memref::AllocaScopeOp>(
-                   op->getParentOp())) op->getParentOp()
-          ->walk([&](Operation *in) {
-            if (conservative)
-              return WalkResult::interrupt();
-            if (!collectEffects(in, effects, /* ignoreBarriers */ true)) {
-              conservative = true;
-              return WalkResult::interrupt();
-            }
-            return WalkResult::advance();
-          });
+  // If the parent operation is not guaranteed to execute its (single-block)
+  // region once, walk the block.
+  if (!isa<scf::IfOp, affine::AffineIfOp, memref::AllocaScopeOp>(
+          op->getParentOp()))
+    op->getParentOp()->walk([&](Operation *in) {
+      if (conservative)
+        return WalkResult::interrupt();
+      if (!collectEffects(in, effects, /* ignoreBarriers */ true)) {
+        conservative = true;
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
   return !conservative;
 }
 bool getEffectsAfter(Operation *op,
