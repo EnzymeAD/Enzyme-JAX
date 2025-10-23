@@ -195,28 +195,26 @@ bool getEffectsBefore(Operation *op,
   //     return WalkResult::advance();
   //   });
 
-  // return !conservative;
   if (!isa<scf::IfOp, affine::AffineIfOp, memref::AllocaScopeOp>(
           op->getParentOp())) {
-    SmallVector<MemoryEffects::EffectInstance> walkEffects;
-    bool conservative = false;
-
+    SmallVector<Operation *> opsToProcess;
     op->getParentOp()->walk([&](Operation *in) {
-      if (conservative)
-        return WalkResult::interrupt();
-      if (!collectEffects(in, walkEffects, /* ignoreBarriers */ true)) {
-        conservative = true;
-        return WalkResult::interrupt();
-      }
+      opsToProcess.push_back(in);
       return WalkResult::advance();
     });
 
-    if (conservative)
-      return false;
+    std::stable_sort(opsToProcess.begin(), opsToProcess.end(),
+                     [](Operation *a, Operation *b) { return a < b; });
 
-    effects.append(walkEffects.begin(), walkEffects.end());
+    for (Operation *in : opsToProcess) {
+      if (!collectEffects(in, effects, /* ignoreBarriers */ true)) {
+        conservative = true;
+        break;
+      }
+    }
   }
-  return true;
+
+  return !conservative;
 }
 bool getEffectsAfter(Operation *op,
                      SmallVectorImpl<MemoryEffects::EffectInstance> &effects,
