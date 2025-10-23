@@ -1,6 +1,6 @@
 //===----------------------------------------------------------------------===//
 //
-// This file implements patterns to convert operations in the Tessera dialect to 
+// This file implements patterns to convert operations in the Tessera dialect to
 // operations in the Func dialect.
 //
 //===----------------------------------------------------------------------===//
@@ -22,9 +22,7 @@
 using namespace mlir;
 using namespace mlir::enzyme;
 
-namespace {
-} // namespace
-
+namespace {} // namespace
 
 //===----------------------------------------------------------------------===//
 // Rewrite Patterns
@@ -37,11 +35,9 @@ class DefineOpRewrite final : public OpRewritePattern<tessera::DefineOp> {
 public:
   using OpRewritePattern<tessera::DefineOp>::OpRewritePattern;
 
-  LogicalResult
-  matchAndRewrite(tessera::DefineOp defineOp,
-                  PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite(tessera::DefineOp defineOp,
+                                PatternRewriter &rewriter) const override {
     FunctionType fnType = defineOp.getFunctionType();
-
 
     // Create the `func.func` op
     auto funcOp = rewriter.create<func::FuncOp>(defineOp.getLoc(),
@@ -72,13 +68,12 @@ class CallOpRewrite final : public OpRewritePattern<tessera::CallOp> {
 public:
   using OpRewritePattern<tessera::CallOp>::OpRewritePattern;
 
-  LogicalResult
-  matchAndRewrite(tessera::CallOp callOp,
-                  PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite(tessera::CallOp callOp,
+                                PatternRewriter &rewriter) const override {
 
     rewriter.replaceOpWithNewOp<func::CallOp>(callOp, callOp.getResultTypes(),
-                                               callOp.getOperands(),
-                                               callOp->getAttrs());
+                                              callOp.getOperands(),
+                                              callOp->getAttrs());
 
     return success();
   }
@@ -89,12 +84,11 @@ class ReturnOpRewrite final : public OpRewritePattern<tessera::ReturnOp> {
 public:
   using OpRewritePattern<tessera::ReturnOp>::OpRewritePattern;
 
-  LogicalResult
-  matchAndRewrite(tessera::ReturnOp returnOp,
-                  PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite(tessera::ReturnOp returnOp,
+                                PatternRewriter &rewriter) const override {
 
     rewriter.replaceOpWithNewOp<func::ReturnOp>(returnOp,
-        returnOp.getOperands());
+                                                returnOp.getOperands());
     return success();
   }
 };
@@ -107,7 +101,7 @@ public:
 namespace mlir::enzyme::tessera {
 
 struct TesseraToFuncPass
-  : public PassWrapper<TesseraToFuncPass, OperationPass<ModuleOp>> {
+    : public PassWrapper<TesseraToFuncPass, OperationPass<ModuleOp>> {
 
   StringRef getArgument() const final { return "tessera-to-func"; }
   StringRef getDescription() const final {

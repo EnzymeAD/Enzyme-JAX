@@ -1,6 +1,6 @@
 //===----------------------------------------------------------------------===//
 //
-// This file implements patterns to convert operations in the Func dialect to 
+// This file implements patterns to convert operations in the Func dialect to
 // operations in the Tessera dialect.
 //
 //===----------------------------------------------------------------------===//
@@ -23,8 +23,7 @@
 using namespace mlir;
 using namespace mlir::enzyme;
 
-namespace {
-} // namespace
+namespace {} // namespace
 
 //===----------------------------------------------------------------------===//
 // Rewrite Patterns
@@ -37,11 +36,9 @@ class FuncOpRewrite final : public OpRewritePattern<func::FuncOp> {
 public:
   using OpRewritePattern<func::FuncOp>::OpRewritePattern;
 
-  LogicalResult
-  matchAndRewrite(func::FuncOp funcOp,
-                  PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite(func::FuncOp funcOp,
+                                PatternRewriter &rewriter) const override {
     FunctionType fnType = funcOp.getFunctionType();
-
 
     // Create the `tessera.define` op
     auto tesseraDefineOp = rewriter.create<tessera::DefineOp>(
@@ -88,21 +85,21 @@ class CallOpRewrite final : public OpRewritePattern<func::CallOp> {
 public:
   using OpRewritePattern<func::CallOp>::OpRewritePattern;
 
-  LogicalResult
-  matchAndRewrite(func::CallOp callOp,
-                  PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite(func::CallOp callOp,
+                                PatternRewriter &rewriter) const override {
 
     auto calleeAttr = callOp.getCalleeAttr();
     Operation *moduleOp = callOp->getParentOfType<ModuleOp>();
     Operation *calleeOp = SymbolTable::lookupSymbolIn(moduleOp, calleeAttr);
-    
+
     // Only convert if the callee is a Tessera DefineOp
     if (!isa<tessera::DefineOp>(calleeOp))
-      return rewriter.notifyMatchFailure(callOp, "Callee is not a Tessera DefineOp");
-    
-      rewriter.replaceOpWithNewOp<tessera::CallOp>(callOp, callOp.getResultTypes(),
-                                               callOp.getOperands(),
-                                               callOp->getAttrs());
+      return rewriter.notifyMatchFailure(callOp,
+                                         "Callee is not a Tessera DefineOp");
+
+    rewriter.replaceOpWithNewOp<tessera::CallOp>(
+        callOp, callOp.getResultTypes(), callOp.getOperands(),
+        callOp->getAttrs());
 
     return success();
   }
@@ -113,17 +110,17 @@ class ReturnOpRewrite final : public OpRewritePattern<func::ReturnOp> {
 public:
   using OpRewritePattern<func::ReturnOp>::OpRewritePattern;
 
-  LogicalResult
-  matchAndRewrite(func::ReturnOp returnOp,
-                  PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite(func::ReturnOp returnOp,
+                                PatternRewriter &rewriter) const override {
     Operation *parent = returnOp->getParentOp();
-    
+
     // Only convert if the function is a Tessera DefineOp
     if (!isa<tessera::DefineOp>(parent))
-      return rewriter.notifyMatchFailure(returnOp, "Parent is not a Tessera DefineOp");
-    
+      return rewriter.notifyMatchFailure(returnOp,
+                                         "Parent is not a Tessera DefineOp");
+
     rewriter.replaceOpWithNewOp<tessera::ReturnOp>(returnOp,
-        returnOp.getOperands());
+                                                   returnOp.getOperands());
     return success();
   }
 };
@@ -136,7 +133,7 @@ public:
 namespace mlir::enzyme::tessera {
 
 struct FuncToTesseraPass
-  : public PassWrapper<FuncToTesseraPass, OperationPass<ModuleOp>> {
+    : public PassWrapper<FuncToTesseraPass, OperationPass<ModuleOp>> {
 
   StringRef getArgument() const final { return "func-to-tessera"; }
   StringRef getDescription() const final {
