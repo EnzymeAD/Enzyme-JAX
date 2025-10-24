@@ -768,8 +768,7 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
 
   auto parentFunc = whileOp->getParentOp();
   if (!parentFunc)
-    return failure();
-  DominanceInfo domInfo(parentFunc);
+    return rewriter.notifyMatchFailure(whileOp, "parent function not found");
 
   // Find all dynamic slices in the loop body that meet the criteria:
   // 1. All slice variables are outside the loop body
@@ -783,17 +782,18 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
       continue;
     for (auto user : value.getUsers()) {
       if (auto sliceOp = dyn_cast<stablehlo::DynamicSliceOp>(user)) {
-        auto dim = isDynamicSliceValidForBatching(
-            sliceOp, value, limit, whileBody, parentBlock, domInfo);
-        if (dim != -1) {
-          candidateSlices.push_back(DynamicSliceInfo{sliceOp, dim, false});
+        auto result = isDynamicSliceValidForBatching(sliceOp, value, limit,
+                                                     whileBody, parentBlock);
+        if (result.result == IsValidForBatchingResult::VALID) {
+          candidateSlices.push_back(
+              DynamicSliceInfo{sliceOp, result.sliceDim, false});
         }
       }
     }
   }
 
   if (candidateSlices.empty())
-    return failure();
+    return rewriter.notifyMatchFailure(whileOp, "no candidate slices found");
 
   // Create a map of user operations to their corresponding dynamic slices
   DenseMap<Operation *, SmallVector<DynamicSliceInfo>> userOpToSlicesMap;
@@ -822,29 +822,23 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
 
   bool wasLifted = false;
   for (auto &[op, slices] : userOpToSlicesMap) {
-    // Elementwise is simple handle it separately
-    // TODO: test for reshape => elementwise
-    if (op->hasTrait<OpTrait::Elementwise>() &&
-        liftElementwiseOp(rewriter, whileOp, slices, op, info)) {
-      wasLifted = true;
-    } else {
-      SmallVector<bool> allIntermediateReshapes(slices.size());
-      for (auto [i, slice] : llvm::enumerate(slices))
-        allIntermediateReshapes[i] = slice.intermediateReshape;
-      auto [validReshapes, intermediateReshape] =
-          allSameBool(allIntermediateReshapes);
-      if (!validReshapes)
-        continue;
+    SmallVector<bool> allIntermediateReshapes(slices.size());
+    for (auto [i, slice] : llvm::enumerate(slices))
+      allIntermediateReshapes[i] = slice.intermediateReshape;
+    auto [validReshapes, intermediateReshape] =
+        allSameBool(allIntermediateReshapes);
 
-      // add the cases which we can handle here. keeping it simple for now
-      // TODO: add scatter here once batch interface is
-      if (isa<stablehlo::DotGeneralOp, stablehlo::GatherOp, stablehlo::ReduceOp,
-              stablehlo::SortOp, stablehlo::TransposeOp,
-              stablehlo::BroadcastInDimOp, stablehlo::ReduceWindowOp>(op)) {
-        if (liftOperationByBatching(rewriter, whileOp, slices, op, info,
-                                    intermediateReshape)) {
-          wasLifted = true;
-        }
+    if (!validReshapes)
+      continue;
+
+    // TODO: add scatter here once batch interface is
+    if (isa<stablehlo::DotGeneralOp, stablehlo::GatherOp, stablehlo::ReduceOp,
+            stablehlo::SortOp, stablehlo::TransposeOp,
+            stablehlo::BroadcastInDimOp, stablehlo::ReduceWindowOp>(op) ||
+        op->hasTrait<OpTrait::Elementwise>()) {
+      if (liftOperationByBatching(rewriter, whileOp, slices, op, info,
+                                  intermediateReshape)) {
+        wasLifted = true;
       }
     }
   }
@@ -856,14 +850,6 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
     PatternRewriter &rewriter, stablehlo::WhileOp whileOp,
     ArrayRef<DynamicSliceInfo> sliceOps, Operation *op, WhileLoopInfo info,
     bool intermediateReshape) const {
-  // TODO: for this case, we need to ensure all the slice dims are the same and
-  // move that to the beginning, then batch and finally move it back to the
-  // original position
-  if (!intermediateReshape)
-    return false;
-
-  // Since all had an intermediate reshape, our `op` is already the unbatched
-  // operation
   auto moduleOp = op->getParentOfType<ModuleOp>();
 
   // TODO: copy constant operands directly into the function body
@@ -884,20 +870,28 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
     if (!defOp)
       return false;
 
-    if (auto reshapeOp = dyn_cast<stablehlo::ReshapeOp>(defOp)) {
-      if (auto ds = reshapeOp.getOperand()
-                        .getDefiningOp<stablehlo::DynamicSliceOp>()) {
-        auto itr = llvm::find_if(sliceOps, [&](const DynamicSliceInfo &info) {
-          return info.sliceOp == ds;
-        });
-        if (itr != sliceOps.end()) {
-          batchLiftingModes[i] = BatchLiftingMode::DYNAMIC_SLICE;
-          sliceDims[i] = itr->inductionVarDimension;
-          batchOperands[i] = ds->getOperand(0);
-          continue;
-        } else {
-          return false;
-        }
+    Operation *dsOp;
+    if (intermediateReshape) {
+      if (auto reshapeOp = dyn_cast<stablehlo::ReshapeOp>(defOp)) {
+        dsOp = reshapeOp.getOperand().getDefiningOp();
+      } else {
+        return false;
+      }
+    } else {
+      dsOp = defOp;
+    }
+
+    if (auto ds = dyn_cast<stablehlo::DynamicSliceOp>(dsOp)) {
+      auto itr = llvm::find_if(sliceOps, [&](const DynamicSliceInfo &info) {
+        return info.sliceOp == ds;
+      });
+      if (itr != sliceOps.end()) {
+        batchLiftingModes[i] = BatchLiftingMode::DYNAMIC_SLICE;
+        sliceDims[i] = itr->inductionVarDimension;
+        batchOperands[i] = ds->getOperand(0);
+        continue;
+      } else {
+        return false;
       }
     }
 
@@ -943,17 +937,40 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
 
     switch (consType) {
     case BatchLiftingMode::DYNAMIC_SLICE: {
-      SmallVector<int64_t> permutation(operandRank);
-      permutation[0] = sliceDim;
-      for (int i = 0; i < sliceDim; i++)
-        permutation[i + 1] = i;
-      for (int i = sliceDim + 1; i < operandRank; i++)
-        permutation[i] = i;
+      if (intermediateReshape) {
+        SmallVector<int64_t> permutation(operandRank);
+        permutation[0] = sliceDim;
+        for (int i = 0; i < sliceDim; i++)
+          permutation[i + 1] = i;
+        for (int i = sliceDim + 1; i < operandRank; i++)
+          permutation[i] = i;
 
-      auto transposedOperand = rewriter.create<stablehlo::TransposeOp>(
-          whileOp->getLoc(), baseOp,
-          rewriter.getDenseI64ArrayAttr(permutation));
-      newOperands.push_back(transposedOperand->getResult(0));
+        auto transposedOperand = rewriter.create<stablehlo::TransposeOp>(
+            whileOp->getLoc(), baseOp,
+            rewriter.getDenseI64ArrayAttr(permutation));
+        newOperands.push_back(transposedOperand->getResult(0));
+      } else {
+        SmallVector<int64_t> mapping(operandRank);
+        for (size_t i = 0; i < sliceDim; i++)
+          mapping[i] = i + 1;
+        mapping[sliceDim] = 0;
+        for (size_t i = sliceDim + 1; i < operandRank; i++)
+          mapping[i] = i;
+
+        SmallVector<int64_t> resultShape(operandRank + 1);
+        resultShape[0] = info.getConstantLimit().value();
+        resultShape[sliceDim + 1] = 1;
+        for (size_t i = 0; i < sliceDim; i++)
+          resultShape[i + 1] = operandShape[i];
+        for (size_t i = sliceDim + 1; i < operandRank; i++)
+          resultShape[i + 1] = operandShape[i];
+
+        auto broadcastedOperand = rewriter.create<stablehlo::BroadcastInDimOp>(
+            whileOp->getLoc(),
+            RankedTensorType::get(resultShape, operandType.getElementType()),
+            baseOp, rewriter.getDenseI64ArrayAttr(mapping));
+        newOperands.push_back(broadcastedOperand->getResult(0));
+      }
       break;
     }
     case BatchLiftingMode::DEFINED_OUTSIDE_WHILE: {
@@ -972,7 +989,7 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
       newOperands.push_back(broadcastedOperand->getResult(0));
       break;
     }
-    case BatchLiftingMode::CONSTANT: {
+    default: {
       assert(false && "not implemented");
       break;
     }
@@ -1001,10 +1018,8 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
       rewriter.getDenseI64ArrayAttr({info.getConstantLimit().value()}));
 
   rewriter.setInsertionPointAfter(op);
-  SmallVector<Value> dynamicSliceStarts(outputShape.size());
+  SmallVector<Value> dynamicSliceStarts(outputShape.size(), constZero);
   dynamicSliceStarts[0] = info.getInductionVariable();
-  for (int i = 1; i < outputShape.size(); i++)
-    dynamicSliceStarts[i] = constZero;
 
   SmallVector<int64_t> dynamicSliceSizes(outputShape.size());
   dynamicSliceSizes[0] = 1;
@@ -1024,169 +1039,68 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
       batchedFunctionCache));
 }
 
-bool GreedyWhileLoopBatchFission::liftElementwiseOp(
-    PatternRewriter &rewriter, stablehlo::WhileOp whileOp,
-    ArrayRef<DynamicSliceInfo> sliceOps, Operation *elem,
-    WhileLoopInfo info) const {
-  IRRewriter::InsertionGuard guard(rewriter);
-  rewriter.setInsertionPoint(whileOp);
-
-  // For non-unary elementwise ops, we can
-  //   1. lift operands if they are produced by DSs in the list
-  //   2. defined outside the loop body, in which case we simply do a
-  //   broadcast_in_dim
-  SmallVector<BatchLiftingMode> batchLiftingModes(elem->getNumOperands());
-  SmallVector<Value> baseOperands(elem->getNumOperands());
-  stablehlo::DynamicSliceOp sliceOp;
-  int64_t sliceDim = -1;
-  for (auto [i, operand] : llvm::enumerate(elem->getOperands())) {
-    auto defOp = operand.getDefiningOp();
-    if (!defOp) // FIXME: this is probably a block argument
-      return false;
-
-    if (defOp->getBlock() == whileOp->getBlock()) {
-      batchLiftingModes[i] = BatchLiftingMode::DEFINED_OUTSIDE_WHILE;
-      baseOperands[i] = operand;
-      continue;
-    }
-
-    if (auto ds = dyn_cast<stablehlo::DynamicSliceOp>(defOp)) {
-      auto itr = llvm::find_if(sliceOps, [&](const DynamicSliceInfo &info) {
-        return info.sliceOp == ds;
-      });
-      if (itr != sliceOps.end()) {
-        batchLiftingModes[i] = BatchLiftingMode::DYNAMIC_SLICE;
-        if (sliceDim == -1) {
-          sliceOp = ds;
-          sliceDim = itr->inductionVarDimension;
-        } else if (sliceDim != itr->inductionVarDimension) {
-          return false;
-        }
-        baseOperands[i] = itr->sliceOp->getOperand(0);
-        continue;
-      } else {
-        return false;
-      }
-    }
-
-    return false;
-  }
-
-  assert(sliceDim != -1);
-
-  SmallVector<Value> newOperands;
-  for (auto [consType, baseOp] : llvm::zip(batchLiftingModes, baseOperands)) {
-    switch (consType) {
-    case BatchLiftingMode::DYNAMIC_SLICE: {
-      newOperands.push_back(baseOp);
-      break;
-    }
-    case BatchLiftingMode::DEFINED_OUTSIDE_WHILE: {
-      auto opShape =
-          llvm::to_vector(cast<RankedTensorType>(baseOp.getType()).getShape());
-      if (opShape[sliceDim] != 1) {
-        whileOp->emitError("broadcast_in_dim operand not broadcastable");
-        return false;
-      }
-      opShape[sliceDim] = info.getConstantLimit().value();
-      SmallVector<int64_t> mapping(opShape.size(), -1);
-      std::iota(mapping.begin(), mapping.end(), 0);
-      auto newBcastOp = rewriter.create<stablehlo::BroadcastInDimOp>(
-          whileOp->getLoc(),
-          RankedTensorType::get(
-              opShape,
-              cast<RankedTensorType>(baseOp.getType()).getElementType()),
-          baseOp, rewriter.getDenseI64ArrayAttr(mapping));
-      newOperands.push_back(newBcastOp->getResult(0));
-      break;
-    }
-    case BatchLiftingMode::CONSTANT: {
-      assert(false && "not implemented");
-      break;
-    }
-    }
-  }
-
-  auto newElemShape = llvm::to_vector(
-      cast<RankedTensorType>(elem->getResult(0).getType()).getShape());
-  newElemShape[sliceDim] = info.getConstantLimit().value();
-  auto newElemType = RankedTensorType::get(
-      newElemShape,
-      cast<RankedTensorType>(elem->getResult(0).getType()).getElementType());
-
-  auto newOp = rewriter.create(
-      elem->getLoc(), elem->getName().getIdentifier(), ValueRange(newOperands),
-      TypeRange({newElemType}), elem->getAttrs(), {}, {});
-
-  rewriter.setInsertionPoint(elem);
-  rewriter.replaceOpWithNewOp<stablehlo::DynamicSliceOp>(
-      elem, newOp->getResult(0), sliceOp.getStartIndices(),
-      sliceOp.getSliceSizes());
-  return true;
-}
-
-int64_t GreedyWhileLoopBatchFission::isDynamicSliceValidForBatching(
+GreedyWhileLoopBatchFission::ValidBatchingInfo
+GreedyWhileLoopBatchFission::isDynamicSliceValidForBatching(
     stablehlo::DynamicSliceOp sliceOp, Value iterVar, int64_t limit,
-    Block &whileBody, Block *parentBlock, DominanceInfo &domInfo) const {
+    Block &whileBody, Block *parentBlock) const {
   auto startIndices = sliceOp.getStartIndices();
   auto sliceSizes = sliceOp.getSliceSizes();
   auto operand = sliceOp.getOperand();
   auto operandShape = cast<RankedTensorType>(operand.getType()).getShape();
 
-  if (!isValueAccessibleFromBlock(domInfo, operand, parentBlock))
-    return -1;
+  if (operand.getParentBlock() == &whileBody)
+    return ValidBatchingInfo{
+        IsValidForBatchingResult::OPERAND_NOT_ACCESSIBLE_FROM_PARENT, -1};
 
   // Track which start index corresponds to the induction variable descendant
-  int32_t inductionVarDimension = -1, indicesFromBody = 0;
+  int32_t inductionVarDimension = -1;
 
-  for (int32_t i = 0; i < startIndices.size(); i++) {
+  for (size_t i = 0; i < startIndices.size(); i++) {
     Value startIndex = startIndices[i];
+
+    if (startIndex == iterVar) {
+      // Multiple dimensions are descendants of induction var - invalid
+      if (inductionVarDimension != -1)
+        return ValidBatchingInfo{
+            IsValidForBatchingResult::MULTIPLE_INDUCTION_VARIABLE_SLICE_DIMS,
+            -1};
+      inductionVarDimension = i;
+
+      // Check if the slice size in this dimension equals the limit
+      // TODO: relax the limit check at some point
+      if (operandShape[i] != limit || sliceSizes[i] != 1) {
+        ;
+        return ValidBatchingInfo{IsValidForBatchingResult::NOT_FULL_SLICE, -1};
+      }
+
+      continue;
+    }
+
     Operation *definingOp = startIndex.getDefiningOp();
-    if (!definingOp)
-      return -1;
+    if (!definingOp) {
+      // TODO: defining op might be false here since it could be the induction
+      // variable itself
+      return ValidBatchingInfo{IsValidForBatchingResult::NOT_FULL_SLICE, -1};
+    }
 
     // Check if this start index is defined within the loop body
-    if (definingOp->getBlock() == &whileBody) {
-      indicesFromBody++;
-
-      // Check if this is a direct descendant of the induction variable
-      if (startIndex == iterVar) {
-        // Multiple dimensions are descendants of induction var - invalid
-        if (inductionVarDimension != -1)
-          return -1;
-        inductionVarDimension = i;
-
-        // Check if the slice size in this dimension equals the limit
-        // TODO: relax the limit check at some point
-        if (operandShape[i] != limit || sliceSizes[i] != 1)
-          return -1;
-      }
-    } else {
+    if (definingOp->getBlock() != &whileBody) {
       // TODO: we are only considering the full slice case for now. we can
       // generalize this
-      if (!matchPattern(definingOp, m_Zero()))
-        return -1;
-
-      if (sliceSizes[i] != operandShape[i])
-        return -1;
+      if (!matchPattern(definingOp, m_Zero()) ||
+          sliceSizes[i] != operandShape[i]) {
+        return ValidBatchingInfo{IsValidForBatchingResult::NOT_FULL_SLICE, -1};
+      }
+      continue;
     }
+
+    return ValidBatchingInfo{IsValidForBatchingResult::NOT_FULL_SLICE, -1};
   }
 
   // We should have exactly one index from the body, and it should be
   // a descendant of the induction variable
-  if (indicesFromBody == 1)
-    return inductionVarDimension;
-  return -1;
-}
-
-bool GreedyWhileLoopBatchFission::isValueAccessibleFromBlock(
-    DominanceInfo &domInfo, Value value, Block *block) const {
-  if (auto definingOp = value.getDefiningOp()) {
-    return domInfo.dominates(definingOp->getBlock(), block);
-  } else if (auto blockArg = dyn_cast<BlockArgument>(value)) {
-    return domInfo.dominates(blockArg.getOwner(), block);
-  }
-  return false;
+  return ValidBatchingInfo{IsValidForBatchingResult::VALID,
+                           inductionVarDimension};
 }
 
 struct AutoBatchingPass

@@ -219,16 +219,22 @@ private:
     CONSTANT,
   };
 
-  int64_t isDynamicSliceValidForBatching(
-      mlir::stablehlo::DynamicSliceOp sliceOp, mlir::Value iterVar,
-      int64_t limit, mlir::Block &whileBody, mlir::Block *parentBlock,
-      mlir::DominanceInfo &domInfo) const;
+  enum class IsValidForBatchingResult {
+    VALID,
+    OPERAND_NOT_ACCESSIBLE_FROM_PARENT,
+    NOT_FULL_SLICE,
+    MULTIPLE_INDUCTION_VARIABLE_SLICE_DIMS,
+    MULTIPLE_INDICES_FROM_BODY,
+  };
 
-  bool liftElementwiseOp(mlir::PatternRewriter &rewriter,
-                         mlir::stablehlo::WhileOp whileOp,
-                         llvm::ArrayRef<DynamicSliceInfo> sliceOps,
-                         mlir::Operation *op,
-                         mlir::enzyme::WhileLoopInfo info) const;
+  struct ValidBatchingInfo {
+    IsValidForBatchingResult result;
+    int64_t sliceDim;
+  };
+
+  ValidBatchingInfo isDynamicSliceValidForBatching(
+      mlir::stablehlo::DynamicSliceOp sliceOp, mlir::Value iterVar,
+      int64_t limit, mlir::Block &whileBody, mlir::Block *parentBlock) const;
 
   bool liftOperationByBatching(mlir::PatternRewriter &rewriter,
                                mlir::stablehlo::WhileOp whileOp,
@@ -236,7 +242,4 @@ private:
                                mlir::Operation *op,
                                mlir::enzyme::WhileLoopInfo info,
                                bool intermediateReshape) const;
-
-  bool isValueAccessibleFromBlock(mlir::DominanceInfo &domInfo,
-                                  mlir::Value value, mlir::Block *block) const;
 };
