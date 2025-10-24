@@ -2723,7 +2723,7 @@ private:
       Value args[] = {
           ptr,
       };
-      rewriter.create<LLVM::CallOp>(loc, freeFunc.value(), args)->getResult(0);
+      rewriter.create<LLVM::CallOp>(loc, freeFunc.value(), args);
     } else if (backend.starts_with("xla")) {
       auto ptrty = LLVM::LLVMPointerType::get(rewriter.getContext());
 
@@ -2742,7 +2742,7 @@ private:
 
       Value args[] = {xdata, ptr};
 
-      rewriter.create<LLVM::CallOp>(loc, xlaFreeFn.value(), args)->getResult(0);
+      rewriter.create<LLVM::CallOp>(loc, xlaFreeFn.value(), args);
     } else {
       llvm::errs() << " unknown backend: " << backend << "\n";
       return failure();
@@ -3909,6 +3909,16 @@ struct ConvertPolygeistToLLVMPass
 
   void convertModule(ModuleOp m, bool gpuModule) {
     const auto &dataLayoutAnalysis = getAnalysis<DataLayoutAnalysis>();
+
+    if (m->walk([](enzymexla::AlternativesOp op) {
+           emitError(op.getLoc())
+               << "Lowering of alternatives op not currently supported, set "
+                  "POLYGEIST_GPU_KERNEL_BLOCK_SIZE";
+           return WalkResult::interrupt();
+         }).wasInterrupted()) {
+      signalPassFailure();
+      return;
+    }
 
     if (useCStyleMemRef && useBarePtrCallConv) {
       emitError(m.getLoc()) << "C-style memref lowering is not compatible with "
