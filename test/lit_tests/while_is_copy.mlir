@@ -1,12 +1,12 @@
 // RUN: enzymexlamlir-opt --enzyme-hlo-opt %s | FileCheck %s
 
 module {
-  func.func @main(%arg0: tensor<10xf32> {enzymexla.memory_effects = [], tf.aliasing_output = 0 : i32}, %arg1: tensor<10xf32> {enzymexla.memory_effects = []}) -> tensor<10xf32> attributes {enzymexla.memory_effects = []} {
+  func.func @main(%arg0: tensor<10xf32> {tf.aliasing_output = 0 : i32}, %arg1: tensor<10xf32>) -> tensor<10xf32> {
     %c = stablehlo.constant dense<1> : tensor<i32>
     %c_0 = stablehlo.constant dense<0> : tensor<i64>
     %c_1 = stablehlo.constant dense<10> : tensor<i64>
     %c_2 = stablehlo.constant dense<1> : tensor<i64>
-    %0:2 = stablehlo.while(%iterArg = %c_0, %iterArg_3 = %arg0) : tensor<i64>, tensor<10xf32> attributes {enzyme.disable_mincut}
+    %0:2 = stablehlo.while(%iterArg = %c_0, %iterArg_3 = %arg0) : tensor<i64>, tensor<10xf32>
     cond {
       %1 = stablehlo.compare  LT, %iterArg, %c_1 : (tensor<i64>, tensor<i64>) -> tensor<i1>
       stablehlo.return %1 : tensor<i1>
@@ -26,17 +26,17 @@ module {
   }
 }
 
-// CHECK: func.func @main(%arg0: tensor<10xf32> {enzymexla.memory_effects = [], tf.aliasing_output = 0 : i32}, %arg1: tensor<10xf32> {enzymexla.memory_effects = []}) -> tensor<10xf32> attributes {enzymexla.memory_effects = []} {
+// CHECK: func.func @main(%arg0: tensor<10xf32> {tf.aliasing_output = 0 : i32}, %arg1: tensor<10xf32>) -> tensor<10xf32> {
 // CHECK-NEXT:     return %arg1 : tensor<10xf32>
 // CHECK-NEXT: }
 
 module {
-  func.func @main(%arg0: tensor<10xf32> {enzymexla.memory_effects = [], tf.aliasing_output = 0 : i32}, %arg1: tensor<10xf32> {enzymexla.memory_effects = []}) -> tensor<10xf32> attributes {enzymexla.memory_effects = []} {
+  func.func @main(%arg0: tensor<10xf32> {tf.aliasing_output = 0 : i32}, %arg1: tensor<10xf32>) -> tensor<10xf32> {
     %c = stablehlo.constant dense<1> : tensor<i32>
     %c_0 = stablehlo.constant dense<0> : tensor<i64>
     %c_1 = stablehlo.constant dense<9> : tensor<i64>
     %c_2 = stablehlo.constant dense<1> : tensor<i64>
-    %0:2 = stablehlo.while(%iterArg = %c_0, %iterArg_3 = %arg0) : tensor<i64>, tensor<10xf32> attributes {enzyme.disable_mincut}
+    %0:2 = stablehlo.while(%iterArg = %c_0, %iterArg_3 = %arg0) : tensor<i64>, tensor<10xf32>
     cond {
       %1 = stablehlo.compare  LT, %iterArg, %c_1 : (tensor<i64>, tensor<i64>) -> tensor<i1>
       stablehlo.return %1 : tensor<i1>
@@ -56,7 +56,7 @@ module {
   }
 }
 
-// CHECK: func.func @main(%arg0: tensor<10xf32> {enzymexla.memory_effects = [], tf.aliasing_output = 0 : i32}, %arg1: tensor<10xf32> {enzymexla.memory_effects = []}) -> tensor<10xf32> attributes {enzymexla.memory_effects = []} {
+// CHECK: func.func @main(%arg0: tensor<10xf32> {tf.aliasing_output = 0 : i32}, %arg1: tensor<10xf32>) -> tensor<10xf32> {
 // CHECK-NEXT:      %0 = stablehlo.slice %arg1 [0:9] : (tensor<10xf32>) -> tensor<9xf32>
 // CHECK-NEXT:      %1 = stablehlo.slice %arg0 [9:10] : (tensor<10xf32>) -> tensor<1xf32>
 // CHECK-NEXT:      %2 = stablehlo.concatenate %0, %1, dim = 0 : (tensor<9xf32>, tensor<1xf32>) -> tensor<10xf32>
@@ -64,13 +64,13 @@ module {
 // CHECK-NEXT:    }
 
 module {
-  func.func @main(%arg0: tensor<3x4x5xf32> {enzymexla.memory_effects = [], tf.aliasing_output = 0 : i32}, %arg1: tensor<4xf32> {enzymexla.memory_effects = [], tf.aliasing_output = 1 : i32}, %arg2: tensor<3x4x5xf32> {enzymexla.memory_effects = []}, %arg3: tensor<4xf32> {enzymexla.memory_effects = []}) -> (tensor<3x4x5xf32>, tensor<4xf32>) attributes {enzymexla.memory_effects = []} {
+  func.func @main(%arg0: tensor<3x4x5xf32> {tf.aliasing_output = 0 : i32}, %arg1: tensor<4xf32> {tf.aliasing_output = 1 : i32}, %arg2: tensor<3x4x5xf32>, %arg3: tensor<4xf32>) -> (tensor<3x4x5xf32>, tensor<4xf32>) {
     %c = stablehlo.constant dense<0> : tensor<i32>
     %c_0 = stablehlo.constant dense<1> : tensor<i32>
     %c_1 = stablehlo.constant dense<0> : tensor<i64>
     %c_2 = stablehlo.constant dense<4> : tensor<i64>
     %c_3 = stablehlo.constant dense<1> : tensor<i64>
-    %0:3 = stablehlo.while(%iterArg = %c_1, %iterArg_4 = %arg0, %iterArg_5 = %arg1) : tensor<i64>, tensor<3x4x5xf32>, tensor<4xf32> attributes {enzyme.disable_mincut}
+    %0:3 = stablehlo.while(%iterArg = %c_1, %iterArg_4 = %arg0, %iterArg_5 = %arg1) : tensor<i64>, tensor<3x4x5xf32>, tensor<4xf32>
     cond {
       %1 = stablehlo.compare  LT, %iterArg, %c_2 : (tensor<i64>, tensor<i64>) -> tensor<i1>
       stablehlo.return %1 : tensor<i1>
@@ -92,12 +92,12 @@ module {
   }
 }
 
-// CHECK: func.func @main(%arg0: tensor<3x4x5xf32> {enzymexla.memory_effects = [], tf.aliasing_output = 0 : i32}, %arg1: tensor<4xf32> {enzymexla.memory_effects = [], tf.aliasing_output = 1 : i32}, %arg2: tensor<3x4x5xf32> {enzymexla.memory_effects = []}, %arg3: tensor<4xf32> {enzymexla.memory_effects = []}) -> (tensor<3x4x5xf32>, tensor<4xf32>) attributes {enzymexla.memory_effects = []} {
+// CHECK: func.func @main(%arg0: tensor<3x4x5xf32> {tf.aliasing_output = 0 : i32}, %arg1: tensor<4xf32> {tf.aliasing_output = 1 : i32}, %arg2: tensor<3x4x5xf32>, %arg3: tensor<4xf32>) -> (tensor<3x4x5xf32>, tensor<4xf32>) {
 // CHECK-NEXT:     return %arg2, %arg3 : tensor<3x4x5xf32>, tensor<4xf32>
 // CHECK-NEXT: }
 
 module {
-  func.func @main(%arg0: tensor<11x9x7xf32> {enzymexla.memory_effects = [], tf.aliasing_output = 0 : i32}, %arg1: tensor<9x6x4xf32> {enzymexla.memory_effects = []}) -> tensor<11x9x7xf32> attributes {enzymexla.memory_effects = []} {
+  func.func @main(%arg0: tensor<11x9x7xf32> {tf.aliasing_output = 0 : i32}, %arg1: tensor<9x6x4xf32>) -> tensor<11x9x7xf32> {
     %c = stablehlo.constant dense<2> : tensor<i32>
     %c_0 = stablehlo.constant dense<3> : tensor<i32>
     %c_1 = stablehlo.constant dense<0> : tensor<i32>
@@ -106,7 +106,7 @@ module {
     %c_4 = stablehlo.constant dense<1> : tensor<i64>
     %c_5 = stablehlo.constant dense<2> : tensor<i64>
     %c_6 = stablehlo.constant dense<5> : tensor<i64>
-    %0:2 = stablehlo.while(%iterArg = %c_3, %iterArg_7 = %arg0) : tensor<i64>, tensor<11x9x7xf32> attributes {enzyme.disable_mincut}
+    %0:2 = stablehlo.while(%iterArg = %c_3, %iterArg_7 = %arg0) : tensor<i64>, tensor<11x9x7xf32>
     cond {
       %1 = stablehlo.compare  LT, %iterArg, %c_6 : (tensor<i64>, tensor<i64>) -> tensor<i1>
       stablehlo.return %1 : tensor<i1>
@@ -123,10 +123,45 @@ module {
   }
 }
 
-// CHECK: func.func @main(%arg0: tensor<11x9x7xf32> {enzymexla.memory_effects = [], tf.aliasing_output = 0 : i32}, %arg1: tensor<9x6x4xf32> {enzymexla.memory_effects = []}) -> tensor<11x9x7xf32> attributes {enzymexla.memory_effects = []} {
+// CHECK: func.func @main(%arg0: tensor<11x9x7xf32> {tf.aliasing_output = 0 : i32}, %arg1: tensor<9x6x4xf32>) -> tensor<11x9x7xf32> {
 // CHECK-NEXT:     %c = stablehlo.constant dense<2> : tensor<i32>
 // CHECK-NEXT:     %c_0 = stablehlo.constant dense<1> : tensor<i32>
 // CHECK-NEXT:     %0 = stablehlo.slice %arg1 [3:9, 1:6, 0:4] : (tensor<9x6x4xf32>) -> tensor<6x5x4xf32>
 // CHECK-NEXT:     %1 = stablehlo.dynamic_update_slice %arg0, %0, %c_0, %c_0, %c : (tensor<11x9x7xf32>, tensor<6x5x4xf32>, tensor<i32>, tensor<i32>, tensor<i32>) -> tensor<11x9x7xf32>
 // CHECK-NEXT:     return %1 : tensor<11x9x7xf32>
+// CHECK-NEXT: }
+
+
+module {
+  func.func @main(%arg0: tensor<3x5x10xf32>, %arg1: tensor<4x3xf32>) -> tensor<4x5x10xf32> {
+    %c = stablehlo.constant dense<0> : tensor<i32>
+    %c_0 = stablehlo.constant dense<5> : tensor<i64>
+    %cst = stablehlo.constant dense<0.000000e+00> : tensor<4x5x10xf32>
+    %c_1 = stablehlo.constant dense<1> : tensor<i32>
+    %c_2 = stablehlo.constant dense<0> : tensor<i64>
+    %c_3 = stablehlo.constant dense<1> : tensor<i64>
+    %0 = stablehlo.broadcast_in_dim %arg1, dims = [1, 2] : (tensor<4x3xf32>) -> tensor<5x4x3xf32>
+    %1 = stablehlo.dot_general %arg0, %0, batching_dims = [1] x [0], contracting_dims = [0] x [2], precision = [DEFAULT, DEFAULT] : (tensor<3x5x10xf32>, tensor<5x4x3xf32>) -> tensor<5x10x4xf32>
+    %2:2 = stablehlo.while(%iterArg = %c_2, %iterArg_4 = %cst) : tensor<i64>, tensor<4x5x10xf32>
+    cond {
+      %3 = stablehlo.compare  LT, %iterArg, %c_0 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+      stablehlo.return %3 : tensor<i1>
+    } do {
+      %3 = stablehlo.add %c_3, %iterArg : tensor<i64>
+      %4 = stablehlo.convert %3 : (tensor<i64>) -> tensor<i32>
+      %5 = stablehlo.subtract %4, %c_1 : tensor<i32>
+      %6 = stablehlo.dynamic_slice %1, %iterArg, %c_2, %c_2, sizes = [1, 10, 4] : (tensor<5x10x4xf32>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<1x10x4xf32>
+      %7 = stablehlo.transpose %6, dims = [2, 0, 1] : (tensor<1x10x4xf32>) -> tensor<4x1x10xf32>
+      %8 = stablehlo.dynamic_update_slice %iterArg_4, %7, %c, %5, %c : (tensor<4x5x10xf32>, tensor<4x1x10xf32>, tensor<i32>, tensor<i32>, tensor<i32>) -> tensor<4x5x10xf32>
+      stablehlo.return %3, %8 : tensor<i64>, tensor<4x5x10xf32>
+    }
+    return %2#1 : tensor<4x5x10xf32>
+  }
+}
+
+// CHECK: func.func @main(%arg0: tensor<3x5x10xf32>, %arg1: tensor<4x3xf32>) -> tensor<4x5x10xf32> {
+// CHECK-NEXT:     %0 = stablehlo.broadcast_in_dim %arg1, dims = [1, 2] : (tensor<4x3xf32>) -> tensor<5x4x3xf32>
+// CHECK-NEXT:     %1 = stablehlo.dot_general %arg0, %0, batching_dims = [1] x [0], contracting_dims = [0] x [2], precision = [DEFAULT, DEFAULT] : (tensor<3x5x10xf32>, tensor<5x4x3xf32>) -> tensor<5x10x4xf32>
+// CHECK-NEXT:     %2 = stablehlo.transpose %1, dims = [2, 0, 1] : (tensor<5x10x4xf32>) -> tensor<4x5x10xf32>
+// CHECK-NEXT:     return %2 : tensor<4x5x10xf32>
 // CHECK-NEXT: }
