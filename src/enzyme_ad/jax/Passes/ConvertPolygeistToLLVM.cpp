@@ -2723,7 +2723,7 @@ private:
       Value args[] = {
           ptr,
       };
-      rewriter.create<LLVM::CallOp>(loc, freeFunc.value(), args)->getResult(0);
+      rewriter.create<LLVM::CallOp>(loc, freeFunc.value(), args);
     } else if (backend.starts_with("xla")) {
       auto ptrty = LLVM::LLVMPointerType::get(rewriter.getContext());
 
@@ -2742,7 +2742,7 @@ private:
 
       Value args[] = {xdata, ptr};
 
-      rewriter.create<LLVM::CallOp>(loc, xlaFreeFn.value(), args)->getResult(0);
+      rewriter.create<LLVM::CallOp>(loc, xlaFreeFn.value(), args);
     } else {
       llvm::errs() << " unknown backend: " << backend << "\n";
       return failure();
