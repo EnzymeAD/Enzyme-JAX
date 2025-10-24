@@ -1159,20 +1159,27 @@ static LogicalResult wrapAndDistribute(T op, bool singleExecution,
   auto pop = op->getParentOp();
   if (before) {
     Operation *postPop = nullptr;
-    (void)distributeAfterWrap<scf::ParallelOp, UseMinCut>(pop, before, rewriter,
-                                                          &postPop);
-    (void)distributeAfterWrap<affine::AffineParallelOp, UseMinCut>(
+    auto ran = distributeAfterWrap<scf::ParallelOp, UseMinCut>(
         pop, before, rewriter, &postPop);
+    if (!ran.failed()) {
+      (void)distributeAfterWrap<affine::AffineParallelOp, UseMinCut>(
+          pop, before, rewriter, &postPop);
+    }
     after = getFirstBarrier(postPop->getBlock());
-    (void)distributeAfterWrap<scf::ParallelOp, UseMinCut>(
+    ran = distributeAfterWrap<scf::ParallelOp, UseMinCut>(
         dyn_cast_or_null<scf::ParallelOp>(postPop), after, rewriter);
-    (void)distributeAfterWrap<affine::AffineParallelOp, UseMinCut>(
-        dyn_cast_or_null<affine::AffineParallelOp>(postPop), after, rewriter);
+    if (!ran.failed()) {
+      distributeAfterWrap<affine::AffineParallelOp, UseMinCut>(
+          dyn_cast_or_null<affine::AffineParallelOp>(postPop), after, rewriter);
+    }
   } else {
     // We only have a barrier after the op
-    (void)distributeAfterWrap<scf::ParallelOp, UseMinCut>(pop, after, rewriter);
-    (void)distributeAfterWrap<affine::AffineParallelOp, UseMinCut>(pop, after,
-                                                                   rewriter);
+    auto ran =
+        distributeAfterWrap<scf::ParallelOp, UseMinCut>(pop, after, rewriter);
+    if (!ran.failed()) {
+      distributeAfterWrap<affine::AffineParallelOp, UseMinCut>(pop, after,
+                                                               rewriter);
+    }
   }
 
   return success();
