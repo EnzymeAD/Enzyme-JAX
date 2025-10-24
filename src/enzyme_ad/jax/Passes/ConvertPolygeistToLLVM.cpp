@@ -3910,6 +3910,16 @@ struct ConvertPolygeistToLLVMPass
   void convertModule(ModuleOp m, bool gpuModule) {
     const auto &dataLayoutAnalysis = getAnalysis<DataLayoutAnalysis>();
 
+    if (m->walk([](enzymexla::AlternativesOp op) {
+           emitError(op.getLoc())
+               << "Lowering of alternatives op not currently supported, set "
+                  "POLYGEIST_GPU_KERNEL_BLOCK_SIZE";
+           return WalkResult::interrupt();
+         }).wasInterrupted()) {
+      signalPassFailure();
+      return;
+    }
+
     if (useCStyleMemRef && useBarePtrCallConv) {
       emitError(m.getLoc()) << "C-style memref lowering is not compatible with "
                                "bare-pointer calling convention";
