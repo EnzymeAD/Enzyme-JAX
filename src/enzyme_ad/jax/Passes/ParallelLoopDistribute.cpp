@@ -1169,7 +1169,7 @@ static LogicalResult wrapAndDistribute(T op, bool singleExecution,
     ran = distributeAfterWrap<scf::ParallelOp, UseMinCut>(
         dyn_cast_or_null<scf::ParallelOp>(postPop), after, rewriter);
     if (!ran.failed()) {
-      distributeAfterWrap<affine::AffineParallelOp, UseMinCut>(
+      (void)distributeAfterWrap<affine::AffineParallelOp, UseMinCut>(
           dyn_cast_or_null<affine::AffineParallelOp>(postPop), after, rewriter);
     }
   } else {
@@ -1177,8 +1177,8 @@ static LogicalResult wrapAndDistribute(T op, bool singleExecution,
     auto ran =
         distributeAfterWrap<scf::ParallelOp, UseMinCut>(pop, after, rewriter);
     if (!ran.failed()) {
-      distributeAfterWrap<affine::AffineParallelOp, UseMinCut>(pop, after,
-                                                               rewriter);
+      (void)distributeAfterWrap<affine::AffineParallelOp, UseMinCut>(pop, after,
+                                                                     rewriter);
     }
   }
 
