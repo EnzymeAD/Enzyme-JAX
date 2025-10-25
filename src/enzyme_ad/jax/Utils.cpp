@@ -1049,13 +1049,31 @@ bool allOperandsAreConstant(mlir::Operation *op) {
   return true;
 }
 
+SmallVector<int64_t>
+findReshapeInsertionDims(RankedTensorType inputType,
+                         RankedTensorType outputType,
+                         llvm::SmallSet<int64_t, 4> &ignoreDims) {
+  return findReshapeInsertionDims(inputType.getShape(), outputType.getShape(),
+                                  ignoreDims);
+}
+
 SmallVector<int64_t> findReshapeInsertionDims(RankedTensorType inputType,
                                               RankedTensorType outputType) {
-  return findReshapeInsertionDims(inputType.getShape(), outputType.getShape());
+  llvm::SmallSet<int64_t, 4> ignoreDims;
+  return findReshapeInsertionDims(inputType.getShape(), outputType.getShape(),
+                                  ignoreDims);
 }
 
 SmallVector<int64_t> findReshapeInsertionDims(ArrayRef<int64_t> inputShape,
                                               ArrayRef<int64_t> outputShape) {
+  llvm::SmallSet<int64_t, 4> ignoreDims;
+  return findReshapeInsertionDims(inputShape, outputShape, ignoreDims);
+}
+
+SmallVector<int64_t>
+findReshapeInsertionDims(ArrayRef<int64_t> inputShape,
+                         ArrayRef<int64_t> outputShape,
+                         llvm::SmallSet<int64_t, 4> &ignoreDims) {
   if (inputShape.size() >= outputShape.size())
     return {}; // trivial no insertion case
 
@@ -1066,8 +1084,9 @@ SmallVector<int64_t> findReshapeInsertionDims(ArrayRef<int64_t> inputShape,
     auto dim = outputShape[i];
     if (inputDimIndex < inputShape.size() && dim == inputShape[inputDimIndex]) {
       ++inputDimIndex;
-    } else if (dim == 1 && (inputDimIndex >= inputShape.size() ||
-                            dim != inputShape[inputDimIndex])) {
+    } else if (dim == 1 && !ignoreDims.contains(i) &&
+               (inputDimIndex >= inputShape.size() ||
+                dim != inputShape[inputDimIndex])) {
       // Singleton dimension inserted by reshape.
       insertionDims.push_back(i);
     } else {

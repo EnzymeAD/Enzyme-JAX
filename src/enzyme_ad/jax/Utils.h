@@ -7,6 +7,7 @@
 #include "mlir/IR/Types.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -663,8 +664,16 @@ static arith::CmpIPredicate swapPredicate(arith::CmpIPredicate pred) {
 
 SmallVector<int64_t> findReshapeInsertionDims(RankedTensorType inputType,
                                               RankedTensorType outputType);
+SmallVector<int64_t>
+findReshapeInsertionDims(RankedTensorType inputType,
+                         RankedTensorType outputType,
+                         llvm::SmallSet<int64_t, 4> &ignoreDims);
 SmallVector<int64_t> findReshapeInsertionDims(ArrayRef<int64_t> inputShape,
                                               ArrayRef<int64_t> outputShape);
+SmallVector<int64_t>
+findReshapeInsertionDims(ArrayRef<int64_t> inputShape,
+                         ArrayRef<int64_t> outputShape,
+                         llvm::SmallSet<int64_t, 4> &ignoreDims);
 
 bool areValidInsertionDims(RankedTensorType inputType,
                            RankedTensorType outputType,
