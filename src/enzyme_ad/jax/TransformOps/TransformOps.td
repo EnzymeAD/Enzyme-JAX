@@ -1515,6 +1515,21 @@ def ApplyReshapeSlicePatterns : EnzymeHLOParameterizedPatternOp<
   }];
 }
 
+def ApplyReshapeDynamicSlicePatterns : EnzymeHLOParameterizedPatternOp<
+    "reshape_dynamic_slice"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
 def ApplyReshapeElementwisePatterns : EnzymeHLOParameterizedPatternOp<
     "reshape_elementwise"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
