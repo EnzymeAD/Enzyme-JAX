@@ -109,11 +109,38 @@ module {
   }
 
   // CHECK: func.func @reshape_slice_remove_first(%arg0: tensor<1x2048x2048xf64>) -> tensor<1x2032xf64> {
-  // CHECK-NEXT:   %c = stablehlo.constant dense<0> : tensor<i64>
-  // CHECK-NEXT:   %c_0 = stablehlo.constant dense<8> : tensor<i64>
+  // CHECK-NEXT:   %c = stablehlo.constant dense<8> : tensor<i64>
   // CHECK-NEXT:   %0 = stablehlo.reshape %arg0 : (tensor<1x2048x2048xf64>) -> tensor<2048x2048xf64>
-  // CHECK-NEXT:   %1 = stablehlo.dynamic_slice %0, %c, %c_0, sizes = [1, 2032] : (tensor<2048x2048xf64>, tensor<i64>, tensor<i64>) -> tensor<1x2032xf64>
+  // CHECK-NEXT:   %1 = stablehlo.dynamic_slice %0, %c, %c, sizes = [1, 2032] : (tensor<2048x2048xf64>, tensor<i64>, tensor<i64>) -> tensor<1x2032xf64>
   // CHECK-NEXT:   return %1 : tensor<1x2032xf64>
   // CHECK-NEXT: }
 
+}
+
+module {
+  func.func @main(%arg0: tensor<5x4x3xf32>, %arg1: tensor<3x1x4x1x5xf32>) -> tensor<5x4x3xf32> {
+    %c = stablehlo.constant dense<0> : tensor<i32>
+    %c_0 = stablehlo.constant dense<1> : tensor<i32>
+    %c_1 = stablehlo.constant dense<0> : tensor<i64>
+    %c_2 = stablehlo.constant dense<1> : tensor<i64>
+    %c_3 = stablehlo.constant dense<4> : tensor<i64>
+    %0 = stablehlo.transpose %arg1, dims = [4, 1, 2, 3, 0] : (tensor<3x1x4x1x5xf32>) -> tensor<5x1x4x1x3xf32>
+    %1:2 = stablehlo.while(%iterArg = %c_1, %iterArg_3 = %arg0) : tensor<i64>, tensor<5x4x3xf32>
+    cond {
+      %2 = stablehlo.compare  LT, %iterArg, %c_3 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+      stablehlo.return %2 : tensor<i1>
+    } do {
+      %2 = stablehlo.add %c_2, %iterArg : tensor<i64>
+      %3 = stablehlo.convert %2 : (tensor<i64>) -> tensor<i32>
+      %4 = stablehlo.subtract %3, %c_0 : tensor<i32>
+      %5 = stablehlo.dynamic_slice %0, %c, %c, %4, %c, %c, sizes = [5, 1, 1, 1, 3] : (tensor<5x1x4x1x3xf32>, tensor<i32>, tensor<i32>, tensor<i32>, tensor<i32>, tensor<i32>) -> tensor<5x1x1x1x3xf32>
+      %6 = stablehlo.reshape %5 : (tensor<5x1x1x1x3xf32>) -> tensor<5x1x3xf32>
+      %7 = stablehlo.dynamic_update_slice %iterArg_3, %6, %c, %4, %c : (tensor<5x4x3xf32>, tensor<5x1x3xf32>, tensor<i32>, tensor<i32>, tensor<i32>) -> tensor<5x4x3xf32>
+      // CHECK: %5 = stablehlo.reshape %0 : (tensor<5x1x4x1x3xf32>) -> tensor<5x4x3xf32>
+      // CHECK-NEXT: %6 = stablehlo.dynamic_slice %5, %c, %4, %c, sizes = [5, 1, 3] : (tensor<5x4x3xf32>, tensor<i32>, tensor<i32>, tensor<i32>) -> tensor<5x1x3xf32>
+      // CHECK-NEXT: %7 = stablehlo.dynamic_update_slice %iterArg_4, %6, %c, %4, %c : (tensor<5x4x3xf32>, tensor<5x1x3xf32>, tensor<i32>, tensor<i32>, tensor<i32>) -> tensor<5x4x3xf32>
+      stablehlo.return %2, %7 : tensor<i64>, tensor<5x4x3xf32>
+    }
+    return %1#1 : tensor<5x4x3xf32>
+  }
 }
