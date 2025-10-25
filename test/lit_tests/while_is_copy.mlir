@@ -191,8 +191,12 @@ module {
   }
 }
 
+// CHECK: func.func @main(%arg0: tensor<10xf64>) -> tensor<10xf64> {
+// CHECK-NEXT:   return %arg0 : tensor<10xf64>
+// CHECK-NEXT: }
+
 module {
-  func.func @main(%arg0: tensor<5x4x3xf32>, %arg1: tensor<5x3xf32>) -> tensor<4x5x3xf32> {
+  func.func @main(%arg0: tensor<5x4x3xf32>) -> tensor<4x5x3xf32> {
     %c = stablehlo.constant dense<0> : tensor<i32>
     %cst = stablehlo.constant dense<0.000000e+00> : tensor<4x5x3xf32>
     %c_0 = stablehlo.constant dense<1> : tensor<i32>
@@ -216,3 +220,8 @@ module {
     return %1#1 : tensor<4x5x3xf32>
   }
 }
+
+// CHECK: func.func @main(%arg0: tensor<5x4x3xf32>) -> tensor<4x5x3xf32> {
+// CHECK-NEXT:   %0 = stablehlo.transpose %arg0, dims = [1, 0, 2] : (tensor<5x4x3xf32>) -> tensor<4x5x3xf32>
+// CHECK-NEXT:   return %0 : tensor<4x5x3xf32>
+// CHECK-NEXT: }
