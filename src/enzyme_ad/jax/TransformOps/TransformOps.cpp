@@ -161,6 +161,11 @@ void ApplyReshapeSlicePatterns::populatePatterns(RewritePatternSet &patterns) {
   addReshapeSlice(patterns, getParameter(), *getContext(),
                   PatternBenefit(getBenefit().value_or(1)));
 }
+void ApplyReshapeDynamicSlicePatterns::populatePatterns(
+    RewritePatternSet &patterns) {
+  addReshapeDynamicSlice(patterns, getParameter(), *getContext(),
+                         PatternBenefit(getBenefit().value_or(1)));
+}
 void ApplySumToConvPatterns::populatePatterns(RewritePatternSet &patterns) {
   addSumToConv(patterns, getParameter(), *getContext(),
                PatternBenefit(getBenefit().value_or(0)));

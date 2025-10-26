@@ -469,10 +469,10 @@ struct DynamicUpdateSliceElim final
 // and fill any new dimensions with toFill. Check that any removed indices have
 // value checkRemoved, if set
 template <typename T>
-bool transformReshapeSlice(RankedTensorType fromType, RankedTensorType toType,
-                           SmallVectorImpl<T> &start,
-                           std::function<T()> toFillFn,
-                           T *checkRemoved = nullptr) {
+bool transformReshapeSlice(
+    RankedTensorType fromType, RankedTensorType toType,
+    SmallVectorImpl<T> &start, std::function<T()> toFillFn,
+    std::function<bool(const T &)> checkRemovedFn = nullptr) {
   auto fromShape = fromType.getShape();
   auto toShape = toType.getShape();
 
@@ -491,10 +491,10 @@ bool transformReshapeSlice(RankedTensorType fromType, RankedTensorType toType,
     }
 
     if (fromShape[i] == 1) {
-      if (checkRemoved) {
-        if (start[startidx] != *checkRemoved) {
+      if (checkRemovedFn) {
+        if (!checkRemovedFn(start[startidx])) {
           if (i > 0 && j > 0 && fromShape[i - 1] == fromShape[j - 1] &&
-              fromShape[i - 1] == 1 && start[startidx - 1] == *checkRemoved) {
+              fromShape[i - 1] == 1 && checkRemovedFn(start[startidx - 1])) {
             i--;
             j--;
             startidx--;
@@ -523,8 +523,8 @@ bool transformReshapeSlice(RankedTensorType fromType, RankedTensorType toType,
 
   while (i < fromShape.size()) {
     if (fromShape[i] == 1) {
-      if (checkRemoved) {
-        if (start[startidx] != *checkRemoved) {
+      if (checkRemovedFn) {
+        if (!checkRemovedFn(start[startidx])) {
           return false;
         }
       }
@@ -553,10 +553,32 @@ bool transformReshapeSlice(RankedTensorType fromType, RankedTensorType toType,
 
 template <typename T>
 bool transformReshapeSlice(RankedTensorType fromType, RankedTensorType toType,
+                           SmallVectorImpl<T> &start,
+                           std::function<T()> toFillFn, T *checkRemoved) {
+  std::function<bool(const T &)> checkRemovedFn;
+  if (checkRemoved) {
+    checkRemovedFn = [checkRemoved](const T &val) {
+      return val == *checkRemoved;
+    };
+  }
+  return transformReshapeSlice<T>(fromType, toType, start, toFillFn,
+                                  checkRemovedFn);
+}
+
+template <typename T>
+bool transformReshapeSlice(RankedTensorType fromType, RankedTensorType toType,
                            SmallVectorImpl<T> &start, T toFill,
                            T *checkRemoved = nullptr) {
   return transformReshapeSlice<T>(
       fromType, toType, start, [=]() { return toFill; }, checkRemoved);
+}
+
+template <typename T>
+bool transformReshapeSlice(RankedTensorType fromType, RankedTensorType toType,
+                           SmallVectorImpl<T> &start, T toFill,
+                           std::function<bool(const T &)> checkRemovedFn) {
+  return transformReshapeSlice<T>(
+      fromType, toType, start, [=]() { return toFill; }, checkRemovedFn);
 }
 
 template <typename T>
@@ -568,10 +590,26 @@ bool transformReshapeSlice(stablehlo::ReshapeOp op, SmallVectorImpl<T> &start,
 
 template <typename T>
 bool transformReshapeSlice(stablehlo::ReshapeOp op, SmallVectorImpl<T> &start,
+                           T toFill,
+                           std::function<bool(const T &)> checkRemovedFn) {
+  return transformReshapeSlice<T>(op.getOperand().getType(), op.getType(),
+                                  start, toFill, checkRemovedFn);
+}
+
+template <typename T>
+bool transformReshapeSlice(stablehlo::ReshapeOp op, SmallVectorImpl<T> &start,
                            std::function<T()> toFill,
                            T *checkRemoved = nullptr) {
   return transformReshapeSlice<T>(op.getOperand().getType(), op.getType(),
                                   start, toFill, checkRemoved);
+}
+
+template <typename T>
+bool transformReshapeSlice(stablehlo::ReshapeOp op, SmallVectorImpl<T> &start,
+                           std::function<T()> toFill,
+                           std::function<bool(const T &)> checkRemovedFn) {
+  return transformReshapeSlice<T>(op.getOperand().getType(), op.getType(),
+                                  start, toFill, checkRemovedFn);
 }
 
 stablehlo::Element conj(const stablehlo::Element &orig) {
@@ -621,10 +659,12 @@ struct ReshapeDUS final
                      : RankedTensorType::get({}, rewriter.getI64Type());
 
     if (!transformReshapeSlice<mlir::Value>(
-            op, startIndices, /*toFill*/ [&]() -> mlir::Value {
+            op, startIndices, /*toFill*/
+            [&]() -> mlir::Value {
               return rewriter.create<stablehlo::ConstantOp>(
                   dus.getLoc(), itype, cast<ElementsAttr>(makeAttr(itype, 0)));
-            }))
+            },
+            [](mlir::Value v) -> bool { return matchPattern(v, m_Zero()); }))
       return failure();
 
     SmallVector<int64_t> updateShape(
@@ -712,6 +752,78 @@ struct ReshapeSlice final
     rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
         op, newOperand, startIndices, limitIndices, stepIndices);
 
+    return success();
+  }
+};
+
+struct ReshapeDynamicSlice final
+    : CheckedOpRewritePattern<stablehlo::ReshapeOp, ReshapeDynamicSlice> {
+  bool onlySingleUser;
+
+  ReshapeDynamicSlice(bool onlySingleUser, MLIRContext *ctx,
+                      PatternBenefit benefit = 1)
+      : CheckedOpRewritePattern<stablehlo::ReshapeOp, ReshapeDynamicSlice>(
+            ctx, benefit),
+        onlySingleUser(onlySingleUser) {}
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
+                                    PatternRewriter &rewriter) const {
+    // Check if the input to Reshape is a DynamicSlice
+    auto slice = op.getOperand().getDefiningOp<stablehlo::DynamicSliceOp>();
+    if (!slice)
+      return failure();
+
+    if (onlySingleUser && !llvm::hasSingleElement(slice->getUsers()))
+      return failure();
+
+    // %0 = dynamic_slice %arg0
+    // %1 = reshape %0
+    //
+    // ->
+    //
+    // %arg0_reshaped = reshape %arg0
+    // dynamic_slice %arg0_reshaped
+    SmallVector<Value> startIndices(slice.getStartIndices().begin(),
+                                    slice.getStartIndices().end());
+
+    auto itype = startIndices.size() > 0
+                     ? cast<RankedTensorType>(startIndices[0].getType())
+                     : RankedTensorType::get({}, rewriter.getI64Type());
+
+    if (!transformReshapeSlice<mlir::Value>(
+            op, startIndices, /*toFill*/
+            [&]() -> mlir::Value {
+              return rewriter.create<stablehlo::ConstantOp>(
+                  slice.getLoc(), itype,
+                  cast<ElementsAttr>(makeAttr(itype, 0)));
+            },
+            [](mlir::Value v) -> bool { return matchPattern(v, m_Zero()); }))
+      return failure();
+
+    SmallVector<int64_t> sliceSizes = llvm::to_vector(slice.getSliceSizes());
+
+    int64_t one = 1;
+    if (!transformReshapeSlice<int64_t>(op, sliceSizes, /*toFill*/ 1,
+                                        /*checkRemoved*/ &one))
+      return failure();
+
+    SmallVector<int64_t> operandShape(
+        slice.getOperand().getType().getShape().begin(),
+        slice.getOperand().getType().getShape().end());
+
+    if (!transformReshapeSlice<int64_t>(op, operandShape, /*toFill*/ 1,
+                                        /*checkRemoved*/ &one))
+      return failure();
+
+    auto newOperand = rewriter.create<stablehlo::ReshapeOp>(
+        op.getLoc(),
+        RankedTensorType::get(operandShape,
+                              slice.getOperand().getType().getElementType()),
+        slice.getOperand());
+
+    rewriter.replaceOpWithNewOp<stablehlo::DynamicSliceOp>(
+        op, newOperand, startIndices,
+        rewriter.getDenseI64ArrayAttr(sliceSizes));
     return success();
   }
 };
@@ -24830,6 +24942,13 @@ void mlir::transform::addReshapeSlice(RewritePatternSet &patterns,
   patterns.insert<ReshapeSlice>(onlySingleUser, &context, benefit);
 }
 
+void mlir::transform::addReshapeDynamicSlice(RewritePatternSet &patterns,
+                                             bool onlySingleUser,
+                                             MLIRContext &context,
+                                             PatternBenefit benefit) {
+  patterns.insert<ReshapeDynamicSlice>(onlySingleUser, &context, benefit);
+}
+
 void mlir::transform::addExtendUnaryElementwise(RewritePatternSet &patterns,
                                                 bool onlySingleUser,
                                                 MLIRContext &context,
@@ -25090,7 +25209,8 @@ struct EnzymeHLOOptPass
 
     if (passses & (2048 * 64)) {
       // add reshape push up cases here
-      patterns.add<ReshapeElementwise, ReshapeSlice>(true, context);
+      patterns.add<ReshapeElementwise, ReshapeSlice, ReshapeDynamicSlice>(
+          true, context);
       patterns.add<ReshapeOfConcatToConcatOfReshape, ReshapeDUS, ReshapePad,
                    ReshapeReduceWindow, ReshapeSelect>(context);
     }
