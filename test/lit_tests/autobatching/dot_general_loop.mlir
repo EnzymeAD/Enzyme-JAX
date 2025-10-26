@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --auto-batching --inline --enzyme-hlo-opt %s | FileCheck %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-opt --auto-batching --inline --enzyme-hlo-generate-td="patterns=reshape_dynamic_slice(1);reshape_licm(1);transpose_dynamic_slice;transpose_licm(1);while_is_copy_simplify;reshape_elementwise(1);elementwise_licm(1)" --transform-interpreter --enzyme-hlo-remove-transform --enzyme-hlo-opt %s | FileCheck %s
 
 module {
   func.func @main(%arg0: tensor<3x5x10xf32> {enzymexla.memory_effects = []}, %arg1: tensor<4x3xf32> {enzymexla.memory_effects = []}) -> tensor<4x5x10xf32> attributes {enzymexla.memory_effects = []} {

@@ -24461,34 +24461,15 @@ private:
       auto sliceSizes = sliceOp.getSliceSizes();
 
       SmallVector<int32_t> mapDStoDUSDim(sliceOp.getStartIndices().size(), -1);
+      std::iota(mapDStoDUSDim.begin(), mapDStoDUSDim.end(), 0);
       bool isIotaMapping = false;
-      if (inductionVarDim == dusInductionVarDim) {
-        isIotaMapping = true;
-        std::iota(mapDStoDUSDim.begin(), mapDStoDUSDim.end(), 0);
-      } else {
-        auto minVal = std::min(dusInductionVarDim, inductionVarDim);
-        auto maxVal = std::max(dusInductionVarDim, inductionVarDim);
-
-        for (int32_t i = 0; i < minVal; i++)
-          mapDStoDUSDim[i] = i;
-
-        bool allOnes = true;
-        for (int32_t i = minVal; i <= maxVal; i++) {
-          if (sliceSizes[i] != 1) {
-            allOnes = false;
-            break;
-          }
-          mapDStoDUSDim[i] = i;
-        }
+      if (inductionVarDim != dusInductionVarDim) {
+        if (sliceSizes[dusInductionVarDim] != 1 ||
+            sliceSizes[inductionVarDim] != 1)
+          return unsupportedIndexMappingInfo();
 
         mapDStoDUSDim[dusInductionVarDim] = inductionVarDim;
         mapDStoDUSDim[inductionVarDim] = dusInductionVarDim;
-
-        if (!allOnes)
-          return unsupportedIndexMappingInfo();
-
-        for (int32_t i = maxVal + 1; i < sliceOp.getStartIndices().size(); i++)
-          mapDStoDUSDim[i] = i;
       }
 
       return IndexMappingInfo{true,         isIotaMapping,
@@ -24532,6 +24513,9 @@ private:
                               prevInfo.sliceOperand,
                               newMapping};
     }
+
+    // TODO: support the very common case of dropdim of dim = 0 which is emitted
+    // by the auto-batching pass
 
     return unsupportedIndexMappingInfo();
   }

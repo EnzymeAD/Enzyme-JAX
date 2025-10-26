@@ -1,4 +1,4 @@
-// // RUN: enzymexlamlir-opt --enzyme-hlo-opt --auto-batching --enzyme-hlo-opt %s | FileCheck %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-opt --auto-batching --inline --enzyme-hlo-generate-td="patterns=reshape_dynamic_slice(1);reshape_licm(1);transpose_dynamic_slice;transpose_licm(1);while_is_copy_simplify;reshape_elementwise(1);elementwise_licm(1)" --transform-interpreter --enzyme-hlo-remove-transform --enzyme-hlo-opt %s | FileCheck %s
 
 module {
   func.func @main(%arg0: tensor<10xf64>) -> tensor<10xf64> {
@@ -70,3 +70,12 @@ module {
     return %2#1 : tensor<4x5x3xf32>
   }
 }
+
+// CHECK: func.func @main(%arg0: tensor<5x4x3xf32>, %arg1: tensor<5x3xf32>) -> tensor<4x5x3xf32> {
+// CHECK-NEXT:   %0 = stablehlo.transpose %arg0, dims = [1, 2, 0] : (tensor<5x4x3xf32>) -> tensor<4x3x5xf32>
+// CHECK-NEXT:   %1 = stablehlo.broadcast_in_dim %arg1, dims = [2, 1] : (tensor<5x3xf32>) -> tensor<4x3x5xf32>
+// CHECK-NEXT:   %2 = stablehlo.add %0, %1 : tensor<4x3x5xf32>
+// CHECK-NEXT:   %3 = stablehlo.sine %2 : tensor<4x3x5xf32>
+// CHECK-NEXT:   %4 = stablehlo.transpose %3, dims = [0, 2, 1] : (tensor<4x3x5xf32>) -> tensor<4x5x3xf32>
+// CHECK-NEXT:   return %4 : tensor<4x5x3xf32>
+// CHECK-NEXT: }
