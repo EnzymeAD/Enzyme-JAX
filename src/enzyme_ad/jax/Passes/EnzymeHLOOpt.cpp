@@ -24704,6 +24704,39 @@ private:
   }
 };
 
+struct DynamicSliceSimplify
+    : public CheckedOpRewritePattern<stablehlo::DynamicSliceOp,
+                                     DynamicSliceSimplify> {
+  using CheckedOpRewritePattern<stablehlo::DynamicSliceOp,
+                                DynamicSliceSimplify>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DynamicSliceOp op,
+                                    PatternRewriter &rewriter) const {
+    // If slice is a splatted constant, then it doesn't matter which indices we
+    // are slicing.
+    SplatElementsAttr splat;
+    if (matchPattern(op.getOperand(), m_Constant(&splat))) {
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, op.getType(), splat.resizeSplat(op.getType()));
+      return success();
+    }
+
+    // If it is from a broadcasted scalar, we can replace it with a broadcast
+    if (auto bcast =
+            op.getOperand().getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+      auto bcastInput = bcast.getOperand();
+      auto bcastInputTy = cast<RankedTensorType>(bcastInput.getType());
+      if (bcastInputTy.getRank() == 0) {
+        rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+            op, op.getType(), bcastInput, rewriter.getDenseI64ArrayAttr({}));
+        return success();
+      }
+    }
+
+    return failure();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -25335,7 +25368,8 @@ struct EnzymeHLOOptPass
         DynamicPadToPad,
         RemoveNoOpsFromWhileLoop,
         WhileIsCopySimplify,
-        SplitVariadicScatterOp
+        SplitVariadicScatterOp,
+        DynamicSliceSimplify
       >(context);
 
     patterns.add<
