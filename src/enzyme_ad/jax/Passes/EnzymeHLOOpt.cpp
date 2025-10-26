@@ -24704,6 +24704,27 @@ private:
   }
 };
 
+struct DynamicSliceSimplify
+    : public CheckedOpRewritePattern<stablehlo::DynamicSliceOp,
+                                     DynamicSliceSimplify> {
+  using CheckedOpRewritePattern<stablehlo::DynamicSliceOp,
+                                DynamicSliceSimplify>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DynamicSliceOp op,
+                                    PatternRewriter &rewriter) const {
+    // If slice is a splatted constant, then it doesn't matter which indices we
+    // are slicing.
+    SplatElementsAttr splat;
+    if (matchPattern(op.getOperand(), m_Constant(&splat))) {
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, op.getType(), splat.resizeSplat(op.getType()));
+      return success();
+    }
+
+    return failure();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -25335,7 +25356,8 @@ struct EnzymeHLOOptPass
         DynamicPadToPad,
         RemoveNoOpsFromWhileLoop,
         WhileIsCopySimplify,
-        SplitVariadicScatterOp
+        SplitVariadicScatterOp,
+        DynamicSliceSimplify
       >(context);
 
     patterns.add<
