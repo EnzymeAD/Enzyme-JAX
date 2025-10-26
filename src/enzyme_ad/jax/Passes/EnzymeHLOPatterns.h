@@ -87,6 +87,8 @@ void addReshapeElementwise(RewritePatternSet &patterns, bool onlySingleUser,
                            MLIRContext &context, PatternBenefit benefit);
 void addReshapeSlice(RewritePatternSet &patterns, bool onlySingleUser,
                      MLIRContext &context, PatternBenefit benefit);
+void addReshapeDynamicSlice(RewritePatternSet &patterns, bool onlySingleUser,
+                            MLIRContext &context, PatternBenefit benefit);
 void addExtendUnaryElementwise(RewritePatternSet &patterns, bool onlySingleUser,
                                MLIRContext &context, PatternBenefit benefit);
 void addWrapUnaryElementwise(RewritePatternSet &patterns, bool onlySingleUser,
