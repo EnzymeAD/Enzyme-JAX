@@ -24306,9 +24306,9 @@ struct WhileIsCopySimplify
 
       auto [success, iotaMapping, sliceOp, sliceInductionVarDim, sliceOperand,
             mapDStoDUSDim] =
-          getIndexMappingInfo(dusOp.getUpdate().getDefiningOp(), domInfo,
-                              parentBlock, rewriter, whileOp,
-                              inductionVarOffsets, dusOp, dusInductionVarDim);
+          getIndexMappingInfo(
+              dusOp.getUpdate().getDefiningOp(), domInfo, parentBlock, rewriter,
+              whileOp, inductionVarOffsets, dusOp, dusInductionVarDim, 0);
       if (!success)
         continue;
 
@@ -24326,28 +24326,34 @@ struct WhileIsCopySimplify
         int32_t j = mapDStoDUSDim[i];
 
         auto dsStartIndex = sliceOp.getStartIndices()[i];
-        auto dusStartIndex = dusOp.getStartIndices()[j];
+        Value dusStartIndex;
+        if (j != -2) {
+          dusStartIndex = dusOp.getStartIndices()[j];
+        }
 
         if (isConstantAcrossLoopIterations(dsStartIndex, whileOp)) {
           sliceStartIndices[i] = IndexInfo{dsStartIndex, -1};
           sliceSizes[i] = dsShape[i];
-          if (isConstantAcrossLoopIterations(dusStartIndex, whileOp)) {
-            dusStartIndices[j] = IndexInfo{dusStartIndex, -1};
-          } else {
-            indicesMatch = false;
-            break;
+          if (dusStartIndex) {
+            if (isConstantAcrossLoopIterations(dusStartIndex, whileOp)) {
+              dusStartIndices[j] = IndexInfo{dusStartIndex, -1};
+            } else {
+              indicesMatch = false;
+              break;
+            }
           }
         } else {
           if (foundInductionVar || // multiple indices with induction var
               !inductionVarOffsets.contains(dsStartIndex) || // no induction var
-              !inductionVarOffsets.contains(dusStartIndex)) {
+              (dusStartIndex && !inductionVarOffsets.contains(dusStartIndex))) {
             indicesMatch = false;
             break;
           }
 
           foundInductionVar = true;
           auto dsOffset = inductionVarOffsets[dsStartIndex];
-          auto dusOffset = inductionVarOffsets[dusStartIndex];
+          auto dusOffset =
+              dusStartIndex ? inductionVarOffsets[dusStartIndex] : dsOffset;
 
           if (dsOffset != dusOffset || dsShape[i] != 1) {
             indicesMatch = false;
@@ -24356,8 +24362,10 @@ struct WhileIsCopySimplify
 
           sliceStartIndices[i] = IndexInfo{
               nullptr, static_cast<int32_t>(start + getInt(dsOffset))};
-          dusStartIndices[j] = IndexInfo{
-              nullptr, static_cast<int32_t>(start + getInt(dusOffset))};
+          if (dusStartIndex) {
+            dusStartIndices[j] = IndexInfo{
+                nullptr, static_cast<int32_t>(start + getInt(dusOffset))};
+          }
           sliceSizes[i] = limit - start;
         }
       }
@@ -24389,11 +24397,29 @@ struct WhileIsCopySimplify
       auto dusUpdate = sliceOp.getResult();
 
       if (!copyInfo.iotaMapping) {
-        SmallVector<int64_t> permutation(copyInfo.mapDStoDUSDim.size());
-        for (int i = 0; i < copyInfo.mapDStoDUSDim.size(); i++)
-          permutation[copyInfo.mapDStoDUSDim[i]] = i;
+        int32_t nDeletions = 0;
+        SmallVector<int64_t> reshapeOutShape, mapping;
+        for (auto [i, dim] : enumerate(copyInfo.mapDStoDUSDim)) {
+          if (dim == -2) {
+            nDeletions++;
+            continue;
+          }
+          reshapeOutShape.push_back(copyInfo.sliceSizes[i]);
+          mapping.push_back(dim);
+        }
+
+        auto reshapeOp = rewriter.create<stablehlo::ReshapeOp>(
+            whileOp.getLoc(),
+            RankedTensorType::get(reshapeOutShape,
+                                  dusUpdate.getType().getElementType()),
+            dusUpdate);
+
+        SmallVector<int64_t> permutation(mapping.size());
+        for (int i = 0; i < mapping.size(); i++)
+          permutation[mapping[i]] = i;
+
         dusUpdate = rewriter.create<stablehlo::TransposeOp>(
-            whileOp.getLoc(), dusUpdate,
+            whileOp.getLoc(), reshapeOp,
             rewriter.getDenseI64ArrayAttr(permutation));
       }
 
@@ -24445,7 +24471,7 @@ private:
                       PatternRewriter &rewriter, stablehlo::WhileOp whileOp,
                       DenseMap<Value, APInt> &inductionVarOffsets,
                       stablehlo::DynamicUpdateSliceOp dusOp,
-                      int32_t dusInductionVarDim) const {
+                      int32_t dusInductionVarDim, int32_t depth) const {
     if (auto sliceOp = dyn_cast<stablehlo::DynamicSliceOp>(op)) {
       // base case, we have reached the dynamic slice
       Value sliceOperand = sliceOp.getOperand();
@@ -24461,34 +24487,15 @@ private:
       auto sliceSizes = sliceOp.getSliceSizes();
 
       SmallVector<int32_t> mapDStoDUSDim(sliceOp.getStartIndices().size(), -1);
+      std::iota(mapDStoDUSDim.begin(), mapDStoDUSDim.end(), 0);
       bool isIotaMapping = false;
-      if (inductionVarDim == dusInductionVarDim) {
-        isIotaMapping = true;
-        std::iota(mapDStoDUSDim.begin(), mapDStoDUSDim.end(), 0);
-      } else {
-        auto minVal = std::min(dusInductionVarDim, inductionVarDim);
-        auto maxVal = std::max(dusInductionVarDim, inductionVarDim);
-
-        for (int32_t i = 0; i < minVal; i++)
-          mapDStoDUSDim[i] = i;
-
-        bool allOnes = true;
-        for (int32_t i = minVal; i <= maxVal; i++) {
-          if (sliceSizes[i] != 1) {
-            allOnes = false;
-            break;
-          }
-          mapDStoDUSDim[i] = i;
-        }
+      if (inductionVarDim != dusInductionVarDim) {
+        if (sliceSizes[dusInductionVarDim] != 1 ||
+            sliceSizes[inductionVarDim] != 1)
+          return unsupportedIndexMappingInfo();
 
         mapDStoDUSDim[dusInductionVarDim] = inductionVarDim;
         mapDStoDUSDim[inductionVarDim] = dusInductionVarDim;
-
-        if (!allOnes)
-          return unsupportedIndexMappingInfo();
-
-        for (int32_t i = maxVal + 1; i < sliceOp.getStartIndices().size(); i++)
-          mapDStoDUSDim[i] = i;
       }
 
       return IndexMappingInfo{true,         isIotaMapping,
@@ -24511,7 +24518,7 @@ private:
       auto prevInfo = getIndexMappingInfo(
           transposeOp.getOperand().getDefiningOp(), domInfo, parentBlock,
           rewriter, whileOp, inductionVarOffsets, dusOp,
-          mappedDusInductionVarDim);
+          mappedDusInductionVarDim, depth + 1);
       if (!prevInfo.success)
         return prevInfo;
 
@@ -24531,6 +24538,53 @@ private:
                               sliceInductionVarDim,
                               prevInfo.sliceOperand,
                               newMapping};
+    }
+
+    if (depth == 0) {
+      // Special case for dropdim of dim = 0 which is emitted by the
+      // auto-batching pass
+      if (auto reshapeOp = dyn_cast<stablehlo::ReshapeOp>(op)) {
+        auto sliceOp =
+            reshapeOp.getOperand().getDefiningOp<stablehlo::DynamicSliceOp>();
+        if (!sliceOp)
+          return unsupportedIndexMappingInfo();
+        Value sliceOperand = sliceOp.getOperand();
+
+        auto sliceInductionVarDim = getInductionVariableDimension(
+            sliceOp, inductionVarOffsets, whileOp);
+        if (sliceInductionVarDim != 0)
+          return unsupportedIndexMappingInfo();
+
+        auto inputType =
+            cast<RankedTensorType>(reshapeOp.getOperand().getType());
+        auto outputType = cast<RankedTensorType>(op->getResult(0).getType());
+        if (inputType.getRank() != outputType.getRank() + 1)
+          return unsupportedIndexMappingInfo();
+
+        auto inputShape = llvm::to_vector(inputType.getShape());
+        auto outputShape = llvm::to_vector(outputType.getShape());
+        if (inputShape[0] != 1)
+          return unsupportedIndexMappingInfo();
+
+        for (int i = 0; i < inputShape.size() - 1; i++)
+          if (inputShape[i + 1] != outputShape[i])
+            return unsupportedIndexMappingInfo();
+
+        auto sliceSizes = sliceOp.getSliceSizes();
+
+        SmallVector<int32_t> mapDStoDUSDim(sliceOp.getStartIndices().size());
+        std::iota(mapDStoDUSDim.begin(), mapDStoDUSDim.end(), -1);
+        bool isIotaMapping = false;
+        if (sliceSizes[dusInductionVarDim + 1] != 1)
+          return unsupportedIndexMappingInfo();
+
+        mapDStoDUSDim[0] = dusInductionVarDim;
+        mapDStoDUSDim[dusInductionVarDim + 1] = -2;
+
+        return IndexMappingInfo{true,         false,
+                                sliceOp,      sliceInductionVarDim,
+                                sliceOperand, mapDStoDUSDim};
+      }
     }
 
     return unsupportedIndexMappingInfo();
