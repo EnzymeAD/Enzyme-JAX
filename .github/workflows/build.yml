@@ -125,7 +125,7 @@ jobs:
         run: |
           bazel build $BAZEL_FLAGS --color=yes //:enzymexlamlir-opt --test_output=errors
       - name: Upload enzymexlamlir-opt
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: enzymexlamlir-opt-${{ matrix.os }}-${{ matrix.python }}
           path: "bazel-bin/enzymexlamlir-opt"
@@ -138,7 +138,7 @@ jobs:
         run: |
           bazel build $BAZEL_FLAGS --color=yes :wheel --test_output=errors
       - name: Upload wheel
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         if: ${{ !endsWith(matrix.os, 'arm') }}
         with:
           name: Enzyme-JAX-Wheel-${{ matrix.os }}-${{ matrix.python }}
@@ -151,7 +151,7 @@ jobs:
         run: |
           bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/...
       - name: Upload test results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         if: ${{ !cancelled() }}
         with:
           name: Enzyme-JAX-tests-${{ matrix.os }}-${{ matrix.python }}
@@ -159,7 +159,7 @@ jobs:
             bazel-out/**/test.log
           retention-days: 90
       - name: Upload benchmark results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         if: ${{ !cancelled() }}
         with:
           name: Enzyme-JAX-benchmark-${{ matrix.os }}-${{ matrix.python }}
@@ -195,7 +195,7 @@ jobs:
             --csv_file=combined_results.csv \
             --json_file=combined_results.json
       - name: Upload benchmark results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         if: ${{ !cancelled() }}
         with:
           name: Enzyme-JAX-combined-benchmark-results
