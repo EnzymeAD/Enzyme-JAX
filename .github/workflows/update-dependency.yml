@@ -26,6 +26,12 @@ on:
         required: false
         type: 'string'
         default: 'main'
+      workspace_path:
+        description: 'The path to the Bazel workspace file'
+        required: false
+        type: 'string'
+        default: 'workspace.bzl'
+
 
 jobs:
   pr-update-dep:
@@ -49,7 +55,7 @@ jobs:
       - name: Get upstream commit
         shell: bash
         run: |
-          OLD_UPSTREAM_COMMIT=$(grep '${{ inputs.variable_name }} *= *".*"' workspace.bzl | cut -d= -f2 | tr -d '" ')
+          OLD_UPSTREAM_COMMIT=$(grep '${{ inputs.variable_name }} *= *".*"' ${{ inputs.workspace_path }} | cut -d= -f2 | tr -d '" ')
 
           if [[ -n '${{ inputs.upstream_commit }}' ]]; then
               NEW_UPSTREAM_COMMIT="${{ inputs.upstream_commit }}"
@@ -62,7 +68,7 @@ jobs:
           echo "DIFF_MSG=Diff: https://github.com/${{ inputs.upstream_repo }}/compare/${OLD_UPSTREAM_COMMIT}...${NEW_UPSTREAM_COMMIT}" >> "${GITHUB_ENV}"
       - name: Modify upstream commit
         run: |
-          sed -i 's/${{ inputs.variable_name }} *= *".*"/${{ inputs.variable_name }} = "${{ env.NEW_UPSTREAM_COMMIT }}"/' workspace.bzl
+          sed -i 's/${{ inputs.variable_name }} *= *".*"/${{ inputs.variable_name }} = "${{ env.NEW_UPSTREAM_COMMIT }}"/' ${{ inputs.workspace_path }}
       - name: Decide whether to open the pull request
         id: decide
         run: |
