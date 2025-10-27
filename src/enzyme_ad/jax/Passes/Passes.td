@@ -450,12 +450,42 @@ def LowerEnzymeXLALapackPass : Pass<"lower-enzymexla-lapack"> {
   ];
 }
 
-def LowerEnzymeProbProgPass : Pass<"lower-enzyme-probprog"> {
-  let summary = "Lower enzyme probprog ops";
+def LowerProbProgToStableHLOPass : Pass<"lower-probprog-to-stablehlo"> {
+  let summary = "Lower computational enzyme ops to StableHLO";
+  let description = [{
+    Lower computational probprog ops (loop, dot, cholesky_solve, random, unflatten_slice)
+    to StableHLO dialect operations.
+  }];
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "chlo::ChloDialect",
+    "arith::ArithDialect",
+    "func::FuncDialect",
+    "enzyme::EnzymeDialect",
+  ];
+
+  let options = [
+    Option<
+        /*C++ variable name=*/"backend",
+        /*CLI argument=*/"backend",
+        /*type=*/"std::string",
+        /*default=*/"\"cpu\"",
+        /*description=*/"HW backend">,
+  ];
+}
+
+def LowerProbProgTraceOpsPass : Pass<"lower-probprog-trace-ops"> {
+  let summary = "Lower probprog trace manipulation ops to JIT calls";
+  let description = [{
+    Lower probprog trace manipulation ops (initTrace, addSampleToTrace, getSampleFromTrace, etc.)
+    to enzymexla.jit_call operations that invoke external runtime functions (e.g., Julia `@cfunction`).
+    This pass also handles type conversions (!enzyme.Trace -> tensor<ui64>, !enzyme.Constraint -> tensor<ui64>).
+  }];
   let dependentDialects = [
     "stablehlo::StablehloDialect",
     "enzymexla::EnzymeXLADialect",
     "LLVM::LLVMDialect",
+    "func::FuncDialect",
   ];
 
   let options = [

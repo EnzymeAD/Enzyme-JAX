@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(lower-enzyme-probprog{backend=cpu})" | FileCheck %s --check-prefix=CPU
+// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(lower-probprog-trace-ops{backend=cpu})" | FileCheck %s --check-prefix=CPU
 
 module {
   func.func private @test.simulate(%arg0: tensor<2xui64>) -> (!enzyme.Trace, tensor<f64>)
