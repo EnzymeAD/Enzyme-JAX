@@ -183,7 +183,7 @@ jobs:
           curl -LsSf https://astral.sh/uv/install.sh | sh
       - uses: actions/checkout@v5
       - name: Download all benchmark artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v6
         with:
           pattern: Enzyme-JAX-benchmark-*
           path: benchmark-results
