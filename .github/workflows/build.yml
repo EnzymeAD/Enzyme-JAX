@@ -81,9 +81,6 @@ jobs:
           if [ ${{ runner.arch }} == ARM64 ] && [ ${{ runner.os }} == Linux ]; then
               BAZEL_FLAGS="${BAZEL_FLAGS} --linkopt=-fuse-ld=lld"
           fi
-          gcc --version
-          cc --version
-          clang --version
           BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_TOPOLOGY"
           BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_WORKER_ID"
           BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_SKIP_MDS_QUERY=true"
