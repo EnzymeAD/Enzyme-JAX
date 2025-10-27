@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1761555943466,
+  "lastUpdate": 1761560091919,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "144174576+jessicacotturone21@users.noreply.github.com",
-            "name": "jessicacotturone21",
-            "username": "jessicacotturone21"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "6a8fec3671b4624b36985c6d61baed97a9effb5e",
-          "message": "Tessera Dialect (#1422)\n\n* Created Tessera dialect files\n\n* Registered Tessera dialect with Enzyme and defined Bazel build targets\n\n* Added missing files\n\n* Fmt1\n\n* more format\n\n* fmt3",
-          "timestamp": "2025-09-25T16:14:41-05:00",
-          "tree_id": "f3354bec5b50769ad39de390bacd9ecc2150d969",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/6a8fec3671b4624b36985c6d61baed97a9effb5e"
-        },
-        "date": 1758845116790,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.000004267043014988303,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.0000043392709922045465,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001528746286174,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001432681385893,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2239,6 +2195,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001498814538004,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "scharfrichterq@gmail.com",
+            "name": "Acake",
+            "username": "sbrantq"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f3d79b36e034cb46f7868adc1fa223a6019130f8",
+          "message": "ProbProg: Static HMC (#1464)\n\n* todo\n\n* cleanup\n\n* more mh ops lowering\n\n* test\n\n* select trace/dump op\n\n* cholesky solve op\n\n* multinormal\n\n* GetFlattenedSamplesFromTraceOpConversion  LoopOpConversion UnflattenSliceOpConversion\n\n* split lower-enzyme-probprog in two\n\n* save tests\n\n* save\n\n* simplify",
+          "timestamp": "2025-10-27T03:35:57-05:00",
+          "tree_id": "0c283d16850205054a637775d7898e9158336be5",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/f3d79b36e034cb46f7868adc1fa223a6019130f8"
+        },
+        "date": 1761560091250,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.0000042890359996818,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004200187907554209,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001495036462089,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001424800402019,
             "unit": "s"
           }
         ]
