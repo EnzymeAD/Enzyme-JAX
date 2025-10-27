@@ -25,10 +25,6 @@ common --define framework_shared_object=true
 common --define tsl_protobuf_header_only=true
 common --define=allow_oversize_protos=true
 
-# See https://github.com/google/XNNPACK/issues/9000#issuecomment-3419074934
-common --define ynn_enable_x86_amx=false
-common --define ynn_enable_arm64_sme=false
-
 # Some targets have the same py source file, but use different
 # configurations via `requires-` tags. This results in an action
 # conflict when precompiling. Disable to avoid that problem.
