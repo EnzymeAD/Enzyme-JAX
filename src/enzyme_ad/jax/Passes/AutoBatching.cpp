@@ -955,7 +955,7 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
           mapping[i] = i + 1;
         mapping[sliceDim] = 0;
         for (size_t i = sliceDim + 1; i < operandRank; i++)
-          mapping[i] = i;
+          mapping[i] = i + 1;
 
         SmallVector<int64_t> resultShape(operandRank + 1);
         resultShape[0] = info.getConstantLimit().value();
