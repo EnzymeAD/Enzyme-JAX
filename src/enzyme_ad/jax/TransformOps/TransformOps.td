@@ -2443,3 +2443,8 @@ def ApplyDynamicSliceSimplifyPatterns : EnzymeHLOPatternOp<
     "dynamic_slice_simplify"> {
   let patterns = ["DynamicSliceSimplify"];
 }
+
+def ApplyGreedyWhileLoopBatchFissionPatterns : EnzymeHLOPatternOp<
+    "greedy_while_loop_batch_fission"> {
+  let patterns = ["GreedyWhileLoopBatchFission"];
+}
