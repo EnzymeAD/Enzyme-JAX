@@ -832,6 +832,8 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
       continue;
 
     // TODO: add scatter here once batch interface is
+    // TODO: special case for reshape to move that above dynamic slice and hoist
+    // it out
     if (isa<stablehlo::DotGeneralOp, stablehlo::GatherOp, stablehlo::ReduceOp,
             stablehlo::SortOp, stablehlo::TransposeOp,
             stablehlo::BroadcastInDimOp, stablehlo::ReduceWindowOp>(op) ||
@@ -852,21 +854,24 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
     bool intermediateReshape) const {
   auto moduleOp = op->getParentOfType<ModuleOp>();
 
-  // TODO: copy constant operands directly into the function body
-
   SmallVector<BatchLiftingMode> batchLiftingModes(op->getNumOperands());
   SmallVector<Value> batchOperands(op->getNumOperands());
   SmallVector<int32_t> sliceDims(op->getNumOperands());
   for (int i = 0; i < op->getNumOperands(); i++) {
     auto operand = op->getOperand(i);
+    auto defOp = operand.getDefiningOp();
 
     if (operand.getParentBlock() != &whileOp.getBody().front()) {
-      batchLiftingModes[i] = BatchLiftingMode::DEFINED_OUTSIDE_WHILE;
+      SplatElementsAttr splat;
+      if (defOp && matchPattern(defOp, m_Constant(&splat))) {
+        batchLiftingModes[i] = BatchLiftingMode::CONSTANT;
+      } else {
+        batchLiftingModes[i] = BatchLiftingMode::DEFINED_OUTSIDE_WHILE;
+      }
       batchOperands[i] = operand;
       continue;
     }
 
-    auto defOp = operand.getDefiningOp();
     if (!defOp)
       return false;
 
@@ -908,8 +913,15 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
     OpBuilder::InsertionGuard guard(rewriter);
     rewriter.setInsertionPointToStart(moduleOp.getBody());
 
+    SmallVector<Type> argTypes;
+    for (int i = 0; i < op->getNumOperands(); i++) {
+      if (batchLiftingModes[i] == BatchLiftingMode::CONSTANT)
+        continue;
+      argTypes.push_back(op->getOperand(i).getType());
+    }
+
     FunctionType calleeType =
-        rewriter.getFunctionType(op->getOperandTypes(), op->getResultTypes());
+        rewriter.getFunctionType(TypeRange(argTypes), op->getResultTypes());
     func = rewriter.create<func::FuncOp>(moduleOp.getLoc(), batchFnName,
                                          calleeType);
     func.setPrivate();
@@ -919,7 +931,13 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
 
     IRMapping mapper;
     for (int i = 0; i < op->getNumOperands(); i++) {
-      mapper.map(op->getOperand(i), entryBlock.getArguments()[i]);
+      auto operand = op->getOperand(i);
+      if (batchLiftingModes[i] == BatchLiftingMode::CONSTANT) {
+        auto clonedConst = rewriter.clone(*operand.getDefiningOp());
+        mapper.map(operand, clonedConst->getResult(0));
+        continue;
+      }
+      mapper.map(operand, entryBlock.getArguments()[i]);
     }
 
     auto unbatchedOp = rewriter.clone(*op, mapper);
@@ -988,6 +1006,9 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
           baseOp, rewriter.getDenseI64ArrayAttr(mapping));
       newOperands.push_back(broadcastedOperand->getResult(0));
       break;
+    }
+    case BatchLiftingMode::CONSTANT: {
+      continue; // copied into the function body no need to include in operands
     }
     default: {
       assert(false && "not implemented");
