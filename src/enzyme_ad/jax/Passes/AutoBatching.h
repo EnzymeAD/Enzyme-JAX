@@ -236,6 +236,12 @@ private:
       mlir::stablehlo::DynamicSliceOp sliceOp, mlir::Value iterVar,
       int64_t limit, mlir::Block &whileBody, mlir::Block *parentBlock) const;
 
+  bool liftSpecialReshapeOp(mlir::PatternRewriter &rewriter,
+                            mlir::stablehlo::WhileOp whileOp,
+                            llvm::ArrayRef<DynamicSliceInfo> sliceOps,
+                            mlir::stablehlo::ReshapeOp reshapeOp,
+                            mlir::enzyme::WhileLoopInfo info) const;
+
   bool liftOperationByBatching(mlir::PatternRewriter &rewriter,
                                mlir::stablehlo::WhileOp whileOp,
                                llvm::ArrayRef<DynamicSliceInfo> sliceOps,

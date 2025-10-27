@@ -14,6 +14,7 @@
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 
 #define DEBUG_TYPE "auto-batching"
@@ -832,8 +833,6 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
       continue;
 
     // TODO: add scatter here once batch interface is
-    // TODO: special case for reshape to move that above dynamic slice and hoist
-    // it out
     if (isa<stablehlo::DotGeneralOp, stablehlo::GatherOp, stablehlo::ReduceOp,
             stablehlo::SortOp, stablehlo::TransposeOp,
             stablehlo::BroadcastInDimOp, stablehlo::ReduceWindowOp>(op) ||
@@ -842,11 +841,85 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
                                   intermediateReshape)) {
         wasLifted = true;
       }
+    } else if (!intermediateReshape && isa<stablehlo::ReshapeOp>(op)) {
+      if (liftSpecialReshapeOp(rewriter, whileOp, slices,
+                               dyn_cast<stablehlo::ReshapeOp>(op), info)) {
+        wasLifted = true;
+      }
     }
   }
 
   return wasLifted ? success() : failure();
 };
+
+bool GreedyWhileLoopBatchFission::liftSpecialReshapeOp(
+    PatternRewriter &rewriter, stablehlo::WhileOp whileOp,
+    ArrayRef<DynamicSliceInfo> sliceOps, stablehlo::ReshapeOp reshapeOp,
+    WhileLoopInfo info) const {
+  auto moduleOp = reshapeOp->getParentOfType<ModuleOp>();
+
+  if (sliceOps.size() != 1)
+    return false;
+
+  auto sliceInfo = sliceOps[0];
+  auto sliceOp = sliceInfo.sliceOp;
+
+  auto inputType = cast<RankedTensorType>(reshapeOp.getOperand().getType());
+  auto outputType = cast<RankedTensorType>(reshapeOp.getType());
+
+  auto deletionDims = findReshapeInsertionDims(outputType, inputType);
+
+  llvm::SmallSet<int64_t, 4> deletionDimsWithoutInductionVarDim;
+  bool foundSliceDim = false;
+  for (auto dim : deletionDims) {
+    if (dim == sliceInfo.inductionVarDimension) {
+      foundSliceDim = true;
+      continue;
+    }
+    deletionDimsWithoutInductionVarDim.insert(dim);
+  }
+  if (!foundSliceDim || deletionDimsWithoutInductionVarDim.empty())
+    return false;
+
+  // check that the ds start indices for these dims are all zero
+  SmallVector<int64_t> reshapeShape;
+  auto sliceOperandType =
+      cast<RankedTensorType>(sliceOp.getOperand().getType());
+  auto sliceOperandShape = sliceOperandType.getShape();
+
+  auto sliceStartIndices = sliceOp.getStartIndices();
+  auto sliceSizes = sliceOp.getSliceSizes();
+  SmallVector<Value> newStartIndices;
+  SmallVector<int64_t> newSliceSizes;
+  for (int32_t i = 0; i < sliceStartIndices.size(); i++) {
+    if (deletionDimsWithoutInductionVarDim.contains(i)) {
+      if (matchPattern(sliceStartIndices[i], m_Zero()))
+        continue;
+      return false;
+    }
+    reshapeShape.push_back(sliceOperandShape[i]);
+    newStartIndices.push_back(sliceStartIndices[i]);
+    newSliceSizes.push_back(sliceSizes[i]);
+  }
+
+  // hoist the reshape op
+  rewriter.setInsertionPoint(whileOp);
+  auto outsideReshapeOp = rewriter.create<stablehlo::ReshapeOp>(
+      whileOp->getLoc(),
+      RankedTensorType::get(reshapeShape, inputType.getElementType()),
+      sliceOp.getOperand());
+
+  // then reconstruct the slice op with removed start indices
+  rewriter.setInsertionPoint(reshapeOp);
+  auto newSliceOp = rewriter.create<stablehlo::DynamicSliceOp>(
+      whileOp->getLoc(), outsideReshapeOp->getResult(0), newStartIndices,
+      rewriter.getDenseI64ArrayAttr(newSliceSizes));
+
+  // introduce another reshape op to only delete the induction var dim
+  rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(
+      reshapeOp, reshapeOp.getType(), newSliceOp);
+  return true;
+}
 
 bool GreedyWhileLoopBatchFission::liftOperationByBatching(
     PatternRewriter &rewriter, stablehlo::WhileOp whileOp,
