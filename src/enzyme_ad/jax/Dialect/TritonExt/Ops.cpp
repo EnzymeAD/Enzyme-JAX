@@ -25,6 +25,11 @@ triton_ext::TritonCallOp ReadOnlyArg<triton_ext::TritonCallOp>::create(
       launchOp.getXlaSideEffectFreeAttr());
 }
 
+template <>
+void ReadNoneArg<JITCallOp>::updateOperandSegmentSizes(
+    triton_ext::TritonCallOp call, int32_t numLiveOperands,
+    PatternRewriter &rewriter) const {}
+
 namespace triton_ext {
 
 // ------------
