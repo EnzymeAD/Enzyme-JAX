@@ -198,6 +198,14 @@ public:
         nonLiveCallOperands.set(call.getInputs().getBeginOperandIndex() +
                                 index);
 
+      int32_t numLiveOperands = 0;
+      for (int32_t idx = call.getInputs().getBeginOperandIndex();
+           idx < nonLiveCallOperands.size(); idx++) {
+        if (nonLiveCallOperands[idx])
+          continue;
+        numLiveOperands++;
+      }
+
       SmallVector<Attribute> outputAliases;
       auto operand_aliases = call.getOutputOperandAliases();
 

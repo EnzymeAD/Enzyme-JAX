@@ -18,7 +18,8 @@ triton_ext::TritonCallOp ReadOnlyArg<triton_ext::TritonCallOp>::create(
   return rewriter.create<triton_ext::TritonCallOp>(
       launchOp.getLoc(), resTys, launchOp.getFn(), launchOp.getGridx(),
       launchOp.getGridy(), launchOp.getGridz(), launchOp.getBlockx(),
-      launchOp.getBlocky(), launchOp.getBlockz(), launchOp.getInputs(),
+      launchOp.getBlocky(), launchOp.getBlockz(), launchOp.getClusterx(),
+      launchOp.getClustery(), launchOp.getClusterz(), launchOp.getInputs(),
       launchOp.getBackendConfigAttr(), launchOp.getOperandLayoutsAttr(),
       /*resultLayouts*/ nullptr, launchOp.getArgAttrsAttr(),
       launchOp.getResAttrsAttr(), outputAliases,
@@ -26,7 +27,7 @@ triton_ext::TritonCallOp ReadOnlyArg<triton_ext::TritonCallOp>::create(
 }
 
 template <>
-void ReadNoneArg<JITCallOp>::updateOperandSegmentSizes(
+void ReadNoneArg<triton_ext::TritonCallOp>::updateOperandSegmentSizes(
     triton_ext::TritonCallOp call, int32_t numLiveOperands,
     PatternRewriter &rewriter) const {}
 
