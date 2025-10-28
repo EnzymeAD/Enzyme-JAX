@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1761650742147,
+  "lastUpdate": 1761682309641,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "avikpal@mit.edu",
-            "name": "Avik Pal",
-            "username": "avik-pal"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "14bfc935f481d25da64cdd680bf831cbb19ef65b",
-          "message": "feat: dus to dynamic_pad + dynamic_pad to pad (#1430)\n\n* feat: dus to dynamic_pad\n\n* feat: dynamic_pad to pad\n\n* chore: comments\n\n* test: restrict applicability\n\n* feat: add to primitives",
-          "timestamp": "2025-09-28T13:58:26-04:00",
-          "tree_id": "a08f416c464c826dc7c72aa4624afe4883605dba",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/14bfc935f481d25da64cdd680bf831cbb19ef65b"
-        },
-        "date": 1759086063094,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.000004376951899030246,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.000004339134899782948,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001438124105974,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001403865636006,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2239,6 +2195,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001577116009895,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "avikpal@mit.edu",
+            "name": "Avik Pal",
+            "username": "avik-pal"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c4ad72b48c57c448e7fe6443e1d7eb94256be40b",
+          "message": "fix: batch reduce region correctly with external constants (#1526)\n\n* fix: batch constantOp correctly\n\n* feat: support cloning reduce op region with outside constants",
+          "timestamp": "2025-10-28T13:34:31-04:00",
+          "tree_id": "3aac18ccaad8890b16e198baf336f8d5566f838b",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/c4ad72b48c57c448e7fe6443e1d7eb94256be40b"
+        },
+        "date": 1761682308983,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004199580405838788,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004190525400917977,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001350029852939,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001341407105908,
             "unit": "s"
           }
         ]
