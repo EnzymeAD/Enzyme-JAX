@@ -1644,26 +1644,33 @@ struct SHLOConstantOpBatchInterface
   mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
                                   IRMapping &mapper,
                                   ArrayRef<int64_t> batchSizes) const {
+    auto constOp = cast<ConstantOp>(src);
 
-    SmallVector<Type> resultTypes(src->getResultTypes().begin(),
-                                  src->getResultTypes().end());
-    for (auto &Ty : resultTypes) {
-      auto T = cast<TensorType>(Ty);
-      SmallVector<int64_t> shape(batchSizes.begin(), batchSizes.end());
-      shape.append(T.getShape().begin(), T.getShape().end());
-      Ty = T.clone(shape);
+    auto T = cast<TensorType>(constOp.getType());
+    SmallVector<int64_t> shape(batchSizes.begin(), batchSizes.end());
+    shape.append(T.getShape().begin(), T.getShape().end());
+    auto Ty = T.clone(shape);
+
+    // If splatted attr then we can easily batch it
+    auto eattr = cast<DenseElementsAttr>(constOp.getValue());
+    if (eattr.isSplat()) {
+      auto splatAttr = cast<SplatElementsAttr>(constOp.getValue());
+      auto newSplattedConstOp = builder.create<ConstantOp>(
+          constOp->getLoc(), Ty,
+          cast<ElementsAttr>(splatAttr.resizeSplat(cast<ShapedType>(Ty))));
+      mapper.map(src->getResult(0), newSplattedConstOp->getResult(0));
+      return success();
     }
-    mlir::NamedAttrList attrs;
-    for (auto attr : src->getAttrs()) {
-      auto eattr = cast<DenseElementsAttr>(attr.getValue());
-      attr.setValue(eattr.resizeSplat(cast<ShapedType>(resultTypes[0])));
-      attrs.append(attr);
-    }
-    auto cop = mlir::Operation::create(
-        src->getLoc(), src->getName(), resultTypes, {}, std::move(attrs),
-        OpaqueProperties(nullptr), mlir::BlockRange(), 0);
-    builder.insert(cop);
-    mapper.map(src->getResult(0), cop->getResult(0));
+
+    // otherwise do a broadcast in dim
+    SmallVector<int64_t> mapping(T.getShape().size());
+    std::iota(mapping.begin(), mapping.end(), batchSizes.size());
+
+    auto constOpCloned = builder.clone(*constOp);
+    auto bcastOp = builder.create<BroadcastInDimOp>(
+        src->getLoc(), Ty, constOpCloned->getResult(0),
+        builder.getDenseI64ArrayAttr(mapping));
+    mapper.map(src->getResult(0), bcastOp->getResult(0));
     return success();
   }
 };
