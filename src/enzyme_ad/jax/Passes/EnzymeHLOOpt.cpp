@@ -23311,13 +23311,14 @@ struct ReduceSliceFusionBase
   LogicalResult matchAndRewriteImpl(BinaryOpType binaryOp,
                                     PatternRewriter &rewriter) const {
     SmallVector<SliceInfo> slices;
-    if (!collectSlicesInChain(binaryOp, slices))
+    SmallVector<Value> extraValues;
+    if (!collectSlicesInChain(binaryOp, slices, extraValues))
       return failure();
 
     if (!areSlicesContiguous(slices))
       return failure();
 
-    return createFusedReduce(rewriter, binaryOp, slices);
+    return createFusedReduce(rewriter, binaryOp, slices, extraValues);
   };
 
 private:
@@ -23333,52 +23334,49 @@ private:
   };
 
   std::tuple<bool, SliceInfo>
-  matchReshapeReduceSlice(stablehlo::ReshapeOp reshapeOp) const {
-    auto inputType = cast<RankedTensorType>(reshapeOp.getOperand().getType());
-    auto outputType = cast<RankedTensorType>(reshapeOp.getType());
-
-    SmallVector<int64_t> insertionDims =
-        findReshapeInsertionDims(inputType, outputType);
-    if (insertionDims.size() != 1) {
+  matchReduceSlice(stablehlo::ReduceOp reduceOp) const {
+    if (reduceOp.getInputs().size() != 1 ||
+        reduceOp.getDimensions().size() != 1) {
       return std::make_tuple(false, SliceInfo());
     }
 
+    if (!((Child *)this)->isCompatibleReduction(reduceOp)) {
+      return std::make_tuple(false, SliceInfo());
+    }
+
+    auto slice =
+        reduceOp.getInputs()[0].template getDefiningOp<stablehlo::SliceOp>();
+    if (!slice) {
+      return std::make_tuple(false, SliceInfo());
+    }
+    SliceInfo info = extractSliceInfo(slice);
+    info.initValue = reduceOp.getInitValues()[0];
+
+    return std::make_tuple(info.sliceDim == reduceOp.getDimensions()[0], info);
+  }
+
+  std::tuple<bool, SliceInfo>
+  matchReshapeReduceSlice(stablehlo::ReshapeOp reshapeOp) const {
     auto reduce =
         reshapeOp.getOperand().template getDefiningOp<stablehlo::ReduceOp>();
     if (!reduce) {
       return std::make_tuple(false, SliceInfo());
     }
 
-    if (reduce.getInputs().size() != 1 || reduce.getDimensions().size() != 1 ||
-        reduce.getDimensions()[0] != insertionDims[0]) {
+    auto inputType = cast<RankedTensorType>(reshapeOp.getOperand().getType());
+    auto outputType = cast<RankedTensorType>(reshapeOp.getType());
+    auto reduceDim = reduce.getDimensions()[0];
+    if (!areValidInsertionDims(inputType, outputType, {reduceDim})) {
       return std::make_tuple(false, SliceInfo());
     }
 
-    if (!((Child *)this)->isCompatibleReduction(reduce)) {
-      return std::make_tuple(false, SliceInfo());
-    }
-
-    auto slice =
-        reduce.getInputs()[0].template getDefiningOp<stablehlo::SliceOp>();
-    if (!slice) {
-      return std::make_tuple(false, SliceInfo());
-    }
-    SliceInfo info = extractSliceInfo(slice);
-    info.initValue = reduce.getInitValues()[0];
-
-    return std::make_tuple(info.sliceDim == insertionDims[0], info);
+    return matchReduceSlice(reduce);
   }
 
   std::tuple<bool, SliceInfo>
   matchReshapeSlice(stablehlo::ReshapeOp reshapeOp) const {
     auto inputType = cast<RankedTensorType>(reshapeOp.getOperand().getType());
     auto outputType = cast<RankedTensorType>(reshapeOp.getType());
-
-    SmallVector<int64_t> deletionDims =
-        findReshapeInsertionDims(outputType, inputType);
-    if (deletionDims.size() != 1) {
-      return std::make_tuple(false, SliceInfo());
-    }
 
     auto slice =
         reshapeOp.getOperand().template getDefiningOp<stablehlo::SliceOp>();
@@ -23387,7 +23385,8 @@ private:
     }
     SliceInfo info = extractSliceInfo(slice);
 
-    return std::make_tuple(info.sliceDim == deletionDims[0], info);
+    return std::make_tuple(
+        areValidInsertionDims(outputType, inputType, {info.sliceDim}), info);
   }
 
   bool matchingSourceOperand(SmallVector<SliceInfo> &slices,
@@ -23401,7 +23400,8 @@ private:
 
   // Collect all slices in the binary operation chain
   bool collectSlicesInChain(BinaryOpType startOp,
-                            SmallVector<SliceInfo> &slices) const {
+                            SmallVector<SliceInfo> &slices,
+                            SmallVector<Value> &extraValues) const {
     // Use a worklist to traverse the binary operation chain
     SmallVector<Value> worklist;
     DenseSet<Value> visited;
@@ -23421,15 +23421,18 @@ private:
         worklist.push_back(binaryOp.getRhs());
       } else if (auto reshape =
                      current.template getDefiningOp<stablehlo::ReshapeOp>()) {
+        // slice -> reduce -> single insert dim along reduction dim -> ...
         auto [isMatchRRS, infoRRS] = matchReshapeReduceSlice(reshape);
         if (isMatchRRS && matchingSourceOperand(slices, infoRRS.sliceOp)) {
           slices.push_back(infoRRS);
         } else {
+          // slice -> drop dim -> ...
           auto [isMatchRS, infoRS] = matchReshapeSlice(reshape);
           if (isMatchRS && matchingSourceOperand(slices, infoRS.sliceOp)) {
             slices.push_back(infoRS);
           } else {
-            return false;
+            extraValues.push_back(current);
+            continue;
           }
         }
       } else if (auto slice =
@@ -23439,11 +23442,22 @@ private:
           if (info.sliceOp) {
             slices.push_back(info);
           } else {
-            return false;
+            extraValues.push_back(current);
+            continue;
           }
         }
+      } else if (auto reduce =
+                     current.template getDefiningOp<stablehlo::ReduceOp>()) {
+        auto [isMatchRR, infoRR] = matchReduceSlice(reduce);
+        if (isMatchRR && matchingSourceOperand(slices, infoRR.sliceOp)) {
+          slices.push_back(infoRR);
+        } else {
+          extraValues.push_back(current);
+          continue;
+        }
       } else {
-        return false;
+        extraValues.push_back(current);
+        continue;
       }
     }
 
@@ -23514,7 +23528,8 @@ private:
   // Create the fused reduce operation
   LogicalResult createFusedReduce(PatternRewriter &rewriter,
                                   BinaryOpType binaryOp,
-                                  SmallVector<SliceInfo> &slices) const {
+                                  SmallVector<SliceInfo> &slices,
+                                  SmallVector<Value> &extraValues) const {
     Value sourceOperand = slices[0].sliceOp.getOperand();
 
     auto sliceInfo = slices[0];
@@ -23596,8 +23611,17 @@ private:
     rewriter.setInsertionPointAfter(newReduce);
     auto binaryResultType =
         cast<RankedTensorType>(binaryOp.getResult().getType());
-    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(
-        binaryOp, binaryResultType, newReduce.getResult(0));
+    Value result =
+        rewriter
+            .create<stablehlo::ReshapeOp>(binaryOp.getLoc(), binaryResultType,
+                                          newReduce.getResult(0))
+            .getResult();
+
+    for (auto &value : extraValues) {
+      result = rewriter.template create<BinaryOpType>(binaryOp.getLoc(), result,
+                                                      value);
+    }
+    rewriter.replaceOp(binaryOp, result);
     return success();
   }
 };
