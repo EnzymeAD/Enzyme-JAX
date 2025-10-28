@@ -154,12 +154,86 @@ static void getIndVars(Operation *op, SmallPtrSet<Value, 3> &indVars) {
       indVars.insert(var);
 }
 
+/// Wrapper around collectEffects that handles LoopDistribute-specific logic
+/// for CacheLoadOp operations.
+static bool collectEffectsForLoopDistribute(
+    Operation *op,
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects,
+    bool ignoreBarriers) {
+  
+  // Ignore CacheLoads as they are already guaranteed to not have side effects
+  // in the context of a parallel op, these only exist while we are in the
+  // CPUifyPass
+  if (isa<enzymexla::CacheLoadOp>(op))
+    return true;
+
+  // For recursive
+  if (op->hasTrait<OpTrait::HasRecursiveMemoryEffects>()) {
+    for (auto &region : op->getRegions()) {
+      for (auto &block : region) {
+        for (auto &innerOp : block)
+          if (!collectEffectsForLoopDistribute(&innerOp, effects, ignoreBarriers))
+            return false;
+      }
+    }
+    return true;
+  }
+  
+  return collectEffects(op, effects, ignoreBarriers);
+}
+
+// Wrapper around getEffectsBefore that handles LoopDistribute-specific logic
+// for CacheLoadOp operations.
+static bool getEffectsBeforeForLoopDistribute(
+    Operation *op,
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects,
+    bool stopAtBarrier) {
+  
+  if (op != &op->getBlock()->front())
+    for (Operation *it = op->getPrevNode(); it != nullptr;
+         it = it->getPrevNode()) {
+      if (isa<enzymexla::BarrierOp>(it)) {
+        if (stopAtBarrier)
+          return true;
+        else
+          continue;
+      }
+      
+      if (!collectEffectsForLoopDistribute(it, effects, /* ignoreBarriers */ true)) {
+        return false;
+      }
+    }
+
+  bool conservative = false;
+
+  if (isa<scf::ParallelOp, affine::AffineParallelOp>(op->getParentOp()))
+    return true;
+
+  if (!getEffectsBeforeForLoopDistribute(op->getParentOp(), effects, stopAtBarrier)) {
+    return false;
+  }
+  
+  if (!isa<scf::IfOp, affine::AffineIfOp, memref::AllocaScopeOp>(
+          op->getParentOp()))
+    op->getParentOp()->walk([&](Operation *in) {
+      if (conservative)
+        return WalkResult::interrupt();
+      
+      if (!collectEffectsForLoopDistribute(in, effects, /* ignoreBarriers */ true)) {
+        conservative = true;
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+  return !conservative;
+}
+
 /// \p singleExecution denotes whether op is guaranteed to execute the body once
 /// and after the cloned values
 static bool arePreceedingOpsFullyRecomputable(Operation *op,
                                               bool singleExecution) {
   SmallVector<MemoryEffects::EffectInstance> beforeEffects;
-  mlir::enzyme::getEffectsBefore(op, beforeEffects, /*stopAtBarrier*/ false);
+  getEffectsBeforeForLoopDistribute(op, beforeEffects, /*stopAtBarrier*/ false);
 
   llvm::errs() << " checking if preceeding op is recomputable op: " << *op
                << " singleExecution: " << singleExecution << "\n";
@@ -192,7 +266,7 @@ static bool isRecomputableAfterDistribute(Operation *op,
     return false;
 
   SmallVector<MemoryEffects::EffectInstance> effects;
-  collectEffects(op, effects, /*ignoreBarriers*/ false);
+  collectEffectsForLoopDistribute(op, effects, /*ignoreBarriers*/ false);
 
   if (effects.size() == 0)
     return true;
@@ -843,7 +917,7 @@ static LogicalResult distributeAroundBarrier(T op, enzymexla::BarrierOp barrier,
   assert(mod);
   DataLayout DLI(mod);
   auto addToAllocations = [&](Value v, SmallVector<Value> &allocations) {
-    if (auto cl = v.getDefiningOp<enzymexla::CacheLoad>()) {
+    if (auto cl = v.getDefiningOp<enzymexla::CacheLoadOp>()) {
       allocations.push_back(cl.getMemref());
     } else if (auto ao = v.getDefiningOp<LLVM::AllocaOp>()) {
       allocations.push_back(allocateTemporaryBuffer<LLVM::AllocaOp>(
@@ -926,7 +1000,7 @@ static LogicalResult distributeAroundBarrier(T op, enzymexla::BarrierOp barrier,
     Value alloc = std::get<1>(pair);
 
     // No need to store cache loads
-    if (!isa<enzymexla::CacheLoad>(v.getDefiningOp())) {
+    if (!isa<enzymexla::CacheLoadOp>(v.getDefiningOp())) {
       // Store
       rewriter.setInsertionPointAfter(v.getDefiningOp());
       rewriter.create<memref::StoreOp>(v.getLoc(), v, alloc,
@@ -934,7 +1008,7 @@ static LogicalResult distributeAroundBarrier(T op, enzymexla::BarrierOp barrier,
     }
     // Reload
     rewriter.setInsertionPointAfter(barrier);
-    Value reloaded = rewriter.create<enzymexla::CacheLoad>(
+    Value reloaded = rewriter.create<enzymexla::CacheLoadOp>(
         v.getLoc(), alloc, preLoop.getBody()->getArguments());
     for (auto &u : llvm::make_early_inc_range(v.getUses())) {
       auto *user = u.getOwner();
@@ -2004,7 +2078,7 @@ struct DistributeIfAroundBarrier : public OpRewritePattern<IfOpType> {
       return false;
 
     SmallVector<MemoryEffects::EffectInstance> effects;
-    collectEffects(op, effects, /*ignoreBarriers*/ false);
+    collectEffectsForLoopDistribute(op, effects, /*ignoreBarriers*/ false);
 
     if (effects.size() == 0)
       return true;
@@ -2168,7 +2242,7 @@ struct DistributeIfAroundBarrier : public OpRewritePattern<IfOpType> {
       assert(mod);
       DataLayout DLI(mod);
       for (Value v : crossingCache) {
-        if (auto cl = v.getDefiningOp<enzymexla::CacheLoad>()) {
+        if (auto cl = v.getDefiningOp<enzymexla::CacheLoadOp>()) {
           cacheAllocations.push_back(cl.getMemref());
         } else {
           // allocations.push_back(allocateTemporaryBuffer<memref::AllocaOp>(rewriter,
@@ -2185,14 +2259,14 @@ struct DistributeIfAroundBarrier : public OpRewritePattern<IfOpType> {
         Value alloc = std::get<1>(pair);
 
         // No need to store cache loads
-        if (!isa<enzymexla::CacheLoad>(v.getDefiningOp())) {
+        if (!isa<enzymexla::CacheLoadOp>(v.getDefiningOp())) {
           // Store
           rewriter.setInsertionPointAfter(v.getDefiningOp());
           rewriter.create<memref::StoreOp>(v.getLoc(), v, alloc, ValueRange());
         }
         // Reload
         rewriter.setInsertionPointAfter(barrier);
-        Value reloaded = rewriter.create<enzymexla::CacheLoad>(
+        Value reloaded = rewriter.create<enzymexla::CacheLoadOp>(
             v.getLoc(), alloc, ValueRange());
         for (auto &u : llvm::make_early_inc_range(v.getUses())) {
           auto *user = u.getOwner();
@@ -2266,7 +2340,7 @@ struct Reg2MemFor : public OpRewritePattern<T> {
     SmallVector<Value> newRegionArguments;
     newRegionArguments.push_back(newOp.getInductionVar());
     if (UseMinCut)
-      loadValues<enzymexla::CacheLoad>(op.getLoc(), allocated, rewriter,
+      loadValues<enzymexla::CacheLoadOp>(op.getLoc(), allocated, rewriter,
                                        newRegionArguments);
     else
       loadValues<memref::LoadOp>(op.getLoc(), allocated, rewriter,
@@ -2299,7 +2373,7 @@ struct Reg2MemFor : public OpRewritePattern<T> {
       if (UseMinCut)
         loaded.push_back(
             rewriter
-                .create<enzymexla::CacheLoad>(op.getLoc(), alloc, ValueRange())
+                .create<enzymexla::CacheLoadOp>(op.getLoc(), alloc, ValueRange())
                 ->getResult(0));
       else
         loaded.push_back(
@@ -2397,7 +2471,7 @@ struct Reg2MemIf : public OpRewritePattern<T> {
           }
           if (!usesMustStore) {
             Value val = std::get<1>(tup);
-            if (auto cl = val.getDefiningOp<enzymexla::CacheLoad>()) {
+            if (auto cl = val.getDefiningOp<enzymexla::CacheLoadOp>()) {
               if (isEquivalent(cl.getMemref(), storeOp.getMemref()) &&
                   cl->getBlock() == storeOp->getBlock() &&
                   llvm::all_of(llvm::zip(cl.getIndices(), storeOp.getIndices()),
@@ -2418,7 +2492,7 @@ struct Reg2MemIf : public OpRewritePattern<T> {
               }
             }
             val = std::get<2>(tup);
-            if (auto cl = val.getDefiningOp<enzymexla::CacheLoad>()) {
+            if (auto cl = val.getDefiningOp<enzymexla::CacheLoadOp>()) {
               if (isEquivalent(cl.getMemref(), storeOp.getMemref()) &&
                   cl->getBlock() == storeOp->getBlock() &&
                   llvm::all_of(llvm::zip(cl.getIndices(), storeOp.getIndices()),
@@ -2585,7 +2659,7 @@ struct Reg2MemIf : public OpRewritePattern<T> {
         if (UseMinCut)
           std::get<0>(pair).replaceAllUsesWith(
               rewriter
-                  .create<enzymexla::CacheLoad>(op.getLoc(), alloc,
+                  .create<enzymexla::CacheLoadOp>(op.getLoc(), alloc,
                                                 ValueRange())
                   ->getResult(0));
         else
@@ -2682,10 +2756,10 @@ struct Reg2MemWhile : public OpRewritePattern<scf::WhileOp> {
   }
 };
 
-struct LowerCacheLoad : public OpRewritePattern<enzymexla::CacheLoad> {
-  using OpRewritePattern<enzymexla::CacheLoad>::OpRewritePattern;
+struct LowerCacheLoad : public OpRewritePattern<enzymexla::CacheLoadOp> {
+  using OpRewritePattern<enzymexla::CacheLoadOp>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(enzymexla::CacheLoad op,
+  LogicalResult matchAndRewrite(enzymexla::CacheLoadOp op,
                                 PatternRewriter &rewriter) const override {
     auto memrefLoad = rewriter.create<memref::LoadOp>(
         op.getLoc(), op.getMemref(), op.getIndices());

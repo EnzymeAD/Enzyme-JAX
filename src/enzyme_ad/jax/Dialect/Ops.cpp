@@ -2642,8 +2642,6 @@ OpFoldResult SubIndexOp::fold(FoldAdaptor adaptor) {
   }
   /// Replace subindex(cast(x)) with subindex(x)
   if (auto castOp = getSource().getDefiningOp<memref::CastOp>()) {
-    // if (castOp.getType().cast<MemRefType>().getElementType() ==
-    //     getResult().getType().cast<MemRefType>().getElementType()) {
     if (cast<MemRefType>(castOp.getType()).getElementType() ==
         cast<MemRefType>(getResult().getType()).getElementType()) {
       getSourceMutable().assign(castOp.getSource());

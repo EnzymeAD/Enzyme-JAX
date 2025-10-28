@@ -1,4 +1,5 @@
-//===- EnzymeXLAOps.td - EnzymeXLA dialect ops ------------------*- tablegen -*-===//
+//===- EnzymeXLAOps.td - EnzymeXLA dialect ops ------------------*- tablegen
+//-*-===//
 //
 // This file is licensed under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -30,24 +31,34 @@ include "stablehlo/dialect/Base.td"
 include "mlir/Dialect/GPU/IR/GPUBase.td"
 include "mlir/Dialect/LLVMIR/LLVMOpBase.td"
 
-def TensorI64 : Type<CPred<"::llvm::isa<::mlir::TensorType>($_self) && ::llvm::cast<::mlir::TensorType>($_self).getShape().size() == 0 && ::llvm::cast<::mlir::TensorType>($_self).getElementType().isSignlessInteger(64)">, "tensor<i64>",
-                 "::mlir::TensorType">,
-            BuildableType<"RankedTensorType::get({}, $_builder.getIntegerType(64))">;
+def TensorI64
+    : Type<CPred<"::llvm::isa<::mlir::TensorType>($_self) && "
+                 "::llvm::cast<::mlir::TensorType>($_self).getShape().size() "
+                 "== 0 && "
+                 "::llvm::cast<::mlir::TensorType>($_self).getElementType()."
+                 "isSignlessInteger(64)">,
+           "tensor<i64>", "::mlir::TensorType">,
+      BuildableType<"RankedTensorType::get({}, $_builder.getIntegerType(64))">;
 
-def TensorFloat : Type<
-  CPred<"::llvm::isa<::mlir::TensorType>($_self) && "
-        "::llvm::cast<::mlir::TensorType>($_self).getShape().size() == 0 && "
-        "(::llvm::isa<::mlir::FloatType>(::llvm::cast<::mlir::TensorType>($_self).getElementType()) || "
-        " (::llvm::isa<::mlir::ComplexType>(::llvm::cast<::mlir::TensorType>($_self).getElementType()) && "
-        "  ::llvm::isa<::mlir::FloatType>(::llvm::cast<::mlir::ComplexType>(::llvm::cast<::mlir::TensorType>($_self).getElementType()).getElementType())))">,
-  "tensor<float or complex<float> scalar>",
-  "::mlir::TensorType">;
+def TensorFloat
+    : Type<CPred<"::llvm::isa<::mlir::TensorType>($_self) && "
+                 "::llvm::cast<::mlir::TensorType>($_self).getShape().size() "
+                 "== 0 && "
+                 "(::llvm::isa<::mlir::FloatType>(::llvm::cast<::mlir::"
+                 "TensorType>($_self).getElementType()) || "
+                 " (::llvm::isa<::mlir::ComplexType>(::llvm::cast<::mlir::"
+                 "TensorType>($_self).getElementType()) && "
+                 "  "
+                 "::llvm::isa<::mlir::FloatType>(::llvm::cast<::mlir::"
+                 "ComplexType>(::llvm::cast<::mlir::TensorType>($_self)."
+                 "getElementType()).getElementType())))">,
+           "tensor<float or complex<float> scalar>", "::mlir::TensorType">;
 
-def KernelCallOp: EnzymeXLA_Op<"kernel_call", [
-    AttrSizedOperandSegments,
-    DeclareOpInterfaceMethods<SymbolUserOpInterface>,
-    DeclareOpInterfaceMethods<CallOpInterface>,
-    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+def KernelCallOp : EnzymeXLA_Op<"kernel_call", [
+  AttrSizedOperandSegments, DeclareOpInterfaceMethods<SymbolUserOpInterface>,
+  DeclareOpInterfaceMethods<CallOpInterface>,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
   let summary = "Kernel Call operation";
 
   let arguments = (ins
@@ -74,7 +85,6 @@ def KernelCallOp: EnzymeXLA_Op<"kernel_call", [
   );
 
   let results = (outs Variadic<AnyType>);
-
 
   let assemblyFormat = [{
     $fn
@@ -185,18 +195,20 @@ def GPUWrapperOp : EnzymeXLA_Op<"gpu_wrapper", [
   let summary = "Indicates the region contained must be executed on the GPU";
   let description = [{
     The optional arguments to this operation are suggestions about what block
-    dimensions this gpu kernel should have - usually taken from kernel launch
-    params
-  }];
-  let results = (outs Index : $result);
-  let regions = (region SizedRegion<1>:$region);
-  let skipDefaultBuilders = 1;
-  let builders = [
-      OpBuilder<(ins "ValueRange":$blockSizes)>,
-      OpBuilder<(ins)>];
+    dimensions this gpu kernel should have - usually taken f rom kernel
+      launch params
+}];
+let results = (outs Index : $result);
+let regions = (region SizedRegion<1> : $region);
+let skipDefaultBuilders = 1;
+let builders = [OpBuilder<(ins "ValueRange" : $blockSizes)>, OpBuilder<(ins)>];
 }
 
-def XLAWrapperOp: EnzymeXLA_Op<"xla_wrapper", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, DeclareOpInterfaceMethods<CallOpInterface>, DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+def XLAWrapperOp : EnzymeXLA_Op<"xla_wrapper", [
+  DeclareOpInterfaceMethods<SymbolUserOpInterface>,
+  DeclareOpInterfaceMethods<CallOpInterface>,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
   let summary = "XLA Call operation";
 
   let arguments = (ins
@@ -467,23 +479,22 @@ def GeqrfOp : EnzymeXLA_Op<"lapack.geqrf", [Pure]> {
   let description = [{
     This operation computes the QR factorization of a matrix using Householder 
     reflections. Mathematically, it decomposes A into the product of an 
-    orthogonal matrix Q and an upper triangular matrix R, such that A = QR.
+    orthogonal matri x Q and an upper triangular matrix R,
+      such that A = QR.
 
-    This operation is modeled after LAPACK's *GEQRF routines, which returns the 
-    result in the QR packed format.
-  }];
+                    This operation is modeled after
+                        LAPACK's *GEQRF routines, which returns the  result in
+                            the QR packed format.
+}];
 
-  let arguments = (ins
-    HLO_Tensor:$input
-  );
+let arguments = (ins HLO_Tensor : $input);
 
-  let results = (outs
-    HLO_Tensor:$output,
-    HLO_Tensor:$tau,
-    HLO_Tensor:$info
-  );
+let results = (outs HLO_Tensor
+               : $output, HLO_Tensor
+               : $tau, HLO_Tensor
+               : $info);
 
-  let assemblyFormat = [{
+let assemblyFormat = [{
     $input attr-dict `:` functional-type($input, results)
   }];
 }
@@ -645,7 +656,7 @@ def ReluOp: EnzymeXLA_Op<"ml.relu", [Pure, SameOperandsAndResultType, Elementwis
   }];
 }
 
-def CacheLoad : EnzymeXLA_Op<"cacheload"> {
+def CacheLoadOp : EnzymeXLA_Op<"cacheload"> {
   let arguments = (ins Arg<AnyMemRef, "the reference to load from",
                            [MemRead]>:$memref,
                        Variadic<Index>:$indices);

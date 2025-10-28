@@ -54,8 +54,8 @@ bool collectEffects(Operation *op,
   // Ignore CacheLoads as they are already guaranteed to not have side effects
   // in the context of a parallel op, these only exist while we are in the
   // CPUifyPass
-  if (isa<enzymexla::CacheLoad>(op))
-    return true;
+  // if (isa<enzymexla::CacheLoadOp>(op))
+  //   return true;
 
   // Collect effect instances the operation. Note that the implementation of
   // getEffects erases all effect instances that have the type other than the
