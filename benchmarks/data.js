@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1761682309641,
+  "lastUpdate": 1761691434469,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "wmoses@google.com",
-            "name": "William Moses",
-            "username": "wsmoses"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "a8202a577d32b74f9e83776cabc9334827852bcd",
-          "message": "Fix case where path is not on inverted (#1436)",
-          "timestamp": "2025-09-28T13:52:35-05:00",
-          "tree_id": "59b4c3cbb3e7d0bbb1c78232826c55d472a3ce6c",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/a8202a577d32b74f9e83776cabc9334827852bcd"
-        },
-        "date": 1759093522055,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.000004343702000915073,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.000004178517899708822,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001543433807994,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001460785379022,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2239,6 +2195,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001341407105908,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "xuyuansui@outlook.com",
+            "name": "xys-syx",
+            "username": "xys-syx"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8dc549db2c67dd4940743b6fbca96af2cab41de5",
+          "message": "Cpuify (#1415)\n\n* Port cpuify pass from polygeist\n\n* add missing files\n\n* add cpuify tests\n\n* fmt\n\n* lit tests modified\n\n* Apply clang-format\n\n* fmt\n\n* fix\n\n* Fmt\n\n* fix\n\n* fix\n\n* fix looprecur\n\n* temp using DAG in cpuifyifsplit.mlir\n\n* fmt\n\n* fmt\n\n* fmt\n\n* fmt\n\n* fix\n\n* fix\n\n* fix\n\n* fix\n\n* fix\n\n* fix\n\n* fmt:\n\n* fmt\n\n* fix\n\n* fix\n\n* fix\n\n* fix\n\n* fix\n\n* fmt\n\n* fix\n\n* fmt\n\n* fix\n\n* macos\n\n* macos\n\n* remove\n\n* remove\n\n* Fix memory error\n\n* void\n\n* fix\n\n* fix\n\n* fmt\n\n* fmt\n\n* wrapper for LoopDistribute Specific Logic\n\n* fmt\n\n---------\n\nCo-authored-by: William S. Moses <gh@wsmoses.com>",
+          "timestamp": "2025-10-28T14:05:05-05:00",
+          "tree_id": "bc51ee9ff8ec53ad8ca91555493034524bc71705",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/8dc549db2c67dd4940743b6fbca96af2cab41de5"
+        },
+        "date": 1761691433845,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004480922990478576,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004438424995169044,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001398530440987,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001646234500105,
             "unit": "s"
           }
         ]
