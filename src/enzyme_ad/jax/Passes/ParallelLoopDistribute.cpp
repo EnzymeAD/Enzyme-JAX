@@ -159,6 +159,10 @@ static void getIndVars(Operation *op, SmallPtrSet<Value, 3> &indVars) {
 static bool collectEffectsForLoopDistribute(
     Operation *op, SmallVectorImpl<MemoryEffects::EffectInstance> &effects,
     bool ignoreBarriers) {
+  // Skip over barriers to avoid infinite recursion (those barriers would ask
+  // this barrier again).
+  if (ignoreBarriers && isa<enzymexla::BarrierOp>(op))
+    return true;
 
   // Ignore CacheLoads as they are already guaranteed to not have side effects
   // in the context of a parallel op, these only exist while we are in the
@@ -166,20 +170,99 @@ static bool collectEffectsForLoopDistribute(
   if (isa<enzymexla::CacheLoadOp>(op))
     return true;
 
-  // For recursive
+  // Collect effect instances the operation. Note that the implementation of
+  // getEffects erases all effect instances that have the type other than the
+  // template parameter so we collect them first in a local buffer and then
+  // copy.
+  if (auto iface = dyn_cast<MemoryEffectOpInterface>(op)) {
+    SmallVector<MemoryEffects::EffectInstance> localEffects;
+    iface.getEffects(localEffects);
+    llvm::append_range(effects, localEffects);
+    return true;
+  }
   if (op->hasTrait<OpTrait::HasRecursiveMemoryEffects>()) {
     for (auto &region : op->getRegions()) {
       for (auto &block : region) {
         for (auto &innerOp : block)
-          if (!collectEffectsForLoopDistribute(&innerOp, effects,
-                                               ignoreBarriers))
+          if (!collectEffectsForLoopDistribute(&innerOp, effects, ignoreBarriers))
             return false;
       }
     }
     return true;
   }
 
-  return collectEffects(op, effects, ignoreBarriers);
+  if (auto cop = dyn_cast<LLVM::CallOp>(op)) {
+    if (auto callee = cop.getCallee()) {
+      if (*callee == "scanf" || *callee == "__isoc99_scanf") {
+        // Global read
+        effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Read>());
+
+        bool first = true;
+        for (auto &arg : cop.getArgOperandsMutable()) {
+          if (first)
+            effects.emplace_back(::mlir::MemoryEffects::Read::get(), &arg);
+          else
+            effects.emplace_back(::mlir::MemoryEffects::Write::get(), &arg,
+                                 ::mlir::SideEffects::DefaultResource::get());
+          first = false;
+        }
+
+        return true;
+      }
+      if (*callee == "fscanf" || *callee == "__isoc99_fscanf") {
+        // Global read
+        effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Read>());
+
+        for (auto &&[idx, arg] : llvm::enumerate(cop.getArgOperandsMutable())) {
+          if (idx == 0) {
+            effects.emplace_back(::mlir::MemoryEffects::Read::get(), &arg,
+                                 ::mlir::SideEffects::DefaultResource::get());
+            effects.emplace_back(::mlir::MemoryEffects::Write::get(), &arg,
+                                 ::mlir::SideEffects::DefaultResource::get());
+          } else if (idx == 1) {
+            effects.emplace_back(::mlir::MemoryEffects::Read::get(), &arg,
+                                 ::mlir::SideEffects::DefaultResource::get());
+          } else
+            effects.emplace_back(::mlir::MemoryEffects::Write::get(), &arg,
+                                 ::mlir::SideEffects::DefaultResource::get());
+        }
+
+        return true;
+      }
+      if (*callee == "printf") {
+        // Global read
+        effects.emplace_back(
+            MemoryEffects::Effect::get<MemoryEffects::Write>());
+        for (auto &arg : cop.getArgOperandsMutable()) {
+          effects.emplace_back(::mlir::MemoryEffects::Read::get(), &arg,
+                               ::mlir::SideEffects::DefaultResource::get());
+        }
+        return true;
+      }
+      if (*callee == "free") {
+        for (auto &arg : cop.getArgOperandsMutable()) {
+          effects.emplace_back(::mlir::MemoryEffects::Free::get(), &arg,
+                               ::mlir::SideEffects::DefaultResource::get());
+        }
+        return true;
+      }
+      if (*callee == "strlen") {
+        for (auto &arg : cop.getArgOperandsMutable()) {
+          effects.emplace_back(::mlir::MemoryEffects::Read::get(), &arg,
+                               ::mlir::SideEffects::DefaultResource::get());
+        }
+        return true;
+      }
+    }
+  }
+
+  // We need to be conservative here in case the op doesn't have the interface
+  // and assume it can have any possible effect.
+  effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Read>());
+  effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Write>());
+  effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Allocate>());
+  effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Free>());
+  return false;
 }
 
 // Wrapper around getEffectsBefore that handles LoopDistribute-specific logic
