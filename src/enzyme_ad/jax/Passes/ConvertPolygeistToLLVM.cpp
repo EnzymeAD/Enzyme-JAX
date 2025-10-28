@@ -563,16 +563,17 @@ public:
           createIndexAttrConstant(rewriter, loc, rewriter.getIndexType(),
                                   innerSizes));
     }
-    assert(0 && "todo alloc lower");
-    Value elementSize;
-    // = rewriter.create<enzymexla::TypeSizeOp>(
-    //     loc, rewriter.getIndexType(),
-    //     mlir::TypeAttr::get(originalType.getElementType()));
-    Value size = rewriter.create<LLVM::MulOp>(loc, totalSize, elementSize);
+    // Get shape of the memref as values: static sizes are constant
+    // values and dynamic sizes are passed to 'alloc' as operands.
+    SmallVector<Value, 4> shape;
+    SmallVector<Value, 4> strides;
+    Value sizeBytes;
+    getMemRefDescriptorSizes(loc, originalType, adaptor.getDynamicSizes(),
+                             rewriter, shape, strides, sizeBytes);
 
     if (auto F = module.lookupSymbol<mlir::func::FuncOp>("malloc")) {
       Value allocated =
-          rewriter.create<func::CallOp>(loc, F, size).getResult(0);
+          rewriter.create<func::CallOp>(loc, F, sizeBytes).getResult(0);
       rewriter.replaceOpWithNewOp<enzymexla::Memref2PointerOp>(
           allocOp, convertedType, allocated);
     } else {
@@ -584,7 +585,7 @@ public:
       if (failed(mallocFunc))
         return failure();
       Value allocated =
-          rewriter.create<LLVM::CallOp>(loc, mallocFunc.value(), size)
+          rewriter.create<LLVM::CallOp>(loc, mallocFunc.value(), sizeBytes)
               .getResult();
       rewriter.replaceOpWithNewOp<LLVM::BitcastOp>(allocOp, convertedType,
                                                    allocated);
