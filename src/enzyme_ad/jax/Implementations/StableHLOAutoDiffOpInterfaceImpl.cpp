@@ -3013,6 +3013,19 @@ Value getScalarInitValue(Operation *op, OpBuilder &builder) {
     }
   }
 
+  // Convert
+  if (auto convertOp = dyn_cast<stablehlo::ConvertOp>(op)) {
+    auto scalar =
+        getScalarInitValue(convertOp.getOperand().getDefiningOp(), builder);
+    if (scalar) {
+      auto convertOutElemType =
+          cast<RankedTensorType>(convertOp.getResult().getType())
+              .getElementType();
+      return builder.create<stablehlo::ConvertOp>(
+          op->getLoc(), RankedTensorType::get({}, convertOutElemType), scalar);
+    }
+  }
+
   return nullptr;
 }
 
@@ -3042,8 +3055,6 @@ struct SHLOReduceOpBatchInterface
     for (auto opValue : reduceOp.getInputs())
       newReduceInputs.push_back(mapper.lookup(opValue));
 
-    // The init value would have been batched already, we need to slice it.
-    // Constant Folding will fix it up later.
     SmallVector<Value, 8> newReduceInits;
     newReduceInits.reserve(reduceOp.getInitValues().size());
     for (auto opValue : reduceOp.getInitValues()) {
@@ -3068,6 +3079,26 @@ struct SHLOReduceOpBatchInterface
         reduceDims);
 
     IRMapping regionMapper;
+    Block &oldBlock = reduceOp.getRegion().front();
+    for (Operation &op : oldBlock.getOperations()) {
+      for (Value operand : op.getOperands()) {
+        // If operand is defined outside the region and not yet mapped
+        if (operand.getParentRegion() != &reduceOp.getRegion() &&
+            !regionMapper.contains(operand)) {
+          if (matchPattern(operand, m_Constant())) {
+            Operation *definingOp = operand.getDefiningOp();
+            OpBuilder::InsertionGuard guard(builder);
+            builder.setInsertionPoint(newReduceOp);
+            auto clonedOp = builder.clone(*definingOp);
+            regionMapper.map(operand, clonedOp->getResult(0));
+          } else {
+            src->emitError("Currently we don't support non-constants in reduce "
+                           "body that are external to the region");
+            return failure();
+          }
+        }
+      }
+    }
     reduceOp.getRegion().cloneInto(&newReduceOp.getRegion(), regionMapper);
 
     for (int i = 0; i < reduceOp.getResults().size(); i++) {
