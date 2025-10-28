@@ -50,7 +50,7 @@ jobs:
   build-jll:
     name: Build Reactant_jll
     if: github.event.pull_request.draft == false
-    uses: EnzymeAD/ReactantBuilder/.github/workflows/build-reactant-reusable.yml@scuda
+    uses: EnzymeAD/ReactantBuilder/.github/workflows/build-reactant-reusable.yml@main
     needs: get-reactant-commit
     with:
       reactantbuilder_ref: 'main'
