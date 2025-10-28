@@ -23335,7 +23335,8 @@ private:
 
   std::tuple<bool, SliceInfo>
   matchReduceSlice(stablehlo::ReduceOp reduceOp) const {
-    if (reduceOp.getInputs().size() != 1 || reduceOp.getDimensions().size() != 1) {
+    if (reduceOp.getInputs().size() != 1 ||
+        reduceOp.getDimensions().size() != 1) {
       return std::make_tuple(false, SliceInfo());
     }
 
