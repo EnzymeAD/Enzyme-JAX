@@ -87,19 +87,11 @@ struct Node {
   }
   void dump() const {
     if (type == VAL)
-      llvm::errs() << "[" << V << ", "
-                   << "Value"
-                   << "]\n";
+      llvm::errs() << "[" << V << ", " << "Value" << "]\n";
     else if (type == OP)
-      llvm::errs() << "[" << *O << ", "
-                   << "Operation"
-                   << "]\n";
+      llvm::errs() << "[" << *O << ", " << "Operation" << "]\n";
     else
-      llvm::errs() << "["
-                   << "NULL"
-                   << ", "
-                   << "None"
-                   << "]\n";
+      llvm::errs() << "[" << "NULL" << ", " << "None" << "]\n";
   }
 };
 
@@ -157,10 +149,9 @@ static void getIndVars(Operation *op, SmallPtrSet<Value, 3> &indVars) {
 /// Wrapper around collectEffects that handles LoopDistribute-specific logic
 /// for CacheLoadOp operations.
 static bool collectEffectsForLoopDistribute(
-    Operation *op,
-    SmallVectorImpl<MemoryEffects::EffectInstance> &effects,
+    Operation *op, SmallVectorImpl<MemoryEffects::EffectInstance> &effects,
     bool ignoreBarriers) {
-  
+
   // Ignore CacheLoads as they are already guaranteed to not have side effects
   // in the context of a parallel op, these only exist while we are in the
   // CPUifyPass
@@ -172,23 +163,23 @@ static bool collectEffectsForLoopDistribute(
     for (auto &region : op->getRegions()) {
       for (auto &block : region) {
         for (auto &innerOp : block)
-          if (!collectEffectsForLoopDistribute(&innerOp, effects, ignoreBarriers))
+          if (!collectEffectsForLoopDistribute(&innerOp, effects,
+                                               ignoreBarriers))
             return false;
       }
     }
     return true;
   }
-  
+
   return collectEffects(op, effects, ignoreBarriers);
 }
 
 // Wrapper around getEffectsBefore that handles LoopDistribute-specific logic
 // for CacheLoadOp operations.
 static bool getEffectsBeforeForLoopDistribute(
-    Operation *op,
-    SmallVectorImpl<MemoryEffects::EffectInstance> &effects,
+    Operation *op, SmallVectorImpl<MemoryEffects::EffectInstance> &effects,
     bool stopAtBarrier) {
-  
+
   if (op != &op->getBlock()->front())
     for (Operation *it = op->getPrevNode(); it != nullptr;
          it = it->getPrevNode()) {
@@ -198,8 +189,9 @@ static bool getEffectsBeforeForLoopDistribute(
         else
           continue;
       }
-      
-      if (!collectEffectsForLoopDistribute(it, effects, /* ignoreBarriers */ true)) {
+
+      if (!collectEffectsForLoopDistribute(it, effects,
+                                           /* ignoreBarriers */ true)) {
         return false;
       }
     }
@@ -209,17 +201,19 @@ static bool getEffectsBeforeForLoopDistribute(
   if (isa<scf::ParallelOp, affine::AffineParallelOp>(op->getParentOp()))
     return true;
 
-  if (!getEffectsBeforeForLoopDistribute(op->getParentOp(), effects, stopAtBarrier)) {
+  if (!getEffectsBeforeForLoopDistribute(op->getParentOp(), effects,
+                                         stopAtBarrier)) {
     return false;
   }
-  
+
   if (!isa<scf::IfOp, affine::AffineIfOp, memref::AllocaScopeOp>(
           op->getParentOp()))
     op->getParentOp()->walk([&](Operation *in) {
       if (conservative)
         return WalkResult::interrupt();
-      
-      if (!collectEffectsForLoopDistribute(in, effects, /* ignoreBarriers */ true)) {
+
+      if (!collectEffectsForLoopDistribute(in, effects,
+                                           /* ignoreBarriers */ true)) {
         conservative = true;
         return WalkResult::interrupt();
       }
@@ -1284,8 +1278,7 @@ struct WrapForWithBarrier : public OpRewritePattern<scf::ForOp> {
 
   LogicalResult matchAndRewrite(scf::ForOp op,
                                 PatternRewriter &rewriter) const override {
-    LLVM_DEBUG(DBGS() << "For wrapper"
-                      << "\n";);
+    LLVM_DEBUG(DBGS() << "For wrapper" << "\n";);
     return wrapAndDistribute<scf::ForOp, UseMinCut>(
         op, /* singleExecution */ false, rewriter);
   }
@@ -2341,7 +2334,7 @@ struct Reg2MemFor : public OpRewritePattern<T> {
     newRegionArguments.push_back(newOp.getInductionVar());
     if (UseMinCut)
       loadValues<enzymexla::CacheLoadOp>(op.getLoc(), allocated, rewriter,
-                                       newRegionArguments);
+                                         newRegionArguments);
     else
       loadValues<memref::LoadOp>(op.getLoc(), allocated, rewriter,
                                  newRegionArguments);
@@ -2371,10 +2364,10 @@ struct Reg2MemFor : public OpRewritePattern<T> {
     SmallVector<Value> loaded;
     for (Value alloc : allocated) {
       if (UseMinCut)
-        loaded.push_back(
-            rewriter
-                .create<enzymexla::CacheLoadOp>(op.getLoc(), alloc, ValueRange())
-                ->getResult(0));
+        loaded.push_back(rewriter
+                             .create<enzymexla::CacheLoadOp>(op.getLoc(), alloc,
+                                                             ValueRange())
+                             ->getResult(0));
       else
         loaded.push_back(
             rewriter.create<memref::LoadOp>(op.getLoc(), alloc, ValueRange())
@@ -2660,7 +2653,7 @@ struct Reg2MemIf : public OpRewritePattern<T> {
           std::get<0>(pair).replaceAllUsesWith(
               rewriter
                   .create<enzymexla::CacheLoadOp>(op.getLoc(), alloc,
-                                                ValueRange())
+                                                  ValueRange())
                   ->getResult(0));
         else
           std::get<0>(pair).replaceAllUsesWith(
