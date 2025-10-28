@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1761633458986,
+  "lastUpdate": 1761650742147,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "avikpal@mit.edu",
-            "name": "Avik Pal",
-            "username": "avik-pal"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "c8efb465dfeeb6577a4a0dc60cf2b42eb1e5d55f",
-          "message": "feat: update AutoBatching passes to be CheckedRewrite (#1434)",
-          "timestamp": "2025-09-27T21:14:14-04:00",
-          "tree_id": "bc5f5264036addbf4096d12bbb140d4973761443",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/c8efb465dfeeb6577a4a0dc60cf2b42eb1e5d55f"
-        },
-        "date": 1759025502544,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.0000041507179994368925,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.000004372967997915112,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001458673020999,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001442531612003,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2239,6 +2195,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.000138530330907,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "wmoses@google.com",
+            "name": "William Moses",
+            "username": "wsmoses"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8f6fcba733909db2ed5fe0969f7544b612357de6",
+          "message": "Statically linked cuda libs (#1516)\n\n* Statically linked cuda libs\n\n* Update build-reactantjll.yml\n\n* fix\n\n* Update ML_TOOLCHAIN_COMMIT to new commit hash\n\n* nvperf\n\n* Update build-reactantjll.yml",
+          "timestamp": "2025-10-28T00:51:20-05:00",
+          "tree_id": "518ffa0906346414c23bf31a38e5c651cd326151",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/8f6fcba733909db2ed5fe0969f7544b612357de6"
+        },
+        "date": 1761650741472,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004677987098693847,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004717439110390842,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001567242303979,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001577116009895,
             "unit": "s"
           }
         ]
