@@ -137,3 +137,41 @@ func.func @main_min1(%arg0: tensor<8x2xf64>) -> tensor<2xf64> {
 // CHECK-NEXT:     %0 = stablehlo.reduce(%arg0 init: %cst) applies stablehlo.minimum across dimensions = [0] : (tensor<8x2xf64>, tensor<f64>) -> tensor<2xf64>
 // CHECK-NEXT:     return %0 : tensor<2xf64>
 // CHECK-NEXT: }
+
+func.func @main_with_reshape(%arg0: tensor<7x5x3xf32>) -> tensor<7x3xf32> {
+    %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+    %0 = stablehlo.slice %arg0 [0:7, 0:2, 0:3] : (tensor<7x5x3xf32>) -> tensor<7x2x3xf32>
+    %1 = stablehlo.reduce(%0 init: %cst) applies stablehlo.add across dimensions = [1] : (tensor<7x2x3xf32>, tensor<f32>) -> tensor<7x3xf32>
+    %2 = stablehlo.slice %arg0 [0:7, 2:3, 0:3] : (tensor<7x5x3xf32>) -> tensor<7x1x3xf32>
+    %3 = stablehlo.reshape %2 : (tensor<7x1x3xf32>) -> tensor<7x3xf32>
+    %4 = stablehlo.add %1, %3 : tensor<7x3xf32>
+    %5 = stablehlo.slice %arg0 [0:7, 3:4, 0:3] : (tensor<7x5x3xf32>) -> tensor<7x1x3xf32>
+    %6 = stablehlo.reshape %5 : (tensor<7x1x3xf32>) -> tensor<7x3xf32>
+    %7 = stablehlo.add %4, %6 : tensor<7x3xf32>
+    %8 = stablehlo.slice %arg0 [0:7, 4:5, 0:3] : (tensor<7x5x3xf32>) -> tensor<7x1x3xf32>
+    %9 = stablehlo.reshape %8 : (tensor<7x1x3xf32>) -> tensor<7x3xf32>
+    %10 = stablehlo.add %7, %9 : tensor<7x3xf32>
+    return %10 : tensor<7x3xf32>
+}
+
+// CHECK: func.func @main_with_reshape(%arg0: tensor<7x5x3xf32>) -> tensor<7x3xf32> {
+// CHECK-NEXT:     %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+// CHECK-NEXT:     %0 = stablehlo.reduce(%arg0 init: %cst) applies stablehlo.add across dimensions = [1] : (tensor<7x5x3xf32>, tensor<f32>) -> tensor<7x3xf32>
+// CHECK-NEXT:     return %0 : tensor<7x3xf32>
+// CHECK-NEXT: }
+
+func.func @main_with_reshape2(%arg0: tensor<7x5x3xf32>) -> tensor<7x3xf32> {
+    %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+    %0 = stablehlo.slice %arg0 [0:7, 0:2, 0:3] : (tensor<7x5x3xf32>) -> tensor<7x2x3xf32>
+    %1 = stablehlo.reduce(%0 init: %cst) applies stablehlo.add across dimensions = [1] : (tensor<7x2x3xf32>, tensor<f32>) -> tensor<7x3xf32>
+    %2 = stablehlo.slice %arg0 [0:7, 2:5, 0:3] : (tensor<7x5x3xf32>) -> tensor<7x3x3xf32>
+    %3 = stablehlo.reduce(%2 init: %cst) applies stablehlo.add across dimensions = [1] : (tensor<7x3x3xf32>, tensor<f32>) -> tensor<7x3xf32>
+    %4 = stablehlo.add %3, %1 : tensor<7x3xf32>
+    return %4 : tensor<7x3xf32>
+}
+
+// CHECK: func.func @main_with_reshape2(%arg0: tensor<7x5x3xf32>) -> tensor<7x3xf32> {
+// CHECK-NEXT:     %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+// CHECK-NEXT:     %0 = stablehlo.reduce(%arg0 init: %cst) applies stablehlo.add across dimensions = [1] : (tensor<7x5x3xf32>, tensor<f32>) -> tensor<7x3xf32>
+// CHECK-NEXT:     return %0 : tensor<7x3xf32>
+// CHECK-NEXT: }
