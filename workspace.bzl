@@ -4,8 +4,8 @@ JAX_SHA256 = ""
 ENZYME_COMMIT = "63c81877e73b019745ebff33f6dc2e13a5003a17"
 ENZYME_SHA256 = ""
 
-ML_TOOLCHAIN_COMMIT = "d8d8f49297a1e74fcceffc9ef6c7f8da9b0a0c53"
-ML_TOOLCHAIN_SHA256 = "4133c6c2045de5d7a133f6fc008ee6bd613af778f12143d09003e908dd541d8c"
+ML_TOOLCHAIN_COMMIT = "40e3ff3154271b5a97599e125207ca73e9eeedae"
+ML_TOOLCHAIN_SHA256 = ""
 
 # If the empty string this will automatically use the commit above
 # otherwise this should be a path to the folder containing the BUILD file for enzyme
@@ -15,6 +15,13 @@ HEDRON_COMPILE_COMMANDS_COMMIT = "4f28899228fb3ad0126897876f147ca15026151e"
 HEDRON_COMPILE_COMMANDS_SHA256 = ""
 
 XLA_PATCHES = [
+    """
+    sed -i.bak0 "s/return TryDlopenCUDALibraries()/LOG(INFO) << \\"GPU libraries are statically linked, skip dlopen check.\\";\\nreturn absl::OkStatus();/g" xla/tsl/platform/default/dlopen_checker.cc
+""",
+    """
+    sed -i.bak0 "s/return TryDlopenCUDALibraries()/LOG(INFO) << \\"GPU libraries are statically linked, skip dlopen check.\\";\\nreturn absl::OkStatus();/g" n
+    sed -i.bak0 "s/namespace/THIS_SHOULD_NEVER_BE_COMPILED/g" xla/tsl/cuda/{cublas,cublasLt,cufft,cusolver,cusparse,cudnn,cudart}_stub.cc
+""",
     """
 	sed -i.bak0 "/amdgpu_backend/d" xla/backends/gpu/codegen/triton/BUILD
     """,
