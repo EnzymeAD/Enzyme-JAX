@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1761618412096,
+  "lastUpdate": 1761633458986,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "avikpal@mit.edu",
-            "name": "Avik Pal",
-            "username": "avik-pal"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "87f3bf4242e04eb3e0781e9ce8a405999d939169",
-          "message": "feat: concat reshape elem (#1432)",
-          "timestamp": "2025-09-27T09:26:57-04:00",
-          "tree_id": "c2648fdef88335c5a39d47fdb422e9aed2a4b337",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/87f3bf4242e04eb3e0781e9ce8a405999d939169"
-        },
-        "date": 1758984406866,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.000004505915900517721,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.0000044609560005483215,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001454494060992,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001406824400997,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2239,6 +2195,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001506869731936,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "avikpal@mit.edu",
+            "name": "Avik Pal",
+            "username": "avik-pal"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "992f348493d08666a9bd4305fdbfc35ff6910c0b",
+          "message": "feat: greedy loop to batch (#1425)\n\n* feat: greedy loop to batch via loop fission\n\nfeat: support non-constant extra indices\n\nfix: only emit new ops if sure\n\nfeat: propagate bounds and eliminate noops\n\nchore: run fmt\n\nfeat: check for dynamic_slices\n\nfeat: unary elementwise working\n\nchore: comments\n\nfeat: clear out unwanted no-ops from loop body\n\nfeat: elementwise ops are completely supported\n\nchore: add a note\n\nfix: bad rebase\n\nfeat: generalize index handling\n\ntest: elementwise loop fission\n\nrefactor: support dynamicsliceop\n\nfeat: sliceinfo generalize\n\nfeat: lift ops by batch op\n\nfeat: run batching pass\n\nfeat: generalize handling for non-reshape case\n\n* chore: make a note on supporting dropdim in while is copy\n\n* feat: support while is copy with dropdims = 0\n\n* feat: add to transform ops\n\n* fix: mapping\n\n* feat: support constants by lifting them into function body\n\n* feat: special handling of reshape",
+          "timestamp": "2025-10-27T19:49:19-04:00",
+          "tree_id": "0253de51884ecf5ff2b226afa85c8da3ee5327b6",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/992f348493d08666a9bd4305fdbfc35ff6910c0b"
+        },
+        "date": 1761633458474,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004391519189812243,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004307569190859795,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001399941653944,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.000138530330907,
             "unit": "s"
           }
         ]
