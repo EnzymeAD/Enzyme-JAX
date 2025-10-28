@@ -184,7 +184,8 @@ static bool collectEffectsForLoopDistribute(
     for (auto &region : op->getRegions()) {
       for (auto &block : region) {
         for (auto &innerOp : block)
-          if (!collectEffectsForLoopDistribute(&innerOp, effects, ignoreBarriers))
+          if (!collectEffectsForLoopDistribute(&innerOp, effects,
+                                               ignoreBarriers))
             return false;
       }
     }
