@@ -54,8 +54,8 @@ bool collectEffects(Operation *op,
   // Ignore CacheLoads as they are already guaranteed to not have side effects
   // in the context of a parallel op, these only exist while we are in the
   // CPUifyPass
-  // if (isa<CacheLoad>(op))
-  //  return true;
+  // if (isa<enzymexla::CacheLoadOp>(op))
+  //   return true;
 
   // Collect effect instances the operation. Note that the implementation of
   // getEffects erases all effect instances that have the type other than the
@@ -166,8 +166,9 @@ bool getEffectsBefore(Operation *op,
         else
           continue;
       }
-      if (!collectEffects(it, effects, /* ignoreBarriers */ true))
+      if (!collectEffects(it, effects, /* ignoreBarriers */ true)) {
         return false;
+      }
     }
 
   bool conservative = false;
@@ -177,9 +178,9 @@ bool getEffectsBefore(Operation *op,
 
   // As we didn't hit another barrier, we must check the predecessors of this
   // operation.
-  if (!getEffectsBefore(op->getParentOp(), effects, stopAtBarrier))
+  if (!getEffectsBefore(op->getParentOp(), effects, stopAtBarrier)) {
     return false;
-
+  }
   // If the parent operation is not guaranteed to execute its (single-block)
   // region once, walk the block.
   if (!isa<scf::IfOp, affine::AffineIfOp, memref::AllocaScopeOp>(
@@ -193,7 +194,6 @@ bool getEffectsBefore(Operation *op,
       }
       return WalkResult::advance();
     });
-
   return !conservative;
 }
 bool getEffectsAfter(Operation *op,
@@ -540,7 +540,7 @@ bool mayWriteTo(Operation *op, Value val, bool ignoreBarrier) {
 
   // Calls which do not use a derived pointer of a known alloca, which is not
   // captured can not write to said memory.
-  if (isa<LLVM::CallOp, func::CallOp>(op)) {
+  if (auto callOp = dyn_cast<CallOpInterface>(op)) {
     auto base = getBase(val);
     bool seenuse = false;
     if (isStackAlloca(base) && !isCaptured(base, op, &seenuse) && !seenuse) {
@@ -1122,7 +1122,44 @@ bool isOnlyUsedInOperation(Operation *operation, Operation *parentOp) {
     if (user != parentOp)
       return false;
   }
+  return true;
+}
 
+bool mayReadFrom(Operation *op, Value val) {
+  bool hasRecursiveEffects = op->hasTrait<OpTrait::HasRecursiveMemoryEffects>();
+  if (hasRecursiveEffects) {
+    for (Region &region : op->getRegions()) {
+      for (auto &block : region) {
+        for (auto &nestedOp : block)
+          if (mayReadFrom(&nestedOp, val))
+            return true;
+      }
+    }
+    return false;
+  }
+
+  // If the op has memory effects, try to characterize them to see if the op
+  // is trivially dead here.
+  if (auto effectInterface = dyn_cast<MemoryEffectOpInterface>(op)) {
+    // Check to see if this op either has no effects, or only allocates/reads
+    // memory.
+    SmallVector<MemoryEffects::EffectInstance, 1> effects;
+    effectInterface.getEffects(effects);
+    for (auto it : effects) {
+      if (!isa<MemoryEffects::Read>(it.getEffect()))
+        continue;
+      if (mayAlias(it, val))
+        return true;
+    }
+    return false;
+  }
+  if (auto callOp = dyn_cast<CallOpInterface>(op)) {
+    auto base = getBase(val);
+    bool seenuse = false;
+    if (isStackAlloca(base) && !isCaptured(base, op, &seenuse) && !seenuse) {
+      return false;
+    }
+  }
   return true;
 }
 
