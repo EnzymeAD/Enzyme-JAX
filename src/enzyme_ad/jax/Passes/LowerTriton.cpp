@@ -84,9 +84,9 @@ struct TritonCallOpLowering
 
     rewriter.replaceOpWithNewOp<enzymexla::KernelCallOp>(
         op, op.getResultTypes(), op.getFn(), op.getGridx(), op.getGridy(),
-        op.getGridz(), op.getBlockx(), op.getBlocky(), op.getBlockz(),
-        shmemOp, op.getClusterx(), op.getClustery(), op.getClusterz(),
-        inputs, op.getBackendConfigAttr(), op.getOperandLayoutsAttr(),
+        op.getGridz(), op.getBlockx(), op.getBlocky(), op.getBlockz(), shmemOp,
+        op.getClusterx(), op.getClustery(), op.getClusterz(), inputs,
+        op.getBackendConfigAttr(), op.getOperandLayoutsAttr(),
         op.getResultLayoutsAttr(), op.getArgAttrsAttr(), op.getResAttrsAttr(),
         op.getOutputOperandAliasesAttr(), op.getXlaSideEffectFreeAttr());
     return success();
