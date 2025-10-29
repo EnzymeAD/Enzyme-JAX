@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1761710843155,
+  "lastUpdate": 1761755146596,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "avikpal@mit.edu",
-            "name": "Avik Pal",
-            "username": "avik-pal"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "936ed09be87374323f0d96f1041478262eeea274",
-          "message": "feat: function argument memory effects for kernels (#1439)\n\n* feat: function argument memory effects for kernels\n\n* chore: run fmt\n\n* feat: use llvm dialect attributes\n\n* feat: merge the arg effects pass into func effects\n\n* fix: correct use of CallOpInterface + only mark llvm attrs for ptrs\n\n* fix: avoid readnone for now (drop me)",
-          "timestamp": "2025-10-02T15:26:08-04:00",
-          "tree_id": "02accefac1a279e505c9944ac06b2191ea7116e9",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/936ed09be87374323f0d96f1041478262eeea274"
-        },
-        "date": 1759436634203,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.000004362944897729904,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.000004383776907343417,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001482813360053,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001463136211037,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2239,6 +2195,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001499467342044,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "238314553+enzymead-bot[bot]@users.noreply.github.com",
+            "name": "enzymead-bot[bot]",
+            "username": "enzymead-bot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "be41edd949d05733c12b59b582b14f6c9ef462c1",
+          "message": "Update EnzymeAD/Enzyme to commit fdc9f4a7266c986e0efe4dbce9d9446471f640ae (#1530)\n\nDiff: https://github.com/EnzymeAD/Enzyme/compare/aecafad17d3f63c1c0697609ad713615af322e23...fdc9f4a7266c986e0efe4dbce9d9446471f640ae\n\nCo-authored-by: enzymead-bot[bot] <238314553+enzymead-bot[bot]@users.noreply.github.com>",
+          "timestamp": "2025-10-29T13:23:02+01:00",
+          "tree_id": "d1709e21d05246a26712671e42c4711438d78d04",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/be41edd949d05733c12b59b582b14f6c9ef462c1"
+        },
+        "date": 1761755145469,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004200157907325775,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004260525992140174,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001329022263991,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001370554722961,
             "unit": "s"
           }
         ]
