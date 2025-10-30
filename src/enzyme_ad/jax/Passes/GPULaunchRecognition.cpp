@@ -322,12 +322,7 @@ enum __device_builtin__ cudaMemcpyKind
         }
       }
       auto cur = launch.first;
-//#define USE_GPU_FUNC
-#ifdef USE_GPU_FUNC
       gpu::GPUFuncOp gpufunc = nullptr;
-#else
-      LLVM::LLVMFuncOp gpufunc = nullptr;
-#endif
       bool local_use_launch_func = use_launch_func || captured;
       if (local_use_launch_func) {
 
@@ -348,12 +343,14 @@ enum __device_builtin__ cudaMemcpyKind
         }
         initGPUModule(gpuModule, launch.first);
         builder.setInsertionPointToStart(&gpuModule.getBodyRegion().front());
-        #ifdef USE_GPU_FUNC
         gpufunc = builder.create<gpu::GPUFuncOp>(cur->getLoc(), cur.getName(),
                                                  gpuTy0);
-        #else
-        gpufunc = builder.cloneWithoutRegions(cur);
-        #endif
+        if (auto attrs = cur.getAllArgAttrs()) {
+	  gpufunc.setAllArgAttrs(attrs);
+	}
+        if (auto attrs = cur.getAllResultAttrs()) {
+	  gpufunc.setAllResultAttrs(attrs);
+	}
         auto entry = &gpufunc.getBody().front();
         builder.setInsertionPointToEnd(entry);
         IRMapping map;
@@ -371,7 +368,6 @@ enum __device_builtin__ cudaMemcpyKind
 
         gpufunc->setAttr("gpu.kernel", builder.getUnitAttr());
 
-        #ifdef USE_GPU_FUNC
         gpufunc->walk([](LLVM::ReturnOp op) {
           OpBuilder rewriter(op);
           rewriter.create<gpu::ReturnOp>(op.getLoc());
@@ -389,7 +385,6 @@ enum __device_builtin__ cudaMemcpyKind
           rewriter.create<gpu::ReturnOp>(op.getLoc());
           op.erase();
         });
-        #endif
 
         cur->walk([&](CallOpInterface cop) {
           if (auto op2 = cop.resolveCallable())
@@ -432,14 +427,10 @@ enum __device_builtin__ cudaMemcpyKind
         }
       }
 
-#ifdef USE_GPU_FUNC
       auto sym = gpufunc;
-#else
-      auto sym = SymbolRefAttr::get(gpufunc.getContext(), gpuModuleName, {SymbolRefAttr::get(gpufunc.getSymNameAttr())});
-#endif
 
-      gpu::LaunchFuncOp launchFuncOp = nullptr;
       for (auto cop : launch.second) {
+        gpu::LaunchFuncOp launchFuncOp = nullptr;
         auto loc = cop->getLoc();
         builder.setInsertionPointAfter(cop);
 
@@ -504,11 +495,9 @@ enum __device_builtin__ cudaMemcpyKind
             builder.create<gpu::TerminatorOp>(loc);
           }
         }
-        cop->erase();
-      }
+	if (launchFuncOp) {
 
-      if (launchFuncOp && cur.getArgAttrs()) {
-        SmallVector<Attribute> newArgAttrs;
+	SmallVector<Attribute> newArgAttrs;
         for (auto [i, argAttrs] : llvm::enumerate(*cur.getArgAttrs())) {
           if (std::optional<NamedAttribute> attr =
               cast<DictionaryAttr>(argAttrs).getNamed(LLVM::LLVMDialect::getByValAttrName())) {
@@ -519,7 +508,9 @@ enum __device_builtin__ cudaMemcpyKind
               NamedAttrList().getDictionary(gpufunc->getContext()));
           }
         }
-        launchFuncOp->setAttr("reactant.arg_attrs", ArrayAttr::get(gpufunc->getContext(), newArgAttrs));
+	launchFuncOp->setAttr("reactant.arg_attrs", ArrayAttr::get(gpufunc->getContext(), newArgAttrs));
+	}
+        cop->erase();
       }
     }
 

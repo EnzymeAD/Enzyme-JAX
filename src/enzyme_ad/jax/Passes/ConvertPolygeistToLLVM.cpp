@@ -1694,10 +1694,8 @@ Value ConvertLaunchFuncOpToGpuRuntimeCallPattern::generateParamsArray(
     bool isByVal = argAttrss && cast<DictionaryAttr>(argAttrss[en.index()]).getNamed(LLVM::LLVMDialect::getByValAttrName());
     Value fieldPtr;
     if (isByVal) {
-      llvm::errs() << "BYVAL " << en.value() << "\n";
       fieldPtr = en.value();
     } else {
-      llvm::errs() << "NOBYVAL " << en.value() << "\n";
       {
         PatternRewriter::InsertionGuard B(builder);
         builder.setInsertionPointToStart(allocaBlock);
