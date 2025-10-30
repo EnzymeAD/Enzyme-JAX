@@ -1339,7 +1339,8 @@ void CommRegionOp::getSuccessorRegions(
   }
 
   // Otherwise, the region branches back to the parent operation.
-  regions.push_back(RegionSuccessor(getResults()));
+  regions.push_back(RegionSuccessor(
+      point.getTerminatorPredecessorOrNull()->getParentRegion()));
 }
 
 LogicalResult enzymexla::MemcpyOp::verify() {
