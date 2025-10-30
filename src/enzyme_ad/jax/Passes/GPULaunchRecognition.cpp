@@ -427,8 +427,6 @@ enum __device_builtin__ cudaMemcpyKind
         }
       }
 
-      auto sym = gpufunc;
-
       for (auto cop : launch.second) {
         gpu::LaunchFuncOp launchFuncOp = nullptr;
         auto loc = cop->getLoc();
@@ -462,7 +460,7 @@ enum __device_builtin__ cudaMemcpyKind
         if (stream.getDefiningOp<LLVM::ZeroOp>()) {
           if (local_use_launch_func) {
             launchFuncOp = builder.create<gpu::LaunchFuncOp>(
-                loc, sym, gpu::KernelDim3{grid[0], grid[1], grid[2]},
+                loc, gpufunc, gpu::KernelDim3{grid[0], grid[1], grid[2]},
                 gpu::KernelDim3{block[0], block[1], block[2]}, shMemSize,
                 ValueRange(args));
           } else {
@@ -479,7 +477,7 @@ enum __device_builtin__ cudaMemcpyKind
             stream = builder.create<enzymexla::StreamToTokenOp>(
                 loc, gpu::AsyncTokenType::get(ctx), stream);
             launchFuncOp = builder.create<gpu::LaunchFuncOp>(
-                loc, sym, gpu::KernelDim3{grid[0], grid[1], grid[2]},
+                loc, gpufunc, gpu::KernelDim3{grid[0], grid[1], grid[2]},
                 gpu::KernelDim3{block[0], block[1], block[2]}, shMemSize,
                 ValueRange(args), stream.getType(), ValueRange(stream));
           } else {
