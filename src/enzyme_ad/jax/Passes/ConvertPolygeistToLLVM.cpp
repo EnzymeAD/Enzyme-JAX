@@ -1675,11 +1675,11 @@ Value ConvertLaunchFuncOpToGpuRuntimeCallPattern::generateParamsArray(
     argumentTypes.push_back(argument.getType());
   auto structType = LLVM::LLVMStructType::getNewIdentified(context, StringRef(),
                                                            argumentTypes);
-  Value structPtr, arrayPtr;
+  Value structPtr, arrayPtr, one;
   {
     PatternRewriter::InsertionGuard B(builder);
     builder.setInsertionPointToStart(allocaBlock);
-    auto one = builder.create<LLVM::ConstantOp>(loc, llvmInt32Type, 1);
+    one = builder.create<LLVM::ConstantOp>(loc, llvmInt32Type, 1);
     structPtr = builder.create<LLVM::AllocaOp>(
         loc, LLVM::LLVMPointerType::get(builder.getContext()), structType, one,
         /*alignment=*/0);
@@ -1689,11 +1689,25 @@ Value ConvertLaunchFuncOpToGpuRuntimeCallPattern::generateParamsArray(
                                               llvmPointerType, arraySize,
                                               /*alignment=*/0);
   }
+  auto argAttrss =
+      dyn_cast_or_null<ArrayAttr>(launchOp->getAttr("reactant.arg_attrs"));
   for (const auto &en : llvm::enumerate(arguments)) {
-    auto fieldPtr = builder.create<LLVM::GEPOp>(
-        loc, LLVM::LLVMPointerType::get(builder.getContext()), structType,
-        structPtr, ArrayRef<LLVM::GEPArg>{0, en.index()});
-    builder.create<LLVM::StoreOp>(loc, en.value(), fieldPtr);
+    bool isByVal =
+        argAttrss && cast<DictionaryAttr>(argAttrss[en.index()])
+                         .getNamed(LLVM::LLVMDialect::getByValAttrName());
+    Value fieldPtr;
+    if (isByVal) {
+      fieldPtr = en.value();
+    } else {
+      {
+        PatternRewriter::InsertionGuard B(builder);
+        builder.setInsertionPointToStart(allocaBlock);
+        fieldPtr = builder.create<LLVM::AllocaOp>(loc, llvmPointerPointerType,
+                                                  en.value().getType(), one,
+                                                  /*alignment=*/0);
+      }
+      builder.create<LLVM::StoreOp>(loc, en.value(), fieldPtr);
+    }
     auto elementPtr = builder.create<LLVM::GEPOp>(
         loc, llvmPointerType, llvmPointerPointerType, arrayPtr,
         ArrayRef<LLVM::GEPArg>{en.index()});
@@ -4191,6 +4205,24 @@ struct ConvertPolygeistToLLVMPass
          }).wasInterrupted()) {
       signalPassFailure();
       return;
+    }
+
+    {
+      const char *GetDeviceFromHostFuncName = "__reactant$get_device_from_host";
+      SmallVector<LLVM::CallOp> toHandle;
+      m->walk([&](LLVM::CallOp call) {
+        CallInterfaceCallable callable = call.getCallableForCallee();
+        auto callee = dyn_cast<SymbolRefAttr>(callable);
+        if (!callee)
+          return;
+        if (callee.getLeafReference() == GetDeviceFromHostFuncName)
+          toHandle.push_back(call);
+      });
+      for (auto call : toHandle) {
+        assert(call->getNumResults() == 1 && call.getNumOperands() == 1);
+        call.getResult().replaceAllUsesWith(call.getArgOperands()[0]);
+        call->erase();
+      }
     }
   }
 
