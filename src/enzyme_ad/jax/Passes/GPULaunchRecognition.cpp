@@ -346,11 +346,11 @@ enum __device_builtin__ cudaMemcpyKind
         gpufunc = builder.create<gpu::GPUFuncOp>(cur->getLoc(), cur.getName(),
                                                  gpuTy0);
         if (auto attrs = cur.getAllArgAttrs()) {
-	  gpufunc.setAllArgAttrs(attrs);
-	}
+          gpufunc.setAllArgAttrs(attrs);
+        }
         if (auto attrs = cur.getAllResultAttrs()) {
-	  gpufunc.setAllResultAttrs(attrs);
-	}
+          gpufunc.setAllResultAttrs(attrs);
+        }
         auto entry = &gpufunc.getBody().front();
         builder.setInsertionPointToEnd(entry);
         IRMapping map;
@@ -495,21 +495,24 @@ enum __device_builtin__ cudaMemcpyKind
             builder.create<gpu::TerminatorOp>(loc);
           }
         }
-	if (launchFuncOp) {
+        if (launchFuncOp) {
 
-	SmallVector<Attribute> newArgAttrs;
-        for (auto [i, argAttrs] : llvm::enumerate(*cur.getArgAttrs())) {
-          if (std::optional<NamedAttribute> attr =
-              cast<DictionaryAttr>(argAttrs).getNamed(LLVM::LLVMDialect::getByValAttrName())) {
-            newArgAttrs.push_back(
-              NamedAttrList(*attr).getDictionary(gpufunc->getContext()));
-          } else {
-            newArgAttrs.push_back(
-              NamedAttrList().getDictionary(gpufunc->getContext()));
+          SmallVector<Attribute> newArgAttrs;
+          for (auto [i, argAttrs] : llvm::enumerate(*cur.getArgAttrs())) {
+            if (std::optional<NamedAttribute> attr =
+                    cast<DictionaryAttr>(argAttrs).getNamed(
+                        LLVM::LLVMDialect::getByValAttrName())) {
+              newArgAttrs.push_back(
+                  NamedAttrList(*attr).getDictionary(gpufunc->getContext()));
+            } else {
+              newArgAttrs.push_back(
+                  NamedAttrList().getDictionary(gpufunc->getContext()));
+            }
           }
+          launchFuncOp->setAttr(
+              "reactant.arg_attrs",
+              ArrayAttr::get(gpufunc->getContext(), newArgAttrs));
         }
-	launchFuncOp->setAttr("reactant.arg_attrs", ArrayAttr::get(gpufunc->getContext(), newArgAttrs));
-	}
         cop->erase();
       }
     }

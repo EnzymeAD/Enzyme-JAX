@@ -1689,9 +1689,12 @@ Value ConvertLaunchFuncOpToGpuRuntimeCallPattern::generateParamsArray(
                                               llvmPointerType, arraySize,
                                               /*alignment=*/0);
   }
-  auto argAttrss = dyn_cast_or_null<ArrayAttr>(launchOp->getAttr("reactant.arg_attrs"));
+  auto argAttrss =
+      dyn_cast_or_null<ArrayAttr>(launchOp->getAttr("reactant.arg_attrs"));
   for (const auto &en : llvm::enumerate(arguments)) {
-    bool isByVal = argAttrss && cast<DictionaryAttr>(argAttrss[en.index()]).getNamed(LLVM::LLVMDialect::getByValAttrName());
+    bool isByVal =
+        argAttrss && cast<DictionaryAttr>(argAttrss[en.index()])
+                         .getNamed(LLVM::LLVMDialect::getByValAttrName());
     Value fieldPtr;
     if (isByVal) {
       fieldPtr = en.value();
