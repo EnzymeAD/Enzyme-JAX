@@ -1763,46 +1763,6 @@ struct ADDataFlowSortOp
   }
 };
 
-struct RegionBranchCaseOp
-    : public RegionBranchOpInterface::ExternalModel<RegionBranchCaseOp,
-                                                    CaseOp> {
-
-  void
-  getEntrySuccessorRegions(Operation *op, ArrayRef<Attribute> operands,
-                           SmallVectorImpl<RegionSuccessor> &successors) const {
-    for (auto &reg : op->getRegions())
-      successors.push_back(RegionSuccessor(&reg));
-  }
-
-  mlir::OperandRange getEntrySuccessorOperands(Operation *op,
-                                               RegionBranchPoint bp) const {
-    auto end = op->operand_end();
-    return ::mlir::OperandRange(end, end);
-  }
-
-  void
-  getRegionInvocationBounds(Operation *op, ArrayRef<Attribute> operands,
-                            SmallVectorImpl<InvocationBounds> &bounds) const {
-    bounds.append(op->getNumRegions(), InvocationBounds(/*lb=*/0, /*ub=*/1));
-  }
-
-  bool areTypesCompatible(Operation *op, Type lhs, Type rhs) const {
-    return lhs == rhs;
-  }
-
-  void getSuccessorRegions(Operation *op, RegionBranchPoint point,
-                           SmallVectorImpl<RegionSuccessor> &regions) const {
-    // The `then` and the `else` region branch back to the parent operation.
-    if (!point.isParent()) {
-      regions.push_back(RegionSuccessor(op->getResults()));
-      return;
-    }
-
-    for (auto &reg : op->getRegions())
-      regions.push_back(RegionSuccessor(&reg));
-  }
-};
-
 struct ScatterActivity
     : public ActivityOpInterface::ExternalModel<ScatterActivity, ScatterOp> {
   bool isInactive(Operation *op) const { return false; }
@@ -2587,7 +2547,7 @@ public:
 
       // push does not depend on a value inside the loop, we can hoist the
       // push/pop before the for loops.
-      if (cinfo.pushedValue().getParentRegion() != whileOp.getBody()) {
+      if (cinfo.pushedValue().getParentRegion() != &whileOp.getBody()) {
         auto newPush = rewriter.create<enzyme::PushOp>(cache.getLoc(), cache,
                                                        cinfo.pushedValue());
         rewriter.eraseOp(cinfo.pushOp);
@@ -2786,7 +2746,7 @@ public:
 
     // 5. Finally, replace pops with slices.
     for (auto &info : caches) {
-      if (info.pushedValue().getParentRegion() != newWhile.getBody())
+      if (info.pushedValue().getParentRegion() != &newWhile.getBody())
         continue;
 
       Value cache = info.initOp.getResult();
@@ -3659,8 +3619,6 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     SortOp::attachInterface<ADDataFlowSortOp>(*context);
     ScatterOp::attachInterface<ADDataFlowScatterOp>(*context);
     ReduceOp::attachInterface<ADDataFlowReduceOp>(*context);
-
-    CaseOp::attachInterface<RegionBranchCaseOp>(*context);
 
     ScatterOp::attachInterface<ScatterActivity>(*context);
     ScatterOp::attachInterface<AutoDiffScatterFwd>(*context);
