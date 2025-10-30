@@ -24,6 +24,7 @@
 
 #include "src/enzyme_ad/jax/RegistryUtils.h"
 #include "llvm/Support/TargetSelect.h"
+#include <system_error>
 
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/NVVM/NVVMToLLVMIRTranslation.h"
@@ -67,6 +68,11 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
   else
     flags.enableDebugInfo(false, /*pretty*/ false);
 
+  if (auto path = getenv("DEBUG_REACTANT_IMPORTED_MLIR_MOD_PATH")) {
+    std::error_code EC;
+    llvm::raw_fd_ostream os(path, EC);
+    mod->print(os, flags);
+  }
   if (getenv("DEBUG_REACTANT")) {
     llvm::errs() << " imported mlir mod: ";
     mod->print(llvm::errs(), flags);

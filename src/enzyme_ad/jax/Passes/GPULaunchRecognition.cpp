@@ -275,8 +275,9 @@ enum __device_builtin__ cudaMemcpyKind
         {"cudaFuncGetName", 1},
         {"cudaFuncSetAttribute", 0},
         {"cudaFuncSetCacheConfig", 0},
+        {"cudaLaunchKernelExC", 1},
     };
-    for (auto &pair : runtime_fns)
+    for (auto &pair : runtime_fns) {
       if (auto occupancy = symbolTable.getSymbolTable(getOperation())
                                .lookup<LLVM::LLVMFuncOp>(pair.first)) {
         auto launchFuncUses = occupancy.getSymbolUses(getOperation());
@@ -296,6 +297,7 @@ enum __device_builtin__ cudaMemcpyKind
           }
         }
       }
+    }
 
     SmallVector<Operation *> toErase;
     for (auto &launch : kernelLaunches) {
@@ -320,9 +322,14 @@ enum __device_builtin__ cudaMemcpyKind
         }
       }
       auto cur = launch.first;
+//#define USE_GPU_FUNC
+#ifdef USE_GPU_FUNC
       gpu::GPUFuncOp gpufunc = nullptr;
+#else
+      LLVM::LLVMFuncOp gpufunc = nullptr;
+#endif
       bool local_use_launch_func = use_launch_func || captured;
-      if (local_use_launch_func && !gpufunc) {
+      if (local_use_launch_func) {
 
         FunctionType gpuTy0 = dyn_cast<FunctionType>(cur.getFunctionType());
         if (!gpuTy0) {
@@ -341,8 +348,12 @@ enum __device_builtin__ cudaMemcpyKind
         }
         initGPUModule(gpuModule, launch.first);
         builder.setInsertionPointToStart(&gpuModule.getBodyRegion().front());
+        #ifdef USE_GPU_FUNC
         gpufunc = builder.create<gpu::GPUFuncOp>(cur->getLoc(), cur.getName(),
                                                  gpuTy0);
+        #else
+        gpufunc = builder.cloneWithoutRegions(cur);
+        #endif
         auto entry = &gpufunc.getBody().front();
         builder.setInsertionPointToEnd(entry);
         IRMapping map;
@@ -360,6 +371,7 @@ enum __device_builtin__ cudaMemcpyKind
 
         gpufunc->setAttr("gpu.kernel", builder.getUnitAttr());
 
+        #ifdef USE_GPU_FUNC
         gpufunc->walk([](LLVM::ReturnOp op) {
           OpBuilder rewriter(op);
           rewriter.create<gpu::ReturnOp>(op.getLoc());
@@ -377,6 +389,7 @@ enum __device_builtin__ cudaMemcpyKind
           rewriter.create<gpu::ReturnOp>(op.getLoc());
           op.erase();
         });
+        #endif
 
         cur->walk([&](CallOpInterface cop) {
           if (auto op2 = cop.resolveCallable())
@@ -419,6 +432,13 @@ enum __device_builtin__ cudaMemcpyKind
         }
       }
 
+#ifdef USE_GPU_FUNC
+      auto sym = gpufunc;
+#else
+      auto sym = SymbolRefAttr::get(gpufunc.getContext(), gpuModuleName, {SymbolRefAttr::get(gpufunc.getSymNameAttr())});
+#endif
+
+      gpu::LaunchFuncOp launchFuncOp = nullptr;
       for (auto cop : launch.second) {
         auto loc = cop->getLoc();
         builder.setInsertionPointAfter(cop);
@@ -450,8 +470,8 @@ enum __device_builtin__ cudaMemcpyKind
         }
         if (stream.getDefiningOp<LLVM::ZeroOp>()) {
           if (local_use_launch_func) {
-            builder.create<gpu::LaunchFuncOp>(
-                loc, gpufunc, gpu::KernelDim3{grid[0], grid[1], grid[2]},
+            launchFuncOp = builder.create<gpu::LaunchFuncOp>(
+                loc, sym, gpu::KernelDim3{grid[0], grid[1], grid[2]},
                 gpu::KernelDim3{block[0], block[1], block[2]}, shMemSize,
                 ValueRange(args));
           } else {
@@ -467,8 +487,8 @@ enum __device_builtin__ cudaMemcpyKind
             assert(isa<LLVM::LLVMPointerType>(stream.getType()));
             stream = builder.create<enzymexla::StreamToTokenOp>(
                 loc, gpu::AsyncTokenType::get(ctx), stream);
-            builder.create<gpu::LaunchFuncOp>(
-                loc, gpufunc, gpu::KernelDim3{grid[0], grid[1], grid[2]},
+            launchFuncOp = builder.create<gpu::LaunchFuncOp>(
+                loc, sym, gpu::KernelDim3{grid[0], grid[1], grid[2]},
                 gpu::KernelDim3{block[0], block[1], block[2]}, shMemSize,
                 ValueRange(args), stream.getType(), ValueRange(stream));
           } else {
@@ -485,6 +505,21 @@ enum __device_builtin__ cudaMemcpyKind
           }
         }
         cop->erase();
+      }
+
+      if (launchFuncOp && cur.getArgAttrs()) {
+        SmallVector<Attribute> newArgAttrs;
+        for (auto [i, argAttrs] : llvm::enumerate(*cur.getArgAttrs())) {
+          if (std::optional<NamedAttribute> attr =
+              cast<DictionaryAttr>(argAttrs).getNamed(LLVM::LLVMDialect::getByValAttrName())) {
+            newArgAttrs.push_back(
+              NamedAttrList(*attr).getDictionary(gpufunc->getContext()));
+          } else {
+            newArgAttrs.push_back(
+              NamedAttrList().getDictionary(gpufunc->getContext()));
+          }
+        }
+        launchFuncOp->setAttr("reactant.arg_attrs", ArrayAttr::get(gpufunc->getContext(), newArgAttrs));
       }
     }
 
