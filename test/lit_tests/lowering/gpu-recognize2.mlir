@@ -69,7 +69,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
 }
 
 // CHECK:  gpu.module @__mlir_gpu_module [#nvvm.target<chip = "sm_120", features = "+ptx88,+sm_120">] attributes {dlti.dl_spec = #dlti.dl_spec<index = 32 : i64>} {
-// CHECK-NEXT:    gpu.func @reactant$_Z18__device_stub__fooPi(%arg0: !llvm.ptr) kernel {
+// CHECK-NEXT:    gpu.func @reactant$_Z18__device_stub__fooPi(%arg0: !llvm.ptr {llvm.nocapture, llvm.noundef, llvm.writeonly}) kernel {
 // CHECK-NEXT:      %0 = nvvm.read.ptx.sreg.tid.x : i32
 // CHECK-NEXT:      %1 = llvm.zext nneg %0 : i32 to i64
 // CHECK-NEXT:      %2 = llvm.getelementptr inbounds|nuw %arg0[%1] : (!llvm.ptr, i64) -> !llvm.ptr, i32
