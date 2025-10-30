@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1761832718747,
+  "lastUpdate": 1761868532606,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "avikpal@mit.edu",
-            "name": "Avik Pal",
-            "username": "avik-pal"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "9b689ed3e1a8a2d21a43d489232cf3dbdbccab13",
-          "message": "fix: restrict broadcast in dim check for auto-batching (#1444)",
-          "timestamp": "2025-10-03T13:51:43-04:00",
-          "tree_id": "7f6986aa35ad0300c8f10ecd0abdf1808dc102fb",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/9b689ed3e1a8a2d21a43d489232cf3dbdbccab13"
-        },
-        "date": 1759517351220,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.000004480150900781155,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.000004280475992709399,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001693931275978,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001651718516135,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2239,6 +2195,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001375977221992,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "34986820+EganJ@users.noreply.github.com",
+            "name": "Egan",
+            "username": "EganJ"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "12bca85ccbf361c5c7d3017c0b77af1a5e8cf30f",
+          "message": "Bump hedron hash to fix compile commands issue (#1423)",
+          "timestamp": "2025-10-30T15:11:13-05:00",
+          "tree_id": "5ebb8010a494981720e1935fac94bcb7567a6b3c",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/12bca85ccbf361c5c7d3017c0b77af1a5e8cf30f"
+        },
+        "date": 1761868531450,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000006158093002159148,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004402495000977069,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001326389673049,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001374468563008,
             "unit": "s"
           }
         ]
