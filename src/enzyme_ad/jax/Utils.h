@@ -489,8 +489,7 @@ public:
     if (opCache.find(op) != opCache.end()) {
       bool guaranteed = opCache[op];
       rewriter.modifyOpInPlace(op, [&]() {
-        op->setAttr(attrName,
-                    BoolAttr::get(op->getContext(), guaranteed));
+        op->setAttr(attrName, BoolAttr::get(op->getContext(), guaranteed));
       });
       return guaranteed;
     }
