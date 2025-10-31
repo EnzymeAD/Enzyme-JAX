@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1761886253384,
+  "lastUpdate": 1761901041708,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "avikpal@mit.edu",
-            "name": "Avik Pal",
-            "username": "avik-pal"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "42cde4f9e761a78fad169030c4895ab860fc872d",
-          "message": "fix: nested module mem effects + conservative effects (#1449)\n\n* fix: mark memory effects for nested modules correctly\n\n* fix: be conservative if effect getValue is null\n\n* fix: correctly use nested references",
-          "timestamp": "2025-10-04T21:11:43-04:00",
-          "tree_id": "42f38264163ddcc4023e5291f574860a0885c344",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/42cde4f9e761a78fad169030c4895ab860fc872d"
-        },
-        "date": 1759636239092,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.000004279392980970443,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.000004272616002708673,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.000151909063803,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001518488608067,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2239,6 +2195,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001379254845087,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "wmoses@google.com",
+            "name": "William Moses",
+            "username": "wsmoses"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "77a8d3d05359d470c6a103e643d129a430722d2a",
+          "message": "Add remove enzyme ops to pass list (#1536)",
+          "timestamp": "2025-10-30T19:16:32-05:00",
+          "tree_id": "974530eb996f1c910b3fe852ad8f045e671d1111",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/77a8d3d05359d470c6a103e643d129a430722d2a"
+        },
+        "date": 1761901041164,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004398716997820884,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004282150999642908,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001329769102972,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001306660962989,
             "unit": "s"
           }
         ]
