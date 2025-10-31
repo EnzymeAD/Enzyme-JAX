@@ -379,6 +379,28 @@ def DelinearizeIndexingPass : Pass<"delinearize-indexing"> {
   ];
 }
 
+def LowerTritonPass : Pass<"lower-triton"> {
+  let summary = "Lower Triton to kernel call";
+  let dependentDialects = [
+    "triton::TritonDialect",
+    "gpu::GPUDialect",
+    "enzymexla::EnzymeXLADialect",
+    "func::FuncDialect",
+    "triton_ext::TritonExtDialect",
+    "stablehlo::StablehloDialect",
+  ];
+}
+
+def ConvertTritonToTritonGPUPreservingModuleAttributesPass : Pass<
+    "convert-triton-to-triton-gpu-preserving-module-attributes", "mlir::ModuleOp"> {
+  let summary = "Triton generally compiles a single kernel, so they can specify the number of ctas and warps. However, we want to be able to compile multiple kernels. This pass will use the attributes from the module and use that to lower to TritonGPU.";
+  let dependentDialects = [];
+  let options = [
+    Option<"target", "target",
+          "std::string", /*default*/"\"\"",
+          "the GPU target, e.g., cuda:80, hip:gfx942">
+  ];
+}
 
 def LowerKernelPass : Pass<"lower-kernel"> {
   let summary = "Lower kernel to custom call";
