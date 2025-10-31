@@ -457,6 +457,9 @@ public:
         SmallPtrSet<Operation *, 2> set(localtodo.begin(), localtodo.end());
         for (auto v : set) {
           reverseSeen[v].push_back(cur);
+          if (opCache.find(v) == opCache.end() && seen.find(v) == seen.end()) {
+            todo.push_back(v);
+          }
         }
         seen[cur] = std::move(set);
         break;
@@ -468,18 +471,30 @@ public:
     // would invalidate. Therefore all seen operations [including op] are known
     // to be guaranteed.
     for (auto &sval : seen) {
-      opCache[sval.first] = true;
-      rewriter.modifyOpInPlace(sval.first, [&]() {
-        sval.first->setAttr(attrName,
-                            BoolAttr::get(sval.first->getContext(), true));
-      });
+      bool allGuaranteed = true;
+      for (auto v : sval.second) {
+        bool found = opCache.find(v) != opCache.end();
+        if ((found && !opCache[v]) || !found)
+          allGuaranteed = false;
+      }
+      if (allGuaranteed) {
+        opCache[sval.first] = true;
+        rewriter.modifyOpInPlace(sval.first, [&]() {
+          sval.first->setAttr(attrName,
+                              BoolAttr::get(sval.first->getContext(), true));
+        });
+      }
     }
 
-    assert(opCache.find(op) != opCache.end());
-    rewriter.modifyOpInPlace(op, [&]() {
-      op->setAttr(attrName, BoolAttr::get(op->getContext(), true));
-    });
-    return true;
+    if (opCache.find(op) != opCache.end()) {
+      bool guaranteed = opCache[op];
+      rewriter.modifyOpInPlace(op, [&]() {
+        op->setAttr(attrName,
+                    BoolAttr::get(op->getContext(), guaranteed));
+      });
+      return guaranteed;
+    }
+    return false;
   }
 
   bool guaranteed(stablehlo::ConstantOp constOp, PatternRewriter &rewriter) {

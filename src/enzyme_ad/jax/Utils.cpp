@@ -31,6 +31,7 @@
 #include "llvm/Support/Debug.h"
 
 #include "stablehlo/dialect/StablehloOps.h"
+#include "stablehlo/dialect/ChloOps.h"
 
 #include <set>
 
@@ -883,6 +884,10 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
           stablehlo::IotaOp, stablehlo::AndOp, stablehlo::OrOp,
           stablehlo::XorOp, stablehlo::NotOp>(op)) {
     return State::GUARANTEED;
+  }
+
+  if (isa<chlo::ErfInvOp>(op)) {
+    return State::NOTGUARANTEED;
   }
 
   // Any non-negative operation that produces a non-negative result
