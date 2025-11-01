@@ -19,10 +19,10 @@ absl::Status detectDiagonalTensor(stablehlo::ScatterOp scatterOp,
                                   mlir::Value *outUpdates);
 
 struct IotaLikeTensor {
-    int64_t start;
-    int64_t limit;
-    int64_t dimension;
-    mlir::RankedTensorType tensorType;
+  int64_t start;
+  int64_t limit;
+  int64_t dimension;
+  mlir::RankedTensorType tensorType;
 };
 
 std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor);
