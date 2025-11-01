@@ -1,3 +1,5 @@
+// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=reshape_dynamic_slice(1);while_is_copy_simplify;greedy_while_loop_batch_fission;broadcast_to_reshape;merge_consecutive_reshapes;reshape_licm(0)" --transform-interpreter --enzyme-hlo-remove-transform --inline --enzyme-hlo-opt --enzyme-hlo-generate-td="patterns=reshape_dynamic_slice(1);while_is_copy_simplify;greedy_while_loop_batch_fission;broadcast_to_reshape;merge_consecutive_reshapes;reshape_licm(0);reshape_elementwise(0)" --transform-interpreter --enzyme-hlo-remove-transform %s | FileCheck %s
+
 module {
   func.func @main(%arg0: tensor<10xf64>, %arg1: tensor<10xf64>) -> tensor<10xf32> {
     %c = stablehlo.constant dense<1> : tensor<i32>
@@ -5,8 +7,7 @@ module {
     %c_1 = stablehlo.constant dense<10> : tensor<i64>
     %c_2 = stablehlo.constant dense<0> : tensor<i64>
     %cst = stablehlo.constant dense<0.000000e+00> : tensor<10xf32>
-    %c_3 = stablehlo.iota dim = 0 : tensor<10xi32>
-    // %c_3 = stablehlo.constant dense<[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]> : tensor<10xi32>
+    %c_3 = stablehlo.constant dense<[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]> : tensor<10xi32>
     %0:2 = stablehlo.while(%iterArg = %c_2, %iterArg_4 = %cst) : tensor<i64>, tensor<10xf32>
     cond {
       %1 = stablehlo.compare  LT, %iterArg, %c_1 : (tensor<i64>, tensor<i64>) -> tensor<i1>
@@ -29,3 +30,11 @@ module {
     return %0#1 : tensor<10xf32>
   }
 }
+
+// CHECK: func.func @main(%arg0: tensor<10xf64>, %arg1: tensor<10xf64>) -> tensor<10xf32> {
+// CHECK-NEXT:     %0 = stablehlo.add %arg0, %arg1 : tensor<10xf64>
+// CHECK-NEXT:     %1 = stablehlo.maximum %arg0, %arg1 : tensor<10xf64>
+// CHECK-NEXT:     %2 = stablehlo.add %0, %1 : tensor<10xf64>
+// CHECK-NEXT:     %3 = stablehlo.convert %2 : (tensor<10xf64>) -> tensor<10xf32>
+// CHECK-NEXT:     return %3 : tensor<10xf32>
+// CHECK-NEXT: }

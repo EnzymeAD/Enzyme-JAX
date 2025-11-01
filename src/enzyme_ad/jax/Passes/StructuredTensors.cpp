@@ -168,8 +168,61 @@ std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
     result = IotaLikeTensor{0, iotaType.getShape()[iotaDim], iotaDim, iotaType};
   } else if (auto constantOp =
                  dyn_cast<stablehlo::ConstantOp>(chain.back().op)) {
-    // TODO: implement the check
-    return std::nullopt;
+    auto denseAttr = cast<DenseElementsAttr>(constantOp.getValue());
+    auto constType = cast<RankedTensorType>(constantOp.getResult().getType());
+    auto shape = constType.getShape();
+
+    if (denseAttr.isSplat())
+      return std::nullopt;
+
+    // Calculate strides for indexing
+    SmallVector<int64_t> strides(constType.getRank(), 1);
+    for (int64_t i = constType.getRank() - 2; i >= 0; --i) {
+      strides[i] = strides[i + 1] * shape[i + 1];
+    }
+
+    bool isIotaLike = false;
+    auto denseAttrValues = denseAttr.getValues<APInt>();
+
+    for (int64_t dim = 0; dim < constType.getRank(); dim++) {
+      bool isIotaAlongDim = true;
+      std::optional<int64_t> detectedStart;
+
+      SmallVector<int64_t> indices(constType.getRank(), 0);
+      int64_t numElements = constType.getNumElements();
+
+      for (int64_t idx = 0; idx < numElements && isIotaAlongDim; idx++) {
+        int64_t temp = idx;
+        // linear to cartesian indexing
+        for (int64_t d = 0; d < constType.getRank(); d++) {
+          indices[d] = temp / strides[d];
+          temp = temp % strides[d];
+        }
+
+        int64_t actualValue = denseAttrValues[idx].getSExtValue();
+
+        if (!detectedStart) {
+          detectedStart = actualValue;
+        }
+
+        int64_t expectedValue = detectedStart.value() + indices[dim];
+        if (actualValue != expectedValue) {
+          isIotaAlongDim = false;
+          break;
+        }
+      }
+
+      if (isIotaAlongDim && detectedStart) {
+        isIotaLike = true;
+        result =
+            IotaLikeTensor{detectedStart.value(),
+                           detectedStart.value() + shape[dim], dim, constType};
+        break;
+      }
+    }
+
+    if (!isIotaLike)
+      return std::nullopt;
   } else {
     return std::nullopt;
   }
