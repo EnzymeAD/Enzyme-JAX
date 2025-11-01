@@ -1045,4 +1045,12 @@ def ConvertTritonToTritonGPUPreservingModuleAttributesPass : Pass<
       >];
 }
 
+def EnzymeBatchToStableHLOPass : Pass<"enzyme-batch-to-stablehlo"> {
+  let summary = "Legalize batching specific enzyme ops to stablehlo dialect";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "enzyme::EnzymeDialect"
+  ];
+}
+
 #endif
