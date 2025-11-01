@@ -7,6 +7,8 @@
 #include "mlir/IR/Types.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -354,7 +356,7 @@ public:
 
     // Map of operations we have seen before. The target of the map[o] is a list
     // of sub-queries, that if all true prove that `o` is no-nan.
-    DenseMap<Operation *, SmallPtrSet<Operation *, 2>> seen;
+    llvm::MapVector<Operation *, llvm::SmallSetVector<Operation *, 2>> seen;
 
     // Inverse of seen. A map of operations `p` we still need to prove, to a
     // list of values that require `p` to be proven.
@@ -442,7 +444,7 @@ public:
           for (auto next : rfound->second) {
             auto bfound = seen.find(next);
             assert(bfound != seen.end());
-            bfound->second.erase(rcur);
+            bfound->second.remove(rcur);
             if (bfound->second.empty())
               rtodo.push_back(next);
           }
@@ -454,8 +456,9 @@ public:
       case State::PENDING: {
         assert(localtodo.size());
         assert(seen.find(cur) == seen.end());
-        SmallPtrSet<Operation *, 2> set(localtodo.begin(), localtodo.end());
-        for (auto v : set) {
+        llvm::SmallSetVector<Operation *, 2> set(localtodo.begin(),
+                                                 localtodo.end());
+        for (auto v : localtodo) {
           reverseSeen[v].push_back(cur);
           if (opCache.find(v) == opCache.end() && seen.find(v) == seen.end()) {
             todo.push_back(v);
