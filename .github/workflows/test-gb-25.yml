@@ -48,13 +48,13 @@ jobs:
           - '1.11'
         xla_commit:
           - ''
-          # - 'b25f3cbed2bc88c8ffef85f6a5319e2cf7b0454c'
+          - '7e740cc0c4b5d6e43e7e35f7f9f07c6152b62999'
         gb25_commit:
           - 'main'
           # - '0123456789abcdef0123456789abcdef01234567'
         reactant_commit:
           - 'main'
-          # - 'regenerate-mlir-bindings'
+          - 'wsmoses-patch-9'
 
     steps:
       - name: Check GPUs
