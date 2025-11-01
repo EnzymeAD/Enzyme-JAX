@@ -1000,4 +1000,13 @@ def SCFCPUify : Pass<"cpuify"> {
   Option<"method", "method", "std::string", /*default=*/"\"distribute\"", "Method of doing distribution">
   ];
 }
+
+def EnzymeBatchToStableHLOPass : Pass<"enzyme-batch-to-stablehlo"> {
+  let summary = "Legalize batching specific enzyme ops to stablehlo dialect";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "enzyme::EnzymeDialect"
+  ];
+}
+
 #endif
