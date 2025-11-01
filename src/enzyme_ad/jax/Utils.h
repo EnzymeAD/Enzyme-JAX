@@ -530,7 +530,7 @@ public:
           guaranteedResult = true;
         }
       }
-    }
+    } 
 
     rewriter.modifyOpInPlace(constOp, [&]() {
       constOp->setAttr(attrName,
@@ -563,6 +563,19 @@ public:
 
 class FiniteResultAnalysis;
 class NoNanResultAnalysis;
+class SymmetricResultAnalysis;
+
+class SymmetricResultAnalysis
+    : public GuaranteedResultAnalysisBase<SymmetricResultAnalysis> {
+public:
+  State localGuaranteed(Operation *op, SmallVectorImpl<Operation *> &localtodo, PatternRewriter &rewriter);
+  
+  bool constantFloatCheck(DenseElementsAttr attr);
+  bool constantIntCheck(DenseElementsAttr attr);
+
+  StringRef getAttrName() const { return "enzymexla.guaranteed_symmetric"; }
+
+};
 
 class NoNanResultAnalysis
     : public GuaranteedResultAnalysisBase<NoNanResultAnalysis> {

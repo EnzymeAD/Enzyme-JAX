@@ -584,6 +584,130 @@ bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy, Type inTy,
   return allowOnFloatingPointMath || guaranteedNoNanResult(op, rewriter);
 }
 
+bool SymmetricResultAnalysis::constantIntCheck(DenseElementsAttr attr) {
+  return false; // TODO
+}
+
+bool SymmetricResultAnalysis::constantFloatCheck(DenseElementsAttr attr) {
+  for (auto elem : attr.getValues<APFloat>()) {
+    // ?
+  }
+  return false; // TODO
+}
+
+SymmetricResultAnalysis::State 
+SymmetricResultAnalysis::localGuaranteed(Operation *op,
+                                         SmallVectorImpl<Operation *> &localtodo,
+                                         PatternRewriter &rewriter) {
+  assert(op);
+  
+  // TODO will not work right now because constantIntCheck and constantFloatCheck are not implemented
+  if (auto constantOp = dyn_cast<stablehlo::ConstantOp>(op)) {
+    if (guaranteed(constantOp, rewriter)) {
+      return State::GUARANTEED;
+    } else {
+      return State::NOTGUARANTEED;
+    }
+  }
+
+  // A + A^T will always be symmetric
+  if (auto addOp = dyn_cast<stablehlo::AddOp>(op)) {
+    auto lhs = addOp.getLhs();
+    auto rhs = addOp.getRhs();
+
+    if (auto rhsT = dyn_cast_or_null<stablehlo::TransposeOp>(rhs.getDefiningOp())) {
+      auto rhsInput = rhsT.getOperand();
+      if (rhsInput == lhs)
+        return State::GUARANTEED;
+    }
+
+    if (auto lhsT = dyn_cast_or_null<stablehlo::TransposeOp>(lhs.getDefiningOp())) {
+      auto lhsInput = lhsT.getOperand();
+      if (lhsInput == rhs)
+        return State::GUARANTEED;
+    }
+  }
+
+  // A * A^T will always be symmetric
+  if (auto mulOp = dyn_cast<stablehlo::MulOp>(op)) {
+    auto lhs = mulOp.getLhs();
+    auto rhs = mulOp.getRhs();
+
+    if (auto rhsT = dyn_cast_or_null<stablehlo::TransposeOp>(rhs.getDefiningOp())) {
+      auto rhsInput = rhsT.getOperand();
+      if (rhsInput == lhs)
+        return State::GUARANTEED;
+    }
+
+    if (auto lhsT = dyn_cast_or_null<stablehlo::TransposeOp>(lhs.getDefiningOp())) {
+      auto lhsInput = lhsT.getOperand();
+      if (lhsInput == rhs)
+        return State::GUARANTEED;
+    }
+  }
+
+  bool recursiveCheck = false;
+
+  // elementwise ops
+  if (isa<stablehlo::AndOp, stablehlo::OrOp, stablehlo::XorOp, stablehlo::NotOp,
+          stablehlo::AbsOp, stablehlo::ExpOp, stablehlo::ConvertOp,
+          stablehlo::CompareOp, stablehlo::TanhOp, stablehlo::LogisticOp,
+          stablehlo::FloorOp, stablehlo::CeilOp, stablehlo::NegOp, stablehlo::LogOp,
+          stablehlo::SineOp, stablehlo::CosineOp, stablehlo::SqrtOp, stablehlo::RsqrtOp,
+          stablehlo::AddOp, stablehlo::SubtractOp, stablehlo::MulOp, stablehlo::DivOp,
+          stablehlo::MaxOp, stablehlo::MinOp>(op)) {
+    recursiveCheck = true;
+  }
+
+  /**
+   * TODO
+   * - check if its * 0 -> symmetric
+   */
+  
+  if (recursiveCheck) {
+    bool allOperandsGuaranteed = true;
+    for (auto operand : op->getOperands()) {
+      {
+        auto found = valueCache.find(operand);
+        if (found != valueCache.end()) {
+          if (found->second) {
+            continue;
+          } else {
+            return State::NOTGUARANTEED;
+          }
+        }
+      }
+      auto dop = operand.getDefiningOp();
+      if (!dop)
+        return State::NOTGUARANTEED;
+
+      {
+        auto found = opCache.find(dop);
+        if (found != opCache.end()) {
+          if (found->second) {
+            continue;
+          } else {
+            return State::NOTGUARANTEED;
+          }
+        }
+      }
+
+      localtodo.push_back(dop);
+      allOperandsGuaranteed = false;
+    }
+
+    if (allOperandsGuaranteed)
+      return State::GUARANTEED;
+    else
+      return State::PENDING;
+  } else {
+    return State::NOTGUARANTEED;
+  }
+
+}
+
+
+
 NoNanResultAnalysis initNoNanResultAnalysis() {
   auto finiteAnalysis = std::make_shared<FiniteResultAnalysis>();
   auto noNanAnalysis = std::make_shared<NoNanResultAnalysis>();
