@@ -789,7 +789,6 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
         if (result.result == IsValidForBatchingResult::VALID) {
           candidateSlices.push_back(
               DynamicSliceInfo{sliceOp, result.sliceDim, false});
-          llvm::dbgs() << "valid slice: " << sliceOp << "\n";
         }
       }
     }
@@ -802,18 +801,39 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
 
   // iota [idx] where iota starts at 0 and iter var also starts at 0
   // replace this with idx
-  // If we do a successful rewrite here, we need to update corresponding
-  // DynamicSliceInfo in the candidateSlices vector
-  for (auto slice : candidateSlices) {
+  // If we do a successful rewrite here, we remove the DynamicSliceInfo from
+  // the candidateSlices vector (a later invocation will handle the rest)
+  SmallVector<DynamicSliceInfo> retainedSlices;
+  for (auto [i, slice] : llvm::enumerate(candidateSlices)) {
     auto iotaDetection = detectIotaLikeTensor(slice.sliceOp.getOperand());
-    if (iotaDetection) {
-      auto iotaTensor = iotaDetection.value();
-      llvm::dbgs() << "original op: " << slice.sliceOp << "\n";
-      llvm::dbgs() << "  [iota tensor] start: " << iotaTensor.start
-                   << ", limit: " << iotaTensor.limit
-                   << ", dimension: " << iotaTensor.dimension << "\n";
+    if (iotaDetection &&
+        slice.inductionVarDimension == iotaDetection.value().dimension &&
+        iotaDetection.value().start == 0 &&
+        iotaDetection.value().limit == limit) {
+      anyOpRewritten = true;
+
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPoint(slice.sliceOp);
+      Value newOperand = info.getInductionVariable();
+      auto sliceType =
+          cast<RankedTensorType>(slice.sliceOp.getResult().getType());
+      auto outElemType = sliceType.getElementType();
+      if (cast<TensorType>(newOperand.getType()).getElementType() !=
+          outElemType) {
+        newOperand = rewriter
+                         .create<stablehlo::ConvertOp>(
+                             slice.sliceOp.getLoc(),
+                             RankedTensorType::get({}, outElemType), newOperand)
+                         .getResult();
+      }
+      rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+          slice.sliceOp, sliceType, newOperand,
+          rewriter.getDenseI64ArrayAttr({}));
+    } else {
+      retainedSlices.push_back(slice);
     }
   }
+  candidateSlices = std::move(retainedSlices);
 
   // Create a map of user operations to their corresponding dynamic slices
   DenseMap<Operation *, SmallVector<DynamicSliceInfo>> userOpToSlicesMap;
