@@ -50,7 +50,8 @@ jobs:
           - ''
           - 'dd0f59f000f23641191db8b2a1f8f893e429cca4'
         gb25_commit:
-          - 'main'
+          # - 'main'
+          - 'mg/oom-reproducer'
           # - '0123456789abcdef0123456789abcdef01234567'
         reactant_commit:
           - 'main'
