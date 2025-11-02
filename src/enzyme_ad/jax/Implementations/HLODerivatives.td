@@ -1459,15 +1459,31 @@ def getBroadcastDimensionsWithBatch : GlobalExpr</*needsprimal*/0, /*needsshadow
 
 def BroadcastDimsToReductionDims : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   SmallVector<int64_t> reduceDims;
-  auto outRank = cast<RankedTensorType>(op.getType()).getRank();
-  for (int64_t i = 0; i < outRank; i++) {
-    if (!llvm::is_contained(op.getBroadcastDimensions(), i)) {
-      reduceDims.push_back(i);
+  auto outTy = cast<RankedTensorType>(op.getType());
+  auto bcastDims = op.getBroadcastDimensions();
+  auto inTy = cast<RankedTensorType>(op.getOperand().getType());
+
+  for (auto en : llvm::enumerate(outTy.getShape())) {
+    ssize_t bcastIdx = -1;
+    for (auto en2 : llvm::enumerate(bcastDims)) {
+      if (en2.value() == en.index()) {
+        bcastIdx = en2.index();
+        break;
+      }
     }
+    if (bcastIdx != -1) {
+      if (en.value() != inTy.getShape()[bcastIdx]) {
+        reduceDims.push_back(en.index());
+        assert(inTy.getShape()[bcastIdx] == 1);
+      }
+      continue;
+    }
+    reduceDims.push_back(en.index());
   }
+
   if (gutils->width > 1) {
-    for (int64_t i = 0; i < reduceDims.size(); i++) {
-      reduceDims[i] += 1;
+    for (int i = 0; i < reduceDims.size(); i++) {
+      reduceDims[i]++;
     }
   }
   getI64Attr(builder, reduceDims);
@@ -1503,11 +1519,33 @@ def BroadcastDimensionsToInversePermutation : GlobalExpr</*needsprimal*/0, /*nee
 }]>;
 
 def InsertDeletedReduceDimsType : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  SmallVector<int64_t> reduceDims;
   auto outTy = cast<RankedTensorType>(op.getType());
+  auto bcastDims = op.getBroadcastDimensions();
+  auto inTy = cast<RankedTensorType>(op.getOperand().getType());
   auto outShape = outTy.getShape();
+
+  for (auto en : llvm::enumerate(outTy.getShape())) {
+    ssize_t bcastIdx = -1;
+    for (auto en2 : llvm::enumerate(bcastDims)) {
+      if (en2.value() == en.index()) {
+        bcastIdx = en2.index();
+        break;
+      }
+    }
+    if (bcastIdx != -1) {
+      if (en.value() != inTy.getShape()[bcastIdx]) {
+        reduceDims.push_back(en.index());
+        assert(inTy.getShape()[bcastIdx] == 1);
+      }
+      continue;
+    }
+    reduceDims.push_back(en.index());
+  }
+
   SmallVector<int64_t> reshapeShape(outTy.getRank(), -1);
   for (auto [i, sz] : llvm::enumerate(outShape)) {
-    if (!llvm::is_contained(op.getBroadcastDimensions(), i)) {
+    if (llvm::is_contained(reduceDims, i)) {
       reshapeShape[i] = 1;
     } else {
       reshapeShape[i] = sz;
@@ -1559,12 +1597,5 @@ def : HLODerivative<"BroadcastInDimOp", (Op $x),
         )
       ],
       (
-        SelectIfActive $x,
-        (
-          BroadcastInDim
-          (ResultTypeWithBatch),
-          (Shadow $x),
-          (getBroadcastDimensionsWithBatch)
-        ),
-        (HLOConstantFP<"0">)
+        BroadcastInDim (ResultTypeWithBatch), (Shadow $x), (getBroadcastDimensionsWithBatch)
       )>;
