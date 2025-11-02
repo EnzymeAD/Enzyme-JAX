@@ -2238,17 +2238,17 @@ struct GetFlattenedSamplesFromTraceOpConversion
   }
 };
 
-struct LoopOpConversion : public OpConversionPattern<enzyme::LoopOp> {
+struct ForLoopOpConversion : public OpConversionPattern<enzyme::ForLoopOp> {
   using OpConversionPattern::OpConversionPattern;
 
   std::string backend;
-  LoopOpConversion(std::string backend, TypeConverter &typeConverter,
-                   MLIRContext *context, PatternBenefit benefit = 1)
+  ForLoopOpConversion(std::string backend, TypeConverter &typeConverter,
+                      MLIRContext *context, PatternBenefit benefit = 1)
       : OpConversionPattern(typeConverter, context, benefit), backend(backend) {
   }
 
   LogicalResult
-  matchAndRewrite(enzyme::LoopOp op, OpAdaptor adaptor,
+  matchAndRewrite(enzyme::ForLoopOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     SmallVector<Value> initVals = {adaptor.getLowerBound()};
     initVals.append(adaptor.getInitArgs().begin(), adaptor.getInitArgs().end());
@@ -2393,14 +2393,14 @@ struct LowerProbProgToStableHLOPass
     target.addIllegalOp<enzyme::CholeskySolveOp>();
     target.addIllegalOp<enzyme::DotOp>();
     target.addIllegalOp<enzyme::UnflattenSliceOp>();
-    target.addIllegalOp<enzyme::LoopOp>();
+    target.addIllegalOp<enzyme::ForLoopOp>();
 
     target.addLegalOp<UnrealizedConversionCastOp>();
 
     RewritePatternSet patterns(context);
 
     patterns.add<RandomOpConversion, CholeskySolveOpConversion, DotOpConversion,
-                 UnflattenSliceOpConversion, LoopOpConversion>(
+                 UnflattenSliceOpConversion, ForLoopOpConversion>(
         backend, typeConverter, context);
 
     if (failed(applyPartialConversion(getOperation(), target,
