@@ -10,6 +10,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Passes/StructuredTensors.h"
 #include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/DenseMap.h"
@@ -796,6 +797,44 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
   if (candidateSlices.empty())
     return rewriter.notifyMatchFailure(whileOp, "no candidate slices found");
 
+  bool anyOpRewritten = false;
+
+  // iota [idx] where iota starts at 0 and iter var also starts at 0
+  // replace this with idx
+  // If we do a successful rewrite here, we remove the DynamicSliceInfo from
+  // the candidateSlices vector (a later invocation will handle the rest)
+  SmallVector<DynamicSliceInfo> retainedSlices;
+  for (auto [i, slice] : llvm::enumerate(candidateSlices)) {
+    auto iotaDetection = detectIotaLikeTensor(slice.sliceOp.getOperand());
+    if (iotaDetection &&
+        slice.inductionVarDimension == iotaDetection.value().dimension &&
+        iotaDetection.value().start == 0 &&
+        iotaDetection.value().limit == limit) {
+      anyOpRewritten = true;
+
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPoint(slice.sliceOp);
+      Value newOperand = info.getInductionVariable();
+      auto sliceType =
+          cast<RankedTensorType>(slice.sliceOp.getResult().getType());
+      auto outElemType = sliceType.getElementType();
+      if (cast<TensorType>(newOperand.getType()).getElementType() !=
+          outElemType) {
+        newOperand = rewriter
+                         .create<stablehlo::ConvertOp>(
+                             slice.sliceOp.getLoc(),
+                             RankedTensorType::get({}, outElemType), newOperand)
+                         .getResult();
+      }
+      rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+          slice.sliceOp, sliceType, newOperand,
+          rewriter.getDenseI64ArrayAttr({}));
+    } else {
+      retainedSlices.push_back(slice);
+    }
+  }
+  candidateSlices = std::move(retainedSlices);
+
   // Create a map of user operations to their corresponding dynamic slices
   DenseMap<Operation *, SmallVector<DynamicSliceInfo>> userOpToSlicesMap;
   for (auto ds : candidateSlices) {
@@ -819,9 +858,8 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
   }
 
   if (userOpToSlicesMap.empty())
-    return failure();
+    return anyOpRewritten ? success() : failure();
 
-  bool wasLifted = false;
   for (auto &[op, slices] : userOpToSlicesMap) {
     SmallVector<bool> allIntermediateReshapes(slices.size());
     for (auto [i, slice] : llvm::enumerate(slices))
@@ -839,17 +877,17 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
         op->hasTrait<OpTrait::Elementwise>()) {
       if (liftOperationByBatching(rewriter, whileOp, slices, op, info,
                                   intermediateReshape)) {
-        wasLifted = true;
+        anyOpRewritten = true;
       }
     } else if (!intermediateReshape && isa<stablehlo::ReshapeOp>(op)) {
       if (liftSpecialReshapeOp(rewriter, whileOp, slices,
                                dyn_cast<stablehlo::ReshapeOp>(op), info)) {
-        wasLifted = true;
+        anyOpRewritten = true;
       }
     }
   }
 
-  return wasLifted ? success() : failure();
+  return anyOpRewritten ? success() : failure();
 };
 
 bool GreedyWhileLoopBatchFission::liftSpecialReshapeOp(
