@@ -474,19 +474,11 @@ public:
     // would invalidate. Therefore all seen operations [including op] are known
     // to be guaranteed.
     for (auto &sval : seen) {
-      bool allGuaranteed = true;
-      for (auto v : sval.second) {
-        bool found = opCache.find(v) != opCache.end();
-        if ((found && !opCache[v]) || !found)
-          allGuaranteed = false;
-      }
-      if (allGuaranteed) {
-        opCache[sval.first] = true;
-        rewriter.modifyOpInPlace(sval.first, [&]() {
-          sval.first->setAttr(attrName,
-                              BoolAttr::get(sval.first->getContext(), true));
-        });
-      }
+      opCache[sval.first] = true;
+      rewriter.modifyOpInPlace(sval.first, [&]() {
+        sval.first->setAttr(attrName,
+                            BoolAttr::get(sval.first->getContext(), true));
+      });
     }
 
     if (opCache.find(op) != opCache.end()) {
