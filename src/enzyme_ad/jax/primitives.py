@@ -283,6 +283,7 @@ def optimization_passes(
         "slice_dus_to_concat",
         "while_induction_reduction",
         "slice_licm(0)",
+        "dot_general_licm(0)",
         "pad_licm(0)",
         "elementwise_licm(0)",
         "concatenate_licm(0)",
