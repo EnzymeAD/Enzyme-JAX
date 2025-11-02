@@ -479,8 +479,9 @@ public:
       });
     }
 
-    if (opCache.find(op) != opCache.end()) {
-      bool guaranteed = opCache[op];
+    auto found = opCache.find(op);
+    if (found != opCache.end()) {
+      bool guaranteed = found->second;
       rewriter.modifyOpInPlace(op, [&]() {
         op->setAttr(attrName, BoolAttr::get(op->getContext(), guaranteed));
       });
