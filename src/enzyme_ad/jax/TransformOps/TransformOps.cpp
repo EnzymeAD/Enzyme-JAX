@@ -80,6 +80,11 @@ void ApplySliceLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
   addSliceLICM(patterns, getParameter(), *getContext(),
                PatternBenefit(getBenefit().value_or(1)));
 }
+void ApplyDotGeneralLICMPatterns::populatePatterns(
+    RewritePatternSet &patterns) {
+  addDotGeneralLICM(patterns, getParameter(), *getContext(),
+                    PatternBenefit(getBenefit().value_or(1)));
+}
 void ApplyDUSLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
   addDUSLICM(patterns, getParameter(), *getContext(),
              PatternBenefit(getBenefit().value_or(1)));
