@@ -346,6 +346,65 @@ struct NoopSlice final
   }
 };
 
+SmallVector<Value> promoteToLargestBitWidth(SmallVector<Value> values,
+                                            PatternRewriter &rewriter) {
+  if (values.empty())
+    return {};
+
+  int64_t maxBitWidth = 0;
+  for (auto v : values) {
+    auto tensorTy = cast<RankedTensorType>(v.getType());
+    assert(tensorTy && tensorTy.getRank() == 0 && "Expected rank 0 tensor");
+    auto intTy = cast<IntegerType>(tensorTy.getElementType());
+    assert(intTy && "Expected integer type");
+    maxBitWidth = std::max(maxBitWidth, static_cast<int64_t>(intTy.getWidth()));
+  }
+
+  SmallVector<Value> promotedValues(values.size());
+  for (size_t i = 0; i < values.size(); i++) {
+    auto tensorTy = cast<RankedTensorType>(values[i].getType());
+    auto intTy = cast<IntegerType>(tensorTy.getElementType());
+
+    if (intTy.getWidth() == maxBitWidth) {
+      promotedValues[i] = values[i];
+      continue;
+    }
+
+    promotedValues[i] = rewriter.create<stablehlo::ConvertOp>(
+        values[i].getLoc(),
+        RankedTensorType::get({}, rewriter.getIntegerType(maxBitWidth)),
+        values[i]);
+  }
+  return promotedValues;
+}
+
+void sliceSliceHelper(stablehlo::DynamicSliceOp prev,
+                      SmallVector<Value> &startIndices,
+                      SmallVector<int64_t> &sliceSizes,
+                      PatternRewriter &rewriter) {
+  assert(startIndices.size() == prev.getType().getShape().size());
+  assert(sliceSizes.size() == prev.getType().getShape().size());
+
+  auto prevOperandType = prev.getOperand().getType();
+  auto prevOperandShape = prevOperandType.getShape();
+
+  auto prevStartIndices = prev.getStartIndices();
+  auto prevSliceSizes = prev.getSliceSizes();
+
+  for (size_t i = 0; i < startIndices.size(); ++i) {
+    auto size = prevOperandShape[i];
+
+    if (startIndices[i]) {
+      SmallVector<Value> addInputs = promoteToLargestBitWidth(
+          {startIndices[i], prevStartIndices[i]}, rewriter);
+      startIndices[i] = rewriter.create<stablehlo::AddOp>(
+          prev.getLoc(), addInputs[0], addInputs[1]);
+    } else {
+      startIndices[i] = prevStartIndices[i];
+    }
+  }
+}
+
 void sliceSliceHelper(stablehlo::SliceOp prev, SmallVector<int64_t> &starts,
                       SmallVector<int64_t> &limits,
                       SmallVector<int64_t> &strides) {
@@ -10202,6 +10261,72 @@ struct PadDotGeneral
   }
 };
 
+// sliceIndices which are null are essentially 0 (we don't construct here since
+// the pass might still fail)
+LogicalResult sliceReshapeHelper(stablehlo::DynamicSliceOp op,
+                                 SmallVectorImpl<Value> &startIndices,
+                                 SmallVectorImpl<int64_t> &sliceSizes) {
+  auto reshape = op.getOperand().getDefiningOp<stablehlo::ReshapeOp>();
+  if (!reshape) {
+    return failure();
+  }
+
+  assert(startIndices.size() == 0);
+  assert(sliceSizes.size() == 0);
+
+  auto reshapeOperandType = cast<TensorType>(reshape.getOperand().getType());
+  auto reshapeType = cast<TensorType>(reshape.getType());
+  size_t indim = 0;
+  size_t outdim = 0;
+
+  while (indim < reshapeOperandType.getShape().size() &&
+         outdim < reshapeType.getShape().size()) {
+    if (reshapeOperandType.getShape()[indim] ==
+        reshapeType.getShape()[outdim]) {
+      startIndices.push_back(op.getStartIndices()[outdim]);
+      sliceSizes.push_back(op.getSliceSizes()[outdim]);
+      indim++;
+      outdim++;
+      continue;
+    }
+
+    if (reshapeOperandType.getShape()[indim] == 1) {
+      startIndices.push_back(nullptr);
+      sliceSizes.push_back(1);
+      indim++;
+      continue;
+    }
+
+    if (reshapeType.getShape()[outdim] == 1) {
+      if (!matchPattern(op.getStartIndices()[outdim], m_Zero()))
+        return failure();
+      if (op.getSliceSizes()[outdim] != 1)
+        return failure();
+      outdim++;
+      continue;
+    }
+    return failure();
+  }
+  while (indim < reshapeOperandType.getShape().size()) {
+    if (reshapeOperandType.getShape()[indim] != 1)
+      return failure();
+    // It's a full slice of the original dimension.
+    startIndices.push_back(nullptr);
+    sliceSizes.push_back(1);
+    indim++;
+  }
+  while (outdim < reshapeType.getShape().size()) {
+    if (reshapeType.getShape()[outdim] != 1)
+      return failure();
+    if (!matchPattern(op.getStartIndices()[outdim], m_Zero()))
+      return failure();
+    if (op.getSliceSizes()[outdim] != 1)
+      return failure();
+    outdim++;
+  }
+  return success();
+}
+
 LogicalResult sliceReshapeHelper(stablehlo::SliceOp op,
                                  SmallVectorImpl<int64_t> &starts,
                                  SmallVectorImpl<int64_t> &limits,
@@ -11099,6 +11224,64 @@ struct SliceReshapeSlice final
     return success();
   }
 };
+
+struct DynamicSliceReshapeDynamicSlice final
+    : CheckedOpRewritePattern<stablehlo::DynamicSliceOp,
+                              DynamicSliceReshapeDynamicSlice> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DynamicSliceOp op,
+                                    PatternRewriter &rewriter) const {
+    auto reshape = op.getOperand().getDefiningOp<stablehlo::ReshapeOp>();
+    if (!reshape)
+      return failure();
+
+    if (!llvm::hasSingleElement(reshape->getUsers()))
+      return failure();
+
+    auto prev = reshape.getOperand().getDefiningOp<stablehlo::DynamicSliceOp>();
+    if (!prev)
+      return failure();
+
+    llvm::errs() << "prev: " << prev << "\n";
+    llvm::errs() << "reshape: " << reshape << "\n";
+    llvm::errs() << "op: " << op << "\n\n";
+
+    SmallVector<Value> startIndices;
+    SmallVector<int64_t> sliceSizes;
+    if (!sliceReshapeHelper(op, startIndices, sliceSizes).succeeded())
+      return failure();
+
+    for (int i = 0; i < startIndices.size(); i++) {
+      if (startIndices[i])
+        llvm::errs() << "sliced: " << startIndices[i] << "\n";
+      else
+        llvm::errs() << "zero\n";
+    }
+    llvm::errs() << "\n";
+    llvm::errs() << "startSizes: " << rewriter.getDenseI64ArrayAttr(sliceSizes)
+                 << "\n";
+
+    sliceSliceHelper(prev, startIndices, sliceSizes, rewriter);
+
+    llvm::errs() << "post slice slice\n";
+    for (int i = 0; i < startIndices.size(); i++) {
+      if (startIndices[i])
+        llvm::errs() << "sliced: " << startIndices[i] << "\n";
+      else
+        llvm::errs() << "zero\n";
+    }
+
+    auto newSlice = rewriter.create<stablehlo::DynamicSliceOp>(
+        op.getLoc(), prev.getOperand(),
+        promoteToLargestBitWidth(startIndices, rewriter),
+        rewriter.getDenseI64ArrayAttr(sliceSizes));
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
+                                                      newSlice);
+    return success();
+  }
+};
+
 } // namespace
 
 // Rewritten from

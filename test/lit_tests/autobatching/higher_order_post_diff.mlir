@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=dot_general_licm(0);elementwise_licm(0);greedy_while_loop_batch_fission;while_is_copy_simplify;remove_no_ops_from_while_loop" --transform-interpreter --enzyme-hlo-remove-transform --inline --enzyme-hlo-opt %s | FileCheck %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=dot_general_licm(0);elementwise_licm(0);greedy_while_loop_batch_fission;while_is_copy_simplify;remove_no_ops_from_while_loop;dynamic_slice_reshape_dynamic_slice" --transform-interpreter --enzyme-hlo-remove-transform --inline --enzyme-hlo-opt %s | FileCheck %s
 
 func.func @main(%arg0: tensor<5x5xf32>, %arg1: tensor<5xf32>, %arg2: tensor<3x5xf32>) -> tensor<3x5xf32> {
     %cst = stablehlo.constant dense<"0x000000400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000040000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000040000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000040000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000040000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000040"> : tensor<15x3x5xf32>
@@ -111,14 +111,14 @@ func.func @main(%arg0: tensor<5x5xf32>, %arg1: tensor<5xf32>, %arg2: tensor<3x5x
 // CHECK-NEXT:       stablehlo.return %30 : tensor<i1>
 // CHECK-NEXT:     } do {
 // CHECK-NEXT:       %30 = stablehlo.add %c_8, %iterArg : tensor<i64>
-// CHECK-NEXT:       %31 = stablehlo.dynamic_slice %28, %iterArg, %c_7, %c_7, sizes = [1, 5, 3] : (tensor<15x5x3xf32>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<1x5x3xf32>
-// CHECK-NEXT:       %32 = stablehlo.reshape %31 : (tensor<1x5x3xf32>) -> tensor<5x3xf32>
-// CHECK-NEXT:       %33 = stablehlo.remainder %iterArg, %c_5 : tensor<i64>
-// CHECK-NEXT:       %34 = stablehlo.add %33, %c_8 : tensor<i64>
-// CHECK-NEXT:       %35 = stablehlo.convert %34 : (tensor<i64>) -> tensor<i32>
-// CHECK-NEXT:       %36 = stablehlo.subtract %35, %c_6 : tensor<i32>
-// CHECK-NEXT:       %37 = stablehlo.dynamic_slice %32, %36, %c, sizes = [1, 1] : (tensor<5x3xf32>, tensor<i32>, tensor<i32>) -> tensor<1x1xf32>
-// CHECK-NEXT:       %38 = stablehlo.dynamic_update_slice %iterArg_12, %37, %c, %36 : (tensor<3x5xf32>, tensor<1x1xf32>, tensor<i32>, tensor<i32>) -> tensor<3x5xf32>
+// CHECK-NEXT:       %31 = stablehlo.remainder %iterArg, %c_5 : tensor<i64>
+// CHECK-NEXT:       %32 = stablehlo.add %31, %c_8 : tensor<i64>
+// CHECK-NEXT:       %33 = stablehlo.convert %32 : (tensor<i64>) -> tensor<i32>
+// CHECK-NEXT:       %34 = stablehlo.subtract %33, %c_6 : tensor<i32>
+// CHECK-NEXT:       %35 = stablehlo.convert %34 : (tensor<i32>) -> tensor<i64>
+// CHECK-NEXT:       %36 = stablehlo.dynamic_slice %28, %iterArg, %35, %c_7, sizes = [1, 1, 1] : (tensor<15x5x3xf32>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<1x1x1xf32>
+// CHECK-NEXT:       %37 = stablehlo.reshape %36 : (tensor<1x1x1xf32>) -> tensor<1x1xf32>
+// CHECK-NEXT:       %38 = stablehlo.dynamic_update_slice %iterArg_12, %37, %c, %34 : (tensor<3x5xf32>, tensor<1x1xf32>, tensor<i32>, tensor<i32>) -> tensor<3x5xf32>
 // CHECK-NEXT:       stablehlo.return %30, %38 : tensor<i64>, tensor<3x5xf32>
 // CHECK-NEXT:     }
 // CHECK-NEXT:     return %29#1 : tensor<3x5xf32>
