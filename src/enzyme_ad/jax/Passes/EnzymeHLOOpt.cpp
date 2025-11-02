@@ -460,6 +460,34 @@ struct SliceSlice final
   }
 };
 
+struct DynamicSliceDynamicSlice final
+    : CheckedOpRewritePattern<stablehlo::DynamicSliceOp,
+                              DynamicSliceDynamicSlice> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DynamicSliceOp op,
+                                    PatternRewriter &rewriter) const {
+    auto type = dyn_cast<RankedTensorType>(op.getType());
+    if (!type)
+      return failure();
+
+    auto prev = op.getOperand().getDefiningOp<stablehlo::DynamicSliceOp>();
+    if (!prev)
+      return failure();
+
+    SmallVector<Value> startIndices(op.getStartIndices().begin(),
+                                    op.getStartIndices().end());
+    SmallVector<int64_t> sliceSizes(op.getSliceSizes().begin(),
+                                    op.getSliceSizes().end());
+    sliceSliceHelper(prev, startIndices, sliceSizes, rewriter);
+    auto res = rewriter.replaceOpWithNewOp<stablehlo::DynamicSliceOp>(
+        op, prev.getOperand(), startIndices, sliceSizes);
+    assert(res.getType() == op.getType());
+    (void)res;
+    return success();
+  }
+};
+
 struct DynamicSliceToStatic final
     : CheckedOpRewritePattern<stablehlo::DynamicSliceOp, DynamicSliceToStatic> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -11243,35 +11271,13 @@ struct DynamicSliceReshapeDynamicSlice final
     if (!prev)
       return failure();
 
-    llvm::errs() << "prev: " << prev << "\n";
-    llvm::errs() << "reshape: " << reshape << "\n";
-    llvm::errs() << "op: " << op << "\n\n";
-
     SmallVector<Value> startIndices;
     SmallVector<int64_t> sliceSizes;
     if (!sliceReshapeHelper(op, startIndices, sliceSizes).succeeded())
       return failure();
 
-    for (int i = 0; i < startIndices.size(); i++) {
-      if (startIndices[i])
-        llvm::errs() << "sliced: " << startIndices[i] << "\n";
-      else
-        llvm::errs() << "zero\n";
-    }
-    llvm::errs() << "\n";
-    llvm::errs() << "startSizes: " << rewriter.getDenseI64ArrayAttr(sliceSizes)
-                 << "\n";
 
     sliceSliceHelper(prev, startIndices, sliceSizes, rewriter);
-
-    llvm::errs() << "post slice slice\n";
-    for (int i = 0; i < startIndices.size(); i++) {
-      if (startIndices[i])
-        llvm::errs() << "sliced: " << startIndices[i] << "\n";
-      else
-        llvm::errs() << "zero\n";
-    }
-
     auto newSlice = rewriter.create<stablehlo::DynamicSliceOp>(
         op.getLoc(), prev.getOperand(),
         promoteToLargestBitWidth(startIndices, rewriter),
