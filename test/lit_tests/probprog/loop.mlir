@@ -23,7 +23,7 @@ module {
     %c1 = stablehlo.constant dense<1> : tensor<i64>
     %init = stablehlo.constant dense<0.0> : tensor<f64>
 
-    %result = enzyme.loop (%c0 : tensor<i64>) to (%n : tensor<i64>) step (%c1 : tensor<i64>)
+    %result = enzyme.for_loop (%c0 : tensor<i64>) to (%n : tensor<i64>) step (%c1 : tensor<i64>)
       iter_args(%init : tensor<f64>)
       -> tensor<f64> {
     ^bb0(%iv: tensor<i64>, %sum_iter: tensor<f64>):
@@ -64,11 +64,11 @@ module {
     %c1 = stablehlo.constant dense<1> : tensor<i64>
     %init = stablehlo.constant dense<0.0> : tensor<f64>
 
-    %result = enzyme.loop (%c0 : tensor<i64>) to (%m : tensor<i64>) step (%c1 : tensor<i64>)
+    %result = enzyme.for_loop (%c0 : tensor<i64>) to (%m : tensor<i64>) step (%c1 : tensor<i64>)
       iter_args(%init : tensor<f64>)
       -> tensor<f64> {
     ^bb0(%i: tensor<i64>, %outer_sum_iter: tensor<f64>):
-      %inner_result = enzyme.loop (%c0 : tensor<i64>) to (%n : tensor<i64>) step (%c1 : tensor<i64>)
+      %inner_result = enzyme.for_loop (%c0 : tensor<i64>) to (%n : tensor<i64>) step (%c1 : tensor<i64>)
         iter_args(%outer_sum_iter : tensor<f64>)
         -> tensor<f64> {
       ^bb1(%j: tensor<i64>, %inner_sum_iter: tensor<f64>):
@@ -108,7 +108,7 @@ module {
     %init_sum = stablehlo.constant dense<0.0> : tensor<f64>
     %init_prod = stablehlo.constant dense<1.0> : tensor<f64>
 
-    %sum, %prod = enzyme.loop (%c0 : tensor<i64>) to (%n : tensor<i64>) step (%c1 : tensor<i64>)
+    %sum, %prod = enzyme.for_loop (%c0 : tensor<i64>) to (%n : tensor<i64>) step (%c1 : tensor<i64>)
       iter_args(%init_sum, %init_prod : tensor<f64>, tensor<f64>)
       -> tensor<f64>, tensor<f64> {
     ^bb0(%iv: tensor<i64>, %s_iter: tensor<f64>, %p_iter: tensor<f64>):
@@ -173,7 +173,7 @@ module {
     %init_sum = stablehlo.constant dense<0.0> : tensor<f64>
     %init_trace = enzyme.initTrace : !enzyme.Trace
 
-    %sum, %trace = enzyme.loop (%c0 : tensor<i64>) to (%n : tensor<i64>) step (%c1 : tensor<i64>)
+    %sum, %trace = enzyme.for_loop (%c0 : tensor<i64>) to (%n : tensor<i64>) step (%c1 : tensor<i64>)
       iter_args(%init_sum, %init_trace : tensor<f64>, !enzyme.Trace)
       -> tensor<f64>, !enzyme.Trace {
     ^bb0(%iv: tensor<i64>, %s_iter: tensor<f64>, %t_iter: !enzyme.Trace):
