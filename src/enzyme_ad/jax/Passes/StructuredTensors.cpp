@@ -75,8 +75,10 @@ absl::Status detectDiagonalTensor(stablehlo::ScatterOp scatterOp,
     return absl::InvalidArgumentError(
         "Scatter dimension numbers are not valid for a diagonal tensor.");
 
-  if (auto iotaOp = dyn_cast<stablehlo::IotaOp>(indices.getDefiningOp())) {
-    if (iotaOp.getIotaDimension() == 0) {
+  auto isIotaLikeTensor = detectIotaLikeTensor(indices);
+  if (isIotaLikeTensor) {
+    auto iotaLikeTensor = isIotaLikeTensor.value();
+    if (iotaLikeTensor.dimension == 0 && iotaLikeTensor.start == 0) {
       *outUpdates = updates;
       return absl::OkStatus();
     }
