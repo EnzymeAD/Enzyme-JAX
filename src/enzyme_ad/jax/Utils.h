@@ -460,7 +460,8 @@ public:
           reverseSeen[v].push_back(cur);
           todo.push_back(v);
         }
-        llvm::SmallPtrSet<Operation *, 2> set(localtodo.begin(), localtodo.end());
+        llvm::SmallPtrSet<Operation *, 2> set(localtodo.begin(),
+                                              localtodo.end());
         seen[cur] = std::move(set);
         break;
       }
