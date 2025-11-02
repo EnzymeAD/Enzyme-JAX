@@ -530,7 +530,7 @@ public:
           guaranteedResult = true;
         }
       }
-    } 
+    }
 
     rewriter.modifyOpInPlace(constOp, [&]() {
       constOp->setAttr(attrName,
