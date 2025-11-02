@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1762076906158,
+  "lastUpdate": 1762108885789,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "wmoses@google.com",
-            "name": "William Moses",
-            "username": "wsmoses"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "54edf3845b103a7bfcc335f186ee720a1953a65b",
-          "message": "SROA pass error (#1456)",
-          "timestamp": "2025-10-05T17:46:09-05:00",
-          "tree_id": "0b1c2f86927a1376b6cb355d567753e1cbb5e5a5",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/54edf3845b103a7bfcc335f186ee720a1953a65b"
-        },
-        "date": 1759714867513,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.000004485886999464128,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.000004439690998697188,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001577955517001,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001410659988992,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2239,6 +2195,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001438122397055,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "wmoses@google.com",
+            "name": "William Moses",
+            "username": "wsmoses"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4a22980dd3b3ffa65e81c8273b41483035f8ea02",
+          "message": "Fix infinite loop ori disjoint (#1547)",
+          "timestamp": "2025-11-02T09:30:18-06:00",
+          "tree_id": "65f0f4954e15fc5dc09b97acc7a63e5bbde16aed",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/4a22980dd3b3ffa65e81c8273b41483035f8ea02"
+        },
+        "date": 1762108884746,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.0000043374820001190525,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.00000406218699990859,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001517361998001,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001501404909,
             "unit": "s"
           }
         ]
