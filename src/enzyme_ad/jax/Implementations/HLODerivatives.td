@@ -977,8 +977,6 @@ def : HLODerivative<"Atan2Op", (Op $x, $y),
                     (CheckedDiv (Sub (Mul $x, (Shadow $y)), (Mul $y, (Shadow $x))), (Add (Pow $x, (HLOConstantFP<"2">)), (Pow $y, (HLOConstantFP<"2"> $y))))
                   >;
 
-def : HLOReadOnlyIdentityOp<"BroadcastInDimOp">;
-
 // Gather Adjoint
 def ResultDimensionNumbers : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   op.getDimensionNumbers();
@@ -1446,3 +1444,127 @@ def : HLODerivative<"FftOp",
       Fft (Shadow $x), (FftType), (FftLength)
     )
 >;
+
+def getBroadcastDimensionsWithBatch : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto bcastDims = op.getBroadcastDimensions();
+  SmallVector<int64_t> newBcastDims;
+  for (auto dim : bcastDims) {
+    newBcastDims.push_back(to_i64(dim));
+  }
+  if (gutils->width > 1) {
+    newBcastDims.insert(newBcastDims.begin(), gutils->width);
+  }
+  getI64Attr(builder, newBcastDims);
+}]>;
+
+def BroadcastDimsToReductionDims : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  SmallVector<int64_t> reduceDims;
+  auto outRank = cast<RankedTensorType>(op.getType()).getRank();
+  for (int64_t i = 0; i < outRank; i++) {
+    if (!llvm::is_contained(op.getBroadcastDimensions(), i)) {
+      reduceDims.push_back(i);
+    }
+  }
+  if (gutils->width > 1) {
+    for (int64_t i = 0; i < reduceDims.size(); i++) {
+      reduceDims[i] += 1;
+    }
+  }
+  getI64Attr(builder, reduceDims);
+}]>;
+
+def ReduceAddNullValue : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto operand = op->getOperand(0);
+  auto operandElemType = cast<RankedTensorType>(operand.getType()).getElementType();
+  auto bodyTy = RankedTensorType::get({}, operandElemType);
+  cast<AutoDiffTypeInterface>(
+      gutils->getShadowType(bodyTy)).createNullValue(builder, op.getLoc());
+}]>;
+
+def BroadcastDimensionsToInversePermutation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto outTy = cast<RankedTensorType>(op.getType());
+  SmallVector<int64_t> perm(outTy.getRank());
+  SmallVector<int64_t> mapping(outTy.getRank(), -1);
+  for (auto [i, dim] : llvm::enumerate(op.getBroadcastDimensions())) {
+    mapping[to_i64(dim)] = i;
+  }
+
+  int next = op.getBroadcastDimensions().size();
+  for (int i = 0; i < outTy.getRank(); i++) {
+    if (mapping[i] == -1) {
+      mapping[i] = next++;
+    }
+  }
+
+  for (int i = 0; i < outTy.getRank(); i++) {
+    perm[mapping[i]] = i;
+  }
+  getI64Attr(builder, perm);
+}]>;
+
+def InsertDeletedReduceDimsType : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto outTy = cast<RankedTensorType>(op.getType());
+  auto outShape = outTy.getShape();
+  SmallVector<int64_t> reshapeShape(outTy.getRank(), -1);
+  for (auto [i, sz] : llvm::enumerate(outShape)) {
+    if (!llvm::is_contained(op.getBroadcastDimensions(), i)) {
+      reshapeShape[i] = 1;
+    } else {
+      reshapeShape[i] = sz;
+    }
+  }
+
+  if (gutils->width > 1) {
+    reshapeShape.insert(reshapeShape.begin(), gutils->width);
+  }
+  RankedTensorType::get(reshapeShape, outTy.getElementType());
+}]>;
+
+def ReduceAdd : HLOInst<"ReduceOp", ")->getResult(0)", "createAddRegion(">;
+
+def ResultTypeWithBatch : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto outTy = cast<RankedTensorType>(op.getType());
+  auto outShape = outTy.getShape();
+  SmallVector<int64_t> newShape(outShape.begin(), outShape.end());
+  if (gutils->width > 1) {
+    newShape.insert(newShape.begin(), gutils->width);
+  }
+  RankedTensorType::get(newShape, outTy.getElementType());
+}]>;
+
+def InputTypeWithBatch : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto inTy = cast<RankedTensorType>(op.getOperand().getType());
+  auto inShape = inTy.getShape();
+  SmallVector<int64_t> newShape(inShape.begin(), inShape.end());
+  if (gutils->width > 1) {
+    newShape.insert(newShape.begin(), gutils->width);
+  }
+  RankedTensorType::get(newShape, inTy.getElementType());
+}]>;
+
+def : HLODerivative<"BroadcastInDimOp", (Op $x),
+      [
+        (
+          Reshape
+          (InputTypeWithBatch),
+          (
+            Transpose
+            (
+              Reshape
+              (InsertDeletedReduceDimsType),
+              (ReduceAdd (DiffeRet), (ReduceAddNullValue), (BroadcastDimsToReductionDims))
+            ),
+            (BroadcastDimensionsToInversePermutation)
+          )
+        )
+      ],
+      (
+        SelectIfActive $x,
+        (
+          BroadcastInDim
+          (ResultTypeWithBatch),
+          (Shadow $x),
+          (getBroadcastDimensionsWithBatch)
+        ),
+        (HLOConstantFP<"0">)
+      )>;

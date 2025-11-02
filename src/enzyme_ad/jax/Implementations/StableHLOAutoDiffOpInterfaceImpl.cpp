@@ -1133,116 +1133,6 @@ private:
   }
 };
 
-class AutoDiffBroadcastInDimRev
-    : public ReverseAutoDiffOpInterface::ExternalModel<
-          AutoDiffBroadcastInDimRev, BroadcastInDimOp> {
-public:
-  LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
-                                         MGradientUtilsReverse *gutils,
-                                         SmallVector<Value> caches) const {
-    auto op = cast<BroadcastInDimOp>(orig);
-    auto inTy = op.getOperand().getType();
-    auto outTy = op.getType();
-    auto inDiffe = gutils->diffe(op, builder);
-    gutils->zeroDiffe(op, builder);
-
-    SmallVector<int64_t> bcastDims(op.getBroadcastDimensions().begin(),
-                                   op.getBroadcastDimensions().end());
-
-    SmallVector<int64_t> reducedDims;
-    SmallVector<int64_t> iterShape;
-    for (auto en : llvm::enumerate(outTy.getShape())) {
-      ssize_t bcastIdx = -1;
-      for (auto en2 : llvm::enumerate(bcastDims)) {
-        if (en2.value() == en.index()) {
-          bcastIdx = en2.index();
-          break;
-        }
-      }
-      if (bcastIdx != -1) {
-        if (en.value() != inTy.getShape()[bcastIdx]) {
-          reducedDims.push_back(en.index());
-          assert(inTy.getShape()[bcastIdx] == 1);
-        } else {
-          iterShape.push_back(inTy.getShape()[bcastIdx]);
-        }
-        continue;
-      }
-      reducedDims.push_back(en.index());
-    }
-
-    SmallVector<int64_t> reshapedShape(outTy.getRank(), -1);
-    for (auto [i, sz] : llvm::enumerate(outTy.getShape())) {
-      if (llvm::is_contained(reducedDims, i)) {
-        reshapedShape[i] = 1;
-      } else {
-        reshapedShape[i] = sz;
-      }
-    }
-
-    SmallVector<int64_t> perm(outTy.getRank(), -1);
-    SmallVector<int64_t> mapping(outTy.getRank(), -1);
-    for (auto [i, dim] : llvm::enumerate(bcastDims)) {
-      mapping[dim] = i;
-    }
-
-    int next = bcastDims.size();
-    for (int i = 0; i < outTy.getRank(); i++) {
-      if (mapping[i] == -1) {
-        mapping[i] = next++;
-      }
-    }
-
-    for (int i = 0; i < outTy.getRank(); i++) {
-      perm[mapping[i]] = i;
-    }
-
-    auto reduceTy = RankedTensorType::get(iterShape, inTy.getElementType());
-    auto bodyTy = RankedTensorType::get({}, inTy.getElementType());
-
-    Value zero = cast<AutoDiffTypeInterface>(gutils->getShadowType(bodyTy))
-                     .createNullValue(builder, op.getLoc());
-
-    auto red = builder.create<ReduceOp>(
-        op.getLoc(), TypeRange(gutils->getShadowType(reduceTy)), inDiffe, zero,
-        reducedDims);
-    red.getBody().push_back(new Block());
-    Block &body = red.getBody().front();
-    OpBuilder bodyBuilder(orig->getContext());
-    bodyBuilder.setInsertionPointToEnd(&body);
-
-    body.addArgument(bodyTy, op.getLoc());
-    body.addArgument(bodyTy, op.getLoc());
-    auto add = bodyBuilder.create<AddOp>(op.getLoc(), body.getArgument(0),
-                                         body.getArgument(1));
-    bodyBuilder.create<ReturnOp>(op.getLoc(), ValueRange(add));
-
-    // for simplicity we do grad -> reduce -> reshape (restore 1 dims) ->
-    // transpose -> reshape
-    // The repeated reshapes are then eliminated via `enzyme-hlo-opt`.
-    auto reshapedRed = builder.create<ReshapeOp>(
-        op.getLoc(),
-        RankedTensorType::get(reshapedShape, inTy.getElementType()),
-        red->getResult(0));
-    auto transposedVal =
-        builder.create<TransposeOp>(op.getLoc(), reshapedRed, perm);
-    auto res = builder.create<ReshapeOp>(
-        op.getLoc(), gutils->getShadowType(op.getOperand().getType()),
-        transposedVal);
-
-    gutils->addToDiffe(op.getOperand(), res, builder);
-    return success();
-  }
-
-  SmallVector<Value> cacheValues(Operation *orig,
-                                 MGradientUtilsReverse *gutils) const {
-    return {};
-  }
-
-  void createShadowValues(Operation *op, OpBuilder &builder,
-                          MGradientUtilsReverse *gutils) const {}
-};
-
 class AutoDiffSliceRev
     : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffSliceRev,
                                                        SliceOp> {
@@ -3635,7 +3525,6 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     WhileOp::attachInterface<AutoDiffWhileRev>(*context);
     ReduceOp::attachInterface<AutoDiffReduceCF<ReduceOp>>(*context);
     WhileOp::attachInterface<AutoDiffReduceCF<WhileOp>>(*context);
-    BroadcastInDimOp::attachInterface<AutoDiffBroadcastInDimRev>(*context);
     SliceOp::attachInterface<AutoDiffSliceRev>(*context);
     ReduceOp::attachInterface<AutoDiffReduceRev>(*context);
     ReduceWindowOp::attachInterface<AutoDiffReduceWindowRev>(*context);
