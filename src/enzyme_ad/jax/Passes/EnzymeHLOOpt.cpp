@@ -25018,6 +25018,13 @@ void mlir::transform::addSliceLICM(RewritePatternSet &patterns,
   patterns.insert<LICM<stablehlo::SliceOp>>(single_user, &context, benefit);
 }
 
+void mlir::transform::addDotGeneralLICM(RewritePatternSet &patterns,
+                                        bool single_user, MLIRContext &context,
+                                        PatternBenefit benefit) {
+  patterns.insert<LICM<stablehlo::DotGeneralOp>>(single_user, &context,
+                                                 benefit);
+}
+
 void mlir::transform::addDUSLICM(RewritePatternSet &patterns, bool single_user,
                                  MLIRContext &context, PatternBenefit benefit) {
   patterns.insert<LICM<stablehlo::DynamicUpdateSliceOp>>(single_user, &context,

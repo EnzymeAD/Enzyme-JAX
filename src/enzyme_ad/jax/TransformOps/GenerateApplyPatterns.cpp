@@ -149,11 +149,11 @@ LogicalResult parseTransform(OpBuilder &builder, Location loc,
     if (parameter != -1) {
       if (opName == "no_nan_add_sub_simplify" || opName == "while_simplify" ||
           opName == "sum_to_conv" || opName == "while_licm" ||
-          opName == "slice_licm" || opName == "dus_licm" ||
-          opName == "pad_licm" || opName == "elementwise_licm" ||
-          opName == "concatenate_licm" || opName == "broadcastindim_licm" ||
-          opName == "reshape_licm" || opName == "transpose_licm" ||
-          opName == "transpose_elementwise" ||
+          opName == "slice_licm" || opName == "dot_general_licm" ||
+          opName == "dus_licm" || opName == "pad_licm" ||
+          opName == "elementwise_licm" || opName == "concatenate_licm" ||
+          opName == "broadcastindim_licm" || opName == "reshape_licm" ||
+          opName == "transpose_licm" || opName == "transpose_elementwise" ||
           opName == "reshape_elementwise" || opName == "reshape_slice" ||
           opName == "reshape_dynamic_slice" ||
           opName == "extend_unary_elementwise" ||
