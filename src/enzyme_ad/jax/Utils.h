@@ -356,7 +356,7 @@ public:
 
     // Map of operations we have seen before. The target of the map[o] is a list
     // of sub-queries, that if all true prove that `o` is no-nan.
-    llvm::MapVector<Operation *, llvm::SmallSetVector<Operation *, 2>> seen;
+    llvm::MapVector<Operation *, llvm::SmallPtrSet<Operation *, 2>> seen;
 
     // Inverse of seen. A map of operations `p` we still need to prove, to a
     // list of values that require `p` to be proven.
@@ -444,7 +444,7 @@ public:
           for (auto next : rfound->second) {
             auto bfound = seen.find(next);
             assert(bfound != seen.end());
-            bfound->second.remove(rcur);
+            bfound->second.erase(rcur);
             if (bfound->second.empty())
               rtodo.push_back(next);
           }
@@ -456,14 +456,11 @@ public:
       case State::PENDING: {
         assert(localtodo.size());
         assert(seen.find(cur) == seen.end());
-        llvm::SmallSetVector<Operation *, 2> set(localtodo.begin(),
-                                                 localtodo.end());
         for (auto v : localtodo) {
           reverseSeen[v].push_back(cur);
-          if (opCache.find(v) == opCache.end() && seen.find(v) == seen.end()) {
-            todo.push_back(v);
-          }
+          todo.push_back(v);
         }
+        llvm::SmallPtrSet<Operation *, 2> set(localtodo.begin(), localtodo.end());
         seen[cur] = std::move(set);
         break;
       }
