@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1762108885789,
+  "lastUpdate": 1762120583810,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "avikpal@mit.edu",
-            "name": "Avik Pal",
-            "username": "avik-pal"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "2064d83426f78d51611ab767deba28f500f5b1fc",
-          "message": "feat: propagate bounds in whileop (#1453)\n\n* feat: remove remainder in whileop\n\n* feat: propagate bounds and eliminate noops\n\n* chore: run fmt\n\n* feat: propagate div bounds\n\n* fix: remainder check\n\n* test: negative step\n\n* fix: add iteration count check\n\n* fix: value\n\n* chore: add some comment for each check",
-          "timestamp": "2025-10-05T20:58:37-04:00",
-          "tree_id": "1c7ef4d4bb5529ba8de488679bfddac0874e24d4",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/2064d83426f78d51611ab767deba28f500f5b1fc"
-        },
-        "date": 1759721873673,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.000004382277900003828,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.000004261513000528794,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001337104498001,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001333137927998,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2239,6 +2195,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001501404909,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "avikpal@mit.edu",
+            "name": "Avik Pal",
+            "username": "avik-pal"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b3d6fde1c3d150e8c0be3363c9e234e349aa13cd",
+          "message": "feat: iota tensor detection + indirect iota indexing simplification (#1542)\n\n* feat: iota tensor detection\n\n* chore: run fmt\n\n* feat: rewrite iota ops\n\n* test: indirect indexing\n\n* feat: support more iota like ops for scatter detection",
+          "timestamp": "2025-11-02T11:06:12-05:00",
+          "tree_id": "608a05ee69d0011cda2f5c2d0fdb0942828d6f44",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/b3d6fde1c3d150e8c0be3363c9e234e349aa13cd"
+        },
+        "date": 1762120582721,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004345976980403066,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004376305988989771,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001504514841828,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001366461332887,
             "unit": "s"
           }
         ]
