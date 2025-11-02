@@ -518,6 +518,7 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
            t.getDefiningOp<ConstantIntOp>() ||
            t.getDefiningOp<ConstantIndexOp>())) ||
          ((decast.getDefiningOp<AddIOp>() || decast.getDefiningOp<SubIOp>() ||
+           (decast.getDefiningOp<OrIOp>() && isDisjoint(decast)) ||
            decast.getDefiningOp<MulIOp>() || decast.getDefiningOp<RemUIOp>() ||
            decast.getDefiningOp<RemSIOp>() || decast.getDefiningOp<ShRUIOp>() ||
            decast.getDefiningOp<ShLIOp>()) &&
