@@ -11276,7 +11276,6 @@ struct DynamicSliceReshapeDynamicSlice final
     if (!sliceReshapeHelper(op, startIndices, sliceSizes).succeeded())
       return failure();
 
-
     sliceSliceHelper(prev, startIndices, sliceSizes, rewriter);
     auto newSlice = rewriter.create<stablehlo::DynamicSliceOp>(
         op.getLoc(), prev.getOperand(),
