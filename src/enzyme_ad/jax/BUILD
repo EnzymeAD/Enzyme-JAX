@@ -693,6 +693,7 @@ cc_library(
         "@llvm-project//mlir:Support",
         "@llvm-project//mlir:ViewLikeInterface",
         "@stablehlo//:base",
+        "@stablehlo//:chlo_ops",
         "@stablehlo//:stablehlo_ops",
     ],
 )

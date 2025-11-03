@@ -111,7 +111,7 @@ module {
 // CHECK-NEXT:    %c_4 = stablehlo.constant dense<-92> : tensor<185xi64>
 // CHECK-NEXT:    %0 = stablehlo.iota dim = 0 : tensor<185xi64>
 // CHECK-NEXT:    %1 = stablehlo.add %0, %c_4 : tensor<185xi64>
-// CHECK-NEXT:    %2 = stablehlo.convert %1 {enzymexla.guaranteed_finite = true, enzymexla.guaranteed_non_negative = false} : (tensor<185xi64>) -> tensor<185xf64>
+// CHECK-NEXT:    %2 = stablehlo.convert %1 {enzymexla.guaranteed_finite = true, enzymexla.guaranteed_no_nan = true, enzymexla.guaranteed_non_negative = false} : (tensor<185xi64>) -> tensor<185xf64>
 // CHECK-NEXT:    %3 = stablehlo.add %cst_3, %2 {enzymexla.guaranteed_finite = true} : tensor<185xf64>
 // CHECK-NEXT:    %4 = stablehlo.multiply %3, %cst_0 : tensor<185xf64>
 // CHECK-NEXT:    %5 = stablehlo.cosine %4 : tensor<185xf64>
@@ -128,7 +128,7 @@ module {
 // CHECK-NEXT:    %16 = stablehlo.slice %arg3 [0:1] : (tensor<186xf64>) -> tensor<1xf64>
 // CHECK-NEXT:    %17 = stablehlo.concatenate %16, %6, dim = 0 : (tensor<1xf64>, tensor<185xf64>) -> tensor<186xf64>
 // CHECK-NEXT:    %18 = stablehlo.add %0, %c_2 : tensor<185xi64>
-// CHECK-NEXT:    %19 = stablehlo.convert %18 {enzymexla.guaranteed_finite = true} : (tensor<185xi64>) -> tensor<185xf64>
+// CHECK-NEXT:    %19 = stablehlo.convert %18 {enzymexla.guaranteed_finite = true, enzymexla.guaranteed_no_nan = true} : (tensor<185xi64>) -> tensor<185xf64>
 // CHECK-NEXT:    %20 = stablehlo.multiply %19, %cst_0 : tensor<185xf64>
 // CHECK-NEXT:    %21 = stablehlo.sine %20 : tensor<185xf64>
 // CHECK-NEXT:    %22 = stablehlo.sine %9 : tensor<185xf64>
@@ -138,7 +138,7 @@ module {
 // CHECK-NEXT:    %26 = stablehlo.concatenate %25, %24, dim = 0 : (tensor<1xf64>, tensor<185xf64>) -> tensor<186xf64>
 // CHECK-NEXT:    %27 = stablehlo.sine %4 : tensor<185xf64>
 // CHECK-NEXT:    %28 = stablehlo.add %0, %c : tensor<185xi64>
-// CHECK-NEXT:    %29 = stablehlo.convert %28 {enzymexla.guaranteed_finite = true, enzymexla.guaranteed_non_negative = false} : (tensor<185xi64>) -> tensor<185xf64>
+// CHECK-NEXT:    %29 = stablehlo.convert %28 {enzymexla.guaranteed_finite = true, enzymexla.guaranteed_no_nan = true, enzymexla.guaranteed_non_negative = false} : (tensor<185xi64>) -> tensor<185xf64>
 // CHECK-NEXT:    %30 = stablehlo.add %cst_3, %29 {enzymexla.guaranteed_finite = true} : tensor<185xf64>
 // CHECK-NEXT:    %31 = stablehlo.multiply %30, %cst_0 : tensor<185xf64>
 // CHECK-NEXT:    %32 = stablehlo.sine %31 : tensor<185xf64>
