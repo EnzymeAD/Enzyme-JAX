@@ -132,22 +132,13 @@ module @reactant_f_gener... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
   }
 }
 
-// CHECK:  module @reactant_f_gener... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas = 1 : i64} {
-// CHECK-NEXT:    func.func private @enzymexla_unbatched_SliceToBatch_1(%arg0: tensor<1x2xf32>) -> tensor<1x2xf32> {
-// CHECK-NEXT:      %0 = stablehlo.convert %arg0 : tensor<1x2xf32>
-// CHECK-NEXT:      return %0 : tensor<1x2xf32>
-// CHECK-NEXT:    }
-// CHECK-NEXT:    func.func private @enzymexla_unbatched_SliceToBatch_0(%arg0: tensor<2x1xf32>) -> tensor<1x2xf32> {
-// CHECK-NEXT:      %0 = stablehlo.transpose %arg0, dims = [1, 0] : (tensor<2x1xf32>) -> tensor<1x2xf32>
-// CHECK-NEXT:      return %0 : tensor<1x2xf32>
-// CHECK-NEXT:    }
-// CHECK-NEXT:    func.func @main(%arg0: tensor<6x2xf32> {tf.aliasing_output = 1 : i32}, %arg1: tensor<2x4xf32> {tf.aliasing_output = 2 : i32}) -> (tensor<4xf32>, tensor<6x2xf32>, tensor<2x4xf32>) attributes {enzymexla.memory_effects = ["read", "write", "allocate", "free"]} {
+// CHECK:    func.func @main(%arg0: tensor<6x2xf32> {tf.aliasing_output = 1 : i32}, %arg1: tensor<2x4xf32> {tf.aliasing_output = 2 : i32}) -> (tensor<4xf32>, tensor<6x2xf32>, tensor<2x4xf32>) attributes {enzymexla.memory_effects = ["read", "write", "allocate", "free"]} {
 // CHECK-NEXT:      %0 = stablehlo.transpose %arg0, dims = [1, 0] : (tensor<6x2xf32>) -> tensor<2x6xf32>
 // CHECK-NEXT:      %1 = stablehlo.transpose %arg1, dims = [1, 0] : (tensor<2x4xf32>) -> tensor<4x2xf32>
-// CHECK-NEXT:      %2 = stablehlo.broadcast_in_dim %0, dims = [1, 0] : (tensor<2x6xf32>) -> tensor<6x2x1xf32>
-// CHECK-NEXT:      %3 = call @batched_enzymexla_unbatched_SliceToBatch_0(%2) : (tensor<6x2x1xf32>) -> tensor<6x1x2xf32>
-// CHECK-NEXT:      %4 = stablehlo.transpose %3, dims = [0, 1, 2] : (tensor<6x1x2xf32>) -> tensor<6x1x2xf32>
-// CHECK-NEXT:      %5 = call @batched_enzymexla_unbatched_SliceToBatch_1(%4) : (tensor<6x1x2xf32>) -> tensor<6x1x2xf32>
+// CHECK-NEXT:      %2 = stablehlo.convert %0 : tensor<2x6xf32>
+// CHECK-NEXT:      %3 = stablehlo.broadcast_in_dim %2, dims = [1, 0] : (tensor<2x6xf32>) -> tensor<6x2x1xf32>
+// CHECK-NEXT:      %4 = stablehlo.transpose %3, dims = [0, 2, 1] : (tensor<6x2x1xf32>) -> tensor<6x1x2xf32>
+// CHECK-NEXT:      %5 = stablehlo.transpose %4, dims = [0, 1, 2] : (tensor<6x1x2xf32>) -> tensor<6x1x2xf32>
 // CHECK-NEXT:      %6 = stablehlo.slice %5 [0:1, 0:1, 0:2] : (tensor<6x1x2xf32>) -> tensor<1x1x2xf32>
 // CHECK-NEXT:      %7 = stablehlo.reshape %6 : (tensor<1x1x2xf32>) -> tensor<1x2xf32>
 // CHECK-NEXT:      %8 = stablehlo.slice %5 [1:2, 0:1, 0:2] : (tensor<6x1x2xf32>) -> tensor<1x1x2xf32>
@@ -257,13 +248,4 @@ module @reactant_f_gener... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
 // CHECK-NEXT:      %112 = stablehlo.transpose %0, dims = [1, 0] : (tensor<2x6xf32>) -> tensor<6x2xf32>
 // CHECK-NEXT:      %113 = stablehlo.transpose %1, dims = [1, 0] : (tensor<4x2xf32>) -> tensor<2x4xf32>
 // CHECK-NEXT:      return %111, %112, %113 : tensor<4xf32>, tensor<6x2xf32>, tensor<2x4xf32>
-// CHECK-NEXT:    }
-// CHECK-NEXT:    func.func private @batched_enzymexla_unbatched_SliceToBatch_0(%arg0: tensor<6x2x1xf32>) -> tensor<6x1x2xf32> {
-// CHECK-NEXT:      %0 = stablehlo.transpose %arg0, dims = [0, 2, 1] : (tensor<6x2x1xf32>) -> tensor<6x1x2xf32>
-// CHECK-NEXT:      return %0 : tensor<6x1x2xf32>
-// CHECK-NEXT:    }
-// CHECK-NEXT:    func.func private @batched_enzymexla_unbatched_SliceToBatch_1(%arg0: tensor<6x1x2xf32>) -> tensor<6x1x2xf32> {
-// CHECK-NEXT:      %0 = stablehlo.convert %arg0 : tensor<6x1x2xf32>
-// CHECK-NEXT:      return %0 : tensor<6x1x2xf32>
-// CHECK-NEXT:    }
 // CHECK-NEXT:  }

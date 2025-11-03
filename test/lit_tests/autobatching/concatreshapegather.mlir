@@ -51,12 +51,8 @@ module @reactant_batched... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
 // CHECK-NEXT:     %14 = stablehlo.reshape %5 : (tensor<7x2xi64>) -> tensor<1x7x2xi64>
 // CHECK-NEXT:     %15 = stablehlo.reshape %6 : (tensor<7x2xi64>) -> tensor<1x7x2xi64>
 // CHECK-NEXT:     %16 = stablehlo.concatenate %12, %13, %14, %15, dim = 0 : (tensor<1x7x2xi64>, tensor<1x7x2xi64>, tensor<1x7x2xi64>, tensor<1x7x2xi64>) -> tensor<4x7x2xi64>
-// CHECK-NEXT:     %17 = call [[FN_NAME:@.*]](%11, %16) : (tensor<4x3x4x5xf64>, tensor<4x7x2xi64>) -> tensor<4x7x5xf64>
+// CHECK-NEXT:     %17 = "stablehlo.gather"(%11, %16) <{dimension_numbers = #stablehlo.gather<offset_dims = [2], collapsed_slice_dims = [1, 2], operand_batching_dims = [0], start_indices_batching_dims = [0], start_index_map = [1, 2], index_vector_dim = 2>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1, 1, 5>}> : (tensor<4x3x4x5xf64>, tensor<4x7x2xi64>) -> tensor<4x7x5xf64>
 // CHECK-NEXT:     %18 = stablehlo.transpose %17, dims = [1, 0, 2] : (tensor<4x7x5xf64>) -> tensor<7x4x5xf64>
 // CHECK-NEXT:     %19 = stablehlo.transpose %18, dims = [2, 1, 0] : (tensor<7x4x5xf64>) -> tensor<5x4x7xf64>
 // CHECK-NEXT:     return %19 : tensor<5x4x7xf64>
-// CHECK-NEXT:   }
-// CHECK-NEXT: func.func private [[FN_NAME]](%arg0: tensor<4x3x4x5xf64>, %arg1: tensor<4x7x2xi64>) -> tensor<4x7x5xf64> {
-// CHECK-NEXT:     %0 = "stablehlo.gather"(%arg0, %arg1) <{dimension_numbers = #stablehlo.gather<offset_dims = [2], collapsed_slice_dims = [1, 2], operand_batching_dims = [0], start_indices_batching_dims = [0], start_index_map = [1, 2], index_vector_dim = 2>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1, 1, 5>}> : (tensor<4x3x4x5xf64>, tensor<4x7x2xi64>) -> tensor<4x7x5xf64>
-// CHECK-NEXT:     return %0 : tensor<4x7x5xf64>
 // CHECK-NEXT:   }
