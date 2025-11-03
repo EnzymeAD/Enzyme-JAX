@@ -8,7 +8,9 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "mlir/Transforms/InliningUtils.h"
 #include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
+#include "src/enzyme_ad/jax/Passes/AlwaysInliner.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Passes/StructuredTensors.h"
 #include "src/enzyme_ad/jax/Utils.h"
@@ -367,6 +369,51 @@ bool areSlicesContiguous(SmallVector<SliceInfo<stablehlo::SliceOp>> &slices) {
   return true;
 }
 
+LogicalResult batchOperationAndInline(PatternRewriter &rewriter,
+                                      enzyme::BatchOp batchOp,
+                                      func::FuncOp func) {
+  auto funcOpInterface = cast<FunctionOpInterface>(func.getOperation());
+  auto key = enzyme::batchutils::BatchCacheKey{
+      funcOpInterface, llvm::to_vector(batchOp.getBatchShape())};
+  auto modOp = batchOp->getParentOfType<ModuleOp>();
+  if (!modOp)
+    return rewriter.notifyMatchFailure(batchOp, "parent module not found");
+
+  std::map<enzyme::batchutils::BatchCacheKey, FunctionOpInterface>
+      batchedFunctionCache;
+  auto batchingResult = enzyme::batchutils::batchOperation(
+      rewriter, batchOp, funcOpInterface, batchedFunctionCache);
+  if (failed(batchingResult))
+    return batchingResult;
+
+  // If calling this function, we assume that we can erase the unbatched
+  // function.
+  rewriter.eraseOp(func);
+
+  // Inline the batched function
+  auto batchedFuncOp = batchedFunctionCache[key];
+  auto symbolUses = SymbolTable::getSymbolUses(batchedFuncOp, modOp);
+  if (symbolUses) {
+    SmallVector<Operation *> callSites;
+    for (auto &use : *symbolUses)
+      callSites.push_back(use.getUser());
+
+    bool hasRemainingUses = false;
+    for (Operation *callSite : callSites) {
+      if (auto callOp = dyn_cast<func::CallOp>(callSite)) {
+        alwaysInlineCall(callOp);
+      } else {
+        hasRemainingUses = true;
+      }
+    }
+
+    if (!hasRemainingUses)
+      rewriter.eraseOp(batchedFuncOp);
+  }
+
+  return success();
+}
+
 LogicalResult ConcatInsertDimToBatchBase::matchAndRewriteImpl(
     stablehlo::ConcatenateOp concatOp, PatternRewriter &rewriter) const {
   if (concatOp.getNumOperands() <= 1)
@@ -452,11 +499,8 @@ LogicalResult ConcatInsertDimToBatchBase::matchAndRewriteImpl(
 
   rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(
       concatOp, batchOp->getResult(0), permutation);
-  std::map<enzyme::batchutils::BatchCacheKey, FunctionOpInterface>
-      batchedFunctionCache;
-  return enzyme::batchutils::batchOperation(
-      rewriter, batchOp, cast<FunctionOpInterface>(func.getOperation()),
-      batchedFunctionCache);
+
+  return batchOperationAndInline(rewriter, batchOp, func);
 }
 
 bool ConcatInsertDimToBatchBase::validReshapeOpInsertDimForBatching(
@@ -732,11 +776,7 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
         otherOp, otherOp->getResult(0).getType(), slicedOp);
   }
 
-  std::map<enzyme::batchutils::BatchCacheKey, FunctionOpInterface>
-      batchedFunctionCache;
-  return enzyme::batchutils::batchOperation(
-      rewriter, batchOp, cast<FunctionOpInterface>(func.getOperation()),
-      batchedFunctionCache);
+  return batchOperationAndInline(rewriter, batchOp, func);
 }
 
 LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
@@ -1164,11 +1204,7 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
   rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(
       op, op->getResult(0).getType(), dynamicSlice);
 
-  std::map<enzyme::batchutils::BatchCacheKey, FunctionOpInterface>
-      batchedFunctionCache;
-  return succeeded(enzyme::batchutils::batchOperation(
-      rewriter, batchOp, cast<FunctionOpInterface>(func.getOperation()),
-      batchedFunctionCache));
+  return succeeded(batchOperationAndInline(rewriter, batchOp, func));
 }
 
 GreedyWhileLoopBatchFission::ValidBatchingInfo
