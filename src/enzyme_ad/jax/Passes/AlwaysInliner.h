@@ -77,7 +77,7 @@ struct AlwaysInlinerInterface : public mlir::InlinerInterface {
   }
 };
 
-mlir::InlinerInterface::CloneCallbackTy cloneCallback =
+static mlir::InlinerInterface::CloneCallbackTy cloneCallback =
     [](mlir::OpBuilder &builder, mlir::Region *src, mlir::Block *inlineBlock,
        mlir::Block *postInsertBlock, mlir::IRMapping &mapper,
        bool shouldCloneInlinedRegion) {
