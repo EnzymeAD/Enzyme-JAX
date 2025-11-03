@@ -369,47 +369,33 @@ bool areSlicesContiguous(SmallVector<SliceInfo<stablehlo::SliceOp>> &slices) {
   return true;
 }
 
-LogicalResult batchOperationAndInline(PatternRewriter &rewriter,
-                                      enzyme::BatchOp batchOp,
-                                      func::FuncOp func) {
+LogicalResult batchOperationInline(PatternRewriter &rewriter,
+                                   enzyme::BatchOp batchOp, func::FuncOp func) {
   auto funcOpInterface = cast<FunctionOpInterface>(func.getOperation());
-  auto key = enzyme::batchutils::BatchCacheKey{
-      funcOpInterface, llvm::to_vector(batchOp.getBatchShape())};
-  auto modOp = batchOp->getParentOfType<ModuleOp>();
-  if (!modOp)
-    return rewriter.notifyMatchFailure(batchOp, "parent module not found");
+
+  auto &origRegion = funcOpInterface.getFunctionBody();
+  auto &origBlock = origRegion.front();
+
+  IRMapping mapper;
+  for (int i = 0; i < batchOp->getNumOperands(); i++) {
+    mapper.map(origBlock.getArguments()[i], batchOp->getOperand(i));
+  }
+
+  rewriter.setInsertionPoint(batchOp);
 
   std::map<enzyme::batchutils::BatchCacheKey, FunctionOpInterface>
       batchedFunctionCache;
-  auto batchingResult = enzyme::batchutils::batchOperation(
-      rewriter, batchOp, funcOpInterface, batchedFunctionCache);
-  if (failed(batchingResult))
-    return batchingResult;
+  enzyme::batchutils::batchCloneBlock(rewriter, &origBlock, mapper,
+                                      batchOp.getBatchShape(),
+                                      batchedFunctionCache, true);
 
-  // If calling this function, we assume that we can erase the unbatched
-  // function.
-  rewriter.eraseOp(func);
-
-  // Inline the batched function
-  auto batchedFuncOp = batchedFunctionCache[key];
-  auto symbolUses = SymbolTable::getSymbolUses(batchedFuncOp, modOp);
-  if (symbolUses) {
-    SmallVector<Operation *> callSites;
-    for (auto &use : *symbolUses)
-      callSites.push_back(use.getUser());
-
-    bool hasRemainingUses = false;
-    for (Operation *callSite : callSites) {
-      if (auto callOp = dyn_cast<func::CallOp>(callSite)) {
-        alwaysInlineCall(callOp);
-      } else {
-        hasRemainingUses = true;
-      }
-    }
-
-    if (!hasRemainingUses)
-      rewriter.eraseOp(batchedFuncOp);
+  auto origTerm = origBlock.getTerminator();
+  for (auto [i, operand] : llvm::enumerate(origTerm->getOperands())) {
+    auto mappedOperand = mapper.lookup(operand);
+    rewriter.replaceAllUsesWith(batchOp->getResult(i), mappedOperand);
   }
+  rewriter.eraseOp(batchOp);
+  rewriter.eraseOp(func);
 
   return success();
 }
@@ -500,7 +486,7 @@ LogicalResult ConcatInsertDimToBatchBase::matchAndRewriteImpl(
   rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(
       concatOp, batchOp->getResult(0), permutation);
 
-  return batchOperationAndInline(rewriter, batchOp, func);
+  return batchOperationInline(rewriter, batchOp, func);
 }
 
 bool ConcatInsertDimToBatchBase::validReshapeOpInsertDimForBatching(
@@ -776,7 +762,7 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
         otherOp, otherOp->getResult(0).getType(), slicedOp);
   }
 
-  return batchOperationAndInline(rewriter, batchOp, func);
+  return batchOperationInline(rewriter, batchOp, func);
 }
 
 LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
@@ -1204,7 +1190,7 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
   rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(
       op, op->getResult(0).getType(), dynamicSlice);
 
-  return succeeded(batchOperationAndInline(rewriter, batchOp, func));
+  return succeeded(batchOperationInline(rewriter, batchOp, func));
 }
 
 GreedyWhileLoopBatchFission::ValidBatchingInfo
