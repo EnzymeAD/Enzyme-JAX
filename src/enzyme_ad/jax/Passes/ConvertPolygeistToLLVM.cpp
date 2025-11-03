@@ -923,20 +923,32 @@ public:
 
     auto ptrty = LLVM::LLVMPointerType::get(op.getContext());
 
+    auto i32 = rewriter.getIntegerType(32);
+
+    std::string memcpyFuncName;
+
+    bool xla = backend.starts_with("xla");
+
+    if (xla) {
+      memcpyFuncName = "reactantXLAMemcpy";
+    } else if (backend == "cuda") {
+      memcpyFuncName = "cudaMemcpy";
+    } else if (backend == "rocm") {
+      memcpyFuncName = "hipMemcpy";
+    }
+
     SmallVector<Type> tys = {ptrty, ptrty, size.getType(),
                              rewriter.getIntegerType(32)};
     if (backend.starts_with("xla")) {
       tys.insert(tys.begin(), ptrty);
     }
-    auto i32 = rewriter.getIntegerType(32);
-    bool xla = backend.starts_with("xla");
 
-    auto cudaMemcpyFn = LLVM::lookupOrCreateFn(
-        rewriter, moduleOp, xla ? "reactantXLAMemcpy" : "cudaMemcpy", tys,
-        xla ? (mlir::Type)LLVM::LLVMVoidType::get(rewriter.getContext())
-            : (mlir::Type)i32);
-    if (failed(cudaMemcpyFn))
+    auto memcpyFn = LLVM::lookupOrCreateFn(
+      rewriter, moduleOp, memcpyFuncName, tys, xla ? (mlir::Type)LLVM::LLVMVoidType::get(rewriter.getContext())
+                                                  : (mlir::Type)i32);
+    if (failed(memcpyFn)) {
       return failure();
+    }
 
     SmallVector<Value> args = {dst, src, size,
                                rewriter.create<LLVM::ConstantOp>(
@@ -951,7 +963,7 @@ public:
       args.insert(args.begin(), xdata);
     }
 
-    rewriter.create<LLVM::CallOp>(op.getLoc(), cudaMemcpyFn.value(), args);
+    rewriter.create<LLVM::CallOp>(op.getLoc(), memcpyFn.value(), args);
     rewriter.eraseOp(op);
     return success();
   }
@@ -1809,7 +1821,7 @@ ConvertGPUModuleOp::matchAndRewrite(gpu::GPUModuleOp kernelModule,
         unregisterFatBinaryFuncName = "__cudaUnregisterFatBinary";
         registerFatBinaryEndFuncName = "__cudaRegisterFatBinaryEnd";
         requiresRegisterEnd = true;
-      } else {
+      } else if (gpuTarget == "rocm") {
         registerFatBinaryFuncName = "__hipRegisterFatBinary";
         registerFunctionFuncName = "__hipRegisterFunction";
         registerVarFuncName = "__hipRegisterVar";
