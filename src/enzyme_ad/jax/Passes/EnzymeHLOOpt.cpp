@@ -24955,9 +24955,17 @@ namespace enzyme {
 }; // namespace mlir
 
 #include "src/enzyme_ad/jax/Passes/AutoBatching.h"
+#include "src/enzyme_ad/jax/Passes/EnzymeHLOUnroll.h"
 
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.cpp.inc"
 // clang-format on
+
+void mlir::transform::addEnzymeHLOUnroll(RewritePatternSet &patterns,
+                                         int64_t maxNumIterations,
+                                         MLIRContext &context,
+                                         PatternBenefit benefit) {
+  patterns.insert<WhileUnroll>(maxNumIterations, &context, benefit);
+}
 
 void mlir::transform::addPadDotGeneral(RewritePatternSet &patterns,
                                        bool postPad, MLIRContext &context,

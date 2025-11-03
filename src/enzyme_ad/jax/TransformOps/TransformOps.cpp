@@ -183,6 +183,10 @@ void WrapUnaryElementwise::populatePatterns(RewritePatternSet &patterns) {
   addWrapUnaryElementwise(patterns, getParameter(), *getContext(),
                           PatternBenefit(getBenefit().value_or(0)));
 }
+void EnzymeHLOUnroll::populatePatterns(RewritePatternSet &patterns) {
+  addEnzymeHLOUnroll(patterns, getParameter(), *getContext(),
+                     PatternBenefit(getBenefit().value_or(0)));
+}
 
 } // namespace transform
 } // namespace mlir

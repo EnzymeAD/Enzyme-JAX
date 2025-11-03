@@ -105,5 +105,7 @@ void addSelfSubtractToConvolutionLike(RewritePatternSet &patterns,
 void addSelfMulToConvolutionLike(RewritePatternSet &patterns,
                                  bool allowEmitConvolution,
                                  MLIRContext &context, PatternBenefit benefit);
+void addEnzymeHLOUnroll(RewritePatternSet &patterns, int64_t maxNumIterations,
+                        MLIRContext &context, PatternBenefit benefit);
 
 } // namespace mlir::transform
