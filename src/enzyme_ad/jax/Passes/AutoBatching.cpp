@@ -452,11 +452,10 @@ LogicalResult ConcatInsertDimToBatchBase::matchAndRewriteImpl(
 
   rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(
       concatOp, batchOp->getResult(0), permutation);
-  std::map<enzyme::batchutils::BatchCacheKey, FunctionOpInterface>
-      batchedFunctionCache;
-  return enzyme::batchutils::batchOperation(
-      rewriter, batchOp, cast<FunctionOpInterface>(func.getOperation()),
-      batchedFunctionCache);
+
+  enzyme::batchutils::batchOperationInline(
+      rewriter, batchOp, cast<FunctionOpInterface>(func.getOperation()));
+  return success();
 }
 
 bool ConcatInsertDimToBatchBase::validReshapeOpInsertDimForBatching(
@@ -732,11 +731,9 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
         otherOp, otherOp->getResult(0).getType(), slicedOp);
   }
 
-  std::map<enzyme::batchutils::BatchCacheKey, FunctionOpInterface>
-      batchedFunctionCache;
-  return enzyme::batchutils::batchOperation(
-      rewriter, batchOp, cast<FunctionOpInterface>(func.getOperation()),
-      batchedFunctionCache);
+  enzyme::batchutils::batchOperationInline(
+      rewriter, batchOp, cast<FunctionOpInterface>(func.getOperation()));
+  return success();
 }
 
 LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
@@ -1164,11 +1161,9 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
   rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(
       op, op->getResult(0).getType(), dynamicSlice);
 
-  std::map<enzyme::batchutils::BatchCacheKey, FunctionOpInterface>
-      batchedFunctionCache;
-  return succeeded(enzyme::batchutils::batchOperation(
-      rewriter, batchOp, cast<FunctionOpInterface>(func.getOperation()),
-      batchedFunctionCache));
+  enzyme::batchutils::batchOperationInline(
+      rewriter, batchOp, cast<FunctionOpInterface>(func.getOperation()));
+  return true;
 }
 
 GreedyWhileLoopBatchFission::ValidBatchingInfo
