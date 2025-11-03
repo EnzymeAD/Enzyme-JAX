@@ -720,7 +720,12 @@ cc_library(
         "Dialect/*.cpp",
         "Dialect/Distributed/*.cpp",
         "Dialect/Tessera/*.cpp",
-    ]) + [
+    ],
+    exclude = [
+        "Passes/CudaRuntimeWrappers.cpp",
+        "Passes/RocmRuntimeWrappers.cpp",
+    ],
+    ) + [
         "Utils.cpp",
     ],
     hdrs = glob([

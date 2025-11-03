@@ -1727,6 +1727,14 @@ ConvertGPUModuleOp::matchAndRewrite(gpu::GPUModuleOp kernelModule,
 
   auto loc = kernelModule.getLoc();
   auto ctorloc = rewriter.getUnknownLoc();
+
+  std::string registerFatBinaryFuncName;
+  std::string registerFunctionFuncName;
+  std::string registerVarFuncName;
+  std::string unregisterFatBinaryFuncName;
+  std::string registerFatBinaryEndFuncName;
+  bool requiresRegisterEnd;
+
   rewriter.modifyOpInPlace(kernelModule, [&]() {
     kernelModule->setAttr("polygeist_stubs", rewriter.getUnitAttr());
   });
@@ -1793,13 +1801,7 @@ ConvertGPUModuleOp::matchAndRewrite(gpu::GPUModuleOp kernelModule,
         moduleIDPrefix = "__hip_";
         fatMagic = HIPFatMagic;
       }
-      std::string registerFatBinaryFuncName;
-      std::string registerFunctionFuncName;
-      std::string registerVarFuncName;
-      std::string unregisterFatBinaryFuncName;
-      std::string registerFatBinaryEndFuncName;
-      bool requiresRegisterEnd;
-
+      
       if (gpuTarget == "cuda") {
         registerFatBinaryFuncName = "__cudaRegisterFatBinary";
         registerFunctionFuncName = "__cudaRegisterFunction";
