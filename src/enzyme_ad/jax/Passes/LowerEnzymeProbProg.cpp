@@ -1591,12 +1591,17 @@ struct DotOpConversion : public OpConversionPattern<enzyme::DotOp> {
     auto rhs = adaptor.getRhs();
     auto resultType = cast<RankedTensorType>(op.getResult().getType());
 
+    auto lhsBatching = op.getLhsBatchingDimensions();
+    auto rhsBatching = op.getRhsBatchingDimensions();
+    auto lhsContracting = op.getLhsContractingDimensions();
+    auto rhsContracting = op.getRhsContractingDimensions();
+
     auto dotDimensionNumbers = stablehlo::DotDimensionNumbersAttr::get(
         rewriter.getContext(),
-        /*lhs_batching_dimensions=*/{},
-        /*rhs_batching_dimensions=*/{},
-        /*lhs_contracting_dimensions=*/{0},
-        /*rhs_contracting_dimensions=*/{0});
+        SmallVector<int64_t>(lhsBatching.begin(), lhsBatching.end()),
+        SmallVector<int64_t>(rhsBatching.begin(), rhsBatching.end()),
+        SmallVector<int64_t>(lhsContracting.begin(), lhsContracting.end()),
+        SmallVector<int64_t>(rhsContracting.begin(), rhsContracting.end()));
 
     auto dotOp = stablehlo::DotGeneralOp::create(
         rewriter, op.getLoc(), resultType, lhs, rhs, dotDimensionNumbers,
