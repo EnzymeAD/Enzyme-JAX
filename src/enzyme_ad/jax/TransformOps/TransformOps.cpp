@@ -85,6 +85,15 @@ void ApplyDotGeneralLICMPatterns::populatePatterns(
   addDotGeneralLICM(patterns, getParameter(), *getContext(),
                     PatternBenefit(getBenefit().value_or(1)));
 }
+void ApplyReduceLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
+  addReduceLICM(patterns, getParameter(), *getContext(),
+                PatternBenefit(getBenefit().value_or(1)));
+}
+void ApplyReduceWindowLICMPatterns::populatePatterns(
+    RewritePatternSet &patterns) {
+  addReduceWindowLICM(patterns, getParameter(), *getContext(),
+                      PatternBenefit(getBenefit().value_or(1)));
+}
 void ApplyDUSLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
   addDUSLICM(patterns, getParameter(), *getContext(),
              PatternBenefit(getBenefit().value_or(1)));
