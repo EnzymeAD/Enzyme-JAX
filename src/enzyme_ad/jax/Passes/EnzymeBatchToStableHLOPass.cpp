@@ -36,12 +36,38 @@ struct ExtractOpConversion : public OpConversionPattern<enzyme::ExtractOp> {
   LogicalResult
   matchAndRewrite(enzyme::ExtractOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+
+    auto inTy = op.getInput().getType();
     auto outTy = op.getOutput().getType();
-    // stablehlo always has tensor type
     auto outRankTy = dyn_cast<RankedTensorType>(outTy);
-    auto rank = outRankTy.getRank();
-    return failure(); 
-    // stablehlo.dynamic_slice op
+    // stablehlo always has tensor type
+    auto inRankTy = dyn_cast<RankedTensorType>(inTy);
+    auto ndims = inRankTy.getRank(); // is atleast 1
+
+    if (ndims < 1)
+      return failure();
+
+    // dynamic_slice followed by reshape
+    auto i64Ty = IntegerType::get(rewriter.getContext(), 64);
+    auto tensor0i64Ty = RankedTensorType::get({}, i64Ty);
+    auto zero = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), rewriter.getZeroAttr(tensor0i64Ty));
+
+    SmallVector<Value> dynamicSliceStartSlices(ndims, zero);
+    dynamicSliceStartSlices[0] = op.getIndex(); // assume its legal for no
+
+    SmallVector<int64_t> localRetShape = {1};
+    localRetShape.append(outRankTy.getShape().begin(),
+                         outRankTy.getShape().end());
+    ;
+    auto slicedOut = rewriter.create<stablehlo::DynamicSliceOp>(
+        op->getLoc(), op.getInput(), dynamicSliceStartSlices, localRetShape);
+
+    // reshape slicedOut to our final Op
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op->getLoc(), outTy,
+                                                      slicedOut);
+
+    return success();
   }
 };
 
@@ -67,8 +93,8 @@ struct ConcatOpConversion : public OpConversionPattern<enzyme::ConcatOp> {
       SmallVector<int64_t> newInShape = {1};
       newInShape.append(inShape.begin(), inShape.end());
       auto newInTy = inRankTy.clone(newInShape);
-      Value newInput = rewriter.create<stablehlo::ReshapeOp>(
-          op->getLoc(), newInTy, in, op->getAttrs());
+      Value newInput =
+          rewriter.create<stablehlo::ReshapeOp>(op->getLoc(), newInTy, in);
       expandedInputs.push_back(newInput);
     }
 
@@ -78,6 +104,7 @@ struct ConcatOpConversion : public OpConversionPattern<enzyme::ConcatOp> {
     return success();
   }
 };
+
 struct EnzymeBatchToStableHLOPass
     : public enzyme::impl::EnzymeBatchToStableHLOPassBase<
           EnzymeBatchToStableHLOPass> {
