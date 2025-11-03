@@ -181,6 +181,14 @@ def EnzymeHLOUnrollPass : Pass<"enzyme-hlo-unroll"> {
   let summary = "Unroll stablehlo";
   let dependentDialects =
       ["stablehlo::StablehloDialect", "tensor::TensorDialect"];
+  let options = [
+    Option<
+        /*C++ variable name=*/"maxNumIterations",
+        /*CLI argument=*/"max-num-iterations",
+        /*type=*/"int",
+        /*default=*/"-1",
+        /*description=*/"Only unroll if total iterations is less than this value. If -1, no limit.">,
+  ];
 }
 
 def PrintPass : Pass<"print"> {
