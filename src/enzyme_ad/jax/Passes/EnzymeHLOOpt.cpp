@@ -25033,6 +25033,20 @@ void mlir::transform::addDotGeneralLICM(RewritePatternSet &patterns,
                                                  benefit);
 }
 
+void mlir::transform::addReduceLICM(RewritePatternSet &patterns,
+                                    bool single_user, MLIRContext &context,
+                                    PatternBenefit benefit) {
+  patterns.insert<LICM<stablehlo::ReduceOp>>(single_user, &context, benefit);
+}
+
+void mlir::transform::addReduceWindowLICM(RewritePatternSet &patterns,
+                                          bool single_user,
+                                          MLIRContext &context,
+                                          PatternBenefit benefit) {
+  patterns.insert<LICM<stablehlo::ReduceWindowOp>>(single_user, &context,
+                                                   benefit);
+}
+
 void mlir::transform::addDUSLICM(RewritePatternSet &patterns, bool single_user,
                                  MLIRContext &context, PatternBenefit benefit) {
   patterns.insert<LICM<stablehlo::DynamicUpdateSliceOp>>(single_user, &context,
