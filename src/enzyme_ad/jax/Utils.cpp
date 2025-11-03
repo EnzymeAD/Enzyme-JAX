@@ -636,7 +636,7 @@ SymmetricResultAnalysis::localGuaranteed(Operation *op,
     if (auto lhsType = dyn_cast_or_null<ShapedType>(lhs.getType());
         lhsType && lhsType.hasRank() && lhsType.getRank() == 2) {
 
-      if (auto rhsT = dyn_cast_or_null<stablehlo::TransposeOp>(rhs.getDefiningOp())) {
+      if (auto rhsT = rhs.getDefiningOp<stablehlo::TransposeOp>()) {
         auto rhsInput = rhsT.getOperand();
         if (rhsInput == lhs && isTrueTranspose(rhsT))
           return State::GUARANTEED;
