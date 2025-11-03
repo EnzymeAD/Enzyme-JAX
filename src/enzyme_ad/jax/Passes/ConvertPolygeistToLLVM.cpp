@@ -1284,7 +1284,7 @@ struct LowerGPUAlternativesOp
             ops, floatOps, intOps, loads, stores, branches,
         };
       };
-
+      
 #if POLYGEIST_ENABLE_CUDA
       if (gpuTarget == "cuda") {
         char cuErrorBuffer[4096] = {0};
@@ -1793,6 +1793,29 @@ ConvertGPUModuleOp::matchAndRewrite(gpu::GPUModuleOp kernelModule,
         moduleIDPrefix = "__hip_";
         fatMagic = HIPFatMagic;
       }
+      std::string registerFatBinaryFuncName;
+      std::string registerFunctionFuncName;
+      std::string registerVarFuncName;
+      std::string unregisterFatBinaryFuncName;
+      std::string registerFatBinaryEndFuncName;
+      bool requiresRegisterEnd;
+
+      if (gpuTarget == "cuda") {
+        registerFatBinaryFuncName = "__cudaRegisterFatBinary";
+        registerFunctionFuncName = "__cudaRegisterFunction";
+        registerVarFuncName = "__cudaRegisterVar";
+        unregisterFatBinaryFuncName = "__cudaUnregisterFatBinary";
+        registerFatBinaryEndFuncName = "__cudaRegisterFatBinaryEnd";
+        requiresRegisterEnd = true;
+      } else {
+        registerFatBinaryFuncName = "__hipRegisterFatBinary";
+        registerFunctionFuncName = "__hipRegisterFunction";
+        registerVarFuncName = "__hipRegisterVar";
+        unregisterFatBinaryFuncName = "__hipUnregisterFatBinary";
+        registerFatBinaryEndFuncName = "";
+        requiresRegisterEnd = false;
+      }
+
       (void)fatbinConstantName;
       (void)moduleIDSectionName;
 
@@ -1855,16 +1878,27 @@ ConvertGPUModuleOp::matchAndRewrite(gpu::GPUModuleOp kernelModule,
       auto bitcastOfWrapper = ctorBuilder.create<LLVM::AddrSpaceCastOp>(
           ctorloc, llvmPointerType, addressOfWrapper);
 
-      auto cudaRegisterFatbinFn =
-          LLVM::lookupOrCreateFn(rewriter, moduleOp, "__cudaRegisterFatBinary",
-                                 llvmPointerType, llvmPointerType);
-      if (failed(cudaRegisterFatbinFn)) {
-        llvm::errs() << " cudamalloc already exists with different types\n";
+      // auto cudaRegisterFatbinFn =
+      //     LLVM::lookupOrCreateFn(rewriter, moduleOp, "__cudaRegisterFatBinary",
+      //                            llvmPointerType, llvmPointerType);
+      // if (failed(cudaRegisterFatbinFn)) {
+      //   llvm::errs() << " cudamalloc already exists with different types\n";
+      //   return failure();
+      // }
+
+      // auto module = rewriter.create<LLVM::CallOp>(
+      //     ctorloc, cudaRegisterFatbinFn.value(), ValueRange(bitcastOfWrapper));
+
+      auto registerFatbinFn = LLVM::lookupOrCreateFn(rewriter, moduleOp, registerFatBinaryFuncName, llvmPointerType, llvmPointerType);
+
+      if (failed(registerFatbinFn)) {
+        llvm::errs() << "register fatbin function already exists with different types\n";
         return failure();
       }
 
       auto module = rewriter.create<LLVM::CallOp>(
-          ctorloc, cudaRegisterFatbinFn.value(), ValueRange(bitcastOfWrapper));
+        ctorloc, registerFatbinFn.value(), ValueRange(bitcastOfWrapper)
+      );
 
       auto moduleGlobalName =
           std::string(llvm::formatv("polygeist_{0}_module_ptr", moduleName));
@@ -1919,12 +1953,22 @@ ConvertGPUModuleOp::matchAndRewrite(gpu::GPUModuleOp kernelModule,
                         llvmPointerType, llvmInt32Type,   llvmPointerType,
                         llvmPointerType, llvmPointerType, llvmPointerType,
                         llvmPointerType};
-          auto cudaRegisterFn = LLVM::lookupOrCreateFn(
-              rewriter, moduleOp, "__cudaRegisterFunction", tys, llvmInt32Type);
-          if (failed(cudaRegisterFn)) {
-            llvm::errs() << " cudamalloc already exists with different types\n";
+          // auto cudaRegisterFn = LLVM::lookupOrCreateFn(
+          //     rewriter, moduleOp, "__cudaRegisterFunction", tys, llvmInt32Type);
+          // if (failed(cudaRegisterFn)) {
+          //   llvm::errs() << " cudamalloc already exists with different types\n";
+          //   return failure();
+          // }
+
+          auto registerFunctionFn = LLVM::lookupOrCreateFn(
+            rewriter, moduleOp, registerFunctionFuncName, tys, llvmInt32Type
+          );
+
+          if (failed(registerFunctionFn)) {
+            llvm::errs() << " register function already exists with different types\n";
             return failure();
           }
+
           Value args[] = {
               module.getResult(),
               bitcast,
@@ -1937,7 +1981,8 @@ ConvertGPUModuleOp::matchAndRewrite(gpu::GPUModuleOp kernelModule,
               nullPtr,
               nullPtr};
 
-          rewriter.create<LLVM::CallOp>(ctorloc, cudaRegisterFn.value(), args);
+          // rewriter.create<LLVM::CallOp>(ctorloc, cudaRegisterFn.value(), args);
+          rewriter.create<LLVM::CallOp>(ctorloc, registerFunctionFn.value(), args);
         } else if (LLVM::GlobalOp g = dyn_cast<LLVM::GlobalOp>(op)) {
           int addrSpace = g.getAddrSpace();
           if (addrSpace != 1 /* device */ && addrSpace != 4 /* constant */)
@@ -1968,6 +2013,7 @@ ConvertGPUModuleOp::matchAndRewrite(gpu::GPUModuleOp kernelModule,
           // to pass the GPU DL in here
           DataLayout DLI(moduleOp);
           auto size = DLI.getTypeSize(globalTy);
+          // why 'mgpu'
           rtRegisterVarCallBuilder.create(
               ctorloc, ctorBuilder,
               {module.getResult(), bitcast, symbolName, symbolName,
@@ -1985,7 +2031,7 @@ ConvertGPUModuleOp::matchAndRewrite(gpu::GPUModuleOp kernelModule,
                                                     0)});
         }
       }
-      // TODO this has to happen only for some CUDA versions
+      // TODO this has to happen only for some CUDA versions, hip does not need finialize
       if (gpuTarget == "cuda") {
         auto cudaRegisterFatbinFn = LLVM::lookupOrCreateFn(
             rewriter, moduleOp, "__cudaRegisterFatBinaryEnd", llvmPointerType,
@@ -2017,16 +2063,26 @@ ConvertGPUModuleOp::matchAndRewrite(gpu::GPUModuleOp kernelModule,
       auto module = dtorBuilder.create<LLVM::LoadOp>(
           ctorloc, llvmPointerPointerType, aoo->getResult(0));
 
-      auto cudaUnRegisterFatbinFn = LLVM::lookupOrCreateFn(
-          rewriter, moduleOp, "__cudaUnregisterFatBinary", llvmPointerType,
-          llvmVoidType);
-      if (failed(cudaUnRegisterFatbinFn)) {
-        llvm::errs() << " cudamalloc already exists with different types\n";
-        return failure();
-      }
+      // auto cudaUnRegisterFatbinFn = LLVM::lookupOrCreateFn(
+      //     rewriter, moduleOp, "__cudaUnregisterFatBinary", llvmPointerType,
+      //     llvmVoidType);
+      // if (failed(cudaUnRegisterFatbinFn)) {
+      //   llvm::errs() << " cudamalloc already exists with different types\n";
+      //   return failure();
+      // }
 
-      rewriter.create<LLVM::CallOp>(ctorloc, cudaUnRegisterFatbinFn.value(),
-                                    ValueRange(module));
+      // rewriter.create<LLVM::CallOp>(ctorloc, cudaUnRegisterFatbinFn.value(),
+      //                               ValueRange(module));
+      auto unregisterFatbinFn = LLVM::lookupOrCreateFn(
+          rewriter, moduleOp, unregisterFatBinaryFuncName, llvmPointerType,
+          llvmVoidType);
+      if (failed(unregisterFatbinFn)) {
+          llvm::errs() << " unregister fatbin function already exists with different types\n";
+          return failure();
+      }
+      rewriter.create<LLVM::CallOp>(ctorloc, unregisterFatbinFn.value(),
+                              ValueRange(module));
+
       dtorBuilder.create<LLVM::ReturnOp>(ctorloc, ValueRange());
       auto dtorSymbol = FlatSymbolRefAttr::get(dtor);
       {
