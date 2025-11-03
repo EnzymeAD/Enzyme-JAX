@@ -667,6 +667,21 @@ bool isZero(Value v) {
   return false;
 }
 
+SplatElementsAttr isSplat(ElementsAttr v) {
+  return dyn_cast<SplatElementsAttr>(v);
+}
+
+SplatElementsAttr isSplat(Value v) {
+  SplatElementsAttr elem;
+  if (matchPattern(v, m_Constant(&elem))) {
+    return elem;
+  }
+  if (auto sdyConstant = v.getDefiningOp<sdy::ConstantOp>()) {
+    return isSplat(sdyConstant.getValue());
+  }
+  return nullptr;
+}
+
 // TODO: we might need to update this to use the generalized version for the
 // generateShiftPairs function
 std::tuple<Value, Value, Value, Value, Value, Value>
@@ -2219,6 +2234,8 @@ struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
         dus.getLoc(), rewriter.getZeroAttr(elementType));
     auto one = rewriter.create<stablehlo::ConstantOp>(
         dus.getLoc(), rewriter.getOneAttr(elementType));
+    auto oneI1 = rewriter.create<stablehlo::ConstantOp>(
+        dus.getLoc(), rewriter.getOneAttr(rewriter.getI1Type()));
 
     SmallVector<int64_t> padInner(ndims, 0);
 
@@ -2230,49 +2247,68 @@ struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
           operandShape[i] - updateShape[i] - constantStartIndices[i];
     }
     Value updatePad = nullptr;
-    if (!isZero(update)) {
-      auto updatePadOp = rewriter.create<stablehlo::PadOp>(
-          dus.getLoc(), update, zero, updatePadLow, updatePadHigh, padInner);
-      sdy::setSharding(updatePadOp, sharding);
-      updatePad = updatePadOp;
-    }
 
-    Value maskedOperand = nullptr;
-    if (!isZero(operand)) {
-      auto updateType = cast<RankedTensorType>(update.getType());
-      auto zeroAttr =
-          DenseElementsAttr::get(updateType, rewriter.getZeroAttr(elementType));
+    auto splatUpdate = isSplat(update);
+    auto splatOperand = isSplat(update);
+
+    auto updateType = cast<RankedTensorType>(update.getType());
+    auto updateI1Type =
+        RankedTensorType::get(updateType.getShape(), rewriter.getI1Type());
+    auto zeroAttr = DenseElementsAttr::get(
+        updateI1Type, rewriter.getZeroAttr(rewriter.getI1Type()));
+    auto zeroUpdateOp = rewriter.create<stablehlo::ConstantOp>(
+        dus.getLoc(), updateI1Type, zeroAttr);
+    sdy::setSharding(zeroUpdateOp, sharding);
+
+    auto maskOp = rewriter.create<stablehlo::PadOp>(dus.getLoc(), zeroUpdateOp,
+                                                    oneI1, updatePadLow,
+                                                    updatePadHigh, padInner);
+
+    Value resultV = nullptr;
+    if (splatOperand) {
+      auto padTy =
+          RankedTensorType::get({}, operand.getType().getElementType());
+      auto newOperand = rewriter.create<stablehlo::ConstantOp>(
+          dus.getLoc(), padTy, splatOperand.resizeSplat(padTy));
+      auto maskedOperandOp = rewriter.create<stablehlo::PadOp>(
+          dus.getLoc(), update, newOperand, updatePadLow, updatePadHigh,
+          padInner);
+      sdy::setSharding(maskedOperandOp, sharding);
+    }
+    {
+      Value newUpdate;
+      if (splatUpdate) {
+        newUpdate = rewriter.create<stablehlo::ConstantOp>(
+            dus.getLoc(), operand.getType(),
+            splatUpdate.resizeSplat(operand.getType()));
+      } else {
+        auto newUpdateOp = rewriter.create<stablehlo::PadOp>(
+            dus.getLoc(), operand.getType(), update, zero, updatePadLow,
+            updatePadHigh, padInner);
+        sdy::setSharding(newUpdateOp, sharding);
+        newUpdate = newUpdateOp;
+      }
+
+      auto updateI1Type =
+          RankedTensorType::get(updateType.getShape(), rewriter.getI1Type());
+
+      auto zeroAttr = DenseElementsAttr::get(
+          updateI1Type, rewriter.getZeroAttr(rewriter.getI1Type()));
       auto zeroUpdateOp = rewriter.create<stablehlo::ConstantOp>(
-          dus.getLoc(), updateType, zeroAttr);
+          dus.getLoc(), updateI1Type, zeroAttr);
       sdy::setSharding(zeroUpdateOp, sharding);
 
       auto maskOp = rewriter.create<stablehlo::PadOp>(
-          dus.getLoc(), zeroUpdateOp, one, updatePadLow, updatePadHigh,
+          dus.getLoc(), zeroUpdateOp, oneI1, updatePadLow, updatePadHigh,
           padInner);
+
       sdy::setSharding(maskOp, sharding);
 
-      auto maskedOperandOp =
-          rewriter.create<stablehlo::MulOp>(dus.getLoc(), operand, maskOp);
+      auto maskedOperandOp = rewriter.create<stablehlo::SelectOp>(
+          dus.getLoc(), maskOp, operand, newUpdate);
       sdy::setSharding(maskedOperandOp, sharding);
-      maskedOperand = maskedOperandOp;
-    }
 
-    Value resultV = nullptr;
-    if (maskedOperand && updatePad) {
-      auto result = rewriter.create<stablehlo::AddOp>(dus.getLoc(),
-                                                      maskedOperand, updatePad);
-      sdy::setSharding(result, sharding);
-      resultV = result;
-    } else if (maskedOperand) {
-      resultV = maskedOperand;
-    } else if (updatePad) {
-      resultV = updatePad;
-    } else {
-      auto cst = rewriter.create<stablehlo::ConstantOp>(
-          dus.getLoc(), dus.getType(),
-          cast<ElementsAttr>(rewriter.getZeroAttr(dus.getType())));
-      sdy::setSharding(cst, sharding);
-      resultV = cst;
+      resultV = maskedOperandOp;
     }
 
     rewriter.replaceOp(dus, resultV);
