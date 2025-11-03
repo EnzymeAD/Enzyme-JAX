@@ -584,6 +584,14 @@ bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy, Type inTy,
   return allowOnFloatingPointMath || guaranteedNoNanResult(op, rewriter);
 }
 
+bool canApplySymmetricPattern(mlir::Operation *op, PatternRewriter &rewriter) {
+  return guaranteedSymmetricResult(op, rewriter);
+}
+
+SymmetricResultAnalysis initSymmetricResultAnalysis() {
+  return SymmetricResultAnalysis();
+}
+
 bool SymmetricResultAnalysis::constantIntCheck(DenseElementsAttr attr) {
   return false; // TODO
 }
@@ -610,52 +618,42 @@ SymmetricResultAnalysis::localGuaranteed(Operation *op,
     }
   }
 
-  // A + A^T will always be symmetric
-  if (auto addOp = dyn_cast<stablehlo::AddOp>(op)) {
-    auto lhs = addOp.getLhs();
-    auto rhs = addOp.getRhs();
+  // check that transpose dimensions are [1,0]
+  auto isTrueTranspose = [](stablehlo::TransposeOp tOp) -> bool {
+    SmallVector<int64_t> perm;
+    for (auto v : tOp.getPermutation())
+      perm.push_back(v);
+    return perm.size() == 2 && perm[0] == 1 && perm[1] == 0;
+  };
 
-    if (auto rhsT = dyn_cast_or_null<stablehlo::TransposeOp>(rhs.getDefiningOp())) {
-      auto rhsInput = rhsT.getOperand();
-      if (rhsInput == lhs)
-        return State::GUARANTEED;
-    }
+  // an elementwise operation with A and A^T will always be symmetric
+  // A(A^T) will also always be symmetric
+  if (isa<stablehlo::DotGeneralOp>(op) ||
+      (op->hasTrait<OpTrait::Elementwise>() && op->hasTrait<OpTrait::IsCommutative>())) {
+    auto lhs = op->getOperand(0);
+    auto rhs = op->getOperand(1);
 
-    if (auto lhsT = dyn_cast_or_null<stablehlo::TransposeOp>(lhs.getDefiningOp())) {
-      auto lhsInput = lhsT.getOperand();
-      if (lhsInput == rhs)
-        return State::GUARANTEED;
-    }
-  }
+    if (auto lhsType = dyn_cast_or_null<ShapedType>(lhs.getType());
+        lhsType && lhsType.hasRank() && lhsType.getRank() == 2) {
 
-  // A * A^T will always be symmetric
-  if (auto mulOp = dyn_cast<stablehlo::MulOp>(op)) {
-    auto lhs = mulOp.getLhs();
-    auto rhs = mulOp.getRhs();
-
-    if (auto rhsT = dyn_cast_or_null<stablehlo::TransposeOp>(rhs.getDefiningOp())) {
-      auto rhsInput = rhsT.getOperand();
-      if (rhsInput == lhs)
-        return State::GUARANTEED;
-    }
-
-    if (auto lhsT = dyn_cast_or_null<stablehlo::TransposeOp>(lhs.getDefiningOp())) {
-      auto lhsInput = lhsT.getOperand();
-      if (lhsInput == rhs)
-        return State::GUARANTEED;
+      if (auto rhsT = dyn_cast_or_null<stablehlo::TransposeOp>(rhs.getDefiningOp())) {
+        auto rhsInput = rhsT.getOperand();
+        if (rhsInput == lhs && isTrueTranspose(rhsT))
+          return State::GUARANTEED;
+      }
+  
+      if (auto lhsT = dyn_cast_or_null<stablehlo::TransposeOp>(lhs.getDefiningOp())) {
+        auto lhsInput = lhsT.getOperand();
+        if (lhsInput == rhs && isTrueTranspose(lhsT))
+          return State::GUARANTEED;
+      }
     }
   }
 
   bool recursiveCheck = false;
 
   // elementwise ops
-  if (isa<stablehlo::AndOp, stablehlo::OrOp, stablehlo::XorOp, stablehlo::NotOp,
-          stablehlo::AbsOp, stablehlo::ExpOp, stablehlo::ConvertOp,
-          stablehlo::CompareOp, stablehlo::TanhOp, stablehlo::LogisticOp,
-          stablehlo::FloorOp, stablehlo::CeilOp, stablehlo::NegOp, stablehlo::LogOp,
-          stablehlo::SineOp, stablehlo::CosineOp, stablehlo::SqrtOp, stablehlo::RsqrtOp,
-          stablehlo::AddOp, stablehlo::SubtractOp, stablehlo::MulOp, stablehlo::DivOp,
-          stablehlo::MaxOp, stablehlo::MinOp>(op)) {
+  if (op->hasTrait<OpTrait::Elementwise>()) {
     recursiveCheck = true;
   }
 

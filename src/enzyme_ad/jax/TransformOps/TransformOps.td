@@ -599,6 +599,12 @@ def ApplyNoNanZeroBasePowSimplify : EnzymeHLOParameterizedPatternOp<
   }];
 }
 
+def ApplySymmetricSimplify : EnzymeHLOParameterizedPatternOp<
+    "symmetric_simplify"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit);
+  let assemblyFormat = "attr-dict";
+}
+
 def ApplyTransposeElementwisePatterns : EnzymeHLOParameterizedPatternOp<
     "transpose_elementwise"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);

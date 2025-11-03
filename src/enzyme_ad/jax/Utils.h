@@ -313,6 +313,8 @@ bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy, Type inTy);
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy, Type inTy,
                           mlir::Operation *op, PatternRewriter &rewriter);
 
+bool canApplySymmetricPattern(mlir::Operation *op, PatternRewriter &rewriter);
+
 template <typename Child> class GuaranteedResultAnalysisBase {
 protected:
   llvm::DenseMap<mlir::Value, bool> valueCache;
@@ -617,6 +619,7 @@ public:
 
 NoNanResultAnalysis initNoNanResultAnalysis();
 FiniteResultAnalysis initFiniteResultAnalysis();
+SymmetricResultAnalysis initSymmetricResultAnalysis();
 
 inline bool guaranteedNoNanResult(mlir::Value value,
                                   PatternRewriter &rewriter) {
@@ -632,6 +635,14 @@ inline bool guaranteedFiniteResult(mlir::Value value,
 }
 inline bool guaranteedFiniteResult(Operation *op, PatternRewriter &rewriter) {
   return initFiniteResultAnalysis().guaranteed(op, rewriter);
+}
+
+inline bool guaranteedSymmetricResult(mlir::Value value,
+                                  PatternRewriter &rewriter) {
+  return initSymmetricResultAnalysis().guaranteed(value, rewriter);
+}
+inline bool guaranteedSymmetricResult(Operation *op, PatternRewriter &rewriter) {
+  return initSymmetricResultAnalysis().guaranteed(op, rewriter);
 }
 
 class NonNegativeResultAnalysis
