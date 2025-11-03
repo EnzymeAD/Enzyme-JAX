@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1762203466979,
+  "lastUpdate": 1762213945613,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "avikpal@mit.edu",
-            "name": "Avik Pal",
-            "username": "avik-pal"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "31b84b426807dea183316469b04c1672e4a43435",
-          "message": "feat: constant folding of scatter op (#1466)\n\n* feat: constant folding of scatter op\n\n* chore: prune out unwanted deps",
-          "timestamp": "2025-10-10T20:15:24-04:00",
-          "tree_id": "4e5d36efac9d12057a50fc1f6b4d829ef928ac91",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/31b84b426807dea183316469b04c1672e4a43435"
-        },
-        "date": 1760153750718,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.000005471757001942024,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.000004321999900275842,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001507768686977,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001482369966979,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2239,6 +2195,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001527759867007,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "avikpal@mit.edu",
+            "name": "Avik Pal",
+            "username": "avik-pal"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4b6f35da1a180014640dc7ab1a3fd5fa881df77a",
+          "message": "fix: bump enzyme commit and make linker happy (#1562)",
+          "timestamp": "2025-11-03T16:21:11-05:00",
+          "tree_id": "a415fa78cd4a3de078a2e2cbed25dfa4b7194a54",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/4b6f35da1a180014640dc7ab1a3fd5fa881df77a"
+        },
+        "date": 1762213944923,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004540896898834035,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004838709998875857,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001475114347995,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001373216477993,
             "unit": "s"
           }
         ]
