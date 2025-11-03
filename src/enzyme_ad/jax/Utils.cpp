@@ -1325,6 +1325,28 @@ bool reshapeIsTranspose(stablehlo::ReshapeOp reshapeOp) {
   return true;
 }
 
+bool areValidDotGeneralInputs(
+    Value lhs, Value rhs, stablehlo::DotDimensionNumbersAttr dotDimNumbers) {
+  auto lhsShape = cast<ShapedType>(lhs.getType()).getShape();
+  auto rhsShape = cast<ShapedType>(rhs.getType()).getShape();
+
+  for (auto [lhsBatchDim, rhsBatchDim] :
+       llvm::zip(dotDimNumbers.getLhsBatchingDimensions(),
+                 dotDimNumbers.getRhsBatchingDimensions())) {
+    if (lhsShape[lhsBatchDim] != rhsShape[rhsBatchDim])
+      return false;
+  }
+
+  for (auto [lhsContractingDim, rhsContractingDim] :
+       llvm::zip(dotDimNumbers.getLhsContractingDimensions(),
+                 dotDimNumbers.getRhsContractingDimensions())) {
+    if (lhsShape[lhsContractingDim] != rhsShape[rhsContractingDim])
+      return false;
+  }
+
+  return true;
+}
+
 } // namespace stablehlo
 
 } // namespace mlir
