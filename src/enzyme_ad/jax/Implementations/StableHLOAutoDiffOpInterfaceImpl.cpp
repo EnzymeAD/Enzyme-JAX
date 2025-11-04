@@ -3556,6 +3556,28 @@ struct SHLOSelectOpBatchInterface
   }
 };
 
+struct SHLOReverseOpBatchInterface
+    : public BatchOpInterface::ExternalModel<SHLOReverseOpBatchInterface,
+                                             stablehlo::ReverseOp> {
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto op = cast<stablehlo::ReverseOp>(src);
+
+    int64_t nBatches = batchSizes.size();
+    SmallVector<int64_t> newDims;
+    for (auto dim : op.getDimensions())
+      newDims.push_back(dim + nBatches);
+
+    auto newReverseOp = builder.create<stablehlo::ReverseOp>(
+        op.getLoc(), mapper.lookup(op.getOperand()),
+        builder.getDenseI64ArrayAttr(newDims));
+
+    mapper.map(src->getResult(0), newReverseOp.getResult());
+    return success();
+  }
+};
+
 struct StablehloAddSimplifyMathInterface
     : public MathSimplifyInterface::ExternalModel<
           StablehloAddSimplifyMathInterface, stablehlo::AddOp> {
@@ -3665,9 +3687,8 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     SortOp::attachInterface<SHLOSortOpBatchInterface>(*context);
     GetDimensionSizeOp::attachInterface<SHLOGetDimensionSizeOpBatchInterface>(
         *context);
+    ReverseOp::attachInterface<SHLOReverseOpBatchInterface>(*context);
 
-    ReverseOp::attachInterface<SHLOGenericBatchOpInterface<ReverseOp>>(
-        *context); // TODO: simpler version with newly named dims
     ScatterOp::attachInterface<SHLOGenericBatchOpInterface<ScatterOp>>(
         *context); // TODO: simpler version with newly named dims
     ConvolutionOp::attachInterface<SHLOGenericBatchOpInterface<ConvolutionOp>>(
