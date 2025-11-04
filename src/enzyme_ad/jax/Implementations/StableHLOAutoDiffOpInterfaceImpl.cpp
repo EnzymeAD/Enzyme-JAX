@@ -3856,6 +3856,40 @@ struct SHLOConvolutionOpBatchInterface
     mapper.map(src->getResult(0), transposedOut);
     return success();
   }
+
+private:
+  mlir::Value groupAndReshapeValueAroundBatchDims(OpBuilder &builder,
+                                                  Value operand,
+                                                  int64_t batchSize,
+                                                  ArrayRef<int64_t> &batchSizes,
+                                                  int64_t origBatchDim) const {
+    auto operandType = cast<RankedTensorType>(operand.getType());
+    auto operandShape = operandType.getShape();
+
+    SmallVector<int64_t> permutation(operandType.getRank());
+    for (size_t i = 0; i <= origBatchDim; i++)
+      permutation[i] = i + batchSizes.size(); // left shift
+    for (size_t i = 0; i < batchSizes.size(); i++)
+      permutation[origBatchDim + i + 1] =
+          i; // move the batch dims just after origBatchDim
+    for (size_t i = batchSizes.size() + origBatchDim + 1;
+         i < permutation.size(); i++)
+      permutation[i] = i; // preserve the rest
+
+    auto transposedOperand = stablehlo::TransposeOp::create(
+        builder, operand.getLoc(), operand,
+        builder.getDenseI64ArrayAttr(permutation));
+
+    // now we need to group the batch dims
+    SmallVector<int64_t> newShape(operandShape.begin() + batchSizes.size(),
+                                  operandShape.end());
+    newShape[origBatchDim] = newShape[origBatchDim] * batchSize;
+
+    return stablehlo::ReshapeOp::create(
+        builder, operand.getLoc(),
+        RankedTensorType::get(newShape, operandType.getElementType()),
+        transposedOperand);
+  }
 };
 
 struct StablehloAddSimplifyMathInterface
