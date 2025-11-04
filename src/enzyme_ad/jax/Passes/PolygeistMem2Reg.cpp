@@ -1980,7 +1980,9 @@ void PolygeistMem2Reg::runOnOperation() {
       auto lastStored = getLastStored(AI);
       for (const auto &vec : lastStored) {
         LLVM_DEBUG(llvm::dbgs() << " + forwarding vec to promote {";
-                   for (auto m : vec) llvm::dbgs() << m << ",";
+                   for (auto m
+                        : vec) llvm::dbgs()
+                   << m << ",";
                    llvm::dbgs() << "} of " << AI << "\n");
         // llvm::errs() << " PRE " << AI << "\n";
         // f.dump();

@@ -847,11 +847,8 @@ struct SVDFactorizationOpLowering
           rewriter, op.getLoc(), TypeRange{type_llvm_lapack_int},
           SymbolRefAttr::get(ctx, bind_fn),
           ValueRange{
-              op_layout.getResult(),
-              op_jobu.getResult(),
-              op_jobvt.getResult(),
-              op_m.getResult(),
-              op_n.getResult(),
+              op_layout.getResult(), op_jobu.getResult(), op_jobvt.getResult(),
+              op_m.getResult(), op_n.getResult(),
               op_func.getArgument(0), // a
               op_lda.getResult(),
               op_func.getArgument(2), // s
