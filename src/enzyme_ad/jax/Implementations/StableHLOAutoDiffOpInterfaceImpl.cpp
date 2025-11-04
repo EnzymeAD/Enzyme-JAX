@@ -3585,138 +3585,65 @@ struct SHLOReverseOpBatchInterface
   }
 };
 
+// https://github.com/jax-ml/jax/blob/2a8cb54b82f1b0d17181d43f9be78d2b349df333/jax/_src/lax/convolution.py#L613-L629
 struct SHLOConvolutionOpBatchInterface
     : public BatchOpInterface::ExternalModel<SHLOConvolutionOpBatchInterface,
                                              stablehlo::ConvolutionOp> {
   mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
                                   IRMapping &mapper,
                                   ArrayRef<int64_t> batchSizes) const {
-    // We can emit an optimized version of the convolution if only the lhs is
-    // batched with batch_group_count = 1. Alternatively the rhs can be a
-    // splatted constant or a broadcast_in_dim with the batch dims expanded.
     auto convolution = cast<stablehlo::ConvolutionOp>(src);
     auto convDimNumbers = convolution.getDimensionNumbers();
     int64_t inputBatchDim = convDimNumbers.getInputBatchDimension();
+    int64_t inputFeatureDim = convDimNumbers.getInputFeatureDimension();
     int64_t outputBatchDim = convDimNumbers.getOutputBatchDimension();
     int64_t kernelOutputFeatureDim =
         convDimNumbers.getKernelOutputFeatureDimension();
     int64_t outputFeatureDim = convDimNumbers.getOutputFeatureDimension();
 
-    // can we optimize this case? probably... but is it worth it?
-    if (convolution.getBatchGroupCount() != 1)
-      return genericCreateBatch(src, builder, mapper, batchSizes);
-
     int64_t nbatchDims = batchSizes.size();
-    int64_t batchSize = 1;
-    for (int64_t dim : batchSizes)
-      batchSize *= dim;
+    int64_t batchSize = std::accumulate(batchSizes.begin(), batchSizes.end(), 1,
+                                        std::multiplies<int64_t>());
 
+    auto lhs = mapper.lookup(convolution.getLhs());
     auto rhs = mapper.lookup(convolution.getRhs());
-    Value batchedRhs;
-    int64_t batchGroupCount = batchSize;
 
-    SplatElementsAttr splat;
-    if (matchPattern(rhs, m_Constant(&splat))) {
-      batchGroupCount = 1;
-      batchedRhs = stablehlo::ConstantOp::create(
-          builder, convolution.getLoc(),
-          splat.resizeSplat(convolution.getRhs().getType()));
+    int64_t batchGroupCount = convolution.getBatchGroupCount();
+    int64_t featureGroupCount = convolution.getFeatureGroupCount();
 
-      // TODO: identify patterns like broadcast_in_dim / iota, where all the
-      // kernels are the same and we don't need to use a larger batch group
-      // count
+    int64_t inputBatchingDimFromGroupCount;
+    if (batchGroupCount > 1) {
+      inputBatchingDimFromGroupCount = inputBatchDim;
+      batchGroupCount *= batchSize;
+    } else {
+      inputBatchingDimFromGroupCount = inputFeatureDim;
+      featureGroupCount *= batchSize;
     }
+    auto batchedLhs = reshapeAxisInto(builder, lhs, batchSizes,
+                                      inputBatchingDimFromGroupCount);
 
-    if (!batchedRhs) {
-      // RHS -> Group the Batch Dims and Kernel Output Feature Dims -> Reshape
-      // and Combine the Batch Dims -> Convolution -> Reshape to extract the
-      batchedRhs = groupAndReshapeValueAroundBatchDims(
-          builder, rhs, batchSize, batchSizes, kernelOutputFeatureDim);
-    }
-
-    int64_t resultBatchDim =
-        batchGroupCount == 1 ? outputBatchDim : outputFeatureDim;
-
-    // LHS -> Group the Batch Dimensions -> Reshape and Combine the Batch
-    // Dimensions -> Convolution -> Reshape to extract the batch dims ->
-    // transpose again
-    auto batchedReshapedLhs = groupAndReshapeValueAroundBatchDims(
-        builder, mapper.lookup(convolution.getLhs()), batchSize, batchSizes,
-        inputBatchDim);
+    auto batchedRhs = reshapeAxisInto(builder, rhs, batchSizes,
+                                      kernelOutputFeatureDim);
 
     auto outTy = cast<RankedTensorType>(convolution.getResult().getType());
     auto outShape = llvm::to_vector(outTy.getShape());
-    outShape[resultBatchDim] = outShape[resultBatchDim] * batchSize;
+    outShape[outputFeatureDim] = outShape[outputFeatureDim] * batchSize;
     auto outElemTy = outTy.getElementType();
 
     auto batchedConvolution = stablehlo::ConvolutionOp::create(
         builder, src->getLoc(), RankedTensorType::get(outShape, outElemTy),
-        batchedReshapedLhs, batchedRhs, convolution.getWindowStridesAttr(),
+        batchedLhs, batchedRhs, convolution.getWindowStridesAttr(),
         convolution.getPaddingAttr(), convolution.getLhsDilationAttr(),
         convolution.getRhsDilationAttr(), convolution.getWindowReversalAttr(),
         convolution.getDimensionNumbersAttr(),
-        convolution.getFeatureGroupCountAttr(),
+        builder.getI64IntegerAttr(featureGroupCount),
         builder.getI64IntegerAttr(batchGroupCount),
         convolution.getPrecisionConfigAttr());
 
-    outShape[resultBatchDim] = outShape[resultBatchDim] / batchSize;
-    for (int64_t i = 0; i < nbatchDims; i++)
-      outShape.insert(outShape.begin() + resultBatchDim + i + 1, batchSizes[i]);
-
-    auto reshapedOut = stablehlo::ReshapeOp::create(
-        builder, src->getLoc(), RankedTensorType::get(outShape, outElemTy),
-        batchedConvolution);
-
-    SmallVector<int64_t> permutation2(
-        cast<RankedTensorType>(reshapedOut.getType()).getRank());
-    for (size_t i = 0; i < nbatchDims; i++)
-      permutation2[i] = resultBatchDim + i + 1;
-    for (size_t i = 0; i <= resultBatchDim; i++)
-      permutation2[nbatchDims + i] = i;
-    for (size_t i = nbatchDims + resultBatchDim + 1; i < permutation2.size();
-         i++)
-      permutation2[i] = i;
-
-    auto transposedOut = stablehlo::TransposeOp::create(
-        builder, src->getLoc(), reshapedOut,
-        builder.getDenseI64ArrayAttr(permutation2));
-
-    mapper.map(src->getResult(0), transposedOut->getResult(0));
+    auto transposedOut = reshapeAxisOutOf(builder, batchedConvolution,
+                                          batchSizes, outputFeatureDim);
+    mapper.map(src->getResult(0), transposedOut);
     return success();
-  }
-
-private:
-  mlir::Value groupAndReshapeValueAroundBatchDims(OpBuilder &builder,
-                                                  Value operand,
-                                                  int64_t batchSize,
-                                                  ArrayRef<int64_t> &batchSizes,
-                                                  int64_t origBatchDim) const {
-    auto operandType = cast<RankedTensorType>(operand.getType());
-    auto operandShape = operandType.getShape();
-
-    SmallVector<int64_t> permutation(operandType.getRank());
-    for (size_t i = 0; i <= origBatchDim; i++)
-      permutation[i] = i + batchSizes.size(); // left shift
-    for (size_t i = 0; i < batchSizes.size(); i++)
-      permutation[origBatchDim + i + 1] =
-          i; // move the batch dims just after origBatchDim
-    for (size_t i = batchSizes.size() + origBatchDim + 1;
-         i < permutation.size(); i++)
-      permutation[i] = i; // preserve the rest
-
-    auto transposedOperand = stablehlo::TransposeOp::create(
-        builder, operand.getLoc(), operand,
-        builder.getDenseI64ArrayAttr(permutation));
-
-    // now we need to group the batch dims
-    SmallVector<int64_t> newShape(operandShape.begin() + batchSizes.size(),
-                                  operandShape.end());
-    newShape[origBatchDim] = newShape[origBatchDim] * batchSize;
-
-    return stablehlo::ReshapeOp::create(
-        builder, operand.getLoc(),
-        RankedTensorType::get(newShape, operandType.getElementType()),
-        transposedOperand);
   }
 };
 
