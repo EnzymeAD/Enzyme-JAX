@@ -3585,6 +3585,113 @@ struct SHLOReverseOpBatchInterface
   }
 };
 
+struct SHLOConvolutionOpBatchInterface
+    : public BatchOpInterface::ExternalModel<SHLOConvolutionOpBatchInterface,
+                                             stablehlo::ConvolutionOp> {
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    // We can emit an optimized version of the convolution if only the lhs is
+    // batched with batch_group_count = 1. Alternatively the rhs can be a
+    // splatted constant or a broadcast_in_dim with the batch dims expanded.
+    auto convolution = cast<stablehlo::ConvolutionOp>(src);
+    auto convDimNumbers = convolution.getDimensionNumbers();
+    int64_t inputBatchDim = convDimNumbers.getInputBatchDimension();
+    int64_t outputBatchDim = convDimNumbers.getOutputBatchDimension();
+
+    if (convolution.getBatchGroupCount() != 1)
+      return genericCreateBatch(src, builder, mapper, batchSizes);
+
+    bool optimizedConvolution = false;
+    SplatElementsAttr splat;
+    auto rhs = mapper.lookup(convolution.getRhs());
+    Value batchedRhs;
+    if (matchPattern(rhs, m_Constant(&splat))) {
+      optimizedConvolution = true;
+      batchedRhs = builder.create<stablehlo::ConstantOp>(
+          convolution.getLoc(),
+          splat.resizeSplat(convolution.getRhs().getType()));
+    } else if (auto broadcastInDim =
+                   rhs.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+      // TODO: broadcast_in_dim
+    }
+
+    if (!optimizedConvolution) {
+      return genericCreateBatch(src, builder, mapper, batchSizes);
+    }
+
+    int64_t nbatchDims = batchSizes.size();
+    int64_t batchSize = 1;
+    for (int64_t dim : batchSizes)
+      batchSize *= dim;
+
+    // LHS -> Group the Batch Dimensions -> Reshape and Combine the Batch
+    // Dimensions -> Convolution -> Reshape to extract the batch dims ->
+    // transpose again
+    auto lhs = mapper.lookup(convolution.getLhs());
+
+    SmallVector<int64_t> permutation(
+        cast<RankedTensorType>(lhs.getType()).getRank());
+    for (size_t i = 0; i <= inputBatchDim; i++)
+      permutation[i] = i + nbatchDims;
+    for (size_t i = 0; i < nbatchDims; i++)
+      permutation[inputBatchDim + i + 1] = i;
+    for (size_t i = inputBatchDim + nbatchDims + 1; i < permutation.size(); i++)
+      permutation[i] = i;
+
+    auto transposedLhs = builder.create<stablehlo::TransposeOp>(
+        src->getLoc(), lhs, builder.getDenseI64ArrayAttr(permutation));
+
+    auto batchedLhsShape = llvm::to_vector(
+        cast<RankedTensorType>(convolution.getLhs().getType()).getShape());
+    batchedLhsShape[inputBatchDim] = batchedLhsShape[inputBatchDim] * batchSize;
+    auto reshapedLhs = builder.create<stablehlo::ReshapeOp>(
+        src->getLoc(),
+        RankedTensorType::get(
+            batchedLhsShape,
+            cast<RankedTensorType>(lhs.getType()).getElementType()),
+        transposedLhs);
+
+    auto outTy = cast<RankedTensorType>(convolution.getResult().getType());
+    auto outShape = llvm::to_vector(outTy.getShape());
+    outShape[outputBatchDim] = outShape[outputBatchDim] * batchSize;
+    auto outElemTy = outTy.getElementType();
+
+    auto batchedConvolution = builder.create<stablehlo::ConvolutionOp>(
+        src->getLoc(), RankedTensorType::get(outShape, outElemTy), reshapedLhs,
+        batchedRhs, convolution.getWindowStridesAttr(),
+        convolution.getPaddingAttr(), convolution.getLhsDilationAttr(),
+        convolution.getRhsDilationAttr(), convolution.getWindowReversalAttr(),
+        convolution.getDimensionNumbersAttr(),
+        convolution.getFeatureGroupCountAttr(),
+        convolution.getBatchGroupCountAttr(),
+        convolution.getPrecisionConfigAttr());
+
+    outShape[outputBatchDim] = outShape[outputBatchDim] / batchSize;
+    for (int64_t i = 0; i < nbatchDims; i++)
+      outShape.insert(outShape.begin() + outputBatchDim + i + 1, batchSizes[i]);
+
+    auto reshapedOut = builder.create<stablehlo::ReshapeOp>(
+        src->getLoc(), RankedTensorType::get(outShape, outElemTy),
+        batchedConvolution);
+    SmallVector<int64_t> permutation2(
+        cast<RankedTensorType>(reshapedOut.getType()).getRank());
+    for (size_t i = 0; i < nbatchDims; i++)
+      permutation2[i] = outputBatchDim + i + 1;
+    for (size_t i = 0; i <= outputBatchDim; i++)
+      permutation2[nbatchDims + i] = i;
+    for (size_t i = nbatchDims + outputBatchDim + 1; i < permutation2.size();
+         i++)
+      permutation2[i] = i;
+
+    auto transposedOut = builder.create<stablehlo::TransposeOp>(
+        src->getLoc(), reshapedOut,
+        builder.getDenseI64ArrayAttr(permutation2));
+    mapper.map(src->getResult(0), transposedOut->getResult(0));
+    return success();
+  }
+};
+
 struct StablehloAddSimplifyMathInterface
     : public MathSimplifyInterface::ExternalModel<
           StablehloAddSimplifyMathInterface, stablehlo::AddOp> {
@@ -3695,10 +3802,9 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     GetDimensionSizeOp::attachInterface<SHLOGetDimensionSizeOpBatchInterface>(
         *context);
     ReverseOp::attachInterface<SHLOReverseOpBatchInterface>(*context);
+    ConvolutionOp::attachInterface<SHLOConvolutionOpBatchInterface>(*context);
 
     ScatterOp::attachInterface<SHLOGenericBatchOpInterface<ScatterOp>>(
-        *context); // TODO: simpler version with newly named dims
-    ConvolutionOp::attachInterface<SHLOGenericBatchOpInterface<ConvolutionOp>>(
         *context); // TODO: simpler version with newly named dims
 
     AddOp::attachInterface<StablehloAddSimplifyMathInterface>(*context);
