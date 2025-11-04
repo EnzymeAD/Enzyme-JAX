@@ -867,11 +867,8 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
     if (!validReshapes)
       continue;
 
-    // TODO: add scatter here once batch interface is
-    if (isa<stablehlo::DotGeneralOp, stablehlo::GatherOp, stablehlo::ReduceOp,
-            stablehlo::SortOp, stablehlo::TransposeOp,
-            stablehlo::BroadcastInDimOp, stablehlo::ReduceWindowOp>(op) ||
-        op->hasTrait<OpTrait::Elementwise>()) {
+    auto batchInterface = dyn_cast<BatchOpInterface>(op);
+    if (batchInterface || op->hasTrait<OpTrait::Elementwise>()) {
       if (liftOperationByBatching(rewriter, whileOp, slices, op, info,
                                   intermediateReshape)) {
         anyOpRewritten = true;
@@ -1247,6 +1244,9 @@ struct AutoBatchingPass
                    // op interface is implemented
                    ConcatInsertDimToBatch<stablehlo::SortOp>,
                    ConcatInsertDimToBatch<stablehlo::ReduceWindowOp>,
+                   ConcatInsertDimToBatch<stablehlo::ConcatenateOp>,
+                   ConcatInsertDimToBatch<stablehlo::GetDimensionSizeOp>,
+                   ConcatInsertDimToBatch<stablehlo::ReverseOp>,
                    ConcatInsertDimElementwiseToBatch>(context);
     }
 
@@ -1258,6 +1258,9 @@ struct AutoBatchingPass
           SliceToBatch<stablehlo::TransposeOp>,
           SliceToBatch<stablehlo::BroadcastInDimOp>,
           SliceToBatch<stablehlo::ReduceWindowOp>,
+          SliceToBatch<stablehlo::ConcatenateOp>,
+          SliceToBatch<stablehlo::GetDimensionSizeOp>,
+          SliceToBatch<stablehlo::ReverseOp>,
           // SliceToBatchReshape,
           SliceToBatchElementwise>(context);
     }
