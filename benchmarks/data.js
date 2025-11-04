@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1762213945613,
+  "lastUpdate": 1762247542923,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "avikpal@mit.edu",
-            "name": "Avik Pal",
-            "username": "avik-pal"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "ca3badc415cecf86258853abcbd3966a7782c10b",
-          "message": "feat: split variadic scatter (#1467)\n\n* feat: split variadic scatter\n\n* feat: split variadic scatter\n\n* fix: logging remove\n\n* fix: slice_simplify\n\n* chore: run fmt",
-          "timestamp": "2025-10-11T20:02:47-04:00",
-          "tree_id": "338b7f893a5d2a18739fe2fddbbfee334abd7778",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/ca3badc415cecf86258853abcbd3966a7782c10b"
-        },
-        "date": 1760230858468,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.000004422669904306531,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.000004261300899088383,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.000134292779304,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001348743572947,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2239,6 +2195,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001373216477993,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "avikpal@mit.edu",
+            "name": "Avik Pal",
+            "username": "avik-pal"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f729dca2048c2cfd941877cf23c1556368d04ac3",
+          "message": "feat: reduce licm passes (#1564)",
+          "timestamp": "2025-11-03T18:40:19-05:00",
+          "tree_id": "5c674b7cf1dc3eff9f5171535c332d174a6d511e",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/f729dca2048c2cfd941877cf23c1556368d04ac3"
+        },
+        "date": 1762247542361,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004296338000131073,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.00000426451699968311,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001563015472005,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001416123602,
             "unit": "s"
           }
         ]
