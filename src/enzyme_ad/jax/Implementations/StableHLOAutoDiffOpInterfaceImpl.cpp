@@ -3622,8 +3622,8 @@ struct SHLOConvolutionOpBatchInterface
     auto batchedLhs = reshapeAxisInto(builder, lhs, batchSizes,
                                       inputBatchingDimFromGroupCount);
 
-    auto batchedRhs = reshapeAxisInto(builder, rhs, batchSizes,
-                                      kernelOutputFeatureDim);
+    auto batchedRhs =
+        reshapeAxisInto(builder, rhs, batchSizes, kernelOutputFeatureDim);
 
     auto outTy = cast<RankedTensorType>(convolution.getResult().getType());
     auto outShape = llvm::to_vector(outTy.getShape());

@@ -1331,11 +1331,11 @@ Value reshapeAxisInto(OpBuilder &builder, Value input,
   auto inputShape = inputType.getShape();
 
   SmallVector<int64_t> permutation(inputShape.size());
-  for (size_t i = 0; i <= dim; i++)
+  for (size_t i = 0; i < dim; i++)
     permutation[i] = i + batchSizes.size(); // left shift
   for (size_t i = 0; i < batchSizes.size(); i++)
-    permutation[dim + i + 1] = i; // move the batch dims
-  for (size_t i = batchSizes.size() + dim + 1; i < permutation.size(); i++)
+    permutation[dim + i] = i; // move the batch dims
+  for (size_t i = batchSizes.size() + dim; i < permutation.size(); i++)
     permutation[i] = i; // keep the rest
 
   auto transposedInput =
@@ -1359,9 +1359,9 @@ Value reshapeAxisOutOf(OpBuilder &builder, Value input,
   auto inputShape = llvm::to_vector(inputType.getShape());
   auto batchSize = std::accumulate(batchSizes.begin(), batchSizes.end(), 1,
                                    std::multiplies<int64_t>());
-  for (size_t i = 0; i < batchSizes.size(); i++)
-    inputShape.insert(inputShape.begin() + dim + i + 1, batchSizes[i]);
   inputShape[dim] = inputShape[dim] / batchSize;
+  for (size_t i = 0; i < batchSizes.size(); i++)
+    inputShape.insert(inputShape.begin() + dim + i, batchSizes[i]);
 
   auto reshapedInput = stablehlo::ReshapeOp::create(
       builder, input.getLoc(),
@@ -1369,10 +1369,10 @@ Value reshapeAxisOutOf(OpBuilder &builder, Value input,
 
   SmallVector<int64_t> permutation(inputShape.size());
   for (size_t i = 0; i < batchSizes.size(); i++)
-    permutation[i] = dim + i + 1;
-  for (size_t i = 0; i <= dim; i++)
+    permutation[i] = dim + i;
+  for (size_t i = 0; i < dim; i++)
     permutation[batchSizes.size() + i] = i;
-  for (size_t i = batchSizes.size() + dim + 1; i < permutation.size(); i++)
+  for (size_t i = batchSizes.size() + dim; i < permutation.size(); i++)
     permutation[i] = i;
 
   return stablehlo::TransposeOp::create(
