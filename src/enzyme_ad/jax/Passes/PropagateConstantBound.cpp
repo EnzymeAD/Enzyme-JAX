@@ -261,8 +261,8 @@ struct PropagateConstantBoundsPass
               return;
             if (hasSingleCaller) {
               builder.setInsertionPoint(op);
-              auto newCst = builder.create<LLVM::ConstantOp>(
-                  op->getLoc(), builder.getI32Type(),
+              auto newCst = LLVM::ConstantOp::create(
+                  builder, op->getLoc(), builder.getI32Type(),
                   builder.getIntegerAttr(builder.getI32Type(), maxValue));
               op->getResult(0).replaceAllUsesWith(newCst.getResult());
             } else {
