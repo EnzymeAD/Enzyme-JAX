@@ -61,6 +61,8 @@ void addSliceLICM(RewritePatternSet &patterns, bool single_user,
                   MLIRContext &context, PatternBenefit benefit);
 void addDotGeneralLICM(RewritePatternSet &patterns, bool single_user,
                        MLIRContext &context, PatternBenefit benefit);
+void addReverseLICM(RewritePatternSet &patterns, bool single_user,
+                    MLIRContext &context, PatternBenefit benefit);
 void addReduceLICM(RewritePatternSet &patterns, bool single_user,
                    MLIRContext &context, PatternBenefit benefit);
 void addReduceWindowLICM(RewritePatternSet &patterns, bool single_user,
