@@ -3608,8 +3608,8 @@ struct SHLOConvolutionOpBatchInterface
     Value batchedRhs;
     if (matchPattern(rhs, m_Constant(&splat))) {
       optimizedConvolution = true;
-      batchedRhs = builder.create<stablehlo::ConstantOp>(
-          convolution.getLoc(),
+      batchedRhs = stablehlo::ConstantOp::create(
+          builder, convolution.getLoc(),
           splat.resizeSplat(convolution.getRhs().getType()));
     } else if (auto broadcastInDim =
                    rhs.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
@@ -3639,14 +3639,14 @@ struct SHLOConvolutionOpBatchInterface
     for (size_t i = inputBatchDim + nbatchDims + 1; i < permutation.size(); i++)
       permutation[i] = i;
 
-    auto transposedLhs = builder.create<stablehlo::TransposeOp>(
-        src->getLoc(), lhs, builder.getDenseI64ArrayAttr(permutation));
+    auto transposedLhs = stablehlo::TransposeOp::create(
+        builder, src->getLoc(), lhs, builder.getDenseI64ArrayAttr(permutation));
 
     auto batchedLhsShape = llvm::to_vector(
         cast<RankedTensorType>(convolution.getLhs().getType()).getShape());
     batchedLhsShape[inputBatchDim] = batchedLhsShape[inputBatchDim] * batchSize;
-    auto reshapedLhs = builder.create<stablehlo::ReshapeOp>(
-        src->getLoc(),
+    auto reshapedLhs = stablehlo::ReshapeOp::create(
+        builder, src->getLoc(),
         RankedTensorType::get(
             batchedLhsShape,
             cast<RankedTensorType>(lhs.getType()).getElementType()),
@@ -3657,9 +3657,9 @@ struct SHLOConvolutionOpBatchInterface
     outShape[outputBatchDim] = outShape[outputBatchDim] * batchSize;
     auto outElemTy = outTy.getElementType();
 
-    auto batchedConvolution = builder.create<stablehlo::ConvolutionOp>(
-        src->getLoc(), RankedTensorType::get(outShape, outElemTy), reshapedLhs,
-        batchedRhs, convolution.getWindowStridesAttr(),
+    auto batchedConvolution = stablehlo::ConvolutionOp::create(
+        builder, src->getLoc(), RankedTensorType::get(outShape, outElemTy),
+        reshapedLhs, batchedRhs, convolution.getWindowStridesAttr(),
         convolution.getPaddingAttr(), convolution.getLhsDilationAttr(),
         convolution.getRhsDilationAttr(), convolution.getWindowReversalAttr(),
         convolution.getDimensionNumbersAttr(),
@@ -3671,8 +3671,8 @@ struct SHLOConvolutionOpBatchInterface
     for (int64_t i = 0; i < nbatchDims; i++)
       outShape.insert(outShape.begin() + outputBatchDim + i + 1, batchSizes[i]);
 
-    auto reshapedOut = builder.create<stablehlo::ReshapeOp>(
-        src->getLoc(), RankedTensorType::get(outShape, outElemTy),
+    auto reshapedOut = stablehlo::ReshapeOp::create(
+        builder, src->getLoc(), RankedTensorType::get(outShape, outElemTy),
         batchedConvolution);
     SmallVector<int64_t> permutation2(
         cast<RankedTensorType>(reshapedOut.getType()).getRank());
@@ -3684,8 +3684,8 @@ struct SHLOConvolutionOpBatchInterface
          i++)
       permutation2[i] = i;
 
-    auto transposedOut = builder.create<stablehlo::TransposeOp>(
-        src->getLoc(), reshapedOut,
+    auto transposedOut = stablehlo::TransposeOp::create(
+        builder, src->getLoc(), reshapedOut,
         builder.getDenseI64ArrayAttr(permutation2));
     mapper.map(src->getResult(0), transposedOut->getResult(0));
     return success();
