@@ -51,14 +51,13 @@ struct ArithRaisingPass
     OpBuilder builder(origOp);                                                 \
     Value newOp;                                                               \
     if (use_stablehlo)                                                         \
-      newOp = builder                                                          \
-                  .create<StableHLOOp>(origOp.getLoc(), origOp->getOperand(0), \
-                                       origOp->getOperand(1))                  \
-                  .getResult();                                                \
+      newOp =                                                                  \
+          StableHLOOp::create(builder, origOp.getLoc(), origOp->getOperand(0), \
+                              origOp->getOperand(1))                           \
+              .getResult();                                                    \
     else                                                                       \
-      newOp = builder                                                          \
-                  .create<MHLOOp>(origOp.getLoc(), origOp->getOperand(0),      \
-                                  origOp->getOperand(1))                       \
+      newOp = MHLOOp::create(builder, origOp.getLoc(), origOp->getOperand(0),  \
+                             origOp->getOperand(1))                            \
                   .getResult();                                                \
     origOp.replaceAllUsesWith(newOp);                                          \
     origOp.erase();                                                            \
@@ -102,9 +101,10 @@ struct ArithRaisingPass
     Value newAddOp;                                                            \
     if (use_stablehlo)                                                         \
       newAddOp =                                                               \
-          builder.create<StableHLOOp>(inpOp.getLoc(), inpOp->getOperand(0));   \
+          StableHLOOp::create(builder, inpOp.getLoc(), inpOp->getOperand(0));  \
     else                                                                       \
-      newAddOp = builder.create<MHLOOp>(inpOp.getLoc(), inpOp->getOperand(0)); \
+      newAddOp =                                                               \
+          MHLOOp::create(builder, inpOp.getLoc(), inpOp->getOperand(0));       \
     inpOp.replaceAllUsesWith(newAddOp);                                        \
     inpOp.erase();                                                             \
   });
@@ -128,8 +128,8 @@ struct ArithRaisingPass
         return;
 
       OpBuilder builder(op);
-      auto res = builder.create<stablehlo::BitcastConvertOp>(op.getLoc(), ty,
-                                                             op.getIn());
+      auto res = stablehlo::BitcastConvertOp::create(builder, op.getLoc(), ty,
+                                                     op.getIn());
       op.replaceAllUsesWith(res.getResult());
       op.erase();
     });
@@ -139,8 +139,8 @@ struct ArithRaisingPass
         return;
 
       OpBuilder builder(truncOp);
-      auto res = builder.create<stablehlo::ConvertOp>(truncOp.getLoc(), ty,
-                                                      truncOp.getIn());
+      auto res = stablehlo::ConvertOp::create(builder, truncOp.getLoc(), ty,
+                                              truncOp.getIn());
       truncOp.replaceAllUsesWith(res.getResult());
       truncOp.erase();
     });
@@ -150,8 +150,8 @@ struct ArithRaisingPass
         return;
 
       OpBuilder builder(truncOp);
-      auto res = builder.create<stablehlo::ConvertOp>(truncOp.getLoc(), ty,
-                                                      truncOp.getIn());
+      auto res = stablehlo::ConvertOp::create(builder, truncOp.getLoc(), ty,
+                                              truncOp.getIn());
       truncOp.replaceAllUsesWith(res.getResult());
       truncOp.erase();
     });
@@ -161,10 +161,10 @@ struct ArithRaisingPass
         return;
 
       OpBuilder builder(fma);
-      auto res = builder.create<stablehlo::MulOp>(
-          fma.getLoc(), fma.getOperand(0), fma.getOperand(1));
-      auto res2 = builder.create<stablehlo::AddOp>(fma.getLoc(), res,
-                                                   fma.getOperand(2));
+      auto res = stablehlo::MulOp::create(builder, fma.getLoc(),
+                                          fma.getOperand(0), fma.getOperand(1));
+      auto res2 = stablehlo::AddOp::create(builder, fma.getLoc(), res,
+                                           fma.getOperand(2));
       fma.replaceAllUsesWith(res2.getResult());
       fma.erase();
     });
@@ -181,17 +181,17 @@ struct ArithRaisingPass
       Value val = copySignOp.getLhs();
       Value sign = copySignOp.getRhs();
       Attribute constAttr = FloatAttr::get(ty.getElementType(), 0);
-      Value zero = builder.create<stablehlo::ConstantOp>(
-          loc, ty, SplatElementsAttr::get(ty, constAttr));
-      Value signPositive = builder.create<stablehlo::CompareOp>(
-          loc, sign, zero, stablehlo::ComparisonDirection::GE);
-      Value valPositive = builder.create<stablehlo::CompareOp>(
-          loc, val, zero, stablehlo::ComparisonDirection::GE);
+      Value zero = stablehlo::ConstantOp::create(
+          builder, loc, ty, SplatElementsAttr::get(ty, constAttr));
+      Value signPositive = stablehlo::CompareOp::create(
+          builder, loc, sign, zero, stablehlo::ComparisonDirection::GE);
+      Value valPositive = stablehlo::CompareOp::create(
+          builder, loc, val, zero, stablehlo::ComparisonDirection::GE);
       Value notSameSign =
-          builder.create<stablehlo::XorOp>(loc, signPositive, valPositive);
-      Value negVal = builder.create<stablehlo::NegOp>(loc, val);
+          stablehlo::XorOp::create(builder, loc, signPositive, valPositive);
+      Value negVal = stablehlo::NegOp::create(builder, loc, val);
       Value res =
-          builder.create<stablehlo::SelectOp>(loc, notSameSign, negVal, val);
+          stablehlo::SelectOp::create(builder, loc, notSameSign, negVal, val);
 
       copySignOp.replaceAllUsesWith(res);
       copySignOp.erase();
@@ -222,9 +222,9 @@ struct ArithRaisingPass
         oneAttr = DenseElementsAttr::get(ty, oneAttr0);
 
       Value one =
-          builder.create<stablehlo::ConstantOp>(atanOp.getLoc(), oneAttr);
-      Value res = builder.create<stablehlo::Atan2Op>(atanOp.getLoc(),
-                                                     atanOp.getOperand(), one);
+          stablehlo::ConstantOp::create(builder, atanOp.getLoc(), oneAttr);
+      Value res = stablehlo::Atan2Op::create(builder, atanOp.getLoc(),
+                                             atanOp.getOperand(), one);
       atanOp.replaceAllUsesWith(res);
       atanOp.erase();
     });
@@ -236,11 +236,11 @@ struct ArithRaisingPass
 
       OpBuilder builder(maxOp);
       Value isLhsNaN =
-          builder.create<math::IsNaNOp>(maxOp.getLoc(), maxOp.getLhs());
-      Value max = builder.create<stablehlo::MaxOp>(
-          maxOp.getLoc(), maxOp.getLhs(), maxOp.getRhs());
-      Value res = builder.create<stablehlo::SelectOp>(maxOp.getLoc(), isLhsNaN,
-                                                      maxOp.getRhs(), max);
+          math::IsNaNOp::create(builder, maxOp.getLoc(), maxOp.getLhs());
+      Value max = stablehlo::MaxOp::create(builder, maxOp.getLoc(),
+                                           maxOp.getLhs(), maxOp.getRhs());
+      Value res = stablehlo::SelectOp::create(builder, maxOp.getLoc(), isLhsNaN,
+                                              maxOp.getRhs(), max);
       maxOp.replaceAllUsesWith(res);
       maxOp.erase();
     });
@@ -251,11 +251,11 @@ struct ArithRaisingPass
 
       OpBuilder builder(minOp);
       Value isLhsNaN =
-          builder.create<math::IsNaNOp>(minOp.getLoc(), minOp.getLhs());
-      Value min = builder.create<stablehlo::MinOp>(
-          minOp.getLoc(), minOp.getLhs(), minOp.getRhs());
-      Value res = builder.create<stablehlo::SelectOp>(minOp.getLoc(), isLhsNaN,
-                                                      minOp.getRhs(), min);
+          math::IsNaNOp::create(builder, minOp.getLoc(), minOp.getLhs());
+      Value min = stablehlo::MinOp::create(builder, minOp.getLoc(),
+                                           minOp.getLhs(), minOp.getRhs());
+      Value res = stablehlo::SelectOp::create(builder, minOp.getLoc(), isLhsNaN,
+                                              minOp.getRhs(), min);
       minOp.replaceAllUsesWith(res);
       minOp.erase();
     });
@@ -265,17 +265,17 @@ struct ArithRaisingPass
 
       OpBuilder builder(nanOp);
 
-      Value isFinite = builder.create<stablehlo::IsFiniteOp>(
-          nanOp.getLoc(), nanOp.getOperand());
+      Value isFinite = stablehlo::IsFiniteOp::create(builder, nanOp.getLoc(),
+                                                     nanOp.getOperand());
       Value isNotFinite =
-          builder.create<stablehlo::NotOp>(nanOp.getLoc(), isFinite);
+          stablehlo::NotOp::create(builder, nanOp.getLoc(), isFinite);
 
-      Value isNotInf = builder.create<stablehlo::NotOp>(
-          nanOp.getLoc(),
-          builder.create<chlo::IsInfOp>(nanOp.getLoc(), nanOp.getOperand()));
+      Value isNotInf = stablehlo::NotOp::create(
+          builder, nanOp.getLoc(),
+          chlo::IsInfOp::create(builder, nanOp.getLoc(), nanOp.getOperand()));
 
-      Value isNaN = builder.create<stablehlo::AndOp>(nanOp.getLoc(),
-                                                     isNotFinite, isNotInf);
+      Value isNaN = stablehlo::AndOp::create(builder, nanOp.getLoc(),
+                                             isNotFinite, isNotInf);
 
       nanOp.replaceAllUsesWith(isNaN);
       nanOp.erase();
@@ -286,7 +286,7 @@ struct ArithRaisingPass
       OpBuilder builder(addOp);
       Value newAddOp;
       newAddOp =
-          builder.create<chlo::ConjOp>(addOp.getLoc(), addOp->getOperand(0));
+          chlo::ConjOp::create(builder, addOp.getLoc(), addOp->getOperand(0));
       addOp.replaceAllUsesWith(newAddOp);
       addOp.erase();
     });
@@ -300,7 +300,7 @@ struct ArithRaisingPass
 
       OpBuilder builder(constOp);
       Value newConstOp =
-          builder.create<stablehlo::ConstantOp>(constOp.getLoc(), valueAttr);
+          stablehlo::ConstantOp::create(builder, constOp.getLoc(), valueAttr);
       constOp.replaceAllUsesWith(newConstOp);
       constOp.erase();
     });
@@ -309,8 +309,8 @@ struct ArithRaisingPass
         return;
       OpBuilder builder(addOp);
       Value newAddOp;
-      newAddOp = builder.create<stablehlo::ConvertOp>(
-          addOp.getLoc(), addOp->getOperand(0),
+      newAddOp = stablehlo::ConvertOp::create(
+          builder, addOp.getLoc(), addOp->getOperand(0),
           cast<RankedTensorType>(addOp->getResult(0).getType())
               .getElementType());
       addOp.replaceAllUsesWith(newAddOp);
@@ -321,14 +321,14 @@ struct ArithRaisingPass
         return;
       OpBuilder builder(addOp);
       Value newAddOp;
-      newAddOp = builder.create<stablehlo::ConvertOp>(
-          addOp.getLoc(), addOp->getOperand(0),
+      newAddOp = stablehlo::ConvertOp::create(
+          builder, addOp.getLoc(), addOp->getOperand(0),
           cast<RankedTensorType>(addOp->getResult(0).getType())
               .getElementType());
       if (cast<RankedTensorType>(addOp.getOperand().getType())
               .getElementType()
               .isInteger(1)) {
-        newAddOp = builder.create<stablehlo::NegOp>(addOp.getLoc(), newAddOp);
+        newAddOp = stablehlo::NegOp::create(builder, addOp.getLoc(), newAddOp);
       }
       addOp.replaceAllUsesWith(newAddOp);
       addOp.erase();
@@ -343,8 +343,8 @@ struct ArithRaisingPass
       }
       OpBuilder builder(addOp);
       Value newAddOp;
-      newAddOp = builder.create<stablehlo::ConvertOp>(
-          addOp.getLoc(), addOp->getOperand(0),
+      newAddOp = stablehlo::ConvertOp::create(
+          builder, addOp.getLoc(), addOp->getOperand(0),
           cast<RankedTensorType>(addOp->getResult(0).getType())
               .getElementType());
       addOp.replaceAllUsesWith(newAddOp);
@@ -359,8 +359,8 @@ struct ArithRaisingPass
         return;
       OpBuilder builder(addOp);
       Value newAddOp;
-      newAddOp = builder.create<stablehlo::ConvertOp>(
-          addOp.getLoc(), addOp->getOperand(0),
+      newAddOp = stablehlo::ConvertOp::create(
+          builder, addOp.getLoc(), addOp->getOperand(0),
           cast<RankedTensorType>(addOp->getResult(0).getType())
               .getElementType());
       addOp.replaceAllUsesWith(newAddOp);
@@ -379,9 +379,9 @@ struct ArithRaisingPass
         // is prepended:
         broadcastDims.push_back(en.index() + 1);
       }
-      newBroadcastOp = builder.create<stablehlo::BroadcastInDimOp>(
-          broadcastOp.getLoc(), broadcastOp.getType(), broadcastOp.getInput(),
-          builder.getDenseI64ArrayAttr(broadcastDims));
+      newBroadcastOp = stablehlo::BroadcastInDimOp::create(
+          builder, broadcastOp.getLoc(), broadcastOp.getType(),
+          broadcastOp.getInput(), builder.getDenseI64ArrayAttr(broadcastDims));
       broadcastOp.replaceAllUsesWith(newBroadcastOp);
       broadcastOp.erase();
     });
@@ -392,9 +392,10 @@ struct ArithRaisingPass
         return;
 
       OpBuilder builder(selectOp);
-      auto newOp = builder.create<stablehlo::SelectOp>(
-          selectOp.getLoc(), selectOp.getType(), selectOp.getCondition(),
-          selectOp.getTrueValue(), selectOp.getFalseValue());
+      auto newOp = stablehlo::SelectOp::create(
+          builder, selectOp.getLoc(), selectOp.getType(),
+          selectOp.getCondition(), selectOp.getTrueValue(),
+          selectOp.getFalseValue());
       selectOp.replaceAllUsesWith(newOp.getResult());
       selectOp.erase();
     });
@@ -441,9 +442,9 @@ struct ArithRaisingPass
         default:
           return;
         }
-        newCmpOp = builder.create<stablehlo::CompareOp>(
-            cmpOp->getLoc(), cmpOp->getOperand(0), cmpOp->getOperand(1),
-            direction, compType);
+        newCmpOp = stablehlo::CompareOp::create(
+            builder, cmpOp->getLoc(), cmpOp->getOperand(0),
+            cmpOp->getOperand(1), direction, compType);
       } else {
         return;
       }
@@ -488,9 +489,9 @@ struct ArithRaisingPass
         default:
           return;
         }
-        newCmpOp = builder.create<stablehlo::CompareOp>(
-            cmpOp->getLoc(), cmpOp->getOperand(0), cmpOp->getOperand(1),
-            direction, stablehlo::ComparisonType::FLOAT);
+        newCmpOp = stablehlo::CompareOp::create(
+            builder, cmpOp->getLoc(), cmpOp->getOperand(0),
+            cmpOp->getOperand(1), direction, stablehlo::ComparisonType::FLOAT);
       } else {
         mhlo::ComparisonDirection direction;
         switch (cmpOp.getPredicate()) {
@@ -515,9 +516,9 @@ struct ArithRaisingPass
         default:
           return;
         }
-        newCmpOp = builder.create<mhlo::CompareOp>(
-            cmpOp->getLoc(), cmpOp->getOperand(0), cmpOp->getOperand(1),
-            direction);
+        newCmpOp = mhlo::CompareOp::create(builder, cmpOp->getLoc(),
+                                           cmpOp->getOperand(0),
+                                           cmpOp->getOperand(1), direction);
       }
       cmpOp.replaceAllUsesWith(newCmpOp);
       cmpOp.erase();

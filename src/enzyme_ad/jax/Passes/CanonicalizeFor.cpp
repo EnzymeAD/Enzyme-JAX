@@ -280,12 +280,12 @@ static Value castValue(PatternRewriter &rewriter, Value value, Value target,
     return value;
 
   if (targetType.isIndex() || value.getType().isIndex()) {
-    return rewriter.create<IndexCastOp>(loc, targetType, value);
+    return IndexCastOp::create(rewriter, loc, targetType, value);
   } else if (targetType.getIntOrFloatBitWidth() >
              valueType.getIntOrFloatBitWidth()) {
-    return rewriter.create<arith::ExtSIOp>(loc, targetType, value);
+    return arith::ExtSIOp::create(rewriter, loc, targetType, value);
   } else {
-    return rewriter.create<arith::TruncIOp>(loc, targetType, value);
+    return arith::TruncIOp::create(rewriter, loc, targetType, value);
   }
 };
 
@@ -335,37 +335,38 @@ struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
       if (!iterarg.use_empty()) {
         Value init = outiter;
         rewriter.setInsertionPointToStart(&forOp.getRegion().front());
-        Value replacement = rewriter.create<SubIOp>(
-            forOp.getLoc(), forOp.getInductionVar(), forOp.getLowerBound());
+        Value replacement =
+            SubIOp::create(rewriter, forOp.getLoc(), forOp.getInductionVar(),
+                           forOp.getLowerBound());
 
         if (!sameValue)
-          replacement = rewriter.create<DivUIOp>(forOp.getLoc(), replacement,
-                                                 forOp.getStep());
+          replacement = DivUIOp::create(rewriter, forOp.getLoc(), replacement,
+                                        forOp.getStep());
 
         if (!sameValue) {
           Value step = addOp.getOperand(1);
 
           if (step.getType() != replacement.getType()) {
             if (replacement.getType().isIndex() || step.getType().isIndex())
-              step = rewriter.create<IndexCastOp>(forOp.getLoc(),
-                                                  replacement.getType(), step);
+              step = IndexCastOp::create(rewriter, forOp.getLoc(),
+                                         replacement.getType(), step);
             else if (replacement.getType().getIntOrFloatBitWidth() >
                      step.getType().getIntOrFloatBitWidth())
-              step = rewriter.create<arith::ExtSIOp>(
-                  forOp.getLoc(), replacement.getType(), step);
+              step = arith::ExtSIOp::create(rewriter, forOp.getLoc(),
+                                            replacement.getType(), step);
             else
-              step = rewriter.create<arith::TruncIOp>(
-                  forOp.getLoc(), replacement.getType(), step);
+              step = arith::TruncIOp::create(rewriter, forOp.getLoc(),
+                                             replacement.getType(), step);
           }
 
           replacement =
-              rewriter.create<MulIOp>(forOp.getLoc(), replacement, step);
+              MulIOp::create(rewriter, forOp.getLoc(), replacement, step);
         }
 
         init = castValue(rewriter, init, replacement, forOp.getLoc());
 
         replacement =
-            rewriter.create<AddIOp>(forOp.getLoc(), init, replacement);
+            AddIOp::create(rewriter, forOp.getLoc(), init, replacement);
 
         replacement = castValue(rewriter, replacement, iterarg, forOp.getLoc());
 
@@ -377,12 +378,13 @@ struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
       if (!res.use_empty()) {
         Value init = outiter;
         rewriter.setInsertionPoint(forOp);
-        Value replacement = rewriter.create<SubIOp>(
-            forOp.getLoc(), forOp.getUpperBound(), forOp.getLowerBound());
+        Value replacement =
+            SubIOp::create(rewriter, forOp.getLoc(), forOp.getUpperBound(),
+                           forOp.getLowerBound());
 
         if (!sameValue)
-          replacement = rewriter.create<DivUIOp>(forOp.getLoc(), replacement,
-                                                 forOp.getStep());
+          replacement = DivUIOp::create(rewriter, forOp.getLoc(), replacement,
+                                        forOp.getStep());
 
         if (!sameValue) {
           Value step = addOp.getOperand(1);
@@ -390,13 +392,13 @@ struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
           step = castValue(rewriter, step, replacement, forOp.getLoc());
 
           replacement =
-              rewriter.create<MulIOp>(forOp.getLoc(), replacement, step);
+              MulIOp::create(rewriter, forOp.getLoc(), replacement, step);
         }
 
         init = castValue(rewriter, init, replacement, forOp.getLoc());
 
         replacement =
-            rewriter.create<AddIOp>(forOp.getLoc(), init, replacement);
+            AddIOp::create(rewriter, forOp.getLoc(), init, replacement);
 
         replacement = castValue(rewriter, replacement, iterarg, forOp.getLoc());
 
@@ -449,10 +451,10 @@ struct RemoveInductionVarRelated : public OpRewritePattern<ForOp> {
     // select(arg == lb, init, arg - step)
     for (OpOperand &use : llvm::make_early_inc_range(iterArg.getUses())) {
       rewriter.setInsertionPoint(use.getOwner());
-      Value cmp = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
-                                                 inductionVar, lb);
-      Value sub = rewriter.create<arith::SubIOp>(loc, inductionVar, step);
-      Value newVal = rewriter.create<arith::SelectOp>(loc, cmp, initVal, sub);
+      Value cmp = arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::eq,
+                                        inductionVar, lb);
+      Value sub = arith::SubIOp::create(rewriter, loc, inductionVar, step);
+      Value newVal = arith::SelectOp::create(rewriter, loc, cmp, initVal, sub);
       rewriter.replaceAllUsesWith(use.get(), newVal);
     }
 
@@ -464,8 +466,8 @@ struct RemoveInductionVarRelated : public OpRewritePattern<ForOp> {
     }
 
     rewriter.setInsertionPointAfter(forOp);
-    auto newForOp = rewriter.create<scf::ForOp>(loc, lb, forOp.getUpperBound(),
-                                                step, newIterArgs);
+    auto newForOp = scf::ForOp::create(rewriter, loc, lb, forOp.getUpperBound(),
+                                       step, newIterArgs);
     newForOp->setAttrs(forOp->getAttrs());
 
     // Move body blocks to the new for op (excluding the iter_arg we removed)
@@ -501,7 +503,7 @@ struct RemoveInductionVarRelated : public OpRewritePattern<ForOp> {
     }
     rewriter.setInsertionPointToEnd(newBody);
     if (!newYieldVals.empty())
-      rewriter.create<scf::YieldOp>(oldYieldOp.getLoc(), newYieldVals);
+      scf::YieldOp::create(rewriter, oldYieldOp.getLoc(), newYieldVals);
     rewriter.eraseOp(oldYieldOp);
 
     // Step 3: Replace old loop uses.
@@ -513,25 +515,25 @@ struct RemoveInductionVarRelated : public OpRewritePattern<ForOp> {
       rewriter.setInsertionPointAfter(newForOp);
       Value ub = forOp.getUpperBound();
       auto computeLastValue = [&]() -> Value {
-        Value diff = rewriter.create<arith::SubIOp>(loc, ub, lb);
-        Value one = rewriter.create<arith::ConstantOp>(
-            loc, rewriter.getIntegerAttr(lb.getType(), 1));
-        Value diffMinus1 = rewriter.create<arith::SubIOp>(loc, diff, one);
+        Value diff = arith::SubIOp::create(rewriter, loc, ub, lb);
+        Value one = arith::ConstantOp::create(
+            rewriter, loc, rewriter.getIntegerAttr(lb.getType(), 1));
+        Value diffMinus1 = arith::SubIOp::create(rewriter, loc, diff, one);
         Value iterations =
-            rewriter.create<arith::DivUIOp>(loc, diffMinus1, step);
+            arith::DivUIOp::create(rewriter, loc, diffMinus1, step);
         Value stepTimesIters =
-            rewriter.create<arith::MulIOp>(loc, step, iterations);
+            arith::MulIOp::create(rewriter, loc, step, iterations);
         Value lastValue =
-            rewriter.create<arith::AddIOp>(loc, step, stepTimesIters);
-        return rewriter.create<arith::AddIOp>(loc, lb, lastValue);
+            arith::AddIOp::create(rewriter, loc, step, stepTimesIters);
+        return arith::AddIOp::create(rewriter, loc, lb, lastValue);
       };
       Value lastValue = computeLastValue();
       // TODO: handle negative step
-      Value cmp = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ule,
-                                                 ub, lb);
+      Value cmp = arith::CmpIOp::create(rewriter, loc,
+                                        arith::CmpIPredicate::ule, ub, lb);
 
       Value newVal =
-          rewriter.create<arith::SelectOp>(loc, cmp, initVal, lastValue);
+          arith::SelectOp::create(rewriter, loc, cmp, initVal, lastValue);
       rewriter.replaceAllUsesWith(forOp.getResult(inductionVarResultIdx),
                                   newVal);
     }
@@ -621,8 +623,8 @@ struct RemoveUnusedArgs : public OpRewritePattern<ForOp> {
       return failure();
 
     auto newForOp =
-        rewriter.create<ForOp>(op.getLoc(), op.getLowerBound(),
-                               op.getUpperBound(), op.getStep(), usedOperands);
+        ForOp::create(rewriter, op.getLoc(), op.getLowerBound(),
+                      op.getUpperBound(), op.getStep(), usedOperands);
     newForOp->setAttrs(op->getAttrs());
 
     if (!newForOp.getBody()->empty())
@@ -721,7 +723,7 @@ cast<scf::YieldOp>(op.thenRegion().back().getTerminator());
 +                 llvm::make_early_inc_range(std::get<2>(tup).getUses())) {
 +              changed = true;
 +              rewriter.modifyOpInPlace(use.getOwner(), [&]() {
-+                use.set(rewriter.create<XOrOp>(op.getLoc(), op.condition()));
++                use.set(XOrOp::create(rewriter, op.getLoc(), op.condition()));
 +              });
 +            }
 +          }
@@ -769,19 +771,19 @@ cast<scf::YieldOp>(op.thenRegion().back().getTerminator());
 +              cast<scf::YieldOp>(op.elseRegion().front().getTerminator());
 +          size_t idx = 0;
 +
-+          auto c1 = (mlir::Value)rewriter.create<ConstantOp>(
++          auto c1 = (mlir::Value)ConstantOp::create(rewriter,
 +              op.getLoc(), op.condition().getType(),
 +              rewriter.getIntegerAttr(op.condition().getType(), 1));
-+          auto notcond = (mlir::Value)rewriter.create<mlir::XOrOp>(
++          auto notcond = (mlir::Value)mlir::XOrOp::create(rewriter,
 +              op.getLoc(), op.condition(), c1);
 +
 +          std::vector<Value> replacements;
 +          for (auto res : op.results()) {
-+            auto rep = rewriter.create<OrOp>(
++            auto rep = OrOp::create(rewriter,
 +                op.getLoc(),
-+                rewriter.create<AndOp>(op.getLoc(), op.condition(),
++                AndOp::create(rewriter, op.getLoc(), op.condition(),
 +                                       yop1.results()[idx]),
-+                rewriter.create<AndOp>(op.getLoc(), notcond,
++                AndOp::create(rewriter, op.getLoc(), notcond,
 +                                       yop2.results()[idx]));
 +            replacements.push_back(rep);
 +            idx++;
@@ -804,7 +806,7 @@ cast<scf::YieldOp>(op.thenRegion().back().getTerminator());
 +      std::vector<Value> replacements;
 +      for (auto res : op.results()) {
 +        auto rep =
-+            rewriter.create<SelectOp>(op.getLoc(), op.condition(),
++            SelectOp::create(rewriter, op.getLoc(), op.condition(),
 +                                      yop1.results()[idx],
 yop2.results()[idx]);
 +        replacements.push_back(rep);
@@ -887,8 +889,8 @@ public:
     resultTypes.push_back(op.getType());
 
     rewriter.setInsertionPoint(ifOp);
-    auto nop = rewriter.create<scf::IfOp>(
-        ifOp.getLoc(), resultTypes, ifOp.getCondition(), /*hasElse*/ true);
+    auto nop = scf::IfOp::create(rewriter, ifOp.getLoc(), resultTypes,
+                                 ifOp.getCondition(), /*hasElse*/ true);
     rewriter.eraseBlock(nop.thenBlock());
     rewriter.eraseBlock(nop.elseBlock());
 
@@ -901,14 +903,14 @@ public:
     llvm::append_range(thenYields, nop.thenYield().getOperands());
     rewriter.setInsertionPoint(nop.thenYield());
     thenYields.push_back(
-        rewriter.create<TruncIOp>(op.getLoc(), op.getType(), thenYields[idx]));
+        TruncIOp::create(rewriter, op.getLoc(), op.getType(), thenYields[idx]));
     rewriter.replaceOpWithNewOp<scf::YieldOp>(nop.thenYield(), thenYields);
 
     SmallVector<Value> elseYields;
     llvm::append_range(elseYields, nop.elseYield().getOperands());
     rewriter.setInsertionPoint(nop.elseYield());
     elseYields.push_back(
-        rewriter.create<TruncIOp>(op.getLoc(), op.getType(), elseYields[idx]));
+        TruncIOp::create(rewriter, op.getLoc(), op.getType(), elseYields[idx]));
     rewriter.replaceOpWithNewOp<scf::YieldOp>(nop.elseYield(), elseYields);
     rewriter.replaceOp(ifOp, nop.getResults().take_front(ifOp.getNumResults()));
     rewriter.replaceOp(op, nop.getResults().take_back(1));
@@ -1365,15 +1367,15 @@ struct WhileToForHelper {
 
     if (lb_addOne) {
       Value one =
-          rewriter.create<ConstantIntOp>(loop.getLoc(), lb.getType(), 1);
-      lb = rewriter.create<AddIOp>(loop.getLoc(), lb, one);
+          ConstantIntOp::create(rewriter, loop.getLoc(), lb.getType(), 1);
+      lb = AddIOp::create(rewriter, loop.getLoc(), lb, one);
     }
 
     if (lb_addStep) {
-      lb = rewriter.create<AddIOp>(loop.getLoc(), lb, step);
+      lb = AddIOp::create(rewriter, loop.getLoc(), lb, step);
     }
     if (lb_subStep) {
-      lb = rewriter.create<SubIOp>(loop.getLoc(), lb, step);
+      lb = SubIOp::create(rewriter, loop.getLoc(), lb, step);
     }
 
     if (ub_cloneMove) {
@@ -1385,11 +1387,11 @@ struct WhileToForHelper {
     }
     if (ub_addOne) {
       Value one =
-          rewriter.create<ConstantIntOp>(loop.getLoc(), ub.getType(), 1);
-      ub = rewriter.create<AddIOp>(loop.getLoc(), ub, one);
+          ConstantIntOp::create(rewriter, loop.getLoc(), ub.getType(), 1);
+      ub = AddIOp::create(rewriter, loop.getLoc(), ub, one);
     }
     if (ub_addStep) {
-      ub = rewriter.create<AddIOp>(loop.getLoc(), ub, step);
+      ub = AddIOp::create(rewriter, loop.getLoc(), ub, step);
     }
     bool modifyTypeToIndex = true;
     if ((step.getType() == lb.getType()) && (ub.getType() == lb.getType())) {
@@ -1397,19 +1399,20 @@ struct WhileToForHelper {
     }
 
     if (negativeStep) {
-      auto zero = rewriter.create<arith::ConstantOp>(
-          step.getLoc(), step.getType(), rewriter.getZeroAttr(step.getType()));
-      step = rewriter.create<SubIOp>(step.getLoc(), zero, step);
+      auto zero =
+          arith::ConstantOp::create(rewriter, step.getLoc(), step.getType(),
+                                    rewriter.getZeroAttr(step.getType()));
+      step = SubIOp::create(rewriter, step.getLoc(), zero, step);
     }
 
     // Only cast if the types of step, ub and lb are different
     if (modifyTypeToIndex) {
-      ub = rewriter.create<IndexCastOp>(loop.getLoc(),
-                                        IndexType::get(loop.getContext()), ub);
-      lb = rewriter.create<IndexCastOp>(loop.getLoc(),
-                                        IndexType::get(loop.getContext()), lb);
-      step = rewriter.create<IndexCastOp>(
-          loop.getLoc(), IndexType::get(loop.getContext()), step);
+      ub = IndexCastOp::create(rewriter, loop.getLoc(),
+                               IndexType::get(loop.getContext()), ub);
+      lb = IndexCastOp::create(rewriter, loop.getLoc(),
+                               IndexType::get(loop.getContext()), lb);
+      step = IndexCastOp::create(rewriter, loop.getLoc(),
+                                 IndexType::get(loop.getContext()), step);
     }
   }
 };
@@ -1480,14 +1483,14 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
         }
       }
       if (!newArg)
-        newArg = rewriter.create<ub::PoisonOp>(arg.getLoc(), arg.getType());
+        newArg = ub::PoisonOp::create(rewriter, arg.getLoc(), arg.getType());
       forArgs.push_back(newArg);
     }
 
     // And finally, optionally, the extra condition from the and
     if (lookThrough) {
-      forArgs.push_back(rewriter.create<arith::ConstantIntOp>(
-          loop.getLoc(), rewriter.getI1Type(), true));
+      forArgs.push_back(arith::ConstantIntOp::create(
+          rewriter, loop.getLoc(), rewriter.getI1Type(), true));
     }
 
     bool doWhile = false;
@@ -1520,13 +1523,13 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
       // we add step to force the extra iteration at the end, but also we need
       // to max with lb + step to make sure one iteration runs at all. max(lb +
       // step, ub + step) -> max(ub, lb) + step
-      ub = rewriter.create<arith::MaxSIOp>(loop.getLoc(), ub, helper.lb);
+      ub = arith::MaxSIOp::create(rewriter, loop.getLoc(), ub, helper.lb);
 
-      ub = rewriter.create<arith::AddIOp>(loop.getLoc(), ub, helper.step);
+      ub = arith::AddIOp::create(rewriter, loop.getLoc(), ub, helper.step);
     }
 
-    auto forloop = rewriter.create<scf::ForOp>(loop.getLoc(), helper.lb, ub,
-                                               helper.step, forArgs);
+    auto forloop = scf::ForOp::create(rewriter, loop.getLoc(), helper.lb, ub,
+                                      helper.step, forArgs);
     forloop->setAttrs(loop->getAttrs());
 
     if (!forloop.getBody()->empty())
@@ -1551,8 +1554,8 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
       SmallVector<Type> resTys = llvm::to_vector(loop.getResultTypes());
       resTys.push_back(rewriter.getI1Type());
 
-      ifOp = rewriter.create<scf::IfOp>(
-          forloop.getLoc(), resTys, forloop.getRegionIterArgs().back(), true);
+      ifOp = scf::IfOp::create(rewriter, forloop.getLoc(), resTys,
+                               forloop.getRegionIterArgs().back(), true);
 
       rewriter.eraseBlock(&ifOp->getRegion(0).front());
       ifOp->getRegion(0).getBlocks().splice(
@@ -1563,7 +1566,7 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
       auto toYield = llvm::to_vector(condOp.getArgs());
 
       toYield.push_back(lookThrough);
-      rewriter.create<scf::YieldOp>(loop.getLoc(), toYield);
+      scf::YieldOp::create(rewriter, loop.getLoc(), toYield);
 
       rewriter.setInsertionPointToEnd(&ifOp.getElseRegion().front());
 
@@ -1573,10 +1576,10 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
             forloop.getRegionIterArgs()[i + loop.getInits().size()]);
       }
 
-      toYield.push_back(rewriter.create<arith::ConstantIntOp>(
-          loop.getLoc(), rewriter.getI1Type(), false));
+      toYield.push_back(arith::ConstantIntOp::create(
+          rewriter, loop.getLoc(), rewriter.getI1Type(), false));
 
-      rewriter.create<scf::YieldOp>(loop.getLoc(), toYield);
+      scf::YieldOp::create(rewriter, loop.getLoc(), toYield);
 
       rewriter.modifyOpInPlace(loop, [&] {
         for (auto pair :
@@ -1613,16 +1616,16 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
       SmallVector<Type> initTypes;
       for (auto T : loop.getInits())
         initTypes.push_back(T.getType());
-      Value cond = rewriter.create<arith::CmpIOp>(
-          forloop.getLoc(),
-          helper.negativeStep ? arith::CmpIPredicate::sgt
-                              : arith::CmpIPredicate::slt,
-          forloop.getInductionVar(), helper.ub);
+      Value cond =
+          arith::CmpIOp::create(rewriter, forloop.getLoc(),
+                                helper.negativeStep ? arith::CmpIPredicate::sgt
+                                                    : arith::CmpIPredicate::slt,
+                                forloop.getInductionVar(), helper.ub);
       if (lookThrough) {
-        cond = rewriter.create<AndIOp>(loop.getLoc(), cond, nextLookThrough);
+        cond = AndIOp::create(rewriter, loop.getLoc(), cond, nextLookThrough);
       }
       auto ifOp =
-          rewriter.create<scf::IfOp>(forloop.getLoc(), initTypes, cond, true);
+          scf::IfOp::create(rewriter, forloop.getLoc(), initTypes, cond, true);
 
       rewriter.eraseBlock(&ifOp->getRegion(0).front());
       ifOp->getRegion(0).getBlocks().splice(
@@ -1630,15 +1633,15 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
           loop->getRegion(1).getBlocks());
 
       rewriter.setInsertionPointToEnd(&ifOp.getThenRegion().front());
-      rewriter.create<scf::YieldOp>(loop.getLoc(), oldYield.getResults());
+      scf::YieldOp::create(rewriter, loop.getLoc(), oldYield.getResults());
 
       rewriter.setInsertionPointToEnd(&ifOp.getElseRegion().front());
       SmallVector<Value> nonArgs;
       for (auto A : loop.getInits()) {
         nonArgs.push_back(
-            rewriter.create<ub::PoisonOp>(loop.getLoc(), A.getType()));
+            ub::PoisonOp::create(rewriter, loop.getLoc(), A.getType()));
       }
-      rewriter.create<scf::YieldOp>(loop.getLoc(), nonArgs);
+      scf::YieldOp::create(rewriter, loop.getLoc(), nonArgs);
 
       for (size_t i = 0; i < loop.getInits().size(); i++) {
         newYields[i] = ifOp->getResults()[i];
@@ -1656,7 +1659,7 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
     }
 
     rewriter.setInsertionPointToEnd(forloop.getBody());
-    rewriter.create<scf::YieldOp>(loop.getLoc(), newYields);
+    scf::YieldOp::create(rewriter, loop.getLoc(), newYields);
 
     rewriter.eraseOp(condOp);
     rewriter.eraseOp(oldYield);
@@ -1760,39 +1763,40 @@ struct RotateWhileAnd : public OpRewritePattern<WhileOp> {
         if (current == nullptr) {
           current = aval;
         } else {
-          current = rewriter.create<AndIOp>(loop.getLoc(), current, aval);
+          current = AndIOp::create(rewriter, loop.getLoc(), current, aval);
         }
       }
       for (auto aval : negatedValues) {
-        aval = rewriter.create<XOrIOp>(loop.getLoc(), aval,
-                                       rewriter.create<arith::ConstantIntOp>(
-                                           aval.getLoc(), aval.getType(), 1));
+        aval = XOrIOp::create(rewriter, loop.getLoc(), aval,
+                              arith::ConstantIntOp::create(
+                                  rewriter, aval.getLoc(), aval.getType(), 1));
         if (current == nullptr) {
           current = aval;
         } else {
-          current = rewriter.create<AndIOp>(loop.getLoc(), current, aval);
+          current = AndIOp::create(rewriter, loop.getLoc(), current, aval);
         }
       }
       for (auto &&[aval, negated] : todo) {
         if (negated)
-          aval = rewriter.create<XOrIOp>(loop.getLoc(), aval,
-                                         rewriter.create<arith::ConstantIntOp>(
-                                             aval.getLoc(), aval.getType(), 1));
+          aval =
+              XOrIOp::create(rewriter, loop.getLoc(), aval,
+                             arith::ConstantIntOp::create(
+                                 rewriter, aval.getLoc(), aval.getType(), 1));
         if (current == nullptr) {
           current = aval;
         } else {
-          current = rewriter.create<AndIOp>(loop.getLoc(), current, aval);
+          current = AndIOp::create(rewriter, loop.getLoc(), current, aval);
         }
       }
 
       Value cmpIOp2 = cmpIOp;
       if (negated) {
-        cmpIOp2 = rewriter.create<CmpIOp>(
-            loop.getLoc(), invertPredicate(cmpIOp.getPredicate()),
-            cmpIOp.getLhs(), cmpIOp.getRhs());
+        cmpIOp2 = CmpIOp::create(rewriter, loop.getLoc(),
+                                 invertPredicate(cmpIOp.getPredicate()),
+                                 cmpIOp.getLhs(), cmpIOp.getRhs());
       }
       if (current)
-        current = rewriter.create<AndIOp>(loop.getLoc(), current, cmpIOp2);
+        current = AndIOp::create(rewriter, loop.getLoc(), current, cmpIOp2);
       else
         current = cmpIOp2;
 
@@ -1883,8 +1887,8 @@ struct MoveWhileDown : public OpRewritePattern<WhileOp> {
       for (auto a : args)
         tys.push_back(a.getType());
 
-      auto op2 = rewriter.create<WhileOp>(op.getLoc(), tys, op.getInits(),
-                                          op->getAttrs());
+      auto op2 = WhileOp::create(rewriter, op.getLoc(), tys, op.getInits(),
+                                 op->getAttrs());
       op2.getBefore().takeBody(op.getBefore());
       op2.getAfter().takeBody(op.getAfter());
       SmallVector<Value, 4> replacements;
@@ -2084,8 +2088,8 @@ struct MoveWhileDown2 : public OpRewritePattern<WhileOp> {
       }
 
       rewriter.setInsertionPoint(op);
-      auto nop = rewriter.create<WhileOp>(op.getLoc(), resultTypes,
-                                          op.getInits(), op->getAttrs());
+      auto nop = WhileOp::create(rewriter, op.getLoc(), resultTypes,
+                                 op.getInits(), op->getAttrs());
       nop.getBefore().takeBody(op.getBefore());
       nop.getAfter().takeBody(op.getAfter());
 
@@ -2201,7 +2205,7 @@ struct WhileLogicalNegation : public OpRewritePattern<WhileOp> {
         rewriter.modifyOpInPlace(op, [&] {
           rewriter.setInsertionPoint(op);
           auto truev =
-              rewriter.create<ConstantIntOp>(op.getLoc(), !afterValue, 1);
+              ConstantIntOp::create(rewriter, op.getLoc(), !afterValue, 1);
           std::get<0>(pair).replaceAllUsesWith(truev);
         });
         changed = true;
@@ -2210,7 +2214,7 @@ struct WhileLogicalNegation : public OpRewritePattern<WhileOp> {
         rewriter.modifyOpInPlace(op, [&] {
           rewriter.setInsertionPointToStart(&op.getAfter().front());
           auto truev =
-              rewriter.create<ConstantIntOp>(op.getLoc(), afterValue, 1);
+              ConstantIntOp::create(rewriter, op.getLoc(), afterValue, 1);
           std::get<2>(pair).replaceAllUsesWith(truev);
         });
         changed = true;
@@ -2246,8 +2250,8 @@ struct WhileCmpOffset : public OpRewritePattern<WhileOp> {
               {
                 rewriter.setInsertionPoint(op);
                 SmallVector<Value> oldInits = op.getInits();
-                oldInits[blockArg.getArgNumber()] = rewriter.create<AddIOp>(
-                    addI.getLoc(), oldInits[blockArg.getArgNumber()],
+                oldInits[blockArg.getArgNumber()] = AddIOp::create(
+                    rewriter, addI.getLoc(), oldInits[blockArg.getArgNumber()],
                     addI.getOperand(1));
                 op.getInitsMutable().assign(oldInits);
                 rewriter.modifyOpInPlace(
@@ -2257,16 +2261,16 @@ struct WhileCmpOffset : public OpRewritePattern<WhileOp> {
               YieldOp afterYield = cast<YieldOp>(op.getAfter().front().back());
               rewriter.setInsertionPoint(afterYield);
               SmallVector<Value> oldYields = afterYield.getResults();
-              oldYields[blockArg.getArgNumber()] = rewriter.create<AddIOp>(
-                  addI.getLoc(), oldYields[blockArg.getArgNumber()],
+              oldYields[blockArg.getArgNumber()] = AddIOp::create(
+                  rewriter, addI.getLoc(), oldYields[blockArg.getArgNumber()],
                   addI.getOperand(1));
               rewriter.modifyOpInPlace(afterYield, [&] {
                 afterYield.getResultsMutable().assign(oldYields);
               });
 
               rewriter.setInsertionPointToStart(&op.getBefore().front());
-              auto sub = rewriter.create<SubIOp>(addI.getLoc(), blockArg,
-                                                 addI.getOperand(1));
+              auto sub = SubIOp::create(rewriter, addI.getLoc(), blockArg,
+                                        addI.getOperand(1));
               for (OpOperand &use : rng) {
                 rewriter.modifyOpInPlace(use.getOwner(),
                                          [&]() { use.set(sub); });
@@ -2320,8 +2324,8 @@ struct RemoveWhileSelect : public OpRewritePattern<WhileOp> {
     for (auto v : newYields) {
       resultTypes.push_back(v.getType());
     }
-    auto nop = rewriter.create<WhileOp>(loop.getLoc(), resultTypes,
-                                        loop.getInits(), loop->getAttrs());
+    auto nop = WhileOp::create(rewriter, loop.getLoc(), resultTypes,
+                               loop.getInits(), loop->getAttrs());
 
     nop.getBefore().takeBody(loop.getBefore());
 
@@ -2417,8 +2421,8 @@ struct MoveWhileDown3 : public OpRewritePattern<WhileOp> {
     for (auto v : condOps) {
       resultTypes.push_back(v.getType());
     }
-    auto nop = rewriter.create<WhileOp>(op.getLoc(), resultTypes, op.getInits(),
-                                        op->getAttrs());
+    auto nop = WhileOp::create(rewriter, op.getLoc(), resultTypes,
+                               op.getInits(), op->getAttrs());
 
     nop.getBefore().takeBody(op.getBefore());
     nop.getAfter().takeBody(op.getAfter());
@@ -2612,8 +2616,8 @@ struct RemoveUnusedCondVar : public OpRewritePattern<WhileOp> {
                                                     conds);
 
       rewriter.setInsertionPoint(op);
-      auto op2 = rewriter.create<WhileOp>(op.getLoc(), tys, op.getInits(),
-                                          op->getAttrs());
+      auto op2 = WhileOp::create(rewriter, op.getLoc(), tys, op.getInits(),
+                                 op->getAttrs());
 
       op2.getBefore().takeBody(op.getBefore());
       op2.getAfter().takeBody(op.getAfter());
@@ -2658,8 +2662,8 @@ struct MoveSideEffectFreeWhile : public OpRewritePattern<WhileOp> {
       for (auto arg : conds) {
         tys.push_back(arg.getType());
       }
-      auto op2 = rewriter.create<WhileOp>(op.getLoc(), tys, op.getInits(),
-                                          op->getAttrs());
+      auto op2 = WhileOp::create(rewriter, op.getLoc(), tys, op.getInits(),
+                                 op->getAttrs());
       op2.getBefore().takeBody(op.getBefore());
       op2.getAfter().takeBody(op.getAfter());
       unsigned j = 0;
@@ -2684,8 +2688,8 @@ struct SubToAdd : public OpRewritePattern<SubIOp> {
     if (auto cop = op.getOperand(1).getDefiningOp<ConstantIntOp>()) {
       rewriter.replaceOpWithNewOp<AddIOp>(
           op, op.getOperand(0),
-          rewriter.create<ConstantIntOp>(cop.getLoc(), cop.getType(),
-                                         -cop.value()));
+          ConstantIntOp::create(rewriter, cop.getLoc(), cop.getType(),
+                                -cop.value()));
       return success();
     }
     return failure();
@@ -2748,8 +2752,8 @@ struct RemoveUnusedResults : public OpRewritePattern<IfOp> {
 
     // Create a replacement operation with empty then and else regions.
     auto emptyBuilder = [](OpBuilder &, Location) {};
-    auto newOp = rewriter.create<IfOp>(op.getLoc(), newTypes, op.getCondition(),
-                                       emptyBuilder, emptyBuilder);
+    auto newOp = IfOp::create(rewriter, op.getLoc(), newTypes,
+                              op.getCondition(), emptyBuilder, emptyBuilder);
 
     // Move the bodies and replace the terminators (note there is a then and
     // an else region since the operation returns results).
@@ -2780,12 +2784,12 @@ struct SelectTruncToTruncSelect : public OpRewritePattern<TruncIOp> {
     auto b = selectOp.getFalseValue();
 
     // Create new extract operations
-    auto aTrunc = rewriter.create<TruncIOp>(op.getLoc(), op.getType(), a);
-    auto bTrunc = rewriter.create<TruncIOp>(op.getLoc(), op.getType(), b);
+    auto aTrunc = TruncIOp::create(rewriter, op.getLoc(), op.getType(), a);
+    auto bTrunc = TruncIOp::create(rewriter, op.getLoc(), op.getType(), b);
 
     // Create new select with same condition and operands
-    auto newSelect = rewriter.create<SelectOp>(selectOp.getLoc(), op.getType(),
-                                               cond, aTrunc, bTrunc);
+    auto newSelect = SelectOp::create(rewriter, selectOp.getLoc(), op.getType(),
+                                      cond, aTrunc, bTrunc);
 
     // Replace old extract with new select
     rewriter.replaceOp(op, newSelect);
@@ -2849,25 +2853,25 @@ struct WhileShiftToInduction : public OpRewritePattern<WhileOp> {
     auto startingV = loop.getInits()[indVar.getArgNumber()];
 
     Value lz =
-        rewriter.create<math::CountLeadingZerosOp>(loop.getLoc(), startingV);
+        math::CountLeadingZerosOp::create(rewriter, loop.getLoc(), startingV);
     if (!lz.getType().isIndex())
-      lz = rewriter.create<IndexCastOp>(loop.getLoc(), rewriter.getIndexType(),
-                                        lz);
+      lz = IndexCastOp::create(rewriter, loop.getLoc(), rewriter.getIndexType(),
+                               lz);
 
-    auto len = rewriter.create<SubIOp>(
-        loop.getLoc(),
-        rewriter.create<ConstantIndexOp>(
-            loop.getLoc(), indVar.getType().getIntOrFloatBitWidth()),
+    auto len = SubIOp::create(
+        rewriter, loop.getLoc(),
+        ConstantIndexOp::create(rewriter, loop.getLoc(),
+                                indVar.getType().getIntOrFloatBitWidth()),
         lz);
 
     SmallVector<Value> newInits(loop.getInits());
     newInits[indVar.getArgNumber()] =
-        rewriter.create<ConstantIndexOp>(loop.getLoc(), 0);
+        ConstantIndexOp::create(rewriter, loop.getLoc(), 0);
     SmallVector<Type> postTys(loop.getResultTypes());
     postTys.push_back(rewriter.getIndexType());
 
-    auto newWhile = rewriter.create<WhileOp>(loop.getLoc(), postTys, newInits,
-                                             loop->getAttrs());
+    auto newWhile = WhileOp::create(rewriter, loop.getLoc(), postTys, newInits,
+                                    loop->getAttrs());
     rewriter.createBlock(&newWhile.getBefore());
 
     IRMapping map;
@@ -2882,21 +2886,21 @@ struct WhileShiftToInduction : public OpRewritePattern<WhileOp> {
     }
 
     rewriter.setInsertionPointToEnd(&newWhile.getBefore().front());
-    Value newCmp = rewriter.create<CmpIOp>(cmpIOp.getLoc(), CmpIPredicate::ult,
-                                           newIndVar, len);
+    Value newCmp = CmpIOp::create(rewriter, cmpIOp.getLoc(), CmpIPredicate::ult,
+                                  newIndVar, len);
     map.map(cmpIOp, newCmp);
 
     Value newIndVarTyped = newIndVar;
     if (newIndVarTyped.getType() != indVar.getType())
-      newIndVarTyped = rewriter.create<arith::IndexCastOp>(
-          shiftOp.getLoc(), indVar.getType(), newIndVar);
-    map.map(indVar, rewriter.create<ShRUIOp>(shiftOp.getLoc(), startingV,
-                                             newIndVarTyped));
+      newIndVarTyped = arith::IndexCastOp::create(rewriter, shiftOp.getLoc(),
+                                                  indVar.getType(), newIndVar);
+    map.map(indVar, ShRUIOp::create(rewriter, shiftOp.getLoc(), startingV,
+                                    newIndVarTyped));
     SmallVector<Value> remapped;
     for (auto o : condOp.getArgs())
       remapped.push_back(map.lookup(o));
     remapped.push_back(newIndVar);
-    rewriter.create<ConditionOp>(condOp.getLoc(), newCmp, remapped);
+    ConditionOp::create(rewriter, condOp.getLoc(), newCmp, remapped);
 
     newWhile.getAfter().takeBody(loop.getAfter());
 
@@ -2906,9 +2910,9 @@ struct WhileShiftToInduction : public OpRewritePattern<WhileOp> {
         cast<scf::YieldOp>(newWhile.getAfter().front().getTerminator());
     SmallVector<Value> yields(yieldOp.getOperands());
     rewriter.setInsertionPointToEnd(&newWhile.getAfter().front());
-    yields[indVar.getArgNumber()] = rewriter.create<AddIOp>(
-        loop.getLoc(), newPostInd,
-        rewriter.create<arith::ConstantIndexOp>(loop.getLoc(), 1));
+    yields[indVar.getArgNumber()] = AddIOp::create(
+        rewriter, loop.getLoc(), newPostInd,
+        arith::ConstantIndexOp::create(rewriter, loop.getLoc(), 1));
     rewriter.replaceOpWithNewOp<scf::YieldOp>(yieldOp, yields);
 
     SmallVector<Value> res(newWhile.getResults());
@@ -2934,14 +2938,14 @@ struct SelectI1Simplify : public OpRewritePattern<arith::SelectOp> {
       return failure();
 
     Value falseConstant =
-        rewriter.create<arith::ConstantIntOp>(op.getLoc(), true, 1);
-    Value notCondition = rewriter.create<arith::XOrIOp>(
-        op.getLoc(), op.getCondition(), falseConstant);
+        arith::ConstantIntOp::create(rewriter, op.getLoc(), true, 1);
+    Value notCondition = arith::XOrIOp::create(
+        rewriter, op.getLoc(), op.getCondition(), falseConstant);
 
-    Value trueVal = rewriter.create<arith::AndIOp>(
-        op.getLoc(), op.getCondition(), op.getTrueValue());
-    Value falseVal = rewriter.create<arith::AndIOp>(op.getLoc(), notCondition,
-                                                    op.getFalseValue());
+    Value trueVal = arith::AndIOp::create(rewriter, op.getLoc(),
+                                          op.getCondition(), op.getTrueValue());
+    Value falseVal = arith::AndIOp::create(rewriter, op.getLoc(), notCondition,
+                                           op.getFalseValue());
     rewriter.replaceOpWithNewOp<arith::OrIOp>(op, trueVal, falseVal);
     return success();
   }
@@ -3134,9 +3138,9 @@ struct IfYieldMovementPattern : public OpRewritePattern<scf::IfOp> {
       resultTypes.push_back(operand.getType());
     }
 
-    auto newIfOp = rewriter.create<scf::IfOp>(ifOp.getLoc(), resultTypes,
-                                              ifOp.getCondition(),
-                                              /*hasElse=*/true);
+    auto newIfOp = scf::IfOp::create(rewriter, ifOp.getLoc(), resultTypes,
+                                     ifOp.getCondition(),
+                                     /*hasElse=*/true);
 
     // Move operations from the original then block to the new then block
 
@@ -3154,7 +3158,7 @@ struct IfYieldMovementPattern : public OpRewritePattern<scf::IfOp> {
     {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToEnd(newIfOp.thenBlock());
-      rewriter.create<scf::YieldOp>(thenYield.getLoc(), ifYieldOperands);
+      scf::YieldOp::create(rewriter, thenYield.getLoc(), ifYieldOperands);
       rewriter.eraseOp(thenYield);
     }
 
@@ -3162,7 +3166,7 @@ struct IfYieldMovementPattern : public OpRewritePattern<scf::IfOp> {
     {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToEnd(newIfOp.elseBlock());
-      rewriter.create<scf::YieldOp>(elseYield.getLoc(), elseYieldOperands);
+      scf::YieldOp::create(rewriter, elseYield.getLoc(), elseYieldOperands);
       rewriter.eraseOp(elseYield);
     }
 

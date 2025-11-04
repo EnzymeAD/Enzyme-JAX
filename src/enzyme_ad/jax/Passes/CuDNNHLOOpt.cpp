@@ -118,7 +118,7 @@ struct DotGeneralElementwiseToCuDNNFusion
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(mod.getBody());
 
-      auto funcOp = rewriter.create<func::FuncOp>(elemLoc, fnSym, funcTy);
+      auto funcOp = func::FuncOp::create(rewriter, elemLoc, fnSym, funcTy);
       funcOp.setVisibility(SymbolTable::Visibility::Private);
       funcOp.setNoInlineAttr(rewriter.getUnitAttr());
       auto &entryBlock = *funcOp.addEntryBlock();
@@ -128,19 +128,19 @@ struct DotGeneralElementwiseToCuDNNFusion
       auto arg1 = entryBlock.getArgument(1);
       auto arg2 = entryBlock.getArgument(2);
 
-      auto newDotGeneral = rewriter.create<stablehlo::DotGeneralOp>(
-          elemLoc, dotGeneral.getType(), arg0, arg1,
+      auto newDotGeneral = stablehlo::DotGeneralOp::create(
+          rewriter, elemLoc, dotGeneral.getType(), arg0, arg1,
           dotGeneral.getDotDimensionNumbersAttr(),
           dotGeneral.getPrecisionConfigAttr(), dotGeneral.getAlgorithmAttr());
       Value newElementwise;
       if (dotGeneralIsLhs) {
         newElementwise =
-            rewriter.create<ElementwiseOpTy>(elemLoc, newDotGeneral, arg2);
+            ElementwiseOpTy::create(rewriter, elemLoc, newDotGeneral, arg2);
       } else {
         newElementwise =
-            rewriter.create<ElementwiseOpTy>(elemLoc, arg2, newDotGeneral);
+            ElementwiseOpTy::create(rewriter, elemLoc, arg2, newDotGeneral);
       }
-      rewriter.create<func::ReturnOp>(elemLoc, newElementwise);
+      func::ReturnOp::create(rewriter, elemLoc, newElementwise);
     }
 
     return success();
