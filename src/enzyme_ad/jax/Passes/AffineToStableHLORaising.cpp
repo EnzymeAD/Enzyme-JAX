@@ -1974,7 +1974,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
                : updateValueMap.getOperands()) {
             iv.printAsOperand(llvm::dbgs(), flags);
             llvm::dbgs() << ", ";
-          } llvm::dbgs() << "\n";
+          } llvm::dbgs()
+          << "\n";
           updateValueMap.getAffineMap().dump(););
       return failure();
     }
