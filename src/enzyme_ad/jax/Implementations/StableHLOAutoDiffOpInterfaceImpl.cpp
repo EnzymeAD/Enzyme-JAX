@@ -3622,8 +3622,9 @@ struct SHLOConvolutionOpBatchInterface
           builder, convolution.getLoc(),
           splat.resizeSplat(convolution.getRhs().getType()));
 
-      // TODO: identify patterns like broadcast_in_dim / iota, where all the kernels
-      // are the same and we don't need to use a larger batch group count
+      // TODO: identify patterns like broadcast_in_dim / iota, where all the
+      // kernels are the same and we don't need to use a larger batch group
+      // count
     }
 
     if (!batchedRhs) {
@@ -3633,7 +3634,8 @@ struct SHLOConvolutionOpBatchInterface
           builder, rhs, batchSize, batchSizes, kernelOutputFeatureDim);
     }
 
-    int64_t resultBatchDim = batchGroupCount == 1 ? outputBatchDim : outputFeatureDim;
+    int64_t resultBatchDim =
+        batchGroupCount == 1 ? outputBatchDim : outputFeatureDim;
 
     // LHS -> Group the Batch Dimensions -> Reshape and Combine the Batch
     // Dimensions -> Convolution -> Reshape to extract the batch dims ->
