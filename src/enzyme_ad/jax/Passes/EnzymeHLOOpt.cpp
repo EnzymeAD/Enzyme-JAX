@@ -25033,6 +25033,12 @@ void mlir::transform::addDotGeneralLICM(RewritePatternSet &patterns,
                                                  benefit);
 }
 
+void mlir::transform::addReverseLICM(RewritePatternSet &patterns,
+                                     bool single_user, MLIRContext &context,
+                                     PatternBenefit benefit) {
+  patterns.insert<LICM<stablehlo::ReverseOp>>(single_user, &context, benefit);
+}
+
 void mlir::transform::addReduceLICM(RewritePatternSet &patterns,
                                     bool single_user, MLIRContext &context,
                                     PatternBenefit benefit) {

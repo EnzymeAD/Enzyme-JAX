@@ -85,6 +85,10 @@ void ApplyDotGeneralLICMPatterns::populatePatterns(
   addDotGeneralLICM(patterns, getParameter(), *getContext(),
                     PatternBenefit(getBenefit().value_or(1)));
 }
+void ApplyReverseLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
+  addReverseLICM(patterns, getParameter(), *getContext(),
+                 PatternBenefit(getBenefit().value_or(1)));
+}
 void ApplyReduceLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
   addReduceLICM(patterns, getParameter(), *getContext(),
                 PatternBenefit(getBenefit().value_or(1)));

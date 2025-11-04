@@ -1136,6 +1136,21 @@ def ApplyDotGeneralLICMPatterns : EnzymeHLOParameterizedPatternOp<
   }];
 }
 
+def ApplyReverseLICMPatterns : EnzymeHLOParameterizedPatternOp<
+    "reverse_licm"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
 def ApplyReduceLICMPatterns : EnzymeHLOParameterizedPatternOp<
     "reduce_licm"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
