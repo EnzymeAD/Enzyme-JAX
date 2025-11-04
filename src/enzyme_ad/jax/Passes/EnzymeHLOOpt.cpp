@@ -13052,6 +13052,12 @@ struct NoopReverse final
 
   LogicalResult matchAndRewriteImpl(stablehlo::ReverseOp op,
                                     PatternRewriter &rewriter) const {
+    SplatElementsAttr splat;
+    if (matchPattern(op.getOperand(), m_Constant(&splat))) {
+      rewriter.replaceAllUsesWith(op, op.getOperand());
+      return success();
+    }
+
     SmallVector<int64_t> newDimensions;
     auto dimensions = op.getDimensions();
     auto shape = op.getResult().getType().getShape();
@@ -13060,6 +13066,11 @@ struct NoopReverse final
       auto size = shape[dim];
       if (size != 1)
         newDimensions.push_back(dim);
+    }
+
+    if (auto bcast =
+            op.getOperand().getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+      peelBroadcastedDimensions(bcast, newDimensions);
     }
 
     if (newDimensions.empty()) {
@@ -13073,6 +13084,27 @@ struct NoopReverse final
     rewriter.replaceOpWithNewOp<stablehlo::ReverseOp>(op, op.getOperand(),
                                                       newDimensions);
     return success();
+  }
+
+private:
+  void peelBroadcastedDimensions(stablehlo::BroadcastInDimOp op,
+                                 SmallVectorImpl<int64_t> &dims) const {
+    DenseMap<int64_t, int64_t> dimMap;
+    for (auto [i, dim] : llvm::enumerate(op.getBroadcastDimensions())) {
+      dimMap[dim] = i;
+    }
+
+    auto opShape = cast<RankedTensorType>(op.getOperand().getType()).getShape();
+
+    auto newEnd = llvm::remove_if(dims, [&](int64_t dim) {
+      auto it = dimMap.find(dim);
+      if (it != dimMap.end()) {
+        return opShape[it->second] == 1; // if 1 then trivially expanded
+      }
+      return true; // not in broadcast dims so it was expanded
+    });
+    dims.erase(newEnd, dims.end());
+    return;
   }
 };
 
