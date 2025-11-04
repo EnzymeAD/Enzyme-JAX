@@ -61,8 +61,8 @@ struct AlwaysInlinerInterface : public mlir::InlinerInterface {
 
     // Replace the return with a branch to the dest.
     mlir::OpBuilder builder(op);
-    builder.create<mlir::cf::BranchOp>(op->getLoc(), newDest,
-                                       op->getOperands());
+    mlir::cf::BranchOp::create(builder, op->getLoc(), newDest,
+                               op->getOperands());
     op->erase();
   }
 

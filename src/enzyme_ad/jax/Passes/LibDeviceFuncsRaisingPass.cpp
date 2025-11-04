@@ -318,8 +318,8 @@ public:
     if (callee.getLeafReference() != funcName)
       return failure();
 
-    auto newOp = rewriter.create<TargetOp>(
-        op->getLoc(), op->getOperand(0).getType(), op->getOperands());
+    auto newOp = TargetOp::create(
+        rewriter, op->getLoc(), op->getOperand(0).getType(), op->getOperands());
     auto sourceType = cast<IntegerType>(op->getOperand(0).getType());
     auto targetType = cast<IntegerType>(op->getResultTypes()[0]);
     if (targetType.getWidth() > sourceType.getWidth()) {
@@ -356,7 +356,7 @@ public:
         callee.getLeafReference() == "__nv_isnanf") {
       rewriter.replaceOpWithNewOp<LLVM::ZExtOp>(
           op, op->getResultTypes(),
-          rewriter.create<math::IsNaNOp>(op.getLoc(), op->getOperands()[0]));
+          math::IsNaNOp::create(rewriter, op.getLoc(), op->getOperands()[0]));
       return success();
     }
 
@@ -365,7 +365,8 @@ public:
         callee.getLeafReference() == "__nv_isfinitef") {
       rewriter.replaceOpWithNewOp<LLVM::ZExtOp>(
           op, op->getResultTypes(),
-          rewriter.create<math::IsFiniteOp>(op.getLoc(), op->getOperands()[0]));
+          math::IsFiniteOp::create(rewriter, op.getLoc(),
+                                   op->getOperands()[0]));
       return success();
     }
 
@@ -374,7 +375,8 @@ public:
         callee.getLeafReference() == "__nv_finitef") {
       rewriter.replaceOpWithNewOp<LLVM::ZExtOp>(
           op, op->getResultTypes(),
-          rewriter.create<math::IsFiniteOp>(op.getLoc(), op->getOperands()[0]));
+          math::IsFiniteOp::create(rewriter, op.getLoc(),
+                                   op->getOperands()[0]));
       return success();
     }
 
@@ -383,7 +385,8 @@ public:
         callee.getLeafReference() == "__nv_isinff") {
       rewriter.replaceOpWithNewOp<LLVM::ZExtOp>(
           op, op->getResultTypes(),
-          rewriter.create<math::IsFiniteOp>(op.getLoc(), op->getOperands()[0]));
+          math::IsFiniteOp::create(rewriter, op.getLoc(),
+                                   op->getOperands()[0]));
       return success();
     }
 
@@ -627,7 +630,7 @@ struct GPUConvert : public OpRewritePattern<From> {
 
   LogicalResult matchAndRewrite(From op,
                                 PatternRewriter &rewriter) const override {
-    auto res = rewriter.create<To>(op.getLoc(), dim);
+    auto res = To::create(rewriter, op.getLoc(), dim);
     SmallVector<Operation *> toReplace;
     for (auto u : op->getUsers()) {
       if (auto ext = dyn_cast<arith::ExtUIOp>(u)) {

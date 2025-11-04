@@ -29,8 +29,8 @@ void generatePatternGroup(OpBuilder &builder, Location loc, Value root,
                           ArrayRef<OpConfig> configurations,
                           llvm::APInt selectionBitmask) {
   OpBuilder::InsertionGuard guard(builder);
-  auto apply = builder.create<transform::ApplyPatternsOp>(
-      loc, root, [](OpBuilder &builder, Location loc) {});
+  auto apply = transform::ApplyPatternsOp::create(
+      builder, loc, root, [](OpBuilder &builder, Location loc) {});
   builder.setInsertionPointToStart(apply.getBody());
   for (auto &&[i, opConfig] : llvm::enumerate(configurations)) {
     if (selectionBitmask.extractBits(/*numBits=*/1, /*bitPosition=*/i).isZero())
@@ -42,14 +42,14 @@ void generatePatternGroup(OpBuilder &builder, Location loc, Value root,
 }
 
 Value generateTransformMain(OpBuilder &builder, Location loc) {
-  auto namedSequence = builder.create<transform::NamedSequenceOp>(
-      loc, "__transform_main", builder.getType<transform::AnyOpType>(),
+  auto namedSequence = transform::NamedSequenceOp::create(
+      builder, loc, "__transform_main", builder.getType<transform::AnyOpType>(),
       TypeRange(), [](OpBuilder &builder, Location loc, BlockArgument) {
-        builder.create<transform::YieldOp>(loc);
+        transform::YieldOp::create(builder, loc);
       });
   builder.setInsertionPointToStart(&namedSequence.getBody().front());
-  auto match = builder.create<transform::MatchOp>(
-      loc, namedSequence.getBody().front().getArgument(0),
+  auto match = transform::MatchOp::create(
+      builder, loc, namedSequence.getBody().front().getArgument(0),
       ArrayRef<StringRef>{func::FuncOp::getOperationName()});
   return match;
 }
@@ -90,8 +90,8 @@ LogicalResult generateTransform(OpBuilder &builder, llvm::APInt version) {
 LogicalResult parseTransform(OpBuilder &builder, Location loc,
                              StringRef patterns) {
   Value root = generateTransformMain(builder, loc);
-  auto apply = builder.create<transform::ApplyPatternsOp>(
-      loc, root, [](OpBuilder &builder, Location loc) {});
+  auto apply = transform::ApplyPatternsOp::create(
+      builder, loc, root, [](OpBuilder &builder, Location loc) {});
   builder.setInsertionPointToStart(apply.getBody());
 
   SmallVector<StringRef> singlePatterns;
@@ -209,7 +209,7 @@ public:
     OpBuilder builder(&getContext());
     builder.setInsertionPointToStart(&op->getRegion(0).front());
     if (createModule) {
-      auto transformModule = builder.create<ModuleOp>(op->getLoc());
+      auto transformModule = ModuleOp::create(builder, op->getLoc());
       op = transformModule;
       builder.setInsertionPointToStart(&op->getRegion(0).front());
     }

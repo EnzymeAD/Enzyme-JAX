@@ -21,7 +21,7 @@ def : EnzymeXLAControlFlowOp<"GPUWrapperOp", [{
                                MGradientUtils *gutils, Operation *original,
                                ValueRange remappedOperands,
                                TypeRange rettys) const {
-    return builder.create<enzymexla::GPUWrapperOp>(original->getLoc(),
+    return enzymexla::GPUWrapperOp::create(builder, original->getLoc(),
                                         remappedOperands);
   }
 }]>;

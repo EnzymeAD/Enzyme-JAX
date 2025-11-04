@@ -22,11 +22,11 @@ namespace details {
 static Value makeIntegerConstant(Location loc, OpBuilder &builder, Type type,
                                  int64_t val) {
   auto unrankedTensorType = RankedTensorType::get({}, type);
-  return builder
-      .create<ConstantOp>(loc, unrankedTensorType,
-                          SplatElementsAttr::get(
-                              unrankedTensorType,
-                              ArrayRef<Attribute>(IntegerAttr::get(type, val))))
+  return ConstantOp::create(
+             builder, loc, unrankedTensorType,
+             SplatElementsAttr::get(
+                 unrankedTensorType,
+                 ArrayRef<Attribute>(IntegerAttr::get(type, val))))
       .getResult();
 }
 
@@ -79,7 +79,7 @@ struct SHLOGenericBatchOpInterface
       N *= batchSize;
     }
 
-    auto whileOp = builder.create<WhileOp>(src->getLoc(), whileOperands);
+    auto whileOp = WhileOp::create(builder, src->getLoc(), whileOperands);
 
     auto whileCond = new Block();
     auto whileBody = new Block();
@@ -94,10 +94,10 @@ struct SHLOGenericBatchOpInterface
         whileCond->addArgument(operand.getType(), src->getLoc());
       }
 
-      condBuilder.create<ReturnOp>(
-          src->getLoc(),
-          ValueRange(condBuilder.create<CompareOp>(
-              src->getLoc(), whileCond->getArgument(0),
+      ReturnOp::create(
+          condBuilder, src->getLoc(),
+          ValueRange(CompareOp::create(
+              condBuilder, src->getLoc(), whileCond->getArgument(0),
               details::makeI64Constant(src->getLoc(), condBuilder, N),
               ComparisonDirection::LT)));
     }
@@ -112,18 +112,17 @@ struct SHLOGenericBatchOpInterface
       SmallVector<Value> whileBodyOutputs;
       whileBodyOutputs.reserve(whileBody->getNumArguments());
 
-      whileBodyOutputs.push_back(bodyBuilder.create<AddOp>(
-          src->getLoc(), whileBody->getArgument(0),
+      whileBodyOutputs.push_back(AddOp::create(
+          bodyBuilder, src->getLoc(), whileBody->getArgument(0),
           details::makeI64Constant(src->getLoc(), bodyBuilder, 1)));
 
       for (int d = 0; d < ndims; ++d) {
         // auto idx = (i / batchStrides[d]) % batchSizes[d];
-        auto idx = bodyBuilder.create<RemOp>(
-            src->getLoc(),
-            bodyBuilder.create<DivOp>(
-                src->getLoc(), whileBody->getArgument(0),
-                details::makeI64Constant(src->getLoc(), bodyBuilder,
-                                         batchStrides[d])),
+        auto idx = RemOp::create(
+            bodyBuilder, src->getLoc(),
+            DivOp::create(bodyBuilder, src->getLoc(), whileBody->getArgument(0),
+                          details::makeI64Constant(src->getLoc(), bodyBuilder,
+                                                   batchStrides[d])),
             details::makeI64Constant(src->getLoc(), bodyBuilder,
                                      batchSizes[d]));
 
@@ -146,11 +145,13 @@ struct SHLOGenericBatchOpInterface
         for (auto i = 0; i < Ty.getShape().size(); i++)
           operandStartIndices.push_back(zeroIdx);
 
-        auto sliceOp = bodyBuilder.create<DynamicSliceOp>(
-            src->getLoc(), sliceTy, batched, operandStartIndices, shape);
+        auto sliceOp =
+            DynamicSliceOp::create(bodyBuilder, src->getLoc(), sliceTy, batched,
+                                   operandStartIndices, shape);
 
-        auto reshapeOp = bodyBuilder.create<ReshapeOp>(
-            src->getLoc(), operand.getType(), sliceOp->getResult(0));
+        auto reshapeOp =
+            ReshapeOp::create(bodyBuilder, src->getLoc(), operand.getType(),
+                              sliceOp->getResult(0));
 
         origToUnbatch.map(operand, reshapeOp->getResult(0));
       }
@@ -167,20 +168,21 @@ struct SHLOGenericBatchOpInterface
         auto reshapeTy = Ty.clone(shape);
 
         auto reshapeOp =
-            bodyBuilder.create<ReshapeOp>(src->getLoc(), reshapeTy, newRes);
+            ReshapeOp::create(bodyBuilder, src->getLoc(), reshapeTy, newRes);
 
         SmallVector<Value> operandStartIndices;
         operandStartIndices.append(startIndices.begin(), startIndices.end());
         for (int i = 0; i < Ty.getShape().size(); ++i)
           operandStartIndices.push_back(zeroIdx);
 
-        auto update = bodyBuilder.create<DynamicUpdateSliceOp>(
-            src->getLoc(), batched, reshapeOp, operandStartIndices);
+        auto update =
+            DynamicUpdateSliceOp::create(bodyBuilder, src->getLoc(), batched,
+                                         reshapeOp, operandStartIndices);
 
         whileBodyOutputs.push_back(update);
       }
 
-      bodyBuilder.create<ReturnOp>(src->getLoc(), whileBodyOutputs);
+      ReturnOp::create(bodyBuilder, src->getLoc(), whileBodyOutputs);
     }
 
     for (auto oldRes : src->getOpResults()) {
@@ -206,8 +208,8 @@ private:
         for (auto resTy : src->getResultTypes()) {
           results.push_back(applyBatchSizes(resTy, batchSizes));
         }
-        auto newIf = builder.create<IfOp>(src->getLoc(), results,
-                                          predBroadcast.getOperand());
+        auto newIf = IfOp::create(builder, src->getLoc(), results,
+                                  predBroadcast.getOperand());
         newIf.getTrueBranch().push_back(new Block());
         newIf.getFalseBranch().push_back(new Block());
 

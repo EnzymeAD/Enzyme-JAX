@@ -120,8 +120,8 @@ func::FuncOp createWrapperUnbatchedFunction(PatternRewriter &rewriter,
 
   FunctionType calleeType =
       rewriter.getFunctionType(argTypes, {templateOp->getResult(0).getType()});
-  func::FuncOp func =
-      rewriter.create<func::FuncOp>(templateOp->getLoc(), funcName, calleeType);
+  func::FuncOp func = func::FuncOp::create(rewriter, templateOp->getLoc(),
+                                           funcName, calleeType);
   func.setPrivate();
 
   auto &entryBlock = *func.addEntryBlock();
@@ -144,8 +144,8 @@ func::FuncOp createWrapperUnbatchedFunction(PatternRewriter &rewriter,
   }
 
   auto unbatchedOp = rewriter.clone(*templateOp, mapper);
-  rewriter.create<func::ReturnOp>(templateOp->getLoc(),
-                                  ValueRange(unbatchedOp->getResult(0)));
+  func::ReturnOp::create(rewriter, templateOp->getLoc(),
+                         ValueRange(unbatchedOp->getResult(0)));
 
   return func;
 }
@@ -212,8 +212,8 @@ constructAndExtractBatchOperands(PatternRewriter &rewriter,
           else
             permutation[0] = i;
         }
-        auto transposeOp = rewriter.create<stablehlo::TransposeOp>(
-            loc, sliceOp.getOperand(),
+        auto transposeOp = stablehlo::TransposeOp::create(
+            rewriter, loc, sliceOp.getOperand(),
             rewriter.getDenseI64ArrayAttr(permutation));
         operands.push_back(transposeOp.getResult());
       } else {
@@ -229,8 +229,8 @@ constructAndExtractBatchOperands(PatternRewriter &rewriter,
             mapping[i] = 0;
           }
         }
-        auto bcastOp = rewriter.create<stablehlo::BroadcastInDimOp>(
-            loc,
+        auto bcastOp = stablehlo::BroadcastInDimOp::create(
+            rewriter, loc,
             RankedTensorType::get(bcastShape, sliceOpType.getElementType()),
             sliceOp.getOperand(), rewriter.getDenseI64ArrayAttr(mapping));
         operands.push_back(bcastOp.getResult());
@@ -250,14 +250,15 @@ constructAndExtractBatchOperands(PatternRewriter &rewriter,
 
         // expand the batch dim (== 0) or move the batch dim from `batchDim` to
         // `0`
-        auto newReshapeOp = rewriter.create<stablehlo::ReshapeOp>(
-            loc, RankedTensorType::get(outputShape, inputType.getElementType()),
+        auto newReshapeOp = stablehlo::ReshapeOp::create(
+            rewriter, loc,
+            RankedTensorType::get(outputShape, inputType.getElementType()),
             operand);
         newConcatOperands.push_back(newReshapeOp.getResult());
       }
 
       auto newConcatOp =
-          rewriter.create<stablehlo::ConcatenateOp>(loc, newConcatOperands, 0);
+          stablehlo::ConcatenateOp::create(rewriter, loc, newConcatOperands, 0);
 
       operandIndexMap.push_back(operands.size());
       operands.push_back(newConcatOp.getResult());
@@ -436,8 +437,8 @@ LogicalResult ConcatInsertDimToBatchBase::matchAndRewriteImpl(
     outputShape.push_back(concatShape[i]);
   }
 
-  auto batchOp = rewriter.create<enzyme::BatchOp>(
-      concatOp.getLoc(),
+  auto batchOp = enzyme::BatchOp::create(
+      rewriter, concatOp.getLoc(),
       RankedTensorType::get(outputShape, concatType.getElementType()),
       mlir::FlatSymbolRefAttr::get(concatOp.getContext(), wrapperFuncName),
       ValueRange(batchOpOperands),
@@ -706,8 +707,8 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
   auto funcRetShape = relatedOpsType.getShape();
   outputShape.append(funcRetShape.begin(), funcRetShape.end());
 
-  auto batchOp = rewriter.create<enzyme::BatchOp>(
-      sliceOp.getLoc(),
+  auto batchOp = enzyme::BatchOp::create(
+      rewriter, sliceOp.getLoc(),
       RankedTensorType::get(outputShape, relatedOpsType.getElementType()),
       mlir::FlatSymbolRefAttr::get(sliceOp.getContext(), sliceToBatchName),
       ValueRange(batchOpOperands),
@@ -722,8 +723,8 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
     startIndices[0] = sliceInfo.sliceStart;
     endIndices[0] = sliceInfo.sliceStart + 1;
 
-    auto slicedOp = rewriter.create<stablehlo::SliceOp>(
-        sliceOp.getLoc(), batchOp->getResult(0),
+    auto slicedOp = stablehlo::SliceOp::create(
+        rewriter, sliceOp.getLoc(), batchOp->getResult(0),
         rewriter.getDenseI64ArrayAttr(startIndices),
         rewriter.getDenseI64ArrayAttr(endIndices),
         rewriter.getDenseI64ArrayAttr(strides));
@@ -817,10 +818,9 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
       auto outElemType = sliceType.getElementType();
       if (cast<TensorType>(newOperand.getType()).getElementType() !=
           outElemType) {
-        newOperand = rewriter
-                         .create<stablehlo::ConvertOp>(
-                             slice.sliceOp.getLoc(),
-                             RankedTensorType::get({}, outElemType), newOperand)
+        newOperand = stablehlo::ConvertOp::create(
+                         rewriter, slice.sliceOp.getLoc(),
+                         RankedTensorType::get({}, outElemType), newOperand)
                          .getResult();
       }
       rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
@@ -939,16 +939,16 @@ bool GreedyWhileLoopBatchFission::liftSpecialReshapeOp(
 
   // hoist the reshape op
   rewriter.setInsertionPoint(whileOp);
-  auto outsideReshapeOp = rewriter.create<stablehlo::ReshapeOp>(
-      whileOp->getLoc(),
+  auto outsideReshapeOp = stablehlo::ReshapeOp::create(
+      rewriter, whileOp->getLoc(),
       RankedTensorType::get(reshapeShape, inputType.getElementType()),
       sliceOp.getOperand());
 
   // then reconstruct the slice op with removed start indices
   rewriter.setInsertionPoint(reshapeOp);
-  auto newSliceOp = rewriter.create<stablehlo::DynamicSliceOp>(
-      whileOp->getLoc(), outsideReshapeOp->getResult(0), newStartIndices,
-      rewriter.getDenseI64ArrayAttr(newSliceSizes));
+  auto newSliceOp = stablehlo::DynamicSliceOp::create(
+      rewriter, whileOp->getLoc(), outsideReshapeOp->getResult(0),
+      newStartIndices, rewriter.getDenseI64ArrayAttr(newSliceSizes));
 
   // introduce another reshape op to only delete the induction var dim
   rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(
@@ -1030,8 +1030,8 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
 
     FunctionType calleeType =
         rewriter.getFunctionType(TypeRange(argTypes), op->getResultTypes());
-    func = rewriter.create<func::FuncOp>(moduleOp.getLoc(), batchFnName,
-                                         calleeType);
+    func = func::FuncOp::create(rewriter, moduleOp.getLoc(), batchFnName,
+                                calleeType);
     func.setPrivate();
 
     auto &entryBlock = *func.addEntryBlock();
@@ -1049,7 +1049,7 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
     }
 
     auto unbatchedOp = rewriter.clone(*op, mapper);
-    rewriter.create<func::ReturnOp>(op->getLoc(), unbatchedOp->getResults());
+    func::ReturnOp::create(rewriter, op->getLoc(), unbatchedOp->getResults());
   }
 
   rewriter.setInsertionPoint(whileOp);
@@ -1071,8 +1071,8 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
         for (int i = sliceDim + 1; i < operandRank; i++)
           permutation[i] = i;
 
-        auto transposedOperand = rewriter.create<stablehlo::TransposeOp>(
-            whileOp->getLoc(), baseOp,
+        auto transposedOperand = stablehlo::TransposeOp::create(
+            rewriter, whileOp->getLoc(), baseOp,
             rewriter.getDenseI64ArrayAttr(permutation));
         newOperands.push_back(transposedOperand->getResult(0));
       } else {
@@ -1091,8 +1091,8 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
         for (size_t i = sliceDim + 1; i < operandRank; i++)
           resultShape[i + 1] = operandShape[i];
 
-        auto broadcastedOperand = rewriter.create<stablehlo::BroadcastInDimOp>(
-            whileOp->getLoc(),
+        auto broadcastedOperand = stablehlo::BroadcastInDimOp::create(
+            rewriter, whileOp->getLoc(),
             RankedTensorType::get(resultShape, operandType.getElementType()),
             baseOp, rewriter.getDenseI64ArrayAttr(mapping));
         newOperands.push_back(broadcastedOperand->getResult(0));
@@ -1108,8 +1108,8 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
       SmallVector<int64_t> mapping(operandRank);
       std::iota(mapping.begin(), mapping.end(), 1);
 
-      auto broadcastedOperand = rewriter.create<stablehlo::BroadcastInDimOp>(
-          whileOp->getLoc(),
+      auto broadcastedOperand = stablehlo::BroadcastInDimOp::create(
+          rewriter, whileOp->getLoc(),
           RankedTensorType::get(newOperandShape, operandType.getElementType()),
           baseOp, rewriter.getDenseI64ArrayAttr(mapping));
       newOperands.push_back(broadcastedOperand->getResult(0));
@@ -1135,12 +1135,12 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
   auto inductionVar = info.getInductionVariable();
   auto inductionVarType = cast<RankedTensorType>(inductionVar.getType());
 
-  auto constZero = rewriter.create<stablehlo::ConstantOp>(
-      whileOp->getLoc(), inductionVarType,
+  auto constZero = stablehlo::ConstantOp::create(
+      rewriter, whileOp->getLoc(), inductionVarType,
       cast<ElementsAttr>(makeAttr(inductionVarType, 0)));
 
-  auto batchOp = rewriter.create<enzyme::BatchOp>(
-      whileOp->getLoc(),
+  auto batchOp = enzyme::BatchOp::create(
+      rewriter, whileOp->getLoc(),
       RankedTensorType::get(outputShape, resultType.getElementType()),
       mlir::FlatSymbolRefAttr::get(func.getContext(), batchFnName),
       ValueRange(newOperands),
@@ -1155,8 +1155,8 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
   for (int i = 1; i < outputShape.size(); i++)
     dynamicSliceSizes[i] = outputShape[i];
 
-  auto dynamicSlice = rewriter.create<stablehlo::DynamicSliceOp>(
-      whileOp->getLoc(), batchOp->getResult(0), dynamicSliceStarts,
+  auto dynamicSlice = stablehlo::DynamicSliceOp::create(
+      rewriter, whileOp->getLoc(), batchOp->getResult(0), dynamicSliceStarts,
       dynamicSliceSizes);
   rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(
       op, op->getResult(0).getType(), dynamicSlice);
