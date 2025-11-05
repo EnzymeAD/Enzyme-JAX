@@ -267,6 +267,20 @@ td_library(
 )
 
 gentbl_cc_library(
+    name = "triton-derivatives",
+    tbl_outs = [(
+      ["-gen-mlir-derivatives"],
+      "Implementations/TritonDerivatives.inc",
+    )],
+    tblgen = "@enzyme//:enzyme-tblgen",
+    td_file = "Implementations/TritonDerivatives.td",
+    td_srcs = [
+      "Implementations/TritonDerivatives.td",
+    ],
+    deps = [":ImplementationsCommonTdFiles"],
+)
+
+gentbl_cc_library(
     name = "mhlo-derivatives",
     tbl_outs = [(
         ["-gen-mlir-derivatives"],
@@ -762,6 +776,7 @@ cc_library(
         ":enzymexla-derivatives",
         ":mhlo-derivatives",
         ":stablehlo-derivatives",
+        ":triton-derivatives",
         "//src/external/isl:Isl",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
