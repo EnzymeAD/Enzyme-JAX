@@ -48,13 +48,15 @@ jobs:
           - '1.11'
         xla_commit:
           - ''
-          # - 'b25f3cbed2bc88c8ffef85f6a5319e2cf7b0454c'
+          - 'dd0f59f000f23641191db8b2a1f8f893e429cca4'
         gb25_commit:
           - 'main'
+          # - 'mg/oom-reproducer'
           # - '0123456789abcdef0123456789abcdef01234567'
         reactant_commit:
           - 'main'
-          # - 'regenerate-mlir-bindings'
+          - 'wsmoses-patch-9'
+
 
     steps:
       - name: Check GPUs
@@ -187,7 +189,7 @@ jobs:
       - name: Run GB-25 simulation
         timeout-minutes: 60
         run: |
-          export XLA_FLAGS='--xla_dump_to=${{ env.GB25_DIR }}/xla_dump'
+          export XLA_FLAGS='--xla_dump_to=${{ env.GB25_DIR }}/xla_dump --xla_dump_hlo_pass_re=.*'
           timeout --signal=TERM --verbose 59m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_run.jl
         working-directory: ${{ env.GB25_DIR }}
       - name: Test correctness in GB-25 code
