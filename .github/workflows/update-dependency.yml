@@ -1,0 +1,108 @@
+name: "Update upstream dependency"
+
+on:
+  workflow_call:
+    secrets:
+      ENZYMEAD_BOT_ID:
+        required: true
+      ENZYMEAD_BOT_PRIVATE_KEY:
+        required: true
+    inputs:
+      upstream_repo:
+        description: 'The GitHub repository of the upstream dependency'
+        required: true
+        type: 'string'
+      upstream_commit:
+        description: 'The commit of the upstream dependency to update to (optional)'
+        required: false
+        type: 'string'
+        default: ''
+      variable_name:
+        description: 'The name of the Bazel variable referencing the commit to update'
+        required: true
+        type: 'string'
+      base_branch:
+        description: 'Name of the base branch against which to open the PR (optional, defaults to main)'
+        required: false
+        type: 'string'
+        default: 'main'
+      workspace_path:
+        description: 'The path to the Bazel workspace file'
+        required: false
+        type: 'string'
+        default: 'workspace.bzl'
+
+
+jobs:
+  pr-update-dep:
+    name: 'Update dependency'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/create-github-app-token@v2
+        id: generate_token
+        with:
+          app-id: "${{ secrets.ENZYMEAD_BOT_ID }}"
+          private-key: "${{ secrets.ENZYMEAD_BOT_PRIVATE_KEY }}"
+      - uses: actions/checkout@v5
+      - name: Set branch name
+        run: |
+          echo "BRANCH_NAME=update-$(echo ${{ inputs.upstream_repo }} | tr '/A-Z' '-a-z')" >> "${GITHUB_ENV}"
+      - name: Prepare commit message
+        run: |
+          echo "COMMIT_MSG_PREFIX=Update ${{ inputs.upstream_repo }} to commit " >> "${GITHUB_ENV}"
+      - name: Get upstream commit
+        shell: bash
+        run: |
+          OLD_UPSTREAM_COMMIT=$(grep '${{ inputs.variable_name }} *= *".*"' ${{ inputs.workspace_path }} | cut -d= -f2 | tr -d '" ')
+
+          if [[ -n '${{ inputs.upstream_commit }}' ]]; then
+              NEW_UPSTREAM_COMMIT="${{ inputs.upstream_commit }}"
+          else
+              NEW_UPSTREAM_COMMIT="$(git ls-remote https://github.com/${{ inputs.upstream_repo }}.git main | awk '{print $1}')"
+          fi
+
+          echo "OLD_UPSTREAM_COMMIT=${OLD_UPSTREAM_COMMIT}" >> "${GITHUB_ENV}"
+          echo "NEW_UPSTREAM_COMMIT=${NEW_UPSTREAM_COMMIT}" >> "${GITHUB_ENV}"
+          echo "DIFF_MSG=Diff: https://github.com/${{ inputs.upstream_repo }}/compare/${OLD_UPSTREAM_COMMIT}...${NEW_UPSTREAM_COMMIT}" >> "${GITHUB_ENV}"
+      - name: Modify upstream commit
+        run: |
+          sed -i 's/${{ inputs.variable_name }} *= *".*"/${{ inputs.variable_name }} = "${{ env.NEW_UPSTREAM_COMMIT }}"/' ${{ inputs.workspace_path }}
+      - name: Decide whether to open the pull request
+        id: decide
+        run: |
+          # Fetch latest commit on the branch
+          LATEST_COMMIT_MESSAGE="$(curl -s -H 'Authorization: token ${{ secrets.GITHUB_TOKEN }}' 'https://api.github.com/repos/${{ github.repository }}/commits/${{ env.BRANCH_NAME }}' | jq -r '.commit.message')"
+          echo "Latest commit message on the branch '${{ env.BRANCH_NAME }}' is:"
+          echo "----------"
+          echo "${LATEST_COMMIT_MESSAGE}"
+          echo "----------"
+          if [[ "${LATEST_COMMIT_MESSAGE}" == "null" || "${LATEST_COMMIT_MESSAGE}" == "${{ env.COMMIT_MSG_PREFIX }}"* ]]; then
+              # Open the PR only if the target branch doesn't exist or latest commit message
+              # starts with the expected prefix.
+              echo "We're going to open the pull request..."
+              echo "should_pr=true" >> "${GITHUB_OUTPUT}"
+          else
+              # Otherwise there are other commits to the branch and we don't want to
+              # override them!
+              echo "There seem to be extra commits, we won't open the pull request"
+              echo "should_pr=false" >> "${GITHUB_OUTPUT}"
+          fi
+      - name: Create Pull Request
+        if: ${{ steps.decide.outputs.should_pr == 'true' }}
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ steps.generate_token.outputs.token }}
+          commit-message: |
+            ${{ env.COMMIT_MSG_PREFIX }}${{ env.NEW_UPSTREAM_COMMIT }}
+
+            ${{ env.DIFF_MSG }}
+          body: ${{ env.DIFF_MSG }}
+          base: ${{ inputs.base_branch }}
+          branch: ${{ env.BRANCH_NAME }}
+          title: '${{ env.COMMIT_MSG_PREFIX }}${{ env.NEW_UPSTREAM_COMMIT }}'
+          delete-branch: true
+          draft: false
+          author: 'enzymead-bot[bot] <238314553+enzymead-bot[bot]@users.noreply.github.com>'
+          labels: 'dependencies'

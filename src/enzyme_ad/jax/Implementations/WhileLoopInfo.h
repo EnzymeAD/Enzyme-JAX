@@ -39,6 +39,8 @@ struct WhileLoopInfo {
   std::optional<int64_t> getConstantStart();
   std::optional<int64_t> getConstantLimit();
 
+  Value getInductionVariable() { return op.getBody().front().getArgument(0); }
+
   int64_t getConstantNumIters();
   Value getNumIters(OpBuilder &builder);
 

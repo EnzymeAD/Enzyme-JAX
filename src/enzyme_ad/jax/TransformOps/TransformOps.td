@@ -1121,6 +1121,66 @@ def ApplySliceLICMPatterns : EnzymeHLOParameterizedPatternOp<
   }];
 }
 
+def ApplyDotGeneralLICMPatterns : EnzymeHLOParameterizedPatternOp<
+    "dot_general_licm"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
+def ApplyReverseLICMPatterns : EnzymeHLOParameterizedPatternOp<
+    "reverse_licm"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
+def ApplyReduceLICMPatterns : EnzymeHLOParameterizedPatternOp<
+    "reduce_licm"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
+def ApplyReduceWindowLICMPatterns : EnzymeHLOParameterizedPatternOp<
+    "reduce_window_licm"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
 def ApplyDUSLICMPatterns : EnzymeHLOParameterizedPatternOp<
     "dus_licm"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
@@ -1502,6 +1562,21 @@ def ApplyReshapeDUSPatterns : EnzymeHLOPatternOp<
 
 def ApplyReshapeSlicePatterns : EnzymeHLOParameterizedPatternOp<
     "reshape_slice"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
+def ApplyReshapeDynamicSlicePatterns : EnzymeHLOParameterizedPatternOp<
+    "reshape_dynamic_slice"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
   let assemblyFormat = "attr-dict";
   // TODO: this should be made better searchable.
@@ -2343,6 +2418,18 @@ def ApplyConcatInsertDimSortPatterns : EnzymeHLOPatternOp<
     "concat_insert_dim_sort"> {
   let patterns = ["ConcatInsertDimToBatch<stablehlo::SortOp>"];
 }
+def ApplyConcatInsertDimConcatenatePatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_concatenate"> {
+  let patterns = ["ConcatInsertDimToBatch<stablehlo::ConcatenateOp>"];
+}
+def ApplyConcatInsertDimGetDimensionSizePatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_get_dimension_size"> {
+  let patterns = ["ConcatInsertDimToBatch<stablehlo::GetDimensionSizeOp>"];
+}
+def ApplyConcatInsertDimReversePatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_reverse"> {
+  let patterns = ["ConcatInsertDimToBatch<stablehlo::ReverseOp>"];
+}
 def ApplyConcatInsertDimReduceWindowPatterns : EnzymeHLOPatternOp<
     "concat_insert_dim_reduce_window"> {
   let patterns = ["ConcatInsertDimToBatch<stablehlo::ReduceWindowOp>"];
@@ -2380,6 +2467,18 @@ def ApplyTransposeSliceToBatchPatterns : EnzymeHLOPatternOp<
 def ApplyBroadcastInDimSliceToBatchPatterns : EnzymeHLOPatternOp<
     "broadcastindim_slice_to_batch"> {
   let patterns = ["SliceToBatch<stablehlo::BroadcastInDimOp>"];
+}
+def ApplyConcatenateSliceToBatchPatterns : EnzymeHLOPatternOp<
+    "concatenate_slice_to_batch"> {
+  let patterns = ["SliceToBatch<stablehlo::ConcatenateOp>"];
+}
+def ApplyGetDimensionSizeSliceToBatchPatterns : EnzymeHLOPatternOp<
+    "get_dimension_size_slice_to_batch"> {
+  let patterns = ["SliceToBatch<stablehlo::GetDimensionSizeOp>"];
+}
+def ApplyReverseSliceToBatchPatterns : EnzymeHLOPatternOp<
+    "reverse_slice_to_batch"> {
+  let patterns = ["SliceToBatch<stablehlo::ReverseOp>"];
 }
 def ApplyReduceWindowSliceToBatchPatterns : EnzymeHLOPatternOp<
     "reducewindow_slice_to_batch"> {
@@ -2422,4 +2521,29 @@ def ApplyWhileIsCopySimplifyPatterns : EnzymeHLOPatternOp<
 def ApplySplitVariadicScatterOpPatterns : EnzymeHLOPatternOp<
     "split_variadic_scatter_op"> {
   let patterns = ["SplitVariadicScatterOp"];
+}
+
+def ApplyDynamicSliceSimplifyPatterns : EnzymeHLOPatternOp<
+    "dynamic_slice_simplify"> {
+  let patterns = ["DynamicSliceSimplify"];
+}
+
+def ApplyGreedyWhileLoopBatchFissionPatterns : EnzymeHLOPatternOp<
+    "greedy_while_loop_batch_fission"> {
+  let patterns = ["GreedyWhileLoopBatchFission"];
+}
+
+def EnzymeHLOUnroll : EnzymeHLOParameterizedPatternOp<
+    "enzyme_hlo_unroll"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, I64Attr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getI64IntegerAttr(1024)))};
+    }
+  }];
 }

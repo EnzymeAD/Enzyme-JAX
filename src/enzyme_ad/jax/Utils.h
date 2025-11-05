@@ -7,6 +7,8 @@
 #include "mlir/IR/Types.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -141,9 +143,8 @@ static inline mlir::scf::IfOp cloneWithResults(mlir::scf::IfOp op,
                                                mlir::OpBuilder &rewriter,
                                                mlir::IRMapping mapping = {}) {
   using namespace mlir;
-  return rewriter.create<scf::IfOp>(op.getLoc(), op.getResultTypes(),
-                                    mapping.lookupOrDefault(op.getCondition()),
-                                    true);
+  return scf::IfOp::create(rewriter, op.getLoc(), op.getResultTypes(),
+                           mapping.lookupOrDefault(op.getCondition()), true);
 }
 static inline mlir::affine::AffineIfOp
 cloneWithResults(mlir::affine::AffineIfOp op, mlir::OpBuilder &rewriter,
@@ -152,8 +153,8 @@ cloneWithResults(mlir::affine::AffineIfOp op, mlir::OpBuilder &rewriter,
   SmallVector<mlir::Value> lower;
   for (auto o : op.getOperands())
     lower.push_back(mapping.lookupOrDefault(o));
-  return rewriter.create<affine::AffineIfOp>(op.getLoc(), op.getResultTypes(),
-                                             op.getIntegerSet(), lower, true);
+  return affine::AffineIfOp::create(rewriter, op.getLoc(), op.getResultTypes(),
+                                    op.getIntegerSet(), lower, true);
 }
 
 static inline mlir::scf::IfOp cloneWithoutResults(mlir::scf::IfOp op,
@@ -161,8 +162,8 @@ static inline mlir::scf::IfOp cloneWithoutResults(mlir::scf::IfOp op,
                                                   mlir::IRMapping mapping = {},
                                                   mlir::TypeRange types = {}) {
   using namespace mlir;
-  return rewriter.create<scf::IfOp>(
-      op.getLoc(), types, mapping.lookupOrDefault(op.getCondition()), true);
+  return scf::IfOp::create(rewriter, op.getLoc(), types,
+                           mapping.lookupOrDefault(op.getCondition()), true);
 }
 static inline mlir::affine::AffineIfOp
 cloneWithoutResults(mlir::affine::AffineIfOp op, mlir::OpBuilder &rewriter,
@@ -171,18 +172,18 @@ cloneWithoutResults(mlir::affine::AffineIfOp op, mlir::OpBuilder &rewriter,
   SmallVector<mlir::Value> lower;
   for (auto o : op.getOperands())
     lower.push_back(mapping.lookupOrDefault(o));
-  return rewriter.create<affine::AffineIfOp>(op.getLoc(), types,
-                                             op.getIntegerSet(), lower, true);
+  return affine::AffineIfOp::create(rewriter, op.getLoc(), types,
+                                    op.getIntegerSet(), lower, true);
 }
 
 static inline mlir::scf::ForOp
 cloneWithoutResults(mlir::scf::ForOp op, mlir::PatternRewriter &rewriter,
                     mlir::IRMapping mapping = {}) {
   using namespace mlir;
-  return rewriter.create<scf::ForOp>(
-      op.getLoc(), mapping.lookupOrDefault(op.getLowerBound()),
-      mapping.lookupOrDefault(op.getUpperBound()),
-      mapping.lookupOrDefault(op.getStep()));
+  return scf::ForOp::create(rewriter, op.getLoc(),
+                            mapping.lookupOrDefault(op.getLowerBound()),
+                            mapping.lookupOrDefault(op.getUpperBound()),
+                            mapping.lookupOrDefault(op.getStep()));
 }
 static inline mlir::affine::AffineForOp
 cloneWithoutResults(mlir::affine::AffineForOp op,
@@ -195,9 +196,9 @@ cloneWithoutResults(mlir::affine::AffineForOp op,
   SmallVector<Value> upper;
   for (auto o : op.getUpperBoundOperands())
     upper.push_back(mapping.lookupOrDefault(o));
-  auto newFor = rewriter.create<affine::AffineForOp>(
-      op.getLoc(), lower, op.getLowerBoundMap(), upper, op.getUpperBoundMap(),
-      op.getStepAsInt());
+  auto newFor = affine::AffineForOp::create(
+      rewriter, op.getLoc(), lower, op.getLowerBoundMap(), upper,
+      op.getUpperBoundMap(), op.getStepAsInt());
   for (auto attr : op->getDiscardableAttrs())
     newFor->setAttr(attr.getName(), attr.getValue());
   return newFor;
@@ -307,10 +308,10 @@ bool mayAlias(mlir::MemoryEffects::EffectInstance a, mlir::Value b);
 
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type Ty);
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type Ty,
-                          mlir::Operation *op);
+                          mlir::Operation *op, PatternRewriter &rewriter);
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy, Type inTy);
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy, Type inTy,
-                          mlir::Operation *op);
+                          mlir::Operation *op, PatternRewriter &rewriter);
 
 template <typename Child> class GuaranteedResultAnalysisBase {
 protected:
@@ -318,12 +319,12 @@ protected:
   llvm::DenseMap<mlir::Operation *, bool> opCache;
 
 public:
-  bool guaranteed(mlir::Value value) {
+  bool guaranteed(mlir::Value value, PatternRewriter &rewriter) {
     auto it = valueCache.find(value);
     if (it != valueCache.end())
       return it->second;
 
-    bool result = guaranteed(value.getDefiningOp());
+    bool result = guaranteed(value.getDefiningOp(), rewriter);
     valueCache[value] = result;
     return result;
   }
@@ -337,9 +338,16 @@ public:
     PENDING = 2
   };
 
-  bool guaranteed(Operation *op) {
+  bool guaranteed(Operation *op, PatternRewriter &rewriter) {
     if (!op)
       return false;
+
+    auto attrName = ((Child *)this)->getAttrName();
+    if (auto boolAttr = op->getAttrOfType<BoolAttr>(attrName)) {
+      bool value = boolAttr.getValue();
+      opCache[op] = value;
+      return value;
+    }
 
     // Map of operations we need to still check. If all of these are no-nan
     // we therefore know that the operation `op` is no nan.
@@ -347,7 +355,7 @@ public:
 
     // Map of operations we have seen before. The target of the map[o] is a list
     // of sub-queries, that if all true prove that `o` is no-nan.
-    DenseMap<Operation *, SmallPtrSet<Operation *, 2>> seen;
+    llvm::MapVector<Operation *, llvm::SmallPtrSet<Operation *, 2>> seen;
 
     // Inverse of seen. A map of operations `p` we still need to prove, to a
     // list of values that require `p` to be proven.
@@ -369,7 +377,7 @@ public:
             status = State::NOTGUARANTEED;
           }
         } else {
-          status = ((Child *)this)->localGuaranteed(cur, localtodo);
+          status = localGuaranteedWithSetAttr(cur, localtodo, rewriter);
         }
       }
 
@@ -382,6 +390,10 @@ public:
             continue;
           }
           opCache[rcur] = false;
+          rewriter.modifyOpInPlace(rcur, [&]() {
+            rcur->setAttr(attrName, BoolAttr::get(rcur->getContext(), false));
+          });
+
           auto rfound = reverseSeen.find(rcur);
           if (rfound != reverseSeen.end()) {
             for (auto next : rfound->second) {
@@ -390,6 +402,10 @@ public:
             reverseSeen.erase(rfound);
           }
         }
+
+        rewriter.modifyOpInPlace(op, [&]() {
+          op->setAttr(attrName, BoolAttr::get(op->getContext(), false));
+        });
         return false;
       }
 
@@ -439,10 +455,12 @@ public:
       case State::PENDING: {
         assert(localtodo.size());
         assert(seen.find(cur) == seen.end());
-        SmallPtrSet<Operation *, 2> set(localtodo.begin(), localtodo.end());
-        for (auto v : set) {
+        for (auto v : localtodo) {
           reverseSeen[v].push_back(cur);
+          todo.push_back(v);
         }
+        llvm::SmallPtrSet<Operation *, 2> set(localtodo.begin(),
+                                              localtodo.end());
         seen[cur] = std::move(set);
         break;
       }
@@ -454,16 +472,34 @@ public:
     // to be guaranteed.
     for (auto &sval : seen) {
       opCache[sval.first] = true;
+      rewriter.modifyOpInPlace(sval.first, [&]() {
+        sval.first->setAttr(attrName,
+                            BoolAttr::get(sval.first->getContext(), true));
+      });
     }
 
-    assert(opCache.find(op) != opCache.end());
-
-    return true;
+    auto found = opCache.find(op);
+    if (found != opCache.end()) {
+      bool guaranteed = found->second;
+      rewriter.modifyOpInPlace(op, [&]() {
+        op->setAttr(attrName, BoolAttr::get(op->getContext(), guaranteed));
+      });
+      return guaranteed;
+    }
+    return false;
   }
 
-  bool guaranteed(stablehlo::ConstantOp constOp) {
+  bool guaranteed(stablehlo::ConstantOp constOp, PatternRewriter &rewriter) {
     if (!constOp)
       return false;
+
+    auto attrName = ((Child *)this)->getAttrName();
+    if (auto boolAttr = constOp->getAttrOfType<mlir::BoolAttr>(attrName)) {
+      if (boolAttr.getValue())
+        return true;
+      else
+        return false;
+    }
 
     auto it = opCache.find(constOp);
     if (it != opCache.end())
@@ -493,8 +529,32 @@ public:
       }
     }
 
+    rewriter.modifyOpInPlace(constOp, [&]() {
+      constOp->setAttr(attrName,
+                       BoolAttr::get(constOp.getContext(), guaranteedResult));
+    });
     opCache[constOp] = guaranteedResult;
     return guaranteedResult;
+  }
+
+  State localGuaranteedWithSetAttr(Operation *op,
+                                   SmallVectorImpl<Operation *> &localtodo,
+                                   PatternRewriter &rewriter) {
+    auto state = ((Child *)this)->localGuaranteed(op, localtodo, rewriter);
+    auto attrName = ((Child *)this)->getAttrName();
+    switch (state) {
+    case State::GUARANTEED:
+      rewriter.modifyOpInPlace(op, [&]() {
+        op->setAttr(attrName, BoolAttr::get(op->getContext(), true));
+      });
+      break;
+    case State::NOTGUARANTEED:
+      rewriter.modifyOpInPlace(op, [&]() {
+        op->setAttr(attrName, BoolAttr::get(op->getContext(), false));
+      });
+      break;
+    }
+    return state;
   }
 };
 
@@ -507,10 +567,13 @@ private:
   std::shared_ptr<FiniteResultAnalysis> finiteResultAnalysis = nullptr;
 
 public:
-  State localGuaranteed(Operation *op, SmallVectorImpl<Operation *> &localtodo);
+  State localGuaranteed(Operation *op, SmallVectorImpl<Operation *> &localtodo,
+                        PatternRewriter &rewriter);
 
   bool constantFloatCheck(DenseElementsAttr attr);
   bool constantIntCheck(DenseElementsAttr attr);
+
+  StringRef getAttrName() const { return "enzymexla.guaranteed_no_nan"; }
 
   void setFiniteResultAnalysis(std::shared_ptr<FiniteResultAnalysis> analysis) {
     finiteResultAnalysis = analysis;
@@ -526,7 +589,10 @@ public:
   bool constantFloatCheck(DenseElementsAttr attr);
   bool constantIntCheck(DenseElementsAttr attr);
 
-  State localGuaranteed(Operation *op, SmallVectorImpl<Operation *> &localtodo);
+  StringRef getAttrName() const { return "enzymexla.guaranteed_finite"; }
+
+  State localGuaranteed(Operation *op, SmallVectorImpl<Operation *> &localtodo,
+                        PatternRewriter &rewriter);
 
   void setNoNanResultAnalysis(std::shared_ptr<NoNanResultAnalysis> analysis) {
     noNanResultAnalysis = analysis;
@@ -536,18 +602,20 @@ public:
 NoNanResultAnalysis initNoNanResultAnalysis();
 FiniteResultAnalysis initFiniteResultAnalysis();
 
-inline bool guaranteedNoNanResult(mlir::Value value) {
-  return initNoNanResultAnalysis().guaranteed(value);
+inline bool guaranteedNoNanResult(mlir::Value value,
+                                  PatternRewriter &rewriter) {
+  return initNoNanResultAnalysis().guaranteed(value, rewriter);
 }
-inline bool guaranteedNoNanResult(Operation *op) {
-  return initNoNanResultAnalysis().guaranteed(op);
+inline bool guaranteedNoNanResult(Operation *op, PatternRewriter &rewriter) {
+  return initNoNanResultAnalysis().guaranteed(op, rewriter);
 }
 
-inline bool guaranteedFiniteResult(mlir::Value value) {
-  return initFiniteResultAnalysis().guaranteed(value);
+inline bool guaranteedFiniteResult(mlir::Value value,
+                                   PatternRewriter &rewriter) {
+  return initFiniteResultAnalysis().guaranteed(value, rewriter);
 }
-inline bool guaranteedFiniteResult(Operation *op) {
-  return initFiniteResultAnalysis().guaranteed(op);
+inline bool guaranteedFiniteResult(Operation *op, PatternRewriter &rewriter) {
+  return initFiniteResultAnalysis().guaranteed(op, rewriter);
 }
 
 class NonNegativeResultAnalysis
@@ -556,14 +624,19 @@ public:
   bool constantFloatCheck(DenseElementsAttr attr);
   bool constantIntCheck(DenseElementsAttr attr);
 
-  State localGuaranteed(Operation *op, SmallVectorImpl<Operation *> &localtodo);
+  StringRef getAttrName() const { return "enzymexla.guaranteed_non_negative"; }
+
+  State localGuaranteed(Operation *op, SmallVectorImpl<Operation *> &localtodo,
+                        PatternRewriter &rewriter);
 };
 
-inline bool guaranteedNonNegativeResult(mlir::Value value) {
-  return NonNegativeResultAnalysis().guaranteed(value);
+inline bool guaranteedNonNegativeResult(mlir::Value value,
+                                        PatternRewriter &rewriter) {
+  return NonNegativeResultAnalysis().guaranteed(value, rewriter);
 }
-inline bool guaranteedNonNegativeResult(Operation *op) {
-  return NonNegativeResultAnalysis().guaranteed(op);
+inline bool guaranteedNonNegativeResult(Operation *op,
+                                        PatternRewriter &rewriter) {
+  return NonNegativeResultAnalysis().guaranteed(op, rewriter);
 }
 
 bool anyOperandIsConstant(mlir::Operation *op);
@@ -702,8 +775,8 @@ SmallVector<int64_t> computeGatherSliceSizes(stablehlo::ScatterOp &scatterOp);
 template <typename T>
 stablehlo::ConstantOp createConstantOpFromScalar(PatternRewriter &rewriter,
                                                  Operation *op, T value) {
-  return rewriter.create<stablehlo::ConstantOp>(
-      op->getLoc(), op->getResult(0).getType(),
+  return stablehlo::ConstantOp::create(
+      rewriter, op->getLoc(), op->getResult(0).getType(),
       cast<ElementsAttr>(
           mlir::enzyme::makeAttr(op->getResult(0).getType(), value)));
 }
@@ -715,6 +788,12 @@ stablehlo::ComparisonDirection
 negatedComparisonDirection(stablehlo::ComparisonDirection direction);
 
 bool reshapeIsTranspose(stablehlo::ReshapeOp reshapeOp);
+
+mlir::Value reshapeAxisInto(OpBuilder &builder, Value input,
+                            ArrayRef<int64_t> &batchSizes, int64_t dim);
+
+mlir::Value reshapeAxisOutOf(OpBuilder &builder, Value input,
+                             ArrayRef<int64_t> &batchSizes, int64_t dim);
 
 } // namespace stablehlo
 

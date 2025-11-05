@@ -181,6 +181,14 @@ def EnzymeHLOUnrollPass : Pass<"enzyme-hlo-unroll"> {
   let summary = "Unroll stablehlo";
   let dependentDialects =
       ["stablehlo::StablehloDialect", "tensor::TensorDialect"];
+  let options = [
+    Option<
+        /*C++ variable name=*/"maxNumIterations",
+        /*CLI argument=*/"max-num-iterations",
+        /*type=*/"int",
+        /*default=*/"-1",
+        /*description=*/"Only unroll if total iterations is less than this value. If -1, no limit.">,
+  ];
 }
 
 def PrintPass : Pass<"print"> {
@@ -450,12 +458,42 @@ def LowerEnzymeXLALapackPass : Pass<"lower-enzymexla-lapack"> {
   ];
 }
 
-def LowerEnzymeProbProgPass : Pass<"lower-enzyme-probprog"> {
-  let summary = "Lower enzyme probprog ops";
+def LowerProbProgToStableHLOPass : Pass<"lower-probprog-to-stablehlo"> {
+  let summary = "Lower computational enzyme ops to StableHLO";
+  let description = [{
+    Lower computational probprog ops (loop, dot, cholesky_solve, random, unflatten_slice)
+    to StableHLO dialect operations.
+  }];
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "chlo::ChloDialect",
+    "arith::ArithDialect",
+    "func::FuncDialect",
+    "enzyme::EnzymeDialect",
+  ];
+
+  let options = [
+    Option<
+        /*C++ variable name=*/"backend",
+        /*CLI argument=*/"backend",
+        /*type=*/"std::string",
+        /*default=*/"\"cpu\"",
+        /*description=*/"HW backend">,
+  ];
+}
+
+def LowerProbProgTraceOpsPass : Pass<"lower-probprog-trace-ops"> {
+  let summary = "Lower probprog trace manipulation ops to JIT calls";
+  let description = [{
+    Lower probprog trace manipulation ops (initTrace, addSampleToTrace, getSampleFromTrace, etc.)
+    to enzymexla.jit_call operations that invoke external runtime functions (e.g., Julia `@cfunction`).
+    This pass also handles type conversions (!enzyme.Trace -> tensor<ui64>, !enzyme.Constraint -> tensor<ui64>).
+  }];
   let dependentDialects = [
     "stablehlo::StablehloDialect",
     "enzymexla::EnzymeXLADialect",
     "LLVM::LLVMDialect",
+    "func::FuncDialect",
   ];
 
   let options = [
@@ -929,6 +967,12 @@ def AutoBatchingPass : Pass<"auto-batching"> {
       /*default=*/"true",
       /*description=*/"Whether to run slice to batch passes">,
     Option<
+      /*C++ variable name=*/"while_loop_batching_mode",
+      /*CLI argument=*/"while_loop_batching_mode",
+      /*type=*/"std::string",
+      /*default=*/"\"greedy\"",
+      /*description=*/"Whether to run while loop batching passes (greedy, none)">,
+    Option<
         /*C++ variable name=*/"max_iterations",
         /*CLI argument=*/"max_iterations",
         /*type=*/"int64_t",
@@ -956,4 +1000,12 @@ def DropUnsupportedAttributesPass : Pass<"drop-unsupported-attributes", "ModuleO
   ];
 }
 
+def SCFCPUify : Pass<"cpuify"> {
+  let summary = "remove barrier ig";
+  let dependentDialects =
+      ["memref::MemRefDialect", "func::FuncDialect", "LLVM::LLVMDialect"];
+  let options = [
+  Option<"method", "method", "std::string", /*default=*/"\"distribute\"", "Method of doing distribution">
+  ];
+}
 #endif

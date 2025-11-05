@@ -59,12 +59,11 @@ static inline Operation *createAddRegion(Operation *op) {
   auto tensorType = RankedTensorType::get({}, elemType);
   block->addArguments({tensorType, tensorType}, {op->getLoc(), op->getLoc()});
   builder.setInsertionPointToEnd(block);
-  builder.create<mlir::mhlo::ReturnOp>(
-      op->getLoc(),
-      builder
-          .create<mlir::mhlo::AddOp>(op->getLoc(), block->getArgument(0),
-                                     block->getArgument(1))
-          ->getResult(0));
+  mlir::mhlo::ReturnOp::create(builder, op->getLoc(),
+                               mlir::mhlo::AddOp::create(builder, op->getLoc(),
+                                                         block->getArgument(0),
+                                                         block->getArgument(1))
+                                   ->getResult(0));
   return op;
 }
 

@@ -36,8 +36,8 @@ struct GPULaunchRecognitionPass
     auto ctx = getOperation()->getContext();
     auto moduleBuilder =
         OpBuilder::atBlockBegin(cast<ModuleOp>(getOperation()).getBody());
-    gpuModule = moduleBuilder.create<gpu::GPUModuleOp>(getOperation()->getLoc(),
-                                                       gpuModuleName);
+    gpuModule = gpu::GPUModuleOp::create(
+        moduleBuilder, getOperation()->getLoc(), gpuModuleName);
 
     std::string sm;
     if (auto attr = dyn_cast_or_null<ArrayAttr>(func.getPassthroughAttr())) {
@@ -107,21 +107,21 @@ struct GPULaunchRecognitionPass
 
         Value arg = call->getOperand(1);
         if (!isa<IndexType>(arg.getType()))
-          arg = builder.create<arith::IndexCastOp>(call->getLoc(),
-                                                   builder.getIndexType(), arg);
+          arg = arith::IndexCastOp::create(builder, call->getLoc(),
+                                           builder.getIndexType(), arg);
 
-        auto res = builder.create<gpu::AllocOp>(
-            call.getLoc(),
+        auto res = gpu::AllocOp::create(
+            builder, call.getLoc(),
             MemRefType::get({ShapedType::kDynamic}, i8,
                             MemRefLayoutAttrInterface{},
                             builder.getI64IntegerAttr(1)),
             (mlir::Type) nullptr, ValueRange(), ValueRange(arg), ValueRange());
-        auto ptr = builder.create<enzymexla::Memref2PointerOp>(
-            call.getLoc(), LLVM::LLVMPointerType::get(call.getContext()),
-            res.getResult(0));
-        builder.create<LLVM::StoreOp>(call.getLoc(), ptr, call->getOperand(0));
+        auto ptr = enzymexla::Memref2PointerOp::create(
+            builder, call.getLoc(),
+            LLVM::LLVMPointerType::get(call.getContext()), res.getResult(0));
+        LLVM::StoreOp::create(builder, call.getLoc(), ptr, call->getOperand(0));
         auto replace =
-            builder.create<LLVM::ZeroOp>(call.getLoc(), call.getType(0));
+            LLVM::ZeroOp::create(builder, call.getLoc(), call.getType(0));
         call->replaceAllUsesWith(replace);
         call->erase();
         return;
@@ -138,16 +138,16 @@ struct GPULaunchRecognitionPass
         if (!curfn)
           return;
 
-        auto repOp = builder.create<enzymexla::GPUOccupancyOp>(
-            call.getLoc(), intType,
+        auto repOp = enzymexla::GPUOccupancyOp::create(
+            builder, call.getLoc(), intType,
             mlir::SymbolRefAttr::get(curfn.getContext(),
                                      curfn.getSymName().str()),
             call.getArgOperands()[2], call.getArgOperands()[3],
             call.getArgOperands()[4]);
-        builder.create<LLVM::StoreOp>(call.getLoc(), repOp->getResult(0),
-                                      call.getArgOperands()[0]);
+        LLVM::StoreOp::create(builder, call.getLoc(), repOp->getResult(0),
+                              call.getArgOperands()[0]);
         auto replace =
-            builder.create<LLVM::ZeroOp>(call.getLoc(), call.getType(0));
+            LLVM::ZeroOp::create(builder, call.getLoc(), call.getType(0));
         call->replaceAllUsesWith(replace);
         call->erase();
         return;
@@ -161,7 +161,7 @@ struct GPULaunchRecognitionPass
               << " Unsupported runtime function: " << *callee << "\n";
         seenErrors.insert(*callee);
         auto replace =
-            builder.create<LLVM::ZeroOp>(call.getLoc(), call.getType(0));
+            LLVM::ZeroOp::create(builder, call.getLoc(), call.getType(0));
         call->replaceAllUsesWith(replace);
         call->erase();
         return;
@@ -183,14 +183,14 @@ enum __device_builtin__ cudaMemcpyKind
         if (matchPattern(call->getOperand(3), m_ConstantInt(&directionA))) {
           auto dst = call->getOperand(0);
           if (directionA == 0 || directionA == 2)
-            dst = builder.create<enzymexla::Pointer2MemrefOp>(
-                call->getLoc(),
+            dst = enzymexla::Pointer2MemrefOp::create(
+                builder, call->getLoc(),
                 MemRefType::get({ShapedType::kDynamic}, i8,
                                 MemRefLayoutAttrInterface{}),
                 dst);
           else
-            dst = builder.create<enzymexla::Pointer2MemrefOp>(
-                call->getLoc(),
+            dst = enzymexla::Pointer2MemrefOp::create(
+                builder, call->getLoc(),
                 MemRefType::get({ShapedType::kDynamic}, i8,
                                 MemRefLayoutAttrInterface{},
                                 builder.getI64IntegerAttr(1)),
@@ -198,14 +198,14 @@ enum __device_builtin__ cudaMemcpyKind
 
           auto src = call->getOperand(1);
           if (directionA == 0 || directionA == 1)
-            src = builder.create<enzymexla::Pointer2MemrefOp>(
-                call->getLoc(),
+            src = enzymexla::Pointer2MemrefOp::create(
+                builder, call->getLoc(),
                 MemRefType::get({ShapedType::kDynamic}, i8,
                                 MemRefLayoutAttrInterface{}),
                 src);
           else
-            src = builder.create<enzymexla::Pointer2MemrefOp>(
-                call->getLoc(),
+            src = enzymexla::Pointer2MemrefOp::create(
+                builder, call->getLoc(),
                 MemRefType::get({ShapedType::kDynamic}, i8,
                                 MemRefLayoutAttrInterface{},
                                 builder.getI64IntegerAttr(1)),
@@ -213,13 +213,14 @@ enum __device_builtin__ cudaMemcpyKind
 
           Value arg = call->getOperand(2);
           if (!isa<IndexType>(arg.getType()))
-            arg = builder.create<arith::IndexCastOp>(
-                call->getLoc(), builder.getIndexType(), arg);
+            arg = arith::IndexCastOp::create(builder, call->getLoc(),
+                                             builder.getIndexType(), arg);
 
-          builder.create<enzymexla::MemcpyOp>(
-              call.getLoc(), (mlir::Type) nullptr, ValueRange(), dst, src, arg);
+          enzymexla::MemcpyOp::create(builder, call.getLoc(),
+                                      (mlir::Type) nullptr, ValueRange(), dst,
+                                      src, arg);
           auto replace =
-              builder.create<LLVM::ZeroOp>(call.getLoc(), call.getType(0));
+              LLVM::ZeroOp::create(builder, call.getLoc(), call.getType(0));
           call->replaceAllUsesWith(replace);
           call->erase();
           return;
@@ -275,8 +276,9 @@ enum __device_builtin__ cudaMemcpyKind
         {"cudaFuncGetName", 1},
         {"cudaFuncSetAttribute", 0},
         {"cudaFuncSetCacheConfig", 0},
+        {"cudaLaunchKernelExC", 1},
     };
-    for (auto &pair : runtime_fns)
+    for (auto &pair : runtime_fns) {
       if (auto occupancy = symbolTable.getSymbolTable(getOperation())
                                .lookup<LLVM::LLVMFuncOp>(pair.first)) {
         auto launchFuncUses = occupancy.getSymbolUses(getOperation());
@@ -296,6 +298,7 @@ enum __device_builtin__ cudaMemcpyKind
           }
         }
       }
+    }
 
     SmallVector<Operation *> toErase;
     for (auto &launch : kernelLaunches) {
@@ -322,7 +325,7 @@ enum __device_builtin__ cudaMemcpyKind
       auto cur = launch.first;
       gpu::GPUFuncOp gpufunc = nullptr;
       bool local_use_launch_func = use_launch_func || captured;
-      if (local_use_launch_func && !gpufunc) {
+      if (local_use_launch_func) {
 
         FunctionType gpuTy0 = dyn_cast<FunctionType>(cur.getFunctionType());
         if (!gpuTy0) {
@@ -341,8 +344,14 @@ enum __device_builtin__ cudaMemcpyKind
         }
         initGPUModule(gpuModule, launch.first);
         builder.setInsertionPointToStart(&gpuModule.getBodyRegion().front());
-        gpufunc = builder.create<gpu::GPUFuncOp>(cur->getLoc(), cur.getName(),
-                                                 gpuTy0);
+        gpufunc = gpu::GPUFuncOp::create(builder, cur->getLoc(), cur.getName(),
+                                         gpuTy0);
+        if (auto attrs = cur.getAllArgAttrs()) {
+          gpufunc.setAllArgAttrs(attrs);
+        }
+        if (auto attrs = cur.getAllResultAttrs()) {
+          gpufunc.setAllResultAttrs(attrs);
+        }
         auto entry = &gpufunc.getBody().front();
         builder.setInsertionPointToEnd(entry);
         IRMapping map;
@@ -362,19 +371,19 @@ enum __device_builtin__ cudaMemcpyKind
 
         gpufunc->walk([](LLVM::ReturnOp op) {
           OpBuilder rewriter(op);
-          rewriter.create<gpu::ReturnOp>(op.getLoc());
+          gpu::ReturnOp::create(rewriter, op.getLoc());
           op.erase();
         });
 
         gpufunc->walk([](LLVM::UnreachableOp op) {
           OpBuilder rewriter(op);
-          rewriter.create<gpu::ReturnOp>(op.getLoc());
+          gpu::ReturnOp::create(rewriter, op.getLoc());
           op.erase();
         });
 
         gpufunc->walk([](func::ReturnOp op) {
           OpBuilder rewriter(op);
-          rewriter.create<gpu::ReturnOp>(op.getLoc());
+          gpu::ReturnOp::create(rewriter, op.getLoc());
           op.erase();
         });
 
@@ -405,8 +414,8 @@ enum __device_builtin__ cudaMemcpyKind
             continue;
           }
           builder.setInsertionPoint(user);
-          auto k2 = builder.create<enzymexla::GPUKernelAddressOp>(
-              user->getLoc(), user.getType(), kernelSymbol);
+          auto k2 = enzymexla::GPUKernelAddressOp::create(
+              builder, user->getLoc(), user.getType(), kernelSymbol);
           for (auto &user2 :
                llvm::make_early_inc_range(user->getResult(0).getUses())) {
             auto user3 = dyn_cast<CallOpInterface>(user2.getOwner());
@@ -420,11 +429,12 @@ enum __device_builtin__ cudaMemcpyKind
       }
 
       for (auto cop : launch.second) {
+        gpu::LaunchFuncOp launchFuncOp = nullptr;
         auto loc = cop->getLoc();
         builder.setInsertionPointAfter(cop);
 
-        auto shMemSize = builder.create<LLVM::TruncOp>(
-            loc, builder.getI32Type(), cop.getArgOperands()[7]);
+        auto shMemSize = LLVM::TruncOp::create(
+            builder, loc, builder.getI32Type(), cop.getArgOperands()[7]);
         auto stream = cop.getArgOperands()[8];
         llvm::SmallVector<mlir::Value> args;
         for (unsigned i = 9; i < cop.getArgOperands().size(); i++)
@@ -433,56 +443,78 @@ enum __device_builtin__ cudaMemcpyKind
         Value grid[3];
         for (int i = 0; i < 3; i++) {
           if (local_use_launch_func)
-            grid[i] = builder.create<LLVM::SExtOp>(loc, builder.getI64Type(),
-                                                   cop.getArgOperands()[i + 1]);
+            grid[i] = LLVM::SExtOp::create(builder, loc, builder.getI64Type(),
+                                           cop.getArgOperands()[i + 1]);
           else
-            grid[i] = builder.create<arith::IndexCastOp>(
-                loc, builder.getIndexType(), cop.getArgOperands()[i + 1]);
+            grid[i] =
+                arith::IndexCastOp::create(builder, loc, builder.getIndexType(),
+                                           cop.getArgOperands()[i + 1]);
         }
         Value block[3];
         for (int i = 0; i < 3; i++) {
           if (local_use_launch_func)
-            block[i] = builder.create<LLVM::SExtOp>(
-                loc, builder.getI64Type(), cop.getArgOperands()[i + 4]);
+            block[i] = LLVM::SExtOp::create(builder, loc, builder.getI64Type(),
+                                            cop.getArgOperands()[i + 4]);
           else
-            block[i] = builder.create<arith::IndexCastOp>(
-                loc, builder.getIndexType(), cop.getArgOperands()[i + 4]);
+            block[i] =
+                arith::IndexCastOp::create(builder, loc, builder.getIndexType(),
+                                           cop.getArgOperands()[i + 4]);
         }
         if (stream.getDefiningOp<LLVM::ZeroOp>()) {
           if (local_use_launch_func) {
-            builder.create<gpu::LaunchFuncOp>(
-                loc, gpufunc, gpu::KernelDim3{grid[0], grid[1], grid[2]},
+            launchFuncOp = gpu::LaunchFuncOp::create(
+                builder, loc, gpufunc,
+                gpu::KernelDim3{grid[0], grid[1], grid[2]},
                 gpu::KernelDim3{block[0], block[1], block[2]}, shMemSize,
                 ValueRange(args));
           } else {
-            auto op = builder.create<mlir::gpu::LaunchOp>(
-                launch.first->getLoc(), grid[0], grid[1], grid[2], block[0],
-                block[1], block[2], shMemSize, nullptr, ValueRange());
+            auto op = mlir::gpu::LaunchOp::create(
+                builder, launch.first->getLoc(), grid[0], grid[1], grid[2],
+                block[0], block[1], block[2], shMemSize, nullptr, ValueRange());
             builder.setInsertionPointToStart(&op.getRegion().front());
-            builder.create<LLVM::CallOp>(loc, cur, args);
-            builder.create<gpu::TerminatorOp>(loc);
+            LLVM::CallOp::create(builder, loc, cur, args);
+            gpu::TerminatorOp::create(builder, loc);
           }
         } else {
           if (local_use_launch_func) {
             assert(isa<LLVM::LLVMPointerType>(stream.getType()));
-            stream = builder.create<enzymexla::StreamToTokenOp>(
-                loc, gpu::AsyncTokenType::get(ctx), stream);
-            builder.create<gpu::LaunchFuncOp>(
-                loc, gpufunc, gpu::KernelDim3{grid[0], grid[1], grid[2]},
+            stream = enzymexla::StreamToTokenOp::create(
+                builder, loc, gpu::AsyncTokenType::get(ctx), stream);
+            launchFuncOp = gpu::LaunchFuncOp::create(
+                builder, loc, gpufunc,
+                gpu::KernelDim3{grid[0], grid[1], grid[2]},
                 gpu::KernelDim3{block[0], block[1], block[2]}, shMemSize,
                 ValueRange(args), stream.getType(), ValueRange(stream));
           } else {
             assert(isa<LLVM::LLVMPointerType>(stream.getType()));
-            stream = builder.create<enzymexla::StreamToTokenOp>(
-                loc, gpu::AsyncTokenType::get(ctx), stream);
-            auto op = builder.create<mlir::gpu::LaunchOp>(
-                launch.first->getLoc(), grid[0], grid[1], grid[2], block[0],
-                block[1], block[2], shMemSize, stream.getType(),
+            stream = enzymexla::StreamToTokenOp::create(
+                builder, loc, gpu::AsyncTokenType::get(ctx), stream);
+            auto op = mlir::gpu::LaunchOp::create(
+                builder, launch.first->getLoc(), grid[0], grid[1], grid[2],
+                block[0], block[1], block[2], shMemSize, stream.getType(),
                 ValueRange(stream));
             builder.setInsertionPointToStart(&op.getRegion().front());
-            builder.create<LLVM::CallOp>(loc, cur, args);
-            builder.create<gpu::TerminatorOp>(loc);
+            LLVM::CallOp::create(builder, loc, cur, args);
+            gpu::TerminatorOp::create(builder, loc);
           }
+        }
+        if (launchFuncOp) {
+
+          SmallVector<Attribute> newArgAttrs;
+          for (auto [i, argAttrs] : llvm::enumerate(*cur.getArgAttrs())) {
+            if (std::optional<NamedAttribute> attr =
+                    cast<DictionaryAttr>(argAttrs).getNamed(
+                        LLVM::LLVMDialect::getByValAttrName())) {
+              newArgAttrs.push_back(
+                  NamedAttrList(*attr).getDictionary(gpufunc->getContext()));
+            } else {
+              newArgAttrs.push_back(
+                  NamedAttrList().getDictionary(gpufunc->getContext()));
+            }
+          }
+          launchFuncOp->setAttr(
+              "reactant.arg_attrs",
+              ArrayAttr::get(gpufunc->getContext(), newArgAttrs));
         }
         cop->erase();
       }

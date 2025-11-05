@@ -30,6 +30,7 @@
 #include "llvm/ADT/SetVector.h"
 #include "llvm/Support/Debug.h"
 
+#include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
 #include <set>
@@ -54,8 +55,8 @@ bool collectEffects(Operation *op,
   // Ignore CacheLoads as they are already guaranteed to not have side effects
   // in the context of a parallel op, these only exist while we are in the
   // CPUifyPass
-  // if (isa<CacheLoad>(op))
-  //  return true;
+  // if (isa<enzymexla::CacheLoadOp>(op))
+  //   return true;
 
   // Collect effect instances the operation. Note that the implementation of
   // getEffects erases all effect instances that have the type other than the
@@ -166,8 +167,9 @@ bool getEffectsBefore(Operation *op,
         else
           continue;
       }
-      if (!collectEffects(it, effects, /* ignoreBarriers */ true))
+      if (!collectEffects(it, effects, /* ignoreBarriers */ true)) {
         return false;
+      }
     }
 
   bool conservative = false;
@@ -177,9 +179,9 @@ bool getEffectsBefore(Operation *op,
 
   // As we didn't hit another barrier, we must check the predecessors of this
   // operation.
-  if (!getEffectsBefore(op->getParentOp(), effects, stopAtBarrier))
+  if (!getEffectsBefore(op->getParentOp(), effects, stopAtBarrier)) {
     return false;
-
+  }
   // If the parent operation is not guaranteed to execute its (single-block)
   // region once, walk the block.
   if (!isa<scf::IfOp, affine::AffineIfOp, memref::AllocaScopeOp>(
@@ -193,7 +195,6 @@ bool getEffectsBefore(Operation *op,
       }
       return WalkResult::advance();
     });
-
   return !conservative;
 }
 bool getEffectsAfter(Operation *op,
@@ -540,7 +541,7 @@ bool mayWriteTo(Operation *op, Value val, bool ignoreBarrier) {
 
   // Calls which do not use a derived pointer of a known alloca, which is not
   // captured can not write to said memory.
-  if (isa<LLVM::CallOp, func::CallOp>(op)) {
+  if (auto callOp = dyn_cast<CallOpInterface>(op)) {
     auto base = getBase(val);
     bool seenuse = false;
     if (isStackAlloca(base) && !isCaptured(base, op, &seenuse) && !seenuse) {
@@ -558,11 +559,11 @@ bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type Ty) {
 }
 
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type Ty,
-                          mlir::Operation *op) {
+                          mlir::Operation *op, PatternRewriter &rewriter) {
   Ty = getElementTypeOrSelf(Ty);
   if (Ty.isInteger())
     return true;
-  return allowOnFloatingPointMath || guaranteedNoNanResult(op);
+  return allowOnFloatingPointMath || guaranteedNoNanResult(op, rewriter);
 }
 
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy,
@@ -575,12 +576,12 @@ bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy,
 }
 
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy, Type inTy,
-                          mlir::Operation *op) {
+                          mlir::Operation *op, PatternRewriter &rewriter) {
   outTy = getElementTypeOrSelf(outTy);
   inTy = getElementTypeOrSelf(inTy);
   if (outTy.isInteger() && inTy.isInteger())
     return true;
-  return allowOnFloatingPointMath || guaranteedNoNanResult(op);
+  return allowOnFloatingPointMath || guaranteedNoNanResult(op, rewriter);
 }
 
 NoNanResultAnalysis initNoNanResultAnalysis() {
@@ -605,11 +606,19 @@ bool NoNanResultAnalysis::constantFloatCheck(DenseElementsAttr attr) {
 
 NoNanResultAnalysis::State
 NoNanResultAnalysis::localGuaranteed(Operation *op,
-                                     SmallVectorImpl<Operation *> &localtodo) {
+                                     SmallVectorImpl<Operation *> &localtodo,
+                                     PatternRewriter &rewriter) {
   assert(op);
 
+  if (auto boolAttr = op->getAttrOfType<BoolAttr>(getAttrName())) {
+    if (boolAttr.getValue())
+      return State::GUARANTEED;
+    else
+      return State::NOTGUARANTEED;
+  }
+
   if (auto constantOp = dyn_cast<stablehlo::ConstantOp>(op)) {
-    if (guaranteed(constantOp)) {
+    if (guaranteed(constantOp, rewriter)) {
       return State::GUARANTEED;
     } else {
       return State::NOTGUARANTEED;
@@ -638,16 +647,19 @@ NoNanResultAnalysis::localGuaranteed(Operation *op,
 
     // If any one of the operands is a Inf, the result is Inf. If both are Inf,
     // the result is NaN.
-    auto lhsFinite = finiteResultAnalysis->guaranteed(op->getOperand(0));
-    auto rhsFinite = finiteResultAnalysis->guaranteed(op->getOperand(1));
+    auto lhsFinite =
+        finiteResultAnalysis->guaranteed(op->getOperand(0), rewriter);
+    auto rhsFinite =
+        finiteResultAnalysis->guaranteed(op->getOperand(1), rewriter);
 
-    if (lhsFinite || rhsFinite)
+    if (lhsFinite && rhsFinite) {
       return State::GUARANTEED;
+    }
 
     recursiveCheck = true;
   } else if (isa<stablehlo::SineOp, stablehlo::CosineOp>(op)) {
 
-    if (!finiteResultAnalysis->guaranteed(op->getOperand(0))) {
+    if (!finiteResultAnalysis->guaranteed(op->getOperand(0), rewriter)) {
       return State::NOTGUARANTEED;
     }
 
@@ -657,8 +669,8 @@ NoNanResultAnalysis::localGuaranteed(Operation *op,
 
     // TODO: If one is inf check if the other is zero. We can significantly
     // relax this check if we can prove that the other is not zero.
-    if (!finiteResultAnalysis->guaranteed(mulOp.getLhs()) ||
-        !finiteResultAnalysis->guaranteed(mulOp.getRhs())) {
+    if (!finiteResultAnalysis->guaranteed(mulOp.getLhs(), rewriter) ||
+        !finiteResultAnalysis->guaranteed(mulOp.getRhs(), rewriter)) {
       return State::NOTGUARANTEED;
     }
 
@@ -704,10 +716,11 @@ NoNanResultAnalysis::localGuaranteed(Operation *op,
       allOperandsGuaranteed = false;
     }
 
-    if (allOperandsGuaranteed)
+    if (allOperandsGuaranteed) {
       return State::GUARANTEED;
-    else
+    } else {
       return State::PENDING;
+    }
   } else {
     return State::NOTGUARANTEED;
   }
@@ -735,12 +748,19 @@ bool FiniteResultAnalysis::constantIntCheck(DenseElementsAttr attr) {
 
 FiniteResultAnalysis::State
 FiniteResultAnalysis::localGuaranteed(Operation *op,
-                                      SmallVectorImpl<Operation *> &localtodo) {
-
+                                      SmallVectorImpl<Operation *> &localtodo,
+                                      PatternRewriter &rewriter) {
   assert(op);
 
+  if (auto boolAttr = op->getAttrOfType<BoolAttr>(getAttrName())) {
+    if (boolAttr.getValue())
+      return State::GUARANTEED;
+    else
+      return State::NOTGUARANTEED;
+  }
+
   if (auto constantOp = dyn_cast<stablehlo::ConstantOp>(op)) {
-    if (guaranteed(constantOp)) {
+    if (guaranteed(constantOp, rewriter)) {
       return State::GUARANTEED;
     } else {
       return State::NOTGUARANTEED;
@@ -794,8 +814,9 @@ FiniteResultAnalysis::localGuaranteed(Operation *op,
       }
 
       auto dop = operand.getDefiningOp();
-      if (!dop)
+      if (!dop) {
         return State::NOTGUARANTEED;
+      }
 
       {
         auto found = opCache.find(dop);
@@ -812,10 +833,11 @@ FiniteResultAnalysis::localGuaranteed(Operation *op,
       allOperandsGuaranteed = false;
     }
 
-    if (allOperandsGuaranteed)
+    if (allOperandsGuaranteed) {
       return State::GUARANTEED;
-    else
+    } else {
       return State::PENDING;
+    }
   } else {
     return State::NOTGUARANTEED;
   }
@@ -838,12 +860,19 @@ bool NonNegativeResultAnalysis::constantFloatCheck(DenseElementsAttr attr) {
 }
 
 NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
-    Operation *op, SmallVectorImpl<Operation *> &localtodo) {
-
+    Operation *op, SmallVectorImpl<Operation *> &localtodo,
+    PatternRewriter &rewriter) {
   assert(op);
 
+  if (auto boolAttr = op->getAttrOfType<BoolAttr>(getAttrName())) {
+    if (boolAttr.getValue())
+      return State::GUARANTEED;
+    else
+      return State::NOTGUARANTEED;
+  }
+
   if (auto constantOp = dyn_cast<stablehlo::ConstantOp>(op)) {
-    if (guaranteed(constantOp)) {
+    if (guaranteed(constantOp, rewriter)) {
       return State::GUARANTEED;
     } else {
       return State::NOTGUARANTEED;
@@ -853,14 +882,20 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
   // integer ops
   if (isa<stablehlo::AbsOp, stablehlo::SqrtOp, stablehlo::ExpOp,
           stablehlo::IotaOp, stablehlo::AndOp, stablehlo::OrOp,
-          stablehlo::XorOp, stablehlo::NotOp>(op))
+          stablehlo::XorOp, stablehlo::NotOp>(op)) {
     return State::GUARANTEED;
+  }
+
+  if (isa<chlo::ErfInvOp>(op)) {
+    return State::NOTGUARANTEED;
+  }
 
   // Any non-negative operation that produces a non-negative result
   // Here we recur on the rhs, as that is more likely to be a constant.
   if (isa<stablehlo::MaxOp>(op)) {
-    if (guaranteed(op->getOperand(1)))
+    if (guaranteed(op->getOperand(1), rewriter)) {
       return State::GUARANTEED;
+    }
 
     auto operand = op->getOperand(0);
 
@@ -876,8 +911,9 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
     }
 
     auto dop = operand.getDefiningOp();
-    if (!dop)
+    if (!dop) {
       return State::NOTGUARANTEED;
+    }
 
     {
       auto found = opCache.find(dop);
@@ -899,8 +935,9 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
     auto lhsOp = mulOp.getLhs().getDefiningOp();
     auto rhsOp = mulOp.getRhs().getDefiningOp();
 
-    if (lhsOp == rhsOp)
+    if (lhsOp == rhsOp) {
       return State::GUARANTEED;
+    }
   }
 
   if (auto clampOp = dyn_cast<stablehlo::ClampOp>(op)) {
@@ -919,8 +956,9 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
     }
 
     auto dop = operand.getDefiningOp();
-    if (!dop)
+    if (!dop) {
       return State::NOTGUARANTEED;
+    }
 
     {
       auto found = opCache.find(dop);
@@ -969,8 +1007,9 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
       }
 
       auto dop = operand.getDefiningOp();
-      if (!dop)
+      if (!dop) {
         return State::NOTGUARANTEED;
+      }
 
       {
         auto found = opCache.find(dop);
@@ -987,10 +1026,11 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
       allOperandsGuaranteed = false;
     }
 
-    if (allOperandsGuaranteed)
+    if (allOperandsGuaranteed) {
       return State::GUARANTEED;
-    else
+    } else {
       return State::PENDING;
+    }
   } else {
     return State::NOTGUARANTEED;
   }
@@ -1087,7 +1127,44 @@ bool isOnlyUsedInOperation(Operation *operation, Operation *parentOp) {
     if (user != parentOp)
       return false;
   }
+  return true;
+}
 
+bool mayReadFrom(Operation *op, Value val) {
+  bool hasRecursiveEffects = op->hasTrait<OpTrait::HasRecursiveMemoryEffects>();
+  if (hasRecursiveEffects) {
+    for (Region &region : op->getRegions()) {
+      for (auto &block : region) {
+        for (auto &nestedOp : block)
+          if (mayReadFrom(&nestedOp, val))
+            return true;
+      }
+    }
+    return false;
+  }
+
+  // If the op has memory effects, try to characterize them to see if the op
+  // is trivially dead here.
+  if (auto effectInterface = dyn_cast<MemoryEffectOpInterface>(op)) {
+    // Check to see if this op either has no effects, or only allocates/reads
+    // memory.
+    SmallVector<MemoryEffects::EffectInstance, 1> effects;
+    effectInterface.getEffects(effects);
+    for (auto it : effects) {
+      if (!isa<MemoryEffects::Read>(it.getEffect()))
+        continue;
+      if (mayAlias(it, val))
+        return true;
+    }
+    return false;
+  }
+  if (auto callOp = dyn_cast<CallOpInterface>(op)) {
+    auto base = getBase(val);
+    bool seenuse = false;
+    if (isStackAlloca(base) && !isCaptured(base, op, &seenuse) && !seenuse) {
+      return false;
+    }
+  }
   return true;
 }
 
@@ -1246,6 +1323,61 @@ bool reshapeIsTranspose(stablehlo::ReshapeOp reshapeOp) {
   }
 
   return true;
+}
+
+Value reshapeAxisInto(OpBuilder &builder, Value input,
+                      ArrayRef<int64_t> &batchSizes, int64_t dim) {
+  auto inputType = cast<ShapedType>(input.getType());
+  auto inputShape = inputType.getShape();
+
+  SmallVector<int64_t> permutation(inputShape.size());
+  for (size_t i = 0; i < dim; i++)
+    permutation[i] = i + batchSizes.size(); // left shift
+  for (size_t i = 0; i < batchSizes.size(); i++)
+    permutation[dim + i] = i; // move the batch dims
+  for (size_t i = batchSizes.size() + dim; i < permutation.size(); i++)
+    permutation[i] = i; // keep the rest
+
+  auto transposedInput =
+      stablehlo::TransposeOp::create(builder, input.getLoc(), input,
+                                     builder.getDenseI64ArrayAttr(permutation));
+
+  SmallVector<int64_t> newShape(inputShape.begin() + batchSizes.size(),
+                                inputShape.end());
+  newShape[dim] =
+      newShape[dim] * std::accumulate(batchSizes.begin(), batchSizes.end(), 1,
+                                      std::multiplies<int64_t>());
+  return stablehlo::ReshapeOp::create(
+      builder, input.getLoc(),
+      RankedTensorType::get(newShape, inputType.getElementType()),
+      transposedInput);
+}
+
+Value reshapeAxisOutOf(OpBuilder &builder, Value input,
+                       ArrayRef<int64_t> &batchSizes, int64_t dim) {
+  auto inputType = cast<ShapedType>(input.getType());
+  auto inputShape = llvm::to_vector(inputType.getShape());
+  auto batchSize = std::accumulate(batchSizes.begin(), batchSizes.end(), 1,
+                                   std::multiplies<int64_t>());
+  inputShape[dim] = inputShape[dim] / batchSize;
+  for (size_t i = 0; i < batchSizes.size(); i++)
+    inputShape.insert(inputShape.begin() + dim + i, batchSizes[i]);
+
+  auto reshapedInput = stablehlo::ReshapeOp::create(
+      builder, input.getLoc(),
+      RankedTensorType::get(inputShape, inputType.getElementType()), input);
+
+  SmallVector<int64_t> permutation(inputShape.size());
+  for (size_t i = 0; i < batchSizes.size(); i++)
+    permutation[i] = dim + i;
+  for (size_t i = 0; i < dim; i++)
+    permutation[batchSizes.size() + i] = i;
+  for (size_t i = batchSizes.size() + dim; i < permutation.size(); i++)
+    permutation[i] = i;
+
+  return stablehlo::TransposeOp::create(
+      builder, input.getLoc(), reshapedInput,
+      builder.getDenseI64ArrayAttr(permutation));
 }
 
 } // namespace stablehlo

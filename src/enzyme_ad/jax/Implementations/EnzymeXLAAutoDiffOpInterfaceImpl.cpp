@@ -17,6 +17,7 @@
 #include "Enzyme/MLIR/Interfaces/GradientUtilsReverse.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/Support/LogicalResult.h"
+#include "src/enzyme_ad/jax/Implementations/SHLOGenericBatchOpInterface.h"
 
 #include "Dialect/Ops.h"
 #include "mlir/IR/TypeSupport.h"
@@ -95,13 +96,13 @@ struct GPUWrapperOpEnzymeOpsRemover
     /*
     size_t idx = ifOp->getNumResults();
     for (auto grad : gradients) {
-      rewriter.create<enzyme::SetOp>(grad.getLoc(), grad,
+      enzyme::SetOp::create(rewriter, grad.getLoc(), grad,
                                      newIf->getResult(idx));
       idx++;
     }
 
     for (auto &[pushedValue, info] : pushedCaches) {
-      rewriter.create<enzyme::PushOp>(info.pushOp->getLoc(),
+      enzyme::PushOp::create(rewriter, info.pushOp->getLoc(),
                                       info.initOp.getResult(),
                                       newIf->getResult(idx));
       rewriter.eraseOp(info.pushOp);
@@ -109,7 +110,7 @@ struct GPUWrapperOpEnzymeOpsRemover
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPoint(info.popOp->getParentOp());
 
-      auto newPop = rewriter.create<enzyme::PopOp>(
+      auto newPop = enzyme::PopOp::create(rewriter,
           info.popOp->getLoc(), info.popOp.getResult().getType(),
           info.popOp.getCache());
       rewriter.replaceAllUsesWith(info.popOp.getResult(), newPop);
@@ -141,7 +142,7 @@ struct GPUWrapperOpInterfaceReverse
       operands.push_back(gutils->popCache(v, builder));
     }
 
-    auto repFor = builder.create<GPUWrapperOp>(wrapOp.getLoc(), operands);
+    auto repFor = GPUWrapperOp::create(builder, wrapOp.getLoc(), operands);
 
     bool valid = true;
     for (auto &&[oldReg, newReg] :
@@ -151,7 +152,7 @@ struct GPUWrapperOpInterfaceReverse
 
         // Create implicit terminator if not present (when num results > 0)
         if (revBB.empty()) {
-          bodyBuilder.create<YieldOp>(repFor->getLoc(), ValueRange());
+          YieldOp::create(bodyBuilder, repFor->getLoc(), ValueRange());
         }
         bodyBuilder.setInsertionPoint(revBB.getTerminator());
 
@@ -200,6 +201,11 @@ void mlir::enzyme::registerEnzymeXLADialectAutoDiffInterface(
     registerInterfaces(context);
     GPUWrapperOp::attachInterface<GPUWrapperOpInterfaceReverse>(*context);
     GPUWrapperOp::attachInterface<GPUWrapperOpEnzymeOpsRemover>(*context);
+
+    // Register batching interfaces
+    JITCallOp::attachInterface<SHLOGenericBatchOpInterface<JITCallOp>>(
+        *context);
+
     context->loadDialect<stablehlo::StablehloDialect>();
   });
 }

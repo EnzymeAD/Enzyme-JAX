@@ -59,6 +59,14 @@ void addWhileLICM(RewritePatternSet &patterns, bool hoist_all,
                   MLIRContext &context, PatternBenefit benefit);
 void addSliceLICM(RewritePatternSet &patterns, bool single_user,
                   MLIRContext &context, PatternBenefit benefit);
+void addDotGeneralLICM(RewritePatternSet &patterns, bool single_user,
+                       MLIRContext &context, PatternBenefit benefit);
+void addReverseLICM(RewritePatternSet &patterns, bool single_user,
+                    MLIRContext &context, PatternBenefit benefit);
+void addReduceLICM(RewritePatternSet &patterns, bool single_user,
+                   MLIRContext &context, PatternBenefit benefit);
+void addReduceWindowLICM(RewritePatternSet &patterns, bool single_user,
+                         MLIRContext &context, PatternBenefit benefit);
 void addDUSLICM(RewritePatternSet &patterns, bool single_user,
                 MLIRContext &context, PatternBenefit benefit);
 void addPadLICM(RewritePatternSet &patterns, bool single_user,
@@ -87,6 +95,8 @@ void addReshapeElementwise(RewritePatternSet &patterns, bool onlySingleUser,
                            MLIRContext &context, PatternBenefit benefit);
 void addReshapeSlice(RewritePatternSet &patterns, bool onlySingleUser,
                      MLIRContext &context, PatternBenefit benefit);
+void addReshapeDynamicSlice(RewritePatternSet &patterns, bool onlySingleUser,
+                            MLIRContext &context, PatternBenefit benefit);
 void addExtendUnaryElementwise(RewritePatternSet &patterns, bool onlySingleUser,
                                MLIRContext &context, PatternBenefit benefit);
 void addWrapUnaryElementwise(RewritePatternSet &patterns, bool onlySingleUser,
@@ -101,5 +111,7 @@ void addSelfSubtractToConvolutionLike(RewritePatternSet &patterns,
 void addSelfMulToConvolutionLike(RewritePatternSet &patterns,
                                  bool allowEmitConvolution,
                                  MLIRContext &context, PatternBenefit benefit);
+void addEnzymeHLOUnroll(RewritePatternSet &patterns, int64_t maxNumIterations,
+                        MLIRContext &context, PatternBenefit benefit);
 
 } // namespace mlir::transform

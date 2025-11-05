@@ -61,8 +61,8 @@ struct AlwaysInlinerInterface : public mlir::InlinerInterface {
 
     // Replace the return with a branch to the dest.
     mlir::OpBuilder builder(op);
-    builder.create<mlir::cf::BranchOp>(op->getLoc(), newDest,
-                                       op->getOperands());
+    mlir::cf::BranchOp::create(builder, op->getLoc(), newDest,
+                               op->getOperands());
     op->erase();
   }
 
@@ -77,7 +77,7 @@ struct AlwaysInlinerInterface : public mlir::InlinerInterface {
   }
 };
 
-mlir::InlinerInterface::CloneCallbackTy cloneCallback =
+static mlir::InlinerInterface::CloneCallbackTy cloneCallback =
     [](mlir::OpBuilder &builder, mlir::Region *src, mlir::Block *inlineBlock,
        mlir::Block *postInsertBlock, mlir::IRMapping &mapper,
        bool shouldCloneInlinedRegion) {

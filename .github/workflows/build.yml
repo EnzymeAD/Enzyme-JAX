@@ -81,7 +81,6 @@ jobs:
           if [ ${{ runner.arch }} == ARM64 ] && [ ${{ runner.os }} == Linux ]; then
               BAZEL_FLAGS="${BAZEL_FLAGS} --linkopt=-fuse-ld=lld"
           fi
-
           BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_TOPOLOGY"
           BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_WORKER_ID"
           BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_SKIP_MDS_QUERY=true"
@@ -97,6 +96,8 @@ jobs:
           BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=ALT=false"
           BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=WRAP"
           BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=VBAR_CONTROL_SERVICE_URL"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --repo_env=CC=`which clang`"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --define=using_clang=true"
           echo "BAZEL_FLAGS=${BAZEL_FLAGS}" >> "${GITHUB_ENV}"
       - uses: actions/checkout@v5
       - uses: bazel-contrib/setup-bazel@0.15.0
@@ -124,7 +125,7 @@ jobs:
         run: |
           bazel build $BAZEL_FLAGS --color=yes //:enzymexlamlir-opt --test_output=errors
       - name: Upload enzymexlamlir-opt
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: enzymexlamlir-opt-${{ matrix.os }}-${{ matrix.python }}
           path: "bazel-bin/enzymexlamlir-opt"
@@ -137,7 +138,7 @@ jobs:
         run: |
           bazel build $BAZEL_FLAGS --color=yes :wheel --test_output=errors
       - name: Upload wheel
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         if: ${{ !endsWith(matrix.os, 'arm') }}
         with:
           name: Enzyme-JAX-Wheel-${{ matrix.os }}-${{ matrix.python }}
@@ -150,7 +151,7 @@ jobs:
         run: |
           bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/...
       - name: Upload test results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         if: ${{ !cancelled() }}
         with:
           name: Enzyme-JAX-tests-${{ matrix.os }}-${{ matrix.python }}
@@ -158,7 +159,7 @@ jobs:
             bazel-out/**/test.log
           retention-days: 90
       - name: Upload benchmark results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         if: ${{ !cancelled() }}
         with:
           name: Enzyme-JAX-benchmark-${{ matrix.os }}-${{ matrix.python }}
@@ -182,7 +183,7 @@ jobs:
           curl -LsSf https://astral.sh/uv/install.sh | sh
       - uses: actions/checkout@v5
       - name: Download all benchmark artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v6
         with:
           pattern: Enzyme-JAX-benchmark-*
           path: benchmark-results
@@ -194,7 +195,7 @@ jobs:
             --csv_file=combined_results.csv \
             --json_file=combined_results.json
       - name: Upload benchmark results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         if: ${{ !cancelled() }}
         with:
           name: Enzyme-JAX-combined-benchmark-results

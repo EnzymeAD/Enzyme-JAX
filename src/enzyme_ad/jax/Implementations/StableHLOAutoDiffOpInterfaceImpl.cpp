@@ -16,6 +16,7 @@
 #include "Enzyme/MLIR/Interfaces/GradientUtils.h"
 #include "Enzyme/MLIR/Interfaces/GradientUtilsReverse.h"
 #include "Enzyme/MLIR/Passes/RemovalUtils.h"
+#include "src/enzyme_ad/jax/Implementations/SHLOGenericBatchOpInterface.h"
 
 #include "mlir/Analysis/TopologicalSortUtils.h"
 
@@ -64,11 +65,11 @@ static llvm::ArrayRef<bool> getBoolIter(llvm::ArrayRef<bool> vals) {
 Value makeIntegerConstant(Location loc, OpBuilder &builder, Type type,
                           int64_t val) {
   auto unrankedTensorType = RankedTensorType::get({}, type);
-  return builder
-      .create<ConstantOp>(loc, unrankedTensorType,
-                          SplatElementsAttr::get(
-                              unrankedTensorType,
-                              ArrayRef<Attribute>(IntegerAttr::get(type, val))))
+  return ConstantOp::create(
+             builder, loc, unrankedTensorType,
+             SplatElementsAttr::get(
+                 unrankedTensorType,
+                 ArrayRef<Attribute>(IntegerAttr::get(type, val))))
       .getResult();
 }
 
@@ -88,11 +89,10 @@ static inline Operation *createAddRegion(Operation *op) {
   auto tensorType = RankedTensorType::get({}, elemType);
   block->addArguments({tensorType, tensorType}, {op->getLoc(), op->getLoc()});
   builder.setInsertionPointToEnd(block);
-  builder.create<mlir::stablehlo::ReturnOp>(
-      op->getLoc(),
-      builder
-          .create<mlir::stablehlo::AddOp>(op->getLoc(), block->getArgument(0),
-                                          block->getArgument(1))
+  mlir::stablehlo::ReturnOp::create(
+      builder, op->getLoc(),
+      mlir::stablehlo::AddOp::create(
+          builder, op->getLoc(), block->getArgument(0), block->getArgument(1))
           ->getResult(0));
   return op;
 }
@@ -193,8 +193,8 @@ public:
                                MGradientUtils *gutils, Operation *original,
                                ValueRange remappedOperands,
                                TypeRange rettys) const {
-    return builder.create<OpTy>(original->getLoc(), rettys, remappedOperands,
-                                original->getAttrs());
+    return OpTy::create(builder, original->getLoc(), rettys, remappedOperands,
+                        original->getAttrs());
   }
 };
 
@@ -352,8 +352,8 @@ public:
                                MGradientUtils *gutils, Operation *original,
                                ValueRange remappedOperands,
                                TypeRange rettys) const {
-    return builder.create<IfOp>(original->getLoc(), rettys, remappedOperands,
-                                original->getAttrs());
+    return IfOp::create(builder, original->getLoc(), rettys, remappedOperands,
+                        original->getAttrs());
   }
 };
 
@@ -363,9 +363,9 @@ public:
   LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
                                          MGradientUtilsReverse *gutils,
                                          SmallVector<Value> caches) const {
-    auto revOp = builder.create<IfOp>(orig->getLoc(), ArrayRef<mlir::Type>{},
-                                      gutils->popCache(caches[0], builder),
-                                      orig->getAttrs());
+    auto revOp =
+        IfOp::create(builder, orig->getLoc(), ArrayRef<mlir::Type>{},
+                     gutils->popCache(caches[0], builder), orig->getAttrs());
 
     bool valid = true;
     for (auto &&[origReg, newReg] :
@@ -398,7 +398,8 @@ public:
         valid &= gutils->Logic.visitChild(op, revBuilder, gutils).succeeded();
       }
 
-      revBuilder.create<stablehlo::ReturnOp>(orig->getLoc(), ArrayRef<Value>{});
+      stablehlo::ReturnOp::create(revBuilder, orig->getLoc(),
+                                  ArrayRef<Value>{});
     }
 
     return success(valid);
@@ -514,7 +515,7 @@ class AutoDiffWhileRev
 
     auto types = ValueRange(operandsWithInduction).getTypes();
     auto whileOp =
-        builder.create<stablehlo::WhileOp>(loc, types, operandsWithInduction);
+        stablehlo::WhileOp::create(builder, loc, types, operandsWithInduction);
 
     SmallVector<Location> locs{loc};
     locs.reserve(operands.size() + 1);
@@ -522,17 +523,17 @@ class AutoDiffWhileRev
       locs.push_back(val.getLoc());
 
     Block *cond = builder.createBlock(&whileOp.getCond(), {}, types, locs);
-    Value cmp = builder.create<stablehlo::CompareOp>(
-        loc, cond->getArgument(0), limit, ComparisonDirection::LT);
-    builder.create<stablehlo::ReturnOp>(loc, cmp);
+    Value cmp = stablehlo::CompareOp::create(builder, loc, cond->getArgument(0),
+                                             limit, ComparisonDirection::LT);
+    stablehlo::ReturnOp::create(builder, loc, cmp);
 
     Block *body = builder.createBlock(&whileOp.getBody(), {}, types, locs);
     Value newVal =
-        builder.create<stablehlo::AddOp>(loc, body->getArgument(0), step);
+        stablehlo::AddOp::create(builder, loc, body->getArgument(0), step);
     operandsWithInduction.assign(body->getArguments().begin(),
                                  body->getArguments().end());
     operandsWithInduction[0] = newVal;
-    builder.create<stablehlo::ReturnOp>(loc, operandsWithInduction);
+    stablehlo::ReturnOp::create(builder, loc, operandsWithInduction);
 
     return whileOp;
   }
@@ -580,11 +581,12 @@ class AutoDiffWhileRev
     Block *revOuterBody = &revOuter.getBody().front();
     builder.setInsertionPointToStart(revOuterBody);
 
-    Value outerStep = builder.create<stablehlo::SubtractOp>(
-        orig.getLoc(), makeI64Constant(orig.getLoc(), builder, nOuter - 1),
+    Value outerStep = stablehlo::SubtractOp::create(
+        builder, orig.getLoc(),
+        makeI64Constant(orig.getLoc(), builder, nOuter - 1),
         revOuterBody->getArgument(0));
-    Value outerStart = builder.create<stablehlo::MulOp>(
-        orig.getLoc(), makeI64Constant(orig.getLoc(), builder, nInner),
+    Value outerStart = stablehlo::MulOp::create(
+        builder, orig.getLoc(), makeI64Constant(orig.getLoc(), builder, nInner),
         outerStep);
 
     Value lastCache = nullptr;
@@ -625,18 +627,19 @@ class AutoDiffWhileRev
 
     builder.setInsertionPointToStart(revInnerBody);
 
-    Value innerIV = builder.create<stablehlo::SubtractOp>(
-        orig.getLoc(), makeI64Constant(orig.getLoc(), builder, nInner - 1),
+    Value innerIV = stablehlo::SubtractOp::create(
+        builder, orig.getLoc(),
+        makeI64Constant(orig.getLoc(), builder, nInner - 1),
         revInnerBody->getArgument(0));
 
     Value currentStep =
-        builder.create<stablehlo::AddOp>(orig.getLoc(), outerStart, innerIV);
-    Value currentIV = builder.create<stablehlo::AddOp>(
-        orig.getLoc(),
+        stablehlo::AddOp::create(builder, orig.getLoc(), outerStart, innerIV);
+    Value currentIV = stablehlo::AddOp::create(
+        builder, orig.getLoc(),
         makeI64Constant(orig.getLoc(), builder,
                         revInfo.info.getConstantStart().value()),
-        builder.create<stablehlo::MulOp>(
-            orig.getLoc(),
+        stablehlo::MulOp::create(
+            builder, orig.getLoc(),
             makeI64Constant(orig.getLoc(), builder,
                             revInfo.info.getConstantStep().value()),
             currentStep));
@@ -689,7 +692,7 @@ class AutoDiffWhileRev
       OpBuilder cacheBuilder(revInner);
       auto loc = orig->getLoc();
       auto cacheCreator = [&](Type t) {
-        Value cache = cacheBuilder.create<enzyme::InitOp>(loc, t);
+        Value cache = enzyme::InitOp::create(cacheBuilder, loc, t);
         return std::make_pair(cache, cache);
       };
       gutils->registerCacheCreatorHook(cacheCreator);
@@ -768,16 +771,16 @@ public:
                                       builder, gutils, caches, operandsActive);
     } else if (revInfo.mode == CONSTANT) {
       auto iterType = orig->getOperand(0).getType();
-      numIters = builder.create<stablehlo::ConstantOp>(
-          orig->getLoc(), iterType,
+      numIters = stablehlo::ConstantOp::create(
+          builder, orig->getLoc(), iterType,
           cast<ElementsAttr>(
               makeAttr(iterType, revInfo.info.getConstantNumIters())));
     } else
       numIters = gutils->popCache(caches[0], builder);
 
     auto unrankedTensorType = RankedTensorType::get({}, builder.getI64Type());
-    auto iterVarOp = builder.create<ConstantOp>(
-        orig->getLoc(), unrankedTensorType,
+    auto iterVarOp = ConstantOp::create(
+        builder, orig->getLoc(), unrankedTensorType,
         SplatElementsAttr::get(
             unrankedTensorType,
             ArrayRef<Attribute>(IntegerAttr::get(builder.getI64Type(), 0))));
@@ -795,8 +798,8 @@ public:
       }
     }
 
-    auto revWhile = builder.create<WhileOp>(
-        orig->getLoc(), ValueRange(operands).getTypes(), operands);
+    auto revWhile = WhileOp::create(builder, orig->getLoc(),
+                                    ValueRange(operands).getTypes(), operands);
     auto &condReg = revWhile.getCond();
     auto &bodyReg = revWhile.getBody();
 
@@ -822,22 +825,21 @@ public:
         builder.setInsertionPointAfter(iterVarOp);
         DenseIntElementsAttr numAttr;
         if (matchPattern(numIters, m_Constant(&numAttr))) {
-          numIters = builder.create<ConstantOp>(
-              orig->getLoc(), condIterVar.getType(),
+          numIters = ConstantOp::create(
+              builder, orig->getLoc(), condIterVar.getType(),
               cast<ElementsAttr>(makeAttr(condIterVar.getType(),
                                           (*numAttr.begin()).getSExtValue())));
         } else {
-          numIters = builder.create<ConvertOp>(orig->getLoc(), numIters,
-                                               condIterVarElemType);
+          numIters = ConvertOp::create(builder, orig->getLoc(), numIters,
+                                       condIterVarElemType);
         }
         builder.setInsertionPointAfter(revWhile);
       }
 
-      condBuilder.create<ReturnOp>(
-          orig->getLoc(),
-          ValueRange(condBuilder
-                         .create<CompareOp>(orig->getLoc(), condIterVar,
-                                            numIters, ComparisonDirection::LT)
+      ReturnOp::create(
+          condBuilder, orig->getLoc(),
+          ValueRange(CompareOp::create(condBuilder, orig->getLoc(), condIterVar,
+                                       numIters, ComparisonDirection::LT)
                          .getResult()));
     }
 
@@ -847,13 +849,13 @@ public:
         body->addArgument(operand.getType(), orig->getLoc());
       }
       OpBuilder bodyBuilder(body, body->end());
-      auto one = bodyBuilder.create<ConstantOp>(
-          orig->getLoc(), unrankedTensorType,
+      auto one = ConstantOp::create(
+          bodyBuilder, orig->getLoc(), unrankedTensorType,
           SplatElementsAttr::get(unrankedTensorType,
                                  ArrayRef<Attribute>(IntegerAttr::get(
                                      bodyBuilder.getI64Type(), 1))));
       Value bodyIterVar =
-          bodyBuilder.create<AddOp>(orig->getLoc(), body->getArgument(0), one);
+          AddOp::create(bodyBuilder, orig->getLoc(), body->getArgument(0), one);
 
       Block *oBB = &orig->getRegion(1).front();
       auto term = oBB->getTerminator();
@@ -907,7 +909,7 @@ public:
         }
       }
 
-      bodyBuilder.create<ReturnOp>(orig->getLoc(), newResults);
+      ReturnOp::create(bodyBuilder, orig->getLoc(), newResults);
     }
 
     int revIdx = 1;
@@ -965,8 +967,8 @@ public:
             Block *outerBody = &outer.getBody().front();
             builder.setInsertionPointToStart(outerBody);
 
-            Value outerIV = builder.create<stablehlo::MulOp>(
-                newWhile.getLoc(), outerBody->getArgument(0),
+            Value outerIV = stablehlo::MulOp::create(
+                builder, newWhile.getLoc(), outerBody->getArgument(0),
                 makeI64Constant(newWhile.getLoc(), builder, nOuter));
 
             for (auto arg : outerBody->getArguments().slice(1)) {
@@ -1004,8 +1006,8 @@ public:
             }
 
             Value oldIV = oldInnerBody->getArgument(0);
-            Value newIV = builder.create<stablehlo::AddOp>(
-                oldIV.getLoc(), innerBody->getArgument(0), outerIV);
+            Value newIV = stablehlo::AddOp::create(
+                builder, oldIV.getLoc(), innerBody->getArgument(0), outerIV);
 
             mapping.map(oldIV, newIV);
 
@@ -1051,12 +1053,11 @@ public:
 
       auto unrankedTensorType = RankedTensorType::get({}, elementType);
       auto numItersInit =
-          revBuilder
-              .create<ConstantOp>(
-                  orig->getLoc(), unrankedTensorType,
-                  SplatElementsAttr::get(
-                      unrankedTensorType,
-                      ArrayRef<Attribute>(IntegerAttr::get(elementType, 0))))
+          ConstantOp::create(
+              revBuilder, orig->getLoc(), unrankedTensorType,
+              SplatElementsAttr::get(
+                  unrankedTensorType,
+                  ArrayRef<Attribute>(IntegerAttr::get(elementType, 0))))
               .getResult();
 
       newWhile->insertOperands(newWhile->getNumOperands(),
@@ -1066,13 +1067,13 @@ public:
           body->addArgument(numItersInit.getType(), orig->getLoc());
 
       OpBuilder inBodyBuilder(body, body->begin());
-      auto one = inBodyBuilder.create<ConstantOp>(
-          orig->getLoc(), unrankedTensorType,
+      auto one = ConstantOp::create(
+          inBodyBuilder, orig->getLoc(), unrankedTensorType,
           SplatElementsAttr::get(
               unrankedTensorType,
               ArrayRef<Attribute>(IntegerAttr::get(elementType, 1))));
-      numItersInBlock = inBodyBuilder.create<AddOp>(
-          orig->getLoc(), numItersInBlock, one.getResult());
+      numItersInBlock = AddOp::create(inBodyBuilder, orig->getLoc(),
+                                      numItersInBlock, one.getResult());
       auto term = body->getTerminator();
       term->insertOperands(term->getNumOperands(), ValueRange(numItersInBlock));
 
@@ -1080,8 +1081,8 @@ public:
                                     newWhile->getResultTypes().end());
       resultTypes.push_back(numItersInit.getType());
 
-      auto newnewWhile = revBuilder.create<WhileOp>(orig->getLoc(), resultTypes,
-                                                    newWhile->getOperands());
+      auto newnewWhile = WhileOp::create(revBuilder, orig->getLoc(),
+                                         resultTypes, newWhile->getOperands());
       newnewWhile.getCond().takeBody(newWhile.getCond());
       newnewWhile.getBody().takeBody(newWhile.getBody());
 
@@ -1202,9 +1203,9 @@ public:
     Value zero = cast<AutoDiffTypeInterface>(gutils->getShadowType(bodyTy))
                      .createNullValue(builder, op.getLoc());
 
-    auto red = builder.create<ReduceOp>(
-        op.getLoc(), TypeRange(gutils->getShadowType(reduceTy)), inDiffe, zero,
-        reducedDims);
+    auto red = ReduceOp::create(builder, op.getLoc(),
+                                TypeRange(gutils->getShadowType(reduceTy)),
+                                inDiffe, zero, reducedDims);
     red.getBody().push_back(new Block());
     Block &body = red.getBody().front();
     OpBuilder bodyBuilder(orig->getContext());
@@ -1212,21 +1213,21 @@ public:
 
     body.addArgument(bodyTy, op.getLoc());
     body.addArgument(bodyTy, op.getLoc());
-    auto add = bodyBuilder.create<AddOp>(op.getLoc(), body.getArgument(0),
-                                         body.getArgument(1));
-    bodyBuilder.create<ReturnOp>(op.getLoc(), ValueRange(add));
+    auto add = AddOp::create(bodyBuilder, op.getLoc(), body.getArgument(0),
+                             body.getArgument(1));
+    ReturnOp::create(bodyBuilder, op.getLoc(), ValueRange(add));
 
     // for simplicity we do grad -> reduce -> reshape (restore 1 dims) ->
     // transpose -> reshape
     // The repeated reshapes are then eliminated via `enzyme-hlo-opt`.
-    auto reshapedRed = builder.create<ReshapeOp>(
-        op.getLoc(),
+    auto reshapedRed = ReshapeOp::create(
+        builder, op.getLoc(),
         RankedTensorType::get(reshapedShape, inTy.getElementType()),
         red->getResult(0));
     auto transposedVal =
-        builder.create<TransposeOp>(op.getLoc(), reshapedRed, perm);
-    auto res = builder.create<ReshapeOp>(
-        op.getLoc(), gutils->getShadowType(op.getOperand().getType()),
+        TransposeOp::create(builder, op.getLoc(), reshapedRed, perm);
+    auto res = ReshapeOp::create(
+        builder, op.getLoc(), gutils->getShadowType(op.getOperand().getType()),
         transposedVal);
 
     gutils->addToDiffe(op.getOperand(), res, builder);
@@ -1268,8 +1269,9 @@ public:
     auto zeroPad = cast<AutoDiffTypeInterface>(
                        RankedTensorType::get({}, inTy.getElementType()))
                        .createNullValue(builder, op.getLoc());
-    auto red = builder.create<stablehlo::PadOp>(
-        op.getLoc(), inDiffe, zeroPad, builder.getDenseI64ArrayAttr(starts),
+    auto red = stablehlo::PadOp::create(
+        builder, op.getLoc(), inDiffe, zeroPad,
+        builder.getDenseI64ArrayAttr(starts),
         builder.getDenseI64ArrayAttr(edge_padding_high),
         builder.getDenseI64ArrayAttr(interior_padding));
 
@@ -1295,8 +1297,8 @@ static void makeAddBlock(Region &region, Location loc,
   auto b = block->addArgument(unrankedTensorType, loc);
 
   OpBuilder builder(block, block->end());
-  auto addOp = builder.create<AddOp>(loc, a, b);
-  builder.create<stablehlo::ReturnOp>(loc, addOp.getResult());
+  auto addOp = AddOp::create(builder, loc, a, b);
+  stablehlo::ReturnOp::create(builder, loc, addOp.getResult());
 }
 
 class AutoDiffReduceWindowRev
@@ -1417,15 +1419,14 @@ public:
                       .createNullValue(builder, op.getLoc());
 
       auto paddedIndiffe =
-          builder
-              .create<stablehlo::PadOp>(op.getLoc(), inDiffe, zero,
-                                        getI64Attr(builder, paddingHigh),
-                                        getI64Attr(builder, paddingLow),
-                                        getI64Attr(builder, paddingInterior))
+          stablehlo::PadOp::create(builder, op.getLoc(), inDiffe, zero,
+                                   getI64Attr(builder, paddingHigh),
+                                   getI64Attr(builder, paddingLow),
+                                   getI64Attr(builder, paddingInterior))
               .getResult();
 
-      auto revOp = builder.create<stablehlo::ReduceWindowOp>(
-          op.getLoc(), operandType, paddedIndiffe,
+      auto revOp = stablehlo::ReduceWindowOp::create(
+          builder, op.getLoc(), operandType, paddedIndiffe,
           /*init_value*/ zero,
           /*window_dimensions*/ op.getWindowDimensionsAttr(),
           /*window_strides*/ op.getBaseDilationsAttr(),
@@ -1443,14 +1444,15 @@ public:
         OpBuilder::InsertionGuard guard(builder);
         builder.setInsertionPointToEnd(select);
 
-        auto cmpOp = builder.create<CompareOp>(
-            op.getLoc(), select->getArgument(0), select->getArgument(1),
+        auto cmpOp = CompareOp::create(
+            builder, op.getLoc(), select->getArgument(0),
+            select->getArgument(1),
             ismax ? ComparisonDirection::GE : ComparisonDirection::LE);
-        builder.create<ReturnOp>(op.getLoc(), cmpOp.getResult());
+        ReturnOp::create(builder, op.getLoc(), cmpOp.getResult());
       }
 
-      auto revOp = builder.create<SelectAndScatterOp>(
-          op.getLoc(), op.getOperand(0).getType(),
+      auto revOp = SelectAndScatterOp::create(
+          builder, op.getLoc(), op.getOperand(0).getType(),
           gutils->popCache(caches[0], builder), inDiffe,
           cast<AutoDiffTypeInterface>(unrankedTensorType)
               .createNullValue(builder, op.getLoc()),
@@ -1520,8 +1522,8 @@ public:
       if (!gutils->isConstantValue(op.getInputs()[0])) {
         Value bcast;
 
-        bcast = builder.create<BroadcastInDimOp>(
-            op.getLoc(), gutils->getShadowType(inTy), inDiffe,
+        bcast = BroadcastInDimOp::create(
+            builder, op.getLoc(), gutils->getShadowType(inTy), inDiffe,
             builder.getDenseI64ArrayAttr(toBroadcast));
 
         gutils->addToDiffe(op.getInputs()[0], bcast, builder);
@@ -1540,16 +1542,16 @@ public:
       if (!gutils->isConstantValue(op.getInputs()[0])) {
         auto oprev = gutils->getNewFromOriginal(op.getInputs()[0]);
         auto attr = builder.getDenseI64ArrayAttr(toBroadcast);
-        auto bc = builder.create<BroadcastInDimOp>(op.getLoc(), oprev.getType(),
-                                                   ores, attr);
+        auto bc = BroadcastInDimOp::create(builder, op.getLoc(),
+                                           oprev.getType(), ores, attr);
 
-        auto cmp = builder.create<CompareOp>(op.getLoc(), bc, oprev,
-                                             ComparisonDirection::EQ);
+        auto cmp = CompareOp::create(builder, op.getLoc(), bc, oprev,
+                                     ComparisonDirection::EQ);
 
-        auto bc2 = builder.create<BroadcastInDimOp>(
-            op.getLoc(), oprev.getType(), inDiffe, attr);
+        auto bc2 = BroadcastInDimOp::create(builder, op.getLoc(),
+                                            oprev.getType(), inDiffe, attr);
 
-        auto res = builder.create<SelectOp>(op.getLoc(), cmp, bc2, zero);
+        auto res = SelectOp::create(builder, op.getLoc(), cmp, bc2, zero);
         gutils->addToDiffe(op.getInputs()[0], res, builder);
       }
       if (!gutils->isConstantValue(op.getInitValues()[0])) {
@@ -1558,10 +1560,10 @@ public:
         auto zeroI = cast<AutoDiffTypeInterface>(inDiffe.getType())
                          .createNullValue(builder, op.getLoc());
 
-        auto cmp = builder.create<CompareOp>(op.getLoc(), ores, oprev,
-                                             ComparisonDirection::EQ);
+        auto cmp = CompareOp::create(builder, op.getLoc(), ores, oprev,
+                                     ComparisonDirection::EQ);
 
-        auto res = builder.create<SelectOp>(op.getLoc(), cmp, inDiffe, zeroI);
+        auto res = SelectOp::create(builder, op.getLoc(), cmp, inDiffe, zeroI);
         gutils->addToDiffe(op.getInitValues()[0], res, builder);
       }
       return success();
@@ -1618,10 +1620,10 @@ public:
       }
       if (gutils->isConstantValue(op))
         continue;
-      auto res = builder.create<SliceOp>(
-          op.getLoc(), RankedTensorType::get(tys, RT.getElementType()), inDiffe,
-          start, limit, strides);
-      auto res2 = builder.create<ReshapeOp>(op.getLoc(), inTy, res);
+      auto res = SliceOp::create(
+          builder, op.getLoc(), RankedTensorType::get(tys, RT.getElementType()),
+          inDiffe, start, limit, strides);
+      auto res2 = ReshapeOp::create(builder, op.getLoc(), inTy, res);
       gutils->addToDiffe(op, res2, builder);
     }
     return success();
@@ -1636,301 +1638,6 @@ public:
                           MGradientUtilsReverse *gutils) const {}
 };
 
-// Collects all references in op that are defined either in ref or in a an
-// ancestor of ref.
-static void getAllReferences(SmallVector<Value> &refs, Operation *op,
-                             Region *ref) {
-  for (auto operand : op->getOperands()) {
-    if (operand.getParentRegion()->isAncestor(ref))
-      refs.push_back(operand);
-  }
-
-  for (auto &reg : op->getRegions()) {
-    for (auto &childOp : reg.getOps()) {
-      getAllReferences(refs, &childOp, ref);
-    }
-  }
-}
-
-static mlir::TensorType applyBatchSizes(mlir::Type Ty,
-                                        llvm::ArrayRef<int64_t> batchSizes) {
-  auto T = cast<TensorType>(Ty);
-  SmallVector<int64_t> shape(batchSizes.begin(), batchSizes.end());
-  shape.append(T.getShape().begin(), T.getShape().end());
-  auto T2 = T.clone(shape);
-  return T2;
-}
-
-// TODO: make public in Enzyme MLIR?
-// this is essentially
-// https://github.com/EnzymeAD/Enzyme/blob/342057e3a3e657a33da8295c99acdcd20b0375f4/enzyme/Enzyme/MLIR/Passes/EnzymeBatchPass.cpp#L58-L100
-static void batchCloneBlock(Block *srcBlock, Block *destBlock,
-                            IRMapping &mapper, ArrayRef<int64_t> batchSizes) {
-  for (auto arg : srcBlock->getArguments()) {
-    auto batched = destBlock->addArgument(
-        applyBatchSizes(arg.getType(), batchSizes), arg.getLoc());
-    mapper.map(arg, batched);
-  }
-
-  OpBuilder builder(destBlock, destBlock->end());
-  for (auto &src : srcBlock->getOperations()) {
-    if (auto ifaceOp = dyn_cast<BatchOpInterface>(&src)) {
-      auto res = ifaceOp.createBatch(builder, mapper, batchSizes);
-      if (res.succeeded())
-        continue;
-    }
-
-    SmallVector<Value, 8> operands;
-    SmallVector<Block *, 2> successors;
-
-    // Remap the operands.
-    operands.reserve(src.getNumOperands());
-    for (auto opValue : src.getOperands())
-      operands.push_back(mapper.lookup(opValue));
-
-    // Remap the successors.
-    successors.reserve(src.getNumSuccessors());
-    for (Block *successor : src.getSuccessors())
-      successors.push_back(mapper.lookup(successor));
-
-    SmallVector<Type> resultTypes(src.getResultTypes().begin(),
-                                  src.getResultTypes().end());
-    for (auto &Ty : resultTypes) {
-      Ty = applyBatchSizes(Ty, batchSizes);
-    }
-
-    Operation *newOp = Operation::create(
-        src.getLoc(), src.getName(), resultTypes, operands, src.getAttrs(),
-        OpaqueProperties(nullptr), successors, src.getNumRegions());
-
-    // // Clone the regions.
-    // for (auto &&[oldReg, newReg] :
-    //      llvm::zip(src.getRegions(), newOp->getRegions())) {
-    //   batchCloneRegion(&oldReg, &newReg, mapper, batchSizes);
-    // }
-
-    // Remember the mapping of any results.
-    for (unsigned i = 0, e = src.getNumResults(); i != e; ++i)
-      mapper.map(src.getResult(i), newOp->getResult(i));
-
-    builder.insert(newOp);
-  }
-}
-
-// For some ops with nested regions, identify if we can batch the inner regions
-// instead
-static LogicalResult tryToBatchInner(Operation *src, OpBuilder &builder,
-                                     IRMapping &mapper,
-                                     ArrayRef<int64_t> batchSizes) {
-  if (auto ifOp = dyn_cast<IfOp>(src)) {
-    auto predBroadcast =
-        mapper.lookup(ifOp.getPred()).getDefiningOp<BroadcastInDimOp>();
-    if (predBroadcast && predBroadcast.isSimpleBroadcast() &&
-        predBroadcast.getBroadcastDimensions().size() == batchSizes.size()) {
-      // %pred = broadcast_in_dim %0
-      // if %0 {} {}
-      SmallVector<Type> results;
-      results.reserve(src->getNumResults());
-      for (auto resTy : src->getResultTypes()) {
-        results.push_back(applyBatchSizes(resTy, batchSizes));
-      }
-      auto newIf = builder.create<IfOp>(src->getLoc(), results,
-                                        predBroadcast.getOperand());
-      newIf.getTrueBranch().push_back(new Block());
-      newIf.getFalseBranch().push_back(new Block());
-
-      batchCloneBlock(&ifOp.getTrueBranch().front(),
-                      &newIf.getTrueBranch().front(), mapper, batchSizes);
-      batchCloneBlock(&ifOp.getFalseBranch().front(),
-                      &newIf.getFalseBranch().front(), mapper, batchSizes);
-
-      for (auto &&[oldRes, newRes] :
-           llvm::zip(ifOp->getResults(), newIf->getResults())) {
-        mapper.map(oldRes, newRes);
-      }
-
-      return success();
-    }
-
-    auto iszero = matchPattern(ifOp.getPred(), m_Zero());
-    auto isone = matchPattern(ifOp.getPred(), m_One());
-
-    if (!iszero && !isone)
-      return failure();
-
-    auto &reg = isone ? ifOp.getTrueBranch() : ifOp.getFalseBranch();
-
-    assert(reg.hasOneBlock());  // stablehlo.if only allows 1 or 0 block in the
-    auto *block = &reg.front(); // regions
-
-    batchCloneBlock(block, builder.getInsertionBlock(), mapper, batchSizes);
-    auto term = builder.getInsertionBlock()->getTerminator();
-
-    for (auto &&[result, operand] :
-         llvm::zip(src->getResults(), term->getOperands())) {
-      mapper.map(result, operand);
-    }
-
-    term->erase();
-
-    return success();
-  }
-
-  return failure();
-}
-
-template <typename OpTy>
-struct SHLOGenericBatchOpInterface
-    : public BatchOpInterface::ExternalModel<SHLOGenericBatchOpInterface<OpTy>,
-                                             OpTy> {
-public:
-  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
-                                  IRMapping &mapper,
-                                  ArrayRef<int64_t> batchSizes) const {
-    if (tryToBatchInner(src, builder, mapper, batchSizes).succeeded())
-      return success();
-
-    SmallVector<Value> operands;
-    operands.reserve(src->getNumOperands());
-
-    getAllReferences(operands, src, src->getParentRegion());
-
-    SmallVector<Value> whileOperands;
-    whileOperands.reserve(src->getNumResults() + 1);
-    whileOperands.push_back(makeI64Constant(src->getLoc(), builder, 0));
-
-    for (auto res : src->getResults()) {
-      auto Ty = cast<TensorType>(res.getType());
-      SmallVector<int64_t> shape(batchSizes.begin(), batchSizes.end());
-      shape.append(Ty.getShape().begin(), Ty.getShape().end());
-      auto T2 = cast<AutoDiffTypeInterface>(Ty.clone(shape));
-      auto defaultValue = T2.createNullValue(builder, src->getLoc());
-      mapper.map(res, defaultValue);
-      whileOperands.push_back(defaultValue);
-    }
-
-    auto ndims = batchSizes.size();
-
-    SmallVector<int64_t> batchStrides;
-    batchStrides.reserve(ndims);
-    SmallVector<Value> startIndices;
-    startIndices.reserve(ndims);
-
-    int64_t N = 1;
-    for (auto batchSize : batchSizes) {
-      batchStrides.push_back(N);
-      N *= batchSize;
-    }
-
-    auto whileOp = builder.create<WhileOp>(src->getLoc(), whileOperands);
-
-    auto whileCond = new Block();
-    auto whileBody = new Block();
-
-    whileOp.getCond().push_back(whileCond);
-    whileOp.getBody().push_back(whileBody);
-
-    {
-      OpBuilder condBuilder(whileCond, whileCond->end());
-
-      for (auto operand : whileOperands) {
-        whileCond->addArgument(operand.getType(), src->getLoc());
-      }
-
-      condBuilder.create<ReturnOp>(
-          src->getLoc(), ValueRange(condBuilder.create<CompareOp>(
-                             src->getLoc(), whileCond->getArgument(0),
-                             makeI64Constant(src->getLoc(), condBuilder, N),
-                             ComparisonDirection::LT)));
-    }
-
-    {
-      OpBuilder bodyBuilder(whileBody, whileBody->end());
-
-      for (auto operand : whileOperands) {
-        whileBody->addArgument(operand.getType(), src->getLoc());
-      }
-
-      SmallVector<Value> whileBodyOutputs;
-      whileBodyOutputs.reserve(whileBody->getNumArguments());
-
-      whileBodyOutputs.push_back(bodyBuilder.create<AddOp>(
-          src->getLoc(), whileBody->getArgument(0),
-          makeI64Constant(src->getLoc(), bodyBuilder, 1)));
-
-      for (int d = 0; d < ndims; ++d) {
-        // auto idx = (i / batchStrides[d]) % batchSizes[d];
-        auto idx = bodyBuilder.create<RemOp>(
-            src->getLoc(),
-            bodyBuilder.create<DivOp>(
-                src->getLoc(), whileBody->getArgument(0),
-                makeI64Constant(src->getLoc(), bodyBuilder, batchStrides[d])),
-            makeI64Constant(src->getLoc(), bodyBuilder, batchSizes[d]));
-
-        startIndices.push_back(idx);
-      }
-
-      auto zeroIdx = makeI64Constant(src->getLoc(), bodyBuilder, 0);
-
-      IRMapping origToUnbatch;
-      for (auto operand : operands) {
-        auto batched = mapper.lookup(operand);
-
-        auto Ty = cast<TensorType>(operand.getType());
-        SmallVector<int64_t> shape(ndims, 1);
-        shape.append(Ty.getShape().begin(), Ty.getShape().end());
-        auto sliceTy = Ty.clone(shape);
-
-        SmallVector<Value> operandStartIndices;
-        operandStartIndices.append(startIndices.begin(), startIndices.end());
-        for (auto i = 0; i < Ty.getShape().size(); i++)
-          operandStartIndices.push_back(zeroIdx);
-
-        auto sliceOp = bodyBuilder.create<DynamicSliceOp>(
-            src->getLoc(), sliceTy, batched, operandStartIndices, shape);
-
-        auto reshapeOp = bodyBuilder.create<ReshapeOp>(
-            src->getLoc(), operand.getType(), sliceOp->getResult(0));
-
-        origToUnbatch.map(operand, reshapeOp->getResult(0));
-      }
-
-      auto newOp = bodyBuilder.clone(*src, origToUnbatch);
-
-      for (auto &&[idx, origRes, newRes] :
-           llvm::enumerate(src->getResults(), newOp->getResults())) {
-        auto batched = whileBody->getArgument(idx + 1);
-
-        auto Ty = cast<TensorType>(newRes.getType());
-        SmallVector<int64_t> shape(ndims, 1);
-        shape.append(Ty.getShape().begin(), Ty.getShape().end());
-        auto reshapeTy = Ty.clone(shape);
-
-        auto reshapeOp =
-            bodyBuilder.create<ReshapeOp>(src->getLoc(), reshapeTy, newRes);
-
-        SmallVector<Value> operandStartIndices;
-        operandStartIndices.append(startIndices.begin(), startIndices.end());
-        for (int i = 0; i < Ty.getShape().size(); ++i)
-          operandStartIndices.push_back(zeroIdx);
-
-        auto update = bodyBuilder.create<DynamicUpdateSliceOp>(
-            src->getLoc(), batched, reshapeOp, operandStartIndices);
-
-        whileBodyOutputs.push_back(update);
-      }
-
-      bodyBuilder.create<ReturnOp>(src->getLoc(), whileBodyOutputs);
-    }
-
-    for (auto oldRes : src->getOpResults()) {
-      mapper.map(oldRes, whileOp->getResult(oldRes.getResultNumber() + 1));
-    }
-
-    return success();
-  }
-};
-
 struct SHLOConstantOpBatchInterface
     : public BatchOpInterface::ExternalModel<SHLOConstantOpBatchInterface,
                                              ConstantOp> {
@@ -1938,26 +1645,57 @@ struct SHLOConstantOpBatchInterface
   mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
                                   IRMapping &mapper,
                                   ArrayRef<int64_t> batchSizes) const {
+    auto constOp = cast<ConstantOp>(src);
 
-    SmallVector<Type> resultTypes(src->getResultTypes().begin(),
-                                  src->getResultTypes().end());
-    for (auto &Ty : resultTypes) {
-      auto T = cast<TensorType>(Ty);
-      SmallVector<int64_t> shape(batchSizes.begin(), batchSizes.end());
-      shape.append(T.getShape().begin(), T.getShape().end());
-      Ty = T.clone(shape);
+    auto T = cast<TensorType>(constOp.getType());
+    SmallVector<int64_t> shape(batchSizes.begin(), batchSizes.end());
+    shape.append(T.getShape().begin(), T.getShape().end());
+    auto Ty = T.clone(shape);
+
+    // If splatted attr then we can easily batch it
+    auto eattr = cast<DenseElementsAttr>(constOp.getValue());
+    if (eattr.isSplat()) {
+      auto splatAttr = cast<SplatElementsAttr>(constOp.getValue());
+      auto newSplattedConstOp = ConstantOp::create(
+          builder, constOp->getLoc(), Ty,
+          cast<ElementsAttr>(splatAttr.resizeSplat(cast<ShapedType>(Ty))));
+      mapper.map(src->getResult(0), newSplattedConstOp->getResult(0));
+      return success();
     }
-    mlir::NamedAttrList attrs;
-    for (auto attr : src->getAttrs()) {
-      auto eattr = cast<DenseElementsAttr>(attr.getValue());
-      attr.setValue(eattr.resizeSplat(cast<ShapedType>(resultTypes[0])));
-      attrs.append(attr);
-    }
-    auto cop = mlir::Operation::create(
-        src->getLoc(), src->getName(), resultTypes, {}, std::move(attrs),
-        OpaqueProperties(nullptr), mlir::BlockRange(), 0);
-    builder.insert(cop);
-    mapper.map(src->getResult(0), cop->getResult(0));
+
+    // otherwise do a broadcast in dim
+    SmallVector<int64_t> mapping(T.getShape().size());
+    std::iota(mapping.begin(), mapping.end(), batchSizes.size());
+
+    auto constOpCloned = builder.clone(*constOp);
+    auto bcastOp = BroadcastInDimOp::create(
+        builder, src->getLoc(), Ty, constOpCloned->getResult(0),
+        builder.getDenseI64ArrayAttr(mapping));
+    mapper.map(src->getResult(0), bcastOp->getResult(0));
+    return success();
+  }
+};
+
+struct SHLOGetDimensionSizeOpBatchInterface
+    : public BatchOpInterface::ExternalModel<
+          SHLOGetDimensionSizeOpBatchInterface, GetDimensionSizeOp> {
+
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto getDimSizeOp = cast<GetDimensionSizeOp>(src);
+
+    auto newOp = GetDimensionSizeOp::create(
+        builder, src->getLoc(), mapper.lookup(getDimSizeOp.getOperand()),
+        cast<IntegerAttr>(getDimSizeOp.getDimensionAttr()).getInt() +
+            batchSizes.size());
+    auto bcastOp = BroadcastInDimOp::create(
+        builder, src->getLoc(),
+        RankedTensorType::get(
+            batchSizes, cast<RankedTensorType>(newOp->getResult(0).getType())
+                            .getElementType()),
+        newOp->getResult(0), builder.getDenseI64ArrayAttr({}));
+    mapper.map(src->getResult(0), bcastOp->getResult(0));
     return success();
   }
 };
@@ -2023,46 +1761,6 @@ struct ADDataFlowSortOp
   SmallVector<Value> getPotentialTerminatorUsers(Operation *op, Operation *term,
                                                  Value v) const {
     return {};
-  }
-};
-
-struct RegionBranchCaseOp
-    : public RegionBranchOpInterface::ExternalModel<RegionBranchCaseOp,
-                                                    CaseOp> {
-
-  void
-  getEntrySuccessorRegions(Operation *op, ArrayRef<Attribute> operands,
-                           SmallVectorImpl<RegionSuccessor> &successors) const {
-    for (auto &reg : op->getRegions())
-      successors.push_back(RegionSuccessor(&reg));
-  }
-
-  mlir::OperandRange getEntrySuccessorOperands(Operation *op,
-                                               RegionBranchPoint bp) const {
-    auto end = op->operand_end();
-    return ::mlir::OperandRange(end, end);
-  }
-
-  void
-  getRegionInvocationBounds(Operation *op, ArrayRef<Attribute> operands,
-                            SmallVectorImpl<InvocationBounds> &bounds) const {
-    bounds.append(op->getNumRegions(), InvocationBounds(/*lb=*/0, /*ub=*/1));
-  }
-
-  bool areTypesCompatible(Operation *op, Type lhs, Type rhs) const {
-    return lhs == rhs;
-  }
-
-  void getSuccessorRegions(Operation *op, RegionBranchPoint point,
-                           SmallVectorImpl<RegionSuccessor> &regions) const {
-    // The `then` and the `else` region branch back to the parent operation.
-    if (!point.isParent()) {
-      regions.push_back(RegionSuccessor(op->getResults()));
-      return;
-    }
-
-    for (auto &reg : op->getRegions())
-      regions.push_back(RegionSuccessor(&reg));
   }
 };
 
@@ -2246,8 +1944,8 @@ public:
       }
     }
 
-    auto replacement = builder.create<ScatterOp>(
-        scat.getLoc(), ResultTypes, Inputs,
+    auto replacement = ScatterOp::create(
+        builder, scat.getLoc(), ResultTypes, Inputs,
         gutils->getNewFromOriginal(scat.getScatterIndices()), Updates,
         scat.getScatterDimensionNumbersAttr(), scat.getIndicesAreSortedAttr(),
         scat.getUniqueIndicesAttr());
@@ -2375,8 +2073,8 @@ public:
       OpBuilder &builder) const {
     for (auto [i, operand] : llvm::enumerate(scatterOp.getInputs())) {
       if (!gutils->isConstantValue(operand)) {
-        auto updateDiffe = builder.create<stablehlo::GatherOp>(
-            scatterOp.getLoc(), outputDiffe[i], scatterIndices,
+        auto updateDiffe = stablehlo::GatherOp::create(
+            builder, scatterOp.getLoc(), outputDiffe[i], scatterIndices,
             gatherDimNumbers, gatherSliceSizes,
             scatterOp.getIndicesAreSortedAttr());
         gutils->addToDiffe(operand, updateDiffe, builder);
@@ -2392,13 +2090,13 @@ public:
       DenseI64ArrayAttr gatherSliceSizes, SmallVector<Value> outputDiffe,
       OpBuilder &builder) const {
     auto zeroUpdateType = scatterOp.getUpdates()[0].getType();
-    auto zeroUpdate = builder.create<stablehlo::ConstantOp>(
-        scatterOp.getLoc(), zeroUpdateType,
+    auto zeroUpdate = stablehlo::ConstantOp::create(
+        builder, scatterOp.getLoc(), zeroUpdateType,
         cast<ElementsAttr>(makeAttr(zeroUpdateType, 0)));
 
     auto elemType = cast<RankedTensorType>(zeroUpdateType).getElementType();
-    auto zeroScalar = builder.create<stablehlo::ConstantOp>(
-        scatterOp.getLoc(), RankedTensorType::get({}, elemType),
+    auto zeroScalar = stablehlo::ConstantOp::create(
+        builder, scatterOp.getLoc(), RankedTensorType::get({}, elemType),
         cast<ElementsAttr>(makeAttr(RankedTensorType::get({}, elemType), 0)));
 
     // gradient of the inputs
@@ -2415,8 +2113,8 @@ public:
     int64_t nNonConsts = selectedOutputDiffe.size();
 
     if (nNonConsts > 0) {
-      auto newScatterOp = builder.create<stablehlo::ScatterOp>(
-          scatterOp.getLoc(), selectedOutputTypes, selectedOutputDiffe,
+      auto newScatterOp = stablehlo::ScatterOp::create(
+          builder, scatterOp.getLoc(), selectedOutputTypes, selectedOutputDiffe,
           scatterIndices, newScatterUpdates,
           scatterOp.getScatterDimensionNumbersAttr(),
           scatterOp.getIndicesAreSortedAttr(),
@@ -2437,7 +2135,7 @@ public:
         for (int i = nNonConsts; i < 2 * nNonConsts; i++)
           returnValues.push_back(zeroScalar);
 
-        builder.create<stablehlo::ReturnOp>(scatterOp.getLoc(), returnValues);
+        stablehlo::ReturnOp::create(builder, scatterOp.getLoc(), returnValues);
       }
 
       builder.setInsertionPointAfter(newScatterOp);
@@ -2462,8 +2160,8 @@ public:
                         OpBuilder &builder) const {
     for (auto [i, update] : llvm::enumerate(scatterOp.getUpdates())) {
       if (!gutils->isConstantValue(update)) {
-        auto updateDiffe = builder.create<stablehlo::GatherOp>(
-            scatterOp.getLoc(), outputDiffe[i], scatterIndices,
+        auto updateDiffe = stablehlo::GatherOp::create(
+            builder, scatterOp.getLoc(), outputDiffe[i], scatterIndices,
             gatherDimNumbers, gatherSliceSizes,
             scatterOp.getIndicesAreSortedAttr());
         gutils->addToDiffe(update, updateDiffe, builder);
@@ -2623,9 +2321,9 @@ public:
       auto opResult1 = gutils->getNewFromOriginal(op->getResult(1));
       auto opResult2 = gutils->getNewFromOriginal(op->getResult(2));
 
-      auto gradOp = builder.create<BatchNormGradOp>(
-          op->getLoc(), opOperand0, opOperand1, opResult1, opResult2, inDiffe,
-          op.getEpsilonAttr(), op.getFeatureIndexAttr());
+      auto gradOp = BatchNormGradOp::create(
+          builder, op->getLoc(), opOperand0, opOperand1, opResult1, opResult2,
+          inDiffe, op.getEpsilonAttr(), op.getFeatureIndexAttr());
 
       if (!gutils->isConstantValue(op->getOperand(0))) {
         gutils->addToDiffe(op->getOperand(0), gradOp.getResult(0), builder);
@@ -2773,8 +2471,8 @@ public:
       if (!getOp || updatedGradients.contains(getOp.getGradient()))
         continue;
 
-      auto outerGet = rewriter.create<enzyme::GetOp>(
-          getOp->getLoc(),
+      auto outerGet = enzyme::GetOp::create(
+          rewriter, getOp->getLoc(),
           cast<enzyme::GradientType>(getOp.getResult().getType()).getBasetype(),
           getOp.getGradient());
 
@@ -2790,7 +2488,7 @@ public:
     SmallVector<Value> newOperands(whileOp.getOperands());
     for (auto grad : updatedGradients) {
       auto Ty = cast<enzyme::GradientType>(grad.getType()).getBasetype();
-      auto outerGet = rewriter.create<enzyme::GetOp>(grad.getLoc(), Ty, grad);
+      auto outerGet = enzyme::GetOp::create(rewriter, grad.getLoc(), Ty, grad);
 
       newOperands.push_back(outerGet.getResult());
       auto newArg = body->addArgument(Ty, grad.getLoc());
@@ -2832,10 +2530,15 @@ public:
     auto zero = makeI64Constant(whileOp->getLoc(), rewriter, 0);
 
     // Run min cut partitioning to limit the amount of values to be cached.
-    if (!caches.empty() && !whileOp->hasAttr("enzymexla.disable_min_cut")) {
+    if (hasMinCut(whileOp) && caches.size()) {
       Block *forward = &whileOp.getBody().front();
       Block *reverse = &otherWhileOp.getBody().front();
-      mlir::enzyme::minCutCache(forward, reverse, caches, rewriter);
+      Operation *lastFwd = nullptr;
+      IRMapping fwdrevmap;
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(reverse);
+      mlir::enzyme::minCutCache(forward, reverse, caches, rewriter, fwdrevmap,
+                                lastFwd);
     }
 
     Value itersV = nullptr;
@@ -2845,9 +2548,9 @@ public:
 
       // push does not depend on a value inside the loop, we can hoist the
       // push/pop before the for loops.
-      if (cinfo.pushedValue().getParentRegion() != whileOp.getBody()) {
-        auto newPush = rewriter.create<enzyme::PushOp>(cache.getLoc(), cache,
-                                                       cinfo.pushedValue());
+      if (cinfo.pushedValue().getParentRegion() != &whileOp.getBody()) {
+        auto newPush = enzyme::PushOp::create(rewriter, cache.getLoc(), cache,
+                                              cinfo.pushedValue());
         rewriter.eraseOp(cinfo.pushOp);
         cinfo.pushOp = newPush;
 
@@ -2856,8 +2559,8 @@ public:
           rewriter.setInsertionPoint(cinfo.popOp->getParentOp());
 
           auto popVal = cinfo.popOp.getResult();
-          auto newPop = rewriter.create<enzyme::PopOp>(cache.getLoc(),
-                                                       popVal.getType(), cache);
+          auto newPop = enzyme::PopOp::create(rewriter, cache.getLoc(),
+                                              popVal.getType(), cache);
           rewriter.replaceAllUsesWith(popVal, newPop.getResult());
           rewriter.eraseOp(cinfo.popOp);
           cinfo.popOp = newPop;
@@ -2896,30 +2599,32 @@ public:
                                                 newType.getElementType()))
                           .createNullValue(rewriter, cinfo.initOp->getLoc());
 
-        auto zeroInt = rewriter.create<stablehlo::ConstantOp>(
-            cinfo.initOp->getLoc(), itersV.getType(),
+        auto zeroInt = stablehlo::ConstantOp::create(
+            rewriter, cinfo.initOp->getLoc(), itersV.getType(),
             cast<ElementsAttr>(makeAttr(itersV.getType(), 0)));
 
         auto ST = RankedTensorType::get(
             zeros.size(),
             cast<RankedTensorType>(itersV.getType()).getElementType());
-        auto starts = rewriter.create<stablehlo::ConstantOp>(
-            cinfo.initOp->getLoc(), ST, cast<ElementsAttr>(makeAttr(ST, 0)));
+        auto starts =
+            stablehlo::ConstantOp::create(rewriter, cinfo.initOp->getLoc(), ST,
+                                          cast<ElementsAttr>(makeAttr(ST, 0)));
         auto ints = starts;
 
         int64_t padStart[] = {0};
         int64_t padEnd[] = {(int64_t)zeros.size() - 1};
-        auto iterRS = rewriter.create<stablehlo::ReshapeOp>(
-            cinfo.initOp->getLoc(),
+        auto iterRS = stablehlo::ReshapeOp::create(
+            rewriter, cinfo.initOp->getLoc(),
             RankedTensorType::get(
                 {1}, cast<TensorType>(itersV.getType()).getElementType()),
             itersV);
-        Value ends = rewriter.create<stablehlo::PadOp>(
-            cinfo.initOp->getLoc(), starts.getType(), iterRS, zeroInt, padStart,
-            padEnd, padStart);
+        Value ends = stablehlo::PadOp::create(rewriter, cinfo.initOp->getLoc(),
+                                              starts.getType(), iterRS, zeroInt,
+                                              padStart, padEnd, padStart);
 
-        initValue = rewriter.create<stablehlo::DynamicPadOp>(
-            cinfo.initOp->getLoc(), newType, op, zeroOp, starts, ends, ints);
+        initValue = stablehlo::DynamicPadOp::create(
+            rewriter, cinfo.initOp->getLoc(), newType, op, zeroOp, starts, ends,
+            ints);
       }
 
       newOperands.push_back(initValue);
@@ -2941,15 +2646,16 @@ public:
           SmallVector<int64_t> updateShape;
           updateShape.push_back(1);
           updateShape.append(shape.begin(), shape.end());
-          Value reshapedUpdate = rewriter.create<stablehlo::ReshapeOp>(
-              cinfo.pushOp->getLoc(), TT.clone(updateShape),
+          Value reshapedUpdate = stablehlo::ReshapeOp::create(
+              rewriter, cinfo.pushOp->getLoc(), TT.clone(updateShape),
               cinfo.pushOp.getValue());
 
-          newCacheValue = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
-              cinfo.pushOp->getLoc(), cacheValue, reshapedUpdate, startIndices);
+          newCacheValue = stablehlo::DynamicUpdateSliceOp::create(
+              rewriter, cinfo.pushOp->getLoc(), cacheValue, reshapedUpdate,
+              startIndices);
         } else {
           assert(false && "todo");
-          // newCacheValue = rewriter.create<tensor::InsertOp>(
+          // newCacheValue = tensor::InsertOp::create(rewriter,
           //     info.pushOp->getLoc(), info.pushOp.getValue(), cacheValue,
           //     inductionVariable);
         }
@@ -2960,7 +2666,7 @@ public:
 
     auto numInitArgs = whileOp->getNumOperands();
     auto newWhile =
-        rewriter.create<stablehlo::WhileOp>(op->getLoc(), newOperands);
+        stablehlo::WhileOp::create(rewriter, op->getLoc(), newOperands);
 
     newWhile.getCond().takeBody(whileOp.getCond());
     newWhile.getBody().takeBody(whileOp.getBody());
@@ -2969,8 +2675,8 @@ public:
     for (auto grad : updatedGradients) {
       // set the updated gradient after the new for op.
       OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.create<enzyme::SetOp>(grad.getLoc(), grad,
-                                     newWhile->getResult(resultIdx));
+      enzyme::SetOp::create(rewriter, grad.getLoc(), grad,
+                            newWhile->getResult(resultIdx));
       ++resultIdx;
     }
 
@@ -2997,11 +2703,11 @@ public:
       } else {
         if (!itersV)
           itersV = info.getNumIters(rewriter);
-        auto one = rewriter.create<stablehlo::ConstantOp>(
-            otherWhileOp->getLoc(), itersV.getType(),
+        auto one = stablehlo::ConstantOp::create(
+            rewriter, otherWhileOp->getLoc(), itersV.getType(),
             cast<ElementsAttr>(makeAttr(itersV.getType(), 1)));
-        auto sub = rewriter.create<stablehlo::SubtractOp>(
-            otherWhileOp->getLoc(), itersV, one);
+        auto sub = stablehlo::SubtractOp::create(
+            rewriter, otherWhileOp->getLoc(), itersV, one);
         operands.push_back(sub);
       }
 
@@ -3016,20 +2722,20 @@ public:
       rewriter.setInsertionPoint(otherTerm);
 
       otherInductionVariable =
-          rewriter
-              .create<stablehlo::SubtractOp>(
-                  otherWhileOp->getLoc(), otherInductionVariable,
-                  rewriter.create<stablehlo::ConstantOp>(
-                      otherWhileOp->getLoc(), otherInductionVariable.getType(),
-                      cast<ElementsAttr>(
-                          makeAttr(otherInductionVariable.getType(), 1))))
+          stablehlo::SubtractOp::create(
+              rewriter, otherWhileOp->getLoc(), otherInductionVariable,
+              stablehlo::ConstantOp::create(
+                  rewriter, otherWhileOp->getLoc(),
+                  otherInductionVariable.getType(),
+                  cast<ElementsAttr>(
+                      makeAttr(otherInductionVariable.getType(), 1))))
               .getResult();
       otherTerm->insertOperands(otherTerm->getNumOperands(),
                                 ValueRange(otherInductionVariable));
 
       rewriter.setInsertionPoint(otherWhileOp);
-      auto newOtherWhileOp =
-          rewriter.create<stablehlo::WhileOp>(otherWhileOp->getLoc(), operands);
+      auto newOtherWhileOp = stablehlo::WhileOp::create(
+          rewriter, otherWhileOp->getLoc(), operands);
 
       for (auto &&[res, newRes] : llvm::zip(otherWhileOp->getResults(),
                                             newOtherWhileOp->getResults())) {
@@ -3044,7 +2750,7 @@ public:
 
     // 5. Finally, replace pops with slices.
     for (auto &info : caches) {
-      if (info.pushedValue().getParentRegion() != newWhile.getBody())
+      if (info.pushedValue().getParentRegion() != &newWhile.getBody())
         continue;
 
       Value cache = info.initOp.getResult();
@@ -3056,16 +2762,16 @@ public:
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPoint(info.initOp);
 
-        rewriter.create<enzyme::InitOp>(
-            info.initOp->getLoc(),
+        enzyme::InitOp::create(
+            rewriter, info.initOp->getLoc(),
             enzyme::CacheType::get(cache.getContext(), newType));
       });
       info.pushOp = ({
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointAfter(newWhile);
-        auto newPush =
-            rewriter.create<enzyme::PushOp>(cache.getLoc(), newInit.getResult(),
-                                            newWhile->getResult(resultIdx));
+        auto newPush = enzyme::PushOp::create(rewriter, cache.getLoc(),
+                                              newInit.getResult(),
+                                              newWhile->getResult(resultIdx));
         rewriter.eraseOp(info.pushOp);
         newPush;
       });
@@ -3077,8 +2783,8 @@ public:
 
         rewriter.setInsertionPoint(otherWhileOp);
 
-        auto popNewValue = rewriter.create<enzyme::PopOp>(
-            info.popOp->getLoc(), newType, newInit.getResult());
+        auto popNewValue = enzyme::PopOp::create(rewriter, info.popOp->getLoc(),
+                                                 newType, newInit.getResult());
 
         Block *popBody = &otherWhileOp.getBody().front();
         rewriter.setInsertionPoint(info.popOp);
@@ -3096,11 +2802,11 @@ public:
           sliceSizes.push_back(1);
           sliceSizes.append(shape.begin(), shape.end());
 
-          popValue = rewriter.create<stablehlo::DynamicSliceOp>(
-              info.popOp->getLoc(), TT.clone(sliceSizes), popNewValue,
+          popValue = stablehlo::DynamicSliceOp::create(
+              rewriter, info.popOp->getLoc(), TT.clone(sliceSizes), popNewValue,
               startIndices, sliceSizes);
-          popValue = rewriter.create<stablehlo::ReshapeOp>(info.popOp->getLoc(),
-                                                           TT, popValue);
+          popValue = stablehlo::ReshapeOp::create(
+              rewriter, info.popOp->getLoc(), TT, popValue);
         } else {
           assert(false && "todo");
           // popValue = tensor.extract(%popNewValue)
@@ -3179,8 +2885,8 @@ struct IfOpEnzymeOpsRemover
     for (auto grad : gradients) {
       auto trueValue = trueMapping.lookupOrNull(grad);
       if (!trueValue) {
-        trueValue = rewriter.create<enzyme::GetOp>(
-            grad.getLoc(),
+        trueValue = enzyme::GetOp::create(
+            rewriter, grad.getLoc(),
             cast<enzyme::GradientType>(grad.getType()).getBasetype(), grad);
       }
       trueTerm->insertOperands(trueTerm->getNumOperands(),
@@ -3188,8 +2894,8 @@ struct IfOpEnzymeOpsRemover
 
       auto falseValue = falseMapping.lookupOrNull(grad);
       if (!falseValue) {
-        falseValue = rewriter.create<enzyme::GetOp>(
-            grad.getLoc(),
+        falseValue = enzyme::GetOp::create(
+            rewriter, grad.getLoc(),
             cast<enzyme::GradientType>(grad.getType()).getBasetype(), grad);
       }
       falseTerm->insertOperands(falseTerm->getNumOperands(),
@@ -3211,30 +2917,29 @@ struct IfOpEnzymeOpsRemover
                                 ValueRange(falseValue));
     }
 
-    auto newIf = rewriter.create<stablehlo::IfOp>(
-        ifOp->getLoc(), trueTerm->getOperandTypes(), ifOp.getPred());
+    auto newIf = stablehlo::IfOp::create(
+        rewriter, ifOp->getLoc(), trueTerm->getOperandTypes(), ifOp.getPred());
     newIf.getTrueBranch().takeBody(ifOp.getTrueBranch());
     newIf.getFalseBranch().takeBody(ifOp.getFalseBranch());
 
     size_t idx = ifOp->getNumResults();
     for (auto grad : gradients) {
-      rewriter.create<enzyme::SetOp>(grad.getLoc(), grad,
-                                     newIf->getResult(idx));
+      enzyme::SetOp::create(rewriter, grad.getLoc(), grad,
+                            newIf->getResult(idx));
       idx++;
     }
 
     for (auto &[pushedValue, info] : pushedCaches) {
-      rewriter.create<enzyme::PushOp>(info.pushOp->getLoc(),
-                                      info.initOp.getResult(),
-                                      newIf->getResult(idx));
+      enzyme::PushOp::create(rewriter, info.pushOp->getLoc(),
+                             info.initOp.getResult(), newIf->getResult(idx));
       rewriter.eraseOp(info.pushOp);
 
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPoint(info.popOp->getParentOp());
 
-      auto newPop = rewriter.create<enzyme::PopOp>(
-          info.popOp->getLoc(), info.popOp.getResult().getType(),
-          info.popOp.getCache());
+      auto newPop = enzyme::PopOp::create(rewriter, info.popOp->getLoc(),
+                                          info.popOp.getResult().getType(),
+                                          info.popOp.getCache());
       rewriter.replaceAllUsesWith(info.popOp.getResult(), newPop);
       rewriter.eraseOp(info.popOp);
 
@@ -3259,8 +2964,8 @@ Value getScalarInitValue(Operation *op, OpBuilder &builder) {
   if (matchPattern(op, m_Constant(&elems))) {
     auto scalarElemType = RankedTensorType::get(
         {}, cast<TensorType>(op->getResult(0).getType()).getElementType());
-    auto constInit = builder.create<ConstantOp>(
-        op->getLoc(), scalarElemType, elems.resizeSplat(scalarElemType));
+    auto constInit = ConstantOp::create(builder, op->getLoc(), scalarElemType,
+                                        elems.resizeSplat(scalarElemType));
     return constInit;
   }
 
@@ -3268,6 +2973,20 @@ Value getScalarInitValue(Operation *op, OpBuilder &builder) {
   if (isa<stablehlo::BroadcastInDimOp, stablehlo::ReshapeOp>(op)) {
     if (cast<RankedTensorType>(op->getOperand(0).getType()).getRank() == 0) {
       return op->getOperand(0);
+    }
+  }
+
+  // Convert
+  if (auto convertOp = dyn_cast<stablehlo::ConvertOp>(op)) {
+    auto scalar =
+        getScalarInitValue(convertOp.getOperand().getDefiningOp(), builder);
+    if (scalar) {
+      auto convertOutElemType =
+          cast<RankedTensorType>(convertOp.getResult().getType())
+              .getElementType();
+      return stablehlo::ConvertOp::create(
+          builder, op->getLoc(), RankedTensorType::get({}, convertOutElemType),
+          scalar);
     }
   }
 
@@ -3300,8 +3019,6 @@ struct SHLOReduceOpBatchInterface
     for (auto opValue : reduceOp.getInputs())
       newReduceInputs.push_back(mapper.lookup(opValue));
 
-    // The init value would have been batched already, we need to slice it.
-    // Constant Folding will fix it up later.
     SmallVector<Value, 8> newReduceInits;
     newReduceInits.reserve(reduceOp.getInitValues().size());
     for (auto opValue : reduceOp.getInitValues()) {
@@ -3321,11 +3038,31 @@ struct SHLOReduceOpBatchInterface
       reduceDims[i] += batchSizes.size();
     }
 
-    auto newReduceOp = builder.create<stablehlo::ReduceOp>(
-        src->getLoc(), resultTypes, newReduceInputs, newReduceInits,
-        reduceDims);
+    auto newReduceOp = stablehlo::ReduceOp::create(builder, src->getLoc(),
+                                                   resultTypes, newReduceInputs,
+                                                   newReduceInits, reduceDims);
 
     IRMapping regionMapper;
+    Block &oldBlock = reduceOp.getRegion().front();
+    for (Operation &op : oldBlock.getOperations()) {
+      for (Value operand : op.getOperands()) {
+        // If operand is defined outside the region and not yet mapped
+        if (operand.getParentRegion() != &reduceOp.getRegion() &&
+            !regionMapper.contains(operand)) {
+          if (matchPattern(operand, m_Constant())) {
+            Operation *definingOp = operand.getDefiningOp();
+            OpBuilder::InsertionGuard guard(builder);
+            builder.setInsertionPoint(newReduceOp);
+            auto clonedOp = builder.clone(*definingOp);
+            regionMapper.map(operand, clonedOp->getResult(0));
+          } else {
+            src->emitError("Currently we don't support non-constants in reduce "
+                           "body that are external to the region");
+            return failure();
+          }
+        }
+      }
+    }
     reduceOp.getRegion().cloneInto(&newReduceOp.getRegion(), regionMapper);
 
     for (int i = 0; i < reduceOp.getResults().size(); i++) {
@@ -3421,10 +3158,10 @@ struct SHLOReduceWindowOpBatchInterface
       newPaddingAttr = mlir::DenseIntElementsAttr::get(paddingType, newPadding);
     }
 
-    auto newReduceWindowOp = builder.create<stablehlo::ReduceWindowOp>(
-        src->getLoc(), resultTypes, newReduceWindowInputs, newReduceWindowInits,
-        windowDims, windowStridesAttr, baseDilationsAttr, windowDilationsAttr,
-        newPaddingAttr);
+    auto newReduceWindowOp = stablehlo::ReduceWindowOp::create(
+        builder, src->getLoc(), resultTypes, newReduceWindowInputs,
+        newReduceWindowInits, windowDims, windowStridesAttr, baseDilationsAttr,
+        windowDilationsAttr, newPaddingAttr);
 
     IRMapping regionMapper;
     reduceWindowOp.getRegion().cloneInto(&newReduceWindowOp.getRegion(),
@@ -3481,8 +3218,8 @@ struct SHLODotGeneralOpBatchInterface
       resultShape.push_back(dim);
     }
 
-    auto dotOp = builder.create<stablehlo::DotGeneralOp>(
-        op.getLoc(),
+    auto dotOp = stablehlo::DotGeneralOp::create(
+        builder, op.getLoc(),
         RankedTensorType::get(resultShape, op.getType().getElementType()),
         mapper.lookup(op.getLhs()), mapper.lookup(op.getRhs()), dotDimsAttr,
         op.getPrecisionConfigAttr(), op.getAlgorithmAttr());
@@ -3519,8 +3256,8 @@ struct SHLOBroadcastInDimOpBatchInterface
       resultShape.push_back(dim);
     }
 
-    auto bcastOp = builder.create<stablehlo::BroadcastInDimOp>(
-        op.getLoc(),
+    auto bcastOp = stablehlo::BroadcastInDimOp::create(
+        builder, op.getLoc(),
         RankedTensorType::get(resultShape, resultType.getElementType()),
         mapper.lookup(op.getOperand()),
         builder.getDenseI64ArrayAttr(bcastDims));
@@ -3544,8 +3281,8 @@ struct SHLOConcatenateOpBatchInterface
       newInputs.push_back(mapper.lookup(input));
     }
 
-    auto newConcatOp = builder.create<stablehlo::ConcatenateOp>(
-        op.getLoc(), ValueRange(newInputs),
+    auto newConcatOp = stablehlo::ConcatenateOp::create(
+        builder, op.getLoc(), ValueRange(newInputs),
         op.getDimension() + batchSizes.size());
 
     mapper.map(src->getResult(0), newConcatOp->getResult(0));
@@ -3604,8 +3341,9 @@ struct SHLOGatherOpBatchInterface
     for (auto sliceSize : op.getSliceSizes())
       newSliceSizes.push_back(sliceSize);
 
-    auto newGatherOp = builder.create<stablehlo::GatherOp>(
-        op.getLoc(), newOperand, newStartIndices, gatherDims, newSliceSizes);
+    auto newGatherOp =
+        stablehlo::GatherOp::create(builder, op.getLoc(), newOperand,
+                                    newStartIndices, gatherDims, newSliceSizes);
 
     mapper.map(src->getResult(0), newGatherOp->getResult(0));
     return success();
@@ -3636,8 +3374,9 @@ struct SHLOSliceOpBatchInterface
       newStrides.push_back(stride);
     }
 
-    auto newSliceOp = builder.create<stablehlo::SliceOp>(
-        op.getLoc(), newOperand, newStartIndices, newLimitIndices, newStrides);
+    auto newSliceOp = stablehlo::SliceOp::create(builder, op.getLoc(),
+                                                 newOperand, newStartIndices,
+                                                 newLimitIndices, newStrides);
 
     mapper.map(src->getResult(0), newSliceOp->getResult(0));
     return success();
@@ -3666,11 +3405,11 @@ SmallVector<Value> computeBatchedStartIndices(Operation *op, OpBuilder &builder,
 
   for (auto sIndex : startIndices) {
     // We need to slice and extract a single element
-    auto newStartIndex = builder.create<stablehlo::SliceOp>(
-        op->getLoc(), mapper.lookup(sIndex), innerSliceStarts, innerSliceLimits,
-        innerSliceStrides);
-    auto newStartIndexReshape = builder.create<stablehlo::ReshapeOp>(
-        op->getLoc(), RankedTensorType::get({}, startIndicesElemType),
+    auto newStartIndex = stablehlo::SliceOp::create(
+        builder, op->getLoc(), mapper.lookup(sIndex), innerSliceStarts,
+        innerSliceLimits, innerSliceStrides);
+    auto newStartIndexReshape = stablehlo::ReshapeOp::create(
+        builder, op->getLoc(), RankedTensorType::get({}, startIndicesElemType),
         newStartIndex);
     newStartIndices.push_back(newStartIndexReshape.getResult());
   }
@@ -3696,8 +3435,9 @@ struct SHLODynamicSliceOpBatchInterface
     for (auto sIndex : op.getSliceSizes())
       sliceSizes.push_back(sIndex);
 
-    auto newSliceOp = builder.create<stablehlo::DynamicSliceOp>(
-        op.getLoc(), mapper.lookup(op.getOperand()), startIndices, sliceSizes);
+    auto newSliceOp = stablehlo::DynamicSliceOp::create(
+        builder, op.getLoc(), mapper.lookup(op.getOperand()), startIndices,
+        sliceSizes);
 
     mapper.map(src->getResult(0), newSliceOp.getResult());
     return success();
@@ -3716,8 +3456,8 @@ struct SHLODynamicUpdateSliceOpBatchInterface
     SmallVector<Value> startIndices = computeBatchedStartIndices(
         op, builder, op.getStartIndices(), mapper, batchSizes);
 
-    auto newDUS = builder.create<stablehlo::DynamicUpdateSliceOp>(
-        op.getLoc(), mapper.lookup(op.getOperand()),
+    auto newDUS = stablehlo::DynamicUpdateSliceOp::create(
+        builder, op.getLoc(), mapper.lookup(op.getOperand()),
         mapper.lookup(op.getUpdate()), startIndices);
 
     mapper.map(src->getResult(0), newDUS.getResult());
@@ -3739,8 +3479,8 @@ struct SHLOIotaOpBatchInterface
     newShape.append(batchSizes.begin(), batchSizes.end());
     newShape.append(origResult.getShape().begin(), origResult.getShape().end());
 
-    auto newIotaOp = builder.create<stablehlo::IotaOp>(
-        op.getLoc(),
+    auto newIotaOp = stablehlo::IotaOp::create(
+        builder, op.getLoc(),
         RankedTensorType::get(newShape, origResult.getElementType()),
         op.getIotaDimension() + batchSizes.size());
 
@@ -3763,8 +3503,8 @@ struct SHLOSortOpBatchInterface
       newOperands.push_back(mapper.lookup(operand));
     }
 
-    auto newSortOp = builder.create<stablehlo::SortOp>(
-        op.getLoc(), ValueRange(newOperands),
+    auto newSortOp = stablehlo::SortOp::create(
+        builder, op.getLoc(), ValueRange(newOperands),
         builder.getI64IntegerAttr(op.getDimension() + batchSizes.size()),
         op.getIsStableAttr());
 
@@ -3803,22 +3543,106 @@ struct SHLOSelectOpBatchInterface
       for (int64_t i = 0; i < batchSizes.size(); i++)
         broadcastDims.push_back(i);
 
-      auto newPred = builder.create<stablehlo::BroadcastInDimOp>(
-          op.getLoc(),
+      auto newPred = stablehlo::BroadcastInDimOp::create(
+          builder, op.getLoc(),
           RankedTensorType::get(newShape, opPredType.getElementType()),
           mapper.lookup(opPredOld),
           builder.getDenseI64ArrayAttr(broadcastDims));
 
-      newSelectOp = builder.create<stablehlo::SelectOp>(
-          op.getLoc(), newPred, mapper.lookup(op.getOnTrue()),
-          mapper.lookup(op.getOnFalse()));
+      newSelectOp = stablehlo::SelectOp::create(builder, op.getLoc(), newPred,
+                                                mapper.lookup(op.getOnTrue()),
+                                                mapper.lookup(op.getOnFalse()));
     } else {
-      newSelectOp = builder.create<stablehlo::SelectOp>(
-          op.getLoc(), mapper.lookup(opPredOld), mapper.lookup(op.getOnTrue()),
-          mapper.lookup(op.getOnFalse()));
+      newSelectOp = stablehlo::SelectOp::create(
+          builder, op.getLoc(), mapper.lookup(opPredOld),
+          mapper.lookup(op.getOnTrue()), mapper.lookup(op.getOnFalse()));
     }
 
     mapper.map(src->getResult(0), newSelectOp.getResult());
+    return success();
+  }
+};
+
+struct SHLOReverseOpBatchInterface
+    : public BatchOpInterface::ExternalModel<SHLOReverseOpBatchInterface,
+                                             stablehlo::ReverseOp> {
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto op = cast<stablehlo::ReverseOp>(src);
+
+    int64_t nBatches = batchSizes.size();
+    SmallVector<int64_t> newDims;
+    for (auto dim : op.getDimensions())
+      newDims.push_back(dim + nBatches);
+
+    auto newReverseOp = stablehlo::ReverseOp::create(
+        builder, op.getLoc(), mapper.lookup(op.getOperand()),
+        builder.getDenseI64ArrayAttr(newDims));
+
+    mapper.map(src->getResult(0), newReverseOp.getResult());
+    return success();
+  }
+};
+
+// https://github.com/jax-ml/jax/blob/2a8cb54b82f1b0d17181d43f9be78d2b349df333/jax/_src/lax/convolution.py#L613-L629
+struct SHLOConvolutionOpBatchInterface
+    : public BatchOpInterface::ExternalModel<SHLOConvolutionOpBatchInterface,
+                                             stablehlo::ConvolutionOp> {
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto convolution = cast<stablehlo::ConvolutionOp>(src);
+    auto convDimNumbers = convolution.getDimensionNumbers();
+    int64_t inputBatchDim = convDimNumbers.getInputBatchDimension();
+    int64_t inputFeatureDim = convDimNumbers.getInputFeatureDimension();
+    int64_t outputBatchDim = convDimNumbers.getOutputBatchDimension();
+    int64_t kernelOutputFeatureDim =
+        convDimNumbers.getKernelOutputFeatureDimension();
+    int64_t outputFeatureDim = convDimNumbers.getOutputFeatureDimension();
+
+    int64_t nbatchDims = batchSizes.size();
+    int64_t batchSize = std::accumulate(batchSizes.begin(), batchSizes.end(), 1,
+                                        std::multiplies<int64_t>());
+
+    auto lhs = mapper.lookup(convolution.getLhs());
+    auto rhs = mapper.lookup(convolution.getRhs());
+
+    int64_t batchGroupCount = convolution.getBatchGroupCount();
+    int64_t featureGroupCount = convolution.getFeatureGroupCount();
+
+    int64_t inputBatchingDimFromGroupCount;
+    if (batchGroupCount > 1) {
+      inputBatchingDimFromGroupCount = inputBatchDim;
+      batchGroupCount *= batchSize;
+    } else {
+      inputBatchingDimFromGroupCount = inputFeatureDim;
+      featureGroupCount *= batchSize;
+    }
+    auto batchedLhs = reshapeAxisInto(builder, lhs, batchSizes,
+                                      inputBatchingDimFromGroupCount);
+
+    auto batchedRhs =
+        reshapeAxisInto(builder, rhs, batchSizes, kernelOutputFeatureDim);
+
+    auto outTy = cast<RankedTensorType>(convolution.getResult().getType());
+    auto outShape = llvm::to_vector(outTy.getShape());
+    outShape[outputFeatureDim] = outShape[outputFeatureDim] * batchSize;
+    auto outElemTy = outTy.getElementType();
+
+    auto batchedConvolution = stablehlo::ConvolutionOp::create(
+        builder, src->getLoc(), RankedTensorType::get(outShape, outElemTy),
+        batchedLhs, batchedRhs, convolution.getWindowStridesAttr(),
+        convolution.getPaddingAttr(), convolution.getLhsDilationAttr(),
+        convolution.getRhsDilationAttr(), convolution.getWindowReversalAttr(),
+        convolution.getDimensionNumbersAttr(),
+        builder.getI64IntegerAttr(featureGroupCount),
+        builder.getI64IntegerAttr(batchGroupCount),
+        convolution.getPrecisionConfigAttr());
+
+    auto transposedOut = reshapeAxisOutOf(builder, batchedConvolution,
+                                          batchSizes, outputFeatureDim);
+    mapper.map(src->getResult(0), transposedOut);
     return success();
   }
 };
@@ -3887,8 +3711,6 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     ScatterOp::attachInterface<ADDataFlowScatterOp>(*context);
     ReduceOp::attachInterface<ADDataFlowReduceOp>(*context);
 
-    CaseOp::attachInterface<RegionBranchCaseOp>(*context);
-
     ScatterOp::attachInterface<ScatterActivity>(*context);
     ScatterOp::attachInterface<AutoDiffScatterFwd>(*context);
     ScatterOp::attachInterface<AutoDiffScatterRev>(*context);
@@ -3932,76 +3754,15 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     IotaOp::attachInterface<SHLOIotaOpBatchInterface>(*context);
     SelectOp::attachInterface<SHLOSelectOpBatchInterface>(*context);
     SortOp::attachInterface<SHLOSortOpBatchInterface>(*context);
+    GetDimensionSizeOp::attachInterface<SHLOGetDimensionSizeOpBatchInterface>(
+        *context);
+    ReverseOp::attachInterface<SHLOReverseOpBatchInterface>(*context);
+    ConvolutionOp::attachInterface<SHLOConvolutionOpBatchInterface>(*context);
 
-    ReverseOp::attachInterface<SHLOGenericBatchOpInterface<ReverseOp>>(
-        *context); // TODO: simpler version with newly named dims
     ScatterOp::attachInterface<SHLOGenericBatchOpInterface<ScatterOp>>(
-        *context); // TODO: simpler version with newly named dims
-    ConvolutionOp::attachInterface<SHLOGenericBatchOpInterface<ConvolutionOp>>(
         *context); // TODO: simpler version with newly named dims
 
     AddOp::attachInterface<StablehloAddSimplifyMathInterface>(*context);
     SubtractOp::attachInterface<StablehloSubSimplifyMathInterface>(*context);
   });
-}
-
-void mlir::enzyme::removalBlockExplore(
-    Block *block, IRMapping &mapping, PatternRewriter &rewriter,
-    llvm::SetVector<Value> &gradients,
-    llvm::MapVector<Value, CacheInfo> &caches) {
-  for (auto it = block->begin(), e = block->end(); it != e;) {
-    Operation *op = &*it;
-
-    if (auto setOp = dyn_cast<enzyme::SetOp>(op)) {
-      auto grad = setOp.getGradient();
-      auto value = setOp.getValue();
-      mapping.map(grad, value);
-      gradients.insert(grad);
-    }
-
-    if (auto getOp = dyn_cast<enzyme::GetOp>(op)) {
-      auto grad = getOp.getGradient();
-      Value value = mapping.lookupOrNull(getOp.getGradient());
-      if (!value) {
-        value = rewriter.create<enzyme::GetOp>(
-            getOp->getLoc(), getOp.getResult().getType(), grad);
-        mapping.map(grad, value);
-      }
-      rewriter.replaceAllUsesWith(getOp.getResult(), value);
-    }
-
-    if (auto pushOp = dyn_cast<enzyme::PushOp>(op)) {
-      CacheInfo info(pushOp.getCache());
-
-      Value pushedValue = info.pushedValue();
-
-      // Then we can push the value before the if, if it is defined before the
-      // if
-      if (pushedValue.getParentBlock() != block) {
-        rewriter.create<enzyme::PushOp>(pushOp->getLoc(), pushOp.getCache(),
-                                        pushedValue);
-
-        ++it; // Increment iterator to allow in place deletion
-        rewriter.eraseOp(pushOp);
-
-        // Move the pop before the other if
-        OpBuilder::InsertionGuard guard(rewriter);
-        rewriter.setInsertionPoint(info.popOp->getParentOp());
-
-        auto newPop = rewriter.create<enzyme::PopOp>(
-            info.popOp->getLoc(), pushedValue.getType(), info.popOp.getCache());
-        rewriter.replaceAllUsesWith(info.popOp.getResult(), newPop);
-        rewriter.eraseOp(info.popOp);
-
-        continue;
-      }
-
-      if (caches.contains(pushedValue)) {
-        info = info.merge(caches.lookup(pushedValue), rewriter);
-      }
-      caches[pushedValue] = info;
-    }
-
-    ++it;
-  }
 }
