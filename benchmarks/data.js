@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1762303066153,
+  "lastUpdate": 1762319836860,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "avikpal@mit.edu",
-            "name": "Avik Pal",
-            "username": "avik-pal"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "c69b2705dde03bd34a671b67217b041d321c03bc",
-          "message": "feat: symm (#1479)\n\n* ssymm\n\n* change fattr to ftensor\n\n* add test\n\n* add cpp api\n\n* Apply suggestion from @avik-pal\n\n* fix: typo in name\n\n* fix: ensure types match\n\n* feat: support complex\n\n---------\n\nCo-authored-by: snonk <scq@mit.edu>",
-          "timestamp": "2025-10-14T13:29:05-04:00",
-          "tree_id": "8597a0ed82d796440a6b718c5a94e81b57b9f31d",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/c69b2705dde03bd34a671b67217b041d321c03bc"
-        },
-        "date": 1760469087991,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.0000043608139996649695,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.000004245785999228246,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001479420117015,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001517619816993,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2239,6 +2195,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001343496753004,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "avikpal@mit.edu",
+            "name": "Avik Pal",
+            "username": "avik-pal"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "04d3efd7363e3499e4ad92c9835b2f2ec0401116",
+          "message": "feat: optimized conv batching (#1569)\n\n* refactor: cleanup generic batch op interface to use batchutils\n\n* feat: better conv batching\n\n* test: conv batching\n\n* fix: stop using deprecated api\n\n* feat: exploit the batch_group_dim for batching kernel\n\n* chore: run fmt\n\n* test: update\n\n* fix: mimic jax batching\n\n* fix: layout\n\n* test: update",
+          "timestamp": "2025-11-04T22:31:17-05:00",
+          "tree_id": "2542f308d8143af4d3b10e9161527a03b04495e0",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/04d3efd7363e3499e4ad92c9835b2f2ec0401116"
+        },
+        "date": 1762319835724,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004327598999952898,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004309819897753186,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001458566345012,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001412948345008,
             "unit": "s"
           }
         ]
