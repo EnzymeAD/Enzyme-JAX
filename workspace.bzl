@@ -1,4 +1,4 @@
-JAX_COMMIT = "f59e61a2cff82c9895aab75221719002be7c17e1"
+JAX_COMMIT = "e9609ce42f272e0a4e908b9e16ea81239e76385c"
 JAX_SHA256 = ""
 
 ENZYME_COMMIT = "0ce301aedef3ca040c8703cb1b7d340ed4a58271"
@@ -114,7 +114,7 @@ sed -i.bak0 "s/__chkstk/__chkstk_ms/g" xla/service/cpu/runtime_symbol_generator.
 sed -i.bak0 "1s/^/#include \\"llvm\\/Support\\/DynamicLibrary.h\\"\\n/g" xla/service/cpu/runtime_symbol_generator.cc
 """,
     """
-sed -i.bak0 "s/(__chkstk_ms)/(llvm::sys::DynamicLibrary::SearchForAddressOfSymbol(\\"__chkstk_ms\\"))/g" xla/service/cpu/runtime_symbol_generator.cc
+sed -i.bak0 "s/SymbolDef(__chkstk_ms)/SymbolDef(reinterpret_cast<void* (*)(size_t)>(llvm::sys::DynamicLibrary::SearchForAddressOfSymbol(\\"__chkstk_ms\\")))/g" xla/service/cpu/runtime_symbol_generator.cc
 """,
     """
 sed -i.bak0 "s/Shlwapi/shlwapi/g" xla/tsl/platform/windows/load_library.cc xla/tsl/platform/windows/windows_file_system.cc xla/tsl/platform/windows/env.cc
