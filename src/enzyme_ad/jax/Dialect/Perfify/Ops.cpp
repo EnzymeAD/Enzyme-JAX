@@ -13,5 +13,3 @@ namespace mlir::enzyme::perfify {} // namespace mlir::enzyme::perfify
 
 #define GET_OP_CLASSES
 #include "src/enzyme_ad/jax/Dialect/Perfify/PerfifyOps.cpp.inc"
-
-
