@@ -114,7 +114,7 @@ sed -i.bak0 "s/__chkstk/__chkstk_ms/g" xla/service/cpu/runtime_symbol_generator.
 sed -i.bak0 "1s/^/#include \\"llvm\\/Support\\/DynamicLibrary.h\\"\\n/g" xla/service/cpu/runtime_symbol_generator.cc
 """,
     """
-sed -i.bak0 "s/SymbolDef(__chkstk_ms)/SymbolDef(static_cast<void* (*)(size_t)>(llvm::sys::DynamicLibrary::SearchForAddressOfSymbol(\\"__chkstk_ms\\")))/g" xla/service/cpu/runtime_symbol_generator.cc
+sed -i.bak0 "s/SymbolDef(__chkstk_ms)/SymbolDef(reinterpret_cast<void* (*)(size_t)>(llvm::sys::DynamicLibrary::SearchForAddressOfSymbol(\\"__chkstk_ms\\")))/g" xla/service/cpu/runtime_symbol_generator.cc
 """,
     """
 sed -i.bak0 "s/Shlwapi/shlwapi/g" xla/tsl/platform/windows/load_library.cc xla/tsl/platform/windows/windows_file_system.cc xla/tsl/platform/windows/env.cc
