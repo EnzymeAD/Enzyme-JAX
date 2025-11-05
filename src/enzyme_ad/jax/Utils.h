@@ -789,6 +789,12 @@ negatedComparisonDirection(stablehlo::ComparisonDirection direction);
 
 bool reshapeIsTranspose(stablehlo::ReshapeOp reshapeOp);
 
+mlir::Value reshapeAxisInto(OpBuilder &builder, Value input,
+                            ArrayRef<int64_t> &batchSizes, int64_t dim);
+
+mlir::Value reshapeAxisOutOf(OpBuilder &builder, Value input,
+                             ArrayRef<int64_t> &batchSizes, int64_t dim);
+
 } // namespace stablehlo
 
 } // namespace mlir
