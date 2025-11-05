@@ -3585,6 +3585,68 @@ struct SHLOReverseOpBatchInterface
   }
 };
 
+// https://github.com/jax-ml/jax/blob/2a8cb54b82f1b0d17181d43f9be78d2b349df333/jax/_src/lax/convolution.py#L613-L629
+struct SHLOConvolutionOpBatchInterface
+    : public BatchOpInterface::ExternalModel<SHLOConvolutionOpBatchInterface,
+                                             stablehlo::ConvolutionOp> {
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto convolution = cast<stablehlo::ConvolutionOp>(src);
+    auto convDimNumbers = convolution.getDimensionNumbers();
+    int64_t inputBatchDim = convDimNumbers.getInputBatchDimension();
+    int64_t inputFeatureDim = convDimNumbers.getInputFeatureDimension();
+    int64_t outputBatchDim = convDimNumbers.getOutputBatchDimension();
+    int64_t kernelOutputFeatureDim =
+        convDimNumbers.getKernelOutputFeatureDimension();
+    int64_t outputFeatureDim = convDimNumbers.getOutputFeatureDimension();
+
+    int64_t nbatchDims = batchSizes.size();
+    int64_t batchSize = std::accumulate(batchSizes.begin(), batchSizes.end(), 1,
+                                        std::multiplies<int64_t>());
+
+    auto lhs = mapper.lookup(convolution.getLhs());
+    auto rhs = mapper.lookup(convolution.getRhs());
+
+    int64_t batchGroupCount = convolution.getBatchGroupCount();
+    int64_t featureGroupCount = convolution.getFeatureGroupCount();
+
+    int64_t inputBatchingDimFromGroupCount;
+    if (batchGroupCount > 1) {
+      inputBatchingDimFromGroupCount = inputBatchDim;
+      batchGroupCount *= batchSize;
+    } else {
+      inputBatchingDimFromGroupCount = inputFeatureDim;
+      featureGroupCount *= batchSize;
+    }
+    auto batchedLhs = reshapeAxisInto(builder, lhs, batchSizes,
+                                      inputBatchingDimFromGroupCount);
+
+    auto batchedRhs =
+        reshapeAxisInto(builder, rhs, batchSizes, kernelOutputFeatureDim);
+
+    auto outTy = cast<RankedTensorType>(convolution.getResult().getType());
+    auto outShape = llvm::to_vector(outTy.getShape());
+    outShape[outputFeatureDim] = outShape[outputFeatureDim] * batchSize;
+    auto outElemTy = outTy.getElementType();
+
+    auto batchedConvolution = stablehlo::ConvolutionOp::create(
+        builder, src->getLoc(), RankedTensorType::get(outShape, outElemTy),
+        batchedLhs, batchedRhs, convolution.getWindowStridesAttr(),
+        convolution.getPaddingAttr(), convolution.getLhsDilationAttr(),
+        convolution.getRhsDilationAttr(), convolution.getWindowReversalAttr(),
+        convolution.getDimensionNumbersAttr(),
+        builder.getI64IntegerAttr(featureGroupCount),
+        builder.getI64IntegerAttr(batchGroupCount),
+        convolution.getPrecisionConfigAttr());
+
+    auto transposedOut = reshapeAxisOutOf(builder, batchedConvolution,
+                                          batchSizes, outputFeatureDim);
+    mapper.map(src->getResult(0), transposedOut);
+    return success();
+  }
+};
+
 struct StablehloAddSimplifyMathInterface
     : public MathSimplifyInterface::ExternalModel<
           StablehloAddSimplifyMathInterface, stablehlo::AddOp> {
@@ -3695,10 +3757,9 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     GetDimensionSizeOp::attachInterface<SHLOGetDimensionSizeOpBatchInterface>(
         *context);
     ReverseOp::attachInterface<SHLOReverseOpBatchInterface>(*context);
+    ConvolutionOp::attachInterface<SHLOConvolutionOpBatchInterface>(*context);
 
     ScatterOp::attachInterface<SHLOGenericBatchOpInterface<ScatterOp>>(
-        *context); // TODO: simpler version with newly named dims
-    ConvolutionOp::attachInterface<SHLOGenericBatchOpInterface<ConvolutionOp>>(
         *context); // TODO: simpler version with newly named dims
 
     AddOp::attachInterface<StablehloAddSimplifyMathInterface>(*context);
