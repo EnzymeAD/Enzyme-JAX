@@ -1,72 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1762333943907,
+  "lastUpdate": 1762385658723,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "765740+giordano@users.noreply.github.com",
-            "name": "Mosè Giordano",
-            "username": "giordano"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "6137ac98e710adf6f4e953bf441db4e25b2db40f",
-          "message": "Update JAX to commit 45065d569064392cee45a066f9f788fe29ee2cd8 (#1418)\n\n* Update JAX to commit 45065d569064392cee45a066f9f788fe29ee2cd8\n\nDiff: https://github.com/jax-ml/jax/compare/4455434869812dfb7336b18f2e59a8690ba38e79...45065d569064392cee45a066f9f788fe29ee2cd8\n\n* Drop unneeded patch\n\n* fixup\n\n* Fix\n\n* fix\n\n* fix tests\n\n* fix\n\n* add missing file\n\n* fix\n\n* fix\n\n* fixup\n\n* bug workaround for gcc\n\n* fix\n\n* fix\n\n* more patches\n\n* fix\n\n* fix\n\n* fix\n\n---------\n\nCo-authored-by: enzyme-ci-bot[bot] <78882869+enzyme-ci-bot[bot]@users.noreply.github.com>\nCo-authored-by: William S. Moses <gh@wsmoses.com>",
-          "timestamp": "2025-10-17T19:02:06+08:00",
-          "tree_id": "965c16fa81550d4cf0b83351d59e1ede0142b92a",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/6137ac98e710adf6f4e953bf441db4e25b2db40f"
-        },
-        "date": 1760714912713,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "add_two / JaX   / cpu / Primal",
-            "value": 0.0000038976957999693696,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / JaXPipe / cpu / Primal",
-            "value": 0.00000598926249986107,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / JaX   / cpu / Forward",
-            "value": 0.000008238229199923807,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / JaXPipe / cpu / Forward",
-            "value": 0.000008194375000130095,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / JaX   / cpu / BothRev",
-            "value": 0.000011886500000036904,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / JaXPipe / cpu / PreRev",
-            "value": 0.000009867437499997322,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / JaXPipe / cpu / PostRev",
-            "value": 0.000010835137499998382,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / JaXPipe / cpu / BothRev",
-            "value": 0.000013692654199985554,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2239,6 +2175,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001384789892006,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "238314553+enzymead-bot[bot]@users.noreply.github.com",
+            "name": "enzymead-bot[bot]",
+            "username": "enzymead-bot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f38cddf4d496b40d06152c527aad8375560f7e77",
+          "message": "Update EnzymeAD/Enzyme to commit 032828cbfef50bfba41443baacc39989c203534b (#1577)\n\n* Update EnzymeAD/Enzyme to commit 032828cbfef50bfba41443baacc39989c203534b\n\nDiff: https://github.com/EnzymeAD/Enzyme/compare/0ce301aedef3ca040c8703cb1b7d340ed4a58271...032828cbfef50bfba41443baacc39989c203534b\n\n* fix\n\nfix\n\n---------\n\nCo-authored-by: enzymead-bot[bot] <238314553+enzymead-bot[bot]@users.noreply.github.com>\nCo-authored-by: sbrantq <scharfrichterq@gmail.com>",
+          "timestamp": "2025-11-05T13:47:13-06:00",
+          "tree_id": "a73dd2e5e24890f018de2417d05101adb9bd01c6",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/f38cddf4d496b40d06152c527aad8375560f7e77"
+        },
+        "date": 1762385658093,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004294576001120731,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004324483900563791,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001519668891996,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001453466621984,
             "unit": "s"
           }
         ]
