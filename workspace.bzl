@@ -105,6 +105,8 @@ sed -i.bak0 "s/tf_http_archive(/http_archive(/g" third_party/py/python_init_rule
 
 """,
     """
+sed -i.bak0 "s/_DEFAULT_ROCM_TOOLKIT_PATH =/_TMPDIR = \\"TMPDIR\\"\\n_DEFAULT_ROCM_TOOLKIT_PATH =/g" third_party/gpus/rocm_configure.bzl
+sed -i.bak0 "s/\\"%{rocm_hipblaslt}\\"/\\"%{tmpdir}\\":get_host_environ(repository_ctx,_TMPDIR,\\"\\"), \\"%{rocm_hipblaslt}\\"/g" third_party/gpus/rocm_configure.bzl
 sed -i.bak0 "s/VERBOSE =/TMPDIR= '%{tmpdir}'\\nVERBOSE =/g" third_party/gpus/crosstool/clang/bin/crosstool_wrapper_driver_rocm.tpl
 sed -i.bak0 "s/def main():/def main():\\n  if TMPDIR: os.environ['TMPDIR'] = TMPDIR/g" third_party/gpus/crosstool/clang/bin/crosstool_wrapper_driver_is_not_gcc.tpl third_party/gpus/crosstool/clang/bin/crosstool_wrapper_driver_rocm.tpl
 """,
