@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1762284186962,
+  "lastUpdate": 1762303066153,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "avikpal@mit.edu",
-            "name": "Avik Pal",
-            "username": "avik-pal"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "3d66292dd7ee4c05611641610a0891828f920297",
-          "message": "fix: dot_general_simplify for complex numbers (#1478)",
-          "timestamp": "2025-10-14T10:57:19-04:00",
-          "tree_id": "1eb36c9971e8032ec8cff2f3370af33f3c483ab8",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/3d66292dd7ee4c05611641610a0891828f920297"
-        },
-        "date": 1760457122408,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.000004383468901505694,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.000004369143999065273,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001544043866975,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001480491947004,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2239,6 +2195,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001431011000007,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "avikpal@mit.edu",
+            "name": "Avik Pal",
+            "username": "avik-pal"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c051c600464bf9e8936bd7b17262669d73be6e02",
+          "message": "feat: enable raising more operations from loops (#1567)\n\n* feat: enable raising more operations from loops\n\n* test: add test cases",
+          "timestamp": "2025-11-04T16:14:10-05:00",
+          "tree_id": "e50df750ccef5af950a1008f86c72b7e41b9a35d",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/c051c600464bf9e8936bd7b17262669d73be6e02"
+        },
+        "date": 1762303064974,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004429023999546189,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.00000442851999978302,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001343285013004,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001343496753004,
             "unit": "s"
           }
         ]
