@@ -15,16 +15,21 @@ class TritonInactiveOp<string m> : InactiveOp<"triton", m>;
 class TritonReturnOp<string m> : ReturnOp<"triton", m>;
 
 def FpToFp : TritonInst<"FpToFpOp">;
+def PreciseDivF : TritonInst<"PreciseDivFOp">;
 def MakeRange : TritonInst<"MakeRangeOp">;
 
 def : TritonReturnOp<"ReturnOp">;
-def : TritonInactiveOp<"MakeRangeOp">;
-def : TritonInactiveOp<"BitcastOp">;
 
-def : MemoryIdentityOp<"triton", "StoreOp", [1], [0]>;
-def : ReadOnlyIdentityOp<"triton", "LoadOp", [0]>;
+def : TritonInactiveOp<"AssertOp">;
+def : TritonInactiveOp<"BitcastOp">;
+def : TritonInactiveOp<"MakeRangeOp">;
+def : TritonInactiveOp<"PrintOp">;
+
 def : ReadOnlyIdentityOp<"triton", "AddPtrOp", [0]>;
+def : ReadOnlyIdentityOp<"triton", "AdvanceOp", [0]>;
+def : ReadOnlyIdentityOp<"triton", "LoadOp", [0]>;
 def : ReadOnlyIdentityOp<"triton", "SplatOp", [0]>;
+def : MemoryIdentityOp<"triton", "StoreOp", [1], [0]>;
 
 def FpToFpRoundingMode : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   op.getRoundingAttr();
