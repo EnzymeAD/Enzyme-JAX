@@ -2388,7 +2388,36 @@ public:
       cachedValues.push_back(gutils->popCache(caches[i], builder));
     }
 
-    size_t gradIdx = 0;
+    auto indices = cachedValues[orig->getNumResults()];
+    auto indicesTy = cast<RankedTensorType>(indices.getType());
+
+    SmallVector<int64_t> newIndicesShape(indicesTy.getShape().begin(),
+                                         indicesTy.getShape().end());
+    newIndicesShape.push_back(1);
+
+    indices = stablehlo::ReshapeOp::create(
+        builder, orig->getLoc(),
+        RankedTensorType::get(newIndicesShape, indicesTy.getElementType()),
+        indices);
+
+    auto inTy = cast<RankedTensorType>(orig->getOperand(0).getType());
+    auto inRank = inTy.getRank();
+    auto inShape = inTy.getShape();
+
+    SmallVector<int64_t> batchingDims;
+    for (int32_t d = 0; d < inRank; d++) {
+      if (d != sortOp.getDimension()) {
+        batchingDims.push_back(d);
+      }
+    }
+
+    auto scatterDims = stablehlo::ScatterDimensionNumbersAttr::get(
+        orig->getContext(), SmallVector<int64_t>(),
+        SmallVector<int64_t>{static_cast<int64_t>(sortOp.getDimension())},
+        batchingDims, batchingDims,
+        SmallVector<int64_t>{static_cast<int64_t>(sortOp.getDimension())},
+        indicesTy.getRank());
+
     for (size_t i = 0; i < orig->getNumResults(); i++) {
       if (gutils->isConstantValue(orig->getResult(i)) ||
           gutils->isConstantValue(orig->getOperand(i)))
@@ -2400,47 +2429,6 @@ public:
       gutils->zeroDiffe(orig->getResult(i), builder);
 
       auto outDiffe = gutils->diffe(orig->getOperand(i), builder);
-      auto outDiffeTy = cast<RankedTensorType>(outDiffe.getType());
-
-      auto indices = cachedValues[orig->getNumResults() + gradIdx++];
-      auto indicesTy = cast<RankedTensorType>(indices.getType());
-
-      SmallVector<int64_t> reshapeShape(indicesTy.getShape().begin(),
-                                        indicesTy.getShape().end());
-      reshapeShape.push_back(1);
-      indices = stablehlo::ReshapeOp::create(
-          builder, orig->getLoc(),
-          RankedTensorType::get(reshapeShape, indicesTy.getElementType()),
-          indices);
-
-      SmallVector<int64_t> updatesShape;
-      for (int32_t d = 0; d < inDiffeTy.getRank(); d++) {
-        if (d == sortOp.getDimension()) {
-          updatesShape.push_back(inDiffeTy.getDimSize(d));
-          updatesShape.push_back(1);
-        } else {
-          updatesShape.push_back(inDiffeTy.getDimSize(d));
-        }
-      }
-
-      inDiffe = stablehlo::ReshapeOp::create(
-          builder, orig->getLoc(),
-          RankedTensorType::get(updatesShape, inDiffeTy.getElementType()),
-          inDiffe);
-
-      SmallVector<int64_t> updateWindowDims;
-      for (int32_t d = 0; d < inDiffeTy.getRank(); d++) {
-        if (d != sortOp.getDimension()) {
-          updateWindowDims.push_back(d);
-        }
-      }
-
-      auto scatterDims = stablehlo::ScatterDimensionNumbersAttr::get(
-          orig->getContext(), updateWindowDims,
-          SmallVector<int64_t>{static_cast<int64_t>(sortOp.getDimension())},
-          SmallVector<int64_t>(), SmallVector<int64_t>(),
-          SmallVector<int64_t>{static_cast<int64_t>(sortOp.getDimension())},
-          cast<RankedTensorType>(indices.getType()).getRank() - 1);
 
       Region combiner;
       {
@@ -2506,7 +2494,8 @@ public:
     auto OpTy = cast<TensorType>(newOperands[0].getType());
     auto iotaOp = stablehlo::IotaOp::create(
         cacheBuilder, orig->getLoc(),
-        RankedTensorType::get(OpTy.getShape(), cacheBuilder.getI32Type()),
+        RankedTensorType::get(OpTy.getShape(),
+                              cacheBuilder.getIntegerType(32, false)),
         sortOp.getDimensionAttr());
     newOperands[newOperands.size() - 1] = iotaOp.getResult();
 
