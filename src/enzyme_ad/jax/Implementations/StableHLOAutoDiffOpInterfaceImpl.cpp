@@ -2279,6 +2279,49 @@ public:
   }
 };
 
+stablehlo::SortOp
+constructSortOpWithExtraOperands(OpBuilder &builder, stablehlo::SortOp original,
+                                 SmallVectorImpl<Value> &newOperands) {
+  auto newSortOp = stablehlo::SortOp::create(
+      builder, original.getLoc(), newOperands, original.getDimensionAttr(),
+      original.getIsStableAttr());
+
+  IRMapping regionMapper;
+  auto &newComparator = newSortOp.getComparator();
+  auto *newBlock = new Block();
+  newComparator.push_back(newBlock);
+
+  {
+    SmallVector<Type> scalarArgTys;
+    for (auto arg : newOperands) {
+      auto elTy = RankedTensorType::get(
+          {}, cast<TensorType>(arg.getType()).getElementType());
+      scalarArgTys.push_back(elTy);
+      scalarArgTys.push_back(elTy);
+    }
+    newBlock->addArguments(
+        scalarArgTys,
+        SmallVector<Location>(scalarArgTys.size(), original.getLoc()));
+  }
+
+  auto &origComparator = original.getComparator();
+  auto &origBlock = origComparator.front();
+
+  IRMapping mapper;
+  for (int64_t i = 0; i < origBlock.getNumArguments(); i++)
+    mapper.map(origBlock.getArgument(i), newBlock->getArgument(i));
+
+  {
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(newBlock);
+    for (Operation &origOpInside : origBlock) {
+      builder.clone(origOpInside, mapper);
+    }
+  }
+
+  return newSortOp;
+}
+
 class AutoDiffSortFwd
     : public AutoDiffOpInterface::ExternalModel<AutoDiffSortFwd, SortOp> {
 public:
@@ -2305,51 +2348,8 @@ public:
       }
     }
 
-    auto newSortOp = stablehlo::SortOp::create(
-        builder, sortOp.getLoc(), newOperands,
-        builder.getI64IntegerAttr(sortOp.getDimension()),
-        sortOp.getIsStableAttr());
-
-    IRMapping regionMapper;
-    auto &origComparator = sortOp.getComparator();
-    auto &origBlock = origComparator.front();
-
-    auto &newComparator = newSortOp.getComparator();
-    auto *newBlock = new Block();
-    newComparator.push_back(newBlock);
-
-    {
-      SmallVector<Type> scalarArgTys;
-      for (auto arg : sortOp.getInputs()) {
-        auto elTy = RankedTensorType::get(
-            {}, cast<TensorType>(arg.getType()).getElementType());
-        scalarArgTys.push_back(elTy);
-        scalarArgTys.push_back(elTy);
-      }
-      for (auto [i, arg] : llvm::enumerate(sortOp.getInputs())) {
-        if (gradMapping.count(i)) {
-          auto elTy = RankedTensorType::get(
-              {}, cast<TensorType>(arg.getType()).getElementType());
-          scalarArgTys.push_back(elTy);
-          scalarArgTys.push_back(elTy);
-        }
-      }
-      newBlock->addArguments(
-          scalarArgTys,
-          SmallVector<Location>(scalarArgTys.size(), op->getLoc()));
-    }
-
-    IRMapping mapper;
-    for (int64_t i = 0; i < origBlock.getNumArguments(); i++)
-      mapper.map(origBlock.getArgument(i), newBlock->getArgument(i));
-
-    {
-      OpBuilder::InsertionGuard guard(builder);
-      builder.setInsertionPointToStart(newBlock);
-      for (Operation &origOpInside : origBlock) {
-        builder.clone(origOpInside, mapper);
-      }
-    }
+    auto newSortOp =
+        constructSortOpWithExtraOperands(builder, sortOp, newOperands);
 
     SmallVector<Value> replacementResults(sortOp.getNumResults());
     for (int32_t i = 0; i < sortOp.getNumResults(); i++) {
@@ -2499,54 +2499,19 @@ public:
     auto newOp = gutils->getNewFromOriginal(orig);
     OpBuilder cacheBuilder(newOp);
 
-    SmallVector<Value> newOperands(sortOp.getInputs().size());
+    SmallVector<Value> newOperands(sortOp.getInputs().size() + 1);
     for (auto [i, operand] : llvm::enumerate(sortOp.getInputs())) {
       newOperands[i] = gutils->getNewFromOriginal(operand);
-      if (!gutils->isConstantValue(operand)) {
-        auto OpTy = cast<TensorType>(operand.getType());
-        auto iotaOp = stablehlo::IotaOp::create(
-            cacheBuilder, operand.getLoc(),
-            RankedTensorType::get(OpTy.getShape(), cacheBuilder.getI32Type()),
-            sortOp.getDimensionAttr());
-        newOperands.push_back(iotaOp.getResult());
-      }
     }
+    auto OpTy = cast<TensorType>(newOperands[0].getType());
+    auto iotaOp = stablehlo::IotaOp::create(
+        cacheBuilder, orig->getLoc(),
+        RankedTensorType::get(OpTy.getShape(), cacheBuilder.getI32Type()),
+        sortOp.getDimensionAttr());
+    newOperands[newOperands.size() - 1] = iotaOp.getResult();
 
-    auto newSortOp = stablehlo::SortOp::create(
-        cacheBuilder, sortOp.getLoc(), newOperands, sortOp.getDimensionAttr(),
-        sortOp.getIsStableAttr());
-
-    auto &newComparator = newSortOp.getComparator();
-    auto *newBlock = new Block();
-    newComparator.push_back(newBlock);
-
-    {
-      SmallVector<Type> scalarArgTys;
-      for (auto arg : newOperands) {
-        auto elTy = RankedTensorType::get(
-            {}, cast<TensorType>(arg.getType()).getElementType());
-        scalarArgTys.push_back(elTy);
-        scalarArgTys.push_back(elTy);
-      }
-      newBlock->addArguments(
-          scalarArgTys,
-          SmallVector<Location>(scalarArgTys.size(), orig->getLoc()));
-    }
-
-    auto &origComparator = sortOp.getComparator();
-    auto &origBlock = origComparator.front();
-
-    IRMapping mapper;
-    for (int64_t i = 0; i < origBlock.getNumArguments(); i++)
-      mapper.map(origBlock.getArgument(i), newBlock->getArgument(i));
-
-    {
-      OpBuilder::InsertionGuard guard(cacheBuilder);
-      cacheBuilder.setInsertionPointToStart(newBlock);
-      for (Operation &origOpInside : origBlock) {
-        cacheBuilder.clone(origOpInside, mapper);
-      }
-    }
+    auto newSortOp =
+        constructSortOpWithExtraOperands(cacheBuilder, sortOp, newOperands);
 
     SmallVector<Value> caches;
     for (auto result : newSortOp.getResults()) {
