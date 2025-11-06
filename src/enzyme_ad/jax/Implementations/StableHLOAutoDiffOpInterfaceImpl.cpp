@@ -2383,12 +2383,7 @@ public:
       return failure();
     }
 
-    SmallVector<Value> cachedValues;
-    for (int32_t i = 0; i < caches.size(); i++) {
-      cachedValues.push_back(gutils->popCache(caches[i], builder));
-    }
-
-    auto indices = cachedValues[orig->getNumResults()];
+    auto indices = gutils->popCache(caches[0], builder);
     auto indicesTy = cast<RankedTensorType>(indices.getType());
 
     SmallVector<int64_t> newIndicesShape(indicesTy.getShape().begin(),
@@ -2457,12 +2452,6 @@ public:
       gutils->setDiffe(orig->getOperand(i), scatterOp.getResults()[0], builder);
     }
 
-    // replace the original results with the optimized version
-    SmallVector<Value> newResults(cachedValues.begin(),
-                                  cachedValues.begin() + orig->getNumResults());
-    gutils->replaceOrigOpWith(orig, newResults);
-    gutils->eraseIfUnused(orig);
-
     return success();
   }
 
@@ -2501,11 +2490,21 @@ public:
 
     auto newSortOp =
         constructSortOpWithExtraOperands(cacheBuilder, sortOp, newOperands);
+    auto newResults = newSortOp.getResults();
 
     SmallVector<Value> caches;
-    for (auto result : newSortOp.getResults()) {
-      caches.push_back(gutils->initAndPushCache(result, cacheBuilder));
+    caches.push_back(gutils->initAndPushCache(newResults[newResults.size() - 1],
+                                              cacheBuilder));
+
+    SmallVector<Value> replacements;
+    for (size_t i = 0; i < newResults.size() - 1; i++) {
+      replacements.push_back(newResults[i]);
     }
+
+    gutils->replaceOrigOpWith(orig, replacements);
+    gutils->eraseIfUnused(orig);
+    gutils->originalToNewFnOps[orig] = newSortOp;
+
     return caches;
   }
 
