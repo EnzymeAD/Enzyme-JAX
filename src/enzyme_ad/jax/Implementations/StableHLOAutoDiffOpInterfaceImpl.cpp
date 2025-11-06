@@ -2368,6 +2368,197 @@ public:
   }
 };
 
+class AutoDiffSortRev
+    : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffSortRev,
+                                                       stablehlo::SortOp> {
+public:
+  LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
+                                         MGradientUtilsReverse *gutils,
+                                         SmallVector<Value> caches) const {
+    auto sortOp = cast<stablehlo::SortOp>(orig);
+
+    if (gutils->width > 1) {
+      orig->emitError(
+          "TODO: AutoDiffSortRev does not support batched reverse mode");
+      return failure();
+    }
+
+    SmallVector<Value> cachedValues;
+    for (int32_t i = 0; i < caches.size(); i++) {
+      cachedValues.push_back(gutils->popCache(caches[i], builder));
+    }
+
+    size_t gradIdx = 0;
+    for (size_t i = 0; i < orig->getNumResults(); i++) {
+      if (gutils->isConstantValue(orig->getResult(i)) ||
+          gutils->isConstantValue(orig->getOperand(i)))
+        continue;
+
+      // we compute the gradients with scatter_add and then set the original
+      auto inDiffe = gutils->diffe(orig->getResult(i), builder);
+      auto inDiffeTy = cast<RankedTensorType>(inDiffe.getType());
+      gutils->zeroDiffe(orig->getResult(i), builder);
+
+      auto outDiffe = gutils->diffe(orig->getOperand(i), builder);
+      auto outDiffeTy = cast<RankedTensorType>(outDiffe.getType());
+
+      auto indices = cachedValues[orig->getNumResults() + gradIdx++];
+      auto indicesTy = cast<RankedTensorType>(indices.getType());
+
+      SmallVector<int64_t> reshapeShape(indicesTy.getShape().begin(),
+                                        indicesTy.getShape().end());
+      reshapeShape.push_back(1);
+      indices = stablehlo::ReshapeOp::create(
+          builder, orig->getLoc(),
+          RankedTensorType::get(reshapeShape, indicesTy.getElementType()),
+          indices);
+
+      SmallVector<int64_t> updatesShape;
+      for (int32_t d = 0; d < inDiffeTy.getRank(); d++) {
+        if (d == sortOp.getDimension()) {
+          updatesShape.push_back(inDiffeTy.getDimSize(d));
+          updatesShape.push_back(1);
+        } else {
+          updatesShape.push_back(inDiffeTy.getDimSize(d));
+        }
+      }
+
+      inDiffe = stablehlo::ReshapeOp::create(
+          builder, orig->getLoc(),
+          RankedTensorType::get(updatesShape, inDiffeTy.getElementType()),
+          inDiffe);
+
+      SmallVector<int64_t> updateWindowDims;
+      for (int32_t d = 0; d < inDiffeTy.getRank(); d++) {
+        if (d != sortOp.getDimension()) {
+          updateWindowDims.push_back(d);
+        }
+      }
+
+      auto scatterDims = stablehlo::ScatterDimensionNumbersAttr::get(
+          orig->getContext(), updateWindowDims,
+          SmallVector<int64_t>{static_cast<int64_t>(sortOp.getDimension())},
+          SmallVector<int64_t>(), SmallVector<int64_t>(),
+          SmallVector<int64_t>{static_cast<int64_t>(sortOp.getDimension())},
+          cast<RankedTensorType>(indices.getType()).getRank() - 1);
+
+      Region combiner;
+      {
+        Block *block = new Block();
+        combiner.push_back(block);
+        block->addArgument(
+            RankedTensorType::get({}, inDiffeTy.getElementType()),
+            orig->getLoc());
+        block->addArgument(
+            RankedTensorType::get({}, inDiffeTy.getElementType()),
+            orig->getLoc());
+        OpBuilder::InsertionGuard guard(builder);
+        builder.setInsertionPointToStart(block);
+        stablehlo::ReturnOp::create(
+            builder, orig->getLoc(),
+            ValueRange{stablehlo::AddOp::create(builder, orig->getLoc(),
+                                                block->getArgument(0),
+                                                block->getArgument(1))});
+      }
+
+      auto scatterOp = stablehlo::ScatterOp::create(
+          builder, orig->getLoc(), outDiffe, indices, inDiffe, scatterDims,
+          builder.getBoolAttr(false), builder.getBoolAttr(true));
+      scatterOp.getUpdateComputation().takeBody(combiner);
+
+      gutils->setDiffe(orig->getOperand(i), scatterOp.getResults()[0], builder);
+    }
+
+    // replace the original results with the optimized version
+    SmallVector<Value> newResults(cachedValues.begin(),
+                                  cachedValues.begin() + orig->getNumResults());
+    gutils->replaceOrigOpWith(orig, newResults);
+    gutils->eraseIfUnused(orig);
+
+    return success();
+  }
+
+  SmallVector<Value> cacheValues(Operation *orig,
+                                 MGradientUtilsReverse *gutils) const {
+    auto sortOp = cast<stablehlo::SortOp>(orig);
+
+    if (gutils->width > 1)
+      return {};
+
+    bool allConstant = true;
+    for (auto input : sortOp.getInputs()) {
+      if (!gutils->isConstantValue(input)) {
+        allConstant = false;
+        break;
+      }
+    }
+
+    if (allConstant)
+      return {};
+
+    auto newOp = gutils->getNewFromOriginal(orig);
+    OpBuilder cacheBuilder(newOp);
+
+    SmallVector<Value> newOperands(sortOp.getInputs().size());
+    for (auto [i, operand] : llvm::enumerate(sortOp.getInputs())) {
+      newOperands[i] = gutils->getNewFromOriginal(operand);
+      if (!gutils->isConstantValue(operand)) {
+        auto OpTy = cast<TensorType>(operand.getType());
+        auto iotaOp = stablehlo::IotaOp::create(
+            cacheBuilder, operand.getLoc(),
+            RankedTensorType::get(OpTy.getShape(), cacheBuilder.getI32Type()),
+            sortOp.getDimensionAttr());
+        newOperands.push_back(iotaOp.getResult());
+      }
+    }
+
+    auto newSortOp = stablehlo::SortOp::create(
+        cacheBuilder, sortOp.getLoc(), newOperands, sortOp.getDimensionAttr(),
+        sortOp.getIsStableAttr());
+
+    auto &newComparator = newSortOp.getComparator();
+    auto *newBlock = new Block();
+    newComparator.push_back(newBlock);
+
+    {
+      SmallVector<Type> scalarArgTys;
+      for (auto arg : newOperands) {
+        auto elTy = RankedTensorType::get(
+            {}, cast<TensorType>(arg.getType()).getElementType());
+        scalarArgTys.push_back(elTy);
+        scalarArgTys.push_back(elTy);
+      }
+      newBlock->addArguments(
+          scalarArgTys,
+          SmallVector<Location>(scalarArgTys.size(), orig->getLoc()));
+    }
+
+    auto &origComparator = sortOp.getComparator();
+    auto &origBlock = origComparator.front();
+
+    IRMapping mapper;
+    for (int64_t i = 0; i < origBlock.getNumArguments(); i++)
+      mapper.map(origBlock.getArgument(i), newBlock->getArgument(i));
+
+    {
+      OpBuilder::InsertionGuard guard(cacheBuilder);
+      cacheBuilder.setInsertionPointToStart(newBlock);
+      for (Operation &origOpInside : origBlock) {
+        cacheBuilder.clone(origOpInside, mapper);
+      }
+    }
+
+    SmallVector<Value> caches;
+    for (auto result : newSortOp.getResults()) {
+      caches.push_back(gutils->initAndPushCache(result, cacheBuilder));
+    }
+    return caches;
+  }
+
+  void createShadowValues(Operation *op, OpBuilder &builder,
+                          MGradientUtilsReverse *gutils) const {}
+};
+
 class AutoDiffBatchNormTrainingRev
     : public ReverseAutoDiffOpInterface::ExternalModel<
           AutoDiffBatchNormTrainingRev, BatchNormTrainingOp> {
@@ -3788,7 +3979,7 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     IfOp::attachInterface<AutoDiffIfCF>(*context);
 
     SortOp::attachInterface<AutoDiffSortFwd>(*context);
-    // SortOp::attachInterface<AutoDiffSortRev>(*context);
+    SortOp::attachInterface<AutoDiffSortRev>(*context);
     WhileOp::attachInterface<AutoDiffWhileFwd>(*context);
     WhileOp::attachInterface<AutoDiffWhileRev>(*context);
     ReduceOp::attachInterface<AutoDiffReduceCF<ReduceOp>>(*context);
