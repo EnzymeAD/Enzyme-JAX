@@ -269,13 +269,13 @@ td_library(
 gentbl_cc_library(
     name = "triton-derivatives",
     tbl_outs = [(
-      ["-gen-mlir-derivatives"],
-      "Implementations/TritonDerivatives.inc",
+        ["-gen-mlir-derivatives"],
+        "Implementations/TritonDerivatives.inc",
     )],
     tblgen = "@enzyme//:enzyme-tblgen",
     td_file = "Implementations/TritonDerivatives.td",
     td_srcs = [
-      "Implementations/TritonDerivatives.td",
+        "Implementations/TritonDerivatives.td",
     ],
     deps = [":ImplementationsCommonTdFiles"],
 )
