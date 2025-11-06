@@ -843,33 +843,19 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
       userOpToSlicesMap[op].push_back(ds);
 
       if (isa<stablehlo::ReshapeOp>(op)) {
-        bool intermediateReshape = false;
-        SmallVector<int64_t> additionalDropDimensions;
+        SmallVector<int64_t> reshapeShape;
 
         auto operandTy = cast<RankedTensorType>(op->getOperand(0).getType());
         auto resultTy = cast<RankedTensorType>(op->getResult(0).getType());
 
-        if (areValidInsertionDims(resultTy, operandTy,
-                                  {ds.inductionVarDimension})) {
-          intermediateReshape = true;
-        } else {
-          auto dropDims = findReshapeInsertionDims(resultTy, operandTy);
-          for (auto dim : dropDims) {
-            if (dim == ds.inductionVarDimension) {
-              intermediateReshape = true;
-              break;
-            }
-            additionalDropDimensions.push_back(dim);
-          }
+        if (!areValidInsertionDims(resultTy, operandTy,
+                                   {ds.inductionVarDimension})) {
+          reshapeShape = llvm::to_vector(resultTy.getShape());
         }
 
-        if (!intermediateReshape)
-          continue;
-
         for (auto user : op->getUsers()) {
-          userOpToSlicesMap[user].push_back(
-              DynamicSliceInfo{ds.sliceOp, ds.inductionVarDimension, true,
-                               additionalDropDimensions});
+          userOpToSlicesMap[user].push_back(DynamicSliceInfo{
+              ds.sliceOp, ds.inductionVarDimension, true, reshapeShape});
         }
       }
     }
@@ -1105,33 +1091,7 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
           rewriter.getDenseI64ArrayAttr(newSliceSizes));
 
       if (intermediateReshape) {
-        if (sliceInfo.additionalDropDimensions.size() > 0) {
-          SmallVector<int64_t> reshapedShape;
-          for (auto [i, sz] : llvm::enumerate(
-                   cast<ShapedType>(newSlice.getType()).getShape())) {
-            if (llvm::is_contained(sliceInfo.additionalDropDimensions, i)) {
-              assert(sz == 1 && "expected to drop singleton dim");
-              continue;
-            }
-            reshapedShape.push_back(sz);
-          }
-          newSlice = stablehlo::ReshapeOp::create(
-              rewriter, whileOp->getLoc(),
-              RankedTensorType::get(reshapedShape,
-                                    operandType.getElementType()),
-              newSlice);
-
-          operandRank -= sliceInfo.additionalDropDimensions.size();
-
-          // correct the slice dim
-          int64_t nbefore = 0;
-          for (auto dim : sliceInfo.additionalDropDimensions) {
-            if (dim < sliceDim)
-              nbefore++;
-          }
-          sliceDim -= nbefore;
-        }
-
+        // move the slice dim to the front
         SmallVector<int64_t> permutation(operandRank);
         permutation[0] = sliceDim;
         for (int i = 0; i < sliceDim; i++)
@@ -1139,10 +1099,25 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
         for (int i = sliceDim + 1; i < operandRank; i++)
           permutation[i] = i;
 
-        auto transposedOperand = stablehlo::TransposeOp::create(
-            rewriter, whileOp->getLoc(), newSlice,
-            rewriter.getDenseI64ArrayAttr(permutation));
-        newOperands.push_back(transposedOperand->getResult(0));
+        auto newOperand = stablehlo::TransposeOp::create(
+                              rewriter, whileOp->getLoc(), newSlice,
+                              rewriter.getDenseI64ArrayAttr(permutation))
+                              .getResult();
+
+        if (!sliceInfo.reshapeShape.empty()) {
+          SmallVector<int64_t> reshapedShape(sliceInfo.reshapeShape.begin(),
+                                             sliceInfo.reshapeShape.end());
+          reshapedShape.insert(reshapedShape.begin(),
+                               info.getConstantLimit().value() -
+                                   info.getConstantStart().value());
+          newOperand = stablehlo::ReshapeOp::create(
+              rewriter, whileOp->getLoc(),
+              RankedTensorType::get(reshapedShape,
+                                    operandType.getElementType()),
+              newOperand);
+        }
+
+        newOperands.push_back(newOperand);
       } else {
         auto operandShape = operandType.getShape();
 
