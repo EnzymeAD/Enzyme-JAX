@@ -28,10 +28,10 @@ index 3f8617428b..72ca4b6225 100644
      name = "toolchain_data",
      srcs = glob([
 diff --git a/third_party/rocm_device_libs/build_defs.bzl b/third_party/rocm_device_libs/build_defs.bzl
-index 845618bd9c..f84e69462c 100644
+index 845618bd9c..2a66d91425 100644
 --- a/third_party/rocm_device_libs/build_defs.bzl
 +++ b/third_party/rocm_device_libs/build_defs.bzl
-@@ -2,110 +2,148 @@
+@@ -2,110 +2,145 @@
  
  load("@bazel_skylib//lib:paths.bzl", "paths")
  
@@ -227,6 +227,7 @@ index 845618bd9c..f84e69462c 100644
 +        inputs = [strip_out],
 +        outputs = [final_bc],
 +        arguments = [strip_out.path, "-o", final_bc.path],
++	use_default_shell_env = True,
 +        progress_message = "Preparing final bitcode for {}".format(ctx.label.name),
      )
 +
@@ -244,25 +245,21 @@ index 845618bd9c..f84e69462c 100644
 +        "_clang": attr.label(
 +            default = Label("@local_config_rocm//rocm:hipcc"),
 +            executable = True,
-+	    use_default_shell_env = True,
 +            cfg = "exec",
 +        ),
 +        "_llvm_link": attr.label(
 +            default = Label("@local_config_rocm//rocm:llvm-link"),
 +            executable = True,
-+	    use_default_shell_env = True,
 +            cfg = "exec",
 +        ),
 +        "_opt": attr.label(
 +            default = Label("@local_config_rocm//rocm:opt"),
 +            executable = True,
-+	    use_default_shell_env = True,
 +            cfg = "exec",
 +        ),
 +        "_prepare_builtins": attr.label(
 +            default = Label(":prepare_builtins"),
 +            executable = True,
-+	    use_default_shell_env = True,
 +            cfg = "exec",
 +        ),
 +        "_clang_includes": attr.label(
