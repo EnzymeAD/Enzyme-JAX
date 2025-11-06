@@ -1,0 +1,58 @@
+diff --git a/third_party/rocm_device_libs/rocm_device_libs.BUILD b/third_party/rocm_device_libs/rocm_device_libs.BUILD
+index 11795b3537..c6e953d577 100644
+--- a/third_party/rocm_device_libs/rocm_device_libs.BUILD
++++ b/third_party/rocm_device_libs/rocm_device_libs.BUILD
+@@ -28,35 +28,24 @@ cc_binary(
+ )
+ 
+ bitcode_library(
+-    name = "ocml",
++    name = "ockl",
+     srcs = glob([
+         "ocml/src/*.cl",
++        "ockl/src/*.cl",
++        "ockl/src/*.ll",
+     ]),
+     hdrs = glob([
+         "ocml/src/*.h",
+         "ocml/inc/*.h",
+         "irif/inc/*.h",
+-        "oclc/inc/*.h",
++        "oclc/inc/*.h",    
++	"ockl/inc/*.h",
+     ]),
+     file_specific_flags = {
+         "native_logF.cl": ["-fapprox-func"],
+         "native_expF.cl": ["-fapprox-func"],
+         "sqrtF.cl": ["-cl-fp32-correctly-rounded-divide-sqrt"],
+-    },
+-)
+-
+-bitcode_library(
+-    name = "ockl",
+-    srcs = glob([
+-        "ockl/src/*.cl",
+-        "ockl/src/*.ll",
+-    ]),
+-    hdrs = glob([
+-        "ockl/inc/*.h",
+-        "irif/inc/*.h",
+-        "oclc/inc/*.h",
+-    ]),
+-    file_specific_flags = {
+         "gaaf.cl": ["-munsafe-fp-atomics"],
+     },
+ )
++
+diff --git a/xla/service/gpu/llvm_gpu_backend/BUILD b/xla/service/gpu/llvm_gpu_backend/BUILD
+index 101b0580e1..1df2b6accb 100644
+--- a/xla/service/gpu/llvm_gpu_backend/BUILD
++++ b/xla/service/gpu/llvm_gpu_backend/BUILD
+@@ -130,7 +130,6 @@ genrule(
+     name = "generate_amdgpu_device_lib_data",
+     srcs = [
+         "@rocm_device_libs//:ockl",
+-        "@rocm_device_libs//:ocml",
+     ],
+     outs = ["amdgpu_device_lib_data.h"],
+     cmd = "$(location {}) --llvm_link_bin $(location {}) $(SRCS) -o $@ --cpp_identifier=kAMDGPUDeviceLibData".format(
