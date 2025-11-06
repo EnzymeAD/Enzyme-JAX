@@ -129,9 +129,6 @@ mgpuLaunchKernel(CUfunction function, intptr_t gridX, intptr_t gridY,
                                       extra));
 }
 
-// The wrapper uses intptr_t instead of CUDA's unsigned int to match
-// the type of MLIR's index type. This avoids the need for casts in the
-// generated MLIR code.
 extern "C" MLIR_CUDA_WRAPPERS_EXPORT int32_t mgpuLaunchKernelErr(
     CUfunction function, intptr_t gridX, intptr_t gridY, intptr_t gridZ,
     intptr_t blockX, intptr_t blockY, intptr_t blockZ, int32_t smem,
