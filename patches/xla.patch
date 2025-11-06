@@ -1,5 +1,34 @@
+diff --git a/third_party/gpus/rocm/BUILD.tpl b/third_party/gpus/rocm/BUILD.tpl
+index 3f8617428b..72ca4b6225 100644
+--- a/third_party/gpus/rocm/BUILD.tpl
++++ b/third_party/gpus/rocm/BUILD.tpl
+@@ -546,6 +546,24 @@ filegroup(
+     visibility = ["//visibility:public"],
+ )
+ 
++sh_binary(
++    name = "hipcc",
++    srcs = ["%{rocm_root}/bin/hipcc"],
++    visibility = ["//visibility:public"],
++)
++
++sh_binary(
++    name = "llvm-link",
++    srcs = ["%{rocm_root}/lib/llvm/bin/llvm-link"],
++    visibility = ["//visibility:public"],
++)
++
++sh_binary(
++    name = "opt",
++    srcs = ["%{rocm_root}/lib/llvm/bin/opt"],
++    visibility = ["//visibility:public"],
++)
++
+ filegroup(
+     name = "toolchain_data",
+     srcs = glob([
 diff --git a/third_party/rocm_device_libs/build_defs.bzl b/third_party/rocm_device_libs/build_defs.bzl
-index 845618bd9c..352882efb5 100644
+index 845618bd9c..7ce2a839de 100644
 --- a/third_party/rocm_device_libs/build_defs.bzl
 +++ b/third_party/rocm_device_libs/build_defs.bzl
 @@ -2,110 +2,144 @@
@@ -213,17 +242,17 @@ index 845618bd9c..352882efb5 100644
 +        "hdrs": attr.label_list(allow_files = [".h"]),
 +        "file_specific_flags": attr.string_dict(),
 +        "_clang": attr.label(
-+            default = Label("@llvm-project//clang:clang"),
++            default = Label("@local_config_rocm//rocm:hipcc"),
 +            executable = True,
 +            cfg = "exec",
 +        ),
 +        "_llvm_link": attr.label(
-+            default = Label("@llvm-project//llvm:llvm-link"),
++            default = Label("@local_config_rocm//rocm:llvm-link"),
 +            executable = True,
 +            cfg = "exec",
 +        ),
 +        "_opt": attr.label(
-+            default = Label("@llvm-project//llvm:opt"),
++            default = Label("@local_config_rocm//rocm:opt"),
 +            executable = True,
 +            cfg = "exec",
 +        ),
