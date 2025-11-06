@@ -715,17 +715,18 @@ cc_library(
 
 cc_library(
     name = "XLADerivatives",
-    srcs = glob([
-        "Implementations/*.cpp",
-        "Passes/*.cpp",
-        "Dialect/*.cpp",
-        "Dialect/Distributed/*.cpp",
-        "Dialect/Tessera/*.cpp",
-    ],
-    exclude = [
-        "Passes/CudaRuntimeWrappers.cpp",
-        "Passes/RocmRuntimeWrappers.cpp",
-    ],
+    srcs = glob(
+        [
+            "Implementations/*.cpp",
+            "Passes/*.cpp",
+            "Dialect/*.cpp",
+            "Dialect/Distributed/*.cpp",
+            "Dialect/Tessera/*.cpp",
+        ],
+        exclude = [
+            "Passes/CudaRuntimeWrappers.cpp",
+            "Passes/RocmRuntimeWrappers.cpp",
+        ],
     ) + [
         "Utils.cpp",
     ],
