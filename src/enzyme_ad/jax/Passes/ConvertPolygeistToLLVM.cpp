@@ -969,11 +969,7 @@ public:
       args.insert(args.begin(), xdata);
     }
 
-<<<<<<< HEAD
     rewriter.create<LLVM::CallOp>(op.getLoc(), memcpyFn.value(), args);
-=======
-    LLVM::CallOp::create(rewriter, op.getLoc(), cudaMemcpyFn.value(), args);
->>>>>>> origin/main
     rewriter.eraseOp(op);
     return success();
   }
@@ -1941,14 +1937,9 @@ ConvertGPUModuleOp::matchAndRewrite(gpu::GPUModuleOp kernelModule,
         return failure();
       }
 
-<<<<<<< HEAD
-      auto module = rewriter.create<LLVM::CallOp>(
-          ctorloc, registerFatbinFn.value(), ValueRange(bitcastOfWrapper));
-=======
       auto module =
-          LLVM::CallOp::create(rewriter, ctorloc, cudaRegisterFatbinFn.value(),
+          LLVM::CallOp::create(rewriter, ctorloc, registerFatbinFn.value(),
                                ValueRange(bitcastOfWrapper));
->>>>>>> origin/main
 
       auto moduleGlobalName =
           std::string(llvm::formatv("polygeist_{0}_module_ptr", moduleName));
@@ -2032,14 +2023,10 @@ ConvertGPUModuleOp::matchAndRewrite(gpu::GPUModuleOp kernelModule,
               nullPtr,
               nullPtr};
 
-<<<<<<< HEAD
-          // rewriter.create<LLVM::CallOp>(ctorloc, cudaRegisterFn.value(),
+          // LLVM::CallOp::create(rewriter, ctorloc, cudaRegisterFn.value(),
           // args);
           rewriter.create<LLVM::CallOp>(ctorloc, registerFunctionFn.value(),
                                         args);
-=======
-          LLVM::CallOp::create(rewriter, ctorloc, cudaRegisterFn.value(), args);
->>>>>>> origin/main
         } else if (LLVM::GlobalOp g = dyn_cast<LLVM::GlobalOp>(op)) {
           int addrSpace = g.getAddrSpace();
           if (addrSpace != 1 /* device */ && addrSpace != 4 /* constant */)
@@ -2139,17 +2126,10 @@ ConvertGPUModuleOp::matchAndRewrite(gpu::GPUModuleOp kernelModule,
                         "different types\n";
         return failure();
       }
-<<<<<<< HEAD
       rewriter.create<LLVM::CallOp>(ctorloc, unregisterFatbinFn.value(),
                                     ValueRange(module));
 
       dtorBuilder.create<LLVM::ReturnOp>(ctorloc, ValueRange());
-=======
-
-      LLVM::CallOp::create(rewriter, ctorloc, cudaUnRegisterFatbinFn.value(),
-                           ValueRange(module));
-      LLVM::ReturnOp::create(dtorBuilder, ctorloc, ValueRange());
->>>>>>> origin/main
       auto dtorSymbol = FlatSymbolRefAttr::get(dtor);
       {
         PatternRewriter::InsertionGuard B(rewriter);
@@ -2273,7 +2253,6 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
   auto ptrty = LLVM::LLVMPointerType::get(rewriter.getContext());
   Type tys[] = {ptrty, i64, i32, i64, i32, ptrty, i64, ptrty};
 
-<<<<<<< HEAD
   std::string launchFuncName;
   if (gpuTarget == "cuda") {
     launchFuncName = "cudaLaunchKernel";
@@ -2284,12 +2263,6 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
   auto launchCall =
       rewriter.create<LLVM::CallOp>(loc, TypeRange(i32), launchFuncName, args);
 
-=======
-  auto launchCall = LLVM::CallOp::create(
-      rewriter, loc, TypeRange(i32), "cudaLaunchKernel",
-      args); // FlatSymbolRefAttr::get(rewriter.getStringAttr("cudaLaunchKernel")),
-             // args);
->>>>>>> origin/main
   if (launchOp.getAsyncToken()) {
     // Async launch: make dependent ops use the same stream.
     rewriter.replaceOp(launchOp, {stream});
@@ -2576,7 +2549,6 @@ private:
             ptr,
             sizeBytes,
         };
-<<<<<<< HEAD
         rewriter.create<LLVM::CallOp>(loc, cudaMallocFn.value(), args);
         allocatedPtr = rewriter.create<LLVM::LoadOp>(loc, ptr1ty, ptr);
       } else if (backend == "rocm") {
@@ -2600,10 +2572,6 @@ private:
         rewriter.create<LLVM::CallOp>(loc, hipMallocFn.value(), args);
         allocatedPtr = rewriter.create<LLVM::LoadOp>(loc, ptr1ty, ptr);
 
-=======
-        LLVM::CallOp::create(rewriter, loc, cudaMallocFn.value(), args);
-        allocatedPtr = LLVM::LoadOp::create(rewriter, loc, ptr1ty, ptr);
->>>>>>> origin/main
       } else if (backend.starts_with("cpu")) {
         Type convertedIndex =
             typeConverter->convertType(rewriter.getIndexType());
@@ -2787,13 +2755,7 @@ private:
     auto addr = LLVM::AddressOfOp::create(rewriter, loc, ptrty, funcStubName);
     Value args[] = {ptr, addr, adaptor.getBlockSize(),
                     adaptor.getDynamicSMemSize(), adaptor.getFlags()};
-<<<<<<< HEAD
     rewriter.create<LLVM::CallOp>(loc, occupancyFn.value(), args);
-=======
-    LLVM::CallOp::create(
-        rewriter, loc,
-        cudaOccupancyMaxActiveBlocksPerMultiprocessorWithFlagsFn.value(), args);
->>>>>>> origin/main
     rewriter.replaceOpWithNewOp<LLVM::LoadOp>(op, intty, ptr);
 
     return success();
@@ -2887,7 +2849,6 @@ private:
       Value args[] = {
           ptr,
       };
-<<<<<<< HEAD
       rewriter.create<LLVM::CallOp>(loc, cudaFreeFn.value(), args);
     } else if (backend == "rocm") {
       Type tys[] = {ptr1ty};
@@ -2903,9 +2864,6 @@ private:
       };
       rewriter.create<LLVM::CallOp>(loc, hipFreeFn.value(), args);
 
-=======
-      LLVM::CallOp::create(rewriter, loc, cudaFreeFn.value(), args);
->>>>>>> origin/main
     } else if (backend.starts_with("cpu")) {
 
       FailureOr<LLVM::LLVMFuncOp> freeFunc =
@@ -4087,6 +4045,28 @@ static LLVM::LLVMFuncOp addMocCUDAFunction(ModuleOp module, Type streamTy) {
   auto resumeOp = LLVM::LLVMFuncOp::create(
       moduleBuilder, fname,
       LLVM::LLVMFunctionType::get(voidTy, {ptrTy, ptrTy, streamTy}));
+  resumeOp.setPrivate();
+
+  return resumeOp;
+}
+
+static LLVM::LLVMFuncOp addMocROCmFunction(ModuleOp module, Type streamTy) {
+  const char fname[] = "fake_rocm_dispatch";
+
+  MLIRContext *ctx = module->getContext();
+  auto loc = module->getLoc();
+  auto moduleBuilder = ImplicitLocOpBuilder::atBlockEnd(loc, module.getBody());
+
+  for (auto fn : module.getBody()->getOps<LLVM::LLVMFuncOp>()) {
+    if (fn.getName() == fname)
+      return fn;
+  }
+
+  auto voidTy = LLVM::LLVMVoidType::get(ctx);
+  auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+
+  auto resumeOp = moduleBuilder.create<LLVM::LLVMFuncOp>(
+      fname, LLVM::LLVMFunctionType::get(voidTy, {ptrTy, ptrTy, streamTy}));
   resumeOp.setPrivate();
 
   return resumeOp;
