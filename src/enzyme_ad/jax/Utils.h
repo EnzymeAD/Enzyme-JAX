@@ -7,6 +7,8 @@
 #include "mlir/IR/Types.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -141,9 +143,8 @@ static inline mlir::scf::IfOp cloneWithResults(mlir::scf::IfOp op,
                                                mlir::OpBuilder &rewriter,
                                                mlir::IRMapping mapping = {}) {
   using namespace mlir;
-  return rewriter.create<scf::IfOp>(op.getLoc(), op.getResultTypes(),
-                                    mapping.lookupOrDefault(op.getCondition()),
-                                    true);
+  return scf::IfOp::create(rewriter, op.getLoc(), op.getResultTypes(),
+                           mapping.lookupOrDefault(op.getCondition()), true);
 }
 static inline mlir::affine::AffineIfOp
 cloneWithResults(mlir::affine::AffineIfOp op, mlir::OpBuilder &rewriter,
@@ -152,8 +153,8 @@ cloneWithResults(mlir::affine::AffineIfOp op, mlir::OpBuilder &rewriter,
   SmallVector<mlir::Value> lower;
   for (auto o : op.getOperands())
     lower.push_back(mapping.lookupOrDefault(o));
-  return rewriter.create<affine::AffineIfOp>(op.getLoc(), op.getResultTypes(),
-                                             op.getIntegerSet(), lower, true);
+  return affine::AffineIfOp::create(rewriter, op.getLoc(), op.getResultTypes(),
+                                    op.getIntegerSet(), lower, true);
 }
 
 static inline mlir::scf::IfOp cloneWithoutResults(mlir::scf::IfOp op,
@@ -161,8 +162,8 @@ static inline mlir::scf::IfOp cloneWithoutResults(mlir::scf::IfOp op,
                                                   mlir::IRMapping mapping = {},
                                                   mlir::TypeRange types = {}) {
   using namespace mlir;
-  return rewriter.create<scf::IfOp>(
-      op.getLoc(), types, mapping.lookupOrDefault(op.getCondition()), true);
+  return scf::IfOp::create(rewriter, op.getLoc(), types,
+                           mapping.lookupOrDefault(op.getCondition()), true);
 }
 static inline mlir::affine::AffineIfOp
 cloneWithoutResults(mlir::affine::AffineIfOp op, mlir::OpBuilder &rewriter,
@@ -171,18 +172,18 @@ cloneWithoutResults(mlir::affine::AffineIfOp op, mlir::OpBuilder &rewriter,
   SmallVector<mlir::Value> lower;
   for (auto o : op.getOperands())
     lower.push_back(mapping.lookupOrDefault(o));
-  return rewriter.create<affine::AffineIfOp>(op.getLoc(), types,
-                                             op.getIntegerSet(), lower, true);
+  return affine::AffineIfOp::create(rewriter, op.getLoc(), types,
+                                    op.getIntegerSet(), lower, true);
 }
 
 static inline mlir::scf::ForOp
 cloneWithoutResults(mlir::scf::ForOp op, mlir::PatternRewriter &rewriter,
                     mlir::IRMapping mapping = {}) {
   using namespace mlir;
-  return rewriter.create<scf::ForOp>(
-      op.getLoc(), mapping.lookupOrDefault(op.getLowerBound()),
-      mapping.lookupOrDefault(op.getUpperBound()),
-      mapping.lookupOrDefault(op.getStep()));
+  return scf::ForOp::create(rewriter, op.getLoc(),
+                            mapping.lookupOrDefault(op.getLowerBound()),
+                            mapping.lookupOrDefault(op.getUpperBound()),
+                            mapping.lookupOrDefault(op.getStep()));
 }
 static inline mlir::affine::AffineForOp
 cloneWithoutResults(mlir::affine::AffineForOp op,
@@ -195,9 +196,9 @@ cloneWithoutResults(mlir::affine::AffineForOp op,
   SmallVector<Value> upper;
   for (auto o : op.getUpperBoundOperands())
     upper.push_back(mapping.lookupOrDefault(o));
-  auto newFor = rewriter.create<affine::AffineForOp>(
-      op.getLoc(), lower, op.getLowerBoundMap(), upper, op.getUpperBoundMap(),
-      op.getStepAsInt());
+  auto newFor = affine::AffineForOp::create(
+      rewriter, op.getLoc(), lower, op.getLowerBoundMap(), upper,
+      op.getUpperBoundMap(), op.getStepAsInt());
   for (auto attr : op->getDiscardableAttrs())
     newFor->setAttr(attr.getName(), attr.getValue());
   return newFor;
@@ -354,7 +355,7 @@ public:
 
     // Map of operations we have seen before. The target of the map[o] is a list
     // of sub-queries, that if all true prove that `o` is no-nan.
-    DenseMap<Operation *, SmallPtrSet<Operation *, 2>> seen;
+    llvm::MapVector<Operation *, llvm::SmallPtrSet<Operation *, 2>> seen;
 
     // Inverse of seen. A map of operations `p` we still need to prove, to a
     // list of values that require `p` to be proven.
@@ -454,10 +455,12 @@ public:
       case State::PENDING: {
         assert(localtodo.size());
         assert(seen.find(cur) == seen.end());
-        SmallPtrSet<Operation *, 2> set(localtodo.begin(), localtodo.end());
-        for (auto v : set) {
+        for (auto v : localtodo) {
           reverseSeen[v].push_back(cur);
+          todo.push_back(v);
         }
+        llvm::SmallPtrSet<Operation *, 2> set(localtodo.begin(),
+                                              localtodo.end());
         seen[cur] = std::move(set);
         break;
       }
@@ -475,11 +478,15 @@ public:
       });
     }
 
-    assert(opCache.find(op) != opCache.end());
-    rewriter.modifyOpInPlace(op, [&]() {
-      op->setAttr(attrName, BoolAttr::get(op->getContext(), true));
-    });
-    return true;
+    auto found = opCache.find(op);
+    if (found != opCache.end()) {
+      bool guaranteed = found->second;
+      rewriter.modifyOpInPlace(op, [&]() {
+        op->setAttr(attrName, BoolAttr::get(op->getContext(), guaranteed));
+      });
+      return guaranteed;
+    }
+    return false;
   }
 
   bool guaranteed(stablehlo::ConstantOp constOp, PatternRewriter &rewriter) {
@@ -768,8 +775,8 @@ SmallVector<int64_t> computeGatherSliceSizes(stablehlo::ScatterOp &scatterOp);
 template <typename T>
 stablehlo::ConstantOp createConstantOpFromScalar(PatternRewriter &rewriter,
                                                  Operation *op, T value) {
-  return rewriter.create<stablehlo::ConstantOp>(
-      op->getLoc(), op->getResult(0).getType(),
+  return stablehlo::ConstantOp::create(
+      rewriter, op->getLoc(), op->getResult(0).getType(),
       cast<ElementsAttr>(
           mlir::enzyme::makeAttr(op->getResult(0).getType(), value)));
 }
@@ -781,6 +788,12 @@ stablehlo::ComparisonDirection
 negatedComparisonDirection(stablehlo::ComparisonDirection direction);
 
 bool reshapeIsTranspose(stablehlo::ReshapeOp reshapeOp);
+
+mlir::Value reshapeAxisInto(OpBuilder &builder, Value input,
+                            ArrayRef<int64_t> &batchSizes, int64_t dim);
+
+mlir::Value reshapeAxisOutOf(OpBuilder &builder, Value input,
+                             ArrayRef<int64_t> &batchSizes, int64_t dim);
 
 } // namespace stablehlo
 

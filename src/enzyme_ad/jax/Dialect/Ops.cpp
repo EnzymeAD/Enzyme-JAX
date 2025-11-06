@@ -321,14 +321,15 @@ template <>
 enzymexla::KernelCallOp ReadOnlyArg<enzymexla::KernelCallOp>::create(
     PatternRewriter &rewriter, enzymexla::KernelCallOp launchOp,
     ArrayRef<Type> resTys, ArrayAttr outputAliases) const {
-  return rewriter.create<enzymexla::KernelCallOp>(
-      launchOp.getLoc(), resTys, launchOp.getFn(), launchOp.getGridx(),
-      launchOp.getGridy(), launchOp.getGridz(), launchOp.getBlockx(),
-      launchOp.getBlocky(), launchOp.getBlockz(), launchOp.getShmem(),
-      launchOp.getClusterx(), launchOp.getClustery(), launchOp.getClusterz(),
-      launchOp.getInputs(), launchOp.getBackendConfigAttr(),
-      launchOp.getOperandLayoutsAttr(), /*resultLayouts*/ nullptr,
-      launchOp.getArgAttrsAttr(), launchOp.getResAttrsAttr(), outputAliases,
+  return enzymexla::KernelCallOp::create(
+      rewriter, launchOp.getLoc(), resTys, launchOp.getFn(),
+      launchOp.getGridx(), launchOp.getGridy(), launchOp.getGridz(),
+      launchOp.getBlockx(), launchOp.getBlocky(), launchOp.getBlockz(),
+      launchOp.getShmem(), launchOp.getClusterx(), launchOp.getClustery(),
+      launchOp.getClusterz(), launchOp.getInputs(),
+      launchOp.getBackendConfigAttr(), launchOp.getOperandLayoutsAttr(),
+      /*resultLayouts*/ nullptr, launchOp.getArgAttrsAttr(),
+      launchOp.getResAttrsAttr(), outputAliases,
       launchOp.getXlaSideEffectFreeAttr());
 }
 
@@ -336,9 +337,10 @@ template <>
 enzymexla::JITCallOp ReadOnlyArg<enzymexla::JITCallOp>::create(
     PatternRewriter &rewriter, enzymexla::JITCallOp launchOp,
     ArrayRef<Type> resTys, ArrayAttr outputAliases) const {
-  return rewriter.create<enzymexla::JITCallOp>(
-      launchOp.getLoc(), resTys, launchOp.getFn(), launchOp.getInputs(),
-      launchOp.getBackendConfigAttr(), launchOp.getOperandLayoutsAttr(),
+  return enzymexla::JITCallOp::create(
+      rewriter, launchOp.getLoc(), resTys, launchOp.getFn(),
+      launchOp.getInputs(), launchOp.getBackendConfigAttr(),
+      launchOp.getOperandLayoutsAttr(),
       /*resultLayouts*/ nullptr, launchOp.getArgAttrsAttr(),
       launchOp.getResAttrsAttr(), outputAliases,
       launchOp.getXlaSideEffectFreeAttr());
@@ -545,30 +547,30 @@ public:
       Value ps;
       if (PET)
         // non-opaque pointer
-        ps = rewriter.create<enzymexla::TypeSizeOp>(
+        ps = enzymexla::TypeSizeOp::create(rewriter, 
             op.getLoc(), rewriter.getIndexType(), mlir::TypeAttr::get(PET));
       else
         // opaque pointer
-        ps = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 1);
-      auto ms = rewriter.create<enzymexla::TypeSizeOp>(
+        ps = arith::ConstantIndexOp::create(rewriter, op.getLoc(), 1);
+      auto ms = enzymexla::TypeSizeOp::create(rewriter, 
           op.getLoc(), rewriter.getIndexType(), mlir::TypeAttr::get(MET));
-      idx[0] = rewriter.create<MulIOp>(op.getLoc(), idx[0], ms);
-      idx[0] = rewriter.create<DivUIOp>(op.getLoc(), idx[0], ps);
+      idx[0] = MulIOp::create(rewriter, op.getLoc(), idx[0], ms);
+      idx[0] = DivUIOp::create(rewriter, op.getLoc(), idx[0], ps);
     }
-    idx[0] = rewriter.create<arith::IndexCastOp>(op.getLoc(),
+    idx[0] = arith::IndexCastOp::create(rewriter, op.getLoc(),
                                                  rewriter.getI64Type(), idx[0]);
     if (PET)
       // non-opaque pointer
       rewriter.replaceOpWithNewOp<LLVM::GEPOp>(
           op, op.getType(),
-          rewriter.create<Memref2PointerOp>(op.getLoc(), op.getType(),
+          Memref2PointerOp::create(rewriter, op.getLoc(), op.getType(),
                                             src.getSource()),
           idx);
     else
       // opaque pointer
       rewriter.replaceOpWithNewOp<LLVM::GEPOp>(
           op, op.getType(), rewriter.getI8Type(),
-          rewriter.create<Memref2PointerOp>(op.getLoc(), op.getType(),
+          Memref2PointerOp::create(rewriter, op.getLoc(), op.getType(),
                                             src.getSource()),
           idx);
     return success();
@@ -672,32 +674,32 @@ public:
     if (factor % width != 0)
       return failure();
 
-    Value c0 = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 0);
-    Value c1 = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 1);
+    Value c0 = arith::ConstantIndexOp::create(rewriter, op.getLoc(), 0);
+    Value c1 = arith::ConstantIndexOp::create(rewriter, op.getLoc(), 1);
     SmallVector<Value> idxs;
-    auto forOp = rewriter.create<scf::ForOp>(
-        op.getLoc(), c0,
-        rewriter.create<arith::DivUIOp>(
-            op.getLoc(),
-            rewriter.create<arith::IndexCastOp>(
-                op.getLoc(), rewriter.getIndexType(), op.getLen()),
-            rewriter.create<arith::ConstantIndexOp>(op.getLoc(), width)),
+    auto forOp = scf::ForOp::create(
+        rewriter, op.getLoc(), c0,
+        arith::DivUIOp::create(
+            rewriter, op.getLoc(),
+            arith::IndexCastOp::create(rewriter, op.getLoc(),
+                                       rewriter.getIndexType(), op.getLen()),
+            arith::ConstantIndexOp::create(rewriter, op.getLoc(), width)),
         c1);
 
     rewriter.setInsertionPointToStart(&forOp.getRegion().getBlocks().front());
     idxs.push_back(forOp.getInductionVar());
 
     for (auto bound : bounds) {
-      auto forOp = rewriter.create<scf::ForOp>(
-          op.getLoc(), c0, rewriter.create<ConstantIndexOp>(op.getLoc(), bound),
-          c1);
+      auto forOp = scf::ForOp::create(
+          rewriter, op.getLoc(), c0,
+          ConstantIndexOp::create(rewriter, op.getLoc(), bound), c1);
       rewriter.setInsertionPointToStart(&forOp.getRegion().getBlocks().front());
       idxs.push_back(forOp.getInductionVar());
     }
 
-    rewriter.create<memref::StoreOp>(
-        op.getLoc(),
-        rewriter.create<memref::LoadOp>(op.getLoc(), src.getSource(), idxs),
+    memref::StoreOp::create(
+        rewriter, op.getLoc(),
+        memref::LoadOp::create(rewriter, op.getLoc(), src.getSource(), idxs),
         dst.getSource(), idxs);
 
     rewriter.eraseOp(op);
@@ -773,33 +775,33 @@ public:
     if (factor % width != 0)
       return failure();
 
-    Value c0 = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 0);
-    Value c1 = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 1);
+    Value c0 = arith::ConstantIndexOp::create(rewriter, op.getLoc(), 0);
+    Value c1 = arith::ConstantIndexOp::create(rewriter, op.getLoc(), 1);
     SmallVector<Value> idxs;
     Value val = cast<mlir::enzyme::AutoDiffTypeInterface>(elTy).createNullValue(
         rewriter, op.getLoc());
 
-    auto forOp = rewriter.create<scf::ForOp>(
-        op.getLoc(), c0,
-        rewriter.create<arith::DivUIOp>(
-            op.getLoc(),
-            rewriter.create<arith::IndexCastOp>(
-                op.getLoc(), rewriter.getIndexType(), op.getLen()),
-            rewriter.create<arith::ConstantIndexOp>(op.getLoc(), width)),
+    auto forOp = scf::ForOp::create(
+        rewriter, op.getLoc(), c0,
+        arith::DivUIOp::create(
+            rewriter, op.getLoc(),
+            arith::IndexCastOp::create(rewriter, op.getLoc(),
+                                       rewriter.getIndexType(), op.getLen()),
+            arith::ConstantIndexOp::create(rewriter, op.getLoc(), width)),
         c1);
 
     rewriter.setInsertionPointToStart(&forOp.getRegion().getBlocks().front());
     idxs.push_back(forOp.getInductionVar());
 
     for (auto bound : bounds) {
-      auto forOp = rewriter.create<scf::ForOp>(
-          op.getLoc(), c0, rewriter.create<ConstantIndexOp>(op.getLoc(), bound),
-          c1);
+      auto forOp = scf::ForOp::create(
+          rewriter, op.getLoc(), c0,
+          ConstantIndexOp::create(rewriter, op.getLoc(), bound), c1);
       rewriter.setInsertionPointToStart(&forOp.getRegion().getBlocks().front());
       idxs.push_back(forOp.getInductionVar());
     }
 
-    rewriter.create<memref::StoreOp>(op.getLoc(), val, dst.getSource(), idxs);
+    memref::StoreOp::create(rewriter, op.getLoc(), val, dst.getSource(), idxs);
 
     rewriter.eraseOp(op);
     return success();
@@ -937,8 +939,8 @@ public:
       return failure();
 
     Location loc = op.getLoc();
-    auto baseMemref = rewriter.create<Pointer2MemrefOp>(
-        loc, cast<MemRefType>(src.getType()), ptr);
+    auto baseMemref = Pointer2MemrefOp::create(
+        rewriter, loc, cast<MemRefType>(src.getType()), ptr);
 
     // Start with the original load offset
     Value finalIndex = nullptr;
@@ -947,8 +949,8 @@ public:
       PointerUnion<IntegerAttr, Value> rawIdx = gep.getIndices()[0];
       Value idx = dyn_cast_if_present<Value>(rawIdx);
       if (!idx)
-        idx = rewriter.create<arith::ConstantIndexOp>(
-            loc, cast<IntegerAttr>(rawIdx).getValue().getSExtValue());
+        idx = arith::ConstantIndexOp::create(
+            rewriter, loc, cast<IntegerAttr>(rawIdx).getValue().getSExtValue());
       // TODO: verify the total byte offset will be element-aligned for dynamic
       // indices by inserting runtime check
       if (auto constIdx = idx.getDefiningOp<arith::ConstantIndexOp>()) {
@@ -960,8 +962,8 @@ public:
 
       // Convert index to the right type if needed
       if (!idx.getType().isIndex()) {
-        idx = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(),
-                                                  idx);
+        idx = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(),
+                                         idx);
       }
 
       // Calculate byte offset: idx * gepElemSize / elementSize
@@ -972,23 +974,23 @@ public:
       // Multiply first if needed
       Value scaledIdx =
           (scaledGep != 1)
-              ? rewriter.create<arith::MulIOp>(
-                    loc, idx,
-                    rewriter.create<arith::ConstantIndexOp>(loc, scaledGep))
+              ? arith::MulIOp::create(
+                    rewriter, loc, idx,
+                    arith::ConstantIndexOp::create(rewriter, loc, scaledGep))
               : idx;
 
       // Then divide if needed
       Value elemOffset =
           (scaledElement != 1)
-              ? rewriter.create<arith::DivSIOp>(
-                    loc, scaledIdx,
-                    rewriter.create<arith::ConstantIndexOp>(loc, scaledElement))
+              ? arith::DivSIOp::create(rewriter, loc, scaledIdx,
+                                       arith::ConstantIndexOp::create(
+                                           rewriter, loc, scaledElement))
               : scaledIdx;
 
       // Add to total offset
       if (finalIndex)
         finalIndex =
-            rewriter.create<arith::AddIOp>(loc, finalIndex, elemOffset);
+            arith::AddIOp::create(rewriter, loc, finalIndex, elemOffset);
       else
         finalIndex = elemOffset;
     }
@@ -1028,7 +1030,7 @@ SmallVector<Value> LoadStorePointer2MemrefGEP<memref::LoadOp>::newIndex(
     memref::LoadOp op, Value finalIndex, PatternRewriter &rewriter) const {
   auto operands = llvm::to_vector(op.getIndices());
   operands[0] =
-      rewriter.create<arith::AddIOp>(op.getLoc(), operands[0], finalIndex);
+      arith::AddIOp::create(rewriter, op.getLoc(), operands[0], finalIndex);
   return operands;
 }
 
@@ -1037,14 +1039,14 @@ SmallVector<Value> LoadStorePointer2MemrefGEP<affine::AffineLoadOp>::newIndex(
     affine::AffineLoadOp op, Value finalIndex,
     PatternRewriter &rewriter) const {
   auto map = op.getAffineMap();
-  auto apply = rewriter.create<affine::AffineApplyOp>(
-      op.getLoc(), op.getAffineMap(), op.getMapOperands());
+  auto apply = affine::AffineApplyOp::create(
+      rewriter, op.getLoc(), op.getAffineMap(), op.getMapOperands());
 
   SmallVector<Value> operands;
   for (auto op : apply->getResults())
     operands.push_back(op);
   operands[0] =
-      rewriter.create<arith::AddIOp>(op.getLoc(), operands[0], finalIndex);
+      arith::AddIOp::create(rewriter, op.getLoc(), operands[0], finalIndex);
   return operands;
 }
 
@@ -1053,7 +1055,7 @@ SmallVector<Value> LoadStorePointer2MemrefGEP<memref::StoreOp>::newIndex(
     memref::StoreOp op, Value finalIndex, PatternRewriter &rewriter) const {
   auto operands = llvm::to_vector(op.getIndices());
   operands[0] =
-      rewriter.create<arith::AddIOp>(op.getLoc(), operands[0], finalIndex);
+      arith::AddIOp::create(rewriter, op.getLoc(), operands[0], finalIndex);
   return operands;
 }
 
@@ -1062,14 +1064,14 @@ SmallVector<Value> LoadStorePointer2MemrefGEP<affine::AffineStoreOp>::newIndex(
     affine::AffineStoreOp op, Value finalIndex,
     PatternRewriter &rewriter) const {
   auto map = op.getAffineMap();
-  auto apply = rewriter.create<affine::AffineApplyOp>(
-      op.getLoc(), op.getAffineMap(), op.getMapOperands());
+  auto apply = affine::AffineApplyOp::create(
+      rewriter, op.getLoc(), op.getAffineMap(), op.getMapOperands());
 
   SmallVector<Value> operands;
   for (auto op : apply->getResults())
     operands.push_back(op);
   operands[0] =
-      rewriter.create<arith::AddIOp>(op.getLoc(), operands[0], finalIndex);
+      arith::AddIOp::create(rewriter, op.getLoc(), operands[0], finalIndex);
   return operands;
 }
 
@@ -1156,24 +1158,24 @@ public:
     auto shape = mt.getShape();
     for (size_t i = 0; i < shape.size(); i++) {
       auto off = computeIndex(op, i, rewriter);
-      auto cur = rewriter.create<arith::IndexCastOp>(
-          op.getLoc(), rewriter.getI32Type(), off);
+      auto cur = arith::IndexCastOp::create(rewriter, op.getLoc(),
+                                            rewriter.getI32Type(), off);
       if (idx == nullptr) {
         idx = cur;
       } else {
-        idx = rewriter.create<AddIOp>(
-            op.getLoc(),
-            rewriter.create<MulIOp>(op.getLoc(), idx,
-                                    rewriter.create<arith::ConstantIntOp>(
-                                        op.getLoc(), shape[i], 32)),
+        idx = AddIOp::create(
+            rewriter, op.getLoc(),
+            MulIOp::create(rewriter, op.getLoc(), idx,
+                           arith::ConstantIntOp::create(rewriter, op.getLoc(),
+                                                        shape[i], 32)),
             cur);
       }
     }
 
     if (idx) {
       Value idxs[] = {idx};
-      val = rewriter.create<LLVM::GEPOp>(op.getLoc(), val.getType(),
-                                         mt.getElementType(), val, idxs);
+      val = LLVM::GEPOp::create(rewriter, op.getLoc(), val.getType(),
+                                mt.getElementType(), val, idxs);
     }
     rewriteInternal(op, val, rewriter);
     return success();
@@ -1208,8 +1210,8 @@ template <>
 Value MetaPointer2Memref<affine::AffineLoadOp>::computeIndex(
     affine::AffineLoadOp op, size_t i, PatternRewriter &rewriter) const {
   auto map = op.getAffineMap();
-  auto apply = rewriter.create<affine::AffineApplyOp>(
-      op.getLoc(), map.getSliceMap(i, 1), op.getMapOperands());
+  auto apply = affine::AffineApplyOp::create(
+      rewriter, op.getLoc(), map.getSliceMap(i, 1), op.getMapOperands());
   return apply->getResult(0);
 }
 
@@ -1223,8 +1225,8 @@ template <>
 Value MetaPointer2Memref<affine::AffineStoreOp>::computeIndex(
     affine::AffineStoreOp op, size_t i, PatternRewriter &rewriter) const {
   auto map = op.getAffineMap();
-  auto apply = rewriter.create<affine::AffineApplyOp>(
-      op.getLoc(), map.getSliceMap(i, 1), op.getMapOperands());
+  auto apply = affine::AffineApplyOp::create(
+      rewriter, op.getLoc(), map.getSliceMap(i, 1), op.getMapOperands());
   return apply->getResult(0);
 }
 
@@ -1339,7 +1341,8 @@ void CommRegionOp::getSuccessorRegions(
   }
 
   // Otherwise, the region branches back to the parent operation.
-  regions.push_back(RegionSuccessor(getResults()));
+  regions.push_back(RegionSuccessor(
+      point.getTerminatorPredecessorOrNull()->getParentRegion()));
 }
 
 LogicalResult enzymexla::MemcpyOp::verify() {
@@ -1517,16 +1520,16 @@ struct CopyWithTypes : public OpRewritePattern<enzymexla::MemcpyOp> {
       auto MT = cast<MemRefType>(vals[i].getType());
       if (MT.getElementType() == finalType.getElementType())
         continue;
-      vals[i] = rewriter.create<enzymexla::Memref2PointerOp>(
-          op.getLoc(),
+      vals[i] = enzymexla::Memref2PointerOp::create(
+          rewriter, op.getLoc(),
           LLVM::LLVMPointerType::get(vals[i].getContext(),
                                      MT.getMemorySpaceAsInt()),
           vals[i]);
       auto shape2 = llvm::to_vector(MT.getShape());
       if (shape2.size() > 0)
         shape2[shape2.size() - 1] = ShapedType::kDynamic;
-      vals[i] = rewriter.create<enzymexla::Pointer2MemrefOp>(
-          op.getLoc(),
+      vals[i] = enzymexla::Pointer2MemrefOp::create(
+          rewriter, op.getLoc(),
           MemRefType::get(shape2, finalType.getElementType(), MT.getLayout(),
                           MT.getMemorySpace()),
           vals[i]);
@@ -1577,7 +1580,7 @@ public:
       }
       if (below) {
         rewriter.setInsertionPoint(barrier->getParentOp()->getNextNode());
-        rewriter.create<BarrierOp>(barrier.getLoc(), barrier.getOperands());
+        BarrierOp::create(rewriter, barrier.getLoc(), barrier.getOperands());
         rewriter.eraseOp(barrier);
         return success();
       }
@@ -1591,7 +1594,7 @@ public:
       }
       if (above) {
         rewriter.setInsertionPoint(barrier->getParentOp());
-        rewriter.create<BarrierOp>(barrier.getLoc(), barrier.getOperands());
+        BarrierOp::create(rewriter, barrier.getLoc(), barrier.getOperands());
         rewriter.eraseOp(barrier);
         return success();
       }
@@ -1612,9 +1615,9 @@ public:
         }
         if (above) {
           rewriter.setInsertionPointToStart(&whileOp.getAfter().front());
-          rewriter.create<BarrierOp>(barrier.getLoc(), barrier.getOperands());
+          BarrierOp::create(rewriter, barrier.getLoc(), barrier.getOperands());
           rewriter.setInsertionPoint(whileOp->getNextNode());
-          rewriter.create<BarrierOp>(barrier.getLoc(), barrier.getOperands());
+          BarrierOp::create(rewriter, barrier.getLoc(), barrier.getOperands());
           rewriter.eraseOp(barrier);
           return success();
         }
@@ -1723,7 +1726,7 @@ LogicalResult fixupGetFunc(LLVM::CallOp op, OpBuilder &rewriter,
       if (!FT2.getParams()[i].isa<MemRefType>() ||
           !args[i].getType().isa<LLVM::LLVMPointerType>())
         return failure();
-      args[i] = rewriter.create<polygeist::Pointer2MemrefOp>(
+      args[i] = polygeist::Pointer2MemrefOp::create(rewriter, 
           op.getLoc(), FT2.getParams()[i], args[i]);
     }
   }
@@ -1733,13 +1736,12 @@ LogicalResult fixupGetFunc(LLVM::CallOp op, OpBuilder &rewriter,
        !FT2.getReturnType().isa<MemRefType>()))
     return failure();
 
-  auto res = rewriter
-                 .create<func::CallOp>(op.getLoc(), gfn.getNameAttr(),
+  auto res = func::CallOp::create(rewriter, op.getLoc(), gfn.getNameAttr(),
                                        op.getResultTypes(), args)
                  .getResults();
   for (Value r : res) {
     if (r.getType() != FT.getReturnType())
-      r = rewriter.create<polygeist::Memref2PointerOp>(op.getLoc(),
+      r = polygeist::Memref2PointerOp::create(rewriter, op.getLoc(),
                                                        FT.getReturnType(), r);
     vals.push_back(r);
   }
@@ -1818,7 +1820,7 @@ void AlternativesOp::build(OpBuilder &builder, OperationState &result,
     Region *bodyRegion = result.addRegion();
     Block *block = builder.createBlock(bodyRegion);
     builder.setInsertionPointToEnd(block);
-    builder.create<PolygeistYieldOp>(result.location);
+    PolygeistYieldOp::create(builder, result.location);
   }
 }
 
@@ -1867,8 +1869,9 @@ public:
       return failure();
 
     // TODO use block insertion etc for better performance
-    auto newAop = rewriter.create<enzymexla::AlternativesOp>(
-        aop->getLoc(), innerAop->getNumRegions() + aop->getNumRegions() - 1);
+    auto newAop = enzymexla::AlternativesOp::create(
+        rewriter, aop->getLoc(),
+        innerAop->getNumRegions() + aop->getNumRegions() - 1);
     newAop->setAttrs(aop->getAttrs());
     auto outerDescs = aop->getAttrOfType<ArrayAttr>("alternatives.descs");
     auto innerDescs = innerAop->getAttrOfType<ArrayAttr>("alternatives.descs");
@@ -1974,8 +1977,8 @@ public:
         mt1.getShape().size() == mt0.getShape().size()) {
       rewriter.replaceOpWithNewOp<SubIndexOp>(
           subViewOp, mt2, prevOp.getSource(),
-          rewriter.create<AddIOp>(prevOp.getLoc(), subViewOp.getIndex(),
-                                  prevOp.getIndex()));
+          AddIOp::create(rewriter, prevOp.getLoc(), subViewOp.getIndex(),
+                         prevOp.getIndex()));
       return success();
     }
     return failure();
@@ -2087,8 +2090,8 @@ public:
     // Valid optimization target; perform the substitution.
     rewriter.replaceOpWithNewOp<SubIndexOp>(
         op, op.getResult().getType(), srcOp.getSource(),
-        rewriter.create<arith::AddIOp>(op.getLoc(), op.getIndex(),
-                                       srcOp.getIndex()));
+        arith::AddIOp::create(rewriter, op.getLoc(), op.getIndex(),
+                              srcOp.getIndex()));
     return success();
   }
 };
@@ -2120,8 +2123,8 @@ struct SimplifySubIndexUsers : public OpRewritePattern<SubIndexOp> {
                   .getShape()
                   .size()) {
             assert(indices.size() > 0);
-            indices[0] = rewriter.create<AddIOp>(subindex.getLoc(), indices[0],
-                                                 subindex.getIndex());
+            indices[0] = AddIOp::create(rewriter, subindex.getLoc(), indices[0],
+                                        subindex.getIndex());
           } else {
             assert(cast<MemRefType>(subindex.getType()).getShape().size() + 1 ==
                    cast<MemRefType>(subindex.getSource().getType())
@@ -2145,8 +2148,8 @@ struct SimplifySubIndexUsers : public OpRewritePattern<SubIndexOp> {
                   .getShape()
                   .size()) {
             assert(indices.size() > 0);
-            indices[0] = rewriter.create<AddIOp>(subindex.getLoc(), indices[0],
-                                                 subindex.getIndex());
+            indices[0] = AddIOp::create(rewriter, subindex.getLoc(), indices[0],
+                                        subindex.getIndex());
           } else {
             assert(cast<MemRefType>(subindex.getType()).getShape().size() + 1 ==
                    cast<MemRefType>(subindex.getSource().getType())
@@ -2169,8 +2172,8 @@ struct SimplifySubIndexUsers : public OpRewritePattern<SubIndexOp> {
                   .getShape()
                   .size()) {
             assert(indices.size() > 0);
-            indices[0] = rewriter.create<AddIOp>(subindex.getLoc(), indices[0],
-                                                 subindex.getIndex());
+            indices[0] = AddIOp::create(rewriter, subindex.getLoc(), indices[0],
+                                        subindex.getIndex());
           } else {
             assert(cast<MemRefType>(subindex.getType()).getShape().size() + 1 ==
                    cast<MemRefType>(subindex.getSource().getType())
@@ -2198,8 +2201,8 @@ struct SimplifySubIndexUsers : public OpRewritePattern<SubIndexOp> {
             auto map = storeOp.getAffineMap();
             indices.push_back(subindex.getIndex());
             for (size_t i = 0; i < map.getNumResults(); i++) {
-              auto apply = rewriter.create<affine::AffineApplyOp>(
-                  storeOp.getLoc(), map.getSliceMap(i, 1),
+              auto apply = affine::AffineApplyOp::create(
+                  rewriter, storeOp.getLoc(), map.getSliceMap(i, 1),
                   storeOp.getMapOperands());
               indices.push_back(apply->getResult(0));
             }
@@ -2223,8 +2226,8 @@ struct SimplifySubIndexUsers : public OpRewritePattern<SubIndexOp> {
             auto map = storeOp.getAffineMap();
             indices.push_back(subindex.getIndex());
             for (size_t i = 0; i < map.getNumResults(); i++) {
-              auto apply = rewriter.create<affine::AffineApplyOp>(
-                  storeOp.getLoc(), map.getSliceMap(i, 1),
+              auto apply = affine::AffineApplyOp::create(
+                  rewriter, storeOp.getLoc(), map.getSliceMap(i, 1),
                   storeOp.getMapOperands());
               indices.push_back(apply->getResult(0));
             }
@@ -2265,7 +2268,7 @@ struct SimplifySubViewUsers : public OpRewritePattern<memref::SubViewOp> {
           return failure();
       }
     }
-    Value off = rewriter.create<ConstantIndexOp>(subindex.getLoc(), offs);
+    Value off = ConstantIndexOp::create(rewriter, subindex.getLoc(), offs);
     assert(off);
 
     for (OpOperand &use : llvm::make_early_inc_range(subindex->getUses())) {
@@ -2283,7 +2286,7 @@ struct SimplifySubViewUsers : public OpRewritePattern<memref::SubViewOp> {
                   .size()) {
             assert(indices.size() > 0);
             indices[0] =
-                rewriter.create<AddIOp>(subindex.getLoc(), indices[0], off);
+                AddIOp::create(rewriter, subindex.getLoc(), indices[0], off);
           } else {
             if (cast<MemRefType>(subindex.getType()).getShape().size() + 1 ==
                 cast<MemRefType>(subindex.getSource().getType())
@@ -2312,7 +2315,7 @@ struct SimplifySubViewUsers : public OpRewritePattern<memref::SubViewOp> {
                   .size()) {
             assert(indices.size() > 0);
             indices[0] =
-                rewriter.create<AddIOp>(subindex.getLoc(), indices[0], off);
+                AddIOp::create(rewriter, subindex.getLoc(), indices[0], off);
           } else {
             if (cast<MemRefType>(subindex.getType()).getShape().size() + 1 ==
                 cast<MemRefType>(subindex.getSource().getType())
@@ -2354,8 +2357,8 @@ struct SimplifySubViewUsers : public OpRewritePattern<memref::SubViewOp> {
             auto map = storeOp.getAffineMap();
             indices.push_back(off);
             for (size_t i = 0; i < map.getNumResults(); i++) {
-              auto apply = rewriter.create<affine::AffineApplyOp>(
-                  storeOp.getLoc(), map.getSliceMap(i, 1),
+              auto apply = affine::AffineApplyOp::create(
+                  rewriter, storeOp.getLoc(), map.getSliceMap(i, 1),
                   storeOp.getMapOperands());
               indices.push_back(apply->getResult(0));
             }
@@ -2379,8 +2382,8 @@ struct SimplifySubViewUsers : public OpRewritePattern<memref::SubViewOp> {
             auto map = storeOp.getAffineMap();
             indices.push_back(off);
             for (size_t i = 0; i < map.getNumResults(); i++) {
-              auto apply = rewriter.create<affine::AffineApplyOp>(
-                  storeOp.getLoc(), map.getSliceMap(i, 1),
+              auto apply = affine::AffineApplyOp::create(
+                  rewriter, storeOp.getLoc(), map.getSliceMap(i, 1),
                   storeOp.getMapOperands());
               indices.push_back(apply->getResult(0));
             }
@@ -2416,8 +2419,9 @@ struct SelectOfCast : public OpRewritePattern<mlir::arith::SelectOp> {
     if (cst1.getSource().getType() != cst2.getSource().getType())
       return failure();
 
-    auto newSel = rewriter.create<mlir::arith::SelectOp>(
-        op.getLoc(), op.getCondition(), cst1.getSource(), cst2.getSource());
+    auto newSel =
+        mlir::arith::SelectOp::create(rewriter, op.getLoc(), op.getCondition(),
+                                      cst1.getSource(), cst2.getSource());
 
     rewriter.replaceOpWithNewOp<memref::CastOp>(op, op.getType(), newSel);
     return success();
@@ -2441,10 +2445,12 @@ struct SelectOfSubIndex : public OpRewritePattern<mlir::arith::SelectOp> {
     if (cst1.getSource().getType() != cst2.getSource().getType())
       return failure();
 
-    auto newSel = rewriter.create<mlir::arith::SelectOp>(
-        op.getLoc(), op.getCondition(), cst1.getSource(), cst2.getSource());
-    auto newIdx = rewriter.create<mlir::arith::SelectOp>(
-        op.getLoc(), op.getCondition(), cst1.getIndex(), cst2.getIndex());
+    auto newSel =
+        mlir::arith::SelectOp::create(rewriter, op.getLoc(), op.getCondition(),
+                                      cst1.getSource(), cst2.getSource());
+    auto newIdx =
+        mlir::arith::SelectOp::create(rewriter, op.getLoc(), op.getCondition(),
+                                      cst1.getIndex(), cst2.getIndex());
     rewriter.replaceOpWithNewOp<SubIndexOp>(op, op.getType(), newSel, newIdx);
     return success();
   }
@@ -2591,20 +2597,21 @@ template <typename T> struct LoadSelect : public OpRewritePattern<T> {
       return failure();
 
     Type tys[] = {op.getType()};
-    auto iop = rewriter.create<scf::IfOp>(mem.getLoc(), tys, mem.getCondition(),
-                                          /*hasElse*/ true);
+    auto iop =
+        scf::IfOp::create(rewriter, mem.getLoc(), tys, mem.getCondition(),
+                          /*hasElse*/ true);
 
     auto vop = cast<T>(op->clone());
     iop.thenBlock()->push_front(vop);
     ptrMutable(vop).assign(mem.getTrueValue());
     rewriter.setInsertionPointToEnd(iop.thenBlock());
-    rewriter.create<scf::YieldOp>(op.getLoc(), vop->getResults());
+    scf::YieldOp::create(rewriter, op.getLoc(), vop->getResults());
 
     auto eop = cast<T>(op->clone());
     iop.elseBlock()->push_front(eop);
     ptrMutable(eop).assign(mem.getFalseValue());
     rewriter.setInsertionPointToEnd(iop.elseBlock());
-    rewriter.create<scf::YieldOp>(op.getLoc(), eop->getResults());
+    scf::YieldOp::create(rewriter, op.getLoc(), eop->getResults());
 
     rewriter.replaceOp(op, iop.getResults());
     return success();

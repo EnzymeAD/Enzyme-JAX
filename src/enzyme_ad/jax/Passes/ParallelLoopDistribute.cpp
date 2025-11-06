@@ -621,25 +621,25 @@ struct NormalizeLoop : public OpRewritePattern<scf::ForOp> {
 
     OpBuilder::InsertPoint point = rewriter.saveInsertionPoint();
     rewriter.setInsertionPoint(op->getParentOp());
-    Value zero = rewriter.create<ConstantIndexOp>(op.getLoc(), 0);
-    Value one = rewriter.create<ConstantIndexOp>(op.getLoc(), 1);
+    Value zero = ConstantIndexOp::create(rewriter, op.getLoc(), 0);
+    Value one = ConstantIndexOp::create(rewriter, op.getLoc(), 1);
     rewriter.restoreInsertionPoint(point);
 
-    Value difference = rewriter.create<SubIOp>(op.getLoc(), op.getUpperBound(),
+    Value difference = SubIOp::create(rewriter, op.getLoc(), op.getUpperBound(),
                                                op.getLowerBound());
-    Value tripCount = rewriter.create<AddIOp>(
+    Value tripCount = AddIOp::create(rewriter, 
         op.getLoc(),
-        rewriter.create<DivUIOp>(
-            op.getLoc(), rewriter.create<SubIOp>(op.getLoc(), difference, one),
+        DivUIOp::create(rewriter, 
+            op.getLoc(), SubIOp::create(rewriter, op.getLoc(), difference, one),
             op.getStep()),
         one);
-    // rewriter.create<CeilDivSIOp>(op.getLoc(), difference, op.getStep());
+    // CeilDivSIOp::create(rewriter, op.getLoc(), difference, op.getStep());
     auto newForOp =
-        rewriter.create<scf::ForOp>(op.getLoc(), zero, tripCount, one);
+        scf::ForOp::create(rewriter, op.getLoc(), zero, tripCount, one);
     rewriter.setInsertionPointToStart(newForOp.getBody());
-    Value scaled = rewriter.create<MulIOp>(
+    Value scaled = MulIOp::create(rewriter, 
         op.getLoc(), newForOp.getInductionVar(), op.getStep());
-    Value iv = rewriter.create<AddIOp>(op.getLoc(), op.getLowerBound(), scaled);
+    Value iv = AddIOp::create(rewriter, op.getLoc(), op.getLowerBound(), scaled);
     rewriter.inlineBlockBefore(op.getBody(), &newForOp.getBody()->back(), {iv});
     rewriter.eraseOp(&newForOp.getBody()->back());
     rewriter.eraseOp(op);
@@ -693,21 +693,21 @@ struct NormalizeParallel : public OpRewritePattern<scf::ParallelOp> {
       return failure();
     }
 
-    Value zero = rewriter.create<ConstantIndexOp>(op.getLoc(), 0);
-    Value one = rewriter.create<ConstantIndexOp>(op.getLoc(), 1);
+    Value zero = ConstantIndexOp::create(rewriter, op.getLoc(), 0);
+    Value one = ConstantIndexOp::create(rewriter, op.getLoc(), 1);
     SmallVector<Value> iterationCounts = emitIterationCounts(rewriter, op);
-    auto newOp = rewriter.create<scf::ParallelOp>(
-        op.getLoc(), SmallVector<Value>(iterationCounts.size(), zero),
+    auto newOp = scf::ParallelOp::create(
+        rewriter, op.getLoc(), SmallVector<Value>(iterationCounts.size(), zero),
         iterationCounts, SmallVector<Value>(iterationCounts.size(), one));
 
     SmallVector<Value> inductionVars;
     inductionVars.reserve(iterationCounts.size());
     rewriter.setInsertionPointToStart(newOp.getBody());
     for (unsigned i = 0, e = iterationCounts.size(); i < e; ++i) {
-      Value scaled = rewriter.create<MulIOp>(
-          op.getLoc(), newOp.getInductionVars()[i], op.getStep()[i]);
+      Value scaled = MulIOp::create(
+          rewriter, op.getLoc(), newOp.getInductionVars()[i], op.getStep()[i]);
       Value shifted =
-          rewriter.create<AddIOp>(op.getLoc(), op.getLowerBound()[i], scaled);
+          AddIOp::create(rewriter, op.getLoc(), op.getLowerBound()[i], scaled);
       inductionVars.push_back(shifted);
     }
 
@@ -751,29 +751,29 @@ LogicalResult splitSubLoop(scf::ParallelOp op, PatternRewriter &rewriter,
   if (!innerLower.size())
     return failure();
   if (outerLower.size()) {
-    outerLoop = rewriter.create<scf::ParallelOp>(op.getLoc(), outerLower,
-                                                 outerUpper, outerStep);
+    outerLoop = scf::ParallelOp::create(rewriter, op.getLoc(), outerLower,
+                                        outerUpper, outerStep);
     rewriter.eraseOp(&outerLoop.getBody()->back());
     outerBlock = outerLoop.getBody();
   } else {
-    outerEx = rewriter.create<memref::AllocaScopeOp>(op.getLoc(), TypeRange());
+    outerEx = memref::AllocaScopeOp::create(rewriter, op.getLoc(), TypeRange());
     outerBlock = new Block();
     outerEx.getRegion().push_back(outerBlock);
   }
 
   rewriter.setInsertionPointToEnd(outerBlock);
   for (auto tup : llvm::zip(innerLower, innerUpper, innerStep)) {
-    iterCounts.push_back(rewriter.create<DivUIOp>(
-        op.getLoc(),
-        rewriter.create<SubIOp>(op.getLoc(), std::get<1>(tup),
-                                std::get<0>(tup)),
-        std::get<2>(tup)));
+    iterCounts.push_back(
+        DivUIOp::create(rewriter, op.getLoc(),
+                        SubIOp ::create(rewriter, op.getLoc(), std::get<1>(tup),
+                                        std::get<0>(tup)),
+                        std::get<2>(tup)));
   }
-  preLoop = rewriter.create<scf::ParallelOp>(op.getLoc(), innerLower,
-                                             innerUpper, innerStep);
+  preLoop = scf::ParallelOp::create(rewriter, op.getLoc(), innerLower,
+                                    innerUpper, innerStep);
   rewriter.eraseOp(&preLoop.getBody()->back());
-  postLoop = rewriter.create<scf::ParallelOp>(op.getLoc(), innerLower,
-                                              innerUpper, innerStep);
+  postLoop = scf::ParallelOp::create(rewriter, op.getLoc(), innerLower,
+                                     innerUpper, innerStep);
   rewriter.eraseOp(&postLoop.getBody()->back());
   return success();
 }
@@ -813,14 +813,14 @@ splitSubLoop(affine::AffineParallelOp op, PatternRewriter &rewriter,
   if (!innerLower.size())
     return failure();
   if (outerLower.size()) {
-    outerLoop = rewriter.create<affine::AffineParallelOp>(
-        op.getLoc(), TypeRange(), ArrayRef<AtomicRMWKind>(), outerLower,
-        op.getLowerBoundsOperands(), outerUpper, op.getUpperBoundsOperands(),
-        outerStep);
+    outerLoop = affine::AffineParallelOp::create(
+        rewriter, op.getLoc(), TypeRange(), ArrayRef<AtomicRMWKind>(),
+        outerLower, op.getLowerBoundsOperands(), outerUpper,
+        op.getUpperBoundsOperands(), outerStep);
     rewriter.eraseOp(&outerLoop.getBody()->back());
     outerBlock = outerLoop.getBody();
   } else {
-    outerEx = rewriter.create<memref::AllocaScopeOp>(op.getLoc(), TypeRange());
+    outerEx = memref::AllocaScopeOp::create(rewriter, op.getLoc(), TypeRange());
     outerBlock = new Block();
     outerEx.getRegion().push_back(outerBlock);
   }
@@ -855,16 +855,17 @@ splitSubLoop(affine::AffineParallelOp op, PatternRewriter &rewriter,
     }
     SmallVector<Value> ops = dims;
     ops.append(symbols);
-    iterCounts.push_back(rewriter.create<affine::AffineApplyOp>(
-        op.getLoc(), AffineMap::get(dims.size(), symbols.size(), expr), ops));
+    iterCounts.push_back(affine::AffineApplyOp::create(
+        rewriter, op.getLoc(),
+        AffineMap::get(dims.size(), symbols.size(), expr), ops));
   }
-  preLoop = rewriter.create<affine::AffineParallelOp>(
-      op.getLoc(), TypeRange(), ArrayRef<AtomicRMWKind>(), innerLower,
+  preLoop = affine::AffineParallelOp::create(
+      rewriter, op.getLoc(), TypeRange(), ArrayRef<AtomicRMWKind>(), innerLower,
       op.getLowerBoundsOperands(), innerUpper, op.getUpperBoundsOperands(),
       innerStep);
   rewriter.eraseOp(&preLoop.getBody()->back());
-  postLoop = rewriter.create<affine::AffineParallelOp>(
-      op.getLoc(), TypeRange(), ArrayRef<AtomicRMWKind>(), innerLower,
+  postLoop = affine::AffineParallelOp::create(
+      rewriter, op.getLoc(), TypeRange(), ArrayRef<AtomicRMWKind>(), innerLower,
       op.getLowerBoundsOperands(), innerUpper, op.getUpperBoundsOperands(),
       innerStep);
   rewriter.eraseOp(&postLoop.getBody()->back());
@@ -1036,8 +1037,8 @@ static LogicalResult distributeAroundBarrier(T op, enzymexla::BarrierOp barrier,
                                     MemRefLayoutAttrInterface(),
                                     // mt0.getLayout(),
                                     mt0.getMemorySpace());
-          auto subidx = rewriter.create<enzymexla::SubIndexOp>(alloc.getLoc(),
-                                                               mt, buf, idx);
+          auto subidx = enzymexla::SubIndexOp::create(rewriter, alloc.getLoc(),
+                                                      mt, buf, idx);
           buf = subidx;
         }
         u.set(buf);
@@ -1047,7 +1048,7 @@ static LogicalResult distributeAroundBarrier(T op, enzymexla::BarrierOp barrier,
       Value sz = ao.getArraySize();
       rewriter.setInsertionPointAfter(alloc.getDefiningOp());
       alloc =
-          rewriter.create<LLVM::BitcastOp>(ao.getLoc(), ao.getType(), alloc);
+          LLVM::BitcastOp::create(rewriter, ao.getLoc(), ao.getType(), alloc);
       for (auto &u : llvm::make_early_inc_range(ao.getResult().getUses())) {
         rewriter.setInsertionPoint(u.getOwner());
         Value idx = nullptr;
@@ -1057,21 +1058,21 @@ static LogicalResult distributeAroundBarrier(T op, enzymexla::BarrierOp barrier,
         for (auto pair :
              llvm::zip(iterCounts, preLoop.getBody()->getArguments())) {
           if (idx) {
-            idx = rewriter.create<arith::MulIOp>(ao.getLoc(), idx,
-                                                 std::get<0>(pair));
-            idx = rewriter.create<arith::AddIOp>(ao.getLoc(), idx,
-                                                 std::get<1>(pair));
+            idx = arith::MulIOp::create(rewriter, ao.getLoc(), idx,
+                                        std::get<0>(pair));
+            idx = arith::AddIOp::create(rewriter, ao.getLoc(), idx,
+                                        std::get<1>(pair));
           } else
             idx = std::get<1>(pair);
         }
-        idx = rewriter.create<MulIOp>(ao.getLoc(), sz,
-                                      rewriter.create<arith::IndexCastOp>(
-                                          ao.getLoc(), sz.getType(), idx));
+        idx = MulIOp::create(rewriter, ao.getLoc(), sz,
+                             arith::IndexCastOp::create(rewriter, ao.getLoc(),
+                                                        sz.getType(), idx));
         SmallVector<Value> vec = {idx};
         auto elementType = rewriter.getI8Type();
-        u.set(rewriter.create<LLVM::GEPOp>(
-            ao.getLoc(), ao.getType(), elementType, alloc, ValueRange{idx}));
-        // u.set(rewriter.create<LLVM::GEPOp>(ao.getLoc(), ao.getType(), alloc,
+        u.set(LLVM::GEPOp::create(rewriter, ao.getLoc(), ao.getType(),
+                                  elementType, alloc, ValueRange{idx}));
+        // u.set(LLVM::GEPOp::create(rewriter, ao.getLoc(), ao.getType(), alloc,
         //                                    idx));
       }
     } else {
@@ -1089,13 +1090,13 @@ static LogicalResult distributeAroundBarrier(T op, enzymexla::BarrierOp barrier,
     if (!isa<enzymexla::CacheLoadOp>(v.getDefiningOp())) {
       // Store
       rewriter.setInsertionPointAfter(v.getDefiningOp());
-      rewriter.create<memref::StoreOp>(v.getLoc(), v, alloc,
-                                       preLoop.getBody()->getArguments());
+      memref::StoreOp::create(rewriter, v.getLoc(), v, alloc,
+                              preLoop.getBody()->getArguments());
     }
     // Reload
     rewriter.setInsertionPointAfter(barrier);
-    Value reloaded = rewriter.create<enzymexla::CacheLoadOp>(
-        v.getLoc(), alloc, preLoop.getBody()->getArguments());
+    Value reloaded = enzymexla::CacheLoadOp::create(
+        rewriter, v.getLoc(), alloc, preLoop.getBody()->getArguments());
     for (auto &u : llvm::make_early_inc_range(v.getUses())) {
       auto *user = u.getOwner();
       while (user->getBlock() != barrier->getBlock())
@@ -1119,13 +1120,13 @@ static LogicalResult distributeAroundBarrier(T op, enzymexla::BarrierOp barrier,
   rewriter.setInsertionPointToEnd(outerBlock);
   if (outerLoop) {
     if (isa<scf::ParallelOp>(outerLoop))
-      rewriter.create<scf::ReduceOp>(op.getLoc());
+      scf::ReduceOp::create(rewriter, op.getLoc());
     else {
       assert(isa<affine::AffineParallelOp>(outerLoop));
-      rewriter.create<affine::AffineYieldOp>(op.getLoc());
+      affine::AffineYieldOp::create(rewriter, op.getLoc());
     }
   } else {
-    rewriter.create<memref::AllocaScopeReturnOp>(op.getLoc());
+    memref::AllocaScopeReturnOp::create(rewriter, op.getLoc());
   }
 
   // Recreate the operations in the new loop with new values.
@@ -1255,12 +1256,12 @@ wrapWithBarriers(T op, PatternRewriter &rewriter,
   SmallVector<Value> vargs(args.begin(), args.end());
 
   if (!hasPrevBarrierLike)
-    before = rewriter.create<enzymexla::BarrierOp>(op->getLoc(), vargs);
+    before = enzymexla::BarrierOp::create(rewriter, op->getLoc(), vargs);
 
   if (!hasNextBarrierLike) {
     OpBuilder::InsertionGuard guard(rewriter);
     rewriter.setInsertionPointAfter(op);
-    after = rewriter.create<enzymexla::BarrierOp>(op->getLoc(), vargs);
+    after = enzymexla::BarrierOp::create(rewriter, op->getLoc(), vargs);
   }
 
   // We don't actually change the op, but the pattern infra wants us to. Just
@@ -1501,9 +1502,8 @@ SmallVector<Value> getLowerBounds(affine::AffineParallelOp op,
                                   PatternRewriter &rewriter) {
   SmallVector<Value> vals;
   for (AffineExpr expr : op.getLowerBoundsMap().getResults()) {
-    vals.push_back(rewriter
-                       .create<affine::AffineApplyOp>(
-                           op.getLoc(), expr, op.getLowerBoundsOperands())
+    vals.push_back(affine::AffineApplyOp::create(rewriter, op.getLoc(), expr,
+                                                 op.getLowerBoundsOperands())
                        .getResult());
   }
   return vals;
@@ -1791,31 +1791,31 @@ template <typename T> struct InterchangeWhilePFor : public OpRewritePattern<T> {
         !conditionOp.getCondition().getParentRegion()->isAncestor(
             whileOp->getParentRegion())) {
       rewriter.setInsertionPoint(beforeParallelOp);
-      Value allocated = rewriter.create<memref::AllocaOp>(
-          conditionDefiningOp->getLoc(),
-          MemRefType::get({}, rewriter.getI1Type()));
+      Value allocated =
+          memref::AllocaOp::create(rewriter, conditionDefiningOp->getLoc(),
+                                   MemRefType::get({}, rewriter.getI1Type()));
       rewriter.setInsertionPointAfter(conditionDefiningOp);
-      Value cond = rewriter.create<ConstantIntOp>(conditionDefiningOp->getLoc(),
-                                                  true, 1);
+      Value cond = ConstantIntOp::create(
+          rewriter, conditionDefiningOp->getLoc(), true, 1);
       for (auto tup : llvm::zip(getLowerBounds(beforeParallelOp, rewriter),
                                 beforeParallelOp.getBody()->getArguments())) {
-        cond = rewriter.create<AndIOp>(
-            conditionDefiningOp->getLoc(),
-            rewriter.create<CmpIOp>(conditionDefiningOp->getLoc(),
-                                    CmpIPredicate::eq, std::get<0>(tup),
-                                    std::get<1>(tup)),
+        cond = AndIOp::create(
+            rewriter, conditionDefiningOp->getLoc(),
+            CmpIOp::create(rewriter, conditionDefiningOp->getLoc(),
+                           CmpIPredicate::eq, std::get<0>(tup),
+                           std::get<1>(tup)),
             cond);
       }
       auto ifOp =
-          rewriter.create<scf::IfOp>(conditionDefiningOp->getLoc(), cond);
+          scf::IfOp::create(rewriter, conditionDefiningOp->getLoc(), cond);
       rewriter.setInsertionPointToStart(ifOp.thenBlock());
-      rewriter.create<memref::StoreOp>(conditionDefiningOp->getLoc(),
-                                       conditionOp.getCondition(), allocated);
+      memref::StoreOp::create(rewriter, conditionDefiningOp->getLoc(),
+                              conditionOp.getCondition(), allocated);
 
       rewriter.setInsertionPoint(conditionOp);
 
-      Value reloaded = rewriter.create<memref::LoadOp>(
-          conditionDefiningOp->getLoc(), allocated);
+      Value reloaded = memref::LoadOp::create(
+          rewriter, conditionDefiningOp->getLoc(), allocated);
       rewriter.replaceOpWithNewOp<scf::ConditionOp>(conditionOp, reloaded,
                                                     ValueRange());
     }
@@ -1867,7 +1867,7 @@ struct RotateWhile : public OpRewritePattern<scf::WhileOp> {
     auto condition = cast<scf::ConditionOp>(op.getBefore().front().back());
     rewriter.setInsertionPoint(condition);
     auto conditional =
-        rewriter.create<scf::IfOp>(op.getLoc(), condition.getCondition());
+        scf::IfOp::create(rewriter, op.getLoc(), condition.getCondition());
     rewriter.inlineBlockBefore(&op.getAfter().front(),
                                &conditional.getBody()->back());
     rewriter.eraseOp(&conditional.getBody()->back());
@@ -2106,11 +2106,11 @@ void distributeBlockAroundBarrier(mlir::PatternRewriter &rewriter,
 
   // Yield before the barrier
   rewriter.setInsertionPoint(barrier);
-  // rewriter.create<scf::YieldOp>(beforeBlocks->getLoc(), ValueRange());
+  // scf::YieldOp::create(rewriter, beforeBlocks->getLoc(), ValueRange());
   if (isa<scf::ParallelOp>(beforeBlocks)) {
-    rewriter.create<scf::ReduceOp>(beforeBlocks->getLoc());
+    scf::ReduceOp::create(rewriter, beforeBlocks->getLoc());
   } else {
-    rewriter.create<scf::YieldOp>(beforeBlocks->getLoc(), ValueRange());
+    scf::YieldOp::create(rewriter, beforeBlocks->getLoc(), ValueRange());
   }
   Operation *postBarrier = barrier->getNextNode();
   rewriter.eraseOp(barrier);
@@ -2237,14 +2237,14 @@ struct DistributeIfAroundBarrier : public OpRewritePattern<IfOpType> {
 
     if (!thenBarrier) {
       rewriter.setInsertionPoint(getThenBlock(ifOp)->getTerminator());
-      thenBarrier = rewriter.create<enzymexla::BarrierOp>(
-          ifOp->getLoc(), elseBarrier->getOperands());
+      thenBarrier = enzymexla::BarrierOp::create(rewriter, ifOp->getLoc(),
+                                                 elseBarrier->getOperands());
     }
     if (elseBlock) {
       if (!elseBarrier) {
         rewriter.setInsertionPoint(getElseBlock(ifOp)->getTerminator());
-        elseBarrier = rewriter.create<enzymexla::BarrierOp>(
-            ifOp->getLoc(), thenBarrier->getOperands());
+        elseBarrier = enzymexla::BarrierOp::create(rewriter, ifOp->getLoc(),
+                                                   thenBarrier->getOperands());
       }
     }
 
@@ -2333,8 +2333,8 @@ struct DistributeIfAroundBarrier : public OpRewritePattern<IfOpType> {
         } else {
           // allocations.push_back(allocateTemporaryBuffer<memref::AllocaOp>(rewriter,
           // v, iterCounts));
-          cacheAllocations.push_back(rewriter.create<memref::AllocaOp>(
-              ifOp->getLoc(), MemRefType::get({}, v.getType())));
+          cacheAllocations.push_back(memref::AllocaOp::create(
+              rewriter, ifOp->getLoc(), MemRefType::get({}, v.getType())));
         }
       }
 
@@ -2348,12 +2348,12 @@ struct DistributeIfAroundBarrier : public OpRewritePattern<IfOpType> {
         if (!isa<enzymexla::CacheLoadOp>(v.getDefiningOp())) {
           // Store
           rewriter.setInsertionPointAfter(v.getDefiningOp());
-          rewriter.create<memref::StoreOp>(v.getLoc(), v, alloc, ValueRange());
+          memref::StoreOp::create(rewriter, v.getLoc(), v, alloc, ValueRange());
         }
         // Reload
         rewriter.setInsertionPointAfter(barrier);
-        Value reloaded = rewriter.create<enzymexla::CacheLoadOp>(
-            v.getLoc(), alloc, ValueRange());
+        Value reloaded = enzymexla::CacheLoadOp::create(rewriter, v.getLoc(),
+                                                        alloc, ValueRange());
         for (auto &u : llvm::make_early_inc_range(v.getUses())) {
           auto *user = u.getOwner();
           while (user->getBlock() != barrier->getBlock())
@@ -2392,7 +2392,7 @@ static void loadValues(Location loc, ArrayRef<Value> pointers,
                        SmallVectorImpl<Value> &loaded) {
   loaded.reserve(loaded.size() + pointers.size());
   for (Value alloc : pointers)
-    loaded.push_back(rewriter.create<T>(loc, alloc, ValueRange()));
+    loaded.push_back(T::create(rewriter, loc, alloc, ValueRange()));
 }
 
 template <typename T, bool UseMinCut>
@@ -2412,13 +2412,14 @@ struct Reg2MemFor : public OpRewritePattern<T> {
     SmallVector<Value> allocated;
     allocated.reserve(op.getInits().size());
     for (Value operand : op.getInits()) {
-      Value alloc = rewriter.create<memref::AllocaOp>(
-          op.getLoc(), MemRefType::get(ArrayRef<int64_t>(), operand.getType()),
+      Value alloc = memref::AllocaOp::create(
+          rewriter, op.getLoc(),
+          MemRefType::get(ArrayRef<int64_t>(), operand.getType()),
           ValueRange());
       allocated.push_back(alloc);
       if (!isUndef(operand))
-        rewriter.create<memref::StoreOp>(op.getLoc(), operand, alloc,
-                                         ValueRange());
+        memref::StoreOp::create(rewriter, op.getLoc(), operand, alloc,
+                                ValueRange());
     }
 
     auto newOp = cloneWithoutResults(op, rewriter);
@@ -2449,21 +2450,20 @@ struct Reg2MemFor : public OpRewritePattern<T> {
     rewriter.setInsertionPoint(IP);
     for (auto en : llvm::enumerate(oldOps)) {
       if (!isUndef(en.value()))
-        rewriter.create<memref::StoreOp>(op.getLoc(), en.value(),
-                                         allocated[en.index()], ValueRange());
+        memref::StoreOp::create(rewriter, op.getLoc(), en.value(),
+                                allocated[en.index()], ValueRange());
     }
 
     rewriter.setInsertionPointAfter(op);
     SmallVector<Value> loaded;
     for (Value alloc : allocated) {
       if (UseMinCut)
-        loaded.push_back(rewriter
-                             .create<enzymexla::CacheLoadOp>(op.getLoc(), alloc,
-                                                             ValueRange())
+        loaded.push_back(enzymexla::CacheLoadOp::create(rewriter, op.getLoc(),
+                                                        alloc, ValueRange())
                              ->getResult(0));
       else
         loaded.push_back(
-            rewriter.create<memref::LoadOp>(op.getLoc(), alloc, ValueRange())
+            memref::LoadOp::create(rewriter, op.getLoc(), alloc, ValueRange())
                 ->getResult(0));
     }
     rewriter.replaceOp(op, loaded);
@@ -2605,8 +2605,8 @@ struct Reg2MemIf : public OpRewritePattern<T> {
       }
       Value alloc = nullptr;
       if (usesMustStore) {
-        alloc = rewriter.create<memref::AllocaOp>(
-            op.getLoc(), MemRefType::get(ArrayRef<int64_t>(), opType),
+        alloc = memref::AllocaOp::create(
+            rewriter, op.getLoc(), MemRefType::get(ArrayRef<int64_t>(), opType),
             ValueRange());
       }
       allocated.push_back(alloc);
@@ -2657,12 +2657,13 @@ struct Reg2MemIf : public OpRewritePattern<T> {
           for (auto ind : storeOp.getIndices())
             inds.push_back(map.lookupOrDefault(ind));
           // Only erase during the else, since we need that there
-          rewriter.create<memref::StoreOp>(
-              storeOp.getLoc(), val, map.lookupOrDefault(storeOp.getMemref()),
-              inds);
+          memref::StoreOp::create(rewriter, storeOp.getLoc(), val,
+                                  map.lookupOrDefault(storeOp.getMemref()),
+                                  inds);
         }
       } else if (!isUndef(val)) {
-        rewriter.create<memref::StoreOp>(op.getLoc(), val, alloc, ValueRange());
+        memref::StoreOp::create(rewriter, op.getLoc(), val, alloc,
+                                ValueRange());
       }
     }
     rewriter.setInsertionPoint(thenYield);
@@ -2721,7 +2722,8 @@ struct Reg2MemIf : public OpRewritePattern<T> {
               storeOp, val, map.lookupOrDefault(storeOp.getMemref()), inds);
         }
       } else if (!isUndef(val)) {
-        rewriter.create<memref::StoreOp>(op.getLoc(), val, alloc, ValueRange());
+        memref::StoreOp::create(rewriter, op.getLoc(), val, alloc,
+                                ValueRange());
       }
     }
     rewriter.setInsertionPoint(elseYield);
@@ -2744,13 +2746,12 @@ struct Reg2MemIf : public OpRewritePattern<T> {
         // TODO may want to move this far into the future.
         if (UseMinCut)
           std::get<0>(pair).replaceAllUsesWith(
-              rewriter
-                  .create<enzymexla::CacheLoadOp>(op.getLoc(), alloc,
-                                                  ValueRange())
+              enzymexla::CacheLoadOp::create(rewriter, op.getLoc(), alloc,
+                                             ValueRange())
                   ->getResult(0));
         else
           std::get<0>(pair).replaceAllUsesWith(
-              rewriter.create<memref::LoadOp>(op.getLoc(), alloc, ValueRange())
+              memref::LoadOp::create(rewriter, op.getLoc(), alloc, ValueRange())
                   ->getResult(0));
       }
     }
@@ -2764,8 +2765,8 @@ static void storeValues(Location loc, ValueRange values, ValueRange pointers,
                         PatternRewriter &rewriter) {
   for (auto pair : llvm::zip(values, pointers)) {
     if (!isUndef(std::get<0>(pair)))
-      rewriter.create<memref::StoreOp>(loc, std::get<0>(pair),
-                                       std::get<1>(pair), ValueRange());
+      memref::StoreOp::create(rewriter, loc, std::get<0>(pair),
+                              std::get<1>(pair), ValueRange());
   }
 }
 
@@ -2774,8 +2775,8 @@ static void allocaValues(Location loc, ValueRange values,
                          SmallVector<Value> &allocated) {
   allocated.reserve(values.size());
   for (Value value : values) {
-    Value alloc = rewriter.create<memref::AllocaOp>(
-        loc, MemRefType::get(ArrayRef<int64_t>(), value.getType()),
+    Value alloc = memref::AllocaOp::create(
+        rewriter, loc, MemRefType::get(ArrayRef<int64_t>(), value.getType()),
         ValueRange());
     allocated.push_back(alloc);
   }
@@ -2793,7 +2794,7 @@ struct Reg2MemWhile : public OpRewritePattern<scf::WhileOp> {
       return failure();
     }
 
-    // Value stackPtr = rewriter.create<LLVM::StackSaveOp>(
+    // Value stackPtr = LLVM::StackSaveOp::create(rewriter,
     //     op.getLoc(), LLVM::LLVMPointerType::get(rewriter.getIntegerType(8)));
     SmallVector<Value> beforeAllocated, afterAllocated;
     allocaValues(op.getLoc(), op.getOperands(), rewriter, beforeAllocated);
@@ -2801,7 +2802,7 @@ struct Reg2MemWhile : public OpRewritePattern<scf::WhileOp> {
     allocaValues(op.getLoc(), op.getResults(), rewriter, afterAllocated);
 
     auto newOp =
-        rewriter.create<scf::WhileOp>(op.getLoc(), TypeRange(), ValueRange());
+        scf::WhileOp::create(rewriter, op.getLoc(), TypeRange(), ValueRange());
     Block *newBefore =
         rewriter.createBlock(&newOp.getBefore(), newOp.getBefore().begin());
     SmallVector<Value> newBeforeArguments;
@@ -2836,7 +2837,7 @@ struct Reg2MemWhile : public OpRewritePattern<scf::WhileOp> {
     rewriter.setInsertionPointAfter(op);
     SmallVector<Value> results;
     loadValues(op.getLoc(), afterAllocated, rewriter, results);
-    // rewriter.create<LLVM::StackRestoreOp>(op.getLoc(), stackPtr);
+    // LLVM::StackRestoreOp::create(rewriter, op.getLoc(), stackPtr);
     rewriter.replaceOp(op, results);
     return success();
   }
@@ -2847,8 +2848,8 @@ struct LowerCacheLoad : public OpRewritePattern<enzymexla::CacheLoadOp> {
 
   LogicalResult matchAndRewrite(enzymexla::CacheLoadOp op,
                                 PatternRewriter &rewriter) const override {
-    auto memrefLoad = rewriter.create<memref::LoadOp>(
-        op.getLoc(), op.getMemref(), op.getIndices());
+    auto memrefLoad = memref::LoadOp::create(rewriter, op.getLoc(),
+                                             op.getMemref(), op.getIndices());
     rewriter.replaceOp(op, memrefLoad.getResult());
     return success();
   }
@@ -2945,7 +2946,7 @@ struct SCFCPUifyPass : public enzyme::impl::SCFCPUifyBase<SCFCPUifyPass> {
           [&](enzymexla::BarrierOp b) { toReplace.push_back(b); });
       for (auto b : toReplace) {
         OpBuilder Builder(b);
-        Builder.create<omp::BarrierOp>(b.getLoc());
+        omp::BarrierOp::create(Builder, b.getLoc());
         b->erase();
       }
     } else {

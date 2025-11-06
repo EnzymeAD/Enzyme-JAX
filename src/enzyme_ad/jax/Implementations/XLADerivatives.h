@@ -22,11 +22,6 @@ registerXLAAutoDiffInterfaces(mlir::DialectRegistry &registry) {
   registerCHLODialectAutoDiffInterface(registry);
   registerEnzymeXLADialectAutoDiffInterface(registry);
 }
-
-void removalBlockExplore(Block *block, IRMapping &mapping,
-                         PatternRewriter &rewriter,
-                         llvm::SetVector<Value> &gradients,
-                         llvm::MapVector<Value, CacheInfo> &caches);
 } // namespace enzyme
 } // namespace mlir
   //

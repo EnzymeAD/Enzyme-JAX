@@ -1,17 +1,17 @@
-JAX_COMMIT = "3af51a593dcb2a20c0b30bc4199646a411347516"
+JAX_COMMIT = "eb2d56b99ceef305933d9293d5c1715fdb333950"
 JAX_SHA256 = ""
 
-ENZYME_COMMIT = "aecafad17d3f63c1c0697609ad713615af322e23"
+ENZYME_COMMIT = "032828cbfef50bfba41443baacc39989c203534b"
 ENZYME_SHA256 = ""
 
-ML_TOOLCHAIN_COMMIT = "16d548ee2c2a5347c11888872c96bcea90b57106"
+ML_TOOLCHAIN_COMMIT = "78ef5eda03c54a912c000f1f872242d4ca6063a4"
 ML_TOOLCHAIN_SHA256 = ""
 
 # If the empty string this will automatically use the commit above
 # otherwise this should be a path to the folder containing the BUILD file for enzyme
 OVERRIDE_ENZYME_PATH = ""
 
-HEDRON_COMPILE_COMMANDS_COMMIT = "4f28899228fb3ad0126897876f147ca15026151e"
+HEDRON_COMPILE_COMMANDS_COMMIT = "d107d9c9025915902fd52346f1c6e18d87f7013a"
 HEDRON_COMPILE_COMMANDS_SHA256 = ""
 
 XLA_PATCHES = [
@@ -105,7 +105,10 @@ sed -i.bak0 "s/tf_http_archive(/http_archive(/g" third_party/py/python_init_rule
 
 """,
     """
-sed -i.bak0 "s/def main():/def main():\\n  if TMPDIR: os.environ['TMPDIR'] = TMPDIR/g" third_party/gpus/crosstool/clang/bin/crosstool_wrapper_driver_is_not_gcc.tpl
+sed -i.bak0 "s/_DEFAULT_ROCM_TOOLKIT_PATH =/_TMPDIR = \\"TMPDIR\\"\\n_DEFAULT_ROCM_TOOLKIT_PATH =/g" third_party/gpus/rocm_configure.bzl
+sed -i.bak0 "s/\\"%{gcc_host_compiler_path}\\"/\\"%{tmpdir}\\":get_host_environ(repository_ctx,_TMPDIR,\\"\\"), \\"%{gcc_host_compiler_path}\\"/g" third_party/gpus/rocm_configure.bzl
+sed -i.bak0 "s/VERBOSE =/TMPDIR= '%{tmpdir}'\\nVERBOSE =/g" third_party/gpus/crosstool/clang/bin/crosstool_wrapper_driver_rocm.tpl
+sed -i.bak0 "s/def main():/def main():\\n  if TMPDIR: os.environ['TMPDIR'] = TMPDIR/g" third_party/gpus/crosstool/clang/bin/crosstool_wrapper_driver_is_not_gcc.tpl third_party/gpus/crosstool/clang/bin/crosstool_wrapper_driver_rocm.tpl
 """,
     """
 sed -i.bak0 "s/__chkstk/__chkstk_ms/g" xla/service/cpu/runtime_symbol_generator.cc
@@ -114,7 +117,7 @@ sed -i.bak0 "s/__chkstk/__chkstk_ms/g" xla/service/cpu/runtime_symbol_generator.
 sed -i.bak0 "1s/^/#include \\"llvm\\/Support\\/DynamicLibrary.h\\"\\n/g" xla/service/cpu/runtime_symbol_generator.cc
 """,
     """
-sed -i.bak0 "s/(__chkstk_ms)/(llvm::sys::DynamicLibrary::SearchForAddressOfSymbol(\\"__chkstk_ms\\"))/g" xla/service/cpu/runtime_symbol_generator.cc
+sed -i.bak0 "s/SymbolDef(__chkstk_ms)/SymbolDef(reinterpret_cast<void* (*)(size_t)>(llvm::sys::DynamicLibrary::SearchForAddressOfSymbol(\\"__chkstk_ms\\")))/g" xla/service/cpu/runtime_symbol_generator.cc
 """,
     """
 sed -i.bak0 "s/Shlwapi/shlwapi/g" xla/tsl/platform/windows/load_library.cc xla/tsl/platform/windows/windows_file_system.cc xla/tsl/platform/windows/env.cc

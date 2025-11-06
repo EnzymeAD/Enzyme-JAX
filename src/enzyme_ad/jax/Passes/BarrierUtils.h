@@ -20,8 +20,8 @@ emitIterationCounts(mlir::OpBuilder &rewriter, mlir::scf::ParallelOp op) {
     Value upperBound = std::get<1>(bounds);
     Value step = std::get<2>(bounds);
     Value diff =
-        rewriter.create<arith::SubIOp>(op.getLoc(), upperBound, lowerBound);
-    Value count = rewriter.create<arith::CeilDivSIOp>(op.getLoc(), diff, step);
+        arith::SubIOp::create(rewriter, op.getLoc(), upperBound, lowerBound);
+    Value count = arith::CeilDivSIOp::create(rewriter, op.getLoc(), diff, step);
     iterationCounts.push_back(count);
   }
   return iterationCounts;
@@ -53,7 +53,7 @@ allocateTemporaryBuffer(mlir::OpBuilder &rewriter, mlir::Value value,
       }
     }
   auto type = MemRefType::get(bufferSize, ty);
-  return rewriter.create<T>(value.getLoc(), type, iterationCounts);
+  return T::create(rewriter, value.getLoc(), type, iterationCounts);
 }
 
 } // namespace enzyme

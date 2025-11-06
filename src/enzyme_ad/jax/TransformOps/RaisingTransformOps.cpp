@@ -60,12 +60,12 @@ LogicalResult RemoveIVs::matchAndRewrite(scf::ForOp forOp,
       continue;
 
     rewriter.setInsertionPointToStart(forOp.getBody());
-    Value iterNum = rewriter.create<arith::SubIOp>(loc, forOp.getInductionVar(),
-                                                   forOp.getLowerBound());
-    iterNum = rewriter.create<arith::DivSIOp>(loc, iterNum, forOp.getStep());
+    Value iterNum = arith::SubIOp::create(
+        rewriter, loc, forOp.getInductionVar(), forOp.getLowerBound());
+    iterNum = arith::DivSIOp::create(rewriter, loc, iterNum, forOp.getStep());
 
-    Value replacementIV = rewriter.create<arith::MulIOp>(loc, iterNum, step);
-    replacementIV = rewriter.create<arith::AddIOp>(loc, replacementIV, init);
+    Value replacementIV = arith::MulIOp::create(rewriter, loc, iterNum, step);
+    replacementIV = arith::AddIOp::create(rewriter, loc, replacementIV, init);
 
     rewriter.replaceAllUsesWith(ba, replacementIV);
 
@@ -83,9 +83,9 @@ LogicalResult RemoveIVs::matchAndRewrite(scf::ForOp forOp,
       newInits.push_back(forOp.getInits()[i]);
 
   rewriter.setInsertionPoint(forOp);
-  auto newForOp = rewriter.create<scf::ForOp>(loc, forOp.getLowerBound(),
-                                              forOp.getUpperBound(),
-                                              forOp.getStep(), newInits);
+  auto newForOp =
+      scf::ForOp::create(rewriter, loc, forOp.getLowerBound(),
+                         forOp.getUpperBound(), forOp.getStep(), newInits);
   if (!newForOp.getRegion().empty())
     newForOp.getRegion().front().erase();
   assert(newForOp.getRegion().empty());
@@ -115,13 +115,13 @@ LogicalResult RemoveIVs::matchAndRewrite(scf::ForOp forOp,
         continue;
 
       rewriter.setInsertionPointAfter(forOp.getOperation());
-      Value iterNum = rewriter.create<arith::SubIOp>(loc, forOp.getUpperBound(),
-                                                     forOp.getLowerBound());
-      iterNum = rewriter.create<arith::DivSIOp>(loc, iterNum, forOp.getStep());
+      Value iterNum = arith::SubIOp::create(
+          rewriter, loc, forOp.getUpperBound(), forOp.getLowerBound());
+      iterNum = arith::DivSIOp::create(rewriter, loc, iterNum, forOp.getStep());
 
-      Value afterLoop = rewriter.create<arith::MulIOp>(loc, iterNum, steps[i]);
+      Value afterLoop = arith::MulIOp::create(rewriter, loc, iterNum, steps[i]);
       afterLoop =
-          rewriter.create<arith::AddIOp>(loc, afterLoop, forOp.getInits()[i]);
+          arith::AddIOp::create(rewriter, loc, afterLoop, forOp.getInits()[i]);
 
       rewriter.replaceAllUsesWith(result, afterLoop);
     } else {
@@ -145,9 +145,9 @@ static inline void clearBlock(mlir::Block *block,
 static mlir::Value createConstantInt(RewriterBase &rewriter, Location loc,
                                      Type ty, int64_t v) {
   if (ty.isIndex())
-    return rewriter.create<arith::ConstantIndexOp>(loc, v);
+    return arith::ConstantIndexOp::create(rewriter, loc, v);
   else
-    return rewriter.create<arith::ConstantIntOp>(loc, ty, v);
+    return arith::ConstantIntOp::create(rewriter, loc, ty, v);
 }
 
 static std::optional<int64_t> getConstant(Operation *op) {
@@ -196,21 +196,21 @@ LogicalResult NormalizeLoop::matchAndRewrite(scf::ForOp op,
   Value one = createConstantInt(rewriter, op.getLoc(),
                                 op.getInductionVar().getType(), 1);
 
-  Value difference = rewriter.create<SubIOp>(op.getLoc(), op.getUpperBound(),
-                                             op.getLowerBound());
-  Value tripCount = rewriter.create<AddIOp>(
-      op.getLoc(),
-      rewriter.create<DivUIOp>(
-          op.getLoc(), rewriter.create<SubIOp>(op.getLoc(), difference, one),
-          op.getStep()),
+  Value difference = SubIOp::create(rewriter, op.getLoc(), op.getUpperBound(),
+                                    op.getLowerBound());
+  Value tripCount = AddIOp::create(
+      rewriter, op.getLoc(),
+      DivUIOp::create(rewriter, op.getLoc(),
+                      SubIOp::create(rewriter, op.getLoc(), difference, one),
+                      op.getStep()),
       one);
-  auto newForOp = rewriter.create<scf::ForOp>(op.getLoc(), zero, tripCount, one,
-                                              op.getInits());
+  auto newForOp = scf::ForOp::create(rewriter, op.getLoc(), zero, tripCount,
+                                     one, op.getInits());
   clearBlock(newForOp.getBody(), rewriter);
   rewriter.setInsertionPointToStart(newForOp.getBody());
-  Value scaled = rewriter.create<MulIOp>(
-      op.getLoc(), newForOp.getInductionVar(), op.getStep());
-  Value iv = rewriter.create<AddIOp>(op.getLoc(), op.getLowerBound(), scaled);
+  Value scaled = MulIOp::create(rewriter, op.getLoc(),
+                                newForOp.getInductionVar(), op.getStep());
+  Value iv = AddIOp::create(rewriter, op.getLoc(), op.getLowerBound(), scaled);
   SmallVector<Value> newArgs(newForOp.getRegion().args_begin(),
                              newForOp.getRegion().args_end());
   newArgs[0] = iv;

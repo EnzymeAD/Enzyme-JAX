@@ -80,6 +80,24 @@ void ApplySliceLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
   addSliceLICM(patterns, getParameter(), *getContext(),
                PatternBenefit(getBenefit().value_or(1)));
 }
+void ApplyDotGeneralLICMPatterns::populatePatterns(
+    RewritePatternSet &patterns) {
+  addDotGeneralLICM(patterns, getParameter(), *getContext(),
+                    PatternBenefit(getBenefit().value_or(1)));
+}
+void ApplyReverseLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
+  addReverseLICM(patterns, getParameter(), *getContext(),
+                 PatternBenefit(getBenefit().value_or(1)));
+}
+void ApplyReduceLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
+  addReduceLICM(patterns, getParameter(), *getContext(),
+                PatternBenefit(getBenefit().value_or(1)));
+}
+void ApplyReduceWindowLICMPatterns::populatePatterns(
+    RewritePatternSet &patterns) {
+  addReduceWindowLICM(patterns, getParameter(), *getContext(),
+                      PatternBenefit(getBenefit().value_or(1)));
+}
 void ApplyDUSLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
   addDUSLICM(patterns, getParameter(), *getContext(),
              PatternBenefit(getBenefit().value_or(1)));
@@ -177,6 +195,10 @@ void ExtendUnaryElementwise::populatePatterns(RewritePatternSet &patterns) {
 void WrapUnaryElementwise::populatePatterns(RewritePatternSet &patterns) {
   addWrapUnaryElementwise(patterns, getParameter(), *getContext(),
                           PatternBenefit(getBenefit().value_or(0)));
+}
+void EnzymeHLOUnroll::populatePatterns(RewritePatternSet &patterns) {
+  addEnzymeHLOUnroll(patterns, getParameter(), *getContext(),
+                     PatternBenefit(getBenefit().value_or(0)));
 }
 
 } // namespace transform

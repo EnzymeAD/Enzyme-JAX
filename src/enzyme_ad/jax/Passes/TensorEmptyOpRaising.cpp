@@ -49,8 +49,8 @@ struct TensorEmptyOpRaisingPass
 
       Attribute attr = makeAttr(ety, 0);
 
-      Value replacementValue = builder.create<stablehlo::ConstantOp>(
-          eop.getLoc(), ty, SplatElementsAttr::get(ty, attr));
+      Value replacementValue = stablehlo::ConstantOp::create(
+          builder, eop.getLoc(), ty, SplatElementsAttr::get(ty, attr));
 
       eop.replaceAllUsesWith(replacementValue);
       eop.erase();

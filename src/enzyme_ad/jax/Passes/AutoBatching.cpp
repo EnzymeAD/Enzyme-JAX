@@ -10,6 +10,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Passes/StructuredTensors.h"
 #include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/DenseMap.h"
@@ -119,8 +120,8 @@ func::FuncOp createWrapperUnbatchedFunction(PatternRewriter &rewriter,
 
   FunctionType calleeType =
       rewriter.getFunctionType(argTypes, {templateOp->getResult(0).getType()});
-  func::FuncOp func =
-      rewriter.create<func::FuncOp>(templateOp->getLoc(), funcName, calleeType);
+  func::FuncOp func = func::FuncOp::create(rewriter, templateOp->getLoc(),
+                                           funcName, calleeType);
   func.setPrivate();
 
   auto &entryBlock = *func.addEntryBlock();
@@ -143,8 +144,8 @@ func::FuncOp createWrapperUnbatchedFunction(PatternRewriter &rewriter,
   }
 
   auto unbatchedOp = rewriter.clone(*templateOp, mapper);
-  rewriter.create<func::ReturnOp>(templateOp->getLoc(),
-                                  ValueRange(unbatchedOp->getResult(0)));
+  func::ReturnOp::create(rewriter, templateOp->getLoc(),
+                         ValueRange(unbatchedOp->getResult(0)));
 
   return func;
 }
@@ -211,8 +212,8 @@ constructAndExtractBatchOperands(PatternRewriter &rewriter,
           else
             permutation[0] = i;
         }
-        auto transposeOp = rewriter.create<stablehlo::TransposeOp>(
-            loc, sliceOp.getOperand(),
+        auto transposeOp = stablehlo::TransposeOp::create(
+            rewriter, loc, sliceOp.getOperand(),
             rewriter.getDenseI64ArrayAttr(permutation));
         operands.push_back(transposeOp.getResult());
       } else {
@@ -228,8 +229,8 @@ constructAndExtractBatchOperands(PatternRewriter &rewriter,
             mapping[i] = 0;
           }
         }
-        auto bcastOp = rewriter.create<stablehlo::BroadcastInDimOp>(
-            loc,
+        auto bcastOp = stablehlo::BroadcastInDimOp::create(
+            rewriter, loc,
             RankedTensorType::get(bcastShape, sliceOpType.getElementType()),
             sliceOp.getOperand(), rewriter.getDenseI64ArrayAttr(mapping));
         operands.push_back(bcastOp.getResult());
@@ -249,14 +250,15 @@ constructAndExtractBatchOperands(PatternRewriter &rewriter,
 
         // expand the batch dim (== 0) or move the batch dim from `batchDim` to
         // `0`
-        auto newReshapeOp = rewriter.create<stablehlo::ReshapeOp>(
-            loc, RankedTensorType::get(outputShape, inputType.getElementType()),
+        auto newReshapeOp = stablehlo::ReshapeOp::create(
+            rewriter, loc,
+            RankedTensorType::get(outputShape, inputType.getElementType()),
             operand);
         newConcatOperands.push_back(newReshapeOp.getResult());
       }
 
       auto newConcatOp =
-          rewriter.create<stablehlo::ConcatenateOp>(loc, newConcatOperands, 0);
+          stablehlo::ConcatenateOp::create(rewriter, loc, newConcatOperands, 0);
 
       operandIndexMap.push_back(operands.size());
       operands.push_back(newConcatOp.getResult());
@@ -435,8 +437,8 @@ LogicalResult ConcatInsertDimToBatchBase::matchAndRewriteImpl(
     outputShape.push_back(concatShape[i]);
   }
 
-  auto batchOp = rewriter.create<enzyme::BatchOp>(
-      concatOp.getLoc(),
+  auto batchOp = enzyme::BatchOp::create(
+      rewriter, concatOp.getLoc(),
       RankedTensorType::get(outputShape, concatType.getElementType()),
       mlir::FlatSymbolRefAttr::get(concatOp.getContext(), wrapperFuncName),
       ValueRange(batchOpOperands),
@@ -451,11 +453,10 @@ LogicalResult ConcatInsertDimToBatchBase::matchAndRewriteImpl(
 
   rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(
       concatOp, batchOp->getResult(0), permutation);
-  std::map<enzyme::batchutils::BatchCacheKey, FunctionOpInterface>
-      batchedFunctionCache;
-  return enzyme::batchutils::batchOperation(
-      rewriter, batchOp, cast<FunctionOpInterface>(func.getOperation()),
-      batchedFunctionCache);
+
+  enzyme::batchutils::batchOperationInline(
+      rewriter, batchOp, cast<FunctionOpInterface>(func.getOperation()));
+  return success();
 }
 
 bool ConcatInsertDimToBatchBase::validReshapeOpInsertDimForBatching(
@@ -706,8 +707,8 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
   auto funcRetShape = relatedOpsType.getShape();
   outputShape.append(funcRetShape.begin(), funcRetShape.end());
 
-  auto batchOp = rewriter.create<enzyme::BatchOp>(
-      sliceOp.getLoc(),
+  auto batchOp = enzyme::BatchOp::create(
+      rewriter, sliceOp.getLoc(),
       RankedTensorType::get(outputShape, relatedOpsType.getElementType()),
       mlir::FlatSymbolRefAttr::get(sliceOp.getContext(), sliceToBatchName),
       ValueRange(batchOpOperands),
@@ -722,8 +723,8 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
     startIndices[0] = sliceInfo.sliceStart;
     endIndices[0] = sliceInfo.sliceStart + 1;
 
-    auto slicedOp = rewriter.create<stablehlo::SliceOp>(
-        sliceOp.getLoc(), batchOp->getResult(0),
+    auto slicedOp = stablehlo::SliceOp::create(
+        rewriter, sliceOp.getLoc(), batchOp->getResult(0),
         rewriter.getDenseI64ArrayAttr(startIndices),
         rewriter.getDenseI64ArrayAttr(endIndices),
         rewriter.getDenseI64ArrayAttr(strides));
@@ -731,11 +732,9 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
         otherOp, otherOp->getResult(0).getType(), slicedOp);
   }
 
-  std::map<enzyme::batchutils::BatchCacheKey, FunctionOpInterface>
-      batchedFunctionCache;
-  return enzyme::batchutils::batchOperation(
-      rewriter, batchOp, cast<FunctionOpInterface>(func.getOperation()),
-      batchedFunctionCache);
+  enzyme::batchutils::batchOperationInline(
+      rewriter, batchOp, cast<FunctionOpInterface>(func.getOperation()));
+  return success();
 }
 
 LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
@@ -796,6 +795,43 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
   if (candidateSlices.empty())
     return rewriter.notifyMatchFailure(whileOp, "no candidate slices found");
 
+  bool anyOpRewritten = false;
+
+  // iota [idx] where iota starts at 0 and iter var also starts at 0
+  // replace this with idx
+  // If we do a successful rewrite here, we remove the DynamicSliceInfo from
+  // the candidateSlices vector (a later invocation will handle the rest)
+  SmallVector<DynamicSliceInfo> retainedSlices;
+  for (auto [i, slice] : llvm::enumerate(candidateSlices)) {
+    auto iotaDetection = detectIotaLikeTensor(slice.sliceOp.getOperand());
+    if (iotaDetection &&
+        slice.inductionVarDimension == iotaDetection.value().dimension &&
+        iotaDetection.value().start == 0 &&
+        iotaDetection.value().limit == limit) {
+      anyOpRewritten = true;
+
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPoint(slice.sliceOp);
+      Value newOperand = info.getInductionVariable();
+      auto sliceType =
+          cast<RankedTensorType>(slice.sliceOp.getResult().getType());
+      auto outElemType = sliceType.getElementType();
+      if (cast<TensorType>(newOperand.getType()).getElementType() !=
+          outElemType) {
+        newOperand = stablehlo::ConvertOp::create(
+                         rewriter, slice.sliceOp.getLoc(),
+                         RankedTensorType::get({}, outElemType), newOperand)
+                         .getResult();
+      }
+      rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+          slice.sliceOp, sliceType, newOperand,
+          rewriter.getDenseI64ArrayAttr({}));
+    } else {
+      retainedSlices.push_back(slice);
+    }
+  }
+  candidateSlices = std::move(retainedSlices);
+
   // Create a map of user operations to their corresponding dynamic slices
   DenseMap<Operation *, SmallVector<DynamicSliceInfo>> userOpToSlicesMap;
   for (auto ds : candidateSlices) {
@@ -819,9 +855,8 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
   }
 
   if (userOpToSlicesMap.empty())
-    return failure();
+    return anyOpRewritten ? success() : failure();
 
-  bool wasLifted = false;
   for (auto &[op, slices] : userOpToSlicesMap) {
     SmallVector<bool> allIntermediateReshapes(slices.size());
     for (auto [i, slice] : llvm::enumerate(slices))
@@ -832,24 +867,21 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
     if (!validReshapes)
       continue;
 
-    // TODO: add scatter here once batch interface is
-    if (isa<stablehlo::DotGeneralOp, stablehlo::GatherOp, stablehlo::ReduceOp,
-            stablehlo::SortOp, stablehlo::TransposeOp,
-            stablehlo::BroadcastInDimOp, stablehlo::ReduceWindowOp>(op) ||
-        op->hasTrait<OpTrait::Elementwise>()) {
+    auto batchInterface = dyn_cast<BatchOpInterface>(op);
+    if (batchInterface || op->hasTrait<OpTrait::Elementwise>()) {
       if (liftOperationByBatching(rewriter, whileOp, slices, op, info,
                                   intermediateReshape)) {
-        wasLifted = true;
+        anyOpRewritten = true;
       }
     } else if (!intermediateReshape && isa<stablehlo::ReshapeOp>(op)) {
       if (liftSpecialReshapeOp(rewriter, whileOp, slices,
                                dyn_cast<stablehlo::ReshapeOp>(op), info)) {
-        wasLifted = true;
+        anyOpRewritten = true;
       }
     }
   }
 
-  return wasLifted ? success() : failure();
+  return anyOpRewritten ? success() : failure();
 };
 
 bool GreedyWhileLoopBatchFission::liftSpecialReshapeOp(
@@ -904,16 +936,16 @@ bool GreedyWhileLoopBatchFission::liftSpecialReshapeOp(
 
   // hoist the reshape op
   rewriter.setInsertionPoint(whileOp);
-  auto outsideReshapeOp = rewriter.create<stablehlo::ReshapeOp>(
-      whileOp->getLoc(),
+  auto outsideReshapeOp = stablehlo::ReshapeOp::create(
+      rewriter, whileOp->getLoc(),
       RankedTensorType::get(reshapeShape, inputType.getElementType()),
       sliceOp.getOperand());
 
   // then reconstruct the slice op with removed start indices
   rewriter.setInsertionPoint(reshapeOp);
-  auto newSliceOp = rewriter.create<stablehlo::DynamicSliceOp>(
-      whileOp->getLoc(), outsideReshapeOp->getResult(0), newStartIndices,
-      rewriter.getDenseI64ArrayAttr(newSliceSizes));
+  auto newSliceOp = stablehlo::DynamicSliceOp::create(
+      rewriter, whileOp->getLoc(), outsideReshapeOp->getResult(0),
+      newStartIndices, rewriter.getDenseI64ArrayAttr(newSliceSizes));
 
   // introduce another reshape op to only delete the induction var dim
   rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(
@@ -995,8 +1027,8 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
 
     FunctionType calleeType =
         rewriter.getFunctionType(TypeRange(argTypes), op->getResultTypes());
-    func = rewriter.create<func::FuncOp>(moduleOp.getLoc(), batchFnName,
-                                         calleeType);
+    func = func::FuncOp::create(rewriter, moduleOp.getLoc(), batchFnName,
+                                calleeType);
     func.setPrivate();
 
     auto &entryBlock = *func.addEntryBlock();
@@ -1014,7 +1046,7 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
     }
 
     auto unbatchedOp = rewriter.clone(*op, mapper);
-    rewriter.create<func::ReturnOp>(op->getLoc(), unbatchedOp->getResults());
+    func::ReturnOp::create(rewriter, op->getLoc(), unbatchedOp->getResults());
   }
 
   rewriter.setInsertionPoint(whileOp);
@@ -1036,8 +1068,8 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
         for (int i = sliceDim + 1; i < operandRank; i++)
           permutation[i] = i;
 
-        auto transposedOperand = rewriter.create<stablehlo::TransposeOp>(
-            whileOp->getLoc(), baseOp,
+        auto transposedOperand = stablehlo::TransposeOp::create(
+            rewriter, whileOp->getLoc(), baseOp,
             rewriter.getDenseI64ArrayAttr(permutation));
         newOperands.push_back(transposedOperand->getResult(0));
       } else {
@@ -1056,8 +1088,8 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
         for (size_t i = sliceDim + 1; i < operandRank; i++)
           resultShape[i + 1] = operandShape[i];
 
-        auto broadcastedOperand = rewriter.create<stablehlo::BroadcastInDimOp>(
-            whileOp->getLoc(),
+        auto broadcastedOperand = stablehlo::BroadcastInDimOp::create(
+            rewriter, whileOp->getLoc(),
             RankedTensorType::get(resultShape, operandType.getElementType()),
             baseOp, rewriter.getDenseI64ArrayAttr(mapping));
         newOperands.push_back(broadcastedOperand->getResult(0));
@@ -1073,8 +1105,8 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
       SmallVector<int64_t> mapping(operandRank);
       std::iota(mapping.begin(), mapping.end(), 1);
 
-      auto broadcastedOperand = rewriter.create<stablehlo::BroadcastInDimOp>(
-          whileOp->getLoc(),
+      auto broadcastedOperand = stablehlo::BroadcastInDimOp::create(
+          rewriter, whileOp->getLoc(),
           RankedTensorType::get(newOperandShape, operandType.getElementType()),
           baseOp, rewriter.getDenseI64ArrayAttr(mapping));
       newOperands.push_back(broadcastedOperand->getResult(0));
@@ -1100,12 +1132,12 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
   auto inductionVar = info.getInductionVariable();
   auto inductionVarType = cast<RankedTensorType>(inductionVar.getType());
 
-  auto constZero = rewriter.create<stablehlo::ConstantOp>(
-      whileOp->getLoc(), inductionVarType,
+  auto constZero = stablehlo::ConstantOp::create(
+      rewriter, whileOp->getLoc(), inductionVarType,
       cast<ElementsAttr>(makeAttr(inductionVarType, 0)));
 
-  auto batchOp = rewriter.create<enzyme::BatchOp>(
-      whileOp->getLoc(),
+  auto batchOp = enzyme::BatchOp::create(
+      rewriter, whileOp->getLoc(),
       RankedTensorType::get(outputShape, resultType.getElementType()),
       mlir::FlatSymbolRefAttr::get(func.getContext(), batchFnName),
       ValueRange(newOperands),
@@ -1120,17 +1152,15 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
   for (int i = 1; i < outputShape.size(); i++)
     dynamicSliceSizes[i] = outputShape[i];
 
-  auto dynamicSlice = rewriter.create<stablehlo::DynamicSliceOp>(
-      whileOp->getLoc(), batchOp->getResult(0), dynamicSliceStarts,
+  auto dynamicSlice = stablehlo::DynamicSliceOp::create(
+      rewriter, whileOp->getLoc(), batchOp->getResult(0), dynamicSliceStarts,
       dynamicSliceSizes);
   rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(
       op, op->getResult(0).getType(), dynamicSlice);
 
-  std::map<enzyme::batchutils::BatchCacheKey, FunctionOpInterface>
-      batchedFunctionCache;
-  return succeeded(enzyme::batchutils::batchOperation(
-      rewriter, batchOp, cast<FunctionOpInterface>(func.getOperation()),
-      batchedFunctionCache));
+  enzyme::batchutils::batchOperationInline(
+      rewriter, batchOp, cast<FunctionOpInterface>(func.getOperation()));
+  return true;
 }
 
 GreedyWhileLoopBatchFission::ValidBatchingInfo
@@ -1214,6 +1244,9 @@ struct AutoBatchingPass
                    // op interface is implemented
                    ConcatInsertDimToBatch<stablehlo::SortOp>,
                    ConcatInsertDimToBatch<stablehlo::ReduceWindowOp>,
+                   ConcatInsertDimToBatch<stablehlo::ConcatenateOp>,
+                   ConcatInsertDimToBatch<stablehlo::GetDimensionSizeOp>,
+                   ConcatInsertDimToBatch<stablehlo::ReverseOp>,
                    ConcatInsertDimElementwiseToBatch>(context);
     }
 
@@ -1225,6 +1258,9 @@ struct AutoBatchingPass
           SliceToBatch<stablehlo::TransposeOp>,
           SliceToBatch<stablehlo::BroadcastInDimOp>,
           SliceToBatch<stablehlo::ReduceWindowOp>,
+          SliceToBatch<stablehlo::ConcatenateOp>,
+          SliceToBatch<stablehlo::GetDimensionSizeOp>,
+          SliceToBatch<stablehlo::ReverseOp>,
           // SliceToBatchReshape,
           SliceToBatchElementwise>(context);
     }

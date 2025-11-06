@@ -30,6 +30,7 @@
 #include "llvm/ADT/SetVector.h"
 #include "llvm/Support/Debug.h"
 
+#include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
 #include <set>
@@ -885,6 +886,10 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
     return State::GUARANTEED;
   }
 
+  if (isa<chlo::ErfInvOp>(op)) {
+    return State::NOTGUARANTEED;
+  }
+
   // Any non-negative operation that produces a non-negative result
   // Here we recur on the rhs, as that is more likely to be a constant.
   if (isa<stablehlo::MaxOp>(op)) {
@@ -1318,6 +1323,61 @@ bool reshapeIsTranspose(stablehlo::ReshapeOp reshapeOp) {
   }
 
   return true;
+}
+
+Value reshapeAxisInto(OpBuilder &builder, Value input,
+                      ArrayRef<int64_t> &batchSizes, int64_t dim) {
+  auto inputType = cast<ShapedType>(input.getType());
+  auto inputShape = inputType.getShape();
+
+  SmallVector<int64_t> permutation(inputShape.size());
+  for (size_t i = 0; i < dim; i++)
+    permutation[i] = i + batchSizes.size(); // left shift
+  for (size_t i = 0; i < batchSizes.size(); i++)
+    permutation[dim + i] = i; // move the batch dims
+  for (size_t i = batchSizes.size() + dim; i < permutation.size(); i++)
+    permutation[i] = i; // keep the rest
+
+  auto transposedInput =
+      stablehlo::TransposeOp::create(builder, input.getLoc(), input,
+                                     builder.getDenseI64ArrayAttr(permutation));
+
+  SmallVector<int64_t> newShape(inputShape.begin() + batchSizes.size(),
+                                inputShape.end());
+  newShape[dim] =
+      newShape[dim] * std::accumulate(batchSizes.begin(), batchSizes.end(), 1,
+                                      std::multiplies<int64_t>());
+  return stablehlo::ReshapeOp::create(
+      builder, input.getLoc(),
+      RankedTensorType::get(newShape, inputType.getElementType()),
+      transposedInput);
+}
+
+Value reshapeAxisOutOf(OpBuilder &builder, Value input,
+                       ArrayRef<int64_t> &batchSizes, int64_t dim) {
+  auto inputType = cast<ShapedType>(input.getType());
+  auto inputShape = llvm::to_vector(inputType.getShape());
+  auto batchSize = std::accumulate(batchSizes.begin(), batchSizes.end(), 1,
+                                   std::multiplies<int64_t>());
+  inputShape[dim] = inputShape[dim] / batchSize;
+  for (size_t i = 0; i < batchSizes.size(); i++)
+    inputShape.insert(inputShape.begin() + dim + i, batchSizes[i]);
+
+  auto reshapedInput = stablehlo::ReshapeOp::create(
+      builder, input.getLoc(),
+      RankedTensorType::get(inputShape, inputType.getElementType()), input);
+
+  SmallVector<int64_t> permutation(inputShape.size());
+  for (size_t i = 0; i < batchSizes.size(); i++)
+    permutation[i] = dim + i;
+  for (size_t i = 0; i < dim; i++)
+    permutation[batchSizes.size() + i] = i;
+  for (size_t i = batchSizes.size() + dim; i < permutation.size(); i++)
+    permutation[i] = i;
+
+  return stablehlo::TransposeOp::create(
+      builder, input.getLoc(), reshapedInput,
+      builder.getDenseI64ArrayAttr(permutation));
 }
 
 } // namespace stablehlo

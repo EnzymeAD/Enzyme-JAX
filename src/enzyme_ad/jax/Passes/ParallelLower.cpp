@@ -140,7 +140,7 @@ mlir::Value callMalloc(mlir::OpBuilder &ibuilder, mlir::ModuleOp module,
   std::vector args = {arg};
   if (auto fn = dyn_cast_or_null<func::FuncOp>(symbolTable.lookupSymbolIn(
           module, builder.getStringAttr("malloc")))) {
-    return ibuilder.create<mlir::func::CallOp>(loc, fn, args)->getResult(0);
+    return mlir::func::CallOp::create(ibuilder, loc, fn, args)->getResult(0);
   }
   if (!dyn_cast_or_null<LLVM::LLVMFuncOp>(symbolTable.lookupSymbolIn(
           module, builder.getStringAttr("malloc")))) {
@@ -151,13 +151,13 @@ mlir::Value callMalloc(mlir::OpBuilder &ibuilder, mlir::ModuleOp module,
 
     LLVM::Linkage lnk = LLVM::Linkage::External;
     builder.setInsertionPointToStart(module.getBody());
-    builder.create<LLVM::LLVMFuncOp>(module.getLoc(), "malloc", llvmFnType,
-                                     lnk);
+    LLVM::LLVMFuncOp::create(builder, module.getLoc(), "malloc", llvmFnType,
+                             lnk);
   }
 
   auto fn = cast<LLVM::LLVMFuncOp>(
       symbolTable.lookupSymbolIn(module, builder.getStringAttr("malloc")));
-  return ibuilder.create<mlir::LLVM::CallOp>(loc, fn, args)->getResult(0);
+  return mlir::LLVM::CallOp::create(ibuilder, loc, fn, args)->getResult(0);
 }
 mlir::LLVM::LLVMFuncOp GetOrCreateFreeFunction(ModuleOp module) {
   static std::mutex _mutex;
@@ -176,8 +176,8 @@ mlir::LLVM::LLVMFuncOp GetOrCreateFreeFunction(ModuleOp module) {
 
   LLVM::Linkage lnk = LLVM::Linkage::External;
   builder.setInsertionPointToStart(module.getBody());
-  return builder.create<LLVM::LLVMFuncOp>(module.getLoc(), "free", llvmFnType,
-                                          lnk);
+  return LLVM::LLVMFuncOp::create(builder, module.getLoc(), "free", llvmFnType,
+                                  lnk);
 }
 
 LogicalResult fixupGetFunc(LLVM::CallOp, OpBuilder &rewriter,
@@ -355,18 +355,18 @@ void ParallelLower::runOnOperation() {
         autodiffInliner(op);
     }
     OpBuilder b(caller);
-    auto allocScope = b.create<memref::AllocaScopeOp>(caller.getLoc(),
-                                                      caller.getResultTypes());
+    auto allocScope = memref::AllocaScopeOp::create(b, caller.getLoc(),
+                                                    caller.getResultTypes());
     allocScope.getRegion().push_back(new Block());
     b.setInsertionPointToStart(&allocScope.getRegion().front());
-    auto exOp = b.create<scf::ExecuteRegionOp>(caller.getLoc(),
-                                               caller.getResultTypes());
+    auto exOp = scf::ExecuteRegionOp::create(b, caller.getLoc(),
+                                             caller.getResultTypes());
     Block *blk = new Block();
     exOp.getRegion().push_back(blk);
     caller->moveBefore(blk, blk->begin());
     caller.replaceAllUsesWith(allocScope.getResults());
     b.setInsertionPointToEnd(blk);
-    b.create<scf::YieldOp>(caller.getLoc(), caller.getResults());
+    scf::YieldOp::create(b, caller.getLoc(), caller.getResults());
     if (inlineCall(interface, cloneCallback, caller, callableOp, targetRegion,
                    /*shouldCloneInlinedRegion=*/true)
             .succeeded()) {
@@ -374,8 +374,8 @@ void ParallelLower::runOnOperation() {
       replacedCallables.insert(callableOp);
     }
     b.setInsertionPointToEnd(&allocScope.getRegion().front());
-    b.create<memref::AllocaScopeReturnOp>(allocScope.getLoc(),
-                                          exOp.getResults());
+    memref::AllocaScopeReturnOp::create(b, allocScope.getLoc(),
+                                        exOp.getResults());
   };
   auto LLVMcallInlinerImpl = [&](LLVM::CallOp caller) {
     // Build the inliner interface.
@@ -410,18 +410,18 @@ void ParallelLower::runOnOperation() {
         autodiffInliner(op);
     }
     OpBuilder b(caller);
-    auto allocScope = b.create<memref::AllocaScopeOp>(caller.getLoc(),
-                                                      caller.getResultTypes());
+    auto allocScope = memref::AllocaScopeOp::create(b, caller.getLoc(),
+                                                    caller.getResultTypes());
     allocScope.getRegion().push_back(new Block());
     b.setInsertionPointToStart(&allocScope.getRegion().front());
-    auto exOp = b.create<scf::ExecuteRegionOp>(caller.getLoc(),
-                                               caller.getResultTypes());
+    auto exOp = scf::ExecuteRegionOp::create(b, caller.getLoc(),
+                                             caller.getResultTypes());
     Block *blk = new Block();
     exOp.getRegion().push_back(blk);
     caller->moveBefore(blk, blk->begin());
     caller.replaceAllUsesWith(allocScope.getResults());
     b.setInsertionPointToEnd(blk);
-    b.create<scf::YieldOp>(caller.getLoc(), caller.getResults());
+    scf::YieldOp::create(b, caller.getLoc(), caller.getResults());
     if (!callableOp
              ->walk([](Operation *op) {
                if (isa<GPUWrapperOp, gpu::LaunchOp>(op))
@@ -437,8 +437,8 @@ void ParallelLower::runOnOperation() {
       }
     }
     b.setInsertionPointToEnd(&allocScope.getRegion().front());
-    b.create<memref::AllocaScopeReturnOp>(allocScope.getLoc(),
-                                          exOp.getResults());
+    memref::AllocaScopeReturnOp::create(b, allocScope.getLoc(),
+                                        exOp.getResults());
   };
   LLVMcallInliner = [&](LLVM::CallOp caller) {
     Operation *gpuWrapper = nullptr;
@@ -452,12 +452,12 @@ void ParallelLower::runOnOperation() {
         prepareForGPUInline(caller, gpuWrapper, symbolTable);
     LLVMcallInlinerImpl(callInGPU);
     OpBuilder b(caller);
-    auto allocScope = b.create<memref::AllocaScopeOp>(caller.getLoc(),
-                                                      caller.getResultTypes());
+    auto allocScope = memref::AllocaScopeOp::create(b, caller.getLoc(),
+                                                    caller.getResultTypes());
     allocScope.getRegion().push_back(new Block());
     b.setInsertionPointToStart(&allocScope.getRegion().front());
-    auto exOp = b.create<scf::ExecuteRegionOp>(caller.getLoc(),
-                                               caller.getResultTypes());
+    auto exOp = scf::ExecuteRegionOp::create(b, caller.getLoc(),
+                                             caller.getResultTypes());
     Block *blk = new Block();
     exOp.getRegion().push_back(blk);
     b.cloneRegionBefore(lfn.getBody(), exOp.getRegion(),
@@ -472,10 +472,10 @@ void ParallelLower::runOnOperation() {
     auto retVals = ret->getOperands();
     ret.erase();
     b.setInsertionPointToEnd(&exOp.getRegion().back());
-    b.create<scf::YieldOp>(callerLoc, retVals);
+    scf::YieldOp::create(b, callerLoc, retVals);
     b.setInsertionPointToEnd(&allocScope.getRegion().front());
-    b.create<memref::AllocaScopeReturnOp>(allocScope.getLoc(),
-                                          exOp.getResults());
+    memref::AllocaScopeReturnOp::create(b, allocScope.getLoc(),
+                                        exOp.getResults());
     lfn->erase();
   };
   autodiffInliner = [&](enzyme::AutoDiffOp caller) {
@@ -646,11 +646,11 @@ void ParallelLower::runOnOperation() {
       return;
 
     OpBuilder builder(launchOp);
-    auto op = builder.create<mlir::gpu::LaunchOp>(
-        launchOp.getLoc(), launchOp.getGridSizeX(), launchOp.getGridSizeY(),
-        launchOp.getGridSizeZ(), launchOp.getBlockSizeX(),
-        launchOp.getBlockSizeY(), launchOp.getBlockSizeZ(),
-        launchOp.getDynamicSharedMemorySize(),
+    auto op = mlir::gpu::LaunchOp::create(
+        builder, launchOp.getLoc(), launchOp.getGridSizeX(),
+        launchOp.getGridSizeY(), launchOp.getGridSizeZ(),
+        launchOp.getBlockSizeX(), launchOp.getBlockSizeY(),
+        launchOp.getBlockSizeZ(), launchOp.getDynamicSharedMemorySize(),
         launchOp.getNumResults() ? launchOp.getResultTypes()[0] : nullptr,
         launchOp.getAsyncDependencies(),
         /*workgroup*/ TypeRange(),
@@ -658,9 +658,9 @@ void ParallelLower::runOnOperation() {
         launchOp.getClusterSizeY(), launchOp.getClusterSizeZ());
 
     builder.setInsertionPointToStart(&op.getRegion().front());
-    builder.create<func::CallOp>(launchOp.getLoc(), launchOp.getKernel(),
-                                 TypeRange(), launchOp.getKernelOperands());
-    builder.create<gpu::TerminatorOp>(launchOp.getLoc());
+    func::CallOp::create(builder, launchOp.getLoc(), launchOp.getKernel(),
+                         TypeRange(), launchOp.getKernelOperands());
+    gpu::TerminatorOp::create(builder, launchOp.getLoc());
     for (auto &&[lhs, rhs] :
          llvm::zip_equal(launchOp->getResults(), op->getResults())) {
       lhs.replaceAllUsesWith(rhs);
@@ -700,21 +700,21 @@ void ParallelLower::runOnOperation() {
     auto loc = launchOp.getLoc();
 
     builder.setInsertionPoint(launchOp->getBlock(), launchOp->getIterator());
-    auto zindex = builder.create<ConstantIndexOp>(loc, 0);
+    auto zindex = ConstantIndexOp::create(builder, loc, 0);
 
-    auto oneindex = builder.create<ConstantIndexOp>(loc, 1);
+    auto oneindex = ConstantIndexOp::create(builder, loc, 1);
 
     async::ExecuteOp asyncOp = nullptr;
     if (!launchOp.getAsyncDependencies().empty()) {
       SmallVector<Value> dependencies;
       for (auto v : launchOp.getAsyncDependencies()) {
         auto tok = v.getDefiningOp<enzymexla::StreamToTokenOp>();
-        dependencies.push_back(builder.create<enzymexla::StreamToTokenOp>(
-            tok.getLoc(), builder.getType<async::TokenType>(),
+        dependencies.push_back(enzymexla::StreamToTokenOp::create(
+            builder, tok.getLoc(), builder.getType<async::TokenType>(),
             tok.getSource()));
       }
-      asyncOp = builder.create<mlir::async::ExecuteOp>(
-          loc, /*results*/ TypeRange(), /*dependencies*/ dependencies,
+      asyncOp = mlir::async::ExecuteOp::create(
+          builder, loc, /*results*/ TypeRange(), /*dependencies*/ dependencies,
           /*operands*/ ValueRange());
       Block *blockB = asyncOp.getBody();
       builder.setInsertionPointToStart(blockB);
@@ -722,8 +722,8 @@ void ParallelLower::runOnOperation() {
 
     OpBuilder hostBuilder = builder;
     if (wrapParallelOps) {
-      auto pw = builder.create<enzymexla::GPUWrapperOp>(
-          loc,
+      auto pw = enzymexla::GPUWrapperOp::create(
+          builder, loc,
           ValueRange({launchOp.getGridSizeX(), launchOp.getGridSizeY(),
                       launchOp.getGridSizeZ(), launchOp.getBlockSizeX(),
                       launchOp.getBlockSizeY(), launchOp.getBlockSizeZ()}));
@@ -738,8 +738,8 @@ void ParallelLower::runOnOperation() {
       builder.setInsertionPointToStart(pw.getBody());
     }
 
-    auto block = builder.create<mlir::scf::ParallelOp>(
-        loc, std::vector<Value>({zindex, zindex, zindex}),
+    auto block = mlir::scf::ParallelOp::create(
+        builder, loc, std::vector<Value>({zindex, zindex, zindex}),
         std::vector<Value>({launchOp.getGridSizeX(), launchOp.getGridSizeY(),
                             launchOp.getGridSizeZ()}),
         std::vector<Value>({oneindex, oneindex, oneindex}));
@@ -748,12 +748,12 @@ void ParallelLower::runOnOperation() {
 
     /*
     if (gpuKernelStructureMode == PGSM_BlockThreadWrappers) {
-      auto gpuBlock = builder.create<enzymexla::GPUBlockOp>(
+      auto gpuBlock = enzymexla::GPUBlockOp::create(builder,
           loc, blockB->getArguments()[0], blockB->getArguments()[1],
           blockB->getArguments()[2]);
       builder.setInsertionPointToStart(&gpuBlock.getRegion().front());
     } else if (gpuKernelStructureMode == PGSM_BlockThreadNoops) {
-      auto noop = builder.create<enzymexla::NoopOp>(
+      auto noop = enzymexla::NoopOp::create(builder,
           loc, ValueRange({blockB->getArguments()[0], blockB->getArguments()[1],
                            blockB->getArguments()[2]}));
       noop->setAttr("polygeist.noop_type",
@@ -761,8 +761,8 @@ void ParallelLower::runOnOperation() {
     }
     */
 
-    auto threadr = builder.create<mlir::scf::ParallelOp>(
-        loc, std::vector<Value>({zindex, zindex, zindex}),
+    auto threadr = mlir::scf::ParallelOp::create(
+        builder, loc, std::vector<Value>({zindex, zindex, zindex}),
         std::vector<Value>({launchOp.getBlockSizeX(), launchOp.getBlockSizeY(),
                             launchOp.getBlockSizeZ()}),
         std::vector<Value>({oneindex, oneindex, oneindex}));
@@ -772,7 +772,7 @@ void ParallelLower::runOnOperation() {
 
     /*
     if (gpuKernelStructureMode == PGSM_BlockThreadWrappers) {
-      auto gpuThread = builder.create<enzymexla::GPUThreadOp>(
+      auto gpuThread = enzymexla::GPUThreadOp::create(builder,
           loc, threadB->getArguments()[0], threadB->getArguments()[1],
           threadB->getArguments()[2]);
       builder.setInsertionPointToStart(&gpuThread.getRegion().front());
@@ -781,7 +781,7 @@ void ParallelLower::runOnOperation() {
                gpuKernelStructureMode == PGSM_ThreadNoop) {
       OpBuilder::InsertionGuard guard(builder);
       builder.setInsertionPoint(mergeLoc);
-      auto noop = builder.create<enzymexla::NoopOp>(
+      auto noop = enzymexla::NoopOp::create(builder,
           loc,
           ValueRange({threadB->getArguments()[0], threadB->getArguments()[1],
                       threadB->getArguments()[2]}));
@@ -830,8 +830,8 @@ void ParallelLower::runOnOperation() {
               dyn_cast_or_null<IntegerAttr>(alop.getType().getMemorySpace()))
         if (ia.getValue() == 5) {
           builder.setInsertionPointToStart(blockB);
-          auto newAlloca = builder.create<memref::AllocaOp>(
-              alop.getLoc(),
+          auto newAlloca = memref::AllocaOp::create(
+              builder, alop.getLoc(),
               MemRefType::get(alop.getType().getShape(),
                               alop.getType().getElementType(),
                               alop.getType().getLayout(), Attribute()));
@@ -844,8 +844,9 @@ void ParallelLower::runOnOperation() {
       auto PT = cast<LLVM::LLVMPointerType>(alop.getType());
       if (PT.getAddressSpace() == 5) {
         builder.setInsertionPointToStart(blockB);
-        auto newAlloca = builder.create<LLVM::AllocaOp>(
-            alop.getLoc(), LLVM::LLVMPointerType::get(alop.getContext(), 0),
+        auto newAlloca = LLVM::AllocaOp::create(
+            builder, alop.getLoc(),
+            LLVM::LLVMPointerType::get(alop.getContext(), 0),
             alop.getArraySize());
         builder.replaceOpWithNewOp<LLVM::AddrSpaceCastOp>(alop, PT, newAlloca);
       }
@@ -866,8 +867,8 @@ void ParallelLower::runOnOperation() {
             size.push_back(AT.getNumElements());
             elType = AT.getElementType();
           }
-          auto newAlloca = builder.create<memref::AllocaOp>(
-              alop.getLoc(), MemRefType::get(size, elType));
+          auto newAlloca = memref::AllocaOp::create(
+              builder, alop.getLoc(), MemRefType::get(size, elType));
           sharedmems[glob.getName()] = newAlloca;
         }
         builder.replaceOpWithNewOp<enzymexla::Memref2PointerOp>(
@@ -887,8 +888,7 @@ void ParallelLower::runOnOperation() {
       for (auto ggo : ggops) {
         builder.setInsertionPoint(ggo);
         builder.replaceOp(
-            ggo, builder
-                     .create<enzymexla::GetDeviceGlobalOp>(
+            ggo, enzymexla::GetDeviceGlobalOp::create(builder,
                          ggo->getLoc(), ggo.getType(), ggo.getNameAttr())
                      ->getResults());
       }
@@ -950,8 +950,9 @@ void ParallelLower::runOnOperation() {
       auto map = storeOp.getAffineMap();
       std::vector<Value> indices;
       for (size_t i = 0; i < map.getNumResults(); i++) {
-        auto apply = builder.create<affine::AffineApplyOp>(
-            storeOp.getLoc(), map.getSliceMap(i, 1), storeOp.getMapOperands());
+        auto apply = affine::AffineApplyOp::create(builder, storeOp.getLoc(),
+                                                   map.getSliceMap(i, 1),
+                                                   storeOp.getMapOperands());
         indices.push_back(apply->getResult(0));
       }
       builder.replaceOpWithNewOp<memref::StoreOp>(storeOp, storeOp.getValue(),
@@ -963,8 +964,9 @@ void ParallelLower::runOnOperation() {
       auto map = storeOp.getAffineMap();
       std::vector<Value> indices;
       for (size_t i = 0; i < map.getNumResults(); i++) {
-        auto apply = builder.create<affine::AffineApplyOp>(
-            storeOp.getLoc(), map.getSliceMap(i, 1), storeOp.getMapOperands());
+        auto apply = affine::AffineApplyOp::create(builder, storeOp.getLoc(),
+                                                   map.getSliceMap(i, 1),
+                                                   storeOp.getMapOperands());
         indices.push_back(apply->getResult(0));
       }
       builder.replaceOpWithNewOp<memref::LoadOp>(storeOp, storeOp.getMemref(),
@@ -1119,8 +1121,8 @@ void FixGPUFunc::runOnOperation() {
 }
 
 static void replaceCallWithSuccess(Operation *call, OpBuilder &bz) {
-  call->replaceAllUsesWith(bz.create<ConstantIntOp>(
-      call->getLoc(), call->getResult(0).getType(), 0));
+  call->replaceAllUsesWith(ConstantIntOp::create(
+      bz, call->getLoc(), call->getResult(0).getType(), 0));
   call->erase();
 }
 
@@ -1136,10 +1138,10 @@ void ConvertCudaRTtoCPU::runOnOperation() {
       [&](Operation *call, StringRef callee) {
         if (callee == "cudaMemcpy" || callee == "cudaMemcpyAsync") {
           OpBuilder bz(call);
-          auto falsev = bz.create<ConstantIntOp>(call->getLoc(), false, 1);
+          auto falsev = ConstantIntOp::create(bz, call->getLoc(), false, 1);
           auto dst = call->getOperand(0);
           if (auto mt = dyn_cast<MemRefType>(dst.getType())) {
-            dst = bz.create<enzymexla::Memref2PointerOp>(
+            dst = enzymexla::Memref2PointerOp::create(bz, 
                 call->getLoc(),
                 LLVM::LLVMPointerType::get(mt.getElementType(),
                                            mt.getMemorySpaceAsInt()),
@@ -1147,24 +1149,24 @@ void ConvertCudaRTtoCPU::runOnOperation() {
           }
           auto src = call->getOperand(1);
           if (auto mt = dyn_cast<MemRefType>(src.getType())) {
-            src = bz.create<enzymexla::Memref2PointerOp>(
+            src = enzymexla::Memref2PointerOp::create(bz, 
                 call->getLoc(),
                 LLVM::LLVMPointerType::get(mt.getElementType(),
                                            mt.getMemorySpaceAsInt()),
                 src);
           }
-          bz.create<LLVM::MemcpyOp>(call->getLoc(), dst, src,
+          LLVM::MemcpyOp::create(bz, call->getLoc(), dst, src,
                                     call->getOperand(2),
                                     /*isVolatile*/ falsev);
-          call->replaceAllUsesWith(bz.create<ConstantIntOp>(
+          call->replaceAllUsesWith(ConstantIntOp::create(bz, 
               call->getLoc(), 0, call->getResult(0).getType()));
           call->erase();
         } else if (callee == "cudaMemcpyToSymbol") {
           OpBuilder bz(call);
-          auto falsev = bz.create<ConstantIntOp>(call->getLoc(), false, 1);
+          auto falsev = ConstantIntOp::create(bz, call->getLoc(), false, 1);
           auto dst = call->getOperand(0);
           if (auto mt = dyn_cast<MemRefType>(dst.getType())) {
-            dst = bz.create<enzymexla::Memref2PointerOp>(
+            dst = enzymexla::Memref2PointerOp::create(bz, 
                 call->getLoc(),
                 LLVM::LLVMPointerType::get(mt.getElementType(),
                                            mt.getMemorySpaceAsInt()),
@@ -1172,39 +1174,39 @@ void ConvertCudaRTtoCPU::runOnOperation() {
           }
           auto src = call->getOperand(1);
           if (auto mt = dyn_cast<MemRefType>(src.getType())) {
-            src = bz.create<enzymexla::Memref2PointerOp>(
+            src = enzymexla::Memref2PointerOp::create(bz, 
                 call->getLoc(),
                 LLVM::LLVMPointerType::get(mt.getElementType(),
                                            mt.getMemorySpaceAsInt()),
                 src);
           }
-          bz.create<LLVM::MemcpyOp>(
+          LLVM::MemcpyOp::create(bz, 
               call->getLoc(),
-              bz.create<LLVM::GEPOp>(call->getLoc(), dst.getType(), dst,
+              LLVM::GEPOp::create(bz, call->getLoc(), dst.getType(), dst,
                                      std::vector<Value>({call->getOperand(3)})),
               src, call->getOperand(2),
               /*isVolatile*/ falsev);
-          call->replaceAllUsesWith(bz.create<ConstantIntOp>(
+          call->replaceAllUsesWith(ConstantIntOp::create(bz, 
               call->getLoc(), 0, call->getResult(0).getType()));
           call->erase();
         } else if (callee == "cudaMemset") {
           OpBuilder bz(call);
-          auto falsev = bz.create<ConstantIntOp>(call->getLoc(), false, 1);
+          auto falsev = ConstantIntOp::create(bz, call->getLoc(), false, 1);
           auto dst = call->getOperand(0);
           if (auto mt = dyn_cast<MemRefType>(dst.getType())) {
-            dst = bz.create<enzymexla::Memref2PointerOp>(
+            dst = enzymexla::Memref2PointerOp::create(bz, 
                 call->getLoc(),
                 LLVM::LLVMPointerType::get(mt.getElementType(),
                                            mt.getMemorySpaceAsInt()),
                 dst);
           }
-          bz.create<LLVM::MemsetOp>(call->getLoc(), dst,
-                                    bz.create<TruncIOp>(call->getLoc(),
+          LLVM::MemsetOp::create(bz, call->getLoc(), dst,
+                                    TruncIOp::create(bz, call->getLoc(),
                                                         bz.getI8Type(),
                                                         call->getOperand(1)),
                                     call->getOperand(2),
                                     /*isVolatile*/ falsev);
-          call->replaceAllUsesWith(bz.create<ConstantIntOp>(
+          call->replaceAllUsesWith(ConstantIntOp::create(bz, 
               call->getLoc(), 0, call->getResult(0).getType()));
           call->erase();
         } else if (callee == "cudaMalloc" || callee == "cudaMallocHost") {
@@ -1212,12 +1214,12 @@ void ConvertCudaRTtoCPU::runOnOperation() {
           Value arg = call->getOperand(1);
           if (arg.getType().cast<IntegerType>().getWidth() < 64)
             arg =
-                bz.create<arith::ExtUIOp>(call->getLoc(), bz.getI64Type(), arg);
+                arith::ExtUIOp::create(bz, call->getLoc(), bz.getI64Type(), arg);
           mlir::Value alloc =
               callMalloc(bz, getOperation(), call->getLoc(), arg);
-          bz.create<LLVM::StoreOp>(call->getLoc(), alloc, call->getOperand(0));
+          LLVM::StoreOp::create(bz, call->getLoc(), alloc, call->getOperand(0));
           {
-            auto retv = bz.create<ConstantIntOp>(
+            auto retv = ConstantIntOp::create(bz, 
                 call->getLoc(), 0,
                 call->getResult(0).getType().cast<IntegerType>().getWidth());
             Value vals[] = {retv};
@@ -1228,9 +1230,9 @@ void ConvertCudaRTtoCPU::runOnOperation() {
           auto mf = GetOrCreateFreeFunction(getOperation());
           OpBuilder bz(call);
           Value args[] = {call->getOperand(0)};
-          bz.create<mlir::LLVM::CallOp>(call->getLoc(), mf, args);
+          mlir::LLVM::CallOp::create(bz, call->getLoc(), mf, args);
           {
-            auto retv = bz.create<ConstantIntOp>(
+            auto retv = ConstantIntOp::create(bz, 
                 call->getLoc(), 0,
                 call->getResult(0).getType().cast<IntegerType>().getWidth());
             Value vals[] = {retv};
@@ -1242,7 +1244,7 @@ void ConvertCudaRTtoCPU::runOnOperation() {
           // TODO if we have async kernels we must preserve this and lower it to
           // a CPU equivalent
           OpBuilder bz(call);
-          auto retv = bz.create<ConstantIntOp>(
+          auto retv = ConstantIntOp::create(bz, 
               call->getLoc(), 0,
               call->getResult(0).getType().cast<IntegerType>().getWidth());
           Value vals[] = {retv};
@@ -1251,7 +1253,7 @@ void ConvertCudaRTtoCPU::runOnOperation() {
         } else if (callee == "cudaGetLastError" ||
                    callee == "cudaPeekAtLastError") {
           OpBuilder bz(call);
-          auto retv = bz.create<ConstantIntOp>(
+          auto retv = ConstantIntOp::create(bz, 
               call->getLoc(), 0,
               call->getResult(0).getType().cast<IntegerType>().getWidth());
           Value vals[] = {retv};
@@ -1370,7 +1372,7 @@ void ConvertCudaRTtoHipRT::runOnOperation() {
   OpBuilder builder(&getContext());
   getOperation().walk([&](mlir::NVVM::Barrier0Op op) {
     builder.setInsertionPoint(op);
-    builder.create<mlir::ROCDL::BarrierOp>(op->getLoc());
+    mlir::ROCDL::BarrierOp::create(builder, op->getLoc());
     op->erase();
   });
 }
