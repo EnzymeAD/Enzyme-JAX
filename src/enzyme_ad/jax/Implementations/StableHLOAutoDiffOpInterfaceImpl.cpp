@@ -2279,25 +2279,92 @@ public:
   }
 };
 
-class AutoDiffSort
-    : public AutoDiffOpInterface::ExternalModel<AutoDiffSort, SortOp> {
+class AutoDiffSortFwd
+    : public AutoDiffOpInterface::ExternalModel<AutoDiffSortFwd, SortOp> {
 public:
   LogicalResult createForwardModeTangent(Operation *op, OpBuilder &builder,
                                          MGradientUtils *gutils) const {
+    if (gutils->width > 1) {
+      op->emitError(
+          "TODO: AutoDiffSortFwd does not support batched forward mode");
+      return failure();
+    }
 
-    // TODO: we may need to record, for every successor, which of its inputs
-    // need a shadow to recreate the body correctly.
-    llvm::SmallDenseSet<unsigned> operandPositionsToShadow;
-    llvm::SmallDenseSet<unsigned> resultPositionsToShadow;
+    auto sortOp = cast<stablehlo::SortOp>(op);
 
-    for (auto res : op->getResults())
-      if (!gutils->isConstantValue(res)) {
-        operandPositionsToShadow.insert(res.getResultNumber());
-        resultPositionsToShadow.insert(res.getResultNumber());
+    DenseMap<int32_t, int32_t> gradMapping;
+
+    SmallVector<Value> newOperands;
+    for (auto operand : sortOp.getInputs()) {
+      newOperands.push_back(gutils->getNewFromOriginal(operand));
+    }
+    for (auto [i, operand] : llvm::enumerate(sortOp.getInputs())) {
+      if (!gutils->isConstantValue(operand)) {
+        newOperands.push_back(gutils->invertPointerM(operand, builder));
+        gradMapping[i] = newOperands.size() - 1;
       }
+    }
 
-    return mlir::enzyme::detail::controlFlowForwardHandler(
-        op, builder, gutils, operandPositionsToShadow, resultPositionsToShadow);
+    auto newSortOp = stablehlo::SortOp::create(
+        builder, sortOp.getLoc(), newOperands,
+        builder.getI64IntegerAttr(sortOp.getDimension()),
+        sortOp.getIsStableAttr());
+
+    IRMapping regionMapper;
+    auto &origComparator = sortOp.getComparator();
+    auto &origBlock = origComparator.front();
+
+    auto &newComparator = newSortOp.getComparator();
+    auto *newBlock = new Block();
+    newComparator.push_back(newBlock);
+
+    {
+      SmallVector<Type> scalarArgTys;
+      for (auto arg : sortOp.getInputs()) {
+        auto elTy = RankedTensorType::get(
+            {}, cast<TensorType>(arg.getType()).getElementType());
+        scalarArgTys.push_back(elTy);
+        scalarArgTys.push_back(elTy);
+      }
+      for (auto [i, arg] : llvm::enumerate(sortOp.getInputs())) {
+        if (gradMapping.count(i)) {
+          auto elTy = RankedTensorType::get(
+              {}, cast<TensorType>(arg.getType()).getElementType());
+          scalarArgTys.push_back(elTy);
+          scalarArgTys.push_back(elTy);
+        }
+      }
+      newBlock->addArguments(
+          scalarArgTys,
+          SmallVector<Location>(scalarArgTys.size(), op->getLoc()));
+    }
+
+    IRMapping mapper;
+    for (int64_t i = 0; i < origBlock.getNumArguments(); i++)
+      mapper.map(origBlock.getArgument(i), newBlock->getArgument(i));
+
+    {
+      OpBuilder::InsertionGuard guard(builder);
+      builder.setInsertionPointToStart(newBlock);
+      for (Operation &origOpInside : origBlock) {
+        builder.clone(origOpInside, mapper);
+      }
+    }
+
+    SmallVector<Value> replacementResults(sortOp.getNumResults());
+    for (int32_t i = 0; i < sortOp.getNumResults(); i++) {
+      replacementResults[i] = newSortOp.getResults()[i];
+      auto origRes = sortOp.getResults()[i];
+      if (!gutils->isConstantValue(origRes)) {
+        int32_t j = gradMapping[i];
+        gutils->setDiffe(origRes, newSortOp.getResults()[j], builder);
+      }
+    }
+
+    gutils->replaceOrigOpWith(op, replacementResults);
+    gutils->originalToNewFnOps[op] = newSortOp;
+    gutils->eraseIfUnused(op);
+    return success();
   }
 };
 
@@ -3701,8 +3768,6 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
                             stablehlo::StablehloDialect *) {
     registerInterfaces(context);
 
-    // SortOp::attachInterface<AutoDiffSort>(*context);
-
     WhileOp::attachInterface<WhileOpEnzymeOpsRemover>(*context);
     IfOp::attachInterface<IfOpEnzymeOpsRemover>(*context);
 
@@ -3722,6 +3787,8 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     IfOp::attachInterface<AutoDiffIfFwd>(*context);
     IfOp::attachInterface<AutoDiffIfCF>(*context);
 
+    SortOp::attachInterface<AutoDiffSortFwd>(*context);
+    // SortOp::attachInterface<AutoDiffSortRev>(*context);
     WhileOp::attachInterface<AutoDiffWhileFwd>(*context);
     WhileOp::attachInterface<AutoDiffWhileRev>(*context);
     ReduceOp::attachInterface<AutoDiffReduceCF<ReduceOp>>(*context);
