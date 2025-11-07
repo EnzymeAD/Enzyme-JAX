@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1762457587663,
+  "lastUpdate": 1762477807334,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "avikpal@mit.edu",
-            "name": "Avik Pal",
-            "username": "avik-pal"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "9b1e2a60c0131c796d014d87b277134eff978d26",
-          "message": "feat: get_dimension_size batch interface (#1502)",
-          "timestamp": "2025-10-21T20:21:20-04:00",
-          "tree_id": "bd07a7bfe8108dfed5a2488d39957981e4869639",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/9b1e2a60c0131c796d014d87b277134eff978d26"
-        },
-        "date": 1761104436481,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.000004142056999262422,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.0000042869389988482,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001476135021977,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001478948342002,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2199,6 +2155,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001428062787992,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gh@wsmoses.com",
+            "name": "William S. Moses",
+            "username": "wsmoses"
+          },
+          "committer": {
+            "email": "gh@wsmoses.com",
+            "name": "William S. Moses",
+            "username": "wsmoses"
+          },
+          "distinct": true,
+          "id": "ebf0544faa96f7eff3bee167a6c42b62f89f9c82",
+          "message": "More rocm fix",
+          "timestamp": "2025-11-06T16:22:38-06:00",
+          "tree_id": "514529a591ad5cbddd4460d0deb8e3d3227cda95",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/ebf0544faa96f7eff3bee167a6c42b62f89f9c82"
+        },
+        "date": 1762477806027,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004396587099472526,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004314664100820664,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001368273229993,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001318798172011,
             "unit": "s"
           }
         ]
