@@ -1842,7 +1842,7 @@ ConvertGPUModuleOp::matchAndRewrite(gpu::GPUModuleOp kernelModule,
         unregisterFatBinaryFuncName = "__cudaUnregisterFatBinary";
         registerFatBinaryEndFuncName = "__cudaRegisterFatBinaryEnd";
         requiresRegisterEnd = true;
-      } else if (gpuTarget == "rocm") {
+      } else {
         registerFatBinaryFuncName = "__hipRegisterFatBinary";
         registerFunctionFuncName = "__hipRegisterFunction";
         registerVarFuncName = "__hipRegisterVar";
@@ -1963,7 +1963,6 @@ ConvertGPUModuleOp::matchAndRewrite(gpu::GPUModuleOp kernelModule,
           {
             PatternRewriter::InsertionGuard B(rewriter);
             rewriter.setInsertionPointToEnd(moduleOp.getBody());
-            stub = moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(stubName);
             stub = LLVM::LLVMFuncOp::create(
                 rewriter, ctorloc, getFuncStubName(moduleName, f.getName()),
                 LLVM::LLVMFunctionType::get(llvmVoidType, {}),
@@ -2225,7 +2224,7 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
   std::string launchFuncName;
   if (gpuTarget == "cuda") {
     launchFuncName = "cudaLaunchKernel";
-  } else if (gpuTarget == "rocm") {
+  } else {
     launchFuncName = "hipLaunchKernel";
   }
 
@@ -3950,7 +3949,7 @@ populateCStyleGPUFuncLoweringPatterns(RewritePatternSet &patterns,
 
       populateLibDeviceConversionPatterns(typeConverter, patterns, benefit);
       patterns.add<GPUBarrierToNVVM>(typeConverter, benefit);
-    } else if (gpuTarget == "rocm") {
+    } else {
       using namespace mlir::gpu::index_lowering;
       PatternBenefit benefit(1);
       PatternBenefit highBenefit(2);
@@ -4387,7 +4386,7 @@ struct ConvertPolygeistToLLVMPass
       Type tys[] = {ptrty, i64, i32, i64, i32, ptrty, i64, ptrty};
       if (backend == "cuda") {
         LLVM::lookupOrCreateFn(rewriter, m, "cudaLaunchKernel", tys, i32);
-      } else if (backend == "rocm") {
+      } else {
         LLVM::lookupOrCreateFn(rewriter, m, "hipLaunchKernel", tys, i32);
       }
     }
