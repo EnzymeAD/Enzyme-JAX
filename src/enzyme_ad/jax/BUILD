@@ -668,6 +668,8 @@ cc_library(
     ],
     deps = [
         ":EnzymeXLAAttrsIncGen",
+        ":EnzymeXLACanonicalizers",
+        ":EnzymeXLADialectUtils",
         ":EnzymeXLAOpsIncGen",
         "@enzyme//:EnzymeMLIR",
         "@llvm-project//llvm:Support",
