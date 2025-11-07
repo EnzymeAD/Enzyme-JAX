@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1762544290470,
+  "lastUpdate": 1762549164808,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "ivanov.i.aa@m.titech.ac.jp",
-            "name": "Ivan R. Ivanov",
-            "username": "ivanradanov"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "1e54673c056fb0609696ca99da98f69186558738",
-          "message": "Fix inlining LLVM functions when we are in a GPU execution context  (#1508)\n\n* Avoid generating allocas on the host\n\n* fix\n\n* add test\n\n* fix test\n\n* fix memory error\n\n* fix\n\n* depdial\n\n* fix\n\n---------\n\nCo-authored-by: William S. Moses <gh@wsmoses.com>",
-          "timestamp": "2025-10-23T21:37:56-05:00",
-          "tree_id": "0cf05f66f09d989cf04d3e18172d9c05544c2980",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/1e54673c056fb0609696ca99da98f69186558738"
-        },
-        "date": 1761278493702,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.000004218969901558012,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.000004310426797019317,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001654816534952,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001385609487013,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2199,6 +2155,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001326188359991,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "avikpal@mit.edu",
+            "name": "Avik Pal",
+            "username": "avik-pal"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "32eeef933b3df77237434cc5f3ceed3de12772a4",
+          "message": "feat: support partial indexing to batch (#1587)\n\n* feat: exploit the batch_group_dim for batching kernel\n\n* fix: mimic jax batching\n\n* feat: support partial indexing to batch\n\n* chore: run fmt",
+          "timestamp": "2025-11-07T13:39:48-05:00",
+          "tree_id": "6c383208a1e82e32602cfed2fb8e4c619a2923e0",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/32eeef933b3df77237434cc5f3ceed3de12772a4"
+        },
+        "date": 1762549163679,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004371509997872636,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004321837998577393,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001365762186993,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001342667606018,
             "unit": "s"
           }
         ]
