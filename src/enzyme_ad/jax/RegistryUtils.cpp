@@ -90,6 +90,7 @@
 
 #include "src/enzyme_ad/jax/Dialect/Distributed/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Tessera/Dialect.h"
+#include "src/enzyme_ad/jax/Dialect/Perfify/Dialect.h"
 
 #include "shardy/dialect/sdy/ir/dialect.h"
 #include "shardy/dialect/sdy/ir/utils.h"
@@ -208,6 +209,7 @@ void registerDialects(mlir::DialectRegistry &registry) {
   registry.insert<mlir::enzymexla::EnzymeXLADialect>();
   registry.insert<mlir::enzyme::distributed::DistributedDialect>();
   registry.insert<mlir::enzyme::tessera::TesseraDialect>();
+  registry.insert<mlir::enzyme::perfify::PerfifyDialect>();
   registry.insert<mlir::sdy::SdyDialect>();
   registry.insert<mlir::ub::UBDialect>();
   registry.insert<mlir::triton::TritonDialect>();
