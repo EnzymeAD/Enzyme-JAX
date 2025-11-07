@@ -24,7 +24,7 @@ module {
   }
 }
 
-// CHECK:  tt.func @add_kernel(%[[arg0:.+]]: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %[[arg1:.+]]: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %[[arg2:.+]]: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %[[arg3:.+]]: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %[[arg4:.+]]: !tt.ptr<f32>, %[[arg5:.+]]: i32) attributes {noinline = false} {
+// CHECK:  tt.func @add_kernel(%[[arg0:.+]]: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %[[arg1:.+]]: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %[[arg2:.+]]: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %[[arg3:.+]]: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %[[arg4:.+]]: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %[[arg5:.+]]: i32 {tt.divisibility = 16 : i32}) attributes {noinline = false} {
 // CHECK-NEXT:    %[[c1024_i32:.+]] = arith.constant 1024 : i32
 // CHECK-NEXT:    %[[v0:.+]] = tt.get_program_id x : i32
 // CHECK-NEXT:    %[[v1:.+]] = arith.muli %[[v0]], %[[c1024_i32]] : i32
