@@ -11,7 +11,7 @@ include "mlir/IR/OpBase.td"
 //===----------------------------------------------------------------------===//
 
 def TritonExtDialect : Dialect {
-  let name = "enzymexla_triton_ext";
+  let name = "enzymexla_tt_ext";
   let summary = "A dialect for extending Triton";
   let cppNamespace = "::mlir::enzymexla::triton_ext";
   let dependentDialects = [

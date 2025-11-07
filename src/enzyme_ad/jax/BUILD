@@ -738,14 +738,14 @@ gentbl_cc_library(
         (
             [
                 "-gen-dialect-decls",
-                "-dialect=enzymexla_triton_ext",
+                "-dialect=enzymexla_tt_ext",
             ],
             "Dialect/TritonExt/TritonExtDialect.h.inc",
         ),
         (
             [
                 "-gen-dialect-defs",
-                "-dialect=enzymexla_triton_ext",
+                "-dialect=enzymexla_tt_ext",
             ],
             "Dialect/TritonExt/TritonExtDialect.cpp.inc",
         ),
