@@ -25,6 +25,7 @@ namespace enzyme {
 
 using namespace mlir;
 using namespace mlir::enzyme;
+using namespace mlir::enzymexla;
 
 namespace {
 
