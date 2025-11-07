@@ -211,6 +211,7 @@ private:
     mlir::stablehlo::DynamicSliceOp sliceOp;
     int64_t inductionVarDimension;
     bool intermediateReshape;
+    llvm::SmallVector<int64_t> reshapeShape;
   };
 
   enum class BatchLiftingMode {
