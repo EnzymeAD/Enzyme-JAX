@@ -24423,7 +24423,7 @@ struct WhileIsCopySimplify
       return failure();
     DominanceInfo domInfo(parentFunc);
 
-    DenseMap<Value, APInt> inductionVarOffsets = info.getInductionVarOffsets();
+    auto inductionVarOffsets = info.getInductionVarOffsets();
 
     auto returnOp = dyn_cast<stablehlo::ReturnOp>(whileBody.getTerminator());
     if (!returnOp)
@@ -24608,7 +24608,7 @@ private:
       PatternRewriter &rewriter, DominanceInfo &domInfo, Block *parentBlock,
       stablehlo::DynamicUpdateSliceOp dusOp, int32_t dusInductionVarDim,
       stablehlo::WhileOp whileOp,
-      DenseMap<Value, APInt> &inductionVarOffsets) const {
+      llvm::MapVector<Value, APInt> &inductionVarOffsets) const {
     SmallVector<SmallVector<int32_t>> indexTracking(1);
     indexTracking[0] = {dusInductionVarDim};
     SmallVector<Operation *> updateChain;
@@ -24656,7 +24656,7 @@ private:
       PatternRewriter &rewriter, DominanceInfo &domInfo, Block *parentBlock,
       Operation *op, SmallVectorImpl<SmallVector<int32_t>> &indexTracking,
       stablehlo::DynamicUpdateSliceOp dusOp, stablehlo::WhileOp whileOp,
-      DenseMap<Value, APInt> &inductionVarOffsets,
+      llvm::MapVector<Value, APInt> &inductionVarOffsets,
       SmallVectorImpl<Operation *> &updateChain) const {
     if (!op)
       return;
@@ -24773,7 +24773,7 @@ private:
 
   int32_t
   getInductionVariableDimension(stablehlo::DynamicSliceOp sliceOp,
-                                DenseMap<Value, APInt> &inductionVarOffsets,
+                                llvm::MapVector<Value, APInt> &inductionVarOffsets,
                                 stablehlo::WhileOp whileOp) const {
     int32_t inductionVarDimension = -1;
 
@@ -24794,7 +24794,7 @@ private:
 
   int32_t
   getInductionVariableDimension(stablehlo::DynamicUpdateSliceOp dusOp,
-                                DenseMap<Value, APInt> &inductionVarOffsets,
+                                llvm::MapVector<Value, APInt> &inductionVarOffsets,
                                 stablehlo::WhileOp whileOp) const {
     int32_t inductionVarDimension = -1;
 
