@@ -948,7 +948,9 @@ struct LowerJITPass
     registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
                     mlir::math::MathDialect, mlir::memref::MemRefDialect,
                     mlir::scf::SCFDialect, mlir::vector::VectorDialect,
-                    mlir::gpu::GPUDialect, mlir::nvgpu::NVGPUDialect,
+                    mlir::gpu::GPUDialect,
+                    // FIXME: add once https://github.com/triton-lang/triton/issues/8348 is fixed upstream
+                    // mlir::nvgpu::NVGPUDialect,
                     mlir::NVVM::NVVMDialect, mlir::LLVM::LLVMDialect>();
   }
 

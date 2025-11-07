@@ -10,6 +10,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "src/enzyme_ad/jax/Dialect/TritonExt/Ops.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
@@ -332,6 +333,12 @@ struct MarkFunctionMemoryEffectsPass
           }
         } else if (auto kcall = dyn_cast<enzymexla::KernelCallOp>(op)) {
           if (kcall.getXlaSideEffectFreeAttr()) {
+            return WalkResult::advance();
+          } else {
+            insertMemoryEffects(effects);
+          }
+        } else if (auto tcall = dyn_cast<triton_ext::TritonCallOp>(op)) {
+          if (tcall.getXlaSideEffectFreeAttr()) {
             return WalkResult::advance();
           } else {
             insertMemoryEffects(effects);
