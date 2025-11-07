@@ -16267,10 +16267,10 @@ struct WhileSimplify
       Value condArg = cond->getArgument(i);
 
       bool canHoist = inputValue.getDefiningOp<stablehlo::ConstantOp>();
-      if (auto BA = dyn_cast<BlockArgument>(inputValue)) {
-        canHoist |= isa<FunctionOpInterface>(BA.getOwner()->getParentOp());
-      } else if (hoist_all) {
+      if (hoist_all) {
         canHoist = true;
+      } else if (auto BA = dyn_cast<BlockArgument>(inputValue)) {
+        canHoist |= isa<FunctionOpInterface>(BA.getOwner()->getParentOp());
       }
 
       Value bodyRes = bodyTerm->getOperand(i);
