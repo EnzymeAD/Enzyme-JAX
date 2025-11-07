@@ -203,7 +203,8 @@ void registerDialects(mlir::DialectRegistry &registry) {
   registry.insert<mlir::stablehlo::check::CheckDialect>();
   registry.insert<mlir::chlo::ChloDialect>();
   registry.insert<mlir::vector::VectorDialect>();
-  // FIXME: add once https://github.com/triton-lang/triton/issues/8348 is fixed upstream
+  // FIXME: add once https://github.com/triton-lang/triton/issues/8348 is fixed
+  // upstream
   // registry.insert<mlir::nvgpu::NVGPUDialect>();
   registry.insert<mlir::transform::TransformDialect>();
   registry.insert<mlir::ub::UBDialect>();
@@ -242,7 +243,8 @@ void loadAllRegisteredDialects(mlir::MLIRContext &context) {
   context.loadDialect<mlir::stablehlo::check::CheckDialect>();
   context.loadDialect<mlir::chlo::ChloDialect>();
   context.loadDialect<mlir::vector::VectorDialect>();
-  // FIXME: add once https://github.com/triton-lang/triton/issues/8348 is fixed upstream
+  // FIXME: add once https://github.com/triton-lang/triton/issues/8348 is fixed
+  // upstream
   // context.loadDialect<mlir::nvgpu::NVGPUDialect>();
   context.loadDialect<mlir::transform::TransformDialect>();
   context.loadDialect<mlir::ub::UBDialect>();
