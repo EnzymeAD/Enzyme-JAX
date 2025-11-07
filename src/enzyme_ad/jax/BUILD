@@ -668,6 +668,8 @@ cc_library(
     ],
     deps = [
         ":EnzymeXLAAttrsIncGen",
+        ":EnzymeXLACanonicalizers",
+        ":EnzymeXLADialectUtils",
         ":EnzymeXLAOpsIncGen",
         "@enzyme//:EnzymeMLIR",
         "@llvm-project//llvm:Support",
@@ -714,6 +716,27 @@ cc_library(
 )
 
 cc_library(
+    name = "EnzymeXLADialectUtils",
+    srcs = ["Dialect/Utils.cpp"],
+    hdrs = ["Dialect/Utils.h"],
+    deps = [
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:SideEffectInterfaces",
+    ],
+)
+
+cc_library(
+    name = "EnzymeXLACanonicalizers",
+    srcs = [],
+    hdrs = ["Dialect/Canonicalizers.h"],
+    deps = [
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:LLVMDialect",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+cc_library(
     name = "XLADerivatives",
     srcs = glob([
         "Implementations/*.cpp",
@@ -749,6 +772,8 @@ cc_library(
         ":DistributedTypesIncGen",
         ":EnzymeHLOPatternsIncGen",
         ":EnzymeXLAAttrsIncGen",
+        ":EnzymeXLACanonicalizers",
+        ":EnzymeXLADialectUtils",
         ":EnzymeXLAOpsIncGen",
         ":EnzymeXLAPassesIncGen",
         ":RaisingTransformOps",
