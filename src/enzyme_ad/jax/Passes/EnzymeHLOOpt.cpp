@@ -24771,10 +24771,10 @@ private:
     return;
   }
 
-  int32_t
-  getInductionVariableDimension(stablehlo::DynamicSliceOp sliceOp,
-                                llvm::MapVector<Value, APInt> &inductionVarOffsets,
-                                stablehlo::WhileOp whileOp) const {
+  int32_t getInductionVariableDimension(
+      stablehlo::DynamicSliceOp sliceOp,
+      llvm::MapVector<Value, APInt> &inductionVarOffsets,
+      stablehlo::WhileOp whileOp) const {
     int32_t inductionVarDimension = -1;
 
     for (size_t i = 0; i < sliceOp.getStartIndices().size(); i++) {
@@ -24792,10 +24792,10 @@ private:
     return inductionVarDimension;
   }
 
-  int32_t
-  getInductionVariableDimension(stablehlo::DynamicUpdateSliceOp dusOp,
-                                llvm::MapVector<Value, APInt> &inductionVarOffsets,
-                                stablehlo::WhileOp whileOp) const {
+  int32_t getInductionVariableDimension(
+      stablehlo::DynamicUpdateSliceOp dusOp,
+      llvm::MapVector<Value, APInt> &inductionVarOffsets,
+      stablehlo::WhileOp whileOp) const {
     int32_t inductionVarDimension = -1;
 
     for (size_t i = 0; i < dusOp.getStartIndices().size(); i++) {

@@ -927,7 +927,7 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
         batchOperands[i] = ds->getOperand(0);
         mappedSliceInfos[i] = *itr;
         if (mustBeIntermediateReshape && !itr->intermediateReshape) {
-            return false;
+          return false;
         }
         continue;
       } else {
