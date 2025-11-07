@@ -3949,7 +3949,7 @@ populateCStyleGPUFuncLoweringPatterns(RewritePatternSet &patterns,
 
       populateLibDeviceConversionPatterns(typeConverter, patterns, benefit);
       patterns.add<GPUBarrierToNVVM>(typeConverter, benefit);
-    } else if (gpuTarget == "rocm"){
+    } else if (gpuTarget == "rocm") {
       using namespace mlir::gpu::index_lowering;
       PatternBenefit benefit(1);
       PatternBenefit highBenefit(2);
@@ -4393,9 +4393,8 @@ struct ConvertPolygeistToLLVMPass
       auto i64 = rewriter.getIntegerType(64);
       auto ptrty = LLVM::LLVMPointerType::get(rewriter.getContext());
       Type tys[] = {ptrty, i64, i32, i64, i32, ptrty, i64, ptrty};
-      
+
       LLVM::lookupOrCreateFn(rewriter, m, launchFuncName, tys, i32);
-      
     }
 
     for (auto mod : gmods) {
@@ -4580,7 +4579,6 @@ struct ConvertPolygeistToLLVMPass
         signalPassFailure();
         return;
       }
-
     }
 
     if (StringRef(gpuTarget).starts_with("xla")) {
@@ -4627,23 +4625,22 @@ struct ConvertPolygeistToLLVMPass
       return;
     }
     {
-        const char *GetDeviceFromHostFuncName =
-            "__reactant$get_device_from_host";
-        SmallVector<LLVM::CallOp> toHandle;
-        m->walk([&](LLVM::CallOp call) {
-          CallInterfaceCallable callable = call.getCallableForCallee();
-          auto callee = dyn_cast<SymbolRefAttr>(callable);
-          if (!callee)
-            return;
-          if (callee.getLeafReference() == GetDeviceFromHostFuncName)
-            toHandle.push_back(call);
-        });
-        for (auto call : toHandle) {
-          assert(call->getNumResults() == 1 && call.getNumOperands() == 1);
-          call.getResult().replaceAllUsesWith(call.getArgOperands()[0]);
-          call->erase();
-        }
+      const char *GetDeviceFromHostFuncName = "__reactant$get_device_from_host";
+      SmallVector<LLVM::CallOp> toHandle;
+      m->walk([&](LLVM::CallOp call) {
+        CallInterfaceCallable callable = call.getCallableForCallee();
+        auto callee = dyn_cast<SymbolRefAttr>(callable);
+        if (!callee)
+          return;
+        if (callee.getLeafReference() == GetDeviceFromHostFuncName)
+          toHandle.push_back(call);
+      });
+      for (auto call : toHandle) {
+        assert(call->getNumResults() == 1 && call.getNumOperands() == 1);
+        call.getResult().replaceAllUsesWith(call.getArgOperands()[0]);
+        call->erase();
       }
+    }
   }
 
   void runOnOperation() override {
