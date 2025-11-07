@@ -949,8 +949,8 @@ struct LowerJITPass
                     mlir::math::MathDialect, mlir::memref::MemRefDialect,
                     mlir::scf::SCFDialect, mlir::vector::VectorDialect,
                     mlir::gpu::GPUDialect,
-                    // FIXME: add once https://github.com/triton-lang/triton/issues/8348 is
-                    // fixed upstream
+                    // FIXME:
+                    // https://github.com/triton-lang/triton/issues/8348
                     // mlir::nvgpu::NVGPUDialect,
                     mlir::NVVM::NVVMDialect, mlir::LLVM::LLVMDialect>();
   }
