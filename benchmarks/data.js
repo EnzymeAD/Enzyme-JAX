@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1762563419394,
+  "lastUpdate": 1762585133455,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "238314553+enzymead-bot[bot]@users.noreply.github.com",
-            "name": "enzymead-bot[bot]",
-            "username": "enzymead-bot[bot]"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "57c7154bd98aa670a51cfe55335a2786d55412c6",
-          "message": "Update EnzymeAD/Enzyme to commit 9946ebe14697e2fc56978f2b08aa969cea096e70 (#1514)\n\nDiff: https://github.com/EnzymeAD/Enzyme/compare/989a56376195c78cb1e7d9847945ced50f101dbd...9946ebe14697e2fc56978f2b08aa969cea096e70\n\nCo-authored-by: enzymead-bot[bot] <238314553+enzymead-bot[bot]@users.noreply.github.com>",
-          "timestamp": "2025-10-25T16:42:06+01:00",
-          "tree_id": "d2633327c9585ab4174f812cd0da8b69e7798fef",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/57c7154bd98aa670a51cfe55335a2786d55412c6"
-        },
-        "date": 1761413582708,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.000005347679002443329,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.000004560647998005152,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001507630862004,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001501561831973,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2199,6 +2155,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001499391246004,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "238314553+enzymead-bot[bot]@users.noreply.github.com",
+            "name": "enzymead-bot[bot]",
+            "username": "enzymead-bot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "24641f33ea39c03c45b07ce99e2881ad50128538",
+          "message": "Update jax-ml/jax to commit 30e565311af559569b4842bddced4b461f21dd73 (#1586)\n\n* Update jax-ml/jax to commit 30e565311af559569b4842bddced4b461f21dd73\n\nDiff: https://github.com/jax-ml/jax/compare/eb2d56b99ceef305933d9293d5c1715fdb333950...30e565311af559569b4842bddced4b461f21dd73\n\n* fix\n\n* remove rocm tmpdir patch\n\n---------\n\nCo-authored-by: enzymead-bot[bot] <238314553+enzymead-bot[bot]@users.noreply.github.com>\nCo-authored-by: William S. Moses <gh@wsmoses.com>",
+          "timestamp": "2025-11-07T22:51:51-06:00",
+          "tree_id": "289469ea040dab7ed40380ae1a6f4377d7fa9e5c",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/24641f33ea39c03c45b07ce99e2881ad50128538"
+        },
+        "date": 1762585132339,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004388645000290125,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004541678001987748,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001507710175996,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001508200245996,
             "unit": "s"
           }
         ]
