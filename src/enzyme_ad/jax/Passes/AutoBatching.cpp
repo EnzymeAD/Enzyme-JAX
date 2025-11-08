@@ -869,6 +869,10 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
     return anyOpRewritten ? success() : failure();
 
   for (auto &[op, slices] : userOpToSlicesMap) {
+    if (isa<stablehlo::DynamicSliceOp, stablehlo::DynamicUpdateSliceOp>(op) ||
+        op->getNumResults() != 1)
+      continue;
+
     auto batchInterface = dyn_cast<BatchOpInterface>(op);
     if (batchInterface || op->hasTrait<OpTrait::Elementwise>()) {
       if (liftOperationByBatching(rewriter, whileOp, slices, op, info)) {
@@ -1042,7 +1046,8 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
 
         newOperands.push_back(newOperand);
       } else {
-        auto operandShape = operandType.getShape();
+        auto slicedShape =
+            cast<RankedTensorType>(newSlice.getType()).getShape();
 
         SmallVector<int64_t> mapping(operandRank);
         for (size_t i = 0; i < sliceDim; i++)
@@ -1052,12 +1057,13 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
           mapping[i] = i + 1;
 
         SmallVector<int64_t> resultShape(operandRank + 1);
-        resultShape[0] = info.getConstantLimit().value();
+        resultShape[0] =
+            info.getConstantLimit().value() - info.getConstantStart().value();
         resultShape[sliceDim + 1] = 1;
         for (size_t i = 0; i < sliceDim; i++)
-          resultShape[i + 1] = operandShape[i];
+          resultShape[i + 1] = slicedShape[i];
         for (size_t i = sliceDim + 1; i < operandRank; i++)
-          resultShape[i + 1] = operandShape[i];
+          resultShape[i + 1] = slicedShape[i];
 
         auto broadcastedOperand = stablehlo::BroadcastInDimOp::create(
             rewriter, whileOp->getLoc(),
@@ -1065,6 +1071,7 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
             newSlice, rewriter.getDenseI64ArrayAttr(mapping));
         newOperands.push_back(broadcastedOperand->getResult(0));
       }
+
       break;
     }
     case BatchLiftingMode::DEFINED_OUTSIDE_WHILE: {
@@ -1097,7 +1104,8 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
   auto resultType = cast<RankedTensorType>(op->getResult(0).getType());
   auto resultShape = resultType.getShape();
   SmallVector<int64_t> outputShape(resultShape.size() + 1);
-  outputShape[0] = info.getConstantLimit().value();
+  outputShape[0] =
+      info.getConstantLimit().value() - info.getConstantStart().value();
   for (int i = 0; i < resultShape.size(); i++)
     outputShape[i + 1] = resultShape[i];
 
@@ -1132,6 +1140,7 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
 
   enzyme::batchutils::batchOperationInline(
       rewriter, batchOp, cast<FunctionOpInterface>(func.getOperation()));
+
   return true;
 }
 
