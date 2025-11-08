@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1762555714628,
+  "lastUpdate": 1762563419394,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "avikpal@mit.edu",
-            "name": "Avik Pal",
-            "username": "avik-pal"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "682c439f6819ccb1e1271324a7baeaf5c18924be",
-          "message": "feat: support more data movement ops in `while_is_copy` (#1507)\n\n* feat: support transposed copy\n\n* feat: support non-constant extra indices\n\n* fix: only emit new ops if sure",
-          "timestamp": "2025-10-24T10:15:46-04:00",
-          "tree_id": "c3951a8aaef79c9179d7235378be399bdc27cdda",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/682c439f6819ccb1e1271324a7baeaf5c18924be"
-        },
-        "date": 1761319114405,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.000004394761298317462,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.000004432443296536803,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001361593089008,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001352883182,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2199,6 +2155,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001417176780989,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "avikpal@mit.edu",
+            "name": "Avik Pal",
+            "username": "avik-pal"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6e58b86686d04b2f803925a9ecc0021fbec1102d",
+          "message": "fix: infinite raising + correct broadcast shape (#1593)",
+          "timestamp": "2025-11-07T19:06:25-05:00",
+          "tree_id": "b272fd5ada5ff9fd9021bf78fc923c36c99bdeda",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/6e58b86686d04b2f803925a9ecc0021fbec1102d"
+        },
+        "date": 1762563418795,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004448425001464784,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.00000446261799952481,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001502956085983,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001499391246004,
             "unit": "s"
           }
         ]
