@@ -1,4 +1,4 @@
-JAX_COMMIT = "eb2d56b99ceef305933d9293d5c1715fdb333950"
+JAX_COMMIT = "30e565311af559569b4842bddced4b461f21dd73"
 JAX_SHA256 = ""
 
 ENZYME_COMMIT = "68e62fbd1b496a60490266952916112b63e62a18"
@@ -105,19 +105,13 @@ sed -i.bak0 "s/tf_http_archive(/http_archive(/g" third_party/py/python_init_rule
 
 """,
     """
-sed -i.bak0 "s/_DEFAULT_ROCM_TOOLKIT_PATH =/_TMPDIR = \\"TMPDIR\\"\\n_DEFAULT_ROCM_TOOLKIT_PATH =/g" third_party/gpus/rocm_configure.bzl
-sed -i.bak0 "s/\\"%{gcc_host_compiler_path}\\"/\\"%{tmpdir}\\":get_host_environ(repository_ctx,_TMPDIR,\\"\\"), \\"%{gcc_host_compiler_path}\\"/g" third_party/gpus/rocm_configure.bzl
-sed -i.bak0 "s/VERBOSE =/TMPDIR= '%{tmpdir}'\\nVERBOSE =/g" third_party/gpus/crosstool/clang/bin/crosstool_wrapper_driver_rocm.tpl
-sed -i.bak0 "s/def main():/def main():\\n  if TMPDIR: os.environ['TMPDIR'] = TMPDIR/g" third_party/gpus/crosstool/clang/bin/crosstool_wrapper_driver_is_not_gcc.tpl third_party/gpus/crosstool/clang/bin/crosstool_wrapper_driver_rocm.tpl
+sed -i.bak0 "s/__chkstk/__chkstk_ms/g" xla/backends/cpu/codegen/builtin_definition_generator.cc
 """,
     """
-sed -i.bak0 "s/__chkstk/__chkstk_ms/g" xla/service/cpu/runtime_symbol_generator.cc
+sed -i.bak0 "1s/^/#include \\"llvm\\/Support\\/DynamicLibrary.h\\"\\n/g" xla/backends/cpu/codegen/builtin_definition_generator.cc
 """,
     """
-sed -i.bak0 "1s/^/#include \\"llvm\\/Support\\/DynamicLibrary.h\\"\\n/g" xla/service/cpu/runtime_symbol_generator.cc
-""",
-    """
-sed -i.bak0 "s/SymbolDef(__chkstk_ms)/SymbolDef(reinterpret_cast<void* (*)(size_t)>(llvm::sys::DynamicLibrary::SearchForAddressOfSymbol(\\"__chkstk_ms\\")))/g" xla/service/cpu/runtime_symbol_generator.cc
+sed -i.bak0 "s/SymbolDef(__chkstk_ms)/SymbolDef(reinterpret_cast<void* (*)(size_t)>(llvm::sys::DynamicLibrary::SearchForAddressOfSymbol(\\"__chkstk_ms\\")))/g" xla/backends/cpu/codegen/builtin_definition_generator.cc
 """,
     """
 sed -i.bak0 "s/Shlwapi/shlwapi/g" xla/tsl/platform/windows/load_library.cc xla/tsl/platform/windows/windows_file_system.cc xla/tsl/platform/windows/env.cc
