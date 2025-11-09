@@ -21,7 +21,6 @@ def MakeRange : TritonInst<"MakeRangeOp">;
 def : TritonReturnOp<"ReturnOp">;
 
 def : TritonInactiveOp<"AssertOp">;
-def : TritonInactiveOp<"BitcastOp">;
 def : TritonInactiveOp<"MakeRangeOp">;
 def : TritonInactiveOp<"PrintOp">;
 
