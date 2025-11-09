@@ -365,6 +365,9 @@ public:
       auto cur = todo.front();
       todo.pop_front();
 
+      if (seen.find(cur) != seen.end())
+        continue;
+
       SmallVector<Operation *, 2> localtodo;
       State status;
 
