@@ -808,13 +808,9 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
   SmallVector<DynamicSliceInfo> retainedSlices;
   for (auto [i, slice] : llvm::enumerate(candidateSlices)) {
     auto iotaDetection = detectIotaLikeTensor(slice.sliceOp.getOperand());
-    // TODO: optionally if the iota is just shifted, it would be better to
-    // insert the arithmetic operation to compute the offset than index into the
-    // iota
+
     if (iotaDetection &&
-        slice.inductionVarDimension == iotaDetection.value().dimension &&
-        iotaDetection.value().start == start + slice.offset &&
-        iotaDetection.value().limit == limit + slice.offset) {
+        slice.inductionVarDimension == iotaDetection.value().dimension) {
       anyOpRewritten = true;
 
       OpBuilder::InsertionGuard guard(rewriter);
@@ -823,8 +819,22 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
       auto sliceType =
           cast<RankedTensorType>(slice.sliceOp.getResult().getType());
       auto outElemType = sliceType.getElementType();
-      if (cast<TensorType>(newOperand.getType()).getElementType() !=
-          outElemType) {
+      auto opElemType = cast<TensorType>(newOperand.getType()).getElementType();
+
+      auto sliceStart = start + slice.offset;
+      auto iotaStart = iotaDetection.value().start;
+      auto scalarType = RankedTensorType::get({}, opElemType);
+      if (iotaStart != sliceStart) {
+        // induction var +/- diff
+        newOperand = stablehlo::AddOp::create(
+            rewriter, slice.sliceOp.getLoc(), newOperand,
+            stablehlo::ConstantOp::create(
+                rewriter, slice.sliceOp.getLoc(), scalarType,
+                cast<ElementsAttr>(
+                    makeAttr(scalarType, iotaStart - sliceStart))));
+      }
+
+      if (opElemType != outElemType) {
         newOperand = stablehlo::ConvertOp::create(
                          rewriter, slice.sliceOp.getLoc(),
                          RankedTensorType::get({}, outElemType), newOperand)
