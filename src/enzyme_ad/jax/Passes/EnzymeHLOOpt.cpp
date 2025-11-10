@@ -17212,58 +17212,56 @@ struct AssociativeCommonMulOpReordering final
 // Case 2: (op x (op (op x y) y)) -> (op (op x y) (op x y))
 // Case 3: (op x (op y (op x y))) -> (op (op x y) (op x y))
 // Case 4: (op x (op y (op y x))) -> (op (op x y) (op x y))
-template <typename Op>
 struct AssociativeBinaryOpReordering
-    : public CheckedOpRewritePattern<Op, AssociativeBinaryOpReordering<Op>> {
-  using CheckedOpRewritePattern<
-      Op, AssociativeBinaryOpReordering<Op>>::CheckedOpRewritePattern;
+    : public CheckedOpTraitRewritePattern<OpTrait::Elementwise,
+                                          AssociativeBinaryOpReordering> {
+  using CheckedOpTraitRewritePattern<
+      OpTrait::Elementwise,
+      AssociativeBinaryOpReordering>::CheckedOpTraitRewritePattern;
 
   // TODO: generalize to the case where lhs is an Op
-  LogicalResult matchAndRewriteImpl(Op op, PatternRewriter &rewriter) const {
-    auto lhs = op.getLhs();
-    auto rhsOp = op.getRhs().template getDefiningOp<Op>();
-    if (!rhsOp)
+  LogicalResult matchAndRewriteImpl(Operation *op,
+                                    PatternRewriter &rewriter) const {
+    if (op->getNumOperands() != 2 || !stablehlo::isAssociativeOp(op))
       return failure();
 
-    auto rhslhs = rhsOp.getLhs();
-    auto rhsrhs = rhsOp.getRhs();
+    auto lhs = op->getOperand(0);
+    auto rhs = op->getOperand(1);
+    auto rhsOp = rhs.getDefiningOp();
+    if (!rhsOp || rhsOp->getName() != op->getName())
+      return failure();
 
-    auto rhslhsOp = rhslhs.template getDefiningOp<Op>();
-    if (rhslhsOp) {
-      auto rhslhslhs = rhslhsOp.getLhs();
-      auto rhslhsrhs = rhslhsOp.getRhs();
+    auto rhslhs = rhsOp->getOperand(0);
+    auto rhsrhs = rhsOp->getOperand(1);
 
-      // Case 1
-      if (lhs == rhslhsrhs && rhslhslhs == rhsrhs) {
-        rewriter.replaceOpWithNewOp<Op>(op, rhslhsOp.getResult(),
-                                        rhslhsOp.getResult());
-        return success();
-      }
+    auto rhslhsOp = rhslhs.getDefiningOp();
+    if (rhslhsOp && rhslhsOp->getName() == op->getName()) {
+      auto rhslhslhs = rhslhsOp->getOperand(0);
+      auto rhslhsrhs = rhslhsOp->getOperand(1);
 
-      // Case 2
-      if (lhs == rhslhslhs && rhslhsrhs == rhsrhs) {
-        rewriter.replaceOpWithNewOp<Op>(op, rhslhsOp.getResult(),
-                                        rhslhsOp.getResult());
+      // Case 1 || Case 2
+      if ((lhs == rhslhsrhs && rhslhslhs == rhsrhs) ||
+          (lhs == rhslhslhs && rhslhsrhs == rhsrhs)) {
+        rewriter.modifyOpInPlace(op, [&] {
+          op->setOperand(0, rhslhsOp->getResult(0));
+          op->setOperand(1, rhslhsOp->getResult(0));
+        });
         return success();
       }
     }
 
-    auto rhsrhsOp = rhsrhs.template getDefiningOp<Op>();
-    if (rhsrhsOp) {
-      auto rhsrhslhs = rhsrhsOp.getLhs();
-      auto rhsrhsrhs = rhsrhsOp.getRhs();
+    auto rhsrhsOp = rhsrhs.getDefiningOp();
+    if (rhsrhsOp && rhsrhsOp->getName() == op->getName()) {
+      auto rhsrhslhs = rhsrhsOp->getOperand(0);
+      auto rhsrhsrhs = rhsrhsOp->getOperand(1);
 
-      // Case 3
-      if (lhs == rhsrhslhs && rhslhs == rhsrhsrhs) {
-        rewriter.replaceOpWithNewOp<Op>(op, rhsrhsOp.getResult(),
-                                        rhsrhsOp.getResult());
-        return success();
-      }
-
-      // Case 4
-      if (lhs == rhsrhsrhs && rhslhs == rhsrhslhs) {
-        rewriter.replaceOpWithNewOp<Op>(op, rhsrhsOp.getResult(),
-                                        rhsrhsOp.getResult());
+      // Case 3 || Case 4
+      if ((lhs == rhsrhslhs && rhslhs == rhsrhsrhs) ||
+          (lhs == rhsrhsrhs && rhslhs == rhsrhslhs)) {
+        rewriter.modifyOpInPlace(op, [&] {
+          op->setOperand(0, rhsrhsOp->getResult(0));
+          op->setOperand(1, rhsrhsOp->getResult(0));
+        });
         return success();
       }
     }
@@ -25495,13 +25493,7 @@ struct EnzymeHLOOptPass
                  BinaryOpTransposeSimplify<stablehlo::PowOp>,
                  BinaryOpTransposeSimplify<stablehlo::RemOp>,
                  TransposeElementwiseTransposeSimplify,
-                 AssociativeBinaryOpReordering<stablehlo::AddOp>,
-                 AssociativeBinaryOpReordering<stablehlo::MulOp>,
-                 AssociativeBinaryOpReordering<stablehlo::MinOp>,
-                 AssociativeBinaryOpReordering<stablehlo::MaxOp>,
-                 AssociativeBinaryOpReordering<stablehlo::AndOp>,
-                 AssociativeBinaryOpReordering<stablehlo::OrOp>,
-                 AssociativeBinaryOpReordering<stablehlo::XorOp>,
+                 AssociativeBinaryOpReordering,
                  CommonAssociativeCommutativeOpReorder>(context);
 
     patterns.add<BinopPadToConcat<stablehlo::AddOp>,

@@ -692,13 +692,7 @@ def  AssociativeCommonMulOpReorderingPatterns : EnzymeHLOPatternOp<
 
 def ApplyAssociativeBinaryOpReorderingPatterns : EnzymeHLOPatternOp<
     "associative_binary_op_reordering"> {
-  let patterns = ["AssociativeBinaryOpReordering<stablehlo::AddOp>",
-                  "AssociativeBinaryOpReordering<stablehlo::MulOp>",
-                  "AssociativeBinaryOpReordering<stablehlo::MinOp>",
-                  "AssociativeBinaryOpReordering<stablehlo::MaxOp>",
-                  "AssociativeBinaryOpReordering<stablehlo::AndOp>",
-                  "AssociativeBinaryOpReordering<stablehlo::OrOp>",
-                  "AssociativeBinaryOpReordering<stablehlo::XorOp>"];
+  let patterns = ["AssociativeBinaryOpReordering"];
 }
 
 def ApplyCommonAssociativeCommutativeOpReorderPatterns : EnzymeHLOPatternOp<
