@@ -6582,8 +6582,8 @@ struct ElementwiseAllTransposeOperandsSimplify
           op, "ElementwiseAllTransposeOperandsSimplify needs at least one "
               "transpose op");
 
-    auto invPerm = rewriter.getDenseI64ArrayAttr(
-        getInversePermutation(permutation));
+    auto invPerm =
+        rewriter.getDenseI64ArrayAttr(getInversePermutation(permutation));
     for (size_t i = 0; i < operands.size(); i++) {
       switch (kinds[i]) {
       case OperandKind::Transpose:
