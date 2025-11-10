@@ -8,4 +8,14 @@
 +        "//visibility:public",
      ],
  )
- 
+
+--- a/jaxlib/gpu/BUILD
++++ b/jaxlib/gpu/BUILD
+@@ -81,6 +81,7 @@ proto_library(
+
+ cc_proto_library(
+     name = "triton_cc_proto",
++    visibility = "//visibility:public",
+     compatible_with = None,
+     deps = [":triton_proto"],
+ ) 
