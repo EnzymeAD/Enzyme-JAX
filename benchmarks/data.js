@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1762684873581,
+  "lastUpdate": 1762761374293,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "wmoses@google.com",
-            "name": "William Moses",
-            "username": "wsmoses"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "2e44779cdb9067c269e482bca0e5ad947b6057bd",
-          "message": "Update ENZYME_COMMIT to new commit hash",
-          "timestamp": "2025-10-26T00:42:10-05:00",
-          "tree_id": "4aba441f2b59252398d4d7a7e2932743daf153e1",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/2e44779cdb9067c269e482bca0e5ad947b6057bd"
-        },
-        "date": 1761469868731,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.000005347679002443329,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.000004560647998005152,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001507630862004,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001501561831973,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2199,6 +2155,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / gpu / Primal",
             "value": 0.00007941056929994375,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "avikpal@mit.edu",
+            "name": "Avik Pal",
+            "username": "avik-pal"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c86285ad203b75530dcb5107c131f0820a00ab70",
+          "message": "feat: support iota with offset (#1599)",
+          "timestamp": "2025-11-09T23:22:30-05:00",
+          "tree_id": "3af779cf0ba46380c2ed7c0ad0ed1ee56c34dab3",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/c86285ad203b75530dcb5107c131f0820a00ab70"
+        },
+        "date": 1762761373801,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004515824798727408,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004259957897011191,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001276962814969,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001333710766979,
             "unit": "s"
           }
         ]
