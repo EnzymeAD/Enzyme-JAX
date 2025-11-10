@@ -893,6 +893,7 @@ cc_library(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@enzyme//:EnzymeMLIR",
+        "@jax//jaxlib/gpu:triton_cc_proto",
         "@llvm-project//llvm:Core",
         "@llvm-project//llvm:ExecutionEngine",
         "@llvm-project//llvm:IPO",
@@ -994,7 +995,6 @@ cc_library(
         "@triton//:TritonToTritonGPUPasses",
         "@xla//xla/mlir/utils:type_util",
         "@xla//xla/mlir_hlo",
-        "@jax//jaxlib/gpu:triton_cc_proto"
     ],
 )
 
