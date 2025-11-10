@@ -1,4 +1,4 @@
-//===- PrintPass.cpp - Print the MLIR module                     ------------ //
+//===- RaiseTritonCustomCall.cpp - Raise triton custom calls --------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -6,7 +6,9 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file implements a pass to print the MLIR module
+// This file implements a pass to raise stablehlo triton custom calls to the
+// triton ext dialect.
+//
 //===----------------------------------------------------------------------===//
 
 #include <zlib.h>
@@ -90,12 +92,8 @@ struct RaiseTritonCustomCallPattern final
 
     SymbolTable symTable(SymbolTable::getNearestSymbolTable(callOp));
 
-    // auto fnOp = callOp->getParentOfType<FunctionOpInterface>();
-    // if (!fnOp) return failure();
-
     OpBuilder::InsertionGuard guard(rewriter);
     rewriter.setInsertionPointToEnd(&symTable.getOp()->getRegion(0).front());
-    // rewriter.setInsertionPoint(fnOp);
 
     auto innerMod = cast<mlir::ModuleOp>(mir.release().getOperation());
     auto outerMod = enzymexla::triton_ext::TritonModuleOp::create(
