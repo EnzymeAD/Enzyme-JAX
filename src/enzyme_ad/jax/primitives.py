@@ -605,22 +605,14 @@ def full_optimization_pass_pipeline(
             max_constant_threshold=max_constant_threshold,
         )
 
-    import os
-    path = os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR")
-    print(f"path: {path}")
-
     return ",".join(
         [
             "mark-func-memory-effects",
-            f'print{{filename="{path}/pre-opt-passes.mlir"}}',
             opt_passes,
-            f'print{{filename="{path}/pre-opt-passes2.mlir"}}',
             "enzyme-batch",
             opt_passes,
-            f'print{{filename="{path}/pre-opt-passes3.mlir"}}',
             enzyme_pass,
             opt_passes,
-            f'print{{filename="{path}/pre-opt-passes4.mlir"}}',
             "canonicalize",
             "remove-unnecessary-enzyme-ops",
             "enzyme-simplify-math",
