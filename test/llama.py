@@ -315,7 +315,8 @@ class Llama(EnzymeJaxTest):
         self.ins = [x, weights, key_cache, value_cache]
         self.dins = [dx, weights, key_cache, value_cache]
         self.douts = dx
-        self.tol = 5e-5
+        self.atol = 5e-5
+        self.rtol = 0.0
 
 
 if __name__ == "__main__":
