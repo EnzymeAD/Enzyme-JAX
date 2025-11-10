@@ -712,61 +712,9 @@ def ApplyCommonAssociativeCommutativeOpReorderPatterns : EnzymeHLOPatternOp<
                   "CommonAssociativeCommutativeOpReorder<stablehlo::XorOp>"];
 }
 
-def ApplyTransposeUnaryTransposeAbsPatterns : EnzymeHLOPatternOp<
-    "transpose_unary_transpose_abs"> {
-  let patterns = ["TransposeUnaryTransposeSimplify<stablehlo::AbsOp>"];
-}
-def ApplyTransposeUnaryTransposeNegPatterns : EnzymeHLOPatternOp<
-    "transpose_unary_transpose_neg"> {
-  let patterns = ["TransposeUnaryTransposeSimplify<stablehlo::NegOp>"];
-}
-def ApplyTransposeUnaryTransposeSqrtPatterns : EnzymeHLOPatternOp<
-    "transpose_unary_transpose_sqrt"> {
-  let patterns = ["TransposeUnaryTransposeSimplify<stablehlo::SqrtOp>"];
-}
-def ApplyTransposeUnaryTransposeRsqrtPatterns : EnzymeHLOPatternOp<
-    "transpose_unary_transpose_rsqrt"> {
-  let patterns = ["TransposeUnaryTransposeSimplify<stablehlo::RsqrtOp>"];
-}
-def ApplyTransposeUnaryTransposeCeilPatterns : EnzymeHLOPatternOp<
-    "transpose_unary_transpose_ceil"> {
-  let patterns = ["TransposeUnaryTransposeSimplify<stablehlo::CeilOp>"];
-}
-def ApplyTransposeUnaryTransposeConvertPatterns : EnzymeHLOPatternOp<
-    "transpose_unary_transpose_convert"> {
-  let patterns = ["TransposeUnaryTransposeSimplify<stablehlo::ConvertOp>"];
-}
-def ApplyTransposeUnaryTransposeCosinePatterns : EnzymeHLOPatternOp<
-    "transpose_unary_transpose_cosine"> {
-  let patterns = ["TransposeUnaryTransposeSimplify<stablehlo::CosineOp>"];
-}
-def ApplyTransposeUnaryTransposeExpPatterns : EnzymeHLOPatternOp<
-    "transpose_unary_transpose_exp"> {
-  let patterns = ["TransposeUnaryTransposeSimplify<stablehlo::ExpOp>"];
-}
-def ApplyTransposeUnaryTransposeExpm1Patterns : EnzymeHLOPatternOp<
-    "transpose_unary_transpose_expm1"> {
-  let patterns = ["TransposeUnaryTransposeSimplify<stablehlo::Expm1Op>"];
-}
-def ApplyTransposeUnaryTransposeLogPatterns : EnzymeHLOPatternOp<
-    "transpose_unary_transpose_log"> {
-  let patterns = ["TransposeUnaryTransposeSimplify<stablehlo::LogOp>"];
-}
-def ApplyTransposeUnaryTransposeLog1pPatterns : EnzymeHLOPatternOp<
-    "transpose_unary_transpose_log1p"> {
-  let patterns = ["TransposeUnaryTransposeSimplify<stablehlo::Log1pOp>"];
-}
-def ApplyTransposeUnaryTransposeSignPatterns : EnzymeHLOPatternOp<
-    "transpose_unary_transpose_sign"> {
-  let patterns = ["TransposeUnaryTransposeSimplify<stablehlo::SignOp>"];
-}
-def ApplyTransposeUnaryTransposeSinePatterns : EnzymeHLOPatternOp<
-    "transpose_unary_transpose_sine"> {
-  let patterns = ["TransposeUnaryTransposeSimplify<stablehlo::SineOp>"];
-}
-def ApplyTransposeUnaryTransposeTanhPatterns : EnzymeHLOPatternOp<
-    "transpose_unary_transpose_tanh"> {
-  let patterns = ["TransposeUnaryTransposeSimplify<stablehlo::TanhOp>"];
+def ApplyTransposeElementwiseTransposeAbsPatterns : EnzymeHLOPatternOp<
+    "transpose_elementwise_transpose"> {
+  let patterns = ["TransposeElementwiseTransposeSimplify"];
 }
 
 def TransposeBroadcastInDimToBroadcastInDimPatterns : EnzymeHLOPatternOp<
