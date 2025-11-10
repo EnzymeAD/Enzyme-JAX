@@ -17,10 +17,8 @@ module {
 // CHECK-SAME: (%[[PRIMAL:.*]]: tensor<f64>, %[[DIFF1:.*]]: tensor<f64>, %[[DIFF2:.*]]: tensor<f64>) -> (tensor<f64>, tensor<f64>)
 // CHECK:         %[[CONCAT:.*]] = enzyme.concat(%[[DIFF1]], %[[DIFF2]]) : (tensor<f64>, tensor<f64>) -> tensor<2xf64>
 // CHECK:         %[[BATCHED_RES:.*]] = enzyme.fwddiff @square(%[[PRIMAL]], %[[CONCAT]]) {{.*}} width = 2 {{.*}} : (tensor<f64>, tensor<2xf64>) -> tensor<2xf64>
-// CHECK:         %[[C0:.*]] = arith.constant 0 : index
-// CHECK-NEXT:    %[[RES0:.*]] = enzyme.extract %[[BATCHED_RES]][%[[C0]]] : (tensor<2xf64>) -> tensor<f64>
-// CHECK-NEXT:    %[[C1:.*]] = arith.constant 1 : index
-// CHECK-NEXT:    %[[RES1:.*]] = enzyme.extract %[[BATCHED_RES]][%[[C1]]] : (tensor<2xf64>) -> tensor<f64>
+// CHECK:         %[[RES0:.*]] = enzyme.extract %[[BATCHED_RES]][0] : (tensor<2xf64>) -> tensor<f64>
+// CHECK-NEXT:    %[[RES1:.*]] = enzyme.extract %[[BATCHED_RES]][1] : (tensor<2xf64>) -> tensor<f64>
 // CHECK-NEXT:    return %[[RES0]], %[[RES1]]
 
 // LEGAL-LABEL: func.func @test1
@@ -29,10 +27,10 @@ module {
 // LEGAL:         %[[EDIFF2:.*]] = stablehlo.reshape %[[DIFF2]] : (tensor<f64>) -> tensor<1xf64>
 // LEGAL:         %[[CONCAT:.*]] = stablehlo.concatenate %[[EDIFF1]], %[[EDIFF2]], dim = 0 : (tensor<1xf64>, tensor<1xf64>) -> tensor<2xf64>
 // LEGAL:         %[[BATCHED_RES:.*]] = enzyme.fwddiff @square(%[[PRIMAL]], %[[CONCAT]]) {{.*}} width = 2 {{.*}} : (tensor<f64>, tensor<2xf64>) -> tensor<2xf64>
-// LEGAL:         %[[C0:.*]] = arith.constant 0 : index
-// LEGAL-NEXT:    %[[RES0:.*]] = tensor.extract %[[BATCHED_RES]][%[[C0]]] : tensor<2xf64>
-// LEGAL-NEXT:    %[[C1:.*]] = arith.constant 1 : index
-// LEGAL-NEXT:    %[[RES1:.*]] = tensor.extract %[[BATCHED_RES]][%[[C1]]] : tensor<2xf64>
+// LEGAL:         %[[R0:.*]] = stablehlo.slice %[[BATCHED_RES]] [0:1] : (tensor<2xf64>) -> tensor<1xf64>
+// LEGAL-NEXT:    %[[RES0:.*]] = stablehlo.reshape %[[R0]] : (tensor<1xf64>) -> tensor<f64>
+// LEGAL-NEXT:    %[[R1:.*]] = stablehlo.slice %[[BATCHED_RES]] [1:2] : (tensor<2xf64>) -> tensor<1xf64>
+// LEGAL-NEXT:    %[[RES1:.*]] = stablehlo.reshape %[[R1]] : (tensor<1xf64>) -> tensor<f64>
 // LEGAL-NEXT:    return %[[RES0]], %[[RES1]]
 
 // -----
@@ -50,14 +48,13 @@ module {
   }
 }
 
+
 // CHECK-LABEL: func.func @test2
 // CHECK-SAME: (%[[PRIMAL:.*]]: tensor<10xf64>, %[[DIFF1:.*]]: tensor<10xf64>, %[[DIFF2:.*]]: tensor<10xf64>) -> (tensor<10xf64>, tensor<10xf64>)
 // CHECK:         %[[CONCAT:.*]] = enzyme.concat(%[[DIFF1]], %[[DIFF2]]) : (tensor<10xf64>, tensor<10xf64>) -> tensor<2x10xf64>
 // CHECK:         %[[BATCHED_RES:.*]] = enzyme.fwddiff @square(%[[PRIMAL]], %[[CONCAT]]) {{.*}} width = 2 {{.*}} : (tensor<10xf64>, tensor<2x10xf64>) -> tensor<2x10xf64>
-// CHECK:         %[[C0:.*]] = arith.constant 0 : index
-// CHECK-NEXT:    %[[RES0:.*]] = enzyme.extract %[[BATCHED_RES]][%[[C0]]] : (tensor<2x10xf64>) -> tensor<10xf64>
-// CHECK-NEXT:    %[[C1:.*]] = arith.constant 1 : index
-// CHECK-NEXT:    %[[RES1:.*]] = enzyme.extract %[[BATCHED_RES]][%[[C1]]] : (tensor<2x10xf64>) -> tensor<10xf64>
+// CHECK:         %[[RES0:.*]] = enzyme.extract %[[BATCHED_RES]][0] : (tensor<2x10xf64>) -> tensor<10xf64>
+// CHECK-NEXT:    %[[RES1:.*]] = enzyme.extract %[[BATCHED_RES]][1] : (tensor<2x10xf64>) -> tensor<10xf64>
 // CHECK-NEXT:    return %[[RES0]], %[[RES1]]
 
 // LEGAL-LABEL: func.func @test2
@@ -66,8 +63,8 @@ module {
 // LEGAL:         %[[EDIFF2:.*]] = stablehlo.reshape %[[DIFF2]] : (tensor<10xf64>) -> tensor<1x10xf64>
 // LEGAL:         %[[CONCAT:.*]] = stablehlo.concatenate %[[EDIFF1]], %[[EDIFF2]], dim = 0 : (tensor<1x10xf64>, tensor<1x10xf64>) -> tensor<2x10xf64>
 // LEGAL:         %[[BATCHED_RES:.*]] = enzyme.fwddiff @square(%[[PRIMAL]], %[[CONCAT]]) {{.*}} width = 2 {{.*}} : (tensor<10xf64>, tensor<2x10xf64>) -> tensor<2x10xf64>
-// LEGAL:         %[[C0:.*]] = arith.constant 0 : index
-// LEGAL-NEXT:    %[[RES0:.*]] = tensor.extract_slice %[[BATCHED_RES]][%[[C0]], 0] [1, 10] [1, 1] : tensor<2x10xf64> to tensor<10xf64>
-// LEGAL-NEXT:    %[[C1:.*]] = arith.constant 1 : index
-// LEGAL-NEXT:    %[[RES1:.*]] = tensor.extract_slice %[[BATCHED_RES]][%[[C1]], 0] [1, 10] [1, 1] : tensor<2x10xf64> to tensor<10xf64>
+// LEGAL:         %[[R0:.*]] = stablehlo.slice %[[BATCHED_RES]] [0:1, 0:10] : (tensor<2x10xf64>) -> tensor<1x10xf64>
+// LEGAL-NEXT:    %[[RES0:.*]] = stablehlo.reshape %[[R0]] : (tensor<1x10xf64>) -> tensor<10xf64>
+// LEGAL-NEXT:    %[[R1:.*]] = stablehlo.slice %[[BATCHED_RES]] [1:2, 0:10] : (tensor<2x10xf64>) -> tensor<1x10xf64>
+// LEGAL-NEXT:    %[[RES1:.*]] = stablehlo.reshape %[[R1]] : (tensor<1x10xf64>) -> tensor<10xf64>
 // LEGAL-NEXT:    return %[[RES0]], %[[RES1]]
