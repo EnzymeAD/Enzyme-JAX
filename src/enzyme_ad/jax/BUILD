@@ -994,6 +994,7 @@ cc_library(
         "@triton//:TritonToTritonGPUPasses",
         "@xla//xla/mlir/utils:type_util",
         "@xla//xla/mlir_hlo",
+        "@jax//jaxlib/gpu:triton_cc_proto"
     ],
 )
 
