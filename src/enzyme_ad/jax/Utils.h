@@ -798,6 +798,11 @@ mlir::Value reshapeAxisInto(OpBuilder &builder, Value input,
 mlir::Value reshapeAxisOutOf(OpBuilder &builder, Value input,
                              ArrayRef<int64_t> &batchSizes, int64_t dim);
 
+// matches for hasTrait<OpTrait::Elementwise>. Additionally matches for
+// hasTrait<OpTrait::HLOBroadcastingElementwise> if all of the operands are
+// of the same shape.
+bool hasTraitElementwise(Operation *op);
+
 } // namespace stablehlo
 
 } // namespace mlir
