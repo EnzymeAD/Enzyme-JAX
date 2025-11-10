@@ -3086,7 +3086,7 @@ struct SliceElementwise final
     auto elem = op.getOperand().getDefiningOp();
     if (!elem)
       return failure();
-    if (!elem->hasTrait<mlir::OpTrait::Elementwise>())
+    if (!stablehlo::hasTraitElementwise(elem))
       return failure();
     if (llvm::hasSingleElement(elem->getUsers())) {
       SmallVector<Value> ops;
@@ -3772,7 +3772,7 @@ struct FullReduceReshapeOrTranspose final
           reshapeOrTransposes.push_back(rs);
           continue;
         }
-        if (!curOp->hasTrait<mlir::OpTrait::Elementwise>())
+        if (!hasTraitElementwise(curOp))
           return failure();
         if (!isMemoryEffectFree(curOp))
           return failure();
@@ -10469,7 +10469,7 @@ struct SliceReshapeElementwise final
     auto elem = reshape.getOperand().getDefiningOp();
     if (!elem)
       return failure();
-    if (!elem->hasTrait<mlir::OpTrait::Elementwise>())
+    if (!stablehlo::hasTraitElementwise(elem))
       return failure();
     if (!llvm::hasSingleElement(elem->getUsers()))
       return failure();
@@ -10515,7 +10515,7 @@ struct TransposeElementwise final
     if (!elem)
       return failure();
 
-    if (!elem->hasTrait<mlir::OpTrait::Elementwise>())
+    if (!stablehlo::hasTraitElementwise(elem))
       return failure();
 
     bool singleUser = llvm::hasSingleElement(elem->getUsers());
@@ -10913,7 +10913,7 @@ struct ReshapeElementwise final
     if (onlySingleUser && !llvm::hasSingleElement(elem->getUsers()))
       return failure();
 
-    if (!elem->hasTrait<mlir::OpTrait::Elementwise>())
+    if (!stablehlo::hasTraitElementwise(elem))
       return failure();
 
     SmallVector<Value> ops;
@@ -18958,8 +18958,8 @@ LogicalResult commUnaryOpElementwise(bool onlySingleUser, EnzymeOp op,
 
   bool anyModified = false;
   for (auto elem : llvm::make_early_inc_range(op->getUsers())) {
-    if (!elem->template hasTrait<mlir::OpTrait::Elementwise>() ||
-        elem->getNumResults() != 1 || elem->getNumOperands() != 1)
+    if (!hasTraitElementwise(elem) || elem->getNumResults() != 1 ||
+        elem->getNumOperands() != 1)
       continue;
 
     auto newOp = rewriter.create(
@@ -20270,7 +20270,7 @@ struct ConcatElementwise final
       if (isa<stablehlo::ConvertOp>(vdefOp)) // Conflicts with ConvertConcat
         return failure();
 
-      if (vdefOp->hasTrait<mlir::OpTrait::Elementwise>()) {
+      if (hasTraitElementwise(vdefOp)) {
         if (concatOpOperands.size() != 0) {
           if (!OperationEquivalence::isEquivalentTo(
                   concatOpOperands[0], vdefOp,
@@ -20671,7 +20671,7 @@ struct ConcatReshapeElementwise final
       if (!vdefOp)
         return failure();
 
-      if (vdefOp->hasTrait<mlir::OpTrait::Elementwise>()) {
+      if (hasTraitElementwise(vdefOp)) {
         if (concatOpOperands.size() != 0) {
           if (!OperationEquivalence::isEquivalentTo(
                   concatOpOperands[0], vdefOp,
@@ -21259,7 +21259,7 @@ struct GatherElementwise
                                     PatternRewriter &rewriter) const {
     auto gatherInput = op.getOperand();
     auto defOp = gatherInput.getDefiningOp();
-    if (!defOp || !defOp->hasTrait<mlir::OpTrait::Elementwise>())
+    if (!defOp || !hasTraitElementwise(defOp))
       return rewriter.notifyMatchFailure(op,
                                          "GatherOp with non-elementwise input");
 

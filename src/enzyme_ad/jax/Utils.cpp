@@ -1380,6 +1380,38 @@ Value reshapeAxisOutOf(OpBuilder &builder, Value input,
       builder.getDenseI64ArrayAttr(permutation));
 }
 
+bool hasTraitElementwise(Operation *op) {
+  if (op->hasTrait<OpTrait::Elementwise>())
+    return true;
+
+  if (op->hasTrait<hlo::OpTrait::BroadcastingElementwise>()) {
+    // Check sizes (shapes) match across operands, not the exact types.
+    auto refShapedTy = dyn_cast<ShapedType>(op->getOperand(0).getType());
+    if (!refShapedTy)
+      return false;
+
+    for (auto operand : op->getOperands()) {
+      auto curShapedTy = dyn_cast<ShapedType>(operand.getType());
+      if (!curShapedTy)
+        return false;
+
+      if (curShapedTy.getRank() != refShapedTy.getRank())
+        return false;
+
+      for (int64_t i = 0; i < curShapedTy.getRank(); ++i) {
+        int64_t a = curShapedTy.getDimSize(i);
+        int64_t b = refShapedTy.getDimSize(i);
+        // If both are static and different, sizes don't match.
+        if (a != ShapedType::kDynamic && b != ShapedType::kDynamic && a != b)
+          return false;
+      }
+    }
+    return true;
+  }
+
+  return false;
+}
+
 } // namespace stablehlo
 
 } // namespace mlir
