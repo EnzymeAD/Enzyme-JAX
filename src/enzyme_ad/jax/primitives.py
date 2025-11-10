@@ -480,17 +480,7 @@ def optimization_passes(
     elif transpose_propagate == "down":
         transform_passes_list += [
             "reorder_elementwise_and_shape_op<16>",
-            "binary_op_transpose_simplify_add",
-            "binary_op_transpose_simplify_sub",
-            "binary_op_transpose_simplify_mul",
-            "binary_op_transpose_simplify_div",
-            "binary_op_transpose_simplify_min",
-            "binary_op_transpose_simplify_max",
-            "binary_op_transpose_simplify_pow",
-            "binary_op_transpose_simplify_rem",
-            "binary_op_transpose_simplify_or",
-            "binary_op_transpose_simplify_and",
-            "binary_op_transpose_simplify_xor",
+            "elementwise_all_transpose_operands_simplify",
             "slice_transpose",
             "einsum_transpose<1>",
             "slice_reshape_transpose<1>",
