@@ -703,13 +703,7 @@ def ApplyAssociativeBinaryOpReorderingPatterns : EnzymeHLOPatternOp<
 
 def ApplyCommonAssociativeCommutativeOpReorderPatterns : EnzymeHLOPatternOp<
     "common_associative_commutative_op_reorder"> {
-  let patterns = ["CommonAssociativeCommutativeOpReorder<stablehlo::AddOp>",
-                  "CommonAssociativeCommutativeOpReorder<stablehlo::MulOp>",
-                  "CommonAssociativeCommutativeOpReorder<stablehlo::MinOp>",
-                  "CommonAssociativeCommutativeOpReorder<stablehlo::MaxOp>",
-                  "CommonAssociativeCommutativeOpReorder<stablehlo::AndOp>",
-                  "CommonAssociativeCommutativeOpReorder<stablehlo::OrOp>",
-                  "CommonAssociativeCommutativeOpReorder<stablehlo::XorOp>"];
+  let patterns = ["CommonAssociativeCommutativeOpReorder"];
 }
 
 def ApplyTransposeElementwiseTransposeAbsPatterns : EnzymeHLOPatternOp<

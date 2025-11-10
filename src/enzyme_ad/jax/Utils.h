@@ -803,6 +803,9 @@ mlir::Value reshapeAxisOutOf(OpBuilder &builder, Value input,
 // of the same shape.
 bool hasTraitElementwise(Operation *op);
 
+// currently there are no traits for associative ops
+bool isAssociativeOp(Operation *op);
+
 } // namespace stablehlo
 
 } // namespace mlir

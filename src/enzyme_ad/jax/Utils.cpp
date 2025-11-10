@@ -1412,6 +1412,12 @@ bool hasTraitElementwise(Operation *op) {
   return false;
 }
 
+bool isAssociativeOp(Operation *op) {
+  return isa<stablehlo::AddOp, stablehlo::MulOp, stablehlo::MinOp,
+             stablehlo::MaxOp, stablehlo::AndOp, stablehlo::OrOp,
+             stablehlo::XorOp>(op);
+}
+
 } // namespace stablehlo
 
 } // namespace mlir
