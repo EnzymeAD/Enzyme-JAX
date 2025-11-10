@@ -47,26 +47,23 @@ struct ExtractOpConversion : public OpConversionPattern<enzyme::ExtractOp> {
     if (ndims < 1)
       return failure();
 
-    // dynamic_slice followed by reshape
-    auto i64Ty = IntegerType::get(rewriter.getContext(), 64);
-    auto tensor0i64Ty = RankedTensorType::get({}, i64Ty);
-    auto zero = rewriter.create<stablehlo::ConstantOp>(
-        op.getLoc(), rewriter.getZeroAttr(tensor0i64Ty));
-
-    SmallVector<Value> dynamicSliceStartSlices(ndims, zero);
-    dynamicSliceStartSlices[0] = op.getIndex(); // assume its legal for no
-
-    SmallVector<int64_t> localRetShape = {1};
-    localRetShape.append(outRankTy.getShape().begin(),
+    // static slice
+    SmallVector<int64_t> start_indices;
+    start_indices.push_back(op.getIndex());
+    for (int i = 1; i < ndims; ++i) {
+      start_indices.push_back(0);
+    }
+    SmallVector<int64_t> limit_indices;
+    limit_indices.push_back(op.getIndex() + 1);
+    limit_indices.append(outRankTy.getShape().begin(),
                          outRankTy.getShape().end());
-    ;
-    auto slicedOut = rewriter.create<stablehlo::DynamicSliceOp>(
-        op->getLoc(), op.getInput(), dynamicSliceStartSlices, localRetShape);
+    SmallVector<int64_t> strides(ndims, 1);
 
+    Value slicedOut =
+        stablehlo::SliceOp::create(rewriter, op->getLoc(), op.getInput(),
+                                   start_indices, limit_indices, strides);
     // reshape slicedOut to our final Op
-    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op->getLoc(), outTy,
-                                                      slicedOut);
-
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, outTy, slicedOut);
     return success();
   }
 };
@@ -81,8 +78,6 @@ struct ConcatOpConversion : public OpConversionPattern<enzyme::ConcatOp> {
     if (inputs.empty())
       return failure();
 
-    auto firstInTy = inputs.front().getType();
-
     // stablehlo always has tensor type
     // reshape each input to 1xinput_rank and concatenate on dim=0
 
@@ -94,7 +89,7 @@ struct ConcatOpConversion : public OpConversionPattern<enzyme::ConcatOp> {
       newInShape.append(inShape.begin(), inShape.end());
       auto newInTy = inRankTy.clone(newInShape);
       Value newInput =
-          rewriter.create<stablehlo::ReshapeOp>(op->getLoc(), newInTy, in);
+          stablehlo::ReshapeOp::create(rewriter, op->getLoc(), newInTy, in);
       expandedInputs.push_back(newInput);
     }
 
@@ -116,7 +111,7 @@ struct EnzymeBatchToStableHLOPass
     ConversionTarget target(*context);
     target.addLegalDialect<stablehlo::StablehloDialect>();
     target.addLegalDialect<enzyme::EnzymeDialect>();
-    target.addIllegalOp<enzyme::ConcatOp>();
+    target.addIllegalOp<enzyme::ConcatOp, enzyme::ExtractOp>();
 
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns)))) {
