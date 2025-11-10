@@ -24088,7 +24088,7 @@ struct RemoveNoOpsFromWhileLoop
       return failure();
 
     auto &whileBody = whileOp.getBody().front();
-    auto inductionVar = whileBody.getArgument(0);
+    auto inductionVar = info.getInductionVariable();
 
     auto limit = info.getConstantLimit().value();
     auto start = info.getConstantStart().value();
