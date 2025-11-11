@@ -93,22 +93,27 @@ struct JITCallScratchMemoryLowering
           allocOp.getResult());
       rewriter.replaceAllUsesWith(fnBody.getArgument(idx), ptrOp.getResult());
 
-      SmallVector<Value> deps;
-      Operation *lastUser = ptrOp;
-      for (auto u : ptrOp->getUsers()) {
-        if (auto gpuLaunchOp = dyn_cast<gpu::LaunchFuncOp>(u)) {
-          deps.push_back(gpuLaunchOp.getAsyncToken());
-        }
+      // clang-format off
+      // FIXME: This is producing
+      //  error: 'llvm.call' op operand type mismatch for operand 0: '!llvm.ptr<1>' != '!llvm.ptr'
+      // see current operation: "llvm.call"(%61, %60) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @mgpuMemFree, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 2, 0>}> : (!llvm.ptr<1>, !llvm.ptr) -> ()
+      // SmallVector<Value> deps;
+      // Operation *lastUser = ptrOp;
+      // for (auto u : ptrOp->getUsers()) {
+      //   if (auto gpuLaunchOp = dyn_cast<gpu::LaunchFuncOp>(u)) {
+      //     deps.push_back(gpuLaunchOp.getAsyncToken());
+      //   }
 
-        if (lastUser->isBeforeInBlock(u)) {
-          lastUser = u;
-        }
-      }
+      //   if (lastUser->isBeforeInBlock(u)) {
+      //     lastUser = u;
+      //   }
+      // }
 
-      rewriter.setInsertionPointAfter(lastUser);
-      gpu::DeallocOp::create(rewriter, op.getLoc(),
-                             gpu::AsyncTokenType::get(rewriter.getContext()),
-                             ValueRange(deps), allocOp.getResult());
+      // rewriter.setInsertionPointAfter(lastUser);
+      // gpu::DeallocOp::create(rewriter, op.getLoc(),
+      //                        gpu::AsyncTokenType::get(rewriter.getContext()),
+      //                        ValueRange(deps), allocOp.getResult());
+      // clang-format on
     }
 
     funcOpInterface.eraseArguments(rewriteScratchMemoryIdxs);
