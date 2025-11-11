@@ -1369,6 +1369,14 @@ def ApplyDynamicSliceReshapeDynamicSlicePatterns : EnzymeHLOPatternOp<
     "dynamic_slice_reshape_dynamic_slice"> {
   let patterns = ["DynamicSliceReshapeDynamicSlice"];
 }
+def ApplySliceReshapeDynamicSlicePatterns : EnzymeHLOPatternOp<
+    "slice_reshape_dynamic_slice"> {
+  let patterns = ["SliceReshapeDynamicSlice"];
+}
+def ApplyDynamicSliceReshapeSlicePatterns : EnzymeHLOPatternOp<
+    "dynamic_slice_reshape_slice"> {
+  let patterns = ["DynamicSliceReshapeSlice"];
+}
 def ApplyDynamicSliceDynamicSlicePatterns : EnzymeHLOPatternOp<
     "dynamic_slice_dynamic_slice"> {
   let patterns = ["DynamicSliceDynamicSlice"];
