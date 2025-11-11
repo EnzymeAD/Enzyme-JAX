@@ -13,6 +13,9 @@ JAX_PATCHES = [
     """
     sed -i.bak0 "s/#include \\"jaxlib\\/mosaic\\/dialect\\/tpu\\/tpu_enums.h.inc/#undef ARG_MAX\\n#include \\"jaxlib\\/mosaic\\/dialect\\/tpu\\/tpu_enums.h.inc/g" jaxlib/mosaic/dialect/tpu/tpu_dialect.h
     """,
+    """
+    sed -i.bak0 "s/name = \\"triton_cc_proto\\"/name = \\"triton_cc_proto\\",\\n    visibility = [\\"\\/\\/visibility:public\\"]/g" jaxlib/gpu/BUILD
+    """,
 ]
 
 def repo(extra_patches = [], override_commit = ""):

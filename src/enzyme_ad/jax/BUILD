@@ -267,6 +267,20 @@ td_library(
 )
 
 gentbl_cc_library(
+    name = "triton-derivatives",
+    tbl_outs = [(
+        ["-gen-mlir-derivatives"],
+        "Implementations/TritonDerivatives.inc",
+    )],
+    tblgen = "@enzyme//:enzyme-tblgen",
+    td_file = "Implementations/TritonDerivatives.td",
+    td_srcs = [
+        "Implementations/TritonDerivatives.td",
+    ],
+    deps = [":ImplementationsCommonTdFiles"],
+)
+
+gentbl_cc_library(
     name = "mhlo-derivatives",
     tbl_outs = [(
         ["-gen-mlir-derivatives"],
@@ -880,10 +894,12 @@ cc_library(
         ":enzymexla-derivatives",
         ":mhlo-derivatives",
         ":stablehlo-derivatives",
+        ":triton-derivatives",
         "//src/external/isl:Isl",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@enzyme//:EnzymeMLIR",
+        "@jax//jaxlib/gpu:triton_cc_proto",
         "@llvm-project//llvm:Core",
         "@llvm-project//llvm:ExecutionEngine",
         "@llvm-project//llvm:IPO",
@@ -946,6 +962,7 @@ cc_library(
         "@llvm-project//mlir:NVVMToLLVM",
         "@llvm-project//mlir:OpenMPDialect",
         "@llvm-project//mlir:OpenMPToLLVM",
+        "@llvm-project//mlir:Parser",
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:QuantOps",
         "@llvm-project//mlir:ROCDLDialect",
@@ -986,6 +1003,7 @@ cc_library(
         "@triton//:TritonToTritonGPUPasses",
         "@xla//xla/mlir/utils:type_util",
         "@xla//xla/mlir_hlo",
+        "@zlib",
     ],
 )
 
