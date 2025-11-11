@@ -1023,4 +1023,13 @@ def ConvertTritonToTritonGPUPreservingModuleAttributesPass : Pass<
       >];
 }
 
+def TritonAugmentFunctionWithExtraArgumentsPass : Pass<
+    "triton-augment-function-with-extra-arguments", "mlir::ModuleOp"> {
+  let dependentDialects = [
+    "triton::TritonDialect",
+    "func::FuncDialect",
+    "enzymexla::triton_ext::TritonExtDialect",
+  ];
+}
+
 #endif
