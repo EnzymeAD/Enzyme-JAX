@@ -7,6 +7,7 @@ import itertools
 import sys
 import os
 import tempfile
+from absl import logging
 
 import jax
 from jax import lax
@@ -915,6 +916,22 @@ def ret_activity_from_pipeline(pass_pipeline):
     return pre_act, acts, post_act
 
 
+def _dump_mlir_to_file(source, pass_pipeline):
+    # bazel will zip up the outputs in this directory
+    dump_mlir_dir = os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR", None)
+    if dump_mlir_dir is None:
+        dump_mlir_dir = tempfile.gettempdir()
+
+    tmpfile = tempfile.NamedTemporaryFile(
+        suffix=".mlir", dir=dump_mlir_dir, delete=False
+    )
+    with open(tmpfile.name, "w") as f:
+        f.write("# " + pass_pipeline + "\n")
+        f.write(str(source))
+
+    return tmpfile.name
+
+
 def _enzyme_primal_lowering(
     ctx: jax_mlir.LoweringRuleContext,
     *args_flat: ir.Value,
@@ -1016,17 +1033,8 @@ def _enzyme_primal_lowering(
             try:
                 name, nmod = enzyme_call.run_pass_pipeline(fns, source, pass_pipeline)
             except Exception as e:
-                # bazel will zip up the outputs in this directory
-                dump_mlir_dir = os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR", None)
-                if dump_mlir_dir is None:
-                    dump_mlir_dir = tempfile.gettempdir()
-
-                tmpfile = tempfile.NamedTemporaryFile(dir=dump_mlir_dir, delete=False)
-                with open(tmpfile.name, "w") as f:
-                    f.write("// " + pass_pipeline)
-                    f.write(str(source))
-
-                print(f"Enzyme MLIR dumped to {tmpfile.name}")
+                filename = _dump_mlir_to_file(source, pass_pipeline)
+                logging.exception("Enzyme MLIR dumped to %s", filename)
                 raise e
 
             if print_mlir:
