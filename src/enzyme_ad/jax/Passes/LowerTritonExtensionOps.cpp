@@ -68,9 +68,9 @@ struct JITCallScratchMemoryLowering
     auto funcOpInterface = dyn_cast<FunctionOpInterface>(funcOp);
 
     auto &fnBody = funcOp->getRegion(0).front();
-    rewriter.setInsertionPoint(&fnBody, fnBody.begin());
 
     for (unsigned idx : rewriteScratchMemoryIdxs.set_bits()) {
+      rewriter.setInsertionPoint(&fnBody, fnBody.begin());
       auto scratchMemoryOp =
           inputs[idx].getDefiningOp<triton_ext::ScratchMemoryOp>();
       auto outTy =
@@ -93,7 +93,22 @@ struct JITCallScratchMemoryLowering
           allocOp.getResult());
       rewriter.replaceAllUsesWith(fnBody.getArgument(idx), ptrOp.getResult());
 
-      // TODO: dealloc the ops using gpu.dealloc
+      SmallVector<Value> deps;
+      Operation *lastUser = ptrOp;
+      for (auto u : ptrOp->getUsers()) {
+        if (auto gpuLaunchOp = dyn_cast<gpu::LaunchFuncOp>(u)) {
+          deps.push_back(gpuLaunchOp.getAsyncToken());
+        }
+
+        if (lastUser->isBeforeInBlock(u)) {
+          lastUser = u;
+        }
+      }
+
+      rewriter.setInsertionPointAfter(lastUser);
+      gpu::DeallocOp::create(rewriter, op.getLoc(),
+                             gpu::AsyncTokenType::get(rewriter.getContext()),
+                             ValueRange(deps), allocOp.getResult());
     }
 
     funcOpInterface.eraseArguments(rewriteScratchMemoryIdxs);
