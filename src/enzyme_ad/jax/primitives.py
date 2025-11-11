@@ -5,6 +5,8 @@ from collections.abc import Callable, Sequence
 from typing import Any
 import itertools
 import sys
+import os
+import tempfile
 
 import jax
 from jax import lax
@@ -1010,12 +1012,29 @@ def _enzyme_primal_lowering(
 
             if len(pass_pipeline) > 0:
                 pass_pipeline = pass_pipeline + ",tensor-empty-raise"
-            name, nmod = enzyme_call.run_pass_pipeline(fns, source, pass_pipeline)
+
+            try:
+                name, nmod = enzyme_call.run_pass_pipeline(fns, source, pass_pipeline)
+            except Exception as e:
+                # bazel will zip up the outputs in this directory
+                dump_mlir_dir = os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR", None)
+                if dump_mlir_dir is None:
+                    dump_mlir_dir = tempfile.gettempdir()
+
+                tmpfile = tempfile.NamedTemporaryFile(dir=dump_mlir_dir, delete=False)
+                with open(tmpfile.name, "w") as f:
+                    f.write("// " + pass_pipeline)
+                    f.write(str(source))
+
+                print(f"Enzyme MLIR dumped to {tmpfile.name}")
+                raise e
+
             if print_mlir:
-                if type(print_mlir) != type(True):
+                if not isinstance(print_mlir, bool):
                     print_mlir.write(nmod)
                 else:
                     print(str(nmod), flush=True)
+
             nmod = ir.Module.parse(nmod)
             fn = None
             pushtop = []
