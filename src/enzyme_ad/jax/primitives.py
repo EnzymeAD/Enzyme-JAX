@@ -164,6 +164,8 @@ def optimization_passes(
         "noop_slice<16>",
         "noop_reverse<16>",
         "slice_slice<16>",
+        "dynamic_slice_slice<16>",
+        "slice_dynamic_slice<16>",
         "shift_right_logical_simplify<16>",
         f"pad_simplify<16>({max_constant_threshold})",
         "select_pad_to_dus<1>",

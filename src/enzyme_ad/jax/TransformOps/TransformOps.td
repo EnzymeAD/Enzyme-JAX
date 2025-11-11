@@ -1373,6 +1373,14 @@ def ApplyDynamicSliceDynamicSlicePatterns : EnzymeHLOPatternOp<
     "dynamic_slice_dynamic_slice"> {
   let patterns = ["DynamicSliceDynamicSlice"];
 }
+def ApplyDynamicSliceSlicePatterns : EnzymeHLOPatternOp<
+    "dynamic_slice_slice"> {
+  let patterns = ["DynamicSliceSlice"];
+}
+def ApplySliceDynamicSlicePatterns : EnzymeHLOPatternOp<
+    "slice_dynamic_slice"> {
+  let patterns = ["SliceDynamicSlice"];
+}
 def ConcatToBroadcastPatterns : EnzymeHLOPatternOp<
     "concat_to_broadcast"> {
   let patterns = ["ConcatToBroadcast"];

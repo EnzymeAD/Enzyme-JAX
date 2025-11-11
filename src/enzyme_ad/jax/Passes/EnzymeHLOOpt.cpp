@@ -370,8 +370,8 @@ SmallVector<Value> promoteToLargestBitWidth(SmallVector<Value> values,
       continue;
     }
 
-    promotedValues[i] = rewriter.create<stablehlo::ConvertOp>(
-        values[i].getLoc(),
+    promotedValues[i] = stablehlo::ConvertOp::create(
+        rewriter, values[i].getLoc(),
         RankedTensorType::get({}, rewriter.getIntegerType(maxBitWidth)),
         values[i]);
   }
@@ -397,8 +397,8 @@ void sliceSliceHelper(stablehlo::DynamicSliceOp prev,
     if (startIndices[i]) {
       SmallVector<Value> addInputs = promoteToLargestBitWidth(
           {startIndices[i], prevStartIndices[i]}, rewriter);
-      startIndices[i] = rewriter.create<stablehlo::AddOp>(
-          prev.getLoc(), addInputs[0], addInputs[1]);
+      startIndices[i] = stablehlo::AddOp::create(rewriter, prev.getLoc(),
+                                                 addInputs[0], addInputs[1]);
     } else {
       startIndices[i] = prevStartIndices[i];
     }
@@ -460,6 +460,44 @@ struct SliceSlice final
   }
 };
 
+void rewriteDynamicSliceDynamicSlice(stablehlo::DynamicSliceOp op,
+                                     stablehlo::DynamicSliceOp prev,
+                                     PatternRewriter &rewriter) {
+  SmallVector<Value> startIndices(op.getStartIndices().begin(),
+                                  op.getStartIndices().end());
+  SmallVector<int64_t> sliceSizes(op.getSliceSizes().begin(),
+                                  op.getSliceSizes().end());
+  sliceSliceHelper(prev, startIndices, sliceSizes, rewriter);
+
+  auto resTy = op.getType();
+  auto res = rewriter.replaceOpWithNewOp<stablehlo::DynamicSliceOp>(
+      op, prev.getOperand(), startIndices, sliceSizes);
+  assert(res.getType() == resTy);
+}
+
+stablehlo::DynamicSliceOp SliceToDynamicSlice(stablehlo::SliceOp op,
+                                              PatternRewriter &rewriter) {
+  for (auto stride : op.getStrides()) {
+    if (stride != 1) // dynamic slice only supports stride 1
+      return nullptr;
+  }
+
+  SmallVector<Value> startIndices;
+  SmallVector<int64_t> sliceSizes;
+  auto elemTy = RankedTensorType::get({}, rewriter.getI32Type());
+  for (auto &&[start, end] :
+       llvm::zip(op.getStartIndices(), op.getLimitIndices())) {
+    startIndices.push_back(stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), elemTy,
+        cast<ElementsAttr>(makeAttr(elemTy, start))));
+    sliceSizes.push_back(end - start);
+  }
+
+  auto res = rewriter.replaceOpWithNewOp<stablehlo::DynamicSliceOp>(
+      op, op.getOperand(), startIndices, sliceSizes);
+  return res;
+}
+
 struct DynamicSliceDynamicSlice final
     : CheckedOpRewritePattern<stablehlo::DynamicSliceOp,
                               DynamicSliceDynamicSlice> {
@@ -475,15 +513,53 @@ struct DynamicSliceDynamicSlice final
     if (!prev)
       return failure();
 
-    SmallVector<Value> startIndices(op.getStartIndices().begin(),
-                                    op.getStartIndices().end());
-    SmallVector<int64_t> sliceSizes(op.getSliceSizes().begin(),
-                                    op.getSliceSizes().end());
-    sliceSliceHelper(prev, startIndices, sliceSizes, rewriter);
-    auto res = rewriter.replaceOpWithNewOp<stablehlo::DynamicSliceOp>(
-        op, prev.getOperand(), startIndices, sliceSizes);
-    assert(res.getType() == op.getType());
-    (void)res;
+    rewriteDynamicSliceDynamicSlice(op, prev, rewriter);
+    return success();
+  }
+};
+
+struct SliceDynamicSlice final
+    : CheckedOpRewritePattern<stablehlo::SliceOp, SliceDynamicSlice> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
+                                    PatternRewriter &rewriter) const {
+    auto type = dyn_cast<RankedTensorType>(op.getType());
+    if (!type)
+      return failure();
+
+    auto prev = op.getOperand().getDefiningOp<stablehlo::DynamicSliceOp>();
+    if (!prev)
+      return failure();
+
+    auto curDS = SliceToDynamicSlice(op, rewriter);
+    if (!curDS)
+      return failure();
+
+    rewriteDynamicSliceDynamicSlice(curDS, prev, rewriter);
+    return success();
+  }
+};
+
+struct DynamicSliceSlice final
+    : CheckedOpRewritePattern<stablehlo::DynamicSliceOp, DynamicSliceSlice> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DynamicSliceOp op,
+                                    PatternRewriter &rewriter) const {
+    auto type = dyn_cast<RankedTensorType>(op.getType());
+    if (!type)
+      return failure();
+
+    auto prev = op.getOperand().getDefiningOp<stablehlo::SliceOp>();
+    if (!prev)
+      return failure();
+
+    auto prevDS = SliceToDynamicSlice(prev, rewriter);
+    if (!prevDS)
+      return failure();
+
+    rewriteDynamicSliceDynamicSlice(op, prevDS, rewriter);
     return success();
   }
 };
@@ -11277,8 +11353,8 @@ struct DynamicSliceReshapeDynamicSlice final
       return failure();
 
     sliceSliceHelper(prev, startIndices, sliceSizes, rewriter);
-    auto newSlice = rewriter.create<stablehlo::DynamicSliceOp>(
-        op.getLoc(), prev.getOperand(),
+    auto newSlice = stablehlo::DynamicSliceOp::create(
+        rewriter, op.getLoc(), prev.getOperand(),
         promoteToLargestBitWidth(startIndices, rewriter),
         rewriter.getDenseI64ArrayAttr(sliceSizes));
     rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
@@ -11286,6 +11362,9 @@ struct DynamicSliceReshapeDynamicSlice final
     return success();
   }
 };
+
+// TODO: SliceReshapeDynamicSlice
+// TODO: DynamicSliceReshapeDynamicSlice
 
 } // namespace
 
@@ -25560,9 +25639,10 @@ struct EnzymeHLOOptPass
     patterns.add<
         AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
         OrSimplify, XorSimplify, MulSimplify, DivSimplify, RemSimplify,
-        PowSimplify, NoopSlice, NoopReverse, SliceSlice, LogSimplify,
-        ShiftRightLogicalSimplify, NegativePadToSlice, SliceSimplify,
-        ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
+        PowSimplify, NoopSlice, NoopReverse, SliceSlice,
+        DynamicSliceDynamicSlice, DynamicSliceSlice, SliceDynamicSlice,
+        LogSimplify, ShiftRightLogicalSimplify, NegativePadToSlice,
+        SliceSimplify, ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
         DotGeneralReshape, DiagonalTensorDotGeneralRewrite,
         DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
         BroadcastToReshape, ReshapeEmptyBroadcast, BroadcastReshape,
