@@ -16,6 +16,8 @@ def TensorI64
            "tensor<i64>", "::mlir::TensorType">,
       BuildableType<"RankedTensorType::get({}, $_builder.getIntegerType(64))">;
 
+def ScratchTensor : RankedTensorOf<[I8]>;
+
 def TritonModuleOp : TritonExtOp<"module", [
   IsolatedFromAbove, NoRegionArguments, SymbolTable, Symbol, NoTerminator
 ]> {
@@ -28,6 +30,21 @@ def TritonModuleOp : TritonExtOp<"module", [
   let assemblyFormat = [{
     $sym_name
     attr-dict-with-keyword $bodyRegion
+  }];
+  // clang-format on
+}
+
+def ScratchMemoryOp : TritonExtOp<"scratch_memory", [ConstantLike, Pure]> {
+  let summary = "Allocate scratch memory";
+  let description = [{ Allocate scratch memory for a kernel. }];
+
+  let arguments = (ins I64Attr : $alignment);
+
+  let results = (outs ScratchTensor : $result);
+
+  // clang-format off
+  let assemblyFormat = [{
+    attr-dict `:` type($result)
   }];
   // clang-format on
 }
