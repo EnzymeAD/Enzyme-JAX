@@ -172,7 +172,6 @@ def fix_paths():
     )
 
     if os.path.exists(cublas_path):
-
         import ctypes
 
         ctypes.cdll.LoadLibrary(cublas_path)
@@ -751,7 +750,9 @@ class EnzymeJaxTest(absltest.TestCase):
                     if primres is None:
                         primres = ao
                     else:
-                        recursive_check(self, ao, primres, self.tol, "Primal " + pname)
+                        recursive_check(
+                            self, ao, primres, self.atol, self.rtol, "Primal " + pname
+                        )
 
                     self.pretty_print_table(
                         name,
@@ -832,7 +833,6 @@ class EnzymeJaxTest(absltest.TestCase):
 
             for pname, pipeline, pbackends in self.revfilter(self.AllPipelines):
                 if backend in pbackends:
-
                     adout = douts_backend
                     if pipeline is not None:
                         if self.mlirad_rev or pipeline is None:
