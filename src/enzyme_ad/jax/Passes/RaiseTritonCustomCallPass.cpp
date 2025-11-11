@@ -131,8 +131,7 @@ struct RaiseTritonCustomCallPattern final
 
     rewriter.setInsertionPoint(callOp);
     rewriter.replaceOpWithNewOp<enzymexla::triton_ext::TritonCallOp>(
-        callOp, callOp->getResultTypes(),
-        fn,
+        callOp, callOp->getResultTypes(), fn,
 
         TI64(gridx), TI64(gridy), TI64(gridz),
 
