@@ -108,12 +108,6 @@ struct RaiseTritonCustomCallPattern final
 
     innerMod.setSymName("triton_module_inner");
 
-    // https://github.com/jax-ml/jax/blob/8d21fb89146b7e5864191bf013733d3a638a26d5/jaxlib/gpu/triton_kernels.cc#L323
-    uint64_t kNumThreadsPerWarp = 64;
-
-    uint64_t blockx = kCall.kernel().num_warps() * kNumThreadsPerWarp,
-             blocky = 1, blockz = 1;
-
     uint64_t gridx = kCall.grid_0(), gridy = kCall.grid_1(),
              gridz = kCall.grid_2();
     uint64_t clusterx = kCall.kernel().cluster_dim_0(),
@@ -137,13 +131,9 @@ struct RaiseTritonCustomCallPattern final
 
     rewriter.setInsertionPoint(callOp);
     rewriter.replaceOpWithNewOp<enzymexla::triton_ext::TritonCallOp>(
-        callOp, callOp->getResultTypes(),
-
-        fn,
+        callOp, callOp->getResultTypes(), fn,
 
         TI64(gridx), TI64(gridy), TI64(gridz),
-
-        TI64(blockx), TI64(blocky), TI64(blockz),
 
         TI64(clusterx), TI64(clustery), TI64(clusterz),
 

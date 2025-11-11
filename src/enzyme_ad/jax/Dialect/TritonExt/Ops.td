@@ -44,9 +44,6 @@ def TritonCallOp : TritonExtOp<"call", [
     TensorI64:$gridx,
     TensorI64:$gridy,
     TensorI64:$gridz,
-    TensorI64:$blockx,
-    TensorI64:$blocky,
-    TensorI64:$blockz,
     TensorI64:$clusterx,
     TensorI64:$clustery,
     TensorI64:$clusterz,
@@ -68,7 +65,6 @@ def TritonCallOp : TritonExtOp<"call", [
     $fn
     `clusters` `in` `(` $clusterx `,` $clustery `,` $clusterz `)`
     `blocks` `in` `(` $gridx `,` $gridy `,` $gridz `)`
-    `threads` `in` `(` $blockx `,` $blocky `,` $blockz `)`
     `(` $inputs `)`
     attr-dict `:` functional-type($inputs, results)
   }];

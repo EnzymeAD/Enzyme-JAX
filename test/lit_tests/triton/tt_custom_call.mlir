@@ -9,8 +9,7 @@ module @jit_add attributes {mhlo.num_partitions = 1 : i32, mhlo.num_replicas = 1
 
 // CHECK:  func.func public @main(%arg0: tensor<8xi32>, %arg1: tensor<8xi32>) -> (tensor<8xi32> {jax.result_info = "result"}) {
 // CHECK-NEXT:    %c = stablehlo.constant dense<1> : tensor<i64>
-// CHECK-NEXT:    %c_0 = stablehlo.constant dense<256> : tensor<i64>
-// CHECK-NEXT:    %0 = enzymexla_tt_ext.call @triton_module::@triton_module_inner::@add_kernel clusters in(%c, %c, %c) blocks in(%c, %c, %c) threads in(%c_0, %c, %c) (%arg0, %arg1) {arg_attrs = [], operand_layouts = [dense<0> : tensor<1xindex>, dense<0> : tensor<1xindex>], res_attrs = [], result_layouts = [dense<0> : tensor<1xindex>]} : (tensor<8xi32>, tensor<8xi32>) -> tensor<8xi32>
+// CHECK-NEXT:    %0 = enzymexla_tt_ext.call @triton_module::@triton_module_inner::@add_kernel clusters in(%c, %c, %c) blocks in(%c, %c, %c) (%arg0, %arg1) {arg_attrs = [], operand_layouts = [dense<0> : tensor<1xindex>, dense<0> : tensor<1xindex>], res_attrs = [], result_layouts = [dense<0> : tensor<1xindex>]} : (tensor<8xi32>, tensor<8xi32>) -> tensor<8xi32>
 // CHECK-NEXT:    return %0 : tensor<8xi32>
 // CHECK-NEXT:  }
 
