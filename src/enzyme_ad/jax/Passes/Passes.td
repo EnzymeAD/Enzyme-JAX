@@ -1060,4 +1060,16 @@ def TritonAugmentFunctionWithExtraArgumentsPass : Pass<
   ];
 }
 
+def LowerTritonExtensionOpsPass : Pass<"lower-triton-extension-ops"> {
+  let dependentDialects = [
+    "triton::TritonDialect",
+    "func::FuncDialect",
+    "LLVM::LLVMDialect",
+    "memref::MemRefDialect",
+    "enzymexla::EnzymeXLADialect",
+    "enzymexla::triton_ext::TritonExtDialect",
+    "gpu::GPUDialect",
+  ];
+}
+
 #endif
