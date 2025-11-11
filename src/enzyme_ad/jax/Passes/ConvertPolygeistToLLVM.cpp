@@ -2224,8 +2224,10 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
   std::string launchFuncName;
   if (gpuTarget == "cuda") {
     launchFuncName = "cudaLaunchKernel";
-  } else {
+  } else if (gpuTarget == "rocm") {
     launchFuncName = "hipLaunchKernel";
+  } else {
+    launchFuncName = "cudaLaunchKernel";
   }
 
   auto launchCall =
