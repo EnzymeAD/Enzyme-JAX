@@ -1613,6 +1613,51 @@ struct DotOpConversion : public OpConversionPattern<enzyme::DotOp> {
   }
 };
 
+// Reference:
+// https://github.com/jax-ml/jax/blob/e9b487238f0cfe932200bae842d26826f19ba2bc/jax/_src/lax/other.py#L262
+struct LogAddExpOpConversion : public OpConversionPattern<enzyme::LogAddExpOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  std::string backend;
+  LogAddExpOpConversion(std::string backend, TypeConverter &typeConverter,
+                        MLIRContext *context, PatternBenefit benefit = 1)
+      : OpConversionPattern(typeConverter, context, benefit), backend(backend) {
+  }
+
+  LogicalResult
+  matchAndRewrite(enzyme::LogAddExpOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto lhs = adaptor.getLhs();
+    auto rhs = adaptor.getRhs();
+    auto resultType = cast<RankedTensorType>(op.getResult().getType());
+
+    auto amax =
+        stablehlo::MaxOp::create(rewriter, op.getLoc(), resultType, lhs, rhs);
+    auto delta = stablehlo::SubtractOp::create(rewriter, op.getLoc(),
+                                               resultType, lhs, rhs);
+    auto isNaN =
+        stablehlo::CompareOp::create(rewriter, op.getLoc(), delta, delta,
+                                     stablehlo::ComparisonDirection::NE);
+    auto nanResult =
+        stablehlo::AddOp::create(rewriter, op.getLoc(), resultType, lhs, rhs);
+    auto absDelta =
+        stablehlo::AbsOp::create(rewriter, op.getLoc(), resultType, delta);
+    auto negAbsDelta =
+        stablehlo::NegOp::create(rewriter, op.getLoc(), resultType, absDelta);
+    auto expNegAbsDelta = stablehlo::ExpOp::create(rewriter, op.getLoc(),
+                                                   resultType, negAbsDelta);
+    auto log1pResult = stablehlo::Log1pOp::create(rewriter, op.getLoc(),
+                                                  resultType, expNegAbsDelta);
+    auto normalResult = stablehlo::AddOp::create(rewriter, op.getLoc(),
+                                                 resultType, amax, log1pResult);
+    auto result = stablehlo::SelectOp::create(rewriter, op.getLoc(), resultType,
+                                              isNaN, nanResult, normalResult);
+
+    rewriter.replaceOp(op, result);
+    return success();
+  }
+};
+
 struct RandomOpConversion : public OpConversionPattern<enzyme::RandomOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -2397,6 +2442,7 @@ struct LowerProbProgToStableHLOPass
     target.addIllegalOp<enzyme::RandomOp>();
     target.addIllegalOp<enzyme::CholeskySolveOp>();
     target.addIllegalOp<enzyme::DotOp>();
+    target.addIllegalOp<enzyme::LogAddExpOp>();
     target.addIllegalOp<enzyme::UnflattenSliceOp>();
     target.addIllegalOp<enzyme::ForLoopOp>();
 
@@ -2405,8 +2451,8 @@ struct LowerProbProgToStableHLOPass
     RewritePatternSet patterns(context);
 
     patterns.add<RandomOpConversion, CholeskySolveOpConversion, DotOpConversion,
-                 UnflattenSliceOpConversion, ForLoopOpConversion>(
-        backend, typeConverter, context);
+                 LogAddExpOpConversion, UnflattenSliceOpConversion,
+                 ForLoopOpConversion>(backend, typeConverter, context);
 
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns)))) {
