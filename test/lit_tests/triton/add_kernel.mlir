@@ -28,11 +28,10 @@ module {
     }
   }
   func.func @main(%arg0: tensor<1024xf32>, %arg1: tensor<1024xf32>, %arg2: tensor<1024xf32>, %arg3: tensor<i32>) -> (tensor<1024xf32>, tensor<1024xf32>, tensor<1024xf32>) {
-    %c = stablehlo.constant dense<64> : tensor<i64>
     %c_0 = stablehlo.constant dense<1> : tensor<i64>
     %c_1 = stablehlo.constant dense<16> : tensor<i64>
     // CHECK: enzymexla_tt_ext.call
-    %0:3 = enzymexla_tt_ext.call @add_kernel_tt::@add_kernel_inner::@add_kernel clusters in (%c_0, %c_0, %c_0) blocks in(%c_1, %c_0, %c_0) threads in(%c, %c_0, %c_0) (%arg0, %arg1, %arg2, %arg3) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 0, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [1], operand_index = 1, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [2], operand_index = 2, operand_tuple_indices = []>]} : (tensor<1024xf32>, tensor<1024xf32>, tensor<1024xf32>, tensor<i32>) -> (tensor<1024xf32>, tensor<1024xf32>, tensor<1024xf32>)
+    %0:3 = enzymexla_tt_ext.call @add_kernel_tt::@add_kernel_inner::@add_kernel clusters in (%c_0, %c_0, %c_0) blocks in(%c_1, %c_0, %c_0) (%arg0, %arg1, %arg2, %arg3) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 0, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [1], operand_index = 1, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [2], operand_index = 2, operand_tuple_indices = []>]} : (tensor<1024xf32>, tensor<1024xf32>, tensor<1024xf32>, tensor<i32>) -> (tensor<1024xf32>, tensor<1024xf32>, tensor<1024xf32>)
     return %0#0, %0#1, %0#2 : tensor<1024xf32>, tensor<1024xf32>, tensor<1024xf32>
   }
 }
