@@ -1017,4 +1017,19 @@ def SCFCPUify : Pass<"cpuify"> {
   Option<"method", "method", "std::string", /*default=*/"\"distribute\"", "Method of doing distribution">
   ];
 }
+
+def ConvertTritonToTritonGPUPreservingModuleAttributesPass : Pass<
+    "convert-triton-to-triton-gpu-preserving-module-attributes", "mlir::ModuleOp"> {
+  let summary = "Triton generally compiles a single kernel, so they can specify the number of ctas and warps. However, we want to be able to compile multiple kernels. This pass will use the attributes from the module and use that to lower to TritonGPU.";
+  let dependentDialects = [];
+  let options = [
+    Option<
+        /*C++ variable name=*/"target",
+        /*CLI argument=*/"target",
+        /*type=*/"std::string",
+        /*default=*/"\"\"",
+        /*description=*/"the GPU target, e.g., cuda:80, hip:gfx942"
+      >];
+}
+
 #endif
