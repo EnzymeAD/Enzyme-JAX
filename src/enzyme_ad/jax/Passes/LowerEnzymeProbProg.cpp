@@ -1590,14 +1590,18 @@ struct DotOpConversion : public OpConversionPattern<enzyme::DotOp> {
     auto lhs = adaptor.getLhs();
     auto rhs = adaptor.getRhs();
     auto resultType = cast<RankedTensorType>(op.getResult().getType());
-    auto lhsType = cast<RankedTensorType>(lhs.getType());
+
+    auto lhsBatching = op.getLhsBatchingDimensions();
+    auto rhsBatching = op.getRhsBatchingDimensions();
+    auto lhsContracting = op.getLhsContractingDimensions();
+    auto rhsContracting = op.getRhsContractingDimensions();
 
     auto dotDimensionNumbers = stablehlo::DotDimensionNumbersAttr::get(
         rewriter.getContext(),
-        /*lhs_batching_dimensions=*/{},
-        /*rhs_batching_dimensions=*/{},
-        /*lhs_contracting_dimensions=*/{0},
-        /*rhs_contracting_dimensions=*/{0});
+        SmallVector<int64_t>(lhsBatching.begin(), lhsBatching.end()),
+        SmallVector<int64_t>(rhsBatching.begin(), rhsBatching.end()),
+        SmallVector<int64_t>(lhsContracting.begin(), lhsContracting.end()),
+        SmallVector<int64_t>(rhsContracting.begin(), rhsContracting.end()));
 
     auto dotOp = stablehlo::DotGeneralOp::create(
         rewriter, op.getLoc(), resultType, lhs, rhs, dotDimensionNumbers,
@@ -1605,6 +1609,51 @@ struct DotOpConversion : public OpConversionPattern<enzyme::DotOp> {
         /*algorithm=*/stablehlo::DotAlgorithmAttr());
 
     rewriter.replaceOp(op, dotOp.getResult());
+    return success();
+  }
+};
+
+// Reference:
+// https://github.com/jax-ml/jax/blob/e9b487238f0cfe932200bae842d26826f19ba2bc/jax/_src/lax/other.py#L262
+struct LogAddExpOpConversion : public OpConversionPattern<enzyme::LogAddExpOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  std::string backend;
+  LogAddExpOpConversion(std::string backend, TypeConverter &typeConverter,
+                        MLIRContext *context, PatternBenefit benefit = 1)
+      : OpConversionPattern(typeConverter, context, benefit), backend(backend) {
+  }
+
+  LogicalResult
+  matchAndRewrite(enzyme::LogAddExpOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto lhs = adaptor.getLhs();
+    auto rhs = adaptor.getRhs();
+    auto resultType = cast<RankedTensorType>(op.getResult().getType());
+
+    auto amax =
+        stablehlo::MaxOp::create(rewriter, op.getLoc(), resultType, lhs, rhs);
+    auto delta = stablehlo::SubtractOp::create(rewriter, op.getLoc(),
+                                               resultType, lhs, rhs);
+    auto isNaN =
+        stablehlo::CompareOp::create(rewriter, op.getLoc(), delta, delta,
+                                     stablehlo::ComparisonDirection::NE);
+    auto nanResult =
+        stablehlo::AddOp::create(rewriter, op.getLoc(), resultType, lhs, rhs);
+    auto absDelta =
+        stablehlo::AbsOp::create(rewriter, op.getLoc(), resultType, delta);
+    auto negAbsDelta =
+        stablehlo::NegOp::create(rewriter, op.getLoc(), resultType, absDelta);
+    auto expNegAbsDelta = stablehlo::ExpOp::create(rewriter, op.getLoc(),
+                                                   resultType, negAbsDelta);
+    auto log1pResult = stablehlo::Log1pOp::create(rewriter, op.getLoc(),
+                                                  resultType, expNegAbsDelta);
+    auto normalResult = stablehlo::AddOp::create(rewriter, op.getLoc(),
+                                                 resultType, amax, log1pResult);
+    auto result = stablehlo::SelectOp::create(rewriter, op.getLoc(), resultType,
+                                              isNaN, nanResult, normalResult);
+
+    rewriter.replaceOp(op, result);
     return success();
   }
 };
@@ -2239,17 +2288,17 @@ struct GetFlattenedSamplesFromTraceOpConversion
   }
 };
 
-struct LoopOpConversion : public OpConversionPattern<enzyme::LoopOp> {
+struct ForLoopOpConversion : public OpConversionPattern<enzyme::ForLoopOp> {
   using OpConversionPattern::OpConversionPattern;
 
   std::string backend;
-  LoopOpConversion(std::string backend, TypeConverter &typeConverter,
-                   MLIRContext *context, PatternBenefit benefit = 1)
+  ForLoopOpConversion(std::string backend, TypeConverter &typeConverter,
+                      MLIRContext *context, PatternBenefit benefit = 1)
       : OpConversionPattern(typeConverter, context, benefit), backend(backend) {
   }
 
   LogicalResult
-  matchAndRewrite(enzyme::LoopOp op, OpAdaptor adaptor,
+  matchAndRewrite(enzyme::ForLoopOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     SmallVector<Value> initVals = {adaptor.getLowerBound()};
     initVals.append(adaptor.getInitArgs().begin(), adaptor.getInitArgs().end());
@@ -2394,16 +2443,17 @@ struct LowerProbProgToStableHLOPass
     target.addIllegalOp<enzyme::RandomOp>();
     target.addIllegalOp<enzyme::CholeskySolveOp>();
     target.addIllegalOp<enzyme::DotOp>();
+    target.addIllegalOp<enzyme::LogAddExpOp>();
     target.addIllegalOp<enzyme::UnflattenSliceOp>();
-    target.addIllegalOp<enzyme::LoopOp>();
+    target.addIllegalOp<enzyme::ForLoopOp>();
 
     target.addLegalOp<UnrealizedConversionCastOp>();
 
     RewritePatternSet patterns(context);
 
     patterns.add<RandomOpConversion, CholeskySolveOpConversion, DotOpConversion,
-                 UnflattenSliceOpConversion, LoopOpConversion>(
-        backend, typeConverter, context);
+                 LogAddExpOpConversion, UnflattenSliceOpConversion,
+                 ForLoopOpConversion>(backend, typeConverter, context);
 
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns)))) {
