@@ -515,6 +515,15 @@ def LowerEnzymeXLAMLPass : Pass<"lower-enzymexla-ml"> {
   ];
 }
 
+def RaiseTritonCustomCallPass : Pass<"raise-triton-custom-call"> {
+  let summary = "Raise triton custom kernel call";
+  let dependentDialects = [
+    "triton::TritonDialect",
+    "mlir::enzymexla::triton_ext::TritonExtDialect",
+    "stablehlo::StablehloDialect"
+  ];
+}
+
 def LowerJITPass : Pass<"lower-jit"> {
   let summary = "Lower jit call to custom call";
   let dependentDialects = [
