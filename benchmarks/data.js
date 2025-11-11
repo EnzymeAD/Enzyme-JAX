@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1762812434044,
+  "lastUpdate": 1762853494257,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "scharfrichterq@gmail.com",
-            "name": "Acake",
-            "username": "sbrantq"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "f3d79b36e034cb46f7868adc1fa223a6019130f8",
-          "message": "ProbProg: Static HMC (#1464)\n\n* todo\n\n* cleanup\n\n* more mh ops lowering\n\n* test\n\n* select trace/dump op\n\n* cholesky solve op\n\n* multinormal\n\n* GetFlattenedSamplesFromTraceOpConversion  LoopOpConversion UnflattenSliceOpConversion\n\n* split lower-enzyme-probprog in two\n\n* save tests\n\n* save\n\n* simplify",
-          "timestamp": "2025-10-27T03:35:57-05:00",
-          "tree_id": "0c283d16850205054a637775d7898e9158336be5",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/f3d79b36e034cb46f7868adc1fa223a6019130f8"
-        },
-        "date": 1761560091250,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.0000042890359996818,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.000004200187907554209,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001495036462089,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001424800402019,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2199,6 +2155,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001292214179993,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "naydex.mc+github@gmail.com",
+            "name": "Paul Berg",
+            "username": "Pangoraw"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7d0b3924ab6ec0bf8417fc2a4b0376a59b9f6207",
+          "message": "pass to raise triton custom call (#1601)\n\n* pass to raise triton custom call\n\n* Buildifier\n\n* patches\n\n* comment\n\n* fmt\n\n* deps",
+          "timestamp": "2025-11-11T08:47:59+01:00",
+          "tree_id": "48fe906963826b5b738c5e5afc3a8f0dcb12ba98",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/7d0b3924ab6ec0bf8417fc2a4b0376a59b9f6207"
+        },
+        "date": 1762853493637,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004253403999609873,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004486645001452416,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001332565265009,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001343388594978,
             "unit": "s"
           }
         ]
