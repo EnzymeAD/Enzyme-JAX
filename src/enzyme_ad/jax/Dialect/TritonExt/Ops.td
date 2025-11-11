@@ -34,7 +34,7 @@ def TritonModuleOp : TritonExtOp<"module", [
   // clang-format on
 }
 
-def ScratchMemoryOp : TritonExtOp<"scratch_memory", [ConstantLike, Pure]> {
+def ScratchMemoryOp : TritonExtOp<"scratch_memory", [Pure]> {
   let summary = "Allocate scratch memory";
   let description = [{ Allocate scratch memory for a kernel. }];
 

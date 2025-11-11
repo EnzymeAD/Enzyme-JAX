@@ -30,9 +30,9 @@ using namespace mlir::enzymexla::triton_ext;
 // See for description on the extra arguments
 // https://github.com/triton-lang/triton/blob/6ac622c57152ce88edd058f11997b5c5e18d096b/lib/Conversion/TritonGPUToLLVM/FuncOpToLLVM.cpp#L12-L25
 
-LogicalResult augmentTritonCallOpWithExtraArguments(ModuleOp mod,
-                                                    triton_ext::TritonCallOp op,
-                                                    OpBuilder &builder) {
+LogicalResult
+augmentTritonCallOpWithExtraArguments(ModuleOp mod,
+                                      triton_ext::TritonCallOp op) {
   SymbolTableCollection symbolTable;
   symbolTable.getSymbolTable(mod);
   auto funcOp = symbolTable.lookupNearestSymbolFrom<FunctionOpInterface>(
@@ -76,8 +76,7 @@ LogicalResult augmentTritonCallOpWithExtraArguments(ModuleOp mod,
   auto newInputs = llvm::to_vector(op.getInputs());
 
   // global scratch memory
-  uint64_t gsmNBytes = 0;
-  uint64_t gsmAlign = 0;
+  uint64_t gsmNBytes = 0, gsmAlign = 0;
   if (auto gsm = funcOp->getAttrOfType<IntegerAttr>(
           "ttg.global_scratch_memory_size")) {
     gsmNBytes = gsm.getValue().getZExtValue();
@@ -87,7 +86,7 @@ LogicalResult augmentTritonCallOpWithExtraArguments(ModuleOp mod,
     gsmAlign = smalign.getValue().getZExtValue();
   }
 
-  builder.setInsertionPoint(op);
+  OpBuilder builder(op);
 
   auto gsmTy = RankedTensorType::get({static_cast<int64_t>(gsmNBytes)},
                                      builder.getIntegerType(8));
@@ -97,8 +96,7 @@ LogicalResult augmentTritonCallOpWithExtraArguments(ModuleOp mod,
 
   // profile scratch memory
   if (hasProfileScratchMemory) {
-    uint64_t psmNBytes = 0;
-    uint64_t psmAlign = 0;
+    uint64_t psmNBytes = 0, psmAlign = 1;
     if (auto psm = funcOp->getAttrOfType<IntegerAttr>(
             "ttg.profile_scratch_memory_size")) {
       psmNBytes = psm.getValue().getZExtValue();
@@ -136,19 +134,12 @@ struct TritonAugmentFunctionWithExtraArgumentsPass
   void runOnOperation() override {
     auto modOp = getOperation();
 
-    OpBuilder builder(modOp);
-
-    bool anyFailed = false;
     modOp->walk([&](triton_ext::TritonCallOp op) -> WalkResult {
-      if (failed(augmentTritonCallOpWithExtraArguments(modOp, op, builder))) {
-        anyFailed = true;
+      if (failed(augmentTritonCallOpWithExtraArguments(modOp, op))) {
+        signalPassFailure();
         return WalkResult::interrupt();
       }
       return WalkResult::advance();
     });
-
-    if (anyFailed) {
-      signalPassFailure();
-    }
   }
 };
