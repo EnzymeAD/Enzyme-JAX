@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1762890046752,
+  "lastUpdate": 1762928480100,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "765740+giordano@users.noreply.github.com",
-            "name": "Mosè Giordano",
-            "username": "giordano"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "f0c1e1bc526fee6281db47fdeff2bd50f17b4469",
-          "message": "Update JAX to commit eac1414e85f61667591b5879bbb95f80d609f23f (#1484)\n\n* Update JAX to commit eac1414e85f61667591b5879bbb95f80d609f23f\n\nDiff: https://github.com/jax-ml/jax/compare/3a22eea644237001df0f3dd42253225cc059b43c...eac1414e85f61667591b5879bbb95f80d609f23f\n\n* Disable x86 AMX support in Bazel configuration\n\n* Log compiler versions in build workflow\n\nAdded commands to display GCC, CC, and Clang versions.\n\n* Fix Bazel flags assignment in build.yml\n\n* Update build.yml\n\n* fix\n\n* fmt\n\n* Update .bazelrc\n\n* Update .bazelrc\n\n* Update JAX_COMMIT hash in workspace.bzl\n\n* Update .bazelrc\n\n* Remove compiler version checks from build.yml\n\nRemoved version checks for gcc, cc, and clang from the build workflow.\n\n* Update .bazelrc\n\n* Update JAX_COMMIT to new commit hash\n\n---------\n\nCo-authored-by: enzyme-ci-bot[bot] <78882869+enzyme-ci-bot[bot]@users.noreply.github.com>\nCo-authored-by: William Moses <wmoses@google.com>\nCo-authored-by: William S. Moses <gh@wsmoses.com>",
-          "timestamp": "2025-10-27T17:27:47-05:00",
-          "tree_id": "f83ee8cedecfd38343a1c34a21db8f7f6a5bbe7e",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/f0c1e1bc526fee6281db47fdeff2bd50f17b4469"
-        },
-        "date": 1761618411603,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.000003881685994565487,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.000004159397992771119,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001516026142984,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001506869731936,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2199,6 +2155,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001489120090031,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "wmoses@google.com",
+            "name": "William Moses",
+            "username": "wsmoses"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "afd06426aec90984e084c72885fdc5a9fd2e9d12",
+          "message": "Extend to pad 2 (#1608)\n\n* Extend to pad 2\n\n* fix",
+          "timestamp": "2025-11-11T22:22:33-06:00",
+          "tree_id": "e9f85526172fa1f4a9598eb8c7af79d88752d5a6",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/afd06426aec90984e084c72885fdc5a9fd2e9d12"
+        },
+        "date": 1762928478734,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004394121200311929,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.0000043122530914843084,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001489107565023,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.000159457737999,
             "unit": "s"
           }
         ]
