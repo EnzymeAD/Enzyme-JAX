@@ -1023,4 +1023,52 @@ def SCFCPUify : Pass<"cpuify"> {
   Option<"method", "method", "std::string", /*default=*/"\"distribute\"", "Method of doing distribution">
   ];
 }
+
+def ConvertTritonToTritonGPUPreservingModuleAttributesPass : Pass<
+    "convert-triton-to-triton-gpu-preserving-module-attributes", "mlir::ModuleOp"> {
+  let summary = "Triton generally compiles a single kernel, so they can specify the number of ctas and warps. However, we want to be able to compile multiple kernels. This pass will use the attributes from the module and use that to lower to TritonGPU.";
+  let dependentDialects = [];
+  let options = [
+    Option<
+        /*C++ variable name=*/"target",
+        /*CLI argument=*/"target",
+        /*type=*/"std::string",
+        /*default=*/"\"\"",
+        /*description=*/"the GPU target, e.g., cuda:80, hip:gfx942"
+      >];
+}
+
+def LowerTritonPass : Pass<"lower-triton", "mlir::ModuleOp"> {
+  let summary = "Lower Triton to kernel call";
+  let dependentDialects = [
+    "triton::TritonDialect",
+    "gpu::GPUDialect",
+    "enzymexla::EnzymeXLADialect",
+    "func::FuncDialect",
+    "enzymexla::triton_ext::TritonExtDialect",
+    "stablehlo::StablehloDialect",
+  ];
+}
+
+def TritonAugmentFunctionWithExtraArgumentsPass : Pass<
+    "triton-augment-function-with-extra-arguments", "mlir::ModuleOp"> {
+  let dependentDialects = [
+    "triton::TritonDialect",
+    "func::FuncDialect",
+    "enzymexla::triton_ext::TritonExtDialect",
+  ];
+}
+
+def LowerTritonExtensionOpsPass : Pass<"lower-triton-extension-ops"> {
+  let dependentDialects = [
+    "triton::TritonDialect",
+    "func::FuncDialect",
+    "LLVM::LLVMDialect",
+    "memref::MemRefDialect",
+    "enzymexla::EnzymeXLADialect",
+    "enzymexla::triton_ext::TritonExtDialect",
+    "gpu::GPUDialect",
+  ];
+}
+
 #endif
