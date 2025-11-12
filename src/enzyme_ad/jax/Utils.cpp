@@ -611,8 +611,14 @@ SymmetricResultAnalysis::State SymmetricResultAnalysis::localGuaranteed(
   if (outTy.getDimSize(0) != outTy.getDimSize(1))
     return State::NOTGUARANTEED; // quick check and exit
 
-  if (auto constantOp = dyn_cast<stablehlo::ConstantOp>(op)) {
-    if (guaranteed(constantOp, rewriter)) {
+  SplatElementsAttr splatAttr;
+  if (matchPattern(op, m_Constant(&splatAttr))) {
+    return State::GUARANTEED;
+  }
+
+  DenseElementsAttr denseAttr;
+  if (matchPattern(op, m_Constant(&denseAttr))) {
+    if (guaranteedConstantOp(op, denseAttr, rewriter)) {
       return State::GUARANTEED;
     } else {
       return State::NOTGUARANTEED;
@@ -740,8 +746,9 @@ NoNanResultAnalysis::localGuaranteed(Operation *op,
       return State::NOTGUARANTEED;
   }
 
-  if (auto constantOp = dyn_cast<stablehlo::ConstantOp>(op)) {
-    if (guaranteed(constantOp, rewriter)) {
+  DenseElementsAttr denseAttr;
+  if (matchPattern(op, m_Constant(&denseAttr))) {
+    if (guaranteedConstantOp(op, denseAttr, rewriter)) {
       return State::GUARANTEED;
     } else {
       return State::NOTGUARANTEED;
@@ -882,8 +889,9 @@ FiniteResultAnalysis::localGuaranteed(Operation *op,
       return State::NOTGUARANTEED;
   }
 
-  if (auto constantOp = dyn_cast<stablehlo::ConstantOp>(op)) {
-    if (guaranteed(constantOp, rewriter)) {
+  DenseElementsAttr denseAttr;
+  if (matchPattern(op, m_Constant(&denseAttr))) {
+    if (guaranteedConstantOp(op, denseAttr, rewriter)) {
       return State::GUARANTEED;
     } else {
       return State::NOTGUARANTEED;
@@ -994,8 +1002,9 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
       return State::NOTGUARANTEED;
   }
 
-  if (auto constantOp = dyn_cast<stablehlo::ConstantOp>(op)) {
-    if (guaranteed(constantOp, rewriter)) {
+  DenseElementsAttr denseAttr;
+  if (matchPattern(op, m_Constant(&denseAttr))) {
+    if (guaranteedConstantOp(op, denseAttr, rewriter)) {
       return State::GUARANTEED;
     } else {
       return State::NOTGUARANTEED;

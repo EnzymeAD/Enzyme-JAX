@@ -494,51 +494,47 @@ public:
     return false;
   }
 
-  bool guaranteed(stablehlo::ConstantOp constOp, PatternRewriter &rewriter) {
-    if (!constOp)
+  bool guaranteedConstantOp(Operation *op, DenseElementsAttr denseAttr,
+                            PatternRewriter &rewriter) {
+    if (!op)
       return false;
 
     auto attrName = ((Child *)this)->getAttrName();
-    if (auto boolAttr = constOp->getAttrOfType<mlir::BoolAttr>(attrName)) {
+    if (auto boolAttr = op->getAttrOfType<mlir::BoolAttr>(attrName)) {
       if (boolAttr.getValue())
         return true;
       else
         return false;
     }
 
-    auto it = opCache.find(constOp);
+    auto it = opCache.find(op);
     if (it != opCache.end())
       return it->second;
 
-    Attribute attr = constOp.getValue();
-
     bool guaranteedResult = false;
-    if (auto denseAttr = dyn_cast<DenseElementsAttr>(attr)) {
-      if (denseAttr.getType().getShape().size() && denseAttr.isSplat()) {
-        denseAttr = denseAttr.resizeSplat(
-            RankedTensorType::get({}, denseAttr.getType().getElementType()));
-      }
+    if (denseAttr.getType().getShape().size() && denseAttr.isSplat()) {
+      denseAttr = denseAttr.resizeSplat(
+          RankedTensorType::get({}, denseAttr.getType().getElementType()));
+    }
 
-      // For floating point values
-      if (isa<FloatType>(denseAttr.getElementType())) {
-        if (((Child *)this)->constantFloatCheck(denseAttr)) {
-          guaranteedResult = true;
-        }
-      }
-
-      // For integer values
-      if (isa<IntegerType>(denseAttr.getElementType())) {
-        if (((Child *)this)->constantIntCheck(denseAttr)) {
-          guaranteedResult = true;
-        }
+    // For floating point values
+    if (isa<FloatType>(denseAttr.getElementType())) {
+      if (((Child *)this)->constantFloatCheck(denseAttr)) {
+        guaranteedResult = true;
       }
     }
 
-    rewriter.modifyOpInPlace(constOp, [&]() {
-      constOp->setAttr(attrName,
-                       BoolAttr::get(constOp.getContext(), guaranteedResult));
+    // For integer values
+    if (isa<IntegerType>(denseAttr.getElementType())) {
+      if (((Child *)this)->constantIntCheck(denseAttr)) {
+        guaranteedResult = true;
+      }
+    }
+
+    rewriter.modifyOpInPlace(op, [&]() {
+      op->setAttr(attrName, BoolAttr::get(op->getContext(), guaranteedResult));
     });
-    opCache[constOp] = guaranteedResult;
+    opCache[op] = guaranteedResult;
     return guaranteedResult;
   }
 
