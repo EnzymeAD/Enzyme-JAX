@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1762928480100,
+  "lastUpdate": 1762955213226,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "avikpal@mit.edu",
-            "name": "Avik Pal",
-            "username": "avik-pal"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "992f348493d08666a9bd4305fdbfc35ff6910c0b",
-          "message": "feat: greedy loop to batch (#1425)\n\n* feat: greedy loop to batch via loop fission\n\nfeat: support non-constant extra indices\n\nfix: only emit new ops if sure\n\nfeat: propagate bounds and eliminate noops\n\nchore: run fmt\n\nfeat: check for dynamic_slices\n\nfeat: unary elementwise working\n\nchore: comments\n\nfeat: clear out unwanted no-ops from loop body\n\nfeat: elementwise ops are completely supported\n\nchore: add a note\n\nfix: bad rebase\n\nfeat: generalize index handling\n\ntest: elementwise loop fission\n\nrefactor: support dynamicsliceop\n\nfeat: sliceinfo generalize\n\nfeat: lift ops by batch op\n\nfeat: run batching pass\n\nfeat: generalize handling for non-reshape case\n\n* chore: make a note on supporting dropdim in while is copy\n\n* feat: support while is copy with dropdims = 0\n\n* feat: add to transform ops\n\n* fix: mapping\n\n* feat: support constants by lifting them into function body\n\n* feat: special handling of reshape",
-          "timestamp": "2025-10-27T19:49:19-04:00",
-          "tree_id": "0253de51884ecf5ff2b226afa85c8da3ee5327b6",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/992f348493d08666a9bd4305fdbfc35ff6910c0b"
-        },
-        "date": 1761633458474,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.000004391519189812243,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.000004307569190859795,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001399941653944,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.000138530330907,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2199,6 +2155,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.000159457737999,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "238314553+enzymead-bot[bot]@users.noreply.github.com",
+            "name": "enzymead-bot[bot]",
+            "username": "enzymead-bot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "044e8c29ee1d11a83243e8ef94d6016183f8dbc7",
+          "message": "Update jax-ml/jax to commit 24e80c494cb5464794730818cea05b60d7a956d7 (#1596)\n\n* Update jax-ml/jax to commit 24e80c494cb5464794730818cea05b60d7a956d7\n\nDiff: https://github.com/jax-ml/jax/compare/30e565311af559569b4842bddced4b461f21dd73...24e80c494cb5464794730818cea05b60d7a956d7\n\n* bump enzyme commit\n\n* fix\n\n* patch\n\n---------\n\nCo-authored-by: enzymead-bot[bot] <238314553+enzymead-bot[bot]@users.noreply.github.com>\nCo-authored-by: William S. Moses <gh@wsmoses.com>",
+          "timestamp": "2025-11-11T23:57:32-06:00",
+          "tree_id": "d179a146fff70a8469d28e7241b6bcf134980a0b",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/044e8c29ee1d11a83243e8ef94d6016183f8dbc7"
+        },
+        "date": 1762955212560,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004321588110178709,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004304491099901497,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001413633406045,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001412845815997,
             "unit": "s"
           }
         ]
