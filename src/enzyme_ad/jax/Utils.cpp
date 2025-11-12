@@ -608,6 +608,8 @@ SymmetricResultAnalysis::State SymmetricResultAnalysis::localGuaranteed(
   auto outTy = cast<RankedTensorType>(op->getResult(0).getType());
   if (outTy.getRank() != 2)
     return State::NOTGUARANTEED; // this pass only checks for symmetric matrices
+  if (outTy.getDimSize(0) != outTy.getDimSize(1))
+    return State::NOTGUARANTEED; // quick check and exit
 
   if (auto constantOp = dyn_cast<stablehlo::ConstantOp>(op)) {
     if (guaranteed(constantOp, rewriter)) {

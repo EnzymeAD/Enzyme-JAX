@@ -6920,6 +6920,14 @@ struct TransposeSymmetricSimplify
     if (!defOp)
       return rewriter.notifyMatchFailure(op, "no defining op");
 
+    auto perm = op.getPermutation();
+    if (perm.size() != 2 || perm[0] != 1 || perm[1] != 0)
+      return failure();
+
+    auto resTy = cast<RankedTensorType>(op.getResult().getType());
+    if (resTy.getRank() != 2 || resTy.getDimSize(0) != resTy.getDimSize(1))
+      return failure(); // quick check and exit
+
     if (canApplySymmetricPattern(
             defOp, rewriter)) { // tranpose(symmetric) -> symmetric
       rewriter.replaceOp(op, op.getOperand());
