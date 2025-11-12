@@ -1656,6 +1656,8 @@ struct ExtendToPadCommOptimize2 : public OpRewritePattern<enzymexla::ExtendOp> {
 
     Value current = paddedExtendOp;
 
+    auto i1ty = RankedTensorType::get(paddedExtendOp.getType().getShape(),
+                                      rewriter.getI1Type());
     auto iota = stablehlo::IotaOp::create(
         rewriter, extend.getLoc(),
         RankedTensorType::get(paddedExtendOp.getType().getShape(),
@@ -1672,18 +1674,18 @@ struct ExtendToPadCommOptimize2 : public OpRewritePattern<enzymexla::ExtendOp> {
       sdy::setSharding(paddedLeftSliceOp, extendSharding);
 
       Value lhsValue = stablehlo::ConstantOp::create(
-          rewriter, extendOp.getLoc(),
+          rewriter, extend.getLoc(),
           SplatElementsAttr::get(iota.getType(),
-                                 rewriter.getI32Attr(extend.getLhs())));
+                                 rewriter.getI32IntegerAttr(extend.getLhs())));
 
       auto cond = stablehlo::CompareOp::create(
-          rewriter, extend.getLoc(), stablehlo::ComparisonDirection::LT, iota,
-          lhsVal);
+          rewriter, extend.getLoc(), iota, lhsValue,
+          stablehlo::ComparisonDirection::LT);
       sdy::setSharding(cond, extendSharding);
 
       auto selOp = stablehlo::SelectOp::create(rewriter, extend.getLoc(), cond,
                                                paddedLeftSliceOp, current);
-      sdy::setSharding(cond, selOp);
+      sdy::setSharding(selOp, extendSharding);
       current = selOp;
     }
 
@@ -1696,20 +1698,20 @@ struct ExtendToPadCommOptimize2 : public OpRewritePattern<enzymexla::ExtendOp> {
       sdy::setSharding(paddedRightSliceOp, extendSharding);
 
       Value rhsValue = stablehlo::ConstantOp::create(
-          rewriter, extendOp.getLoc(),
+          rewriter, extend.getLoc(),
           SplatElementsAttr::get(
-              iota.getType(),
-              rewriter.getI32Attr(extend.getType().getShape()[extendDimension] +
+              iota.getType(), rewriter.getI32IntegerAttr(
+                                  extend.getType().getShape()[extendDimension] +
                                   extend.getLhs())));
 
       auto cond = stablehlo::CompareOp::create(
-          rewriter, extend.getLoc(), stablehlo::ComparisonDirection::LT, iota,
-          rhsVal);
+          rewriter, extend.getLoc(), iota, rhsValue,
+          stablehlo::ComparisonDirection::LT);
       sdy::setSharding(cond, extendSharding);
 
       auto selOp = stablehlo::SelectOp::create(rewriter, extend.getLoc(), cond,
                                                current, paddedRightSliceOp);
-      sdy::setSharding(cond, selOp);
+      sdy::setSharding(selOp, extendSharding);
       current = selOp;
     }
 
