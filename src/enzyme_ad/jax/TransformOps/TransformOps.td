@@ -599,7 +599,7 @@ def ApplyNoNanZeroBasePowSimplify : EnzymeHLOParameterizedPatternOp<
   }];
 }
 
-def ApplyTransposeSymmetricSimplify : EnzymeHLOParameterizedPatternOp<
+def ApplyTransposeSymmetricSimplify : EnzymeHLOPatternOp<
     "transpose_symmetric_simplify"> {
   let patterns = ["TransposeSymmetricSimplify"];
 }
