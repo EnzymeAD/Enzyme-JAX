@@ -39,7 +39,17 @@ struct WhileLoopInfo {
   std::optional<int64_t> getConstantStart();
   std::optional<int64_t> getConstantLimit();
 
-  Value getInductionVariable() { return op.getBody().front().getArgument(0); }
+  // assumes computeInfo() has been called and was successful
+  // returns the induction variable in the body of the while op
+  Value getInductionVariable() {
+    auto &condBlk = op.getCond().front();
+    auto condTerm = cast<stablehlo::ReturnOp>(condBlk.getTerminator());
+    auto condV = condTerm->getOperand(0);
+    auto cond = condV.getDefiningOp<stablehlo::CompareOp>();
+    auto induct = dyn_cast<BlockArgument>(cond.getOperand(0));
+    auto blockArgNum = induct.getArgNumber();
+    return op.getBody().front().getArgument(blockArgNum);
+  }
 
   int64_t getConstantNumIters();
   Value getNumIters(OpBuilder &builder);
