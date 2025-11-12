@@ -654,6 +654,8 @@ td_library(
     deps = [
         "@llvm-project//mlir:BuiltinDialectTdFiles",
         "@llvm-project//mlir:OpBaseTdFiles",
+        "@llvm-project//mlir:SideEffectInterfaces",
+        "@llvm-project//mlir:ControlFlowInterfacesTdFiles",
     ],
 )
 

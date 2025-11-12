@@ -3,6 +3,8 @@
 
 include "mlir/IR/BuiltinAttributes.td"
 include "mlir/IR/OpBase.td"
+include "mlir/Interfaces/SideEffectInterfaces.td"
+include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "Dialect.td"
 
 // Perfify.cost op
@@ -22,12 +24,12 @@ def ArgOp : PerfifyOp<"arg", []> {
   let results = (outs I64);
 }
 
-def AssumeOp : PerfifyOp<"assume", []> {
-  let arguments = (ins BoolAttr:$precondition);
+def AssumeOp : PerfifyOp<"assume", [HasParent<"ConditionsOp">, Terminator]> {
+  let arguments = (ins I1:$precondition);
   let assemblyFormat = "$precondition attr-dict";
 }
 
-def ConditionsOp : PerfifyOp<"conditions", []> {
+def ConditionsOp : PerfifyOp<"conditions", [HasParent<"AssumptionsOp">, Terminator]> {
   let arguments = (ins FlatSymbolRefAttr:$func_handle,
                   BoolAttr:$verify_huh);
   let regions = (region AnyRegion:$precondition, AnyRegion:$postcondition);
@@ -40,7 +42,7 @@ def ConditionsOp : PerfifyOp<"conditions", []> {
   }];
 }
 
-def AssumptionsOp : PerfifyOp<"assumptions", []> {
+def AssumptionsOp : PerfifyOp<"assumptions", [Terminator]> {
   let regions = (region AnyRegion:$body);
   let assemblyFormat = [{$body attr-dict}];
 }
