@@ -1,7 +1,7 @@
-JAX_COMMIT = "30e565311af559569b4842bddced4b461f21dd73"
+JAX_COMMIT = "24e80c494cb5464794730818cea05b60d7a956d7"
 JAX_SHA256 = ""
 
-ENZYME_COMMIT = "269207f268bdda2b46e6c6bc1646bb2195eee0f2"
+ENZYME_COMMIT = "f20d134a02177cc5f295d1e878aeb2d7579585b2"
 ENZYME_SHA256 = ""
 
 ML_TOOLCHAIN_COMMIT = "78ef5eda03c54a912c000f1f872242d4ca6063a4"
@@ -32,7 +32,8 @@ XLA_PATCHES = [
     sed -i.bak0 "s/load(\\\"\\/\\/xla\\/tsl:tsl.bzl\\\", \\\"if_google\\\")/\\0\\nload(\\\"@local_config_rocm\\/\\/rocm:build_defs.bzl\\\", \\\"if_rocm_is_configured\\\")/g" xla/backends/gpu/codegen/triton/BUILD
     """,
     """
-    sed -i.bak0 "s/e07debd5e257ec1e118f18c54068977b89f03b2f/9018c682b99eb20d5874a4e38271ce63d7393879/g" third_party/stablehlo/workspace.bzl
+    sed -i.bak0 "s,third_party/llvm/llvm-project/llvm/include/,,g" third_party/stablehlo/temporary.patch
+    sed -i.bak0 "s,third_party/llvm/llvm-project/mlir/include/,,g" third_party/stablehlo/temporary.patch
     """,
     """
     sed -i.bak0 "s/\\/\\/third_party:repo.bzl/@bazel_tools\\/\\/tools\\/build_defs\\/repo:http.bzl/g" third_party/llvm/workspace.bzl
