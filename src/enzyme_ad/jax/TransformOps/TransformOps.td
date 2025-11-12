@@ -1365,6 +1365,30 @@ def ApplySliceReshapeSlicePatterns : EnzymeHLOPatternOp<
     "slice_reshape_slice"> {
   let patterns = ["SliceReshapeSlice"];
 }
+def ApplyDynamicSliceReshapeDynamicSlicePatterns : EnzymeHLOPatternOp<
+    "dynamic_slice_reshape_dynamic_slice"> {
+  let patterns = ["DynamicSliceReshapeDynamicSlice"];
+}
+def ApplySliceReshapeDynamicSlicePatterns : EnzymeHLOPatternOp<
+    "slice_reshape_dynamic_slice"> {
+  let patterns = ["SliceReshapeDynamicSlice"];
+}
+def ApplyDynamicSliceReshapeSlicePatterns : EnzymeHLOPatternOp<
+    "dynamic_slice_reshape_slice"> {
+  let patterns = ["DynamicSliceReshapeSlice"];
+}
+def ApplyDynamicSliceDynamicSlicePatterns : EnzymeHLOPatternOp<
+    "dynamic_slice_dynamic_slice"> {
+  let patterns = ["DynamicSliceDynamicSlice"];
+}
+def ApplyDynamicSliceSlicePatterns : EnzymeHLOPatternOp<
+    "dynamic_slice_slice"> {
+  let patterns = ["DynamicSliceSlice"];
+}
+def ApplySliceDynamicSlicePatterns : EnzymeHLOPatternOp<
+    "slice_dynamic_slice"> {
+  let patterns = ["SliceDynamicSlice"];
+}
 def ConcatToBroadcastPatterns : EnzymeHLOPatternOp<
     "concat_to_broadcast"> {
   let patterns = ["ConcatToBroadcast"];
