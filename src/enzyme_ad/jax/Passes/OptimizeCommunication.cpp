@@ -1599,6 +1599,125 @@ struct ExtendToPadCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
   }
 };
 
+struct ExtendToPadCommOptimize2 : public OpRewritePattern<enzymexla::ExtendOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::ExtendOp extend,
+                                PatternRewriter &rewriter) const override {
+    if (extend->getParentOfType<sdy::ManualComputationOp>())
+      return failure();
+    auto elemType = extend.getType().getElementType();
+    auto ndims = extend.getType().getRank();
+    auto extendOperandShape = extend.getOperand().getType().getShape();
+    auto extendShape = extend.getType().getShape();
+    auto extendDimension = extend.getDimension();
+
+    auto extendSharding = mlir::sdy::getSharding(extend);
+    if (!extendSharding)
+      return failure();
+
+    auto operandSharding = mlir::sdy::getSharding(extend.getOperand());
+    if (!operandSharding)
+      return failure();
+
+    if (operandSharding != extendSharding)
+      return failure();
+
+    auto numDevicesAlongDimension =
+        getNumDevicesAlongDimension(extendSharding, extendDimension, extend);
+    if (numDevicesAlongDimension == 1) {
+      return rewriter.notifyMatchFailure(
+          extend,
+          "numDevicesAlongDimension == 1. Communication is already optimized.");
+    }
+
+    SmallVector<int64_t> strides(ndims, 1);
+
+    auto zero = stablehlo::ConstantOp::create(rewriter, extend.getLoc(),
+                                              rewriter.getZeroAttr(elemType));
+
+    SmallVector<int64_t> padLow(ndims, 0);
+    SmallVector<int64_t> padHigh(ndims, 0);
+    SmallVector<int64_t> padInner(ndims, 0);
+
+    padLow[extendDimension] = extend.getRhs() + extend.getLhs();
+    padHigh[extendDimension] = 0;
+    auto paddedRightSliceOp =
+        stablehlo::PadOp::create(rewriter, extend.getLoc(), extend.getOperand(),
+                                 zero, padLow, padHigh, padInner);
+    sdy::setSharding(paddedRightSliceOp, extendSharding);
+
+    padLow[extendDimension] = extend.getLhs();
+    padHigh[extendDimension] = extend.getRhs();
+    auto paddedExtendOp =
+        stablehlo::PadOp::create(rewriter, extend.getLoc(), extend.getOperand(),
+                                 zero, padLow, padHigh, padInner);
+    sdy::setSharding(paddedExtendOp, extendSharding);
+
+    Value current = paddedExtendOp;
+
+    auto iota = stablehlo::IotaOp::create(
+        rewriter, extend.getLoc(),
+        RankedTensorType::get(paddedExtendOp.getType().getShape(),
+                              rewriter.getI32Type()),
+        extendDimension);
+    sdy::setSharding(iota, extendSharding);
+
+    if (extend.getLhs() != 0) {
+      padLow[extendDimension] = 0;
+      padHigh[extendDimension] = extend.getRhs() + extend.getLhs();
+      auto paddedLeftSliceOp = stablehlo::PadOp::create(
+          rewriter, extend.getLoc(), extend.getOperand(), zero, padLow, padHigh,
+          padInner);
+      sdy::setSharding(paddedLeftSliceOp, extendSharding);
+
+      Value lhsValue = stablehlo::ConstantOp::create(
+          rewriter, extendOp.getLoc(),
+          SplatElementsAttr::get(iota.getType(),
+                                 rewriter.getI32Attr(extend.getLhs())));
+
+      auto cond = stablehlo::CompareOp::create(
+          rewriter, extend.getLoc(), stablehlo::ComparisonDirection::LT, iota,
+          lhsVal);
+      sdy::setSharding(cond, extendSharding);
+
+      auto selOp = stablehlo::SelectOp::create(rewriter, extend.getLoc(), cond,
+                                               paddedLeftSliceOp, current);
+      sdy::setSharding(cond, selOp);
+      current = selOp;
+    }
+
+    if (extend.getRhs() != 0) {
+      padLow[extendDimension] = extend.getRhs() + extend.getLhs();
+      padHigh[extendDimension] = 0;
+      auto paddedRightSliceOp = stablehlo::PadOp::create(
+          rewriter, extend.getLoc(), extend.getOperand(), zero, padLow, padHigh,
+          padInner);
+      sdy::setSharding(paddedRightSliceOp, extendSharding);
+
+      Value rhsValue = stablehlo::ConstantOp::create(
+          rewriter, extendOp.getLoc(),
+          SplatElementsAttr::get(
+              iota.getType(),
+              rewriter.getI32Attr(extend.getType().getShape()[extendDimension] +
+                                  extend.getLhs())));
+
+      auto cond = stablehlo::CompareOp::create(
+          rewriter, extend.getLoc(), stablehlo::ComparisonDirection::LT, iota,
+          rhsVal);
+      sdy::setSharding(cond, extendSharding);
+
+      auto selOp = stablehlo::SelectOp::create(rewriter, extend.getLoc(), cond,
+                                               current, paddedRightSliceOp);
+      sdy::setSharding(cond, selOp);
+      current = selOp;
+    }
+
+    rewriter.replaceOp(extend, current);
+    return success();
+  }
+};
+
 // TODO: check mesh attr and ensure only applied to iota tile
 struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
 
@@ -3593,6 +3712,10 @@ struct OptimizeCommunicationPass
     if (extend_to_pad_comm > 0)
       patterns.add<ExtendToPadCommOptimize>(context,
                                             PatternBenefit(extend_to_pad_comm));
+
+    if (extend_to_pad_comm2 > 0)
+      patterns.add<ExtendToPadCommOptimize2>(
+          context, PatternBenefit(extend_to_pad_comm2));
 
     if (dus_to_pad_manual_comp_comm > 0)
       patterns.add<DUSToPadManualCompComm>(
