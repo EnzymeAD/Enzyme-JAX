@@ -844,6 +844,12 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*default=*/"1",
        /*description=*/"Perform an Extend with Padding to optimize the communication">,
        Option<
+       /*C++ variable name=*/"extend_to_pad_comm2",
+       /*CLI argument=*/"extend_to_pad_comm2",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Perform an Extend with Padding to optimize the communication">,
+       Option<
        /*C++ variable name=*/"concat_two_dus_like",
        /*CLI argument=*/"concat_two_dus_like",
        /*type=*/"int",
