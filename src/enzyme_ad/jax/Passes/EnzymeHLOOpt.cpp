@@ -6907,16 +6907,23 @@ struct SubSimplify
   }
 };
 
-template <typename OpT>
-struct SymmetricSimplify
-    : public CheckedOpRewritePattern<OpT, SymmetricSimplify<OpT>> {
-
+struct TransposeSymmetricSimplify
+    : public CheckedOpRewritePattern<stablehlo::TransposeOp,
+                                     TransposeSymmetricSimplify> {
   using CheckedOpRewritePattern<
-      OpT, SymmetricSimplify<OpT>>::CheckedOpRewritePattern;
+      stablehlo::TransposeOp,
+      TransposeSymmetricSimplify>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewriteImpl(OpT op, PatternRewriter &rewriter) const {
-    if (canApplySymmetricPattern(op, rewriter)) {
-      return success(); // no rewrite yet, just mark success
+  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
+                                    PatternRewriter &rewriter) const {
+    auto defOp = op.getOperand().getDefiningOp();
+    if (!defOp)
+      return rewriter.notifyMatchFailure(op, "no defining op");
+
+    if (canApplySymmetricPattern(
+            defOp, rewriter)) { // tranpose(symmetric) -> symmetric
+      rewriter.replaceOp(op, op.getOperand());
+      return success();
     }
     return failure();
   }
@@ -25676,16 +25683,6 @@ void mlir::transform::addNoNanZeroBasePowSimplify(RewritePatternSet &patterns,
                                             benefit);
 }
 
-void mlir::transform::addSymmetricSimplify(RewritePatternSet &patterns,
-                                           MLIRContext &context,
-                                           PatternBenefit benefit) {
-  patterns.insert<SymmetricSimplify<stablehlo::AddOp>,
-                  SymmetricSimplify<stablehlo::SubtractOp>,
-                  SymmetricSimplify<stablehlo::MulOp>,
-                  SymmetricSimplify<stablehlo::DotGeneralOp>,
-                  SymmetricSimplify<stablehlo::TransposeOp>>(&context, benefit);
-}
-
 void mlir::transform::addSelfSubtractToConvolutionLike(
     RewritePatternSet &patterns, bool allowEmitConvolution,
     MLIRContext &context, PatternBenefit benefit) {
@@ -26019,11 +26016,7 @@ struct EnzymeHLOOptPass
                  NoNanAddSubSimplify, NoNanMulSimplify, NoNanDivSimplify>(
         (no_nan || all_finite), context);
 
-    patterns.add<SymmetricSimplify<stablehlo::AddOp>,
-                 SymmetricSimplify<stablehlo::SubtractOp>,
-                 SymmetricSimplify<stablehlo::MulOp>,
-                 SymmetricSimplify<stablehlo::DotGeneralOp>,
-                 SymmetricSimplify<stablehlo::TransposeOp>>(context);
+    patterns.add<TransposeSymmetricSimplify>(context);
 
     // clang-format off
     patterns.add<
