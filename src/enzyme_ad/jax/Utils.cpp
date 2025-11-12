@@ -603,13 +603,13 @@ bool SymmetricResultAnalysis::constantFloatCheck(DenseElementsAttr attr) {
   return false; // TODO
 }
 
-SymmetricResultAnalysis::State 
-SymmetricResultAnalysis::localGuaranteed(Operation *op,
-                                         SmallVectorImpl<Operation *> &localtodo,
-                                         PatternRewriter &rewriter) {
+SymmetricResultAnalysis::State SymmetricResultAnalysis::localGuaranteed(
+    Operation *op, SmallVectorImpl<Operation *> &localtodo,
+    PatternRewriter &rewriter) {
   assert(op);
-  
-  // TODO will not work right now because constantIntCheck and constantFloatCheck are not implemented
+
+  // TODO will not work right now because constantIntCheck and
+  // constantFloatCheck are not implemented
   if (auto constantOp = dyn_cast<stablehlo::ConstantOp>(op)) {
     if (guaranteed(constantOp, rewriter)) {
       return State::GUARANTEED;
@@ -629,7 +629,8 @@ SymmetricResultAnalysis::localGuaranteed(Operation *op,
   // an elementwise operation with A and A^T will always be symmetric
   // A(A^T) will also always be symmetric
   if (isa<stablehlo::DotGeneralOp>(op) ||
-      (op->hasTrait<OpTrait::Elementwise>() && op->hasTrait<OpTrait::IsCommutative>())) {
+      (op->hasTrait<OpTrait::Elementwise>() &&
+       op->hasTrait<OpTrait::IsCommutative>())) {
     auto lhs = op->getOperand(0);
     auto rhs = op->getOperand(1);
 
@@ -641,8 +642,9 @@ SymmetricResultAnalysis::localGuaranteed(Operation *op,
         if (rhsInput == lhs && isTrueTranspose(rhsT))
           return State::GUARANTEED;
       }
-  
-      if (auto lhsT = dyn_cast_or_null<stablehlo::TransposeOp>(lhs.getDefiningOp())) {
+
+      if (auto lhsT =
+              dyn_cast_or_null<stablehlo::TransposeOp>(lhs.getDefiningOp())) {
         auto lhsInput = lhsT.getOperand();
         if (lhsInput == rhs && isTrueTranspose(lhsT))
           return State::GUARANTEED;
@@ -661,7 +663,7 @@ SymmetricResultAnalysis::localGuaranteed(Operation *op,
    * TODO
    * - check if its * 0 -> symmetric
    */
-  
+
   if (recursiveCheck) {
     bool allOperandsGuaranteed = true;
     for (auto operand : op->getOperands()) {
@@ -701,10 +703,7 @@ SymmetricResultAnalysis::localGuaranteed(Operation *op,
   } else {
     return State::NOTGUARANTEED;
   }
-
 }
-
-
 
 NoNanResultAnalysis initNoNanResultAnalysis() {
   auto finiteAnalysis = std::make_shared<FiniteResultAnalysis>();

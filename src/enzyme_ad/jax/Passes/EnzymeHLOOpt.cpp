@@ -6911,7 +6911,8 @@ template <typename OpT>
 struct SymmetricSimplify
     : public CheckedOpRewritePattern<OpT, SymmetricSimplify<OpT>> {
 
-  using CheckedOpRewritePattern<OpT, SymmetricSimplify<OpT>>::CheckedOpRewritePattern;
+  using CheckedOpRewritePattern<
+      OpT, SymmetricSimplify<OpT>>::CheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(OpT op, PatternRewriter &rewriter) const {
     if (canApplySymmetricPattern(op, rewriter)) {
@@ -6920,7 +6921,6 @@ struct SymmetricSimplify
     return failure();
   }
 };
-
 
 struct NoNanSelfSubSimplify
     : public NoNanCheckedOpRewritePattern<stablehlo::SubtractOp,
@@ -25677,15 +25677,13 @@ void mlir::transform::addNoNanZeroBasePowSimplify(RewritePatternSet &patterns,
 }
 
 void mlir::transform::addSymmetricSimplify(RewritePatternSet &patterns,
-                          MLIRContext &context,
-                          PatternBenefit benefit) {
-  patterns.insert<
-      SymmetricSimplify<stablehlo::AddOp>,
-      SymmetricSimplify<stablehlo::SubtractOp>,
-      SymmetricSimplify<stablehlo::MulOp>,
-      SymmetricSimplify<stablehlo::DotGeneralOp>,
-      SymmetricSimplify<stablehlo::TransposeOp>
-  >(&context, benefit);
+                                           MLIRContext &context,
+                                           PatternBenefit benefit) {
+  patterns.insert<SymmetricSimplify<stablehlo::AddOp>,
+                  SymmetricSimplify<stablehlo::SubtractOp>,
+                  SymmetricSimplify<stablehlo::MulOp>,
+                  SymmetricSimplify<stablehlo::DotGeneralOp>,
+                  SymmetricSimplify<stablehlo::TransposeOp>>(&context, benefit);
 }
 
 void mlir::transform::addSelfSubtractToConvolutionLike(
@@ -26022,10 +26020,10 @@ struct EnzymeHLOOptPass
         (no_nan || all_finite), context);
 
     patterns.add<SymmetricSimplify<stablehlo::AddOp>,
-      SymmetricSimplify<stablehlo::SubtractOp>,
-      SymmetricSimplify<stablehlo::MulOp>,
-      SymmetricSimplify<stablehlo::DotGeneralOp>,
-      SymmetricSimplify<stablehlo::TransposeOp>>(context);
+                 SymmetricSimplify<stablehlo::SubtractOp>,
+                 SymmetricSimplify<stablehlo::MulOp>,
+                 SymmetricSimplify<stablehlo::DotGeneralOp>,
+                 SymmetricSimplify<stablehlo::TransposeOp>>(context);
 
     // clang-format off
     patterns.add<

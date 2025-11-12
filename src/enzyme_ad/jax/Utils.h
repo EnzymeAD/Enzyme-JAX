@@ -570,13 +570,13 @@ class SymmetricResultAnalysis;
 class SymmetricResultAnalysis
     : public GuaranteedResultAnalysisBase<SymmetricResultAnalysis> {
 public:
-  State localGuaranteed(Operation *op, SmallVectorImpl<Operation *> &localtodo, PatternRewriter &rewriter);
-  
+  State localGuaranteed(Operation *op, SmallVectorImpl<Operation *> &localtodo,
+                        PatternRewriter &rewriter);
+
   bool constantFloatCheck(DenseElementsAttr attr);
   bool constantIntCheck(DenseElementsAttr attr);
 
   StringRef getAttrName() const { return "enzymexla.guaranteed_symmetric"; }
-
 };
 
 class NoNanResultAnalysis
@@ -638,10 +638,11 @@ inline bool guaranteedFiniteResult(Operation *op, PatternRewriter &rewriter) {
 }
 
 inline bool guaranteedSymmetricResult(mlir::Value value,
-                                  PatternRewriter &rewriter) {
+                                      PatternRewriter &rewriter) {
   return initSymmetricResultAnalysis().guaranteed(value, rewriter);
 }
-inline bool guaranteedSymmetricResult(Operation *op, PatternRewriter &rewriter) {
+inline bool guaranteedSymmetricResult(Operation *op,
+                                      PatternRewriter &rewriter) {
   return initSymmetricResultAnalysis().guaranteed(op, rewriter);
 }
 
