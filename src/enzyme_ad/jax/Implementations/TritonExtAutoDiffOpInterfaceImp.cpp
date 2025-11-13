@@ -24,6 +24,7 @@ using namespace mlir::enzymexla;
 
 namespace {
 
+// this assumes no tuple in either args or results.
 static std::optional<unsigned>
 findAliasedOperand(ArrayAttr outputOperandAliases, unsigned outputIndex) {
   for (auto attr : outputOperandAliases) {
@@ -47,23 +48,31 @@ public:
 
     auto callOp = cast<triton_ext::TritonCallOp>(orig);
 
+    for (auto [i, arg] : llvm::enumerate(callOp.getInputs())) {
+      if (!isa<TensorType>(arg.getType())) {
+        orig->emitError()
+            << "unsupported forward rule of triton kernel call with non array "
+               "return at return #"
+            << i << " of type " << arg.getType() << ".";
+        return failure();
+      }
+    }
+
     for (auto [i, res] : llvm::enumerate(callOp->getResults())) {
       if (!isa<TensorType>(res.getType())) {
-        orig->emitError() << "unsupported triton kernel call with non array "
-                             "return at return #"
-                          << i << " of type " << res.getType() << ".";
+        orig->emitError()
+            << "unsupported forward rule of triton kernel call with non array "
+               "return at return #"
+            << i << " of type " << res.getType() << ".";
         return failure();
       }
     }
 
     auto output_operand_aliases = callOp.getOutputOperandAliases();
-    auto operandLayouts = callOp.getOperandLayouts();
-    auto resultLayouts = callOp.getResultLayouts();
-
-    // if (!output_operand_aliases.empty()) {
-    //   orig->emitError() << "TODO: support output operand aliases";
-    //   return failure();
-    // }
+    auto operandLayouts = dyn_cast_or_null<ArrayAttr>(
+        callOp.getOperandLayouts().value_or(nullptr));
+    auto resultLayouts = dyn_cast_or_null<ArrayAttr>(
+        callOp.getResultLayouts().value_or(nullptr));
 
     Operation *callee =
         SymbolTable::lookupNearestSymbolFrom(callOp, callOp.getFn());
@@ -73,16 +82,14 @@ public:
 
     int numInputs = callOp.getInputs().size();
     int narg = numInputs + orig->getNumResults();
-    int nret = 0;
-
-    SmallVector<Type> retTypes;
 
     std::vector<DIFFE_TYPE> RetActivity;
+    std::vector<bool> returnPrimal;
+    std::vector<bool> returnShadow;
 
     // Unless there is aliasing, returns values arguments are assumed to
     // appended to the argument list in the triton kernel.
     SmallVector<unsigned> operandIndexMap;
-    SmallVector<unsigned> resultIndexMap;
 
     unsigned argCnt = 0;
 
@@ -103,20 +110,10 @@ public:
         auto act = gutils->isConstantValue(res) ? DIFFE_TYPE::CONSTANT
                                                 : DIFFE_TYPE::DUP_ARG;
         ArgActivity.push_back(act);
-
-        resultIndexMap.push_back(argCnt);
-
-        argCnt++;
-        if (act == DIFFE_TYPE::DUP_ARG)
-          argCnt++;
       } else {
-        resultIndexMap.push_back(operandIndexMap[*aliasedOperandIndex]);
         narg--;
       }
     }
-
-    std::vector<bool> returnPrimal(nret, true);
-    std::vector<bool> returnShadow(nret, false);
 
     auto type_args = gutils->TA.getAnalyzedTypeInfo(fn);
 
@@ -134,8 +131,21 @@ public:
     SmallVector<Value> fwdArguments;
     SmallVector<Type> returnTypes;
 
-    for (auto &&[arg, act] : llvm::zip(callOp.getOperands(), ArgActivity)) {
+    // let's assume the same layout for a value and its shadow.
+    SmallVector<Attribute> newOperandLayouts;
+    SmallVector<Attribute> newResultLayouts;
+
+    unsigned argIdx = 0;
+    for (auto &&[arg, act] : llvm::zip(callOp.getInputs(), ArgActivity)) {
       fwdArguments.push_back(gutils->getNewFromOriginal(arg));
+
+      if (operandLayouts) {
+        newOperandLayouts.push_back(operandLayouts[argIdx]);
+        if (act == DIFFE_TYPE::DUP_ARG)
+          newOperandLayouts.push_back(operandLayouts[argIdx]);
+      }
+      argIdx++;
+
       if (act == DIFFE_TYPE::DUP_ARG)
         fwdArguments.push_back(gutils->invertPointerM(arg, builder));
     }
@@ -169,6 +179,12 @@ public:
         act = ArgActivity[i - naliased + numInputs];
       }
 
+      if (resultLayouts) {
+        newResultLayouts.push_back(resultLayouts[i]);
+        if (act == DIFFE_TYPE::DUP_ARG)
+          newResultLayouts.push_back(resultLayouts[i]);
+      }
+
       returnTypes.push_back(res.getType());
       if (act == DIFFE_TYPE::DUP_ARG)
         returnTypes.push_back(
@@ -193,6 +209,13 @@ public:
           clustery = gutils->getNewFromOriginal(callOp.getClustery()),
           clusterz = gutils->getNewFromOriginal(callOp.getClusterz());
 
+    Attribute newOperandLayoutsAttr =
+        operandLayouts ? ArrayAttr::get(callOp.getContext(), newOperandLayouts)
+                       : nullptr;
+    Attribute newResultLayoutsAttr =
+        resultLayouts ? ArrayAttr::get(callOp.getContext(), newResultLayouts)
+                      : nullptr;
+
     auto fwdCallOp = triton_ext::TritonCallOp::create(
         builder, callOp.getLoc(), TypeRange(returnTypes),
         /*fn*/ fnRef,
@@ -203,7 +226,7 @@ public:
 
         ValueRange(fwdArguments),
         /* backendConfig */ StringAttr::get(callOp.getContext(), ""),
-        callOp.getOperandLayoutsAttr(), callOp.getResultLayoutsAttr(),
+        newOperandLayoutsAttr, newResultLayoutsAttr,
         /* argAttrs */ mlir::ArrayAttr::get(callOp.getContext(), {}),
         /* resAttrs */ mlir::ArrayAttr::get(callOp.getContext(), {}),
         ArrayAttr::get(callOp.getContext(), newOutputOperandAliases),
