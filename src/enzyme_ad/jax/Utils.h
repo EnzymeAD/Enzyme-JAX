@@ -313,6 +313,8 @@ bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy, Type inTy);
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy, Type inTy,
                           mlir::Operation *op, PatternRewriter &rewriter);
 
+bool canApplySymmetricPattern(mlir::Operation *op, PatternRewriter &rewriter);
+
 template <typename Child> class GuaranteedResultAnalysisBase {
 protected:
   llvm::DenseMap<mlir::Value, bool> valueCache;
@@ -492,51 +494,47 @@ public:
     return false;
   }
 
-  bool guaranteed(stablehlo::ConstantOp constOp, PatternRewriter &rewriter) {
-    if (!constOp)
+  bool guaranteedConstantOp(Operation *op, DenseElementsAttr denseAttr,
+                            PatternRewriter &rewriter) {
+    if (!op)
       return false;
 
     auto attrName = ((Child *)this)->getAttrName();
-    if (auto boolAttr = constOp->getAttrOfType<mlir::BoolAttr>(attrName)) {
+    if (auto boolAttr = op->getAttrOfType<mlir::BoolAttr>(attrName)) {
       if (boolAttr.getValue())
         return true;
       else
         return false;
     }
 
-    auto it = opCache.find(constOp);
+    auto it = opCache.find(op);
     if (it != opCache.end())
       return it->second;
 
-    Attribute attr = constOp.getValue();
-
     bool guaranteedResult = false;
-    if (auto denseAttr = dyn_cast<DenseElementsAttr>(attr)) {
-      if (denseAttr.getType().getShape().size() && denseAttr.isSplat()) {
-        denseAttr = denseAttr.resizeSplat(
-            RankedTensorType::get({}, denseAttr.getType().getElementType()));
-      }
+    if (denseAttr.getType().getShape().size() && denseAttr.isSplat()) {
+      denseAttr = denseAttr.resizeSplat(
+          RankedTensorType::get({}, denseAttr.getType().getElementType()));
+    }
 
-      // For floating point values
-      if (isa<FloatType>(denseAttr.getElementType())) {
-        if (((Child *)this)->constantFloatCheck(denseAttr)) {
-          guaranteedResult = true;
-        }
-      }
-
-      // For integer values
-      if (isa<IntegerType>(denseAttr.getElementType())) {
-        if (((Child *)this)->constantIntCheck(denseAttr)) {
-          guaranteedResult = true;
-        }
+    // For floating point values
+    if (isa<FloatType>(denseAttr.getElementType())) {
+      if (((Child *)this)->constantFloatCheck(denseAttr)) {
+        guaranteedResult = true;
       }
     }
 
-    rewriter.modifyOpInPlace(constOp, [&]() {
-      constOp->setAttr(attrName,
-                       BoolAttr::get(constOp.getContext(), guaranteedResult));
+    // For integer values
+    if (isa<IntegerType>(denseAttr.getElementType())) {
+      if (((Child *)this)->constantIntCheck(denseAttr)) {
+        guaranteedResult = true;
+      }
+    }
+
+    rewriter.modifyOpInPlace(op, [&]() {
+      op->setAttr(attrName, BoolAttr::get(op->getContext(), guaranteedResult));
     });
-    opCache[constOp] = guaranteedResult;
+    opCache[op] = guaranteedResult;
     return guaranteedResult;
   }
 
@@ -563,6 +561,19 @@ public:
 
 class FiniteResultAnalysis;
 class NoNanResultAnalysis;
+class SymmetricResultAnalysis;
+
+class SymmetricResultAnalysis
+    : public GuaranteedResultAnalysisBase<SymmetricResultAnalysis> {
+public:
+  State localGuaranteed(Operation *op, SmallVectorImpl<Operation *> &localtodo,
+                        PatternRewriter &rewriter);
+
+  bool constantFloatCheck(DenseElementsAttr attr);
+  bool constantIntCheck(DenseElementsAttr attr);
+
+  StringRef getAttrName() const { return "enzymexla.guaranteed_symmetric"; }
+};
 
 class NoNanResultAnalysis
     : public GuaranteedResultAnalysisBase<NoNanResultAnalysis> {
@@ -604,6 +615,7 @@ public:
 
 NoNanResultAnalysis initNoNanResultAnalysis();
 FiniteResultAnalysis initFiniteResultAnalysis();
+SymmetricResultAnalysis initSymmetricResultAnalysis();
 
 inline bool guaranteedNoNanResult(mlir::Value value,
                                   PatternRewriter &rewriter) {
@@ -619,6 +631,15 @@ inline bool guaranteedFiniteResult(mlir::Value value,
 }
 inline bool guaranteedFiniteResult(Operation *op, PatternRewriter &rewriter) {
   return initFiniteResultAnalysis().guaranteed(op, rewriter);
+}
+
+inline bool guaranteedSymmetricResult(mlir::Value value,
+                                      PatternRewriter &rewriter) {
+  return initSymmetricResultAnalysis().guaranteed(value, rewriter);
+}
+inline bool guaranteedSymmetricResult(Operation *op,
+                                      PatternRewriter &rewriter) {
+  return initSymmetricResultAnalysis().guaranteed(op, rewriter);
 }
 
 class NonNegativeResultAnalysis
