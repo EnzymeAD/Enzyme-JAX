@@ -213,6 +213,7 @@ private:
     bool intermediateReshape;
     llvm::SmallVector<int64_t> reshapeShape;
     int64_t offset;
+    bool needsManualReshape;
   };
 
   enum class BatchLiftingMode {

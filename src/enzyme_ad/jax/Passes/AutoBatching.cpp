@@ -861,15 +861,17 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
         auto operandTy = cast<RankedTensorType>(op->getOperand(0).getType());
         auto resultTy = cast<RankedTensorType>(op->getResult(0).getType());
 
+        bool needsManualReshape = false;
         if (!areValidInsertionDims(resultTy, operandTy,
                                    {ds.inductionVarDimension})) {
+          needsManualReshape = true;
           reshapeShape = llvm::to_vector(resultTy.getShape());
         }
 
         for (auto user : op->getUsers()) {
           userOpToSlicesMap[user].push_back(
               DynamicSliceInfo{ds.sliceOp, ds.inductionVarDimension, true,
-                               reshapeShape, ds.offset});
+                               reshapeShape, ds.offset, needsManualReshape});
         }
       }
     }
@@ -1041,7 +1043,7 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
                               rewriter.getDenseI64ArrayAttr(permutation))
                               .getResult();
 
-        if (!sliceInfo.reshapeShape.empty()) {
+        if (sliceInfo.needsManualReshape) {
           SmallVector<int64_t> reshapedShape(sliceInfo.reshapeShape.begin(),
                                              sliceInfo.reshapeShape.end());
           reshapedShape.insert(reshapedShape.begin(),
