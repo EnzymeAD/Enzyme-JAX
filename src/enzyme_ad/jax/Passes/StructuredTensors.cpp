@@ -5,6 +5,8 @@
 #include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
+#include "llvm/ADT/SetVector.h"
+
 namespace mlir {
 namespace enzyme {
 
@@ -254,6 +256,90 @@ std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
 
   result.tensorType = cast<RankedTensorType>(tensor.getType());
   return result;
+}
+
+bool allAccessesAreOnMainDiagonalPostReshape(stablehlo::ReshapeOp op,
+                                             stablehlo::SliceOp sliceOp) {
+  auto reshapeInTy = cast<RankedTensorType>(op.getOperand().getType());
+  auto reshapeOutTy = cast<RankedTensorType>(op.getType());
+
+  if (reshapeOutTy.getRank() != 1 ||
+      reshapeInTy.getRank() != 2) // [M, N] -> [M * N] vector
+    return false;
+
+  auto M = reshapeInTy.getDimSize(0);
+  auto N = reshapeInTy.getDimSize(1);
+  auto diagLen = std::min(M, N);
+  auto diagStride = N + 1;
+
+  int64_t start = sliceOp.getStartIndices()[0];
+  int64_t limit = sliceOp.getLimitIndices()[0];
+  int64_t stride = sliceOp.getStrides()[0];
+
+  if (stride % diagStride != 0)
+    return false;
+
+  // start can be on any of the diagonal elements
+  if (start % diagStride != 0)
+    return false;
+
+  if (limit > M * N)
+    return false; // technically this is illegal
+
+  // sanity check
+  int64_t count = (limit - start + stride - 1) / stride;
+  if (count <= 0 || count > diagLen)
+    return false;
+
+  return true;
+}
+
+bool allAccessesAreOnMainDiagonalPostReshape(
+    stablehlo::ReshapeOp op, Operation *user,
+    llvm::SetVector<Operation *> &opsToReplace) {
+  if (auto sliceOp = dyn_cast<stablehlo::SliceOp>(user)) {
+    if (allAccessesAreOnMainDiagonalPostReshape(op, sliceOp)) {
+      opsToReplace.insert(sliceOp);
+      return true;
+    }
+    return false;
+  }
+  return false;
+}
+
+bool allAccessesAreOnMainDiagonal(Operation *op,
+                                  llvm::SetVector<Operation *> &opsToReplace) {
+  if (auto reshapeOp = dyn_cast<stablehlo::ReshapeOp>(op)) {
+    return allAccessesAreOnMainDiagonal(reshapeOp, opsToReplace);
+  } else if (auto gatherOp = dyn_cast<stablehlo::GatherOp>(op)) {
+    return allAccessesAreOnMainDiagonal(gatherOp, opsToReplace);
+  }
+  return false;
+}
+
+bool allAccessesAreOnMainDiagonal(stablehlo::ReshapeOp op,
+                                  llvm::SetVector<Operation *> &opsToReplace) {
+  auto reshapeInTy = cast<RankedTensorType>(op.getOperand().getType());
+  if (reshapeInTy.getRank() != 2) // [M, N] matrix
+    return false;                 // quick exit
+
+  llvm::SmallPtrSet<Operation *, 4> seenOps;
+  for (auto user : op->getUsers()) {
+    if (seenOps.count(user))
+      continue;
+
+    if (!allAccessesAreOnMainDiagonalPostReshape(op, user, opsToReplace))
+      return false;
+
+    seenOps.insert(user);
+  }
+
+  return true;
+}
+
+bool allAccessesAreOnMainDiagonal(stablehlo::GatherOp op,
+                                  llvm::SetVector<Operation *> &opsToReplace) {
+  return false; // TODO: implement this where we are doing gather with iota
 }
 
 } // namespace enzyme

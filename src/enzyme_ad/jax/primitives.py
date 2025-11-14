@@ -310,6 +310,7 @@ def optimization_passes(
         "split_variadic_scatter_op",
         "dynamic_slice_simplify",
         "enzyme_hlo_unroll(4)",
+        "dot_general_only_diagonal_access",
     ]
 
     # constant propagation patterns
