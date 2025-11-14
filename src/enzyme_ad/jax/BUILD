@@ -838,13 +838,19 @@ cc_library(
 
 cc_library(
     name = "XLADerivatives",
-    srcs = glob([
-        "Implementations/*.cpp",
-        "Passes/*.cpp",
-        "Dialect/*.cpp",
-        "Dialect/Distributed/*.cpp",
-        "Dialect/Tessera/*.cpp",
-    ]) + [
+    srcs = glob(
+        [
+            "Implementations/*.cpp",
+            "Passes/*.cpp",
+            "Dialect/*.cpp",
+            "Dialect/Distributed/*.cpp",
+            "Dialect/Tessera/*.cpp",
+        ],
+        exclude = [
+            "Passes/CudaRuntimeWrappers.cpp",
+            "Passes/RocmRuntimeWrappers.cpp",
+        ],
+    ) + [
         "Utils.cpp",
     ],
     hdrs = glob([
@@ -944,6 +950,7 @@ cc_library(
         "@llvm-project//mlir:MathDialect",
         "@llvm-project//mlir:MathToLLVM",
         "@llvm-project//mlir:MathToLibm",
+        "@llvm-project//mlir:MathToROCDL",
         "@llvm-project//mlir:MemRefDialect",
         "@llvm-project//mlir:MemRefToLLVM",
         "@llvm-project//mlir:MemRefTransforms",
