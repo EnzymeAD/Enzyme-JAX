@@ -346,6 +346,7 @@ def optimization_passes(
         "dynamic_pad_to_pad",
         "remove_no_ops_from_while_loop",
         "while_is_copy_simplify",
+        "dot_general_only_diagonal_access",
     ]
 
     # constant propagation patterns

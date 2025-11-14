@@ -5,6 +5,8 @@
 #include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
+#include "llvm/ADT/SetVector.h"
+
 #include <optional>
 
 namespace mlir {
@@ -26,6 +28,16 @@ struct IotaLikeTensor {
 };
 
 std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor);
+
+// TODO: we can do a full analysis and return if the access is on a specific set
+// of diagonals. Checks that all accesses for this Op and its users thereoff are
+// along the diagonal.
+bool allAccessesAreOnMainDiagonal(
+    mlir::Operation *op, llvm::SetVector<mlir::Operation *> &opsToReplace);
+bool allAccessesAreOnMainDiagonal(
+    stablehlo::ReshapeOp op, llvm::SetVector<mlir::Operation *> &opsToReplace);
+bool allAccessesAreOnMainDiagonal(
+    stablehlo::GatherOp op, llvm::SetVector<mlir::Operation *> &opsToReplace);
 
 } // namespace enzyme
 } // namespace mlir
