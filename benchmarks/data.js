@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1762985092846,
+  "lastUpdate": 1763095527902,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "xuyuansui@outlook.com",
-            "name": "xys-syx",
-            "username": "xys-syx"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "8dc549db2c67dd4940743b6fbca96af2cab41de5",
-          "message": "Cpuify (#1415)\n\n* Port cpuify pass from polygeist\n\n* add missing files\n\n* add cpuify tests\n\n* fmt\n\n* lit tests modified\n\n* Apply clang-format\n\n* fmt\n\n* fix\n\n* Fmt\n\n* fix\n\n* fix\n\n* fix looprecur\n\n* temp using DAG in cpuifyifsplit.mlir\n\n* fmt\n\n* fmt\n\n* fmt\n\n* fmt\n\n* fix\n\n* fix\n\n* fix\n\n* fix\n\n* fix\n\n* fix\n\n* fmt:\n\n* fmt\n\n* fix\n\n* fix\n\n* fix\n\n* fix\n\n* fix\n\n* fmt\n\n* fix\n\n* fmt\n\n* fix\n\n* macos\n\n* macos\n\n* remove\n\n* remove\n\n* Fix memory error\n\n* void\n\n* fix\n\n* fix\n\n* fmt\n\n* fmt\n\n* wrapper for LoopDistribute Specific Logic\n\n* fmt\n\n---------\n\nCo-authored-by: William S. Moses <gh@wsmoses.com>",
-          "timestamp": "2025-10-28T14:05:05-05:00",
-          "tree_id": "bc51ee9ff8ec53ad8ca91555493034524bc71705",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/8dc549db2c67dd4940743b6fbca96af2cab41de5"
-        },
-        "date": 1761691433845,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.000004480922990478576,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.000004438424995169044,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001398530440987,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001646234500105,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2199,6 +2155,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001351870352984,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "58750937+snonk@users.noreply.github.com",
+            "name": "snonk",
+            "username": "snonk"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "546c4edb8ff48eba6808574f2b95b28d4b6c8d74",
+          "message": "feat: symmetric tensor detection + transpose(symmetric) simplify (#1549)\n\n* added symm op\n\n* fmt\n\n* wip\n\n* Update src/enzyme_ad/jax/Utils.cpp\n\nCo-authored-by: Avik Pal <avikpal@mit.edu>\n\n* chore: run fmt\n\n* feat: transpose symmetric simplify\n\n* feat: generalize is_commutative check\n\n* fix: more checks + update tests\n\n* feat: generalizes the constant check\n\n---------\n\nCo-authored-by: Avik Pal <avikpal@mit.edu>",
+          "timestamp": "2025-11-13T19:16:13-05:00",
+          "tree_id": "6c319f664c6a5a37a9f8396e7694a4243fe044fa",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/546c4edb8ff48eba6808574f2b95b28d4b6c8d74"
+        },
+        "date": 1763095527469,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000008844769300776533,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000008818387897918,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / gpu / Primal",
+            "value": 0.00008130874570051673,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / gpu / Primal",
+            "value": 0.00007962837539962492,
             "unit": "s"
           }
         ]
