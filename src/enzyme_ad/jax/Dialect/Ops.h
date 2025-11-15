@@ -34,6 +34,9 @@ extern llvm::cl::opt<bool> BarrierOpt;
 #define GET_ATTRDEF_CLASSES
 #include "src/enzyme_ad/jax/Dialect/EnzymeXLAAttrDefs.h.inc"
 
+#define GET_TYPEDEF_CLASSES
+#include "src/enzyme_ad/jax/Dialect/EnzymeXLATypes.h.inc"
+
 #define GET_OP_CLASSES
 #include "src/enzyme_ad/jax/Dialect/EnzymeXLAOps.h.inc"
 
