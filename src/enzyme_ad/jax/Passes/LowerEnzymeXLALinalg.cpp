@@ -109,9 +109,9 @@ private:
         /*xla_side_effect_free=*/rewriter.getUnitAttr());
 
     func::ReturnOp::create(rewriter, op.getLoc(),
-                                ValueRange{jitCall.getResult(0),
-                                           jitCall.getResult(1),
-                                           jitCall.getResult(2)});
+                           ValueRange{jitCall.getResult(0),
+                                      jitCall.getResult(1),
+                                      jitCall.getResult(2)});
 
     return func;
   }
