@@ -108,7 +108,7 @@ private:
         /*output_operand_aliases=*/outputOperandAliases,
         /*xla_side_effect_free=*/rewriter.getUnitAttr());
 
-    stablehlo::ReturnOp::create(rewriter, op.getLoc(),
+    func::ReturnOp::create(rewriter, op.getLoc(),
                                 ValueRange{jitCall.getResult(0),
                                            jitCall.getResult(1),
                                            jitCall.getResult(2)});
