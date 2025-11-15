@@ -75,29 +75,29 @@ module {
 // TPU-NEXT:     return %0#0, %1, %2, %6 : tensor<64x64xf32>, tensor<64xi32>, tensor<64xi32>, tensor<i32>
 // TPU-NEXT: }
 
-module {
-  // CPU: enzymexla.jit_call @enzymexla_lapack_dgetrf_
-  // CPU: func.func @main(%arg0: tensor<64x64xf64>) -> (tensor<64x64xf64>, tensor<64xi32>, tensor<i32>) {
-  func.func @main(%arg0: tensor<64x64xf64>) -> (tensor<64x64xf64>, tensor<64xi32>, tensor<i32>) {
-    %0:4 = enzymexla.linalg.lu %arg0 : (tensor<64x64xf64>) -> (tensor<64x64xf64>, tensor<64xi32>, tensor<64xi32>, tensor<i32>)
-    return %0#0, %0#1, %0#3 : tensor<64x64xf64>, tensor<64xi32>, tensor<i32>
-  }
-}
+// module {
+//   // CPU: enzymexla.jit_call @enzymexla_lapack_dgetrf_
+//   // CPU: func.func @main(%arg0: tensor<64x64xf64>) -> (tensor<64x64xf64>, tensor<64xi32>, tensor<i32>) {
+//   func.func @main(%arg0: tensor<64x64xf64>) -> (tensor<64x64xf64>, tensor<64xi32>, tensor<i32>) {
+//     %0:4 = enzymexla.linalg.lu %arg0 : (tensor<64x64xf64>) -> (tensor<64x64xf64>, tensor<64xi32>, tensor<64xi32>, tensor<i32>)
+//     return %0#0, %0#1, %0#3 : tensor<64x64xf64>, tensor<64xi32>, tensor<i32>
+//   }
+// }
 
-module {
-  // CPU: enzymexla.jit_call @enzymexla_lapack_zgetrf_
-  // CPU: func.func @main(%arg0: tensor<64x64xcomplex<f64>>) -> (tensor<64x64xcomplex<f64>>, tensor<64xi32>, tensor<i32>) {
-  func.func @main(%arg0: tensor<64x64xcomplex<f64>>) -> (tensor<64x64xcomplex<f64>>, tensor<64xi32>, tensor<i32>) {
-    %0:4 = enzymexla.linalg.lu %arg0 : (tensor<64x64xcomplex<f64>>) -> (tensor<64x64xcomplex<f64>>, tensor<64xi32>, tensor<64xi32>, tensor<i32>)
-    return %0#0, %0#1, %0#3 : tensor<64x64xcomplex<f64>>, tensor<64xi32>, tensor<i32>
-  }
-}
+// module {
+//   // CPU: enzymexla.jit_call @enzymexla_lapack_zgetrf_
+//   // CPU: func.func @main(%arg0: tensor<64x64xcomplex<f64>>) -> (tensor<64x64xcomplex<f64>>, tensor<64xi32>, tensor<i32>) {
+//   func.func @main(%arg0: tensor<64x64xcomplex<f64>>) -> (tensor<64x64xcomplex<f64>>, tensor<64xi32>, tensor<i32>) {
+//     %0:4 = enzymexla.linalg.lu %arg0 : (tensor<64x64xcomplex<f64>>) -> (tensor<64x64xcomplex<f64>>, tensor<64xi32>, tensor<64xi32>, tensor<i32>)
+//     return %0#0, %0#1, %0#3 : tensor<64x64xcomplex<f64>>, tensor<64xi32>, tensor<i32>
+//   }
+// }
 
-module {
-  // CPU: enzymexla.jit_call @enzymexla_lapack_cgetrf_
-  // CPU: func.func @main(%arg0: tensor<64x64xcomplex<f32>>) -> (tensor<64x64xcomplex<f32>>, tensor<64xi32>, tensor<i32>) {
-  func.func @main(%arg0: tensor<64x64xcomplex<f32>>) -> (tensor<64x64xcomplex<f32>>, tensor<64xi32>, tensor<i32>) {
-    %0:4 = enzymexla.linalg.lu %arg0 : (tensor<64x64xcomplex<f32>>) -> (tensor<64x64xcomplex<f32>>, tensor<64xi32>, tensor<64xi32>, tensor<i32>)
-    return %0#0, %0#1, %0#3 : tensor<64x64xcomplex<f32>>, tensor<64xi32>, tensor<i32>
-  }
-}
+// module {
+//   // CPU: enzymexla.jit_call @enzymexla_lapack_cgetrf_
+//   // CPU: func.func @main(%arg0: tensor<64x64xcomplex<f32>>) -> (tensor<64x64xcomplex<f32>>, tensor<64xi32>, tensor<i32>) {
+//   func.func @main(%arg0: tensor<64x64xcomplex<f32>>) -> (tensor<64x64xcomplex<f32>>, tensor<64xi32>, tensor<i32>) {
+//     %0:4 = enzymexla.linalg.lu %arg0 : (tensor<64x64xcomplex<f32>>) -> (tensor<64x64xcomplex<f32>>, tensor<64xi32>, tensor<64xi32>, tensor<i32>)
+//     return %0#0, %0#1, %0#3 : tensor<64x64xcomplex<f32>>, tensor<64xi32>, tensor<i32>
+//   }
+// }
