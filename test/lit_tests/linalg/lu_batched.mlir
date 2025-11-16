@@ -74,7 +74,7 @@ module {
 // CPU-NEXT:       %12 = stablehlo.dynamic_update_slice %iterArg_10, %11, %2, %3 : (tensor<4x3xi64>, tensor<1x1xi64>, tensor<i64>, tensor<i64>) -> tensor<4x3xi64>
 // CPU-NEXT:       stablehlo.return %1, %8, %10, %12 : tensor<i64>, tensor<4x3x64x64xf32>, tensor<4x3x64xi64>, tensor<4x3xi64>
 // CPU-NEXT:     }
-// CPU-NEXT:     stablehlo.return %0#1, %0#2, %0#3 : tensor<4x3x64x64xf32>, tensor<4x3x64xi64>, tensor<4x3xi64>
+// CPU-NEXT:     return %0#1, %0#2, %0#3 : tensor<4x3x64x64xf32>, tensor<4x3x64xi64>, tensor<4x3xi64>
 // CPU-NEXT:   }
 
 
