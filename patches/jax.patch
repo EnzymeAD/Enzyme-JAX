@@ -1,5 +1,5 @@
 diff --git a/jaxlib/mosaic/BUILD b/jaxlib/mosaic/BUILD
-index 088411939..ee6d632b6 100644
+index 088411939..8a8ae857e 100644
 --- a/jaxlib/mosaic/BUILD
 +++ b/jaxlib/mosaic/BUILD
 @@ -48,13 +48,11 @@ cc_library(
@@ -15,7 +15,7 @@ index 088411939..ee6d632b6 100644
 -    ],
 +    hdrs = glob(
 +        [
-+            "dialect/tpu/**/*.h",
++            "**/*.h",
 +        ])
 +	,
      # compatible with libtpu
