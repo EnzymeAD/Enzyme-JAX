@@ -29,6 +29,208 @@ namespace enzyme {
 using namespace mlir;
 using namespace mlir::enzyme;
 
+struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
+  std::string backend;
+  int64_t blasIntWidth;
+  SymmOpLowering(std::string backend, int64_t blasIntWidth,
+                  MLIRContext *context, PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit), backend(backend),
+        blasIntWidth(blasIntWidth) {}
+
+  LogicalResult matchAndRewrite(enzymexla::SymmOp op,
+                                PatternRewriter &rewriter) const override {
+    if (backend == "cpu")
+      return matchAndRewriteCPU(op, rewriter);
+
+    // else if (backend == "cuda")
+    //   return matchAndRewriteCUDA(op, rewriter);
+
+    // else if (backend == "tpu")
+    //   return matchAndRewriteTPU(op, rewriter);
+
+    else
+      return rewriter.notifyMatchFailure(op, "Unknown backend: \"" + backend +
+                                                 "\"");
+  }
+
+  LogicalResult matchAndRewriteCPU(enzymexla::SymmOp op,
+                                    PatternRewriter &rewriter) const {
+    auto ctx = op->getContext();
+    LLVMTypeConverter typeConverter(ctx);
+
+    // Operands: typically A (symmetric), B, C or maybe input, symmetricOperand, output
+    Value a = op.getOperand(0);
+    Value b = op.getOperand(1);
+    Value c = op.getOperand(2);
+    Value alpha_value = op.getAlpha();
+    Value beta_value = op.getBeta();
+    auto side_value = op.getSide() == enzymexla::LapackSide::left ? 'L' : 'R';
+    auto side_value = op.getUplo() == enzymexla::LapackUplo::L ? 'L' : 'U';
+
+    // Types & shapes
+    auto aType = cast<RankedTensorType>(a.getType());
+    auto bType = cast<RankedTensorType>(b.getType());
+    auto cType = cast<RankedTensorType>(c.getType());
+    if (!aType || !bType || !cType)
+      return rewriter.notifyMatchFailure(op, "operand types not ranked tensor types");
+
+    if (!aType.hasRank() || !bType.hasRank() || !cType.hasRank())
+      return rewriter.notifyMatchFailure(op, "expected ranked tensor types");
+
+    // TODO figure out what happens for a 1D number
+    if (aType.getRank() != 2 || bType.getRank() != 2 || cType.getRank() != 2)
+      return rewriter.notifyMatchFailure(op, "only 2D matrices supported for symm");
+
+    int64_t m = aType.getShape()[0];
+    int64_t n_a = aType.getShape()[1]; // should equal m if A is symmetric
+    int64_t n = bType.getShape()[1];
+
+    if (m != n_a || bType.getShape()[0] != m || cType.getShape()[0] != m || cType.getShape()[1] != n)
+      return rewriter.notifyMatchFailure(op, "shape mismatch for symm");
+
+    Type elementType = aType.getElementType();
+    // Determine prefix (s, d, c, z) depending on elementType
+    std::string fn = "symm_";
+    if (auto prefix = lapack_precision_prefix(elementType)) {
+      fn = *prefix + fn;
+    } else {
+      op->emitOpError() << "Unsupported element type: " << elementType;
+      return rewriter.notifyMatchFailure(op, "unsupported element type");
+    }
+
+    auto type_lapack_int = rewriter.getIntegerType(blasIntWidth);
+    auto type_llvm_char = rewriter.getIntegerType(8);
+    auto type_llvm_lapack_int = typeConverter.convertType(type_lapack_int);
+    auto typeElm = typeConverter.convertType(elementType);
+    auto type_llvm_ptr = LLVM::LLVMPointerType::get(ctx);
+    auto type_llvm_void = LLVM::LLVMVoidType::get(ctx);
+
+    std::string bind_fn = "enzymexla_lapacke_" + fn;
+    std::string wrapper_fn = "enzymexla_wrapper_lapacke_" + fn;
+
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(bind_fn)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+      auto func_type =
+          LLVM::LLVMFunctionType::get(type_llvm_lapack_int,
+                                      {
+                                          type_llvm_lapack_int, // side
+                                          type_llvm_lapack_int, // uplo
+                                          type_llvm_lapack_int, // m
+                                          type_llvm_lapack_int, // n
+                                          typeElm,              // alpha
+                                          type_llvm_ptr,        // A
+                                          type_llvm_lapack_int, // lda
+                                          type_llvm_ptr,        // B
+                                          type_llvm_lapack_int, // ldb
+                                          typeElm,              // beta
+                                          type_llvm_ptr,        // C
+                                          type_llvm_lapack_int  // ldc
+                                      },
+                                      false);
+      rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), bind_fn, func_type,
+                                        LLVM::Linkage::External);
+    }
+
+    static int64_t fn_counter = 0;
+    fn_counter++;
+
+    wrapper_fn += std::to_string(fn_counter);
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      auto func_type = LLVM::LLVMFunctionType::get(type_llvm_void, {
+        type_llvm_ptr, // A
+        type_llvm_ptr, // B
+        type_llvm_ptr, // C
+        type_llvm_ptr, // alpha
+        type_llvm_ptr,  // beta
+      }, false);
+
+      auto func =
+        rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), wrapper_fn, func_type);
+      rewriter.setInsertionPointToStart(func.addEntryBlock(rewriter));
+
+      // constants for side, uplo, m, n, lda, ldb, ldc
+      // we assume e.g. side='L', uplo='U' for now — you would read attributes from op
+      auto side = rewriter.create<LLVM::ConstantOp>(
+          op.getLoc(), type_llvm_char,
+          rewriter.getIntegerAttr(type_llvm_char, side_value));
+      auto uplo = rewriter.create<LLVM::ConstantOp>(
+          op.getLoc(), type_llvm_char,
+          rewriter.getIntegerAttr(type_llvm_char, uplo_value));
+      auto m = rewriter.create<LLVM::ConstantOp>(op.getLoc(), type_lapack_int,
+                        rewriter.getIntegerAttr(type_lapack_int, m));
+      auto n = rewriter.create<LLVM::ConstantOp>(op.getLoc(), type_lapack_int,
+                        rewriter.getIntegerAttr(type_lapack_int, n));
+      auto lda = m;
+      auto ldb = m;
+      auto ldc = m;
+
+      // call to `lapacke_*symm*`
+      auto res = rewriter.create<LLVM::CallOp>(op.getLoc(),
+                                              TypeRange{type_llvm_lapack_int},
+                                              SymbolRefAttr::get(ctx, bind_fn),
+                                              ValueRange{
+                                                side.getResult(),
+                                                uplo.getResult(),
+                                                m.getResult(),
+                                                n.getResult(),
+                                                alpha.getResult(),
+                                                func.getArgument(0),        // A pointer
+                                                lda.getResult(),
+                                                func.getArgument(1),        // B pointer
+                                                ldb.getResult(),
+                                                beta.getResult(),
+                                                func.getArgument(2),        // C pointer
+                                                ldc.getResult()
+                                              });
+      rewriter.create<LLVM::ReturnOp>(op.getLoc(), ValueRange{});
+    }
+
+    // emit the `enzymexla.jit_call` op to `symm` wrapper
+    auto isColMajorArr = { true, true, true };
+    auto operandRanks = { /*A*/ 2, /*B*/ 2, /*C*/ 2, /*alpha*/ 0, /*beta*/ 0};
+    auto resultRanks  = { 2/*C*/};
+
+    auto operandLayouts = getSHLOLayout(rewriter, operandRanks, isColMajorArr, 2);
+    auto resultLayouts  = getSHLOLayout(rewriter, resultRanks, isColMajorArr, 2);
+
+    SmallVector<Attribute> aliases;
+    aliases.push_back(stablehlo::OutputOperandAliasAttr::get(ctx, {}, 2, {})); /*C*/
+
+    auto jit_call_op = rewriter.create<enzymexla::JITCallOp>(
+      op.getLoc(),
+      TypeRange{cType},
+      FlatSymbolRefAttr::get(ctx, wrapper_fn),
+      // TODO FILL IN ALPHA and BETA
+      ValueRange{a, b, c, alpha, beta},
+      rewriter.getStringAttr(""),
+      operandLayouts,
+      resultLayouts,
+      /*arg_attrs=*/nullptr,
+      /*res_attrs=*/nullptr,
+      /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
+      /*xla_side_effect_free=*/rewriter.getUnitAttr()
+    );
+
+    rewriter.replaceAllUsesWith(op.getResult(0), jit_call_op.getResult(0));
+    rewriter.eraseOp(op);
+
+    return success();
+  }
+
+  LogicalResult matchAndRewriteCUDA(enzymexla::SymmOp op,
+                                    PatternRewriter &rewriter) const {
+  }
+  LogicalResult matchAndRewriteTPU(enzymexla::SymmOp op,
+                                    PatternRewriter &rewriter) const {
+  }
+};
+
 struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
   std::string backend;
   int64_t blasIntWidth;
