@@ -416,6 +416,7 @@ def LowerEnzymeXLALinalgPass : Pass<"lower-enzymexla-linalg"> {
     "stablehlo::StablehloDialect",
     "enzymexla::EnzymeXLADialect",
     "LLVM::LLVMDialect",
+    "enzyme::EnzymeDialect",
   ];
 
   let options = [
