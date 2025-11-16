@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1763147562742,
+  "lastUpdate": 1763291061567,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "238314553+enzymead-bot[bot]@users.noreply.github.com",
-            "name": "enzymead-bot[bot]",
-            "username": "enzymead-bot[bot]"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "be41edd949d05733c12b59b582b14f6c9ef462c1",
-          "message": "Update EnzymeAD/Enzyme to commit fdc9f4a7266c986e0efe4dbce9d9446471f640ae (#1530)\n\nDiff: https://github.com/EnzymeAD/Enzyme/compare/aecafad17d3f63c1c0697609ad713615af322e23...fdc9f4a7266c986e0efe4dbce9d9446471f640ae\n\nCo-authored-by: enzymead-bot[bot] <238314553+enzymead-bot[bot]@users.noreply.github.com>",
-          "timestamp": "2025-10-29T13:23:02+01:00",
-          "tree_id": "d1709e21d05246a26712671e42c4711438d78d04",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/be41edd949d05733c12b59b582b14f6c9ef462c1"
-        },
-        "date": 1761755145469,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.000004200157907325775,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.000004260525992140174,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001329022263991,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001370554722961,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2199,6 +2155,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001508538136025,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "avikpal@mit.edu",
+            "name": "Avik Pal",
+            "username": "avik-pal"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "582e713446209d3a920deb8c6e79ed110d068a2e",
+          "message": "refactor: cleanup linalg/lapack lowering (#1501)\n\n* feat: get_dimension_size batch interface\n\n* feat: implement jitcall batching with shlo_generic_batch_op_interface\n\n* refactor: reuse batching interface for LU factorization\n\n* fix: remove old changes\n\n* refactor: move into separate functions\n\n* test: update LU tests\n\n* feat: dynamic slice simplify\n\n* feat: mark memory effects\n\n* fix: update to new API\n\n* fix: use correct return\n\n* chore: run fmt\n\n* test: fix",
+          "timestamp": "2025-11-15T21:30:24-06:00",
+          "tree_id": "3e8266dd8c93d516b3bec56995d57598cb00e12a",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/582e713446209d3a920deb8c6e79ed110d068a2e"
+        },
+        "date": 1763291061023,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004273933998774737,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004275060992222279,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.000134760071407,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001332195553928,
             "unit": "s"
           }
         ]
