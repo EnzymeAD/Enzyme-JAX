@@ -1,21 +1,12 @@
+diff --git a/jaxlib/mosaic/BUILD b/jaxlib/mosaic/BUILD
+index 088411939..366f6d6f3 100644
 --- a/jaxlib/mosaic/BUILD
 +++ b/jaxlib/mosaic/BUILD
-@@ -20,7 +20,7 @@ licenses(["notice"])
- package(
-     default_applicable_licenses = [],
-     default_visibility = [
--        "//jax/experimental:mosaic_users",
-+        "//visibility:public",
-     ],
- )
-
---- a/jaxlib/gpu/BUILD
-+++ b/jaxlib/gpu/BUILD
-@@ -81,6 +81,7 @@ proto_library(
-
- cc_proto_library(
-     name = "triton_cc_proto",
-+    visibility = "//visibility:public",
-     compatible_with = None,
-     deps = [":triton_proto"],
- ) 
+@@ -58,6 +58,7 @@ cc_library(
+     # compatible with libtpu
+     deps = [
+         ":tpu_inc_gen",
++        ":tpu_passes",
+         "@com_google_absl//absl/algorithm:container",
+         "@com_google_absl//absl/hash",
+         "@com_google_absl//absl/log",
