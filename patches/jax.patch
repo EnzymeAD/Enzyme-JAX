@@ -1,21 +1,23 @@
+diff --git a/jaxlib/mosaic/BUILD b/jaxlib/mosaic/BUILD
+index 088411939..8a8ae857e 100644
 --- a/jaxlib/mosaic/BUILD
 +++ b/jaxlib/mosaic/BUILD
-@@ -20,7 +20,7 @@ licenses(["notice"])
- package(
-     default_applicable_licenses = [],
-     default_visibility = [
--        "//jax/experimental:mosaic_users",
-+        "//visibility:public",
+@@ -48,13 +48,11 @@ cc_library(
+         "dialect/tpu/util.cc",
+         "dialect/tpu/vreg_util.cc",
      ],
- )
-
---- a/jaxlib/gpu/BUILD
-+++ b/jaxlib/gpu/BUILD
-@@ -81,6 +81,7 @@ proto_library(
-
- cc_proto_library(
-     name = "triton_cc_proto",
-+    visibility = "//visibility:public",
-     compatible_with = None,
-     deps = [":triton_proto"],
- ) 
+-    hdrs = [
+-        "dialect/tpu/array_util.h",
+-        "dialect/tpu/layout.h",
+-        "dialect/tpu/tpu_dialect.h",
+-        "dialect/tpu/util.h",
+-        "dialect/tpu/vreg_util.h",
+-    ],
++    hdrs = glob(
++        [
++            "**/*.h",
++        ])
++	,
+     # compatible with libtpu
+     deps = [
+         ":tpu_inc_gen",
