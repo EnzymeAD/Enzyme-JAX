@@ -593,11 +593,73 @@ SymmetricResultAnalysis initSymmetricResultAnalysis() {
 }
 
 bool SymmetricResultAnalysis::constantIntCheck(DenseElementsAttr attr) {
-  return false; // TODO
+  if (!attr)
+    return false;
+
+  auto type = dyn_cast<RankedTensorType>(attr.getType());
+  if (!type) return false;
+  if (type.getRank() == 0) {
+    return true;
+  }
+  if (type.getRank() != 2)
+    return false;
+
+  auto shape = type.getShape();
+  int64_t rows = shape[0];
+  int64_t cols = shape[1];
+
+  if (rows != cols)
+    return false;
+
+  auto values = attr.getValues<APInt>();
+  auto it = values.begin();
+
+  for (int64_t i = 0; i < rows; i++) {
+    for (int64_t j = i + 1; j < cols; j++) {
+      auto a = *(it + i * cols + j);
+      auto b = *(it + j * cols + i);
+      if (a != b)
+        return false;
+    }
+  }
+
+  return true;
 }
 
 bool SymmetricResultAnalysis::constantFloatCheck(DenseElementsAttr attr) {
-  return false; // TODO
+  if (!attr)
+    return false;
+
+  auto type = dyn_cast<RankedTensorType>(attr.getType());
+  llvm::errs() << "type: " << type.getRank() << "\n";
+
+  if (!type) return false;
+  if (type.getRank() == 0) {
+    return true;
+  }
+  if (type.getRank() != 2)
+    return false;
+
+  auto shape = type.getShape();
+  int64_t rows = shape[0];
+  int64_t cols = shape[1];
+
+  if (rows != cols)
+    return false;
+
+  auto values = attr.getValues<APFloat>();
+  auto it = values.begin();
+
+  for (int64_t i = 0; i < rows; i++) {
+    for (int64_t j = i + 1; j < cols; j++) {
+      auto a = *(it + i * cols + j);
+      auto b = *(it + j * cols + i);
+      if (a.compare(b) != llvm::APFloat::cmpEqual)
+        return false;
+    }
+  }
+
+  return true;
 }
 
 SymmetricResultAnalysis::State SymmetricResultAnalysis::localGuaranteed(
