@@ -1,8 +1,8 @@
 diff --git a/jaxlib/mosaic/BUILD b/jaxlib/mosaic/BUILD
-index 088411939..d11fa28d0 100644
+index 088411939..598118390 100644
 --- a/jaxlib/mosaic/BUILD
 +++ b/jaxlib/mosaic/BUILD
-@@ -54,7 +54,11 @@ cc_library(
+@@ -54,7 +54,15 @@ cc_library(
          "dialect/tpu/tpu_dialect.h",
          "dialect/tpu/util.h",
          "dialect/tpu/vreg_util.h",
@@ -10,6 +10,10 @@ index 088411939..d11fa28d0 100644
 +    ] + glob(
 +        [
 +            "dialect/tpu/transforms/*.h",
++        ],
++        exclude = [
++            "dialect/tpu/transforms/serde.h",
++            "dialect/tpu/transforms/linalg_vectorization.h",
 +        ])
 +	,
      # compatible with libtpu
