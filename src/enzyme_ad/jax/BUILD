@@ -1280,7 +1280,8 @@ cc_library(
         "@com_google_absl//absl/status:statusor",
 
         # Mosaic
-        "@jax//jaxlib/mosaic:tpu_dialect",
+        # Upstream is broken, re-enable when working
+	# "@jax//jaxlib/mosaic:tpu_dialect",
     ],
 )
 
