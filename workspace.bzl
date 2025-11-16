@@ -1,4 +1,4 @@
-JAX_COMMIT = "24e80c494cb5464794730818cea05b60d7a956d7"
+JAX_COMMIT = "d79c1c43fe8c40c3c51743e1796f2d2b43ebfb82"
 JAX_SHA256 = ""
 
 ENZYME_COMMIT = "6b4a73e3c71e6451c919850acf2999ee04daab12"
@@ -46,9 +46,9 @@ XLA_PATCHES = [
     sed -i.bak0 "s/DCHECK_NE(runtime, nullptr/DCHECK_NE(runtime.get(), nullptr/g" xla/backends/cpu/runtime/xnnpack/xnn_fusion_thunk.cc
     """,
     # TODO remove
-    """
-    sed -i.bak0 "s/^bool IsSupportedType/static inline bool IsSupportedType/g" xla/backends/cpu/runtime/convolution_lib.cc
-    """,
+    #"""
+    #sed -i.bak0 "s/^bool IsSupportedType/static inline bool IsSupportedType/g" xla/backends/cpu/runtime/convolution_lib.cc
+    #""",
     """
     sed -i.bak0 "s/Node::Leaf(std::forward<decltype(value)>/Node::Leaf(std::forward<T>/g" xla/tuple_tree.h
     """,
