@@ -1,12 +1,17 @@
 diff --git a/jaxlib/mosaic/BUILD b/jaxlib/mosaic/BUILD
-index 088411939..366f6d6f3 100644
+index 088411939..d11fa28d0 100644
 --- a/jaxlib/mosaic/BUILD
 +++ b/jaxlib/mosaic/BUILD
-@@ -58,6 +58,7 @@ cc_library(
+@@ -54,7 +54,11 @@ cc_library(
+         "dialect/tpu/tpu_dialect.h",
+         "dialect/tpu/util.h",
+         "dialect/tpu/vreg_util.h",
+-    ],
++    ] + glob(
++        [
++            "dialect/tpu/transforms/*.h",
++        ])
++	,
      # compatible with libtpu
      deps = [
          ":tpu_inc_gen",
-+        ":tpu_passes",
-         "@com_google_absl//absl/algorithm:container",
-         "@com_google_absl//absl/hash",
-         "@com_google_absl//absl/log",
