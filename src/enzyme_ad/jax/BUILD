@@ -1127,7 +1127,7 @@ cc_library(
         "@enzyme//:EnzymeMLIR",
 
         # Mosaic
-        "@jax//jaxlib/mosaic:tpu_dialect",
+        # "@jax//jaxlib/mosaic:tpu_dialect",
 
         # SHLO
         "@stablehlo//:stablehlo_ops",
