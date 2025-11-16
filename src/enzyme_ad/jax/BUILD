@@ -1281,7 +1281,7 @@ cc_library(
 
         # Mosaic
         # Upstream is broken, re-enable when working
-	# "@jax//jaxlib/mosaic:tpu_dialect",
+        # "@jax//jaxlib/mosaic:tpu_dialect",
     ],
 )
 
