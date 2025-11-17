@@ -660,6 +660,10 @@ SymmetricResultAnalysis::State SymmetricResultAnalysis::localGuaranteed(
     }
   }
 
+  if (isa<enzymexla::SymmOp>(op)) {
+    return State::GUARANTEED;
+  }
+
   bool recursiveCheck = false;
 
   // elementwise ops
