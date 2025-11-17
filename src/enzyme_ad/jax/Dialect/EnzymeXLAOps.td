@@ -397,7 +397,7 @@ def CommRegionOp : EnzymeXLA_Op<"comm_region", [
 
 // Linear Algebra Ops
 
-def SymmOp: EnzymeXLA_Op<"lapack.symm", [Pure, SameOperandsAndResultElementType]> {
+def SymmOp: EnzymeXLA_Op<"blas.symm", [Pure, SameOperandsAndResultElementType]> {
   let summary = "Multiplication involving a symmetric matrix";
 
   let description = [{
