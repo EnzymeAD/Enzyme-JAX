@@ -1,3 +1,5 @@
+#include "Enzyme/MLIR/Dialect/Dialect.h"
+#include "Enzyme/MLIR/Passes/EnzymeBatchPass.h"
 #include "mhlo/IR/hlo_ops.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -1281,6 +1283,109 @@ struct GemqrtOpLowering : public OpRewritePattern<enzymexla::GemqrtOp> {
   }
 };
 
+struct GetrfOpLowering : public OpRewritePattern<enzymexla::GetrfOp> {
+  std::string backend;
+  int64_t blasIntWidth;
+
+  GetrfOpLowering(std::string backend, int64_t blasIntWidth,
+                  MLIRContext *context, PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit), backend(backend),
+        blasIntWidth(blasIntWidth) {}
+
+  LogicalResult matchAndRewrite(enzymexla::GetrfOp op,
+                                PatternRewriter &rewriter) const override {
+    if (backend == "cpu")
+      return matchAndRewriteCPU(op, rewriter);
+    else if (backend == "cuda")
+      return matchAndRewriteCUDA(op, rewriter);
+    else if (backend == "tpu")
+      return matchAndRewriteTPU(op, rewriter);
+
+    op->emitOpError() << "Unsupported backend: " << backend;
+    return failure();
+  }
+
+private:
+  LogicalResult matchAndRewriteCPU(enzymexla::GetrfOp op,
+                                   PatternRewriter &rewriter) const override {
+    return failure();
+  }
+
+  LogicalResult matchAndRewriteCUDA(enzymexla::GetrfOp op,
+                                    PatternRewriter &rewriter) const override {
+    return failure();
+  }
+
+  LogicalResult matchAndRewriteTPU(enzymexla::GetrfOp op,
+                                   PatternRewriter &rewriter) const override {
+    return failure();
+  }
+};
+
+struct GetriOpLowering : public OpRewritePattern<enzymexla::GetriOp> {
+  std::string backend;
+  int64_t blasIntWidth;
+
+  GetriOpLowering(std::string backend, int64_t blasIntWidth,
+                  MLIRContext *context, PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit), backend(backend),
+        blasIntWidth(blasIntWidth) {}
+
+  LogicalResult matchAndRewrite(enzymexla::GetriOp op,
+                                PatternRewriter &rewriter) const override {
+    op->emitOpError() << "Unsupported backend: " << backend;
+    return failure();
+  }
+};
+
+struct GesvdOpLowering : public OpRewritePattern<enzymexla::GesvdOp> {
+  std::string backend;
+  int64_t blasIntWidth;
+
+  GesvdOpLowering(std::string backend, int64_t blasIntWidth,
+                  MLIRContext *context, PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit), backend(backend),
+        blasIntWidth(blasIntWidth) {}
+
+  LogicalResult matchAndRewrite(enzymexla::GesvdOp op,
+                                PatternRewriter &rewriter) const override {
+    op->emitOpError() << "Unsupported backend: " << backend;
+    return failure();
+  }
+};
+
+struct GesddOpLowering : public OpRewritePattern<enzymexla::GesddOp> {
+  std::string backend;
+  int64_t blasIntWidth;
+
+  GesddOpLowering(std::string backend, int64_t blasIntWidth,
+                  MLIRContext *context, PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit), backend(backend),
+        blasIntWidth(blasIntWidth) {}
+
+  LogicalResult matchAndRewrite(enzymexla::GesddOp op,
+                                PatternRewriter &rewriter) const override {
+    op->emitOpError() << "Unsupported backend: " << backend;
+    return failure();
+  }
+};
+
+struct GesvjOpLowering : public OpRewritePattern<enzymexla::GesvjOp> {
+  std::string backend;
+  int64_t blasIntWidth;
+
+  GesvjOpLowering(std::string backend, int64_t blasIntWidth,
+                  MLIRContext *context, PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit), backend(backend),
+        blasIntWidth(blasIntWidth) {}
+
+  LogicalResult matchAndRewrite(enzymexla::GesvjOp op,
+                                PatternRewriter &rewriter) const override {
+    op->emitOpError() << "Unsupported backend: " << backend;
+    return failure();
+  }
+};
+
 struct LowerEnzymeXLALapackPass
     : public enzyme::impl::LowerEnzymeXLALapackPassBase<
           LowerEnzymeXLALapackPass> {
@@ -1290,11 +1395,11 @@ struct LowerEnzymeXLALapackPass
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
 
-    patterns.add<GeqrfOpLowering>(backend, blasIntWidth, context);
-    patterns.add<GeqrtOpLowering>(backend, blasIntWidth, context);
-    patterns.add<OrgqrOpLowering>(backend, blasIntWidth, context);
-    patterns.add<OrmqrOpLowering>(backend, blasIntWidth, context);
-    patterns.add<GemqrtOpLowering>(backend, blasIntWidth, context);
+    patterns
+        .add<GeqrfOpLowering, GeqrtOpLowering, OrgqrOpLowering, OrmqrOpLowering,
+             GemqrtOpLowering, GetrfOpLowering, GetriOpLowering,
+             GesvdOpLowering, GesddOpLowering, GesvjOpLowering>(
+            backend, blasIntWidth, context);
 
     GreedyRewriteConfig config;
     if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
