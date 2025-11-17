@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1763358157596,
+  "lastUpdate": 1763364373003,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "238314553+enzymead-bot[bot]@users.noreply.github.com",
-            "name": "enzymead-bot[bot]",
-            "username": "enzymead-bot[bot]"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "73ee4b92e04a17fc5ec6c2663e7fecb1ac98bd6e",
-          "message": "Update jax-ml/jax to commit f6edb899a75dad482a687fe42c8a81d1eaa3aac5 (#1539)\n\nDiff: https://github.com/jax-ml/jax/compare/7d256f847561f57f290b74468b99a8b0da79cd1a...f6edb899a75dad482a687fe42c8a81d1eaa3aac5\n\nCo-authored-by: enzymead-bot[bot] <238314553+enzymead-bot[bot]@users.noreply.github.com>",
-          "timestamp": "2025-11-01T13:19:18Z",
-          "tree_id": "166b954f7e341ecc89a6be8d03ad421e69dbe0bf",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/73ee4b92e04a17fc5ec6c2663e7fecb1ac98bd6e"
-        },
-        "date": 1762015537511,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.000004233665904030204,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.0000041352519067004326,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001391577433096,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001395150692202,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2199,6 +2155,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001310077337082,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "avikpal@mit.edu",
+            "name": "Avik Pal",
+            "username": "avik-pal"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "aded9a2821774cdfa05c6207afa3b92e16b6d583",
+          "message": "fix: use lapack instead of lapacke (#1618)\n\nfeat: get_dimension_size batch interface\n\nfeat: implement jitcall batching with shlo_generic_batch_op_interface\n\nrefactor: reuse batching interface for LU factorization\n\nfix: remove old changes\n\nfeat: mark memory effects\n\nfix: update to new API\n\nfix: use correct return\n\nfix: rework svd lowering to use lapack and workspace buffers\n\nfix: use func return\n\nfix: leading dimension\n\nfix: use backend config\n\nfix: remove unused vars\n\nfix: tpu lowering\n\ntest: update",
+          "timestamp": "2025-11-17T00:05:45-05:00",
+          "tree_id": "ddffb8cb739571b2b0e3cf6765c4b1a2fa659fea",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/aded9a2821774cdfa05c6207afa3b92e16b6d583"
+        },
+        "date": 1763364371985,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004386482108384371,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004358096001669764,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001448858825955,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001450719916028,
             "unit": "s"
           }
         ]
