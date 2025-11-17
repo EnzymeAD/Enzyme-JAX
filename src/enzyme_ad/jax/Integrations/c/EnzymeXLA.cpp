@@ -75,6 +75,10 @@ MlirAttribute enzymexlaSVDAlgorithmAttrGet(MlirContext ctx, int32_t mode) {
     break;
   case 2:
     algorithm = mlir::enzymexla::SVDAlgorithm::DivideAndConquer;
+    break;
+  case 3:
+    algorithm = mlir::enzymexla::SVDAlgorithm::Jacobi;
+    break;
   }
   return wrap(mlir::enzymexla::SVDAlgorithmAttr::get(unwrap(ctx), algorithm));
 }

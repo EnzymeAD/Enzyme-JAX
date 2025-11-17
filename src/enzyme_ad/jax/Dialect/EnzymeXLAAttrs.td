@@ -87,7 +87,8 @@ def EnzymeXLA_SVDAlgorithm : I32EnumAttr<"SVDAlgorithm",
     [
       I32EnumAttrCase<"DEFAULT", 0>,
       I32EnumAttrCase<"QRIteration", 1>,
-      I32EnumAttrCase<"DivideAndConquer", 2>
+      I32EnumAttrCase<"DivideAndConquer", 2>,
+      I32EnumAttrCase<"Jacobi", 3>
     ]> {
   let genSpecializedAttr = 0;
   let cppNamespace = "::mlir::enzymexla";
