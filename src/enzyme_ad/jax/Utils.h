@@ -326,6 +326,18 @@ public:
     if (it != valueCache.end())
       return it->second;
 
+    if (auto blockArg = dyn_cast<BlockArgument>(value)) {
+      if (auto funcOp = dyn_cast<FunctionOpInterface>(
+              blockArg.getOwner()->getParentOp())) {
+        auto attrName = ((Child *)this)->getAttrName();
+        if (auto boolAttr = funcOp.getArgAttrOfType<BoolAttr>(blockArg.getArgNumber(), attrName)) {
+          bool result = boolAttr.getValue();
+          valueCache[value] = result;
+          return result;
+        }
+      }
+    }
+
     bool result = guaranteed(value.getDefiningOp(), rewriter);
     valueCache[value] = result;
     return result;
