@@ -82,6 +82,23 @@ def EnzymeXLA_QrAlgorithmAttr : EnumAttr<EnzymeXLA_Dialect,
   let assemblyFormat = "`<` $value `>`";
 }
 
+def EnzymeXLA_SVDAlgorithm : I32EnumAttr<"SVDAlgorithm",
+    "Algorithm to use for the SVD factorization",
+    [
+      I32EnumAttrCase<"DEFAULT", 0>,
+      I32EnumAttrCase<"QRIteration", 1>,
+      I32EnumAttrCase<"DivideAndConquer", 2>
+    ]> {
+  let genSpecializedAttr = 0;
+  let cppNamespace = "::mlir::enzymexla";
+}
+
+def EnzymeXLA_SVDAlgorithmAttr : EnumAttr<EnzymeXLA_Dialect,
+    EnzymeXLA_SVDAlgorithm, "svd_algorithm"> {
+  let assemblyFormat = "`<` $value `>`";
+  let cppType = "::mlir::enzymexla::SVDAlgorithmAttr";
+}
+
 // Machine Learning
 
 def EnzymeXLA_GeluApproximation : I32EnumAttr<"GeluApproximation",
