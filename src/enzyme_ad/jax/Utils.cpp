@@ -631,8 +631,6 @@ SymmetricResultAnalysis::State SymmetricResultAnalysis::localGuaranteed(
     return perm.size() == 2 && perm[0] == 1 && perm[1] == 0;
   };
 
-  // TODO: check for dot_general as well
-
   // commutative operation with A and A^T will always be symmetric
   // op(A, A^T) will also always be symmetric
   if (stablehlo::hasTraitElementwise(op) &&
@@ -655,6 +653,39 @@ SymmetricResultAnalysis::State SymmetricResultAnalysis::localGuaranteed(
       if (isTrueTranspose(lhsT)) {
         if (rhs == lhsT.getOperand()) {
           return State::GUARANTEED;
+        }
+      }
+    }
+  }
+
+    // A(A^T) will always be symmetric
+  if (auto dotOp = dyn_cast_or_null<stablehlo::DotGeneralOp>(op)) {
+    auto lhs = dotOp.getLhs();
+    auto rhs = dotOp.getRhs();
+
+    auto lhsDims = dotOp.getDotDimensionNumbers().getLhsContractingDimensions();
+    auto rhsDims = dotOp.getDotDimensionNumbers().getRhsContractingDimensions();
+    
+    if (auto lhsType = dyn_cast_or_null<ShapedType>(lhs.getType());
+        lhsType && lhsType.hasRank() && lhsType.getRank() == 2) {
+
+      if (rhs == lhs) {
+        if (lhsDims.size() == 1 && lhsDims == rhsDims) {
+          return State::GUARANTEED;
+        }
+      }
+
+      if (lhsDims.size() == 1 && lhsDims != rhsDims) {
+        if (auto rhsT = rhs.getDefiningOp<stablehlo::TransposeOp>()) {
+          auto rhsInput = rhsT.getOperand();
+          if (rhsInput == lhs && isTrueTranspose(rhsT))
+            return State::GUARANTEED;
+        }
+    
+        if (auto lhsT = dyn_cast_or_null<stablehlo::TransposeOp>(lhs.getDefiningOp())) {
+          auto lhsInput = lhsT.getOperand();
+          if (lhsInput == rhs && isTrueTranspose(lhsT))
+            return State::GUARANTEED;
         }
       }
     }
