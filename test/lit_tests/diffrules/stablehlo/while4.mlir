@@ -214,7 +214,7 @@ module {
 // CHECK-NEXT:    %28 = stablehlo.multiply %25#5, %27 : tensor<3x2xf32>
 // CHECK-NEXT:    %29 = stablehlo.reduce(%28 init: %cst_7) applies stablehlo.add across dimensions = [1] : (tensor<3x2xf32>, tensor<f32>) -> tensor<3xf32>
 // CHECK-NEXT:    %30 = stablehlo.add %25#3, %29 : tensor<3xf32>
-// CHECK-NEXT:    %31 = stablehlo.dot_general %28, %5, contracting_dims = [1] x [0] {enzymexla.guaranteed_symmetric = false} : (tensor<3x2xf32>, tensor<2x3xf32>) -> tensor<3x3xf32>
+// CHECK-NEXT:    %31 = stablehlo.dot_general %28, %5, contracting_dims = [1] x [0] : (tensor<3x2xf32>, tensor<2x3xf32>) -> tensor<3x3xf32>
 // CHECK-NEXT:    %32 = stablehlo.reduce(%28 init: %cst_7) applies stablehlo.add across dimensions = [1] : (tensor<3x2xf32>, tensor<f32>) -> tensor<3xf32>
 // CHECK-NEXT:    %33 = stablehlo.add %25#4, %32 : tensor<3xf32>
 // CHECK-NEXT:    %34 = stablehlo.transpose %25#2, dims = [1, 0] : (tensor<3x3xf32>) -> tensor<3x3xf32>
