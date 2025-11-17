@@ -748,13 +748,6 @@ NoNanResultAnalysis::localGuaranteed(Operation *op,
                                      PatternRewriter &rewriter) {
   assert(op);
 
-  if (auto boolAttr = op->getAttrOfType<BoolAttr>(getAttrName())) {
-    if (boolAttr.getValue())
-      return State::GUARANTEED;
-    else
-      return State::NOTGUARANTEED;
-  }
-
   DenseElementsAttr denseAttr;
   if (matchPattern(op, m_Constant(&denseAttr))) {
     if (guaranteedConstantOp(op, denseAttr, rewriter)) {
@@ -891,13 +884,6 @@ FiniteResultAnalysis::localGuaranteed(Operation *op,
                                       PatternRewriter &rewriter) {
   assert(op);
 
-  if (auto boolAttr = op->getAttrOfType<BoolAttr>(getAttrName())) {
-    if (boolAttr.getValue())
-      return State::GUARANTEED;
-    else
-      return State::NOTGUARANTEED;
-  }
-
   DenseElementsAttr denseAttr;
   if (matchPattern(op, m_Constant(&denseAttr))) {
     if (guaranteedConstantOp(op, denseAttr, rewriter)) {
@@ -1003,13 +989,6 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
     Operation *op, SmallVectorImpl<Operation *> &localtodo,
     PatternRewriter &rewriter) {
   assert(op);
-
-  if (auto boolAttr = op->getAttrOfType<BoolAttr>(getAttrName())) {
-    if (boolAttr.getValue())
-      return State::GUARANTEED;
-    else
-      return State::NOTGUARANTEED;
-  }
 
   DenseElementsAttr denseAttr;
   if (matchPattern(op, m_Constant(&denseAttr))) {

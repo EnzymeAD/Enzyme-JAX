@@ -541,8 +541,18 @@ public:
   State localGuaranteedWithSetAttr(Operation *op,
                                    SmallVectorImpl<Operation *> &localtodo,
                                    PatternRewriter &rewriter) {
-    auto state = ((Child *)this)->localGuaranteed(op, localtodo, rewriter);
+
     auto attrName = ((Child *)this)->getAttrName();
+
+    if (auto boolAttr = op->getAttrOfType<BoolAttr>(attrName)) {
+      if (boolAttr.getValue())
+        return State::GUARANTEED;
+      else
+        return State::NOTGUARANTEED;
+    }
+
+    auto state = ((Child *)this)->localGuaranteed(op, localtodo, rewriter);
+
     switch (state) {
     case State::GUARANTEED:
       rewriter.modifyOpInPlace(op, [&]() {
