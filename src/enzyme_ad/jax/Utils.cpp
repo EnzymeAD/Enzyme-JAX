@@ -612,6 +612,9 @@ bool SymmetricResultAnalysis::constantIntCheck(DenseElementsAttr attr) {
   if (rows != cols)
     return false;
 
+  if (attr.isSplat())
+    return true;
+
   auto values = attr.getValues<APInt>();
   auto it = values.begin();
 
@@ -648,6 +651,10 @@ bool SymmetricResultAnalysis::constantFloatCheck(DenseElementsAttr attr) {
 
   if (rows != cols)
     return false;
+
+  if (attr.isSplat())
+    return true;
+
 
   auto values = attr.getValues<APFloat>();
   auto it = values.begin();
@@ -696,6 +703,15 @@ SymmetricResultAnalysis::State SymmetricResultAnalysis::localGuaranteed(
   };
 
   // TODO: check for dot_general as well
+
+  if (auto broadcastOp = dyn_cast<stablehlo::BroadcastInDimOp>(op)) {
+    auto operand = broadcastOp.getOperand();
+    auto operandTy = cast<RankedTensorType>(operand.getType());
+    auto dims = broadcastOp.getBroadcastDimensions();
+    if (operandTy.getRank() == 0 && dims.empty()) {
+      return State::GUARANTEED;
+    }
+  }
 
   // commutative operation with A and A^T will always be symmetric
   // op(A, A^T) will also always be symmetric
