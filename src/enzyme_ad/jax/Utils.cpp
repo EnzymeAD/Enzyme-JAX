@@ -606,6 +606,7 @@ SymmetricResultAnalysis::State SymmetricResultAnalysis::localGuaranteed(
   assert(op);
 
   auto outTy = cast<RankedTensorType>(op->getResult(0).getType());
+
   if (outTy.getRank() != 2)
     return State::NOTGUARANTEED; // this pass only checks for symmetric matrices
   if (outTy.getDimSize(0) != outTy.getDimSize(1))
@@ -660,10 +661,6 @@ SymmetricResultAnalysis::State SymmetricResultAnalysis::localGuaranteed(
     }
   }
 
-  if (isa<enzymexla::SymmOp>(op)) {
-    return State::GUARANTEED;
-  }
-
   bool recursiveCheck = false;
 
   // elementwise ops
@@ -671,7 +668,7 @@ SymmetricResultAnalysis::State SymmetricResultAnalysis::localGuaranteed(
     recursiveCheck = true;
   }
 
-  if (isa<stablehlo::TransposeOp>(op), isa<stablehlo::DotGeneralOp>(op)) {
+  if (isa<stablehlo::TransposeOp>(op)) {
     // All operands symmetric => symmetric result
     recursiveCheck = true;
   }
