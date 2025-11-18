@@ -36,6 +36,8 @@ public:
     initializeBandwidths();
   }
 
+  StructuredSparsityPattern(Value v);
+
   StructuredSparsityPattern(int64_t lowerBandwidth, int64_t upperBandwidth)
       : kind(StructuredSparsityKind::Band), lowerBandwidth(lowerBandwidth),
         upperBandwidth(upperBandwidth) {
@@ -83,6 +85,8 @@ class ValueProperties {
 public:
   ValueProperties() = default;
   explicit ValueProperties(uint32_t flags) : flags(flags) {}
+
+  ValueProperties(Value v);
 
   void set(ValueProperty property) { flags |= static_cast<uint32_t>(property); }
   void clear(ValueProperty property) {
@@ -132,6 +136,10 @@ public:
                        ValueProperties valueProperties)
       : sparsityPattern(sparsityPattern), valueProperties(valueProperties) {}
 
+  StructuredMatrixType(Value v)
+      : StructuredMatrixType(StructuredSparsityPattern(v), ValueProperties(v)) {
+  }
+
   const StructuredSparsityPattern &getSparsityPattern() const {
     return sparsityPattern;
   }
@@ -172,8 +180,14 @@ class StructuredMatrixLattice : public dataflow::AbstractSparseLattice {
 public:
   using AbstractSparseLattice::AbstractSparseLattice;
 
+  StructuredMatrixLattice(Value v)
+      : AbstractSparseLattice(v), value(StructuredMatrixType(v)) {}
+
   ChangeResult meet(const AbstractSparseLattice &rhs) override;
+  ChangeResult meet(StructuredMatrixLattice rhs);
+
   ChangeResult join(const AbstractSparseLattice &rhs) override;
+  ChangeResult join(StructuredMatrixLattice rhs);
 
   void print(raw_ostream &os) const override;
   raw_ostream &operator<<(raw_ostream &os) const {

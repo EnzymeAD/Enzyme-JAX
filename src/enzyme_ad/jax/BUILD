@@ -1130,6 +1130,7 @@ cc_library(
         ":RaisingTransformOpsIncGen",
         ":RaisingTransformPatternsIncGen",
         ":StablehloOptPatternsIncGen",
+        ":StructuredMatrixAnalysis",
         ":TesseraDialectIncGen",
         ":TesseraOpsIncGen",
         ":TritonExtDialect",
