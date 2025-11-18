@@ -592,12 +592,55 @@ SymmetricResultAnalysis initSymmetricResultAnalysis() {
   return SymmetricResultAnalysis();
 }
 
+bool checkNotEqual(APInt a, APInt b) { return a != b; }
+
+bool checkNotEqual(APFloat a, APFloat b) {
+  return a.compare(b) != llvm::APFloat::cmpEqual;
+}
+
+template <typename Ty> bool checkConstantSymmetric(DenseElementsAttr attr) {
+  if (!attr)
+    return false;
+
+  auto type = dyn_cast<RankedTensorType>(attr.getType());
+  if (!type)
+    return false;
+
+  if (type.getRank() == 0)
+    return true;
+  if (type.getRank() != 2)
+    return false;
+
+  auto shape = type.getShape();
+  int64_t rows = shape[0];
+  int64_t cols = shape[1];
+
+  if (rows != cols)
+    return false;
+  if (attr.isSplat())
+    return true;
+
+  auto values = attr.getValues<Ty>();
+  auto it = values.begin();
+
+  for (int64_t i = 0; i < rows; i++) {
+    for (int64_t j = i + 1; j < cols; j++) {
+      auto a = *(it + i * cols + j);
+      auto b = *(it + j * cols + i);
+      if (checkNotEqual(a, b))
+        return false;
+    }
+  }
+
+  return true;
+}
+
 bool SymmetricResultAnalysis::constantIntCheck(DenseElementsAttr attr) {
-  return false; // TODO
+  return checkConstantSymmetric<APInt>(attr);
 }
 
 bool SymmetricResultAnalysis::constantFloatCheck(DenseElementsAttr attr) {
-  return false; // TODO
+  return checkConstantSymmetric<APFloat>(attr);
 }
 
 SymmetricResultAnalysis::State SymmetricResultAnalysis::localGuaranteed(
@@ -632,6 +675,15 @@ SymmetricResultAnalysis::State SymmetricResultAnalysis::localGuaranteed(
   };
 
   // TODO: check for dot_general as well
+
+  if (auto broadcastOp = dyn_cast<stablehlo::BroadcastInDimOp>(op)) {
+    auto operand = broadcastOp.getOperand();
+    auto operandTy = cast<RankedTensorType>(operand.getType());
+    auto dims = broadcastOp.getBroadcastDimensions();
+    if (operandTy.getRank() == 0 && dims.empty()) {
+      return State::GUARANTEED;
+    }
+  }
 
   // commutative operation with A and A^T will always be symmetric
   // op(A, A^T) will also always be symmetric
