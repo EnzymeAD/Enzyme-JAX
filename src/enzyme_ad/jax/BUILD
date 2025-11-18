@@ -837,6 +837,28 @@ cc_library(
 )
 
 cc_library(
+    name = "StructuredMatrixAnalysis",
+    srcs = ["Analysis/StructuredMatrixAnalysis.cpp"],
+    hdrs = ["Analysis/StructuredMatrixAnalysis.h"],
+    deps = [
+        # MLIR Core
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Support",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:Transforms",
+
+        # MLIR Analysis
+        "@llvm-project//mlir:Analysis",
+
+        # MLIR Dialects
+        "@stablehlo//:stablehlo_ops",
+
+        # LLVM Support
+        "@llvm-project//llvm:Support",
+    ],
+)
+
+cc_library(
     name = "XLADerivatives",
     srcs = glob([
         "Implementations/*.cpp",
