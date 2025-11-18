@@ -377,6 +377,7 @@ td_library(
     srcs = [
         "Dialect/Dialect.td",
         "Dialect/EnzymeXLAAttrs.td",
+        "Dialect/EnzymeXLATypes.td",
         "Dialect/EnzymeXLAOps.td",
     ],
     includes = ["."],
@@ -433,13 +434,9 @@ gentbl_cc_library(
         ),
     ],
     tblgen = "@llvm-project//mlir:mlir-tblgen",
-    td_file = "Dialect/EnzymeXLAOps.td",
+    td_file = "Dialect/EnzymeXLATypes.td",
     deps = [
-        ":EnzymeXLAAttrsIncGen",
         ":EnzymeXLADialectTdFiles",
-        "@enzyme//:EnzymeDialectTdFiles",
-        "@llvm-project//mlir:GPUOpsTdFiles",
-        "@stablehlo//:stablehlo_ops_td_files",
     ],
 )
 
@@ -472,8 +469,6 @@ gentbl_cc_library(
     tblgen = "@llvm-project//mlir:mlir-tblgen",
     td_file = "Dialect/EnzymeXLAOps.td",
     deps = [
-        ":EnzymeXLAAttrsIncGen",
-        ":EnzymeXLATypesIncGen",
         ":EnzymeXLADialectTdFiles",
         "@enzyme//:EnzymeDialectTdFiles",
         "@llvm-project//mlir:GPUOpsTdFiles",
