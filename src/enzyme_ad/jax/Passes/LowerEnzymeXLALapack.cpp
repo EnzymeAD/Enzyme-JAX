@@ -215,8 +215,7 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
 
     auto input = op.getOperand();
     auto type_input = cast<RankedTensorType>(input.getType());
-    auto shape_input = type_input.getShape();
-    auto rank_input = static_cast<int64_t>(shape_input.size());
+    auto rank_input = type_input.getRank();
 
     auto type_tau = cast<RankedTensorType>(op.getResult(1).getType());
     auto rank_tau = type_tau.getRank();
@@ -275,7 +274,7 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
     // emit `stablehlo.custom_call` to `@Qr` kernel from XLA
     auto type_tau = cast<RankedTensorType>(op.getResult(1).getType());
 
-    auto custom_call_op = stablehlo::CustomCallOp::create(
+    auto customCall = stablehlo::CustomCallOp::create(
         rewriter, op.getLoc(), TypeRange{type_input, type_tau},
         ValueRange{input}, rewriter.getStringAttr("Qr"),
         /*has_side_effect*/ nullptr,
@@ -286,8 +285,8 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
         /*result_layouts*/ nullptr,
         /*output_operand_aliases*/ nullptr);
 
-    rewriter.replaceAllUsesWith(op.getResult(0), custom_call_op.getResult(0));
-    rewriter.replaceAllUsesWith(op.getResult(1), custom_call_op.getResult(1));
+    rewriter.replaceAllUsesWith(op.getResult(0), customCall.getResult(0));
+    rewriter.replaceAllUsesWith(op.getResult(1), customCall.getResult(1));
 
     // Netlib's LAPACK returns `info`, but TPU kernel doesn't
     auto type_info =
@@ -688,8 +687,7 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
 
     auto input = op.getOperand(0);
     auto type_input = cast<RankedTensorType>(input.getType());
-    auto shape_input = type_input.getShape();
-    auto rank_input = static_cast<int64_t>(shape_input.size());
+    auto rank_input = type_input.getRank();
 
     auto tau = op.getOperand(1);
     auto type_tau = cast<RankedTensorType>(tau.getType());
@@ -736,7 +734,7 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
     auto type_input = cast<RankedTensorType>(input.getType());
     auto tau = op.getOperand(1);
 
-    auto custom_call_op = stablehlo::CustomCallOp::create(
+    auto customCall = stablehlo::CustomCallOp::create(
         rewriter, op.getLoc(), TypeRange{type_input}, ValueRange{input, tau},
         rewriter.getStringAttr("ProductOfElementaryHouseholderReflectors"),
         /*has_side_effect*/ nullptr,
@@ -747,7 +745,7 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
         /*result_layouts*/ nullptr,
         /*output_operand_aliases*/ nullptr);
 
-    rewriter.replaceAllUsesWith(op.getResult(), custom_call_op.getResult(0));
+    rewriter.replaceAllUsesWith(op.getResult(), customCall.getResult(0));
 
     return success();
   }
@@ -2022,18 +2020,11 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
 
   auto input = op.getOperand();
   auto inputType = cast<RankedTensorType>(input.getType());
-  auto inputShape = inputType.getShape();
-  auto inputRank = static_cast<int64_t>(inputShape.size());
+  auto inputRank = inputType.getRank();
   auto inputElementType = inputType.getElementType();
 
   const int64_t numBatchDims = inputRank - 2;
   const bool isfull = op.getFull();
-
-  if (numBatchDims > 0) {
-    // TODO: use the batching functionality to auto-batch this
-    return rewriter.notifyMatchFailure(
-        op, "SVD factorization with batch dimensions is not yet supported");
-  }
 
   auto type_lapack_int = rewriter.getIntegerType(blasIntWidth);
   auto type_lapack_int64 = rewriter.getIntegerType(64);
@@ -2295,10 +2286,6 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
     LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
   }
 
-  // emit wrapper function
-  static int64_t fn_counter = 0;
-  fn_counter++;
-
   auto blasIntType = rewriter.getIntegerType(blasIntWidth);
 
   SmallVector<bool> isColMajorArr(10, true);
@@ -2317,32 +2304,98 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
   aliases.push_back(stablehlo::OutputOperandAliasAttr::get(
       ctx, std::vector<int64_t>{3}, 9, std::vector<int64_t>{}));
 
+  Value UResult, SResult, VTResult, infoResult;
+  static int64_t fn_counter = 0;
   std::string shlo_wrapper_fn =
-      "shlo_" + wrapper_fn + "_wrapper_" + std::to_string(fn_counter);
+      "shlo_" + wrapper_fn + "_wrapper_" + std::to_string(fn_counter++);
+
+  auto inputShape = inputType.getShape();
+
+  auto unbatchedInputType = RankedTensorType::get(
+      SmallVector<int64_t>(inputShape.end() - 2, inputShape.end()),
+      inputType.getElementType());
+
+  auto UResultType = cast<RankedTensorType>(op.getResult(0).getType());
+  auto unbatchedUResultType = RankedTensorType::get(
+      SmallVector<int64_t>(UResultType.getShape().end() - 2,
+                           UResultType.getShape().end()),
+      UResultType.getElementType());
+
+  auto SResultType = cast<RankedTensorType>(op.getResult(1).getType());
+  auto unbatchedSResultType = RankedTensorType::get(
+      SmallVector<int64_t>(SResultType.getShape().end() - 1,
+                           SResultType.getShape().end()),
+      SResultType.getElementType());
+
+  auto VTResultType = cast<RankedTensorType>(op.getResult(2).getType());
+  auto unbatchedVTResultType = RankedTensorType::get(
+      SmallVector<int64_t>(VTResultType.getShape().end() - 2,
+                           VTResultType.getShape().end()),
+      VTResultType.getElementType());
+
+  SmallVector<int64_t> batchShape(inputType.getShape().begin(),
+                                  inputType.getShape().end() - 2);
+  auto infoType =
+      RankedTensorType::get(batchShape, rewriter.getIntegerType(blasIntWidth));
+  auto unbatchedInfoType =
+      RankedTensorType::get({}, rewriter.getIntegerType(blasIntWidth));
 
   func::FuncOp func = createSVDAlgorithmWrapperFuncOpCPULapack(
-      rewriter, wrapper_fn, inputType,
-      cast<RankedTensorType>(op.getResult(0).getType()),
-      cast<RankedTensorType>(op.getResult(1).getType()),
-      cast<RankedTensorType>(op.getResult(2).getType()),
-      cast<RankedTensorType>(op.getResult(3).getType()), blasIntType,
-      shlo_wrapper_fn, op, operandLayouts, resultLayouts,
+      rewriter, wrapper_fn, unbatchedInputType, unbatchedUResultType,
+      unbatchedSResultType, unbatchedVTResultType, unbatchedInfoType,
+      blasIntType, shlo_wrapper_fn, op, operandLayouts, resultLayouts,
       rewriter.getArrayAttr(aliases));
   if (!func)
     return rewriter.notifyMatchFailure(op, "failed to create wrapper function");
 
-  auto callOp =
-      func::CallOp::create(rewriter, op.getLoc(), func, ValueRange{input});
+  SmallVector<enzyme::BatchOp> batchOps;
+  SmallVector<FunctionOpInterface> batchFunctions;
+
+  if (numBatchDims > 0) {
+    SmallVector<int64_t> batchShape(inputShape.begin(),
+                                    inputShape.begin() + numBatchDims);
+
+    auto batchOp = enzyme::BatchOp::create(
+        rewriter, op.getLoc(),
+        TypeRange{UResultType, SResultType, VTResultType, infoType},
+        mlir::FlatSymbolRefAttr::get(op.getContext(), wrapper_fn),
+        ValueRange{input}, rewriter.getDenseI64ArrayAttr(batchShape));
+
+    UResult = batchOp.getResult(0);
+    SResult = batchOp.getResult(1);
+    VTResult = batchOp.getResult(2);
+    infoResult = batchOp.getResult(3);
+
+    batchOps.push_back(batchOp);
+    batchFunctions.push_back(cast<FunctionOpInterface>(func.getOperation()));
+  } else {
+    auto callOp =
+        func::CallOp::create(rewriter, op.getLoc(), func, ValueRange{input});
+
+    UResult = callOp.getResult(0);
+    SResult = callOp.getResult(1);
+    VTResult = callOp.getResult(2);
+    infoResult = callOp.getResult(3);
+  }
 
   // replace enzymexla.linalg.svd with enzymexla.jit_call
-  auto info = stablehlo::ConvertOp::create(
-      rewriter, op.getLoc(), op.getResult(3).getType(), callOp.getResult(3));
+  auto infoFinal = stablehlo::ConvertOp::create(
+      rewriter, op.getLoc(), op.getResult(3).getType(), infoResult);
 
-  rewriter.replaceAllUsesWith(op.getResult(0), callOp.getResult(0));
-  rewriter.replaceAllUsesWith(op.getResult(1), callOp.getResult(1));
-  rewriter.replaceAllUsesWith(op.getResult(2), callOp.getResult(2));
-  rewriter.replaceAllUsesWith(op.getResult(3), info.getResult());
+  rewriter.replaceAllUsesWith(op.getResult(0), UResult);
+  rewriter.replaceAllUsesWith(op.getResult(1), SResult);
+  rewriter.replaceAllUsesWith(op.getResult(2), VTResult);
+  rewriter.replaceAllUsesWith(op.getResult(3), infoFinal);
   rewriter.eraseOp(op);
+
+  std::map<enzyme::batchutils::BatchCacheKey, FunctionOpInterface>
+      batchedFunctionCache;
+  for (auto [batchOp, func] : llvm::zip(batchOps, batchFunctions)) {
+    if (failed(enzyme::batchutils::batchOperation(rewriter, batchOp, func,
+                                                  batchedFunctionCache))) {
+      return rewriter.notifyMatchFailure(op, "failed to batch operation");
+    }
+  }
 
   return success();
 }
@@ -2353,8 +2406,7 @@ LogicalResult lowerSVDAlgorithmCUDA(OpTy op, PatternRewriter &rewriter,
                                     std::string targetName) {
   auto input = op.getOperand();
   auto type_input = cast<RankedTensorType>(input.getType());
-  auto shape_input = type_input.getShape();
-  auto rank_input = static_cast<int64_t>(shape_input.size());
+  auto rank_input = type_input.getRank();
 
   auto type_u = cast<RankedTensorType>(op.getResult(0).getType());
   auto rank_u = type_u.getRank();
@@ -2363,18 +2415,16 @@ LogicalResult lowerSVDAlgorithmCUDA(OpTy op, PatternRewriter &rewriter,
   if (auto complex_type = dyn_cast<ComplexType>(type_input_element_real)) {
     type_input_element_real = complex_type.getElementType();
   }
-  auto type_s = cast<RankedTensorType>(RankedTensorType::get(
-      {std::min(shape_input[0], shape_input[1])}, type_input_element_real));
+  auto type_s = cast<RankedTensorType>(op.getResult(1).getType());
   auto rank_s = type_s.getRank();
 
   auto type_vt = cast<RankedTensorType>(op.getResult(2).getType());
   auto rank_vt = type_vt.getRank();
 
-  auto type_info = RankedTensorType::get({}, rewriter.getIntegerType(32));
+  auto type_info_out = cast<RankedTensorType>(op.getResult(3).getType());
+  auto type_info = RankedTensorType::get(type_info_out.getShape(),
+                                         rewriter.getIntegerType(32));
   auto rank_info = type_info.getRank();
-  auto op_info = stablehlo::ConstantOp::create(
-      rewriter, op.getLoc(), type_info,
-      cast<ElementsAttr>(makeAttr(type_info, -1)));
 
   // emit `stablehlo.custom_call` to `@cusolver_geqrf_ffi` kernel from jaxlib
   SmallVector<Attribute> aliases = {};
@@ -2513,14 +2563,13 @@ struct GesvjOpLowering : public OpRewritePattern<enzymexla::GesvjOp> {
                                    PatternRewriter &rewriter) const {
     auto input = op.getOperand();
     auto type_input = cast<RankedTensorType>(input.getType());
-    auto shape_input = type_input.getShape();
-    auto rank_input = static_cast<int64_t>(shape_input.size());
+    auto rank_input = type_input.getRank();
 
     // emit `stablehlo.custom_call` to `@SVD` kernel from XLA
-    auto type_tau = cast<RankedTensorType>(op.getResult(1).getType());
-
-    auto custom_call_op = stablehlo::CustomCallOp::create(
-        rewriter, op.getLoc(), TypeRange{type_input, type_tau, type_input},
+    auto customCall = stablehlo::CustomCallOp::create(
+        rewriter, op.getLoc(),
+        TypeRange{op.getResult(0).getType(), op.getResult(1).getType(),
+                  op.getResult(2).getType()},
         ValueRange{input}, rewriter.getStringAttr("SVD"),
         /*has_side_effect*/ nullptr,
         /*backend_config*/ nullptr,
@@ -2530,17 +2579,16 @@ struct GesvjOpLowering : public OpRewritePattern<enzymexla::GesvjOp> {
         /*result_layouts*/ nullptr,
         /*output_operand_aliases*/ nullptr);
 
-    rewriter.replaceAllUsesWith(op.getResult(0), custom_call_op.getResult(0));
-    rewriter.replaceAllUsesWith(op.getResult(1), custom_call_op.getResult(1));
-    rewriter.replaceAllUsesWith(op.getResult(2), custom_call_op.getResult(2));
+    rewriter.replaceAllUsesWith(op.getResult(0), customCall.getResult(0));
+    rewriter.replaceAllUsesWith(op.getResult(1), customCall.getResult(1));
+    rewriter.replaceAllUsesWith(op.getResult(2), customCall.getResult(2));
 
     // Netlib's LAPACK returns `info`, but TPU kernel doesn't
-    auto type_info =
-        RankedTensorType::get({}, rewriter.getIntegerType(blasIntWidth));
-    auto info_op = stablehlo::ConstantOp::create(
-        rewriter, op.getLoc(), type_info,
-        cast<ElementsAttr>(makeAttr(type_info, 0)));
-    rewriter.replaceAllUsesWith(op.getResult(3), info_op.getResult());
+    auto info =
+        anyNonFiniteValue(rewriter, op.getLoc(),
+                          cast<RankedTensorType>(op.getResult(3).getType()),
+                          customCall.getResult(0), type_input.getRank());
+    rewriter.replaceAllUsesWith(op.getResult(3), info);
 
     return success();
   }
