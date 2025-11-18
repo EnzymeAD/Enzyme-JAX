@@ -1,3 +1,5 @@
+#pragma once
+
 #include "mlir/Analysis/DataFlow/SparseAnalysis.h"
 
 #include <algorithm>
@@ -5,6 +7,25 @@
 
 namespace mlir {
 namespace structure_analysis {
+
+namespace utils {
+
+static bool isOne(APInt v) { return v.isOne(); }
+static bool isOne(APFloat v) { return v.isExactlyValue(1.0); }
+static bool isOne(Attribute v) {
+  if (auto intAttr = dyn_cast<IntegerAttr>(v))
+    return isOne(intAttr.getValue());
+  if (auto floatAttr = dyn_cast<FloatAttr>(v))
+    return isOne(floatAttr.getValue());
+  return false;
+}
+
+static bool areEqual(APInt a, APInt b) { return a == b; }
+static bool areEqual(APFloat a, APFloat b) {
+  return a.compare(b) == llvm::APFloat::cmpEqual;
+}
+
+} // namespace utils
 
 //===----------------------------------------------------------------------===//
 // Structured Sparsity Pattern Implementation
@@ -28,8 +49,8 @@ enum class StructuredSparsityKind {
 class StructuredSparsityPattern {
 public:
   StructuredSparsityPattern()
-      : kind(StructuredSparsityKind::Unknown), lowerBandwidth(0),
-        upperBandwidth(0) {}
+      : kind(StructuredSparsityKind::Unknown), lowerBandwidth(-1),
+        upperBandwidth(-1) {}
 
   explicit StructuredSparsityPattern(StructuredSparsityKind kind)
       : kind(kind), lowerBandwidth(-1), upperBandwidth(-1) {
@@ -64,6 +85,12 @@ public:
 private:
   void initializeBandwidths();
   void refineKind();
+
+  void setUnknown() {
+    kind = StructuredSparsityKind::Unknown;
+    lowerBandwidth = -1;
+    upperBandwidth = -1;
+  }
 
   StructuredSparsityKind kind;
   int64_t lowerBandwidth;
@@ -110,6 +137,7 @@ public:
   }
 
   uint32_t getFlags() const { return flags; }
+  void setFlags(uint32_t f) { flags = f; }
 
   static ValueProperties meet(const ValueProperties &lhs,
                               const ValueProperties &rhs);
@@ -122,7 +150,14 @@ public:
   }
 
 private:
-  uint32_t flags;
+  static ValueProperties getPropertiesFromDenseAttr(DenseElementsAttr attr);
+
+  static bool isUnitDiagonal(DenseElementsAttr attr, int64_t nrows,
+                             int64_t ncols);
+  static std::tuple<int64_t, int64_t>
+  isSymmetricOrHermitian(DenseElementsAttr, int64_t nrows, int64_t ncols);
+
+  uint32_t flags = 0;
 };
 
 //===----------------------------------------------------------------------===//
