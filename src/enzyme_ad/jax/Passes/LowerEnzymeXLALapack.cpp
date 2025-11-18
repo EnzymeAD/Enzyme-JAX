@@ -2050,7 +2050,7 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
     type_input_element_real = complex_type.getElementType();
   }
 
-  if (auto prefix = lapackPrecisionPrefix(type_input_element_real)) {
+  if (auto prefix = lapackPrecisionPrefix(inputElementType)) {
     fn = *prefix + fn;
   } else {
     op->emitOpError() << "Unsupported element type: " << inputElementType;
