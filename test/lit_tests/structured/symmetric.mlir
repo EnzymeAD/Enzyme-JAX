@@ -1,3 +1,5 @@
+// RUN: enzymexlamlir-opt --structured-matrix-simplify %s | FileCheck %s
+
 module {
   func.func @symmetric(%arg0: tensor<2x2xf32>) -> tensor<2x2xf32> {
     %cst = stablehlo.constant dense<0.000000e+00> : tensor<2x2xf32>
