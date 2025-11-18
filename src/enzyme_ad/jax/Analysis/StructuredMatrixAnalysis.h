@@ -1,3 +1,5 @@
+#include "mlir/Analysis/DataFlow/SparseAnalysis.h"
+
 #include <algorithm>
 #include <cstdint>
 
@@ -40,43 +42,21 @@ public:
     refineKind();
   }
 
-  // most precise of lhs and rhs
   static StructuredSparsityPattern meet(const StructuredSparsityPattern &lhs,
-                                        const StructuredSparsityPattern &rhs) {
-    if (lhs.kind == StructuredSparsityKind::Empty ||
-        rhs.kind == StructuredSparsityKind::Empty)
-      return StructuredSparsityPattern(StructuredSparsityKind::Empty);
+                                        const StructuredSparsityPattern &rhs);
 
-    if (lhs.kind == StructuredSparsityKind::Unknown)
-      return rhs;
-    if (rhs.kind == StructuredSparsityKind::Unknown)
-      return lhs;
+  static StructuredSparsityPattern join(const StructuredSparsityPattern &lhs,
+                                        const StructuredSparsityPattern &rhs);
 
-    // for all other cases, we take the min of the bandwidths and refine
-    auto lb = std::min(lhs.lowerBandwidth, rhs.lowerBandwidth);
-    auto ub = std::min(lhs.upperBandwidth, rhs.upperBandwidth);
-    auto newPattern = StructuredSparsityPattern(lb, ub);
-    newPattern.refineKind();
-    return newPattern;
+  bool operator==(const StructuredSparsityPattern &other) const {
+    return kind == other.kind && lowerBandwidth == other.lowerBandwidth &&
+           upperBandwidth == other.upperBandwidth;
   }
 
-  // least precise of lhs and rhs
-  static StructuredSparsityPattern join(const StructuredSparsityPattern &lhs,
-                                        const StructuredSparsityPattern &rhs) {
-    if (lhs.kind == StructuredSparsityKind::Empty)
-      return rhs;
-    if (rhs.kind == StructuredSparsityKind::Empty)
-      return lhs;
-
-    if (lhs.kind == StructuredSparsityKind::Unknown ||
-        rhs.kind == StructuredSparsityKind::Unknown)
-      return StructuredSparsityPattern(StructuredSparsityKind::Unknown);
-
-    auto lb = std::max(lhs.lowerBandwidth, rhs.lowerBandwidth);
-    auto ub = std::max(lhs.upperBandwidth, rhs.upperBandwidth);
-    auto newPattern = StructuredSparsityPattern(lb, ub);
-    newPattern.refineKind();
-    return newPattern;
+  void print(raw_ostream &os) const;
+  raw_ostream &operator<<(raw_ostream &os) const {
+    print(os);
+    return os;
   }
 
 private:
@@ -96,6 +76,7 @@ enum class ValueProperty {
   UnitDiagonal = 1 << 0,
   Symmetric = 1 << 1,
   Hermitian = 1 << 2,
+  BroadcastedScalar = 1 << 3,
 };
 
 class ValueProperties {
@@ -114,17 +95,26 @@ public:
   bool hasUnitDiagonal() const { return has(ValueProperty::UnitDiagonal); }
   bool isSymmetric() const { return has(ValueProperty::Symmetric); }
   bool isHermitian() const { return has(ValueProperty::Hermitian); }
+  bool isBroadcastedScalar() const {
+    return has(ValueProperty::BroadcastedScalar);
+  }
+
+  void print(raw_ostream &os) const;
+  raw_ostream &operator<<(raw_ostream &os) const {
+    print(os);
+    return os;
+  }
 
   uint32_t getFlags() const { return flags; }
 
   static ValueProperties meet(const ValueProperties &lhs,
-                              const ValueProperties &rhs) {
-    return ValueProperties(lhs.flags & rhs.flags);
-  }
+                              const ValueProperties &rhs);
 
   static ValueProperties join(const ValueProperties &lhs,
-                              const ValueProperties &rhs) {
-    return ValueProperties(lhs.flags | rhs.flags);
+                              const ValueProperties &rhs);
+
+  bool operator==(const ValueProperties &other) const {
+    return flags == other.flags;
   }
 
 private:
@@ -147,27 +137,77 @@ public:
   }
   const ValueProperties &getProperties() const { return valueProperties; }
 
-  // partial ordering
   static StructuredMatrixType meet(const StructuredMatrixType &lhs,
-                                   const StructuredMatrixType &rhs) {
-    return StructuredMatrixType(
-        StructuredSparsityPattern::meet(lhs.sparsityPattern,
-                                        rhs.sparsityPattern),
-        ValueProperties::meet(lhs.valueProperties, rhs.valueProperties));
-  }
+                                   const StructuredMatrixType &rhs);
 
   static StructuredMatrixType join(const StructuredMatrixType &lhs,
-                                   const StructuredMatrixType &rhs) {
-    return StructuredMatrixType(
-        StructuredSparsityPattern::join(lhs.sparsityPattern,
-                                        rhs.sparsityPattern),
-        ValueProperties::join(lhs.valueProperties, rhs.valueProperties));
+                                   const StructuredMatrixType &rhs);
+
+  bool operator==(const StructuredMatrixType &other) const {
+    return sparsityPattern == other.sparsityPattern &&
+           valueProperties == other.valueProperties;
   }
+
+  void print(raw_ostream &os) const;
+  raw_ostream &operator<<(raw_ostream &os) const {
+    print(os);
+    return os;
+  }
+
+  // TODO: propagation rules probably goes in here
+
+  // TODO: implement queries that check both the sparsity pattern and value
+  // properties and return specific matrix kinds
 
 private:
   StructuredSparsityPattern sparsityPattern;
   ValueProperties valueProperties;
 };
+
+//===----------------------------------------------------------------------===//
+// Lattice Element
+//===----------------------------------------------------------------------===//
+
+class StructuredMatrixLattice : public dataflow::AbstractSparseLattice {
+public:
+  using AbstractSparseLattice::AbstractSparseLattice;
+
+  ChangeResult meet(const AbstractSparseLattice &rhs) override;
+  ChangeResult join(const AbstractSparseLattice &rhs) override;
+
+  void print(raw_ostream &os) const override;
+  raw_ostream &operator<<(raw_ostream &os) const {
+    print(os);
+    return os;
+  }
+
+  const StructuredMatrixType &getValue() const { return value; }
+  void setValue(const StructuredMatrixType &v) { value = v; }
+
+private:
+  StructuredMatrixType value;
+};
+
+//===----------------------------------------------------------------------===//
+// Dataflow Analysis
+//===----------------------------------------------------------------------===//
+
+class StructuredMatrixAnalysis
+    : public dataflow::SparseForwardDataFlowAnalysis<StructuredMatrixLattice> {
+public:
+  using SparseForwardDataFlowAnalysis::SparseForwardDataFlowAnalysis;
+
+  void setToEntryState(StructuredMatrixLattice *lattice) override;
+
+  LogicalResult
+  visitOperation(Operation *op,
+                 ArrayRef<const StructuredMatrixLattice *> operands,
+                 ArrayRef<StructuredMatrixLattice *> results) override;
+};
+
+//===----------------------------------------------------------------------===//
+// Structure Originators
+//===----------------------------------------------------------------------===//
 
 } // namespace structure_analysis
 } // namespace mlir
