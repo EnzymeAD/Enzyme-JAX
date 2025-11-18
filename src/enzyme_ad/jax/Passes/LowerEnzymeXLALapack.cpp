@@ -1929,6 +1929,75 @@ struct GetriOpLowering : public OpRewritePattern<enzymexla::GetriOp> {
   }
 };
 
+template <typename OpTy>
+LogicalResult lowerSVDAlgorithmCUDA(OpTy op, PatternRewriter &rewriter,
+                                    DictionaryAttr &options,
+                                    std::string targetName) {
+  auto input = op.getOperand();
+  auto type_input = cast<RankedTensorType>(input.getType());
+  auto shape_input = type_input.getShape();
+  auto rank_input = static_cast<int64_t>(shape_input.size());
+
+  auto type_u = cast<RankedTensorType>(op.getResult(0).getType());
+  auto rank_u = type_u.getRank();
+
+  auto type_input_element_real = type_input.getElementType();
+  if (auto complex_type = dyn_cast<ComplexType>(type_input_element_real)) {
+    type_input_element_real = complex_type.getElementType();
+  }
+  auto type_s = cast<RankedTensorType>(RankedTensorType::get(
+      {std::min(shape_input[0], shape_input[1])}, type_input_element_real));
+  auto rank_s = type_s.getRank();
+
+  auto type_vt = cast<RankedTensorType>(op.getResult(2).getType());
+  auto rank_vt = type_vt.getRank();
+
+  auto type_info = RankedTensorType::get({}, rewriter.getIntegerType(32));
+  auto rank_info = type_info.getRank();
+  auto op_info = stablehlo::ConstantOp::create(
+      rewriter, op.getLoc(), type_info,
+      cast<ElementsAttr>(makeAttr(type_info, -1)));
+
+  // emit `stablehlo.custom_call` to `@cusolver_geqrf_ffi` kernel from jaxlib
+  SmallVector<Attribute> aliases = {};
+  SmallVector<int64_t> ranks_operands = {rank_input};
+  SmallVector<int64_t> ranks_results = {rank_input, rank_s, rank_u, rank_vt,
+                                        rank_info};
+  SmallVector<bool> isColMajorArrOperands = {true};
+  SmallVector<bool> isColMajorArrOutputs = {true, true, true, true, true};
+
+  auto cusolverCallOp = stablehlo::CustomCallOp::create(
+      rewriter, op.getLoc(),
+      TypeRange{type_input, type_s, type_u, type_vt, type_info},
+      ValueRange{input}, rewriter.getStringAttr(targetName),
+      /*has_side_effect*/ nullptr,
+      /*backend_config*/ options,
+      /*api_version*/
+      stablehlo::CustomCallApiVersionAttr::get(
+          rewriter.getContext(),
+          mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
+      /*calledcomputations*/ nullptr,
+      /*operand_layouts*/
+      getSHLOLayout(rewriter, ranks_operands, isColMajorArrOperands,
+                    rank_input),
+      /*result_layouts*/
+      getSHLOLayout(rewriter, ranks_results, isColMajorArrOutputs, rank_input),
+      /*output_operand_aliases*/ rewriter.getArrayAttr(aliases));
+
+  auto info = stablehlo::ConvertOp::create(rewriter, op.getLoc(),
+                                           op.getResult(3).getType(),
+                                           cusolverCallOp.getResult(4));
+
+  // replace enzymexla.linalg.svd with stablehlo.custom_call
+  rewriter.replaceAllUsesWith(op.getResult(0), cusolverCallOp.getResult(2));
+  rewriter.replaceAllUsesWith(op.getResult(1), cusolverCallOp.getResult(1));
+  rewriter.replaceAllUsesWith(op.getResult(2), cusolverCallOp.getResult(3));
+  rewriter.replaceAllUsesWith(op.getResult(3), info.getResult());
+  rewriter.eraseOp(op);
+
+  return success();
+}
+
 struct GesvdOpLowering : public OpRewritePattern<enzymexla::GesvdOp> {
   std::string backend;
   int64_t blasIntWidth;
@@ -1940,8 +2009,25 @@ struct GesvdOpLowering : public OpRewritePattern<enzymexla::GesvdOp> {
 
   LogicalResult matchAndRewrite(enzymexla::GesvdOp op,
                                 PatternRewriter &rewriter) const override {
+    if (backend == "cuda")
+      return matchAndRewriteCUDA(op, rewriter);
+
     op->emitOpError() << "Unsupported backend: " << backend;
     return failure();
+  }
+
+  // TODO: lower CPU to gesvd
+
+  LogicalResult matchAndRewriteCUDA(enzymexla::GesvdOp op,
+                                    PatternRewriter &rewriter) const {
+    auto backend_config = rewriter.getDictionaryAttr({
+        rewriter.getNamedAttr("full_matrices",
+                              rewriter.getBoolAttr(op.getFull())),
+        rewriter.getNamedAttr("compute_uv", rewriter.getBoolAttr(true)),
+        rewriter.getNamedAttr("transposed", rewriter.getBoolAttr(false)),
+    });
+    return lowerSVDAlgorithmCUDA(op, rewriter, backend_config,
+                                 "cusolver_gesvd_ffi");
   }
 };
 
@@ -1959,6 +2045,8 @@ struct GesddOpLowering : public OpRewritePattern<enzymexla::GesddOp> {
     op->emitOpError() << "Unsupported backend: " << backend;
     return failure();
   }
+
+  // TODO: lower CPU to gesdd
 };
 
 struct GesvjOpLowering : public OpRewritePattern<enzymexla::GesvjOp> {
@@ -1972,8 +2060,62 @@ struct GesvjOpLowering : public OpRewritePattern<enzymexla::GesvjOp> {
 
   LogicalResult matchAndRewrite(enzymexla::GesvjOp op,
                                 PatternRewriter &rewriter) const override {
+    if (backend == "cuda")
+      return matchAndRewriteCUDA(op, rewriter);
+    else if (backend == "tpu")
+      return matchAndRewriteTPU(op, rewriter);
+
     op->emitOpError() << "Unsupported backend: " << backend;
     return failure();
+  }
+
+  // TODO: lower CPU to gesvj
+
+  LogicalResult matchAndRewriteCUDA(enzymexla::GesvjOp op,
+                                    PatternRewriter &rewriter) const {
+    auto backend_config = rewriter.getDictionaryAttr({
+        rewriter.getNamedAttr("full_matrices",
+                              rewriter.getBoolAttr(op.getFull())),
+        rewriter.getNamedAttr("compute_uv", rewriter.getBoolAttr(true)),
+    });
+    return lowerSVDAlgorithmCUDA(op, rewriter, backend_config,
+                                 "cusolver_gesvdj_ffi");
+  }
+
+  LogicalResult matchAndRewriteTPU(enzymexla::GesvjOp op,
+                                   PatternRewriter &rewriter) const {
+    auto input = op.getOperand();
+    auto type_input = cast<RankedTensorType>(input.getType());
+    auto shape_input = type_input.getShape();
+    auto rank_input = static_cast<int64_t>(shape_input.size());
+
+    // emit `stablehlo.custom_call` to `@SVD` kernel from XLA
+    auto type_tau = cast<RankedTensorType>(op.getResult(1).getType());
+
+    auto custom_call_op = stablehlo::CustomCallOp::create(
+        rewriter, op.getLoc(), TypeRange{type_input, type_tau, type_input},
+        ValueRange{input}, rewriter.getStringAttr("SVD"),
+        /*has_side_effect*/ nullptr,
+        /*backend_config*/ nullptr,
+        /*api_version*/ nullptr,
+        /*calledcomputations*/ nullptr,
+        /*operand_layouts*/ nullptr,
+        /*result_layouts*/ nullptr,
+        /*output_operand_aliases*/ nullptr);
+
+    rewriter.replaceAllUsesWith(op.getResult(0), custom_call_op.getResult(0));
+    rewriter.replaceAllUsesWith(op.getResult(1), custom_call_op.getResult(1));
+    rewriter.replaceAllUsesWith(op.getResult(2), custom_call_op.getResult(2));
+
+    // Netlib's LAPACK returns `info`, but TPU kernel doesn't
+    auto type_info =
+        RankedTensorType::get({}, rewriter.getIntegerType(blasIntWidth));
+    auto info_op = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), type_info,
+        cast<ElementsAttr>(makeAttr(type_info, 0)));
+    rewriter.replaceAllUsesWith(op.getResult(3), info_op.getResult());
+
+    return success();
   }
 };
 
