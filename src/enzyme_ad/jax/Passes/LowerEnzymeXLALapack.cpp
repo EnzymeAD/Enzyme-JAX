@@ -2008,10 +2008,10 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
   std::string fn;
   if constexpr (std::is_same_v<OpTy, enzymexla::GesvdOp>) {
     algorithm = enzymexla::SVDAlgorithm::QRIteration;
-    fn = "gesvd";
+    fn = "gesvd_";
   } else if constexpr (std::is_same_v<OpTy, enzymexla::GesddOp>) {
     algorithm = enzymexla::SVDAlgorithm::DivideAndConquer;
-    fn = "gesdd";
+    fn = "gesdd_";
   } else {
     op->emitOpError() << "Unsupported algorithm";
     return failure();
