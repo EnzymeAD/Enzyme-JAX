@@ -13,11 +13,12 @@ enum class StructuredSparsityKind {
   Dense,
   Band,
   UpperTriangular,
+  UpperBidiagonal,
   LowerTriangular,
-  Diagonal,
-  Bidiagonal,
+  LowerBidiagonal,
   Tridiagonal,
-  Empty,
+  Diagonal,
+  Empty, // doesn't really mean anything, but we need it for bottom element
 };
 
 // TODO: currently only legal negative value is -1, which means "unknown"
@@ -35,115 +36,52 @@ public:
 
   StructuredSparsityPattern(int64_t lowerBandwidth, int64_t upperBandwidth)
       : kind(StructuredSparsityKind::Band), lowerBandwidth(lowerBandwidth),
-        upperBandwidth(upperBandwidth) {}
+        upperBandwidth(upperBandwidth) {
+    refineKind();
+  }
 
+  // most precise of lhs and rhs
   static StructuredSparsityPattern meet(const StructuredSparsityPattern &lhs,
                                         const StructuredSparsityPattern &rhs) {
     if (lhs.kind == StructuredSparsityKind::Empty ||
         rhs.kind == StructuredSparsityKind::Empty)
       return StructuredSparsityPattern(StructuredSparsityKind::Empty);
+
     if (lhs.kind == StructuredSparsityKind::Unknown)
       return rhs;
     if (rhs.kind == StructuredSparsityKind::Unknown)
       return lhs;
 
-    if (lhs.kind == StructuredSparsityKind::Band &&
-        rhs.kind == StructuredSparsityKind::Band) {
-      return StructuredSparsityPattern(
-          std::min(lhs.lowerBandwidth, rhs.lowerBandwidth),
-          std::min(lhs.upperBandwidth, rhs.upperBandwidth));
-    }
-
-    return lhs <= rhs ? lhs : rhs;
+    // for all other cases, we take the min of the bandwidths and refine
+    auto lb = std::min(lhs.lowerBandwidth, rhs.lowerBandwidth);
+    auto ub = std::min(lhs.upperBandwidth, rhs.upperBandwidth);
+    auto newPattern = StructuredSparsityPattern(lb, ub);
+    newPattern.refineKind();
+    return newPattern;
   }
 
+  // least precise of lhs and rhs
   static StructuredSparsityPattern join(const StructuredSparsityPattern &lhs,
                                         const StructuredSparsityPattern &rhs) {
-    if (lhs.kind == StructuredSparsityKind::Unknown ||
-        rhs.kind == StructuredSparsityKind::Unknown)
-      return StructuredSparsityPattern(StructuredSparsityKind::Unknown);
     if (lhs.kind == StructuredSparsityKind::Empty)
       return rhs;
     if (rhs.kind == StructuredSparsityKind::Empty)
       return lhs;
 
-    if (lhs.kind == StructuredSparsityKind::Band &&
-        rhs.kind == StructuredSparsityKind::Band) {
-      return StructuredSparsityPattern(
-          std::max(lhs.lowerBandwidth, rhs.lowerBandwidth),
-          std::max(lhs.upperBandwidth, rhs.upperBandwidth));
-    }
+    if (lhs.kind == StructuredSparsityKind::Unknown ||
+        rhs.kind == StructuredSparsityKind::Unknown)
+      return StructuredSparsityPattern(StructuredSparsityKind::Unknown);
 
-    return StructuredSparsityPattern(StructuredSparsityKind::Dense);
-  }
-
-  bool operator==(const StructuredSparsityPattern &other) const {}
-
-  bool operator<=(const StructuredSparsityPattern &other) const {
-    if (kind == StructuredSparsityKind::Empty)
-      return true;
-
-    if (other.kind == StructuredSparsityKind::Unknown)
-      return true;
-
-    if (other.kind == StructuredSparsityKind::Empty)
-      return kind == StructuredSparsityKind::Empty;
-
-    if (kind == StructuredSparsityKind::Unknown)
-      return other.kind == StructuredSparsityKind::Unknown;
-
-    if (kind == other.kind) {
-      if (kind == StructuredSparsityKind::Band) {
-        return lowerBandwidth <= other.lowerBandwidth &&
-               upperBandwidth <= other.upperBandwidth;
-      }
-      return true;
-    }
-
-    if (kind == StructuredSparsityKind::Diagonal) {
-      return other.kind != StructuredSparsityKind::Empty;
-    }
-
-    if (kind == StructuredSparsityKind::Bidiagonal) {
-      return other.kind == StructuredSparsityKind::Tridiagonal ||
-             other.kind == StructuredSparsityKind::Band ||
-             other.kind == StructuredSparsityKind::UpperTriangular ||
-             other.kind == StructuredSparsityKind::Dense;
-    }
-
-    if (kind == StructuredSparsityKind::Tridiagonal) {
-      return other.kind == StructuredSparsityKind::Band ||
-             other.kind == StructuredSparsityKind::Dense;
-    }
-
-    if (kind == StructuredSparsityKind::UpperTriangular ||
-        kind == StructuredSparsityKind::LowerTriangular) {
-      if (other.kind == StructuredSparsityKind::Dense)
-        return true;
-      if (other.kind == StructuredSparsityKind::Band) {
-        if (kind == StructuredSparsityKind::UpperTriangular) {
-          return other.lowerBandwidth == 0;
-        } else {
-          return other.upperBandwidth == 0;
-        }
-      }
-      return false;
-    }
-
-    if (kind == StructuredSparsityKind::Band) {
-      return other.kind == StructuredSparsityKind::Dense;
-    }
-
-    if (kind == StructuredSparsityKind::Dense) {
-      return other.kind == StructuredSparsityKind::Dense ||
-             other.kind == StructuredSparsityKind::Unknown;
-    }
-
-    return false;
+    auto lb = std::max(lhs.lowerBandwidth, rhs.lowerBandwidth);
+    auto ub = std::max(lhs.upperBandwidth, rhs.upperBandwidth);
+    auto newPattern = StructuredSparsityPattern(lb, ub);
+    newPattern.refineKind();
+    return newPattern;
   }
 
 private:
   void initializeBandwidths();
+  void refineKind();
 
   StructuredSparsityKind kind;
   int64_t lowerBandwidth;
@@ -179,7 +117,6 @@ public:
 
   uint32_t getFlags() const { return flags; }
 
-  // partial ordering
   static ValueProperties meet(const ValueProperties &lhs,
                               const ValueProperties &rhs) {
     return ValueProperties(lhs.flags & rhs.flags);
@@ -188,14 +125,6 @@ public:
   static ValueProperties join(const ValueProperties &lhs,
                               const ValueProperties &rhs) {
     return ValueProperties(lhs.flags | rhs.flags);
-  }
-
-  bool operator==(const ValueProperties &other) const {
-    return flags == other.flags;
-  }
-
-  bool operator<=(const ValueProperties &other) const {
-    return (flags & other.flags) == flags;
   }
 
 private:
@@ -233,11 +162,6 @@ public:
         StructuredSparsityPattern::join(lhs.sparsityPattern,
                                         rhs.sparsityPattern),
         ValueProperties::join(lhs.valueProperties, rhs.valueProperties));
-  }
-
-  bool operator==(const StructuredMatrixType &other) const {
-    return sparsityPattern == other.sparsityPattern &&
-           valueProperties == other.valueProperties;
   }
 
 private:
