@@ -21,6 +21,11 @@ namespace structure_analysis {
 // Structured Sparsity Pattern Implementation
 //===----------------------------------------------------------------------===//
 
+StructuredSparsityPattern::StructuredSparsityPattern(Value v) {
+  llvm::errs() << "TODO: structured sparsity pattern not implemented for " << v
+               << "\n";
+}
+
 void StructuredSparsityPattern::initializeBandwidths() {
   switch (kind) {
   case StructuredSparsityKind::Unknown:
@@ -182,6 +187,10 @@ void StructuredSparsityPattern::print(raw_ostream &os) const {
 // Value Properties Implementation
 //===----------------------------------------------------------------------===//
 
+ValueProperties::ValueProperties(Value v) {
+  llvm::errs() << "TODO: value properties not implemented for " << v << "\n";
+}
+
 ValueProperties ValueProperties::meet(const ValueProperties &lhs,
                                       const ValueProperties &rhs) {
   return ValueProperties(lhs.flags & rhs.flags);
@@ -245,6 +254,36 @@ void StructuredMatrixType::print(raw_ostream &os) const {
 //===----------------------------------------------------------------------===//
 // Lattice Element
 //===----------------------------------------------------------------------===//
+
+ChangeResult StructuredMatrixLattice::meet(const AbstractSparseLattice &rhs) {
+  const auto *rhsStruct =
+      reinterpret_cast<const StructuredMatrixLattice *>(&rhs);
+  return meet(*rhsStruct);
+}
+
+ChangeResult StructuredMatrixLattice::meet(StructuredMatrixLattice rhs) {
+  auto newValue = StructuredMatrixType::meet(getValue(), rhs.getValue());
+  if (getValue() == newValue)
+    return ChangeResult::NoChange;
+
+  setValue(newValue);
+  return ChangeResult::Change;
+}
+
+ChangeResult StructuredMatrixLattice::join(const AbstractSparseLattice &rhs) {
+  const auto *rhsStruct =
+      reinterpret_cast<const StructuredMatrixLattice *>(&rhs);
+  return join(*rhsStruct);
+}
+
+ChangeResult StructuredMatrixLattice::join(StructuredMatrixLattice rhs) {
+  auto newValue = StructuredMatrixType::join(getValue(), rhs.getValue());
+  if (getValue() == newValue)
+    return ChangeResult::NoChange;
+
+  setValue(newValue);
+  return ChangeResult::Change;
+}
 
 void StructuredMatrixLattice::print(raw_ostream &os) const {
   os << "StructuredMatrixLattice(";
