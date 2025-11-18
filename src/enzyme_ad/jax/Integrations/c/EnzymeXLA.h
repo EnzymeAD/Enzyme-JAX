@@ -33,6 +33,9 @@ MLIR_CAPI_EXPORTED MlirAttribute enzymexlaLapackUploAttrGet(MlirContext ctx,
 MLIR_CAPI_EXPORTED MlirAttribute enzymexlaQRAlgorithmAttrGet(MlirContext ctx,
                                                              int32_t mode);
 
+MLIR_CAPI_EXPORTED MlirAttribute enzymexlaSVDAlgorithmAttrGet(MlirContext ctx,
+                                                              int32_t mode);
+
 //===----------------------------------------------------------------------===//
 // Machine Learning Ops
 //===----------------------------------------------------------------------===//
