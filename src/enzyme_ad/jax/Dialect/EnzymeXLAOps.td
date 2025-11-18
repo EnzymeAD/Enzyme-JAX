@@ -700,7 +700,7 @@ def TypeAlignOp : EnzymeXLA_Op<"typeAlign", [Pure]> {
 
 
 // MPI Ops
-def MPI_CommRankOp : EnzymeXLA_Op<"comm_rank", [Pure]> {
+def MPICommRankOp : EnzymeXLA_Op<"comm_rank", [Pure]> {
   let summary = "Get the current rank, equivalent to "
                 "`MPI_Comm_rank(comm, &rank)`";
   let description = [{
