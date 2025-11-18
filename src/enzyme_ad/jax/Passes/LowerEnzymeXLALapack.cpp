@@ -2283,7 +2283,11 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
 
     LLVM::StoreOp::create(rewriter, op.getLoc(), workSpaceSize, lworkptr);
 
-    args[11] = workspace;
+    if (algorithm == enzymexla::SVDAlgorithm::QRIteration) {
+      args[11] = workspace;
+    } else if (algorithm == enzymexla::SVDAlgorithm::DivideAndConquer) {
+      args[10] = workspace;
+    }
 
     LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{},
                          SymbolRefAttr::get(ctx, bind_fn), ValueRange(args));
