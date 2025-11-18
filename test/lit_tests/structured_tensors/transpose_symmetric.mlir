@@ -26,6 +26,26 @@ func.func @pass2(%arg0: tensor<2x2xf32>) -> tensor<2x2xf32> {
 // CHECK-NEXT:   return %1 : tensor<2x2xf32>
 // CHECK-NEXT: }
 
+func.func @pass3() -> tensor<3x3xf32> {
+  %cst = stablehlo.constant dense<3.000000e+00> : tensor<f32>
+  %cst_0 = stablehlo.constant dense<2.000000e+00> : tensor<f32>
+  %0 = stablehlo.broadcast_in_dim %cst_0, dims = [] : (tensor<f32>) -> tensor<3x3xf32>
+  %1 = stablehlo.broadcast_in_dim %cst, dims = [] : (tensor<f32>) -> tensor<3x3xf32>
+  %2 = stablehlo.transpose %0, dims = [1, 0] : (tensor<3x3xf32>) -> tensor<3x3xf32>
+  %3 = stablehlo.transpose %1, dims = [1, 0] : (tensor<3x3xf32>) -> tensor<3x3xf32>
+  %4 = stablehlo.add %2, %3 : tensor<3x3xf32>
+  return %4 : tensor<3x3xf32>
+}
+
+// CHECK: func.func @pass3() -> tensor<3x3xf32> {
+// CHECK-NEXT:   %cst = stablehlo.constant dense<3.000000e+00> : tensor<f32>
+// CHECK-NEXT:   %cst_0 = stablehlo.constant dense<2.000000e+00> : tensor<f32>
+// CHECK-NEXT:   %0 = stablehlo.broadcast_in_dim %cst_0, dims = [] {enzymexla.guaranteed_symmetric = true} : (tensor<f32>) -> tensor<3x3xf32>
+// CHECK-NEXT:   %1 = stablehlo.broadcast_in_dim %cst, dims = [] {enzymexla.guaranteed_symmetric = true} : (tensor<f32>) -> tensor<3x3xf32>
+// CHECK-NEXT:   %2 = stablehlo.add %0, %1 : tensor<3x3xf32>
+// CHECK-NEXT:   return %2 : tensor<3x3xf32>
+// CHECK-NEXT: }
+
 func.func @fail1(%arg0: tensor<2x2xf32>) -> tensor<2x2xf32> {
   %0 = stablehlo.transpose %arg0, dims = [1, 0] : (tensor<2x2xf32>) -> tensor<2x2xf32>
   %1 = stablehlo.subtract %arg0, %0 : tensor<2x2xf32>
