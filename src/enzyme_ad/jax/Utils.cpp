@@ -599,9 +599,8 @@ bool SymmetricResultAnalysis::constantIntCheck(DenseElementsAttr attr) {
   auto type = dyn_cast<RankedTensorType>(attr.getType());
   if (!type)
     return false;
-  if (type.getRank() == 0) {
+  if (type.getRank() == 0)
     return true;
-  }
   if (type.getRank() != 2)
     return false;
 
@@ -635,13 +634,11 @@ bool SymmetricResultAnalysis::constantFloatCheck(DenseElementsAttr attr) {
     return false;
 
   auto type = dyn_cast<RankedTensorType>(attr.getType());
-  llvm::errs() << "type: " << type.getRank() << "\n";
 
   if (!type)
     return false;
-  if (type.getRank() == 0) {
+  if (type.getRank() == 0)
     return true;
-  }
   if (type.getRank() != 2)
     return false;
 
@@ -654,7 +651,6 @@ bool SymmetricResultAnalysis::constantFloatCheck(DenseElementsAttr attr) {
 
   if (attr.isSplat())
     return true;
-
 
   auto values = attr.getValues<APFloat>();
   auto it = values.begin();
