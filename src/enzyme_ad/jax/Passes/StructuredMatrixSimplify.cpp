@@ -48,6 +48,8 @@ public:
       return signalPassFailure();
     }
 
+    // TODO: annotate the IR with the properties for later usage (use an option)
+
     // TODO: do things here
   }
 };
