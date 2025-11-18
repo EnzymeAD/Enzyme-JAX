@@ -23,28 +23,82 @@ namespace structure_analysis {
 
 void StructuredSparsityPattern::initializeBandwidths() {
   switch (kind) {
-  case StructuredSparsityKind::Diagonal:
-    lowerBandwidth = 0;
-    upperBandwidth = 0;
-    break;
-  case StructuredSparsityKind::Bidiagonal:
-    lowerBandwidth = 0;
-    upperBandwidth = 1;
-    break;
-  case StructuredSparsityKind::Tridiagonal:
-    lowerBandwidth = 1;
-    upperBandwidth = 1;
-    break;
+  case StructuredSparsityKind::Unknown:
+    break; // leave as is
+  case StructuredSparsityKind::Dense:
+    lowerBandwidth = std::numeric_limits<int64_t>::max();
+    upperBandwidth = std::numeric_limits<int64_t>::max();
+  case StructuredSparsityKind::Band:
+    llvm_unreachable("constructing band with no bandwidths");
   case StructuredSparsityKind::UpperTriangular:
     lowerBandwidth = 0;
     upperBandwidth = std::numeric_limits<int64_t>::max();
+    break;
+  case StructuredSparsityKind::UpperBidiagonal:
+    lowerBandwidth = 0;
+    upperBandwidth = 1;
     break;
   case StructuredSparsityKind::LowerTriangular:
     lowerBandwidth = std::numeric_limits<int64_t>::max();
     upperBandwidth = 0;
     break;
-  default:
+  case StructuredSparsityKind::LowerBidiagonal:
+    lowerBandwidth = 1;
+    upperBandwidth = 0;
     break;
+  case StructuredSparsityKind::Tridiagonal:
+    lowerBandwidth = 1;
+    upperBandwidth = 1;
+    break;
+  case StructuredSparsityKind::Diagonal:
+    lowerBandwidth = 0;
+    upperBandwidth = 0;
+    break;
+  case StructuredSparsityKind::Empty:
+    break;
+  }
+}
+
+void StructuredSparsityPattern::refineKind() {
+  if (kind != StructuredSparsityKind::Band)
+    return;
+
+  if (lowerBandwidth == 0) {
+    if (upperBandwidth == 0) {
+      kind = StructuredSparsityKind::Diagonal;
+      return;
+    }
+    if (upperBandwidth == 1) {
+      kind = StructuredSparsityKind::UpperBidiagonal;
+      return;
+    }
+    if (upperBandwidth == std::numeric_limits<int64_t>::max()) {
+      kind = StructuredSparsityKind::UpperTriangular;
+      return;
+    }
+  }
+
+  // lowerBandwidth != 0
+  if (upperBandwidth == 0) {
+    if (lowerBandwidth == 1) {
+      kind = StructuredSparsityKind::LowerBidiagonal;
+      return;
+    }
+    if (lowerBandwidth == std::numeric_limits<int64_t>::max()) {
+      kind = StructuredSparsityKind::LowerTriangular;
+      return;
+    }
+  }
+
+  if (lowerBandwidth == 1 && upperBandwidth == 1) {
+    kind = StructuredSparsityKind::Tridiagonal;
+    return;
+  }
+
+  if (lowerBandwidth == std::numeric_limits<int64_t>::max() &&
+      upperBandwidth == std::numeric_limits<int64_t>::max()) {
+    kind = StructuredSparsityKind::Dense;
+    return;
   }
 }
 
