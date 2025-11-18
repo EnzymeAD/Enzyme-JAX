@@ -3833,7 +3833,12 @@ struct GPUBarrierToROCDL : ConvertOpToLLVMPattern<gpu::BarrierOp> {
   LogicalResult
   matchAndRewrite(gpu::BarrierOp op, gpu::BarrierOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    LLVM::FenceOp::create(rewriter, op.getLoc(), LLVM::AtomicOrdering::release,
+                          StringRef("workgroup"));
     rewriter.replaceOpWithNewOp<ROCDL::BarrierOp>(op);
+    LLVM::FenceOp::create(rewriter, op.getLoc(), LLVM::AtomicOrdering::acquire,
+                          StringRef("workgroup"));
+    rewriter.eraseOp(op);
     return success();
   }
 };
