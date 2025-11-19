@@ -3244,8 +3244,6 @@ private:
       };
       LLVM::CallOp::create(rewriter, loc, freeFunc.value(), args);
     } else if (backend.starts_with("xla")) {
-      auto ptrty = LLVM::LLVMPointerType::get(rewriter.getContext());
-
       // handle, ptr
       Type tys[] = {ptrty, ptrty};
 
