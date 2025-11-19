@@ -3691,10 +3691,10 @@ struct GPULaneIdOpToROCDL : ConvertOpToLLVMPattern<gpu::LaneIdOp> {
     Value zero = LLVM::ConstantOp::create(rewriter, loc, int32Type,
                                           rewriter.getI32IntegerAttr(0));
 
-    Value laneIdLo = ROCDL::MbcntLoOp::create(rewriter, loc, int32Type,
-                                              minusOne, zero, nullptr, nullptr);
-    Value laneId = ROCDL::MbcntHiOp::create(rewriter, loc, int32Type, minusOne,
-                                            laneIdLo, nullptr, nullptr);
+    Value laneIdLo =
+        ROCDL::MbcntLoOp::create(rewriter, loc, int32Type, {minusOne, zero});
+    Value laneId = ROCDL::MbcntHiOp::create(rewriter, loc, int32Type,
+                                            {minusOne, laneIdLo});
     LLVM::ConstantRangeAttr bounds = nullptr;
     if (std::optional<APInt> upperBound = op.getUpperBound())
       bounds = rewriter.getAttr<LLVM::ConstantRangeAttr>(
@@ -3740,10 +3740,10 @@ struct GPUShuffleOpToROCDL : public ConvertOpToLLVMPattern<gpu::ShuffleOp> {
     Value zero = LLVM::ConstantOp::create(rewriter, loc, int32Type,
                                           rewriter.getI32IntegerAttr(0));
 
-    Value laneIdLo = ROCDL::MbcntLoOp::create(rewriter, loc, int32Type,
-                                              minusOne, zero, nullptr, nullptr);
-    Value laneId = ROCDL::MbcntHiOp::create(rewriter, loc, int32Type, minusOne,
-                                            laneIdLo, nullptr, nullptr);
+    Value laneIdLo =
+        ROCDL::MbcntLoOp::create(rewriter, loc, int32Type, {minusOne, zero});
+    Value laneId = ROCDL::MbcntHiOp::create(rewriter, loc, int32Type,
+                                            {minusOne, laneIdLo});
 
     Value targetLane;
     Value offset = adaptor.getOffset();
