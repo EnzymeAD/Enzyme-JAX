@@ -6937,6 +6937,76 @@ struct TransposeSymmetricSimplify
   }
 };
 
+struct DotGeneralSymmetricSimplify
+    : public CheckedOpRewritePattern<stablehlo::DotGeneralOp,
+                                     DotGeneralSymmetricSimplify> {
+  using CheckedOpRewritePattern<
+      stablehlo::DotGeneralOp,
+      DotGeneralSymmetricSimplify>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp op,
+                                    PatternRewriter &rewriter) const {
+    auto lhsTy = cast<RankedTensorType>(op.getLhs().getType());
+    auto rhsTy = cast<RankedTensorType>(op.getRhs().getType());
+
+    if (lhsTy.getRank() != 2 || rhsTy.getRank() != 2)
+      return failure();
+
+    auto dotNumbers = op.getDotDimensionNumbers();
+    auto lhsContracting = dotNumbers.getLhsContractingDimensions();
+    auto rhsContracting = dotNumbers.getRhsContractingDimensions();
+
+    if (lhsContracting.size() != 1 || rhsContracting.size() != 1)
+      return failure();
+
+    int64_t lhsCDim = lhsContracting[0];
+    int64_t rhsCDim = rhsContracting[0];
+
+    bool changed = false;
+
+    // Canonicalize LHS: if contracting dim is 0 and symmetric, swap to 1
+    if (lhsCDim == 0) {
+      if (auto defOp = op.getLhs().getDefiningOp()) {
+        if (canApplySymmetricPattern(defOp, rewriter)) {
+          lhsCDim = 1;
+          changed = true;
+        }
+      }
+    }
+
+    // Canonicalize RHS: if contracting dim is 0 and symmetric, swap to 1
+    if (rhsCDim == 0) {
+      if (auto defOp = op.getRhs().getDefiningOp()) {
+        if (canApplySymmetricPattern(defOp, rewriter)) {
+          rhsCDim = 1;
+          changed = true;
+        }
+      }
+    }
+
+    if (!changed)
+      return failure();
+
+    auto newDotNumbers = stablehlo::DotDimensionNumbersAttr::get(
+        op.getContext(), dotNumbers.getLhsBatchingDimensions(),
+        dotNumbers.getRhsBatchingDimensions(), {lhsCDim}, {rhsCDim});
+
+    SmallVector<NamedAttribute> attributes;
+    for (auto attr : op->getAttrs()) {
+      if (attr.getName() == "dot_dimension_numbers") {
+        attributes.push_back(
+            rewriter.getNamedAttr("dot_dimension_numbers", newDotNumbers));
+      } else {
+        attributes.push_back(attr);
+      }
+    }
+
+    rewriter.replaceOpWithNewOp<stablehlo::DotGeneralOp>(
+        op, op.getType(), ValueRange{op.getLhs(), op.getRhs()}, attributes);
+    return success();
+  }
+};
+
 struct NoNanSelfSubSimplify
     : public NoNanCheckedOpRewritePattern<stablehlo::SubtractOp,
                                           NoNanSelfSubSimplify> {
@@ -26163,7 +26233,7 @@ struct EnzymeHLOOptPass
                  NoNanAddSubSimplify, NoNanMulSimplify, NoNanDivSimplify>(
         (no_nan || all_finite), context);
 
-    patterns.add<TransposeSymmetricSimplify>(context);
+    patterns.add<TransposeSymmetricSimplify, DotGeneralSymmetricSimplify>(context);
 
     // clang-format off
     patterns.add<

@@ -604,6 +604,16 @@ def ApplyTransposeSymmetricSimplify : EnzymeHLOPatternOp<
   let patterns = ["TransposeSymmetricSimplify"];
 }
 
+def ApplyDotGeneralSymmetricSimplify : EnzymeHLOPatternOp<
+    "dot_general_symmetric_simplify"> {
+  let patterns = ["DotGeneralSymmetricSimplify"];
+}
+
+def ApplySymmetricPartRewrite : EnzymeHLOPatternOp<
+    "symmetric_part_rewrite"> {
+  let patterns = ["SymmetricPartRewrite<stablehlo::DotOp>", "SymmetricPartRewrite<stablehlo::DotGeneralOp>"];
+}
+
 def ApplyTransposeElementwisePatterns : EnzymeHLOParameterizedPatternOp<
     "transpose_elementwise"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
