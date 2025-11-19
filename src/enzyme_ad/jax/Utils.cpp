@@ -668,9 +668,25 @@ SymmetricResultAnalysis::State SymmetricResultAnalysis::localGuaranteed(
     recursiveCheck = true;
   }
 
+  // propagate symmetry for transpose
   if (isa<stablehlo::TransposeOp>(op)) {
-    // All operands symmetric => symmetric result
-    recursiveCheck = true;
+      recursiveCheck = true;
+  }
+
+  // propagate symmetry for A * A
+  if (auto dotGeneralOp = dyn_cast<stablehlo::DotGeneralOp>(op)) {
+      auto lhs = dotGeneralOp.getOperand(0);
+      auto rhs = dotGeneralOp.getOperand(1);
+      auto dimensionNumbers = dotGeneralOp.getDotDimensionNumbers();
+
+      if (lhs == rhs) {
+          auto lhs_contracting = dimensionNumbers.getLhsContractingDimensions();
+          auto rhs_contracting = dimensionNumbers.getRhsContractingDimensions();
+
+          if (lhs_contracting.size() == 1 && rhs_contracting.size() == 1) {
+              recursiveCheck = true;
+          }
+      }
   }
 
   /**
