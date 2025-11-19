@@ -2717,19 +2717,22 @@ private:
     auto i32 = rewriter.getIntegerType(32);
     auto moduleOp = deallocOp->getParentOfType<ModuleOp>();
 
-    auto ptr1ty = LLVM::LLVMPointerType::get(rewriter.getContext(), 1);
+    auto ptrty = LLVM::LLVMPointerType::get(rewriter.getContext());
 
     if (backend == "cuda") {
       auto one = LLVM::ConstantOp::create(rewriter, loc, i64,
                                           rewriter.getI64IntegerAttr(1));
 
-      Type tys[] = {ptr1ty};
+      Type tys[] = {ptrty};
       auto cudaFreeFn =
           LLVM::lookupOrCreateFn(rewriter, moduleOp, "cudaFree", tys, i32);
       if (failed(cudaFreeFn)) {
         llvm::errs() << " cudafree already exists with different types\n";
         return failure();
       }
+
+      if (cast<LLVM::LLVMPointerType>(ptr.getType()).getAddressSpace() != 0)
+        ptr = LLVM::AddrSpaceCastOp::create(rewriter, loc, ptrty, ptr);
 
       Value args[] = {
           ptr,
@@ -2750,8 +2753,6 @@ private:
       };
       LLVM::CallOp::create(rewriter, loc, freeFunc.value(), args);
     } else if (backend.starts_with("xla")) {
-      auto ptrty = LLVM::LLVMPointerType::get(rewriter.getContext());
-
       // handle, ptr
       Type tys[] = {ptrty, ptrty};
 
