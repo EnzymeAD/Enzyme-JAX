@@ -64,6 +64,25 @@ MlirAttribute enzymexlaQRAlgorithmAttrGet(MlirContext ctx, int32_t mode) {
   return wrap(mlir::enzymexla::QrAlgorithmAttr::get(unwrap(ctx), algorithm));
 }
 
+MlirAttribute enzymexlaSVDAlgorithmAttrGet(MlirContext ctx, int32_t mode) {
+  mlir::enzymexla::SVDAlgorithm algorithm;
+  switch (mode) {
+  case 0:
+    algorithm = mlir::enzymexla::SVDAlgorithm::DEFAULT;
+    break;
+  case 1:
+    algorithm = mlir::enzymexla::SVDAlgorithm::QRIteration;
+    break;
+  case 2:
+    algorithm = mlir::enzymexla::SVDAlgorithm::DivideAndConquer;
+    break;
+  case 3:
+    algorithm = mlir::enzymexla::SVDAlgorithm::Jacobi;
+    break;
+  }
+  return wrap(mlir::enzymexla::SVDAlgorithmAttr::get(unwrap(ctx), algorithm));
+}
+
 MlirAttribute enzymexlaGeluApproximationAttrGet(MlirContext ctx, int32_t mode) {
   mlir::enzymexla::GeluApproximation approximation;
   switch (mode) {

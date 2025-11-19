@@ -1130,7 +1130,7 @@ cc_library(
         "@enzyme//:EnzymeMLIR",
 
         # Mosaic
-        "@jax//jaxlib/mosaic:tpu_dialect",
+        # "@jax//jaxlib/mosaic:tpu_dialect",
 
         # SHLO
         "@stablehlo//:stablehlo_ops",
@@ -1283,7 +1283,8 @@ cc_library(
         "@com_google_absl//absl/status:statusor",
 
         # Mosaic
-        "@jax//jaxlib/mosaic:tpu_dialect",
+        # Upstream is broken, re-enable when working
+        # "@jax//jaxlib/mosaic:tpu_dialect",
     ],
 )
 

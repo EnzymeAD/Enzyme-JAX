@@ -30,4 +30,6 @@ def repo(extra_patches = [], override_commit = ""):
         strip_prefix = "jax-" + commit,
         urls = ["https://github.com/google/jax/archive/{commit}.tar.gz".format(commit = commit)],
         patch_cmds = JAX_PATCHES + extra_patches,
+        patches = ["//:patches/jax.patch"],
+        patch_args = ["-p1"],
     )

@@ -584,6 +584,187 @@ bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy, Type inTy,
   return allowOnFloatingPointMath || guaranteedNoNanResult(op, rewriter);
 }
 
+bool canApplySymmetricPattern(mlir::Operation *op, PatternRewriter &rewriter) {
+  return guaranteedSymmetricResult(op, rewriter);
+}
+
+SymmetricResultAnalysis initSymmetricResultAnalysis() {
+  return SymmetricResultAnalysis();
+}
+
+bool checkNotEqual(APInt a, APInt b) { return a != b; }
+
+bool checkNotEqual(APFloat a, APFloat b) {
+  return a.compare(b) != llvm::APFloat::cmpEqual;
+}
+
+template <typename Ty> bool checkConstantSymmetric(DenseElementsAttr attr) {
+  if (!attr)
+    return false;
+
+  auto type = dyn_cast<RankedTensorType>(attr.getType());
+  if (!type)
+    return false;
+
+  if (type.getRank() == 0)
+    return true;
+  if (type.getRank() != 2)
+    return false;
+
+  auto shape = type.getShape();
+  int64_t rows = shape[0];
+  int64_t cols = shape[1];
+
+  if (rows != cols)
+    return false;
+  if (attr.isSplat())
+    return true;
+
+  auto values = attr.getValues<Ty>();
+  auto it = values.begin();
+
+  for (int64_t i = 0; i < rows; i++) {
+    for (int64_t j = i + 1; j < cols; j++) {
+      auto a = *(it + i * cols + j);
+      auto b = *(it + j * cols + i);
+      if (checkNotEqual(a, b))
+        return false;
+    }
+  }
+
+  return true;
+}
+
+bool SymmetricResultAnalysis::constantIntCheck(DenseElementsAttr attr) {
+  return checkConstantSymmetric<APInt>(attr);
+}
+
+bool SymmetricResultAnalysis::constantFloatCheck(DenseElementsAttr attr) {
+  return checkConstantSymmetric<APFloat>(attr);
+}
+
+SymmetricResultAnalysis::State SymmetricResultAnalysis::localGuaranteed(
+    Operation *op, SmallVectorImpl<Operation *> &localtodo,
+    PatternRewriter &rewriter) {
+  assert(op);
+
+  auto outTy = cast<RankedTensorType>(op->getResult(0).getType());
+  if (outTy.getRank() != 2)
+    return State::NOTGUARANTEED; // this pass only checks for symmetric matrices
+  if (outTy.getDimSize(0) != outTy.getDimSize(1))
+    return State::NOTGUARANTEED; // quick check and exit
+
+  SplatElementsAttr splatAttr;
+  if (matchPattern(op, m_Constant(&splatAttr))) {
+    return State::GUARANTEED;
+  }
+
+  DenseElementsAttr denseAttr;
+  if (matchPattern(op, m_Constant(&denseAttr))) {
+    if (guaranteedConstantOp(op, denseAttr, rewriter)) {
+      return State::GUARANTEED;
+    } else {
+      return State::NOTGUARANTEED;
+    }
+  }
+
+  // check that transpose dimensions are [1,0]
+  auto isTrueTranspose = [](stablehlo::TransposeOp tOp) -> bool {
+    auto perm = tOp.getPermutation();
+    return perm.size() == 2 && perm[0] == 1 && perm[1] == 0;
+  };
+
+  // TODO: check for dot_general as well
+
+  if (auto broadcastOp = dyn_cast<stablehlo::BroadcastInDimOp>(op)) {
+    auto operand = broadcastOp.getOperand();
+    auto operandTy = cast<RankedTensorType>(operand.getType());
+    auto dims = broadcastOp.getBroadcastDimensions();
+    if (operandTy.getRank() == 0 && dims.empty()) {
+      return State::GUARANTEED;
+    }
+  }
+
+  // commutative operation with A and A^T will always be symmetric
+  // op(A, A^T) will also always be symmetric
+  if (stablehlo::hasTraitElementwise(op) &&
+      (op->hasTrait<OpTrait::IsCommutative>() ||
+       op->hasTrait<hlo::OpTrait::IsCommutative>())) {
+    auto lhs = op->getOperand(0);
+    auto rhs = op->getOperand(1);
+
+    // op(A, A^T)
+    if (auto rhsT = rhs.getDefiningOp<stablehlo::TransposeOp>()) {
+      if (isTrueTranspose(rhsT)) {
+        if (lhs == rhsT.getOperand()) {
+          return State::GUARANTEED;
+        }
+      }
+    }
+
+    // op(A^T, A)
+    if (auto lhsT = lhs.getDefiningOp<stablehlo::TransposeOp>()) {
+      if (isTrueTranspose(lhsT)) {
+        if (rhs == lhsT.getOperand()) {
+          return State::GUARANTEED;
+        }
+      }
+    }
+  }
+
+  bool recursiveCheck = false;
+
+  // elementwise ops
+  if (stablehlo::hasTraitElementwise(op)) {
+    recursiveCheck = true;
+  }
+
+  /**
+   * TODO
+   * - check if its * 0 -> symmetric
+   */
+
+  if (recursiveCheck) {
+    bool allOperandsGuaranteed = true;
+    for (auto operand : op->getOperands()) {
+      {
+        auto found = valueCache.find(operand);
+        if (found != valueCache.end()) {
+          if (found->second) {
+            continue;
+          } else {
+            return State::NOTGUARANTEED;
+          }
+        }
+      }
+      auto dop = operand.getDefiningOp();
+      if (!dop)
+        return State::NOTGUARANTEED;
+
+      {
+        auto found = opCache.find(dop);
+        if (found != opCache.end()) {
+          if (found->second) {
+            continue;
+          } else {
+            return State::NOTGUARANTEED;
+          }
+        }
+      }
+
+      localtodo.push_back(dop);
+      allOperandsGuaranteed = false;
+    }
+
+    if (allOperandsGuaranteed)
+      return State::GUARANTEED;
+    else
+      return State::PENDING;
+  } else {
+    return State::NOTGUARANTEED;
+  }
+}
+
 NoNanResultAnalysis initNoNanResultAnalysis() {
   auto finiteAnalysis = std::make_shared<FiniteResultAnalysis>();
   auto noNanAnalysis = std::make_shared<NoNanResultAnalysis>();
@@ -617,8 +798,9 @@ NoNanResultAnalysis::localGuaranteed(Operation *op,
       return State::NOTGUARANTEED;
   }
 
-  if (auto constantOp = dyn_cast<stablehlo::ConstantOp>(op)) {
-    if (guaranteed(constantOp, rewriter)) {
+  DenseElementsAttr denseAttr;
+  if (matchPattern(op, m_Constant(&denseAttr))) {
+    if (guaranteedConstantOp(op, denseAttr, rewriter)) {
       return State::GUARANTEED;
     } else {
       return State::NOTGUARANTEED;
@@ -759,8 +941,9 @@ FiniteResultAnalysis::localGuaranteed(Operation *op,
       return State::NOTGUARANTEED;
   }
 
-  if (auto constantOp = dyn_cast<stablehlo::ConstantOp>(op)) {
-    if (guaranteed(constantOp, rewriter)) {
+  DenseElementsAttr denseAttr;
+  if (matchPattern(op, m_Constant(&denseAttr))) {
+    if (guaranteedConstantOp(op, denseAttr, rewriter)) {
       return State::GUARANTEED;
     } else {
       return State::NOTGUARANTEED;
@@ -871,8 +1054,9 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
       return State::NOTGUARANTEED;
   }
 
-  if (auto constantOp = dyn_cast<stablehlo::ConstantOp>(op)) {
-    if (guaranteed(constantOp, rewriter)) {
+  DenseElementsAttr denseAttr;
+  if (matchPattern(op, m_Constant(&denseAttr))) {
+    if (guaranteedConstantOp(op, denseAttr, rewriter)) {
       return State::GUARANTEED;
     } else {
       return State::NOTGUARANTEED;
@@ -1410,6 +1594,12 @@ bool hasTraitElementwise(Operation *op) {
   }
 
   return false;
+}
+
+bool isAssociativeOp(Operation *op) {
+  return isa<stablehlo::AddOp, stablehlo::MulOp, stablehlo::MinOp,
+             stablehlo::MaxOp, stablehlo::AndOp, stablehlo::OrOp,
+             stablehlo::XorOp>(op);
 }
 
 } // namespace stablehlo

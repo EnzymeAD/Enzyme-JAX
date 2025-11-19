@@ -1,7 +1,7 @@
-JAX_COMMIT = "30e565311af559569b4842bddced4b461f21dd73"
+JAX_COMMIT = "071a6a5a9a70b2447f0164e61e3e0333318422a8"
 JAX_SHA256 = ""
 
-ENZYME_COMMIT = "269207f268bdda2b46e6c6bc1646bb2195eee0f2"
+ENZYME_COMMIT = "6b4a73e3c71e6451c919850acf2999ee04daab12"
 ENZYME_SHA256 = ""
 
 ML_TOOLCHAIN_COMMIT = "78ef5eda03c54a912c000f1f872242d4ca6063a4"
@@ -32,7 +32,8 @@ XLA_PATCHES = [
     sed -i.bak0 "s/load(\\\"\\/\\/xla\\/tsl:tsl.bzl\\\", \\\"if_google\\\")/\\0\\nload(\\\"@local_config_rocm\\/\\/rocm:build_defs.bzl\\\", \\\"if_rocm_is_configured\\\")/g" xla/backends/gpu/codegen/triton/BUILD
     """,
     """
-    sed -i.bak0 "s/e07debd5e257ec1e118f18c54068977b89f03b2f/9018c682b99eb20d5874a4e38271ce63d7393879/g" third_party/stablehlo/workspace.bzl
+    sed -i.bak0 "s,third_party/llvm/llvm-project/llvm/include/,,g" third_party/stablehlo/temporary.patch
+    sed -i.bak0 "s,third_party/llvm/llvm-project/mlir/include/,,g" third_party/stablehlo/temporary.patch
     """,
     """
     sed -i.bak0 "s/\\/\\/third_party:repo.bzl/@bazel_tools\\/\\/tools\\/build_defs\\/repo:http.bzl/g" third_party/llvm/workspace.bzl
@@ -45,9 +46,9 @@ XLA_PATCHES = [
     sed -i.bak0 "s/DCHECK_NE(runtime, nullptr/DCHECK_NE(runtime.get(), nullptr/g" xla/backends/cpu/runtime/xnnpack/xnn_fusion_thunk.cc
     """,
     # TODO remove
-    """
-    sed -i.bak0 "s/^bool IsSupportedType/static inline bool IsSupportedType/g" xla/backends/cpu/runtime/convolution_lib.cc
-    """,
+    #"""
+    #sed -i.bak0 "s/^bool IsSupportedType/static inline bool IsSupportedType/g" xla/backends/cpu/runtime/convolution_lib.cc
+    #""",
     """
     sed -i.bak0 "s/Node::Leaf(std::forward<decltype(value)>/Node::Leaf(std::forward<T>/g" xla/tuple_tree.h
     """,
