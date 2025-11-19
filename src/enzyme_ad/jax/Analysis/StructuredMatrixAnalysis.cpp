@@ -13,6 +13,8 @@
 #include "mlir/Support/LLVM.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include "stablehlo/dialect/StablehloOps.h"
+
 using namespace mlir;
 using namespace mlir::dataflow;
 
@@ -75,9 +77,6 @@ void StructuredSparsityPattern::initializeBandwidths() {
 }
 
 void StructuredSparsityPattern::refineKind() {
-  if (kind != StructuredSparsityKind::Band)
-    return;
-
   if (lowerBandwidth == 0) {
     if (upperBandwidth == 0) {
       kind = StructuredSparsityKind::Diagonal;
@@ -215,15 +214,26 @@ ValueProperties::ValueProperties(Value v) {
   if (matchPattern(v, m_Constant(&denseAttr))) {
     auto props = getPropertiesFromDenseAttr(denseAttr);
     setFlags(props.getFlags());
-    llvm::errs() << "v: " << v << " properties: ";
-    this->print(llvm::errs());
-    llvm::errs() << "\n";
     return;
   }
 
-  // TODO: symmetric checks Utils.cpp:688
+  auto defOp = v.getDefiningOp();
+  if (!defOp)
+    return;
 
-  // TODO: broadcasted scalar
+  // comm_op(A, A^T) will always be symmetric
+
+  // A x A^T will always be symmetric
+
+  if (auto bcastOp = dyn_cast<stablehlo::BroadcastInDimOp>(defOp)) {
+    auto operand = bcastOp.getOperand();
+    if (cast<RankedTensorType>(operand.getType()).getRank() == 0) { // bcast(scalar)
+      if (matchPattern(operand, m_One())) // bcast(1)
+        set(ValueProperty::UnitDiagonal);
+      set(ValueProperty::BroadcastedScalar);
+      set(ValueProperty::Symmetric);
+    }
+  }
 
   // TODO: unit diagonal
   //       - iota scatter with constant
@@ -443,10 +453,6 @@ LogicalResult StructuredMatrixAnalysis::visitOperation(
 
   return success();
 }
-
-//===----------------------------------------------------------------------===//
-// Structure Originators
-//===----------------------------------------------------------------------===//
 
 } // namespace structure_analysis
 } // namespace mlir
