@@ -2403,6 +2403,7 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
 template <typename OpTy>
 LogicalResult lowerSVDAlgorithmCUDA(OpTy op, PatternRewriter &rewriter,
                                     DictionaryAttr &options,
+                                    bool skipUVAllocation,
                                     std::string targetName) {
   auto input = op.getOperand();
   auto type_input = cast<RankedTensorType>(input.getType());
@@ -2429,15 +2430,25 @@ LogicalResult lowerSVDAlgorithmCUDA(OpTy op, PatternRewriter &rewriter,
   // emit `stablehlo.custom_call` to `@cusolver_geqrf_ffi` kernel from jaxlib
   SmallVector<Attribute> aliases = {};
   SmallVector<int64_t> ranks_operands = {rank_input};
-  SmallVector<int64_t> ranks_results = {rank_input, rank_s, rank_u, rank_vt,
-                                        rank_info};
   SmallVector<bool> isColMajorArrOperands = {true};
+
+  SmallVector<int64_t> ranks_results;
+  SmallVector<Type> outTypes;
+  if (skipUVAllocation) {
+    auto empty_type_u = RankedTensorType::get({}, type_u.getElementType());
+    auto empty_type_vt = RankedTensorType::get({}, type_vt.getElementType());
+
+    outTypes = {type_input, type_s, empty_type_u, empty_type_vt, type_info};
+    ranks_results = {rank_input, rank_s, 0, 0, rank_info};
+  } else {
+    outTypes = {type_input, type_s, type_u, type_vt, type_info};
+    ranks_results = {rank_input, rank_s, rank_u, rank_vt, rank_info};
+  }
   SmallVector<bool> isColMajorArrOutputs = {true, true, true, true, true};
 
   auto cusolverCallOp = stablehlo::CustomCallOp::create(
-      rewriter, op.getLoc(),
-      TypeRange{type_input, type_s, type_u, type_vt, type_info},
-      ValueRange{input}, rewriter.getStringAttr(targetName),
+      rewriter, op.getLoc(), outTypes, ValueRange{input},
+      rewriter.getStringAttr(targetName),
       /*has_side_effect*/ nullptr,
       /*backend_config*/ options,
       /*api_version*/
@@ -2457,9 +2468,23 @@ LogicalResult lowerSVDAlgorithmCUDA(OpTy op, PatternRewriter &rewriter,
                                            cusolverCallOp.getResult(4));
 
   // replace enzymexla.linalg.svd with stablehlo.custom_call
-  rewriter.replaceAllUsesWith(op.getResult(0), cusolverCallOp.getResult(2));
   rewriter.replaceAllUsesWith(op.getResult(1), cusolverCallOp.getResult(1));
-  rewriter.replaceAllUsesWith(op.getResult(2), cusolverCallOp.getResult(3));
+
+  Value Ures, Vtres;
+  if (skipUVAllocation) {
+    // return empty tensors for U and Vt
+    Ures = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), type_u, cast<ElementsAttr>(makeAttr(type_u, 0)));
+    Vtres =
+        stablehlo::ConstantOp::create(rewriter, op.getLoc(), type_vt,
+                                      cast<ElementsAttr>(makeAttr(type_vt, 0)));
+  } else {
+    Ures = cusolverCallOp.getResult(2);
+    Vtres = cusolverCallOp.getResult(3);
+  }
+  rewriter.replaceAllUsesWith(op.getResult(0), Ures);
+  rewriter.replaceAllUsesWith(op.getResult(2), Vtres);
+
   rewriter.replaceAllUsesWith(op.getResult(3), info.getResult());
   rewriter.eraseOp(op);
 
@@ -2494,13 +2519,12 @@ struct GesvdOpLowering : public OpRewritePattern<enzymexla::GesvdOp> {
   LogicalResult matchAndRewriteCUDA(enzymexla::GesvdOp op,
                                     PatternRewriter &rewriter) const {
     auto backend_config = rewriter.getDictionaryAttr({
-        rewriter.getNamedAttr("full_matrices",
-                              rewriter.getBoolAttr(op.getFull())),
-        rewriter.getNamedAttr("compute_uv", rewriter.getBoolAttr(true)),
+        rewriter.getNamedAttr("full_matrices", op.getFullAttr()),
+        rewriter.getNamedAttr("compute_uv", op.getComputeUvAttr()),
         rewriter.getNamedAttr("transposed", rewriter.getBoolAttr(false)),
     });
     return lowerSVDAlgorithmCUDA(op, rewriter, backend_config,
-                                 "cusolver_gesvd_ffi");
+                                 !op.getComputeUv(), "cusolver_gesvd_ffi");
   }
 };
 
@@ -2551,12 +2575,13 @@ struct GesvjOpLowering : public OpRewritePattern<enzymexla::GesvjOp> {
   LogicalResult matchAndRewriteCUDA(enzymexla::GesvjOp op,
                                     PatternRewriter &rewriter) const {
     auto backend_config = rewriter.getDictionaryAttr({
-        rewriter.getNamedAttr("full_matrices",
-                              rewriter.getBoolAttr(op.getFull())),
-        rewriter.getNamedAttr("compute_uv", rewriter.getBoolAttr(true)),
+        rewriter.getNamedAttr("full_matrices", op.getFullAttr()),
+        rewriter.getNamedAttr("compute_uv", op.getComputeUvAttr()),
     });
-    return lowerSVDAlgorithmCUDA(op, rewriter, backend_config,
-                                 "cusolver_gesvdj_ffi");
+    return lowerSVDAlgorithmCUDA(
+        op, rewriter, backend_config,
+        false, // https://github.com/jax-ml/jax/blob/43d14afad3e6bc321309054c512c5ffe1d1bca86/jaxlib/gpu/solver_kernels_ffi.cc#L1117
+        "cusolver_gesvdj_ffi");
   }
 
   LogicalResult matchAndRewriteTPU(enzymexla::GesvjOp op,
