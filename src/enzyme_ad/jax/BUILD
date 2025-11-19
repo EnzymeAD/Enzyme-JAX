@@ -845,7 +845,8 @@ cc_library(
             "Dialect/*.cpp",
             "Dialect/Distributed/*.cpp",
             "Dialect/Tessera/*.cpp",
-        ]) + [
+        ],
+    ) + [
         "Utils.cpp",
     ],
     hdrs = glob([
