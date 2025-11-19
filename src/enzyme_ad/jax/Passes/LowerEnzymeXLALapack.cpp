@@ -1979,8 +1979,11 @@ func::FuncOp createSVDAlgorithmWrapperFuncOpCPULapack(
       rewriter, op.getLoc(), RankedTensorType::get({}, blasIntType),
       stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), VT, 0));
 
+  // lapack mutates the input buffer, introduce an additionaly output to  fix
+  // this during bufferization
   auto jitCall = enzymexla::JITCallOp::create(
-      rewriter, op.getLoc(), TypeRange{UType, SType, VType, infoType},
+      rewriter, op.getLoc(),
+      TypeRange{UType, SType, VType, infoType, inputType},
       mlir::FlatSymbolRefAttr::get(ctx, lapackFn),
       ValueRange{mSize, nSize, input, mSize, S, U, ldu, VT, ldvt, info},
       rewriter.getStringAttr(""),
@@ -2314,6 +2317,8 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
       ctx, std::vector<int64_t>{2}, 7, std::vector<int64_t>{}));
   aliases.push_back(stablehlo::OutputOperandAliasAttr::get(
       ctx, std::vector<int64_t>{3}, 9, std::vector<int64_t>{}));
+  aliases.push_back(stablehlo::OutputOperandAliasAttr::get(
+      ctx, std::vector<int64_t>{4}, 2, std::vector<int64_t>{}));
 
   Value UResult, SResult, VTResult, infoResult;
   static int64_t fn_counter = 0;
@@ -2493,8 +2498,8 @@ LogicalResult lowerSVDAlgorithmCUDA(OpTy op, PatternRewriter &rewriter,
   } else {
     Ures = cusolverCallOp.getResult(2);
 
-    // cuda_customcall returns `U` and `V`. We need to transpose `V` to match the
-    // return convention of `enzymexla.linalg.svd`.
+    // cuda_customcall returns `U` and `V`. We need to transpose `V` to match
+    // the return convention of `enzymexla.linalg.svd`.
     SmallVector<int64_t> permutation(rank_input);
     std::iota(permutation.begin(), permutation.end() - 2, 0);
     permutation[rank_input - 1] = rank_input - 2;
