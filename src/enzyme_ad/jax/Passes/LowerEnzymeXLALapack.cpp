@@ -1962,12 +1962,25 @@ func::FuncOp createSVDAlgorithmWrapperFuncOpCPULapack(
       rewriter, op.getLoc(), RankedTensorType::get({}, blasIntType),
       stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), input, 1));
 
+  RankedTensorType UTypeJitCall, VTypeJitCall;
+  if (op.getComputeUv()) {
+    UTypeJitCall = UType;
+    VTypeJitCall = VType;
+  } else {
+    UTypeJitCall =
+        RankedTensorType::get({UType.getShape()[0], 0}, UType.getElementType());
+    VTypeJitCall =
+        RankedTensorType::get({VType.getShape()[0], 0}, VType.getElementType());
+  }
+
   auto U = stablehlo::ConstantOp::create(
-      rewriter, op.getLoc(), UType, cast<ElementsAttr>(makeAttr(UType, 0)));
+      rewriter, op.getLoc(), UTypeJitCall,
+      cast<ElementsAttr>(makeAttr(UTypeJitCall, 0)));
   auto S = stablehlo::ConstantOp::create(
       rewriter, op.getLoc(), SType, cast<ElementsAttr>(makeAttr(SType, 0)));
   auto VT = stablehlo::ConstantOp::create(
-      rewriter, op.getLoc(), VType, cast<ElementsAttr>(makeAttr(VType, 0)));
+      rewriter, op.getLoc(), VTypeJitCall,
+      cast<ElementsAttr>(makeAttr(VTypeJitCall, 0)));
   auto info =
       stablehlo::ConstantOp::create(rewriter, op.getLoc(), infoType,
                                     cast<ElementsAttr>(makeAttr(infoType, 0)));
@@ -1979,11 +1992,11 @@ func::FuncOp createSVDAlgorithmWrapperFuncOpCPULapack(
       rewriter, op.getLoc(), RankedTensorType::get({}, blasIntType),
       stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), VT, 0));
 
-  // lapack mutates the input buffer, introduce an additionaly output to  fix
+  // lapack mutates the input buffer, introduce an additionaly output to fix
   // this during bufferization
   auto jitCall = enzymexla::JITCallOp::create(
       rewriter, op.getLoc(),
-      TypeRange{UType, SType, VType, infoType, inputType},
+      TypeRange{UTypeJitCall, SType, VTypeJitCall, infoType, inputType},
       mlir::FlatSymbolRefAttr::get(ctx, lapackFn),
       ValueRange{mSize, nSize, input, mSize, S, U, ldu, VT, ldvt, info},
       rewriter.getStringAttr(""),
@@ -1994,10 +2007,20 @@ func::FuncOp createSVDAlgorithmWrapperFuncOpCPULapack(
       /*output_operand_aliases=*/outputOperandAliases,
       /*xla_side_effect_free=*/rewriter.getUnitAttr());
 
-  func::ReturnOp::create(rewriter, op.getLoc(),
-                         ValueRange{jitCall.getResult(0), jitCall.getResult(1),
-                                    jitCall.getResult(2),
-                                    jitCall.getResult(3)});
+  Value Ures, VTres;
+  if (op.getComputeUv()) {
+    Ures = jitCall.getResult(0);
+    VTres = jitCall.getResult(2);
+  } else {
+    Ures = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), UType, cast<ElementsAttr>(makeAttr(UType, 0)));
+    VTres = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), VType, cast<ElementsAttr>(makeAttr(VType, 0)));
+  }
+
+  func::ReturnOp::create(
+      rewriter, op.getLoc(),
+      ValueRange{Ures, jitCall.getResult(1), VTres, jitCall.getResult(3)});
 
   return func;
 }
@@ -2090,6 +2113,8 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
                              LLVM::Linkage::External);
   }
 
+  char lapackJob = op.getComputeUv() ? (isfull ? 'A' : 'S') : 'N';
+
   if (!moduleOp.template lookupSymbol<LLVM::LLVMFuncOp>(wrapper_fn)) {
     OpBuilder::InsertionGuard guard(rewriter);
     rewriter.setInsertionPointToStart(moduleOp.getBody());
@@ -2140,10 +2165,10 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
 
       auto jobu = LLVM::ConstantOp::create(
           rewriter, op.getLoc(), type_lapack_char,
-          rewriter.getIntegerAttr(type_lapack_char, isfull ? 'A' : 'S'));
+          rewriter.getIntegerAttr(type_lapack_char, lapackJob));
       auto jobvt = LLVM::ConstantOp::create(
           rewriter, op.getLoc(), type_lapack_char,
-          rewriter.getIntegerAttr(type_lapack_char, isfull ? 'A' : 'S'));
+          rewriter.getIntegerAttr(type_lapack_char, lapackJob));
 
       LLVM::StoreOp::create(rewriter, op.getLoc(), jobu, jobuptr);
       LLVM::StoreOp::create(rewriter, op.getLoc(), jobvt, jobvtptr);
@@ -2192,7 +2217,7 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
 
       auto job = LLVM::ConstantOp::create(
           rewriter, op.getLoc(), type_lapack_char,
-          rewriter.getIntegerAttr(type_lapack_char, isfull ? 'A' : 'S'));
+          rewriter.getIntegerAttr(type_lapack_char, lapackJob));
 
       auto MVal = LLVM::LoadOp::create(
           rewriter, op.getLoc(), type_llvm_lapack_int, funcOp.getArgument(0));
@@ -2231,46 +2256,56 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
       };
 
       if (isComplex) {
-        // minmn*max(5*minmn+7, 2*max(m,n)+2*minm
-        auto maxMN = arith::MaxSIOp::create(rewriter, op.getLoc(), MVal, NVal);
-
-        // 5 * minmn
-        auto c5 = LLVM::ConstantOp::create(
-            rewriter, op.getLoc(), type_llvm_lapack_int,
-            rewriter.getIntegerAttr(type_llvm_lapack_int, 5));
-        auto fiveMin = arith::MulIOp::create(rewriter, op.getLoc(), c5, minMN);
-
-        // 5*minmn + 7
         auto c7 = LLVM::ConstantOp::create(
             rewriter, op.getLoc(), type_llvm_lapack_int,
             rewriter.getIntegerAttr(type_llvm_lapack_int, 7));
-        auto termA = arith::AddIOp::create(rewriter, op.getLoc(), fiveMin, c7);
+        if (lapackJob == 'N') {
+          // 7*minmn
+          auto sevenMin =
+              arith::MulIOp::create(rewriter, op.getLoc(), c7, minMN);
+          args.insert(args.begin() + 13, sevenMin);
+        } else {
+          // minmn*max(5*minmn+7, 2*max(m,n)+2*minmn
+          auto maxMN =
+              arith::MaxSIOp::create(rewriter, op.getLoc(), MVal, NVal);
 
-        // 2 * max(m,n)
-        auto c2 = LLVM::ConstantOp::create(
-            rewriter, op.getLoc(), type_llvm_lapack_int,
-            rewriter.getIntegerAttr(type_llvm_lapack_int, 2));
-        auto twoMax = arith::MulIOp::create(rewriter, op.getLoc(), c2, maxMN);
+          // 5 * minmn
+          auto c5 = LLVM::ConstantOp::create(
+              rewriter, op.getLoc(), type_llvm_lapack_int,
+              rewriter.getIntegerAttr(type_llvm_lapack_int, 5));
+          auto fiveMin =
+              arith::MulIOp::create(rewriter, op.getLoc(), c5, minMN);
 
-        // 2*minmn
-        auto twoMin = arith::MulIOp::create(rewriter, op.getLoc(), c2, minMN);
+          // 5*minmn + 7
+          auto termA =
+              arith::AddIOp::create(rewriter, op.getLoc(), fiveMin, c7);
 
-        // 2*max(m,n) + 2*minmn
-        auto termB =
-            arith::AddIOp::create(rewriter, op.getLoc(), twoMax, twoMin);
+          // 2 * max(m,n)
+          auto c2 = LLVM::ConstantOp::create(
+              rewriter, op.getLoc(), type_llvm_lapack_int,
+              rewriter.getIntegerAttr(type_llvm_lapack_int, 2));
+          auto twoMax = arith::MulIOp::create(rewriter, op.getLoc(), c2, maxMN);
 
-        // max(termA, termB)
-        auto maxTerm =
-            arith::MaxSIOp::create(rewriter, op.getLoc(), termA, termB);
+          // 2*minmn
+          auto twoMin = arith::MulIOp::create(rewriter, op.getLoc(), c2, minMN);
 
-        auto rworkSize =
-            arith::MulIOp::create(rewriter, op.getLoc(), minMN, maxTerm);
+          // 2*max(m,n) + 2*minmn
+          auto termB =
+              arith::AddIOp::create(rewriter, op.getLoc(), twoMax, twoMin);
 
-        auto rworkptr =
-            LLVM::AllocaOp::create(rewriter, op.getLoc(), type_llvm_ptr,
-                                   type_input_element_real, rworkSize);
+          // max(termA, termB)
+          auto maxTerm =
+              arith::MaxSIOp::create(rewriter, op.getLoc(), termA, termB);
 
-        args.insert(args.begin() + 13, rworkptr);
+          auto rworkSize =
+              arith::MulIOp::create(rewriter, op.getLoc(), minMN, maxTerm);
+
+          auto rworkptr =
+              LLVM::AllocaOp::create(rewriter, op.getLoc(), type_llvm_ptr,
+                                     type_input_element_real, rworkSize);
+
+          args.insert(args.begin() + 13, rworkptr);
+        }
       }
     }
 
@@ -2304,7 +2339,7 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
 
   SmallVector<bool> isColMajorArr(10, true);
   SmallVector<int64_t> operandRanks = {0, 0, 2, 0, 1, 2, 0, 2, 0, 0};
-  SmallVector<int64_t> outputRanks = {2, 1, 2, 0};
+  SmallVector<int64_t> outputRanks = {2, 1, 2, 0, 2};
   auto operandLayouts = getSHLOLayout(rewriter, operandRanks, isColMajorArr, 2);
   auto resultLayouts = getSHLOLayout(rewriter, outputRanks, isColMajorArr, 2);
 
