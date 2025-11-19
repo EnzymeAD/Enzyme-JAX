@@ -254,9 +254,5 @@ public:
                  ArrayRef<StructuredMatrixLattice *> results) override;
 };
 
-//===----------------------------------------------------------------------===//
-// Structure Originators
-//===----------------------------------------------------------------------===//
-
 } // namespace structure_analysis
 } // namespace mlir
