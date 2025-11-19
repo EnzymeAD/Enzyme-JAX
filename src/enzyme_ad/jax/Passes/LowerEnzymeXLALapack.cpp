@@ -1999,6 +1999,17 @@ func::FuncOp createSVDAlgorithmWrapperFuncOpCPULapack(
   return func;
 }
 
+RankedTensorType getVType(RankedTensorType VtType) {
+  auto inputShape = VtType.getShape();
+  auto inputRank = VtType.getRank();
+
+  SmallVector<int64_t> VShape(inputShape.begin(), inputShape.end() - 2);
+  VShape.push_back(inputShape[inputRank - 1]);
+  VShape.push_back(inputShape[inputRank - 2]);
+
+  return RankedTensorType::get(VShape, VtType.getElementType());
+}
+
 template <typename OpTy>
 LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
                                    int64_t blasIntWidth) {
@@ -2421,6 +2432,7 @@ LogicalResult lowerSVDAlgorithmCUDA(OpTy op, PatternRewriter &rewriter,
 
   auto type_vt = cast<RankedTensorType>(op.getResult(2).getType());
   auto rank_vt = type_vt.getRank();
+  auto type_v = getVType(type_vt);
 
   auto type_info_out = cast<RankedTensorType>(op.getResult(3).getType());
   auto type_info = RankedTensorType::get(type_info_out.getShape(),
@@ -2441,7 +2453,7 @@ LogicalResult lowerSVDAlgorithmCUDA(OpTy op, PatternRewriter &rewriter,
     outTypes = {type_input, type_s, empty_type_u, empty_type_vt, type_info};
     ranks_results = {rank_input, rank_s, 0, 0, rank_info};
   } else {
-    outTypes = {type_input, type_s, type_u, type_vt, type_info};
+    outTypes = {type_input, type_s, type_u, type_v, type_info};
     ranks_results = {rank_input, rank_s, rank_u, rank_vt, rank_info};
   }
   SmallVector<bool> isColMajorArrOutputs = {true, true, true, true, true};
@@ -2480,7 +2492,15 @@ LogicalResult lowerSVDAlgorithmCUDA(OpTy op, PatternRewriter &rewriter,
                                       cast<ElementsAttr>(makeAttr(type_vt, 0)));
   } else {
     Ures = cusolverCallOp.getResult(2);
-    Vtres = cusolverCallOp.getResult(3);
+
+    // cuda_customcall returns `U` and `V`. We need to transpose `V` to match the
+    // return convention of `enzymexla.linalg.svd`.
+    SmallVector<int64_t> permutation(rank_input);
+    std::iota(permutation.begin(), permutation.end() - 2, 0);
+    permutation[rank_input - 1] = rank_input - 2;
+    permutation[rank_input - 2] = rank_input - 1;
+    Vtres = stablehlo::TransposeOp::create(
+        rewriter, op.getLoc(), cusolverCallOp.getResult(3), permutation);
   }
   rewriter.replaceAllUsesWith(op.getResult(0), Ures);
   rewriter.replaceAllUsesWith(op.getResult(2), Vtres);
@@ -2594,7 +2614,7 @@ struct GesvjOpLowering : public OpRewritePattern<enzymexla::GesvjOp> {
     auto customCall = stablehlo::CustomCallOp::create(
         rewriter, op.getLoc(),
         TypeRange{op.getResult(0).getType(), op.getResult(1).getType(),
-                  op.getResult(2).getType()},
+                  getVType(cast<RankedTensorType>(op.getResult(2).getType()))},
         ValueRange{input}, rewriter.getStringAttr("SVD"),
         /*has_side_effect*/ nullptr,
         /*backend_config*/ nullptr,
@@ -2606,7 +2626,16 @@ struct GesvjOpLowering : public OpRewritePattern<enzymexla::GesvjOp> {
 
     rewriter.replaceAllUsesWith(op.getResult(0), customCall.getResult(0));
     rewriter.replaceAllUsesWith(op.getResult(1), customCall.getResult(1));
-    rewriter.replaceAllUsesWith(op.getResult(2), customCall.getResult(2));
+
+    // @SVD returns `U` and `V`. We need to transpose `V` to match the
+    // return convention of `enzymexla.linalg.svd`.
+    SmallVector<int64_t> permutation(rank_input);
+    std::iota(permutation.begin(), permutation.end() - 2, 0);
+    permutation[rank_input - 1] = rank_input - 2;
+    permutation[rank_input - 2] = rank_input - 1;
+    auto Vt = stablehlo::TransposeOp::create(
+        rewriter, op.getLoc(), customCall.getResult(2), permutation);
+    rewriter.replaceAllUsesWith(op.getResult(2), Vt);
 
     // Netlib's LAPACK returns `info`, but TPU kernel doesn't
     auto info =
