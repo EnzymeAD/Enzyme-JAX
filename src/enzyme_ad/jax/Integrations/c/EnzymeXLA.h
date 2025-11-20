@@ -47,8 +47,8 @@ enzymexlaGeluApproximationAttrGet(MlirContext ctx, int32_t mode);
 // Other Ops / Attributes
 //===----------------------------------------------------------------------===//
 
-MLIR_CAPI_EXPORTED MlirAttribute enzymexlaGuaranteedAnalysisAttrGet(
-    MlirContext ctx, int32_t mode);
+MLIR_CAPI_EXPORTED MlirAttribute
+enzymexlaGuaranteedAnalysisAttrGet(MlirContext ctx, int32_t mode);
 
 #ifdef __cplusplus
 } // extern "C"

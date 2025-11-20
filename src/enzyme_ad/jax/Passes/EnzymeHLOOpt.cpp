@@ -6917,10 +6917,6 @@ struct TransposeSymmetricSimplify
   LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
                                     PatternRewriter &rewriter) const {
     auto operand = op.getOperand();
-    auto defOp = operand.getDefiningOp();
-    if (!defOp)
-      return rewriter.notifyMatchFailure(op, "no defining op");
-
     auto perm = op.getPermutation();
     if (perm.size() != 2 || perm[0] != 1 || perm[1] != 0)
       return failure();

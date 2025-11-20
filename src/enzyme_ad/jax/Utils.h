@@ -528,12 +528,49 @@ public:
   }
 
 private:
+  State
+  GuaranteedAnalysisResultToState(enzymexla::GuaranteedAnalysisResult val) {
+    switch (val) {
+    case enzymexla::GuaranteedAnalysisResult::GUARANTEED:
+      return State::GUARANTEED;
+    case enzymexla::GuaranteedAnalysisResult::NOTGUARANTEED:
+      return State::NOTGUARANTEED;
+    case enzymexla::GuaranteedAnalysisResult::UNKNOWN:
+      return State::UNKNOWN;
+    }
+  }
+
   State lookupGuaranteedFromIR(Value val, PatternRewriter &rewriter) {
+    auto attrName = ((Child *)this)->getAttrName();
+
+    auto blockArg = dyn_cast<BlockArgument>(val);
+    if (blockArg) {
+      auto op = blockArg.getOwner()->getParentOp();
+      if (!op)
+        return State::UNKNOWN;
+
+      auto funcOpInterface = dyn_cast<FunctionOpInterface>(op);
+      if (!funcOpInterface)
+        return State::UNKNOWN;
+
+      auto argAttrs = funcOpInterface.getArgAttrs(blockArg.getArgNumber());
+      for (auto attr : argAttrs) {
+        if (attr.getName() == attrName) {
+          auto enumAttr = dyn_cast<enzymexla::GuaranteedAnalysisResultAttr>(
+              attr.getValue());
+          assert(enumAttr && "Expected guaranteed analysis result");
+
+          return GuaranteedAnalysisResultToState(enumAttr.getValue());
+        }
+      }
+
+      return State::UNKNOWN;
+    }
+
     auto op = val.getDefiningOp();
     if (!op)
       return State::UNKNOWN;
 
-    auto attrName = ((Child *)this)->getAttrName();
     auto arrayAttr = op->getAttrOfType<ArrayAttr>(attrName);
     if (!arrayAttr)
       return State::UNKNOWN;
@@ -554,16 +591,7 @@ private:
     auto enumAttr = dyn_cast<enzymexla::GuaranteedAnalysisResultAttr>(attr);
     assert(enumAttr && "Expected guaranteed analysis result");
 
-    switch (enumAttr.getValue()) {
-    case enzymexla::GuaranteedAnalysisResult::GUARANTEED:
-      return State::GUARANTEED;
-    case enzymexla::GuaranteedAnalysisResult::NOTGUARANTEED:
-      return State::NOTGUARANTEED;
-    case enzymexla::GuaranteedAnalysisResult::UNKNOWN:
-      return State::UNKNOWN;
-    default:
-      llvm_unreachable("Unexpected guaranteed analysis result");
-    }
+    return GuaranteedAnalysisResultToState(enumAttr.getValue());
   }
 
   void setGuaranteedInIR(Value val, bool guaranteed,
