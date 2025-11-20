@@ -649,6 +649,7 @@ SymmetricResultAnalysis::State SymmetricResultAnalysis::localGuaranteed(
   assert(op);
 
   auto outTy = cast<RankedTensorType>(op->getResult(0).getType());
+
   if (outTy.getRank() != 2)
     return State::NOTGUARANTEED; // this pass only checks for symmetric matrices
   if (outTy.getDimSize(0) != outTy.getDimSize(1))
@@ -717,6 +718,27 @@ SymmetricResultAnalysis::State SymmetricResultAnalysis::localGuaranteed(
   // elementwise ops
   if (stablehlo::hasTraitElementwise(op)) {
     recursiveCheck = true;
+  }
+
+  // propagate symmetry for transpose
+  if (isa<stablehlo::TransposeOp>(op)) {
+    recursiveCheck = true;
+  }
+
+  // propagate symmetry for A * A
+  if (auto dotGeneralOp = dyn_cast<stablehlo::DotGeneralOp>(op)) {
+    auto lhs = dotGeneralOp.getOperand(0);
+    auto rhs = dotGeneralOp.getOperand(1);
+    auto dimensionNumbers = dotGeneralOp.getDotDimensionNumbers();
+
+    if (lhs == rhs) {
+      auto lhs_contracting = dimensionNumbers.getLhsContractingDimensions();
+      auto rhs_contracting = dimensionNumbers.getRhsContractingDimensions();
+
+      if (lhs_contracting.size() == 1 && rhs_contracting.size() == 1) {
+        recursiveCheck = true;
+      }
+    }
   }
 
   /**
@@ -790,13 +812,6 @@ NoNanResultAnalysis::localGuaranteed(Operation *op,
                                      SmallVectorImpl<Operation *> &localtodo,
                                      PatternRewriter &rewriter) {
   assert(op);
-
-  if (auto boolAttr = op->getAttrOfType<BoolAttr>(getAttrName())) {
-    if (boolAttr.getValue())
-      return State::GUARANTEED;
-    else
-      return State::NOTGUARANTEED;
-  }
 
   DenseElementsAttr denseAttr;
   if (matchPattern(op, m_Constant(&denseAttr))) {
@@ -934,13 +949,6 @@ FiniteResultAnalysis::localGuaranteed(Operation *op,
                                       PatternRewriter &rewriter) {
   assert(op);
 
-  if (auto boolAttr = op->getAttrOfType<BoolAttr>(getAttrName())) {
-    if (boolAttr.getValue())
-      return State::GUARANTEED;
-    else
-      return State::NOTGUARANTEED;
-  }
-
   DenseElementsAttr denseAttr;
   if (matchPattern(op, m_Constant(&denseAttr))) {
     if (guaranteedConstantOp(op, denseAttr, rewriter)) {
@@ -1046,13 +1054,6 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
     Operation *op, SmallVectorImpl<Operation *> &localtodo,
     PatternRewriter &rewriter) {
   assert(op);
-
-  if (auto boolAttr = op->getAttrOfType<BoolAttr>(getAttrName())) {
-    if (boolAttr.getValue())
-      return State::GUARANTEED;
-    else
-      return State::NOTGUARANTEED;
-  }
 
   DenseElementsAttr denseAttr;
   if (matchPattern(op, m_Constant(&denseAttr))) {
