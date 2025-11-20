@@ -656,15 +656,6 @@ SymmetricResultAnalysis::State SymmetricResultAnalysis::localGuaranteed(
     return State::GUARANTEED;
   }
 
-  DenseElementsAttr denseAttr;
-  if (matchPattern(val, m_Constant(&denseAttr))) {
-    if (guaranteedConstant(val, denseAttr, rewriter)) {
-      return State::GUARANTEED;
-    } else {
-      return State::NOTGUARANTEED;
-    }
-  }
-
   auto op = val.getDefiningOp();
   if (!op)
     return State::NOTGUARANTEED;
@@ -774,15 +765,6 @@ bool NoNanResultAnalysis::constantFloatCheck(DenseElementsAttr attr) {
 
 NoNanResultAnalysis::State NoNanResultAnalysis::localGuaranteed(
     Value val, SmallVectorImpl<Value> &localtodo, PatternRewriter &rewriter) {
-  DenseElementsAttr denseAttr;
-  if (matchPattern(val, m_Constant(&denseAttr))) {
-    if (guaranteedConstant(val, denseAttr, rewriter)) {
-      return State::GUARANTEED;
-    } else {
-      return State::NOTGUARANTEED;
-    }
-  }
-
   auto op = val.getDefiningOp();
   if (!op)
     return State::NOTGUARANTEED;
@@ -896,15 +878,6 @@ bool FiniteResultAnalysis::constantIntCheck(DenseElementsAttr attr) {
 
 FiniteResultAnalysis::State FiniteResultAnalysis::localGuaranteed(
     Value val, SmallVectorImpl<Value> &localtodo, PatternRewriter &rewriter) {
-  DenseElementsAttr denseAttr;
-  if (matchPattern(val, m_Constant(&denseAttr))) {
-    if (guaranteedConstant(val, denseAttr, rewriter)) {
-      return State::GUARANTEED;
-    } else {
-      return State::NOTGUARANTEED;
-    }
-  }
-
   auto op = val.getDefiningOp();
   if (!op)
     return State::NOTGUARANTEED;
@@ -987,15 +960,6 @@ bool NonNegativeResultAnalysis::constantFloatCheck(DenseElementsAttr attr) {
 
 NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
     Value val, SmallVectorImpl<Value> &localtodo, PatternRewriter &rewriter) {
-  DenseElementsAttr denseAttr;
-  if (matchPattern(val, m_Constant(&denseAttr))) {
-    if (guaranteedConstant(val, denseAttr, rewriter)) {
-      return State::GUARANTEED;
-    } else {
-      return State::NOTGUARANTEED;
-    }
-  }
-
   auto op = val.getDefiningOp();
   if (!op)
     return State::NOTGUARANTEED;

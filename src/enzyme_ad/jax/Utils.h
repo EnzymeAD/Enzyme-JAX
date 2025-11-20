@@ -476,18 +476,16 @@ public:
     return false;
   }
 
-  bool guaranteedConstant(Value val, DenseElementsAttr denseAttr,
-                          PatternRewriter &rewriter) {
-    State stateFromIR = lookupGuaranteedFromIR(val, rewriter);
-    if (stateFromIR != State::UNKNOWN) {
-      return stateFromIR == State::GUARANTEED;
-    }
-
+  State guaranteedConstant(Value val, PatternRewriter &rewriter) {
     auto it = valueCache.find(val);
     if (it != valueCache.end())
-      return it->second;
+      return it->second ? State::GUARANTEED : State::NOTGUARANTEED;
 
-    bool guaranteedResult = false;
+    DenseElementsAttr denseAttr;
+    if (!matchPattern(val, m_Constant(&denseAttr)))
+      return State::UNKNOWN;
+
+    State state = State::NOTGUARANTEED;
     if (denseAttr.getType().getShape().size() && denseAttr.isSplat()) {
       denseAttr = denseAttr.resizeSplat(
           RankedTensorType::get({}, denseAttr.getType().getElementType()));
@@ -496,19 +494,19 @@ public:
     // For floating point values
     if (isa<FloatType>(denseAttr.getElementType())) {
       if (((Child *)this)->constantFloatCheck(denseAttr)) {
-        guaranteedResult = true;
+        state = State::GUARANTEED;
       }
     }
 
     // For integer values
     if (isa<IntegerType>(denseAttr.getElementType())) {
       if (((Child *)this)->constantIntCheck(denseAttr)) {
-        guaranteedResult = true;
+        state = State::GUARANTEED;
       }
     }
 
-    setGuaranteedInIR(val, guaranteedResult, rewriter);
-    return guaranteedResult;
+    setGuaranteedInIR(val, state, rewriter);
+    return state;
   }
 
   State localGuaranteedWithSetAttr(Value val, SmallVectorImpl<Value> &localtodo,
@@ -516,6 +514,10 @@ public:
     auto stateFromIR = lookupGuaranteedFromIR(val, rewriter);
     if (stateFromIR != State::UNKNOWN)
       return stateFromIR;
+
+    auto stateFromConstant = guaranteedConstant(val, rewriter);
+    if (stateFromConstant != State::UNKNOWN)
+      return stateFromConstant;
 
     auto state = ((Child *)this)->localGuaranteed(val, localtodo, rewriter);
 
