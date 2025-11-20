@@ -123,8 +123,7 @@ def EnzymeXLA_GuaranteedAnalysisResult : I32EnumAttr<"GuaranteedAnalysisResult",
     [
       I32EnumAttrCase<"GUARANTEED", 0>,
       I32EnumAttrCase<"NOTGUARANTEED", 1>,
-      I32EnumAttrCase<"PENDING", 2>,
-      I32EnumAttrCase<"UNKNOWN", 3>
+      I32EnumAttrCase<"UNKNOWN", 2>
     ]> {
   let genSpecializedAttr = 0;
   let cppNamespace = "::mlir::enzymexla";
