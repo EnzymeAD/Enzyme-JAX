@@ -6916,10 +6916,7 @@ struct TransposeSymmetricSimplify
 
   LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
                                     PatternRewriter &rewriter) const {
-    auto defOp = op.getOperand().getDefiningOp();
-    if (!defOp)
-      return rewriter.notifyMatchFailure(op, "no defining op");
-
+    auto operand = op.getOperand();
     auto perm = op.getPermutation();
     if (perm.size() != 2 || perm[0] != 1 || perm[1] != 0)
       return failure();
@@ -6929,8 +6926,8 @@ struct TransposeSymmetricSimplify
       return failure(); // quick check and exit
 
     if (canApplySymmetricPattern(
-            defOp, rewriter)) { // tranpose(symmetric) -> symmetric
-      rewriter.replaceOp(op, op.getOperand());
+            operand, rewriter)) { // tranpose(symmetric) -> symmetric
+      rewriter.replaceOp(op, operand);
       return success();
     }
     return failure();

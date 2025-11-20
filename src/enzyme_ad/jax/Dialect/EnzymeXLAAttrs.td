@@ -116,4 +116,20 @@ def EnzymeXLA_GeluApproximation : I32EnumAttr<"GeluApproximation",
 def EnzymeXLA_GeluApproximationAttr : EnumAttr<EnzymeXLA_Dialect,
     EnzymeXLA_GeluApproximation, "gelu_approximation">;
 
+// Analysis Passes
+
+def EnzymeXLA_GuaranteedAnalysisResult : I32EnumAttr<"GuaranteedAnalysisResult",
+    "Result of an analysis pass",
+    [
+      I32EnumAttrCase<"GUARANTEED", 0>,
+      I32EnumAttrCase<"NOTGUARANTEED", 1>,
+      I32EnumAttrCase<"UNKNOWN", 2>
+    ]> {
+  let genSpecializedAttr = 0;
+  let cppNamespace = "::mlir::enzymexla";
+}
+
+def EnzymeXLA_GuaranteedAnalysisResultAttr : EnumAttr<EnzymeXLA_Dialect,
+    EnzymeXLA_GuaranteedAnalysisResult, "guaranteed">;
+
 #endif // ENZYMEXLA_ATTRS
