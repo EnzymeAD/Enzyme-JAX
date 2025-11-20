@@ -16,8 +16,8 @@ module {
 // CHECK:  func.func private @main_raised(%arg0: tensor<180x180xf32>, %arg1: tensor<180x180xf32>) -> (tensor<180x180xf32>, tensor<180x180xf32>) {
 // CHECK-NEXT:    %0 = stablehlo.slice %arg0 [0:180, 0:1] : (tensor<180x180xf32>) -> tensor<180x1xf32>
 // CHECK-NEXT:    %1 = stablehlo.reshape %0 : (tensor<180x1xf32>) -> tensor<180xf32>
-// CHECK-NEXT:    %2 = stablehlo.broadcast_in_dim %1, dims = [0] {enzymexla.guaranteed_symmetric = false} : (tensor<180xf32>) -> tensor<180x180xf32>
-// CHECK-NEXT:    %3 = stablehlo.add %2, %arg1 {enzymexla.guaranteed_symmetric = false} : tensor<180x180xf32>
+// CHECK-NEXT:    %2 = stablehlo.broadcast_in_dim %1, dims = [0] {enzymexla.guaranteed_symmetric = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<180xf32>) -> tensor<180x180xf32>
+// CHECK-NEXT:    %3 = stablehlo.add %2, %arg1 {enzymexla.guaranteed_symmetric = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<180x180xf32>
 // CHECK-NEXT:    %4 = stablehlo.transpose %3, dims = [1, 0] : (tensor<180x180xf32>) -> tensor<180x180xf32>
 // CHECK-NEXT:    return %arg0, %4 : tensor<180x180xf32>, tensor<180x180xf32>
 // CHECK-NEXT:  }

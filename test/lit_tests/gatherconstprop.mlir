@@ -16,8 +16,8 @@ func.func @gather_constprop1(%arg0: tensor<4xi64>, %arg1: tensor<6xi64>, %arg2: 
 }
 
 // CHECK: func.func @gather_constprop1(%arg0: tensor<4xi64>, %arg1: tensor<6xi64>, %arg2: tensor<6x4xf64>) -> tensor<6x4xf64> {
-// CHECK-NEXT:     %cst = stablehlo.constant {enzymexla.guaranteed_finite = true} dense<0.000000e+00> : tensor<6x4xf64>
-// CHECK-NEXT:     %0 = stablehlo.multiply %cst, %arg2 {enzymexla.guaranteed_no_nan = false} : tensor<6x4xf64>
+// CHECK-NEXT:     %cst = stablehlo.constant {enzymexla.guaranteed_finite = [#enzymexla<guaranteed GUARANTEED>]} dense<0.000000e+00> : tensor<6x4xf64>
+// CHECK-NEXT:     %0 = stablehlo.multiply %cst, %arg2 {enzymexla.guaranteed_no_nan = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<6x4xf64>
 // CHECK-NEXT:     return %0 : tensor<6x4xf64>
 // CHECK-NEXT: }
 
