@@ -1013,6 +1013,12 @@ def DropUnsupportedAttributesPass : Pass<"drop-unsupported-attributes", "ModuleO
         /*type=*/"bool",
         /*default=*/"true",
         /*description=*/"Drop enzymexla.memory_effects attribute">,
+    Option<
+        /*C++ variable name=*/"enzymexla_analysis_result",
+        /*CLI argument=*/"enzymexla-analysis-result",
+        /*type=*/"bool",
+        /*default=*/"true",
+        /*description=*/"Drop attribute from various analysis results">,
   ];
 }
 

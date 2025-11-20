@@ -545,9 +545,7 @@ private:
     // invalidate if arrayAttr size doesn't match. can happen for ops like while
     // where the inputs/results were modified
     if (arrayAttr.size() != op->getNumResults()) {
-      rewriter.modifyOpInPlace(op, [&]() {
-        op->removeAttr(attrName);
-      });
+      rewriter.modifyOpInPlace(op, [&]() { op->removeAttr(attrName); });
       return State::UNKNOWN;
     }
 
