@@ -315,6 +315,7 @@ bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy, Type inTy,
                           mlir::Operation *op, PatternRewriter &rewriter);
 
 bool canApplySymmetricPattern(mlir::Operation *op, PatternRewriter &rewriter);
+bool canApplySymmetricPattern(mlir::Value val, PatternRewriter &rewriter);
 
 template <typename Child> class GuaranteedResultAnalysisBase {
 protected:
@@ -541,6 +542,15 @@ private:
     if (!opResult)
       return State::UNKNOWN;
 
+    // invalidate if arrayAttr size doesn't match. can happen for ops like while
+    // where the inputs/results were modified
+    if (arrayAttr.size() != op->getNumResults()) {
+      rewriter.modifyOpInPlace(op, [&]() {
+        op->removeAttr(attrName);
+      });
+      return State::UNKNOWN;
+    }
+
     auto resultNumber = opResult.getResultNumber();
     auto attr = arrayAttr[resultNumber];
     auto enumAttr = dyn_cast<enzymexla::GuaranteedAnalysisResultAttr>(attr);
@@ -583,7 +593,9 @@ private:
 
     SmallVector<Attribute> newAttrs;
 
-    if (!arrayAttr) {
+    // if arrayAttr size doesn't match invalidate the results. can happen
+    // for ops like while where the inputs/results were modified
+    if (!arrayAttr || arrayAttr.size() != op->getNumResults()) {
       auto unknownAttr = enzymexla::GuaranteedAnalysisResultAttr::get(
           val.getContext(), enzymexla::GuaranteedAnalysisResult::UNKNOWN);
 
@@ -635,7 +647,7 @@ public:
   bool constantFloatCheck(DenseElementsAttr attr);
   bool constantIntCheck(DenseElementsAttr attr);
 
-  StringRef getAttrName() const { return "enzymexla.guaranteed_symmetric"; }
+  StringRef getAttrName() const { return "enzymexla.symmetric_matrix"; }
 };
 
 class NoNanResultAnalysis
@@ -650,7 +662,7 @@ public:
   bool constantFloatCheck(DenseElementsAttr attr);
   bool constantIntCheck(DenseElementsAttr attr);
 
-  StringRef getAttrName() const { return "enzymexla.guaranteed_no_nan"; }
+  StringRef getAttrName() const { return "enzymexla.no_nan"; }
 
   void setFiniteResultAnalysis(std::shared_ptr<FiniteResultAnalysis> analysis) {
     finiteResultAnalysis = analysis;
@@ -666,7 +678,7 @@ public:
   bool constantFloatCheck(DenseElementsAttr attr);
   bool constantIntCheck(DenseElementsAttr attr);
 
-  StringRef getAttrName() const { return "enzymexla.guaranteed_finite"; }
+  StringRef getAttrName() const { return "enzymexla.finite"; }
 
   State localGuaranteed(Value val, SmallVectorImpl<Value> &localtodo,
                         PatternRewriter &rewriter);
@@ -729,7 +741,7 @@ public:
   bool constantFloatCheck(DenseElementsAttr attr);
   bool constantIntCheck(DenseElementsAttr attr);
 
-  StringRef getAttrName() const { return "enzymexla.guaranteed_non_negative"; }
+  StringRef getAttrName() const { return "enzymexla.non_negative"; }
 
   State localGuaranteed(Value val, SmallVectorImpl<Value> &localtodo,
                         PatternRewriter &rewriter);

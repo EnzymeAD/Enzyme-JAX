@@ -32,7 +32,7 @@ func.func @unaryscatter(%arg0: tensor<4xi64>, %arg1: tensor<6xi64>, %arg2: tenso
 // CHECK-NEXT:     %6 = "stablehlo.scatter"(%cst_0, %5, %cst) <{scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>}> ({
 // CHECK-NEXT:     ^bb0(%arg3: tensor<f32>, %arg4: tensor<f32>):
 // CHECK-NEXT:       stablehlo.return %arg4 : tensor<f32>
-// CHECK-NEXT:     }) {enzymexla.guaranteed_symmetric = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<1024x1024xf32>, tensor<24x2xi64>, tensor<24xf32>) -> tensor<1024x1024xf32>
+// CHECK-NEXT:     }) {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<1024x1024xf32>, tensor<24x2xi64>, tensor<24xf32>) -> tensor<1024x1024xf32>
 // CHECK-NEXT:     %7 = stablehlo.transpose %6, dims = [1, 0] : (tensor<1024x1024xf32>) -> tensor<1024x1024xf32>
 // CHECK-NEXT:     return %7 : tensor<1024x1024xf32>
 // CHECK-NEXT: }
@@ -69,7 +69,7 @@ func.func @expscatter(%arg0: tensor<4xi64>, %arg1: tensor<6xi64>, %arg2: tensor<
 // CHECK-NEXT:     %6 = "stablehlo.scatter"(%cst_0, %5, %cst) <{scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>}> ({
 // CHECK-NEXT:     ^bb0(%arg3: tensor<f32>, %arg4: tensor<f32>):
 // CHECK-NEXT:       stablehlo.return %arg4 : tensor<f32>
-// CHECK-NEXT:     }) {enzymexla.guaranteed_symmetric = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<1024x1024xf32>, tensor<24x2xi64>, tensor<24xf32>) -> tensor<1024x1024xf32>
+// CHECK-NEXT:     }) {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<1024x1024xf32>, tensor<24x2xi64>, tensor<24xf32>) -> tensor<1024x1024xf32>
 // CHECK-NEXT:     %7 = stablehlo.transpose %6, dims = [1, 0] : (tensor<1024x1024xf32>) -> tensor<1024x1024xf32>
 // CHECK-NEXT:     return %7 : tensor<1024x1024xf32>
 // CHECK-NEXT: }

@@ -18,8 +18,8 @@ func.func @t1(%arg0: tensor<3xf64>, %arg1: tensor<3xf64>) -> tensor<3xf64> {
 
 // NAN-LABEL:  @t1(
 // NAN-SAME:  %[[ARG0:.+]]: tensor<3xf64>, %[[ARG1:.+]]: tensor<3xf64>) -> tensor<3xf64> {
-// NAN-NEXT:    %[[ADD:.+]] = stablehlo.add %[[ARG0]], %[[ARG1]] {enzymexla.guaranteed_finite = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<3xf64>
-// NAN-NEXT:    %[[SUB:.+]] = stablehlo.subtract %[[ARG1]], %[[ADD]] {enzymexla.guaranteed_no_nan = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<3xf64>
+// NAN-NEXT:    %[[ADD:.+]] = stablehlo.add %[[ARG0]], %[[ARG1]] {enzymexla.finite = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<3xf64>
+// NAN-NEXT:    %[[SUB:.+]] = stablehlo.subtract %[[ARG1]], %[[ADD]] {enzymexla.no_nan = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<3xf64>
 // NAN-NEXT:    return %[[SUB]] : tensor<3xf64>
 
 
@@ -35,8 +35,8 @@ func.func @t2(%arg0: tensor<3xf64>, %arg1: tensor<3xf64>) -> tensor<3xf64> {
 
 // NAN-LABEL:  @t2(
 // NAN-SAME:  %[[ARG0:.+]]: tensor<3xf64>, %[[ARG1:.+]]: tensor<3xf64>) -> tensor<3xf64> {
-// NAN-NEXT:    %[[ADD:.+]] = stablehlo.add %[[ARG0]], %[[ARG1]] {enzymexla.guaranteed_finite = [#enzymexla<guaranteed NOTGUARANTEED>], enzymexla.guaranteed_no_nan = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<3xf64>
-// NAN-NEXT:    %[[SUB:.+]] = stablehlo.subtract %[[ADD]], %[[ARG1]] {enzymexla.guaranteed_no_nan = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<3xf64>
+// NAN-NEXT:    %[[ADD:.+]] = stablehlo.add %[[ARG0]], %[[ARG1]] {enzymexla.finite = [#enzymexla<guaranteed NOTGUARANTEED>], enzymexla.no_nan = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<3xf64>
+// NAN-NEXT:    %[[SUB:.+]] = stablehlo.subtract %[[ADD]], %[[ARG1]] {enzymexla.no_nan = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<3xf64>
 // NAN-NEXT:    return %[[SUB]] : tensor<3xf64>
 
 
@@ -53,8 +53,8 @@ func.func @t3(%arg0: tensor<3xf64>, %arg1: tensor<3xf64>) -> tensor<3xf64> {
 
 // NAN-LABEL:  @t3(
 // NAN-SAME:  %[[ARG0:.+]]: tensor<3xf64>, %[[ARG1:.+]]: tensor<3xf64>) -> tensor<3xf64> {
-// NAN-NEXT:    %[[ADD:.+]] = stablehlo.add %[[ARG1]], %[[ARG0]] {enzymexla.guaranteed_finite = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<3xf64>
-// NAN-NEXT:    %[[SUB:.+]] = stablehlo.subtract %[[ARG1]], %[[ADD]] {enzymexla.guaranteed_no_nan = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<3xf64>
+// NAN-NEXT:    %[[ADD:.+]] = stablehlo.add %[[ARG1]], %[[ARG0]] {enzymexla.finite = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<3xf64>
+// NAN-NEXT:    %[[SUB:.+]] = stablehlo.subtract %[[ARG1]], %[[ADD]] {enzymexla.no_nan = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<3xf64>
 // NAN-NEXT:    return %[[SUB]] : tensor<3xf64>
 
 
@@ -70,8 +70,8 @@ func.func @t4(%arg0: tensor<3xf64>, %arg1: tensor<3xf64>) -> tensor<3xf64> {
 
 // NAN-LABEL:  @t4(
 // NAN-SAME:  %[[ARG0:.+]]: tensor<3xf64>, %[[ARG1:.+]]: tensor<3xf64>) -> tensor<3xf64> {
-// NAN-NEXT:    %[[ADD:.+]] = stablehlo.add %[[ARG1]], %[[ARG0]] {enzymexla.guaranteed_finite = [#enzymexla<guaranteed NOTGUARANTEED>], enzymexla.guaranteed_no_nan = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<3xf64>
-// NAN-NEXT:    %[[SUB:.+]] = stablehlo.subtract %[[ADD]], %[[ARG1]] {enzymexla.guaranteed_no_nan = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<3xf64>
+// NAN-NEXT:    %[[ADD:.+]] = stablehlo.add %[[ARG1]], %[[ARG0]] {enzymexla.finite = [#enzymexla<guaranteed NOTGUARANTEED>], enzymexla.no_nan = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<3xf64>
+// NAN-NEXT:    %[[SUB:.+]] = stablehlo.subtract %[[ADD]], %[[ARG1]] {enzymexla.no_nan = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<3xf64>
 // NAN-NEXT:    return %[[SUB]] : tensor<3xf64>
 
 func.func @t5(%arg0: tensor<3xi32>, %arg1: tensor<3xi32>) -> tensor<3xi32> {

@@ -587,6 +587,9 @@ bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy, Type inTy,
 bool canApplySymmetricPattern(mlir::Operation *op, PatternRewriter &rewriter) {
   return guaranteedSymmetricResult(op, rewriter);
 }
+bool canApplySymmetricPattern(Value val, PatternRewriter &rewriter) {
+  return guaranteedSymmetricResult(val, rewriter);
+}
 
 SymmetricResultAnalysis initSymmetricResultAnalysis() {
   return SymmetricResultAnalysis();

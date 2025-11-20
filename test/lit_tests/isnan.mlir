@@ -20,7 +20,7 @@ module {
 // REMOVED-NEXT:  }
 
 // SAME:  func.func @main(%arg0: tensor<2x2xf32>) -> (tensor<2x2xi1>, tensor<2x2xi1>) {
-// SAME-NEXT:    %[[i0:.+]] = stablehlo.compare  EQ, %arg0, %arg0,  FLOAT {enzymexla.guaranteed_no_nan = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xi1>
+// SAME-NEXT:    %[[i0:.+]] = stablehlo.compare  EQ, %arg0, %arg0,  FLOAT {enzymexla.no_nan = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xi1>
 // SAME-NEXT:    %[[i1:.+]] = stablehlo.not  %[[i0]] : tensor<2x2xi1>
 // SAME-NEXT:    return %[[i0]], %[[i1]] : tensor<2x2xi1>, tensor<2x2xi1>
 // SAME-NEXT:  }
