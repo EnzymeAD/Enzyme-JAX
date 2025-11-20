@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1763479651962,
+  "lastUpdate": 1763639530966,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "avikpal@mit.edu",
-            "name": "Avik Pal",
-            "username": "avik-pal"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "b3d6fde1c3d150e8c0be3363c9e234e349aa13cd",
-          "message": "feat: iota tensor detection + indirect iota indexing simplification (#1542)\n\n* feat: iota tensor detection\n\n* chore: run fmt\n\n* feat: rewrite iota ops\n\n* test: indirect indexing\n\n* feat: support more iota like ops for scatter detection",
-          "timestamp": "2025-11-02T11:06:12-05:00",
-          "tree_id": "608a05ee69d0011cda2f5c2d0fdb0942828d6f44",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/b3d6fde1c3d150e8c0be3363c9e234e349aa13cd"
-        },
-        "date": 1762120582721,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.000004345976980403066,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.000004376305988989771,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001504514841828,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001366461332887,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2199,6 +2155,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001522772955002,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "avikpal@mit.edu",
+            "name": "Avik Pal",
+            "username": "avik-pal"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2b7c1da4ae9bef7d8aa96f9c9009aec509e510a5",
+          "message": "feat: don't compute UV in SVD unless needed (#1632)\n\n* feat: don't compute UV in SVD unless needed\n\n* fix: call convention for cusolver\n\n* fix: aliasing in cpu custom_call\n\n* feat: lower to job=N when compute_uv=false",
+          "timestamp": "2025-11-20T00:06:20-06:00",
+          "tree_id": "a34678503a58349c91817c11c89a61ebc22fa515",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/2b7c1da4ae9bef7d8aa96f9c9009aec509e510a5"
+        },
+        "date": 1763639530241,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004362374899938004,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004327750999800628,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001545558818004,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001537393587001,
             "unit": "s"
           }
         ]
