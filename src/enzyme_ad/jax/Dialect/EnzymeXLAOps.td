@@ -665,7 +665,8 @@ def GesddOp : EnzymeXLA_Op<"lapack.gesdd", [Pure]> {
 
   let arguments = (ins
     HLO_Tensor:$input,
-    DefaultValuedAttr<BoolAttr, "false">:$full
+    DefaultValuedAttr<BoolAttr, "false">:$full,
+    DefaultValuedAttr<BoolAttr, "true">:$compute_uv
   );
 
   let results = (outs
@@ -685,7 +686,8 @@ def GesvdOp : EnzymeXLA_Op<"lapack.gesvd", [Pure]> {
 
   let arguments = (ins
     HLO_Tensor:$input,
-    DefaultValuedAttr<BoolAttr, "false">:$full
+    DefaultValuedAttr<BoolAttr, "false">:$full,
+    DefaultValuedAttr<BoolAttr, "true">:$compute_uv
   );
 
   let results = (outs
@@ -705,7 +707,8 @@ def GesvjOp : EnzymeXLA_Op<"lapack.gesvj", [Pure]> {
 
   let arguments = (ins
     HLO_Tensor:$input,
-    DefaultValuedAttr<BoolAttr, "false">:$full
+    DefaultValuedAttr<BoolAttr, "false">:$full,
+    DefaultValuedAttr<BoolAttr, "true">:$compute_uv
   );
 
   let results = (outs

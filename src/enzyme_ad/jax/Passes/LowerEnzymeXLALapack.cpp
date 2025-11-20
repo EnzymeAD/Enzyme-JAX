@@ -1962,12 +1962,25 @@ func::FuncOp createSVDAlgorithmWrapperFuncOpCPULapack(
       rewriter, op.getLoc(), RankedTensorType::get({}, blasIntType),
       stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), input, 1));
 
+  RankedTensorType UTypeJitCall, VTypeJitCall;
+  if (op.getComputeUv()) {
+    UTypeJitCall = UType;
+    VTypeJitCall = VType;
+  } else {
+    UTypeJitCall =
+        RankedTensorType::get({UType.getShape()[0], 0}, UType.getElementType());
+    VTypeJitCall =
+        RankedTensorType::get({VType.getShape()[0], 0}, VType.getElementType());
+  }
+
   auto U = stablehlo::ConstantOp::create(
-      rewriter, op.getLoc(), UType, cast<ElementsAttr>(makeAttr(UType, 0)));
+      rewriter, op.getLoc(), UTypeJitCall,
+      cast<ElementsAttr>(makeAttr(UTypeJitCall, 0)));
   auto S = stablehlo::ConstantOp::create(
       rewriter, op.getLoc(), SType, cast<ElementsAttr>(makeAttr(SType, 0)));
   auto VT = stablehlo::ConstantOp::create(
-      rewriter, op.getLoc(), VType, cast<ElementsAttr>(makeAttr(VType, 0)));
+      rewriter, op.getLoc(), VTypeJitCall,
+      cast<ElementsAttr>(makeAttr(VTypeJitCall, 0)));
   auto info =
       stablehlo::ConstantOp::create(rewriter, op.getLoc(), infoType,
                                     cast<ElementsAttr>(makeAttr(infoType, 0)));
@@ -1979,8 +1992,11 @@ func::FuncOp createSVDAlgorithmWrapperFuncOpCPULapack(
       rewriter, op.getLoc(), RankedTensorType::get({}, blasIntType),
       stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), VT, 0));
 
+  // lapack mutates the input buffer, introduce an additionaly output to fix
+  // this during bufferization
   auto jitCall = enzymexla::JITCallOp::create(
-      rewriter, op.getLoc(), TypeRange{UType, SType, VType, infoType},
+      rewriter, op.getLoc(),
+      TypeRange{UTypeJitCall, SType, VTypeJitCall, infoType, inputType},
       mlir::FlatSymbolRefAttr::get(ctx, lapackFn),
       ValueRange{mSize, nSize, input, mSize, S, U, ldu, VT, ldvt, info},
       rewriter.getStringAttr(""),
@@ -1991,12 +2007,33 @@ func::FuncOp createSVDAlgorithmWrapperFuncOpCPULapack(
       /*output_operand_aliases=*/outputOperandAliases,
       /*xla_side_effect_free=*/rewriter.getUnitAttr());
 
-  func::ReturnOp::create(rewriter, op.getLoc(),
-                         ValueRange{jitCall.getResult(0), jitCall.getResult(1),
-                                    jitCall.getResult(2),
-                                    jitCall.getResult(3)});
+  Value Ures, VTres;
+  if (op.getComputeUv()) {
+    Ures = jitCall.getResult(0);
+    VTres = jitCall.getResult(2);
+  } else {
+    Ures = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), UType, cast<ElementsAttr>(makeAttr(UType, 0)));
+    VTres = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), VType, cast<ElementsAttr>(makeAttr(VType, 0)));
+  }
+
+  func::ReturnOp::create(
+      rewriter, op.getLoc(),
+      ValueRange{Ures, jitCall.getResult(1), VTres, jitCall.getResult(3)});
 
   return func;
+}
+
+RankedTensorType getVType(RankedTensorType VtType) {
+  auto inputShape = VtType.getShape();
+  auto inputRank = VtType.getRank();
+
+  SmallVector<int64_t> VShape(inputShape.begin(), inputShape.end() - 2);
+  VShape.push_back(inputShape[inputRank - 1]);
+  VShape.push_back(inputShape[inputRank - 2]);
+
+  return RankedTensorType::get(VShape, VtType.getElementType());
 }
 
 template <typename OpTy>
@@ -2076,6 +2113,8 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
                              LLVM::Linkage::External);
   }
 
+  char lapackJob = op.getComputeUv() ? (isfull ? 'A' : 'S') : 'N';
+
   if (!moduleOp.template lookupSymbol<LLVM::LLVMFuncOp>(wrapper_fn)) {
     OpBuilder::InsertionGuard guard(rewriter);
     rewriter.setInsertionPointToStart(moduleOp.getBody());
@@ -2126,10 +2165,10 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
 
       auto jobu = LLVM::ConstantOp::create(
           rewriter, op.getLoc(), type_lapack_char,
-          rewriter.getIntegerAttr(type_lapack_char, isfull ? 'A' : 'S'));
+          rewriter.getIntegerAttr(type_lapack_char, lapackJob));
       auto jobvt = LLVM::ConstantOp::create(
           rewriter, op.getLoc(), type_lapack_char,
-          rewriter.getIntegerAttr(type_lapack_char, isfull ? 'A' : 'S'));
+          rewriter.getIntegerAttr(type_lapack_char, lapackJob));
 
       LLVM::StoreOp::create(rewriter, op.getLoc(), jobu, jobuptr);
       LLVM::StoreOp::create(rewriter, op.getLoc(), jobvt, jobvtptr);
@@ -2178,7 +2217,7 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
 
       auto job = LLVM::ConstantOp::create(
           rewriter, op.getLoc(), type_lapack_char,
-          rewriter.getIntegerAttr(type_lapack_char, isfull ? 'A' : 'S'));
+          rewriter.getIntegerAttr(type_lapack_char, lapackJob));
 
       auto MVal = LLVM::LoadOp::create(
           rewriter, op.getLoc(), type_llvm_lapack_int, funcOp.getArgument(0));
@@ -2217,46 +2256,56 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
       };
 
       if (isComplex) {
-        // minmn*max(5*minmn+7, 2*max(m,n)+2*minm
-        auto maxMN = arith::MaxSIOp::create(rewriter, op.getLoc(), MVal, NVal);
-
-        // 5 * minmn
-        auto c5 = LLVM::ConstantOp::create(
-            rewriter, op.getLoc(), type_llvm_lapack_int,
-            rewriter.getIntegerAttr(type_llvm_lapack_int, 5));
-        auto fiveMin = arith::MulIOp::create(rewriter, op.getLoc(), c5, minMN);
-
-        // 5*minmn + 7
         auto c7 = LLVM::ConstantOp::create(
             rewriter, op.getLoc(), type_llvm_lapack_int,
             rewriter.getIntegerAttr(type_llvm_lapack_int, 7));
-        auto termA = arith::AddIOp::create(rewriter, op.getLoc(), fiveMin, c7);
+        if (lapackJob == 'N') {
+          // 7*minmn
+          auto sevenMin =
+              arith::MulIOp::create(rewriter, op.getLoc(), c7, minMN);
+          args.insert(args.begin() + 13, sevenMin);
+        } else {
+          // minmn*max(5*minmn+7, 2*max(m,n)+2*minmn
+          auto maxMN =
+              arith::MaxSIOp::create(rewriter, op.getLoc(), MVal, NVal);
 
-        // 2 * max(m,n)
-        auto c2 = LLVM::ConstantOp::create(
-            rewriter, op.getLoc(), type_llvm_lapack_int,
-            rewriter.getIntegerAttr(type_llvm_lapack_int, 2));
-        auto twoMax = arith::MulIOp::create(rewriter, op.getLoc(), c2, maxMN);
+          // 5 * minmn
+          auto c5 = LLVM::ConstantOp::create(
+              rewriter, op.getLoc(), type_llvm_lapack_int,
+              rewriter.getIntegerAttr(type_llvm_lapack_int, 5));
+          auto fiveMin =
+              arith::MulIOp::create(rewriter, op.getLoc(), c5, minMN);
 
-        // 2*minmn
-        auto twoMin = arith::MulIOp::create(rewriter, op.getLoc(), c2, minMN);
+          // 5*minmn + 7
+          auto termA =
+              arith::AddIOp::create(rewriter, op.getLoc(), fiveMin, c7);
 
-        // 2*max(m,n) + 2*minmn
-        auto termB =
-            arith::AddIOp::create(rewriter, op.getLoc(), twoMax, twoMin);
+          // 2 * max(m,n)
+          auto c2 = LLVM::ConstantOp::create(
+              rewriter, op.getLoc(), type_llvm_lapack_int,
+              rewriter.getIntegerAttr(type_llvm_lapack_int, 2));
+          auto twoMax = arith::MulIOp::create(rewriter, op.getLoc(), c2, maxMN);
 
-        // max(termA, termB)
-        auto maxTerm =
-            arith::MaxSIOp::create(rewriter, op.getLoc(), termA, termB);
+          // 2*minmn
+          auto twoMin = arith::MulIOp::create(rewriter, op.getLoc(), c2, minMN);
 
-        auto rworkSize =
-            arith::MulIOp::create(rewriter, op.getLoc(), minMN, maxTerm);
+          // 2*max(m,n) + 2*minmn
+          auto termB =
+              arith::AddIOp::create(rewriter, op.getLoc(), twoMax, twoMin);
 
-        auto rworkptr =
-            LLVM::AllocaOp::create(rewriter, op.getLoc(), type_llvm_ptr,
-                                   type_input_element_real, rworkSize);
+          // max(termA, termB)
+          auto maxTerm =
+              arith::MaxSIOp::create(rewriter, op.getLoc(), termA, termB);
 
-        args.insert(args.begin() + 13, rworkptr);
+          auto rworkSize =
+              arith::MulIOp::create(rewriter, op.getLoc(), minMN, maxTerm);
+
+          auto rworkptr =
+              LLVM::AllocaOp::create(rewriter, op.getLoc(), type_llvm_ptr,
+                                     type_input_element_real, rworkSize);
+
+          args.insert(args.begin() + 13, rworkptr);
+        }
       }
     }
 
@@ -2290,7 +2339,7 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
 
   SmallVector<bool> isColMajorArr(10, true);
   SmallVector<int64_t> operandRanks = {0, 0, 2, 0, 1, 2, 0, 2, 0, 0};
-  SmallVector<int64_t> outputRanks = {2, 1, 2, 0};
+  SmallVector<int64_t> outputRanks = {2, 1, 2, 0, 2};
   auto operandLayouts = getSHLOLayout(rewriter, operandRanks, isColMajorArr, 2);
   auto resultLayouts = getSHLOLayout(rewriter, outputRanks, isColMajorArr, 2);
 
@@ -2303,6 +2352,8 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
       ctx, std::vector<int64_t>{2}, 7, std::vector<int64_t>{}));
   aliases.push_back(stablehlo::OutputOperandAliasAttr::get(
       ctx, std::vector<int64_t>{3}, 9, std::vector<int64_t>{}));
+  aliases.push_back(stablehlo::OutputOperandAliasAttr::get(
+      ctx, std::vector<int64_t>{4}, 2, std::vector<int64_t>{}));
 
   Value UResult, SResult, VTResult, infoResult;
   static int64_t fn_counter = 0;
@@ -2403,6 +2454,7 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
 template <typename OpTy>
 LogicalResult lowerSVDAlgorithmCUDA(OpTy op, PatternRewriter &rewriter,
                                     DictionaryAttr &options,
+                                    bool skipUVAllocation,
                                     std::string targetName) {
   auto input = op.getOperand();
   auto type_input = cast<RankedTensorType>(input.getType());
@@ -2420,6 +2472,7 @@ LogicalResult lowerSVDAlgorithmCUDA(OpTy op, PatternRewriter &rewriter,
 
   auto type_vt = cast<RankedTensorType>(op.getResult(2).getType());
   auto rank_vt = type_vt.getRank();
+  auto type_v = getVType(type_vt);
 
   auto type_info_out = cast<RankedTensorType>(op.getResult(3).getType());
   auto type_info = RankedTensorType::get(type_info_out.getShape(),
@@ -2429,15 +2482,25 @@ LogicalResult lowerSVDAlgorithmCUDA(OpTy op, PatternRewriter &rewriter,
   // emit `stablehlo.custom_call` to `@cusolver_geqrf_ffi` kernel from jaxlib
   SmallVector<Attribute> aliases = {};
   SmallVector<int64_t> ranks_operands = {rank_input};
-  SmallVector<int64_t> ranks_results = {rank_input, rank_s, rank_u, rank_vt,
-                                        rank_info};
   SmallVector<bool> isColMajorArrOperands = {true};
+
+  SmallVector<int64_t> ranks_results;
+  SmallVector<Type> outTypes;
+  if (skipUVAllocation) {
+    auto empty_type_u = RankedTensorType::get({}, type_u.getElementType());
+    auto empty_type_vt = RankedTensorType::get({}, type_vt.getElementType());
+
+    outTypes = {type_input, type_s, empty_type_u, empty_type_vt, type_info};
+    ranks_results = {rank_input, rank_s, 0, 0, rank_info};
+  } else {
+    outTypes = {type_input, type_s, type_u, type_v, type_info};
+    ranks_results = {rank_input, rank_s, rank_u, rank_vt, rank_info};
+  }
   SmallVector<bool> isColMajorArrOutputs = {true, true, true, true, true};
 
   auto cusolverCallOp = stablehlo::CustomCallOp::create(
-      rewriter, op.getLoc(),
-      TypeRange{type_input, type_s, type_u, type_vt, type_info},
-      ValueRange{input}, rewriter.getStringAttr(targetName),
+      rewriter, op.getLoc(), outTypes, ValueRange{input},
+      rewriter.getStringAttr(targetName),
       /*has_side_effect*/ nullptr,
       /*backend_config*/ options,
       /*api_version*/
@@ -2457,9 +2520,31 @@ LogicalResult lowerSVDAlgorithmCUDA(OpTy op, PatternRewriter &rewriter,
                                            cusolverCallOp.getResult(4));
 
   // replace enzymexla.linalg.svd with stablehlo.custom_call
-  rewriter.replaceAllUsesWith(op.getResult(0), cusolverCallOp.getResult(2));
   rewriter.replaceAllUsesWith(op.getResult(1), cusolverCallOp.getResult(1));
-  rewriter.replaceAllUsesWith(op.getResult(2), cusolverCallOp.getResult(3));
+
+  Value Ures, Vtres;
+  if (skipUVAllocation) {
+    // return empty tensors for U and Vt
+    Ures = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), type_u, cast<ElementsAttr>(makeAttr(type_u, 0)));
+    Vtres =
+        stablehlo::ConstantOp::create(rewriter, op.getLoc(), type_vt,
+                                      cast<ElementsAttr>(makeAttr(type_vt, 0)));
+  } else {
+    Ures = cusolverCallOp.getResult(2);
+
+    // cuda_customcall returns `U` and `V`. We need to transpose `V` to match
+    // the return convention of `enzymexla.linalg.svd`.
+    SmallVector<int64_t> permutation(rank_input);
+    std::iota(permutation.begin(), permutation.end() - 2, 0);
+    permutation[rank_input - 1] = rank_input - 2;
+    permutation[rank_input - 2] = rank_input - 1;
+    Vtres = stablehlo::TransposeOp::create(
+        rewriter, op.getLoc(), cusolverCallOp.getResult(3), permutation);
+  }
+  rewriter.replaceAllUsesWith(op.getResult(0), Ures);
+  rewriter.replaceAllUsesWith(op.getResult(2), Vtres);
+
   rewriter.replaceAllUsesWith(op.getResult(3), info.getResult());
   rewriter.eraseOp(op);
 
@@ -2494,13 +2579,12 @@ struct GesvdOpLowering : public OpRewritePattern<enzymexla::GesvdOp> {
   LogicalResult matchAndRewriteCUDA(enzymexla::GesvdOp op,
                                     PatternRewriter &rewriter) const {
     auto backend_config = rewriter.getDictionaryAttr({
-        rewriter.getNamedAttr("full_matrices",
-                              rewriter.getBoolAttr(op.getFull())),
-        rewriter.getNamedAttr("compute_uv", rewriter.getBoolAttr(true)),
+        rewriter.getNamedAttr("full_matrices", op.getFullAttr()),
+        rewriter.getNamedAttr("compute_uv", op.getComputeUvAttr()),
         rewriter.getNamedAttr("transposed", rewriter.getBoolAttr(false)),
     });
     return lowerSVDAlgorithmCUDA(op, rewriter, backend_config,
-                                 "cusolver_gesvd_ffi");
+                                 !op.getComputeUv(), "cusolver_gesvd_ffi");
   }
 };
 
@@ -2551,12 +2635,13 @@ struct GesvjOpLowering : public OpRewritePattern<enzymexla::GesvjOp> {
   LogicalResult matchAndRewriteCUDA(enzymexla::GesvjOp op,
                                     PatternRewriter &rewriter) const {
     auto backend_config = rewriter.getDictionaryAttr({
-        rewriter.getNamedAttr("full_matrices",
-                              rewriter.getBoolAttr(op.getFull())),
-        rewriter.getNamedAttr("compute_uv", rewriter.getBoolAttr(true)),
+        rewriter.getNamedAttr("full_matrices", op.getFullAttr()),
+        rewriter.getNamedAttr("compute_uv", op.getComputeUvAttr()),
     });
-    return lowerSVDAlgorithmCUDA(op, rewriter, backend_config,
-                                 "cusolver_gesvdj_ffi");
+    return lowerSVDAlgorithmCUDA(
+        op, rewriter, backend_config,
+        false, // https://github.com/jax-ml/jax/blob/43d14afad3e6bc321309054c512c5ffe1d1bca86/jaxlib/gpu/solver_kernels_ffi.cc#L1117
+        "cusolver_gesvdj_ffi");
   }
 
   LogicalResult matchAndRewriteTPU(enzymexla::GesvjOp op,
@@ -2569,7 +2654,7 @@ struct GesvjOpLowering : public OpRewritePattern<enzymexla::GesvjOp> {
     auto customCall = stablehlo::CustomCallOp::create(
         rewriter, op.getLoc(),
         TypeRange{op.getResult(0).getType(), op.getResult(1).getType(),
-                  op.getResult(2).getType()},
+                  getVType(cast<RankedTensorType>(op.getResult(2).getType()))},
         ValueRange{input}, rewriter.getStringAttr("SVD"),
         /*has_side_effect*/ nullptr,
         /*backend_config*/ nullptr,
@@ -2581,7 +2666,16 @@ struct GesvjOpLowering : public OpRewritePattern<enzymexla::GesvjOp> {
 
     rewriter.replaceAllUsesWith(op.getResult(0), customCall.getResult(0));
     rewriter.replaceAllUsesWith(op.getResult(1), customCall.getResult(1));
-    rewriter.replaceAllUsesWith(op.getResult(2), customCall.getResult(2));
+
+    // @SVD returns `U` and `V`. We need to transpose `V` to match the
+    // return convention of `enzymexla.linalg.svd`.
+    SmallVector<int64_t> permutation(rank_input);
+    std::iota(permutation.begin(), permutation.end() - 2, 0);
+    permutation[rank_input - 1] = rank_input - 2;
+    permutation[rank_input - 2] = rank_input - 1;
+    auto Vt = stablehlo::TransposeOp::create(
+        rewriter, op.getLoc(), customCall.getResult(2), permutation);
+    rewriter.replaceAllUsesWith(op.getResult(2), Vt);
 
     // Netlib's LAPACK returns `info`, but TPU kernel doesn't
     auto info =
