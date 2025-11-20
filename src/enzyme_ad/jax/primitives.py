@@ -1029,7 +1029,9 @@ def _enzyme_primal_lowering(
                 fns.append(f.sym_name.value)
 
             if len(pass_pipeline) > 0:
-                pass_pipeline = pass_pipeline + ",tensor-empty-raise"
+                pass_pipeline = (
+                    pass_pipeline + ",tensor-empty-raise,drop-unsupported-attributes"
+                )
 
             try:
                 name, nmod = enzyme_call.run_pass_pipeline(fns, source, pass_pipeline)
