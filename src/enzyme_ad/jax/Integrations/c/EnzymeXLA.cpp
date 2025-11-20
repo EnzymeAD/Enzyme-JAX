@@ -98,3 +98,20 @@ MlirAttribute enzymexlaGeluApproximationAttrGet(MlirContext ctx, int32_t mode) {
   return wrap(
       mlir::enzymexla::GeluApproximationAttr::get(unwrap(ctx), approximation));
 }
+
+MlirAttribute enzymexlaGuaranteedAnalysisAttrGet(MlirContext ctx, int32_t mode) {
+  mlir::enzymexla::GuaranteedAnalysisAnalysis analysis;
+  switch (mode) {
+  case 0:
+    analysis = mlir::enzymexla::GuaranteedAnalysisAnalysis::GUARANTEED;
+    break;
+  case 1:
+    analysis = mlir::enzymexla::GuaranteedAnalysisAnalysis::NOTGUARANTEED;
+    break;
+  case 2:
+    analysis = mlir::enzymexla::GuaranteedAnalysisAnalysis::UNKNOWN;
+    break;
+  }
+  return wrap(
+      mlir::enzymexla::GuaranteedAnalysisAttr::get(unwrap(ctx), analysis));
+}

@@ -43,6 +43,13 @@ MLIR_CAPI_EXPORTED MlirAttribute enzymexlaSVDAlgorithmAttrGet(MlirContext ctx,
 MLIR_CAPI_EXPORTED MlirAttribute
 enzymexlaGeluApproximationAttrGet(MlirContext ctx, int32_t mode);
 
+//===----------------------------------------------------------------------===//
+// Other Ops / Attributes
+//===----------------------------------------------------------------------===//
+
+MLIR_CAPI_EXPORTED MlirAttribute enzymexlaGuaranteedAnalysisAttrGet(
+    MlirContext ctx, int32_t mode);
+
 #ifdef __cplusplus
 } // extern "C"
 #endif
