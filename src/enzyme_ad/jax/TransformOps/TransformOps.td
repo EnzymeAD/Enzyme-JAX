@@ -2474,6 +2474,6 @@ def EnzymeHLOUnroll : EnzymeHLOParameterizedPatternOp<
 }
 
 def ApplyDotGeneralOnlyDiagonalAccessPatterns : EnzymeHLOPatternOp<
-  "dot_general_only_diagonal_access"> {
+    "dot_general_only_diagonal_access"> {
   let patterns = ["DotGeneralOnlyDiagonalAccess"];
 }

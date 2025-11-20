@@ -66,25 +66,28 @@ struct SVDFactorizationOpLowering
       }
     }
 
+    bool computeUv =
+        !op.getResult(0).use_empty() || !op.getResult(2).use_empty();
+
     switch (algorithm) {
     case SVDAlgorithm::QRIteration: {
       auto gesddOp = enzymexla::GesvdOp::create(
           rewriter, op.getLoc(), op->getResultTypes(), op.getInput(),
-          /*full=*/op.getFull());
+          /*full=*/op.getFull(), computeUv);
       rewriter.replaceOp(op, gesddOp);
       break;
     }
     case SVDAlgorithm::DivideAndConquer: {
       auto gesvjOp = enzymexla::GesddOp::create(
           rewriter, op.getLoc(), op->getResultTypes(), op.getInput(),
-          /*full=*/op.getFull());
+          /*full=*/op.getFull(), computeUv);
       rewriter.replaceOp(op, gesvjOp);
       break;
     }
     case SVDAlgorithm::Jacobi: {
       auto gesvdOp = enzymexla::GesvjOp::create(
           rewriter, op.getLoc(), op->getResultTypes(), op.getInput(),
-          /*full=*/op.getFull());
+          /*full=*/op.getFull(), computeUv);
       rewriter.replaceOp(op, gesvdOp);
       break;
     }
