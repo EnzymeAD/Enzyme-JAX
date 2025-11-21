@@ -51,6 +51,29 @@ static mlir::DenseI64ArrayAttr getI64Attr(OpBuilder &builder,
 namespace {
 #include "src/enzyme_ad/jax/Implementations/EnzymeXLADerivatives.inc"
 
+void traverseDownDefUseChains(
+    SmallVectorImpl<Value> &frontier,
+    function_ref<void(Operation *)> processOperation) {
+  DenseSet<Value> visited;
+  while (!frontier.empty()) {
+    Value v = frontier.back();
+    Operation *definingOp = v.getDefiningOp();
+    frontier.pop_back();
+
+    if (!definingOp)
+      continue;
+
+    processOperation(definingOp);
+
+    for (Operation *user : v.getUsers())
+      for (auto result : user->getResults())
+        if (!visited.contains(result)) {
+          frontier.push_back(result);
+          visited.insert(result);
+        }
+  }
+}
+
 struct GPUWrapperOpEnzymeOpsRemover
     : public EnzymeOpsRemoverOpInterface::ExternalModel<
           GPUWrapperOpEnzymeOpsRemover, GPUWrapperOp> {
@@ -105,6 +128,8 @@ struct GPUWrapperOpEnzymeOpsRemover
 
       if (!definingOp)
         continue;
+      if (definingOp->getBlock() != &wrapOp.getBodyRegion().front())
+        continue;
 
       // Assume allocations and frees are legal to move
       if (hasEffect<MemoryEffects::Read>(definingOp) ||
@@ -127,20 +152,30 @@ struct GPUWrapperOpEnzymeOpsRemover
     OpBuilder::InsertionGuard guard(rewriter);
     IRMapping map;
     rewriter.setInsertionPoint(wrapOp);
+    // Assume GPU allocations need to be in address space 1
+    auto globalMemSpace = rewriter.getI64IntegerAttr(1);
     for (Operation *toMove : llvm::reverse(opsToMove)) {
       Operation *cloned = rewriter.clone(*toMove, map);
       toMove->replaceAllUsesWith(cloned->getResults());
 
       if (auto allocOp = dyn_cast<memref::AllocOp>(cloned)) {
-        // Assume GPU allocations need to be in address space 1
         auto gpuAlloc = gpu::AllocOp::create(
             rewriter, allocOp.getLoc(),
-            *allocOp.getType().clonePtrWith(rewriter.getI64IntegerAttr(1),
-                                            std::nullopt),
+            *allocOp.getType().clonePtrWith(globalMemSpace, std::nullopt),
             /*asyncDependencies=*/ValueRange(), allocOp.getDynamicSizes(),
             /*symbolOperands=*/ValueRange());
         allocOp.replaceAllUsesWith(gpuAlloc.getResult(0));
         rewriter.eraseOp(allocOp);
+
+        // Update the memory space of any users
+        SmallVector<Value> frontier{gpuAlloc.getResult(0)};
+        traverseDownDefUseChains(frontier, [globalMemSpace](Operation *op) {
+          if (auto subviewOp = dyn_cast<memref::SubViewOp>(op)) {
+            auto newType = cast<MemRefType>(*subviewOp.getType().clonePtrWith(
+                globalMemSpace, std::nullopt));
+            subviewOp.getResult().setType(newType);
+          }
+        });
       }
     }
 
@@ -150,8 +185,17 @@ struct GPUWrapperOpEnzymeOpsRemover
       assert(revWrapper && "failed to find reverse gpu_wrapper");
       rewriter.moveOpBefore(info.popOp, revWrapper);
 
+      SmallVector<Value> frontier{info.popOp.getResult()};
+      traverseDownDefUseChains(frontier, [globalMemSpace](Operation *op) {
+        if (auto subviewOp = dyn_cast<memref::SubViewOp>(op)) {
+          auto newType = cast<MemRefType>(
+              *subviewOp.getType().clonePtrWith(globalMemSpace, std::nullopt));
+          subviewOp.getResult().setType(newType);
+        }
+      });
+
       for (auto user : info.popOp.getResult().getUsers()) {
-        if (isa<memref::DeallocOp>(user)) {
+        if (hasSingleEffect<MemoryEffects::Free>(user)) {
           rewriter.eraseOp(user);
         }
       }
