@@ -1,5 +1,5 @@
 // RUN: enzymexlamlir-opt --split-input-file --enzyme-diff-batch %s | FileCheck %s
-// RUN: enzymexlamlir-opt --split-input-file --enzyme-diff-batch --enzyme-batch-to-tensor %s | FileCheck %s --check-prefix=LEGAL
+// RUN: enzymexlamlir-opt --split-input-file --enzyme-diff-batch --enzyme-batch-to-stablehlo %s | FileCheck %s --check-prefix=LEGAL
 
 //1. Scalar test
 module {
