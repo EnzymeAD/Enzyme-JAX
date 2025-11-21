@@ -1045,4 +1045,37 @@ def ConvertTritonToTritonGPUPreservingModuleAttributesPass : Pass<
       >];
 }
 
+def LowerTritonPass : Pass<"lower-triton", "mlir::ModuleOp"> {
+  let summary = "Lower Triton to kernel call";
+  let dependentDialects = [
+    "triton::TritonDialect",
+    "gpu::GPUDialect",
+    "enzymexla::EnzymeXLADialect",
+    "func::FuncDialect",
+    "enzymexla::triton_ext::TritonExtDialect",
+    "stablehlo::StablehloDialect",
+  ];
+}
+
+def TritonAugmentFunctionWithExtraArgumentsPass : Pass<
+    "triton-augment-function-with-extra-arguments", "mlir::ModuleOp"> {
+  let dependentDialects = [
+    "triton::TritonDialect",
+    "func::FuncDialect",
+    "enzymexla::triton_ext::TritonExtDialect",
+  ];
+}
+
+def LowerTritonExtensionOpsPass : Pass<"lower-triton-extension-ops"> {
+  let dependentDialects = [
+    "triton::TritonDialect",
+    "func::FuncDialect",
+    "LLVM::LLVMDialect",
+    "memref::MemRefDialect",
+    "enzymexla::EnzymeXLADialect",
+    "enzymexla::triton_ext::TritonExtDialect",
+    "gpu::GPUDialect",
+  ];
+}
+
 #endif
