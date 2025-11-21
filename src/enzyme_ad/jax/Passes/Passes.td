@@ -1045,4 +1045,12 @@ def ConvertTritonToTritonGPUPreservingModuleAttributesPass : Pass<
       >];
 }
 
+def StructuredMatrixSimplifyPass : Pass<"structured-matrix-simplify", "ModuleOp"> {
+  let summary = "Simplify structured matrix operations";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "func::FuncDialect",
+  ];
+}
+
 #endif
