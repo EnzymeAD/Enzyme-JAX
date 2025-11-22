@@ -25779,6 +25779,13 @@ void mlir::transform::addTransposeLICM(RewritePatternSet &patterns,
   patterns.insert<LICM<stablehlo::TransposeOp>>(single_user, &context, benefit);
 }
 
+void mlir::transform::addConvolutionLICM(RewritePatternSet &patterns,
+                                         bool single_user, MLIRContext &context,
+                                         PatternBenefit benefit) {
+  patterns.insert<LICM<stablehlo::ConvolutionOp>>(single_user, &context,
+                                                  benefit);
+}
+
 void mlir::transform::addNoNanAddSubSimplify(RewritePatternSet &patterns,
                                              bool allowOnFloatingPointMath,
                                              MLIRContext &context,

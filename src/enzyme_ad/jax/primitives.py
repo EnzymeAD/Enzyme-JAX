@@ -375,6 +375,7 @@ def optimization_passes(
             "concat_insert_dim_reduce",
             "concat_insert_dim_sort",
             "concat_insert_dim_reduce_window",
+            "concat_insert_dim_convolution",
             "concat_insert_dim_elementwise",
             "dot_general_slice_to_batch",
             "gather_slice_to_batch",
@@ -384,6 +385,7 @@ def optimization_passes(
             "transpose_slice_to_batch",
             "broadcastindim_slice_to_batch",
             "reducewindow_slice_to_batch",
+            "convolution_slice_to_batch",
             "elementwise_slice_to_batch",
             "greedy_while_loop_batch_fission",
         ]
@@ -402,6 +404,7 @@ def optimization_passes(
             "reduce_licm(0)",
             "reduce_window_licm(0)",
             "reverse_licm(0)",
+            "convolution_licm(0)",
         ]
 
     if enable_scatter_gather_optimization_passes:
