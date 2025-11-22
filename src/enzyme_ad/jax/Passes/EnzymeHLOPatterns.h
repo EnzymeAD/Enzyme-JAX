@@ -81,6 +81,8 @@ void addReshapeLICM(RewritePatternSet &patterns, bool single_user,
                     MLIRContext &context, PatternBenefit benefit);
 void addTransposeLICM(RewritePatternSet &patterns, bool single_user,
                       MLIRContext &context, PatternBenefit benefit);
+void addConvolutionLICM(RewritePatternSet &patterns, bool single_user,
+                        MLIRContext &context, PatternBenefit benefit);
 void addBroadcastInDimSimplify(RewritePatternSet &patterns,
                                int64_t maxConstantExpansion,
                                MLIRContext &context, PatternBenefit benefit);

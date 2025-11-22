@@ -404,6 +404,7 @@ def optimization_passes(
             "reduce_licm(0)",
             "reduce_window_licm(0)",
             "reverse_licm(0)",
+            "convolution_licm(0)",
         ]
 
     if enable_scatter_gather_optimization_passes:

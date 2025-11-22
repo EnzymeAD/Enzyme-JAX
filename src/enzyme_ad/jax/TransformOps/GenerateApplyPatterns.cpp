@@ -155,6 +155,7 @@ LogicalResult parseTransform(OpBuilder &builder, Location loc,
           opName == "pad_licm" || opName == "elementwise_licm" ||
           opName == "concatenate_licm" || opName == "broadcastindim_licm" ||
           opName == "reshape_licm" || opName == "transpose_licm" ||
+          opName == "convolution_licm" ||
           opName == "transpose_elementwise" ||
           opName == "reshape_elementwise" || opName == "reshape_slice" ||
           opName == "reshape_dynamic_slice" ||
