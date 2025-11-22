@@ -21740,6 +21740,94 @@ struct GatherElementwise
   }
 };
 
+struct FactorScalarsInDotGeneral final
+    : public CheckedOpRewritePattern<stablehlo::DotGeneralOp,
+                                     FactorScalarsInDotGeneral> {
+  using CheckedOpRewritePattern<
+      stablehlo::DotGeneralOp,
+      FactorScalarsInDotGeneral>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp op,
+                                    PatternRewriter &rewriter) const {
+    auto lhs = op.getLhs();
+    auto rhs = op.getRhs();
+
+    // From v, extract scalar * tensor, and return true if the operation is not
+    // used elsewhere.
+    auto extractMul = [&](Value v, Value &scalar, Value &z) -> bool {
+      auto mulOp = v.getDefiningOp<stablehlo::MulOp>();
+      if (!mulOp) { // set default scalar to 1
+        scalar = nullptr;
+        z = v;
+        return true;
+      }
+      if (!isOnlyUsedInOperation(mulOp, op)) {
+        return false;
+      }
+
+      Value mLhs = mulOp.getLhs();
+      Value mRhs = mulOp.getRhs();
+
+      SplatElementsAttr splatAttr;
+      auto mLhsIsSplat = matchPattern(mLhs, m_Constant(&splatAttr));
+      auto mRhsIsSplat = matchPattern(mRhs, m_Constant(&splatAttr));
+
+      if (mLhsIsSplat) {
+        scalar = mLhs;
+        z = mRhs;
+      } else if (mRhsIsSplat) {
+        scalar = mRhs;
+        z = mLhs;
+      } else {
+        // If both are non-scalar, treat whole v as Z, no scalar
+        scalar = nullptr;
+        z = v;
+      }
+      return true;
+    };
+
+    Value lhsScalar, lhsZ;
+    Value rhsScalar, rhsZ;
+
+    if (!extractMul(lhs, lhsScalar, lhsZ) || !extractMul(rhs, rhsScalar, rhsZ))
+      return failure();
+
+    if (!lhsScalar && !rhsScalar) { // nothing to do
+      return failure();
+    }
+
+    auto rhsZT = rhsZ.getDefiningOp<stablehlo::TransposeOp>();
+    auto lhsZT = lhsZ.getDefiningOp<stablehlo::TransposeOp>();
+    if (lhsZ == rhsZ || rhsZT && rhsZT.getOperand() == lhsZ ||
+        lhsZT && lhsZT.getOperand() == rhsZ) {
+      auto precision =
+          op.getPrecisionConfig().value_or(stablehlo::PrecisionConfigAttr());
+      auto algorithm =
+          op.getAlgorithm().value_or(stablehlo::DotAlgorithmAttr());
+
+      auto newDot = rewriter.create<stablehlo::DotGeneralOp>(
+          op.getLoc(), op.getType(), lhsZ, rhsZ, op.getDotDimensionNumbers(),
+          precision, algorithm);
+
+      Value combinedScalar;
+      if (lhsScalar && rhsScalar) {
+        combinedScalar = rewriter.create<stablehlo::MulOp>(
+            op.getLoc(), lhsScalar, rhsScalar);
+      } else {
+        combinedScalar = lhsScalar ? lhsScalar : rhsScalar;
+      }
+
+      // Multiply (a*b) * dot_general(Z, Z)
+      Value result = rewriter.create<stablehlo::MulOp>(
+          op.getLoc(), combinedScalar, newDot.getResult());
+      rewriter.replaceOp(op, result);
+      return success();
+    }
+
+    return failure();
+  }
+};
+
 struct ChainedMultiplyToPower final
     : public CheckedOpRewritePattern<stablehlo::MulOp, ChainedMultiplyToPower> {
   using CheckedOpRewritePattern<
@@ -26278,6 +26366,7 @@ struct EnzymeHLOOptPass
         (no_nan || all_finite), context);
 
     patterns.add<TransposeSymmetricSimplify>(context);
+    patterns.add<FactorScalarsInDotGeneral>(context);
 
     // clang-format off
     patterns.add<
