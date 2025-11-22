@@ -2500,3 +2500,13 @@ def ApplyDotGeneralOnlyDiagonalAccessPatterns : EnzymeHLOPatternOp<
     "dot_general_only_diagonal_access"> {
   let patterns = ["DotGeneralOnlyDiagonalAccess"];
 }
+
+def ApplyDivideNegatedOperandsSimplifyPatterns : EnzymeHLOPatternOp<
+    "divide_negated_operands_simplify"> {
+  let patterns = ["BinaryNegatedOperandsSimplify<stablehlo::DivOp>"];
+}
+
+def ApplyMultiplyNegatedOperandsSimplifyPatterns : EnzymeHLOPatternOp<
+    "multiply_negated_operands_simplify"> {
+  let patterns = ["BinaryNegatedOperandsSimplify<stablehlo::MulOp>"];
+}
