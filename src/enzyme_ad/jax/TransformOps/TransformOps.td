@@ -2359,6 +2359,10 @@ def ApplyConcatInsertDimReduceWindowPatterns : EnzymeHLOPatternOp<
     "concat_insert_dim_reduce_window"> {
   let patterns = ["ConcatInsertDimToBatch<stablehlo::ReduceWindowOp>"];
 }
+def ApplyConcatInsertDimConvolutionPatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_convolution"> {
+  let patterns = ["ConcatInsertDimToBatch<stablehlo::ConvolutionOp>"];
+}
 
 def ApplyConcatInsertDimElementwisePatterns : EnzymeHLOPatternOp<
     "concat_insert_dim_elementwise"> {
@@ -2408,6 +2412,10 @@ def ApplyReverseSliceToBatchPatterns : EnzymeHLOPatternOp<
 def ApplyReduceWindowSliceToBatchPatterns : EnzymeHLOPatternOp<
     "reducewindow_slice_to_batch"> {
   let patterns = ["SliceToBatch<stablehlo::ReduceWindowOp>"];
+}
+def ApplyConvolutionSliceToBatchPatterns : EnzymeHLOPatternOp<
+    "convolution_slice_to_batch"> {
+  let patterns = ["SliceToBatch<stablehlo::ConvolutionOp>"];
 }
 // def ApplyReshapeSliceToBatchPatterns : EnzymeHLOPatternOp<"reshape_slice_to_batch"> {
 //   let patterns = ["SliceToBatchReshape"];
