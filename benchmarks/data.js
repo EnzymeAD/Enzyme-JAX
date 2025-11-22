@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1763705201767,
+  "lastUpdate": 1763789397528,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "avikpal@mit.edu",
-            "name": "Avik Pal",
-            "username": "avik-pal"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "283c7d77ae625786387aad45537f746a77ceec42",
-          "message": "feat: export enzyme_hlo_unroll via transform (#1560)",
-          "timestamp": "2025-11-03T12:52:00-05:00",
-          "tree_id": "2f925cb46cb7780ec4a0e836dbfa1869e661cbc7",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/283c7d77ae625786387aad45537f746a77ceec42"
-        },
-        "date": 1762203466429,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.000004386635900300462,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.000004332715999044012,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001515112646011,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001527759867007,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2199,6 +2155,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001364999429992,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "39610523+vimarsh6739@users.noreply.github.com",
+            "name": "Vimarsh Sathia",
+            "username": "vimarsh6739"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "da7ed39b534102b1e24a1758584a98d9c79e05e5",
+          "message": "Enzyme batch to StableHLO (#1556)\n\n* Add raising skeleton\n\n* Add ConcatOp lowering, fix lit test\nNeed to find another cafe to work...\n\n* fix lit tests for concatenateOp\n\n* just add conversion for Extract assuming index is 0-dim tensor\n\n* Finalize changes\n\n* fix lit",
+          "timestamp": "2025-11-21T15:30:39-06:00",
+          "tree_id": "c43567fed636223aed56454f7208ee76e117a5ba",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/da7ed39b534102b1e24a1758584a98d9c79e05e5"
+        },
+        "date": 1763789396324,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004360322000047745,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.00000430330099998173,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001381765273,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001457332371999,
             "unit": "s"
           }
         ]
