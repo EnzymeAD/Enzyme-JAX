@@ -6874,6 +6874,25 @@ struct ReplaceNegAddWithSubtract
   }
 };
 
+struct ReplaceSubtractNegWithAdd
+    : CheckedOpRewritePattern<stablehlo::SubtractOp,
+                              ReplaceSubtractNegWithAdd> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SubtractOp op,
+                                    PatternRewriter &rewriter) const {
+    if (auto rhsNegateOp = op.getRhs().getDefiningOp<stablehlo::NegOp>()) {
+      if (llvm::hasSingleElement(rhsNegateOp->getUsers())) {
+        rewriter.replaceOpWithNewOp<stablehlo::AddOp>(op, op.getLhs(),
+                                                      rhsNegateOp.getOperand());
+        return success();
+      }
+    }
+
+    return failure();
+  }
+};
+
 struct SubSimplify
     : public CheckedOpRewritePattern<stablehlo::SubtractOp, SubSimplify> {
   using CheckedOpRewritePattern<stablehlo::SubtractOp,
@@ -26020,8 +26039,9 @@ struct EnzymeHLOOptPass
         DotGeneralReshape, DiagonalTensorDotGeneralRewrite,
         DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
         BroadcastToReshape, ReshapeEmptyBroadcast, BroadcastReshape,
-        ConstPropThroughBarrier, ReplaceNegAddWithSubtract, SignAbsSimplify,
-        AbsPositiveSimplify, SimplifyBoundary<enzymexla::ExtendOp>,
+        ConstPropThroughBarrier, ReplaceNegAddWithSubtract,
+        ReplaceSubtractNegWithAdd, SignAbsSimplify, AbsPositiveSimplify,
+        SimplifyBoundary<enzymexla::ExtendOp>,
         SimplifyBoundary<enzymexla::WrapOp>,
         SimplifyBoundary<enzymexla::RotateOp>, TransposeReshapeToBroadcast,
         ReshapeTransposeToBroadcast, SelectBroadcastInDim, PowerMultiplyToPower,

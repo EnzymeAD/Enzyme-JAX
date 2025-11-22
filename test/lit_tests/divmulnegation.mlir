@@ -9,10 +9,9 @@ func.func @main1(%arg0: tensor<8xf32>, %arg1: tensor<8xf32>, %arg2: tensor<8xf32
 }
 
 // CHECK: func.func @main1(%arg0: tensor<8xf32>, %arg1: tensor<8xf32>, %arg2: tensor<8xf32>) -> tensor<8xf32> {
-// CHECK-NEXT:   %0 = stablehlo.negate %arg2 : tensor<8xf32>
-// CHECK-NEXT:   %1 = stablehlo.subtract %arg1, %0 : tensor<8xf32>
-// CHECK-NEXT:   %2 = stablehlo.divide %arg0, %1 : tensor<8xf32>
-// CHECK-NEXT:   return %2 : tensor<8xf32>
+// CHECK-NEXT:   %0 = stablehlo.add %arg1, %arg2 : tensor<8xf32>
+// CHECK-NEXT:   %1 = stablehlo.divide %arg0, %0 : tensor<8xf32>
+// CHECK-NEXT:   return %1 : tensor<8xf32>
 // CHECK-NEXT: }
 
 func.func @main2(%arg0: tensor<8xf32>, %arg1: tensor<8xf32>, %arg2: tensor<8xf32>) -> tensor<8xf32> {
@@ -24,10 +23,9 @@ func.func @main2(%arg0: tensor<8xf32>, %arg1: tensor<8xf32>, %arg2: tensor<8xf32
 }
 
 // CHECK: func.func @main2(%arg0: tensor<8xf32>, %arg1: tensor<8xf32>, %arg2: tensor<8xf32>) -> tensor<8xf32> {
-// CHECK-NEXT:   %0 = stablehlo.negate %arg2 : tensor<8xf32>
-// CHECK-NEXT:   %1 = stablehlo.subtract %arg1, %0 : tensor<8xf32>
-// CHECK-NEXT:   %2 = stablehlo.multiply %arg0, %1 : tensor<8xf32>
-// CHECK-NEXT:   return %2 : tensor<8xf32>
+// CHECK-NEXT:   %0 = stablehlo.add %arg1, %arg2 : tensor<8xf32>
+// CHECK-NEXT:   %1 = stablehlo.multiply %arg0, %0 : tensor<8xf32>
+// CHECK-NEXT:   return %1 : tensor<8xf32>
 // CHECK-NEXT: }
 
 func.func @main3(%arg0: tensor<8xf32>, %arg1: tensor<8xf32>, %arg2: tensor<8xf32>) -> tensor<8xf32> {
@@ -39,10 +37,9 @@ func.func @main3(%arg0: tensor<8xf32>, %arg1: tensor<8xf32>, %arg2: tensor<8xf32
 }
 
 // CHECK: func.func @main3(%arg0: tensor<8xf32>, %arg1: tensor<8xf32>, %arg2: tensor<8xf32>) -> tensor<8xf32> {
-// CHECK-NEXT:   %0 = stablehlo.negate %arg2 : tensor<8xf32>
-// CHECK-NEXT:   %1 = stablehlo.subtract %arg1, %0 : tensor<8xf32>
-// CHECK-NEXT:   %2 = stablehlo.divide %1, %arg0 : tensor<8xf32>
-// CHECK-NEXT:   return %2 : tensor<8xf32>
+// CHECK-NEXT:   %0 = stablehlo.add %arg1, %arg2 : tensor<8xf32>
+// CHECK-NEXT:   %1 = stablehlo.divide %0, %arg0 : tensor<8xf32>
+// CHECK-NEXT:   return %1 : tensor<8xf32>
 // CHECK-NEXT: }
 
 func.func @main4(%arg0: tensor<8xf32>, %arg1: tensor<8xf32>, %arg2: tensor<8xf32>) -> tensor<8xf32> {
@@ -54,8 +51,7 @@ func.func @main4(%arg0: tensor<8xf32>, %arg1: tensor<8xf32>, %arg2: tensor<8xf32
 }
 
 // CHECK: func.func @main4(%arg0: tensor<8xf32>, %arg1: tensor<8xf32>, %arg2: tensor<8xf32>) -> tensor<8xf32> {
-// CHECK-NEXT:   %0 = stablehlo.negate %arg2 : tensor<8xf32>
-// CHECK-NEXT:   %1 = stablehlo.subtract %arg1, %0 : tensor<8xf32>
-// CHECK-NEXT:   %2 = stablehlo.multiply %1, %arg0 : tensor<8xf32>
-// CHECK-NEXT:   return %2 : tensor<8xf32>
+// CHECK-NEXT:   %0 = stablehlo.add %arg1, %arg2 : tensor<8xf32>
+// CHECK-NEXT:   %1 = stablehlo.multiply %0, %arg0 : tensor<8xf32>
+// CHECK-NEXT:   return %1 : tensor<8xf32>
 // CHECK-NEXT: }

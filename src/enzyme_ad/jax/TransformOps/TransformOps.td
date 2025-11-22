@@ -49,6 +49,10 @@ def ApplyReplaceNegAddWithSubtract: EnzymeHLOPatternOp<
     "replace_neg_add_with_subtract"> {
   let patterns = ["ReplaceNegAddWithSubtract"];
 }
+def ApplyReplaceSubtractNegWithAdd: EnzymeHLOPatternOp<
+    "replace_subtract_neg_with_add"> {
+  let patterns = ["ReplaceSubtractNegWithAdd"];
+}
 def ApplySubSimplifyPatterns : EnzymeHLOPatternOp<
     "sub_simplify"> {
   let patterns = ["SubSimplify"];
