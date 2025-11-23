@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1763847964665,
+  "lastUpdate": 1763872725307,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "avikpal@mit.edu",
-            "name": "Avik Pal",
-            "username": "avik-pal"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "f729dca2048c2cfd941877cf23c1556368d04ac3",
-          "message": "feat: reduce licm passes (#1564)",
-          "timestamp": "2025-11-03T18:40:19-05:00",
-          "tree_id": "5c674b7cf1dc3eff9f5171535c332d174a6d511e",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/f729dca2048c2cfd941877cf23c1556368d04ac3"
-        },
-        "date": 1762247542361,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.000004296338000131073,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.00000426451699968311,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001563015472005,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001416123602,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2199,6 +2155,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001533850926993,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "avikpal@mit.edu",
+            "name": "Avik Pal",
+            "username": "avik-pal"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9a198274188537b5f832a9a25359f0be4b01255d",
+          "message": "fix: missing patterns in transform dialect (#1639)\n\n* fix: missing patterns in transform dialect\n\n* feat: convolution_licm\n\n* chore: run format",
+          "timestamp": "2025-11-22T18:53:16-05:00",
+          "tree_id": "1b262845fd4e7f854effbc2598d6360b7ef022be",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/9a198274188537b5f832a9a25359f0be4b01255d"
+        },
+        "date": 1763872724839,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.00000435271799997281,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004273902099976112,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001496146923999,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001404514594,
             "unit": "s"
           }
         ]
