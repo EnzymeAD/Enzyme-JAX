@@ -14090,22 +14090,20 @@ struct WhileOpInductionReplacement
 
         // Create the calculation for the current iteration
         Value iterOffset = stablehlo::SubtractOp::create(
-            rewriter, whileOp.getLoc(), counterArg.getType(), counterArg,
-            startValue);
+            rewriter, whileOp.getLoc(), counterArg, startValue);
 
         // First multiply by the step value
         Value scaledOffset = stablehlo::MulOp::create(
-            rewriter, whileOp.getLoc(), iterOffset.getType(), iterOffset,
-            stepValue);
+            rewriter, whileOp.getLoc(),
+            getCorrectlySizedValue(iterOffset, stepValue, rewriter), stepValue);
 
         // Then divide by the counter step value to get the correct scaling
         Value normalizedOffset = stablehlo::DivOp::create(
-            rewriter, whileOp.getLoc(), scaledOffset.getType(), scaledOffset,
-            counterStepValue);
+            rewriter, whileOp.getLoc(), scaledOffset,
+            getCorrectlySizedValue(counterStepValue, scaledOffset, rewriter));
 
         Value replacement = stablehlo::AddOp::create(
-            rewriter, whileOp.getLoc(), iterArg.getType(), initValue,
-            normalizedOffset);
+            rewriter, whileOp.getLoc(), initValue, normalizedOffset);
 
         rewriter.modifyOpInPlace(
             whileOp, [&] { iterArg.replaceAllUsesWith(replacement); });
@@ -14119,23 +14117,21 @@ struct WhileOpInductionReplacement
 
         // Calculate total iterations: limit - start
         Value totalIters = stablehlo::SubtractOp::create(
-            rewriter, whileOp.getLoc(), limitValue.getType(), limitValue,
-            startValue);
+            rewriter, whileOp.getLoc(), limitValue, startValue);
 
         // First multiply by the step value (using the same step value
         // identified earlier)
         Value scaledOffset = stablehlo::MulOp::create(
-            rewriter, whileOp.getLoc(), totalIters.getType(), totalIters,
-            stepValue);
+            rewriter, whileOp.getLoc(),
+            getCorrectlySizedValue(totalIters, stepValue, rewriter), stepValue);
 
         // Then divide by the counter step value to get the correct scaling
         Value normalizedOffset = stablehlo::DivOp::create(
-            rewriter, whileOp.getLoc(), scaledOffset.getType(), scaledOffset,
-            counterStepValue);
+            rewriter, whileOp.getLoc(), scaledOffset,
+            getCorrectlySizedValue(counterStepValue, scaledOffset, rewriter));
 
-        Value finalValue = stablehlo::AddOp::create(rewriter, whileOp.getLoc(),
-                                                    result.getType(), initValue,
-                                                    normalizedOffset);
+        Value finalValue = stablehlo::AddOp::create(
+            rewriter, whileOp.getLoc(), initValue, normalizedOffset);
 
         rewriter.replaceAllUsesWith(result, finalValue);
         canonicalized = true;
@@ -14146,6 +14142,33 @@ struct WhileOpInductionReplacement
   }
 
 private:
+  Value getCorrectlySizedValue(Value origValue, Value targetValue,
+                               PatternRewriter &rewriter) const {
+    return getCorrectlySizedValue(
+        origValue, cast<RankedTensorType>(targetValue.getType()), rewriter);
+  }
+
+  Value getCorrectlySizedValue(Value origValue, RankedTensorType targetType,
+                               PatternRewriter &rewriter) const {
+    if (origValue.getType() == targetType)
+      return origValue;
+
+    if (cast<ShapedType>(origValue.getType()).getElementType() !=
+        targetType.getElementType()) {
+      origValue = stablehlo::ConvertOp::create(
+          rewriter, origValue.getLoc(),
+          RankedTensorType::get({}, targetType.getElementType()), origValue);
+    }
+
+    if (origValue.getType() != targetType) {
+      origValue = stablehlo::BroadcastInDimOp::create(
+          rewriter, origValue.getLoc(), targetType, origValue,
+          rewriter.getDenseI64ArrayAttr({}));
+    }
+
+    return origValue;
+  }
+
   // Helper function to identify the counter variable and its limit
   // Returns the index of the counter argument and the limit value
   bool findCounterAndLimit(stablehlo::WhileOp whileOp, unsigned &counterIdx,
