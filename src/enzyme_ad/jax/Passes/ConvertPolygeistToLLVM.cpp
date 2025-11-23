@@ -3024,8 +3024,9 @@ public:
   using ConvertOpToLLVMPattern<gpu::GPUFuncOp>::ConvertOpToLLVMPattern;
 
   GPUFuncOpLowering(LLVMTypeConverter &converter, unsigned allocaAddrSpace,
-                    StringAttr kernelAttributeName)
-      : ConvertOpToLLVMPattern<gpu::GPUFuncOp>(converter),
+                    StringAttr kernelAttributeName,
+                    PatternBenefit benefit = PatternBenefit(1))
+      : ConvertOpToLLVMPattern<gpu::GPUFuncOp>(converter, benefit),
         allocaAddrSpace(allocaAddrSpace),
         kernelAttributeName(kernelAttributeName) {}
 
@@ -3675,158 +3676,6 @@ public:
 } // namespace gpu
 } // namespace mlir
 
-// https://rocm.docs.amd.com/projects/HIP/en/docs-6.4.0/reference/hardware_features.html
-struct GPULaneIdOpToROCDL : ConvertOpToLLVMPattern<gpu::LaneIdOp> {
-  using ConvertOpToLLVMPattern<gpu::LaneIdOp>::ConvertOpToLLVMPattern;
-
-  LogicalResult
-  matchAndRewrite(gpu::LaneIdOp op, gpu::LaneIdOp::Adaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    auto loc = op->getLoc();
-    MLIRContext *context = rewriter.getContext();
-    auto int32Type = rewriter.getI32Type();
-
-    Value minusOne = LLVM::ConstantOp::create(rewriter, loc, int32Type,
-                                              rewriter.getI32IntegerAttr(-1));
-    Value zero = LLVM::ConstantOp::create(rewriter, loc, int32Type,
-                                          rewriter.getI32IntegerAttr(0));
-
-    Value laneIdLo =
-        ROCDL::MbcntLoOp::create(rewriter, loc, int32Type, {minusOne, zero});
-    Value laneId = ROCDL::MbcntHiOp::create(rewriter, loc, int32Type,
-                                            {minusOne, laneIdLo});
-    LLVM::ConstantRangeAttr bounds = nullptr;
-    if (std::optional<APInt> upperBound = op.getUpperBound())
-      bounds = rewriter.getAttr<LLVM::ConstantRangeAttr>(
-          /*bitWidth=*/32, /*lower=*/0, upperBound->getZExtValue());
-    else
-      bounds = rewriter.getAttr<LLVM::ConstantRangeAttr>(
-          /*bitWidth=*/32, /*lower=*/0, /*upper=*/64);
-
-    if (bounds) {
-      laneId.getDefiningOp()->setAttr("range", bounds);
-    }
-
-    const unsigned indexBitwidth = getTypeConverter()->getIndexTypeBitwidth();
-
-    if (indexBitwidth > 32) {
-      laneId = LLVM::SExtOp::create(
-          rewriter, loc, IntegerType::get(context, indexBitwidth), laneId);
-    } else if (indexBitwidth < 32) {
-      laneId = LLVM::TruncOp::create(
-          rewriter, loc, IntegerType::get(context, indexBitwidth), laneId);
-    }
-
-    rewriter.replaceOp(op, {laneId});
-
-    return success();
-  }
-};
-
-struct GPUShuffleOpToROCDL : public ConvertOpToLLVMPattern<gpu::ShuffleOp> {
-  using ConvertOpToLLVMPattern<gpu::ShuffleOp>::ConvertOpToLLVMPattern;
-
-  LogicalResult
-  matchAndRewrite(gpu::ShuffleOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    Location loc = op->getLoc();
-
-    auto valueTy = adaptor.getValue().getType();
-    auto value = adaptor.getValue();
-    auto int32Type = IntegerType::get(rewriter.getContext(), 32);
-
-    Value minusOne = LLVM::ConstantOp::create(rewriter, loc, int32Type,
-                                              rewriter.getI32IntegerAttr(-1));
-    Value zero = LLVM::ConstantOp::create(rewriter, loc, int32Type,
-                                          rewriter.getI32IntegerAttr(0));
-
-    Value laneIdLo =
-        ROCDL::MbcntLoOp::create(rewriter, loc, int32Type, {minusOne, zero});
-    Value laneId = ROCDL::MbcntHiOp::create(rewriter, loc, int32Type,
-                                            {minusOne, laneIdLo});
-
-    Value targetLane;
-    Value offset = adaptor.getOffset();
-
-    switch (op.getMode()) {
-    case gpu::ShuffleMode::XOR:
-      targetLane =
-          LLVM::XOrOp::create(rewriter, loc, int32Type, laneId, offset);
-      break;
-    case gpu::ShuffleMode::UP:
-      targetLane =
-          LLVM::SubOp::create(rewriter, loc, int32Type, laneId, offset);
-      break;
-    case gpu::ShuffleMode::DOWN:
-      targetLane =
-          LLVM::AddOp::create(rewriter, loc, int32Type, laneId, offset);
-      break;
-    case gpu::ShuffleMode::IDX:
-      targetLane = offset;
-      break;
-    }
-
-    Value width = adaptor.getWidth();
-
-    auto isNonNegative = LLVM::ICmpOp::create(
-        rewriter, loc, LLVM::ICmpPredicate::sge, targetLane, zero);
-    auto isWithinWidth = LLVM::ICmpOp::create(
-        rewriter, loc, LLVM::ICmpPredicate::slt, targetLane, width);
-    auto isValid =
-        LLVM::AndOp::create(rewriter, loc, isNonNegative, isWithinWidth);
-
-    Value maskAndClamp;
-
-    Value widthMinusone = LLVM::SubOp::create(
-        rewriter, loc, width,
-        LLVM::ConstantOp::create(rewriter, loc, int32Type,
-                                 rewriter.getI32IntegerAttr(1)));
-    Value minResult = LLVM::SelectOp::create(
-        rewriter, loc,
-        LLVM::ICmpOp::create(rewriter, loc, LLVM::ICmpPredicate::slt,
-                             targetLane, widthMinusone),
-        targetLane, widthMinusone);
-    maskAndClamp = LLVM::SelectOp::create(
-        rewriter, loc,
-        LLVM::ICmpOp::create(rewriter, loc, LLVM::ICmpPredicate::sgt, minResult,
-                             zero),
-        minResult, zero);
-
-    Value four = LLVM::ConstantOp::create(rewriter, loc, int32Type,
-                                          rewriter.getI32IntegerAttr(4));
-    Value byteIndex = LLVM::MulOp::create(rewriter, loc, maskAndClamp, four);
-
-    Value shuffleResult;
-    if (valueTy.isF32()) {
-      Value valueAsInt =
-          LLVM::BitcastOp::create(rewriter, loc, int32Type, value);
-
-      Value resultInt = ROCDL::DsBpermuteOp::create(rewriter, loc, int32Type,
-                                                    byteIndex, valueAsInt);
-
-      shuffleResult =
-          LLVM::BitcastOp::create(rewriter, loc, valueTy, resultInt);
-
-    } else if (valueTy.isInteger(32)) {
-      shuffleResult = ROCDL::DsBpermuteOp::create(rewriter, loc, int32Type,
-                                                  byteIndex, value);
-    }
-    // } else if (valueTy.isF64() || valueTy.isInteger(64)) {
-    //   shuffleResult = shuffle64BitValue(loc, rewriter, value, byteIndex,
-    //   valueTy);
-    // }
-
-    bool predIsUsed = !op->getResult(1).use_empty();
-    if (predIsUsed) {
-      rewriter.replaceOp(op, {shuffleResult, isValid});
-    } else {
-      rewriter.replaceOp(op, {shuffleResult, nullptr});
-    }
-
-    return success();
-  }
-};
-
 struct GPUBarrierToROCDL : ConvertOpToLLVMPattern<gpu::BarrierOp> {
   using ConvertOpToLLVMPattern<gpu::BarrierOp>::ConvertOpToLLVMPattern;
 
@@ -3907,6 +3756,7 @@ populateCStyleGPUFuncLoweringPatterns(RewritePatternSet &patterns,
                                       LLVMTypeConverter &typeConverter,
                                       std::string gpuTarget, bool func) {
   if (func) {
+    PatternBenefit highBenefit(2);
     patterns.add<GPUReturnOpLowering>(typeConverter);
     patterns.add<GPUFuncOpLowering>(
         typeConverter,
@@ -3914,7 +3764,8 @@ populateCStyleGPUFuncLoweringPatterns(RewritePatternSet &patterns,
         StringAttr::get(&typeConverter.getContext(),
                         gpuTarget == "cuda"
                             ? NVVM::NVVMDialect::getKernelFuncAttrName()
-                            : ROCDL::ROCDLDialect::getKernelFuncAttrName()));
+                            : ROCDL::ROCDLDialect::getKernelFuncAttrName()),
+        highBenefit);
   } else {
     if (gpuTarget == "cuda") {
       using namespace mlir::gpu::index_lowering;
@@ -3960,30 +3811,29 @@ populateCStyleGPUFuncLoweringPatterns(RewritePatternSet &patterns,
       using namespace mlir::gpu::index_lowering;
       PatternBenefit benefit(1);
       PatternBenefit highBenefit(2);
+
+      mlir::populateGpuToROCDLConversionPatterns(typeConverter, patterns,
+                                                 mlir::gpu::amd::Runtime::HIP,
+                                                 amdgpu::Chipset());
+
       patterns.add<gpu::index_lowering::OpLowering<
           gpu::ThreadIdOp, ROCDL::ThreadIdXOp, ROCDL::ThreadIdYOp,
           ROCDL::ThreadIdZOp>>(typeConverter, IndexKind::Block, IntrType::Id,
-                               benefit);
+                               highBenefit);
       patterns.add<gpu::index_lowering::OpLowering<
           gpu::BlockDimOp, ROCDL::BlockDimXOp, ROCDL::BlockDimYOp,
           ROCDL::BlockDimZOp>>(typeConverter, IndexKind::Block, IntrType::Dim,
-                               benefit);
+                               highBenefit);
       patterns.add<gpu::index_lowering::OpLowering<
           gpu::BlockIdOp, ROCDL::BlockIdXOp, ROCDL::BlockIdYOp,
           ROCDL::BlockIdZOp>>(typeConverter, IndexKind::Grid, IntrType::Id,
-                              benefit);
+                              highBenefit);
       patterns.add<gpu::index_lowering::OpLowering<
           gpu::GridDimOp, ROCDL::GridDimXOp, ROCDL::GridDimYOp,
           ROCDL::GridDimZOp>>(typeConverter, IndexKind::Grid, IntrType::Dim,
-                              benefit);
+                              highBenefit);
 
-      patterns.add<GPULaneIdOpToROCDL>(typeConverter, benefit);
-      patterns.add<GPUShuffleOpToROCDL>(typeConverter, benefit);
-      patterns.add<GPUBarrierToROCDL>(typeConverter, benefit);
-
-      populateMathToLLVMConversionPatterns(typeConverter, patterns);
-      populateMathToROCDLConversionPatterns(typeConverter, patterns,
-                                            std::nullopt);
+      patterns.add<GPUBarrierToROCDL>(typeConverter, highBenefit);
 
       patterns.add<ClusterIdOpToROCDL>(typeConverter, highBenefit);
       patterns.add<ClusterDimOpToROCDL>(typeConverter, highBenefit);
