@@ -70,12 +70,48 @@ public:
           continue;
         }
 
-        anyKnown = true;
+        if (state->getValue().getSparsityPattern().getKind() !=
+            mlir::structure_analysis::StructuredSparsityKind::Unknown) {
+          anyKnown = true;
+        }
 
-        // TODO: get structured sparsity kind
+        enzymexla::StructuredSparsityKind ssKind;
+        switch (state->getValue().getSparsityPattern().getKind()) {
+        case mlir::structure_analysis::StructuredSparsityKind::Unknown:
+          ssKind = enzymexla::StructuredSparsityKind::Unknown;
+          break;
+        case mlir::structure_analysis::StructuredSparsityKind::Dense:
+          ssKind = enzymexla::StructuredSparsityKind::Dense;
+          break;
+        case mlir::structure_analysis::StructuredSparsityKind::Band:
+          ssKind = enzymexla::StructuredSparsityKind::Band;
+          break;
+        case mlir::structure_analysis::StructuredSparsityKind::UpperTriangular:
+          ssKind = enzymexla::StructuredSparsityKind::UpperTriangular;
+          break;
+        case mlir::structure_analysis::StructuredSparsityKind::UpperBidiagonal:
+          ssKind = enzymexla::StructuredSparsityKind::UpperBidiagonal;
+          break;
+        case mlir::structure_analysis::StructuredSparsityKind::LowerTriangular:
+          ssKind = enzymexla::StructuredSparsityKind::LowerTriangular;
+          break;
+        case mlir::structure_analysis::StructuredSparsityKind::LowerBidiagonal:
+          ssKind = enzymexla::StructuredSparsityKind::LowerBidiagonal;
+          break;
+        case mlir::structure_analysis::StructuredSparsityKind::Tridiagonal:
+          ssKind = enzymexla::StructuredSparsityKind::Tridiagonal;
+          break;
+        case mlir::structure_analysis::StructuredSparsityKind::Diagonal:
+          ssKind = enzymexla::StructuredSparsityKind::Diagonal;
+          break;
+        case mlir::structure_analysis::StructuredSparsityKind::Empty:
+          ssKind = enzymexla::StructuredSparsityKind::Empty;
+          break;
+        }
+
         auto structuredSparsityKind =
             enzymexla::StructuredSparsityPatternAttr::get(
-                mod.getContext(), enzymexla::StructuredSparsityKind::Unknown,
+                mod.getContext(), ssKind,
                 state->getValue().getSparsityPattern().getLowerBandwidth(),
                 state->getValue().getSparsityPattern().getUpperBandwidth());
 
@@ -83,18 +119,22 @@ public:
             structuredValueProperties;
         auto valueProperties = state->getValue().getProperties();
         if (valueProperties.hasUnitDiagonal()) {
+          anyKnown = true;
           structuredValueProperties.push_back(
               enzymexla::StructuredValueProperty::UnitDiagonal);
         }
         if (valueProperties.isSymmetric()) {
+          anyKnown = true;
           structuredValueProperties.push_back(
               enzymexla::StructuredValueProperty::Symmetric);
         }
         if (valueProperties.isHermitian()) {
+          anyKnown = true;
           structuredValueProperties.push_back(
               enzymexla::StructuredValueProperty::Hermitian);
         }
         if (valueProperties.isBroadcastedScalar()) {
+          anyKnown = true;
           structuredValueProperties.push_back(
               enzymexla::StructuredValueProperty::BroadcastedScalar);
         }
