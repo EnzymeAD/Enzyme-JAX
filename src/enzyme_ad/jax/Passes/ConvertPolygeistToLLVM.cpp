@@ -20,6 +20,7 @@
 #include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVM.h"
 #include "mlir/Conversion/GPUCommon/GPUCommonPass.h"
 #include "mlir/Conversion/GPUToNVVM/GPUToNVVMPass.h"
+#include "mlir/Conversion/GPUToROCDL/GPUToROCDLPass.h"
 #include "mlir/Conversion/LLVMCommon/ConversionTarget.h"
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
@@ -30,6 +31,7 @@
 #include "mlir/Conversion/OpenMPToLLVM/ConvertOpenMPToLLVM.h"
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Conversion/UBToLLVM/UBToLLVM.h"
+#include "mlir/Dialect/AMDGPU/Utils/Chipset.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
@@ -3811,6 +3813,8 @@ populateCStyleGPUFuncLoweringPatterns(RewritePatternSet &patterns,
       using namespace mlir::gpu::index_lowering;
       PatternBenefit benefit(1);
       PatternBenefit highBenefit(2);
+
+      typeConverter.getContext().loadDialect<ROCDL::ROCDLDialect>();
 
       mlir::populateGpuToROCDLConversionPatterns(typeConverter, patterns,
                                                  mlir::gpu::amd::Runtime::HIP,
