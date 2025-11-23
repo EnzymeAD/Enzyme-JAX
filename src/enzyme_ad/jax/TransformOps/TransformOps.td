@@ -49,6 +49,10 @@ def ApplyReplaceNegAddWithSubtract: EnzymeHLOPatternOp<
     "replace_neg_add_with_subtract"> {
   let patterns = ["ReplaceNegAddWithSubtract"];
 }
+def ApplyReplaceSubtractNegWithAdd: EnzymeHLOPatternOp<
+    "replace_subtract_neg_with_add"> {
+  let patterns = ["ReplaceSubtractNegWithAdd"];
+}
 def ApplySubSimplifyPatterns : EnzymeHLOPatternOp<
     "sub_simplify"> {
   let patterns = ["SubSimplify"];
@@ -2499,4 +2503,14 @@ def EnzymeHLOUnroll : EnzymeHLOParameterizedPatternOp<
 def ApplyDotGeneralOnlyDiagonalAccessPatterns : EnzymeHLOPatternOp<
     "dot_general_only_diagonal_access"> {
   let patterns = ["DotGeneralOnlyDiagonalAccess"];
+}
+
+def ApplyDivideNegatedOperandsSimplifyPatterns : EnzymeHLOPatternOp<
+    "divide_negated_operands_simplify"> {
+  let patterns = ["BinaryNegatedOperandsSimplify<stablehlo::DivOp>"];
+}
+
+def ApplyMultiplyNegatedOperandsSimplifyPatterns : EnzymeHLOPatternOp<
+    "multiply_negated_operands_simplify"> {
+  let patterns = ["BinaryNegatedOperandsSimplify<stablehlo::MulOp>"];
 }
