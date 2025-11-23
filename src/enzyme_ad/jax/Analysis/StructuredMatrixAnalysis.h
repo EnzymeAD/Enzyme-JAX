@@ -2,6 +2,8 @@
 
 #include "mlir/Analysis/DataFlow/SparseAnalysis.h"
 
+#include "src/enzyme_ad/jax/Dialect/Ops.h"
+
 #include <algorithm>
 #include <cstdint>
 
@@ -64,6 +66,9 @@ public:
         upperBandwidth(upperBandwidth) {
     refineKind();
   }
+
+  int64_t getLowerBandwidth() const { return lowerBandwidth; }
+  int64_t getUpperBandwidth() const { return upperBandwidth; }
 
   static StructuredSparsityPattern meet(const StructuredSparsityPattern &lhs,
                                         const StructuredSparsityPattern &rhs);

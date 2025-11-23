@@ -13,6 +13,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
 #define DEBUG_TYPE "structured-matrix-simplify"
@@ -48,7 +49,70 @@ public:
       return signalPassFailure();
     }
 
-    // TODO: annotate the IR with the properties for later usage (use an option)
+    auto mod = getOperation();
+
+    // TODO: make IR annotation optional via an option
+    mod->walk([&](Operation *op) {
+      SmallVector<Attribute> structuredSparsityAttrs;
+      bool anyKnown = false;
+      for (auto result : op->getResults()) {
+        auto *state =
+            solver.lookupState<structure_analysis::StructuredMatrixLattice>(
+                result);
+        if (!state) {
+          structuredSparsityAttrs.push_back(
+              enzymexla::StructuredSparsityAttr::get(
+                  mod.getContext(),
+                  enzymexla::StructuredSparsityPatternAttr::get(
+                      mod.getContext(),
+                      enzymexla::StructuredSparsityKind::Unknown, -1, -1),
+                  SmallVector<enzymexla::StructuredValueProperty>()));
+          continue;
+        }
+
+        anyKnown = true;
+
+        // TODO: get structured sparsity kind
+        auto structuredSparsityKind =
+            enzymexla::StructuredSparsityPatternAttr::get(
+                mod.getContext(), enzymexla::StructuredSparsityKind::Unknown,
+                state->getValue().getSparsityPattern().getLowerBandwidth(),
+                state->getValue().getSparsityPattern().getUpperBandwidth());
+
+        SmallVector<enzymexla::StructuredValueProperty>
+            structuredValueProperties;
+        auto valueProperties = state->getValue().getProperties();
+        if (valueProperties.hasUnitDiagonal()) {
+          structuredValueProperties.push_back(
+              enzymexla::StructuredValueProperty::UnitDiagonal);
+        }
+        if (valueProperties.isSymmetric()) {
+          structuredValueProperties.push_back(
+              enzymexla::StructuredValueProperty::Symmetric);
+        }
+        if (valueProperties.isHermitian()) {
+          structuredValueProperties.push_back(
+              enzymexla::StructuredValueProperty::Hermitian);
+        }
+        if (valueProperties.isBroadcastedScalar()) {
+          structuredValueProperties.push_back(
+              enzymexla::StructuredValueProperty::BroadcastedScalar);
+        }
+
+        auto structuredSparsity = enzymexla::StructuredSparsityAttr::get(
+            mod.getContext(), structuredSparsityKind,
+            structuredValueProperties);
+
+        structuredSparsityAttrs.push_back(structuredSparsity);
+      }
+
+      if (anyKnown) {
+        op->setAttr("structured_sparsity",
+                    ArrayAttr::get(mod.getContext(), structuredSparsityAttrs));
+      }
+
+      return WalkResult::advance();
+    });
 
     // TODO: do things here
   }
