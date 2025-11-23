@@ -6874,6 +6874,25 @@ struct ReplaceNegAddWithSubtract
   }
 };
 
+struct ReplaceSubtractNegWithAdd
+    : CheckedOpRewritePattern<stablehlo::SubtractOp,
+                              ReplaceSubtractNegWithAdd> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SubtractOp op,
+                                    PatternRewriter &rewriter) const {
+    if (auto rhsNegateOp = op.getRhs().getDefiningOp<stablehlo::NegOp>()) {
+      if (llvm::hasSingleElement(rhsNegateOp->getUsers())) {
+        rewriter.replaceOpWithNewOp<stablehlo::AddOp>(op, op.getLhs(),
+                                                      rhsNegateOp.getOperand());
+        return success();
+      }
+    }
+
+    return failure();
+  }
+};
+
 struct SubSimplify
     : public CheckedOpRewritePattern<stablehlo::SubtractOp, SubSimplify> {
   using CheckedOpRewritePattern<stablehlo::SubtractOp,
@@ -25619,6 +25638,73 @@ private:
   }
 };
 
+template <typename OpTy>
+struct BinaryNegatedOperandsSimplify
+    : public CheckedOpRewritePattern<OpTy,
+                                     BinaryNegatedOperandsSimplify<OpTy>> {
+  using CheckedOpRewritePattern<
+      OpTy, BinaryNegatedOperandsSimplify<OpTy>>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(OpTy op, PatternRewriter &rewriter) const {
+    auto lhs = op.getLhs();
+    auto rhs = op.getRhs();
+
+    auto lhsInfo = getOperandInfo(lhs, op);
+    if (lhsInfo.kind == NegKind::NOT)
+      return failure();
+
+    auto rhsInfo = getOperandInfo(rhs, op);
+    if (rhsInfo.kind == NegKind::NOT)
+      return failure();
+
+    // prevent an infinite loop here op(sub, sub) -> op(sub, sub) -> ...
+    if (lhsInfo.kind == NegKind::SUB && rhsInfo.kind == NegKind::SUB)
+      return failure();
+
+    rewriter.replaceOpWithNewOp<OpTy>(op, negateOperand(lhsInfo, rewriter),
+                                      negateOperand(rhsInfo, rewriter));
+    return success();
+  }
+
+private:
+  enum class NegKind { NEG, SUB, NOT };
+
+  struct OperandInfo {
+    NegKind kind;
+    Value lhs;
+    Value rhs;
+  };
+
+  Value negateOperand(OperandInfo info, PatternRewriter &rewriter) const {
+    switch (info.kind) {
+    case NegKind::NEG:
+      return info.lhs;
+    case NegKind::SUB:
+      return stablehlo::SubtractOp::create(rewriter, info.lhs.getLoc(),
+                                           info.rhs, info.lhs)
+          .getResult();
+    case NegKind::NOT:
+      assert(false && "unexpected");
+    }
+  }
+
+  OperandInfo getOperandInfo(Value val, OpTy op) const {
+    auto defOp = val.getDefiningOp();
+    if (!defOp || !isOnlyUsedInOperation(defOp, op))
+      return OperandInfo{NegKind::NOT, nullptr, nullptr};
+
+    if (auto negOp = dyn_cast<stablehlo::NegOp>(defOp)) {
+      return OperandInfo{NegKind::NEG, negOp.getOperand(), nullptr};
+    }
+
+    if (auto subOp = dyn_cast<stablehlo::SubtractOp>(defOp)) {
+      return OperandInfo{NegKind::SUB, subOp.getLhs(), subOp.getRhs()};
+    }
+
+    return OperandInfo{NegKind::NOT, nullptr, nullptr};
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -25953,8 +26039,9 @@ struct EnzymeHLOOptPass
         DotGeneralReshape, DiagonalTensorDotGeneralRewrite,
         DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
         BroadcastToReshape, ReshapeEmptyBroadcast, BroadcastReshape,
-        ConstPropThroughBarrier, ReplaceNegAddWithSubtract, SignAbsSimplify,
-        AbsPositiveSimplify, SimplifyBoundary<enzymexla::ExtendOp>,
+        ConstPropThroughBarrier, ReplaceNegAddWithSubtract,
+        ReplaceSubtractNegWithAdd, SignAbsSimplify, AbsPositiveSimplify,
+        SimplifyBoundary<enzymexla::ExtendOp>,
         SimplifyBoundary<enzymexla::WrapOp>,
         SimplifyBoundary<enzymexla::RotateOp>, TransposeReshapeToBroadcast,
         ReshapeTransposeToBroadcast, SelectBroadcastInDim, PowerMultiplyToPower,
@@ -26261,7 +26348,9 @@ struct EnzymeHLOOptPass
         WhileIsCopySimplify,
         SplitVariadicScatterOp,
         DynamicSliceSimplify,
-        DotGeneralOnlyDiagonalAccess
+        DotGeneralOnlyDiagonalAccess,
+        BinaryNegatedOperandsSimplify<stablehlo::MulOp>,
+        BinaryNegatedOperandsSimplify<stablehlo::DivOp>
       >(context);
 
     patterns.add<

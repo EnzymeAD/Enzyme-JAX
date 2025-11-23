@@ -217,6 +217,7 @@ def optimization_passes(
         "associative_binary_op_reordering<1>",
         "transpose_broadcast_in_dim_to_broadcast_in_dim<16>",
         "replace_neg_add_with_subtract",
+        "replace_subtract_neg_with_add",
         "binop_const_simplify",
         "not_select_simplify",
         "common_compare_expression_rewrite",
@@ -311,6 +312,8 @@ def optimization_passes(
         "dynamic_slice_simplify",
         "enzyme_hlo_unroll(4)",
         "dot_general_only_diagonal_access",
+        "divide_negated_operands_simplify",
+        "multiply_negated_operands_simplify",
     ]
 
     # constant propagation patterns
