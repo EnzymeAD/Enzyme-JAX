@@ -907,6 +907,7 @@ cc_library(
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:AMDGPUDialect",
         "@llvm-project//mlir:AMDGPUToROCDL",
+        "@llvm-project//mlir:AMDGPUUtils",
         "@llvm-project//mlir:AffineAnalysis",
         "@llvm-project//mlir:AffineDialect",
         "@llvm-project//mlir:AffineToStandard",
