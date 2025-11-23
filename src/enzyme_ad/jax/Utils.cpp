@@ -587,6 +587,9 @@ bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy, Type inTy,
 bool canApplySymmetricPattern(mlir::Operation *op, PatternRewriter &rewriter) {
   return guaranteedSymmetricResult(op, rewriter);
 }
+bool canApplySymmetricPattern(Value val, PatternRewriter &rewriter) {
+  return guaranteedSymmetricResult(val, rewriter);
+}
 
 SymmetricResultAnalysis initSymmetricResultAnalysis() {
   return SymmetricResultAnalysis();
@@ -644,29 +647,21 @@ bool SymmetricResultAnalysis::constantFloatCheck(DenseElementsAttr attr) {
 }
 
 SymmetricResultAnalysis::State SymmetricResultAnalysis::localGuaranteed(
-    Operation *op, SmallVectorImpl<Operation *> &localtodo,
-    PatternRewriter &rewriter) {
-  assert(op);
-
-  auto outTy = cast<RankedTensorType>(op->getResult(0).getType());
-  if (outTy.getRank() != 2)
+    Value val, SmallVectorImpl<Value> &localtodo, PatternRewriter &rewriter) {
+  auto valTy = cast<RankedTensorType>(val.getType());
+  if (valTy.getRank() != 2)
     return State::NOTGUARANTEED; // this pass only checks for symmetric matrices
-  if (outTy.getDimSize(0) != outTy.getDimSize(1))
+  if (valTy.getDimSize(0) != valTy.getDimSize(1))
     return State::NOTGUARANTEED; // quick check and exit
 
   SplatElementsAttr splatAttr;
-  if (matchPattern(op, m_Constant(&splatAttr))) {
+  if (matchPattern(val, m_Constant(&splatAttr))) {
     return State::GUARANTEED;
   }
 
-  DenseElementsAttr denseAttr;
-  if (matchPattern(op, m_Constant(&denseAttr))) {
-    if (guaranteedConstantOp(op, denseAttr, rewriter)) {
-      return State::GUARANTEED;
-    } else {
-      return State::NOTGUARANTEED;
-    }
-  }
+  auto op = val.getDefiningOp();
+  if (!op)
+    return State::NOTGUARANTEED;
 
   // check that transpose dimensions are [1,0]
   auto isTrueTranspose = [](stablehlo::TransposeOp tOp) -> bool {
@@ -737,22 +732,8 @@ SymmetricResultAnalysis::State SymmetricResultAnalysis::localGuaranteed(
           }
         }
       }
-      auto dop = operand.getDefiningOp();
-      if (!dop)
-        return State::NOTGUARANTEED;
 
-      {
-        auto found = opCache.find(dop);
-        if (found != opCache.end()) {
-          if (found->second) {
-            continue;
-          } else {
-            return State::NOTGUARANTEED;
-          }
-        }
-      }
-
-      localtodo.push_back(dop);
+      localtodo.push_back(operand);
       allOperandsGuaranteed = false;
     }
 
@@ -785,27 +766,11 @@ bool NoNanResultAnalysis::constantFloatCheck(DenseElementsAttr attr) {
   return true;
 }
 
-NoNanResultAnalysis::State
-NoNanResultAnalysis::localGuaranteed(Operation *op,
-                                     SmallVectorImpl<Operation *> &localtodo,
-                                     PatternRewriter &rewriter) {
-  assert(op);
-
-  if (auto boolAttr = op->getAttrOfType<BoolAttr>(getAttrName())) {
-    if (boolAttr.getValue())
-      return State::GUARANTEED;
-    else
-      return State::NOTGUARANTEED;
-  }
-
-  DenseElementsAttr denseAttr;
-  if (matchPattern(op, m_Constant(&denseAttr))) {
-    if (guaranteedConstantOp(op, denseAttr, rewriter)) {
-      return State::GUARANTEED;
-    } else {
-      return State::NOTGUARANTEED;
-    }
-  }
+NoNanResultAnalysis::State NoNanResultAnalysis::localGuaranteed(
+    Value val, SmallVectorImpl<Value> &localtodo, PatternRewriter &rewriter) {
+  auto op = val.getDefiningOp();
+  if (!op)
+    return State::NOTGUARANTEED;
 
   // integer ops
   if (isa<stablehlo::AndOp, stablehlo::OrOp, stablehlo::XorOp, stablehlo::NotOp,
@@ -879,22 +844,8 @@ NoNanResultAnalysis::localGuaranteed(Operation *op,
           }
         }
       }
-      auto dop = operand.getDefiningOp();
-      if (!dop)
-        return State::NOTGUARANTEED;
 
-      {
-        auto found = opCache.find(dop);
-        if (found != opCache.end()) {
-          if (found->second) {
-            continue;
-          } else {
-            return State::NOTGUARANTEED;
-          }
-        }
-      }
-
-      localtodo.push_back(dop);
+      localtodo.push_back(operand);
       allOperandsGuaranteed = false;
     }
 
@@ -928,27 +879,11 @@ bool FiniteResultAnalysis::constantIntCheck(DenseElementsAttr attr) {
   return true;
 }
 
-FiniteResultAnalysis::State
-FiniteResultAnalysis::localGuaranteed(Operation *op,
-                                      SmallVectorImpl<Operation *> &localtodo,
-                                      PatternRewriter &rewriter) {
-  assert(op);
-
-  if (auto boolAttr = op->getAttrOfType<BoolAttr>(getAttrName())) {
-    if (boolAttr.getValue())
-      return State::GUARANTEED;
-    else
-      return State::NOTGUARANTEED;
-  }
-
-  DenseElementsAttr denseAttr;
-  if (matchPattern(op, m_Constant(&denseAttr))) {
-    if (guaranteedConstantOp(op, denseAttr, rewriter)) {
-      return State::GUARANTEED;
-    } else {
-      return State::NOTGUARANTEED;
-    }
-  }
+FiniteResultAnalysis::State FiniteResultAnalysis::localGuaranteed(
+    Value val, SmallVectorImpl<Value> &localtodo, PatternRewriter &rewriter) {
+  auto op = val.getDefiningOp();
+  if (!op)
+    return State::NOTGUARANTEED;
 
   // integer ops
   if (isa<stablehlo::AndOp, stablehlo::OrOp, stablehlo::XorOp, stablehlo::NotOp,
@@ -996,23 +931,7 @@ FiniteResultAnalysis::localGuaranteed(Operation *op,
         }
       }
 
-      auto dop = operand.getDefiningOp();
-      if (!dop) {
-        return State::NOTGUARANTEED;
-      }
-
-      {
-        auto found = opCache.find(dop);
-        if (found != opCache.end()) {
-          if (found->second) {
-            continue;
-          } else {
-            return State::NOTGUARANTEED;
-          }
-        }
-      }
-
-      localtodo.push_back(dop);
+      localtodo.push_back(operand);
       allOperandsGuaranteed = false;
     }
 
@@ -1043,25 +962,10 @@ bool NonNegativeResultAnalysis::constantFloatCheck(DenseElementsAttr attr) {
 }
 
 NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
-    Operation *op, SmallVectorImpl<Operation *> &localtodo,
-    PatternRewriter &rewriter) {
-  assert(op);
-
-  if (auto boolAttr = op->getAttrOfType<BoolAttr>(getAttrName())) {
-    if (boolAttr.getValue())
-      return State::GUARANTEED;
-    else
-      return State::NOTGUARANTEED;
-  }
-
-  DenseElementsAttr denseAttr;
-  if (matchPattern(op, m_Constant(&denseAttr))) {
-    if (guaranteedConstantOp(op, denseAttr, rewriter)) {
-      return State::GUARANTEED;
-    } else {
-      return State::NOTGUARANTEED;
-    }
-  }
+    Value val, SmallVectorImpl<Value> &localtodo, PatternRewriter &rewriter) {
+  auto op = val.getDefiningOp();
+  if (!op)
+    return State::NOTGUARANTEED;
 
   // integer ops
   if (isa<stablehlo::AbsOp, stablehlo::SqrtOp, stablehlo::ExpOp,
@@ -1094,23 +998,7 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
       }
     }
 
-    auto dop = operand.getDefiningOp();
-    if (!dop) {
-      return State::NOTGUARANTEED;
-    }
-
-    {
-      auto found = opCache.find(dop);
-      if (found != opCache.end()) {
-        if (found->second) {
-          return State::GUARANTEED;
-        } else {
-          return State::NOTGUARANTEED;
-        }
-      }
-    }
-
-    localtodo.push_back(dop);
+    localtodo.push_back(operand);
     return State::PENDING;
   }
 
@@ -1139,23 +1027,7 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
       }
     }
 
-    auto dop = operand.getDefiningOp();
-    if (!dop) {
-      return State::NOTGUARANTEED;
-    }
-
-    {
-      auto found = opCache.find(dop);
-      if (found != opCache.end()) {
-        if (found->second) {
-          return State::GUARANTEED;
-        } else {
-          return State::NOTGUARANTEED;
-        }
-      }
-    }
-
-    localtodo.push_back(dop);
+    localtodo.push_back(operand);
     return State::PENDING;
   }
 
@@ -1190,23 +1062,7 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
         }
       }
 
-      auto dop = operand.getDefiningOp();
-      if (!dop) {
-        return State::NOTGUARANTEED;
-      }
-
-      {
-        auto found = opCache.find(dop);
-        if (found != opCache.end()) {
-          if (found->second) {
-            continue;
-          } else {
-            return State::NOTGUARANTEED;
-          }
-        }
-      }
-
-      localtodo.push_back(dop);
+      localtodo.push_back(operand);
       allOperandsGuaranteed = false;
     }
 

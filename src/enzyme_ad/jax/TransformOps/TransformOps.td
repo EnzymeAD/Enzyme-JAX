@@ -49,6 +49,10 @@ def ApplyReplaceNegAddWithSubtract: EnzymeHLOPatternOp<
     "replace_neg_add_with_subtract"> {
   let patterns = ["ReplaceNegAddWithSubtract"];
 }
+def ApplyReplaceSubtractNegWithAdd: EnzymeHLOPatternOp<
+    "replace_subtract_neg_with_add"> {
+  let patterns = ["ReplaceSubtractNegWithAdd"];
+}
 def ApplySubSimplifyPatterns : EnzymeHLOPatternOp<
     "sub_simplify"> {
   let patterns = ["SubSimplify"];
@@ -1174,6 +1178,21 @@ def ApplyReshapeLICMPatterns : EnzymeHLOParameterizedPatternOp<
 
 def ApplyTransposeLICMPatterns : EnzymeHLOParameterizedPatternOp<
     "transpose_licm"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
+def ApplyConvolutionLICMPatterns : EnzymeHLOParameterizedPatternOp<
+    "convolution_licm"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
   let assemblyFormat = "attr-dict";
   // TODO: this should be made better searchable.
@@ -2359,6 +2378,10 @@ def ApplyConcatInsertDimReduceWindowPatterns : EnzymeHLOPatternOp<
     "concat_insert_dim_reduce_window"> {
   let patterns = ["ConcatInsertDimToBatch<stablehlo::ReduceWindowOp>"];
 }
+def ApplyConcatInsertDimConvolutionPatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_convolution"> {
+  let patterns = ["ConcatInsertDimToBatch<stablehlo::ConvolutionOp>"];
+}
 
 def ApplyConcatInsertDimElementwisePatterns : EnzymeHLOPatternOp<
     "concat_insert_dim_elementwise"> {
@@ -2408,6 +2431,10 @@ def ApplyReverseSliceToBatchPatterns : EnzymeHLOPatternOp<
 def ApplyReduceWindowSliceToBatchPatterns : EnzymeHLOPatternOp<
     "reducewindow_slice_to_batch"> {
   let patterns = ["SliceToBatch<stablehlo::ReduceWindowOp>"];
+}
+def ApplyConvolutionSliceToBatchPatterns : EnzymeHLOPatternOp<
+    "convolution_slice_to_batch"> {
+  let patterns = ["SliceToBatch<stablehlo::ConvolutionOp>"];
 }
 // def ApplyReshapeSliceToBatchPatterns : EnzymeHLOPatternOp<"reshape_slice_to_batch"> {
 //   let patterns = ["SliceToBatchReshape"];
@@ -2474,6 +2501,16 @@ def EnzymeHLOUnroll : EnzymeHLOParameterizedPatternOp<
 }
 
 def ApplyDotGeneralOnlyDiagonalAccessPatterns : EnzymeHLOPatternOp<
-  "dot_general_only_diagonal_access"> {
+    "dot_general_only_diagonal_access"> {
   let patterns = ["DotGeneralOnlyDiagonalAccess"];
+}
+
+def ApplyDivideNegatedOperandsSimplifyPatterns : EnzymeHLOPatternOp<
+    "divide_negated_operands_simplify"> {
+  let patterns = ["BinaryNegatedOperandsSimplify<stablehlo::DivOp>"];
+}
+
+def ApplyMultiplyNegatedOperandsSimplifyPatterns : EnzymeHLOPatternOp<
+    "multiply_negated_operands_simplify"> {
+  let patterns = ["BinaryNegatedOperandsSimplify<stablehlo::MulOp>"];
 }

@@ -1013,6 +1013,12 @@ def DropUnsupportedAttributesPass : Pass<"drop-unsupported-attributes", "ModuleO
         /*type=*/"bool",
         /*default=*/"true",
         /*description=*/"Drop enzymexla.memory_effects attribute">,
+    Option<
+        /*C++ variable name=*/"enzymexla_analysis_result",
+        /*CLI argument=*/"enzymexla-analysis-result",
+        /*type=*/"bool",
+        /*default=*/"true",
+        /*description=*/"Drop attribute from various analysis results">,
   ];
 }
 
@@ -1037,6 +1043,14 @@ def ConvertTritonToTritonGPUPreservingModuleAttributesPass : Pass<
         /*default=*/"\"\"",
         /*description=*/"the GPU target, e.g., cuda:80, hip:gfx942"
       >];
+}
+
+def EnzymeBatchToStableHLOPass : Pass<"enzyme-batch-to-stablehlo"> {
+  let summary = "Legalize batching specific enzyme ops to stablehlo dialect";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "enzyme::EnzymeDialect"
+  ];
 }
 
 #endif

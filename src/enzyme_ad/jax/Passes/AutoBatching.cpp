@@ -1227,6 +1227,7 @@ struct AutoBatchingPass
                    ConcatInsertDimToBatch<stablehlo::ConcatenateOp>,
                    ConcatInsertDimToBatch<stablehlo::GetDimensionSizeOp>,
                    ConcatInsertDimToBatch<stablehlo::ReverseOp>,
+                   ConcatInsertDimToBatch<stablehlo::ReduceWindowOp>,
                    ConcatInsertDimToBatch<stablehlo::ConvolutionOp>,
                    ConcatInsertDimElementwiseToBatch>(context);
     }
@@ -1242,6 +1243,7 @@ struct AutoBatchingPass
           SliceToBatch<stablehlo::ConcatenateOp>,
           SliceToBatch<stablehlo::GetDimensionSizeOp>,
           SliceToBatch<stablehlo::ReverseOp>,
+          SliceToBatch<stablehlo::ReduceWindowOp>,
           SliceToBatch<stablehlo::ConvolutionOp>,
           // SliceToBatchReshape,
           SliceToBatchElementwise>(context);
