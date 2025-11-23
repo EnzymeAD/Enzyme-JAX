@@ -67,6 +67,7 @@ public:
     refineKind();
   }
 
+  StructuredSparsityKind getKind() const { return kind; }
   int64_t getLowerBandwidth() const { return lowerBandwidth; }
   int64_t getUpperBandwidth() const { return upperBandwidth; }
 
