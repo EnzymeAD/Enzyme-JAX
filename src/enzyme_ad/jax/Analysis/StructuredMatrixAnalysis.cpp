@@ -1,4 +1,5 @@
 #include "src/enzyme_ad/jax/Analysis/StructuredMatrixAnalysis.h"
+#include "src/enzyme_ad/jax/Utils.h"
 
 #include "mlir/Analysis/DataFlow/ConstantPropagationAnalysis.h"
 #include "mlir/Analysis/DataFlow/DeadCodeAnalysis.h"
@@ -221,9 +222,33 @@ ValueProperties::ValueProperties(Value v) {
   if (!defOp)
     return;
 
-  // comm_op(A, A^T) will always be symmetric
+  // check that transpose dimensions are [1,0]
+  auto isTrueTranspose = [](stablehlo::TransposeOp tOp) -> bool {
+    auto perm = tOp.getPermutation();
+    return perm.size() == 2 && perm[0] == 1 && perm[1] == 0;
+  };
 
-  // A x A^T will always be symmetric
+  // comm_op(A, A^T) will always be symmetric
+  if (stablehlo::hasTraitElementwise(defOp) &&
+      (defOp->hasTrait<OpTrait::IsCommutative>() ||
+       defOp->hasTrait<hlo::OpTrait::IsCommutative>())) {
+    auto lhs = defOp->getOperand(0);
+    auto rhs = defOp->getOperand(1);
+
+    if (auto rhsT = rhs.getDefiningOp<stablehlo::TransposeOp>()) {
+      if (isTrueTranspose(rhsT) && lhs == rhsT.getOperand()) {
+        set(ValueProperty::Symmetric);
+      }
+    }
+
+    if (auto lhsT = lhs.getDefiningOp<stablehlo::TransposeOp>()) {
+      if (isTrueTranspose(lhsT) && rhs == lhsT.getOperand()) {
+        set(ValueProperty::Symmetric);
+      }
+    }
+  }
+
+  // TODO: A x A^T will always be symmetric
 
   if (auto bcastOp = dyn_cast<stablehlo::BroadcastInDimOp>(defOp)) {
     auto operand = bcastOp.getOperand();
@@ -232,15 +257,13 @@ ValueProperties::ValueProperties(Value v) {
         set(ValueProperty::UnitDiagonal);
       set(ValueProperty::BroadcastedScalar);
       set(ValueProperty::Symmetric);
+      return;
     }
   }
 
   // TODO: unit diagonal
   //       - iota scatter with constant
 
-  llvm::errs() << "(Not implemented) v: " << v << " properties: ";
-  this->print(llvm::errs());
-  llvm::errs() << "\n";
   return;
 }
 

@@ -132,4 +132,77 @@ def EnzymeXLA_GuaranteedAnalysisResult : I32EnumAttr<"GuaranteedAnalysisResult",
 def EnzymeXLA_GuaranteedAnalysisResultAttr : EnumAttr<EnzymeXLA_Dialect,
     EnzymeXLA_GuaranteedAnalysisResult, "guaranteed">;
 
+def EnzymeXLA_StructuredSparsityKind : I32EnumAttr<"StructuredSparsityKind",
+    "Kind of sparsity pattern",
+    [
+      I32EnumAttrCase<"Unknown", 0>,
+      I32EnumAttrCase<"Dense", 1>,
+      I32EnumAttrCase<"Band", 2>,
+      I32EnumAttrCase<"UpperTriangular", 3>,
+      I32EnumAttrCase<"UpperBidiagonal", 4>,
+      I32EnumAttrCase<"LowerTriangular", 5>,
+      I32EnumAttrCase<"LowerBidiagonal", 6>,
+      I32EnumAttrCase<"Tridiagonal", 7>,
+      I32EnumAttrCase<"Diagonal", 8>,
+      I32EnumAttrCase<"Empty", 9>
+    ]> {
+  let genSpecializedAttr = 0;
+  let cppNamespace = "::mlir::enzymexla";
+}
+
+def EnzymeXLA_StructuredSparsityKindAttr : EnumAttr<EnzymeXLA_Dialect,
+    EnzymeXLA_StructuredSparsityKind, "kind"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
+def EnzymeXLA_StructuredSparsityPattern : AttrDef<EnzymeXLA_Dialect,
+    "StructuredSparsityPattern"> {
+  let summary = "Structured Sparsity Pattern";
+
+  let parameters = (ins
+    "::mlir::enzymexla::StructuredSparsityKind":$kind,
+    "int64_t":$lowerBandwidth,
+    "int64_t":$upperBandwidth
+  );
+
+  let assemblyFormat = [{
+    `<` $kind ` ` `[` $lowerBandwidth `,` ` ` $upperBandwidth `]` `>`
+  }];
+
+  let mnemonic = "structured_sparsity_pattern";
+  let cppNamespace = "::mlir::enzymexla";
+}
+
+def EnzymeXLA_StructuredValueProperty : I32EnumAttr<"StructuredValueProperty",
+    "Value properties",
+    [
+      I32EnumAttrCase<"UnitDiagonal", 0>,
+      I32EnumAttrCase<"Symmetric", 1>,
+      I32EnumAttrCase<"Hermitian", 2>,
+      I32EnumAttrCase<"BroadcastedScalar", 3>
+    ]> {
+  let genSpecializedAttr = 0;
+  let cppNamespace = "::mlir::enzymexla";
+}
+
+def EnzymeXLA_StructuredValuePropertyAttr : EnumAttr<EnzymeXLA_Dialect,
+    EnzymeXLA_StructuredValueProperty, "value_property"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
+def EnzymeXLA_StructuredSparsity : AttrDef<EnzymeXLA_Dialect,
+    "StructuredSparsity"> {
+  let summary = "Structured Sparsity";
+  let cppNamespace = "::mlir::enzymexla";
+
+  let parameters = (ins
+    EnzymeXLA_StructuredSparsityPattern:$pattern,
+    ArrayRefParameter<"StructuredValueProperty">:$valueProperties
+  );
+
+  let mnemonic = "structured_sparsity";
+
+  let hasCustomAssemblyFormat = 1;
+}
+
 #endif // ENZYMEXLA_ATTRS

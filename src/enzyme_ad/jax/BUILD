@@ -837,30 +837,9 @@ cc_library(
 )
 
 cc_library(
-    name = "StructuredMatrixAnalysis",
-    srcs = ["Analysis/StructuredMatrixAnalysis.cpp"],
-    hdrs = ["Analysis/StructuredMatrixAnalysis.h"],
-    deps = [
-        # MLIR Core
-        "@llvm-project//mlir:IR",
-        "@llvm-project//mlir:Support",
-        "@llvm-project//mlir:Pass",
-        "@llvm-project//mlir:Transforms",
-
-        # MLIR Analysis
-        "@llvm-project//mlir:Analysis",
-
-        # MLIR Dialects
-        "@stablehlo//:stablehlo_ops",
-
-        # LLVM Support
-        "@llvm-project//llvm:Support",
-    ],
-)
-
-cc_library(
     name = "XLADerivatives",
     srcs = glob([
+        "Analysis/*.cpp",
         "Implementations/*.cpp",
         "Passes/*.cpp",
         "Dialect/*.cpp",
@@ -870,6 +849,7 @@ cc_library(
         "Utils.cpp",
     ],
     hdrs = glob([
+        "Analysis/*.h",
         "Implementations/*.h",
         "Passes/*.h",
         "Dialect/*.h",
@@ -903,7 +883,6 @@ cc_library(
         ":RaisingTransformOpsIncGen",
         ":RaisingTransformPatternsIncGen",
         ":StablehloOptPatternsIncGen",
-        ":StructuredMatrixAnalysis",
         ":TesseraDialectIncGen",
         ":TesseraOpsIncGen",
         ":TritonExtDialect",
