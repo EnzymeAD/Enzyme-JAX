@@ -88,6 +88,10 @@ public:
     return os;
   }
 
+  // propagation rules
+  static StructuredSparsityPattern propagateTranspose(
+      const StructuredSparsityPattern &op);
+
 private:
   void initializeBandwidths();
   void refineKind();
@@ -203,7 +207,14 @@ public:
     return os;
   }
 
-  // TODO: propagation rules probably goes in here
+  // propagation rules
+  static StructuredMatrixType propagateTranspose(const StructuredMatrixType &op);
+
+  static StructuredMatrixType propagateAdd(const StructuredMatrixType &lhs,
+                                           const StructuredMatrixType &rhs);
+
+  static StructuredMatrixType propagateMultiply(const StructuredMatrixType &lhs,
+                                                const StructuredMatrixType &rhs);
 
   // TODO: implement queries that check both the sparsity pattern and value
   // properties and return specific matrix kinds

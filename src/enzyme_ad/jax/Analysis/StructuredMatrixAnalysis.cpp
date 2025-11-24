@@ -33,8 +33,6 @@ StructuredSparsityPattern::StructuredSparsityPattern(Value v) {
     return;
   }
 
-  llvm::errs() << "TODO: structured sparsity pattern not implemented for " << v
-               << "\n";
   setUnknown();
   return;
 }
@@ -130,9 +128,8 @@ StructuredSparsityPattern::meet(const StructuredSparsityPattern &lhs,
   if (rhs.kind == StructuredSparsityKind::Unknown)
     return lhs;
 
-  // for all other cases, we take the min of the bandwidths and refine
-  auto lb = std::min(lhs.lowerBandwidth, rhs.lowerBandwidth);
-  auto ub = std::min(lhs.upperBandwidth, rhs.upperBandwidth);
+  auto lb = std::max(lhs.lowerBandwidth, rhs.lowerBandwidth);
+  auto ub = std::max(lhs.upperBandwidth, rhs.upperBandwidth);
   auto newPattern = StructuredSparsityPattern(lb, ub);
   newPattern.refineKind();
   return newPattern;
@@ -151,9 +148,17 @@ StructuredSparsityPattern::join(const StructuredSparsityPattern &lhs,
       rhs.kind == StructuredSparsityKind::Unknown)
     return StructuredSparsityPattern(StructuredSparsityKind::Unknown);
 
-  auto lb = std::max(lhs.lowerBandwidth, rhs.lowerBandwidth);
-  auto ub = std::max(lhs.upperBandwidth, rhs.upperBandwidth);
+  auto lb = std::min(lhs.lowerBandwidth, rhs.lowerBandwidth);
+  auto ub = std::min(lhs.upperBandwidth, rhs.upperBandwidth);
   auto newPattern = StructuredSparsityPattern(lb, ub);
+  newPattern.refineKind();
+  return newPattern;
+}
+
+StructuredSparsityPattern StructuredSparsityPattern::propagateTranspose(
+    const StructuredSparsityPattern &op) {
+  auto newPattern = StructuredSparsityPattern(op.upperBandwidth,
+                                              op.lowerBandwidth);
   newPattern.refineKind();
   return newPattern;
 }
@@ -413,6 +418,31 @@ void StructuredMatrixType::print(raw_ostream &os) const {
   os << ")";
 }
 
+StructuredMatrixType StructuredMatrixType::propagateTranspose(
+    const StructuredMatrixType &op) {
+  return StructuredMatrixType(
+      StructuredSparsityPattern::propagateTranspose(op.sparsityPattern),
+      op.valueProperties);
+}
+
+StructuredMatrixType StructuredMatrixType::propagateAdd(
+    const StructuredMatrixType &lhs, const StructuredMatrixType &rhs) {
+  ValueProperties valProps;
+  // TODO: If one is unit diag and other is zeros, we can propagate the other
+  // to the unit diag
+  if (lhs.getProperties().isSymmetric() && rhs.getProperties().isSymmetric()) {
+    valProps.set(ValueProperty::Symmetric);
+  }
+  if (lhs.getProperties().isBroadcastedScalar() &&
+      rhs.getProperties().isBroadcastedScalar()) {
+    valProps.set(ValueProperty::BroadcastedScalar);
+  }
+
+  return StructuredMatrixType(
+      StructuredSparsityPattern::meet(lhs.sparsityPattern, rhs.sparsityPattern),
+      valProps);
+}
+
 //===----------------------------------------------------------------------===//
 // Lattice Element
 //===----------------------------------------------------------------------===//
@@ -465,11 +495,44 @@ void StructuredMatrixAnalysis::setToEntryState(
 LogicalResult StructuredMatrixAnalysis::visitOperation(
     Operation *op, ArrayRef<const StructuredMatrixLattice *> operands,
     ArrayRef<StructuredMatrixLattice *> results) {
+  SmallVector<bool> updatedProps(results.size(), false);
+  SmallVector<StructuredMatrixType> propagatedProps(results.size());
+
+  // transpose
+  if (auto transposeOp = dyn_cast<stablehlo::TransposeOp>(op)) {
+    updatedProps[0] = true;
+    propagatedProps[0] = StructuredMatrixType::propagateTranspose(
+        operands[0]->getValue());
+  }
+
+  // elementwise
+  /// add
+  if (auto addOp = dyn_cast<stablehlo::AddOp>(op)) {
+    updatedProps[0] = true;
+    propagatedProps[0] = StructuredMatrixType::propagateAdd(
+        operands[0]->getValue(), operands[1]->getValue());
+  }
+
+  /// mul
+
+  // finalize
+  for (size_t i = 0; i < results.size(); i++) {
+    if (updatedProps[i]) {
+      results[i]->setValue(
+          StructuredMatrixType::join(results[i]->getValue(), propagatedProps[i]));
+    }
+  }
+
 
   llvm::errs() << "Visiting operation " << *op << "\n";
   for (auto operand : operands) {
     llvm::errs() << "    operand: ";
     operand->getValue().print(llvm::errs());
+    llvm::errs() << "\n";
+  }
+  for (auto result : results) {
+    llvm::errs() << "    result: ";
+    result->getValue().print(llvm::errs());
     llvm::errs() << "\n";
   }
   llvm::errs() << "\n";
