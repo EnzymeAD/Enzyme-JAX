@@ -427,7 +427,11 @@ def SyrkOp: EnzymeXLA_Op<"blas.syrk", [Pure, SameOperandsAndResultElementType]> 
   let summary = "Multiplication involving a symmetric matrix";
 
   let description = [{
-    C := alpha*A*A^T + beta*C, or C := alpha*A^T*A + beta*C, where alpha and beta are scalars. C must be a n x n symmetric matrix."
+    C := alpha*A*A^T + beta*C, or C := alpha*A^T*A + beta*C, where alpha and beta are
+    scalars. C must be a n x n symmetric matrix.
+
+    If `fill` is present, then both the upper and lower triangles of the matrix are filled.
+    Otherwise only accessing `uplo` is valid.
   }];
 
   let arguments = (ins
@@ -436,7 +440,8 @@ def SyrkOp: EnzymeXLA_Op<"blas.syrk", [Pure, SameOperandsAndResultElementType]> 
     TensorFloat:$alpha,
     TensorFloat:$beta,
     EnzymeXLA_LapackUploAttr:$uplo,
-    DefaultValuedAttr<EnzymeXLA_LapackTransposeAttr, "::mlir::enzymexla::LapackTranspose::none">:$transpose
+    DefaultValuedAttr<EnzymeXLA_LapackTransposeAttr, "::mlir::enzymexla::LapackTranspose::none">:$transpose,
+    OptionalAttr<UnitAttr>:$fill
   );
 
   let results = (outs
