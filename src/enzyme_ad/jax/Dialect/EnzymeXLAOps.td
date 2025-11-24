@@ -435,6 +435,7 @@ def SyrkOp: EnzymeXLA_Op<"blas.syrk", [Pure, SameOperandsAndResultElementType]> 
     HLO_Tensor:$C,
     TensorFloat:$alpha,
     TensorFloat:$beta,
+    EnzymeXLA_LapackUploAttr:$uplo,
     DefaultValuedAttr<EnzymeXLA_LapackTransposeAttr, "::mlir::enzymexla::LapackTranspose::none">:$transpose
   );
 
