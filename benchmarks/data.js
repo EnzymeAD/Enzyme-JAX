@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1763944641650,
+  "lastUpdate": 1763982352372,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "avikpal@mit.edu",
-            "name": "Avik Pal",
-            "username": "avik-pal"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "04d3efd7363e3499e4ad92c9835b2f2ec0401116",
-          "message": "feat: optimized conv batching (#1569)\n\n* refactor: cleanup generic batch op interface to use batchutils\n\n* feat: better conv batching\n\n* test: conv batching\n\n* fix: stop using deprecated api\n\n* feat: exploit the batch_group_dim for batching kernel\n\n* chore: run fmt\n\n* test: update\n\n* fix: mimic jax batching\n\n* fix: layout\n\n* test: update",
-          "timestamp": "2025-11-04T22:31:17-05:00",
-          "tree_id": "2542f308d8143af4d3b10e9161527a03b04495e0",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/04d3efd7363e3499e4ad92c9835b2f2ec0401116"
-        },
-        "date": 1762319835724,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.000004327598999952898,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.000004309819897753186,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001458566345012,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001412948345008,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2199,6 +2155,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001495373456,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "wmoses@google.com",
+            "name": "William Moses",
+            "username": "wsmoses"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f9784e443d54e91422ca841a66f56860aeb7af92",
+          "message": "Update enzyme for fwddiff (#1645)",
+          "timestamp": "2025-11-23T22:52:06-06:00",
+          "tree_id": "d218198ad6499354d6fb8ad358f2b17626b4c9ab",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/f9784e443d54e91422ca841a66f56860aeb7af92"
+        },
+        "date": 1763982351343,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004370322999966447,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004389473999981419,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001559570289999,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001467021811,
             "unit": "s"
           }
         ]
