@@ -663,6 +663,9 @@ SymmetricResultAnalysis::State SymmetricResultAnalysis::localGuaranteed(
   if (!op)
     return State::NOTGUARANTEED;
 
+  if (isa<enzymexla::SyrkOp>(op))
+    return State::GUARANTEED;
+
   // check that transpose dimensions are [1,0]
   auto isTrueTranspose = [](stablehlo::TransposeOp tOp) -> bool {
     auto perm = tOp.getPermutation();

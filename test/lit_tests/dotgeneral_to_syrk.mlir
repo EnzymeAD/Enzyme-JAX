@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(enzyme-hlo-generate-td{patterns=dot_general_to_syrk;transpose_syrk_to_syrk;fuse_mul_into_syrk},transform-interpreter,enzyme-hlo-remove-transform,enzyme-hlo-opt)" %s | FileCheck %s
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(enzyme-hlo-generate-td{patterns=dot_general_to_syrk;transpose_syrk_to_syrk;fuse_mul_into_syrk;fuse_add_into_syrk},transform-interpreter,enzyme-hlo-remove-transform,enzyme-hlo-opt)" %s | FileCheck %s
 
 func.func @main1(%arg0: tensor<64x32xf32>) -> tensor<64x64xf32> {
   %cst = stablehlo.constant dense<5.000000e-01> : tensor<64x64xf32>
