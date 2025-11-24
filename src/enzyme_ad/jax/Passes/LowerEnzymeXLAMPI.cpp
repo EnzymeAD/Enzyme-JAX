@@ -35,8 +35,8 @@ struct MPICommRankOpLowering
 
   LogicalResult matchAndRewrite(enzymexla::MPICommRankOp op,
                                 PatternRewriter &rewriter) const override {
-    // auto ctx = op->getContext();
-    // LLVMTypeConverter typeConverter(ctx);
+    auto ctx = op->getContext();
+    LLVMTypeConverter typeConverter(ctx);
 
     auto comm = op.getOperand();
     if (backend == "cpu") {
