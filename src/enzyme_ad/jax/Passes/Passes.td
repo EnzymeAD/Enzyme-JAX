@@ -466,6 +466,14 @@ def LowerEnzymeXLAMPIPass : Pass<"lower-enzymexla-mpi"> {
     "enzymexla::EnzymeXLADialect",
     "LLVM::LLVMDialect",
   ];
+  let options = [
+    Option<
+        /*C++ variable name=*/"backend",
+        /*CLI argument=*/"backend",
+        /*type=*/"std::string",
+        /*default=*/"\"cpu\"",
+        /*description=*/"HW backend">,
+  ];
 }
 
 def LowerEnzymeXLALapackPass : Pass<"lower-enzymexla-lapack"> {
