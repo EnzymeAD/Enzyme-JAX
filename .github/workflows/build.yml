@@ -99,7 +99,7 @@ jobs:
           BAZEL_FLAGS="${BAZEL_FLAGS} --repo_env=CC=`which clang`"
           BAZEL_FLAGS="${BAZEL_FLAGS} --define=using_clang=true"
           echo "BAZEL_FLAGS=${BAZEL_FLAGS}" >> "${GITHUB_ENV}"
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - uses: bazel-contrib/setup-bazel@0.15.0
         name: Set up Bazel
         with:
@@ -181,7 +181,7 @@ jobs:
       - name: Install Dependencies
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - name: Download all benchmark artifacts
         uses: actions/download-artifact@v6
         with:
