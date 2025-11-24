@@ -1819,7 +1819,7 @@ def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
         newpasses = (
             prev_passes
             + ad_pass
-            + ",arith-raise{stablehlo=true},cenzyme-batch-to-stablehlo,canonicalize, remove-unnecessary-enzyme-ops, enzyme-simplify-math, "
+            + ",arith-raise{stablehlo=true},enzyme-batch-to-stablehlo,canonicalize, remove-unnecessary-enzyme-ops, enzyme-simplify-math, "
             + optimization_passes()
             + ", canonicalize, cse"
             + post_passes
