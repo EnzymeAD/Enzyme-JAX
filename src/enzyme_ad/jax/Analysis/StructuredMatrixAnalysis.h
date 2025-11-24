@@ -12,6 +12,16 @@ namespace structure_analysis {
 
 namespace utils {
 
+static bool isZero(APInt v) { return v.isZero(); }
+static bool isZero(APFloat v) { return v.isZero(); }
+static bool isZero(Attribute v) {
+  if (auto intAttr = dyn_cast<IntegerAttr>(v))
+    return isZero(intAttr.getValue());
+  if (auto floatAttr = dyn_cast<FloatAttr>(v))
+    return isZero(floatAttr.getValue());
+  return false;
+}
+
 static bool isOne(APInt v) { return v.isOne(); }
 static bool isOne(APFloat v) { return v.isExactlyValue(1.0); }
 static bool isOne(Attribute v) {
@@ -89,8 +99,8 @@ public:
   }
 
   // propagation rules
-  static StructuredSparsityPattern propagateTranspose(
-      const StructuredSparsityPattern &op);
+  static StructuredSparsityPattern
+  propagateTranspose(Value val, const StructuredSparsityPattern &op);
 
 private:
   void initializeBandwidths();
@@ -208,13 +218,20 @@ public:
   }
 
   // propagation rules
-  static StructuredMatrixType propagateTranspose(const StructuredMatrixType &op);
+  static StructuredMatrixType
+  propagateTranspose(Value val, const StructuredMatrixType &op);
 
-  static StructuredMatrixType propagateAdd(const StructuredMatrixType &lhs,
-                                           const StructuredMatrixType &rhs);
+  static StructuredMatrixType propagateAdd(Value lhs, Value rhs,
+                                           const StructuredMatrixType &lhsType,
+                                           const StructuredMatrixType &rhsType);
 
-  static StructuredMatrixType propagateMultiply(const StructuredMatrixType &lhs,
-                                                const StructuredMatrixType &rhs);
+  static StructuredMatrixType
+  propagateMultiply(Value lhs, Value rhs, const StructuredMatrixType &lhsType,
+                    const StructuredMatrixType &rhsType);
+
+  static StructuredMatrixType
+  propagateElementwise(ArrayRef<Value> operands,
+                       SmallVectorImpl<StructuredMatrixType> &operandsType);
 
   // TODO: implement queries that check both the sparsity pattern and value
   // properties and return specific matrix kinds

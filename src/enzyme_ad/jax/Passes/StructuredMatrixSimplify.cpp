@@ -147,7 +147,7 @@ public:
       }
 
       if (anyKnown) {
-        op->setAttr("structured_sparsity",
+        op->setAttr("enzymexla.structured_sparsity",
                     ArrayAttr::get(mod.getContext(), structuredSparsityAttrs));
       }
 

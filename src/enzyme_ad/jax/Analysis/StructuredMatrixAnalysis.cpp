@@ -156,9 +156,9 @@ StructuredSparsityPattern::join(const StructuredSparsityPattern &lhs,
 }
 
 StructuredSparsityPattern StructuredSparsityPattern::propagateTranspose(
-    const StructuredSparsityPattern &op) {
-  auto newPattern = StructuredSparsityPattern(op.upperBandwidth,
-                                              op.lowerBandwidth);
+    Value val, const StructuredSparsityPattern &op) {
+  auto newPattern =
+      StructuredSparsityPattern(op.upperBandwidth, op.lowerBandwidth);
   newPattern.refineKind();
   return newPattern;
 }
@@ -253,11 +253,52 @@ ValueProperties::ValueProperties(Value v) {
     }
   }
 
-  // TODO: A x A^T will always be symmetric
+  if (auto dotGeneralOp = dyn_cast<stablehlo::DotGeneralOp>(defOp)) {
+    auto dotDimNumbers = dotGeneralOp.getDotDimensionNumbers();
+    auto lhs = dotGeneralOp.getLhs();
+    auto rhs = dotGeneralOp.getRhs();
+
+    if (dotDimNumbers.getLhsBatchingDimensions().size() == 0 &&
+        dotDimNumbers.getRhsBatchingDimensions().size() == 0) {
+      // lhs == rhs => check for the dimension numbers
+      if (lhs == rhs) {
+        if (dotDimNumbers.getLhsContractingDimensions().size() == 1 &&
+            dotDimNumbers.getRhsContractingDimensions().size() == 1 &&
+            dotDimNumbers.getLhsContractingDimensions()[0] ==
+                dotDimNumbers.getRhsContractingDimensions()[0]) {
+          set(ValueProperty::Symmetric);
+        }
+      }
+
+      // check operands are transposed: `A x A^T` and `A^T x A`
+      if (auto lhsT = lhs.getDefiningOp<stablehlo::TransposeOp>()) {
+        if (isTrueTranspose(lhsT) && rhs == lhsT.getOperand()) {
+          if (dotDimNumbers.getLhsContractingDimensions().size() == 1 &&
+              dotDimNumbers.getRhsContractingDimensions().size() == 1 &&
+              dotDimNumbers.getLhsContractingDimensions()[0] ==
+                  1 - dotDimNumbers.getRhsContractingDimensions()[0]) {
+            set(ValueProperty::Symmetric);
+          }
+        }
+      }
+
+      if (auto rhsT = rhs.getDefiningOp<stablehlo::TransposeOp>()) {
+        if (isTrueTranspose(rhsT) && lhs == rhsT.getOperand()) {
+          if (dotDimNumbers.getLhsContractingDimensions().size() == 1 &&
+              dotDimNumbers.getRhsContractingDimensions().size() == 1 &&
+              dotDimNumbers.getLhsContractingDimensions()[0] ==
+                  1 - dotDimNumbers.getRhsContractingDimensions()[0]) {
+            set(ValueProperty::Symmetric);
+          }
+        }
+      }
+    }
+  }
 
   if (auto bcastOp = dyn_cast<stablehlo::BroadcastInDimOp>(defOp)) {
     auto operand = bcastOp.getOperand();
-    if (cast<RankedTensorType>(operand.getType()).getRank() == 0) { // bcast(scalar)
+    if (cast<RankedTensorType>(operand.getType()).getRank() ==
+        0) {                              // bcast(scalar)
       if (matchPattern(operand, m_One())) // bcast(1)
         set(ValueProperty::UnitDiagonal);
       set(ValueProperty::BroadcastedScalar);
@@ -418,29 +459,84 @@ void StructuredMatrixType::print(raw_ostream &os) const {
   os << ")";
 }
 
-StructuredMatrixType StructuredMatrixType::propagateTranspose(
-    const StructuredMatrixType &op) {
+StructuredMatrixType
+StructuredMatrixType::propagateTranspose(Value val,
+                                         const StructuredMatrixType &op) {
   return StructuredMatrixType(
-      StructuredSparsityPattern::propagateTranspose(op.sparsityPattern),
+      StructuredSparsityPattern::propagateTranspose(val, op.sparsityPattern),
       op.valueProperties);
 }
 
-StructuredMatrixType StructuredMatrixType::propagateAdd(
-    const StructuredMatrixType &lhs, const StructuredMatrixType &rhs) {
+StructuredMatrixType
+StructuredMatrixType::propagateAdd(Value lhs, Value rhs,
+                                   const StructuredMatrixType &lhsType,
+                                   const StructuredMatrixType &rhsType) {
   ValueProperties valProps;
-  // TODO: If one is unit diag and other is zeros, we can propagate the other
+
+  // If one is unit diag and other is zeros, we can propagate the other
   // to the unit diag
-  if (lhs.getProperties().isSymmetric() && rhs.getProperties().isSymmetric()) {
+  SplatElementsAttr lhsSplat, rhsSplat;
+  if (lhsType.getProperties().hasUnitDiagonal() &&
+      matchPattern(lhs, m_Constant(&lhsSplat))) {
+    if (utils::isZero(lhsSplat.getSplatValue<Attribute>())) {
+      valProps.set(ValueProperty::UnitDiagonal);
+    }
+  }
+  if (rhsType.getProperties().hasUnitDiagonal() &&
+      matchPattern(rhs, m_Constant(&rhsSplat))) {
+    if (utils::isZero(rhsSplat.getSplatValue<Attribute>())) {
+      valProps.set(ValueProperty::UnitDiagonal);
+    }
+  }
+
+  if (lhsType.getProperties().isSymmetric() &&
+      rhsType.getProperties().isSymmetric()) {
     valProps.set(ValueProperty::Symmetric);
   }
-  if (lhs.getProperties().isBroadcastedScalar() &&
-      rhs.getProperties().isBroadcastedScalar()) {
+  if (lhsType.getProperties().isBroadcastedScalar() &&
+      rhsType.getProperties().isBroadcastedScalar()) {
     valProps.set(ValueProperty::BroadcastedScalar);
   }
 
   return StructuredMatrixType(
-      StructuredSparsityPattern::meet(lhs.sparsityPattern, rhs.sparsityPattern),
+      StructuredSparsityPattern::meet(lhsType.sparsityPattern,
+                                      rhsType.sparsityPattern),
       valProps);
+}
+
+StructuredMatrixType
+StructuredMatrixType::propagateMultiply(Value lhs, Value rhs,
+                                        const StructuredMatrixType &lhsType,
+                                        const StructuredMatrixType &rhsType) {
+  return StructuredMatrixType::meet(lhsType, rhsType);
+}
+
+// TODO: we ideally want to special case elementwise ops that preserve certain
+// properties
+StructuredMatrixType StructuredMatrixType::propagateElementwise(
+    ArrayRef<Value> operands,
+    SmallVectorImpl<StructuredMatrixType> &operandsType) {
+  // TODO: propagate structure
+
+  ValueProperties valueProperties;
+  // TODO: propagate hermitian
+  bool allSymmetric = true, allScalar = true;
+  for (auto opType : operandsType) {
+    if (!opType.getProperties().isSymmetric()) {
+      allSymmetric = false;
+    }
+    if (!opType.getProperties().isBroadcastedScalar()) {
+      allScalar = false;
+    }
+  }
+  if (allSymmetric) {
+    valueProperties.set(ValueProperty::Symmetric);
+  }
+  if (allScalar) {
+    valueProperties.set(ValueProperty::BroadcastedScalar);
+  }
+
+  return StructuredMatrixType(StructuredSparsityPattern(), valueProperties);
 }
 
 //===----------------------------------------------------------------------===//
@@ -498,11 +594,16 @@ LogicalResult StructuredMatrixAnalysis::visitOperation(
   SmallVector<bool> updatedProps(results.size(), false);
   SmallVector<StructuredMatrixType> propagatedProps(results.size());
 
+  SmallVector<StructuredMatrixType> operandValues(operands.size());
+  for (size_t i = 0; i < operands.size(); i++) {
+    operandValues[i] = operands[i]->getValue();
+  }
+
   // transpose
   if (auto transposeOp = dyn_cast<stablehlo::TransposeOp>(op)) {
     updatedProps[0] = true;
     propagatedProps[0] = StructuredMatrixType::propagateTranspose(
-        operands[0]->getValue());
+        transposeOp.getOperand(), operandValues[0]);
   }
 
   // elementwise
@@ -510,32 +611,41 @@ LogicalResult StructuredMatrixAnalysis::visitOperation(
   if (auto addOp = dyn_cast<stablehlo::AddOp>(op)) {
     updatedProps[0] = true;
     propagatedProps[0] = StructuredMatrixType::propagateAdd(
-        operands[0]->getValue(), operands[1]->getValue());
+        addOp.getLhs(), addOp.getRhs(), operandValues[0], operandValues[1]);
   }
 
   /// mul
+  if (auto mulOp = dyn_cast<stablehlo::MulOp>(op)) {
+    updatedProps[0] = true;
+    propagatedProps[0] = StructuredMatrixType::propagateMultiply(
+        mulOp.getLhs(), mulOp.getRhs(), operandValues[0], operandValues[1]);
+  }
+
+  /// fallback for other elementwise ops
+  if (stablehlo::hasTraitElementwise(op)) {
+    updatedProps[0] = true;
+    propagatedProps[0] = StructuredMatrixType::propagateElementwise(
+        llvm::to_vector<3>(op->getOperands()), operandValues);
+  }
+
+  // pass through ops
+  if (isa<stablehlo::ConvertOp>(op)) {
+    updatedProps[0] = true;
+    propagatedProps[0] = operandValues[0];
+  }
 
   // finalize
   for (size_t i = 0; i < results.size(); i++) {
     if (updatedProps[i]) {
-      results[i]->setValue(
-          StructuredMatrixType::join(results[i]->getValue(), propagatedProps[i]));
+      auto resultOrig = results[i]->getValue();
+      auto resultNew =
+          StructuredMatrixType::join(resultOrig, propagatedProps[i]);
+      results[i]->setValue(resultNew);
+      propagateIfChanged(results[i], resultNew == resultOrig
+                                         ? ChangeResult::NoChange
+                                         : ChangeResult::Change);
     }
   }
-
-
-  llvm::errs() << "Visiting operation " << *op << "\n";
-  for (auto operand : operands) {
-    llvm::errs() << "    operand: ";
-    operand->getValue().print(llvm::errs());
-    llvm::errs() << "\n";
-  }
-  for (auto result : results) {
-    llvm::errs() << "    result: ";
-    result->getValue().print(llvm::errs());
-    llvm::errs() << "\n";
-  }
-  llvm::errs() << "\n";
 
   return success();
 }
