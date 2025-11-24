@@ -427,7 +427,7 @@ def SyrkOp: EnzymeXLA_Op<"blas.syrk", [Pure, SameOperandsAndResultElementType]> 
   let summary = "Multiplication involving a symmetric matrix";
 
   let description = [{
-    C := alpha*A*A^T + beta*C, or C := alpha*A^T*A + beta*C, where alpha and beta are scalars,  A is a symmetric matrix"
+    C := alpha*A*A^T + beta*C, or C := alpha*A^T*A + beta*C, where alpha and beta are scalars. C must be a n x n symmetric matrix."
   }];
 
   let arguments = (ins
