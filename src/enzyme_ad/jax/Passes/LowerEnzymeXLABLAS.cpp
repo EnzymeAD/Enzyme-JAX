@@ -66,6 +66,8 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
 
     auto blasIntType = rewriter.getIntegerType(blasIntWidth);
     auto intType = RankedTensorType::get({}, blasIntType);
+    auto uint8Type =
+        RankedTensorType::get({}, rewriter.getIntegerType(8, false));
     auto llvmPtrType = LLVM::LLVMPointerType::get(ctx);
     auto llvmVoidType = LLVM::LLVMVoidType::get(ctx);
     auto llvmIntType = typeConverter.convertType(blasIntType);
@@ -153,7 +155,7 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
 
     SmallVector<Attribute> aliases;
     aliases.push_back(stablehlo::OutputOperandAliasAttr::get(
-        ctx, std::vector<int64_t>{0}, 8, std::vector<int64_t>{}));
+        ctx, std::vector<int64_t>{}, 8, std::vector<int64_t>{}));
 
     func::FuncOp shloFunc;
 
@@ -196,13 +198,11 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
           stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), C, 0));
 
       auto uploConst = stablehlo::ConstantOp::create(
-          rewriter, op.getLoc(), intType,
-          cast<ElementsAttr>(
-              makeAttr(RankedTensorType::get({}, blasIntType), uploValue)));
+          rewriter, op.getLoc(), uint8Type,
+          cast<ElementsAttr>(makeAttr(uint8Type, uploValue)));
       auto transConst = stablehlo::ConstantOp::create(
-          rewriter, op.getLoc(), intType,
-          cast<ElementsAttr>(
-              makeAttr(RankedTensorType::get({}, blasIntType), transValue)));
+          rewriter, op.getLoc(), uint8Type,
+          cast<ElementsAttr>(makeAttr(uint8Type, transValue)));
 
       // {uplo, trans, n, k, alpha, A, lda, beta, C, ldc}
       auto jitCall = enzymexla::JITCallOp::create(
