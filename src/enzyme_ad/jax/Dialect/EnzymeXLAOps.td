@@ -423,6 +423,58 @@ def SymmOp: EnzymeXLA_Op<"blas.symm", [Pure, SameOperandsAndResultElementType]> 
   }];
 }
 
+def SyrkOp: EnzymeXLA_Op<"blas.syrk", [Pure, SameOperandsAndResultElementType]> {
+  let summary = "Multiplication involving a symmetric matrix";
+
+  let description = [{
+    C := alpha*A*A^T + beta*C, or C := alpha*A^T*A + beta*C, where alpha and beta are scalars. C must be a n x n symmetric matrix."
+  }];
+
+  let arguments = (ins
+    HLO_Tensor:$A,
+    HLO_Tensor:$C,
+    TensorFloat:$alpha,
+    TensorFloat:$beta,
+    EnzymeXLA_LapackUploAttr:$uplo,
+    DefaultValuedAttr<EnzymeXLA_LapackTransposeAttr, "::mlir::enzymexla::LapackTranspose::none">:$transpose
+  );
+
+  let results = (outs
+    HLO_Tensor: $output
+  );
+
+  let assemblyFormat = [{
+    $A `,` $C `,` $alpha `,` $beta attr-dict `:` functional-type(operands, results)
+  }];
+}
+
+def TrmmOp: EnzymeXLA_Op<"blas.trmm", [Pure, SameOperandsAndResultElementType]> {
+  let summary = "Multiplication involving a triangular matrix";
+
+  let description = [{
+    B := alpha * op(A) x B, or B := alpha * B x op(A), where alpha is a scalar,
+    B is a m x n matrix, A is a unit, or non-unit, upper or lower triangular
+    matrix, and op(A) is one of op(A) = A, or op(A) = A^T or A^H.
+  }];
+
+  let arguments = (ins
+    HLO_Tensor:$A,
+    HLO_Tensor:$B,
+    TensorFloat:$alpha,
+    EnzymeXLA_LapackSideAttr:$side,
+    EnzymeXLA_LapackUploAttr:$uplo,
+    EnzymeXLA_LapackTransposeAttr:$transpose
+  );
+
+  let results = (outs
+    HLO_Tensor: $output
+  );
+
+  let assemblyFormat = [{
+    $A `,` $B `,` $alpha `,` attr-dict `:` functional-type(operands, results)
+  }];
+}
+
 def LUFactorizationOp: EnzymeXLA_Op<"linalg.lu", [Pure]> {
   let summary = "LU factorization operation with RowMaximum pivoting.";
 
