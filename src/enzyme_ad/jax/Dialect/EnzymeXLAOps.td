@@ -423,6 +423,30 @@ def SymmOp: EnzymeXLA_Op<"blas.symm", [Pure, SameOperandsAndResultElementType]> 
   }];
 }
 
+def SyrkOp: EnzymeXLA_Op<"blas.syrk", [Pure, SameOperandsAndResultElementType]> {
+  let summary = "Multiplication involving a symmetric matrix";
+
+  let description = [{
+    C := alpha*A*A^T + beta*C, or C := alpha*A^T*A + beta*C, where alpha and beta are scalars,  A is a symmetric matrix"
+  }];
+
+  let arguments = (ins
+    HLO_Tensor:$A,
+    HLO_Tensor:$C,
+    TensorFloat:$alpha,
+    TensorFloat:$beta,
+    DefaultValuedAttr<EnzymeXLA_LapackTransposeAttr, "::mlir::enzymexla::LapackTranspose::none">:$transpose
+  );
+
+  let results = (outs
+    HLO_Tensor: $output
+  );
+
+  let assemblyFormat = [{
+    $A `,` $C `,` $alpha `,` $beta attr-dict `:` functional-type(operands, results)
+  }];
+}
+
 def LUFactorizationOp: EnzymeXLA_Op<"linalg.lu", [Pure]> {
   let summary = "LU factorization operation with RowMaximum pivoting.";
 
