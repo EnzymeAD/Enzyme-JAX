@@ -57,15 +57,16 @@ module {
 // CHECK-NEXT:  }
 
 // Test 5: Reverse a splat constant - should replace with operand
+// Use a huge tensor shape that is clearly above any max threshold
 module {
-  func.func @main() -> tensor<4xf64> {
-    %cst = stablehlo.constant dense<5.0> : tensor<4xf64>
-    %0 = stablehlo.reverse %cst, dims = [0] : tensor<4xf64>
-    return %0 : tensor<4xf64>
+  func.func @main() -> tensor<1000000xf64> {
+    %cst = stablehlo.constant dense<5.0> : tensor<1000000xf64>
+    %0 = stablehlo.reverse %cst, dims = [0] : tensor<1000000xf64>
+    return %0 : tensor<1000000xf64>
   }
 }
 
-// CHECK:  func.func @main() -> tensor<4xf64> {
-// CHECK-NEXT:    %cst = stablehlo.constant dense<5.000000e+00> : tensor<4xf64>
-// CHECK-NEXT:    return %cst : tensor<4xf64>
+// CHECK:  func.func @main() -> tensor<1000000xf64> {
+// CHECK-NEXT:    %cst = stablehlo.constant dense<5.000000e+00> : tensor<1000000xf64>
+// CHECK-NEXT:    return %cst : tensor<1000000xf64>
 // CHECK-NEXT:  }
