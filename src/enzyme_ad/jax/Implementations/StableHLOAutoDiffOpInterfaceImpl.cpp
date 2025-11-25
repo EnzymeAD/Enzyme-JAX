@@ -3166,44 +3166,6 @@ struct IfOpEnzymeOpsRemover
   }
 };
 
-Value getScalarInitValue(Operation *op, OpBuilder &builder) {
-  if (!op)
-    return nullptr;
-
-  // Splatted Constant
-  SplatElementsAttr elems;
-  if (matchPattern(op, m_Constant(&elems))) {
-    auto scalarElemType = RankedTensorType::get(
-        {}, cast<TensorType>(op->getResult(0).getType()).getElementType());
-    auto constInit = ConstantOp::create(builder, op->getLoc(), scalarElemType,
-                                        elems.resizeSplat(scalarElemType));
-    return constInit;
-  }
-
-  // BroadcastInDim / Reshape
-  if (isa<stablehlo::BroadcastInDimOp, stablehlo::ReshapeOp>(op)) {
-    if (cast<RankedTensorType>(op->getOperand(0).getType()).getRank() == 0) {
-      return op->getOperand(0);
-    }
-  }
-
-  // Convert
-  if (auto convertOp = dyn_cast<stablehlo::ConvertOp>(op)) {
-    auto scalar =
-        getScalarInitValue(convertOp.getOperand().getDefiningOp(), builder);
-    if (scalar) {
-      auto convertOutElemType =
-          cast<RankedTensorType>(convertOp.getResult().getType())
-              .getElementType();
-      return stablehlo::ConvertOp::create(
-          builder, op->getLoc(), RankedTensorType::get({}, convertOutElemType),
-          scalar);
-    }
-  }
-
-  return nullptr;
-}
-
 struct SHLOReduceOpBatchInterface
     : public BatchOpInterface::ExternalModel<SHLOReduceOpBatchInterface,
                                              ReduceOp> {
@@ -3234,8 +3196,7 @@ struct SHLOReduceOpBatchInterface
     newReduceInits.reserve(reduceOp.getInitValues().size());
     for (auto opValue : reduceOp.getInitValues()) {
       auto batchedInit = mapper.lookup(opValue);
-      auto scalarInit =
-          getScalarInitValue(batchedInit.getDefiningOp(), builder);
+      auto scalarInit = getScalarValue(batchedInit.getDefiningOp(), builder);
       if (!scalarInit) {
         // TODO: we need to support broadcasting inits, or do we?
         src->emitError("Unsupported reduce init for batched reduce");
@@ -3316,8 +3277,7 @@ struct SHLOReduceWindowOpBatchInterface
     newReduceWindowInits.reserve(reduceWindowOp.getInitValues().size());
     for (auto opValue : reduceWindowOp.getInitValues()) {
       auto batchedInit = mapper.lookup(opValue);
-      auto scalarInit =
-          getScalarInitValue(batchedInit.getDefiningOp(), builder);
+      auto scalarInit = getScalarValue(batchedInit.getDefiningOp(), builder);
       if (!scalarInit) {
         src->emitError(
             "Unsupported reduce window init for batched reduce window");

@@ -2519,3 +2519,23 @@ def ApplyMultiplyNegatedOperandsSimplifyPatterns : EnzymeHLOPatternOp<
     "multiply_negated_operands_simplify"> {
   let patterns = ["BinaryNegatedOperandsSimplify<stablehlo::MulOp>"];
 }
+
+def ApplyDotGeneralToSyrkPatterns : EnzymeHLOPatternOp<
+    "dot_general_to_syrk"> {
+  let patterns = ["DotGeneralToSyrk"];
+}
+
+def ApplyTransposeSyrkToSyrkPatterns : EnzymeHLOPatternOp<
+    "transpose_syrk_to_syrk"> {
+  let patterns = ["TransposeSyrkToSyrk"];
+}
+
+def ApplyFuseMulIntoSyrkPatterns : EnzymeHLOPatternOp<
+    "fuse_mul_into_syrk"> {
+  let patterns = ["FuseMulIntoSyrk"];
+}
+
+def ApplyFuseAddIntoSyrkPatterns : EnzymeHLOPatternOp<
+    "fuse_add_into_syrk"> {
+  let patterns = ["FuseAddIntoSyrk"];
+}
