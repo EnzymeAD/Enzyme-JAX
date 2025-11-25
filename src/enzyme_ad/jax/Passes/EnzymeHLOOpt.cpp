@@ -13590,10 +13590,12 @@ struct ReverseConstProp final
     if (!matchPattern(op.getOperand(), m_Constant(&inp)))
       return failure();
 
-    // Splat constants are already handled by NoopReverse - the reverse
-    // of a splat is the same splat, so we can skip them here.
-    if (inp.isSplat())
-      return failure();
+    // For splat constants, reverse produces the same splat.
+    // Replace the op with the operand.
+    if (inp.isSplat()) {
+      rewriter.replaceOp(op, op.getOperand());
+      return success();
+    }
 
     // Check size limit
     size_t size = 1;
