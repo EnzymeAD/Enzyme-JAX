@@ -1499,6 +1499,37 @@ Value getScalarValue(Operation *op, OpBuilder &builder) {
   return nullptr;
 }
 
+Value copyTriangularPart(OpBuilder &builder, Value input,
+                         enzymexla::LapackUplo uplo) {
+  if (uplo == enzymexla::LapackUplo::F)
+    return input;
+
+  auto inputType = cast<RankedTensorType>(input.getType());
+  assert(inputType.getRank() == 2 && "only 2D matrices supported");
+  assert(inputType.getDimSize(0) != ShapedType::kDynamic &&
+         inputType.getDimSize(1) != ShapedType::kDynamic &&
+         "only statically sized matrices supported");
+  auto inputShape = inputType.getShape();
+
+  Value rowIdxs = stablehlo::IotaOp::create(
+      builder, input.getLoc(),
+      RankedTensorType::get(inputShape, builder.getI32Type()), 0);
+  Value colIdxs = stablehlo::IotaOp::create(
+      builder, input.getLoc(),
+      RankedTensorType::get(inputShape, builder.getI32Type()), 1);
+
+  Value indicator = stablehlo::CompareOp::create(
+      builder, input.getLoc(), rowIdxs, colIdxs,
+      uplo == enzymexla::LapackUplo::U ? ComparisonDirection::LT
+                                       : ComparisonDirection::GT);
+
+  Value transposedInput = stablehlo::TransposeOp::create(
+      builder, input.getLoc(), input, builder.getDenseI64ArrayAttr({1, 0}));
+
+  return stablehlo::SelectOp::create(builder, input.getLoc(), indicator, input,
+                                     transposedInput);
+}
+
 } // namespace stablehlo
 
 } // namespace mlir

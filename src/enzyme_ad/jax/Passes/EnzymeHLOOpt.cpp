@@ -25958,7 +25958,7 @@ struct DotGeneralToSyrk
             rewriter, op.getLoc(), alphaType,
             cast<ElementsAttr>(makeAttr(alphaType, 0))),
         enzymexla::LapackUploAttr::get(op.getContext(),
-                                       enzymexla::LapackUplo::U),
+                                       enzymexla::LapackUplo::F),
         enzymexla::LapackTransposeAttr::get(op.getContext(), lapackTranspose),
         rewriter.getUnitAttr());
     rewriter.replaceOp(op, syrkOp.getResult());
