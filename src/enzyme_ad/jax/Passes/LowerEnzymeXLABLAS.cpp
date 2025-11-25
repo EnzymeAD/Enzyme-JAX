@@ -126,7 +126,21 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
       LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
     }
 
-    char uploValue = op.getUplo() == enzymexla::LapackUplo::U ? 'U' : 'L';
+    enzymexla::LapackUplo uplo2 = op.getUplo(); // drop `F` uplo attribute
+    char uploValue;
+    switch (op.getUplo()) {
+    case enzymexla::LapackUplo::U:
+      uploValue = 'U';
+      break;
+    case enzymexla::LapackUplo::L:
+      uploValue = 'L';
+      break;
+    case enzymexla::LapackUplo::F:
+      uploValue = 'U';
+      uplo2 = enzymexla::LapackUplo::U;
+      break;
+    }
+
     char transValue;
     switch (op.getTranspose()) {
     case enzymexla::LapackTranspose::none:
@@ -226,8 +240,11 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
         rewriter, op.getLoc(), shloFunc,
         ValueRange{op.getA(), op.getC(), op.getAlpha(), op.getBeta()});
 
-    // TODO: we need to copy the values to the other half of the matrix
-    rewriter.replaceAllUsesWith(op.getResult(), callOp.getResult(0));
+    auto result = callOp.getResult(0);
+    if (op.getFill()) {
+      result = stablehlo::copyTriangularPart(rewriter, result, uplo2);
+    }
+    rewriter.replaceAllUsesWith(op.getResult(), result);
 
     return success();
   }
