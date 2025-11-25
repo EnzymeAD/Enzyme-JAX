@@ -948,6 +948,8 @@ bool hasTraitElementwise(Operation *op);
 // currently there are no traits for associative ops
 bool isAssociativeOp(Operation *op);
 
+Value getScalarValue(Operation *op, OpBuilder &builder);
+
 } // namespace stablehlo
 
 } // namespace mlir
