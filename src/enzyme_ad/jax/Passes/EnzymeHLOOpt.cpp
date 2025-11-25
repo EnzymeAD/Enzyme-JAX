@@ -13571,6 +13571,46 @@ private:
   }
 };
 
+// Fold reverse of a constant tensor to a new constant tensor.
+// This handles non-splat constants within the max_constant_expansion limit.
+struct ReverseConstProp final
+    : CheckedOpRewritePattern<stablehlo::ReverseOp, ReverseConstProp> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  size_t max_constant_expansion;
+  ReverseConstProp(size_t max_constant_expansion, MLIRContext *context,
+                   PatternBenefit benefit = 1,
+                   ArrayRef<StringRef> generatedNames = {})
+      : CheckedOpRewritePattern(context, benefit, generatedNames),
+        max_constant_expansion(max_constant_expansion) {}
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReverseOp op,
+                                    PatternRewriter &rewriter) const {
+    DenseElementsAttr inp;
+    if (!matchPattern(op.getOperand(), m_Constant(&inp)))
+      return failure();
+
+    // Splat constants are already handled by NoopReverse - the reverse
+    // of a splat is the same splat, so we can skip them here.
+    if (inp.isSplat())
+      return failure();
+
+    // Check size limit
+    size_t size = 1;
+    for (auto sz : op.getType().getShape())
+      size *= sz;
+    if (size >= max_constant_expansion)
+      return failure();
+
+    // Use stablehlo reference interpreter to compute the reverse
+    auto out = fromTensor(stablehlo::reverseOp(
+        stablehlo::constantOp(inp), stablehlo::Axes(op.getDimensions()),
+        op.getType()));
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(), out);
+    return success();
+  }
+};
+
 /// Converts gather ops to slice ops in case we have a single set of constant
 /// indices.
 struct GatherOpCanon final
@@ -26557,8 +26597,9 @@ struct EnzymeHLOOptPass
                                                     PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,
-                 DynamicUpdateSliceConstProp, PadSimplify, ScatterConstFold>(
-        max_constant_expansion, context, PatternBenefit(65000));
+                 DynamicUpdateSliceConstProp, PadSimplify, ScatterConstFold,
+                 ReverseConstProp>(max_constant_expansion, context,
+                                   PatternBenefit(65000));
 
     patterns.add<
         ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
