@@ -55,3 +55,17 @@ module {
 // CHECK-NEXT{LITERAL}:    %cst = stablehlo.constant dense<[[3.000000e+00, 2.000000e+00, 1.000000e+00], [6.000000e+00, 5.000000e+00, 4.000000e+00]]> : tensor<2x3xf64>
 // CHECK-NEXT:    return %cst : tensor<2x3xf64>
 // CHECK-NEXT:  }
+
+// Test 5: Reverse a splat constant - should replace with operand
+module {
+  func.func @main() -> tensor<4xf64> {
+    %cst = stablehlo.constant dense<5.0> : tensor<4xf64>
+    %0 = stablehlo.reverse %cst, dims = [0] : tensor<4xf64>
+    return %0 : tensor<4xf64>
+  }
+}
+
+// CHECK:  func.func @main() -> tensor<4xf64> {
+// CHECK-NEXT:    %cst = stablehlo.constant dense<5.000000e+00> : tensor<4xf64>
+// CHECK-NEXT:    return %cst : tensor<4xf64>
+// CHECK-NEXT:  }
