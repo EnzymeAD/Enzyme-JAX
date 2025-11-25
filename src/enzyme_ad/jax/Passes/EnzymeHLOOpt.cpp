@@ -21769,13 +21769,10 @@ struct FactorScalarsInDotGeneral final
       Value mRhs = mulOp.getRhs();
 
       SplatElementsAttr splatAttr;
-      auto mLhsIsSplat = matchPattern(mLhs, m_Constant(&splatAttr));
-      auto mRhsIsSplat = matchPattern(mRhs, m_Constant(&splatAttr));
-
-      if (mLhsIsSplat) {
+      if (matchPattern(mLhs, m_Constant(&splatAttr))) {
         scalar = mLhs;
         z = mRhs;
-      } else if (mRhsIsSplat) {
+      } else if (matchPattern(mRhs, m_Constant(&splatAttr))) {
         scalar = mRhs;
         z = mLhs;
       } else {
@@ -21800,14 +21797,9 @@ struct FactorScalarsInDotGeneral final
     auto lhsZT = lhsZ.getDefiningOp<stablehlo::TransposeOp>();
     if (lhsZ == rhsZ || rhsZT && rhsZT.getOperand() == lhsZ ||
         lhsZT && lhsZT.getOperand() == rhsZ) {
-      auto precision =
-          op.getPrecisionConfig().value_or(stablehlo::PrecisionConfigAttr());
-      auto algorithm =
-          op.getAlgorithm().value_or(stablehlo::DotAlgorithmAttr());
-
       auto newDot = rewriter.create<stablehlo::DotGeneralOp>(
           op.getLoc(), op.getType(), lhsZ, rhsZ, op.getDotDimensionNumbers(),
-          precision, algorithm);
+          op.getPrecisionConfigAttr(), op.getAlgorithmAttr());
 
       Value combinedScalar;
       if (lhsScalar && rhsScalar) {
