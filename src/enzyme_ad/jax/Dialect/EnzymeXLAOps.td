@@ -431,7 +431,7 @@ def SyrkOp: EnzymeXLA_Op<"blas.syrk", [Pure, SameOperandsAndResultElementType]> 
     scalars. C must be a n x n symmetric matrix.
 
     If `fill` is present, then both the upper and lower triangles of the matrix are filled.
-    Otherwise accessing the non-uplo part of the matrix is undefined behavior.
+    Otherwise the values in the non-uplo part of the matrix are undefined.
   }];
 
   let arguments = (ins
