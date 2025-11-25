@@ -672,8 +672,6 @@ SymmetricResultAnalysis::State SymmetricResultAnalysis::localGuaranteed(
     return perm.size() == 2 && perm[0] == 1 && perm[1] == 0;
   };
 
-  // TODO: check for dot_general as well
-
   if (auto broadcastOp = dyn_cast<stablehlo::BroadcastInDimOp>(op)) {
     auto operand = broadcastOp.getOperand();
     auto operandTy = cast<RankedTensorType>(operand.getType());
@@ -710,34 +708,33 @@ SymmetricResultAnalysis::State SymmetricResultAnalysis::localGuaranteed(
     }
   }
 
-  // A(A^T) will always be symmetric
-  if (auto dotOp = dyn_cast_or_null<stablehlo::DotGeneralOp>(op)) {
+  // A x (A^T) / (A^T) x A will always be symmetric
+  if (auto dotOp = dyn_cast<stablehlo::DotGeneralOp>(op)) {
+    auto dotDimNumbers = dotOp.getDotDimensionNumbers();
     auto lhs = dotOp.getLhs();
     auto rhs = dotOp.getRhs();
 
-    auto lhsDims = dotOp.getDotDimensionNumbers().getLhsContractingDimensions();
-    auto rhsDims = dotOp.getDotDimensionNumbers().getRhsContractingDimensions();
+    auto lhsCDims = dotDimNumbers.getLhsContractingDimensions();
+    auto rhsCDims = dotDimNumbers.getRhsContractingDimensions();
 
-    if (auto lhsType = dyn_cast_or_null<ShapedType>(lhs.getType());
-        lhsType && lhsType.hasRank() && lhsType.getRank() == 2) {
+    if (dotDimNumbers.getLhsBatchingDimensions().size() == 0 &&
+        dotDimNumbers.getRhsBatchingDimensions().size() == 0 &&
+        lhsCDims.size() == 1 && rhsCDims.size() == 1) {
+      if (lhs == rhs && lhsCDims[0] == rhsCDims[0]) {
+        return State::GUARANTEED;
+      }
 
-      if (rhs == lhs) {
-        if (lhsDims.size() == 1 && lhsDims == rhsDims) {
+      if (auto lhsT = lhs.getDefiningOp<stablehlo::TransposeOp>()) {
+        if (isTrueTranspose(lhsT) && lhsT.getOperand() == rhs &&
+            lhsCDims[0] == 1 - rhsCDims[0]) {
           return State::GUARANTEED;
         }
       }
 
-      if (lhsDims.size() == 1 && lhsDims != rhsDims) {
-        if (auto rhsT = rhs.getDefiningOp<stablehlo::TransposeOp>()) {
-          auto rhsInput = rhsT.getOperand();
-          if (rhsInput == lhs && isTrueTranspose(rhsT))
-            return State::GUARANTEED;
-        }
-
-        if (auto lhsT = lhs.getDefiningOp<stablehlo::TransposeOp>()) {
-          auto lhsInput = lhsT.getOperand();
-          if (lhsInput == rhs && isTrueTranspose(lhsT))
-            return State::GUARANTEED;
+      if (auto rhsT = rhs.getDefiningOp<stablehlo::TransposeOp>()) {
+        if (isTrueTranspose(rhsT) && rhsT.getOperand() == lhs &&
+            lhsCDims[0] == 1 - rhsCDims[0]) {
+          return State::GUARANTEED;
         }
       }
     }
