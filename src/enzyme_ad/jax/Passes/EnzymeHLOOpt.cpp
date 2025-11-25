@@ -13588,33 +13588,29 @@ struct ReverseReverse final
     auto outerDims = op.getDimensions();
     auto innerDims = prevReverse.getDimensions();
 
-    // Compute the symmetric difference of dimensions:
+    // Compute the symmetric difference of dimensions using a single set:
     // - Dimensions in both cancel out (reverse twice = identity)
     // - Dimensions in only one remain
-    llvm::SmallDenseSet<int64_t> innerDimSet(innerDims.begin(), innerDims.end());
-    llvm::SmallDenseSet<int64_t> outerDimSet(outerDims.begin(), outerDims.end());
-
-    SmallVector<int64_t> newDimensions;
-
-    // Add dimensions that are only in inner (not in outer)
+    // XOR-like operation: add if not present, remove if already present
+    llvm::SmallDenseSet<int64_t> dimSet;
     for (int64_t dim : innerDims) {
-      if (!outerDimSet.contains(dim))
-        newDimensions.push_back(dim);
+      dimSet.insert(dim);
     }
-
-    // Add dimensions that are only in outer (not in inner)
     for (int64_t dim : outerDims) {
-      if (!innerDimSet.contains(dim))
-        newDimensions.push_back(dim);
+      auto [it, inserted] = dimSet.insert(dim);
+      if (!inserted) {
+        // Dimension was in both - cancel out
+        dimSet.erase(it);
+      }
     }
 
-    // Sort the dimensions to maintain canonical form
-    llvm::sort(newDimensions);
-
-    if (newDimensions.empty()) {
+    if (dimSet.empty()) {
       // Both reverses cancel out completely
       rewriter.replaceOp(op, prevReverse.getOperand());
     } else {
+      // Convert set to sorted vector for canonical form
+      SmallVector<int64_t> newDimensions(dimSet.begin(), dimSet.end());
+      llvm::sort(newDimensions);
       rewriter.replaceOpWithNewOp<stablehlo::ReverseOp>(
           op, prevReverse.getOperand(), newDimensions);
     }
