@@ -21740,6 +21740,149 @@ struct GatherElementwise
   }
 };
 
+// (a1 * A) × (b1 * B) → (a1 * b1) * (A × B)
+struct FactorScalarsInDotGeneral final
+    : public CheckedOpRewritePattern<stablehlo::DotGeneralOp,
+                                     FactorScalarsInDotGeneral> {
+  using CheckedOpRewritePattern<
+      stablehlo::DotGeneralOp,
+      FactorScalarsInDotGeneral>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp op,
+                                    PatternRewriter &rewriter) const {
+    auto lhs = op.getLhs();
+    auto rhs = op.getRhs();
+
+    // first check if atleast one of lhs or rhs has a
+    // mutliplication with a scalar
+    if (!canRewriteOperation(op, lhs, rhs))
+      return failure();
+
+    // From v, extract scalar * tensor, and return true if the operation is not
+    // used elsewhere.
+    auto extractMul = [&](Value v, Value &scalar, Value &z) -> bool {
+      auto mulOp = v.getDefiningOp<stablehlo::MulOp>();
+      if (!mulOp) { // set default scalar to 1
+        scalar = nullptr;
+        z = v;
+        return true;
+      }
+      if (!isOnlyUsedInOperation(mulOp, op)) {
+        return false;
+      }
+
+      Value mLhs = mulOp.getLhs();
+      Value mRhs = mulOp.getRhs();
+
+      SplatElementsAttr splatAttr;
+      if (matchPattern(mLhs, m_Constant(&splatAttr))) {
+        auto mLhsType = cast<RankedTensorType>(mLhs.getType());
+        auto scalarType = RankedTensorType::get({}, mLhsType.getElementType());
+        scalar =
+            stablehlo::ConstantOp::create(rewriter, op.getLoc(), scalarType,
+                                          splatAttr.resizeSplat(scalarType));
+        z = mRhs;
+      } else if (matchPattern(mRhs, m_Constant(&splatAttr))) {
+        auto mRhsType = cast<RankedTensorType>(mRhs.getType());
+        auto scalarType = RankedTensorType::get({}, mRhsType.getElementType());
+        scalar =
+            stablehlo::ConstantOp::create(rewriter, op.getLoc(), scalarType,
+                                          splatAttr.resizeSplat(scalarType));
+        z = mLhs;
+      } else if (auto lhsBcast =
+                     mLhs.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+        if (cast<RankedTensorType>(lhsBcast.getOperand().getType()).getRank() ==
+            0) {
+          scalar = lhsBcast.getOperand();
+          z = mRhs;
+        } else {
+          scalar = nullptr;
+          return false;
+        }
+      } else if (auto rhsBcast =
+                     mRhs.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+        if (cast<RankedTensorType>(rhsBcast.getOperand().getType()).getRank() ==
+            0) {
+          scalar = rhsBcast.getOperand();
+          z = mLhs;
+        } else {
+          scalar = nullptr;
+          return false;
+        }
+      } else { // If both are non-scalar, treat whole v as Z, no scalar
+        scalar = nullptr;
+        z = v;
+      }
+      return true;
+    };
+
+    Value lhsScalar, lhsZ;
+    Value rhsScalar, rhsZ;
+
+    auto lhsExtracted = extractMul(lhs, lhsScalar, lhsZ);
+    auto rhsExtracted = extractMul(rhs, rhsScalar, rhsZ);
+
+    assert(lhsExtracted && rhsExtracted);
+
+    auto newDot = stablehlo::DotGeneralOp::create(
+        rewriter, op.getLoc(), op.getType(), lhsZ, rhsZ,
+        op.getDotDimensionNumbers(), op.getPrecisionConfigAttr(),
+        op.getAlgorithmAttr());
+
+    Value combinedScalar;
+    if (lhsScalar && rhsScalar) {
+      combinedScalar =
+          stablehlo::MulOp::create(rewriter, op.getLoc(), lhsScalar, rhsScalar);
+    } else {
+      combinedScalar = lhsScalar ? lhsScalar : rhsScalar;
+    }
+
+    auto bcastedScalar = stablehlo::BroadcastInDimOp::create(
+        rewriter, op.getLoc(), newDot.getType(), combinedScalar,
+        rewriter.getDenseI64ArrayAttr({}));
+    rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, bcastedScalar, newDot);
+    return success();
+  }
+
+private:
+  bool canRewriteOperation(stablehlo::DotGeneralOp op, Value lhs,
+                           Value rhs) const {
+    auto lhsMulOp = lhs.getDefiningOp<stablehlo::MulOp>();
+    auto rhsMulOp = rhs.getDefiningOp<stablehlo::MulOp>();
+    if (!lhsMulOp && !rhsMulOp)
+      return false; // nothing to do
+
+    if ((lhsMulOp && !isOnlyUsedInOperation(lhsMulOp, op)) ||
+        (rhsMulOp && !isOnlyUsedInOperation(rhsMulOp, op)))
+      return false; // better to not do anything
+
+    auto isScalar = [&](Value v) -> bool {
+      SplatElementsAttr splatAttr;
+      if (matchPattern(v, m_Constant(&splatAttr)))
+        return true;
+
+      auto bcastOp = v.getDefiningOp<stablehlo::BroadcastInDimOp>();
+      if (bcastOp &&
+          cast<RankedTensorType>(bcastOp.getOperand().getType()).getRank() == 0)
+        return true;
+
+      return false;
+    };
+
+    bool lhsHasScalar = false;
+    if (lhsMulOp) {
+      lhsHasScalar = isScalar(lhsMulOp.getLhs()) || isScalar(lhsMulOp.getRhs());
+    }
+
+    bool rhsHasScalar = false;
+    if (rhsMulOp) {
+      rhsHasScalar = isScalar(rhsMulOp.getLhs()) || isScalar(rhsMulOp.getRhs());
+    }
+
+    return lhsHasScalar || rhsHasScalar;
+  }
+};
+
 struct ChainedMultiplyToPower final
     : public CheckedOpRewritePattern<stablehlo::MulOp, ChainedMultiplyToPower> {
   using CheckedOpRewritePattern<
@@ -26278,6 +26421,7 @@ struct EnzymeHLOOptPass
         (no_nan || all_finite), context);
 
     patterns.add<TransposeSymmetricSimplify>(context);
+    patterns.add<FactorScalarsInDotGeneral>(context);
 
     // clang-format off
     patterns.add<

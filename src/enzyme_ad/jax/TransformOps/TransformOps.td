@@ -608,6 +608,11 @@ def ApplyTransposeSymmetricSimplify : EnzymeHLOPatternOp<
   let patterns = ["TransposeSymmetricSimplify"];
 }
 
+def ApplyFactorScalarsInDotGeneral : EnzymeHLOPatternOp<
+    "factor_scalars_in_dot_general"> {
+  let patterns = ["FactorScalarsInDotGeneral"];
+}
+
 def ApplyTransposeElementwisePatterns : EnzymeHLOParameterizedPatternOp<
     "transpose_elementwise"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
