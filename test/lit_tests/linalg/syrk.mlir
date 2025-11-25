@@ -1,5 +1,5 @@
-// RUN: enzymexlamlir-opt %s | FileCheck %s
-// RUN: enzymexlamlir-opt --lower-enzymexla-blas="backend=cpu" %s | FileCheck %s --check-prefix=LOWERCPU
+// RUN: enzymexlamlir-opt --lower-enzymexla-blas="backend=cpu" %s | FileCheck %s --check-prefix=CPU
+// RUN: enzymexlamlir-opt --lower-enzymexla-blas="backend=tpu" %s | FileCheck %s --check-prefix=TPU
 
 func.func @main1(%arg0: tensor<64x32xf32>, %arg1: tensor<64x64xf32>) -> tensor<64x64xf32> {
     %alpha = stablehlo.constant dense<2.0> : tensor<f32>

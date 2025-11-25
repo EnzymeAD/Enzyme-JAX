@@ -258,6 +258,15 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
     SmallVector<int64_t> batchDims(nBatchDims, 0);
     std::iota(batchDims.begin(), batchDims.end(), 0);
 
+    Value C = op.getC();
+    if (!matchPattern(C, m_Constant())) {
+      // for safety we need to copy the uplo part into the other half of the
+      // matrix
+      C = stablehlo::copyTriangularPart(rewriter, C, op.getUplo());
+      if (!C)
+        return failure();
+    }
+
     bool isComplex = false;
     if (auto complexType = dyn_cast<ComplexType>(AType.getElementType())) {
       isComplex = true;
@@ -284,31 +293,22 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
       break;
     }
 
-    auto AAT = rewriter.create<stablehlo::DotGeneralOp>(
-        op.getLoc(), cast<RankedTensorType>(op.getC().getType()), op.getA(),
-        op.getA(), dotDims, nullptr, nullptr);
+    auto AAT = stablehlo::DotGeneralOp::create(
+        rewriter, op.getLoc(), cast<RankedTensorType>(op.getC().getType()),
+        op.getA(), op.getA(), dotDims, nullptr, nullptr);
 
-    auto alpha = rewriter.create<stablehlo::BroadcastInDimOp>(
-        op.getLoc(), cast<RankedTensorType>(AAT.getType()), op.getAlpha(),
-        rewriter.getDenseI64ArrayAttr({}));
+    auto alpha = stablehlo::BroadcastInDimOp::create(
+        rewriter, op.getLoc(), cast<RankedTensorType>(AAT.getType()),
+        op.getAlpha(), rewriter.getDenseI64ArrayAttr({}));
 
-    // TODO: specialize if alpha/beta are one/zero (only if no-nan)
-    auto lhs = rewriter.create<stablehlo::MulOp>(op.getLoc(), alpha, AAT);
+    auto lhs = stablehlo::MulOp::create(rewriter, op.getLoc(), alpha, AAT);
 
-    auto beta = rewriter.create<stablehlo::BroadcastInDimOp>(
-        op.getLoc(), cast<RankedTensorType>(op.getC().getType()), op.getBeta(),
-        rewriter.getDenseI64ArrayAttr({}));
+    auto beta = stablehlo::BroadcastInDimOp::create(
+        rewriter, op.getLoc(), cast<RankedTensorType>(op.getC().getType()),
+        op.getBeta(), rewriter.getDenseI64ArrayAttr({}));
 
-    Value C = op.getC();
-    if (!matchPattern(C, m_Constant())) {
-      // for safety we need to copy the uplo part into the other half of the
-      // matrix
-      C = stablehlo::copyTriangularPart(rewriter, C, op.getUplo());
-    }
-
-    auto rhs = rewriter.create<stablehlo::MulOp>(op.getLoc(), beta, C);
-
-    rewriter.replaceOpWithNewOp<stablehlo::AddOp>(op, lhs, rhs);
+    rewriter.replaceOpWithNewOp<stablehlo::AddOp>(
+        op, lhs, stablehlo::MulOp::create(rewriter, op.getLoc(), beta, C));
     return success();
   }
 
