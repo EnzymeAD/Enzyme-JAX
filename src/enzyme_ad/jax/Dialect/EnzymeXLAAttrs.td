@@ -53,10 +53,11 @@ def EnzymeXLA_LapackSideAttr : EnumAttr<EnzymeXLA_Dialect,
 }
 
 def EnzymeXLA_LapackUplo : I32EnumAttr<"LapackUplo",
-    "Uplo of the matrix to apply the operation",
+    "Uplo of the matrix to apply the operation. If `F` is specified, either the upper or lower triangle of the matrix (which must be symmetric) can be used for the operation.",
     [
       I32EnumAttrCase<"U", 0>,
-      I32EnumAttrCase<"L", 1>
+      I32EnumAttrCase<"L", 1>,
+      I32EnumAttrCase<"F", 2>
     ]> {
   let genSpecializedAttr = 0;
   let cppNamespace = "::mlir::enzymexla";
