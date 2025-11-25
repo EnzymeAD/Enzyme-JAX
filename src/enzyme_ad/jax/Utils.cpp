@@ -663,6 +663,9 @@ SymmetricResultAnalysis::State SymmetricResultAnalysis::localGuaranteed(
   if (!op)
     return State::NOTGUARANTEED;
 
+  if (isa<enzymexla::SyrkOp>(op))
+    return State::GUARANTEED;
+
   // check that transpose dimensions are [1,0]
   auto isTrueTranspose = [](stablehlo::TransposeOp tOp) -> bool {
     auto perm = tOp.getPermutation();
@@ -1456,6 +1459,44 @@ bool isAssociativeOp(Operation *op) {
   return isa<stablehlo::AddOp, stablehlo::MulOp, stablehlo::MinOp,
              stablehlo::MaxOp, stablehlo::AndOp, stablehlo::OrOp,
              stablehlo::XorOp>(op);
+}
+
+Value getScalarValue(Operation *op, OpBuilder &builder) {
+  if (!op)
+    return nullptr;
+
+  // Splatted Constant
+  SplatElementsAttr elems;
+  if (matchPattern(op, m_Constant(&elems))) {
+    auto scalarElemType = RankedTensorType::get(
+        {}, cast<TensorType>(op->getResult(0).getType()).getElementType());
+    auto constInit = ConstantOp::create(builder, op->getLoc(), scalarElemType,
+                                        elems.resizeSplat(scalarElemType));
+    return constInit;
+  }
+
+  // BroadcastInDim / Reshape
+  if (isa<stablehlo::BroadcastInDimOp, stablehlo::ReshapeOp>(op)) {
+    if (cast<RankedTensorType>(op->getOperand(0).getType()).getRank() == 0) {
+      return op->getOperand(0);
+    }
+  }
+
+  // Convert
+  if (auto convertOp = dyn_cast<stablehlo::ConvertOp>(op)) {
+    auto scalar =
+        getScalarValue(convertOp.getOperand().getDefiningOp(), builder);
+    if (scalar) {
+      auto convertOutElemType =
+          cast<RankedTensorType>(convertOp.getResult().getType())
+              .getElementType();
+      return stablehlo::ConvertOp::create(
+          builder, op->getLoc(), RankedTensorType::get({}, convertOutElemType),
+          scalar);
+    }
+  }
+
+  return nullptr;
 }
 
 } // namespace stablehlo

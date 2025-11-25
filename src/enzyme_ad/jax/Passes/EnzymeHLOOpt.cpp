@@ -14090,22 +14090,20 @@ struct WhileOpInductionReplacement
 
         // Create the calculation for the current iteration
         Value iterOffset = stablehlo::SubtractOp::create(
-            rewriter, whileOp.getLoc(), counterArg.getType(), counterArg,
-            startValue);
+            rewriter, whileOp.getLoc(), counterArg, startValue);
 
         // First multiply by the step value
         Value scaledOffset = stablehlo::MulOp::create(
-            rewriter, whileOp.getLoc(), iterOffset.getType(), iterOffset,
-            stepValue);
+            rewriter, whileOp.getLoc(),
+            getCorrectlySizedValue(iterOffset, stepValue, rewriter), stepValue);
 
         // Then divide by the counter step value to get the correct scaling
         Value normalizedOffset = stablehlo::DivOp::create(
-            rewriter, whileOp.getLoc(), scaledOffset.getType(), scaledOffset,
-            counterStepValue);
+            rewriter, whileOp.getLoc(), scaledOffset,
+            getCorrectlySizedValue(counterStepValue, scaledOffset, rewriter));
 
         Value replacement = stablehlo::AddOp::create(
-            rewriter, whileOp.getLoc(), iterArg.getType(), initValue,
-            normalizedOffset);
+            rewriter, whileOp.getLoc(), initValue, normalizedOffset);
 
         rewriter.modifyOpInPlace(
             whileOp, [&] { iterArg.replaceAllUsesWith(replacement); });
@@ -14119,23 +14117,21 @@ struct WhileOpInductionReplacement
 
         // Calculate total iterations: limit - start
         Value totalIters = stablehlo::SubtractOp::create(
-            rewriter, whileOp.getLoc(), limitValue.getType(), limitValue,
-            startValue);
+            rewriter, whileOp.getLoc(), limitValue, startValue);
 
         // First multiply by the step value (using the same step value
         // identified earlier)
         Value scaledOffset = stablehlo::MulOp::create(
-            rewriter, whileOp.getLoc(), totalIters.getType(), totalIters,
-            stepValue);
+            rewriter, whileOp.getLoc(),
+            getCorrectlySizedValue(totalIters, stepValue, rewriter), stepValue);
 
         // Then divide by the counter step value to get the correct scaling
         Value normalizedOffset = stablehlo::DivOp::create(
-            rewriter, whileOp.getLoc(), scaledOffset.getType(), scaledOffset,
-            counterStepValue);
+            rewriter, whileOp.getLoc(), scaledOffset,
+            getCorrectlySizedValue(counterStepValue, scaledOffset, rewriter));
 
-        Value finalValue = stablehlo::AddOp::create(rewriter, whileOp.getLoc(),
-                                                    result.getType(), initValue,
-                                                    normalizedOffset);
+        Value finalValue = stablehlo::AddOp::create(
+            rewriter, whileOp.getLoc(), initValue, normalizedOffset);
 
         rewriter.replaceAllUsesWith(result, finalValue);
         canonicalized = true;
@@ -14146,6 +14142,33 @@ struct WhileOpInductionReplacement
   }
 
 private:
+  Value getCorrectlySizedValue(Value origValue, Value targetValue,
+                               PatternRewriter &rewriter) const {
+    return getCorrectlySizedValue(
+        origValue, cast<RankedTensorType>(targetValue.getType()), rewriter);
+  }
+
+  Value getCorrectlySizedValue(Value origValue, RankedTensorType targetType,
+                               PatternRewriter &rewriter) const {
+    if (origValue.getType() == targetType)
+      return origValue;
+
+    if (cast<ShapedType>(origValue.getType()).getElementType() !=
+        targetType.getElementType()) {
+      origValue = stablehlo::ConvertOp::create(
+          rewriter, origValue.getLoc(),
+          RankedTensorType::get({}, targetType.getElementType()), origValue);
+    }
+
+    if (origValue.getType() != targetType) {
+      origValue = stablehlo::BroadcastInDimOp::create(
+          rewriter, origValue.getLoc(), targetType, origValue,
+          rewriter.getDenseI64ArrayAttr({}));
+    }
+
+    return origValue;
+  }
+
   // Helper function to identify the counter variable and its limit
   // Returns the index of the counter argument and the limit value
   bool findCounterAndLimit(stablehlo::WhileOp whileOp, unsigned &counterIdx,
@@ -21717,6 +21740,149 @@ struct GatherElementwise
   }
 };
 
+// (a1 * A) × (b1 * B) → (a1 * b1) * (A × B)
+struct FactorScalarsInDotGeneral final
+    : public CheckedOpRewritePattern<stablehlo::DotGeneralOp,
+                                     FactorScalarsInDotGeneral> {
+  using CheckedOpRewritePattern<
+      stablehlo::DotGeneralOp,
+      FactorScalarsInDotGeneral>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp op,
+                                    PatternRewriter &rewriter) const {
+    auto lhs = op.getLhs();
+    auto rhs = op.getRhs();
+
+    // first check if atleast one of lhs or rhs has a
+    // mutliplication with a scalar
+    if (!canRewriteOperation(op, lhs, rhs))
+      return failure();
+
+    // From v, extract scalar * tensor, and return true if the operation is not
+    // used elsewhere.
+    auto extractMul = [&](Value v, Value &scalar, Value &z) -> bool {
+      auto mulOp = v.getDefiningOp<stablehlo::MulOp>();
+      if (!mulOp) { // set default scalar to 1
+        scalar = nullptr;
+        z = v;
+        return true;
+      }
+      if (!isOnlyUsedInOperation(mulOp, op)) {
+        return false;
+      }
+
+      Value mLhs = mulOp.getLhs();
+      Value mRhs = mulOp.getRhs();
+
+      SplatElementsAttr splatAttr;
+      if (matchPattern(mLhs, m_Constant(&splatAttr))) {
+        auto mLhsType = cast<RankedTensorType>(mLhs.getType());
+        auto scalarType = RankedTensorType::get({}, mLhsType.getElementType());
+        scalar =
+            stablehlo::ConstantOp::create(rewriter, op.getLoc(), scalarType,
+                                          splatAttr.resizeSplat(scalarType));
+        z = mRhs;
+      } else if (matchPattern(mRhs, m_Constant(&splatAttr))) {
+        auto mRhsType = cast<RankedTensorType>(mRhs.getType());
+        auto scalarType = RankedTensorType::get({}, mRhsType.getElementType());
+        scalar =
+            stablehlo::ConstantOp::create(rewriter, op.getLoc(), scalarType,
+                                          splatAttr.resizeSplat(scalarType));
+        z = mLhs;
+      } else if (auto lhsBcast =
+                     mLhs.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+        if (cast<RankedTensorType>(lhsBcast.getOperand().getType()).getRank() ==
+            0) {
+          scalar = lhsBcast.getOperand();
+          z = mRhs;
+        } else {
+          scalar = nullptr;
+          return false;
+        }
+      } else if (auto rhsBcast =
+                     mRhs.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+        if (cast<RankedTensorType>(rhsBcast.getOperand().getType()).getRank() ==
+            0) {
+          scalar = rhsBcast.getOperand();
+          z = mLhs;
+        } else {
+          scalar = nullptr;
+          return false;
+        }
+      } else { // If both are non-scalar, treat whole v as Z, no scalar
+        scalar = nullptr;
+        z = v;
+      }
+      return true;
+    };
+
+    Value lhsScalar, lhsZ;
+    Value rhsScalar, rhsZ;
+
+    auto lhsExtracted = extractMul(lhs, lhsScalar, lhsZ);
+    auto rhsExtracted = extractMul(rhs, rhsScalar, rhsZ);
+
+    assert(lhsExtracted && rhsExtracted);
+
+    auto newDot = stablehlo::DotGeneralOp::create(
+        rewriter, op.getLoc(), op.getType(), lhsZ, rhsZ,
+        op.getDotDimensionNumbers(), op.getPrecisionConfigAttr(),
+        op.getAlgorithmAttr());
+
+    Value combinedScalar;
+    if (lhsScalar && rhsScalar) {
+      combinedScalar =
+          stablehlo::MulOp::create(rewriter, op.getLoc(), lhsScalar, rhsScalar);
+    } else {
+      combinedScalar = lhsScalar ? lhsScalar : rhsScalar;
+    }
+
+    auto bcastedScalar = stablehlo::BroadcastInDimOp::create(
+        rewriter, op.getLoc(), newDot.getType(), combinedScalar,
+        rewriter.getDenseI64ArrayAttr({}));
+    rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, bcastedScalar, newDot);
+    return success();
+  }
+
+private:
+  bool canRewriteOperation(stablehlo::DotGeneralOp op, Value lhs,
+                           Value rhs) const {
+    auto lhsMulOp = lhs.getDefiningOp<stablehlo::MulOp>();
+    auto rhsMulOp = rhs.getDefiningOp<stablehlo::MulOp>();
+    if (!lhsMulOp && !rhsMulOp)
+      return false; // nothing to do
+
+    if ((lhsMulOp && !isOnlyUsedInOperation(lhsMulOp, op)) ||
+        (rhsMulOp && !isOnlyUsedInOperation(rhsMulOp, op)))
+      return false; // better to not do anything
+
+    auto isScalar = [&](Value v) -> bool {
+      SplatElementsAttr splatAttr;
+      if (matchPattern(v, m_Constant(&splatAttr)))
+        return true;
+
+      auto bcastOp = v.getDefiningOp<stablehlo::BroadcastInDimOp>();
+      if (bcastOp &&
+          cast<RankedTensorType>(bcastOp.getOperand().getType()).getRank() == 0)
+        return true;
+
+      return false;
+    };
+
+    bool lhsHasScalar = false;
+    if (lhsMulOp) {
+      lhsHasScalar = isScalar(lhsMulOp.getLhs()) || isScalar(lhsMulOp.getRhs());
+    }
+
+    bool rhsHasScalar = false;
+    if (rhsMulOp) {
+      rhsHasScalar = isScalar(rhsMulOp.getLhs()) || isScalar(rhsMulOp.getRhs());
+    }
+
+    return lhsHasScalar || rhsHasScalar;
+  }
+};
+
 struct ChainedMultiplyToPower final
     : public CheckedOpRewritePattern<stablehlo::MulOp, ChainedMultiplyToPower> {
   using CheckedOpRewritePattern<
@@ -25705,6 +25871,227 @@ private:
   }
 };
 
+// currently limited to non-batched dot_general
+struct DotGeneralToSyrk
+    : public CheckedOpRewritePattern<stablehlo::DotGeneralOp,
+                                     DotGeneralToSyrk> {
+  using CheckedOpRewritePattern<stablehlo::DotGeneralOp,
+                                DotGeneralToSyrk>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp op,
+                                    PatternRewriter &rewriter) const {
+    auto dotDims = op.getDotDimensionNumbers();
+    auto lhs = op.getLhs();
+    auto rhs = op.getRhs();
+
+    if (dotDims.getLhsBatchingDimensions().size() != 0 ||
+        dotDims.getRhsBatchingDimensions().size() != 0) {
+      return failure();
+    }
+
+    if (dotDims.getLhsContractingDimensions().size() != 1 ||
+        dotDims.getRhsContractingDimensions().size() != 1) {
+      return failure();
+    }
+
+    // check that transpose dimensions are [1,0]
+    auto isTrueTranspose = [](stablehlo::TransposeOp tOp) -> bool {
+      auto perm = tOp.getPermutation();
+      return perm.size() == 2 && perm[0] == 1 && perm[1] == 0;
+    };
+
+    auto lhsContractingDim = dotDims.getLhsContractingDimensions()[0];
+    auto rhsContractingDim = dotDims.getRhsContractingDimensions()[0];
+
+    Value syrkInput;
+    enzymexla::LapackTranspose lapackTranspose;
+
+    if (lhs == rhs && lhsContractingDim == rhsContractingDim) {
+      syrkInput = lhs;
+      if (lhsContractingDim == 1) {
+        lapackTranspose = enzymexla::LapackTranspose::none;
+      } else {
+        lapackTranspose = enzymexla::LapackTranspose::transpose;
+      }
+    }
+
+    if (auto lhsT = lhs.getDefiningOp<stablehlo::TransposeOp>()) {
+      if (isTrueTranspose(lhsT) && lhsT.getOperand() == rhs &&
+          lhsContractingDim == 1 - rhsContractingDim) {
+        syrkInput = rhs;
+        if (rhsContractingDim == 1) {
+          lapackTranspose = enzymexla::LapackTranspose::none;
+        } else {
+          lapackTranspose = enzymexla::LapackTranspose::transpose;
+        }
+      }
+    }
+
+    if (auto rhsT = rhs.getDefiningOp<stablehlo::TransposeOp>()) {
+      if (isTrueTranspose(rhsT) && rhsT.getOperand() == lhs &&
+          rhsContractingDim == 1 - lhsContractingDim) {
+        syrkInput = lhs;
+        if (lhsContractingDim == 0) {
+          lapackTranspose = enzymexla::LapackTranspose::transpose;
+        } else {
+          lapackTranspose = enzymexla::LapackTranspose::none;
+        }
+      }
+    }
+
+    if (!syrkInput)
+      return failure();
+
+    auto elemType =
+        cast<RankedTensorType>(syrkInput.getType()).getElementType();
+    auto alphaType = RankedTensorType::get({}, elemType);
+
+    auto syrkOp = enzymexla::SyrkOp::create(
+        rewriter, op.getLoc(), op.getResult().getType(), syrkInput,
+        stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), op.getType(),
+            cast<ElementsAttr>(makeAttr(op.getType(), 0))),
+        stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), alphaType,
+            cast<ElementsAttr>(makeAttr(alphaType, 1))),
+        stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), alphaType,
+            cast<ElementsAttr>(makeAttr(alphaType, 0))),
+        enzymexla::LapackUploAttr::get(op.getContext(),
+                                       enzymexla::LapackUplo::U),
+        enzymexla::LapackTransposeAttr::get(op.getContext(), lapackTranspose),
+        rewriter.getUnitAttr());
+    rewriter.replaceOp(op, syrkOp.getResult());
+    return success();
+  }
+};
+
+struct TransposeSyrkToSyrk
+    : public CheckedOpRewritePattern<enzymexla::SyrkOp, TransposeSyrkToSyrk> {
+  using CheckedOpRewritePattern<enzymexla::SyrkOp,
+                                TransposeSyrkToSyrk>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(enzymexla::SyrkOp op,
+                                    PatternRewriter &rewriter) const {
+    auto input = op.getA();
+    if (cast<RankedTensorType>(input.getType()).getRank() != 2)
+      return failure(); // support only rank 2 matrices for now
+
+    auto transposeOp = input.getDefiningOp<stablehlo::TransposeOp>();
+    if (!transposeOp)
+      return failure();
+
+    auto perm = transposeOp.getPermutation();
+    if (perm.size() != 2 || perm[0] != 1 || perm[1] != 0)
+      return failure();
+
+    enzymexla::LapackTranspose lapackTranspose;
+    switch (op.getTranspose()) {
+    case enzymexla::LapackTranspose::none:
+      lapackTranspose = enzymexla::LapackTranspose::transpose;
+      break;
+    default:
+      lapackTranspose = enzymexla::LapackTranspose::none;
+    }
+
+    rewriter.replaceOpWithNewOp<enzymexla::SyrkOp>(
+        op, op.getResult().getType(), transposeOp.getOperand(), op.getC(),
+        op.getAlpha(), op.getBeta(), op.getUploAttr(),
+        enzymexla::LapackTransposeAttr::get(op.getContext(), lapackTranspose),
+        op.getFillAttr());
+    return success();
+  }
+};
+
+struct FuseMulIntoSyrk
+    : public CheckedOpRewritePattern<stablehlo::MulOp, FuseMulIntoSyrk> {
+  using CheckedOpRewritePattern<stablehlo::MulOp,
+                                FuseMulIntoSyrk>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::MulOp op,
+                                    PatternRewriter &rewriter) const {
+    auto lhs = op.getLhs();
+    auto rhs = op.getRhs();
+
+    enzymexla::SyrkOp syrkOp;
+    Value other;
+
+    if (auto lhsSyrk = lhs.getDefiningOp<enzymexla::SyrkOp>()) {
+      syrkOp = lhsSyrk;
+      other = rhs;
+    } else if (auto rhsSyrk = rhs.getDefiningOp<enzymexla::SyrkOp>()) {
+      syrkOp = rhsSyrk;
+      other = lhs;
+    } else {
+      return failure();
+    }
+
+    Value scalarVal =
+        stablehlo::getScalarValue(other.getDefiningOp(), rewriter);
+    if (!scalarVal)
+      return failure();
+
+    auto newBeta = stablehlo::MulOp::create(rewriter, op.getLoc(),
+                                            syrkOp.getBeta(), scalarVal);
+    auto newAlpha = stablehlo::MulOp::create(rewriter, op.getLoc(),
+                                             syrkOp.getAlpha(), scalarVal);
+
+    rewriter.replaceOpWithNewOp<enzymexla::SyrkOp>(
+        op, syrkOp.getType(), syrkOp.getA(), syrkOp.getC(), newAlpha, newBeta,
+        syrkOp.getUploAttr(), syrkOp.getTransposeAttr(), syrkOp.getFillAttr());
+    return success();
+  }
+};
+
+struct FuseAddIntoSyrk
+    : public CheckedOpRewritePattern<stablehlo::AddOp,
+                                     FuseAddIntoSyrk>::CheckedOpRewritePattern {
+  using CheckedOpRewritePattern<stablehlo::AddOp,
+                                FuseAddIntoSyrk>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::AddOp op,
+                                    PatternRewriter &rewriter) const {
+    auto lhs = op.getLhs();
+    auto rhs = op.getRhs();
+
+    enzymexla::SyrkOp syrkOp;
+    Value other;
+
+    if (auto lhsSyrk = lhs.getDefiningOp<enzymexla::SyrkOp>()) {
+      syrkOp = lhsSyrk;
+      other = rhs;
+    } else if (auto rhsSyrk = rhs.getDefiningOp<enzymexla::SyrkOp>()) {
+      syrkOp = rhsSyrk;
+      other = lhs;
+    } else {
+      return failure();
+    }
+
+    // we can fuse this addition iff the other operand is a symmetric matrix
+    if (!canApplySymmetricPattern(other, rewriter))
+      return failure();
+
+    auto oldBeta = syrkOp.getBeta();
+    auto bcastedBeta = stablehlo::BroadcastInDimOp::create(
+        rewriter, op.getLoc(), syrkOp.getType(), oldBeta,
+        rewriter.getDenseI64ArrayAttr({}));
+
+    auto scaledC = stablehlo::MulOp::create(rewriter, op.getLoc(),
+                                            syrkOp.getC(), bcastedBeta);
+
+    auto newC = stablehlo::AddOp::create(rewriter, op.getLoc(), scaledC, other);
+
+    auto newBeta = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), oldBeta.getType(),
+        cast<ElementsAttr>(makeAttr(oldBeta.getType(), 1)));
+
+    rewriter.replaceOpWithNewOp<enzymexla::SyrkOp>(
+        op, syrkOp.getType(), syrkOp.getA(), newC, syrkOp.getAlpha(), newBeta,
+        syrkOp.getUploAttr(), syrkOp.getTransposeAttr(), syrkOp.getFillAttr());
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -26255,6 +26642,13 @@ struct EnzymeHLOOptPass
         (no_nan || all_finite), context);
 
     patterns.add<TransposeSymmetricSimplify>(context);
+    patterns.add<FactorScalarsInDotGeneral>(context);
+
+    // syrk patterns
+    // currently disabled since lowering is missing
+    // patterns.add<DotGeneralToSyrk>(context);
+    patterns.add<TransposeSyrkToSyrk, FuseMulIntoSyrk, FuseAddIntoSyrk>(
+        context);
 
     // clang-format off
     patterns.add<

@@ -45,7 +45,7 @@ jobs:
         with:
           app-id: "${{ secrets.ENZYMEAD_BOT_ID }}"
           private-key: "${{ secrets.ENZYMEAD_BOT_PRIVATE_KEY }}"
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - name: Set branch name
         run: |
           echo "BRANCH_NAME=update-$(echo ${{ inputs.upstream_repo }} | tr '/A-Z' '-a-z')" >> "${GITHUB_ENV}"

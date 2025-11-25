@@ -314,6 +314,7 @@ def optimization_passes(
         "dot_general_only_diagonal_access",
         "divide_negated_operands_simplify",
         "multiply_negated_operands_simplify",
+        "factor_scalars_in_dot_general",
     ]
 
     # constant propagation patterns
@@ -603,7 +604,7 @@ def full_optimization_pass_pipeline(
         enable_batching_passes=enable_batching_passes,
     )
 
-    enzyme_pass = 'enzyme{postpasses="arith-raise{stablehlo=true},canonicalize,cse,canonicalize,remove-unnecessary-enzyme-ops,enzyme-simplify-math,canonicalize,cse,canonicalize"}'
+    enzyme_pass = 'enzyme{postpasses="arith-raise{stablehlo=true},enzyme-batch-to-stablehlo,canonicalize,cse,canonicalize,remove-unnecessary-enzyme-ops,enzyme-simplify-math,canonicalize,cse,canonicalize"}'
 
     propagate_down_passes = ""
     if transpose_propagate == "up" or reshape_propagate == "up":
@@ -1581,7 +1582,7 @@ def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
         outshapes = kwargs["out_shapes"]
         ret_act_tup = ",".join(["enzyme_dup"] * len(outshapes))
         afterad = (
-            "arith-raise{stablehlo=true}, "
+            "arith-raise{stablehlo=true},enzyme-batch-to-stablehlo, "
             + optimization_passes()
             + ", cse, canonicalize"
         )
@@ -1819,7 +1820,7 @@ def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
         newpasses = (
             prev_passes
             + ad_pass
-            + ",arith-raise{stablehlo=true},canonicalize, remove-unnecessary-enzyme-ops, enzyme-simplify-math, "
+            + ",arith-raise{stablehlo=true},enzyme-batch-to-stablehlo,canonicalize, remove-unnecessary-enzyme-ops, enzyme-simplify-math, "
             + optimization_passes()
             + ", canonicalize, cse"
             + post_passes
