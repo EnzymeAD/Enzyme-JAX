@@ -55,7 +55,7 @@ func.func @pass4(%arg0: tensor<2x2xf32>) -> tensor<2x2xf32> {
 
 // CHECK: func.func @pass4(%arg0: tensor<2x2xf32>) -> tensor<2x2xf32> {
 // CHECK-NEXT:   %0 = stablehlo.transpose %arg0, dims = [1, 0] : (tensor<2x2xf32>) -> tensor<2x2xf32>
-// CHECK-NEXT:   %1 = stablehlo.dot_general %0, %arg0, contracting_dims = [1] x [0], precision = [DEFAULT, DEFAULT] {enzymexla.guaranteed_symmetric = true} : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xf32>
+// CHECK-NEXT:   %1 = stablehlo.dot_general %0, %arg0, contracting_dims = [1] x [0], precision = [DEFAULT, DEFAULT] {enzymexla.symmetric_matrix = [#enzymexla<guaranteed GUARANTEED>]} : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xf32>
 // CHECK-NEXT:   return %1 : tensor<2x2xf32>
 // CHECK-NEXT: }
 
@@ -66,7 +66,7 @@ func.func @pass5(%arg0: tensor<2x2xf32>) -> tensor<2x2xf32> {
 }
 
 // CHECK: func.func @pass5(%arg0: tensor<2x2xf32>) -> tensor<2x2xf32> {
-// CHECK-NEXT:   %0 = stablehlo.dot_general %arg0, %arg0, contracting_dims = [0] x [0], precision = [DEFAULT, DEFAULT] {enzymexla.guaranteed_symmetric = true} : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xf32>
+// CHECK-NEXT:   %0 = stablehlo.dot_general %arg0, %arg0, contracting_dims = [0] x [0], precision = [DEFAULT, DEFAULT] {enzymexla.symmetric_matrix = [#enzymexla<guaranteed GUARANTEED>]} : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xf32>
 // CHECK-NEXT:   return %0 : tensor<2x2xf32>
 // CHECK-NEXT: }
 
@@ -93,7 +93,7 @@ func.func @fail2(%arg0: tensor<2x2xf32>) -> tensor<2x2xf32> {
 
 // CHECK: func.func @fail2(%arg0: tensor<2x2xf32>) -> tensor<2x2xf32> {
 // CHECK-NEXT:   %0 = stablehlo.transpose %arg0, dims = [1, 0] : (tensor<2x2xf32>) -> tensor<2x2xf32>
-// CHECK-NEXT:   %1 = stablehlo.dot_general %0, %arg0, contracting_dims = [1] x [1], precision = [DEFAULT, DEFAULT] {enzymexla.guaranteed_symmetric = false} : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xf32>
+// CHECK-NEXT:   %1 = stablehlo.dot_general %0, %arg0, contracting_dims = [1] x [1], precision = [DEFAULT, DEFAULT] {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xf32>
 // CHECK-NEXT:   %2 = stablehlo.transpose %1, dims = [1, 0] : (tensor<2x2xf32>) -> tensor<2x2xf32>
 // CHECK-NEXT:   return %2 : tensor<2x2xf32>
 // CHECK-NEXT: }
