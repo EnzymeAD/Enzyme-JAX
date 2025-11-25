@@ -13571,6 +13571,57 @@ private:
   }
 };
 
+// reverse(reverse(x)) -> x or reverse(x) with reduced dimensions
+// When we have two consecutive reverse operations, dimensions that appear
+// in both cancel out, and we only need to reverse the symmetric difference.
+struct ReverseReverse final
+    : CheckedOpRewritePattern<stablehlo::ReverseOp, ReverseReverse> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReverseOp op,
+                                    PatternRewriter &rewriter) const {
+    auto prevReverse = op.getOperand().getDefiningOp<stablehlo::ReverseOp>();
+    if (!prevReverse)
+      return failure();
+
+    // Get dimensions from both reverse operations
+    auto outerDims = op.getDimensions();
+    auto innerDims = prevReverse.getDimensions();
+
+    // Compute the symmetric difference of dimensions:
+    // - Dimensions in both cancel out (reverse twice = identity)
+    // - Dimensions in only one remain
+    llvm::SmallDenseSet<int64_t> innerDimSet(innerDims.begin(), innerDims.end());
+    llvm::SmallDenseSet<int64_t> outerDimSet(outerDims.begin(), outerDims.end());
+
+    SmallVector<int64_t> newDimensions;
+
+    // Add dimensions that are only in inner (not in outer)
+    for (int64_t dim : innerDims) {
+      if (!outerDimSet.contains(dim))
+        newDimensions.push_back(dim);
+    }
+
+    // Add dimensions that are only in outer (not in inner)
+    for (int64_t dim : outerDims) {
+      if (!innerDimSet.contains(dim))
+        newDimensions.push_back(dim);
+    }
+
+    // Sort the dimensions to maintain canonical form
+    llvm::sort(newDimensions);
+
+    if (newDimensions.empty()) {
+      // Both reverses cancel out completely
+      rewriter.replaceOp(op, prevReverse.getOperand());
+    } else {
+      rewriter.replaceOpWithNewOp<stablehlo::ReverseOp>(
+          op, prevReverse.getOperand(), newDimensions);
+    }
+    return success();
+  }
+};
+
 /// Converts gather ops to slice ops in case we have a single set of constant
 /// indices.
 struct GatherOpCanon final
@@ -26055,7 +26106,7 @@ struct EnzymeHLOOptPass
     patterns.add<
         AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
         OrSimplify, XorSimplify, MulSimplify, DivSimplify, RemSimplify,
-        PowSimplify, NoopSlice, NoopReverse, SliceSlice,
+        PowSimplify, NoopSlice, NoopReverse, ReverseReverse, SliceSlice,
         DynamicSliceDynamicSlice, DynamicSliceSlice, SliceDynamicSlice,
         LogSimplify, ShiftRightLogicalSimplify, NegativePadToSlice,
         SliceSimplify, ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
