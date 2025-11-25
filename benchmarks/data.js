@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1764029036043,
+  "lastUpdate": 1764035767580,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "gh@wsmoses.com",
-            "name": "William S. Moses",
-            "username": "wsmoses"
-          },
-          "committer": {
-            "email": "gh@wsmoses.com",
-            "name": "William S. Moses",
-            "username": "wsmoses"
-          },
-          "distinct": true,
-          "id": "f937a462ceaf28a0008c7aa9a03c6fc4c3a6c7c9",
-          "message": "Fix rocm",
-          "timestamp": "2025-11-05T00:10:19-06:00",
-          "tree_id": "603551bab435d152ef56663a050df2abb37c518e",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/f937a462ceaf28a0008c7aa9a03c6fc4c3a6c7c9"
-        },
-        "date": 1762333943211,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.000004327470000134781,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.000004281620000256225,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001368987841997,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001384789892006,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2199,6 +2155,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001445494979001,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "avikpal@mit.edu",
+            "name": "Avik Pal",
+            "username": "avik-pal"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f11d5ad20f7929603bfd2b45a956fae030fccb1c",
+          "message": "feat: add syrk and trmm op (#1644)\n\n* feat: add syrk op\n\n* test: syrk\n\n* fix: docs\n\n* feat: trmm op\n\n* fix: missing uplo",
+          "timestamp": "2025-11-24T14:23:37-05:00",
+          "tree_id": "5bf0f7eec2193ccc789003e5cfd0defc3c1a5cda",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/f11d5ad20f7929603bfd2b45a956fae030fccb1c"
+        },
+        "date": 1764035766460,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004226516900234856,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.0000041471548989648,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001521801919996,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001423218900003,
             "unit": "s"
           }
         ]
