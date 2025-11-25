@@ -1499,6 +1499,16 @@ Value getScalarValue(Operation *op, OpBuilder &builder) {
   return nullptr;
 }
 
+Value copyUpperTriangularToLowerTriangular(OpBuilder &builder, Value input) {
+  auto inputType = cast<RankedTensorType>(input.getType());
+  assert(inputType.getRank() == 2 && "only 2D matrices supported");
+
+  
+}
+
+Value copyLowerTriangularToUpperTriangular(OpBuilder &builder, Value input) {
+}
+
 } // namespace stablehlo
 
 } // namespace mlir

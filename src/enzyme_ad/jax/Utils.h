@@ -950,6 +950,9 @@ bool isAssociativeOp(Operation *op);
 
 Value getScalarValue(Operation *op, OpBuilder &builder);
 
+Value copyUpperTriangularToLowerTriangular(OpBuilder &builder, Value input);
+Value copyLowerTriangularToUpperTriangular(OpBuilder &builder, Value input);
+
 } // namespace stablehlo
 
 } // namespace mlir

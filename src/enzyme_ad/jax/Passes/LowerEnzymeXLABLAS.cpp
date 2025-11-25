@@ -282,6 +282,11 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
         op.getLoc(), cast<RankedTensorType>(op.getC().getType()), op.getBeta(),
         rewriter.getDenseI64ArrayAttr({}));
 
+    if (matchPattern(op.getC(), m_Constant())) {
+      // for safety we need to copy the uplo part into the other half of the
+      // matrix
+    }
+
     auto rhs = rewriter.create<stablehlo::MulOp>(op.getLoc(), beta, op.getC());
 
     rewriter.replaceOpWithNewOp<stablehlo::AddOp>(op, lhs, rhs);
