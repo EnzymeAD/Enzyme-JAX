@@ -164,6 +164,11 @@ Located in `.github/workflows/`:
 - TableGen definitions in `.td` files
 - Register in `src/enzyme_ad/jax/RegistryUtils.cpp`
 
+**When adding a new pass to `EnzymeHLOOpt.cpp`:**
+1. Add the pattern class to `src/enzyme_ad/jax/Passes/EnzymeHLOOpt.cpp`
+2. Add the corresponding entry to `src/enzyme_ad/jax/TransformOps/TransformOps.td`
+3. Add the pass name to the list in `src/enzyme_ad/jax/primitives.py`
+
 ## Dependencies
 
 External dependencies are configured in `third_party/`:
