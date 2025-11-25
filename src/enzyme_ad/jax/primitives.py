@@ -365,6 +365,7 @@ def optimization_passes(
         "const_prop_through_barrier<16>",
         f"concat_const_prop<1>({max_constant_threshold})",
         f"dynamic_update_slice_const_prop({max_constant_threshold})",
+        f"reverse_const_prop({max_constant_threshold})",
         "clamp_const_prop",
     ]
 
