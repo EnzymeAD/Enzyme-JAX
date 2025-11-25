@@ -950,6 +950,9 @@ bool isAssociativeOp(Operation *op);
 
 Value getScalarValue(Operation *op, OpBuilder &builder);
 
+Value copyTriangularPart(OpBuilder &builder, Value input,
+                         enzymexla::LapackUplo uplo);
+
 } // namespace stablehlo
 
 } // namespace mlir
