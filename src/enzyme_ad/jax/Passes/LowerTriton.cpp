@@ -297,54 +297,83 @@ struct LowerTritonPass
         continue;
       }
 
-      // int32_t threadsPerWarp = 32;
-      // if (innerMod->hasAttrOfType<IntegerAttr>("ttg.threads_per_warp")) {
-      //   threadsPerWarp =
-      //       innerMod->getAttrOfType<IntegerAttr>("ttg.threads_per_warp")
-      //           .getInt();
+      // remove divisibility attributes from the module before lowering to PTX
+      // auto funcOpInterface = dyn_cast<FunctionOpInterface>(
+      //     symbolTable.lookupNearestSymbolFrom(ttCallOp,
+      //     ttCallOp.getFnAttr()));
+
+      // if (!funcOpInterface) {
+      //   innerMod->emitError("Failed to find function '") << ttCallOp.getFn()
+      //   <<
+      //                       "' in module";
+      //   anyFailed = true;
+      //   continue;
       // }
 
-      auto ptxOrError =
-          cuda::LLVMToPTX(innerMod, computeCapability, libdeviceDir);
-      if (!ptxOrError.ok()) {
-        innerMod->emitError(ptxOrError.status().message());
-        anyFailed = true;
-        continue;
-      }
+      // mlir::StringAttr divAttrName =
+      // builder.getStringAttr("tt.divisibility"); for (size_t i = 0; i <
+      // ttCallOp.getInputs().size(); ++i) {
+      //   funcOpInterface.removeArgAttr(i, divAttrName);
+      // }
 
-      auto ptx = ptxOrError.value();
-      llvm::errs() << "Compilation result: " << ptx << "\n";
+      // auto ptxOrError =
+      //     cuda::LLVMToPTX(innerMod, computeCapability, libdeviceDir);
+      // if (!ptxOrError.ok()) {
+      //   innerMod->emitError(ptxOrError.status().message());
+      //   anyFailed = true;
+      //   continue;
+      // }
+
+      // auto ptx = ptxOrError.value();
+      // llvm::errs() << "Compilation result: " << ptx << "\n";
+
+      int32_t threadsPerWarp = 32;
+      if (innerMod->hasAttrOfType<IntegerAttr>("ttg.threads_per_warp")) {
+        threadsPerWarp =
+            innerMod->getAttrOfType<IntegerAttr>("ttg.threads_per_warp")
+                .getInt();
+      }
 
       builder.setInsertionPoint(ttCallOp);
 
-      // auto sharedMemSizeAttr =
-      //     innerMod->getAttrOfType<IntegerAttr>("ttg.shared");
-      // auto sharedMemSize = sharedMemSizeAttr.getInt();
-      // auto shmemOpType = ttCallOp.getGridx().getType();
-      // auto shmemOp = stablehlo::ConstantOp::create(
-      //     builder, ttCallOp.getLoc(), shmemOpType,
-      //     cast<ElementsAttr>(makeAttr(shmemOpType, sharedMemSize)));
+      auto sharedMemSizeAttr =
+          innerMod->getAttrOfType<IntegerAttr>("ttg.shared");
+      auto sharedMemSize = sharedMemSizeAttr.getInt();
+      auto shmemOpType = ttCallOp.getGridx().getType();
+      auto shmemOp = stablehlo::ConstantOp::create(
+          builder, ttCallOp.getLoc(), shmemOpType,
+          cast<ElementsAttr>(makeAttr(shmemOpType, sharedMemSize)));
 
-      // auto blockX = stablehlo::ConstantOp::create(
-      //     builder, ttCallOp.getLoc(), shmemOpType,
-      //     cast<ElementsAttr>(makeAttr(shmemOpType, threadsPerWarp *
-      //     numWarps)));
-      // auto blockYZ = stablehlo::ConstantOp::create(
-      //     builder, ttCallOp.getLoc(), shmemOpType,
-      //     cast<ElementsAttr>(makeAttr(shmemOpType, 1)));
+      auto blockX = stablehlo::ConstantOp::create(
+          builder, ttCallOp.getLoc(), shmemOpType,
+          cast<ElementsAttr>(makeAttr(shmemOpType, threadsPerWarp * numWarps)));
+      auto blockYZ = stablehlo::ConstantOp::create(
+          builder, ttCallOp.getLoc(), shmemOpType,
+          cast<ElementsAttr>(makeAttr(shmemOpType, 1)));
 
-      // auto kernelCallOp = enzymexla::KernelCallOp::create(
-      //     builder, ttCallOp.getLoc(), ttCallOp.getResultTypes(),
-      //     ttCallOp.getFn(), ttCallOp.getGridx(), ttCallOp.getGridy(),
-      //     ttCallOp.getGridz(), blockX, blockYZ, blockYZ, shmemOp,
-      //     ttCallOp.getClusterx(), ttCallOp.getClustery(),
-      //     ttCallOp.getClusterz(), ttCallOp.getInputs(),
-      //     ttCallOp.getBackendConfigAttr(), ttCallOp.getOperandLayoutsAttr(),
-      //     ttCallOp.getResultLayoutsAttr(), ttCallOp.getArgAttrsAttr(),
-      //     ttCallOp.getResAttrsAttr(), ttCallOp.getOutputOperandAliasesAttr(),
-      //     ttCallOp.getXlaSideEffectFreeAttr());
-      // ttCallOp.replaceAllUsesWith(kernelCallOp);
-      // ttCallOp.erase();
+      SmallVector<mlir::Value> newInputs(ttCallOp.getInputs().begin(),
+                                         ttCallOp.getInputs().end());
+      // we don't use the next 2 inputs
+      auto scratchSpace = stablehlo::ConstantOp::create(
+          builder, ttCallOp.getLoc(),
+          RankedTensorType::get({}, builder.getI8Type()),
+          cast<ElementsAttr>(
+              makeAttr(RankedTensorType::get({}, builder.getI8Type()), 0)));
+      newInputs.push_back(scratchSpace);
+      newInputs.push_back(scratchSpace);
+
+      auto kernelCallOp = enzymexla::KernelCallOp::create(
+          builder, ttCallOp.getLoc(), ttCallOp.getResultTypes(),
+          ttCallOp.getFn(), ttCallOp.getGridx(), ttCallOp.getGridy(),
+          ttCallOp.getGridz(), blockX, blockYZ, blockYZ, shmemOp,
+          ttCallOp.getClusterx(), ttCallOp.getClustery(),
+          ttCallOp.getClusterz(), newInputs, ttCallOp.getBackendConfigAttr(),
+          ttCallOp.getOperandLayoutsAttr(), ttCallOp.getResultLayoutsAttr(),
+          ttCallOp.getArgAttrsAttr(), ttCallOp.getResAttrsAttr(),
+          ttCallOp.getOutputOperandAliasesAttr(),
+          ttCallOp.getXlaSideEffectFreeAttr());
+      ttCallOp.replaceAllUsesWith(kernelCallOp);
+      ttCallOp.erase();
     }
 
     if (anyFailed) {
