@@ -1097,6 +1097,12 @@ def LowerTritonPass : Pass<"lower-triton", "mlir::ModuleOp"> {
   ];
   let options = [
     Option<
+        /*C++ variable name=*/"libdeviceDir",
+        /*CLI argument=*/"libdevice_dir",
+        /*type=*/"std::string",
+        /*default=*/"\"\"",
+        /*description=*/"Path to the libdevice directory">,
+    Option<
         /*C++ variable name=*/"backend",
         /*CLI argument=*/"backend",
         /*type=*/"std::string",
