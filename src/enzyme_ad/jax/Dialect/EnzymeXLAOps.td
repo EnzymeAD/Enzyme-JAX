@@ -1099,14 +1099,18 @@ def MPICommRankOp : EnzymeXLA_Op<"comm_rank", [Pure]> {
     to check for errors.
   }];
 
-  let arguments = (ins MPI_Comm : $comm);
-
-  let results = (
-    outs Optional<MPI_Retval> : $retval,
+  /* let arguments = (ins MPI_Comm : $comm); */
+  let arguments = (ins HLO_Tensor : $comm);
+    
+  let results = ( outs
+    /* Optional<MPI_Retval> : $retval, */
     I32 : $rank
   );
 
-  let assemblyFormat = "`(` $comm `)` attr-dict `:` type(results)";
+  /* let assemblyFormat = "`(` $comm `)` attr-dict `:` type(results)"; */
+  let assemblyFormat = [{
+    $comm attr-dict `:` functional-type($comm, results)
+  }];
   /* let hasCanonicalizer = 1; */
 }
 

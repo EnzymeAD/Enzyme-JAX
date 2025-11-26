@@ -35,28 +35,28 @@ struct MPICommRankOpLowering
 
   LogicalResult matchAndRewrite(enzymexla::MPICommRankOp op,
                                 PatternRewriter &rewriter) const override {
-    auto ctx = op->getContext();
-    LLVMTypeConverter typeConverter(ctx);
+    // auto ctx = op->getContext();
+    // LLVMTypeConverter typeConverter(ctx);
 
-    auto comm = op.getOperand();
-    if (backend == "cpu") {
-      // auto moduleOp = op->getParentOfType<ModuleOp>();
-      // static int64_t fnNum = 0;
+    // auto comm = op.getOperand();
+    // if (backend == "cpu") {
+    //   // auto moduleOp = op->getParentOfType<ModuleOp>();
+    //   // static int64_t fnNum = 0;
 
-      // // auto blasIntType = rewriter.getIntegerType(blasIntWidth);
-      // // auto llvmBlasIntType = typeConverter.convertType(blasIntType);
-      // auto llvmPtrType = LLVM::LLVMPointerType::get(ctx);
-      // auto llvmVoidPtrType = LLVM::LLVMVoidType::get(ctx);
+    //   // // auto blasIntType = rewriter.getIntegerType(blasIntWidth);
+    //   // // auto llvmBlasIntType = typeConverter.convertType(blasIntType);
+    //   // auto llvmPtrType = LLVM::LLVMPointerType::get(ctx);
+    //   // auto llvmVoidPtrType = LLVM::LLVMVoidType::get(ctx);
 
-      // std::string fn = "MPI_Comm_Rank";
+    //   // std::string fn = "MPI_Comm_Rank";
       
-      // std::string fnName = fn + "wrapper_" + std::to_string(fnNum);
-      // fnNum++;
-      // {
-      // }
-    } else {
-      return rewriter.notifyMatchFailure(op, "Backend not supported: " + backend);
-    }
+    //   // std::string fnName = fn + "wrapper_" + std::to_string(fnNum);
+    //   // fnNum++;
+    //   // {
+    //   // }
+    // } else {
+    //   return rewriter.notifyMatchFailure(op, "Backend not supported: " + backend);
+    // }
 
   }
 
