@@ -42,12 +42,18 @@ MlirAttribute enzymexlaLapackSideAttrGet(MlirContext ctx, uint8_t left_side) {
   return wrap(mlir::enzymexla::LapackSideAttr::get(unwrap(ctx), side));
 }
 
-MlirAttribute enzymexlaLapackUploAttrGet(MlirContext ctx, uint8_t up) {
+MlirAttribute enzymexlaLapackUploAttrGet(MlirContext ctx, int32_t mode) {
   mlir::enzymexla::LapackUplo uplo;
-  if (up) {
+  switch (mode) {
+  case 0:
     uplo = mlir::enzymexla::LapackUplo::U;
-  } else {
+    break;
+  case 1:
     uplo = mlir::enzymexla::LapackUplo::L;
+    break;
+  case 2:
+    uplo = mlir::enzymexla::LapackUplo::F;
+    break;
   }
   return wrap(mlir::enzymexla::LapackUploAttr::get(unwrap(ctx), uplo));
 }
