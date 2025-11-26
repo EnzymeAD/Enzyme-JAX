@@ -26314,6 +26314,13 @@ void mlir::transform::addDynamicUpdateSliceConstProp(
                                                benefit);
 }
 
+void mlir::transform::addReverseConstProp(RewritePatternSet &patterns,
+                                          int64_t maxConstantExpansion,
+                                          MLIRContext &context,
+                                          PatternBenefit benefit) {
+  patterns.insert<ReverseConstProp>(maxConstantExpansion, &context, benefit);
+}
+
 void mlir::transform::addWhileSimplify(RewritePatternSet &patterns,
                                        bool hoistAll, MLIRContext &context,
                                        PatternBenefit benefit) {
