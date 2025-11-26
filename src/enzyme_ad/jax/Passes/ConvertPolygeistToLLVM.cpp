@@ -2224,9 +2224,7 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
   Type tys[] = {ptrty, i64, i32, i64, i32, ptrty, i64, ptrty};
 
   std::string launchFuncName;
-  if (gpuTarget == "cuda") {
-    launchFuncName = "cudaLaunchKernel";
-  } else if (gpuTarget == "rocm") {
+  if (gpuTarget == "rocm") {
     launchFuncName = "hipLaunchKernel";
   } else {
     launchFuncName = "cudaLaunchKernel";
@@ -4241,9 +4239,7 @@ struct ConvertPolygeistToLLVMPass
                       }).wasInterrupted();
 
     std::string launchFuncName;
-    if (backend == "cuda") {
-      launchFuncName = "cudaLaunchKernel";
-    } else if (backend == "rocm") {
+    if (backend == "rocm") {
       launchFuncName = "hipLaunchKernel";
     } else {
       launchFuncName = "cudaLaunchKernel";
