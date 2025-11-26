@@ -1069,6 +1069,47 @@ def ConvertTritonToTritonGPUPreservingModuleAttributesPass : Pass<
       >];
 }
 
+def LowerTritonPass : Pass<"lower-triton", "mlir::ModuleOp"> {
+  let summary = "Lower Triton to kernel call";
+  let dependentDialects = [
+    "triton::TritonDialect",
+    "enzymexla::EnzymeXLADialect",
+    "func::FuncDialect",
+    "enzymexla::triton_ext::TritonExtDialect",
+    "stablehlo::StablehloDialect",
+    "triton::nvidia_gpu::TritonNvidiaGPUDialect",
+    "triton::instrument::TritonInstrumentDialect",
+    "triton::nvgpu::NVGPUDialect",
+    "triton::nvws::NVWSDialect",
+    "triton::amdgpu::TritonAMDGPUDialect",
+    "triton::proton::ProtonDialect",
+    "triton::proton::gpu::ProtonGPUDialect",
+    "triton::gluon::GluonDialect",
+    "triton::gpu::TritonGPUDialect",
+    "cf::ControlFlowDialect",
+    "math::MathDialect",
+    "arith::ArithDialect",
+    "scf::SCFDialect",
+    "gpu::GPUDialect",
+    "LLVM::LLVMDialect",
+    "NVVM::NVVMDialect",
+    "ROCDL::ROCDLDialect",
+  ];
+  let options = [
+    Option<
+        /*C++ variable name=*/"backend",
+        /*CLI argument=*/"backend",
+        /*type=*/"std::string",
+        /*default=*/"\"cuda\"",
+        /*description=*/"HW backend">,
+    Option<
+        /*C++ variable name=*/"computeCapability",
+        /*CLI argument=*/"compute_capability",
+        /*type=*/"std::string",
+        /*default=*/"\"8.0\"",
+        /*description=*/"Compute capability">];
+}
+
 def EnzymeBatchToStableHLOPass : Pass<"enzyme-batch-to-stablehlo"> {
   let summary = "Legalize batching specific enzyme ops to stablehlo dialect";
   let dependentDialects = [
