@@ -1077,4 +1077,13 @@ def EnzymeBatchToStableHLOPass : Pass<"enzyme-batch-to-stablehlo"> {
   ];
 }
 
+def StructuredMatrixSimplifyPass : Pass<"structured-matrix-simplify", "ModuleOp"> {
+  let summary = "Simplify structured matrix operations";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "enzymexla::EnzymeXLADialect",
+    "func::FuncDialect",
+  ];
+}
+
 #endif
