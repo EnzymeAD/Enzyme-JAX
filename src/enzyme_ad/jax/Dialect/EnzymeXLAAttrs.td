@@ -133,4 +133,36 @@ def EnzymeXLA_GuaranteedAnalysisResult : I32EnumAttr<"GuaranteedAnalysisResult",
 def EnzymeXLA_GuaranteedAnalysisResultAttr : EnumAttr<EnzymeXLA_Dialect,
     EnzymeXLA_GuaranteedAnalysisResult, "guaranteed">;
 
+def EnzymeXLA_SymmetricDimensionSetAttr : AttrDef<EnzymeXLA_Dialect,
+    "SymmetricDimensionSet"> {
+  let summary = "A set of symmetric dimension indices";
+  let cppNamespace = "::mlir::enzymexla";
+
+  let parameters = (ins
+    "DenseI64ArrayAttr":$dimensions
+  );
+
+  let assemblyFormat = [{
+    `<` $dimensions `>`
+  }];
+
+  let mnemonic = "symmetric_dimension_set";
+}
+
+def EnzymeXLA_PartialSymmetryAnalysisResultAttr : AttrDef<EnzymeXLA_Dialect,
+    "PartialSymmetryAnalysisResult"> {
+  let summary = "Sets of partially symmetric dimensions";
+  let cppNamespace = "::mlir::enzymexla";
+
+  let parameters = (ins
+    ArrayRefParameter<"SymmetricDimensionSetAttr">:$values
+  );
+
+  let assemblyFormat = [{
+    `<` $values `>`
+  }];
+
+  let mnemonic = "partial_symmetry";
+}
+
 #endif // ENZYMEXLA_ATTRS
