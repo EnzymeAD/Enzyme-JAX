@@ -1077,4 +1077,13 @@ def EnzymeBatchToStableHLOPass : Pass<"enzyme-batch-to-stablehlo"> {
   ];
 }
 
+def PartialSymmetrySimplifyPass : Pass<"partial-symmetry-simplify", "ModuleOp"> {
+  let summary = "Simplify operations using partial symmetry analysis";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "enzymexla::EnzymeXLADialect",
+    "func::FuncDialect",
+  ];
+}
+
 #endif
