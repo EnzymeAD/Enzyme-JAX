@@ -44,7 +44,6 @@ static bool areEqual(APFloat a, APFloat b) {
 //===----------------------------------------------------------------------===//
 
 enum class StructuredSparsityKind {
-  Unknown,
   Dense,
   Band,
   UpperTriangular,
@@ -53,7 +52,8 @@ enum class StructuredSparsityKind {
   LowerBidiagonal,
   Tridiagonal,
   Diagonal,
-  Empty, // doesn't really mean anything, but we need it for bottom element
+  Empty, // denotes that all elements are structural zeros
+  Unknown,
 };
 
 // TODO: currently only legal negative value is -1, which means "unknown"
