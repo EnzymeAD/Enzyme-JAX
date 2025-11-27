@@ -103,9 +103,8 @@ void StructuredSparsityAttr::print(::mlir::AsmPrinter &printer) const {
   auto pattern = getPattern();
   auto kind = pattern.getKind();
 
-  // Skip printing kind for Unknown and Empty
-  bool printKind = (kind != StructuredSparsityKind::Unknown &&
-                    kind != StructuredSparsityKind::Empty);
+  // Skip printing kind for Unknown
+  bool printKind = kind != StructuredSparsityKind::Unknown;
 
   if (printKind) {
     printer << stringifyStructuredSparsityKind(kind);

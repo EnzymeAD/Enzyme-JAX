@@ -1,4 +1,5 @@
 #include "src/enzyme_ad/jax/Analysis/StructuredMatrixAnalysis.h"
+#include "src/enzyme_ad/jax/Passes/StructuredTensors.h"
 #include "src/enzyme_ad/jax/Utils.h"
 
 #include "mlir/Analysis/DataFlow/ConstantPropagationAnalysis.h"
@@ -33,6 +34,102 @@ StructuredSparsityPattern::StructuredSparsityPattern(Value v) {
     return;
   }
 
+  auto vTy = cast<RankedTensorType>(v.getType());
+  if (!vTy.hasStaticShape() || vTy.getRank() != 2) {
+    setUnknown();
+    return;
+  }
+  int64_t nrows = vTy.getDimSize(0);
+  int64_t ncols = vTy.getDimSize(1);
+
+  auto defOp = v.getDefiningOp();
+  if (!defOp) {
+    setUnknown();
+    return;
+  }
+
+  if (auto compareOp = dyn_cast<stablehlo::CompareOp>(defOp)) {
+    auto lhs = compareOp.getLhs();
+    auto rhs = compareOp.getRhs();
+
+    auto lhsIotaLikeTensor = enzyme::detectIotaLikeTensor(lhs);
+    auto rhsIotaLikeTensor = enzyme::detectIotaLikeTensor(rhs);
+
+    if (lhsIotaLikeTensor && rhsIotaLikeTensor) {
+      auto lhsIotaLikeTensorValue = *lhsIotaLikeTensor;
+      auto rhsIotaLikeTensorValue = *rhsIotaLikeTensor;
+
+      bool lhsIsRow = lhsIotaLikeTensorValue.dimension == 0;
+      bool rhsIsRow = rhsIotaLikeTensorValue.dimension == 0;
+      bool lhsIsCol = lhsIotaLikeTensorValue.dimension == 1;
+      bool rhsIsCol = rhsIotaLikeTensorValue.dimension == 1;
+
+      auto direction = compareOp.getComparisonDirection();
+      int64_t offset;
+
+      if (lhsIsRow && rhsIsCol) {
+        offset = lhsIotaLikeTensorValue.start - rhsIotaLikeTensorValue.start;
+      } else if (lhsIsCol && rhsIsRow) {
+        offset = rhsIotaLikeTensorValue.start - lhsIotaLikeTensorValue.start;
+        direction = reversedComparisonDirection(direction);
+      } else {
+        setUnknown();
+        return;
+      }
+
+      // TODO: verify calculation here
+      switch (direction) {
+      case stablehlo::ComparisonDirection::LT:
+        upperBandwidth = ncols - 1 + offset;
+        lowerBandwidth = -offset;
+        break;
+      case stablehlo::ComparisonDirection::LE:
+        upperBandwidth = ncols - 1 + offset;
+        lowerBandwidth = -offset - 1;
+        break;
+      case stablehlo::ComparisonDirection::GT:
+        upperBandwidth = -offset - 1;
+        lowerBandwidth = nrows - 1 + offset;
+        break;
+      case stablehlo::ComparisonDirection::GE:
+        upperBandwidth = -offset;
+        lowerBandwidth = nrows - 1 + offset;
+        break;
+      case stablehlo::ComparisonDirection::EQ:
+        // row == col => diagonal with offset
+        upperBandwidth = std::max(0L, -offset);
+        lowerBandwidth = std::max(0L, offset);
+        break;
+      case stablehlo::ComparisonDirection::NE:
+        setUnknown();
+        return;
+      }
+
+      lowerBandwidth = std::max(0L, std::min(lowerBandwidth, nrows - 1));
+      upperBandwidth = std::max(0L, std::min(upperBandwidth, ncols - 1));
+      kind = StructuredSparsityKind::Band;
+      refineKind();
+      return;
+    }
+  }
+
+  DenseElementsAttr denseAttr;
+  if (matchPattern(defOp, m_Constant(&denseAttr))) {
+    if (denseAttr.isSplat()) {
+      auto val = denseAttr.getSplatValue<Attribute>();
+      if (utils::isZero(val)) {
+        kind = StructuredSparsityKind::Empty;
+        return;
+      }
+    }
+
+    // TODO: get better sparsity pattern from denseAttr, for now we just
+    //       assume it is dense
+    kind = StructuredSparsityKind::Dense;
+    initializeBandwidths();
+    return;
+  }
+
   setUnknown();
   return;
 }
@@ -44,6 +141,7 @@ void StructuredSparsityPattern::initializeBandwidths() {
   case StructuredSparsityKind::Dense:
     lowerBandwidth = std::numeric_limits<int64_t>::max();
     upperBandwidth = std::numeric_limits<int64_t>::max();
+    break;
   case StructuredSparsityKind::Band:
     llvm_unreachable("constructing band with no bandwidths");
   case StructuredSparsityKind::UpperTriangular:
@@ -71,6 +169,8 @@ void StructuredSparsityPattern::initializeBandwidths() {
     upperBandwidth = 0;
     break;
   case StructuredSparsityKind::Empty:
+    lowerBandwidth = -1;
+    upperBandwidth = -1;
     break;
   }
 }
@@ -115,17 +215,18 @@ void StructuredSparsityPattern::refineKind() {
   }
 }
 
-// most specific pattern
+// intersection of the properties
 StructuredSparsityPattern
 StructuredSparsityPattern::meet(const StructuredSparsityPattern &lhs,
                                 const StructuredSparsityPattern &rhs) {
-  if (lhs.kind == StructuredSparsityKind::Empty ||
-      rhs.kind == StructuredSparsityKind::Empty)
-    return StructuredSparsityPattern(StructuredSparsityKind::Empty);
-
   if (lhs.kind == StructuredSparsityKind::Unknown)
     return rhs;
   if (rhs.kind == StructuredSparsityKind::Unknown)
+    return lhs;
+
+  if (lhs.kind == StructuredSparsityKind::Empty)
+    return rhs;
+  if (rhs.kind == StructuredSparsityKind::Empty)
     return lhs;
 
   auto lb = std::max(lhs.lowerBandwidth, rhs.lowerBandwidth);
@@ -135,18 +236,18 @@ StructuredSparsityPattern::meet(const StructuredSparsityPattern &lhs,
   return newPattern;
 }
 
-// least specific structure containing both
+// union of the properties
 StructuredSparsityPattern
 StructuredSparsityPattern::join(const StructuredSparsityPattern &lhs,
                                 const StructuredSparsityPattern &rhs) {
-  if (lhs.kind == StructuredSparsityKind::Empty)
+  if (lhs.kind == StructuredSparsityKind::Unknown)
     return rhs;
-  if (rhs.kind == StructuredSparsityKind::Empty)
+  if (rhs.kind == StructuredSparsityKind::Unknown)
     return lhs;
 
-  if (lhs.kind == StructuredSparsityKind::Unknown ||
-      rhs.kind == StructuredSparsityKind::Unknown)
-    return StructuredSparsityPattern(StructuredSparsityKind::Unknown);
+  if (lhs.kind == StructuredSparsityKind::Empty ||
+      rhs.kind == StructuredSparsityKind::Empty)
+    return StructuredSparsityPattern(StructuredSparsityKind::Empty);
 
   auto lb = std::min(lhs.lowerBandwidth, rhs.lowerBandwidth);
   auto ub = std::min(lhs.upperBandwidth, rhs.upperBandwidth);
@@ -157,6 +258,10 @@ StructuredSparsityPattern::join(const StructuredSparsityPattern &lhs,
 
 StructuredSparsityPattern StructuredSparsityPattern::propagateTranspose(
     Value val, const StructuredSparsityPattern &op) {
+  if (op.kind == StructuredSparsityKind::Empty ||
+      op.kind == StructuredSparsityKind::Unknown)
+    return StructuredSparsityPattern(op.kind);
+
   auto newPattern =
       StructuredSparsityPattern(op.upperBandwidth, op.lowerBandwidth);
   newPattern.refineKind();
@@ -191,9 +296,6 @@ void StructuredSparsityPattern::print(raw_ostream &os) const {
     break;
   case StructuredSparsityKind::Diagonal:
     os << "Diagonal";
-    break;
-  case StructuredSparsityKind::Empty:
-    os << "Empty";
     break;
   }
 }
