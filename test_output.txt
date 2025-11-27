@@ -1,0 +1,31 @@
+module {
+  func.func @pass1(%arg0: tensor<2x2x2xf32>) -> tensor<2x2x2xf32> {
+    %0 = stablehlo.transpose %arg0, dims = [0, 2, 1] : (tensor<2x2x2xf32>) -> tensor<2x2x2xf32>
+    %1 = stablehlo.add %arg0, %0 : tensor<2x2x2xf32>
+    %2 = stablehlo.transpose %1, dims = [0, 2, 1] : (tensor<2x2x2xf32>) -> tensor<2x2x2xf32>
+    return %2 : tensor<2x2x2xf32>
+  }
+  func.func @pass2(%arg0: tensor<2x2x2x2xf32>) -> tensor<2x2x2x2xf32> {
+    %0 = stablehlo.transpose %arg0, dims = [0, 1, 3, 2] : (tensor<2x2x2x2xf32>) -> tensor<2x2x2x2xf32>
+    %1 = stablehlo.add %arg0, %0 : tensor<2x2x2x2xf32>
+    %2 = stablehlo.transpose %1, dims = [0, 1, 3, 2] : (tensor<2x2x2x2xf32>) -> tensor<2x2x2x2xf32>
+    return %2 : tensor<2x2x2x2xf32>
+  }
+  func.func @fail1(%arg0: tensor<2x2x2xf32>) -> tensor<2x2x2xf32> {
+    %0 = stablehlo.transpose %arg0, dims = [1, 0, 2] : (tensor<2x2x2xf32>) -> tensor<2x2x2xf32>
+    %1 = stablehlo.add %arg0, %0 : tensor<2x2x2xf32>
+    %2 = stablehlo.transpose %1, dims = [0, 2, 1] : (tensor<2x2x2xf32>) -> tensor<2x2x2xf32>
+    return %2 : tensor<2x2x2xf32>
+  }
+  func.func @pass3() -> tensor<2x2x2xf32> {
+    %cst = stablehlo.constant dense<[[[1.000000e+00, 2.000000e+00], [2.000000e+00, 1.000000e+00]], [[3.000000e+00, 4.000000e+00], [4.000000e+00, 3.000000e+00]]]> : tensor<2x2x2xf32>
+    %0 = stablehlo.transpose %cst, dims = [0, 2, 1] : (tensor<2x2x2xf32>) -> tensor<2x2x2xf32>
+    return %0 : tensor<2x2x2xf32>
+  }
+  func.func @fail3() -> tensor<2x2x2xf32> {
+    %cst = stablehlo.constant dense<[[[1.000000e+00, 2.000000e+00], [2.000000e+00, 1.000000e+00]], [[3.000000e+00, 4.000000e+00], [5.000000e+00, 3.000000e+00]]]> : tensor<2x2x2xf32>
+    %0 = stablehlo.transpose %cst, dims = [0, 2, 1] : (tensor<2x2x2xf32>) -> tensor<2x2x2xf32>
+    return %0 : tensor<2x2x2xf32>
+  }
+}
+

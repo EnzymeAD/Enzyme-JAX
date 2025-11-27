@@ -205,4 +205,21 @@ def EnzymeXLA_StructuredSparsity : AttrDef<EnzymeXLA_Dialect,
   let hasCustomAssemblyFormat = 1;
 }
 
+def EnzymeXLA_SymmetricDims : AttrDef<EnzymeXLA_Dialect, "SymmetricDims"> {
+  let summary = "Symmetric dimensions of a tensor";
+  let description = [{
+    This attribute represents the symmetry of a tensor as a list of sets of dimensions.
+    Each set contains dimensions that are symmetric with respect to each other.
+    For example, `{{0, 1}, {2}}` means dimensions 0 and 1 are symmetric, and dimension 2 is independent.
+  }];
+
+  let parameters = (ins
+    ArrayRefParameter<"StringAttr">:$dims
+  );
+
+  let mnemonic = "symmetric_dims";
+  let assemblyFormat = "`<` $dims `>`";
+  let cppNamespace = "::mlir::enzymexla";
+}
+
 #endif // ENZYMEXLA_ATTRS

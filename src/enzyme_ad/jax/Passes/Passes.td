@@ -1062,4 +1062,13 @@ def StructuredMatrixSimplifyPass : Pass<"structured-matrix-simplify", "ModuleOp"
   ];
 }
 
+def TensorSymmetricSimplifyPass : Pass<"tensor-symmetric-simplify", "ModuleOp"> {
+  let summary = "Simplify symmetric tensor operations";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "enzymexla::EnzymeXLADialect",
+    "func::FuncDialect",
+  ];
+}
+
 #endif
