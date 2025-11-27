@@ -24,6 +24,7 @@ common
 common --define framework_shared_object=true
 common --define tsl_protobuf_header_only=true
 common --define=allow_oversize_protos=true
+common --check_visibility=false
 
 
 # Some targets have the same py source file, but use different

@@ -105,14 +105,21 @@
 #include "xla/service/spmd/shardy/stablehlo_round_trip/stablehlo_export.h"
 #include "xla/service/spmd/shardy/stablehlo_round_trip/stablehlo_import.h"
 
+#include "amd/include/Dialect/TritonAMDGPU/IR/Dialect.h"
+#include "nvidia/include/Dialect/NVGPU/IR/Dialect.h"
+#include "nvidia/include/Dialect/NVWS/IR/Dialect.h"
 #include "nvidia/include/NVGPUToLLVM/Passes.h"
 #include "nvidia/include/TritonNVIDIAGPUToLLVM/Passes.h"
+#include "proton/Dialect/include/Dialect/Proton/IR/Dialect.h"
+#include "proton/Dialect/include/Dialect/ProtonGPU/IR/Dialect.h"
 #include "triton/Conversion/TritonGPUToLLVM/Passes.h"
 #include "triton/Conversion/TritonToTritonGPU/Passes.h"
+#include "triton/Dialect/Gluon/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
+#include "triton/Dialect/TritonInstrument/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/Transforms/Passes.h"
 #include "triton/Target/LLVMIR/Passes.h"
@@ -218,6 +225,13 @@ void registerDialects(mlir::DialectRegistry &registry) {
   registry.insert<mlir::ub::UBDialect>();
   registry.insert<mlir::triton::TritonDialect>();
   registry.insert<mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect>();
+  registry.insert<mlir::triton::instrument::TritonInstrumentDialect>();
+  registry.insert<mlir::triton::nvgpu::NVGPUDialect>();
+  registry.insert<mlir::triton::nvws::NVWSDialect>();
+  registry.insert<mlir::triton::amdgpu::TritonAMDGPUDialect>();
+  registry.insert<mlir::triton::proton::ProtonDialect>();
+  registry.insert<mlir::triton::proton::gpu::ProtonGPUDialect>();
+  registry.insert<mlir::triton::gluon::GluonDialect>();
   registry.insert<mlir::triton::gpu::TritonGPUDialect>();
 }
 
@@ -256,6 +270,13 @@ void loadAllRegisteredDialects(mlir::MLIRContext &context) {
   context.loadDialect<mlir::ub::UBDialect>();
   context.loadDialect<mlir::triton::TritonDialect>();
   context.loadDialect<mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect>();
+  context.loadDialect<mlir::triton::instrument::TritonInstrumentDialect>();
+  context.loadDialect<mlir::triton::nvgpu::NVGPUDialect>();
+  context.loadDialect<mlir::triton::nvws::NVWSDialect>();
+  context.loadDialect<mlir::triton::amdgpu::TritonAMDGPUDialect>();
+  context.loadDialect<mlir::triton::proton::ProtonDialect>();
+  context.loadDialect<mlir::triton::proton::gpu::ProtonGPUDialect>();
+  context.loadDialect<mlir::triton::gluon::GluonDialect>();
   context.loadDialect<mlir::triton::gpu::TritonGPUDialect>();
 }
 
