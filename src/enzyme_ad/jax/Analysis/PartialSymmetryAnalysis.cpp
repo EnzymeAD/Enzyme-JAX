@@ -486,9 +486,7 @@ LogicalResult PartialSymmetryAnalysis::visitOperation(
 
         // If transpose pattern detected, add symmetry from transpose
         if (transposePatternDetected) {
-          propagatedAnnotation[0] =
-              PartialSymmetryAnnotation::generateSymmetryFromBilinearTranspose(
-                  propagatedAnnotation[0], transposePermutation);
+          // TODO
         }
 
         updatedAnnotation[0] = true;
