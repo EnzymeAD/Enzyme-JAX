@@ -16,15 +16,19 @@ common --action_env=PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=upb
 common --experimental_repo_remote_exec
 common --cxxopt=-std=c++17 --host_cxxopt=-std=c++17
 common --cxxopt=-w --host_cxxopt=-w
-# common --copt=-fbracket-depth=1024 --host_copt=-fbracket-depth=1024
+
 common --define=grpc_no_ares=true
 common --define=tsl_link_protobuf=true
 common --define open_source_build=true
-common
 common --define framework_shared_object=true
 common --define tsl_protobuf_header_only=true
 common --define=allow_oversize_protos=true
 
+common --enable_platform_specific_config
+
+# macos specific config
+build:macos --macos_minimum_os=11.3
+build:macos --define using_clang=true
 
 # Some targets have the same py source file, but use different
 # configurations via `requires-` tags. This results in an action
