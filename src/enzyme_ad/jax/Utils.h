@@ -948,7 +948,18 @@ bool hasTraitElementwise(Operation *op);
 // currently there are no traits for associative ops
 bool isAssociativeOp(Operation *op);
 
+// this doesn't construct the scalar value and instead returns the
+// other operand
+bool extractMultiplicationFactor(Value v, Value &other, Operation *op,
+                                 OpBuilder &builder);
+bool extractMultiplicationFactor(Value v, Value &scalar, Value &other,
+                                 Operation *op, OpBuilder &builder);
+
+Value getScalarValue(Value val, OpBuilder &builder);
 Value getScalarValue(Operation *op, OpBuilder &builder);
+
+bool isScalarValue(Value val);
+bool isScalarValue(Operation *op);
 
 Value copyTriangularPart(OpBuilder &builder, Value input,
                          enzymexla::LapackUplo uplo);
