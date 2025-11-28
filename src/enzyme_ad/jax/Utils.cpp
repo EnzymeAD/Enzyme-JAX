@@ -1491,6 +1491,64 @@ bool isAssociativeOp(Operation *op) {
              stablehlo::XorOp>(op);
 }
 
+bool extractMultiplicationFactor(Value v, Value &other, Operation *op,
+                                 OpBuilder &builder) {
+  auto mulOp = v.getDefiningOp<stablehlo::MulOp>();
+  if (!mulOp) {
+    other = v;
+    return true;
+  }
+
+  if (!isOnlyUsedInOperation(mulOp, op))
+    return false;
+
+  Value mLhs = mulOp.getLhs(), mRhs = mulOp.getRhs();
+
+  if (isScalarValue(mLhs)) {
+    other = mRhs;
+  } else if (isScalarValue(mRhs)) {
+    other = mLhs;
+  } else {
+    return false;
+  }
+  return true;
+}
+
+bool extractMultiplicationFactor(Value v, Value &scalar, Value &other,
+                                 Operation *op, OpBuilder &builder) {
+  auto mulOp = v.getDefiningOp<stablehlo::MulOp>();
+  if (!mulOp) {
+    scalar = nullptr;
+    other = v;
+    return true;
+  }
+
+  if (!isOnlyUsedInOperation(mulOp, op))
+    return false;
+
+  Value mLhs = mulOp.getLhs(), mRhs = mulOp.getRhs();
+
+  auto lhsScalarValue = stablehlo::getScalarValue(mLhs, builder);
+  if (lhsScalarValue) {
+    scalar = lhsScalarValue;
+    other = mRhs;
+  } else {
+    auto rhsScalarValue = stablehlo::getScalarValue(mRhs, builder);
+    if (rhsScalarValue) {
+      scalar = rhsScalarValue;
+      other = mLhs;
+    } else {
+      scalar = nullptr;
+      return false;
+    }
+  }
+  return true;
+}
+
+Value getScalarValue(Value val, OpBuilder &builder) {
+  return getScalarValue(val.getDefiningOp(), builder);
+}
+
 Value getScalarValue(Operation *op, OpBuilder &builder) {
   if (!op)
     return nullptr;
@@ -1527,6 +1585,26 @@ Value getScalarValue(Operation *op, OpBuilder &builder) {
   }
 
   return nullptr;
+}
+
+bool isScalarValue(Value val) { return isScalarValue(val.getDefiningOp()); }
+
+bool isScalarValue(Operation *op) {
+  if (!op)
+    return false;
+
+  SplatElementsAttr splatAttr;
+  if (matchPattern(op, m_Constant(&splatAttr)))
+    return true;
+
+  if (isa<stablehlo::BroadcastInDimOp, stablehlo::ReshapeOp>(op) &&
+      cast<RankedTensorType>(op->getOperand(0).getType()).getRank() == 0)
+    return true;
+
+  if (isa<stablehlo::ConvertOp>(op))
+    return isScalarValue(op->getOperand(0));
+
+  return false;
 }
 
 Value copyTriangularPart(OpBuilder &builder, Value input,
