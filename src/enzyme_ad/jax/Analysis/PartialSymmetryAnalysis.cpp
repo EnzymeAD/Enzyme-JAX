@@ -70,27 +70,36 @@ void PartialSymmetryAnnotation::canonicalize() {
   }
 }
 
+void PartialSymmetryAnnotation::uniteDimensionSets(int i, int j) {
+  if (storage[i] == storage[j])
+    return;
+  
+  int oldId = storage[i];
+  int newId = storage[j];
+  for (size_t k = 0; k < storage.size(); ++k) {
+    if (storage[k] == oldId) {
+      storage[k] = newId;
+    }
+  }
+  
+  canonicalize();
+}
+
 PartialSymmetryAnnotation
 PartialSymmetryAnnotation::join(const PartialSymmetryAnnotation &lhs,
                                 const PartialSymmetryAnnotation &rhs) {
   if (lhs.isUnknown() || rhs.isUnknown())
     return PartialSymmetryAnnotation();
 
-  PartialSymmetryAnnotation result = createKnownUninitialized(lhs.getRank());
-  int nextId = 0;
+  PartialSymmetryAnnotation result = createNotSymmetric(lhs.getRank());
 
   for (int64_t i = 0; i < lhs.getRank(); ++i) {
     bool found = false;
     for (int64_t j = 0; j < i; ++j) {
       if (lhs.getSetId(i) == lhs.getSetId(j) &&
           rhs.getSetId(i) == rhs.getSetId(j)) {
-        result.storage[i] = result.storage[j];
-        found = true;
-        break;
+        result.uniteDimensionSets(i, j);
       }
-    }
-    if (!found) {
-      result.storage[i] = nextId++;
     }
   }
 
@@ -106,21 +115,14 @@ PartialSymmetryAnnotation::meet(const PartialSymmetryAnnotation &lhs,
   if (rhs.isUnknown())
     return lhs;
 
-  PartialSymmetryAnnotation result = createKnownUninitialized(lhs.getRank());
-  int nextId = 0;
+  PartialSymmetryAnnotation result = createNotSymmetric(lhs.getRank());
 
   for (int64_t i = 0; i < lhs.getRank(); ++i) {
-    bool found = false;
     for (int64_t j = 0; j < i; ++j) {
       if (lhs.getSetId(i) == lhs.getSetId(j) ||
           rhs.getSetId(i) == rhs.getSetId(j)) {
-        result.storage[i] = result.storage[j];
-        found = true;
-        break;
+        result.uniteDimensionSets(i, j);
       }
-    }
-    if (!found) {
-      result.storage[i] = nextId++;
     }
   }
 
@@ -134,8 +136,7 @@ PartialSymmetryAnnotation PartialSymmetryAnnotation::propagateTranspose(
   if (annotation.isUnknown())
     return PartialSymmetryAnnotation();
 
-  PartialSymmetryAnnotation result =
-      createKnownUninitialized(annotation.getRank());
+  PartialSymmetryAnnotation result = createKnownUninitialized(annotation.getRank());
 
   for (int64_t i = 0; i < annotation.getRank(); ++i) {
     result.storage[i] = annotation.getSetId(permutation[i]);
@@ -228,21 +229,90 @@ PartialSymmetryAnnotation PartialSymmetryAnnotation::propagateDotGeneral(
 
   PartialSymmetryAnnotation result = createNotSymmetric(resultRank);
 
+  // Preserve symmetry in batching dimensions
   for (int i = 0; i < lhsBatchingDims.size(); ++i) {
     for (int j = 0; j < i; ++j) {
       if (lhsAnnotation.getSetId(lhsBatchingDims[i]) ==
               lhsAnnotation.getSetId(lhsBatchingDims[j]) &&
           rhsAnnotation.getSetId(rhsBatchingDims[i]) ==
               rhsAnnotation.getSetId(rhsBatchingDims[j])) {
-        result.storage[i] = result.storage[j];
+        result.uniteDimensionSets(i, j);
       }
     }
   }
 
+  // Preserve symmetry in free (non-contracting, non-batching) dimensions
   if (lhsEqualsRhs && lhsBatchingDims == rhsBatchingDims &&
       lhsContractingDims == rhsContractingDims) {
-    // Also preserve symmetry in non-contracting, non-batching dimensions
-    // TODO
+      
+    // annotations must be equal
+    PartialSymmetryAnnotation annotation = lhsAnnotation;
+    
+    bool exchange_valid = true;
+    
+    // check that each batching dimension has same ID for LHS and RHS
+    for (int i = 0; i < lhsBatchingDims.size(); ++i) {
+      if (lhsAnnotation.getSetId(lhsBatchingDims[i]) != rhsAnnotation.getSetId(rhsBatchingDims[i])) {
+        exchange_valid = false;
+      }
+    }
+    
+    // check that the multiset of IDs for contracting dimensions are equal for LHS and RHS
+    SmallVector<int> lhsContractingIds, rhsContractingIds;
+    for (int64_t dim : lhsContractingDims) {
+      lhsContractingIds.push_back(lhsAnnotation.getSetId(dim));
+    }
+    for (int64_t dim : rhsContractingDims) {
+      rhsContractingIds.push_back(rhsAnnotation.getSetId(dim));
+    }
+    llvm::sort(lhsContractingIds);
+    llvm::sort(rhsContractingIds);
+    if (lhsContractingIds != rhsContractingIds) {
+      exchange_valid = false;
+    }
+        
+    if (exchange_valid) {
+      SmallVector<int64_t> lhsResultDims;
+      for (int64_t i = 0; i < annotation.getRank(); ++i) {
+        if (!llvm::is_contained(lhsBatchingDims, i) && !llvm::is_contained(lhsContractingDims, i)) {
+          lhsResultDims.push_back(i);
+        }
+      }
+      
+      SmallVector<int64_t> rhsResultDims;
+      for (int64_t i = 0; i < annotation.getRank(); ++i) {
+        if (!llvm::is_contained(rhsBatchingDims, i) && !llvm::is_contained(rhsContractingDims, i)) {
+          rhsResultDims.push_back(i);
+        }
+      }
+
+      // Symmetry within free dimensions of LHS
+      for (int i = 0; i < lhsResultDims.size(); ++i) {
+        for (int j = 0; j < i; ++j) {
+          if (annotation.getSetId(lhsResultDims[i]) == annotation.getSetId(lhsResultDims[j])) {
+            result.uniteDimensionSets(lhsBatchingDims.size() + i, lhsBatchingDims.size() + j);
+          }
+        }
+      }
+      
+      // Symmetry between free dimensions of RHS
+      for (int i = 0; i < rhsResultDims.size(); ++i) {
+        for (int j = 0; j < i; ++j) {
+          if (annotation.getSetId(rhsResultDims[i]) == annotation.getSetId(rhsResultDims[j])) {
+            result.uniteDimensionSets(lhsBatchingDims.size() + lhsResultDims.size() + i, lhsBatchingDims.size() + lhsResultDims.size() + j);
+          }
+        }
+      }
+      
+      // Symmetry between free dimensions of LHS and RHS
+      for (int i = 0; i < lhsResultDims.size(); ++i) {
+        for (int j = 0; j < rhsResultDims.size(); ++j) {
+          if (annotation.getSetId(lhsResultDims[i]) == annotation.getSetId(rhsResultDims[j])) {
+            result.uniteDimensionSets(lhsBatchingDims.size() + lhsResultDims.size() + i, lhsBatchingDims.size() + j);
+          }
+        }
+      }
+    }
   }
 
   result.canonicalize();
@@ -324,26 +394,19 @@ PartialSymmetryAnnotation
 PartialSymmetryAnnotation::checkConstant(DenseElementsAttr attr) {
   if (auto type = dyn_cast<RankedTensorType>(attr.getType())) {
     int64_t rank = type.getRank();
-    SmallVector<int> storage(rank);
-    for (int i = 0; i < rank; ++i)
-      storage[i] = i;
-
+    PartialSymmetryAnnotation result = createNotSymmetric(rank);
+    
     for (int i = 0; i < rank; ++i) {
       for (int j = i + 1; j < rank; ++j) {
-        if (storage[i] == storage[j])
+        if (result.getSetId(i) == result.getSetId(j))
           continue;
 
         if (checkPairwiseSymmetry(attr, i, j)) {
-          int oldId = storage[j];
-          int newId = storage[i];
-          for (int k = 0; k < rank; ++k) {
-            if (storage[k] == oldId)
-              storage[k] = newId;
-          }
+          result.uniteDimensionSets(i, j);
         }
       }
     }
-    return PartialSymmetryAnnotation(storage);
+    return result;
   }
   return PartialSymmetryAnnotation();
 }

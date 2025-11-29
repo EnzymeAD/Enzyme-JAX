@@ -32,7 +32,7 @@ public:
   int64_t getRank() const { return storage.size(); }
 
   bool isUnknown() const { return !known; }
-
+  
   static PartialSymmetryAnnotation join(const PartialSymmetryAnnotation &lhs,
                                         const PartialSymmetryAnnotation &rhs);
   static PartialSymmetryAnnotation meet(const PartialSymmetryAnnotation &lhs,
@@ -74,6 +74,7 @@ private:
   SmallVector<int> storage;
 
   void canonicalize();
+  void uniteDimensionSets(int i, int j);
 };
 
 class PartialSymmetryLattice : public dataflow::AbstractSparseLattice {
