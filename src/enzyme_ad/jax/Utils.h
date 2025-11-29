@@ -307,6 +307,9 @@ bool mayAlias(mlir::MemoryEffects::EffectInstance a,
 
 bool mayAlias(mlir::MemoryEffects::EffectInstance a, mlir::Value b);
 
+bool checkNotEqual(llvm::APInt a, llvm::APInt b);
+bool checkNotEqual(llvm::APFloat a, llvm::APFloat b);
+
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type Ty);
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type Ty,
                           mlir::Operation *op, PatternRewriter &rewriter);

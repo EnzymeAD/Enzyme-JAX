@@ -17,9 +17,9 @@ namespace enzyme {
 // Represents the partial symmetry of a tensor as a partition of its dimensions.
 class PartialSymmetryAnnotation {
 public:
-  PartialSymmetryAnnotation() : known(false), storage() {}
+  PartialSymmetryAnnotation() : known(false), dimensionSetIDs() {}
 
-  explicit PartialSymmetryAnnotation(ArrayRef<int> storage);
+  explicit PartialSymmetryAnnotation(ArrayRef<int64_t> dimensionSetIDs);
 
   static PartialSymmetryAnnotation createKnownUninitialized(int64_t rank);
   static PartialSymmetryAnnotation createNotSymmetric(int64_t rank);
@@ -27,9 +27,9 @@ public:
 
   bool isSymmetric(int64_t i, int64_t j) const;
 
-  int getSetId(int64_t i) const { return storage[i]; }
+  int64_t getSetId(int64_t i) const { return dimensionSetIDs[i]; }
 
-  int64_t getRank() const { return storage.size(); }
+  int64_t getRank() const { return dimensionSetIDs.size(); }
 
   bool isUnknown() const { return !known; }
   
@@ -65,7 +65,7 @@ public:
                              ArrayRef<int64_t> rhsDimToLhs);
 
   bool operator==(const PartialSymmetryAnnotation &other) const {
-    return (!known && !other.known) || storage == other.storage;
+    return (!known && !other.known) || dimensionSetIDs == other.dimensionSetIDs;
   }
 
   SmallVector<SmallVector<int64_t>> getDimensionSets() const;
@@ -74,10 +74,10 @@ public:
 
 private:
   bool known;
-  SmallVector<int> storage;
+  SmallVector<int64_t> dimensionSetIDs;
 
   void canonicalize();
-  void uniteDimensionSets(int64_t rank, int i, int j);
+  void uniteDimensionSets(int64_t rank, int64_t i, int64_t j);
 };
 
 class PartialSymmetryLattice : public dataflow::AbstractSparseLattice {
