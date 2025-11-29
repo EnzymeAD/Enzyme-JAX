@@ -199,30 +199,15 @@ PartialSymmetryAnnotation::propagateElementwiseBinary(
     int64_t rank = resultRank;
     
     PartialSymmetryAnnotation transposeSymmetry = createKnownUninitialized(rank);
-    SmallVector<bool> assigned(rank, false);
-    int nextId = 0;
     
     for (int64_t i = 0; i < rank; ++i) {
-      if (assigned[i])
-        continue;
-      
       int64_t j = rhsDimToLhs[i];
-      if (j != i && rhsDimToLhs[j] == i) {
-        transposeSymmetry.storage[i] = nextId;
-        transposeSymmetry.storage[j] = nextId;
-        assigned[i] = true;
-        assigned[j] = true;
-      } else {
-        transposeSymmetry.storage[i] = nextId;
-        assigned[i] = true;
-      }
-      
-      nextId++;
+      if (rhsDimToLhs[j] == i) {
+        result.uniteDimensionSets(rank, i, j);
+      }       
     }
     
-    transposeSymmetry.canonicalize();
-    
-    result = meet(result, transposeSymmetry);
+    result.canonicalize();
   }
   
   return result;
