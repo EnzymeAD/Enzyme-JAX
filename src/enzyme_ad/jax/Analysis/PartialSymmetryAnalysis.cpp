@@ -217,8 +217,6 @@ PartialSymmetryAnnotation PartialSymmetryAnnotation::propagateDotGeneral(
       }
     }
 
-    llvm::errs() << "still ok 1\n";
-
     // check that the multiset of IDs for contracting dimensions are equal for
     // LHS and RHS
     SmallVector<int64_t> lhsContractingIds, rhsContractingIds;
@@ -233,8 +231,6 @@ PartialSymmetryAnnotation PartialSymmetryAnnotation::propagateDotGeneral(
     if (lhsContractingIds != rhsContractingIds) {
       exchange_valid = false;
     }
-
-    llvm::errs() << "still ok 2\n";
 
     if (exchange_valid) {
       SmallVector<int64_t> lhsResultDims;
@@ -495,8 +491,6 @@ LogicalResult PartialSymmetryAnalysis::visitOperation(
           rhsAliasesLhs = true;
         }
       }
-
-      llvm::errs() << "dotGeneral rhsAliasesLhs: " << rhsAliasesLhs << "\n";
 
       // Propagate symmetry through dotGeneral
       propagatedAnnotation[0] = PartialSymmetryAnnotation::propagateDotGeneral(
