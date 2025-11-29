@@ -18,7 +18,8 @@ namespace enzyme {
 // PartialSymmetryAnnotation Implementation
 //===----------------------------------------------------------------------===//
 
-PartialSymmetryAnnotation::PartialSymmetryAnnotation(ArrayRef<int64_t> dimensionSetIDs) {
+PartialSymmetryAnnotation::PartialSymmetryAnnotation(
+    ArrayRef<int64_t> dimensionSetIDs) {
   this->dimensionSetIDs.assign(dimensionSetIDs.begin(), dimensionSetIDs.end());
   canonicalize();
 }
@@ -63,10 +64,11 @@ void PartialSymmetryAnnotation::canonicalize() {
   }
 }
 
-void PartialSymmetryAnnotation::uniteDimensionSets(int64_t rank, int64_t i, int64_t j) {
+void PartialSymmetryAnnotation::uniteDimensionSets(int64_t rank, int64_t i,
+                                                   int64_t j) {
   if (dimensionSetIDs[i] == dimensionSetIDs[j])
     return;
-  
+
   int64_t oldId = dimensionSetIDs[i];
   int64_t newId = dimensionSetIDs[j];
   for (int64_t k = 0; k < (int64_t)dimensionSetIDs.size(); ++k) {
@@ -74,7 +76,7 @@ void PartialSymmetryAnnotation::uniteDimensionSets(int64_t rank, int64_t i, int6
       dimensionSetIDs[k] = newId;
     }
   }
-  
+
   canonicalize();
 }
 
@@ -161,27 +163,24 @@ PartialSymmetryAnnotation PartialSymmetryAnnotation::propagateBroadcastInDim(
   return result;
 }
 
-PartialSymmetryAnnotation
-PartialSymmetryAnnotation::propagateElementwiseBinary(
+PartialSymmetryAnnotation PartialSymmetryAnnotation::propagateElementwiseBinary(
     const PartialSymmetryAnnotation &lhsAnnotation,
-    const PartialSymmetryAnnotation &rhsAnnotation,
-    int64_t resultRank,
-    bool rhsAliasesLhs,
-    ArrayRef<int64_t> rhsDimToLhs) {
-  
+    const PartialSymmetryAnnotation &rhsAnnotation, int64_t resultRank,
+    bool rhsAliasesLhs, ArrayRef<int64_t> rhsDimToLhs) {
+
   PartialSymmetryAnnotation result = join(lhsAnnotation, rhsAnnotation);
-  
+
   if (rhsAliasesLhs) {
     for (int64_t i = 0; i < resultRank; ++i) {
       int64_t j = rhsDimToLhs[i];
       if (rhsDimToLhs[j] == i) {
         result.uniteDimensionSets(resultRank, i, j);
-      }       
+      }
     }
-    
+
     result.canonicalize();
   }
-  
+
   return result;
 }
 
@@ -191,7 +190,7 @@ PartialSymmetryAnnotation PartialSymmetryAnnotation::propagateDotGeneral(
     ArrayRef<int64_t> lhsBatchingDims, ArrayRef<int64_t> rhsBatchingDims,
     ArrayRef<int64_t> lhsContractingDims, ArrayRef<int64_t> rhsContractingDims,
     bool rhsAliasesLhs, ArrayRef<int64_t> rhsDimToLhs) {
-      
+
   PartialSymmetryAnnotation result = createNotSymmetric(resultRank);
 
   // Preserve symmetry in batching dimensions
@@ -209,17 +208,19 @@ PartialSymmetryAnnotation PartialSymmetryAnnotation::propagateDotGeneral(
   // Preserve symmetry in free (non-contracting, non-batching) dimensions
   if (rhsAliasesLhs) {
     bool exchange_valid = true;
-    
+
     // check that each batching dimension has same ID for LHS and RHS
     for (int64_t i = 0; i < (int64_t)lhsBatchingDims.size(); ++i) {
-      if (lhsAnnotation.getSetId(lhsBatchingDims[i]) != lhsAnnotation.getSetId(rhsDimToLhs[rhsBatchingDims[i]])) {
+      if (lhsAnnotation.getSetId(lhsBatchingDims[i]) !=
+          lhsAnnotation.getSetId(rhsDimToLhs[rhsBatchingDims[i]])) {
         exchange_valid = false;
       }
     }
 
     llvm::errs() << "still ok 1\n";
-    
-    // check that the multiset of IDs for contracting dimensions are equal for LHS and RHS
+
+    // check that the multiset of IDs for contracting dimensions are equal for
+    // LHS and RHS
     SmallVector<int64_t> lhsContractingIds, rhsContractingIds;
     for (int64_t dim : lhsContractingDims) {
       lhsContractingIds.push_back(lhsAnnotation.getSetId(dim));
@@ -234,18 +235,20 @@ PartialSymmetryAnnotation PartialSymmetryAnnotation::propagateDotGeneral(
     }
 
     llvm::errs() << "still ok 2\n";
-        
+
     if (exchange_valid) {
       SmallVector<int64_t> lhsResultDims;
       for (int64_t i = 0; i < lhsAnnotation.getRank(); ++i) {
-        if (!llvm::is_contained(lhsBatchingDims, i) && !llvm::is_contained(lhsContractingDims, i)) {
+        if (!llvm::is_contained(lhsBatchingDims, i) &&
+            !llvm::is_contained(lhsContractingDims, i)) {
           lhsResultDims.push_back(i);
         }
       }
-      
+
       SmallVector<int64_t> rhsResultDims;
       for (int64_t i = 0; i < rhsAnnotation.getRank(); ++i) {
-        if (!llvm::is_contained(rhsBatchingDims, i) && !llvm::is_contained(rhsContractingDims, i)) {
+        if (!llvm::is_contained(rhsBatchingDims, i) &&
+            !llvm::is_contained(rhsContractingDims, i)) {
           rhsResultDims.push_back(i);
         }
       }
@@ -253,26 +256,34 @@ PartialSymmetryAnnotation PartialSymmetryAnnotation::propagateDotGeneral(
       // Symmetry within free dimensions of LHS
       for (int64_t i = 0; i < (int64_t)lhsResultDims.size(); ++i) {
         for (int64_t j = 0; j < i; ++j) {
-          if (lhsAnnotation.getSetId(lhsResultDims[i]) == lhsAnnotation.getSetId(lhsResultDims[j])) {
-            result.uniteDimensionSets(resultRank, lhsBatchingDims.size() + i, lhsBatchingDims.size() + j);
+          if (lhsAnnotation.getSetId(lhsResultDims[i]) ==
+              lhsAnnotation.getSetId(lhsResultDims[j])) {
+            result.uniteDimensionSets(resultRank, lhsBatchingDims.size() + i,
+                                      lhsBatchingDims.size() + j);
           }
         }
       }
-      
+
       // Symmetry between free dimensions of RHS
       for (int64_t i = 0; i < (int64_t)rhsResultDims.size(); ++i) {
         for (int64_t j = 0; j < i; ++j) {
-          if (rhsAnnotation.getSetId(rhsResultDims[i]) == rhsAnnotation.getSetId(rhsResultDims[j])) {
-            result.uniteDimensionSets(resultRank, lhsBatchingDims.size() + lhsResultDims.size() + i, lhsBatchingDims.size() + lhsResultDims.size() + j);
+          if (rhsAnnotation.getSetId(rhsResultDims[i]) ==
+              rhsAnnotation.getSetId(rhsResultDims[j])) {
+            result.uniteDimensionSets(
+                resultRank, lhsBatchingDims.size() + lhsResultDims.size() + i,
+                lhsBatchingDims.size() + lhsResultDims.size() + j);
           }
         }
       }
-      
+
       // Symmetry between free dimensions of LHS and RHS
       for (int64_t i = 0; i < (int64_t)lhsResultDims.size(); ++i) {
         for (int64_t j = 0; j < (int64_t)rhsResultDims.size(); ++j) {
-          if (lhsAnnotation.getSetId(lhsResultDims[i]) == lhsAnnotation.getSetId(rhsDimToLhs[rhsResultDims[j]])) {
-            result.uniteDimensionSets(resultRank, lhsBatchingDims.size() + i, lhsBatchingDims.size() + lhsResultDims.size() + j);
+          if (lhsAnnotation.getSetId(lhsResultDims[i]) ==
+              lhsAnnotation.getSetId(rhsDimToLhs[rhsResultDims[j]])) {
+            result.uniteDimensionSets(resultRank, lhsBatchingDims.size() + i,
+                                      lhsBatchingDims.size() +
+                                          lhsResultDims.size() + j);
           }
         }
       }
@@ -338,7 +349,7 @@ PartialSymmetryAnnotation::checkConstant(DenseElementsAttr attr) {
   if (auto type = dyn_cast<RankedTensorType>(attr.getType())) {
     int64_t rank = type.getRank();
     PartialSymmetryAnnotation result = createNotSymmetric(rank);
-    
+
     for (int64_t i = 0; i < rank; ++i) {
       for (int64_t j = 0; j < i; ++j) {
         bool isSymmetric = false;
@@ -426,7 +437,8 @@ void PartialSymmetryLattice::print(raw_ostream &os) const { value.print(os); }
 //===----------------------------------------------------------------------===//
 
 void PartialSymmetryAnalysis::setToEntryState(PartialSymmetryLattice *lattice) {
-  lattice->setValue(PartialSymmetryAnnotation::createNotSymmetric(lattice->getValue().getRank()));
+  lattice->setValue(PartialSymmetryAnnotation::createNotSymmetric(
+      lattice->getValue().getRank()));
 }
 
 LogicalResult PartialSymmetryAnalysis::visitOperation(
@@ -448,7 +460,8 @@ LogicalResult PartialSymmetryAnalysis::visitOperation(
   }
 
   if (auto bcastOp = dyn_cast<stablehlo::BroadcastInDimOp>(op)) {
-    if (auto resultType = dyn_cast<RankedTensorType>(op->getResult(0).getType())) {
+    if (auto resultType =
+            dyn_cast<RankedTensorType>(op->getResult(0).getType())) {
       updatedAnnotation[0] = true;
       propagatedAnnotation[0] =
           PartialSymmetryAnnotation::propagateBroadcastInDim(
@@ -458,7 +471,8 @@ LogicalResult PartialSymmetryAnalysis::visitOperation(
   }
 
   if (auto dotGeneralOp = dyn_cast<stablehlo::DotGeneralOp>(op)) {
-    if (auto resultType = dyn_cast<RankedTensorType>(op->getResult(0).getType())) {
+    if (auto resultType =
+            dyn_cast<RankedTensorType>(op->getResult(0).getType())) {
       auto dotDimNumbers = dotGeneralOp.getDotDimensionNumbers();
       auto lhs = dotGeneralOp.getLhs();
       auto rhs = dotGeneralOp.getRhs();
@@ -468,7 +482,8 @@ LogicalResult PartialSymmetryAnalysis::visitOperation(
       SmallVector<int64_t> rhsDimToLhs;
       if (auto lhsT = lhs.getDefiningOp<stablehlo::TransposeOp>()) {
         if (rhs == lhsT.getOperand()) {
-          rhsDimToLhs.assign(lhsT.getPermutation().begin(), lhsT.getPermutation().end());
+          rhsDimToLhs.assign(lhsT.getPermutation().begin(),
+                             lhsT.getPermutation().end());
           rhsAliasesLhs = true;
         }
       }
@@ -480,39 +495,41 @@ LogicalResult PartialSymmetryAnalysis::visitOperation(
           rhsAliasesLhs = true;
         }
       }
-      
+
       llvm::errs() << "dotGeneral rhsAliasesLhs: " << rhsAliasesLhs << "\n";
 
       // Propagate symmetry through dotGeneral
-      propagatedAnnotation[0] =
-          PartialSymmetryAnnotation::propagateDotGeneral(
-              operandAnnotations[0], operandAnnotations[1],
-              resultType.getRank(), dotDimNumbers.getLhsBatchingDimensions(),
-              dotDimNumbers.getRhsBatchingDimensions(),
-              dotDimNumbers.getLhsContractingDimensions(),
-              dotDimNumbers.getRhsContractingDimensions(), rhsAliasesLhs, rhsDimToLhs);
+      propagatedAnnotation[0] = PartialSymmetryAnnotation::propagateDotGeneral(
+          operandAnnotations[0], operandAnnotations[1], resultType.getRank(),
+          dotDimNumbers.getLhsBatchingDimensions(),
+          dotDimNumbers.getRhsBatchingDimensions(),
+          dotDimNumbers.getLhsContractingDimensions(),
+          dotDimNumbers.getRhsContractingDimensions(), rhsAliasesLhs,
+          rhsDimToLhs);
 
       updatedAnnotation[0] = true;
     }
   }
 
   if (stablehlo::hasTraitElementwise(op)) {
-    if (auto resultType = dyn_cast<RankedTensorType>(op->getResult(0).getType())) {
+    if (auto resultType =
+            dyn_cast<RankedTensorType>(op->getResult(0).getType())) {
       if (operands.size() == 1) {
         propagatedAnnotation[0] = operandAnnotations[0];
         updatedAnnotation[0] = true;
       } else if (operands.size() == 2 &&
-                  (op->hasTrait<OpTrait::IsCommutative>() ||
+                 (op->hasTrait<OpTrait::IsCommutative>() ||
                   op->hasTrait<hlo::OpTrait::IsCommutative>())) {
         auto lhs = op->getOperand(0);
         auto rhs = op->getOperand(1);
-        
+
         bool rhsAliasesLhs = false;
         SmallVector<int64_t> rhsDimToLhs;
-        
+
         if (auto lhsT = lhs.getDefiningOp<stablehlo::TransposeOp>()) {
           if (rhs == lhsT.getOperand()) {
-            rhsDimToLhs.assign(lhsT.getPermutation().begin(), lhsT.getPermutation().end());
+            rhsDimToLhs.assign(lhsT.getPermutation().begin(),
+                               lhsT.getPermutation().end());
             rhsAliasesLhs = true;
           }
         }
@@ -524,9 +541,11 @@ LogicalResult PartialSymmetryAnalysis::visitOperation(
             rhsAliasesLhs = true;
           }
         }
-        
-        propagatedAnnotation[0] = PartialSymmetryAnnotation::propagateElementwiseBinary(
-            operandAnnotations[0], operandAnnotations[1], resultType.getRank(), rhsAliasesLhs, rhsDimToLhs);
+
+        propagatedAnnotation[0] =
+            PartialSymmetryAnnotation::propagateElementwiseBinary(
+                operandAnnotations[0], operandAnnotations[1],
+                resultType.getRank(), rhsAliasesLhs, rhsDimToLhs);
         updatedAnnotation[0] = true;
       }
     }

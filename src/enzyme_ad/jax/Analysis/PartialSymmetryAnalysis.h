@@ -31,7 +31,6 @@ public:
 
   int64_t getRank() const { return dimensionSetIDs.size(); }
 
- 
   static PartialSymmetryAnnotation join(const PartialSymmetryAnnotation &lhs,
                                         const PartialSymmetryAnnotation &rhs);
   static PartialSymmetryAnnotation meet(const PartialSymmetryAnnotation &lhs,
@@ -52,12 +51,12 @@ public:
                       int64_t resultRank, ArrayRef<int64_t> lhsBatchingDims,
                       ArrayRef<int64_t> rhsBatchingDims,
                       ArrayRef<int64_t> lhsContractingDims,
-                      ArrayRef<int64_t> rhsContractingDims,
-                      bool rhsAliasesLhs, ArrayRef<int64_t> rhsDimToLhs);
+                      ArrayRef<int64_t> rhsContractingDims, bool rhsAliasesLhs,
+                      ArrayRef<int64_t> rhsDimToLhs);
 
   static PartialSymmetryAnnotation checkConstant(DenseElementsAttr attr);
 
-  static PartialSymmetryAnnotation 
+  static PartialSymmetryAnnotation
   propagateElementwiseBinary(const PartialSymmetryAnnotation &lhsAnnotation,
                              const PartialSymmetryAnnotation &rhsAnnotation,
                              int64_t resultRank, bool rhsAliasesLhs,
