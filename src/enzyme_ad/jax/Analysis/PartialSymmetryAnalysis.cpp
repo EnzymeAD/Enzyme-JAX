@@ -222,7 +222,7 @@ PartialSymmetryAnnotation PartialSymmetryAnnotation::propagateDotGeneral(
     const PartialSymmetryAnnotation &rhsAnnotation, int64_t resultRank,
     ArrayRef<int64_t> lhsBatchingDims, ArrayRef<int64_t> rhsBatchingDims,
     ArrayRef<int64_t> lhsContractingDims, ArrayRef<int64_t> rhsContractingDims,
-    bool lhsEqualsRhs) {
+    bool rhsAliasesLhs, ArrayRef<int64_t> rhsDimToLhs) {
 
   if (lhsAnnotation.isUnknown() || rhsAnnotation.isUnknown())
     return PartialSymmetryAnnotation();
@@ -242,17 +242,13 @@ PartialSymmetryAnnotation PartialSymmetryAnnotation::propagateDotGeneral(
   }
 
   // Preserve symmetry in free (non-contracting, non-batching) dimensions
-  if (lhsEqualsRhs && lhsBatchingDims == rhsBatchingDims &&
-      lhsContractingDims == rhsContractingDims) {
-      
-    // annotations must be equal
-    PartialSymmetryAnnotation annotation = lhsAnnotation;
-    
+  if (rhsAliasesLhs) {
+
     bool exchange_valid = true;
     
     // check that each batching dimension has same ID for LHS and RHS
     for (int i = 0; i < lhsBatchingDims.size(); ++i) {
-      if (lhsAnnotation.getSetId(lhsBatchingDims[i]) != rhsAnnotation.getSetId(rhsBatchingDims[i])) {
+      if (lhsAnnotation.getSetId(lhsBatchingDims[i]) != lhsAnnotation.getSetId(rhsDimToLhs[rhsBatchingDims[i]])) {
         exchange_valid = false;
       }
     }
@@ -263,7 +259,7 @@ PartialSymmetryAnnotation PartialSymmetryAnnotation::propagateDotGeneral(
       lhsContractingIds.push_back(lhsAnnotation.getSetId(dim));
     }
     for (int64_t dim : rhsContractingDims) {
-      rhsContractingIds.push_back(rhsAnnotation.getSetId(dim));
+      rhsContractingIds.push_back(lhsAnnotation.getSetId(rhsDimToLhs[dim]));
     }
     llvm::sort(lhsContractingIds);
     llvm::sort(rhsContractingIds);
@@ -273,14 +269,14 @@ PartialSymmetryAnnotation PartialSymmetryAnnotation::propagateDotGeneral(
         
     if (exchange_valid) {
       SmallVector<int64_t> lhsResultDims;
-      for (int64_t i = 0; i < annotation.getRank(); ++i) {
+      for (int64_t i = 0; i < lhsAnnotation.getRank(); ++i) {
         if (!llvm::is_contained(lhsBatchingDims, i) && !llvm::is_contained(lhsContractingDims, i)) {
           lhsResultDims.push_back(i);
         }
       }
       
       SmallVector<int64_t> rhsResultDims;
-      for (int64_t i = 0; i < annotation.getRank(); ++i) {
+      for (int64_t i = 0; i < rhsAnnotation.getRank(); ++i) {
         if (!llvm::is_contained(rhsBatchingDims, i) && !llvm::is_contained(rhsContractingDims, i)) {
           rhsResultDims.push_back(i);
         }
@@ -289,7 +285,7 @@ PartialSymmetryAnnotation PartialSymmetryAnnotation::propagateDotGeneral(
       // Symmetry within free dimensions of LHS
       for (int i = 0; i < lhsResultDims.size(); ++i) {
         for (int j = 0; j < i; ++j) {
-          if (annotation.getSetId(lhsResultDims[i]) == annotation.getSetId(lhsResultDims[j])) {
+          if (lhsAnnotation.getSetId(lhsResultDims[i]) == lhsAnnotation.getSetId(lhsResultDims[j])) {
             result.uniteDimensionSets(lhsBatchingDims.size() + i, lhsBatchingDims.size() + j);
           }
         }
@@ -298,7 +294,7 @@ PartialSymmetryAnnotation PartialSymmetryAnnotation::propagateDotGeneral(
       // Symmetry between free dimensions of RHS
       for (int i = 0; i < rhsResultDims.size(); ++i) {
         for (int j = 0; j < i; ++j) {
-          if (annotation.getSetId(rhsResultDims[i]) == annotation.getSetId(rhsResultDims[j])) {
+          if (rhsAnnotation.getSetId(rhsResultDims[i]) == rhsAnnotation.getSetId(rhsResultDims[j])) {
             result.uniteDimensionSets(lhsBatchingDims.size() + lhsResultDims.size() + i, lhsBatchingDims.size() + lhsResultDims.size() + j);
           }
         }
@@ -307,8 +303,8 @@ PartialSymmetryAnnotation PartialSymmetryAnnotation::propagateDotGeneral(
       // Symmetry between free dimensions of LHS and RHS
       for (int i = 0; i < lhsResultDims.size(); ++i) {
         for (int j = 0; j < rhsResultDims.size(); ++j) {
-          if (annotation.getSetId(lhsResultDims[i]) == annotation.getSetId(rhsResultDims[j])) {
-            result.uniteDimensionSets(lhsBatchingDims.size() + lhsResultDims.size() + i, lhsBatchingDims.size() + j);
+          if (lhsAnnotation.getSetId(lhsResultDims[i]) == lhsAnnotation.getSetId(rhsDimToLhs[rhsResultDims[j]])) {
+            result.uniteDimensionSets(lhsBatchingDims.size() + i, lhsBatchingDims.size() + lhsResultDims.size() + j);
           }
         }
       }
@@ -519,22 +515,22 @@ LogicalResult PartialSymmetryAnalysis::visitOperation(
         auto dotDimNumbers = dotGeneralOp.getDotDimensionNumbers();
         auto lhs = dotGeneralOp.getLhs();
         auto rhs = dotGeneralOp.getRhs();
-        bool lhsEqualsRhs = (lhs == rhs);
 
-        // Check for transpose pattern: A x A^T or A^T x A
-        bool transposePatternDetected = false;
-        ArrayRef<int64_t> transposePermutation;
-
+        // Check for aliasing between LHS and RHS (up to transpose)
+        bool rhsAliasesLhs = false;
+        SmallVector<int64_t> rhsDimToLhs;
         if (auto lhsT = lhs.getDefiningOp<stablehlo::TransposeOp>()) {
           if (rhs == lhsT.getOperand()) {
-            transposePatternDetected = true;
-            transposePermutation = lhsT.getPermutation();
+            rhsDimToLhs.assign(lhsT.getPermutation().begin(), lhsT.getPermutation().end());
+            rhsAliasesLhs = true;
           }
         }
         if (auto rhsT = rhs.getDefiningOp<stablehlo::TransposeOp>()) {
           if (lhs == rhsT.getOperand()) {
-            transposePatternDetected = true;
-            transposePermutation = rhsT.getPermutation();
+            rhsDimToLhs.resize(rhsT.getPermutation().size());
+            for (size_t i = 0; i < rhsT.getPermutation().size(); ++i)
+              rhsDimToLhs[rhsT.getPermutation()[i]] = i;
+            rhsAliasesLhs = true;
           }
         }
 
@@ -545,12 +541,7 @@ LogicalResult PartialSymmetryAnalysis::visitOperation(
                 resultType.getRank(), dotDimNumbers.getLhsBatchingDimensions(),
                 dotDimNumbers.getRhsBatchingDimensions(),
                 dotDimNumbers.getLhsContractingDimensions(),
-                dotDimNumbers.getRhsContractingDimensions(), lhsEqualsRhs);
-
-        // If transpose pattern detected, add symmetry from transpose
-        if (transposePatternDetected) {
-          // TODO
-        }
+                dotDimNumbers.getRhsContractingDimensions(), rhsAliasesLhs, rhsDimToLhs);
 
         updatedAnnotation[0] = true;
       }

@@ -53,7 +53,8 @@ public:
                       int64_t resultRank, ArrayRef<int64_t> lhsBatchingDims,
                       ArrayRef<int64_t> rhsBatchingDims,
                       ArrayRef<int64_t> lhsContractingDims,
-                      ArrayRef<int64_t> rhsContractingDims, bool lhsEqualsRhs);
+                      ArrayRef<int64_t> rhsContractingDims, bool rhsAliasesLhs,
+                      ArrayRef<int64_t> rhsDimToLhs);
 
   static PartialSymmetryAnnotation checkConstant(DenseElementsAttr attr);
 
