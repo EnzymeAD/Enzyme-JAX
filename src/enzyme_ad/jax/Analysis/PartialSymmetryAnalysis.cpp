@@ -196,7 +196,7 @@ PartialSymmetryAnnotation::propagateElementwiseBinary(
   PartialSymmetryAnnotation result = join(lhsAnnotation, rhsAnnotation);
   
   if (rhsAliasesLhs) {
-    int64_t rank = result.getRank();
+    int64_t rank = resultRank;
     
     PartialSymmetryAnnotation transposeSymmetry = createKnownUninitialized(rank);
     SmallVector<bool> assigned(rank, false);
@@ -216,6 +216,8 @@ PartialSymmetryAnnotation::propagateElementwiseBinary(
         transposeSymmetry.storage[i] = nextId;
         assigned[i] = true;
       }
+      
+      nextId++;
     }
     
     transposeSymmetry.canonicalize();
@@ -580,9 +582,11 @@ LogicalResult PartialSymmetryAnalysis::visitOperation(
           }
         }
         
-        // propagatedAnnotation[0] = PartialSymmetryAnnotation::propagateElementwiseBinary(
-        //     operandAnnotations[0], operandAnnotations[1], resultType.getRank(), rhsAliasesLhs, rhsDimToLhs);
-        // updatedAnnotation[0] = true;
+        llvm::errs() << "handling elementwise op" << "\n";
+        
+        propagatedAnnotation[0] = PartialSymmetryAnnotation::propagateElementwiseBinary(
+            operandAnnotations[0], operandAnnotations[1], resultType.getRank(), rhsAliasesLhs, rhsDimToLhs);
+        updatedAnnotation[0] = true;
       }
     }
   }
