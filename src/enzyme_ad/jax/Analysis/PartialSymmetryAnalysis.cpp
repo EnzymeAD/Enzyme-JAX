@@ -18,8 +18,7 @@ namespace enzyme {
 // PartialSymmetryAnnotation Implementation
 //===----------------------------------------------------------------------===//
 
-PartialSymmetryAnnotation::PartialSymmetryAnnotation(ArrayRef<int64_t> dimensionSetIDs)
-    : known(true) {
+PartialSymmetryAnnotation::PartialSymmetryAnnotation(ArrayRef<int64_t> dimensionSetIDs) {
   this->dimensionSetIDs.assign(dimensionSetIDs.begin(), dimensionSetIDs.end());
   canonicalize();
 }
@@ -27,7 +26,6 @@ PartialSymmetryAnnotation::PartialSymmetryAnnotation(ArrayRef<int64_t> dimension
 PartialSymmetryAnnotation
 PartialSymmetryAnnotation::createFullySymmetric(int64_t rank) {
   PartialSymmetryAnnotation annotation;
-  annotation.known = true;
   for (int64_t i = 0; i < rank; ++i) {
     annotation.dimensionSetIDs.push_back(0);
   }
@@ -37,7 +35,6 @@ PartialSymmetryAnnotation::createFullySymmetric(int64_t rank) {
 PartialSymmetryAnnotation
 PartialSymmetryAnnotation::createNotSymmetric(int64_t rank) {
   PartialSymmetryAnnotation annotation;
-  annotation.known = true;
   for (int64_t i = 0; i < rank; ++i) {
     annotation.dimensionSetIDs.push_back(i);
   }
@@ -45,9 +42,8 @@ PartialSymmetryAnnotation::createNotSymmetric(int64_t rank) {
 }
 
 PartialSymmetryAnnotation
-PartialSymmetryAnnotation::createKnownUninitialized(int64_t rank) {
+PartialSymmetryAnnotation::createUninitialized(int64_t rank) {
   PartialSymmetryAnnotation annotation;
-  annotation.known = true;
   annotation.dimensionSetIDs.resize(rank);
   return annotation;
 }
@@ -68,10 +64,6 @@ void PartialSymmetryAnnotation::canonicalize() {
 }
 
 void PartialSymmetryAnnotation::uniteDimensionSets(int64_t rank, int64_t i, int64_t j) {
-  if (isUnknown()) {
-    *this = createNotSymmetric(rank);
-  }
-  
   if (dimensionSetIDs[i] == dimensionSetIDs[j])
     return;
   
@@ -89,9 +81,6 @@ void PartialSymmetryAnnotation::uniteDimensionSets(int64_t rank, int64_t i, int6
 PartialSymmetryAnnotation
 PartialSymmetryAnnotation::join(const PartialSymmetryAnnotation &lhs,
                                 const PartialSymmetryAnnotation &rhs) {
-  if (lhs.isUnknown() || rhs.isUnknown())
-    return PartialSymmetryAnnotation();
-
   PartialSymmetryAnnotation result = createNotSymmetric(lhs.getRank());
 
   for (int64_t i = 0; i < lhs.getRank(); ++i) {
@@ -111,11 +100,6 @@ PartialSymmetryAnnotation::join(const PartialSymmetryAnnotation &lhs,
 PartialSymmetryAnnotation
 PartialSymmetryAnnotation::meet(const PartialSymmetryAnnotation &lhs,
                                 const PartialSymmetryAnnotation &rhs) {
-  if (lhs.isUnknown())
-    return rhs;
-  if (rhs.isUnknown())
-    return lhs;
-
   PartialSymmetryAnnotation result = createNotSymmetric(lhs.getRank());
 
   for (int64_t i = 0; i < lhs.getRank(); ++i) {
@@ -134,10 +118,8 @@ PartialSymmetryAnnotation::meet(const PartialSymmetryAnnotation &lhs,
 PartialSymmetryAnnotation PartialSymmetryAnnotation::propagateTranspose(
     const PartialSymmetryAnnotation &annotation,
     ArrayRef<int64_t> permutation) {
-  if (annotation.isUnknown())
-    return PartialSymmetryAnnotation();
 
-  PartialSymmetryAnnotation result = createKnownUninitialized(annotation.getRank());
+  PartialSymmetryAnnotation result = createUninitialized(annotation.getRank());
 
   for (int64_t i = 0; i < annotation.getRank(); ++i) {
     result.dimensionSetIDs[i] = annotation.getSetId(permutation[i]);
@@ -151,10 +133,7 @@ PartialSymmetryAnnotation PartialSymmetryAnnotation::propagateBroadcastInDim(
     const PartialSymmetryAnnotation &annotation, int64_t outputRank,
     ArrayRef<int64_t> broadcastDimensions) {
 
-  if (annotation.isUnknown())
-    return PartialSymmetryAnnotation();
-
-  PartialSymmetryAnnotation result = createKnownUninitialized(outputRank);
+  PartialSymmetryAnnotation result = createUninitialized(outputRank);
 
   llvm::SmallDenseMap<int64_t, int64_t> outputToInput;
   for (int64_t i = 0; i < (int64_t)broadcastDimensions.size(); ++i) {
@@ -193,14 +172,10 @@ PartialSymmetryAnnotation::propagateElementwiseBinary(
   PartialSymmetryAnnotation result = join(lhsAnnotation, rhsAnnotation);
   
   if (rhsAliasesLhs) {
-    int64_t rank = resultRank;
-    
-    PartialSymmetryAnnotation transposeSymmetry = createKnownUninitialized(rank);
-    
-    for (int64_t i = 0; i < rank; ++i) {
+    for (int64_t i = 0; i < resultRank; ++i) {
       int64_t j = rhsDimToLhs[i];
       if (rhsDimToLhs[j] == i) {
-        result.uniteDimensionSets(rank, i, j);
+        result.uniteDimensionSets(resultRank, i, j);
       }       
     }
     
@@ -216,10 +191,7 @@ PartialSymmetryAnnotation PartialSymmetryAnnotation::propagateDotGeneral(
     ArrayRef<int64_t> lhsBatchingDims, ArrayRef<int64_t> rhsBatchingDims,
     ArrayRef<int64_t> lhsContractingDims, ArrayRef<int64_t> rhsContractingDims,
     bool rhsAliasesLhs, ArrayRef<int64_t> rhsDimToLhs) {
-
-  if (lhsAnnotation.isUnknown() || rhsAnnotation.isUnknown())
-    return PartialSymmetryAnnotation();
-
+      
   PartialSymmetryAnnotation result = createNotSymmetric(resultRank);
 
   // Preserve symmetry in batching dimensions
@@ -244,6 +216,8 @@ PartialSymmetryAnnotation PartialSymmetryAnnotation::propagateDotGeneral(
         exchange_valid = false;
       }
     }
+
+    llvm::errs() << "still ok 1\n";
     
     // check that the multiset of IDs for contracting dimensions are equal for LHS and RHS
     SmallVector<int64_t> lhsContractingIds, rhsContractingIds;
@@ -258,6 +232,8 @@ PartialSymmetryAnnotation PartialSymmetryAnnotation::propagateDotGeneral(
     if (lhsContractingIds != rhsContractingIds) {
       exchange_valid = false;
     }
+
+    llvm::errs() << "still ok 2\n";
         
     if (exchange_valid) {
       SmallVector<int64_t> lhsResultDims;
@@ -450,7 +426,7 @@ void PartialSymmetryLattice::print(raw_ostream &os) const { value.print(os); }
 //===----------------------------------------------------------------------===//
 
 void PartialSymmetryAnalysis::setToEntryState(PartialSymmetryLattice *lattice) {
-  lattice->setValue(PartialSymmetryAnnotation());
+  lattice->setValue(PartialSymmetryAnnotation::createNotSymmetric(lattice->getValue().getRank()));
 }
 
 LogicalResult PartialSymmetryAnalysis::visitOperation(
@@ -504,6 +480,8 @@ LogicalResult PartialSymmetryAnalysis::visitOperation(
           rhsAliasesLhs = true;
         }
       }
+      
+      llvm::errs() << "dotGeneral rhsAliasesLhs: " << rhsAliasesLhs << "\n";
 
       // Propagate symmetry through dotGeneral
       propagatedAnnotation[0] =

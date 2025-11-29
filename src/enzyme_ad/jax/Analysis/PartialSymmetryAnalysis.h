@@ -17,11 +17,11 @@ namespace enzyme {
 // Represents the partial symmetry of a tensor as a partition of its dimensions.
 class PartialSymmetryAnnotation {
 public:
-  PartialSymmetryAnnotation() : known(false), dimensionSetIDs() {}
+  PartialSymmetryAnnotation() : dimensionSetIDs() {}
 
   explicit PartialSymmetryAnnotation(ArrayRef<int64_t> dimensionSetIDs);
 
-  static PartialSymmetryAnnotation createKnownUninitialized(int64_t rank);
+  static PartialSymmetryAnnotation createUninitialized(int64_t rank);
   static PartialSymmetryAnnotation createNotSymmetric(int64_t rank);
   static PartialSymmetryAnnotation createFullySymmetric(int64_t rank);
 
@@ -31,8 +31,7 @@ public:
 
   int64_t getRank() const { return dimensionSetIDs.size(); }
 
-  bool isUnknown() const { return !known; }
-  
+ 
   static PartialSymmetryAnnotation join(const PartialSymmetryAnnotation &lhs,
                                         const PartialSymmetryAnnotation &rhs);
   static PartialSymmetryAnnotation meet(const PartialSymmetryAnnotation &lhs,
@@ -65,7 +64,7 @@ public:
                              ArrayRef<int64_t> rhsDimToLhs);
 
   bool operator==(const PartialSymmetryAnnotation &other) const {
-    return (!known && !other.known) || dimensionSetIDs == other.dimensionSetIDs;
+    return dimensionSetIDs == other.dimensionSetIDs;
   }
 
   SmallVector<SmallVector<int64_t>> getDimensionSets() const;
@@ -73,7 +72,6 @@ public:
   void print(raw_ostream &os) const;
 
 private:
-  bool known;
   SmallVector<int64_t> dimensionSetIDs;
 
   void canonicalize();
@@ -99,7 +97,6 @@ public:
   void setValue(const PartialSymmetryAnnotation &v) { value = v; }
 
 private:
-  bool isUnknown;
   PartialSymmetryAnnotation value;
 };
 

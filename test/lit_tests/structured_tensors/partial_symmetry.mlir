@@ -50,3 +50,14 @@ func.func @test4() -> tensor<2x2xf32> {
 // CHECK-NEXT: return %0 : tensor<2x2xf32>
 // CHECK-NEXT: }
 
+func.func @test5(%arg0: tensor<3x3x3xf32>) -> tensor<3x3x3xf32> {
+  %0 = stablehlo.transpose %arg0, dims = [2, 1, 0] : (tensor<3x3x3xf32>) -> tensor<3x3x3xf32>
+  %1 = stablehlo.dot_general %arg0, %0, batching_dims = [1] x [1], contracting_dims = [0] x [2] : (tensor<3x3x3xf32>, tensor<3x3x3xf32>) -> tensor<3x3x3xf32>
+  return %1 : tensor<3x3x3xf32>
+}
+// CHECK: func.func @test5(%arg0: tensor<3x3x3xf32>) -> tensor<3x3x3xf32> {
+// CHECK-NEXT: %0 = stablehlo.transpose %arg0, dims = [2, 1, 0] : (tensor<3x3x3xf32>) -> tensor<3x3x3xf32>
+// CHECK-NEXT: %1 = stablehlo.dot_general %arg0, %0, batching_dims = [1] x [1], contracting_dims = [0] x [2] {enzymexla.partial_symmetry = [#enzymexla.partial_symmetry<<[1, 2]>>]} : (tensor<3x3x3xf32>, tensor<3x3x3xf32>) -> tensor<3x3x3xf32>
+// CHECK-NEXT: return %1 : tensor<3x3x3xf32>
+// CHECK-NEXT: }
+
