@@ -17,11 +17,11 @@
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
-#define DEBUG_TYPE "partial-symmetry-simplify"
+#define DEBUG_TYPE "partial-symmetry-annotate"
 
 namespace mlir {
 namespace enzyme {
-#define GEN_PASS_DEF_PARTIALSYMMETRYSIMPLIFYPASS
+#define GEN_PASS_DEF_PARTIALSYMMETRYANNOTATEPASS
 #include "src/enzyme_ad/jax/Passes/Passes.h.inc"
 } // namespace enzyme
 } // namespace mlir
@@ -32,9 +32,9 @@ using namespace mlir::enzyme;
 
 namespace {
 
-class PartialSymmetrySimplifyPass
-    : public enzyme::impl::PartialSymmetrySimplifyPassBase<
-          PartialSymmetrySimplifyPass> {
+class PartialSymmetryAnnotatePass
+    : public enzyme::impl::PartialSymmetryAnnotatePassBase<
+          PartialSymmetryAnnotatePass> {
 public:
   using Base::Base;
 
@@ -51,6 +51,7 @@ public:
 
     auto mod = getOperation();
 
+    // Annotate all operations with partial symmetry information
     mod->walk([&](Operation *op) {
       SmallVector<Attribute> partialSymmetryAttrs;
       bool anyKnown = false;
@@ -92,8 +93,6 @@ public:
 
       return WalkResult::advance();
     });
-
-    // TODO: do things here
   }
 };
 

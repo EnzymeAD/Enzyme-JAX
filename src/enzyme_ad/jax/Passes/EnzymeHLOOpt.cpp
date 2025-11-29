@@ -33,6 +33,7 @@
 #include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Analysis/PartialSymmetryAnalysis.h"
 #include "src/enzyme_ad/jax/Passes/StructuredTensors.h"
 #include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/Base.h"
@@ -55,6 +56,7 @@
 #include "llvm/ADT/MapVector.h"
 #include <iterator>
 #include <numeric>
+#include <optional>
 #define DEBUG_TYPE "enzymehloopt"
 
 namespace mlir {
@@ -6949,6 +6951,82 @@ struct TransposeSymmetricSimplify
       rewriter.replaceOp(op, operand);
       return success();
     }
+    return failure();
+  }
+};
+
+static std::optional<enzyme::PartialSymmetryAnnotation>
+getPartialSymmetryFromAttr(Value val) {
+  auto op = val.getDefiningOp();
+  if (!op)
+    return std::nullopt;
+
+  auto arrayAttr =
+      op->getAttrOfType<ArrayAttr>("enzymexla.partial_symmetry");
+  if (!arrayAttr || arrayAttr.empty())
+    return std::nullopt;
+
+  // Get the result number for this value
+  auto opResult = dyn_cast<OpResult>(val);
+  if (!opResult)
+    return std::nullopt;
+
+  auto resultNumber = opResult.getResultNumber();
+  if (resultNumber >= arrayAttr.size())
+    return std::nullopt;
+
+  auto partialSymmetryAttr = dyn_cast<enzymexla::PartialSymmetryAnalysisResultAttr>(
+      arrayAttr[resultNumber]);
+  if (!partialSymmetryAttr)
+    return std::nullopt;
+
+  auto dimensionSetAttrs = partialSymmetryAttr.getValues();
+  auto rank = cast<RankedTensorType>(val.getType()).getRank();
+
+  SmallVector<ArrayRef<int64_t>> dimensionSets;
+  for (auto dimensionSetAttr : dimensionSetAttrs) {
+    auto dims = dimensionSetAttr.getDimensions().asArrayRef();
+    dimensionSets.push_back(dims);
+  }
+
+  return enzyme::PartialSymmetryAnnotation::fromDimensionSets(rank, dimensionSets);
+}
+
+struct TransposePartialSymmetrySimplify
+    : public CheckedOpRewritePattern<stablehlo::TransposeOp,
+                                     TransposePartialSymmetrySimplify> {
+  using CheckedOpRewritePattern<
+      stablehlo::TransposeOp,
+      TransposePartialSymmetrySimplify>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
+                                        PatternRewriter &rewriter) const {
+    auto operand = op.getOperand();
+    auto perm = op.getPermutation();
+
+    // Get partial symmetry annotation from the operand
+    auto annotationOpt = getPartialSymmetryFromAttr(operand);
+    if (!annotationOpt.has_value())
+      return failure();
+    
+    auto annotation = annotationOpt.value();
+
+    // Check if the transpose is an identity based on partial symmetry
+    // A transpose is identity if permuting dimensions doesn't change which
+    // dimensions are in the same symmetric set
+    bool isIdentity = true;
+    for (int64_t i = 0; i < (int64_t)perm.size(); ++i) {
+      if (annotation.getSetId(i) != annotation.getSetId(perm[i])) {
+        isIdentity = false;
+        break;
+      }
+    }
+
+    if (isIdentity) {
+      rewriter.replaceOp(op, operand);
+      return success();
+    }
+
     return failure();
   }
 };
@@ -26758,7 +26836,8 @@ struct EnzymeHLOOptPass
                  NoNanAddSubSimplify, NoNanMulSimplify, NoNanDivSimplify>(
         (no_nan || all_finite), context);
 
-    patterns.add<TransposeSymmetricSimplify>(context);
+    patterns.add<TransposeSymmetricSimplify, TransposePartialSymmetrySimplify>(
+        context);
     patterns.add<FactorScalarsInDotGeneral>(context);
 
     // syrk patterns

@@ -386,6 +386,25 @@ PartialSymmetryAnnotation::getDimensionSets() const {
   return result;
 }
 
+PartialSymmetryAnnotation
+PartialSymmetryAnnotation::fromDimensionSets(int64_t rank,
+                                             ArrayRef<ArrayRef<int64_t>> dimensionSets) {
+  SmallVector<int64_t> dimensionSetIDs(rank);
+  for (int64_t i = 0; i < rank; ++i) {
+    dimensionSetIDs[i] = i;
+  }
+
+  // Note that dimensionSets is not assumed to be a complete partition.
+  // Missing dimensions are treated as separate sets.
+  for (auto dims : dimensionSets) {
+    for (int64_t i = 1; i < (int64_t)dims.size(); ++i) {
+      dimensionSetIDs[dims[i]] = dimensionSetIDs[dims[0]];
+    }
+  }
+
+  return PartialSymmetryAnnotation(dimensionSetIDs);
+}
+
 void PartialSymmetryAnnotation::print(raw_ostream &os) const {
   auto dimensionSets = getDimensionSets();
   os << "{";

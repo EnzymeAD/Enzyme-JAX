@@ -68,6 +68,9 @@ public:
 
   SmallVector<SmallVector<int64_t>> getDimensionSets() const;
 
+  static PartialSymmetryAnnotation
+  fromDimensionSets(int64_t rank, ArrayRef<ArrayRef<int64_t>> dimensionSets);
+
   void print(raw_ostream &os) const;
 
 private:
