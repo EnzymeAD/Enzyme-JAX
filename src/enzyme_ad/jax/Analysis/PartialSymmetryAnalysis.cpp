@@ -70,7 +70,11 @@ void PartialSymmetryAnnotation::canonicalize() {
   }
 }
 
-void PartialSymmetryAnnotation::uniteDimensionSets(int i, int j) {
+void PartialSymmetryAnnotation::uniteDimensionSets(int64_t rank, int i, int j) {
+  if (isUnknown()) {
+    *this = createNotSymmetric(rank);
+  }
+  
   if (storage[i] == storage[j])
     return;
   
@@ -98,7 +102,7 @@ PartialSymmetryAnnotation::join(const PartialSymmetryAnnotation &lhs,
     for (int64_t j = 0; j < i; ++j) {
       if (lhs.getSetId(i) == lhs.getSetId(j) &&
           rhs.getSetId(i) == rhs.getSetId(j)) {
-        result.uniteDimensionSets(i, j);
+        result.uniteDimensionSets(lhs.getRank(), i, j);
       }
     }
   }
@@ -121,7 +125,7 @@ PartialSymmetryAnnotation::meet(const PartialSymmetryAnnotation &lhs,
     for (int64_t j = 0; j < i; ++j) {
       if (lhs.getSetId(i) == lhs.getSetId(j) ||
           rhs.getSetId(i) == rhs.getSetId(j)) {
-        result.uniteDimensionSets(i, j);
+        result.uniteDimensionSets(lhs.getRank(), i, j);
       }
     }
   }
@@ -182,39 +186,44 @@ PartialSymmetryAnnotation PartialSymmetryAnnotation::propagateBroadcastInDim(
 }
 
 PartialSymmetryAnnotation
-PartialSymmetryAnnotation::generateSymmetryFromBilinearTranspose(
-    const PartialSymmetryAnnotation &annotation,
-    ArrayRef<int64_t> permutation) {
-  int64_t rank = permutation.size();
-
-  // Each pair (i, j) where perm[i] = j and perm[j] = i is symmetric
-  PartialSymmetryAnnotation transposeSymmetry = createKnownUninitialized(rank);
-  SmallVector<bool> assigned(rank, false);
-  int nextId = 0;
-
-  for (int64_t i = 0; i < rank; ++i) {
-    if (assigned[i])
-      continue;
-
-    int64_t j = permutation[i];
-    if (j != i && permutation[j] == i) {
-      // i and j are swapped, so assign them the same ID
-      transposeSymmetry.storage[i] = nextId;
-      transposeSymmetry.storage[j] = nextId;
-      assigned[i] = true;
-      assigned[j] = true;
-    } else {
-      // dimension i is not swapped, so assign it a new ID
-      transposeSymmetry.storage[i] = nextId;
-      assigned[i] = true;
+PartialSymmetryAnnotation::propagateElementwiseBinary(
+    const PartialSymmetryAnnotation &lhsAnnotation,
+    const PartialSymmetryAnnotation &rhsAnnotation,
+    int64_t resultRank,
+    bool rhsAliasesLhs,
+    ArrayRef<int64_t> rhsDimToLhs) {
+  
+  PartialSymmetryAnnotation result = join(lhsAnnotation, rhsAnnotation);
+  
+  if (rhsAliasesLhs) {
+    int64_t rank = result.getRank();
+    
+    PartialSymmetryAnnotation transposeSymmetry = createKnownUninitialized(rank);
+    SmallVector<bool> assigned(rank, false);
+    int nextId = 0;
+    
+    for (int64_t i = 0; i < rank; ++i) {
+      if (assigned[i])
+        continue;
+      
+      int64_t j = rhsDimToLhs[i];
+      if (j != i && rhsDimToLhs[j] == i) {
+        transposeSymmetry.storage[i] = nextId;
+        transposeSymmetry.storage[j] = nextId;
+        assigned[i] = true;
+        assigned[j] = true;
+      } else {
+        transposeSymmetry.storage[i] = nextId;
+        assigned[i] = true;
+      }
     }
-    nextId++;
+    
+    transposeSymmetry.canonicalize();
+    
+    result = meet(result, transposeSymmetry);
   }
-
-  transposeSymmetry.canonicalize();
-
-  // Meet the existing annotation with the transpose symmetry
-  return meet(annotation, transposeSymmetry);
+  
+  return result;
 }
 
 PartialSymmetryAnnotation PartialSymmetryAnnotation::propagateDotGeneral(
@@ -236,7 +245,7 @@ PartialSymmetryAnnotation PartialSymmetryAnnotation::propagateDotGeneral(
               lhsAnnotation.getSetId(lhsBatchingDims[j]) &&
           rhsAnnotation.getSetId(rhsBatchingDims[i]) ==
               rhsAnnotation.getSetId(rhsBatchingDims[j])) {
-        result.uniteDimensionSets(i, j);
+        result.uniteDimensionSets(resultRank, i, j);
       }
     }
   }
@@ -286,7 +295,7 @@ PartialSymmetryAnnotation PartialSymmetryAnnotation::propagateDotGeneral(
       for (int i = 0; i < lhsResultDims.size(); ++i) {
         for (int j = 0; j < i; ++j) {
           if (lhsAnnotation.getSetId(lhsResultDims[i]) == lhsAnnotation.getSetId(lhsResultDims[j])) {
-            result.uniteDimensionSets(lhsBatchingDims.size() + i, lhsBatchingDims.size() + j);
+            result.uniteDimensionSets(resultRank, lhsBatchingDims.size() + i, lhsBatchingDims.size() + j);
           }
         }
       }
@@ -295,7 +304,7 @@ PartialSymmetryAnnotation PartialSymmetryAnnotation::propagateDotGeneral(
       for (int i = 0; i < rhsResultDims.size(); ++i) {
         for (int j = 0; j < i; ++j) {
           if (rhsAnnotation.getSetId(rhsResultDims[i]) == rhsAnnotation.getSetId(rhsResultDims[j])) {
-            result.uniteDimensionSets(lhsBatchingDims.size() + lhsResultDims.size() + i, lhsBatchingDims.size() + lhsResultDims.size() + j);
+            result.uniteDimensionSets(resultRank, lhsBatchingDims.size() + lhsResultDims.size() + i, lhsBatchingDims.size() + lhsResultDims.size() + j);
           }
         }
       }
@@ -304,7 +313,7 @@ PartialSymmetryAnnotation PartialSymmetryAnnotation::propagateDotGeneral(
       for (int i = 0; i < lhsResultDims.size(); ++i) {
         for (int j = 0; j < rhsResultDims.size(); ++j) {
           if (lhsAnnotation.getSetId(lhsResultDims[i]) == lhsAnnotation.getSetId(rhsDimToLhs[rhsResultDims[j]])) {
-            result.uniteDimensionSets(lhsBatchingDims.size() + i, lhsBatchingDims.size() + lhsResultDims.size() + j);
+            result.uniteDimensionSets(resultRank, lhsBatchingDims.size() + i, lhsBatchingDims.size() + lhsResultDims.size() + j);
           }
         }
       }
@@ -398,7 +407,7 @@ PartialSymmetryAnnotation::checkConstant(DenseElementsAttr attr) {
           continue;
 
         if (checkPairwiseSymmetry(attr, i, j)) {
-          result.uniteDimensionSets(i, j);
+          result.uniteDimensionSets(rank, i, j);
         }
       }
     }
@@ -496,29 +505,66 @@ LogicalResult PartialSymmetryAnalysis::visitOperation(
   }
 
   if (auto bcastOp = dyn_cast<stablehlo::BroadcastInDimOp>(op)) {
-    if (results.size() > 0) {
-      if (auto resultType =
-              dyn_cast<RankedTensorType>(op->getResult(0).getType())) {
-        updatedAnnotation[0] = true;
-        propagatedAnnotation[0] =
-            PartialSymmetryAnnotation::propagateBroadcastInDim(
-                operandAnnotations[0], resultType.getRank(),
-                bcastOp.getBroadcastDimensions());
-      }
+    if (auto resultType = dyn_cast<RankedTensorType>(op->getResult(0).getType())) {
+      updatedAnnotation[0] = true;
+      propagatedAnnotation[0] =
+          PartialSymmetryAnnotation::propagateBroadcastInDim(
+              operandAnnotations[0], resultType.getRank(),
+              bcastOp.getBroadcastDimensions());
     }
   }
 
   if (auto dotGeneralOp = dyn_cast<stablehlo::DotGeneralOp>(op)) {
-    if (results.size() > 0) {
-      if (auto resultType =
-              dyn_cast<RankedTensorType>(op->getResult(0).getType())) {
-        auto dotDimNumbers = dotGeneralOp.getDotDimensionNumbers();
-        auto lhs = dotGeneralOp.getLhs();
-        auto rhs = dotGeneralOp.getRhs();
+    if (auto resultType = dyn_cast<RankedTensorType>(op->getResult(0).getType())) {
+      auto dotDimNumbers = dotGeneralOp.getDotDimensionNumbers();
+      auto lhs = dotGeneralOp.getLhs();
+      auto rhs = dotGeneralOp.getRhs();
 
-        // Check for aliasing between LHS and RHS (up to transpose)
+      // Check for aliasing between LHS and RHS (up to transpose)
+      bool rhsAliasesLhs = false;
+      SmallVector<int64_t> rhsDimToLhs;
+      if (auto lhsT = lhs.getDefiningOp<stablehlo::TransposeOp>()) {
+        if (rhs == lhsT.getOperand()) {
+          rhsDimToLhs.assign(lhsT.getPermutation().begin(), lhsT.getPermutation().end());
+          rhsAliasesLhs = true;
+        }
+      }
+      if (auto rhsT = rhs.getDefiningOp<stablehlo::TransposeOp>()) {
+        if (lhs == rhsT.getOperand()) {
+          rhsDimToLhs.resize(rhsT.getPermutation().size());
+          for (size_t i = 0; i < rhsT.getPermutation().size(); ++i)
+            rhsDimToLhs[rhsT.getPermutation()[i]] = i;
+          rhsAliasesLhs = true;
+        }
+      }
+
+      // Propagate symmetry through dotGeneral
+      propagatedAnnotation[0] =
+          PartialSymmetryAnnotation::propagateDotGeneral(
+              operandAnnotations[0], operandAnnotations[1],
+              resultType.getRank(), dotDimNumbers.getLhsBatchingDimensions(),
+              dotDimNumbers.getRhsBatchingDimensions(),
+              dotDimNumbers.getLhsContractingDimensions(),
+              dotDimNumbers.getRhsContractingDimensions(), rhsAliasesLhs, rhsDimToLhs);
+
+      updatedAnnotation[0] = true;
+    }
+  }
+
+  if (stablehlo::hasTraitElementwise(op)) {
+    if (auto resultType = dyn_cast<RankedTensorType>(op->getResult(0).getType())) {
+      if (operands.size() == 1) {
+        propagatedAnnotation[0] = operandAnnotations[0];
+        updatedAnnotation[0] = true;
+      } else if (operands.size() == 2 &&
+                  (op->hasTrait<OpTrait::IsCommutative>() ||
+                  op->hasTrait<hlo::OpTrait::IsCommutative>())) {
+        auto lhs = op->getOperand(0);
+        auto rhs = op->getOperand(1);
+        
         bool rhsAliasesLhs = false;
         SmallVector<int64_t> rhsDimToLhs;
+        
         if (auto lhsT = lhs.getDefiningOp<stablehlo::TransposeOp>()) {
           if (rhs == lhsT.getOperand()) {
             rhsDimToLhs.assign(lhsT.getPermutation().begin(), lhsT.getPermutation().end());
@@ -533,58 +579,10 @@ LogicalResult PartialSymmetryAnalysis::visitOperation(
             rhsAliasesLhs = true;
           }
         }
-
-        // Propagate symmetry through dotGeneral
-        propagatedAnnotation[0] =
-            PartialSymmetryAnnotation::propagateDotGeneral(
-                operandAnnotations[0], operandAnnotations[1],
-                resultType.getRank(), dotDimNumbers.getLhsBatchingDimensions(),
-                dotDimNumbers.getRhsBatchingDimensions(),
-                dotDimNumbers.getLhsContractingDimensions(),
-                dotDimNumbers.getRhsContractingDimensions(), rhsAliasesLhs, rhsDimToLhs);
-
-        updatedAnnotation[0] = true;
-      }
-    }
-  }
-
-  if (stablehlo::hasTraitElementwise(op)) {
-    if (results.size() == 1 && operands.size() > 0) {
-      propagatedAnnotation[0] = operandAnnotations[0];
-      for (size_t i = 1; i < operands.size(); ++i) {
-        propagatedAnnotation[0] = PartialSymmetryAnnotation::join(
-            propagatedAnnotation[0], operandAnnotations[i]);
-      }
-      updatedAnnotation[0] = true;
-
-      // Generate symmetry from commutative operation with transpose argument
-      if (op->hasTrait<OpTrait::IsCommutative>() ||
-          op->hasTrait<hlo::OpTrait::IsCommutative>() &&
-              op->getNumOperands() == 2) {
-        auto lhs = op->getOperand(0);
-        auto rhs = op->getOperand(1);
-
-        bool transposePatternDetected = false;
-        ArrayRef<int64_t> transposePermutation;
-
-        if (auto lhsT = lhs.getDefiningOp<stablehlo::TransposeOp>()) {
-          if (rhs == lhsT.getOperand()) {
-            transposePatternDetected = true;
-            transposePermutation = lhsT.getPermutation();
-          }
-        }
-        if (auto rhsT = rhs.getDefiningOp<stablehlo::TransposeOp>()) {
-          if (lhs == rhsT.getOperand()) {
-            transposePatternDetected = true;
-            transposePermutation = rhsT.getPermutation();
-          }
-        }
-
-        if (transposePatternDetected) {
-          propagatedAnnotation[0] =
-              PartialSymmetryAnnotation::generateSymmetryFromBilinearTranspose(
-                  propagatedAnnotation[0], transposePermutation);
-        }
+        
+        // propagatedAnnotation[0] = PartialSymmetryAnnotation::propagateElementwiseBinary(
+        //     operandAnnotations[0], operandAnnotations[1], resultType.getRank(), rhsAliasesLhs, rhsDimToLhs);
+        // updatedAnnotation[0] = true;
       }
     }
   }

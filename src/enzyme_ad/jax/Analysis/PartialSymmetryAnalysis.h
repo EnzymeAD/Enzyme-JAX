@@ -53,14 +53,16 @@ public:
                       int64_t resultRank, ArrayRef<int64_t> lhsBatchingDims,
                       ArrayRef<int64_t> rhsBatchingDims,
                       ArrayRef<int64_t> lhsContractingDims,
-                      ArrayRef<int64_t> rhsContractingDims, bool rhsAliasesLhs,
-                      ArrayRef<int64_t> rhsDimToLhs);
+                      ArrayRef<int64_t> rhsContractingDims,
+                      bool rhsAliasesLhs, ArrayRef<int64_t> rhsDimToLhs);
 
   static PartialSymmetryAnnotation checkConstant(DenseElementsAttr attr);
 
-  static PartialSymmetryAnnotation generateSymmetryFromBilinearTranspose(
-      const PartialSymmetryAnnotation &annotation,
-      ArrayRef<int64_t> permutation);
+  static PartialSymmetryAnnotation 
+  propagateElementwiseBinary(const PartialSymmetryAnnotation &lhsAnnotation,
+                             const PartialSymmetryAnnotation &rhsAnnotation,
+                             int64_t resultRank, bool rhsAliasesLhs,
+                             ArrayRef<int64_t> rhsDimToLhs);
 
   bool operator==(const PartialSymmetryAnnotation &other) const {
     return (!known && !other.known) || storage == other.storage;
@@ -75,7 +77,7 @@ private:
   SmallVector<int> storage;
 
   void canonicalize();
-  void uniteDimensionSets(int i, int j);
+  void uniteDimensionSets(int64_t rank, int i, int j);
 };
 
 class PartialSymmetryLattice : public dataflow::AbstractSparseLattice {
