@@ -83,3 +83,19 @@ func.func @fail1(%arg0: tensor<5x2xf32>) -> tensor<f32> {
 // CHECK-NEXT:   %1 = stablehlo.dot_general %0, %0, contracting_dims = [0] x [0], precision = [DEFAULT, DEFAULT] : (tensor<10xf32>, tensor<10xf32>) -> tensor<f32>
 // CHECK-NEXT:   return %1 : tensor<f32>
 // CHECK-NEXT: }
+
+func.func @main5(%arg0: tensor<2048x1024xf32>, %arg1: tensor<1024x1024xf32>) -> tensor<1024x1024xf32> {
+  %cst = stablehlo.constant dense<5.000000e+00> : tensor<1024x1024xf32>
+  %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<1024x1024xf32>
+  %cst_1 = stablehlo.constant dense<3.000000e+00> : tensor<f32>
+  %cst_2 = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+  %0 = enzymexla.blas.syrk %arg0, %cst_0, %cst_1, %cst_2 {fill, transpose = #enzymexla.transpose<transpose>, uplo = #enzymexla.uplo<F>} : (tensor<2048x1024xf32>, tensor<1024x1024xf32>, tensor<f32>, tensor<f32>) -> tensor<1024x1024xf32>
+  %1 = stablehlo.iota dim = 1 : tensor<1024x1024xi64>
+  %2 = stablehlo.iota dim = 0 : tensor<1024x1024xi64>
+  %3 = stablehlo.compare  LT, %1, %2 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<1024x1024xi64>, tensor<1024x1024xi64>) -> tensor<1024x1024xi1>
+  %4 = stablehlo.transpose %arg1, dims = [1, 0] : (tensor<1024x1024xf32>) -> tensor<1024x1024xf32>
+  %5 = stablehlo.select %3, %arg1, %4 : tensor<1024x1024xi1>, tensor<1024x1024xf32>
+  %6 = stablehlo.multiply %cst, %5 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<1024x1024xf32>
+  %7 = stablehlo.add %0, %6 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<1024x1024xf32>
+  return %7 : tensor<1024x1024xf32>
+}

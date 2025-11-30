@@ -8,6 +8,7 @@
 
 #include "Utils.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "src/enzyme_ad/jax/Passes/StructuredTensors.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -741,10 +742,46 @@ SymmetricResultAnalysis::State SymmetricResultAnalysis::localGuaranteed(
   }
 
   bool recursiveCheck = false;
+  SmallVector<bool> checkOperandMask;
 
   // elementwise ops
   if (stablehlo::hasTraitElementwise(op)) {
     recursiveCheck = true;
+  }
+
+  if (auto selectOp = dyn_cast<stablehlo::SelectOp>(op)) {
+    auto onTrue = selectOp.getOnTrue();
+    auto onFalse = selectOp.getOnFalse();
+    auto pred = selectOp.getPred();
+
+    if (auto compareOp = pred.getDefiningOp<stablehlo::CompareOp>()) {
+      // TODO: more compare directions
+      auto lhsIotaLike = detectIotaLikeTensor(compareOp.getLhs());
+      auto rhsIotaLike = detectIotaLikeTensor(compareOp.getRhs());
+
+      bool validCompare = false;
+      if (lhsIotaLike && lhsIotaLike->start == 0 && lhsIotaLike->dimension == 1 &&
+          rhsIotaLike && rhsIotaLike->start == 0 && rhsIotaLike->dimension == 0) {
+        validCompare = compareOp.getComparisonDirection() == stablehlo::ComparisonDirection::LT;
+      }
+
+      if (validCompare) {
+        if (auto onTrueT = onTrue.getDefiningOp<stablehlo::TransposeOp>()) {
+          if (isTrueTranspose(onTrueT) && onTrueT.getOperand() == onFalse) {
+            // TODO
+          }
+        }
+
+        if (auto onFalseT = onFalse.getDefiningOp<stablehlo::TransposeOp>()) {
+          if (isTrueTranspose(onFalseT) && onFalseT.getOperand() == onTrue) {
+            return State::GUARANTEED;
+          }
+        }
+      }
+    }
+
+    recursiveCheck = true;
+    checkOperandMask = {false, true, true};
   }
 
   /**
@@ -754,7 +791,11 @@ SymmetricResultAnalysis::State SymmetricResultAnalysis::localGuaranteed(
 
   if (recursiveCheck) {
     bool allOperandsGuaranteed = true;
-    for (auto operand : op->getOperands()) {
+    for (auto [i, operand] : llvm::enumerate(op->getOperands())) {
+      if (!checkOperandMask.empty() && !checkOperandMask[i]) {
+        continue;
+      }
+
       {
         auto found = valueCache.find(operand);
         if (found != valueCache.end()) {
