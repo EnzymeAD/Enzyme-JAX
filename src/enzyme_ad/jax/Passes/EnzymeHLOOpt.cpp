@@ -25884,6 +25884,14 @@ struct DotGeneralToSyrk
     auto lhs = op.getLhs();
     auto rhs = op.getRhs();
 
+    auto lhsType = cast<RankedTensorType>(lhs.getType());
+    auto rhsType = cast<RankedTensorType>(rhs.getType());
+    auto outType = cast<RankedTensorType>(op.getResult().getType());
+    if (lhsType.getRank() != 2 || rhsType.getRank() != 2 ||
+        outType.getRank() != 2) {
+      return failure();
+    }
+
     if (dotDims.getLhsBatchingDimensions().size() != 0 ||
         dotDims.getRhsBatchingDimensions().size() != 0) {
       return failure();
