@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1764270091845,
+  "lastUpdate": 1764476172696,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "avikpal@mit.edu",
-            "name": "Avik Pal",
-            "username": "avik-pal"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "51d94b351ff8aaf7c6f3aae1c949f3611c394c7d",
-          "message": "feat: sort autodiff rules (#1584)\n\n* feat: sort forward mode AD\n\n* feat: reverse mode\n\n* refactor: move the common function\n\n* fix: derivative rule\n\n* test: update\n\n* fix: replace in cacheValues",
-          "timestamp": "2025-11-06T18:55:07-05:00",
-          "tree_id": "2678042ccacdf96ce90fe6cf038902e1cd435602",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/51d94b351ff8aaf7c6f3aae1c949f3611c394c7d"
-        },
-        "date": 1762485258317,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.000004135624998889398,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.000004203124999185093,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001434340536012,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001441685565005,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2199,6 +2155,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001477157437002,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "avikpal@mit.edu",
+            "name": "Avik Pal",
+            "username": "avik-pal"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4dca341c723aa44d252140bd2b17765e1618fb22",
+          "message": "fix: restrict raising dot_general to syrk to 2D tensors (#1666)",
+          "timestamp": "2025-11-29T18:00:32-05:00",
+          "tree_id": "231af61ab0b625d796e5b2baadc3bdb84cc3059c",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/4dca341c723aa44d252140bd2b17765e1618fb22"
+        },
+        "date": 1764476172094,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.00000445421799995529,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004487904000052367,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001397346443,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001396779474,
             "unit": "s"
           }
         ]
