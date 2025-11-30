@@ -168,6 +168,126 @@ py_test(
     }),
 )
 
+py_test(
+    name = "simple_mcmc_benchmark",
+    timeout = "moderate",
+    srcs = [
+        "simple_mcmc_benchmark.py",
+        "test_utils.py",
+    ],
+    imports = ["."],
+    tags = ["exclusive"],
+    deps = TEST_DEPS,
+)
+
+py_test(
+    name = "blackjax_benchmark",
+    timeout = "long",
+    srcs = [
+        "blackjax_benchmark.py",
+        "test_utils.py",
+    ],
+    imports = ["."],
+    tags = ["exclusive"],
+    deps = TEST_DEPS + select({
+        "@bazel_tools//src/conditions:linux_x86_64": ["@pypi_blackjax//:pkg"],
+        "//conditions:default": [],
+    }),
+)
+
+py_test(
+    name = "debug_mcmc",
+    timeout = "short",
+    srcs = [
+        "debug_mcmc.py",
+        "test_utils.py",
+    ],
+    imports = ["."],
+    tags = ["exclusive"],
+    deps = TEST_DEPS,
+)
+
+py_test(
+    name = "mcmc_debug_detailed",
+    timeout = "moderate",
+    srcs = [
+        "mcmc_debug_detailed.py",
+        "test_utils.py",
+    ],
+    imports = ["."],
+    tags = ["exclusive"],
+    deps = TEST_DEPS + select({
+        "@bazel_tools//src/conditions:linux_x86_64": ["@pypi_blackjax//:pkg"],
+        "//conditions:default": [],
+    }),
+)
+
+py_test(
+    name = "simple_hmc_benchmark",
+    timeout = "moderate",
+    srcs = [
+        "simple_hmc_benchmark.py",
+        "test_utils.py",
+    ],
+    imports = ["."],
+    tags = ["exclusive"],
+    deps = TEST_DEPS,
+)
+
+py_test(
+    name = "advanced_ml_benchmarks",
+    timeout = "long",
+    srcs = [
+        "advanced_ml_benchmarks.py",
+        "test_utils.py",
+    ],
+    imports = ["."],
+    tags = ["exclusive"],
+    deps = TEST_DEPS,
+)
+
+py_test(
+    name = "simple_blackjax_benchmark",
+    timeout = "short",
+    srcs = [
+        "simple_blackjax_benchmark.py",
+        "test_utils.py",
+    ],
+    imports = ["."],
+    tags = ["exclusive"],
+    deps = TEST_DEPS + select({
+        "@bazel_tools//src/conditions:linux_x86_64": ["@pypi_blackjax//:pkg"],
+        "//conditions:default": [],
+    }),
+)
+
+py_test(
+    name = "advanced_blackjax_benchmarks",
+    timeout = "long",
+    srcs = [
+        "advanced_blackjax_benchmarks.py",
+        "test_utils.py",
+    ],
+    imports = ["."],
+    tags = ["exclusive"],
+    deps = TEST_DEPS + select({
+        "@bazel_tools//src/conditions:linux_x86_64": ["@pypi_blackjax//:pkg"],
+        "//conditions:default": [],
+    }),
+)
+
+py_test(
+    name = "debug_dynamic_update_slice",
+    timeout = "short",
+    srcs = [
+        "debug_dynamic_update_slice.py",
+        "test_utils.py",
+    ],
+    imports = ["."],
+    tags = ["exclusive"],
+    deps = TEST_DEPS,
+)
+
 # py_test(
 #     name = "maxtext",
 #     srcs = [
