@@ -1,13 +1,14 @@
 #pragma once
 
+#include "src/enzyme_ad/jax/CheckedRewrite.h"
+#include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
+
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/PatternMatch.h"
-#include "src/enzyme_ad/jax/CheckedRewrite.h"
-#include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/SmallVector.h"
+
 #include <tuple>
-#include <vector>
 
 // Loading the header causes a bunch of ambiguous errors
 // #include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
@@ -207,15 +208,6 @@ struct GreedyWhileLoopBatchFission
                       mlir::PatternRewriter &rewriter) const;
 
 private:
-  struct DynamicSliceInfo {
-    mlir::stablehlo::DynamicSliceOp sliceOp;
-    int64_t inductionVarDimension;
-    bool intermediateReshape;
-    llvm::SmallVector<int64_t> reshapeShape;
-    int64_t offset;
-    bool needsManualReshape;
-  };
-
   enum class BatchLiftingMode {
     DYNAMIC_SLICE,
     DEFINED_OUTSIDE_WHILE,
@@ -225,9 +217,21 @@ private:
   enum class IsValidForBatchingResult {
     VALID,
     OPERAND_NOT_ACCESSIBLE_FROM_PARENT,
-    NOT_FULL_SLICE,
+    DYNAMIC_START_INDEX,
     MULTIPLE_INDUCTION_VARIABLE_SLICE_DIMS,
-    MULTIPLE_INDICES_FROM_BODY,
+  };
+
+  static bool isValidForBatchingResult(IsValidForBatchingResult result) {
+    return result == IsValidForBatchingResult::VALID;
+  }
+
+  struct DynamicSliceInfo {
+    mlir::stablehlo::DynamicSliceOp sliceOp;
+    int64_t inductionVarDimension;
+    bool intermediateReshape;
+    llvm::SmallVector<int64_t> reshapeShape;
+    mlir::enzyme::WhileLoopInfo::AffineIndexInfo affineIndexInfo;
+    bool needsManualReshape;
   };
 
   struct ValidBatchingInfo {
@@ -235,9 +239,11 @@ private:
     int64_t sliceDim;
   };
 
-  ValidBatchingInfo isDynamicSliceValidForBatching(
-      mlir::stablehlo::DynamicSliceOp sliceOp, mlir::Value iterVar,
-      int64_t limit, mlir::Block &whileBody, mlir::Block *parentBlock) const;
+  ValidBatchingInfo
+  isDynamicSliceValidForBatching(mlir::stablehlo::DynamicSliceOp sliceOp,
+                                 mlir::Value iterVar, mlir::Block &whileBody,
+                                 mlir::Block *parentBlock,
+                                 mlir::stablehlo::WhileOp whileOp) const;
 
   bool liftOperationByBatching(mlir::PatternRewriter &rewriter,
                                mlir::stablehlo::WhileOp whileOp,

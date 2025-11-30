@@ -1,11 +1,9 @@
 #include "src/enzyme_ad/jax/Passes/AutoBatching.h"
 
-#include "Enzyme/MLIR/Dialect/Dialect.h"
 #include "Enzyme/MLIR/Passes/EnzymeBatchPass.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Matchers.h"
-#include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
@@ -13,9 +11,7 @@
 #include "src/enzyme_ad/jax/Passes/StructuredTensors.h"
 #include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/StablehloOps.h"
-#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SetVector.h"
-#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 
 #define DEBUG_TYPE "auto-batching"
@@ -737,6 +733,10 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
   return success();
 }
 
+static bool definedOutside(Value v, Operation *op) {
+  return !op->isAncestor(v.getParentBlock()->getParentOp());
+}
+
 LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
     stablehlo::WhileOp whileOp, PatternRewriter &rewriter) const {
   auto info = WhileLoopInfo(whileOp);
@@ -744,53 +744,38 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
   if (computeInfoSuccess.failed())
     return computeInfoSuccess;
 
-  // TODO: in principle we only need the loop count to be constant and the
-  // step to be 1.
+  // TODO: the only actual restriction is that the total loop iterations be
+  // constant and the indexing must be affine
   if (!info.isValid() || !info.isConstant())
-    return failure();
-
-  auto numIters = info.getConstantNumIters();
-  if (numIters == 1) // should get unrolled
-    return failure();
-
-  int64_t start = info.getConstantStart().value();
-  int64_t limit = info.getConstantLimit().value();
-  int64_t step = info.getConstantStep().value();
-
-  // TODO: we can support start != 0 for applying a function to part of the
-  // tensor
-  if (step != 1)
     return failure();
 
   auto parentBlock = whileOp->getBlock();
   auto &whileBody = whileOp.getBody().front();
 
-  info.propagateInductionVarOffsets();
-  llvm::MapVector<Value, APInt> inductionVarOffsets =
-      info.getInductionVarOffsets();
+  auto affineIndexInfoMap = info.getAffineIndexInfo();
 
   auto parentFunc = whileOp->getParentOp();
   if (!parentFunc)
     return rewriter.notifyMatchFailure(whileOp, "parent function not found");
 
   // Find all dynamic slices in the loop body that meet the criteria:
-  // 1. All slice variables are outside the loop body
+  // 1. All slice variables are constant across iterations
   // 2. Only one variable in the body is a direct descendant of the induction
   // variable
-  // 3. The size of that dimension equals the limit
   SmallVector<DynamicSliceInfo> candidateSlices;
 
-  for (auto [value, offset] : inductionVarOffsets) {
+  for (auto [value, affineIndexInfo] : affineIndexInfoMap) {
     for (auto user : value.getUsers()) {
       if (user->getBlock() != &whileBody)
         continue;
 
       if (auto sliceOp = dyn_cast<stablehlo::DynamicSliceOp>(user)) {
-        auto result = isDynamicSliceValidForBatching(sliceOp, value, limit,
-                                                     whileBody, parentBlock);
-        if (result.result == IsValidForBatchingResult::VALID) {
+        auto result = isDynamicSliceValidForBatching(sliceOp, value, whileBody,
+                                                     parentBlock, whileOp);
+
+        if (isValidForBatchingResult(result.result)) {
           candidateSlices.push_back(DynamicSliceInfo{
-              sliceOp, result.sliceDim, false, {}, offset.getSExtValue()});
+              sliceOp, result.sliceDim, false, {}, affineIndexInfo, false});
         }
       }
     }
@@ -821,17 +806,32 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
       auto outElemType = sliceType.getElementType();
       auto opElemType = cast<TensorType>(newOperand.getType()).getElementType();
 
-      auto sliceStart = start + slice.offset;
-      auto iotaStart = iotaDetection.value().start;
+      // iotaTensor[i] = iotaStart + i
+      // indexing with `scale * indVar + offset`
+      // result = scale * indVar + (iotaStart + offset)
+
       auto scalarType = RankedTensorType::get({}, opElemType);
-      if (iotaStart != sliceStart) {
-        // induction var +/- diff
+
+      if (!slice.affineIndexInfo.scale.isOne()) {
+        newOperand = stablehlo::MulOp::create(
+            rewriter, slice.sliceOp.getLoc(),
+            stablehlo::ConstantOp::create(
+                rewriter, slice.sliceOp.getLoc(), scalarType,
+                cast<ElementsAttr>(makeAttr(
+                    scalarType, slice.affineIndexInfo.scale.getSExtValue()))),
+            newOperand);
+      }
+
+      auto indexOffset = slice.affineIndexInfo.offset.getSExtValue();
+      auto iotaStart = iotaDetection.value().start;
+      auto offset = indexOffset + iotaStart;
+
+      if (offset != 0) {
         newOperand = stablehlo::AddOp::create(
             rewriter, slice.sliceOp.getLoc(), newOperand,
             stablehlo::ConstantOp::create(
                 rewriter, slice.sliceOp.getLoc(), scalarType,
-                cast<ElementsAttr>(
-                    makeAttr(scalarType, iotaStart - sliceStart))));
+                cast<ElementsAttr>(makeAttr(scalarType, offset))));
       }
 
       if (opElemType != outElemType) {
@@ -840,6 +840,7 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
                          RankedTensorType::get({}, outElemType), newOperand)
                          .getResult();
       }
+
       rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
           slice.sliceOp, sliceType, newOperand,
           rewriter.getDenseI64ArrayAttr({}));
@@ -869,9 +870,9 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
         }
 
         for (auto user : op->getUsers()) {
-          userOpToSlicesMap[user].push_back(
-              DynamicSliceInfo{ds.sliceOp, ds.inductionVarDimension, true,
-                               reshapeShape, ds.offset, needsManualReshape});
+          userOpToSlicesMap[user].push_back(DynamicSliceInfo{
+              ds.sliceOp, ds.inductionVarDimension, true, reshapeShape,
+              ds.affineIndexInfo, needsManualReshape});
         }
       }
     }
@@ -885,8 +886,7 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
         op->getNumResults() != 1)
       continue;
 
-    auto batchInterface = dyn_cast<BatchOpInterface>(op);
-    if (batchInterface || op->hasTrait<OpTrait::Elementwise>()) {
+    if (dyn_cast<BatchOpInterface>(op) || stablehlo::hasTraitElementwise(op)) {
       if (liftOperationByBatching(rewriter, whileOp, slices, op, info)) {
         anyOpRewritten = true;
       }
@@ -908,19 +908,21 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
   SmallVector<DynamicSliceInfo> mappedSliceInfos(op->getNumOperands());
   for (int i = 0; i < op->getNumOperands(); i++) {
     auto operand = op->getOperand(i);
-    auto defOp = operand.getDefiningOp();
 
-    if (operand.getParentBlock() != &whileOp.getBody().front()) {
+    Value outerValue = operand;
+    if (operand.getParentBlock() != &whileOp.getBody().front() ||
+        info.isConstantAcrossIterations(operand, outerValue)) {
       SplatElementsAttr splat;
-      if (defOp && matchPattern(defOp, m_Constant(&splat))) {
+      if (matchPattern(operand, m_Constant(&splat))) {
         batchLiftingModes[i] = BatchLiftingMode::CONSTANT;
       } else {
         batchLiftingModes[i] = BatchLiftingMode::DEFINED_OUTSIDE_WHILE;
       }
-      batchOperands[i] = operand;
+      batchOperands[i] = outerValue;
       continue;
     }
 
+    auto defOp = operand.getDefiningOp();
     if (!defOp)
       return false;
 
@@ -940,7 +942,16 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
       if (itr != sliceOps.end()) {
         batchLiftingModes[i] = BatchLiftingMode::DYNAMIC_SLICE;
         sliceDims[i] = itr->inductionVarDimension;
-        batchOperands[i] = ds->getOperand(0);
+
+        auto dsOperand = ds->getOperand(0);
+        if (definedOutside(dsOperand, whileOp)) {
+          batchOperands[i] = dsOperand;
+        } else {
+          auto blockArg = dyn_cast<BlockArgument>(dsOperand);
+          assert(blockArg && "expected block arg");
+          batchOperands[i] = whileOp->getOperand(blockArg.getArgNumber());
+        }
+
         mappedSliceInfos[i] = *itr;
         if (mustBeIntermediateReshape && !itr->intermediateReshape) {
           return false;
@@ -1008,26 +1019,11 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
       // hoist the dynamic slice out of the loop and replace the sliceDim
       // with full slice. Once we support partial slicing we should replace with
       // correct start and limit
-      auto originalSlice = sliceInfo.sliceOp;
-      SmallVector<Value> newSliceStarts =
-          llvm::to_vector(originalSlice.getStartIndices());
-      SmallVector<int64_t> newSliceSizes =
-          llvm::to_vector(originalSlice.getSliceSizes());
-
-      auto zeroTy = RankedTensorType::get(
-          {},
-          cast<TensorType>(originalSlice.getStartIndices()[sliceDim].getType())
-              .getElementType());
-      newSliceStarts[sliceDim] = stablehlo::ConstantOp::create(
-          rewriter, whileOp->getLoc(), zeroTy,
-          cast<ElementsAttr>(makeAttr(zeroTy, info.getConstantStart().value() +
-                                                  sliceInfo.offset)));
-      newSliceSizes[sliceDim] =
-          info.getConstantLimit().value() - info.getConstantStart().value();
-
-      Value newSlice = stablehlo::DynamicSliceOp::create(
-          rewriter, whileOp->getLoc(), baseOp, newSliceStarts,
-          rewriter.getDenseI64ArrayAttr(newSliceSizes));
+      Value newSlice;
+      bool successfulHoist = info.hoistOperationFromLoop(
+          rewriter, baseOp, sliceInfo.sliceOp, sliceDim, newSlice);
+      assert(successfulHoist && "Expected DS hoist to succeed");
+      auto slicedShape = cast<RankedTensorType>(newSlice.getType()).getShape();
 
       if (sliceInfo.intermediateReshape) {
         // move the slice dim to the front
@@ -1046,9 +1042,7 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
         if (sliceInfo.needsManualReshape) {
           SmallVector<int64_t> reshapedShape(sliceInfo.reshapeShape.begin(),
                                              sliceInfo.reshapeShape.end());
-          reshapedShape.insert(reshapedShape.begin(),
-                               info.getConstantLimit().value() -
-                                   info.getConstantStart().value());
+          reshapedShape.insert(reshapedShape.begin(), slicedShape[sliceDim]);
           newOperand = stablehlo::ReshapeOp::create(
               rewriter, whileOp->getLoc(),
               RankedTensorType::get(reshapedShape,
@@ -1058,9 +1052,6 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
 
         newOperands.push_back(newOperand);
       } else {
-        auto slicedShape =
-            cast<RankedTensorType>(newSlice.getType()).getShape();
-
         SmallVector<int64_t> mapping(operandRank);
         for (size_t i = 0; i < sliceDim; i++)
           mapping[i] = i + 1;
@@ -1069,8 +1060,7 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
           mapping[i] = i + 1;
 
         SmallVector<int64_t> resultShape(operandRank + 1);
-        resultShape[0] =
-            info.getConstantLimit().value() - info.getConstantStart().value();
+        resultShape[0] = slicedShape[sliceDim];
         resultShape[sliceDim + 1] = 1;
         for (size_t i = 0; i < sliceDim; i++)
           resultShape[i + 1] = slicedShape[i];
@@ -1089,7 +1079,7 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
     case BatchLiftingMode::DEFINED_OUTSIDE_WHILE: {
       auto operandShape = operandType.getShape();
       SmallVector<int64_t> newOperandShape(operandRank + 1);
-      newOperandShape[0] = info.getConstantLimit().value();
+      newOperandShape[0] = info.getConstantNumIters();
       for (int i = 0; i < operandRank; i++)
         newOperandShape[i + 1] = operandShape[i];
 
@@ -1116,8 +1106,7 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
   auto resultType = cast<RankedTensorType>(op->getResult(0).getType());
   auto resultShape = resultType.getShape();
   SmallVector<int64_t> outputShape(resultShape.size() + 1);
-  outputShape[0] =
-      info.getConstantLimit().value() - info.getConstantStart().value();
+  outputShape[0] = info.getConstantNumIters();
   for (int i = 0; i < resultShape.size(); i++)
     outputShape[i + 1] = resultShape[i];
 
@@ -1133,11 +1122,18 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
       RankedTensorType::get(outputShape, resultType.getElementType()),
       mlir::FlatSymbolRefAttr::get(func.getContext(), batchFnName),
       ValueRange(newOperands),
-      rewriter.getDenseI64ArrayAttr({info.getConstantLimit().value()}));
+      rewriter.getDenseI64ArrayAttr({info.getConstantNumIters()}));
 
   rewriter.setInsertionPointAfter(op);
   SmallVector<Value> dynamicSliceStarts(outputShape.size(), constZero);
-  dynamicSliceStarts[0] = info.getInductionVariable();
+  dynamicSliceStarts[0] = stablehlo::SubtractOp::create(
+      rewriter, whileOp->getLoc(), info.getInductionVariable(),
+      info.getStart());
+  if (!info.isStepOne()) {
+    dynamicSliceStarts[0] =
+        stablehlo::DivOp::create(rewriter, whileOp->getLoc(),
+                                 dynamicSliceStarts[0], info.getStep(rewriter));
+  }
 
   SmallVector<int64_t> dynamicSliceSizes(outputShape.size());
   dynamicSliceSizes[0] = 1;
@@ -1158,14 +1154,24 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
 
 GreedyWhileLoopBatchFission::ValidBatchingInfo
 GreedyWhileLoopBatchFission::isDynamicSliceValidForBatching(
-    stablehlo::DynamicSliceOp sliceOp, Value iterVar, int64_t limit,
-    Block &whileBody, Block *parentBlock) const {
+    stablehlo::DynamicSliceOp sliceOp, Value iterVar, Block &whileBody,
+    Block *parentBlock, stablehlo::WhileOp whileOp) const {
   auto startIndices = sliceOp.getStartIndices();
   auto operand = sliceOp.getOperand();
 
-  if (operand.getParentBlock() == &whileBody)
-    return ValidBatchingInfo{
+  if (operand.getParentBlock() == &whileBody) {
+    auto failureRetVal = ValidBatchingInfo{
         IsValidForBatchingResult::OPERAND_NOT_ACCESSIBLE_FROM_PARENT, -1};
+    if (auto blockArg = dyn_cast<BlockArgument>(operand)) {
+      auto terminator = whileBody.getTerminator();
+      if (!terminator ||
+          terminator->getOperand(blockArg.getArgNumber()) != operand) {
+        return failureRetVal;
+      }
+    } else {
+      return failureRetVal;
+    }
+  }
 
   // Track which start index corresponds to the induction variable descendant
   int32_t inductionVarDimension = -1;
@@ -1174,29 +1180,21 @@ GreedyWhileLoopBatchFission::isDynamicSliceValidForBatching(
     Value startIndex = startIndices[i];
 
     if (startIndex == iterVar) {
+      // TODO: we can support this by emitting a gather op instead of a slice
       // Multiple dimensions are descendants of induction var - invalid
       if (inductionVarDimension != -1)
         return ValidBatchingInfo{
             IsValidForBatchingResult::MULTIPLE_INDUCTION_VARIABLE_SLICE_DIMS,
             -1};
       inductionVarDimension = i;
-
       continue;
     }
 
-    Operation *definingOp = startIndex.getDefiningOp();
-    if (!definingOp) {
-      // TODO: defining op might be false here since it could be the induction
-      // variable itself
-      return ValidBatchingInfo{IsValidForBatchingResult::NOT_FULL_SLICE, -1};
-    }
-
-    // Check if this start index is defined within the loop body
-    if (definingOp->getBlock() != &whileBody) {
+    if (definedOutside(startIndex, whileOp))
       continue;
-    }
 
-    return ValidBatchingInfo{IsValidForBatchingResult::NOT_FULL_SLICE, -1};
+    // not an affine index
+    return ValidBatchingInfo{IsValidForBatchingResult::DYNAMIC_START_INDEX, -1};
   }
 
   // We should have exactly one index from the body, and it should be

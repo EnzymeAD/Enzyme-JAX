@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --auto-batching --enzyme-hlo-opt | FileCheck %s
+// RUN: enzymexlamlir-opt %s --auto-batching --enzyme-hlo-opt --auto-batching --enzyme-hlo-opt | FileCheck %s
 
 module {
   func.func @main(%arg0: tensor<3x2xf64>, %arg1: tensor<3x2xf64>, %arg2: tensor<3x2xf64>) -> (tensor<i64>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<3x2xf64>) {
@@ -45,9 +45,9 @@ module {
 // CHECK-NEXT:     %c_2 = stablehlo.constant dense<1> : tensor<i64>
 // CHECK-NEXT:     %0 = stablehlo.transpose %arg1, dims = [1, 0] : (tensor<3x2xf64>) -> tensor<2x3xf64>
 // CHECK-NEXT:     %1 = stablehlo.transpose %arg2, dims = [1, 0] : (tensor<3x2xf64>) -> tensor<2x3xf64>
-// CHECK-NEXT:     %2 = stablehlo.reshape %1 : (tensor<2x3xf64>) -> tensor<2x3x1x1xf64>
-// CHECK-NEXT:     %3 = stablehlo.reshape %0 : (tensor<2x3xf64>) -> tensor<2x3x1x1xf64>
-// CHECK-NEXT:     %4 = stablehlo.add %3, %2 : tensor<2x3x1x1xf64>
+// CHECK-NEXT:     %2 = stablehlo.reshape %0 : (tensor<2x3xf64>) -> tensor<2x3x1x1xf64>
+// CHECK-NEXT:     %3 = stablehlo.reshape %1 : (tensor<2x3xf64>) -> tensor<2x3x1x1xf64>
+// CHECK-NEXT:     %4 = stablehlo.add %2, %3 : tensor<2x3x1x1xf64>
 // CHECK-NEXT:     %5 = stablehlo.reshape %4 : (tensor<2x3x1x1xf64>) -> tensor<2x3xf64>
 // CHECK-NEXT:     %6 = stablehlo.transpose %5, dims = [1, 0] : (tensor<2x3xf64>) -> tensor<3x2xf64>
 // CHECK-NEXT:     %7 = stablehlo.while(%iterArg = %c_0) : tensor<i64> attributes {enzyme.disable_mincut}
