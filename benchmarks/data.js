@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1764476172696,
+  "lastUpdate": 1764538831200,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "238314553+enzymead-bot[bot]@users.noreply.github.com",
-            "name": "enzymead-bot[bot]",
-            "username": "enzymead-bot[bot]"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "2347ef5292dc2c2c7c3a9d3d987540ef68e3a967",
-          "message": "Update EnzymeAD/Enzyme to commit 68e62fbd1b496a60490266952916112b63e62a18 (#1588)\n\nDiff: https://github.com/EnzymeAD/Enzyme/compare/6b1848d8582e57dd57c0bb5d0c373c5cb1c1bbfb...68e62fbd1b496a60490266952916112b63e62a18\n\nCo-authored-by: enzymead-bot[bot] <238314553+enzymead-bot[bot]@users.noreply.github.com>",
-          "timestamp": "2025-11-07T11:58:31Z",
-          "tree_id": "f802eb19af9d2a3c6d2f94d0a7d7f8b0982184b9",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/2347ef5292dc2c2c7c3a9d3d987540ef68e3a967"
-        },
-        "date": 1762524211386,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.000004325116000836715,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.000004328913100471254,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001335319516001,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001367936525988,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2199,6 +2155,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001396779474,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "58750937+snonk@users.noreply.github.com",
+            "name": "snonk",
+            "username": "snonk"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a9caa01126d9d16da33a1b20945446cb65e60653",
+          "message": "dot general case for symm (#1620)\n\n* dot general case\n\n* add test and fmt\n\n* fix: update to new version\n\n---------\n\nCo-authored-by: Avik Pal <avikpal@mit.edu>",
+          "timestamp": "2025-11-30T13:09:24-05:00",
+          "tree_id": "3bb8ab7140e0c3244b5613053f9640bb7758661d",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/a9caa01126d9d16da33a1b20945446cb65e60653"
+        },
+        "date": 1764538830589,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004310507999616675,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004355360000045039,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001534784994,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001503140465007,
             "unit": "s"
           }
         ]
