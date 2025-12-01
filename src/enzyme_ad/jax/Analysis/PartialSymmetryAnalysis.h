@@ -65,7 +65,9 @@ public:
   }
 
   SmallVector<SmallVector<int64_t>> getDimensionSets() const;
-  static PartialSymmetryAnnotation createFromDimensionSets(int64_t rank, ArrayRef<ArrayRef<int64_t>> dimensionSets);
+  static PartialSymmetryAnnotation
+  createFromDimensionSets(int64_t rank,
+                          ArrayRef<ArrayRef<int64_t>> dimensionSets);
   static std::optional<PartialSymmetryAnnotation> createFromIR(Value val);
 
   void print(raw_ostream &os) const;

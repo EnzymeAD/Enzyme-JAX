@@ -388,9 +388,8 @@ PartialSymmetryAnnotation::getDimensionSets() const {
   return result;
 }
 
-PartialSymmetryAnnotation
-PartialSymmetryAnnotation::createFromDimensionSets(int64_t rank,
-                                             ArrayRef<ArrayRef<int64_t>> dimensionSets) {
+PartialSymmetryAnnotation PartialSymmetryAnnotation::createFromDimensionSets(
+    int64_t rank, ArrayRef<ArrayRef<int64_t>> dimensionSets) {
   SmallVector<int64_t> dimensionSetIDs(rank);
   for (int64_t i = 0; i < rank; ++i) {
     dimensionSetIDs[i] = i;
@@ -424,14 +423,15 @@ PartialSymmetryAnnotation::createFromIR(Value val) {
         if (!arrayAttr || arrayAttr.empty()) {
           continue;
         }
-        
-        auto partialSymmetryAttr = dyn_cast<enzymexla::PartialSymmetryAnalysisResultAttr>(
-            arrayAttr[0]);
-        
+
+        auto partialSymmetryAttr =
+            dyn_cast<enzymexla::PartialSymmetryAnalysisResultAttr>(
+                arrayAttr[0]);
+
         if (!partialSymmetryAttr) {
           continue;
         }
-        
+
         auto dimensionSetAttrs = partialSymmetryAttr.getValues();
         auto rank = cast<RankedTensorType>(val.getType()).getRank();
 
@@ -441,7 +441,8 @@ PartialSymmetryAnnotation::createFromIR(Value val) {
           dimensionSets.push_back(dims);
         }
 
-        return PartialSymmetryAnnotation::createFromDimensionSets(rank, dimensionSets);
+        return PartialSymmetryAnnotation::createFromDimensionSets(
+            rank, dimensionSets);
       }
     }
     return std::nullopt;
@@ -451,8 +452,7 @@ PartialSymmetryAnnotation::createFromIR(Value val) {
   if (!op)
     return std::nullopt;
 
-  auto arrayAttr =
-      op->getAttrOfType<ArrayAttr>("enzymexla.partial_symmetry");
+  auto arrayAttr = op->getAttrOfType<ArrayAttr>("enzymexla.partial_symmetry");
   if (!arrayAttr || arrayAttr.empty())
     return std::nullopt;
 
@@ -462,8 +462,9 @@ PartialSymmetryAnnotation::createFromIR(Value val) {
 
   auto resultNumber = opResult.getResultNumber();
 
-  auto partialSymmetryAttr = dyn_cast<enzymexla::PartialSymmetryAnalysisResultAttr>(
-      arrayAttr[resultNumber]);
+  auto partialSymmetryAttr =
+      dyn_cast<enzymexla::PartialSymmetryAnalysisResultAttr>(
+          arrayAttr[resultNumber]);
   if (!partialSymmetryAttr)
     return std::nullopt;
 
@@ -476,7 +477,8 @@ PartialSymmetryAnnotation::createFromIR(Value val) {
     dimensionSets.push_back(dims);
   }
 
-  return PartialSymmetryAnnotation::createFromDimensionSets(rank, dimensionSets);
+  return PartialSymmetryAnnotation::createFromDimensionSets(rank,
+                                                            dimensionSets);
 }
 
 void PartialSymmetryAnnotation::print(raw_ostream &os) const {
@@ -504,7 +506,8 @@ void PartialSymmetryAnnotation::print(raw_ostream &os) const {
 // PartialSymmetryLattice Implementation
 //===----------------------------------------------------------------------===//
 
-PartialSymmetryLattice::PartialSymmetryLattice(Value v) : AbstractSparseLattice(v) {
+PartialSymmetryLattice::PartialSymmetryLattice(Value v)
+    : AbstractSparseLattice(v) {
   if (auto type = dyn_cast<RankedTensorType>(v.getType())) {
     // Trust existing IR annotations if present.
     auto annotation = PartialSymmetryAnnotation::createFromIR(v);
@@ -512,7 +515,7 @@ PartialSymmetryLattice::PartialSymmetryLattice(Value v) : AbstractSparseLattice(
       value = annotation.value();
       return;
     }
-    
+
     value = PartialSymmetryAnnotation::createFullySymmetric(type.getRank());
   }
 }
@@ -539,12 +542,13 @@ void PartialSymmetryLattice::print(raw_ostream &os) const { value.print(os); }
 //===----------------------------------------------------------------------===//
 
 void PartialSymmetryAnalysis::setToEntryState(PartialSymmetryLattice *lattice) {
-  auto annotation = PartialSymmetryAnnotation::createFromIR(lattice->getAnchor());
+  auto annotation =
+      PartialSymmetryAnnotation::createFromIR(lattice->getAnchor());
   if (annotation.has_value()) {
     lattice->setValue(annotation.value());
     return;
   }
-  
+
   lattice->setValue(PartialSymmetryAnnotation::createNotSymmetric(
       lattice->getValue().getRank()));
 }

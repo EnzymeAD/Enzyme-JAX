@@ -19,22 +19,22 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Builders.h"
-#include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Visitors.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "shardy/dialect/sdy/ir/utils.h"
+#include "src/enzyme_ad/jax/Analysis/PartialSymmetryAnalysis.h"
 #include "src/enzyme_ad/jax/CheckedRewrite.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
-#include "src/enzyme_ad/jax/Analysis/PartialSymmetryAnalysis.h"
 #include "src/enzyme_ad/jax/Passes/StructuredTensors.h"
 #include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/Base.h"
@@ -6964,14 +6964,15 @@ struct TransposePartialSymmetrySimplify
       TransposePartialSymmetrySimplify>::CheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
-                                        PatternRewriter &rewriter) const {
+                                    PatternRewriter &rewriter) const {
     auto operand = op.getOperand();
     auto perm = op.getPermutation();
 
-    auto annotationOpt = enzyme::PartialSymmetryAnnotation::createFromIR(operand);
+    auto annotationOpt =
+        enzyme::PartialSymmetryAnnotation::createFromIR(operand);
     if (!annotationOpt.has_value())
       return failure();
-    
+
     auto annotation = annotationOpt.value();
 
     bool isIdentity = true;
