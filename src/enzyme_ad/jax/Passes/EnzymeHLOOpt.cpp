@@ -25877,6 +25877,90 @@ private:
   }
 };
 
+struct ReduceMulBroadcastToDotGeneral
+    : public CheckedOpRewritePattern<stablehlo::ReduceOp,
+                                     ReduceMulBroadcastToDotGeneral> {
+  using CheckedOpRewritePattern<
+      stablehlo::ReduceOp,
+      ReduceMulBroadcastToDotGeneral>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op.getInputs().size() != 1 || op.getInitValues().size() != 1) {
+      return rewriter.notifyMatchFailure(
+          op, "only single-operand single-init reduce is supported");
+    }
+
+    auto dims = op.getDimensions();
+
+    Value input = op.getInputs()[0];
+    auto TT = cast<TensorType>(input.getType());
+    auto OT = cast<TensorType>(op.getResultTypes()[0]);
+
+    if (OT.getRank() != 2 || dims.size() != 1)
+      return failure();
+
+    auto checkCommonReduce = mlir::stablehlo::CheckCommonReduceOp(op);
+    if (!checkCommonReduce.isAddReduce ||
+        !matchPattern(op.getInitValues()[0], m_AnyZeroFloat()))
+      return rewriter.notifyMatchFailure(op, "reduction is not add");
+
+    auto mul = input.getDefiningOp<stablehlo::MulOp>();
+    if (!mul)
+      return rewriter.notifyMatchFailure(op, "input source is not a mul op");
+
+    Value mulLhs = mul.getLhs(), mulRhs = mul.getRhs();
+    auto lhsBdim = mulLhs.getDefiningOp<stablehlo::BroadcastInDimOp>(),
+         rhsBdim = mulRhs.getDefiningOp<stablehlo::BroadcastInDimOp>();
+
+    if (!lhsBdim || !rhsBdim)
+      return failure();
+
+    auto prepareInputForDotGeneral =
+        [&](stablehlo::BroadcastInDimOp bdim) -> Value {
+      // transpose dims: [0, 2] -> [0, 1]
+      // transpose dims: [1, 0] -> [1, 0]
+      auto OT = cast<TensorType>(bdim.getResult().getType());
+
+      auto bdims = bdim.getBroadcastDimensions();
+      SmallVector<int64_t> transposeDims(bdims.size(), -1);
+
+      int64_t ncdims = 0;
+      for (int i = 0; i < OT.getRank(); i++) {
+        bool inBDims = false;
+        for (auto [j, dim] : llvm::enumerate(bdims)) {
+          if (dim == i) {
+            inBDims = true;
+            transposeDims[j] = i - ncdims;
+            break;
+          }
+        }
+        if (!inBDims) {
+          ncdims++;
+        }
+      }
+
+      Value prepared = stablehlo::TransposeOp::create(
+          rewriter, bdim.getLoc(), bdim.getOperand(), transposeDims);
+
+      return prepared;
+    };
+
+    auto lhs = prepareInputForDotGeneral(lhsBdim);
+    auto rhs = prepareInputForDotGeneral(rhsBdim);
+
+    auto ndim = stablehlo::DotDimensionNumbersAttr::get(
+        op.getContext(), {}, {}, op.getDimensions(), op.getDimensions());
+
+    auto dg = DotGeneralOp::create(rewriter, op.getLoc(), OT, lhs, rhs, ndim,
+                                   /* precision_config */ nullptr,
+                                   /*algorithm*/ nullptr);
+    rewriter.replaceAllOpUsesWith(op, dg.getResult());
+
+    return success();
+  }
+};
+
 // currently limited to non-batched dot_general
 struct DotGeneralToSyrk
     : public CheckedOpRewritePattern<stablehlo::DotGeneralOp,
@@ -26761,6 +26845,7 @@ struct EnzymeHLOOptPass
         ElementwiseWrap,
         ElementwiseExtend,
         SubtractMultiplyConstToAddMulConst,
+        ReduceMulBroadcastToDotGeneral,
         DotGeneralDistributiveSimplify<stablehlo::AddOp>,
         DotGeneralDistributiveSimplify<stablehlo::SubtractOp>,
         TrivialReduceWindowToReduceOp,
