@@ -82,14 +82,11 @@ module {
 // CHECK-NEXT{LITERAL}:    %c = stablehlo.constant dense<[[0, 10, 2], [0, 20, 2], [0, 30, 2], [0, 40, 2], [0, 50, 2], [0, 60, 2], [0, 70, 2]]> : tensor<7x3xi32>
 // CHECK-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<9x72x6xf32>
 // CHECK-NEXT:    %0 = stablehlo.slice %arg0 [2:6, 0:31:5, 1:4] : (tensor<9x72x6xf32>) -> tensor<4x7x3xf32>
-// CHECK-NEXT:    %1 = stablehlo.broadcast_in_dim %0, dims = [3, 0, 1] : (tensor<4x7x3xf32>) -> tensor<7x3x1x4xf32>
-// CHECK-NEXT:    %2 = stablehlo.sine %1 : tensor<7x3x1x4xf32>
-// CHECK-NEXT:    %3 = stablehlo.transpose %2, dims = [0, 3, 2, 1] : (tensor<7x3x1x4xf32>) -> tensor<7x4x1x3xf32>
-// CHECK-NEXT:    %4 = stablehlo.reshape %3 : (tensor<7x4x1x3xf32>) -> tensor<7x4x3xf32>
-// CHECK-NEXT:    %5 = stablehlo.transpose %4, dims = [1, 0, 2] : (tensor<7x4x3xf32>) -> tensor<4x7x3xf32>
-// CHECK-NEXT:    %6 = "stablehlo.scatter"(%cst, %c, %5) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<update_window_dims = [0, 2], inserted_window_dims = [1], scatter_dims_to_operand_dims = [0, 1, 2], index_vector_dim = 1>, unique_indices = true}> ({
+// CHECK-NEXT:    %1 = stablehlo.sine %0 : tensor<4x7x3xf32>
+// CHECK-NEXT:    %2 = stablehlo.transpose %1, dims = [1, 0, 2] : (tensor<4x7x3xf32>) -> tensor<7x4x3xf32>
+// CHECK-NEXT:    %3 = "stablehlo.scatter"(%cst, %c, %2) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<update_window_dims = [1, 2], inserted_window_dims = [1], scatter_dims_to_operand_dims = [0, 1, 2], index_vector_dim = 1>, unique_indices = true}> ({
 // CHECK-NEXT:    ^bb0(%arg1: tensor<f32>, %arg2: tensor<f32>):
 // CHECK-NEXT:      stablehlo.return %arg2 : tensor<f32>
-// CHECK-NEXT:    }) : (tensor<9x72x6xf32>, tensor<7x3xi32>, tensor<4x7x3xf32>) -> tensor<9x72x6xf32>
-// CHECK-NEXT:    return %6 : tensor<9x72x6xf32>
+// CHECK-NEXT:    }) : (tensor<9x72x6xf32>, tensor<7x3xi32>, tensor<7x4x3xf32>) -> tensor<9x72x6xf32>
+// CHECK-NEXT:    return %3 : tensor<9x72x6xf32>
 // CHECK-NEXT:  }

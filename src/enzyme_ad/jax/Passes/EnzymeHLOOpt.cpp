@@ -24999,9 +24999,9 @@ struct WhileIsCopySimplify
           blockArg.getArgNumber() != idx)
         continue;
 
-      int32_t dusInductionVarDim =
+      auto dusInductionVarDims =
           getInductionVariableDimension(dusOp, affineIndexInfo, whileOp, info);
-      if (dusInductionVarDim == -1)
+      if (dusInductionVarDims.empty())
         continue;
 
       auto updateChainOrNone = extractValidUpdateChain(rewriter, dusOp, whileOp,
@@ -25014,17 +25014,17 @@ struct WhileIsCopySimplify
         continue;
 
       auto dsOp = dyn_cast<stablehlo::DynamicSliceOp>(updateChain.back());
-      auto dsInductionVarDim =
+      auto dsInductionVarDims =
           getInductionVariableDimension(dsOp, affineIndexInfo, whileOp, info);
-      if (dsInductionVarDim == -1)
+      if (dsInductionVarDims.empty())
         continue;
 
-      if (!info.canHoistOperationFromLoop(dsOp, dsInductionVarDim) ||
-          !info.canHoistOperationFromLoop(dusOp, dusInductionVarDim))
+      if (!info.canHoistOperationFromLoop(dsOp, dsInductionVarDims) ||
+          !info.canHoistOperationFromLoop(dusOp, dusInductionVarDims))
         continue;
 
       auto funcOp = createCopyFunction(rewriter, whileOp, updateChain,
-                                       dsInductionVarDim, dusInductionVarDim);
+                                       dsInductionVarDims, dusInductionVarDims);
       if (!funcOp)
         continue;
 
@@ -25033,32 +25033,30 @@ struct WhileIsCopySimplify
       rewriter.setInsertionPoint(whileOp);
       Value dsResult;
       auto successfulHoist = info.hoistOperationFromLoop(
-          rewriter, dsOp.getOperand(), dsOp, dsInductionVarDim, dsResult);
+          rewriter, dsOp.getOperand(), dsOp, dsInductionVarDims, dsResult);
       assert(successfulHoist && "expected DS hoist to succeed.");
       auto dsResTy = cast<RankedTensorType>(dsResult.getType());
 
       // move the induction var to the front
-      if (dsInductionVarDim != 0) {
-        SmallVector<int64_t> permutation(dsResTy.getRank());
-        std::iota(permutation.begin(), permutation.end(), 0);
-        permutation[0] = dsInductionVarDim;
-        for (int i = 1; i <= dsInductionVarDim; i++)
-          permutation[i] = i - 1;
-
-        dsResult = stablehlo::TransposeOp::create(
-                       rewriter, whileOp.getLoc(), dsResult,
-                       rewriter.getDenseI64ArrayAttr(permutation))
-                       .getResult();
+      SmallVector<int64_t> dsPerm;
+      dsPerm.push_back(dsInductionVarDims[0]);
+      for (size_t i = 0; i < dsResTy.getRank(); i++) {
+        if (dsInductionVarDims[0] != i)
+          dsPerm.push_back(i);
       }
 
+      dsResult =
+          stablehlo::TransposeOp::create(rewriter, whileOp.getLoc(), dsResult,
+                                         rewriter.getDenseI64ArrayAttr(dsPerm));
+
       auto dusOpUpdateTy = cast<RankedTensorType>(dusOp.getUpdate().getType());
-      auto dusOpUpdateShape = dusOpUpdateTy.getShape();
-      SmallVector<int64_t> dusOpUpdateShapePreTranspose;
-      dusOpUpdateShapePreTranspose.push_back(info.getConstantNumIters());
-      for (int i = 0; i < dusInductionVarDim; i++)
-        dusOpUpdateShapePreTranspose.push_back(dusOpUpdateShape[i]);
-      for (int i = dusInductionVarDim + 1; i < dusOpUpdateShape.size(); i++)
-        dusOpUpdateShapePreTranspose.push_back(dusOpUpdateShape[i]);
+
+      SmallVector<int64_t> dusOpUpdateShapePreTranspose = {
+          info.getConstantNumIters()};
+      for (auto [i, sz] : llvm::enumerate(dusOpUpdateTy.getShape())) {
+        if (!llvm::is_contained(dusInductionVarDims, i))
+          dusOpUpdateShapePreTranspose.push_back(sz);
+      }
       auto batchOpOutTy = RankedTensorType::get(dusOpUpdateShapePreTranspose,
                                                 dusOpUpdateTy.getElementType());
 
@@ -25068,25 +25066,10 @@ struct WhileIsCopySimplify
           rewriter.getDenseI64ArrayAttr({info.getConstantNumIters()}));
       batchOps.push_back({batchOp, funcOp});
 
-      Value dusUpdateNew = batchOp.getResult(0);
-      if (dusInductionVarDim != 0) {
-        SmallVector<int64_t> permutation(dusOpUpdateShape.size());
-        for (int i = 0; i < dusInductionVarDim; i++)
-          permutation[i] = i + 1;
-        permutation[dusInductionVarDim] = 0;
-        std::iota(permutation.begin() + dusInductionVarDim + 1,
-                  permutation.end(), dusInductionVarDim + 1);
-
-        dusUpdateNew = stablehlo::TransposeOp::create(
-                           rewriter, whileOp.getLoc(), dusUpdateNew,
-                           rewriter.getDenseI64ArrayAttr(permutation))
-                           .getResult();
-      }
-
       Value newDUS;
       successfulHoist = info.hoistOperationFromLoop(
-          rewriter, whileOp.getOperands()[idx], dusUpdateNew, dusOp,
-          dusInductionVarDim, newDUS);
+          rewriter, whileOp.getOperands()[idx], batchOp.getResult(0), dusOp,
+          dusInductionVarDims, newDUS);
       assert(successfulHoist && "Expected DUS hoist to succeed.");
 
       whileOp.getResult(idx).replaceAllUsesWith(newDUS);
@@ -25104,19 +25087,19 @@ struct WhileIsCopySimplify
   }
 
 private:
-  func::FuncOp createCopyFunction(PatternRewriter &rewriter,
-                                  stablehlo::WhileOp whileOp,
-                                  SmallVectorImpl<Operation *> &updateChain,
-                                  int64_t dsInductionVarDimension,
-                                  int64_t dusInductionVarDimension) const {
+  func::FuncOp
+  createCopyFunction(PatternRewriter &rewriter, stablehlo::WhileOp whileOp,
+                     SmallVectorImpl<Operation *> &updateChain,
+                     SmallVectorImpl<int64_t> &dsInductionVarDims,
+                     SmallVectorImpl<int64_t> &dusInductionVarDims) const {
     auto dSlice = cast<stablehlo::DynamicSliceOp>(updateChain.back());
     auto dusOp = cast<stablehlo::DynamicUpdateSliceOp>(updateChain.front());
 
     auto dSliceResTy = cast<RankedTensorType>(dSlice.getResult().getType());
     auto dusUpdateTy = cast<RankedTensorType>(dusOp.getUpdate().getType());
 
-    auto funcInType = removeBatchedDims(dSliceResTy, dsInductionVarDimension);
-    auto funcOutType = removeBatchedDims(dusUpdateTy, dusInductionVarDimension);
+    auto funcInType = removeBatchedDims(dSliceResTy, dsInductionVarDims);
+    auto funcOutType = removeBatchedDims(dusUpdateTy, dusInductionVarDims);
 
     static int64_t counter = 0;
     std::string funcName =
@@ -25156,10 +25139,11 @@ private:
     return funcOp;
   }
 
-  RankedTensorType removeBatchedDims(RankedTensorType Ty, int64_t dim) const {
+  RankedTensorType removeBatchedDims(RankedTensorType Ty,
+                                     SmallVectorImpl<int64_t> &dims) const {
     SmallVector<int64_t> newShape;
     for (int64_t i = 0; i < Ty.getRank(); i++) {
-      if (i != dim)
+      if (!llvm::is_contained(dims, i))
         newShape.push_back(Ty.getDimSize(i));
     }
     return RankedTensorType::get(newShape, Ty.getElementType());
@@ -25204,7 +25188,7 @@ private:
   }
 
   template <typename OpTy>
-  int32_t getInductionVariableDimension(
+  SmallVector<int64_t> getInductionVariableDimension(
       OpTy op,
       llvm::MapVector<Value, WhileLoopInfo::AffineIndexInfo> &affineIndexInfo,
       stablehlo::WhileOp whileOp, WhileLoopInfo &info) const {
@@ -25212,22 +25196,22 @@ private:
                                          whileOp, info);
   }
 
-  int32_t getInductionVariableDimension(
+  SmallVector<int64_t> getInductionVariableDimension(
       mlir::OperandRange startIndices,
       llvm::MapVector<Value, WhileLoopInfo::AffineIndexInfo> &affineIndexInfo,
       stablehlo::WhileOp whileOp, WhileLoopInfo &info) const {
-    int32_t inductionVarDimension = -1;
+    SmallVector<int64_t> inductionVarDimensions;
 
     for (auto [i, startIndex] : llvm::enumerate(startIndices)) {
-      if (!info.isConstantAcrossIterations(startIndex)) {
-        if (inductionVarDimension > 0 || // multiple indices with induction var
-            !affineIndexInfo.contains(startIndex))
-          return -1;
+      if (info.isConstantAcrossIterations(startIndex))
+        continue;
 
-        inductionVarDimension = i;
-      }
+      if (!affineIndexInfo.contains(startIndex))
+        return {};
+
+      inductionVarDimensions.push_back(i);
     }
-    return inductionVarDimension;
+    return inductionVarDimensions;
   }
 };
 
