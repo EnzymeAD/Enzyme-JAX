@@ -35,7 +35,7 @@ def benchmark_symmetry():
 
     pipeline = JaXPipeline(
         "inline{default-pipeline=canonicalize max-iterations=4},"
-        "canonicalize,cse,partial-symmetry-simplify,canonicalize,cse"
+        "partial-symmetry-annotate,enzyme-hlo-generate-td{patterns=transpose_partial_symmetry_simplify},transform-interpreter,enzyme-hlo-remove-transform"
     )
     
     NUM_ITER = 100
