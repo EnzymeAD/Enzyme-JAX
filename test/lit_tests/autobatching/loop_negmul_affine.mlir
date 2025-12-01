@@ -40,9 +40,10 @@ module {
 // CHECK-NEXT:     %cst = stablehlo.constant dense<0.000000e+00> : tensor<5x20x6xf32>
 // CHECK-NEXT:     %0 = stablehlo.slice %arg0 [0:2, 2:11:2, 0:4] : (tensor<5x20x6xf32>) -> tensor<2x5x4xf32>
 // CHECK-NEXT:     %1 = stablehlo.cosine %0 : tensor<2x5x4xf32>
-// CHECK-NEXT:     %2 = "stablehlo.scatter"(%cst, %c, %1) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<update_window_dims = [0, 2], inserted_window_dims = [1], scatter_dims_to_operand_dims = [0, 1, 2], index_vector_dim = 1>, unique_indices = true}> ({
+// CHECK-NEXT:     %2 = stablehlo.transpose %1, dims = [1, 0, 2] : (tensor<2x5x4xf32>) -> tensor<5x2x4xf32>
+// CHECK-NEXT:     %3 = "stablehlo.scatter"(%cst, %c, %2) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<update_window_dims = [1, 2], inserted_window_dims = [1], scatter_dims_to_operand_dims = [0, 1, 2], index_vector_dim = 1>, unique_indices = true}> ({
 // CHECK-NEXT:     ^bb0(%arg1: tensor<f32>, %arg2: tensor<f32>):
 // CHECK-NEXT:       stablehlo.return %arg2 : tensor<f32>
-// CHECK-NEXT:     }) : (tensor<5x20x6xf32>, tensor<5x3xi32>, tensor<2x5x4xf32>) -> tensor<5x20x6xf32>
-// CHECK-NEXT:     return %2 : tensor<5x20x6xf32>
+// CHECK-NEXT:     }) : (tensor<5x20x6xf32>, tensor<5x3xi32>, tensor<5x2x4xf32>) -> tensor<5x20x6xf32>
+// CHECK-NEXT:     return %3 : tensor<5x20x6xf32>
 // CHECK-NEXT: }

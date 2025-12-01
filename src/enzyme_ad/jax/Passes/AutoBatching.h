@@ -6,6 +6,7 @@
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/PatternMatch.h"
 #include "stablehlo/dialect/StablehloOps.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <tuple>
@@ -218,7 +219,7 @@ private:
     VALID,
     OPERAND_NOT_ACCESSIBLE_FROM_PARENT,
     DYNAMIC_START_INDEX,
-    MULTIPLE_INDUCTION_VARIABLE_SLICE_DIMS,
+    NO_INDUCTION_VARIABLE_DETECTED,
   };
 
   static bool isValidForBatchingResult(IsValidForBatchingResult result) {
@@ -227,7 +228,7 @@ private:
 
   struct DynamicSliceInfo {
     mlir::stablehlo::DynamicSliceOp sliceOp;
-    int64_t inductionVarDimension;
+    llvm::SmallVector<int64_t> dimensions;
     bool intermediateReshape;
     llvm::SmallVector<int64_t> reshapeShape;
     mlir::enzyme::WhileLoopInfo::AffineIndexInfo affineIndexInfo;
@@ -236,14 +237,14 @@ private:
 
   struct ValidBatchingInfo {
     IsValidForBatchingResult result;
-    int64_t sliceDim;
+    llvm::SmallVector<int64_t> dimensions;
   };
 
-  ValidBatchingInfo
-  isDynamicSliceValidForBatching(mlir::stablehlo::DynamicSliceOp sliceOp,
-                                 mlir::Value iterVar, mlir::Block &whileBody,
-                                 mlir::Block *parentBlock,
-                                 mlir::stablehlo::WhileOp whileOp) const;
+  ValidBatchingInfo isDynamicSliceValidForBatching(
+      mlir::stablehlo::DynamicSliceOp sliceOp,
+      llvm::MapVector<mlir::Value, mlir::enzyme::WhileLoopInfo::AffineIndexInfo>
+          &affineIndexInfoMap,
+      mlir::Block &whileBody, mlir::stablehlo::WhileOp whileOp) const;
 
   bool liftOperationByBatching(mlir::PatternRewriter &rewriter,
                                mlir::stablehlo::WhileOp whileOp,

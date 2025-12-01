@@ -299,32 +299,104 @@ bool WhileLoopInfo::isConstantAcrossIterations(Value v) {
 }
 
 bool WhileLoopInfo::isConstantAcrossIterations(Value v, Value &outerValue) {
+  if (definedOutside(v, op)) {
+    outerValue = v;
+    return true;
+  }
+
   if (auto blockArg = dyn_cast<BlockArgument>(v)) {
     int64_t blockArgIndex = blockArg.getArgNumber();
     auto &body = op.getBody().front();
     auto terminator = body.getTerminator();
-    if (terminator && terminator->getOperand(blockArgIndex) ==
-                          body.getArgument(blockArgIndex)) {
+    if (terminator && blockArgIndex < terminator->getNumOperands() &&
+        terminator->getOperand(blockArgIndex) ==
+            body.getArgument(blockArgIndex)) {
       outerValue = op->getOperand(blockArgIndex);
       return true;
     }
   }
 
-  if (definedOutside(v, op)) {
-    outerValue = v;
-    return true;
-  }
   return false;
 }
 
+template <typename OpTy>
+void constructScatterGatherIndices(OpTy op, Value &result, OpBuilder &builder,
+                                   SmallVectorImpl<int64_t> &dimensions,
+                                   WhileLoopInfo &whileLoopInfo) {
+  auto startIndices = op.getStartIndices();
+  auto indexTy = startIndices[0].getType();
+  auto indexElemTy = cast<ShapedType>(indexTy).getElementType();
+  Location loc = op.getLoc();
+  auto affineIndexInfo = whileLoopInfo.getAffineIndexInfo();
+
+  SmallVector<int64_t> indexVectorShape = {whileLoopInfo.getConstantNumIters(),
+                                           1};
+  auto depIndicesTy = RankedTensorType::get(indexVectorShape, indexElemTy);
+
+  auto bcastIndex = [&](Value val) {
+    if (cast<RankedTensorType>(val.getType()).getElementType() != indexElemTy) {
+      val = stablehlo::ConvertOp::create(
+          builder, loc, RankedTensorType::get({}, indexElemTy), val);
+    }
+
+    return stablehlo::BroadcastInDimOp::create(
+        builder, loc, depIndicesTy, val, builder.getDenseI64ArrayAttr({}));
+  };
+
+  Value startVal = bcastIndex(whileLoopInfo.getStart());
+
+  SmallVector<Value> concatInputs;
+  for (size_t i = 0; i < startIndices.size(); i++) {
+    if (!llvm::is_contained(dimensions, i)) {
+      concatInputs.push_back(bcastIndex(startIndices[i]));
+      continue;
+    }
+
+    auto depIndex = startIndices[i];
+    auto indexInfo = affineIndexInfo[depIndex];
+    auto scale = indexInfo.scale.getSExtValue();
+    auto offset = indexInfo.offset.getSExtValue();
+
+    Value depIndices = stablehlo::IotaOp::create(builder, loc, depIndicesTy, 0);
+
+    // step * iota
+    if (!whileLoopInfo.isStepOne()) {
+      depIndices = stablehlo::MulOp::create(
+          builder, loc, depIndices, bcastIndex(whileLoopInfo.getStep(builder)));
+    }
+
+    // step * iota + offset
+    depIndices = stablehlo::AddOp::create(builder, loc, depIndices, startVal);
+
+    // apply affine map
+    auto scaleConst = stablehlo::ConstantOp::create(
+        builder, loc, depIndicesTy,
+        cast<ElementsAttr>(makeAttr(depIndicesTy, scale)));
+    auto offsetConst = stablehlo::ConstantOp::create(
+        builder, loc, depIndicesTy,
+        cast<ElementsAttr>(makeAttr(depIndicesTy, offset)));
+
+    depIndices = stablehlo::MulOp::create(builder, loc, depIndices, scaleConst);
+    depIndices =
+        stablehlo::AddOp::create(builder, loc, depIndices, offsetConst);
+
+    concatInputs.push_back(depIndices);
+  }
+
+  result = stablehlo::ConcatenateOp::create(builder, loc, concatInputs, 1);
+  return;
+}
+
 bool WhileLoopInfo::canHoistOperationFromLoop(
-    mlir::stablehlo::DynamicSliceOp sliceOp, int64_t sliceIndex) {
+    mlir::stablehlo::DynamicSliceOp sliceOp,
+    SmallVectorImpl<int64_t> &dimensions) {
   if (!isConstant())
     return false;
 
-  auto depIndex = sliceOp.getStartIndices()[sliceIndex];
-  if (!affineIndexInfo.contains(depIndex))
-    return false;
+  for (auto dim : dimensions) {
+    if (!affineIndexInfo.contains(sliceOp.getStartIndices()[dim]))
+      return false;
+  }
 
   return true;
 }
@@ -332,8 +404,8 @@ bool WhileLoopInfo::canHoistOperationFromLoop(
 bool WhileLoopInfo::hoistOperationFromLoop(
     OpBuilder &builder, Value operand, mlir::stablehlo::DynamicSliceOp sliceOp,
     int64_t sliceIndex, Value &result) {
-  // for non constant iteration count we will need a dynamic slice
-  if (!isConstant())
+  SmallVector<int64_t> dimensions = {sliceIndex};
+  if (!canHoistOperationFromLoop(sliceOp, dimensions))
     return false;
 
   auto totalIterCount = getConstantNumIters();
@@ -345,14 +417,9 @@ bool WhileLoopInfo::hoistOperationFromLoop(
   // might be converted into a Slice Op if the starts are static.
   // Next we do a strided slice of this DS op. If starts are static,
   // these will get fused into a single slice op.
-  if (!affineIndexInfo.contains(depIndex))
-    return false;
-
   auto indexInfo = affineIndexInfo[depIndex];
   auto scale = indexInfo.scale.getSExtValue();
   auto offset = indexInfo.offset.getSExtValue();
-
-  bool negativeScale = scale < 0;
 
   auto step = getConstantStep().value();
   auto lb = getConstantStart().value();
@@ -401,7 +468,7 @@ bool WhileLoopInfo::hoistOperationFromLoop(
                                  builder.getDenseI64ArrayAttr(sliceStrides));
   result = slice.getResult();
 
-  if (negativeScale) {
+  if (scale < 0) {
     result = stablehlo::ReverseOp::create(
         builder, sliceOp.getLoc(), result,
         builder.getDenseI64ArrayAttr({sliceIndex}));
@@ -410,11 +477,64 @@ bool WhileLoopInfo::hoistOperationFromLoop(
   return true;
 }
 
-bool WhileLoopInfo::canHoistOperationFromLoop(
-    mlir::stablehlo::DynamicUpdateSliceOp dusOp, int64_t dusIndex) {
-  auto depIndex = dusOp.getStartIndices()[dusIndex];
-  if (!affineIndexInfo.contains(depIndex))
+bool WhileLoopInfo::hoistOperationFromLoop(
+    OpBuilder &builder, Value operand, mlir::stablehlo::DynamicSliceOp sliceOp,
+    SmallVectorImpl<int64_t> &dimensions, Value &result) {
+  if (!canHoistOperationFromLoop(sliceOp, dimensions))
     return false;
+
+  if (dimensions.size() == 1) {
+    return hoistOperationFromLoop(builder, operand, sliceOp, dimensions[0],
+                                  result);
+  }
+
+  Value gatherIndices;
+  constructScatterGatherIndices(sliceOp, gatherIndices, builder, dimensions,
+                                *this);
+
+  auto sliceSizes = sliceOp.getSliceSizes();
+
+  SmallVector<int64_t> gatherSliceSizes;
+  for (size_t i = 0; i < sliceSizes.size(); i++) {
+    if (!llvm::is_contained(dimensions, i)) {
+      gatherSliceSizes.push_back(sliceSizes[i]);
+      continue;
+    }
+    gatherSliceSizes.push_back(1);
+  }
+
+  SmallVector<int64_t> offsetDims;
+  for (size_t i = 0; i < sliceSizes.size(); i++) {
+    if (!llvm::is_contained(dimensions, i))
+      offsetDims.push_back(i);
+  }
+
+  SmallVector<int64_t> startIndexMap(sliceSizes.size());
+  std::iota(startIndexMap.begin(), startIndexMap.end(), 0);
+
+  auto gatherOp = stablehlo::GatherOp::create(
+      builder, sliceOp.getLoc(), operand, gatherIndices,
+      stablehlo::GatherDimensionNumbersAttr::get(
+          sliceOp.getContext(),
+          /*offsetDims*/ offsetDims,
+          /*collapsedSliceDims*/ dimensions,
+          /*operandBatchingDims*/ {},
+          /*startIndicesBatchingDims*/ {},
+          /*startIndexMap*/ startIndexMap,
+          /*indexVectorDim*/ 1),
+      gatherSliceSizes);
+  result = gatherOp.getResult();
+
+  return true;
+}
+
+bool WhileLoopInfo::canHoistOperationFromLoop(
+    mlir::stablehlo::DynamicUpdateSliceOp dusOp,
+    SmallVectorImpl<int64_t> &dimensions) {
+  for (auto dim : dimensions) {
+    if (!affineIndexInfo.contains(dusOp.getStartIndices()[dim]))
+      return false;
+  }
 
   return true;
 }
@@ -423,152 +543,98 @@ bool WhileLoopInfo::hoistOperationFromLoop(
     OpBuilder &builder, Value operand, Value update,
     mlir::stablehlo::DynamicUpdateSliceOp dusOp, int64_t dusIndex,
     Value &result) {
-  auto depIndex = dusOp.getStartIndices()[dusIndex];
-  auto indexTy = depIndex.getType();
-
-  if (!affineIndexInfo.contains(depIndex))
+  SmallVector<int64_t> dimensions = {dusIndex};
+  if (!canHoistOperationFromLoop(dusOp, dimensions) || !isStepOne())
     return false;
 
-  auto indexInfo = affineIndexInfo[depIndex];
-  auto scale = indexInfo.scale.getSExtValue();
-  auto offset = indexInfo.offset.getSExtValue();
-
-  auto dusType = cast<RankedTensorType>(dusOp.getResult().getType());
   SmallVector<Value> dusStartIndices(dusOp.getStartIndices().begin(),
                                      dusOp.getStartIndices().end());
 
-  if (scale == 1) { // avoid scatter if possible
-    auto constOffset = stablehlo::ConstantOp::create(
-        builder, dusOp.getLoc(), indexTy,
-        cast<ElementsAttr>(makeAttr(indexTy, offset)));
-    Value startVal = start;
-    if (start.getType() != indexTy) {
-      startVal =
-          stablehlo::ConvertOp::create(builder, dusOp.getLoc(), indexTy, start);
-    }
-    dusStartIndices[dusIndex] = stablehlo::AddOp::create(
-        builder, dusOp.getLoc(), startVal, constOffset);
+  auto depIndex = dusOp.getStartIndices()[dusIndex];
+  auto indexTy = depIndex.getType();
+  auto indexInfo = affineIndexInfo[depIndex];
 
-    result = stablehlo::DynamicUpdateSliceOp::create(
-                 builder, dusOp.getLoc(), operand, update, dusStartIndices)
-                 .getResult();
-  } else { // emit a scatter
-    auto updateTy = cast<RankedTensorType>(update.getType());
-    auto indexElemTy = cast<ShapedType>(indexTy).getElementType();
+  if (!indexInfo.scale.isOne())
+    return false;
 
-    auto bcastIndex = [&](Value val) {
-      if (cast<RankedTensorType>(val.getType()).getElementType() !=
-          indexElemTy) {
-        val = stablehlo::ConvertOp::create(
-            builder, dusOp.getLoc(), RankedTensorType::get({}, indexElemTy),
-            val);
-      }
+  // move the update dim = 0 to dusIndex
+  SmallVector<int64_t> perm(dusOp.getStartIndices().size() - 1);
+  std::iota(perm.begin(), perm.end(), 1);
+  perm.insert(perm.begin() + dusIndex, 0);
 
-      return stablehlo::BroadcastInDimOp::create(
-          builder, dusOp.getLoc(),
-          RankedTensorType::get({updateTy.getDimSize(dusIndex), 1},
-                                indexElemTy),
-          val, builder.getDenseI64ArrayAttr({}));
-    };
+  update = stablehlo::TransposeOp::create(builder, dusOp.getLoc(), update,
+                                          builder.getDenseI64ArrayAttr(perm));
 
-    SmallVector<Value> leftScatterIndices, rightScatterIndices;
-    for (size_t i = 0; i < dusIndex; i++) {
-      leftScatterIndices.push_back(bcastIndex(dusStartIndices[i]));
-    }
-    for (size_t i = dusIndex + 1; i < dusOp.getStartIndices().size(); i++) {
-      rightScatterIndices.push_back(bcastIndex(dusStartIndices[i]));
-    }
+  auto constOffset = stablehlo::ConstantOp::create(
+      builder, dusOp.getLoc(), indexTy,
+      cast<ElementsAttr>(makeAttr(indexTy, indexInfo.offset.getSExtValue())));
 
-    auto depIndicesTy =
-        RankedTensorType::get({updateTy.getDimSize(dusIndex), 1}, indexElemTy);
-    auto depIndices =
-        stablehlo::IotaOp::create(builder, dusOp.getLoc(), depIndicesTy, 0)
-            .getResult();
+  Value startVal = start;
+  if (start.getType() != indexTy) {
+    startVal =
+        stablehlo::ConvertOp::create(builder, dusOp.getLoc(), indexTy, start);
+  }
 
-    // indices: scale * (idx) + offset -> scale * (lb + i * step) + offset
-    // shift by the lower bound
-    Value startVal = getStart();
-    if (cast<RankedTensorType>(startVal.getType()).getElementType() !=
-        indexElemTy) {
-      startVal = stablehlo::ConvertOp::create(
-          builder, dusOp.getLoc(), RankedTensorType::get({}, indexElemTy),
-          startVal);
-    }
+  dusStartIndices[dusIndex] =
+      stablehlo::AddOp::create(builder, dusOp.getLoc(), startVal, constOffset);
 
-    if (!isStepOne()) {
-      Value stepVal = getStep(builder);
-      if (cast<RankedTensorType>(stepVal.getType()).getElementType() !=
-          indexElemTy) {
-        stepVal = stablehlo::ConvertOp::create(
-            builder, dusOp.getLoc(), RankedTensorType::get({}, indexElemTy),
-            stepVal);
-      }
-      depIndices = stablehlo::MulOp::create(builder, dusOp.getLoc(), depIndices,
-                                            stepVal);
-    }
+  result = stablehlo::DynamicUpdateSliceOp::create(
+      builder, dusOp.getLoc(), operand, update, dusStartIndices);
+  return true;
+}
 
-    depIndices = stablehlo::AddOp::create(
-        builder, dusOp.getLoc(), depIndices,
-        stablehlo::BroadcastInDimOp::create(builder, dusOp.getLoc(),
-                                            depIndicesTy, startVal,
-                                            builder.getDenseI64ArrayAttr({})));
+// dimension 0 of the update is the batch dimension
+bool WhileLoopInfo::hoistOperationFromLoop(
+    OpBuilder &builder, Value operand, Value update,
+    mlir::stablehlo::DynamicUpdateSliceOp dusOp,
+    SmallVectorImpl<int64_t> &dimensions, Value &result) {
+  if (!canHoistOperationFromLoop(dusOp, dimensions))
+    return false;
 
-    // apply affine map
-    depIndices = stablehlo::MulOp::create(
-        builder, dusOp.getLoc(), depIndices,
-        stablehlo::ConstantOp::create(
-            builder, dusOp.getLoc(), depIndicesTy,
-            cast<ElementsAttr>(makeAttr(depIndicesTy, scale))));
-    depIndices = stablehlo::AddOp::create(
-        builder, dusOp.getLoc(), depIndices,
-        stablehlo::ConstantOp::create(
-            builder, dusOp.getLoc(), depIndicesTy,
-            cast<ElementsAttr>(makeAttr(depIndicesTy, offset))));
+  if (dimensions.size() == 1 &&
+      hoistOperationFromLoop(builder, operand, update, dusOp, dimensions[0],
+                             result)) {
+    return true;
+  }
 
-    SmallVector<Value> concatInputs;
-    concatInputs.insert(concatInputs.end(), leftScatterIndices.begin(),
-                        leftScatterIndices.end());
-    concatInputs.push_back(depIndices);
-    concatInputs.insert(concatInputs.end(), rightScatterIndices.begin(),
-                        rightScatterIndices.end());
+  Value scatterIndices;
+  constructScatterGatherIndices(dusOp, scatterIndices, builder, dimensions,
+                                *this);
 
-    Value scatterIndices = stablehlo::ConcatenateOp::create(
-        builder, dusOp.getLoc(), concatInputs, 1);
+  auto updateTy = cast<RankedTensorType>(update.getType());
+  auto operandTy = cast<RankedTensorType>(operand.getType());
 
-    SmallVector<int64_t> updateWindowDims(updateTy.getRank() - 1);
-    std::iota(updateWindowDims.begin(), updateWindowDims.begin() + dusIndex, 0);
-    std::iota(updateWindowDims.begin() + dusIndex, updateWindowDims.end(),
-              dusIndex + 1);
+  SmallVector<int64_t> updateWindowDims(updateTy.getRank() - 1);
+  std::iota(updateWindowDims.begin(), updateWindowDims.end(), 1);
 
-    SmallVector<int64_t> scatterDimsToOperandDims(updateTy.getRank());
-    std::iota(scatterDimsToOperandDims.begin(), scatterDimsToOperandDims.end(),
-              0);
+  SmallVector<int64_t> scatterDimsToOperandDims(operandTy.getRank());
+  std::iota(scatterDimsToOperandDims.begin(), scatterDimsToOperandDims.end(),
+            0);
 
-    auto scatterOp = stablehlo::ScatterOp::create(
-        builder, dusOp.getLoc(), ValueRange{operand}, scatterIndices,
-        ValueRange{update},
-        stablehlo::ScatterDimensionNumbersAttr::get(
-            dusOp.getContext(),
-            /*updateWindowDims*/ updateWindowDims,
-            /*insertedWindowDims*/ {dusIndex},
-            /*inputBatchingDims*/ {},
-            /*scatterIndicesBatchingDims*/ {},
-            /*scatterDimsToOperandDims*/ scatterDimsToOperandDims,
-            /*indexVectorDim*/ 1),
-        /*indicesAreSorted*/ false, /*uniqueIndices*/ true);
-    result = scatterOp.getResult(0);
+  auto scatterOp = stablehlo::ScatterOp::create(
+      builder, dusOp.getLoc(), ValueRange{operand}, scatterIndices,
+      ValueRange{update},
+      stablehlo::ScatterDimensionNumbersAttr::get(
+          dusOp.getContext(),
+          /*updateWindowDims*/ updateWindowDims,
+          /*insertedWindowDims*/ dimensions,
+          /*inputBatchingDims*/ {},
+          /*scatterIndicesBatchingDims*/ {},
+          /*scatterDimsToOperandDims*/ scatterDimsToOperandDims,
+          /*indexVectorDim*/ 1),
+      /*indicesAreSorted*/ false, /*uniqueIndices*/ true);
+  result = scatterOp.getResult(0);
 
-    Block *updateBody = new Block();
-    scatterOp.getUpdateComputation().push_back(updateBody);
+  Block *updateBody = new Block();
+  scatterOp.getUpdateComputation().push_back(updateBody);
 
-    {
-      OpBuilder::InsertionGuard guard(builder);
-      builder.setInsertionPointToStart(updateBody);
-      auto unrankedTy = RankedTensorType::get({}, updateTy.getElementType());
-      updateBody->addArgument(unrankedTy, dusOp.getLoc());
-      Value updateInBody = updateBody->addArgument(unrankedTy, dusOp.getLoc());
-      stablehlo::ReturnOp::create(builder, dusOp.getLoc(), updateInBody);
-    }
+  {
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(updateBody);
+    auto unrankedTy = RankedTensorType::get({}, updateTy.getElementType());
+    updateBody->addArgument(unrankedTy, dusOp.getLoc());
+    Value updateInBody = updateBody->addArgument(unrankedTy, dusOp.getLoc());
+    stablehlo::ReturnOp::create(builder, dusOp.getLoc(), updateInBody);
   }
   return true;
 }

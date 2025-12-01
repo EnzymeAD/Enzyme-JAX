@@ -46,14 +46,12 @@ module {
 // CHECK-NEXT:     %0 = stablehlo.slice %arg0 [0:2, 4:17:6, 0:4] : (tensor<5x20x6xf32>) -> tensor<2x3x4xf32>
 // CHECK-NEXT:     %1 = stablehlo.transpose %0, dims = [2, 1, 0] : (tensor<2x3x4xf32>) -> tensor<4x3x2xf32>
 // CHECK-NEXT:     %2 = stablehlo.reverse %1, dims = [1] : tensor<4x3x2xf32>
-// CHECK-NEXT:     %3 = stablehlo.broadcast_in_dim %2, dims = [1, 0, 3] : (tensor<4x3x2xf32>) -> tensor<3x4x1x2xf32>
-// CHECK-NEXT:     %4 = stablehlo.cosine %3 : tensor<3x4x1x2xf32>
-// CHECK-NEXT:     %5 = stablehlo.reshape %4 : (tensor<3x4x1x2xf32>) -> tensor<3x4x2xf32>
-// CHECK-NEXT:     %6 = stablehlo.transpose %5, dims = [1, 0, 2] : (tensor<3x4x2xf32>) -> tensor<4x3x2xf32>
-// CHECK-NEXT:     %7 = "stablehlo.scatter"(%cst, %c, %6) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<update_window_dims = [0, 2], inserted_window_dims = [1], scatter_dims_to_operand_dims = [0, 1, 2], index_vector_dim = 1>, unique_indices = true}> ({
+// CHECK-NEXT:     %3 = stablehlo.cosine %2 : tensor<4x3x2xf32>
+// CHECK-NEXT:     %4 = stablehlo.transpose %3, dims = [1, 0, 2] : (tensor<4x3x2xf32>) -> tensor<3x4x2xf32>
+// CHECK-NEXT:     %5 = "stablehlo.scatter"(%cst, %c, %4) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<update_window_dims = [1, 2], inserted_window_dims = [1], scatter_dims_to_operand_dims = [0, 1, 2], index_vector_dim = 1>, unique_indices = true}> ({
 // CHECK-NEXT:     ^bb0(%arg1: tensor<f32>, %arg2: tensor<f32>):
 // CHECK-NEXT:       stablehlo.return %arg2 : tensor<f32>
-// CHECK-NEXT:     }) : (tensor<6x20x5xf32>, tensor<3x3xi32>, tensor<4x3x2xf32>) -> tensor<6x20x5xf32>
-// CHECK-NEXT:     %8 = stablehlo.transpose %7, dims = [2, 1, 0] : (tensor<6x20x5xf32>) -> tensor<5x20x6xf32>
-// CHECK-NEXT:     return %8 : tensor<5x20x6xf32>
-// CHECK-NEXT: }
+// CHECK-NEXT:     }) : (tensor<6x20x5xf32>, tensor<3x3xi32>, tensor<3x4x2xf32>) -> tensor<6x20x5xf32>
+// CHECK-NEXT:     %6 = stablehlo.transpose %5, dims = [2, 1, 0] : (tensor<6x20x5xf32>) -> tensor<5x20x6xf32>
+// CHECK-NEXT:     return %6 : tensor<5x20x6xf32>
+// CHECK-NEXT:   }
