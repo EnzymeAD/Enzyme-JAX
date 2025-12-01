@@ -67,16 +67,36 @@ struct WhileLoopInfo {
   bool isConstantAcrossIterations(Value v, Value &outerValue);
 
   bool canHoistOperationFromLoop(mlir::stablehlo::DynamicSliceOp sliceOp,
-                                 int64_t sliceIndex);
+                                 SmallVectorImpl<int64_t> &dimensions);
   bool hoistOperationFromLoop(OpBuilder &builder, Value operand,
                               mlir::stablehlo::DynamicSliceOp sliceOp,
                               int64_t sliceIndex, Value &result);
+  bool hoistOperationFromLoop(OpBuilder &builder, Value operand,
+                              mlir::stablehlo::DynamicSliceOp sliceOp,
+                              SmallVectorImpl<int64_t> &dimensions,
+                              Value &result);
 
   bool canHoistOperationFromLoop(mlir::stablehlo::DynamicUpdateSliceOp dusOp,
-                                 int64_t dusIndex);
+                                 SmallVectorImpl<int64_t> &dimensions);
   bool hoistOperationFromLoop(OpBuilder &builder, Value operand, Value update,
                               mlir::stablehlo::DynamicUpdateSliceOp dusOp,
                               int64_t dusIndex, Value &result);
+  bool hoistOperationFromLoop(OpBuilder &builder, Value operand, Value update,
+                              mlir::stablehlo::DynamicUpdateSliceOp dusOp,
+                              SmallVectorImpl<int64_t> &dimensions,
+                              Value &result);
+
+  bool isConstantAcrossIterations(Value v);
+  bool isConstantAcrossIterations(Value v, Value &outerValue);
+
+  bool hoistDynamicSliceFromLoop(OpBuilder &builder, Value operand,
+                                 mlir::stablehlo::DynamicSliceOp sliceOp,
+                                 int64_t sliceIndex, Value &result);
+  bool
+  hoistDynamicUpdateSliceFromLoop(OpBuilder &builder, Value operand,
+                                  Value update,
+                                  mlir::stablehlo::DynamicUpdateSliceOp dusOp,
+                                  int64_t dusIndex, Value &result);
 
 private:
   stablehlo::WhileOp op;
