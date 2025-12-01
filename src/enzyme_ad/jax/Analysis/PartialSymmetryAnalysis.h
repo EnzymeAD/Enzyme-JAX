@@ -26,9 +26,7 @@ public:
   static PartialSymmetryAnnotation createFullySymmetric(int64_t rank);
 
   bool isSymmetric(int64_t i, int64_t j) const;
-
   int64_t getSetId(int64_t i) const { return dimensionSetIDs[i]; }
-
   int64_t getRank() const { return dimensionSetIDs.size(); }
 
   static PartialSymmetryAnnotation join(const PartialSymmetryAnnotation &lhs,
@@ -67,9 +65,8 @@ public:
   }
 
   SmallVector<SmallVector<int64_t>> getDimensionSets() const;
-
-  static PartialSymmetryAnnotation
-  fromDimensionSets(int64_t rank, ArrayRef<ArrayRef<int64_t>> dimensionSets);
+  static PartialSymmetryAnnotation createFromDimensionSets(int64_t rank, ArrayRef<ArrayRef<int64_t>> dimensionSets);
+  static std::optional<PartialSymmetryAnnotation> createFromIR(Value val);
 
   void print(raw_ostream &os) const;
 
@@ -84,11 +81,7 @@ class PartialSymmetryLattice : public dataflow::AbstractSparseLattice {
 public:
   using AbstractSparseLattice::AbstractSparseLattice;
 
-  PartialSymmetryLattice(Value v) : AbstractSparseLattice(v) {
-    if (auto type = dyn_cast<RankedTensorType>(v.getType())) {
-      value = PartialSymmetryAnnotation::createFullySymmetric(type.getRank());
-    }
-  }
+  PartialSymmetryLattice(Value v);
 
   ChangeResult join(const AbstractSparseLattice &rhs) override;
   ChangeResult join(const PartialSymmetryLattice &rhs);

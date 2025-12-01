@@ -5,6 +5,8 @@
 #include "mlir/Analysis/DataFlow/SparseAnalysis.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
+#include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/DenseMap.h"
 
@@ -387,7 +389,7 @@ PartialSymmetryAnnotation::getDimensionSets() const {
 }
 
 PartialSymmetryAnnotation
-PartialSymmetryAnnotation::fromDimensionSets(int64_t rank,
+PartialSymmetryAnnotation::createFromDimensionSets(int64_t rank,
                                              ArrayRef<ArrayRef<int64_t>> dimensionSets) {
   SmallVector<int64_t> dimensionSetIDs(rank);
   for (int64_t i = 0; i < rank; ++i) {
@@ -403,6 +405,78 @@ PartialSymmetryAnnotation::fromDimensionSets(int64_t rank,
   }
 
   return PartialSymmetryAnnotation(dimensionSetIDs);
+}
+
+std::optional<PartialSymmetryAnnotation>
+PartialSymmetryAnnotation::createFromIR(Value val) {
+  auto blockArg = dyn_cast<BlockArgument>(val);
+  if (blockArg) {
+    auto op = blockArg.getOwner()->getParentOp();
+    auto funcOpInterface = dyn_cast<FunctionOpInterface>(op);
+    if (!funcOpInterface) {
+      return std::nullopt;
+    }
+
+    auto argAttrs = funcOpInterface.getArgAttrs(blockArg.getArgNumber());
+    for (auto attr : argAttrs) {
+      if (attr.getName() == "enzymexla.partial_symmetry") {
+        auto arrayAttr = dyn_cast<ArrayAttr>(attr.getValue());
+        if (!arrayAttr || arrayAttr.empty()) {
+          continue;
+        }
+        
+        auto partialSymmetryAttr = dyn_cast<enzymexla::PartialSymmetryAnalysisResultAttr>(
+            arrayAttr[0]);
+        
+        if (!partialSymmetryAttr) {
+          continue;
+        }
+        
+        auto dimensionSetAttrs = partialSymmetryAttr.getValues();
+        auto rank = cast<RankedTensorType>(val.getType()).getRank();
+
+        SmallVector<ArrayRef<int64_t>> dimensionSets;
+        for (auto dimensionSetAttr : dimensionSetAttrs) {
+          auto dims = dimensionSetAttr.getDimensions().asArrayRef();
+          dimensionSets.push_back(dims);
+        }
+
+        return PartialSymmetryAnnotation::createFromDimensionSets(rank, dimensionSets);
+      }
+    }
+    return std::nullopt;
+  }
+
+  auto op = val.getDefiningOp();
+  if (!op)
+    return std::nullopt;
+
+  auto arrayAttr =
+      op->getAttrOfType<ArrayAttr>("enzymexla.partial_symmetry");
+  if (!arrayAttr || arrayAttr.empty())
+    return std::nullopt;
+
+  auto opResult = dyn_cast<OpResult>(val);
+  if (!opResult)
+    return std::nullopt;
+
+  auto resultNumber = opResult.getResultNumber();
+
+  auto partialSymmetryAttr = dyn_cast<enzymexla::PartialSymmetryAnalysisResultAttr>(
+      arrayAttr[resultNumber]);
+  if (!partialSymmetryAttr)
+    return std::nullopt;
+
+  auto dimensionSetAttrs = partialSymmetryAttr.getValues();
+  auto rank = cast<RankedTensorType>(val.getType()).getRank();
+
+  SmallVector<ArrayRef<int64_t>> dimensionSets;
+  for (auto dimensionSetAttr : dimensionSetAttrs) {
+    auto dims = dimensionSetAttr.getDimensions().asArrayRef();
+    dimensionSets.push_back(dims);
+  }
+
+  return PartialSymmetryAnnotation::createFromDimensionSets(rank, dimensionSets);
 }
 
 void PartialSymmetryAnnotation::print(raw_ostream &os) const {
@@ -430,6 +504,19 @@ void PartialSymmetryAnnotation::print(raw_ostream &os) const {
 // PartialSymmetryLattice Implementation
 //===----------------------------------------------------------------------===//
 
+PartialSymmetryLattice::PartialSymmetryLattice(Value v) : AbstractSparseLattice(v) {
+  if (auto type = dyn_cast<RankedTensorType>(v.getType())) {
+    // Trust existing IR annotations if present.
+    auto annotation = PartialSymmetryAnnotation::createFromIR(v);
+    if (annotation.has_value()) {
+      value = annotation.value();
+      return;
+    }
+    
+    value = PartialSymmetryAnnotation::createFullySymmetric(type.getRank());
+  }
+}
+
 ChangeResult PartialSymmetryLattice::join(const AbstractSparseLattice &rhs) {
   const auto *rhsStruct =
       reinterpret_cast<const PartialSymmetryLattice *>(&rhs);
@@ -452,6 +539,12 @@ void PartialSymmetryLattice::print(raw_ostream &os) const { value.print(os); }
 //===----------------------------------------------------------------------===//
 
 void PartialSymmetryAnalysis::setToEntryState(PartialSymmetryLattice *lattice) {
+  auto annotation = PartialSymmetryAnnotation::createFromIR(lattice->getAnchor());
+  if (annotation.has_value()) {
+    lattice->setValue(annotation.value());
+    return;
+  }
+  
   lattice->setValue(PartialSymmetryAnnotation::createNotSymmetric(
       lattice->getValue().getRank()));
 }

@@ -39,16 +39,14 @@ func.func @test_add_generate_symmetry(%arg0: tensor<3x2x3xf32>) -> tensor<3x2x3x
 // CHECK-NEXT: return %1 : tensor<3x2x3xf32>
 // CHECK-NEXT: }
 
-func.func @test_dot_propagate() -> tensor<2x2xf32> {
-  %cst0 = stablehlo.constant dense<[[[1.0, 2.0, 3.0], [2.0, 3.0, 4.0]], [[2.0, 3.0, 4.0], [3.0, 4.0, 5.0]]]> : tensor<2x2x3xf32>
+func.func @test_dot_propagate(%arg0: tensor<2x2x3xf32> {enzymexla.partial_symmetry = [#enzymexla.partial_symmetry<<[0, 1]>>]}) -> tensor<2x2xf32> {
   %cst1 = stablehlo.constant dense<[[[1.0, 2.0], [2.0, 3.0]], [[2.0, 3.0], [3.0, 4.0]], [[2.0, 3.0], [3.0, 4.0]]]> : tensor<3x2x2xf32>
-  %0 = stablehlo.dot_general %cst0, %cst1, batching_dims = [0, 1] x [1, 2], contracting_dims = [2] x [0] : (tensor<2x2x3xf32>, tensor<3x2x2xf32>) -> tensor<2x2xf32>
+  %0 = stablehlo.dot_general %arg0, %cst1, batching_dims = [0, 1] x [1, 2], contracting_dims = [2] x [0] : (tensor<2x2x3xf32>, tensor<3x2x2xf32>) -> tensor<2x2xf32>
   return %0 : tensor<2x2xf32>
 }
-// CHECK: func.func @test_dot_propagate() -> tensor<2x2xf32> {
-// CHECK-NEXT: %cst = stablehlo.constant {enzymexla.partial_symmetry = [#enzymexla.partial_symmetry<<[0, 1]>>]} dense<{{.*}}> : tensor<2x2x3xf32>
-// CHECK-NEXT: %cst_0 = stablehlo.constant {enzymexla.partial_symmetry = [#enzymexla.partial_symmetry<<[1, 2]>>]} dense<{{.*}}> : tensor<3x2x2xf32>
-// CHECK-NEXT: %0 = stablehlo.dot_general %cst, %cst_0, batching_dims = [0, 1] x [1, 2], contracting_dims = [2] x [0] {enzymexla.partial_symmetry = [#enzymexla.partial_symmetry<<[0, 1]>>]} : (tensor<2x2x3xf32>, tensor<3x2x2xf32>) -> tensor<2x2xf32>
+// CHECK: func.func @test_dot_propagate(%arg0: tensor<2x2x3xf32> {enzymexla.partial_symmetry = [#enzymexla.partial_symmetry<<[0, 1]>>]}) -> tensor<2x2xf32> {
+// CHECK-NEXT: %cst = stablehlo.constant {enzymexla.partial_symmetry = [#enzymexla.partial_symmetry<<[1, 2]>>]} dense<{{.*}}> : tensor<3x2x2xf32>
+// CHECK-NEXT: %0 = stablehlo.dot_general %arg0, %cst, batching_dims = [0, 1] x [1, 2], contracting_dims = [2] x [0] {enzymexla.partial_symmetry = [#enzymexla.partial_symmetry<<[0, 1]>>]} : (tensor<2x2x3xf32>, tensor<3x2x2xf32>) -> tensor<2x2xf32>
 // CHECK-NEXT: return %0 : tensor<2x2xf32>
 // CHECK-NEXT: }
 
