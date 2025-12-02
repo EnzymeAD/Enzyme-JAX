@@ -156,8 +156,9 @@ PartialSymmetryAnnotation PartialSymmetryAnnotation::propagateBroadcastInDim(
       int64_t inputDim = outputToInput[outputDim];
       result.dimensionSetIDs[outputDim] = annotation.getSetId(inputDim);
     } else {
-      // broadcasted dimension => new ID
-      result.dimensionSetIDs[outputDim] = nextSetId++;
+      // result is constant in each broadcasted dimension,
+      // so they are partially symmetric with each other
+      result.dimensionSetIDs[outputDim] = nextSetId;
     }
   }
 

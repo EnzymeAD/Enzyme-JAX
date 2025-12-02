@@ -61,3 +61,20 @@ func.func @test_dot_general_generate_symmetry(%arg0: tensor<3x3x3xf32>) -> tenso
 // CHECK-NEXT: return %1 : tensor<3x3x3xf32>
 // CHECK-NEXT: }
 
+func.func @test_scalar_multiply(%arg0: tensor<2x2xf32>) -> tensor<2x2xf32> {
+  %cst = stablehlo.constant dense<9.900000e-01> : tensor<f32>
+  %0 = stablehlo.transpose %arg0, dims = [1, 0] : (tensor<2x2xf32>) -> tensor<2x2xf32>
+  %1 = stablehlo.add %0, %arg0 : tensor<2x2xf32>
+  %2 = stablehlo.broadcast_in_dim %cst, dims = [] : (tensor<f32>) -> tensor<2x2xf32>
+  %3 = stablehlo.multiply %1, %2 : tensor<2x2xf32>
+  return %3 : tensor<2x2xf32>
+}
+// CHECK: func.func @test_scalar_multiply(%arg0: tensor<2x2xf32>) -> tensor<2x2xf32> {
+// CHECK-NEXT: %cst = stablehlo.constant dense<9.900000e-01> : tensor<f32>
+// CHECK-NEXT: %0 = stablehlo.transpose %arg0, dims = [1, 0] : (tensor<2x2xf32>) -> tensor<2x2xf32>
+// CHECK-NEXT: %1 = stablehlo.add %0, %arg0 {enzymexla.partial_symmetry = [#enzymexla.partial_symmetry<<[0, 1]>>]} : tensor<2x2xf32>
+// CHECK-NEXT: %2 = stablehlo.broadcast_in_dim %cst, dims = [] {enzymexla.partial_symmetry = [#enzymexla.partial_symmetry<<[0, 1]>>]} : (tensor<f32>) -> tensor<2x2xf32>
+// CHECK-NEXT: %3 = stablehlo.multiply %1, %2 {enzymexla.partial_symmetry = [#enzymexla.partial_symmetry<<[0, 1]>>]} : tensor<2x2xf32>
+// CHECK-NEXT: return %3 : tensor<2x2xf32>
+// CHECK-NEXT: }
+
