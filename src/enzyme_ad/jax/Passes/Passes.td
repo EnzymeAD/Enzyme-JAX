@@ -1077,4 +1077,11 @@ def EnzymeBatchToStableHLOPass : Pass<"enzyme-batch-to-stablehlo"> {
   ];
 }
 
+def WhileLoopOutsideValuesAddToArgumentListPass : Pass<
+    "while-loop-outside-values-add-to-argument-list"> {
+  let dependentDialects = [
+    "stablehlo::StablehloDialect"
+  ];
+}
+
 #endif
