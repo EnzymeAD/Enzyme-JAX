@@ -40,6 +40,12 @@ def benchmark_symmetry():
         a = x.T + x
         return jnp.dot(a, a) + jnp.dot(a, a.T) + jnp.dot(a.T, a)
         
+    def reduce_rows(x):
+        return jnp.sum(x, axis=0)
+
+    def reduce_cols(x):
+        return jnp.sum(x, axis=1)
+
     passes = "inline{default-pipeline=canonicalize max-iterations=4}, canonicalize, cse, partial-symmetry-annotate, enzyme-hlo-generate-td{patterns=transpose_partial_symmetry_simplify}, transform-interpreter, enzyme-hlo-remove-transform"
 
     pipeline_debug = JaXPipeline(passes, keep_enzyme_attributes=True)
@@ -51,6 +57,8 @@ def benchmark_symmetry():
         ("Chained (10x)", chained_symmetric_op, 2048),
         ("Interleaved (10x)", interleaved_symmetric_op, 2048),
         ("Dot CSE", dot_cse, 1024),
+        ("Reduce rows", reduce_rows, 16384),
+        ("Reduce cols", reduce_cols, 16384),
     ]
     
     # Collect MLIR file paths to print at the end
