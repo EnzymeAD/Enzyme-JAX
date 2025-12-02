@@ -21758,69 +21758,13 @@ struct FactorScalarsInDotGeneral final
     if (!canRewriteOperation(op, lhs, rhs))
       return failure();
 
-    // From v, extract scalar * tensor, and return true if the operation is not
-    // used elsewhere.
-    auto extractMul = [&](Value v, Value &scalar, Value &z) -> bool {
-      auto mulOp = v.getDefiningOp<stablehlo::MulOp>();
-      if (!mulOp) { // set default scalar to 1
-        scalar = nullptr;
-        z = v;
-        return true;
-      }
-      if (!isOnlyUsedInOperation(mulOp, op)) {
-        return false;
-      }
-
-      Value mLhs = mulOp.getLhs();
-      Value mRhs = mulOp.getRhs();
-
-      SplatElementsAttr splatAttr;
-      if (matchPattern(mLhs, m_Constant(&splatAttr))) {
-        auto mLhsType = cast<RankedTensorType>(mLhs.getType());
-        auto scalarType = RankedTensorType::get({}, mLhsType.getElementType());
-        scalar =
-            stablehlo::ConstantOp::create(rewriter, op.getLoc(), scalarType,
-                                          splatAttr.resizeSplat(scalarType));
-        z = mRhs;
-      } else if (matchPattern(mRhs, m_Constant(&splatAttr))) {
-        auto mRhsType = cast<RankedTensorType>(mRhs.getType());
-        auto scalarType = RankedTensorType::get({}, mRhsType.getElementType());
-        scalar =
-            stablehlo::ConstantOp::create(rewriter, op.getLoc(), scalarType,
-                                          splatAttr.resizeSplat(scalarType));
-        z = mLhs;
-      } else if (auto lhsBcast =
-                     mLhs.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
-        if (cast<RankedTensorType>(lhsBcast.getOperand().getType()).getRank() ==
-            0) {
-          scalar = lhsBcast.getOperand();
-          z = mRhs;
-        } else {
-          scalar = nullptr;
-          return false;
-        }
-      } else if (auto rhsBcast =
-                     mRhs.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
-        if (cast<RankedTensorType>(rhsBcast.getOperand().getType()).getRank() ==
-            0) {
-          scalar = rhsBcast.getOperand();
-          z = mLhs;
-        } else {
-          scalar = nullptr;
-          return false;
-        }
-      } else { // If both are non-scalar, treat whole v as Z, no scalar
-        scalar = nullptr;
-        z = v;
-      }
-      return true;
-    };
-
     Value lhsScalar, lhsZ;
     Value rhsScalar, rhsZ;
 
-    auto lhsExtracted = extractMul(lhs, lhsScalar, lhsZ);
-    auto rhsExtracted = extractMul(rhs, rhsScalar, rhsZ);
+    auto lhsExtracted = stablehlo::extractMultiplicationFactor(
+        lhs, lhsScalar, lhsZ, op, rewriter);
+    auto rhsExtracted = stablehlo::extractMultiplicationFactor(
+        rhs, rhsScalar, rhsZ, op, rewriter);
 
     assert(lhsExtracted && rhsExtracted);
 
@@ -21856,27 +21800,16 @@ private:
         (rhsMulOp && !isOnlyUsedInOperation(rhsMulOp, op)))
       return false; // better to not do anything
 
-    auto isScalar = [&](Value v) -> bool {
-      SplatElementsAttr splatAttr;
-      if (matchPattern(v, m_Constant(&splatAttr)))
-        return true;
-
-      auto bcastOp = v.getDefiningOp<stablehlo::BroadcastInDimOp>();
-      if (bcastOp &&
-          cast<RankedTensorType>(bcastOp.getOperand().getType()).getRank() == 0)
-        return true;
-
-      return false;
-    };
-
     bool lhsHasScalar = false;
     if (lhsMulOp) {
-      lhsHasScalar = isScalar(lhsMulOp.getLhs()) || isScalar(lhsMulOp.getRhs());
+      lhsHasScalar =
+          isScalarValue(lhsMulOp.getLhs()) || isScalarValue(lhsMulOp.getRhs());
     }
 
     bool rhsHasScalar = false;
     if (rhsMulOp) {
-      rhsHasScalar = isScalar(rhsMulOp.getLhs()) || isScalar(rhsMulOp.getRhs());
+      rhsHasScalar =
+          isScalarValue(rhsMulOp.getLhs()) || isScalarValue(rhsMulOp.getRhs());
     }
 
     return lhsHasScalar || rhsHasScalar;
@@ -23871,20 +23804,12 @@ private:
 // operations and converts them to dot_general(a, op(b, c)) or
 // dot_general(op(b, c), a)
 template <typename OpTy>
-LogicalResult dotGeneralDistributiveSimplify(OpTy op,
-                                             PatternRewriter &rewriter) {
+LogicalResult
+dotGeneralDistributiveSimplify(OpTy op, stablehlo::DotGeneralOp lhsDotGeneralOp,
+                               stablehlo::DotGeneralOp rhsDotGeneralOp,
+                               PatternRewriter &rewriter) {
   // TODO: generalize this to handle cases where the dot general dim numbers are
   // different but the ops can still be distributed
-  if (op.getNumOperands() != 2)
-    return failure();
-
-  auto lhsDotGeneralOp =
-      op.getLhs().template getDefiningOp<stablehlo::DotGeneralOp>();
-  auto rhsDotGeneralOp =
-      op.getRhs().template getDefiningOp<stablehlo::DotGeneralOp>();
-  if (!lhsDotGeneralOp || !rhsDotGeneralOp)
-    return failure();
-
   if (!OperationEquivalence::isEquivalentTo(
           lhsDotGeneralOp, rhsDotGeneralOp,
           OperationEquivalence::ignoreValueEquivalence, nullptr,
@@ -23916,6 +23841,87 @@ LogicalResult dotGeneralDistributiveSimplify(OpTy op,
         op, TypeRange{op.getType()},
         ValueRange{newDotLhs.getResult(), rhsDotGeneralRhs},
         lhsDotGeneralOp->getAttrs());
+    return success();
+  }
+
+  return failure();
+}
+
+template <typename OpTy>
+LogicalResult dotGeneralDistributiveSimplify(OpTy op,
+                                             PatternRewriter &rewriter) {
+  if (op.getNumOperands() != 2)
+    return failure();
+
+  auto lhs = op.getLhs(), rhs = op.getRhs();
+  auto lhsDotGeneralOp = lhs.template getDefiningOp<stablehlo::DotGeneralOp>();
+  auto rhsDotGeneralOp = rhs.template getDefiningOp<stablehlo::DotGeneralOp>();
+
+  if (lhsDotGeneralOp && !isOnlyUsedInOperation(lhsDotGeneralOp, op))
+    return failure();
+  if (rhsDotGeneralOp && !isOnlyUsedInOperation(rhsDotGeneralOp, op))
+    return failure();
+
+  if (lhsDotGeneralOp && rhsDotGeneralOp)
+    return dotGeneralDistributiveSimplify<OpTy>(op, lhsDotGeneralOp,
+                                                rhsDotGeneralOp, rewriter);
+
+  Value newLhs, newRhs;
+  stablehlo::DotGeneralOp dotGeneralOp;
+
+  auto constructOtherOp = [&](Value other, Value scalar, bool scalarIsLhs) {
+    auto bcastedScalar = stablehlo::BroadcastInDimOp::create(
+        rewriter, op.getLoc(), other.getType(), scalar,
+        rewriter.getDenseI64ArrayAttr({}));
+    auto lhs = scalarIsLhs ? bcastedScalar : other;
+    auto rhs = scalarIsLhs ? other : bcastedScalar;
+    return OpTy::create(rewriter, op.getLoc(), lhs, rhs);
+  };
+
+  if (lhsDotGeneralOp) {
+    Value scalar, other;
+    dotGeneralOp = lhsDotGeneralOp;
+    if (extractMultiplicationFactor(rhs, other, op, rewriter)) {
+      if (other == lhsDotGeneralOp.getLhs()) {
+        extractMultiplicationFactor(rhs, scalar, other, op, rewriter);
+
+        // op(X × Y, a * X) -> X × op(Y, a)
+        newLhs = lhsDotGeneralOp.getLhs();
+        newRhs = constructOtherOp(lhsDotGeneralOp.getRhs(), scalar, false);
+      } else if (other == lhsDotGeneralOp.getRhs()) {
+        extractMultiplicationFactor(rhs, scalar, other, op, rewriter);
+
+        // op(Y × X, a * X) -> op(Y, a) × X
+        newLhs = constructOtherOp(lhsDotGeneralOp.getLhs(), scalar, false);
+        newRhs = lhsDotGeneralOp.getRhs();
+      }
+    }
+  }
+
+  if (rhsDotGeneralOp) {
+    Value scalar, other;
+    dotGeneralOp = rhsDotGeneralOp;
+    if (extractMultiplicationFactor(lhs, other, op, rewriter)) {
+      if (other == rhsDotGeneralOp.getLhs()) {
+        extractMultiplicationFactor(lhs, scalar, other, op, rewriter);
+
+        // op(a * X, X × Y) -> X × op(a, Y)
+        newLhs = rhsDotGeneralOp.getLhs();
+        newRhs = constructOtherOp(rhsDotGeneralOp.getRhs(), scalar, true);
+      } else if (other == rhsDotGeneralOp.getRhs()) {
+        extractMultiplicationFactor(lhs, scalar, other, op, rewriter);
+
+        // op(a * X, Y × X) -> op(a, Y) × X
+        newLhs = constructOtherOp(rhsDotGeneralOp.getLhs(), scalar, true);
+        newRhs = rhsDotGeneralOp.getRhs();
+      }
+    }
+  }
+
+  if (newLhs && newRhs) {
+    rewriter.replaceOpWithNewOp<stablehlo::DotGeneralOp>(
+        op, TypeRange{op.getType()}, ValueRange{newLhs, newRhs},
+        dotGeneralOp->getAttrs());
     return success();
   }
 
@@ -25871,6 +25877,90 @@ private:
   }
 };
 
+struct ReduceMulBroadcastToDotGeneral
+    : public CheckedOpRewritePattern<stablehlo::ReduceOp,
+                                     ReduceMulBroadcastToDotGeneral> {
+  using CheckedOpRewritePattern<
+      stablehlo::ReduceOp,
+      ReduceMulBroadcastToDotGeneral>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op.getInputs().size() != 1 || op.getInitValues().size() != 1) {
+      return rewriter.notifyMatchFailure(
+          op, "only single-operand single-init reduce is supported");
+    }
+
+    auto dims = op.getDimensions();
+
+    Value input = op.getInputs()[0];
+    auto TT = cast<TensorType>(input.getType());
+    auto OT = cast<TensorType>(op.getResultTypes()[0]);
+
+    if (OT.getRank() != 2 || dims.size() != 1)
+      return failure();
+
+    auto checkCommonReduce = mlir::stablehlo::CheckCommonReduceOp(op);
+    if (!checkCommonReduce.isAddReduce ||
+        !matchPattern(op.getInitValues()[0], m_AnyZeroFloat()))
+      return rewriter.notifyMatchFailure(op, "reduction is not add");
+
+    auto mul = input.getDefiningOp<stablehlo::MulOp>();
+    if (!mul)
+      return rewriter.notifyMatchFailure(op, "input source is not a mul op");
+
+    Value mulLhs = mul.getLhs(), mulRhs = mul.getRhs();
+    auto lhsBdim = mulLhs.getDefiningOp<stablehlo::BroadcastInDimOp>(),
+         rhsBdim = mulRhs.getDefiningOp<stablehlo::BroadcastInDimOp>();
+
+    if (!lhsBdim || !rhsBdim)
+      return failure();
+
+    auto prepareInputForDotGeneral =
+        [&](stablehlo::BroadcastInDimOp bdim) -> Value {
+      // transpose dims: [0, 2] -> [0, 1]
+      // transpose dims: [1, 0] -> [1, 0]
+      auto OT = cast<TensorType>(bdim.getResult().getType());
+
+      auto bdims = bdim.getBroadcastDimensions();
+      SmallVector<int64_t> transposeDims(bdims.size(), -1);
+
+      int64_t ncdims = 0;
+      for (int i = 0; i < OT.getRank(); i++) {
+        bool inBDims = false;
+        for (auto [j, dim] : llvm::enumerate(bdims)) {
+          if (dim == i) {
+            inBDims = true;
+            transposeDims[j] = i - ncdims;
+            break;
+          }
+        }
+        if (!inBDims) {
+          ncdims++;
+        }
+      }
+
+      Value prepared = stablehlo::TransposeOp::create(
+          rewriter, bdim.getLoc(), bdim.getOperand(), transposeDims);
+
+      return prepared;
+    };
+
+    auto lhs = prepareInputForDotGeneral(lhsBdim);
+    auto rhs = prepareInputForDotGeneral(rhsBdim);
+
+    auto ndim = stablehlo::DotDimensionNumbersAttr::get(
+        op.getContext(), {}, {}, op.getDimensions(), op.getDimensions());
+
+    auto dg = DotGeneralOp::create(rewriter, op.getLoc(), OT, lhs, rhs, ndim,
+                                   /* precision_config */ nullptr,
+                                   /*algorithm*/ nullptr);
+    rewriter.replaceAllOpUsesWith(op, dg.getResult());
+
+    return success();
+  }
+};
+
 // currently limited to non-batched dot_general
 struct DotGeneralToSyrk
     : public CheckedOpRewritePattern<stablehlo::DotGeneralOp,
@@ -25914,12 +26004,25 @@ struct DotGeneralToSyrk
     Value syrkInput;
     enzymexla::LapackTranspose lapackTranspose;
 
-    if (lhs == rhs && lhsContractingDim == rhsContractingDim) {
-      syrkInput = lhs;
-      if (lhsContractingDim == 1) {
-        lapackTranspose = enzymexla::LapackTranspose::none;
+    if (lhs == rhs) {
+      if (lhsContractingDim == rhsContractingDim) {
+        syrkInput = lhs;
+        if (lhsContractingDim == 1) {
+          lapackTranspose = enzymexla::LapackTranspose::none;
+        } else {
+          lapackTranspose = enzymexla::LapackTranspose::transpose;
+        }
       } else {
-        lapackTranspose = enzymexla::LapackTranspose::transpose;
+        // if lhsContractingDim != rhsContractingDim, then we can fuse iff
+        // lhs/rhs is a symmetric matrix
+        if (canApplySymmetricPattern(lhs, rewriter)) {
+          syrkInput = lhs;
+          if (lhsContractingDim == 1) {
+            lapackTranspose = enzymexla::LapackTranspose::none;
+          } else {
+            lapackTranspose = enzymexla::LapackTranspose::transpose;
+          }
+        }
       }
     }
 
@@ -26034,6 +26137,9 @@ struct FuseMulIntoSyrk
       return failure();
     }
 
+    if (!isOnlyUsedInOperation(syrkOp, op))
+      return failure();
+
     Value scalarVal =
         stablehlo::getScalarValue(other.getDefiningOp(), rewriter);
     if (!scalarVal)
@@ -26074,6 +26180,9 @@ struct FuseAddIntoSyrk
     } else {
       return failure();
     }
+
+    if (!isOnlyUsedInOperation(syrkOp, op))
+      return failure();
 
     // we can fuse this addition iff the other operand is a symmetric matrix
     if (!canApplySymmetricPattern(other, rewriter))
@@ -26736,6 +26845,7 @@ struct EnzymeHLOOptPass
         ElementwiseWrap,
         ElementwiseExtend,
         SubtractMultiplyConstToAddMulConst,
+        ReduceMulBroadcastToDotGeneral,
         DotGeneralDistributiveSimplify<stablehlo::AddOp>,
         DotGeneralDistributiveSimplify<stablehlo::SubtractOp>,
         TrivialReduceWindowToReduceOp,
