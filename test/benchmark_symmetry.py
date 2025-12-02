@@ -30,13 +30,13 @@ def benchmark_symmetry():
 
     def chained_symmetric_op(x):
         a = x.T + x
-        for _ in range(2):
+        for _ in range(10):
             a = a.T + a
         return a
 
     def interleaved_symmetric_op(x):
         a = x.T + x
-        for _ in range(2):
+        for _ in range(10):
             a = a.T * 0.99 + a * 0.01
         return a
 
