@@ -20,10 +20,6 @@ def benchmark_symmetry():
     tmp_dir = os.path.join(".", "tmp", f"enzyme_mlir")
     os.makedirs(tmp_dir, exist_ok=True)
     
-    N = 200
-    key = jax.random.PRNGKey(0)
-    X = jax.device_put(jax.random.normal(key, (N, N)))
-    
     def single_symmetric_op(x):
         a = x.T + x
         return a + a.T
@@ -44,26 +40,29 @@ def benchmark_symmetry():
         a = x.T + x
         return jnp.dot(a, a) + jnp.dot(a, a.T) + jnp.dot(a.T, a)
         
-    passes = "inline{default-pipeline=canonicalize max-iterations=4}, canonicalize, cse, partial-symmetry-annotate, enzyme-hlo-remove-transform"
+    passes = "inline{default-pipeline=canonicalize max-iterations=4}, canonicalize, cse, partial-symmetry-annotate, enzyme-hlo-generate-td{patterns=transpose_partial_symmetry_simplify}, transform-interpreter, enzyme-hlo-remove-transform"
 
     pipeline_debug = JaXPipeline(passes, keep_enzyme_attributes=True)
     pipeline = JaXPipeline(passes)
     
     NUM_ITER = 100
     tests = [
-        ("Single op", single_symmetric_op),
-        ("Chained (10x)", chained_symmetric_op),
-        ("Interleaved (10x)", interleaved_symmetric_op),
-        ("Dot CSE", dot_cse),
+        ("Single op", single_symmetric_op, 2048),
+        ("Chained (10x)", chained_symmetric_op, 2048),
+        ("Interleaved (10x)", interleaved_symmetric_op, 2048),
+        ("Dot CSE", dot_cse, 1024),
     ]
     
     # Collect MLIR file paths to print at the end
     mlir_files = []
     
-    print(f"{'Test':<20} {'Transposes':<15} {'Baseline':<12} {'Optimized':<12} {'Speedup':<8}")
-    print("-" * 70)
+    print(f"{'Test':<20} {'N':<6} {'Transposes':<15} {'Baseline':<12} {'Optimized':<12} {'Speedup':<8}")
+    print("-" * 76)
     
-    for name, fn in tests:
+    for name, fn, N in tests:
+        # Construct input X based on N
+        key = jax.random.PRNGKey(0)
+        X = jax.device_put(jax.random.normal(key, (N, N)))
         # Count transposes
         ir_buf = io.StringIO()
         _ = jax.jit(enzyme_jax_ir(pipeline_options=JaXPipeline(""), 
@@ -114,7 +113,7 @@ def benchmark_symmetry():
         opt_ms = (timeit.default_timer() - start) / NUM_ITER * 1000
         
         speedup = baseline_ms / opt_ms
-        print(f"{name:<20} {base_t:>2} -> {opt_t:<2} (-{base_t-opt_t})  {baseline_ms:>8.2f} ms  {opt_ms:>8.2f} ms  {speedup:.2f}x")
+        print(f"{name:<20} {N:>6} {base_t:>2} -> {opt_t:<2} (-{base_t-opt_t})  {baseline_ms:>8.2f} ms  {opt_ms:>8.2f} ms  {speedup:.2f}x")
     
     # Print MLIR file paths after the table
     print("\n" + "=" * 70)
