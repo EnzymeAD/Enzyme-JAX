@@ -85,8 +85,9 @@ class XLAPipeline:
 
 
 class JaXPipeline:
-    def __init__(self, passes=""):
+    def __init__(self, passes="", keep_enzyme_attributes=False):
         self.passes = passes
+        self.keep_enzyme_attributes = keep_enzyme_attributes
 
     def pass_pipeline(self):
         return self.passes
@@ -99,7 +100,7 @@ class JaXPipeline:
 
     def ad_level(self):
         return self.passes.count("enzyme-wrap")
-
+    
 
 def optimization_passes(
     *,
@@ -1037,8 +1038,11 @@ def _enzyme_primal_lowering(
                 fns.append(f.sym_name.value)
 
             if len(pass_pipeline) > 0:
+                drop_attrs_option = ""
+                if pipeline_options.keep_enzyme_attributes:
+                    drop_attrs_option = "{enzymexla-analysis-result=false}"
                 pass_pipeline = (
-                    pass_pipeline + ",tensor-empty-raise,drop-unsupported-attributes"
+                    pass_pipeline + ",tensor-empty-raise,drop-unsupported-attributes" + drop_attrs_option
                 )
 
             try:
