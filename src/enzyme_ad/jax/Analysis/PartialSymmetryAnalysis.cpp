@@ -593,20 +593,23 @@ LogicalResult PartialSymmetryAnalysis::visitOperation(
       // Check for aliasing between LHS and RHS (up to transpose)
       bool rhsAliasesLhs = false;
       SmallVector<int64_t> rhsDimToLhs;
-      if (auto lhsT = lhs.getDefiningOp<stablehlo::TransposeOp>()) {
-        if (rhs == lhsT.getOperand()) {
-          rhsDimToLhs.assign(lhsT.getPermutation().begin(),
-                             lhsT.getPermutation().end());
-          rhsAliasesLhs = true;
-        }
-      }
-      if (auto rhsT = rhs.getDefiningOp<stablehlo::TransposeOp>()) {
-        if (lhs == rhsT.getOperand()) {
-          rhsDimToLhs.resize(rhsT.getPermutation().size());
-          for (int64_t i = 0; i < (int64_t)rhsT.getPermutation().size(); ++i)
-            rhsDimToLhs[rhsT.getPermutation()[i]] = i;
-          rhsAliasesLhs = true;
-        }
+      if (lhs == rhs) {
+        auto lhsType = cast<RankedTensorType>(lhs.getType());
+        rhsDimToLhs.resize(lhsType.getRank());
+        for (int64_t i = 0; i < lhsType.getRank(); ++i)
+          rhsDimToLhs[i] = i; // Identity mapping
+        rhsAliasesLhs = true;
+      } else if (auto lhsT = lhs.getDefiningOp<stablehlo::TransposeOp>();
+                 lhsT && rhs == lhsT.getOperand()) {
+        rhsDimToLhs.assign(lhsT.getPermutation().begin(),
+                           lhsT.getPermutation().end());
+        rhsAliasesLhs = true;
+      } else if (auto rhsT = rhs.getDefiningOp<stablehlo::TransposeOp>();
+                 rhsT && lhs == rhsT.getOperand()) {
+        rhsDimToLhs.resize(rhsT.getPermutation().size());
+        for (int64_t i = 0; i < (int64_t)rhsT.getPermutation().size(); ++i)
+          rhsDimToLhs[rhsT.getPermutation()[i]] = i;
+        rhsAliasesLhs = true;
       }
 
       // Propagate symmetry through dotGeneral
@@ -634,23 +637,26 @@ LogicalResult PartialSymmetryAnalysis::visitOperation(
         auto lhs = op->getOperand(0);
         auto rhs = op->getOperand(1);
 
+        // Check for aliasing between LHS and RHS (up to transpose)
         bool rhsAliasesLhs = false;
         SmallVector<int64_t> rhsDimToLhs;
-
-        if (auto lhsT = lhs.getDefiningOp<stablehlo::TransposeOp>()) {
-          if (rhs == lhsT.getOperand()) {
-            rhsDimToLhs.assign(lhsT.getPermutation().begin(),
-                               lhsT.getPermutation().end());
-            rhsAliasesLhs = true;
-          }
-        }
-        if (auto rhsT = rhs.getDefiningOp<stablehlo::TransposeOp>()) {
-          if (lhs == rhsT.getOperand()) {
-            rhsDimToLhs.resize(rhsT.getPermutation().size());
-            for (int64_t i = 0; i < (int64_t)rhsT.getPermutation().size(); ++i)
-              rhsDimToLhs[rhsT.getPermutation()[i]] = i;
-            rhsAliasesLhs = true;
-          }
+        if (lhs == rhs) {
+          auto lhsType = cast<RankedTensorType>(lhs.getType());
+          rhsDimToLhs.resize(lhsType.getRank());
+          for (int64_t i = 0; i < lhsType.getRank(); ++i)
+            rhsDimToLhs[i] = i; // Identity mapping
+          rhsAliasesLhs = true;
+        } else if (auto lhsT = lhs.getDefiningOp<stablehlo::TransposeOp>();
+                   lhsT && rhs == lhsT.getOperand()) {
+          rhsDimToLhs.assign(lhsT.getPermutation().begin(),
+                             lhsT.getPermutation().end());
+          rhsAliasesLhs = true;
+        } else if (auto rhsT = rhs.getDefiningOp<stablehlo::TransposeOp>();
+                   rhsT && lhs == rhsT.getOperand()) {
+          rhsDimToLhs.resize(rhsT.getPermutation().size());
+          for (int64_t i = 0; i < (int64_t)rhsT.getPermutation().size(); ++i)
+            rhsDimToLhs[rhsT.getPermutation()[i]] = i;
+          rhsAliasesLhs = true;
         }
 
         propagatedAnnotation[0] =
