@@ -20,7 +20,7 @@ def benchmark_symmetry():
     tmp_dir = os.path.join(".", "tmp", f"enzyme_mlir")
     os.makedirs(tmp_dir, exist_ok=True)
     
-    N = 2048
+    N = 200
     key = jax.random.PRNGKey(0)
     X = jax.device_put(jax.random.normal(key, (N, N)))
     
@@ -40,21 +40,21 @@ def benchmark_symmetry():
             a = a.T * 0.99 + a * 0.01
         return a
 
-    pipeline_debug = JaXPipeline(
-        "inline{default-pipeline=canonicalize max-iterations=4},"
-        "partial-symmetry-annotate,enzyme-hlo-generate-td{patterns=transpose_partial_symmetry_simplify},transform-interpreter,enzyme-hlo-remove-transform"
-    , keep_enzyme_attributes=True)
+    def dot_cse(x):
+        a = x.T + x
+        return jnp.dot(a, a) + jnp.dot(a, a.T) + jnp.dot(a.T, a)
+        
+    passes = "inline{default-pipeline=canonicalize max-iterations=4}, canonicalize, cse, partial-symmetry-annotate, enzyme-hlo-remove-transform"
 
-    pipeline= JaXPipeline(
-        "inline{default-pipeline=canonicalize max-iterations=4},"
-        "partial-symmetry-annotate,enzyme-hlo-generate-td{patterns=transpose_partial_symmetry_simplify},transform-interpreter,enzyme-hlo-remove-transform"
-    )
+    pipeline_debug = JaXPipeline(passes, keep_enzyme_attributes=True)
+    pipeline = JaXPipeline(passes)
     
     NUM_ITER = 100
     tests = [
         ("Single op", single_symmetric_op),
         ("Chained (10x)", chained_symmetric_op),
         ("Interleaved (10x)", interleaved_symmetric_op),
+        ("Dot CSE", dot_cse),
     ]
     
     # Collect MLIR file paths to print at the end
