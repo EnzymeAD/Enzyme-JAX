@@ -16,132 +16,6 @@ def count_transposes(ir_string):
 def benchmark_symmetry():
     setup_backends()
     
-    # Register BLAS symbols for Enzyme-JAX JIT
-    import ctypes
-    import os
-    import sys
-    
-    try:
-        from enzyme_ad.jax import enzyme_call
-        enzyme_call_path = os.path.dirname(enzyme_call.__file__)
-        
-        # Try to load Enzyme-JAX shared library
-        enzyme_lib = None
-        for lib_name in ['enzyme_ad_jax', 'enzyme_call', 'enzyme']:
-            for ext in ['.so', '.dylib', '.dll']:
-                lib_path = os.path.join(enzyme_call_path, f'lib{lib_name}{ext}')
-                if os.path.exists(lib_path):
-                    try:
-                        enzyme_lib = ctypes.CDLL(lib_path)
-                        break
-                    except:
-                        pass
-            if enzyme_lib:
-                break
-        
-        if not enzyme_lib:
-            # Try loading from the enzyme_call module's directory
-            try:
-                # enzyme_call might be a .so file itself
-                if hasattr(enzyme_call, '__file__'):
-                    enzyme_file = enzyme_call.__file__
-                    if enzyme_file.endswith('.so') or enzyme_file.endswith('.dylib'):
-                        try:
-                            enzyme_lib = ctypes.CDLL(enzyme_file)
-                        except:
-                            pass
-            except:
-                pass
-        
-        if not enzyme_lib:
-            for lib_name in ['enzyme_ad_jax', 'enzyme_call', 'enzyme']:
-                try:
-                    enzyme_lib = ctypes.CDLL(f'lib{lib_name}.so')
-                    break
-                except:
-                    pass
-        
-        if enzyme_lib:
-            try:
-                map_symbol = enzyme_lib.EnzymeJaXMapSymbol
-                map_symbol.argtypes = [ctypes.c_char_p, ctypes.c_void_p]
-                map_symbol.restype = None
-                
-                # Load BLAS library - try multiple approaches
-                blas_lib = None
-                blas_names = ['libblas.so.3', 'libopenblas.so.0', 'libblas.so', 'libcblas.so', 
-                             'libblas.so.2', 'libopenblas.so']
-                
-                for blas_name in blas_names:
-                    try:
-                        blas_lib = ctypes.CDLL(blas_name, ctypes.RTLD_GLOBAL)
-                        break
-                    except:
-                        pass
-                
-                # Also try using numpy's BLAS if available
-                if not blas_lib:
-                    try:
-                        import numpy as np
-                        # numpy might have BLAS linked
-                        blas_lib = ctypes.CDLL(np.__file__.replace('__init__.py', '') + 
-                                              '../.libs/libopenblas.so.0', ctypes.RTLD_GLOBAL)
-                    except:
-                        pass
-                
-                if blas_lib:
-                    # Register ssyrk_ (single precision) - try both with and without underscore
-                    registered_ssyrk = False
-                    for sym_name in ['ssyrk_', 'ssyrk']:
-                        try:
-                            ssyrk_sym = getattr(blas_lib, sym_name)
-                            # Get the actual function pointer address
-                            if hasattr(ssyrk_sym, '_handle'):
-                                func_ptr = ssyrk_sym._handle
-                            else:
-                                func_ptr = ctypes.cast(ssyrk_sym, ctypes.c_void_p).value
-                            if func_ptr:
-                                map_symbol(b'enzymexla_blas_ssyrk_', func_ptr)
-                                registered_ssyrk = True
-                                print(f"Registered enzymexla_blas_ssyrk_ from {sym_name}", file=sys.stderr)
-                                break
-                        except (AttributeError, TypeError) as e:
-                            continue
-                    
-                    if not registered_ssyrk:
-                        print("Warning: Could not register ssyrk_", file=sys.stderr)
-                    
-                    # Register dsyrk_ (double precision)
-                    registered_dsyrk = False
-                    for sym_name in ['dsyrk_', 'dsyrk']:
-                        try:
-                            dsyrk_sym = getattr(blas_lib, sym_name)
-                            if hasattr(dsyrk_sym, '_handle'):
-                                func_ptr = dsyrk_sym._handle
-                            else:
-                                func_ptr = ctypes.cast(dsyrk_sym, ctypes.c_void_p).value
-                            if func_ptr:
-                                map_symbol(b'enzymexla_blas_dsyrk_', func_ptr)
-                                registered_dsyrk = True
-                                print(f"Registered enzymexla_blas_dsyrk_ from {sym_name}", file=sys.stderr)
-                                break
-                        except (AttributeError, TypeError):
-                            continue
-                    
-                    if not registered_dsyrk:
-                        print("Warning: Could not register dsyrk_", file=sys.stderr)
-                        
-                else:
-                    print("Warning: Could not load BLAS library", file=sys.stderr)
-            except AttributeError as e:
-                print(f"Warning: Could not find EnzymeJaXMapSymbol: {e}", file=sys.stderr)
-            except Exception as e:
-                print(f"Warning: Error registering BLAS symbols: {e}", file=sys.stderr)
-        else:
-            print("Warning: Could not load Enzyme-JAX library", file=sys.stderr)
-    except Exception as e:
-        print(f"Warning: Could not register BLAS symbols: {e}", file=sys.stderr)
-    
     # Create tmp directory for MLIR files in current directory
     # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     tmp_dir = os.path.join(".", "tmp", f"enzyme_mlir")
@@ -191,8 +65,68 @@ def benchmark_symmetry():
     def matrix_multiply(x):
         a = x.T + x 
         return jnp.matmul(a, a)
+    
+    def gram_chain(x):
+        # x is (n, d)
+        G = x.T @ x         
+        # H = G @ G + G @ G.T 
+        for _ in range(20):
+            G = (G + G.T) @ (G + G.T) #H @ G + G @ H.T
+        return G
+    
+    def sylvester_iter(x):
+        A = x + x.T
+        B = A.copy()
+        C = A.copy()
+        for _ in range(6):
+            C = A @ C + C.T @ B   # C.T redundant once C is known symmetric
+            C = (C + C.T) * 0.5   # force symmetry
+        return C
+    
+    
+    def symmetric_kalman_filter(x, steps=100):
+        """
+        A symmetric Kalman filter microbenchmark.
+        All matrices (F, H, Q, R, P) are symmetric.
+        Transpose symmetry is explicit in all updates.
+        """
+        # Initial estimate and symmetric covariance
+        P = x + x.T  # make symmetric
+        F = P
+        H = P
+        Q = P
+        R = P
+
+        for _ in range(steps):
+            # --- Prediction step ---
+            # P_pred = F P Fᵀ + Q    (all symmetric)
+            P_pred = F @ P @ F.T
+            P_pred = P_pred + Q
+            P_pred = P_pred + P_pred.T - jnp.diag(jnp.diag(P_pred))  # explicit symmetrization
+
+            # --- Innovation covariance ---
+            # S = H P_pred Hᵀ + R    (symmetric)
+            S = H @ P_pred @ H.T
+            S = S + R
+            S = S + S.T - jnp.diag(jnp.diag(S))
+
+            # --- Kalman gain ---
+            # K = P_pred Hᵀ S^{-1}
+            # but we use solve for stability: K = P_pred Hᵀ (S \ I)
+            K = jnp.linalg.solve(S, H @ P_pred).T  # equivalent to P_pred Hᵀ S^{-1}
+
+            # --- Update ---
+            # P = (I - K H) P_pred
+            KH = K @ H
+            I = jnp.eye(P.shape[0])
+            P = (I - KH) @ P_pred @ (I - KH).T
+
+            # explicit symmetrization after update
+            P = P + P.T - jnp.diag(jnp.diag(P))
+
+        return P
         
-    passes = "inline{default-pipeline=canonicalize max-iterations=4}, canonicalize, cse, partial-symmetry-annotate, enzyme-hlo-generate-td{patterns=transpose_partial_symmetry_simplify;reduce_partial_symmetry_rotate_axes;dot_general_to_syrk;transpose_syrk_to_syrk;fuse_mul_into_syrk;fuse_add_into_syrk}, transform-interpreter,lower-jit{backend=cpu},  lower-enzymexla-blas{backend=cpu}, lower-jit{backend=cpu}, enzyme-hlo-remove-transform, canonicalize, cse"
+    passes = "inline{default-pipeline=canonicalize max-iterations=4}, canonicalize, cse, partial-symmetry-annotate, enzyme-hlo-generate-td{patterns=transpose_partial_symmetry_simplify;reduce_partial_symmetry_rotate_axes}, transform-interpreter,lower-jit{backend=cpu},  lower-enzymexla-blas{backend=cpu}, lower-jit{backend=cpu}, enzyme-hlo-remove-transform, canonicalize, cse"
     passes_control = "inline{default-pipeline=canonicalize max-iterations=4}, canonicalize, cse"
 
     pipeline_debug = JaXPipeline(passes, keep_enzyme_attributes=True)
@@ -206,7 +140,10 @@ def benchmark_symmetry():
         # ("Interleaved (10x)", interleaved_symmetric_op, (2048, 2048)),
         # ("Dot CSE", dot_cse, (1024, 1024)),
         # ("Reduce partial symmetry", reduce_partial_symmetry, (32, 32, 32, 32)),
-        ("Matrix multiply", matrix_multiply, (2048, 2048))
+        # ("Matrix multiply", matrix_multiply, (2048, 2048)),
+        # ("Gram chain", gram_chain, (256, 256)),
+        # ("Sylvester iter", sylvester_iter, (256, 256))
+        ("Symmetric Kalman filter", symmetric_kalman_filter, (128, 128))
     ]
     
     # Collect MLIR file paths to print at the end
