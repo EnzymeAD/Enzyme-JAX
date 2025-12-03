@@ -41,7 +41,7 @@ def benchmark_symmetry():
         return jnp.dot(a, a) + jnp.dot(a, a.T) + jnp.dot(a.T, a)
         
     def reduce_partial_symmetry(x):
-        a = x.transpose((2, 1, 0)) + x
+        a = x.transpose((3, 1, 2, 0)) + x
         result = jnp.zeros(a.shape[1:])
         for _ in range(20):
             reduced = jnp.sum(a, axis=0)
@@ -66,7 +66,7 @@ def benchmark_symmetry():
         ("Chained (10x)", chained_symmetric_op, (2048, 2048)),
         ("Interleaved (10x)", interleaved_symmetric_op, (2048, 2048)),
         ("Dot CSE", dot_cse, (1024, 1024)),
-        ("Reduce partial symmetry", reduce_partial_symmetry, (128, 128, 128)),
+        ("Reduce partial symmetry", reduce_partial_symmetry, (32, 32, 32, 32)),
         ("Reduce rows", reduce_rows, (16384, 16384)),
         ("Reduce cols", reduce_cols, (16384, 16384)),
     ]
