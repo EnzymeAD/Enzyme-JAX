@@ -1100,11 +1100,12 @@ def MPICommRankOp : EnzymeXLA_Op<"comm_rank", [Pure]> {
   }];
 
   /* let arguments = (ins MPI_Comm : $comm); */
-  let arguments = (ins HLO_Tensor : $comm);
+  /* let arguments = (ins I64 : $comm); */
+  let arguments = (ins TensorOf<[I32]> : $comm);
     
   let results = ( outs
     /* Optional<MPI_Retval> : $retval, */
-    I32 : $rank
+    TensorOf<[I32]> : $rank
   );
 
   /* let assemblyFormat = "`(` $comm `)` attr-dict `:` type(results)"; */
