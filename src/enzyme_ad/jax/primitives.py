@@ -100,7 +100,7 @@ class JaXPipeline:
 
     def ad_level(self):
         return self.passes.count("enzyme-wrap")
-    
+
 
 def optimization_passes(
     *,

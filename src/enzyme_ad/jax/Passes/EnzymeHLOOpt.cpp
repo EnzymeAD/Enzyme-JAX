@@ -26104,8 +26104,11 @@ struct DotGeneralToSyrk
         }
       } else {
         // if lhsContractingDim != rhsContractingDim, then we can fuse iff
-        // lhs/rhs is a symmetric matrix
-        if (canApplySymmetricPattern(lhs, rewriter)) {
+        // lhs/rhs is a symmetric matrix (partial symmetry between dims 0 and 1)
+        auto annotationOpt =
+            enzyme::PartialSymmetryAnnotation::createFromIR(lhs);
+        if (annotationOpt.has_value() &&
+            annotationOpt.value().isSymmetric(0, 1)) {
           syrkInput = lhs;
           if (lhsContractingDim == 1) {
             lapackTranspose = enzymexla::LapackTranspose::none;
