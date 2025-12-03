@@ -795,30 +795,6 @@ def BesselJ : EnzymeXLA_Op<"special.besselj", [Pure, SameOperandsAndResultType, 
   );
 }
 
-def BesselJ0 : EnzymeXLA_Op<"special.besselj0", [Pure, SameOperandsAndResultType, Elementwise]> {
-  let summary = "Bessel function of the first kind of order 0 at z";
-  
-  let arguments = (ins
-    HLO_Tensor:$z
-  );
-  
-  let results = (outs
-    HLO_Tensor:$res
-  );
-}
-
-def BesselJ1 : EnzymeXLA_Op<"special.besselj1", [Pure, SameOperandsAndResultType, Elementwise]> {
-  let summary = "Bessel function of the first kind of order 1 at z";
-  
-  let arguments = (ins
-    HLO_Tensor:$z
-  );
-  
-  let results = (outs
-    HLO_Tensor:$res
-  );
-}
-
 def BesselJX : EnzymeXLA_Op<"special.besseljx", [Pure, SameOperandsAndResultType, Elementwise]> {
   let summary = "Scaled Bessel function of the first kind of order nu at z";
   
@@ -850,30 +826,6 @@ def BesselY : EnzymeXLA_Op<"special.bessely", [Pure, SameOperandsAndResultType, 
   
   let arguments = (ins
     HLO_Tensor:$nu,
-    HLO_Tensor:$z
-  );
-  
-  let results = (outs
-    HLO_Tensor:$res
-  );
-}
-
-def BesselY0 : EnzymeXLA_Op<"special.bessely0", [Pure, SameOperandsAndResultType, Elementwise]> {
-  let summary = "Bessel function of the second kind of order 0 at z";
-  
-  let arguments = (ins
-    HLO_Tensor:$z
-  );
-  
-  let results = (outs
-    HLO_Tensor:$res
-  );
-}
-
-def BesselY1 : EnzymeXLA_Op<"special.bessely1", [Pure, SameOperandsAndResultType, Elementwise]> {
-  let summary = "Bessel function of the second kind of order 1 at z";
-  
-  let arguments = (ins
     HLO_Tensor:$z
   );
   
@@ -928,34 +880,8 @@ def BesselH : EnzymeXLA_Op<"special.besselh", [Pure, SameOperandsAndResultType, 
   );
 }
 
-def HankelH1 : EnzymeXLA_Op<"special.hankelh1", [Pure, SameOperandsAndResultType, Elementwise]> {
-  let summary = "Hankel function of the first kind of order nu at z";
-  
-  let arguments = (ins
-    HLO_Tensor:$nu,
-    HLO_Tensor:$z
-  );
-  
-  let results = (outs
-    HLO_Tensor:$res
-  );
-}
-
 def HankelH1X : EnzymeXLA_Op<"special.hankelh1x", [Pure, SameOperandsAndResultType, Elementwise]> {
   let summary = "Scaled Hankel function of the first kind of order nu at z";
-  
-  let arguments = (ins
-    HLO_Tensor:$nu,
-    HLO_Tensor:$z
-  );
-  
-  let results = (outs
-    HLO_Tensor:$res
-  );
-}
-
-def HankelH2 : EnzymeXLA_Op<"special.hankelh2", [Pure, SameOperandsAndResultType, Elementwise]> {
-  let summary = "Hankel function of the second kind of order nu at z";
   
   let arguments = (ins
     HLO_Tensor:$nu,
@@ -1049,7 +975,6 @@ def Jinc : EnzymeXLA_Op<"special.jinc", [Pure, SameOperandsAndResultType, Elemen
     HLO_Tensor:$res
   );
 }
-
 // Machine Learning Ops
 
 def GeluOp: EnzymeXLA_Op<"ml.gelu", [Pure, SameOperandsAndResultType, Elementwise]> {
