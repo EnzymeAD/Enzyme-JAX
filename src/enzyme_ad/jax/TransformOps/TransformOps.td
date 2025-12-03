@@ -610,7 +610,12 @@ def ApplyTransposeSymmetricSimplify : EnzymeHLOPatternOp<
 
 def ApplyTransposePartialSymmetrySimplify : EnzymeHLOPatternOp<
     "transpose_partial_symmetry_simplify"> {
-  let patterns = ["TransposePartialSymmetrySimplify"];
+   let patterns = ["TransposePartialSymmetrySimplify"];
+}
+
+def ApplyReducePartialSymmetrySimplify : EnzymeHLOPatternOp<
+    "reduce_partial_symmetry_rotate_axes"> {
+  let patterns = ["ReducePartialSymmetryRotateAxes"];
 }
 
 def ApplyFactorScalarsInDotGeneral : EnzymeHLOPatternOp<

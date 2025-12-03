@@ -6992,6 +6992,57 @@ struct TransposePartialSymmetrySimplify
   }
 };
 
+struct ReducePartialSymmetryRotateAxes
+    : public CheckedOpRewritePattern<stablehlo::ReduceOp,
+                                     ReducePartialSymmetryRotateAxes> {
+  using CheckedOpRewritePattern<stablehlo::ReduceOp,
+                                ReducePartialSymmetryRotateAxes>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op.getInputs().size() != 1)
+      return failure();
+
+    auto operand = op.getInputs()[0];
+    auto annotationOpt =
+        enzyme::PartialSymmetryAnnotation::createFromIR(operand);
+    if (!annotationOpt.has_value())
+      return failure();
+
+    auto annotation = annotationOpt.value();
+    auto inputType = cast<RankedTensorType>(operand.getType());
+    int64_t rank = inputType.getRank();
+
+    SmallVector<int64_t> newDims;
+    bool changed = false;
+
+    for (int64_t dim : op.getDimensions()) {
+      int64_t setId = annotation.getSetId(dim);
+      int64_t bestDim = dim;
+
+      for (int64_t i = dim + 1; i < rank; ++i) {
+        if (annotation.getSetId(i) == setId && !llvm::is_contained(newDims, i)) {
+          bestDim = i;
+        }
+      }
+
+      if (bestDim != dim)
+        changed = true;
+      newDims.push_back(bestDim);
+    }
+
+    if (!changed)
+      return failure();
+
+    auto newReduce = stablehlo::ReduceOp::create(
+        rewriter, op.getLoc(), op->getResultTypes(), op.getInputs(),
+        op.getInitValues(), rewriter.getDenseI64ArrayAttr(newDims));
+    newReduce.getRegion().takeBody(op.getRegion());
+    rewriter.replaceOp(op, newReduce);
+    return success();
+  }
+};
+
 struct NoNanSelfSubSimplify
     : public NoNanCheckedOpRewritePattern<stablehlo::SubtractOp,
                                           NoNanSelfSubSimplify> {
@@ -26797,8 +26848,8 @@ struct EnzymeHLOOptPass
                  NoNanAddSubSimplify, NoNanMulSimplify, NoNanDivSimplify>(
         (no_nan || all_finite), context);
 
-    patterns.add<TransposeSymmetricSimplify, TransposePartialSymmetrySimplify>(
-        context);
+    patterns.add<TransposeSymmetricSimplify, TransposePartialSymmetrySimplify,
+                 ReducePartialSymmetryRotateAxes>(context);
     patterns.add<FactorScalarsInDotGeneral>(context);
 
     // syrk patterns

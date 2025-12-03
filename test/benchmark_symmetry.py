@@ -40,37 +40,47 @@ def benchmark_symmetry():
         a = x.T + x
         return jnp.dot(a, a) + jnp.dot(a, a.T) + jnp.dot(a.T, a)
         
+    def reduce_partial_symmetry(x):
+        a = x.transpose((2, 1, 0)) + x
+        result = jnp.zeros(a.shape[1:])
+        for _ in range(20):
+            reduced = jnp.sum(a, axis=0)
+            result = result + reduced
+            a = a + 1 
+        return result
+        
     def reduce_rows(x):
         return jnp.sum(x, axis=0)
 
     def reduce_cols(x):
         return jnp.sum(x, axis=1)
 
-    passes = "inline{default-pipeline=canonicalize max-iterations=4}, canonicalize, cse, partial-symmetry-annotate, enzyme-hlo-generate-td{patterns=transpose_partial_symmetry_simplify}, transform-interpreter, enzyme-hlo-remove-transform"
+    passes = "inline{default-pipeline=canonicalize max-iterations=4}, canonicalize, cse, partial-symmetry-annotate, enzyme-hlo-generate-td{patterns=transpose_partial_symmetry_simplify;reduce_partial_symmetry_rotate_axes}, transform-interpreter, enzyme-hlo-remove-transform"
 
     pipeline_debug = JaXPipeline(passes, keep_enzyme_attributes=True)
     pipeline = JaXPipeline(passes)
     
     NUM_ITER = 100
     tests = [
-        ("Single op", single_symmetric_op, 2048),
-        ("Chained (10x)", chained_symmetric_op, 2048),
-        ("Interleaved (10x)", interleaved_symmetric_op, 2048),
-        ("Dot CSE", dot_cse, 1024),
-        ("Reduce rows", reduce_rows, 16384),
-        ("Reduce cols", reduce_cols, 16384),
+        ("Single op", single_symmetric_op, (2048, 2048)),
+        ("Chained (10x)", chained_symmetric_op, (2048, 2048)),
+        ("Interleaved (10x)", interleaved_symmetric_op, (2048, 2048)),
+        ("Dot CSE", dot_cse, (1024, 1024)),
+        ("Reduce partial symmetry", reduce_partial_symmetry, (128, 128, 128)),
+        ("Reduce rows", reduce_rows, (16384, 16384)),
+        ("Reduce cols", reduce_cols, (16384, 16384)),
     ]
     
     # Collect MLIR file paths to print at the end
     mlir_files = []
     
-    print(f"{'Test':<20} {'N':<6} {'Transposes':<15} {'Baseline':<12} {'Optimized':<12} {'Speedup':<8}")
-    print("-" * 76)
+    print(f"{'Test':<20} {'Shape':<15} {'Transposes':<15} {'Baseline':<12} {'Optimized':<12} {'Speedup':<8}")
+    print("-" * 85)
     
-    for name, fn, N in tests:
-        # Construct input X based on N
+    for name, fn, shape in tests:
+        # Construct input X based on shape
         key = jax.random.PRNGKey(0)
-        X = jax.device_put(jax.random.normal(key, (N, N)))
+        X = jax.device_put(jax.random.normal(key, shape))
         # Count transposes
         ir_buf = io.StringIO()
         _ = jax.jit(enzyme_jax_ir(pipeline_options=JaXPipeline(""), 
@@ -121,7 +131,8 @@ def benchmark_symmetry():
         opt_ms = (timeit.default_timer() - start) / NUM_ITER * 1000
         
         speedup = baseline_ms / opt_ms
-        print(f"{name:<20} {N:>6} {base_t:>2} -> {opt_t:<2} (-{base_t-opt_t})  {baseline_ms:>8.2f} ms  {opt_ms:>8.2f} ms  {speedup:.2f}x")
+        shape_str = f"{shape[0]}x{shape[1]}" if len(shape) == 2 else str(shape)
+        print(f"{name:<20} {shape_str:<15} {base_t:>2} -> {opt_t:<2} (-{base_t-opt_t})  {baseline_ms:>8.2f} ms  {opt_ms:>8.2f} ms  {speedup:.2f}x")
     
     # Print MLIR file paths after the table
     print("\n" + "=" * 70)
