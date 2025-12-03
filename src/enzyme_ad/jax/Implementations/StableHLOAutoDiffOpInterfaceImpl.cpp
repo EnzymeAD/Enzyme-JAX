@@ -2279,26 +2279,237 @@ public:
   }
 };
 
-class AutoDiffSort
-    : public AutoDiffOpInterface::ExternalModel<AutoDiffSort, SortOp> {
+stablehlo::SortOp
+constructSortOpWithExtraOperands(OpBuilder &builder, stablehlo::SortOp original,
+                                 SmallVectorImpl<Value> &newOperands) {
+  auto newSortOp = stablehlo::SortOp::create(
+      builder, original.getLoc(), newOperands, original.getDimensionAttr(),
+      original.getIsStableAttr());
+
+  IRMapping regionMapper;
+  auto &newComparator = newSortOp.getComparator();
+  auto *newBlock = new Block();
+  newComparator.push_back(newBlock);
+
+  {
+    SmallVector<Type> scalarArgTys;
+    for (auto arg : newOperands) {
+      auto elTy = RankedTensorType::get(
+          {}, cast<TensorType>(arg.getType()).getElementType());
+      scalarArgTys.push_back(elTy);
+      scalarArgTys.push_back(elTy);
+    }
+    newBlock->addArguments(
+        scalarArgTys,
+        SmallVector<Location>(scalarArgTys.size(), original.getLoc()));
+  }
+
+  auto &origComparator = original.getComparator();
+  auto &origBlock = origComparator.front();
+
+  IRMapping mapper;
+  for (int64_t i = 0; i < origBlock.getNumArguments(); i++)
+    mapper.map(origBlock.getArgument(i), newBlock->getArgument(i));
+
+  {
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(newBlock);
+    for (Operation &origOpInside : origBlock) {
+      builder.clone(origOpInside, mapper);
+    }
+  }
+
+  return newSortOp;
+}
+
+class AutoDiffSortFwd
+    : public AutoDiffOpInterface::ExternalModel<AutoDiffSortFwd, SortOp> {
 public:
   LogicalResult createForwardModeTangent(Operation *op, OpBuilder &builder,
                                          MGradientUtils *gutils) const {
+    if (gutils->width > 1) {
+      op->emitError(
+          "TODO: AutoDiffSortFwd does not support batched forward mode");
+      return failure();
+    }
 
-    // TODO: we may need to record, for every successor, which of its inputs
-    // need a shadow to recreate the body correctly.
-    llvm::SmallDenseSet<unsigned> operandPositionsToShadow;
-    llvm::SmallDenseSet<unsigned> resultPositionsToShadow;
+    auto sortOp = cast<stablehlo::SortOp>(op);
 
-    for (auto res : op->getResults())
-      if (!gutils->isConstantValue(res)) {
-        operandPositionsToShadow.insert(res.getResultNumber());
-        resultPositionsToShadow.insert(res.getResultNumber());
+    DenseMap<int32_t, int32_t> gradMapping;
+
+    SmallVector<Value> newOperands;
+    for (auto operand : sortOp.getInputs()) {
+      newOperands.push_back(gutils->getNewFromOriginal(operand));
+    }
+    for (auto [i, operand] : llvm::enumerate(sortOp.getInputs())) {
+      if (!gutils->isConstantValue(operand)) {
+        newOperands.push_back(gutils->invertPointerM(operand, builder));
+        gradMapping[i] = newOperands.size() - 1;
+      }
+    }
+
+    auto newSortOp =
+        constructSortOpWithExtraOperands(builder, sortOp, newOperands);
+
+    SmallVector<Value> replacementResults(sortOp.getNumResults());
+    for (int32_t i = 0; i < sortOp.getNumResults(); i++) {
+      replacementResults[i] = newSortOp.getResults()[i];
+      auto origRes = sortOp.getResults()[i];
+      if (!gutils->isConstantValue(origRes)) {
+        int32_t j = gradMapping[i];
+        gutils->setDiffe(origRes, newSortOp.getResults()[j], builder);
+      }
+    }
+
+    gutils->replaceOrigOpWith(op, replacementResults);
+    gutils->originalToNewFnOps[op] = newSortOp;
+    gutils->eraseIfUnused(op);
+    return success();
+  }
+};
+
+class AutoDiffSortRev
+    : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffSortRev,
+                                                       stablehlo::SortOp> {
+public:
+  LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
+                                         MGradientUtilsReverse *gutils,
+                                         SmallVector<Value> caches) const {
+    auto sortOp = cast<stablehlo::SortOp>(orig);
+
+    if (gutils->width > 1) {
+      orig->emitError(
+          "TODO: AutoDiffSortRev does not support batched reverse mode");
+      return failure();
+    }
+
+    auto indices = gutils->popCache(caches[0], builder);
+    auto indicesTy = cast<RankedTensorType>(indices.getType());
+
+    SmallVector<int64_t> newIndicesShape(indicesTy.getShape().begin(),
+                                         indicesTy.getShape().end());
+    newIndicesShape.push_back(1);
+
+    indices = stablehlo::ReshapeOp::create(
+        builder, orig->getLoc(),
+        RankedTensorType::get(newIndicesShape, indicesTy.getElementType()),
+        indices);
+
+    auto inTy = cast<RankedTensorType>(orig->getOperand(0).getType());
+    auto inRank = inTy.getRank();
+    auto inShape = inTy.getShape();
+
+    SmallVector<int64_t> batchingDims;
+    for (int32_t d = 0; d < inRank; d++) {
+      if (d != sortOp.getDimension()) {
+        batchingDims.push_back(d);
+      }
+    }
+
+    auto scatterDims = stablehlo::ScatterDimensionNumbersAttr::get(
+        orig->getContext(), SmallVector<int64_t>(),
+        SmallVector<int64_t>{static_cast<int64_t>(sortOp.getDimension())},
+        batchingDims, batchingDims,
+        SmallVector<int64_t>{static_cast<int64_t>(sortOp.getDimension())},
+        indicesTy.getRank());
+
+    for (size_t i = 0; i < orig->getNumResults(); i++) {
+      if (gutils->isConstantValue(orig->getResult(i)) ||
+          gutils->isConstantValue(orig->getOperand(i)))
+        continue;
+
+      // we compute the gradients with scatter_add and then set the original
+      auto inDiffe = gutils->diffe(orig->getResult(i), builder);
+      auto inDiffeTy = cast<RankedTensorType>(inDiffe.getType());
+      gutils->zeroDiffe(orig->getResult(i), builder);
+
+      auto outDiffe = gutils->diffe(orig->getOperand(i), builder);
+
+      Region combiner;
+      {
+        Block *block = new Block();
+        combiner.push_back(block);
+        block->addArgument(
+            RankedTensorType::get({}, inDiffeTy.getElementType()),
+            orig->getLoc());
+        block->addArgument(
+            RankedTensorType::get({}, inDiffeTy.getElementType()),
+            orig->getLoc());
+        OpBuilder::InsertionGuard guard(builder);
+        builder.setInsertionPointToStart(block);
+        stablehlo::ReturnOp::create(
+            builder, orig->getLoc(),
+            ValueRange{stablehlo::AddOp::create(builder, orig->getLoc(),
+                                                block->getArgument(0),
+                                                block->getArgument(1))});
       }
 
-    return mlir::enzyme::detail::controlFlowForwardHandler(
-        op, builder, gutils, operandPositionsToShadow, resultPositionsToShadow);
+      auto scatterOp = stablehlo::ScatterOp::create(
+          builder, orig->getLoc(), outDiffe, indices, inDiffe, scatterDims,
+          builder.getBoolAttr(false), builder.getBoolAttr(true));
+      scatterOp.getUpdateComputation().takeBody(combiner);
+
+      gutils->setDiffe(orig->getOperand(i), scatterOp.getResults()[0], builder);
+    }
+
+    return success();
   }
+
+  SmallVector<Value> cacheValues(Operation *orig,
+                                 MGradientUtilsReverse *gutils) const {
+    auto sortOp = cast<stablehlo::SortOp>(orig);
+
+    if (gutils->width > 1)
+      return {};
+
+    bool allConstant = true;
+    for (auto input : sortOp.getInputs()) {
+      if (!gutils->isConstantValue(input)) {
+        allConstant = false;
+        break;
+      }
+    }
+
+    if (allConstant)
+      return {};
+
+    auto newOp = gutils->getNewFromOriginal(orig);
+    OpBuilder cacheBuilder(newOp);
+
+    SmallVector<Value> newOperands(sortOp.getInputs().size() + 1);
+    for (auto [i, operand] : llvm::enumerate(sortOp.getInputs())) {
+      newOperands[i] = gutils->getNewFromOriginal(operand);
+    }
+    auto OpTy = cast<TensorType>(newOperands[0].getType());
+    auto iotaOp = stablehlo::IotaOp::create(
+        cacheBuilder, orig->getLoc(),
+        RankedTensorType::get(OpTy.getShape(),
+                              cacheBuilder.getIntegerType(32, false)),
+        sortOp.getDimensionAttr());
+    newOperands[newOperands.size() - 1] = iotaOp.getResult();
+
+    auto newSortOp =
+        constructSortOpWithExtraOperands(cacheBuilder, sortOp, newOperands);
+    auto newResults = newSortOp.getResults();
+
+    SmallVector<Value> caches;
+    caches.push_back(gutils->initAndPushCache(newResults[newResults.size() - 1],
+                                              cacheBuilder));
+
+    SmallVector<Value> replacements;
+    for (size_t i = 0; i < newResults.size() - 1; i++) {
+      replacements.push_back(newResults[i]);
+    }
+
+    gutils->replaceOrigOpWith(orig, replacements);
+    gutils->eraseIfUnused(orig);
+    gutils->originalToNewFnOps[orig] = newSortOp;
+
+    return caches;
+  }
+
+  void createShadowValues(Operation *op, OpBuilder &builder,
+                          MGradientUtilsReverse *gutils) const {}
 };
 
 class AutoDiffBatchNormTrainingRev
@@ -2955,44 +3166,6 @@ struct IfOpEnzymeOpsRemover
   }
 };
 
-Value getScalarInitValue(Operation *op, OpBuilder &builder) {
-  if (!op)
-    return nullptr;
-
-  // Splatted Constant
-  SplatElementsAttr elems;
-  if (matchPattern(op, m_Constant(&elems))) {
-    auto scalarElemType = RankedTensorType::get(
-        {}, cast<TensorType>(op->getResult(0).getType()).getElementType());
-    auto constInit = ConstantOp::create(builder, op->getLoc(), scalarElemType,
-                                        elems.resizeSplat(scalarElemType));
-    return constInit;
-  }
-
-  // BroadcastInDim / Reshape
-  if (isa<stablehlo::BroadcastInDimOp, stablehlo::ReshapeOp>(op)) {
-    if (cast<RankedTensorType>(op->getOperand(0).getType()).getRank() == 0) {
-      return op->getOperand(0);
-    }
-  }
-
-  // Convert
-  if (auto convertOp = dyn_cast<stablehlo::ConvertOp>(op)) {
-    auto scalar =
-        getScalarInitValue(convertOp.getOperand().getDefiningOp(), builder);
-    if (scalar) {
-      auto convertOutElemType =
-          cast<RankedTensorType>(convertOp.getResult().getType())
-              .getElementType();
-      return stablehlo::ConvertOp::create(
-          builder, op->getLoc(), RankedTensorType::get({}, convertOutElemType),
-          scalar);
-    }
-  }
-
-  return nullptr;
-}
-
 struct SHLOReduceOpBatchInterface
     : public BatchOpInterface::ExternalModel<SHLOReduceOpBatchInterface,
                                              ReduceOp> {
@@ -3023,8 +3196,7 @@ struct SHLOReduceOpBatchInterface
     newReduceInits.reserve(reduceOp.getInitValues().size());
     for (auto opValue : reduceOp.getInitValues()) {
       auto batchedInit = mapper.lookup(opValue);
-      auto scalarInit =
-          getScalarInitValue(batchedInit.getDefiningOp(), builder);
+      auto scalarInit = getScalarValue(batchedInit.getDefiningOp(), builder);
       if (!scalarInit) {
         // TODO: we need to support broadcasting inits, or do we?
         src->emitError("Unsupported reduce init for batched reduce");
@@ -3105,8 +3277,7 @@ struct SHLOReduceWindowOpBatchInterface
     newReduceWindowInits.reserve(reduceWindowOp.getInitValues().size());
     for (auto opValue : reduceWindowOp.getInitValues()) {
       auto batchedInit = mapper.lookup(opValue);
-      auto scalarInit =
-          getScalarInitValue(batchedInit.getDefiningOp(), builder);
+      auto scalarInit = getScalarValue(batchedInit.getDefiningOp(), builder);
       if (!scalarInit) {
         src->emitError(
             "Unsupported reduce window init for batched reduce window");
@@ -3701,8 +3872,6 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
                             stablehlo::StablehloDialect *) {
     registerInterfaces(context);
 
-    // SortOp::attachInterface<AutoDiffSort>(*context);
-
     WhileOp::attachInterface<WhileOpEnzymeOpsRemover>(*context);
     IfOp::attachInterface<IfOpEnzymeOpsRemover>(*context);
 
@@ -3722,6 +3891,8 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     IfOp::attachInterface<AutoDiffIfFwd>(*context);
     IfOp::attachInterface<AutoDiffIfCF>(*context);
 
+    SortOp::attachInterface<AutoDiffSortFwd>(*context);
+    SortOp::attachInterface<AutoDiffSortRev>(*context);
     WhileOp::attachInterface<AutoDiffWhileFwd>(*context);
     WhileOp::attachInterface<AutoDiffWhileRev>(*context);
     ReduceOp::attachInterface<AutoDiffReduceCF<ReduceOp>>(*context);

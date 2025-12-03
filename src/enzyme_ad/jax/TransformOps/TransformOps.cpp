@@ -129,6 +129,11 @@ void ApplyTransposeLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
   addTransposeLICM(patterns, getParameter(), *getContext(),
                    PatternBenefit(getBenefit().value_or(1)));
 }
+void ApplyConvolutionLICMPatterns::populatePatterns(
+    RewritePatternSet &patterns) {
+  addConvolutionLICM(patterns, getParameter(), *getContext(),
+                     PatternBenefit(getBenefit().value_or(1)));
+}
 void ApplyIotaSimplifyPatterns::populatePatterns(RewritePatternSet &patterns) {
   addIotaSimplify(patterns, getParameter(), *getContext(),
                   PatternBenefit(getBenefit().value_or(1)));

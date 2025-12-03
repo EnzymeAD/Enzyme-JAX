@@ -91,6 +91,7 @@
 #include "src/enzyme_ad/jax/Dialect/Distributed/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Perfify/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Tessera/Dialect.h"
+#include "src/enzyme_ad/jax/Dialect/TritonExt/Dialect.h"
 
 #include "shardy/dialect/sdy/ir/dialect.h"
 #include "shardy/dialect/sdy/ir/utils.h"
@@ -105,6 +106,8 @@
 #include "xla/service/spmd/shardy/stablehlo_round_trip/stablehlo_export.h"
 #include "xla/service/spmd/shardy/stablehlo_round_trip/stablehlo_import.h"
 
+#include "nvidia/include/NVGPUToLLVM/Passes.h"
+#include "nvidia/include/TritonNVIDIAGPUToLLVM/Passes.h"
 #include "triton/Conversion/TritonGPUToLLVM/Passes.h"
 #include "triton/Conversion/TritonToTritonGPU/Passes.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -201,7 +204,9 @@ void registerDialects(mlir::DialectRegistry &registry) {
   registry.insert<mlir::stablehlo::check::CheckDialect>();
   registry.insert<mlir::chlo::ChloDialect>();
   registry.insert<mlir::vector::VectorDialect>();
-  registry.insert<mlir::nvgpu::NVGPUDialect>();
+  // FIXME: add once https://github.com/triton-lang/triton/issues/8348 is fixed
+  // upstream
+  // registry.insert<mlir::nvgpu::NVGPUDialect>();
   registry.insert<mlir::transform::TransformDialect>();
   registry.insert<mlir::ub::UBDialect>();
   registry.insert<mlir::sparse_tensor::SparseTensorDialect>();
@@ -210,6 +215,7 @@ void registerDialects(mlir::DialectRegistry &registry) {
   registry.insert<mlir::enzyme::distributed::DistributedDialect>();
   registry.insert<mlir::enzyme::tessera::TesseraDialect>();
   registry.insert<mlir::enzyme::perfify::PerfifyDialect>();
+  registry.insert<mlir::enzymexla::triton_ext::TritonExtDialect>();
   registry.insert<mlir::sdy::SdyDialect>();
   registry.insert<mlir::ub::UBDialect>();
   registry.insert<mlir::triton::TritonDialect>();
@@ -239,12 +245,15 @@ void loadAllRegisteredDialects(mlir::MLIRContext &context) {
   context.loadDialect<mlir::stablehlo::check::CheckDialect>();
   context.loadDialect<mlir::chlo::ChloDialect>();
   context.loadDialect<mlir::vector::VectorDialect>();
-  context.loadDialect<mlir::nvgpu::NVGPUDialect>();
+  // FIXME: add once https://github.com/triton-lang/triton/issues/8348 is fixed
+  // upstream
+  // context.loadDialect<mlir::nvgpu::NVGPUDialect>();
   context.loadDialect<mlir::transform::TransformDialect>();
   context.loadDialect<mlir::ub::UBDialect>();
   context.loadDialect<mlir::sparse_tensor::SparseTensorDialect>();
   context.loadDialect<mlir::enzyme::EnzymeDialect>();
   context.loadDialect<mlir::enzymexla::EnzymeXLADialect>();
+  context.loadDialect<mlir::enzymexla::triton_ext::TritonExtDialect>();
   context.loadDialect<mlir::sdy::SdyDialect>();
   context.loadDialect<mlir::ub::UBDialect>();
   context.loadDialect<mlir::triton::TritonDialect>();
@@ -305,6 +314,7 @@ void initializePasses() {
   mlir::registerStripDebugInfo();
   mlir::registerCanonicalizerPass();
   mlir::registerSymbolDCEPass();
+  mlir::registerSymbolPrivatizePass();
   mlir::registerLoopInvariantCodeMotionPass();
   mlir::registerConvertSCFToOpenMPPass();
   mlir::affine::registerAffinePasses();
@@ -314,6 +324,10 @@ void initializePasses() {
   mlir::arith::registerArithPasses();
 
   mlir::registerSCFToControlFlowPass();
+  mlir::registerConvertControlFlowToLLVMPass();
+  mlir::registerConvertIndexToLLVMPass();
+  mlir::registerArithToLLVMConversionPass();
+  mlir::registerConvertNVVMToLLVMPass();
 
   mlir::registerGPUPasses();
 
@@ -365,6 +379,9 @@ void initializePasses() {
   mlir::triton::gpu::registerTritonGPUToLLVMPasses();
   mlir::triton::nvidia_gpu::registerTritonNvidiaGPUPasses();
   mlir::triton::registerTritonToTritonGPUPasses();
+  mlir::triton::registerConvertWarpSpecializeToLLVM();
+  mlir::triton::registerConvertTritonGPUToLLVMPass();
+  mlir::triton::registerConvertNVGPUToLLVMPass();
   mlir::registerLLVMDIScopePass();
 }
 

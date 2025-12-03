@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 #pragma once
 
-#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/MapVector.h"
 
 #include "stablehlo/dialect/StablehloOps.h"
 
@@ -20,7 +20,7 @@ namespace enzyme {
 
 struct WhileLoopInfo {
   WhileOp op;
-  DenseMap<Value, APInt> inductionVarOffsets;
+  llvm::MapVector<Value, APInt> inductionVarOffsets;
   mlir::Value start; // guaranteed to dominate the while op
   mlir::Value limit; // not guaranteed to dominate the while op
   mlir::Value step;  // not guaranteed to dominate the while op
@@ -39,13 +39,23 @@ struct WhileLoopInfo {
   std::optional<int64_t> getConstantStart();
   std::optional<int64_t> getConstantLimit();
 
-  Value getInductionVariable() { return op.getBody().front().getArgument(0); }
+  // assumes computeInfo() has been called and was successful
+  // returns the induction variable in the body of the while op
+  Value getInductionVariable() {
+    auto &condBlk = op.getCond().front();
+    auto condTerm = cast<stablehlo::ReturnOp>(condBlk.getTerminator());
+    auto condV = condTerm->getOperand(0);
+    auto cond = condV.getDefiningOp<stablehlo::CompareOp>();
+    auto induct = dyn_cast<BlockArgument>(cond.getOperand(0));
+    auto blockArgNum = induct.getArgNumber();
+    return op.getBody().front().getArgument(blockArgNum);
+  }
 
   int64_t getConstantNumIters();
   Value getNumIters(OpBuilder &builder);
 
   void propagateInductionVarOffsets();
-  DenseMap<Value, APInt> getInductionVarOffsets() {
+  llvm::MapVector<Value, APInt> getInductionVarOffsets() {
     return inductionVarOffsets;
   }
 

@@ -42,12 +42,18 @@ MlirAttribute enzymexlaLapackSideAttrGet(MlirContext ctx, uint8_t left_side) {
   return wrap(mlir::enzymexla::LapackSideAttr::get(unwrap(ctx), side));
 }
 
-MlirAttribute enzymexlaLapackUploAttrGet(MlirContext ctx, uint8_t up) {
+MlirAttribute enzymexlaLapackUploAttrGet(MlirContext ctx, int32_t mode) {
   mlir::enzymexla::LapackUplo uplo;
-  if (up) {
+  switch (mode) {
+  case 0:
     uplo = mlir::enzymexla::LapackUplo::U;
-  } else {
+    break;
+  case 1:
     uplo = mlir::enzymexla::LapackUplo::L;
+    break;
+  case 2:
+    uplo = mlir::enzymexla::LapackUplo::F;
+    break;
   }
   return wrap(mlir::enzymexla::LapackUploAttr::get(unwrap(ctx), uplo));
 }
@@ -64,6 +70,25 @@ MlirAttribute enzymexlaQRAlgorithmAttrGet(MlirContext ctx, int32_t mode) {
   return wrap(mlir::enzymexla::QrAlgorithmAttr::get(unwrap(ctx), algorithm));
 }
 
+MlirAttribute enzymexlaSVDAlgorithmAttrGet(MlirContext ctx, int32_t mode) {
+  mlir::enzymexla::SVDAlgorithm algorithm;
+  switch (mode) {
+  case 0:
+    algorithm = mlir::enzymexla::SVDAlgorithm::DEFAULT;
+    break;
+  case 1:
+    algorithm = mlir::enzymexla::SVDAlgorithm::QRIteration;
+    break;
+  case 2:
+    algorithm = mlir::enzymexla::SVDAlgorithm::DivideAndConquer;
+    break;
+  case 3:
+    algorithm = mlir::enzymexla::SVDAlgorithm::Jacobi;
+    break;
+  }
+  return wrap(mlir::enzymexla::SVDAlgorithmAttr::get(unwrap(ctx), algorithm));
+}
+
 MlirAttribute enzymexlaGeluApproximationAttrGet(MlirContext ctx, int32_t mode) {
   mlir::enzymexla::GeluApproximation approximation;
   switch (mode) {
@@ -78,4 +103,22 @@ MlirAttribute enzymexlaGeluApproximationAttrGet(MlirContext ctx, int32_t mode) {
   }
   return wrap(
       mlir::enzymexla::GeluApproximationAttr::get(unwrap(ctx), approximation));
+}
+
+MlirAttribute enzymexlaGuaranteedAnalysisResultAttrGet(MlirContext ctx,
+                                                       int32_t mode) {
+  mlir::enzymexla::GuaranteedAnalysisResult analysis;
+  switch (mode) {
+  case 0:
+    analysis = mlir::enzymexla::GuaranteedAnalysisResult::GUARANTEED;
+    break;
+  case 1:
+    analysis = mlir::enzymexla::GuaranteedAnalysisResult::NOTGUARANTEED;
+    break;
+  case 2:
+    analysis = mlir::enzymexla::GuaranteedAnalysisResult::UNKNOWN;
+    break;
+  }
+  return wrap(mlir::enzymexla::GuaranteedAnalysisResultAttr::get(unwrap(ctx),
+                                                                 analysis));
 }

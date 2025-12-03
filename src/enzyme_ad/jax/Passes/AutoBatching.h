@@ -211,6 +211,9 @@ private:
     mlir::stablehlo::DynamicSliceOp sliceOp;
     int64_t inductionVarDimension;
     bool intermediateReshape;
+    llvm::SmallVector<int64_t> reshapeShape;
+    int64_t offset;
+    bool needsManualReshape;
   };
 
   enum class BatchLiftingMode {
@@ -236,16 +239,9 @@ private:
       mlir::stablehlo::DynamicSliceOp sliceOp, mlir::Value iterVar,
       int64_t limit, mlir::Block &whileBody, mlir::Block *parentBlock) const;
 
-  bool liftSpecialReshapeOp(mlir::PatternRewriter &rewriter,
-                            mlir::stablehlo::WhileOp whileOp,
-                            llvm::ArrayRef<DynamicSliceInfo> sliceOps,
-                            mlir::stablehlo::ReshapeOp reshapeOp,
-                            mlir::enzyme::WhileLoopInfo info) const;
-
   bool liftOperationByBatching(mlir::PatternRewriter &rewriter,
                                mlir::stablehlo::WhileOp whileOp,
                                llvm::ArrayRef<DynamicSliceInfo> sliceOps,
                                mlir::Operation *op,
-                               mlir::enzyme::WhileLoopInfo info,
-                               bool intermediateReshape) const;
+                               mlir::enzyme::WhileLoopInfo info) const;
 };

@@ -416,6 +416,7 @@ def LowerEnzymeXLALinalgPass : Pass<"lower-enzymexla-linalg"> {
     "stablehlo::StablehloDialect",
     "enzymexla::EnzymeXLADialect",
     "LLVM::LLVMDialect",
+    "enzyme::EnzymeDialect",
   ];
 
   let options = [
@@ -436,6 +437,30 @@ def LowerEnzymeXLALinalgPass : Pass<"lower-enzymexla-linalg"> {
 
 def LowerEnzymeXLALapackPass : Pass<"lower-enzymexla-lapack"> {
   let summary = "Lower enzymexla.lapack ops to stablehlo";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "enzymexla::EnzymeXLADialect",
+    "LLVM::LLVMDialect",
+  ];
+
+  let options = [
+    Option<
+        /*C++ variable name=*/"backend",
+        /*CLI argument=*/"backend",
+        /*type=*/"std::string",
+        /*default=*/"\"cpu\"",
+        /*description=*/"HW backend">,
+    Option<
+        /*C++ variable name=*/"blasIntWidth",
+        /*CLI argument=*/"blas_int_width",
+        /*type=*/"int",
+        /*default=*/"64",
+        /*description=*/"Blas int width (32 or 64). Only used for CPU backend.">,
+  ];
+}
+
+def LowerEnzymeXLABLASPass : Pass<"lower-enzymexla-blas"> {
+  let summary = "Lower enzymexla.blas ops to stablehlo";
   let dependentDialects = [
     "stablehlo::StablehloDialect",
     "enzymexla::EnzymeXLADialect",
@@ -512,6 +537,15 @@ def LowerEnzymeXLAMLPass : Pass<"lower-enzymexla-ml"> {
     "stablehlo::StablehloDialect",
     "chlo::ChloDialect",
     "enzymexla::EnzymeXLADialect",
+  ];
+}
+
+def RaiseTritonCustomCallPass : Pass<"raise-triton-custom-call"> {
+  let summary = "Raise triton custom kernel call";
+  let dependentDialects = [
+    "triton::TritonDialect",
+    "mlir::enzymexla::triton_ext::TritonExtDialect",
+    "stablehlo::StablehloDialect"
   ];
 }
 
@@ -835,6 +869,12 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*default=*/"1",
        /*description=*/"Perform an Extend with Padding to optimize the communication">,
        Option<
+       /*C++ variable name=*/"extend_to_pad_comm2",
+       /*CLI argument=*/"extend_to_pad_comm2",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Perform an Extend with Padding to optimize the communication">,
+       Option<
        /*C++ variable name=*/"concat_two_dus_like",
        /*CLI argument=*/"concat_two_dus_like",
        /*type=*/"int",
@@ -997,6 +1037,12 @@ def DropUnsupportedAttributesPass : Pass<"drop-unsupported-attributes", "ModuleO
         /*type=*/"bool",
         /*default=*/"true",
         /*description=*/"Drop enzymexla.memory_effects attribute">,
+    Option<
+        /*C++ variable name=*/"enzymexla_analysis_result",
+        /*CLI argument=*/"enzymexla-analysis-result",
+        /*type=*/"bool",
+        /*default=*/"true",
+        /*description=*/"Drop attribute from various analysis results">,
   ];
 }
 
@@ -1008,4 +1054,27 @@ def SCFCPUify : Pass<"cpuify"> {
   Option<"method", "method", "std::string", /*default=*/"\"distribute\"", "Method of doing distribution">
   ];
 }
+
+def ConvertTritonToTritonGPUPreservingModuleAttributesPass : Pass<
+    "convert-triton-to-triton-gpu-preserving-module-attributes", "mlir::ModuleOp"> {
+  let summary = "Triton generally compiles a single kernel, so they can specify the number of ctas and warps. However, we want to be able to compile multiple kernels. This pass will use the attributes from the module and use that to lower to TritonGPU.";
+  let dependentDialects = [];
+  let options = [
+    Option<
+        /*C++ variable name=*/"target",
+        /*CLI argument=*/"target",
+        /*type=*/"std::string",
+        /*default=*/"\"\"",
+        /*description=*/"the GPU target, e.g., cuda:80, hip:gfx942"
+      >];
+}
+
+def EnzymeBatchToStableHLOPass : Pass<"enzyme-batch-to-stablehlo"> {
+  let summary = "Legalize batching specific enzyme ops to stablehlo dialect";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "enzyme::EnzymeDialect"
+  ];
+}
+
 #endif

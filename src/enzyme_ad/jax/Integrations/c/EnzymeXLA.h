@@ -28,10 +28,13 @@ MLIR_CAPI_EXPORTED MlirAttribute enzymexlaLapackSideAttrGet(MlirContext ctx,
                                                             uint8_t left_side);
 
 MLIR_CAPI_EXPORTED MlirAttribute enzymexlaLapackUploAttrGet(MlirContext ctx,
-                                                            uint8_t up);
+                                                            int32_t mode);
 
 MLIR_CAPI_EXPORTED MlirAttribute enzymexlaQRAlgorithmAttrGet(MlirContext ctx,
                                                              int32_t mode);
+
+MLIR_CAPI_EXPORTED MlirAttribute enzymexlaSVDAlgorithmAttrGet(MlirContext ctx,
+                                                              int32_t mode);
 
 //===----------------------------------------------------------------------===//
 // Machine Learning Ops
@@ -39,6 +42,13 @@ MLIR_CAPI_EXPORTED MlirAttribute enzymexlaQRAlgorithmAttrGet(MlirContext ctx,
 
 MLIR_CAPI_EXPORTED MlirAttribute
 enzymexlaGeluApproximationAttrGet(MlirContext ctx, int32_t mode);
+
+//===----------------------------------------------------------------------===//
+// Other Ops / Attributes
+//===----------------------------------------------------------------------===//
+
+MLIR_CAPI_EXPORTED MlirAttribute
+enzymexlaGuaranteedAnalysisResultAttrGet(MlirContext ctx, int32_t mode);
 
 #ifdef __cplusplus
 } // extern "C"

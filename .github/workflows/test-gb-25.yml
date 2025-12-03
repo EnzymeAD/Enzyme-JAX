@@ -54,7 +54,7 @@ jobs:
           # - '0123456789abcdef0123456789abcdef01234567'
         reactant_commit:
           - 'main'
-          # - 'regenerate-mlir-bindings'
+          # - 'ap/pass_generalization'
 
     steps:
       - name: Check GPUs
@@ -79,7 +79,7 @@ jobs:
           repository-cache: true
           bazelisk-version: 1.x
       - name: Checkout Reactant.jl
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           repository: 'EnzymeAD/Reactant.jl'
           ref: 'main'
@@ -134,7 +134,7 @@ jobs:
           fi
         working-directory: ${{ env.REACTANT_DIR }}/deps/ReactantExtra
       - name: Checkout GB-25
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           repository: 'PRONTOLab/GB-25'
           ref: ${{ matrix.gb25_commit }}

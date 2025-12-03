@@ -397,7 +397,7 @@ def CommRegionOp : EnzymeXLA_Op<"comm_region", [
 
 // Linear Algebra Ops
 
-def SymmOp: EnzymeXLA_Op<"lapack.symm", [Pure, SameOperandsAndResultElementType]> {
+def SymmOp: EnzymeXLA_Op<"blas.symm", [Pure, SameOperandsAndResultElementType]> {
   let summary = "Multiplication involving a symmetric matrix";
 
   let description = [{
@@ -420,6 +420,63 @@ def SymmOp: EnzymeXLA_Op<"lapack.symm", [Pure, SameOperandsAndResultElementType]
 
   let assemblyFormat = [{
     $A `,` $B `,` $C `,` $alpha `,` $beta attr-dict `:` functional-type(operands, results)
+  }];
+}
+
+def SyrkOp: EnzymeXLA_Op<"blas.syrk", [Pure, SameOperandsAndResultElementType]> {
+  let summary = "Multiplication involving a symmetric matrix";
+
+  let description = [{
+    C := alpha*A*A^T + beta*C, or C := alpha*A^T*A + beta*C, where alpha and beta are
+    scalars. C must be a n x n symmetric matrix.
+
+    If `fill` is present, then both the upper and lower triangles of the matrix are filled.
+    Otherwise the values in the non-uplo part of the matrix are undefined.
+  }];
+
+  let arguments = (ins
+    HLO_Tensor:$A,
+    HLO_Tensor:$C,
+    TensorFloat:$alpha,
+    TensorFloat:$beta,
+    EnzymeXLA_LapackUploAttr:$uplo,
+    DefaultValuedAttr<EnzymeXLA_LapackTransposeAttr, "::mlir::enzymexla::LapackTranspose::none">:$transpose,
+    OptionalAttr<UnitAttr>:$fill
+  );
+
+  let results = (outs
+    HLO_Tensor: $output
+  );
+
+  let assemblyFormat = [{
+    $A `,` $C `,` $alpha `,` $beta attr-dict `:` functional-type(operands, results)
+  }];
+}
+
+def TrmmOp: EnzymeXLA_Op<"blas.trmm", [Pure, SameOperandsAndResultElementType]> {
+  let summary = "Multiplication involving a triangular matrix";
+
+  let description = [{
+    B := alpha * op(A) x B, or B := alpha * B x op(A), where alpha is a scalar,
+    B is a m x n matrix, A is a unit, or non-unit, upper or lower triangular
+    matrix, and op(A) is one of op(A) = A, or op(A) = A^T or A^H.
+  }];
+
+  let arguments = (ins
+    HLO_Tensor:$A,
+    HLO_Tensor:$B,
+    TensorFloat:$alpha,
+    EnzymeXLA_LapackSideAttr:$side,
+    EnzymeXLA_LapackUploAttr:$uplo,
+    EnzymeXLA_LapackTransposeAttr:$transpose
+  );
+
+  let results = (outs
+    HLO_Tensor: $output
+  );
+
+  let assemblyFormat = [{
+    $A `,` $B `,` $alpha `,` attr-dict `:` functional-type(operands, results)
   }];
 }
 
@@ -446,15 +503,15 @@ def QRFactorizationOp: EnzymeXLA_Op<"linalg.qr", [Pure]> {
   let summary = "QR factorization operation (high-level op)";
 
   let description = [{
-    This operation computes the QR factorization of a matrix using Householder 
-    reflections. Mathematically, it decomposes A into the product of an 
-    orthogonal (unitary if complex) matrix Q and an upper triangular matrix R, 
+    This operation computes the QR factorization of a matrix using Householder
+    reflections. Mathematically, it decomposes A into the product of an
+    orthogonal (unitary if complex) matrix Q and an upper triangular matrix R,
     such that A = QR.
 
     If A has size m x n and m > n, Q is an m x n isometric matrix. If m < n, R
     will be a m x n trapezoidal matrix.
 
-    This operation is modeled after the mathematical formulation of the QR 
+    This operation is modeled after the mathematical formulation of the QR
     factorization, and not after LAPACK's compact formats.
   }];
 
@@ -473,28 +530,49 @@ def QRFactorizationOp: EnzymeXLA_Op<"linalg.qr", [Pure]> {
   }];
 }
 
+def SVDFactorizationOp : EnzymeXLA_Op<"linalg.svd", [Pure]> {
+  let summary = "Singular Value Decomposition (SVD) factorization operation.";
+
+  let arguments = (ins
+    HLO_Tensor:$input,
+    DefaultValuedAttr<BoolAttr, "false">:$full,
+    DefaultValuedAttr<EnzymeXLA_SVDAlgorithmAttr, "::mlir::enzymexla::SVDAlgorithm::DEFAULT">:$algorithm
+  );
+
+  let results = (outs
+    HLO_Tensor:$U,
+    HLO_Tensor:$S,
+    HLO_Tensor:$Vt,
+    HLO_Tensor:$info
+  );
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
 def GeqrfOp : EnzymeXLA_Op<"lapack.geqrf", [Pure]> {
   let summary = "QR factorization operation (low-level op)";
 
   let description = [{
-    This operation computes the QR factorization of a matrix using Householder 
-    reflections. Mathematically, it decomposes A into the product of an 
+    This operation computes the QR factorization of a matrix using Householder
+    reflections. Mathematically, it decomposes A into the product of an
     orthogonal matri x Q and an upper triangular matrix R,
-      such that A = QR.
+    such that A = QR.
 
-                    This operation is modeled after
-                        LAPACK's *GEQRF routines, which returns the  result in
-                            the QR packed format.
-}];
+    This operation is modeled after LAPACK's *GEQRF routines, which returns the
+    result in the QR packed format.
+  }];
 
-let arguments = (ins HLO_Tensor : $input);
+  let arguments = (ins HLO_Tensor : $input);
 
-let results = (outs HLO_Tensor
-               : $output, HLO_Tensor
-               : $tau, HLO_Tensor
-               : $info);
+  let results = (outs
+    HLO_Tensor:$output,
+    HLO_Tensor:$tau,
+    HLO_Tensor:$info
+  );
 
-let assemblyFormat = [{
+  let assemblyFormat = [{
     $input attr-dict `:` functional-type($input, results)
   }];
 }
@@ -503,11 +581,11 @@ def GeqrtOp : EnzymeXLA_Op<"lapack.geqrt", [Pure]> {
   let summary = "QR factorization operation (low-level op)";
 
   let description = [{
-    This operation computes the QR factorization of a matrix using Householder 
-    reflections. Mathematically, it decomposes A into the product of an 
+    This operation computes the QR factorization of a matrix using Householder
+    reflections. Mathematically, it decomposes A into the product of an
     orthogonal matrix Q and an upper triangular matrix R, such that A = QR.
 
-    This operation is modeled after LAPACK's *GEQRT routines, which returns the 
+    This operation is modeled after LAPACK's *GEQRT routines, which returns the
     result in the QR CompactWY format.
   }];
 
@@ -605,12 +683,89 @@ def GemqrtOp : EnzymeXLA_Op<"lapack.gemqrt", [Pure]> {
   }];
 }
 
-def SVDFactorizationOp : EnzymeXLA_Op<"linalg.svd", [Pure]> {
+def GetrfOp : EnzymeXLA_Op<"lapack.getrf", [Pure]> {
+  let summary = "LU factorization operation with row-major pivoting.";
+
+  let arguments = (ins HLO_Tensor:$input);
+
+  let results = (outs
+    HLO_Tensor:$output,
+    HLO_Tensor:$pivots,
+    HLO_Tensor:$permutation,
+    HLO_Tensor:$info
+  );
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
+def GetriOp : EnzymeXLA_Op<"lapack.getri", [Pure]> {
+  let summary = "Computes the inverse of a matrix using the LU factorization.";
+
+  let arguments = (ins
+    HLO_Tensor:$input,
+    HLO_Tensor:$ipiv
+  );
+
+  let results = (outs
+    HLO_Tensor:$output
+  );
+
+  let assemblyFormat = [{
+    $input `,` $ipiv attr-dict `:` functional-type(operands, results)
+  }];
+}
+
+def GesddOp : EnzymeXLA_Op<"lapack.gesdd", [Pure]> {
   let summary = "Singular Value Decomposition (SVD) factorization operation.";
 
   let arguments = (ins
     HLO_Tensor:$input,
-    DefaultValuedAttr<BoolAttr, "false">:$full
+    DefaultValuedAttr<BoolAttr, "false">:$full,
+    DefaultValuedAttr<BoolAttr, "true">:$compute_uv
+  );
+
+  let results = (outs
+    HLO_Tensor:$U,
+    HLO_Tensor:$S,
+    HLO_Tensor:$Vt,
+    HLO_Tensor:$info
+  );
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
+def GesvdOp : EnzymeXLA_Op<"lapack.gesvd", [Pure]> {
+  let summary = "Singular Value Decomposition (SVD) factorization operation.";
+
+  let arguments = (ins
+    HLO_Tensor:$input,
+    DefaultValuedAttr<BoolAttr, "false">:$full,
+    DefaultValuedAttr<BoolAttr, "true">:$compute_uv
+  );
+
+  let results = (outs
+    HLO_Tensor:$U,
+    HLO_Tensor:$S,
+    HLO_Tensor:$Vt,
+    HLO_Tensor:$info
+  );
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
+def GesvjOp : EnzymeXLA_Op<"lapack.gesvj", [Pure]> {
+  let summary = "Singular Value Decomposition (SVD) factorization operation.";
+
+  let arguments = (ins
+    HLO_Tensor:$input,
+    DefaultValuedAttr<BoolAttr, "false">:$full,
+    DefaultValuedAttr<BoolAttr, "true">:$compute_uv
   );
 
   let results = (outs
