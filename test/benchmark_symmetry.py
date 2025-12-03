@@ -49,16 +49,12 @@ def benchmark_symmetry():
             a = a + 1 
         return result
         
-    def reduce_rows(x):
-        return jnp.sum(x, axis=0)
-
-    def reduce_cols(x):
-        return jnp.sum(x, axis=1)
-
-    passes = "inline{default-pipeline=canonicalize max-iterations=4}, canonicalize, cse, partial-symmetry-annotate, enzyme-hlo-generate-td{patterns=transpose_partial_symmetry_simplify;reduce_partial_symmetry_rotate_axes}, transform-interpreter, enzyme-hlo-remove-transform"
+    passes = "inline{default-pipeline=canonicalize max-iterations=4}, canonicalize, cse, partial-symmetry-annotate, enzyme-hlo-generate-td{patterns=transpose_partial_symmetry_simplify;reduce_partial_symmetry_rotate_axes}, transform-interpreter, enzyme-hlo-remove-transform, canonicalize, cse"
+    passes_control = "inline{default-pipeline=canonicalize max-iterations=4}, canonicalize, cse"
 
     pipeline_debug = JaXPipeline(passes, keep_enzyme_attributes=True)
     pipeline = JaXPipeline(passes)
+    pipeline_control = JaXPipeline(passes_control)
     
     NUM_ITER = 100
     tests = [
@@ -66,9 +62,7 @@ def benchmark_symmetry():
         ("Chained (10x)", chained_symmetric_op, (2048, 2048)),
         ("Interleaved (10x)", interleaved_symmetric_op, (2048, 2048)),
         ("Dot CSE", dot_cse, (1024, 1024)),
-        ("Reduce partial symmetry", reduce_partial_symmetry, (32, 32, 32, 32)),
-        ("Reduce rows", reduce_rows, (16384, 16384)),
-        ("Reduce cols", reduce_cols, (16384, 16384)),
+        ("Reduce partial symmetry", reduce_partial_symmetry, (32, 32, 32, 32))
     ]
     
     # Collect MLIR file paths to print at the end
@@ -83,7 +77,7 @@ def benchmark_symmetry():
         X = jax.device_put(jax.random.normal(key, shape))
         # Count transposes
         ir_buf = io.StringIO()
-        _ = jax.jit(enzyme_jax_ir(pipeline_options=JaXPipeline(""), 
+        _ = jax.jit(enzyme_jax_ir(pipeline_options=pipeline_control, 
                                    jit_options={"print_mlir": ir_buf})(fn))(X).block_until_ready()
         base_mlir = ir_buf.getvalue()
         base_t = count_transposes(base_mlir)
