@@ -667,9 +667,9 @@ td_library(
     ],
     deps = [
         "@llvm-project//mlir:BuiltinDialectTdFiles",
+        "@llvm-project//mlir:ControlFlowInterfacesTdFiles",
         "@llvm-project//mlir:OpBaseTdFiles",
         "@llvm-project//mlir:SideEffectInterfaces",
-        "@llvm-project//mlir:ControlFlowInterfacesTdFiles",
     ],
 )
 
@@ -694,7 +694,7 @@ gentbl_cc_library(
     tblgen = "@llvm-project//mlir:mlir-tblgen",
     td_file = "Dialect/Perfify/Dialect.td",
     deps = [
-        ":PerfifyDialectFiles"
+        ":PerfifyDialectFiles",
     ],
 )
 
@@ -713,7 +713,7 @@ gentbl_cc_library(
     tblgen = "@llvm-project//mlir:mlir-tblgen",
     td_file = "Dialect/Perfify/Ops.td",
     deps = [
-        ":PerfifyDialectFiles"
+        ":PerfifyDialectFiles",
     ],
 )
 
@@ -936,6 +936,8 @@ cc_library(
         ":EnzymeXLADialectUtils",
         ":EnzymeXLAOpsIncGen",
         ":EnzymeXLAPassesIncGen",
+        ":PerfifyDialectIncGen",
+        ":PerfifyOpsIncGen",
         ":RaisingTransformOps",
         ":RaisingTransformOpsImplIncGen",
         ":RaisingTransformOpsIncGen",
@@ -943,8 +945,6 @@ cc_library(
         ":StablehloOptPatternsIncGen",
         ":TesseraDialectIncGen",
         ":TesseraOpsIncGen",
-        ":PerfifyDialectIncGen",
-        ":PerfifyOpsIncGen",
         ":TritonExtDialect",
         ":chlo-derivatives",
         ":enzymexla-derivatives",
