@@ -196,7 +196,7 @@ PartialSymmetryAnnotation PartialSymmetryAnnotation::propagateDotGeneral(
 
   PartialSymmetryAnnotation result = createNotSymmetric(resultRank);
 
-  // Preserve symmetry in batching dimensions
+  // Symmetry between batching dimensions
   for (int64_t i = 0; i < (int64_t)lhsBatchingDims.size(); ++i) {
     for (int64_t j = 0; j < i; ++j) {
       if (lhsAnnotation.getSetId(lhsBatchingDims[i]) ==
@@ -208,7 +208,47 @@ PartialSymmetryAnnotation PartialSymmetryAnnotation::propagateDotGeneral(
     }
   }
 
-  // Preserve symmetry in free (non-contracting, non-batching) dimensions
+  // Calculate free (non-contracting, non-batching) dimensions
+  SmallVector<int64_t> lhsFreeDims;
+  for (int64_t i = 0; i < lhsAnnotation.getRank(); ++i) {
+    if (!llvm::is_contained(lhsBatchingDims, i) &&
+        !llvm::is_contained(lhsContractingDims, i)) {
+      lhsFreeDims.push_back(i);
+    }
+  }
+
+  SmallVector<int64_t> rhsFreeDims;
+  for (int64_t i = 0; i < rhsAnnotation.getRank(); ++i) {
+    if (!llvm::is_contained(rhsBatchingDims, i) &&
+        !llvm::is_contained(rhsContractingDims, i)) {
+      rhsFreeDims.push_back(i);
+    }
+  }
+
+  // Symmetry between free dimensions from LHS
+  for (int64_t i = 0; i < (int64_t)lhsFreeDims.size(); ++i) {
+    for (int64_t j = 0; j < i; ++j) {
+      if (lhsAnnotation.getSetId(lhsFreeDims[i]) ==
+          lhsAnnotation.getSetId(lhsFreeDims[j])) {
+        result.uniteDimensionSets(resultRank, lhsBatchingDims.size() + i,
+                                  lhsBatchingDims.size() + j);
+      }
+    }
+  }
+
+  // Symmetry between free dimensions from RHS
+  for (int64_t i = 0; i < (int64_t)rhsFreeDims.size(); ++i) {
+    for (int64_t j = 0; j < i; ++j) {
+      if (rhsAnnotation.getSetId(rhsFreeDims[i]) ==
+          rhsAnnotation.getSetId(rhsFreeDims[j])) {
+        result.uniteDimensionSets(
+            resultRank, lhsBatchingDims.size() + lhsFreeDims.size() + i,
+            lhsBatchingDims.size() + lhsFreeDims.size() + j);
+      }
+    }
+  }
+
+  // Symmetry between free dimensions of LHS and free dimensions of RHS
   if (rhsAliasesLhs) {
     bool exchange_valid = true;
 
@@ -236,53 +276,13 @@ PartialSymmetryAnnotation PartialSymmetryAnnotation::propagateDotGeneral(
     }
 
     if (exchange_valid) {
-      SmallVector<int64_t> lhsResultDims;
-      for (int64_t i = 0; i < lhsAnnotation.getRank(); ++i) {
-        if (!llvm::is_contained(lhsBatchingDims, i) &&
-            !llvm::is_contained(lhsContractingDims, i)) {
-          lhsResultDims.push_back(i);
-        }
-      }
-
-      SmallVector<int64_t> rhsResultDims;
-      for (int64_t i = 0; i < rhsAnnotation.getRank(); ++i) {
-        if (!llvm::is_contained(rhsBatchingDims, i) &&
-            !llvm::is_contained(rhsContractingDims, i)) {
-          rhsResultDims.push_back(i);
-        }
-      }
-
-      // Symmetry within free dimensions of LHS
-      for (int64_t i = 0; i < (int64_t)lhsResultDims.size(); ++i) {
-        for (int64_t j = 0; j < i; ++j) {
-          if (lhsAnnotation.getSetId(lhsResultDims[i]) ==
-              lhsAnnotation.getSetId(lhsResultDims[j])) {
-            result.uniteDimensionSets(resultRank, lhsBatchingDims.size() + i,
-                                      lhsBatchingDims.size() + j);
-          }
-        }
-      }
-
-      // Symmetry between free dimensions of RHS
-      for (int64_t i = 0; i < (int64_t)rhsResultDims.size(); ++i) {
-        for (int64_t j = 0; j < i; ++j) {
-          if (rhsAnnotation.getSetId(rhsResultDims[i]) ==
-              rhsAnnotation.getSetId(rhsResultDims[j])) {
-            result.uniteDimensionSets(
-                resultRank, lhsBatchingDims.size() + lhsResultDims.size() + i,
-                lhsBatchingDims.size() + lhsResultDims.size() + j);
-          }
-        }
-      }
-
-      // Symmetry between free dimensions of LHS and RHS
-      for (int64_t i = 0; i < (int64_t)lhsResultDims.size(); ++i) {
-        for (int64_t j = 0; j < (int64_t)rhsResultDims.size(); ++j) {
-          if (lhsAnnotation.getSetId(lhsResultDims[i]) ==
-              lhsAnnotation.getSetId(rhsDimToLhs[rhsResultDims[j]])) {
+      for (int64_t i = 0; i < (int64_t)lhsFreeDims.size(); ++i) {
+        for (int64_t j = 0; j < (int64_t)rhsFreeDims.size(); ++j) {
+          if (lhsAnnotation.getSetId(lhsFreeDims[i]) ==
+              lhsAnnotation.getSetId(rhsDimToLhs[rhsFreeDims[j]])) {
             result.uniteDimensionSets(resultRank, lhsBatchingDims.size() + i,
                                       lhsBatchingDims.size() +
-                                          lhsResultDims.size() + j);
+                                          lhsFreeDims.size() + j);
           }
         }
       }
