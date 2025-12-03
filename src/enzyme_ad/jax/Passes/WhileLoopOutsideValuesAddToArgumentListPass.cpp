@@ -1,4 +1,5 @@
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Transforms/RegionUtils.h"
 #include "mlir/Transforms/WalkPatternRewriteDriver.h"
 
 #include "src/enzyme_ad/jax/Passes/Passes.h"
@@ -27,26 +28,9 @@ struct SHLOWhileOpUpdateArgumentListPattern final
 
   LogicalResult matchAndRewrite(stablehlo::WhileOp whileOp,
                                 PatternRewriter &rewriter) const override {
-    // Collect values used inside cond/body that are defined outside the WhileOp
-    SmallVector<Value, 4> extraValues;
-    SmallPtrSet<Value, 8> seen;
-
-    auto collectExternal = [&](Region &region) {
-      region.walk([&](Operation *op) {
-        for (OpOperand &operand : op->getOpOperands()) {
-          Value v = operand.get();
-          if (!v)
-            continue;
-          if (definedOutside(v, whileOp) && !seen.contains(v)) {
-            seen.insert(v);
-            extraValues.push_back(v);
-          }
-        }
-      });
-    };
-
-    collectExternal(whileOp.getCond());
-    collectExternal(whileOp.getBody());
+    SetVector<Value> extraValuesSet;
+    getUsedValuesDefinedAbove(whileOp->getRegions(), extraValuesSet);
+    SmallVector<Value> extraValues = extraValuesSet.takeVector();
 
     if (extraValues.empty())
       return failure();
