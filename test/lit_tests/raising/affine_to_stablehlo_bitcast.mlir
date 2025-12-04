@@ -82,7 +82,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
 // CHECK-NEXT:    %8 = stablehlo.reshape %7 : (tensor<2160000xf32>) -> tensor<120x18000xf32>
 // CHECK-NEXT:    %9 = stablehlo.bitcast_convert %arg0 : (tensor<?xf32>) -> tensor<?x4xi8>
 // CHECK-NEXT:    %10 = stablehlo.get_dimension_size %arg0, dim = 0 : (tensor<?xf32>) -> tensor<i32>
-// CHECK-NEXT:    %11 = stablehlo.divide %10, %cst_6 : tensor<i32>
+// CHECK-NEXT:    %11 = stablehlo.multiply %10, %cst_6 : tensor<i32>
 // CHECK-NEXT:    %12 = stablehlo.reshape %11 : (tensor<i32>) -> tensor<1xi32>
 // CHECK-NEXT:    %13 = stablehlo.dynamic_reshape %9, %12 : (tensor<?x4xi8>, tensor<1xi32>) -> tensor<?xi8>
 // CHECK-NEXT:    %14 = stablehlo.multiply %0, %c_3 : tensor<18000xi64>
