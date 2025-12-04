@@ -4198,6 +4198,18 @@ struct ConvertPolygeistToLLVMPass
         }
       });
     }
+    if (StringRef(gpuTarget).starts_with("xla") || gpuTarget == "cpu") {
+      m->walk([](LLVM::LLVMFuncOp call) {
+        if (call.getName() == "cudaGetLastError") {
+
+          OpBuilder builder(call);
+          auto replace =
+              LLVM::ZeroOp::create(builder, call.getLoc(), call.getType(0));
+          call->replaceAllUsesWith(replace);
+          call->erase();
+        }
+      });
+    }
 
     removeUnsupportedLifeTimes(m);
     if (m->walk<WalkOrder::PreOrder>([](Operation *op) {
