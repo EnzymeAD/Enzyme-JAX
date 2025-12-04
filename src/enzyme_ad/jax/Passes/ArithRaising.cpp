@@ -424,10 +424,19 @@ struct ArithRaisingPass
     op->walk([=](arith::ExtUIOp addOp) {
       if (!use_stablehlo || !isa<RankedTensorType>(addOp->getResultTypes()[0]))
         return;
-      if (!cast<RankedTensorType>(addOp.getOperand().getType())
-               .getElementType()
-               .isInteger(1))
+      auto inTy =
+          cast<RankedTensorType>(addOp.getOperand().getType()).getElementType();
+      auto outTy = cast<RankedTensorType>(addOp.getType()).getElementType();
+      bool legal = false;
+      if (inTy.isInteger(1)) {
+        legal = true;
+      } else if (inTy.isInteger() && outTy.isInteger() &&
+                 inTy.getIntOrFloatBitWidth() < outTy.getIntOrFloatBitWidth()) {
+        legal = true;
+      }
+      if (!legal) {
         return;
+      }
       OpBuilder builder(addOp);
       Value newAddOp;
       newAddOp = stablehlo::ConvertOp::create(
