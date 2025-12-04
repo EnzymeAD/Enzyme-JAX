@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1764809227865,
+  "lastUpdate": 1764875098456,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "avikpal@mit.edu",
-            "name": "Avik Pal",
-            "username": "avik-pal"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "6e58b86686d04b2f803925a9ecc0021fbec1102d",
-          "message": "fix: infinite raising + correct broadcast shape (#1593)",
-          "timestamp": "2025-11-07T19:06:25-05:00",
-          "tree_id": "b272fd5ada5ff9fd9021bf78fc923c36c99bdeda",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/6e58b86686d04b2f803925a9ecc0021fbec1102d"
-        },
-        "date": 1762563418795,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.000004448425001464784,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.00000446261799952481,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001502956085983,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001499391246004,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2199,6 +2155,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001325478068999,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "wmoses@google.com",
+            "name": "William Moses",
+            "username": "wsmoses"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f65a4dd29e0dad1700fee99c8bb7d9ec1b0bbca5",
+          "message": "RaiseToStableHLO: fix store to scatter (#1677)\n\n* RaiseToStableHLO: fix store to scatter\n\n* fix\n\n* fix\n\n* Update affine_to_stablehlo_bitcast.mlir",
+          "timestamp": "2025-12-04T08:22:53-06:00",
+          "tree_id": "9ba9188b5d78425de8573d9d6e2424168590d5f1",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/f65a4dd29e0dad1700fee99c8bb7d9ec1b0bbca5"
+        },
+        "date": 1764875097276,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004281310999795096,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004241763000027276,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001342257274001,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001461607222998,
             "unit": "s"
           }
         ]
