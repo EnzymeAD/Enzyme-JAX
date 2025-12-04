@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1764875098456,
+  "lastUpdate": 1764881592659,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "238314553+enzymead-bot[bot]@users.noreply.github.com",
-            "name": "enzymead-bot[bot]",
-            "username": "enzymead-bot[bot]"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "24641f33ea39c03c45b07ce99e2881ad50128538",
-          "message": "Update jax-ml/jax to commit 30e565311af559569b4842bddced4b461f21dd73 (#1586)\n\n* Update jax-ml/jax to commit 30e565311af559569b4842bddced4b461f21dd73\n\nDiff: https://github.com/jax-ml/jax/compare/eb2d56b99ceef305933d9293d5c1715fdb333950...30e565311af559569b4842bddced4b461f21dd73\n\n* fix\n\n* remove rocm tmpdir patch\n\n---------\n\nCo-authored-by: enzymead-bot[bot] <238314553+enzymead-bot[bot]@users.noreply.github.com>\nCo-authored-by: William S. Moses <gh@wsmoses.com>",
-          "timestamp": "2025-11-07T22:51:51-06:00",
-          "tree_id": "289469ea040dab7ed40380ae1a6f4377d7fa9e5c",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/24641f33ea39c03c45b07ce99e2881ad50128538"
-        },
-        "date": 1762585132339,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.000004388645000290125,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.000004541678001987748,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001507710175996,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001508200245996,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2199,6 +2155,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001461607222998,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "wmoses@google.com",
+            "name": "William Moses",
+            "username": "wsmoses"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8e83bb047e01f2f0499b5a0680405ff029330436",
+          "message": "Don't check cuda error on other backend (#1680)\n\n* Don't check cuda error on other backend\n\n* Fix\n\n* fix\n\n* fix\n\n* fix\n\n* fix\n\n* fix\n\n* mul to div\n\n* fix\n\n* fix",
+          "timestamp": "2025-12-04T11:49:11-06:00",
+          "tree_id": "e46ef81b376f671b3669d2ff14cd85258f0063d1",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/8e83bb047e01f2f0499b5a0680405ff029330436"
+        },
+        "date": 1764881592174,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004402163899794687,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004342059900227468,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001481182198,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001468281217999,
             "unit": "s"
           }
         ]
