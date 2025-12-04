@@ -111,7 +111,7 @@ Type convertMemrefElementTypeForLLVMPointer(
 }
 
 static Value insertXLAInitDeinit(mlir::ModuleOp moduleOp, StringRef backend,
-                                 OpBuilder &rewriter) {
+                                 RewriterBase &rewriter) {
   auto loc = moduleOp.getLoc();
   // TODO is it okay to be using OpBuilder's in op rewriter?
   // OpBuilder moduleBuilder(moduleOp.getBodyRegion());
@@ -161,11 +161,16 @@ static Value insertXLAInitDeinit(mlir::ModuleOp moduleOp, StringRef backend,
         rewriter.getI32ArrayAttr({65535}),
         rewriter.getArrayAttr({LLVM::ZeroAttr::get(rewriter.getContext())}));
 
-    if (!data) {
-      data = LLVM::GlobalOp::create(rewriter, loc, ptrty, /*constant*/ false,
-                                    LLVM::Linkage::Linkonce, dataNameBuffer,
-                                    /* initValue */ mlir::Attribute(),
-                                    /* alignment */ 8, /* addrSpace */ 0);
+    if (!data || data.getLinkage() == LLVM::Linkage::External) {
+      auto newdata =
+          LLVM::GlobalOp::create(rewriter, loc, ptrty, /*constant*/ false,
+                                 LLVM::Linkage::Linkonce, dataNameBuffer,
+                                 /* initValue */ mlir::Attribute(),
+                                 /* alignment */ 8, /* addrSpace */ 0);
+      if (data) {
+        rewriter.eraseOp(data);
+      }
+      data = newdata;
     }
   }
 
