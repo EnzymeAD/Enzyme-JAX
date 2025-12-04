@@ -92,8 +92,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
 // CHECK-NEXT:    %18 = stablehlo.add %16, %17 : tensor<120x18000xi64>
 // CHECK-NEXT:    %19 = stablehlo.add %18, %c_1 : tensor<120x18000xi64>
 // CHECK-NEXT:    %20 = stablehlo.reshape %19 : (tensor<120x18000xi64>) -> tensor<2160000x1xi64>
-// CHECK-NEXT:    %21 = "stablehlo.gather"(%13, %20) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1>}> : (tensor<?xi8>, tensor<2160000x1x
-// CHECK-NEXT:i64>) -> tensor<2160000xi8>
+// CHECK-NEXT:    %21 = "stablehlo.gather"(%13, %20) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1>}> : (tensor<?xi8>, tensor<2160000x1xCHECK-NEXT:i64>) -> tensor<2160000xi8>
 // CHECK-NEXT:    %22 = arith.extui %21 : tensor<2160000xi8> to tensor<2160000xi32>
 // CHECK-NEXT:    %23 = stablehlo.reshape %22 : (tensor<2160000xi32>) -> tensor<120x18000xi32>
 // CHECK-NEXT:    %24 = arith.andi %23, %c_0 : tensor<120x18000xi32>
