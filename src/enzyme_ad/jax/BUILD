@@ -656,6 +656,38 @@ gentbl_cc_library(
     td_file = "Dialect/Tessera/Ops.td",
     deps = [
         ":TesseraDialectTdFiles",
+        "@llvm-project//mlir:CallOpInterfaces",
+        "@llvm-project//mlir:ControlFlowInterfaces",
+        "@llvm-project//mlir:FunctionInterfacesTdFiles",
+        "@llvm-project//mlir:IR",
+    ],
+)
+
+td_library(
+    name = "TesseraPassesTdFiles",
+    srcs = [
+    ],
+    deps = [
+        "@llvm-project//mlir:PassBaseTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "TesseraPassesIncGen",
+    tbl_outs = [
+        (
+            [
+                "-gen-pass-decls",
+                "-name=tessera",
+            ],
+            "Passes/Tessera/Passes.h.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Passes/Tessera/Passes.td",
+    deps = [
+        ":TesseraPassesTdFiles",
+        "@llvm-project//mlir:FunctionInterfacesTdFiles",
     ],
 )
 
@@ -841,6 +873,7 @@ cc_library(
     srcs = glob([
         "Implementations/*.cpp",
         "Passes/*.cpp",
+        "Passes/Tessera/*.cpp",
         "Dialect/*.cpp",
         "Dialect/Distributed/*.cpp",
         "Dialect/Tessera/*.cpp",
@@ -850,6 +883,7 @@ cc_library(
     hdrs = glob([
         "Implementations/*.h",
         "Passes/*.h",
+        "Passes/Tessera/*.h",
         "Dialect/*.h",
         "Dialect/Distributed/*.h",
         "Dialect/Tessera/*.h",
@@ -883,6 +917,7 @@ cc_library(
         ":StablehloOptPatternsIncGen",
         ":TesseraDialectIncGen",
         ":TesseraOpsIncGen",
+        ":TesseraPassesIncGen",
         ":TritonExtDialect",
         ":chlo-derivatives",
         ":enzymexla-derivatives",
