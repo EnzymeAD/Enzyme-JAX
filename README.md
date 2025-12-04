@@ -74,3 +74,8 @@ Enzyme-Jax exposes a bunch of different tensor rewrites as MLIR passes in `src/e
 ```bash
 bazel run :refresh_compile_commands
 ```
+
+# References
+[1] Moses, William, and Valentin Churavy. "Instead of rewriting foreign code for machine learning, automatically synthesize fast gradients." Advances in neural information processing systems 33 (2020): 12472-12485.
+
+[2] Moses, William S., et al. "Polygeist: Raising C to polyhedral MLIR." 2021 30th International Conference on Parallel Architectures and Compilation Techniques (PACT). IEEE, 2021.
