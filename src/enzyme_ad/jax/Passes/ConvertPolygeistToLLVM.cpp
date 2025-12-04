@@ -161,10 +161,12 @@ static Value insertXLAInitDeinit(mlir::ModuleOp moduleOp, StringRef backend,
         rewriter.getI32ArrayAttr({65535}),
         rewriter.getArrayAttr({LLVM::ZeroAttr::get(rewriter.getContext())}));
 
-    data = LLVM::GlobalOp::create(rewriter, loc, ptrty, /*constant*/ false,
-                                  LLVM::Linkage::Linkonce, dataNameBuffer,
-                                  /* initValue */ mlir::Attribute(),
-                                  /* alignment */ 8, /* addrSpace */ 0);
+    if (!data) {
+      data = LLVM::GlobalOp::create(rewriter, loc, ptrty, /*constant*/ false,
+                                    LLVM::Linkage::Linkonce, dataNameBuffer,
+                                    /* initValue */ mlir::Attribute(),
+                                    /* alignment */ 8, /* addrSpace */ 0);
+    }
   }
 
   // device id, ptr
