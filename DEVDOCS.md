@@ -8,7 +8,7 @@ Enzyme-JAX is a C++ project that integrates the Enzyme automatic differentiation
 
 ### Quick Build
 ```bash
-bazel build --repo_env=CC=clang-18 --color=yes --copt=-fbracket-depth=1024 --host_copt=-fbracket-depth=1024 -c dbg :enzymexlamlir-opt
+bazel build --repo_env=CC=clang-18 --color=yes -c dbg :enzymexlamlir-opt
 ```
 
 ### Build Artifacts
