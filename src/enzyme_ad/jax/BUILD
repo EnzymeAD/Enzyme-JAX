@@ -267,6 +267,20 @@ td_library(
 )
 
 gentbl_cc_library(
+    name = "triton-derivatives",
+    tbl_outs = [(
+        ["-gen-mlir-derivatives"],
+        "Implementations/TritonDerivatives.inc",
+    )],
+    tblgen = "@enzyme//:enzyme-tblgen",
+    td_file = "Implementations/TritonDerivatives.td",
+    td_srcs = [
+        "Implementations/TritonDerivatives.td",
+    ],
+    deps = [":ImplementationsCommonTdFiles"],
+)
+
+gentbl_cc_library(
     name = "mhlo-derivatives",
     tbl_outs = [(
         ["-gen-mlir-derivatives"],
@@ -700,6 +714,8 @@ cc_library(
     ],
     deps = [
         ":EnzymeXLAAttrsIncGen",
+        ":EnzymeXLACanonicalizers",
+        ":EnzymeXLADialectUtils",
         ":EnzymeXLAOpsIncGen",
         "@enzyme//:EnzymeMLIR",
         "@llvm-project//llvm:Support",
@@ -725,6 +741,7 @@ cc_library(
         "@llvm-project//mlir:Support",
         "@llvm-project//mlir:ViewLikeInterface",
         "@stablehlo//:base",
+        "@stablehlo//:chlo_ops",
         "@stablehlo//:stablehlo_ops",
     ],
 )
@@ -742,6 +759,113 @@ cc_library(
         "@llvm-project//mlir:Support",
     ],
     alwayslink = True,
+)
+
+td_library(
+    name = "TritonExtDialectTdFiles",
+    srcs = [
+        "Dialect/TritonExt/Dialect.td",
+        "Dialect/TritonExt/Ops.td",
+    ],
+    deps = [
+        "@llvm-project//mlir:BuiltinDialectTdFiles",
+        "@llvm-project//mlir:CallOpInterfaces",
+        "@llvm-project//mlir:ControlFlowInterfacesTdFiles",
+        "@llvm-project//mlir:FunctionInterfacesTdFiles",
+        "@llvm-project//mlir:InferTypeOpInterfaceTdFiles",
+        "@llvm-project//mlir:OpBaseTdFiles",
+        "@llvm-project//mlir:SideEffectInterfacesTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "TritonExtDialectIncGen",
+    tbl_outs = [
+        (
+            [
+                "-gen-dialect-decls",
+                "-dialect=enzymexla_tt_ext",
+            ],
+            "Dialect/TritonExt/TritonExtDialect.h.inc",
+        ),
+        (
+            [
+                "-gen-dialect-defs",
+                "-dialect=enzymexla_tt_ext",
+            ],
+            "Dialect/TritonExt/TritonExtDialect.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/TritonExt/Dialect.td",
+    deps = [
+        ":TritonExtDialectTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "TritonExtOpsIncGen",
+    tbl_outs = [
+        (
+            ["-gen-op-decls"],
+            "Dialect/TritonExt/TritonExtOps.h.inc",
+        ),
+        (
+            ["-gen-op-defs"],
+            "Dialect/TritonExt/TritonExtOps.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/TritonExt/Ops.td",
+    deps = [
+        ":TritonExtDialectTdFiles",
+    ],
+)
+
+cc_library(
+    name = "TritonExtDialect",
+    srcs = [
+        "Dialect/TritonExt/Dialect.cpp",
+        "Dialect/TritonExt/Ops.cpp",
+    ],
+    hdrs = [
+        "Dialect/TritonExt/Dialect.h",
+        "Dialect/TritonExt/Ops.h",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":EnzymeXLACanonicalizers",
+        ":EnzymeXLADialectUtils",
+        ":TritonExtDialectIncGen",
+        ":TritonExtOpsIncGen",
+        "@llvm-project//mlir:CallOpInterfaces",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:LLVMDialect",
+        "@llvm-project//mlir:SideEffectInterfaces",
+        "@stablehlo//:stablehlo_ops",
+        "@triton//:TritonDialects",
+    ],
+)
+
+cc_library(
+    name = "EnzymeXLADialectUtils",
+    srcs = ["Dialect/Utils.cpp"],
+    hdrs = ["Dialect/Utils.h"],
+    deps = [
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:SideEffectInterfaces",
+    ],
+)
+
+cc_library(
+    name = "EnzymeXLACanonicalizers",
+    srcs = [],
+    hdrs = ["Dialect/Canonicalizers.h"],
+    deps = [
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:LLVMDialect",
+        "@stablehlo//:stablehlo_ops",
+    ],
 )
 
 cc_library(
@@ -782,6 +906,8 @@ cc_library(
         ":DistributedTypesIncGen",
         ":EnzymeHLOPatternsIncGen",
         ":EnzymeXLAAttrsIncGen",
+        ":EnzymeXLACanonicalizers",
+        ":EnzymeXLADialectUtils",
         ":EnzymeXLAOpsIncGen",
         ":EnzymeXLAPassesIncGen",
         ":RaisingTransformOps",
@@ -792,14 +918,17 @@ cc_library(
         ":TesseraDialectIncGen",
         ":TesseraOpsIncGen",
         ":TesseraPassesIncGen",
+        ":TritonExtDialect",
         ":chlo-derivatives",
         ":enzymexla-derivatives",
         ":mhlo-derivatives",
         ":stablehlo-derivatives",
+        ":triton-derivatives",
         "//src/external/isl:Isl",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@enzyme//:EnzymeMLIR",
+        "@jax//jaxlib/gpu:triton_cc_proto",
         "@llvm-project//llvm:Core",
         "@llvm-project//llvm:ExecutionEngine",
         "@llvm-project//llvm:IPO",
@@ -861,6 +990,7 @@ cc_library(
         "@llvm-project//mlir:NVVMToLLVM",
         "@llvm-project//mlir:OpenMPDialect",
         "@llvm-project//mlir:OpenMPToLLVM",
+        "@llvm-project//mlir:Parser",
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:QuantOps",
         "@llvm-project//mlir:ROCDLDialect",
@@ -898,8 +1028,10 @@ cc_library(
         "@stablehlo//:stablehlo_passes",
         "@stablehlo//:stablehlo_type_inference",
         "@triton//:TritonDialects",
+        "@triton//:TritonToTritonGPUPasses",
         "@xla//xla/mlir/utils:type_util",
         "@xla//xla/mlir_hlo",
+        "@zlib",
     ],
 )
 
@@ -915,6 +1047,7 @@ cc_library(
     deps = [
         ":TransformOps",
         ":XLADerivatives",
+        ":TritonExtDialect",
         ":EnzymeXLAPassesIncGen",
         "@com_google_protobuf//:protobuf",
         "@tsl//tsl/platform:env",
@@ -1029,7 +1162,7 @@ cc_library(
         "@enzyme//:EnzymeMLIR",
 
         # Mosaic
-        "@jax//jaxlib/mosaic:tpu_dialect",
+        # "@jax//jaxlib/mosaic:tpu_dialect",
 
         # SHLO
         "@stablehlo//:stablehlo_ops",
@@ -1182,7 +1315,8 @@ cc_library(
         "@com_google_absl//absl/status:statusor",
 
         # Mosaic
-        "@jax//jaxlib/mosaic:tpu_dialect",
+        # Upstream is broken, re-enable when working
+        # "@jax//jaxlib/mosaic:tpu_dialect",
     ],
 )
 

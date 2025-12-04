@@ -54,7 +54,7 @@ jobs:
           # - '0123456789abcdef0123456789abcdef01234567'
         reactant_commit:
           - 'main'
-          # - ap/symbol_ref_kernel_call
+          # - 'ap/pass_generalization'
 
     steps:
       - name: Check GPUs
@@ -79,7 +79,7 @@ jobs:
           repository-cache: true
           bazelisk-version: 1.x
       - name: Checkout Reactant.jl
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           repository: 'EnzymeAD/Reactant.jl'
           ref: 'main'
@@ -134,7 +134,7 @@ jobs:
           fi
         working-directory: ${{ env.REACTANT_DIR }}/deps/ReactantExtra
       - name: Checkout GB-25
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           repository: 'PRONTOLab/GB-25'
           ref: ${{ matrix.gb25_commit }}
@@ -168,7 +168,7 @@ jobs:
           Pkg.gc()
         working-directory: ${{ env.GB25_DIR }}
       - name: Upload Julia project environment
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         timeout-minutes: 10
         if: ${{ always() }}
         with:
@@ -196,7 +196,7 @@ jobs:
           timeout --signal=TERM --verbose 19m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict correctness/correctness_sharded_baroclinic_instability_simulation_run.jl
         working-directory: ${{ env.GB25_DIR }}
       - name: Upload MLIR and XLA modules
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         timeout-minutes: 10
         if: ${{ !cancelled() }}
         with:
@@ -207,7 +207,7 @@ jobs:
           retention-days: 90
           overwrite: false
       - name: Upload XLA dump
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         timeout-minutes: 20
         if: ${{ !cancelled() }}
         with:
@@ -216,7 +216,7 @@ jobs:
           retention-days: 90
           overwrite: false
       - name: Upload XLA profiler traces
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         timeout-minutes: 10
         if: ${{ !cancelled() }}
         with:

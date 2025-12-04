@@ -80,6 +80,22 @@ struct DropUnsupportedAttributesPass
                                             config))) {
       signalPassFailure();
     }
+
+    if (enzymexla_analysis_result) {
+      auto moduleOp = getOperation();
+      SmallVector<StringRef, 4> enzymexlaAnalysisResultAttrs = {
+          "enzymexla.symmetric_matrix", "enzymexla.non_negative",
+          "enzymexla.finite", "enzymexla.no_nan"};
+
+      moduleOp.walk([&](Operation *op) {
+        for (auto removeAttr : enzymexlaAnalysisResultAttrs) {
+          if (op->hasAttr(removeAttr)) {
+            op->removeAttr(removeAttr);
+          }
+        }
+        return WalkResult::advance();
+      });
+    }
   }
 };
 

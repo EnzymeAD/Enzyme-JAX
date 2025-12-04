@@ -48,7 +48,8 @@ class HLOFFI(EnzymeJaxTest):
 
         self.name = "hlo_ffi"
 
-        self.tol = 1e-4
+        self.atol = 1e-4
+        self.rtol = 0.0
 
 
 if __name__ == "__main__":

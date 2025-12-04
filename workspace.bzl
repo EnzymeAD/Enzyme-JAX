@@ -1,11 +1,11 @@
-JAX_COMMIT = "3a22eea644237001df0f3dd42253225cc059b43c"
+JAX_COMMIT = "071a6a5a9a70b2447f0164e61e3e0333318422a8"
 JAX_SHA256 = ""
 
-ENZYME_COMMIT = "bc11256dcf8d36887a80fe422dcb6c02b9a88bd8"
+ENZYME_COMMIT = "6c20ffc94c5abff04831f22caf46fe1b25c069be"
 ENZYME_SHA256 = ""
 
-ML_TOOLCHAIN_COMMIT = "d8d8f49297a1e74fcceffc9ef6c7f8da9b0a0c53"
-ML_TOOLCHAIN_SHA256 = "4133c6c2045de5d7a133f6fc008ee6bd613af778f12143d09003e908dd541d8c"
+ML_TOOLCHAIN_COMMIT = "78ef5eda03c54a912c000f1f872242d4ca6063a4"
+ML_TOOLCHAIN_SHA256 = ""
 
 # If the empty string this will automatically use the commit above
 # otherwise this should be a path to the folder containing the BUILD file for enzyme
@@ -16,6 +16,13 @@ HEDRON_COMPILE_COMMANDS_SHA256 = ""
 
 XLA_PATCHES = [
     """
+    sed -i.bak0 "s/return TryDlopenCUDALibraries()/LOG(INFO) << \\"GPU libraries are statically linked, skip dlopen check.\\";\\nreturn absl::OkStatus();/g" xla/tsl/platform/default/dlopen_checker.cc
+""",
+    """
+    sed -i.bak0 "s/return TryDlopenCUDALibraries()/LOG(INFO) << \\"GPU libraries are statically linked, skip dlopen check.\\";\\nreturn absl::OkStatus();/g" n
+    sed -i.bak0 "s/namespace/THIS_SHOULD_NEVER_BE_COMPILED/g" xla/tsl/cuda/{cublas,cublasLt,cufft,cusolver,cusparse,cudnn,cudart}_stub.cc
+""",
+    """
 	sed -i.bak0 "/amdgpu_backend/d" xla/backends/gpu/codegen/triton/BUILD
     """,
     """
@@ -25,7 +32,8 @@ XLA_PATCHES = [
     sed -i.bak0 "s/load(\\\"\\/\\/xla\\/tsl:tsl.bzl\\\", \\\"if_google\\\")/\\0\\nload(\\\"@local_config_rocm\\/\\/rocm:build_defs.bzl\\\", \\\"if_rocm_is_configured\\\")/g" xla/backends/gpu/codegen/triton/BUILD
     """,
     """
-    sed -i.bak0 "s/e07debd5e257ec1e118f18c54068977b89f03b2f/9018c682b99eb20d5874a4e38271ce63d7393879/g" third_party/stablehlo/workspace.bzl
+    sed -i.bak0 "s,third_party/llvm/llvm-project/llvm/include/,,g" third_party/stablehlo/temporary.patch
+    sed -i.bak0 "s,third_party/llvm/llvm-project/mlir/include/,,g" third_party/stablehlo/temporary.patch
     """,
     """
     sed -i.bak0 "s/\\/\\/third_party:repo.bzl/@bazel_tools\\/\\/tools\\/build_defs\\/repo:http.bzl/g" third_party/llvm/workspace.bzl
@@ -38,9 +46,9 @@ XLA_PATCHES = [
     sed -i.bak0 "s/DCHECK_NE(runtime, nullptr/DCHECK_NE(runtime.get(), nullptr/g" xla/backends/cpu/runtime/xnnpack/xnn_fusion_thunk.cc
     """,
     # TODO remove
-    """
-    sed -i.bak0 "s/^bool IsSupportedType/static inline bool IsSupportedType/g" xla/backends/cpu/runtime/convolution_lib.cc
-    """,
+    #"""
+    #sed -i.bak0 "s/^bool IsSupportedType/static inline bool IsSupportedType/g" xla/backends/cpu/runtime/convolution_lib.cc
+    #""",
     """
     sed -i.bak0 "s/Node::Leaf(std::forward<decltype(value)>/Node::Leaf(std::forward<T>/g" xla/tuple_tree.h
     """,
@@ -98,16 +106,13 @@ sed -i.bak0 "s/tf_http_archive(/http_archive(/g" third_party/py/python_init_rule
 
 """,
     """
-sed -i.bak0 "s/def main():/def main():\\n  if TMPDIR: os.environ['TMPDIR'] = TMPDIR/g" third_party/gpus/crosstool/clang/bin/crosstool_wrapper_driver_is_not_gcc.tpl
+sed -i.bak0 "s/__chkstk/__chkstk_ms/g" xla/backends/cpu/codegen/builtin_definition_generator.cc
 """,
     """
-sed -i.bak0 "s/__chkstk/__chkstk_ms/g" xla/service/cpu/runtime_symbol_generator.cc
+sed -i.bak0 "1s/^/#include \\"llvm\\/Support\\/DynamicLibrary.h\\"\\n/g" xla/backends/cpu/codegen/builtin_definition_generator.cc
 """,
     """
-sed -i.bak0 "1s/^/#include \\"llvm\\/Support\\/DynamicLibrary.h\\"\\n/g" xla/service/cpu/runtime_symbol_generator.cc
-""",
-    """
-sed -i.bak0 "s/(__chkstk_ms)/(llvm::sys::DynamicLibrary::SearchForAddressOfSymbol(\\"__chkstk_ms\\"))/g" xla/service/cpu/runtime_symbol_generator.cc
+sed -i.bak0 "s/SymbolDef(__chkstk_ms)/SymbolDef(reinterpret_cast<void* (*)(size_t)>(llvm::sys::DynamicLibrary::SearchForAddressOfSymbol(\\"__chkstk_ms\\")))/g" xla/backends/cpu/codegen/builtin_definition_generator.cc
 """,
     """
 sed -i.bak0 "s/Shlwapi/shlwapi/g" xla/tsl/platform/windows/load_library.cc xla/tsl/platform/windows/windows_file_system.cc xla/tsl/platform/windows/env.cc

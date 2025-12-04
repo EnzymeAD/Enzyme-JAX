@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(lower-enzyme-probprog{backend=cpu})" | FileCheck %s --check-prefix=CPU
+// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(lower-probprog-trace-ops{backend=cpu})" | FileCheck %s --check-prefix=CPU
 
 module {
   func.func private @joint(tensor<2xui64>, tensor<f64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>, tensor<2xf64>)

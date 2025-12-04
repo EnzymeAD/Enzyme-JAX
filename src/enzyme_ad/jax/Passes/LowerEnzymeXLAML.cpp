@@ -33,8 +33,9 @@ struct LowerReluOpToStablehlo : public OpRewritePattern<enzymexla::ReluOp> {
                                 PatternRewriter &rewriter) const override {
     rewriter.replaceOpWithNewOp<stablehlo::MaxOp>(
         op, op.getOperand(),
-        rewriter.create<stablehlo::ConstantOp>(
-            op.getLoc(), cast<ElementsAttr>(makeAttr(op.getType(), 0))));
+        stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(),
+            cast<ElementsAttr>(makeAttr(op.getType(), 0))));
     return success();
   }
 };
@@ -63,15 +64,18 @@ private:
     auto operand = op.getOperand();
     rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
         op, operand,
-        rewriter.create<stablehlo::MulOp>(
-            op.getLoc(), createConstantOpFromScalar(rewriter, op, 0.5),
-            rewriter.create<stablehlo::AddOp>(
-                op.getLoc(), createConstantOpFromScalar(rewriter, op, 1),
-                rewriter.create<chlo::ErfOp>(
-                    op.getLoc(), rewriter.create<stablehlo::MulOp>(
-                                     op.getLoc(), operand,
-                                     createConstantOpFromScalar(
-                                         rewriter, op, 1 / std::sqrt(2)))))));
+        stablehlo::MulOp::create(
+            rewriter, op.getLoc(),
+            createConstantOpFromScalar(rewriter, op, 0.5),
+            stablehlo::AddOp::create(
+                rewriter, op.getLoc(),
+                createConstantOpFromScalar(rewriter, op, 1),
+                chlo::ErfOp::create(
+                    rewriter, op.getLoc(),
+                    stablehlo::MulOp::create(
+                        rewriter, op.getLoc(), operand,
+                        createConstantOpFromScalar(rewriter, op,
+                                                   1 / std::sqrt(2)))))));
     return success();
   }
 
@@ -83,26 +87,29 @@ private:
     auto operand = op.getOperand();
     rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
         op, operand,
-        rewriter.create<stablehlo::MulOp>(
-            op.getLoc(), createConstantOpFromScalar(rewriter, op, 0.5),
-            rewriter.create<stablehlo::AddOp>(
-                op.getLoc(), createConstantOpFromScalar(rewriter, op, 1),
-                rewriter.create<stablehlo::TanhOp>(
-                    op.getLoc(),
-                    rewriter.create<stablehlo::MulOp>(
-                        op.getLoc(),
+        stablehlo::MulOp::create(
+            rewriter, op.getLoc(),
+            createConstantOpFromScalar(rewriter, op, 0.5),
+            stablehlo::AddOp::create(
+                rewriter, op.getLoc(),
+                createConstantOpFromScalar(rewriter, op, 1),
+                stablehlo::TanhOp::create(
+                    rewriter, op.getLoc(),
+                    stablehlo::MulOp::create(
+                        rewriter, op.getLoc(),
                         createConstantOpFromScalar(rewriter, op,
                                                    std::sqrt(2.0 / M_PI)),
-                        rewriter.create<stablehlo::AddOp>(
-                            op.getLoc(), operand,
-                            rewriter.create<stablehlo::MulOp>(
-                                op.getLoc(),
+                        stablehlo::AddOp::create(
+                            rewriter, op.getLoc(), operand,
+                            stablehlo::MulOp::create(
+                                rewriter, op.getLoc(),
                                 createConstantOpFromScalar(rewriter, op,
                                                            0.044715),
-                                rewriter.create<stablehlo::MulOp>(
-                                    op.getLoc(), operand,
-                                    rewriter.create<stablehlo::MulOp>(
-                                        op.getLoc(), operand, operand)))))))));
+                                stablehlo::MulOp::create(
+                                    rewriter, op.getLoc(), operand,
+                                    stablehlo::MulOp::create(
+                                        rewriter, op.getLoc(), operand,
+                                        operand)))))))));
     return success();
   }
 
@@ -114,21 +121,21 @@ private:
     auto operand = op.getOperand();
     rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
         op, operand,
-        rewriter.create<stablehlo::LogisticOp>(
-            op.getLoc(),
-            rewriter.create<stablehlo::MulOp>(
-                op.getLoc(),
+        stablehlo::LogisticOp::create(
+            rewriter, op.getLoc(),
+            stablehlo::MulOp::create(
+                rewriter, op.getLoc(),
                 createConstantOpFromScalar(rewriter, op, std::sqrt(8.0 / M_PI)),
-                rewriter.create<stablehlo::MulOp>(
-                    op.getLoc(), operand,
-                    rewriter.create<stablehlo::AddOp>(
-                        op.getLoc(),
+                stablehlo::MulOp::create(
+                    rewriter, op.getLoc(), operand,
+                    stablehlo::AddOp::create(
+                        rewriter, op.getLoc(),
                         createConstantOpFromScalar(rewriter, op, 1),
-                        rewriter.create<stablehlo::MulOp>(
-                            op.getLoc(),
+                        stablehlo::MulOp::create(
+                            rewriter, op.getLoc(),
                             createConstantOpFromScalar(rewriter, op, 0.044715),
-                            rewriter.create<stablehlo::MulOp>(
-                                op.getLoc(), operand, operand)))))));
+                            stablehlo::MulOp::create(rewriter, op.getLoc(),
+                                                     operand, operand)))))));
     return success();
   }
 };

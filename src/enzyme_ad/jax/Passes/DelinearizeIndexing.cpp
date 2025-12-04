@@ -151,12 +151,12 @@ reshapeMemref2(Value memref, ArrayRef<int64_t> shape,
         // either memref ld/st (emit new index calc ops)
         Value last_dim_key = ainfo.last_dim_key;
         rewriter.setInsertionPoint(ainfo.mOpInst);
-        auto dim_size = rewriter.create<arith::ConstantIndexOp>(
-            ainfo.mOpInst->getLoc(), cst);
-        auto mod = rewriter.create<arith::RemUIOp>(ainfo.mOpInst->getLoc(),
-                                                   last_dim_key, dim_size);
-        auto floor = rewriter.create<arith::DivUIOp>(ainfo.mOpInst->getLoc(),
-                                                     last_dim_key, dim_size);
+        auto dim_size = arith::ConstantIndexOp::create(
+            rewriter, ainfo.mOpInst->getLoc(), cst);
+        auto mod = arith::RemUIOp::create(rewriter, ainfo.mOpInst->getLoc(),
+                                          last_dim_key, dim_size);
+        auto floor = arith::DivUIOp::create(rewriter, ainfo.mOpInst->getLoc(),
+                                            last_dim_key, dim_size);
         ainfo.updated_indices.push_back(mod);
 
         // floor is the new last dim key
