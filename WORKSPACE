@@ -67,6 +67,8 @@ python_init_repositories(
         "3.10": "//builddeps:requirements_lock_3_10.txt",
         "3.11": "//builddeps:requirements_lock_3_11.txt",
         "3.12": "//builddeps:requirements_lock_3_12.txt",
+        "3.13": "//builddeps:requirements_lock_3_13.txt",
+        "3.14": "//builddeps:requirements_lock_3_14.txt",
     },
 )
 
