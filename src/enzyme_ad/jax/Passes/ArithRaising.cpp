@@ -169,7 +169,7 @@ struct ArithRaisingPass
                   builder, op.getLoc(), val.getType(),
                   cast<ElementsAttr>(
                       makeAttr(val.getType(), inSize / outSize)));
-              vval = stablehlo::DivOp::create(builder, op.getLoc(), vval, cst);
+              vval = stablehlo::MulOp::create(builder, op.getLoc(), vval, cst);
             }
             vval = stablehlo::ReshapeOp::create(
                 builder, op.getLoc(),

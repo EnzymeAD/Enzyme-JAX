@@ -2152,7 +2152,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
             auto cst = arith::ConstantOp::create(
                 builder, p2m.getLoc(), val.getType(),
                 cast<ElementsAttr>(makeAttr(val.getType(), inSize / outSize)));
-            vval = stablehlo::DivOp::create(builder, p2m.getLoc(), vval, cst);
+            vval = stablehlo::MulOp::create(builder, p2m.getLoc(), vval, cst);
           }
           vval = stablehlo::ReshapeOp::create(
               builder, p2m.getLoc(),
