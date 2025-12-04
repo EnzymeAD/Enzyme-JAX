@@ -782,7 +782,7 @@ def GesvjOp : EnzymeXLA_Op<"lapack.gesvj", [Pure]> {
 
 // Special Functions - Bessel Functions
 
-def BesselJ : EnzymeXLA_Op<"special.besselj", [Pure, SameOperandsAndResultType, Elementwise]> {
+def BesselJ : EnzymeXLA_Op<"special.besselj", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
   let summary = "Bessel function of the first kind of order nu at z";
   
   let arguments = (ins
@@ -795,7 +795,7 @@ def BesselJ : EnzymeXLA_Op<"special.besselj", [Pure, SameOperandsAndResultType, 
   );
 }
 
-def BesselJX : EnzymeXLA_Op<"special.besseljx", [Pure, SameOperandsAndResultType, Elementwise]> {
+def BesselJX : EnzymeXLA_Op<"special.besseljx", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
   let summary = "Scaled Bessel function of the first kind of order nu at z";
   
   let arguments = (ins
@@ -808,7 +808,7 @@ def BesselJX : EnzymeXLA_Op<"special.besseljx", [Pure, SameOperandsAndResultType
   );
 }
 
-def SphericalBesselJ : EnzymeXLA_Op<"special.sphericalbesselj", [Pure, SameOperandsAndResultType, Elementwise]> {
+def SphericalBesselJ : EnzymeXLA_Op<"special.sphericalbesselj", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
   let summary = "Spherical Bessel function of the first kind of order nu at z";
   
   let arguments = (ins
@@ -821,7 +821,7 @@ def SphericalBesselJ : EnzymeXLA_Op<"special.sphericalbesselj", [Pure, SameOpera
   );
 }
 
-def BesselY : EnzymeXLA_Op<"special.bessely", [Pure, SameOperandsAndResultType, Elementwise]> {
+def BesselY : EnzymeXLA_Op<"special.bessely", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
   let summary = "Bessel function of the second kind of order nu at z";
   
   let arguments = (ins
@@ -834,7 +834,7 @@ def BesselY : EnzymeXLA_Op<"special.bessely", [Pure, SameOperandsAndResultType, 
   );
 }
 
-def BesselYX : EnzymeXLA_Op<"special.besselyx", [Pure, SameOperandsAndResultType, Elementwise]> {
+def BesselYX : EnzymeXLA_Op<"special.besselyx", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
   let summary = "Scaled Bessel function of the second kind of order nu at z";
   
   let arguments = (ins
@@ -847,7 +847,7 @@ def BesselYX : EnzymeXLA_Op<"special.besselyx", [Pure, SameOperandsAndResultType
   );
 }
 
-def SphericalBesselY : EnzymeXLA_Op<"special.sphericalbessely", [Pure, SameOperandsAndResultType, Elementwise]> {
+def SphericalBesselY : EnzymeXLA_Op<"special.sphericalbessely", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
   let summary = "Spherical Bessel function of the second kind of order nu at z";
   
   let arguments = (ins
@@ -860,7 +860,7 @@ def SphericalBesselY : EnzymeXLA_Op<"special.sphericalbessely", [Pure, SameOpera
   );
 }
 
-def BesselH : EnzymeXLA_Op<"special.besselh", [Pure, SameOperandsAndResultType, Elementwise]> {
+def BesselH : EnzymeXLA_Op<"special.besselh", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
   let summary = "Bessel function of the third kind (Hankel function) of order nu at z";
   
   let description = [{
@@ -880,7 +880,7 @@ def BesselH : EnzymeXLA_Op<"special.besselh", [Pure, SameOperandsAndResultType, 
   );
 }
 
-def HankelH1X : EnzymeXLA_Op<"special.hankelh1x", [Pure, SameOperandsAndResultType, Elementwise]> {
+def HankelH1X : EnzymeXLA_Op<"special.hankelh1x", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
   let summary = "Scaled Hankel function of the first kind of order nu at z";
   
   let arguments = (ins
@@ -893,7 +893,7 @@ def HankelH1X : EnzymeXLA_Op<"special.hankelh1x", [Pure, SameOperandsAndResultTy
   );
 }
 
-def HankelH2X : EnzymeXLA_Op<"special.hankelh2x", [Pure, SameOperandsAndResultType, Elementwise]> {
+def HankelH2X : EnzymeXLA_Op<"special.hankelh2x", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
   let summary = "Scaled Hankel function of the second kind of order nu at z";
   
   let arguments = (ins
@@ -906,7 +906,7 @@ def HankelH2X : EnzymeXLA_Op<"special.hankelh2x", [Pure, SameOperandsAndResultTy
   );
 }
 
-def BesselI : EnzymeXLA_Op<"special.besseli", [Pure, SameOperandsAndResultType, Elementwise]> {
+def BesselI : EnzymeXLA_Op<"special.besseli", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
   let summary = "Modified Bessel function of the first kind of order nu at z";
   
   let arguments = (ins
@@ -919,7 +919,7 @@ def BesselI : EnzymeXLA_Op<"special.besseli", [Pure, SameOperandsAndResultType, 
   );
 }
 
-def BesselIX : EnzymeXLA_Op<"special.besselix", [Pure, SameOperandsAndResultType, Elementwise]> {
+def BesselIX : EnzymeXLA_Op<"special.besselix", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
   let summary = "Scaled modified Bessel function of the first kind of order nu at z";
   
   let arguments = (ins
@@ -932,7 +932,7 @@ def BesselIX : EnzymeXLA_Op<"special.besselix", [Pure, SameOperandsAndResultType
   );
 }
 
-def BesselK : EnzymeXLA_Op<"special.besselk", [Pure, SameOperandsAndResultType, Elementwise]> {
+def BesselK : EnzymeXLA_Op<"special.besselk", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
   let summary = "Modified Bessel function of the second kind of order nu at z";
   
   let arguments = (ins
@@ -945,7 +945,7 @@ def BesselK : EnzymeXLA_Op<"special.besselk", [Pure, SameOperandsAndResultType, 
   );
 }
 
-def BesselKX : EnzymeXLA_Op<"special.besselkx", [Pure, SameOperandsAndResultType, Elementwise]> {
+def BesselKX : EnzymeXLA_Op<"special.besselkx", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
   let summary = "Scaled modified Bessel function of the second kind of order nu at z";
   
   let arguments = (ins
@@ -975,6 +975,7 @@ def Jinc : EnzymeXLA_Op<"special.jinc", [Pure, SameOperandsAndResultType, Elemen
     HLO_Tensor:$res
   );
 }
+
 // Machine Learning Ops
 
 def GeluOp: EnzymeXLA_Op<"ml.gelu", [Pure, SameOperandsAndResultType, Elementwise]> {
