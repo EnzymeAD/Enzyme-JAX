@@ -11,7 +11,7 @@ module {
 }
 // CHECK:  func.func private @single_dim_raised(%arg0: tensor<3xi64>, %arg1: tensor<3xi64>) -> (tensor<3xi64>, tensor<3xi64>) {
 // CHECK-NEXT:    %0 = stablehlo.iota dim = 0 : tensor<3x1xi64>
-// CHECK-NEXT:    %1 = "stablehlo.scatter"(%arg0, %0, %arg1) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0], index_vector_dim = 1>, unique_indices = false}> ({
+// CHECK-NEXT:    %1 = "stablehlo.scatter"(%arg0, %0, %arg1) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0], index_vector_dim = 1>, unique_indices = true}> ({
 // CHECK-NEXT:    ^bb0(%arg2: tensor<i64>, %arg3: tensor<i64>):
 // CHECK-NEXT:      stablehlo.return %arg3 : tensor<i64>
 // CHECK-NEXT:    }) : (tensor<3xi64>, tensor<3x1xi64>, tensor<3xi64>) -> tensor<3xi64>
@@ -34,7 +34,7 @@ module {
 // CHECK-NEXT:    %3 = stablehlo.reshape %2 : (tensor<3x3xi64>) -> tensor<9x1xi64>
 // CHECK-NEXT:    %4 = stablehlo.concatenate %1, %3, dim = 1 : (tensor<9x1xi64>, tensor<9x1xi64>) -> tensor<9x2xi64>
 // CHECK-NEXT:    %5 = stablehlo.reshape %arg1 : (tensor<3x3xi64>) -> tensor<9xi64>
-// CHECK-NEXT:    %6 = "stablehlo.scatter"(%arg0, %4, %5) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>, unique_indices = false}> ({
+// CHECK-NEXT:    %6 = "stablehlo.scatter"(%arg0, %4, %5) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>, unique_indices = true}> ({
 // CHECK-NEXT:    ^bb0(%arg2: tensor<i64>, %arg3: tensor<i64>):
 // CHECK-NEXT:      stablehlo.return %arg3 : tensor<i64>
 // CHECK-NEXT:    }) : (tensor<3x3xi64>, tensor<9x2xi64>, tensor<9xi64>) -> tensor<3x3xi64>
@@ -57,7 +57,7 @@ module {
 // CHECK-NEXT:    %1 = stablehlo.reshape %0 : (tensor<3x1xi64>) -> tensor<3xi64>
 // CHECK-NEXT:    %2 = stablehlo.iota dim = 0 : tensor<3x1xi64>
 // CHECK-NEXT:    %3 = stablehlo.pad %2, %c, low = [0, 0], high = [0, 1], interior = [0, 0] : (tensor<3x1xi64>, tensor<i64>) -> tensor<3x2xi64>
-// CHECK-NEXT:    %4 = "stablehlo.scatter"(%arg0, %3, %1) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>, unique_indices = false}> ({
+// CHECK-NEXT:    %4 = "stablehlo.scatter"(%arg0, %3, %1) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>, unique_indices = true}> ({
 // CHECK-NEXT:    ^bb0(%arg2: tensor<i64>, %arg3: tensor<i64>):
 // CHECK-NEXT:      stablehlo.return %arg3 : tensor<i64>
 // CHECK-NEXT:    }) : (tensor<3x3xi64>, tensor<3x2xi64>, tensor<3xi64>) -> tensor<3x3xi64>
@@ -83,7 +83,7 @@ module {
 // CHECK-NEXT:    %4 = stablehlo.concatenate %1, %3, dim = 1 : (tensor<9x1xi64>, tensor<9x1xi64>) -> tensor<9x2xi64>
 // CHECK-NEXT:    %5 = stablehlo.transpose %arg1, dims = [1, 0] : (tensor<3x3xi64>) -> tensor<3x3xi64>
 // CHECK-NEXT:    %6 = stablehlo.reshape %5 : (tensor<3x3xi64>) -> tensor<9xi64>
-// CHECK-NEXT:    %7 = "stablehlo.scatter"(%arg0, %4, %6) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>, unique_indices = false}> ({
+// CHECK-NEXT:    %7 = "stablehlo.scatter"(%arg0, %4, %6) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>, unique_indices = true}> ({
 // CHECK-NEXT:    ^bb0(%arg3: tensor<i64>, %arg4: tensor<i64>):
 // CHECK-NEXT:      stablehlo.return %arg4 : tensor<i64>
 // CHECK-NEXT:    }) : (tensor<3x3xi64>, tensor<9x2xi64>, tensor<9xi64>) -> tensor<3x3xi64>

@@ -12,6 +12,7 @@
 
 #include "src/enzyme_ad/jax/Passes/AffineUtils.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Utils.h"
 
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/Utils.h"
@@ -918,7 +919,8 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
             return nullptr;
           }
 
-          broadcastDims[updateIdx] = (updateShape.size() - (1 + j));
+          broadcastDims[updateIdx] =
+              (updateShape.size() - Ty.getShape().size() + j);
         }
       }
     }
@@ -980,7 +982,9 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
           /*scatterDimsToOperandDims*/ scatterDimsToOperandDims,
           /*indexVectorDim*/ 1),
       /*indicesAreSorted*/ false,
-      /*uniqueIndices*/ false);
+      /*uniqueIndices*/ true); // Indices must be unique because otherwise the
+                               // original program had a race [writing to the
+                               // same location across multiple threads].
   Value res = scatter.getResult(0);
 
   Block *updateBody = new Block();
@@ -2109,9 +2113,72 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     Value operand = op->getOperand(0), result = op->getResult(0);
     auto input = mapping.lookup(operand);
     auto MT = p2m.getType();
-    auto TT = RankedTensorType::get(MT.getShape(), MT.getElementType());
-    auto res =
-        stablehlo::BitcastConvertOp::create(builder, p2m.getLoc(), TT, input);
+    auto ty = RankedTensorType::get(MT.getShape(), MT.getElementType());
+
+    auto inTy = cast<RankedTensorType>(input.getType());
+    size_t outSize =
+        cast<AutoDiffTypeInterface>(ty.getElementType()).getApproxSize();
+    size_t inSize =
+        cast<AutoDiffTypeInterface>(inTy.getElementType()).getApproxSize();
+
+    Value res;
+    if (outSize == inSize) {
+      res =
+          stablehlo::BitcastConvertOp::create(builder, p2m.getLoc(), ty, input);
+    } else if (outSize < inSize) {
+      SmallVector<int64_t> dims2 = llvm::to_vector(ty.getShape());
+      auto oidx = dims2.size();
+      dims2.push_back(inSize / outSize);
+      if (oidx != 0 && dims2[oidx - 1] != ShapedType::kDynamic) {
+        dims2[oidx - 1] /= inSize / outSize;
+      }
+      res = stablehlo::BitcastConvertOp::create(
+          builder, p2m.getLoc(),
+          RankedTensorType::get(dims2, ty.getElementType()), input);
+      bool anyDynamic = false;
+      for (auto idx : dims2) {
+        if (idx == ShapedType::kDynamic) {
+          anyDynamic = true;
+          break;
+        }
+      }
+      if (anyDynamic) {
+        SmallVector<Value> vals;
+        for (size_t i = 0; i < ty.getShape().size(); i++) {
+          auto val = stablehlo::GetDimensionSizeOp::create(
+              builder, p2m.getLoc(), input, i);
+          Value vval = val;
+          if (i == ty.getShape().size() - 1) {
+            auto cst = arith::ConstantOp::create(
+                builder, p2m.getLoc(), val.getType(),
+                cast<ElementsAttr>(makeAttr(val.getType(), inSize / outSize)));
+            vval = stablehlo::DivOp::create(builder, p2m.getLoc(), vval, cst);
+          }
+          vval = stablehlo::ReshapeOp::create(
+              builder, p2m.getLoc(),
+              RankedTensorType::get({1}, val.getType().getElementType()), vval);
+          vals.push_back(vval);
+        }
+
+        auto idxs =
+            stablehlo::ConcatenateOp::create(builder, p2m.getLoc(), vals, 0);
+        res = stablehlo::DynamicReshapeOp::create(builder, p2m.getLoc(), ty,
+                                                  res, idxs);
+      } else {
+        res = stablehlo::ReshapeOp::create(builder, p2m.getLoc(), ty, res);
+      }
+    } else {
+      SmallVector<int64_t> dims2 = llvm::to_vector(ty.getShape());
+      auto oidx = dims2.size();
+      dims2.push_back(outSize / inSize);
+      if (oidx != 0 && dims2[oidx - 1] != ShapedType::kDynamic) {
+        dims2[oidx - 1] /= outSize / inSize;
+      }
+      res = stablehlo::ReshapeOp::create(
+          builder, p2m.getLoc(),
+          RankedTensorType::get(dims2, inTy.getElementType()), input);
+      res = stablehlo::BitcastConvertOp::create(builder, p2m.getLoc(), ty, res);
+    }
     mapping.map(result, res);
     return success();
   }
