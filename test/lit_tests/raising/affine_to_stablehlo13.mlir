@@ -72,7 +72,7 @@ module {
 // CHECK-NEXT:    %2 = stablehlo.concatenate %1, %0, dim = 2 : (tensor<3x3x1xi64>, tensor<3x3x1xi64>) -> tensor<3x3x2xi64>
 // CHECK-NEXT:    %3 = stablehlo.reshape %2 : (tensor<3x3x2xi64>) -> tensor<9x2xi64>
 // CHECK-NEXT:    %4 = "stablehlo.gather"(%arg1, %3) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1], start_index_map = [0, 1], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1>}> : (tensor<3x3xi64>, tensor<9x2xi64>) -> tensor<9xi64>
-// CHECK-NEXT:    %5 = stablehlo.reshape %4 : (tensor<9xi64>) -> tensor<3x3xi64>
+// CHECK-NEXT:    %5 = stablehlo.reshape %4 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<9xi64>) -> tensor<3x3xi64>
 // CHECK-NEXT:    %6 = stablehlo.transpose %5, dims = [1, 0] : (tensor<3x3xi64>) -> tensor<3x3xi64>
 // CHECK-NEXT:    return %6, %arg1, %arg2 : tensor<3x3xi64>, tensor<3x3xi64>, tensor<3xi64>
 // CHECK-NEXT:  }

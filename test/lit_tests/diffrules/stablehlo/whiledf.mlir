@@ -12,7 +12,7 @@ module @reactant_differe... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
     %cst_5 = stablehlo.constant dense<0.000000e+00> : tensor<63x63x16xf64>
     %0 = stablehlo.broadcast_in_dim %arg0, dims = [1, 0] : (tensor<63x63xf64>) -> tensor<63x63x1xf64>
     %1 = stablehlo.dynamic_update_slice %cst_4, %0, %c_3, %c_3, %c_2 : (tensor<78x78x31xf64>, tensor<63x63x1xf64>, tensor<i32>, tensor<i32>, tensor<i32>) -> tensor<78x78x31xf64>
-    %2:3 = stablehlo.while(%iterArg = %c, %iterArg_6 = %1, %iterArg_7 = %cst_5) : tensor<i64>, tensor<78x78x31xf64>, tensor<63x63x16xf64> attributes {enzymexla.disable_min_cut}
+    %2:3 = stablehlo.while(%iterArg = %c, %iterArg_6 = %1, %iterArg_7 = %cst_5) : tensor<i64>, tensor<78x78x31xf64>, tensor<63x63x16xf64> attributes {enzyme.disable_mincut}
      cond {
       %4 = stablehlo.compare  LT, %iterArg, %c_0 : (tensor<i64>, tensor<i64>) -> tensor<i1>
       stablehlo.return %4 : tensor<i1>

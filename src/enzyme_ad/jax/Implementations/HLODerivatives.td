@@ -1343,7 +1343,7 @@ def RFFTPaddingZero : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   auto diffeType = cast<RankedTensorType>(
       gutils->diffe(op->getResult(0), builder).getType());
   auto zeroType = RankedTensorType::get({}, diffeType.getElementType());
-  builder.create<ConstantOp>(
+  ConstantOp::create(builder, 
       op->getLoc(), zeroType,
       cast<ElementsAttr>(makeAttr(zeroType, 0)));
 }]>;
@@ -1372,31 +1372,31 @@ def IRFFTMaskedScaling : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   auto elemType = diffeType.getElementType();
 
   auto maskBeginType = RankedTensorType::get({1}, elemType);
-  auto maskBegin = builder.create<ConstantOp>(
+  auto maskBegin = ConstantOp::create(builder, 
       op->getLoc(), maskBeginType,
       cast<ElementsAttr>(makeAttr(maskBeginType, scaling)));
 
   auto maskMiddleType = RankedTensorType::get({n - 2 + isOdd}, elemType);
-  auto maskMiddle = builder.create<ConstantOp>(
+  auto maskMiddle = ConstantOp::create(builder, 
       op->getLoc(), maskMiddleType,
       cast<ElementsAttr>(makeAttr(maskMiddleType, 2 * scaling)));
 
   auto maskEndType = RankedTensorType::get({1 - isOdd}, elemType);
-  auto maskEnd = builder.create<ConstantOp>(
+  auto maskEnd = ConstantOp::create(builder, 
       op->getLoc(), maskEndType,
       cast<ElementsAttr>(makeAttr(maskEndType, scaling)));
 
-  auto mask = builder.create<ConcatenateOp>(
+  auto mask = ConcatenateOp::create(builder, 
       op->getLoc(), ValueRange{maskBegin, maskMiddle, maskEnd},
       /*dimension=*/0);
 
-  auto zero = builder.create<ConstantOp>(
+  auto zero = ConstantOp::create(builder, 
       op->getLoc(), RankedTensorType::get({n}, elemType),
       cast<ElementsAttr>(makeAttr(RankedTensorType::get({n}, elemType), 0)));
 
-  auto complex = builder.create<ComplexOp>(op->getLoc(), ValueRange{mask, zero});
+  auto complex = ComplexOp::create(builder, op->getLoc(), ValueRange{mask, zero});
 
-  builder.create<BroadcastInDimOp>(
+  BroadcastInDimOp::create(builder, 
       op->getLoc(),
       RankedTensorType::get(
         fftOutShape, cast<RankedTensorType>(complex.getType()).getElementType()),

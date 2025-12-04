@@ -38,24 +38,20 @@ module @reactant_conditi... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
 }
 
 // CHECK: func.func @main(%arg0: tensor<10x2xf64> {tf.aliasing_output = 3 : i32}) -> (tensor<10x2xf64>, tensor<10x2xf64>, tensor<10x2xf64>, tensor<10x2xf64>) {
-// CHECK-NEXT:     %cst = stablehlo.constant dense<2.000000e+00> : tensor<2x10xf64>
-// CHECK-NEXT:     %cst_0 = stablehlo.constant dense<1.000000e+00> : tensor<2x10xf64>
-// CHECK-NEXT:     %cst_1 = stablehlo.constant dense<0.000000e+00> : tensor<f64>
-// CHECK-NEXT:     %0 = stablehlo.transpose %arg0, dims = [1, 0] : (tensor<10x2xf64>) -> tensor<2x10xf64>
-// CHECK-NEXT:     %1 = stablehlo.add %0, %cst_0 : tensor<2x10xf64>
-// CHECK-NEXT:     %2 = stablehlo.reduce(%1 init: %cst_1) applies stablehlo.add across dimensions = [0, 1] : (tensor<2x10xf64>, tensor<f64>) -> tensor<f64>
-// CHECK-NEXT:     %3 = stablehlo.compare  GT, %2, %cst_1 : (tensor<f64>, tensor<f64>) -> tensor<i1>
-// CHECK-NEXT:     %4 = stablehlo.transpose %1, dims = [1, 0] : (tensor<2x10xf64>) -> tensor<10x2xf64>
-// CHECK-NEXT:     %5 = stablehlo.select %3, %arg0, %4 : tensor<i1>, tensor<10x2xf64>
-// CHECK-NEXT:     %6:2 = "stablehlo.if"(%3) ({
-// CHECK-NEXT:       %7 = stablehlo.transpose %1, dims = [1, 0] : (tensor<2x10xf64>) -> tensor<10x2xf64>
-// CHECK-NEXT:       stablehlo.return %7, %4 : tensor<10x2xf64>, tensor<10x2xf64>
+// CHECK-NEXT:     %cst = stablehlo.constant dense<2.000000e+00> : tensor<10x2xf64>
+// CHECK-NEXT:     %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+// CHECK-NEXT:     %cst_1 = stablehlo.constant dense<1.000000e+00> : tensor<10x2xf64>
+// CHECK-NEXT:     %0 = stablehlo.add %arg0, %cst_1 : tensor<10x2xf64>
+// CHECK-NEXT:     %1 = stablehlo.negate %0 : tensor<10x2xf64>
+// CHECK-NEXT:     %2 = stablehlo.reduce(%0 init: %cst_0) applies stablehlo.add across dimensions = [0, 1] : (tensor<10x2xf64>, tensor<f64>) -> tensor<f64>
+// CHECK-NEXT:     %3 = stablehlo.compare  GT, %2, %cst_0 : (tensor<f64>, tensor<f64>) -> tensor<i1>
+// CHECK-NEXT:     %4 = stablehlo.select %3, %arg0, %0 : tensor<i1>, tensor<10x2xf64>
+// CHECK-NEXT:     %5 = stablehlo.select %3, %0, %1 : tensor<i1>, tensor<10x2xf64>
+// CHECK-NEXT:     %6 = "stablehlo.if"(%3) ({
+// CHECK-NEXT:       stablehlo.return %0 : tensor<10x2xf64>
 // CHECK-NEXT:     }, {
-// CHECK-NEXT:       %7 = stablehlo.negate %1 : tensor<2x10xf64>
-// CHECK-NEXT:       %8 = stablehlo.add %0, %cst : tensor<2x10xf64>
-// CHECK-NEXT:       %9 = stablehlo.transpose %8, dims = [1, 0] : (tensor<2x10xf64>) -> tensor<10x2xf64>
-// CHECK-NEXT:       %10 = stablehlo.transpose %7, dims = [1, 0] : (tensor<2x10xf64>) -> tensor<10x2xf64>
-// CHECK-NEXT:       stablehlo.return %10, %9 : tensor<10x2xf64>, tensor<10x2xf64>
-// CHECK-NEXT:     }) : (tensor<i1>) -> (tensor<10x2xf64>, tensor<10x2xf64>)
-// CHECK-NEXT:     return %6#0, %5, %6#1, %arg0 : tensor<10x2xf64>, tensor<10x2xf64>, tensor<10x2xf64>, tensor<10x2xf64>
-// CHECK-NEXT: }
+// CHECK-NEXT:       %7 = stablehlo.add %arg0, %cst : tensor<10x2xf64>
+// CHECK-NEXT:       stablehlo.return %7 : tensor<10x2xf64>
+// CHECK-NEXT:     }) : (tensor<i1>) -> tensor<10x2xf64>
+// CHECK-NEXT:     return %5, %4, %6, %arg0 : tensor<10x2xf64>, tensor<10x2xf64>, tensor<10x2xf64>, tensor<10x2xf64>
+// CHECK-NEXT:   }

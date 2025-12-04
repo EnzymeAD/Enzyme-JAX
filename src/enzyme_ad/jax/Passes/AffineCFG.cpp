@@ -518,6 +518,7 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
            t.getDefiningOp<ConstantIntOp>() ||
            t.getDefiningOp<ConstantIndexOp>())) ||
          ((decast.getDefiningOp<AddIOp>() || decast.getDefiningOp<SubIOp>() ||
+           (decast.getDefiningOp<OrIOp>() && isDisjoint(decast)) ||
            decast.getDefiningOp<MulIOp>() || decast.getDefiningOp<RemUIOp>() ||
            decast.getDefiningOp<RemSIOp>() || decast.getDefiningOp<ShRUIOp>() ||
            decast.getDefiningOp<ShLIOp>()) &&
@@ -874,8 +875,8 @@ void fully2ComposeAffineMapAndOperands(
         else {
           if (insertedOps) {
             OpBuilder builder(toInsert);
-            auto inserted = builder.create<IndexCastOp>(
-                op.getLoc(), builder.getIndexType(), op);
+            auto inserted = IndexCastOp::create(builder, op.getLoc(),
+                                                builder.getIndexType(), op);
             op = inserted->getResult(0);
             insertedOps->push_back(inserted);
           } else {
@@ -946,15 +947,15 @@ void fully2ComposeIntegerSetAndOperands(
       else {
         if (insertedOps) {
           OpBuilder builder(toInsert);
-          auto inserted = builder.create<IndexCastOp>(
-              op.getLoc(), builder.getIndexType(), op);
+          auto inserted = IndexCastOp::create(builder, op.getLoc(),
+                                              builder.getIndexType(), op);
           op = inserted->getResult(0);
           insertedOps->push_back(inserted);
         } else {
           PatternRewriter::InsertionGuard B(builder);
           builder.setInsertionPoint(toInsert);
-          auto inserted = builder.create<IndexCastOp>(
-              op.getLoc(), builder.getIndexType(), op);
+          auto inserted = IndexCastOp::create(builder, op.getLoc(),
+                                              builder.getIndexType(), op);
           op = inserted->getResult(0);
         }
       }
@@ -1025,8 +1026,8 @@ struct SimplfyIntegerCastMath : public OpRewritePattern<IndexCastOp> {
       setLocationAfter(b2, iadd.getOperand(1));
       rewriter.replaceOpWithNewOp<AddIOp>(
           op,
-          b.create<IndexCastOp>(op.getLoc(), op.getType(), iadd.getOperand(0)),
-          b2.create<IndexCastOp>(op.getLoc(), op.getType(),
+          IndexCastOp::create(b, op.getLoc(), op.getType(), iadd.getOperand(0)),
+          IndexCastOp::create(b2, op.getLoc(), op.getType(),
                                  iadd.getOperand(1)));
       return success();
     }
@@ -1037,9 +1038,9 @@ struct SimplfyIntegerCastMath : public OpRewritePattern<IndexCastOp> {
       setLocationAfter(b2, iadd.getOperand(1));
       rewriter.replaceOpWithNewOp<SubIOp>(
           op,
-          b.create<arith::IndexCastOp>(op.getLoc(), op.getType(),
+          arith::IndexCastOp::create(b, op.getLoc(), op.getType(),
                                        iadd.getOperand(0)),
-          b2.create<arith::IndexCastOp>(op.getLoc(), op.getType(),
+          arith::IndexCastOp::create(b2, op.getLoc(), op.getType(),
                                         iadd.getOperand(1)));
       return success();
     }
@@ -1050,8 +1051,8 @@ struct SimplfyIntegerCastMath : public OpRewritePattern<IndexCastOp> {
       setLocationAfter(b2, iadd.getOperand(1));
       rewriter.replaceOpWithNewOp<MulIOp>(
           op,
-          b.create<IndexCastOp>(op.getLoc(), op.getType(), iadd.getOperand(0)),
-          b2.create<IndexCastOp>(op.getLoc(), op.getType(),
+          IndexCastOp::create(b, op.getLoc(), op.getType(), iadd.getOperand(0)),
+          IndexCastOp::create(b2, op.getLoc(), op.getType(),
                                  iadd.getOperand(1)));
       return success();
     }
@@ -1062,9 +1063,9 @@ struct SimplfyIntegerCastMath : public OpRewritePattern<IndexCastOp> {
       setLocationAfter(b2, iadd.getOperand(1));
       rewriter.replaceOpWithNewOp<DivUIOp>(
           op,
-          b.create<arith::IndexCastOp>(op.getLoc(), op.getType(),
+          arith::IndexCastOp::create(b, op.getLoc(), op.getType(),
                                        iadd.getOperand(0)),
-          b2.create<arith::IndexCastOp>(op.getLoc(), op.getType(),
+          arith::IndexCastOp::create(b2, op.getLoc(), op.getType(),
                                         iadd.getOperand(1)));
       return success();
     }
@@ -1075,9 +1076,9 @@ struct SimplfyIntegerCastMath : public OpRewritePattern<IndexCastOp> {
       setLocationAfter(b2, iadd.getOperand(1));
       rewriter.replaceOpWithNewOp<DivSIOp>(
           op,
-          b.create<arith::IndexCastOp>(op.getLoc(), op.getType(),
+          arith::IndexCastOp::create(b, op.getLoc(), op.getType(),
                                        iadd.getOperand(0)),
-          b2.create<arith::IndexCastOp>(op.getLoc(), op.getType(),
+          arith::IndexCastOp::create(b2, op.getLoc(), op.getType(),
                                         iadd.getOperand(1)));
       return success();
     }
@@ -1088,9 +1089,9 @@ struct SimplfyIntegerCastMath : public OpRewritePattern<IndexCastOp> {
       setLocationAfter(b2, iadd.getOperand(1));
       rewriter.replaceOpWithNewOp<RemUIOp>(
           op,
-          b.create<arith::IndexCastOp>(op.getLoc(), op.getType(),
+          arith::IndexCastOp::create(b, op.getLoc(), op.getType(),
                                        iadd.getOperand(0)),
-          b2.create<arith::IndexCastOp>(op.getLoc(), op.getType(),
+          arith::IndexCastOp::create(b2, op.getLoc(), op.getType(),
                                         iadd.getOperand(1)));
       return success();
     }
@@ -1101,9 +1102,9 @@ struct SimplfyIntegerCastMath : public OpRewritePattern<IndexCastOp> {
       setLocationAfter(b2, iadd.getOperand(1));
       rewriter.replaceOpWithNewOp<RemSIOp>(
           op,
-          b.create<arith::IndexCastOp>(op.getLoc(), op.getType(),
+          arith::IndexCastOp::create(b, op.getLoc(), op.getType(),
                                        iadd.getOperand(0)),
-          b2.create<arith::IndexCastOp>(op.getLoc(), op.getType(),
+          arith::IndexCastOp::create(b2, op.getLoc(), op.getType(),
                                         iadd.getOperand(1)));
       return success();
     }
@@ -1119,14 +1120,12 @@ struct SimplfyIntegerCastMath : public OpRewritePattern<IndexCastOp> {
         if (cmp.getLhs() == iadd.getTrueValue() &&
             cmp.getRhs() == iadd.getFalseValue()) {
 
-          auto truev = b.create<arith::IndexCastOp>(op.getLoc(), op.getType(),
+          auto truev = arith::IndexCastOp::create(b, op.getLoc(), op.getType(),
                                                     iadd.getTrueValue());
-          auto falsev = b2.create<arith::IndexCastOp>(op.getLoc(), op.getType(),
-                                                      iadd.getFalseValue());
-          cond = b3.create<CmpIOp>(cmp.getLoc(), cmp.getPredicate(), truev,
-                                   falsev);
-          rewriter.replaceOpWithNewOp<SelectOp>(op, cond, truev, falsev);
-          return success();
+          auto falsev = arith::IndexCastOp::create(b2, op.getLoc(),
+op.getType(), iadd.getFalseValue()); cond = b3CmpIOp::create(b2, cmp.getLoc(),
+cmp.getPredicate(), truev, falsev); rewriter.replaceOpWithNewOp<SelectOp>(op,
+cond, truev, falsev); return success();
         }
       }
     }
@@ -1622,7 +1621,7 @@ static void replaceStore(memref::StoreOp store,
 
   PatternRewriter builder(store);
   Location loc = store.getLoc();
-  builder.create<affine::AffineStoreOp>(loc, store.getValueToStore(),
+  affine::AffineStoreOp::create(builder, loc, store.getValueToStore(),
 store.getMemRef(), newIndexes); store.erase();
 }
 
@@ -1639,7 +1638,7 @@ static void replaceLoad(memref::LoadOp load,
   assert(rank == newIndexes.size() && "rank must equal new indexes size");
 
   affine::AffineLoadOp affineLoad =
-      builder.create<affine::AffineLoadOp>(loc, load.getMemRef(), newIndexes);
+      affine::AffineLoadOp::create(builder, loc, load.getMemRef(), newIndexes);
   load.getResult().replaceAllUsesWith(affineLoad.getResult());
   load.erase();
 }
@@ -1683,8 +1682,8 @@ struct MoveLoadToAffine : public OpRewritePattern<memref::LoadOp> {
     map = recreateExpr(map);
     assert(map.getNumInputs() == operands.size());
 
-    affine::AffineLoadOp affineLoad = rewriter.create<affine::AffineLoadOp>(
-        load.getLoc(), load.getMemRef(), map, operands);
+    affine::AffineLoadOp affineLoad = affine::AffineLoadOp::create(
+        rewriter, load.getLoc(), load.getMemRef(), map, operands);
     load.getResult().replaceAllUsesWith(affineLoad.getResult());
     rewriter.eraseOp(load);
     return success();
@@ -1724,9 +1723,9 @@ struct MoveStoreToAffine : public OpRewritePattern<memref::StoreOp> {
     affine::canonicalizeMapAndOperands(&map, &operands);
     map = recreateExpr(map);
 
-    rewriter.create<affine::AffineStoreOp>(store.getLoc(),
-                                           store.getValueToStore(),
-                                           store.getMemRef(), map, operands);
+    affine::AffineStoreOp::create(rewriter, store.getLoc(),
+                                  store.getValueToStore(), store.getMemRef(),
+                                  map, operands);
     rewriter.eraseOp(store);
     return success();
   }
@@ -1994,12 +1993,12 @@ struct MoveIfToAffine : public OpRewritePattern<scf::IfOp> {
       for (auto vori : applies) {
         Value operand = vori.v_val;
         if (!vori.isValue) {
-          operand = rewriter.create<arith::ConstantIndexOp>(
-              ifOp.getLoc(), vori.i_val.getSExtValue());
+          operand = arith::ConstantIndexOp::create(rewriter, ifOp.getLoc(),
+                                                   vori.i_val.getSExtValue());
         }
         if (!isa<IndexType>(operand.getType())) {
           operand =
-              rewriter.create<arith::IndexCastOp>(ifOp.getLoc(), ity, operand);
+              arith::IndexCastOp::create(rewriter, ifOp.getLoc(), ity, operand);
         }
         operands.push_back(operand);
       }
@@ -2011,8 +2010,8 @@ struct MoveIfToAffine : public OpRewritePattern<scf::IfOp> {
                                   eqflags);
       fully2ComposeIntegerSetAndOperands(rewriter, &iset, &operands, DI, scope);
       affine::canonicalizeSetAndOperands(&iset, &operands);
-      affine::AffineIfOp affineIfOp = rewriter.create<affine::AffineIfOp>(
-          ifOp.getLoc(), types, iset, operands,
+      affine::AffineIfOp affineIfOp = affine::AffineIfOp::create(
+          rewriter, ifOp.getLoc(), types, iset, operands,
           /*elseBlock=*/true);
 
       rewriter.setInsertionPoint(ifOp.thenYield());
@@ -2037,7 +2036,7 @@ struct MoveIfToAffine : public OpRewritePattern<scf::IfOp> {
       } else {
         if (ifOp.getElseRegion().empty()) {
           rewriter.createBlock(&affineIfOp.getThenRegion());
-          rewriter.create<affine::AffineYieldOp>(ifOp.getLoc());
+          affine::AffineYieldOp::create(rewriter, ifOp.getLoc());
         } else {
           rewriter.inlineRegionBefore(ifOp.getElseRegion(),
                                       affineIfOp.getThenRegion(),
@@ -2132,12 +2131,12 @@ struct MoveExtToAffine : public OpRewritePattern<arith::ExtUIOp> {
       for (auto vori : applies) {
         Value operand = vori.v_val;
         if (!vori.isValue) {
-          operand = rewriter.create<arith::ConstantIndexOp>(
-              ifOp.getLoc(), vori.i_val.getSExtValue());
+          operand = arith::ConstantIndexOp::create(rewriter, ifOp.getLoc(),
+                                                   vori.i_val.getSExtValue());
         }
         if (!isa<IndexType>(operand.getType())) {
           operand =
-              rewriter.create<arith::IndexCastOp>(ifOp.getLoc(), ity, operand);
+              arith::IndexCastOp::create(rewriter, ifOp.getLoc(), ity, operand);
         }
         operands.push_back(operand);
       }
@@ -2149,21 +2148,21 @@ struct MoveExtToAffine : public OpRewritePattern<arith::ExtUIOp> {
                                   eqflags);
       fully2ComposeIntegerSetAndOperands(rewriter, &iset, &operands, DI, scope);
       affine::canonicalizeSetAndOperands(&iset, &operands);
-      Value tval[1] = {rewriter.create<arith::ConstantIntOp>(
-          ifOp.getLoc(), ifOp.getType(), 1)};
-      Value fval[1] = {rewriter.create<arith::ConstantIntOp>(
-          ifOp.getLoc(), ifOp.getType(), 0)};
-      affine::AffineIfOp affineIfOp = rewriter.create<affine::AffineIfOp>(
-          ifOp.getLoc(), types, iset, operands,
+      Value tval[1] = {arith::ConstantIntOp::create(rewriter, ifOp.getLoc(),
+                                                    ifOp.getType(), 1)};
+      Value fval[1] = {arith::ConstantIntOp::create(rewriter, ifOp.getLoc(),
+                                                    ifOp.getType(), 0)};
+      affine::AffineIfOp affineIfOp = affine::AffineIfOp::create(
+          rewriter, ifOp.getLoc(), types, iset, operands,
           /*elseBlock=*/true);
 
       rewriter.setInsertionPointToEnd(affineIfOp.getThenBlock());
-      rewriter.create<affine::AffineYieldOp>(ifOp.getLoc(),
-                                             i == 0 ? tval : fval);
+      affine::AffineYieldOp::create(rewriter, ifOp.getLoc(),
+                                    i == 0 ? tval : fval);
 
       rewriter.setInsertionPointToEnd(affineIfOp.getElseBlock());
-      rewriter.create<affine::AffineYieldOp>(ifOp.getLoc(),
-                                             i == 0 ? fval : tval);
+      affine::AffineYieldOp::create(rewriter, ifOp.getLoc(),
+                                    i == 0 ? fval : tval);
 
       rewriter.replaceOp(ifOp, affineIfOp);
       return success();
@@ -2205,10 +2204,10 @@ struct MoveSIToFPToAffine : public OpRewritePattern<arith::SIToFPOp> {
     map = recreateExpr(map);
 
     auto app =
-        rewriter.create<affine::AffineApplyOp>(ifOp.getLoc(), map, operands);
+        affine::AffineApplyOp::create(rewriter, ifOp.getLoc(), map, operands);
 
-    auto cast = rewriter.create<arith::IndexCastOp>(
-        ifOp.getLoc(), ifOp.getOperand().getType(), app);
+    auto cast = arith::IndexCastOp::create(rewriter, ifOp.getLoc(),
+                                           ifOp.getOperand().getType(), app);
 
     rewriter.modifyOpInPlace(ifOp, [&]() { ifOp.getInMutable().assign(cast); });
     return success();
@@ -2230,8 +2229,8 @@ struct CmpExt : public OpRewritePattern<arith::CmpIOp> {
 
     // ext (i1 -> i64) == 0, !%c
     if (cmpOp.getPredicate() == arith::CmpIPredicate::eq) {
-      auto tval = rewriter.create<arith::ConstantIntOp>(
-          cmpOp.getLoc(), ext.getOperand().getType(), 1);
+      auto tval = arith::ConstantIntOp::create(rewriter, cmpOp.getLoc(),
+                                               ext.getOperand().getType(), 1);
       rewriter.replaceOpWithNewOp<arith::XOrIOp>(cmpOp, ext.getOperand(), tval);
       return success();
     }
@@ -2315,12 +2314,12 @@ struct MoveSelectToAffine : public OpRewritePattern<arith::SelectOp> {
       for (auto vori : applies) {
         Value operand = vori.v_val;
         if (!vori.isValue) {
-          operand = rewriter.create<arith::ConstantIndexOp>(
-              ifOp.getLoc(), vori.i_val.getSExtValue());
+          operand = arith::ConstantIndexOp::create(rewriter, ifOp.getLoc(),
+                                                   vori.i_val.getSExtValue());
         }
         if (!isa<IndexType>(operand.getType())) {
           operand =
-              rewriter.create<arith::IndexCastOp>(ifOp.getLoc(), ity, operand);
+              arith::IndexCastOp::create(rewriter, ifOp.getLoc(), ity, operand);
         }
         operands.push_back(operand);
       }
@@ -2332,17 +2331,19 @@ struct MoveSelectToAffine : public OpRewritePattern<arith::SelectOp> {
                                   eqflags);
       fully2ComposeIntegerSetAndOperands(rewriter, &iset, &operands, DI, scope);
       affine::canonicalizeSetAndOperands(&iset, &operands);
-      affine::AffineIfOp affineIfOp = rewriter.create<affine::AffineIfOp>(
-          ifOp.getLoc(), types, iset, operands,
+      affine::AffineIfOp affineIfOp = affine::AffineIfOp::create(
+          rewriter, ifOp.getLoc(), types, iset, operands,
           /*elseBlock=*/true);
 
       rewriter.setInsertionPointToEnd(affineIfOp.getThenBlock());
-      rewriter.create<affine::AffineYieldOp>(
-          ifOp.getLoc(), i == 0 ? ifOp.getTrueValue() : ifOp.getFalseValue());
+      affine::AffineYieldOp::create(rewriter, ifOp.getLoc(),
+                                    i == 0 ? ifOp.getTrueValue()
+                                           : ifOp.getFalseValue());
 
       rewriter.setInsertionPointToEnd(affineIfOp.getElseBlock());
-      rewriter.create<affine::AffineYieldOp>(
-          ifOp.getLoc(), i == 0 ? ifOp.getFalseValue() : ifOp.getTrueValue());
+      affine::AffineYieldOp::create(rewriter, ifOp.getLoc(),
+                                    i == 0 ? ifOp.getFalseValue()
+                                           : ifOp.getTrueValue());
 
       rewriter.replaceOp(ifOp, affineIfOp.getResults());
       return success();
@@ -2431,12 +2432,12 @@ struct MoveSelectToAffine : public OpRewritePattern<arith::SelectOp> {
           for (auto vori : applies) {
             Value operand = vori.v_val;
             if (!vori.isValue) {
-              operand = rewriter.create<arith::ConstantIndexOp>(
-                  ifOp.getLoc(), vori.i_val.getSExtValue());
+              operand = arith::ConstantIndexOp::create(
+                  rewriter, ifOp.getLoc(), vori.i_val.getSExtValue());
             }
             if (!isa<IndexType>(operand.getType())) {
-              operand = rewriter.create<arith::IndexCastOp>(ifOp.getLoc(), ity,
-                                                            operand);
+              operand = arith::IndexCastOp::create(rewriter, ifOp.getLoc(), ity,
+                                                   operand);
             }
             operands.push_back(operand);
           }
@@ -2452,22 +2453,22 @@ struct MoveSelectToAffine : public OpRewritePattern<arith::SelectOp> {
                                              scope);
           affine::canonicalizeSetAndOperands(&iset, &operands);
 
-          Value tval[1] = {rewriter.create<arith::ConstantIntOp>(ifOp.getLoc(),
-                                                                 types[0], 1)};
-          Value fval[1] = {rewriter.create<arith::ConstantIntOp>(ifOp.getLoc(),
-                                                                 types[0], 0)};
+          Value tval[1] = {arith::ConstantIntOp::create(rewriter, ifOp.getLoc(),
+                                                        types[0], 1)};
+          Value fval[1] = {arith::ConstantIntOp::create(rewriter, ifOp.getLoc(),
+                                                        types[0], 0)};
 
-          affine::AffineIfOp affineIfOp = rewriter.create<affine::AffineIfOp>(
-              ifOp.getLoc(), types, iset, operands,
+          affine::AffineIfOp affineIfOp = affine::AffineIfOp::create(
+              rewriter, ifOp.getLoc(), types, iset, operands,
               /*elseBlock=*/true);
 
           rewriter.setInsertionPointToEnd(affineIfOp.getThenBlock());
-          rewriter.create<affine::AffineYieldOp>(ifOp.getLoc(),
-                                                 i == 0 ? tval : fval);
+          affine::AffineYieldOp::create(rewriter, ifOp.getLoc(),
+                                        i == 0 ? tval : fval);
 
           rewriter.setInsertionPointToEnd(affineIfOp.getElseBlock());
-          rewriter.create<affine::AffineYieldOp>(ifOp.getLoc(),
-                                                 i == 0 ? fval : tval);
+          affine::AffineYieldOp::create(rewriter, ifOp.getLoc(),
+                                        i == 0 ? fval : tval);
 
           rewriter.modifyOpInPlace(
               condOp, [&] { opv.assign(affineIfOp.getResult(0)); });
@@ -2568,23 +2569,22 @@ struct ForOpRaising : public OpRewritePattern<scf::ForOp> {
       if (!loop.getStep().getDefiningOp<ConstantIndexOp>()) {
         if (ubs.size() != 1 || lbs.size() != 1)
           return failure();
-        ubs[0] = rewriter.create<DivUIOp>(
-            loop.getLoc(),
-            rewriter.create<AddIOp>(
-                loop.getLoc(),
-                rewriter
-                    .create<SubIOp>(
-                        loop.getLoc(), loop.getStep(),
-                        isa<IndexType>(loop.getStep().getType())
-                            ? rewriter.create<ConstantIndexOp>(loop.getLoc(), 1)
-                                  .getResult()
-                            : rewriter.create<ConstantIntOp>(
-                                  loop.getLoc(), loop.getStep().getType(), 1))
+        ubs[0] = DivUIOp::create(
+            rewriter, loop.getLoc(),
+            AddIOp::create(
+                rewriter, loop.getLoc(),
+                SubIOp::create(
+                    rewriter, loop.getLoc(), loop.getStep(),
+                    isa<IndexType>(loop.getStep().getType())
+                        ? ConstantIndexOp::create(rewriter, loop.getLoc(), 1)
+                              .getResult()
+                        : ConstantIntOp::create(rewriter, loop.getLoc(),
+                                                loop.getStep().getType(), 1))
                     .getResult(),
-                rewriter.create<SubIOp>(loop.getLoc(), loop.getUpperBound(),
-                                        loop.getLowerBound())),
+                SubIOp::create(rewriter, loop.getLoc(), loop.getUpperBound(),
+                               loop.getLowerBound())),
             loop.getStep());
-        lbs[0] = rewriter.create<ConstantIndexOp>(loop.getLoc(), 0);
+        lbs[0] = ConstantIndexOp::create(rewriter, loop.getLoc(), 0);
         rewrittenStep = true;
       }
 
@@ -2606,9 +2606,9 @@ struct ForOpRaising : public OpRewritePattern<scf::ForOp> {
         ubMap = recreateExpr(ubMap);
       }
 
-      affine::AffineForOp affineLoop = rewriter.create<affine::AffineForOp>(
-          loop.getLoc(), lbs, lbMap, ubs, ubMap, getStep(loop.getStep()),
-          loop.getInits());
+      affine::AffineForOp affineLoop = affine::AffineForOp::create(
+          rewriter, loop.getLoc(), lbs, lbMap, ubs, ubMap,
+          getStep(loop.getStep()), loop.getInits());
       preserveDiscardableAttributes(affineLoop, loop);
 
       auto mergedYieldOp =
@@ -2628,13 +2628,13 @@ struct ForOpRaising : public OpRewritePattern<scf::ForOp> {
       for (Value arg : affineLoop.getRegion().front().getArguments()) {
         bool isInduction = arg == affineLoop.getInductionVar();
         if (isInduction && arg.getType() != loop.getInductionVar().getType()) {
-          arg = rewriter.create<arith::IndexCastOp>(
-              loop.getLoc(), loop.getInductionVar().getType(), arg);
+          arg = arith::IndexCastOp::create(
+              rewriter, loop.getLoc(), loop.getInductionVar().getType(), arg);
         }
         if (rewrittenStep && isInduction) {
-          arg = rewriter.create<AddIOp>(
-              loop.getLoc(), loop.getLowerBound(),
-              rewriter.create<MulIOp>(loop.getLoc(), arg, loop.getStep()));
+          arg = AddIOp::create(
+              rewriter, loop.getLoc(), loop.getLowerBound(),
+              MulIOp::create(rewriter, loop.getLoc(), arg, loop.getStep()));
         }
         vals.push_back(arg);
       }
@@ -2643,8 +2643,8 @@ struct ForOpRaising : public OpRewritePattern<scf::ForOp> {
                            &affineLoop.getRegion().front(), vals);
 
       rewriter.setInsertionPoint(mergedYieldOp);
-      rewriter.create<affine::AffineYieldOp>(mergedYieldOp.getLoc(),
-                                             mergedYieldOp.getOperands());
+      affine::AffineYieldOp::create(rewriter, mergedYieldOp.getLoc(),
+                                    mergedYieldOp.getOperands());
       rewriter.eraseOp(mergedYieldOp);
 
       rewriter.replaceOp(loop, affineLoop.getResults());
@@ -2713,11 +2713,10 @@ struct ParallelOpRaising : public OpRewritePattern<scf::ParallelOp> {
       bounds.push_back(AffineMap::get(
           /*dimCount=*/0, /*symbolCount=*/loop.getLowerBound().size(),
           builder.getAffineSymbolExpr(i)));
-    affine::AffineParallelOp affineLoop =
-        rewriter.create<affine::AffineParallelOp>(
-            loop.getLoc(), loop.getResultTypes(), reductions, bounds,
-            loop.getLowerBound(), bounds, loop.getUpperBound(),
-            steps); //, loop.getInitVals());
+    affine::AffineParallelOp affineLoop = affine::AffineParallelOp::create(
+        rewriter, loop.getLoc(), loop.getResultTypes(), reductions, bounds,
+        loop.getLowerBound(), bounds, loop.getUpperBound(),
+        steps); //, loop.getInitVals());
 
     canonicalizeLoopBounds(rewriter, affineLoop);
 
@@ -2741,8 +2740,8 @@ struct ParallelOpRaising : public OpRewritePattern<scf::ParallelOp> {
                          &affineLoop.getRegion().front(), vals);
 
     rewriter.setInsertionPoint(mergedYieldOp);
-    rewriter.create<affine::AffineYieldOp>(mergedYieldOp.getLoc(),
-                                           mergedYieldOp.getOperands());
+    affine::AffineYieldOp::create(rewriter, mergedYieldOp.getLoc(),
+                                  mergedYieldOp.getOperands());
     rewriter.eraseOp(mergedYieldOp);
 
     rewriter.replaceOp(loop, affineLoop.getResults());
@@ -2942,8 +2941,8 @@ struct AffineIfSimplification : public OpRewritePattern<affine::AffineIfOp> {
         IntegerSet::get(op.getIntegerSet().getNumDims(),
                         op.getIntegerSet().getNumSymbols(), todo, eqFlags);
 
-    auto newIf = rewriter.create<affine::AffineIfOp>(
-        op.getLoc(), op.getResultTypes(), iset, op.getOperands(),
+    auto newIf = affine::AffineIfOp::create(
+        rewriter, op.getLoc(), op.getResultTypes(), iset, op.getOperands(),
         /*hasElse*/ true);
     rewriter.eraseBlock(newIf.getThenBlock());
     rewriter.eraseBlock(newIf.getElseBlock());
@@ -3019,8 +3018,8 @@ struct CombineAffineIfs : public OpRewritePattern<affine::AffineIfOp> {
     SmallVector<Type> mergedTypes(prevIf.getResultTypes());
     llvm::append_range(mergedTypes, nextIf.getResultTypes());
 
-    affine::AffineIfOp combinedIf = rewriter.create<affine::AffineIfOp>(
-        nextIf.getLoc(), mergedTypes, prevIf.getIntegerSet(),
+    affine::AffineIfOp combinedIf = affine::AffineIfOp::create(
+        rewriter, nextIf.getLoc(), mergedTypes, prevIf.getIntegerSet(),
         prevIf.getOperands(), /*hasElse=*/true);
     rewriter.eraseBlock(&combinedIf.getThenRegion().back());
     rewriter.eraseBlock(&combinedIf.getElseRegion().back());
@@ -3039,7 +3038,8 @@ struct CombineAffineIfs : public OpRewritePattern<affine::AffineIfOp> {
 
       SmallVector<Value> mergedYields(thenYield.getOperands());
       llvm::append_range(mergedYields, thenYield2.getOperands());
-      rewriter.create<affine::AffineYieldOp>(thenYield2.getLoc(), mergedYields);
+      affine::AffineYieldOp::create(rewriter, thenYield2.getLoc(),
+                                    mergedYields);
       rewriter.eraseOp(thenYield);
       rewriter.eraseOp(thenYield2);
     }
@@ -3065,8 +3065,8 @@ struct CombineAffineIfs : public OpRewritePattern<affine::AffineIfOp> {
         SmallVector<Value> mergedElseYields(elseYield.getOperands());
         llvm::append_range(mergedElseYields, elseYield2.getOperands());
 
-        rewriter.create<affine::AffineYieldOp>(elseYield2.getLoc(),
-                                               mergedElseYields);
+        affine::AffineYieldOp::create(rewriter, elseYield2.getLoc(),
+                                      mergedElseYields);
         rewriter.eraseOp(elseYield);
         rewriter.eraseOp(elseYield2);
       }
@@ -3191,24 +3191,23 @@ struct MergeNestedAffineParallelLoops
     for (auto U : innerOp.getSteps())
       steps.push_back(U);
 
-    affine::AffineParallelOp affineLoop =
-        rewriter.create<affine::AffineParallelOp>(
-            op.getLoc(), newTypes, rewriter.getArrayAttr(reductions),
-            AffineMapAttr::get(
-                AffineMap::get(op.getLowerBoundsMap().getNumDims() +
-                                   innerOp.getLowerBoundsMap().getNumDims(),
-                               op.getLowerBoundsMap().getNumSymbols() +
-                                   innerOp.getLowerBoundsMap().getNumSymbols(),
-                               lbounds, op.getContext())),
-            rewriter.getI32TensorAttr(lboundGroup),
-            AffineMapAttr::get(
-                AffineMap::get(op.getUpperBoundsMap().getNumDims() +
-                                   innerOp.getUpperBoundsMap().getNumDims(),
-                               op.getUpperBoundsMap().getNumSymbols() +
-                                   innerOp.getUpperBoundsMap().getNumSymbols(),
-                               ubounds, op.getContext())),
-            rewriter.getI32TensorAttr(uboundGroup),
-            rewriter.getI64ArrayAttr(steps), operands);
+    affine::AffineParallelOp affineLoop = affine::AffineParallelOp::create(
+        rewriter, op.getLoc(), newTypes, rewriter.getArrayAttr(reductions),
+        AffineMapAttr::get(
+            AffineMap::get(op.getLowerBoundsMap().getNumDims() +
+                               innerOp.getLowerBoundsMap().getNumDims(),
+                           op.getLowerBoundsMap().getNumSymbols() +
+                               innerOp.getLowerBoundsMap().getNumSymbols(),
+                           lbounds, op.getContext())),
+        rewriter.getI32TensorAttr(lboundGroup),
+        AffineMapAttr::get(
+            AffineMap::get(op.getUpperBoundsMap().getNumDims() +
+                               innerOp.getUpperBoundsMap().getNumDims(),
+                           op.getUpperBoundsMap().getNumSymbols() +
+                               innerOp.getUpperBoundsMap().getNumSymbols(),
+                           ubounds, op.getContext())),
+        rewriter.getI32TensorAttr(uboundGroup), rewriter.getI64ArrayAttr(steps),
+        operands);
 
     rewriter.inlineRegionBefore(op.getRegion(), affineLoop.getRegion(),
                                 affineLoop.getRegion().begin());
@@ -3539,22 +3538,20 @@ struct MergeNestedAffineParallelIf
 
     ArrayRef<Attribute> reductions;
 
-    affine::AffineParallelOp affineLoop =
-        rewriter.create<affine::AffineParallelOp>(
-            op.getLoc(), op.getResultTypes(), rewriter.getArrayAttr(reductions),
-            AffineMapAttr::get(
-                AffineMap::get(op.getLowerBoundsMap().getNumDims(),
-                               op.getLowerBoundsMap().getNumSymbols(), lbounds,
-                               op.getContext())),
-            rewriter.getI32TensorAttr(lboundGroup),
-            AffineMapAttr::get(
-                AffineMap::get(op.getUpperBoundsMap().getNumDims() +
-                                   innerOp.getIntegerSet().getNumDims(),
-                               op.getUpperBoundsMap().getNumSymbols() +
-                                   innerOp.getIntegerSet().getNumSymbols(),
-                               ubounds, op.getContext())),
-            rewriter.getI32TensorAttr(uboundGroup), op.getStepsAttr(),
-            operands);
+    affine::AffineParallelOp affineLoop = affine::AffineParallelOp::create(
+        rewriter, op.getLoc(), op.getResultTypes(),
+        rewriter.getArrayAttr(reductions),
+        AffineMapAttr::get(AffineMap::get(
+            op.getLowerBoundsMap().getNumDims(),
+            op.getLowerBoundsMap().getNumSymbols(), lbounds, op.getContext())),
+        rewriter.getI32TensorAttr(lboundGroup),
+        AffineMapAttr::get(
+            AffineMap::get(op.getUpperBoundsMap().getNumDims() +
+                               innerOp.getIntegerSet().getNumDims(),
+                           op.getUpperBoundsMap().getNumSymbols() +
+                               innerOp.getIntegerSet().getNumSymbols(),
+                           ubounds, op.getContext())),
+        rewriter.getI32TensorAttr(uboundGroup), op.getStepsAttr(), operands);
     rewriter.inlineRegionBefore(op.getRegion(), affineLoop.getRegion(),
                                 affineLoop.getRegion().begin());
 
@@ -3569,8 +3566,8 @@ struct MergeNestedAffineParallelIf
       rewriter.replaceOp(innerOp, toRet);
       rewriter.eraseOp(op);
     } else {
-      affine::AffineIfOp newIf = rewriter.create<affine::AffineIfOp>(
-          innerOp.getLoc(), innerOp.getResultTypes(),
+      affine::AffineIfOp newIf = affine::AffineIfOp::create(
+          rewriter, innerOp.getLoc(), innerOp.getResultTypes(),
           IntegerSet::get(innerOp.getIntegerSet().getNumDims(),
                           innerOp.getIntegerSet().getNumSymbols(), remaining,
                           isEq),
@@ -4062,8 +4059,8 @@ struct SplitParallelInductions
           upperBoundsGroup.push_back(ub.getZExtValue());
         upperBoundsGroup.push_back(1);
 
-        auto affineLoop = rewriter.create<affine::AffineParallelOp>(
-            op.getLoc(), op.getResultTypes(), op.getReductionsAttr(),
+        auto affineLoop = affine::AffineParallelOp::create(
+            rewriter, op.getLoc(), op.getResultTypes(), op.getReductionsAttr(),
             AffineMapAttr::get(
                 AffineMap::get(op.getLowerBoundsMap().getNumDims(),
                                op.getLowerBoundsMap().getNumSymbols(), lbounds,
@@ -4193,19 +4190,19 @@ struct SplitParallelInductions
 
               if (isa<arith::FloorDivSIOp, arith::DivUIOp>(UU)) {
                 rewriter.setInsertionPoint(UU);
-                auto replacement = rewriter.create<arith::MulIOp>(
-                    UU->getLoc(), U->getResult(0),
-                    rewriter.create<arith::ConstantIntOp>(
-                        UU->getLoc(), U->getResult(0).getType(),
-                        base.i_val.getSExtValue()));
+                auto replacement = arith::MulIOp::create(
+                    rewriter, UU->getLoc(), U->getResult(0),
+                    arith::ConstantIntOp::create(rewriter, UU->getLoc(),
+                                                 U->getResult(0).getType(),
+                                                 base.i_val.getSExtValue()));
                 replacement.setOverflowFlags(IntegerOverflowFlags::nuw);
                 rewriter.replaceOpWithNewOp<arith::DivUIOp>(UU, replacement,
                                                             UU->getOperand(1));
               } else if (isa<arith::RemUIOp>(UU)) {
                 rewriter.replaceAllUsesWith(
-                    UU->getResult(0),
-                    rewriter.create<arith::IndexCastUIOp>(
-                        U->getLoc(), U->getResult(0).getType(), newIv));
+                    UU->getResult(0), arith::IndexCastUIOp::create(
+                                          rewriter, U->getLoc(),
+                                          U->getResult(0).getType(), newIv));
               } else {
                 llvm_unreachable("impossible use of cast");
               }
@@ -4213,10 +4210,10 @@ struct SplitParallelInductions
 
           } else if (isa<arith::FloorDivSIOp, arith::DivUIOp>(U)) {
             rewriter.setInsertionPoint(U);
-            auto replacement = rewriter.create<arith::MulIOp>(
-                U->getLoc(), iv,
-                rewriter.create<arith::ConstantIndexOp>(
-                    U->getLoc(), base.i_val.getSExtValue()));
+            auto replacement = arith::MulIOp::create(
+                rewriter, U->getLoc(), iv,
+                arith::ConstantIndexOp::create(rewriter, U->getLoc(),
+                                               base.i_val.getSExtValue()));
             replacement.setOverflowFlags(IntegerOverflowFlags::nuw);
             rewriter.replaceOpWithNewOp<arith::DivUIOp>(U, replacement,
                                                         U->getOperand(1));
@@ -4224,13 +4221,13 @@ struct SplitParallelInductions
             rewriter.replaceAllUsesWith(U->getResult(0), newIv);
           } else {
             rewriter.setInsertionPoint(U);
-            auto replacement = rewriter.create<arith::MulIOp>(
-                U->getLoc(), iv,
-                rewriter.create<arith::ConstantIndexOp>(
-                    U->getLoc(), base.i_val.getSExtValue()));
+            auto replacement = arith::MulIOp::create(
+                rewriter, U->getLoc(), iv,
+                arith::ConstantIndexOp::create(rewriter, U->getLoc(),
+                                               base.i_val.getSExtValue()));
             replacement.setOverflowFlags(IntegerOverflowFlags::nuw);
-            auto replacement2 =
-                rewriter.create<arith::AddIOp>(U->getLoc(), replacement, newIv);
+            auto replacement2 = arith::AddIOp::create(rewriter, U->getLoc(),
+                                                      replacement, newIv);
             rewriter.replaceUsesWithIf(
                 iv, replacement2->getResult(0),
                 [&](OpOperand &op) { return op.getOwner() == U; });
@@ -4653,16 +4650,14 @@ struct MergeParallelInductions
       ubounds[off1] = ubounds[off1] * ubounds[off2];
       ubounds[off2] = getAffineConstantExpr(1, op.getContext());
 
-      affine::AffineParallelOp affineLoop =
-          rewriter.create<affine::AffineParallelOp>(
-              op.getLoc(), op.getResultTypes(), op.getReductionsAttr(),
-              op.getLowerBoundsMapAttr(), op.getLowerBoundsGroupsAttr(),
-              AffineMapAttr::get(
-                  AffineMap::get(op.getUpperBoundsMap().getNumDims(),
-                                 op.getUpperBoundsMap().getNumSymbols(),
-                                 ubounds, op.getContext())),
-              op.getUpperBoundsGroupsAttr(), op.getStepsAttr(),
-              op.getOperands());
+      affine::AffineParallelOp affineLoop = affine::AffineParallelOp::create(
+          rewriter, op.getLoc(), op.getResultTypes(), op.getReductionsAttr(),
+          op.getLowerBoundsMapAttr(), op.getLowerBoundsGroupsAttr(),
+          AffineMapAttr::get(
+              AffineMap::get(op.getUpperBoundsMap().getNumDims(),
+                             op.getUpperBoundsMap().getNumSymbols(), ubounds,
+                             op.getContext())),
+          op.getUpperBoundsGroupsAttr(), op.getStepsAttr(), op.getOperands());
 
       rewriter.inlineRegionBefore(op.getRegion(), affineLoop.getRegion(),
                                   affineLoop.getRegion().begin());
@@ -4695,7 +4690,7 @@ struct AddAddCstEnd : public OpRewritePattern<arith::AddIOp> {
         continue;
 
       auto tmp1 =
-          rewriter.create<arith::AddIOp>(op.getLoc(), val2, val.getLhs());
+          arith::AddIOp::create(rewriter, op.getLoc(), val2, val.getLhs());
       rewriter.replaceOpWithNewOp<arith::AddIOp>(op, tmp1, val.getRhs());
       return success();
     }
@@ -4887,9 +4882,10 @@ struct AffineIfYieldMovementPattern
       resultTypes.push_back(operand.getType());
     }
 
-    auto newIfOp = rewriter.create<affine::AffineIfOp>(
-        ifOp.getLoc(), resultTypes, ifOp.getIntegerSet(), ifOp.getOperands(),
-        /*hasElse=*/true);
+    auto newIfOp =
+        affine::AffineIfOp::create(rewriter, ifOp.getLoc(), resultTypes,
+                                   ifOp.getIntegerSet(), ifOp.getOperands(),
+                                   /*hasElse=*/true);
 
     // Move operations from the original then block to the new then block
 
@@ -4907,8 +4903,8 @@ struct AffineIfYieldMovementPattern
     {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToEnd(newIfOp.getThenBlock());
-      rewriter.create<affine::AffineYieldOp>(thenYield.getLoc(),
-                                             ifYieldOperands);
+      affine::AffineYieldOp::create(rewriter, thenYield.getLoc(),
+                                    ifYieldOperands);
       rewriter.eraseOp(thenYield);
     }
 
@@ -4916,8 +4912,8 @@ struct AffineIfYieldMovementPattern
     {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToEnd(newIfOp.getElseBlock());
-      rewriter.create<affine::AffineYieldOp>(elseYield.getLoc(),
-                                             elseYieldOperands);
+      affine::AffineYieldOp::create(rewriter, elseYield.getLoc(),
+                                    elseYieldOperands);
       rewriter.eraseOp(elseYield);
     }
 
@@ -5041,9 +5037,9 @@ struct SinkStoreInIf : public OpRewritePattern<scf::IfOp> {
       resultTypes.push_back(operand.getType());
     }
 
-    auto newIfOp = rewriter.create<scf::IfOp>(ifOp.getLoc(), resultTypes,
-                                              ifOp.getCondition(),
-                                              /*hasElse=*/true);
+    auto newIfOp = scf::IfOp::create(rewriter, ifOp.getLoc(), resultTypes,
+                                     ifOp.getCondition(),
+                                     /*hasElse=*/true);
 
     // Move operations from the original then block to the new then block
 
@@ -5061,7 +5057,7 @@ struct SinkStoreInIf : public OpRewritePattern<scf::IfOp> {
     {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToEnd(newIfOp.thenBlock());
-      rewriter.create<scf::YieldOp>(thenYield.getLoc(), ifYieldOperands);
+      scf::YieldOp::create(rewriter, thenYield.getLoc(), ifYieldOperands);
       rewriter.eraseOp(thenYield);
     }
 
@@ -5069,12 +5065,12 @@ struct SinkStoreInIf : public OpRewritePattern<scf::IfOp> {
     {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToEnd(newIfOp.elseBlock());
-      rewriter.create<scf::YieldOp>(elseYield.getLoc(), elseYieldOperands);
+      scf::YieldOp::create(rewriter, elseYield.getLoc(), elseYieldOperands);
       rewriter.eraseOp(elseYield);
     }
 
-    rewriter.create<affine::AffineStoreOp>(
-        thenStore.getLoc(), newIfOp.getResult(ifOp.getNumResults()),
+    affine::AffineStoreOp::create(
+        rewriter, thenStore.getLoc(), newIfOp.getResult(ifOp.getNumResults()),
         thenStore.getMemref(), thenStore.getAffineMap(),
         thenStore.getMapOperands());
 
@@ -5144,9 +5140,9 @@ struct SinkStoreInAffineIf : public OpRewritePattern<affine::AffineIfOp> {
       resultTypes.push_back(operand.getType());
     }
 
-    auto newIfOp = rewriter.create<affine::AffineIfOp>(
-        ifOp.getLoc(), resultTypes, ifOp.getIntegerSet(), ifOp.getOperands(),
-        true);
+    auto newIfOp = affine::AffineIfOp::create(rewriter, ifOp.getLoc(),
+                                              resultTypes, ifOp.getIntegerSet(),
+                                              ifOp.getOperands(), true);
 
     // Move operations from the original then block to the new then block
 
@@ -5164,8 +5160,8 @@ struct SinkStoreInAffineIf : public OpRewritePattern<affine::AffineIfOp> {
     {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToEnd(newIfOp.getThenBlock());
-      rewriter.create<affine::AffineYieldOp>(thenYield.getLoc(),
-                                             ifYieldOperands);
+      affine::AffineYieldOp::create(rewriter, thenYield.getLoc(),
+                                    ifYieldOperands);
       rewriter.eraseOp(thenYield);
     }
 
@@ -5173,13 +5169,13 @@ struct SinkStoreInAffineIf : public OpRewritePattern<affine::AffineIfOp> {
     {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToEnd(newIfOp.getElseBlock());
-      rewriter.create<affine::AffineYieldOp>(elseYield.getLoc(),
-                                             elseYieldOperands);
+      affine::AffineYieldOp::create(rewriter, elseYield.getLoc(),
+                                    elseYieldOperands);
       rewriter.eraseOp(elseYield);
     }
 
-    rewriter.create<affine::AffineStoreOp>(
-        thenStore.getLoc(), newIfOp.getResult(ifOp.getNumResults()),
+    affine::AffineStoreOp::create(
+        rewriter, thenStore.getLoc(), newIfOp.getResult(ifOp.getNumResults()),
         thenStore.getMemref(), thenStore.getAffineMap(),
         thenStore.getMapOperands());
 
@@ -5287,16 +5283,16 @@ public:
 
       if (isa<scf::IfOp>(conditional)) {
         rewriter.setInsertionPointToEnd(tBlk);
-        rewriter.create<scf::YieldOp>(conditional->getLoc(), trueResults);
+        scf::YieldOp::create(rewriter, conditional->getLoc(), trueResults);
         rewriter.setInsertionPointToEnd(fBlk);
-        rewriter.create<scf::YieldOp>(conditional->getLoc(), falseResults);
+        scf::YieldOp::create(rewriter, conditional->getLoc(), falseResults);
       } else {
         rewriter.setInsertionPointToEnd(tBlk);
-        rewriter.create<affine::AffineYieldOp>(conditional->getLoc(),
-                                               trueResults);
+        affine::AffineYieldOp::create(rewriter, conditional->getLoc(),
+                                      trueResults);
         rewriter.setInsertionPointToEnd(fBlk);
-        rewriter.create<affine::AffineYieldOp>(conditional->getLoc(),
-                                               falseResults);
+        affine::AffineYieldOp::create(rewriter, conditional->getLoc(),
+                                      falseResults);
       }
       rewriter.setInsertionPoint(postOp);
       auto conditional2 = rewriter.create(
@@ -5594,7 +5590,7 @@ struct CompareVs1 : public OpRewritePattern<arith::CmpIOp> {
 
       rewriter.replaceOpWithNewOp<arith::CmpIOp>(
           cmpOp, predicate, lhs,
-          rewriter.create<arith::ConstantIndexOp>(cmpOp.getLoc(), 0));
+          arith::ConstantIndexOp::create(rewriter, cmpOp.getLoc(), 0));
       return success();
     }
 
@@ -5692,7 +5688,7 @@ struct AffineForReductionIter : public OpRewritePattern<affine::AffineForOp> {
     rewriter.setInsertionPoint(forOp);
     IRMapping map;
     map.map(forOp.getInductionVar(),
-            rewriter.create<arith::ConstantIndexOp>(forOp.getLoc(), 0));
+            arith::ConstantIndexOp::create(rewriter, forOp.getLoc(), 0));
     for (auto &&[store, loads] : todo) {
       auto movedLoad =
           cast<affine::AffineLoadOp>(rewriter.clone(*loads[0].first, map));
@@ -5701,10 +5697,10 @@ struct AffineForReductionIter : public OpRewritePattern<affine::AffineForOp> {
     }
 
     // create the for.
-    affine::AffineForOp newForOp = rewriter.create<affine::AffineForOp>(
-        forOp.getLoc(), forOp.getLowerBoundOperands(), forOp.getLowerBoundMap(),
-        forOp.getUpperBoundOperands(), forOp.getUpperBoundMap(),
-        forOp.getStep().getSExtValue(), newIterArgs);
+    affine::AffineForOp newForOp = affine::AffineForOp::create(
+        rewriter, forOp.getLoc(), forOp.getLowerBoundOperands(),
+        forOp.getLowerBoundMap(), forOp.getUpperBoundOperands(),
+        forOp.getUpperBoundMap(), forOp.getStep().getSExtValue(), newIterArgs);
     preserveDiscardableAttributes(newForOp, forOp);
 
     // remove load operation inside the for.
@@ -5849,7 +5845,7 @@ struct AffineForReductionSink : public OpRewritePattern<affine::AffineForOp> {
         for (auto &&[i, val] : llvm::enumerate(store.getIndices())) {
           if (val == forOp.getInductionVar()) {
             store.getIndicesMutable()[i].assign(
-                rewriter.create<arith::ConstantIndexOp>(store.getLoc(), 0));
+                arith::ConstantIndexOp::create(rewriter, store.getLoc(), 0));
           }
         }
 
@@ -6653,8 +6649,8 @@ struct AffineParallelizePattern : public OpRewritePattern<affine::AffineForOp> {
         reductions, [](const LoopReduction &red) { return red.value; }));
     auto reductionKinds = llvm::to_vector(llvm::map_range(
         reductions, [](const LoopReduction &red) { return red.kind; }));
-    AffineParallelOp newPloop = rewriter.create<AffineParallelOp>(
-        loc, ValueRange(reducedValues).getTypes(), reductionKinds,
+    AffineParallelOp newPloop = AffineParallelOp::create(
+        rewriter, loc, ValueRange(reducedValues).getTypes(), reductionKinds,
         llvm::ArrayRef(lowerBoundMap), lowerBoundOperands,
         llvm::ArrayRef(upperBoundMap), upperBoundOperands,
         llvm::ArrayRef(forOp.getStepAsInt()));

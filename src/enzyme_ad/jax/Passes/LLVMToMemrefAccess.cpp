@@ -158,15 +158,15 @@ struct LLVMToMemrefAccessPass
           auto newType = newTypes[index];
           auto oldArg = callee.getArgument(index);
           auto newArg = entry->insertArgument(index, newType, oldArg.getLoc());
-          auto newPtr = builder.create<enzymexla::Memref2PointerOp>(
-              newArg.getLoc(), oldArg.getType(), newArg);
+          auto newPtr = enzymexla::Memref2PointerOp::create(
+              builder, newArg.getLoc(), oldArg.getType(), newArg);
           oldArg.replaceAllUsesWith(newPtr);
           entry->eraseArgument(index + 1);
         }
 
         builder.setInsertionPoint(callee);
-        auto newFunc = builder.create<func::FuncOp>(
-            callee.getLoc(), callee.getName(), newFuncTy);
+        auto newFunc = func::FuncOp::create(builder, callee.getLoc(),
+                                            callee.getName(), newFuncTy);
         newFunc.getBlocks().splice(newFunc.getBlocks().begin(),
                                    callee.getFunctionBody().getBlocks());
 

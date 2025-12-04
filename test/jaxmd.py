@@ -120,16 +120,8 @@ class JAXMD(EnzymeJaxTest):
         # TODO: This is horribly slow for reasons which are unknown.
         self.mlirad_fwd = False
 
-        if jax.default_backend() == "tpu":
-            self.tol = 5e-3
-
-        elif jax.default_backend() == "gpu":
-            # GPU CI reverse mode needs loose, merits future investigation
-            self.tol = 1e-2
-
-        else:
-            # CPU backend needs loose tolerance, see #1289
-            self.tol = 0.07
+        self.atol = 5e-3
+        self.rtol = 1e-3
 
 
 if __name__ == "__main__":

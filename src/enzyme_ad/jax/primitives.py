@@ -5,6 +5,9 @@ from collections.abc import Callable, Sequence
 from typing import Any
 import itertools
 import sys
+import os
+import tempfile
+from absl import logging
 
 import jax
 from jax import lax
@@ -107,6 +110,9 @@ def optimization_passes(
     reshape_propagate: str = "up",
     max_constant_threshold: int = 1024,
     enable_batching_passes: bool = True,
+    enable_licm_optimization_passes: bool = True,
+    enable_scatter_gather_optimization_passes: bool = True,
+    enable_pad_optimization_passes: bool = True,
 ):
     transform_passes_list = [
         "compare_op_canon<16>",
@@ -124,7 +130,6 @@ def optimization_passes(
         "imag_op_canon<16>",
         "conj_complex_negate<16>",
         "get_dimension_size_op_canon<16>",
-        "gather_op_canon<16>",
         "reshape_op_canon<16>",
         "merge_consecutive_reshapes<16>",
         "transpose_is_reshape<16>",
@@ -133,7 +138,6 @@ def optimization_passes(
         "cse_slice<16>",
         "cse_transpose<16>",
         "cse_convert<16>",
-        "cse_pad<16>",
         "cse_dot_general<16>",
         "cse_reshape<16>",
         "cse_mul<16>",
@@ -164,11 +168,10 @@ def optimization_passes(
         "noop_slice<16>",
         "noop_reverse<16>",
         "slice_slice<16>",
+        "dynamic_slice_slice<16>",
+        "slice_dynamic_slice<16>",
         "shift_right_logical_simplify<16>",
         f"pad_simplify<16>({max_constant_threshold})",
-        "select_pad_to_dus<1>",
-        "and_pad_pad<1>",
-        "negative_pad_to_slice<16>",
         "slice_simplify<16>",
         "convert_simplify<16>",
         "dynamic_slice_to_static<16>",
@@ -183,14 +186,10 @@ def optimization_passes(
         "dynamic_update_to_concat<1>",
         "slice_of_dynamic_update<1>",
         "slice_elementwise<1>",
-        "slice_pad<1>",
         "dot_reshape_dot<1>",
         "concat_fuse<1>",
-        "pad_reshape_pad<1>",
-        "pad_pad<1>",
         "concat_push_binop_add<1>",
         "concat_push_binop_mul<1>",
-        "scatter_to_dynamic_update_slice<1>",
         "reduce_concat<1>",
         "slice_concat<1>",
         "concat_slice<1>",
@@ -202,49 +201,23 @@ def optimization_passes(
         "dot_general_simplify<16>",
         "transpose_simplify<16>",
         "reshape_empty_broadcast<1>",
-        "add_pad_pad_to_concat<1>",
         "broadcast_reshape<1>",
-        "concat_pad<1>",
-        "reduce_pad<1>",
-        "broadcast_pad<1>",
-        "zero_product_reshape_pad<1>",
-        "mul_zero_pad<1>",
-        "div_zero_pad<1>",
-        "binop_const_reshape_pad<1>",
-        "binop_const_pad_add<1>",
-        "binop_const_pad_subtract<1>",
-        "binop_const_pad_mul<1>",
-        "binop_const_pad_div<1>",
-        "clamp_const_prop<1>",
-        "binop_binop_pad_pad_add<1>",
-        "binop_binop_pad_pad_mul<1>",
-        "binop_pad_pad_add<1>",
-        "binop_pad_pad_subtract<1>",
-        "binop_pad_pad_mul<1>",
-        "binop_pad_pad_div<1>",
-        "binop_pad_pad_min<1>",
-        "binop_pad_pad_max<1>",
-        "unary_pad_push_convert<1>",
-        "unary_pad_push_tanh<1>",
-        "unary_pad_push_exp<1>",
         "transpose_dot_reorder<1>",
         "dot_transpose<1>",
         "transpose_convolution<1>",
         "convolution_transpose<1>",
         "convert_convert_float<1>",
         "convert_convert_int<1>",
-        "concat_to_pad<1>",
         "reshape_iota<1>",
         "broadcast_reduce<1>",
         "slice_dot_general<1>",
         "if_inline<1>",
         "if_to_select<1>",
-        "dynamic_gather_op_is_not_dynamic<16>",
         "divide_sqrt_to_multiply_rsqrt<16>",
         "associative_binary_op_reordering<1>",
         "transpose_broadcast_in_dim_to_broadcast_in_dim<16>",
-        "scatter_indices_are_unique",
         "replace_neg_add_with_subtract",
+        "replace_subtract_neg_with_add",
         "binop_const_simplify",
         "not_select_simplify",
         "common_compare_expression_rewrite",
@@ -256,45 +229,22 @@ def optimization_passes(
         "dus_dus",
         "dus_dus_concat",
         "abs_positive_simplify",
-        "transpose_unary_transpose_abs",
-        "transpose_unary_transpose_neg",
-        "transpose_unary_transpose_sqrt",
-        "transpose_unary_transpose_rsqrt",
-        "transpose_unary_transpose_ceil",
-        "transpose_unary_transpose_convert",
-        "transpose_unary_transpose_cosine",
-        "transpose_unary_transpose_exp",
-        "transpose_unary_transpose_expm1",
-        "transpose_unary_transpose_log",
-        "transpose_unary_transpose_log1p",
-        "transpose_unary_transpose_sign",
-        "transpose_unary_transpose_sine",
-        "transpose_unary_transpose_tanh",
+        "transpose_elementwise_transpose",
         "select_comp_iota_const_simplify<1>",
         "sign_abs_simplify<1>",
         "broadcastindim_is_reshape",
         "slice_reduce_window<1>",
         "while_deadresult",
         "while_dus",
-        "dus_licm(0)",
         "while_op_induction_replacement",
-        "dus_pad",
         "dus_concat",
         "slice_dus_to_concat",
         "while_induction_reduction",
-        "slice_licm(0)",
-        "pad_licm(0)",
-        "elementwise_licm(0)",
-        "concatenate_licm(0)",
         "slice_broadcast",
-        "while_pad_induction_reduction",
-        "while_licm<1>(1)",
         "associative_common_mul_op_reordering",
         "slice_select_to_select_slice",
-        "pad_concat_to_concat_pad",
         "slice_if",
         "dus_to_i32",
-        "rotate_pad",
         "slice_extend",
         "concat_wrap",
         "cse_extend<16>",
@@ -302,9 +252,7 @@ def optimization_passes(
         "cse_rotate<16>",
         "cse_rotate<16>",
         "concat_concat_axis_swap",
-        "concat_multipad",
         "concat_concat_to_dus",
-        "speculate_if_pad_to_select",
         "broadcast_iota_simplify",
         "select_comp_iota_to_dus",
         "compare_cleanup",
@@ -332,8 +280,6 @@ def optimization_passes(
         "split_convolution_into_reverse_convolution",
         # TODO we want to enable but may cause an infinite compile time
         # "concat_to_onedim_dusslice",
-        "scatter_multiply_simplify",
-        "unary_elementwise_scatter_simplify",
         # "chained_multiply_to_power", # TODO: make it into an optional pass
         "power_multiply_to_power",
         "common_associative_commutative_op_reorder",
@@ -343,17 +289,33 @@ def optimization_passes(
         "reshape_deletions_broadcast_in_dim_simplify",
         "reshape_insertions_broadcast_in_dim_simplify",
         "dot_general_reshape",
-        "diagonal_tensor_dot_general_rewrite",
         "widen_wrap",
         "widen_extend",
-        "elementwise_pad",
         "compare_negate_const_simplify",
         "select_simplify",
-        "concatenate_subtract_to_subtract_pad",
         "concatenate_broadcast_in_dim",
+        "compare_abs",
+        # "compare_mul",
+        "compare_convert",
+        "add_selects",
+        # TODO: parameterize based on the device
+        "self_subtract_to_convolution_like(0)",
+        "self_add_to_convolution_like(0)",
+        "self_mul_to_convolution_like(0)",
+        "trivial_reduce_window_to_reduce_op",
         "case_to_if",
-        "dus_to_dynamic_pad",
-        "dynamic_pad_to_pad",
+        "reduce_mul_broadcast_to_dot_general",
+        "dot_general_add_distributive_simplify",
+        "dot_general_subtract_distributive_simplify",
+        "remove_no_ops_from_while_loop",
+        "while_is_copy_simplify",
+        "split_variadic_scatter_op",
+        "dynamic_slice_simplify",
+        "enzyme_hlo_unroll(4)",
+        "dot_general_only_diagonal_access",
+        "divide_negated_operands_simplify",
+        "multiply_negated_operands_simplify",
+        "factor_scalars_in_dot_general",
     ]
 
     # constant propagation patterns
@@ -403,13 +365,7 @@ def optimization_passes(
         "const_prop_through_barrier<16>",
         f"concat_const_prop<1>({max_constant_threshold})",
         f"dynamic_update_slice_const_prop({max_constant_threshold})",
-        "scatter_update_computation_const_prop",
-        "gather_const_prop",
-        # TODO: parameterize based on the device
-        "self_subtract_to_convolution_like(0)",
-        "self_add_to_convolution_like(0)",
-        "self_mul_to_convolution_like(0)",
-        "trivial_reduce_window_to_reduce_op",
+        "clamp_const_prop",
     ]
 
     if enable_batching_passes:
@@ -424,6 +380,7 @@ def optimization_passes(
             "concat_insert_dim_reduce",
             "concat_insert_dim_sort",
             "concat_insert_dim_reduce_window",
+            "concat_insert_dim_convolution",
             "concat_insert_dim_elementwise",
             "dot_general_slice_to_batch",
             "gather_slice_to_batch",
@@ -433,7 +390,88 @@ def optimization_passes(
             "transpose_slice_to_batch",
             "broadcastindim_slice_to_batch",
             "reducewindow_slice_to_batch",
+            "convolution_slice_to_batch",
             "elementwise_slice_to_batch",
+            "greedy_while_loop_batch_fission",
+        ]
+
+    if enable_licm_optimization_passes:
+        transform_passes_list += [
+            "dus_licm(0)",
+            "slice_licm(0)",
+            "elementwise_licm(0)",
+            "concatenate_licm(0)",
+            "while_licm<1>(1)",
+            "transpose_licm(0)",
+            "broadcastindim_licm(0)",
+            "reshape_licm(0)",
+            "dot_general_licm(0)",
+            "reduce_licm(0)",
+            "reduce_window_licm(0)",
+            "reverse_licm(0)",
+            "convolution_licm(0)",
+        ]
+
+    if enable_scatter_gather_optimization_passes:
+        transform_passes_list += [
+            "scatter_to_dynamic_update_slice<1>",
+            "scatter_multiply_simplify",
+            "unary_elementwise_scatter_simplify",
+            "scatter_indices_are_unique",
+            "diagonal_tensor_dot_general_rewrite",
+            ## const prop patterns
+            "scatter_update_computation_const_prop",
+            # gather patterns
+            "dynamic_gather_op_is_not_dynamic<16>",
+            "gather_op_canon<16>",
+            "gather_elementwise",
+            ## const prop patterns
+            "gather_const_prop",
+            f"scatter_const_fold({max_constant_threshold})",
+        ]
+
+    if enable_pad_optimization_passes:
+        transform_passes_list += [
+            "dus_pad",
+            "cse_pad<16>",
+            f"pad_simplify<16>({max_constant_threshold})",
+            "select_pad_to_dus<1>",
+            "and_pad_pad<1>",
+            "negative_pad_to_slice<16>",
+            "slice_pad<1>",
+            "pad_reshape_pad<1>",
+            "pad_pad<1>",
+            "add_pad_pad_to_concat<1>",
+            "concat_pad<1>",
+            "reduce_pad<1>",
+            "broadcast_pad<1>",
+            "zero_product_reshape_pad<1>",
+            "mul_zero_pad<1>",
+            "div_zero_pad<1>",
+            "binop_const_reshape_pad<1>",
+            "binop_const_pad_add<1>",
+            "binop_const_pad_subtract<1>",
+            "binop_const_pad_mul<1>",
+            "binop_const_pad_div<1>",
+            "binop_binop_pad_pad_add<1>",
+            "binop_binop_pad_pad_mul<1>",
+            "binop_pad_pad_add<1>",
+            "binop_pad_pad_subtract<1>",
+            "binop_pad_pad_mul<1>",
+            "binop_pad_pad_div<1>",
+            "binop_pad_pad_min<1>",
+            "binop_pad_pad_max<1>",
+            "unary_pad_push_convert<1>",
+            "unary_pad_push_tanh<1>",
+            "unary_pad_push_exp<1>",
+            "concat_to_pad<1>",
+            "while_pad_induction_reduction",
+            "pad_concat_to_concat_pad",
+            "rotate_pad",
+            "concat_multipad",
+            "speculate_if_pad_to_select",
+            "dus_to_dynamic_pad",
+            "dynamic_pad_to_pad",
         ]
 
     if reshape_propagate == "up":
@@ -453,6 +491,9 @@ def optimization_passes(
             "concat_appending_reshape",
             "slice_reshape",
             "slice_reshape_slice<1>",
+            "dynamic_slice_reshape_dynamic_slice",
+            "dynamic_slice_reshape_slice",
+            "slice_reshape_dynamic_slice",
             "slice_reshape_concat<1>",
             "slice_reshape_elementwise<1>",
             "slice_reshape_dot_general<1>",
@@ -489,17 +530,7 @@ def optimization_passes(
     elif transpose_propagate == "down":
         transform_passes_list += [
             "reorder_elementwise_and_shape_op<16>",
-            "binary_op_transpose_simplify_add",
-            "binary_op_transpose_simplify_sub",
-            "binary_op_transpose_simplify_mul",
-            "binary_op_transpose_simplify_div",
-            "binary_op_transpose_simplify_min",
-            "binary_op_transpose_simplify_max",
-            "binary_op_transpose_simplify_pow",
-            "binary_op_transpose_simplify_rem",
-            "binary_op_transpose_simplify_or",
-            "binary_op_transpose_simplify_and",
-            "binary_op_transpose_simplify_xor",
+            "elementwise_all_transpose_operands_simplify",
             "slice_transpose",
             "einsum_transpose<1>",
             "slice_reshape_transpose<1>",
@@ -574,7 +605,7 @@ def full_optimization_pass_pipeline(
         enable_batching_passes=enable_batching_passes,
     )
 
-    enzyme_pass = 'enzyme{postpasses="arith-raise{stablehlo=true},canonicalize,cse,canonicalize,remove-unnecessary-enzyme-ops,enzyme-simplify-math,canonicalize,cse,canonicalize"}'
+    enzyme_pass = 'enzyme{postpasses="arith-raise{stablehlo=true},enzyme-batch-to-stablehlo,canonicalize,cse,canonicalize,remove-unnecessary-enzyme-ops,enzyme-simplify-math,canonicalize,cse,canonicalize"}'
 
     propagate_down_passes = ""
     if transpose_propagate == "up" or reshape_propagate == "up":
@@ -894,6 +925,22 @@ def ret_activity_from_pipeline(pass_pipeline):
     return pre_act, acts, post_act
 
 
+def _dump_mlir_to_file(source, pass_pipeline):
+    # bazel will zip up the outputs in this directory
+    dump_mlir_dir = os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR", None)
+    if dump_mlir_dir is None:
+        dump_mlir_dir = tempfile.gettempdir()
+
+    tmpfile = tempfile.NamedTemporaryFile(
+        suffix=".mlir", dir=dump_mlir_dir, delete=False
+    )
+    with open(tmpfile.name, "w") as f:
+        f.write("# " + pass_pipeline + "\n")
+        f.write(str(source))
+
+    return tmpfile.name
+
+
 def _enzyme_primal_lowering(
     ctx: jax_mlir.LoweringRuleContext,
     *args_flat: ir.Value,
@@ -990,13 +1037,23 @@ def _enzyme_primal_lowering(
                 fns.append(f.sym_name.value)
 
             if len(pass_pipeline) > 0:
-                pass_pipeline = pass_pipeline + ",tensor-empty-raise"
-            name, nmod = enzyme_call.run_pass_pipeline(fns, source, pass_pipeline)
+                pass_pipeline = (
+                    pass_pipeline + ",tensor-empty-raise,drop-unsupported-attributes"
+                )
+
+            try:
+                name, nmod = enzyme_call.run_pass_pipeline(fns, source, pass_pipeline)
+            except Exception as e:
+                filename = _dump_mlir_to_file(source, pass_pipeline)
+                logging.exception("Enzyme MLIR dumped to %s", filename)
+                raise e
+
             if print_mlir:
-                if type(print_mlir) != type(True):
+                if not isinstance(print_mlir, bool):
                     print_mlir.write(nmod)
                 else:
                     print(str(nmod), flush=True)
+
             nmod = ir.Module.parse(nmod)
             fn = None
             pushtop = []
@@ -1526,7 +1583,7 @@ def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
         outshapes = kwargs["out_shapes"]
         ret_act_tup = ",".join(["enzyme_dup"] * len(outshapes))
         afterad = (
-            "arith-raise{stablehlo=true}, "
+            "arith-raise{stablehlo=true},enzyme-batch-to-stablehlo, "
             + optimization_passes()
             + ", cse, canonicalize"
         )
@@ -1764,7 +1821,7 @@ def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
         newpasses = (
             prev_passes
             + ad_pass
-            + ",arith-raise{stablehlo=true},canonicalize, remove-unnecessary-enzyme-ops, enzyme-simplify-math, "
+            + ",arith-raise{stablehlo=true},enzyme-batch-to-stablehlo,canonicalize, remove-unnecessary-enzyme-ops, enzyme-simplify-math, "
             + optimization_passes()
             + ", canonicalize, cse"
             + post_passes

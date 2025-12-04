@@ -413,26 +413,26 @@ void moveParallelLoopInvariantCode(scf::ParallelOp looplike) {
     Value cond = nullptr;
     for (auto pair : llvm::zip(looplike.getLowerBound(),
                                looplike.getUpperBound(), looplike.getStep())) {
-      auto val = b.create<arith::CmpIOp>(looplike.getLoc(), CmpIPredicate::slt,
-                                         std::get<0>(pair), std::get<1>(pair));
+      auto val = arith::CmpIOp::create(b, looplike.getLoc(), CmpIPredicate::slt,
+                                       std::get<0>(pair), std::get<1>(pair));
       if (cond == nullptr)
         cond = val;
       else
-        cond = b.create<arith::AndIOp>(looplike.getLoc(), cond, val);
+        cond = arith::AndIOp::create(b, looplike.getLoc(), cond, val);
     }
     auto ifOp =
-        b.create<scf::IfOp>(looplike.getLoc(), looplike.getResultTypes(), cond,
-                            /*hasElse*/ !looplike.getResultTypes().empty());
+        scf::IfOp::create(b, looplike.getLoc(), looplike.getResultTypes(), cond,
+                          /*hasElse*/ !looplike.getResultTypes().empty());
     if (!ifOp.thenBlock()->empty())
       ifOp.thenBlock()->getTerminator()->erase();
 
     looplike->moveBefore(ifOp.thenBlock(), ifOp.thenBlock()->begin());
     looplike.replaceAllUsesWith(ifOp->getResults());
     OpBuilder B(ifOp.thenBlock(), ifOp.thenBlock()->end());
-    B.create<scf::YieldOp>(looplike.getLoc(), looplike.getResults());
+    scf::YieldOp::create(B, looplike.getLoc(), looplike.getResults());
     if (!looplike.getResultTypes().empty()) {
       B.setInsertionPointToEnd(ifOp.elseBlock());
-      B.create<scf::YieldOp>(looplike.getLoc(), looplike.getInitVals());
+      scf::YieldOp::create(B, looplike.getLoc(), looplike.getInitVals());
     }
   }
   for (auto op : opsToMove)
@@ -529,8 +529,8 @@ void moveParallelLoopInvariantCode(affine::AffineParallelOp looplike) {
         /*symbols*/ looplike.getLowerBoundsMap().getNumSymbols() +
             looplike.getUpperBoundsMap().getNumSymbols(),
         exprs, eqflags);
-    auto ifOp = b.create<affine::AffineIfOp>(
-        looplike.getLoc(), looplike.getResultTypes(), iset, values,
+    auto ifOp = affine::AffineIfOp::create(
+        b, looplike.getLoc(), looplike.getResultTypes(), iset, values,
         /*hasElse*/ !looplike.getResultTypes().empty());
     if (!ifOp.getThenBlock()->empty())
       ifOp.getThenBlock()->getTerminator()->erase();
@@ -538,11 +538,11 @@ void moveParallelLoopInvariantCode(affine::AffineParallelOp looplike) {
     looplike->moveBefore(ifOp.getThenBlock(), ifOp.getThenBlock()->begin());
     looplike.replaceAllUsesWith(ifOp->getResults());
     OpBuilder B(ifOp.getThenBlock(), ifOp.getThenBlock()->end());
-    B.create<affine::AffineYieldOp>(looplike.getLoc(), looplike.getResults());
+    affine::AffineYieldOp::create(B, looplike.getLoc(), looplike.getResults());
     if (!looplike.getResultTypes().empty()) {
       B.setInsertionPointToEnd(ifOp.getElseBlock());
       // TODO affine parallel initial value for reductions.
-      // B.create<affine::AffineYieldOp>(looplike.getLoc(),
+      // affine::AffineYieldOp::create(B, looplike.getLoc(),
       // looplike.getInits());
     }
   }
@@ -581,22 +581,22 @@ void moveSerialLoopInvariantCode(scf::ForOp looplike) {
   // loop.
   if (!llvm::all_of(opsToMove, polygeist::isSpeculatable)) {
     OpBuilder b(looplike);
-    Value cond = b.create<arith::CmpIOp>(looplike.getLoc(), CmpIPredicate::slt,
-                                         looplike.getLowerBound(),
-                                         looplike.getUpperBound());
+    Value cond = arith::CmpIOp::create(b, looplike.getLoc(), CmpIPredicate::slt,
+                                       looplike.getLowerBound(),
+                                       looplike.getUpperBound());
     auto ifOp =
-        b.create<scf::IfOp>(looplike.getLoc(), looplike.getResultTypes(), cond,
-                            /*hasElse*/ !looplike.getResultTypes().empty());
+        scf::IfOp::create(b, looplike.getLoc(), looplike.getResultTypes(), cond,
+                          /*hasElse*/ !looplike.getResultTypes().empty());
     if (!ifOp.thenBlock()->empty())
       ifOp.thenBlock()->getTerminator()->erase();
 
     looplike->moveBefore(ifOp.thenBlock(), ifOp.thenBlock()->begin());
     looplike.replaceAllUsesWith(ifOp->getResults());
     OpBuilder B(ifOp.thenBlock(), ifOp.thenBlock()->end());
-    B.create<scf::YieldOp>(looplike.getLoc(), looplike.getResults());
+    scf::YieldOp::create(B, looplike.getLoc(), looplike.getResults());
     if (!looplike.getResultTypes().empty()) {
       B.setInsertionPointToEnd(ifOp.elseBlock());
-      B.create<scf::YieldOp>(looplike.getLoc(), looplike.getInits());
+      scf::YieldOp::create(B, looplike.getLoc(), looplike.getInits());
     }
   }
   for (auto op : opsToMove)
@@ -693,8 +693,8 @@ void moveSerialLoopInvariantCode(affine::AffineForOp looplike) {
         /*symbols*/ looplike.getLowerBoundMap().getNumSymbols() +
             looplike.getUpperBoundMap().getNumSymbols(),
         exprs, eqflags);
-    auto ifOp = b.create<affine::AffineIfOp>(
-        looplike.getLoc(), looplike.getResultTypes(), iset, values,
+    auto ifOp = affine::AffineIfOp::create(
+        b, looplike.getLoc(), looplike.getResultTypes(), iset, values,
         /*hasElse*/ !looplike.getResultTypes().empty());
     if (!ifOp.getThenBlock()->empty())
       ifOp.getThenBlock()->getTerminator()->erase();
@@ -702,10 +702,10 @@ void moveSerialLoopInvariantCode(affine::AffineForOp looplike) {
     looplike->moveBefore(ifOp.getThenBlock(), ifOp.getThenBlock()->begin());
     looplike.replaceAllUsesWith(ifOp->getResults());
     OpBuilder B(ifOp.getThenBlock(), ifOp.getThenBlock()->end());
-    B.create<affine::AffineYieldOp>(looplike.getLoc(), looplike.getResults());
+    affine::AffineYieldOp::create(B, looplike.getLoc(), looplike.getResults());
     if (!looplike.getResultTypes().empty()) {
       B.setInsertionPointToEnd(ifOp.getElseBlock());
-      B.create<affine::AffineYieldOp>(looplike.getLoc(), looplike.getInits());
+      affine::AffineYieldOp::create(B, looplike.getLoc(), looplike.getInits());
     }
   }
   for (auto op : opsToMove)
