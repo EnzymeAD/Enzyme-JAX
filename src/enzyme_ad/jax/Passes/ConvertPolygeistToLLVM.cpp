@@ -4192,7 +4192,8 @@ struct ConvertPolygeistToLLVMPass
     }
 
     if (StringRef(gpuTarget).starts_with("xla")) {
-      const char *toErase[] = {"cudaDeviceSetLimit", "cudaDeviceSynchronize"};
+      const char *toErase[] = {"cudaDeviceSetLimit", "cudaDeviceSynchronize",
+                               "cudaThreadSynchronize"};
       m->walk([=](LLVM::CallOp call) {
         if (auto callee = call.getCallee()) {
           for (auto e : toErase) {
