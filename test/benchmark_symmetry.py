@@ -34,7 +34,7 @@ def benchmark_symmetry():
     def interleaved_symmetric_op(x):
         a = x.T + x
         for _ in range(10):
-            a = a.T * 0.99 + a * 0.01
+            a = a.T * 1.99 + a * 0.01
         return a
 
     def dot_cse(x):
@@ -62,9 +62,9 @@ def benchmark_symmetry():
         z = jax.scipy.linalg.solve_triangular(L, y, lower=True)
         return jax.scipy.linalg.solve_triangular(L.T, z, lower=False)
         
-    def matrix_multiply(x):
-        a = x.T + x 
-        return jnp.matmul(a, a)
+    # def matrix_multiply(x):
+    #     a = x.T + x 
+    #     return jnp.matmul(a, a)
     
     def gram_chain(x):
         # x is (n, d)
@@ -135,11 +135,11 @@ def benchmark_symmetry():
     
     NUM_ITER = 100
     tests = [
-        # ("Single op", single_symmetric_op, (2048, 2048)),
-        # ("Chained (10x)", chained_symmetric_op, (2048, 2048)),
-        # ("Interleaved (10x)", interleaved_symmetric_op, (2048, 2048)),
-        # ("Dot CSE", dot_cse, (1024, 1024)),
-        # ("Reduce partial symmetry", reduce_partial_symmetry, (32, 32, 32, 32)),
+        ("Single op", single_symmetric_op, (2048, 2048)),
+        ("Chained (10x)", chained_symmetric_op, (2048, 2048)),
+        ("Interleaved (10x)", interleaved_symmetric_op, (2048, 2048)),
+        ("Dot CSE", dot_cse, (1024, 1024)),
+        ("Reduce partial symmetry", reduce_partial_symmetry, (32, 32, 32, 32)),
         # ("Matrix multiply", matrix_multiply, (2048, 2048)),
         # ("Gram chain", gram_chain, (256, 256)),
         # ("Sylvester iter", sylvester_iter, (256, 256))
