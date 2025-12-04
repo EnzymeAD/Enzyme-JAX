@@ -10,7 +10,7 @@ include "Interfaces.td"
 
 // Device definition ops
 
-def ChannelOp : DistributedOp<"Channel", [Symbol, ChannelDefTrait, DeclareOpInterfaceMethods<SymbolUserOpInterface>]>{
+def ChannelOp : DistributedOp<"channel", [Symbol, ChannelDefTrait, DeclareOpInterfaceMethods<SymbolUserOpInterface>]>{
     let arguments = (ins 
         SymbolNameAttr:$sym_name,
         // a variadic list of devices connected by this channel
@@ -21,7 +21,7 @@ def ChannelOp : DistributedOp<"Channel", [Symbol, ChannelDefTrait, DeclareOpInte
     let assemblyFormat = "$sym_name $sending_devices $receiving_devices attr-dict";
 }
 
-def LeafDeviceOp : DistributedOp<"LeafDevice", [Symbol, DeviceDefTrait]>{
+def LeafDeviceOp : DistributedOp<"leaf_device", [Symbol, DeviceDefTrait]>{
     let arguments = (ins 
         SymbolNameAttr:$sym_name
         // TODO: device type, e.g. TPU, GPU, CPU, and other attributes
@@ -29,7 +29,7 @@ def LeafDeviceOp : DistributedOp<"LeafDevice", [Symbol, DeviceDefTrait]>{
     let assemblyFormat = "$sym_name attr-dict";
 }
 
-def DeviceGroupOp : DistributedOp<"DeviceGroup", [Symbol, DeviceDefTrait, DeclareOpInterfaceMethods<SymbolUserOpInterface>]>{
+def DeviceGroupOp : DistributedOp<"device_group", [Symbol, DeviceDefTrait, DeclareOpInterfaceMethods<SymbolUserOpInterface>]>{
     let arguments = (ins
         SymbolNameAttr:$sym_name,
         // a variadic list of devices in the group
@@ -39,7 +39,7 @@ def DeviceGroupOp : DistributedOp<"DeviceGroup", [Symbol, DeviceDefTrait, Declar
     );
     let assemblyFormat = "$sym_name $devices $channels attr-dict";
 }
-def DeviceMeshOp : DistributedOp<"DeviceMesh", [Symbol, DeviceDefTrait, DeclareOpInterfaceMethods<SymbolUserOpInterface>]>{
+def DeviceMeshOp : DistributedOp<"device_mesh", [Symbol, DeviceDefTrait, DeclareOpInterfaceMethods<SymbolUserOpInterface>]>{
     let arguments = (ins
         SymbolNameAttr:$sym_name,
         SymbolRefAttr:$device_type,
@@ -49,44 +49,56 @@ def DeviceMeshOp : DistributedOp<"DeviceMesh", [Symbol, DeviceDefTrait, DeclareO
     let assemblyFormat = "$sym_name $device_type $shape attr-dict";
 }
 
-// Ops for breaking down computation across the device hierarchy
+// def ContinueOp : DistributedOp<"continue", [Terminator]> {
+//     let description = [{
+//         A terminator for DeviceParallelOp regions. Takes as arguments the tokens to be passed to the
+//         continuation of the DeviceParallelOp. These values can then be used in a subsequent DeviceParallelOp
+//         that is a sibling to the original DeviceParallelOp by referencing the returned tokens.
+//     }];
+//     let arguments = (ins Variadic<AnyType>:$operands);
+//     let results = (outs ); // No outputs for terminators, the token is output by the parent DeviceParallelOp.
+//     let assemblyFormat = "$operands type($operands) attr-dict";
+// }
 
-def MeshForOp : DistributedOp<"MeshFor", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, NoTerminator, SingleBlock]>{
-    let arguments = (ins SymbolRefAttr:$mesh); // TODO: verify it's a mesh
-    let regions = (region MaxSizedRegion<1>:$body); // TODO: body's block args are device type and mesh index
-    let results = (outs ); // TODO
-    // let hasVerifier = 1; // TODO: verify body's block args take mesh index
-    let assemblyFormat = "$mesh $body attr-dict";
-}
+def DeviceParallelOp : DistributedOp<"device_parallel", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, NoTerminator]>{
+    let description = [{
+        An op for mapping computations to subdevices. Serves both for homogenous device meshes as well
+        as explicitly enumerated device groups. In the case of device meshes, this op should contain
+        a single region to be executed in parallel on each device. In the case of device groups, this
+        op should contain one region per device and channel in the group.
 
-def GroupSplitOp : DistributedOp<"GroupSplit", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, NoTerminator, SingleBlock]>{
+        In either case, regions must take as argument one device index within the parent device followed
+        by a number of token arguments. Tokens are matched by positionally between different branches,
+        and all branches must have the same number and type of token arguments (though they may be unused).
+    }];
+    
     let arguments = (ins
-        SymbolRefAttr:$device_group // TODO: verify it's a group
+        SymbolRefAttr:$enclosing_device,
+        ArrayAttr:$branch_assignments // the device components for each region (device-specific branch)
     );
-    let regions = (region SizedRegion<1>:$declarations); // Takes as args the devices and channels in the group
-    let results = (outs ); // TODO
-    // let hasVerifier = 1; // TODO
-    // let hasCanonicalizer = 1; // TODO: token declarations up front, followed by device and channel branches in order of listing in the group
-    let assemblyFormat = "$device_group $declarations  attr-dict";
+    let regions = (region VariadicRegion<SizedRegion<1>>:$branches);
+    // let results = (outs Variadic<TokenType>:$continuation_tokens);
+    let results = (outs );
+    let hasVerifier = 1; // TODO
+    let assemblyFormat = "$enclosing_device `{` custom<DeviceBranches>($branch_assignments, $branches) `}` attr-dict";
+    let extraClassDeclaration = [{
+        Operation* getEnclosingDeviceOp();
+    }];
 }
 
-def SplitBranchOp : DistributedOp<"SplitBranch", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, NoTerminator, SingleBlock]>{
+def SendOp : DistributedOp<"send", [DeclareOpInterfaceMethods<TokenWriterOpInterface>]>{
     let arguments = (ins
-        SymbolRefAttr:$device_or_channel // TODO: verify it's a device or channel
-        );
-    let regions = (region MaxSizedRegion<1>:$body); // Takes as args the device or channel
-    let results = (outs ); // TODO
-    // let hasVerifier = 1; // TODO: parent is a groupsplitop
-    let assemblyFormat = "$device_or_channel $body attr-dict";
+        TokenType:$token,
+        // value to send
+        AnyType:$value);
+    let assemblyFormat = "$token type($value) $value attr-dict";
 }
 
-def DefineTokenOp : DistributedOp<"DefineToken", [DeclareOpInterfaceMethods<SymbolUserOpInterface>]>{
+def RecvOp : DistributedOp<"recv", [DeclareOpInterfaceMethods<TokenReaderOpInterface>]>{
     let arguments = (ins
-            SymbolRefAttr:$channel
-        );
-    let results = (outs TokenType:$token_out);
-    // let hasVerifier = 1; // TODO: verify writers and readers are connected to the channel
-    let assemblyFormat = "$channel attr-dict";
+        TokenType:$token);
+    let results = (outs AnyType:$value);
+    let assemblyFormat = "$token type($value) attr-dict";
 }
 
 #endif // ENZYME_AD_JAX_DIALECT_DISTRIBUTED_OPS_TD

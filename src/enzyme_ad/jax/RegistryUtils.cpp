@@ -86,6 +86,7 @@
 #include "mlir/Target/LLVMIR/Dialect/NVVM/NVVMToLLVMIRTranslation.h"
 
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "src/enzyme_ad/jax/Passes/Distributed/Passes.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 
 #include "src/enzyme_ad/jax/Dialect/Distributed/Dialect.h"
@@ -303,6 +304,7 @@ void registerInterfaces(mlir::DialectRegistry &registry) {
 void initializePasses() {
   registerenzymePasses();
   enzyme::registerenzymexlaPasses();
+  enzyme::distributed::registerdistributedPasses();
 
   // Register the standard passes we want.
   mlir::registerCSEPass();
