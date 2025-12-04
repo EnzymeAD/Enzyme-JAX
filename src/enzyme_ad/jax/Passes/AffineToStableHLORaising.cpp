@@ -918,7 +918,8 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
             return nullptr;
           }
 
-          broadcastDims[updateIdx] = (updateShape.size() - (1 + j));
+          broadcastDims[updateIdx] =
+              (updateShape.size() - Ty.getShape().size() + j);
         }
       }
     }
@@ -980,7 +981,9 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
           /*scatterDimsToOperandDims*/ scatterDimsToOperandDims,
           /*indexVectorDim*/ 1),
       /*indicesAreSorted*/ false,
-      /*uniqueIndices*/ false);
+      /*uniqueIndices*/ true); // Indices must be unique because otherwise the
+                               // original program had a race [writing to the
+                               // same location across multiple threads].
   Value res = scatter.getResult(0);
 
   Block *updateBody = new Block();
