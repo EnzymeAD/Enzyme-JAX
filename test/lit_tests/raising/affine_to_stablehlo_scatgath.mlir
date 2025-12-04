@@ -145,7 +145,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
 //  arg3 + arg2 * 128 (axis is reshape(arg3, arg2))
 // CHECK-NEXT:    %22 = stablehlo.reshape %21 : (tensor<120x18000xf32>) -> tensor<2160000xf32>  
 
-// CHECK-NEXT:    %23 = "stablehlo.scatter"(%arg1, %20, %22) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0], index_vector_dim = 1>, unique_indices = false}> ({
+// CHECK-NEXT:    %23 = "stablehlo.scatter"(%arg1, %20, %22) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0], index_vector_dim = 1>, unique_indices = true}> ({
 // CHECK-NEXT:    ^bb0(%arg2: tensor<f32>, %arg3: tensor<f32>):
 // CHECK-NEXT:      stablehlo.return %arg3 : tensor<f32>
 // CHECK-NEXT:    }) : (tensor<?xf32>, tensor<2160000x1xi64>, tensor<2160000xf32>) -> tensor<?xf32>  
