@@ -4185,28 +4185,48 @@ struct ConvertPolygeistToLLVMPass
     }
 
     if (StringRef(gpuTarget).starts_with("xla")) {
+      const char *toErase = {"cudaDeviceSetLimit", "cudaDeviceSynchronize"};
       m->walk([](LLVM::CallOp call) {
         if (auto callee = call.getCallee()) {
-          if (callee == "cudaDeviceSynchronize") {
-            call->erase();
+          for (auto e : toErase) {
+            if (callee == e) {
+              call->erase();
+              return;
+            }
           }
         }
       });
       m->walk([](LLVM::LLVMFuncOp call) {
-        if (call.getName() == "cudaDeviceSynchronize") {
-          call->erase();
+        for (auto e : toErase) {
+          if (call.getName() == e) {
+            call->erase();
+            return;
+          }
         }
       });
     }
     if (StringRef(gpuTarget).starts_with("xla") || gpuTarget == "cpu") {
-      m->walk([](LLVM::LLVMFuncOp call) {
-        if (call.getName() == "cudaGetLastError") {
+      const char *toErase = {"cudaGetLastError"};
+      m->walk([](LLVM::LLVMCallOp call) {
+        if (auto callee = call.getCallee()) {
+          for (auto e : toErase) {
+            if (callee == e) {
 
-          OpBuilder builder(call);
-          auto replace =
-              LLVM::ZeroOp::create(builder, call.getLoc(), call.getType(0));
-          call->replaceAllUsesWith(replace);
-          call->erase();
+              OpBuilder builder(call);
+              auto replace =
+                  LLVM::ZeroOp::create(builder, call.getLoc(), call.getType(0));
+              call->replaceAllUsesWith(replace);
+              call->erase();
+            }
+          }
+        }
+      });
+      m->walk([](LLVM::LLVMFuncOp call) {
+        for (auto e : toErase) {
+          if (call.getName() == e) {
+            call->erase();
+            return;
+          }
         }
       });
     }
