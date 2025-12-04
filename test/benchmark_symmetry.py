@@ -40,6 +40,11 @@ def benchmark_symmetry():
     def dot_cse(x):
         a = x.T + x
         return jnp.dot(a, a) + jnp.dot(a, a.T) + jnp.dot(a.T, a)
+
+    def reduce_and_transpose(x):
+        a = x + x.transpose((2, 1, 0))
+        b = a + a.transpose((2, 1, 0))
+        return b.sum(axis=0)
         
     def reduce_partial_symmetry(x):
         a = x.transpose((3, 1, 2, 0)) + x
@@ -62,28 +67,6 @@ def benchmark_symmetry():
         z = jax.scipy.linalg.solve_triangular(L, y, lower=True)
         return jax.scipy.linalg.solve_triangular(L.T, z, lower=False)
         
-    # def matrix_multiply(x):
-    #     a = x.T + x 
-    #     return jnp.matmul(a, a)
-    
-    def gram_chain(x):
-        # x is (n, d)
-        G = x.T @ x         
-        # H = G @ G + G @ G.T 
-        for _ in range(20):
-            G = (G + G.T) @ (G + G.T) #H @ G + G @ H.T
-        return G
-    
-    def sylvester_iter(x):
-        A = x + x.T
-        B = A.copy()
-        C = A.copy()
-        for _ in range(6):
-            C = A @ C + C.T @ B   # C.T redundant once C is known symmetric
-            C = (C + C.T) * 0.5   # force symmetry
-        return C
-    
-    
     def symmetric_kalman_filter(x, steps=100):
         """
         A symmetric Kalman filter microbenchmark.
@@ -139,10 +122,8 @@ def benchmark_symmetry():
         ("Chained (10x)", chained_symmetric_op, (2048, 2048)),
         ("Interleaved (10x)", interleaved_symmetric_op, (2048, 2048)),
         ("Dot CSE", dot_cse, (1024, 1024)),
+        ("Reduce and transpose (for overview example)", reduce_and_transpose, (1024, 3, 1024)),
         ("Reduce partial symmetry", reduce_partial_symmetry, (32, 32, 32, 32)),
-        # ("Matrix multiply", matrix_multiply, (2048, 2048)),
-        # ("Gram chain", gram_chain, (256, 256)),
-        # ("Sylvester iter", sylvester_iter, (256, 256))
         ("Symmetric Kalman filter", symmetric_kalman_filter, (128, 128))
     ]
     
