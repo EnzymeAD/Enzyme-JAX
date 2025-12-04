@@ -1,8 +1,4 @@
-# Enzyme-JAX Developer Documentation
-
-## Overview
-
-Enzyme-JAX is a C++ project that integrates the Enzyme automatic differentiation tool with JAX, enabling automatic differentiation of external C++ code within JAX. The project uses LLVM's MLIR framework for intermediate representation and transformation of code.
+# Enzyme-JAX Developer Notes
 
 ## Building the Project
 
