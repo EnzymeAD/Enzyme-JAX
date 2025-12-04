@@ -142,12 +142,12 @@ static Value insertXLAInitDeinit(mlir::ModuleOp moduleOp, StringRef backend,
         rewriter, loc, ctorNameBuffer,
         LLVM::LLVMFunctionType::get(
             LLVM::LLVMVoidType::get(moduleOp.getContext()), {}),
-        LLVM::Linkage::Private);
+        LLVM::Linkage::Linkonce);
     dtor = LLVM::LLVMFuncOp::create(
         rewriter, loc, dtorNameBuffer,
         LLVM::LLVMFunctionType::get(
             LLVM::LLVMVoidType::get(moduleOp.getContext()), {}),
-        LLVM::Linkage::Private);
+        LLVM::Linkage::Linkonce);
 
     auto ctorSymbol = FlatSymbolRefAttr::get(ctor);
     LLVM::GlobalCtorsOp::create(
@@ -162,7 +162,7 @@ static Value insertXLAInitDeinit(mlir::ModuleOp moduleOp, StringRef backend,
         rewriter.getArrayAttr({LLVM::ZeroAttr::get(rewriter.getContext())}));
 
     data = LLVM::GlobalOp::create(rewriter, loc, ptrty, /*constant*/ false,
-                                  LLVM::Linkage::Internal, dataNameBuffer,
+                                  LLVM::Linkage::Linkonce, dataNameBuffer,
                                   /* initValue */ mlir::Attribute(),
                                   /* alignment */ 8, /* addrSpace */ 0);
   }
@@ -4185,8 +4185,8 @@ struct ConvertPolygeistToLLVMPass
     }
 
     if (StringRef(gpuTarget).starts_with("xla")) {
-      const char *toErase = {"cudaDeviceSetLimit", "cudaDeviceSynchronize"};
-      m->walk([](LLVM::CallOp call) {
+      const char *toErase[] = {"cudaDeviceSetLimit", "cudaDeviceSynchronize"};
+      m->walk([=](LLVM::CallOp call) {
         if (auto callee = call.getCallee()) {
           for (auto e : toErase) {
             if (callee == e) {
@@ -4196,7 +4196,7 @@ struct ConvertPolygeistToLLVMPass
           }
         }
       });
-      m->walk([](LLVM::LLVMFuncOp call) {
+      m->walk([=](LLVM::LLVMFuncOp call) {
         for (auto e : toErase) {
           if (call.getName() == e) {
             call->erase();
@@ -4206,8 +4206,8 @@ struct ConvertPolygeistToLLVMPass
       });
     }
     if (StringRef(gpuTarget).starts_with("xla") || gpuTarget == "cpu") {
-      const char *toErase = {"cudaGetLastError"};
-      m->walk([](LLVM::LLVMCallOp call) {
+      const char *toErase[] = {"cudaGetLastError"};
+      m->walk([=](LLVM::CallOp call) {
         if (auto callee = call.getCallee()) {
           for (auto e : toErase) {
             if (callee == e) {
@@ -4221,7 +4221,7 @@ struct ConvertPolygeistToLLVMPass
           }
         }
       });
-      m->walk([](LLVM::LLVMFuncOp call) {
+      m->walk([=](LLVM::LLVMFuncOp call) {
         for (auto e : toErase) {
           if (call.getName() == e) {
             call->erase();
