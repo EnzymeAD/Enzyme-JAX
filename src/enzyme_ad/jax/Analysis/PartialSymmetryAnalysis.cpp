@@ -174,13 +174,17 @@ PartialSymmetryAnnotation PartialSymmetryAnnotation::propagateElementwiseBinary(
   PartialSymmetryAnnotation result = join(lhsAnnotation, rhsAnnotation);
 
   if (rhsAliasesLhs) {
+    int64_t changed_dim = -1;
+    int changed_dims = 0;
     for (int64_t i = 0; i < resultRank; ++i) {
-      int64_t j = rhsDimToLhs[i];
-      if (rhsDimToLhs[j] == i) {
-        result.uniteDimensionSets(resultRank, i, j);
+      if (rhsDimToLhs[i] != i) {
+        changed_dim = i;
+        changed_dims++;
       }
     }
-
+    if (changed_dims == 2) {
+      result.uniteDimensionSets(resultRank, changed_dim, rhsDimToLhs[changed_dim]);
+    }
     result.canonicalize();
   }
 
