@@ -83,7 +83,7 @@ void PartialSymmetryAnnotation::uniteDimensionSets(int64_t rank, int64_t i,
 }
 
 PartialSymmetryAnnotation
-PartialSymmetryAnnotation::join(const PartialSymmetryAnnotation &lhs,
+PartialSymmetryAnnotation::meet(const PartialSymmetryAnnotation &lhs,
                                 const PartialSymmetryAnnotation &rhs) {
   PartialSymmetryAnnotation result = createNotSymmetric(lhs.getRank());
 
@@ -102,7 +102,7 @@ PartialSymmetryAnnotation::join(const PartialSymmetryAnnotation &lhs,
 }
 
 PartialSymmetryAnnotation
-PartialSymmetryAnnotation::meet(const PartialSymmetryAnnotation &lhs,
+PartialSymmetryAnnotation::join(const PartialSymmetryAnnotation &lhs,
                                 const PartialSymmetryAnnotation &rhs) {
   PartialSymmetryAnnotation result = createNotSymmetric(lhs.getRank());
 
@@ -171,7 +171,7 @@ PartialSymmetryAnnotation PartialSymmetryAnnotation::propagateElementwiseBinary(
     const PartialSymmetryAnnotation &rhsAnnotation, int64_t resultRank,
     bool rhsAliasesLhs, ArrayRef<int64_t> rhsDimToLhs) {
 
-  PartialSymmetryAnnotation result = join(lhsAnnotation, rhsAnnotation);
+  PartialSymmetryAnnotation result = meet(lhsAnnotation, rhsAnnotation);
 
   if (rhsAliasesLhs) {
     int64_t changed_dim = -1;
@@ -525,14 +525,14 @@ PartialSymmetryLattice::PartialSymmetryLattice(Value v)
   }
 }
 
-ChangeResult PartialSymmetryLattice::join(const AbstractSparseLattice &rhs) {
+ChangeResult PartialSymmetryLattice::meet(const AbstractSparseLattice &rhs) {
   const auto *rhsStruct =
       reinterpret_cast<const PartialSymmetryLattice *>(&rhs);
-  return join(*rhsStruct);
+  return meet(*rhsStruct);
 }
 
-ChangeResult PartialSymmetryLattice::join(const PartialSymmetryLattice &rhs) {
-  auto newValue = PartialSymmetryAnnotation::join(getValue(), rhs.getValue());
+ChangeResult PartialSymmetryLattice::meet(const PartialSymmetryLattice &rhs) {
+  auto newValue = PartialSymmetryAnnotation::meet(getValue(), rhs.getValue());
   if (getValue() == newValue)
     return ChangeResult::NoChange;
 
@@ -683,7 +683,7 @@ LogicalResult PartialSymmetryAnalysis::visitOperation(
     if (updatedAnnotation[i]) {
       auto resultOrig = results[i]->getValue();
       auto resultNew =
-          PartialSymmetryAnnotation::join(resultOrig, propagatedAnnotation[i]);
+          PartialSymmetryAnnotation::meet(resultOrig, propagatedAnnotation[i]);
       results[i]->setValue(resultNew);
       propagateIfChanged(results[i], resultNew == resultOrig
                                          ? ChangeResult::NoChange

@@ -29,9 +29,9 @@ public:
   int64_t getSetId(int64_t i) const { return dimensionSetIDs[i]; }
   int64_t getRank() const { return dimensionSetIDs.size(); }
 
-  static PartialSymmetryAnnotation join(const PartialSymmetryAnnotation &lhs,
-                                        const PartialSymmetryAnnotation &rhs);
   static PartialSymmetryAnnotation meet(const PartialSymmetryAnnotation &lhs,
+                                        const PartialSymmetryAnnotation &rhs);
+  static PartialSymmetryAnnotation join(const PartialSymmetryAnnotation &lhs,
                                         const PartialSymmetryAnnotation &rhs);
 
   static PartialSymmetryAnnotation
@@ -85,8 +85,8 @@ public:
 
   PartialSymmetryLattice(Value v);
 
-  ChangeResult join(const AbstractSparseLattice &rhs) override;
-  ChangeResult join(const PartialSymmetryLattice &rhs);
+  ChangeResult meet(const AbstractSparseLattice &rhs) override;
+  ChangeResult meet(const PartialSymmetryLattice &rhs);
 
   void print(raw_ostream &os) const override;
 
