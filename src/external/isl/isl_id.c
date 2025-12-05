@@ -45,7 +45,16 @@ const char *isl_id_get_name(__isl_keep isl_id *id)
 
 static __isl_give isl_id *id_alloc(isl_ctx *ctx, const char *name, void *user)
 {
-	const char *copy = name ? strdup(name) : NULL;
+	const char *copy = NULL;
+	if (name) {
+         const char* s = name;
+         size_t len = strlen(s);
+         char* ret = (char*)(malloc(len + 1));
+         memcpy(ret, s, len);
+         ret[len] = '\0';
+         copy = ret;
+        }
+
 	isl_id *id;
 
 	if (name && !copy)
