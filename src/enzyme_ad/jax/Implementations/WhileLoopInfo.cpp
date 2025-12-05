@@ -162,7 +162,6 @@ void WhileLoopInfo::propagateInductionVarOffsets() {
           result = addOp.getResult();
         }
       } else if (auto subOp = dyn_cast<stablehlo::SubtractOp>(user)) {
-        Value lhs = subOp.getLhs();
         Value rhs = subOp.getRhs();
         APInt constVal(bitWidth, 0, true);
 

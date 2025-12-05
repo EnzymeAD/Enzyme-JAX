@@ -379,6 +379,8 @@ public:
       }
 
       switch (status) {
+      case State::UNKNOWN:
+        llvm_unreachable("Unknown state not handled");
       case State::NOTGUARANTEED: {
         SmallVector<Value, 2> rtodo{cur};
         while (!rtodo.empty()) {
@@ -522,7 +524,6 @@ public:
 
     auto state = ((Child *)this)->localGuaranteed(val, localtodo, rewriter);
 
-    auto attrName = ((Child *)this)->getAttrName();
     setGuaranteedInIR(val, state, rewriter);
     return state;
   }
