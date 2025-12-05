@@ -115,7 +115,7 @@ Type convertMemrefElementTypeForLLVMPointer(
 }
 
 static Value insertXLAInitDeinit(mlir::ModuleOp moduleOp, StringRef backend,
-                                 OpBuilder &rewriter) {
+                                 RewriterBase &rewriter) {
   auto loc = moduleOp.getLoc();
   // TODO is it okay to be using OpBuilder's in op rewriter?
   // OpBuilder moduleBuilder(moduleOp.getBodyRegion());
@@ -146,12 +146,12 @@ static Value insertXLAInitDeinit(mlir::ModuleOp moduleOp, StringRef backend,
         rewriter, loc, ctorNameBuffer,
         LLVM::LLVMFunctionType::get(
             LLVM::LLVMVoidType::get(moduleOp.getContext()), {}),
-        LLVM::Linkage::Private);
+        LLVM::Linkage::Linkonce);
     dtor = LLVM::LLVMFuncOp::create(
         rewriter, loc, dtorNameBuffer,
         LLVM::LLVMFunctionType::get(
             LLVM::LLVMVoidType::get(moduleOp.getContext()), {}),
-        LLVM::Linkage::Private);
+        LLVM::Linkage::Linkonce);
 
     auto ctorSymbol = FlatSymbolRefAttr::get(ctor);
     LLVM::GlobalCtorsOp::create(
@@ -165,10 +165,17 @@ static Value insertXLAInitDeinit(mlir::ModuleOp moduleOp, StringRef backend,
         rewriter.getI32ArrayAttr({65535}),
         rewriter.getArrayAttr({LLVM::ZeroAttr::get(rewriter.getContext())}));
 
-    data = LLVM::GlobalOp::create(rewriter, loc, ptrty, /*constant*/ false,
-                                  LLVM::Linkage::Internal, dataNameBuffer,
-                                  /* initValue */ mlir::Attribute(),
-                                  /* alignment */ 8, /* addrSpace */ 0);
+    if (!data || data.getLinkage() == LLVM::Linkage::External) {
+      auto newdata =
+          LLVM::GlobalOp::create(rewriter, loc, ptrty, /*constant*/ false,
+                                 LLVM::Linkage::Linkonce, dataNameBuffer,
+                                 /* initValue */ mlir::Attribute(),
+                                 /* alignment */ 8, /* addrSpace */ 0);
+      if (data) {
+        rewriter.eraseOp(data);
+      }
+      data = newdata;
+    }
   }
 
   // device id, ptr
@@ -4287,9 +4294,21 @@ struct ConvertPolygeistToLLVMPass
     }
 
     if (StringRef(gpuTarget).starts_with("xla")) {
-      m->walk([](LLVM::CallOp call) {
+      const char *toErase[] = {"cudaDeviceSetLimit", "cudaDeviceSynchronize",
+                               "cudaThreadSynchronize"};
+      m->walk([=](LLVM::CallOp call) {
         if (auto callee = call.getCallee()) {
-          if (callee == "cudaDeviceSynchronize") {
+          for (auto e : toErase) {
+            if (callee == e) {
+              call->erase();
+              return;
+            }
+          }
+        }
+      });
+      m->walk([=](LLVM::LLVMFuncOp call) {
+        for (auto e : toErase) {
+          if (call.getName() == e) {
             call->erase();
           } else if (callee == "hipDeviceSynchronize") {
             call->erase();
@@ -4301,6 +4320,33 @@ struct ConvertPolygeistToLLVMPass
           call->erase();
         } else if (call.getName() == "hipDeviceSynchronize") {
           call->erase();
+            return;
+          }
+        }
+      });
+    }
+    if (StringRef(gpuTarget).starts_with("xla") || gpuTarget == "cpu") {
+      const char *toErase[] = {"cudaGetLastError"};
+      m->walk([=](LLVM::CallOp call) {
+        if (auto callee = call.getCallee()) {
+          for (auto e : toErase) {
+            if (callee == e) {
+
+              OpBuilder builder(call);
+              auto replace =
+                  LLVM::ZeroOp::create(builder, call.getLoc(), call.getType(0));
+              call->replaceAllUsesWith(replace);
+              call->erase();
+            }
+          }
+        }
+      });
+      m->walk([=](LLVM::LLVMFuncOp call) {
+        for (auto e : toErase) {
+          if (call.getName() == e) {
+            call->erase();
+            return;
+          }
         }
       });
     }
