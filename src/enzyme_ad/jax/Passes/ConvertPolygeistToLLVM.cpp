@@ -4310,8 +4310,7 @@ struct ConvertPolygeistToLLVMPass
         for (auto e : toErase) {
           if (call.getName() == e) {
             call->erase();
-          } else if (callee == "hipDeviceSynchronize") {
-            call->erase();
+            return;
           }
         }
       });
@@ -4320,8 +4319,7 @@ struct ConvertPolygeistToLLVMPass
           call->erase();
         } else if (call.getName() == "hipDeviceSynchronize") {
           call->erase();
-            return;
-          }
+          return;
         }
       });
     }
