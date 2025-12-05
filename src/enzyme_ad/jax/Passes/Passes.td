@@ -1273,4 +1273,44 @@ def RemoveAtomicsPass : Pass<"remove-atomics"> {
   ];
 }
 
+def PrepareLLVMFuncInline : Pass<"prepare-llvm-func-inline", "ModuleOp"> { 
+  let summary = "Marks alls llvm funcs as always_inline so that they get inlined with the standard inline pass.";
+  let description = [{
+    sample Text
+  }];
+  let dependentDialects = ["LLVM::LLVMDialect"]; 
+  let options = [];
+  let statistics = [];
+}
+
+def HandleLLVMUnreachable : Pass<"handle-llvm-unreachable", "ModuleOp"> { 
+  let summary = "Convert all llvm.unreachable ops to llvm.return ops (assuming all functions being inlined).";
+  let description = [{
+    sample Text
+  }];
+  let dependentDialects = ["LLVM::LLVMDialect"]; 
+  let options = [];
+  let statistics = [];
+}
+
+def DeleteInlinedFuncs : Pass<"delete-inlined-funcs", "ModuleOp"> { 
+  let summary = "Erase all llvm.func (in future also func.func) ops that were previously inlined and not needed in the main module.";
+  let description = [{
+    sample Text
+  }];
+  let dependentDialects = ["LLVM::LLVMDialect"]; 
+  let options = [];
+  let statistics = [];
+}
+
+def InlineGPULaunchFuncs : Pass<"inline-gpu-launch-funcs", "ModuleOp"> { 
+  let summary = "Inlines the gpu functions in gpu module into its calling site at gpu launch func operations and move exteral functions to the main module.";
+  let description = [{
+    sample Text
+  }];
+  let dependentDialects = []; 
+  let options = [];
+  let statistics = [];
+}
+
 #endif
