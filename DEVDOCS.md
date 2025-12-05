@@ -79,3 +79,14 @@ Run tests with:
 ```bash
 bazel test //test/...
 ```
+This runs the tests in 
+
+Most of the Enzyme-JaX tests use [lit](https://llvm.org/docs/CommandGuide/lit.html) for testing.
+These tests are stored in `test/lit_tests`.
+A lit test contains one or more run directives at the top a file.
+e.g. in `test/lit_tests/if.mlir`:
+```mlir
+// RUN: enzymexlamlir-opt %s --enzyme-hlo-opt | FileCheck %s
+```
+This instructs `lit` to run the `enzyme-hlo-opt` pass on `test/lit_tests/if.mlir`.
+The output is fed to `FileCheck` which compares it against the expected result that is provided in comments in the file that start with `// CHECK`.
