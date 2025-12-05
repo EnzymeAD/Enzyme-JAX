@@ -4140,7 +4140,7 @@ struct ConvertPolygeistToLLVMPass
         mod->emitError() << "failed to apply folding";
         return signalPassFailure();
       }
-    };
+    }
 
     LLVMConversionTarget target(getContext());
     RewritePatternSet patterns(&getContext());
