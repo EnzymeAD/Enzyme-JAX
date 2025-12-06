@@ -465,6 +465,8 @@ void rewriteDynamicSliceDynamicSlice(stablehlo::DynamicSliceOp op,
   auto resTy = op.getType();
   auto res = rewriter.replaceOpWithNewOp<stablehlo::DynamicSliceOp>(
       op, prev.getOperand(), startIndices, sliceSizes);
+  (void)res;
+  (void)resTy;
   assert(res.getType() == resTy);
 }
 
