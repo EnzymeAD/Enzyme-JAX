@@ -41,6 +41,7 @@ MLIR passes implement transformations and optimizations.
 
 - Tablegen definitions in `src/enzyme_ad/jax/Passes/Passes.td`
 - **EnzymeHLOOpt.cpp** - Core optimization patterns for StableHLO and EnzymeXLA operations
+  This file contains (nearly) all the stablehlo tensor optimizations.
 
 #### 3. **Transform Operations** (`src/enzyme_ad/jax/TransformOps/`)
 In order to have more granular control over which pattern is applied, patterns are also registered as transform operations.
