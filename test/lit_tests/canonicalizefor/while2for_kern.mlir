@@ -49,7 +49,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
   }
 }
 
-// CHECK:  llvm.func internal @_Z35__device_stub__negate_forces_kernelP8Particleii(%arg0: !llvm.ptr {llvm.nocapture, llvm.nofree, llvm.noundef}, %arg1: i32 {llvm.noundef}, %arg2: i32 {llvm.noundef}) attributes {dso_local, frame_pointer = #llvm.framePointerKind<all>, no_unwind, passthrough = ["mustprogress", "nofree", "norecurse", "nosync", ["no-trapping-math", "true"], ["stack-protector-buffer-size", "8"], ["target-cpu", "sm_52"], ["uniform-work-group-size", "true"]], sym_visibility = "private", target_cpu = "sm_52", target_features = #llvm.target_features<["+ptx80", "+sm_52"]>, will_return} {
+// CHECK:  llvm.func internal @_Z35__device_stub__negate_forces_kernelP8Particleii(%arg0: !llvm.ptr {llvm.nocapture, llvm.nofree, llvm.noundef}, %arg1: i32 {llvm.noundef}, %arg2: i32 {llvm.noundef}) 
 // CHECK-NEXT:    %c-1_i32 = arith.constant -1 : i32
 // CHECK-NEXT:    %c1_i32 = arith.constant 1 : i32
 // CHECK-NEXT:    %block_id_x = gpu.block_id  x
