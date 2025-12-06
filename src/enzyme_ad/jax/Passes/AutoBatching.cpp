@@ -1,6 +1,7 @@
 #include "src/enzyme_ad/jax/Passes/AutoBatching.h"
 
 #include "Enzyme/MLIR/Passes/EnzymeBatchPass.h"
+#include "mlir/Analysis/TopologicalSortUtils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Matchers.h"
@@ -925,11 +926,14 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
   SmallVector<SmallVector<int64_t>> sliceDims(op->getNumOperands());
   SmallVector<int64_t> hoistedDims(op->getNumOperands());
   SmallVector<DynamicSliceInfo> mappedSliceInfos(op->getNumOperands());
+  DenseMap<Value, SmallVector<Operation *>> hoistMap;
+
   for (int i = 0; i < op->getNumOperands(); i++) {
     auto operand = op->getOperand(i);
 
     Value outerValue;
-    if (info.isConstantAcrossIterations(operand, outerValue)) {
+    SmallVector<Operation *> canBeHoisted;
+    if (info.isConstantAcrossIterations(operand, outerValue, canBeHoisted)) {
       if (outerValue) {
         SplatElementsAttr splat;
         if (matchPattern(operand, m_Constant(&splat))) {
@@ -939,6 +943,7 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
         }
         batchOperands[i] = outerValue;
       } else {
+        hoistMap[operand] = canBeHoisted;
         hoistedDims[i] = cast<mlir::OpResult>(operand).getResultNumber();
         batchLiftingModes[i] = BatchLiftingMode::NEEDS_HOISTING_OUTSIDE_WHILE;
         batchOperands[i] = operand;
@@ -1040,6 +1045,34 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
 
   rewriter.setInsertionPoint(whileOp);
 
+  // hoist any operations that can be hoisted
+  DenseMap<Value, Value> hoistedValues;
+  for (auto &[val, ops] : hoistMap) {
+    llvm::SetVector<Operation *> toHoist(ops.begin(), ops.end());
+    auto sorted = mlir::topologicalSort(toHoist);
+    IRMapping mapper;
+
+    for (auto &op : sorted) {
+      for (auto operand : op->getOperands()) {
+        if (!definedOutside(operand, whileOp)) {
+          Value outerValue;
+          SmallVector<Operation *> canBeHoisted;
+          if (info.isConstantAcrossIterations(operand, outerValue, canBeHoisted,
+                                              false)) {
+            mapper.map(operand, outerValue);
+          }
+        }
+      }
+      auto hoisted = rewriter.clone(*op, mapper);
+      for (auto [origRes, newRes] :
+           llvm::zip(op->getResults(), hoisted->getResults())) {
+        mapper.map(origRes, newRes);
+      }
+    }
+
+    hoistedValues[val] = mapper.lookup(val);
+  }
+
   SmallVector<Value> newOperands;
   for (auto [consType, baseOp, sliceDim, sliceInfo, hoistDim] :
        llvm::zip(batchLiftingModes, batchOperands, sliceDims, mappedSliceInfos,
@@ -1055,6 +1088,7 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
       bool successfulHoist = info.hoistOperationFromLoop(
           rewriter, baseOp, sliceInfo.sliceOp, sliceDim, newSlice);
       assert(successfulHoist && "Expected DS hoist to succeed");
+      (void)successfulHoist;
       auto originalShape =
           cast<RankedTensorType>(sliceInfo.sliceOp.getType()).getShape();
 
@@ -1097,9 +1131,8 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
       break;
     }
     case BatchLiftingMode::NEEDS_HOISTING_OUTSIDE_WHILE: {
-      auto hoisted = rewriter.clone(*baseOp.getDefiningOp());
-      baseOp = hoisted->getResult(hoistDim);
-      // intentionally fallthrough
+      baseOp = hoistedValues[baseOp];
+      LLVM_FALLTHROUGH;
     }
     case BatchLiftingMode::DEFINED_OUTSIDE_WHILE: {
       auto operandShape = operandType.getShape();

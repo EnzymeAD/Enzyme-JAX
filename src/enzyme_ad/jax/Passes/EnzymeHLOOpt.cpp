@@ -2210,7 +2210,6 @@ struct DUSPad final
 
     SmallVector<int64_t> newDusStartIndexValues;
     SmallVector<Value> newDusStartIndices;
-    SmallVector<int64_t> newDusStartIndexValues;
     Location loc = dus.getLoc();
     auto indexElementType =
         cast<ShapedType>(startIndices[0].getType()).getElementType();
@@ -24999,6 +24998,9 @@ struct WhileIsCopySimplify
           blockArg.getArgNumber() != idx)
         continue;
 
+      if (whileOp.getResult(idx).getUses().empty())
+        continue;
+
       auto dusInductionVarDims =
           getInductionVariableDimension(dusOp, affineIndexInfo, whileOp, info);
       if (dusInductionVarDims.empty())
@@ -25035,6 +25037,7 @@ struct WhileIsCopySimplify
       auto successfulHoist = info.hoistOperationFromLoop(
           rewriter, dsOp.getOperand(), dsOp, dsInductionVarDims, dsResult);
       assert(successfulHoist && "expected DS hoist to succeed.");
+      (void)successfulHoist;
       auto dsResTy = cast<RankedTensorType>(dsResult.getType());
 
       // move the induction var to the front

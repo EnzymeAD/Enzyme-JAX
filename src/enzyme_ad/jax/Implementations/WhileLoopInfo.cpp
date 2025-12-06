@@ -214,7 +214,8 @@ bool WhileLoopInfo::isConstantValue(Value v, llvm::APInt &constVal) {
     return true;
 
   Value outerValue;
-  if (isConstantAcrossIterations(v, outerValue) &&
+  SmallVector<Operation *> canBeHoisted;
+  if (isConstantAcrossIterations(v, outerValue, canBeHoisted, false) &&
       matchPattern(outerValue, m_ConstantInt(&constVal)))
     return true;
   return false;
@@ -295,11 +296,13 @@ void WhileLoopInfo::propagateAffineIndexInfo() {
 
 bool WhileLoopInfo::isConstantAcrossIterations(Value v, bool checkOperands) {
   Value outerValue;
-  return isConstantAcrossIterations(v, outerValue, checkOperands);
+  SmallVector<Operation *> canBeHoisted;
+  return isConstantAcrossIterations(v, outerValue, canBeHoisted, checkOperands);
 }
 
-bool WhileLoopInfo::isConstantAcrossIterations(Value v, Value &outerValue,
-                                               bool checkOperands) {
+bool WhileLoopInfo::isConstantAcrossIterations(
+    Value v, Value &outerValue, SmallVector<Operation *> &canBeHoisted,
+    bool checkOperands) {
   if (definedOutside(v, op)) {
     outerValue = v;
     return true;
@@ -326,12 +329,15 @@ bool WhileLoopInfo::isConstantAcrossIterations(Value v, Value &outerValue,
 
   // all operands of the defining op are constant across iterations
   // don't populate the outerValue in this case
-  return llvm::all_of(defOp->getOperands(), [&](Value operand) {
-    // TODO: we should do `isConstantAcrossIterations` but for now we do a more
-    // conservative check
-    // return isConstantAcrossIterations(operand);
-    return definedOutside(operand, op);
-  });
+  if (llvm::all_of(defOp->getOperands(), [&](Value operand) {
+        return isConstantAcrossIterations(operand, outerValue, canBeHoisted,
+                                          true);
+      })) {
+    outerValue = nullptr;
+    canBeHoisted.push_back(defOp);
+    return true;
+  }
+  return false;
 }
 
 template <typename OpTy>
@@ -423,8 +429,6 @@ bool WhileLoopInfo::hoistOperationFromLoop(
   if (!canHoistOperationFromLoop(sliceOp, dimensions))
     return false;
 
-  auto totalIterCount = getConstantNumIters();
-
   auto depIndex = sliceOp.getStartIndices()[sliceIndex];
   auto indexTy = depIndex.getType();
 
@@ -439,7 +443,6 @@ bool WhileLoopInfo::hoistOperationFromLoop(
   auto step = getConstantStep().value();
   auto lb = getConstantStart().value();
   auto ub = getConstantLimit().value();
-  int64_t N = ub - lb;
 
   auto rawMin = scale * lb + offset;
   auto rawMax = scale * (ub - 1) + offset;

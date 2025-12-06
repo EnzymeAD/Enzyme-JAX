@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=dot_general_licm(0);elementwise_licm(0);greedy_while_loop_batch_fission;while_is_copy_simplify;remove_no_ops_from_while_loop;dynamic_slice_reshape_dynamic_slice" --transform-interpreter --enzyme-hlo-remove-transform --inline --enzyme-hlo-opt %s | FileCheck %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=greedy_while_loop_batch_fission;while_is_copy_simplify;remove_no_ops_from_while_loop;dynamic_slice_reshape_dynamic_slice" --transform-interpreter --enzyme-hlo-remove-transform --enzyme-hlo-opt %s | FileCheck %s
 
 func.func @main(%arg0: tensor<5x5xf32>, %arg1: tensor<5xf32>, %arg2: tensor<3x5xf32>) -> tensor<3x5xf32> {
     %cst = stablehlo.constant dense<"0x000000400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000040000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000040000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000040000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000040000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000040"> : tensor<15x3x5xf32>
@@ -83,29 +83,29 @@ func.func @main(%arg0: tensor<5x5xf32>, %arg1: tensor<5xf32>, %arg2: tensor<3x5x
 // CHECK-NEXT:     %4 = stablehlo.dot_general %0, %cst_0, batching_dims = [0] x [0], contracting_dims = [1] x [2] : (tensor<15x5x5xf32>, tensor<15x3x5xf32>) -> tensor<15x5x3xf32>
 // CHECK-NEXT:     %5 = stablehlo.dot_general %arg0, %arg2, contracting_dims = [0] x [1] : (tensor<5x5xf32>, tensor<3x5xf32>) -> tensor<5x3xf32>
 // CHECK-NEXT:     %6 = stablehlo.add %5, %3 : tensor<5x3xf32>
-// CHECK-NEXT:     %7 = stablehlo.broadcast_in_dim %6, dims = [1, 2] : (tensor<5x3xf32>) -> tensor<15x5x3xf32>
-// CHECK-NEXT:     %8 = stablehlo.multiply %7, %4 : tensor<15x5x3xf32>
-// CHECK-NEXT:     %9 = stablehlo.multiply %8, %cst : tensor<15x5x3xf32>
-// CHECK-NEXT:     %10 = stablehlo.multiply %cst_4, %6 : tensor<5x3xf32>
-// CHECK-NEXT:     %11 = stablehlo.broadcast_in_dim %10, dims = [1, 2] : (tensor<5x3xf32>) -> tensor<15x5x3xf32>
-// CHECK-NEXT:     %12 = stablehlo.multiply %9, %11 : tensor<15x5x3xf32>
-// CHECK-NEXT:     %13 = stablehlo.multiply %6, %6 : tensor<5x3xf32>
-// CHECK-NEXT:     %14 = stablehlo.multiply %13, %cst_3 : tensor<5x3xf32>
-// CHECK-NEXT:     %15 = stablehlo.add %14, %cst_2 : tensor<5x3xf32>
-// CHECK-NEXT:     %16 = stablehlo.broadcast_in_dim %15, dims = [1, 2] : (tensor<5x3xf32>) -> tensor<15x5x3xf32>
-// CHECK-NEXT:     %17 = stablehlo.multiply %2, %16 : tensor<15x5x3xf32>
-// CHECK-NEXT:     %18 = stablehlo.add %17, %12 : tensor<15x5x3xf32>
-// CHECK-NEXT:     %19 = stablehlo.multiply %10, %15 : tensor<5x3xf32>
-// CHECK-NEXT:     %20 = stablehlo.logistic %19 : tensor<5x3xf32>
-// CHECK-NEXT:     %21 = stablehlo.broadcast_in_dim %20, dims = [1, 2] : (tensor<5x3xf32>) -> tensor<15x5x3xf32>
-// CHECK-NEXT:     %22 = stablehlo.multiply %1, %21 : tensor<15x5x3xf32>
-// CHECK-NEXT:     %23 = stablehlo.logistic %19 : tensor<5x3xf32>
+// CHECK-NEXT:     %7 = stablehlo.multiply %6, %6 : tensor<5x3xf32>
+// CHECK-NEXT:     %8 = stablehlo.multiply %7, %cst_3 : tensor<5x3xf32>
+// CHECK-NEXT:     %9 = stablehlo.add %8, %cst_2 : tensor<5x3xf32>
+// CHECK-NEXT:     %10 = stablehlo.broadcast_in_dim %9, dims = [1, 2] : (tensor<5x3xf32>) -> tensor<15x5x3xf32>
+// CHECK-NEXT:     %11 = stablehlo.multiply %2, %10 : tensor<15x5x3xf32>
+// CHECK-NEXT:     %12 = stablehlo.broadcast_in_dim %6, dims = [1, 2] : (tensor<5x3xf32>) -> tensor<15x5x3xf32>
+// CHECK-NEXT:     %13 = stablehlo.multiply %12, %4 : tensor<15x5x3xf32>
+// CHECK-NEXT:     %14 = stablehlo.multiply %cst_4, %6 : tensor<5x3xf32>
+// CHECK-NEXT:     %15 = stablehlo.multiply %14, %9 : tensor<5x3xf32>
+// CHECK-NEXT:     %16 = stablehlo.logistic %15 : tensor<5x3xf32>
+// CHECK-NEXT:     %17 = stablehlo.broadcast_in_dim %16, dims = [1, 2] : (tensor<5x3xf32>) -> tensor<15x5x3xf32>
+// CHECK-NEXT:     %18 = stablehlo.multiply %1, %17 : tensor<15x5x3xf32>
+// CHECK-NEXT:     %19 = stablehlo.multiply %13, %cst : tensor<15x5x3xf32>
+// CHECK-NEXT:     %20 = stablehlo.broadcast_in_dim %14, dims = [1, 2] : (tensor<5x3xf32>) -> tensor<15x5x3xf32>
+// CHECK-NEXT:     %21 = stablehlo.multiply %19, %20 : tensor<15x5x3xf32>
+// CHECK-NEXT:     %22 = stablehlo.add %11, %21 : tensor<15x5x3xf32>
+// CHECK-NEXT:     %23 = stablehlo.logistic %15 : tensor<5x3xf32>
 // CHECK-NEXT:     %24 = stablehlo.subtract %cst_2, %23 : tensor<5x3xf32>
 // CHECK-NEXT:     %25 = stablehlo.multiply %23, %24 : tensor<5x3xf32>
 // CHECK-NEXT:     %26 = stablehlo.broadcast_in_dim %25, dims = [1, 2] : (tensor<5x3xf32>) -> tensor<15x5x3xf32>
-// CHECK-NEXT:     %27 = stablehlo.multiply %18, %26 : tensor<15x5x3xf32>
-// CHECK-NEXT:     %28 = stablehlo.multiply %27, %7 : tensor<15x5x3xf32>
-// CHECK-NEXT:     %29 = stablehlo.add %22, %28 : tensor<15x5x3xf32>
+// CHECK-NEXT:     %27 = stablehlo.multiply %22, %26 : tensor<15x5x3xf32>
+// CHECK-NEXT:     %28 = stablehlo.multiply %27, %12 : tensor<15x5x3xf32>
+// CHECK-NEXT:     %29 = stablehlo.add %18, %28 : tensor<15x5x3xf32>
 // CHECK-NEXT:     %30:2 = stablehlo.while(%iterArg = %c_7, %iterArg_12 = %cst_9) : tensor<i64>, tensor<3x5xf32>
 // CHECK-NEXT:     cond {
 // CHECK-NEXT:       %31 = stablehlo.compare  LT, %iterArg, %c_11 : (tensor<i64>, tensor<i64>) -> tensor<i1>

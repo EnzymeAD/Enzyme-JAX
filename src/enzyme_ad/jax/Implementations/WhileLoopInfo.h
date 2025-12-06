@@ -65,6 +65,7 @@ struct WhileLoopInfo {
 
   bool isConstantAcrossIterations(Value v, bool checkOperands = true);
   bool isConstantAcrossIterations(Value v, Value &outerValue,
+                                  SmallVector<Operation *> &canBeHoisted,
                                   bool checkOperands = true);
 
   bool canHoistOperationFromLoop(mlir::stablehlo::DynamicSliceOp sliceOp,
