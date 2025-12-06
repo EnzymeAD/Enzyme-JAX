@@ -813,8 +813,13 @@ struct OrmqrOpLowering : public OpRewritePattern<enzymexla::OrmqrOp> {
       break;
     }
 
+    (void)output_shape;
+    (void)C_shape;
     assert(output_shape == C_shape && "`enzymexla.lapack.ormqr` requires `C` "
                                       "and `output` to have the same shape");
+    (void)A_eltype;
+    (void)C_eltype;
+    (void)tau_eltype;
     assert(A_eltype == C_eltype && A_eltype == tau_eltype &&
            "`enzymexla.lapack.ormqr` requires the same element type for all "
            "operands");
