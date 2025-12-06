@@ -52,6 +52,7 @@ jobs:
     if: github.event.pull_request.draft == false
     uses: EnzymeAD/ReactantBuilder/.github/workflows/build-reactant-reusable.yml@main
     needs: get-reactant-commit
+    secrets: inherit
     with:
       reactantbuilder_ref: 'main'
       enzyme_jax_commit: ${{ github.sha }}
