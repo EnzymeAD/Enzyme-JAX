@@ -149,6 +149,7 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
         llvm_unreachable("adjoint is not supported for complex matrices");
       }
       // adjoint for real matrices is the same as transpose
+      LLVM_FALLTHROUGH;
     case enzymexla::LapackTranspose::transpose:
       transValue = 'T';
       break;
@@ -285,6 +286,7 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
         llvm_unreachable("adjoint is not supported for complex matrices");
       }
       // adjoint for real matrices is the same as transpose
+      LLVM_FALLTHROUGH;
     case enzymexla::LapackTranspose::transpose:
       dotDims = stablehlo::DotDimensionNumbersAttr::get(
           op.getContext(), batchDims, batchDims, {nBatchDims}, {nBatchDims});
