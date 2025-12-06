@@ -21761,6 +21761,8 @@ struct FactorScalarsInDotGeneral final
     auto rhsExtracted = stablehlo::extractMultiplicationFactor(
         rhs, rhsScalar, rhsZ, op, rewriter);
 
+    (void)lhsExtracted;
+    (void)rhsExtracted;
     assert(lhsExtracted && rhsExtracted);
 
     auto newDot = stablehlo::DotGeneralOp::create(
