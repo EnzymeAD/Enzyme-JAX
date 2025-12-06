@@ -248,11 +248,13 @@ struct AddLaunchBounds : public OpRewritePattern<gpu::LaunchFuncOp> {
       gpuFuncOp->setAttr(attrName, rewriter.getIntegerAttr(
                                        rewriter.getIndexType(), blockSize));
       assert(succeeded);
+      (void)succeeded;
       return success();
     } else {
       assert(blockSize ==
              dyn_cast<IntegerAttr>(gpuFuncOp->getAttr(attrName)).getInt());
       assert(!succeeded);
+      (void)succeeded;
       return failure();
     }
   }
@@ -514,7 +516,6 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       auto loc = pop->getLoc();
 
       auto upperBounds = getUpperBounds<6>(pop);
-      int totalDims = upperBounds.size();
 
       mlir::OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPoint(pop);
@@ -1428,6 +1429,7 @@ struct RemovePolygeistNoopOp : public OpRewritePattern<enzymexla::NoopOp> {
           }
         } else {
           auto cst = getConstantInteger(operand);
+          (void)cst;
           assert(cst && *cst == 0 && "non block arg operands must be const 0");
         }
       }
@@ -2345,6 +2347,7 @@ struct ConvertParallelToGPU1Pass
                    iThread < UNROLL_FACTORS[blockDims].size(); iThread++) {
                 auto succeeded =
                     emitAlternative(unrollFactorOne, iThread).succeeded();
+                (void)succeeded;
                 assert(succeeded);
               }
             }

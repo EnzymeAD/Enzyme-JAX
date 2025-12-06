@@ -6222,6 +6222,8 @@ bool valueCmp(Cmp cmp, APInt expr, ValueOrInt val) {
     return val < expr;
   case Cmp::GE:
     return val <= expr;
+  default:
+    llvm_unreachable("Unknown value to cmp");
   }
 }
 
