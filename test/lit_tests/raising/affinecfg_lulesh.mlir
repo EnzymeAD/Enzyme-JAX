@@ -2,7 +2,7 @@
 
 module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<6> = dense<32> : vector<4xi64>, i64 = dense<64> : vector<2xi64>, i128 = dense<128> : vector<2xi64>, !llvm.ptr = dense<64> : vector<4xi64>, i1 = dense<8> : vector<2xi64>, i8 = dense<8> : vector<2xi64>, i16 = dense<16> : vector<2xi64>, i32 = dense<32> : vector<2xi64>, f16 = dense<16> : vector<2xi64>, f64 = dense<64> : vector<2xi64>, f128 = dense<128> : vector<2xi64>, "dlti.endianness" = "little", "dlti.legal_int_widths" = array<i32: 16, 32, 64>>, llvm.target_triple = "nvptx64-nvidia-cuda"} {
   llvm.mlir.global internal unnamed_addr constant @__cudart_i2opi_f(dense<[1011060801, -614296167, -181084736, -64530479, 1313084713, -1560706194]> : tensor<6xi32>) {addr_space = 1 : i32, alignment = 4 : i64, dso_local} : !llvm.array<6 x i32>
-  llvm.func local_unnamed_addr @__nv_jnf(%arg0: i32 {llvm.noundef}, %arg1: f32) -> f32 attributes {dso_local, frame_pointer = #llvm.framePointerKind<all>, memory_effects = #llvm.memory_effects<other = none, argMem = none, inaccessibleMem = none>, no_infs_fp_math = false, no_inline, no_nans_fp_math = false, no_unwind, passthrough = ["nofree", "norecurse", "nosync", ["disable-tail-calls", "false"], ["enzyme_math", "jnf"], ["implements", "llvm.jn.f32"], ["implements2", "jnf"], ["less-precise-fpmad", "false"], ["no-trapping-math", "true"], "prev_always_inline", "prev_fixup", ["prev_linkage", "7"], ["stack-protector-buffer-size", "8"], ["target-cpu", "sm_60"], ["use-soft-float", "false"]], target_cpu = "sm_60", target_features = #llvm.target_features<["+ptx85", "+sm_60"]>, unsafe_fp_math = false} {
+  llvm.func local_unnamed_addr @__nv_jnf(%arg0: i32 {llvm.noundef}, %arg1: f32) -> f32 attributes {dso_local, no_infs_fp_math = false, no_inline, no_nans_fp_math = false, no_unwind, passthrough = ["nofree", "norecurse", "nosync", ["disable-tail-calls", "false"], ["enzyme_math", "jnf"], ["implements", "llvm.jn.f32"], ["implements2", "jnf"], ["less-precise-fpmad", "false"], ["no-trapping-math", "true"], "prev_always_inline", "prev_fixup", ["prev_linkage", "7"], ["stack-protector-buffer-size", "8"], ["target-cpu", "sm_60"], ["use-soft-float", "false"]], target_cpu = "sm_60", target_features = #llvm.target_features<["+ptx85", "+sm_60"]>, unsafe_fp_math = false} {
     %0 = ub.poison : i32
     %c1_i32 = arith.constant 1 : i32
     %c0_i32 = arith.constant 0 : i32
@@ -855,7 +855,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<6> = dense<32> : vecto
 }
 
 
-// CHECK:  llvm.func local_unnamed_addr @__nv_jnf(%arg0: i32 {llvm.noundef}, %arg1: f32) -> f32 attributes {dso_local, frame_pointer = #llvm.framePointerKind<all>, memory_effects = #llvm.memory_effects<other = none, argMem = none, inaccessibleMem = none>, no_infs_fp_math = false, no_inline, no_nans_fp_math = false, no_unwind, passthrough = ["nofree", "norecurse", "nosync", ["disable-tail-calls", "false"], ["enzyme_math", "jnf"], ["implements", "llvm.jn.f32"], ["implements2", "jnf"], ["less-precise-fpmad", "false"], ["no-trapping-math", "true"], "prev_always_inline", "prev_fixup", ["prev_linkage", "7"], ["stack-protector-buffer-size", "8"], ["target-cpu", "sm_60"], ["use-soft-float", "false"]], target_cpu = "sm_60", target_features = #llvm.target_features<["+ptx85", "+sm_60"]>, unsafe_fp_math = false} {
+// CHECK:  llvm.func local_unnamed_addr @__nv_jnf(%arg0: i32 {llvm.noundef}, %arg1: f32) -> f32
 // CHECK-NEXT:    %0 = ub.poison : i32
 // CHECK-NEXT:    %c1_i32 = arith.constant 1 : i32
 // CHECK-NEXT:    %c0_i32 = arith.constant 0 : i32
@@ -1014,7 +1014,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<6> = dense<32> : vecto
 // CHECK-NEXT:              %66 = arith.shrui %62, %c23_i32 : i32
 // CHECK-NEXT:              %67 = arith.andi %66, %c224_i32 : i32
 // CHECK-NEXT:              %68 = arith.addi %67, %c-128_i32 : i32
-// CHECK-NEXT:              %69 = arith.shrui %68, %c5_i32 {isExact} : i32
+// CHECK-NEXT:              %69 = arith.shrui %68, %c5_i32 exact : i32
 // CHECK-NEXT:              %70 = llvm.getelementptr inbounds|nuw %2[24] : (!llvm.ptr) -> !llvm.ptr, i8
 // CHECK-NEXT:              llvm.store %65#1, %70 {alignment = 4 : i64} : i32, !llvm.ptr
 // CHECK-NEXT:              %71 = arith.subi %c6_i32, %69 : i32
