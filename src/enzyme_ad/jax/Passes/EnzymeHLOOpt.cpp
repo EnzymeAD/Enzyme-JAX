@@ -385,15 +385,8 @@ void sliceSliceHelper(stablehlo::DynamicSliceOp prev,
   assert(startIndices.size() == prev.getType().getShape().size());
   assert(sliceSizes.size() == prev.getType().getShape().size());
 
-  auto prevOperandType = prev.getOperand().getType();
-  auto prevOperandShape = prevOperandType.getShape();
-
   auto prevStartIndices = prev.getStartIndices();
-  auto prevSliceSizes = prev.getSliceSizes();
-
   for (size_t i = 0; i < startIndices.size(); ++i) {
-    auto size = prevOperandShape[i];
-
     if (startIndices[i]) {
       SmallVector<Value> addInputs = promoteToLargestBitWidth(
           {startIndices[i], prevStartIndices[i]}, rewriter);
@@ -472,6 +465,8 @@ void rewriteDynamicSliceDynamicSlice(stablehlo::DynamicSliceOp op,
   auto resTy = op.getType();
   auto res = rewriter.replaceOpWithNewOp<stablehlo::DynamicSliceOp>(
       op, prev.getOperand(), startIndices, sliceSizes);
+  (void)res;
+  (void)resTy;
   assert(res.getType() == resTy);
 }
 
@@ -17318,6 +17313,8 @@ reorderComparisionDirection(stablehlo::ComparisonDirection direction) {
     return stablehlo::ComparisonDirection::GE;
   case stablehlo::ComparisonDirection::LT:
     return stablehlo::ComparisonDirection::GT;
+  default:
+    llvm_unreachable("could not reorder comparison direction");
   }
 }
 
@@ -21766,6 +21763,8 @@ struct FactorScalarsInDotGeneral final
     auto rhsExtracted = stablehlo::extractMultiplicationFactor(
         rhs, rhsScalar, rhsZ, op, rewriter);
 
+    (void)lhsExtracted;
+    (void)rhsExtracted;
     assert(lhsExtracted && rhsExtracted);
 
     auto newDot = stablehlo::DotGeneralOp::create(
@@ -22865,7 +22864,6 @@ private:
     if (insertionDims.empty())
       return std::make_tuple(false, insertionDims);
 
-    bool found = false;
     for (auto dim : insertionDims) {
       if (std::find(batchingDims.begin(), batchingDims.end(), dim) !=
           batchingDims.end()) {
@@ -24654,7 +24652,6 @@ struct RemoveNoOpsFromWhileLoop
         info.getConstantNumIters() <= 0)
       return failure();
 
-    auto &whileBody = whileOp.getBody().front();
     auto inductionVar = info.getInductionVariable();
 
     auto limit = info.getConstantLimit().value();
@@ -25026,7 +25023,6 @@ struct WhileIsCopySimplify
       return failure();
 
     auto &whileBody = whileOp.getBody().front();
-    auto inductionVar = whileBody.getArgument(0);
     auto parentBlock = whileOp->getBlock();
 
     auto limit = info.getConstantLimit().value();
@@ -25726,9 +25722,6 @@ struct DotGeneralOnlyDiagonalAccess
     auto rhsContractDim = rhsContractingDims[0];
     // result[i, i] = sum_k (lhs[i, k] * rhs[k, i])
     //              = reduce_sum(lhs[i, :] * rhs[:, i])
-    auto lhsNonContractDim = 1 - lhsContractDim;
-    auto rhsNonContractDim = 1 - rhsContractDim;
-
     if (lhsContractDim == 0) {
       // move to dim = 1
       lhs = stablehlo::TransposeOp::create(
@@ -25855,8 +25848,8 @@ private:
       return stablehlo::SubtractOp::create(rewriter, info.lhs.getLoc(),
                                            info.rhs, info.lhs)
           .getResult();
-    case NegKind::NOT:
-      assert(false && "unexpected");
+    default:
+      llvm_unreachable("Unhandled negation");
     }
   }
 
@@ -25894,7 +25887,6 @@ struct ReduceMulBroadcastToDotGeneral
     auto dims = op.getDimensions();
 
     Value input = op.getInputs()[0];
-    auto TT = cast<TensorType>(input.getType());
     auto OT = cast<TensorType>(op.getResultTypes()[0]);
 
     if (OT.getRank() != 2 || dims.size() != 1)

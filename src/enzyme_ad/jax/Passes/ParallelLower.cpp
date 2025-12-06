@@ -720,7 +720,6 @@ void ParallelLower::runOnOperation() {
       builder.setInsertionPointToStart(blockB);
     }
 
-    OpBuilder hostBuilder = builder;
     if (wrapParallelOps) {
       auto pw = enzymexla::GPUWrapperOp::create(
           builder, loc,
