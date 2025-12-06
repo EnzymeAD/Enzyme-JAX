@@ -1431,7 +1431,6 @@ static void insertRecomputables(PatternRewriter &rewriter, T oldParallel,
 template <typename T, typename IfType>
 static void moveBodiesIf(PatternRewriter &rewriter, T op, IfType ifOp,
                          IfType newIf) {
-  rewriter.startOpModification(op);
   {
     OpBuilder::InsertionGuard guard(rewriter);
     rewriter.setInsertionPointToStart(getThenBlock(newIf));
@@ -1488,7 +1487,6 @@ static void moveBodiesIf(PatternRewriter &rewriter, T op, IfType ifOp,
 
   rewriter.eraseOp(ifOp);
   rewriter.eraseOp(op);
-  rewriter.finalizeOpModification(op);
 }
 
 mlir::OperandRange getLowerBounds(scf::ParallelOp op,
