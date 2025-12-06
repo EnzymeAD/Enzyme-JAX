@@ -248,11 +248,13 @@ struct AddLaunchBounds : public OpRewritePattern<gpu::LaunchFuncOp> {
       gpuFuncOp->setAttr(attrName, rewriter.getIntegerAttr(
                                        rewriter.getIndexType(), blockSize));
       assert(succeeded);
+      (void)succeeded;
       return success();
     } else {
       assert(blockSize ==
              dyn_cast<IntegerAttr>(gpuFuncOp->getAttr(attrName)).getInt());
       assert(!succeeded);
+      (void)succeeded;
       return failure();
     }
   }
