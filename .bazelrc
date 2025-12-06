@@ -15,15 +15,12 @@ common --action_env=PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=upb
 
 common --experimental_repo_remote_exec
 common --cxxopt=-Wno-deprecated-declarations --host_cxxopt=-Wno-deprecated-declarations
-common --cxxopt=-Wno-class-memaccess --host_cxxopt=-Wno-class-memaccess
 common --cxxopt=-Wno-sign-compare --host_cxxopt=-Wno-sign-compare
-common --cxxopt=-Wno-maybe-uninitialized --host_cxxopt=-Wno-maybe-uninitialized
 common --cxxopt=-Wno-array-bounds --host_cxxopt=-Wno-array-bounds
 common --cxxopt=-Wno-comment --host_cxxopt=-Wno-comment
 common --cxxopt=-Wno-invalid-constexpr --host_cxxopt=-Wno-invalid-constexpr
 common --cxxopt=-Wno-mismatched-new-delete --host_cxxopt=-Wno-mismatched-new-delete
 common --cxxopt=-Wno-unused-but-set-parameter --host_cxxopt=-Wno-unused-but-set-parameter
-common --cxxopt=-Wno-stringop-overread --host_cxxopt=-Wno-stringop-overread
 common --cxxopt=-Wno-unused-but-set-variable --host_cxxopt=-Wno-unused-but-set-variable
 common --cxxopt=-Wno-misleading-indentation --host_cxxopt=-Wno-misleading-indentation
 common --cxxopt=-Wno-return-type --host_cxxopt=-Wno-return-type
@@ -33,6 +30,11 @@ common --cxxopt=-Wno-unused-local-typedefs --host_cxxopt=-Wno-unused-local-typed
 common --cxxopt=-Wno-reorder --host_cxxopt=-Wno-reorder
 common --cxxopt=-Wno-missing-braces --host_cxxopt=-Wno-missing-braces
 common --cxxopt=-Wno-range-loop-construct --host_cxxopt=-Wno-range-loop-construct
+
+# for gcc
+# common --cxxopt=-Wno-class-memaccess --host_cxxopt=-Wno-class-memaccess
+# common --cxxopt=-Wno-maybe-uninitialized --host_cxxopt=-Wno-maybe-uninitialized
+# common --cxxopt=-Wno-stringop-overread --host_cxxopt=-Wno-stringop-overread
 
 common --cxxopt=-std=c++17 --host_cxxopt=-std=c++17
 
