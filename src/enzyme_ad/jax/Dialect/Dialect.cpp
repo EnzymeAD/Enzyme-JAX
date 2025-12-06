@@ -97,6 +97,122 @@ struct EnzymeXLADialectInlinerInterface : public DialectInlinerInterface {
 
 } // namespace
 
+void StructuredSparsityAttr::print(::mlir::AsmPrinter &printer) const {
+  printer << "<";
+
+  auto pattern = getPattern();
+  auto kind = pattern.getKind();
+
+  // Skip printing kind for Unknown
+  bool printKind = kind != StructuredSparsityKind::Unknown;
+
+  if (printKind) {
+    printer << stringifyStructuredSparsityKind(kind);
+
+    // Print bandwidth only for Band
+    if (kind == StructuredSparsityKind::Band) {
+      printer << " [" << pattern.getLowerBandwidth() << ", "
+              << pattern.getUpperBandwidth() << "]";
+    }
+  }
+
+  // Print value properties as a set
+  auto props = getValueProperties();
+  if (!props.empty()) {
+    if (printKind) {
+      printer << ", ";
+    }
+    printer << "{";
+    llvm::interleaveComma(props, printer, [&](StructuredValueProperty prop) {
+      printer << stringifyStructuredValueProperty(prop);
+    });
+    printer << "}";
+  }
+
+  printer << ">";
+}
+
+::mlir::Attribute StructuredSparsityAttr::parse(::mlir::AsmParser &parser,
+                                                ::mlir::Type type) {
+  if (parser.parseLess())
+    return {};
+
+  StructuredSparsityKind kind = StructuredSparsityKind::Unknown;
+  int64_t lowerBandwidth = -1;
+  int64_t upperBandwidth = -1;
+  llvm::SmallVector<StructuredValueProperty> valueProperties;
+
+  // Check if we start with a brace (properties only, no kind)
+  if (parser.parseOptionalLBrace().failed()) {
+    // Try to parse the kind
+    llvm::StringRef kindStr;
+    if (succeeded(parser.parseOptionalKeyword(&kindStr))) {
+      auto kindOpt = symbolizeStructuredSparsityKind(kindStr);
+      if (!kindOpt) {
+        parser.emitError(parser.getCurrentLocation(), "invalid sparsity kind: ")
+            << kindStr;
+        return {};
+      }
+      kind = *kindOpt;
+
+      // If Band, parse bandwidth bounds
+      if (kind == StructuredSparsityKind::Band) {
+        if (parser.parseLSquare() || parser.parseInteger(lowerBandwidth) ||
+            parser.parseComma() || parser.parseInteger(upperBandwidth) ||
+            parser.parseRSquare()) {
+          return {};
+        }
+      }
+
+      // Check for comma before properties
+      parser.parseOptionalComma();
+    }
+
+    // Try to parse value properties set
+    if (succeeded(parser.parseOptionalLBrace())) {
+      // Fall through to parse properties
+    } else {
+      // No properties
+      if (parser.parseGreater())
+        return {};
+
+      auto pattern = StructuredSparsityPatternAttr::get(
+          parser.getContext(), kind, lowerBandwidth, upperBandwidth);
+      return StructuredSparsityAttr::get(parser.getContext(), pattern,
+                                         valueProperties);
+    }
+  }
+
+  // Parse properties
+  if (!parser.parseOptionalRBrace().succeeded()) {
+    do {
+      llvm::StringRef propStr;
+      if (parser.parseKeyword(&propStr))
+        return {};
+
+      auto propOpt = symbolizeStructuredValueProperty(propStr);
+      if (!propOpt) {
+        parser.emitError(parser.getCurrentLocation(),
+                         "invalid value property: ")
+            << propStr;
+        return {};
+      }
+      valueProperties.push_back(*propOpt);
+    } while (succeeded(parser.parseOptionalComma()));
+
+    if (parser.parseRBrace())
+      return {};
+  }
+
+  if (parser.parseGreater())
+    return {};
+
+  auto pattern = StructuredSparsityPatternAttr::get(
+      parser.getContext(), kind, lowerBandwidth, upperBandwidth);
+  return StructuredSparsityAttr::get(parser.getContext(), pattern,
+                                     valueProperties);
+}
+
 void EnzymeXLADialect::initialize() {
   addInterfaces<EnzymeXLADialectInlinerInterface>();
   addOperations<
