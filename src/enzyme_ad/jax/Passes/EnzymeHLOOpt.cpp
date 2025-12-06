@@ -385,9 +385,6 @@ void sliceSliceHelper(stablehlo::DynamicSliceOp prev,
   assert(startIndices.size() == prev.getType().getShape().size());
   assert(sliceSizes.size() == prev.getType().getShape().size());
 
-  auto prevOperandType = prev.getOperand().getType();
-  auto prevOperandShape = prevOperandType.getShape();
-
   auto prevStartIndices = prev.getStartIndices();
   for (size_t i = 0; i < startIndices.size(); ++i) {
     if (startIndices[i]) {
@@ -22863,7 +22860,6 @@ private:
     if (insertionDims.empty())
       return std::make_tuple(false, insertionDims);
 
-    bool found = false;
     for (auto dim : insertionDims) {
       if (std::find(batchingDims.begin(), batchingDims.end(), dim) !=
           batchingDims.end()) {
