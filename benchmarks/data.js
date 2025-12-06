@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1764987790669,
+  "lastUpdate": 1765013583437,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "238314553+enzymead-bot[bot]@users.noreply.github.com",
-            "name": "enzymead-bot[bot]",
-            "username": "enzymead-bot[bot]"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "3bb71d558e5cdd7a8150fa7b0a94a600643202d5",
-          "message": "Update EnzymeAD/Enzyme to commit 300e6f7913407b1216bf07b5ea8827aae963c898 (#1597)\n\nDiff: https://github.com/EnzymeAD/Enzyme/compare/68e62fbd1b496a60490266952916112b63e62a18...300e6f7913407b1216bf07b5ea8827aae963c898\n\nCo-authored-by: enzymead-bot[bot] <238314553+enzymead-bot[bot]@users.noreply.github.com>",
-          "timestamp": "2025-11-10T01:22:53-06:00",
-          "tree_id": "b7bc9cfcf0b203555a8f2b5082939b8778dfd618",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/3bb71d558e5cdd7a8150fa7b0a94a600643202d5"
-        },
-        "date": 1762768111720,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.000004388973099412396,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.00000432439599535428,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001340801675978,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001337204235023,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2199,6 +2155,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.000144374809401,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "238314553+enzymead-bot[bot]@users.noreply.github.com",
+            "name": "enzymead-bot[bot]",
+            "username": "enzymead-bot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3d387c5890ad3f212baa1d85f2ffccea6aba7009",
+          "message": "Update jax-ml/jax to commit e45b7b654c5734ba0ebf22a771a947f9a5507859 (#1628)\n\n* Update jax-ml/jax to commit e45b7b654c5734ba0ebf22a771a947f9a5507859\n\nDiff: https://github.com/jax-ml/jax/compare/071a6a5a9a70b2447f0164e61e3e0333318422a8...e45b7b654c5734ba0ebf22a771a947f9a5507859\n\n* fix patch\n\n* fix\n\n---------\n\nCo-authored-by: enzymead-bot[bot] <238314553+enzymead-bot[bot]@users.noreply.github.com>\nCo-authored-by: William S. Moses <gh@wsmoses.com>",
+          "timestamp": "2025-12-05T19:39:17-06:00",
+          "tree_id": "b760630f803ff8e23a9369a909bb8b98aa0245d9",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/3d387c5890ad3f212baa1d85f2ffccea6aba7009"
+        },
+        "date": 1765013582463,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004378527000153554,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004377812000166159,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001487893048,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001412560908,
             "unit": "s"
           }
         ]
