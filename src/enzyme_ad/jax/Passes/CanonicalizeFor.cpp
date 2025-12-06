@@ -2735,7 +2735,7 @@ struct RemoveUnusedResults : public OpRewritePattern<IfOp> {
                              [&]() { yieldOp->setOperands(usedOperands); });
   }
 
-  static void emptyBuilder(OpBuilder &, Location) {};
+  static void emptyBuilder(OpBuilder &, Location){};
 
   LogicalResult matchAndRewrite(IfOp op,
                                 PatternRewriter &rewriter) const override {
