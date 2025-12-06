@@ -646,6 +646,7 @@ private:
     } else {
       Attribute attr = arrayAttr[resultNumber];
       auto enumAttr = dyn_cast<enzymexla::GuaranteedAnalysisResultAttr>(attr);
+      (void)enumAttr;
       assert(enumAttr && "Expected guaranteed analysis result");
 
       newAttrs = SmallVector<Attribute>(arrayAttr.begin(), arrayAttr.end());
