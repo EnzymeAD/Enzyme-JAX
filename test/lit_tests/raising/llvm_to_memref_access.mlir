@@ -65,7 +65,7 @@ module {
 // -----
 
 module {
-  llvm.func ptx_kernelcc @"multi_args_kern"(%arg0: !llvm.ptr<1> {llvm.noalias, llvm.nocapture, llvm.nofree}, %arg1: !llvm.ptr<1> {llvm.noalias, llvm.nocapture, llvm.nofree}, %arg2: !llvm.ptr<1> {llvm.noalias, llvm.nocapture, llvm.nofree, llvm.readonly}, %arg3: !llvm.ptr<1> {llvm.noalias, llvm.nocapture, llvm.nofree, llvm.readonly}) attributes {memory_effects = #llvm.memory_effects<other = none, argMem = readwrite, inaccessibleMem = none>, no_unwind, passthrough = ["mustprogress", "nofree", "norecurse", "nosync"], will_return} {
+  llvm.func ptx_kernelcc @"multi_args_kern"(%arg0: !llvm.ptr<1> {llvm.noalias, llvm.nocapture, llvm.nofree}, %arg1: !llvm.ptr<1> {llvm.noalias, llvm.nocapture, llvm.nofree}, %arg2: !llvm.ptr<1> {llvm.noalias, llvm.nocapture, llvm.nofree, llvm.readonly}, %arg3: !llvm.ptr<1> {llvm.noalias, llvm.nocapture, llvm.nofree, llvm.readonly}) attributes {no_unwind, passthrough = ["mustprogress", "nofree", "norecurse", "nosync"], will_return} {
     %0 = llvm.mlir.constant(23 : i32) : i32
     %1 = llvm.mlir.constant(1152921504606846953 : i64) : i64
     %2 = llvm.mlir.constant(4 : i64) : i64
@@ -136,7 +136,6 @@ module {
 // CHECK-SAME:  %[[ARG3:.*]]: memref<114x135x374xf64, 1> {llvm.noalias, llvm.nocapture, llvm.nofree, llvm.readonly}
 // CHECK-SAME:  CConv = #llvm.cconv<ptx_kernelcc>
 // CHECK-SAME:  linkage = #llvm.linkage<external>
-// CHECK-SAME:  memory_effects = #llvm.memory_effects<other = none, argMem = readwrite, inaccessibleMem = none>
 // CHECK-SAME:  no_unwind
 // CHECK-SAME:  passthrough = ["mustprogress", "nofree", "norecurse", "nosync"]
 // CHECK-SAME:  unnamed_addr = 0 : i64
@@ -154,7 +153,7 @@ module {
 // -----
 
 module {
-  llvm.func ptx_kernelcc @"loop_kern"(%arg0: !llvm.ptr<1> {llvm.noalias, llvm.nocapture, llvm.nofree}, %arg1: !llvm.ptr<1> {llvm.noalias, llvm.nocapture, llvm.nofree}, %arg2: !llvm.ptr<1> {llvm.noalias, llvm.nocapture, llvm.nofree, llvm.readonly}, %arg3: !llvm.ptr<1> {llvm.noalias, llvm.nocapture, llvm.nofree, llvm.readonly}) attributes {memory_effects = #llvm.memory_effects<other = none, argMem = readwrite, inaccessibleMem = none>, no_unwind, passthrough = ["mustprogress", "nofree", "norecurse", "nosync"], will_return} {
+  llvm.func ptx_kernelcc @"loop_kern"(%arg0: !llvm.ptr<1> {llvm.noalias, llvm.nocapture, llvm.nofree}, %arg1: !llvm.ptr<1> {llvm.noalias, llvm.nocapture, llvm.nofree}, %arg2: !llvm.ptr<1> {llvm.noalias, llvm.nocapture, llvm.nofree, llvm.readonly}, %arg3: !llvm.ptr<1> {llvm.noalias, llvm.nocapture, llvm.nofree, llvm.readonly}) attributes {no_unwind, passthrough = ["mustprogress", "nofree", "norecurse", "nosync"], will_return} {
     %0 = llvm.mlir.constant(23 : i32) : i32
     %1 = llvm.mlir.constant(1152921504606846953 : i64) : i64
     %2 = llvm.mlir.constant(4 : i64) : i64
