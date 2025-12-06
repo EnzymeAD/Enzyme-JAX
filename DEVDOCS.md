@@ -65,6 +65,7 @@ enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=and_pad_pad" --transform-in
 3. Implement `matchAndRewrite()` method
 4. Register in `EnzymeHLOOptPass::runOnOperation()`
 5. Register as Transform operation in `TransformOps.td`
+6. Add the pass to the appropriate pass list in `src/enzyme_ad/jax/primitives.py`
 
 ### Adding a New Dialect Operation
 
