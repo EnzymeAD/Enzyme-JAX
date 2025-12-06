@@ -845,7 +845,7 @@ struct OrmqrOpLowering : public OpRewritePattern<enzymexla::OrmqrOp> {
 
     (void)mA;
     (void)mC;
-    (void)cC;
+    (void)nC;
     if (side_value == 'L') {
       assert(mC == mA && "for a left-sided multiplication, the first dimension "
                          "of C, must equal the first dimension of A");

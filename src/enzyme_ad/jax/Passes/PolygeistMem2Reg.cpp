@@ -1589,6 +1589,7 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
   for (auto &pair : replaceableValues) {
     SmallPtrSet<Block *, 1> requirements;
     bool _tmp = pair.second->definedWithArg(requirements);
+    (void)_tmp;
     assert(_tmp);
     PotentiallyHelpfulArgs.insert(requirements.begin(), requirements.end());
   }
@@ -1670,6 +1671,7 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
   for (auto pair : replaceableValues) {
     SmallPtrSet<Block *, 1> requirements;
     bool _tmp = pair.second->definedWithArg(requirements);
+    (void)_tmp;
     assert(_tmp);
     bool illegal = false;
     for (auto *r : requirements) {
@@ -1710,7 +1712,7 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
 
   for (auto *block : Legal) {
     auto startFound = valueAtStartOfBlock.find(block);
-
+    (void)startFound;
     assert(startFound != valueAtStartOfBlock.end());
     assert(startFound->second->valueAtStart == block);
     auto arg = block->addArgument(subType, loc);
@@ -1746,6 +1748,7 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
     Value maybeblockArg =
         valueAtStartOfBlock.find(block)->second->materialize(false);
     auto blockArg = dyn_cast<BlockArgument>(maybeblockArg);
+    (void)blockArg;
     assert(blockArg && blockArg.getOwner() == block);
 
     SetVector<Block *> prepred(block->getPredecessors().begin(),

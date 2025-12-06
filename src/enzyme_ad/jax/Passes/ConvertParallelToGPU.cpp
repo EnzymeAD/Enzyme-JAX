@@ -1429,6 +1429,7 @@ struct RemovePolygeistNoopOp : public OpRewritePattern<enzymexla::NoopOp> {
           }
         } else {
           auto cst = getConstantInteger(operand);
+          (void)cst;
           assert(cst && *cst == 0 && "non block arg operands must be const 0");
         }
       }
@@ -2346,6 +2347,7 @@ struct ConvertParallelToGPU1Pass
                    iThread < UNROLL_FACTORS[blockDims].size(); iThread++) {
                 auto succeeded =
                     emitAlternative(unrollFactorOne, iThread).succeeded();
+                (void)succeeded;
                 assert(succeeded);
               }
             }
