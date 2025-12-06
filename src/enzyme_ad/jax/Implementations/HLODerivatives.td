@@ -298,10 +298,8 @@ def ShadowRHSDotDim : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   auto lhsBatching = existingattr.getLhsBatchingDimensions();
   auto lhsContracting = existingattr.getLhsContractingDimensions();
   auto rhsBatching = existingattr.getRhsBatchingDimensions();
-  auto rhsContracting = existingattr.getRhsContractingDimensions();
 
   auto lhsRank = cast<RankedTensorType>(op.getLhs().getType()).getRank();
-  auto rhsRank = cast<RankedTensorType>(op.getRhs().getType()).getRank();
 
   SmallVector<int64_t> lhsKept;
   for (int64_t i = 0; i < lhsRank; i++) {
@@ -338,12 +336,7 @@ def ShadowRHSDotRes : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   auto lhsContracting = existingattr.getLhsContractingDimensions();
   auto lhsShape = cast<RankedTensorType>(op.getLhs().getType()).getShape();
 
-  auto rhsBatching = existingattr.getRhsBatchingDimensions();
-  auto rhsContracting = existingattr.getRhsContractingDimensions();
-  auto rhsShape = cast<RankedTensorType>(op.getRhs().getType()).getShape();
-
   auto lhsRank = cast<RankedTensorType>(op.getLhs().getType()).getRank();
-  auto rhsRank = cast<RankedTensorType>(op.getRhs().getType()).getRank();
 
   SmallVector<int64_t> shapes;
 
@@ -351,7 +344,6 @@ def ShadowRHSDotRes : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
     shapes.push_back(lhsShape[B]);
 
   int64_t lhsKeptSize = lhsRank - lhsBatching.size() - lhsContracting.size();
-  int64_t rhsKeptSize = rhsRank - rhsBatching.size() - rhsContracting.size();
 
   SmallVector<int64_t> resContractingDims;
   for (int64_t i = 0; i < lhsKeptSize; i++) {

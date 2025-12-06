@@ -1,6 +1,18 @@
 #include "mhlo/IR/hlo_ops.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wmissing-braces"
+#else
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-braces"
+#endif
 #include "shardy/dialect/sdy/ir/dialect.h"
+#ifdef __clang__
+#pragma clang diagnostic pop
+#else
+#pragma GCC diagnostic pop
+#endif
 #include "shardy/dialect/sdy/ir/utils.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
@@ -1608,8 +1620,6 @@ struct ExtendToPadCommOptimize2 : public OpRewritePattern<enzymexla::ExtendOp> {
       return failure();
     auto elemType = extend.getType().getElementType();
     auto ndims = extend.getType().getRank();
-    auto extendOperandShape = extend.getOperand().getType().getShape();
-    auto extendShape = extend.getType().getShape();
     auto extendDimension = extend.getDimension();
 
     auto extendSharding = mlir::sdy::getSharding(extend);
@@ -1656,8 +1666,6 @@ struct ExtendToPadCommOptimize2 : public OpRewritePattern<enzymexla::ExtendOp> {
 
     Value current = paddedExtendOp;
 
-    auto i1ty = RankedTensorType::get(paddedExtendOp.getType().getShape(),
-                                      rewriter.getI1Type());
     auto iota = stablehlo::IotaOp::create(
         rewriter, extend.getLoc(),
         RankedTensorType::get(paddedExtendOp.getType().getShape(),

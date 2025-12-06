@@ -1,4 +1,16 @@
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wmissing-braces"
+#else
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-braces"
+#endif
 #include "stablehlo/dialect/StablehloOps.h"
+#ifdef __clang__
+#pragma clang diagnostic pop
+#else
+#pragma GCC diagnostic pop
+#endif
 
 #include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
 #include "src/enzyme_ad/jax/Utils.h"
@@ -162,7 +174,6 @@ void WhileLoopInfo::propagateInductionVarOffsets() {
           result = addOp.getResult();
         }
       } else if (auto subOp = dyn_cast<stablehlo::SubtractOp>(user)) {
-        Value lhs = subOp.getLhs();
         Value rhs = subOp.getRhs();
         APInt constVal(bitWidth, 0, true);
 

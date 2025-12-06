@@ -477,9 +477,8 @@ static void minCutCache(enzymexla::BarrierOp barrier,
     todo.push_back(Node(V));
 
   while (todo.size()) {
-    auto N = todo.front();
+    // auto N = todo.front();
     todo.pop_front();
-    auto found = Orig.find(N);
     // TODO
     break;
   }
@@ -792,7 +791,6 @@ splitSubLoop(affine::AffineParallelOp op, PatternRewriter &rewriter,
   SmallVector<AffineMap> innerLower;
   SmallVector<AffineMap> innerUpper;
   SmallVector<int64_t> innerStep;
-  unsigned idx = 0;
   for (auto en : llvm::enumerate(
            llvm::zip(op.getBody()->getArguments(), op.getSteps()))) {
     bool found = false;
@@ -808,7 +806,6 @@ splitSubLoop(affine::AffineParallelOp op, PatternRewriter &rewriter,
       outerUpper.push_back(op.getUpperBoundsMap().getSliceMap(en.index(), 1));
       outerStep.push_back(std::get<1>(en.value()));
     }
-    idx++;
   }
   if (!innerLower.size())
     return failure();
@@ -2278,7 +2275,7 @@ struct DistributeIfAroundBarrier : public OpRewritePattern<IfOpType> {
               recalculateVal(res);
 
       if (op->getBlock() == ifOp->getBlock())
-        auto cloned = rewriter.clone(*op, mapping);
+        rewriter.clone(*op, mapping);
       else
         for (Value v : op->getResults())
           mapping.map(v, v);

@@ -91,6 +91,8 @@ struct SVDFactorizationOpLowering
       rewriter.replaceOp(op, gesvdOp);
       break;
     }
+    case SVDAlgorithm::DEFAULT:
+      llvm_unreachable("Default should have already been handled");
     }
 
     return success();

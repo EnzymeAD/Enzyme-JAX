@@ -1590,7 +1590,6 @@ struct DotOpConversion : public OpConversionPattern<enzyme::DotOp> {
     auto lhs = adaptor.getLhs();
     auto rhs = adaptor.getRhs();
     auto resultType = cast<RankedTensorType>(op.getResult().getType());
-    auto lhsType = cast<RankedTensorType>(lhs.getType());
 
     auto dotDimensionNumbers = stablehlo::DotDimensionNumbersAttr::get(
         rewriter.getContext(),
@@ -2315,7 +2314,6 @@ struct UnflattenSliceOpConversion
   LogicalResult
   matchAndRewrite(enzyme::UnflattenSliceOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto positionType = cast<RankedTensorType>(adaptor.getPosition().getType());
     auto resultType = cast<RankedTensorType>(op.getResult().getType());
 
     int64_t numElements = 1;
