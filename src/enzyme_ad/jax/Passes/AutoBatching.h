@@ -214,6 +214,7 @@ private:
     DEFINED_OUTSIDE_WHILE,
     CONSTANT,
     NEEDS_HOISTING_OUTSIDE_WHILE,
+    AFFINE_INDEX,
   };
 
   enum class IsValidForBatchingResult {
@@ -231,9 +232,8 @@ private:
     mlir::stablehlo::DynamicSliceOp sliceOp;
     llvm::SmallVector<int64_t> dimensions;
     bool intermediateReshape;
-    llvm::SmallVector<int64_t> reshapeShape;
-    mlir::enzyme::WhileLoopInfo::AffineIndexInfo affineIndexInfo;
     bool needsManualReshape;
+    llvm::SmallVector<int64_t> reshapeShape;
   };
 
   struct ValidBatchingInfo {

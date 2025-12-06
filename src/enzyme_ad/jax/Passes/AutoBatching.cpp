@@ -776,15 +776,12 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
             sliceOp, affineIndexInfoMap, whileBody, whileOp);
 
         if (isValidForBatchingResult(result.result)) {
-          candidateSlices.push_back(DynamicSliceInfo{
-              sliceOp, result.dimensions, false, {}, affineIndexInfo, false});
+          candidateSlices.push_back(
+              DynamicSliceInfo{sliceOp, result.dimensions, false, false, {}});
         }
       }
     }
   }
-
-  if (candidateSlices.empty())
-    return rewriter.notifyMatchFailure(whileOp, "no candidate slices found");
 
   bool anyOpRewritten = false;
 
@@ -817,19 +814,23 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
       // indexing with `scale * indVar + offset`
       // result = scale * indVar + (iotaStart + offset)
 
+      auto affineIndexInfo =
+          affineIndexInfoMap[slice.sliceOp
+                                 .getStartIndices()[slice.dimensions[0]]];
+
       auto scalarType = RankedTensorType::get({}, opElemType);
 
-      if (!slice.affineIndexInfo.scale.isOne()) {
+      if (!affineIndexInfo.scale.isOne()) {
         newOperand = stablehlo::MulOp::create(
             rewriter, slice.sliceOp.getLoc(),
             stablehlo::ConstantOp::create(
                 rewriter, slice.sliceOp.getLoc(), scalarType,
                 cast<ElementsAttr>(makeAttr(
-                    scalarType, slice.affineIndexInfo.scale.getSExtValue()))),
+                    scalarType, affineIndexInfo.scale.getSExtValue()))),
             newOperand);
       }
 
-      auto indexOffset = slice.affineIndexInfo.offset.getSExtValue();
+      auto indexOffset = affineIndexInfo.offset.getSExtValue();
       auto iotaStart = iotaDetection.value().start;
       auto offset = indexOffset + iotaStart;
 
@@ -877,9 +878,19 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
 
         for (auto user : op->getUsers()) {
           userOpToSlicesMap[user].push_back(
-              DynamicSliceInfo{ds.sliceOp, ds.dimensions, true, reshapeShape,
-                               ds.affineIndexInfo, needsManualReshape});
+              DynamicSliceInfo{ds.sliceOp, ds.dimensions, true,
+                               needsManualReshape, reshapeShape});
         }
+      }
+    }
+  }
+
+  // for certain operations on index variables it is more efficient to hoist
+  // those out of the loop and then perform indirect indexing
+  for (auto &[val, slices] : affineIndexInfoMap) {
+    for (auto user : val.getUsers()) {
+      if (isa<stablehlo::CompareOp, stablehlo::BroadcastInDimOp>(user)) {
+        userOpToSlicesMap[user].push_back(DynamicSliceInfo());
       }
     }
   }
@@ -907,6 +918,7 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
     ArrayRef<DynamicSliceInfo> sliceOps, Operation *op,
     WhileLoopInfo info) const {
   auto moduleOp = op->getParentOfType<ModuleOp>();
+  auto affineIndexInfoMap = info.getAffineIndexInfo();
 
   SmallVector<BatchLiftingMode> batchLiftingModes(op->getNumOperands());
   SmallVector<Value> batchOperands(op->getNumOperands());
@@ -931,6 +943,12 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
         batchLiftingModes[i] = BatchLiftingMode::NEEDS_HOISTING_OUTSIDE_WHILE;
         batchOperands[i] = operand;
       }
+      continue;
+    }
+
+    if (affineIndexInfoMap.contains(operand)) {
+      batchLiftingModes[i] = BatchLiftingMode::AFFINE_INDEX;
+      batchOperands[i] = operand;
       continue;
     }
 
@@ -1101,10 +1119,39 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
       break;
     }
     case BatchLiftingMode::CONSTANT: {
-      continue; // copied into the function body no need to include in operands
+      break; // copied into the function body no need to include in operands
     }
-    default: {
-      assert(false && "not implemented");
+    case BatchLiftingMode::AFFINE_INDEX: {
+      auto hoistedTy = RankedTensorType::get({info.getConstantNumIters()},
+                                             operandType.getElementType());
+      Value loopIndices = stablehlo::IotaOp::create(
+          rewriter, whileOp->getLoc(),
+          RankedTensorType::get({info.getConstantNumIters()},
+                                operandType.getElementType()),
+          0);
+
+      auto createConst = [&](int64_t val) {
+        return stablehlo::ConstantOp::create(
+            rewriter, whileOp->getLoc(), hoistedTy,
+            cast<ElementsAttr>(makeAttr(hoistedTy, val)));
+      };
+
+      auto startVal = createConst(info.getConstantStart().value());
+      auto stepVal = createConst(info.getConstantStep().value());
+      loopIndices = stablehlo::AddOp::create(
+          rewriter, whileOp->getLoc(), loopIndices,
+          stablehlo::MulOp::create(rewriter, whileOp->getLoc(), stepVal,
+                                   startVal));
+
+      auto affineIndexInfo = info.getAffineIndexInfo()[baseOp];
+      auto scale = createConst(affineIndexInfo.scale.getSExtValue());
+      auto offset = createConst(affineIndexInfo.offset.getSExtValue());
+      auto res = stablehlo::AddOp::create(
+          rewriter, whileOp->getLoc(),
+          stablehlo::MulOp::create(rewriter, whileOp->getLoc(), scale,
+                                   loopIndices),
+          offset);
+      newOperands.push_back(res);
       break;
     }
     }
