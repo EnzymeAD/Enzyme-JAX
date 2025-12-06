@@ -213,6 +213,7 @@ private:
     DYNAMIC_SLICE,
     DEFINED_OUTSIDE_WHILE,
     CONSTANT,
+    NEEDS_HOISTING_OUTSIDE_WHILE,
   };
 
   enum class IsValidForBatchingResult {
