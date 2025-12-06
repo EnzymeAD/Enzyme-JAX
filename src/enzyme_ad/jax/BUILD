@@ -858,6 +858,7 @@ cc_library(
         "Utils.h",
     ],
     copts = [
+        "-Werror=implicit-fallthrough",
         "-Werror=switch",
         "-Werror=unused-variable",
         "-Werror=unused-result",
