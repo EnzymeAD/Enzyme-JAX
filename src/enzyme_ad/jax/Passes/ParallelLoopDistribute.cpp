@@ -791,7 +791,6 @@ splitSubLoop(affine::AffineParallelOp op, PatternRewriter &rewriter,
   SmallVector<AffineMap> innerLower;
   SmallVector<AffineMap> innerUpper;
   SmallVector<int64_t> innerStep;
-  unsigned idx = 0;
   for (auto en : llvm::enumerate(
            llvm::zip(op.getBody()->getArguments(), op.getSteps()))) {
     bool found = false;
@@ -807,7 +806,6 @@ splitSubLoop(affine::AffineParallelOp op, PatternRewriter &rewriter,
       outerUpper.push_back(op.getUpperBoundsMap().getSliceMap(en.index(), 1));
       outerStep.push_back(std::get<1>(en.value()));
     }
-    idx++;
   }
   if (!innerLower.size())
     return failure();
