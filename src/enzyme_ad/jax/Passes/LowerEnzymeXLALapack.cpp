@@ -835,12 +835,17 @@ struct OrmqrOpLowering : public OpRewritePattern<enzymexla::OrmqrOp> {
               "yet supported");
     }
 
+    (void)A_shape;
     assert(A_shape[0] >= A_shape[1] &&
            "`lapack.ormqr` with wide QR not yet supported. use "
            "`stablehlo.dynamic_update_slice` first");
+    (void)k_value;
     assert(A_shape[1] == k_value &&
            "second dimension of A and dimension of tau must match");
 
+    (void)mA;
+    (void)mC;
+    (void)cC;
     if (side_value == 'L') {
       assert(mC == mA && "for a left-sided multiplication, the first dimension "
                          "of C, must equal the first dimension of A");
@@ -1078,9 +1083,12 @@ struct GemqrtOpLowering : public OpRewritePattern<enzymexla::GemqrtOp> {
            "`enzymexla.lapack.gemqrt` requires `T` to be a matrix");
     assert(C_rank == 2 &&
            "`enzymexla.lapack.gemqrt` requires `C` to be a matrix");
+    (void)output_shape;
     assert(output_shape == C_shape && "`enzymexla.lapack.gemqrt` requires `C` "
                                       "and `output` to have the same shape");
 
+    (void)V_eltype;
+    (void)T_eltype;
     assert(V_eltype == C_eltype && V_eltype == T_eltype &&
            "`enzymexla.lapack.gemqrt` requires the same element type for all "
            "operands");
