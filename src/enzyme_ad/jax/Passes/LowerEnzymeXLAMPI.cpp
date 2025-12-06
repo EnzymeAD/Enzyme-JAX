@@ -39,29 +39,27 @@ struct MPICommRankOpLowering
     // LLVMTypeConverter typeConverter(ctx);
 
     // auto comm = op.getOperand();
-    // if (backend == "cpu") {
-    //   // auto moduleOp = op->getParentOfType<ModuleOp>();
-    //   // static int64_t fnNum = 0;
-
-    //   // // auto blasIntType = rewriter.getIntegerType(blasIntWidth);
-    //   // // auto llvmBlasIntType = typeConverter.convertType(blasIntType);
-    //   // auto llvmPtrType = LLVM::LLVMPointerType::get(ctx);
-    //   // auto llvmVoidPtrType = LLVM::LLVMVoidType::get(ctx);
-
-    //   // std::string fn = "MPI_Comm_Rank";
+    if (backend == "cpu") {
+      // Get the result type (it's a tensor)
+      auto resultType = op.getResult().getType();
       
-    //   // std::string fnName = fn + "wrapper_" + std::to_string(fnNum);
-    //   // fnNum++;
-    //   // {
-    //   // }
-    // } else {
-    //   return rewriter.notifyMatchFailure(op, "Backend not supported: " + backend);
-    // }
+      // Create a dense tensor constant with value 0
+      auto elementType = cast<RankedTensorType>(resultType).getElementType();
+      auto attr = DenseElementsAttr::get(
+          cast<RankedTensorType>(resultType),
+          rewriter.getIntegerAttr(elementType, 0));
+      
+      auto placeholderValue = rewriter.create<arith::ConstantOp>(
+          op.getLoc(), attr);
+      
+      rewriter.replaceOp(op, placeholderValue);
+    
+      return success();
+    } else {
+      return rewriter.notifyMatchFailure(op, "Backend not supported: " + backend);
+    }
 
   }
-
-
-
 
 };
 
