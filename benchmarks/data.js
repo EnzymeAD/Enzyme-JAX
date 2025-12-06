@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1765013583437,
+  "lastUpdate": 1765024082658,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "naydex.mc+github@gmail.com",
-            "name": "Paul Berg",
-            "username": "Pangoraw"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "47d57c1cea7b24e210ad75aee6e7c3f93d89ff78",
-          "message": "Triton forward mode AD (#1578)\n\n* Triton forward mode AD\n\n* fmt build\n\n* header\n\n* Bump enzyme\n\n* Update TritonDerivatives.td\n\n---------\n\nCo-authored-by: Mosè Giordano <765740+giordano@users.noreply.github.com>\nCo-authored-by: William Moses <wmoses@google.com>",
-          "timestamp": "2025-11-10T09:26:15+01:00",
-          "tree_id": "8ccf271a1cecd218e105271802b5b5bd983f7fcd",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/47d57c1cea7b24e210ad75aee6e7c3f93d89ff78"
-        },
-        "date": 1762785887758,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.000003993225202430039,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.00000422822319669649,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001449365721025,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001456860908016,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2199,6 +2155,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001412560908,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gh@wsmoses.com",
+            "name": "William S. Moses",
+            "username": "wsmoses"
+          },
+          "committer": {
+            "email": "gh@wsmoses.com",
+            "name": "William S. Moses",
+            "username": "wsmoses"
+          },
+          "distinct": true,
+          "id": "5ca1f5fa926e4f618c67dec2a53e756821353f43",
+          "message": "symbol uses",
+          "timestamp": "2025-12-06T01:17:01-05:00",
+          "tree_id": "f276ada78c076caad5890e7277656ef28ee0f05a",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/5ca1f5fa926e4f618c67dec2a53e756821353f43"
+        },
+        "date": 1765024081671,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004449392399692442,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004502534499988542,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001494022488997,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001521238961999,
             "unit": "s"
           }
         ]
