@@ -2208,6 +2208,7 @@ struct DUSPad final
     ArrayRef<int64_t> lowPadding = padOp.getEdgePaddingLow();
 
     SmallVector<Value> newDusStartIndices;
+    SmallVector<int64_t> newDusStartIndexValues;
     Location loc = dus.getLoc();
     auto indexElementType =
         cast<ShapedType>(startIndices[0].getType()).getElementType();
@@ -2237,12 +2238,13 @@ struct DUSPad final
       }
 
       // Calculate new start index relative to original data
-      int64_t newStartVal = startVal - lowPad;
-      auto newStartAttr =
-          rewriter.getIntegerAttr(indexElementType, newStartVal);
+      newDusStartIndexValues.push_back(startVal - lowPad);
+    }
+
+    for (auto val : newDusStartIndexValues) {
       auto newStartConst = stablehlo::ConstantOp::create(
           rewriter, loc, indexScalarType,
-          DenseElementsAttr::get(indexScalarType, newStartAttr));
+          cast<ElementsAttr>(makeAttr(indexScalarType, val)));
       newDusStartIndices.push_back(newStartConst);
     }
 
