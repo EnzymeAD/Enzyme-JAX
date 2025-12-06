@@ -1161,9 +1161,7 @@ GreedyWhileLoopBatchFission::isDynamicSliceValidForBatching(
     stablehlo::DynamicSliceOp sliceOp, Value iterVar, int64_t limit,
     Block &whileBody, Block *parentBlock) const {
   auto startIndices = sliceOp.getStartIndices();
-  auto sliceSizes = sliceOp.getSliceSizes();
   auto operand = sliceOp.getOperand();
-  auto operandShape = cast<RankedTensorType>(operand.getType()).getShape();
 
   if (operand.getParentBlock() == &whileBody)
     return ValidBatchingInfo{

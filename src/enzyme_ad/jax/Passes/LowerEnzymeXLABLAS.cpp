@@ -1,5 +1,3 @@
-#pragma once
-
 #include "Enzyme/MLIR/Dialect/Dialect.h"
 #include "Enzyme/MLIR/Passes/EnzymeBatchPass.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
@@ -121,8 +119,8 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
       args.push_back(const1);
       args.push_back(const1);
 
-      auto callOp = LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{},
-                                         SymbolRefAttr::get(ctx, blasFn), args);
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{},
+                           SymbolRefAttr::get(ctx, blasFn), args);
       LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
     }
 

@@ -542,8 +542,6 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
     auto inputElementType = inputType.getElementType();
 
     auto tau = op.getOperand(1);
-    auto type_tau = cast<RankedTensorType>(tau.getType());
-    auto rank_tau = type_tau.getRank();
 
     const int64_t numBatchDims = inputRank - 2;
 
@@ -635,18 +633,18 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
       auto lda = m;
 
       // call to `lapacke_*(or|un)gqr*`
-      auto res = LLVM::CallOp::create(rewriter, op.getLoc(),
-                                      TypeRange{type_llvm_lapack_int},
-                                      SymbolRefAttr::get(ctx, bind_fn),
-                                      ValueRange{
-                                          layout.getResult(),
-                                          m.getResult(),
-                                          n.getResult(),
-                                          k.getResult(),
-                                          func.getArgument(0),
-                                          lda.getResult(),
-                                          func.getArgument(1),
-                                      });
+      LLVM::CallOp::create(rewriter, op.getLoc(),
+                           TypeRange{type_llvm_lapack_int},
+                           SymbolRefAttr::get(ctx, bind_fn),
+                           ValueRange{
+                               layout.getResult(),
+                               m.getResult(),
+                               n.getResult(),
+                               k.getResult(),
+                               func.getArgument(0),
+                               lda.getResult(),
+                               func.getArgument(1),
+                           });
 
       LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
     }
@@ -789,7 +787,6 @@ struct OrmqrOpLowering : public OpRewritePattern<enzymexla::OrmqrOp> {
     auto tau = op.getOperand(1);
     auto tau_type = cast<RankedTensorType>(tau.getType());
     auto tau_shape = tau_type.getShape();
-    auto tau_rank = tau_type.getRank();
     auto tau_eltype = tau_type.getElementType();
 
     auto C = op.getOperand(2);
@@ -801,8 +798,6 @@ struct OrmqrOpLowering : public OpRewritePattern<enzymexla::OrmqrOp> {
     auto output = op.getResult();
     auto output_type = cast<RankedTensorType>(output.getType());
     auto output_shape = output_type.getShape();
-    auto output_rank = static_cast<int64_t>(output_shape.size());
-    auto output_eltype = output_type.getElementType();
 
     auto side_value = op.getSide() == enzymexla::LapackSide::left ? 'L' : 'R';
     char trans_value = 'N';
@@ -957,22 +952,22 @@ struct OrmqrOpLowering : public OpRewritePattern<enzymexla::OrmqrOp> {
           rewriter.getIntegerAttr(type_lapack_int, ldc_value));
 
       // call to `lapacke_*(or|un)mqr*`
-      auto res = LLVM::CallOp::create(rewriter, op.getLoc(),
-                                      TypeRange{type_llvm_lapack_int},
-                                      SymbolRefAttr::get(ctx, bind_fn),
-                                      ValueRange{
-                                          layout.getResult(),
-                                          side.getResult(),
-                                          trans.getResult(),
-                                          m.getResult(),
-                                          n.getResult(),
-                                          k.getResult(),
-                                          func.getArgument(0),
-                                          lda.getResult(),
-                                          func.getArgument(1),
-                                          func.getArgument(2),
-                                          ldc.getResult(),
-                                      });
+      LLVM::CallOp::create(rewriter, op.getLoc(),
+                           TypeRange{type_llvm_lapack_int},
+                           SymbolRefAttr::get(ctx, bind_fn),
+                           ValueRange{
+                               layout.getResult(),
+                               side.getResult(),
+                               trans.getResult(),
+                               m.getResult(),
+                               n.getResult(),
+                               k.getResult(),
+                               func.getArgument(0),
+                               lda.getResult(),
+                               func.getArgument(1),
+                               func.getArgument(2),
+                               ldc.getResult(),
+                           });
 
       LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
     }
@@ -1057,8 +1052,6 @@ struct GemqrtOpLowering : public OpRewritePattern<enzymexla::GemqrtOp> {
     auto output = op.getResult();
     auto output_type = cast<RankedTensorType>(output.getType());
     auto output_shape = output_type.getShape();
-    auto output_rank = static_cast<int64_t>(output_shape.size());
-    auto output_eltype = output_type.getElementType();
 
     auto side_value = op.getSide() == enzymexla::LapackSide::left ? 'L' : 'R';
     char trans_value = 'N';
@@ -1229,24 +1222,24 @@ struct GemqrtOpLowering : public OpRewritePattern<enzymexla::GemqrtOp> {
           rewriter.getIntegerAttr(type_lapack_int, ldc_value));
 
       // call to `lapacke_*(or|un)mqr*`
-      auto res = LLVM::CallOp::create(rewriter, op.getLoc(),
-                                      TypeRange{type_llvm_lapack_int},
-                                      SymbolRefAttr::get(ctx, bind_fn),
-                                      ValueRange{
-                                          layout.getResult(),
-                                          side.getResult(),
-                                          trans.getResult(),
-                                          m.getResult(),
-                                          n.getResult(),
-                                          k.getResult(),
-                                          nb.getResult(),
-                                          func.getArgument(0), // V
-                                          ldv.getResult(),
-                                          func.getArgument(1), // T
-                                          ldt.getResult(),
-                                          func.getArgument(2), // C
-                                          ldc.getResult(),
-                                      });
+      LLVM::CallOp::create(rewriter, op.getLoc(),
+                           TypeRange{type_llvm_lapack_int},
+                           SymbolRefAttr::get(ctx, bind_fn),
+                           ValueRange{
+                               layout.getResult(),
+                               side.getResult(),
+                               trans.getResult(),
+                               m.getResult(),
+                               n.getResult(),
+                               k.getResult(),
+                               nb.getResult(),
+                               func.getArgument(0), // V
+                               ldv.getResult(),
+                               func.getArgument(1), // T
+                               ldt.getResult(),
+                               func.getArgument(2), // C
+                               ldc.getResult(),
+                           });
 
       LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
     }
@@ -1420,7 +1413,6 @@ private:
     auto inputElementType = inputType.getElementType();
     auto inputShape = inputType.getShape();
     auto inputRank = inputType.getRank();
-    auto infoRank = infoType.getRank();
 
     auto numBatchDims = inputRank - 2;
 
@@ -1438,7 +1430,6 @@ private:
     auto moduleOp = op->getParentOfType<ModuleOp>();
 
     auto blasIntType = rewriter.getIntegerType(blasIntWidth);
-    auto intType = RankedTensorType::get({}, blasIntType);
     auto llvmPtrType = LLVM::LLVMPointerType::get(ctx);
     auto llvmVoidType = LLVM::LLVMVoidType::get(ctx);
 
@@ -1503,16 +1494,16 @@ private:
                           rewriter.getUnitAttr());
       }
 
-      auto callOp = LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{},
-                                         SymbolRefAttr::get(ctx, lapackFn),
-                                         ValueRange{
-                                             funcOp.getArgument(0),
-                                             funcOp.getArgument(1),
-                                             funcOp.getArgument(2),
-                                             funcOp.getArgument(3),
-                                             funcOp.getArgument(4),
-                                             funcOp.getArgument(5),
-                                         });
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{},
+                           SymbolRefAttr::get(ctx, lapackFn),
+                           ValueRange{
+                               funcOp.getArgument(0),
+                               funcOp.getArgument(1),
+                               funcOp.getArgument(2),
+                               funcOp.getArgument(3),
+                               funcOp.getArgument(4),
+                               funcOp.getArgument(5),
+                           });
       LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
     }
 
@@ -1766,7 +1757,6 @@ private:
     auto pivotType = cast<RankedTensorType>(op.getResult(1).getType());
     auto infoType = cast<RankedTensorType>(op.getResult(3).getType());
 
-    auto inputShape = inputType.getShape();
     auto inputRank = inputType.getRank();
     auto pivotRank = pivotType.getRank();
     auto infoRank = infoType.getRank();
@@ -2067,7 +2057,6 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
   auto type_lapack_int64 = rewriter.getIntegerType(64);
   auto type_lapack_char = rewriter.getIntegerType(sizeof(char) * 8);
   auto type_llvm_lapack_int = typeConverter.convertType(type_lapack_int);
-  auto type_llvm_input = typeConverter.convertType(inputElementType);
   auto type_llvm_int64 = typeConverter.convertType(type_lapack_int64);
   auto type_llvm_ptr = LLVM::LLVMPointerType::get(ctx);
   auto type_llvm_void = LLVM::LLVMVoidType::get(ctx);

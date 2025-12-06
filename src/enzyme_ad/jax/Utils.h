@@ -17,7 +17,19 @@
 #include "mlir/IR/IntegerSet.h"
 
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wmissing-braces"
+#else
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-braces"
+#endif
 #include "stablehlo/dialect/StablehloOps.h"
+#ifdef __clang__
+#pragma clang diagnostic pop
+#else
+#pragma GCC diagnostic pop
+#endif
 
 #include <deque>
 
@@ -538,6 +550,8 @@ private:
       return State::NOTGUARANTEED;
     case enzymexla::GuaranteedAnalysisResult::UNKNOWN:
       return State::UNKNOWN;
+    default:
+      llvm_unreachable("Unhandled state");
     }
   }
 

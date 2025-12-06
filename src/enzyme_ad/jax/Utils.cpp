@@ -1325,6 +1325,8 @@ reversedComparisonDirection(stablehlo::ComparisonDirection direction) {
     return stablehlo::ComparisonDirection::GE;
   case stablehlo::ComparisonDirection::LT:
     return stablehlo::ComparisonDirection::GT;
+  default:
+    llvm_unreachable("Cannot perform reverse comparison");
   }
 }
 
@@ -1343,6 +1345,8 @@ negatedComparisonDirection(stablehlo::ComparisonDirection direction) {
     return stablehlo::ComparisonDirection::GT;
   case stablehlo::ComparisonDirection::LT:
     return stablehlo::ComparisonDirection::GE;
+  default:
+    llvm_unreachable("Cannot negate comparison");
   }
 }
 

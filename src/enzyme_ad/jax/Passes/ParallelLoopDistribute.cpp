@@ -477,9 +477,8 @@ static void minCutCache(enzymexla::BarrierOp barrier,
     todo.push_back(Node(V));
 
   while (todo.size()) {
-    auto N = todo.front();
+    // auto N = todo.front();
     todo.pop_front();
-    auto found = Orig.find(N);
     // TODO
     break;
   }
@@ -2278,7 +2277,7 @@ struct DistributeIfAroundBarrier : public OpRewritePattern<IfOpType> {
               recalculateVal(res);
 
       if (op->getBlock() == ifOp->getBlock())
-        auto cloned = rewriter.clone(*op, mapping);
+        rewriter.clone(*op, mapping);
       else
         for (Value v : op->getResults())
           mapping.map(v, v);

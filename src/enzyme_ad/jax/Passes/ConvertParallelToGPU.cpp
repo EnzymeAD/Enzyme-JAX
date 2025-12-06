@@ -514,7 +514,6 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       auto loc = pop->getLoc();
 
       auto upperBounds = getUpperBounds<6>(pop);
-      int totalDims = upperBounds.size();
 
       mlir::OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPoint(pop);

@@ -953,7 +953,7 @@ struct WhileToForHelper {
       auto *op = cmpIOp.getRhs().getDefiningOp();
       if (!op || !canMoveOpOutsideWhile(op, loop) ||
           (op->getNumResults() != 1)) {
-        rewriter.notifyMatchFailure(loop, "Non-dominating rhs");
+        (void)rewriter.notifyMatchFailure(loop, "Non-dominating rhs");
         return false;
       }
       ub_cloneMove = true;
@@ -986,7 +986,7 @@ struct WhileToForHelper {
       }
 
       if (stepInt < 0) {
-        rewriter.notifyMatchFailure(
+        (void)rewriter.notifyMatchFailure(
             loop, "Cmp less than with negative step unhandled");
         return false;
       } else if (stepInt == 0) {
@@ -1005,7 +1005,7 @@ struct WhileToForHelper {
       ub_addOne = true;
 
       if (stepInt < 0) {
-        rewriter.notifyMatchFailure(
+        (void)rewriter.notifyMatchFailure(
             loop, "Cmp less than with negative step unhandled");
         return false;
       } else if (stepInt == 0) {
@@ -1023,7 +1023,7 @@ struct WhileToForHelper {
       }
 
       if (stepInt > 0) {
-        rewriter.notifyMatchFailure(
+        (void)rewriter.notifyMatchFailure(
             loop, "Cmp less than with positive step unhandled");
         return false;
       } else if (stepInt == 0) {
@@ -1043,7 +1043,7 @@ struct WhileToForHelper {
       }
 
       if (stepInt > 0) {
-        rewriter.notifyMatchFailure(
+        (void)rewriter.notifyMatchFailure(
             loop, "Cmp less than with positive step unhandled");
         return false;
       } else if (stepInt == 0) {
@@ -1076,8 +1076,8 @@ struct WhileToForHelper {
           constantBounds = true;
         }
       } else {
-        rewriter.notifyMatchFailure(loop,
-                                    "Predicate ne with non-constant step");
+        (void)rewriter.notifyMatchFailure(
+            loop, "Predicate ne with non-constant step");
         return false;
       }
 
@@ -1106,20 +1106,21 @@ struct WhileToForHelper {
           // updated value
           lb_addStep = comparingUpdated;
         } else {
-          rewriter.notifyMatchFailure(loop,
-                                      "Predicate ne with unhandled bounds");
+          (void)rewriter.notifyMatchFailure(
+              loop, "Predicate ne with unhandled bounds");
           return false;
         }
       } else {
-        rewriter.notifyMatchFailure(loop,
-                                    "Predicate ne with non-divisible bounds");
+        (void)rewriter.notifyMatchFailure(
+            loop, "Predicate ne with non-divisible bounds");
         return false; // If upperbound - lowerbound is not divisible by step
                       // size, then we cannot transform the condition
       }
       break;
     }
     case CmpIPredicate::eq: {
-      rewriter.notifyMatchFailure(loop, "Predicate eq predicate unhandled");
+      (void)rewriter.notifyMatchFailure(loop,
+                                        "Predicate eq predicate unhandled");
       return false;
     }
     }
@@ -1326,7 +1327,7 @@ struct WhileToForHelper {
   endDetect:;
 
     if (!indVar) {
-      rewriter.notifyMatchFailure(loop, "Failed to find iv");
+      (void)rewriter.notifyMatchFailure(loop, "Failed to find iv");
       return false;
     }
     assert(step);
@@ -1335,7 +1336,7 @@ struct WhileToForHelper {
     // Cannot transform for if step is not loop-invariant
     if (auto *op = step.getDefiningOp()) {
       if (loop->isAncestor(op)) {
-        rewriter.notifyMatchFailure(loop, "Step is not loop invariant");
+        (void)rewriter.notifyMatchFailure(loop, "Step is not loop invariant");
         return false;
       }
     }
@@ -1348,7 +1349,7 @@ struct WhileToForHelper {
       if (!sizeCheck)
         size--;
       if (size != 2) {
-        rewriter.notifyMatchFailure(
+        (void)rewriter.notifyMatchFailure(
             loop, "Before region contains more than just comparison");
         return false;
       }
@@ -2734,6 +2735,8 @@ struct RemoveUnusedResults : public OpRewritePattern<IfOp> {
                              [&]() { yieldOp->setOperands(usedOperands); });
   }
 
+  static void emptyBuilder(OpBuilder &, Location) {};
+
   LogicalResult matchAndRewrite(IfOp op,
                                 PatternRewriter &rewriter) const override {
     // Compute the list of used results.
@@ -2751,7 +2754,6 @@ struct RemoveUnusedResults : public OpRewritePattern<IfOp> {
                     [](OpResult result) { return result.getType(); });
 
     // Create a replacement operation with empty then and else regions.
-    auto emptyBuilder = [](OpBuilder &, Location) {};
     auto newOp = IfOp::create(rewriter, op.getLoc(), newTypes,
                               op.getCondition(), emptyBuilder, emptyBuilder);
 
@@ -3249,8 +3251,6 @@ struct MaxSimplify : public OpRewritePattern<arith::MaxSIOp> {
 
   LogicalResult matchAndRewrite(arith::MaxSIOp maxOp,
                                 PatternRewriter &rewriter) const override {
-    Operation *op = maxOp;
-
     for (Operation *op = maxOp; op; op = op->getParentOp()) {
       auto ifOp = dyn_cast_or_null<scf::IfOp>(op->getParentOp());
       if (!ifOp)
@@ -3381,8 +3381,6 @@ struct ForLoopApplyEnzymeAttributes
       return success();
     }
 
-    bool anyErased = false;
-
     for (auto use : *uses) {
       auto user = use.getUser();
       assert(isa<LLVM::CallOp>(user));
@@ -3401,7 +3399,6 @@ struct ForLoopApplyEnzymeAttributes
       }
 
       rewriter.eraseOp(user);
-      anyErased = true;
     }
 
     rewriter.eraseOp(func);
