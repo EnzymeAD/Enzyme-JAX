@@ -2735,8 +2735,6 @@ struct RemoveUnusedResults : public OpRewritePattern<IfOp> {
                              [&]() { yieldOp->setOperands(usedOperands); });
   }
 
-  static void emptyBuilder(OpBuilder &, Location){};
-
   LogicalResult matchAndRewrite(IfOp op,
                                 PatternRewriter &rewriter) const override {
     // Compute the list of used results.
@@ -2755,7 +2753,7 @@ struct RemoveUnusedResults : public OpRewritePattern<IfOp> {
 
     // Create a replacement operation with empty then and else regions.
     auto newOp = IfOp::create(rewriter, op.getLoc(), newTypes,
-                              op.getCondition(), emptyBuilder, emptyBuilder);
+                              op.getCondition(), true, true);
 
     // Move the bodies and replace the terminators (note there is a then and
     // an else region since the operation returns results).
