@@ -293,12 +293,13 @@ void WhileLoopInfo::propagateAffineIndexInfo() {
   }
 }
 
-bool WhileLoopInfo::isConstantAcrossIterations(Value v) {
+bool WhileLoopInfo::isConstantAcrossIterations(Value v, bool checkOperands) {
   Value outerValue;
-  return isConstantAcrossIterations(v, outerValue);
+  return isConstantAcrossIterations(v, outerValue, checkOperands);
 }
 
-bool WhileLoopInfo::isConstantAcrossIterations(Value v, Value &outerValue) {
+bool WhileLoopInfo::isConstantAcrossIterations(Value v, Value &outerValue,
+                                               bool checkOperands) {
   if (definedOutside(v, op)) {
     outerValue = v;
     return true;
@@ -316,7 +317,21 @@ bool WhileLoopInfo::isConstantAcrossIterations(Value v, Value &outerValue) {
     }
   }
 
-  return false;
+  if (!checkOperands)
+    return false;
+
+  auto defOp = v.getDefiningOp();
+  if (!defOp)
+    return false;
+
+  // all operands of the defining op are constant across iterations
+  // don't populate the outerValue in this case
+  return llvm::all_of(defOp->getOperands(), [&](Value operand) {
+    // TODO: we should do `isConstantAcrossIterations` but for now we do a more
+    // conservative check
+    // return isConstantAcrossIterations(operand);
+    return definedOutside(operand, op);
+  });
 }
 
 template <typename OpTy>

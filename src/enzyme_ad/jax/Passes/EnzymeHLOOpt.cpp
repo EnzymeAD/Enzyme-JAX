@@ -25203,7 +25203,8 @@ private:
     SmallVector<int64_t> inductionVarDimensions;
 
     for (auto [i, startIndex] : llvm::enumerate(startIndices)) {
-      if (info.isConstantAcrossIterations(startIndex))
+      // we could hoist the other dimensions but licm should fix this
+      if (info.isConstantAcrossIterations(startIndex, false))
         continue;
 
       if (!affineIndexInfo.contains(startIndex))

@@ -911,26 +911,33 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
   SmallVector<BatchLiftingMode> batchLiftingModes(op->getNumOperands());
   SmallVector<Value> batchOperands(op->getNumOperands());
   SmallVector<SmallVector<int64_t>> sliceDims(op->getNumOperands());
+  SmallVector<int64_t> hoistedDims(op->getNumOperands());
   SmallVector<DynamicSliceInfo> mappedSliceInfos(op->getNumOperands());
   for (int i = 0; i < op->getNumOperands(); i++) {
     auto operand = op->getOperand(i);
 
-    Value outerValue = operand;
-    if (operand.getParentBlock() != &whileOp.getBody().front() ||
-        info.isConstantAcrossIterations(operand, outerValue)) {
-      SplatElementsAttr splat;
-      if (matchPattern(operand, m_Constant(&splat))) {
-        batchLiftingModes[i] = BatchLiftingMode::CONSTANT;
+    Value outerValue;
+    if (info.isConstantAcrossIterations(operand, outerValue)) {
+      if (outerValue) {
+        SplatElementsAttr splat;
+        if (matchPattern(operand, m_Constant(&splat))) {
+          batchLiftingModes[i] = BatchLiftingMode::CONSTANT;
+        } else {
+          batchLiftingModes[i] = BatchLiftingMode::DEFINED_OUTSIDE_WHILE;
+        }
+        batchOperands[i] = outerValue;
       } else {
-        batchLiftingModes[i] = BatchLiftingMode::DEFINED_OUTSIDE_WHILE;
+        hoistedDims[i] = cast<mlir::OpResult>(operand).getResultNumber();
+        batchLiftingModes[i] = BatchLiftingMode::NEEDS_HOISTING_OUTSIDE_WHILE;
+        batchOperands[i] = operand;
       }
-      batchOperands[i] = outerValue;
       continue;
     }
 
     auto defOp = operand.getDefiningOp();
-    if (!defOp)
+    if (!defOp) {
       return false;
+    }
 
     Operation *dsOp;
     bool mustBeIntermediateReshape = false;
@@ -998,14 +1005,15 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
     rewriter.setInsertionPointToStart(&entryBlock);
 
     IRMapping mapper;
-    for (int i = 0; i < op->getNumOperands(); i++) {
-      auto operand = op->getOperand(i);
-      if (batchLiftingModes[i] == BatchLiftingMode::CONSTANT) {
+    size_t argIdx = 0;
+    for (auto [batchLiftMode, operand] :
+         llvm::zip(batchLiftingModes, op->getOperands())) {
+      if (batchLiftMode == BatchLiftingMode::CONSTANT) {
         auto clonedConst = rewriter.clone(*operand.getDefiningOp());
         mapper.map(operand, clonedConst->getResult(0));
         continue;
       }
-      mapper.map(operand, entryBlock.getArguments()[i]);
+      mapper.map(operand, entryBlock.getArguments()[argIdx++]);
     }
 
     auto unbatchedOp = rewriter.clone(*op, mapper);
@@ -1015,8 +1023,9 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
   rewriter.setInsertionPoint(whileOp);
 
   SmallVector<Value> newOperands;
-  for (auto [consType, baseOp, sliceDim, sliceInfo] : llvm::zip(
-           batchLiftingModes, batchOperands, sliceDims, mappedSliceInfos)) {
+  for (auto [consType, baseOp, sliceDim, sliceInfo, hoistDim] :
+       llvm::zip(batchLiftingModes, batchOperands, sliceDims, mappedSliceInfos,
+                 hoistedDims)) {
     auto operandType = cast<RankedTensorType>(baseOp.getType());
     int operandRank = cast<RankedTensorType>(baseOp.getType()).getRank();
 
@@ -1068,6 +1077,11 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
 
       newOperands.push_back(newOperand);
       break;
+    }
+    case BatchLiftingMode::NEEDS_HOISTING_OUTSIDE_WHILE: {
+      auto hoisted = rewriter.clone(*baseOp.getDefiningOp());
+      baseOp = hoisted->getResult(hoistDim);
+      // intentionally fallthrough
     }
     case BatchLiftingMode::DEFINED_OUTSIDE_WHILE: {
       auto operandShape = operandType.getShape();

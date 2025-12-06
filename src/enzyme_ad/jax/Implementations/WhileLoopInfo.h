@@ -63,8 +63,9 @@ struct WhileLoopInfo {
     return affineIndexInfo;
   }
 
-  bool isConstantAcrossIterations(Value v);
-  bool isConstantAcrossIterations(Value v, Value &outerValue);
+  bool isConstantAcrossIterations(Value v, bool checkOperands = true);
+  bool isConstantAcrossIterations(Value v, Value &outerValue,
+                                  bool checkOperands = true);
 
   bool canHoistOperationFromLoop(mlir::stablehlo::DynamicSliceOp sliceOp,
                                  SmallVectorImpl<int64_t> &dimensions);
