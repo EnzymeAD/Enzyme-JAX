@@ -2856,8 +2856,9 @@ private:
         FlatSymbolRefAttr::get(rewriter.getStringAttr("<undefined>")));
 
     bool baduser = false;
-    for (auto use :
-         *SymbolTable::getSymbolUses(fn.getOperation(), fn->getParentOp())) {
+    auto uses =
+        SymbolTable::getSymbolUses(fn.getOperation(), fn->getParentOp());
+    for (auto use : *uses) {
       if (use.getUser() == wrap)
         continue;
       baduser = true;
