@@ -2730,8 +2730,7 @@ public:
 
     Value inductionVariable; // [0,..., N - 1] counter from within the loop
 
-    if (matchPattern(info.start, m_Zero()) &&
-        matchPattern(info.step, m_One())) {
+    if (matchPattern(info.getStart(), m_Zero()) && info.isStepOne()) {
       inductionVariable = body->getArgument(0);
     }
 
