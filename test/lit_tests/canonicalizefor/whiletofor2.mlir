@@ -89,7 +89,7 @@ module {
 // CHECK-DAG:           %[[cst1:.*]] = arith.constant 1.000000e+00 : f32
 // CHECK-DAG:           %[[c0:.*]] = arith.constant 0 : i32
 // CHECK-DAG:           %[[c1:.*]] = arith.constant 1 : i32
-// CHECK:           %[[FOR:.*]]:6 = scf.for %[[arg:.+]] = %[[c0]] to %[[ub]] step %[[c1]] iter_args(%[[VAL_1:.*]] = %[[c0]], %[[VAL_2:.*]] = %[[cst0]], %[[VAL_3:.*]] = %[[true]], %[[VAL_11:.*]] = %[[c0]], %[[VAL_12:.*]] = %[[cst0]], %[[VAL_13:.*]] = %[[true]])
+// CHECK:           %[[FOR:.*]]:6 = scf.for %[[arg:.+]] = %[[c0]] to %[[VAL_0]] step %[[c1]] iter_args(%[[VAL_1:.*]] = %[[c0]], %[[VAL_2:.*]] = %[[cst0]], %[[VAL_3:.*]] = %[[true]], %[[VAL_11:.*]] = %[[c0]], %[[VAL_12:.*]] = %[[cst0]], %[[VAL_13:.*]] = %[[true]])
 // CHECK:             %[[IF1:.*]]:3 = scf.if %[[VAL_13]] -> (i32, f32, i1) {
 // CHECK:               scf.yield %[[VAL_1]], %[[VAL_2]], %[[VAL_3]] : i32, f32, i1
 // CHECK:             } else {
