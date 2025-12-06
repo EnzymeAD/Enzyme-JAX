@@ -95,7 +95,7 @@ module {
 // CHECK:             } else {
 // CHECK:               scf.yield %[[VAL_11]], %[[VAL_12]], %[[false]] : i32, f32, i1
 // CHECK:             }
-// CHECK:             %[[CMP:.*]] = arith.cmpi slt, %[[arg]], %[[ub]]
+// CHECK:             %[[CMP:.*]] = arith.cmpi slt, %[[arg]], %[[VAL_0]]
 // CHECK:             %[[AND:.*]] = arith.andi %[[CMP]], %[[IF1]]#2
 // CHECK:             %[[IF2:.*]]:3 = scf.if %[[AND]] -> (i32, f32, i1) {
 // CHECK:                 %[[VAL_15:.*]] = "test.something"() : () -> i1
