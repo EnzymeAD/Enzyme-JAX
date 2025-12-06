@@ -838,13 +838,15 @@ cc_library(
 
 cc_library(
     name = "XLADerivatives",
-    srcs = glob([
-        "Implementations/*.cpp",
-        "Passes/*.cpp",
-        "Dialect/*.cpp",
-        "Dialect/Distributed/*.cpp",
-        "Dialect/Tessera/*.cpp",
-    ]) + [
+    srcs = glob(
+        [
+            "Implementations/*.cpp",
+            "Passes/*.cpp",
+            "Dialect/*.cpp",
+            "Dialect/Distributed/*.cpp",
+            "Dialect/Tessera/*.cpp",
+        ],
+    ) + [
         "Utils.cpp",
     ],
     hdrs = glob([
@@ -903,6 +905,9 @@ cc_library(
         "@llvm-project//llvm:Passes",
         "@llvm-project//llvm:Scalar",
         "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:AMDGPUDialect",
+        "@llvm-project//mlir:AMDGPUToROCDL",
+        "@llvm-project//mlir:AMDGPUUtils",
         "@llvm-project//mlir:AffineAnalysis",
         "@llvm-project//mlir:AffineDialect",
         "@llvm-project//mlir:AffineToStandard",
@@ -933,6 +938,7 @@ cc_library(
         "@llvm-project//mlir:GPUPipelines",
         "@llvm-project//mlir:GPUToGPURuntimeTransforms",
         "@llvm-project//mlir:GPUToNVVMTransforms",
+        "@llvm-project//mlir:GPUToROCDLTransforms",
         "@llvm-project//mlir:GPUTransforms",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:IndexToLLVM",
@@ -944,6 +950,7 @@ cc_library(
         "@llvm-project//mlir:MathDialect",
         "@llvm-project//mlir:MathToLLVM",
         "@llvm-project//mlir:MathToLibm",
+        "@llvm-project//mlir:MathToROCDL",
         "@llvm-project//mlir:MemRefDialect",
         "@llvm-project//mlir:MemRefToLLVM",
         "@llvm-project//mlir:MemRefTransforms",
