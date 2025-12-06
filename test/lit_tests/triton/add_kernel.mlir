@@ -1,4 +1,5 @@
 // RUN: enzymexlamlir-opt %s -canonicalize | FileCheck %s
+// RUN: enzymexlamlir-opt %s -lower-triton | FileCheck %s --check-prefix=LOWER
 
 module {
   // CHECK: enzymexla_tt_ext.module
