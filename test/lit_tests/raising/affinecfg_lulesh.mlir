@@ -160,7 +160,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<6> = dense<32> : vecto
               %66 = arith.shrui %62, %c23_i32 : i32
               %67 = arith.andi %66, %c224_i32 : i32
               %68 = arith.addi %67, %c-128_i32 : i32
-              %69 = arith.shrui %68, %c5_i32 {isExact} : i32
+              %69 = arith.shrui %68, %c5_i32 exact : i32
               %70 = llvm.getelementptr inbounds|nuw %2[24] : (!llvm.ptr) -> !llvm.ptr, i8
               llvm.store %65#1, %70 {alignment = 4 : i64} : i32, !llvm.ptr
               %71 = arith.subi %c6_i32, %69 : i32
@@ -327,7 +327,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<6> = dense<32> : vecto
               %72 = arith.shrui %68, %c23_i32 : i32
               %73 = arith.andi %72, %c224_i32 : i32
               %74 = arith.addi %73, %c-128_i32 : i32
-              %75 = arith.shrui %74, %c5_i32 {isExact} : i32
+              %75 = arith.shrui %74, %c5_i32 exact : i32
               %76 = llvm.getelementptr inbounds|nuw %2[24] : (!llvm.ptr) -> !llvm.ptr, i8
               llvm.store %71#1, %76 {alignment = 4 : i64} : i32, !llvm.ptr
               %77 = arith.subi %c6_i32, %75 : i32
@@ -529,7 +529,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<6> = dense<32> : vecto
                   %83 = arith.shrui %79, %c23_i32 : i32
                   %84 = arith.andi %83, %c224_i32 : i32
                   %85 = arith.addi %84, %c-128_i32 : i32
-                  %86 = arith.shrui %85, %c5_i32 {isExact} : i32
+                  %86 = arith.shrui %85, %c5_i32 exact : i32
                   %87 = llvm.getelementptr inbounds|nuw %2[24] : (!llvm.ptr) -> !llvm.ptr, i8
                   llvm.store %82#1, %87 {alignment = 4 : i64} : i32, !llvm.ptr
                   %88 = arith.subi %c6_i32, %86 : i32
@@ -697,7 +697,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<6> = dense<32> : vecto
                   %83 = arith.shrui %79, %c23_i32 : i32
                   %84 = arith.andi %83, %c224_i32 : i32
                   %85 = arith.addi %84, %c-128_i32 : i32
-                  %86 = arith.shrui %85, %c5_i32 {isExact} : i32
+                  %86 = arith.shrui %85, %c5_i32 exact : i32
                   %87 = llvm.getelementptr inbounds|nuw %2[24] : (!llvm.ptr) -> !llvm.ptr, i8
                   llvm.store %82#1, %87 {alignment = 4 : i64} : i32, !llvm.ptr
                   %88 = arith.subi %c6_i32, %86 : i32
@@ -1182,7 +1182,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<6> = dense<32> : vecto
 // CHECK-NEXT:              %72 = arith.shrui %68, %c23_i32 : i32
 // CHECK-NEXT:              %73 = arith.andi %72, %c224_i32 : i32
 // CHECK-NEXT:              %74 = arith.addi %73, %c-128_i32 : i32
-// CHECK-NEXT:              %75 = arith.shrui %74, %c5_i32 {isExact} : i32
+// CHECK-NEXT:              %75 = arith.shrui %74, %c5_i32 exact : i32
 // CHECK-NEXT:              %76 = llvm.getelementptr inbounds|nuw %2[24] : (!llvm.ptr) -> !llvm.ptr, i8
 // CHECK-NEXT:              llvm.store %71#1, %76 {alignment = 4 : i64} : i32, !llvm.ptr
 // CHECK-NEXT:              %77 = arith.subi %c6_i32, %75 : i32
@@ -1385,7 +1385,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<6> = dense<32> : vecto
 // CHECK-NEXT:                  %83 = arith.shrui %79, %c23_i32 : i32
 // CHECK-NEXT:                  %84 = arith.andi %83, %c224_i32 : i32
 // CHECK-NEXT:                  %85 = arith.addi %84, %c-128_i32 : i32
-// CHECK-NEXT:                  %86 = arith.shrui %85, %c5_i32 {isExact} : i32
+// CHECK-NEXT:                  %86 = arith.shrui %85, %c5_i32 exact : i32
 // CHECK-NEXT:                  %87 = llvm.getelementptr inbounds|nuw %2[24] : (!llvm.ptr) -> !llvm.ptr, i8
 // CHECK-NEXT:                  llvm.store %82#1, %87 {alignment = 4 : i64} : i32, !llvm.ptr
 // CHECK-NEXT:                  %88 = arith.subi %c6_i32, %86 : i32
@@ -1554,7 +1554,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<6> = dense<32> : vecto
 // CHECK-NEXT:                  %83 = arith.shrui %79, %c23_i32 : i32
 // CHECK-NEXT:                  %84 = arith.andi %83, %c224_i32 : i32
 // CHECK-NEXT:                  %85 = arith.addi %84, %c-128_i32 : i32
-// CHECK-NEXT:                  %86 = arith.shrui %85, %c5_i32 {isExact} : i32
+// CHECK-NEXT:                  %86 = arith.shrui %85, %c5_i32 exact : i32
 // CHECK-NEXT:                  %87 = llvm.getelementptr inbounds|nuw %2[24] : (!llvm.ptr) -> !llvm.ptr, i8
 // CHECK-NEXT:                  llvm.store %82#1, %87 {alignment = 4 : i64} : i32, !llvm.ptr
 // CHECK-NEXT:                  %88 = arith.subi %c6_i32, %86 : i32
