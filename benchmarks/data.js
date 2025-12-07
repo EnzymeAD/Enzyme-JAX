@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1765059938804,
+  "lastUpdate": 1765075227859,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "238314553+enzymead-bot[bot]@users.noreply.github.com",
-            "name": "enzymead-bot[bot]",
-            "username": "enzymead-bot[bot]"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "8a0664ae8dd09bad32cef3f611ad51ca62a9dba2",
-          "message": "Update EnzymeAD/Enzyme to commit 269207f268bdda2b46e6c6bc1646bb2195eee0f2 (#1606)\n\nDiff: https://github.com/EnzymeAD/Enzyme/compare/300e6f7913407b1216bf07b5ea8827aae963c898...269207f268bdda2b46e6c6bc1646bb2195eee0f2\n\nCo-authored-by: enzymead-bot[bot] <238314553+enzymead-bot[bot]@users.noreply.github.com>",
-          "timestamp": "2025-11-11T13:58:43+01:00",
-          "tree_id": "8326699bd1a94b8bc18517c6b4f8ba2d032a9c4f",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/8a0664ae8dd09bad32cef3f611ad51ca62a9dba2"
-        },
-        "date": 1762870811352,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.0000045017170021310446,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.000004457445099251344,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001498850076983,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001502703774021,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2199,6 +2155,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001514616753003,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "03e82068e7f4cf7830950e30510e6ef23d843949",
+          "message": "build(deps): bump urllib3 from 2.2.2 to 2.6.0 in /builddeps (#1698)\n\nBumps [urllib3](https://github.com/urllib3/urllib3) from 2.2.2 to 2.6.0.\n- [Release notes](https://github.com/urllib3/urllib3/releases)\n- [Changelog](https://github.com/urllib3/urllib3/blob/main/CHANGES.rst)\n- [Commits](https://github.com/urllib3/urllib3/compare/2.2.2...2.6.0)\n\n---\nupdated-dependencies:\n- dependency-name: urllib3\n  dependency-version: 2.6.0\n  dependency-type: direct:production\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2025-12-06T16:06:52-06:00",
+          "tree_id": "c40ae5d22373eff54fe31d2263df38d8efc06bde",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/03e82068e7f4cf7830950e30510e6ef23d843949"
+        },
+        "date": 1765075227100,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000006569129900162807,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004035204899992095,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001487978921999,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001493543142001,
             "unit": "s"
           }
         ]
