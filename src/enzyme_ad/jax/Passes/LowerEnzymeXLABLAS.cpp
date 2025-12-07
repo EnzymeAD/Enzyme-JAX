@@ -33,12 +33,14 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
   SyrkOpLowering(std::string backend, int64_t blasIntWidth,
                  MLIRContext *context, PatternBenefit benefit = 1)
       : OpRewritePattern(context, benefit), backend(backend),
-        blasIntWidth(blasIntWidth){};
+        blasIntWidth(blasIntWidth) {};
 
   LogicalResult matchAndRewrite(enzymexla::SyrkOp op,
                                 PatternRewriter &rewriter) const override {
     if (backend == "cpu")
       return matchAndRewriteCPU(op, rewriter);
+    if (backend == "cuda")
+      return matchAndRewriteCUDA(op, rewriter);
 
     return matchAndRewriteFallback(op, rewriter);
   }
@@ -248,7 +250,70 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
     return success();
   }
 
-  // TODO: gpu lowering after we register the cublas functions via XLA FFI
+  LogicalResult matchAndRewriteCUDA(enzymexla::SyrkOp op,
+                                    PatternRewriter &rewriter) const {
+    // XXX: for performance reasons we should implement our own version
+    // https://github.com/jax-ml/jax/blob/1709d4639a3dd73d0f8748090ab9af4af9a84758/jaxlib/gpu/solver_kernels_ffi.cc#L777
+    // doesn't expose the `uplo` attribute and forces it to be `U`
+    auto A = op.getA();
+    Value C = op.getC();
+
+    auto CType = cast<RankedTensorType>(C.getType());
+    auto rank = CType.getRank();
+
+    switch (op.getUplo()) {
+    case enzymexla::LapackUplo::L:
+      C = stablehlo::copyTriangularPart(rewriter, C, op.getUplo());
+      break;
+    default:
+      break; // nothing to do here
+    }
+
+    bool isComplex = false;
+    if (auto complex_type = dyn_cast<ComplexType>(CType.getElementType())) {
+      isComplex = true;
+    }
+
+    if (isComplex && op.getTranspose() == enzymexla::LapackTranspose::adjoint) {
+      return rewriter.notifyMatchFailure(
+          op, "Complex matrix not supported for complex transpose");
+    }
+
+    bool transpose = op.getTranspose() != enzymexla::LapackTranspose::none;
+
+    auto customCall = stablehlo::CustomCallOp::create(
+        rewriter, op.getLoc(), TypeRange{C.getType()},
+        ValueRange{A, C, op.getAlpha(), op.getBeta()},
+        rewriter.getStringAttr("cusolver_syrk_ffi"),
+        /*has_side_effect*/ nullptr,
+        /*backend_config*/
+        rewriter.getDictionaryAttr({
+            rewriter.getNamedAttr("transpose", rewriter.getBoolAttr(transpose)),
+        }),
+        /*api_version*/
+        stablehlo::CustomCallApiVersionAttr::get(
+            rewriter.getContext(),
+            mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
+        /*calledcomputations*/ nullptr,
+        /*operand_layouts*/
+        getSHLOLayout(rewriter, {rank, rank, 0, 0}, SmallVector<bool>(4, true),
+                      rank),
+        /*result_layouts*/
+        getSHLOLayout(rewriter, {rank}, SmallVector<bool>(rank, true), rank),
+        /*output_operand_aliases*/
+        rewriter.getArrayAttr({
+            stablehlo::OutputOperandAliasAttr::get(op.getContext(), {}, 1, {}),
+        }));
+
+    auto result = customCall.getResult(0);
+    if (op.getFill() || op.getUplo() == enzymexla::LapackUplo::L) {
+      result = stablehlo::copyTriangularPart(rewriter, result,
+                                             enzymexla::LapackUplo::U);
+    }
+    rewriter.replaceAllUsesWith(op.getResult(), result);
+
+    return success();
+  }
 
   LogicalResult matchAndRewriteFallback(enzymexla::SyrkOp op,
                                         PatternRewriter &rewriter) const {

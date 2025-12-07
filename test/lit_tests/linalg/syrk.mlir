@@ -1,4 +1,5 @@
 // RUN: enzymexlamlir-opt --lower-enzymexla-blas="backend=cpu" --enzyme-hlo-opt %s | FileCheck %s --check-prefix=CPU
+// RUN: enzymexlamlir-opt --lower-enzymexla-blas="backend=cuda" --enzyme-hlo-opt %s | FileCheck %s --check-prefix=CUDA
 // RUN: enzymexlamlir-opt --lower-enzymexla-blas="backend=tpu" --enzyme-hlo-opt %s | FileCheck %s --check-prefix=TPU
 
 module {
@@ -35,6 +36,18 @@ module {
 // CPU-NEXT:   %5 = stablehlo.select %3, %0, %4 : tensor<64x64xi1>, tensor<64x64xf32>
 // CPU-NEXT:   return %5 : tensor<64x64xf32>
 // CPU-NEXT: }
+
+// CUDA: func.func @main1(%arg0: tensor<64x32xf32>, %arg1: tensor<64x64xf32>) -> tensor<64x64xf32> {
+// CUDA-NEXT:   %cst = stablehlo.constant dense<2.000000e+00> : tensor<f32>
+// CUDA-NEXT:   %cst_0 = stablehlo.constant dense<3.000000e+00> : tensor<f32>
+// CUDA-NEXT:   %0 = stablehlo.custom_call @cusolver_syrk_ffi(%arg0, %arg1, %cst, %cst_0) {api_version = 4 : i32, backend_config = {transpose = false}, enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>], operand_layouts = [dense<[0, 1]> : tensor<2xindex>, dense<[0, 1]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 1, operand_tuple_indices = []>], result_layouts = [dense<[0, 1]> : tensor<2xindex>]} : (tensor<64x32xf32>, tensor<64x64xf32>, tensor<f32>, tensor<f32>) -> tensor<64x64xf32>
+// CUDA-NEXT:   %1 = stablehlo.iota dim = 0 : tensor<64x64xi32>
+// CUDA-NEXT:   %2 = stablehlo.iota dim = 1 : tensor<64x64xi32>
+// CUDA-NEXT:   %3 = stablehlo.compare  LT, %1, %2 : (tensor<64x64xi32>, tensor<64x64xi32>) -> tensor<64x64xi1>
+// CUDA-NEXT:   %4 = stablehlo.transpose %0, dims = [1, 0] : (tensor<64x64xf32>) -> tensor<64x64xf32>
+// CUDA-NEXT:   %5 = stablehlo.select %3, %0, %4 : tensor<64x64xi1>, tensor<64x64xf32>
+// CUDA-NEXT:   return %5 : tensor<64x64xf32>
+// CUDA-NEXT: }
 
 // TPU: func.func @main1(%arg0: tensor<64x32xf32>, %arg1: tensor<64x64xf32>) -> tensor<64x64xf32> {
 // TPU-NEXT:     %cst = stablehlo.constant dense<3.000000e+00> : tensor<64x64xf32>
@@ -81,6 +94,23 @@ module {
 // CPU-NEXT:   return %0 : tensor<64x64xf32>
 // CPU-NEXT: }
 
+// CUDA: func.func @main2(%arg0: tensor<64x32xf32>, %arg1: tensor<64x64xf32>) -> tensor<64x64xf32> {
+// CUDA-NEXT:   %cst = stablehlo.constant dense<2.000000e+00> : tensor<f32>
+// CUDA-NEXT:   %cst_0 = stablehlo.constant dense<3.000000e+00> : tensor<f32>
+// CUDA-NEXT:   %0 = stablehlo.iota dim = 0 : tensor<64x64xi32>
+// CUDA-NEXT:   %1 = stablehlo.iota dim = 1 : tensor<64x64xi32>
+// CUDA-NEXT:   %2 = stablehlo.compare  GT, %0, %1 : (tensor<64x64xi32>, tensor<64x64xi32>) -> tensor<64x64xi1>
+// CUDA-NEXT:   %3 = stablehlo.transpose %arg1, dims = [1, 0] : (tensor<64x64xf32>) -> tensor<64x64xf32>
+// CUDA-NEXT:   %4 = stablehlo.select %2, %arg1, %3 : tensor<64x64xi1>, tensor<64x64xf32>
+// CUDA-NEXT:   %5 = stablehlo.custom_call @cusolver_syrk_ffi(%arg0, %4, %cst, %cst_0) {api_version = 4 : i32, backend_config = {transpose = false}, enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>], operand_layouts = [dense<[0, 1]> : tensor<2xindex>, dense<[0, 1]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 1, operand_tuple_indices = []>], result_layouts = [dense<[0, 1]> : tensor<2xindex>]} : (tensor<64x32xf32>, tensor<64x64xf32>, tensor<f32>, tensor<f32>) -> tensor<64x64xf32>
+// CUDA-NEXT:   %6 = stablehlo.iota dim = 0 : tensor<64x64xi32>
+// CUDA-NEXT:   %7 = stablehlo.iota dim = 1 : tensor<64x64xi32>
+// CUDA-NEXT:   %8 = stablehlo.compare  LT, %6, %7 : (tensor<64x64xi32>, tensor<64x64xi32>) -> tensor<64x64xi1>
+// CUDA-NEXT:   %9 = stablehlo.transpose %5, dims = [1, 0] : (tensor<64x64xf32>) -> tensor<64x64xf32>
+// CUDA-NEXT:   %10 = stablehlo.select %8, %5, %9 : tensor<64x64xi1>, tensor<64x64xf32>
+// CUDA-NEXT:   return %10 : tensor<64x64xf32>
+// CUDA-NEXT: }
+
 // TPU: func.func @main2(%arg0: tensor<64x32xf32>, %arg1: tensor<64x64xf32>) -> tensor<64x64xf32> {
 // TPU-NEXT:     %cst = stablehlo.constant dense<3.000000e+00> : tensor<64x64xf32>
 // TPU-NEXT:     %cst_0 = stablehlo.constant dense<2.000000e+00> : tensor<64x64xf32>
@@ -125,6 +155,13 @@ module {
 // CPU-NEXT:   %0 = call @enzymexla_blas_ssyrk_wrapper_[[SYRKID]](%arg0, %arg1, %cst, %cst_0) : (tensor<64x32xf32>, tensor<64x64xf32>, tensor<f32>, tensor<f32>) -> tensor<64x64xf32>
 // CPU-NEXT:   return %0 : tensor<64x64xf32>
 // CPU-NEXT: }
+
+// CUDA: func.func @main3(%arg0: tensor<64x32xf32>, %arg1: tensor<64x64xf32>) -> tensor<64x64xf32> {
+// CUDA-NEXT:     %cst = stablehlo.constant dense<2.000000e+00> : tensor<f32>
+// CUDA-NEXT:     %cst_0 = stablehlo.constant dense<3.000000e+00> : tensor<f32>
+// CUDA-NEXT:     %0 = stablehlo.custom_call @cusolver_syrk_ffi(%arg0, %arg1, %cst, %cst_0) {api_version = 4 : i32, backend_config = {transpose = false}, operand_layouts = [dense<[0, 1]> : tensor<2xindex>, dense<[0, 1]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 1, operand_tuple_indices = []>], result_layouts = [dense<[0, 1]> : tensor<2xindex>]} : (tensor<64x32xf32>, tensor<64x64xf32>, tensor<f32>, tensor<f32>) -> tensor<64x64xf32>
+// CUDA-NEXT:     return %0 : tensor<64x64xf32>
+// CUDA-NEXT: }
 
 // TPU: func.func @main3(%arg0: tensor<64x32xf32>, %arg1: tensor<64x64xf32>) -> tensor<64x64xf32> {
 // TPU-NEXT:     %cst = stablehlo.constant dense<3.000000e+00> : tensor<64x64xf32>
@@ -176,6 +213,20 @@ module {
 // CPU-NEXT:   %4 = stablehlo.add %2, %3 : tensor<4x4xf32>
 // CPU-NEXT:   return %4 : tensor<4x4xf32>
 // CPU-NEXT: }
+
+// CUDA: func.func @main4(%arg0: tensor<5x4xf32>, %arg1: tensor<4x4xf32>) -> tensor<4x4xf32> {
+// CUDA-NEXT{LITERAL}:     %c = stablehlo.constant dense<[[false, true, true, true], [false, false, true, true], [false, false, false, true], [false, false, false, false]]> : tensor<4x4xi1>
+// CUDA-NEXT:     %cst = stablehlo.constant dense<5.000000e+00> : tensor<4x4xf32>
+// CUDA-NEXT:     %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<4x4xf32>
+// CUDA-NEXT:     %cst_1 = stablehlo.constant dense<1.000000e+00> : tensor<f32>
+// CUDA-NEXT:     %cst_2 = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+// CUDA-NEXT:     %0 = stablehlo.custom_call @cusolver_syrk_ffi(%arg0, %cst_0, %cst_1, %cst_2) {api_version = 4 : i32, backend_config = {transpose = true}, enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>], operand_layouts = [dense<[0, 1]> : tensor<2xindex>, dense<[0, 1]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 1, operand_tuple_indices = []>], result_layouts = [dense<[0, 1]> : tensor<2xindex>]} : (tensor<5x4xf32>, tensor<4x4xf32>, tensor<f32>, tensor<f32>) -> tensor<4x4xf32>
+// CUDA-NEXT:     %1 = stablehlo.transpose %0, dims = [1, 0] : (tensor<4x4xf32>) -> tensor<4x4xf32>
+// CUDA-NEXT:     %2 = stablehlo.select %c, %0, %1 : tensor<4x4xi1>, tensor<4x4xf32>
+// CUDA-NEXT:     %3 = stablehlo.multiply %cst, %arg1 : tensor<4x4xf32>
+// CUDA-NEXT:     %4 = stablehlo.add %2, %3 : tensor<4x4xf32>
+// CUDA-NEXT:     return %4 : tensor<4x4xf32>
+// CUDA-NEXT: }
 
 // TPU: func.func @main4(%arg0: tensor<5x4xf32>, %arg1: tensor<4x4xf32>) -> tensor<4x4xf32> {
 // TPU-NEXT:     %cst = stablehlo.constant dense<5.000000e+00> : tensor<4x4xf32>
