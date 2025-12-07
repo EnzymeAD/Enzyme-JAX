@@ -1,5 +1,5 @@
 diff --git a/third_party/gpus/rocm/BUILD.tpl b/third_party/gpus/rocm/BUILD.tpl
-index c95f9a9593..24af99347c 100644
+index c95f9a9593..6e9ac4f185 100644
 --- a/third_party/gpus/rocm/BUILD.tpl
 +++ b/third_party/gpus/rocm/BUILD.tpl
 @@ -594,6 +594,36 @@ filegroup(
@@ -24,13 +24,13 @@ index c95f9a9593..24af99347c 100644
 +    visibility = ["//visibility:public"],
 +)
 +
-+sh_binary(
++filegroup(
 +    name = "ocml",
 +    srcs = ["%{rocm_root}/lib/llvm/amdgcn/bitcode/ocml.bc"],
 +    visibility = ["//visibility:public"],
 +)
 +
-+sh_binary(
++filegroup(
 +    name = "ockl",
 +    srcs = ["%{rocm_root}/lib/llvm/amdgcn/bitcode/ockl.bc"],
 +    visibility = ["//visibility:public"],
