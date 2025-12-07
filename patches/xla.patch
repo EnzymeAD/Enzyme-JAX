@@ -1,8 +1,8 @@
 diff --git a/third_party/gpus/rocm/BUILD.tpl b/third_party/gpus/rocm/BUILD.tpl
-index c95f9a9593..18eb5a3fd1 100644
+index c95f9a9593..24af99347c 100644
 --- a/third_party/gpus/rocm/BUILD.tpl
 +++ b/third_party/gpus/rocm/BUILD.tpl
-@@ -594,6 +594,24 @@ filegroup(
+@@ -594,6 +594,36 @@ filegroup(
      visibility = ["//visibility:public"],
  )
  
@@ -21,6 +21,18 @@ index c95f9a9593..18eb5a3fd1 100644
 +sh_binary(
 +    name = "opt",
 +    srcs = ["%{rocm_root}/lib/llvm/bin/opt"],
++    visibility = ["//visibility:public"],
++)
++
++sh_binary(
++    name = "ocml",
++    srcs = ["%{rocm_root}/lib/llvm/amdgcn/bitcode/ocml.bc"],
++    visibility = ["//visibility:public"],
++)
++
++sh_binary(
++    name = "ockl",
++    srcs = ["%{rocm_root}/lib/llvm/amdgcn/bitcode/ockl.bc"],
 +    visibility = ["//visibility:public"],
 +)
 +
@@ -60,3 +72,48 @@ index 5b9aee4f08..f55aabe5ad 100644
              executable = True,
              cfg = "exec",
          ),
+diff --git a/third_party/rocm_device_libs/rocm_device_libs.BUILD b/third_party/rocm_device_libs/rocm_device_libs.BUILD
+index 11795b3537..24ba30ec5e 100644
+--- a/third_party/rocm_device_libs/rocm_device_libs.BUILD
++++ b/third_party/rocm_device_libs/rocm_device_libs.BUILD
+@@ -27,36 +27,12 @@ cc_binary(
+     ],
+ )
+ 
+-bitcode_library(
++alias(
+     name = "ocml",
+-    srcs = glob([
+-        "ocml/src/*.cl",
+-    ]),
+-    hdrs = glob([
+-        "ocml/src/*.h",
+-        "ocml/inc/*.h",
+-        "irif/inc/*.h",
+-        "oclc/inc/*.h",
+-    ]),
+-    file_specific_flags = {
+-        "native_logF.cl": ["-fapprox-func"],
+-        "native_expF.cl": ["-fapprox-func"],
+-        "sqrtF.cl": ["-cl-fp32-correctly-rounded-divide-sqrt"],
+-    },
++    actual = "@local_config_rocm//rocm:ocml"
+ )
+ 
+-bitcode_library(
++alias(
+     name = "ockl",
+-    srcs = glob([
+-        "ockl/src/*.cl",
+-        "ockl/src/*.ll",
+-    ]),
+-    hdrs = glob([
+-        "ockl/inc/*.h",
+-        "irif/inc/*.h",
+-        "oclc/inc/*.h",
+-    ]),
+-    file_specific_flags = {
+-        "gaaf.cl": ["-munsafe-fp-atomics"],
+-    },
++    actual = "@local_config_rocm//rocm:ockl"
+ )
