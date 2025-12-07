@@ -1047,13 +1047,20 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
 
   // hoist any operations that can be hoisted
   DenseMap<Value, Value> hoistedValues;
+  IRMapping mapper;
   for (auto &[val, ops] : hoistMap) {
     llvm::SetVector<Operation *> toHoist(ops.begin(), ops.end());
     auto sorted = mlir::topologicalSort(toHoist);
-    IRMapping mapper;
 
     for (auto &op : sorted) {
+      if (llvm::all_of(op->getResults(),
+                       [&](Value v) { return mapper.contains(v); }))
+        continue;
+
       for (auto operand : op->getOperands()) {
+        if (mapper.contains(operand))
+          continue;
+
         if (!definedOutside(operand, whileOp)) {
           Value outerValue;
           SmallVector<Operation *> canBeHoisted;
