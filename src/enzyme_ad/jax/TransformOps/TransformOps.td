@@ -2505,9 +2505,9 @@ def EnzymeHLOUnroll : EnzymeHLOParameterizedPatternOp<
   }];
 }
 
-def ApplyReduceMulBroadcastToDotGeneralPatterns : EnzymeHLOPatternOp<
-    "reduce_mul_broadcast_to_dot_general"> {
-  let patterns = ["ReduceMulBroadcastToDotGeneral"];
+def ApplyReduceMulToDotGeneralPatterns : EnzymeHLOPatternOp<
+    "reduce_mul_to_dot_general"> {
+  let patterns = ["ReduceMulToDotGeneral"];
 }
 
 def ApplyDotGeneralOnlyDiagonalAccessPatterns : EnzymeHLOPatternOp<

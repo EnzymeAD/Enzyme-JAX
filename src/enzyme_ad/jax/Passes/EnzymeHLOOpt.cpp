@@ -25872,12 +25872,11 @@ private:
   }
 };
 
-struct ReduceMulBroadcastToDotGeneral
+struct ReduceMulToDotGeneral
     : public CheckedOpRewritePattern<stablehlo::ReduceOp,
-                                     ReduceMulBroadcastToDotGeneral> {
-  using CheckedOpRewritePattern<
-      stablehlo::ReduceOp,
-      ReduceMulBroadcastToDotGeneral>::CheckedOpRewritePattern;
+                                     ReduceMulToDotGeneral> {
+  using CheckedOpRewritePattern<stablehlo::ReduceOp,
+                                ReduceMulToDotGeneral>::CheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
                                     PatternRewriter &rewriter) const {
@@ -25889,10 +25888,7 @@ struct ReduceMulBroadcastToDotGeneral
     auto dims = op.getDimensions();
 
     Value input = op.getInputs()[0];
-    auto OT = cast<TensorType>(op.getResultTypes()[0]);
-
-    if (OT.getRank() != 2 || dims.size() != 1)
-      return failure();
+    auto inTy = cast<RankedTensorType>(input.getType());
 
     auto checkCommonReduce = mlir::stablehlo::CheckCommonReduceOp(op);
     if (!checkCommonReduce.isAddReduce ||
@@ -25903,54 +25899,19 @@ struct ReduceMulBroadcastToDotGeneral
     if (!mul)
       return rewriter.notifyMatchFailure(op, "input source is not a mul op");
 
-    Value mulLhs = mul.getLhs(), mulRhs = mul.getRhs();
-    auto lhsBdim = mulLhs.getDefiningOp<stablehlo::BroadcastInDimOp>(),
-         rhsBdim = mulRhs.getDefiningOp<stablehlo::BroadcastInDimOp>();
+    SmallVector<int64_t> batchDims;
+    for (int i = 0; i < inTy.getRank(); i++) {
+      if (!llvm::is_contained(dims, i))
+        batchDims.push_back(i);
+    }
 
-    if (!lhsBdim || !rhsBdim)
-      return failure();
-
-    auto prepareInputForDotGeneral =
-        [&](stablehlo::BroadcastInDimOp bdim) -> Value {
-      // transpose dims: [0, 2] -> [0, 1]
-      // transpose dims: [1, 0] -> [1, 0]
-      auto OT = cast<TensorType>(bdim.getResult().getType());
-
-      auto bdims = bdim.getBroadcastDimensions();
-      SmallVector<int64_t> transposeDims(bdims.size(), -1);
-
-      int64_t ncdims = 0;
-      for (int i = 0; i < OT.getRank(); i++) {
-        bool inBDims = false;
-        for (auto [j, dim] : llvm::enumerate(bdims)) {
-          if (dim == i) {
-            inBDims = true;
-            transposeDims[j] = i - ncdims;
-            break;
-          }
-        }
-        if (!inBDims) {
-          ncdims++;
-        }
-      }
-
-      Value prepared = stablehlo::TransposeOp::create(
-          rewriter, bdim.getLoc(), bdim.getOperand(), transposeDims);
-
-      return prepared;
-    };
-
-    auto lhs = prepareInputForDotGeneral(lhsBdim);
-    auto rhs = prepareInputForDotGeneral(rhsBdim);
-
-    auto ndim = stablehlo::DotDimensionNumbersAttr::get(
-        op.getContext(), {}, {}, op.getDimensions(), op.getDimensions());
-
-    auto dg = DotGeneralOp::create(rewriter, op.getLoc(), OT, lhs, rhs, ndim,
-                                   /* precision_config */ nullptr,
-                                   /*algorithm*/ nullptr);
-    rewriter.replaceAllOpUsesWith(op, dg.getResult());
-
+    auto dotDims = stablehlo::DotDimensionNumbersAttr::get(
+        op.getContext(), batchDims, batchDims, dims, dims);
+    // auto dotOp = stablehlo::DotGeneralOp::create(
+    //     rewriter, op.getLoc(), op.getResult(0).getType(), mul.getLhs(),
+    rewriter.replaceOpWithNewOp<stablehlo::DotGeneralOp>(
+        op, op.getResult(0).getType(), mul.getLhs(), mul.getRhs(), dotDims,
+        nullptr, nullptr);
     return success();
   }
 };
@@ -26839,7 +26800,7 @@ struct EnzymeHLOOptPass
         ElementwiseWrap,
         ElementwiseExtend,
         SubtractMultiplyConstToAddMulConst,
-        ReduceMulBroadcastToDotGeneral,
+        ReduceMulToDotGeneral,
         DotGeneralDistributiveSimplify<stablehlo::AddOp>,
         DotGeneralDistributiveSimplify<stablehlo::SubtractOp>,
         TrivialReduceWindowToReduceOp,
