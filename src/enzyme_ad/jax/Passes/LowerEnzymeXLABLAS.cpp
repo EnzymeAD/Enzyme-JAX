@@ -10,7 +10,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
-#include "mlir/Transforms/DialectConversion.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/SmallVector.h"
 
 #define DEBUG_TYPE "lower-enzymexla-blas"
@@ -27,16 +27,16 @@ using namespace mlir::enzyme;
 using namespace mlir::enzymexla;
 using namespace mlir::stablehlo;
 
-struct SyrkOpLowering : public OpConversionPattern<enzymexla::SyrkOp> {
-  using OpConversionPattern<enzymexla::SyrkOp>::OpConversionPattern;
+struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
+  using OpRewritePattern<enzymexla::SyrkOp>::OpRewritePattern;
 
   SyrkOpLowering(std::string backend, int64_t blasIntWidth,
                  MLIRContext *context, PatternBenefit benefit = 1)
-      : OpConversionPattern(context, benefit), backend(backend),
+      : OpRewritePattern(context, benefit), backend(backend),
         blasIntWidth(blasIntWidth){};
 
-  LogicalResult matchAndRewrite(enzymexla::SyrkOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite(enzymexla::SyrkOp op,
+                                PatternRewriter &rewriter) const override {
     if (backend == "cpu")
       return matchAndRewriteCPU(op, rewriter);
 
@@ -44,7 +44,7 @@ struct SyrkOpLowering : public OpConversionPattern<enzymexla::SyrkOp> {
   }
 
   LogicalResult matchAndRewriteCPU(enzymexla::SyrkOp op,
-                                   ConversionPatternRewriter &rewriter) const {
+                                   PatternRewriter &rewriter) const {
     auto nBatchDims = cast<RankedTensorType>(op.getA().getType()).getRank() - 2;
     if (nBatchDims != 0) {
       return matchAndRewriteFallback(op, rewriter);
@@ -251,7 +251,7 @@ struct SyrkOpLowering : public OpConversionPattern<enzymexla::SyrkOp> {
   // TODO: gpu lowering after we register the cublas functions via XLA FFI
 
   LogicalResult matchAndRewriteFallback(enzymexla::SyrkOp op,
-                                        ConversionPatternRewriter &rewriter) const {
+                                        PatternRewriter &rewriter) const {
     auto AType = cast<RankedTensorType>(op.getA().getType());
     auto nBatchDims = AType.getRank() - 2;
     SmallVector<int64_t> batchDims(nBatchDims, 0);
@@ -322,20 +322,27 @@ struct LowerEnzymeXLABLASPass
   using Base::Base;
 
   void runOnOperation() override {
-    MLIRContext *context = &getContext();
+    auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
 
     patterns.add<SyrkOpLowering>(backend, blasIntWidth, context);
 
-    ConversionTarget target(*context);
-    target.addLegalDialect<stablehlo::StablehloDialect>();
-    target.addLegalDialect<func::FuncDialect>();
-    target.addLegalDialect<LLVM::LLVMDialect>();
-    target.addLegalDialect<enzymexla::EnzymeXLADialect>();
-    target.addIllegalOp<enzymexla::SyrkOp>();
+    GreedyRewriteConfig config;
+    if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
+                                            config))) {
+      signalPassFailure();
+    }
 
-    if (failed(applyPartialConversion(getOperation(), target,
-                                      std::move(patterns)))) {
+    // Verify that all illegal ops have been lowered
+    auto walkResult = getOperation()->walk([&](Operation *op) {
+      if (isa<enzymexla::SyrkOp>(op)) {
+        op->emitError("Failed to lower enzymexla::SyrkOp");
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+
+    if (walkResult.wasInterrupted()) {
       signalPassFailure();
     }
   }

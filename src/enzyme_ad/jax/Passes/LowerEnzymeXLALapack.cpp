@@ -3,7 +3,7 @@
 #include "mhlo/IR/hlo_ops.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/Transforms/DialectConversion.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/LinalgUtils.h"
@@ -31,17 +31,17 @@ namespace enzyme {
 using namespace mlir;
 using namespace mlir::enzyme;
 
-struct GeqrfOpLowering : public OpConversionPattern<enzymexla::GeqrfOp> {
+struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
   std::string backend;
   int64_t blasIntWidth;
 
   GeqrfOpLowering(std::string backend, int64_t blasIntWidth,
                   MLIRContext *context, PatternBenefit benefit = 1)
-      : OpConversionPattern(context, benefit), backend(backend),
+      : OpRewritePattern(context, benefit), backend(backend),
         blasIntWidth(blasIntWidth) {}
 
-  LogicalResult matchAndRewrite(enzymexla::GeqrfOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite(enzymexla::GeqrfOp op,
+                                PatternRewriter &rewriter) const override {
     if (backend == "cpu")
       return matchAndRewriteCPU(op, rewriter);
     else if (backend == "cuda")
@@ -56,7 +56,7 @@ struct GeqrfOpLowering : public OpConversionPattern<enzymexla::GeqrfOp> {
   // TODO get matrix sizes dynamically so that we don't need to create a
   // function wrapper for each op instance
   LogicalResult matchAndRewriteCPU(enzymexla::GeqrfOp op,
-                                   ConversionPatternRewriter &rewriter) const {
+                                   PatternRewriter &rewriter) const {
     auto ctx = op->getContext();
     LLVMTypeConverter typeConverter(ctx);
 
@@ -209,7 +209,7 @@ struct GeqrfOpLowering : public OpConversionPattern<enzymexla::GeqrfOp> {
   }
 
   LogicalResult matchAndRewriteCUDA(enzymexla::GeqrfOp op,
-                                    ConversionPatternRewriter &rewriter) const {
+                                    PatternRewriter &rewriter) const {
     auto ctx = op->getContext();
     LLVMTypeConverter typeConverter(ctx);
 
@@ -264,7 +264,7 @@ struct GeqrfOpLowering : public OpConversionPattern<enzymexla::GeqrfOp> {
   }
 
   LogicalResult matchAndRewriteTPU(enzymexla::GeqrfOp op,
-                                   ConversionPatternRewriter &rewriter) const {
+                                   PatternRewriter &rewriter) const {
     auto ctx = op->getContext();
     LLVMTypeConverter typeConverter(ctx);
 
@@ -302,17 +302,17 @@ struct GeqrfOpLowering : public OpConversionPattern<enzymexla::GeqrfOp> {
 
 // NOTE CUDA (cuSOLVER) and TPU (XLA) do not have specific implementations :(
 // but could work if we lower directly to StableHLO
-struct GeqrtOpLowering : public OpConversionPattern<enzymexla::GeqrtOp> {
+struct GeqrtOpLowering : public OpRewritePattern<enzymexla::GeqrtOp> {
   std::string backend;
   int64_t blasIntWidth;
 
   GeqrtOpLowering(std::string backend, int64_t blasIntWidth,
                   MLIRContext *context, PatternBenefit benefit = 1)
-      : OpConversionPattern(context, benefit), backend(backend),
+      : OpRewritePattern(context, benefit), backend(backend),
         blasIntWidth(blasIntWidth) {}
 
-  LogicalResult matchAndRewrite(enzymexla::GeqrtOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite(enzymexla::GeqrtOp op,
+                                PatternRewriter &rewriter) const override {
     if (backend == "cpu")
       return matchAndRewriteCPU(op, rewriter);
     // else if (backend == "cuda")
@@ -327,7 +327,7 @@ struct GeqrtOpLowering : public OpConversionPattern<enzymexla::GeqrtOp> {
   // TODO get matrix sizes dynamically so that we don't need to create a
   // function wrapper for each op instance
   LogicalResult matchAndRewriteCPU(enzymexla::GeqrtOp op,
-                                   ConversionPatternRewriter &rewriter) const {
+                                   PatternRewriter &rewriter) const {
     auto ctx = op->getContext();
     LLVMTypeConverter typeConverter(ctx);
 
@@ -506,17 +506,17 @@ struct GeqrtOpLowering : public OpConversionPattern<enzymexla::GeqrtOp> {
   }
 };
 
-struct OrgqrOpLowering : public OpConversionPattern<enzymexla::OrgqrOp> {
+struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
   std::string backend;
   int64_t blasIntWidth;
 
   OrgqrOpLowering(std::string backend, int64_t blasIntWidth,
                   MLIRContext *context, PatternBenefit benefit = 1)
-      : OpConversionPattern(context, benefit), backend(backend),
+      : OpRewritePattern(context, benefit), backend(backend),
         blasIntWidth(blasIntWidth) {}
 
-  LogicalResult matchAndRewrite(enzymexla::OrgqrOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite(enzymexla::OrgqrOp op,
+                                PatternRewriter &rewriter) const override {
     if (backend == "cpu")
       return matchAndRewriteCPU(op, rewriter);
     else if (backend == "cuda")
@@ -531,7 +531,7 @@ struct OrgqrOpLowering : public OpConversionPattern<enzymexla::OrgqrOp> {
   // TODO get matrix sizes dynamically so that we don't need to create a
   // function wrapper for each op instance
   LogicalResult matchAndRewriteCPU(enzymexla::OrgqrOp op,
-                                   ConversionPatternRewriter &rewriter) const {
+                                   PatternRewriter &rewriter) const {
     auto ctx = op->getContext();
     LLVMTypeConverter typeConverter(ctx);
 
@@ -679,7 +679,7 @@ struct OrgqrOpLowering : public OpConversionPattern<enzymexla::OrgqrOp> {
   }
 
   LogicalResult matchAndRewriteCUDA(enzymexla::OrgqrOp op,
-                                    ConversionPatternRewriter &rewriter) const {
+                                    PatternRewriter &rewriter) const {
     auto ctx = op->getContext();
     LLVMTypeConverter typeConverter(ctx);
 
@@ -724,7 +724,7 @@ struct OrgqrOpLowering : public OpConversionPattern<enzymexla::OrgqrOp> {
   }
 
   LogicalResult matchAndRewriteTPU(enzymexla::OrgqrOp op,
-                                   ConversionPatternRewriter &rewriter) const {
+                                   PatternRewriter &rewriter) const {
     auto ctx = op->getContext();
     LLVMTypeConverter typeConverter(ctx);
 
@@ -749,17 +749,17 @@ struct OrgqrOpLowering : public OpConversionPattern<enzymexla::OrgqrOp> {
   }
 };
 
-struct OrmqrOpLowering : public OpConversionPattern<enzymexla::OrmqrOp> {
+struct OrmqrOpLowering : public OpRewritePattern<enzymexla::OrmqrOp> {
   std::string backend;
   int64_t blasIntWidth;
 
   OrmqrOpLowering(std::string backend, int64_t blasIntWidth,
                   MLIRContext *context, PatternBenefit benefit = 1)
-      : OpConversionPattern(context, benefit), backend(backend),
+      : OpRewritePattern(context, benefit), backend(backend),
         blasIntWidth(blasIntWidth) {}
 
-  LogicalResult matchAndRewrite(enzymexla::OrmqrOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite(enzymexla::OrmqrOp op,
+                                PatternRewriter &rewriter) const override {
     if (backend == "cpu")
       return matchAndRewriteCPU(op, rewriter);
     // else if (backend == "cuda")
@@ -774,7 +774,7 @@ struct OrmqrOpLowering : public OpConversionPattern<enzymexla::OrmqrOp> {
   // TODO get matrix sizes dynamically so that we don't need to create a
   // function wrapper for each op instance
   LogicalResult matchAndRewriteCPU(enzymexla::OrmqrOp op,
-                                   ConversionPatternRewriter &rewriter) const {
+                                   PatternRewriter &rewriter) const {
     auto ctx = op->getContext();
     LLVMTypeConverter typeConverter(ctx);
 
@@ -1012,17 +1012,17 @@ struct OrmqrOpLowering : public OpConversionPattern<enzymexla::OrmqrOp> {
   }
 };
 
-struct GemqrtOpLowering : public OpConversionPattern<enzymexla::GemqrtOp> {
+struct GemqrtOpLowering : public OpRewritePattern<enzymexla::GemqrtOp> {
   std::string backend;
   int64_t blasIntWidth;
 
   GemqrtOpLowering(std::string backend, int64_t blasIntWidth,
                    MLIRContext *context, PatternBenefit benefit = 1)
-      : OpConversionPattern(context, benefit), backend(backend),
+      : OpRewritePattern(context, benefit), backend(backend),
         blasIntWidth(blasIntWidth) {}
 
-  LogicalResult matchAndRewrite(enzymexla::GemqrtOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite(enzymexla::GemqrtOp op,
+                                PatternRewriter &rewriter) const override {
     if (backend == "cpu")
       return matchAndRewriteCPU(op, rewriter);
     // else if (backend == "cuda")
@@ -1037,7 +1037,7 @@ struct GemqrtOpLowering : public OpConversionPattern<enzymexla::GemqrtOp> {
   // TODO get matrix sizes dynamically so that we don't need to create a
   // function wrapper for each op instance
   LogicalResult matchAndRewriteCPU(enzymexla::GemqrtOp op,
-                                   ConversionPatternRewriter &rewriter) const {
+                                   PatternRewriter &rewriter) const {
     auto ctx = op->getContext();
     LLVMTypeConverter typeConverter(ctx);
 
@@ -1329,17 +1329,17 @@ Value anyNonFiniteValue(PatternRewriter &rewriter, Location loc, Type outType,
       stablehlo::NotOp::create(rewriter, loc, allFinite.getResult(0)));
 }
 
-struct GetrfOpLowering : public OpConversionPattern<enzymexla::GetrfOp> {
+struct GetrfOpLowering : public OpRewritePattern<enzymexla::GetrfOp> {
   std::string backend;
   int64_t blasIntWidth;
 
   GetrfOpLowering(std::string backend, int64_t blasIntWidth,
                   MLIRContext *context, PatternBenefit benefit = 1)
-      : OpConversionPattern(context, benefit), backend(backend),
+      : OpRewritePattern(context, benefit), backend(backend),
         blasIntWidth(blasIntWidth) {}
 
-  LogicalResult matchAndRewrite(enzymexla::GetrfOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite(enzymexla::GetrfOp op,
+                                PatternRewriter &rewriter) const override {
     if (backend == "cpu")
       return matchAndRewriteCPU(op, rewriter);
     else if (backend == "cuda")
@@ -1414,7 +1414,7 @@ private:
   }
 
   LogicalResult matchAndRewriteCPU(enzymexla::GetrfOp op,
-                                   ConversionPatternRewriter &rewriter) const {
+                                   PatternRewriter &rewriter) const {
     auto ctx = op->getContext();
 
     auto input = op.getInput();
@@ -1763,7 +1763,7 @@ private:
   }
 
   LogicalResult matchAndRewriteCUDA(enzymexla::GetrfOp op,
-                                    ConversionPatternRewriter &rewriter) const {
+                                    PatternRewriter &rewriter) const {
     auto input = op.getInput();
 
     auto inputType = cast<RankedTensorType>(input.getType());
@@ -1849,7 +1849,7 @@ private:
   }
 
   LogicalResult matchAndRewriteTPU(enzymexla::GetrfOp op,
-                                   ConversionPatternRewriter &rewriter) const {
+                                   PatternRewriter &rewriter) const {
     auto input = op.getInput();
 
     auto inputType = cast<RankedTensorType>(input.getType());
@@ -1914,17 +1914,17 @@ private:
   }
 };
 
-struct GetriOpLowering : public OpConversionPattern<enzymexla::GetriOp> {
+struct GetriOpLowering : public OpRewritePattern<enzymexla::GetriOp> {
   std::string backend;
   int64_t blasIntWidth;
 
   GetriOpLowering(std::string backend, int64_t blasIntWidth,
                   MLIRContext *context, PatternBenefit benefit = 1)
-      : OpConversionPattern(context, benefit), backend(backend),
+      : OpRewritePattern(context, benefit), backend(backend),
         blasIntWidth(blasIntWidth) {}
 
-  LogicalResult matchAndRewrite(enzymexla::GetriOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite(enzymexla::GetriOp op,
+                                PatternRewriter &rewriter) const override {
     op->emitOpError() << "Unsupported backend: " << backend;
     return failure();
   }
@@ -2553,17 +2553,17 @@ LogicalResult lowerSVDAlgorithmCUDA(OpTy op, PatternRewriter &rewriter,
   return success();
 }
 
-struct GesvdOpLowering : public OpConversionPattern<enzymexla::GesvdOp> {
+struct GesvdOpLowering : public OpRewritePattern<enzymexla::GesvdOp> {
   std::string backend;
   int64_t blasIntWidth;
 
   GesvdOpLowering(std::string backend, int64_t blasIntWidth,
                   MLIRContext *context, PatternBenefit benefit = 1)
-      : OpConversionPattern(context, benefit), backend(backend),
+      : OpRewritePattern(context, benefit), backend(backend),
         blasIntWidth(blasIntWidth) {}
 
-  LogicalResult matchAndRewrite(enzymexla::GesvdOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite(enzymexla::GesvdOp op,
+                                PatternRewriter &rewriter) const override {
     if (backend == "cpu")
       return matchAndRewriteCPU(op, rewriter);
     else if (backend == "cuda")
@@ -2574,12 +2574,12 @@ struct GesvdOpLowering : public OpConversionPattern<enzymexla::GesvdOp> {
   }
 
   LogicalResult matchAndRewriteCPU(enzymexla::GesvdOp op,
-                                   ConversionPatternRewriter &rewriter) const {
+                                   PatternRewriter &rewriter) const {
     return lowerSVDAlgorithmCPU(op, rewriter, blasIntWidth);
   }
 
   LogicalResult matchAndRewriteCUDA(enzymexla::GesvdOp op,
-                                    ConversionPatternRewriter &rewriter) const {
+                                    PatternRewriter &rewriter) const {
     auto backend_config = rewriter.getDictionaryAttr({
         rewriter.getNamedAttr("full_matrices", op.getFullAttr()),
         rewriter.getNamedAttr("compute_uv", op.getComputeUvAttr()),
@@ -2590,17 +2590,17 @@ struct GesvdOpLowering : public OpConversionPattern<enzymexla::GesvdOp> {
   }
 };
 
-struct GesddOpLowering : public OpConversionPattern<enzymexla::GesddOp> {
+struct GesddOpLowering : public OpRewritePattern<enzymexla::GesddOp> {
   std::string backend;
   int64_t blasIntWidth;
 
   GesddOpLowering(std::string backend, int64_t blasIntWidth,
                   MLIRContext *context, PatternBenefit benefit = 1)
-      : OpConversionPattern(context, benefit), backend(backend),
+      : OpRewritePattern(context, benefit), backend(backend),
         blasIntWidth(blasIntWidth) {}
 
-  LogicalResult matchAndRewrite(enzymexla::GesddOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite(enzymexla::GesddOp op,
+                                PatternRewriter &rewriter) const override {
     if (backend == "cpu")
       return matchAndRewriteCPU(op, rewriter);
 
@@ -2609,22 +2609,22 @@ struct GesddOpLowering : public OpConversionPattern<enzymexla::GesddOp> {
   }
 
   LogicalResult matchAndRewriteCPU(enzymexla::GesddOp op,
-                                   ConversionPatternRewriter &rewriter) const {
+                                   PatternRewriter &rewriter) const {
     return lowerSVDAlgorithmCPU(op, rewriter, blasIntWidth);
   }
 };
 
-struct GesvjOpLowering : public OpConversionPattern<enzymexla::GesvjOp> {
+struct GesvjOpLowering : public OpRewritePattern<enzymexla::GesvjOp> {
   std::string backend;
   int64_t blasIntWidth;
 
   GesvjOpLowering(std::string backend, int64_t blasIntWidth,
                   MLIRContext *context, PatternBenefit benefit = 1)
-      : OpConversionPattern(context, benefit), backend(backend),
+      : OpRewritePattern(context, benefit), backend(backend),
         blasIntWidth(blasIntWidth) {}
 
-  LogicalResult matchAndRewrite(enzymexla::GesvjOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite(enzymexla::GesvjOp op,
+                                PatternRewriter &rewriter) const override {
     if (backend == "cuda")
       return matchAndRewriteCUDA(op, rewriter);
     else if (backend == "tpu")
@@ -2635,7 +2635,7 @@ struct GesvjOpLowering : public OpConversionPattern<enzymexla::GesvjOp> {
   }
 
   LogicalResult matchAndRewriteCUDA(enzymexla::GesvjOp op,
-                                    ConversionPatternRewriter &rewriter) const {
+                                    PatternRewriter &rewriter) const {
     auto backend_config = rewriter.getDictionaryAttr({
         rewriter.getNamedAttr("full_matrices", op.getFullAttr()),
         rewriter.getNamedAttr("compute_uv", op.getComputeUvAttr()),
@@ -2647,7 +2647,7 @@ struct GesvjOpLowering : public OpConversionPattern<enzymexla::GesvjOp> {
   }
 
   LogicalResult matchAndRewriteTPU(enzymexla::GesvjOp op,
-                                   ConversionPatternRewriter &rewriter) const {
+                                   PatternRewriter &rewriter) const {
     auto input = op.getOperand();
     auto type_input = cast<RankedTensorType>(input.getType());
     auto rank_input = type_input.getRank();
@@ -2696,7 +2696,7 @@ struct LowerEnzymeXLALapackPass
   using Base::Base;
 
   void runOnOperation() override {
-    MLIRContext *context = &getContext();
+    auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
 
     patterns
@@ -2705,21 +2705,25 @@ struct LowerEnzymeXLALapackPass
              GesvdOpLowering, GesddOpLowering, GesvjOpLowering>(
             backend, blasIntWidth, context);
 
-    ConversionTarget target(*context);
-    target.addLegalDialect<stablehlo::StablehloDialect>();
-    target.addLegalDialect<func::FuncDialect>();
-    target.addLegalDialect<LLVM::LLVMDialect>();
-    target.addLegalDialect<enzyme::EnzymeDialect>();
-    target.addLegalDialect<enzymexla::EnzymeXLADialect>();
-    target.addLegalDialect<arith::ArithDialect>();
-    target.addIllegalOp<enzymexla::GeqrfOp, enzymexla::GeqrtOp,
-                        enzymexla::OrgqrOp, enzymexla::OrmqrOp,
-                        enzymexla::GemqrtOp, enzymexla::GetrfOp,
-                        enzymexla::GetriOp, enzymexla::GesvdOp,
-                        enzymexla::GesddOp, enzymexla::GesvjOp>();
+    GreedyRewriteConfig config;
+    if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
+                                            config))) {
+      signalPassFailure();
+    }
 
-    if (failed(applyPartialConversion(getOperation(), target,
-                                      std::move(patterns)))) {
+    // Verify that all illegal ops have been lowered
+    auto walkResult = getOperation()->walk([&](Operation *op) {
+      if (isa<enzymexla::GeqrfOp, enzymexla::GeqrtOp, enzymexla::OrgqrOp,
+              enzymexla::OrmqrOp, enzymexla::GemqrtOp, enzymexla::GetrfOp,
+              enzymexla::GetriOp, enzymexla::GesvdOp, enzymexla::GesddOp,
+              enzymexla::GesvjOp>(op)) {
+        op->emitError("Failed to lower enzymexla lapack operation");
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+
+    if (walkResult.wasInterrupted()) {
       signalPassFailure();
     }
   }
