@@ -1366,6 +1366,9 @@ mlir::func::FuncOp adaptToCallingConvention(mlir::func::FuncOp f,
       Value res;
       auto currentShape = currentType.getShape();
       auto targetShape = innerType.getShape();
+      
+      // Scalar i32 tensor type for shape constants
+      auto scalarI32Type = RankedTensorType::get({}, builder.getI32Type());
 
       if (currentSizeBytes == targetSizeBytes) {
         // Same size: direct bitcast
@@ -1401,7 +1404,6 @@ mlir::func::FuncOp adaptToCallingConvention(mlir::func::FuncOp f,
         if (anyDynamic) {
           // Use dynamic reshape
           SmallVector<Value> shapeValues;
-          auto scalarI32Type = RankedTensorType::get({}, builder.getI32Type());
           for (size_t i = 0; i < targetShape.size(); ++i) {
             if (targetShape[i] == ShapedType::kDynamic) {
               // Get dynamic dimension from original tensor
@@ -1452,7 +1454,6 @@ mlir::func::FuncOp adaptToCallingConvention(mlir::func::FuncOp f,
         if (anyDynamic) {
           // Use dynamic reshape
           SmallVector<Value> shapeValues;
-          auto scalarI32Type = RankedTensorType::get({}, builder.getI32Type());
           for (size_t i = 0; i < intermediateShape.size(); ++i) {
             if (intermediateShape[i] == ShapedType::kDynamic) {
               if (i < currentShape.size()) {
