@@ -921,9 +921,10 @@ bool isOnlyUsedInOperation(Operation *operation, Operation *parentOp);
 /// \param inputTensorTypes The tensor types for the wrapper function arguments
 /// \param byteOffsets Byte offsets for each argument (0 means no offset)
 /// \return A new function that adapts the calling convention
-mlir::func::FuncOp adaptToCallingConvention(mlir::func::FuncOp f,
-                                            ArrayRef<mlir::Type> inputTensorTypes,
-                                            ArrayRef<int64_t> byteOffsets);
+mlir::func::FuncOp
+adaptToCallingConvention(mlir::func::FuncOp f,
+                         ArrayRef<mlir::Type> inputTensorTypes,
+                         ArrayRef<int64_t> byteOffsets);
 
 } // namespace enzyme
 

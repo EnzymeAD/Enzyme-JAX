@@ -1244,9 +1244,10 @@ bool mayReadFrom(Operation *op, Value val) {
   return true;
 }
 
-mlir::func::FuncOp adaptToCallingConvention(mlir::func::FuncOp f,
-                                            ArrayRef<mlir::Type> inputTensorTypes,
-                                            ArrayRef<int64_t> byteOffsets) {
+mlir::func::FuncOp
+adaptToCallingConvention(mlir::func::FuncOp f,
+                         ArrayRef<mlir::Type> inputTensorTypes,
+                         ArrayRef<int64_t> byteOffsets) {
   // Get the original function type
   auto originalFuncType = f.getFunctionType();
   size_t numInputs = originalFuncType.getNumInputs();
@@ -1260,35 +1261,36 @@ mlir::func::FuncOp adaptToCallingConvention(mlir::func::FuncOp f,
   // Create the new function type using the outer specification types
   auto context = f.getContext();
   auto loc = f.getLoc();
-  auto newFuncType = mlir::FunctionType::get(
-      context, inputTensorTypes, originalFuncType.getResults());
-  
+  auto newFuncType = mlir::FunctionType::get(context, inputTensorTypes,
+                                             originalFuncType.getResults());
+
   // Create a new function with a unique name
   std::string wrapperName = (f.getName() + "_adapted").str();
   OpBuilder builder(context);
   builder.setInsertionPoint(f);
-  
-  auto wrapperFunc = builder.create<mlir::func::FuncOp>(loc, wrapperName, newFuncType);
-  
+
+  auto wrapperFunc =
+      builder.create<mlir::func::FuncOp>(loc, wrapperName, newFuncType);
+
   // Add entry block to the wrapper function
   auto &entryBlock = *wrapperFunc.addEntryBlock();
   builder.setInsertionPointToStart(&entryBlock);
-  
+
   // Process each argument
   SmallVector<Value> adaptedArgs;
   for (size_t i = 0; i < numInputs; ++i) {
     Value arg = entryBlock.getArgument(i);
     auto outerType = dyn_cast<RankedTensorType>(inputTensorTypes[i]);
     auto innerType = dyn_cast<RankedTensorType>(originalFuncType.getInput(i));
-    
+
     if (!outerType || !innerType) {
       // If not tensor types, pass through as-is
       adaptedArgs.push_back(arg);
       continue;
     }
-    
+
     Value adaptedArg = arg;
-    
+
     // Handle byte offset if non-zero
     int64_t byteOffset = byteOffsets[i];
     if (byteOffset != 0) {
@@ -1296,7 +1298,7 @@ mlir::func::FuncOp adaptToCallingConvention(mlir::func::FuncOp f,
       auto elementType = outerType.getElementType();
 
       // Get element size in bytes using AutoDiffTypeInterface
-      size_t elementSizeBytes = 
+      size_t elementSizeBytes =
           cast<AutoDiffTypeInterface>(elementType).getApproxSize();
 
       // Verify byte offset aligns with element boundaries
@@ -1304,17 +1306,17 @@ mlir::func::FuncOp adaptToCallingConvention(mlir::func::FuncOp f,
              "Byte offset must be aligned to element boundaries");
 
       int64_t elementOffset = byteOffset / elementSizeBytes;
-      
+
       auto outerShape = outerType.getShape();
       auto innerShape = innerType.getShape();
-      
+
       // Convert linear element offset to multi-dimensional start indices
       SmallVector<int64_t> startIndices;
       SmallVector<int64_t> limitIndices;
       SmallVector<int64_t> strides(outerShape.size(), 1);
-      
+
       int64_t remainingOffset = elementOffset;
-      
+
       // Calculate strides for each dimension (row-major order)
       for (size_t j = 0; j < outerShape.size(); ++j) {
         // Calculate the stride for this dimension
@@ -1322,7 +1324,7 @@ mlir::func::FuncOp adaptToCallingConvention(mlir::func::FuncOp f,
         for (size_t k = j + 1; k < outerShape.size(); ++k) {
           dimStride *= outerShape[k];
         }
-        
+
         // Calculate the index for this dimension
         int64_t dimIndex = remainingOffset / dimStride;
         startIndices.push_back(dimIndex);
@@ -1339,15 +1341,16 @@ mlir::func::FuncOp adaptToCallingConvention(mlir::func::FuncOp f,
         // Update remaining offset for next dimension
         remainingOffset = remainingOffset % dimStride;
       }
-      
-      auto slicedType = RankedTensorType::get(innerShape, outerType.getElementType());
+
+      auto slicedType =
+          RankedTensorType::get(innerShape, outerType.getElementType());
       adaptedArg = builder.create<stablehlo::SliceOp>(
           loc, slicedType, adaptedArg,
           builder.getDenseI64ArrayAttr(startIndices),
           builder.getDenseI64ArrayAttr(limitIndices),
           builder.getDenseI64ArrayAttr(strides));
     }
-    
+
     // Handle element type conversion if needed using bitcast_convert
     auto currentType = cast<RankedTensorType>(adaptedArg.getType());
     if (currentType.getElementType() != innerType.getElementType()) {
@@ -1355,9 +1358,9 @@ mlir::func::FuncOp adaptToCallingConvention(mlir::func::FuncOp f,
       auto targetElemType = innerType.getElementType();
 
       // Calculate element sizes in bytes using AutoDiffTypeInterface
-      size_t currentSizeBytes = 
+      size_t currentSizeBytes =
           cast<AutoDiffTypeInterface>(currentElemType).getApproxSize();
-      size_t targetSizeBytes = 
+      size_t targetSizeBytes =
           cast<AutoDiffTypeInterface>(targetElemType).getApproxSize();
 
       assert(currentSizeBytes > 0 && targetSizeBytes > 0 &&
@@ -1366,14 +1369,15 @@ mlir::func::FuncOp adaptToCallingConvention(mlir::func::FuncOp f,
       Value res;
       auto currentShape = currentType.getShape();
       auto targetShape = innerType.getShape();
-      
+
       // Scalar i32 tensor type for shape constants
       auto scalarI32Type = RankedTensorType::get({}, builder.getI32Type());
 
       if (currentSizeBytes == targetSizeBytes) {
         // Same size: direct bitcast
         auto convertedType = RankedTensorType::get(targetShape, targetElemType);
-        res = builder.create<stablehlo::BitcastConvertOp>(loc, convertedType, adaptedArg);
+        res = builder.create<stablehlo::BitcastConvertOp>(loc, convertedType,
+                                                          adaptedArg);
       } else if (targetSizeBytes < currentSizeBytes) {
         // Target element is smaller: add dimension at the end
         assert(currentSizeBytes % targetSizeBytes == 0 &&
@@ -1385,24 +1389,29 @@ mlir::func::FuncOp adaptToCallingConvention(mlir::func::FuncOp f,
         intermediateShape.push_back(sizeRatio);
 
         // Adjust the last dimension if needed
-        if (lastIdx > 0 && intermediateShape[lastIdx - 1] != ShapedType::kDynamic) {
+        if (lastIdx > 0 &&
+            intermediateShape[lastIdx - 1] != ShapedType::kDynamic) {
           intermediateShape[lastIdx - 1] /= sizeRatio;
         }
 
-        auto intermediateType = RankedTensorType::get(intermediateShape, targetElemType);
-        res = builder.create<stablehlo::BitcastConvertOp>(loc, intermediateType, adaptedArg);
+        auto intermediateType =
+            RankedTensorType::get(intermediateShape, targetElemType);
+        res = builder.create<stablehlo::BitcastConvertOp>(loc, intermediateType,
+                                                          adaptedArg);
 
-        // Always use dynamic reshape with GetDimensionSizeOp (will be optimized away for static shapes)
+        // Always use dynamic reshape with GetDimensionSizeOp (will be optimized
+        // away for static shapes)
         SmallVector<Value> shapeValues;
         for (size_t i = 0; i < targetShape.size(); ++i) {
-          auto dimValue = builder.create<stablehlo::GetDimensionSizeOp>(
-              loc, res, i);
+          auto dimValue =
+              builder.create<stablehlo::GetDimensionSizeOp>(loc, res, i);
           shapeValues.push_back(dimValue);
         }
-        auto shapeOp = builder.create<stablehlo::ConcatenateOp>(
-            loc, shapeValues, 0);
+        auto shapeOp =
+            builder.create<stablehlo::ConcatenateOp>(loc, shapeValues, 0);
         res = builder.create<stablehlo::DynamicReshapeOp>(
-            loc, RankedTensorType::get(targetShape, targetElemType), res, shapeOp);
+            loc, RankedTensorType::get(targetShape, targetElemType), res,
+            shapeOp);
       } else {
         // Target element is larger: reshape first, then bitcast
         assert(targetSizeBytes % currentSizeBytes == 0 &&
@@ -1414,11 +1423,13 @@ mlir::func::FuncOp adaptToCallingConvention(mlir::func::FuncOp f,
         intermediateShape.push_back(sizeRatio);
 
         // Adjust the last dimension if needed
-        if (lastIdx > 0 && intermediateShape[lastIdx - 1] != ShapedType::kDynamic) {
+        if (lastIdx > 0 &&
+            intermediateShape[lastIdx - 1] != ShapedType::kDynamic) {
           intermediateShape[lastIdx - 1] /= sizeRatio;
         }
 
-        // Always use dynamic reshape with GetDimensionSizeOp (will be optimized away for static shapes)
+        // Always use dynamic reshape with GetDimensionSizeOp (will be optimized
+        // away for static shapes)
         SmallVector<Value> shapeValues;
         for (size_t i = 0; i < intermediateShape.size(); ++i) {
           if (i < currentShape.size()) {
@@ -1432,8 +1443,8 @@ mlir::func::FuncOp adaptToCallingConvention(mlir::func::FuncOp f,
             shapeValues.push_back(constValue);
           }
         }
-        auto shapeOp = builder.create<stablehlo::ConcatenateOp>(
-            loc, shapeValues, 0);
+        auto shapeOp =
+            builder.create<stablehlo::ConcatenateOp>(loc, shapeValues, 0);
         Value reshaped = builder.create<stablehlo::DynamicReshapeOp>(
             loc, RankedTensorType::get(intermediateShape, currentElemType),
             adaptedArg, shapeOp);
@@ -1445,16 +1456,16 @@ mlir::func::FuncOp adaptToCallingConvention(mlir::func::FuncOp f,
 
       adaptedArg = res;
     }
-    
+
     adaptedArgs.push_back(adaptedArg);
   }
-  
+
   // Call the original function with adapted arguments
   auto callOp = builder.create<mlir::func::CallOp>(loc, f, adaptedArgs);
-  
+
   // Return the results
   builder.create<mlir::func::ReturnOp>(loc, callOp.getResults());
-  
+
   return wrapperFunc;
 }
 
