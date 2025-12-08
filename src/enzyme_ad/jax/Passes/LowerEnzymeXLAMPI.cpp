@@ -54,6 +54,11 @@ struct MPICommRankOpLowering
       
       rewriter.replaceOp(op, placeholderValue);
     
+      // TODO return success/failure/notifymatchfailure not behaving as i expect
+      // Seems to be some sort of funny interaction between replaceop and return
+      // success or fail. ie, if I comment out the replaceop part it behaves slightly
+      // more as expected (ie, it enters into the if(failed(...)) block in 
+      // runOnOperation below
       return success();
     } else {
       return rewriter.notifyMatchFailure(op, "Backend not supported: " + backend);
@@ -136,6 +141,7 @@ struct LowerEnzymeXLAMPIPass
     GreedyRewriteConfig config;
     if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
                                             config))) {
+      printf("FAILEEEEDDDDDD\n");
       signalPassFailure();
     }
   }
