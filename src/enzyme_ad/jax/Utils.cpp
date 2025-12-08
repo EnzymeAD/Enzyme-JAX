@@ -34,6 +34,8 @@
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
+#include "Interfaces/AutoDiffTypeInterface.h"
+
 #include <set>
 
 using namespace mlir;
@@ -1293,19 +1295,9 @@ mlir::func::FuncOp adaptToCallingConvention(mlir::func::FuncOp f,
       // Calculate element offset from byte offset
       auto elementType = outerType.getElementType();
 
-      // Get element size in bytes
-      int64_t elementBytes = 0;
-      if (auto complexType = dyn_cast<ComplexType>(elementType)) {
-        // Complex types have two components of the underlying element type
-        auto componentType = complexType.getElementType();
-        unsigned componentBitWidth = componentType.getIntOrFloatBitWidth();
-        elementBytes = 2 * ((componentBitWidth + 7) / 8);
-      } else {
-        unsigned elementBitWidth = elementType.getIntOrFloatBitWidth();
-        assert(elementBitWidth > 0 &&
-               "Element type must have valid bit width for byte offset calculation");
-        elementBytes = (elementBitWidth + 7) / 8;
-      }
+      // Get element size in bytes using AutoDiffTypeInterface
+      size_t elementBytes = 
+          cast<AutoDiffTypeInterface>(elementType).getApproxSize();
 
       // Verify byte offset aligns with element boundaries
       assert(byteOffset % elementBytes == 0 &&
@@ -1362,20 +1354,14 @@ mlir::func::FuncOp adaptToCallingConvention(mlir::func::FuncOp f,
       auto currentElemType = currentType.getElementType();
       auto targetElemType = innerType.getElementType();
 
-      // Calculate element sizes in bits
-      auto getElementSize = [](Type elemType) -> size_t {
-        if (auto complexType = dyn_cast<ComplexType>(elemType)) {
-          auto componentType = complexType.getElementType();
-          return 2 * componentType.getIntOrFloatBitWidth();
-        }
-        return elemType.getIntOrFloatBitWidth();
-      };
-
-      size_t currentSize = getElementSize(currentElemType);
-      size_t targetSize = getElementSize(targetElemType);
+      // Calculate element sizes using AutoDiffTypeInterface
+      size_t currentSize = 
+          cast<AutoDiffTypeInterface>(currentElemType).getApproxSize();
+      size_t targetSize = 
+          cast<AutoDiffTypeInterface>(targetElemType).getApproxSize();
 
       assert(currentSize > 0 && targetSize > 0 &&
-             "Element types must have valid bit width for conversion");
+             "Element types must have valid size for conversion");
 
       Value res;
       auto currentShape = currentType.getShape();
