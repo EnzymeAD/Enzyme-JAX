@@ -154,10 +154,15 @@ module {
 // CPU-NEXT:      %7 = stablehlo.bitcast_convert %6 : (tensor<ui64>) -> tensor<f64>
 // CPU-NEXT:      %cst_9 = stablehlo.constant dense<1.000000e+00> : tensor<f64>
 // CPU-NEXT:      %8 = stablehlo.subtract %7, %cst_9 : tensor<f64>
-// CPU-NEXT:      %9 = stablehlo.log %8 : tensor<f64>
-// CPU-NEXT:      %10 = stablehlo.compare  LT, %9, %4,  FLOAT : (tensor<f64>, tensor<f64>) -> tensor<i1>
-// CPU-NEXT:      %11 = stablehlo.select %10, %2#0, %iterArg_4 : tensor<i1>, tensor<ui64>
-// CPU-NEXT:      stablehlo.return %1, %11, %output_state : tensor<i64>, tensor<ui64>, tensor<2xui64>
+// CPU-NEXT:      %9 = stablehlo.broadcast_in_dim %cst, dims = [] : (tensor<f64>) -> tensor<f64>
+// CPU-NEXT:      %10 = stablehlo.broadcast_in_dim %cst_0, dims = [] : (tensor<f64>) -> tensor<f64>
+// CPU-NEXT:      %11 = stablehlo.subtract %10, %9 : tensor<f64>
+// CPU-NEXT:      %12 = stablehlo.multiply %11, %8 : tensor<f64>
+// CPU-NEXT:      %13 = stablehlo.add %9, %12 : tensor<f64>
+// CPU-NEXT:      %14 = stablehlo.log %13 : tensor<f64>
+// CPU-NEXT:      %15 = stablehlo.compare  LT, %14, %4,  FLOAT : (tensor<f64>, tensor<f64>) -> tensor<i1>
+// CPU-NEXT:      %16 = stablehlo.select %15, %2#0, %iterArg_4 : tensor<i1>, tensor<ui64>
+// CPU-NEXT:      stablehlo.return %1, %16, %output_state : tensor<i64>, tensor<ui64>, tensor<2xui64>
 // CPU-NEXT:    }
 // CPU-NEXT:    return %0#1, %0#2 : tensor<ui64>, tensor<2xui64>
 // CPU-NEXT:  }
