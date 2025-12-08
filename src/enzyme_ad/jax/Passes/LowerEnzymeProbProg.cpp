@@ -1873,8 +1873,23 @@ struct RandomOpConversion : public OpConversionPattern<enzyme::RandomOp> {
           rewriter, op.getLoc(), rankedType,
           DenseElementsAttr::get(rankedType,
                                  rewriter.getFloatAttr(elemType, 1.0)));
-      result = stablehlo::SubtractOp::create(rewriter, op.getLoc(), rankedType,
-                                             floatValue, oneConst);
+      auto uniform01 = stablehlo::SubtractOp::create(
+          rewriter, op.getLoc(), rankedType, floatValue, oneConst);
+
+      auto a = adaptor.getA();
+      auto b = adaptor.getB();
+      auto aBroadcast = stablehlo::BroadcastInDimOp::create(
+          rewriter, op.getLoc(), rankedType, a,
+          rewriter.getDenseI64ArrayAttr({}));
+      auto bBroadcast = stablehlo::BroadcastInDimOp::create(
+          rewriter, op.getLoc(), rankedType, b,
+          rewriter.getDenseI64ArrayAttr({}));
+      auto range = stablehlo::SubtractOp::create(
+          rewriter, op.getLoc(), rankedType, bBroadcast, aBroadcast);
+      auto scaled = stablehlo::MulOp::create(rewriter, op.getLoc(), rankedType,
+                                             range, uniform01);
+      result = stablehlo::AddOp::create(rewriter, op.getLoc(), rankedType,
+                                        aBroadcast, scaled);
     } else if (distribution == enzyme::RngDistribution::NORMAL) {
       unsigned mantissaBits;
       if (nbits == 16)
@@ -1943,9 +1958,21 @@ struct RandomOpConversion : public OpConversionPattern<enzyme::RandomOp> {
           rewriter, op.getLoc(), rankedType,
           DenseElementsAttr::get(rankedType,
                                  rewriter.getFloatAttr(elemType, sqrt2)));
-      result = stablehlo::MulOp::create(rewriter, op.getLoc(), rankedType,
-                                        probit, sqrt2Const)
-                   .getResult();
+      auto standardNormal = stablehlo::MulOp::create(
+          rewriter, op.getLoc(), rankedType, probit, sqrt2Const);
+
+      auto mu = adaptor.getA();
+      auto sigma = adaptor.getB();
+      auto muBroadcast = stablehlo::BroadcastInDimOp::create(
+          rewriter, op.getLoc(), rankedType, mu,
+          rewriter.getDenseI64ArrayAttr({}));
+      auto sigmaBroadcast = stablehlo::BroadcastInDimOp::create(
+          rewriter, op.getLoc(), rankedType, sigma,
+          rewriter.getDenseI64ArrayAttr({}));
+      auto scaled = stablehlo::MulOp::create(rewriter, op.getLoc(), rankedType,
+                                             sigmaBroadcast, standardNormal);
+      result = stablehlo::AddOp::create(rewriter, op.getLoc(), rankedType,
+                                        muBroadcast, scaled);
     } else if (distribution == enzyme::RngDistribution::MULTINORMAL) {
       // Multivariate normal: x ~ N(mean, cov)
       // Algorithm: x = mean + chol(cov) * z, where z ~ N(0, I)
