@@ -53,16 +53,19 @@ static bool extractConstantScalar(Value val, double &realPart,
 }
 
 // Helper function to create operand and rank for scalar value
-// Returns the operand to use and the rank (1 for empty placeholder, 0 for scalar)
-static std::pair<Value, int64_t>
-createScalarOperand(PatternRewriter &rewriter, Location loc, Value originalVal,
-                    bool useAttribute) {
+// Returns the operand to use and the rank (1 for empty placeholder, 0 for
+// scalar)
+static std::pair<Value, int64_t> createScalarOperand(PatternRewriter &rewriter,
+                                                     Location loc,
+                                                     Value originalVal,
+                                                     bool useAttribute) {
   if (useAttribute) {
     // Create an empty 0-element tensor as placeholder
     auto emptyType = RankedTensorType::get(
         {0}, cast<RankedTensorType>(originalVal.getType()).getElementType());
     auto emptyTensor = stablehlo::ConstantOp::create(
-        rewriter, loc, DenseElementsAttr::get(emptyType, ArrayRef<Attribute>{}));
+        rewriter, loc,
+        DenseElementsAttr::get(emptyType, ArrayRef<Attribute>{}));
     return {emptyTensor, 1};
   }
   return {originalVal, 0};
@@ -311,7 +314,8 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
     // Try to extract alpha and beta as constants
     double alphaReal = 0.0, alphaImag = 0.0;
     double betaReal = 0.0, betaImag = 0.0;
-    bool useAlphaAttr = extractConstantScalar(op.getAlpha(), alphaReal, alphaImag);
+    bool useAlphaAttr =
+        extractConstantScalar(op.getAlpha(), alphaReal, alphaImag);
     bool useBetaAttr = extractConstantScalar(op.getBeta(), betaReal, betaImag);
 
     // Build operands list - use empty tensors for constant alpha/beta
@@ -332,21 +336,27 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
     operandRanks.push_back(betaRank);
 
     auto customCall = stablehlo::CustomCallOp::create(
-        rewriter, op.getLoc(), TypeRange{CType},
-        operands,
+        rewriter, op.getLoc(), TypeRange{CType}, operands,
         rewriter.getStringAttr("reactant_cublas_syrk_ffi"),
         /*has_side_effect*/ nullptr,
         /*backend_config*/
         rewriter.getDictionaryAttr({
             rewriter.getNamedAttr("transpose", rewriter.getBoolAttr(transpose)),
-            rewriter.getNamedAttr("uplo", rewriter.getBoolAttr(op.getUplo() ==
-                                                                enzymexla::LapackUplo::U)),
-            rewriter.getNamedAttr("use_alpha_attribute", rewriter.getBoolAttr(useAlphaAttr)),
-            rewriter.getNamedAttr("use_beta_attribute", rewriter.getBoolAttr(useBetaAttr)),
-            rewriter.getNamedAttr("alpha_real", rewriter.getF64FloatAttr(alphaReal)),
-            rewriter.getNamedAttr("alpha_imag", rewriter.getF64FloatAttr(alphaImag)),
-            rewriter.getNamedAttr("beta_real", rewriter.getF64FloatAttr(betaReal)),
-            rewriter.getNamedAttr("beta_imag", rewriter.getF64FloatAttr(betaImag)),
+            rewriter.getNamedAttr(
+                "uplo",
+                rewriter.getBoolAttr(op.getUplo() == enzymexla::LapackUplo::U)),
+            rewriter.getNamedAttr("use_alpha_attribute",
+                                  rewriter.getBoolAttr(useAlphaAttr)),
+            rewriter.getNamedAttr("use_beta_attribute",
+                                  rewriter.getBoolAttr(useBetaAttr)),
+            rewriter.getNamedAttr("alpha_real",
+                                  rewriter.getF64FloatAttr(alphaReal)),
+            rewriter.getNamedAttr("alpha_imag",
+                                  rewriter.getF64FloatAttr(alphaImag)),
+            rewriter.getNamedAttr("beta_real",
+                                  rewriter.getF64FloatAttr(betaReal)),
+            rewriter.getNamedAttr("beta_imag",
+                                  rewriter.getF64FloatAttr(betaImag)),
         }),
         /*api_version*/
         stablehlo::CustomCallApiVersionAttr::get(
@@ -354,8 +364,7 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
             mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
         /*calledcomputations*/ nullptr,
         /*operand_layouts*/
-        getSHLOLayout(rewriter, operandRanks, SmallVector<bool>(4, true),
-                      rank),
+        getSHLOLayout(rewriter, operandRanks, SmallVector<bool>(4, true), rank),
         /*result_layouts*/
         getSHLOLayout(rewriter, {rank}, SmallVector<bool>(rank, true), rank),
         /*output_operand_aliases*/
