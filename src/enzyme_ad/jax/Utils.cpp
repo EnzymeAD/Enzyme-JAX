@@ -1392,40 +1392,17 @@ mlir::func::FuncOp adaptToCallingConvention(mlir::func::FuncOp f,
         auto intermediateType = RankedTensorType::get(intermediateShape, targetElemType);
         res = builder.create<stablehlo::BitcastConvertOp>(loc, intermediateType, adaptedArg);
 
-        // Check if we need dynamic or static reshape
-        bool anyDynamic = false;
-        for (auto dim : intermediateShape) {
-          if (dim == ShapedType::kDynamic) {
-            anyDynamic = true;
-            break;
-          }
+        // Always use dynamic reshape with GetDimensionSizeOp (will be optimized away for static shapes)
+        SmallVector<Value> shapeValues;
+        for (size_t i = 0; i < targetShape.size(); ++i) {
+          auto dimValue = builder.create<stablehlo::GetDimensionSizeOp>(
+              loc, res, i);
+          shapeValues.push_back(dimValue);
         }
-
-        if (anyDynamic) {
-          // Use dynamic reshape
-          SmallVector<Value> shapeValues;
-          for (size_t i = 0; i < targetShape.size(); ++i) {
-            if (targetShape[i] == ShapedType::kDynamic) {
-              // Get dynamic dimension from original tensor
-              auto dimValue = builder.create<stablehlo::GetDimensionSizeOp>(
-                  loc, scalarI32Type, adaptedArg, i);
-              shapeValues.push_back(dimValue);
-            } else {
-              auto constValue = builder.create<stablehlo::ConstantOp>(
-                  loc, scalarI32Type,
-                  cast<ElementsAttr>(makeAttr(scalarI32Type, targetShape[i])));
-              shapeValues.push_back(constValue);
-            }
-          }
-          auto shapeOp = builder.create<stablehlo::ConcatenateOp>(
-              loc, shapeValues, 0);
-          res = builder.create<stablehlo::DynamicReshapeOp>(
-              loc, RankedTensorType::get(targetShape, targetElemType), res, shapeOp);
-        } else {
-          // Use static reshape
-          res = builder.create<stablehlo::ReshapeOp>(
-              loc, RankedTensorType::get(targetShape, targetElemType), res);
-        }
+        auto shapeOp = builder.create<stablehlo::ConcatenateOp>(
+            loc, shapeValues, 0);
+        res = builder.create<stablehlo::DynamicReshapeOp>(
+            loc, RankedTensorType::get(targetShape, targetElemType), res, shapeOp);
       } else {
         // Target element is larger: reshape first, then bitcast
         assert(targetSizeBytes % currentSizeBytes == 0 &&
@@ -1441,48 +1418,25 @@ mlir::func::FuncOp adaptToCallingConvention(mlir::func::FuncOp f,
           intermediateShape[lastIdx - 1] /= sizeRatio;
         }
 
-        Value reshaped;
-        // Check if we need dynamic reshape
-        bool anyDynamic = false;
-        for (auto dim : intermediateShape) {
-          if (dim == ShapedType::kDynamic) {
-            anyDynamic = true;
-            break;
+        // Always use dynamic reshape with GetDimensionSizeOp (will be optimized away for static shapes)
+        SmallVector<Value> shapeValues;
+        for (size_t i = 0; i < intermediateShape.size(); ++i) {
+          if (i < currentShape.size()) {
+            auto dimValue = builder.create<stablehlo::GetDimensionSizeOp>(
+                loc, adaptedArg, i);
+            shapeValues.push_back(dimValue);
+          } else {
+            // This is the added dimension
+            auto constValue = builder.create<stablehlo::ConstantOp>(
+                loc, cast<ElementsAttr>(makeAttr(scalarI32Type, sizeRatio)));
+            shapeValues.push_back(constValue);
           }
         }
-
-        if (anyDynamic) {
-          // Use dynamic reshape
-          SmallVector<Value> shapeValues;
-          for (size_t i = 0; i < intermediateShape.size(); ++i) {
-            if (intermediateShape[i] == ShapedType::kDynamic) {
-              if (i < currentShape.size()) {
-                auto dimValue = builder.create<stablehlo::GetDimensionSizeOp>(
-                    loc, scalarI32Type, adaptedArg, i);
-                shapeValues.push_back(dimValue);
-              } else {
-                // This is the added dimension
-                auto constValue = builder.create<stablehlo::ConstantOp>(
-                    loc, scalarI32Type,
-                    cast<ElementsAttr>(makeAttr(scalarI32Type, sizeRatio)));
-                shapeValues.push_back(constValue);
-              }
-            } else {
-              auto constValue = builder.create<stablehlo::ConstantOp>(
-                  loc, scalarI32Type,
-                  cast<ElementsAttr>(makeAttr(scalarI32Type, intermediateShape[i])));
-              shapeValues.push_back(constValue);
-            }
-          }
-          auto shapeOp = builder.create<stablehlo::ConcatenateOp>(
-              loc, shapeValues, 0);
-          reshaped = builder.create<stablehlo::DynamicReshapeOp>(
-              loc, RankedTensorType::get(intermediateShape, currentElemType),
-              adaptedArg, shapeOp);
-        } else {
-          reshaped = builder.create<stablehlo::ReshapeOp>(
-              loc, RankedTensorType::get(intermediateShape, currentElemType), adaptedArg);
-        }
+        auto shapeOp = builder.create<stablehlo::ConcatenateOp>(
+            loc, shapeValues, 0);
+        Value reshaped = builder.create<stablehlo::DynamicReshapeOp>(
+            loc, RankedTensorType::get(intermediateShape, currentElemType),
+            adaptedArg, shapeOp);
 
         // Now bitcast to target type
         res = builder.create<stablehlo::BitcastConvertOp>(
