@@ -185,4 +185,43 @@ module {
 
     return %sum, %trace : tensor<f64>, !enzyme.Trace
   }
+
+  // SHLO:  func.func @test_while_loop(%arg0: tensor<i64>) -> tensor<f64> {
+  // SHLO-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+  // SHLO-NEXT:    %c = stablehlo.constant dense<0> : tensor<i64>
+  // SHLO-NEXT:    %c_0 = stablehlo.constant dense<1> : tensor<i64>
+  // SHLO-NEXT:    %0:2 = stablehlo.while(%iterArg = %cst, %iterArg_1 = %c) : tensor<f64>, tensor<i64>
+  // SHLO-NEXT:    cond {
+  // SHLO-NEXT:      %1 = stablehlo.compare  LT, %iterArg_1, %arg0 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+  // SHLO-NEXT:      stablehlo.return %1 : tensor<i1>
+  // SHLO-NEXT:    } do {
+  // SHLO-NEXT:      %1 = stablehlo.convert %iterArg_1 : (tensor<i64>) -> tensor<f64>
+  // SHLO-NEXT:      %2 = stablehlo.add %iterArg, %1 : tensor<f64>
+  // SHLO-NEXT:      %3 = stablehlo.add %iterArg_1, %c_0 : tensor<i64>
+  // SHLO-NEXT:      stablehlo.return %2, %3 : tensor<f64>, tensor<i64>
+  // SHLO-NEXT:    }
+  // SHLO-NEXT:    return %0#0 : tensor<f64>
+  // SHLO-NEXT:  }
+  func.func @test_while_loop(%n: tensor<i64>) -> tensor<f64> {
+    %init_sum = stablehlo.constant dense<0.0> : tensor<f64>
+    %init_counter = stablehlo.constant dense<0> : tensor<i64>
+    %c1 = stablehlo.constant dense<1> : tensor<i64>
+
+    %sum, %counter = enzyme.while_loop (%init_sum, %init_counter : tensor<f64>, tensor<i64>)
+      -> tensor<f64>, tensor<i64>
+      condition {
+      ^bb0(%s_cond: tensor<f64>, %c_cond: tensor<i64>):
+        %cond = stablehlo.compare LT, %c_cond, %n : (tensor<i64>, tensor<i64>) -> tensor<i1>
+        enzyme.yield %cond : tensor<i1>
+      }
+      body {
+      ^bb0(%s_body: tensor<f64>, %c_body: tensor<i64>):
+        %c_f64 = stablehlo.convert %c_body : (tensor<i64>) -> tensor<f64>
+        %s_next = stablehlo.add %s_body, %c_f64 : tensor<f64>
+        %c_next = stablehlo.add %c_body, %c1 : tensor<i64>
+        enzyme.yield %s_next, %c_next : tensor<f64>, tensor<i64>
+      }
+
+    return %sum : tensor<f64>
+  }
 }
