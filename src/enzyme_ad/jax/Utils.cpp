@@ -1356,12 +1356,143 @@ mlir::func::FuncOp adaptToCallingConvention(mlir::func::FuncOp f,
           builder.getDenseI64ArrayAttr(strides));
     }
     
-    // Handle element type conversion if needed
-    if (outerType.getElementType() != innerType.getElementType()) {
-      auto convertedType = RankedTensorType::get(
-          cast<RankedTensorType>(adaptedArg.getType()).getShape(),
-          innerType.getElementType());
-      adaptedArg = builder.create<stablehlo::ConvertOp>(loc, convertedType, adaptedArg);
+    // Handle element type conversion if needed using bitcast_convert
+    auto currentType = cast<RankedTensorType>(adaptedArg.getType());
+    if (currentType.getElementType() != innerType.getElementType()) {
+      auto currentElemType = currentType.getElementType();
+      auto targetElemType = innerType.getElementType();
+
+      // Calculate element sizes in bits
+      auto getElementSize = [](Type elemType) -> size_t {
+        if (auto complexType = dyn_cast<ComplexType>(elemType)) {
+          auto componentType = complexType.getElementType();
+          return 2 * componentType.getIntOrFloatBitWidth();
+        }
+        return elemType.getIntOrFloatBitWidth();
+      };
+
+      size_t currentSize = getElementSize(currentElemType);
+      size_t targetSize = getElementSize(targetElemType);
+
+      assert(currentSize > 0 && targetSize > 0 &&
+             "Element types must have valid bit width for conversion");
+
+      Value res;
+      auto currentShape = currentType.getShape();
+      auto targetShape = innerType.getShape();
+
+      if (currentSize == targetSize) {
+        // Same size: direct bitcast
+        auto convertedType = RankedTensorType::get(targetShape, targetElemType);
+        res = builder.create<stablehlo::BitcastConvertOp>(loc, convertedType, adaptedArg);
+      } else if (targetSize < currentSize) {
+        // Target element is smaller: add dimension at the end
+        SmallVector<int64_t> intermediateShape = llvm::to_vector(targetShape);
+        auto lastIdx = intermediateShape.size();
+        intermediateShape.push_back(currentSize / targetSize);
+
+        // Adjust the last dimension if needed
+        if (lastIdx > 0 && intermediateShape[lastIdx - 1] != ShapedType::kDynamic) {
+          intermediateShape[lastIdx - 1] /= (currentSize / targetSize);
+        }
+
+        auto intermediateType = RankedTensorType::get(intermediateShape, targetElemType);
+        res = builder.create<stablehlo::BitcastConvertOp>(loc, intermediateType, adaptedArg);
+
+        // Check if we need dynamic or static reshape
+        bool anyDynamic = false;
+        for (auto dim : intermediateShape) {
+          if (dim == ShapedType::kDynamic) {
+            anyDynamic = true;
+            break;
+          }
+        }
+
+        if (anyDynamic) {
+          // Use dynamic reshape
+          SmallVector<Value> shapeValues;
+          for (int64_t i = 0; i < (int64_t)targetShape.size(); ++i) {
+            if (targetShape[i] == ShapedType::kDynamic) {
+              // Get dynamic dimension from original tensor
+              auto dimValue = builder.create<stablehlo::GetDimensionSizeOp>(
+                  loc, builder.getI32Type(), adaptedArg, i);
+              shapeValues.push_back(dimValue);
+            } else {
+              auto constValue = builder.create<stablehlo::ConstantOp>(
+                  loc, builder.getI32Type(),
+                  builder.getI32IntegerAttr(targetShape[i]));
+              shapeValues.push_back(constValue);
+            }
+          }
+          auto shapeOp = builder.create<stablehlo::ConcatenateOp>(
+              loc, shapeValues, 0);
+          res = builder.create<stablehlo::DynamicReshapeOp>(
+              loc, RankedTensorType::get(targetShape, targetElemType), res, shapeOp);
+        } else {
+          // Use static reshape
+          res = builder.create<stablehlo::ReshapeOp>(
+              loc, RankedTensorType::get(targetShape, targetElemType), res);
+        }
+      } else {
+        // Target element is larger: reshape first, then bitcast
+        SmallVector<int64_t> intermediateShape = llvm::to_vector(currentShape);
+        auto lastIdx = intermediateShape.size();
+        intermediateShape.push_back(targetSize / currentSize);
+
+        // Adjust the last dimension if needed
+        if (lastIdx > 0 && intermediateShape[lastIdx - 1] != ShapedType::kDynamic) {
+          intermediateShape[lastIdx - 1] /= (targetSize / currentSize);
+        }
+
+        Value reshaped;
+        // Check if we need dynamic reshape
+        bool anyDynamic = false;
+        for (auto dim : intermediateShape) {
+          if (dim == ShapedType::kDynamic) {
+            anyDynamic = true;
+            break;
+          }
+        }
+
+        if (anyDynamic) {
+          // Use dynamic reshape
+          SmallVector<Value> shapeValues;
+          for (size_t i = 0; i < intermediateShape.size(); ++i) {
+            if (intermediateShape[i] == ShapedType::kDynamic) {
+              if (i < currentShape.size()) {
+                auto dimValue = builder.create<stablehlo::GetDimensionSizeOp>(
+                    loc, builder.getI32Type(), adaptedArg, i);
+                shapeValues.push_back(dimValue);
+              } else {
+                // This is the added dimension
+                auto constValue = builder.create<stablehlo::ConstantOp>(
+                    loc, builder.getI32Type(),
+                    builder.getI32IntegerAttr(targetSize / currentSize));
+                shapeValues.push_back(constValue);
+              }
+            } else {
+              auto constValue = builder.create<stablehlo::ConstantOp>(
+                  loc, builder.getI32Type(),
+                  builder.getI32IntegerAttr(intermediateShape[i]));
+              shapeValues.push_back(constValue);
+            }
+          }
+          auto shapeOp = builder.create<stablehlo::ConcatenateOp>(
+              loc, shapeValues, 0);
+          reshaped = builder.create<stablehlo::DynamicReshapeOp>(
+              loc, RankedTensorType::get(intermediateShape, currentElemType),
+              adaptedArg, shapeOp);
+        } else {
+          reshaped = builder.create<stablehlo::ReshapeOp>(
+              loc, RankedTensorType::get(intermediateShape, currentElemType), adaptedArg);
+        }
+
+        // Now bitcast to target type
+        res = builder.create<stablehlo::BitcastConvertOp>(
+            loc, RankedTensorType::get(targetShape, targetElemType), reshaped);
+      }
+
+      adaptedArg = res;
     }
     
     adaptedArgs.push_back(adaptedArg);
