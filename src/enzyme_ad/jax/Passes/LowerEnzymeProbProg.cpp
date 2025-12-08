@@ -2623,6 +2623,70 @@ struct ForLoopOpConversion : public OpConversionPattern<enzyme::ForLoopOp> {
   }
 };
 
+struct WhileLoopOpConversion : public OpConversionPattern<enzyme::WhileLoopOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  std::string backend;
+  WhileLoopOpConversion(std::string backend, TypeConverter &typeConverter,
+                        MLIRContext *context, PatternBenefit benefit = 1)
+      : OpConversionPattern(typeConverter, context, benefit), backend(backend) {
+  }
+
+  LogicalResult
+  matchAndRewrite(enzyme::WhileLoopOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    SmallVector<Type> loopTypes;
+    for (auto result : op.getResults())
+      loopTypes.push_back(typeConverter->convertType(result.getType()));
+
+    auto whileOp = stablehlo::WhileOp::create(rewriter, op.getLoc(), loopTypes,
+                                              adaptor.getInitArgs());
+
+    Block *condBlock = rewriter.createBlock(&whileOp.getCond());
+    for (auto type : loopTypes)
+      condBlock->addArgument(type, op.getLoc());
+
+    rewriter.setInsertionPointToStart(condBlock);
+
+    Block &origCond = op.getConditionRegion().front();
+    rewriter.mergeBlocks(&origCond, condBlock, condBlock->getArguments());
+    auto condYieldOp = cast<enzyme::YieldOp>(condBlock->getTerminator());
+    rewriter.setInsertionPoint(condYieldOp);
+
+    if (condYieldOp.getOperands().size() != 1) {
+      return rewriter.notifyMatchFailure(
+          op, "Condition region must yield exactly one boolean value");
+    }
+
+    Value condValue = rewriter.getRemappedValue(condYieldOp.getOperand(0));
+    stablehlo::ReturnOp::create(rewriter, op.getLoc(), condValue);
+    rewriter.eraseOp(condYieldOp);
+
+    Block *bodyBlock = rewriter.createBlock(&whileOp.getBody());
+    for (auto type : loopTypes)
+      bodyBlock->addArgument(type, op.getLoc());
+
+    rewriter.setInsertionPointToStart(bodyBlock);
+
+    Block &origBody = op.getBodyRegion().front();
+    rewriter.mergeBlocks(&origBody, bodyBlock, bodyBlock->getArguments());
+    auto bodyYieldOp = cast<enzyme::YieldOp>(bodyBlock->getTerminator());
+    rewriter.setInsertionPoint(bodyYieldOp);
+
+    SmallVector<Value> yieldedVals;
+    for (auto val : bodyYieldOp.getOperands()) {
+      Value remappedVal = rewriter.getRemappedValue(val);
+      yieldedVals.push_back(remappedVal);
+    }
+
+    stablehlo::ReturnOp::create(rewriter, op.getLoc(), yieldedVals);
+    rewriter.eraseOp(bodyYieldOp);
+
+    rewriter.replaceOp(op, whileOp.getResults());
+    return success();
+  }
+};
+
 struct UnflattenSliceOpConversion
     : public OpConversionPattern<enzyme::UnflattenSliceOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -2718,6 +2782,7 @@ struct LowerProbProgToStableHLOPass
     target.addIllegalOp<enzyme::LogAddExpOp>();
     target.addIllegalOp<enzyme::UnflattenSliceOp>();
     target.addIllegalOp<enzyme::ForLoopOp>();
+    target.addIllegalOp<enzyme::WhileLoopOp>();
 
     target.addLegalOp<UnrealizedConversionCastOp>();
 
@@ -2726,7 +2791,8 @@ struct LowerProbProgToStableHLOPass
     patterns.add<RandomOpConversion, RandomSplitOpConversion,
                  CholeskySolveOpConversion, DotOpConversion,
                  LogAddExpOpConversion, UnflattenSliceOpConversion,
-                 ForLoopOpConversion>(backend, typeConverter, context);
+                 ForLoopOpConversion, WhileLoopOpConversion>(
+        backend, typeConverter, context);
 
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns)))) {
