@@ -1401,16 +1401,17 @@ mlir::func::FuncOp adaptToCallingConvention(mlir::func::FuncOp f,
         if (anyDynamic) {
           // Use dynamic reshape
           SmallVector<Value> shapeValues;
+          auto scalarI32Type = RankedTensorType::get({}, builder.getI32Type());
           for (size_t i = 0; i < targetShape.size(); ++i) {
             if (targetShape[i] == ShapedType::kDynamic) {
               // Get dynamic dimension from original tensor
               auto dimValue = builder.create<stablehlo::GetDimensionSizeOp>(
-                  loc, builder.getI32Type(), adaptedArg, i);
+                  loc, scalarI32Type, adaptedArg, i);
               shapeValues.push_back(dimValue);
             } else {
               auto constValue = builder.create<stablehlo::ConstantOp>(
-                  loc, builder.getI32Type(),
-                  builder.getI32IntegerAttr(targetShape[i]));
+                  loc, scalarI32Type,
+                  cast<ElementsAttr>(makeAttr(scalarI32Type, targetShape[i])));
               shapeValues.push_back(constValue);
             }
           }
@@ -1451,23 +1452,24 @@ mlir::func::FuncOp adaptToCallingConvention(mlir::func::FuncOp f,
         if (anyDynamic) {
           // Use dynamic reshape
           SmallVector<Value> shapeValues;
+          auto scalarI32Type = RankedTensorType::get({}, builder.getI32Type());
           for (size_t i = 0; i < intermediateShape.size(); ++i) {
             if (intermediateShape[i] == ShapedType::kDynamic) {
               if (i < currentShape.size()) {
                 auto dimValue = builder.create<stablehlo::GetDimensionSizeOp>(
-                    loc, builder.getI32Type(), adaptedArg, i);
+                    loc, scalarI32Type, adaptedArg, i);
                 shapeValues.push_back(dimValue);
               } else {
                 // This is the added dimension
                 auto constValue = builder.create<stablehlo::ConstantOp>(
-                    loc, builder.getI32Type(),
-                    builder.getI32IntegerAttr(sizeRatio));
+                    loc, scalarI32Type,
+                    cast<ElementsAttr>(makeAttr(scalarI32Type, sizeRatio)));
                 shapeValues.push_back(constValue);
               }
             } else {
               auto constValue = builder.create<stablehlo::ConstantOp>(
-                  loc, builder.getI32Type(),
-                  builder.getI32IntegerAttr(intermediateShape[i]));
+                  loc, scalarI32Type,
+                  cast<ElementsAttr>(makeAttr(scalarI32Type, intermediateShape[i])));
               shapeValues.push_back(constValue);
             }
           }
