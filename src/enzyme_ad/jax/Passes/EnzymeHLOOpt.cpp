@@ -26164,6 +26164,240 @@ struct FuseAddIntoSyrk
   }
 };
 
+// if a dimension was created by broadcasting for both lhs and rhs, then we move
+// the broadcasting after the dot_general
+struct DotGeneralBroadcastInDim
+    : public CheckedOpRewritePattern<
+          stablehlo::DotGeneralOp,
+          DotGeneralBroadcastInDim>::CheckedOpRewritePattern {
+  using CheckedOpRewritePattern<
+      stablehlo::DotGeneralOp,
+      DotGeneralBroadcastInDim>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp dotOp,
+                                    PatternRewriter &rewriter) const {
+    auto lhsBcast = dotOp.getLhs().getDefiningOp<stablehlo::BroadcastInDimOp>();
+    auto rhsBcast = dotOp.getRhs().getDefiningOp<stablehlo::BroadcastInDimOp>();
+
+    if (!lhsBcast || !rhsBcast)
+      return failure();
+
+    auto lhsDims = lhsBcast.getBroadcastDimensions();
+    auto rhsDims = rhsBcast.getBroadcastDimensions();
+
+    auto lhsInputType = cast<RankedTensorType>(lhsBcast.getOperand().getType());
+    auto rhsInputType = cast<RankedTensorType>(rhsBcast.getOperand().getType());
+    auto lhsBcastType = cast<RankedTensorType>(lhsBcast.getResult().getType());
+    auto rhsBcastType = cast<RankedTensorType>(rhsBcast.getResult().getType());
+
+    auto dotDims = dotOp.getDotDimensionNumbers();
+    auto lhsBatchDims(dotDims.getLhsBatchingDimensions());
+    auto rhsBatchDims(dotDims.getRhsBatchingDimensions());
+    auto lhsContractDims(dotDims.getLhsContractingDimensions());
+    auto rhsContractDims(dotDims.getRhsContractingDimensions());
+
+    SmallVector<int64_t> lhsCreatedBatchDims, rhsCreatedBatchDims,
+        lhsRealBatchDims, rhsRealBatchDims;
+    llvm::SmallDenseSet<int64_t> dimsToRemove;
+    for (size_t i = 0; i < lhsBatchDims.size(); ++i) {
+      int64_t lhsDim = lhsBatchDims[i];
+      int64_t rhsDim = rhsBatchDims[i];
+
+      // Check if this batch dimension was created by broadcast
+      bool lhsIsNew =
+          std::find(lhsDims.begin(), lhsDims.end(), lhsDim) == lhsDims.end();
+      bool rhsIsNew =
+          std::find(rhsDims.begin(), rhsDims.end(), rhsDim) == rhsDims.end();
+
+      if (lhsIsNew && rhsIsNew) {
+        dimsToRemove.insert(i);
+        lhsCreatedBatchDims.push_back(lhsDim);
+        rhsCreatedBatchDims.push_back(rhsDim);
+      } else {
+        lhsRealBatchDims.push_back(lhsDim);
+        rhsRealBatchDims.push_back(rhsDim);
+      }
+    }
+
+    if (lhsCreatedBatchDims.empty())
+      return failure();
+
+    SmallVector<int64_t> newDotShape;
+    auto dotResultType = cast<RankedTensorType>(dotOp.getResult().getType());
+    for (size_t i = 0; i < dotResultType.getRank(); ++i) {
+      if (llvm::is_contained(dimsToRemove, i))
+        continue;
+      newDotShape.push_back(dotResultType.getDimSize(i));
+    }
+
+    SmallVector<int64_t> lhsNewBcastDims, rhsNewBcastDims;
+    DenseMap<int64_t, int64_t> lhsOldToNew, rhsOldToNew;
+    auto newLhsBcastType =
+        getNewBroadcastType(lhsBcastType, lhsInputType, lhsDims,
+                            lhsCreatedBatchDims, lhsNewBcastDims, lhsOldToNew);
+    auto newRhsBcastType =
+        getNewBroadcastType(rhsBcastType, rhsInputType, rhsDims,
+                            rhsCreatedBatchDims, rhsNewBcastDims, rhsOldToNew);
+
+    auto newLhsBcast = stablehlo::BroadcastInDimOp::create(
+        rewriter, dotOp.getLoc(), newLhsBcastType, lhsBcast.getOperand(),
+        rewriter.getDenseI64ArrayAttr(lhsNewBcastDims));
+    auto newRhsBcast = stablehlo::BroadcastInDimOp::create(
+        rewriter, dotOp.getLoc(), newRhsBcastType, rhsBcast.getOperand(),
+        rewriter.getDenseI64ArrayAttr(rhsNewBcastDims));
+
+    SmallVector<int64_t> newLhsContractDims, newRhsContractDims,
+        newLhsBatchDims, newRhsBatchDims;
+    for (auto dim : lhsContractDims) {
+      newLhsContractDims.push_back(lhsOldToNew[dim]);
+    }
+    for (auto dim : rhsContractDims) {
+      newRhsContractDims.push_back(rhsOldToNew[dim]);
+    }
+    for (auto dim : lhsRealBatchDims) {
+      newLhsBatchDims.push_back(lhsOldToNew[dim]);
+    }
+    for (auto dim : rhsRealBatchDims) {
+      newRhsBatchDims.push_back(rhsOldToNew[dim]);
+    }
+
+    auto newDotDims = DotDimensionNumbersAttr::get(
+        rewriter.getContext(), newLhsBatchDims, newRhsBatchDims,
+        newLhsContractDims, newRhsContractDims);
+    auto newDotOp = stablehlo::DotGeneralOp::create(
+        rewriter, dotOp.getLoc(),
+        RankedTensorType::get(newDotShape, dotResultType.getElementType()),
+        newLhsBcast, newRhsBcast, newDotDims, dotOp.getPrecisionConfigAttr(),
+        dotOp.getAlgorithmAttr());
+
+    SmallVector<int64_t> newMapping;
+    for (size_t i = 0; i < cast<RankedTensorType>(dotOp.getType()).getRank();
+         ++i) {
+      if (llvm::is_contained(dimsToRemove, i))
+        continue;
+      newMapping.push_back(i);
+    }
+    rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+        dotOp, dotOp.getType(), newDotOp.getResult(),
+        rewriter.getDenseI64ArrayAttr(newMapping));
+
+    return success();
+  }
+
+private:
+  RankedTensorType
+  getNewBroadcastType(RankedTensorType oldOutputType,
+                      RankedTensorType inputType, ArrayRef<int64_t> oldMapping,
+                      ArrayRef<int64_t> removeDims,
+                      SmallVectorImpl<int64_t> &newMapping,
+                      DenseMap<int64_t, int64_t> &oldToNew) const {
+    SmallVector<int64_t> newOutShape;
+    for (size_t i = 0; i < oldOutputType.getRank(); ++i) {
+      if (llvm::is_contained(removeDims, i))
+        continue;
+      oldToNew[i] = newOutShape.size();
+      newOutShape.push_back(oldOutputType.getDimSize(i));
+    }
+    for (auto dim : oldMapping) {
+      auto numDel =
+          llvm::count_if(removeDims, [&](int64_t d) { return d < dim; });
+      newMapping.push_back(dim - numDel);
+    }
+    return RankedTensorType::get(newOutShape, oldOutputType.getElementType());
+  }
+};
+
+struct DotGeneralBroadcastInDimSortDims
+    : public CheckedOpRewritePattern<
+          stablehlo::DotGeneralOp,
+          DotGeneralBroadcastInDimSortDims>::CheckedOpRewritePattern {
+  using CheckedOpRewritePattern<
+      stablehlo::DotGeneralOp,
+      DotGeneralBroadcastInDimSortDims>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp dotOp,
+                                    PatternRewriter &rewriter) const {
+    auto lhsBcast = dotOp.getLhs().getDefiningOp<stablehlo::BroadcastInDimOp>();
+    auto rhsBcast = dotOp.getRhs().getDefiningOp<stablehlo::BroadcastInDimOp>();
+
+    if (!lhsBcast && !rhsBcast)
+      return failure();
+
+    // if any of the operands has an implicit transpose, we absorb it into the
+    // dot general op
+    Value lhs = dotOp.getLhs(), rhs = dotOp.getRhs();
+    bool changed = false;
+
+    auto dotDims = dotOp.getDotDimensionNumbers();
+    SmallVector<int64_t> newLhsBatchDims(dotDims.getLhsBatchingDimensions());
+    SmallVector<int64_t> newLhsContractDims(
+        dotDims.getLhsContractingDimensions());
+    SmallVector<int64_t> newRhsBatchDims(dotDims.getRhsBatchingDimensions());
+    SmallVector<int64_t> newRhsContractDims(
+        dotDims.getRhsContractingDimensions());
+
+    if (lhsBcast && !llvm::is_sorted(lhsBcast.getBroadcastDimensions())) {
+      changed = true;
+      lhs = getNewBroadcastWithSortedDims(rewriter, lhsBcast, newLhsBatchDims,
+                                          newLhsContractDims);
+    }
+
+    if (rhsBcast && !llvm::is_sorted(rhsBcast.getBroadcastDimensions())) {
+      changed = true;
+      rhs = getNewBroadcastWithSortedDims(rewriter, rhsBcast, newRhsBatchDims,
+                                          newRhsContractDims);
+    }
+
+    if (changed) {
+      auto newDotDims = stablehlo::DotDimensionNumbersAttr::get(
+          rewriter.getContext(), newLhsBatchDims, newRhsBatchDims,
+          newLhsContractDims, newRhsContractDims);
+      rewriter.replaceOpWithNewOp<stablehlo::DotGeneralOp>(
+          dotOp, dotOp.getType(), lhs, rhs, newDotDims,
+          dotOp.getPrecisionConfigAttr(), dotOp.getAlgorithmAttr());
+      return success();
+    }
+    return failure();
+  }
+
+private:
+  Value getNewBroadcastWithSortedDims(
+      PatternRewriter &rewriter, stablehlo::BroadcastInDimOp oldBroadcast,
+      SmallVectorImpl<int64_t> &newBatchDims,
+      SmallVectorImpl<int64_t> &newContractDims) const {
+    auto inputType =
+        cast<RankedTensorType>(oldBroadcast.getOperand().getType());
+    auto outputType = cast<RankedTensorType>(oldBroadcast.getType());
+    SmallVector<int64_t> oldToNew(outputType.getRank());
+    int64_t newDimsStart = inputType.getRank();
+    SmallVector<int64_t> newOutputShape(outputType.getRank());
+    for (size_t i = 0; i < outputType.getRank(); ++i) {
+      if (!llvm::is_contained(oldBroadcast.getBroadcastDimensions(), i)) {
+        oldToNew[i] = newDimsStart++;
+        newOutputShape[oldToNew[i]] = outputType.getDimSize(i);
+        continue;
+      }
+    }
+    for (auto [i, dim] :
+         llvm::enumerate(oldBroadcast.getBroadcastDimensions())) {
+      oldToNew[dim] = i;
+      newOutputShape[i] = outputType.getDimSize(dim);
+    }
+
+    for (auto &dim : newBatchDims)
+      dim = oldToNew[dim];
+    for (auto &dim : newContractDims)
+      dim = oldToNew[dim];
+
+    SmallVector<int64_t> newMapping(inputType.getRank());
+    std::iota(newMapping.begin(), newMapping.end(), 0);
+    return stablehlo::BroadcastInDimOp::create(
+        rewriter, oldBroadcast.getLoc(),
+        RankedTensorType::get(newOutputShape, inputType.getElementType()),
+        oldBroadcast.getOperand(), rewriter.getDenseI64ArrayAttr(newMapping));
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -26817,7 +27051,9 @@ struct EnzymeHLOOptPass
         DynamicSliceSimplify,
         DotGeneralOnlyDiagonalAccess,
         BinaryNegatedOperandsSimplify<stablehlo::MulOp>,
-        BinaryNegatedOperandsSimplify<stablehlo::DivOp>
+        BinaryNegatedOperandsSimplify<stablehlo::DivOp>,
+        DotGeneralBroadcastInDim,
+        DotGeneralBroadcastInDimSortDims
       >(context);
 
     patterns.add<

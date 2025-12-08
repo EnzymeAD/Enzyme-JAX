@@ -2544,3 +2544,13 @@ def ApplyFuseAddIntoSyrkPatterns : EnzymeHLOPatternOp<
     "fuse_add_into_syrk"> {
   let patterns = ["FuseAddIntoSyrk"];
 }
+
+def ApplyDotGeneralBroadcastInDimPatterns : EnzymeHLOPatternOp<
+    "dot_general_broadcast_in_dim"> {
+  let patterns = ["DotGeneralBroadcastInDim"];
+}
+
+def ApplyDotGeneralBroadcastInDimSortDimsPatterns : EnzymeHLOPatternOp<
+    "dot_general_broadcast_in_dim_sort_dims"> {
+  let patterns = ["DotGeneralBroadcastInDimSortDims"];
+}
