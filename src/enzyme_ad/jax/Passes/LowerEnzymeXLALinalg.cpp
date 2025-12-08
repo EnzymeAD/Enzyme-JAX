@@ -119,7 +119,8 @@ struct LowerEnzymeXLALinalgPass
 
     // Verify that all illegal ops have been lowered
     auto walkResult = getOperation()->walk([&](Operation *op) {
-      if (isa<enzymexla::LUFactorizationOp, enzymexla::SVDFactorizationOp>(op)) {
+      if (isa<enzymexla::LUFactorizationOp, enzymexla::SVDFactorizationOp>(
+              op)) {
         op->emitError("Failed to lower enzymexla linalg operation");
         return WalkResult::interrupt();
       }
