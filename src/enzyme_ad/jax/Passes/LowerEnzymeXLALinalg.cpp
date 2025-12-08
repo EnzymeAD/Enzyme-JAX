@@ -3,7 +3,7 @@
 #include "mhlo/IR/hlo_ops.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "mlir/Transforms/DialectConversion.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/LinalgUtils.h"
@@ -33,11 +33,11 @@ using namespace mlir::enzyme;
 using namespace mlir::enzymexla;
 
 struct LUFactorizationOpLowering
-    : public OpRewritePattern<enzymexla::LUFactorizationOp> {
-  using OpRewritePattern::OpRewritePattern;
+    : public OpConversionPattern<enzymexla::LUFactorizationOp> {
+  using OpConversionPattern::OpConversionPattern;
 
-  LogicalResult matchAndRewrite(enzymexla::LUFactorizationOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite(enzymexla::LUFactorizationOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
     auto getrfOp = enzymexla::GetrfOp::create(
         rewriter, op.getLoc(), op->getResultTypes(), op.getInput());
     rewriter.replaceOp(op, getrfOp);
@@ -46,14 +46,14 @@ struct LUFactorizationOpLowering
 };
 
 struct SVDFactorizationOpLowering
-    : public OpRewritePattern<enzymexla::SVDFactorizationOp> {
+    : public OpConversionPattern<enzymexla::SVDFactorizationOp> {
   std::string backend;
 
   SVDFactorizationOpLowering(std::string backend, MLIRContext *context)
-      : OpRewritePattern(context), backend(backend) {}
+      : OpConversionPattern(context), backend(backend) {}
 
-  LogicalResult matchAndRewrite(enzymexla::SVDFactorizationOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite(enzymexla::SVDFactorizationOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
     SVDAlgorithm algorithm = op.getAlgorithm();
     if (algorithm == SVDAlgorithm::DEFAULT) {
       if (backend == "cpu") {
@@ -105,15 +105,18 @@ struct LowerEnzymeXLALinalgPass
   using Base::Base;
 
   void runOnOperation() override {
-    auto context = getOperation()->getContext();
+    MLIRContext *context = &getContext();
     RewritePatternSet patterns(context);
 
     patterns.add<LUFactorizationOpLowering>(context);
     patterns.add<SVDFactorizationOpLowering>(backend, context);
 
-    GreedyRewriteConfig config;
-    if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
-                                            config))) {
+    ConversionTarget target(*context);
+    target.addLegalDialect<enzymexla::EnzymeXLADialect>();
+    target.addIllegalOp<enzymexla::LUFactorizationOp, enzymexla::SVDFactorizationOp>();
+
+    if (failed(applyPartialConversion(getOperation(), target,
+                                      std::move(patterns)))) {
       signalPassFailure();
     }
   }

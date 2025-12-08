@@ -10,7 +10,7 @@
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
-#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "mlir/Transforms/DialectConversion.h"
 #include "llvm/ADT/SmallVector.h"
 
 #define DEBUG_TYPE "lower-enzymexla-ml"
@@ -26,11 +26,11 @@ using namespace mlir;
 using namespace mlir::enzyme;
 using namespace mlir::stablehlo;
 
-struct LowerReluOpToStablehlo : public OpRewritePattern<enzymexla::ReluOp> {
-  using OpRewritePattern<enzymexla::ReluOp>::OpRewritePattern;
+struct LowerReluOpToStablehlo : public OpConversionPattern<enzymexla::ReluOp> {
+  using OpConversionPattern<enzymexla::ReluOp>::OpConversionPattern;
 
-  LogicalResult matchAndRewrite(enzymexla::ReluOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite(enzymexla::ReluOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
     rewriter.replaceOpWithNewOp<stablehlo::MaxOp>(
         op, op.getOperand(),
         stablehlo::ConstantOp::create(
@@ -40,11 +40,11 @@ struct LowerReluOpToStablehlo : public OpRewritePattern<enzymexla::ReluOp> {
   }
 };
 
-struct LowerGeluOpToStablehlo : public OpRewritePattern<enzymexla::GeluOp> {
-  using OpRewritePattern<enzymexla::GeluOp>::OpRewritePattern;
+struct LowerGeluOpToStablehlo : public OpConversionPattern<enzymexla::GeluOp> {
+  using OpConversionPattern<enzymexla::GeluOp>::OpConversionPattern;
 
-  LogicalResult matchAndRewrite(enzymexla::GeluOp op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite(enzymexla::GeluOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
     switch (op.getGeluApproximation()) {
     case enzymexla::GeluApproximation::NONE:
       return rewriteAsErf(op, rewriter);
@@ -59,7 +59,7 @@ struct LowerGeluOpToStablehlo : public OpRewritePattern<enzymexla::GeluOp> {
 
 private:
   LogicalResult rewriteAsErf(enzymexla::GeluOp op,
-                             PatternRewriter &rewriter) const {
+                             ConversionPatternRewriter &rewriter) const {
     // x * (0.5 * (1 + erf(x / sqrt(2))))
     auto operand = op.getOperand();
     rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
@@ -80,7 +80,7 @@ private:
   }
 
   LogicalResult rewriteAsTanh(enzymexla::GeluOp op,
-                              PatternRewriter &rewriter) const {
+                              ConversionPatternRewriter &rewriter) const {
     // Ordering of the operations is important here. This comes from
     // https://github.com/openxla/xla/blob/3ab47f2c9324b10751ef18e58d2b303732685f30/xla/service/gpu/transforms/gemm_rewriter.cc#L773-L803
     // x * (0.5 * (1 + tanh(sqrt(2 / pi) * (x + 0.044715 * x^3)))
@@ -114,7 +114,7 @@ private:
   }
 
   LogicalResult rewriteAsSigmoid(enzymexla::GeluOp op,
-                                 PatternRewriter &rewriter) const {
+                                 ConversionPatternRewriter &rewriter) const {
     // This is effectively the same as the tanh formulation but is typically
     // faster and more numerically accurate.
     // x * sigmoid(sqrt(8 / pi) * x * (1 + 0.044715 * x^2))
@@ -145,16 +145,20 @@ struct LowerEnzymeXLAMLPass
   using Base::Base;
 
   void runOnOperation() override {
-    auto context = getOperation()->getContext();
+    MLIRContext *context = &getContext();
     RewritePatternSet patterns(context);
 
     // SHLO Lowering
     patterns.add<LowerReluOpToStablehlo>(context);
     patterns.add<LowerGeluOpToStablehlo>(context);
 
-    GreedyRewriteConfig config;
-    if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
-                                            config))) {
+    ConversionTarget target(*context);
+    target.addLegalDialect<stablehlo::StablehloDialect>();
+    target.addLegalDialect<chlo::ChloDialect>();
+    target.addIllegalOp<enzymexla::ReluOp, enzymexla::GeluOp>();
+
+    if (failed(applyPartialConversion(getOperation(), target,
+                                      std::move(patterns)))) {
       signalPassFailure();
     }
   }
