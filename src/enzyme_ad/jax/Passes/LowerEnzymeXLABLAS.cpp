@@ -280,7 +280,7 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
     }
 
     // NOTE: jax weirdly uses a flipped convention for transpose
-    bool transpose = op.getTranspose() == enzymexla::LapackTranspose::none;
+    bool transpose = op.getTranspose() != enzymexla::LapackTranspose::none;
 
     auto customCall = stablehlo::CustomCallOp::create(
         rewriter, op.getLoc(), TypeRange{C.getType()},
