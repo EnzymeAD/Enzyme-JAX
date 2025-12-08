@@ -1387,13 +1387,17 @@ mlir::func::FuncOp adaptToCallingConvention(mlir::func::FuncOp f,
         res = builder.create<stablehlo::BitcastConvertOp>(loc, convertedType, adaptedArg);
       } else if (targetSize < currentSize) {
         // Target element is smaller: add dimension at the end
+        assert(currentSize % targetSize == 0 &&
+               "Current element size must be divisible by target element size");
+        size_t sizeRatio = currentSize / targetSize;
+
         SmallVector<int64_t> intermediateShape = llvm::to_vector(targetShape);
         auto lastIdx = intermediateShape.size();
-        intermediateShape.push_back(currentSize / targetSize);
+        intermediateShape.push_back(sizeRatio);
 
         // Adjust the last dimension if needed
         if (lastIdx > 0 && intermediateShape[lastIdx - 1] != ShapedType::kDynamic) {
-          intermediateShape[lastIdx - 1] /= (currentSize / targetSize);
+          intermediateShape[lastIdx - 1] /= sizeRatio;
         }
 
         auto intermediateType = RankedTensorType::get(intermediateShape, targetElemType);
@@ -1411,7 +1415,7 @@ mlir::func::FuncOp adaptToCallingConvention(mlir::func::FuncOp f,
         if (anyDynamic) {
           // Use dynamic reshape
           SmallVector<Value> shapeValues;
-          for (int64_t i = 0; i < (int64_t)targetShape.size(); ++i) {
+          for (size_t i = 0; i < targetShape.size(); ++i) {
             if (targetShape[i] == ShapedType::kDynamic) {
               // Get dynamic dimension from original tensor
               auto dimValue = builder.create<stablehlo::GetDimensionSizeOp>(
@@ -1435,13 +1439,17 @@ mlir::func::FuncOp adaptToCallingConvention(mlir::func::FuncOp f,
         }
       } else {
         // Target element is larger: reshape first, then bitcast
+        assert(targetSize % currentSize == 0 &&
+               "Target element size must be divisible by current element size");
+        size_t sizeRatio = targetSize / currentSize;
+
         SmallVector<int64_t> intermediateShape = llvm::to_vector(currentShape);
         auto lastIdx = intermediateShape.size();
-        intermediateShape.push_back(targetSize / currentSize);
+        intermediateShape.push_back(sizeRatio);
 
         // Adjust the last dimension if needed
         if (lastIdx > 0 && intermediateShape[lastIdx - 1] != ShapedType::kDynamic) {
-          intermediateShape[lastIdx - 1] /= (targetSize / currentSize);
+          intermediateShape[lastIdx - 1] /= sizeRatio;
         }
 
         Value reshaped;
@@ -1467,7 +1475,7 @@ mlir::func::FuncOp adaptToCallingConvention(mlir::func::FuncOp f,
                 // This is the added dimension
                 auto constValue = builder.create<stablehlo::ConstantOp>(
                     loc, builder.getI32Type(),
-                    builder.getI32IntegerAttr(targetSize / currentSize));
+                    builder.getI32IntegerAttr(sizeRatio));
                 shapeValues.push_back(constValue);
               }
             } else {
