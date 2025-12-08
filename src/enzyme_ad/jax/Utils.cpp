@@ -1296,23 +1296,37 @@ mlir::func::FuncOp adaptToCallingConvention(mlir::func::FuncOp f,
       int64_t elementBytes = (elementBitWidth + 7) / 8;
       int64_t elementOffset = byteOffset / elementBytes;
       
-      // Create slice operation to offset the tensor
-      // Slice from [elementOffset, 0, 0, ...] to [shape[0], shape[1], ...]
-      auto shape = outerType.getShape();
-      SmallVector<int64_t> startIndices(shape.size(), 0);
-      SmallVector<int64_t> limitIndices(shape.begin(), shape.end());
-      SmallVector<int64_t> strides(shape.size(), 1);
+      auto outerShape = outerType.getShape();
+      auto innerShape = innerType.getShape();
       
-      // Set the offset on the first dimension
-      if (shape.size() > 0) {
-        startIndices[0] = elementOffset;
-        // Adjust the limit to maintain the inner shape
-        if (innerType.getShape().size() > 0 && shape[0] != ShapedType::kDynamic) {
-          limitIndices[0] = elementOffset + innerType.getShape()[0];
+      // Convert linear element offset to multi-dimensional start indices
+      SmallVector<int64_t> startIndices;
+      SmallVector<int64_t> limitIndices;
+      SmallVector<int64_t> strides(outerShape.size(), 1);
+      
+      int64_t remainingOffset = elementOffset;
+      
+      // Calculate strides for each dimension (row-major order)
+      for (size_t j = 0; j < outerShape.size(); ++j) {
+        // Calculate the stride for this dimension
+        int64_t dimStride = 1;
+        for (size_t k = j + 1; k < outerShape.size(); ++k) {
+          dimStride *= outerShape[k];
         }
+        
+        // Calculate the index for this dimension
+        int64_t dimIndex = remainingOffset / dimStride;
+        startIndices.push_back(dimIndex);
+        
+        // Calculate the limit based on the inner shape
+        int64_t innerDim = (j < innerShape.size()) ? innerShape[j] : 1;
+        limitIndices.push_back(dimIndex + innerDim);
+        
+        // Update remaining offset for next dimension
+        remainingOffset = remainingOffset % dimStride;
       }
       
-      auto slicedType = RankedTensorType::get(innerType.getShape(), outerType.getElementType());
+      auto slicedType = RankedTensorType::get(innerShape, outerType.getElementType());
       adaptedArg = builder.create<stablehlo::SliceOp>(
           loc, slicedType, adaptedArg,
           builder.getDenseI64ArrayAttr(startIndices),
