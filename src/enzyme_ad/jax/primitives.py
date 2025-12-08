@@ -317,6 +317,7 @@ def optimization_passes(
         "multiply_negated_operands_simplify",
         "factor_scalars_in_dot_general",
         "dot_general_broadcast_in_dim",
+        "dot_general_broadcast_in_dim_sort_dims",
     ]
 
     # constant propagation patterns
