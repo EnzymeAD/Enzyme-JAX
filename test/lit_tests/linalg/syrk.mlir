@@ -235,3 +235,10 @@ module {
 // TPU-NEXT:     %2 = stablehlo.add %0, %1 : tensor<4x4xf32>
 // TPU-NEXT:     return %2 : tensor<4x4xf32>
 // TPU-NEXT: }
+
+module {
+    func.func @main(%arg0: tensor<64x32xf32>, %arg1: tensor<64x64xf32>, %alpha: tensor<f32>, %beta: tensor<f32>) -> tensor<64x64xf32> {
+        %0 = enzymexla.blas.syrk %arg0, %arg1, %alpha, %beta {fill, transpose = #enzymexla.transpose<none>, uplo = #enzymexla.uplo<U>} : (tensor<64x32xf32>, tensor<64x64xf32>, tensor<f32>, tensor<f32>) -> tensor<64x64xf32>
+        return %0 : tensor<64x64xf32>
+    }
+}

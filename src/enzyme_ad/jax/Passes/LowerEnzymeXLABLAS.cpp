@@ -252,22 +252,8 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
 
   LogicalResult matchAndRewriteCUDA(enzymexla::SyrkOp op,
                                     PatternRewriter &rewriter) const {
-    // XXX: for performance reasons we should implement our own version
-    // https://github.com/jax-ml/jax/blob/1709d4639a3dd73d0f8748090ab9af4af9a84758/jaxlib/gpu/solver_kernels_ffi.cc#L777
-    // doesn't expose the `uplo` attribute and forces it to be `U`
-    auto A = op.getA();
-    Value C = op.getC();
-
-    auto CType = cast<RankedTensorType>(C.getType());
+    auto CType = cast<RankedTensorType>(op.getC().getType());
     auto rank = CType.getRank();
-
-    switch (op.getUplo()) {
-    case enzymexla::LapackUplo::L:
-      C = stablehlo::copyTriangularPart(rewriter, C, op.getUplo());
-      break;
-    default:
-      break; // nothing to do here
-    }
 
     bool isComplex = false;
     if (auto complex_type = dyn_cast<ComplexType>(CType.getElementType())) {
@@ -279,17 +265,25 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
           op, "Complex matrix not supported for complex transpose");
     }
 
-    // NOTE: jax weirdly uses a flipped convention for transpose
     bool transpose = op.getTranspose() != enzymexla::LapackTranspose::none;
 
     auto customCall = stablehlo::CustomCallOp::create(
-        rewriter, op.getLoc(), TypeRange{C.getType()},
-        ValueRange{A, C, op.getAlpha(), op.getBeta()},
-        rewriter.getStringAttr("cusolver_syrk_ffi"),
+        rewriter, op.getLoc(), TypeRange{CType},
+        ValueRange{op.getA(), op.getC(), op.getAlpha(), op.getBeta()},
+        rewriter.getStringAttr("reactant_cublas_syrk_ffi"),
         /*has_side_effect*/ nullptr,
         /*backend_config*/
         rewriter.getDictionaryAttr({
             rewriter.getNamedAttr("transpose", rewriter.getBoolAttr(transpose)),
+            rewriter.getNamedAttr("uplo", rewriter.getBoolAttr(op.getUplo() ==
+                                                                enzymexla::LapackUplo::U)),
+            // TODO: capture alpha and beta to ensure those are not on device
+            rewriter.getNamedAttr("use_alpha_attribute", rewriter.getBoolAttr(false)),
+            rewriter.getNamedAttr("use_beta_attribute", rewriter.getBoolAttr(false)),
+            rewriter.getNamedAttr("alpha_real", rewriter.getF64FloatAttr(0.0)),
+            rewriter.getNamedAttr("alpha_imag", rewriter.getF64FloatAttr(0.0)),
+            rewriter.getNamedAttr("beta_real", rewriter.getF64FloatAttr(0.0)),
+            rewriter.getNamedAttr("beta_imag", rewriter.getF64FloatAttr(0.0)),
         }),
         /*api_version*/
         stablehlo::CustomCallApiVersionAttr::get(
