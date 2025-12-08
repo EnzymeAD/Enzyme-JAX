@@ -1296,14 +1296,14 @@ mlir::func::FuncOp adaptToCallingConvention(mlir::func::FuncOp f,
       auto elementType = outerType.getElementType();
 
       // Get element size in bytes using AutoDiffTypeInterface
-      size_t elementBytes = 
+      size_t elementSizeBytes = 
           cast<AutoDiffTypeInterface>(elementType).getApproxSize();
 
       // Verify byte offset aligns with element boundaries
-      assert(byteOffset % elementBytes == 0 &&
+      assert(byteOffset % elementSizeBytes == 0 &&
              "Byte offset must be aligned to element boundaries");
 
-      int64_t elementOffset = byteOffset / elementBytes;
+      int64_t elementOffset = byteOffset / elementSizeBytes;
       
       auto outerShape = outerType.getShape();
       auto innerShape = innerType.getShape();
@@ -1354,28 +1354,28 @@ mlir::func::FuncOp adaptToCallingConvention(mlir::func::FuncOp f,
       auto currentElemType = currentType.getElementType();
       auto targetElemType = innerType.getElementType();
 
-      // Calculate element sizes using AutoDiffTypeInterface
-      size_t currentSize = 
+      // Calculate element sizes in bytes using AutoDiffTypeInterface
+      size_t currentSizeBytes = 
           cast<AutoDiffTypeInterface>(currentElemType).getApproxSize();
-      size_t targetSize = 
+      size_t targetSizeBytes = 
           cast<AutoDiffTypeInterface>(targetElemType).getApproxSize();
 
-      assert(currentSize > 0 && targetSize > 0 &&
+      assert(currentSizeBytes > 0 && targetSizeBytes > 0 &&
              "Element types must have valid size for conversion");
 
       Value res;
       auto currentShape = currentType.getShape();
       auto targetShape = innerType.getShape();
 
-      if (currentSize == targetSize) {
+      if (currentSizeBytes == targetSizeBytes) {
         // Same size: direct bitcast
         auto convertedType = RankedTensorType::get(targetShape, targetElemType);
         res = builder.create<stablehlo::BitcastConvertOp>(loc, convertedType, adaptedArg);
-      } else if (targetSize < currentSize) {
+      } else if (targetSizeBytes < currentSizeBytes) {
         // Target element is smaller: add dimension at the end
-        assert(currentSize % targetSize == 0 &&
+        assert(currentSizeBytes % targetSizeBytes == 0 &&
                "Current element size must be divisible by target element size");
-        size_t sizeRatio = currentSize / targetSize;
+        size_t sizeRatio = currentSizeBytes / targetSizeBytes;
 
         SmallVector<int64_t> intermediateShape = llvm::to_vector(targetShape);
         auto lastIdx = intermediateShape.size();
@@ -1425,9 +1425,9 @@ mlir::func::FuncOp adaptToCallingConvention(mlir::func::FuncOp f,
         }
       } else {
         // Target element is larger: reshape first, then bitcast
-        assert(targetSize % currentSize == 0 &&
+        assert(targetSizeBytes % currentSizeBytes == 0 &&
                "Target element size must be divisible by current element size");
-        size_t sizeRatio = targetSize / currentSize;
+        size_t sizeRatio = targetSizeBytes / currentSizeBytes;
 
         SmallVector<int64_t> intermediateShape = llvm::to_vector(currentShape);
         auto lastIdx = intermediateShape.size();
