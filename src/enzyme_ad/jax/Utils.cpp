@@ -1242,6 +1242,104 @@ bool mayReadFrom(Operation *op, Value val) {
   return true;
 }
 
+mlir::func::FuncOp adaptToCallingConvention(mlir::func::FuncOp f,
+                                            ArrayRef<mlir::Type> inputTensorTypes,
+                                            ArrayRef<int64_t> byteOffsets) {
+  // Get the original function type
+  auto originalFuncType = f.getFunctionType();
+  size_t numInputs = originalFuncType.getNumInputs();
+  
+  // Validate inputs
+  assert(inputTensorTypes.size() == numInputs &&
+         "Number of input tensor types must match function inputs");
+  assert(byteOffsets.size() == numInputs &&
+         "Number of byte offsets must match function inputs");
+  
+  // Create the new function type using the outer specification types
+  auto context = f.getContext();
+  auto loc = f.getLoc();
+  auto newFuncType = mlir::FunctionType::get(
+      context, inputTensorTypes, originalFuncType.getResults());
+  
+  // Create a new function with a unique name
+  std::string wrapperName = (f.getName() + "_adapted").str();
+  OpBuilder builder(context);
+  builder.setInsertionPoint(f);
+  
+  auto wrapperFunc = builder.create<mlir::func::FuncOp>(loc, wrapperName, newFuncType);
+  
+  // Add entry block to the wrapper function
+  auto &entryBlock = *wrapperFunc.addEntryBlock();
+  builder.setInsertionPointToStart(&entryBlock);
+  
+  // Process each argument
+  SmallVector<Value> adaptedArgs;
+  for (size_t i = 0; i < numInputs; ++i) {
+    Value arg = entryBlock.getArgument(i);
+    auto outerType = dyn_cast<RankedTensorType>(inputTensorTypes[i]);
+    auto innerType = dyn_cast<RankedTensorType>(originalFuncType.getInput(i));
+    
+    if (!outerType || !innerType) {
+      // If not tensor types, pass through as-is
+      adaptedArgs.push_back(arg);
+      continue;
+    }
+    
+    Value adaptedArg = arg;
+    
+    // Handle byte offset if non-zero
+    int64_t byteOffset = byteOffsets[i];
+    if (byteOffset != 0) {
+      // Calculate element offset from byte offset
+      auto elementType = outerType.getElementType();
+      unsigned elementBitWidth = elementType.getIntOrFloatBitWidth();
+      int64_t elementBytes = (elementBitWidth + 7) / 8;
+      int64_t elementOffset = byteOffset / elementBytes;
+      
+      // Create slice operation to offset the tensor
+      // Slice from [elementOffset, 0, 0, ...] to [shape[0], shape[1], ...]
+      auto shape = outerType.getShape();
+      SmallVector<int64_t> startIndices(shape.size(), 0);
+      SmallVector<int64_t> limitIndices(shape.begin(), shape.end());
+      SmallVector<int64_t> strides(shape.size(), 1);
+      
+      // Set the offset on the first dimension
+      if (shape.size() > 0) {
+        startIndices[0] = elementOffset;
+        // Adjust the limit to maintain the inner shape
+        if (innerType.getShape().size() > 0 && shape[0] != ShapedType::kDynamic) {
+          limitIndices[0] = elementOffset + innerType.getShape()[0];
+        }
+      }
+      
+      auto slicedType = RankedTensorType::get(innerType.getShape(), outerType.getElementType());
+      adaptedArg = builder.create<stablehlo::SliceOp>(
+          loc, slicedType, adaptedArg,
+          builder.getDenseI64ArrayAttr(startIndices),
+          builder.getDenseI64ArrayAttr(limitIndices),
+          builder.getDenseI64ArrayAttr(strides));
+    }
+    
+    // Handle element type conversion if needed
+    if (outerType.getElementType() != innerType.getElementType()) {
+      auto convertedType = RankedTensorType::get(
+          cast<RankedTensorType>(adaptedArg.getType()).getShape(),
+          innerType.getElementType());
+      adaptedArg = builder.create<stablehlo::ConvertOp>(loc, convertedType, adaptedArg);
+    }
+    
+    adaptedArgs.push_back(adaptedArg);
+  }
+  
+  // Call the original function with adapted arguments
+  auto callOp = builder.create<mlir::func::CallOp>(loc, f, adaptedArgs);
+  
+  // Return the results
+  builder.create<mlir::func::ReturnOp>(loc, callOp.getResults());
+  
+  return wrapperFunc;
+}
+
 } // namespace enzyme
 
 namespace stablehlo {
