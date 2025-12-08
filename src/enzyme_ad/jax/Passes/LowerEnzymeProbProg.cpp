@@ -74,6 +74,130 @@ static std::string getOrCreateWrapper(const std::string &baseFnName,
   return wrapperName;
 }
 
+// Reference (_make_rotate_left):
+// https://github.com/jax-ml/jax/blob/3aa8a6b0d4de5e554f45db638b0f3056e4c520f1/jax/_src/prng.py#L832
+static Value createRotateLeft(OpBuilder &builder, Location loc, Value x,
+                              Value distance) {
+  auto xType = cast<RankedTensorType>(x.getType());
+  auto elemType = cast<IntegerType>(xType.getElementType());
+  unsigned nbits = elemType.getWidth();
+
+  auto nbitsConst = stablehlo::ConstantOp::create(
+      builder, loc, xType,
+      DenseElementsAttr::get(xType, builder.getIntegerAttr(elemType, nbits)));
+  auto nbitsMinusD =
+      stablehlo::SubtractOp::create(builder, loc, xType, nbitsConst, distance);
+  auto shiftedLeft =
+      stablehlo::ShiftLeftOp::create(builder, loc, xType, x, distance);
+  auto shiftedRight = stablehlo::ShiftRightLogicalOp::create(
+      builder, loc, xType, x, nbitsMinusD);
+  auto result =
+      stablehlo::OrOp::create(builder, loc, xType, shiftedLeft, shiftedRight);
+
+  return result;
+}
+
+// Reference (_apply_round):
+// https://github.com/jax-ml/jax/blob/3aa8a6b0d4de5e554f45db638b0f3056e4c520f1/jax/_src/prng.py#L863
+static std::pair<Value, Value> applyRound(OpBuilder &builder, Location loc,
+                                          Value v0, Value v1,
+                                          uint32_t rotation) {
+  auto vType = cast<RankedTensorType>(v0.getType());
+  auto elemType = vType.getElementType();
+
+  auto newV0 = stablehlo::AddOp::create(builder, loc, vType, v0, v1);
+  auto rotConst = stablehlo::ConstantOp::create(
+      builder, loc, vType,
+      DenseElementsAttr::get(vType,
+                             builder.getIntegerAttr(elemType, rotation)));
+  auto rotated = createRotateLeft(builder, loc, v1, rotConst);
+  auto newV1 = stablehlo::XorOp::create(builder, loc, vType, newV0, rotated);
+
+  return {newV0, newV1};
+}
+
+// Reference (_threefry2x32):
+// https://github.com/jax-ml/jax/blob/3aa8a6b0d4de5e554f45db638b0f3056e4c520f1/jax/_src/prng.py#L883
+static std::pair<Value, Value> threefry2x32Hash(OpBuilder &builder,
+                                                Location loc, Value key1,
+                                                Value key2, Value x1,
+                                                Value x2) {
+  auto xType = cast<RankedTensorType>(x1.getType());
+  auto elemType = xType.getElementType();
+
+  auto parityConst = stablehlo::ConstantOp::create(
+      builder, loc, xType,
+      DenseElementsAttr::get(xType,
+                             builder.getIntegerAttr(elemType, 0x1BD11BDA)));
+
+  // [key1, key2, key1 ^ key2 ^ 0x1BD11BDA]
+  auto ks2 = stablehlo::XorOp::create(
+      builder, loc, xType,
+      stablehlo::XorOp::create(builder, loc, xType, key1, key2), parityConst);
+
+  const uint32_t rotations[2][4] = {{13, 15, 26, 6}, {17, 29, 16, 24}};
+
+  Value v0 = stablehlo::AddOp::create(builder, loc, xType, x1, key1);
+  Value v1 = stablehlo::AddOp::create(builder, loc, xType, x2, key2);
+
+  // 1st iteration in rotations[0], then v0 += ks[1], v1 += ks[2] + 1
+  for (uint32_t rot : rotations[0]) {
+    std::tie(v0, v1) = applyRound(builder, loc, v0, v1, rot);
+  }
+  v0 = stablehlo::AddOp::create(builder, loc, xType, v0, key2);
+  auto oneConst = stablehlo::ConstantOp::create(
+      builder, loc, xType,
+      DenseElementsAttr::get(xType, builder.getIntegerAttr(elemType, 1)));
+  auto v1PlusKs2 = stablehlo::AddOp::create(builder, loc, xType, v1, ks2);
+  v1 = stablehlo::AddOp::create(builder, loc, xType, v1PlusKs2, oneConst);
+
+  // 2nd iteration in rotations[1], then v0 += ks[2], v1 += ks[0] + 2
+  for (uint32_t rot : rotations[1]) {
+    std::tie(v0, v1) = applyRound(builder, loc, v0, v1, rot);
+  }
+  v0 = stablehlo::AddOp::create(builder, loc, xType, v0, ks2);
+  auto twoConst = stablehlo::ConstantOp::create(
+      builder, loc, xType,
+      DenseElementsAttr::get(xType, builder.getIntegerAttr(elemType, 2)));
+  auto v1PlusKey1 = stablehlo::AddOp::create(builder, loc, xType, v1, key1);
+  v1 = stablehlo::AddOp::create(builder, loc, xType, v1PlusKey1, twoConst);
+
+  // 3rd iteration in rotations[0], then v0 += ks[0], v1 += ks[1] + 3
+  for (uint32_t rot : rotations[0]) {
+    std::tie(v0, v1) = applyRound(builder, loc, v0, v1, rot);
+  }
+  v0 = stablehlo::AddOp::create(builder, loc, xType, v0, key1);
+  auto threeConst = stablehlo::ConstantOp::create(
+      builder, loc, xType,
+      DenseElementsAttr::get(xType, builder.getIntegerAttr(elemType, 3)));
+  auto v1PlusKey2 = stablehlo::AddOp::create(builder, loc, xType, v1, key2);
+  v1 = stablehlo::AddOp::create(builder, loc, xType, v1PlusKey2, threeConst);
+
+  // 4th iteration in rotations[1], then v0 += ks[1], v1 += ks[2] + 4
+  for (uint32_t rot : rotations[1]) {
+    std::tie(v0, v1) = applyRound(builder, loc, v0, v1, rot);
+  }
+  v0 = stablehlo::AddOp::create(builder, loc, xType, v0, key2);
+  auto fourConst = stablehlo::ConstantOp::create(
+      builder, loc, xType,
+      DenseElementsAttr::get(xType, builder.getIntegerAttr(elemType, 4)));
+  auto v1PlusKs2_2 = stablehlo::AddOp::create(builder, loc, xType, v1, ks2);
+  v1 = stablehlo::AddOp::create(builder, loc, xType, v1PlusKs2_2, fourConst);
+
+  // 5th iteration in rotations[0], then v0 += ks[2], v1 += ks[0] + 5
+  for (uint32_t rot : rotations[0]) {
+    std::tie(v0, v1) = applyRound(builder, loc, v0, v1, rot);
+  }
+  v0 = stablehlo::AddOp::create(builder, loc, xType, v0, ks2);
+  auto fiveConst = stablehlo::ConstantOp::create(
+      builder, loc, xType,
+      DenseElementsAttr::get(xType, builder.getIntegerAttr(elemType, 5)));
+  auto v1PlusKey1_2 = stablehlo::AddOp::create(builder, loc, xType, v1, key1);
+  v1 = stablehlo::AddOp::create(builder, loc, xType, v1PlusKey1_2, fiveConst);
+
+  return {v0, v1};
+}
+
 struct InitTraceOpConversion : public OpConversionPattern<enzyme::InitTraceOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -1951,6 +2075,154 @@ struct RandomOpConversion : public OpConversionPattern<enzyme::RandomOp> {
   }
 };
 
+// Reference (_rbg_split):
+// https://github.com/jax-ml/jax/blob/3aa8a6b0d4de5e554f45db638b0f3056e4c520f1/jax/_src/prng.py#L1271
+struct RandomSplitOpConversion
+    : public OpConversionPattern<enzyme::RandomSplitOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  std::string backend;
+  RandomSplitOpConversion(std::string backend, TypeConverter &typeConverter,
+                          MLIRContext *context, PatternBenefit benefit = 1)
+      : OpConversionPattern(typeConverter, context, benefit), backend(backend) {
+  }
+
+  LogicalResult
+  matchAndRewrite(enzyme::RandomSplitOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto rngState = adaptor.getRngState();
+    auto rngStateType = cast<RankedTensorType>(rngState.getType());
+    auto elemType = cast<IntegerType>(rngStateType.getElementType());
+
+    // Check RNG state is a tensor<2xui64>
+    if (rngStateType.getShape().size() != 1 ||
+        rngStateType.getShape()[0] != 2 || elemType.getWidth() != 64 ||
+        !elemType.isUnsigned()) {
+      return rewriter.notifyMatchFailure(op, "Unsupported RNG state");
+    }
+
+    size_t numOutputs = op.getNumResults();
+
+    auto ui32Type =
+        IntegerType::get(rewriter.getContext(), 32, IntegerType::Unsigned);
+    auto ui32x2x2Type = RankedTensorType::get({2, 2}, ui32Type);
+    auto ui32x4Type = RankedTensorType::get({4}, ui32Type);
+
+    // tensor<2xui64> -> tensor<4xui32>
+    // little endian [low32([0]), high32([0]), low32([1]), high32([1])]
+    auto bitcastTo2x2 = stablehlo::BitcastConvertOp::create(
+        rewriter, op.getLoc(), ui32x2x2Type, rngState);
+    auto reshapedKey = stablehlo::ReshapeOp::create(rewriter, op.getLoc(),
+                                                    ui32x4Type, bitcastTo2x2);
+
+    auto ui32TensorType = RankedTensorType::get({}, ui32Type);
+    auto ui32x1Type = RankedTensorType::get({1}, ui32Type);
+
+    // Extract keys
+    auto key0_0 = stablehlo::ReshapeOp::create(
+        rewriter, op.getLoc(), ui32TensorType,
+        stablehlo::SliceOp::create(rewriter, op.getLoc(), ui32x1Type,
+                                   reshapedKey,
+                                   rewriter.getDenseI64ArrayAttr({0}),
+                                   rewriter.getDenseI64ArrayAttr({1}),
+                                   rewriter.getDenseI64ArrayAttr({1})));
+    auto key0_1 = stablehlo::ReshapeOp::create(
+        rewriter, op.getLoc(), ui32TensorType,
+        stablehlo::SliceOp::create(rewriter, op.getLoc(), ui32x1Type,
+                                   reshapedKey,
+                                   rewriter.getDenseI64ArrayAttr({1}),
+                                   rewriter.getDenseI64ArrayAttr({2}),
+                                   rewriter.getDenseI64ArrayAttr({1})));
+    auto key1_0 = stablehlo::ReshapeOp::create(
+        rewriter, op.getLoc(), ui32TensorType,
+        stablehlo::SliceOp::create(rewriter, op.getLoc(), ui32x1Type,
+                                   reshapedKey,
+                                   rewriter.getDenseI64ArrayAttr({2}),
+                                   rewriter.getDenseI64ArrayAttr({3}),
+                                   rewriter.getDenseI64ArrayAttr({1})));
+    auto key1_1 = stablehlo::ReshapeOp::create(
+        rewriter, op.getLoc(), ui32TensorType,
+        stablehlo::SliceOp::create(rewriter, op.getLoc(), ui32x1Type,
+                                   reshapedKey,
+                                   rewriter.getDenseI64ArrayAttr({3}),
+                                   rewriter.getDenseI64ArrayAttr({4}),
+                                   rewriter.getDenseI64ArrayAttr({1})));
+
+    // Construct counter [0, 1, ..., numOutputs-1]
+    auto counterType =
+        RankedTensorType::get({static_cast<int64_t>(numOutputs)}, ui32Type);
+    auto counter = stablehlo::IotaOp::create(rewriter, op.getLoc(), counterType,
+                                             rewriter.getI64IntegerAttr(0));
+
+    // Broadcast keys to match `counter`
+    auto key0_0_bcast = stablehlo::BroadcastInDimOp::create(
+        rewriter, op.getLoc(), counterType, key0_0,
+        rewriter.getDenseI64ArrayAttr({}));
+    auto key0_1_bcast = stablehlo::BroadcastInDimOp::create(
+        rewriter, op.getLoc(), counterType, key0_1,
+        rewriter.getDenseI64ArrayAttr({}));
+    auto key1_0_bcast = stablehlo::BroadcastInDimOp::create(
+        rewriter, op.getLoc(), counterType, key1_0,
+        rewriter.getDenseI64ArrayAttr({}));
+    auto key1_1_bcast = stablehlo::BroadcastInDimOp::create(
+        rewriter, op.getLoc(), counterType, key1_1,
+        rewriter.getDenseI64ArrayAttr({}));
+
+    // Hash with key0_0 and key0_1 to produce output[i][0]
+    auto [h0_0, h0_1] = threefry2x32Hash(rewriter, op.getLoc(), key0_0_bcast,
+                                         key0_1_bcast, counter, counter);
+
+    // Hash with key1_0 and key1_1 to produce output[i][1]
+    auto [h1_0, h1_1] = threefry2x32Hash(rewriter, op.getLoc(), key1_0_bcast,
+                                         key1_1_bcast, counter, counter);
+
+    // Compute output keys
+    //   output[i][0] = combine(h0_0[i], h0_1[i])
+    //   output[i][1] = combine(h1_0[i], h1_1[i])
+    SmallVector<Value> outputKeys;
+    for (size_t i = 0; i < numOutputs; ++i) {
+      auto h0_0_i = stablehlo::SliceOp::create(
+          rewriter, op.getLoc(), ui32x1Type, h0_0,
+          rewriter.getDenseI64ArrayAttr({static_cast<int64_t>(i)}),
+          rewriter.getDenseI64ArrayAttr({static_cast<int64_t>(i + 1)}),
+          rewriter.getDenseI64ArrayAttr({1}));
+      auto h0_1_i = stablehlo::SliceOp::create(
+          rewriter, op.getLoc(), ui32x1Type, h0_1,
+          rewriter.getDenseI64ArrayAttr({static_cast<int64_t>(i)}),
+          rewriter.getDenseI64ArrayAttr({static_cast<int64_t>(i + 1)}),
+          rewriter.getDenseI64ArrayAttr({1}));
+      auto h1_0_i = stablehlo::SliceOp::create(
+          rewriter, op.getLoc(), ui32x1Type, h1_0,
+          rewriter.getDenseI64ArrayAttr({static_cast<int64_t>(i)}),
+          rewriter.getDenseI64ArrayAttr({static_cast<int64_t>(i + 1)}),
+          rewriter.getDenseI64ArrayAttr({1}));
+      auto h1_1_i = stablehlo::SliceOp::create(
+          rewriter, op.getLoc(), ui32x1Type, h1_1,
+          rewriter.getDenseI64ArrayAttr({static_cast<int64_t>(i)}),
+          rewriter.getDenseI64ArrayAttr({static_cast<int64_t>(i + 1)}),
+          rewriter.getDenseI64ArrayAttr({1}));
+
+      // Concatenate [h0_0[i], h0_1[i], h1_0[i], h1_1[i]] -> tensor<4xui32>
+      SmallVector<Value> parts = {h0_0_i, h0_1_i, h1_0_i, h1_1_i};
+      auto concatType = RankedTensorType::get({4}, ui32Type);
+      auto concated = stablehlo::ConcatenateOp::create(
+          rewriter, op.getLoc(), concatType, parts,
+          rewriter.getI64IntegerAttr(0));
+
+      // Restore: tensor<4xui32> -> tensor<2xui64>
+      auto reshaped = stablehlo::ReshapeOp::create(rewriter, op.getLoc(),
+                                                   ui32x2x2Type, concated);
+      auto outputKey = stablehlo::BitcastConvertOp::create(
+          rewriter, op.getLoc(), rngStateType, reshaped);
+
+      outputKeys.push_back(outputKey);
+    }
+
+    rewriter.replaceOp(op, outputKeys);
+    return success();
+  }
+};
+
 struct GetSubtraceOpConversion
     : public OpConversionPattern<enzyme::GetSubtraceOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -2440,6 +2712,7 @@ struct LowerProbProgToStableHLOPass
     target.addLegalDialect<enzyme::EnzymeDialect>();
 
     target.addIllegalOp<enzyme::RandomOp>();
+    target.addIllegalOp<enzyme::RandomSplitOp>();
     target.addIllegalOp<enzyme::CholeskySolveOp>();
     target.addIllegalOp<enzyme::DotOp>();
     target.addIllegalOp<enzyme::LogAddExpOp>();
@@ -2450,7 +2723,8 @@ struct LowerProbProgToStableHLOPass
 
     RewritePatternSet patterns(context);
 
-    patterns.add<RandomOpConversion, CholeskySolveOpConversion, DotOpConversion,
+    patterns.add<RandomOpConversion, RandomSplitOpConversion,
+                 CholeskySolveOpConversion, DotOpConversion,
                  LogAddExpOpConversion, UnflattenSliceOpConversion,
                  ForLoopOpConversion>(backend, typeConverter, context);
 
