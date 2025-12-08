@@ -1248,13 +1248,13 @@ mlir::func::FuncOp adaptToCallingConvention(mlir::func::FuncOp f,
   // Get the original function type
   auto originalFuncType = f.getFunctionType();
   size_t numInputs = originalFuncType.getNumInputs();
-  
+
   // Validate inputs
   assert(inputTensorTypes.size() == numInputs &&
          "Number of input tensor types must match function inputs");
   assert(byteOffsets.size() == numInputs &&
          "Number of byte offsets must match function inputs");
-  
+
   // Create the new function type using the outer specification types
   auto context = f.getContext();
   auto loc = f.getLoc();
@@ -1292,8 +1292,25 @@ mlir::func::FuncOp adaptToCallingConvention(mlir::func::FuncOp f,
     if (byteOffset != 0) {
       // Calculate element offset from byte offset
       auto elementType = outerType.getElementType();
-      unsigned elementBitWidth = elementType.getIntOrFloatBitWidth();
-      int64_t elementBytes = (elementBitWidth + 7) / 8;
+
+      // Get element size in bytes
+      int64_t elementBytes = 0;
+      if (auto complexType = dyn_cast<ComplexType>(elementType)) {
+        // Complex types have two components of the underlying element type
+        auto componentType = complexType.getElementType();
+        unsigned componentBitWidth = componentType.getIntOrFloatBitWidth();
+        elementBytes = 2 * ((componentBitWidth + 7) / 8);
+      } else {
+        unsigned elementBitWidth = elementType.getIntOrFloatBitWidth();
+        assert(elementBitWidth > 0 &&
+               "Element type must have valid bit width for byte offset calculation");
+        elementBytes = (elementBitWidth + 7) / 8;
+      }
+
+      // Verify byte offset aligns with element boundaries
+      assert(byteOffset % elementBytes == 0 &&
+             "Byte offset must be aligned to element boundaries");
+
       int64_t elementOffset = byteOffset / elementBytes;
       
       auto outerShape = outerType.getShape();
@@ -1317,11 +1334,16 @@ mlir::func::FuncOp adaptToCallingConvention(mlir::func::FuncOp f,
         // Calculate the index for this dimension
         int64_t dimIndex = remainingOffset / dimStride;
         startIndices.push_back(dimIndex);
-        
+
         // Calculate the limit based on the inner shape
         int64_t innerDim = (j < innerShape.size()) ? innerShape[j] : 1;
-        limitIndices.push_back(dimIndex + innerDim);
-        
+        int64_t limitIndex = dimIndex + innerDim;
+
+        // Ensure limit doesn't exceed outer dimension bounds
+        assert(limitIndex <= outerShape[j] &&
+               "Byte offset results in out-of-bounds access");
+        limitIndices.push_back(limitIndex);
+
         // Update remaining offset for next dimension
         remainingOffset = remainingOffset % dimStride;
       }
