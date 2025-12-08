@@ -60,4 +60,3 @@ module {
 // CHECK-SAME: dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [1, 2, 0], start_index_map = [2, 1, 0], index_vector_dim = 1>
 // CHECK-NEXT: return %[[RES]]
 
-

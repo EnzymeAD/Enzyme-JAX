@@ -16978,7 +16978,7 @@ struct DynamicGatherTranspose
 
     // Get dimension numbers
     auto dimNumbers = op.getDimensionNumbers();
-    
+
     // Create new start_index_map by applying inverse permutation
     SmallVector<int64_t> newStartIndexMap;
     for (auto idx : dimNumbers.getStartIndexMap()) {
