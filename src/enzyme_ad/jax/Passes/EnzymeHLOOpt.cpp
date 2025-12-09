@@ -25907,8 +25907,6 @@ struct ReduceMulToDotGeneral
 
     auto dotDims = stablehlo::DotDimensionNumbersAttr::get(
         op.getContext(), batchDims, batchDims, dims, dims);
-    // auto dotOp = stablehlo::DotGeneralOp::create(
-    //     rewriter, op.getLoc(), op.getResult(0).getType(), mul.getLhs(),
     rewriter.replaceOpWithNewOp<stablehlo::DotGeneralOp>(
         op, op.getResult(0).getType(), mul.getLhs(), mul.getRhs(), dotDims,
         nullptr, nullptr);
