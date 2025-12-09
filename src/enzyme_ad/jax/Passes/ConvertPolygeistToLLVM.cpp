@@ -1640,7 +1640,7 @@ struct LowerGPUAlternativesOp
         } else {
           // TODO might get some round off errors here, maybe use a better alg
           // or median
-          avgs.push_back(1
+          avgs.push_back(
               std::accumulate(timings[i].begin(), timings[i].end(), 0.0f) /
               timings[i].size());
           llvm::errs() << "Alternative " << i << "," << descs[i] << " is "
