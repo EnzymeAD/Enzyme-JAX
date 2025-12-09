@@ -937,7 +937,7 @@ def _dump_mlir_to_file(source, pass_pipeline):
         suffix=".mlir", dir=dump_mlir_dir, delete=False
     )
     with open(tmpfile.name, "w") as f:
-        f.write("# " + pass_pipeline + "\n")
+        f.write("// " + pass_pipeline + "\n")
         f.write(str(source))
 
     return tmpfile.name

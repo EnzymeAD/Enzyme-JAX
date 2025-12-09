@@ -84,7 +84,7 @@ class Cache(EnzymeJaxTest):
 
         self.fn = cache
         self.name = "cache"
-        self.rtol = 1e-5 # comparing values ~1e7 magnitudes
+        self.rtol = 1e-5  # comparing values ~1e7 magnitudes
 
 
 class Slicing(EnzymeJaxTest):
