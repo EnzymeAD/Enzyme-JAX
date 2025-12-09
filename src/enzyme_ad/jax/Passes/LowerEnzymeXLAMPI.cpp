@@ -59,7 +59,7 @@ struct MPICommRankOpLowering
         // Create the function type
         auto funcType = LLVM::LLVMFunctionType::get(
             llvmVoidPtrType, // void return type
-            {},              // parameter types: empty (no arguments)
+            {llvmPtrType},   // parameter types TODO how to add {enzymexla.memory_effects = ["read", "write", "allocate", "free"]}
             false);          // is variadic: false
 
         auto func =
@@ -102,23 +102,7 @@ struct MPICommRankOpLowering
                                  LLVM::Linkage::External);
       }
 
-      // // TODO Call the LLVM function with enzymexlaw.jit_call
-      // auto jitCall = enzymexla::JITCallOp::create(
-      //     rewriter, op.getLoc(),
-      //     TypeRange{},
-      //     mlir::FlatSymbolRefAttr::get(ctx, fnName),
-      //     ValueRange{},
-      //     rewriter.getStringAttr(""),
-      //     /*operand_layouts=*/nullptr,
-      //     /*result_layouts=*/nullptr,
-      //     /*arg_attrs=*/nullptr,
-      //     /*res_attrs=*/nullptr,
-      //     /*output_operand_aliases=*/nullptr,
-      //     /*xla_side_effect_free=*/nullptr);
-
-      // ----------------
-      // ----------------
-      // Get the result type (it's a tensor)
+      // Get the result type (it's a tensor<i32>)
       auto resultType = op.getResult().getType();
       
       // Create a dense tensor constant with value 0
@@ -130,8 +114,22 @@ struct MPICommRankOpLowering
       auto placeholderValue = rewriter.create<arith::ConstantOp>(
           op.getLoc(), attr);
       
+      // Call the LLVM function with enzymexla.jit_call
+      auto jitCall = enzymexla::JITCallOp::create(
+          rewriter, 
+          op.getLoc(),
+          TypeRange{resultType},
+          mlir::FlatSymbolRefAttr::get(ctx, fnName),
+          ValueRange{placeholderValue},
+          rewriter.getStringAttr(""),
+          /*operand_layouts=*/nullptr,
+          /*result_layouts=*/nullptr,
+          /*arg_attrs=*/nullptr,
+          /*res_attrs=*/nullptr,
+          /*output_operand_aliases=*/nullptr,
+          /*xla_side_effect_free=*/nullptr);
+
       rewriter.replaceOp(op, placeholderValue);
-      // ----------------
 
       // TODO return success/failure/notifymatchfailure not behaving as i expect
       // Seems to be some sort of funny interaction between replaceop and return
