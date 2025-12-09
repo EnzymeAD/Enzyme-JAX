@@ -68,6 +68,13 @@ enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=and_pad_pad" --transform-in
 5. Register as Transform operation in `TransformOps.td`
 6. Add the pass to the appropriate pass list in `src/enzyme_ad/jax/primitives.py`
 
+### Adding a new lowering pass
+1. Define the pass in `src/enzyme_ad/jax/Passes/Passes.td`, e.g. `LowerEnzymeXLALinalgPass`
+2. Create a new `.cpp` file in `src/enzyme_ad/jax/Passes/`, e.g. `src/enzyme_ad/jax/Passes/LowerEnzymeXLALinalg.cpp`. In the new file...
+   1. Inherit from `mlir::OpRewritePattern<OpType>` and implement the `matchAndRewrite()` method.
+   2. Inherit from the generated `PassBase` class and implement `runOnOperation` to register your pass.
+3. Write lit tests for your pass, e.g. `test/lit_tests/linalg/*.mlir`.
+
 ### Adding a New Dialect Operation
 
 1. Define operation in `src/enzyme_ad/jax/Dialect/EnzymeXLAOps.td`
