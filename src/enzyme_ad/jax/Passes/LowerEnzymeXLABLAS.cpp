@@ -1,5 +1,3 @@
-#pragma once
-
 #include "Enzyme/MLIR/Dialect/Dialect.h"
 #include "Enzyme/MLIR/Passes/EnzymeBatchPass.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
@@ -29,6 +27,50 @@ using namespace mlir::enzyme;
 using namespace mlir::enzymexla;
 using namespace mlir::stablehlo;
 
+// Helper function to extract constant scalar value (real/imag parts)
+static bool extractConstantScalar(Value val, double &realPart,
+                                  double &imagPart) {
+  DenseElementsAttr attr;
+  if (!matchPattern(val, m_Constant(&attr)))
+    return false;
+
+  auto valType = cast<RankedTensorType>(val.getType());
+  auto elemType = valType.getElementType();
+
+  if (auto complexType = dyn_cast<ComplexType>(elemType)) {
+    // Complex scalar
+    auto complexVal = attr.getSplatValue<std::complex<APFloat>>();
+    realPart = complexVal.real().convertToDouble();
+    imagPart = complexVal.imag().convertToDouble();
+    return true;
+  } else if (isa<FloatType>(elemType)) {
+    // Real scalar
+    realPart = attr.getSplatValue<APFloat>().convertToDouble();
+    imagPart = 0.0;
+    return true;
+  }
+  return false;
+}
+
+// Helper function to create operand and rank for scalar value
+// Returns the operand to use and the rank (1 for empty placeholder, 0 for
+// scalar)
+static std::pair<Value, int64_t> createScalarOperand(PatternRewriter &rewriter,
+                                                     Location loc,
+                                                     Value originalVal,
+                                                     bool useAttribute) {
+  if (useAttribute) {
+    // Create an empty 0-element tensor as placeholder
+    auto emptyType = RankedTensorType::get(
+        {0}, cast<RankedTensorType>(originalVal.getType()).getElementType());
+    auto emptyTensor = stablehlo::ConstantOp::create(
+        rewriter, loc,
+        DenseElementsAttr::get(emptyType, ArrayRef<Attribute>{}));
+    return {emptyTensor, 1};
+  }
+  return {originalVal, 0};
+}
+
 struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
   using OpRewritePattern<enzymexla::SyrkOp>::OpRewritePattern;
 
@@ -41,6 +83,8 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
                                 PatternRewriter &rewriter) const override {
     if (backend == "cpu")
       return matchAndRewriteCPU(op, rewriter);
+    if (backend == "cuda")
+      return matchAndRewriteCUDA(op, rewriter);
 
     return matchAndRewriteFallback(op, rewriter);
   }
@@ -121,8 +165,8 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
       args.push_back(const1);
       args.push_back(const1);
 
-      auto callOp = LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{},
-                                         SymbolRefAttr::get(ctx, blasFn), args);
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{},
+                           SymbolRefAttr::get(ctx, blasFn), args);
       LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
     }
 
@@ -151,6 +195,7 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
         llvm_unreachable("adjoint is not supported for complex matrices");
       }
       // adjoint for real matrices is the same as transpose
+      LLVM_FALLTHROUGH;
     case enzymexla::LapackTranspose::transpose:
       transValue = 'T';
       break;
@@ -249,7 +294,93 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
     return success();
   }
 
-  // TODO: gpu lowering after we register the cublas functions via XLA FFI
+  LogicalResult matchAndRewriteCUDA(enzymexla::SyrkOp op,
+                                    PatternRewriter &rewriter) const {
+    auto CType = cast<RankedTensorType>(op.getC().getType());
+    auto rank = CType.getRank();
+
+    bool isComplex = false;
+    if (auto complex_type = dyn_cast<ComplexType>(CType.getElementType())) {
+      isComplex = true;
+    }
+
+    if (isComplex && op.getTranspose() == enzymexla::LapackTranspose::adjoint) {
+      return rewriter.notifyMatchFailure(
+          op, "Complex matrix not supported for complex transpose");
+    }
+
+    bool transpose = op.getTranspose() != enzymexla::LapackTranspose::none;
+
+    // Try to extract alpha and beta as constants
+    double alphaReal = 0.0, alphaImag = 0.0;
+    double betaReal = 0.0, betaImag = 0.0;
+    bool useAlphaAttr =
+        extractConstantScalar(op.getAlpha(), alphaReal, alphaImag);
+    bool useBetaAttr = extractConstantScalar(op.getBeta(), betaReal, betaImag);
+
+    // Build operands list - use empty tensors for constant alpha/beta
+    SmallVector<Value> operands;
+    operands.push_back(op.getA());
+    operands.push_back(op.getC());
+
+    SmallVector<int64_t> operandRanks = {rank, rank};
+
+    auto [alphaOperand, alphaRank] =
+        createScalarOperand(rewriter, op.getLoc(), op.getAlpha(), useAlphaAttr);
+    operands.push_back(alphaOperand);
+    operandRanks.push_back(alphaRank);
+
+    auto [betaOperand, betaRank] =
+        createScalarOperand(rewriter, op.getLoc(), op.getBeta(), useBetaAttr);
+    operands.push_back(betaOperand);
+    operandRanks.push_back(betaRank);
+
+    auto customCall = stablehlo::CustomCallOp::create(
+        rewriter, op.getLoc(), TypeRange{CType}, operands,
+        rewriter.getStringAttr("reactant_cublas_syrk_ffi"),
+        /*has_side_effect*/ nullptr,
+        /*backend_config*/
+        rewriter.getDictionaryAttr({
+            rewriter.getNamedAttr("transpose", rewriter.getBoolAttr(transpose)),
+            rewriter.getNamedAttr(
+                "uplo",
+                rewriter.getBoolAttr(op.getUplo() == enzymexla::LapackUplo::U)),
+            rewriter.getNamedAttr("use_alpha_attribute",
+                                  rewriter.getBoolAttr(useAlphaAttr)),
+            rewriter.getNamedAttr("use_beta_attribute",
+                                  rewriter.getBoolAttr(useBetaAttr)),
+            rewriter.getNamedAttr("alpha_real",
+                                  rewriter.getF64FloatAttr(alphaReal)),
+            rewriter.getNamedAttr("alpha_imag",
+                                  rewriter.getF64FloatAttr(alphaImag)),
+            rewriter.getNamedAttr("beta_real",
+                                  rewriter.getF64FloatAttr(betaReal)),
+            rewriter.getNamedAttr("beta_imag",
+                                  rewriter.getF64FloatAttr(betaImag)),
+        }),
+        /*api_version*/
+        stablehlo::CustomCallApiVersionAttr::get(
+            rewriter.getContext(),
+            mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
+        /*calledcomputations*/ nullptr,
+        /*operand_layouts*/
+        getSHLOLayout(rewriter, operandRanks, SmallVector<bool>(4, true), rank),
+        /*result_layouts*/
+        getSHLOLayout(rewriter, {rank}, SmallVector<bool>(rank, true), rank),
+        /*output_operand_aliases*/
+        rewriter.getArrayAttr({
+            stablehlo::OutputOperandAliasAttr::get(op.getContext(), {}, 1, {}),
+        }));
+
+    auto result = customCall.getResult(0);
+    if (op.getFill() || op.getUplo() == enzymexla::LapackUplo::L) {
+      result = stablehlo::copyTriangularPart(rewriter, result,
+                                             enzymexla::LapackUplo::U);
+    }
+    rewriter.replaceAllUsesWith(op.getResult(), result);
+
+    return success();
+  }
 
   LogicalResult matchAndRewriteFallback(enzymexla::SyrkOp op,
                                         PatternRewriter &rewriter) const {
@@ -287,6 +418,7 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
         llvm_unreachable("adjoint is not supported for complex matrices");
       }
       // adjoint for real matrices is the same as transpose
+      LLVM_FALLTHROUGH;
     case enzymexla::LapackTranspose::transpose:
       dotDims = stablehlo::DotDimensionNumbersAttr::get(
           op.getContext(), batchDims, batchDims, {nBatchDims}, {nBatchDims});

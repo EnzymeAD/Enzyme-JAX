@@ -900,8 +900,6 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
     for (auto s : Ty.getShape())
       numIndices *= s;
 
-    int64_t rank = Ty.getShape().size();
-
     scatterDimsToOperandDims.push_back(i);
 
     auto S = Ty.getShape();

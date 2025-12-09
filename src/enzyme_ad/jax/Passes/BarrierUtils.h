@@ -2,6 +2,7 @@
 #define ENZYME_AD_JAX_PASSES_BARRIER_UTILS_H
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Value.h"

@@ -1736,9 +1736,9 @@ Value ConvertLaunchFuncOpToGpuRuntimeCallPattern::generateParamsArray(
       }
       LLVM::StoreOp::create(builder, loc, en.value(), fieldPtr);
     }
-    auto elementPtr = LLVM::GEPOp::create(builder, loc, llvmPointerType,
-                                          llvmPointerPointerType, arrayPtr,
-                                          ArrayRef<LLVM::GEPArg>{en.index()});
+    auto elementPtr = LLVM::GEPOp::create(
+        builder, loc, llvmPointerType, llvmPointerPointerType, arrayPtr,
+        ArrayRef<LLVM::GEPArg>{(int32_t)en.index()});
     auto casted =
         LLVM::BitcastOp::create(builder, loc, llvmPointerType, fieldPtr);
     LLVM::StoreOp::create(builder, loc, casted, elementPtr);
@@ -2149,8 +2149,6 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
       currentOp = parentOp;
     }
   }
-
-  ModuleOp moduleOp = launchOp->getParentOfType<ModuleOp>();
 
   Location loc = launchOp.getLoc();
 
@@ -2568,9 +2566,6 @@ private:
                                      rewriter.getI64IntegerAttr(xla_type_id(
                                          memRefType.getElementType())));
 
-        Type convertedIndex =
-            typeConverter->convertType(rewriter.getIndexType());
-
         auto shapeDim = LLVM::ConstantOp::create(
             rewriter, loc, i64,
             rewriter.getI64IntegerAttr(memRefType.getShape().size()));
@@ -2790,15 +2785,12 @@ private:
     if (failed(isAsyncWithNoDependency(rewriter, deallocOp)))
       return failure();
 
-    auto i64 = rewriter.getIntegerType(64);
     auto i32 = rewriter.getIntegerType(32);
     auto moduleOp = deallocOp->getParentOfType<ModuleOp>();
 
     auto ptr1ty = LLVM::LLVMPointerType::get(rewriter.getContext(), 1);
 
     if (backend == "cuda") {
-      auto one = LLVM::ConstantOp::create(rewriter, loc, i64,
-                                          rewriter.getI64IntegerAttr(1));
 
       Type tys[] = {ptr1ty};
       auto cudaFreeFn =
@@ -2951,8 +2943,9 @@ private:
         FlatSymbolRefAttr::get(rewriter.getStringAttr("<undefined>")));
 
     bool baduser = false;
-    for (auto use :
-         *SymbolTable::getSymbolUses(fn.getOperation(), fn->getParentOp())) {
+    auto uses =
+        SymbolTable::getSymbolUses(fn.getOperation(), fn->getParentOp());
+    for (auto use : *uses) {
       if (use.getUser() == wrap)
         continue;
       baduser = true;
@@ -3881,7 +3874,6 @@ struct AsyncOpLowering : public ConvertOpToLLVMPattern<async::ExecuteOp> {
         SmallVector<Type> types;
         for (auto v : functionInputs)
           types.push_back(converter->convertType(v.getType()));
-        auto ST = LLVM::LLVMStructType::getLiteral(ctx, types);
         auto alloc = LLVM::BitcastOp::create(
             rewriter, execute.getLoc(), LLVM::LLVMPointerType::get(ctx), arg);
         for (auto idx : llvm::enumerate(functionInputs)) {
@@ -4105,8 +4097,7 @@ struct ConvertPolygeistToLLVMPass
       auto i64 = rewriter.getIntegerType(64);
       auto ptrty = LLVM::LLVMPointerType::get(rewriter.getContext());
       Type tys[] = {ptrty, i64, i32, i64, i32, ptrty, i64, ptrty};
-
-      LLVM::lookupOrCreateFn(rewriter, m, launchFuncName, tys, i32);
+      (void)LLVM::lookupOrCreateFn(rewriter, m, launchFuncName, tys, i32);
     }
 
     for (auto mod : gmods) {
