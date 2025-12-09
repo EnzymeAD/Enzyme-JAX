@@ -522,6 +522,10 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
     bool isIntermediateReshape = false;
     auto candidateTargetOp = isValidTargetOp(onlyUser);
 
+    if (!relatedOps.empty() && candidateTargetOp &&
+        candidateTargetOp->getBlock() != relatedOps[0]->getBlock())
+      continue;
+
     Operation *preceedingOp = candidateSlice;
     if (!candidateTargetOp) {
       // check for reshape
@@ -640,7 +644,7 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
       firstRelatedOp = op;
   }
   // if we have to move around too many ops we avoid applying this pattern
-  llvm::SmallSetVector<Operation *, 8> opsToMoveWorklist;
+  llvm::SetVector<Operation *> opsToMoveWorklist;
   for (auto &op : relatedOps) {
     if (op == firstRelatedOp)
       continue;
@@ -652,7 +656,8 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
       if (notSeen) {
         for (auto operand : currOp->getOperands()) {
           if (auto operandOp = operand.getDefiningOp()) {
-            if (!operandOp->isBeforeInBlock(firstRelatedOp)) {
+            if (operandOp->getBlock() == firstRelatedOp->getBlock() &&
+                !operandOp->isBeforeInBlock(firstRelatedOp)) {
               opsToMove.push_back(operandOp);
             }
           }
@@ -661,12 +666,8 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
     }
   }
 
-  SmallVector<Operation *> opsToMoveWorklistVec(opsToMoveWorklist.begin(),
-                                                opsToMoveWorklist.end());
-
-  std::sort(opsToMoveWorklistVec.begin(), opsToMoveWorklistVec.end(),
-            [](Operation *a, Operation *b) { return a->isBeforeInBlock(b); });
-  for (auto op : opsToMoveWorklistVec) {
+  auto opsToMoveSorted = mlir::topologicalSort(opsToMoveWorklist);
+  for (auto op : opsToMoveSorted) {
     rewriter.moveOpAfter(op, firstRelatedOp);
     firstRelatedOp = op;
   }
@@ -951,7 +952,10 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
       continue;
     }
 
-    if (affineIndexInfoMap.contains(operand)) {
+    if (affineIndexInfoMap.contains(operand) &&
+        !cast<RankedTensorType>(operand.getType())
+             .getElementType()
+             .isInteger(1)) {
       batchLiftingModes[i] = BatchLiftingMode::AFFINE_INDEX;
       batchOperands[i] = operand;
       continue;

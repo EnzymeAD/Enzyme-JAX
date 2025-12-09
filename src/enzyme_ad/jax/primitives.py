@@ -1041,12 +1041,6 @@ def _enzyme_primal_lowering(
                     pass_pipeline + ",tensor-empty-raise,drop-unsupported-attributes"
                 )
 
-            _, nmod2 = enzyme_call.run_pass_pipeline(
-                fns, source, "convert-all-constants-to-splatted-constant"
-            )
-            filename = _dump_mlir_to_file(str(nmod2), pass_pipeline)
-            logging.warning("Enzyme MLIR dumped to %s", filename)
-
             try:
                 name, nmod = enzyme_call.run_pass_pipeline(fns, source, pass_pipeline)
             except Exception as e:
