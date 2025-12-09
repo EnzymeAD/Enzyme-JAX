@@ -330,8 +330,8 @@ SliceInfo<stablehlo::SliceOp> constructSliceInfo(stablehlo::SliceOp sliceOp) {
   if (!supported)
     return defaultUnsupportedSliceInfo(sliceOp);
 
-  return SliceInfo<stablehlo::SliceOp>{sliceOp, {}, startIndices, inputShape,
-                                       sliceDim, sliceStart, true};
+  return SliceInfo<stablehlo::SliceOp>{
+      sliceOp, {}, startIndices, inputShape, sliceDim, sliceStart, true};
 }
 
 bool areSlicesContiguous(SmallVector<SliceInfo<stablehlo::SliceOp>> &slices) {
