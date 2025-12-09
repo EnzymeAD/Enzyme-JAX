@@ -84,11 +84,11 @@ enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=and_pad_pad" --transform-in
 
 ## Testing
 
-Run tests with:
+Run all tests with:
 ```bash
-bazel test //test/...
+bazel test //test:all
 ```
-This runs the tests in 
+This runs all the test targets in `test/BUILD`.
 
 Most of the Enzyme-JaX tests use [lit](https://llvm.org/docs/CommandGuide/lit.html) for testing.
 These tests are stored in `test/lit_tests`.
@@ -99,3 +99,8 @@ e.g. in `test/lit_tests/if.mlir`:
 ```
 This instructs `lit` to run the `enzyme-hlo-opt` pass on `test/lit_tests/if.mlir`.
 The output is fed to `FileCheck` which compares it against the expected result that is provided in comments in the file that start with `// CHECK`.
+
+Run all lit tests with
+```bash
+bazel test //test/lit_tests:all
+```
