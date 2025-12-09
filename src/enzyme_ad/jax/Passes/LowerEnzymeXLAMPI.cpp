@@ -35,11 +35,73 @@ struct MPICommRankOpLowering
 
   LogicalResult matchAndRewrite(enzymexla::MPICommRankOp op,
                                 PatternRewriter &rewriter) const override {
-    // auto ctx = op->getContext();
-    // LLVMTypeConverter typeConverter(ctx);
+    auto ctx = op->getContext();
+    LLVMTypeConverter typeConverter(ctx);
 
-    // auto comm = op.getOperand();
     if (backend == "cpu") {
+
+      auto moduleOp = op->getParentOfType<ModuleOp>();
+
+      auto llvmPtrType = LLVM::LLVMPointerType::get(ctx);
+      auto llvmVoidPtrType = LLVM::LLVMVoidType::get(ctx);
+
+      auto i32Type = IntegerType::get(rewriter.getContext(), 32);
+
+      std::string fn;
+      fn = "MPI_Comm_rank";
+
+      // Generate the LLVM function body
+      std::string fnName = "enzymexla_wrapper_" + fn;
+      {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+        // Create the function type: i32 func()
+        auto funcType = LLVM::LLVMFunctionType::get(
+            i32Type,    // return type: i32
+            {},         // parameter types: empty (no arguments)
+            false);     // is variadic: false
+
+        auto func =
+            LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), fnName, funcType);
+        rewriter.setInsertionPointToStart(func.addEntryBlock(rewriter));
+
+        // auto ptrSize =
+        //     LLVM::ConstantOp::create(rewriter, op.getLoc(), llvmBlasIntType,
+        //                              rewriter.getIntegerAttr(blasIntType, 1));
+        // auto mPtr = LLVM::AllocaOp::create(rewriter, op.getLoc(), llvmPtrType,
+        //                                    llvmBlasIntType, ptrSize, 0);
+        // auto nPtr = LLVM::AllocaOp::create(rewriter, op.getLoc(), llvmPtrType,
+        //                                    llvmBlasIntType, ptrSize, 0);
+
+        // auto mVal =
+        //     LLVM::ConstantOp::create(rewriter, op.getLoc(), llvmBlasIntType,
+        //                              rewriter.getIntegerAttr(blasIntType, m));
+        // auto nVal =
+        //     LLVM::ConstantOp::create(rewriter, op.getLoc(), llvmBlasIntType,
+        //                              rewriter.getIntegerAttr(blasIntType, n));
+
+        // LLVM::StoreOp::create(rewriter, op.getLoc(), mVal, mPtr);
+        // LLVM::StoreOp::create(rewriter, op.getLoc(), nVal, nPtr);
+
+        auto callOp = LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{i32Type},
+                             SymbolRefAttr::get(ctx, fn),
+                             ValueRange{});
+
+        LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{callOp->getResult(0)});
+      }
+
+      // Insert function declaration if not already present
+      if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(fn)) {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+        auto funcType = LLVM::LLVMFunctionType::get(i32Type, {}, false);
+
+        LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), fn, funcType,
+                                 LLVM::Linkage::External);
+      }
+
       // Get the result type (it's a tensor)
       auto resultType = op.getResult().getType();
       
