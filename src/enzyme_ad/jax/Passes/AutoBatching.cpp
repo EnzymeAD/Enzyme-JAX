@@ -30,6 +30,13 @@ using namespace mlir::enzyme;
 static int64_t concatReshapeToBatchCounter = 0;
 static int64_t sliceToBatchCount = 0;
 
+// Implicitly assumes before in block if ops are in different blocks
+bool isBeforeInBlock(Operation *op, Operation *otherOp) {
+  if (op->getBlock() != otherOp->getBlock())
+    return true;
+  return op->isBeforeInBlock(otherOp);
+}
+
 // This function checks if any 2 ops in the list are data-dependent on each
 // other. We exploit the fact that while traversing the dep graph if we are at a
 // position before the other ops in the set, we know that the other ops are not
@@ -41,8 +48,7 @@ bool anyOpsAreDataDependent(ArrayRef<Operation *> ops) {
   // ops are sorted based on ordering of slices. we need to sort here based on
   // op ordering
   SmallVector<Operation *> sortedOps(ops.begin(), ops.end());
-  std::sort(sortedOps.begin(), sortedOps.end(),
-            [](Operation *a, Operation *b) { return a->isBeforeInBlock(b); });
+  std::sort(sortedOps.begin(), sortedOps.end(), isBeforeInBlock);
 
   SmallPtrSet<Operation *, 8> subsetOps(ops.begin(), ops.end());
   Block *parentBlock = ops[0]->getBlock();
@@ -77,13 +83,13 @@ bool anyOpsAreDataDependent(ArrayRef<Operation *> ops) {
       }
 
       // Only explore dependencies of operations that come before laterOp
-      if (!curr->isBeforeInBlock(laterOp))
+      if (!isBeforeInBlock(curr, laterOp))
         continue;
 
       for (Value operand : curr->getOperands()) {
         Operation *definingOp = operand.getDefiningOp();
         if (definingOp && definingOp->getBlock() == parentBlock &&
-            definingOp->isBeforeInBlock(laterOp) &&
+            isBeforeInBlock(definingOp, laterOp) &&
             dependencies.insert(definingOp).second) {
           worklist.push_back(definingOp);
         }
@@ -640,7 +646,7 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
   // together
   Operation *firstRelatedOp = relatedOps[0];
   for (auto &op : relatedOps) {
-    if (op->isBeforeInBlock(firstRelatedOp))
+    if (isBeforeInBlock(op, firstRelatedOp))
       firstRelatedOp = op;
   }
   // if we have to move around too many ops we avoid applying this pattern
@@ -656,8 +662,7 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
       if (notSeen) {
         for (auto operand : currOp->getOperands()) {
           if (auto operandOp = operand.getDefiningOp()) {
-            if (operandOp->getBlock() == firstRelatedOp->getBlock() &&
-                !operandOp->isBeforeInBlock(firstRelatedOp)) {
+            if (!isBeforeInBlock(operandOp, firstRelatedOp)) {
               opsToMove.push_back(operandOp);
             }
           }
@@ -674,7 +679,7 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
 
   Operation *insertionPoint = relatedOps[0];
   for (auto &op : relatedOps) {
-    if (op->isBeforeInBlock(insertionPoint))
+    if (isBeforeInBlock(op, insertionPoint))
       continue;
     insertionPoint = op;
   }
