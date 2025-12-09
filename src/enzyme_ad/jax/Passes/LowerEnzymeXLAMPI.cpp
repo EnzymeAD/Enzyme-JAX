@@ -50,17 +50,17 @@ struct MPICommRankOpLowering
       std::string fn;
       fn = "MPI_Comm_rank";
 
-      // Generate the LLVM function body
+      // Generate the enzymexla_wrapper_MPI_Comm_rank LLVM function body
       std::string fnName = "enzymexla_wrapper_" + fn;
       {
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(moduleOp.getBody());
 
-        // Create the function type: i32 func()
+        // Create the function type
         auto funcType = LLVM::LLVMFunctionType::get(
-            i32Type,    // return type: i32
-            {},         // parameter types: empty (no arguments)
-            false);     // is variadic: false
+            llvmVoidPtrType, // void return type
+            {},              // parameter types: empty (no arguments)
+            false);          // is variadic: false
 
         auto func =
             LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), fnName, funcType);
@@ -88,10 +88,10 @@ struct MPICommRankOpLowering
                              SymbolRefAttr::get(ctx, fn),
                              ValueRange{});
 
-        LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{callOp->getResult(0)});
+        LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
       }
 
-      // Insert function declaration if not already present
+      // Insert MPI_Comm_rank function declaration if not already present
       if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(fn)) {
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(moduleOp.getBody());
@@ -102,6 +102,22 @@ struct MPICommRankOpLowering
                                  LLVM::Linkage::External);
       }
 
+      // // TODO Call the LLVM function with enzymexlaw.jit_call
+      // auto jitCall = enzymexla::JITCallOp::create(
+      //     rewriter, op.getLoc(),
+      //     TypeRange{},
+      //     mlir::FlatSymbolRefAttr::get(ctx, fnName),
+      //     ValueRange{},
+      //     rewriter.getStringAttr(""),
+      //     /*operand_layouts=*/nullptr,
+      //     /*result_layouts=*/nullptr,
+      //     /*arg_attrs=*/nullptr,
+      //     /*res_attrs=*/nullptr,
+      //     /*output_operand_aliases=*/nullptr,
+      //     /*xla_side_effect_free=*/nullptr);
+
+      // ----------------
+      // ----------------
       // Get the result type (it's a tensor)
       auto resultType = op.getResult().getType();
       
@@ -115,7 +131,8 @@ struct MPICommRankOpLowering
           op.getLoc(), attr);
       
       rewriter.replaceOp(op, placeholderValue);
-    
+      // ----------------
+
       // TODO return success/failure/notifymatchfailure not behaving as i expect
       // Seems to be some sort of funny interaction between replaceop and return
       // success or fail. ie, if I comment out the replaceop part it behaves slightly
