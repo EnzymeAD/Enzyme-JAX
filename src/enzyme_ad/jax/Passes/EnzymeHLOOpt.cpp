@@ -25948,7 +25948,7 @@ void mlir::transform::addEnzymeHLOUnroll(RewritePatternSet &patterns,
                                          int64_t maxNumIterations,
                                          MLIRContext &context,
                                          PatternBenefit benefit) {
-  patterns.insert<WhileUnroll>(maxNumIterations, &context, benefit);
+  patterns.insert<WhileUnroll>(maxNumIterations, 128, &context, benefit);
 }
 
 void mlir::transform::addPadDotGeneral(RewritePatternSet &patterns,
