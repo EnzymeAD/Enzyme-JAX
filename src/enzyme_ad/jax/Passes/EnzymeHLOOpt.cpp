@@ -16997,6 +16997,7 @@ struct DynamicGatherTranspose
     // Create new dimension numbers
     auto newDimNumbers = stablehlo::GatherDimensionNumbersAttr::get(
         op.getContext(), newOffsetDims, newCollapsedSliceDims,
+        /*operandBatchingDims=*/{}, /*startIndicesBatchingDims=*/{},
         newStartIndexMap, dimNumbers.getIndexVectorDim());
 
     // We also need to permute the slice_sizes based on the inverse permutation
