@@ -2215,7 +2215,6 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
   args.push_back(stream);
 
   auto ptrty = LLVM::LLVMPointerType::get(rewriter.getContext());
-  Type tys[] = {ptrty, i64, i32, i64, i32, ptrty, i64, ptrty};
 
   // Create LLVM call to launch kernel
   std::string launchFuncName =
