@@ -22,6 +22,14 @@ struct WhileLoopInfo;
 std::tuple<bool, bool> allSameBool(const llvm::SmallVector<bool> &bools);
 bool allOpsAreUnique(const llvm::SmallVector<mlir::Operation *> &ops);
 
+enum class BatchLiftingMode {
+  DYNAMIC_SLICE,
+  DEFINED_OUTSIDE_WHILE,
+  CONSTANT,
+  NEEDS_HOISTING_OUTSIDE_WHILE,
+  AFFINE_INDEX,
+};
+
 struct BatchOperandConstructionInfo {
   mlir::stablehlo::SliceOp sliceOp;
   int32_t sliceOperandIndex;
@@ -38,26 +46,13 @@ template <typename OpTy> struct SliceInfo {
   int64_t sliceDim;
   int64_t sliceStart;
   bool supported;
-
-  SliceInfo(OpTy sliceOp, llvm::SmallVector<mlir::Value> dynamicStartIndices,
-            llvm::SmallVector<int64_t> startIndices,
-            llvm::SmallVector<int64_t> sliceSizes, int64_t sliceDim,
-            int64_t sliceStart, bool supported)
-      : sliceOp(sliceOp), dynamicStartIndices(std::move(dynamicStartIndices)),
-        startIndices(std::move(startIndices)),
-        sliceSizes(std::move(sliceSizes)), sliceDim(sliceDim),
-        sliceStart(sliceStart), supported(supported) {}
 };
 
 SliceInfo<mlir::stablehlo::SliceOp>
 constructSliceInfo(mlir::stablehlo::SliceOp sliceOp);
-SliceInfo<mlir::stablehlo::DynamicSliceOp>
-constructSliceInfo(mlir::stablehlo::DynamicSliceOp sliceOp);
 
 bool areSlicesContiguous(
     llvm::SmallVector<SliceInfo<mlir::stablehlo::SliceOp>> &slices);
-bool areSlicesContiguous(
-    llvm::SmallVector<SliceInfo<mlir::stablehlo::DynamicSliceOp>> &slices);
 
 struct ConcatInsertDimToBatchBase
     : public mlir::enzyme::CheckedOpRewritePattern<
@@ -144,44 +139,6 @@ template <typename OpTy> struct SliceToBatch : public SliceToBatchBase {
             ctx, benefit) {}
 };
 
-// TODO: we need to be a bit more smart about this pattern. Everytime this
-// pattern is applied we increase the dimension of the tensor by 1. struct
-// SliceToBatchReshape : public SliceToBatchBase {
-//   SliceToBatchReshape(mlir::MLIRContext *ctx, mlir::PatternBenefit benefit =
-//   1)
-//       : SliceToBatchBase(
-//             [](mlir::Operation *op) -> mlir::Operation * {
-//               if (!op)
-//                 return nullptr;
-//               if (auto reshapeOp = dyn_cast<mlir::stablehlo::ReshapeOp>(op))
-//               {
-//                 if (reshapeIsTranspose(reshapeOp))
-//                   return op;
-
-//                 auto inputType = cast<mlir::RankedTensorType>(
-//                     reshapeOp.getOperand().getType());
-//                 auto outputType = cast<mlir::RankedTensorType>(
-//                     reshapeOp.getResult().getType());
-
-//                 auto insertionDims = mlir::enzyme::findReshapeInsertionDims(
-//                     inputType, outputType);
-//                 if (!insertionDims.empty())
-//                   return op;
-
-//                 // We need to be a bit careful about deletions to prevent an
-//                 infinite
-//                 // loop of insertions and deletions.
-//                 // auto deletionDims =
-//                 mlir::enzyme::findReshapeInsertionDims(
-//                 //     outputType, inputType);
-//                 // if (!deletionDims.empty())
-//                 //   return op;
-//               }
-//               return nullptr;
-//             },
-//             ctx, benefit) {}
-// };
-
 struct SliceToBatchElementwise : public SliceToBatchBase {
   SliceToBatchElementwise(mlir::MLIRContext *ctx,
                           mlir::PatternBenefit benefit = 1)
@@ -209,14 +166,6 @@ struct GreedyWhileLoopBatchFission
                       mlir::PatternRewriter &rewriter) const;
 
 private:
-  enum class BatchLiftingMode {
-    DYNAMIC_SLICE,
-    DEFINED_OUTSIDE_WHILE,
-    CONSTANT,
-    NEEDS_HOISTING_OUTSIDE_WHILE,
-    AFFINE_INDEX,
-  };
-
   enum class IsValidForBatchingResult {
     VALID,
     OPERAND_NOT_ACCESSIBLE_FROM_PARENT,

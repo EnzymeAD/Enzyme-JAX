@@ -287,7 +287,7 @@ bool allOpsAreUnique(const SmallVector<Operation *> &ops) {
 
 static SliceInfo<stablehlo::SliceOp>
 defaultUnsupportedSliceInfo(stablehlo::SliceOp sliceOp) {
-  return SliceInfo<stablehlo::SliceOp>(sliceOp, {}, {}, {}, -1, -1, false);
+  return SliceInfo<stablehlo::SliceOp>{sliceOp, {}, {}, {}, -1, -1, false};
 }
 
 SliceInfo<stablehlo::SliceOp> constructSliceInfo(stablehlo::SliceOp sliceOp) {
@@ -330,8 +330,8 @@ SliceInfo<stablehlo::SliceOp> constructSliceInfo(stablehlo::SliceOp sliceOp) {
   if (!supported)
     return defaultUnsupportedSliceInfo(sliceOp);
 
-  return SliceInfo<stablehlo::SliceOp>(sliceOp, {}, startIndices, inputShape,
-                                       sliceDim, sliceStart, true);
+  return SliceInfo<stablehlo::SliceOp>{sliceOp, {}, startIndices, inputShape,
+                                       sliceDim, sliceStart, true};
 }
 
 bool areSlicesContiguous(SmallVector<SliceInfo<stablehlo::SliceOp>> &slices) {
@@ -1344,9 +1344,8 @@ struct AutoBatchingPass
           SliceToBatch<stablehlo::GetDimensionSizeOp>,
           SliceToBatch<stablehlo::ReverseOp>,
           SliceToBatch<stablehlo::ReduceWindowOp>,
-          SliceToBatch<stablehlo::ConvolutionOp>,
-          // SliceToBatchReshape,
-          SliceToBatchElementwise>(context);
+          SliceToBatch<stablehlo::ConvolutionOp>, SliceToBatchElementwise>(
+          context);
     }
 
     if (while_loop_batching_mode == "greedy") {
