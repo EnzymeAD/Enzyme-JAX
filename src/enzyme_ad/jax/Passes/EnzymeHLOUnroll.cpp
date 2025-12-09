@@ -60,8 +60,9 @@ WhileUnroll::matchAndRewriteImpl(mlir::stablehlo::WhileOp op,
     return rewriter.notifyMatchFailure(op,
                                        "max iterations for unrolling exceeded");
 
-  if (iters > 1 && std::distance(loopBodyBlock->begin(), loopBodyBlock->end()) >
-                       maxOperationThreshold)
+  if (iters > 1 && maxOperationThreshold > -1 &&
+      std::distance(loopBodyBlock->begin(), loopBodyBlock->end()) >
+          maxOperationThreshold)
     return rewriter.notifyMatchFailure(op,
                                        "max operations for unrolling exceeded");
 
