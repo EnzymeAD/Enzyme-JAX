@@ -79,7 +79,7 @@ enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=and_pad_pad" --transform-in
 
 Run all tests with:
 ```bash
-bazel test //test:all
+bazel test //test:...
 ```
 This runs all the test targets in `test/BUILD`.
 
