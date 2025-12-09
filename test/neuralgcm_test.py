@@ -4,7 +4,7 @@ from test_utils import *
 argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
 
 
-class NeuralGCM:
+class NeuralGCM(EnzymeJaxTest):
     def setUp(self):
         import jax.random
         import jax.numpy as np
@@ -116,49 +116,19 @@ class NeuralGCM:
         rng_key = jax.random.key(42)  # optional for deterministic models
         self.initial_state = self.model.encode(inputs, input_forcings, rng_key)
 
-    def test(self):
-        import jax
-        from enzyme_ad.jax import enzyme_jax_ir
+        # Set up EnzymeJaxTest attributes
+        self.fn = self.sub
+        self.ins = [self.initial_state, self.all_forcings]
+        self.dins = [jax.tree_map(np.ones_like, self.initial_state),
+                     jax.tree_map(np.ones_like, self.all_forcings)]
+        self.douts = self.sub(self.initial_state, self.all_forcings)
+        self.name = "neuralgcm"
+        self.count = 1  # NeuralGCM is expensive, just run once per pipeline
 
-        for name, pipe, _ in pipelines():
-            print("name=", name)
-            if pipe is None:
-                nfn = jax.jit(self.sub)
-            else:
-                nfn = jax.jit(
-                    enzyme_jax_ir(pipeline_options=pipe, inner_jit=False)(self.sub)
-                )
-
-            res = self.run_on_fn(nfn)
-            print("name=", name, res)
-
-    def run_on_fn(self, fn, steps=1):
-        import timeit
-
-        map(
-            lambda x: x.block_until_ready(),
-            fn(
-                self.initial_state,
-                self.all_forcings,
-            ),
-        )
-        return timeit.Timer(
-            """map(lambda x:x.block_until_ready(), fn(
-        initial_state,
-        all_forcings,
-    ))""",
-            globals={
-                "fn": fn,
-                "initial_state": self.initial_state,
-                "all_forcings": self.all_forcings,
-            },
-        ).timeit(steps)
-
-
-def main(argv):
-    c = NeuralGCM()
-    c.setUp()
-    c.test()
+        # Performance-only mode (like advanced benchmarks)
+        self.primfilter = lambda x: x
+        self.fwdfilter = lambda x: []
+        self.revfilter = lambda x: []
 
 
 if __name__ == "__main__":
@@ -169,4 +139,5 @@ if __name__ == "__main__":
 
     # Deps not available on macos
     if platform.system() != "Darwin" and platform.machine() == "x86_64":
-        app.run(main)
+        import unittest
+        unittest.main()
