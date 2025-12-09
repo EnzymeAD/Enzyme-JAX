@@ -17957,47 +17957,12 @@ struct BroadcastInDimIsReshape final
 
   LogicalResult matchAndRewriteImpl(stablehlo::BroadcastInDimOp op,
                                     PatternRewriter &rewriter) const {
-    auto input = op.getOperand();
-    auto outputType = op.getType();
-    auto inputType = input.getType();
-    auto broadcastDims = op.getBroadcastDimensions();
-
-    size_t inputSize = 1;
-    for (auto sz : inputType.getShape())
-      inputSize *= sz;
-    size_t outputSize = 1;
-    for (auto sz : outputType.getShape())
-      outputSize *= sz;
-
-    if (inputSize != outputSize)
-      return failure();
-
-    SmallVector<int64_t> nonSingletonDims;
-
-    for (size_t i = 0; i < broadcastDims.size(); ++i) {
-      int64_t dimIdx = broadcastDims[i];
-      if (inputType.getRank() > i && inputType.getDimSize(i) != 1) {
-        nonSingletonDims.push_back(dimIdx);
-      }
+    if (stablehlo::broadcastInDimIsReshape(op)) {
+      rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
+                                                        op.getOperand());
+      return success();
     }
-
-    for (int i = 1, s = nonSingletonDims.size(); i < s; ++i) {
-      if (nonSingletonDims[i - 1] > nonSingletonDims[i])
-        return failure();
-    }
-
-    for (size_t i = 0; i < outputType.getRank(); ++i) {
-      int64_t dimIdx = outputType.getDimSize(i);
-      if (dimIdx == 1)
-        continue;
-      auto it = llvm::find(broadcastDims, dimIdx);
-      if (it == broadcastDims.end()) {
-        return failure();
-      }
-    }
-
-    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, outputType, input);
-    return success();
+    return failure();
   }
 };
 

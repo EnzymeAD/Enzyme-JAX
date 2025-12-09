@@ -980,6 +980,8 @@ bool isScalarValue(Operation *op);
 Value copyTriangularPart(OpBuilder &builder, Value input,
                          enzymexla::LapackUplo uplo);
 
+bool broadcastInDimIsReshape(BroadcastInDimOp op);
+
 } // namespace stablehlo
 
 } // namespace mlir

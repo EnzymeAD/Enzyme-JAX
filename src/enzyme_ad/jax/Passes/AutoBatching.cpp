@@ -14,6 +14,7 @@
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/TypeSwitch.h"
 
 #define DEBUG_TYPE "auto-batching"
 
@@ -906,9 +907,16 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
     return anyOpRewritten ? success() : failure();
 
   for (auto &[op, slices] : userOpToSlicesMap) {
-    if (isa<stablehlo::DynamicSliceOp, stablehlo::DynamicUpdateSliceOp>(op) ||
-        op->getNumResults() != 1)
+    bool avoidBatching =
+        llvm::TypeSwitch<Operation *, bool>(op)
+            .Case<stablehlo::DynamicSliceOp, stablehlo::DynamicUpdateSliceOp,
+                  stablehlo::ReshapeOp>([=](auto op) { return true; })
+            .Case<stablehlo::BroadcastInDimOp>(
+                [=](auto op) { return stablehlo::broadcastInDimIsReshape(op); })
+            .Default([](auto op) { return false; });
+    if (avoidBatching) {
       continue;
+    }
 
     if (dyn_cast<BatchOpInterface>(op) || stablehlo::hasTraitElementwise(op)) {
       if (liftOperationByBatching(rewriter, whileOp, slices, op, info)) {
