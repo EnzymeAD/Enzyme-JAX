@@ -85,7 +85,7 @@ func.func @main(%arg0: tensor<20x24x80xf64> {sdy.sharding = #sdy.sharding<@mesh1
 // PAD-NEXT:  }
 
 // SEL:  func.func @main(%arg0: tensor<20x24x80xf64> {sdy.sharding = #sdy.sharding<@mesh1, [{"z"}, {"y"}, {"x"}]>}) -> (tensor<1x10x82xf64> {sdy.sharding = #sdy.sharding<@mesh1, [{"z"}, {"y"}, {"x"}]>}) {
-// SEL-NEXT:    %c = stablehlo.constant dense<83> : tensor<1x10x82xi32>
+// SEL-NEXT:    %c = stablehlo.constant dense<81> : tensor<1x10x82xi32>
 // SEL-NEXT:    %c_0 = stablehlo.constant dense<1> : tensor<1x10x82xi32>
 // SEL-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<f64>
 // SEL-NEXT:    %0 = stablehlo.slice %arg0 [11:12, 7:17, 0:80] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<20x24x80xf64>) -> tensor<1x10x80xf64>
@@ -145,7 +145,7 @@ func.func @main2(%arg0: tensor<20x24x80xf64> {sdy.sharding = #sdy.sharding<@mesh
 // PAD-NEXT: }
 
 // SEL:  func.func @main2(%arg0: tensor<20x24x80xf64> {sdy.sharding = #sdy.sharding<@mesh2, [{"z"}, {"y"}, {"x"}]>}) -> (tensor<1x10x82xf64> {sdy.sharding = #sdy.sharding<@mesh2, [{"z"}, {"y"}, {"x"}]>}) {
-// SEL-NEXT:    %c = stablehlo.constant dense<83> : tensor<1x10x82xi32>
+// SEL-NEXT:    %c = stablehlo.constant dense<81> : tensor<1x10x82xi32>
 // SEL-NEXT:    %c_0 = stablehlo.constant dense<1> : tensor<1x10x82xi32>
 // SEL-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<f64>
 // SEL-NEXT:    %0 = stablehlo.slice %arg0 [11:12, 7:17, 0:80] {sdy.sharding = #sdy.sharding_per_value<[<@mesh2, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<20x24x80xf64>) -> tensor<1x10x80xf64>
