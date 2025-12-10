@@ -845,6 +845,9 @@ cc_library(
         "Dialect/*.cpp",
         "Dialect/Distributed/*.cpp",
         "Dialect/Tessera/*.cpp",
+        "Polymer/Support/*.cpp",
+        "Polymer/Target/ISL/*.cpp",
+        "Polymer/Transforms/*.cpp",
     ]) + [
         "Utils.cpp",
     ],
