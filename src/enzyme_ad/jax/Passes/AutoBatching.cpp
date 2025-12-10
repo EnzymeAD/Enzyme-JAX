@@ -12,7 +12,9 @@
 #include "src/enzyme_ad/jax/Passes/StructuredTensors.h"
 #include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/StablehloOps.h"
+
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 
@@ -136,8 +138,7 @@ void ConstructAndExtractBatchOperands(
       SmallVector<int64_t> outShape;
       if (batchInfo->intermediateReshape) {
         // nothing for now
-      }
-      else {
+      } else {
         needsReshape = true;
         outShape =
             llvm::to_vector(cast<ShapedType>(newOperand.getType()).getShape());
@@ -185,69 +186,64 @@ bool IsEquivalentToIgnoringValueEquivalence(Operation *op1, Operation *op2) {
       OperationEquivalence::IgnoreLocations, nullptr);
 }
 
-} // namespace utils
-
-// Implicitly assumes before in block if ops are in different blocks
-bool isBeforeInBlock(Operation *op, Operation *otherOp) {
-  if (op->getBlock() != otherOp->getBlock())
-    return true;
-  return op->isBeforeInBlock(otherOp);
-}
-
 // This function checks if any 2 ops in the list are data-dependent on each
 // other. We exploit the fact that while traversing the dep graph if we are at a
 // position before the other ops in the set, we know that the other ops are not
 // data dependent.
 bool anyOpsAreDataDependent(ArrayRef<Operation *> ops) {
-  if (ops.size() <= 1)
+  if (ops.size() <= 1) {
     return false;
+  }
 
-  // ops are sorted based on ordering of slices. we need to sort here based on
-  // op ordering
-  SmallVector<Operation *> sortedOps(ops.begin(), ops.end());
-  std::sort(sortedOps.begin(), sortedOps.end(), isBeforeInBlock);
-
-  SmallPtrSet<Operation *, 8> subsetOps(ops.begin(), ops.end());
   Block *parentBlock = ops[0]->getBlock();
+  // dependency analysis for ops in different blocks is hard. conservatively
+  // assume that all ops are data dependent
+  if (llvm::any_of(
+          ops, [&](Operation *op) { return op->getBlock() != parentBlock; })) {
+    return true;
+  }
+
+  llvm::SetVector<Operation *> sortedOpsTmp(ops.begin(), ops.end());
+  auto sortedOps = mlir::topologicalSort(sortedOpsTmp);
+
+  llvm::SmallSet<Value, 8> dependentValues;
+  for (auto op : sortedOps) {
+    for (auto result : op->getResults()) {
+      dependentValues.insert(result);
+    }
+  }
+
+  SmallVector<Operation *> worklist;
 
   // For each op, we only need to check if it depends on any earlier op in our
-  // subset We can use a worklist approach but only traverse backwards in
+  // subset. We can use a worklist approach but only traverse backwards in
   // program order
-  for (int i = 1; i < sortedOps.size(); ++i) {
-    Operation *laterOp = sortedOps[i];
-
-    // Track all operations this op transitively depends on
-    SmallPtrSet<Operation *, 16> dependencies;
-    SmallVector<Operation *> worklist;
-
-    // Start with direct operands
-    for (Value operand : laterOp->getOperands()) {
-      Operation *definingOp = operand.getDefiningOp();
-      if (definingOp && definingOp->getBlock() == parentBlock) {
-        if (dependencies.insert(definingOp).second) {
-          worklist.push_back(definingOp);
-        }
+  for (auto op : llvm::drop_begin(sortedOps)) {
+    for (Value operand : op->getOperands()) {
+      if (dependentValues.contains(operand)) {
+        return true;
+      }
+      if (auto definingOp = operand.getDefiningOp()) {
+        worklist.push_back(definingOp);
       }
     }
 
-    // Expand transitively, but only for ops that come before laterOp
     while (!worklist.empty()) {
       Operation *curr = worklist.pop_back_val();
 
-      // Early termination: if we found a dependency in our subset, we're done
-      if (subsetOps.contains(curr)) {
-        return true;
+      // Only explore dependencies of operations that come after first op
+      if (curr->isBeforeInBlock(sortedOps.front())) {
+        continue;
       }
 
-      // Only explore dependencies of operations that come before laterOp
-      if (!isBeforeInBlock(curr, laterOp))
-        continue;
-
       for (Value operand : curr->getOperands()) {
+        if (dependentValues.contains(operand)) {
+          return true;
+        }
+
         Operation *definingOp = operand.getDefiningOp();
         if (definingOp && definingOp->getBlock() == parentBlock &&
-            isBeforeInBlock(definingOp, laterOp) &&
-            dependencies.insert(definingOp).second) {
+            definingOp->isBeforeInBlock(sortedOps.front())) {
           worklist.push_back(definingOp);
         }
       }
@@ -255,6 +251,15 @@ bool anyOpsAreDataDependent(ArrayRef<Operation *> ops) {
   }
 
   return false;
+}
+
+} // namespace utils
+
+// Implicitly assumes before in block if ops are in different blocks
+bool isBeforeInBlock(Operation *op, Operation *otherOp) {
+  if (op->getBlock() != otherOp->getBlock())
+    return true;
+  return op->isBeforeInBlock(otherOp);
 }
 
 std::tuple<bool, bool> allSameBool(const SmallVector<bool> &bools) {
@@ -528,18 +533,21 @@ LogicalResult
 SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
                                       PatternRewriter &rewriter) const {
   Value sliceInput = sliceOp.getOperand();
+  auto block = sliceOp->getBlock();
+
   // Find all slices of the same input that feed into equivalent operations
   SmallVector<SliceInfo<stablehlo::SliceOp>> relatedSlices;
   SmallVector<Operation *> relatedOps;
   SmallVector<bool> allHaveIntermediateReshapes;
-  Operation *targetOp = nullptr;
+  Operation *targetOp;
   int64_t sliceOperandIndex = -1;
 
   // Build worklist of all slice operations on the same input
   for (auto [idx, user] : llvm::enumerate(sliceInput.getUsers())) {
     auto candidateSlice = dyn_cast<stablehlo::SliceOp>(user);
-    if (!candidateSlice || !candidateSlice.getResult().hasOneUse())
+    if (!candidateSlice || !candidateSlice.getResult().hasOneUse()) {
       continue;
+    }
 
     auto sliceInfo = constructSliceInfo(candidateSlice);
 
@@ -548,9 +556,9 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
     bool isIntermediateReshape = false;
     auto candidateTargetOp = isValidTargetOp(onlyUser);
 
-    if (!relatedOps.empty() && candidateTargetOp &&
-        candidateTargetOp->getBlock() != relatedOps[0]->getBlock())
+    if (candidateTargetOp && candidateTargetOp->getBlock() != block) {
       continue;
+    }
 
     Operation *preceedingOp = candidateSlice;
     if (!candidateTargetOp) {
@@ -599,6 +607,8 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
     relatedOps.push_back(candidateTargetOp);
     allHaveIntermediateReshapes.push_back(isIntermediateReshape);
   }
+
+  // TODO: go through the slice ops and condense them
 
   if (relatedSlices.size() <= 1)
     return rewriter.notifyMatchFailure(sliceOp, "no related slices found");
@@ -655,7 +665,7 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
     return rewriter.notifyMatchFailure(
         sliceOp, "not all ops have same intermediate reshape");
 
-  if (anyOpsAreDataDependent(relatedOps))
+  if (::utils::anyOpsAreDataDependent(relatedOps))
     return rewriter.notifyMatchFailure(sliceOp, "ops are data dependent");
 
   assert(sliceOperandIndex >= 0);
