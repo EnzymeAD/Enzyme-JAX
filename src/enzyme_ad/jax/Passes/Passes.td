@@ -11,6 +11,12 @@
 
 include "mlir/Pass/PassBase.td"
 
+def RemoveAtomicsPass : Pass<"remove-atomics"> {
+  let summary = "Remove unneeded atomic accesses";
+  let dependentDialects = [
+  ];
+}
+
 def CanonicalizeLoopsPass : InterfacePass<"canonicalize-loops", 
                                           "mlir::FunctionOpInterface"> {
   let summary = "Canonicalize loops";
@@ -744,6 +750,7 @@ def SCFCanonicalizeFor : Pass<"canonicalize-scf-for"> {
 def AffineCFG : Pass<"affine-cfg"> {
   let summary = "Replace scf.if and similar with affine.if";
   let dependentDialects = [
+    "enzyme::EnzymeDialect",
     "scf::SCFDialect",
     "affine::AffineDialect",
   ];
