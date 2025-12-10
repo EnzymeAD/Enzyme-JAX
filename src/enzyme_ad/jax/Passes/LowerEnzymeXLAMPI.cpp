@@ -73,24 +73,6 @@ struct MPICommRankOpLowering
         Block *entryBlock = func.addEntryBlock(rewriter);
         rewriter.setInsertionPointToStart(entryBlock);
 
-        // auto ptrSize =
-        //     LLVM::ConstantOp::create(rewriter, op.getLoc(), llvmBlasIntType,
-        //                              rewriter.getIntegerAttr(blasIntType, 1));
-        // auto mPtr = LLVM::AllocaOp::create(rewriter, op.getLoc(), llvmPtrType,
-        //                                    llvmBlasIntType, ptrSize, 0);
-        // auto nPtr = LLVM::AllocaOp::create(rewriter, op.getLoc(), llvmPtrType,
-        //                                    llvmBlasIntType, ptrSize, 0);
-
-        // auto mVal =
-        //     LLVM::ConstantOp::create(rewriter, op.getLoc(), llvmBlasIntType,
-        //                              rewriter.getIntegerAttr(blasIntType, m));
-        // auto nVal =
-        //     LLVM::ConstantOp::create(rewriter, op.getLoc(), llvmBlasIntType,
-        //                              rewriter.getIntegerAttr(blasIntType, n));
-
-        // LLVM::StoreOp::create(rewriter, op.getLoc(), mVal, mPtr);
-        // LLVM::StoreOp::create(rewriter, op.getLoc(), nVal, nPtr);
-
         // Get the first (and only) argument of the function
         Value funcArg = entryBlock->getArgument(0);
 
