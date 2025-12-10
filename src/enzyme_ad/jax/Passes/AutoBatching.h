@@ -78,10 +78,12 @@ protected:
   std::function<mlir::Operation *(mlir::Operation *)> isValidTargetOp;
 
 private:
-  bool validReshapeOpInsertDimForBatching(mlir::Operation *op,
-                                          int64_t dim) const;
-  bool validBroadcastInDimOpInsertDimForBatching(mlir::Operation *op,
-                                                 int64_t dim) const;
+  bool validReshapeOpInsertDimForBatching(
+      mlir::stablehlo::ReshapeOp op, int64_t dim,
+      llvm::SmallVectorImpl<int64_t> &intermediateInsertions) const;
+  bool validBroadcastInDimOpInsertDimForBatching(
+      mlir::stablehlo::BroadcastInDimOp op, int64_t dim,
+      llvm::SmallVectorImpl<int64_t> &intermediateInsertions) const;
 };
 
 template <typename OpTy>
