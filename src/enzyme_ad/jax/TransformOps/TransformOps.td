@@ -2505,9 +2505,9 @@ def EnzymeHLOUnroll : EnzymeHLOParameterizedPatternOp<
   }];
 }
 
-def ApplyReduceMulBroadcastToDotGeneralPatterns : EnzymeHLOPatternOp<
-    "reduce_mul_broadcast_to_dot_general"> {
-  let patterns = ["ReduceMulBroadcastToDotGeneral"];
+def ApplyReduceMulToDotGeneralPatterns : EnzymeHLOPatternOp<
+    "reduce_mul_to_dot_general"> {
+  let patterns = ["ReduceMulToDotGeneral"];
 }
 
 def ApplyDotGeneralOnlyDiagonalAccessPatterns : EnzymeHLOPatternOp<
@@ -2543,4 +2543,14 @@ def ApplyFuseMulIntoSyrkPatterns : EnzymeHLOPatternOp<
 def ApplyFuseAddIntoSyrkPatterns : EnzymeHLOPatternOp<
     "fuse_add_into_syrk"> {
   let patterns = ["FuseAddIntoSyrk"];
+}
+
+def ApplyDotGeneralBroadcastInDimPatterns : EnzymeHLOPatternOp<
+    "dot_general_broadcast_in_dim"> {
+  let patterns = ["DotGeneralBroadcastInDim"];
+}
+
+def ApplyDotGeneralBroadcastInDimSortDimsPatterns : EnzymeHLOPatternOp<
+    "dot_general_broadcast_in_dim_sort_dims"> {
+  let patterns = ["DotGeneralBroadcastInDimSortDims"];
 }
