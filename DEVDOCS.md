@@ -81,7 +81,7 @@ Run all tests with:
 ```bash
 bazel test //test/...
 ```
-This runs all the test targets in `test/BUILD`.
+This recursively runs all targets in the `test/` directory.
 
 Most of the Enzyme-JaX tests use [lit](https://llvm.org/docs/CommandGuide/lit.html) for testing.
 These tests are stored in `test/lit_tests`.
