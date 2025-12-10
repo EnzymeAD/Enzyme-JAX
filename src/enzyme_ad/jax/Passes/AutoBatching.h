@@ -3,7 +3,6 @@
 #include "src/enzyme_ad/jax/CheckedRewrite.h"
 #include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
 
-#include "mlir/IR/Dominance.h"
 #include "mlir/IR/PatternMatch.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/MapVector.h"
