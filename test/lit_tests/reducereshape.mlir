@@ -19,9 +19,7 @@ module {
 }
 
 // CHECK:  func.func @main(%arg0: tensor<20xf32>, %arg1: tensor<20xf32>) -> tensor<f32> {
-// CHECK-NEXT:    %[[i0:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<f32>
-// CHECK-NEXT:    %[[i1:.+]] = stablehlo.add %arg0, %arg1 : tensor<20xf32>
-// CHECK-NEXT:    %[[i2:.+]] = stablehlo.multiply %[[i1]], %[[i1]] : tensor<20xf32>
-// CHECK-NEXT:    %[[i3:.+]] = stablehlo.reduce(%[[i2]] init: %[[i0]]) applies stablehlo.add across dimensions = [0] : (tensor<20xf32>, tensor<f32>) -> tensor<f32>
-// CHECK-NEXT:    return %[[i3]] : tensor<f32>
+// CHECK-NEXT:    %[[i0:.+]] = stablehlo.add %arg0, %arg1 : tensor<20xf32>
+// CHECK-NEXT:    %[[i1:.+]] = stablehlo.dot_general %0, %0, contracting_dims = [0] x [0] : (tensor<20xf32>, tensor<20xf32>) -> tensor<f32>
+// CHECK-NEXT:    return %[[i1]] : tensor<f32>
 // CHECK-NEXT:  }

@@ -788,7 +788,6 @@ template <>
 SmallVector<Value> LoadStorePointer2MemrefGEP<affine::AffineLoadOp>::newIndex(
     affine::AffineLoadOp op, Value finalIndex,
     PatternRewriter &rewriter) const {
-  auto map = op.getAffineMap();
   auto apply = affine::AffineApplyOp::create(
       rewriter, op.getLoc(), op.getAffineMap(), op.getMapOperands());
 
@@ -813,7 +812,6 @@ template <>
 SmallVector<Value> LoadStorePointer2MemrefGEP<affine::AffineStoreOp>::newIndex(
     affine::AffineStoreOp op, Value finalIndex,
     PatternRewriter &rewriter) const {
-  auto map = op.getAffineMap();
   auto apply = affine::AffineApplyOp::create(
       rewriter, op.getLoc(), op.getAffineMap(), op.getMapOperands());
 
