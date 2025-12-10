@@ -66,8 +66,20 @@ struct MPICommRankOpLowering
 
         auto wrapperFunc = rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), wrapperFunctionName, funcType);
 
+        // Add function-level memory effects attribute
+        auto memoryEffectsAttr = rewriter.getArrayAttr({
+            rewriter.getStringAttr("read"),
+            rewriter.getStringAttr("write"),
+            rewriter.getStringAttr("allocate"),
+            rewriter.getStringAttr("free")
+        });
+        wrapperFunc->setAttr("enzymexla.memory_effects", memoryEffectsAttr);
+
         Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
         rewriter.setInsertionPointToStart(entryBlock);
+
+        // Add argument-level memory effects attribute
+        wrapperFunc.setArgAttr(0, "enzymexla.memory_effects", memoryEffectsAttr);
 
         // Get the first (and only) argument of the function
         Value rankOutputPtr = entryBlock->getArgument(0);
@@ -129,7 +141,7 @@ struct MPICommRankOpLowering
       auto attr = DenseElementsAttr::get(
           rankedTensorType,
           rewriter.getIntegerAttr(elementType, 0));
-      auto placeholderValue = rewriter.create<arith::ConstantOp>(
+      auto placeholderValue = rewriter.create<stablehlo::ConstantOp>(
           op.getLoc(), attr);
 
       // Call the LLVM function with enzymexla.jit_call
