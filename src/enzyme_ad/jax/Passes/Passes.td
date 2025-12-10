@@ -188,6 +188,12 @@ def EnzymeHLOUnrollPass : Pass<"enzyme-hlo-unroll"> {
         /*type=*/"int",
         /*default=*/"-1",
         /*description=*/"Only unroll if total iterations is less than this value. If -1, no limit.">,
+    Option<
+        /*C++ variable name=*/"maxOperationThreshold",
+        /*CLI argument=*/"max-operation-threshold",
+        /*type=*/"int",
+        /*default=*/"-1",
+        /*description=*/"Only unroll if total operations is less than this value. If -1, no limit.">
   ];
 }
 
@@ -1074,6 +1080,13 @@ def EnzymeBatchToStableHLOPass : Pass<"enzyme-batch-to-stablehlo"> {
   let dependentDialects = [
     "stablehlo::StablehloDialect",
     "enzyme::EnzymeDialect"
+  ];
+}
+
+def ConvertAllConstantsToSplattedConstantPass : Pass<"convert-all-constants-to-splatted-constant", "ModuleOp"> {
+  let summary = "Convert all constants to splatted constants. This is supposed to be used for debugging purposes when dumping the module.";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
   ];
 }
 

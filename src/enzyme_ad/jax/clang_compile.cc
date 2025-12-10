@@ -489,8 +489,7 @@ struct tensor<T, n0, N...>
   // Infer the builtin include path if unspecified.
   if (Clang->getHeaderSearchOpts().UseBuiltinIncludes &&
       Clang->getHeaderSearchOpts().ResourceDir.empty())
-    Clang->getHeaderSearchOpts().ResourceDir =
-        CompilerInvocation::GetResourcesPath(binary, /*MainAddr*/ 0x0);
+    Clang->getHeaderSearchOpts().ResourceDir = clang::GetResourcesPath(binary);
 
   // Create the actual diagnostics engine.
   Clang->setDiagnostics(Clang->createDiagnostics(*fuseFS, DiagOpts));

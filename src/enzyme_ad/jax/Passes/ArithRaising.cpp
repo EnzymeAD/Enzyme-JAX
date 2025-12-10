@@ -11,6 +11,7 @@
 
 #include "Enzyme/MLIR/Dialect/Dialect.h"
 #include "Enzyme/MLIR/Dialect/Ops.h"
+#include "Interfaces/AutoDiffTypeInterface.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Complex/IR/Complex.h"
 #include "mlir/Dialect/Math/IR/Math.h"
@@ -19,6 +20,7 @@
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Utils.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 
 #include "stablehlo/dialect/ChloOps.h"
@@ -127,10 +129,79 @@ struct ArithRaisingPass
       if (!use_stablehlo || !ty)
         return;
 
+      size_t outSize =
+          cast<AutoDiffTypeInterface>(ty.getElementType()).getApproxSize();
+      size_t inSize = cast<AutoDiffTypeInterface>(
+                          cast<RankedTensorType>(op.getOperand().getType())
+                              .getElementType())
+                          .getApproxSize();
+
       OpBuilder builder(op);
-      auto res = stablehlo::BitcastConvertOp::create(builder, op.getLoc(), ty,
-                                                     op.getIn());
-      op.replaceAllUsesWith(res.getResult());
+      Value res;
+      if (outSize == inSize) {
+        res = stablehlo::BitcastConvertOp::create(builder, op.getLoc(), ty,
+                                                  op.getIn());
+      } else if (outSize < inSize) {
+        SmallVector<int64_t> dims2 = llvm::to_vector(ty.getShape());
+        auto oidx = dims2.size();
+        dims2.push_back(inSize / outSize);
+        if (oidx != 0 && dims2[oidx - 1] != ShapedType::kDynamic) {
+          dims2[oidx - 1] /= inSize / outSize;
+        }
+        res = stablehlo::BitcastConvertOp::create(
+            builder, op.getLoc(),
+            RankedTensorType::get(dims2, ty.getElementType()), op.getIn());
+        bool anyDynamic = false;
+        for (auto idx : dims2) {
+          if (idx == ShapedType::kDynamic) {
+            anyDynamic = true;
+            break;
+          }
+        }
+        if (anyDynamic) {
+          SmallVector<Value> vals;
+          for (size_t i = 0; i < ty.getShape().size(); i++) {
+            auto val = stablehlo::GetDimensionSizeOp::create(
+                builder, op.getLoc(), op.getIn(), i);
+            Value vval = val;
+            if (i == ty.getShape().size() - 1) {
+              auto cst = arith::ConstantOp::create(
+                  builder, op.getLoc(), val.getType(),
+                  cast<ElementsAttr>(
+                      makeAttr(val.getType(), inSize / outSize)));
+              vval = stablehlo::MulOp::create(builder, op.getLoc(), vval, cst);
+            }
+            vval = stablehlo::ReshapeOp::create(
+                builder, op.getLoc(),
+                RankedTensorType::get({1}, val.getType().getElementType()),
+                vval);
+            vals.push_back(vval);
+          }
+
+          auto idxs =
+              stablehlo::ConcatenateOp::create(builder, op.getLoc(), vals, 0);
+          res = stablehlo::DynamicReshapeOp::create(builder, op.getLoc(), ty,
+                                                    res, idxs);
+        } else {
+          res = stablehlo::ReshapeOp::create(builder, op.getLoc(), ty, res);
+        }
+      } else {
+        SmallVector<int64_t> dims2 = llvm::to_vector(ty.getShape());
+        auto oidx = dims2.size();
+        dims2.push_back(outSize / inSize);
+        if (oidx != 0 && dims2[oidx - 1] != ShapedType::kDynamic) {
+          dims2[oidx - 1] /= outSize / inSize;
+        }
+        res = stablehlo::ReshapeOp::create(
+            builder, op.getLoc(),
+            RankedTensorType::get(
+                dims2, cast<RankedTensorType>(op.getOperand().getType())
+                           .getElementType()),
+            op.getIn());
+        res =
+            stablehlo::BitcastConvertOp::create(builder, op.getLoc(), ty, res);
+      }
+      op.replaceAllUsesWith(res);
       op.erase();
     });
     op->walk([=](arith::TruncFOp truncOp) {
@@ -353,10 +424,19 @@ struct ArithRaisingPass
     op->walk([=](arith::ExtUIOp addOp) {
       if (!use_stablehlo || !isa<RankedTensorType>(addOp->getResultTypes()[0]))
         return;
-      if (!cast<RankedTensorType>(addOp.getOperand().getType())
-               .getElementType()
-               .isInteger(1))
+      auto inTy =
+          cast<RankedTensorType>(addOp.getOperand().getType()).getElementType();
+      auto outTy = cast<RankedTensorType>(addOp.getType()).getElementType();
+      bool legal = false;
+      if (inTy.isInteger(1)) {
+        legal = true;
+      } else if (inTy.isInteger() && outTy.isInteger() &&
+                 inTy.getIntOrFloatBitWidth() < outTy.getIntOrFloatBitWidth()) {
+        legal = true;
+      }
+      if (!legal) {
         return;
+      }
       OpBuilder builder(addOp);
       Value newAddOp;
       newAddOp = stablehlo::ConvertOp::create(

@@ -17,7 +17,19 @@
 #include "mlir/IR/IntegerSet.h"
 
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wmissing-braces"
+#else
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-braces"
+#endif
 #include "stablehlo/dialect/StablehloOps.h"
+#ifdef __clang__
+#pragma clang diagnostic pop
+#else
+#pragma GCC diagnostic pop
+#endif
 
 #include <deque>
 
@@ -379,6 +391,8 @@ public:
       }
 
       switch (status) {
+      case State::UNKNOWN:
+        llvm_unreachable("Unknown state not handled");
       case State::NOTGUARANTEED: {
         SmallVector<Value, 2> rtodo{cur};
         while (!rtodo.empty()) {
@@ -522,7 +536,6 @@ public:
 
     auto state = ((Child *)this)->localGuaranteed(val, localtodo, rewriter);
 
-    auto attrName = ((Child *)this)->getAttrName();
     setGuaranteedInIR(val, state, rewriter);
     return state;
   }
@@ -537,6 +550,8 @@ private:
       return State::NOTGUARANTEED;
     case enzymexla::GuaranteedAnalysisResult::UNKNOWN:
       return State::UNKNOWN;
+    default:
+      llvm_unreachable("Unhandled state");
     }
   }
 
@@ -631,6 +646,7 @@ private:
     } else {
       Attribute attr = arrayAttr[resultNumber];
       auto enumAttr = dyn_cast<enzymexla::GuaranteedAnalysisResultAttr>(attr);
+      (void)enumAttr;
       assert(enumAttr && "Expected guaranteed analysis result");
 
       newAttrs = SmallVector<Attribute>(arrayAttr.begin(), arrayAttr.end());
@@ -963,6 +979,8 @@ bool isScalarValue(Operation *op);
 
 Value copyTriangularPart(OpBuilder &builder, Value input,
                          enzymexla::LapackUplo uplo);
+
+bool broadcastInDimIsReshape(BroadcastInDimOp op);
 
 } // namespace stablehlo
 

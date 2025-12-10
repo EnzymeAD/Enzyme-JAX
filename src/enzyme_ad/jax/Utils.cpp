@@ -1325,6 +1325,8 @@ reversedComparisonDirection(stablehlo::ComparisonDirection direction) {
     return stablehlo::ComparisonDirection::GE;
   case stablehlo::ComparisonDirection::LT:
     return stablehlo::ComparisonDirection::GT;
+  default:
+    llvm_unreachable("Cannot perform reverse comparison");
   }
 }
 
@@ -1343,6 +1345,8 @@ negatedComparisonDirection(stablehlo::ComparisonDirection direction) {
     return stablehlo::ComparisonDirection::GT;
   case stablehlo::ComparisonDirection::LT:
     return stablehlo::ComparisonDirection::GE;
+  default:
+    llvm_unreachable("Cannot negate comparison");
   }
 }
 
@@ -1636,6 +1640,49 @@ Value copyTriangularPart(OpBuilder &builder, Value input,
 
   return stablehlo::SelectOp::create(builder, input.getLoc(), indicator, input,
                                      transposedInput);
+}
+
+bool broadcastInDimIsReshape(BroadcastInDimOp op) {
+  auto input = op.getOperand();
+  auto outputType = op.getType();
+  auto inputType = input.getType();
+  auto broadcastDims = op.getBroadcastDimensions();
+
+  size_t inputSize = 1;
+  for (auto sz : inputType.getShape())
+    inputSize *= sz;
+  size_t outputSize = 1;
+  for (auto sz : outputType.getShape())
+    outputSize *= sz;
+
+  if (inputSize != outputSize)
+    return false;
+
+  SmallVector<int64_t> nonSingletonDims;
+
+  for (size_t i = 0; i < broadcastDims.size(); ++i) {
+    int64_t dimIdx = broadcastDims[i];
+    if (inputType.getRank() > i && inputType.getDimSize(i) != 1) {
+      nonSingletonDims.push_back(dimIdx);
+    }
+  }
+
+  for (int i = 1, s = nonSingletonDims.size(); i < s; ++i) {
+    if (nonSingletonDims[i - 1] > nonSingletonDims[i])
+      return false;
+  }
+
+  for (size_t i = 0; i < outputType.getRank(); ++i) {
+    int64_t dimIdx = outputType.getDimSize(i);
+    if (dimIdx == 1)
+      continue;
+    auto it = llvm::find(broadcastDims, dimIdx);
+    if (it == broadcastDims.end()) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 } // namespace stablehlo

@@ -576,8 +576,6 @@ class AutoDiffWhileRev
     stablehlo::WhileOp revOuter =
         makeForLoop(builder, orig.getLoc(), 0, nOuter, 1, operands);
 
-    auto parentFn = revOuter->getParentOfType<FunctionOpInterface>();
-
     Block *revOuterBody = &revOuter.getBody().front();
     builder.setInsertionPointToStart(revOuterBody);
 
@@ -2397,7 +2395,6 @@ public:
 
     auto inTy = cast<RankedTensorType>(orig->getOperand(0).getType());
     auto inRank = inTy.getRank();
-    auto inShape = inTy.getShape();
 
     SmallVector<int64_t> batchingDims;
     for (int32_t d = 0; d < inRank; d++) {
@@ -2733,8 +2730,7 @@ public:
 
     Value inductionVariable; // [0,..., N - 1] counter from within the loop
 
-    if (matchPattern(info.start, m_Zero()) &&
-        matchPattern(info.step, m_One())) {
+    if (matchPattern(info.getStart(), m_Zero()) && info.isStepOne()) {
       inductionVariable = body->getArgument(0);
     }
 
@@ -3767,12 +3763,10 @@ struct SHLOConvolutionOpBatchInterface
     auto convDimNumbers = convolution.getDimensionNumbers();
     int64_t inputBatchDim = convDimNumbers.getInputBatchDimension();
     int64_t inputFeatureDim = convDimNumbers.getInputFeatureDimension();
-    int64_t outputBatchDim = convDimNumbers.getOutputBatchDimension();
     int64_t kernelOutputFeatureDim =
         convDimNumbers.getKernelOutputFeatureDimension();
     int64_t outputFeatureDim = convDimNumbers.getOutputFeatureDimension();
 
-    int64_t nbatchDims = batchSizes.size();
     int64_t batchSize = std::accumulate(batchSizes.begin(), batchSizes.end(), 1,
                                         std::multiplies<int64_t>());
 
