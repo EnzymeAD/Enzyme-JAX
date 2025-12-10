@@ -66,6 +66,7 @@ namespace enzyme {
 
 using namespace mlir;
 using namespace mlir::enzyme;
+using namespace mlir::stablehlo;
 
 // Check if any of the pad sizes are negative
 bool anyPadSizesNegative(stablehlo::PadOp pad) {
@@ -2207,8 +2208,8 @@ struct DUSPad final
     SmallVector<Value> startIndices = dus.getStartIndices();
     ArrayRef<int64_t> lowPadding = padOp.getEdgePaddingLow();
 
-    SmallVector<Value> newDusStartIndices;
     SmallVector<int64_t> newDusStartIndexValues;
+    SmallVector<Value> newDusStartIndices;
     Location loc = dus.getLoc();
     auto indexElementType =
         cast<ShapedType>(startIndices[0].getType()).getElementType();
@@ -17962,47 +17963,12 @@ struct BroadcastInDimIsReshape final
 
   LogicalResult matchAndRewriteImpl(stablehlo::BroadcastInDimOp op,
                                     PatternRewriter &rewriter) const {
-    auto input = op.getOperand();
-    auto outputType = op.getType();
-    auto inputType = input.getType();
-    auto broadcastDims = op.getBroadcastDimensions();
-
-    size_t inputSize = 1;
-    for (auto sz : inputType.getShape())
-      inputSize *= sz;
-    size_t outputSize = 1;
-    for (auto sz : outputType.getShape())
-      outputSize *= sz;
-
-    if (inputSize != outputSize)
-      return failure();
-
-    SmallVector<int64_t> nonSingletonDims;
-
-    for (size_t i = 0; i < broadcastDims.size(); ++i) {
-      int64_t dimIdx = broadcastDims[i];
-      if (inputType.getRank() > i && inputType.getDimSize(i) != 1) {
-        nonSingletonDims.push_back(dimIdx);
-      }
+    if (stablehlo::broadcastInDimIsReshape(op)) {
+      rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
+                                                        op.getOperand());
+      return success();
     }
-
-    for (int i = 1, s = nonSingletonDims.size(); i < s; ++i) {
-      if (nonSingletonDims[i - 1] > nonSingletonDims[i])
-        return failure();
-    }
-
-    for (size_t i = 0; i < outputType.getRank(); ++i) {
-      int64_t dimIdx = outputType.getDimSize(i);
-      if (dimIdx == 1)
-        continue;
-      auto it = llvm::find(broadcastDims, dimIdx);
-      if (it == broadcastDims.end()) {
-        return failure();
-      }
-    }
-
-    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, outputType, input);
-    return success();
+    return failure();
   }
 };
 
@@ -20852,13 +20818,10 @@ struct ReverseTranspose final
     if (!transposeOp->getResult(0).hasOneUse())
       return failure();
 
-    SmallVector<int64_t> permutation =
-        llvm::to_vector(transposeOp.getPermutation());
-
-    SmallVector<int64_t> newReverseDims(op.getDimensions().size(), 0);
-    for (int64_t i = 0; i < op.getDimensions().size(); i++) {
-      newReverseDims[i] = permutation[op.getDimensions()[i]];
-    }
+    auto permutation = transposeOp.getPermutation();
+    SmallVector<int64_t> newReverseDims(op.getDimensions().size());
+    for (auto [i, dim] : llvm::enumerate(op.getDimensions()))
+      newReverseDims[i] = permutation[dim];
 
     auto newReverseOp = stablehlo::ReverseOp::create(
         rewriter, op.getLoc(), transposeOp.getOperand(), newReverseDims);
@@ -20882,15 +20845,13 @@ struct TransposeReverse final
     if (!reverseOp->getResult(0).hasOneUse())
       return failure();
 
-    SmallVector<int64_t> permutation = llvm::to_vector(op.getPermutation());
-
-    SmallVector<int64_t> newReverseDims(reverseOp.getDimensions().size(), 0);
-    for (int64_t i = 0; i < reverseOp.getDimensions().size(); i++) {
-      newReverseDims[i] = permutation[reverseOp.getDimensions()[i]];
-    }
+    auto invPerm = getInversePermutation(op.getPermutation());
+    SmallVector<int64_t> newReverseDims(reverseOp.getDimensions().size());
+    for (auto [i, dim] : llvm::enumerate(reverseOp.getDimensions()))
+      newReverseDims[i] = invPerm[dim];
 
     auto newTranspose = stablehlo::TransposeOp::create(
-        rewriter, op.getLoc(), reverseOp.getOperand(), permutation);
+        rewriter, op.getLoc(), reverseOp.getOperand(), op.getPermutation());
     rewriter.replaceOpWithNewOp<stablehlo::ReverseOp>(op, newTranspose,
                                                       newReverseDims);
     return success();
@@ -24688,23 +24649,17 @@ struct RemoveNoOpsFromWhileLoop
     // Rewrite ops based on computed bounds
     bool anyOpRewritten = false;
     for (auto op : visited) {
-      if (auto remOp = dyn_cast<stablehlo::RemOp>(op)) {
-        if (rewriteRemOp(rewriter, remOp, boundsMap)) {
-          anyOpRewritten = true;
-        }
-      } else if (auto compareOp = dyn_cast<stablehlo::CompareOp>(op)) {
-        if (rewriteCompareOp(rewriter, compareOp, boundsMap)) {
-          anyOpRewritten = true;
-        }
-      } else if (auto absOp = dyn_cast<stablehlo::AbsOp>(op)) {
-        if (rewriteAbsOp(rewriter, absOp, boundsMap)) {
-          anyOpRewritten = true;
-        }
-      } else if (auto clampOp = dyn_cast<stablehlo::ClampOp>(op)) {
-        if (rewriteClampOp(rewriter, clampOp, boundsMap)) {
-          anyOpRewritten = true;
-        }
-      }
+      bool rewritten =
+          llvm::TypeSwitch<Operation *, bool>(op)
+              .Case<stablehlo::RemOp, stablehlo::CompareOp, stablehlo::AbsOp,
+                    stablehlo::ClampOp>([&](auto op) {
+                auto allBounds = getBoundsOfAllOperands(op, boundsMap);
+                if (!allBounds.has_value())
+                  return false;
+                return rewriteOperation(rewriter, op, allBounds.value());
+              })
+              .Default([&](Operation *op) { return false; });
+      anyOpRewritten |= rewritten;
     }
     return anyOpRewritten ? success() : failure();
   }
@@ -24722,6 +24677,19 @@ private:
   APInt min(APInt a, APInt b) const { return a.slt(b) ? a : b; }
   APInt max(APInt a, APInt b) const { return a.sgt(b) ? a : b; }
   APInt abs(APInt a) const { return a.sgt(0) ? a : -a; }
+
+  std::optional<llvm::DenseMap<Value, Bounds>>
+  getBoundsOfAllOperands(Operation *op,
+                         const DenseMap<Value, Bounds> &boundsMap) const {
+    llvm::DenseMap<Value, Bounds> newBoundsMap;
+    for (auto operand : op->getOperands()) {
+      auto bounds = getBounds(boundsMap, operand);
+      if (!bounds.has_value())
+        return std::nullopt;
+      newBoundsMap[operand] = bounds.value();
+    }
+    return newBoundsMap;
+  }
 
   std::optional<Bounds> getBounds(const DenseMap<Value, Bounds> &boundsMap,
                                   Value value) const {
@@ -24819,16 +24787,10 @@ private:
     return std::nullopt;
   }
 
-  bool rewriteRemOp(PatternRewriter &rewriter, stablehlo::RemOp remOp,
-                    const DenseMap<Value, Bounds> &boundsMap) const {
-    auto optional_lhs_bounds = getBounds(boundsMap, remOp.getLhs());
-    auto optional_rhs_bounds = getBounds(boundsMap, remOp.getRhs());
-
-    if (!optional_lhs_bounds.has_value() || !optional_rhs_bounds.has_value())
-      return false;
-
-    auto lhs_bounds = optional_lhs_bounds.value();
-    auto rhs_bounds = optional_rhs_bounds.value();
+  bool rewriteOperation(PatternRewriter &rewriter, stablehlo::RemOp remOp,
+                        const DenseMap<Value, Bounds> &boundsMap) const {
+    auto lhs_bounds = boundsMap.lookup(remOp.getLhs());
+    auto rhs_bounds = boundsMap.lookup(remOp.getRhs());
 
     auto rhs_abs_min = abs(rhs_bounds.min);
     auto rhs_abs_max = abs(rhs_bounds.max);
@@ -24842,17 +24804,24 @@ private:
     return false;
   };
 
-  bool rewriteCompareOp(PatternRewriter &rewriter,
+  bool rewriteOperation(PatternRewriter &rewriter,
                         stablehlo::CompareOp compareOp,
                         const DenseMap<Value, Bounds> &boundsMap) const {
-    auto optional_lhs_bounds = getBounds(boundsMap, compareOp.getLhs());
-    auto optional_rhs_bounds = getBounds(boundsMap, compareOp.getRhs());
+    auto lhs_bounds = boundsMap.lookup(compareOp.getLhs());
+    auto rhs_bounds = boundsMap.lookup(compareOp.getRhs());
 
-    if (!optional_lhs_bounds.has_value() || !optional_rhs_bounds.has_value())
-      return false;
-
-    auto lhs_bounds = optional_lhs_bounds.value();
-    auto rhs_bounds = optional_rhs_bounds.value();
+    auto replaceWithTrue = [&]() {
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          compareOp, compareOp.getType(),
+          cast<ElementsAttr>(makeAttr(compareOp.getType(), true)));
+      return true;
+    };
+    auto replaceWithFalse = [&]() {
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          compareOp, compareOp.getType(),
+          cast<ElementsAttr>(makeAttr(compareOp.getType(), false)));
+      return true;
+    };
 
     switch (compareOp.getComparisonDirection()) {
     case stablehlo::ComparisonDirection::EQ: // lhs == rhs
@@ -24860,92 +24829,51 @@ private:
       if (lhs_bounds.min == lhs_bounds.max &&
           rhs_bounds.min == rhs_bounds.max &&
           lhs_bounds.min == rhs_bounds.min) {
-        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-            compareOp, compareOp.getType(),
-            cast<ElementsAttr>(makeAttr(compareOp.getType(), true)));
-        return true;
+        return replaceWithTrue();
       }
       // outside of range: lhs_max < rhs_min or rhs_max < lhs_min
       if (lhs_bounds.max.slt(rhs_bounds.min) ||
           rhs_bounds.max.slt(lhs_bounds.min)) {
-        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-            compareOp, compareOp.getType(),
-            cast<ElementsAttr>(makeAttr(compareOp.getType(), false)));
-        return true;
+        return replaceWithFalse();
       }
       break;
     case stablehlo::ComparisonDirection::NE: // lhs != rhs
       // outside of range: lhs_max < rhs_min or rhs_max < lhs_min
       if (lhs_bounds.max.slt(rhs_bounds.min) ||
           rhs_bounds.max.slt(lhs_bounds.min)) {
-        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-            compareOp, compareOp.getType(),
-            cast<ElementsAttr>(makeAttr(compareOp.getType(), false)));
-        return true;
+        return replaceWithFalse();
       }
       break;
-    case stablehlo::ComparisonDirection::GE: // lhs >= rhs
-      // lhs_max < rhs_min
-      if (lhs_bounds.max.slt(rhs_bounds.min)) {
-        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-            compareOp, compareOp.getType(),
-            cast<ElementsAttr>(makeAttr(compareOp.getType(), false)));
-        return true;
+    case stablehlo::ComparisonDirection::GE:    // lhs >= rhs
+      if (lhs_bounds.max.slt(rhs_bounds.min)) { // lhs_max < rhs_min
+        return replaceWithFalse();
       }
-      // lhs_min >= rhs_max
-      if (lhs_bounds.min.sge(rhs_bounds.max)) {
-        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-            compareOp, compareOp.getType(),
-            cast<ElementsAttr>(makeAttr(compareOp.getType(), true)));
-        return true;
+      if (lhs_bounds.min.sge(rhs_bounds.max)) { // lhs_min >= rhs_max
+        return replaceWithTrue();
       }
       break;
-    case stablehlo::ComparisonDirection::GT: // lhs > rhs
-      // lhs_max <= rhs_min
-      if (lhs_bounds.max.sle(rhs_bounds.min)) {
-        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-            compareOp, compareOp.getType(),
-            cast<ElementsAttr>(makeAttr(compareOp.getType(), false)));
-        return true;
+    case stablehlo::ComparisonDirection::GT:    // lhs > rhs
+      if (lhs_bounds.max.sle(rhs_bounds.min)) { // lhs_max <= rhs_min
+        return replaceWithFalse();
       }
-      // lhs_min > rhs_max
-      if (lhs_bounds.min.sgt(rhs_bounds.max)) {
-        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-            compareOp, compareOp.getType(),
-            cast<ElementsAttr>(makeAttr(compareOp.getType(), true)));
-        return true;
+      if (lhs_bounds.min.sgt(rhs_bounds.max)) { // lhs_min > rhs_max
+        return replaceWithTrue();
       }
       break;
-    case stablehlo::ComparisonDirection::LE: // lhs <= rhs
-      // rhs_max < lhs_min
-      if (rhs_bounds.max.slt(lhs_bounds.min)) {
-        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-            compareOp, compareOp.getType(),
-            cast<ElementsAttr>(makeAttr(compareOp.getType(), false)));
-        return true;
+    case stablehlo::ComparisonDirection::LE:    // lhs <= rhs
+      if (rhs_bounds.max.slt(lhs_bounds.min)) { // rhs_max < lhs_min
+        return replaceWithFalse();
       }
-      // rhs_min >= lhs_max
-      if (rhs_bounds.min.sge(lhs_bounds.max)) {
-        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-            compareOp, compareOp.getType(),
-            cast<ElementsAttr>(makeAttr(compareOp.getType(), true)));
-        return true;
+      if (rhs_bounds.min.sge(lhs_bounds.max)) { // rhs_min >= lhs_max
+        return replaceWithTrue();
       }
       break;
-    case stablehlo::ComparisonDirection::LT: // lhs < rhs
-      // rhs_max <= lhs_min
-      if (rhs_bounds.max.sle(lhs_bounds.min)) {
-        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-            compareOp, compareOp.getType(),
-            cast<ElementsAttr>(makeAttr(compareOp.getType(), false)));
-        return true;
+    case stablehlo::ComparisonDirection::LT:    // lhs < rhs
+      if (rhs_bounds.max.sle(lhs_bounds.min)) { // rhs_max <= lhs_min
+        return replaceWithFalse();
       }
-      // rhs_min > lhs_max
-      if (rhs_bounds.min.sgt(lhs_bounds.max)) {
-        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-            compareOp, compareOp.getType(),
-            cast<ElementsAttr>(makeAttr(compareOp.getType(), true)));
-        return true;
+      if (rhs_bounds.min.sgt(lhs_bounds.max)) { // rhs_min > lhs_max
+        return replaceWithTrue();
       }
       break;
     }
@@ -24953,13 +24881,10 @@ private:
     return false;
   };
 
-  bool rewriteAbsOp(PatternRewriter &rewriter, stablehlo::AbsOp absOp,
-                    const DenseMap<Value, Bounds> &boundsMap) const {
-    auto optional_bounds = getBounds(boundsMap, absOp.getOperand());
-    if (!optional_bounds.has_value())
-      return false;
+  bool rewriteOperation(PatternRewriter &rewriter, stablehlo::AbsOp absOp,
+                        const DenseMap<Value, Bounds> &boundsMap) const {
+    auto bounds = boundsMap.lookup(absOp.getOperand());
 
-    auto bounds = optional_bounds.value();
     APInt zero(bounds.min.getBitWidth(), 0, true);
     if (bounds.min.sge(zero)) {
       rewriter.replaceOp(absOp, absOp.getOperand());
@@ -24968,18 +24893,11 @@ private:
     return false;
   };
 
-  bool rewriteClampOp(PatternRewriter &rewriter, stablehlo::ClampOp clampOp,
-                      const DenseMap<Value, Bounds> &boundsMap) const {
-    auto optional_min_bounds = getBounds(boundsMap, clampOp.getMin());
-    auto optional_max_bounds = getBounds(boundsMap, clampOp.getMax());
-    auto optional_operand_bounds = getBounds(boundsMap, clampOp.getOperand());
-    if (!optional_min_bounds.has_value() || !optional_max_bounds.has_value() ||
-        !optional_operand_bounds.has_value())
-      return false;
-
-    auto min_bounds = optional_min_bounds.value();
-    auto max_bounds = optional_max_bounds.value();
-    auto operand_bounds = optional_operand_bounds.value();
+  bool rewriteOperation(PatternRewriter &rewriter, stablehlo::ClampOp clampOp,
+                        const DenseMap<Value, Bounds> &boundsMap) const {
+    auto min_bounds = boundsMap.lookup(clampOp.getMin());
+    auto max_bounds = boundsMap.lookup(clampOp.getMax());
+    auto operand_bounds = boundsMap.lookup(clampOp.getOperand());
 
     if (min_bounds.max.sle(operand_bounds.min) &&
         max_bounds.min.sge(operand_bounds.max)) {
@@ -25007,28 +24925,14 @@ struct WhileIsCopySimplify
       return failure();
 
     auto &whileBody = whileOp.getBody().front();
-    auto parentBlock = whileOp->getBlock();
-
-    auto limit = info.getConstantLimit().value();
-    auto start = info.getConstantStart().value();
-    auto step = info.getConstantStep().value();
-    info.propagateInductionVarOffsets();
-
-    if (step != 1)
-      return failure();
-
-    auto parentFunc = whileOp->getParentOp();
-    if (!parentFunc)
-      return failure();
-    DominanceInfo domInfo(parentFunc);
-
-    auto inductionVarOffsets = info.getInductionVarOffsets();
+    auto affineIndexInfo = info.getAffineIndexInfo();
 
     auto returnOp = dyn_cast<stablehlo::ReturnOp>(whileBody.getTerminator());
     if (!returnOp)
       return failure();
 
     bool anyOpRewritten = false;
+    SmallVector<std::tuple<enzyme::BatchOp, func::FuncOp>> batchOps;
 
     for (auto [idx, returnValue] : llvm::enumerate(returnOp.getOperands())) {
       auto dusOp = returnValue.getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
@@ -25041,402 +24945,224 @@ struct WhileIsCopySimplify
           blockArg.getArgNumber() != idx)
         continue;
 
-      int32_t dusInductionVarDim =
-          getInductionVariableDimension(dusOp, inductionVarOffsets, whileOp);
-      if (dusInductionVarDim == -1)
+      if (whileOp.getResult(idx).getUses().empty())
         continue;
 
-      auto [updateChain, trackedDims] = extractValidUpdateChain(
-          rewriter, domInfo, parentBlock, dusOp, dusInductionVarDim, whileOp,
-          inductionVarOffsets);
+      auto dusInductionVarDims =
+          getInductionVariableDimension(dusOp, affineIndexInfo, whileOp, info);
+      if (dusInductionVarDims.empty())
+        continue;
+
+      auto updateChainOrNone = extractValidUpdateChain(rewriter, dusOp, whileOp,
+                                                       affineIndexInfo, info);
+      if (!updateChainOrNone.has_value())
+        continue;
+
+      auto updateChain = updateChainOrNone.value();
       if (updateChain.empty())
         continue;
 
-      if (!anyOpRewritten) {
-        anyOpRewritten = true;
-        rewriter.setInsertionPoint(whileOp);
-      }
-
-      // We traverse the reversed chain and map the values based on the
-      // following rules:
-      // 1. Transpose/BroadcastInDim/Convert: mapped as is with updated operand
-      // 2. DynamicSlice: Change the induction dim to start at info.start and
-      //    update the corresponding sliceSize (limit - start). Next transpose
-      //    and move the induction var to the correct position
-      // 3. Reshape: This is a bit more finicky
-      //    1. Move the induction var dim to the front
-      //    2. Reshape the operand to the correct shape
-      //    3. Transpose and move the induction var to the correct position
-      // 4. DynamicUpdateSlice: Copy as is with updated start indices for the
-      //    induction var dimension
       auto dsOp = dyn_cast<stablehlo::DynamicSliceOp>(updateChain.back());
-      assert(dsOp);
-      Value currentOperand = dsOp.getOperand();
-      int32_t curIdx = trackedDims.back();
-      int32_t nextIdx = trackedDims[trackedDims.size() - 2];
+      auto dsInductionVarDims =
+          getInductionVariableDimension(dsOp, affineIndexInfo, whileOp, info);
+      if (dsInductionVarDims.empty())
+        continue;
 
-      SmallVector<Value> dsStartIndices(dsOp.getStartIndices().begin(),
-                                        dsOp.getStartIndices().end());
-      SmallVector<int64_t> dsSliceSizes(dsOp.getSliceSizes().begin(),
-                                        dsOp.getSliceSizes().end());
-      auto oldDSStartIndex = dsOp.getStartIndices()[curIdx];
-      dsStartIndices[curIdx] = stablehlo::ConstantOp::create(
-          rewriter, dsOp.getLoc(), oldDSStartIndex.getType(),
-          cast<ElementsAttr>(
-              makeAttr(oldDSStartIndex.getType(),
-                       start + getInt(inductionVarOffsets[oldDSStartIndex]))));
-      dsSliceSizes[curIdx] = limit - start;
+      if (!info.canHoistOperationFromLoop(dsOp, dsInductionVarDims) ||
+          !info.canHoistOperationFromLoop(dusOp, dusInductionVarDims))
+        continue;
 
-      auto newDS = stablehlo::DynamicSliceOp::create(
-          rewriter, dsOp.getLoc(), currentOperand, dsStartIndices,
-          rewriter.getDenseI64ArrayAttr(dsSliceSizes));
-      currentOperand = newDS.getResult();
+      auto funcOp = createCopyFunction(rewriter, whileOp, updateChain,
+                                       dsInductionVarDims, dusInductionVarDims);
+      if (!funcOp)
+        continue;
 
-      if (nextIdx != curIdx) {
-        SmallVector<int64_t> permutation(dsStartIndices.size());
-        std::iota(permutation.begin(), permutation.end(), 0);
-        if (curIdx > nextIdx) {
-          for (int i = curIdx; i >= nextIdx; i--)
-            permutation[i] = i - 1;
-        } else {
-          for (int i = curIdx; i <= nextIdx; i++)
-            permutation[i] = i + 1;
-        }
-        permutation[nextIdx] = curIdx;
+      anyOpRewritten = true;
 
-        auto transposeOp = stablehlo::TransposeOp::create(
-            rewriter, dsOp.getLoc(), currentOperand,
-            rewriter.getDenseI64ArrayAttr(permutation));
-        currentOperand = transposeOp.getResult();
+      rewriter.setInsertionPoint(whileOp);
+      Value dsResult;
+      auto successfulHoist = info.hoistOperationFromLoop(
+          rewriter, dsOp.getOperand(), dsOp, dsInductionVarDims, dsResult);
+      assert(successfulHoist && "expected DS hoist to succeed.");
+      (void)successfulHoist;
+      auto dsResTy = cast<RankedTensorType>(dsResult.getType());
+
+      // move the induction var to the front
+      SmallVector<int64_t> dsPerm;
+      dsPerm.push_back(dsInductionVarDims[0]);
+      for (size_t i = 0; i < dsResTy.getRank(); i++) {
+        if (dsInductionVarDims[0] != i)
+          dsPerm.push_back(i);
       }
 
-      for (size_t i = updateChain.size() - 2; i >= 1; i--) {
-        curIdx = trackedDims[i];
-        nextIdx = trackedDims[i - 1];
-        auto curOp = updateChain[i];
+      dsResult =
+          stablehlo::TransposeOp::create(rewriter, whileOp.getLoc(), dsResult,
+                                         rewriter.getDenseI64ArrayAttr(dsPerm));
 
-        if (isa<stablehlo::TransposeOp, stablehlo::BroadcastInDimOp,
-                stablehlo::ConvertOp>(curOp)) {
-          auto resTy = cast<RankedTensorType>(curOp->getResult(0).getType());
-          auto resShape = llvm::to_vector(resTy.getShape());
-          resShape[nextIdx] = limit - start;
-          resTy = RankedTensorType::get(resShape, resTy.getElementType());
+      auto dusOpUpdateTy = cast<RankedTensorType>(dusOp.getUpdate().getType());
 
-          auto tmpIntermediateOp = Operation::create(
-              curOp->getLoc(), curOp->getName(), {resTy}, {currentOperand},
-              curOp->getAttrs(), OpaqueProperties(nullptr),
-              curOp->getSuccessors(), 0);
-          rewriter.insert(tmpIntermediateOp);
-          currentOperand = tmpIntermediateOp->getResult(0);
-        } else if (auto reshapeOp = dyn_cast<stablehlo::ReshapeOp>(curOp)) {
-          auto inTy = cast<RankedTensorType>(reshapeOp.getOperand().getType());
-          auto outTy = cast<RankedTensorType>(reshapeOp.getResult().getType());
-
-          // move curIdx to 0
-          if (curIdx != 0) {
-            SmallVector<int64_t> permutation(inTy.getRank());
-            std::iota(permutation.begin(), permutation.end(), 0);
-            permutation[0] = curIdx;
-            for (size_t j = 1; j <= curIdx; j++)
-              permutation[j] = j - 1;
-
-            auto tmpTransposeOp = stablehlo::TransposeOp::create(
-                rewriter, dsOp.getLoc(), currentOperand,
-                rewriter.getDenseI64ArrayAttr(permutation));
-            currentOperand = tmpTransposeOp.getResult();
-          }
-
-          auto outShape = llvm::to_vector(outTy.getShape());
-          outShape.erase(outShape.begin() + nextIdx);
-          outShape.insert(outShape.begin(), limit - start);
-          auto newReshapeOp = stablehlo::ReshapeOp::create(
-              rewriter, dsOp.getLoc(),
-              RankedTensorType::get(outShape, outTy.getElementType()),
-              currentOperand);
-          currentOperand = newReshapeOp.getResult();
-
-          // move 0th dim to nextIdx
-          if (nextIdx != 0) {
-            SmallVector<int64_t> permutation(outTy.getRank());
-            std::iota(permutation.begin(), permutation.end(), 0);
-            permutation[nextIdx] = 0;
-            for (size_t j = 1; j <= nextIdx; j++)
-              permutation[j - 1] = j;
-
-            auto tmpTransposeOp = stablehlo::TransposeOp::create(
-                rewriter, dsOp.getLoc(), currentOperand,
-                rewriter.getDenseI64ArrayAttr(permutation));
-            currentOperand = tmpTransposeOp.getResult();
-          }
-        } else {
-          llvm_unreachable("unsupported op");
-        }
+      SmallVector<int64_t> dusOpUpdateShapePreTranspose = {
+          info.getConstantNumIters()};
+      for (auto [i, sz] : llvm::enumerate(dusOpUpdateTy.getShape())) {
+        if (!llvm::is_contained(dusInductionVarDims, i))
+          dusOpUpdateShapePreTranspose.push_back(sz);
       }
+      auto batchOpOutTy = RankedTensorType::get(dusOpUpdateShapePreTranspose,
+                                                dusOpUpdateTy.getElementType());
 
-      auto dusFromChain =
-          dyn_cast<stablehlo::DynamicUpdateSliceOp>(updateChain.front());
-      assert(dusFromChain);
+      auto batchOp = enzyme::BatchOp::create(
+          rewriter, whileOp.getLoc(), batchOpOutTy, funcOp.getSymName(),
+          ValueRange(dsResult),
+          rewriter.getDenseI64ArrayAttr({info.getConstantNumIters()}));
+      batchOps.push_back({batchOp, funcOp});
 
-      SmallVector<Value> dusStartIndices(dusFromChain.getStartIndices().begin(),
-                                         dusFromChain.getStartIndices().end());
-      curIdx = trackedDims.front();
-      auto oldDUSStartIndex = dusFromChain.getStartIndices()[curIdx];
-      dusStartIndices[curIdx] = stablehlo::ConstantOp::create(
-          rewriter, dusFromChain.getLoc(), oldDUSStartIndex.getType(),
-          cast<ElementsAttr>(
-              makeAttr(oldDUSStartIndex.getType(),
-                       start + getInt(inductionVarOffsets[oldDUSStartIndex]))));
+      Value newDUS;
+      successfulHoist = info.hoistOperationFromLoop(
+          rewriter, whileOp.getOperands()[idx], batchOp.getResult(0), dusOp,
+          dusInductionVarDims, newDUS);
+      assert(successfulHoist && "Expected DUS hoist to succeed.");
 
-      auto newDUS = stablehlo::DynamicUpdateSliceOp::create(
-          rewriter, dusFromChain.getLoc(), whileOp.getOperands()[idx],
-          currentOperand, dusStartIndices);
+      whileOp.getResult(idx).replaceAllUsesWith(newDUS);
+    }
 
-      whileOp.getResult(idx).replaceAllUsesWith(newDUS.getResult());
+    if (!batchOps.empty()) {
+      for (auto &[batchOp, funcOp] : batchOps) {
+        enzyme::batchutils::batchOperationInline(
+            rewriter, batchOp,
+            cast<FunctionOpInterface>(funcOp.getOperation()));
+      }
     }
 
     return anyOpRewritten ? success() : failure();
   }
 
 private:
-  struct UpdateChainInfo {
-    SmallVector<Operation *> updateChain;
-    SmallVector<int32_t> trackedDims;
-  };
+  func::FuncOp
+  createCopyFunction(PatternRewriter &rewriter, stablehlo::WhileOp whileOp,
+                     SmallVectorImpl<Operation *> &updateChain,
+                     SmallVectorImpl<int64_t> &dsInductionVarDims,
+                     SmallVectorImpl<int64_t> &dusInductionVarDims) const {
+    auto dSlice = cast<stablehlo::DynamicSliceOp>(updateChain.back());
+    auto dusOp = cast<stablehlo::DynamicUpdateSliceOp>(updateChain.front());
 
-  UpdateChainInfo extractValidUpdateChain(
-      PatternRewriter &rewriter, DominanceInfo &domInfo, Block *parentBlock,
-      stablehlo::DynamicUpdateSliceOp dusOp, int32_t dusInductionVarDim,
+    auto dSliceResTy = cast<RankedTensorType>(dSlice.getResult().getType());
+    auto dusUpdateTy = cast<RankedTensorType>(dusOp.getUpdate().getType());
+
+    auto funcInType = removeBatchedDims(dSliceResTy, dsInductionVarDims);
+    auto funcOutType = removeBatchedDims(dusUpdateTy, dusInductionVarDims);
+
+    static int64_t counter = 0;
+    std::string funcName =
+        "__enzymexla__copy_inside_while_loop_" + std::to_string(counter++);
+
+    auto modOp = whileOp->getParentOfType<ModuleOp>();
+    if (!modOp)
+      return nullptr;
+
+    rewriter.setInsertionPointToStart(modOp.getBody());
+    auto funcOp =
+        func::FuncOp::create(rewriter, whileOp.getLoc(), funcName,
+                             rewriter.getFunctionType(TypeRange{funcInType},
+                                                      TypeRange{funcOutType}));
+    funcOp.setPrivate();
+
+    auto &entryBlock = *funcOp.addEntryBlock();
+    rewriter.setInsertionPointToStart(&entryBlock);
+
+    auto reshapeIn = stablehlo::ReshapeOp::create(
+        rewriter, whileOp.getLoc(), dSliceResTy, entryBlock.getArgument(0));
+
+    IRMapping mapper;
+    mapper.map(dSlice.getResult(), reshapeIn.getResult());
+    for (int i = updateChain.size() - 2; i >= 1; i--) {
+      auto update = updateChain[i];
+      auto clonedOp = rewriter.clone(*update, mapper);
+      mapper.map(update->getResult(0), clonedOp->getResult(0));
+    }
+
+    auto reshapeOut =
+        stablehlo::ReshapeOp::create(rewriter, whileOp.getLoc(), funcOutType,
+                                     mapper.lookup(dusOp.getUpdate()));
+
+    func::ReturnOp::create(rewriter, whileOp.getLoc(), reshapeOut.getResult());
+
+    return funcOp;
+  }
+
+  RankedTensorType removeBatchedDims(RankedTensorType Ty,
+                                     SmallVectorImpl<int64_t> &dims) const {
+    SmallVector<int64_t> newShape;
+    for (int64_t i = 0; i < Ty.getRank(); i++) {
+      if (!llvm::is_contained(dims, i))
+        newShape.push_back(Ty.getDimSize(i));
+    }
+    return RankedTensorType::get(newShape, Ty.getElementType());
+  }
+
+  std::optional<SmallVector<Operation *>> extractValidUpdateChain(
+      PatternRewriter &rewriter, stablehlo::DynamicUpdateSliceOp dusOp,
       stablehlo::WhileOp whileOp,
-      llvm::MapVector<Value, APInt> &inductionVarOffsets) const {
-    SmallVector<SmallVector<int32_t>> indexTracking(1);
-    indexTracking[0] = {dusInductionVarDim};
+      llvm::MapVector<Value, WhileLoopInfo::AffineIndexInfo> &affineIndexInfo,
+      WhileLoopInfo &info) const {
     SmallVector<Operation *> updateChain;
     updateChain.push_back(dusOp);
 
-    extractValidUpdateChain(rewriter, domInfo, parentBlock,
-                            dusOp.getUpdate().getDefiningOp(), indexTracking,
-                            dusOp, whileOp, inductionVarOffsets, updateChain);
+    bool success = extractValidUpdateChainInner(
+        rewriter, dusOp.getUpdate().getDefiningOp(), whileOp, updateChain);
 
-    if (updateChain.empty() ||
-        !isa<stablehlo::DynamicSliceOp>(updateChain[updateChain.size() - 1])) {
-      return UpdateChainInfo{{}, {}};
-    }
-
-    // currently using a very simple logic of minimizing dimension changes for
-    // dynamic slices and reshapes
-    SmallVector<int32_t> costMultiplier(updateChain.size() - 1, 0);
-    for (int32_t i = updateChain.size() - 2; i >= 0; i--) {
-      if (isa<stablehlo::DynamicSliceOp>(updateChain[i + 1])) {
-        costMultiplier[i] = 1;
-      } else if (isa<stablehlo::ReshapeOp>(updateChain[i + 1])) {
-        costMultiplier[i] = 3;
-      }
-    }
-
-    int32_t bestCost = std::numeric_limits<int32_t>::max();
-    int32_t bestChain;
-    for (int32_t i = 0; i < indexTracking.size(); i++) {
-      int32_t curCost = 0;
-      for (size_t j = 1; j < indexTracking[i].size(); j++) {
-        curCost += std::abs(indexTracking[i][j] - indexTracking[i][j - 1]) *
-                   costMultiplier[j - 1];
-      }
-      if (curCost < bestCost) {
-        bestCost = curCost;
-        bestChain = i;
-      }
-    }
-
-    return UpdateChainInfo{updateChain, indexTracking[bestChain]};
+    if (!success)
+      return std::nullopt;
+    return updateChain;
   }
 
-  // each of the indexTracking vectors is a list of valid traversal paths
-  void extractValidUpdateChain(
-      PatternRewriter &rewriter, DominanceInfo &domInfo, Block *parentBlock,
-      Operation *op, SmallVectorImpl<SmallVector<int32_t>> &indexTracking,
-      stablehlo::DynamicUpdateSliceOp dusOp, stablehlo::WhileOp whileOp,
-      llvm::MapVector<Value, APInt> &inductionVarOffsets,
+  bool extractValidUpdateChainInner(
+      PatternRewriter &rewriter, Operation *op, stablehlo::WhileOp whileOp,
       SmallVectorImpl<Operation *> &updateChain) const {
     if (!op)
-      return;
+      return false;
 
     if (auto sliceOp = dyn_cast<stablehlo::DynamicSliceOp>(op)) {
       // base case, we have reached the dynamic slice
-      Value sliceOperand = sliceOp.getOperand();
-
-      if (!isValueAccessibleFromBlock(domInfo, sliceOperand, parentBlock))
-        return;
-
-      auto inductionVarDim =
-          getInductionVariableDimension(sliceOp, inductionVarOffsets, whileOp);
-      if (inductionVarDim == -1)
-        return;
-
       updateChain.push_back(sliceOp);
-      for (auto &idxs : indexTracking) {
-        idxs.push_back(inductionVarDim);
-      }
-      return;
+      return definedOutside(sliceOp.getOperand(), whileOp);
     }
 
-    if (auto transposeOp = dyn_cast<stablehlo::TransposeOp>(op)) {
-      updateChain.push_back(transposeOp);
-      auto tperm = transposeOp.getPermutation();
-      for (auto &idxs : indexTracking) {
-        idxs.push_back(tperm[idxs.back()]);
-      }
-      return extractValidUpdateChain(rewriter, domInfo, parentBlock,
-                                     transposeOp.getOperand().getDefiningOp(),
-                                     indexTracking, dusOp, whileOp,
-                                     inductionVarOffsets, updateChain);
-    }
-
-    if (isa<stablehlo::ConvertOp>(op)) { // pass through ops
+    if (isa<stablehlo::ConvertOp, stablehlo::BroadcastInDimOp,
+            stablehlo::ReshapeOp, stablehlo::TransposeOp>(op)) {
       updateChain.push_back(op);
-      for (auto &idxs : indexTracking) {
-        idxs.push_back(idxs.back());
-      }
-      return extractValidUpdateChain(
-          rewriter, domInfo, parentBlock, op->getOperand(0).getDefiningOp(),
-          indexTracking, dusOp, whileOp, inductionVarOffsets, updateChain);
+      return extractValidUpdateChainInner(
+          rewriter, op->getOperand(0).getDefiningOp(), whileOp, updateChain);
     }
-
-    if (auto bcastOp = dyn_cast<stablehlo::BroadcastInDimOp>(op)) {
-      auto fwdMapping = bcastOp.getBroadcastDimensions();
-      auto bcastShape = cast<ShapedType>(bcastOp.getType()).getShape();
-      DenseMap<int64_t, int64_t> bwdMapping;
-      for (auto [i, j] : llvm::enumerate(fwdMapping)) {
-        if (bcastShape[j] == 1) // not expanding along this dimension
-          bwdMapping[j] = i;
-      }
-
-      SmallVector<bool> toRemove(indexTracking.size());
-      for (size_t i = 0; i < indexTracking.size(); i++) {
-        auto found = bwdMapping.find(indexTracking[i].back());
-        if (found != bwdMapping.end()) {
-          indexTracking[i].push_back(found->second);
-          toRemove[i] = false;
-        } else {
-          toRemove[i] = true;
-        }
-      }
-
-      size_t writeIdx = 0;
-      for (auto [i, dim] : llvm::enumerate(indexTracking)) {
-        if (toRemove[i])
-          continue;
-        indexTracking[writeIdx++] = dim;
-      }
-      indexTracking.resize(writeIdx);
-
-      if (indexTracking.empty())
-        return;
-
-      updateChain.push_back(bcastOp);
-      return extractValidUpdateChain(
-          rewriter, domInfo, parentBlock, bcastOp.getOperand().getDefiningOp(),
-          indexTracking, dusOp, whileOp, inductionVarOffsets, updateChain);
-    }
-
-    if (auto reshapeOp = dyn_cast<stablehlo::ReshapeOp>(op)) {
-      SmallVector<int32_t> validIndices;
-      for (auto [i, sz] : llvm::enumerate(
-               cast<ShapedType>(reshapeOp.getOperand().getType()).getShape())) {
-        if (sz == 1)
-          validIndices.push_back(i);
-      }
-
-      if (validIndices.empty())
-        return;
-
-      SmallVector<SmallVector<int32_t>> newTracking;
-      newTracking.reserve(indexTracking.size() * validIndices.size());
-
-      for (const auto &idxs : indexTracking) {
-        for (auto v : validIndices) {
-          SmallVector<int32_t> extended(idxs);
-          extended.push_back(v);
-          newTracking.push_back(extended);
-        }
-      }
-      indexTracking.swap(newTracking);
-      updateChain.push_back(reshapeOp);
-      return extractValidUpdateChain(rewriter, domInfo, parentBlock,
-                                     reshapeOp.getOperand().getDefiningOp(),
-                                     indexTracking, dusOp, whileOp,
-                                     inductionVarOffsets, updateChain);
-    }
-
-    return;
-  }
-
-  int32_t getInductionVariableDimension(
-      stablehlo::DynamicSliceOp sliceOp,
-      llvm::MapVector<Value, APInt> &inductionVarOffsets,
-      stablehlo::WhileOp whileOp) const {
-    int32_t inductionVarDimension = -1;
-
-    for (size_t i = 0; i < sliceOp.getStartIndices().size(); i++) {
-      auto dsStartIndex = sliceOp.getStartIndices()[i];
-
-      if (!isConstantAcrossLoopIterations(dsStartIndex, whileOp)) {
-        if (inductionVarDimension > 0 || // multiple indices with induction var
-            !inductionVarOffsets.contains(dsStartIndex))
-          return -1;
-
-        inductionVarDimension = i;
-      }
-    }
-
-    return inductionVarDimension;
-  }
-
-  int32_t getInductionVariableDimension(
-      stablehlo::DynamicUpdateSliceOp dusOp,
-      llvm::MapVector<Value, APInt> &inductionVarOffsets,
-      stablehlo::WhileOp whileOp) const {
-    int32_t inductionVarDimension = -1;
-
-    for (size_t i = 0; i < dusOp.getStartIndices().size(); i++) {
-      auto dusStartIndex = dusOp.getStartIndices()[i];
-
-      if (!isConstantAcrossLoopIterations(dusStartIndex, whileOp)) {
-        if (inductionVarDimension > 0 || // multiple indices with induction var
-            !inductionVarOffsets.contains(dusStartIndex))
-          return -1;
-
-        inductionVarDimension = i;
-      }
-    }
-
-    return inductionVarDimension;
-  }
-
-  bool isConstantAcrossLoopIterations(Value value, WhileOp whileOp) const {
-    // defined outside the loop body
-    // even if it is currently not defined outside, licm should move it
-    // outside before we apply this pattern
-    if (value.getParentBlock() != &whileOp.getBody().front())
-      return true;
 
     return false;
   }
 
-  bool isValueAccessibleFromBlock(DominanceInfo &domInfo, Value value,
-                                  Block *block) const {
-    if (auto definingOp = value.getDefiningOp()) {
-      return domInfo.dominates(definingOp->getBlock(), block);
-    } else if (auto blockArg = dyn_cast<BlockArgument>(value)) {
-      return domInfo.dominates(blockArg.getOwner(), block);
-    }
-    return false;
+  template <typename OpTy>
+  SmallVector<int64_t> getInductionVariableDimension(
+      OpTy op,
+      llvm::MapVector<Value, WhileLoopInfo::AffineIndexInfo> &affineIndexInfo,
+      stablehlo::WhileOp whileOp, WhileLoopInfo &info) const {
+    return getInductionVariableDimension(op.getStartIndices(), affineIndexInfo,
+                                         whileOp, info);
   }
 
-  int64_t getInt(APInt value) const {
-    if (value.getBitWidth() != 64) {
-      value = value.sextOrTrunc(64);
+  SmallVector<int64_t> getInductionVariableDimension(
+      mlir::OperandRange startIndices,
+      llvm::MapVector<Value, WhileLoopInfo::AffineIndexInfo> &affineIndexInfo,
+      stablehlo::WhileOp whileOp, WhileLoopInfo &info) const {
+    SmallVector<int64_t> inductionVarDimensions;
+
+    for (auto [i, startIndex] : llvm::enumerate(startIndices)) {
+      // we could hoist the other dimensions but licm should fix this
+      if (info.isConstantAcrossIterations(startIndex, false))
+        continue;
+
+      if (!affineIndexInfo.contains(startIndex))
+        return {};
+
+      inductionVarDimensions.push_back(i);
     }
-    return value.getSExtValue();
+    return inductionVarDimensions;
   }
 };
 
@@ -26397,7 +26123,7 @@ void mlir::transform::addEnzymeHLOUnroll(RewritePatternSet &patterns,
                                          int64_t maxNumIterations,
                                          MLIRContext &context,
                                          PatternBenefit benefit) {
-  patterns.insert<WhileUnroll>(maxNumIterations, &context, benefit);
+  patterns.insert<WhileUnroll>(maxNumIterations, 128, &context, benefit);
 }
 
 void mlir::transform::addPadDotGeneral(RewritePatternSet &patterns,
