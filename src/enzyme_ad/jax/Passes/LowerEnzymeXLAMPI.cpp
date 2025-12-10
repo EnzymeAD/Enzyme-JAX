@@ -36,14 +36,13 @@ struct MPICommRankOpLowering
   LogicalResult matchAndRewrite(enzymexla::MPICommRankOp op,
                                 PatternRewriter &rewriter) const override {
     auto ctx = op->getContext();
-    LLVMTypeConverter typeConverter(ctx);
 
     if (backend == "cpu") {
 
       auto moduleOp = op->getParentOfType<ModuleOp>();
 
       auto llvmPtrType = LLVM::LLVMPointerType::get(ctx);
-      auto llvmVoidPtrType = LLVM::LLVMVoidType::get(ctx);
+      auto llvmVoidType = LLVM::LLVMVoidType::get(ctx);
 
       auto i32Type = IntegerType::get(rewriter.getContext(), 32);
 
@@ -63,7 +62,7 @@ struct MPICommRankOpLowering
 
         // Create the function type
         auto funcType = LLVM::LLVMFunctionType::get(
-            llvmVoidPtrType, // void return type
+            llvmVoidType, // void return type
             {llvmPtrType},   // parameter types TODO how to add {enzymexla.memory_effects = ["read", "write", "allocate", "free"]}
             false);          // is variadic: false
 
@@ -83,9 +82,11 @@ struct MPICommRankOpLowering
           comm
         );
 
-        auto callOp = LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{i32Type},
-                             SymbolRefAttr::get(ctx, fn),
-                             ValueRange{addressOfComm, funcArg});
+        // TODO error checking
+        // MPI_Comm_rank returns i32 error code which we're ignorign here
+        LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{i32Type},
+            SymbolRefAttr::get(ctx, fn),
+            ValueRange{addressOfComm, funcArg});
 
         LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
       }
