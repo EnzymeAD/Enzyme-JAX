@@ -58,7 +58,7 @@ struct SVDFactorizationOpLowering
     if (algorithm == SVDAlgorithm::DEFAULT) {
       if (backend == "cpu") {
         algorithm = SVDAlgorithm::DivideAndConquer;
-      } else if (backend == "cuda" || backend == "tpu") {
+      } else if (backend == "cuda" || backend == "tpu" || backend == "rocm") {
         algorithm = SVDAlgorithm::Jacobi;
       } else {
         op->emitOpError() << "Unsupported backend: " << backend;

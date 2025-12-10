@@ -1342,8 +1342,8 @@ struct GetrfOpLowering : public OpRewritePattern<enzymexla::GetrfOp> {
                                 PatternRewriter &rewriter) const override {
     if (backend == "cpu")
       return matchAndRewriteCPU(op, rewriter);
-    else if (backend == "cuda")
-      return matchAndRewriteCUDA(op, rewriter);
+    else if (backend == "cuda" || backend == "rocm")
+      return matchAndRewriteGPU(op, rewriter, backend);
     else if (backend == "tpu")
       return matchAndRewriteTPU(op, rewriter);
 
@@ -1762,8 +1762,9 @@ private:
     return success();
   }
 
-  LogicalResult matchAndRewriteCUDA(enzymexla::GetrfOp op,
-                                    PatternRewriter &rewriter) const {
+  LogicalResult matchAndRewriteGPU(enzymexla::GetrfOp op,
+                                   PatternRewriter &rewriter,
+                                   const std::string &backend) const {
     auto input = op.getInput();
 
     auto inputType = cast<RankedTensorType>(input.getType());
@@ -1779,10 +1780,13 @@ private:
     auto infoCuSolverType =
         RankedTensorType::get(infoType.getShape(), rewriter.getI32Type());
 
-    auto cusolverGetrfFFI = stablehlo::CustomCallOp::create(
+    auto solverDispatch =
+        backend == "cuda" ? "cusolver_getrf_ffi" : "hipsolver_getrf_ffi";
+
+    auto gpusolverGetrfFFI = stablehlo::CustomCallOp::create(
         rewriter, op.getLoc(),
         TypeRange{inputType, pivotCuSolverType, infoCuSolverType},
-        ValueRange{input}, rewriter.getStringAttr("cusolver_getrf_ffi"),
+        ValueRange{input}, rewriter.getStringAttr(solverDispatch),
         /*has_side_effect*/ nullptr,
         /*backend_config*/ nullptr,
         /*api_version*/
@@ -1809,12 +1813,15 @@ private:
           cast<ElementsAttr>(makeAttr(pivotCuSolverType, 1)));
 
       auto pivots0Indexed = stablehlo::SubtractOp::create(
-          rewriter, op.getLoc(), cusolverGetrfFFI.getResult(1), pivotOnes);
+          rewriter, op.getLoc(), gpusolverGetrfFFI.getResult(1), pivotOnes);
+
+      auto pivotFn = backend == "cuda" ? "cu_lu_pivots_to_permutation"
+                                       : "hip_lu_pivots_to_permutation";
 
       auto permutation = stablehlo::CustomCallOp::create(
           rewriter, op.getLoc(), TypeRange{pivotCuSolverType},
           ValueRange{pivots0Indexed.getResult()},
-          rewriter.getStringAttr("cu_lu_pivots_to_permutation"),
+          rewriter.getStringAttr(pivotFn),
           /*has_side_effect*/ nullptr,
           /*backend_config*/ nullptr,
           /*api_version*/
@@ -1834,15 +1841,16 @@ private:
       rewriter.replaceAllUsesWith(op.getResult(2), permutation1Indexed);
     }
 
-    rewriter.replaceAllUsesWith(op.getResult(0), cusolverGetrfFFI.getResult(0));
+    rewriter.replaceAllUsesWith(op.getResult(0),
+                                gpusolverGetrfFFI.getResult(0));
     rewriter.replaceAllUsesWith(
         op.getResult(1),
         stablehlo::ConvertOp::create(rewriter, op.getLoc(), pivotType,
-                                     cusolverGetrfFFI.getResult(1)));
+                                     gpusolverGetrfFFI.getResult(1)));
     rewriter.replaceAllUsesWith(
         op.getResult(3),
         stablehlo::ConvertOp::create(rewriter, op.getLoc(), infoType,
-                                     cusolverGetrfFFI.getResult(2)));
+                                     gpusolverGetrfFFI.getResult(2)));
     rewriter.eraseOp(op);
 
     return success();
@@ -2454,10 +2462,10 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
 }
 
 template <typename OpTy>
-LogicalResult lowerSVDAlgorithmCUDA(OpTy op, PatternRewriter &rewriter,
-                                    DictionaryAttr &options,
-                                    bool skipUVAllocation,
-                                    std::string targetName) {
+LogicalResult lowerSVDAlgorithmGPU(OpTy op, PatternRewriter &rewriter,
+                                   DictionaryAttr &options,
+                                   bool skipUVAllocation,
+                                   std::string targetName) {
   auto input = op.getOperand();
   auto type_input = cast<RankedTensorType>(input.getType());
   auto rank_input = type_input.getRank();
@@ -2500,7 +2508,7 @@ LogicalResult lowerSVDAlgorithmCUDA(OpTy op, PatternRewriter &rewriter,
   }
   SmallVector<bool> isColMajorArrOutputs = {true, true, true, true, true};
 
-  auto cusolverCallOp = stablehlo::CustomCallOp::create(
+  auto gpusolverCallOp = stablehlo::CustomCallOp::create(
       rewriter, op.getLoc(), outTypes, ValueRange{input},
       rewriter.getStringAttr(targetName),
       /*has_side_effect*/ nullptr,
@@ -2519,10 +2527,10 @@ LogicalResult lowerSVDAlgorithmCUDA(OpTy op, PatternRewriter &rewriter,
 
   auto info = stablehlo::ConvertOp::create(rewriter, op.getLoc(),
                                            op.getResult(3).getType(),
-                                           cusolverCallOp.getResult(4));
+                                           gpusolverCallOp.getResult(4));
 
   // replace enzymexla.linalg.svd with stablehlo.custom_call
-  rewriter.replaceAllUsesWith(op.getResult(1), cusolverCallOp.getResult(1));
+  rewriter.replaceAllUsesWith(op.getResult(1), gpusolverCallOp.getResult(1));
 
   Value Ures, Vtres;
   if (skipUVAllocation) {
@@ -2533,7 +2541,7 @@ LogicalResult lowerSVDAlgorithmCUDA(OpTy op, PatternRewriter &rewriter,
         stablehlo::ConstantOp::create(rewriter, op.getLoc(), type_vt,
                                       cast<ElementsAttr>(makeAttr(type_vt, 0)));
   } else {
-    Ures = cusolverCallOp.getResult(2);
+    Ures = gpusolverCallOp.getResult(2);
 
     // cuda_customcall returns `U` and `V`. We need to transpose `V` to match
     // the return convention of `enzymexla.linalg.svd`.
@@ -2542,7 +2550,7 @@ LogicalResult lowerSVDAlgorithmCUDA(OpTy op, PatternRewriter &rewriter,
     permutation[rank_input - 1] = rank_input - 2;
     permutation[rank_input - 2] = rank_input - 1;
     Vtres = stablehlo::TransposeOp::create(
-        rewriter, op.getLoc(), cusolverCallOp.getResult(3), permutation);
+        rewriter, op.getLoc(), gpusolverCallOp.getResult(3), permutation);
   }
   rewriter.replaceAllUsesWith(op.getResult(0), Ures);
   rewriter.replaceAllUsesWith(op.getResult(2), Vtres);
@@ -2566,8 +2574,8 @@ struct GesvdOpLowering : public OpRewritePattern<enzymexla::GesvdOp> {
                                 PatternRewriter &rewriter) const override {
     if (backend == "cpu")
       return matchAndRewriteCPU(op, rewriter);
-    else if (backend == "cuda")
-      return matchAndRewriteCUDA(op, rewriter);
+    else if (backend == "cuda" || backend == "rocm")
+      return matchAndRewriteGPU(op, rewriter, backend);
 
     op->emitOpError() << "Unsupported backend: " << backend;
     return failure();
@@ -2578,15 +2586,20 @@ struct GesvdOpLowering : public OpRewritePattern<enzymexla::GesvdOp> {
     return lowerSVDAlgorithmCPU(op, rewriter, blasIntWidth);
   }
 
-  LogicalResult matchAndRewriteCUDA(enzymexla::GesvdOp op,
-                                    PatternRewriter &rewriter) const {
+  LogicalResult matchAndRewriteGPU(enzymexla::GesvdOp op,
+                                   PatternRewriter &rewriter,
+                                   const std::string &backend) const {
     auto backend_config = rewriter.getDictionaryAttr({
         rewriter.getNamedAttr("full_matrices", op.getFullAttr()),
         rewriter.getNamedAttr("compute_uv", op.getComputeUvAttr()),
         rewriter.getNamedAttr("transposed", rewriter.getBoolAttr(false)),
     });
-    return lowerSVDAlgorithmCUDA(op, rewriter, backend_config,
-                                 !op.getComputeUv(), "cusolver_gesvd_ffi");
+
+    auto solverDispatch =
+        backend == "cuda" ? "cusolver_gesvd_ffi" : "hipsolver_gesvd_ffi";
+
+    return lowerSVDAlgorithmGPU(op, rewriter, backend_config,
+                                !op.getComputeUv(), solverDispatch);
   }
 };
 
@@ -2625,8 +2638,8 @@ struct GesvjOpLowering : public OpRewritePattern<enzymexla::GesvjOp> {
 
   LogicalResult matchAndRewrite(enzymexla::GesvjOp op,
                                 PatternRewriter &rewriter) const override {
-    if (backend == "cuda")
-      return matchAndRewriteCUDA(op, rewriter);
+    if (backend == "cuda" || backend == "rocm")
+      return matchAndRewriteGPU(op, rewriter, backend);
     else if (backend == "tpu")
       return matchAndRewriteTPU(op, rewriter);
 
@@ -2634,16 +2647,21 @@ struct GesvjOpLowering : public OpRewritePattern<enzymexla::GesvjOp> {
     return failure();
   }
 
-  LogicalResult matchAndRewriteCUDA(enzymexla::GesvjOp op,
-                                    PatternRewriter &rewriter) const {
+  LogicalResult matchAndRewriteGPU(enzymexla::GesvjOp op,
+                                   PatternRewriter &rewriter,
+                                   const std::string &backend) const {
     auto backend_config = rewriter.getDictionaryAttr({
         rewriter.getNamedAttr("full_matrices", op.getFullAttr()),
         rewriter.getNamedAttr("compute_uv", op.getComputeUvAttr()),
     });
-    return lowerSVDAlgorithmCUDA(
+
+    auto solverDispatch =
+        backend == "cuda" ? "cusolver_gesvdj_ffi" : "hipsolver_gesvdj_ffi";
+
+    return lowerSVDAlgorithmGPU(
         op, rewriter, backend_config,
         false, // https://github.com/jax-ml/jax/blob/43d14afad3e6bc321309054c512c5ffe1d1bca86/jaxlib/gpu/solver_kernels_ffi.cc#L1117
-        "cusolver_gesvdj_ffi");
+        solverDispatch);
   }
 
   LogicalResult matchAndRewriteTPU(enzymexla::GesvjOp op,
