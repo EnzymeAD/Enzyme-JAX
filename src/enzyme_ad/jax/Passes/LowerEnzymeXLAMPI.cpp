@@ -50,6 +50,11 @@ struct MPICommRankOpLowering
       std::string fn;
       fn = "MPI_Comm_rank";
 
+      // For now we just hard code MPI_COMM_WORLD as the communicator. 
+      // TODO make this more flexible
+      std::string comm;
+      comm = "MPI_COMM_WORLD";
+
       // Generate the enzymexla_wrapper_MPI_Comm_rank LLVM function body
       std::string fnName = "enzymexla_wrapper_" + fn;
       {
@@ -64,7 +69,9 @@ struct MPICommRankOpLowering
 
         auto func =
             LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), fnName, funcType);
-        rewriter.setInsertionPointToStart(func.addEntryBlock(rewriter));
+
+        Block *entryBlock = func.addEntryBlock(rewriter);
+        rewriter.setInsertionPointToStart(entryBlock);
 
         // auto ptrSize =
         //     LLVM::ConstantOp::create(rewriter, op.getLoc(), llvmBlasIntType,
@@ -84,9 +91,19 @@ struct MPICommRankOpLowering
         // LLVM::StoreOp::create(rewriter, op.getLoc(), mVal, mPtr);
         // LLVM::StoreOp::create(rewriter, op.getLoc(), nVal, nPtr);
 
+        // Get the first (and only) argument of the function
+        Value funcArg = entryBlock->getArgument(0);
+
+        // Get the address of the communicator
+        Value addressOfComm = rewriter.create<LLVM::AddressOfOp>(
+          op.getLoc(),
+          llvmPtrType,
+          comm
+        );
+
         auto callOp = LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{i32Type},
                              SymbolRefAttr::get(ctx, fn),
-                             ValueRange{});
+                             ValueRange{addressOfComm, funcArg});
 
         LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
       }
@@ -96,10 +113,31 @@ struct MPICommRankOpLowering
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(moduleOp.getBody());
 
-        auto funcType = LLVM::LLVMFunctionType::get(i32Type, {}, false);
+        auto funcType = LLVM::LLVMFunctionType::get(
+            i32Type, 
+            {llvmPtrType, llvmPtrType}, 
+            false
+        );
 
         LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), fn, funcType,
                                  LLVM::Linkage::External);
+      }
+
+      // Insert MPI_COMM_WORLD declaration if not already present
+      if (!moduleOp.lookupSymbol<LLVM::GlobalOp>(comm)) {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+        rewriter.create<LLVM::GlobalOp>(
+          op.getLoc(),
+          llvmPtrType,
+          /*isConstant=*/true,
+          LLVM::Linkage::External,
+          comm,
+          /*value=*/Attribute(),
+          /*alignment=*/0,
+          /*addrSpace=*/0
+        );
       }
 
       // Get the result type (it's a tensor<i32>)
@@ -129,7 +167,7 @@ struct MPICommRankOpLowering
           /*output_operand_aliases=*/nullptr,
           /*xla_side_effect_free=*/nullptr);
 
-      rewriter.replaceOp(op, placeholderValue);
+      rewriter.replaceOp(op, jitCall);
 
       return success();
     } else {
