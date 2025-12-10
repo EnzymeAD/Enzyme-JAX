@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1765359718787,
+  "lastUpdate": 1765391116281,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "avikpal@mit.edu",
-            "name": "Avik Pal",
-            "username": "avik-pal"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "582e713446209d3a920deb8c6e79ed110d068a2e",
-          "message": "refactor: cleanup linalg/lapack lowering (#1501)\n\n* feat: get_dimension_size batch interface\n\n* feat: implement jitcall batching with shlo_generic_batch_op_interface\n\n* refactor: reuse batching interface for LU factorization\n\n* fix: remove old changes\n\n* refactor: move into separate functions\n\n* test: update LU tests\n\n* feat: dynamic slice simplify\n\n* feat: mark memory effects\n\n* fix: update to new API\n\n* fix: use correct return\n\n* chore: run fmt\n\n* test: fix",
-          "timestamp": "2025-11-15T21:30:24-06:00",
-          "tree_id": "3e8266dd8c93d516b3bec56995d57598cb00e12a",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/582e713446209d3a920deb8c6e79ed110d068a2e"
-        },
-        "date": 1763291061023,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.000004273933998774737,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.000004275060992222279,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.000134760071407,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001332195553928,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2199,6 +2155,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001485629787999,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "31353884+jumerckx@users.noreply.github.com",
+            "name": "jumerckx",
+            "username": "jumerckx"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a24b37116e34b28f857ff114aaf7fb18e49cb1a6",
+          "message": "Operation definitions for Bessel functions (#1676)\n\n* bessel op definitions\n\n* get rid of redundant bessel functions\n\n* Don't use SameOperandsAndResultType\n\nThe order can be a different type (for example an integer)",
+          "timestamp": "2025-12-10T10:33:50-06:00",
+          "tree_id": "8e131f1e0102edf5d37abea2ebc601401dccc80c",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/a24b37116e34b28f857ff114aaf7fb18e49cb1a6"
+        },
+        "date": 1765391115184,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.00000431107299955329,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.0000042005948998848905,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001371250153999,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001364283852999,
             "unit": "s"
           }
         ]
