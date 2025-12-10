@@ -2,6 +2,7 @@
 
 #include "src/enzyme_ad/jax/CheckedRewrite.h"
 #include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
+#include "src/enzyme_ad/jax/Utils.h"
 
 #include "mlir/IR/PatternMatch.h"
 #include "stablehlo/dialect/StablehloOps.h"
@@ -18,9 +19,6 @@ struct WhileLoopInfo;
 }; // namespace enzyme
 }; // namespace mlir
 
-std::tuple<bool, bool> allSameBool(const llvm::SmallVector<bool> &bools);
-bool allOpsAreUnique(const llvm::SmallVector<mlir::Operation *> &ops);
-
 enum class BatchLiftingMode {
   DYNAMIC_SLICE,
   DEFINED_OUTSIDE_WHILE,
@@ -29,29 +27,32 @@ enum class BatchLiftingMode {
   AFFINE_INDEX,
 };
 
-struct BatchOperandConstructionInfo {
-  mlir::stablehlo::SliceOp sliceOp;
-  int32_t sliceOperandIndex;
-  int32_t sliceDim;
-  int32_t nbatches;
-  bool intermediateReshape;
-};
-
 template <typename OpTy> struct SliceInfo {
   OpTy sliceOp;
-  llvm::SmallVector<mlir::Value> dynamicStartIndices;
-  llvm::SmallVector<int64_t> startIndices;
-  llvm::SmallVector<int64_t> sliceSizes;
-  int64_t sliceDim;
-  int64_t sliceStart;
-  bool supported;
+  llvm::SmallVector<int64_t> dimensions;
+  bool intermediateReshape;
+  std::optional<llvm::SmallVector<int64_t>> explicitReshapeShape;
+};
+
+template <typename OpTy> struct BatchOperandConstructionInfo {
+  llvm::SmallVector<SliceInfo<OpTy>> slices;
+  int32_t sliceOperandIndex;
+  bool intermediateReshape;
 };
 
 SliceInfo<mlir::stablehlo::SliceOp>
 constructSliceInfo(mlir::stablehlo::SliceOp sliceOp);
 
-bool areSlicesContiguous(
-    llvm::SmallVector<SliceInfo<mlir::stablehlo::SliceOp>> &slices);
+void ComputeSliceDimension(
+    llvm::ArrayRef<SliceInfo<mlir::stablehlo::SliceOp>> slices,
+    int64_t *sliceDim);
+
+inline mlir::Operation *CheckElementwise(mlir::Operation *op) {
+  if (op && mlir::stablehlo::hasTraitElementwise(op)) {
+    return op;
+  }
+  return nullptr;
+}
 
 struct ConcatInsertDimToBatchBase
     : public mlir::enzyme::CheckedOpRewritePattern<
@@ -72,14 +73,6 @@ struct ConcatInsertDimToBatchBase
 
 protected:
   std::function<mlir::Operation *(mlir::Operation *)> isValidTargetOp;
-
-private:
-  bool validReshapeOpInsertDimForBatching(
-      mlir::stablehlo::ReshapeOp op, int64_t dim,
-      llvm::SmallVectorImpl<int64_t> &intermediateInsertions) const;
-  bool validBroadcastInDimOpInsertDimForBatching(
-      mlir::stablehlo::BroadcastInDimOp op, int64_t dim,
-      llvm::SmallVectorImpl<int64_t> &intermediateInsertions) const;
 };
 
 template <typename OpTy>
@@ -88,9 +81,7 @@ struct ConcatInsertDimToBatch : public ConcatInsertDimToBatchBase {
                          mlir::PatternBenefit benefit = 1)
       : ConcatInsertDimToBatchBase(
             [](mlir::Operation *op) -> mlir::Operation * {
-              if (!op)
-                return nullptr;
-              return llvm::dyn_cast<OpTy>(op);
+              return llvm::dyn_cast_or_null<OpTy>(op);
             },
             ctx, benefit) {}
 };
@@ -98,15 +89,7 @@ struct ConcatInsertDimToBatch : public ConcatInsertDimToBatchBase {
 struct ConcatInsertDimElementwiseToBatch : public ConcatInsertDimToBatchBase {
   ConcatInsertDimElementwiseToBatch(mlir::MLIRContext *ctx,
                                     mlir::PatternBenefit benefit = 1)
-      : ConcatInsertDimToBatchBase(
-            [](mlir::Operation *op) -> mlir::Operation * {
-              if (!op)
-                return nullptr;
-              if (op->hasTrait<mlir::OpTrait::Elementwise>())
-                return op;
-              return nullptr;
-            },
-            ctx, benefit) {}
+      : ConcatInsertDimToBatchBase(CheckElementwise, ctx, benefit) {}
 };
 
 struct SliceToBatchBase
@@ -133,9 +116,7 @@ template <typename OpTy> struct SliceToBatch : public SliceToBatchBase {
   SliceToBatch(mlir::MLIRContext *ctx, mlir::PatternBenefit benefit = 1)
       : SliceToBatchBase(
             [](mlir::Operation *op) -> mlir::Operation * {
-              if (!op)
-                return nullptr;
-              return llvm::dyn_cast<OpTy>(op);
+              return llvm::dyn_cast_or_null<OpTy>(op);
             },
             ctx, benefit) {}
 };
@@ -143,15 +124,7 @@ template <typename OpTy> struct SliceToBatch : public SliceToBatchBase {
 struct SliceToBatchElementwise : public SliceToBatchBase {
   SliceToBatchElementwise(mlir::MLIRContext *ctx,
                           mlir::PatternBenefit benefit = 1)
-      : SliceToBatchBase(
-            [](mlir::Operation *op) -> mlir::Operation * {
-              if (!op)
-                return nullptr;
-              if (op->hasTrait<mlir::OpTrait::Elementwise>())
-                return op;
-              return nullptr;
-            },
-            ctx, benefit) {}
+      : SliceToBatchBase(CheckElementwise, ctx, benefit) {}
 };
 
 struct GreedyWhileLoopBatchFission
@@ -178,14 +151,6 @@ private:
     return result == IsValidForBatchingResult::VALID;
   }
 
-  struct DynamicSliceInfo {
-    mlir::stablehlo::DynamicSliceOp sliceOp;
-    llvm::SmallVector<int64_t> dimensions;
-    bool intermediateReshape;
-    bool needsManualReshape;
-    llvm::SmallVector<int64_t> reshapeShape;
-  };
-
   struct ValidBatchingInfo {
     IsValidForBatchingResult result;
     llvm::SmallVector<int64_t> dimensions;
@@ -197,9 +162,8 @@ private:
           &affineIndexInfoMap,
       mlir::Block &whileBody, mlir::stablehlo::WhileOp whileOp) const;
 
-  bool liftOperationByBatching(mlir::PatternRewriter &rewriter,
-                               mlir::stablehlo::WhileOp whileOp,
-                               llvm::ArrayRef<DynamicSliceInfo> sliceOps,
-                               mlir::Operation *op,
-                               mlir::enzyme::WhileLoopInfo info) const;
+  bool liftOperationByBatching(
+      mlir::PatternRewriter &rewriter, mlir::stablehlo::WhileOp whileOp,
+      llvm::ArrayRef<SliceInfo<mlir::stablehlo::DynamicSliceOp>> slices,
+      mlir::Operation *op, mlir::enzyme::WhileLoopInfo info) const;
 };
