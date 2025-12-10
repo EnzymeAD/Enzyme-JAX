@@ -2214,8 +2214,6 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
       LLVM::ZExtOp::create(rewriter, loc, i64, dynamicSharedMemorySize));
   args.push_back(stream);
 
-  auto ptrty = LLVM::LLVMPointerType::get(rewriter.getContext());
-
   // Create LLVM call to launch kernel
   std::string launchFuncName =
       (gpuTarget == "rocm") ? "hipLaunchKernel" : "cudaLaunchKernel";
