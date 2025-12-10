@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1765318752045,
+  "lastUpdate": 1765333578134,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "avikpal@mit.edu",
-            "name": "Avik Pal",
-            "username": "avik-pal"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "4c2893399e776fb73a1695f2a6f412d1f7b3c6f5",
-          "message": "feat: simplify diagonal accesses for a dot_general op (#1614)\n\n* feat: simplify diagonal accesses for a dot_general op\n\n* test: update",
-          "timestamp": "2025-11-13T19:17:01-05:00",
-          "tree_id": "940464d20f21b4619e21a08103cc19da6baaa5d1",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/4c2893399e776fb73a1695f2a6f412d1f7b3c6f5"
-        },
-        "date": 1763112532131,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.000004451482999138534,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.00000439399010501802,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001457018755027,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001372073734062,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2199,6 +2155,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001290046253998,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "avikpal@mit.edu",
+            "name": "Avik Pal",
+            "username": "avik-pal"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0341e5cc385d350b806a231b6e2d0cff0b1f1310",
+          "message": "feat: correct lowering for rocm (#1715)",
+          "timestamp": "2025-12-09T19:35:22-05:00",
+          "tree_id": "63aa52511cd6e8ef2b932f652acc6c6022ec9e9d",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/0341e5cc385d350b806a231b6e2d0cff0b1f1310"
+        },
+        "date": 1765333577511,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004350405000150204,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004312506999849574,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001511090920997,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001527826641999,
             "unit": "s"
           }
         ]
