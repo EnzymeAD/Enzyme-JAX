@@ -66,8 +66,7 @@ struct MPICommRankOpLowering
             {llvmPtrType},   // parameter types TODO how to add {enzymexla.memory_effects = ["read", "write", "allocate", "free"]}
             false);          // is variadic: false
 
-        auto func =
-            LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), fnName, funcType);
+        auto func = rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), fnName, funcType);
 
         Block *entryBlock = func.addEntryBlock(rewriter);
         rewriter.setInsertionPointToStart(entryBlock);
@@ -84,11 +83,13 @@ struct MPICommRankOpLowering
 
         // TODO error checking
         // MPI_Comm_rank returns i32 error code which we're ignorign here
-        LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{i32Type},
+        rewriter.create<LLVM::CallOp>(
+            op.getLoc(), 
+            TypeRange{i32Type},
             SymbolRefAttr::get(ctx, fn),
             ValueRange{addressOfComm, funcArg});
 
-        LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
+        rewriter.create<LLVM::ReturnOp>(op.getLoc(), ValueRange{});
       }
 
       // Insert MPI_Comm_rank function declaration if not already present
@@ -102,7 +103,7 @@ struct MPICommRankOpLowering
             false
         );
 
-        LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), fn, funcType,
+        rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), fn, funcType,
                                  LLVM::Linkage::External);
       }
 
@@ -144,8 +145,7 @@ struct MPICommRankOpLowering
           /*operand_tuple_indices=*/std::vector<int64_t>{})
       );
 
-      auto jitCall = enzymexla::JITCallOp::create(
-          rewriter, 
+      auto jitCall = rewriter.create<enzymexla::JITCallOp>(
           op.getLoc(),
           TypeRange{resultType},
           mlir::FlatSymbolRefAttr::get(ctx, fnName),
