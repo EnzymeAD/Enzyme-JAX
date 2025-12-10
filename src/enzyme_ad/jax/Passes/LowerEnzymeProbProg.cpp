@@ -46,6 +46,14 @@ static std::string getTensorSignature(Type tensorType) {
       sig += "f32";
     else if (elemType.isF64())
       sig += "f64";
+    else if (auto intType = dyn_cast<IntegerType>(elemType)) {
+      if (intType.isUnsigned())
+        sig += "u";
+      else if (intType.isSigned())
+        sig += "s";
+      sig += "i" + std::to_string(intType.getWidth());
+    } else if (elemType.isInteger(1))
+      sig += "i1";
     else
       llvm_unreachable("Unsupported tensor element type");
 
@@ -1269,16 +1277,25 @@ struct DumpOpConversion : public OpConversionPattern<enzyme::DumpOp> {
 
       auto shape = valueType.getShape();
       size_t ndims = shape.size();
-      size_t width = valueType.getElementType().getIntOrFloatBitWidth();
+      auto elemType = valueType.getElementType();
+      size_t width = elemType.getIntOrFloatBitWidth();
+
+      int64_t typeKind = 0;
+      if (isa<FloatType>(elemType)) {
+        typeKind = 0;
+      } else if (auto intType = dyn_cast<IntegerType>(elemType)) {
+        typeKind = intType.isUnsigned() ? 2 : 1;
+      }
 
       if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapperFn)) {
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(moduleOp.getBody());
 
-        auto funcType = LLVM::LLVMFunctionType::get(
-            llvmVoidType,
-            {llvmPtrType, llvmPtrType, llvmPtrType, llvmPtrType, llvmPtrType},
-            /*isVarArg=*/false);
+        auto funcType =
+            LLVM::LLVMFunctionType::get(llvmVoidType,
+                                        {llvmPtrType, llvmPtrType, llvmPtrType,
+                                         llvmPtrType, llvmPtrType, llvmPtrType},
+                                        /*isVarArg=*/false);
         auto func = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), wrapperFn,
                                              funcType);
 
@@ -1301,6 +1318,14 @@ struct DumpOpConversion : public OpConversionPattern<enzyme::DumpOp> {
         auto widthAlloca = LLVM::AllocaOp::create(
             rewriter, op.getLoc(), llvmPtrType, llvmI64Type, oneConst);
         LLVM::StoreOp::create(rewriter, op.getLoc(), widthConst, widthAlloca);
+
+        auto typeKindConstInner = LLVM::ConstantOp::create(
+            rewriter, op.getLoc(), llvmI64Type,
+            rewriter.getIntegerAttr(llvmI64Type, typeKind));
+        auto typeKindAlloca = LLVM::AllocaOp::create(
+            rewriter, op.getLoc(), llvmPtrType, llvmI64Type, oneConst);
+        LLVM::StoreOp::create(rewriter, op.getLoc(), typeKindConstInner,
+                              typeKindAlloca);
 
         Value shapeArrAlloca;
         if (ndims > 0) {
@@ -1329,7 +1354,7 @@ struct DumpOpConversion : public OpConversionPattern<enzyme::DumpOp> {
         LLVM::CallOp::create(
             rewriter, op.getLoc(), TypeRange{}, SymbolRefAttr::get(ctx, dumpFn),
             ValueRange{func.getArgument(0), func.getArgument(1), ndimsAlloca,
-                       shapeArrAlloca, widthAlloca});
+                       shapeArrAlloca, widthAlloca, func.getArgument(5)});
 
         LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
       }
@@ -1337,10 +1362,11 @@ struct DumpOpConversion : public OpConversionPattern<enzyme::DumpOp> {
       if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(dumpFn)) {
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(moduleOp.getBody());
-        auto funcType = LLVM::LLVMFunctionType::get(
-            llvmVoidType,
-            {llvmPtrType, llvmPtrType, llvmPtrType, llvmPtrType, llvmPtrType},
-            /*isVarArg=*/false);
+        auto funcType =
+            LLVM::LLVMFunctionType::get(llvmVoidType,
+                                        {llvmPtrType, llvmPtrType, llvmPtrType,
+                                         llvmPtrType, llvmPtrType, llvmPtrType},
+                                        /*isVarArg=*/false);
         LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), dumpFn, funcType,
                                  LLVM::Linkage::External);
       }
@@ -1368,6 +1394,9 @@ struct DumpOpConversion : public OpConversionPattern<enzyme::DumpOp> {
           rewriter, op.getLoc(), i64TensorType,
           cast<ElementsAttr>(
               makeAttr(i64TensorType, static_cast<int64_t>(width))));
+      auto typeKindConst = stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(), i64TensorType,
+          cast<ElementsAttr>(makeAttr(i64TensorType, typeKind)));
 
       Value shapeConst;
       if (ndims > 0) {
@@ -1394,7 +1423,8 @@ struct DumpOpConversion : public OpConversionPattern<enzyme::DumpOp> {
       auto jitCall = enzymexla::JITCallOp::create(
           rewriter, op.getLoc(), TypeRange{valueType},
           mlir::FlatSymbolRefAttr::get(ctx, wrapperFn),
-          ValueRange{value, labelConst, ndimsConst, shapeConst, widthConst},
+          ValueRange{value, labelConst, ndimsConst, shapeConst, widthConst,
+                     typeKindConst},
           rewriter.getStringAttr(""),
           /*operand_layouts=*/nullptr, /*result_layouts=*/nullptr,
           /*arg_attrs=*/nullptr, /*res_attrs=*/nullptr,
