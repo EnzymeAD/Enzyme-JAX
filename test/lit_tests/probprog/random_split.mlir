@@ -17,6 +17,7 @@ module {
   // CPU-NEXT:    %c_11 = stablehlo.constant dense<32> : tensor<2xui32>
   // CPU-NEXT:    %c_12 = stablehlo.constant dense<13> : tensor<2xui32>
   // CPU-NEXT:    %c_13 = stablehlo.constant dense<466688986> : tensor<2xui32>
+  // CPU-NEXT:    %c_14 = stablehlo.constant dense<0> : tensor<2xui32>
   // CPU-NEXT:    %0 = stablehlo.bitcast_convert %arg0 : (tensor<2xui64>) -> tensor<2x2xui32>
   // CPU-NEXT:    %1 = stablehlo.reshape %0 : (tensor<2x2xui32>) -> tensor<4xui32>
   // CPU-NEXT:    %2 = stablehlo.slice %1 [0:1] : (tensor<4xui32>) -> tensor<1xui32>
@@ -34,7 +35,7 @@ module {
   // CPU-NEXT:    %14 = stablehlo.broadcast_in_dim %9, dims = [] : (tensor<ui32>) -> tensor<2xui32>
   // CPU-NEXT:    %15 = stablehlo.xor %11, %12 : tensor<2xui32>
   // CPU-NEXT:    %16 = stablehlo.xor %15, %c_13 : tensor<2xui32>
-  // CPU-NEXT:    %17 = stablehlo.add %10, %11 : tensor<2xui32>
+  // CPU-NEXT:    %17 = stablehlo.add %c_14, %11 : tensor<2xui32>
   // CPU-NEXT:    %18 = stablehlo.add %10, %12 : tensor<2xui32>
   // CPU-NEXT:    %19 = stablehlo.add %17, %18 : tensor<2xui32>
   // CPU-NEXT:    %20 = stablehlo.subtract %c_11, %c_12 : tensor<2xui32>
@@ -161,7 +162,7 @@ module {
   // CPU-NEXT:    %141 = stablehlo.add %140, %c : tensor<2xui32>
   // CPU-NEXT:    %142 = stablehlo.xor %13, %14 : tensor<2xui32>
   // CPU-NEXT:    %143 = stablehlo.xor %142, %c_13 : tensor<2xui32>
-  // CPU-NEXT:    %144 = stablehlo.add %10, %13 : tensor<2xui32>
+  // CPU-NEXT:    %144 = stablehlo.add %c_14, %13 : tensor<2xui32>
   // CPU-NEXT:    %145 = stablehlo.add %10, %14 : tensor<2xui32>
   // CPU-NEXT:    %146 = stablehlo.add %144, %145 : tensor<2xui32>
   // CPU-NEXT:    %147 = stablehlo.shift_left %145, %c_12 : tensor<2xui32>
@@ -315,6 +316,7 @@ module {
   // CPU-NEXT:    %c_11 = stablehlo.constant dense<32> : tensor<3xui32>
   // CPU-NEXT:    %c_12 = stablehlo.constant dense<13> : tensor<3xui32>
   // CPU-NEXT:    %c_13 = stablehlo.constant dense<466688986> : tensor<3xui32>
+  // CPU-NEXT:    %c_14 = stablehlo.constant dense<0> : tensor<3xui32>
   // CPU-NEXT:    %0 = stablehlo.bitcast_convert %arg0 : (tensor<2xui64>) -> tensor<2x2xui32>
   // CPU-NEXT:    %1 = stablehlo.reshape %0 : (tensor<2x2xui32>) -> tensor<4xui32>
   // CPU-NEXT:    %2 = stablehlo.slice %1 [0:1] : (tensor<4xui32>) -> tensor<1xui32>
@@ -332,7 +334,7 @@ module {
   // CPU-NEXT:    %14 = stablehlo.broadcast_in_dim %9, dims = [] : (tensor<ui32>) -> tensor<3xui32>
   // CPU-NEXT:    %15 = stablehlo.xor %11, %12 : tensor<3xui32>
   // CPU-NEXT:    %16 = stablehlo.xor %15, %c_13 : tensor<3xui32>
-  // CPU-NEXT:    %17 = stablehlo.add %10, %11 : tensor<3xui32>
+  // CPU-NEXT:    %17 = stablehlo.add %c_14, %11 : tensor<3xui32>
   // CPU-NEXT:    %18 = stablehlo.add %10, %12 : tensor<3xui32>
   // CPU-NEXT:    %19 = stablehlo.add %17, %18 : tensor<3xui32>
   // CPU-NEXT:    %20 = stablehlo.subtract %c_11, %c_12 : tensor<3xui32>
@@ -459,7 +461,7 @@ module {
   // CPU-NEXT:    %141 = stablehlo.add %140, %c : tensor<3xui32>
   // CPU-NEXT:    %142 = stablehlo.xor %13, %14 : tensor<3xui32>
   // CPU-NEXT:    %143 = stablehlo.xor %142, %c_13 : tensor<3xui32>
-  // CPU-NEXT:    %144 = stablehlo.add %10, %13 : tensor<3xui32>
+  // CPU-NEXT:    %144 = stablehlo.add %c_14, %13 : tensor<3xui32>
   // CPU-NEXT:    %145 = stablehlo.add %10, %14 : tensor<3xui32>
   // CPU-NEXT:    %146 = stablehlo.add %144, %145 : tensor<3xui32>
   // CPU-NEXT:    %147 = stablehlo.shift_left %145, %c_12 : tensor<3xui32>
