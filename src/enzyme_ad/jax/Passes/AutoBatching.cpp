@@ -146,12 +146,8 @@ func::FuncOp CreateWrapperUnbatchedFunction(
 
   Value result = rewriter.clone(*op, mapper)->getResult(0);
   if (outShape.has_value()) {
-    result = stablehlo::ReshapeOp::create(
-        rewriter, op->getLoc(),
-        RankedTensorType::get(
-            outShape.value(),
-            cast<RankedTensorType>(result.getType()).getElementType()),
-        result);
+    result = stablehlo::ReshapeOpCreate(rewriter, op->getLoc(), result,
+                                        outShape.value());
   }
   func::ReturnOp::create(rewriter, op->getLoc(), ValueRange(result));
 
@@ -191,9 +187,14 @@ void ConstructAndExtractBatchOperands(
         concatOperands[idx] = slice.sliceOp.getResult();
       }
       auto sliceDim = batchInfo->slices[0].dimensions[0];
-      // TODO: try fusing with the concat slice helper
-      Value concatResult = stablehlo::ConcatenateOp::create(
-          rewriter, loc, concatOperands, sliceDim);
+
+      SmallVector<Value> newConcatOperands;
+      auto canSimplify = stablehlo::concatSliceSimplify(
+          rewriter, concatOperands, sliceDim, newConcatOperands);
+      Value concatResult = stablehlo::ConcatenateOpCreate(
+          rewriter, loc,
+          canSimplify.succeeded() ? newConcatOperands : concatOperands,
+          sliceDim);
 
       auto nbatchSize = static_cast<int64_t>(batchInfo->slices.size());
       auto resTy = cast<RankedTensorType>(concatResult.getType());
@@ -208,9 +209,8 @@ void ConstructAndExtractBatchOperands(
         permutation[i] = i;
       }
 
-      Value newOperand = stablehlo::TransposeOp::create(
-          rewriter, loc, concatResult,
-          rewriter.getDenseI64ArrayAttr(permutation));
+      Value newOperand = stablehlo::TransposeOpCreate(
+          rewriter, loc, concatResult, permutation);
 
       bool needsReshape = false;
       SmallVector<int64_t> outShape;
@@ -218,6 +218,7 @@ void ConstructAndExtractBatchOperands(
         if (batchInfo->slices[0].explicitReshapeShape.has_value()) {
           needsReshape = true;
           outShape = batchInfo->slices[0].explicitReshapeShape.value();
+          outShape.insert(outShape.begin(), nbatchSize);
         }
       } else {
         needsReshape = true;
@@ -227,10 +228,8 @@ void ConstructAndExtractBatchOperands(
       }
 
       if (needsReshape) {
-        newOperand = stablehlo::ReshapeOp::create(
-            rewriter, loc,
-            RankedTensorType::get(outShape, resTy.getElementType()),
-            newOperand);
+        newOperand =
+            stablehlo::ReshapeOpCreate(rewriter, loc, newOperand, outShape);
       }
 
       liftingModes.push_back(BatchLiftingMode::DEFINED_OUTSIDE_WHILE);
@@ -245,18 +244,13 @@ void ConstructAndExtractBatchOperands(
         outputShape.insert(outputShape.begin(), 1);
 
         // expand the batch dim (== 0) to `1`
-        auto newReshapeOp = stablehlo::ReshapeOp::create(
-            rewriter, loc,
-            RankedTensorType::get(outputShape, inputType.getElementType()),
-            operand);
-        newConcatOperands.push_back(newReshapeOp.getResult());
+        newConcatOperands.push_back(
+            stablehlo::ReshapeOpCreate(rewriter, loc, operand, outputShape));
       }
 
-      auto newConcatOp =
-          stablehlo::ConcatenateOp::create(rewriter, loc, newConcatOperands, 0);
-
       liftingModes.push_back(BatchLiftingMode::DEFINED_OUTSIDE_WHILE);
-      operands.push_back(newConcatOp.getResult());
+      operands.push_back(
+          stablehlo::ConcatenateOpCreate(rewriter, loc, newConcatOperands, 0));
     }
   }
 }
@@ -283,10 +277,16 @@ bool allOpsAreUnique(const SmallVector<Operation *> &ops) {
 // dim == -1 => ignore the dimension check
 bool CheckIsValidForBatching(
     stablehlo::ReshapeOp op, int64_t dim,
-    llvm::SmallVectorImpl<int64_t> &intermediateInsertions) {
-  auto insertionDims = findReshapeInsertionDims(
-      cast<RankedTensorType>(op.getOperand().getType()),
-      cast<RankedTensorType>(op.getType()));
+    llvm::SmallVectorImpl<int64_t> &intermediateInsertions,
+    bool checkInsertion) {
+  auto inTy = cast<RankedTensorType>(op.getOperand().getType());
+  auto outTy = cast<RankedTensorType>(op.getType());
+
+  if (!checkInsertion) {
+    std::swap(inTy, outTy);
+  }
+
+  auto insertionDims = findReshapeInsertionDims(inTy, outTy);
   if (insertionDims.empty()) {
     return false;
   }
@@ -304,7 +304,12 @@ bool CheckIsValidForBatching(
 
 bool CheckIsValidForBatching(
     stablehlo::BroadcastInDimOp op, int64_t dim,
-    llvm::SmallVectorImpl<int64_t> &intermediateInsertions) {
+    llvm::SmallVectorImpl<int64_t> &intermediateInsertions,
+    bool checkInsertion) {
+  if (!checkInsertion) {
+    return false; // bcast in dim cannot perform deletion
+  }
+
   auto inputType = cast<RankedTensorType>(op.getOperand().getType());
   auto outputType = cast<RankedTensorType>(op.getType());
 
@@ -438,7 +443,7 @@ LogicalResult ConcatInsertDimToBatchBase::matchAndRewriteImpl(
             .Case<stablehlo::ReshapeOp, stablehlo::BroadcastInDimOp>(
                 [&](auto op) {
                   return ::utils::CheckIsValidForBatching(
-                      op, concatDim, intermediateInsertions);
+                      op, concatDim, intermediateInsertions, true);
                 })
             .Default([](auto op) { return false; });
 
@@ -558,11 +563,14 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
                   [&](auto op) {
                     auto res = op.getResult();
                     preceedingOp = op;
-                    if (::utils::CheckIsValidForBatching(
-                            op, -1, intermediateInsertions) &&
-                        res.hasOneUse()) {
+                    if (res.hasOneUse() &&
+                        ::utils::CheckIsValidForBatching(
+                            op, -1, intermediateInsertions, false)) {
                       candidateTargetOp =
                           isValidTargetOp(*res.getUsers().begin());
+                      if (candidateTargetOp) {
+                        return true;
+                      }
                       return true;
                     }
                     return false;
@@ -1039,9 +1047,8 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
       for (size_t i = sliceDim[0] + 1; i < DSType.getRank(); i++)
         permutation[i] = i;
 
-      Value newOperand = stablehlo::TransposeOp::create(
-          rewriter, whileOp->getLoc(), newSlice,
-          rewriter.getDenseI64ArrayAttr(permutation));
+      Value newOperand = stablehlo::TransposeOpCreate(
+          rewriter, whileOp->getLoc(), newSlice, permutation);
 
       bool applyReshape = true;
       SmallVector<int64_t> reshapeShape;
@@ -1060,10 +1067,8 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
       }
 
       if (applyReshape) {
-        newOperand = stablehlo::ReshapeOp::create(
-            rewriter, whileOp->getLoc(),
-            RankedTensorType::get(reshapeShape, operandType.getElementType()),
-            newOperand);
+        newOperand = stablehlo::ReshapeOpCreate(rewriter, whileOp->getLoc(),
+                                                newOperand, reshapeShape);
       }
 
       newOperands.push_back(newOperand);

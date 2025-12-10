@@ -982,6 +982,33 @@ Value copyTriangularPart(OpBuilder &builder, Value input,
 
 bool broadcastInDimIsReshape(BroadcastInDimOp op);
 
+bool canMergeSlicesAlongAxis(int dimension, ArrayRef<int64_t> sliceStarts,
+                             ArrayRef<int64_t> otherSliceStarts,
+                             ArrayRef<int64_t> sliceLimits,
+                             ArrayRef<int64_t> otherSliceLimits,
+                             ArrayRef<int64_t> sliceStrides,
+                             ArrayRef<int64_t> otherSliceStrides);
+
+bool canMergeSlicesAlongAxis(int dimension, stablehlo::SliceOp slice,
+                             stablehlo::SliceOp otherSlice);
+
+stablehlo::ConcatenateOp lowerWrap(enzymexla::WrapOp wrap,
+                                   PatternRewriter &rewriter, bool replace);
+
+LogicalResult concatSliceSimplify(PatternRewriter &rewriter,
+                                  SmallVectorImpl<Value> &operands, int64_t dim,
+                                  SmallVectorImpl<Value> &newOperands);
+
+// these add additional checks that prevent no-op creation
+Value ConcatenateOpCreate(OpBuilder &builder, Location loc,
+                          ArrayRef<Value> inputs, int64_t dimension);
+
+Value ReshapeOpCreate(OpBuilder &builder, Location loc, Value input,
+                      ArrayRef<int64_t> shape);
+
+Value TransposeOpCreate(OpBuilder &builder, Location loc, Value input,
+                        ArrayRef<int64_t> permutation);
+
 } // namespace stablehlo
 
 } // namespace mlir

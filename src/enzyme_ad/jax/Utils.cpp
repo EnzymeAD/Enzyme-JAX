@@ -30,6 +30,7 @@
 #include "llvm/ADT/SetVector.h"
 #include "llvm/Support/Debug.h"
 
+#include "shardy/dialect/sdy/ir/utils.h"
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
@@ -1679,6 +1680,209 @@ bool broadcastInDimIsReshape(BroadcastInDimOp op) {
   }
 
   return true;
+}
+
+bool canMergeSlicesAlongAxis(int dimension, ArrayRef<int64_t> sliceStarts,
+                             ArrayRef<int64_t> otherSliceStarts,
+                             ArrayRef<int64_t> sliceLimits,
+                             ArrayRef<int64_t> otherSliceLimits,
+                             ArrayRef<int64_t> sliceStrides,
+                             ArrayRef<int64_t> otherSliceStrides) {
+  bool canMerge = true;
+
+  for (int d = 0, ndims = sliceStarts.size(); d < ndims; ++d) {
+    if (d == dimension) {
+      canMerge &= sliceLimits[d] == otherSliceStarts[d] &&
+                  sliceStrides[d] == otherSliceStrides[d];
+    } else {
+      canMerge &= sliceStarts[d] == otherSliceStarts[d] &&
+                  sliceLimits[d] == otherSliceLimits[d] &&
+                  sliceStrides[d] == otherSliceStrides[d];
+    }
+  }
+  return canMerge;
+}
+
+bool canMergeSlicesAlongAxis(int dimension, stablehlo::SliceOp slice,
+                             stablehlo::SliceOp otherSlice) {
+  if (otherSlice.getOperand() != slice.getOperand())
+    return false;
+
+  // Check that both slices are contiguous only in dim
+  ArrayRef<int64_t> sliceStarts = slice.getStartIndices(),
+                    otherSliceStarts = otherSlice.getStartIndices(),
+                    sliceLimits = slice.getLimitIndices(),
+                    otherSliceLimits = otherSlice.getLimitIndices(),
+                    sliceStrides = slice.getStrides(),
+                    otherSliceStrides = otherSlice.getStrides();
+
+  return canMergeSlicesAlongAxis(dimension, sliceStarts, otherSliceStarts,
+                                 sliceLimits, otherSliceLimits, sliceStrides,
+                                 otherSliceStrides);
+}
+
+stablehlo::ConcatenateOp lowerWrap(enzymexla::WrapOp wrap,
+                                   PatternRewriter &rewriter, bool replace) {
+  // sl0[end-lhs:end], mid, sl1[0:rhs]
+  auto wrapOpT = cast<RankedTensorType>(wrap.getOperand().getType());
+  SmallVector<int64_t> strides(wrapOpT.getShape().size(), 1);
+
+  SmallVector<Value> args;
+
+  auto shard = sdy::getShardingPerValue(wrap);
+
+  if (wrap.getLhs() != 0) {
+    SmallVector<int64_t> sl0_starts(wrapOpT.getShape().size(), 0);
+    SmallVector<int64_t> sl0_ends(wrapOpT.getShape());
+
+    sl0_starts[wrap.getDimension()] =
+        wrapOpT.getShape()[wrap.getDimension()] - wrap.getLhs();
+
+    auto sl0 =
+        stablehlo::SliceOp::create(rewriter, wrap.getLoc(), wrap.getOperand(),
+                                   sl0_starts, sl0_ends, strides);
+    if (shard)
+      sdy::setShardings(sl0, shard);
+
+    args.push_back(sl0);
+  }
+
+  args.push_back(wrap.getOperand());
+
+  if (wrap.getRhs() != 0) {
+    SmallVector<int64_t> sl1_starts(wrapOpT.getShape().size(), 0);
+    SmallVector<int64_t> sl1_ends(wrapOpT.getShape());
+
+    sl1_ends[wrap.getDimension()] = wrap.getRhs();
+    auto sl1 =
+        stablehlo::SliceOp::create(rewriter, wrap.getLoc(), wrap.getOperand(),
+                                   sl1_starts, sl1_ends, strides);
+    if (shard)
+      sdy::setShardings(sl1, shard);
+
+    args.push_back(sl1);
+  }
+
+  auto newConcat = stablehlo::ConcatenateOp::create(rewriter, wrap.getLoc(),
+                                                    args, wrap.getDimension());
+  if (replace)
+    rewriter.replaceOp(wrap, newConcat);
+  if (shard)
+    sdy::setShardings(newConcat, shard);
+  return newConcat;
+}
+
+LogicalResult concatSliceSimplify(PatternRewriter &rewriter,
+                                  SmallVectorImpl<Value> &operands, int64_t dim,
+                                  SmallVectorImpl<Value> &newOperands) {
+  bool changed = false;
+  for (size_t i = 0, e = operands.size(); i < e; ++i) {
+    auto operand = operands[i];
+    auto slice = operand.getDefiningOp<stablehlo::SliceOp>();
+
+    if (!slice) {
+      newOperands.push_back(operand);
+      continue;
+    }
+
+    while (i + 1 < e) {
+      if (auto otherSlice =
+              operands[i + 1].getDefiningOp<stablehlo::SliceOp>()) {
+        if (canMergeSlicesAlongAxis(dim, slice, otherSlice)) {
+          slice = stablehlo::SliceOp::create(
+              rewriter, slice->getLoc(), slice.getOperand(),
+              slice.getStartIndices(), otherSlice.getLimitIndices(),
+              slice.getStrides());
+          changed = true;
+          i++;
+          continue;
+        } else {
+          break;
+        }
+      }
+
+      if (auto otherWrap = operands[i + 1].getDefiningOp<enzymexla::WrapOp>()) {
+        auto wrapSlice =
+            otherWrap.getOperand().getDefiningOp<stablehlo::SliceOp>();
+        if (wrapSlice && wrapSlice.getOperand() == slice.getOperand() &&
+            otherWrap.getLhs() != 0) {
+          SmallVector<int64_t> wrapStarts =
+              llvm::to_vector(wrapSlice.getStartIndices());
+          SmallVector<int64_t> wrapLimits =
+              llvm::to_vector(wrapSlice.getLimitIndices());
+          if (wrapSlice.getStrides()[dim] == 1) {
+            wrapStarts[dim] = wrapLimits[dim] - otherWrap.getLhs();
+          }
+          if (canMergeSlicesAlongAxis(dim, slice.getStartIndices(), wrapStarts,
+                                      slice.getLimitIndices(), wrapLimits,
+                                      slice.getStrides(),
+                                      wrapSlice.getStrides())) {
+
+            changed = true;
+            auto c2 = lowerWrap(otherWrap, rewriter, /*replace*/ false);
+            auto newSlice = stablehlo::SliceOp::create(
+                rewriter, slice->getLoc(), slice.getOperand(),
+                slice.getStartIndices(), wrapLimits, slice.getStrides());
+            newOperands.push_back(newSlice);
+            for (int i = 1; i < c2.getOperands().size(); i++) {
+              newOperands.push_back(c2.getOperands()[i]);
+            }
+            i++;
+            slice = nullptr;
+            break;
+          } else {
+            break;
+          }
+        }
+      }
+      break;
+    }
+
+    if (slice) {
+      newOperands.push_back(slice.getResult());
+    }
+  }
+
+  return changed ? success() : failure();
+}
+
+Value ConcatenateOpCreate(OpBuilder &builder, Location loc,
+                          ArrayRef<Value> inputs, int64_t dimension) {
+  assert(inputs.size() >= 1);
+
+  if (inputs.size() == 1) {
+    if (auto defSliceOp = inputs[0].getDefiningOp<stablehlo::SliceOp>()) {
+      // special case if we are using full slices
+      if (defSliceOp.getOperand().getType() == defSliceOp.getType()) {
+        return defSliceOp.getOperand();
+      }
+    }
+    return inputs[0];
+  }
+
+  return stablehlo::ConcatenateOp::create(builder, loc, inputs, dimension);
+}
+
+Value ReshapeOpCreate(OpBuilder &builder, Location loc, Value input,
+                      ArrayRef<int64_t> shape) {
+  auto inputTy = cast<RankedTensorType>(input.getType());
+  if (inputTy.getShape() == shape) {
+    return input;
+  }
+
+  return stablehlo::ReshapeOp::create(
+      builder, loc, RankedTensorType::get(shape, inputTy.getElementType()),
+      input);
+}
+
+Value TransposeOpCreate(OpBuilder &builder, Location loc, Value input,
+                        ArrayRef<int64_t> permutation) {
+  if (llvm::is_sorted(permutation)) {
+    return input;
+  }
+
+  return stablehlo::TransposeOp::create(
+      builder, loc, input, builder.getDenseI64ArrayAttr(permutation));
 }
 
 } // namespace stablehlo
