@@ -180,7 +180,6 @@ struct LowerEnzymeXLAMPIPass
     GreedyRewriteConfig config;
     if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
                                             config))) {
-      printf("FAILEEEEDDDDDD\n");
       signalPassFailure();
     }
   }
