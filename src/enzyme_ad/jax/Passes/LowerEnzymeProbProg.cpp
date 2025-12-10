@@ -82,6 +82,16 @@ static std::string getOrCreateWrapper(const std::string &baseFnName,
   return wrapperName;
 }
 
+static Value conditionalDump(OpBuilder &builder, Location loc, Value value,
+                             StringRef label, bool debugDump) {
+  if (debugDump) {
+    return enzyme::DumpOp::create(builder, loc, value.getType(), value,
+                                  builder.getStringAttr(label))
+        .getOutput();
+  }
+  return value;
+}
+
 // Reference (_make_rotate_left):
 // https://github.com/jax-ml/jax/blob/3aa8a6b0d4de5e554f45db638b0f3056e4c520f1/jax/_src/prng.py#L832
 static Value createRotateLeft(OpBuilder &builder, Location loc, Value x,
@@ -2139,10 +2149,12 @@ struct RandomSplitOpConversion
   using OpConversionPattern::OpConversionPattern;
 
   std::string backend;
-  RandomSplitOpConversion(std::string backend, TypeConverter &typeConverter,
-                          MLIRContext *context, PatternBenefit benefit = 1)
-      : OpConversionPattern(typeConverter, context, benefit), backend(backend) {
-  }
+  bool debugDump;
+  RandomSplitOpConversion(std::string backend, bool debugDump,
+                          TypeConverter &typeConverter, MLIRContext *context,
+                          PatternBenefit benefit = 1)
+      : OpConversionPattern(typeConverter, context, benefit), backend(backend),
+        debugDump(debugDump) {}
 
   LogicalResult
   matchAndRewrite(enzyme::RandomSplitOp op, OpAdaptor adaptor,
@@ -2150,6 +2162,7 @@ struct RandomSplitOpConversion
     auto rngState = adaptor.getRngState();
     auto rngStateType = cast<RankedTensorType>(rngState.getType());
     auto elemType = cast<IntegerType>(rngStateType.getElementType());
+    auto loc = op.getLoc();
 
     // Check RNG state is a tensor<2xui64>
     if (rngStateType.getShape().size() != 1 ||
@@ -2168,10 +2181,9 @@ struct RandomSplitOpConversion
     // tensor<2xui64> -> tensor<4xui32>
     // little endian [low32([0]), high32([0]), low32([1]), high32([1])]
     auto bitcastTo2x2 = stablehlo::BitcastConvertOp::create(
-        rewriter, op.getLoc(), ui32x2x2Type, rngState);
-    auto reshapedKey = stablehlo::ReshapeOp::create(rewriter, op.getLoc(),
-                                                    ui32x4Type, bitcastTo2x2);
-
+        rewriter, loc, ui32x2x2Type, rngState);
+    auto reshapedKey =
+        stablehlo::ReshapeOp::create(rewriter, loc, ui32x4Type, bitcastTo2x2);
     auto ui32TensorType = RankedTensorType::get({}, ui32Type);
     auto ui32x1Type = RankedTensorType::get({1}, ui32Type);
 
@@ -2205,33 +2217,31 @@ struct RandomSplitOpConversion
                                    rewriter.getDenseI64ArrayAttr({4}),
                                    rewriter.getDenseI64ArrayAttr({1})));
 
-    // Construct counter [0, 1, ..., numOutputs-1]
+    // Construct counters
     auto counterType =
         RankedTensorType::get({static_cast<int64_t>(numOutputs)}, ui32Type);
-    auto counter = stablehlo::IotaOp::create(rewriter, op.getLoc(), counterType,
+
+    auto counts1 = stablehlo::ConstantOp::create(
+        rewriter, loc, counterType,
+        DenseElementsAttr::get(counterType,
+                               rewriter.getIntegerAttr(ui32Type, 0)));
+    auto counts2 = stablehlo::IotaOp::create(rewriter, loc, counterType,
                                              rewriter.getI64IntegerAttr(0));
 
-    // Broadcast keys to match `counter`
+    // Broadcast keys
     auto key0_0_bcast = stablehlo::BroadcastInDimOp::create(
-        rewriter, op.getLoc(), counterType, key0_0,
-        rewriter.getDenseI64ArrayAttr({}));
+        rewriter, loc, counterType, key0_0, rewriter.getDenseI64ArrayAttr({}));
     auto key0_1_bcast = stablehlo::BroadcastInDimOp::create(
-        rewriter, op.getLoc(), counterType, key0_1,
-        rewriter.getDenseI64ArrayAttr({}));
+        rewriter, loc, counterType, key0_1, rewriter.getDenseI64ArrayAttr({}));
     auto key1_0_bcast = stablehlo::BroadcastInDimOp::create(
-        rewriter, op.getLoc(), counterType, key1_0,
-        rewriter.getDenseI64ArrayAttr({}));
+        rewriter, loc, counterType, key1_0, rewriter.getDenseI64ArrayAttr({}));
     auto key1_1_bcast = stablehlo::BroadcastInDimOp::create(
-        rewriter, op.getLoc(), counterType, key1_1,
-        rewriter.getDenseI64ArrayAttr({}));
+        rewriter, loc, counterType, key1_1, rewriter.getDenseI64ArrayAttr({}));
 
-    // Hash with key0_0 and key0_1 to produce output[i][0]
-    auto [h0_0, h0_1] = threefry2x32Hash(rewriter, op.getLoc(), key0_0_bcast,
-                                         key0_1_bcast, counter, counter);
-
-    // Hash with key1_0 and key1_1 to produce output[i][1]
-    auto [h1_0, h1_1] = threefry2x32Hash(rewriter, op.getLoc(), key1_0_bcast,
-                                         key1_1_bcast, counter, counter);
+    auto [h0_0, h0_1] = threefry2x32Hash(rewriter, loc, key0_0_bcast,
+                                         key0_1_bcast, counts1, counts2);
+    auto [h1_0, h1_1] = threefry2x32Hash(rewriter, loc, key1_0_bcast,
+                                         key1_1_bcast, counts1, counts2);
 
     // Compute output keys
     //   output[i][0] = combine(h0_0[i], h0_1[i])
@@ -2239,22 +2249,22 @@ struct RandomSplitOpConversion
     SmallVector<Value> outputKeys;
     for (size_t i = 0; i < numOutputs; ++i) {
       auto h0_0_i = stablehlo::SliceOp::create(
-          rewriter, op.getLoc(), ui32x1Type, h0_0,
+          rewriter, loc, ui32x1Type, h0_0,
           rewriter.getDenseI64ArrayAttr({static_cast<int64_t>(i)}),
           rewriter.getDenseI64ArrayAttr({static_cast<int64_t>(i + 1)}),
           rewriter.getDenseI64ArrayAttr({1}));
       auto h0_1_i = stablehlo::SliceOp::create(
-          rewriter, op.getLoc(), ui32x1Type, h0_1,
+          rewriter, loc, ui32x1Type, h0_1,
           rewriter.getDenseI64ArrayAttr({static_cast<int64_t>(i)}),
           rewriter.getDenseI64ArrayAttr({static_cast<int64_t>(i + 1)}),
           rewriter.getDenseI64ArrayAttr({1}));
       auto h1_0_i = stablehlo::SliceOp::create(
-          rewriter, op.getLoc(), ui32x1Type, h1_0,
+          rewriter, loc, ui32x1Type, h1_0,
           rewriter.getDenseI64ArrayAttr({static_cast<int64_t>(i)}),
           rewriter.getDenseI64ArrayAttr({static_cast<int64_t>(i + 1)}),
           rewriter.getDenseI64ArrayAttr({1}));
       auto h1_1_i = stablehlo::SliceOp::create(
-          rewriter, op.getLoc(), ui32x1Type, h1_1,
+          rewriter, loc, ui32x1Type, h1_1,
           rewriter.getDenseI64ArrayAttr({static_cast<int64_t>(i)}),
           rewriter.getDenseI64ArrayAttr({static_cast<int64_t>(i + 1)}),
           rewriter.getDenseI64ArrayAttr({1}));
@@ -2263,14 +2273,13 @@ struct RandomSplitOpConversion
       SmallVector<Value> parts = {h0_0_i, h0_1_i, h1_0_i, h1_1_i};
       auto concatType = RankedTensorType::get({4}, ui32Type);
       auto concated = stablehlo::ConcatenateOp::create(
-          rewriter, op.getLoc(), concatType, parts,
-          rewriter.getI64IntegerAttr(0));
+          rewriter, loc, concatType, parts, rewriter.getI64IntegerAttr(0));
 
       // Restore: tensor<4xui32> -> tensor<2xui64>
-      auto reshaped = stablehlo::ReshapeOp::create(rewriter, op.getLoc(),
-                                                   ui32x2x2Type, concated);
+      auto reshaped =
+          stablehlo::ReshapeOp::create(rewriter, loc, ui32x2x2Type, concated);
       auto outputKey = stablehlo::BitcastConvertOp::create(
-          rewriter, op.getLoc(), rngStateType, reshaped);
+          rewriter, loc, rngStateType, reshaped);
 
       outputKeys.push_back(outputKey);
     }
@@ -2845,11 +2854,12 @@ struct LowerProbProgToStableHLOPass
 
     RewritePatternSet patterns(context);
 
-    patterns.add<RandomOpConversion, RandomSplitOpConversion,
-                 CholeskySolveOpConversion, DotOpConversion,
+    patterns.add<RandomOpConversion, CholeskySolveOpConversion, DotOpConversion,
                  LogAddExpOpConversion, UnflattenSliceOpConversion,
                  ForLoopOpConversion, WhileLoopOpConversion>(
         backend, typeConverter, context);
+    patterns.add<RandomSplitOpConversion>(backend, debugDump, typeConverter,
+                                          context);
 
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns)))) {
