@@ -135,6 +135,14 @@ struct MPICommRankOpLowering
           op.getLoc(), attr);
       
       // Call the LLVM function with enzymexla.jit_call
+      SmallVector<Attribute> aliases;
+      aliases.push_back(stablehlo::OutputOperandAliasAttr::get(
+          ctx, 
+          /*output_operand_aliases=*/std::vector<int64_t>{}, 
+          /*operand_index=*/0, 
+          /*operand_tuple_indices=*/std::vector<int64_t>{})
+      );
+
       auto jitCall = enzymexla::JITCallOp::create(
           rewriter, 
           op.getLoc(),
@@ -146,7 +154,7 @@ struct MPICommRankOpLowering
           /*result_layouts=*/nullptr,
           /*arg_attrs=*/nullptr,
           /*res_attrs=*/nullptr,
-          /*output_operand_aliases=*/nullptr,
+          /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
           /*xla_side_effect_free=*/nullptr);
 
       rewriter.replaceOp(op, jitCall);
@@ -159,64 +167,6 @@ struct MPICommRankOpLowering
   }
 
 };
-
-// //===----------------------------------------------------------------------===//
-// // CommRankOpLowering
-// //===----------------------------------------------------------------------===//
-
-// struct CommRankOpLowering : public ConvertOpToLLVMPattern<mpi::CommRankOp> {
-//   using ConvertOpToLLVMPattern::ConvertOpToLLVMPattern;
-
-//   LogicalResult
-//   matchAndRewrite(mpi::CommRankOp op, OpAdaptor adaptor,
-//                   ConversionPatternRewriter &rewriter) const override {
-//     // get some helper vars
-//     Location loc = op.getLoc();
-//     MLIRContext *context = rewriter.getContext();
-//     Type i32 = rewriter.getI32Type();
-
-//     // ptrType `!llvm.ptr`
-//     Type ptrType = LLVM::LLVMPointerType::get(context);
-
-//     // grab a reference to the global module op:
-//     auto moduleOp = op->getParentOfType<ModuleOp>();
-
-//     auto mpiTraits = MPIImplTraits::get(moduleOp);
-//     // get communicator
-//     Value comm = mpiTraits->castComm(loc, rewriter, adaptor.getComm());
-
-//     // LLVM Function type representing `i32 MPI_Comm_rank(ptr, ptr)`
-//     auto rankFuncType =
-//         LLVM::LLVMFunctionType::get(i32, {comm.getType(), ptrType});
-//     // get or create function declaration:
-//     LLVM::LLVMFuncOp initDecl = getOrDefineFunction(
-//         moduleOp, loc, rewriter, "MPI_Comm_rank", rankFuncType);
-
-//     // replace with function call
-//     auto one = LLVM::ConstantOp::create(rewriter, loc, i32, 1);
-//     auto rankptr = LLVM::AllocaOp::create(rewriter, loc, ptrType, i32, one);
-//     auto callOp = LLVM::CallOp::create(rewriter, loc, initDecl,
-//                                        ValueRange{comm, rankptr.getRes()});
-
-//     // load the rank into a register
-//     auto loadedRank =
-//         LLVM::LoadOp::create(rewriter, loc, i32, rankptr.getResult());
-
-//     // if retval is checked, replace uses of retval with the results from the
-//     // call op
-//     SmallVector<Value> replacements;
-//     if (op.getRetval())
-//       replacements.push_back(callOp.getResult());
-
-//     // replace all uses, then erase op
-//     replacements.push_back(loadedRank.getRes());
-//     rewriter.replaceOp(op, replacements);
-
-//     return success();
-//   }
-// };
-
-// //===----------------------------------------------------------------------===//
 
 
 struct LowerEnzymeXLAMPIPass
