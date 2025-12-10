@@ -183,7 +183,8 @@ PartialSymmetryAnnotation PartialSymmetryAnnotation::propagateElementwiseBinary(
       }
     }
     if (changed_dims == 2) {
-      result.uniteDimensionSets(resultRank, changed_dim, rhsDimToLhs[changed_dim]);
+      result.uniteDimensionSets(resultRank, changed_dim,
+                                rhsDimToLhs[changed_dim]);
     }
     result.canonicalize();
   }
