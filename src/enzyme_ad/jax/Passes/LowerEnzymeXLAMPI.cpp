@@ -35,27 +35,25 @@ struct MPICommRankOpLowering
 
   LogicalResult matchAndRewrite(enzymexla::MPICommRankOp op,
                                 PatternRewriter &rewriter) const override {
-    auto ctx = op->getContext();
+    auto context = op->getContext();
 
     if (backend == "cpu") {
 
       auto moduleOp = op->getParentOfType<ModuleOp>();
 
-      auto llvmPtrType = LLVM::LLVMPointerType::get(ctx);
-      auto llvmVoidType = LLVM::LLVMVoidType::get(ctx);
+      auto llvmPtrType = LLVM::LLVMPointerType::get(context);
+      auto llvmVoidType = LLVM::LLVMVoidType::get(context);
 
-      auto i32Type = IntegerType::get(rewriter.getContext(), 32);
+      auto i32Type = IntegerType::get(context, 32);
 
-      std::string fn;
-      fn = "MPI_Comm_rank";
+      std::string mpiFunctionName = "MPI_Comm_rank";
 
-      // For now we just hard code MPI_COMM_WORLD as the communicator. 
+      // For now we just hard code MPI_COMM_WORLD as the communicator.
       // TODO make this more flexible
-      std::string comm;
-      comm = "MPI_COMM_WORLD";
+      std::string communicatorName = "MPI_COMM_WORLD";
 
       // Generate the enzymexla_wrapper_MPI_Comm_rank LLVM function body
-      std::string fnName = "enzymexla_wrapper_" + fn;
+      std::string wrapperFunctionName = "enzymexla_wrapper_" + mpiFunctionName;
       {
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(moduleOp.getBody());
@@ -66,49 +64,49 @@ struct MPICommRankOpLowering
             {llvmPtrType},   // parameter types TODO how to add {enzymexla.memory_effects = ["read", "write", "allocate", "free"]}
             false);          // is variadic: false
 
-        auto func = rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), fnName, funcType);
+        auto wrapperFunc = rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), wrapperFunctionName, funcType);
 
-        Block *entryBlock = func.addEntryBlock(rewriter);
+        Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
         rewriter.setInsertionPointToStart(entryBlock);
 
         // Get the first (and only) argument of the function
-        Value funcArg = entryBlock->getArgument(0);
+        Value rankOutputPtr = entryBlock->getArgument(0);
 
         // Get the address of the communicator
         Value addressOfComm = rewriter.create<LLVM::AddressOfOp>(
           op.getLoc(),
           llvmPtrType,
-          comm
+          communicatorName
         );
 
         // TODO error checking
-        // MPI_Comm_rank returns i32 error code which we're ignorign here
+        // MPI_Comm_rank returns i32 error code which we're ignoring here
         rewriter.create<LLVM::CallOp>(
-            op.getLoc(), 
+            op.getLoc(),
             TypeRange{i32Type},
-            SymbolRefAttr::get(ctx, fn),
-            ValueRange{addressOfComm, funcArg});
+            SymbolRefAttr::get(context, mpiFunctionName),
+            ValueRange{addressOfComm, rankOutputPtr});
 
         rewriter.create<LLVM::ReturnOp>(op.getLoc(), ValueRange{});
       }
 
       // Insert MPI_Comm_rank function declaration if not already present
-      if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(fn)) {
+      if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(mpiFunctionName)) {
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(moduleOp.getBody());
 
         auto funcType = LLVM::LLVMFunctionType::get(
-            i32Type, 
-            {llvmPtrType, llvmPtrType}, 
+            i32Type,
+            {llvmPtrType, llvmPtrType},
             false
         );
 
-        rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), fn, funcType,
+        rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), mpiFunctionName, funcType,
                                  LLVM::Linkage::External);
       }
 
       // Insert MPI_COMM_WORLD declaration if not already present
-      if (!moduleOp.lookupSymbol<LLVM::GlobalOp>(comm)) {
+      if (!moduleOp.lookupSymbol<LLVM::GlobalOp>(communicatorName)) {
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(moduleOp.getBody());
 
@@ -117,38 +115,36 @@ struct MPICommRankOpLowering
           llvmPtrType,
           /*isConstant=*/true,
           LLVM::Linkage::External,
-          comm,
+          communicatorName,
           /*value=*/Attribute(),
           /*alignment=*/0,
           /*addrSpace=*/0
         );
       }
 
-      // Get the result type (it's a tensor<i32>)
+      // Create a placeholder dense tensor constant with arbitrary value
       auto resultType = op.getResult().getType();
-      
-      // Create a dense tensor constant with value 0
-      auto elementType = cast<RankedTensorType>(resultType).getElementType();
+      auto rankedTensorType = cast<RankedTensorType>(resultType);
+      auto elementType = rankedTensorType.getElementType();
       auto attr = DenseElementsAttr::get(
-          cast<RankedTensorType>(resultType),
+          rankedTensorType,
           rewriter.getIntegerAttr(elementType, 0));
-      
       auto placeholderValue = rewriter.create<arith::ConstantOp>(
           op.getLoc(), attr);
-      
+
       // Call the LLVM function with enzymexla.jit_call
       SmallVector<Attribute> aliases;
       aliases.push_back(stablehlo::OutputOperandAliasAttr::get(
-          ctx, 
-          /*output_operand_aliases=*/std::vector<int64_t>{}, 
-          /*operand_index=*/0, 
+          context,
+          /*output_operand_aliases=*/std::vector<int64_t>{},
+          /*operand_index=*/0,
           /*operand_tuple_indices=*/std::vector<int64_t>{})
       );
 
       auto jitCall = rewriter.create<enzymexla::JITCallOp>(
           op.getLoc(),
           TypeRange{resultType},
-          mlir::FlatSymbolRefAttr::get(ctx, fnName),
+          mlir::FlatSymbolRefAttr::get(context, wrapperFunctionName),
           ValueRange{placeholderValue},
           rewriter.getStringAttr(""),
           /*operand_layouts=*/nullptr,
