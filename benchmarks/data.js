@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1765426085003,
+  "lastUpdate": 1765435183413,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "avikpal@mit.edu",
-            "name": "Avik Pal",
-            "username": "avik-pal"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "9395a9c74963c26b7d653f08999ae5c71f763500",
-          "message": "fix: symm is BLAS not LAPACK (#1624)",
-          "timestamp": "2025-11-16T20:18:11-05:00",
-          "tree_id": "96094647d25c2e9ccc6001f2423cec7e768dfc11",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/9395a9c74963c26b7d653f08999ae5c71f763500"
-        },
-        "date": 1763346337226,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.000004472326103132218,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.0000043786630965769295,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001475851104012,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001428839714033,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2199,6 +2155,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001298194633,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "avikpal@mit.edu",
+            "name": "Avik Pal",
+            "username": "avik-pal"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "cbaec252c15d5f73684dd6bb0dddf22f97cc08f3",
+          "message": "fix: only raise ops with a single result (for now) (#1721)\n\n* fix: only raise ops with a single result (for now)\n\n* test: add lu as a test",
+          "timestamp": "2025-12-10T23:55:14-05:00",
+          "tree_id": "06e6a5f4e14625424c9dceecee67f3570d1ce7ef",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/cbaec252c15d5f73684dd6bb0dddf22f97cc08f3"
+        },
+        "date": 1765435182784,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004326745998696424,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004314442999020685,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001427497209006,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001392607529996,
             "unit": "s"
           }
         ]
