@@ -1,4 +1,5 @@
 #include "Dialect.h"
+#include "Ops.h"
 
 #include "mlir/IR/Builders.h"
 #include "llvm/ADT/TypeSwitch.h"
