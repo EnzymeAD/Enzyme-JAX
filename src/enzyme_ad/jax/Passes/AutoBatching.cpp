@@ -815,8 +815,9 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
 
   for (auto [value, affineIndexInfo] : affineIndexInfoMap) {
     for (auto user : value.getUsers()) {
-      if (user->getBlock() != &whileBody || seenOps.contains(user))
+      if (user->getBlock() != &whileBody || seenOps.contains(user)) {
         continue;
+      }
 
       seenOps.insert(user);
 
@@ -832,80 +833,61 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
     }
   }
 
-  bool anyOpRewritten = false;
-
-  // iota [idx] where iota starts at 0 and iter var also starts at 0
-  // replace this with idx
-  // If we do a successful rewrite here, we remove the DynamicSliceInfo from
-  // the candidateSlices vector (a later invocation will handle the rest)
-  SmallVector<DynamicSliceInfo> retainedSlices;
+  SmallVector<Value> newlyPropagated;
   for (auto [i, slice] : llvm::enumerate(candidateSlices)) {
     if (slice.dimensions.size() != 1) {
-      retainedSlices.push_back(slice);
       continue;
     }
-
     auto iotaDetection = detectIotaLikeTensor(slice.sliceOp.getOperand());
+    auto sliceDim = slice.dimensions[0];
 
-    if (iotaDetection &&
-        slice.dimensions[0] == iotaDetection.value().dimension) {
-      anyOpRewritten = true;
-
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPoint(slice.sliceOp);
-      Value newOperand = info.getInductionVariable();
+    if (iotaDetection && sliceDim == iotaDetection.value().dimension) {
       auto sliceType =
           cast<RankedTensorType>(slice.sliceOp.getResult().getType());
-      auto outElemType = sliceType.getElementType();
-      auto opElemType = cast<TensorType>(newOperand.getType()).getElementType();
-
-      // iotaTensor[i] = iotaStart + i
-      // indexing with `scale * indVar + offset`
-      // result = scale * indVar + (iotaStart + offset)
+      if (sliceType.getNumElements() != 1) {
+        continue;
+      }
 
       auto affineIndexInfo =
-          affineIndexInfoMap[slice.sliceOp
-                                 .getStartIndices()[slice.dimensions[0]]];
-
-      auto scalarType = RankedTensorType::get({}, opElemType);
-
-      if (!affineIndexInfo.scale.isOne()) {
-        newOperand = stablehlo::MulOp::create(
-            rewriter, slice.sliceOp.getLoc(),
-            stablehlo::ConstantOp::create(
-                rewriter, slice.sliceOp.getLoc(), scalarType,
-                cast<ElementsAttr>(makeAttr(
-                    scalarType, affineIndexInfo.scale.getSExtValue()))),
-            newOperand);
-      }
+          affineIndexInfoMap[slice.sliceOp.getStartIndices()[sliceDim]];
 
       auto indexOffset = affineIndexInfo.offset.getSExtValue();
       auto iotaStart = iotaDetection.value().start;
       auto offset = indexOffset + iotaStart;
 
-      if (offset != 0) {
-        newOperand = stablehlo::AddOp::create(
-            rewriter, slice.sliceOp.getLoc(), newOperand,
-            stablehlo::ConstantOp::create(
-                rewriter, slice.sliceOp.getLoc(), scalarType,
-                cast<ElementsAttr>(makeAttr(scalarType, offset))));
-      }
-
-      if (opElemType != outElemType) {
-        newOperand = stablehlo::ConvertOp::create(
-                         rewriter, slice.sliceOp.getLoc(),
-                         RankedTensorType::get({}, outElemType), newOperand)
-                         .getResult();
-      }
-
-      rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
-          slice.sliceOp, sliceType, newOperand,
-          rewriter.getDenseI64ArrayAttr({}));
-    } else {
-      retainedSlices.push_back(slice);
+      info.propagateAffineIndexInfo(
+          slice.sliceOp.getResult(),
+          WhileLoopInfo::AffineIndexInfo{
+              affineIndexInfo.scale,
+              llvm::APInt(affineIndexInfo.offset.getBitWidth(), offset),
+          },
+          newlyPropagated);
     }
   }
-  candidateSlices = std::move(retainedSlices);
+
+  affineIndexInfoMap = info.getAffineIndexInfo();
+
+  // we need to collect based on newly propagated values
+  for (auto value : newlyPropagated) {
+    auto affineIndexInfo = affineIndexInfoMap[value];
+    for (auto user : value.getUsers()) {
+      if (user->getBlock() != &whileBody || seenOps.contains(user)) {
+        continue;
+      }
+
+      seenOps.insert(user);
+
+      if (auto sliceOp = dyn_cast<stablehlo::DynamicSliceOp>(user)) {
+        auto result = isDynamicSliceValidForBatching(
+            sliceOp, affineIndexInfoMap, whileBody, whileOp);
+
+        if (isValidForBatchingResult(result.result)) {
+          candidateSlices.push_back(
+              DynamicSliceInfo{sliceOp, result.dimensions, false, false, {}});
+        }
+      }
+    }
+  }
 
   // Create a map of user operations to their corresponding dynamic slices
   llvm::MapVector<Operation *, SmallVector<DynamicSliceInfo>> userOpToSlicesMap;
@@ -945,7 +927,9 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
   }
 
   if (userOpToSlicesMap.empty())
-    return anyOpRewritten ? success() : failure();
+    return failure();
+
+  bool anyOpRewritten = false;
 
   for (auto &[op, slices] : userOpToSlicesMap) {
     bool avoidBatching =

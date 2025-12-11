@@ -224,11 +224,6 @@ bool WhileLoopInfo::isConstantValue(Value v, llvm::APInt &constVal) {
 void WhileLoopInfo::propagateAffineIndexInfo() {
   auto inductionVar = getInductionVariable();
 
-  SmallVector<Value> worklist;
-  DenseSet<Value> visited;
-
-  worklist.push_back(inductionVar);
-
   auto inductionType = inductionVar.getType();
   unsigned bitWidth = 64;
   if (auto tensorType = dyn_cast<RankedTensorType>(inductionType)) {
@@ -239,13 +234,29 @@ void WhileLoopInfo::propagateAffineIndexInfo() {
 
   llvm::APInt baseScaling(bitWidth, 1, true);
   llvm::APInt baseOffset(bitWidth, 0, true);
-  affineIndexInfo[inductionVar] = AffineIndexInfo{baseScaling, baseOffset};
+  SmallVector<Value> newPropagated;
+
+  propagateAffineIndexInfo(
+      inductionVar, AffineIndexInfo{baseScaling, baseOffset}, newPropagated);
+  return;
+}
+
+void WhileLoopInfo::propagateAffineIndexInfo(
+    Value v, AffineIndexInfo vInfo, SmallVectorImpl<Value> &newPropagated) {
+  SmallVector<Value> worklist;
+  worklist.push_back(v);
+  affineIndexInfo[v] = vInfo;
+
+  auto bitWidth = vInfo.scale.getBitWidth();
+  APInt baseScaling(vInfo.scale.getBitWidth(), 1, true);
+  APInt baseOffset(vInfo.offset.getBitWidth(), 0, true);
 
   while (!worklist.empty()) {
     auto cur = worklist.pop_back_val();
-    if (visited.contains(cur))
+    if (affineIndexPropagationVisited.contains(cur)) {
       continue;
-    visited.insert(cur);
+    }
+    affineIndexPropagationVisited.insert(cur);
 
     AffineIndexInfo curInfo = affineIndexInfo[cur];
 
@@ -284,10 +295,16 @@ void WhileLoopInfo::propagateAffineIndexInfo() {
       } else if (auto negOp = dyn_cast<stablehlo::NegOp>(user)) {
         newInfo = updateAffineIndexInfo(curInfo, -baseScaling, baseOffset);
         result = negOp.getResult();
+      } else if (auto reshapeOp = dyn_cast<stablehlo::ReshapeOp>(user)) {
+        if (cast<ShapedType>(reshapeOp.getType()).getNumElements() == 1) {
+          newInfo = updateAffineIndexInfo(curInfo, baseScaling, baseOffset);
+          result = reshapeOp.getResult();
+        }
       }
 
       if (result && !affineIndexInfo.contains(result)) {
         affineIndexInfo[result] = newInfo;
+        newPropagated.push_back(result);
         worklist.push_back(result);
       }
     }
