@@ -700,6 +700,7 @@ def TypeAlignOp : EnzymeXLA_Op<"typeAlign", [Pure]> {
 
 
 // MPI Ops
+
 def MPICommRankOp : EnzymeXLA_Op<"comm_rank", [Pure]> {
   let summary = "Get the current rank, equivalent to "
                 "`MPI_Comm_rank(comm, &rank)`";
@@ -725,5 +726,10 @@ def MPICommRankOp : EnzymeXLA_Op<"comm_rank", [Pure]> {
   /* let hasCanonicalizer = 1; */
 }
 
+def MPICommSizeOp : EnzymeXLA_Op<"comm_size", [Pure]> {
+  let summary = "Equivalent to MPI_Comm_size(comm, &rank)";
+  let results = (outs TensorOf<[I32]> : $size);
+  let assemblyFormat = [{ attr-dict `:` type(results) }];
+}
 
 #endif // ENZYMEXLA_OPS
