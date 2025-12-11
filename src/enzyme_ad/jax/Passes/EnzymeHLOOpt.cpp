@@ -22246,6 +22246,35 @@ struct LogSimplify final
   }
 };
 
+// Helper function to create a folded negation of a constant value
+static Value foldNegateConstant(PatternRewriter &rewriter, Location loc,
+                                 Value constValue) {
+  DenseElementsAttr constAttr;
+  if (!matchPattern(constValue, m_Constant(&constAttr)))
+    return stablehlo::NegOp::create(rewriter, loc, constValue);
+
+  auto constType = cast<ShapedType>(constValue.getType());
+  stablehlo::Tensor constTen;
+  RankedTensorType ty = cast<RankedTensorType>(constType);
+
+  if (constAttr.isSplat()) {
+    ty = RankedTensorType::get({}, constType.getElementType());
+    auto inputTy = RankedTensorType::get({}, constType.getElementType());
+    constTen = stablehlo::makeTensor(constAttr.resizeSplat(inputTy));
+  } else {
+    constTen = stablehlo::constantOp(constAttr);
+  }
+
+  auto resultType = cast<ShapedType>(ty);
+  auto out = fromTensor(stablehlo::negOp(constTen, resultType));
+
+  if (constAttr.isSplat()) {
+    out = out.resizeSplat(constType);
+  }
+
+  return rewriter.create<stablehlo::ConstantOp>(loc, constType, out);
+}
+
 struct NegMulConstSimplify final
     : public CheckedOpRewritePattern<stablehlo::NegOp, NegMulConstSimplify> {
   using CheckedOpRewritePattern<stablehlo::NegOp,
@@ -22271,13 +22300,13 @@ struct NegMulConstSimplify final
 
     if (lhsIsConst) {
       rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
-          op, stablehlo::NegOp::create(rewriter, op.getLoc(), lhs), rhs);
+          op, foldNegateConstant(rewriter, op.getLoc(), lhs), rhs);
       return success();
     }
 
     if (rhsIsConst) {
       rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
-          op, lhs, stablehlo::NegOp::create(rewriter, op.getLoc(), rhs));
+          op, lhs, foldNegateConstant(rewriter, op.getLoc(), rhs));
       return success();
     }
 
@@ -22310,13 +22339,13 @@ struct NegDivConstSimplify final
 
     if (lhsIsConst) {
       rewriter.replaceOpWithNewOp<stablehlo::DivOp>(
-          op, stablehlo::NegOp::create(rewriter, op.getLoc(), lhs), rhs);
+          op, foldNegateConstant(rewriter, op.getLoc(), lhs), rhs);
       return success();
     }
 
     if (rhsIsConst) {
       rewriter.replaceOpWithNewOp<stablehlo::DivOp>(
-          op, lhs, stablehlo::NegOp::create(rewriter, op.getLoc(), rhs));
+          op, lhs, foldNegateConstant(rewriter, op.getLoc(), rhs));
       return success();
     }
 
