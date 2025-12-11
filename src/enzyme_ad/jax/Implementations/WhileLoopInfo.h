@@ -59,6 +59,9 @@ struct WhileLoopInfo {
   Value getNumIters(OpBuilder &builder);
 
   void propagateAffineIndexInfo();
+  void propagateAffineIndexInfo(Value v, AffineIndexInfo curInfo,
+                                SmallVectorImpl<Value> &newPropagated);
+
   llvm::MapVector<Value, AffineIndexInfo> getAffineIndexInfo() {
     return affineIndexInfo;
   }
@@ -103,6 +106,7 @@ private:
   std::optional<int64_t> constStep;
 
   llvm::MapVector<Value, AffineIndexInfo> affineIndexInfo;
+  DenseSet<Value> affineIndexPropagationVisited;
 
   void computeConstantValues();
 
