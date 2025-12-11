@@ -80,7 +80,8 @@ absl::Status detectDiagonalTensor(stablehlo::ScatterOp scatterOp,
   auto isIotaLikeTensor = detectIotaLikeTensor(indices);
   if (isIotaLikeTensor) {
     auto iotaLikeTensor = isIotaLikeTensor.value();
-    if (iotaLikeTensor.dimension == 0 && iotaLikeTensor.start == 0) {
+    if (iotaLikeTensor.dimension == 0 && iotaLikeTensor.start == 0 &&
+        iotaLikeTensor.scale == 1) {
       *outUpdates = updates;
       return absl::OkStatus();
     }
@@ -101,6 +102,7 @@ std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
   struct ChainItem {
     mlir::Operation *op;
     int64_t offset; // only populated for AddOp/SubtractOp
+    int64_t scale;  // only populated for MulOp
   };
 
   // Build a chain of operations from startOp to the base case
@@ -114,7 +116,7 @@ std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
 
     // check if we found a base case
     if (isa<stablehlo::IotaOp, stablehlo::ConstantOp>(currentOp)) {
-      chain.push_back({currentOp, 0});
+      chain.push_back({currentOp, 0, 1});
       break;
     }
 
@@ -125,7 +127,7 @@ std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
     // TODO: we might want to support broadcast_in_dim / insert_dims / drop_dims
     // as well
     if (isa<stablehlo::TransposeOp>(currentOp)) {
-      chain.push_back({currentOp, 0});
+      chain.push_back({currentOp, 0, 1});
       nextOp = currentOp->getOperand(0).getDefiningOp();
     } else if (auto convertOp = dyn_cast<stablehlo::ConvertOp>(currentOp)) {
       // if operand of convertOp is not a integer, then return std::nullopt
@@ -133,15 +135,15 @@ std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
               cast<TensorType>(convertOp.getOperand().getType())
                   .getElementType()))
         return std::nullopt;
-      chain.push_back({currentOp, 0});
+      chain.push_back({currentOp, 0, 1});
       nextOp = convertOp.getOperand().getDefiningOp();
     } else if (auto addOp = dyn_cast<stablehlo::AddOp>(currentOp)) {
       APInt offsetVal;
       if (matchPattern(addOp.getRhs(), m_ConstantInt(&offsetVal))) {
-        chain.push_back({currentOp, offsetVal.getSExtValue()});
+        chain.push_back({currentOp, offsetVal.getSExtValue(), 1});
         nextOp = addOp.getLhs().getDefiningOp();
       } else if (matchPattern(addOp.getLhs(), m_ConstantInt(&offsetVal))) {
-        chain.push_back({currentOp, offsetVal.getSExtValue()});
+        chain.push_back({currentOp, offsetVal.getSExtValue(), 1});
         nextOp = addOp.getRhs().getDefiningOp();
       } else {
         return std::nullopt;
@@ -149,8 +151,19 @@ std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
     } else if (auto subOp = dyn_cast<stablehlo::SubtractOp>(currentOp)) {
       APInt offsetVal;
       if (matchPattern(subOp.getRhs(), m_ConstantInt(&offsetVal))) {
-        chain.push_back({currentOp, -offsetVal.getSExtValue()});
+        chain.push_back({currentOp, -offsetVal.getSExtValue(), 1});
         nextOp = subOp.getLhs().getDefiningOp();
+      } else {
+        return std::nullopt;
+      }
+    } else if (auto mulOp = dyn_cast<stablehlo::MulOp>(currentOp)) {
+      APInt scaleVal;
+      if (matchPattern(mulOp.getRhs(), m_ConstantInt(&scaleVal))) {
+        chain.push_back({currentOp, 0, scaleVal.getSExtValue()});
+        nextOp = mulOp.getLhs().getDefiningOp();
+      } else if (matchPattern(mulOp.getLhs(), m_ConstantInt(&scaleVal))) {
+        chain.push_back({currentOp, 0, scaleVal.getSExtValue()});
+        nextOp = mulOp.getRhs().getDefiningOp();
       } else {
         return std::nullopt;
       }
@@ -169,7 +182,7 @@ std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
   if (auto iotaOp = dyn_cast<stablehlo::IotaOp>(chain.back().op)) {
     auto iotaType = cast<RankedTensorType>(iotaOp.getResult().getType());
     auto iotaDim = static_cast<int64_t>(iotaOp.getIotaDimension());
-    result = IotaLikeTensor{0, iotaType.getShape()[iotaDim], iotaDim, iotaType};
+    result = IotaLikeTensor{0, iotaDim, 1, iotaType};
   } else if (auto constantOp =
                  dyn_cast<stablehlo::ConstantOp>(chain.back().op)) {
     auto denseAttr = cast<DenseElementsAttr>(constantOp.getValue());
@@ -191,6 +204,7 @@ std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
     for (int64_t dim = 0; dim < constType.getRank(); dim++) {
       bool isIotaAlongDim = true;
       std::optional<int64_t> detectedStart;
+      std::optional<int64_t> detectedScale;
 
       SmallVector<int64_t> indices(constType.getRank(), 0);
       int64_t numElements = constType.getNumElements();
@@ -207,9 +221,18 @@ std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
 
         if (!detectedStart) {
           detectedStart = actualValue;
+        } else if (!detectedScale && indices[dim] == 1) {
+          // Detect scale from the second element along this dimension
+          detectedScale = actualValue - detectedStart.value();
+          if (detectedScale.value() == 0) {
+            // Scale of 0 means all values are the same, not an iota
+            isIotaAlongDim = false;
+            break;
+          }
         }
 
-        int64_t expectedValue = detectedStart.value() + indices[dim];
+        int64_t expectedValue =
+            detectedStart.value() + indices[dim] * detectedScale.value_or(1);
         if (actualValue != expectedValue) {
           isIotaAlongDim = false;
           break;
@@ -218,9 +241,8 @@ std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
 
       if (isIotaAlongDim && detectedStart) {
         isIotaLike = true;
-        result =
-            IotaLikeTensor{detectedStart.value(),
-                           detectedStart.value() + shape[dim], dim, constType};
+        int64_t scale = detectedScale.value_or(1);
+        result = IotaLikeTensor{detectedStart.value(), dim, scale, constType};
         break;
       }
     }
@@ -248,6 +270,10 @@ std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
       continue;
     } else if (isa<stablehlo::AddOp, stablehlo::SubtractOp>(item.op)) {
       result.start += item.offset;
+      continue;
+    } else if (isa<stablehlo::MulOp>(item.op)) {
+      result.start *= item.scale;
+      result.scale *= item.scale;
       continue;
     }
 

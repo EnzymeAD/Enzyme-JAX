@@ -68,7 +68,7 @@ module @reactant_batched... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
 // CHECK-NEXT:   }
 
 // FULL:   func.func @main(%arg0: tensor<5x4x3xf64>, %arg1: tensor<7x4xf64>) -> tensor<5x7x3xf64> {
-// FULL-NEXT:     %0 = stablehlo.broadcast_in_dim %arg1, dims = [2, 1] : (tensor<7x4xf64>) -> tensor<5x4x7xf64>
-// FULL-NEXT:     %1 = stablehlo.dot_general %0, %arg0, batching_dims = [0] x [0], contracting_dims = [1] x [1], precision = [DEFAULT, DEFAULT] : (tensor<5x4x7xf64>, tensor<5x4x3xf64>) -> tensor<5x7x3xf64>
+// FULL-NEXT:     %0 = stablehlo.broadcast_in_dim %arg1, dims = [0, 1] : (tensor<7x4xf64>) -> tensor<7x4x5xf64>
+// FULL-NEXT:     %1 = stablehlo.dot_general %0, %arg0, batching_dims = [2] x [0], contracting_dims = [1] x [1], precision = [DEFAULT, DEFAULT] : (tensor<7x4x5xf64>, tensor<5x4x3xf64>) -> tensor<5x7x3xf64>
 // FULL-NEXT:     return %1 : tensor<5x7x3xf64>
 // FULL-NEXT:   }

@@ -124,6 +124,16 @@ static inline DenseI64ArrayAttr getBroadcastInDimsAttr(OpBuilder &builder,
   return builder.getDenseI64ArrayAttr(dims);
 }
 
+static inline SmallVector<int64_t> shiftDimensions(ArrayRef<int64_t> dims,
+                                                   SmallVector<int64_t> newDims,
+                                                   int64_t addFactor) {
+  SmallVector<int64_t> shiftedDims(newDims.begin(), newDims.end());
+  for (auto dim : dims) {
+    shiftedDims.push_back(dim + addFactor);
+  }
+  return shiftedDims;
+}
+
 namespace {
 
 #include "src/enzyme_ad/jax/Implementations/StableHLODerivatives.inc"
@@ -2730,8 +2740,7 @@ public:
 
     Value inductionVariable; // [0,..., N - 1] counter from within the loop
 
-    if (matchPattern(info.start, m_Zero()) &&
-        matchPattern(info.step, m_One())) {
+    if (matchPattern(info.getStart(), m_Zero()) && info.isStepOne()) {
       inductionVariable = body->getArgument(0);
     }
 

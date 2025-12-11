@@ -1708,9 +1708,10 @@ struct ExtendToPadCommOptimize2 : public OpRewritePattern<enzymexla::ExtendOp> {
       Value rhsValue = stablehlo::ConstantOp::create(
           rewriter, extend.getLoc(),
           SplatElementsAttr::get(
-              iota.getType(), rewriter.getI32IntegerAttr(
-                                  extend.getType().getShape()[extendDimension] +
-                                  extend.getLhs())));
+              iota.getType(),
+              rewriter.getI32IntegerAttr(
+                  extend.getOperand().getType().getShape()[extendDimension] +
+                  extend.getLhs())));
 
       auto cond = stablehlo::CompareOp::create(
           rewriter, extend.getLoc(), iota, rhsValue,
