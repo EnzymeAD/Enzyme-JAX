@@ -22729,30 +22729,25 @@ struct DotGeneralReshape final
                                     PatternRewriter &rewriter) const {
     auto lhsReshapeOp = op.getLhs().getDefiningOp<stablehlo::ReshapeOp>();
     auto rhsReshapeOp = op.getRhs().getDefiningOp<stablehlo::ReshapeOp>();
-    if (!lhsReshapeOp && !rhsReshapeOp)
+    if (!lhsReshapeOp && !rhsReshapeOp) {
       return failure();
+    }
 
     auto dotGeneralDims = op.getDotDimensionNumbers();
 
-    auto [canFuseLhs, lhsInsertionDims] =
-        canFuseOp(lhsReshapeOp, dotGeneralDims.getLhsBatchingDimensions(),
-                  dotGeneralDims.getLhsContractingDimensions());
-    Value newLhs =
-        lhsReshapeOp && canFuseLhs ? lhsReshapeOp.getOperand() : op.getLhs();
-
-    auto [canFuseRhs, rhsInsertionDims] =
-        canFuseOp(rhsReshapeOp, dotGeneralDims.getRhsBatchingDimensions(),
-                  dotGeneralDims.getRhsContractingDimensions());
-    Value newRhs =
-        rhsReshapeOp && canFuseRhs ? rhsReshapeOp.getOperand() : op.getRhs();
-
-    if (!canFuseLhs && !canFuseRhs)
-      return failure();
-
     SmallVector<int64_t> adjustedLhsBatchingDims, adjustedLhsContractingDims,
         adjustedRhsBatchingDims, adjustedRhsContractingDims;
+    SmallVector<int64_t> lhsInsertionDims, rhsInsertionDims;
+    Value newLhs, newRhs;
+    bool changed = false;
 
-    if (canFuseLhs) {
+    newLhs = op.getLhs();
+    if (lhsReshapeOp &&
+        canFuseOp(lhsReshapeOp, dotGeneralDims.getLhsBatchingDimensions(),
+                  dotGeneralDims.getLhsContractingDimensions(),
+                  lhsInsertionDims)) {
+      changed = true;
+      newLhs = lhsReshapeOp.getOperand();
       adjustedLhsBatchingDims = adjustDimsForInsertion(
           dotGeneralDims.getLhsBatchingDimensions(), lhsInsertionDims);
       adjustedLhsContractingDims = adjustDimsForInsertion(
@@ -22764,7 +22759,13 @@ struct DotGeneralReshape final
           llvm::to_vector(dotGeneralDims.getLhsContractingDimensions());
     }
 
-    if (canFuseRhs) {
+    newRhs = op.getRhs();
+    if (rhsReshapeOp &&
+        canFuseOp(rhsReshapeOp, dotGeneralDims.getRhsBatchingDimensions(),
+                  dotGeneralDims.getRhsContractingDimensions(),
+                  rhsInsertionDims)) {
+      changed = true;
+      newRhs = rhsReshapeOp.getOperand();
       adjustedRhsBatchingDims = adjustDimsForInsertion(
           dotGeneralDims.getRhsBatchingDimensions(), rhsInsertionDims);
       adjustedRhsContractingDims = adjustDimsForInsertion(
@@ -22776,29 +22777,28 @@ struct DotGeneralReshape final
           llvm::to_vector(dotGeneralDims.getRhsContractingDimensions());
     }
 
+    if (!changed) {
+      return failure();
+    }
+
     auto lhsShape = cast<RankedTensorType>(newLhs.getType()).getShape();
     auto rhsShape = cast<RankedTensorType>(newRhs.getType()).getShape();
     SmallVector<int64_t> newShape;
-    for (int64_t idx : adjustedLhsBatchingDims)
+    for (int64_t idx : adjustedLhsBatchingDims) {
       newShape.push_back(lhsShape[idx]);
+    }
     for (auto [idx, dim] : llvm::enumerate(lhsShape)) {
-      if (std::find(adjustedLhsContractingDims.begin(),
-                    adjustedLhsContractingDims.end(),
-                    idx) != adjustedLhsContractingDims.end() ||
-          std::find(adjustedRhsBatchingDims.begin(),
-                    adjustedRhsBatchingDims.end(),
-                    idx) != adjustedRhsBatchingDims.end())
+      if (llvm::is_contained(adjustedLhsContractingDims, idx) ||
+          llvm::is_contained(adjustedLhsBatchingDims, idx)) {
         continue;
+      }
       newShape.push_back(dim);
     }
     for (auto [idx, dim] : llvm::enumerate(rhsShape)) {
-      if (std::find(adjustedRhsContractingDims.begin(),
-                    adjustedRhsContractingDims.end(),
-                    idx) != adjustedRhsContractingDims.end() ||
-          std::find(adjustedLhsBatchingDims.begin(),
-                    adjustedLhsBatchingDims.end(),
-                    idx) != adjustedLhsBatchingDims.end())
+      if (llvm::is_contained(adjustedRhsContractingDims, idx) ||
+          llvm::is_contained(adjustedRhsBatchingDims, idx)) {
         continue;
+      }
       newShape.push_back(dim);
     }
 
@@ -22819,32 +22819,31 @@ struct DotGeneralReshape final
   }
 
 private:
-  std::tuple<bool, SmallVector<int64_t>>
-  canFuseOp(stablehlo::ReshapeOp op, ArrayRef<int64_t> batchingDims,
-            ArrayRef<int64_t> contractingDims) const {
+  bool canFuseOp(stablehlo::ReshapeOp op, ArrayRef<int64_t> batchingDims,
+                 ArrayRef<int64_t> contractingDims,
+                 SmallVectorImpl<int64_t> &dims) const {
     SmallVector<int64_t> insertionDims;
-    if (!op)
-      return std::make_tuple(false, insertionDims);
+    if (!op) {
+      return false;
+    }
 
     insertionDims = findReshapeInsertionDims(
         cast<RankedTensorType>(op.getOperand().getType()),
         cast<RankedTensorType>(op.getType()));
 
-    if (insertionDims.empty())
-      return std::make_tuple(false, insertionDims);
+    if (insertionDims.empty()) {
+      return false;
+    }
 
     for (auto dim : insertionDims) {
-      if (std::find(batchingDims.begin(), batchingDims.end(), dim) !=
-          batchingDims.end()) {
-        return std::make_tuple(false, insertionDims);
-      }
-      if (std::find(contractingDims.begin(), contractingDims.end(), dim) !=
-          contractingDims.end()) {
-        return std::make_tuple(false, insertionDims);
+      if (llvm::is_contained(batchingDims, dim) ||
+          llvm::is_contained(contractingDims, dim)) {
+        return false;
       }
     }
 
-    return std::make_tuple(true, insertionDims);
+    dims.append(insertionDims.begin(), insertionDims.end());
+    return true;
   }
 
   SmallVector<int64_t>
