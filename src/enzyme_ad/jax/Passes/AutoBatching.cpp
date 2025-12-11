@@ -959,7 +959,9 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
       continue;
     }
 
-    if (dyn_cast<BatchOpInterface>(op) || stablehlo::hasTraitElementwise(op)) {
+    if ((dyn_cast<BatchOpInterface>(op) ||
+         stablehlo::hasTraitElementwise(op)) &&
+        op->getNumResults() == 1) {
       if (liftOperationByBatching(rewriter, whileOp, slices, op, info)) {
         anyOpRewritten = true;
       }
