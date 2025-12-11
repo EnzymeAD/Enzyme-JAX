@@ -12,7 +12,11 @@
 #pragma GCC diagnostic pop
 #endif
 
+#include "mlir/IR/Matchers.h"
+#include "mlir/IR/PatternMatch.h"
+
 #include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
+#include "src/enzyme_ad/jax/Passes/StructuredTensors.h"
 #include "src/enzyme_ad/jax/Utils.h"
 
 using namespace mlir;
@@ -309,6 +313,55 @@ void WhileLoopInfo::propagateAffineIndexInfo(
       }
     }
   }
+
+  int64_t totalIterations = 0;
+  bool anyNewPropagated;
+  do {
+    anyNewPropagated = false;
+    // if any slice operand is an iota, then we can try to infer the offset
+    // and scale
+    op.getBody().front().walk([&](stablehlo::DynamicSliceOp sliceOp) {
+      // Skip if we've already processed this slice's result
+      if (affineIndexInfo.contains(sliceOp.getResult())) {
+        return WalkResult::advance();
+      }
+
+      if (cast<ShapedType>(sliceOp.getType()).getNumElements() != 1) {
+        return WalkResult::advance();
+      }
+
+      int64_t sliceDim = -1;
+      for (int64_t i = 0; i < sliceOp.getSliceSizes().size(); i++) {
+        if (matchPattern(sliceOp.getStartIndices()[i], m_Zero())) {
+          continue;
+        }
+        if (sliceDim != -1) {
+          return WalkResult::advance(); // can't do anything here
+        }
+        sliceDim = i;
+      }
+
+      auto iotaDetection = detectIotaLikeTensor(sliceOp.getOperand());
+
+      if (iotaDetection && sliceDim == iotaDetection.value().dimension) {
+        anyNewPropagated = true;
+        auto indexInfo = affineIndexInfo[sliceOp.getStartIndices()[sliceDim]];
+        auto offset = indexInfo.offset.getSExtValue();
+        auto iotaStart = iotaDetection.value().start;
+        auto newOffset = offset + iotaStart;
+
+        propagateAffineIndexInfo(
+            sliceOp.getResult(),
+            WhileLoopInfo::AffineIndexInfo{
+                indexInfo.scale,
+                llvm::APInt(indexInfo.offset.getBitWidth(), newOffset)},
+            newPropagated);
+      }
+
+      return WalkResult::advance();
+    });
+    totalIterations++;
+  } while (anyNewPropagated && totalIterations < 4);
 }
 
 bool WhileLoopInfo::isConstantAcrossIterations(Value v, bool checkOperands) {
