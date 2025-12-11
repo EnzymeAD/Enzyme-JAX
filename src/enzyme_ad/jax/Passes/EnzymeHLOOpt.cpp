@@ -11663,6 +11663,128 @@ template <typename T> struct CSE final : CheckedOpRewritePattern<T, CSE<T>> {
   }
 };
 
+// Specialized CSE for DotGeneralOp that handles operand swapping
+struct CSEDotGeneral final
+    : CheckedOpRewritePattern<stablehlo::DotGeneralOp, CSEDotGeneral> {
+  using CheckedOpRewritePattern<stablehlo::DotGeneralOp,
+                                CSEDotGeneral>::CheckedOpRewritePattern;
+
+  bool supportsDynamicShapes() { return true; }
+
+  // Check if two DotGeneralOps are equivalent with swapped operands
+  bool isSwappedEquivalent(stablehlo::DotGeneralOp op1,
+                           stablehlo::DotGeneralOp op2) const {
+    // Check if operands are swapped: op1(A, B) vs op2(B, A)
+    if (op1.getLhs() != op2.getRhs() || op1.getRhs() != op2.getLhs())
+      return false;
+
+    // Check if types match
+    if (op1.getType() != op2.getType())
+      return false;
+
+    auto dims1 = op1.getDotDimensionNumbers();
+    auto dims2 = op2.getDotDimensionNumbers();
+
+    // Check if batching dimensions are swapped
+    auto lhsBatch1 = dims1.getLhsBatchingDimensions();
+    auto rhsBatch1 = dims1.getRhsBatchingDimensions();
+    auto lhsBatch2 = dims2.getLhsBatchingDimensions();
+    auto rhsBatch2 = dims2.getRhsBatchingDimensions();
+
+    if (lhsBatch1.size() != rhsBatch2.size() ||
+        rhsBatch1.size() != lhsBatch2.size())
+      return false;
+
+    if (!std::equal(lhsBatch1.begin(), lhsBatch1.end(), rhsBatch2.begin()) ||
+        !std::equal(rhsBatch1.begin(), rhsBatch1.end(), lhsBatch2.begin()))
+      return false;
+
+    // Check if contracting dimensions are swapped
+    auto lhsContract1 = dims1.getLhsContractingDimensions();
+    auto rhsContract1 = dims1.getRhsContractingDimensions();
+    auto lhsContract2 = dims2.getLhsContractingDimensions();
+    auto rhsContract2 = dims2.getRhsContractingDimensions();
+
+    if (lhsContract1.size() != rhsContract2.size() ||
+        rhsContract1.size() != lhsContract2.size())
+      return false;
+
+    if (!std::equal(lhsContract1.begin(), lhsContract1.end(),
+                    rhsContract2.begin()) ||
+        !std::equal(rhsContract1.begin(), rhsContract1.end(),
+                    lhsContract2.begin()))
+      return false;
+
+    // Check precision config if present
+    if (op1.getPrecisionConfig() != op2.getPrecisionConfig())
+      return false;
+
+    return true;
+  }
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp op,
+                                    PatternRewriter &rewriter) const {
+    // First try standard CSE (same operands, same attributes)
+    if (op->getNumOperands() > 0) {
+      for (auto nop : op.getLhs().getUsers()) {
+        if (nop == op)
+          continue;
+        auto dotOp = dyn_cast<stablehlo::DotGeneralOp>(nop);
+        if (!dotOp)
+          continue;
+        if (dotOp->getBlock() != op->getBlock())
+          continue;
+
+        // Check for standard equivalence
+        if (OperationEquivalence::isEquivalentTo(
+                op, dotOp, OperationEquivalence::IgnoreLocations)) {
+          if (dotOp->isBeforeInBlock(op)) {
+            rewriter.replaceOp(op, dotOp);
+            return success();
+          } else {
+            rewriter.replaceOp(dotOp, op);
+            return success();
+          }
+        }
+
+        // Check for swapped equivalence
+        if (isSwappedEquivalent(op, dotOp)) {
+          if (dotOp->isBeforeInBlock(op)) {
+            rewriter.replaceOp(op, dotOp);
+            return success();
+          } else {
+            rewriter.replaceOp(dotOp, op);
+            return success();
+          }
+        }
+      }
+
+      // Also check users of the right operand for swapped cases
+      for (auto nop : op.getRhs().getUsers()) {
+        if (nop == op)
+          continue;
+        auto dotOp = dyn_cast<stablehlo::DotGeneralOp>(nop);
+        if (!dotOp)
+          continue;
+        if (dotOp->getBlock() != op->getBlock())
+          continue;
+
+        // Check for swapped equivalence
+        if (isSwappedEquivalent(op, dotOp)) {
+          if (dotOp->isBeforeInBlock(op)) {
+            rewriter.replaceOp(op, dotOp);
+            return success();
+          } else {
+            rewriter.replaceOp(dotOp, op);
+            return success();
+          }
+        }
+      }
+    }
+    return failure();
+  }
+};
+
 struct ConstPropThroughBarrier final
     : CheckedOpRewritePattern<stablehlo::OptimizationBarrierOp,
                               ConstPropThroughBarrier> {
@@ -26575,7 +26697,7 @@ struct EnzymeHLOOptPass
     if (cse) {
       patterns.add<CSE<stablehlo::BroadcastInDimOp>, CSE<stablehlo::SliceOp>,
                    CSE<stablehlo::TransposeOp>, CSE<stablehlo::ConvertOp>,
-                   CSE<stablehlo::PadOp>, CSE<stablehlo::DotGeneralOp>,
+                   CSE<stablehlo::PadOp>, CSEDotGeneral,
                    CSE<stablehlo::ReshapeOp>, CSE<stablehlo::MulOp>,
                    CSE<stablehlo::DivOp>, CSE<stablehlo::AddOp>,
                    CSE<stablehlo::SubtractOp>, CSE<stablehlo::MinOp>,
