@@ -31,21 +31,7 @@ func.func @main(%arg0: tensor<5x8x20x4xf32>) -> tensor<1x1x1x1xf32> {
 // CHECK-NEXT:   %5 = stablehlo.slice %0 [0:3, 13:14, 1:7, 1:2] : (tensor<4x20x8x5xf32>) -> tensor<3x1x6x1xf32>
 // CHECK-NEXT:   %6 = stablehlo.concatenate %1, %2, %3, %4, %5, dim = 1 : (tensor<3x1x6x1xf32>, tensor<3x1x6x1xf32>, tensor<3x1x6x1xf32>, tensor<3x1x6x1xf32>, tensor<3x1x6x1xf32>) -> tensor<3x5x6x1xf32>
 // CHECK-NEXT:   %7 = stablehlo.broadcast_in_dim %6, dims = [1, 0, 3, 4] : (tensor<3x5x6x1xf32>) -> tensor<5x3x1x6x1xf32>
-// CHECK-NEXT:   %8 = stablehlo.reduce(%7 init: %cst) applies stablehlo.add across dimensions = [1, 3, 4] : (tensor<5x3x1x6x1xf32>, tensor<f32>) -> tensor<5x1xf32>
-// CHECK-NEXT:   %9 = stablehlo.slice %8 [0:1, 0:1] : (tensor<5x1xf32>) -> tensor<1x1xf32>
-// CHECK-NEXT:   %10 = stablehlo.reshape %9 : (tensor<1x1xf32>) -> tensor<1xf32>
-// CHECK-NEXT:   %11 = stablehlo.slice %8 [1:2, 0:1] : (tensor<5x1xf32>) -> tensor<1x1xf32>
-// CHECK-NEXT:   %12 = stablehlo.reshape %11 : (tensor<1x1xf32>) -> tensor<1xf32>
-// CHECK-NEXT:   %13 = stablehlo.slice %8 [2:3, 0:1] : (tensor<5x1xf32>) -> tensor<1x1xf32>
-// CHECK-NEXT:   %14 = stablehlo.reshape %13 : (tensor<1x1xf32>) -> tensor<1xf32>
-// CHECK-NEXT:   %15 = stablehlo.slice %8 [3:4, 0:1] : (tensor<5x1xf32>) -> tensor<1x1xf32>
-// CHECK-NEXT:   %16 = stablehlo.reshape %15 : (tensor<1x1xf32>) -> tensor<1xf32>
-// CHECK-NEXT:   %17 = stablehlo.slice %8 [4:5, 0:1] : (tensor<5x1xf32>) -> tensor<1x1xf32>
-// CHECK-NEXT:   %18 = stablehlo.reshape %17 : (tensor<1x1xf32>) -> tensor<1xf32>
-// CHECK-NEXT:   %19 = stablehlo.add %10, %12 : tensor<1xf32>
-// CHECK-NEXT:   %20 = stablehlo.add %19, %14 : tensor<1xf32>
-// CHECK-NEXT:   %21 = stablehlo.add %20, %16 : tensor<1xf32>
-// CHECK-NEXT:   %22 = stablehlo.add %21, %18 : tensor<1xf32>
-// CHECK-NEXT:   %23 = stablehlo.reshape %22 : (tensor<1xf32>) -> tensor<1x1x1x1xf32>
-// CHECK-NEXT:   return %23 : tensor<1x1x1x1xf32>
+// CHECK-NEXT:   %8 = stablehlo.reduce(%7 init: %cst) applies stablehlo.add across dimensions = [1, 3, 4, 0] : (tensor<5x3x1x6x1xf32>, tensor<f32>) -> tensor<1xf32>
+// CHECK-NEXT:   %9 = stablehlo.reshape %8 : (tensor<1xf32>) -> tensor<1x1x1x1xf32>
+// CHECK-NEXT:   return %9 : tensor<1x1x1x1xf32>
 // CHECK-NEXT: }

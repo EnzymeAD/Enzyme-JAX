@@ -133,24 +133,14 @@ module @reactant_f_gener... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
 }
 
 // CHECK:  func.func @main(%arg0: tensor<6x2xf32> {tf.aliasing_output = 1 : i32}, %arg1: tensor<2x4xf32> {tf.aliasing_output = 2 : i32}) -> (tensor<4xf32>, tensor<6x2xf32>, tensor<2x4xf32>) attributes {enzymexla.memory_effects = ["read", "write", "allocate", "free"]} {
+// CHECK-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
 // CHECK-NEXT:    %0 = stablehlo.reshape %arg0 : (tensor<6x2xf32>) -> tensor<6x1x2xf32>
 // CHECK-NEXT:    %1 = stablehlo.slice %0 [0:1, 0:1, 0:2] : (tensor<6x1x2xf32>) -> tensor<1x1x2xf32>
-// CHECK-NEXT:    %2 = stablehlo.slice %0 [1:2, 0:1, 0:2] : (tensor<6x1x2xf32>) -> tensor<1x1x2xf32>
-// CHECK-NEXT:    %3 = stablehlo.slice %0 [2:3, 0:1, 0:2] : (tensor<6x1x2xf32>) -> tensor<1x1x2xf32>
-// CHECK-NEXT:    %4 = stablehlo.slice %0 [3:4, 0:1, 0:2] : (tensor<6x1x2xf32>) -> tensor<1x1x2xf32>
-// CHECK-NEXT:    %5 = stablehlo.slice %0 [4:5, 0:1, 0:2] : (tensor<6x1x2xf32>) -> tensor<1x1x2xf32>
-// CHECK-NEXT:    %6 = stablehlo.slice %0 [5:6, 0:1, 0:2] : (tensor<6x1x2xf32>) -> tensor<1x1x2xf32>
-// CHECK-NEXT:    %7 = stablehlo.reshape %1 : (tensor<1x1x2xf32>) -> tensor<2xf32>
-// CHECK-NEXT:    %8 = stablehlo.reshape %2 : (tensor<1x1x2xf32>) -> tensor<2xf32>
-// CHECK-NEXT:    %9 = stablehlo.reshape %3 : (tensor<1x1x2xf32>) -> tensor<2xf32>
-// CHECK-NEXT:    %10 = stablehlo.reshape %4 : (tensor<1x1x2xf32>) -> tensor<2xf32>
-// CHECK-NEXT:    %11 = stablehlo.reshape %5 : (tensor<1x1x2xf32>) -> tensor<2xf32>
-// CHECK-NEXT:    %12 = stablehlo.reshape %6 : (tensor<1x1x2xf32>) -> tensor<2xf32>
-// CHECK-NEXT:    %13 = stablehlo.add %7, %8 : tensor<2xf32>
-// CHECK-NEXT:    %14 = stablehlo.add %13, %9 : tensor<2xf32>
-// CHECK-NEXT:    %15 = stablehlo.add %14, %10 : tensor<2xf32>
-// CHECK-NEXT:    %16 = stablehlo.add %15, %11 : tensor<2xf32>
-// CHECK-NEXT:    %17 = stablehlo.add %16, %12 : tensor<2xf32>
-// CHECK-NEXT:    %18 = stablehlo.dot_general %17, %arg1, contracting_dims = [0] x [0], precision = [DEFAULT, DEFAULT] : (tensor<2xf32>, tensor<2x4xf32>) -> tensor<4xf32>
-// CHECK-NEXT:    return %18, %arg0, %arg1 : tensor<4xf32>, tensor<6x2xf32>, tensor<2x4xf32>
+// CHECK-NEXT:    %2 = stablehlo.reshape %1 : (tensor<1x1x2xf32>) -> tensor<2xf32>
+// CHECK-NEXT:    %3 = stablehlo.slice %0 [1:6, 0:1, 0:2] : (tensor<6x1x2xf32>) -> tensor<5x1x2xf32>
+// CHECK-NEXT:    %4 = stablehlo.reduce(%3 init: %cst) applies stablehlo.add across dimensions = [0] : (tensor<5x1x2xf32>, tensor<f32>) -> tensor<1x2xf32>
+// CHECK-NEXT:    %5 = stablehlo.reshape %4 : (tensor<1x2xf32>) -> tensor<2xf32>
+// CHECK-NEXT:    %6 = stablehlo.add %5, %2 : tensor<2xf32>
+// CHECK-NEXT:    %7 = stablehlo.dot_general %6, %arg1, contracting_dims = [0] x [0], precision = [DEFAULT, DEFAULT] : (tensor<2xf32>, tensor<2x4xf32>) -> tensor<4xf32>
+// CHECK-NEXT:    return %7, %arg0, %arg1 : tensor<4xf32>, tensor<6x2xf32>, tensor<2x4xf32>
 // CHECK-NEXT:  }
