@@ -24145,6 +24145,7 @@ private:
       Value current = worklist.pop_back_val();
 
       if (visited.contains(current)) {
+        extraValues.push_back(current);
         continue;
       }
       visited.insert(current);
