@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1765475613169,
+  "lastUpdate": 1765491190495,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "avikpal@mit.edu",
-            "name": "Avik Pal",
-            "username": "avik-pal"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "aded9a2821774cdfa05c6207afa3b92e16b6d583",
-          "message": "fix: use lapack instead of lapacke (#1618)\n\nfeat: get_dimension_size batch interface\n\nfeat: implement jitcall batching with shlo_generic_batch_op_interface\n\nrefactor: reuse batching interface for LU factorization\n\nfix: remove old changes\n\nfeat: mark memory effects\n\nfix: update to new API\n\nfix: use correct return\n\nfix: rework svd lowering to use lapack and workspace buffers\n\nfix: use func return\n\nfix: leading dimension\n\nfix: use backend config\n\nfix: remove unused vars\n\nfix: tpu lowering\n\ntest: update",
-          "timestamp": "2025-11-17T00:05:45-05:00",
-          "tree_id": "ddffb8cb739571b2b0e3cf6765c4b1a2fa659fea",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/aded9a2821774cdfa05c6207afa3b92e16b6d583"
-        },
-        "date": 1763364371985,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.000004386482108384371,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.000004358096001669764,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001448858825955,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001450719916028,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2199,6 +2155,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001321539557999,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "avikpal@mit.edu",
+            "name": "Avik Pal",
+            "username": "avik-pal"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "779dca1bf78b03acef6b59f7af3b5075c51e1ae3",
+          "message": "feat: vector mode forward for dot_general (#1724)\n\n* feat: vector mode forward for dot_general\n\n* chore: remove comment",
+          "timestamp": "2025-12-11T15:47:35-05:00",
+          "tree_id": "41d81b62d5062f879818f94069e39267ec042e0d",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/779dca1bf78b03acef6b59f7af3b5075c51e1ae3"
+        },
+        "date": 1765491190014,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004318197999964468,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.00000431587900093291,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001485531517013,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001464243666996,
             "unit": "s"
           }
         ]
