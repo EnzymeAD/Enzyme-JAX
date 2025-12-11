@@ -11722,63 +11722,55 @@ struct CSEDotGeneral final
     return true;
   }
 
+  // Helper to replace ops based on which one comes first in the block
+  LogicalResult replaceWithEarlierOp(stablehlo::DotGeneralOp op,
+                                     stablehlo::DotGeneralOp dotOp,
+                                     PatternRewriter &rewriter) const {
+    if (dotOp->isBeforeInBlock(op)) {
+      rewriter.replaceOp(op, dotOp);
+    } else {
+      rewriter.replaceOp(dotOp, op);
+    }
+    return success();
+  }
+
   LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp op,
                                     PatternRewriter &rewriter) const {
-    // First try standard CSE (same operands, same attributes)
+    // Helper lambda to check an operation and perform CSE if equivalent
+    auto checkAndReplaceIfEquivalent =
+        [&](stablehlo::DotGeneralOp dotOp) -> LogicalResult {
+      if (dotOp == op)
+        return failure();
+      if (dotOp->getBlock() != op->getBlock())
+        return failure();
+
+      // Check for standard equivalence
+      if (OperationEquivalence::isEquivalentTo(
+              op, dotOp, OperationEquivalence::IgnoreLocations)) {
+        return replaceWithEarlierOp(op, dotOp, rewriter);
+      }
+
+      // Check for swapped equivalence
+      if (isSwappedEquivalent(op, dotOp)) {
+        return replaceWithEarlierOp(op, dotOp, rewriter);
+      }
+
+      return failure();
+    };
+
+    // Check users of the left operand
     if (op->getNumOperands() > 0) {
       for (auto nop : op.getLhs().getUsers()) {
-        if (nop == op)
-          continue;
         auto dotOp = dyn_cast<stablehlo::DotGeneralOp>(nop);
-        if (!dotOp)
-          continue;
-        if (dotOp->getBlock() != op->getBlock())
-          continue;
-
-        // Check for standard equivalence
-        if (OperationEquivalence::isEquivalentTo(
-                op, dotOp, OperationEquivalence::IgnoreLocations)) {
-          if (dotOp->isBeforeInBlock(op)) {
-            rewriter.replaceOp(op, dotOp);
-            return success();
-          } else {
-            rewriter.replaceOp(dotOp, op);
-            return success();
-          }
-        }
-
-        // Check for swapped equivalence
-        if (isSwappedEquivalent(op, dotOp)) {
-          if (dotOp->isBeforeInBlock(op)) {
-            rewriter.replaceOp(op, dotOp);
-            return success();
-          } else {
-            rewriter.replaceOp(dotOp, op);
-            return success();
-          }
-        }
+        if (dotOp && succeeded(checkAndReplaceIfEquivalent(dotOp)))
+          return success();
       }
 
       // Also check users of the right operand for swapped cases
       for (auto nop : op.getRhs().getUsers()) {
-        if (nop == op)
-          continue;
         auto dotOp = dyn_cast<stablehlo::DotGeneralOp>(nop);
-        if (!dotOp)
-          continue;
-        if (dotOp->getBlock() != op->getBlock())
-          continue;
-
-        // Check for swapped equivalence
-        if (isSwappedEquivalent(op, dotOp)) {
-          if (dotOp->isBeforeInBlock(op)) {
-            rewriter.replaceOp(op, dotOp);
-            return success();
-          } else {
-            rewriter.replaceOp(dotOp, op);
-            return success();
-          }
-        }
+        if (dotOp && succeeded(checkAndReplaceIfEquivalent(dotOp)))
+          return success();
       }
     }
     return failure();
