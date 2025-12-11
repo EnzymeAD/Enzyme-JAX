@@ -1148,7 +1148,6 @@ def DotGeneralBatchedDim : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
       shiftDimensions(attr.getRhsContractingDimensions(), {}, 1)
     );
   }
-  llvm::errs() << "DotGeneralBatchedDim: " << attr << "\n";
   attr;
 }]>;
 
