@@ -22246,7 +22246,9 @@ struct LogSimplify final
   }
 };
 
-// Helper function to create a folded negation of a constant value
+// Helper function to create a folded negation of a constant value.
+// If the value is a constant, computes and returns the negated constant.
+// Otherwise, returns an unfolded NegOp (fallback for non-constant values).
 static Value foldNegateConstant(PatternRewriter &rewriter, Location loc,
                                  Value constValue) {
   DenseElementsAttr constAttr;
@@ -22255,24 +22257,19 @@ static Value foldNegateConstant(PatternRewriter &rewriter, Location loc,
 
   auto constType = cast<ShapedType>(constValue.getType());
   stablehlo::Tensor constTen;
-  RankedTensorType ty = cast<RankedTensorType>(constType);
 
   if (constAttr.isSplat()) {
-    ty = RankedTensorType::get({}, constType.getElementType());
-    auto inputTy = RankedTensorType::get({}, constType.getElementType());
-    constTen = stablehlo::makeTensor(constAttr.resizeSplat(inputTy));
+    auto scalarTy = RankedTensorType::get({}, constType.getElementType());
+    constTen = stablehlo::makeTensor(constAttr.resizeSplat(scalarTy));
+    auto out = fromTensor(stablehlo::negOp(constTen, cast<ShapedType>(scalarTy)));
+    return rewriter.create<stablehlo::ConstantOp>(
+        loc, constType, out.resizeSplat(constType));
   } else {
     constTen = stablehlo::constantOp(constAttr);
+    auto ty = cast<RankedTensorType>(constType);
+    auto out = fromTensor(stablehlo::negOp(constTen, cast<ShapedType>(ty)));
+    return rewriter.create<stablehlo::ConstantOp>(loc, constType, out);
   }
-
-  auto resultType = cast<ShapedType>(ty);
-  auto out = fromTensor(stablehlo::negOp(constTen, resultType));
-
-  if (constAttr.isSplat()) {
-    out = out.resizeSplat(constType);
-  }
-
-  return rewriter.create<stablehlo::ConstantOp>(loc, constType, out);
 }
 
 struct NegMulConstSimplify final
