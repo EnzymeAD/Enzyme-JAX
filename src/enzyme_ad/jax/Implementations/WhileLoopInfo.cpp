@@ -348,12 +348,18 @@ void WhileLoopInfo::propagateAffineIndexInfo(
         auto indexInfo = affineIndexInfo[sliceOp.getStartIndices()[sliceDim]];
         auto offset = indexInfo.offset.getSExtValue();
         auto iotaStart = iotaDetection.value().start;
-        auto newOffset = offset + iotaStart;
+        auto iotaScale = iotaDetection.value().scale;
+        // The slice result is: iotaScale * (indexInfo.scale * i +
+        //                       indexInfo.offset) + iotaStart
+        //                    = (iotaScale * indexInfo.scale) * i + (iotaScale *
+        //                    indexInfo.offset + iotaStart)
+        auto newScale = indexInfo.scale * iotaScale;
+        auto newOffset = iotaScale * offset + iotaStart;
 
         propagateAffineIndexInfo(
             sliceOp.getResult(),
             WhileLoopInfo::AffineIndexInfo{
-                indexInfo.scale,
+                newScale,
                 llvm::APInt(indexInfo.offset.getBitWidth(), newOffset)},
             newPropagated);
       }

@@ -22,8 +22,8 @@ absl::Status detectDiagonalTensor(stablehlo::ScatterOp scatterOp,
 
 struct IotaLikeTensor {
   int64_t start;
-  int64_t limit;
   int64_t dimension;
+  int64_t scale = 1; // multiplicative factor applied to the iota
   mlir::RankedTensorType tensorType;
 };
 
