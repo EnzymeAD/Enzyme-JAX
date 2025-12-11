@@ -11753,21 +11753,19 @@ struct CSEDotGeneral final
       return failure();
     };
 
-    // Check users of the left operand
-    for (auto nop : op.getLhs().getUsers()) {
-      auto dotOp = dyn_cast<stablehlo::DotGeneralOp>(nop);
-      if (dotOp && succeeded(checkAndReplaceIfEquivalent(dotOp)))
-        return success();
-    }
+    // Helper lambda to check all users of an operand
+    auto checkUsers = [&](Value operand) -> LogicalResult {
+      for (auto nop : operand.getUsers()) {
+        auto dotOp = dyn_cast<stablehlo::DotGeneralOp>(nop);
+        if (dotOp && succeeded(checkAndReplaceIfEquivalent(dotOp)))
+          return success();
+      }
+      return failure();
+    };
 
-    // Also check users of the right operand for swapped cases
-    for (auto nop : op.getRhs().getUsers()) {
-      auto dotOp = dyn_cast<stablehlo::DotGeneralOp>(nop);
-      if (dotOp && succeeded(checkAndReplaceIfEquivalent(dotOp)))
-        return success();
-    }
-
-    return failure();
+    // Check users of both operands (left for standard CSE, right for swapped)
+    return succeeded(checkUsers(op.getLhs())) ? success()
+                                               : checkUsers(op.getRhs());
   }
 };
 
