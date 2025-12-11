@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1765397329605,
+  "lastUpdate": 1765426085003,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "238314553+enzymead-bot[bot]@users.noreply.github.com",
-            "name": "enzymead-bot[bot]",
-            "username": "enzymead-bot[bot]"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "2118c2305d0e514fdac66c6c823f87763dba6c94",
-          "message": "Update jax-ml/jax to commit d79c1c43fe8c40c3c51743e1796f2d2b43ebfb82 (#1611)\n\n* Update jax-ml/jax to commit d79c1c43fe8c40c3c51743e1796f2d2b43ebfb82\n\nDiff: https://github.com/jax-ml/jax/compare/24e80c494cb5464794730818cea05b60d7a956d7...d79c1c43fe8c40c3c51743e1796f2d2b43ebfb82\n\n* tmp\n\n* fix\n\n* fix\n\n* fix\n\n* exclude\n\n* fix\n\n* fix\n\n* fix\n\n* fmt\n\n* Fix\n\n---------\n\nCo-authored-by: enzymead-bot[bot] <238314553+enzymead-bot[bot]@users.noreply.github.com>\nCo-authored-by: William S. Moses <gh@wsmoses.com>",
-          "timestamp": "2025-11-16T13:09:20-06:00",
-          "tree_id": "7333d2b3db8b1b1c5cba2527255c6815754e9cbc",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/2118c2305d0e514fdac66c6c823f87763dba6c94"
-        },
-        "date": 1763332032440,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.000004256509896367789,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.000004211377899628133,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001351252875057,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001351235843962,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2199,6 +2155,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001465538042,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "javathunderman@users.noreply.github.com",
+            "name": "Arjun Vedantham",
+            "username": "javathunderman"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0a0ee25da49bf1356e6c4e632549542b1c89360d",
+          "message": "Performance Bounding Dialect (#1580)\n\n* start perfify dialect impl\n\n* Add assume op, TODO: fix roundtrip parsing test\n\n* tweak w/ clang-format\n\n* Fix AssumeOp parsing, adjust parsing test file\n\n* attempt to resolve formatting issue\n\n* format RegistryUtils?\n\n* fix bazel format issue\n\n* add check directives for parsing test\n\n---------\n\nCo-authored-by: William Moses <wmoses@google.com>",
+          "timestamp": "2025-12-10T20:14:26-06:00",
+          "tree_id": "22a6bf16b55cd46952b6b97aeff19695996d8b27",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/0a0ee25da49bf1356e6c4e632549542b1c89360d"
+        },
+        "date": 1765426083961,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004429214999981923,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004354909999892697,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001464696221999,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001298194633,
             "unit": "s"
           }
         ]
