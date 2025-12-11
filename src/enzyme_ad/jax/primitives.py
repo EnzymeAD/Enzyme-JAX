@@ -304,7 +304,7 @@ def optimization_passes(
         "self_mul_to_convolution_like(0)",
         "trivial_reduce_window_to_reduce_op",
         "case_to_if",
-        "reduce_mul_broadcast_to_dot_general",
+        "reduce_mul_to_dot_general",
         "dot_general_add_distributive_simplify",
         "dot_general_subtract_distributive_simplify",
         "remove_no_ops_from_while_loop",
@@ -316,6 +316,8 @@ def optimization_passes(
         "divide_negated_operands_simplify",
         "multiply_negated_operands_simplify",
         "factor_scalars_in_dot_general",
+        "dot_general_broadcast_in_dim",
+        "dot_general_broadcast_in_dim_sort_dims",
     ]
 
     # constant propagation patterns
@@ -935,7 +937,7 @@ def _dump_mlir_to_file(source, pass_pipeline):
         suffix=".mlir", dir=dump_mlir_dir, delete=False
     )
     with open(tmpfile.name, "w") as f:
-        f.write("# " + pass_pipeline + "\n")
+        f.write("// " + pass_pipeline + "\n")
         f.write(str(source))
 
     return tmpfile.name

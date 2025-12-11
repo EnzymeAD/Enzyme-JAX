@@ -60,6 +60,12 @@ WhileUnroll::matchAndRewriteImpl(mlir::stablehlo::WhileOp op,
     return rewriter.notifyMatchFailure(op,
                                        "max iterations for unrolling exceeded");
 
+  if (iters > 1 && maxOperationThreshold > -1 &&
+      std::distance(loopBodyBlock->begin(), loopBodyBlock->end()) >
+          maxOperationThreshold)
+    return rewriter.notifyMatchFailure(op,
+                                       "max operations for unrolling exceeded");
+
   SmallVector<Value> results(op.getOperands().begin(), op.getOperands().end());
 
   for (size_t iter = 0; iter < iters; iter++) {
@@ -86,7 +92,7 @@ struct EnzymeHLOUnrollPass
   void runOnOperation() override {
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
-    patterns.add<WhileUnroll>(maxNumIterations, context);
+    patterns.add<WhileUnroll>(maxNumIterations, maxOperationThreshold, context);
     GreedyRewriteConfig config;
     if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
                                             config))) {

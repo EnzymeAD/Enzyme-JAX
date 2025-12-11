@@ -25,11 +25,13 @@ struct WhileUnroll
                                 WhileUnroll>::CheckedOpRewritePattern;
 
   int64_t maxNumIterations = -1;
+  int64_t maxOperationThreshold = -1;
 
-  WhileUnroll(int64_t maxNumIterations, MLIRContext *ctx,
-              PatternBenefit benefit = 1)
+  WhileUnroll(int64_t maxNumIterations, int64_t maxOperationThreshold,
+              MLIRContext *ctx, PatternBenefit benefit = 1)
       : CheckedOpRewritePattern<stablehlo::WhileOp, WhileUnroll>(ctx, benefit),
-        maxNumIterations(maxNumIterations) {}
+        maxNumIterations(maxNumIterations),
+        maxOperationThreshold(maxOperationThreshold) {}
 
   LogicalResult matchAndRewriteImpl(stablehlo::WhileOp op,
                                     PatternRewriter &rewriter) const;
