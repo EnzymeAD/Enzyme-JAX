@@ -11671,6 +11671,17 @@ struct CSEDotGeneral final
 
   bool supportsDynamicShapes() { return true; }
 
+  // Helper to check if dimension arrays are swapped between two ops
+  bool areDimensionsSwapped(ArrayRef<int64_t> lhs1, ArrayRef<int64_t> rhs1,
+                            ArrayRef<int64_t> lhs2,
+                            ArrayRef<int64_t> rhs2) const {
+    if (lhs1.size() != rhs2.size() || rhs1.size() != lhs2.size())
+      return false;
+
+    return std::equal(lhs1.begin(), lhs1.end(), rhs2.begin()) &&
+           std::equal(rhs1.begin(), rhs1.end(), lhs2.begin());
+  }
+
   // Check if two DotGeneralOps are equivalent with swapped operands
   bool isSwappedEquivalent(stablehlo::DotGeneralOp op1,
                            stablehlo::DotGeneralOp op2) const {
@@ -11686,33 +11697,17 @@ struct CSEDotGeneral final
     auto dims2 = op2.getDotDimensionNumbers();
 
     // Check if batching dimensions are swapped
-    auto lhsBatch1 = dims1.getLhsBatchingDimensions();
-    auto rhsBatch1 = dims1.getRhsBatchingDimensions();
-    auto lhsBatch2 = dims2.getLhsBatchingDimensions();
-    auto rhsBatch2 = dims2.getRhsBatchingDimensions();
-
-    if (lhsBatch1.size() != rhsBatch2.size() ||
-        rhsBatch1.size() != lhsBatch2.size())
-      return false;
-
-    if (!std::equal(lhsBatch1.begin(), lhsBatch1.end(), rhsBatch2.begin()) ||
-        !std::equal(rhsBatch1.begin(), rhsBatch1.end(), lhsBatch2.begin()))
+    if (!areDimensionsSwapped(dims1.getLhsBatchingDimensions(),
+                              dims1.getRhsBatchingDimensions(),
+                              dims2.getLhsBatchingDimensions(),
+                              dims2.getRhsBatchingDimensions()))
       return false;
 
     // Check if contracting dimensions are swapped
-    auto lhsContract1 = dims1.getLhsContractingDimensions();
-    auto rhsContract1 = dims1.getRhsContractingDimensions();
-    auto lhsContract2 = dims2.getLhsContractingDimensions();
-    auto rhsContract2 = dims2.getRhsContractingDimensions();
-
-    if (lhsContract1.size() != rhsContract2.size() ||
-        rhsContract1.size() != lhsContract2.size())
-      return false;
-
-    if (!std::equal(lhsContract1.begin(), lhsContract1.end(),
-                    rhsContract2.begin()) ||
-        !std::equal(rhsContract1.begin(), rhsContract1.end(),
-                    lhsContract2.begin()))
+    if (!areDimensionsSwapped(dims1.getLhsContractingDimensions(),
+                              dims1.getRhsContractingDimensions(),
+                              dims2.getLhsContractingDimensions(),
+                              dims2.getRhsContractingDimensions()))
       return false;
 
     // Check precision config if present
@@ -11759,20 +11754,19 @@ struct CSEDotGeneral final
     };
 
     // Check users of the left operand
-    if (op->getNumOperands() > 0) {
-      for (auto nop : op.getLhs().getUsers()) {
-        auto dotOp = dyn_cast<stablehlo::DotGeneralOp>(nop);
-        if (dotOp && succeeded(checkAndReplaceIfEquivalent(dotOp)))
-          return success();
-      }
-
-      // Also check users of the right operand for swapped cases
-      for (auto nop : op.getRhs().getUsers()) {
-        auto dotOp = dyn_cast<stablehlo::DotGeneralOp>(nop);
-        if (dotOp && succeeded(checkAndReplaceIfEquivalent(dotOp)))
-          return success();
-      }
+    for (auto nop : op.getLhs().getUsers()) {
+      auto dotOp = dyn_cast<stablehlo::DotGeneralOp>(nop);
+      if (dotOp && succeeded(checkAndReplaceIfEquivalent(dotOp)))
+        return success();
     }
+
+    // Also check users of the right operand for swapped cases
+    for (auto nop : op.getRhs().getUsers()) {
+      auto dotOp = dyn_cast<stablehlo::DotGeneralOp>(nop);
+      if (dotOp && succeeded(checkAndReplaceIfEquivalent(dotOp)))
+        return success();
+    }
+
     return failure();
   }
 };
