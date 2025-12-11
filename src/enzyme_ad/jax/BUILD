@@ -897,14 +897,17 @@ cc_library(
 
 cc_library(
     name = "XLADerivatives",
-    srcs = glob([
-        "Implementations/*.cpp",
-        "Passes/*.cpp",
-        "Dialect/*.cpp",
-        "Dialect/Distributed/*.cpp",
-        "Dialect/Tessera/*.cpp",
-        "Dialect/Perfify/*.cpp",
-    ]) + [
+    srcs = glob(
+        [
+            "Implementations/*.cpp",
+            "Passes/*.cpp",
+            "Dialect/*.cpp",
+            "Dialect/Distributed/*.cpp",
+            "Dialect/Tessera/*.cpp",
+            "Dialect/Perfify/*.cpp",
+        ],
+        exclude = ["Dialect/Utils.cpp"],
+    ) + [
         "Utils.cpp",
     ],
     hdrs = glob([
