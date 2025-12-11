@@ -24145,7 +24145,9 @@ private:
       Value current = worklist.pop_back_val();
 
       if (visited.contains(current)) {
-        extraValues.push_back(current);
+        if constexpr (!std::is_same_v<BinaryOpType, stablehlo::MinOp> &&
+                      !std::is_same_v<BinaryOpType, stablehlo::MaxOp>)
+          extraValues.push_back(current);
         continue;
       }
       visited.insert(current);
