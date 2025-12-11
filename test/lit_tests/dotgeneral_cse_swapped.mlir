@@ -59,4 +59,3 @@ func.func @test_dotgeneral_no_cse_different_computation(%arg0: tensor<4x8xf32>, 
 // CHECK-NEXT: %[[V1:.+]] = stablehlo.dot_general %arg1, %arg0
 // CHECK-NEXT: return %[[V0]], %[[V1]]
 
-
