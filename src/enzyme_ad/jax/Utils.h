@@ -16,6 +16,8 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/IntegerSet.h"
 
+#include "shardy/dialect/sdy/ir/utils.h"
+
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #ifdef __clang__
 #pragma clang diagnostic push
@@ -981,6 +983,37 @@ Value copyTriangularPart(OpBuilder &builder, Value input,
                          enzymexla::LapackUplo uplo);
 
 bool broadcastInDimIsReshape(BroadcastInDimOp op);
+
+bool canMergeSlicesAlongAxis(int dimension, ArrayRef<int64_t> sliceStarts,
+                             ArrayRef<int64_t> otherSliceStarts,
+                             ArrayRef<int64_t> sliceLimits,
+                             ArrayRef<int64_t> otherSliceLimits,
+                             ArrayRef<int64_t> sliceStrides,
+                             ArrayRef<int64_t> otherSliceStrides);
+
+bool canMergeSlicesAlongAxis(int dimension, stablehlo::SliceOp slice,
+                             stablehlo::SliceOp otherSlice);
+
+stablehlo::ConcatenateOp lowerWrap(enzymexla::WrapOp wrap,
+                                   PatternRewriter &rewriter, bool replace);
+
+LogicalResult concatSliceSimplify(PatternRewriter &rewriter,
+                                  SmallVectorImpl<Value> &operands, int64_t dim,
+                                  SmallVectorImpl<Value> &newOperands);
+
+// these add additional checks that prevent no-op creation
+Value ConcatenateOpCreate(
+    OpBuilder &builder, Location loc, ArrayRef<Value> inputs, int64_t dimension,
+    std::optional<sdy::TensorShardingPerValueAttr> sharding = std::nullopt);
+
+Value ReshapeOpCreate(
+    OpBuilder &builder, Location loc, Value input, ArrayRef<int64_t> shape,
+    std::optional<sdy::TensorShardingPerValueAttr> sharding = std::nullopt);
+
+Value TransposeOpCreate(
+    OpBuilder &builder, Location loc, Value input,
+    ArrayRef<int64_t> permutation,
+    std::optional<sdy::TensorShardingPerValueAttr> sharding = std::nullopt);
 
 } // namespace stablehlo
 
