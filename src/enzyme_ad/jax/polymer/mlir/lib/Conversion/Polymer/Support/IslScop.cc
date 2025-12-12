@@ -1944,10 +1944,11 @@ std::unique_ptr<IslScop> IslScopBuilder::build(Operation *f) {
           needToLoadOperands = false;
           needToStoreResults = false;
         } else {
-          if (!isa<memref::AllocOp, memref::AllocaOp, memref::AllocOp,
-                   memref::DeallocOp>(op)) {
-            LDBG() << "Unexpected op " << op;
-            llvm_unreachable("");
+          if (!isa<memref::AllocOp, memref::AllocaOp, memref::DeallocOp>(op)) {
+            LDBG() << "Unexpected op " << *op;
+            // TODO we can handle memref load/store here by doing a
+            // read/may-write on the whole memref.
+            return nullptr;
           }
           needToLoadOperands = false;
           needToStoreResults = false;

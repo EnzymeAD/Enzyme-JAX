@@ -274,8 +274,8 @@ public:
   void dumpSchedule(llvm::raw_ostream &os);
   void dumpAccesses(llvm::raw_ostream &os);
 
-  void buildSchedule() {
-    buildSchedule(
+  mlir::LogicalResult buildSchedule() {
+    return buildSchedule(
         getSequenceScheduleOpList(&root->getRegion(0).front().front(),
                                   &root->getRegion(0).front().back()));
   }
@@ -370,9 +370,10 @@ private:
 
   isl::union_map independence;
 
-  void buildSchedule(llvm::SmallVector<mlir::Operation *> ops) {
+  mlir::LogicalResult buildSchedule(llvm::SmallVector<mlir::Operation *> ops) {
     loopId = 0;
     schedule = buildSequenceSchedule(ops);
+    return mlir::success(schedule);
   }
 
   template <typename T>
