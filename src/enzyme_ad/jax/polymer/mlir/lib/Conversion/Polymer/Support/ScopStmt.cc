@@ -38,8 +38,7 @@ static BlockArgument findTopLevelBlockArgument(mlir::Value val) {
   return findTopLevelBlockArgument(defOp->getOperand(0));
 }
 
-[[maybe_unused]]
-static void
+[[maybe_unused]] static void
 promoteSymbolToTopLevel(mlir::Value val,
                         affine::FlatAffineValueConstraints &domain,
                         llvm::DenseMap<mlir::Value, mlir::Value> &symMap) {
