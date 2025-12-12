@@ -391,7 +391,7 @@ struct RewriteScratchpadTypePass
 
       // Are ALL of the sources have static shapes?
       if (!all_of(make_range(sources.begin(), sources.end()), [](Value val) {
-            return val.getType().cast<MemRefType>().hasStaticShape();
+            return cast<MemRefType>(val.getType()).hasStaticShape();
           }))
         return;
 
@@ -608,7 +608,7 @@ static void unifyScratchpad(func::FuncOp f, ModuleOp m, OpBuilder &b) {
   SmallVector<size_t, 4> numDims;
   for (size_t i = 0; i < scratchpads.size(); i++) {
     Value scr = scratchpads[i];
-    MemRefType memType = scr.getType().cast<MemRefType>();
+    MemRefType memType = cast<MemRefType>(scr.getType());
     if (i == 0) {
       numDim = memType.getShape().size();
       elemType = memType.getElementType();

@@ -670,7 +670,7 @@ void Importer::initializeSymbol(mlir::Value val) {
     } else {
       // Now the loop IV is there, we just find its owner for loop and clone
       // the op.
-      mlir::Block *blockToInsert = dstIV.cast<mlir::BlockArgument>().getOwner();
+      mlir::Block *blockToInsert = cast<mlir::BlockArgument>(dstIV).getOwner();
       hasInsertionPoint = true;
       b.setInsertionPointToStart(blockToInsert);
     }

@@ -224,8 +224,8 @@ void OslScopBuilder::buildScopContext(
       // Find the insertion position.
       auto it = symbols.begin();
       while (it != symbols.end()) {
-        auto lhs = it->cast<BlockArgument>();
-        auto rhs = sym.cast<BlockArgument>();
+        auto lhs = cast<BlockArgument>(*it);
+        auto rhs = cast<BlockArgument>(sym);
         if (lhs.getArgNumber() >= rhs.getArgNumber())
           break;
         ++it;

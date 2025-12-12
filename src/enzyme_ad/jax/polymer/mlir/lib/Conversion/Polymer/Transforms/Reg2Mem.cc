@@ -788,7 +788,7 @@ createScratchpadAllocaOp(mlir::func::FuncOp f, mlir::Value spad,
 
   mlir::MemRefType memRefType = mlir::MemRefType::get(
       SmallVector<int64_t, 4>(domain.getNumDimVars(), -1),
-      spad.getType().cast<mlir::MemRefType>().getElementType());
+      cast<mlir::MemRefType>(spad.getType()).getElementType());
 
   llvm::SmallVector<mlir::Value, 4> memSizes(domain.getNumDimVars());
   for (unsigned int i = 0; i < domain.getNumDimVars(); i++) {
@@ -822,7 +822,7 @@ static void resetLoadAndStoreOpsToScratchpad(mlir::func::FuncOp f,
       llvm::SmallVector<mlir::affine::AffineForOp, 4> forOps;
       affine::getAffineForIVs(*op, &forOps);
 
-      mlir::MemRefType memRefType = spad.getType().cast<mlir::MemRefType>();
+      mlir::MemRefType memRefType = cast<mlir::MemRefType>(spad.getType());
       SmallVector<mlir::AffineExpr, 4> indices(memRefType.getShape().size(),
                                                b.getAffineConstantExpr(0));
       SmallVector<mlir::Value, 4> operands;

@@ -1448,15 +1448,15 @@ public:
       // TODO This is temporary and we should get the target system index here
       MaxType = getMaxType();
     else
-      MaxType = MaxTypeI.cast<IntegerType>();
+      MaxType = cast<IntegerType>(MaxTypeI);
     unsigned MaxWidth = MaxType.getWidth();
     for (unsigned I = 0; I < Args.size(); I++) {
       Type Ty = Args[I]->getType();
       if (Ty.isa<IndexType>())
         // TODO This is temporary and we should get the target system index here
         Ty = getMaxType();
-      if (Ty.cast<IntegerType>().getWidth() > MaxWidth) {
-        MaxType = Ty.cast<IntegerType>();
+      if (cast<IntegerType>(Ty).getWidth() > MaxWidth) {
+        MaxType = cast<IntegerType>(Ty);
         MaxWidth = MaxType.getWidth();
       }
     }
