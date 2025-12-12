@@ -1518,17 +1518,14 @@ bool extractMultiplicationFactor(Value v, Value &other, Operation *op,
   return true;
 }
 
-bool extractMultiplicationFactor(Value v, Value &scalar, Value &other,
+void extractMultiplicationFactor(Value v, Value &scalar, Value &other,
                                  Operation *op, OpBuilder &builder) {
   auto mulOp = v.getDefiningOp<stablehlo::MulOp>();
   if (!mulOp) {
     scalar = nullptr;
     other = v;
-    return true;
+    return;
   }
-
-  if (!isOnlyUsedInOperation(mulOp, op))
-    return false;
 
   Value mLhs = mulOp.getLhs(), mRhs = mulOp.getRhs();
 
@@ -1543,10 +1540,9 @@ bool extractMultiplicationFactor(Value v, Value &scalar, Value &other,
       other = mLhs;
     } else {
       scalar = nullptr;
-      return false;
+      other = v;
     }
   }
-  return true;
 }
 
 Value getScalarValue(Value val, OpBuilder &builder) {
