@@ -26,7 +26,6 @@ namespace enzyme {
 
 using namespace mlir;
 
-
 struct MPICommRankOpLowering
     : public OpRewritePattern<enzymexla::MPICommRankOp> {
 

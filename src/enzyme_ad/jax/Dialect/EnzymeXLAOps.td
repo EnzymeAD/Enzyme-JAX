@@ -1096,8 +1096,6 @@ def MPICommRankOp : EnzymeXLA_Op<"comm_rank", [Pure]> {
   let summary = "Get the current rank, equivalent to "
                 "`MPI_Comm_rank(comm, &rank)`";
   let description = [{
-    This operation can optionally return an `!mpi.retval` value that can be used
-    to check for errors.
   }];
 
   /* let arguments = (ins MPI_Comm : $comm); */
@@ -1121,6 +1119,20 @@ def MPICommSizeOp : EnzymeXLA_Op<"comm_size", [Pure]> {
   let summary = "Equivalent to MPI_Comm_size(comm, &rank)";
   let results = (outs TensorOf<[I32]> : $size);
   let assemblyFormat = [{ attr-dict `:` type(results) }];
+}
+
+def MPI_SendOp : EnzymeXLA_Op<"send", []> {
+  let summary = "Equivalent to `MPI_Send(buf, size, dtype, dest, tag, comm)`";
+  let arguments = (
+    ins AnyTensor : $buf,
+    TensorOf<[I32]> : $tag,
+    TensorOf<[I32]> : $dest
+    /* MPI_Comm : $comm */
+  );
+  /* let assemblyFormat = "`(` $buf `,` $tag `,` $dest `,` $comm `)` attr-dict `:` " */
+  /*                      "type($buf) `,` type($tag) `,` type($dest)"; */
+  let assemblyFormat = "`(` operands `)` attr-dict `:` type(operands)";
+
 }
 
 #endif // ENZYMEXLA_OPS
