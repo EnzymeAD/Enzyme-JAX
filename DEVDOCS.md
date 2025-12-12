@@ -102,5 +102,5 @@ The output is fed to `FileCheck` which compares it against the expected result t
 
 Run all lit tests with
 ```bash
-bazel test //test/lit_tests:all
+bazel test //test/lit_tests/...
 ```
