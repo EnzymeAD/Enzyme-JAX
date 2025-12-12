@@ -139,6 +139,7 @@ static void getMemRefSize(MutableArrayRef<mlir::affine::AffineForOp> forOps,
   affine::FlatAffineValueConstraints cst;
   SmallVector<Operation *, 4> enclosingOps{forOps.begin(), forOps.end()};
   auto res = succeeded(getIndexSet(enclosingOps, &cst));
+  (void)res;
   assert(res);
 
   // Project out indices other than the innermost.
@@ -305,8 +306,10 @@ static void scopStmtSplit(ModuleOp m, OpBuilder &b, int toSplit) {
   Operation *opToSplit;
 
   auto res = (opToSplit = findToSplitStmt(m, func, toSplit));
+  (void)res;
   assert(res && "Given split ID cannot be found");
   res = (call = findCallOpForFunc(m, func));
+  (void)res;
   assert(res && "The call op for the target function should be found.");
 
   scopStmtSplit(m, b, func, call, opToSplit);

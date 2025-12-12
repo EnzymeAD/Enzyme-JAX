@@ -52,6 +52,7 @@ promoteSymbolToTopLevel(mlir::Value val,
 
   unsigned int pos;
   auto res = domain.findVar(val, &pos);
+  (void)res;
   assert(res && "Provided value should be in the given domain");
   domain.setValue(pos, arg);
 
@@ -76,6 +77,7 @@ void ScopStmt::initializeDomainAndEnclosingOps() {
 
   // The domain constraints can then be collected from the enclosing ops.
   auto res = succeeded(getIndexSet(enclosingOps, &domain));
+  (void)res;
   assert(res);
 
   // Symbol values, which could be a BlockArgument, or the result of DimOp or
