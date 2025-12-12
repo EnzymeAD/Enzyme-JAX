@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1765491190495,
+  "lastUpdate": 1765500379993,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "58750937+snonk@users.noreply.github.com",
-            "name": "snonk",
-            "username": "snonk"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "8c2e29e2ba68df7f492a3d4ef9b48e5f97a725c5",
-          "message": "add constant int/float check for symm (#1621)\n\n* constant check\n\n* fmt\n\n* add splat and broadcast:\n\n* fix: formatting\n\n* refactor: cleanup into a single function\n\n* add test\n\n---------\n\nCo-authored-by: Avik Pal <avikpal@mit.edu>",
-          "timestamp": "2025-11-18T01:46:55-06:00",
-          "tree_id": "62e40d6f02428e2a18c4e740a44104a36d124a98",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/8c2e29e2ba68df7f492a3d4ef9b48e5f97a725c5"
-        },
-        "date": 1763474814552,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.000004369421099909232,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.000004413862099681864,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001363153289999,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001475828000999,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2199,6 +2155,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001464243666996,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "avikpal@mit.edu",
+            "name": "Avik Pal",
+            "username": "avik-pal"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2308416a42c8ceb073525a68376a2d449daad77e",
+          "message": "fix: dot general reshape pass (#1728)\n\n* feat: vector mode forward for dot_general\n\n* chore: remove comment\n\n* fix: dot general reshape pass",
+          "timestamp": "2025-12-11T17:24:22-05:00",
+          "tree_id": "2b78d35f470325f13c88b120af86480b8048af41",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/2308416a42c8ceb073525a68376a2d449daad77e"
+        },
+        "date": 1765500379391,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004344973900151672,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.00000424071190009272,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001438192881001,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001431801300999,
             "unit": "s"
           }
         ]
