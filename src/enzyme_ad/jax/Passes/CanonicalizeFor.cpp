@@ -370,8 +370,9 @@ struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
 
         replacement = castValue(rewriter, replacement, iterarg, forOp.getLoc());
 
+        Value iterargCopy = iterarg;
         rewriter.modifyOpInPlace(
-            forOp, [&] { iterarg.replaceAllUsesWith(replacement); });
+            forOp, [&] { iterargCopy.replaceAllUsesWith(replacement); });
         canonicalize = true;
       }
 
@@ -402,8 +403,9 @@ struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
 
         replacement = castValue(rewriter, replacement, iterarg, forOp.getLoc());
 
+        Value resCopy = res;
         rewriter.modifyOpInPlace(forOp,
-                                 [&] { res.replaceAllUsesWith(replacement); });
+                                 [&] { resCopy.replaceAllUsesWith(replacement); });
         canonicalize = true;
       }
     }
@@ -579,14 +581,16 @@ struct RemoveUnusedForResults : public OpRewritePattern<ForOp> {
         replacable = true;
         replacement = iter;
         if (!iterarg.use_empty()) {
+          Value iterargCopy = iterarg;
           rewriter.modifyOpInPlace(
-              op, [&] { iterarg.replaceAllUsesWith(replacement); });
+              op, [&] { iterargCopy.replaceAllUsesWith(replacement); });
           changed = true;
         }
       }
       if (!res.use_empty() && replacable) {
+        Value resCopy = res;
         rewriter.modifyOpInPlace(op,
-                                 [&] { res.replaceAllUsesWith(replacement); });
+                                 [&] { resCopy.replaceAllUsesWith(replacement); });
         changed = true;
       }
     }
