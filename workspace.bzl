@@ -1,7 +1,7 @@
-JAX_COMMIT = "a1c8fadb66e372bacf16c93aa6e90fa0aa6ac3af"
+JAX_COMMIT = "952e0d6dbd316dd898788618d0fc47e4507ba8a7"
 JAX_SHA256 = ""
 
-ENZYME_COMMIT = "a60b57849c63792e66f88f7b74fee9ca2f74c53d"
+ENZYME_COMMIT = "fe7267f3d9152ba2d73948605ea0a854cf968756"
 ENZYME_SHA256 = ""
 
 ML_TOOLCHAIN_COMMIT = "78ef5eda03c54a912c000f1f872242d4ca6063a4"
@@ -15,6 +15,9 @@ HEDRON_COMPILE_COMMANDS_COMMIT = "d107d9c9025915902fd52346f1c6e18d87f7013a"
 HEDRON_COMPILE_COMMANDS_SHA256 = ""
 
 XLA_PATCHES = [
+    """
+    sed -i.bak0 "s/\\\"-lamd_comgr\\\",//g" third_party/gpus/rocm/BUILD.tpl 
+    """,
     """
     sed -i.bak0 "s/return TryDlopenCUDALibraries()/LOG(INFO) << \\"GPU libraries are statically linked, skip dlopen check.\\";\\nreturn absl::OkStatus();/g" xla/tsl/platform/default/dlopen_checker.cc
 """,

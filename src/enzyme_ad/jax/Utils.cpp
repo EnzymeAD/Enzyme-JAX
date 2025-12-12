@@ -259,7 +259,7 @@ bool isReadOnly(Operation *op) {
     // memory.
     SmallVector<MemoryEffects::EffectInstance, 1> effects;
     effectInterface.getEffects(effects);
-    if (!llvm::all_of(effects, [op](const MemoryEffects::EffectInstance &it) {
+    if (!llvm::all_of(effects, [](const MemoryEffects::EffectInstance &it) {
           return isa<MemoryEffects::Read>(it.getEffect());
         })) {
       return false;
@@ -289,7 +289,7 @@ bool isReadNone(Operation *op) {
     // memory.
     SmallVector<MemoryEffects::EffectInstance, 1> effects;
     effectInterface.getEffects(effects);
-    if (llvm::any_of(effects, [op](const MemoryEffects::EffectInstance &it) {
+    if (llvm::any_of(effects, [](const MemoryEffects::EffectInstance &it) {
           return isa<MemoryEffects::Read>(it.getEffect()) ||
                  isa<MemoryEffects::Write>(it.getEffect());
         })) {
@@ -1518,17 +1518,14 @@ bool extractMultiplicationFactor(Value v, Value &other, Operation *op,
   return true;
 }
 
-bool extractMultiplicationFactor(Value v, Value &scalar, Value &other,
+void extractMultiplicationFactor(Value v, Value &scalar, Value &other,
                                  Operation *op, OpBuilder &builder) {
   auto mulOp = v.getDefiningOp<stablehlo::MulOp>();
   if (!mulOp) {
     scalar = nullptr;
     other = v;
-    return true;
+    return;
   }
-
-  if (!isOnlyUsedInOperation(mulOp, op))
-    return false;
 
   Value mLhs = mulOp.getLhs(), mRhs = mulOp.getRhs();
 
@@ -1543,10 +1540,9 @@ bool extractMultiplicationFactor(Value v, Value &scalar, Value &other,
       other = mLhs;
     } else {
       scalar = nullptr;
-      return false;
+      other = v;
     }
   }
-  return true;
 }
 
 Value getScalarValue(Value val, OpBuilder &builder) {
