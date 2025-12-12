@@ -26101,6 +26101,53 @@ private:
   }
 };
 
+struct DUSDynamicSliceSimplify final
+    : public CheckedOpRewritePattern<stablehlo::DynamicSliceOp,
+                                     DUSDynamicSliceSimplify> {
+  using CheckedOpRewritePattern<
+      stablehlo::DynamicSliceOp,
+      DUSDynamicSliceSimplify>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DynamicSliceOp op,
+                                    PatternRewriter &rewriter) const {
+    auto dusOp =
+        op.getOperand().getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
+    if (!dusOp) {
+      return failure();
+    }
+
+    // TODO: for constant starts
+    auto dsStartIndices = op.getStartIndices();
+    auto dusStartIndices = dusOp.getStartIndices();
+    bool allAligned = true;
+
+    for (auto [dsStart, dusStart] :
+         llvm::zip(dsStartIndices, dusStartIndices)) {
+      if (dsStart != dusStart) {
+        allAligned = false;
+        break;
+      }
+    }
+
+    if (!allAligned) {
+      return failure();
+    }
+
+    // if sizes match up here, we can remove the DS completely.
+    // otherwise we replace the DS with a slice of the update
+    auto updateTy = cast<RankedTensorType>(dusOp.getUpdate().getType());
+    auto updateShape = llvm::to_vector(updateTy.getShape());
+    auto dsSliceSizes = llvm::to_vector(op.getSliceSizes());
+    if (updateShape == dsSliceSizes) {
+      rewriter.replaceAllUsesWith(op.getResult(), dusOp.getUpdate());
+      return success();
+    }
+
+    // TODO
+    return failure();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -26756,7 +26803,8 @@ struct EnzymeHLOOptPass
         BinaryNegatedOperandsSimplify<stablehlo::MulOp>,
         BinaryNegatedOperandsSimplify<stablehlo::DivOp>,
         DotGeneralBroadcastInDim,
-        DotGeneralBroadcastInDimSortDims
+        DotGeneralBroadcastInDimSortDims,
+        DUSDynamicSliceSimplify
       >(context);
 
     patterns.add<

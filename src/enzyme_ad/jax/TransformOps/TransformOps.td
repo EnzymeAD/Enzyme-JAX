@@ -2554,3 +2554,8 @@ def ApplyDotGeneralBroadcastInDimSortDimsPatterns : EnzymeHLOPatternOp<
     "dot_general_broadcast_in_dim_sort_dims"> {
   let patterns = ["DotGeneralBroadcastInDimSortDims"];
 }
+
+def ApplyDUSDynamicSliceSimplifyPatterns : EnzymeHLOPatternOp<
+    "dus_dynamic_slice_simplify"> {
+  let patterns = ["DUSDynamicSliceSimplify"];
+}

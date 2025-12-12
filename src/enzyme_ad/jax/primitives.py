@@ -318,6 +318,7 @@ def optimization_passes(
         "factor_scalars_in_dot_general",
         "dot_general_broadcast_in_dim",
         "dot_general_broadcast_in_dim_sort_dims",
+        "dus_dynamic_slice_simplify",
     ]
 
     # constant propagation patterns
