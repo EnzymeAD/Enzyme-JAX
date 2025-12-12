@@ -11,6 +11,11 @@
 
 include "mlir/Pass/PassBase.td"
 
+def TestPolymerPass : Pass<"test-polymer"> {
+  let dependentDialects = [
+  ];
+}
+
 def CanonicalizeLoopsPass : InterfacePass<"canonicalize-loops", 
                                           "mlir::FunctionOpInterface"> {
   let summary = "Canonicalize loops";
@@ -750,6 +755,7 @@ def SCFCanonicalizeFor : Pass<"canonicalize-scf-for"> {
 def AffineCFG : Pass<"affine-cfg"> {
   let summary = "Replace scf.if and similar with affine.if";
   let dependentDialects = [
+    "enzyme::EnzymeDialect",
     "scf::SCFDialect",
     "affine::AffineDialect",
     "enzyme::EnzymeDialect",
