@@ -26126,6 +26126,19 @@ struct DUSDynamicSliceSimplify final
   }
 };
 
+struct WhileDUSDSSimplify final
+    : public CheckedOpRewritePattern<stablehlo::WhileOp,
+                                     WhileDUSDSSimplify> {
+  using CheckedOpRewritePattern<
+      stablehlo::WhileOp,
+      WhileDUSDSSimplify>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::WhileOp op,
+                                    PatternRewriter &rewriter) const {
+    return failure();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -26782,7 +26795,8 @@ struct EnzymeHLOOptPass
         BinaryNegatedOperandsSimplify<stablehlo::DivOp>,
         DotGeneralBroadcastInDim,
         DotGeneralBroadcastInDimSortDims,
-        DUSDynamicSliceSimplify
+        DUSDynamicSliceSimplify,
+        WhileDUSDSSimplify
       >(context);
 
     patterns.add<
