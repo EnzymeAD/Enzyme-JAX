@@ -755,7 +755,6 @@ def SCFCanonicalizeFor : Pass<"canonicalize-scf-for"> {
 def AffineCFG : Pass<"affine-cfg"> {
   let summary = "Replace scf.if and similar with affine.if";
   let dependentDialects = [
-    "enzyme::EnzymeDialect",
     "scf::SCFDialect",
     "affine::AffineDialect",
     "enzyme::EnzymeDialect",

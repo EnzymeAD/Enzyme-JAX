@@ -743,6 +743,7 @@ public:
     isl_ast_expr *CalleeExpr = isl_ast_expr_get_op_arg(Expr, 0);
     isl_id *Id = isl_ast_expr_get_id(CalleeExpr);
     const char *CalleeName = isl_id_get_name(Id);
+    (void)CalleeName;
     LLVM_DEBUG(llvm::dbgs() << CalleeName << "\n");
 
     POLYMER_ISL_DEBUG("Will be expanding array ", isl_id_dump(Id));
@@ -1478,7 +1479,7 @@ public:
     SmallVector<Value> Incs;
     SmallVector<isl_id *> Iterators;
     SmallVector<Value> UBs;
-    isl_ast_node *Body;
+    isl_ast_node *Body = nullptr;
     while (For && nLoops > 0) {
       POLYMER_ISL_DEBUG("Building Parallel:\n", isl_ast_node_dump(For));
       Body = isl_ast_node_for_get_body(For);
@@ -1520,7 +1521,7 @@ public:
       }
       nLoops -= 1;
     }
-
+    assert(Body);
     assert(nLoops == 0 && "Not enough nested loops");
 
     auto pop = b.create<scf::ParallelOp>(loc, LBs, UBs, Incs);
@@ -1611,6 +1612,7 @@ public:
     for (int i = 0; i < nparams; i++) {
       isl_id *Id = isl_space_get_dim_id(space, isl_dim_param, i);
       const char *paramName = isl_id_get_name(Id);
+      (void)paramName;
       LLVM_DEBUG(llvm::dbgs() << "MapParams " << paramName << "\n");
       Value V = Value::getFromOpaquePointer(isl_id_get_user(Id));
       IDToValue[Id] = funcMapping.lookup(V);
@@ -1634,6 +1636,7 @@ static void setIslOptions(isl_ctx *ctx) {
   check_res(isl_options_set_ast_build_group_coscheduled(ctx, 1));
   check_res(isl_options_set_ast_build_allow_else(ctx, 1));
 #undef check_res
+  (void)stat;
 }
 
 void IslScop::cleanup(Operation *func) {
