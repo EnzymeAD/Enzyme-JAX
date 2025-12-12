@@ -968,7 +968,7 @@ bool isAssociativeOp(Operation *op);
 // other operand
 bool extractMultiplicationFactor(Value v, Value &other, Operation *op,
                                  OpBuilder &builder);
-bool extractMultiplicationFactor(Value v, Value &scalar, Value &other,
+void extractMultiplicationFactor(Value v, Value &scalar, Value &other,
                                  Operation *op, OpBuilder &builder);
 
 Value getScalarValue(Value val, OpBuilder &builder);

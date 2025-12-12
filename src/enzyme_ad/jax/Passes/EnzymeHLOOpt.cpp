@@ -21727,14 +21727,8 @@ struct FactorScalarsInDotGeneral final
     Value lhsScalar, lhsZ;
     Value rhsScalar, rhsZ;
 
-    auto lhsExtracted = stablehlo::extractMultiplicationFactor(
-        lhs, lhsScalar, lhsZ, op, rewriter);
-    auto rhsExtracted = stablehlo::extractMultiplicationFactor(
-        rhs, rhsScalar, rhsZ, op, rewriter);
-
-    (void)lhsExtracted;
-    (void)rhsExtracted;
-    assert(lhsExtracted && rhsExtracted);
+    stablehlo::extractMultiplicationFactor(lhs, lhsScalar, lhsZ, op, rewriter);
+    stablehlo::extractMultiplicationFactor(rhs, rhsScalar, rhsZ, op, rewriter);
 
     auto newDot = stablehlo::DotGeneralOp::create(
         rewriter, op.getLoc(), op.getType(), lhsZ, rhsZ,
