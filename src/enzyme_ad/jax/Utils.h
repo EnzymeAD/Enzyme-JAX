@@ -16,6 +16,8 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/IntegerSet.h"
 
+#include "shardy/dialect/sdy/ir/utils.h"
+
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #ifdef __clang__
 #pragma clang diagnostic push
@@ -1000,14 +1002,18 @@ LogicalResult concatSliceSimplify(PatternRewriter &rewriter,
                                   SmallVectorImpl<Value> &newOperands);
 
 // these add additional checks that prevent no-op creation
-Value ConcatenateOpCreate(OpBuilder &builder, Location loc,
-                          ArrayRef<Value> inputs, int64_t dimension);
+Value ConcatenateOpCreate(
+    OpBuilder &builder, Location loc, ArrayRef<Value> inputs, int64_t dimension,
+    std::optional<sdy::TensorShardingPerValueAttr> sharding = std::nullopt);
 
-Value ReshapeOpCreate(OpBuilder &builder, Location loc, Value input,
-                      ArrayRef<int64_t> shape);
+Value ReshapeOpCreate(
+    OpBuilder &builder, Location loc, Value input, ArrayRef<int64_t> shape,
+    std::optional<sdy::TensorShardingPerValueAttr> sharding = std::nullopt);
 
-Value TransposeOpCreate(OpBuilder &builder, Location loc, Value input,
-                        ArrayRef<int64_t> permutation);
+Value TransposeOpCreate(
+    OpBuilder &builder, Location loc, Value input,
+    ArrayRef<int64_t> permutation,
+    std::optional<sdy::TensorShardingPerValueAttr> sharding = std::nullopt);
 
 } // namespace stablehlo
 

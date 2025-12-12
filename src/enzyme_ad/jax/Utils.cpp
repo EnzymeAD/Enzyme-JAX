@@ -1846,8 +1846,9 @@ LogicalResult concatSliceSimplify(PatternRewriter &rewriter,
   return changed ? success() : failure();
 }
 
-Value ConcatenateOpCreate(OpBuilder &builder, Location loc,
-                          ArrayRef<Value> inputs, int64_t dimension) {
+Value ConcatenateOpCreate(
+    OpBuilder &builder, Location loc, ArrayRef<Value> inputs, int64_t dimension,
+    std::optional<sdy::TensorShardingPerValueAttr> sharding) {
   assert(inputs.size() >= 1);
 
   if (inputs.size() == 1) {
@@ -1860,29 +1861,45 @@ Value ConcatenateOpCreate(OpBuilder &builder, Location loc,
     return inputs[0];
   }
 
-  return stablehlo::ConcatenateOp::create(builder, loc, inputs, dimension);
+  auto concatOp =
+      stablehlo::ConcatenateOp::create(builder, loc, inputs, dimension);
+  if (sharding.has_value()) {
+    sdy::setShardings(concatOp, *sharding);
+  }
+  return concatOp.getResult();
 }
 
 Value ReshapeOpCreate(OpBuilder &builder, Location loc, Value input,
-                      ArrayRef<int64_t> shape) {
+                      ArrayRef<int64_t> shape,
+                      std::optional<sdy::TensorShardingPerValueAttr> sharding) {
   auto inputTy = cast<RankedTensorType>(input.getType());
   if (inputTy.getShape() == shape) {
     return input;
   }
 
-  return stablehlo::ReshapeOp::create(
+  auto reshapeOp = stablehlo::ReshapeOp::create(
       builder, loc, RankedTensorType::get(shape, inputTy.getElementType()),
       input);
+  if (sharding.has_value()) {
+    sdy::setShardings(reshapeOp, *sharding);
+  }
+  return reshapeOp.getResult();
 }
 
-Value TransposeOpCreate(OpBuilder &builder, Location loc, Value input,
-                        ArrayRef<int64_t> permutation) {
+Value TransposeOpCreate(
+    OpBuilder &builder, Location loc, Value input,
+    ArrayRef<int64_t> permutation,
+    std::optional<sdy::TensorShardingPerValueAttr> sharding) {
   if (llvm::is_sorted(permutation)) {
     return input;
   }
 
-  return stablehlo::TransposeOp::create(
+  auto transposeOp = stablehlo::TransposeOp::create(
       builder, loc, input, builder.getDenseI64ArrayAttr(permutation));
+  if (sharding.has_value()) {
+    sdy::setShardings(transposeOp, *sharding);
+  }
+  return transposeOp.getResult();
 }
 
 } // namespace stablehlo
