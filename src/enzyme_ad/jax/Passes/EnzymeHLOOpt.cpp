@@ -1296,57 +1296,6 @@ struct TransposeDUS final
   }
 };
 
-stablehlo::ConcatenateOp lowerWrap(enzymexla::WrapOp wrap,
-                                   PatternRewriter &rewriter, bool replace) {
-  // sl0[end-lhs:end], mid, sl1[0:rhs]
-  auto wrapOpT = cast<RankedTensorType>(wrap.getOperand().getType());
-  SmallVector<int64_t> strides(wrapOpT.getShape().size(), 1);
-
-  SmallVector<Value> args;
-
-  auto shard = sdy::getShardingPerValue(wrap);
-
-  if (wrap.getLhs() != 0) {
-    SmallVector<int64_t> sl0_starts(wrapOpT.getShape().size(), 0);
-    SmallVector<int64_t> sl0_ends(wrapOpT.getShape());
-
-    sl0_starts[wrap.getDimension()] =
-        wrapOpT.getShape()[wrap.getDimension()] - wrap.getLhs();
-
-    auto sl0 =
-        stablehlo::SliceOp::create(rewriter, wrap.getLoc(), wrap.getOperand(),
-                                   sl0_starts, sl0_ends, strides);
-    if (shard)
-      sdy::setShardings(sl0, shard);
-
-    args.push_back(sl0);
-  }
-
-  args.push_back(wrap.getOperand());
-
-  if (wrap.getRhs() != 0) {
-    SmallVector<int64_t> sl1_starts(wrapOpT.getShape().size(), 0);
-    SmallVector<int64_t> sl1_ends(wrapOpT.getShape());
-
-    sl1_ends[wrap.getDimension()] = wrap.getRhs();
-    auto sl1 =
-        stablehlo::SliceOp::create(rewriter, wrap.getLoc(), wrap.getOperand(),
-                                   sl1_starts, sl1_ends, strides);
-    if (shard)
-      sdy::setShardings(sl1, shard);
-
-    args.push_back(sl1);
-  }
-
-  auto newConcat = stablehlo::ConcatenateOp::create(rewriter, wrap.getLoc(),
-                                                    args, wrap.getDimension());
-  if (replace)
-    rewriter.replaceOp(wrap, newConcat);
-  if (shard)
-    sdy::setShardings(newConcat, shard);
-  return newConcat;
-}
-
 struct LowerWrap
     : public CheckedOpRewritePattern<enzymexla::WrapOp, LowerWrap> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -4051,119 +4000,6 @@ LogicalResult sliceConcatHelper(stablehlo::ConcatenateOp concat,
     curdim += nextdim;
   }
   return success();
-}
-
-bool canMergeSlicesAlongAxis(int dimension, ArrayRef<int64_t> sliceStarts,
-                             ArrayRef<int64_t> otherSliceStarts,
-                             ArrayRef<int64_t> sliceLimits,
-                             ArrayRef<int64_t> otherSliceLimits,
-                             ArrayRef<int64_t> sliceStrides,
-                             ArrayRef<int64_t> otherSliceStrides) {
-  bool canMerge = true;
-
-  for (int d = 0, ndims = sliceStarts.size(); d < ndims; ++d) {
-    if (d == dimension) {
-      canMerge &= sliceLimits[d] == otherSliceStarts[d] &&
-                  sliceStrides[d] == otherSliceStrides[d];
-    } else {
-      canMerge &= sliceStarts[d] == otherSliceStarts[d] &&
-                  sliceLimits[d] == otherSliceLimits[d] &&
-                  sliceStrides[d] == otherSliceStrides[d];
-    }
-  }
-  return canMerge;
-}
-
-bool canMergeSlicesAlongAxis(int dimension, stablehlo::SliceOp slice,
-                             stablehlo::SliceOp otherSlice) {
-  if (otherSlice.getOperand() != slice.getOperand())
-    return false;
-
-  // Check that both slices are contiguous only in dim
-  ArrayRef<int64_t> sliceStarts = slice.getStartIndices(),
-                    otherSliceStarts = otherSlice.getStartIndices(),
-                    sliceLimits = slice.getLimitIndices(),
-                    otherSliceLimits = otherSlice.getLimitIndices(),
-                    sliceStrides = slice.getStrides(),
-                    otherSliceStrides = otherSlice.getStrides();
-
-  return canMergeSlicesAlongAxis(dimension, sliceStarts, otherSliceStarts,
-                                 sliceLimits, otherSliceLimits, sliceStrides,
-                                 otherSliceStrides);
-}
-
-LogicalResult concatSliceSimplify(PatternRewriter &rewriter,
-                                  SmallVectorImpl<Value> &operands, int64_t dim,
-                                  SmallVectorImpl<Value> &newOperands) {
-  bool changed = false;
-  for (size_t i = 0, e = operands.size(); i < e; ++i) {
-    auto operand = operands[i];
-    auto slice = operand.getDefiningOp<stablehlo::SliceOp>();
-
-    if (!slice) {
-      newOperands.push_back(operand);
-      continue;
-    }
-
-    while (i + 1 < e) {
-      if (auto otherSlice =
-              operands[i + 1].getDefiningOp<stablehlo::SliceOp>()) {
-        if (canMergeSlicesAlongAxis(dim, slice, otherSlice)) {
-          slice = stablehlo::SliceOp::create(
-              rewriter, slice->getLoc(), slice.getOperand(),
-              slice.getStartIndices(), otherSlice.getLimitIndices(),
-              slice.getStrides());
-          changed = true;
-          i++;
-          continue;
-        } else {
-          break;
-        }
-      }
-
-      if (auto otherWrap = operands[i + 1].getDefiningOp<enzymexla::WrapOp>()) {
-        auto wrapSlice =
-            otherWrap.getOperand().getDefiningOp<stablehlo::SliceOp>();
-        if (wrapSlice && wrapSlice.getOperand() == slice.getOperand() &&
-            otherWrap.getLhs() != 0) {
-          SmallVector<int64_t> wrapStarts =
-              llvm::to_vector(wrapSlice.getStartIndices());
-          SmallVector<int64_t> wrapLimits =
-              llvm::to_vector(wrapSlice.getLimitIndices());
-          if (wrapSlice.getStrides()[dim] == 1) {
-            wrapStarts[dim] = wrapLimits[dim] - otherWrap.getLhs();
-          }
-          if (canMergeSlicesAlongAxis(dim, slice.getStartIndices(), wrapStarts,
-                                      slice.getLimitIndices(), wrapLimits,
-                                      slice.getStrides(),
-                                      wrapSlice.getStrides())) {
-
-            changed = true;
-            auto c2 = lowerWrap(otherWrap, rewriter, /*replace*/ false);
-            auto newSlice = stablehlo::SliceOp::create(
-                rewriter, slice->getLoc(), slice.getOperand(),
-                slice.getStartIndices(), wrapLimits, slice.getStrides());
-            newOperands.push_back(newSlice);
-            for (int i = 1; i < c2.getOperands().size(); i++) {
-              newOperands.push_back(c2.getOperands()[i]);
-            }
-            i++;
-            slice = nullptr;
-            break;
-          } else {
-            break;
-          }
-        }
-      }
-      break;
-    }
-
-    if (slice) {
-      newOperands.push_back(slice.getResult());
-    }
-  }
-
-  return changed ? success() : failure();
 }
 
 struct ConcatSlice final
@@ -24010,51 +23846,117 @@ struct ReduceSliceFusionBase
                                     PatternRewriter &rewriter) const {
     SmallVector<SliceInfo, 4> slices;
     SmallVector<Value> extraValues;
-    if (!collectSlicesInChain(binaryOp, slices, extraValues))
+
+    if (!collectSlicesInChain(binaryOp, slices, extraValues)) {
       return failure();
+    }
 
-    // ensure all slices are along the same dimension
-    auto sliceDims = findIntersection(slices);
-    if (sliceDims.size() != 1)
-      return failure();
-    int64_t sliceDim = sliceDims[0];
+    // we split up the fusion into 2 subsets: 1 where all have explicit reshape
+    // and 1 where all don't
+    SmallVector<SmallVector<SliceInfo, 4>, 4> slicesPartitioned;
+    SmallVector<std::optional<SmallVector<int64_t>>> partitionShapes;
 
-    // Sort slices by start index
-    llvm::sort(slices, [sliceDim](const SliceInfo &a, const SliceInfo &b) {
-      return a.startIndices[sliceDim] < b.startIndices[sliceDim];
-    });
+    // Initialize with the "no reshape" partition
+    slicesPartitioned.emplace_back();
+    partitionShapes.push_back(std::nullopt);
 
-    // overlapping slices are optimized with a different fusion
-    for (int i = 0; i < slices.size() - 1; i++) {
-      auto info1 = slices[i];
-      auto info2 = slices[i + 1];
-      if (info2.startIndices[sliceDim] < info1.limitIndices[sliceDim]) {
-        return failure();
+    for (auto slice : slices) {
+      std::optional<SmallVector<int64_t>> shape = slice.explicitReshapeShape;
+      bool matched = false;
+      for (size_t i = 0; i < partitionShapes.size(); ++i) {
+        if (partitionShapes[i] == shape) {
+          slicesPartitioned[i].push_back(slice);
+          matched = true;
+          break;
+        }
+      }
+      if (!matched) {
+        partitionShapes.push_back(shape);
+        slicesPartitioned.push_back({slice});
       }
     }
 
-    return createFusedReduce(rewriter, binaryOp, slices, extraValues, sliceDim);
+    auto maxIt = llvm::max_element(slicesPartitioned, [](auto &a, auto &b) {
+      return a.size() < b.size();
+    });
+
+    if (maxIt == slicesPartitioned.end() || maxIt->empty()) {
+      return failure();
+    }
+
+    size_t maxIdx = std::distance(slicesPartitioned.begin(), maxIt);
+    auto &slicesToFuse = slicesPartitioned[maxIdx];
+    auto &shapeToFuse = partitionShapes[maxIdx];
+
+    int64_t sliceDim = extractSliceDim(slicesToFuse);
+    if (sliceDim == -1) {
+      return failure();
+    }
+
+    // add values into the extraValues list
+    for (size_t i = 0; i < slicesPartitioned.size(); i++) {
+      if (i == maxIdx) {
+        continue;
+      }
+      for (auto slice : slicesPartitioned[i]) {
+        assert(slice.source);
+        extraValues.push_back(slice.source);
+      }
+    }
+
+    return createFusedReduce(rewriter, binaryOp, slicesToFuse, extraValues,
+                             sliceDim, shapeToFuse);
   };
 
 private:
   struct SliceInfo {
     stablehlo::SliceOp sliceOp;
-    SmallVector<int64_t> startIndices;
-    SmallVector<int64_t> limitIndices;
-    SmallVector<int64_t> strides;
     llvm::SmallSetVector<int64_t, 4> sliceDims;
+    std::optional<SmallVector<int64_t>> explicitReshapeShape;
     Value initValue;
-
-    SliceInfo() = default;
-    SliceInfo(stablehlo::SliceOp sliceOp) : sliceOp(sliceOp) {
-      startIndices = llvm::to_vector(sliceOp.getStartIndices());
-      limitIndices = llvm::to_vector(sliceOp.getLimitIndices());
-      strides = llvm::to_vector(sliceOp.getStrides());
-    }
+    Value source; // needed for partial fusion
   };
+
+  int64_t extractSliceDim(SmallVector<SliceInfo, 4> &slices) const {
+    int64_t sliceDim = -1;
+    auto sliceDims = findIntersection(slices);
+
+    for (auto dim : sliceDims) {
+      // Sort slices by start index
+      llvm::sort(slices, [&](SliceInfo &a, SliceInfo &b) {
+        return a.sliceOp.getStartIndices()[dim] <
+               b.sliceOp.getStartIndices()[dim];
+      });
+
+      // overlapping slices are optimized with a different fusion
+      bool overlapping = false;
+      for (int i = 0; i < slices.size() - 1; i++) {
+        auto info1 = slices[i];
+        auto info2 = slices[i + 1];
+        if (info2.sliceOp.getStartIndices()[dim] <
+            info1.sliceOp.getLimitIndices()[dim]) {
+          overlapping = true;
+          break;
+        }
+      }
+
+      if (overlapping) {
+        continue;
+      }
+
+      sliceDim = dim;
+      break;
+    }
+
+    return sliceDim;
+  }
 
   llvm::SmallSetVector<int64_t, 4>
   findIntersection(SmallVector<SliceInfo, 4> &slices) const {
+    if (slices.empty()) {
+      return {};
+    }
+
     auto intersection = slices.front().sliceDims;
     for (size_t i = 1; i < slices.size(); i++) {
       llvm::set_intersect(intersection, slices[i].sliceDims);
@@ -24079,6 +23981,7 @@ private:
     SmallVector<int64_t> reductionDims = {reduceOp.getDimensions()[0]};
     SliceInfo info = extractSliceInfo(slice, reductionDims);
     info.initValue = reduceOp.getInitValues()[0];
+    info.source = reduceOp.getResults()[0];
     return {true, info};
   }
 
@@ -24097,12 +24000,13 @@ private:
       return {false, SliceInfo()};
     }
 
-    return matchReduceSlice(reduce);
+    auto [match, info] = matchReduceSlice(reduce);
+    info.source = reshapeOp.getResult();
+    return {match, info};
   }
 
   std::tuple<bool, SliceInfo>
   matchReshapeSlice(stablehlo::ReshapeOp reshapeOp) const {
-    auto inputType = cast<RankedTensorType>(reshapeOp.getOperand().getType());
     auto outputType = cast<RankedTensorType>(reshapeOp.getType());
 
     auto slice =
@@ -24111,17 +24015,23 @@ private:
       return {false, SliceInfo()};
     }
 
-    auto insertionDims = findReshapeInsertionDims(outputType, inputType);
-    SliceInfo info = extractSliceInfo(slice, insertionDims);
-    return {true, info};
+    SliceInfo info = extractSliceInfo(slice);
+    if (info.sliceOp) {
+      info.explicitReshapeShape = llvm::to_vector(outputType.getShape());
+      info.source = reshapeOp.getResult();
+      return {true, info};
+    }
+    return {false, info};
   }
 
   bool matchingSourceOperand(SmallVectorImpl<SliceInfo> &slices,
                              stablehlo::SliceOp slice) const {
-    if (!slice)
+    if (!slice) {
       return false;
-    if (slices.size() == 0)
+    }
+    if (slices.size() == 0) {
       return true;
+    }
     return slices[0].sliceOp.getOperand() == slice.getOperand();
   }
 
@@ -24196,30 +24106,31 @@ private:
 
   // Extract slice information
   SliceInfo extractSliceInfo(stablehlo::SliceOp slice) const {
-    SliceInfo info(slice);
+    SliceInfo info{slice};
     auto outputType = cast<RankedTensorType>(slice.getType());
     for (size_t i = 0; i < outputType.getRank(); ++i) {
       if (outputType.getDimSize(i) == 1) {
         info.sliceDims.insert(i);
       }
     }
+    info.source = slice.getResult();
     return info;
   }
 
   SliceInfo extractSliceInfo(stablehlo::SliceOp slice,
                              SmallVectorImpl<int64_t> &potentialDims) const {
-    SliceInfo info(slice);
+    SliceInfo info{slice};
     for (auto dim : potentialDims)
       info.sliceDims.insert(dim);
     return info;
   }
 
   // Create the fused reduce operation
-  LogicalResult createFusedReduce(PatternRewriter &rewriter,
-                                  BinaryOpType binaryOp,
-                                  SmallVectorImpl<SliceInfo> &slices,
-                                  SmallVectorImpl<Value> &extraValues,
-                                  int64_t sliceDim) const {
+  LogicalResult createFusedReduce(
+      PatternRewriter &rewriter, BinaryOpType binaryOp,
+      SmallVectorImpl<SliceInfo> &slices, SmallVectorImpl<Value> &extraValues,
+      int64_t sliceDim,
+      std::optional<SmallVector<int64_t>> explicitReshapeShape) const {
     Value initValue;
     for (auto sliceInfo : slices) {
       if (sliceInfo.initValue) {
@@ -24293,6 +24204,16 @@ private:
         cast<RankedTensorType>(binaryOp.getResult().getType());
     Value result = stablehlo::ReshapeOp::create(
         rewriter, binaryOp.getLoc(), binaryResultType, newReduce.getResult(0));
+
+    if (explicitReshapeShape.has_value()) {
+      assert(binaryResultType.getRank() == explicitReshapeShape.value().size());
+      for (auto [sz1, sz2] : llvm::zip(explicitReshapeShape.value(),
+                                       binaryResultType.getShape())) {
+        (void)sz1;
+        (void)sz2;
+        assert(sz1 == sz2);
+      }
+    }
 
     for (auto &value : extraValues) {
       result = rewriter.template create<BinaryOpType>(binaryOp.getLoc(), result,
