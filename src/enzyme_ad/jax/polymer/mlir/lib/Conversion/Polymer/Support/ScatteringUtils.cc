@@ -4,7 +4,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "ScatteringUtils.h"
+#include "mlir/Conversion/Polymer/Support/ScatteringUtils.h"
 
 #include <memory>
 

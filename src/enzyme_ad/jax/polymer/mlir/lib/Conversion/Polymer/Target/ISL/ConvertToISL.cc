@@ -5,10 +5,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Polymer/Support/IslScop.h"
-#include "ScopStmt.h"
-#include "Polymer/Target/ISL.h"
-#include "Polymer/Transforms/ExtractScopStmt.h"
+#include "mlir/Conversion/Polymer/Support/IslScop.h"
+#include "mlir/Conversion/Polymer/Support/ScopStmt.h"
+#include "mlir/Conversion/Polymer/Target/ISL.h"
+#include "mlir/Conversion/Polymer/Transforms/ExtractScopStmt.h"
 
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/AffineStructures.h"

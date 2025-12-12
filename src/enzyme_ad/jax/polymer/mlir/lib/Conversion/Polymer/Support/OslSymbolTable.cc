@@ -5,8 +5,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Polymer/Support/OslSymbolTable.h"
-#include "Polymer/Support/OslScopStmtOpSet.h"
+#include "mlir/Conversion/Polymer/Support/OslSymbolTable.h"
+#include "mlir/Conversion/Polymer/Support/OslScopStmtOpSet.h"
 
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/Value.h"

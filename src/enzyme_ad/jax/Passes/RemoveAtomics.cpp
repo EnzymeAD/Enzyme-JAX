@@ -11,8 +11,8 @@
 
 #include "Enzyme/MLIR/Dialect/Dialect.h"
 #include "Enzyme/MLIR/Dialect/Ops.h"
-#include "../Polymer/Support/IslScop.h"
-#include "../Polymer/Target/ISL.h"
+#include "../polymer/mlir/include/mlir/Conversion/Polymer/Support/IslScop.h"
+#include "../polymer/mlir/include/mlir/Conversion/Polymer/Target/ISL.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Complex/IR/Complex.h"
 #include "mlir/Dialect/Math/IR/Math.h"

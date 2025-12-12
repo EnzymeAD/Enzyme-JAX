@@ -4,8 +4,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Utils.h"
-#include "PolymerUtils.h"
+#include "mlir/Conversion/Polymer/Support/Utils.h"
+#include "mlir/Conversion/Polymer/Support/PolymerUtils.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"

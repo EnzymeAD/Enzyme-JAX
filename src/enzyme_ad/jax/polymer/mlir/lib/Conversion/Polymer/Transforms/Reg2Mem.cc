@@ -4,7 +4,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Reg2Mem.h"
+#include "mlir/Conversion/Polymer/Transforms/Reg2Mem.h"
 
 #include "mlir/Analysis/TopologicalSortUtils.h"
 #include "mlir/Conversion/AffineToStandard/AffineToStandard.h"

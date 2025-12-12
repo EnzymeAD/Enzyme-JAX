@@ -1,6 +1,6 @@
 //===- ScopStmtOpt.cc - Optimise SCoP statement extraction ------------C++-===//
 
-#include "ScopStmtOpt.h"
+#include "mlir/Conversion/Polymer/Transforms/ScopStmtOpt.h"
 
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
