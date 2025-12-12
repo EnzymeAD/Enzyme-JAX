@@ -157,5 +157,18 @@ struct LowerEnzymeXLAMLPass
                                             config))) {
       signalPassFailure();
     }
+
+    // Verify that all illegal ops have been lowered
+    auto walkResult = getOperation()->walk([&](Operation *op) {
+      if (isa<enzymexla::ReluOp, enzymexla::GeluOp>(op)) {
+        op->emitError("Failed to lower enzymexla ML operation");
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+
+    if (walkResult.wasInterrupted()) {
+      signalPassFailure();
+    }
   }
 };

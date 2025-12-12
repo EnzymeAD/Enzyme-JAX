@@ -16,7 +16,7 @@
 #include "stablehlo/dialect/StablehloOps.h"
 
 #include "mlir/IR/PatternMatch.h"
-#include "mlir/Transforms/DialectConversion.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 namespace mlir {
 namespace enzyme {
@@ -30,12 +30,11 @@ using namespace mlir::enzyme;
 using namespace enzyme;
 namespace {
 
-struct ExtractOpConversion : public OpConversionPattern<enzyme::ExtractOp> {
-  using OpConversionPattern<enzyme::ExtractOp>::OpConversionPattern;
+struct ExtractOpLowering : public OpRewritePattern<enzyme::ExtractOp> {
+  using OpRewritePattern<enzyme::ExtractOp>::OpRewritePattern;
 
-  LogicalResult
-  matchAndRewrite(enzyme::ExtractOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite(enzyme::ExtractOp op,
+                                PatternRewriter &rewriter) const override {
 
     auto inTy = op.getInput().getType();
     auto outTy = op.getOutput().getType();
@@ -68,12 +67,11 @@ struct ExtractOpConversion : public OpConversionPattern<enzyme::ExtractOp> {
   }
 };
 
-struct ConcatOpConversion : public OpConversionPattern<enzyme::ConcatOp> {
-  using OpConversionPattern<enzyme::ConcatOp>::OpConversionPattern;
+struct ConcatOpLowering : public OpRewritePattern<enzyme::ConcatOp> {
+  using OpRewritePattern<enzyme::ConcatOp>::OpRewritePattern;
 
-  LogicalResult
-  matchAndRewrite(enzyme::ConcatOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite(enzyme::ConcatOp op,
+                                PatternRewriter &rewriter) const override {
     SmallVector<Value> inputs = op.getInputs();
     if (inputs.empty())
       return failure();
@@ -106,15 +104,24 @@ struct EnzymeBatchToStableHLOPass
   void runOnOperation() override {
     MLIRContext *context = &getContext();
     RewritePatternSet patterns(context);
-    patterns.add<ConcatOpConversion, ExtractOpConversion>(context);
+    patterns.add<ConcatOpLowering, ExtractOpLowering>(context);
 
-    ConversionTarget target(*context);
-    target.addLegalDialect<stablehlo::StablehloDialect>();
-    target.addLegalDialect<enzyme::EnzymeDialect>();
-    target.addIllegalOp<enzyme::ConcatOp, enzyme::ExtractOp>();
+    GreedyRewriteConfig config;
+    if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
+                                            config))) {
+      signalPassFailure();
+    }
 
-    if (failed(applyPartialConversion(getOperation(), target,
-                                      std::move(patterns)))) {
+    // Verify that all illegal ops have been lowered
+    auto walkResult = getOperation()->walk([&](Operation *op) {
+      if (isa<enzyme::ConcatOp, enzyme::ExtractOp>(op)) {
+        op->emitError("Failed to lower enzyme batch operation");
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+
+    if (walkResult.wasInterrupted()) {
       signalPassFailure();
     }
   };
