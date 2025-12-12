@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1765542049524,
+  "lastUpdate": 1765575992205,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "avikpal@mit.edu",
-            "name": "Avik Pal",
-            "username": "avik-pal"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "3c38d1fd809f0f7e246bf3ba2f535195dabe78cb",
-          "message": "fix: analysis should be run on Values (not Operations) (#1633)\n\n* fix: analysis should be run on Values (not Operations)\n\n* refactor: abstract away the constant check\n\n* fix: remove PENDING\n\n* fix: make naming better\n\n* fix: drop unsupported attributes\n\n* feat: C API\n\n* feat: read attrs from block args\n\n* test: more testing\n\n* fix: C API",
-          "timestamp": "2025-11-20T14:44:42-05:00",
-          "tree_id": "a8c08f13a1cab3ebf99b5a192e2ebdbcd6ed38a3",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/3c38d1fd809f0f7e246bf3ba2f535195dabe78cb"
-        },
-        "date": 1763695749000,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.000004347273900930304,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.000004293463900103233,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001352114348992,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001364999429992,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2199,6 +2155,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "scatter_sum / JaXPipe / tpu / Primal",
             "value": 0.0001396556061998,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "avikpal@mit.edu",
+            "name": "Avik Pal",
+            "username": "avik-pal"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9b1bf267de1eb1fdbcc006e316b1e4d894de2355",
+          "message": "feat: generalize `slice_to_batch` and `concat_to_batch` passes (#1719)\n\n* feat: generalize slice_to_batch and concat_to_batch passes\n\n* fix: make check a bit faster\n\n* feat: generalize to support non-contiguous slices\n\n* feat: generalize to non contiguous slices\n\n* test: strided slice reduce\n\n* feat: generalize binary op to reduce\n\n* feat: generalize reduce fusion\n\n* fix: build\n\n* test: update\n\n* fix: dependency check\n\n* feat: add a optional arg for sharding attr",
+          "timestamp": "2025-12-12T13:00:14-05:00",
+          "tree_id": "d0377d42edbc3ee825f3c10a68a511565402fa40",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/9b1bf267de1eb1fdbcc006e316b1e4d894de2355"
+        },
+        "date": 1765575991153,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000004463052999926731,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004374844999983907,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001605440113009,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001537183152991,
             "unit": "s"
           }
         ]
