@@ -2221,31 +2221,22 @@ struct RandomSplitOpConversion
     auto counterType =
         RankedTensorType::get({static_cast<int64_t>(numOutputs)}, ui32Type);
 
-    Value counts1 = stablehlo::ConstantOp::create(
+    auto counts1 = stablehlo::ConstantOp::create(
         rewriter, loc, counterType,
         DenseElementsAttr::get(counterType,
                                rewriter.getIntegerAttr(ui32Type, 0)));
-    Value counts2 = stablehlo::IotaOp::create(rewriter, loc, counterType,
-                                              rewriter.getI64IntegerAttr(0));
+    auto counts2 = stablehlo::IotaOp::create(rewriter, loc, counterType,
+                                             rewriter.getI64IntegerAttr(0));
 
     // Broadcast keys
-    Value key0_0_bcast = stablehlo::BroadcastInDimOp::create(
+    auto key0_0_bcast = stablehlo::BroadcastInDimOp::create(
         rewriter, loc, counterType, key0_0, rewriter.getDenseI64ArrayAttr({}));
-    Value key0_1_bcast = stablehlo::BroadcastInDimOp::create(
+    auto key0_1_bcast = stablehlo::BroadcastInDimOp::create(
         rewriter, loc, counterType, key0_1, rewriter.getDenseI64ArrayAttr({}));
-    Value key1_0_bcast = stablehlo::BroadcastInDimOp::create(
+    auto key1_0_bcast = stablehlo::BroadcastInDimOp::create(
         rewriter, loc, counterType, key1_0, rewriter.getDenseI64ArrayAttr({}));
-    Value key1_1_bcast = stablehlo::BroadcastInDimOp::create(
+    auto key1_1_bcast = stablehlo::BroadcastInDimOp::create(
         rewriter, loc, counterType, key1_1, rewriter.getDenseI64ArrayAttr({}));
-
-    // TODO: Come up with a better fix
-    auto barrier = stablehlo::OptimizationBarrierOp::create(
-        rewriter, loc,
-        ValueRange{key0_0_bcast, key0_1_bcast, key1_0_bcast, key1_1_bcast});
-    key0_0_bcast = barrier.getResult()[0];
-    key0_1_bcast = barrier.getResult()[1];
-    key1_0_bcast = barrier.getResult()[2];
-    key1_1_bcast = barrier.getResult()[3];
 
     auto [h0_0, h0_1] = threefry2x32Hash(rewriter, loc, key0_0_bcast,
                                          key0_1_bcast, counts1, counts2);
