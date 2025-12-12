@@ -81,7 +81,7 @@ static void mapDefToUses(mlir::func::FuncOp f, DefToUsesMap &defToUses) {
             isa<memref::AllocOp, memref::AllocaOp, memref::DimOp,
                 mlir::arith::ConstantOp, mlir::affine::AffineApplyOp>(defOp) ||
             (isa<mlir::arith::IndexCastOp>(defOp) &&
-             defOp->getOperand(0).isa<BlockArgument>()))
+             isa<BlockArgument>(defOp->getOperand(0))))
           continue;
 
         // The block that defines the value is different from the block of the
@@ -755,12 +755,12 @@ static mlir::Value findInsertionPointAfter(mlir::func::FuncOp f,
                                            ArrayRef<mlir::Value> candidates) {
   DominanceInfo dom(f);
   for (auto v1 : candidates) {
-    if (v1.isa<BlockArgument>())
+    if (isa<BlockArgument>(v1))
       continue;
 
     bool dominatesOthers = false;
     for (auto v2 : candidates) {
-      if (v2.isa<BlockArgument>())
+      if (isa<BlockArgument>(v2))
         continue;
 
       if (v1 != v2 && dom.dominates(v1.getDefiningOp(), v2.getDefiningOp())) {

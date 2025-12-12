@@ -241,7 +241,7 @@ static void getScopStmtOps(Operation *writeOp,
     if (isa<memref::AllocaOp, memref::AllocOp, memref::DimOp,
             mlir::affine::AffineApplyOp>(op) ||
         (isa<mlir::arith::IndexCastOp>(op) &&
-         op->getOperand(0).isa<BlockArgument>() &&
+         isa<BlockArgument>(op->getOperand(0)) &&
          isa<func::FuncOp>(cast<BlockArgument>(op->getOperand(0)
                                )
                                .getOwner()

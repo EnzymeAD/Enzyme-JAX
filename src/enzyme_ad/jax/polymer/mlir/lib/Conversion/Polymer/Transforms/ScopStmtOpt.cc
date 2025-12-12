@@ -62,11 +62,11 @@ static Value findLastDefined(ValueRange values) {
 
   // TODO: should do a proper topological sort here.
   for (Value value : values) {
-    if (value.isa<BlockArgument>())
+    if (isa<BlockArgument>(value))
       continue;
     bool dominatedByAll = true;
     for (Value other : values) {
-      if (other == value || other.isa<BlockArgument>())
+      if (other == value || isa<BlockArgument>(other))
         continue;
 
       if (!dom.dominates(other.getDefiningOp(), value.getDefiningOp())) {
@@ -549,7 +549,7 @@ static int annotateSplittable(func::FuncOp f, OpBuilder &b, int startId) {
       for (Value operand : op->getOperands()) {
         Operation *defOp = operand.getDefiningOp();
         // Filter out block arguments.
-        if (defOp == nullptr || operand.isa<BlockArgument>())
+        if (defOp == nullptr || isa<BlockArgument>(operand))
           continue;
         // Filter out operations out of the current region.
         if (defOp->getParentRegion() != storeOp->getParentRegion())

@@ -1429,7 +1429,7 @@ public:
     SmallVector<Value *> Args({&args...});
     for (unsigned I = 0; I < Args.size(); I++) {
       Type Ty = Args[I]->getType();
-      if (!Ty.isa<IndexType>()) {
+      if (!isa<IndexType>(Ty)) {
         *Args[I] =
             b.create<arith::IndexCastOp>(loc, b.getIndexType(), *Args[I]);
       }
@@ -1440,11 +1440,11 @@ public:
   Type convertToMaxWidth(Ts &&...args) {
     SmallVector<Value *> Args({&args...});
     if (llvm::all_of(Args,
-                     [&](Value *V) { return V->getType().isa<IndexType>(); }))
+                     [&](Value *V) { return isa<IndexType>(V->getType()); }))
       return Args[0]->getType();
     Type MaxTypeI = Args[0]->getType();
     IntegerType MaxType;
-    if (MaxTypeI.isa<IndexType>())
+    if (isa<IndexType>(MaxTypeI))
       // TODO This is temporary and we should get the target system index here
       MaxType = getMaxType();
     else
@@ -1452,7 +1452,7 @@ public:
     unsigned MaxWidth = MaxType.getWidth();
     for (unsigned I = 0; I < Args.size(); I++) {
       Type Ty = Args[I]->getType();
-      if (Ty.isa<IndexType>())
+      if (isa<IndexType>(Ty))
         // TODO This is temporary and we should get the target system index here
         Ty = getMaxType();
       if (cast<IntegerType>(Ty).getWidth() > MaxWidth) {
@@ -1462,7 +1462,7 @@ public:
     }
     for (unsigned I = 0; I < Args.size(); I++) {
       Type Ty = Args[I]->getType();
-      if (Ty.isa<IndexType>()) {
+      if (isa<IndexType>(Ty)) {
         *Args[I] = b.create<arith::IndexCastOp>(loc, MaxType, *Args[I]);
       } else if (Ty != MaxType) {
         *Args[I] = b.create<arith::ExtSIOp>(loc, MaxType, *Args[I]);
