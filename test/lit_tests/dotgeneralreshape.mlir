@@ -47,25 +47,11 @@ module attributes {transform.with_named_sequence} {
 }
 
 // CHECK: func.func @f_generator(%arg0: tensor<6x2xf32>, %arg1: tensor<2x4xf32>) -> (tensor<4xf32>, tensor<6x2xf32>, tensor<2x4xf32>) {
+// CHECK-NEXT:   %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
 // CHECK-NEXT:   %0 = stablehlo.broadcast_in_dim %arg1, dims = [1, 2] : (tensor<2x4xf32>) -> tensor<6x2x4xf32>
 // CHECK-NEXT:   %1 = stablehlo.dot_general %0, %arg0, batching_dims = [0] x [0], contracting_dims = [1] x [1], precision = [DEFAULT, DEFAULT] : (tensor<6x2x4xf32>, tensor<6x2xf32>) -> tensor<6x4xf32>
 // CHECK-NEXT:   %2 = stablehlo.reshape %1 : (tensor<6x4xf32>) -> tensor<6x4x1xf32>
-// CHECK-NEXT:   %3 = stablehlo.slice %2 [0:1, 0:4, 0:1] : (tensor<6x4x1xf32>) -> tensor<1x4x1xf32>
-// CHECK-NEXT:   %4 = stablehlo.slice %2 [1:2, 0:4, 0:1] : (tensor<6x4x1xf32>) -> tensor<1x4x1xf32>
-// CHECK-NEXT:   %5 = stablehlo.slice %2 [2:3, 0:4, 0:1] : (tensor<6x4x1xf32>) -> tensor<1x4x1xf32>
-// CHECK-NEXT:   %6 = stablehlo.slice %2 [3:4, 0:4, 0:1] : (tensor<6x4x1xf32>) -> tensor<1x4x1xf32>
-// CHECK-NEXT:   %7 = stablehlo.slice %2 [4:5, 0:4, 0:1] : (tensor<6x4x1xf32>) -> tensor<1x4x1xf32>
-// CHECK-NEXT:   %8 = stablehlo.slice %2 [5:6, 0:4, 0:1] : (tensor<6x4x1xf32>) -> tensor<1x4x1xf32>
-// CHECK-NEXT:   %9 = stablehlo.reshape %3 : (tensor<1x4x1xf32>) -> tensor<4xf32>
-// CHECK-NEXT:   %10 = stablehlo.reshape %4 : (tensor<1x4x1xf32>) -> tensor<4xf32>
-// CHECK-NEXT:   %11 = stablehlo.reshape %5 : (tensor<1x4x1xf32>) -> tensor<4xf32>
-// CHECK-NEXT:   %12 = stablehlo.reshape %6 : (tensor<1x4x1xf32>) -> tensor<4xf32>
-// CHECK-NEXT:   %13 = stablehlo.reshape %7 : (tensor<1x4x1xf32>) -> tensor<4xf32>
-// CHECK-NEXT:   %14 = stablehlo.reshape %8 : (tensor<1x4x1xf32>) -> tensor<4xf32>
-// CHECK-NEXT:   %15 = stablehlo.add %9, %10 : tensor<4xf32>
-// CHECK-NEXT:   %16 = stablehlo.add %15, %11 : tensor<4xf32>
-// CHECK-NEXT:   %17 = stablehlo.add %16, %12 : tensor<4xf32>
-// CHECK-NEXT:   %18 = stablehlo.add %17, %13 : tensor<4xf32>
-// CHECK-NEXT:   %19 = stablehlo.add %18, %14 : tensor<4xf32>
-// CHECK-NEXT:   return %19, %arg0, %arg1 : tensor<4xf32>, tensor<6x2xf32>, tensor<2x4xf32>
+// CHECK-NEXT:   %3 = stablehlo.reduce(%2 init: %cst) applies stablehlo.add across dimensions = [0] : (tensor<6x4x1xf32>, tensor<f32>) -> tensor<4x1xf32>
+// CHECK-NEXT:   %4 = stablehlo.reshape %3 : (tensor<4x1xf32>) -> tensor<4xf32>
+// CHECK-NEXT:   return %4, %arg0, %arg1 : tensor<4xf32>, tensor<6x2xf32>, tensor<2x4xf32>
 // CHECK-NEXT: }
