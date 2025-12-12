@@ -857,6 +857,8 @@ cc_library(
         "Dialect/*.h",
         "Dialect/Distributed/*.h",
         "Dialect/Tessera/*.h",
+        "Polymer/**/*.h",
+        "external/polly/include/polly/**/*.h",
     ]) + [
         "Utils.h",
     ],
@@ -868,6 +870,7 @@ cc_library(
         "-Werror=unused-but-set-variable",
         "-Werror=return-type",
         "-Werror=unused-result",
+        "-Isrc/enzyme_ad/jax/external/polly/include/",
     ],
     visibility = ["//visibility:public"],
     deps = [
@@ -895,6 +898,7 @@ cc_library(
         ":stablehlo-derivatives",
         ":triton-derivatives",
         "//src/external/isl:Isl",
+        "//src/external/polly:Polly",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@enzyme//:EnzymeMLIR",

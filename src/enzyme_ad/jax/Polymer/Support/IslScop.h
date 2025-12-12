@@ -6,7 +6,7 @@
 #ifndef POLYMER_SUPPORT_OSLSCOP_H
 #define POLYMER_SUPPORT_OSLSCOP_H
 
-#include "mlir/Conversion/Polymer/Support/ScatteringUtils.h"
+#include "ScatteringUtils.h"
 #include "mlir/Dialect/Affine/Analysis/AffineStructures.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"

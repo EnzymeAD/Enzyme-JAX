@@ -11,16 +11,15 @@
 
 #include "Enzyme/MLIR/Dialect/Dialect.h"
 #include "Enzyme/MLIR/Dialect/Ops.h"
+#include "../Polymer/Support/IslScop.h"
+#include "../Polymer/Target/ISL.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Complex/IR/Complex.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/IRMapping.h"
-#include "mlir/Interfaces/ControlFlowInterfaces.h"
-#include "mlir/Interfaces/FunctionInterfaces.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
-#include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 #include "llvm/Support/DebugLog.h"
 
 #include "stablehlo/dialect/ChloOps.h"
@@ -82,6 +81,7 @@ struct RemoveAtomicsPass
   using RemoveAtomicsPassBase::RemoveAtomicsPassBase;
   void runOnOperation() override {
 
+    #if 0
     getOperation()->walk([](enzyme::AffineAtomicRMWOp rmw) {
       LDBG() << "Processing " << rmw << " to " << rmw.getMemref();
 
@@ -93,6 +93,11 @@ struct RemoveAtomicsPass
         return;
 
       LDBG() << "Success";
+    });
+    #endif
+    getOperation()->walk([](enzyme::GPUWrapperOp gwo) {
+      LDBG() << "Processing " << gwo;
+      std::unique_ptr<polymer::IslScop> scop = polymer::createIslFromFuncOp(gwo);
     });
   }
 };
