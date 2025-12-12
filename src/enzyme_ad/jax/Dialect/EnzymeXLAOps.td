@@ -1125,8 +1125,8 @@ def MPI_SendOp : EnzymeXLA_Op<"send", []> {
   let summary = "Equivalent to `MPI_Send(buf, size, dtype, dest, tag, comm)`";
   let arguments = (
     ins AnyTensor : $buf,
-    TensorOf<[I32]> : $tag,
     TensorOf<[I32]> : $dest
+    TensorOf<[I32]> : $tag,
     /* MPI_Comm : $comm */
   );
   /* let assemblyFormat = "`(` $buf `,` $tag `,` $dest `,` $comm `)` attr-dict `:` " */
