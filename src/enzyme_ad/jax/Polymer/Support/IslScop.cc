@@ -1,10 +1,10 @@
 //===- IslScop.cc -----------------------------------------------*- C++ -*-===//
 
-#include "mlir/Conversion/Polymer/Support/IslScop.h"
+#include "IslScop.h"
 #include "mlir/Analysis/Presburger/PresburgerSpace.h"
-#include "mlir/Conversion/Polymer/Support/ScatteringUtils.h"
-#include "mlir/Conversion/Polymer/Support/ScopStmt.h"
-#include "mlir/Conversion/Polymer/Target/ISL.h"
+#include "ScatteringUtils.h"
+#include "ScopStmt.h"
+#include "Polymer/Target/ISL.h"
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/AffineStructures.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"

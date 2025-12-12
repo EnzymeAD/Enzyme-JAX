@@ -95,7 +95,7 @@ struct RemoveAtomicsPass
       LDBG() << "Success";
     });
     #endif
-    getOperation()->walk([](enzyme::GPUWrapperOp gwo) {
+    getOperation()->walk([](enzymexla::GPUWrapperOp gwo) {
       LDBG() << "Processing " << gwo;
       std::unique_ptr<polymer::IslScop> scop = polymer::createIslFromFuncOp(gwo);
     });

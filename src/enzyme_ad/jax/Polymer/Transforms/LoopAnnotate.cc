@@ -1,6 +1,6 @@
 //===- LoopAnnotate.h - Annotate loop properties -----------------C++-===//
 
-#include "mlir/Conversion/Polymer/Transforms/LoopAnnotate.h"
+#include "Polymer/Transforms/LoopAnnotate.h"
 
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"

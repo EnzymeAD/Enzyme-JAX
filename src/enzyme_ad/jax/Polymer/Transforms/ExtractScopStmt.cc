@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "mlir/Conversion/Polymer/Transforms/ExtractScopStmt.h"
+#include "ExtractScopStmt.h"
 
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Analysis/TopologicalSortUtils.h"
