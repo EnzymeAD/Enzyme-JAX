@@ -26101,6 +26101,7 @@ private:
   }
 };
 
+// can we replace the DS with a slice of the update?
 struct DUSDynamicSliceSimplify final
     : public CheckedOpRewritePattern<stablehlo::DynamicSliceOp,
                                      DUSDynamicSliceSimplify> {
@@ -26116,35 +26117,91 @@ struct DUSDynamicSliceSimplify final
       return failure();
     }
 
-    // TODO: for constant starts
     auto dsStartIndices = op.getStartIndices();
     auto dusStartIndices = dusOp.getStartIndices();
-    bool allAligned = true;
 
-    for (auto [dsStart, dusStart] :
-         llvm::zip(dsStartIndices, dusStartIndices)) {
-      if (dsStart != dusStart) {
-        allAligned = false;
-        break;
+    SmallVector<int64_t> sliceStarts(dusOp.getStartIndices().size());
+    bool canReplace = true;
+
+    for (size_t i = 0; i < dusOp.getStartIndices().size(); ++i) {
+      auto dsStart = dsStartIndices[i];
+      auto dusStart = dusStartIndices[i];
+
+      if (dsStart == dusStart) {
+        sliceStarts[i] = 0;
+        continue;
+      } else {
+        APInt dsStartAP, dusStartAP;
+        if (matchPattern(dsStart, m_ConstantInt(&dsStartAP)) &&
+            matchPattern(dusStart, m_ConstantInt(&dusStartAP))) {
+          int64_t dsStartInt = dsStartAP.getSExtValue();
+          int64_t dusStartInt = dusStartAP.getSExtValue();
+          sliceStarts[i] = dsStartInt - dusStartInt;
+          continue;
+        }
       }
+
+      canReplace = false;
+      break;
     }
 
-    if (!allAligned) {
+    if (!canReplace) {
       return failure();
     }
 
-    // if sizes match up here, we can remove the DS completely.
-    // otherwise we replace the DS with a slice of the update
+    bool allOffsetsZero =
+        llvm::all_of(sliceStarts, [](int64_t offset) { return offset == 0; });
+
     auto updateTy = cast<RankedTensorType>(dusOp.getUpdate().getType());
     auto updateShape = llvm::to_vector(updateTy.getShape());
     auto dsSliceSizes = llvm::to_vector(op.getSliceSizes());
-    if (updateShape == dsSliceSizes) {
+
+    // simple case
+    if (allOffsetsZero && updateShape == dsSliceSizes) {
       rewriter.replaceAllUsesWith(op.getResult(), dusOp.getUpdate());
       return success();
     }
 
-    // TODO
-    return failure();
+    SmallVector<int64_t> sliceLimits(dusOp.getStartIndices().size());
+    SmallVector<int64_t> sliceStrides(dusOp.getStartIndices().size(), 1);
+    SmallVector<int64_t> padLow(dusOp.getStartIndices().size(), 0);
+    SmallVector<int64_t> padHigh(dusOp.getStartIndices().size(), 0);
+    SmallVector<int64_t> padInner(dusOp.getStartIndices().size(), 0);
+    bool needsPad = false;
+
+    for (size_t i = 0; i < dusOp.getStartIndices().size(); ++i) {
+      if (sliceStarts[i] < 0) {
+        needsPad = true;
+        padLow[i] = -sliceStarts[i];
+        sliceStarts[i] = 0;
+      }
+      int64_t limit = dsSliceSizes[i] + sliceStarts[i] - padLow[i];
+      if (limit > updateShape[i]) {
+        needsPad = true;
+        padHigh[i] = limit - updateShape[i];
+        limit = updateShape[i];
+      }
+      sliceLimits[i] = limit;
+    }
+
+    if (needsPad && !stablehlo::isScalarValue(dusOp.getOperand())) {
+      return failure();
+    }
+
+    Value result =
+        stablehlo::SliceOp::create(rewriter, op.getLoc(), dusOp.getUpdate(),
+                                   sliceStarts, sliceLimits, sliceStrides);
+    if (needsPad) {
+      auto padValue = stablehlo::getScalarValue(dusOp.getOperand(), rewriter);
+      assert(padValue);
+      result =
+          stablehlo::PadOp::create(rewriter, op.getLoc(), result, padValue,
+                                   rewriter.getDenseI64ArrayAttr(padLow),
+                                   rewriter.getDenseI64ArrayAttr(padHigh),
+                                   rewriter.getDenseI64ArrayAttr(padInner));
+    }
+    rewriter.replaceAllUsesWith(op.getResult(), result);
+    return success();
   }
 };
 
