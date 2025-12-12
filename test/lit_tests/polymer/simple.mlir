@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --test-polymer | FileCheck %s
+// RUN: enzymexlamlir-opt %s --test-polymer 2>&1 | FileCheck %s
 
 
 module {

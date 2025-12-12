@@ -544,8 +544,10 @@ void demoteLoopReduction(mlir::func::FuncOp f, mlir::affine::AffineForOp forOp,
   }
 
   cloneAffineForWithoutIterArgs(forOp, b);
-  for (mlir::Value result : forOp.getResults())
+  for (mlir::Value result : forOp.getResults()) {
+    (void)result;
     assert(result.getUses().empty());
+  }
   forOp.erase();
 }
 
@@ -611,6 +613,7 @@ static void getScratchpadIterDomains(
 
     affine::FlatAffineValueConstraints domain;
     auto res = succeeded(getIndexSet(forOps, &domain));
+    (void)res;
     assert(res && "Cannot get the iteration domain of the given forOps");
 
     indexSets.push_back(domain);
@@ -680,6 +683,7 @@ static affine::FlatAffineValueConstraints unionScratchpadIterDomains(
         mlir::Value symbol = domain.getValue(j + domain.getNumDimVars());
         unsigned int pos = 0;
         auto res = unionDomain.findVar(symbol, &pos);
+        (void)res;
         assert(res);
         newInEq[pos] = inEq[j + domain.getNumDimVars()];
       }

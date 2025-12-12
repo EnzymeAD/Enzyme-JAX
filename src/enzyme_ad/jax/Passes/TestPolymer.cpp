@@ -45,22 +45,20 @@ struct TestPolymerPass
       std::unique_ptr<polymer::IslScop> scop =
           polymer::createIslFromFuncOp(gwo);
       scop->buildSchedule();
-      scop->dumpSchedule(llvm::errs());
-      llvm::outs() << "Schedule:\n";
+      llvm::errs() << "Schedule:\n";
       isl_schedule_dump(scop->getScheduleTree().get());
-      llvm::outs() << "Accesses:\n";
-      scop->dumpAccesses(llvm::dbgs());
+      llvm::errs() << "Accesses:\n";
+      scop->dumpAccesses(llvm::errs());
     });
     getOperation()->walk([](enzymexla::GPUWrapperOp gwo) {
       LDBG() << "Processing " << gwo;
       std::unique_ptr<polymer::IslScop> scop =
           polymer::createIslFromFuncOp(gwo);
       scop->buildSchedule();
-      scop->dumpSchedule(llvm::errs());
-      llvm::outs() << "Schedule:\n";
+      llvm::errs() << "Schedule:\n";
       isl_schedule_dump(scop->getScheduleTree().get());
-      llvm::outs() << "Accesses:\n";
-      scop->dumpAccesses(llvm::dbgs());
+      llvm::errs() << "Accesses:\n";
+      scop->dumpAccesses(llvm::errs());
     });
   }
 };
