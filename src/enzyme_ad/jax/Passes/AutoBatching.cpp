@@ -55,50 +55,65 @@ bool anyOpsAreDataDependent(ArrayRef<Operation *> ops) {
     return true;
   }
 
-  llvm::SetVector<Operation *> sortedOpsTmp(ops.begin(), ops.end());
-  auto sortedOps = mlir::topologicalSort(sortedOpsTmp);
+  // Sort by block order so "earlier" corresponds to program order.
+  SmallVector<Operation *, 8> sortedOps(ops.begin(), ops.end());
+  std::sort(sortedOps.begin(), sortedOps.end(),
+            [](Operation *a, Operation *b) { return a->isBeforeInBlock(b); });
 
-  llvm::SmallSet<Value, 8> dependentValues;
-  for (auto op : sortedOps) {
-    for (auto result : op->getResults()) {
-      dependentValues.insert(result);
-    }
+  Operation *firstOp = sortedOps.front();
+
+  // Track values defined by subset ops that are earlier in block order.
+  llvm::SmallSetVector<Value, 32> earlierDefinedValues;
+  for (Value result : firstOp->getResults()) {
+    earlierDefinedValues.insert(result);
   }
 
-  SmallVector<Operation *> worklist;
+  // For each op, check if it (directly or indirectly) depends on any earlier op
+  // in the subset by traversing defining ops backwards in program order.
+  for (Operation *op : llvm::drop_begin(sortedOps)) {
+    SmallVector<Operation *, 32> worklist;
+    llvm::SmallPtrSet<Operation *, 32> visited;
 
-  // For each op, we only need to check if it depends on any earlier op in our
-  // subset. We can use a worklist approach but only traverse backwards in
-  // program order
-  for (auto op : llvm::drop_begin(sortedOps)) {
+    auto enqueueDef = [&](Operation *defOp, Operation *userOp) {
+      if (!defOp || defOp->getBlock() != parentBlock) {
+        return;
+      }
+      // Only traverse within the window [first_op, user_op) in block order.
+      if (defOp->isBeforeInBlock(firstOp) || !defOp->isBeforeInBlock(userOp)) {
+        return;
+      }
+      worklist.push_back(defOp);
+    };
+
     for (Value operand : op->getOperands()) {
-      if (dependentValues.contains(operand)) {
+      if (earlierDefinedValues.contains(operand)) {
         return true;
       }
-      if (auto definingOp = operand.getDefiningOp()) {
-        worklist.push_back(definingOp);
-      }
+      enqueueDef(operand.getDefiningOp(), op);
     }
 
     while (!worklist.empty()) {
       Operation *curr = worklist.pop_back_val();
+      if (!visited.insert(curr).second) {
+        continue;
+      }
 
-      // Only explore dependencies of operations that come after first op
-      if (curr->isBeforeInBlock(sortedOps.front())) {
+      // Once we're before the earliest subset op, this path cannot reach any
+      // earlier subset-defined value.
+      if (curr->isBeforeInBlock(firstOp)) {
         continue;
       }
 
       for (Value operand : curr->getOperands()) {
-        if (dependentValues.contains(operand)) {
+        if (earlierDefinedValues.contains(operand)) {
           return true;
         }
-
-        Operation *definingOp = operand.getDefiningOp();
-        if (definingOp && definingOp->getBlock() == parentBlock &&
-            definingOp->isBeforeInBlock(sortedOps.front())) {
-          worklist.push_back(definingOp);
-        }
+        enqueueDef(operand.getDefiningOp(), curr);
       }
+    }
+
+    for (Value result : op->getResults()) {
+      earlierDefinedValues.insert(result);
     }
   }
 
