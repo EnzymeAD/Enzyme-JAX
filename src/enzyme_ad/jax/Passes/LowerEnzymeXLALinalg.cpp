@@ -116,5 +116,19 @@ struct LowerEnzymeXLALinalgPass
                                             config))) {
       signalPassFailure();
     }
+
+    // Verify that all illegal ops have been lowered
+    auto walkResult = getOperation()->walk([&](Operation *op) {
+      if (isa<enzymexla::LUFactorizationOp, enzymexla::SVDFactorizationOp>(
+              op)) {
+        op->emitError("Failed to lower enzymexla linalg operation");
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+
+    if (walkResult.wasInterrupted()) {
+      signalPassFailure();
+    }
   }
 };

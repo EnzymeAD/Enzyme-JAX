@@ -2728,5 +2728,21 @@ struct LowerEnzymeXLALapackPass
                                             config))) {
       signalPassFailure();
     }
+
+    // Verify that all illegal ops have been lowered
+    auto walkResult = getOperation()->walk([&](Operation *op) {
+      if (isa<enzymexla::GeqrfOp, enzymexla::GeqrtOp, enzymexla::OrgqrOp,
+              enzymexla::OrmqrOp, enzymexla::GemqrtOp, enzymexla::GetrfOp,
+              enzymexla::GetriOp, enzymexla::GesvdOp, enzymexla::GesddOp,
+              enzymexla::GesvjOp>(op)) {
+        op->emitError("Failed to lower enzymexla lapack operation");
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+
+    if (walkResult.wasInterrupted()) {
+      signalPassFailure();
+    }
   }
 };
