@@ -21376,7 +21376,8 @@ struct IfOpLiftCommonOps final
       return rewriter.notifyMatchFailure(op, "no common ops found");
 
     for (auto [trueOp, falseOp] : opsToLift) {
-      rewriter.modifyOpInPlace(trueOp, [&]() { trueOp->moveBefore(op); });
+      Operation *trueOpCopy = trueOp;
+      rewriter.modifyOpInPlace(trueOp, [&]() { trueOpCopy->moveBefore(op); });
       rewriter.replaceOp(falseOp, trueOp);
     }
 
