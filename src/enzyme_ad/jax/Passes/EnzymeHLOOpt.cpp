@@ -24194,8 +24194,9 @@ private:
     {
       IRRewriter::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(block);
-      auto elemOp = rewriter.template create<BinaryOpType>(
-          binaryOp.getLoc(), block->getArgument(0), block->getArgument(1));
+      auto elemOp =
+          BinaryOpType::create(rewriter, binaryOp.getLoc(),
+                               block->getArgument(0), block->getArgument(1));
       stablehlo::ReturnOp::create(rewriter, binaryOp.getLoc(),
                                   elemOp.getResult());
     }
@@ -24217,8 +24218,7 @@ private:
     }
 
     for (auto &value : extraValues) {
-      result = rewriter.template create<BinaryOpType>(binaryOp.getLoc(), result,
-                                                      value);
+      result = BinaryOpType::create(rewriter, binaryOp.getLoc(), result, value);
     }
     rewriter.replaceAllUsesWith(binaryOp.getResult(), result);
     return success();
