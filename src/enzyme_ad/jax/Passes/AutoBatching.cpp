@@ -1167,10 +1167,11 @@ bool GreedyWhileLoopBatchFission::liftReduceLikeOperation(
     PatternRewriter &rewriter, stablehlo::WhileOp whileOp,
     ArrayRef<SliceInfo<stablehlo::DynamicSliceOp>> slices, Operation *op,
     WhileLoopInfo info) const {
-  // currently restricted to commutative ops. we can hoist `sub` / `div` by
-  // emitting a `neg` / `reciprocal` and then apply the hoisting. note that
-  // this only applies if the LHS is the loop caried dependency
-  if (!stablehlo::canFuseIntoReduce(op)) {
+  // we can hoist `sub` / `div` by emitting a `neg` / `reciprocal` and then
+  // apply the hoisting. note that this only applies if the LHS is the loop
+  // caried dependency
+  bool specialOps = isa<stablehlo::SubtractOp, stablehlo::DivOp>(op);
+  if (!specialOps && !stablehlo::canFuseIntoReduce(op)) {
     return false;
   }
 
@@ -1180,7 +1181,7 @@ bool GreedyWhileLoopBatchFission::liftReduceLikeOperation(
   }
 
   auto returnOp = dyn_cast<stablehlo::ReturnOp>(*result.getUsers().begin());
-  if (!returnOp) {
+  if (!returnOp || returnOp != whileOp.getBody().front().getTerminator()) {
     return false;
   }
 
@@ -1212,6 +1213,9 @@ bool GreedyWhileLoopBatchFission::liftReduceLikeOperation(
   if (isLhsLoopCarriedDep == isRhsLoopCarriedDep) {
     return false; // atmost one of lhs/rhs must be loop carried dep
   }
+  if (specialOps && isRhsLoopCarriedDep) { // only lhs can be loop carried dep
+    return false;
+  }
 
   Value otherOperand = isLhsLoopCarriedDep ? rhs : lhs;
 
@@ -1239,20 +1243,51 @@ bool GreedyWhileLoopBatchFission::liftReduceLikeOperation(
       rewriter, whileOp, info, batchLiftingModes, batchOperands, sliceDims,
       hoistedDims, mappedSliceInfos, hoistedValues, newOperands);
 
-  Value initVal = stablehlo::getIdentityValue(
-      rewriter, op->getLoc(),
-      cast<RankedTensorType>(otherOperand.getType()).getElementType(), op);
-
   auto whileOperand = whileOp->getOperand(argIdx);
 
   auto elemType =
       cast<RankedTensorType>(whileOperand.getType()).getElementType();
 
+  Value reduceInput = newOperands[0];
+  OperationName opName = op->getName();
+  if (specialOps) {
+    if (isa<stablehlo::SubtractOp>(op)) {
+      reduceInput =
+          stablehlo::NegOp::create(rewriter, op->getLoc(), reduceInput);
+      opName = OperationName("stablehlo.add", op->getContext());
+    } else if (isa<stablehlo::DivOp>(op)) {
+      auto numerator = stablehlo::ConstantOp::create(
+          rewriter, op->getLoc(), rewriter.getOneAttr(reduceInput.getType()));
+      reduceInput = stablehlo::DivOp::create(rewriter, op->getLoc(), numerator,
+                                             reduceInput);
+      opName = OperationName("stablehlo.multiply", op->getContext());
+    } else {
+      llvm_unreachable("unhandled special op");
+    }
+  }
+
+  Value initVal;
+
+  if (specialOps) {
+    TypeSwitch<Operation *>(op)
+        .Case<stablehlo::SubtractOp>([&](auto op) {
+          initVal = stablehlo::getIdentityValueForOp<stablehlo::AddOp>(
+              rewriter, op->getLoc(), elemType);
+        })
+        .Case<stablehlo::DivOp>([&](auto op) {
+          initVal = stablehlo::getIdentityValueForOp<stablehlo::MulOp>(
+              rewriter, op->getLoc(), elemType);
+        });
+  } else {
+    initVal = stablehlo::getIdentityValue(
+        rewriter, op->getLoc(),
+        cast<RankedTensorType>(otherOperand.getType()).getElementType(), op);
+  }
+
   auto reduceOp = stablehlo::ReduceOp::create(
       rewriter, whileOp->getLoc(),
-      TypeRange{whileOp->getResult(argIdx).getType()},
-      ValueRange{newOperands[0]}, ValueRange{initVal},
-      rewriter.getDenseI64ArrayAttr({0}));
+      TypeRange{whileOp->getResult(argIdx).getType()}, ValueRange{reduceInput},
+      ValueRange{initVal}, rewriter.getDenseI64ArrayAttr({0}));
 
   auto scalarType = RankedTensorType::get({}, elemType);
   Block *block = rewriter.createBlock(&reduceOp.getBody());
@@ -1262,7 +1297,7 @@ bool GreedyWhileLoopBatchFission::liftReduceLikeOperation(
   {
     IRRewriter::InsertionGuard guard(rewriter);
     rewriter.setInsertionPointToStart(block);
-    OperationState state(op->getLoc(), op->getName());
+    OperationState state(op->getLoc(), opName);
     state.addTypes(TypeRange{scalarType});
     state.addOperands(ValueRange{block->getArgument(0), block->getArgument(1)});
     // Create the operation from the state.
@@ -1272,7 +1307,7 @@ bool GreedyWhileLoopBatchFission::liftReduceLikeOperation(
   }
 
   rewriter.setInsertionPointAfter(reduceOp);
-  OperationState finalResState(whileOp->getLoc(), op->getName());
+  OperationState finalResState(whileOp->getLoc(), opName);
   finalResState.addTypes(TypeRange{whileOp->getResult(argIdx).getType()});
   finalResState.addOperands(ValueRange{reduceOp->getResult(0), whileOperand});
   auto *finalResOp = mlir::Operation::create(finalResState);
