@@ -1,5 +1,5 @@
 // RUN: enzymexlamlir-opt --auto-batching %s | FileCheck %s
-// RUN: enzymexlamlir-opt --auto-batching --inline --enzyme-hlo-opt="passses=65536" --enzyme-hlo-opt %s | FileCheck %s --check-prefix=FULL
+// RUN: enzymexlamlir-opt --auto-batching --enzyme-hlo-opt="passses=65536" --enzyme-hlo-opt %s | FileCheck %s --check-prefix=FULL
 
 module @reactant_batched... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas = 1 : i64} {
   func.func @main(%arg0: tensor<5x4x3xf64>, %arg1: tensor<7x4xf64>) -> tensor<5x7x3xf64> {
@@ -37,34 +37,33 @@ module @reactant_batched... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
 
 // CHECK: func.func @main(%arg0: tensor<5x4x3xf64>, %arg1: tensor<7x4xf64>) -> tensor<5x7x3xf64> {
 // CHECK-NEXT:     %0 = stablehlo.transpose %arg1, dims = [1, 0] : (tensor<7x4xf64>) -> tensor<4x7xf64>
-// CHECK-NEXT:     %1 = stablehlo.transpose %arg0, dims = [0, 1, 2] : (tensor<5x4x3xf64>) -> tensor<5x4x3xf64>
-// CHECK-NEXT:     %2 = stablehlo.transpose %1, dims = [0, 2, 1] : (tensor<5x4x3xf64>) -> tensor<5x3x4xf64>
-// CHECK-NEXT:     %3 = stablehlo.slice %2 [0:1, 0:3, 0:4] : (tensor<5x3x4xf64>) -> tensor<1x3x4xf64>
-// CHECK-NEXT:     %4 = stablehlo.reshape %3 : (tensor<1x3x4xf64>) -> tensor<3x4xf64>
-// CHECK-NEXT:     %5 = stablehlo.slice %2 [1:2, 0:3, 0:4] : (tensor<5x3x4xf64>) -> tensor<1x3x4xf64>
-// CHECK-NEXT:     %6 = stablehlo.reshape %5 : (tensor<1x3x4xf64>) -> tensor<3x4xf64>
-// CHECK-NEXT:     %7 = stablehlo.slice %2 [2:3, 0:3, 0:4] : (tensor<5x3x4xf64>) -> tensor<1x3x4xf64>
-// CHECK-NEXT:     %8 = stablehlo.reshape %7 : (tensor<1x3x4xf64>) -> tensor<3x4xf64>
-// CHECK-NEXT:     %9 = stablehlo.slice %2 [3:4, 0:3, 0:4] : (tensor<5x3x4xf64>) -> tensor<1x3x4xf64>
-// CHECK-NEXT:     %10 = stablehlo.reshape %9 : (tensor<1x3x4xf64>) -> tensor<3x4xf64>
-// CHECK-NEXT:     %11 = stablehlo.slice %2 [4:5, 0:3, 0:4] : (tensor<5x3x4xf64>) -> tensor<1x3x4xf64>
-// CHECK-NEXT:     %12 = stablehlo.reshape %11 : (tensor<1x3x4xf64>) -> tensor<3x4xf64>
-// CHECK-NEXT:     %13 = stablehlo.reshape %4 : (tensor<3x4xf64>) -> tensor<1x3x4xf64>
-// CHECK-NEXT:     %14 = stablehlo.reshape %6 : (tensor<3x4xf64>) -> tensor<1x3x4xf64>
-// CHECK-NEXT:     %15 = stablehlo.reshape %8 : (tensor<3x4xf64>) -> tensor<1x3x4xf64>
-// CHECK-NEXT:     %16 = stablehlo.reshape %10 : (tensor<3x4xf64>) -> tensor<1x3x4xf64>
-// CHECK-NEXT:     %17 = stablehlo.reshape %12 : (tensor<3x4xf64>) -> tensor<1x3x4xf64>
-// CHECK-NEXT:     %18 = stablehlo.concatenate %13, %14, %15, %16, %17, dim = 0 : (tensor<1x3x4xf64>, tensor<1x3x4xf64>, tensor<1x3x4xf64>, tensor<1x3x4xf64>, tensor<1x3x4xf64>) -> tensor<5x3x4xf64>
+// CHECK-NEXT:     %1 = stablehlo.transpose %arg0, dims = [0, 2, 1] : (tensor<5x4x3xf64>) -> tensor<5x3x4xf64>
+// CHECK-NEXT:     %2 = stablehlo.slice %1 [0:1, 0:3, 0:4] : (tensor<5x3x4xf64>) -> tensor<1x3x4xf64>
+// CHECK-NEXT:     %3 = stablehlo.reshape %2 : (tensor<1x3x4xf64>) -> tensor<3x4xf64>
+// CHECK-NEXT:     %4 = stablehlo.slice %1 [1:2, 0:3, 0:4] : (tensor<5x3x4xf64>) -> tensor<1x3x4xf64>
+// CHECK-NEXT:     %5 = stablehlo.reshape %4 : (tensor<1x3x4xf64>) -> tensor<3x4xf64>
+// CHECK-NEXT:     %6 = stablehlo.slice %1 [2:3, 0:3, 0:4] : (tensor<5x3x4xf64>) -> tensor<1x3x4xf64>
+// CHECK-NEXT:     %7 = stablehlo.reshape %6 : (tensor<1x3x4xf64>) -> tensor<3x4xf64>
+// CHECK-NEXT:     %8 = stablehlo.slice %1 [3:4, 0:3, 0:4] : (tensor<5x3x4xf64>) -> tensor<1x3x4xf64>
+// CHECK-NEXT:     %9 = stablehlo.reshape %8 : (tensor<1x3x4xf64>) -> tensor<3x4xf64>
+// CHECK-NEXT:     %10 = stablehlo.slice %1 [4:5, 0:3, 0:4] : (tensor<5x3x4xf64>) -> tensor<1x3x4xf64>
+// CHECK-NEXT:     %11 = stablehlo.reshape %10 : (tensor<1x3x4xf64>) -> tensor<3x4xf64>
+// CHECK-NEXT:     %12 = stablehlo.reshape %3 : (tensor<3x4xf64>) -> tensor<1x3x4xf64>
+// CHECK-NEXT:     %13 = stablehlo.reshape %5 : (tensor<3x4xf64>) -> tensor<1x3x4xf64>
+// CHECK-NEXT:     %14 = stablehlo.reshape %7 : (tensor<3x4xf64>) -> tensor<1x3x4xf64>
+// CHECK-NEXT:     %15 = stablehlo.reshape %9 : (tensor<3x4xf64>) -> tensor<1x3x4xf64>
+// CHECK-NEXT:     %16 = stablehlo.reshape %11 : (tensor<3x4xf64>) -> tensor<1x3x4xf64>
+// CHECK-NEXT:     %17 = stablehlo.concatenate %12, %13, %14, %15, %16, dim = 0 : (tensor<1x3x4xf64>, tensor<1x3x4xf64>, tensor<1x3x4xf64>, tensor<1x3x4xf64>, tensor<1x3x4xf64>) -> tensor<5x3x4xf64>
+// CHECK-NEXT:     %18 = stablehlo.reshape %0 : (tensor<4x7xf64>) -> tensor<1x4x7xf64>
 // CHECK-NEXT:     %19 = stablehlo.reshape %0 : (tensor<4x7xf64>) -> tensor<1x4x7xf64>
 // CHECK-NEXT:     %20 = stablehlo.reshape %0 : (tensor<4x7xf64>) -> tensor<1x4x7xf64>
 // CHECK-NEXT:     %21 = stablehlo.reshape %0 : (tensor<4x7xf64>) -> tensor<1x4x7xf64>
 // CHECK-NEXT:     %22 = stablehlo.reshape %0 : (tensor<4x7xf64>) -> tensor<1x4x7xf64>
-// CHECK-NEXT:     %23 = stablehlo.reshape %0 : (tensor<4x7xf64>) -> tensor<1x4x7xf64>
-// CHECK-NEXT:     %24 = stablehlo.concatenate %19, %20, %21, %22, %23, dim = 0 : (tensor<1x4x7xf64>, tensor<1x4x7xf64>, tensor<1x4x7xf64>, tensor<1x4x7xf64>, tensor<1x4x7xf64>) -> tensor<5x4x7xf64>
-// CHECK-NEXT:     %25 = stablehlo.dot_general %18, %24, batching_dims = [0] x [0], contracting_dims = [2] x [1], precision = [DEFAULT, DEFAULT] : (tensor<5x3x4xf64>, tensor<5x4x7xf64>) -> tensor<5x3x7xf64>
-// CHECK-NEXT:     %26 = stablehlo.transpose %25, dims = [1, 2, 0] : (tensor<5x3x7xf64>) -> tensor<3x7x5xf64>
-// CHECK-NEXT:     %27 = stablehlo.transpose %26, dims = [2, 1, 0] : (tensor<3x7x5xf64>) -> tensor<5x7x3xf64>
-// CHECK-NEXT:     return %27 : tensor<5x7x3xf64>
+// CHECK-NEXT:     %23 = stablehlo.concatenate %18, %19, %20, %21, %22, dim = 0 : (tensor<1x4x7xf64>, tensor<1x4x7xf64>, tensor<1x4x7xf64>, tensor<1x4x7xf64>, tensor<1x4x7xf64>) -> tensor<5x4x7xf64>
+// CHECK-NEXT:     %24 = stablehlo.dot_general %17, %23, batching_dims = [0] x [0], contracting_dims = [2] x [1], precision = [DEFAULT, DEFAULT] : (tensor<5x3x4xf64>, tensor<5x4x7xf64>) -> tensor<5x3x7xf64>
+// CHECK-NEXT:     %25 = stablehlo.transpose %24, dims = [1, 2, 0] : (tensor<5x3x7xf64>) -> tensor<3x7x5xf64>
+// CHECK-NEXT:     %26 = stablehlo.transpose %25, dims = [2, 1, 0] : (tensor<3x7x5xf64>) -> tensor<5x7x3xf64>
+// CHECK-NEXT:     return %26 : tensor<5x7x3xf64>
 // CHECK-NEXT:   }
 
 // FULL:   func.func @main(%arg0: tensor<5x4x3xf64>, %arg1: tensor<7x4xf64>) -> tensor<5x7x3xf64> {

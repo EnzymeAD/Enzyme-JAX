@@ -12,9 +12,15 @@
 #include "src/enzyme_ad/jax/Passes/StructuredTensors.h"
 #include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/StablehloOps.h"
+
+#include "llvm/ADT/SetOperations.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
+
+#include <algorithm>
+#include <iterator>
 
 #define DEBUG_TYPE "auto-batching"
 
@@ -28,8 +34,247 @@ namespace enzyme {
 using namespace mlir;
 using namespace mlir::enzyme;
 
-static int64_t concatReshapeToBatchCounter = 0;
-static int64_t sliceToBatchCount = 0;
+static int64_t batchCounter = 0;
+
+namespace utils {
+
+// This function checks if any 2 ops in the list are data-dependent on each
+// other. We exploit the fact that while traversing the dep graph if we are at a
+// position before the other ops in the set, we know that the other ops are not
+// data dependent.
+bool anyOpsAreDataDependent(ArrayRef<Operation *> ops) {
+  if (ops.size() <= 1) {
+    return false;
+  }
+
+  Block *parentBlock = ops[0]->getBlock();
+  // dependency analysis for ops in different blocks is hard. conservatively
+  // assume that all ops are data dependent
+  if (llvm::any_of(
+          ops, [&](Operation *op) { return op->getBlock() != parentBlock; })) {
+    return true;
+  }
+
+  // Sort by block order so "earlier" corresponds to program order.
+  SmallVector<Operation *, 8> sortedOps(ops.begin(), ops.end());
+  std::sort(sortedOps.begin(), sortedOps.end(),
+            [](Operation *a, Operation *b) { return a->isBeforeInBlock(b); });
+
+  Operation *firstOp = sortedOps.front();
+
+  // Track values defined by subset ops that are earlier in block order.
+  llvm::SmallSetVector<Value, 32> earlierDefinedValues;
+  for (Value result : firstOp->getResults()) {
+    earlierDefinedValues.insert(result);
+  }
+
+  // For each op, check if it (directly or indirectly) depends on any earlier op
+  // in the subset by traversing defining ops backwards in program order.
+  for (Operation *op : llvm::drop_begin(sortedOps)) {
+    SmallVector<Operation *, 32> worklist;
+    llvm::SmallPtrSet<Operation *, 32> visited;
+
+    auto enqueueDef = [&](Operation *defOp, Operation *userOp) {
+      if (!defOp || defOp->getBlock() != parentBlock) {
+        return;
+      }
+      // Only traverse within the window [first_op, user_op) in block order.
+      if (defOp->isBeforeInBlock(firstOp) || !defOp->isBeforeInBlock(userOp)) {
+        return;
+      }
+      worklist.push_back(defOp);
+    };
+
+    for (Value operand : op->getOperands()) {
+      if (earlierDefinedValues.contains(operand)) {
+        return true;
+      }
+      enqueueDef(operand.getDefiningOp(), op);
+    }
+
+    while (!worklist.empty()) {
+      Operation *curr = worklist.pop_back_val();
+      if (!visited.insert(curr).second) {
+        continue;
+      }
+
+      // Once we're before the earliest subset op, this path cannot reach any
+      // earlier subset-defined value.
+      if (curr->isBeforeInBlock(firstOp)) {
+        continue;
+      }
+
+      for (Value operand : curr->getOperands()) {
+        if (earlierDefinedValues.contains(operand)) {
+          return true;
+        }
+        enqueueDef(operand.getDefiningOp(), curr);
+      }
+    }
+
+    for (Value result : op->getResults()) {
+      earlierDefinedValues.insert(result);
+    }
+  }
+
+  return false;
+}
+
+func::FuncOp CreateWrapperUnbatchedFunction(
+    mlir::ModuleOp modOp, PatternRewriter &rewriter, std::string funcName,
+    SmallVectorImpl<BatchLiftingMode> &batchLiftingModes, Operation *op,
+    std::optional<SmallVector<int64_t>> outShape) {
+  assert(op->getNumResults() == 1 && "only support single result ops");
+
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPointToStart(modOp.getBody());
+
+  SmallVector<Type> argTypes;
+  for (auto [i, v] : llvm::enumerate(op->getOperands())) {
+    if (batchLiftingModes[i] == BatchLiftingMode::CONSTANT) {
+      continue;
+    }
+    argTypes.push_back(v.getType());
+  }
+
+  FunctionType calleeType =
+      rewriter.getFunctionType(argTypes, op->getResultTypes());
+  func::FuncOp funcOp = func::FuncOp::create(
+      rewriter, op->getLoc(), funcName + std::to_string(batchCounter++),
+      calleeType);
+  funcOp.setPrivate();
+
+  auto &entryBlock = *funcOp.addEntryBlock();
+  rewriter.setInsertionPointToStart(&entryBlock);
+
+  IRMapping mapper;
+  size_t argIdx = 0;
+  for (auto [batchLiftMode, operand] :
+       llvm::zip(batchLiftingModes, op->getOperands())) {
+    if (batchLiftMode == BatchLiftingMode::CONSTANT) { // clone into fn body
+      auto clonedConst = rewriter.clone(*operand.getDefiningOp());
+      mapper.map(operand, clonedConst->getResult(0));
+      continue;
+    }
+    mapper.map(operand, entryBlock.getArguments()[argIdx++]);
+  }
+
+  Value result = rewriter.clone(*op, mapper)->getResult(0);
+  if (outShape.has_value()) {
+    result = stablehlo::ReshapeOpCreate(rewriter, op->getLoc(), result,
+                                        outShape.value());
+  }
+  func::ReturnOp::create(rewriter, op->getLoc(), ValueRange(result));
+
+  return funcOp;
+}
+
+void ConstructAndExtractBatchOperands(
+    PatternRewriter &rewriter, ArrayRef<Operation *> batchOps, Location loc,
+    std::optional<BatchOperandConstructionInfo<stablehlo::SliceOp>> batchInfo,
+    SmallVectorImpl<Value> &operands,
+    SmallVectorImpl<BatchLiftingMode> &liftingModes) {
+  for (int i = 0; i < batchOps[0]->getNumOperands(); i++) {
+    SmallVector<Value> currentOperands(batchOps.size());
+    for (auto [idx, op] : llvm::enumerate(batchOps)) {
+      currentOperands[idx] = op->getOperand(i);
+    }
+
+    // all the values are same
+    SplatElementsAttr firstSplat;
+    if (matchPattern(currentOperands[0], m_Constant(&firstSplat))) {
+      if (llvm::all_of(currentOperands, [&](Value v) {
+            SplatElementsAttr splatAttr;
+            if (matchPattern(v, m_Constant(&splatAttr))) {
+              return splatAttr == firstSplat;
+            }
+            return false;
+          })) {
+        liftingModes.push_back(BatchLiftingMode::CONSTANT);
+        continue;
+      }
+    }
+
+    if (batchInfo.has_value() && i == batchInfo->sliceOperandIndex) {
+      SmallVector<Value> concatOperands(batchInfo->slices.size());
+      for (auto [idx, slice] : llvm::enumerate(batchInfo->slices)) {
+        assert(slice.dimensions.size() == 1);
+        concatOperands[idx] = slice.sliceOp.getResult();
+      }
+      auto sliceDim = batchInfo->slices[0].dimensions[0];
+
+      SmallVector<Value> newConcatOperands;
+      auto canSimplify = stablehlo::concatSliceSimplify(
+          rewriter, concatOperands, sliceDim, newConcatOperands);
+      Value concatResult = stablehlo::ConcatenateOpCreate(
+          rewriter, loc,
+          canSimplify.succeeded() ? newConcatOperands : concatOperands,
+          sliceDim);
+
+      auto nbatchSize = static_cast<int64_t>(batchInfo->slices.size());
+      auto resTy = cast<RankedTensorType>(concatResult.getType());
+      assert(resTy.getDimSize(sliceDim) == nbatchSize);
+
+      SmallVector<int64_t> permutation(resTy.getRank());
+      permutation[0] = sliceDim;
+      for (int64_t i = 0; i < sliceDim; i++) {
+        permutation[i + 1] = i;
+      }
+      for (int64_t i = sliceDim + 1; i < resTy.getRank(); i++) {
+        permutation[i] = i;
+      }
+
+      Value newOperand = stablehlo::TransposeOpCreate(
+          rewriter, loc, concatResult, permutation);
+
+      bool needsReshape = false;
+      SmallVector<int64_t> outShape;
+      if (batchInfo->intermediateReshape) {
+        if (batchInfo->slices[0].explicitReshapeShape.has_value()) {
+          needsReshape = true;
+          outShape = batchInfo->slices[0].explicitReshapeShape.value();
+          outShape.insert(outShape.begin(), nbatchSize);
+        }
+      } else {
+        needsReshape = true;
+        outShape =
+            llvm::to_vector(cast<ShapedType>(newOperand.getType()).getShape());
+        outShape.insert(outShape.begin() + sliceDim + 1, 1);
+      }
+
+      if (needsReshape) {
+        newOperand =
+            stablehlo::ReshapeOpCreate(rewriter, loc, newOperand, outShape);
+      }
+
+      liftingModes.push_back(BatchLiftingMode::DEFINED_OUTSIDE_WHILE);
+      operands.push_back(newOperand);
+    } else { // Non-equivalent operands - need to concatenate them
+      SmallVector<Value> newConcatOperands;
+      for (Value operand : currentOperands) {
+        auto inputType = cast<RankedTensorType>(operand.getType());
+        auto inputShape = inputType.getShape();
+
+        SmallVector<int64_t> outputShape(inputShape.begin(), inputShape.end());
+        outputShape.insert(outputShape.begin(), 1);
+
+        // expand the batch dim (== 0) to `1`
+        newConcatOperands.push_back(
+            stablehlo::ReshapeOpCreate(rewriter, loc, operand, outputShape));
+      }
+
+      liftingModes.push_back(BatchLiftingMode::DEFINED_OUTSIDE_WHILE);
+      operands.push_back(
+          stablehlo::ConcatenateOpCreate(rewriter, loc, newConcatOperands, 0));
+    }
+  }
+}
+
+bool IsEquivalentToIgnoringValueEquivalence(Operation *op1, Operation *op2) {
+  return OperationEquivalence::isEquivalentTo(
+      op1, op2, OperationEquivalence::ignoreValueEquivalence, nullptr,
+      OperationEquivalence::IgnoreLocations, nullptr);
+}
 
 // Implicitly assumes before in block if ops are in different blocks
 bool isBeforeInBlock(Operation *op, Operation *otherOp) {
@@ -38,351 +283,161 @@ bool isBeforeInBlock(Operation *op, Operation *otherOp) {
   return op->isBeforeInBlock(otherOp);
 }
 
-// This function checks if any 2 ops in the list are data-dependent on each
-// other. We exploit the fact that while traversing the dep graph if we are at a
-// position before the other ops in the set, we know that the other ops are not
-// data dependent.
-bool anyOpsAreDataDependent(ArrayRef<Operation *> ops) {
-  if (ops.size() <= 1)
-    return false;
-
-  // ops are sorted based on ordering of slices. we need to sort here based on
-  // op ordering
-  SmallVector<Operation *> sortedOps(ops.begin(), ops.end());
-  std::sort(sortedOps.begin(), sortedOps.end(), isBeforeInBlock);
-
-  SmallPtrSet<Operation *, 8> subsetOps(ops.begin(), ops.end());
-  Block *parentBlock = ops[0]->getBlock();
-
-  // For each op, we only need to check if it depends on any earlier op in our
-  // subset We can use a worklist approach but only traverse backwards in
-  // program order
-  for (int i = 1; i < sortedOps.size(); ++i) {
-    Operation *laterOp = sortedOps[i];
-
-    // Track all operations this op transitively depends on
-    SmallPtrSet<Operation *, 16> dependencies;
-    SmallVector<Operation *> worklist;
-
-    // Start with direct operands
-    for (Value operand : laterOp->getOperands()) {
-      Operation *definingOp = operand.getDefiningOp();
-      if (definingOp && definingOp->getBlock() == parentBlock) {
-        if (dependencies.insert(definingOp).second) {
-          worklist.push_back(definingOp);
-        }
-      }
-    }
-
-    // Expand transitively, but only for ops that come before laterOp
-    while (!worklist.empty()) {
-      Operation *curr = worklist.pop_back_val();
-
-      // Early termination: if we found a dependency in our subset, we're done
-      if (subsetOps.contains(curr)) {
-        return true;
-      }
-
-      // Only explore dependencies of operations that come before laterOp
-      if (!isBeforeInBlock(curr, laterOp))
-        continue;
-
-      for (Value operand : curr->getOperands()) {
-        Operation *definingOp = operand.getDefiningOp();
-        if (definingOp && definingOp->getBlock() == parentBlock &&
-            isBeforeInBlock(definingOp, laterOp) &&
-            dependencies.insert(definingOp).second) {
-          worklist.push_back(definingOp);
-        }
-      }
-    }
-  }
-
-  return false;
-}
-
-func::FuncOp createWrapperUnbatchedFunction(
-    PatternRewriter &rewriter, const std::string &funcName,
-    ArrayRef<Value> operands, ArrayRef<int32_t> operandIndexMap,
-    Operation *templateOp, std::optional<SmallVector<int64_t>> outShape) {
-  OpBuilder::InsertionGuard guard(rewriter);
-  auto modOp = templateOp->getParentOfType<mlir::ModuleOp>();
-  if (!modOp)
-    return nullptr;
-  rewriter.setInsertionPointToStart(modOp.getBody());
-
-  SmallVector<mlir::Type> argTypes;
-  for (auto v : operands) {
-    auto vType = cast<RankedTensorType>(v.getType());
-    auto shape = vType.getShape();
-    SmallVector<int64_t> argShape;
-    for (int i = 1; i < shape.size(); i++)
-      argShape.push_back(shape[i]);
-    argTypes.push_back(RankedTensorType::get(argShape, vType.getElementType()));
-  }
-
-  FunctionType calleeType =
-      rewriter.getFunctionType(argTypes, {templateOp->getResult(0).getType()});
-  func::FuncOp func = func::FuncOp::create(rewriter, templateOp->getLoc(),
-                                           funcName, calleeType);
-  func.setPrivate();
-
-  auto &entryBlock = *func.addEntryBlock();
-  rewriter.setInsertionPointToStart(&entryBlock);
-
-  IRMapping mapper;
-  int batchArgIndex = 0;
-  for (int i = 0; i < templateOp->getNumOperands(); i++) {
-    Value originalOperand = templateOp->getOperand(i);
-
-    auto copyConstOp = originalOperand.getDefiningOp<stablehlo::ConstantOp>();
-    if (operandIndexMap[i] == -1 && copyConstOp) {
-      // This is a constant - clone it directly in the function
-      auto clonedConst = rewriter.clone(*copyConstOp);
-      mapper.map(originalOperand, clonedConst->getResult(0));
-    } else {
-      // Map to corresponding function argument
-      mapper.map(originalOperand, entryBlock.getArguments()[batchArgIndex++]);
-    }
-  }
-
-  auto unbatchedOp = rewriter.clone(*templateOp, mapper);
-  Value result = unbatchedOp->getResult(0);
-  if (outShape.has_value()) {
-    result = stablehlo::ReshapeOp::create(
-        rewriter, templateOp->getLoc(),
-        RankedTensorType::get(
-            outShape.value(),
-            cast<RankedTensorType>(result.getType()).getElementType()),
-        result);
-  }
-  func::ReturnOp::create(rewriter, templateOp->getLoc(), ValueRange(result));
-
-  return func;
-}
-
-std::tuple<SmallVector<Value>, SmallVector<int32_t>>
-constructAndExtractBatchOperands(PatternRewriter &rewriter,
-                                 ArrayRef<Operation *> batchOps, Location loc,
-                                 BatchOperandConstructionInfo batchInfo) {
-  SmallVector<Value> operands;
-  SmallVector<int32_t> operandIndexMap;
-
-  // Analyze operands to find equivalences
-  for (int i = 0; i < batchOps[0]->getNumOperands(); i++) {
-    SmallVector<Value> currentOperands;
-    bool allEquivalent = true;
-    auto firstOperand = batchOps[0]->getOperand(i);
-    auto firstDefOp = firstOperand.getDefiningOp();
-
-    for (auto v : batchOps) {
-      auto currentOperand = v->getOperand(i);
-      currentOperands.push_back(currentOperand);
-
-      // Check equivalence with first operand
-      if (firstDefOp) {
-        if (auto currentDefOp = currentOperand.getDefiningOp()) {
-          if (!OperationEquivalence::isEquivalentTo(
-                  firstDefOp, currentDefOp,
-                  OperationEquivalence::ignoreValueEquivalence, nullptr,
-                  OperationEquivalence::IgnoreLocations, nullptr)) {
-            allEquivalent = false;
-          }
-        } else {
-          allEquivalent = false;
-        }
-      } else {
-        // Handle block arguments or other cases
-        if (firstOperand != currentOperand) {
-          allEquivalent = false;
-        }
-      }
-    }
-
-    auto constOp = firstOperand.getDefiningOp<stablehlo::ConstantOp>();
-    if (allEquivalent && constOp) {
-      // Mark as constant (no batch operand needed)
-      operandIndexMap.push_back(-1);
-    } else if (i == batchInfo.sliceOperandIndex) {
-      auto sliceOp = batchInfo.sliceOp;
-      assert(sliceOp);
-      assert(batchInfo.sliceDim >= 0);
-
-      auto sliceOpType = cast<RankedTensorType>(sliceOp.getResult().getType());
-      auto sliceOpShape = sliceOpType.getShape();
-      assert(sliceOpShape[batchInfo.sliceDim] == 1);
-
-      if (batchInfo.intermediateReshape) {
-        // in this case we just need a transpose
-        SmallVector<int64_t> permutation(sliceOpShape.size(), -1);
-        for (int i = 0; i < sliceOpShape.size(); i++) {
-          if (i < batchInfo.sliceDim)
-            permutation[i + 1] = i;
-          else if (i > batchInfo.sliceDim)
-            permutation[i] = i;
-          else
-            permutation[0] = i;
-        }
-        auto transposeOp = stablehlo::TransposeOp::create(
-            rewriter, loc, sliceOp.getOperand(),
-            rewriter.getDenseI64ArrayAttr(permutation));
-        operands.push_back(transposeOp.getResult());
-      } else {
-        SmallVector<int64_t> bcastShape;
-        SmallVector<int64_t> mapping(sliceOpShape.size(), -1);
-        bcastShape.push_back(batchInfo.nbatches);
-        for (int i = 0; i < sliceOpShape.size(); i++) {
-          if (i != batchInfo.sliceDim) {
-            bcastShape.push_back(sliceOpShape[i]);
-            mapping[i] = i + 1;
-          } else {
-            bcastShape.push_back(1);
-            mapping[i] = 0;
-          }
-        }
-        auto bcastOp = stablehlo::BroadcastInDimOp::create(
-            rewriter, loc,
-            RankedTensorType::get(bcastShape, sliceOpType.getElementType()),
-            sliceOp.getOperand(), rewriter.getDenseI64ArrayAttr(mapping));
-        operands.push_back(bcastOp.getResult());
-      }
-
-      operandIndexMap.push_back(operands.size() - 1);
-    } else {
-      // Non-equivalent operands - need to concatenate them
-      SmallVector<Value> newConcatOperands;
-      for (Value operand : currentOperands) {
-        auto inputType = cast<RankedTensorType>(operand.getType());
-        auto inputShape = inputType.getShape();
-
-        SmallVector<int64_t> outputShape;
-        outputShape.push_back(1);
-        outputShape.append(inputShape.begin(), inputShape.end());
-
-        // expand the batch dim (== 0) or move the batch dim from `batchDim` to
-        // `0`
-        auto newReshapeOp = stablehlo::ReshapeOp::create(
-            rewriter, loc,
-            RankedTensorType::get(outputShape, inputType.getElementType()),
-            operand);
-        newConcatOperands.push_back(newReshapeOp.getResult());
-      }
-
-      auto newConcatOp =
-          stablehlo::ConcatenateOp::create(rewriter, loc, newConcatOperands, 0);
-
-      operandIndexMap.push_back(operands.size());
-      operands.push_back(newConcatOp.getResult());
-    }
-  }
-
-  return std::make_tuple(operands, operandIndexMap);
-}
-
-std::tuple<bool, bool> allSameBool(const SmallVector<bool> &bools) {
-  return {
-      llvm::all_of(bools, [&](bool b) { return b == bools.front(); }),
-      bools.front(),
-  };
-}
-
 bool allOpsAreUnique(const SmallVector<Operation *> &ops) {
   SmallPtrSet<Operation *, 8> seen;
   return llvm::all_of(ops,
                       [&](Operation *op) { return seen.insert(op).second; });
 }
 
-static SliceInfo<stablehlo::SliceOp>
-defaultUnsupportedSliceInfo(stablehlo::SliceOp sliceOp) {
-  return SliceInfo<stablehlo::SliceOp>{sliceOp, {}, {}, {}, -1, -1, false};
+// dim == -1 => ignore the dimension check
+bool CheckIsValidForBatching(
+    stablehlo::ReshapeOp op, int64_t dim,
+    llvm::SmallVectorImpl<int64_t> &intermediateInsertions,
+    bool checkInsertion) {
+  auto inTy = cast<RankedTensorType>(op.getOperand().getType());
+  auto outTy = cast<RankedTensorType>(op.getType());
+
+  if (!checkInsertion) {
+    std::swap(inTy, outTy);
+  }
+
+  auto insertionDims = findReshapeInsertionDims(inTy, outTy);
+  if (insertionDims.empty()) {
+    return false;
+  }
+
+  if (dim == -1 || llvm::is_contained(insertionDims, dim)) {
+    for (auto i : insertionDims) {
+      if (i != dim) {
+        intermediateInsertions.push_back(i);
+      }
+    }
+    return true;
+  }
+  return false;
 }
+
+bool CheckIsValidForBatching(
+    stablehlo::BroadcastInDimOp op, int64_t dim,
+    llvm::SmallVectorImpl<int64_t> &intermediateInsertions,
+    bool checkInsertion) {
+  if (!checkInsertion) {
+    return false; // bcast in dim cannot perform deletion
+  }
+
+  auto inputType = cast<RankedTensorType>(op.getOperand().getType());
+  auto outputType = cast<RankedTensorType>(op.getType());
+
+  // If concat dim is present in broadcast dims, then it is not a valid insert
+  if ((dim != -1 && llvm::is_contained(op.getBroadcastDimensions(), dim)) ||
+      !llvm::is_sorted(op.getBroadcastDimensions())) {
+    return false;
+  }
+
+  // all bcasted dim but preserve size
+  for (auto [i, bDim] : llvm::enumerate(op.getBroadcastDimensions())) {
+    if (outputType.getDimSize(bDim) != inputType.getDimSize(i)) {
+      return false;
+    }
+  }
+
+  bool found = false;
+  for (size_t i = 0; i < outputType.getRank(); i++) {
+    if (!llvm::is_contained(op.getBroadcastDimensions(), i) &&
+        outputType.getDimSize(i) == 1) {
+      if (i == dim) {
+        found = true;
+        continue;
+      }
+      intermediateInsertions.push_back(i);
+    }
+  }
+  return dim == -1 || found;
+}
+
+} // namespace utils
 
 SliceInfo<stablehlo::SliceOp> constructSliceInfo(stablehlo::SliceOp sliceOp) {
   auto startIndices = llvm::to_vector(sliceOp.getStartIndices());
   auto limitIndices = llvm::to_vector(sliceOp.getLimitIndices());
-  auto strides = llvm::to_vector(sliceOp.getStrides());
 
-  if (!llvm::all_of(strides, [](int64_t i) { return i == 1; }))
-    return defaultUnsupportedSliceInfo(sliceOp);
-
-  auto inputType = cast<RankedTensorType>(sliceOp.getOperand().getType());
-  auto inputShape = llvm::to_vector(inputType.getShape());
-
-  bool supported = true, found = false;
-  int64_t sliceDim, sliceStart;
-
+  SmallVector<int64_t> dimensions;
   for (size_t i = 0; i < startIndices.size(); ++i) {
-    if (startIndices[i] == limitIndices[i] - 1 &&
-        !(startIndices[i] == 0 && limitIndices[i] == inputShape[i])) {
-      if (found) {
-        // multiple singleton slices not supported
-        supported = false;
-        break;
-      }
-      sliceDim = i;
-      sliceStart = startIndices[i];
-      found = true;
-    } else { // For all other dims, must be a full slice
-      if (!(startIndices[i] == 0 && limitIndices[i] == inputShape[i] &&
-            strides[i] == 1)) {
-        supported = false;
-        break;
-      }
+    if (startIndices[i] == limitIndices[i] - 1) {
+      dimensions.push_back(i);
     }
   }
-  if (!found) { // If no singleton found, not supported
-    supported = false;
+
+  if (dimensions.empty()) {
+    return SliceInfo<stablehlo::SliceOp>();
   }
 
-  if (!supported)
-    return defaultUnsupportedSliceInfo(sliceOp);
-
-  return SliceInfo<stablehlo::SliceOp>{
-      sliceOp, {}, startIndices, inputShape, sliceDim, sliceStart, true};
+  return SliceInfo<stablehlo::SliceOp>{sliceOp, dimensions, false,
+                                       std::nullopt};
 }
 
-bool areSlicesContiguous(SmallVector<SliceInfo<stablehlo::SliceOp>> &slices) {
-  if (slices.empty())
-    return false;
-
-  int64_t sliceDim = slices[0].sliceDim;
-  for (const auto &slice : slices) {
-    if (slice.sliceDim != sliceDim)
-      return false;
-    if (!slice.supported)
-      return false;
+void ComputeSliceDimension(ArrayRef<SliceInfo<mlir::stablehlo::SliceOp>> slices,
+                           int64_t *sliceDim) {
+  // find potential slice dimensions by constructing the intersection of all
+  llvm::SmallSetVector<int64_t, 4> dimensions(slices[0].dimensions.begin(),
+                                              slices[0].dimensions.end());
+  for (auto &slice : llvm::drop_begin(slices)) {
+    llvm::SmallSetVector<int64_t, 4> curDims(slice.dimensions.begin(),
+                                             slice.dimensions.end());
+    llvm::set_intersect(dimensions, curDims);
+  }
+  if (dimensions.empty()) {
+    *sliceDim = -1;
+    return;
   }
 
-  // Sort slices by start index
-  llvm::sort(slices, [](const SliceInfo<stablehlo::SliceOp> &a,
-                        const SliceInfo<stablehlo::SliceOp> &b) {
-    return a.sliceStart < b.sliceStart;
-  });
+  // find the first dimension for which all conditions on the slice ops are
+  // satisfied
+  for (auto dim : dimensions) {
+    auto baseSliceOp = slices[0].sliceOp;
+    auto explicitReshapeShape = slices[0].explicitReshapeShape;
 
-  int64_t expectedStart = slices[0].sliceStart;
-  // TODO: partial slice support
-  if (expectedStart != 0)
-    return false;
+    for (auto slice : llvm::drop_begin(slices)) {
+      auto curSliceOp = slice.sliceOp;
 
-  for (const auto &slice : slices) {
-    if (slice.sliceStart != expectedStart)
-      return false;
-    expectedStart++;
+      if (explicitReshapeShape.has_value()) {
+        if (!slice.explicitReshapeShape.has_value() ||
+            explicitReshapeShape.value() !=
+                slice.explicitReshapeShape.value()) {
+          *sliceDim = -1;
+          return;
+        }
+      }
+
+      for (int64_t i = 0; i < baseSliceOp.getStartIndices().size(); ++i) {
+        if (i == dim) {
+          continue;
+        }
+
+        if (baseSliceOp.getStartIndices()[i] !=
+                curSliceOp.getStartIndices()[i] ||
+            baseSliceOp.getLimitIndices()[i] !=
+                curSliceOp.getLimitIndices()[i] ||
+            baseSliceOp.getStrides()[i] != curSliceOp.getStrides()[i]) {
+          *sliceDim = -1;
+          return;
+        }
+      }
+    }
+
+    *sliceDim = dim;
+    return;
   }
 
-  // TODO: we should support cases where the entire batch is not being sliced
-  //       but introducing an intermediate slice.
-  if (expectedStart !=
-      slices[0].sliceOp.getOperand().getType().getShape()[sliceDim])
-    return false;
-
-  return true;
+  *sliceDim = -1;
+  return;
 }
 
 LogicalResult ConcatInsertDimToBatchBase::matchAndRewriteImpl(
     stablehlo::ConcatenateOp concatOp, PatternRewriter &rewriter) const {
-  if (concatOp.getNumOperands() <= 1)
+  if (concatOp.getNumOperands() <= 1) {
     return failure();
+  }
 
   auto concatDim = concatOp.getDimension();
   auto concatType = cast<RankedTensorType>(concatOp.getResult().getType());
@@ -400,15 +455,10 @@ LogicalResult ConcatInsertDimToBatchBase::matchAndRewriteImpl(
     SmallVector<int64_t> intermediateInsertions;
     bool validIntermediate =
         TypeSwitch<Operation *, bool>(definingOp)
-            .Case<stablehlo::ReshapeOp>([this, concatDim,
-                                         &intermediateInsertions](auto op) {
-              return validReshapeOpInsertDimForBatching(op, concatDim,
-                                                        intermediateInsertions);
-            })
-            .Case<stablehlo::BroadcastInDimOp>(
-                [this, concatDim, &intermediateInsertions](auto op) {
-                  return validBroadcastInDimOpInsertDimForBatching(
-                      op, concatDim, intermediateInsertions);
+            .Case<stablehlo::ReshapeOp, stablehlo::BroadcastInDimOp>(
+                [&](auto op) {
+                  return ::utils::CheckIsValidForBatching(
+                      op, concatDim, intermediateInsertions, true);
                 })
             .Default([](auto op) { return false; });
 
@@ -430,10 +480,8 @@ LogicalResult ConcatInsertDimToBatchBase::matchAndRewriteImpl(
     }
 
     if (concatOpOperands.size() != 0) {
-      if (!OperationEquivalence::isEquivalentTo(
-              concatOpOperands[0], vdefOp,
-              OperationEquivalence::ignoreValueEquivalence, nullptr,
-              OperationEquivalence::IgnoreLocations, nullptr)) {
+      if (!::utils::IsEquivalentToIgnoringValueEquivalence(concatOpOperands[0],
+                                                           vdefOp)) {
         return rewriter.notifyMatchFailure(concatOp,
                                            "op is not equivalent to first");
       }
@@ -447,17 +495,17 @@ LogicalResult ConcatInsertDimToBatchBase::matchAndRewriteImpl(
     concatOpOperands.push_back(vdefOp);
   }
 
-  auto [batchOpOperands, operandIndexMap] = constructAndExtractBatchOperands(
-      rewriter, concatOpOperands, concatOp.getLoc(),
-      BatchOperandConstructionInfo{nullptr, -1, -1, -1, false});
-
-  std::string wrapperFuncName = "enzymexla_unbatched_ConcatInsertDimToBatch_" +
-                                (std::to_string(concatReshapeToBatchCounter++));
+  SmallVector<Value> batchOpOperands;
+  SmallVector<BatchLiftingMode> liftingModes;
+  ::utils::ConstructAndExtractBatchOperands(rewriter, concatOpOperands,
+                                            concatOp.getLoc(), std::nullopt,
+                                            batchOpOperands, liftingModes);
 
   SmallVector<int64_t> outputShape;
   for (int i = 0; i < concatShape.size(); i++) {
-    if (i == concatDim)
+    if (i == concatDim) {
       continue;
+    }
     outputShape.push_back(concatShape[i]);
   }
 
@@ -465,28 +513,27 @@ LogicalResult ConcatInsertDimToBatchBase::matchAndRewriteImpl(
   if (!extraIntermediateInsertions.empty()) {
     explicitReshapeShape = outputShape;
   }
-  func::FuncOp func = createWrapperUnbatchedFunction(
-      rewriter, wrapperFuncName, batchOpOperands, operandIndexMap,
-      concatOpOperands[0], explicitReshapeShape);
-  if (!func) {
-    return rewriter.notifyMatchFailure(concatOp,
-                                       "failed to create wrapper function");
-  }
+  auto moduleOp = concatOp->getParentOfType<ModuleOp>();
+  func::FuncOp func = ::utils::CreateWrapperUnbatchedFunction(
+      moduleOp, rewriter, "enzymexla_unbatched_ConcatInsertDimToBatch_",
+      liftingModes, concatOpOperands[0], explicitReshapeShape);
 
   outputShape.insert(outputShape.begin(), concatShape[concatDim]);
   auto batchOp = enzyme::BatchOp::create(
       rewriter, concatOp.getLoc(),
       RankedTensorType::get(outputShape, concatType.getElementType()),
-      mlir::FlatSymbolRefAttr::get(concatOp.getContext(), wrapperFuncName),
+      mlir::FlatSymbolRefAttr::get(concatOp.getContext(), func.getName()),
       ValueRange(batchOpOperands),
       rewriter.getDenseI64ArrayAttr({concatShape[concatDim]}));
 
   SmallVector<int64_t> permutation;
-  for (int i = 1; i <= concatDim; i++)
+  for (int i = 1; i <= concatDim; i++) {
     permutation.push_back(i);
+  }
   permutation.push_back(0);
-  for (int i = concatDim + 1; i < concatShape.size(); i++)
+  for (int i = concatDim + 1; i < concatShape.size(); i++) {
     permutation.push_back(i);
+  }
 
   rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(
       concatOp, batchOp->getResult(0), permutation);
@@ -496,62 +543,12 @@ LogicalResult ConcatInsertDimToBatchBase::matchAndRewriteImpl(
   return success();
 }
 
-bool ConcatInsertDimToBatchBase::validReshapeOpInsertDimForBatching(
-    stablehlo::ReshapeOp op, int64_t dim,
-    SmallVectorImpl<int64_t> &intermediateInsertions) const {
-  auto insertionDims = findReshapeInsertionDims(
-      cast<RankedTensorType>(op.getOperand().getType()),
-      cast<RankedTensorType>(op.getType()));
-  if (llvm::is_contained(insertionDims, dim)) {
-    for (auto i : insertionDims) {
-      if (i != dim) {
-        intermediateInsertions.push_back(i);
-      }
-    }
-    return true;
-  }
-  return false;
-}
-
-bool ConcatInsertDimToBatchBase::validBroadcastInDimOpInsertDimForBatching(
-    stablehlo::BroadcastInDimOp op, int64_t dim,
-    SmallVectorImpl<int64_t> &intermediateInsertions) const {
-  auto inputType = cast<RankedTensorType>(op.getOperand().getType());
-  auto outputType = cast<RankedTensorType>(op.getType());
-
-  // single insert dim
-  if (inputType.getRank() != outputType.getRank() - 1) {
-    return false;
-  }
-
-  // If concat dim is present in broadcast dims, then it is not a valid insert
-  if (llvm::is_contained(op.getBroadcastDimensions(), dim) ||
-      !llvm::is_sorted(op.getBroadcastDimensions())) {
-    return false;
-  }
-
-  // all bcasted dim but preserve size
-  for (auto [i, bDim] : llvm::enumerate(op.getBroadcastDimensions())) {
-    if (outputType.getDimSize(bDim) != inputType.getDimSize(i)) {
-      return false;
-    }
-  }
-
-  bool found = false;
-  for (size_t i = 0; i < outputType.getRank(); i++) {
-    if (!llvm::is_contained(op.getBroadcastDimensions(), i) &&
-        outputType.getDimSize(i) == 1) {
-      found |= i == dim;
-      intermediateInsertions.push_back(i);
-    }
-  }
-  return found;
-}
-
 LogicalResult
 SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
                                       PatternRewriter &rewriter) const {
   Value sliceInput = sliceOp.getOperand();
+  auto block = sliceOp->getBlock();
+
   // Find all slices of the same input that feed into equivalent operations
   SmallVector<SliceInfo<stablehlo::SliceOp>> relatedSlices;
   SmallVector<Operation *> relatedOps;
@@ -562,52 +559,60 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
   // Build worklist of all slice operations on the same input
   for (auto [idx, user] : llvm::enumerate(sliceInput.getUsers())) {
     auto candidateSlice = dyn_cast<stablehlo::SliceOp>(user);
-    if (!candidateSlice || !candidateSlice.getResult().hasOneUse())
+    if (!candidateSlice || !candidateSlice.getResult().hasOneUse()) {
       continue;
+    }
 
     auto sliceInfo = constructSliceInfo(candidateSlice);
 
     Operation *onlyUser = *candidateSlice.getResult().getUsers().begin();
+    Operation *candidateTargetOp = isValidTargetOp(onlyUser);
 
     bool isIntermediateReshape = false;
-    auto candidateTargetOp = isValidTargetOp(onlyUser);
-
-    if (!relatedOps.empty() && candidateTargetOp &&
-        candidateTargetOp->getBlock() != relatedOps[0]->getBlock())
-      continue;
-
     Operation *preceedingOp = candidateSlice;
     if (!candidateTargetOp) {
-      // check for reshape
-      auto intermediateReshape = dyn_cast<stablehlo::ReshapeOp>(onlyUser);
-      if (!intermediateReshape)
-        continue;
+      SmallVector<int64_t> intermediateInsertions;
+      isIntermediateReshape =
+          TypeSwitch<Operation *, bool>(onlyUser)
+              .Case<stablehlo::ReshapeOp, stablehlo::BroadcastInDimOp>(
+                  [&](auto op) {
+                    auto res = op.getResult();
+                    preceedingOp = op;
+                    if (res.hasOneUse() &&
+                        ::utils::CheckIsValidForBatching(
+                            op, -1, intermediateInsertions, false)) {
+                      candidateTargetOp =
+                          isValidTargetOp(*res.getUsers().begin());
+                      if (candidateTargetOp) {
+                        return true;
+                      }
+                      return true;
+                    }
+                    return false;
+                  })
+              .Default([](auto op) { return false; });
 
-      auto reshapeInputShape =
-          cast<RankedTensorType>(intermediateReshape.getOperand().getType());
-      auto reshapeOutputShape =
-          cast<RankedTensorType>(intermediateReshape.getResult().getType());
-
-      if (!areValidInsertionDims(reshapeOutputShape, reshapeInputShape,
-                                 {sliceInfo.sliceDim}))
-        continue;
-
-      if (!intermediateReshape.getResult().hasOneUse())
-        continue;
-
-      isIntermediateReshape = true;
-      candidateTargetOp =
-          isValidTargetOp(*intermediateReshape.getResult().getUsers().begin());
-      if (!candidateTargetOp)
-        continue;
-      preceedingOp = intermediateReshape;
+      if (isIntermediateReshape) {
+        // resolve the intermediate reshape
+        sliceInfo.intermediateReshape = true;
+        sliceInfo.explicitReshapeShape = llvm::to_vector(
+            cast<ShapedType>(preceedingOp->getResult(0).getType()).getShape());
+      }
     }
 
+    if (!candidateTargetOp || candidateTargetOp->getBlock() != block) {
+      continue; // only consider ops in the same block
+    }
+
+    // check that all of the ops are equivalent and that the slice operand is
+    // at the same location
     if (targetOp) {
-      if (!OperationEquivalence::isEquivalentTo(
-              targetOp, candidateTargetOp,
-              OperationEquivalence::ignoreValueEquivalence, nullptr,
-              OperationEquivalence::IgnoreLocations, nullptr)) {
+      if (!::utils::IsEquivalentToIgnoringValueEquivalence(targetOp,
+                                                           candidateTargetOp)) {
+        continue;
+      }
+      if (candidateTargetOp->getOperand(sliceOperandIndex) !=
+          preceedingOp->getResult(0)) {
         continue;
       }
     } else {
@@ -626,72 +631,65 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
     allHaveIntermediateReshapes.push_back(isIntermediateReshape);
   }
 
-  if (relatedSlices.size() <= 1)
+  if (relatedSlices.size() <= 1) {
     return rewriter.notifyMatchFailure(sliceOp, "no related slices found");
-
-  // Check that all related slices and ops are in the same block
-  // TODO: we can run this pass by constructing common subsets and optimizing
-  // each of those
-  Block *commonBlock = relatedSlices[0].sliceOp->getBlock();
-  for (const auto &sliceInfo : relatedSlices) {
-    if (sliceInfo.sliceOp->getBlock() != commonBlock)
-      return rewriter.notifyMatchFailure(
-          sliceOp, "not all related slices in same block");
-  }
-  for (Operation *op : relatedOps) {
-    if (op->getBlock() != commonBlock)
-      return rewriter.notifyMatchFailure(sliceOp,
-                                         "not all related ops in same block");
   }
 
-  // Sort all three vectors together based on sliceStart
+  if (!::utils::allOpsAreUnique(relatedOps)) {
+    return rewriter.notifyMatchFailure(sliceOp, "ops are not unique");
+  }
+
+  if (sliceOperandIndex < 0) {
+    return rewriter.notifyMatchFailure(sliceOp, "slice operand not found");
+  }
+
+  if (llvm::any_of(allHaveIntermediateReshapes, [=](bool b) {
+        return b != allHaveIntermediateReshapes[0];
+      })) {
+    return rewriter.notifyMatchFailure(
+        sliceOp, "slices have different intermediate reshape");
+  }
+
+  int64_t sliceDim = -1;
+  ComputeSliceDimension(relatedSlices, &sliceDim);
+
+  if (sliceDim < 0) {
+    return rewriter.notifyMatchFailure(sliceOp, "slice dimension not found");
+  }
+
+  // Sort all vectors together based on sliceStart to ensure better locality
   SmallVector<size_t> indices(relatedSlices.size());
   std::iota(indices.begin(), indices.end(), 0);
 
   std::sort(indices.begin(), indices.end(), [&](size_t i, size_t j) {
-    return relatedSlices[i].sliceStart < relatedSlices[j].sliceStart;
+    return relatedSlices[i].sliceOp.getStartIndices()[sliceDim] <
+           relatedSlices[j].sliceOp.getStartIndices()[sliceDim];
   });
 
   // Reorder all three vectors according to the sorted indices
   SmallVector<SliceInfo<stablehlo::SliceOp>> sortedSlices;
   SmallVector<Operation *> sortedOps;
-  SmallVector<bool> sortedReshapes;
 
   for (size_t idx : indices) {
     sortedSlices.push_back(relatedSlices[idx]);
     sortedOps.push_back(relatedOps[idx]);
-    sortedReshapes.push_back(allHaveIntermediateReshapes[idx]);
   }
 
   relatedSlices = std::move(sortedSlices);
   relatedOps = std::move(sortedOps);
-  allHaveIntermediateReshapes = std::move(sortedReshapes);
 
-  // Validate that slices are compatible for batching
-  if (!areSlicesContiguous(relatedSlices))
-    return rewriter.notifyMatchFailure(sliceOp,
-                                       "slices not compatible for batching");
-
-  if (!allOpsAreUnique(relatedOps))
-    return rewriter.notifyMatchFailure(sliceOp, "ops are not unique");
-
-  auto [validReshapes, intermediateReshape] =
-      allSameBool(allHaveIntermediateReshapes);
-  if (!validReshapes)
-    return rewriter.notifyMatchFailure(
-        sliceOp, "not all ops have same intermediate reshape");
-
-  if (anyOpsAreDataDependent(relatedOps))
+  // quite an expensive check, so run at the very end
+  if (::utils::anyOpsAreDataDependent(relatedOps)) {
     return rewriter.notifyMatchFailure(sliceOp, "ops are data dependent");
-
-  assert(sliceOperandIndex >= 0);
+  }
 
   // move all the related ops and their operands (and theirs) s.t they are
   // together
   Operation *firstRelatedOp = relatedOps[0];
   for (auto &op : relatedOps) {
-    if (isBeforeInBlock(op, firstRelatedOp))
+    if (::utils::isBeforeInBlock(op, firstRelatedOp)) {
       firstRelatedOp = op;
+    }
   }
   // if we have to move around too many ops we avoid applying this pattern
   llvm::SetVector<Operation *> opsToMoveWorklist;
@@ -706,7 +704,7 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
       if (notSeen) {
         for (auto operand : currOp->getOperands()) {
           if (auto operandOp = operand.getDefiningOp()) {
-            if (!isBeforeInBlock(operandOp, firstRelatedOp)) {
+            if (!::utils::isBeforeInBlock(operandOp, firstRelatedOp)) {
               opsToMove.push_back(operandOp);
             }
           }
@@ -723,27 +721,30 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
 
   Operation *insertionPoint = relatedOps[0];
   for (auto &op : relatedOps) {
-    if (isBeforeInBlock(op, insertionPoint))
+    if (::utils::isBeforeInBlock(op, insertionPoint)) {
       continue;
+    }
     insertionPoint = op;
   }
   rewriter.setInsertionPoint(insertionPoint);
 
-  auto [batchOpOperands, operandIndexMap] = constructAndExtractBatchOperands(
+  for (auto &slice : relatedSlices) {
+    slice.dimensions = {sliceDim};
+  }
+
+  SmallVector<Value> batchOpOperands;
+  SmallVector<BatchLiftingMode> liftingModes;
+  ::utils::ConstructAndExtractBatchOperands(
       rewriter, relatedOps, sliceOp.getLoc(),
-      BatchOperandConstructionInfo{
-          relatedSlices[0].sliceOp, static_cast<int32_t>(sliceOperandIndex),
-          static_cast<int32_t>(relatedSlices[0].sliceDim),
-          static_cast<int32_t>(relatedSlices.size()), intermediateReshape});
+      BatchOperandConstructionInfo<stablehlo::SliceOp>{
+          relatedSlices, static_cast<int32_t>(sliceOperandIndex),
+          allHaveIntermediateReshapes[0]},
+      batchOpOperands, liftingModes);
 
-  std::string sliceToBatchName =
-      "enzymexla_unbatched_SliceToBatch_" + std::to_string(sliceToBatchCount++);
-
-  func::FuncOp func = createWrapperUnbatchedFunction(
-      rewriter, sliceToBatchName, batchOpOperands, operandIndexMap,
+  auto moduleOp = sliceOp->getParentOfType<ModuleOp>();
+  func::FuncOp func = ::utils::CreateWrapperUnbatchedFunction(
+      moduleOp, rewriter, "enzymexla_unbatched_SliceToBatch_", liftingModes,
       relatedOps[0], std::nullopt);
-  if (!func)
-    return rewriter.notifyMatchFailure(sliceOp, "failed to create function");
 
   SmallVector<int64_t> outputShape;
   outputShape.push_back(relatedSlices.size());
@@ -755,7 +756,7 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
   auto batchOp = enzyme::BatchOp::create(
       rewriter, sliceOp.getLoc(),
       RankedTensorType::get(outputShape, relatedOpsType.getElementType()),
-      mlir::FlatSymbolRefAttr::get(sliceOp.getContext(), sliceToBatchName),
+      mlir::FlatSymbolRefAttr::get(sliceOp.getContext(), func.getName()),
       ValueRange(batchOpOperands),
       rewriter.getDenseI64ArrayAttr(
           {static_cast<int64_t>(relatedSlices.size())}));
@@ -764,9 +765,11 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
   SmallVector<int64_t> endIndices;
   endIndices.append(outputShape.begin(), outputShape.end());
   SmallVector<int64_t> strides(outputShape.size(), 1);
-  for (auto [sliceInfo, otherOp] : llvm::zip(relatedSlices, relatedOps)) {
-    startIndices[0] = sliceInfo.sliceStart;
-    endIndices[0] = sliceInfo.sliceStart + 1;
+  for (auto [idx, sliceInfoAndOp] :
+       llvm::enumerate(llvm::zip(relatedSlices, relatedOps))) {
+    auto &[sliceInfo, otherOp] = sliceInfoAndOp;
+    startIndices[0] = idx;
+    endIndices[0] = idx + 1;
 
     auto slicedOp = stablehlo::SliceOp::create(
         rewriter, sliceOp.getLoc(), batchOp->getResult(0),
@@ -811,7 +814,7 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
   // 2. Only one variable in the body is a direct descendant of the induction
   // variable
   SmallPtrSet<Operation *, 8> seenOps;
-  SmallVector<DynamicSliceInfo> candidateSlices;
+  SmallVector<SliceInfo<stablehlo::DynamicSliceOp>> candidateSlices;
 
   for (auto [value, affineIndexInfo] : affineIndexInfoMap) {
     for (auto user : value.getUsers()) {
@@ -826,35 +829,34 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
             sliceOp, affineIndexInfoMap, whileBody, whileOp);
 
         if (isValidForBatchingResult(result.result)) {
-          candidateSlices.push_back(
-              DynamicSliceInfo{sliceOp, result.dimensions, false, false, {}});
+          candidateSlices.push_back(SliceInfo<stablehlo::DynamicSliceOp>{
+              sliceOp, result.dimensions, false, std::nullopt});
         }
       }
     }
   }
 
   // Create a map of user operations to their corresponding dynamic slices
-  llvm::MapVector<Operation *, SmallVector<DynamicSliceInfo>> userOpToSlicesMap;
+  llvm::MapVector<Operation *,
+                  SmallVector<SliceInfo<stablehlo::DynamicSliceOp>>>
+      userOpToSlicesMap;
   for (auto ds : candidateSlices) {
     for (auto op : ds.sliceOp->getUsers()) {
       userOpToSlicesMap[op].push_back(ds);
 
       if (isa<stablehlo::ReshapeOp>(op)) {
-        SmallVector<int64_t> reshapeShape;
-
         auto operandTy = cast<RankedTensorType>(op->getOperand(0).getType());
         auto resultTy = cast<RankedTensorType>(op->getResult(0).getType());
 
-        bool needsManualReshape = false;
+        std::optional<SmallVector<int64_t>> reshapeShape;
         if (!areValidInsertionDims(resultTy, operandTy, ds.dimensions)) {
-          needsManualReshape = true;
           reshapeShape = llvm::to_vector(resultTy.getShape());
         }
 
         for (auto user : op->getUsers()) {
           userOpToSlicesMap[user].push_back(
-              DynamicSliceInfo{ds.sliceOp, ds.dimensions, true,
-                               needsManualReshape, reshapeShape});
+              SliceInfo<stablehlo::DynamicSliceOp>{ds.sliceOp, ds.dimensions,
+                                                   true, reshapeShape});
         }
       }
     }
@@ -865,7 +867,8 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
   for (auto &[val, slices] : affineIndexInfoMap) {
     for (auto user : val.getUsers()) {
       if (isa<stablehlo::CompareOp, stablehlo::BroadcastInDimOp>(user)) {
-        userOpToSlicesMap[user].push_back(DynamicSliceInfo());
+        userOpToSlicesMap[user].push_back(
+            SliceInfo<stablehlo::DynamicSliceOp>{});
       }
     }
   }
@@ -901,7 +904,7 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
 
 bool GreedyWhileLoopBatchFission::liftOperationByBatching(
     PatternRewriter &rewriter, stablehlo::WhileOp whileOp,
-    ArrayRef<DynamicSliceInfo> sliceOps, Operation *op,
+    ArrayRef<SliceInfo<stablehlo::DynamicSliceOp>> slices, Operation *op,
     WhileLoopInfo info) const {
   auto moduleOp = op->getParentOfType<ModuleOp>();
   auto affineIndexInfoMap = info.getAffineIndexInfo();
@@ -910,7 +913,8 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
   SmallVector<Value> batchOperands(op->getNumOperands());
   SmallVector<SmallVector<int64_t>> sliceDims(op->getNumOperands());
   SmallVector<int64_t> hoistedDims(op->getNumOperands());
-  SmallVector<DynamicSliceInfo> mappedSliceInfos(op->getNumOperands());
+  SmallVector<SliceInfo<stablehlo::DynamicSliceOp>> mappedSliceInfos(
+      op->getNumOperands());
   DenseMap<Value, SmallVector<Operation *>> hoistMap;
 
   for (int i = 0; i < op->getNumOperands(); i++) {
@@ -960,10 +964,11 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
     }
 
     if (auto ds = dyn_cast<stablehlo::DynamicSliceOp>(dsOp)) {
-      auto itr = llvm::find_if(sliceOps, [&](const DynamicSliceInfo &info) {
-        return info.sliceOp == ds;
-      });
-      if (itr != sliceOps.end()) {
+      auto itr = llvm::find_if(
+          slices, [&](const SliceInfo<stablehlo::DynamicSliceOp> &info) {
+            return info.sliceOp == ds;
+          });
+      if (itr != slices.end()) {
         batchLiftingModes[i] = BatchLiftingMode::DYNAMIC_SLICE;
         sliceDims[i] = itr->dimensions;
 
@@ -989,47 +994,9 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
     return false;
   }
 
-  // emit a funcOp that we will batch later
-  static int64_t batchCounter = 0;
-  std::string batchFnName =
-      "enzymexla_loop_batch_fission_" + std::to_string(batchCounter++);
-  func::FuncOp func;
-
-  {
-    OpBuilder::InsertionGuard guard(rewriter);
-    rewriter.setInsertionPointToStart(moduleOp.getBody());
-
-    SmallVector<Type> argTypes;
-    for (int i = 0; i < op->getNumOperands(); i++) {
-      if (batchLiftingModes[i] == BatchLiftingMode::CONSTANT)
-        continue;
-      argTypes.push_back(op->getOperand(i).getType());
-    }
-
-    FunctionType calleeType =
-        rewriter.getFunctionType(TypeRange(argTypes), op->getResultTypes());
-    func = func::FuncOp::create(rewriter, moduleOp.getLoc(), batchFnName,
-                                calleeType);
-    func.setPrivate();
-
-    auto &entryBlock = *func.addEntryBlock();
-    rewriter.setInsertionPointToStart(&entryBlock);
-
-    IRMapping mapper;
-    size_t argIdx = 0;
-    for (auto [batchLiftMode, operand] :
-         llvm::zip(batchLiftingModes, op->getOperands())) {
-      if (batchLiftMode == BatchLiftingMode::CONSTANT) {
-        auto clonedConst = rewriter.clone(*operand.getDefiningOp());
-        mapper.map(operand, clonedConst->getResult(0));
-        continue;
-      }
-      mapper.map(operand, entryBlock.getArguments()[argIdx++]);
-    }
-
-    auto unbatchedOp = rewriter.clone(*op, mapper);
-    func::ReturnOp::create(rewriter, op->getLoc(), unbatchedOp->getResults());
-  }
+  func::FuncOp func = ::utils::CreateWrapperUnbatchedFunction(
+      moduleOp, rewriter, "enzymexla_unbatched_WhileLoopBatchFission_",
+      batchLiftingModes, op, std::nullopt);
 
   rewriter.setInsertionPoint(whileOp);
 
@@ -1095,15 +1062,14 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
       for (size_t i = sliceDim[0] + 1; i < DSType.getRank(); i++)
         permutation[i] = i;
 
-      Value newOperand = stablehlo::TransposeOp::create(
-          rewriter, whileOp->getLoc(), newSlice,
-          rewriter.getDenseI64ArrayAttr(permutation));
+      Value newOperand = stablehlo::TransposeOpCreate(
+          rewriter, whileOp->getLoc(), newSlice, permutation);
 
       bool applyReshape = true;
       SmallVector<int64_t> reshapeShape;
       if (sliceInfo.intermediateReshape) {
-        if (sliceInfo.needsManualReshape) {
-          reshapeShape = llvm::to_vector(sliceInfo.reshapeShape);
+        if (sliceInfo.explicitReshapeShape.has_value()) {
+          reshapeShape = sliceInfo.explicitReshapeShape.value();
           reshapeShape.insert(reshapeShape.begin(), info.getConstantNumIters());
         } else {
           applyReshape = false;
@@ -1116,10 +1082,8 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
       }
 
       if (applyReshape) {
-        newOperand = stablehlo::ReshapeOp::create(
-            rewriter, whileOp->getLoc(),
-            RankedTensorType::get(reshapeShape, operandType.getElementType()),
-            newOperand);
+        newOperand = stablehlo::ReshapeOpCreate(rewriter, whileOp->getLoc(),
+                                                newOperand, reshapeShape);
       }
 
       newOperands.push_back(newOperand);
@@ -1202,7 +1166,7 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
   auto batchOp = enzyme::BatchOp::create(
       rewriter, whileOp->getLoc(),
       RankedTensorType::get(outputShape, resultType.getElementType()),
-      mlir::FlatSymbolRefAttr::get(func.getContext(), batchFnName),
+      mlir::FlatSymbolRefAttr::get(func.getContext(), func.getName()),
       ValueRange(newOperands),
       rewriter.getDenseI64ArrayAttr({info.getConstantNumIters()}));
 
@@ -1256,9 +1220,10 @@ GreedyWhileLoopBatchFission::isDynamicSliceValidForBatching(
   }
 
   SmallVector<int64_t> dimensions;
+  auto sliceSizes = sliceOp.getSliceSizes();
 
   for (auto [i, startIndex] : llvm::enumerate(sliceOp.getStartIndices())) {
-    if (affineIndexInfoMap.contains(startIndex)) {
+    if (affineIndexInfoMap.contains(startIndex) && sliceSizes[i] == 1) {
       dimensions.push_back(i);
       continue;
     }
