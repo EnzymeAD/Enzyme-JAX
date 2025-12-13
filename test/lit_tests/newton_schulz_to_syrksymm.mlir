@@ -44,7 +44,7 @@ module {
 // CHECK-NEXT:       %1 = stablehlo.compare  LT, %iterArg, %c_4 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:       stablehlo.return %1 : tensor<i1>
 // CHECK-NEXT:     } do {
-// CHECK-NEXT:       %1 = stablehlo.add %iterArg, %c_5 : tensor<i64>
+// CHECK-NEXT:       %1 = stablehlo.add %iterArg, %c_5 {enzymexla.bounds = {{.*}}} : tensor<i64>
 // CHECK-NEXT:       %2 = enzymexla.blas.syrk %iterArg_7, %cst_3, %cst_2, %cst_1 {fill, transpose = #enzymexla.transpose<transpose>, uplo = #enzymexla.uplo<F>} : (tensor<5x4xf32>, tensor<4x4xf32>, tensor<f32>, tensor<f32>) -> tensor<4x4xf32>
 // CHECK-NEXT:       %3 = stablehlo.multiply %cst_6, %2 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed GUARANTEED>]} : tensor<4x4xf32>
 // CHECK-NEXT:       %4 = stablehlo.add %3, %cst : tensor<4x4xf32>
