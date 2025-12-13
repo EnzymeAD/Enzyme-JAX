@@ -20,15 +20,19 @@
 #include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVM.h"
 #include "mlir/Conversion/GPUCommon/GPUCommonPass.h"
 #include "mlir/Conversion/GPUToNVVM/GPUToNVVMPass.h"
+#include "mlir/Conversion/GPUToROCDL/GPUToROCDLPass.h"
 #include "mlir/Conversion/LLVMCommon/ConversionTarget.h"
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Conversion/MathToLLVM/MathToLLVM.h"
 #include "mlir/Conversion/MathToLibm/MathToLibm.h"
+#include "mlir/Conversion/MathToROCDL/MathToROCDL.h"
 #include "mlir/Conversion/MemRefToLLVM/MemRefToLLVM.h"
 #include "mlir/Conversion/OpenMPToLLVM/ConvertOpenMPToLLVM.h"
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Conversion/UBToLLVM/UBToLLVM.h"
+#include "mlir/Dialect/AMDGPU/Utils/Chipset.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -932,20 +936,33 @@ public:
 
     auto ptrty = LLVM::LLVMPointerType::get(op.getContext());
 
+    auto i32 = rewriter.getIntegerType(32);
+
+    std::string memcpyFuncName;
+
+    bool xla = backend.starts_with("xla");
+
+    if (xla) {
+      memcpyFuncName = "reactantXLAMemcpy";
+    } else if (backend == "cuda") {
+      memcpyFuncName = "cudaMemcpy";
+    } else if (backend == "rocm") {
+      memcpyFuncName = "hipMemcpy";
+    }
+
     SmallVector<Type> tys = {ptrty, ptrty, size.getType(),
                              rewriter.getIntegerType(32)};
     if (backend.starts_with("xla")) {
       tys.insert(tys.begin(), ptrty);
     }
-    auto i32 = rewriter.getIntegerType(32);
-    bool xla = backend.starts_with("xla");
 
-    auto cudaMemcpyFn = LLVM::lookupOrCreateFn(
-        rewriter, moduleOp, xla ? "reactantXLAMemcpy" : "cudaMemcpy", tys,
+    auto memcpyFn = LLVM::lookupOrCreateFn(
+        rewriter, moduleOp, memcpyFuncName, tys,
         xla ? (mlir::Type)LLVM::LLVMVoidType::get(rewriter.getContext())
             : (mlir::Type)i32);
-    if (failed(cudaMemcpyFn))
+    if (failed(memcpyFn)) {
       return failure();
+    }
 
     SmallVector<Value> args = {dst, src, size,
                                LLVM::ConstantOp::create(rewriter, op.getLoc(),
@@ -961,7 +978,7 @@ public:
       args.insert(args.begin(), xdata);
     }
 
-    LLVM::CallOp::create(rewriter, op.getLoc(), cudaMemcpyFn.value(), args);
+    LLVM::CallOp::create(rewriter, op.getLoc(), memcpyFn.value(), args);
     rewriter.eraseOp(op);
     return success();
   }
@@ -1553,7 +1570,7 @@ struct LowerGPUAlternativesOp
       auto kernelId = LLVM::createGlobalString(
           loc, rewriter, std::string("kernelId.") + std::to_string(num++),
           nullTermLocStr, LLVM::Linkage::Internal, /*opaquePointers*/ true);
-      auto totalAlternatives = LLVM::ConstantOp::create(rewriter, 
+      auto totalAlternatives = LLVM::ConstantOp::create(rewriter,
           loc, llvmInt32Type, gao->getNumRegions());
       auto alternative =
           rtPGOGetAlternativeCallBuilder
@@ -1562,7 +1579,7 @@ struct LowerGPUAlternativesOp
 
       int i = 0;
       for (auto &region : gao->getRegions()) {
-        auto cmpOp = arith::CmpIOp::create(rewriter, 
+        auto cmpOp = arith::CmpIOp::create(rewriter,
             loc, arith::CmpIPredicate::eq, alternative,
             arith::ConstantIntOp::create(rewriter, loc, i, 32));
         auto ifOp = scf::IfOp::create(rewriter, loc, cmpOp, /* hasElse */ true);
@@ -1752,6 +1769,24 @@ ConvertGPUModuleOp::matchAndRewrite(gpu::GPUModuleOp kernelModule,
 
   auto loc = kernelModule.getLoc();
   auto ctorloc = rewriter.getUnknownLoc();
+
+  std::string registerFatBinaryFuncName;
+  std::string registerFunctionFuncName;
+  std::string registerVarFuncName;
+  std::string unregisterFatBinaryFuncName;
+
+  if (gpuTarget == "cuda") {
+    registerFatBinaryFuncName = "__cudaRegisterFatBinary";
+    registerFunctionFuncName = "__cudaRegisterFunction";
+    registerVarFuncName = "__cudaRegisterVar";
+    unregisterFatBinaryFuncName = "__cudaUnregisterFatBinary";
+  } else {
+    registerFatBinaryFuncName = "__hipRegisterFatBinary";
+    registerFunctionFuncName = "__hipRegisterFunction";
+    registerVarFuncName = "__hipRegisterVar";
+    unregisterFatBinaryFuncName = "__hipUnregisterFatBinary";
+  }
+
   rewriter.modifyOpInPlace(kernelModule, [&]() {
     kernelModule->setAttr("polygeist_stubs", rewriter.getUnitAttr());
   });
@@ -1818,6 +1853,7 @@ ConvertGPUModuleOp::matchAndRewrite(gpu::GPUModuleOp kernelModule,
         moduleIDPrefix = "__hip_";
         fatMagic = HIPFatMagic;
       }
+
       (void)fatbinConstantName;
       (void)moduleIDSectionName;
 
@@ -1882,10 +1918,11 @@ ConvertGPUModuleOp::matchAndRewrite(gpu::GPUModuleOp kernelModule,
           ctorBuilder, ctorloc, llvmPointerType, addressOfWrapper);
 
       auto cudaRegisterFatbinFn =
-          LLVM::lookupOrCreateFn(rewriter, moduleOp, "__cudaRegisterFatBinary",
+          LLVM::lookupOrCreateFn(rewriter, moduleOp, registerFatBinaryFuncName,
                                  llvmPointerType, llvmPointerType);
+
       if (failed(cudaRegisterFatbinFn)) {
-        llvm::errs() << " cudamalloc already exists with different types\n";
+        llvm::errs() << "cudamalloc already exists with different types\n";
         return failure();
       }
 
@@ -1946,12 +1983,15 @@ ConvertGPUModuleOp::matchAndRewrite(gpu::GPUModuleOp kernelModule,
                         llvmPointerType, llvmInt32Type,   llvmPointerType,
                         llvmPointerType, llvmPointerType, llvmPointerType,
                         llvmPointerType};
+
           auto cudaRegisterFn = LLVM::lookupOrCreateFn(
-              rewriter, moduleOp, "__cudaRegisterFunction", tys, llvmInt32Type);
+              rewriter, moduleOp, registerFunctionFuncName, tys, llvmInt32Type);
+
           if (failed(cudaRegisterFn)) {
             llvm::errs() << " cudamalloc already exists with different types\n";
             return failure();
           }
+
           Value args[] = {
               module.getResult(),
               bitcast,
@@ -2012,7 +2052,8 @@ ConvertGPUModuleOp::matchAndRewrite(gpu::GPUModuleOp kernelModule,
                                         0)});
         }
       }
-      // TODO this has to happen only for some CUDA versions
+      // TODO this has to happen only for some CUDA versions, hip does not need
+      // finialize cuda 11.X
       if (gpuTarget == "cuda") {
         auto cudaRegisterFatbinFn = LLVM::lookupOrCreateFn(
             rewriter, moduleOp, "__cudaRegisterFatBinaryEnd", llvmPointerType,
@@ -2045,15 +2086,15 @@ ConvertGPUModuleOp::matchAndRewrite(gpu::GPUModuleOp kernelModule,
           dtorBuilder, ctorloc, llvmPointerPointerType, aoo->getResult(0));
 
       auto cudaUnRegisterFatbinFn = LLVM::lookupOrCreateFn(
-          rewriter, moduleOp, "__cudaUnregisterFatBinary", llvmPointerType,
+          rewriter, moduleOp, unregisterFatBinaryFuncName, llvmPointerType,
           llvmVoidType);
       if (failed(cudaUnRegisterFatbinFn)) {
         llvm::errs() << " cudamalloc already exists with different types\n";
         return failure();
       }
-
       LLVM::CallOp::create(rewriter, ctorloc, cudaUnRegisterFatbinFn.value(),
                            ValueRange(module));
+
       LLVM::ReturnOp::create(dtorBuilder, ctorloc, ValueRange());
       auto dtorSymbol = FlatSymbolRefAttr::get(dtor);
       {
@@ -2173,10 +2214,13 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
       LLVM::ZExtOp::create(rewriter, loc, i64, dynamicSharedMemorySize));
   args.push_back(stream);
 
-  auto launchCall = LLVM::CallOp::create(
-      rewriter, loc, TypeRange(i32), "cudaLaunchKernel",
-      args); // FlatSymbolRefAttr::get(rewriter.getStringAttr("cudaLaunchKernel")),
-             // args);
+  // Create LLVM call to launch kernel
+  std::string launchFuncName =
+      (gpuTarget == "rocm") ? "hipLaunchKernel" : "cudaLaunchKernel";
+
+  auto launchCall =
+      LLVM::CallOp::create(rewriter, loc, TypeRange(i32), launchFuncName, args);
+
   if (launchOp.getAsyncToken()) {
     // Async launch: make dependent ops use the same stream.
     rewriter.replaceOp(launchOp, {stream});
@@ -2449,7 +2493,6 @@ private:
       if (backend == "cuda") {
         auto one = LLVM::ConstantOp::create(rewriter, loc, i64,
                                             rewriter.getI64IntegerAttr(1));
-
         auto ptr = LLVM::AllocaOp::create(rewriter, loc, ptrty, ptr1ty, one);
         Type tys[] = {ptrty, i64};
         auto cudaMallocFn =
@@ -2463,7 +2506,28 @@ private:
             ptr,
             sizeBytes,
         };
+
         LLVM::CallOp::create(rewriter, loc, cudaMallocFn.value(), args);
+        allocatedPtr = LLVM::LoadOp::create(rewriter, loc, ptr1ty, ptr);
+      } else if (backend == "rocm") {
+        auto one = LLVM::ConstantOp::create(rewriter, loc, i64,
+                                            rewriter.getI64IntegerAttr(1));
+        auto ptr = LLVM::AllocaOp::create(rewriter, loc, ptrty, ptr1ty, one);
+        Type tys[] = {ptrty, i64};
+        auto hipMallocFn =
+            LLVM::lookupOrCreateFn(rewriter, moduleOp, "hipMalloc", tys, i32);
+
+        if (failed(hipMallocFn)) {
+          llvm::errs() << " hipMalloc already exists with different types\n";
+          return failure();
+        }
+
+        Value args[] = {
+            ptr,
+            sizeBytes,
+        };
+
+        LLVM::CallOp::create(rewriter, loc, hipMallocFn.value(), args);
         allocatedPtr = LLVM::LoadOp::create(rewriter, loc, ptr1ty, ptr);
       } else if (backend.starts_with("cpu")) {
         Type convertedIndex =
@@ -2601,9 +2665,9 @@ private:
     if (failed(areAllLLVMTypes(op, adaptor.getOperands(), rewriter)))
       return failure();
 
-    if (backend != "cuda")
+    if (backend != "cuda" && backend != "rocm")
       return rewriter.notifyMatchFailure(
-          op, "Occupancy op lowering only supported for CUDA");
+          op, "Occupancy op lowering only supported for CUDA and ROCM");
 
     auto moduleOp = op->getParentOfType<ModuleOp>();
     auto i64 = rewriter.getIntegerType(64);
@@ -2616,12 +2680,20 @@ private:
     Type tys[] = {ptrty, ptrty, intty, adaptor.getDynamicSMemSize().getType(),
                   adaptor.getFlags().getType()};
 
-    auto cudaOccupancyMaxActiveBlocksPerMultiprocessorWithFlagsFn =
-        LLVM::lookupOrCreateFn(
-            rewriter, moduleOp,
-            "cudaOccupancyMaxActiveBlocksPerMultiprocessorWithFlags", tys, i32);
-    if (failed(cudaOccupancyMaxActiveBlocksPerMultiprocessorWithFlagsFn)) {
-      llvm::errs() << " cudaOccupancyMaxActiveBlocksPerMultiprocessorWithFlags "
+    std::string occupancyFuncName;
+    if (backend == "cuda") {
+      occupancyFuncName =
+          "cudaOccupancyMaxActiveBlocksPerMultiprocessorWithFlags";
+    } else if (backend == "rocm") {
+      occupancyFuncName =
+          "hipOccupancyMaxActiveBlocksPerMultiprocessorWithFlags";
+    }
+
+    auto occupancyFn =
+        LLVM::lookupOrCreateFn(rewriter, moduleOp, occupancyFuncName, tys, i32);
+
+    if (failed(occupancyFn)) {
+      llvm::errs() << " occupancyMaxActiveBlocksPerMultiprocessorWithFlags "
                       "already exists with different types\n";
       return failure();
     }
@@ -2637,9 +2709,7 @@ private:
     auto addr = LLVM::AddressOfOp::create(rewriter, loc, ptrty, funcStubName);
     Value args[] = {ptr, addr, adaptor.getBlockSize(),
                     adaptor.getDynamicSMemSize(), adaptor.getFlags()};
-    LLVM::CallOp::create(
-        rewriter, loc,
-        cudaOccupancyMaxActiveBlocksPerMultiprocessorWithFlagsFn.value(), args);
+    LLVM::CallOp::create(rewriter, loc, occupancyFn.value(), args);
     rewriter.replaceOpWithNewOp<LLVM::LoadOp>(op, intty, ptr);
 
     return success();
@@ -2662,9 +2732,9 @@ private:
   matchAndRewrite(enzymexla::GPUKernelAddressOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
 
-    if (backend != "cuda")
+    if (backend != "cuda" && backend != "rocm")
       return rewriter.notifyMatchFailure(
-          op, "KernelAddress lowering only supported for CUDA");
+          op, "KernelAddress lowering only supported for CUDA and ROCM");
 
     std::string funcStubName =
         getFuncStubName(op.getFn().getRootReference().getValue(),
@@ -2678,7 +2748,7 @@ private:
 };
 
 /// A rewrite pattern to convert gpu.alloc operations into a GPU runtime
-/// call. Currently it supports CUDA, CPU, and XLA.
+/// call. Currently it supports CUDA, ROCM, CPU, and XLA.
 template <bool cStyle>
 class ConvertDeallocOpToGpuRuntimeCallPattern
     : public ConvertOpToGpuRuntimeCallPattern<gpu::DeallocOp> {
@@ -2731,6 +2801,20 @@ private:
           ptr,
       };
       LLVM::CallOp::create(rewriter, loc, cudaFreeFn.value(), args);
+    } else if (backend == "rocm") {
+      Type tys[] = {ptr1ty};
+      auto hipFreeFn =
+          LLVM::lookupOrCreateFn(rewriter, moduleOp, "hipFree", tys, i32);
+
+      if (failed(hipFreeFn)) {
+        llvm::errs() << " hipfree already exists with different types\n";
+        return failure();
+      }
+      Value args[] = {
+          ptr,
+      };
+      LLVM::CallOp::create(rewriter, loc, hipFreeFn.value(), args);
+
     } else if (backend.starts_with("cpu")) {
 
       FailureOr<LLVM::LLVMFuncOp> freeFunc =
@@ -2923,8 +3007,9 @@ public:
   using ConvertOpToLLVMPattern<gpu::GPUFuncOp>::ConvertOpToLLVMPattern;
 
   GPUFuncOpLowering(LLVMTypeConverter &converter, unsigned allocaAddrSpace,
-                    StringAttr kernelAttributeName)
-      : ConvertOpToLLVMPattern<gpu::GPUFuncOp>(converter),
+                    StringAttr kernelAttributeName,
+                    PatternBenefit benefit = PatternBenefit(1))
+      : ConvertOpToLLVMPattern<gpu::GPUFuncOp>(converter, benefit),
         allocaAddrSpace(allocaAddrSpace),
         kernelAttributeName(kernelAttributeName) {}
 
@@ -3631,6 +3716,11 @@ populateCStyleGPUFuncLoweringPatterns(RewritePatternSet &patterns,
 
       populateLibDeviceConversionPatterns(typeConverter, patterns, benefit);
       patterns.add<GPUBarrierToNVVM>(typeConverter, benefit);
+    } else if (gpuTarget == "rocm") {
+      typeConverter.getContext().loadDialect<ROCDL::ROCDLDialect>();
+      mlir::populateGpuToROCDLConversionPatterns(typeConverter, patterns,
+                                                 mlir::gpu::amd::Runtime::HIP,
+                                                 amdgpu::Chipset());
     }
   }
 }
@@ -3663,7 +3753,6 @@ static LLVM::LLVMFuncOp addMocCUDAFunction(ModuleOp module, Type streamTy) {
       moduleBuilder, fname,
       LLVM::LLVMFunctionType::get(voidTy, {ptrTy, ptrTy, streamTy}));
   resumeOp.setPrivate();
-
   return resumeOp;
 }
 
@@ -3992,13 +4081,20 @@ struct ConvertPolygeistToLLVMPass
     bool hasLaunch = m->walk([](gpu::LaunchFuncOp) {
                         return WalkResult::interrupt();
                       }).wasInterrupted();
+
+    std::string launchFuncName;
+    if (backend == "rocm") {
+      launchFuncName = "hipLaunchKernel";
+    } else {
+      launchFuncName = "cudaLaunchKernel";
+    }
     if (hasLaunch) {
       OpBuilder rewriter(m);
       auto i32 = rewriter.getIntegerType(32);
       auto i64 = rewriter.getIntegerType(64);
       auto ptrty = LLVM::LLVMPointerType::get(rewriter.getContext());
       Type tys[] = {ptrty, i64, i32, i64, i32, ptrty, i64, ptrty};
-      (void)LLVM::lookupOrCreateFn(rewriter, m, "cudaLaunchKernel", tys, i32);
+      (void)LLVM::lookupOrCreateFn(rewriter, m, launchFuncName, tys, i32);
     }
 
     for (auto mod : gmods) {
@@ -4014,6 +4110,11 @@ struct ConvertPolygeistToLLVMPass
           target.addLegalOp<gpu::GPUModuleOp, gpu::GPUFuncOp, gpu::ReturnOp>();
           target.addLegalDialect<NVVM::NVVMDialect, LLVM::LLVMDialect>();
           target.addLegalOp<UnrealizedConversionCastOp>();
+        } else if (backend == "rocm") {
+          target.addIllegalDialect<gpu::GPUDialect>();
+          target.addLegalOp<gpu::GPUModuleOp, gpu::GPUFuncOp, gpu::ReturnOp>();
+          target.addLegalDialect<ROCDL::ROCDLDialect, LLVM::LLVMDialect>();
+          target.addLegalOp<UnrealizedConversionCastOp>();
         }
       }
 
@@ -4027,7 +4128,7 @@ struct ConvertPolygeistToLLVMPass
         mod->emitError() << "failed to apply folding";
         return signalPassFailure();
       }
-    };
+    }
 
     LLVMConversionTarget target(getContext());
     RewritePatternSet patterns(&getContext());
@@ -4201,6 +4302,14 @@ struct ConvertPolygeistToLLVMPass
           }
         }
       });
+      m->walk([](LLVM::LLVMFuncOp call) {
+        if (call.getName() == "cudaDeviceSynchronize") {
+          call->erase();
+        } else if (call.getName() == "hipDeviceSynchronize") {
+          call->erase();
+          return;
+        }
+      });
     }
     if (StringRef(gpuTarget).starts_with("xla") || gpuTarget == "cpu") {
       const char *toErase[] = {"cudaGetLastError"};
@@ -4252,7 +4361,6 @@ struct ConvertPolygeistToLLVMPass
       signalPassFailure();
       return;
     }
-
     {
       const char *GetDeviceFromHostFuncName = "__reactant$get_device_from_host";
       SmallVector<LLVM::CallOp> toHandle;
