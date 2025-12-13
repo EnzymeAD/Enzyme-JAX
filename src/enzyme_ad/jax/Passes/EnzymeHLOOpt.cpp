@@ -22246,52 +22246,6 @@ struct LogSimplify final
   }
 };
 
-// Fold negate of constant values immediately
-struct NegConstFold final
-    : public CheckedOpRewritePattern<stablehlo::NegOp, NegConstFold> {
-  using CheckedOpRewritePattern<stablehlo::NegOp,
-                                NegConstFold>::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::NegOp op,
-                                    PatternRewriter &rewriter) const {
-    DenseElementsAttr inputAttr;
-    if (!matchPattern(op.getOperand(), m_Constant(&inputAttr)))
-      return failure();
-
-    // only const prop if the constant has a single user to prevent creating many
-    // constants
-    if (!inputAttr.isSplat() &&
-        !llvm::hasSingleElement(op.getOperand().getUsers()))
-      return failure();
-
-    auto constType = cast<ShapedType>(op.getOperand().getType());
-    stablehlo::Tensor inputTen;
-    RankedTensorType ty = cast<RankedTensorType>(op->getResultTypes()[0]);
-
-    if (inputAttr.isSplat()) {
-      ty = RankedTensorType::get(
-          {}, cast<ShapedType>(op->getResultTypes()[0]).getElementType());
-      auto inputTy = RankedTensorType::get(
-          {}, cast<ShapedType>(op.getOperand().getType()).getElementType());
-      inputTen = stablehlo::makeTensor(inputAttr.resizeSplat(inputTy));
-    } else {
-      inputTen = stablehlo::constantOp(inputAttr);
-    }
-
-    auto resultType = cast<ShapedType>(ty);
-    auto out = fromTensor(stablehlo::negOp(inputTen, resultType));
-
-    if (inputAttr.isSplat()) {
-      out = out.resizeSplat(cast<ShapedType>(op->getResultTypes()[0]));
-    }
-
-    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-        op, op->getResultTypes()[0], out);
-
-    return success();
-  }
-};
-
 struct NegMulConstSimplify final
     : public CheckedOpRewritePattern<stablehlo::NegOp, NegMulConstSimplify> {
   using CheckedOpRewritePattern<stablehlo::NegOp,
@@ -26493,7 +26447,8 @@ struct EnzymeHLOOptPass
         SimplifyBoundary<enzymexla::WrapOp>,
         SimplifyBoundary<enzymexla::RotateOp>, TransposeReshapeToBroadcast,
         ReshapeTransposeToBroadcast, SelectBroadcastInDim, PowerMultiplyToPower,
-        NegConstFold, NegMulConstSimplify, NegDivConstSimplify,
+        UnaryConstProp<stablehlo::NegOp, stablehlo::negOp>,
+        NegMulConstSimplify, NegDivConstSimplify,
         ReshapeDeletionsBroadcastInDimSimplify,
         ReshapeInsertionsBroadcastInDimSimplify, CompareIotaConstSimplify,
         CompareAbs, CompareMul, CompareConvert, AddSelects,
