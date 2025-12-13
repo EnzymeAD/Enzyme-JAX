@@ -961,6 +961,9 @@ public:
   bool isMinReduce;
   bool isMaxReduce;
   bool isMulReduce;
+  bool isAndReduce;
+  bool isOrReduce;
+  bool isXorReduce;
 
   CheckCommonReduceOp(stablehlo::ReduceOp op) {
     auto &region = op.getRegion();
@@ -977,10 +980,9 @@ public:
     isMinReduce = isCommutativeOpBlock<stablehlo::MinOp>(&block);
     isMaxReduce = isCommutativeOpBlock<stablehlo::MaxOp>(&block);
     isMulReduce = isCommutativeOpBlock<stablehlo::MulOp>(&block);
-  }
-
-  bool isCommonReduce() {
-    return isAddReduce || isMinReduce || isMaxReduce || isMulReduce;
+    isAndReduce = isCommutativeOpBlock<stablehlo::AndOp>(&block);
+    isOrReduce = isCommutativeOpBlock<stablehlo::OrOp>(&block);
+    isXorReduce = isCommutativeOpBlock<stablehlo::XorOp>(&block);
   }
 };
 
@@ -1071,6 +1073,12 @@ stablehlo::ConcatenateOp lowerWrap(enzymexla::WrapOp wrap,
 LogicalResult concatSliceSimplify(PatternRewriter &rewriter,
                                   SmallVectorImpl<Value> &operands, int64_t dim,
                                   SmallVectorImpl<Value> &newOperands);
+
+Value getIdentityValue(OpBuilder &builder, Location loc, Type elemType,
+                       Operation *op);
+
+template <typename OpTy>
+Value getIdentityValueForOp(OpBuilder &builder, Location loc, Type elemType);
 
 // these add additional checks that prevent no-op creation
 Value ConcatenateOpCreate(
