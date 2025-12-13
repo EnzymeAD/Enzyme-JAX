@@ -1922,7 +1922,8 @@ concat_to_dus_slice_common(PatternRewriter &rewriter, Location loc,
           break;
         }
       }
-      if (rhsSlice.getLimitIndices()[i] != concatType.getShape()[i]) {
+      if (rhsSlice.getOperand().getType().getShape()[i] !=
+          concatType.getShape()[i]) {
         hasSlice = true;
       }
     }
