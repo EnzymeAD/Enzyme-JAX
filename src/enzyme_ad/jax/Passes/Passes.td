@@ -752,6 +752,7 @@ def AffineCFG : Pass<"affine-cfg"> {
   let dependentDialects = [
     "scf::SCFDialect",
     "affine::AffineDialect",
+    "enzyme::EnzymeDialect",
   ];
 }
 
