@@ -2346,6 +2346,18 @@ def ApplyMaxReduceSliceFusionPatterns : EnzymeHLOPatternOp<
     "max_reduce_slice_fusion"> {
   let patterns = ["MaxReduceSliceFusion"];
 }
+def ApplyAndReduceSliceFusionPatterns : EnzymeHLOPatternOp<
+    "and_reduce_slice_fusion"> {
+  let patterns = ["AndReduceSliceFusion"];
+}
+def ApplyOrReduceSliceFusionPatterns : EnzymeHLOPatternOp<
+    "or_reduce_slice_fusion"> {
+  let patterns = ["OrReduceSliceFusion"];
+}
+def ApplyXorReduceSliceFusionPatterns : EnzymeHLOPatternOp<
+    "xor_reduce_slice_fusion"> {
+  let patterns = ["XorReduceSliceFusion"];
+}
 
 def ApplyConcatInsertDimDotGeneralPatterns : EnzymeHLOPatternOp<
     "concat_insert_dim_dot_general"> {
