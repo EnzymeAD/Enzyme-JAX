@@ -145,9 +145,9 @@ module {
 // CHECK-NEXT:      %37 = stablehlo.dynamic_update_slice %iterArg_13, %36, %iterArg, %c_4, %c_4 : (tensor<5x3x2xf32>, tensor<1x3x2xf32>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<5x3x2xf32>
 // CHECK-NEXT:      %38 = stablehlo.reshape %iterArg_9 : (tensor<3x3xf32>) -> tensor<1x3x3xf32>
 // CHECK-NEXT:      %39 = stablehlo.dynamic_update_slice %iterArg_12, %38, %iterArg, %c_4, %c_4 : (tensor<5x3x3xf32>, tensor<1x3x3xf32>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<5x3x3xf32>
-// CHECK-NEXT:      %40 = stablehlo.add %iterArg, %c_6 : tensor<i64>
-// CHECK-NEXT:      %41 = stablehlo.add %c_5, %iterArg : tensor<i64>
-// CHECK-NEXT:      %42 = stablehlo.subtract %41, %c_6 : tensor<i64>
+// CHECK-NEXT:      %40 = stablehlo.add %iterArg, %c_6 {enzymexla.bounds = {{.*}}} : tensor<i64>
+// CHECK-NEXT:      %41 = stablehlo.add %c_5, %iterArg {enzymexla.bounds = {{.*}}} : tensor<i64>
+// CHECK-NEXT:      %42 = stablehlo.subtract %41, %c_6 {enzymexla.bounds = {{.*}}} : tensor<i64>
 // CHECK-NEXT:      %43 = stablehlo.dynamic_slice %iterArg_11, %c_4, %c_4, %42, sizes = [3, 2, 1] : (tensor<3x2x6xf32>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<3x2x1xf32>
 // CHECK-NEXT:      %44 = stablehlo.reshape %43 : (tensor<3x2x1xf32>) -> tensor<1x3x2x1xf32>
 // CHECK-NEXT:      %45 = stablehlo.dynamic_update_slice %iterArg_15, %44, %iterArg, %c_4, %c_4, %c_4 : (tensor<5x3x2x1xf32>, tensor<1x3x2x1xf32>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<5x3x2x1xf32>
@@ -192,7 +192,7 @@ module {
 // CHECK-NEXT:      %43 = stablehlo.reshape %42 : (tensor<1x3x2x1xf32>) -> tensor<3x2x1xf32>
 // CHECK-NEXT:      %44 = stablehlo.transpose %43, dims = [2, 1, 0] : (tensor<3x2x1xf32>) -> tensor<1x2x3xf32>
 // CHECK-NEXT:      %45 = stablehlo.reshape %44 : (tensor<1x2x3xf32>) -> tensor<2x3xf32>
-// CHECK-NEXT:      %46 = stablehlo.add %iterArg, %c_6 : tensor<i64>
+// CHECK-NEXT:      %46 = stablehlo.add %iterArg, %c_6 {enzymexla.bounds = {{.*}}} : tensor<i64>
 // CHECK-NEXT:      %47 = stablehlo.tanh %41 : tensor<3x2xf32>
 // CHECK-NEXT:      %48 = stablehlo.multiply %47, %47 : tensor<3x2xf32>
 // CHECK-NEXT:      %49 = stablehlo.subtract %cst_3, %48 : tensor<3x2xf32>

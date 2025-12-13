@@ -2559,3 +2559,8 @@ def ApplyDUSDynamicSliceSimplifyPatterns : EnzymeHLOPatternOp<
     "dus_dynamic_slice_simplify"> {
   let patterns = ["DUSDynamicSliceSimplify"];
 }
+
+def ApplyWhileDUSDSSimplifyPatterns : EnzymeHLOPatternOp<
+    "while_dus_ds_simplify"> {
+  let patterns = ["WhileDUSDSSimplify"];
+}
