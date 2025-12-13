@@ -111,12 +111,12 @@ func.func @main(%arg0: tensor<5x5xf32>, %arg1: tensor<5xf32>, %arg2: tensor<3x5x
 // CHECK-NEXT:       %31 = stablehlo.compare  LT, %iterArg, %c_11 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:       stablehlo.return %31 : tensor<i1>
 // CHECK-NEXT:     } do {
-// CHECK-NEXT:       %31 = stablehlo.add %c_8, %iterArg : tensor<i64>
-// CHECK-NEXT:       %32 = stablehlo.remainder %iterArg, %c_5 : tensor<i64>
-// CHECK-NEXT:       %33 = stablehlo.add %32, %c_8 : tensor<i64>
-// CHECK-NEXT:       %34 = stablehlo.convert %33 : (tensor<i64>) -> tensor<i32>
-// CHECK-NEXT:       %35 = stablehlo.subtract %34, %c_6 : tensor<i32>
-// CHECK-NEXT:       %36 = stablehlo.convert %35 : (tensor<i32>) -> tensor<i64>
+// CHECK-NEXT:       %31 = stablehlo.add %c_8, %iterArg {enzymexla.bounds = {{.*}}} : tensor<i64>
+// CHECK-NEXT:       %32 = stablehlo.remainder %iterArg, %c_5 {enzymexla.bounds = {{.*}}} : tensor<i64>
+// CHECK-NEXT:       %33 = stablehlo.add %32, %c_8 {enzymexla.bounds = {{.*}}} : tensor<i64>
+// CHECK-NEXT:       %34 = stablehlo.convert %33 {enzymexla.bounds = {{.*}}} : (tensor<i64>) -> tensor<i32>
+// CHECK-NEXT:       %35 = stablehlo.subtract %34, %c_6 {enzymexla.bounds = {{.*}}} : tensor<i32>
+// CHECK-NEXT:       %36 = stablehlo.convert %35 {enzymexla.bounds = {{.*}}} : (tensor<i32>) -> tensor<i64>
 // CHECK-NEXT:       %37 = stablehlo.dynamic_slice %29, %iterArg, %36, %c_7, sizes = [1, 1, 1] : (tensor<15x5x3xf32>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<1x1x1xf32>
 // CHECK-NEXT:       %38 = stablehlo.reshape %37 : (tensor<1x1x1xf32>) -> tensor<1x1xf32>
 // CHECK-NEXT:       %39 = stablehlo.dynamic_update_slice %iterArg_12, %38, %c, %35 : (tensor<3x5xf32>, tensor<1x1xf32>, tensor<i32>, tensor<i32>) -> tensor<3x5xf32>

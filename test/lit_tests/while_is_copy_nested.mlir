@@ -95,9 +95,9 @@ module {
 // CHECK-NEXT:     %2 = stablehlo.compare  LT, %iterArg, %c_3 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:     stablehlo.return %2 : tensor<i1>
 // CHECK-NEXT:   } do {
-// CHECK-NEXT:     %2 = stablehlo.add %c_4, %iterArg : tensor<i64>
-// CHECK-NEXT:     %3 = stablehlo.convert %2 : (tensor<i64>) -> tensor<i32>
-// CHECK-NEXT:     %4 = stablehlo.subtract %3, %c_1 : tensor<i32>
+// CHECK-NEXT:     %2 = stablehlo.add %c_4, %iterArg {enzymexla.bounds = {{\[}}[1, 5]{{\]}}} : tensor<i64>
+// CHECK-NEXT:     %3 = stablehlo.convert %2 {enzymexla.bounds = {{\[}}[1, 5]{{\]}}} : (tensor<i64>) -> tensor<i32>
+// CHECK-NEXT:     %4 = stablehlo.subtract %3, %c_1 {enzymexla.bounds = {{\[}}[0, 4]{{\]}}} : tensor<i32>
 // CHECK-NEXT:     %5 = stablehlo.dynamic_slice %0, %iterArg, %c_2, %c_2, %c_2, %c_2, %c_2, sizes = [1, 4, 4, 6, 2, 3] : (tensor<5x4x4x6x2x3xf32>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<1x4x4x6x2x3xf32>
 // CHECK-NEXT:     %6 = stablehlo.reshape %5 : (tensor<1x4x4x6x2x3xf32>) -> tensor<4x4x12x3xf32>
 // CHECK-NEXT{LITERAL}:     %7 = stablehlo.convolution(%6, %cst) dim_numbers = [0, 1, f, b]x[0, 1, i, o]->[0, 1, f, b], window = {stride = [1, 1], pad = [[0, 0], [0, 0]], rhs_dilate = [1, 1]} {batch_group_count = 1 : i64, feature_group_count = 6 : i64, precision_config = [#stablehlo<precision DEFAULT>, #stablehlo<precision DEFAULT>]} : (tensor<4x4x12x3xf32>, tensor<3x3x2x30xf32>) -> tensor<2x2x30x3xf32>

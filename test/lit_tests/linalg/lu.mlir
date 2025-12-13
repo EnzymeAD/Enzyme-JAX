@@ -34,7 +34,7 @@ module {
 // CPU-NEXT:      %7 = stablehlo.compare  LT, %iterArg, %c_1 : (tensor<i32>, tensor<i32>) -> tensor<i1>
 // CPU-NEXT:      stablehlo.return %7 : tensor<i1>
 // CPU-NEXT:    } do {
-// CPU-NEXT:      %7 = stablehlo.add %iterArg, %c_0 : tensor<i32>
+// CPU-NEXT:      %7 = stablehlo.add %iterArg, %c_0 {enzymexla.bounds = {{.*}}} : tensor<i32>
 // CPU-NEXT:      %8 = stablehlo.dynamic_slice %1, %iterArg, sizes = [1] : (tensor<64xi64>, tensor<i32>) -> tensor<1xi64>
 // CPU-NEXT:      %9 = stablehlo.dynamic_slice %iterArg_4, %iterArg, sizes = [1] : (tensor<64xi64>, tensor<i32>) -> tensor<1xi64>
 // CPU-NEXT:      %10 = "stablehlo.gather"(%iterArg_4, %8) <{dimension_numbers = #stablehlo.gather<offset_dims = [0], start_index_map = [0]>, indices_are_sorted = false, slice_sizes = array<i64: 1>}> : (tensor<64xi64>, tensor<1xi64>) -> tensor<1xi64>

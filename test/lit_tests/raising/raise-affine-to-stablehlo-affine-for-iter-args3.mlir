@@ -27,7 +27,7 @@ module @"reactant_run!" attributes {mhlo.num_partitions = 1 : i64, mhlo.num_repl
 // CHECK:             %[[LD_RAW:.*]] = stablehlo.dynamic_slice %[[VAL_0]], %[[VAL_4]], %[[VAL_4]], %[[VAL_7]], sizes = [85, 180, 1] : (tensor<85x180x18xf64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<85x180x1xf64>
 // CHECK:             %[[LD:.*]] = stablehlo.reshape %[[LD_RAW]] : (tensor<85x180x1xf64>) -> tensor<85x180xf64>
 // CHECK:             %[[NEW_SUM:.*]] = arith.addf %[[LD]], %[[VAL_8]] : tensor<85x180xf64>
-// CHECK:             %[[NEW_IV:.*]] = stablehlo.add %[[VAL_7]], %[[VAL_2]] : tensor<i64>
+// CHECK:             %[[NEW_IV:.*]] = stablehlo.add %[[VAL_7]], %[[VAL_2]] {enzymexla.bounds = {{.*}}} : tensor<i64>
 // CHECK:             stablehlo.return %[[NEW_IV]], %[[NEW_SUM]] : tensor<i64>, tensor<85x180xf64>  
 // CHECK:           }
 // CHECK:           return %[[VAL_0]], %[[VAL_6]]#1 : tensor<85x180x18xf64>, tensor<85x180xf64>
