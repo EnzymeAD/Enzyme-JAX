@@ -22258,6 +22258,12 @@ struct NegConstFold final
     if (!matchPattern(op.getOperand(), m_Constant(&inputAttr)))
       return failure();
 
+    // only const prop if the constant has a single user to prevent creating many
+    // constants
+    if (!inputAttr.isSplat() &&
+        !llvm::hasSingleElement(op.getOperand().getUsers()))
+      return failure();
+
     auto constType = cast<ShapedType>(op.getOperand().getType());
     stablehlo::Tensor inputTen;
     RankedTensorType ty = cast<RankedTensorType>(op->getResultTypes()[0]);
