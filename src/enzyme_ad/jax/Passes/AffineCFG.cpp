@@ -882,8 +882,8 @@ void fully2ComposeAffineMapAndOperands(
           } else {
             PatternRewriter::InsertionGuard B(*builder);
             builder->setInsertionPoint(toInsert);
-            auto inserted = IndexCastOp::create(
-                *builder, op.getLoc(), builder->getIndexType(), op);
+            auto inserted = IndexCastOp::create(*builder, op.getLoc(),
+                                                builder->getIndexType(), op);
             op = inserted->getResult(0);
           }
         }
