@@ -26478,7 +26478,6 @@ struct EnzymeHLOOptPass
                  UnaryConstProp<stablehlo::LogOp, stablehlo::logOp>,
                  UnaryConstProp<stablehlo::Log1pOp, stablehlo::log1pOp>,
                  UnaryConstProp<stablehlo::AbsOp, stablehlo::absOp>,
-                 UnaryConstProp<stablehlo::NegOp, stablehlo::negOp>,
                  UnaryConstProp<stablehlo::SqrtOp, stablehlo::sqrtOp>,
                  UnaryConstProp<stablehlo::RsqrtOp, stablehlo::rsqrtOp>,
                  UnaryConstProp<stablehlo::CosineOp, stablehlo::cosineOp>,
