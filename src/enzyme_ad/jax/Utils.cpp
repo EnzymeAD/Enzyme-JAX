@@ -1246,6 +1246,103 @@ bool mayReadFrom(Operation *op, Value val) {
 
 namespace stablehlo {
 
+// Templated helper (default returns nullptr).
+template <typename OpTy>
+Value getIdentityValueForOp(OpBuilder &builder, Location loc, Type elemType) {
+  return nullptr;
+}
+
+// Specializations for identity values of specific binary ops.
+template <>
+Value getIdentityValueForOp<stablehlo::AddOp>(OpBuilder &builder, Location loc,
+                                              Type elemType) {
+  return stablehlo::ConstantOp::create(builder, loc,
+                                       builder.getZeroAttr(elemType));
+}
+
+template <>
+Value getIdentityValueForOp<stablehlo::MulOp>(OpBuilder &builder, Location loc,
+                                              Type elemType) {
+  return stablehlo::ConstantOp::create(builder, loc,
+                                       builder.getOneAttr(elemType));
+}
+
+template <>
+Value getIdentityValueForOp<stablehlo::MinOp>(OpBuilder &builder, Location loc,
+                                              Type elemType) {
+  if (auto floatType = dyn_cast<FloatType>(elemType)) {
+    auto negInf =
+        APFloat::getInf(floatType.getFloatSemantics(), /*negative=*/false);
+    return stablehlo::ConstantOp::create(
+        builder, loc, builder.getFloatAttr(elemType, negInf));
+  } else if (auto intType = dyn_cast<IntegerType>(elemType)) {
+    auto minVal = APInt::getSignedMaxValue(intType.getWidth());
+    return stablehlo::ConstantOp::create(
+        builder, loc, builder.getIntegerAttr(elemType, minVal));
+  }
+  return nullptr;
+}
+
+template <>
+Value getIdentityValueForOp<stablehlo::MaxOp>(OpBuilder &builder, Location loc,
+                                              Type elemType) {
+  if (auto floatType = dyn_cast<FloatType>(elemType)) {
+    auto inf =
+        APFloat::getInf(floatType.getFloatSemantics(), /*negative=*/true);
+    return stablehlo::ConstantOp::create(builder, loc,
+                                         builder.getFloatAttr(elemType, inf));
+  } else if (auto intType = dyn_cast<IntegerType>(elemType)) {
+    auto maxVal = APInt::getSignedMinValue(intType.getWidth());
+    return stablehlo::ConstantOp::create(
+        builder, loc, builder.getIntegerAttr(elemType, maxVal));
+  }
+  return nullptr;
+}
+
+// Identity values for bitwise logical ops.
+// OR/XOR: identity = 0
+template <>
+Value getIdentityValueForOp<stablehlo::OrOp>(OpBuilder &builder, Location loc,
+                                             Type elemType) {
+  // Zero is a valid identity for OR and XOR across integer and boolean types.
+  return stablehlo::ConstantOp::create(builder, loc,
+                                       builder.getZeroAttr(elemType));
+}
+
+template <>
+Value getIdentityValueForOp<stablehlo::XorOp>(OpBuilder &builder, Location loc,
+                                              Type elemType) {
+  // Zero is a valid identity for XOR as well.
+  return stablehlo::ConstantOp::create(builder, loc,
+                                       builder.getZeroAttr(elemType));
+}
+
+// AND: identity is all-ones bitpattern for integer types (applies to booleans
+// too).
+template <>
+Value getIdentityValueForOp<stablehlo::AndOp>(OpBuilder &builder, Location loc,
+                                              Type elemType) {
+  if (auto intType = dyn_cast<IntegerType>(elemType)) {
+    // All ones value for the integer width (e.g., 0xFFFF...); this yields
+    // the 'all bits set' value which acts as identity for bitwise AND.
+    auto ones = APInt::getAllOnes(intType.getWidth());
+    return stablehlo::ConstantOp::create(
+        builder, loc, builder.getIntegerAttr(elemType, ones));
+  }
+  return nullptr;
+}
+
+Value getIdentityValue(OpBuilder &builder, Location loc, Type elemType,
+                       Operation *op) {
+  return TypeSwitch<Operation *, Value>(op)
+      .Case<stablehlo::AddOp, stablehlo::MulOp, stablehlo::MinOp,
+            stablehlo::MaxOp, stablehlo::OrOp, stablehlo::XorOp,
+            stablehlo::AndOp>([&](auto binOp) {
+        return getIdentityValueForOp<decltype(binOp)>(builder, loc, elemType);
+      })
+      .Default([&](Operation *op) -> Value { return nullptr; });
+}
+
 stablehlo::GatherDimensionNumbersAttr
 getGatherDims(mlir::MLIRContext *ctx,
               stablehlo::ScatterDimensionNumbersAttr scatterDimNumbers) {
