@@ -9295,7 +9295,8 @@ struct BroadcastReduce
 
     auto checkCommonReduce = mlir::stablehlo::CheckCommonReduceOp(op);
 
-    if (!checkCommonReduce.isCommonReduce()) {
+    if (!(checkCommonReduce.isAddReduce || checkCommonReduce.isMulReduce ||
+          checkCommonReduce.isMaxReduce || checkCommonReduce.isMinReduce)) {
       return rewriter.notifyMatchFailure(
           op, "only common reduce ops like add, mul, max, min are currently "
               "supported");
@@ -24148,8 +24149,8 @@ private:
 
     auto elemType = cast<ShapedType>(binaryOp.getType()).getElementType();
     if (!initValue) {
-      initValue = ((Child *)this)
-                      ->getIdentityValue(rewriter, binaryOp.getLoc(), elemType);
+      initValue = stablehlo::getIdentityValueForOp<BinaryOpType>(
+          rewriter, binaryOp.getLoc(), elemType);
       if (!initValue) {
         return rewriter.notifyMatchFailure(
             binaryOp, "could not find identity value for element type");
@@ -24225,96 +24226,28 @@ private:
   }
 };
 
-struct AddReduceSliceFusion
-    : public ReduceSliceFusionBase<stablehlo::AddOp, AddReduceSliceFusion> {
-  using ReduceSliceFusionBase<stablehlo::AddOp,
-                              AddReduceSliceFusion>::ReduceSliceFusionBase;
+// Macro to generate ReduceSliceFusion structs for common binary ops.
+#define REDUCESLICEFUSIONSPECIALIZE(OP)                                        \
+  struct OP##ReduceSliceFusion                                                 \
+      : public ReduceSliceFusionBase<stablehlo::OP##Op,                        \
+                                     OP##ReduceSliceFusion> {                  \
+    using ReduceSliceFusionBase<stablehlo::OP##Op,                             \
+                                OP##ReduceSliceFusion>::ReduceSliceFusionBase; \
+                                                                               \
+    bool isCompatibleReduction(stablehlo::ReduceOp reduceOp) const {           \
+      return mlir::stablehlo::CheckCommonReduceOp(reduceOp).is##OP##Reduce;    \
+    }                                                                          \
+  };
 
-  bool isCompatibleReduction(stablehlo::ReduceOp reduceOp) const {
-    return mlir::stablehlo::CheckCommonReduceOp(reduceOp).isAddReduce;
-  }
+REDUCESLICEFUSIONSPECIALIZE(Add)
+REDUCESLICEFUSIONSPECIALIZE(Mul)
+REDUCESLICEFUSIONSPECIALIZE(Min)
+REDUCESLICEFUSIONSPECIALIZE(Max)
+REDUCESLICEFUSIONSPECIALIZE(And)
+REDUCESLICEFUSIONSPECIALIZE(Or)
+REDUCESLICEFUSIONSPECIALIZE(Xor)
 
-  Value getIdentityValue(PatternRewriter &rewriter, Location loc,
-                         Type elementType) {
-    return stablehlo::ConstantOp::create(rewriter, loc,
-                                         rewriter.getZeroAttr(elementType));
-  }
-};
-
-struct MulReduceSliceFusion
-    : public ReduceSliceFusionBase<stablehlo::MulOp, MulReduceSliceFusion> {
-  using ReduceSliceFusionBase<stablehlo::MulOp,
-                              MulReduceSliceFusion>::ReduceSliceFusionBase;
-
-  bool isCompatibleReduction(stablehlo::ReduceOp reduceOp) const {
-    return mlir::stablehlo::CheckCommonReduceOp(reduceOp).isMulReduce;
-  }
-
-  Value getIdentityValue(PatternRewriter &rewriter, Location loc,
-                         Type elementType) {
-    if (isa<FloatType>(elementType)) {
-      return stablehlo::ConstantOp::create(
-          rewriter, loc, rewriter.getFloatAttr(elementType, 1.0));
-    } else if (isa<IntegerType>(elementType)) {
-      return stablehlo::ConstantOp::create(
-          rewriter, loc, rewriter.getIntegerAttr(elementType, 1));
-    } else {
-      return nullptr;
-    }
-  }
-};
-
-struct MinReduceSliceFusion
-    : public ReduceSliceFusionBase<stablehlo::MinOp, MinReduceSliceFusion> {
-  using ReduceSliceFusionBase<stablehlo::MinOp,
-                              MinReduceSliceFusion>::ReduceSliceFusionBase;
-
-  bool isCompatibleReduction(stablehlo::ReduceOp reduceOp) const {
-    return mlir::stablehlo::CheckCommonReduceOp(reduceOp).isMinReduce;
-  }
-
-  Value getIdentityValue(PatternRewriter &rewriter, Location loc,
-                         Type elementType) {
-    if (auto floatType = dyn_cast<FloatType>(elementType)) {
-      auto negInf =
-          APFloat::getInf(floatType.getFloatSemantics(), /*negative=*/false);
-      auto attr = rewriter.getFloatAttr(elementType, negInf);
-      return stablehlo::ConstantOp::create(rewriter, loc, attr);
-    } else if (auto intType = dyn_cast<IntegerType>(elementType)) {
-      auto minVal = APInt::getSignedMaxValue(intType.getWidth());
-      auto attr = rewriter.getIntegerAttr(elementType, minVal);
-      return stablehlo::ConstantOp::create(rewriter, loc, attr);
-    } else {
-      return nullptr;
-    }
-  }
-};
-
-struct MaxReduceSliceFusion
-    : public ReduceSliceFusionBase<stablehlo::MaxOp, MaxReduceSliceFusion> {
-  using ReduceSliceFusionBase<stablehlo::MaxOp,
-                              MaxReduceSliceFusion>::ReduceSliceFusionBase;
-
-  bool isCompatibleReduction(stablehlo::ReduceOp reduceOp) const {
-    return mlir::stablehlo::CheckCommonReduceOp(reduceOp).isMaxReduce;
-  }
-
-  Value getIdentityValue(PatternRewriter &rewriter, Location loc,
-                         Type elementType) {
-    if (auto floatType = dyn_cast<FloatType>(elementType)) {
-      auto posInf =
-          APFloat::getInf(floatType.getFloatSemantics(), /*negative=*/true);
-      auto attr = rewriter.getFloatAttr(elementType, posInf);
-      return stablehlo::ConstantOp::create(rewriter, loc, attr);
-    } else if (auto intType = dyn_cast<IntegerType>(elementType)) {
-      auto maxVal = APInt::getSignedMinValue(intType.getWidth());
-      auto attr = rewriter.getIntegerAttr(elementType, maxVal);
-      return stablehlo::ConstantOp::create(rewriter, loc, attr);
-    } else {
-      return nullptr;
-    }
-  }
-};
+#undef REDUCESLICEFUSIONSPECIALIZE
 
 struct CaseToIf : public CheckedOpRewritePattern<stablehlo::CaseOp, CaseToIf> {
   using CheckedOpRewritePattern<stablehlo::CaseOp,
@@ -26815,6 +26748,9 @@ struct EnzymeHLOOptPass
         MulReduceSliceFusion,
         MinReduceSliceFusion,
         MaxReduceSliceFusion,
+        AndReduceSliceFusion,
+        OrReduceSliceFusion,
+        XorReduceSliceFusion,
         CaseToIf,
         DUSToDynamicPad,
         DynamicPadToPad,
