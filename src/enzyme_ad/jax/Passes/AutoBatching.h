@@ -166,4 +166,9 @@ private:
       mlir::PatternRewriter &rewriter, mlir::stablehlo::WhileOp whileOp,
       llvm::ArrayRef<SliceInfo<mlir::stablehlo::DynamicSliceOp>> slices,
       mlir::Operation *op, mlir::enzyme::WhileLoopInfo info) const;
+
+  bool liftReduceLikeOperation(
+      mlir::PatternRewriter &rewriter, mlir::stablehlo::WhileOp whileOp,
+      llvm::ArrayRef<SliceInfo<mlir::stablehlo::DynamicSliceOp>> slices,
+      mlir::Operation *op, mlir::enzyme::WhileLoopInfo info) const;
 };
