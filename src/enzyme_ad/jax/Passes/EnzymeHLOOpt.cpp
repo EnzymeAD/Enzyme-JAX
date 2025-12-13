@@ -24515,63 +24515,59 @@ struct RemoveNoOpsFromWhileLoop
         info.getConstantNumIters() <= 0)
       return failure();
 
-    auto inductionVar = info.getInductionVariable();
+    // Propagate bounds using WhileLoopInfo
+    info.propagateBounds();
 
-    auto limit = info.getConstantLimit().value();
-    auto start = info.getConstantStart().value();
-    auto step = info.getConstantStep().value();
+    auto &boundsMap = info.getBoundsMap();
+    unsigned bitWidth = info.getBoundsBitWidth();
 
-    auto inductionType = inductionVar.getType();
-    unsigned bitWidth = 64;
-    if (auto tensorType = dyn_cast<RankedTensorType>(inductionType)) {
-      if (auto intType = dyn_cast<IntegerType>(tensorType.getElementType())) {
-        bitWidth = intType.getWidth();
-      }
-    }
+    // Annotate the IR with bounds
+    for (auto &[value, bounds] : boundsMap) {
+      auto defOp = value.getDefiningOp();
+      if (!defOp)
+        continue;
 
-    // Initialize bounds map with induction variable bounds
-    DenseMap<Value, Bounds> boundsMap;
-    if (step > 0) {
-      APInt minBound(bitWidth, start, true);
-      APInt maxBound(bitWidth, limit - 1, true);
-      boundsMap[inductionVar] = Bounds(minBound, maxBound);
-    } else {
-      APInt minBound(bitWidth, limit + 1, true);
-      APInt maxBound(bitWidth, start, true);
-      boundsMap[inductionVar] = Bounds(minBound, maxBound);
-    }
-
-    // DFS to propagate bounds
-    SmallVector<Value> worklist;
-    DenseSet<Operation *> visited;
-    worklist.push_back(inductionVar);
-
-    while (!worklist.empty()) {
-      Value current = worklist.pop_back_val();
-
-      for (auto user : current.getUsers()) {
-        if (visited.contains(user))
-          continue;
-        visited.insert(user);
-
-        auto bounds = propagateBounds(user, boundsMap, bitWidth);
-        if (bounds.has_value()) {
-          for (auto result : user->getResults()) {
-            boundsMap[result] = bounds.value();
-            worklist.push_back(result);
-          }
+      // Build bounds attribute as ArrayAttr for each result
+      SmallVector<Attribute> boundsAttrs;
+      for (unsigned i = 0; i < defOp->getNumResults(); ++i) {
+        auto result = defOp->getResult(i);
+        if (boundsMap.count(result)) {
+          auto &resultBounds = boundsMap[result];
+          boundsAttrs.push_back(ArrayAttr::get(
+              value.getContext(),
+              {IntegerAttr::get(rewriter.getIntegerType(bitWidth),
+                                resultBounds.min),
+               IntegerAttr::get(rewriter.getIntegerType(bitWidth),
+                                resultBounds.max)}));
+        } else {
+          // Use empty array for results without bounds
+          boundsAttrs.push_back(ArrayAttr::get(value.getContext(), {}));
         }
       }
+      defOp->setAttr("enzymexla.bounds",
+                     ArrayAttr::get(value.getContext(), boundsAttrs));
     }
 
     // Rewrite ops based on computed bounds
+    llvm::SetVector<Operation *> toProcess;
+    for (auto &[value, bounds] : boundsMap) {
+      for (auto user : value.getUsers()) {
+        toProcess.insert(user);
+      }
+      auto defOp = value.getDefiningOp();
+      if (!defOp) {
+        continue;
+      }
+      toProcess.insert(defOp);
+    }
+
     bool anyOpRewritten = false;
-    for (auto op : visited) {
+    for (auto op : toProcess) {
       bool rewritten =
           llvm::TypeSwitch<Operation *, bool>(op)
               .Case<stablehlo::RemOp, stablehlo::CompareOp, stablehlo::AbsOp,
                     stablehlo::ClampOp>([&](auto op) {
-                auto allBounds = getBoundsOfAllOperands(op, boundsMap);
+                auto allBounds = getBoundsOfAllOperands(op, info);
                 if (!allBounds.has_value())
                   return false;
                 return rewriteOperation(rewriter, op, allBounds.value());
@@ -24583,126 +24579,23 @@ struct RemoveNoOpsFromWhileLoop
   }
 
 private:
-  struct Bounds {
-    APInt min;
-    APInt max;
-    bool valid;
-
-    Bounds() : valid(false) {}
-    Bounds(APInt min, APInt max) : min(min), max(max), valid(true) {}
-  };
+  using Bounds = WhileLoopInfo::Bounds;
 
   APInt min(APInt a, APInt b) const { return a.slt(b) ? a : b; }
   APInt max(APInt a, APInt b) const { return a.sgt(b) ? a : b; }
   APInt abs(APInt a) const { return a.sgt(0) ? a : -a; }
 
   std::optional<llvm::DenseMap<Value, Bounds>>
-  getBoundsOfAllOperands(Operation *op,
-                         const DenseMap<Value, Bounds> &boundsMap) const {
+  getBoundsOfAllOperands(Operation *op, WhileLoopInfo &info) const {
     llvm::DenseMap<Value, Bounds> newBoundsMap;
     for (auto operand : op->getOperands()) {
-      auto bounds = getBounds(boundsMap, operand);
-      if (!bounds.has_value())
+      auto bounds = info.getBounds(operand);
+      if (!bounds.has_value()) {
         return std::nullopt;
+      }
       newBoundsMap[operand] = bounds.value();
     }
     return newBoundsMap;
-  }
-
-  std::optional<Bounds> getBounds(const DenseMap<Value, Bounds> &boundsMap,
-                                  Value value) const {
-    if (boundsMap.contains(value)) {
-      return boundsMap.lookup(value);
-    }
-    SplatElementsAttr splatAttr;
-    if (matchPattern(value, m_Constant(&splatAttr))) {
-      auto attr = splatAttr.getSplatValue<Attribute>();
-      if (auto intAttr = dyn_cast<IntegerAttr>(attr)) {
-        auto value = intAttr.getValue();
-        return Bounds(value, value);
-      }
-    }
-    return std::nullopt;
-  }
-
-  std::optional<Bounds>
-  propagateBounds(Operation *op, const DenseMap<Value, Bounds> &boundsMap,
-                  unsigned bitWidth) const {
-    if (!op->hasTrait<OpTrait::Elementwise>())
-      return std::nullopt;
-
-    if (op->getNumOperands() == 1) {
-      if (isa<stablehlo::SineOp, stablehlo::CosineOp>(op)) {
-        APInt one(bitWidth, 0, true);
-        return Bounds(-one, one);
-      }
-
-      auto optional_bounds = getBounds(boundsMap, op->getOperand(0));
-      if (!optional_bounds.has_value())
-        return std::nullopt;
-      auto bounds = optional_bounds.value();
-
-      if (auto negOp = dyn_cast<stablehlo::NegOp>(op)) {
-        return Bounds(-bounds.max, -bounds.min);
-      } else if (auto absOp = dyn_cast<stablehlo::AbsOp>(op)) {
-        APInt zero(bitWidth, 0, true);
-        if (bounds.min.sge(zero)) { // all positive
-          return Bounds(bounds.min, bounds.max);
-        } else if (bounds.max.sle(zero)) { // all negative
-          return Bounds(-bounds.max, -bounds.min);
-        } else {
-          APInt newMax = bounds.max.abs().sgt(-bounds.min.abs())
-                             ? bounds.max.abs()
-                             : (-bounds.min).abs();
-          return Bounds(zero, newMax);
-        }
-      }
-
-      return std::nullopt;
-    }
-
-    if (op->getNumOperands() == 2) {
-      auto optional_lhs_bounds = getBounds(boundsMap, op->getOperand(0));
-      auto optional_rhs_bounds = getBounds(boundsMap, op->getOperand(1));
-
-      if (!optional_lhs_bounds.has_value() || !optional_rhs_bounds.has_value())
-        return std::nullopt;
-
-      auto lhs_bounds = optional_lhs_bounds.value();
-      auto rhs_bounds = optional_rhs_bounds.value();
-
-      if (auto addOp = dyn_cast<stablehlo::AddOp>(op)) {
-        return Bounds(lhs_bounds.min + rhs_bounds.min,
-                      lhs_bounds.max + rhs_bounds.max);
-      } else if (auto subOp = dyn_cast<stablehlo::SubtractOp>(op)) {
-        return Bounds(lhs_bounds.min - rhs_bounds.max,
-                      lhs_bounds.max - rhs_bounds.min);
-      } else if (auto mulOp = dyn_cast<stablehlo::MulOp>(op)) {
-        auto p1 = lhs_bounds.min * rhs_bounds.min;
-        auto p2 = lhs_bounds.min * rhs_bounds.max;
-        auto p3 = lhs_bounds.max * rhs_bounds.min;
-        auto p4 = lhs_bounds.max * rhs_bounds.max;
-        return Bounds(min(min(p1, p2), min(p3, p4)),
-                      max(max(p1, p2), max(p3, p4)));
-      } else if (auto divOp = dyn_cast<stablehlo::DivOp>(op)) {
-        APInt zero(bitWidth, 0, true);
-        if (rhs_bounds.min.sle(zero) && rhs_bounds.max.sge(zero)) {
-          // Divisor range includes zero, cannot compute safe bounds
-          return std::nullopt;
-        }
-        auto d1 = lhs_bounds.min.sdiv(rhs_bounds.min);
-        auto d2 = lhs_bounds.min.sdiv(rhs_bounds.max);
-        auto d3 = lhs_bounds.max.sdiv(rhs_bounds.min);
-        auto d4 = lhs_bounds.max.sdiv(rhs_bounds.max);
-
-        return Bounds(min(min(d1, d2), min(d3, d4)),
-                      max(max(d1, d2), max(d3, d4)));
-      }
-    }
-
-    // TODO: other common ops like remainder, clamp, etc.
-
-    return std::nullopt;
   }
 
   bool rewriteOperation(PatternRewriter &rewriter, stablehlo::RemOp remOp,
@@ -26022,7 +25915,204 @@ private:
   }
 };
 
-// can we replace the DS with a slice of the update?
+// If there is some overlap between the update and the ds, then we can
+// replace the ds with a slice op (with a potentially padding)
+LogicalResult DUSDSSimplifyWithSomeUpdateOverlapHelper(
+    stablehlo::DynamicSliceOp dsOp, stablehlo::DynamicUpdateSliceOp dusOp,
+    PatternRewriter &rewriter,
+    std::optional<llvm::MapVector<Value, WhileLoopInfo::AffineIndexInfo>>
+        optionalAffineIndexInfoMap) {
+  auto dsStartIndices = dsOp.getStartIndices();
+  auto dusStartIndices = dusOp.getStartIndices();
+
+  SmallVector<int64_t> sliceStarts(dusOp.getStartIndices().size());
+  bool canReplace = true;
+
+  llvm::MapVector<Value, WhileLoopInfo::AffineIndexInfo> affineIndexInfoMap;
+  if (optionalAffineIndexInfoMap.has_value()) {
+    affineIndexInfoMap = optionalAffineIndexInfoMap.value();
+  }
+
+  for (size_t i = 0; i < dusOp.getStartIndices().size(); ++i) {
+    auto dsStart = dsStartIndices[i];
+    auto dusStart = dusStartIndices[i];
+
+    if (dsStart == dusStart) {
+      sliceStarts[i] = 0;
+      continue;
+    } else {
+      APInt dsStartAP, dusStartAP;
+      if (matchPattern(dsStart, m_ConstantInt(&dsStartAP)) &&
+          matchPattern(dusStart, m_ConstantInt(&dusStartAP))) {
+        int64_t dsStartInt = dsStartAP.getSExtValue();
+        int64_t dusStartInt = dusStartAP.getSExtValue();
+        sliceStarts[i] = dsStartInt - dusStartInt;
+        continue;
+      }
+
+      if (optionalAffineIndexInfoMap.has_value()) {
+        if (affineIndexInfoMap.contains(dsStart) &&
+            affineIndexInfoMap.contains(dusStart)) {
+          auto dsIndexInfo = affineIndexInfoMap[dsStart];
+          auto dusIndexInfo = affineIndexInfoMap[dusStart];
+          if (dsIndexInfo.scale.isOne() && dusIndexInfo.scale.isOne()) {
+            sliceStarts[i] = dsIndexInfo.offset.getSExtValue() -
+                             dusIndexInfo.offset.getSExtValue();
+            continue;
+          }
+        }
+      }
+    }
+
+    canReplace = false;
+    break;
+  }
+
+  if (!canReplace) {
+    return failure();
+  }
+
+  bool allOffsetsZero =
+      llvm::all_of(sliceStarts, [](int64_t offset) { return offset == 0; });
+
+  auto updateTy = cast<RankedTensorType>(dusOp.getUpdate().getType());
+  auto updateShape = llvm::to_vector(updateTy.getShape());
+  auto dsSliceSizes = llvm::to_vector(dsOp.getSliceSizes());
+
+  // simple case
+  if (allOffsetsZero && updateShape == dsSliceSizes) {
+    rewriter.replaceAllUsesWith(dsOp.getResult(), dusOp.getUpdate());
+    return success();
+  }
+
+  SmallVector<int64_t> sliceLimits(dusOp.getStartIndices().size());
+  SmallVector<int64_t> sliceStrides(dusOp.getStartIndices().size(), 1);
+  SmallVector<int64_t> padLow(dusOp.getStartIndices().size(), 0);
+  SmallVector<int64_t> padHigh(dusOp.getStartIndices().size(), 0);
+  SmallVector<int64_t> padInner(dusOp.getStartIndices().size(), 0);
+  bool needsPad = false;
+
+  for (size_t i = 0; i < dusOp.getStartIndices().size(); ++i) {
+    if (sliceStarts[i] < 0) {
+      needsPad = true;
+      padLow[i] = -sliceStarts[i];
+      sliceStarts[i] = 0;
+    }
+    int64_t limit = dsSliceSizes[i] + sliceStarts[i] - padLow[i];
+    if (limit > updateShape[i]) {
+      needsPad = true;
+      padHigh[i] = limit - updateShape[i];
+      limit = updateShape[i];
+    }
+    sliceLimits[i] = limit;
+  }
+
+  if (needsPad && !stablehlo::isScalarValue(dusOp.getOperand())) {
+    return failure();
+  }
+
+  Value result =
+      stablehlo::SliceOp::create(rewriter, dsOp.getLoc(), dusOp.getUpdate(),
+                                 sliceStarts, sliceLimits, sliceStrides);
+  if (needsPad) {
+    auto padValue = stablehlo::getScalarValue(dusOp.getOperand(), rewriter);
+    assert(padValue);
+    result = stablehlo::PadOp::create(rewriter, dsOp.getLoc(), result, padValue,
+                                      rewriter.getDenseI64ArrayAttr(padLow),
+                                      rewriter.getDenseI64ArrayAttr(padHigh),
+                                      rewriter.getDenseI64ArrayAttr(padInner));
+  }
+  rewriter.replaceAllUsesWith(dsOp.getResult(), result);
+  return success();
+}
+
+// if we are slicing a region that has no overlap with the update, we can
+// simply replace with a dynamic slice of the original value
+LogicalResult DUSDSSimplifyWithNoUpdateOverlapHelper(
+    stablehlo::DynamicSliceOp dsOp, stablehlo::DynamicUpdateSliceOp dusOp,
+    PatternRewriter &rewriter,
+    std::optional<llvm::MapVector<Value, WhileLoopInfo::AffineIndexInfo>>
+        optionalAffineIndexInfoMap) {
+  auto dsStartIndices = dsOp.getStartIndices();
+  auto dusStartIndices = dusOp.getStartIndices();
+
+  auto sliceSizes = dsOp.getSliceSizes();
+  auto updateTy = cast<RankedTensorType>(dusOp.getUpdate().getType());
+  auto updateShape = llvm::to_vector(updateTy.getShape());
+
+  llvm::MapVector<Value, WhileLoopInfo::AffineIndexInfo> affineIndexInfoMap;
+  if (optionalAffineIndexInfoMap.has_value()) {
+    affineIndexInfoMap = optionalAffineIndexInfoMap.value();
+  }
+
+  bool overlapWithUpdate = true;
+  for (size_t i = 0; i < dusStartIndices.size(); ++i) {
+    auto dsStart = dsStartIndices[i];
+    auto dusStart = dusStartIndices[i];
+
+    if (dsStart == dusStart) {
+      continue;
+    }
+
+    APInt dsStartAP, dusStartAP;
+    if (matchPattern(dsStart, m_ConstantInt(&dsStartAP)) &&
+        matchPattern(dusStart, m_ConstantInt(&dusStartAP))) {
+      if ((dsStartAP.getSExtValue() + // ds ends before dus starts
+               sliceSizes[i] <=
+           dusStartAP.getSExtValue()) ||
+          (dusStartAP.getSExtValue() + // dus ends before ds starts
+               updateTy.getDimSize(i) <=
+           dsStartAP.getSExtValue())) {
+        overlapWithUpdate = false;
+        break;
+      }
+    } else {
+      if (optionalAffineIndexInfoMap.has_value()) {
+        if (affineIndexInfoMap.contains(dsStart) &&
+            affineIndexInfoMap.contains(dusStart)) {
+          auto dsIndexInfo = affineIndexInfoMap[dsStart];
+          auto dusIndexInfo = affineIndexInfoMap[dusStart];
+          if (dsIndexInfo.scale.isOne() && dusIndexInfo.scale.isOne()) {
+            if (dsIndexInfo.offset.getSExtValue() + // ds ends before dus starts
+                        sliceSizes[i] <=
+                    dusIndexInfo.offset.getSExtValue() ||
+                (dusIndexInfo.offset
+                         .getSExtValue() + // dus ends before ds starts
+                     updateTy.getDimSize(i) <=
+                 dsIndexInfo.offset.getSExtValue())) {
+              overlapWithUpdate = false;
+              break;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (overlapWithUpdate) {
+    return failure();
+  }
+
+  rewriter.modifyOpInPlace(dsOp,
+                           [&]() { dsOp->setOperand(0, dusOp.getOperand()); });
+  return success();
+}
+
+// meta function to consider all possible cases
+LogicalResult DUSDSSimplifyHelper(
+    stablehlo::DynamicSliceOp dsOp, stablehlo::DynamicUpdateSliceOp dusOp,
+    PatternRewriter &rewriter,
+    std::optional<llvm::MapVector<Value, WhileLoopInfo::AffineIndexInfo>>
+        optionalAffineIndexInfoMap = std::nullopt) {
+  auto rewriteWithSomeUpdateOverlap = DUSDSSimplifyWithSomeUpdateOverlapHelper(
+      dsOp, dusOp, rewriter, optionalAffineIndexInfoMap);
+  if (rewriteWithSomeUpdateOverlap.succeeded()) {
+    return rewriteWithSomeUpdateOverlap;
+  }
+  return DUSDSSimplifyWithNoUpdateOverlapHelper(dsOp, dusOp, rewriter,
+                                                optionalAffineIndexInfoMap);
+}
+
 struct DUSDynamicSliceSimplify final
     : public CheckedOpRewritePattern<stablehlo::DynamicSliceOp,
                                      DUSDynamicSliceSimplify> {
@@ -26038,104 +26128,45 @@ struct DUSDynamicSliceSimplify final
       return failure();
     }
 
-    auto dsStartIndices = op.getStartIndices();
-    auto dusStartIndices = dusOp.getStartIndices();
-
-    SmallVector<int64_t> sliceStarts(dusOp.getStartIndices().size());
-    bool canReplace = true;
-
-    for (size_t i = 0; i < dusOp.getStartIndices().size(); ++i) {
-      auto dsStart = dsStartIndices[i];
-      auto dusStart = dusStartIndices[i];
-
-      if (dsStart == dusStart) {
-        sliceStarts[i] = 0;
-        continue;
-      } else {
-        APInt dsStartAP, dusStartAP;
-        if (matchPattern(dsStart, m_ConstantInt(&dsStartAP)) &&
-            matchPattern(dusStart, m_ConstantInt(&dusStartAP))) {
-          int64_t dsStartInt = dsStartAP.getSExtValue();
-          int64_t dusStartInt = dusStartAP.getSExtValue();
-          sliceStarts[i] = dsStartInt - dusStartInt;
-          continue;
-        }
-      }
-
-      canReplace = false;
-      break;
-    }
-
-    if (!canReplace) {
-      return failure();
-    }
-
-    bool allOffsetsZero =
-        llvm::all_of(sliceStarts, [](int64_t offset) { return offset == 0; });
-
-    auto updateTy = cast<RankedTensorType>(dusOp.getUpdate().getType());
-    auto updateShape = llvm::to_vector(updateTy.getShape());
-    auto dsSliceSizes = llvm::to_vector(op.getSliceSizes());
-
-    // simple case
-    if (allOffsetsZero && updateShape == dsSliceSizes) {
-      rewriter.replaceAllUsesWith(op.getResult(), dusOp.getUpdate());
-      return success();
-    }
-
-    SmallVector<int64_t> sliceLimits(dusOp.getStartIndices().size());
-    SmallVector<int64_t> sliceStrides(dusOp.getStartIndices().size(), 1);
-    SmallVector<int64_t> padLow(dusOp.getStartIndices().size(), 0);
-    SmallVector<int64_t> padHigh(dusOp.getStartIndices().size(), 0);
-    SmallVector<int64_t> padInner(dusOp.getStartIndices().size(), 0);
-    bool needsPad = false;
-
-    for (size_t i = 0; i < dusOp.getStartIndices().size(); ++i) {
-      if (sliceStarts[i] < 0) {
-        needsPad = true;
-        padLow[i] = -sliceStarts[i];
-        sliceStarts[i] = 0;
-      }
-      int64_t limit = dsSliceSizes[i] + sliceStarts[i] - padLow[i];
-      if (limit > updateShape[i]) {
-        needsPad = true;
-        padHigh[i] = limit - updateShape[i];
-        limit = updateShape[i];
-      }
-      sliceLimits[i] = limit;
-    }
-
-    if (needsPad && !stablehlo::isScalarValue(dusOp.getOperand())) {
-      return failure();
-    }
-
-    Value result =
-        stablehlo::SliceOp::create(rewriter, op.getLoc(), dusOp.getUpdate(),
-                                   sliceStarts, sliceLimits, sliceStrides);
-    if (needsPad) {
-      auto padValue = stablehlo::getScalarValue(dusOp.getOperand(), rewriter);
-      assert(padValue);
-      result =
-          stablehlo::PadOp::create(rewriter, op.getLoc(), result, padValue,
-                                   rewriter.getDenseI64ArrayAttr(padLow),
-                                   rewriter.getDenseI64ArrayAttr(padHigh),
-                                   rewriter.getDenseI64ArrayAttr(padInner));
-    }
-    rewriter.replaceAllUsesWith(op.getResult(), result);
-    return success();
+    return DUSDSSimplifyHelper(op, dusOp, rewriter);
   }
 };
 
 struct WhileDUSDSSimplify final
-    : public CheckedOpRewritePattern<stablehlo::WhileOp,
-                                     WhileDUSDSSimplify> {
-  using CheckedOpRewritePattern<
-      stablehlo::WhileOp,
-      WhileDUSDSSimplify>::CheckedOpRewritePattern;
+    : public CheckedOpRewritePattern<stablehlo::WhileOp, WhileDUSDSSimplify> {
+  using CheckedOpRewritePattern<stablehlo::WhileOp,
+                                WhileDUSDSSimplify>::CheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::WhileOp op,
                                     PatternRewriter &rewriter) const {
-    return failure();
+    WhileLoopInfo info(op);
+    if (info.computeInfo().failed() || !info.isConstantStep() ||
+        info.getConstantStep() == 0) {
+      return failure();
+    }
+    info.propagateAffineIndexInfo(); // we don't care about computeInfo here
+
+    std::optional<llvm::MapVector<Value, WhileLoopInfo::AffineIndexInfo>>
+        affineIndexInfoMap = info.getAffineIndexInfo();
+    bool anyRewritten = false;
+
+    op.getBody().walk([&](stablehlo::DynamicSliceOp dsOp) {
+      auto dusOp =
+          dsOp.getOperand().getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
+      if (!dusOp) {
+        return WalkResult::advance();
+      }
+
+      rewriter.setInsertionPoint(dsOp);
+      if (DUSDSSimplifyHelper(dsOp, dusOp, rewriter, affineIndexInfoMap)
+              .succeeded()) {
+        anyRewritten = true;
+      }
+
+      return WalkResult::advance();
+    });
+
+    return anyRewritten ? success() : failure();
   }
 };
 

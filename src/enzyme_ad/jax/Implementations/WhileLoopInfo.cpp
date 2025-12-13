@@ -19,6 +19,8 @@
 #include "src/enzyme_ad/jax/Passes/StructuredTensors.h"
 #include "src/enzyme_ad/jax/Utils.h"
 
+#include "llvm/ADT/TypeSwitch.h"
+
 using namespace mlir;
 using namespace mlir::enzyme;
 using namespace mlir::stablehlo;
@@ -731,4 +733,233 @@ bool WhileLoopInfo::hoistOperationFromLoop(
     stablehlo::ReturnOp::create(builder, dusOp.getLoc(), updateInBody);
   }
   return true;
+}
+
+void WhileLoopInfo::propagateBounds() {
+  auto inductionVariable = getInductionVariable();
+
+  auto inductionType = inductionVariable.getType();
+  unsigned bitWidth = 64;
+  if (auto tensorType = dyn_cast<RankedTensorType>(inductionType)) {
+    if (auto intType = dyn_cast<IntegerType>(tensorType.getElementType())) {
+      bitWidth = intType.getWidth();
+    }
+  }
+  this->boundsBitWidth = bitWidth;
+
+  SmallVector<Value> newPropagated;
+
+  auto start = getConstantStart().value();
+  auto limit = getConstantLimit().value();
+  auto step = getConstantStep().value();
+
+  // Initialize bounds for the induction variable
+  Bounds inductionBounds;
+  if (step > 0) {
+    inductionBounds =
+        Bounds{APInt(bitWidth, start, true), APInt(bitWidth, limit - 1, true)};
+  } else {
+    inductionBounds =
+        Bounds{APInt(bitWidth, limit + 1, true), APInt(bitWidth, start, true)};
+  }
+
+  propagateBounds(inductionVariable, inductionBounds, newPropagated);
+  return;
+}
+
+void WhileLoopInfo::propagateBounds(Value v, Bounds curBounds,
+                                    SmallVectorImpl<Value> &newPropagated) {
+  SmallVector<Value> worklist;
+  DenseSet<Operation *> visited;
+  worklist.push_back(v);
+  boundsMap[v] = curBounds;
+
+  while (!worklist.empty()) {
+    auto cur = worklist.pop_back_val();
+
+    for (auto user : cur.getUsers()) {
+      if (visited.contains(user)) {
+        continue;
+      }
+      visited.insert(user);
+
+      auto bounds = computeBounds(user);
+      if (bounds.has_value()) {
+        for (auto result : user->getResults()) {
+          boundsMap[result] = bounds.value();
+          newPropagated.push_back(result);
+          worklist.push_back(result);
+        }
+      }
+    }
+  }
+}
+
+std::optional<WhileLoopInfo::Bounds> WhileLoopInfo::getBounds(Value value) {
+  if (boundsMap.contains(value)) {
+    return boundsMap.lookup(value);
+  }
+
+  // Try to read bounds from IR attribute using the utility function
+  if (auto irBounds = enzyme::getBoundsFromIR(value, boundsBitWidth)) {
+    return Bounds{irBounds->first, irBounds->second};
+  }
+
+  SplatElementsAttr splatAttr;
+  if (matchPattern(value, m_Constant(&splatAttr))) {
+    auto attr = splatAttr.getSplatValue<Attribute>();
+    if (auto intAttr = dyn_cast<IntegerAttr>(attr)) {
+      auto intVal = intAttr.getValue().sextOrTrunc(boundsBitWidth);
+      return Bounds{intVal, intVal};
+    }
+  }
+  return std::nullopt;
+}
+
+// Helper functions for APInt min/max since std::min/max don't work with APInt
+static APInt smin(const APInt &a, const APInt &b) { return a.slt(b) ? a : b; }
+static APInt smax(const APInt &a, const APInt &b) { return a.sgt(b) ? a : b; }
+
+std::optional<WhileLoopInfo::Bounds>
+WhileLoopInfo::computeBounds(Operation *op) {
+  if (!op || !stablehlo::hasTraitElementwise(op)) {
+    return std::nullopt;
+  }
+
+  if (op->getNumOperands() == 1) {
+    if (isa<stablehlo::SineOp, stablehlo::CosineOp>(op)) {
+      APInt one(boundsBitWidth, 1);
+      return Bounds{-one, one};
+    }
+
+    auto optionalBounds = getBounds(op->getOperand(0));
+    if (!optionalBounds.has_value()) {
+      return std::nullopt;
+    }
+    auto bounds = optionalBounds.value();
+
+    return TypeSwitch<Operation *, std::optional<Bounds>>(op)
+        .Case<stablehlo::NegOp>([&](stablehlo::NegOp negOp) {
+          return Bounds{-bounds.max, -bounds.min};
+        })
+        .Case<stablehlo::AbsOp>([&](stablehlo::AbsOp absOp) {
+          APInt zero(boundsBitWidth, 0);
+          if (bounds.min.sge(zero)) { // all positive
+            return Bounds{bounds.min, bounds.max};
+          } else if (bounds.max.sle(zero)) { // all negative
+            return Bounds{-bounds.max, -bounds.min};
+          } else { // mixed signs
+            APInt newMax = bounds.max.abs().sgt(bounds.min.abs())
+                               ? bounds.max.abs()
+                               : (-bounds.min).abs();
+            return Bounds{zero, newMax};
+          }
+        })
+        .Case<stablehlo::ConvertOp>([&](stablehlo::ConvertOp convertOp)
+                                        -> std::optional<Bounds> {
+          auto outType = convertOp.getResult().getType();
+          if (auto tensorType = dyn_cast<RankedTensorType>(outType)) {
+            if (auto intType =
+                    dyn_cast<IntegerType>(tensorType.getElementType())) {
+              unsigned outBitWidth = intType.getWidth();
+              APInt outMin =
+                  APInt::getSignedMinValue(outBitWidth).sext(boundsBitWidth);
+              APInt outMax =
+                  APInt::getSignedMaxValue(outBitWidth).sext(boundsBitWidth);
+              if (bounds.min.sge(outMin) && bounds.max.sle(outMax)) {
+                return Bounds{bounds.min, bounds.max};
+              }
+            }
+          }
+          return std::nullopt;
+        })
+        .Default([&](Operation *) { return std::nullopt; });
+  }
+
+  if (op->getNumOperands() == 2) {
+    auto lhsOptionalBounds = getBounds(op->getOperand(0));
+    auto rhsOptionalBounds = getBounds(op->getOperand(1));
+
+    if (!lhsOptionalBounds.has_value() || !rhsOptionalBounds.has_value()) {
+      return std::nullopt;
+    }
+
+    auto lhsBounds = lhsOptionalBounds.value();
+    auto rhsBounds = rhsOptionalBounds.value();
+
+    return TypeSwitch<Operation *, std::optional<Bounds>>(op)
+        .Case<stablehlo::AddOp>([&](stablehlo::AddOp addOp) {
+          return Bounds{lhsBounds.min + rhsBounds.min,
+                        lhsBounds.max + rhsBounds.max};
+        })
+        .Case<stablehlo::SubtractOp>([&](stablehlo::SubtractOp subOp) {
+          return Bounds{lhsBounds.min - rhsBounds.max,
+                        lhsBounds.max - rhsBounds.min};
+        })
+        .Case<stablehlo::MulOp>([&](stablehlo::MulOp mulOp) {
+          auto p1 = lhsBounds.min * rhsBounds.min;
+          auto p2 = lhsBounds.min * rhsBounds.max;
+          auto p3 = lhsBounds.max * rhsBounds.min;
+          auto p4 = lhsBounds.max * rhsBounds.max;
+          return Bounds{smin(smin(p1, p2), smin(p3, p4)),
+                        smax(smax(p1, p2), smax(p3, p4))};
+        })
+        .Case<stablehlo::DivOp>(
+            [&](stablehlo::DivOp divOp) -> std::optional<Bounds> {
+              APInt zero(boundsBitWidth, 0);
+              if (rhsBounds.min.sle(zero) && rhsBounds.max.sge(zero)) {
+                // divisor range includes zero, cannot compute safe bounds
+                return std::nullopt;
+              }
+              auto d1 = lhsBounds.min.sdiv(rhsBounds.min);
+              auto d2 = lhsBounds.min.sdiv(rhsBounds.max);
+              auto d3 = lhsBounds.max.sdiv(rhsBounds.min);
+              auto d4 = lhsBounds.max.sdiv(rhsBounds.max);
+
+              return Bounds{smin(smin(d1, d2), smin(d3, d4)),
+                            smax(smax(d1, d2), smax(d3, d4))};
+            })
+        .Case<stablehlo::MinOp>([&](stablehlo::MinOp minOp) {
+          return Bounds{smin(lhsBounds.min, rhsBounds.min),
+                        smin(lhsBounds.max, rhsBounds.max)};
+        })
+        .Case<stablehlo::MaxOp>([&](stablehlo::MaxOp maxOp) {
+          return Bounds{smax(lhsBounds.min, rhsBounds.min),
+                        smax(lhsBounds.max, rhsBounds.max)};
+        })
+        .Case<stablehlo::RemOp>(
+            [&](stablehlo::RemOp remOp) -> std::optional<Bounds> {
+              // Only handle constant positive RHS for now
+              if (rhsBounds.min != rhsBounds.max) {
+                return std::nullopt;
+              }
+              APInt zero(boundsBitWidth, 0);
+              APInt rhsVal = rhsBounds.min;
+              if (rhsVal.sle(zero)) {
+                return std::nullopt;
+              }
+              // For x % M where M > 0:
+              // If lhs >= 0: result is in [0, min(lhs_max, M-1)]
+              // If lhs < 0: result is in [max(lhs_min, -(M-1)), 0]
+              // If mixed: result is in [max(lhs_min, -(M-1)), min(lhs_max,
+              // M-1)]
+              APInt maxRemainder = rhsVal - 1;
+              APInt minRemainder = -(rhsVal - 1);
+
+              if (lhsBounds.min.sge(zero)) {
+                // All non-negative
+                return Bounds{zero, smin(lhsBounds.max, maxRemainder)};
+              } else if (lhsBounds.max.sle(zero)) {
+                // All non-positive
+                return Bounds{smax(lhsBounds.min, minRemainder), zero};
+              } else {
+                // Mixed signs
+                return Bounds{smax(lhsBounds.min, minRemainder),
+                              smin(lhsBounds.max, maxRemainder)};
+              }
+            })
+        .Default([&](Operation *) { return std::nullopt; });
+  }
+
+  return std::nullopt;
 }
