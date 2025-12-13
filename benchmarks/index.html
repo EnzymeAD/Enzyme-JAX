@@ -153,9 +153,9 @@
                 const result = { commit, date, tool, bench };
                 const splitted_name = bench.name.split("/");
                 const benchmarkName = splitted_name[0];
-                const variant = splitted_name[3];
+                const variant = splitted_name[1];
                 const device = splitted_name[2];
-                const passes = splitted_name[1];
+                const passes = splitted_name[3];
 
                 if (map.get(benchmarkName) === undefined) {
                   map.set(benchmarkName, new Map());
@@ -233,8 +233,14 @@
             for (const passesName of passesNames) {
               const passesData = graphData.get(passesName);
               const color = colorPalette[datasetIndex % colorPalette.length];
+              // Extract variant from the original bench name for the label
+              const sampleBench = passesData[0]?.bench;
+              const splittedName = sampleBench ? sampleBench.name.split("/") : [];
+              const variantLabel = splittedName[1] ? splittedName[1].trim().toLowerCase() : "";
+              const deviceLabel = splittedName[2] ? splittedName[2].trim() : "";
+              const displayLabel = variantLabel + " / " + passesName.trim();
               const lineData = {
-                label: passesName,
+                label: displayLabel,
                 data: passesData.map((d) => {
                   // Only time plot
                   const val = d.bench.value;
@@ -243,6 +249,7 @@
                 }),
                 borderColor: color,
                 fill: false,
+                lineTension: 0,
               };
               datasets.push(lineData);
               passesIndices.set(datasetIndex, passesName);
@@ -343,7 +350,7 @@
             const devices = [...rowData.keys()].sort();
             for (const device of devices) {
               const graphTitle =
-                benchmarkName + " + " + variant + " + " + device;
+                benchmarkName + " + " + device;
 
               const titleElem = document.createElement("h6");
               titleElem.textContent = graphTitle.toUpperCase();
