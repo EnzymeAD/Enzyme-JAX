@@ -1343,6 +1343,12 @@ Value getIdentityValue(OpBuilder &builder, Location loc, Type elemType,
       .Default([&](Operation *op) -> Value { return nullptr; });
 }
 
+bool canFuseIntoReduce(Operation *op) {
+  return isa<stablehlo::AddOp, stablehlo::MulOp, stablehlo::MinOp,
+             stablehlo::MaxOp, stablehlo::OrOp, stablehlo::XorOp,
+             stablehlo::AndOp>(op);
+}
+
 stablehlo::GatherDimensionNumbersAttr
 getGatherDims(mlir::MLIRContext *ctx,
               stablehlo::ScatterDimensionNumbersAttr scatterDimNumbers) {

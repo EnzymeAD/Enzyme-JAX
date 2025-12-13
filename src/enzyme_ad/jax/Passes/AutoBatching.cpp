@@ -895,6 +895,8 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
         op->getNumResults() == 1) {
       if (liftOperationByBatching(rewriter, whileOp, slices, op, info)) {
         anyOpRewritten = true;
+      } else if (liftReduceLikeOperation(rewriter, whileOp, slices, op, info)) {
+        anyOpRewritten = true;
       }
     }
   }
@@ -902,24 +904,24 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
   return anyOpRewritten ? success() : failure();
 };
 
-bool GreedyWhileLoopBatchFission::liftOperationByBatching(
-    PatternRewriter &rewriter, stablehlo::WhileOp whileOp,
-    ArrayRef<SliceInfo<stablehlo::DynamicSliceOp>> slices, Operation *op,
-    WhileLoopInfo info) const {
-  auto moduleOp = op->getParentOfType<ModuleOp>();
+bool traverseOperandsForHoisting(
+    ArrayRef<Value> operands, stablehlo::WhileOp whileOp,
+    ArrayRef<SliceInfo<stablehlo::DynamicSliceOp>> slices, WhileLoopInfo &info,
+    SmallVectorImpl<BatchLiftingMode> &batchLiftingModes,
+    SmallVectorImpl<Value> &batchOperands,
+    SmallVectorImpl<SmallVector<int64_t>> &sliceDims,
+    SmallVectorImpl<int64_t> &hoistedDims,
+    SmallVectorImpl<SliceInfo<stablehlo::DynamicSliceOp>> &mappedSliceInfos,
+    DenseMap<Value, SmallVector<Operation *>> &hoistMap) {
   auto affineIndexInfoMap = info.getAffineIndexInfo();
 
-  SmallVector<BatchLiftingMode> batchLiftingModes(op->getNumOperands());
-  SmallVector<Value> batchOperands(op->getNumOperands());
-  SmallVector<SmallVector<int64_t>> sliceDims(op->getNumOperands());
-  SmallVector<int64_t> hoistedDims(op->getNumOperands());
-  SmallVector<SliceInfo<stablehlo::DynamicSliceOp>> mappedSliceInfos(
-      op->getNumOperands());
-  DenseMap<Value, SmallVector<Operation *>> hoistMap;
+  batchLiftingModes.resize(operands.size());
+  batchOperands.resize(operands.size());
+  sliceDims.resize(operands.size());
+  hoistedDims.resize(operands.size());
+  mappedSliceInfos.resize(operands.size());
 
-  for (int i = 0; i < op->getNumOperands(); i++) {
-    auto operand = op->getOperand(i);
-
+  for (auto [i, operand] : llvm::enumerate(operands)) {
     Value outerValue;
     SmallVector<Operation *> canBeHoisted;
     if (info.isConstantAcrossIterations(operand, outerValue, canBeHoisted)) {
@@ -994,14 +996,13 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
     return false;
   }
 
-  func::FuncOp func = ::utils::CreateWrapperUnbatchedFunction(
-      moduleOp, rewriter, "enzymexla_unbatched_WhileLoopBatchFission_",
-      batchLiftingModes, op, std::nullopt);
+  return true;
+}
 
-  rewriter.setInsertionPoint(whileOp);
-
-  // hoist any operations that can be hoisted
-  DenseMap<Value, Value> hoistedValues;
+void hoistChainOfOps(DenseMap<Value, SmallVector<Operation *>> &hoistMap,
+                     PatternRewriter &rewriter, stablehlo::WhileOp whileOp,
+                     WhileLoopInfo &info,
+                     DenseMap<Value, Value> &hoistedValues) {
   IRMapping mapper;
   for (auto &[val, ops] : hoistMap) {
     llvm::SetVector<Operation *> toHoist(ops.begin(), ops.end());
@@ -1013,8 +1014,9 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
         continue;
 
       for (auto operand : op->getOperands()) {
-        if (mapper.contains(operand))
+        if (mapper.contains(operand)) {
           continue;
+        }
 
         if (!definedOutside(operand, whileOp)) {
           Value outerValue;
@@ -1034,8 +1036,19 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
 
     hoistedValues[val] = mapper.lookup(val);
   }
+}
 
-  SmallVector<Value> newOperands;
+void constructNewOperandsForHoistedOp(
+    PatternRewriter &rewriter, stablehlo::WhileOp whileOp, WhileLoopInfo &info,
+    SmallVectorImpl<BatchLiftingMode> &batchLiftingModes,
+    SmallVectorImpl<Value> &batchOperands,
+    SmallVectorImpl<SmallVector<int64_t>> &sliceDims,
+    SmallVectorImpl<int64_t> &hoistedDims,
+    SmallVectorImpl<SliceInfo<stablehlo::DynamicSliceOp>> &mappedSliceInfos,
+    DenseMap<Value, Value> &hoistedValues,
+    SmallVectorImpl<Value> &newOperands) {
+  newOperands.clear();
+
   for (auto [consType, baseOp, sliceDim, sliceInfo, hoistDim] :
        llvm::zip(batchLiftingModes, batchOperands, sliceDims, mappedSliceInfos,
                  hoistedDims)) {
@@ -1148,6 +1161,163 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
     }
     }
   }
+}
+
+bool GreedyWhileLoopBatchFission::liftReduceLikeOperation(
+    PatternRewriter &rewriter, stablehlo::WhileOp whileOp,
+    ArrayRef<SliceInfo<stablehlo::DynamicSliceOp>> slices, Operation *op,
+    WhileLoopInfo info) const {
+  // currently restricted to commutative ops. we can hoist `sub` / `div` by
+  // emitting a `neg` / `reciprocal` and then apply the hoisting. note that
+  // this only applies if the LHS is the loop caried dependency
+  if (!stablehlo::canFuseIntoReduce(op)) {
+    return false;
+  }
+
+  auto result = op->getResult(0);
+  if (!llvm::hasSingleElement(result.getUsers())) {
+    return false;
+  }
+
+  auto returnOp = dyn_cast<stablehlo::ReturnOp>(*result.getUsers().begin());
+  if (!returnOp) {
+    return false;
+  }
+
+  auto lhs = op->getOperand(0);
+  auto rhs = op->getOperand(1);
+
+  bool isLhsLoopCarriedDep = false, isRhsLoopCarriedDep = false;
+  int64_t argIdx;
+  if (auto lhsBlockArg = dyn_cast<BlockArgument>(lhs)) {
+    if (lhsBlockArg.getOwner() == &whileOp.getBody().front() &&
+        returnOp->getOperand(lhsBlockArg.getArgNumber()) == result) {
+      argIdx = lhsBlockArg.getArgNumber();
+      isLhsLoopCarriedDep = true;
+    }
+  }
+  if (auto rhsBlockArg = dyn_cast<BlockArgument>(rhs)) {
+    if (rhsBlockArg.getOwner() == &whileOp.getBody().front() &&
+        returnOp->getOperand(rhsBlockArg.getArgNumber()) == result) {
+      argIdx = rhsBlockArg.getArgNumber();
+      isRhsLoopCarriedDep = true;
+    }
+  }
+
+  // while dead args is needed to clean this up
+  if (whileOp->getResult(argIdx).getUsers().empty()) {
+    return false;
+  }
+
+  if (isLhsLoopCarriedDep == isRhsLoopCarriedDep) {
+    return false; // atmost one of lhs/rhs must be loop carried dep
+  }
+
+  Value otherOperand = isLhsLoopCarriedDep ? rhs : lhs;
+
+  SmallVector<BatchLiftingMode> batchLiftingModes;
+  SmallVector<Value> batchOperands;
+  SmallVector<SmallVector<int64_t>> sliceDims;
+  SmallVector<int64_t> hoistedDims;
+  SmallVector<SliceInfo<stablehlo::DynamicSliceOp>> mappedSliceInfos;
+  DenseMap<Value, SmallVector<Operation *>> hoistMap;
+
+  SmallVector<Value> opOperands = {otherOperand};
+
+  if (!traverseOperandsForHoisting(opOperands, whileOp, slices, info,
+                                   batchLiftingModes, batchOperands, sliceDims,
+                                   hoistedDims, mappedSliceInfos, hoistMap)) {
+    return false;
+  }
+
+  rewriter.setInsertionPoint(whileOp);
+  DenseMap<Value, Value> hoistedValues;
+  hoistChainOfOps(hoistMap, rewriter, whileOp, info, hoistedValues);
+
+  SmallVector<Value> newOperands;
+  constructNewOperandsForHoistedOp(
+      rewriter, whileOp, info, batchLiftingModes, batchOperands, sliceDims,
+      hoistedDims, mappedSliceInfos, hoistedValues, newOperands);
+
+  Value initVal = stablehlo::getIdentityValue(
+      rewriter, op->getLoc(),
+      cast<RankedTensorType>(otherOperand.getType()).getElementType(), op);
+
+  auto whileOperand = whileOp->getOperand(argIdx);
+
+  auto elemType =
+      cast<RankedTensorType>(whileOperand.getType()).getElementType();
+
+  auto reduceOp = stablehlo::ReduceOp::create(
+      rewriter, whileOp->getLoc(),
+      TypeRange{whileOp->getResult(argIdx).getType()},
+      ValueRange{newOperands[0]}, ValueRange{initVal},
+      rewriter.getDenseI64ArrayAttr({0}));
+
+  auto scalarType = RankedTensorType::get({}, elemType);
+  Block *block = rewriter.createBlock(&reduceOp.getBody());
+  block->addArgument(scalarType, whileOp->getLoc());
+  block->addArgument(scalarType, whileOp->getLoc());
+
+  {
+    IRRewriter::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(block);
+    OperationState state(op->getLoc(), op->getName());
+    state.addTypes(TypeRange{scalarType});
+    state.addOperands(ValueRange{block->getArgument(0), block->getArgument(1)});
+    // Create the operation from the state.
+    auto *newOp = mlir::Operation::create(state);
+    rewriter.insert(newOp);
+    rewriter.create<stablehlo::ReturnOp>(op->getLoc(), newOp->getResults());
+  }
+
+  rewriter.setInsertionPointAfter(reduceOp);
+  OperationState finalResState(whileOp->getLoc(), op->getName());
+  finalResState.addTypes(TypeRange{whileOp->getResult(argIdx).getType()});
+  finalResState.addOperands(ValueRange{reduceOp->getResult(0), whileOperand});
+  auto *finalResOp = mlir::Operation::create(finalResState);
+  rewriter.insert(finalResOp);
+
+  rewriter.replaceAllUsesWith(whileOp->getResult(argIdx),
+                              finalResOp->getResult(0));
+  return true;
+}
+
+bool GreedyWhileLoopBatchFission::liftOperationByBatching(
+    PatternRewriter &rewriter, stablehlo::WhileOp whileOp,
+    ArrayRef<SliceInfo<stablehlo::DynamicSliceOp>> slices, Operation *op,
+    WhileLoopInfo info) const {
+  auto moduleOp = op->getParentOfType<ModuleOp>();
+  auto affineIndexInfoMap = info.getAffineIndexInfo();
+
+  SmallVector<BatchLiftingMode> batchLiftingModes;
+  SmallVector<Value> batchOperands;
+  SmallVector<SmallVector<int64_t>> sliceDims;
+  SmallVector<int64_t> hoistedDims;
+  SmallVector<SliceInfo<stablehlo::DynamicSliceOp>> mappedSliceInfos;
+  DenseMap<Value, SmallVector<Operation *>> hoistMap;
+
+  auto opOperands = llvm::to_vector(op->getOperands());
+  if (!traverseOperandsForHoisting(opOperands, whileOp, slices, info,
+                                   batchLiftingModes, batchOperands, sliceDims,
+                                   hoistedDims, mappedSliceInfos, hoistMap)) {
+    return false;
+  }
+
+  func::FuncOp func = ::utils::CreateWrapperUnbatchedFunction(
+      moduleOp, rewriter, "enzymexla_unbatched_WhileLoopBatchFission_",
+      batchLiftingModes, op, std::nullopt);
+
+  rewriter.setInsertionPoint(whileOp);
+
+  // hoist any operations that can be hoisted
+  DenseMap<Value, Value> hoistedValues;
+  hoistChainOfOps(hoistMap, rewriter, whileOp, info, hoistedValues);
+
+  SmallVector<Value> newOperands;
+  constructNewOperandsForHoistedOp(
+      rewriter, whileOp, info, batchLiftingModes, batchOperands, sliceDims,
+      hoistedDims, mappedSliceInfos, hoistedValues, newOperands);
 
   auto resultType = cast<RankedTensorType>(op->getResult(0).getType());
   auto resultShape = resultType.getShape();

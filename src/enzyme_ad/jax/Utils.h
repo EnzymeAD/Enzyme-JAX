@@ -1077,6 +1077,8 @@ LogicalResult concatSliceSimplify(PatternRewriter &rewriter,
 Value getIdentityValue(OpBuilder &builder, Location loc, Type elemType,
                        Operation *op);
 
+bool canFuseIntoReduce(Operation *op);
+
 template <typename OpTy>
 Value getIdentityValueForOp(OpBuilder &builder, Location loc, Type elemType);
 
