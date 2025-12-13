@@ -26022,7 +26022,7 @@ LogicalResult DUSDSSimplifyWithSomeUpdateOverlapHelper(
                                       rewriter.getDenseI64ArrayAttr(padHigh),
                                       rewriter.getDenseI64ArrayAttr(padInner));
   }
-  rewriter.replaceAllUsesWith(dsOp.getResult(), result);
+  rewriter.replaceOp(dsOp, result);
   return success();
 }
 
