@@ -22246,31 +22246,45 @@ struct LogSimplify final
   }
 };
 
-// Helper function to create a folded negation of a constant value.
-// If the value is a constant, computes and returns the negated constant.
-// Otherwise, returns an unfolded NegOp (fallback for non-constant values).
-static Value foldNegateConstant(PatternRewriter &rewriter, Location loc,
-                                 Value constValue) {
-  DenseElementsAttr constAttr;
-  if (!matchPattern(constValue, m_Constant(&constAttr)))
-    return stablehlo::NegOp::create(rewriter, loc, constValue);
+// Fold negate of constant values immediately
+struct NegConstFold final
+    : public CheckedOpRewritePattern<stablehlo::NegOp, NegConstFold> {
+  using CheckedOpRewritePattern<stablehlo::NegOp,
+                                NegConstFold>::CheckedOpRewritePattern;
 
-  auto constType = cast<ShapedType>(constValue.getType());
-  stablehlo::Tensor constTen;
+  LogicalResult matchAndRewriteImpl(stablehlo::NegOp op,
+                                    PatternRewriter &rewriter) const {
+    DenseElementsAttr inputAttr;
+    if (!matchPattern(op.getOperand(), m_Constant(&inputAttr)))
+      return failure();
 
-  if (constAttr.isSplat()) {
-    auto scalarTy = RankedTensorType::get({}, constType.getElementType());
-    constTen = stablehlo::makeTensor(constAttr.resizeSplat(scalarTy));
-    auto out = fromTensor(stablehlo::negOp(constTen, cast<ShapedType>(scalarTy)));
-    return rewriter.create<stablehlo::ConstantOp>(
-        loc, constType, out.resizeSplat(constType));
-  } else {
-    constTen = stablehlo::constantOp(constAttr);
-    auto ty = cast<RankedTensorType>(constType);
-    auto out = fromTensor(stablehlo::negOp(constTen, cast<ShapedType>(ty)));
-    return rewriter.create<stablehlo::ConstantOp>(loc, constType, out);
+    auto constType = cast<ShapedType>(op.getOperand().getType());
+    stablehlo::Tensor inputTen;
+    RankedTensorType ty = cast<RankedTensorType>(op->getResultTypes()[0]);
+
+    if (inputAttr.isSplat()) {
+      ty = RankedTensorType::get(
+          {}, cast<ShapedType>(op->getResultTypes()[0]).getElementType());
+      auto inputTy = RankedTensorType::get(
+          {}, cast<ShapedType>(op.getOperand().getType()).getElementType());
+      inputTen = stablehlo::makeTensor(inputAttr.resizeSplat(inputTy));
+    } else {
+      inputTen = stablehlo::constantOp(inputAttr);
+    }
+
+    auto resultType = cast<ShapedType>(ty);
+    auto out = fromTensor(stablehlo::negOp(inputTen, resultType));
+
+    if (inputAttr.isSplat()) {
+      out = out.resizeSplat(cast<ShapedType>(op->getResultTypes()[0]));
+    }
+
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+        op, op->getResultTypes()[0], out);
+
+    return success();
   }
-}
+};
 
 struct NegMulConstSimplify final
     : public CheckedOpRewritePattern<stablehlo::NegOp, NegMulConstSimplify> {
@@ -22297,13 +22311,13 @@ struct NegMulConstSimplify final
 
     if (lhsIsConst) {
       rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
-          op, foldNegateConstant(rewriter, op.getLoc(), lhs), rhs);
+          op, stablehlo::NegOp::create(rewriter, op.getLoc(), lhs), rhs);
       return success();
     }
 
     if (rhsIsConst) {
       rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
-          op, lhs, foldNegateConstant(rewriter, op.getLoc(), rhs));
+          op, lhs, stablehlo::NegOp::create(rewriter, op.getLoc(), rhs));
       return success();
     }
 
@@ -22336,13 +22350,13 @@ struct NegDivConstSimplify final
 
     if (lhsIsConst) {
       rewriter.replaceOpWithNewOp<stablehlo::DivOp>(
-          op, foldNegateConstant(rewriter, op.getLoc(), lhs), rhs);
+          op, stablehlo::NegOp::create(rewriter, op.getLoc(), lhs), rhs);
       return success();
     }
 
     if (rhsIsConst) {
       rewriter.replaceOpWithNewOp<stablehlo::DivOp>(
-          op, lhs, foldNegateConstant(rewriter, op.getLoc(), rhs));
+          op, lhs, stablehlo::NegOp::create(rewriter, op.getLoc(), rhs));
       return success();
     }
 
@@ -26473,7 +26487,7 @@ struct EnzymeHLOOptPass
         SimplifyBoundary<enzymexla::WrapOp>,
         SimplifyBoundary<enzymexla::RotateOp>, TransposeReshapeToBroadcast,
         ReshapeTransposeToBroadcast, SelectBroadcastInDim, PowerMultiplyToPower,
-        NegMulConstSimplify, NegDivConstSimplify,
+        NegConstFold, NegMulConstSimplify, NegDivConstSimplify,
         ReshapeDeletionsBroadcastInDimSimplify,
         ReshapeInsertionsBroadcastInDimSimplify, CompareIotaConstSimplify,
         CompareAbs, CompareMul, CompareConvert, AddSelects,
