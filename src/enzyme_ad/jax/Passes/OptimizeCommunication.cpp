@@ -3555,20 +3555,18 @@ struct ReorderAssociativeOp : public OpRewritePattern<opTy> {
         return failure();
 
       if (aOpSharding == cOpSharding && isCommutative) {
-        auto newOp = rewriter.template create<opTy>(op.getLoc(), aOp, cOp);
+        auto newOp = opTy::create(rewriter, op.getLoc(), aOp, cOp);
         sdy::setSharding(newOp, aOpSharding);
-        auto newFinalOp =
-            rewriter.template create<opTy>(op.getLoc(), newOp, bOp);
+        auto newFinalOp = opTy::create(rewriter, op.getLoc(), newOp, bOp);
         sdy::setSharding(newFinalOp, opSharding);
         rewriter.replaceOp(op, newFinalOp); // op (op a c) b
         return success();
       }
 
       if (aOpSharding == bOpSharding) {
-        auto newOp = rewriter.template create<opTy>(op.getLoc(), aOp, bOp);
+        auto newOp = opTy::create(rewriter, op.getLoc(), aOp, bOp);
         sdy::setSharding(newOp, aOpSharding);
-        auto newFinalOp =
-            rewriter.template create<opTy>(op.getLoc(), newOp, cOp);
+        auto newFinalOp = opTy::create(rewriter, op.getLoc(), newOp, cOp);
         sdy::setSharding(newFinalOp, opSharding);
         rewriter.replaceOp(op, newFinalOp); // op (op a b) c
         return success();
@@ -3595,20 +3593,18 @@ struct ReorderAssociativeOp : public OpRewritePattern<opTy> {
           return failure();
 
         if (aOpSharding == cOpSharding && isCommutative) {
-          auto newOp = rewriter.template create<opTy>(op.getLoc(), aOp, cOp);
+          auto newOp = opTy::create(rewriter, op.getLoc(), aOp, cOp);
           sdy::setSharding(newOp, aOpSharding);
-          auto newFinalOp =
-              rewriter.template create<opTy>(op.getLoc(), newOp, bOp);
+          auto newFinalOp = opTy::create(rewriter, op.getLoc(), newOp, bOp);
           sdy::setSharding(newFinalOp, opSharding);
           rewriter.replaceOp(op, newFinalOp); // op (op a c) b
           return success();
         }
 
         if (bOpSharding == cOpSharding) {
-          auto newOp = rewriter.template create<opTy>(op.getLoc(), bOp, cOp);
+          auto newOp = opTy::create(rewriter, op.getLoc(), bOp, cOp);
           sdy::setSharding(newOp, bOpSharding);
-          auto newFinalOp =
-              rewriter.template create<opTy>(op.getLoc(), aOp, newOp);
+          auto newFinalOp = opTy::create(rewriter, op.getLoc(), aOp, newOp);
           sdy::setSharding(newFinalOp, opSharding);
           rewriter.replaceOp(op, newFinalOp); // op a (op b c)
           return success();
@@ -3643,24 +3639,22 @@ struct ReorderAssociativeOp : public OpRewritePattern<opTy> {
           return failure();
 
         if (aOpSharding == cOpSharding && bOpSharding == dOpSharding) {
-          auto newLhsOp = rewriter.template create<opTy>(op.getLoc(), aOp, cOp);
+          auto newLhsOp = opTy::create(rewriter, op.getLoc(), aOp, cOp);
           sdy::setSharding(newLhsOp, aOpSharding);
-          auto newRhsOp = rewriter.template create<opTy>(op.getLoc(), bOp, dOp);
+          auto newRhsOp = opTy::create(rewriter, op.getLoc(), bOp, dOp);
           sdy::setSharding(newRhsOp, bOpSharding);
-          auto newOp =
-              rewriter.template create<opTy>(op.getLoc(), newLhsOp, newRhsOp);
+          auto newOp = opTy::create(rewriter, op.getLoc(), newLhsOp, newRhsOp);
           sdy::setSharding(newOp, opSharding);
           rewriter.replaceOp(op, newOp); // op (op a c) (op b d)
           return success();
         }
 
         if (aOpSharding == dOpSharding && bOpSharding == cOpSharding) {
-          auto newLhsOp = rewriter.template create<opTy>(op.getLoc(), aOp, dOp);
+          auto newLhsOp = opTy::create(rewriter, op.getLoc(), aOp, dOp);
           sdy::setSharding(newLhsOp, aOpSharding);
-          auto newRhsOp = rewriter.template create<opTy>(op.getLoc(), bOp, cOp);
+          auto newRhsOp = opTy::create(rewriter, op.getLoc(), bOp, cOp);
           sdy::setSharding(newRhsOp, bOpSharding);
-          auto newOp =
-              rewriter.template create<opTy>(op.getLoc(), newLhsOp, newRhsOp);
+          auto newOp = opTy::create(rewriter, op.getLoc(), newLhsOp, newRhsOp);
           sdy::setSharding(newOp, opSharding);
           rewriter.replaceOp(op, newOp); // op (op a d) (op b c)
           return success();
