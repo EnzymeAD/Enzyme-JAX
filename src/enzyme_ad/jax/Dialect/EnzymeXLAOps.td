@@ -1121,13 +1121,14 @@ def MPICommSizeOp : EnzymeXLA_Op<"comm_size", [Pure]> {
   let assemblyFormat = [{ attr-dict `:` type(results) }];
 }
 
-def MPI_SendOp : EnzymeXLA_Op<"send", []> {
+def MPISendOp : EnzymeXLA_Op<"send", []> {
   let summary = "Equivalent to `MPI_Send(buf, size, dtype, dest, tag, comm)`";
   let arguments = (
     ins AnyTensor : $buf,
+    TensorOf<[I32]> : $count,
     TensorOf<[I32]> : $dest,
     TensorOf<[I32]> : $tag
-    /* MPI_Comm : $comm */
+    /* MPI_Comm : $comm */ // TODO 
   );
   /* let assemblyFormat = "`(` $buf `,` $tag `,` $dest `,` $comm `)` attr-dict `:` " */
   /*                      "type($buf) `,` type($tag) `,` type($dest)"; */
