@@ -22077,6 +22077,32 @@ struct LogSimplify final
   }
 };
 
+// Helper function to create a folded negation of a constant value.
+// If the value is a constant, computes and returns the negated constant.
+// Otherwise, returns an unfolded NegOp (fallback for non-constant values).
+static Value foldNegateConstant(PatternRewriter &rewriter, Location loc,
+                                 Value constValue) {
+  DenseElementsAttr constAttr;
+  if (!matchPattern(constValue, m_Constant(&constAttr)))
+    return stablehlo::NegOp::create(rewriter, loc, constValue);
+
+  auto constType = cast<ShapedType>(constValue.getType());
+  stablehlo::Tensor constTen;
+
+  if (constAttr.isSplat()) {
+    auto scalarTy = RankedTensorType::get({}, constType.getElementType());
+    constTen = stablehlo::makeTensor(constAttr.resizeSplat(scalarTy));
+    auto out = fromTensor(stablehlo::negOp(constTen, cast<ShapedType>(scalarTy)));
+    return rewriter.create<stablehlo::ConstantOp>(
+        loc, constType, out.resizeSplat(constType));
+  } else {
+    constTen = stablehlo::constantOp(constAttr);
+    auto ty = cast<RankedTensorType>(constType);
+    auto out = fromTensor(stablehlo::negOp(constTen, cast<ShapedType>(ty)));
+    return rewriter.create<stablehlo::ConstantOp>(loc, constType, out);
+  }
+}
+
 struct NegMulConstSimplify final
     : public CheckedOpRewritePattern<stablehlo::NegOp, NegMulConstSimplify> {
   using CheckedOpRewritePattern<stablehlo::NegOp,
@@ -22102,13 +22128,13 @@ struct NegMulConstSimplify final
 
     if (lhsIsConst) {
       rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
-          op, stablehlo::NegOp::create(rewriter, op.getLoc(), lhs), rhs);
+          op, foldNegateConstant(rewriter, op.getLoc(), lhs), rhs);
       return success();
     }
 
     if (rhsIsConst) {
       rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
-          op, lhs, stablehlo::NegOp::create(rewriter, op.getLoc(), rhs));
+          op, lhs, foldNegateConstant(rewriter, op.getLoc(), rhs));
       return success();
     }
 
@@ -22141,13 +22167,13 @@ struct NegDivConstSimplify final
 
     if (lhsIsConst) {
       rewriter.replaceOpWithNewOp<stablehlo::DivOp>(
-          op, stablehlo::NegOp::create(rewriter, op.getLoc(), lhs), rhs);
+          op, foldNegateConstant(rewriter, op.getLoc(), lhs), rhs);
       return success();
     }
 
     if (rhsIsConst) {
       rewriter.replaceOpWithNewOp<stablehlo::DivOp>(
-          op, lhs, stablehlo::NegOp::create(rewriter, op.getLoc(), rhs));
+          op, lhs, foldNegateConstant(rewriter, op.getLoc(), rhs));
       return success();
     }
 
