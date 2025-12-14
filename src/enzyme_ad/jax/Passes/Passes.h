@@ -8,8 +8,8 @@
 #ifndef ENZYMEXLA_PASSES_H
 #define ENZYMEXLA_PASSES_H
 
-#include "mlir/Conversion/LLVMCommon/LoweringOptions.h"
 #include "Enzyme/MLIR/Dialect/Dialect.h"
+#include "mlir/Conversion/LLVMCommon/LoweringOptions.h"
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/IntegerSet.h"
