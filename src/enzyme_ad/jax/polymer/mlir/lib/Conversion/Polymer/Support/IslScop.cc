@@ -1957,6 +1957,7 @@ std::unique_ptr<IslScop> IslScopBuilder::build(Operation *f) {
           llvm::append_range(indices, rmw.getIndices());
           map = rmw.getMap();
           vMap.reset(map, indices);
+          addLoad(rmw.getValue(), unitVMap);
           addLoad(memref, vMap);
           addMustStore(memref, vMap);
           addMustStore(rmw.getResult(), unitVMap);

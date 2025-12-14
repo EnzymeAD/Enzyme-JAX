@@ -25,9 +25,10 @@ module {
 // CHECK: domain: "{ S0_enzyme_affine_atomic_rmw[i0] : 0 <= i0 <= 3; S1_affine_yield[i0] : 0 <= i0 <= 3 }"
 // CHECK: accesses:
 // CHECK:   - S0_enzyme_affine_atomic_rmw:
-// CHECK:         - read "{ S0_enzyme_affine_atomic_rmw[i0] -> A_func_func_arg_1_0[i0] }"
-// CHECK:         - must_write "{ S0_enzyme_affine_atomic_rmw[i0] -> A_func_func_arg_1_0[i0] }"
-// CHECK:         - must_write "{ S0_enzyme_affine_atomic_rmw[i0] -> A_enzyme_affine_atomic_rmw_res_1[] }"
+// CHECK:         - read "{ S0_enzyme_affine_atomic_rmw[i0] -> A_func_func_arg_0_0[] }"
+// CHECK:         - read "{ S0_enzyme_affine_atomic_rmw[i0] -> A_func_func_arg_1_1[i0] }"
+// CHECK:         - must_write "{ S0_enzyme_affine_atomic_rmw[i0] -> A_func_func_arg_1_1[i0] }"
+// CHECK:         - must_write "{ S0_enzyme_affine_atomic_rmw[i0] -> A_enzyme_affine_atomic_rmw_res_2[] }"
 // CHECK:   - S1_affine_yield:
-// CHECK:         - kill "{ S1_affine_yield[i0] -> A_enzyme_affine_atomic_rmw_res_1[] : 0 <= i0 <= 3 }"
+// CHECK:         - kill "{ S1_affine_yield[i0] -> A_enzyme_affine_atomic_rmw_res_2[] : 0 <= i0 <= 3 }"
 // CHECK:   - S2_func_return:
