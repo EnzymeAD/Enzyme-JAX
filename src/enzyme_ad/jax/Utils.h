@@ -1073,6 +1073,10 @@ stablehlo::ConcatenateOp lowerWrap(enzymexla::WrapOp wrap,
 LogicalResult concatSliceSimplify(PatternRewriter &rewriter,
                                   SmallVectorImpl<Value> &operands, int64_t dim,
                                   SmallVectorImpl<Value> &newOperands);
+LogicalResult concatReshapeSliceSimplify(PatternRewriter &rewriter,
+                                         SmallVectorImpl<Value> &operands,
+                                         int64_t dim,
+                                         SmallVectorImpl<Value> &newOperands);
 
 Value getIdentityValue(OpBuilder &builder, Location loc, Type elemType,
                        Operation *op);
