@@ -1921,6 +1921,109 @@ struct ExtendToPadCommOptimize2 : public OpRewritePattern<enzymexla::ExtendOp> {
   }
 };
 
+struct UpdateWithoutCornersToSelect
+    : public OpRewritePattern<enzymexla::UpdateWithoutCornersOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::UpdateWithoutCornersOp extend,
+                                PatternRewriter &rewriter) const override {
+    if (extend->getParentOfType<sdy::ManualComputationOp>())
+      return failure();
+
+    auto extendSharding = mlir::sdy::getSharding(extend);
+    if (!extendSharding)
+      return failure();
+
+    auto operandSharding = mlir::sdy::getSharding(extend.getOperand());
+    if (!operandSharding)
+      return failure();
+
+    if (operandSharding != extendSharding)
+      return failure();
+
+    auto updateSharding = mlir::sdy::getSharding(extend.getUpdate());
+    if (!updateSharding)
+      return failure();
+
+    if (updateSharding != extendSharding)
+      return failure();
+
+    auto iotaX = stablehlo::IotaOp::create(
+        rewriter, extend.getLoc(),
+        RankedTensorType::get(extend.getType().getShape(),
+                              rewriter.getI32Type()),
+        extend.getDimensionX());
+    sdy::setSharding(iotaX, extendSharding);
+
+    auto iotaY = stablehlo::IotaOp::create(
+        rewriter, extend.getLoc(),
+        RankedTensorType::get(extend.getType().getShape(),
+                              rewriter.getI32Type()),
+        extend.getDimensionY());
+    sdy::setSharding(iotaY, extendSharding);
+
+    Value x1 = stablehlo::ConstantOp::create(
+        rewriter, extend.getLoc(),
+        SplatElementsAttr::get(iotaX.getType(),
+                               rewriter.getI32IntegerAttr(extend.getX1())));
+
+    Value x2 = stablehlo::ConstantOp::create(
+        rewriter, extend.getLoc(),
+        SplatElementsAttr::get(iotaX.getType(),
+                               rewriter.getI32IntegerAttr(extend.getX2())));
+
+    Value y1 = stablehlo::ConstantOp::create(
+        rewriter, extend.getLoc(),
+        SplatElementsAttr::get(iotaY.getType(),
+                               rewriter.getI32IntegerAttr(extend.getY1())));
+
+    Value y2 = stablehlo::ConstantOp::create(
+        rewriter, extend.getLoc(),
+        SplatElementsAttr::get(iotaY.getType(),
+                               rewriter.getI32IntegerAttr(extend.getY2())));
+
+    auto xCmp1 =
+        stablehlo::CompareOp::create(rewriter, extend.getLoc(), iotaX, x1,
+                                     stablehlo::ComparisonDirection::LT);
+    sdy::setSharding(xCmp1, extendSharding);
+
+    auto xCmp2 =
+        stablehlo::CompareOp::create(rewriter, extend.getLoc(), iotaX, x2,
+                                     stablehlo::ComparisonDirection::GE);
+    sdy::setSharding(xCmp2, extendSharding);
+
+    auto xVals =
+        stablehlo::OrOp::create(rewriter, extend.getLoc(), xCmp1, xCmp2);
+    sdy::setSharding(xVals, extendSharding);
+
+    auto yCmp1 =
+        stablehlo::CompareOp::create(rewriter, extend.getLoc(), iotaY, y1,
+                                     stablehlo::ComparisonDirection::LT);
+    sdy::setSharding(yCmp1, extendSharding);
+
+    auto yCmp2 =
+        stablehlo::CompareOp::create(rewriter, extend.getLoc(), iotaY, y2,
+                                     stablehlo::ComparisonDirection::GE);
+    sdy::setSharding(yCmp2, extendSharding);
+
+    auto yVals =
+        stablehlo::OrOp::create(rewriter, extend.getLoc(), yCmp1, yCmp2);
+    sdy::setSharding(yVals, extendSharding);
+
+    auto inCorner =
+        stablehlo::AndOp::create(rewriter, extend.getLoc(), xVals, yVals);
+    sdy::setSharding(inCorner, extendSharding);
+
+    auto result =
+        stablehlo::SelectOp::create(rewriter, extend.getLoc(), inCorner,
+                                    extend.getOperand(), extend.getUpdate());
+    sdy::setSharding(result, extendSharding);
+
+    rewriter.replaceOp(extend, result);
+    return success();
+  }
+};
+
 // TODO: check mesh attr and ensure only applied to iota tile
 struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
 
@@ -4281,6 +4384,10 @@ struct OptimizeCommunicationPass
     if (extend_to_pad_comm2 > 0)
       patterns.add<ExtendToPadCommOptimize2>(
           context, PatternBenefit(extend_to_pad_comm2));
+
+    if (updatewithoutcorners_to_select > 0)
+      patterns.add<UpdateWithoutCornersToSelect>(
+          context, PatternBenefit(updatewithoutcorners_to_select));
 
     if (dus_to_pad_manual_comp_comm > 0)
       patterns.add<DUSToPadManualCompComm>(

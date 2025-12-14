@@ -153,13 +153,8 @@ struct UpdateWithoutCornersOpShardingInterface
           PermuteOperandOpInterface<enzymexla::UpdateWithoutCornersOp>,
           enzymexla::UpdateWithoutCornersOp> {
   mlir::sdy::OpShardingRuleAttr getShardingRule(mlir::Operation *op) const {
-    bool conservativePropagation = false;
     return sdy::OpShardingRuleBuilder(op)
-        .addPointwiseWithDiffTypeForMismatch(
-            sdy::getTensorShape(op->getOperands()[1]),
-            sdy::getTensorShape(op->getResult(0)),
-            sdy::FactorType::kPermutation,
-            /*mismatchFactorIsBlocked*/ conservativePropagation)
+        .addPointwise(sdy::getTensorShape(op->getResult(0)))
         .build();
   }
 };
