@@ -20339,173 +20339,18 @@ struct ConcatReshapeSlice
                                      ConcatReshapeSlice> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp concatOp,
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
                                     PatternRewriter &rewriter) const {
-    auto concatDim = concatOp.getDimension();
-    auto ndims = cast<RankedTensorType>(concatOp.getType()).getRank();
+    auto dim = op.getDimension();
+    SmallVector<Value> newOperands;
 
-    // Ensure all operands are reshapes of slices
-    SmallVector<stablehlo::SliceOp> sliceOps;
-    SmallVector<stablehlo::ReshapeOp> reshapeOps;
-    Value sourceTensor;
+    auto oldOperands = llvm::to_vector(op.getOperands());
+    auto res =
+        concatReshapeSliceSimplify(rewriter, oldOperands, dim, newOperands);
+    if (!res.succeeded())
+      return res;
 
-    for (auto operand : concatOp.getOperands()) {
-      auto reshape = operand.getDefiningOp<stablehlo::ReshapeOp>();
-      if (!reshape || (!reshape->hasOneUse()))
-        return failure();
-
-      if (cast<RankedTensorType>(reshape.getResult().getType())
-              .getShape()[concatDim] != 1)
-        return failure();
-
-      auto slice = reshape.getOperand().getDefiningOp<stablehlo::SliceOp>();
-      if ((!slice) || (!slice->hasOneUse()))
-        return failure();
-
-      // Make sure all slices come from the same source
-      if (!sourceTensor) {
-        sourceTensor = slice.getOperand();
-      } else if (sourceTensor != slice.getOperand()) {
-        return failure();
-      }
-
-      auto sliceStrides = slice.getStrides();
-      for (int64_t i = 0; i < sliceStrides.size(); i++) {
-        if (sliceStrides[i] != 1)
-          return failure();
-      }
-
-      reshapeOps.push_back(reshape);
-      sliceOps.push_back(slice);
-    }
-
-    SmallVector<int64_t> sliceStarts, sliceLimits, insertionDims, deletionDims;
-    bool insertions = false, deletions = false;
-    int64_t srcSliceDim = -1;
-    auto sourceShape =
-        cast<RankedTensorType>(sourceTensor.getType()).getShape();
-
-    for (int i = 0; i < sliceOps.size(); i++) {
-      auto sliceOp = sliceOps[i];
-      auto reshapeOp = reshapeOps[i];
-
-      auto sliceShape =
-          cast<RankedTensorType>(sliceOp.getResult().getType()).getShape();
-      auto curSliceStarts = llvm::to_vector(sliceOp.getStartIndices());
-      auto curSliceLimits = llvm::to_vector(sliceOp.getLimitIndices());
-      auto reshapeShape =
-          cast<RankedTensorType>(reshapeOp.getResult().getType()).getShape();
-
-      int64_t singletonSliceDim = -1, nSingletonSlices = 0;
-      for (int64_t i = 0; i < sliceShape.size(); i++) {
-        if (sliceShape[i] == 1 &&
-            !(curSliceStarts[i] == 0 && curSliceLimits[i] == sourceShape[i])) {
-          singletonSliceDim = i;
-          nSingletonSlices++;
-        }
-      }
-
-      if (nSingletonSlices != 1)
-        return failure();
-
-      if (srcSliceDim == -1) {
-        srcSliceDim = singletonSliceDim;
-        sliceStarts = std::move(curSliceStarts);
-        sliceLimits = std::move(curSliceLimits);
-      } else {
-        if (!canMergeSlicesAlongAxis(srcSliceDim, sliceOps[i - 1], sliceOp))
-          return failure();
-      }
-
-      // Ensure that the reshape is a permutation of the slice
-      SmallVector<int64_t> srcNoSingleton, dstNoSingleton;
-      for (int64_t i = 0; i < sliceShape.size(); i++) {
-        if (i == singletonSliceDim)
-          continue;
-        srcNoSingleton.push_back(sliceShape[i]);
-      }
-      for (int64_t i = 0; i < reshapeShape.size(); i++) {
-        if (i == concatDim)
-          continue;
-        dstNoSingleton.push_back(reshapeShape[i]);
-      }
-
-      if (srcNoSingleton != dstNoSingleton) {
-        auto curInsertionDims =
-            findReshapeInsertionDims(srcNoSingleton, dstNoSingleton);
-        auto curDeletionDims =
-            findReshapeInsertionDims(dstNoSingleton, srcNoSingleton);
-        if (curInsertionDims.empty() && curDeletionDims.empty())
-          return failure();
-
-        if (i > 0) {
-          if (insertions) {
-            if (!curDeletionDims.empty())
-              return failure();
-            if (insertionDims != curInsertionDims)
-              return failure();
-          } else {
-            if (!curInsertionDims.empty())
-              return failure();
-            if (deletionDims != curDeletionDims)
-              return failure();
-          }
-        } else {
-          if (!curInsertionDims.empty()) {
-            insertions = true;
-            insertionDims = std::move(curInsertionDims);
-          } else {
-            deletions = true;
-            deletionDims = std::move(curDeletionDims);
-          }
-        }
-      }
-    }
-
-    int64_t ndimsCorrected = ndims;
-    if (insertions)
-      ndimsCorrected -= insertionDims.size();
-    if (deletions)
-      ndimsCorrected += deletionDims.size();
-
-    SmallVector<int64_t> sliceStrides(ndimsCorrected, 1);
-    int64_t startIndex = sliceOps[0].getStartIndices()[srcSliceDim];
-    int64_t limitIndex =
-        sliceOps[sliceOps.size() - 1].getLimitIndices()[srcSliceDim];
-    sliceStarts[srcSliceDim] = startIndex;
-    sliceLimits[srcSliceDim] = limitIndex;
-
-    auto newSlice =
-        stablehlo::SliceOp::create(rewriter, concatOp.getLoc(), sourceTensor,
-                                   sliceStarts, sliceLimits, sliceStrides);
-
-    SmallVector<int64_t> mapping(ndimsCorrected, 0);
-    std::iota(mapping.begin(), mapping.end(), 0);
-    mapping[srcSliceDim] = concatDim;
-    if (srcSliceDim > concatDim) {
-      for (int64_t i = concatDim; i < srcSliceDim; i++) { // shift right
-        mapping[i]++;
-      }
-    } else {
-      for (int64_t i = srcSliceDim + 1; i <= concatDim; i++) { // shift left
-        mapping[i]--;
-      }
-    }
-
-    SmallVector<int64_t> permutation(mapping.size(), 0);
-    for (int64_t i = 0; i < mapping.size(); i++) {
-      permutation[mapping[i]] = i;
-    }
-
-    auto transposeOp = stablehlo::TransposeOp::create(
-        rewriter, concatOp.getLoc(), newSlice, permutation);
-    if (!insertions && !deletions) {
-      rewriter.replaceOp(concatOp, transposeOp.getResult());
-    } else {
-      // restore the original shape due to the insertion dims
-      rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(
-          concatOp, concatOp.getResult().getType(), transposeOp);
-    }
+    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(op, newOperands, dim);
     return success();
   }
 };
