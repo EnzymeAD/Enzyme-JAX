@@ -44,6 +44,7 @@ struct TestPolymerPass
       if (!isa<func::FuncOp, enzymexla::GPUWrapperOp>(op))
         return;
       LDBG() << "Processing " << op;
+      llvm::errs() << "Processing " << op->getName() << "\n";
       std::unique_ptr<polymer::IslScop> scop = polymer::createIslFromFuncOp(op);
       if (!scop) {
         llvm::errs() << "Failed to build scop\n";
