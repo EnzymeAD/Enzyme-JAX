@@ -1127,13 +1127,13 @@ void constructNewOperandsForHoistedOp(
       break; // copied into the function body no need to include in operands
     }
     case BatchLiftingMode::AFFINE_INDEX: {
-      auto hoistedTy = RankedTensorType::get({info.getConstantNumIters()},
-                                             operandType.getElementType());
-      Value loopIndices = stablehlo::IotaOp::create(
-          rewriter, whileOp->getLoc(),
-          RankedTensorType::get({info.getConstantNumIters()},
-                                operandType.getElementType()),
-          0);
+      SmallVector<int64_t> loopIndicesShape(operandRank + 1, 1);
+      loopIndicesShape[0] = info.getConstantNumIters();
+
+      auto hoistedTy =
+          RankedTensorType::get(loopIndicesShape, operandType.getElementType());
+      Value loopIndices =
+          stablehlo::IotaOp::create(rewriter, whileOp->getLoc(), hoistedTy, 0);
 
       auto createConst = [&](int64_t val) {
         return stablehlo::ConstantOp::create(
