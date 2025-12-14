@@ -19543,6 +19543,17 @@ struct RecognizeExtend
   }
 };
 
+bool canFuseIntoSingleSlice(int dimension, ArrayRef<Value> vals) {
+  for (int i = 1; i < vals.size(); i++) {
+    auto sl0 = vals[i - 1].getDefiningOp<stablehlo::SliceOp>();
+    auto sl1 = vals[i].getDefiningOp<stablehlo::SliceOp>();
+    if (!sl0 || !sl1 || !canMergeSlicesAlongAxis(dimension, sl0, sl1)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool isAxisFusible(int dimension, ArrayRef<Value> vals) {
   assert(vals.size());
 
@@ -20085,17 +20096,40 @@ struct ConcatConcatAxisSwap final
       inners.push_back(concatOp);
     }
 
-    // Check that we don't have a current axis fuse opportunity, and wait for
-    // those fusions
     for (auto inner : inners) {
-      if (isAxisFusible(inner.getDimension(),
-                        llvm::to_vector(inner.getOperands()))) {
-        return failure();
+      if (canFuseIntoSingleSlice(inner.getDimension(),
+                                 llvm::to_vector(inner.getOperands()))) {
+        return failure(); // high-priority
       }
     }
 
-    bool anyFusible = false;
-    for (int i = 0; i < inners[0].getOperands().size(); i++) {
+    // high-priority for fusion that creates a larger contiguous slice
+    bool highPriorityFusion = false;
+    for (int i = 0; i < inners[0]->getNumOperands() && !highPriorityFusion;
+         i++) {
+      SmallVector<Value> newOperands;
+      for (int j = 0; j < outer->getNumOperands(); j++) {
+        newOperands.push_back(inners[j]->getOperand(i));
+      }
+      if (canFuseIntoSingleSlice(outer.getDimension(), newOperands)) {
+        highPriorityFusion = true;
+        break;
+      }
+    }
+
+    // Check that we don't have a current axis fuse opportunity, and wait for
+    // those fusions
+    if (!highPriorityFusion) {
+      for (auto inner : inners) {
+        if (isAxisFusible(inner.getDimension(),
+                          llvm::to_vector(inner.getOperands()))) {
+          return failure();
+        }
+      }
+    }
+
+    bool anyFusible = highPriorityFusion;
+    for (int i = 0; i < inners[0].getOperands().size() && !anyFusible; i++) {
       SmallVector<Value> newOperands;
       for (int j = 0; j < outer.getOperands().size(); j++) {
         newOperands.push_back(inners[j].getOperands()[i]);
