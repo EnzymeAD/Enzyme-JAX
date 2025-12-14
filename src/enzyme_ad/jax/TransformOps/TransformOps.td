@@ -1571,6 +1571,11 @@ def WhileDUS : EnzymeHLOPatternOp<
   let patterns = ["WhileDUS"];
 }
 
+def WhileUpdateWithoutCorners : EnzymeHLOPatternOp<
+    "while_updatewithoutcorners"> {
+  let patterns = ["WhileUpdateWithoutCorners"];
+}
+
 def DUSSliceSimplify : EnzymeHLOPatternOp<
     "dus_slice_simplify"> {
   let patterns = ["DUSSliceSimplify"];
