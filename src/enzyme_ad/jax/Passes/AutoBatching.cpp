@@ -18,6 +18,8 @@
 #include "llvm/ADT/TypeSwitch.h"
 
 #include <algorithm>
+#include <llvm/ADT/STLExtras.h>
+#include <tuple>
 
 #define DEBUG_TYPE "auto-batching"
 
@@ -917,8 +919,8 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
       seenOps.insert(user);
 
       if (auto sliceOp = dyn_cast<stablehlo::DynamicSliceOp>(user)) {
-        auto result = isDynamicSliceValidForBatching(
-            sliceOp, affineIndexInfoMap, whileBody, whileOp);
+        auto result =
+            isDynamicSliceValidForBatching(sliceOp, info, whileBody, whileOp);
 
         if (isValidForBatchingResult(result.result)) {
           candidateSlices.push_back(SliceInfo<stablehlo::DynamicSliceOp>{
@@ -956,7 +958,7 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
 
   // for certain operations on index variables it is more efficient to hoist
   // those out of the loop and then perform indirect indexing
-  for (auto &[val, slices] : affineIndexInfoMap) {
+  for (auto &[val, info] : affineIndexInfoMap) {
     for (auto user : val.getUsers()) {
       if (isa<stablehlo::CompareOp, stablehlo::BroadcastInDimOp>(user)) {
         userOpToSlicesMap[user].push_back(
@@ -965,8 +967,9 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
     }
   }
 
-  if (userOpToSlicesMap.empty())
+  if (userOpToSlicesMap.empty()) {
     return failure();
+  }
 
   bool anyOpRewritten = false;
 
@@ -998,11 +1001,10 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
 
 GreedyWhileLoopBatchFission::ValidBatchingInfo
 GreedyWhileLoopBatchFission::isDynamicSliceValidForBatching(
-    stablehlo::DynamicSliceOp sliceOp,
-    llvm::MapVector<Value, mlir::enzyme::WhileLoopInfo::AffineIndexInfo>
-        &affineIndexInfoMap,
+    stablehlo::DynamicSliceOp sliceOp, mlir::enzyme::WhileLoopInfo &loopInfo,
     Block &whileBody, stablehlo::WhileOp whileOp) const {
   auto operand = sliceOp.getOperand();
+  auto affineIndexInfoMap = loopInfo.getAffineIndexInfo();
 
   if (operand.getParentBlock() == &whileBody) {
     auto failureRetVal = ValidBatchingInfo{
@@ -1027,8 +1029,9 @@ GreedyWhileLoopBatchFission::isDynamicSliceValidForBatching(
       continue;
     }
 
-    if (definedOutside(startIndex, whileOp))
+    if (loopInfo.isConstantAcrossIterations(startIndex, true)) {
       continue;
+    }
 
     return ValidBatchingInfo{IsValidForBatchingResult::DYNAMIC_START_INDEX, {}};
   }
@@ -1139,45 +1142,6 @@ bool traverseOperandsForHoisting(
   }
 
   return true;
-}
-
-void hoistChainOfOps(DenseMap<Value, SmallVector<Operation *>> &hoistMap,
-                     PatternRewriter &rewriter, stablehlo::WhileOp whileOp,
-                     WhileLoopInfo &info,
-                     DenseMap<Value, Value> &hoistedValues) {
-  IRMapping mapper;
-  for (auto &[val, ops] : hoistMap) {
-    llvm::SetVector<Operation *> toHoist(ops.begin(), ops.end());
-    auto sorted = mlir::topologicalSort(toHoist);
-
-    for (auto &op : sorted) {
-      if (llvm::all_of(op->getResults(),
-                       [&](Value v) { return mapper.contains(v); }))
-        continue;
-
-      for (auto operand : op->getOperands()) {
-        if (mapper.contains(operand)) {
-          continue;
-        }
-
-        if (!definedOutside(operand, whileOp)) {
-          Value outerValue;
-          SmallVector<Operation *> canBeHoisted;
-          if (info.isConstantAcrossIterations(operand, outerValue, canBeHoisted,
-                                              false)) {
-            mapper.map(operand, outerValue);
-          }
-        }
-      }
-      auto hoisted = rewriter.clone(*op, mapper);
-      for (auto [origRes, newRes] :
-           llvm::zip_equal(op->getResults(), hoisted->getResults())) {
-        mapper.map(origRes, newRes);
-      }
-    }
-
-    hoistedValues[val] = mapper.lookup(val);
-  }
 }
 
 LogicalResult constructNewOperandsForHoistedOp(
@@ -1612,6 +1576,192 @@ mlir::LogicalResult WhileElementwiseReductionToReduce::matchAndRewriteImpl(
   return success(anyRewritten);
 }
 
+mlir::LogicalResult
+RemoveLoopCarriedDependenciesFromWhileLoadOperations::matchAndRewriteImpl(
+    stablehlo::WhileOp whileOp, PatternRewriter &rewriter) const {
+  auto info = WhileLoopInfo(whileOp);
+  auto computeInfoSuccess = info.computeInfo();
+  if (computeInfoSuccess.failed()) {
+    return computeInfoSuccess;
+  }
+
+  auto affineIndexInfo = info.getAffineIndexInfo();
+
+  auto &whileBody = whileOp.getBody().front();
+  auto term = whileBody.getTerminator();
+  if (!term) {
+    return failure();
+  }
+  bool anyOpRewritten = false;
+
+  enum class DusInfoCollect {
+    FOUND,
+    NOT_SEARCHED,
+    INVALID,
+  };
+
+  SmallVector<std::tuple<SmallVector<Value>, SmallVector<int64_t>>> dusInfoList(
+      term->getNumOperands());
+  SmallVector<DusInfoCollect> hasDusInfo(term->getNumOperands(),
+                                         DusInfoCollect::NOT_SEARCHED);
+
+  whileBody.walk([&](stablehlo::DynamicSliceOp dsOp) {
+    auto operand = dsOp.getOperand();
+
+    auto blockArg = dyn_cast<BlockArgument>(operand);
+    if (!blockArg || blockArg.getOwner() != &whileBody) {
+      return WalkResult::advance();
+    }
+
+    size_t argNum = blockArg.getArgNumber();
+
+    auto res = term->getOperand(argNum);
+    auto resRank = cast<RankedTensorType>(res.getType()).getRank();
+
+    bool canProceed = true;
+    SmallVector<Value> loadStartIndices;
+    SmallVector<int64_t> loadSliceSizes;
+    switch (hasDusInfo[argNum]) {
+    case DusInfoCollect::FOUND:
+      loadStartIndices = std::move(std::get<0>(dusInfoList[argNum]));
+      loadSliceSizes = std::move(std::get<1>(dusInfoList[argNum]));
+      break;
+    case DusInfoCollect::INVALID:
+      canProceed = false;
+      break;
+    case DusInfoCollect::NOT_SEARCHED:
+      loadStartIndices.resize(resRank);
+      loadSliceSizes.resize(resRank);
+      canProceed = extractDynamicUpdateSliceUpdate(res.getDefiningOp(),
+                                                   blockArg, loadStartIndices,
+                                                   loadSliceSizes, info);
+      hasDusInfo[argNum] =
+          canProceed ? DusInfoCollect::FOUND : DusInfoCollect::INVALID;
+      dusInfoList[argNum] = {loadStartIndices, loadSliceSizes};
+    }
+
+    if (!canProceed ||
+        loadStartIndices.size() != dsOp.getStartIndices().size()) {
+      return WalkResult::advance();
+    }
+
+    // we can generalize this but for now we are extremely restrictive (most
+    // usecases will generally satisfy these constraints)
+    //   1. all start indices must be the same
+    //   2. atleast one of the indices must be dependent on the induction
+    //      variable
+    //   3. all start indices dependent on the induction should have slice sizes
+    //      of 1. this can be extended to ensure that each step > step size
+    //      (currently not implemented).
+
+    bool foundDepIndex = false;
+    for (auto [dsStart, dusStart, dsSliceSize, dusSliceSize] :
+         llvm::zip_equal(dsOp.getStartIndices(), loadStartIndices,
+                         dsOp.getSliceSizes(), loadSliceSizes)) {
+      if (dsStart != dusStart || dsSliceSize != dusSliceSize) {
+        return WalkResult::advance();
+      }
+
+      if (!info.isConstantAcrossIterations(dsStart, false) &&
+          affineIndexInfo.contains(dsStart)) {
+        foundDepIndex = true;
+        if (dsSliceSize != 1) {
+          return WalkResult::advance();
+        }
+      }
+    }
+
+    if (foundDepIndex) {
+      rewriter.modifyOpInPlace(
+          dsOp, [&]() { dsOp.setOperand(0, whileOp->getOperand(argNum)); });
+    }
+
+    return WalkResult::advance();
+  });
+
+  return success(anyOpRewritten);
+}
+
+// traverse a chain of dynamic update slices and extract the broadest slice of
+// data that is being updated
+bool RemoveLoopCarriedDependenciesFromWhileLoadOperations::
+    extractDynamicUpdateSliceUpdate(Operation *op, BlockArgument blockArg,
+                                    SmallVectorImpl<Value> &startIndices,
+                                    SmallVectorImpl<int64_t> &sliceSizes,
+                                    WhileLoopInfo &info) const {
+  bool firstCheck = true;
+
+  // For dimensions that are fully updated, we don't need to repeatedly check
+  // those
+  SmallVector<bool> fullUpdate(startIndices.size(), false);
+
+  auto fullDimUpdated = [&](Value operand, Value update, Value start,
+                            int64_t dim) {
+    if (!matchPattern(start, m_Zero())) {
+      return false;
+    }
+
+    auto operandTy = cast<RankedTensorType>(operand.getType());
+    auto updateTy = cast<RankedTensorType>(operand.getType());
+    return operandTy.getDimSize(dim) == updateTy.getDimSize(dim);
+  };
+
+  while (op) {
+    auto dusOp = dyn_cast<stablehlo::DynamicUpdateSliceOp>(op);
+    if (!dusOp) {
+      return false;
+    }
+
+    auto dusOperand = dusOp.getOperand();
+    auto dusUpdate = dusOp.getUpdate();
+    RankedTensorType dusUpdateTy = dusUpdate.getType();
+    auto curStartIndices = dusOp.getStartIndices();
+
+    if (firstCheck) {
+      for (size_t i = 0; i < dusOp.getStartIndices().size(); i++) {
+        startIndices[i] = curStartIndices[i];
+        sliceSizes[i] = dusUpdateTy.getDimSize(i);
+        fullUpdate[i] =
+            fullDimUpdated(dusOperand, dusUpdate, curStartIndices[i], i);
+      }
+      firstCheck = false;
+    } else {
+      for (size_t i = 0; i < dusOp.getStartIndices().size(); i++) {
+        if (fullUpdate[i]) {
+          continue;
+        } else {
+          bool wasFullDimUpdated =
+              fullDimUpdated(dusOperand, dusUpdate, curStartIndices[i], i);
+          if (wasFullDimUpdated) {
+            fullUpdate[i] = true;
+            startIndices[i] = curStartIndices[i];
+            sliceSizes[i] = dusUpdateTy.getDimSize(i);
+            continue;
+          }
+        }
+
+        if (startIndices[i] == curStartIndices[i]) {
+          // take the maximum slice size
+          sliceSizes[i] = std::max(dusUpdateTy.getDimSize(i), sliceSizes[i]);
+        } else {
+          LLVM_DEBUG(dusOp->emitError(
+              "TODO: support the case where we need to resolve "
+              "the starts correctly"));
+          return false;
+        }
+      }
+    }
+
+    if (dusOperand == blockArg) {
+      return true;
+    }
+
+    op = dusOperand.getDefiningOp();
+  }
+
+  return false;
+}
+
 LogicalResult
 WhileIsCopySimplify::matchAndRewriteImpl(stablehlo::WhileOp whileOp,
                                          PatternRewriter &rewriter) const {
@@ -1947,6 +2097,10 @@ void populateAutoBatchingPassPatterns(RewritePatternSet &patterns,
   if (options.enableWhileIsCopySimplify) {
     patterns.add<WhileIsCopySimplify>(ctx);
   }
+
+  if (options.enableRemoveLoopCarriedDependenciesFromWhileLoadOperations) {
+    patterns.add<RemoveLoopCarriedDependenciesFromWhileLoadOperations>(ctx);
+  }
 }
 
 } // namespace enzyme
@@ -1961,9 +2115,12 @@ struct AutoBatchingPass
     RewritePatternSet patterns(context);
 
     mlir::enzyme::AutoBatchingPassPipelineOptions options{
-        slice_to_batch_passes, concat_insert_dim_passes,
-        while_loop_batching_mode, while_elementwise_reduction_to_reduce_passes,
-        while_is_copy_simplify_passes};
+        slice_to_batch_passes,
+        concat_insert_dim_passes,
+        while_loop_batching_mode,
+        while_elementwise_reduction_to_reduce_passes,
+        while_is_copy_simplify_passes,
+        while_remove_loop_carried_dependencies_from_load_operations};
     mlir::enzyme::populateAutoBatchingPassPatterns(patterns, context, options);
 
     GreedyRewriteConfig config;

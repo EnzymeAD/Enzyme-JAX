@@ -11437,6 +11437,67 @@ struct SliceReshapeSlice final
   }
 };
 
+// if the slice chain is defined inside a loop, and atleast one of the indices
+// of the slice is a loop induction variable, then it makes sense to simplify
+// the chain to enable loop optimizations (even if there are multiple users
+// of the intermediate)
+bool DSDSSimplificationSingleUserCheckException(SmallVector<Operation *> ops) {
+  if (ops.empty()) {
+    return false;
+  }
+
+  auto getParentWhileOp = [](auto op) {
+    // this is a more strict check than getParentOfType
+    auto parentOp = op->getParentOp();
+    return dyn_cast_or_null<stablehlo::WhileOp>(parentOp);
+  };
+
+  auto whileOp = getParentWhileOp(ops.front());
+  if (!whileOp) {
+    return false;
+  }
+
+  SmallVector<stablehlo::DynamicSliceOp> dynSliceOps;
+  dynSliceOps.reserve(ops.size());
+  if (auto dslice = dyn_cast<stablehlo::DynamicSliceOp>(ops.front())) {
+    dynSliceOps.push_back(dslice);
+  }
+
+  for (auto op : llvm::drop_begin(ops)) {
+    auto parent = getParentWhileOp(op);
+    if (!parent || whileOp != parent) {
+      return false;
+    }
+    if (auto dslice = dyn_cast<stablehlo::DynamicSliceOp>(op)) {
+      dynSliceOps.push_back(dslice);
+    }
+  }
+
+  if (dynSliceOps.empty()) {
+    return false;
+  }
+
+  // check that atleast one of the dynamic slices have a loop iteration argument
+  // as their start index.
+  WhileLoopInfo loopInfo(whileOp);
+  if (loopInfo.computeInfo().succeeded() && !loopInfo.isValid()) {
+    return false;
+  }
+
+  auto affineIndexInfo = loopInfo.getAffineIndexInfo();
+  bool anyIndVarDependent = false;
+  for (auto slice : dynSliceOps) {
+    for (auto start : slice.getStartIndices()) {
+      if (affineIndexInfo.contains(start)) {
+        anyIndVarDependent = true;
+        goto loopexit;
+      }
+    }
+  }
+loopexit:
+  return anyIndVarDependent;
+}
+
 struct DynamicSliceReshapeDynamicSlice final
     : CheckedOpRewritePattern<stablehlo::DynamicSliceOp,
                               DynamicSliceReshapeDynamicSlice> {
@@ -11448,11 +11509,12 @@ struct DynamicSliceReshapeDynamicSlice final
     if (!reshape)
       return failure();
 
-    if (!llvm::hasSingleElement(reshape->getUsers()))
-      return failure();
-
     auto prev = reshape.getOperand().getDefiningOp<stablehlo::DynamicSliceOp>();
     if (!prev)
+      return failure();
+
+    if (!llvm::hasSingleElement(reshape->getUsers()) &&
+        !DSDSSimplificationSingleUserCheckException({reshape, op, prev}))
       return failure();
 
     SmallVector<Value> startIndices;
@@ -27885,7 +27947,7 @@ struct EnzymeHLOOptPass
 
     if (enable_auto_batching_passes) {
       mlir::enzyme::AutoBatchingPassPipelineOptions options{
-          true, true, "greedy", true, true};
+          true, true, "greedy", true, true, true};
       mlir::enzyme::populateAutoBatchingPassPatterns(patterns, context,
                                                      options);
     }

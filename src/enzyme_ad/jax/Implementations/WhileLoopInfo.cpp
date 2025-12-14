@@ -1,3 +1,4 @@
+#include <cassert>
 #ifdef __clang__
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wmissing-braces"
@@ -12,6 +13,7 @@
 #pragma GCC diagnostic pop
 #endif
 
+#include "mlir/Analysis/TopologicalSortUtils.h"
 #include "mlir/IR/Matchers.h"
 
 #include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
@@ -429,11 +431,60 @@ bool WhileLoopInfo::isConstantAcrossIterations(
   return false;
 }
 
+namespace mlir {
+namespace enzyme {
+
+template <typename OpTy>
+void hoistStartIndicesOutsideLoop(OpTy op, OpBuilder &builder,
+                                  SmallVectorImpl<Value> &newStartIndices,
+                                  SmallVectorImpl<int64_t> &dimensions,
+                                  WhileLoopInfo &whileLoopInfo) {
+  newStartIndices.resize(op.getStartIndices().size());
+
+  DenseMap<Value, SmallVector<Operation *>> hoistMap;
+  SmallVector<int64_t> needToHoist;
+  for (size_t i = 0; i < op.getStartIndices().size(); i++) {
+    auto startIndex = op.getStartIndices()[i];
+
+    if (llvm::is_contained(dimensions, i)) {
+      newStartIndices[i] = startIndex;
+      continue;
+    }
+
+    SmallVector<Operation *> canBeHoisted;
+    Value outerValue;
+    auto isConst = whileLoopInfo.isConstantAcrossIterations(
+        startIndex, outerValue, canBeHoisted, true);
+    assert(isConst);
+    (void)isConst;
+    if (outerValue) {
+      newStartIndices[i] = outerValue;
+      continue;
+    }
+
+    needToHoist.push_back(i);
+    hoistMap[startIndex] = canBeHoisted;
+  }
+
+  if (!hoistMap.empty()) {
+    DenseMap<Value, Value> hoistedValues;
+    hoistChainOfOps(hoistMap, builder, whileLoopInfo.getOp(), whileLoopInfo,
+                    hoistedValues);
+    for (auto i : needToHoist) {
+      auto startIndex = op.getStartIndices()[i];
+      newStartIndices[i] = hoistedValues[startIndex];
+    }
+  }
+}
+
 template <typename OpTy>
 void constructScatterGatherIndices(OpTy op, Value &result, OpBuilder &builder,
                                    SmallVectorImpl<int64_t> &dimensions,
                                    WhileLoopInfo &whileLoopInfo) {
-  auto startIndices = op.getStartIndices();
+  SmallVector<Value> startIndices;
+  mlir::enzyme::hoistStartIndicesOutsideLoop(op, builder, startIndices,
+                                             dimensions, whileLoopInfo);
+
   auto indexTy = startIndices[0].getType();
   auto indexElemTy = cast<ShapedType>(indexTy).getElementType();
   Location loc = op.getLoc();
@@ -541,8 +592,9 @@ bool WhileLoopInfo::hoistOperationFromLoop(
   auto actualMax = std::max(rawMin, rawMax);
   auto actualSize = actualMax - actualMin + 1;
 
-  SmallVector<Value> dSliceStarts(sliceOp.getStartIndices().begin(),
-                                  sliceOp.getStartIndices().end());
+  SmallVector<Value> dSliceStarts;
+  mlir::enzyme::hoistStartIndicesOutsideLoop(sliceOp, builder, dSliceStarts,
+                                             dimensions, *this);
   SmallVector<int64_t> dSliceSizes(sliceOp.getSliceSizes().begin(),
                                    sliceOp.getSliceSizes().end());
 
@@ -663,15 +715,17 @@ bool WhileLoopInfo::hoistOperationFromLoop(
   if (!canHoistOperationFromLoop(dusOp, dimensions) || !isStepOne())
     return false;
 
-  SmallVector<Value> dusStartIndices(dusOp.getStartIndices().begin(),
-                                     dusOp.getStartIndices().end());
+  SmallVector<Value> dusStartIndices;
+  mlir::enzyme::hoistStartIndicesOutsideLoop(dusOp, builder, dusStartIndices,
+                                             dimensions, *this);
 
   auto depIndex = dusOp.getStartIndices()[dusIndex];
   auto indexTy = depIndex.getType();
   auto indexInfo = affineIndexInfo[depIndex];
 
-  if (!indexInfo.scale.isOne())
+  if (!indexInfo.scale.isOne()) {
     return false;
+  }
 
   // move the update dim = 0 to dusIndex
   SmallVector<int64_t> perm(dusOp.getStartIndices().size() - 1);
@@ -986,3 +1040,55 @@ WhileLoopInfo::computeBounds(Operation *op) {
 
   return std::nullopt;
 }
+
+void hoistChainOfOps(DenseMap<Value, SmallVector<Operation *>> &hoistMap,
+                     OpBuilder &builder, stablehlo::WhileOp whileOp,
+                     WhileLoopInfo &info,
+                     DenseMap<Value, Value> &hoistedValues) {
+  IRMapping mapper;
+  for (auto &[val, ops] : hoistMap) {
+    llvm::SetVector<Operation *> toHoist(ops.begin(), ops.end());
+    auto sorted = topologicalSort(toHoist);
+
+    for (auto &op : sorted) {
+      if (llvm::all_of(op->getResults(),
+                       [&](Value v) { return mapper.contains(v); }))
+        continue;
+
+      for (auto operand : op->getOperands()) {
+        if (mapper.contains(operand)) {
+          continue;
+        }
+
+        if (!definedOutside(operand, whileOp)) {
+          Value outerValue;
+          SmallVector<Operation *> canBeHoisted;
+          if (info.isConstantAcrossIterations(operand, outerValue, canBeHoisted,
+                                              false)) {
+            mapper.map(operand, outerValue);
+          }
+        }
+      }
+      auto hoisted = builder.clone(*op, mapper);
+      for (auto [origRes, newRes] :
+           llvm::zip_equal(op->getResults(), hoisted->getResults())) {
+        mapper.map(origRes, newRes);
+      }
+    }
+
+    hoistedValues[val] = mapper.lookup(val);
+  }
+}
+
+template void hoistStartIndicesOutsideLoop<stablehlo::DynamicSliceOp>(
+    stablehlo::DynamicSliceOp op, OpBuilder &builder,
+    SmallVectorImpl<Value> &newStartIndices,
+    SmallVectorImpl<int64_t> &dimensions, WhileLoopInfo &whileLoopInfo);
+
+template void hoistStartIndicesOutsideLoop<stablehlo::DynamicUpdateSliceOp>(
+    stablehlo::DynamicUpdateSliceOp op, OpBuilder &builder,
+    SmallVectorImpl<Value> &newStartIndices,
+    SmallVectorImpl<int64_t> &dimensions, WhileLoopInfo &whileLoopInfo);
+
+} // namespace enzyme
+} // namespace mlir
