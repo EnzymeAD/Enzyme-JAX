@@ -13,6 +13,7 @@ include "mlir/Pass/PassBase.td"
 
 def TestPolymerPass : Pass<"test-polymer"> {
   let dependentDialects = [
+    "enzymexla::EnzymeXLADialect",
   ];
 }
 
