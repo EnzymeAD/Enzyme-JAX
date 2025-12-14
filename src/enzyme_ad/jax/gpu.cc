@@ -1,5 +1,6 @@
 #include "xla/ffi/api/ffi.h"
 #include "xla/ffi/ffi_api.h"
+#include "xla/stream_executor/stream.h"
 
 #if (defined(_WIN32) || defined(__CYGWIN__)) &&                                \
     !defined(MLIR_CAPI_ENABLE_WINDOWS_DLL_DECLSPEC)
@@ -37,8 +38,6 @@ struct CuFuncWrapper {
   void *func;
 };
 
-void noop(void *){};
-
 template <bool withError>
 XLA_FFI_Error *initialize(XLA_FFI_CallFrame *call_frame) {
   assert(call_frame->attrs.size == 1);
@@ -56,11 +55,10 @@ XLA_FFI_Error *initialize(XLA_FFI_CallFrame *call_frame) {
 
   auto internal_api = call_frame->api->internal_api;
   auto ctx = call_frame->ctx;
-  void *stream =
-      ((stream_executor::Stream *)internal_api->XLA_FFI_INTERNAL_Stream_Get(
-           ctx))
-          ->platform_specific_handle()
-          .stream;
+
+  stream_executor::Stream *streamp;
+  internal_api->XLA_FFI_INTERNAL_Stream_Get(ctx, (void **)&streamp);
+  void *stream = streamp->platform_specific_handle().stream;
 
   (void)stream;
   /*
@@ -82,8 +80,8 @@ XLA_FFI_Error *initialize(XLA_FFI_CallFrame *call_frame) {
 
   auto *execution_state = reinterpret_cast<xla::ffi::ExecutionState *>(
       internal_api->XLA_FFI_INTERNAL_ExecutionState_Get(ctx));
-  (void)execution_state->Set(
-      xla::ffi::TypeIdRegistry::GetTypeId<CuFuncWrapper>(), cufunc, noop);
+  (void)execution_state->Set(xla::ffi::TypeRegistry::GetTypeId<CuFuncWrapper>(),
+                             cufunc);
 
   return nullptr;
 }
@@ -117,11 +115,9 @@ XLA_FFI_Error *execute(XLA_FFI_CallFrame *call_frame) {
 
   auto internal_api = call_frame->api->internal_api;
   auto ctx = call_frame->ctx;
-  void *stream =
-      ((stream_executor::Stream *)internal_api->XLA_FFI_INTERNAL_Stream_Get(
-           ctx))
-          ->platform_specific_handle()
-          .stream;
+  stream_executor::Stream *streamp;
+  internal_api->XLA_FFI_INTERNAL_Stream_Get(ctx, (void **)&streamp);
+  void *stream = streamp->platform_specific_handle().stream;
 
   size_t numargs = call_frame->args.size;
   void *ptrs[numargs];

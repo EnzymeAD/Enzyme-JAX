@@ -132,6 +132,8 @@ public:
       return (val == o.val) ? Match::Exact : Match::Maybe;
     case Type::Index:
       return (idx == o.idx) ? Match::Exact : Match::None;
+    default:
+      llvm_unreachable("Unknown offset type");
     }
   }
   bool operator<(const Offset o) const {
@@ -158,6 +160,8 @@ public:
         return val.getAsOpaquePointer() < o.val.getAsOpaquePointer();
       case Offset::Type::Index:
         return idx < o.idx;
+      default:
+        llvm_unreachable("unknown offset type");
       }
     }
   }
@@ -171,6 +175,8 @@ llvm::raw_ostream &operator<<(llvm::raw_ostream &o, const Offset off) {
     return o << off.val;
   case Offset::Type::Index:
     return o << off.idx;
+  default:
+    llvm_unreachable("Unknown offset type");
   }
 }
 
@@ -521,7 +527,7 @@ public:
     SmallVector<mlir::Type, 4> tys(exOp.getResultTypes().begin(),
                                    exOp.getResultTypes().end());
     tys.push_back(metaMap.elType);
-    auto nextEx = B.create<mlir::scf::ExecuteRegionOp>(exOp.getLoc(), tys);
+    auto nextEx = mlir::scf::ExecuteRegionOp::create(B, exOp.getLoc(), tys);
 
     nextEx.getRegion().takeBody(exOp.getRegion());
     for (auto pair : llvm::zip(yields, values)) {
@@ -647,7 +653,7 @@ public:
       B.setInsertionPoint(&getElseRegion(nextIf).back(),
                           getElseRegion(nextIf).back().begin());
       SmallVector<mlir::Value, 4> elseVals = {elseVal};
-      B.create<YieldType>(ifOp.getLoc(), elseVals);
+      YieldType::create(B, ifOp.getLoc(), elseVals);
     }
 
     SmallVector<mlir::Value, 3> resvals = nextIf.getResults();
@@ -1016,7 +1022,7 @@ void removeRedundantBlockArgs(
                                   op.getOperands().end());
           args.erase(args.begin() + blockArg.getArgNumber());
           assert(args.size() == op.getOperands().size() - 1);
-          subbuilder.create<cf::BranchOp>(op.getLoc(), op.getDest(), args);
+          cf::BranchOp::create(subbuilder, op.getLoc(), op.getDest(), args);
           op.erase();
         } else if (auto op =
                        dyn_cast<cf::CondBranchOp>(pred->getTerminator())) {
@@ -1034,9 +1040,9 @@ void removeRedundantBlockArgs(
           }
           assert(trueargs.size() < op.getTrueOperands().size() ||
                  falseargs.size() < op.getFalseOperands().size());
-          subbuilder.create<cf::CondBranchOp>(op.getLoc(), op.getCondition(),
-                                              op.getTrueDest(), trueargs,
-                                              op.getFalseDest(), falseargs);
+          cf::CondBranchOp::create(subbuilder, op.getLoc(), op.getCondition(),
+                                   op.getTrueDest(), trueargs,
+                                   op.getFalseDest(), falseargs);
           op.erase();
         } else if (auto op = dyn_cast<cf::SwitchOp>(pred->getTerminator())) {
           mlir::OpBuilder builder(op.getOperation());
@@ -1057,9 +1063,10 @@ void removeRedundantBlockArgs(
           for (auto &c : cases) {
             vrange.push_back(c);
           }
-          builder.create<cf::SwitchOp>(
-              op.getLoc(), op.getFlag(), op.getDefaultDestination(), defaultOps,
-              op.getCaseValuesAttr(), op.getCaseDestinations(), vrange);
+          cf::SwitchOp::create(builder, op.getLoc(), op.getFlag(),
+                               op.getDefaultDestination(), defaultOps,
+                               op.getCaseValuesAttr(), op.getCaseDestinations(),
+                               vrange);
           op.erase();
         }
       }
@@ -1076,10 +1083,18 @@ Value castToType(Type elType, Value val, Operation *op) {
   OpBuilder b(op);
   b.setInsertionPoint(op);
   if (isa<IntegerType>(val.getType()) && isa<LLVM::LLVMPointerType>(elType)) {
-    return b.create<LLVM::IntToPtrOp>(val.getLoc(), elType, val);
+    return LLVM::IntToPtrOp::create(b, val.getLoc(), elType, val);
   } else if (isa<LLVM::LLVMPointerType>(val.getType()) &&
              isa<IntegerType>(elType)) {
-    return b.create<LLVM::PtrToIntOp>(val.getLoc(), elType, val);
+    return LLVM::PtrToIntOp::create(b, val.getLoc(), elType, val);
+  } else if (auto ST = dyn_cast<LLVM::LLVMStructType>(elType)) {
+    if (ST.getBody().size() == 1) {
+      auto ud = LLVM::UndefOp::create(b, val.getLoc(), elType);
+      auto c0 = castToType(ST.getBody()[0], val, op);
+      b.setInsertionPoint(op);
+      return LLVM::InsertValueOp::create(b, val.getLoc(), ud, c0,
+                                         b.getDenseI64ArrayAttr({0}));
+    }
   }
   llvm::errs() << " mismatched load type, needed: " << elType << " found "
                << val << "\n";
@@ -1574,6 +1589,7 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
   for (auto &pair : replaceableValues) {
     SmallPtrSet<Block *, 1> requirements;
     bool _tmp = pair.second->definedWithArg(requirements);
+    (void)_tmp;
     assert(_tmp);
     PotentiallyHelpfulArgs.insert(requirements.begin(), requirements.end());
   }
@@ -1655,6 +1671,7 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
   for (auto pair : replaceableValues) {
     SmallPtrSet<Block *, 1> requirements;
     bool _tmp = pair.second->definedWithArg(requirements);
+    (void)_tmp;
     assert(_tmp);
     bool illegal = false;
     for (auto *r : requirements) {
@@ -1695,7 +1712,7 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
 
   for (auto *block : Legal) {
     auto startFound = valueAtStartOfBlock.find(block);
-
+    (void)startFound;
     assert(startFound != valueAtStartOfBlock.end());
     assert(startFound->second->valueAtStart == block);
     auto arg = block->addArgument(subType, loc);
@@ -1731,6 +1748,7 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
     Value maybeblockArg =
         valueAtStartOfBlock.find(block)->second->materialize(false);
     auto blockArg = dyn_cast<BlockArgument>(maybeblockArg);
+    (void)blockArg;
     assert(blockArg && blockArg.getOwner() == block);
 
     SetVector<Block *> prepred(block->getPredecessors().begin(),
@@ -1759,7 +1777,7 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
         std::vector<Value> args(op.getOperands().begin(),
                                 op.getOperands().end());
         args.push_back(pval);
-        subbuilder.create<cf::BranchOp>(op.getLoc(), op.getDest(), args);
+        cf::BranchOp::create(subbuilder, op.getLoc(), op.getDest(), args);
         op.erase();
       } else if (auto op = dyn_cast<cf::CondBranchOp>(pred->getTerminator())) {
 
@@ -1774,9 +1792,9 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
         if (op.getFalseDest() == block) {
           falseargs.push_back(pval);
         }
-        subbuilder.create<cf::CondBranchOp>(op.getLoc(), op.getCondition(),
-                                            op.getTrueDest(), trueargs,
-                                            op.getFalseDest(), falseargs);
+        cf::CondBranchOp::create(subbuilder, op.getLoc(), op.getCondition(),
+                                 op.getTrueDest(), trueargs, op.getFalseDest(),
+                                 falseargs);
         op.erase();
       } else if (auto op = dyn_cast<cf::SwitchOp>(pred->getTerminator())) {
         mlir::OpBuilder builder(op.getOperation());
@@ -1798,9 +1816,10 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
         for (auto &c : cases) {
           vrange.push_back(c);
         }
-        builder.create<cf::SwitchOp>(
-            op.getLoc(), op.getFlag(), op.getDefaultDestination(), defaultOps,
-            op.getCaseValuesAttr(), op.getCaseDestinations(), vrange);
+        cf::SwitchOp::create(builder, op.getLoc(), op.getFlag(),
+                             op.getDefaultDestination(), defaultOps,
+                             op.getCaseValuesAttr(), op.getCaseDestinations(),
+                             vrange);
         op.erase();
       } else {
         llvm_unreachable("unknown pred branch");

@@ -55,7 +55,7 @@ struct ParallelSerialization : public OpRewritePattern<scf::ParallelOp> {
          llvm::zip(parallelOp.getInductionVars(), parallelOp.getLowerBound(),
                    parallelOp.getUpperBound(), parallelOp.getStep())) {
       scf::ForOp forOp =
-          rewriter.create<scf::ForOp>(loc, lower, upper, step, iterArgs);
+          scf::ForOp::create(rewriter, loc, lower, upper, step, iterArgs);
       ivs.push_back(forOp.getInductionVar());
       auto iterRange = forOp.getRegionIterArgs();
       iterArgs.assign(iterRange.begin(), iterRange.end());
@@ -69,7 +69,7 @@ struct ParallelSerialization : public OpRewritePattern<scf::ParallelOp> {
         // A loop is constructed with an empty "yield" terminator if there are
         // no results.
         rewriter.setInsertionPointToEnd(rewriter.getInsertionBlock());
-        rewriter.create<scf::YieldOp>(loc, forOp.getResults());
+        scf::YieldOp::create(rewriter, loc, forOp.getResults());
       }
 
       rewriter.setInsertionPointToStart(forOp.getBody());
@@ -101,7 +101,7 @@ struct ParallelSerialization : public OpRewritePattern<scf::ParallelOp> {
     // has been already created in loop construction).
     if (!yieldOperands.empty()) {
       rewriter.setInsertionPointToEnd(rewriter.getInsertionBlock());
-      rewriter.create<scf::YieldOp>(loc, yieldOperands);
+      scf::YieldOp::create(rewriter, loc, yieldOperands);
     }
 
     rewriter.replaceOp(parallelOp, loopResults);

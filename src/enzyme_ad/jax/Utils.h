@@ -7,6 +7,8 @@
 #include "mlir/IR/Types.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -14,7 +16,22 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/IntegerSet.h"
 
+#include "shardy/dialect/sdy/ir/utils.h"
+
+#include "src/enzyme_ad/jax/Dialect/Ops.h"
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wmissing-braces"
+#else
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-braces"
+#endif
 #include "stablehlo/dialect/StablehloOps.h"
+#ifdef __clang__
+#pragma clang diagnostic pop
+#else
+#pragma GCC diagnostic pop
+#endif
 
 #include <deque>
 
@@ -141,9 +158,8 @@ static inline mlir::scf::IfOp cloneWithResults(mlir::scf::IfOp op,
                                                mlir::OpBuilder &rewriter,
                                                mlir::IRMapping mapping = {}) {
   using namespace mlir;
-  return rewriter.create<scf::IfOp>(op.getLoc(), op.getResultTypes(),
-                                    mapping.lookupOrDefault(op.getCondition()),
-                                    true);
+  return scf::IfOp::create(rewriter, op.getLoc(), op.getResultTypes(),
+                           mapping.lookupOrDefault(op.getCondition()), true);
 }
 static inline mlir::affine::AffineIfOp
 cloneWithResults(mlir::affine::AffineIfOp op, mlir::OpBuilder &rewriter,
@@ -152,8 +168,8 @@ cloneWithResults(mlir::affine::AffineIfOp op, mlir::OpBuilder &rewriter,
   SmallVector<mlir::Value> lower;
   for (auto o : op.getOperands())
     lower.push_back(mapping.lookupOrDefault(o));
-  return rewriter.create<affine::AffineIfOp>(op.getLoc(), op.getResultTypes(),
-                                             op.getIntegerSet(), lower, true);
+  return affine::AffineIfOp::create(rewriter, op.getLoc(), op.getResultTypes(),
+                                    op.getIntegerSet(), lower, true);
 }
 
 static inline mlir::scf::IfOp cloneWithoutResults(mlir::scf::IfOp op,
@@ -161,8 +177,8 @@ static inline mlir::scf::IfOp cloneWithoutResults(mlir::scf::IfOp op,
                                                   mlir::IRMapping mapping = {},
                                                   mlir::TypeRange types = {}) {
   using namespace mlir;
-  return rewriter.create<scf::IfOp>(
-      op.getLoc(), types, mapping.lookupOrDefault(op.getCondition()), true);
+  return scf::IfOp::create(rewriter, op.getLoc(), types,
+                           mapping.lookupOrDefault(op.getCondition()), true);
 }
 static inline mlir::affine::AffineIfOp
 cloneWithoutResults(mlir::affine::AffineIfOp op, mlir::OpBuilder &rewriter,
@@ -171,18 +187,18 @@ cloneWithoutResults(mlir::affine::AffineIfOp op, mlir::OpBuilder &rewriter,
   SmallVector<mlir::Value> lower;
   for (auto o : op.getOperands())
     lower.push_back(mapping.lookupOrDefault(o));
-  return rewriter.create<affine::AffineIfOp>(op.getLoc(), types,
-                                             op.getIntegerSet(), lower, true);
+  return affine::AffineIfOp::create(rewriter, op.getLoc(), types,
+                                    op.getIntegerSet(), lower, true);
 }
 
 static inline mlir::scf::ForOp
 cloneWithoutResults(mlir::scf::ForOp op, mlir::PatternRewriter &rewriter,
                     mlir::IRMapping mapping = {}) {
   using namespace mlir;
-  return rewriter.create<scf::ForOp>(
-      op.getLoc(), mapping.lookupOrDefault(op.getLowerBound()),
-      mapping.lookupOrDefault(op.getUpperBound()),
-      mapping.lookupOrDefault(op.getStep()));
+  return scf::ForOp::create(rewriter, op.getLoc(),
+                            mapping.lookupOrDefault(op.getLowerBound()),
+                            mapping.lookupOrDefault(op.getUpperBound()),
+                            mapping.lookupOrDefault(op.getStep()));
 }
 static inline mlir::affine::AffineForOp
 cloneWithoutResults(mlir::affine::AffineForOp op,
@@ -195,9 +211,9 @@ cloneWithoutResults(mlir::affine::AffineForOp op,
   SmallVector<Value> upper;
   for (auto o : op.getUpperBoundOperands())
     upper.push_back(mapping.lookupOrDefault(o));
-  auto newFor = rewriter.create<affine::AffineForOp>(
-      op.getLoc(), lower, op.getLowerBoundMap(), upper, op.getUpperBoundMap(),
-      op.getStepAsInt());
+  auto newFor = affine::AffineForOp::create(
+      rewriter, op.getLoc(), lower, op.getLowerBoundMap(), upper,
+      op.getUpperBoundMap(), op.getStepAsInt());
   for (auto attr : op->getDiscardableAttrs())
     newFor->setAttr(attr.getName(), attr.getValue());
   return newFor;
@@ -305,83 +321,236 @@ bool mayAlias(mlir::MemoryEffects::EffectInstance a,
 
 bool mayAlias(mlir::MemoryEffects::EffectInstance a, mlir::Value b);
 
+template <typename AttrTy, typename T>
+SmallVector<Attribute> getUpdatedAttrList(Value val, StringRef attrName,
+                                          T unknownValue, T newValue) {
+  auto ctx = val.getContext();
+
+  if (auto blockArg = dyn_cast<BlockArgument>(val)) {
+    return {AttrTy::get(ctx, newValue)};
+  }
+
+  auto op = val.getDefiningOp();
+  assert(op);
+
+  auto resultNumber = cast<OpResult>(val).getResultNumber();
+
+  auto arrayAttr = op->template getAttrOfType<ArrayAttr>(attrName);
+
+  SmallVector<Attribute> newAttrs;
+
+  // if arrayAttr size doesn't match invalidate the results. can happen
+  // for ops like while where the inputs/results were modified
+  if (!arrayAttr || arrayAttr.size() != op->getNumResults()) {
+    auto unknownAttr = AttrTy::get(ctx, unknownValue);
+
+    for (auto i = 0; i < op->getNumResults(); i++) {
+      newAttrs.push_back(unknownAttr);
+    }
+  } else {
+    Attribute attr = arrayAttr[resultNumber];
+    auto enumAttr = dyn_cast<AttrTy>(attr);
+    (void)enumAttr;
+    assert(enumAttr && "Expected guaranteed analysis result");
+
+    newAttrs = SmallVector<Attribute>(arrayAttr.begin(), arrayAttr.end());
+    assert(newAttrs.size() == op->getNumResults());
+  }
+
+  newAttrs[resultNumber] = AttrTy::get(ctx, newValue);
+  return newAttrs;
+}
+
+template <typename AttrTy, typename T>
+T getAttributeFromIR(Value val, StringRef attrName, T unknownValue) {
+  if (auto blockArg = dyn_cast<BlockArgument>(val)) {
+    auto parentOp = blockArg.getOwner()->getParentOp();
+    if (!parentOp) {
+      return unknownValue;
+    }
+
+    auto funcOpInterface = dyn_cast<mlir::FunctionOpInterface>(parentOp);
+    if (!funcOpInterface) {
+      return unknownValue;
+    }
+
+    auto argAttrs = funcOpInterface.getArgAttrs(blockArg.getArgNumber());
+    for (auto attr : argAttrs) {
+      if (attr.getName() == attrName) {
+        auto enumAttr = dyn_cast<AttrTy>(attr.getValue());
+        assert(enumAttr && "Expected guaranteed analysis result");
+        return enumAttr.getValue();
+      }
+    }
+
+    return unknownValue;
+  }
+
+  auto op = val.getDefiningOp();
+  assert(op);
+
+  auto arrayAttr = op->template getAttrOfType<ArrayAttr>(attrName);
+  if (!arrayAttr || arrayAttr.size() != op->getNumResults()) {
+    return unknownValue;
+  }
+
+  auto opResult = dyn_cast<OpResult>(val);
+  if (!opResult) {
+    return unknownValue;
+  }
+
+  auto attr = arrayAttr[opResult.getResultNumber()];
+  auto enumAttr = dyn_cast<AttrTy>(attr);
+  assert(enumAttr && "Expected guaranteed analysis result");
+  return enumAttr.getValue();
+}
+
+/// Get bounds attribute from IR. Bounds are stored as ArrayAttr with two
+/// IntegerAttr elements [min, max] under the attribute name "enzymexla.bounds".
+/// Returns nullopt if the attribute is not found or malformed.
+inline std::optional<std::pair<APInt, APInt>>
+getBoundsFromIR(Value val, unsigned bitWidth) {
+  if (auto blockArg = dyn_cast<BlockArgument>(val)) {
+    auto parentOp = blockArg.getOwner()->getParentOp();
+    if (!parentOp)
+      return std::nullopt;
+
+    auto funcOpInterface = dyn_cast<mlir::FunctionOpInterface>(parentOp);
+    if (!funcOpInterface)
+      return std::nullopt;
+
+    auto argAttrs = funcOpInterface.getArgAttrs(blockArg.getArgNumber());
+    for (auto attr : argAttrs) {
+      if (attr.getName() == "enzymexla.bounds") {
+        auto boundsAttr = dyn_cast<ArrayAttr>(attr.getValue());
+        if (!boundsAttr || boundsAttr.size() != 2)
+          return std::nullopt;
+
+        auto minAttr = dyn_cast<IntegerAttr>(boundsAttr[0]);
+        auto maxAttr = dyn_cast<IntegerAttr>(boundsAttr[1]);
+        if (!minAttr || !maxAttr)
+          return std::nullopt;
+
+        auto minVal = minAttr.getValue().sextOrTrunc(bitWidth);
+        auto maxVal = maxAttr.getValue().sextOrTrunc(bitWidth);
+        return std::make_pair(minVal, maxVal);
+      }
+    }
+
+    return std::nullopt;
+  }
+
+  auto op = val.getDefiningOp();
+  if (!op)
+    return std::nullopt;
+
+  auto boundsAttr = op->getAttrOfType<ArrayAttr>("enzymexla.bounds");
+  if (!boundsAttr || boundsAttr.size() != op->getNumResults())
+    return std::nullopt;
+
+  auto opResult = dyn_cast<OpResult>(val);
+  if (!opResult)
+    return std::nullopt;
+
+  auto resultBounds =
+      dyn_cast<ArrayAttr>(boundsAttr[opResult.getResultNumber()]);
+  if (!resultBounds || resultBounds.size() != 2)
+    return std::nullopt;
+
+  auto minAttr = dyn_cast<IntegerAttr>(resultBounds[0]);
+  auto maxAttr = dyn_cast<IntegerAttr>(resultBounds[1]);
+  if (!minAttr || !maxAttr)
+    return std::nullopt;
+
+  auto minVal = minAttr.getValue().sextOrTrunc(bitWidth);
+  auto maxVal = maxAttr.getValue().sextOrTrunc(bitWidth);
+  return std::make_pair(minVal, maxVal);
+}
+
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type Ty);
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type Ty,
-                          mlir::Operation *op);
+                          mlir::Operation *op, PatternRewriter &rewriter);
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy, Type inTy);
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy, Type inTy,
-                          mlir::Operation *op);
+                          mlir::Operation *op, PatternRewriter &rewriter);
+
+bool canApplySymmetricPattern(mlir::Operation *op, PatternRewriter &rewriter);
+bool canApplySymmetricPattern(mlir::Value val, PatternRewriter &rewriter);
 
 template <typename Child> class GuaranteedResultAnalysisBase {
 protected:
   llvm::DenseMap<mlir::Value, bool> valueCache;
-  llvm::DenseMap<mlir::Operation *, bool> opCache;
 
 public:
-  bool guaranteed(mlir::Value value) {
-    auto it = valueCache.find(value);
-    if (it != valueCache.end())
-      return it->second;
-
-    bool result = guaranteed(value.getDefiningOp());
-    valueCache[value] = result;
-    return result;
-  }
-
   enum class State {
     // We know this is _not_ guaranteed.
     NOTGUARANTEED = 0,
     // We know this is guaranteed.
     GUARANTEED = 1,
     // This is guarnateed, pending the results of the new Operations.
-    PENDING = 2
+    PENDING = 2,
+    // Might be returned when parsing the IR for preexisiting guarantees
+    UNKNOWN = 3
   };
 
-  bool guaranteed(Operation *op) {
-    if (!op)
-      return false;
+  bool guaranteed(mlir::Value value, PatternRewriter &rewriter) {
+    auto it = valueCache.find(value);
+    if (it != valueCache.end())
+      return it->second;
 
-    // Map of operations we need to still check. If all of these are no-nan
-    // we therefore know that the operation `op` is no nan.
-    std::deque<Operation *> todo = {op};
+    State stateFromIR = lookupGuaranteedFromIR(value, rewriter);
+    if (stateFromIR != State::UNKNOWN) {
+      return stateFromIR == State::GUARANTEED;
+    }
 
-    // Map of operations we have seen before. The target of the map[o] is a list
-    // of sub-queries, that if all true prove that `o` is no-nan.
-    DenseMap<Operation *, SmallPtrSet<Operation *, 2>> seen;
+    // Map of values we need to still check. If all of these are guaranteed
+    // we therefore know that the operation `op` is guaranteed
+    std::deque<mlir::Value> todo = {value};
 
-    // Inverse of seen. A map of operations `p` we still need to prove, to a
+    // Map of values we have seen before. The target of the map[o] is a list
+    // of sub-queries, that if all true prove that `o` is guaranteed.
+    llvm::MapVector<mlir::Value, llvm::SmallPtrSet<mlir::Value, 2>> seen;
+
+    // Inverse of seen. A map of values `p` we still need to prove, to a
     // list of values that require `p` to be proven.
-    DenseMap<Operation *, SmallVector<Operation *, 2>> reverseSeen;
+    DenseMap<mlir::Value, SmallVector<mlir::Value, 2>> reverseSeen;
 
     while (!todo.empty()) {
       auto cur = todo.front();
       todo.pop_front();
 
-      SmallVector<Operation *, 2> localtodo;
+      if (seen.find(cur) != seen.end())
+        continue;
+
+      SmallVector<mlir::Value> localtodo;
       State status;
 
       {
-        auto found = opCache.find(cur);
-        if (found != opCache.end()) {
+        auto found = valueCache.find(cur);
+        if (found != valueCache.end()) {
           if (found->second) {
             status = State::GUARANTEED;
           } else {
             status = State::NOTGUARANTEED;
           }
         } else {
-          status = ((Child *)this)->localGuaranteed(cur, localtodo);
+          status = localGuaranteedWithSetAttr(cur, localtodo, rewriter);
         }
       }
 
       switch (status) {
+      case State::UNKNOWN:
+        llvm_unreachable("Unknown state not handled");
       case State::NOTGUARANTEED: {
-        SmallVector<Operation *, 2> rtodo{cur};
+        SmallVector<Value, 2> rtodo{cur};
         while (!rtodo.empty()) {
           auto rcur = rtodo.pop_back_val();
-          if (opCache.find(rcur) != opCache.end()) {
+          if (valueCache.find(rcur) != valueCache.end()) {
             continue;
           }
-          opCache[rcur] = false;
+          valueCache[rcur] = false;
+          setGuaranteedInIR(rcur, false, rewriter);
+
           auto rfound = reverseSeen.find(rcur);
           if (rfound != reverseSeen.end()) {
             for (auto next : rfound->second) {
@@ -390,17 +559,19 @@ public:
             reverseSeen.erase(rfound);
           }
         }
+
+        setGuaranteedInIR(cur, false, rewriter);
         return false;
       }
 
       case State::GUARANTEED: {
         // Operations which are now guaranteed
-        SmallVector<Operation *, 2> rtodo = {cur};
+        SmallVector<Value, 2> rtodo = {cur};
 
         while (!rtodo.empty()) {
 
           auto rcur = rtodo.pop_back_val();
-          if (opCache.find(rcur) != opCache.end()) {
+          if (valueCache.find(rcur) != valueCache.end()) {
             continue;
           }
 
@@ -411,11 +582,11 @@ public:
             }
           }
 
-          // This is now an operation we have not previously marked as
+          // This is now an value we have not previously marked as
           // guaranteed
-          opCache[rcur] = true;
+          valueCache[rcur] = true;
 
-          // Look if this is one we have previously visited this operation as a
+          // Look if this is one we have previously visited this value as a
           // pending value, and if so, remove the corresponding pending
           // dependencies
 
@@ -439,10 +610,12 @@ public:
       case State::PENDING: {
         assert(localtodo.size());
         assert(seen.find(cur) == seen.end());
-        SmallPtrSet<Operation *, 2> set(localtodo.begin(), localtodo.end());
-        for (auto v : set) {
+        for (auto v : localtodo) {
           reverseSeen[v].push_back(cur);
+          todo.push_back(v);
         }
+        llvm::SmallPtrSet<mlir::Value, 2> set(localtodo.begin(),
+                                              localtodo.end());
         seen[cur] = std::move(set);
         break;
       }
@@ -453,53 +626,144 @@ public:
     // would invalidate. Therefore all seen operations [including op] are known
     // to be guaranteed.
     for (auto &sval : seen) {
-      opCache[sval.first] = true;
+      valueCache[sval.first] = true;
+      setGuaranteedInIR(sval.first, true, rewriter);
     }
 
-    assert(opCache.find(op) != opCache.end());
-
-    return true;
+    auto found = valueCache.find(value);
+    if (found != valueCache.end()) {
+      bool guaranteed = found->second;
+      setGuaranteedInIR(value, guaranteed, rewriter);
+      return guaranteed;
+    }
+    return false;
   }
 
-  bool guaranteed(stablehlo::ConstantOp constOp) {
-    if (!constOp)
-      return false;
+  State guaranteedConstant(Value val, PatternRewriter &rewriter) {
+    auto it = valueCache.find(val);
+    if (it != valueCache.end())
+      return it->second ? State::GUARANTEED : State::NOTGUARANTEED;
 
-    auto it = opCache.find(constOp);
-    if (it != opCache.end())
-      return it->second;
+    DenseElementsAttr denseAttr;
+    if (!matchPattern(val, m_Constant(&denseAttr)))
+      return State::UNKNOWN;
 
-    Attribute attr = constOp.getValue();
+    State state = State::NOTGUARANTEED;
+    if (denseAttr.getType().getShape().size() && denseAttr.isSplat()) {
+      denseAttr = denseAttr.resizeSplat(
+          RankedTensorType::get({}, denseAttr.getType().getElementType()));
+    }
 
-    bool guaranteedResult = false;
-    if (auto denseAttr = dyn_cast<DenseElementsAttr>(attr)) {
-      if (denseAttr.getType().getShape().size() && denseAttr.isSplat()) {
-        denseAttr = denseAttr.resizeSplat(
-            RankedTensorType::get({}, denseAttr.getType().getElementType()));
-      }
-
-      // For floating point values
-      if (isa<FloatType>(denseAttr.getElementType())) {
-        if (((Child *)this)->constantFloatCheck(denseAttr)) {
-          guaranteedResult = true;
-        }
-      }
-
-      // For integer values
-      if (isa<IntegerType>(denseAttr.getElementType())) {
-        if (((Child *)this)->constantIntCheck(denseAttr)) {
-          guaranteedResult = true;
-        }
+    // For floating point values
+    if (isa<FloatType>(denseAttr.getElementType())) {
+      if (((Child *)this)->constantFloatCheck(denseAttr)) {
+        state = State::GUARANTEED;
       }
     }
 
-    opCache[constOp] = guaranteedResult;
-    return guaranteedResult;
+    // For integer values
+    if (isa<IntegerType>(denseAttr.getElementType())) {
+      if (((Child *)this)->constantIntCheck(denseAttr)) {
+        state = State::GUARANTEED;
+      }
+    }
+
+    setGuaranteedInIR(val, state, rewriter);
+    return state;
+  }
+
+  State localGuaranteedWithSetAttr(Value val, SmallVectorImpl<Value> &localtodo,
+                                   PatternRewriter &rewriter) {
+    auto stateFromIR = lookupGuaranteedFromIR(val, rewriter);
+    if (stateFromIR != State::UNKNOWN)
+      return stateFromIR;
+
+    auto stateFromConstant = guaranteedConstant(val, rewriter);
+    if (stateFromConstant != State::UNKNOWN)
+      return stateFromConstant;
+
+    auto state = ((Child *)this)->localGuaranteed(val, localtodo, rewriter);
+
+    setGuaranteedInIR(val, state, rewriter);
+    return state;
+  }
+
+private:
+  State
+  GuaranteedAnalysisResultToState(enzymexla::GuaranteedAnalysisResult val) {
+    switch (val) {
+    case enzymexla::GuaranteedAnalysisResult::GUARANTEED:
+      return State::GUARANTEED;
+    case enzymexla::GuaranteedAnalysisResult::NOTGUARANTEED:
+      return State::NOTGUARANTEED;
+    case enzymexla::GuaranteedAnalysisResult::UNKNOWN:
+      return State::UNKNOWN;
+    default:
+      llvm_unreachable("Unhandled state");
+    }
+  }
+
+  State lookupGuaranteedFromIR(Value val, PatternRewriter &rewriter) {
+    return GuaranteedAnalysisResultToState(
+        getAttributeFromIR<enzymexla::GuaranteedAnalysisResultAttr>(
+            val, ((Child *)this)->getAttrName(),
+            enzymexla::GuaranteedAnalysisResult::UNKNOWN));
+  }
+
+  void setGuaranteedInIR(Value val, bool guaranteed,
+                         PatternRewriter &rewriter) {
+    setGuaranteedInIR(
+        val, guaranteed ? State::GUARANTEED : State::NOTGUARANTEED, rewriter);
+  }
+
+  void setGuaranteedInIR(Value val, State state, PatternRewriter &rewriter) {
+    if (state == State::UNKNOWN || state == State::PENDING) {
+      return;
+    }
+
+    auto op = val.getDefiningOp();
+    if (!op) {
+      return;
+    }
+
+    auto attrName = ((Child *)this)->getAttrName();
+
+    enzymexla::GuaranteedAnalysisResult newValue;
+    switch (state) {
+    case State::GUARANTEED:
+      newValue = enzymexla::GuaranteedAnalysisResult::GUARANTEED;
+      break;
+    case State::NOTGUARANTEED:
+      newValue = enzymexla::GuaranteedAnalysisResult::NOTGUARANTEED;
+      break;
+    default:
+      llvm_unreachable("Unexpected state");
+    }
+
+    auto newAttrs = getUpdatedAttrList<enzymexla::GuaranteedAnalysisResultAttr>(
+        val, attrName, enzymexla::GuaranteedAnalysisResult::UNKNOWN, newValue);
+
+    rewriter.modifyOpInPlace(op, [&]() {
+      op->setAttr(attrName, ArrayAttr::get(val.getContext(), newAttrs));
+    });
   }
 };
 
 class FiniteResultAnalysis;
 class NoNanResultAnalysis;
+class SymmetricResultAnalysis;
+
+class SymmetricResultAnalysis
+    : public GuaranteedResultAnalysisBase<SymmetricResultAnalysis> {
+public:
+  State localGuaranteed(Value val, SmallVectorImpl<Value> &localtodo,
+                        PatternRewriter &rewriter);
+
+  bool constantFloatCheck(DenseElementsAttr attr);
+  bool constantIntCheck(DenseElementsAttr attr);
+
+  StringRef getAttrName() const { return "enzymexla.symmetric_matrix"; }
+};
 
 class NoNanResultAnalysis
     : public GuaranteedResultAnalysisBase<NoNanResultAnalysis> {
@@ -507,10 +771,13 @@ private:
   std::shared_ptr<FiniteResultAnalysis> finiteResultAnalysis = nullptr;
 
 public:
-  State localGuaranteed(Operation *op, SmallVectorImpl<Operation *> &localtodo);
+  State localGuaranteed(Value val, SmallVectorImpl<Value> &localtodo,
+                        PatternRewriter &rewriter);
 
   bool constantFloatCheck(DenseElementsAttr attr);
   bool constantIntCheck(DenseElementsAttr attr);
+
+  StringRef getAttrName() const { return "enzymexla.no_nan"; }
 
   void setFiniteResultAnalysis(std::shared_ptr<FiniteResultAnalysis> analysis) {
     finiteResultAnalysis = analysis;
@@ -526,7 +793,10 @@ public:
   bool constantFloatCheck(DenseElementsAttr attr);
   bool constantIntCheck(DenseElementsAttr attr);
 
-  State localGuaranteed(Operation *op, SmallVectorImpl<Operation *> &localtodo);
+  StringRef getAttrName() const { return "enzymexla.finite"; }
+
+  State localGuaranteed(Value val, SmallVectorImpl<Value> &localtodo,
+                        PatternRewriter &rewriter);
 
   void setNoNanResultAnalysis(std::shared_ptr<NoNanResultAnalysis> analysis) {
     noNanResultAnalysis = analysis;
@@ -535,19 +805,49 @@ public:
 
 NoNanResultAnalysis initNoNanResultAnalysis();
 FiniteResultAnalysis initFiniteResultAnalysis();
+SymmetricResultAnalysis initSymmetricResultAnalysis();
 
-inline bool guaranteedNoNanResult(mlir::Value value) {
-  return initNoNanResultAnalysis().guaranteed(value);
-}
-inline bool guaranteedNoNanResult(Operation *op) {
-  return initNoNanResultAnalysis().guaranteed(op);
+template <typename T>
+bool runAnalysisOnOperation(T analysis, Operation *op,
+                            PatternRewriter &rewriter) {
+  if (!op)
+    return false;
+
+  for (auto res : op->getResults()) {
+    if (!analysis.guaranteed(res, rewriter)) {
+      return false;
+    }
+  }
+  return true;
 }
 
-inline bool guaranteedFiniteResult(mlir::Value value) {
-  return initFiniteResultAnalysis().guaranteed(value);
+inline bool guaranteedNoNanResult(mlir::Value value,
+                                  PatternRewriter &rewriter) {
+  return initNoNanResultAnalysis().guaranteed(value, rewriter);
 }
-inline bool guaranteedFiniteResult(Operation *op) {
-  return initFiniteResultAnalysis().guaranteed(op);
+inline bool guaranteedNoNanResult(Operation *op, PatternRewriter &rewriter) {
+  auto analysis = initNoNanResultAnalysis();
+  return runAnalysisOnOperation<NoNanResultAnalysis>(analysis, op, rewriter);
+}
+
+inline bool guaranteedFiniteResult(mlir::Value value,
+                                   PatternRewriter &rewriter) {
+  return initFiniteResultAnalysis().guaranteed(value, rewriter);
+}
+inline bool guaranteedFiniteResult(Operation *op, PatternRewriter &rewriter) {
+  auto analysis = initFiniteResultAnalysis();
+  return runAnalysisOnOperation<FiniteResultAnalysis>(analysis, op, rewriter);
+}
+
+inline bool guaranteedSymmetricResult(mlir::Value value,
+                                      PatternRewriter &rewriter) {
+  return initSymmetricResultAnalysis().guaranteed(value, rewriter);
+}
+inline bool guaranteedSymmetricResult(Operation *op,
+                                      PatternRewriter &rewriter) {
+  auto analysis = initSymmetricResultAnalysis();
+  return runAnalysisOnOperation<SymmetricResultAnalysis>(analysis, op,
+                                                         rewriter);
 }
 
 class NonNegativeResultAnalysis
@@ -556,14 +856,21 @@ public:
   bool constantFloatCheck(DenseElementsAttr attr);
   bool constantIntCheck(DenseElementsAttr attr);
 
-  State localGuaranteed(Operation *op, SmallVectorImpl<Operation *> &localtodo);
+  StringRef getAttrName() const { return "enzymexla.non_negative"; }
+
+  State localGuaranteed(Value val, SmallVectorImpl<Value> &localtodo,
+                        PatternRewriter &rewriter);
 };
 
-inline bool guaranteedNonNegativeResult(mlir::Value value) {
-  return NonNegativeResultAnalysis().guaranteed(value);
+inline bool guaranteedNonNegativeResult(mlir::Value value,
+                                        PatternRewriter &rewriter) {
+  return NonNegativeResultAnalysis().guaranteed(value, rewriter);
 }
-inline bool guaranteedNonNegativeResult(Operation *op) {
-  return NonNegativeResultAnalysis().guaranteed(op);
+inline bool guaranteedNonNegativeResult(Operation *op,
+                                        PatternRewriter &rewriter) {
+  auto analysis = NonNegativeResultAnalysis();
+  return runAnalysisOnOperation<NonNegativeResultAnalysis>(analysis, op,
+                                                           rewriter);
 }
 
 bool anyOperandIsConstant(mlir::Operation *op);
@@ -654,6 +961,9 @@ public:
   bool isMinReduce;
   bool isMaxReduce;
   bool isMulReduce;
+  bool isAndReduce;
+  bool isOrReduce;
+  bool isXorReduce;
 
   CheckCommonReduceOp(stablehlo::ReduceOp op) {
     auto &region = op.getRegion();
@@ -670,10 +980,9 @@ public:
     isMinReduce = isCommutativeOpBlock<stablehlo::MinOp>(&block);
     isMaxReduce = isCommutativeOpBlock<stablehlo::MaxOp>(&block);
     isMulReduce = isCommutativeOpBlock<stablehlo::MulOp>(&block);
-  }
-
-  bool isCommonReduce() {
-    return isAddReduce || isMinReduce || isMaxReduce || isMulReduce;
+    isAndReduce = isCommutativeOpBlock<stablehlo::AndOp>(&block);
+    isOrReduce = isCommutativeOpBlock<stablehlo::OrOp>(&block);
+    isXorReduce = isCommutativeOpBlock<stablehlo::XorOp>(&block);
   }
 };
 
@@ -702,8 +1011,8 @@ SmallVector<int64_t> computeGatherSliceSizes(stablehlo::ScatterOp &scatterOp);
 template <typename T>
 stablehlo::ConstantOp createConstantOpFromScalar(PatternRewriter &rewriter,
                                                  Operation *op, T value) {
-  return rewriter.create<stablehlo::ConstantOp>(
-      op->getLoc(), op->getResult(0).getType(),
+  return stablehlo::ConstantOp::create(
+      rewriter, op->getLoc(), op->getResult(0).getType(),
       cast<ElementsAttr>(
           mlir::enzyme::makeAttr(op->getResult(0).getType(), value)));
 }
@@ -715,6 +1024,77 @@ stablehlo::ComparisonDirection
 negatedComparisonDirection(stablehlo::ComparisonDirection direction);
 
 bool reshapeIsTranspose(stablehlo::ReshapeOp reshapeOp);
+
+mlir::Value reshapeAxisInto(OpBuilder &builder, Value input,
+                            ArrayRef<int64_t> &batchSizes, int64_t dim);
+
+mlir::Value reshapeAxisOutOf(OpBuilder &builder, Value input,
+                             ArrayRef<int64_t> &batchSizes, int64_t dim);
+
+// matches for hasTrait<OpTrait::Elementwise>. Additionally matches for
+// hasTrait<OpTrait::HLOBroadcastingElementwise> if all of the operands are
+// of the same shape.
+bool hasTraitElementwise(Operation *op);
+
+// currently there are no traits for associative ops
+bool isAssociativeOp(Operation *op);
+
+// this doesn't construct the scalar value and instead returns the
+// other operand
+bool extractMultiplicationFactor(Value v, Value &other, Operation *op,
+                                 OpBuilder &builder);
+void extractMultiplicationFactor(Value v, Value &scalar, Value &other,
+                                 Operation *op, OpBuilder &builder);
+
+Value getScalarValue(Value val, OpBuilder &builder);
+Value getScalarValue(Operation *op, OpBuilder &builder);
+
+bool isScalarValue(Value val);
+bool isScalarValue(Operation *op);
+
+Value copyTriangularPart(OpBuilder &builder, Value input,
+                         enzymexla::LapackUplo uplo);
+
+bool broadcastInDimIsReshape(BroadcastInDimOp op);
+
+bool canMergeSlicesAlongAxis(int dimension, ArrayRef<int64_t> sliceStarts,
+                             ArrayRef<int64_t> otherSliceStarts,
+                             ArrayRef<int64_t> sliceLimits,
+                             ArrayRef<int64_t> otherSliceLimits,
+                             ArrayRef<int64_t> sliceStrides,
+                             ArrayRef<int64_t> otherSliceStrides);
+
+bool canMergeSlicesAlongAxis(int dimension, stablehlo::SliceOp slice,
+                             stablehlo::SliceOp otherSlice);
+
+stablehlo::ConcatenateOp lowerWrap(enzymexla::WrapOp wrap,
+                                   PatternRewriter &rewriter, bool replace);
+
+LogicalResult concatSliceSimplify(PatternRewriter &rewriter,
+                                  SmallVectorImpl<Value> &operands, int64_t dim,
+                                  SmallVectorImpl<Value> &newOperands);
+
+Value getIdentityValue(OpBuilder &builder, Location loc, Type elemType,
+                       Operation *op);
+
+bool canFuseIntoReduce(Operation *op);
+
+template <typename OpTy>
+Value getIdentityValueForOp(OpBuilder &builder, Location loc, Type elemType);
+
+// these add additional checks that prevent no-op creation
+Value ConcatenateOpCreate(
+    OpBuilder &builder, Location loc, ArrayRef<Value> inputs, int64_t dimension,
+    std::optional<sdy::TensorShardingPerValueAttr> sharding = std::nullopt);
+
+Value ReshapeOpCreate(
+    OpBuilder &builder, Location loc, Value input, ArrayRef<int64_t> shape,
+    std::optional<sdy::TensorShardingPerValueAttr> sharding = std::nullopt);
+
+Value TransposeOpCreate(
+    OpBuilder &builder, Location loc, Value input,
+    ArrayRef<int64_t> permutation,
+    std::optional<sdy::TensorShardingPerValueAttr> sharding = std::nullopt);
 
 } // namespace stablehlo
 

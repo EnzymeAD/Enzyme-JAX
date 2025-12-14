@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -101,8 +102,8 @@ static void shrinkAlternativesOp(enzymexla::AlternativesOp alternativesOp,
   // New AOP with the exact number of regions needed
   mlir::OpBuilder::InsertionGuard guard(rewriter);
   rewriter.setInsertionPoint(alternativesOp);
-  auto newAop = rewriter.create<enzymexla::AlternativesOp>(
-      alternativesOp->getLoc(), size);
+  auto newAop = enzymexla::AlternativesOp::create(
+      rewriter, alternativesOp->getLoc(), size);
   newAop->setAttr("alternatives.type",
                   alternativesOp->getAttr("alternatives.type"));
   assert(newAop->getNumRegions() > 0);
@@ -126,8 +127,8 @@ static void shrinkAlternativesOp(enzymexla::AlternativesOp alternativesOp,
   // New AOP with the exact number of regions needed
   mlir::OpBuilder::InsertionGuard guard(builder);
   builder.setInsertionPoint(alternativesOp);
-  auto newAop =
-      builder.create<enzymexla::AlternativesOp>(alternativesOp->getLoc(), size);
+  auto newAop = enzymexla::AlternativesOp::create(
+      builder, alternativesOp->getLoc(), size);
   newAop->setAttr("alternatives.type",
                   alternativesOp->getAttr("alternatives.type"));
   assert(newAop->getNumRegions() > 0);
@@ -171,11 +172,11 @@ template <int S = 3> SmallVector<Value, S> getUpperBounds(scf::ParallelOp pop) {
 }
 
 void insertReturn(PatternRewriter &rewriter, func::FuncOp f) {
-  rewriter.create<func::ReturnOp>(rewriter.getUnknownLoc());
+  func::ReturnOp::create(rewriter, rewriter.getUnknownLoc());
 }
 void insertReturn(PatternRewriter &rewriter, LLVM::LLVMFuncOp f) {
-  rewriter.create<LLVM::ReturnOp>(rewriter.getUnknownLoc(),
-                                  std::vector<Value>{});
+  LLVM::ReturnOp::create(rewriter, rewriter.getUnknownLoc(),
+                         std::vector<Value>{});
 }
 
 scf::ParallelOp
@@ -247,11 +248,13 @@ struct AddLaunchBounds : public OpRewritePattern<gpu::LaunchFuncOp> {
       gpuFuncOp->setAttr(attrName, rewriter.getIntegerAttr(
                                        rewriter.getIndexType(), blockSize));
       assert(succeeded);
+      (void)succeeded;
       return success();
     } else {
       assert(blockSize ==
              dyn_cast<IntegerAttr>(gpuFuncOp->getAttr(attrName)).getInt());
       assert(!succeeded);
+      (void)succeeded;
       return failure();
     }
   }
@@ -305,12 +308,12 @@ struct SharedLLVMAllocaToGlobal : public OpRewritePattern<LLVM::AllocaOp> {
 
     rewriter.setInsertionPointToStart(module.getBody());
 
-    auto globalOp = rewriter.create<LLVM::GlobalOp>(
-        loc, ao.getElemType(), /* isConstant */ false, LLVM::Linkage::Internal,
-        name, mlir::Attribute(),
+    auto globalOp = LLVM::GlobalOp::create(
+        rewriter, loc, ao.getElemType(), /* isConstant */ false,
+        LLVM::Linkage::Internal, name, mlir::Attribute(),
         /* alignment */ 0, /* addrSpace */ 3);
     rewriter.setInsertionPoint(ao);
-    auto aoo = rewriter.create<LLVM::AddressOfOp>(loc, globalOp);
+    auto aoo = LLVM::AddressOfOp::create(rewriter, loc, globalOp);
 
     rewriter.replaceOp(ao, aoo->getResults());
 
@@ -341,12 +344,12 @@ struct SharedMemrefAllocaToGlobal : public OpRewritePattern<memref::AllocaOp> {
     rewriter.setInsertionPointToStart(module.getBody());
 
     auto initial_value = rewriter.getUnitAttr();
-    rewriter.create<memref::GlobalOp>(
-        loc, rewriter.getStringAttr(name),
-        /* sym_visibility */ mlir::StringAttr(), mlir::TypeAttr::get(type),
-        initial_value, mlir::UnitAttr(), /* alignment */ nullptr);
+    memref::GlobalOp::create(rewriter, loc, rewriter.getStringAttr(name),
+                             /* sym_visibility */ mlir::StringAttr(),
+                             mlir::TypeAttr::get(type), initial_value,
+                             mlir::UnitAttr(), /* alignment */ nullptr);
     rewriter.setInsertionPoint(ao);
-    auto getGlobalOp = rewriter.create<memref::GetGlobalOp>(loc, type, name);
+    auto getGlobalOp = memref::GetGlobalOp::create(rewriter, loc, type, name);
 
     rewriter.replaceOp(ao, getGlobalOp->getResults());
 
@@ -390,15 +393,15 @@ struct CreateParallelOps : public OpRewritePattern<enzymexla::GPUWrapperOp> {
     auto loc = wrapper->getLoc();
     auto terminator = wrapper.getBody()->getTerminator();
     rewriter.setInsertionPoint(wrapper);
-    auto zeroindex = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-    auto oneindex = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+    auto zeroindex = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    auto oneindex = arith::ConstantIndexOp::create(rewriter, loc, 1);
     SmallVector<Value, 1> one(1, oneindex);
     SmallVector<Value, 1> zero(1, zeroindex);
     rewriter.setInsertionPointToEnd(wrapper.getBody());
-    auto gridPop = rewriter.create<scf::ParallelOp>(loc, zero, one, one);
+    auto gridPop = scf::ParallelOp::create(rewriter, loc, zero, one, one);
     rewriter.clone(*terminator);
     rewriter.setInsertionPointToStart(gridPop.getBody());
-    auto blockPop = rewriter.create<scf::ParallelOp>(loc, zero, one, one);
+    auto blockPop = scf::ParallelOp::create(rewriter, loc, zero, one, one);
     rewriter.setInsertionPointToStart(blockPop.getBody());
 
     SmallVector<Operation *> toErase;
@@ -513,17 +516,16 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       auto loc = pop->getLoc();
 
       auto upperBounds = getUpperBounds<6>(pop);
-      int totalDims = upperBounds.size();
 
       mlir::OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPoint(pop);
-      auto gridPop = rewriter.create<scf::ParallelOp>(
-          loc, pop.getLowerBound().slice(0, 3), pop.getUpperBound().slice(0, 3),
-          pop.getStep().slice(0, 3));
+      auto gridPop = scf::ParallelOp::create(
+          rewriter, loc, pop.getLowerBound().slice(0, 3),
+          pop.getUpperBound().slice(0, 3), pop.getStep().slice(0, 3));
       rewriter.setInsertionPointToStart(gridPop.getBody());
-      auto blockPop = rewriter.create<scf::ParallelOp>(
-          loc, pop.getLowerBound().slice(3, 3), pop.getUpperBound().slice(3, 3),
-          pop.getStep().slice(3, 3));
+      auto blockPop = scf::ParallelOp::create(
+          rewriter, loc, pop.getLowerBound().slice(3, 3),
+          pop.getUpperBound().slice(3, 3), pop.getStep().slice(3, 3));
       rewriter.setInsertionPointToStart(blockPop.getBody());
 
       IRMapping mapping;
@@ -545,7 +547,7 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
     };
 
     if (char *blockSizeStr = getenv("POLYGEIST_GPU_KERNEL_BLOCK_SIZE")) {
-      auto alternativesOp = rewriter.create<enzymexla::AlternativesOp>(loc, 1);
+      auto alternativesOp = enzymexla::AlternativesOp::create(rewriter, loc, 1);
       alternativesOp->setAttr("alternatives.type",
                               rewriter.getStringAttr("gpu_kernel"));
       llvm::errs() << "Emitting kernel with " << atoi(blockSizeStr)
@@ -561,10 +563,11 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       alternativesOp->setAttr("alternatives.descs",
                               rewriter.getArrayAttr(descs));
     } else if (shouldEmitAlternatives(pop)) {
-      auto alternativesOp = rewriter.create<enzymexla::AlternativesOp>(
-          loc, ALTERNATIVE_KERNEL_BLOCK_SIZES.size() +
-                   (pop.getUpperBound().size() == 6 &&
-                    pop.getUpperBound() == wrapper.getOperands()));
+      auto alternativesOp = enzymexla::AlternativesOp::create(
+          rewriter, loc,
+          ALTERNATIVE_KERNEL_BLOCK_SIZES.size() +
+              (pop.getUpperBound().size() == 6 &&
+               pop.getUpperBound() == wrapper.getOperands()));
       alternativesOp->setAttr("alternatives.type",
                               rewriter.getStringAttr("gpu_kernel"));
       for (unsigned blockSize : ALTERNATIVE_KERNEL_BLOCK_SIZES) {
@@ -579,7 +582,7 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
                               rewriter.getArrayAttr(descs));
       shrinkAlternativesOp(alternativesOp, curRegion, rewriter);
     } else {
-      auto alternativesOp = rewriter.create<enzymexla::AlternativesOp>(loc, 1);
+      auto alternativesOp = enzymexla::AlternativesOp::create(rewriter, loc, 1);
       alternativesOp->setAttr("alternatives.type",
                               rewriter.getStringAttr("gpu_kernel"));
       emitAlternative(-1, alternativesOp);
@@ -747,15 +750,15 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
     // support all cases currently
     if (gridDims.size() > 3) {
       rewriter.setInsertionPoint(wrapper);
-      auto err = rewriter.create<arith::ConstantIndexOp>(
-          loc, CUDA_ERROR_LAUNCH_OUT_OF_RESOURCES);
+      auto err = arith::ConstantIndexOp::create(
+          rewriter, loc, CUDA_ERROR_LAUNCH_OUT_OF_RESOURCES);
       rewriter.replaceOp(wrapper, err->getResults());
       return -1;
     }
 
     rewriter.setInsertionPoint(pop);
-    auto zeroindex = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-    auto oneindex = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+    auto zeroindex = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    auto oneindex = arith::ConstantIndexOp::create(rewriter, loc, 1);
     unsigned splitDims = 0;
     SmallVector<int, 3> gi;
     SmallVector<int, 3> bi;
@@ -800,7 +803,7 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       rewriter.setInsertionPoint(pop);
       if (splitDims == 1)
         newBlockDims = {
-            rewriter.create<arith::ConstantIndexOp>(loc, threadsLeft),
+            arith::ConstantIndexOp::create(rewriter, loc, threadsLeft),
         };
       else if (splitDims == 2)
         // TODO
@@ -816,10 +819,10 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       for (unsigned i = 0; i < splitDims; i++) {
         // newGridDims[j] = ((gridDims[j] - 1) / newBlockDims[i]) + 1;
         auto sub =
-            rewriter.create<arith::SubIOp>(loc, gridDims[gi[i]], oneindex);
+            arith::SubIOp::create(rewriter, loc, gridDims[gi[i]], oneindex);
         auto div =
-            rewriter.create<arith::DivUIOp>(loc, sub, newBlockDims[bi[i]]);
-        gridDims[gi[i]] = rewriter.create<arith::AddIOp>(loc, div, oneindex);
+            arith::DivUIOp::create(rewriter, loc, sub, newBlockDims[bi[i]]);
+        gridDims[gi[i]] = arith::AddIOp::create(rewriter, loc, div, oneindex);
       }
       blockDims = newBlockDims;
     }
@@ -833,11 +836,11 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
     SmallVector<Value, 3> stepsBlock(blockDims.size(), oneindex);
 
     rewriter.setInsertionPoint(pop);
-    auto gridPop = rewriter.create<scf::ParallelOp>(loc, lowerBoundsGrid,
-                                                    gridDims, stepsGrid);
+    auto gridPop = scf::ParallelOp::create(rewriter, loc, lowerBoundsGrid,
+                                           gridDims, stepsGrid);
     rewriter.setInsertionPointToStart(gridPop.getBody());
-    auto blockPop = rewriter.create<scf::ParallelOp>(loc, lowerBoundsBlock,
-                                                     blockDims, stepsBlock);
+    auto blockPop = scf::ParallelOp::create(rewriter, loc, lowerBoundsBlock,
+                                            blockDims, stepsBlock);
     rewriter.setInsertionPointToStart(blockPop.getBody());
 
     IRMapping mapping;
@@ -861,22 +864,23 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
         // block/thread index, so we might do something like blockIdx.x *
         // blockDim.x + threadIdx.y, should we try to rearrange dims to match
         // them?
-        auto mul = rewriter.create<arith::MulIOp>(
-            loc, gridPop.getBody()->getArgument(gi[i]), blockDims[bi[i]]);
-        auto threadId = rewriter.create<arith::AddIOp>(
-            loc, mul, blockPop.getBody()->getArgument(bi[i]));
+        auto mul = arith::MulIOp::create(rewriter, loc,
+                                         gridPop.getBody()->getArgument(gi[i]),
+                                         blockDims[bi[i]]);
+        auto threadId = arith::AddIOp::create(
+            rewriter, loc, mul, blockPop.getBody()->getArgument(bi[i]));
         assert(blockArgId[bi[i]] == gridArgId[gi[i]]);
         mapping.map(pop.getBody()->getArgument(gridArgId[gi[i]]), threadId);
-        auto threadCond = rewriter.create<arith::CmpIOp>(
-            loc, arith::CmpIPredicate::ult, threadId,
-            upperBounds[gridArgId[gi[i]]]);
+        auto threadCond =
+            arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::ult,
+                                  threadId, upperBounds[gridArgId[gi[i]]]);
         if (i == 0)
           cond = threadCond.getResult();
         else
-          cond =
-              rewriter.create<arith::AndIOp>(loc, threadCond, cond).getResult();
+          cond = arith::AndIOp::create(rewriter, loc, threadCond, cond)
+                     .getResult();
       }
-      auto ifOp = rewriter.create<scf::IfOp>(loc, cond);
+      auto ifOp = scf::IfOp::create(rewriter, loc, cond);
       rewriter.setInsertionPointToStart(ifOp.thenBlock());
     }
 
@@ -945,21 +949,21 @@ struct ParallelizeBlockOps : public OpRewritePattern<scf::ParallelOp> {
     scf::IfOp ifOp = nullptr;
     auto getIf = [&]() {
       if (!ifOp) {
-        auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+        auto zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
         Value cond;
         for (unsigned i = 0; i < innerBlock->getNumArguments(); i++) {
           auto threadId = innerBlock->getArgument(i);
-          auto threadCond = rewriter.create<arith::CmpIOp>(
-              loc, arith::CmpIPredicate::eq, threadId, zero);
+          auto threadCond = arith::CmpIOp::create(
+              rewriter, loc, arith::CmpIPredicate::eq, threadId, zero);
           if (i == 0)
             cond = threadCond.getResult();
           else
-            cond = rewriter.create<arith::AndIOp>(loc, threadCond, cond)
+            cond = arith::AndIOp::create(rewriter, loc, threadCond, cond)
                        .getResult();
         }
-        ifOp = rewriter.create<scf::IfOp>(loc, cond);
-        rewriter.create<mlir::enzymexla::BarrierOp>(loc,
-                                                    innerBlock->getArguments());
+        ifOp = scf::IfOp::create(rewriter, loc, cond);
+        mlir::enzymexla::BarrierOp::create(rewriter, loc,
+                                           innerBlock->getArguments());
         rewriter.setInsertionPoint(ifOp);
       }
     };
@@ -1012,19 +1016,20 @@ struct ParallelizeBlockOps : public OpRewritePattern<scf::ParallelOp> {
 
     // Handle ops after the parallel
     {
-      auto zeroindex = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+      auto zeroindex = arith::ConstantIndexOp::create(rewriter, loc, 0);
       rewriter.setInsertionPoint(innerBlock->getTerminator());
-      auto cmpOp = rewriter.create<arith::CmpIOp>(
-          loc, arith::CmpIPredicate::eq, zeroindex, innerBlock->getArgument(0));
+      auto cmpOp =
+          arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::eq,
+                                zeroindex, innerBlock->getArgument(0));
       Value condition = cmpOp.getResult();
       for (unsigned i = 1; i < innerBlock->getNumArguments(); i++) {
-        auto cmpOp2 = rewriter.create<arith::CmpIOp>(
-            loc, arith::CmpIPredicate::eq, zeroindex,
-            innerBlock->getArgument(i));
-        auto andOp = rewriter.create<arith::AndIOp>(loc, condition, cmpOp2);
+        auto cmpOp2 =
+            arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::eq,
+                                  zeroindex, innerBlock->getArgument(i));
+        auto andOp = arith::AndIOp::create(rewriter, loc, condition, cmpOp2);
         condition = andOp.getResult();
       }
-      auto ifOp = rewriter.create<scf::IfOp>(loc, condition);
+      auto ifOp = scf::IfOp::create(rewriter, loc, condition);
       rewriter.setInsertionPointToStart(ifOp.thenBlock());
       for (; it != end; ++it) {
         Operation &op = *it;
@@ -1088,12 +1093,12 @@ struct HandleWrapperRootAlloca
 
     auto terminator = wrapper.getBody()->getTerminator();
     rewriter.setInsertionPoint(wrapper);
-    auto zeroindex = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-    auto oneindex = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+    auto zeroindex = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    auto oneindex = arith::ConstantIndexOp::create(rewriter, loc, 1);
     SmallVector<Value, 1> one(1, oneindex);
     SmallVector<Value, 1> zero(1, zeroindex);
     rewriter.setInsertionPointToEnd(wrapper.getBody());
-    auto gridPop = rewriter.create<scf::ParallelOp>(loc, zero, one, one);
+    auto gridPop = scf::ParallelOp::create(rewriter, loc, zero, one, one);
     rewriter.clone(*terminator);
     rewriter.setInsertionPointToStart(gridPop.getBody());
 
@@ -1178,7 +1183,7 @@ struct HandleWrapperRootOps : public OpRewritePattern<enzymexla::GPUWrapperOp> {
     }
     rewriter.setInsertionPoint(wrapper);
     auto newWrapper =
-        rewriter.create<enzymexla::GPUWrapperOp>(loc, wrapper.getOperands());
+        enzymexla::GPUWrapperOp::create(rewriter, loc, wrapper.getOperands());
     IRMapping hoistMapping;
     IRMapping splitMapping;
     IRMapping parallelizedMapping;
@@ -1272,18 +1277,18 @@ struct HandleWrapperRootOps : public OpRewritePattern<enzymexla::GPUWrapperOp> {
               rewriter.setInsertionPoint(newWrapper);
               auto mt = MemRefType::get({}, v.getType());
               // TODO we never actually free this...
-              auto alloc = rewriter.create<gpu::AllocOp>(
-                  loc, mt, /* asyncToken type */ nullptr,
+              auto alloc = gpu::AllocOp::create(
+                  rewriter, loc, mt, /* asyncToken type */ nullptr,
                   /* TODO asyncDependencies */ ValueRange(),
                   /* dynamicSizes */ ValueRange(),
                   /* symbolOperands */ ValueRange());
 
               rewriter.setInsertionPoint(newWrapper.getBody()->getTerminator());
-              rewriter.create<memref::StoreOp>(loc, v, alloc.getMemref());
+              memref::StoreOp::create(rewriter, loc, v, alloc.getMemref());
 
               rewriter.setInsertionPoint(firstGridOp);
               cacheLoads.push_back(
-                  rewriter.create<memref::LoadOp>(loc, alloc.getMemref()));
+                  memref::LoadOp::create(rewriter, loc, alloc.getMemref()));
             }
 
             cloned = cacheLoads;
@@ -1375,11 +1380,11 @@ struct RemovePolygeistNoopOp : public OpRewritePattern<enzymexla::NoopOp> {
       Block *block = noop->getBlock();
       auto term = block->getTerminator();
       rewriter.setInsertionPointToStart(block);
-      auto zeroindex = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-      auto oneindex = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+      auto zeroindex = arith::ConstantIndexOp::create(rewriter, loc, 0);
+      auto oneindex = arith::ConstantIndexOp::create(rewriter, loc, 1);
       SmallVector<Value, 1> one(1, oneindex);
       SmallVector<Value, 1> zero(1, zeroindex);
-      auto pop = rewriter.create<scf::ParallelOp>(loc, zero, one, one);
+      auto pop = scf::ParallelOp::create(rewriter, loc, zero, one, one);
 
       Operation *toClone = pop->getNextNode();
       SmallVector<Operation *> toErase;
@@ -1424,6 +1429,7 @@ struct RemovePolygeistNoopOp : public OpRewritePattern<enzymexla::NoopOp> {
           }
         } else {
           auto cst = getConstantInteger(operand);
+          (void)cst;
           assert(cst && *cst == 0 && "non block arg operands must be const 0");
         }
       }
@@ -1457,11 +1463,11 @@ struct RemovePolygeistGPUWrapperOp : public OpRewritePattern<OpType> {
       Block *block = wrapper->getBlock();
       auto term = block->getTerminator();
       rewriter.setInsertionPointToStart(block);
-      auto zeroindex = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-      auto oneindex = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+      auto zeroindex = arith::ConstantIndexOp::create(rewriter, loc, 0);
+      auto oneindex = arith::ConstantIndexOp::create(rewriter, loc, 1);
       SmallVector<Value, 1> one(1, oneindex);
       SmallVector<Value, 1> zero(1, zeroindex);
-      auto pop = rewriter.create<scf::ParallelOp>(loc, zero, one, one);
+      auto pop = scf::ParallelOp::create(rewriter, loc, zero, one, one);
 
       Operation *toClone = pop->getNextNode();
       SmallVector<Operation *> toErase;
@@ -1510,12 +1516,12 @@ struct InterchangeIfOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
     newIf.getThenRegion().push_back(new Block());
     rewriter.setInsertionPointToStart(&*newIf.getThenRegion().begin());
     auto newWrapper = rewriter.cloneWithoutRegions(wrapper);
-    rewriter.create<scf::YieldOp>(loc);
+    scf::YieldOp::create(rewriter, loc);
     rewriter.inlineRegionBefore(ifOp.getThenRegion(), newWrapper.getRegion(),
                                 newWrapper.getRegion().end());
     rewriter.eraseOp(newWrapper.getBody()->getTerminator());
     rewriter.setInsertionPointToEnd(newWrapper.getBody());
-    rewriter.create<enzymexla::PolygeistYieldOp>(loc);
+    enzymexla::PolygeistYieldOp::create(rewriter, loc);
 
     rewriter.eraseOp(wrapper);
 
@@ -1557,7 +1563,7 @@ struct SplitOffParallel : public OpRewritePattern<enzymexla::GPUWrapperOp> {
 
     rewriter.setInsertionPoint(wrapper);
     auto newWrapper =
-        rewriter.create<enzymexla::GPUWrapperOp>(loc, wrapper.getOperands());
+        enzymexla::GPUWrapperOp::create(rewriter, loc, wrapper.getOperands());
     rewriter.setInsertionPointToStart(newWrapper.getBody());
     rewriter.clone(*pop.getOperation());
     rewriter.eraseOp(pop);
@@ -1587,7 +1593,7 @@ struct ParallelToGPULaunch : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       return failure();
     }
     rewriter.setInsertionPoint(wrapper);
-    auto oneindex = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+    auto oneindex = arith::ConstantIndexOp::create(rewriter, loc, 1);
 
     // TODO we currently assume that all parallel ops we encouter are already
     // prepared for conversion to gpu.launch, i.e. two nested parallel loops
@@ -1603,7 +1609,7 @@ struct ParallelToGPULaunch : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       return failure();
 
     rewriter.setInsertionPoint(wrapper);
-    auto errOp = rewriter.create<enzymexla::GPUErrorOp>(loc);
+    auto errOp = enzymexla::GPUErrorOp::create(rewriter, loc);
 
     for (auto atname : {"passthrough", "target_features"})
       if (auto attr = wrapper->getAttr(atname)) {
@@ -1642,21 +1648,21 @@ struct ParallelToGPULaunch : public OpRewritePattern<enzymexla::GPUWrapperOp> {
     // Launch only if the grid size > 0 because launching with 0 blocks is an
     // error in cuda (we do not need the same for blocks because this only
     // happens when we coarsen the blocks with an epilogue loop)
-    auto one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-    auto cond0 = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sge,
-                                                gridBounds[0], one);
-    auto cond1 = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sge,
-                                                gridBounds[1], one);
-    auto cond2 = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sge,
-                                                gridBounds[2], one);
-    auto cond = rewriter.create<arith::AndIOp>(loc, cond0, cond1);
-    cond = rewriter.create<arith::AndIOp>(loc, cond, cond2);
-    auto ifOp = rewriter.create<scf::IfOp>(loc, cond, /*hasElse*/ false);
+    auto one = arith::ConstantIndexOp::create(rewriter, loc, 1);
+    auto cond0 = arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::sge,
+                                       gridBounds[0], one);
+    auto cond1 = arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::sge,
+                                       gridBounds[1], one);
+    auto cond2 = arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::sge,
+                                       gridBounds[2], one);
+    auto cond = arith::AndIOp::create(rewriter, loc, cond0, cond1);
+    cond = arith::AndIOp::create(rewriter, loc, cond, cond2);
+    auto ifOp = scf::IfOp::create(rewriter, loc, cond, /*hasElse*/ false);
 
     rewriter.setInsertionPointToStart(&*ifOp.getThenRegion().begin());
-    auto launchOp = rewriter.create<gpu::LaunchOp>(
-        loc, gridBounds[0], gridBounds[1], gridBounds[2], blockBounds[0],
-        blockBounds[1], blockBounds[2],
+    auto launchOp = gpu::LaunchOp::create(
+        rewriter, loc, gridBounds[0], gridBounds[1], gridBounds[2],
+        blockBounds[0], blockBounds[1], blockBounds[2],
         /*dynamic shmem size*/ nullptr,
         /*token type*/ nullptr,
         /*dependencies*/ SmallVector<Value, 1>());
@@ -1678,8 +1684,8 @@ struct ParallelToGPULaunch : public OpRewritePattern<enzymexla::GPUWrapperOp> {
     SmallVector<Value, 3> argReplacements;
     for (auto en : llvm::enumerate(blockPop.getBody()->getArguments())) {
       gpu::Dimension dim = getDim(en.index());
-      auto blockIdx = rewriter.create<gpu::ThreadIdOp>(
-          loc, mlir::IndexType::get(rewriter.getContext()), dim);
+      auto blockIdx = gpu::ThreadIdOp::create(
+          rewriter, loc, mlir::IndexType::get(rewriter.getContext()), dim);
       argReplacements.push_back(blockIdx);
     }
     rewriter.mergeBlocks(blockPop.getBody(), launchBlock, argReplacements);
@@ -1690,9 +1696,9 @@ struct ParallelToGPULaunch : public OpRewritePattern<enzymexla::GPUWrapperOp> {
         auto type = MemRefType::get(mt.getShape(), mt.getElementType(), {},
                                     /* memspace */ 5);
         auto newAlloca =
-            rewriter.create<memref::AllocaOp>(alloca.getLoc(), type);
-        auto cast = rewriter.create<memref::CastOp>(
-            alloca.getLoc(), alloca.getType(), newAlloca);
+            memref::AllocaOp::create(rewriter, alloca.getLoc(), type);
+        auto cast = memref::CastOp::create(rewriter, alloca.getLoc(),
+                                           alloca.getType(), newAlloca);
         it->replaceAllUsesWith(cast);
       } else {
         assert(0);
@@ -1702,14 +1708,14 @@ struct ParallelToGPULaunch : public OpRewritePattern<enzymexla::GPUWrapperOp> {
 
     for (auto en : llvm::enumerate(gridPop.getBody()->getArguments())) {
       gpu::Dimension dim = getDim(en.index());
-      auto gridIdx = rewriter.create<gpu::BlockIdOp>(
-          loc, mlir::IndexType::get(rewriter.getContext()), dim);
+      auto gridIdx = gpu::BlockIdOp::create(
+          rewriter, loc, mlir::IndexType::get(rewriter.getContext()), dim);
       en.value().replaceAllUsesWith(gridIdx);
       argReplacements.push_back(gridIdx);
     }
 
     rewriter.setInsertionPointToEnd(launchBlock);
-    rewriter.create<gpu::TerminatorOp>(loc);
+    gpu::TerminatorOp::create(rewriter, loc);
 
     rewriter.eraseOp(gridPop);
 
@@ -1786,8 +1792,8 @@ struct AsyncGPULaunch : public OpRewritePattern<async::ExecuteOp> {
 
     SmallVector<Value> gpudeps;
     for (auto dep : async.getDependencies()) {
-      gpudeps.push_back(rewriter.create<enzymexla::StreamToTokenOp>(
-          dep.getLoc(), rewriter.getType<gpu::AsyncTokenType>(),
+      gpudeps.push_back(enzymexla::StreamToTokenOp::create(
+          rewriter, dep.getLoc(), rewriter.getType<gpu::AsyncTokenType>(),
           dep.getDefiningOp<enzymexla::StreamToTokenOp>().getOperand()));
     }
 
@@ -1866,7 +1872,7 @@ struct InnerParallelSerialization : public OpRewritePattern<scf::ParallelOp> {
          llvm::zip(parallelOp.getInductionVars(), parallelOp.getLowerBound(),
                    parallelOp.getUpperBound(), parallelOp.getStep())) {
       scf::ForOp forOp =
-          rewriter.create<scf::ForOp>(loc, lower, upper, step, iterArgs);
+          scf::ForOp::create(rewriter, loc, lower, upper, step, iterArgs);
       ivs.push_back(forOp.getInductionVar());
       auto iterRange = forOp.getRegionIterArgs();
       iterArgs.assign(iterRange.begin(), iterRange.end());
@@ -1880,7 +1886,7 @@ struct InnerParallelSerialization : public OpRewritePattern<scf::ParallelOp> {
         // A loop is constructed with an empty "yield" terminator if there are
         // no results.
         rewriter.setInsertionPointToEnd(rewriter.getInsertionBlock());
-        rewriter.create<scf::YieldOp>(loc, forOp.getResults());
+        scf::YieldOp::create(rewriter, loc, forOp.getResults());
       }
 
       rewriter.setInsertionPointToStart(forOp.getBody());
@@ -1912,7 +1918,7 @@ struct InnerParallelSerialization : public OpRewritePattern<scf::ParallelOp> {
     // has been already created in loop construction).
     if (!yieldOperands.empty()) {
       rewriter.setInsertionPointToEnd(rewriter.getInsertionBlock());
-      rewriter.create<scf::YieldOp>(loc, yieldOperands);
+      scf::YieldOp::create(rewriter, loc, yieldOperands);
     }
 
     rewriter.replaceOp(parallelOp, loopResults);
@@ -2227,24 +2233,24 @@ struct ConvertParallelToGPU1Pass
           OpBuilder builder(wrapper);
 
           auto emitBlockRemCheck = [&](unsigned iThread) {
-            auto zero = builder.create<arith::ConstantIndexOp>(loc, 0);
+            auto zero = arith::ConstantIndexOp::create(builder, loc, 0);
             auto unrollFactors = UNROLL_FACTORS[blockDims][iThread];
             Value cond = nullptr;
             for (unsigned i = 0; i < unrollFactors.size(); i++) {
               auto unrollFactor = unrollFactors[i];
               auto unrollFactorCst =
-                  builder.create<arith::ConstantIndexOp>(loc, unrollFactor);
+                  arith::ConstantIndexOp::create(builder, loc, unrollFactor);
               auto rem =
-                  builder.create<arith::RemUIOp>(loc, ubs[i], unrollFactorCst);
-              auto cmp = builder.create<arith::CmpIOp>(
-                  loc, arith::CmpIPredicate::eq, rem, zero);
+                  arith::RemUIOp::create(builder, loc, ubs[i], unrollFactorCst);
+              auto cmp = arith::CmpIOp::create(
+                  builder, loc, arith::CmpIPredicate::eq, rem, zero);
               if (cond)
-                cond = builder.create<arith::AndIOp>(loc, cond, cmp);
+                cond = arith::AndIOp::create(builder, loc, cond, cmp);
               else
                 cond = cmp;
             }
 
-            auto ifOp = builder.create<scf::IfOp>(loc, cond, /*hasElse*/ true);
+            auto ifOp = scf::IfOp::create(builder, loc, cond, /*hasElse*/ true);
             auto elseBuilder = ifOp.getElseBodyBuilder();
             GpuRuntimeCallBuilders callBuilder(
                 ifOp.getContext(), /*pointerBitwidth, doesnt matter*/ 64);
@@ -2257,7 +2263,7 @@ struct ConvertParallelToGPU1Pass
               UNROLL_FACTORS[gridDims].size() *
               (UNROLL_FACTORS[blockDims].size() - firstUnrollFactorId);
           auto alternativesOp =
-              builder.create<enzymexla::AlternativesOp>(loc, numAlternatives);
+              enzymexla::AlternativesOp::create(builder, loc, numAlternatives);
           alternativesOp->setAttr("alternatives.type",
                                   builder.getStringAttr("gpu_kernel"));
           std::vector<Attribute> descs;
@@ -2341,6 +2347,7 @@ struct ConvertParallelToGPU1Pass
                    iThread < UNROLL_FACTORS[blockDims].size(); iThread++) {
                 auto succeeded =
                     emitAlternative(unrollFactorOne, iThread).succeeded();
+                (void)succeeded;
                 assert(succeeded);
               }
             }
@@ -2368,9 +2375,9 @@ struct ConvertParallelToGPU1Pass
           if (!pop->getParentOfType<enzymexla::GPUWrapperOp>())
             return;
           auto loc = pop->getLoc();
-          auto noop = OpBuilder::atBlockBegin(pop.getBody())
-                          .create<enzymexla::NoopOp>(
-                              loc, pop.getBody()->getArguments());
+          OpBuilder builder = OpBuilder::atBlockBegin(pop.getBody());
+          auto noop = enzymexla::NoopOp::create(builder, loc,
+                                                pop.getBody()->getArguments());
           if (pop->getParentOfType<scf::ParallelOp>()) {
             noop->setAttr(
                 "enzymexla.noop_type",
@@ -2467,7 +2474,7 @@ getOperation()->walk(
  [&](enzymexla::GetDeviceGlobalOp gdgo) { gdgops.push_back(gdgo); });
 for (auto gdgo : gdgops) {
 auto builder = OpBuilder(gdgo);
-auto ggo = builder.create<memref::GetGlobalOp>(
+auto ggo = memref::GetGlobalOp::create(builder,
    gdgo->getLoc(), gdgo.getType(), gdgo.getNameAttr());
 gdgo->replaceAllUsesWith(ggo);
 gdgo->erase();
@@ -2529,6 +2536,30 @@ gdgo->erase();
               gmod.getContext(), /*optLevel*/ 2,
               /*triple*/ "nvptx64-nvidia-cuda", chip, features);
           gmod.setTargetsAttr(ArrayAttr::get(gmod.getContext(), target));
+
+          DataLayoutSpecInterface dataLayout = {};
+          // Set index type size to 32 bits
+          {
+            auto ctx = gmod.getContext();
+            llvm::DenseMap<mlir::TypeAttr, mlir::DataLayoutEntryInterface>
+                typeEntries;
+            auto type = IndexType::get(ctx);
+            auto key = mlir::TypeAttr::get(type);
+            uint64_t size = 32;
+            auto params =
+                IntegerAttr::get(mlir::IntegerType::get(ctx, 64), size);
+            typeEntries.try_emplace(key,
+                                    DataLayoutEntryAttr::get(type, params));
+            SmallVector<DataLayoutEntryInterface> entries;
+            entries.reserve(typeEntries.size());
+            for (const auto &it : typeEntries)
+              entries.push_back(it.second);
+            dataLayout = DataLayoutSpecAttr::get(ctx, entries);
+          }
+          // gpuModule->setAttr(
+          //     LLVM::LLVMDialect::getDataLayoutAttrName(),
+          //     deviceModule->getAttr(LLVM::LLVMDialect::getDataLayoutAttrName()));
+          gmod->setAttr(DLTIDialect::kDataLayoutAttrName, dataLayout);
         }
       });
     });
@@ -2544,7 +2575,7 @@ struct MergeGPUModulesPass
     OpBuilder mBuilder(moduleRegion);
     std::string newModuleName = "__enzymexla_gpu_module";
     auto newGpuModule =
-        mBuilder.create<gpu::GPUModuleOp>(m->getLoc(), newModuleName);
+        gpu::GPUModuleOp::create(mBuilder, m->getLoc(), newModuleName);
     OpBuilder gpumBuilder(newGpuModule->getRegion(0));
     std::vector<gpu::GPUModuleOp> toErase;
     m->walk([&](gpu::GPUModuleOp gpum) {

@@ -11,6 +11,11 @@
 
 include "mlir/Pass/PassBase.td"
 
+def TestPolymerPass : Pass<"test-polymer"> {
+  let dependentDialects = [
+  ];
+}
+
 def CanonicalizeLoopsPass : InterfacePass<"canonicalize-loops", 
                                           "mlir::FunctionOpInterface"> {
   let summary = "Canonicalize loops";
@@ -63,6 +68,11 @@ def PropagateConstantBoundsPass
 
 def MarkFunctionMemoryEffectsPass : Pass<"mark-func-memory-effects", "ModuleOp"> {
   let summary = "Attach enzymexla.memory_effects attribute summarizing memory access";
+  let dependentDialects = [
+    "mlir::LLVM::LLVMDialect",
+    "triton::TritonDialect",
+    "memref::MemRefDialect",
+  ];
   let options = [
     Option<
       /*C++ variable name=*/"max_iterations",
@@ -176,6 +186,20 @@ def EnzymeHLOUnrollPass : Pass<"enzyme-hlo-unroll"> {
   let summary = "Unroll stablehlo";
   let dependentDialects =
       ["stablehlo::StablehloDialect", "tensor::TensorDialect"];
+  let options = [
+    Option<
+        /*C++ variable name=*/"maxNumIterations",
+        /*CLI argument=*/"max-num-iterations",
+        /*type=*/"int",
+        /*default=*/"-1",
+        /*description=*/"Only unroll if total iterations is less than this value. If -1, no limit.">,
+    Option<
+        /*C++ variable name=*/"maxOperationThreshold",
+        /*CLI argument=*/"max-operation-threshold",
+        /*type=*/"int",
+        /*default=*/"-1",
+        /*description=*/"Only unroll if total operations is less than this value. If -1, no limit.">
+  ];
 }
 
 def PrintPass : Pass<"print"> {
@@ -403,6 +427,7 @@ def LowerEnzymeXLALinalgPass : Pass<"lower-enzymexla-linalg"> {
     "stablehlo::StablehloDialect",
     "enzymexla::EnzymeXLADialect",
     "LLVM::LLVMDialect",
+    "enzyme::EnzymeDialect",
   ];
 
   let options = [
@@ -445,12 +470,66 @@ def LowerEnzymeXLALapackPass : Pass<"lower-enzymexla-lapack"> {
   ];
 }
 
-def LowerEnzymeProbProgPass : Pass<"lower-enzyme-probprog"> {
-  let summary = "Lower enzyme probprog ops";
+def LowerEnzymeXLABLASPass : Pass<"lower-enzymexla-blas"> {
+  let summary = "Lower enzymexla.blas ops to stablehlo";
   let dependentDialects = [
     "stablehlo::StablehloDialect",
     "enzymexla::EnzymeXLADialect",
     "LLVM::LLVMDialect",
+  ];
+
+  let options = [
+    Option<
+        /*C++ variable name=*/"backend",
+        /*CLI argument=*/"backend",
+        /*type=*/"std::string",
+        /*default=*/"\"cpu\"",
+        /*description=*/"HW backend">,
+    Option<
+        /*C++ variable name=*/"blasIntWidth",
+        /*CLI argument=*/"blas_int_width",
+        /*type=*/"int",
+        /*default=*/"64",
+        /*description=*/"Blas int width (32 or 64). Only used for CPU backend.">,
+  ];
+}
+
+def LowerProbProgToStableHLOPass : Pass<"lower-probprog-to-stablehlo"> {
+  let summary = "Lower computational enzyme ops to StableHLO";
+  let description = [{
+    Lower computational probprog ops (loop, dot, cholesky_solve, random, unflatten_slice)
+    to StableHLO dialect operations.
+  }];
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "chlo::ChloDialect",
+    "arith::ArithDialect",
+    "func::FuncDialect",
+    "enzyme::EnzymeDialect",
+  ];
+
+  let options = [
+    Option<
+        /*C++ variable name=*/"backend",
+        /*CLI argument=*/"backend",
+        /*type=*/"std::string",
+        /*default=*/"\"cpu\"",
+        /*description=*/"HW backend">,
+  ];
+}
+
+def LowerProbProgTraceOpsPass : Pass<"lower-probprog-trace-ops"> {
+  let summary = "Lower probprog trace manipulation ops to JIT calls";
+  let description = [{
+    Lower probprog trace manipulation ops (initTrace, addSampleToTrace, getSampleFromTrace, etc.)
+    to enzymexla.jit_call operations that invoke external runtime functions (e.g., Julia `@cfunction`).
+    This pass also handles type conversions (!enzyme.Trace -> tensor<ui64>, !enzyme.Constraint -> tensor<ui64>).
+  }];
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "enzymexla::EnzymeXLADialect",
+    "LLVM::LLVMDialect",
+    "func::FuncDialect",
   ];
 
   let options = [
@@ -469,6 +548,15 @@ def LowerEnzymeXLAMLPass : Pass<"lower-enzymexla-ml"> {
     "stablehlo::StablehloDialect",
     "chlo::ChloDialect",
     "enzymexla::EnzymeXLADialect",
+  ];
+}
+
+def RaiseTritonCustomCallPass : Pass<"raise-triton-custom-call"> {
+  let summary = "Raise triton custom kernel call";
+  let dependentDialects = [
+    "triton::TritonDialect",
+    "mlir::enzymexla::triton_ext::TritonExtDialect",
+    "stablehlo::StablehloDialect"
   ];
 }
 
@@ -669,6 +757,7 @@ def AffineCFG : Pass<"affine-cfg"> {
   let dependentDialects = [
     "scf::SCFDialect",
     "affine::AffineDialect",
+    "enzyme::EnzymeDialect",
   ];
 }
 
@@ -790,6 +879,12 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*CLI argument=*/"extend_to_pad_comm",
        /*type=*/"int",
        /*default=*/"1",
+       /*description=*/"Perform an Extend with Padding to optimize the communication">,
+       Option<
+       /*C++ variable name=*/"extend_to_pad_comm2",
+       /*CLI argument=*/"extend_to_pad_comm2",
+       /*type=*/"int",
+       /*default=*/"0",
        /*description=*/"Perform an Extend with Padding to optimize the communication">,
        Option<
        /*C++ variable name=*/"concat_two_dus_like",
@@ -924,6 +1019,12 @@ def AutoBatchingPass : Pass<"auto-batching"> {
       /*default=*/"true",
       /*description=*/"Whether to run slice to batch passes">,
     Option<
+      /*C++ variable name=*/"while_loop_batching_mode",
+      /*CLI argument=*/"while_loop_batching_mode",
+      /*type=*/"std::string",
+      /*default=*/"\"greedy\"",
+      /*description=*/"Whether to run while loop batching passes (greedy, none)">,
+    Option<
         /*C++ variable name=*/"max_iterations",
         /*CLI argument=*/"max_iterations",
         /*type=*/"int64_t",
@@ -935,6 +1036,63 @@ def AutoBatchingPass : Pass<"auto-batching"> {
         /*type=*/"bool",
         /*default=*/"false",
         /*description=*/"Use top down traversal">,
+  ];
+}
+
+def DropUnsupportedAttributesPass : Pass<"drop-unsupported-attributes", "ModuleOp"> {
+  let summary = "Drop unsupported attributes for XLA";
+  let dependentDialects = [];
+  let options = [
+    Option<
+        /*C++ variable name=*/"enzymexla_memory_effects",
+        /*CLI argument=*/"enzymexla-memory-effects",
+        /*type=*/"bool",
+        /*default=*/"true",
+        /*description=*/"Drop enzymexla.memory_effects attribute">,
+    Option<
+        /*C++ variable name=*/"enzymexla_analysis_result",
+        /*CLI argument=*/"enzymexla-analysis-result",
+        /*type=*/"bool",
+        /*default=*/"true",
+        /*description=*/"Drop attribute from various analysis results">,
+  ];
+}
+
+def SCFCPUify : Pass<"cpuify"> {
+  let summary = "remove barrier ig";
+  let dependentDialects =
+      ["memref::MemRefDialect", "func::FuncDialect", "LLVM::LLVMDialect"];
+  let options = [
+  Option<"method", "method", "std::string", /*default=*/"\"distribute\"", "Method of doing distribution">
+  ];
+}
+
+def ConvertTritonToTritonGPUPreservingModuleAttributesPass : Pass<
+    "convert-triton-to-triton-gpu-preserving-module-attributes", "mlir::ModuleOp"> {
+  let summary = "Triton generally compiles a single kernel, so they can specify the number of ctas and warps. However, we want to be able to compile multiple kernels. This pass will use the attributes from the module and use that to lower to TritonGPU.";
+  let dependentDialects = [];
+  let options = [
+    Option<
+        /*C++ variable name=*/"target",
+        /*CLI argument=*/"target",
+        /*type=*/"std::string",
+        /*default=*/"\"\"",
+        /*description=*/"the GPU target, e.g., cuda:80, hip:gfx942"
+      >];
+}
+
+def EnzymeBatchToStableHLOPass : Pass<"enzyme-batch-to-stablehlo"> {
+  let summary = "Legalize batching specific enzyme ops to stablehlo dialect";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "enzyme::EnzymeDialect"
+  ];
+}
+
+def ConvertAllConstantsToSplattedConstantPass : Pass<"convert-all-constants-to-splatted-constant", "ModuleOp"> {
+  let summary = "Convert all constants to splatted constants. This is supposed to be used for debugging purposes when dumping the module.";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
   ];
 }
 

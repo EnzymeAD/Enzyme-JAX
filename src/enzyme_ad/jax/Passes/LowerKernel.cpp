@@ -47,10 +47,28 @@ using namespace enzymexla;
 
 using namespace stablehlo;
 
+SymbolRefAttr SymRefAttrReplacingFunctionName(SymbolRefAttr origSymRef,
+                                              StringRef newName) {
+  auto newNameRef = FlatSymbolRefAttr::get(origSymRef.getContext(), newName);
+  auto nestedRefsAttr = origSymRef.getNestedReferences();
+  if (nestedRefsAttr.size() == 0) {
+    return newNameRef;
+  }
+
+  auto rootRef = origSymRef.getRootReference();
+  SmallVector<FlatSymbolRefAttr> nestedRefs;
+  for (int i = 0; i < nestedRefsAttr.size() - 1; i++) {
+    nestedRefs.push_back(nestedRefsAttr[i]);
+  }
+  nestedRefs.push_back(newNameRef);
+  return SymbolRefAttr::get(origSymRef.getContext(), rootRef, nestedRefs);
+}
+
 bool CompileGPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
                       FunctionOpInterface op, size_t gridx, size_t gridy,
                       size_t gridz, size_t blockx, size_t blocky, size_t blockz,
-                      size_t shmem, enzymexla::KernelCallOp kcall) {
+                      size_t shmem, size_t clusterx, size_t clustery,
+                      size_t clusterz, enzymexla::KernelCallOp kcall) {
 
   OpBuilder builder(op);
 
@@ -102,10 +120,10 @@ bool CompileGPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
     }
     assert(gpufunc);
   } else {
-    gpumod = builder.create<gpu::GPUModuleOp>(loc, gpumodname);
+    gpumod = gpu::GPUModuleOp::create(builder, loc, gpumodname);
     builder.setInsertionPointToStart(&gpumod.getBodyRegion().front());
 
-    gpufunc = builder.create<gpu::GPUFuncOp>(loc, legalName, gpuTy);
+    gpufunc = gpu::GPUFuncOp::create(builder, loc, legalName, gpuTy);
     {
       auto entry = &gpufunc.getBody().front();
       builder.setInsertionPointToEnd(entry);
@@ -116,10 +134,10 @@ bool CompileGPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
 
         if (auto AT = dyn_cast<LLVM::LLVMArrayType>(oldarg.getType())) {
           auto ud =
-              builder.create<LLVM::UndefOp>(newarg.getLoc(), oldarg.getType());
+              LLVM::UndefOp::create(builder, newarg.getLoc(), oldarg.getType());
           int64_t c0[1] = {0};
-          newval = builder.create<LLVM::InsertValueOp>(
-              newarg.getLoc(), oldarg.getType(), ud, newval, c0);
+          newval = LLVM::InsertValueOp::create(
+              builder, newarg.getLoc(), oldarg.getType(), ud, newval, c0);
         }
 
         map.map(oldarg, newval);
@@ -136,19 +154,19 @@ bool CompileGPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
 
       gpufunc->walk([](LLVM::ReturnOp op) {
         OpBuilder rewriter(op);
-        rewriter.create<gpu::ReturnOp>(op.getLoc());
+        gpu::ReturnOp::create(rewriter, op.getLoc());
         op.erase();
       });
 
       gpufunc->walk([](LLVM::UnreachableOp op) {
         OpBuilder rewriter(op);
-        rewriter.create<gpu::ReturnOp>(op.getLoc());
+        gpu::ReturnOp::create(rewriter, op.getLoc());
         op.erase();
       });
 
       gpufunc->walk([](func::ReturnOp op) {
         OpBuilder rewriter(op);
-        rewriter.create<gpu::ReturnOp>(op.getLoc());
+        gpu::ReturnOp::create(rewriter, op.getLoc());
         op.erase();
       });
     }
@@ -190,7 +208,7 @@ bool CompileGPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   static size_t callid = 0;
   callid++;
   auto callName = (op.getName() + "$call$" + std::to_string(callid)).str();
-  auto func = builder.create<func::FuncOp>(loc, callName, gpuTy);
+  auto func = func::FuncOp::create(builder, loc, callName, gpuTy);
   func.setVisibility(SymbolTable::Visibility::Private);
 
   auto &entryBlock = *func.addEntryBlock();
@@ -199,27 +217,40 @@ bool CompileGPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   auto idx = builder.getIntegerType(64);
   auto i32 = builder.getIntegerType(32);
   gpu::KernelDim3 gridSize{
-      builder.create<arith::ConstantIntOp>(loc, idx, gridx),
-      builder.create<arith::ConstantIntOp>(loc, idx, gridy),
-      builder.create<arith::ConstantIntOp>(loc, idx, gridz),
+      arith::ConstantIntOp::create(builder, loc, idx, gridx),
+      arith::ConstantIntOp::create(builder, loc, idx, gridy),
+      arith::ConstantIntOp::create(builder, loc, idx, gridz),
   };
 
   gpu::KernelDim3 blockSize{
-      builder.create<arith::ConstantIntOp>(loc, idx, blockx),
-      builder.create<arith::ConstantIntOp>(loc, idx, blocky),
-      builder.create<arith::ConstantIntOp>(loc, idx, blockz),
+      arith::ConstantIntOp::create(builder, loc, idx, blockx),
+      arith::ConstantIntOp::create(builder, loc, idx, blocky),
+      arith::ConstantIntOp::create(builder, loc, idx, blockz),
   };
 
-  auto dynshmem = builder.create<arith::ConstantIntOp>(loc, i32, shmem);
+  auto dynshmem = arith::ConstantIntOp::create(builder, loc, i32, shmem);
 
-  Value stream = builder.create<enzymexla::GetStreamOp>(
-      loc, gpu::AsyncTokenType::get(kcall.getContext()));
+  Value stream = enzymexla::GetStreamOp::create(
+      builder, loc, gpu::AsyncTokenType::get(kcall.getContext()));
 
-  builder.create<gpu::LaunchFuncOp>(loc, gpufunc, gridSize, blockSize, dynshmem,
-                                    entryBlock.getArguments(), stream.getType(),
-                                    ValueRange(stream));
+  if (clusterx != 1 || clustery != 1 || clusterz != 1) {
+    gpu::KernelDim3 clusterSize{
+        arith::ConstantIntOp::create(builder, loc, idx, clusterx),
+        arith::ConstantIntOp::create(builder, loc, idx, clustery),
+        arith::ConstantIntOp::create(builder, loc, idx, clusterz),
+    };
 
-  builder.create<mlir::func::ReturnOp>(loc);
+    gpu::LaunchFuncOp::create(builder, loc, gpufunc, gridSize, blockSize,
+                              dynshmem, entryBlock.getArguments(),
+                              stream.getType(), ValueRange(stream),
+                              clusterSize);
+  } else {
+    gpu::LaunchFuncOp::create(builder, loc, gpufunc, gridSize, blockSize,
+                              dynshmem, entryBlock.getArguments(),
+                              stream.getType(), ValueRange(stream));
+  }
+
+  mlir::func::ReturnOp::create(builder, loc);
 
   if (!op->getParentOp()->hasAttr(
           gpu::GPUDialect::getContainerModuleAttrName()))
@@ -227,9 +258,9 @@ bool CompileGPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
                                UnitAttr::get(kcall.getContext()));
 
   OpBuilder rewriter(kcall);
-  auto replacement = rewriter.create<enzymexla::JITCallOp>(
-      kcall.getLoc(), kcall.getResultTypes(),
-      mlir::FlatSymbolRefAttr::get(kcall.getContext(), callName),
+  auto replacement = enzymexla::JITCallOp::create(
+      rewriter, kcall.getLoc(), kcall.getResultTypes(),
+      SymRefAttrReplacingFunctionName(kcall.getFn(), callName),
       kcall.getInputs(), kcall.getBackendConfigAttr(),
       kcall.getOperandLayoutsAttr(), kcall.getResultLayoutsAttr(),
       kcall.getArgAttrsAttr(), kcall.getResAttrsAttr(),
@@ -242,8 +273,14 @@ bool CompileGPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
 bool CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
                       FunctionOpInterface op, size_t gridx, size_t gridy,
                       size_t gridz, size_t blockx, size_t blocky, size_t blockz,
-                      size_t shmem, enzymexla::KernelCallOp kcall) {
+                      size_t shmem, size_t clusterx, size_t clustery,
+                      size_t clusterz, enzymexla::KernelCallOp kcall) {
   OpBuilder builder(op);
+
+  if (clusterx != 1 || clustery != 1 || clusterz != 1) {
+    op.emitError("CPU kernels do not support cluster");
+    return false;
+  }
 
   FunctionType gpuTy0 = dyn_cast<FunctionType>(op.getFunctionType());
   if (!gpuTy0) {
@@ -266,7 +303,7 @@ bool CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   static int id = 0;
   auto callName = (op.getName() + "$" + "par" + std::to_string(id)).str();
   id++;
-  auto func = builder.create<func::FuncOp>(loc, callName, gpuTy0);
+  auto func = func::FuncOp::create(builder, loc, callName, gpuTy0);
   func.setVisibility(SymbolTable::Visibility::Private);
   auto &entryBlock = *func.addEntryBlock();
   builder.setInsertionPointToStart(&entryBlock);
@@ -275,9 +312,9 @@ bool CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   SmallVector<mlir::Value> finals;
   SmallVector<mlir::Value> incs;
   for (auto val : {gridx, gridy, gridz, blockx, blocky, blockz}) {
-    inits.push_back(builder.create<arith::ConstantIndexOp>(loc, 0));
-    incs.push_back(builder.create<arith::ConstantIndexOp>(loc, 1));
-    finals.push_back(builder.create<arith::ConstantIndexOp>(loc, val));
+    inits.push_back(arith::ConstantIndexOp::create(builder, loc, 0));
+    incs.push_back(arith::ConstantIndexOp::create(builder, loc, 1));
+    finals.push_back(arith::ConstantIndexOp::create(builder, loc, val));
   }
 
   IRMapping map;
@@ -293,55 +330,55 @@ bool CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   }
 
   SmallVector<int64_t> steps(6, 1);
-  auto par = builder.create<affine::AffineParallelOp>(
-      loc, TypeRange(), ArrayRef<arith::AtomicRMWKind>(), zeroMaps,
+  auto par = affine::AffineParallelOp::create(
+      builder, loc, TypeRange(), ArrayRef<arith::AtomicRMWKind>(), zeroMaps,
       ValueRange(), idMaps, finals, steps);
 
-  builder.create<mlir::func::ReturnOp>(loc);
+  mlir::func::ReturnOp::create(builder, loc);
 
   builder.setInsertionPointToStart(&par.getRegion().front());
   auto executeRegion =
-      builder.create<scf::ExecuteRegionOp>(loc, ArrayRef<mlir::Type>());
+      scf::ExecuteRegionOp::create(builder, loc, ArrayRef<mlir::Type>());
 
   op.getFunctionBody().cloneInto(&executeRegion.getRegion(), map);
 
   executeRegion->walk([](LLVM::ReturnOp op) {
     OpBuilder rewriter(op);
-    rewriter.create<scf::YieldOp>(op.getLoc());
+    scf::YieldOp::create(rewriter, op.getLoc());
     op.erase();
   });
 
   executeRegion->walk([](func::ReturnOp op) {
     OpBuilder rewriter(op);
-    rewriter.create<scf::YieldOp>(op.getLoc());
+    scf::YieldOp::create(rewriter, op.getLoc());
     op.erase();
   });
 
   executeRegion->walk([](LLVM::UnreachableOp op) {
     OpBuilder rewriter(op);
-    rewriter.create<scf::YieldOp>(op.getLoc());
+    scf::YieldOp::create(rewriter, op.getLoc());
     op.erase();
   });
 
   // block idx
   executeRegion->walk([&](NVVM::BlockIdXOp idxOp) {
     OpBuilder rewriter(idxOp);
-    auto rep = rewriter.create<arith::IndexCastUIOp>(
-        op.getLoc(), idxOp.getType(), par.getIVs()[0]);
+    auto rep = arith::IndexCastUIOp::create(rewriter, op.getLoc(),
+                                            idxOp.getType(), par.getIVs()[0]);
     idxOp.replaceAllUsesWith(rep.getResult());
     idxOp.erase();
   });
   executeRegion->walk([&](NVVM::BlockIdYOp idxOp) {
     OpBuilder rewriter(idxOp);
-    auto rep = rewriter.create<arith::IndexCastUIOp>(
-        op.getLoc(), idxOp.getType(), par.getIVs()[1]);
+    auto rep = arith::IndexCastUIOp::create(rewriter, op.getLoc(),
+                                            idxOp.getType(), par.getIVs()[1]);
     idxOp.replaceAllUsesWith(rep.getResult());
     idxOp.erase();
   });
   executeRegion->walk([&](NVVM::BlockIdZOp idxOp) {
     OpBuilder rewriter(idxOp);
-    auto rep = rewriter.create<arith::IndexCastUIOp>(
-        op.getLoc(), idxOp.getType(), par.getIVs()[2]);
+    auto rep = arith::IndexCastUIOp::create(rewriter, op.getLoc(),
+                                            idxOp.getType(), par.getIVs()[2]);
     idxOp.replaceAllUsesWith(rep.getResult());
     idxOp.erase();
   });
@@ -362,22 +399,22 @@ bool CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   // thread idx
   executeRegion->walk([&](NVVM::ThreadIdXOp idxOp) {
     OpBuilder rewriter(idxOp);
-    auto rep = rewriter.create<arith::IndexCastUIOp>(
-        op.getLoc(), idxOp.getType(), par.getIVs()[3]);
+    auto rep = arith::IndexCastUIOp::create(rewriter, op.getLoc(),
+                                            idxOp.getType(), par.getIVs()[3]);
     idxOp.replaceAllUsesWith(rep.getResult());
     idxOp.erase();
   });
   executeRegion->walk([&](NVVM::ThreadIdYOp idxOp) {
     OpBuilder rewriter(idxOp);
-    auto rep = rewriter.create<arith::IndexCastUIOp>(
-        op.getLoc(), idxOp.getType(), par.getIVs()[4]);
+    auto rep = arith::IndexCastUIOp::create(rewriter, op.getLoc(),
+                                            idxOp.getType(), par.getIVs()[4]);
     idxOp.replaceAllUsesWith(rep.getResult());
     idxOp.erase();
   });
   executeRegion->walk([&](NVVM::ThreadIdZOp idxOp) {
     OpBuilder rewriter(idxOp);
-    auto rep = rewriter.create<arith::IndexCastUIOp>(
-        op.getLoc(), idxOp.getType(), par.getIVs()[5]);
+    auto rep = arith::IndexCastUIOp::create(rewriter, op.getLoc(),
+                                            idxOp.getType(), par.getIVs()[5]);
     idxOp.replaceAllUsesWith(rep.getResult());
     idxOp.erase();
   });
@@ -396,9 +433,9 @@ bool CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   });
 
   OpBuilder rewriter(kcall);
-  auto replacement = rewriter.create<enzymexla::JITCallOp>(
-      kcall.getLoc(), kcall.getResultTypes(),
-      mlir::FlatSymbolRefAttr::get(kcall.getContext(), callName),
+  auto replacement = enzymexla::JITCallOp::create(
+      rewriter, kcall.getLoc(), kcall.getResultTypes(),
+      SymRefAttrReplacingFunctionName(kcall.getFn(), callName),
       kcall.getInputs(), kcall.getBackendConfigAttr(),
       kcall.getOperandLayoutsAttr(), kcall.getResultLayoutsAttr(),
       kcall.getArgAttrsAttr(), kcall.getResAttrsAttr(),
@@ -419,7 +456,7 @@ struct LowerKernelPass
     symbolTable.getSymbolTable(getOperation());
 
     getOperation()->walk([&](KernelCallOp op) {
-      size_t data[8];
+      size_t data[11];
 
       auto *symbolOp = symbolTable.lookupNearestSymbolFrom(op, op.getFnAttr());
       auto fn = cast<FunctionOpInterface>(symbolOp);
@@ -434,33 +471,55 @@ struct LowerKernelPass
                       op.getBlockx(), op.getBlocky(), op.getBlockz(),
                       op.getShmem()};
       for (auto en : llvm::enumerate(vals)) {
-        DenseIntElementsAttr stepAttr;
-        if (!matchPattern(en.value(), m_Constant(&stepAttr))) {
-          op->emitError() << "Cannot lower kernel with a grid/block size which "
-                             "is not a constant integer tensor";
+        auto val = getConstantValue(op, en.value(), 0);
+        if (val == -1)
           return;
-        }
-        if (stepAttr.size() != 1) {
-          op->emitError() << "Cannot lower kernel with a grid/block size which "
-                             "is not a constant integer tensor of size 1";
-          return;
-        }
-        auto val = (*stepAttr.begin()).getZExtValue();
         data[1 + en.index()] = val;
+      }
+
+      // Resolve the optional cluster dimensions
+      Value clusterVals[] = {op.getClusterx(), op.getClustery(),
+                             op.getClusterz()};
+      for (auto en : llvm::enumerate(clusterVals)) {
+        auto val = getConstantValue(op, en.value(), 1);
+        if (val == -1)
+          return;
+        data[8 + en.index()] = val;
       }
 
       // Compiled kernel goes here once ready
       if (backend == "cuda") {
         CompileGPUKernel(symbolTable, op.getLoc(), fn, data[1], data[2],
-                         data[3], data[4], data[5], data[6], data[7], op);
+                         data[3], data[4], data[5], data[6], data[7], data[8],
+                         data[9], data[10], op);
       } else if (backend == "cpu") {
         CompileCPUKernel(symbolTable, op.getLoc(), fn, data[1], data[2],
-                         data[3], data[4], data[5], data[6], data[7], op);
+                         data[3], data[4], data[5], data[6], data[7], data[8],
+                         data[9], data[10], op);
       } else {
         op->emitError() << "Cannot lower kernel to unknown backend \""
                         << backend << "\"";
       }
     });
+  }
+
+private:
+  size_t getConstantValue(KernelCallOp op, Value v, size_t defaultValue) {
+    if (!v)
+      return defaultValue;
+
+    DenseIntElementsAttr stepAttr;
+    if (!matchPattern(v, m_Constant(&stepAttr))) {
+      op->emitError() << "Cannot lower kernel with a value which "
+                         "is not a constant integer tensor";
+      return -1;
+    }
+    if (stepAttr.size() != 1) {
+      op->emitError() << "Cannot lower kernel with a value which "
+                         "is not a constant integer tensor of size 1";
+      return -1;
+    }
+    return (*stepAttr.begin()).getZExtValue();
   }
 };
 

@@ -1,101 +1,119 @@
-diff --git a/xla/backends/gpu/codegen/triton/BUILD b/xla/backends/gpu/codegen/triton/BUILD
-index b7b7c6eaa1..8330ac007a 100644
---- a/xla/backends/gpu/codegen/triton/BUILD
-+++ b/xla/backends/gpu/codegen/triton/BUILD
-@@ -1,3 +1,7 @@
-+load(
-+    "@local_config_rocm//rocm:build_defs.bzl",
-+    "if_rocm_is_configured",
-+)
- load("@rules_cc//cc:cc_library.bzl", "cc_library")
- load("//xla:xla.default.bzl", "xla_cc_test")
- load(
-@@ -7,6 +11,10 @@ load(
- )
- load("//xla/tests:build_defs.bzl", "xla_test")
- load("//xla/tsl:tsl.bzl", "if_google")
-+load(
-+    "//xla/tsl/platform/default:cuda_build_defs.bzl",
-+    "if_cuda_is_configured",
-+)
- 
- package(
-     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
-@@ -262,9 +270,6 @@ cc_library(
-         "//xla/service/gpu:backend_configs_cc",
-         "//xla/service/gpu:ir_emission_utils",
-         "//xla/service/gpu:launch_dimensions",
--        "//xla/service/gpu/llvm_gpu_backend:amdgpu_backend",
--        "//xla/service/gpu/llvm_gpu_backend:nvptx_backend",
--        "//xla/service/gpu/llvm_gpu_backend:nvptx_libdevice_path",
-         "//xla/service/gpu:matmul_utils",
-         "//xla/service/gpu:triton_fusion_analysis",
-         "//xla/service/gpu/model:triton_emitter_constraints",
-@@ -272,12 +277,17 @@ cc_library(
-         "//xla/stream_executor/cuda:cuda_compute_capability",
-         "//xla/tools:hlo_decomposer_lib",
-         "//xla/tsl/platform:errors",
--        "//xla/tsl/platform:rocm_rocdl_path",
-         "//xla/tsl/platform:statusor",
-         "@tsl//tsl/platform:errors",
-         "@tsl//tsl/platform:path",
-         "@tsl//tsl/platform:statusor",
-         "@triton//:TritonTransforms",
-+    ]) + if_cuda_is_configured([
-+        "//xla/service/gpu/llvm_gpu_backend:nvptx_backend",
-+        "//xla/service/gpu/llvm_gpu_backend:nvptx_libdevice_path",
-+    ]) + if_rocm_is_configured([
-+        "//xla/service/gpu/llvm_gpu_backend:amdgpu_backend",
-+        "//xla/tsl/platform:rocm_rocdl_path",
-     ]),
+diff --git a/third_party/gpus/rocm/BUILD.tpl b/third_party/gpus/rocm/BUILD.tpl
+index c95f9a9593..6e9ac4f185 100644
+--- a/third_party/gpus/rocm/BUILD.tpl
++++ b/third_party/gpus/rocm/BUILD.tpl
+@@ -594,6 +594,36 @@ filegroup(
+     visibility = ["//visibility:public"],
  )
  
-diff --git a/xla/backends/gpu/codegen/triton/fusion_emitter.cc b/xla/backends/gpu/codegen/triton/fusion_emitter.cc
-index 371b35b484..49f61b6ba2 100644
---- a/xla/backends/gpu/codegen/triton/fusion_emitter.cc
-+++ b/xla/backends/gpu/codegen/triton/fusion_emitter.cc
-@@ -117,8 +117,16 @@ limitations under the License.
- #include "xla/service/dump.h"
- #include "xla/service/gpu/backend_configs.pb.h"
- #include "xla/service/gpu/ir_emission_utils.h"
++sh_binary(
++    name = "hipcc",
++    srcs = ["%{rocm_root}/bin/hipcc"],
++    visibility = ["//visibility:public"],
++)
 +
-+#ifdef TENSORFLOW_USE_ROCM
- #include "xla/service/gpu/llvm_gpu_backend/amdgpu_backend.h"
-+#include "xla/tsl/platform/rocm_rocdl_path.h"
-+#endif
++sh_binary(
++    name = "llvm-link",
++    srcs = ["%{rocm_root}/lib/llvm/bin/llvm-link"],
++    visibility = ["//visibility:public"],
++)
 +
-+#ifdef GOOGLE_CUDA
- #include "xla/service/gpu/llvm_gpu_backend/nvptx_libdevice_path.h"
-+#endif
++sh_binary(
++    name = "opt",
++    srcs = ["%{rocm_root}/lib/llvm/bin/opt"],
++    visibility = ["//visibility:public"],
++)
 +
- #include "xla/service/gpu/model/symbolic_tile_analysis.h"
- #include "xla/service/gpu/model/tiled_hlo_computation.h"
- #include "xla/service/gpu/model/tiled_hlo_instruction.h"
-@@ -136,7 +144,6 @@ limitations under the License.
- #include "xla/stream_executor/launch_dim.h"
- #include "xla/tools/hlo_decomposer.h"
- #include "xla/tsl/platform/errors.h"
--#include "xla/tsl/platform/rocm_rocdl_path.h"
- #include "xla/tsl/platform/statusor.h"
- #include "xla/util.h"
- #include "xla/xla.pb.h"
-@@ -2293,13 +2300,18 @@ absl::StatusOr<TritonWrapperResult> CompileTritonToLLVM(
++filegroup(
++    name = "ocml",
++    srcs = ["%{rocm_root}/lib/llvm/amdgcn/bitcode/ocml.bc"],
++    visibility = ["//visibility:public"],
++)
++
++filegroup(
++    name = "ockl",
++    srcs = ["%{rocm_root}/lib/llvm/amdgcn/bitcode/ockl.bc"],
++    visibility = ["//visibility:public"],
++)
++
+ filegroup(
+     name = "toolchain_data",
+     srcs = glob([
+diff --git a/third_party/rocm_device_libs/build_defs.bzl b/third_party/rocm_device_libs/build_defs.bzl
+index 5b9aee4f08..f55aabe5ad 100644
+--- a/third_party/rocm_device_libs/build_defs.bzl
++++ b/third_party/rocm_device_libs/build_defs.bzl
+@@ -103,6 +103,7 @@ def _bitcode_library_impl(ctx):
+         inputs = [strip_out],
+         outputs = [final_bc],
+         arguments = [strip_out.path, "-o", final_bc.path],
++        use_default_shell_env = True,
+         progress_message = "Preparing final bitcode for {}".format(ctx.label.name),
+         mnemonic = "BitcodeFinalize",
+     )
+@@ -118,17 +119,17 @@ bitcode_library = rule(
+         "hdrs": attr.label_list(allow_files = [".h"]),
+         "file_specific_flags": attr.string_list_dict(),
+         "_clang": attr.label(
+-            default = Label("@llvm-project//clang:clang"),
++            default = Label("@local_config_rocm//rocm:hipcc"),
+             executable = True,
+             cfg = "exec",
+         ),
+         "_llvm_link": attr.label(
+-            default = Label("@llvm-project//llvm:llvm-link"),
++            default = Label("@local_config_rocm//rocm:llvm-link"),
+             executable = True,
+             cfg = "exec",
+         ),
+         "_opt": attr.label(
+-            default = Label("@llvm-project//llvm:opt"),
++            default = Label("@local_config_rocm//rocm:opt"),
+             executable = True,
+             cfg = "exec",
+         ),
+diff --git a/third_party/rocm_device_libs/rocm_device_libs.BUILD b/third_party/rocm_device_libs/rocm_device_libs.BUILD
+index 11795b3537..24ba30ec5e 100644
+--- a/third_party/rocm_device_libs/rocm_device_libs.BUILD
++++ b/third_party/rocm_device_libs/rocm_device_libs.BUILD
+@@ -27,36 +27,12 @@ cc_binary(
+     ],
+ )
  
- std::string GetLibdevicePath(const HloModuleConfig& hlo_config,
-                              const se::DeviceDescription& device_info) {
-+#ifdef GOOGLE_CUDA
-   if (std::holds_alternative<se::CudaComputeCapability>(
-           device_info.gpu_compute_capability())) {
-     return nvptx::LibDevicePath(
-         hlo_config.debug_options().xla_gpu_cuda_data_dir());
-   }
-+#elif defined(TENSORFLOW_USE_ROCM)
-   return amdgpu::LibDevicePath(
-       device_info.rocm_compute_capability().gcn_arch_name(), tsl::RocdlRoot());
-+#else
-+  return "";
-+#endif
- }
+-bitcode_library(
++alias(
+     name = "ocml",
+-    srcs = glob([
+-        "ocml/src/*.cl",
+-    ]),
+-    hdrs = glob([
+-        "ocml/src/*.h",
+-        "ocml/inc/*.h",
+-        "irif/inc/*.h",
+-        "oclc/inc/*.h",
+-    ]),
+-    file_specific_flags = {
+-        "native_logF.cl": ["-fapprox-func"],
+-        "native_expF.cl": ["-fapprox-func"],
+-        "sqrtF.cl": ["-cl-fp32-correctly-rounded-divide-sqrt"],
+-    },
++    actual = "@local_config_rocm//rocm:ocml"
+ )
  
- }  // namespace gpu
- 
+-bitcode_library(
++alias(
+     name = "ockl",
+-    srcs = glob([
+-        "ockl/src/*.cl",
+-        "ockl/src/*.ll",
+-    ]),
+-    hdrs = glob([
+-        "ockl/inc/*.h",
+-        "irif/inc/*.h",
+-        "oclc/inc/*.h",
+-    ]),
+-    file_specific_flags = {
+-        "gaaf.cl": ["-munsafe-fp-atomics"],
+-    },
++    actual = "@local_config_rocm//rocm:ockl"
+ )

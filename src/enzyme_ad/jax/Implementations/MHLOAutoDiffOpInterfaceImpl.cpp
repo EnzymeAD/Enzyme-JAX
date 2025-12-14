@@ -59,12 +59,11 @@ static inline Operation *createAddRegion(Operation *op) {
   auto tensorType = RankedTensorType::get({}, elemType);
   block->addArguments({tensorType, tensorType}, {op->getLoc(), op->getLoc()});
   builder.setInsertionPointToEnd(block);
-  builder.create<mlir::mhlo::ReturnOp>(
-      op->getLoc(),
-      builder
-          .create<mlir::mhlo::AddOp>(op->getLoc(), block->getArgument(0),
-                                     block->getArgument(1))
-          ->getResult(0));
+  mlir::mhlo::ReturnOp::create(builder, op->getLoc(),
+                               mlir::mhlo::AddOp::create(builder, op->getLoc(),
+                                                         block->getArgument(0),
+                                                         block->getArgument(1))
+                                   ->getResult(0));
   return op;
 }
 
@@ -72,6 +71,17 @@ static inline DenseIntElementsAttr
 getBroadcastInDimsAttr(OpBuilder &builder, ArrayRef<int64_t> dims) {
   return builder.getI64VectorAttr(dims);
 }
+
+static inline SmallVector<int64_t> shiftDimensions(ArrayRef<int64_t> dims,
+                                                   SmallVector<int64_t> newDims,
+                                                   int64_t addFactor) {
+  SmallVector<int64_t> shiftedDims(newDims.begin(), newDims.end());
+  for (auto dim : dims) {
+    shiftedDims.push_back(dim + addFactor);
+  }
+  return shiftedDims;
+}
+
 namespace {
 #include "src/enzyme_ad/jax/Implementations/MHLODerivatives.inc"
 } // namespace

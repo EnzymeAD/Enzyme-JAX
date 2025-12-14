@@ -23,8 +23,9 @@ module {
   func.func @main(%arg0: tensor<64xi64>) -> tensor<64xi64> {
     %c0 = stablehlo.constant dense<0> : tensor<i64>
     %c1 = stablehlo.constant dense<1> : tensor<i64>
+    %c2 = stablehlo.constant dense<2> : tensor<i64>
     %c40 = stablehlo.constant dense<40> : tensor<i64>
-    %0 = enzymexla.kernel_call @kern blocks in (%c1, %c1, %c1) threads in (%c1, %c1, %c40) shmem=%c0 (%arg0) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<64xi64>) -> tensor<64xi64>
+    %0 = enzymexla.kernel_call @kern clusters in (%c2, %c1, %c1) blocks in (%c1, %c1, %c1) threads in (%c1, %c1, %c40) shmem=%c0 (%arg0) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<64xi64>) -> tensor<64xi64>
     return %0 : tensor<64xi64>
   }
 }
@@ -51,11 +52,12 @@ module {
 // CHECK-NEXT:    }
 // CHECK-NEXT:  }
 // CHECK:  func.func private @kern$call$1(%arg0: !llvm.ptr<1>) {
+// CHECK-NEXT:    %c2_i64 = arith.constant 2 : i64
 // CHECK-NEXT:    %c1_i64 = arith.constant 1 : i64
 // CHECK-NEXT:    %c40_i64 = arith.constant 40 : i64
 // CHECK-NEXT:    %c0_i32 = arith.constant 0 : i32
 // CHECK-NEXT:    %0 = "enzymexla.get_stream"() : () -> !gpu.async.token
-// CHECK-NEXT:    %1 = gpu.launch_func async [%0] @gpumod_kern::@kern blocks in (%c1_i64, %c1_i64, %c1_i64) threads in (%c1_i64, %c1_i64, %c40_i64) : i64 dynamic_shared_memory_size %c0_i32 args(%arg0 : !llvm.ptr<1>)
+// CHECK-NEXT:    %1 = gpu.launch_func async [%0] @gpumod_kern::@kern clusters in (%c2_i64, %c1_i64, %c1_i64) blocks in (%c1_i64, %c1_i64, %c1_i64) threads in (%c1_i64, %c1_i64, %c40_i64) : i64 dynamic_shared_memory_size %c0_i32 args(%arg0 : !llvm.ptr<1>)
 // CHECK-NEXT:    return
 // CHECK-NEXT:  }
 // CHECK:  func.func @main(%arg0: tensor<64xi64>) -> tensor<64xi64> {

@@ -29,6 +29,7 @@ cc_library(
     deps = [
         "@xla//xla/ffi:ffi_api",
         "@xla//xla/ffi/api:ffi",
+        "@xla//xla/stream_executor:stream",
     ],
 )
 
@@ -267,6 +268,20 @@ td_library(
 )
 
 gentbl_cc_library(
+    name = "triton-derivatives",
+    tbl_outs = [(
+        ["-gen-mlir-derivatives"],
+        "Implementations/TritonDerivatives.inc",
+    )],
+    tblgen = "@enzyme//:enzyme-tblgen",
+    td_file = "Implementations/TritonDerivatives.td",
+    td_srcs = [
+        "Implementations/TritonDerivatives.td",
+    ],
+    deps = [":ImplementationsCommonTdFiles"],
+)
+
+gentbl_cc_library(
     name = "mhlo-derivatives",
     tbl_outs = [(
         ["-gen-mlir-derivatives"],
@@ -294,6 +309,22 @@ gentbl_cc_library(
     td_srcs = [
         "Implementations/StableHLODerivatives.td",
         "Implementations/HLODerivatives.td",
+    ],
+    deps = [
+        ":EnzymeImplementationsCommonTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "enzymexla-derivatives",
+    tbl_outs = [(
+        ["-gen-mlir-derivatives"],
+        "Implementations/EnzymeXLADerivatives.inc",
+    )],
+    tblgen = "@enzyme//:enzyme-tblgen",
+    td_file = "Implementations/EnzymeXLADerivatives.td",
+    td_srcs = [
+        "Implementations/EnzymeXLADerivatives.td",
     ],
     deps = [
         ":EnzymeImplementationsCommonTdFiles",
@@ -553,11 +584,11 @@ gentbl_cc_library(
     name = "DistributedInterfacesIncGen",
     tbl_outs = [
         (
-            ["--gen-interface-decls"],
+            ["--gen-op-interface-decls"],
             "Dialect/Distributed/DistributedInterfaces.h.inc",
         ),
         (
-            ["--gen-interface-defs"],
+            ["--gen-op-interface-defs"],
             "Dialect/Distributed/DistributedInterfaces.cpp.inc",
         ),
     ],
@@ -629,6 +660,64 @@ gentbl_cc_library(
     ],
 )
 
+td_library(
+    name = "PerfifyDialectFiles",
+    srcs = [
+        "Dialect/Perfify/Dialect.td",
+        "Dialect/Perfify/Ops.td",
+    ],
+    deps = [
+        "@llvm-project//mlir:BuiltinDialectTdFiles",
+        "@llvm-project//mlir:ControlFlowInterfacesTdFiles",
+        "@llvm-project//mlir:OpBaseTdFiles",
+        "@llvm-project//mlir:SideEffectInterfaces",
+    ],
+)
+
+gentbl_cc_library(
+    name = "PerfifyDialectIncGen",
+    tbl_outs = [
+        (
+            [
+                "-gen-dialect-decls",
+                "-dialect=perfify",
+            ],
+            "Dialect/Perfify/PerfifyDialect.h.inc",
+        ),
+        (
+            [
+                "-gen-dialect-defs",
+                "-dialect=perfify",
+            ],
+            "Dialect/Perfify/PerfifyDialect.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/Perfify/Dialect.td",
+    deps = [
+        ":PerfifyDialectFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "PerfifyOpsIncGen",
+    tbl_outs = [
+        (
+            ["-gen-op-decls"],
+            "Dialect/Perfify/PerfifyOps.h.inc",
+        ),
+        (
+            ["-gen-op-defs"],
+            "Dialect/Perfify/PerfifyOps.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/Perfify/Ops.td",
+    deps = [
+        ":PerfifyDialectFiles",
+    ],
+)
+
 cc_library(
     name = "CheckedRewrite",
     hdrs = ["CheckedRewrite.h"],
@@ -639,57 +728,226 @@ cc_library(
 )
 
 cc_library(
-    name = "XLADerivatives",
-    srcs = glob([
-        "Implementations/*.cpp",
-        "Passes/*.cpp",
-        "Dialect/*.cpp",
-        "Dialect/Distributed/*.cpp",
-        "Dialect/Tessera/*.cpp",
-    ]) + [
+    name = "EnzymeXLADialect",
+    srcs = [
+        "Dialect/Dialect.cpp",
+        "Dialect/Ops.cpp",
         "Utils.cpp",
     ],
-    hdrs = glob([
-        "Implementations/*.h",
-        "Passes/*.h",
-        "Dialect/*.h",
-        "Dialect/Distributed/*.h",
-        "Dialect/Tessera/*.h",
-    ]) + [
+    hdrs = [
+        "Dialect/Dialect.h",
+        "Dialect/Ops.h",
         "Utils.h",
     ],
+    deps = [
+        ":EnzymeXLAAttrsIncGen",
+        ":EnzymeXLACanonicalizers",
+        ":EnzymeXLADialectUtils",
+        ":EnzymeXLAOpsIncGen",
+        "@enzyme//:EnzymeMLIR",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:AffineDialect",
+        "@llvm-project//mlir:Analysis",
+        "@llvm-project//mlir:ArithDialect",
+        "@llvm-project//mlir:ArithUtils",
+        "@llvm-project//mlir:BytecodeOpInterface",
+        "@llvm-project//mlir:CallOpInterfaces",
+        "@llvm-project//mlir:ControlFlowInterfaces",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:GPUDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:InferTypeOpInterface",
+        "@llvm-project//mlir:InliningUtils",
+        "@llvm-project//mlir:LLVMDialect",
+        "@llvm-project//mlir:MemRefDialect",
+        "@llvm-project//mlir:MemorySlotInterfaces",
+        "@llvm-project//mlir:OpenMPDialect",
+        "@llvm-project//mlir:QuantOps",
+        "@llvm-project//mlir:SCFDialect",
+        "@llvm-project//mlir:SideEffectInterfaces",
+        "@llvm-project//mlir:Support",
+        "@llvm-project//mlir:ViewLikeInterface",
+        "@shardy//shardy/dialect/sdy/ir:dialect",
+        "@stablehlo//:base",
+        "@stablehlo//:chlo_ops",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+cc_library(
+    name = "CInterface",
+    srcs = ["Integrations/c/EnzymeXLA.cpp"],
+    hdrs = ["Integrations/c/EnzymeXLA.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":EnzymeXLADialect",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:CAPIIRObjects",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Support",
+    ],
+    alwayslink = True,
+)
+
+td_library(
+    name = "TritonExtDialectTdFiles",
+    srcs = [
+        "Dialect/TritonExt/Dialect.td",
+        "Dialect/TritonExt/Ops.td",
+    ],
+    deps = [
+        "@llvm-project//mlir:BuiltinDialectTdFiles",
+        "@llvm-project//mlir:CallOpInterfaces",
+        "@llvm-project//mlir:ControlFlowInterfacesTdFiles",
+        "@llvm-project//mlir:FunctionInterfacesTdFiles",
+        "@llvm-project//mlir:InferTypeOpInterfaceTdFiles",
+        "@llvm-project//mlir:OpBaseTdFiles",
+        "@llvm-project//mlir:SideEffectInterfacesTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "TritonExtDialectIncGen",
+    tbl_outs = [
+        (
+            [
+                "-gen-dialect-decls",
+                "-dialect=enzymexla_tt_ext",
+            ],
+            "Dialect/TritonExt/TritonExtDialect.h.inc",
+        ),
+        (
+            [
+                "-gen-dialect-defs",
+                "-dialect=enzymexla_tt_ext",
+            ],
+            "Dialect/TritonExt/TritonExtDialect.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/TritonExt/Dialect.td",
+    deps = [
+        ":TritonExtDialectTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "TritonExtOpsIncGen",
+    tbl_outs = [
+        (
+            ["-gen-op-decls"],
+            "Dialect/TritonExt/TritonExtOps.h.inc",
+        ),
+        (
+            ["-gen-op-defs"],
+            "Dialect/TritonExt/TritonExtOps.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/TritonExt/Ops.td",
+    deps = [
+        ":TritonExtDialectTdFiles",
+    ],
+)
+
+cc_library(
+    name = "TritonExtDialect",
+    srcs = [
+        "Dialect/TritonExt/Dialect.cpp",
+        "Dialect/TritonExt/Ops.cpp",
+    ],
+    hdrs = [
+        "Dialect/TritonExt/Dialect.h",
+        "Dialect/TritonExt/Ops.h",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":EnzymeXLACanonicalizers",
+        ":EnzymeXLADialectUtils",
+        ":TritonExtDialectIncGen",
+        ":TritonExtOpsIncGen",
+        "@llvm-project//mlir:CallOpInterfaces",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:LLVMDialect",
+        "@llvm-project//mlir:SideEffectInterfaces",
+        "@stablehlo//:stablehlo_ops",
+        "@triton//:TritonDialects",
+    ],
+)
+
+cc_library(
+    name = "EnzymeXLADialectUtils",
+    srcs = ["Dialect/Utils.cpp"],
+    hdrs = ["Dialect/Utils.h"],
+    deps = [
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:SideEffectInterfaces",
+    ],
+)
+
+cc_library(
+    name = "EnzymeXLACanonicalizers",
+    srcs = [],
+    hdrs = ["Dialect/Canonicalizers.h"],
+    deps = [
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:LLVMDialect",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+cc_library(
+    name = "Polymer",
+    srcs = [
+        "polymer/mlir/lib/Conversion/Polymer/Support/IslScop.cc",
+        "polymer/mlir/lib/Conversion/Polymer/Support/ScatteringUtils.cc",
+        "polymer/mlir/lib/Conversion/Polymer/Support/ScopStmt.cc",
+        "polymer/mlir/lib/Conversion/Polymer/Support/Utils.cc",
+        "polymer/mlir/lib/Conversion/Polymer/Support/Polly.cc",
+        "polymer/mlir/lib/Conversion/Polymer/Target/ISL/ConvertToISL.cc",
+        "polymer/mlir/lib/Conversion/Polymer/Transforms/AnnotateScop.cc",
+        "polymer/mlir/lib/Conversion/Polymer/Transforms/ExtractScopStmt.cc",
+        "polymer/mlir/lib/Conversion/Polymer/Transforms/IslExternalTransform.cc",
+        "polymer/mlir/lib/Conversion/Polymer/Transforms/LoopAnnotate.cc",
+        "polymer/mlir/lib/Conversion/Polymer/Transforms/LoopExtract.cc",
+        "polymer/mlir/lib/Conversion/Polymer/Transforms/Reg2Mem.cc",
+        "polymer/mlir/lib/Conversion/Polymer/Transforms/ScopStmtOpt.cc",
+        #"polymer/mlir/lib/Conversion/Polymer/Support/OslScop.cc",
+        #"polymer/mlir/lib/Conversion/Polymer/Support/OslScopStmtOpSet.cc",
+        #"polymer/mlir/lib/Conversion/Polymer/Support/OslSymbolTable.cc",
+        #"polymer/mlir/lib/Conversion/Polymer/Target/OpenScop/ConvertFromOpenScop.cc",
+        #"polymer/mlir/lib/Conversion/Polymer/Target/OpenScop/ConvertToOpenScop.cc",
+        #"polymer/mlir/lib/Conversion/Polymer/Transforms/FoldSCFIf.cc",
+        #"polymer/mlir/lib/Conversion/Polymer/Transforms/PlutoTransform.cc",
+    ],
+    hdrs = glob([
+        "polymer/mlir/include/**/*.h",
+    ]),
     copts = [
+        "-Werror=implicit-fallthrough",
+        "-Werror=switch",
         "-Werror=unused-variable",
         "-Werror=unused-result",
-        "-Werror=missing-braces",
         "-Werror=unused-but-set-variable",
         "-Werror=return-type",
         "-Werror=unused-result",
     ],
+    strip_include_prefix = "polymer/mlir/include/",
     visibility = ["//visibility:public"],
     deps = [
-        ":CheckedRewrite",
-        ":DistributedDialectIncGen",
-        ":DistributedOpsIncGen",
-        ":DistributedTypesIncGen",
         ":EnzymeHLOPatternsIncGen",
         ":EnzymeXLAAttrsIncGen",
+        ":EnzymeXLACanonicalizers",
+        ":EnzymeXLADialect",
+        ":EnzymeXLADialectUtils",
         ":EnzymeXLAOpsIncGen",
         ":EnzymeXLAPassesIncGen",
-        ":RaisingTransformOps",
-        ":RaisingTransformOpsImplIncGen",
-        ":RaisingTransformOpsIncGen",
-        ":RaisingTransformPatternsIncGen",
-        ":StablehloOptPatternsIncGen",
-        ":TesseraDialectIncGen",
-        ":TesseraOpsIncGen",
-        ":chlo-derivatives",
-        ":mhlo-derivatives",
-        ":stablehlo-derivatives",
         "//src/external/isl:Isl",
+        "//src/external/polly:Polly",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@enzyme//:EnzymeMLIR",
+        "@jax//jaxlib/gpu:triton_cc_proto",
         "@llvm-project//llvm:Core",
         "@llvm-project//llvm:ExecutionEngine",
         "@llvm-project//llvm:IPO",
@@ -751,6 +1009,7 @@ cc_library(
         "@llvm-project//mlir:NVVMToLLVM",
         "@llvm-project//mlir:OpenMPDialect",
         "@llvm-project//mlir:OpenMPToLLVM",
+        "@llvm-project//mlir:Parser",
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:QuantOps",
         "@llvm-project//mlir:ROCDLDialect",
@@ -782,12 +1041,190 @@ cc_library(
         "@stablehlo//:base",
         "@stablehlo//:chlo_ops",
         "@stablehlo//:reference_ops",
+        "@stablehlo//:reference_scope",
         "@stablehlo//:reference_types",
         "@stablehlo//:stablehlo_ops",
         "@stablehlo//:stablehlo_passes",
         "@stablehlo//:stablehlo_type_inference",
+        "@triton//:TritonDialects",
+        "@triton//:TritonToTritonGPUPasses",
         "@xla//xla/mlir/utils:type_util",
         "@xla//xla/mlir_hlo",
+        "@zlib",
+    ],
+)
+
+cc_library(
+    name = "XLADerivatives",
+    srcs = glob(
+        [
+            "Implementations/*.cpp",
+            "Passes/*.cpp",
+            "Dialect/*.cpp",
+            "Dialect/Distributed/*.cpp",
+            "Dialect/Tessera/*.cpp",
+            "Dialect/Perfify/*.cpp",
+        ],
+        exclude = ["Dialect/Utils.cpp"],
+    ) + [
+        "Utils.cpp",
+    ],
+    hdrs = glob([
+        "Implementations/*.h",
+        "Passes/*.h",
+        "Dialect/*.h",
+        "Dialect/Distributed/*.h",
+        "Dialect/Tessera/*.h",
+        "Dialect/Perfify/*.h",
+    ]) + [
+        "Utils.h",
+    ],
+    copts = [
+        "-Werror=implicit-fallthrough",
+        "-Werror=switch",
+        "-Werror=unused-variable",
+        "-Werror=unused-result",
+        "-Werror=unused-but-set-variable",
+        "-Werror=return-type",
+        "-Werror=unused-result",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":CheckedRewrite",
+        ":DistributedDialectIncGen",
+        ":DistributedOpsIncGen",
+        ":DistributedTypesIncGen",
+        ":EnzymeHLOPatternsIncGen",
+        ":EnzymeXLAAttrsIncGen",
+        ":EnzymeXLACanonicalizers",
+        ":EnzymeXLADialectUtils",
+        ":EnzymeXLAOpsIncGen",
+        ":EnzymeXLAPassesIncGen",
+        ":PerfifyDialectIncGen",
+        ":PerfifyOpsIncGen",
+        ":Polymer",
+        ":RaisingTransformOps",
+        ":RaisingTransformOpsImplIncGen",
+        ":RaisingTransformOpsIncGen",
+        ":RaisingTransformPatternsIncGen",
+        ":StablehloOptPatternsIncGen",
+        ":TesseraDialectIncGen",
+        ":TesseraOpsIncGen",
+        ":TritonExtDialect",
+        ":chlo-derivatives",
+        ":enzymexla-derivatives",
+        ":mhlo-derivatives",
+        ":stablehlo-derivatives",
+        ":triton-derivatives",
+        "//src/external/isl:Isl",
+        "//src/external/polly:Polly",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@enzyme//:EnzymeMLIR",
+        "@jax//jaxlib/gpu:triton_cc_proto",
+        "@llvm-project//llvm:Core",
+        "@llvm-project//llvm:ExecutionEngine",
+        "@llvm-project//llvm:IPO",
+        "@llvm-project//llvm:InstCombine",
+        "@llvm-project//llvm:OrcJIT",
+        "@llvm-project//llvm:OrcTargetProcess",
+        "@llvm-project//llvm:Passes",
+        "@llvm-project//llvm:Scalar",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:AffineAnalysis",
+        "@llvm-project//mlir:AffineDialect",
+        "@llvm-project//mlir:AffineToStandard",
+        "@llvm-project//mlir:AffineTransforms",
+        "@llvm-project//mlir:AffineUtils",
+        "@llvm-project//mlir:Analysis",
+        "@llvm-project//mlir:ArithDialect",
+        "@llvm-project//mlir:ArithToLLVM",
+        "@llvm-project//mlir:ArithUtils",
+        "@llvm-project//mlir:AsyncDialect",
+        "@llvm-project//mlir:BytecodeOpInterface",
+        "@llvm-project//mlir:CallOpInterfaces",
+        "@llvm-project//mlir:CommonFolders",
+        "@llvm-project//mlir:ComplexDialect",
+        "@llvm-project//mlir:ControlFlowDialect",
+        "@llvm-project//mlir:ControlFlowInterfaces",
+        "@llvm-project//mlir:ControlFlowToLLVM",
+        "@llvm-project//mlir:ControlFlowToSCF",
+        "@llvm-project//mlir:DLTIDialect",
+        "@llvm-project//mlir:FromLLVMIRTranslation",
+        "@llvm-project//mlir:FromLLVMIRTranslationRegistration",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:FuncToLLVM",
+        "@llvm-project//mlir:FuncTransforms",
+        "@llvm-project//mlir:FunctionInterfaces",
+        "@llvm-project//mlir:GPUCommonTransforms",
+        "@llvm-project//mlir:GPUDialect",
+        "@llvm-project//mlir:GPUPipelines",
+        "@llvm-project//mlir:GPUToGPURuntimeTransforms",
+        "@llvm-project//mlir:GPUToNVVMTransforms",
+        "@llvm-project//mlir:GPUTransforms",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:IndexToLLVM",
+        "@llvm-project//mlir:InferTypeOpInterface",
+        "@llvm-project//mlir:InliningUtils",
+        "@llvm-project//mlir:LLVMCommonConversion",
+        "@llvm-project//mlir:LLVMDialect",
+        "@llvm-project//mlir:LinalgTransforms",
+        "@llvm-project//mlir:MathDialect",
+        "@llvm-project//mlir:MathToLLVM",
+        "@llvm-project//mlir:MathToLibm",
+        "@llvm-project//mlir:MemRefDialect",
+        "@llvm-project//mlir:MemRefToLLVM",
+        "@llvm-project//mlir:MemRefTransforms",
+        "@llvm-project//mlir:MemRefUtils",
+        "@llvm-project//mlir:MemorySlotInterfaces",
+        "@llvm-project//mlir:NVGPUDialect",
+        "@llvm-project//mlir:NVGPUToNVVM",
+        "@llvm-project//mlir:NVVMDialect",
+        "@llvm-project//mlir:NVVMToLLVM",
+        "@llvm-project//mlir:OpenMPDialect",
+        "@llvm-project//mlir:OpenMPToLLVM",
+        "@llvm-project//mlir:Parser",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:QuantOps",
+        "@llvm-project//mlir:ROCDLDialect",
+        "@llvm-project//mlir:ReconcileUnrealizedCasts",
+        "@llvm-project//mlir:SCFDialect",
+        "@llvm-project//mlir:SCFToControlFlow",
+        "@llvm-project//mlir:SCFToOpenMP",
+        "@llvm-project//mlir:SCFTransforms",
+        "@llvm-project//mlir:SCFUtils",
+        "@llvm-project//mlir:SideEffectInterfaces",
+        "@llvm-project//mlir:Support",
+        "@llvm-project//mlir:TensorDialect",
+        "@llvm-project//mlir:ToLLVMIRTranslation",
+        "@llvm-project//mlir:ToLLVMIRTranslationRegistration",
+        "@llvm-project//mlir:TransformDialect",
+        "@llvm-project//mlir:TransformDialectInterfaces",
+        "@llvm-project//mlir:TransformDialectTransforms",
+        "@llvm-project//mlir:TransformUtils",
+        "@llvm-project//mlir:Transforms",
+        "@llvm-project//mlir:TranslateLib",
+        "@llvm-project//mlir:UBDialect",
+        "@llvm-project//mlir:UBToLLVM",
+        "@llvm-project//mlir:VectorDialect",
+        "@llvm-project//mlir:VectorToLLVM",
+        "@llvm-project//mlir:VectorToSCF",
+        "@llvm-project//mlir:ViewLikeInterface",
+        "@shardy//shardy/dialect/sdy/ir:dialect",
+        "@shardy//shardy/dialect/sdy/transforms/propagation:op_sharding_rule_builder",
+        "@stablehlo//:base",
+        "@stablehlo//:chlo_ops",
+        "@stablehlo//:reference_ops",
+        "@stablehlo//:reference_scope",
+        "@stablehlo//:reference_types",
+        "@stablehlo//:stablehlo_ops",
+        "@stablehlo//:stablehlo_passes",
+        "@stablehlo//:stablehlo_type_inference",
+        "@triton//:TritonDialects",
+        "@triton//:TritonToTritonGPUPasses",
+        "@xla//xla/mlir/utils:type_util",
+        "@xla//xla/mlir_hlo",
+        "@zlib",
     ],
 )
 
@@ -803,6 +1240,7 @@ cc_library(
     deps = [
         ":TransformOps",
         ":XLADerivatives",
+        ":TritonExtDialect",
         ":EnzymeXLAPassesIncGen",
         "@com_google_protobuf//:protobuf",
         "@tsl//tsl/platform:env",
@@ -904,7 +1342,6 @@ cc_library(
         "@triton//third_party/nvidia:NVWSDialect",
         "@triton//third_party/nvidia:NVWSTransforms",
         "@triton//third_party/nvidia:TritonNVIDIAGPUToLLVM",
-        "@triton//third_party/proton:ProtonIRDialect",
 
         # Shardy stuff
         "@shardy//shardy/dialect/sdy/ir:dialect",
@@ -918,7 +1355,7 @@ cc_library(
         "@enzyme//:EnzymeMLIR",
 
         # Mosaic
-        "@jax//jaxlib/mosaic:tpu_dialect",
+        # "@jax//jaxlib/mosaic:tpu_dialect",
 
         # SHLO
         "@stablehlo//:stablehlo_ops",
@@ -1071,7 +1508,8 @@ cc_library(
         "@com_google_absl//absl/status:statusor",
 
         # Mosaic
-        "@jax//jaxlib/mosaic:tpu_dialect",
+        # Upstream is broken, re-enable when working
+        # "@jax//jaxlib/mosaic:tpu_dialect",
     ],
 )
 

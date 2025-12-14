@@ -118,18 +118,18 @@ module {
 // CHECK-NEXT:    llvm.return %12 : i32
 // CHECK-NEXT:  }
 // CHECK:  llvm.func local_unnamed_addr @printf(!llvm.ptr {llvm.nocapture, llvm.noundef, llvm.readonly}, ...) -> (i32 {llvm.noundef}) attributes {no_unwind, passthrough = ["nofree", ["no-trapping-math", "true"], ["stack-protector-buffer-size", "8"], ["target-cpu", "x86-64"]], sym_visibility = "private", target_cpu = "x86-64", target_features = #llvm.target_features<["+cmov", "+cx8", "+fxsr", "+mmx", "+sse", "+sse2", "+x87"]>}
-// CHECK-NEXT:  llvm.func private @__reactant_xla_init() {
+// CHECK-NEXT:  llvm.func linkonce @__reactant_xla_init() {
 // CHECK-NEXT:    %0 = llvm.mlir.addressof @__reactant_xla_data : !llvm.ptr
 // CHECK-NEXT:    %1 = llvm.mlir.addressof @xlabackend : !llvm.ptr
 // CHECK-NEXT:    %2 = llvm.getelementptr %1[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<8 x i8>
 // CHECK-NEXT:    llvm.call @reactantXLAInit(%0, %2) : (!llvm.ptr, !llvm.ptr) -> ()
 // CHECK-NEXT:    llvm.return
 // CHECK-NEXT:  }
-// CHECK:  llvm.func private @__reactant_xla_deinit() {
+// CHECK:  llvm.func linkonce @__reactant_xla_deinit() {
 // CHECK-NEXT:    %0 = llvm.mlir.addressof @__reactant_xla_data : !llvm.ptr
 // CHECK-NEXT:    llvm.call @reactantXLADeInit(%0) : (!llvm.ptr) -> ()
 // CHECK-NEXT:    llvm.return
 // CHECK-NEXT:  }
 // CHECK:  llvm.mlir.global_ctors ctors = [@__reactant_xla_init], priorities = [65535 : i32], data = [#llvm.zero]
 // CHECK:  llvm.mlir.global_dtors dtors = [@__reactant_xla_deinit], priorities = [65535 : i32], data = [#llvm.zero]
-// CHECK:  llvm.mlir.global internal @__reactant_xla_data() {addr_space = 0 : i32, alignment = 8 : i64} : !llvm.ptr
+// CHECK:  llvm.mlir.global linkonce @__reactant_xla_data() {addr_space = 0 : i32, alignment = 8 : i64} : !llvm.ptr

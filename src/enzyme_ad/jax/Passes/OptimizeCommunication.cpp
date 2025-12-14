@@ -1,6 +1,18 @@
 #include "mhlo/IR/hlo_ops.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wmissing-braces"
+#else
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-braces"
+#endif
 #include "shardy/dialect/sdy/ir/dialect.h"
+#ifdef __clang__
+#pragma clang diagnostic pop
+#else
+#pragma GCC diagnostic pop
+#endif
 #include "shardy/dialect/sdy/ir/utils.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
@@ -255,25 +267,25 @@ void generateCommPatternForNonEdges(
   SmallVector<int64_t> innerStrides(ndims, 1);
 
   auto partitionIdType = partitionId.getType();
-  auto alpha = rewriter.create<stablehlo::ConstantOp>(
-      op->getLoc(), partitionIdType,
+  auto alpha = stablehlo::ConstantOp::create(
+      rewriter, op->getLoc(), partitionIdType,
       cast<ElementsAttr>(makeAttr(
           partitionIdType, 2 * paddedBoundarySize / numDevicesAlongDimension)));
 
   // pId % numDevicesAlongDimension
-  auto pidRem = rewriter.create<stablehlo::RemOp>(
-      op->getLoc(), partitionId,
-      rewriter.create<stablehlo::ConstantOp>(
-          op->getLoc(), partitionIdType,
+  auto pidRem = stablehlo::RemOp::create(
+      rewriter, op->getLoc(), partitionId,
+      stablehlo::ConstantOp::create(
+          rewriter, op->getLoc(), partitionIdType,
           cast<ElementsAttr>(
               makeAttr(partitionIdType, numDevicesAlongDimension))));
 
-  auto numDevicesAlongDimension_2 = rewriter.create<stablehlo::ConstantOp>(
-      op->getLoc(), partitionIdType,
+  auto numDevicesAlongDimension_2 = stablehlo::ConstantOp::create(
+      rewriter, op->getLoc(), partitionIdType,
       cast<ElementsAttr>(
           makeAttr(partitionIdType, numDevicesAlongDimension / 2)));
-  auto isLeftBlock = rewriter.create<stablehlo::CompareOp>(
-      op->getLoc(), leftSide, numDevicesAlongDimension_2,
+  auto isLeftBlock = stablehlo::CompareOp::create(
+      rewriter, op->getLoc(), leftSide, numDevicesAlongDimension_2,
       stablehlo::ComparisonDirection::LT);
 
   auto commShape = llvm::to_vector(
@@ -282,8 +294,8 @@ void generateCommPatternForNonEdges(
   Type ifTypesCommSelect[] = {RankedTensorType::get(
       commShape,
       cast<RankedTensorType>(superSliceInnerArg.getType()).getElementType())};
-  auto ifCondCommSelect = rewriter.create<stablehlo::IfOp>(
-      op->getLoc(), ifTypesCommSelect, isLeftBlock);
+  auto ifCondCommSelect = stablehlo::IfOp::create(
+      rewriter, op->getLoc(), ifTypesCommSelect, isLeftBlock);
 
   {
     rewriter.createBlock(&ifCondCommSelect.getTrueBranch(),
@@ -294,10 +306,11 @@ void generateCommPatternForNonEdges(
         cast<RankedTensorType>(superSliceInnerArg.getType()).getShape());
     innerStarts[concatDim] = innerLimits[concatDim] - paddedBoundarySize;
 
-    auto leftSlice = rewriter.create<stablehlo::SliceOp>(
-        op->getLoc(), superSliceInnerArg, innerStarts, innerLimits,
-        innerStrides);
-    rewriter.create<stablehlo::ReturnOp>(op->getLoc(), leftSlice->getResults());
+    auto leftSlice =
+        stablehlo::SliceOp::create(rewriter, op->getLoc(), superSliceInnerArg,
+                                   innerStarts, innerLimits, innerStrides);
+    stablehlo::ReturnOp::create(rewriter, op->getLoc(),
+                                leftSlice->getResults());
   }
 
   {
@@ -309,17 +322,18 @@ void generateCommPatternForNonEdges(
         cast<RankedTensorType>(superSliceInnerArg.getType()).getShape());
     innerLimits[concatDim] = paddedBoundarySize;
 
-    auto rightSlice = rewriter.create<stablehlo::SliceOp>(
-        op->getLoc(), superSliceInnerArg, innerStarts, innerLimits,
-        innerStrides);
-    rewriter.create<stablehlo::ReturnOp>(op->getLoc(),
-                                         rightSlice->getResults());
+    auto rightSlice =
+        stablehlo::SliceOp::create(rewriter, op->getLoc(), superSliceInnerArg,
+                                   innerStarts, innerLimits, innerStrides);
+    stablehlo::ReturnOp::create(rewriter, op->getLoc(),
+                                rightSlice->getResults());
   }
 
   rewriter.setInsertionPointAfter(ifCondCommSelect);
 
-  auto cperm = rewriter.create<stablehlo::CollectivePermuteOp>(
-      op->getLoc(), ifCondCommSelect.getResults()[0], sourceTargetPairs,
+  auto cperm = stablehlo::CollectivePermuteOp::create(
+      rewriter, op->getLoc(), ifCondCommSelect.getResults()[0],
+      sourceTargetPairs,
       stablehlo::ChannelHandleAttr::get(op->getContext(), /*handle*/ channel_id,
                                         /*type*/ 0));
   channel_id++;
@@ -328,8 +342,8 @@ void generateCommPatternForNonEdges(
       localRetShape,
       cast<RankedTensorType>(superSliceInnerArg.getType()).getElementType())};
   auto ifCond =
-      rewriter.create<stablehlo::IfOp>(op->getLoc(), ifTypes, isLeftBlock);
-  rewriter.create<stablehlo::ReturnOp>(op->getLoc(), ifCond->getResults());
+      stablehlo::IfOp::create(rewriter, op->getLoc(), ifTypes, isLeftBlock);
+  stablehlo::ReturnOp::create(rewriter, op->getLoc(), ifCond->getResults());
 
   // we start with               [ superSliceInnerArg ].           : Length SS
   // [superslice] and       we want. [ left  ][                    ][ right ].
@@ -367,18 +381,19 @@ void generateCommPatternForNonEdges(
                          ifCond.getTrueBranch().begin());
 
     Value concatArgs[] = {cperm, midOpInnerArg};
-    auto innerConcat = rewriter.create<stablehlo::ConcatenateOp>(
-        op->getLoc(), concatArgs, concatDim);
+    auto innerConcat = stablehlo::ConcatenateOp::create(rewriter, op->getLoc(),
+                                                        concatArgs, concatDim);
 
     SmallVector<Value> dynamicSliceStartSlices(ndims, zero);
 
     dynamicSliceStartSlices[concatDim] =
-        rewriter.create<stablehlo::MulOp>(op->getLoc(), pidRem, alpha);
+        stablehlo::MulOp::create(rewriter, op->getLoc(), pidRem, alpha);
 
-    auto slicedPart = rewriter.create<stablehlo::DynamicSliceOp>(
-        op->getLoc(), innerConcat, dynamicSliceStartSlices, localRetShape);
-    rewriter.create<stablehlo::ReturnOp>(op->getLoc(),
-                                         slicedPart->getResults());
+    auto slicedPart = stablehlo::DynamicSliceOp::create(
+        rewriter, op->getLoc(), innerConcat, dynamicSliceStartSlices,
+        localRetShape);
+    stablehlo::ReturnOp::create(rewriter, op->getLoc(),
+                                slicedPart->getResults());
   }
 
   // Case II: for the right part of the comm
@@ -387,26 +402,27 @@ void generateCommPatternForNonEdges(
                          ifCond.getFalseBranch().begin());
 
     Value concatArgs[] = {midOpInnerArg, cperm};
-    auto innerConcat = rewriter.create<stablehlo::ConcatenateOp>(
-        op->getLoc(), concatArgs, concatDim);
+    auto innerConcat = stablehlo::ConcatenateOp::create(rewriter, op->getLoc(),
+                                                        concatArgs, concatDim);
 
     SmallVector<Value> dynamicSliceStartSlices(ndims, zero);
     auto limitIndex =
-        rewriter.create<stablehlo::MulOp>(op->getLoc(), pidRem, alpha);
-    auto constVal = rewriter.create<stablehlo::ConstantOp>(
-        op->getLoc(), partitionIdType,
+        stablehlo::MulOp::create(rewriter, op->getLoc(), pidRem, alpha);
+    auto constVal = stablehlo::ConstantOp::create(
+        rewriter, op->getLoc(), partitionIdType,
         cast<ElementsAttr>(makeAttr(
             partitionIdType, cast<RankedTensorType>(innerConcat.getType())
                                      .getShape()[concatDim] -
                                  localRetShape[concatDim])));
 
-    dynamicSliceStartSlices[concatDim] = rewriter.create<stablehlo::SubtractOp>(
-        op->getLoc(), constVal, limitIndex);
+    dynamicSliceStartSlices[concatDim] = stablehlo::SubtractOp::create(
+        rewriter, op->getLoc(), constVal, limitIndex);
 
-    auto slicedPart = rewriter.create<stablehlo::DynamicSliceOp>(
-        op->getLoc(), innerConcat, dynamicSliceStartSlices, localRetShape);
-    rewriter.create<stablehlo::ReturnOp>(op->getLoc(),
-                                         slicedPart->getResults());
+    auto slicedPart = stablehlo::DynamicSliceOp::create(
+        rewriter, op->getLoc(), innerConcat, dynamicSliceStartSlices,
+        localRetShape);
+    stablehlo::ReturnOp::create(rewriter, op->getLoc(),
+                                slicedPart->getResults());
   }
 
   rewriter.setInsertionPointAfter(ifCond);
@@ -430,8 +446,8 @@ wrapCommPatternForEdges(PatternRewriter &rewriter, Operation *op,
   commResultShape[concatDim] = N;
 
   Type ifTypesCommSelect[] = {RankedTensorType::get(commResultShape, elemType)};
-  auto ifCondCommSelect = rewriter.create<stablehlo::IfOp>(
-      op->getLoc(), ifTypesCommSelect, isLeftSide);
+  auto ifCondCommSelect = stablehlo::IfOp::create(
+      rewriter, op->getLoc(), ifTypesCommSelect, isLeftSide);
 
   SmallVector<int64_t> innerStrides(ndims, 1);
 
@@ -443,10 +459,10 @@ wrapCommPatternForEdges(PatternRewriter &rewriter, Operation *op,
     SmallVector<int64_t> innerLimits1 = llvm::to_vector(
         cast<RankedTensorType>(superSliceInnerArg.getType()).getShape());
     innerLimits1[concatDim] = N;
-    auto endSlice = rewriter.create<stablehlo::SliceOp>(
-        op->getLoc(), superSliceInnerArg, innerStarts1, innerLimits1,
-        innerStrides);
-    rewriter.create<stablehlo::ReturnOp>(op->getLoc(), endSlice->getResults());
+    auto endSlice =
+        stablehlo::SliceOp::create(rewriter, op->getLoc(), superSliceInnerArg,
+                                   innerStarts1, innerLimits1, innerStrides);
+    stablehlo::ReturnOp::create(rewriter, op->getLoc(), endSlice->getResults());
   }
 
   {
@@ -457,11 +473,11 @@ wrapCommPatternForEdges(PatternRewriter &rewriter, Operation *op,
     SmallVector<int64_t> innerLimits2 = llvm::to_vector(
         cast<RankedTensorType>(superSliceInnerArg.getType()).getShape());
     innerStarts2[concatDim] = innerLimits2[concatDim] - N;
-    auto startSlice = rewriter.create<stablehlo::SliceOp>(
-        op->getLoc(), superSliceInnerArg, innerStarts2, innerLimits2,
-        innerStrides);
-    rewriter.create<stablehlo::ReturnOp>(op->getLoc(),
-                                         startSlice->getResults());
+    auto startSlice =
+        stablehlo::SliceOp::create(rewriter, op->getLoc(), superSliceInnerArg,
+                                   innerStarts2, innerLimits2, innerStrides);
+    stablehlo::ReturnOp::create(rewriter, op->getLoc(),
+                                startSlice->getResults());
   }
 
   rewriter.setInsertionPointAfter(ifCondCommSelect);
@@ -473,8 +489,8 @@ wrapCommPatternForEdges(PatternRewriter &rewriter, Operation *op,
   sourceTargetIdxs.append(sourceTargetIdxsTmp.begin(),
                           sourceTargetIdxsTmp.end());
 
-  auto commResult = rewriter.create<stablehlo::CollectivePermuteOp>(
-      op->getLoc(), ifCondCommSelect.getResults()[0],
+  auto commResult = stablehlo::CollectivePermuteOp::create(
+      rewriter, op->getLoc(), ifCondCommSelect.getResults()[0],
       DenseIntElementsAttr::get(
           RankedTensorType::get(
               {(int64_t)(sourceTargetIdxs.size() / 2), (int64_t)2},
@@ -486,11 +502,11 @@ wrapCommPatternForEdges(PatternRewriter &rewriter, Operation *op,
 
   Type ifTypes[] = {RankedTensorType::get(localRetShape, elemType)};
   auto ifCondInner =
-      rewriter.create<stablehlo::IfOp>(op->getLoc(), ifTypes, isLeftSide);
+      stablehlo::IfOp::create(rewriter, op->getLoc(), ifTypes, isLeftSide);
 
   if (returnResults)
-    rewriter.create<stablehlo::ReturnOp>(op->getLoc(),
-                                         ifCondInner->getResults());
+    stablehlo::ReturnOp::create(rewriter, op->getLoc(),
+                                ifCondInner->getResults());
 
   {
     rewriter.createBlock(&ifCondInner.getTrueBranch(),
@@ -508,16 +524,16 @@ wrapCommPatternForEdges(PatternRewriter &rewriter, Operation *op,
           cast<RankedTensorType>(midOpInnerArg.getType()).getShape());
       innerLimits3[concatDim] = (T / numDevicesAlongDimension) - N;
 
-      auto lhsRightSlice = rewriter.create<stablehlo::SliceOp>(
-          op->getLoc(), midOpInnerArg, innerStarts3, innerLimits3,
-          innerStrides);
+      auto lhsRightSlice =
+          stablehlo::SliceOp::create(rewriter, op->getLoc(), midOpInnerArg,
+                                     innerStarts3, innerLimits3, innerStrides);
       concatArgs[1] = lhsRightSlice;
     }
 
-    auto finalResult = rewriter.create<stablehlo::ConcatenateOp>(
-        op->getLoc(), concatArgs, concatDim);
-    rewriter.create<stablehlo::ReturnOp>(op->getLoc(),
-                                         finalResult->getResults());
+    auto finalResult = stablehlo::ConcatenateOp::create(rewriter, op->getLoc(),
+                                                        concatArgs, concatDim);
+    stablehlo::ReturnOp::create(rewriter, op->getLoc(),
+                                finalResult->getResults());
   }
 
   {
@@ -535,16 +551,16 @@ wrapCommPatternForEdges(PatternRewriter &rewriter, Operation *op,
           cast<RankedTensorType>(midOpInnerArg.getType()).getShape());
       innerStarts4[concatDim] = N - (2 * N / numDevicesAlongDimension);
 
-      auto rhsLeftSlice = rewriter.create<stablehlo::SliceOp>(
-          op->getLoc(), midOpInnerArg, innerStarts4, innerLimits4,
-          innerStrides);
+      auto rhsLeftSlice =
+          stablehlo::SliceOp::create(rewriter, op->getLoc(), midOpInnerArg,
+                                     innerStarts4, innerLimits4, innerStrides);
       concatArgs[0] = rhsLeftSlice;
     }
 
-    auto finalResult = rewriter.create<stablehlo::ConcatenateOp>(
-        op->getLoc(), concatArgs, concatDim);
-    rewriter.create<stablehlo::ReturnOp>(op->getLoc(),
-                                         finalResult->getResults());
+    auto finalResult = stablehlo::ConcatenateOp::create(rewriter, op->getLoc(),
+                                                        concatArgs, concatDim);
+    stablehlo::ReturnOp::create(rewriter, op->getLoc(),
+                                finalResult->getResults());
   }
 
   rewriter.setInsertionPointAfter(ifCondInner);
@@ -565,10 +581,10 @@ extendCommPatternForEdges(PatternRewriter &rewriter, Operation *op,
 
   Type ifTypes[] = {RankedTensorType::get(localRetShape, elemType)};
   auto ifCondInner =
-      rewriter.create<stablehlo::IfOp>(op->getLoc(), ifTypes, isLeftSide);
+      stablehlo::IfOp::create(rewriter, op->getLoc(), ifTypes, isLeftSide);
   if (returnResults)
-    rewriter.create<stablehlo::ReturnOp>(op->getLoc(),
-                                         ifCondInner->getResults());
+    stablehlo::ReturnOp::create(rewriter, op->getLoc(),
+                                ifCondInner->getResults());
 
   {
     rewriter.createBlock(&ifCondInner.getTrueBranch(),
@@ -578,8 +594,9 @@ extendCommPatternForEdges(PatternRewriter &rewriter, Operation *op,
     SmallVector<int64_t> innerLimits1 =
         llvm::to_vector(cast<RankedTensorType>(innerArg.getType()).getShape());
     innerLimits1[concatDim] = N;
-    auto startSlice = rewriter.create<stablehlo::SliceOp>(
-        op->getLoc(), innerArg, innerStarts1, innerLimits1, innerStrides);
+    auto startSlice =
+        stablehlo::SliceOp::create(rewriter, op->getLoc(), innerArg,
+                                   innerStarts1, innerLimits1, innerStrides);
 
     Value concatArgs[2];
     concatArgs[0] = startSlice;
@@ -592,15 +609,16 @@ extendCommPatternForEdges(PatternRewriter &rewriter, Operation *op,
           cast<RankedTensorType>(innerArg.getType()).getShape());
       innerLimits3[concatDim] = (T / numDevicesAlongDimension) - N;
 
-      auto lhsRightSlice = rewriter.create<stablehlo::SliceOp>(
-          op->getLoc(), innerArg, innerStarts3, innerLimits3, innerStrides);
+      auto lhsRightSlice =
+          stablehlo::SliceOp::create(rewriter, op->getLoc(), innerArg,
+                                     innerStarts3, innerLimits3, innerStrides);
       concatArgs[1] = lhsRightSlice;
     }
 
-    auto finalResult = rewriter.create<stablehlo::ConcatenateOp>(
-        op->getLoc(), concatArgs, concatDim);
-    rewriter.create<stablehlo::ReturnOp>(op->getLoc(),
-                                         finalResult->getResults());
+    auto finalResult = stablehlo::ConcatenateOp::create(rewriter, op->getLoc(),
+                                                        concatArgs, concatDim);
+    stablehlo::ReturnOp::create(rewriter, op->getLoc(),
+                                finalResult->getResults());
   }
 
   {
@@ -611,8 +629,9 @@ extendCommPatternForEdges(PatternRewriter &rewriter, Operation *op,
     SmallVector<int64_t> innerLimits2 =
         llvm::to_vector(cast<RankedTensorType>(innerArg.getType()).getShape());
     innerStarts2[concatDim] = innerLimits2[concatDim] - N;
-    auto endSlice = rewriter.create<stablehlo::SliceOp>(
-        op->getLoc(), innerArg, innerStarts2, innerLimits2, innerStrides);
+    auto endSlice =
+        stablehlo::SliceOp::create(rewriter, op->getLoc(), innerArg,
+                                   innerStarts2, innerLimits2, innerStrides);
 
     Value concatArgs[2];
     concatArgs[1] = endSlice;
@@ -625,15 +644,16 @@ extendCommPatternForEdges(PatternRewriter &rewriter, Operation *op,
           cast<RankedTensorType>(innerArg.getType()).getShape());
       innerStarts4[concatDim] = N - (2 * N / numDevicesAlongDimension);
 
-      auto rhsLeftSlice = rewriter.create<stablehlo::SliceOp>(
-          op->getLoc(), innerArg, innerStarts4, innerLimits4, innerStrides);
+      auto rhsLeftSlice =
+          stablehlo::SliceOp::create(rewriter, op->getLoc(), innerArg,
+                                     innerStarts4, innerLimits4, innerStrides);
       concatArgs[0] = rhsLeftSlice;
     }
 
-    auto finalResult = rewriter.create<stablehlo::ConcatenateOp>(
-        op->getLoc(), concatArgs, concatDim);
-    rewriter.create<stablehlo::ReturnOp>(op->getLoc(),
-                                         finalResult->getResults());
+    auto finalResult = stablehlo::ConcatenateOp::create(rewriter, op->getLoc(),
+                                                        concatArgs, concatDim);
+    stablehlo::ReturnOp::create(rewriter, op->getLoc(),
+                                finalResult->getResults());
   }
 
   rewriter.setInsertionPointAfter(ifCondInner);
@@ -674,33 +694,35 @@ getChecksForBoundaries(PatternRewriter &rewriter, Operation *op,
                        stablehlo::PartitionIdOp partitionId,
                        int64_t numDevicesAlongDimension,
                        stablehlo::ConstantOp zero) {
-  Value leftSide = rewriter.create<stablehlo::RemOp>(
-      op->getLoc(), partitionId,
-      rewriter.create<stablehlo::ConstantOp>(
-          op->getLoc(), partitionId.getType(),
+  Value leftSide = stablehlo::RemOp::create(
+      rewriter, op->getLoc(), partitionId,
+      stablehlo::ConstantOp::create(
+          rewriter, op->getLoc(), partitionId.getType(),
           cast<ElementsAttr>(
               makeAttr(partitionId.getType(), numDevicesAlongDimension))));
-  Value isLeftSide = rewriter.create<stablehlo::CompareOp>(
-      op->getLoc(), leftSide, zero, stablehlo::ComparisonDirection::EQ);
+  Value isLeftSide =
+      stablehlo::CompareOp::create(rewriter, op->getLoc(), leftSide, zero,
+                                   stablehlo::ComparisonDirection::EQ);
 
-  Value rightSide = rewriter.create<stablehlo::AddOp>(
-      op->getLoc(), partitionId,
-      rewriter.create<stablehlo::ConstantOp>(
-          op->getLoc(),
+  Value rightSide = stablehlo::AddOp::create(
+      rewriter, op->getLoc(), partitionId,
+      stablehlo::ConstantOp::create(
+          rewriter, op->getLoc(),
           cast<ElementsAttr>(makeAttr(partitionId.getType(), 1))));
-  rightSide = rewriter.create<stablehlo::RemOp>(
-      op->getLoc(), rightSide,
-      rewriter.create<stablehlo::ConstantOp>(
-          op->getLoc(), partitionId.getType(),
+  rightSide = stablehlo::RemOp::create(
+      rewriter, op->getLoc(), rightSide,
+      stablehlo::ConstantOp::create(
+          rewriter, op->getLoc(), partitionId.getType(),
           cast<ElementsAttr>(
               makeAttr(partitionId.getType(), numDevicesAlongDimension))));
-  Value isRightSide = rewriter.create<stablehlo::CompareOp>(
-      op->getLoc(), rightSide, zero, stablehlo::ComparisonDirection::EQ);
+  Value isRightSide =
+      stablehlo::CompareOp::create(rewriter, op->getLoc(), rightSide, zero,
+                                   stablehlo::ComparisonDirection::EQ);
 
   Value isNotLeftSide =
-      rewriter.create<stablehlo::NotOp>(op->getLoc(), isLeftSide);
+      stablehlo::NotOp::create(rewriter, op->getLoc(), isLeftSide);
   Value isNotRightSide =
-      rewriter.create<stablehlo::NotOp>(op->getLoc(), isRightSide);
+      stablehlo::NotOp::create(rewriter, op->getLoc(), isRightSide);
 
   return {isLeftSide,     isRightSide, isNotLeftSide,
           isNotRightSide, leftSide,    rightSide};
@@ -826,8 +848,8 @@ struct PeriodicConcatSimplify
 
     auto midSliceOp = midOp.getDefiningOp<stablehlo::SliceOp>();
     if (!midSliceOp) {
-      superSliceOp = rewriter.create<stablehlo::SliceOp>(
-          concat.getLoc(), leftSliceOp.getOperand(),
+      superSliceOp = stablehlo::SliceOp::create(
+          rewriter, concat.getLoc(), leftSliceOp.getOperand(),
           rightSliceOp.getStartIndices(), leftSliceOp.getLimitIndices(),
           leftSliceOp.getStrides());
     } else {
@@ -837,8 +859,8 @@ struct PeriodicConcatSimplify
           (leftSliceOp.getLimitIndices()[concatDim] !=
            midSliceOp.getLimitIndices()[concatDim])) {
         // We need to compute the global slice
-        superSliceOp = rewriter.create<stablehlo::SliceOp>(
-            concat.getLoc(), leftSliceOp.getOperand(),
+        superSliceOp = stablehlo::SliceOp::create(
+            rewriter, concat.getLoc(), leftSliceOp.getOperand(),
             rightSliceOp.getStartIndices(), leftSliceOp.getLimitIndices(),
             leftSliceOp.getStrides());
 
@@ -934,14 +956,15 @@ struct PeriodicConcatSimplify
       needsSlice = true;
     }
     if (needsSlice) {
-      auto cst = rewriter.create<stablehlo::ConstantOp>(
-          concat.getLoc(), rewriter.getZeroAttr(elemType));
+      auto cst = stablehlo::ConstantOp::create(rewriter, concat.getLoc(),
+                                               rewriter.getZeroAttr(elemType));
 
-      superSliceOp = rewriter.create<stablehlo::PadOp>(
-          concat.getLoc(), superSliceOp, cst, lowPads, highPads, interior);
+      superSliceOp =
+          stablehlo::PadOp::create(rewriter, concat.getLoc(), superSliceOp, cst,
+                                   lowPads, highPads, interior);
 
-      midOp = rewriter.create<stablehlo::PadOp>(concat.getLoc(), midOp, cst,
-                                                lowPads, highPads, interior);
+      midOp = stablehlo::PadOp::create(rewriter, concat.getLoc(), midOp, cst,
+                                       lowPads, highPads, interior);
     }
 
     manualOpRetShape[concatDim] = T;
@@ -959,19 +982,19 @@ struct PeriodicConcatSimplify
 
     Value manual_ops[] = {superSliceOp, midOp};
     Type manual_types[] = {globalResultType};
-    auto manual = rewriter.create<sdy::ManualComputationOp>(
-        concat.getLoc(), manual_types, manual_ops, in_shardings, out_shardings,
-        manualAxes);
+    auto manual = sdy::ManualComputationOp::create(
+        rewriter, concat.getLoc(), manual_types, manual_ops, in_shardings,
+        out_shardings, manualAxes);
 
     auto blk = rewriter.createBlock(&manual.getBody(), manual.getBody().begin(),
                                     in_tys, in_locs);
     auto superSliceInnerArg = blk->getArgument(0);
     auto midOpInnerArg = blk->getArgument(1);
     auto partitionId =
-        rewriter.create<stablehlo::PartitionIdOp>(concat.getLoc());
+        stablehlo::PartitionIdOp::create(rewriter, concat.getLoc());
 
-    auto zero = rewriter.create<stablehlo::ConstantOp>(
-        concat.getLoc(), rewriter.getZeroAttr(partitionId.getType()));
+    auto zero = stablehlo::ConstantOp::create(
+        rewriter, concat.getLoc(), rewriter.getZeroAttr(partitionId.getType()));
 
     auto [isLeftSide, isRightSide, isNotLeftSide, isNotRightSide, leftSide,
           rightSide] = getChecksForBoundaries(rewriter, concat, partitionId,
@@ -981,10 +1004,10 @@ struct PeriodicConcatSimplify
 
     if (numDevicesAlongDimension != 2) {
       Type ifTypes[] = {localResultType};
-      auto if1 = rewriter.create<stablehlo::IfOp>(
-          concat.getLoc(), ifTypes,
-          rewriter.create<stablehlo::AndOp>(concat.getLoc(), isNotLeftSide,
-                                            isNotRightSide));
+      auto if1 = stablehlo::IfOp::create(
+          rewriter, concat.getLoc(), ifTypes,
+          stablehlo::AndOp::create(rewriter, concat.getLoc(), isNotLeftSide,
+                                   isNotRightSide));
 
       // if ..... !leftSide  && !rightSide
       {
@@ -1010,14 +1033,14 @@ struct PeriodicConcatSimplify
       }
 
       rewriter.setInsertionPointAfter(if1);
-      rewriter.create<sdy::ReturnOp>(concat.getLoc(), if1->getResults());
+      sdy::ReturnOp::create(rewriter, concat.getLoc(), if1->getResults());
     } else {
       auto results = wrapCommPatternForEdges(
           rewriter, concat, partitionId, zero, superSliceInnerArg,
           midOpInnerArg, concatSharding, concatDim, N, numDevicesAlongDimension,
           ndims, T, localResultType.getShape(), isLeftSide, channel_id,
           /*returnResults=*/false);
-      rewriter.create<sdy::ReturnOp>(concat.getLoc(), results);
+      sdy::ReturnOp::create(rewriter, concat.getLoc(), results);
     }
 
     if (concat.getType() != manual->getResult(0).getType()) {
@@ -1124,10 +1147,10 @@ struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
       needsSlice = true;
     }
     if (needsSlice) {
-      inputArg = rewriter.create<stablehlo::PadOp>(
-          wrap.getLoc(), inputArg,
-          rewriter.create<stablehlo::ConstantOp>(
-              wrap.getLoc(), rewriter.getZeroAttr(elemType)),
+      inputArg = stablehlo::PadOp::create(
+          rewriter, wrap.getLoc(), inputArg,
+          stablehlo::ConstantOp::create(rewriter, wrap.getLoc(),
+                                        rewriter.getZeroAttr(elemType)),
           lowPads, highPads, interior);
     }
     manualOpRetShape[wrapDimension] = paddedResultSize;
@@ -1142,18 +1165,19 @@ struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
 
     Value manualOps[] = {inputArg};
     Type manualTypes[] = {globalResultType};
-    auto manual = rewriter.create<sdy::ManualComputationOp>(
-        wrap.getLoc(), manualTypes, manualOps, inShardings, outShardings,
-        manualAxes);
+    auto manual = sdy::ManualComputationOp::create(
+        rewriter, wrap.getLoc(), manualTypes, manualOps, inShardings,
+        outShardings, manualAxes);
 
     auto blk = rewriter.createBlock(&manual.getBody(), manual.getBody().begin(),
                                     inTys, inLocs);
     auto innerArg = blk->getArgument(0);
 
-    auto partitionId = rewriter.create<stablehlo::PartitionIdOp>(wrap.getLoc());
+    auto partitionId =
+        stablehlo::PartitionIdOp::create(rewriter, wrap.getLoc());
 
-    auto zero = rewriter.create<stablehlo::ConstantOp>(
-        wrap.getLoc(), rewriter.getZeroAttr(partitionId.getType()));
+    auto zero = stablehlo::ConstantOp::create(
+        rewriter, wrap.getLoc(), rewriter.getZeroAttr(partitionId.getType()));
 
     auto [isLeftSide, isRightSide, isNotLeftSide, isNotRightSide, leftSide,
           rightSide] = getChecksForBoundaries(rewriter, wrap, partitionId,
@@ -1161,10 +1185,10 @@ struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
 
     if (numDevicesAlongDimension != 2) {
       Type ifTypes[] = {localResultType};
-      auto ifCond = rewriter.create<stablehlo::IfOp>(
-          wrap.getLoc(), ifTypes,
-          rewriter.create<stablehlo::AndOp>(wrap.getLoc(), isNotLeftSide,
-                                            isNotRightSide));
+      auto ifCond = stablehlo::IfOp::create(
+          rewriter, wrap.getLoc(), ifTypes,
+          stablehlo::AndOp::create(rewriter, wrap.getLoc(), isNotLeftSide,
+                                   isNotRightSide));
 
       {
         rewriter.createBlock(&ifCond.getTrueBranch(),
@@ -1188,7 +1212,7 @@ struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
       }
 
       rewriter.setInsertionPointAfter(ifCond);
-      rewriter.create<sdy::ReturnOp>(wrap.getLoc(), ifCond->getResults());
+      sdy::ReturnOp::create(rewriter, wrap.getLoc(), ifCond->getResults());
     } else {
       // There are no edges in this case
       auto results = wrapCommPatternForEdges(
@@ -1196,7 +1220,7 @@ struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
           wrapDimension, paddedBoundarySize, numDevicesAlongDimension, ndims,
           paddedResultSize, localResultType.getShape(), isLeftSide, channel_id,
           /*returnResults=*/false);
-      rewriter.create<sdy::ReturnOp>(wrap.getLoc(), results);
+      sdy::ReturnOp::create(rewriter, wrap.getLoc(), results);
     }
 
     if (wrap.getType() != manual->getResult(0).getType()) {
@@ -1260,20 +1284,22 @@ struct WrapToPadCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
     SmallVector<int64_t> leftLimits = llvm::to_vector(wrapOperandShape);
     leftLimits[wrapDimension] = wrap.getRhs();
 
-    auto leftSliceOp = rewriter.create<stablehlo::SliceOp>(
-        wrap.getLoc(), wrap.getOperand(), leftStarts, leftLimits, strides);
+    auto leftSliceOp =
+        stablehlo::SliceOp::create(rewriter, wrap.getLoc(), wrap.getOperand(),
+                                   leftStarts, leftLimits, strides);
     sdy::setSharding(leftSliceOp, wrapSharding);
 
     SmallVector<int64_t> rightStarts(ndims, 0);
     SmallVector<int64_t> rightLimits = llvm::to_vector(wrapOperandShape);
     rightStarts[wrapDimension] = rightLimits[wrapDimension] - wrap.getLhs();
 
-    auto rightSliceOp = rewriter.create<stablehlo::SliceOp>(
-        wrap.getLoc(), wrap.getOperand(), rightStarts, rightLimits, strides);
+    auto rightSliceOp =
+        stablehlo::SliceOp::create(rewriter, wrap.getLoc(), wrap.getOperand(),
+                                   rightStarts, rightLimits, strides);
     sdy::setSharding(rightSliceOp, wrapSharding);
 
-    auto zero = rewriter.create<stablehlo::ConstantOp>(
-        wrap.getLoc(), rewriter.getZeroAttr(elemType));
+    auto zero = stablehlo::ConstantOp::create(rewriter, wrap.getLoc(),
+                                              rewriter.getZeroAttr(elemType));
 
     SmallVector<int64_t> padLow(ndims, 0);
     SmallVector<int64_t> padHigh(ndims, 0);
@@ -1281,28 +1307,29 @@ struct WrapToPadCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
 
     padLow[wrapDimension] = wrapShape[wrapDimension] - wrap.getRhs();
     padHigh[wrapDimension] = 0;
-    auto paddedLeftSliceOp = rewriter.create<stablehlo::PadOp>(
-        wrap.getLoc(), leftSliceOp, zero, padLow, padHigh, padInner);
+    auto paddedLeftSliceOp = stablehlo::PadOp::create(
+        rewriter, wrap.getLoc(), leftSliceOp, zero, padLow, padHigh, padInner);
     sdy::setSharding(paddedLeftSliceOp, wrapSharding);
 
     padLow[wrapDimension] = 0;
     padHigh[wrapDimension] = wrapShape[wrapDimension] - wrap.getLhs();
-    auto paddedRightSliceOp = rewriter.create<stablehlo::PadOp>(
-        wrap.getLoc(), rightSliceOp, zero, padLow, padHigh, padInner);
+    auto paddedRightSliceOp = stablehlo::PadOp::create(
+        rewriter, wrap.getLoc(), rightSliceOp, zero, padLow, padHigh, padInner);
     sdy::setSharding(paddedRightSliceOp, wrapSharding);
 
     padLow[wrapDimension] = wrap.getLhs();
     padHigh[wrapDimension] = wrap.getRhs();
-    auto paddedWrapOp = rewriter.create<stablehlo::PadOp>(
-        wrap.getLoc(), wrap.getOperand(), zero, padLow, padHigh, padInner);
+    auto paddedWrapOp =
+        stablehlo::PadOp::create(rewriter, wrap.getLoc(), wrap.getOperand(),
+                                 zero, padLow, padHigh, padInner);
     sdy::setSharding(paddedWrapOp, wrapSharding);
 
-    auto addOp = rewriter.create<stablehlo::AddOp>(
-        wrap.getLoc(), paddedRightSliceOp, paddedWrapOp);
+    auto addOp = stablehlo::AddOp::create(rewriter, wrap.getLoc(),
+                                          paddedRightSliceOp, paddedWrapOp);
     mlir::sdy::setSharding(addOp, wrapSharding);
 
-    addOp = rewriter.create<stablehlo::AddOp>(wrap.getLoc(), addOp,
-                                              paddedLeftSliceOp);
+    addOp = stablehlo::AddOp::create(rewriter, wrap.getLoc(), addOp,
+                                     paddedLeftSliceOp);
     sdy::setSharding(addOp, wrapSharding);
 
     rewriter.replaceOp(wrap, addOp);
@@ -1392,10 +1419,10 @@ struct ExtendCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
       needsSlice = true;
     }
     if (needsSlice) {
-      inputArg = rewriter.create<stablehlo::PadOp>(
-          extend.getLoc(), inputArg,
-          rewriter.create<stablehlo::ConstantOp>(
-              extend.getLoc(), rewriter.getZeroAttr(elemType)),
+      inputArg = stablehlo::PadOp::create(
+          rewriter, extend.getLoc(), inputArg,
+          stablehlo::ConstantOp::create(rewriter, extend.getLoc(),
+                                        rewriter.getZeroAttr(elemType)),
           lowPads, highPads, interior);
     }
     manualOpRetShape[extendDimension] = paddedResultSize;
@@ -1410,19 +1437,19 @@ struct ExtendCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
 
     Value manualOps[] = {inputArg};
     Type manualTypes[] = {globalResultType};
-    auto manual = rewriter.create<sdy::ManualComputationOp>(
-        extend.getLoc(), manualTypes, manualOps, inShardings, outShardings,
-        manualAxes);
+    auto manual = sdy::ManualComputationOp::create(
+        rewriter, extend.getLoc(), manualTypes, manualOps, inShardings,
+        outShardings, manualAxes);
 
     auto blk = rewriter.createBlock(&manual.getBody(), manual.getBody().begin(),
                                     inTys, inLocs);
     auto innerArg = blk->getArgument(0);
 
     auto partitionId =
-        rewriter.create<stablehlo::PartitionIdOp>(extend.getLoc());
+        stablehlo::PartitionIdOp::create(rewriter, extend.getLoc());
 
-    auto zero = rewriter.create<stablehlo::ConstantOp>(
-        extend.getLoc(), rewriter.getZeroAttr(partitionId.getType()));
+    auto zero = stablehlo::ConstantOp::create(
+        rewriter, extend.getLoc(), rewriter.getZeroAttr(partitionId.getType()));
 
     auto [isLeftSide, isRightSide, isNotLeftSide, isNotRightSide, leftSide,
           rightSide] = getChecksForBoundaries(rewriter, extend, partitionId,
@@ -1430,10 +1457,10 @@ struct ExtendCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
 
     if (numDevicesAlongDimension != 2) {
       Type ifTypes[] = {localResultType};
-      auto ifCond = rewriter.create<stablehlo::IfOp>(
-          extend.getLoc(), ifTypes,
-          rewriter.create<stablehlo::AndOp>(extend.getLoc(), isNotLeftSide,
-                                            isNotRightSide));
+      auto ifCond = stablehlo::IfOp::create(
+          rewriter, extend.getLoc(), ifTypes,
+          stablehlo::AndOp::create(rewriter, extend.getLoc(), isNotLeftSide,
+                                   isNotRightSide));
 
       {
         rewriter.createBlock(&ifCond.getTrueBranch(),
@@ -1457,14 +1484,14 @@ struct ExtendCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
       }
 
       rewriter.setInsertionPointAfter(ifCond);
-      rewriter.create<sdy::ReturnOp>(extend.getLoc(), ifCond->getResults());
+      sdy::ReturnOp::create(rewriter, extend.getLoc(), ifCond->getResults());
     } else {
       auto results = extendCommPatternForEdges(
           rewriter, extend, partitionId, zero, innerArg, extendSharding,
           extendDimension, paddedBoundarySize, numDevicesAlongDimension, ndims,
           paddedResultSize, localResultType.getShape(), isLeftSide,
           /*returnResults=*/false);
-      rewriter.create<sdy::ReturnOp>(extend.getLoc(), results);
+      sdy::ReturnOp::create(rewriter, extend.getLoc(), results);
     }
 
     if (extend.getType() != manual->getResult(0).getType()) {
@@ -1528,8 +1555,9 @@ struct ExtendToPadCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
     SmallVector<int64_t> leftLimits = llvm::to_vector(extendOperandShape);
     leftLimits[extendDimension] = extend.getLhs();
 
-    auto leftSliceOp = rewriter.create<stablehlo::SliceOp>(
-        extend.getLoc(), extend.getOperand(), leftStarts, leftLimits, strides);
+    auto leftSliceOp = stablehlo::SliceOp::create(
+        rewriter, extend.getLoc(), extend.getOperand(), leftStarts, leftLimits,
+        strides);
     sdy::setSharding(leftSliceOp, extendSharding);
 
     SmallVector<int64_t> rightStarts(ndims, 0);
@@ -1537,13 +1565,13 @@ struct ExtendToPadCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
     rightStarts[extendDimension] =
         rightLimits[extendDimension] - extend.getRhs();
 
-    auto rightSliceOp = rewriter.create<stablehlo::SliceOp>(
-        extend.getLoc(), extend.getOperand(), rightStarts, rightLimits,
-        strides);
+    auto rightSliceOp = stablehlo::SliceOp::create(
+        rewriter, extend.getLoc(), extend.getOperand(), rightStarts,
+        rightLimits, strides);
     sdy::setSharding(rightSliceOp, extendSharding);
 
-    auto zero = rewriter.create<stablehlo::ConstantOp>(
-        extend.getLoc(), rewriter.getZeroAttr(elemType));
+    auto zero = stablehlo::ConstantOp::create(rewriter, extend.getLoc(),
+                                              rewriter.getZeroAttr(elemType));
 
     SmallVector<int64_t> padLow(ndims, 0);
     SmallVector<int64_t> padHigh(ndims, 0);
@@ -1551,31 +1579,152 @@ struct ExtendToPadCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
 
     padLow[extendDimension] = 0;
     padHigh[extendDimension] = extendShape[extendDimension] - extend.getLhs();
-    auto paddedLeftSliceOp = rewriter.create<stablehlo::PadOp>(
-        extend.getLoc(), leftSliceOp, zero, padLow, padHigh, padInner);
+    auto paddedLeftSliceOp =
+        stablehlo::PadOp::create(rewriter, extend.getLoc(), leftSliceOp, zero,
+                                 padLow, padHigh, padInner);
     sdy::setSharding(paddedLeftSliceOp, extendSharding);
 
     padLow[extendDimension] = extendShape[extendDimension] - extend.getRhs();
     padHigh[extendDimension] = 0;
-    auto paddedRightSliceOp = rewriter.create<stablehlo::PadOp>(
-        extend.getLoc(), rightSliceOp, zero, padLow, padHigh, padInner);
+    auto paddedRightSliceOp =
+        stablehlo::PadOp::create(rewriter, extend.getLoc(), rightSliceOp, zero,
+                                 padLow, padHigh, padInner);
     sdy::setSharding(paddedRightSliceOp, extendSharding);
 
     padLow[extendDimension] = extend.getLhs();
     padHigh[extendDimension] = extend.getRhs();
-    auto paddedExtendOp = rewriter.create<stablehlo::PadOp>(
-        extend.getLoc(), extend.getOperand(), zero, padLow, padHigh, padInner);
+    auto paddedExtendOp =
+        stablehlo::PadOp::create(rewriter, extend.getLoc(), extend.getOperand(),
+                                 zero, padLow, padHigh, padInner);
     sdy::setSharding(paddedExtendOp, extendSharding);
 
-    auto addOp = rewriter.create<stablehlo::AddOp>(
-        extend.getLoc(), paddedLeftSliceOp, paddedExtendOp);
+    auto addOp = stablehlo::AddOp::create(rewriter, extend.getLoc(),
+                                          paddedLeftSliceOp, paddedExtendOp);
     mlir::sdy::setSharding(addOp, extendSharding);
 
-    addOp = rewriter.create<stablehlo::AddOp>(extend.getLoc(), addOp,
-                                              paddedRightSliceOp);
+    addOp = stablehlo::AddOp::create(rewriter, extend.getLoc(), addOp,
+                                     paddedRightSliceOp);
     sdy::setSharding(addOp, extendSharding);
 
     rewriter.replaceOp(extend, addOp);
+    return success();
+  }
+};
+
+struct ExtendToPadCommOptimize2 : public OpRewritePattern<enzymexla::ExtendOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::ExtendOp extend,
+                                PatternRewriter &rewriter) const override {
+    if (extend->getParentOfType<sdy::ManualComputationOp>())
+      return failure();
+    auto elemType = extend.getType().getElementType();
+    auto ndims = extend.getType().getRank();
+    auto extendDimension = extend.getDimension();
+
+    auto extendSharding = mlir::sdy::getSharding(extend);
+    if (!extendSharding)
+      return failure();
+
+    auto operandSharding = mlir::sdy::getSharding(extend.getOperand());
+    if (!operandSharding)
+      return failure();
+
+    if (operandSharding != extendSharding)
+      return failure();
+
+    auto numDevicesAlongDimension =
+        getNumDevicesAlongDimension(extendSharding, extendDimension, extend);
+    if (numDevicesAlongDimension == 1) {
+      return rewriter.notifyMatchFailure(
+          extend,
+          "numDevicesAlongDimension == 1. Communication is already optimized.");
+    }
+
+    SmallVector<int64_t> strides(ndims, 1);
+
+    auto zero = stablehlo::ConstantOp::create(rewriter, extend.getLoc(),
+                                              rewriter.getZeroAttr(elemType));
+
+    SmallVector<int64_t> padLow(ndims, 0);
+    SmallVector<int64_t> padHigh(ndims, 0);
+    SmallVector<int64_t> padInner(ndims, 0);
+
+    padLow[extendDimension] = extend.getRhs() + extend.getLhs();
+    padHigh[extendDimension] = 0;
+    auto paddedRightSliceOp =
+        stablehlo::PadOp::create(rewriter, extend.getLoc(), extend.getOperand(),
+                                 zero, padLow, padHigh, padInner);
+    sdy::setSharding(paddedRightSliceOp, extendSharding);
+
+    padLow[extendDimension] = extend.getLhs();
+    padHigh[extendDimension] = extend.getRhs();
+    auto paddedExtendOp =
+        stablehlo::PadOp::create(rewriter, extend.getLoc(), extend.getOperand(),
+                                 zero, padLow, padHigh, padInner);
+    sdy::setSharding(paddedExtendOp, extendSharding);
+
+    Value current = paddedExtendOp;
+
+    auto iota = stablehlo::IotaOp::create(
+        rewriter, extend.getLoc(),
+        RankedTensorType::get(paddedExtendOp.getType().getShape(),
+                              rewriter.getI32Type()),
+        extendDimension);
+    sdy::setSharding(iota, extendSharding);
+
+    if (extend.getLhs() != 0) {
+      padLow[extendDimension] = 0;
+      padHigh[extendDimension] = extend.getRhs() + extend.getLhs();
+      auto paddedLeftSliceOp = stablehlo::PadOp::create(
+          rewriter, extend.getLoc(), extend.getOperand(), zero, padLow, padHigh,
+          padInner);
+      sdy::setSharding(paddedLeftSliceOp, extendSharding);
+
+      Value lhsValue = stablehlo::ConstantOp::create(
+          rewriter, extend.getLoc(),
+          SplatElementsAttr::get(iota.getType(),
+                                 rewriter.getI32IntegerAttr(extend.getLhs())));
+
+      auto cond = stablehlo::CompareOp::create(
+          rewriter, extend.getLoc(), iota, lhsValue,
+          stablehlo::ComparisonDirection::LT);
+      sdy::setSharding(cond, extendSharding);
+
+      auto selOp = stablehlo::SelectOp::create(rewriter, extend.getLoc(), cond,
+                                               paddedLeftSliceOp, current);
+      sdy::setSharding(selOp, extendSharding);
+      current = selOp;
+    }
+
+    if (extend.getRhs() != 0) {
+      padLow[extendDimension] = extend.getRhs() + extend.getLhs();
+      padHigh[extendDimension] = 0;
+      auto paddedRightSliceOp = stablehlo::PadOp::create(
+          rewriter, extend.getLoc(), extend.getOperand(), zero, padLow, padHigh,
+          padInner);
+      sdy::setSharding(paddedRightSliceOp, extendSharding);
+
+      Value rhsValue = stablehlo::ConstantOp::create(
+          rewriter, extend.getLoc(),
+          SplatElementsAttr::get(
+              iota.getType(),
+              rewriter.getI32IntegerAttr(
+                  extend.getOperand().getType().getShape()[extendDimension] +
+                  extend.getLhs())));
+
+      auto cond = stablehlo::CompareOp::create(
+          rewriter, extend.getLoc(), iota, rhsValue,
+          stablehlo::ComparisonDirection::LT);
+      sdy::setSharding(cond, extendSharding);
+
+      auto selOp = stablehlo::SelectOp::create(rewriter, extend.getLoc(), cond,
+                                               current, paddedRightSliceOp);
+      sdy::setSharding(selOp, extendSharding);
+      current = selOp;
+    }
+
+    rewriter.replaceOp(extend, current);
     return success();
   }
 };
@@ -1655,10 +1804,10 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
       localShape[rotateDimension] = extra / numDevicesAlongDimension;
       SmallVector<int64_t> padInner(ndims, 0);
 
-      inputArg = rewriter.create<stablehlo::PadOp>(
-          rotate.getLoc(), rotate.getOperand(),
-          rewriter.create<stablehlo::ConstantOp>(rotate.getLoc(),
-                                                 rewriter.getZeroAttr(elType)),
+      inputArg = stablehlo::PadOp::create(
+          rewriter, rotate.getLoc(), rotate.getOperand(),
+          stablehlo::ConstantOp::create(rewriter, rotate.getLoc(),
+                                        rewriter.getZeroAttr(elType)),
           padLow, padHigh, padInner);
     }
     if (amount > localShape[rotate.getDimension()]) {
@@ -1680,10 +1829,10 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
       needsSlice = true;
     }
     if (needsSlice) {
-      inputArg = rewriter.create<stablehlo::PadOp>(
-          rotate.getLoc(), rotate.getOperand(),
-          rewriter.create<stablehlo::ConstantOp>(rotate.getLoc(),
-                                                 rewriter.getZeroAttr(elType)),
+      inputArg = stablehlo::PadOp::create(
+          rewriter, rotate.getLoc(), rotate.getOperand(),
+          stablehlo::ConstantOp::create(rewriter, rotate.getLoc(),
+                                        rewriter.getZeroAttr(elType)),
           lowPads, highPads, interior);
     }
 
@@ -1695,9 +1844,9 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
 
     Value manualOps[] = {inputArg};
     Type manualTypes[] = {inputArg.getType()};
-    auto manual = rewriter.create<sdy::ManualComputationOp>(
-        rotate.getLoc(), manualTypes, manualOps, inShardings, outShardings,
-        manualAxes);
+    auto manual = sdy::ManualComputationOp::create(
+        rewriter, rotate.getLoc(), manualTypes, manualOps, inShardings,
+        outShardings, manualAxes);
 
     {
       auto blk = rewriter.createBlock(&manual.getBody(),
@@ -1713,14 +1862,15 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
         innerStarts[rotate.getDimension()] =
             innerLimits[rotate.getDimension()] - amount;
       }
-      auto commSlice = rewriter.create<stablehlo::SliceOp>(
-          rotate.getLoc(), innerArg, innerStarts, innerLimits, innerStrides);
+      auto commSlice =
+          stablehlo::SliceOp::create(rewriter, rotate.getLoc(), innerArg,
+                                     innerStarts, innerLimits, innerStrides);
 
       auto sourceTargetIdxs = generateShiftPairs(
           rotateSharding, rotate.getDimension(), rotate, leftToRight, false);
 
-      auto commResult = rewriter.create<stablehlo::CollectivePermuteOp>(
-          rotate.getLoc(), commSlice,
+      auto commResult = stablehlo::CollectivePermuteOp::create(
+          rewriter, rotate.getLoc(), commSlice,
           DenseIntElementsAttr::get(
               RankedTensorType::get(
                   {(int64_t)(sourceTargetIdxs.size() / 2), (int64_t)2},
@@ -1742,12 +1892,12 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
       }
 
       if (onlyComm) {
-        rewriter.create<sdy::ReturnOp>(rotate.getLoc(),
-                                       commResult->getResults());
+        sdy::ReturnOp::create(rewriter, rotate.getLoc(),
+                              commResult->getResults());
       } else {
-        auto remSlice = rewriter.create<stablehlo::SliceOp>(
-            rotate.getLoc(), innerArg, innerStartsPresent, innerLimitsPresent,
-            innerStrides);
+        auto remSlice = stablehlo::SliceOp::create(
+            rewriter, rotate.getLoc(), innerArg, innerStartsPresent,
+            innerLimitsPresent, innerStrides);
 
         std::array<Value, 2> concatArgs;
         if (leftToRight)
@@ -1755,11 +1905,11 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
         else
           concatArgs = {commResult, remSlice};
 
-        auto innerConcat = rewriter.create<stablehlo::ConcatenateOp>(
-            rotate.getLoc(), concatArgs, rotateDimension);
+        auto innerConcat = stablehlo::ConcatenateOp::create(
+            rewriter, rotate.getLoc(), concatArgs, rotateDimension);
 
-        rewriter.create<sdy::ReturnOp>(rotate.getLoc(),
-                                       innerConcat->getResults());
+        sdy::ReturnOp::create(rewriter, rotate.getLoc(),
+                              innerConcat->getResults());
       }
     }
 
@@ -1768,9 +1918,9 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
       SmallVector<int64_t> innerStarts(ndims, 0);
       SmallVector<int64_t> innerLimits =
           llvm::to_vector(rotate.getType().getShape());
-      auto sliceRemovePadding = rewriter.create<stablehlo::SliceOp>(
-          rotate.getLoc(), manual->getResults()[0], innerStarts, innerLimits,
-          innerStrides);
+      auto sliceRemovePadding = stablehlo::SliceOp::create(
+          rewriter, rotate.getLoc(), manual->getResults()[0], innerStarts,
+          innerLimits, innerStrides);
       rewriter.replaceOp(rotate, sliceRemovePadding);
     } else {
       rewriter.replaceOp(rotate, manual);
@@ -1815,34 +1965,36 @@ struct RotateToPadCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
     SmallVector<int64_t> sl1_ends(rotateShape);
     sl1_ends[rotate.getDimension()] = rotate.getAmount();
 
-    auto sl0 = rewriter.create<stablehlo::SliceOp>(
-        rotate.getLoc(), rotate.getOperand(), sl0_starts, sl0_ends, strides);
+    auto sl0 = stablehlo::SliceOp::create(rewriter, rotate.getLoc(),
+                                          rotate.getOperand(), sl0_starts,
+                                          sl0_ends, strides);
     sdy::setSharding(sl0, rotateSharding);
 
-    auto sl1 = rewriter.create<stablehlo::SliceOp>(
-        rotate.getLoc(), rotate.getOperand(), sl1_starts, sl1_ends, strides);
+    auto sl1 = stablehlo::SliceOp::create(rewriter, rotate.getLoc(),
+                                          rotate.getOperand(), sl1_starts,
+                                          sl1_ends, strides);
     sdy::setSharding(sl1, rotateSharding);
 
-    auto zero = rewriter.create<stablehlo::ConstantOp>(
-        rotate.getLoc(), rewriter.getZeroAttr(elType));
+    auto zero = stablehlo::ConstantOp::create(rewriter, rotate.getLoc(),
+                                              rewriter.getZeroAttr(elType));
 
     SmallVector<int64_t> padInner(ndims, 0);
     SmallVector<int64_t> padLow(ndims, 0);
     SmallVector<int64_t> padHigh(ndims, 0);
     padHigh[rotate.getDimension()] =
         sl1.getType().getShape()[rotate.getDimension()];
-    auto paddedSl0 = rewriter.create<stablehlo::PadOp>(
-        rotate.getLoc(), sl0, zero, padLow, padHigh, padInner);
+    auto paddedSl0 = stablehlo::PadOp::create(rewriter, rotate.getLoc(), sl0,
+                                              zero, padLow, padHigh, padInner);
     sdy::setSharding(paddedSl0, rotateSharding);
 
     padHigh[rotate.getDimension()] = 0;
     padLow[rotate.getDimension()] =
         sl0.getType().getShape()[rotate.getDimension()];
-    auto paddedSl1 = rewriter.create<stablehlo::PadOp>(
-        rotate.getLoc(), sl1, zero, padLow, padHigh, padInner);
+    auto paddedSl1 = stablehlo::PadOp::create(rewriter, rotate.getLoc(), sl1,
+                                              zero, padLow, padHigh, padInner);
 
-    auto addOp = rewriter.create<stablehlo::AddOp>(rotate.getLoc(), paddedSl0,
-                                                   paddedSl1);
+    auto addOp = stablehlo::AddOp::create(rewriter, rotate.getLoc(), paddedSl0,
+                                          paddedSl1);
     sdy::setSharding(addOp, rotateSharding);
 
     rewriter.replaceOp(rotate, addOp);
@@ -1938,10 +2090,10 @@ struct ConcatTwoOperandsCommOptimize
       } else {
         padHigh[concatDimension] += padding[i];
       }
-      auto paddedOperand = rewriter.create<stablehlo::PadOp>(
-          concat.getLoc(), allOperands[i],
-          rewriter.create<stablehlo::ConstantOp>(
-              concat.getLoc(), rewriter.getZeroAttr(elemType)),
+      auto paddedOperand = stablehlo::PadOp::create(
+          rewriter, concat.getLoc(), allOperands[i],
+          stablehlo::ConstantOp::create(rewriter, concat.getLoc(),
+                                        rewriter.getZeroAttr(elemType)),
           padLow, padHigh, padInner);
       sdy::setSharding(paddedOperand, concatSharding);
       allOperands[i] = paddedOperand;
@@ -1983,9 +2135,9 @@ struct ConcatTwoOperandsCommOptimize
 
     Type manualTypes[] = {globalResultType};
 
-    auto manual = rewriter.create<sdy::ManualComputationOp>(
-        concat.getLoc(), manualTypes, allOperands, inShardings, outShardings,
-        axis);
+    auto manual = sdy::ManualComputationOp::create(
+        rewriter, concat.getLoc(), manualTypes, allOperands, inShardings,
+        outShardings, axis);
 
     SmallVector<int64_t> innerStrides(ndims, 1);
 
@@ -2001,12 +2153,12 @@ struct ConcatTwoOperandsCommOptimize
           cast<RankedTensorType>(mainArg.getType()).getShape()[concatDimension];
 
       auto partitionId =
-          rewriter.create<stablehlo::PartitionIdOp>(concat.getLoc());
+          stablehlo::PartitionIdOp::create(rewriter, concat.getLoc());
       auto partitionIdType = partitionId.getType();
-      auto zero = rewriter.create<stablehlo::ConstantOp>(
-          concat.getLoc(), rewriter.getZeroAttr(partitionIdType));
-      auto onePId = rewriter.create<stablehlo::ConstantOp>(
-          concat.getLoc(), partitionIdType,
+      auto zero = stablehlo::ConstantOp::create(
+          rewriter, concat.getLoc(), rewriter.getZeroAttr(partitionIdType));
+      auto onePId = stablehlo::ConstantOp::create(
+          rewriter, concat.getLoc(), partitionIdType,
           cast<ElementsAttr>(makeAttr(partitionIdType, 1)));
 
       auto [isLeftSide, isRightSide, isNotLeftSide, isNotRightSide, leftSide,
@@ -2020,23 +2172,25 @@ struct ConcatTwoOperandsCommOptimize
             cast<RankedTensorType>(mainArg.getType()).getShape());
         innerStarts[concatDimension] = N2 - N1;
 
-        commSlice = rewriter.create<stablehlo::SliceOp>(
-            concat.getLoc(), mainArg, innerStarts, innerLimits, innerStrides);
+        commSlice =
+            stablehlo::SliceOp::create(rewriter, concat.getLoc(), mainArg,
+                                       innerStarts, innerLimits, innerStrides);
       } else {
         SmallVector<int64_t> innerStarts(ndims, 0);
         SmallVector<int64_t> innerLimits = llvm::to_vector(
             cast<RankedTensorType>(mainArg.getType()).getShape());
         innerLimits[concatDimension] = N1;
 
-        commSlice = rewriter.create<stablehlo::SliceOp>(
-            concat.getLoc(), mainArg, innerStarts, innerLimits, innerStrides);
+        commSlice =
+            stablehlo::SliceOp::create(rewriter, concat.getLoc(), mainArg,
+                                       innerStarts, innerLimits, innerStrides);
       }
 
       auto shiftPairs = generateShiftPairs(concatSharding, concatDimension,
                                            concat, commLeft, false);
 
-      auto commResult = rewriter.create<stablehlo::CollectivePermuteOp>(
-          concat.getLoc(), commSlice,
+      auto commResult = stablehlo::CollectivePermuteOp::create(
+          rewriter, concat.getLoc(), commSlice,
           DenseIntElementsAttr::get(
               RankedTensorType::get(
                   {(int64_t)(shiftPairs.size() / 2), (int64_t)2},
@@ -2049,22 +2203,23 @@ struct ConcatTwoOperandsCommOptimize
 
       Type ifTypes[] = {RankedTensorType::get(
           cast<ShapedType>(commResult.getType()).getShape(), elemType)};
-      stablehlo::IfOp ifCond = rewriter.create<stablehlo::IfOp>(
-          concat.getLoc(), ifTypes, concatLeft ? isLeftSide : isRightSide);
+      stablehlo::IfOp ifCond =
+          stablehlo::IfOp::create(rewriter, concat.getLoc(), ifTypes,
+                                  concatLeft ? isLeftSide : isRightSide);
 
       {
         rewriter.createBlock(&ifCond.getTrueBranch(),
                              ifCond.getTrueBranch().begin());
 
-        rewriter.create<stablehlo::ReturnOp>(concat.getLoc(), extendArg);
+        stablehlo::ReturnOp::create(rewriter, concat.getLoc(), extendArg);
       }
 
       {
         rewriter.createBlock(&ifCond.getFalseBranch(),
                              ifCond.getFalseBranch().begin());
 
-        rewriter.create<stablehlo::ReturnOp>(concat.getLoc(),
-                                             commResult->getResults());
+        stablehlo::ReturnOp::create(rewriter, concat.getLoc(),
+                                    commResult->getResults());
       }
 
       rewriter.setInsertionPointAfter(ifCond);
@@ -2081,11 +2236,11 @@ struct ConcatTwoOperandsCommOptimize
       auto extendSize =
           cast<ShapedType>(extendArg.getType()).getShape()[concatDimension];
 
-      auto concatResult = rewriter.create<stablehlo::ConcatenateOp>(
-          concat.getLoc(), concatArgs, concatDimension);
+      auto concatResult = stablehlo::ConcatenateOp::create(
+          rewriter, concat.getLoc(), concatArgs, concatDimension);
 
-      auto alpha = rewriter.create<stablehlo::ConstantOp>(
-          concat.getLoc(), partitionIdType,
+      auto alpha = stablehlo::ConstantOp::create(
+          rewriter, concat.getLoc(), partitionIdType,
           cast<ElementsAttr>(makeAttr(partitionIdType,
                                       extendSize / numDevicesAlongDimension)));
 
@@ -2093,35 +2248,34 @@ struct ConcatTwoOperandsCommOptimize
       for (int i = 0; i < ndims; i++) {
         if (i == concatDimension) {
           if (concatLeft) {
-            dynamicSliceStartSlices.push_back(rewriter.create<stablehlo::MulOp>(
-                concat.getLoc(),
-                rewriter.create<stablehlo::SubtractOp>(concat.getLoc(),
-                                                       partitionId, onePId),
+            dynamicSliceStartSlices.push_back(stablehlo::MulOp::create(
+                rewriter, concat.getLoc(),
+                stablehlo::SubtractOp::create(rewriter, concat.getLoc(),
+                                              partitionId, onePId),
                 alpha));
           } else {
-            auto diffIdx = rewriter.create<stablehlo::MulOp>(
-                concat.getLoc(),
-                rewriter.create<stablehlo::AddOp>(concat.getLoc(), partitionId,
-                                                  onePId),
+            auto diffIdx = stablehlo::MulOp::create(
+                rewriter, concat.getLoc(),
+                stablehlo::AddOp::create(rewriter, concat.getLoc(), partitionId,
+                                         onePId),
                 alpha);
-            dynamicSliceStartSlices.push_back(
-                rewriter.create<stablehlo::SubtractOp>(
-                    concat.getLoc(),
-                    rewriter.create<stablehlo::ConstantOp>(
-                        concat.getLoc(), partitionIdType,
-                        cast<ElementsAttr>(
-                            makeAttr(partitionIdType, extendSize))),
-                    diffIdx));
+            dynamicSliceStartSlices.push_back(stablehlo::SubtractOp::create(
+                rewriter, concat.getLoc(),
+                stablehlo::ConstantOp::create(
+                    rewriter, concat.getLoc(), partitionIdType,
+                    cast<ElementsAttr>(makeAttr(partitionIdType, extendSize))),
+                diffIdx));
           }
         } else {
           dynamicSliceStartSlices.push_back(zero);
         }
       }
 
-      auto slicedPart = rewriter.create<stablehlo::DynamicSliceOp>(
-          concat.getLoc(), concatResult, dynamicSliceStartSlices,
+      auto slicedPart = stablehlo::DynamicSliceOp::create(
+          rewriter, concat.getLoc(), concatResult, dynamicSliceStartSlices,
           localResultType.getShape());
-      rewriter.create<sdy::ReturnOp>(concat.getLoc(), slicedPart->getResults());
+      sdy::ReturnOp::create(rewriter, concat.getLoc(),
+                            slicedPart->getResults());
     }
 
     if (padding[0] != 0 || padding[1] != 0) {
@@ -2132,8 +2286,8 @@ struct ConcatTwoOperandsCommOptimize
       sliceLimits[concatDimension] -= padding[1];
 
       rewriter.setInsertionPointAfter(manual);
-      auto sliceRemovePadding = rewriter.create<stablehlo::SliceOp>(
-          concat.getLoc(), manual->getResults()[0], sliceStartIndices,
+      auto sliceRemovePadding = stablehlo::SliceOp::create(
+          rewriter, concat.getLoc(), manual->getResults()[0], sliceStartIndices,
           sliceLimits, innerStrides);
 
       rewriter.replaceOp(concat, sliceRemovePadding);
@@ -2215,10 +2369,10 @@ struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
       constantStartIndices[i] = val.getZExtValue();
     }
 
-    auto zero = rewriter.create<stablehlo::ConstantOp>(
-        dus.getLoc(), rewriter.getZeroAttr(elementType));
-    auto one = rewriter.create<stablehlo::ConstantOp>(
-        dus.getLoc(), rewriter.getOneAttr(elementType));
+    auto zero = stablehlo::ConstantOp::create(
+        rewriter, dus.getLoc(), rewriter.getZeroAttr(elementType));
+    auto one = stablehlo::ConstantOp::create(rewriter, dus.getLoc(),
+                                             rewriter.getOneAttr(elementType));
 
     SmallVector<int64_t> padInner(ndims, 0);
 
@@ -2231,8 +2385,9 @@ struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
     }
     Value updatePad = nullptr;
     if (!isZero(update)) {
-      auto updatePadOp = rewriter.create<stablehlo::PadOp>(
-          dus.getLoc(), update, zero, updatePadLow, updatePadHigh, padInner);
+      auto updatePadOp =
+          stablehlo::PadOp::create(rewriter, dus.getLoc(), update, zero,
+                                   updatePadLow, updatePadHigh, padInner);
       sdy::setSharding(updatePadOp, sharding);
       updatePad = updatePadOp;
     }
@@ -2242,25 +2397,25 @@ struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
       auto updateType = cast<RankedTensorType>(update.getType());
       auto zeroAttr =
           DenseElementsAttr::get(updateType, rewriter.getZeroAttr(elementType));
-      auto zeroUpdateOp = rewriter.create<stablehlo::ConstantOp>(
-          dus.getLoc(), updateType, zeroAttr);
+      auto zeroUpdateOp = stablehlo::ConstantOp::create(rewriter, dus.getLoc(),
+                                                        updateType, zeroAttr);
       sdy::setSharding(zeroUpdateOp, sharding);
 
-      auto maskOp = rewriter.create<stablehlo::PadOp>(
-          dus.getLoc(), zeroUpdateOp, one, updatePadLow, updatePadHigh,
-          padInner);
+      auto maskOp =
+          stablehlo::PadOp::create(rewriter, dus.getLoc(), zeroUpdateOp, one,
+                                   updatePadLow, updatePadHigh, padInner);
       sdy::setSharding(maskOp, sharding);
 
       auto maskedOperandOp =
-          rewriter.create<stablehlo::MulOp>(dus.getLoc(), operand, maskOp);
+          stablehlo::MulOp::create(rewriter, dus.getLoc(), operand, maskOp);
       sdy::setSharding(maskedOperandOp, sharding);
       maskedOperand = maskedOperandOp;
     }
 
     Value resultV = nullptr;
     if (maskedOperand && updatePad) {
-      auto result = rewriter.create<stablehlo::AddOp>(dus.getLoc(),
-                                                      maskedOperand, updatePad);
+      auto result = stablehlo::AddOp::create(rewriter, dus.getLoc(),
+                                             maskedOperand, updatePad);
       sdy::setSharding(result, sharding);
       resultV = result;
     } else if (maskedOperand) {
@@ -2268,8 +2423,8 @@ struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
     } else if (updatePad) {
       resultV = updatePad;
     } else {
-      auto cst = rewriter.create<stablehlo::ConstantOp>(
-          dus.getLoc(), dus.getType(),
+      auto cst = stablehlo::ConstantOp::create(
+          rewriter, dus.getLoc(), dus.getType(),
           cast<ElementsAttr>(rewriter.getZeroAttr(dus.getType())));
       sdy::setSharding(cst, sharding);
       resultV = cst;
@@ -2297,7 +2452,7 @@ void multiDimensionalSelect(Location loc, PatternRewriter &rewriter,
                             Operation *op) {
   int ndims = globalResultType.getShape().size();
 
-  auto partitionId = rewriter.create<stablehlo::PartitionIdOp>(loc);
+  auto partitionId = stablehlo::PartitionIdOp::create(rewriter, loc);
   auto partitionType = partitionId.getType();
 
   DenseMap<std::pair<int64_t, Type>, Value> constantCache;
@@ -2308,8 +2463,8 @@ void multiDimensionalSelect(Location loc, PatternRewriter &rewriter,
     auto found = constantCache.find(key);
     if (found != constantCache.end())
       return found->second;
-    auto cst = rewriter.create<stablehlo::ConstantOp>(
-        loc, TT, cast<ElementsAttr>(makeAttr(TT, v)));
+    auto cst = stablehlo::ConstantOp::create(
+        rewriter, loc, TT, cast<ElementsAttr>(makeAttr(TT, v)));
     constantCache[key] = cst;
     return cst;
   };
@@ -2323,8 +2478,8 @@ void multiDimensionalSelect(Location loc, PatternRewriter &rewriter,
         continue;
       newStarts[i] = getOrCreateConstant(lowPads[i]);
     }
-    innerUpdateVal = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
-        loc, innerOperand, innerUpdate, newStarts);
+    innerUpdateVal = stablehlo::DynamicUpdateSliceOp::create(
+        rewriter, loc, innerOperand, innerUpdate, newStarts);
   }
 
   SmallVector<Value> multiDimIdxs;
@@ -2344,12 +2499,12 @@ void multiDimensionalSelect(Location loc, PatternRewriter &rewriter,
       } else {
         auto cst = getOrCreateConstant(nDevices);
         multiDimIdxs.push_back(
-            rewriter.create<stablehlo::RemOp>(loc, cur, cst));
+            stablehlo::RemOp::create(rewriter, loc, cur, cst));
       }
 
       if (i != localResultType.getShape().size() - 1 && nDevices != 1) {
         auto cst = getOrCreateConstant(nDevices);
-        cur = rewriter.create<stablehlo::DivOp>(loc, cur, cst);
+        cur = stablehlo::DivOp::create(rewriter, loc, cur, cst);
       }
     }
   }
@@ -2367,16 +2522,16 @@ void multiDimensionalSelect(Location loc, PatternRewriter &rewriter,
       // Evenly divisible pad, for example pad 20, inner 50, right 20, local
       // shape is 10 partition 0, and 1 would need the fused update (aka if
       // idx < pad / lowerShape)
-      leftSide = rewriter.create<stablehlo::CompareOp>(
-          loc, multiDimIdxs[idx],
+      leftSide = stablehlo::CompareOp::create(
+          rewriter, loc, multiDimIdxs[idx],
           getOrCreateConstant(lowPads[idx] / localResultType.getShape()[idx]),
           stablehlo::ComparisonDirection::LT);
     } else {
       // Non-evenly divisible pad, for example pad 18, inner 54, right 18,
       // local shape is 10 partition 0, and 1 would need the fused update
       // (aka if idx <= pad / lowerShape)
-      leftSide = rewriter.create<stablehlo::CompareOp>(
-          loc, multiDimIdxs[idx],
+      leftSide = stablehlo::CompareOp::create(
+          rewriter, loc, multiDimIdxs[idx],
           getOrCreateConstant(lowPads[idx] / localResultType.getShape()[idx]),
           stablehlo::ComparisonDirection::LE);
     }
@@ -2395,8 +2550,8 @@ void multiDimensionalSelect(Location loc, PatternRewriter &rewriter,
       // Evenly divisible startIdx, for example pad 20, inner 50, right X,
       // local shape is 10 partition 7, 8, ... would need the fused update
       // (aka if idx >= startIdx / lowerShape)
-      rightSide = rewriter.create<stablehlo::CompareOp>(
-          loc, multiDimIdxs[idx],
+      rightSide = stablehlo::CompareOp::create(
+          rewriter, loc, multiDimIdxs[idx],
           getOrCreateConstant(startIdx / localResultType.getShape()[idx]),
           stablehlo::ComparisonDirection::GE);
     } else {
@@ -2404,8 +2559,8 @@ void multiDimensionalSelect(Location loc, PatternRewriter &rewriter,
       // X, local shape is 10 partition 6, 7, 8, ... would need the fused
       // update (aka if idx >= startIdx / lowerShape) partition 6 only needs
       // from 58-60, partitoin 7 uses fully
-      rightSide = rewriter.create<stablehlo::CompareOp>(
-          loc, multiDimIdxs[idx],
+      rightSide = stablehlo::CompareOp::create(
+          rewriter, loc, multiDimIdxs[idx],
           getOrCreateConstant(startIdx / localResultType.getShape()[idx]),
           stablehlo::ComparisonDirection::GE);
     }
@@ -2417,22 +2572,22 @@ void multiDimensionalSelect(Location loc, PatternRewriter &rewriter,
   for (int i = 0; i < updatedShardedDims.size(); i++) {
     if (leftSides[i]) {
       if (mayContainOperandData)
-        mayContainOperandData = rewriter.create<stablehlo::OrOp>(
-            loc, mayContainOperandData, leftSides[i]);
+        mayContainOperandData = stablehlo::OrOp::create(
+            rewriter, loc, mayContainOperandData, leftSides[i]);
       else
         mayContainOperandData = leftSides[i];
     }
     if (rightSides[i]) {
       if (mayContainOperandData)
-        mayContainOperandData = rewriter.create<stablehlo::OrOp>(
-            loc, mayContainOperandData, rightSides[i]);
+        mayContainOperandData = stablehlo::OrOp::create(
+            rewriter, loc, mayContainOperandData, rightSides[i]);
       else
         mayContainOperandData = rightSides[i];
     }
   }
 
   if (updatedShardedDims.size() == 0) {
-    rewriter.create<sdy::ReturnOp>(loc, innerUpdateVal);
+    sdy::ReturnOp::create(rewriter, loc, innerUpdateVal);
   } else {
     if (updatedShardedDims.size() == 1 && false) {
       // TODO performance optimization, specialize for one dim update, can
@@ -2441,9 +2596,9 @@ void multiDimensionalSelect(Location loc, PatternRewriter &rewriter,
       // if (fully in update) {
       assert(mayContainOperandData);
       Type localTypes[] = {localResultType};
-      auto if0 = rewriter.create<stablehlo::IfOp>(loc, localTypes,
-                                                  mayContainOperandData);
-      rewriter.create<sdy::ReturnOp>(loc, if0->getResults());
+      auto if0 = stablehlo::IfOp::create(rewriter, loc, localTypes,
+                                         mayContainOperandData);
+      sdy::ReturnOp::create(rewriter, loc, if0->getResults());
 
       {
         rewriter.createBlock(&if0.getTrueBranch(), if0.getTrueBranch().begin());
@@ -2455,7 +2610,7 @@ void multiDimensionalSelect(Location loc, PatternRewriter &rewriter,
                                               rewriter.getI1Type());
           auto idx = updatedShardedDims[i];
 
-          auto iota = rewriter.create<stablehlo::IotaOp>(loc, TT, idx);
+          auto iota = stablehlo::IotaOp::create(rewriter, loc, TT, idx);
           Value lhs = nullptr;
 
           if (lowPads[idx] == 0) {
@@ -2476,8 +2631,8 @@ void multiDimensionalSelect(Location loc, PatternRewriter &rewriter,
               // Otherwise we could've entered this if statement for other
               // reasons, whether to use is simply the partition check, now
               // broadcasted
-              lhs = rewriter.create<stablehlo::BroadcastInDimOp>(
-                  loc, TTBool, leftSides[i], ArrayRef<int64_t>());
+              lhs = stablehlo::BroadcastInDimOp::create(
+                  rewriter, loc, TTBool, leftSides[i], ArrayRef<int64_t>());
             }
           } else {
             // Non-evenly divisible pad, for example pad 18, inner 54, right
@@ -2487,8 +2642,8 @@ void multiDimensionalSelect(Location loc, PatternRewriter &rewriter,
             // the transition node, if we're at the point of transition
             // Within the point of transition, we need to consider the
             // offset mod the local result type.
-            Value leftSideTransition = rewriter.create<stablehlo::CompareOp>(
-                loc, iota,
+            Value leftSideTransition = stablehlo::CompareOp::create(
+                rewriter, loc, iota,
                 getOrCreateConstant(
                     lowPads[idx] % localResultType.getShape()[idx], TT),
                 stablehlo::ComparisonDirection::LT);
@@ -2516,16 +2671,16 @@ void multiDimensionalSelect(Location loc, PatternRewriter &rewriter,
             } else {
               // otherwise we fall back and need to check that we're
               // actually at the transition point
-              Value atTransition = rewriter.create<stablehlo::CompareOp>(
-                  loc, multiDimIdxs[idx],
+              Value atTransition = stablehlo::CompareOp::create(
+                  rewriter, loc, multiDimIdxs[idx],
                   getOrCreateConstant(lowPads[idx] /
                                       localResultType.getShape()[idx]),
                   stablehlo::ComparisonDirection::EQ);
-              atTransition = rewriter.create<stablehlo::BroadcastInDimOp>(
-                  loc, TTBool, atTransition, ArrayRef<int64_t>());
+              atTransition = stablehlo::BroadcastInDimOp::create(
+                  rewriter, loc, TTBool, atTransition, ArrayRef<int64_t>());
               assert(leftSideTransition.getType() == TTBool);
-              leftSideTransition = rewriter.create<stablehlo::AndOp>(
-                  loc, leftSideTransition, atTransition);
+              leftSideTransition = stablehlo::AndOp::create(
+                  rewriter, loc, leftSideTransition, atTransition);
             }
 
             // Now let's check for potential non-transition nodes
@@ -2538,16 +2693,16 @@ void multiDimensionalSelect(Location loc, PatternRewriter &rewriter,
             } else {
               // Otherwise we must check both the node idx and the
               // transition idx.
-              Value fullyOperandNode = rewriter.create<stablehlo::CompareOp>(
-                  loc, multiDimIdxs[idx],
+              Value fullyOperandNode = stablehlo::CompareOp::create(
+                  rewriter, loc, multiDimIdxs[idx],
                   getOrCreateConstant(lowPads[idx] /
                                       localResultType.getShape()[idx]),
                   stablehlo::ComparisonDirection::LT);
-              fullyOperandNode = rewriter.create<stablehlo::BroadcastInDimOp>(
-                  loc, TTBool, fullyOperandNode, ArrayRef<int64_t>());
+              fullyOperandNode = stablehlo::BroadcastInDimOp::create(
+                  rewriter, loc, TTBool, fullyOperandNode, ArrayRef<int64_t>());
               assert(leftSideTransition.getType() == TTBool);
-              lhs = rewriter.create<stablehlo::OrOp>(loc, leftSideTransition,
-                                                     fullyOperandNode);
+              lhs = stablehlo::OrOp::create(rewriter, loc, leftSideTransition,
+                                            fullyOperandNode);
             }
           }
 
@@ -2573,8 +2728,8 @@ void multiDimensionalSelect(Location loc, PatternRewriter &rewriter,
               // Otherwise we could've entered this if statement for other
               // reasons, whether to use is simply the partition check, now
               // broadcasted
-              rhs = rewriter.create<stablehlo::BroadcastInDimOp>(
-                  loc, TTBool, rightSides[i], ArrayRef<int64_t>());
+              rhs = stablehlo::BroadcastInDimOp::create(
+                  rewriter, loc, TTBool, rightSides[i], ArrayRef<int64_t>());
             }
           } else {
             // Non-evenly divisible startIdx, for example pad 20, inner 48,
@@ -2586,8 +2741,8 @@ void multiDimensionalSelect(Location loc, PatternRewriter &rewriter,
             // point of transition Within the point of transition, we need
             // to consider the offset mod the local result type.
 
-            Value rightSideTransition = rewriter.create<stablehlo::CompareOp>(
-                loc, iota,
+            Value rightSideTransition = stablehlo::CompareOp::create(
+                rewriter, loc, iota,
                 getOrCreateConstant(startIdx % localResultType.getShape()[idx],
                                     TT),
                 stablehlo::ComparisonDirection::GE);
@@ -2615,16 +2770,16 @@ void multiDimensionalSelect(Location loc, PatternRewriter &rewriter,
             } else {
               // otherwise we fall back and need to check that we're
               // actually at the transition point
-              Value atTransition = rewriter.create<stablehlo::CompareOp>(
-                  loc, multiDimIdxs[idx],
+              Value atTransition = stablehlo::CompareOp::create(
+                  rewriter, loc, multiDimIdxs[idx],
                   getOrCreateConstant(startIdx /
                                       localResultType.getShape()[idx]),
                   stablehlo::ComparisonDirection::EQ);
-              atTransition = rewriter.create<stablehlo::BroadcastInDimOp>(
-                  loc, TTBool, atTransition, ArrayRef<int64_t>());
+              atTransition = stablehlo::BroadcastInDimOp::create(
+                  rewriter, loc, TTBool, atTransition, ArrayRef<int64_t>());
               assert(rightSideTransition.getType() == TTBool);
-              rightSideTransition = rewriter.create<stablehlo::AndOp>(
-                  loc, rightSideTransition, atTransition);
+              rightSideTransition = stablehlo::AndOp::create(
+                  rewriter, loc, rightSideTransition, atTransition);
             }
 
             // Now let's check for potential non-transition nodes
@@ -2640,16 +2795,16 @@ void multiDimensionalSelect(Location loc, PatternRewriter &rewriter,
             } else {
               // Otherwise we must check both the node idx and the
               // transition idx.
-              Value fullyOperandNode = rewriter.create<stablehlo::CompareOp>(
-                  loc, multiDimIdxs[idx],
+              Value fullyOperandNode = stablehlo::CompareOp::create(
+                  rewriter, loc, multiDimIdxs[idx],
                   getOrCreateConstant(startIdx /
                                       localResultType.getShape()[idx]),
                   stablehlo::ComparisonDirection::GT);
-              fullyOperandNode = rewriter.create<stablehlo::BroadcastInDimOp>(
-                  loc, TTBool, fullyOperandNode, ArrayRef<int64_t>());
+              fullyOperandNode = stablehlo::BroadcastInDimOp::create(
+                  rewriter, loc, TTBool, fullyOperandNode, ArrayRef<int64_t>());
               assert(rightSideTransition.getType() == TTBool);
-              rhs = rewriter.create<stablehlo::OrOp>(loc, rightSideTransition,
-                                                     fullyOperandNode);
+              rhs = stablehlo::OrOp::create(rewriter, loc, rightSideTransition,
+                                            fullyOperandNode);
             }
           }
 
@@ -2657,7 +2812,8 @@ void multiDimensionalSelect(Location loc, PatternRewriter &rewriter,
           Value inOperand = lhs;
           if (rhs && inOperand != mayContainOperandData) {
             if (inOperand)
-              inOperand = rewriter.create<stablehlo::OrOp>(loc, inOperand, rhs);
+              inOperand =
+                  stablehlo::OrOp::create(rewriter, loc, inOperand, rhs);
             else
               inOperand = rhs;
           }
@@ -2670,27 +2826,27 @@ void multiDimensionalSelect(Location loc, PatternRewriter &rewriter,
           } else if (inOperand) {
             if (multiIdx) {
               multiIdx =
-                  rewriter.create<stablehlo::OrOp>(loc, multiIdx, inOperand);
+                  stablehlo::OrOp::create(rewriter, loc, multiIdx, inOperand);
             } else {
               multiIdx = inOperand;
             }
           }
         }
 
-        auto newV = multiIdx == mayContainOperandData
-                        ? innerOperand
-                        : rewriter
-                              .create<stablehlo::SelectOp>(
-                                  loc, multiIdx, innerOperand, innerUpdateVal)
-                              ->getResult(0);
-        rewriter.create<stablehlo::ReturnOp>(loc, newV);
+        auto newV =
+            multiIdx == mayContainOperandData
+                ? innerOperand
+                : stablehlo::SelectOp::create(rewriter, loc, multiIdx,
+                                              innerOperand, innerUpdateVal)
+                      ->getResult(0);
+        stablehlo::ReturnOp::create(rewriter, loc, newV);
       }
 
       {
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.createBlock(&if0.getFalseBranch(),
                              if0.getFalseBranch().begin());
-        rewriter.create<stablehlo::ReturnOp>(loc, innerUpdateVal);
+        stablehlo::ReturnOp::create(rewriter, loc, innerUpdateVal);
       }
     }
   }
@@ -2775,8 +2931,8 @@ struct ConcatTwoDUSLike : public OpRewritePattern<stablehlo::ConcatenateOp> {
         return failure();
     }
 
-    auto zero = rewriter.create<stablehlo::ConstantOp>(
-        concat.getLoc(), rewriter.getZeroAttr(elemType));
+    auto zero = stablehlo::ConstantOp::create(rewriter, concat.getLoc(),
+                                              rewriter.getZeroAttr(elemType));
 
     int64_t leftPadding = 0;
     for (auto [i, operand] : llvm::enumerate(concat.getOperands())) {
@@ -2787,8 +2943,8 @@ struct ConcatTwoDUSLike : public OpRewritePattern<stablehlo::ConcatenateOp> {
       padHigh[concatDimension] =
           concatDimSize - leftPadding - operandConcatDimSize;
 
-      auto paddedOperand = rewriter.create<stablehlo::PadOp>(
-          concat.getLoc(), operand, zero, padLow, padHigh, padInner);
+      auto paddedOperand = stablehlo::PadOp::create(
+          rewriter, concat.getLoc(), operand, zero, padLow, padHigh, padInner);
       sdy::setSharding(paddedOperand, sharding);
       manualOps[i] = paddedOperand;
       leftPadding += operandConcatDimSize;
@@ -2820,9 +2976,9 @@ struct ConcatTwoDUSLike : public OpRewritePattern<stablehlo::ConcatenateOp> {
     TensorShardingPerValueAttr out_shardings = TensorShardingPerValueAttr::get(
         concat.getContext(), out_shardings_array);
 
-    auto manual = rewriter.create<sdy::ManualComputationOp>(
-        concat.getLoc(), manualTypes, manualOps, in_shardings, out_shardings,
-        manualAxes);
+    auto manual = sdy::ManualComputationOp::create(
+        rewriter, concat.getLoc(), manualTypes, manualOps, in_shardings,
+        out_shardings, manualAxes);
 
     {
       auto blk = rewriter.createBlock(&manual.getBody(),
@@ -2927,8 +3083,8 @@ struct ExtendDUSLike : public OpRewritePattern<enzymexla::ExtendOp> {
         return failure();
     }
 
-    auto zero = rewriter.create<stablehlo::ConstantOp>(
-        concat.getLoc(), rewriter.getZeroAttr(elemType));
+    auto zero = stablehlo::ConstantOp::create(rewriter, concat.getLoc(),
+                                              rewriter.getZeroAttr(elemType));
 
     for (int i = 0; i < 2; i++) {
       auto operand = concat.getOperand();
@@ -2940,8 +3096,9 @@ struct ExtendDUSLike : public OpRewritePattern<enzymexla::ExtendOp> {
       padHighLocal[concatDimension] +=
           i == 0 ? (concat.getLhs() + concat.getRhs()) : 0;
 
-      auto paddedOperand = rewriter.create<stablehlo::PadOp>(
-          concat.getLoc(), operand, zero, padLowLocal, padHighLocal, padInner);
+      auto paddedOperand =
+          stablehlo::PadOp::create(rewriter, concat.getLoc(), operand, zero,
+                                   padLowLocal, padHighLocal, padInner);
       sdy::setSharding(paddedOperand, sharding);
       manualOps[i] = paddedOperand;
     }
@@ -2973,9 +3130,9 @@ struct ExtendDUSLike : public OpRewritePattern<enzymexla::ExtendOp> {
     TensorShardingPerValueAttr out_shardings = TensorShardingPerValueAttr::get(
         concat.getContext(), out_shardings_array);
 
-    auto manual = rewriter.create<sdy::ManualComputationOp>(
-        concat.getLoc(), manualTypes, manualOps, in_shardings, out_shardings,
-        manualAxes);
+    auto manual = sdy::ManualComputationOp::create(
+        rewriter, concat.getLoc(), manualTypes, manualOps, in_shardings,
+        out_shardings, manualAxes);
 
     {
       auto blk = rewriter.createBlock(&manual.getBody(),
@@ -3132,8 +3289,8 @@ struct DUSToPadManualCompComm
       auto found = constantCache.find(key);
       if (found != constantCache.end())
         return found->second;
-      auto cst = rewriter.create<stablehlo::ConstantOp>(
-          loc, TT, cast<ElementsAttr>(makeAttr(TT, v)));
+      auto cst = stablehlo::ConstantOp::create(
+          rewriter, loc, TT, cast<ElementsAttr>(makeAttr(TT, v)));
       constantCache[key] = cst;
       return cst;
     };
@@ -3143,9 +3300,9 @@ struct DUSToPadManualCompComm
     Value globalOperand = dus.getOperand();
     if (extraSlice) {
       SmallVector<int64_t> zeros(ndims, 0);
-      auto padOp = rewriter.create<stablehlo::PadOp>(
-          loc, dus.getOperand(), getOrCreateConstant(0, PT), zeros,
-          extraHighPads, zeros);
+      auto padOp = stablehlo::PadOp::create(rewriter, loc, dus.getOperand(),
+                                            getOrCreateConstant(0, PT), zeros,
+                                            extraHighPads, zeros);
       sdy::setShardings(padOp, sdy::getShardingPerValue(dus));
       globalOperand = padOp;
     }
@@ -3174,9 +3331,9 @@ struct DUSToPadManualCompComm
       }
     }
     if (!splat) {
-      auto padOp = rewriter.create<stablehlo::PadOp>(
-          loc, dus.getUpdate(), getOrCreateConstant(0, PT), lowPads,
-          totalHighPads, interior);
+      auto padOp = stablehlo::PadOp::create(rewriter, loc, dus.getUpdate(),
+                                            getOrCreateConstant(0, PT), lowPads,
+                                            totalHighPads, interior);
       sdy::setShardings(padOp, sdy::getShardingPerValue(dus));
       pad2 = padOp;
     }
@@ -3219,8 +3376,9 @@ struct DUSToPadManualCompComm
     TensorShardingPerValueAttr out_shardings =
         TensorShardingPerValueAttr::get(dus.getContext(), out_shardings_array);
 
-    auto manual = rewriter.create<sdy::ManualComputationOp>(
-        loc, manualTypes, manualOps, in_shardings, out_shardings, manualAxes);
+    auto manual = sdy::ManualComputationOp::create(rewriter, loc, manualTypes,
+                                                   manualOps, in_shardings,
+                                                   out_shardings, manualAxes);
 
     {
       auto blk = rewriter.createBlock(&manual.getBody(),
@@ -3231,8 +3389,8 @@ struct DUSToPadManualCompComm
       if (pad2) {
         innerUpdate = blk->getArgument(1);
       } else {
-        innerUpdate = rewriter.create<stablehlo::ConstantOp>(
-            loc, localPaddedUpdateType,
+        innerUpdate = stablehlo::ConstantOp::create(
+            rewriter, loc, localPaddedUpdateType,
             splat.resizeSplat(localPaddedUpdateType));
       }
 
@@ -3297,8 +3455,8 @@ struct ConcatToPadCommOptimize
         return failure();
     }
 
-    auto zero = rewriter.create<stablehlo::ConstantOp>(
-        concat.getLoc(), rewriter.getZeroAttr(elemType));
+    auto zero = stablehlo::ConstantOp::create(rewriter, concat.getLoc(),
+                                              rewriter.getZeroAttr(elemType));
 
     int64_t leftPadding = 0;
     for (auto [i, operand] : llvm::enumerate(concat.getOperands())) {
@@ -3314,8 +3472,8 @@ struct ConcatToPadCommOptimize
       padHigh[concatDimension] =
           concatDimSize - leftPadding - operandConcatDimSize;
 
-      auto paddedOperand = rewriter.create<stablehlo::PadOp>(
-          concat.getLoc(), operand, zero, padLow, padHigh, padInner);
+      auto paddedOperand = stablehlo::PadOp::create(
+          rewriter, concat.getLoc(), operand, zero, padLow, padHigh, padInner);
       assert(concat.getType() == paddedOperand.getType());
       sdy::setSharding(paddedOperand, concatSharding);
       addOperands.push_back(paddedOperand);
@@ -3323,8 +3481,8 @@ struct ConcatToPadCommOptimize
     }
 
     if (addOperands.size() == 0) {
-      auto cst = rewriter.create<stablehlo::ConstantOp>(
-          concat.getLoc(), concat.getType(),
+      auto cst = stablehlo::ConstantOp::create(
+          rewriter, concat.getLoc(), concat.getType(),
           cast<ElementsAttr>(rewriter.getZeroAttr(concat.getType())));
       sdy::setSharding(cst, concatSharding);
       rewriter.replaceOp(concat, cst);
@@ -3332,8 +3490,8 @@ struct ConcatToPadCommOptimize
 
     Value sum = addOperands[0];
     for (int i = 1; i < addOperands.size(); i++) {
-      auto addOp = rewriter.create<stablehlo::AddOp>(concat.getLoc(), sum,
-                                                     addOperands[i]);
+      auto addOp = stablehlo::AddOp::create(rewriter, concat.getLoc(), sum,
+                                            addOperands[i]);
       sdy::setSharding(addOp, concatSharding);
       sum = addOp;
     }
@@ -3397,20 +3555,18 @@ struct ReorderAssociativeOp : public OpRewritePattern<opTy> {
         return failure();
 
       if (aOpSharding == cOpSharding && isCommutative) {
-        auto newOp = rewriter.template create<opTy>(op.getLoc(), aOp, cOp);
+        auto newOp = opTy::create(rewriter, op.getLoc(), aOp, cOp);
         sdy::setSharding(newOp, aOpSharding);
-        auto newFinalOp =
-            rewriter.template create<opTy>(op.getLoc(), newOp, bOp);
+        auto newFinalOp = opTy::create(rewriter, op.getLoc(), newOp, bOp);
         sdy::setSharding(newFinalOp, opSharding);
         rewriter.replaceOp(op, newFinalOp); // op (op a c) b
         return success();
       }
 
       if (aOpSharding == bOpSharding) {
-        auto newOp = rewriter.template create<opTy>(op.getLoc(), aOp, bOp);
+        auto newOp = opTy::create(rewriter, op.getLoc(), aOp, bOp);
         sdy::setSharding(newOp, aOpSharding);
-        auto newFinalOp =
-            rewriter.template create<opTy>(op.getLoc(), newOp, cOp);
+        auto newFinalOp = opTy::create(rewriter, op.getLoc(), newOp, cOp);
         sdy::setSharding(newFinalOp, opSharding);
         rewriter.replaceOp(op, newFinalOp); // op (op a b) c
         return success();
@@ -3437,20 +3593,18 @@ struct ReorderAssociativeOp : public OpRewritePattern<opTy> {
           return failure();
 
         if (aOpSharding == cOpSharding && isCommutative) {
-          auto newOp = rewriter.template create<opTy>(op.getLoc(), aOp, cOp);
+          auto newOp = opTy::create(rewriter, op.getLoc(), aOp, cOp);
           sdy::setSharding(newOp, aOpSharding);
-          auto newFinalOp =
-              rewriter.template create<opTy>(op.getLoc(), newOp, bOp);
+          auto newFinalOp = opTy::create(rewriter, op.getLoc(), newOp, bOp);
           sdy::setSharding(newFinalOp, opSharding);
           rewriter.replaceOp(op, newFinalOp); // op (op a c) b
           return success();
         }
 
         if (bOpSharding == cOpSharding) {
-          auto newOp = rewriter.template create<opTy>(op.getLoc(), bOp, cOp);
+          auto newOp = opTy::create(rewriter, op.getLoc(), bOp, cOp);
           sdy::setSharding(newOp, bOpSharding);
-          auto newFinalOp =
-              rewriter.template create<opTy>(op.getLoc(), aOp, newOp);
+          auto newFinalOp = opTy::create(rewriter, op.getLoc(), aOp, newOp);
           sdy::setSharding(newFinalOp, opSharding);
           rewriter.replaceOp(op, newFinalOp); // op a (op b c)
           return success();
@@ -3485,24 +3639,22 @@ struct ReorderAssociativeOp : public OpRewritePattern<opTy> {
           return failure();
 
         if (aOpSharding == cOpSharding && bOpSharding == dOpSharding) {
-          auto newLhsOp = rewriter.template create<opTy>(op.getLoc(), aOp, cOp);
+          auto newLhsOp = opTy::create(rewriter, op.getLoc(), aOp, cOp);
           sdy::setSharding(newLhsOp, aOpSharding);
-          auto newRhsOp = rewriter.template create<opTy>(op.getLoc(), bOp, dOp);
+          auto newRhsOp = opTy::create(rewriter, op.getLoc(), bOp, dOp);
           sdy::setSharding(newRhsOp, bOpSharding);
-          auto newOp =
-              rewriter.template create<opTy>(op.getLoc(), newLhsOp, newRhsOp);
+          auto newOp = opTy::create(rewriter, op.getLoc(), newLhsOp, newRhsOp);
           sdy::setSharding(newOp, opSharding);
           rewriter.replaceOp(op, newOp); // op (op a c) (op b d)
           return success();
         }
 
         if (aOpSharding == dOpSharding && bOpSharding == cOpSharding) {
-          auto newLhsOp = rewriter.template create<opTy>(op.getLoc(), aOp, dOp);
+          auto newLhsOp = opTy::create(rewriter, op.getLoc(), aOp, dOp);
           sdy::setSharding(newLhsOp, aOpSharding);
-          auto newRhsOp = rewriter.template create<opTy>(op.getLoc(), bOp, cOp);
+          auto newRhsOp = opTy::create(rewriter, op.getLoc(), bOp, cOp);
           sdy::setSharding(newRhsOp, bOpSharding);
-          auto newOp =
-              rewriter.template create<opTy>(op.getLoc(), newLhsOp, newRhsOp);
+          auto newOp = opTy::create(rewriter, op.getLoc(), newLhsOp, newRhsOp);
           sdy::setSharding(newOp, opSharding);
           rewriter.replaceOp(op, newOp); // op (op a d) (op b c)
           return success();
@@ -3565,6 +3717,10 @@ struct OptimizeCommunicationPass
     if (extend_to_pad_comm > 0)
       patterns.add<ExtendToPadCommOptimize>(context,
                                             PatternBenefit(extend_to_pad_comm));
+
+    if (extend_to_pad_comm2 > 0)
+      patterns.add<ExtendToPadCommOptimize2>(
+          context, PatternBenefit(extend_to_pad_comm2));
 
     if (dus_to_pad_manual_comp_comm > 0)
       patterns.add<DUSToPadManualCompComm>(

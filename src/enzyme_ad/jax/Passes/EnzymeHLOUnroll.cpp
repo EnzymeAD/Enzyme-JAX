@@ -11,9 +11,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "src/enzyme_ad/jax/Passes/EnzymeHLOUnroll.h"
+
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/IRMapping.h"
 
+#include "src/enzyme_ad/jax/CheckedRewrite.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 
@@ -41,43 +44,46 @@ using namespace mlir;
 using namespace mlir::enzyme;
 using namespace enzyme;
 
-namespace {
+LogicalResult
+WhileUnroll::matchAndRewriteImpl(mlir::stablehlo::WhileOp op,
+                                 PatternRewriter &rewriter) const {
 
-struct WhileUnroll : public OpRewritePattern<mlir::stablehlo::WhileOp> {
-  using OpRewritePattern<mlir::stablehlo::WhileOp>::OpRewritePattern;
+  WhileLoopInfo info(op);
+  if (info.computeInfo().failed() || !info.isConstant())
+    return failure();
 
-  LogicalResult matchAndRewrite(mlir::stablehlo::WhileOp op,
-                                PatternRewriter &rewriter) const final {
+  auto bodyTerm = cast<stablehlo::ReturnOp>(&op.getBody().front().back());
+  auto loopBodyBlock = &op.getBody().front();
 
-    WhileLoopInfo info(op);
-    if (info.computeInfo().failed() || !info.isConstant())
-      return failure();
+  auto iters = info.getConstantNumIters();
+  if (maxNumIterations != -1 && iters > maxNumIterations)
+    return rewriter.notifyMatchFailure(op,
+                                       "max iterations for unrolling exceeded");
 
-    auto bodyTerm = cast<stablehlo::ReturnOp>(&op.getBody().front().back());
-    auto loopBodyBlock = &op.getBody().front();
+  if (iters > 1 && maxOperationThreshold > -1 &&
+      std::distance(loopBodyBlock->begin(), loopBodyBlock->end()) >
+          maxOperationThreshold)
+    return rewriter.notifyMatchFailure(op,
+                                       "max operations for unrolling exceeded");
 
-    auto iters = info.getConstantNumIters();
+  SmallVector<Value> results(op.getOperands().begin(), op.getOperands().end());
 
-    SmallVector<Value> results(op.getOperands().begin(),
-                               op.getOperands().end());
+  for (size_t iter = 0; iter < iters; iter++) {
+    IRMapping operandMap;
+    operandMap.map(loopBodyBlock->getArguments(), results);
 
-    for (size_t iter = 0; iter < iters; iter++) {
-      IRMapping operandMap;
-      operandMap.map(loopBodyBlock->getArguments(), results);
-
-      for (auto &it : loopBodyBlock->without_terminator()) {
-        rewriter.clone(it, operandMap);
-      }
-
-      results.clear();
-      for (auto r : bodyTerm->getOperands()) {
-        results.push_back(operandMap.lookupOrDefault(r));
-      }
+    for (auto &it : loopBodyBlock->without_terminator()) {
+      rewriter.clone(it, operandMap);
     }
-    rewriter.replaceOp(op, results);
-    return success();
+
+    results.clear();
+    for (auto r : bodyTerm->getOperands()) {
+      results.push_back(operandMap.lookupOrDefault(r));
+    }
   }
-};
+  rewriter.replaceOp(op, results);
+  return success();
+}
 
 struct EnzymeHLOUnrollPass
     : public enzyme::impl::EnzymeHLOUnrollPassBase<EnzymeHLOUnrollPass> {
@@ -86,7 +92,7 @@ struct EnzymeHLOUnrollPass
   void runOnOperation() override {
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
-    patterns.add<WhileUnroll>(context);
+    patterns.add<WhileUnroll>(maxNumIterations, maxOperationThreshold, context);
     GreedyRewriteConfig config;
     if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
                                             config))) {
@@ -94,5 +100,3 @@ struct EnzymeHLOUnrollPass
     }
   }
 };
-
-} // end anonymous namespace

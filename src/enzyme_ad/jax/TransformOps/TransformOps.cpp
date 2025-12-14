@@ -80,6 +80,24 @@ void ApplySliceLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
   addSliceLICM(patterns, getParameter(), *getContext(),
                PatternBenefit(getBenefit().value_or(1)));
 }
+void ApplyDotGeneralLICMPatterns::populatePatterns(
+    RewritePatternSet &patterns) {
+  addDotGeneralLICM(patterns, getParameter(), *getContext(),
+                    PatternBenefit(getBenefit().value_or(1)));
+}
+void ApplyReverseLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
+  addReverseLICM(patterns, getParameter(), *getContext(),
+                 PatternBenefit(getBenefit().value_or(1)));
+}
+void ApplyReduceLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
+  addReduceLICM(patterns, getParameter(), *getContext(),
+                PatternBenefit(getBenefit().value_or(1)));
+}
+void ApplyReduceWindowLICMPatterns::populatePatterns(
+    RewritePatternSet &patterns) {
+  addReduceWindowLICM(patterns, getParameter(), *getContext(),
+                      PatternBenefit(getBenefit().value_or(1)));
+}
 void ApplyDUSLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
   addDUSLICM(patterns, getParameter(), *getContext(),
              PatternBenefit(getBenefit().value_or(1)));
@@ -111,6 +129,11 @@ void ApplyTransposeLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
   addTransposeLICM(patterns, getParameter(), *getContext(),
                    PatternBenefit(getBenefit().value_or(1)));
 }
+void ApplyConvolutionLICMPatterns::populatePatterns(
+    RewritePatternSet &patterns) {
+  addConvolutionLICM(patterns, getParameter(), *getContext(),
+                     PatternBenefit(getBenefit().value_or(1)));
+}
 void ApplyIotaSimplifyPatterns::populatePatterns(RewritePatternSet &patterns) {
   addIotaSimplify(patterns, getParameter(), *getContext(),
                   PatternBenefit(getBenefit().value_or(1)));
@@ -119,6 +142,11 @@ void ApplyConcatConstPropPatterns::populatePatterns(
     RewritePatternSet &patterns) {
   addConcatConstProp(patterns, getParameter(), *getContext(),
                      PatternBenefit(getBenefit().value_or(1)));
+}
+void ApplyScatterConstFoldPatterns::populatePatterns(
+    RewritePatternSet &patterns) {
+  addScatterConstFold(patterns, getParameter(), *getContext(),
+                      PatternBenefit(getBenefit().value_or(1)));
 }
 void ApplyPadSimplifyPatterns::populatePatterns(RewritePatternSet &patterns) {
   addPadSimplify(patterns, getParameter(), *getContext(),
@@ -156,6 +184,11 @@ void ApplyReshapeSlicePatterns::populatePatterns(RewritePatternSet &patterns) {
   addReshapeSlice(patterns, getParameter(), *getContext(),
                   PatternBenefit(getBenefit().value_or(1)));
 }
+void ApplyReshapeDynamicSlicePatterns::populatePatterns(
+    RewritePatternSet &patterns) {
+  addReshapeDynamicSlice(patterns, getParameter(), *getContext(),
+                         PatternBenefit(getBenefit().value_or(1)));
+}
 void ApplySumToConvPatterns::populatePatterns(RewritePatternSet &patterns) {
   addSumToConv(patterns, getParameter(), *getContext(),
                PatternBenefit(getBenefit().value_or(0)));
@@ -167,6 +200,10 @@ void ExtendUnaryElementwise::populatePatterns(RewritePatternSet &patterns) {
 void WrapUnaryElementwise::populatePatterns(RewritePatternSet &patterns) {
   addWrapUnaryElementwise(patterns, getParameter(), *getContext(),
                           PatternBenefit(getBenefit().value_or(0)));
+}
+void EnzymeHLOUnroll::populatePatterns(RewritePatternSet &patterns) {
+  addEnzymeHLOUnroll(patterns, getParameter(), *getContext(),
+                     PatternBenefit(getBenefit().value_or(0)));
 }
 
 } // namespace transform

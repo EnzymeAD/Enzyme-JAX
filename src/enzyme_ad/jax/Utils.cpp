@@ -30,6 +30,8 @@
 #include "llvm/ADT/SetVector.h"
 #include "llvm/Support/Debug.h"
 
+#include "shardy/dialect/sdy/ir/utils.h"
+#include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
 #include <set>
@@ -54,8 +56,8 @@ bool collectEffects(Operation *op,
   // Ignore CacheLoads as they are already guaranteed to not have side effects
   // in the context of a parallel op, these only exist while we are in the
   // CPUifyPass
-  // if (isa<CacheLoad>(op))
-  //  return true;
+  // if (isa<enzymexla::CacheLoadOp>(op))
+  //   return true;
 
   // Collect effect instances the operation. Note that the implementation of
   // getEffects erases all effect instances that have the type other than the
@@ -166,8 +168,9 @@ bool getEffectsBefore(Operation *op,
         else
           continue;
       }
-      if (!collectEffects(it, effects, /* ignoreBarriers */ true))
+      if (!collectEffects(it, effects, /* ignoreBarriers */ true)) {
         return false;
+      }
     }
 
   bool conservative = false;
@@ -177,9 +180,9 @@ bool getEffectsBefore(Operation *op,
 
   // As we didn't hit another barrier, we must check the predecessors of this
   // operation.
-  if (!getEffectsBefore(op->getParentOp(), effects, stopAtBarrier))
+  if (!getEffectsBefore(op->getParentOp(), effects, stopAtBarrier)) {
     return false;
-
+  }
   // If the parent operation is not guaranteed to execute its (single-block)
   // region once, walk the block.
   if (!isa<scf::IfOp, affine::AffineIfOp, memref::AllocaScopeOp>(
@@ -193,7 +196,6 @@ bool getEffectsBefore(Operation *op,
       }
       return WalkResult::advance();
     });
-
   return !conservative;
 }
 bool getEffectsAfter(Operation *op,
@@ -258,7 +260,7 @@ bool isReadOnly(Operation *op) {
     // memory.
     SmallVector<MemoryEffects::EffectInstance, 1> effects;
     effectInterface.getEffects(effects);
-    if (!llvm::all_of(effects, [op](const MemoryEffects::EffectInstance &it) {
+    if (!llvm::all_of(effects, [](const MemoryEffects::EffectInstance &it) {
           return isa<MemoryEffects::Read>(it.getEffect());
         })) {
       return false;
@@ -288,7 +290,7 @@ bool isReadNone(Operation *op) {
     // memory.
     SmallVector<MemoryEffects::EffectInstance, 1> effects;
     effectInterface.getEffects(effects);
-    if (llvm::any_of(effects, [op](const MemoryEffects::EffectInstance &it) {
+    if (llvm::any_of(effects, [](const MemoryEffects::EffectInstance &it) {
           return isa<MemoryEffects::Read>(it.getEffect()) ||
                  isa<MemoryEffects::Write>(it.getEffect());
         })) {
@@ -540,7 +542,7 @@ bool mayWriteTo(Operation *op, Value val, bool ignoreBarrier) {
 
   // Calls which do not use a derived pointer of a known alloca, which is not
   // captured can not write to said memory.
-  if (isa<LLVM::CallOp, func::CallOp>(op)) {
+  if (auto callOp = dyn_cast<CallOpInterface>(op)) {
     auto base = getBase(val);
     bool seenuse = false;
     if (isStackAlloca(base) && !isCaptured(base, op, &seenuse) && !seenuse) {
@@ -558,11 +560,11 @@ bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type Ty) {
 }
 
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type Ty,
-                          mlir::Operation *op) {
+                          mlir::Operation *op, PatternRewriter &rewriter) {
   Ty = getElementTypeOrSelf(Ty);
   if (Ty.isInteger())
     return true;
-  return allowOnFloatingPointMath || guaranteedNoNanResult(op);
+  return allowOnFloatingPointMath || guaranteedNoNanResult(op, rewriter);
 }
 
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy,
@@ -575,12 +577,207 @@ bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy,
 }
 
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type outTy, Type inTy,
-                          mlir::Operation *op) {
+                          mlir::Operation *op, PatternRewriter &rewriter) {
   outTy = getElementTypeOrSelf(outTy);
   inTy = getElementTypeOrSelf(inTy);
   if (outTy.isInteger() && inTy.isInteger())
     return true;
-  return allowOnFloatingPointMath || guaranteedNoNanResult(op);
+  return allowOnFloatingPointMath || guaranteedNoNanResult(op, rewriter);
+}
+
+bool canApplySymmetricPattern(mlir::Operation *op, PatternRewriter &rewriter) {
+  return guaranteedSymmetricResult(op, rewriter);
+}
+bool canApplySymmetricPattern(Value val, PatternRewriter &rewriter) {
+  return guaranteedSymmetricResult(val, rewriter);
+}
+
+SymmetricResultAnalysis initSymmetricResultAnalysis() {
+  return SymmetricResultAnalysis();
+}
+
+bool checkNotEqual(APInt a, APInt b) { return a != b; }
+
+bool checkNotEqual(APFloat a, APFloat b) {
+  return a.compare(b) != llvm::APFloat::cmpEqual;
+}
+
+template <typename Ty> bool checkConstantSymmetric(DenseElementsAttr attr) {
+  if (!attr)
+    return false;
+
+  auto type = dyn_cast<RankedTensorType>(attr.getType());
+  if (!type)
+    return false;
+
+  if (type.getRank() == 0)
+    return true;
+  if (type.getRank() != 2)
+    return false;
+
+  auto shape = type.getShape();
+  int64_t rows = shape[0];
+  int64_t cols = shape[1];
+
+  if (rows != cols)
+    return false;
+  if (attr.isSplat())
+    return true;
+
+  auto values = attr.getValues<Ty>();
+  auto it = values.begin();
+
+  for (int64_t i = 0; i < rows; i++) {
+    for (int64_t j = i + 1; j < cols; j++) {
+      auto a = *(it + i * cols + j);
+      auto b = *(it + j * cols + i);
+      if (checkNotEqual(a, b))
+        return false;
+    }
+  }
+
+  return true;
+}
+
+bool SymmetricResultAnalysis::constantIntCheck(DenseElementsAttr attr) {
+  return checkConstantSymmetric<APInt>(attr);
+}
+
+bool SymmetricResultAnalysis::constantFloatCheck(DenseElementsAttr attr) {
+  return checkConstantSymmetric<APFloat>(attr);
+}
+
+SymmetricResultAnalysis::State SymmetricResultAnalysis::localGuaranteed(
+    Value val, SmallVectorImpl<Value> &localtodo, PatternRewriter &rewriter) {
+  auto valTy = cast<RankedTensorType>(val.getType());
+  if (valTy.getRank() != 2)
+    return State::NOTGUARANTEED; // this pass only checks for symmetric matrices
+  if (valTy.getDimSize(0) != valTy.getDimSize(1))
+    return State::NOTGUARANTEED; // quick check and exit
+
+  SplatElementsAttr splatAttr;
+  if (matchPattern(val, m_Constant(&splatAttr))) {
+    return State::GUARANTEED;
+  }
+
+  auto op = val.getDefiningOp();
+  if (!op)
+    return State::NOTGUARANTEED;
+
+  if (isa<enzymexla::SyrkOp>(op))
+    return State::GUARANTEED;
+
+  // check that transpose dimensions are [1,0]
+  auto isTrueTranspose = [](stablehlo::TransposeOp tOp) -> bool {
+    auto perm = tOp.getPermutation();
+    return perm.size() == 2 && perm[0] == 1 && perm[1] == 0;
+  };
+
+  if (auto broadcastOp = dyn_cast<stablehlo::BroadcastInDimOp>(op)) {
+    auto operand = broadcastOp.getOperand();
+    auto operandTy = cast<RankedTensorType>(operand.getType());
+    auto dims = broadcastOp.getBroadcastDimensions();
+    if (operandTy.getRank() == 0 && dims.empty()) {
+      return State::GUARANTEED;
+    }
+  }
+
+  // commutative operation with A and A^T will always be symmetric
+  // op(A, A^T) will also always be symmetric
+  if (stablehlo::hasTraitElementwise(op) &&
+      (op->hasTrait<OpTrait::IsCommutative>() ||
+       op->hasTrait<hlo::OpTrait::IsCommutative>())) {
+    auto lhs = op->getOperand(0);
+    auto rhs = op->getOperand(1);
+
+    // op(A, A^T)
+    if (auto rhsT = rhs.getDefiningOp<stablehlo::TransposeOp>()) {
+      if (isTrueTranspose(rhsT)) {
+        if (lhs == rhsT.getOperand()) {
+          return State::GUARANTEED;
+        }
+      }
+    }
+
+    // op(A^T, A)
+    if (auto lhsT = lhs.getDefiningOp<stablehlo::TransposeOp>()) {
+      if (isTrueTranspose(lhsT)) {
+        if (rhs == lhsT.getOperand()) {
+          return State::GUARANTEED;
+        }
+      }
+    }
+  }
+
+  // A x (A^T) / (A^T) x A will always be symmetric
+  if (auto dotOp = dyn_cast<stablehlo::DotGeneralOp>(op)) {
+    auto dotDimNumbers = dotOp.getDotDimensionNumbers();
+    auto lhs = dotOp.getLhs();
+    auto rhs = dotOp.getRhs();
+
+    auto lhsCDims = dotDimNumbers.getLhsContractingDimensions();
+    auto rhsCDims = dotDimNumbers.getRhsContractingDimensions();
+
+    if (dotDimNumbers.getLhsBatchingDimensions().size() == 0 &&
+        dotDimNumbers.getRhsBatchingDimensions().size() == 0 &&
+        lhsCDims.size() == 1 && rhsCDims.size() == 1) {
+      if (lhs == rhs && lhsCDims[0] == rhsCDims[0]) {
+        return State::GUARANTEED;
+      }
+
+      if (auto lhsT = lhs.getDefiningOp<stablehlo::TransposeOp>()) {
+        if (isTrueTranspose(lhsT) && lhsT.getOperand() == rhs &&
+            lhsCDims[0] == 1 - rhsCDims[0]) {
+          return State::GUARANTEED;
+        }
+      }
+
+      if (auto rhsT = rhs.getDefiningOp<stablehlo::TransposeOp>()) {
+        if (isTrueTranspose(rhsT) && rhsT.getOperand() == lhs &&
+            lhsCDims[0] == 1 - rhsCDims[0]) {
+          return State::GUARANTEED;
+        }
+      }
+    }
+  }
+
+  bool recursiveCheck = false;
+
+  // elementwise ops
+  if (stablehlo::hasTraitElementwise(op)) {
+    recursiveCheck = true;
+  }
+
+  /**
+   * TODO
+   * - check if its * 0 -> symmetric
+   */
+
+  if (recursiveCheck) {
+    bool allOperandsGuaranteed = true;
+    for (auto operand : op->getOperands()) {
+      {
+        auto found = valueCache.find(operand);
+        if (found != valueCache.end()) {
+          if (found->second) {
+            continue;
+          } else {
+            return State::NOTGUARANTEED;
+          }
+        }
+      }
+
+      localtodo.push_back(operand);
+      allOperandsGuaranteed = false;
+    }
+
+    if (allOperandsGuaranteed)
+      return State::GUARANTEED;
+    else
+      return State::PENDING;
+  } else {
+    return State::NOTGUARANTEED;
+  }
 }
 
 NoNanResultAnalysis initNoNanResultAnalysis() {
@@ -603,18 +800,11 @@ bool NoNanResultAnalysis::constantFloatCheck(DenseElementsAttr attr) {
   return true;
 }
 
-NoNanResultAnalysis::State
-NoNanResultAnalysis::localGuaranteed(Operation *op,
-                                     SmallVectorImpl<Operation *> &localtodo) {
-  assert(op);
-
-  if (auto constantOp = dyn_cast<stablehlo::ConstantOp>(op)) {
-    if (guaranteed(constantOp)) {
-      return State::GUARANTEED;
-    } else {
-      return State::NOTGUARANTEED;
-    }
-  }
+NoNanResultAnalysis::State NoNanResultAnalysis::localGuaranteed(
+    Value val, SmallVectorImpl<Value> &localtodo, PatternRewriter &rewriter) {
+  auto op = val.getDefiningOp();
+  if (!op)
+    return State::NOTGUARANTEED;
 
   // integer ops
   if (isa<stablehlo::AndOp, stablehlo::OrOp, stablehlo::XorOp, stablehlo::NotOp,
@@ -638,16 +828,19 @@ NoNanResultAnalysis::localGuaranteed(Operation *op,
 
     // If any one of the operands is a Inf, the result is Inf. If both are Inf,
     // the result is NaN.
-    auto lhsFinite = finiteResultAnalysis->guaranteed(op->getOperand(0));
-    auto rhsFinite = finiteResultAnalysis->guaranteed(op->getOperand(1));
+    auto lhsFinite =
+        finiteResultAnalysis->guaranteed(op->getOperand(0), rewriter);
+    auto rhsFinite =
+        finiteResultAnalysis->guaranteed(op->getOperand(1), rewriter);
 
-    if (lhsFinite || rhsFinite)
+    if (lhsFinite && rhsFinite) {
       return State::GUARANTEED;
+    }
 
     recursiveCheck = true;
   } else if (isa<stablehlo::SineOp, stablehlo::CosineOp>(op)) {
 
-    if (!finiteResultAnalysis->guaranteed(op->getOperand(0))) {
+    if (!finiteResultAnalysis->guaranteed(op->getOperand(0), rewriter)) {
       return State::NOTGUARANTEED;
     }
 
@@ -657,8 +850,8 @@ NoNanResultAnalysis::localGuaranteed(Operation *op,
 
     // TODO: If one is inf check if the other is zero. We can significantly
     // relax this check if we can prove that the other is not zero.
-    if (!finiteResultAnalysis->guaranteed(mulOp.getLhs()) ||
-        !finiteResultAnalysis->guaranteed(mulOp.getRhs())) {
+    if (!finiteResultAnalysis->guaranteed(mulOp.getLhs(), rewriter) ||
+        !finiteResultAnalysis->guaranteed(mulOp.getRhs(), rewriter)) {
       return State::NOTGUARANTEED;
     }
 
@@ -685,29 +878,16 @@ NoNanResultAnalysis::localGuaranteed(Operation *op,
           }
         }
       }
-      auto dop = operand.getDefiningOp();
-      if (!dop)
-        return State::NOTGUARANTEED;
 
-      {
-        auto found = opCache.find(dop);
-        if (found != opCache.end()) {
-          if (found->second) {
-            continue;
-          } else {
-            return State::NOTGUARANTEED;
-          }
-        }
-      }
-
-      localtodo.push_back(dop);
+      localtodo.push_back(operand);
       allOperandsGuaranteed = false;
     }
 
-    if (allOperandsGuaranteed)
+    if (allOperandsGuaranteed) {
       return State::GUARANTEED;
-    else
+    } else {
       return State::PENDING;
+    }
   } else {
     return State::NOTGUARANTEED;
   }
@@ -733,19 +913,11 @@ bool FiniteResultAnalysis::constantIntCheck(DenseElementsAttr attr) {
   return true;
 }
 
-FiniteResultAnalysis::State
-FiniteResultAnalysis::localGuaranteed(Operation *op,
-                                      SmallVectorImpl<Operation *> &localtodo) {
-
-  assert(op);
-
-  if (auto constantOp = dyn_cast<stablehlo::ConstantOp>(op)) {
-    if (guaranteed(constantOp)) {
-      return State::GUARANTEED;
-    } else {
-      return State::NOTGUARANTEED;
-    }
-  }
+FiniteResultAnalysis::State FiniteResultAnalysis::localGuaranteed(
+    Value val, SmallVectorImpl<Value> &localtodo, PatternRewriter &rewriter) {
+  auto op = val.getDefiningOp();
+  if (!op)
+    return State::NOTGUARANTEED;
 
   // integer ops
   if (isa<stablehlo::AndOp, stablehlo::OrOp, stablehlo::XorOp, stablehlo::NotOp,
@@ -793,29 +965,15 @@ FiniteResultAnalysis::localGuaranteed(Operation *op,
         }
       }
 
-      auto dop = operand.getDefiningOp();
-      if (!dop)
-        return State::NOTGUARANTEED;
-
-      {
-        auto found = opCache.find(dop);
-        if (found != opCache.end()) {
-          if (found->second) {
-            continue;
-          } else {
-            return State::NOTGUARANTEED;
-          }
-        }
-      }
-
-      localtodo.push_back(dop);
+      localtodo.push_back(operand);
       allOperandsGuaranteed = false;
     }
 
-    if (allOperandsGuaranteed)
+    if (allOperandsGuaranteed) {
       return State::GUARANTEED;
-    else
+    } else {
       return State::PENDING;
+    }
   } else {
     return State::NOTGUARANTEED;
   }
@@ -838,29 +996,28 @@ bool NonNegativeResultAnalysis::constantFloatCheck(DenseElementsAttr attr) {
 }
 
 NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
-    Operation *op, SmallVectorImpl<Operation *> &localtodo) {
-
-  assert(op);
-
-  if (auto constantOp = dyn_cast<stablehlo::ConstantOp>(op)) {
-    if (guaranteed(constantOp)) {
-      return State::GUARANTEED;
-    } else {
-      return State::NOTGUARANTEED;
-    }
-  }
+    Value val, SmallVectorImpl<Value> &localtodo, PatternRewriter &rewriter) {
+  auto op = val.getDefiningOp();
+  if (!op)
+    return State::NOTGUARANTEED;
 
   // integer ops
   if (isa<stablehlo::AbsOp, stablehlo::SqrtOp, stablehlo::ExpOp,
           stablehlo::IotaOp, stablehlo::AndOp, stablehlo::OrOp,
-          stablehlo::XorOp, stablehlo::NotOp>(op))
+          stablehlo::XorOp, stablehlo::NotOp>(op)) {
     return State::GUARANTEED;
+  }
+
+  if (isa<chlo::ErfInvOp>(op)) {
+    return State::NOTGUARANTEED;
+  }
 
   // Any non-negative operation that produces a non-negative result
   // Here we recur on the rhs, as that is more likely to be a constant.
   if (isa<stablehlo::MaxOp>(op)) {
-    if (guaranteed(op->getOperand(1)))
+    if (guaranteed(op->getOperand(1), rewriter)) {
       return State::GUARANTEED;
+    }
 
     auto operand = op->getOperand(0);
 
@@ -875,22 +1032,7 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
       }
     }
 
-    auto dop = operand.getDefiningOp();
-    if (!dop)
-      return State::NOTGUARANTEED;
-
-    {
-      auto found = opCache.find(dop);
-      if (found != opCache.end()) {
-        if (found->second) {
-          return State::GUARANTEED;
-        } else {
-          return State::NOTGUARANTEED;
-        }
-      }
-    }
-
-    localtodo.push_back(dop);
+    localtodo.push_back(operand);
     return State::PENDING;
   }
 
@@ -899,8 +1041,9 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
     auto lhsOp = mulOp.getLhs().getDefiningOp();
     auto rhsOp = mulOp.getRhs().getDefiningOp();
 
-    if (lhsOp == rhsOp)
+    if (lhsOp == rhsOp) {
       return State::GUARANTEED;
+    }
   }
 
   if (auto clampOp = dyn_cast<stablehlo::ClampOp>(op)) {
@@ -918,22 +1061,7 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
       }
     }
 
-    auto dop = operand.getDefiningOp();
-    if (!dop)
-      return State::NOTGUARANTEED;
-
-    {
-      auto found = opCache.find(dop);
-      if (found != opCache.end()) {
-        if (found->second) {
-          return State::GUARANTEED;
-        } else {
-          return State::NOTGUARANTEED;
-        }
-      }
-    }
-
-    localtodo.push_back(dop);
+    localtodo.push_back(operand);
     return State::PENDING;
   }
 
@@ -968,29 +1096,15 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
         }
       }
 
-      auto dop = operand.getDefiningOp();
-      if (!dop)
-        return State::NOTGUARANTEED;
-
-      {
-        auto found = opCache.find(dop);
-        if (found != opCache.end()) {
-          if (found->second) {
-            continue;
-          } else {
-            return State::NOTGUARANTEED;
-          }
-        }
-      }
-
-      localtodo.push_back(dop);
+      localtodo.push_back(operand);
       allOperandsGuaranteed = false;
     }
 
-    if (allOperandsGuaranteed)
+    if (allOperandsGuaranteed) {
       return State::GUARANTEED;
-    else
+    } else {
       return State::PENDING;
+    }
   } else {
     return State::NOTGUARANTEED;
   }
@@ -1087,13 +1201,153 @@ bool isOnlyUsedInOperation(Operation *operation, Operation *parentOp) {
     if (user != parentOp)
       return false;
   }
+  return true;
+}
 
+bool mayReadFrom(Operation *op, Value val) {
+  bool hasRecursiveEffects = op->hasTrait<OpTrait::HasRecursiveMemoryEffects>();
+  if (hasRecursiveEffects) {
+    for (Region &region : op->getRegions()) {
+      for (auto &block : region) {
+        for (auto &nestedOp : block)
+          if (mayReadFrom(&nestedOp, val))
+            return true;
+      }
+    }
+    return false;
+  }
+
+  // If the op has memory effects, try to characterize them to see if the op
+  // is trivially dead here.
+  if (auto effectInterface = dyn_cast<MemoryEffectOpInterface>(op)) {
+    // Check to see if this op either has no effects, or only allocates/reads
+    // memory.
+    SmallVector<MemoryEffects::EffectInstance, 1> effects;
+    effectInterface.getEffects(effects);
+    for (auto it : effects) {
+      if (!isa<MemoryEffects::Read>(it.getEffect()))
+        continue;
+      if (mayAlias(it, val))
+        return true;
+    }
+    return false;
+  }
+  if (auto callOp = dyn_cast<CallOpInterface>(op)) {
+    auto base = getBase(val);
+    bool seenuse = false;
+    if (isStackAlloca(base) && !isCaptured(base, op, &seenuse) && !seenuse) {
+      return false;
+    }
+  }
   return true;
 }
 
 } // namespace enzyme
 
 namespace stablehlo {
+
+// Templated helper (default returns nullptr).
+template <typename OpTy>
+Value getIdentityValueForOp(OpBuilder &builder, Location loc, Type elemType) {
+  return nullptr;
+}
+
+// Specializations for identity values of specific binary ops.
+template <>
+Value getIdentityValueForOp<stablehlo::AddOp>(OpBuilder &builder, Location loc,
+                                              Type elemType) {
+  return stablehlo::ConstantOp::create(builder, loc,
+                                       builder.getZeroAttr(elemType));
+}
+
+template <>
+Value getIdentityValueForOp<stablehlo::MulOp>(OpBuilder &builder, Location loc,
+                                              Type elemType) {
+  return stablehlo::ConstantOp::create(builder, loc,
+                                       builder.getOneAttr(elemType));
+}
+
+template <>
+Value getIdentityValueForOp<stablehlo::MinOp>(OpBuilder &builder, Location loc,
+                                              Type elemType) {
+  if (auto floatType = dyn_cast<FloatType>(elemType)) {
+    auto negInf =
+        APFloat::getInf(floatType.getFloatSemantics(), /*negative=*/false);
+    return stablehlo::ConstantOp::create(
+        builder, loc, builder.getFloatAttr(elemType, negInf));
+  } else if (auto intType = dyn_cast<IntegerType>(elemType)) {
+    auto minVal = APInt::getSignedMaxValue(intType.getWidth());
+    return stablehlo::ConstantOp::create(
+        builder, loc, builder.getIntegerAttr(elemType, minVal));
+  }
+  return nullptr;
+}
+
+template <>
+Value getIdentityValueForOp<stablehlo::MaxOp>(OpBuilder &builder, Location loc,
+                                              Type elemType) {
+  if (auto floatType = dyn_cast<FloatType>(elemType)) {
+    auto inf =
+        APFloat::getInf(floatType.getFloatSemantics(), /*negative=*/true);
+    return stablehlo::ConstantOp::create(builder, loc,
+                                         builder.getFloatAttr(elemType, inf));
+  } else if (auto intType = dyn_cast<IntegerType>(elemType)) {
+    auto maxVal = APInt::getSignedMinValue(intType.getWidth());
+    return stablehlo::ConstantOp::create(
+        builder, loc, builder.getIntegerAttr(elemType, maxVal));
+  }
+  return nullptr;
+}
+
+// Identity values for bitwise logical ops.
+// OR/XOR: identity = 0
+template <>
+Value getIdentityValueForOp<stablehlo::OrOp>(OpBuilder &builder, Location loc,
+                                             Type elemType) {
+  // Zero is a valid identity for OR and XOR across integer and boolean types.
+  return stablehlo::ConstantOp::create(builder, loc,
+                                       builder.getZeroAttr(elemType));
+}
+
+template <>
+Value getIdentityValueForOp<stablehlo::XorOp>(OpBuilder &builder, Location loc,
+                                              Type elemType) {
+  // Zero is a valid identity for XOR as well.
+  return stablehlo::ConstantOp::create(builder, loc,
+                                       builder.getZeroAttr(elemType));
+}
+
+// AND: identity is all-ones bitpattern for integer types (applies to booleans
+// too).
+template <>
+Value getIdentityValueForOp<stablehlo::AndOp>(OpBuilder &builder, Location loc,
+                                              Type elemType) {
+  if (auto intType = dyn_cast<IntegerType>(elemType)) {
+    // All ones value for the integer width (e.g., 0xFFFF...); this yields
+    // the 'all bits set' value which acts as identity for bitwise AND.
+    auto ones = APInt::getAllOnes(intType.getWidth());
+    return stablehlo::ConstantOp::create(
+        builder, loc, builder.getIntegerAttr(elemType, ones));
+  }
+  return nullptr;
+}
+
+Value getIdentityValue(OpBuilder &builder, Location loc, Type elemType,
+                       Operation *op) {
+  return TypeSwitch<Operation *, Value>(op)
+      .Case<stablehlo::AddOp, stablehlo::MulOp, stablehlo::MinOp,
+            stablehlo::MaxOp, stablehlo::OrOp, stablehlo::XorOp,
+            stablehlo::AndOp>([&](auto binOp) {
+        return getIdentityValueForOp<decltype(binOp)>(builder, loc, elemType);
+      })
+      .Default([&](Operation *op) -> Value { return nullptr; });
+}
+
+bool canFuseIntoReduce(Operation *op) {
+  return isa<stablehlo::AddOp, stablehlo::MulOp, stablehlo::MinOp,
+             stablehlo::MaxOp, stablehlo::OrOp, stablehlo::XorOp,
+             stablehlo::AndOp>(op);
+}
 
 stablehlo::GatherDimensionNumbersAttr
 getGatherDims(mlir::MLIRContext *ctx,
@@ -1175,6 +1429,8 @@ reversedComparisonDirection(stablehlo::ComparisonDirection direction) {
     return stablehlo::ComparisonDirection::GE;
   case stablehlo::ComparisonDirection::LT:
     return stablehlo::ComparisonDirection::GT;
+  default:
+    llvm_unreachable("Cannot perform reverse comparison");
   }
 }
 
@@ -1193,6 +1449,8 @@ negatedComparisonDirection(stablehlo::ComparisonDirection direction) {
     return stablehlo::ComparisonDirection::GT;
   case stablehlo::ComparisonDirection::LT:
     return stablehlo::ComparisonDirection::GE;
+  default:
+    llvm_unreachable("Cannot negate comparison");
   }
 }
 
@@ -1246,6 +1504,505 @@ bool reshapeIsTranspose(stablehlo::ReshapeOp reshapeOp) {
   }
 
   return true;
+}
+
+Value reshapeAxisInto(OpBuilder &builder, Value input,
+                      ArrayRef<int64_t> &batchSizes, int64_t dim) {
+  auto inputType = cast<ShapedType>(input.getType());
+  auto inputShape = inputType.getShape();
+
+  SmallVector<int64_t> permutation(inputShape.size());
+  for (size_t i = 0; i < dim; i++)
+    permutation[i] = i + batchSizes.size(); // left shift
+  for (size_t i = 0; i < batchSizes.size(); i++)
+    permutation[dim + i] = i; // move the batch dims
+  for (size_t i = batchSizes.size() + dim; i < permutation.size(); i++)
+    permutation[i] = i; // keep the rest
+
+  auto transposedInput =
+      stablehlo::TransposeOp::create(builder, input.getLoc(), input,
+                                     builder.getDenseI64ArrayAttr(permutation));
+
+  SmallVector<int64_t> newShape(inputShape.begin() + batchSizes.size(),
+                                inputShape.end());
+  newShape[dim] =
+      newShape[dim] * std::accumulate(batchSizes.begin(), batchSizes.end(), 1,
+                                      std::multiplies<int64_t>());
+  return stablehlo::ReshapeOp::create(
+      builder, input.getLoc(),
+      RankedTensorType::get(newShape, inputType.getElementType()),
+      transposedInput);
+}
+
+Value reshapeAxisOutOf(OpBuilder &builder, Value input,
+                       ArrayRef<int64_t> &batchSizes, int64_t dim) {
+  auto inputType = cast<ShapedType>(input.getType());
+  auto inputShape = llvm::to_vector(inputType.getShape());
+  auto batchSize = std::accumulate(batchSizes.begin(), batchSizes.end(), 1,
+                                   std::multiplies<int64_t>());
+  inputShape[dim] = inputShape[dim] / batchSize;
+  for (size_t i = 0; i < batchSizes.size(); i++)
+    inputShape.insert(inputShape.begin() + dim + i, batchSizes[i]);
+
+  auto reshapedInput = stablehlo::ReshapeOp::create(
+      builder, input.getLoc(),
+      RankedTensorType::get(inputShape, inputType.getElementType()), input);
+
+  SmallVector<int64_t> permutation(inputShape.size());
+  for (size_t i = 0; i < batchSizes.size(); i++)
+    permutation[i] = dim + i;
+  for (size_t i = 0; i < dim; i++)
+    permutation[batchSizes.size() + i] = i;
+  for (size_t i = batchSizes.size() + dim; i < permutation.size(); i++)
+    permutation[i] = i;
+
+  return stablehlo::TransposeOp::create(
+      builder, input.getLoc(), reshapedInput,
+      builder.getDenseI64ArrayAttr(permutation));
+}
+
+bool hasTraitElementwise(Operation *op) {
+  if (op->hasTrait<OpTrait::Elementwise>())
+    return true;
+
+  if (op->hasTrait<hlo::OpTrait::BroadcastingElementwise>()) {
+    // Check sizes (shapes) match across operands, not the exact types.
+    auto refShapedTy = dyn_cast<ShapedType>(op->getOperand(0).getType());
+    if (!refShapedTy)
+      return false;
+
+    for (auto operand : op->getOperands()) {
+      auto curShapedTy = dyn_cast<ShapedType>(operand.getType());
+      if (!curShapedTy)
+        return false;
+
+      if (curShapedTy.getRank() != refShapedTy.getRank())
+        return false;
+
+      for (int64_t i = 0; i < curShapedTy.getRank(); ++i) {
+        int64_t a = curShapedTy.getDimSize(i);
+        int64_t b = refShapedTy.getDimSize(i);
+        // If both are static and different, sizes don't match.
+        if (a != ShapedType::kDynamic && b != ShapedType::kDynamic && a != b)
+          return false;
+      }
+    }
+    return true;
+  }
+
+  return false;
+}
+
+bool isAssociativeOp(Operation *op) {
+  return isa<stablehlo::AddOp, stablehlo::MulOp, stablehlo::MinOp,
+             stablehlo::MaxOp, stablehlo::AndOp, stablehlo::OrOp,
+             stablehlo::XorOp>(op);
+}
+
+bool extractMultiplicationFactor(Value v, Value &other, Operation *op,
+                                 OpBuilder &builder) {
+  auto mulOp = v.getDefiningOp<stablehlo::MulOp>();
+  if (!mulOp) {
+    other = v;
+    return true;
+  }
+
+  if (!isOnlyUsedInOperation(mulOp, op))
+    return false;
+
+  Value mLhs = mulOp.getLhs(), mRhs = mulOp.getRhs();
+
+  if (isScalarValue(mLhs)) {
+    other = mRhs;
+  } else if (isScalarValue(mRhs)) {
+    other = mLhs;
+  } else {
+    return false;
+  }
+  return true;
+}
+
+void extractMultiplicationFactor(Value v, Value &scalar, Value &other,
+                                 Operation *op, OpBuilder &builder) {
+  auto mulOp = v.getDefiningOp<stablehlo::MulOp>();
+  if (!mulOp) {
+    scalar = nullptr;
+    other = v;
+    return;
+  }
+
+  Value mLhs = mulOp.getLhs(), mRhs = mulOp.getRhs();
+
+  auto lhsScalarValue = stablehlo::getScalarValue(mLhs, builder);
+  if (lhsScalarValue) {
+    scalar = lhsScalarValue;
+    other = mRhs;
+  } else {
+    auto rhsScalarValue = stablehlo::getScalarValue(mRhs, builder);
+    if (rhsScalarValue) {
+      scalar = rhsScalarValue;
+      other = mLhs;
+    } else {
+      scalar = nullptr;
+      other = v;
+    }
+  }
+}
+
+Value getScalarValue(Value val, OpBuilder &builder) {
+  return getScalarValue(val.getDefiningOp(), builder);
+}
+
+Value getScalarValue(Operation *op, OpBuilder &builder) {
+  if (!op)
+    return nullptr;
+
+  // Splatted Constant
+  SplatElementsAttr elems;
+  if (matchPattern(op, m_Constant(&elems))) {
+    auto scalarElemType = RankedTensorType::get(
+        {}, cast<TensorType>(op->getResult(0).getType()).getElementType());
+    auto constInit = ConstantOp::create(builder, op->getLoc(), scalarElemType,
+                                        elems.resizeSplat(scalarElemType));
+    return constInit;
+  }
+
+  // BroadcastInDim / Reshape
+  if (isa<stablehlo::BroadcastInDimOp, stablehlo::ReshapeOp>(op)) {
+    if (cast<RankedTensorType>(op->getOperand(0).getType()).getRank() == 0) {
+      return op->getOperand(0);
+    }
+  }
+
+  // Convert
+  if (auto convertOp = dyn_cast<stablehlo::ConvertOp>(op)) {
+    auto scalar =
+        getScalarValue(convertOp.getOperand().getDefiningOp(), builder);
+    if (scalar) {
+      auto convertOutElemType =
+          cast<RankedTensorType>(convertOp.getResult().getType())
+              .getElementType();
+      return stablehlo::ConvertOp::create(
+          builder, op->getLoc(), RankedTensorType::get({}, convertOutElemType),
+          scalar);
+    }
+  }
+
+  return nullptr;
+}
+
+bool isScalarValue(Value val) { return isScalarValue(val.getDefiningOp()); }
+
+bool isScalarValue(Operation *op) {
+  if (!op)
+    return false;
+
+  SplatElementsAttr splatAttr;
+  if (matchPattern(op, m_Constant(&splatAttr)))
+    return true;
+
+  if (isa<stablehlo::BroadcastInDimOp, stablehlo::ReshapeOp>(op) &&
+      cast<RankedTensorType>(op->getOperand(0).getType()).getRank() == 0)
+    return true;
+
+  if (isa<stablehlo::ConvertOp>(op))
+    return isScalarValue(op->getOperand(0));
+
+  return false;
+}
+
+Value copyTriangularPart(OpBuilder &builder, Value input,
+                         enzymexla::LapackUplo uplo) {
+  if (uplo == enzymexla::LapackUplo::F)
+    return input;
+
+  auto inputType = cast<RankedTensorType>(input.getType());
+  assert(inputType.getRank() == 2 && "only 2D matrices supported");
+  assert(inputType.getDimSize(0) != ShapedType::kDynamic &&
+         inputType.getDimSize(1) != ShapedType::kDynamic &&
+         "only statically sized matrices supported");
+  auto inputShape = inputType.getShape();
+
+  Value rowIdxs = stablehlo::IotaOp::create(
+      builder, input.getLoc(),
+      RankedTensorType::get(inputShape, builder.getI32Type()), 0);
+  Value colIdxs = stablehlo::IotaOp::create(
+      builder, input.getLoc(),
+      RankedTensorType::get(inputShape, builder.getI32Type()), 1);
+
+  Value indicator = stablehlo::CompareOp::create(
+      builder, input.getLoc(), rowIdxs, colIdxs,
+      uplo == enzymexla::LapackUplo::U ? ComparisonDirection::LT
+                                       : ComparisonDirection::GT);
+
+  Value transposedInput = stablehlo::TransposeOp::create(
+      builder, input.getLoc(), input, builder.getDenseI64ArrayAttr({1, 0}));
+
+  return stablehlo::SelectOp::create(builder, input.getLoc(), indicator, input,
+                                     transposedInput);
+}
+
+bool broadcastInDimIsReshape(BroadcastInDimOp op) {
+  auto input = op.getOperand();
+  auto outputType = op.getType();
+  auto inputType = input.getType();
+  auto broadcastDims = op.getBroadcastDimensions();
+
+  size_t inputSize = 1;
+  for (auto sz : inputType.getShape())
+    inputSize *= sz;
+  size_t outputSize = 1;
+  for (auto sz : outputType.getShape())
+    outputSize *= sz;
+
+  if (inputSize != outputSize)
+    return false;
+
+  SmallVector<int64_t> nonSingletonDims;
+
+  for (size_t i = 0; i < broadcastDims.size(); ++i) {
+    int64_t dimIdx = broadcastDims[i];
+    if (inputType.getRank() > i && inputType.getDimSize(i) != 1) {
+      nonSingletonDims.push_back(dimIdx);
+    }
+  }
+
+  for (int i = 1, s = nonSingletonDims.size(); i < s; ++i) {
+    if (nonSingletonDims[i - 1] > nonSingletonDims[i])
+      return false;
+  }
+
+  for (size_t i = 0; i < outputType.getRank(); ++i) {
+    int64_t dimIdx = outputType.getDimSize(i);
+    if (dimIdx == 1)
+      continue;
+    auto it = llvm::find(broadcastDims, dimIdx);
+    if (it == broadcastDims.end()) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool canMergeSlicesAlongAxis(int dimension, ArrayRef<int64_t> sliceStarts,
+                             ArrayRef<int64_t> otherSliceStarts,
+                             ArrayRef<int64_t> sliceLimits,
+                             ArrayRef<int64_t> otherSliceLimits,
+                             ArrayRef<int64_t> sliceStrides,
+                             ArrayRef<int64_t> otherSliceStrides) {
+  bool canMerge = true;
+
+  for (int d = 0, ndims = sliceStarts.size(); d < ndims; ++d) {
+    if (d == dimension) {
+      canMerge &= sliceLimits[d] == otherSliceStarts[d] &&
+                  sliceStrides[d] == otherSliceStrides[d];
+    } else {
+      canMerge &= sliceStarts[d] == otherSliceStarts[d] &&
+                  sliceLimits[d] == otherSliceLimits[d] &&
+                  sliceStrides[d] == otherSliceStrides[d];
+    }
+  }
+  return canMerge;
+}
+
+bool canMergeSlicesAlongAxis(int dimension, stablehlo::SliceOp slice,
+                             stablehlo::SliceOp otherSlice) {
+  if (otherSlice.getOperand() != slice.getOperand())
+    return false;
+
+  // Check that both slices are contiguous only in dim
+  ArrayRef<int64_t> sliceStarts = slice.getStartIndices(),
+                    otherSliceStarts = otherSlice.getStartIndices(),
+                    sliceLimits = slice.getLimitIndices(),
+                    otherSliceLimits = otherSlice.getLimitIndices(),
+                    sliceStrides = slice.getStrides(),
+                    otherSliceStrides = otherSlice.getStrides();
+
+  return canMergeSlicesAlongAxis(dimension, sliceStarts, otherSliceStarts,
+                                 sliceLimits, otherSliceLimits, sliceStrides,
+                                 otherSliceStrides);
+}
+
+stablehlo::ConcatenateOp lowerWrap(enzymexla::WrapOp wrap,
+                                   PatternRewriter &rewriter, bool replace) {
+  // sl0[end-lhs:end], mid, sl1[0:rhs]
+  auto wrapOpT = cast<RankedTensorType>(wrap.getOperand().getType());
+  SmallVector<int64_t> strides(wrapOpT.getShape().size(), 1);
+
+  SmallVector<Value> args;
+
+  auto shard = sdy::getShardingPerValue(wrap);
+
+  if (wrap.getLhs() != 0) {
+    SmallVector<int64_t> sl0_starts(wrapOpT.getShape().size(), 0);
+    SmallVector<int64_t> sl0_ends(wrapOpT.getShape());
+
+    sl0_starts[wrap.getDimension()] =
+        wrapOpT.getShape()[wrap.getDimension()] - wrap.getLhs();
+
+    auto sl0 =
+        stablehlo::SliceOp::create(rewriter, wrap.getLoc(), wrap.getOperand(),
+                                   sl0_starts, sl0_ends, strides);
+    if (shard)
+      sdy::setShardings(sl0, shard);
+
+    args.push_back(sl0);
+  }
+
+  args.push_back(wrap.getOperand());
+
+  if (wrap.getRhs() != 0) {
+    SmallVector<int64_t> sl1_starts(wrapOpT.getShape().size(), 0);
+    SmallVector<int64_t> sl1_ends(wrapOpT.getShape());
+
+    sl1_ends[wrap.getDimension()] = wrap.getRhs();
+    auto sl1 =
+        stablehlo::SliceOp::create(rewriter, wrap.getLoc(), wrap.getOperand(),
+                                   sl1_starts, sl1_ends, strides);
+    if (shard)
+      sdy::setShardings(sl1, shard);
+
+    args.push_back(sl1);
+  }
+
+  auto newConcat = stablehlo::ConcatenateOp::create(rewriter, wrap.getLoc(),
+                                                    args, wrap.getDimension());
+  if (replace)
+    rewriter.replaceOp(wrap, newConcat);
+  if (shard)
+    sdy::setShardings(newConcat, shard);
+  return newConcat;
+}
+
+LogicalResult concatSliceSimplify(PatternRewriter &rewriter,
+                                  SmallVectorImpl<Value> &operands, int64_t dim,
+                                  SmallVectorImpl<Value> &newOperands) {
+  bool changed = false;
+  for (size_t i = 0, e = operands.size(); i < e; ++i) {
+    auto operand = operands[i];
+    auto slice = operand.getDefiningOp<stablehlo::SliceOp>();
+
+    if (!slice) {
+      newOperands.push_back(operand);
+      continue;
+    }
+
+    while (i + 1 < e) {
+      if (auto otherSlice =
+              operands[i + 1].getDefiningOp<stablehlo::SliceOp>()) {
+        if (canMergeSlicesAlongAxis(dim, slice, otherSlice)) {
+          slice = stablehlo::SliceOp::create(
+              rewriter, slice->getLoc(), slice.getOperand(),
+              slice.getStartIndices(), otherSlice.getLimitIndices(),
+              slice.getStrides());
+          changed = true;
+          i++;
+          continue;
+        } else {
+          break;
+        }
+      }
+
+      if (auto otherWrap = operands[i + 1].getDefiningOp<enzymexla::WrapOp>()) {
+        auto wrapSlice =
+            otherWrap.getOperand().getDefiningOp<stablehlo::SliceOp>();
+        if (wrapSlice && wrapSlice.getOperand() == slice.getOperand() &&
+            otherWrap.getLhs() != 0) {
+          SmallVector<int64_t> wrapStarts =
+              llvm::to_vector(wrapSlice.getStartIndices());
+          SmallVector<int64_t> wrapLimits =
+              llvm::to_vector(wrapSlice.getLimitIndices());
+          if (wrapSlice.getStrides()[dim] == 1) {
+            wrapStarts[dim] = wrapLimits[dim] - otherWrap.getLhs();
+          }
+          if (canMergeSlicesAlongAxis(dim, slice.getStartIndices(), wrapStarts,
+                                      slice.getLimitIndices(), wrapLimits,
+                                      slice.getStrides(),
+                                      wrapSlice.getStrides())) {
+
+            changed = true;
+            auto c2 = lowerWrap(otherWrap, rewriter, /*replace*/ false);
+            auto newSlice = stablehlo::SliceOp::create(
+                rewriter, slice->getLoc(), slice.getOperand(),
+                slice.getStartIndices(), wrapLimits, slice.getStrides());
+            newOperands.push_back(newSlice);
+            for (int i = 1; i < c2.getOperands().size(); i++) {
+              newOperands.push_back(c2.getOperands()[i]);
+            }
+            i++;
+            slice = nullptr;
+            break;
+          } else {
+            break;
+          }
+        }
+      }
+      break;
+    }
+
+    if (slice) {
+      newOperands.push_back(slice.getResult());
+    }
+  }
+
+  return changed ? success() : failure();
+}
+
+Value ConcatenateOpCreate(
+    OpBuilder &builder, Location loc, ArrayRef<Value> inputs, int64_t dimension,
+    std::optional<sdy::TensorShardingPerValueAttr> sharding) {
+  assert(inputs.size() >= 1);
+
+  if (inputs.size() == 1) {
+    if (auto defSliceOp = inputs[0].getDefiningOp<stablehlo::SliceOp>()) {
+      // special case if we are using full slices
+      if (defSliceOp.getOperand().getType() == defSliceOp.getType()) {
+        return defSliceOp.getOperand();
+      }
+    }
+    return inputs[0];
+  }
+
+  auto concatOp =
+      stablehlo::ConcatenateOp::create(builder, loc, inputs, dimension);
+  if (sharding.has_value()) {
+    sdy::setShardings(concatOp, *sharding);
+  }
+  return concatOp.getResult();
+}
+
+Value ReshapeOpCreate(OpBuilder &builder, Location loc, Value input,
+                      ArrayRef<int64_t> shape,
+                      std::optional<sdy::TensorShardingPerValueAttr> sharding) {
+  auto inputTy = cast<RankedTensorType>(input.getType());
+  if (inputTy.getShape() == shape) {
+    return input;
+  }
+
+  auto reshapeOp = stablehlo::ReshapeOp::create(
+      builder, loc, RankedTensorType::get(shape, inputTy.getElementType()),
+      input);
+  if (sharding.has_value()) {
+    sdy::setShardings(reshapeOp, *sharding);
+  }
+  return reshapeOp.getResult();
+}
+
+Value TransposeOpCreate(
+    OpBuilder &builder, Location loc, Value input,
+    ArrayRef<int64_t> permutation,
+    std::optional<sdy::TensorShardingPerValueAttr> sharding) {
+  if (llvm::is_sorted(permutation)) {
+    return input;
+  }
+
+  auto transposeOp = stablehlo::TransposeOp::create(
+      builder, loc, input, builder.getDenseI64ArrayAttr(permutation));
+  if (sharding.has_value()) {
+    sdy::setShardings(transposeOp, *sharding);
+  }
+  return transposeOp.getResult();
 }
 
 } // namespace stablehlo
