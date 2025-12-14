@@ -2060,9 +2060,7 @@ void IslScopBuilder::gatherStmts(Operation *f, IRMapping &map,
   f->walk([&](affine::AffineParallelOp parallelOp) {
     createParallelIterArgAccesses(parallelOp, map);
   });
-  // f->walk([&](memref::AtAddrOp atAddr) {
-  //   map.map(atAddr.getResult(), atAddr.getAddr());
-  // });
+
   unsigned stmtId = 0;
   f->walk([&](mlir::Operation *op) {
     if (isa<affine::AffineForOp, affine::AffineIfOp, affine::AffineParallelOp>(
