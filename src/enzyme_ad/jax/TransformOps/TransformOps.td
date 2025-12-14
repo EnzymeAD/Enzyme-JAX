@@ -277,6 +277,10 @@ def ApplySliceOfDynamicUpdatePatterns : EnzymeHLOPatternOp<
     "slice_of_dynamic_update"> {
   let patterns = ["SliceOfDynamicUpdate"];
 }
+def ApplySliceOfUpdateWithoutCornersPatterns : EnzymeHLOPatternOp<
+    "slice_of_update_without_corners"> {
+  let patterns = ["SliceOfUpdateWithoutCorners"];
+}
 def ApplySliceElementwisePatterns : EnzymeHLOPatternOp<
     "slice_elementwise"> {
   let patterns = ["SliceElementwise"];

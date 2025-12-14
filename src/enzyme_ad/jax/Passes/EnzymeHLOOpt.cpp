@@ -2576,6 +2576,37 @@ struct SliceOfDynamicUpdate final
   }
 };
 
+struct SliceOfUpdateWithoutCorners final
+    : CheckedOpRewritePattern<stablehlo::SliceOp, SliceOfUpdateWithoutCorners> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
+                                    PatternRewriter &rewriter) const {
+
+    auto dyn =
+        op.getOperand().getDefiningOp<enzymexla::UpdateWithoutCornersOp>();
+    if (!dyn)
+      return failure();
+
+    // Try to use the updated value, currently extremely conservative and checks
+    // everything is within the innermost box This can be extended to just check
+    // that nothing overlaps with the corners.
+    if (op.getStrides()[dyn.getDimensionX()] == 1 &&
+        op.getStrides()[dyn.getDimensionY()] == 1 &&
+        op.getStartIndices()[dyn.getDimensionX()] >= dyn.getX1() &&
+        op.getStartIndices()[dyn.getDimensionY()] >= dyn.getY1() &&
+        op.getLimitIndices()[dyn.getDimensionX()] <=
+            dyn.getType().getShape()[dyn.getDimensionX()] - dyn.getX2() &&
+        op.getLimitIndices()[dyn.getDimensionY()] <=
+            dyn.getType().getShape()[dyn.getDimensionY()] - dyn.getY2()) {
+      rewriter.modifyOpInPlace(
+          op, [&]() { op.getOperandMutable().assign(dyn.getUpdate()); });
+      return success();
+    }
+    return failure();
+  }
+};
+
 struct SliceDUSToConcat final
     : CheckedOpRewritePattern<stablehlo::SliceOp, SliceDUSToConcat> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -28655,7 +28686,7 @@ struct EnzymeHLOOptPass
 
     patterns
         .add<ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
-             SliceElementwise, SliceReshapeElementwise, DynamicSliceElementwise,
+             SliceOfUpdateWithoutCorners, SliceElementwise, SliceReshapeElementwise, DynamicSliceElementwise,
              SlicePad, SliceReshapePad, ReshapeSliceReshape, DotReshapeDot,
              ChloInfConstProp, GammaConstProp, ConcatFuse, ConcatToBroadcast,
              PadPad, PadReshapePad, ConcatPushBinop<stablehlo::AddOp>,
