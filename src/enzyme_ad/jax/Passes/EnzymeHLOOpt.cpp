@@ -2422,6 +2422,377 @@ struct DUSDUSConcat final
   }
 };
 
+// Helper function to check if a value with a given slice region is equivalent
+// to another value with a different slice region. This recursively checks
+// through DUS, slice, and extend operations.
+static bool isEquivalentTo(Value v1, ArrayRef<int64_t> sliceStart1,
+                           ArrayRef<int64_t> sliceLimit1, Value v2,
+                           ArrayRef<int64_t> sliceStart2,
+                           ArrayRef<int64_t> sliceLimit2) {
+  // If values are identical and slice regions match, they're equivalent
+  if (v1 == v2) {
+    for (size_t i = 0; i < sliceStart1.size(); i++) {
+      if (sliceStart1[i] != sliceStart2[i] || sliceLimit1[i] != sliceLimit2[i])
+        return false;
+    }
+    return true;
+  }
+
+  // Check if v1 is a DUS operation
+  if (auto dus1 = v1.getDefiningOp<stablehlo::DynamicUpdateSliceOp>()) {
+    auto updateType = cast<RankedTensorType>(dus1.getUpdate().getType());
+    
+    // Get constant start indices
+    SmallVector<int64_t> dusStarts;
+    for (auto idx : dus1.getStartIndices()) {
+      DenseIntElementsAttr attr;
+      if (!matchPattern(idx, m_Constant(&attr)))
+        return false;
+      dusStarts.push_back((*attr.begin()).getSExtValue());
+    }
+    
+    // Check if the slice region of v1 overlaps with the DUS update region
+    bool overlaps = true;
+    for (size_t i = 0; i < sliceStart1.size(); i++) {
+      int64_t dusStart = dusStarts[i];
+      int64_t dusLimit = dusStart + updateType.getShape()[i];
+      
+      // If slice region doesn't overlap with DUS region, check the operand
+      if (sliceLimit1[i] <= dusStart || sliceStart1[i] >= dusLimit) {
+        overlaps = false;
+        break;
+      }
+    }
+    
+    if (!overlaps) {
+      // Slice is completely outside DUS region, check operand
+      return isEquivalentTo(dus1.getOperand(), sliceStart1, sliceLimit1, v2,
+                           sliceStart2, sliceLimit2);
+    }
+    
+    // Slice overlaps with DUS region - this is more complex
+    // For now, only handle the case where the slice is completely within update
+    bool withinUpdate = true;
+    for (size_t i = 0; i < sliceStart1.size(); i++) {
+      int64_t dusStart = dusStarts[i];
+      int64_t dusLimit = dusStart + updateType.getShape()[i];
+      if (sliceStart1[i] < dusStart || sliceLimit1[i] > dusLimit) {
+        withinUpdate = false;
+        break;
+      }
+    }
+    
+    if (withinUpdate) {
+      // Adjust slice coordinates to be relative to the update
+      SmallVector<int64_t> adjustedStart, adjustedLimit;
+      for (size_t i = 0; i < sliceStart1.size(); i++) {
+        adjustedStart.push_back(sliceStart1[i] - dusStarts[i]);
+        adjustedLimit.push_back(sliceLimit1[i] - dusStarts[i]);
+      }
+      return isEquivalentTo(dus1.getUpdate(), adjustedStart, adjustedLimit, v2,
+                           sliceStart2, sliceLimit2);
+    }
+  }
+
+  // Check if v1 is an extend operation
+  if (auto extend1 = v1.getDefiningOp<enzymexla::ExtendOp>()) {
+    int64_t dim = extend1.getDimension();
+    int64_t lhs = extend1.getLhs();
+    int64_t rhs = extend1.getRhs();
+    
+    // Check if slice is in the left padding, middle, or right padding
+    if (sliceLimit1[dim] <= lhs) {
+      // Slice is in left padding - can't match
+      return false;
+    }
+    
+    auto operandType = cast<RankedTensorType>(extend1.getOperand().getType());
+    int64_t middleLimit = lhs + operandType.getShape()[dim];
+    
+    if (sliceStart1[dim] >= middleLimit) {
+      // Slice is in right padding - can't match
+      return false;
+    }
+    
+    // Check if slice is completely within the middle region
+    if (sliceStart1[dim] < lhs || sliceLimit1[dim] > middleLimit) {
+      // Slice partially extends into padding regions - not equivalent
+      return false;
+    }
+    
+    // Slice is completely in the middle region
+    // Adjust coordinates to be relative to the extend operand
+    SmallVector<int64_t> adjustedStart, adjustedLimit;
+    for (size_t i = 0; i < sliceStart1.size(); i++) {
+      if (i == dim) {
+        adjustedStart.push_back(sliceStart1[i] - lhs);
+        adjustedLimit.push_back(sliceLimit1[i] - lhs);
+      } else {
+        adjustedStart.push_back(sliceStart1[i]);
+        adjustedLimit.push_back(sliceLimit1[i]);
+      }
+    }
+    
+    return isEquivalentTo(extend1.getOperand(), adjustedStart, adjustedLimit,
+                         v2, sliceStart2, sliceLimit2);
+  }
+
+  // Check if v1 is a slice operation
+  if (auto slice1 = v1.getDefiningOp<stablehlo::SliceOp>()) {
+    // Adjust coordinates to be relative to the slice's source
+    SmallVector<int64_t> adjustedStart, adjustedLimit;
+    for (size_t i = 0; i < sliceStart1.size(); i++) {
+      adjustedStart.push_back(slice1.getStartIndices()[i] + sliceStart1[i]);
+      adjustedLimit.push_back(slice1.getStartIndices()[i] + sliceLimit1[i]);
+    }
+    return isEquivalentTo(slice1.getOperand(), adjustedStart, adjustedLimit, v2,
+                         sliceStart2, sliceLimit2);
+  }
+
+  return false;
+}
+
+// Optimization: DUSDUSToExtend
+// Pattern:
+//   %slice_start = stablehlo.slice %source [0:4, 0:1, 0:3056]    // First element in dim 1
+//   %inner_dus = stablehlo.dynamic_update_slice %base, %slice_start, %idx0, %idx1, %idx2
+//   %slice_end = stablehlo.slice %source [0:4, 1519:1520, 0:3056]  // Last element in dim 1
+//   %outer_dus = stablehlo.dynamic_update_slice %inner_dus, %slice_end, %idx0, %idx1+offset, %idx2
+// Constraint: Both slices come from the same source tensor
+// Constraint: The slices differ only in one dimension and are at the beginning and end
+// Constraint: DUS operations differ only in the same dimension
+// Rewrite to:
+//   %middle = stablehlo.slice %source [0:4, 1:1519, 0:3056]  // The gap in the middle
+//   %extend = enzymexla.extend %middle, lhs=1, rhs=1, dimension=1
+//   %new_dus = stablehlo.dynamic_update_slice %base, %extend, %idx0, %idx1, %idx2
+// Note: In the implementation, `dus` refers to outer_dus and `dus2` refers to inner_dus
+struct DUSDUSToExtend final
+    : CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp, DUSDUSToExtend> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DynamicUpdateSliceOp dus,
+                                    PatternRewriter &rewriter) const {
+    // Check if operand is another DUS
+    auto dus2 =
+        dus.getOperand().getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
+    if (!dus2)
+      return failure();
+
+    // Check if both updates come from slicing
+    auto slice1 = dus.getUpdate().getDefiningOp<stablehlo::SliceOp>();
+    auto slice2 = dus2.getUpdate().getDefiningOp<stablehlo::SliceOp>();
+    
+    if (!slice1 || !slice2)
+      return failure();
+
+    // Check if both slices come from the same source
+    if (slice1.getOperand() != slice2.getOperand())
+      return failure();
+
+    auto sourceType = dyn_cast<RankedTensorType>(slice1.getOperand().getType());
+    if (!sourceType)
+      return failure();
+
+    // Check that strides are all 1
+    for (size_t i = 0; i < slice1.getStrides().size(); i++) {
+      if (slice1.getStrides()[i] != 1 || slice2.getStrides()[i] != 1)
+        return failure();
+    }
+
+    // Find the dimension where the slices differ
+    ssize_t diffDim = -1;
+    for (size_t i = 0; i < slice1.getStartIndices().size(); i++) {
+      if (slice1.getStartIndices()[i] != slice2.getStartIndices()[i] ||
+          slice1.getLimitIndices()[i] != slice2.getLimitIndices()[i]) {
+        if (diffDim != -1)
+          return failure(); // Slices differ in more than one dimension
+        diffDim = i;
+      }
+    }
+
+    if (diffDim == -1)
+      return failure(); // Slices are identical
+
+    // Check that both slices have the same shape except in diffDim
+    auto slice1Type = cast<RankedTensorType>(slice1.getType());
+    auto slice2Type = cast<RankedTensorType>(slice2.getType());
+    for (size_t i = 0; i < slice1Type.getRank(); i++) {
+      if (i == diffDim)
+        continue;
+      if (slice1Type.getShape()[i] != slice2Type.getShape()[i])
+        return failure();
+    }
+
+    // Find the dimension where the DUS operations differ in start indices
+    ssize_t dusDiffDim = -1;
+    for (size_t i = 0; i < dus.getStartIndices().size(); i++) {
+      if (dus.getStartIndices()[i] != dus2.getStartIndices()[i]) {
+        if (dusDiffDim != -1)
+          return failure(); // DUS operations differ in more than one dimension
+        dusDiffDim = i;
+      }
+    }
+
+    if (dusDiffDim == -1)
+      return failure(); // DUS operations have same start indices
+
+    // Check that the DUS difference dimension matches the slice difference dimension
+    if (dusDiffDim != diffDim)
+      return failure();
+
+    // Get the slice start and limit indices for the differing dimension
+    int64_t slice1Start = slice1.getStartIndices()[diffDim];
+    int64_t slice1Limit = slice1.getLimitIndices()[diffDim];
+    int64_t slice2Start = slice2.getStartIndices()[diffDim];
+    int64_t slice2Limit = slice2.getLimitIndices()[diffDim];
+
+    // Check if slices are at the beginning and end of the source dimension
+    int64_t sourceDimSize = sourceType.getShape()[diffDim];
+    
+    // Determine which slice is at the start and which is at the end
+    bool slice1AtStart = (slice1Start == 0);
+    bool slice2AtStart = (slice2Start == 0);
+    bool slice1AtEnd = (slice1Limit == sourceDimSize);
+    bool slice2AtEnd = (slice2Limit == sourceDimSize);
+
+    // We need one slice at the start and one at the end
+    if (!((slice1AtStart && slice2AtEnd) || (slice2AtStart && slice1AtEnd)))
+      return failure();
+
+    // Calculate the gap in the middle (what needs to be extended/padded)
+    int64_t gapStart, gapEnd;
+    if (slice1AtStart && slice2AtEnd) {
+      gapStart = slice1Limit;
+      gapEnd = slice2Start;
+    } else {
+      gapStart = slice2Limit;
+      gapEnd = slice1Start;
+    }
+
+    if (gapStart >= gapEnd)
+      return failure(); // No gap or slices overlap
+
+    // Get DUS start indices as constants
+    // Note: dus is outer DUS, dus2 is inner DUS
+    SmallVector<int64_t> dusOuterStarts, dusInnerStarts;
+    for (auto idx : dus.getStartIndices()) {
+      DenseIntElementsAttr attr;
+      if (!matchPattern(idx, m_Constant(&attr)))
+        return failure();
+      dusOuterStarts.push_back((*attr.begin()).getSExtValue());
+    }
+    for (auto idx : dus2.getStartIndices()) {
+      DenseIntElementsAttr attr;
+      if (!matchPattern(idx, m_Constant(&attr)))
+        return failure();
+      dusInnerStarts.push_back((*attr.begin()).getSExtValue());
+    }
+
+    // Calculate padding sizes for the extend operation
+    // lhsPad is the size of whichever slice is at the beginning
+    int64_t lhsPad = slice1AtStart ? (slice1Limit - slice1Start) 
+                                    : (slice2Limit - slice2Start);
+    // rhsPad is the size of whichever slice is at the end
+    int64_t rhsPad = slice1AtEnd ? (slice1Limit - slice1Start) 
+                                  : (slice2Limit - slice2Start);
+
+    // Check if the operand of dus2 already contains the middle region
+    // This would be the case if a previous DUS/extend placed it there
+    SmallVector<int64_t> middleRegionStart, middleRegionLimit;
+    for (size_t i = 0; i < slice1.getStartIndices().size(); i++) {
+      if (i == diffDim) {
+        // Calculate where the middle region should be in the base tensor
+        // The middle starts after the "start" slice. We need to find which DUS
+        // placed the start slice:
+        // - If slice1 (from outer DUS) is at start: middle begins at outer_start + lhsPad
+        // - If slice2 (from inner DUS) is at start: middle begins at inner_start + lhsPad
+        int64_t baseStart = slice1AtStart ? dusOuterStarts[i] + lhsPad 
+                                          : dusInnerStarts[i] + lhsPad;
+        middleRegionStart.push_back(baseStart);
+        middleRegionLimit.push_back(baseStart + (gapEnd - gapStart));
+      } else {
+        middleRegionStart.push_back(slice1.getStartIndices()[i]);
+        middleRegionLimit.push_back(slice1.getLimitIndices()[i]);
+      }
+    }
+
+    // Prepare the slice coordinates for the source tensor (what we're comparing against)
+    SmallVector<int64_t> sourceSliceStart(slice1.getStartIndices().begin(),
+                                          slice1.getStartIndices().end());
+    SmallVector<int64_t> sourceSliceLimit(slice1.getLimitIndices().begin(),
+                                          slice1.getLimitIndices().end());
+    sourceSliceStart[diffDim] = gapStart;
+    sourceSliceLimit[diffDim] = gapEnd;
+
+    // Check if dus2's operand already contains equivalent data in the middle region
+    // This happens when a previous DUS/extend operation placed it there
+    bool operandHasMiddle = isEquivalentTo(
+        dus2.getOperand(), middleRegionStart, middleRegionLimit,
+        slice1.getOperand(), sourceSliceStart, sourceSliceLimit);
+
+    if (operandHasMiddle) {
+      // The middle region is already in dus2's operand!
+      // In this case, we can create an extend that references the existing middle
+      // by slicing it from dus2's operand and extending with the boundary slices.
+      
+      // Create a slice of the middle part from the source (as before)
+      auto middleSliceFromSource = stablehlo::SliceOp::create(
+          rewriter, dus.getLoc(), slice1.getOperand(), sourceSliceStart,
+          sourceSliceLimit, SmallVector<int64_t>(sourceSliceStart.size(), 1));
+
+      // Create extend operation using previously calculated padding
+      auto extendOp = enzymexla::ExtendOp::create(
+          rewriter, dus.getLoc(), middleSliceFromSource, lhsPad, rhsPad, diffDim);
+
+      // Use indices from whichever DUS has the start slice
+      SmallVector<Value> newStartIndices;
+      if (slice1AtStart) {
+        newStartIndices.assign(dus.getStartIndices().begin(), dus.getStartIndices().end());
+      } else {
+        newStartIndices.assign(dus2.getStartIndices().begin(), dus2.getStartIndices().end());
+      }
+
+      // Replace with a single DUS that uses the operand of dus2
+      rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
+          dus, dus2.getOperand(), extendOp, newStartIndices);
+
+      return success();
+    }
+
+    // Create a slice of the middle part (the gap)
+    SmallVector<int64_t> newSliceStarts(slice1.getStartIndices().begin(),
+                                         slice1.getStartIndices().end());
+    SmallVector<int64_t> newSliceLimits(slice1.getLimitIndices().begin(),
+                                         slice1.getLimitIndices().end());
+    SmallVector<int64_t> newSliceStrides(slice1.getStrides().begin(),
+                                          slice1.getStrides().end());
+    
+    newSliceStarts[diffDim] = gapStart;
+    newSliceLimits[diffDim] = gapEnd;
+
+    auto middleSlice = stablehlo::SliceOp::create(
+        rewriter, dus.getLoc(), slice1.getOperand(), newSliceStarts,
+        newSliceLimits, newSliceStrides);
+
+    // Create extend operation using previously calculated padding
+    auto extendOp = enzymexla::ExtendOp::create(
+        rewriter, dus.getLoc(), middleSlice, lhsPad, rhsPad, diffDim);
+    
+    // Use indices from whichever DUS has the start slice
+    SmallVector<Value> newStartIndices;
+    if (slice1AtStart) {
+      newStartIndices.assign(dus.getStartIndices().begin(), dus.getStartIndices().end());
+    } else {
+      newStartIndices.assign(dus2.getStartIndices().begin(), dus2.getStartIndices().end());
+    }
+    
+    rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
+        dus, dus2.getOperand(), extendOp, newStartIndices);
+
+    return success();
+  }
+};
+
 struct DynamicUpdateToConcat final
     : CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp,
                               DynamicUpdateToConcat> {
@@ -26745,8 +27116,8 @@ struct EnzymeHLOOptPass
                    TransposeConvolution, EinsumTranspose, TransposeEinsum,
                    ConvertConvertFloat, ConvertConvertInt, ConcatToPad,
                    ConcatAppendingReshape, ReshapeIota, DUSDUS, DUSDUSConcat,
-                   DUSConcat, DUSPad, SliceDUSToConcat, ConcatConcatToDUS>(
-          context);
+                   DUSDUSToExtend, DUSConcat, DUSPad, SliceDUSToConcat,
+                   ConcatConcatToDUS>(context);
       patterns.add<LICM<stablehlo::DynamicUpdateSliceOp>>(false, context);
     }
 
