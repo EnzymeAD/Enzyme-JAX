@@ -1095,43 +1095,34 @@ def AffineStoreVar : EnzymeXLA_Op<"store_var", [Pure]> {
 def MPICommRankOp : EnzymeXLA_Op<"comm_rank", [Pure]> {
   let summary = "Get the current rank, equivalent to "
                 "`MPI_Comm_rank(comm, &rank)`";
-  let description = [{
-  }];
-
-  /* let arguments = (ins MPI_Comm : $comm); */
-  /* let arguments = (ins I64 : $comm); */
-  /* let arguments = (ins TensorOf<[I32]> : $comm); */
-    
+  /* let arguments = ( */
+  /*   xxx : $comm // TODO */ 
+  /* ); */
   let results = ( outs
     /* Optional<MPI_Retval> : $retval, */
     TensorOf<[I32]> : $rank
   );
-
-  /* let assemblyFormat = "`(` $comm `)` attr-dict `:` type(results)"; */
-  /* let assemblyFormat = [{ $comm attr-dict `:` functional-type($comm, results)}]; */
-
   let assemblyFormat = [{ attr-dict `:` type(results) }];
-
-  /* let hasCanonicalizer = 1; */
 }
 
 def MPICommSizeOp : EnzymeXLA_Op<"comm_size", [Pure]> {
-  let summary = "Equivalent to MPI_Comm_size(comm, &rank)";
+  let summary = "Equivalent to MPI_Comm_size(comm, &size)";
   let results = (outs TensorOf<[I32]> : $size);
   let assemblyFormat = [{ attr-dict `:` type(results) }];
 }
 
 def MPISendOp : EnzymeXLA_Op<"send", []> {
-  let summary = "Equivalent to `MPI_Send(buf, size, dtype, dest, tag, comm)`";
+  let summary = "Equivalent to "
+                "`MPI_Send(&buf, count, datatype, dest, tag, comm)`";
   let arguments = (
     ins AnyTensor : $buf,
     TensorOf<[I32]> : $count,
+    /* xxx : $dtype */ // TODO 
     TensorOf<[I32]> : $dest,
     TensorOf<[I32]> : $tag
-    /* MPI_Comm : $comm */ // TODO 
+    /* xxx : $comm */ // TODO 
   );
   let assemblyFormat = "`(` operands `)` attr-dict `:` type(operands)";
-
 }
 
 #endif // ENZYMEXLA_OPS
