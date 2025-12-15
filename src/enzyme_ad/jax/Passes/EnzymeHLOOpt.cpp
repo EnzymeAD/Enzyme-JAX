@@ -2341,6 +2341,164 @@ struct DUSDUSConcat final
   }
 };
 
+// Optimization: DUSDUSToExtend
+// Pattern:
+//   %slice1 = stablehlo.slice %source [start1_0:limit1_0, start1_1:limit1_1, ...]
+//   %dus1 = stablehlo.dynamic_update_slice %base, %slice1, %idx1_0, %idx1_1, ...
+//   %slice2 = stablehlo.slice %source [start2_0:limit2_0, start2_1:limit2_1, ...]
+//   %dus2 = stablehlo.dynamic_update_slice %dus1, %slice2, %idx2_0, %idx2_1, ...
+// Constraint: Both slices come from the same source tensor
+// Constraint: The slices differ only in one dimension and are at the beginning and end
+// Constraint: All other start indices for DUS operations match
+// Rewrite to:
+//   %extend = enzymexla.extend %source, lhs=..., rhs=..., dimension=...
+//   %new_dus = stablehlo.dynamic_update_slice %base, %extend, %idx1_0, %idx1_1, ...
+struct DUSDUSToExtend final
+    : CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp, DUSDUSToExtend> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DynamicUpdateSliceOp dus,
+                                    PatternRewriter &rewriter) const {
+    // Check if operand is another DUS
+    auto dus2 =
+        dus.getOperand().getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
+    if (!dus2)
+      return failure();
+
+    // Check if both updates come from slicing
+    auto slice1 = dus.getUpdate().getDefiningOp<stablehlo::SliceOp>();
+    auto slice2 = dus2.getUpdate().getDefiningOp<stablehlo::SliceOp>();
+    
+    if (!slice1 || !slice2)
+      return failure();
+
+    // Check if both slices come from the same source
+    if (slice1.getOperand() != slice2.getOperand())
+      return failure();
+
+    auto sourceType = dyn_cast<RankedTensorType>(slice1.getOperand().getType());
+    if (!sourceType)
+      return failure();
+
+    // Find the dimension where the slices differ
+    ssize_t diffDim = -1;
+    for (size_t i = 0; i < slice1.getStartIndices().size(); i++) {
+      if (slice1.getStartIndices()[i] != slice2.getStartIndices()[i] ||
+          slice1.getLimitIndices()[i] != slice2.getLimitIndices()[i]) {
+        if (diffDim != -1)
+          return failure(); // Slices differ in more than one dimension
+        diffDim = i;
+      }
+    }
+
+    if (diffDim == -1)
+      return failure(); // Slices are identical
+
+    // Check that both slices have the same shape except in diffDim
+    auto slice1Type = cast<RankedTensorType>(slice1.getType());
+    auto slice2Type = cast<RankedTensorType>(slice2.getType());
+    for (size_t i = 0; i < slice1Type.getRank(); i++) {
+      if (i == diffDim)
+        continue;
+      if (slice1Type.getShape()[i] != slice2Type.getShape()[i])
+        return failure();
+    }
+
+    // Find the dimension where the DUS operations differ in start indices
+    ssize_t dusDiffDim = -1;
+    for (size_t i = 0; i < dus.getStartIndices().size(); i++) {
+      if (dus.getStartIndices()[i] != dus2.getStartIndices()[i]) {
+        if (dusDiffDim != -1)
+          return failure(); // DUS operations differ in more than one dimension
+        dusDiffDim = i;
+      }
+    }
+
+    // If DUS operations have the same start indices, check if they differ in update size
+    if (dusDiffDim == -1) {
+      for (size_t i = 0; i < dus.getStartIndices().size(); i++) {
+        if (slice1Type.getShape()[i] != slice2Type.getShape()[i]) {
+          if (dusDiffDim != -1)
+            return failure();
+          dusDiffDim = i;
+        }
+      }
+    }
+
+    if (dusDiffDim == -1)
+      return failure();
+
+    // Check that the DUS difference dimension matches the slice difference dimension
+    if (dusDiffDim != diffDim)
+      return failure();
+
+    // Get the slice start and limit indices for the differing dimension
+    int64_t slice1Start = slice1.getStartIndices()[diffDim];
+    int64_t slice1Limit = slice1.getLimitIndices()[diffDim];
+    int64_t slice2Start = slice2.getStartIndices()[diffDim];
+    int64_t slice2Limit = slice2.getLimitIndices()[diffDim];
+
+    // Check if slices are at the beginning and end of the source dimension
+    int64_t sourceDimSize = sourceType.getShape()[diffDim];
+    
+    // Determine which slice is at the start and which is at the end
+    bool slice1AtStart = (slice1Start == 0);
+    bool slice2AtStart = (slice2Start == 0);
+    bool slice1AtEnd = (slice1Limit == sourceDimSize);
+    bool slice2AtEnd = (slice2Limit == sourceDimSize);
+
+    // We need one slice at the start and one at the end
+    if (!((slice1AtStart && slice2AtEnd) || (slice2AtStart && slice1AtEnd)))
+      return failure();
+
+    // Calculate the gap in the middle (what needs to be extended/padded)
+    int64_t gapStart, gapEnd;
+    if (slice1AtStart && slice2AtEnd) {
+      gapStart = slice1Limit;
+      gapEnd = slice2Start;
+    } else {
+      gapStart = slice2Limit;
+      gapEnd = slice1Start;
+    }
+
+    if (gapStart >= gapEnd)
+      return failure(); // No gap or slices overlap
+
+    int64_t gapSize = gapEnd - gapStart;
+
+    // Create a slice of the middle part (the gap)
+    SmallVector<int64_t> newSliceStarts(slice1.getStartIndices().begin(),
+                                         slice1.getStartIndices().end());
+    SmallVector<int64_t> newSliceLimits(slice1.getLimitIndices().begin(),
+                                         slice1.getLimitIndices().end());
+    SmallVector<int64_t> newSliceStrides(slice1.getStrides().begin(),
+                                          slice1.getStrides().end());
+    
+    newSliceStarts[diffDim] = gapStart;
+    newSliceLimits[diffDim] = gapEnd;
+
+    auto middleSlice = stablehlo::SliceOp::create(
+        rewriter, dus.getLoc(), slice1.getOperand(), newSliceStarts,
+        newSliceLimits, newSliceStrides);
+
+    // Create extend operation
+    // lhsPad is the size of the slice at the beginning
+    // rhsPad is the size of the slice at the end
+    int64_t lhsPad = slice1AtStart ? (slice1Limit - slice1Start) : (slice2Limit - slice2Start);
+    int64_t rhsPad = slice1AtEnd ? (slice1Limit - slice1Start) : (slice2Limit - slice2Start);
+
+    auto extendOp = enzymexla::ExtendOp::create(
+        rewriter, dus.getLoc(), middleSlice, lhsPad, rhsPad, diffDim);
+
+    // Replace the second DUS with a single DUS using the extended value
+    // Use the start indices from the earlier DUS (dus2 in the chain)
+    rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
+        dus, dus2.getOperand(), extendOp, dus2.getStartIndices());
+
+    return success();
+  }
+};
+
 struct DynamicUpdateToConcat final
     : CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp,
                               DynamicUpdateToConcat> {
@@ -26406,8 +26564,8 @@ struct EnzymeHLOOptPass
                    TransposeConvolution, EinsumTranspose, TransposeEinsum,
                    ConvertConvertFloat, ConvertConvertInt, ConcatToPad,
                    ConcatAppendingReshape, ReshapeIota, DUSDUS, DUSDUSConcat,
-                   DUSConcat, DUSPad, SliceDUSToConcat, ConcatConcatToDUS>(
-          context);
+                   DUSDUSToExtend, DUSConcat, DUSPad, SliceDUSToConcat,
+                   ConcatConcatToDUS>(context);
       patterns.add<LICM<stablehlo::DynamicUpdateSliceOp>>(false, context);
     }
 
