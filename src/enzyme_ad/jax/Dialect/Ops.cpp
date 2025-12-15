@@ -2415,3 +2415,24 @@ void SubIndexOp::getCanonicalizationPatterns(RewritePatternSet &results,
       context);
   // Disabled: SubToSubView
 }
+
+OpFoldResult RotateOp::fold(FoldAdaptor adaptor) {
+  if (getAmount() == 0) {
+    return getOperand();
+  }
+  return nullptr;
+}
+
+OpFoldResult WrapOp::fold(FoldAdaptor adaptor) {
+  if (getLhs() == 0 && getRhs() == 0) {
+    return getOperand();
+  }
+  return nullptr;
+}
+
+OpFoldResult ExtendOp::fold(FoldAdaptor adaptor) {
+  if (getLhs() == 0 && getRhs() == 0) {
+    return getOperand();
+  }
+  return nullptr;
+}

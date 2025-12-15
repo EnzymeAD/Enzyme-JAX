@@ -2249,7 +2249,17 @@ struct DUSDUSConcat final
       return failure();
 
     ssize_t diffidx = -1;
+    bool allStatic = true;
+    SmallVector<int64_t> starts;
     for (size_t i = 0; i < dus.getStartIndices().size(); i++) {
+      DenseIntElementsAttr startattr;
+      if (!matchPattern(dus.getStartIndices()[i], m_Constant(&startattr))) {
+        allStatic = false;
+      } else {
+        int64_t ival = (*startattr.begin()).getSExtValue();
+        starts.push_back(ival);
+      }
+
       if (dus.getStartIndices()[i] == dus2.getStartIndices()[i])
         continue;
       if (diffidx != -1) {
@@ -2293,7 +2303,14 @@ struct DUSDUSConcat final
       idxs[en.index()] = ival;
     }
 
+    // We have dus(dus2(operand, update2, start=idxs[1]), update1,
+    // start=idxs[0])
+    //
+    // only one index differs, which may differ in start, size, or both
+    //
     if (idxs[1] == idxs[0] + tys[0].getShape()[diffidx]) {
+      // Case 1:     [idxs[0]   ... update1 ...  idxs[0] + tys[0].size][idxs[1]
+      // .... update2 ...   ]
       Value operands[2] = {dus.getUpdate(), dus2.getUpdate()};
       auto concat = stablehlo::ConcatenateOp::create(rewriter, dus.getLoc(),
                                                      operands, diffidx);
@@ -2301,6 +2318,8 @@ struct DUSDUSConcat final
           dus, dus2.getOperand(), concat, dus.getStartIndices());
       return success();
     } else if (idxs[0] == idxs[1] + tys[1].getShape()[diffidx]) {
+      // Case 2:     [idxs[1]   ... update2 ...  idxs[1] + tys[1].size][idxs[0]
+      // .... update1 ...   ]
       Value operands[2] = {dus2.getUpdate(), dus.getUpdate()};
       auto concat = stablehlo::ConcatenateOp::create(rewriter, dus.getLoc(),
                                                      operands, diffidx);
@@ -2309,6 +2328,11 @@ struct DUSDUSConcat final
       return success();
     } else if (idxs[1] >= idxs[0] && idxs[1] + tys[1].getShape()[diffidx] <=
                                          idxs[0] + tys[0].getShape()[diffidx]) {
+
+      // Case 3:     [idxs[1]   ... update2 ...  idxs[1] + tys[1].size]
+      //          [idxs[0]     .... update1 ...              idxs[0] +
+      //          tys[0].size  ]
+
       // the previous update (in dus1) was completely overwritten [e.g. dus0
       // starts before and end later]
       rewriter.modifyOpInPlace(
@@ -2317,6 +2341,10 @@ struct DUSDUSConcat final
     } else if (idxs[0] >= idxs[1] && idxs[0] + tys[0].getShape()[diffidx] <=
                                          idxs[1] + tys[1].getShape()[diffidx]) {
       // the new update is entirely within the space of the old update
+
+      // Case 4:
+      //         [idxs[1]      ... update2 ...         idxs[1] + tys[1].size]
+      //              [idxs[0] ... update1 ...    idxs[0] + tys[0].size  ]
 
       auto itype = dus.getStartIndices()[diffidx].getType();
       auto c0 =
@@ -2336,7 +2364,59 @@ struct DUSDUSConcat final
       rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
           dus, dus2.getOperand(), within_dus, dus2.getStartIndices());
       return success();
+    } else if (idxs[0] >= idxs[1] &&
+               idxs[0] < idxs[1] + tys[1].getShape()[diffidx] &&
+               idxs[0] + tys[0].getShape()[diffidx] >
+                   idxs[1] + tys[1].getShape()[diffidx] &&
+               allStatic) {
+      // the new update overlaps, following the old update
+
+      // Case 5:
+      //         [idxs[1]      ... update2 ...    idxs[1] + tys[1].size]
+      //              [idxs[0] ... update1 ...         idxs[0] + tys[0].size  ]
+
+      SmallVector<int64_t> limits =
+          llvm::to_vector(dus2.getUpdate().getType().getShape());
+      limits[diffidx] = idxs[0] - idxs[1];
+      SmallVector<int64_t> zeros(starts.size(), 0);
+      SmallVector<int64_t> ones(starts.size(), 1);
+      auto begin = stablehlo::SliceOp::create(
+          rewriter, dus.getLoc(), dus2.getUpdate(), zeros, limits, ones);
+      Value operands[2] = {begin, dus.getUpdate()};
+      auto concat = stablehlo::ConcatenateOp::create(rewriter, dus.getLoc(),
+                                                     operands, diffidx);
+
+      rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
+          dus, dus2.getOperand(), concat, dus2.getStartIndices());
+      return success();
+    } else if (idxs[0] < idxs[1] &&
+               idxs[1] < idxs[0] + tys[0].getShape()[diffidx] &&
+               idxs[0] + tys[0].getShape()[diffidx] <
+                   idxs[1] + tys[1].getShape()[diffidx] &&
+               allStatic) {
+      // the new update overlaps, following the old update
+
+      // Case 5:
+      //             [idxs[1]      ... update2 ...    idxs[1] + tys[1].size]
+      //     [idxs[0] ... update1 ...         idxs[0] + tys[0].size  ]
+
+      SmallVector<int64_t> limits =
+          llvm::to_vector(dus2.getUpdate().getType().getShape());
+      limits[diffidx] = idxs[1] + tys[1].getShape()[diffidx] -
+                        (idxs[0] + tys[0].getShape()[diffidx]);
+      SmallVector<int64_t> zeros(starts.size(), 0);
+      SmallVector<int64_t> ones(starts.size(), 1);
+      auto end = stablehlo::SliceOp::create(
+          rewriter, dus.getLoc(), dus2.getUpdate(), zeros, limits, ones);
+      Value operands[2] = {dus.getUpdate(), end};
+      auto concat = stablehlo::ConcatenateOp::create(rewriter, dus.getLoc(),
+                                                     operands, diffidx);
+
+      rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
+          dus, dus2.getOperand(), concat, dus.getStartIndices());
+      return success();
     }
+
     return failure();
   }
 };
