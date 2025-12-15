@@ -53,6 +53,7 @@
 #include "llvm/ADT/SmallSet.h"
 
 #include "llvm/ADT/MapVector.h"
+#include <cstddef>
 #include <iterator>
 #include <numeric>
 #define DEBUG_TYPE "enzymehloopt"
@@ -2249,7 +2250,17 @@ struct DUSDUSConcat final
       return failure();
 
     ssize_t diffidx = -1;
+    bool allStatic = true;
+    SmallVector<int64_t> starts;
     for (size_t i = 0; i < dus.getStartIndices().size(); i++) {
+      DenseIntElementsAttr startattr;
+      if (!matchPattern(dus.getStartIndices()[i], m_Constant(&startattr))) {
+        allStatic = false;
+      } else {
+        int64_t ival = (*startattr.begin()).getSExtValue();
+        starts.push_back(ival);
+      }
+
       if (dus.getStartIndices()[i] == dus2.getStartIndices()[i])
         continue;
       if (diffidx != -1) {
@@ -2293,7 +2304,14 @@ struct DUSDUSConcat final
       idxs[en.index()] = ival;
     }
 
+    // We have dus(dus2(operand, update2, start=idxs[1]), update1,
+    // start=idxs[0])
+    //
+    // only one index differs, which may differ in start, size, or both
+    //
     if (idxs[1] == idxs[0] + tys[0].getShape()[diffidx]) {
+      // Case 1:     [idxs[0]   ... update1 ...  idxs[0] + tys[0].size][idxs[1]
+      // .... update2 ...   ]
       Value operands[2] = {dus.getUpdate(), dus2.getUpdate()};
       auto concat = stablehlo::ConcatenateOp::create(rewriter, dus.getLoc(),
                                                      operands, diffidx);
@@ -2301,6 +2319,8 @@ struct DUSDUSConcat final
           dus, dus2.getOperand(), concat, dus.getStartIndices());
       return success();
     } else if (idxs[0] == idxs[1] + tys[1].getShape()[diffidx]) {
+      // Case 2:     [idxs[1]   ... update2 ...  idxs[1] + tys[1].size][idxs[0]
+      // .... update1 ...   ]
       Value operands[2] = {dus2.getUpdate(), dus.getUpdate()};
       auto concat = stablehlo::ConcatenateOp::create(rewriter, dus.getLoc(),
                                                      operands, diffidx);
@@ -2309,6 +2329,11 @@ struct DUSDUSConcat final
       return success();
     } else if (idxs[1] >= idxs[0] && idxs[1] + tys[1].getShape()[diffidx] <=
                                          idxs[0] + tys[0].getShape()[diffidx]) {
+
+      // Case 3:     [idxs[1]   ... update2 ...  idxs[1] + tys[1].size]
+      //          [idxs[0]     .... update1 ...              idxs[0] +
+      //          tys[0].size  ]
+
       // the previous update (in dus1) was completely overwritten [e.g. dus0
       // starts before and end later]
       rewriter.modifyOpInPlace(
@@ -2317,6 +2342,10 @@ struct DUSDUSConcat final
     } else if (idxs[0] >= idxs[1] && idxs[0] + tys[0].getShape()[diffidx] <=
                                          idxs[1] + tys[1].getShape()[diffidx]) {
       // the new update is entirely within the space of the old update
+
+      // Case 4:
+      //         [idxs[1]      ... update2 ...         idxs[1] + tys[1].size]
+      //              [idxs[0] ... update1 ...    idxs[0] + tys[0].size  ]
 
       auto itype = dus.getStartIndices()[diffidx].getType();
       auto c0 =
@@ -2336,7 +2365,59 @@ struct DUSDUSConcat final
       rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
           dus, dus2.getOperand(), within_dus, dus2.getStartIndices());
       return success();
+    } else if (idxs[0] >= idxs[1] &&
+               idxs[0] < idxs[1] + tys[1].getShape()[diffidx] &&
+               idxs[0] + tys[0].getShape()[diffidx] >
+                   idxs[1] + tys[1].getShape()[diffidx] &&
+               allStatic) {
+      // the new update overlaps, following the old update
+
+      // Case 5:
+      //         [idxs[1]      ... update2 ...    idxs[1] + tys[1].size]
+      //              [idxs[0] ... update1 ...         idxs[0] + tys[0].size  ]
+
+      SmallVector<int64_t> limits =
+          llvm::to_vector(dus2.getUpdate().getType().getShape());
+      limits[diffidx] = idxs[0] - idxs[1];
+      SmallVector<int64_t> zeros(starts.size(), 0);
+      SmallVector<int64_t> ones(starts.size(), 1);
+      auto begin = stablehlo::SliceOp::create(
+          rewriter, dus.getLoc(), dus2.getUpdate(), zeros, limits, ones);
+      Value operands[2] = {begin, dus.getUpdate()};
+      auto concat = stablehlo::ConcatenateOp::create(rewriter, dus.getLoc(),
+                                                     operands, diffidx);
+
+      rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
+          dus, dus2.getOperand(), concat, dus2.getStartIndices());
+      return success();
+    } else if (idxs[0] < idxs[1] &&
+               idxs[1] < idxs[0] + tys[0].getShape()[diffidx] &&
+               idxs[0] + tys[0].getShape()[diffidx] <
+                   idxs[1] + tys[1].getShape()[diffidx] &&
+               allStatic) {
+      // the new update overlaps, following the old update
+
+      // Case 5:
+      //             [idxs[1]      ... update2 ...    idxs[1] + tys[1].size]
+      //     [idxs[0] ... update1 ...         idxs[0] + tys[0].size  ]
+
+      SmallVector<int64_t> limits =
+          llvm::to_vector(dus2.getUpdate().getType().getShape());
+      limits[diffidx] = idxs[1] + tys[1].getShape()[diffidx] -
+                        (idxs[0] + tys[0].getShape()[diffidx]);
+      SmallVector<int64_t> zeros(starts.size(), 0);
+      SmallVector<int64_t> ones(starts.size(), 1);
+      auto end = stablehlo::SliceOp::create(
+          rewriter, dus.getLoc(), dus2.getUpdate(), zeros, limits, ones);
+      Value operands[2] = {dus.getUpdate(), end};
+      auto concat = stablehlo::ConcatenateOp::create(rewriter, dus.getLoc(),
+                                                     operands, diffidx);
+
+      rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
+          dus, dus2.getOperand(), concat, dus.getStartIndices());
+      return success();
     }
+
     return failure();
   }
 };
@@ -19847,6 +19928,15 @@ bool canFuseIntoSingleSlice(int dimension, ArrayRef<Value> vals) {
   return true;
 }
 
+bool canFuseIntoSingleSlice(stablehlo::ConcatenateOp concatOp) {
+  return canFuseIntoSingleSlice(concatOp.getDimension(),
+                                llvm::to_vector(concatOp.getOperands()));
+}
+
+bool canFuseIntoSingleSlice(enzymexla::ExtendOp op) {
+  return op.getLhs() == 0 && op.getRhs() == 0;
+}
+
 bool isAxisFusible(int dimension, ArrayRef<Value> vals) {
   assert(vals.size());
 
@@ -20357,56 +20447,202 @@ struct ConcatConcatAxisSwap final
 
   LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp outer,
                                     PatternRewriter &rewriter) const {
-    if (outer.getOperands().size() < 2)
+    if (outer.getOperands().size() < 2) {
       return failure();
+    }
 
-    SmallVector<stablehlo::ConcatenateOp> inners;
+    SmallVector<Operation *> inners;
+    int64_t innerConcatDim = -1, nInnerOperands = -1;
+    SmallVector<int64_t> innerConcatDimSizes;
 
     // Get a full square of concat of compatible dimensions for axis swap
     for (auto v : outer.getOperands()) {
-      auto concatOp = v.getDefiningOp<stablehlo::ConcatenateOp>();
-      if (!concatOp)
+      auto defOp = v.getDefiningOp();
+      if (!defOp) {
         return failure();
-      if (concatOp.getDimension() == outer.getDimension())
-        return failure();
-      if (concatOp.getOperands().size() < 2)
-        return failure();
-      if (inners.size()) {
-        if (inners[0].getOperands().size() != concatOp.getOperands().size()) {
-          return failure();
-        }
-        if (inners[0].getDimension() != concatOp.getDimension()) {
-          return failure();
-        }
-        for (int i = 0; i < inners[0].getOperands().size(); i++) {
-          if (cast<RankedTensorType>(concatOp.getOperands()[i].getType())
-                  .getShape()[concatOp.getDimension()] !=
-              cast<RankedTensorType>(inners[0].getOperands()[i].getType())
-                  .getShape()[concatOp.getDimension()])
-            return failure();
-        }
       }
-      inners.push_back(concatOp);
+
+      Operation *innerOp;
+      bool supported =
+          TypeSwitch<Operation *, bool>(defOp)
+              .Case<stablehlo::ConcatenateOp>([&](auto op) {
+                auto concatDim = op.getDimension();
+                if (outer.getDimension() == concatDim ||
+                    op.getOperands().size() < 2) {
+                  return false;
+                }
+                if (!inners.empty()) {
+                  if (nInnerOperands != op->getNumOperands() ||
+                      innerConcatDim != concatDim) {
+                    return false;
+                  }
+                  for (size_t i = 0; i < nInnerOperands; i++) {
+                    if (cast<RankedTensorType>(op->getOperand(i).getType())
+                            .getDimSize(concatDim) != innerConcatDimSizes[i]) {
+                      return false;
+                    }
+                  }
+                } else {
+                  innerConcatDim = concatDim;
+                  nInnerOperands = op->getNumOperands();
+                  for (size_t i = 0; i < nInnerOperands; i++) {
+                    innerConcatDimSizes.push_back(
+                        cast<RankedTensorType>(op->getOperand(i).getType())
+                            .getDimSize(concatDim));
+                  }
+                }
+                innerOp = op;
+                return true;
+              })
+              .Case<enzymexla::ExtendOp>([&](auto op) {
+                auto concatDim = op.getDimension();
+                if (outer.getDimension() == concatDim ||
+                    (op.getLhs() == 0 && op.getRhs() == 0)) {
+                  return false;
+                }
+                auto noperands = 1 + (op.getLhs() != 0) + (op.getRhs() != 0);
+                if (!inners.empty()) {
+                  if (nInnerOperands != noperands ||
+                      innerConcatDim != concatDim) {
+                    return false;
+                  }
+                  size_t idx = 0;
+                  if (op.getLhs() != 0) {
+                    if (op.getLhs() != innerConcatDimSizes[idx]) {
+                      return false;
+                    }
+                    idx++;
+                  }
+                  if (cast<RankedTensorType>(op.getOperand().getType())
+                          .getDimSize(concatDim) != innerConcatDimSizes[idx]) {
+                    return false;
+                  }
+                  idx++;
+                  if (op.getRhs() != 0) {
+                    if (op.getRhs() != innerConcatDimSizes[idx]) {
+                      return false;
+                    }
+                  }
+                } else {
+                  innerConcatDim = concatDim;
+                  nInnerOperands = noperands;
+                  if (op.getLhs() != 0) {
+                    innerConcatDimSizes.push_back(op.getLhs());
+                  }
+                  innerConcatDimSizes.push_back(
+                      cast<RankedTensorType>(op.getOperand().getType())
+                          .getDimSize(concatDim));
+                  if (op.getRhs() != 0) {
+                    innerConcatDimSizes.push_back(op.getRhs());
+                  }
+                }
+                innerOp = op;
+                return true;
+              })
+              .Default([](auto op) { return false; });
+
+      if (!supported) {
+        return failure();
+      }
+
+      inners.push_back(innerOp);
     }
 
-    for (auto inner : inners) {
-      if (canFuseIntoSingleSlice(inner.getDimension(),
-                                 llvm::to_vector(inner.getOperands()))) {
-        return failure(); // high-priority
-      }
+    if (llvm::any_of(inners, ([=](auto op) {
+                       return TypeSwitch<Operation *, bool>(op)
+                           .Case<stablehlo::ConcatenateOp, enzymexla::ExtendOp>(
+                               [&](auto op) {
+                                 return canFuseIntoSingleSlice(op);
+                               })
+                           .Default([](auto op) { return false; });
+                     }))) {
+      return failure();
     }
 
     // high-priority for fusion that creates a larger contiguous slice
+    // We can only check this for ConcatenateOps directly. ExtendOps don't have
+    // their virtual operands materialized until lowering, so we compute virtual
+    // slice bounds for them.
     bool highPriorityFusion = false;
-    for (int i = 0; i < inners[0]->getNumOperands() && !highPriorityFusion;
-         i++) {
-      SmallVector<Value> newOperands;
-      for (int j = 0; j < outer->getNumOperands(); j++) {
-        newOperands.push_back(inners[j]->getOperand(i));
+    bool allConcats = llvm::all_of(inners, [](Operation *op) {
+      return isa<stablehlo::ConcatenateOp>(op);
+    });
+
+    if (allConcats) {
+      // All inners are ConcatenateOps, we can directly check operands
+      for (int i = 0; i < nInnerOperands && !highPriorityFusion; i++) {
+        SmallVector<Value> newOperands;
+        for (int j = 0; j < outer->getNumOperands(); j++) {
+          newOperands.push_back(inners[j]->getOperand(i));
+        }
+        if (canFuseIntoSingleSlice(outer.getDimension(), newOperands)) {
+          highPriorityFusion = true;
+          break;
+        }
       }
-      if (canFuseIntoSingleSlice(outer.getDimension(), newOperands)) {
-        highPriorityFusion = true;
-        break;
+    } else {
+      // Some inners are ExtendOps. For each virtual operand index, compute
+      // virtual slice bounds and check if consecutive ones can be merged.
+      // Virtual operand layout for ExtendOp: [lhs_pad, operand, rhs_pad]
+      // where lhs_pad and rhs_pad are zero-padding regions (no defining op).
+      for (int i = 0; i < nInnerOperands && !highPriorityFusion; i++) {
+        // For each pair of consecutive values in outer, check if the virtual
+        // operands at index i can be merged as slices along
+        // outer.getDimension()
+        bool canMergeAll = true;
+        for (int j = 1; j < outer->getNumOperands() && canMergeAll; j++) {
+          // Get the virtual operand info for inners[j-1] and inners[j] at index
+          // i
+          auto getSliceInfo =
+              [&](Operation *op, int idx) -> std::optional<stablehlo::SliceOp> {
+            if (auto concat = dyn_cast<stablehlo::ConcatenateOp>(op)) {
+              auto slice =
+                  concat.getOperands()[idx].getDefiningOp<stablehlo::SliceOp>();
+              if (!slice) {
+                return std::nullopt;
+              }
+              return slice;
+            } else if (auto extend = dyn_cast<enzymexla::ExtendOp>(op)) {
+              // ExtendOp virtual operands:
+              // idx 0 (if lhs != 0): padding region of size lhs
+              // idx (lhs != 0 ? 1 : 0): the actual operand
+              // idx (last, if rhs != 0): padding region of size rhs
+              // Padding regions have no source value so cannot be merged as
+              // slices.
+              int operandIdx = extend.getLhs() != 0 ? 1 : 0;
+              if (idx != operandIdx) {
+                // This is a padding region, not a real slice
+                return std::nullopt;
+              }
+              // The actual operand - get slice info from it if it's a slice
+              auto slice =
+                  extend.getOperand().getDefiningOp<stablehlo::SliceOp>();
+              if (!slice) {
+                return std::nullopt;
+              }
+              return slice;
+            }
+            return std::nullopt;
+          };
+
+          auto info0 = getSliceInfo(inners[j - 1], i);
+          auto info1 = getSliceInfo(inners[j], i);
+
+          if (!info0.has_value() || !info1.has_value()) {
+            canMergeAll = false;
+            continue;
+          }
+
+          if (!canMergeSlicesAlongAxis(outer.getDimension(), info0.value(),
+                                       info1.value())) {
+            canMergeAll = false;
+          }
+        }
+
+        if (canMergeAll) {
+          highPriorityFusion = true;
+          break;
+        }
       }
     }
 
@@ -20414,18 +20650,26 @@ struct ConcatConcatAxisSwap final
     // those fusions
     if (!highPriorityFusion) {
       for (auto inner : inners) {
-        if (isAxisFusible(inner.getDimension(),
-                          llvm::to_vector(inner.getOperands()))) {
+        auto innerConcat = dyn_cast<stablehlo::ConcatenateOp>(inner);
+        if (!innerConcat) {
+          return failure();
+        }
+        if (isAxisFusible(innerConcat.getDimension(),
+                          llvm::to_vector(innerConcat.getOperands()))) {
           return failure();
         }
       }
     }
 
     bool anyFusible = highPriorityFusion;
-    for (int i = 0; i < inners[0].getOperands().size() && !anyFusible; i++) {
+    for (int i = 0; i < nInnerOperands && !anyFusible; i++) {
       SmallVector<Value> newOperands;
       for (int j = 0; j < outer.getOperands().size(); j++) {
-        newOperands.push_back(inners[j].getOperands()[i]);
+        auto innerConcat = dyn_cast<stablehlo::ConcatenateOp>(inners[j]);
+        if (!innerConcat) {
+          return failure();
+        }
+        newOperands.push_back(innerConcat.getOperands()[i]);
       }
       if (isAxisFusible(outer.getDimension(), newOperands)) {
         anyFusible = true;
@@ -20433,21 +20677,30 @@ struct ConcatConcatAxisSwap final
       }
     }
 
-    if (!anyFusible)
+    if (!anyFusible) {
       return failure();
+    }
 
     SmallVector<Value> newOuters;
 
-    for (int i = 0; i < inners[0].getOperands().size(); i++) {
+    // lower all the extends (if any)
+    for (size_t i = 0; i < inners.size(); i++) {
+      auto extendOp = dyn_cast<enzymexla::ExtendOp>(inners[i]);
+      if (extendOp) {
+        inners[i] = lowerExtend(extendOp, rewriter, true);
+      }
+    }
+
+    for (int i = 0; i < nInnerOperands; i++) {
       SmallVector<Value> newOperands;
-      for (int j = 0; j < outer.getOperands().size(); j++) {
-        newOperands.push_back(inners[j].getOperands()[i]);
+      for (int j = 0; j < outer.getNumOperands(); j++) {
+        newOperands.push_back(inners[j]->getOperand(i));
       }
       newOuters.push_back(stablehlo::ConcatenateOp::create(
           rewriter, outer.getLoc(), newOperands, outer.getDimension()));
     }
-    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
-        outer, newOuters, inners[0].getDimension());
+    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(outer, newOuters,
+                                                          innerConcatDim);
     return success();
   }
 };
@@ -26275,6 +26528,92 @@ struct WhileDUSDSSimplify final
   }
 };
 
+struct ReshapeSliceReshape final
+    : public CheckedOpRewritePattern<stablehlo::ReshapeOp,
+                                     ReshapeSliceReshape> {
+  using CheckedOpRewritePattern<stablehlo::ReshapeOp,
+                                ReshapeSliceReshape>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp bottomReshapeOp,
+                                    PatternRewriter &rewriter) const {
+    auto sliceOp =
+        bottomReshapeOp.getOperand().getDefiningOp<stablehlo::SliceOp>();
+    if (!sliceOp || !llvm::hasSingleElement(sliceOp->getUsers())) {
+      return failure();
+    }
+
+    auto topReshapeOp =
+        sliceOp.getOperand().getDefiningOp<stablehlo::ReshapeOp>();
+    if (!topReshapeOp) {
+      return failure();
+    }
+
+    // compute which dims were inserted by the reshape op
+    auto topReshapeInTy =
+        cast<RankedTensorType>(topReshapeOp.getOperand().getType());
+    auto topReshapeOutTy = cast<RankedTensorType>(topReshapeOp.getType());
+    auto topInsertionDims =
+        findReshapeInsertionDims(topReshapeInTy, topReshapeOutTy);
+    if (topInsertionDims.empty()) {
+      return failure();
+    }
+
+    auto bottomReshapeInTy =
+        cast<RankedTensorType>(bottomReshapeOp.getOperand().getType());
+    auto bottomReshapeOutTy = cast<RankedTensorType>(bottomReshapeOp.getType());
+    auto bottomDeletionDims =
+        findReshapeInsertionDims(bottomReshapeOutTy, bottomReshapeInTy);
+    if (bottomDeletionDims.empty()) {
+      return failure();
+    }
+
+    llvm::SetVector<int64_t> intersection;
+    for (auto i : topInsertionDims) {
+      if (llvm::is_contained(bottomDeletionDims, i)) {
+        intersection.insert(i);
+      }
+    }
+
+    if (intersection.empty()) {
+      return failure();
+    }
+
+    SmallVector<int64_t> topReshapeShape, bottomReshapeShape, sliceStarts,
+        sliceLimits, sliceStrides;
+    for (size_t i = 0; i < topReshapeOutTy.getRank(); i++) {
+      if (llvm::is_contained(intersection, i)) {
+        continue;
+      }
+      topReshapeShape.push_back(topReshapeOutTy.getDimSize(i));
+      sliceStarts.push_back(sliceOp.getStartIndices()[i]);
+      sliceLimits.push_back(sliceOp.getLimitIndices()[i]);
+      sliceStrides.push_back(sliceOp.getStrides()[i]);
+    }
+
+    rewriter.setInsertionPointAfter(topReshapeOp);
+    auto newTopReshape =
+        stablehlo::ReshapeOpCreate(rewriter, bottomReshapeOp.getLoc(),
+                                   topReshapeOp.getOperand(), topReshapeShape);
+
+    // Create the new slice op on the new top reshape
+    rewriter.setInsertionPointAfter(sliceOp);
+    auto newSlice =
+        stablehlo::SliceOp::create(rewriter, sliceOp.getLoc(), newTopReshape,
+                                   rewriter.getDenseI64ArrayAttr(sliceStarts),
+                                   rewriter.getDenseI64ArrayAttr(sliceLimits),
+                                   rewriter.getDenseI64ArrayAttr(sliceStrides));
+
+    // Create the new bottom reshape and replace users
+    rewriter.setInsertionPointAfter(bottomReshapeOp);
+    auto newBottomReshape =
+        stablehlo::ReshapeOpCreate(rewriter, bottomReshapeOp.getLoc(), newSlice,
+                                   bottomReshapeOutTy.getShape());
+
+    rewriter.replaceAllUsesWith(bottomReshapeOp.getResult(), newBottomReshape);
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -26628,9 +26967,10 @@ struct EnzymeHLOOptPass
 
     patterns.add<
         ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
-        SliceOfUpdateWithoutCorners, SliceElementwise, SliceReshapeElementwise,
-        SlicePad, SliceReshapePad, DotReshapeDot, ChloInfConstProp,
-        GammaConstProp, ConcatFuse, ConcatToBroadcast, PadPad, PadReshapePad,
+        SliceOfUpdateWithoutCorners, 
+        SliceElementwise, SliceReshapeElementwise, SlicePad, SliceReshapePad,
+        ReshapeSliceReshape, DotReshapeDot, ChloInfConstProp, GammaConstProp,
+        ConcatFuse, ConcatToBroadcast, PadPad, PadReshapePad,
         ConcatPushBinop<stablehlo::AddOp>, ConcatPushBinop<stablehlo::MulOp>,
         ScatterToDynamicUpdateSlice, ReduceConcat, ConcatSlice, ConcatMultiPad,
         ConcatWrap, WidenWrap, WidenExtend, ConcatConcatAxisSwap, SliceConcat,

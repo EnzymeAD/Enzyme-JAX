@@ -349,6 +349,7 @@ def RotateOp : EnzymeXLA_Op<"rotate", [Pure, SameOperandsAndResultType]> {
     SI32Attr:$amount,
     SI32Attr:$dimension
   );
+  let hasFolder = 1;
   let results = (outs HLO_Tensor:$result);
 }
 
@@ -365,6 +366,7 @@ def WrapOp: EnzymeXLA_Op<
     I64Attr:$dimension
   );
 
+  let hasFolder = 1;
   let results = (outs HLO_Tensor:$result);
 }
 
@@ -381,6 +383,7 @@ def ExtendOp: EnzymeXLA_Op<
     I64Attr:$dimension
   );
 
+  let hasFolder = 1;
   let results = (outs HLO_Tensor:$result);
 }
 
