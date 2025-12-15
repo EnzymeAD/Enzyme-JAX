@@ -1426,6 +1426,12 @@ def DUSDUSConcatPatterns : EnzymeHLOPatternOp<
   let patterns = ["DUSDUSConcat"];
 }
 
+def DUSDUSToExtendPatterns : EnzymeHLOPatternOp<
+  "dus_dus_to_extend"
+> {
+  let patterns = ["DUSDUSToExtend"];
+}
+
 def TransposeDUSPatterns : EnzymeHLOPatternOp<
   "transpose_dus"
 > {

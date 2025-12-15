@@ -228,6 +228,7 @@ def optimization_passes(
         "reshape_transpose_to_broadcast",
         "dus_dus",
         "dus_dus_concat",
+        "dus_dus_to_extend",
         "abs_positive_simplify",
         "transpose_elementwise_transpose",
         "select_comp_iota_const_simplify<1>",

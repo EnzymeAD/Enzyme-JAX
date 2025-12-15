@@ -2492,10 +2492,8 @@ struct DUSDUSToExtend final
 
     // Replace the outer DUS with a single DUS using the extended value
     // Use the start indices from the DUS that had the slice from the start
-    Value startIndices = slice1AtStart ? dus.getStartIndices()[0] : dus2.getStartIndices()[0];
     SmallVector<Value> newStartIndices;
     
-    // We need to adjust the start index in the differing dimension
     // The extended tensor should be placed at the position of the start slice
     if (slice1AtStart) {
       // dus has the start slice, use its indices
