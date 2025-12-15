@@ -69,8 +69,33 @@ bool anyOpsAreDataDependent(ArrayRef<Operation *> ops) {
     if (done.contains(cur))
       continue;
     done.insert(cur);
-    // TODO consider with regions
-    if (cur->getNumRegions() != 0) {
+    // Only consider operations whose values are isolated form above
+    if (cur->getNumRegions() != 0 &&
+        !cur->hasTrait<mlir::OpTrait::IsIsolatedFromAbove>()) {
+      SmallVector<Region *> rtodo;
+      for (auto &reg : cur->getRegions()) {
+        rtodo.push_back(&reg);
+      }
+      bool legal = true;
+      while (!rtodo.empty()) {
+        auto reg = rtodo.pop_back_val();
+        for (auto &b : *reg) {
+          for (auto &o : b) {
+            for (auto v : o.getOperands()) {
+              if (!cur->isAncestor(v.getParentBlock()->getParentOp())) {
+                legal = false;
+                goto endCheck;
+              }
+            }
+            for (auto &reg : o.getRegions()) {
+              rtodo.push_back(&reg);
+            }
+          }
+        }
+      }
+    endCheck:;
+      if (!legal)
+        return true;
       return true;
     }
     for (auto v : cur->getOperands()) {
