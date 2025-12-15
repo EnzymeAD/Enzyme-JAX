@@ -53,8 +53,8 @@ jobs:
           - 'main'
           # - '0123456789abcdef0123456789abcdef01234567'
         reactant_commit:
-          - 'main'
-          # - 'ap/pass_generalization'
+          # - 'main'
+          - 'ap/test_barch_gb25'
 
     steps:
       - name: Check GPUs
