@@ -2576,3 +2576,8 @@ def ApplyWhileDUSDSSimplifyPatterns : EnzymeHLOPatternOp<
     "while_dus_ds_simplify"> {
   let patterns = ["WhileDUSDSSimplify"];
 }
+
+def ApplyReshapeSliceReshapePatterns : EnzymeHLOPatternOp<
+    "reshape_slice_reshape"> {
+  let patterns = ["ReshapeSliceReshape"];
+}
