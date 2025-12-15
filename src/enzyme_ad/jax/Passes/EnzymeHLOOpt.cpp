@@ -2460,8 +2460,6 @@ struct DUSDUSToExtend final
     if (gapStart >= gapEnd)
       return failure(); // No gap or slices overlap
 
-    int64_t gapSize = gapEnd - gapStart;
-
     // Create a slice of the middle part (the gap)
     SmallVector<int64_t> newSliceStarts(slice1.getStartIndices().begin(),
                                          slice1.getStartIndices().end());
