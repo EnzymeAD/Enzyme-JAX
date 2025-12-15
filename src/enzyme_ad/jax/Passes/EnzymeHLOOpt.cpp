@@ -2344,9 +2344,9 @@ struct DUSDUSConcat final
 // Optimization: DUSDUSToExtend
 // Pattern:
 //   %slice_start = stablehlo.slice %source [0:4, 0:1, 0:3056]    // First element in dim 1
-//   %dus1 = stablehlo.dynamic_update_slice %base, %slice_start, %idx0, %idx1, %idx2
+//   %inner_dus = stablehlo.dynamic_update_slice %base, %slice_start, %idx0, %idx1, %idx2
 //   %slice_end = stablehlo.slice %source [0:4, 1519:1520, 0:3056]  // Last element in dim 1
-//   %dus2 = stablehlo.dynamic_update_slice %dus1, %slice_end, %idx0, %idx1+offset, %idx2
+//   %outer_dus = stablehlo.dynamic_update_slice %inner_dus, %slice_end, %idx0, %idx1+offset, %idx2
 // Constraint: Both slices come from the same source tensor
 // Constraint: The slices differ only in one dimension and are at the beginning and end
 // Constraint: DUS operations differ only in the same dimension
@@ -2354,6 +2354,7 @@ struct DUSDUSConcat final
 //   %middle = stablehlo.slice %source [0:4, 1:1519, 0:3056]  // The gap in the middle
 //   %extend = enzymexla.extend %middle, lhs=1, rhs=1, dimension=1
 //   %new_dus = stablehlo.dynamic_update_slice %base, %extend, %idx0, %idx1, %idx2
+// Note: In the implementation, `dus` refers to outer_dus and `dus2` refers to inner_dus
 struct DUSDUSToExtend final
     : CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp, DUSDUSToExtend> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
