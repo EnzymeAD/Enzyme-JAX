@@ -2602,6 +2602,12 @@ struct DUSDUSToExtend final
       dus2Starts.push_back((*attr.begin()).getSExtValue());
     }
 
+    // Calculate padding sizes
+    int64_t lhsPad = slice1AtStart ? (slice1Limit - slice1Start) 
+                                    : (slice2Limit - slice2Start);
+    int64_t rhsPad = slice1AtEnd ? (slice1Limit - slice1Start) 
+                                  : (slice2Limit - slice2Start);
+
     // Check if the operand of dus2 already contains the middle region
     // This would be the case if a previous DUS/extend placed it there
     SmallVector<int64_t> middleRegionStart, middleRegionLimit;
@@ -2641,12 +2647,7 @@ struct DUSDUSToExtend final
           rewriter, dus.getLoc(), slice1.getOperand(), sourceSliceStart,
           sourceSliceLimit, SmallVector<int64_t>(sourceSliceStart.size(), 1));
 
-      // Create extend operation
-      int64_t lhsPad = slice1AtStart ? (slice1Limit - slice1Start) 
-                                      : (slice2Limit - slice2Start);
-      int64_t rhsPad = slice1AtEnd ? (slice1Limit - slice1Start) 
-                                    : (slice2Limit - slice2Start);
-
+      // Create extend operation using previously calculated padding
       auto extendOp = enzymexla::ExtendOp::create(
           rewriter, dus.getLoc(), middleSliceFromSource, lhsPad, rhsPad, diffDim);
 
@@ -2680,28 +2681,17 @@ struct DUSDUSToExtend final
         rewriter, dus.getLoc(), slice1.getOperand(), newSliceStarts,
         newSliceLimits, newSliceStrides);
 
-    // Create extend operation
-    // lhsPad is the size of the slice at the beginning of the source dimension
-    // rhsPad is the size of the slice at the end of the source dimension
-    int64_t lhsPad, rhsPad;
-    SmallVector<Value> newStartIndices;
-    
-    if (slice1AtStart) {
-      // slice1 (from dus) is at the start, slice2 (from dus2) is at the end
-      lhsPad = slice1Limit - slice1Start;
-      rhsPad = slice2Limit - slice2Start;
-      // Use indices from dus since it has the start slice
-      newStartIndices.assign(dus.getStartIndices().begin(), dus.getStartIndices().end());
-    } else {
-      // slice2 (from dus2) is at the start, slice1 (from dus) is at the end
-      lhsPad = slice2Limit - slice2Start;
-      rhsPad = slice1Limit - slice1Start;
-      // Use indices from dus2 since it has the start slice
-      newStartIndices.assign(dus2.getStartIndices().begin(), dus2.getStartIndices().end());
-    }
-
+    // Create extend operation using previously calculated padding
     auto extendOp = enzymexla::ExtendOp::create(
         rewriter, dus.getLoc(), middleSlice, lhsPad, rhsPad, diffDim);
+    
+    // Use indices from whichever DUS has the start slice
+    SmallVector<Value> newStartIndices;
+    if (slice1AtStart) {
+      newStartIndices.assign(dus.getStartIndices().begin(), dus.getStartIndices().end());
+    } else {
+      newStartIndices.assign(dus2.getStartIndices().begin(), dus2.getStartIndices().end());
+    }
     
     rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
         dus, dus2.getOperand(), extendOp, newStartIndices);
