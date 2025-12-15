@@ -1343,10 +1343,9 @@ struct WrapToPadCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
 //
 // Pattern: wrap(x, lhs=L, rhs=R) => rotate(extend(x, lhs=L, rhs=R), L)
 //
-// Note: Currently limited to symmetric wraps (lhs == rhs) and only applied
-// when no sharding is present, to be conservative. This pattern is intended
-// to work in conjunction with other communication optimization patterns for
-// extend and rotate operations.
+// Note: Only applied when no sharding is present, to be conservative.
+// This pattern is intended to work in conjunction with other communication
+// optimization patterns for extend and rotate operations.
 struct WrapToRotateOptimize : public OpRewritePattern<enzymexla::WrapOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -1363,10 +1362,6 @@ struct WrapToRotateOptimize : public OpRewritePattern<enzymexla::WrapOp> {
     auto wrapDimension = wrap.getDimension();
     auto lhs = wrap.getLhs();
     auto rhs = wrap.getRhs();
-
-    // Only optimize symmetric wraps for now (lhs == rhs)
-    if (lhs != rhs)
-      return failure();
 
     // Create an extend operation with the same lhs/rhs
     // Extend replicates boundary elements, creating a padded tensor
