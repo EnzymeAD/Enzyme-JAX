@@ -9,18 +9,15 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
-#include "src/enzyme_ad/jax/Passes/StructuredTensors.h"
 #include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
 #include "llvm/ADT/SetOperations.h"
 #include "llvm/ADT/SetVector.h"
-#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 
 #include <algorithm>
-#include <iterator>
 
 #define DEBUG_TYPE "auto-batching"
 
@@ -96,7 +93,6 @@ bool anyOpsAreDataDependent(ArrayRef<Operation *> ops) {
     endCheck:;
       if (!legal)
         return true;
-      return true;
     }
     for (auto v : cur->getOperands()) {
       if (auto op2 = v.getDefiningOp()) {
