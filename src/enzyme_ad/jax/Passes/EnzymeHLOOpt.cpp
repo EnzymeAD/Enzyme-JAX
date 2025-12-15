@@ -2607,9 +2607,11 @@ struct DUSDUSToExtend final
       dusInnerStarts.push_back((*attr.begin()).getSExtValue());
     }
 
-    // Calculate padding sizes
+    // Calculate padding sizes for the extend operation
+    // lhsPad is the size of whichever slice is at the beginning
     int64_t lhsPad = slice1AtStart ? (slice1Limit - slice1Start) 
                                     : (slice2Limit - slice2Start);
+    // rhsPad is the size of whichever slice is at the end
     int64_t rhsPad = slice1AtEnd ? (slice1Limit - slice1Start) 
                                   : (slice2Limit - slice2Start);
 
@@ -2619,8 +2621,10 @@ struct DUSDUSToExtend final
     for (size_t i = 0; i < slice1.getStartIndices().size(); i++) {
       if (i == diffDim) {
         // Calculate where the middle region should be in the base tensor
-        // If slice1 (from outer DUS) is at start, use outer DUS start + lhsPad
-        // If slice2 (from inner DUS) is at start, use inner DUS start + lhsPad
+        // The middle starts after the "start" slice. We need to find which DUS
+        // placed the start slice:
+        // - If slice1 (from outer DUS) is at start: middle begins at outer_start + lhsPad
+        // - If slice2 (from inner DUS) is at start: middle begins at inner_start + lhsPad
         int64_t baseStart = slice1AtStart ? dusOuterStarts[i] + lhsPad 
                                           : dusInnerStarts[i] + lhsPad;
         middleRegionStart.push_back(baseStart);
