@@ -20391,20 +20391,13 @@ struct ConcatConcatAxisSwap final
 
     SmallVector<Value> newOuters;
 
-    auto modOp = outer->getParentOfType<ModuleOp>();
-    llvm::errs() << "modOp: " << modOp << "\n";
-
     // lower all the extends (if any)
     for (size_t i = 0; i < inners.size(); i++) {
       auto extendOp = dyn_cast<enzymexla::ExtendOp>(inners[i]);
       if (extendOp) {
-        llvm::errs() << "lowering " << extendOp << "\n";
         inners[i] = lowerExtend(extendOp, rewriter, true);
-        llvm::errs() << "lowered op: " << *inners[i] << "\n";
       }
     }
-
-    llvm::errs() << "modOp post extend lowering: " << modOp << "\n";
 
     for (int i = 0; i < nInnerOperands; i++) {
       SmallVector<Value> newOperands;
@@ -20416,7 +20409,6 @@ struct ConcatConcatAxisSwap final
     }
     rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(outer, newOuters,
                                                           innerConcatDim);
-    llvm::errs() << "modOp final: " << modOp << "\n";
     return success();
   }
 };
