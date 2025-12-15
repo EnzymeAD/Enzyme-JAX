@@ -1338,14 +1338,18 @@ struct WrapToPadCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
 };
 
 // Communication optimization pattern to rewrite wrap operations in terms of
-// extend and rotate operations. This can enable better optimization of the
+// pad and rotate operations. This can enable better optimization of the
 // resulting operations in distributed/sharded contexts.
 //
-// Pattern: wrap(x, lhs=L, rhs=R) => rotate(extend(x, lhs=L, rhs=R), L)
+// Pattern: wrap(x, lhs=L, rhs=R) =>
+//   p0 = pad(x, lhs=L, rhs=R)
+//   p1 = rotate(p0, L)
+//   p2 = rotate(p0, -R)
+//   result = select based on iota to choose between p1 (left), p0 (middle), p2 (right)
 //
 // Note: Only applied when no sharding is present, to be conservative.
 // This pattern is intended to work in conjunction with other communication
-// optimization patterns for extend and rotate operations.
+// optimization patterns for pad and rotate operations.
 struct WrapToRotateOptimize : public OpRewritePattern<enzymexla::WrapOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -1362,21 +1366,76 @@ struct WrapToRotateOptimize : public OpRewritePattern<enzymexla::WrapOp> {
     auto wrapDimension = wrap.getDimension();
     auto lhs = wrap.getLhs();
     auto rhs = wrap.getRhs();
+    auto elemType = wrap.getType().getElementType();
+    auto ndims = wrap.getType().getRank();
+    auto wrapShape = wrap.getType().getShape();
+    auto operandShape = wrap.getOperand().getType().getShape();
 
-    // Create an extend operation with the same lhs/rhs
-    // Extend replicates boundary elements, creating a padded tensor
-    auto extendOp = enzymexla::ExtendOp::create(
-        rewriter, wrap.getLoc(), wrap.getOperand(), lhs, rhs, wrapDimension);
+    // Create a zero constant for padding
+    auto zero = stablehlo::ConstantOp::create(rewriter, wrap.getLoc(),
+                                              rewriter.getZeroAttr(elemType));
 
-    // Create a rotate operation to implement the wrapping behavior
-    // This transformation exposes the operation to communication-optimized
-    // implementations of extend and rotate
-    auto rotateOp = enzymexla::RotateOp::create(
-        rewriter, wrap.getLoc(), extendOp.getResult(),
+    // Create pad operation with zeros
+    SmallVector<int64_t> padLow(ndims, 0);
+    SmallVector<int64_t> padHigh(ndims, 0);
+    SmallVector<int64_t> padInner(ndims, 0);
+    padLow[wrapDimension] = lhs;
+    padHigh[wrapDimension] = rhs;
+
+    auto paddedOp = stablehlo::PadOp::create(rewriter, wrap.getLoc(),
+                                             wrap.getOperand(), zero, padLow,
+                                             padHigh, padInner);
+
+    // Create two rotate operations
+    auto rotate1Op = enzymexla::RotateOp::create(
+        rewriter, wrap.getLoc(), paddedOp.getResult(),
         static_cast<int32_t>(lhs), static_cast<int32_t>(wrapDimension));
 
-    // Replace the wrap with the rotate
-    rewriter.replaceOp(wrap, rotateOp);
+    auto rotate2Op = enzymexla::RotateOp::create(
+        rewriter, wrap.getLoc(), paddedOp.getResult(),
+        -static_cast<int32_t>(rhs), static_cast<int32_t>(wrapDimension));
+
+    // Create iota along the wrap dimension
+    auto iota = stablehlo::IotaOp::create(
+        rewriter, wrap.getLoc(),
+        RankedTensorType::get(wrapShape, rewriter.getI32Type()),
+        wrapDimension);
+
+    // Use select to choose between the three parts:
+    // - left part (iota < lhs): use rotate1 (rotated left by lhs)
+    // - middle part (lhs <= iota < lhs + operandShape[dim]): use paddedOp
+    // - right part (iota >= lhs + operandShape[dim]): use rotate2 (rotated right by rhs)
+
+    Value current = rotate2Op;
+
+    // Select middle part (padded original)
+    Value midThreshold = stablehlo::ConstantOp::create(
+        rewriter, wrap.getLoc(),
+        SplatElementsAttr::get(iota.getType(),
+                               rewriter.getI32IntegerAttr(lhs + operandShape[wrapDimension])));
+
+    auto midCond = stablehlo::CompareOp::create(
+        rewriter, wrap.getLoc(), iota, midThreshold,
+        stablehlo::ComparisonDirection::LT);
+
+    current = stablehlo::SelectOp::create(rewriter, wrap.getLoc(), midCond,
+                                         paddedOp, current);
+
+    // Select left part (rotate1)
+    Value lhsThreshold = stablehlo::ConstantOp::create(
+        rewriter, wrap.getLoc(),
+        SplatElementsAttr::get(iota.getType(),
+                               rewriter.getI32IntegerAttr(lhs)));
+
+    auto lhsCond = stablehlo::CompareOp::create(
+        rewriter, wrap.getLoc(), iota, lhsThreshold,
+        stablehlo::ComparisonDirection::LT);
+
+    current = stablehlo::SelectOp::create(rewriter, wrap.getLoc(), lhsCond,
+                                         rotate1Op, current);
+
+    // Replace the wrap with the select
+    rewriter.replaceOp(wrap, current);
     return success();
   }
 };
