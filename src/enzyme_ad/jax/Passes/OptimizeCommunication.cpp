@@ -1346,6 +1346,10 @@ struct WrapToRotateOptimize : public OpRewritePattern<enzymexla::WrapOp> {
     if (wrap->getParentOfType<sdy::ManualComputationOp>())
       return failure();
 
+    // Only apply if there's no sharding (for now, to be conservative)
+    if (mlir::sdy::getSharding(wrap))
+      return failure();
+
     auto wrapDimension = wrap.getDimension();
     auto lhs = wrap.getLhs();
     auto rhs = wrap.getRhs();
@@ -1355,23 +1359,16 @@ struct WrapToRotateOptimize : public OpRewritePattern<enzymexla::WrapOp> {
       return failure();
 
     // Create an extend operation with the same lhs/rhs
+    // Extend replicates boundary elements, creating a padded tensor
     auto extendOp = enzymexla::ExtendOp::create(
         rewriter, wrap.getLoc(), wrap.getOperand(), lhs, rhs, wrapDimension);
 
-    // Copy sharding if present
-    if (auto wrapSharding = mlir::sdy::getSharding(wrap)) {
-      mlir::sdy::setSharding(extendOp, wrapSharding);
-    }
-
-    // Create a rotate operation to shift by lhs amount
+    // Create a rotate operation to implement the wrapping behavior
+    // This transformation exposes the operation to communication-optimized
+    // implementations of extend and rotate
     auto rotateOp = enzymexla::RotateOp::create(
         rewriter, wrap.getLoc(), extendOp.getResult(),
         static_cast<int32_t>(lhs), static_cast<int32_t>(wrapDimension));
-
-    // Copy sharding to rotate
-    if (auto wrapSharding = mlir::sdy::getSharding(wrap)) {
-      mlir::sdy::setSharding(rotateOp, wrapSharding);
-    }
 
     // Replace the wrap with the rotate
     rewriter.replaceOp(wrap, rotateOp);
