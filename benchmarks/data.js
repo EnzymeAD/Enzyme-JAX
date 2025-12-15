@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1765740281323,
+  "lastUpdate": 1765765789148,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "avikpal@mit.edu",
-            "name": "Avik Pal",
-            "username": "avik-pal"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "e3de2244ab21c07bf1502ccb8634be0ac86ead82",
-          "message": "fix: typo in pass name (#1651)",
-          "timestamp": "2025-11-24T14:23:20-05:00",
-          "tree_id": "3029092140f3fe6e35326873e06c1386efe12d47",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/e3de2244ab21c07bf1502ccb8634be0ac86ead82"
-        },
-        "date": 1764029035573,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "scatter_sum / JaX   / cpu / Primal",
-            "value": 0.00000432322499982547,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.000004288105000159703,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaX   / tpu / Primal",
-            "value": 0.0001405532037999,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.0001445494979001,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -25464,6 +25420,3770 @@ window.BENCHMARK_DATA = {
           {
             "name": "jaxmd40 / IDefOpt / cpu / PostRev",
             "value": 0.0001638167999772,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "wmoses@google.com",
+            "name": "William Moses",
+            "username": "wsmoses"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "76a2c7a5c9906ccace5d302781feb60ebcc5e685",
+          "message": "Update ENZYME_COMMIT hash to new value",
+          "timestamp": "2025-12-14T16:20:26-06:00",
+          "tree_id": "59611ffe25d792d5f4cd09e7aa80f3720d593ba4",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/76a2c7a5c9906ccace5d302781feb60ebcc5e685"
+        },
+        "date": 1765765788486,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "actmtch / JaX   / cpu / Primal",
+            "value": 0.000004025880799963488,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cpu / Primal",
+            "value": 0.000004044884999984788,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaX   / cpu / Forward",
+            "value": 0.000006777408599964474,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cpu / Forward",
+            "value": 0.000007546321099971465,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaX   / cpu / BothRev",
+            "value": 0.000006839385600005698,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cpu / PreRev",
+            "value": 0.000007984718299985616,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cpu / PostRev",
+            "value": 0.000006609390599987819,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cpu / BothRev",
+            "value": 0.00000815912030002437,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaX   / cpu / Primal",
+            "value": 0.000007118859600450378,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cpu / Primal",
+            "value": 0.000007366171699686674,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaX   / cpu / Forward",
+            "value": 0.000010061556700384244,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cpu / Forward",
+            "value": 0.00001403459780049161,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaX   / cpu / BothRev",
+            "value": 0.000010945267100032653,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cpu / PreRev",
+            "value": 0.000013309384099557064,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cpu / PostRev",
+            "value": 0.000011022097000386566,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cpu / BothRev",
+            "value": 0.000013305433700588764,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaX   / gpu / Primal",
+            "value": 0.00007429608570018899,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / gpu / Primal",
+            "value": 0.00007429539639997528,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaX   / gpu / Forward",
+            "value": 0.0001024609352993,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / gpu / Forward",
+            "value": 0.0001207175345996,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaX   / gpu / BothRev",
+            "value": 0.0001019643831998,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / gpu / PreRev",
+            "value": 0.0001024025826998,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / gpu / PostRev",
+            "value": 0.0001059098080004,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / gpu / BothRev",
+            "value": 0.0001228230366999,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaX   / cpu / Primal",
+            "value": 0.000003926898000099754,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cpu / Primal",
+            "value": 0.000003715718999956152,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaX   / cpu / Forward",
+            "value": 0.000005485598999985087,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cpu / Forward",
+            "value": 0.000006346442999893043,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaX   / cpu / BothRev",
+            "value": 0.0000055282340999838194,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cpu / PreRev",
+            "value": 0.000006088663999980781,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cpu / PostRev",
+            "value": 0.000005184056999860332,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cpu / BothRev",
+            "value": 0.000006364643000051728,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaX   / tpu / Primal",
+            "value": 0.0001426182774001,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / tpu / Primal",
+            "value": 0.0001328874833001,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaX   / tpu / Forward",
+            "value": 0.0002018791246,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / tpu / Forward",
+            "value": 0.0002079719336001,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaX   / tpu / BothRev",
+            "value": 0.0002071459516,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / tpu / PreRev",
+            "value": 0.0002041704475999,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / tpu / PostRev",
+            "value": 0.0001971166686,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / tpu / BothRev",
+            "value": 0.0002035779046,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaX   / cpu / Primal",
+            "value": 0.0000052145487999951005,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cpu / Primal",
+            "value": 0.000005227270400064299,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaX   / cpu / Forward",
+            "value": 0.000007368683700042311,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cpu / Forward",
+            "value": 0.000009485698699973,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaX   / cpu / BothRev",
+            "value": 0.000007706581399997958,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cpu / PreRev",
+            "value": 0.00000954810749999524,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cpu / PostRev",
+            "value": 0.000007861172899993107,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cpu / BothRev",
+            "value": 0.00000972302079999281,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaX   / cpu / Primal",
+            "value": 0.000003978245799953584,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cpu / Primal",
+            "value": 0.00000366993330007972,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaX   / cpu / Forward",
+            "value": 0.000005795312500049476,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cpu / Forward",
+            "value": 0.000008731191699916962,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaX   / cpu / BothRev",
+            "value": 0.000006453479199990397,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cpu / PreRev",
+            "value": 0.000009326574999977313,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cpu / PostRev",
+            "value": 0.000006169595900064451,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cpu / BothRev",
+            "value": 0.000009950845899948037,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaX   / cpu / Primal",
+            "value": 0.000004184759999998278,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cpu / Primal",
+            "value": 0.0000041490242999771,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaX   / cpu / Forward",
+            "value": 0.000008129123600019738,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cpu / Forward",
+            "value": 0.00000833328620001339,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaX   / cpu / BothRev",
+            "value": 0.000008200469400026123,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cpu / PreRev",
+            "value": 0.000008257928999955767,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cpu / PostRev",
+            "value": 0.000008310979799989582,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cpu / BothRev",
+            "value": 0.000008186745400007566,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaX   / cpu / Primal",
+            "value": 0.000007585595199634554,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cpu / Primal",
+            "value": 0.000007641122399945743,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaX   / cpu / Forward",
+            "value": 0.000011694227900443366,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cpu / Forward",
+            "value": 0.000011712016499950553,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaX   / cpu / BothRev",
+            "value": 0.000011565338000218616,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cpu / PreRev",
+            "value": 0.000012324280699976952,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cpu / PostRev",
+            "value": 0.00001234367490033037,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cpu / BothRev",
+            "value": 0.000012250907300040126,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaX   / gpu / Primal",
+            "value": 0.00009291124419978589,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / gpu / Primal",
+            "value": 0.00007702509609953267,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaX   / gpu / Forward",
+            "value": 0.0001113043309,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / gpu / Forward",
+            "value": 0.0001143509861998,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaX   / gpu / BothRev",
+            "value": 0.0001136691788,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / gpu / PreRev",
+            "value": 0.0001115869330998,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / gpu / PostRev",
+            "value": 0.0001165912140997,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / gpu / BothRev",
+            "value": 0.0001075669176003,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaX   / cpu / Primal",
+            "value": 0.000003816800999993575,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cpu / Primal",
+            "value": 0.000003744766000090749,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaX   / cpu / Forward",
+            "value": 0.000005832267999903707,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cpu / Forward",
+            "value": 0.00000608476300003531,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaX   / cpu / BothRev",
+            "value": 0.000005695471099897986,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cpu / PreRev",
+            "value": 0.000006163917999947444,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cpu / PostRev",
+            "value": 0.000006089799999972456,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cpu / BothRev",
+            "value": 0.00000612609199997678,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaX   / tpu / Primal",
+            "value": 0.0001334524183999,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / tpu / Primal",
+            "value": 0.0001330221514001,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaX   / tpu / Forward",
+            "value": 0.0001960718116,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / tpu / Forward",
+            "value": 0.0002058157855999,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaX   / tpu / BothRev",
+            "value": 0.0002231844935999,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / tpu / PreRev",
+            "value": 0.0002206219667001,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / tpu / PostRev",
+            "value": 0.0002180808387,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / tpu / BothRev",
+            "value": 0.0002242320107001,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaX   / cpu / Primal",
+            "value": 0.000005413092100025096,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cpu / Primal",
+            "value": 0.000005392151799969725,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaX   / cpu / Forward",
+            "value": 0.000008239664000029734,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cpu / Forward",
+            "value": 0.000009162514400031796,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaX   / cpu / BothRev",
+            "value": 0.00000892094000000725,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cpu / PreRev",
+            "value": 0.00000933741380003994,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cpu / PostRev",
+            "value": 0.000008859248299995671,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cpu / BothRev",
+            "value": 0.000008898406800017256,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaX   / cpu / Primal",
+            "value": 0.000003987166600018099,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cpu / Primal",
+            "value": 0.000005344749999858323,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaX   / cpu / Forward",
+            "value": 0.000006793424999887065,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cpu / Forward",
+            "value": 0.0000069027958999868136,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaX   / cpu / BothRev",
+            "value": 0.000009338945799936482,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cpu / PreRev",
+            "value": 0.000010060916699876544,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cpu / PostRev",
+            "value": 0.000007899145800001861,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cpu / BothRev",
+            "value": 0.000011627479200069502,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaX   / cpu / Primal",
+            "value": 0.000004436991100010346,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / Primal",
+            "value": 0.000004491838500007361,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaX   / cpu / Forward",
+            "value": 0.000007746475800013285,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / Forward",
+            "value": 0.000007823675500003446,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaX   / cpu / BothRev",
+            "value": 0.000011376517300004708,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / PreRev",
+            "value": 0.000011193558900004064,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / PostRev",
+            "value": 0.000010137865700016846,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / BothRev",
+            "value": 0.000010125893699978404,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaX   / cpu / Primal",
+            "value": 0.000007791939099843149,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / Primal",
+            "value": 0.000007862908900278854,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaX   / cpu / Forward",
+            "value": 0.000011990925399732075,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / Forward",
+            "value": 0.000012571134999598144,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaX   / cpu / BothRev",
+            "value": 0.000014618723100284114,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / PreRev",
+            "value": 0.000014718604300287552,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / PostRev",
+            "value": 0.000014630007900268536,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / BothRev",
+            "value": 0.000014650219400209608,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaX   / gpu / Primal",
+            "value": 0.00007933283329984988,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / gpu / Primal",
+            "value": 0.00008129038859988213,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaX   / gpu / Forward",
+            "value": 0.0001227908456996,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / gpu / Forward",
+            "value": 0.0001380380741,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaX   / gpu / BothRev",
+            "value": 0.0001392139957002,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / gpu / PreRev",
+            "value": 0.0001258005315998,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / gpu / PostRev",
+            "value": 0.0001304496353004,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / gpu / BothRev",
+            "value": 0.0001222125075997,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaX   / cpu / Primal",
+            "value": 0.00000388340800000151,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / Primal",
+            "value": 0.000003983424000034575,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaX   / cpu / Forward",
+            "value": 0.00000600181200006773,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / Forward",
+            "value": 0.000006288238999877649,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaX   / cpu / BothRev",
+            "value": 0.00000717346199999156,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / PreRev",
+            "value": 0.000007254925000052026,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / PostRev",
+            "value": 0.000007207308000033663,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / BothRev",
+            "value": 0.000007177150999996229,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaX   / tpu / Primal",
+            "value": 0.0001499989095,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / tpu / Primal",
+            "value": 0.0001437368633998,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaX   / tpu / Forward",
+            "value": 0.0002266131897,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / tpu / Forward",
+            "value": 0.0002446116728,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaX   / tpu / BothRev",
+            "value": 0.0002564376157,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / tpu / PreRev",
+            "value": 0.0002327634245999,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / tpu / PostRev",
+            "value": 0.0002302984947,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / tpu / BothRev",
+            "value": 0.0002309379557,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaX   / cpu / Primal",
+            "value": 0.000005604534600024636,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / Primal",
+            "value": 0.00000565155809999851,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaX   / cpu / Forward",
+            "value": 0.000008458834599969123,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / Forward",
+            "value": 0.000009104981800010137,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaX   / cpu / BothRev",
+            "value": 0.000010369041600006312,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / PreRev",
+            "value": 0.000010659258099985892,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / PostRev",
+            "value": 0.000010453257100016344,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / BothRev",
+            "value": 0.00000992664329996842,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaX   / cpu / Primal",
+            "value": 0.000006185283299964795,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / Primal",
+            "value": 0.000005187074999957986,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaX   / cpu / Forward",
+            "value": 0.000006773450000036973,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / Forward",
+            "value": 0.000006604933400012669,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaX   / cpu / BothRev",
+            "value": 0.000012038283299989417,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / PreRev",
+            "value": 0.000011607804199957172,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / PostRev",
+            "value": 0.000013465625000026194,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / BothRev",
+            "value": 0.000011028762500063749,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaX   / cpu / Primal",
+            "value": 0.000003870598100002098,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cpu / Primal",
+            "value": 0.000003876098499995351,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaX   / cpu / Forward",
+            "value": 0.000010595768000030148,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cpu / Forward",
+            "value": 0.00001057007839999642,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaX   / cpu / BothRev",
+            "value": 0.00001529880019998018,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cpu / PreRev",
+            "value": 0.000012345711800026038,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cpu / PostRev",
+            "value": 0.000015615305099981926,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cpu / BothRev",
+            "value": 0.000011557009499983904,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaX   / cpu / Primal",
+            "value": 0.000008332699799939292,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cpu / Primal",
+            "value": 0.000008245961000648094,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaX   / cpu / Forward",
+            "value": 0.000013181539200013504,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cpu / Forward",
+            "value": 0.000013132764500187476,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaX   / cpu / BothRev",
+            "value": 0.00002288554719998501,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cpu / PreRev",
+            "value": 0.000017376509499445093,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cpu / PostRev",
+            "value": 0.000022777839100308485,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cpu / BothRev",
+            "value": 0.00001763859050042811,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaX   / gpu / Primal",
+            "value": 0.00007641465650012833,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / gpu / Primal",
+            "value": 0.0000880425261995697,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaX   / gpu / Forward",
+            "value": 0.0001128966318996,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / gpu / Forward",
+            "value": 0.0001120113712997,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaX   / gpu / BothRev",
+            "value": 0.0001277440828998,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / gpu / PreRev",
+            "value": 0.0001367856148004,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / gpu / PostRev",
+            "value": 0.0001140778137996,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / gpu / BothRev",
+            "value": 0.0001108677705,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaX   / cpu / Primal",
+            "value": 0.0000035537559999283984,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cpu / Primal",
+            "value": 0.0000035690241000338574,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaX   / cpu / Forward",
+            "value": 0.000007662459000130183,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cpu / Forward",
+            "value": 0.000005970204000004742,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaX   / cpu / BothRev",
+            "value": 0.000023149857099997463,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cpu / PreRev",
+            "value": 0.000006967018000068492,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cpu / PostRev",
+            "value": 0.000008396031000120274,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cpu / BothRev",
+            "value": 0.000007022424100068747,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaX   / tpu / Primal",
+            "value": 0.0001493401514,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / tpu / Primal",
+            "value": 0.0001491324025,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaX   / tpu / Forward",
+            "value": 0.0002191659255999,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / tpu / Forward",
+            "value": 0.0002199227206001,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaX   / tpu / BothRev",
+            "value": 0.0002144811036998,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / tpu / PreRev",
+            "value": 0.0002259981126999,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / tpu / PostRev",
+            "value": 0.0002103876076998,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / tpu / BothRev",
+            "value": 0.0002063968906,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaX   / cpu / Primal",
+            "value": 0.0000051157214999875576,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cpu / Primal",
+            "value": 0.000005086961300003168,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaX   / cpu / Forward",
+            "value": 0.000008812354499968934,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cpu / Forward",
+            "value": 0.00000879311159997087,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaX   / cpu / BothRev",
+            "value": 0.000015692528799991122,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cpu / PreRev",
+            "value": 0.00001169961499999772,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cpu / PostRev",
+            "value": 0.000015821504799987452,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cpu / BothRev",
+            "value": 0.000011845576999985496,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaX   / cpu / Primal",
+            "value": 0.000004599120799866796,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cpu / Primal",
+            "value": 0.000005787354199856054,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaX   / cpu / Forward",
+            "value": 0.000016348645800098893,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cpu / Forward",
+            "value": 0.0000134533124999507,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaX   / cpu / BothRev",
+            "value": 0.000014646958299999824,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cpu / PreRev",
+            "value": 0.00001697121249999327,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cpu / PostRev",
+            "value": 0.00001254154580001341,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cpu / BothRev",
+            "value": 0.000017345174999900338,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaX   / cpu / Primal",
+            "value": 0.000004164721099959934,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cpu / Primal",
+            "value": 0.000004174372099987523,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaX   / cpu / Forward",
+            "value": 0.000007711320999987948,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cpu / Forward",
+            "value": 0.000007554902099991523,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaX   / cpu / BothRev",
+            "value": 0.000007687106999992465,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cpu / PreRev",
+            "value": 0.000008262521000006017,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cpu / PostRev",
+            "value": 0.000007775472799994531,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cpu / BothRev",
+            "value": 0.00000805979629999456,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaX   / cpu / Primal",
+            "value": 0.000007528182800160721,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cpu / Primal",
+            "value": 0.000007639742200262845,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaX   / cpu / Forward",
+            "value": 0.000012395498099795075,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cpu / Forward",
+            "value": 0.000012271120200603036,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaX   / cpu / BothRev",
+            "value": 0.000012523968199820956,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cpu / PreRev",
+            "value": 0.000012667873899772533,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cpu / PostRev",
+            "value": 0.000016252439199888612,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cpu / BothRev",
+            "value": 0.00001250276999999187,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaX   / gpu / Primal",
+            "value": 0.0000766416977996414,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / gpu / Primal",
+            "value": 0.00007662700189976021,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaX   / gpu / Forward",
+            "value": 0.0001080981583996,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / gpu / Forward",
+            "value": 0.0001104084449994,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaX   / gpu / BothRev",
+            "value": 0.0001021965221996,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / gpu / PreRev",
+            "value": 0.00009738166570023168,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / gpu / PostRev",
+            "value": 0.00009873933490016498,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / gpu / BothRev",
+            "value": 0.00009866421059996356,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaX   / cpu / Primal",
+            "value": 0.000003915992100155563,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cpu / Primal",
+            "value": 0.000003731485999924189,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaX   / cpu / Forward",
+            "value": 0.000005887491000066802,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cpu / Forward",
+            "value": 0.000006045770099990477,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaX   / cpu / BothRev",
+            "value": 0.00000557363499992789,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cpu / PreRev",
+            "value": 0.000005765278000035323,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cpu / PostRev",
+            "value": 0.000005508494999958202,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cpu / BothRev",
+            "value": 0.0000059381560000474565,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaX   / tpu / Primal",
+            "value": 0.0001467914775001,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / tpu / Primal",
+            "value": 0.0001448888293998,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaX   / tpu / Forward",
+            "value": 0.0002170009426999,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / tpu / Forward",
+            "value": 0.0002034913525998,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaX   / tpu / BothRev",
+            "value": 0.0002219464416999,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / tpu / PreRev",
+            "value": 0.0002148360036999,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / tpu / PostRev",
+            "value": 0.0002275090356999,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / tpu / BothRev",
+            "value": 0.0002197073126999,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaX   / cpu / Primal",
+            "value": 0.000005324944700078049,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cpu / Primal",
+            "value": 0.000005353689799994754,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaX   / cpu / Forward",
+            "value": 0.00000864137299995491,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cpu / Forward",
+            "value": 0.000008713522300058685,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaX   / cpu / BothRev",
+            "value": 0.000008417884900063655,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cpu / PreRev",
+            "value": 0.000008963960399978532,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cpu / PostRev",
+            "value": 0.000008810350899966578,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cpu / BothRev",
+            "value": 0.000009126286399987294,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaX   / cpu / Primal",
+            "value": 0.000003307683300045028,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cpu / Primal",
+            "value": 0.000004080729199995403,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaX   / cpu / Forward",
+            "value": 0.000007609525000043504,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cpu / Forward",
+            "value": 0.000010274574999857578,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaX   / cpu / BothRev",
+            "value": 0.00001088732499993057,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cpu / PreRev",
+            "value": 0.000011579595799958042,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cpu / PostRev",
+            "value": 0.000008691233300123713,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cpu / BothRev",
+            "value": 0.000008366354099962337,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaX   / cpu / Primal",
+            "value": 0.00000775340004111058,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaXPipe / cpu / Primal",
+            "value": 0.000006710300021950389,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaX   / cpu / Forward",
+            "value": 0.00000918870000532479,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaXPipe / cpu / Forward",
+            "value": 0.000010896000003413064,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaX   / cpu / Primal",
+            "value": 0.000013441999908536672,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaXPipe / cpu / Primal",
+            "value": 0.000011490099859656766,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaX   / cpu / Forward",
+            "value": 0.00001611280022189021,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaXPipe / cpu / Forward",
+            "value": 0.00001926769982674159,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaX   / gpu / Primal",
+            "value": 0.0001223178005602,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaXPipe / gpu / Primal",
+            "value": 0.0001152687000285,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaX   / gpu / Forward",
+            "value": 0.0001505549997091,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaXPipe / gpu / Forward",
+            "value": 0.0001478528996813,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaX   / cpu / Primal",
+            "value": 0.000006233999920368661,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaXPipe / cpu / Primal",
+            "value": 0.000005332000000635162,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaX   / cpu / Forward",
+            "value": 0.000007464999907824677,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaXPipe / cpu / Forward",
+            "value": 0.000008556000102544203,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaX   / tpu / Primal",
+            "value": 0.0001756739000484,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaXPipe / tpu / Primal",
+            "value": 0.0001723420000416,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaX   / tpu / Forward",
+            "value": 0.0002396960000623,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaXPipe / tpu / Forward",
+            "value": 0.0002504840000256,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaX   / cpu / Primal",
+            "value": 0.000009146599950327072,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaXPipe / cpu / Primal",
+            "value": 0.000008042700028454419,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaX   / cpu / Forward",
+            "value": 0.000012066900035279105,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaXPipe / cpu / Forward",
+            "value": 0.000013222399957157904,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaX   / cpu / Primal",
+            "value": 0.000006216699875949416,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaXPipe / cpu / Primal",
+            "value": 0.0000050750000809784975,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaX   / cpu / Forward",
+            "value": 0.000007512499905715231,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaXPipe / cpu / Forward",
+            "value": 0.000007879099939600565,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaX   / cpu / Primal",
+            "value": 0.000004257403100018564,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cpu / Primal",
+            "value": 0.000004514492099997369,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaX   / cpu / Forward",
+            "value": 0.000007431268600021212,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cpu / Forward",
+            "value": 0.000007516000200030248,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaX   / cpu / BothRev",
+            "value": 0.000006966911500012429,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cpu / PreRev",
+            "value": 0.000007664246700005606,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cpu / PostRev",
+            "value": 0.000007075943200015899,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cpu / BothRev",
+            "value": 0.000008034598199992616,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaX   / cpu / Primal",
+            "value": 0.000007931092500075464,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cpu / Primal",
+            "value": 0.000008366208700317657,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaX   / cpu / Forward",
+            "value": 0.000011223861199687236,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cpu / Forward",
+            "value": 0.000013937317200179675,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaX   / cpu / BothRev",
+            "value": 0.000011570443399978103,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cpu / PreRev",
+            "value": 0.000013275584000075467,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cpu / PostRev",
+            "value": 0.000011451858100190292,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cpu / BothRev",
+            "value": 0.000013377330200455616,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaX   / gpu / Primal",
+            "value": 0.0000748130995001702,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / gpu / Primal",
+            "value": 0.00007717994769991492,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaX   / gpu / Forward",
+            "value": 0.0001015055746996,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / gpu / Forward",
+            "value": 0.0001016320398994,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaX   / gpu / BothRev",
+            "value": 0.0001007369581995,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / gpu / PreRev",
+            "value": 0.0001014838135997,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / gpu / PostRev",
+            "value": 0.0001017508149001,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / gpu / BothRev",
+            "value": 0.0001084872269006,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaX   / cpu / Primal",
+            "value": 0.0000039999439999519385,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cpu / Primal",
+            "value": 0.000004024811000090267,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaX   / cpu / Forward",
+            "value": 0.000005229230999975698,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cpu / Forward",
+            "value": 0.000006393611000021338,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaX   / cpu / BothRev",
+            "value": 0.000005824579000000085,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cpu / PreRev",
+            "value": 0.000006422618100077671,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cpu / PostRev",
+            "value": 0.000005937188999996578,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cpu / BothRev",
+            "value": 0.000006409036000150082,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaX   / tpu / Primal",
+            "value": 0.0001449618524,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / tpu / Primal",
+            "value": 0.0001457215005,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaX   / tpu / Forward",
+            "value": 0.0002207452235999,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / tpu / Forward",
+            "value": 0.0002211922766,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaX   / tpu / BothRev",
+            "value": 0.0002145096247,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / tpu / PreRev",
+            "value": 0.0002040188596,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / tpu / PostRev",
+            "value": 0.0002193005007,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / tpu / BothRev",
+            "value": 0.0002200285086999,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaX   / cpu / Primal",
+            "value": 0.000005494928499956586,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cpu / Primal",
+            "value": 0.000006113196699971013,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaX   / cpu / Forward",
+            "value": 0.000008380550699985179,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cpu / Forward",
+            "value": 0.000009651401799965242,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaX   / cpu / BothRev",
+            "value": 0.00000838603950005563,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cpu / PreRev",
+            "value": 0.000009791968099943916,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cpu / PostRev",
+            "value": 0.000007997900800000935,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cpu / BothRev",
+            "value": 0.000009357405899936568,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaX   / cpu / Primal",
+            "value": 0.000003662975000042934,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cpu / Primal",
+            "value": 0.000004481891700015694,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaX   / cpu / Forward",
+            "value": 0.00000844523340001615,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cpu / Forward",
+            "value": 0.000012411195800086716,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaX   / cpu / BothRev",
+            "value": 0.000009940554100103326,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cpu / PreRev",
+            "value": 0.000006640154199885728,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cpu / PostRev",
+            "value": 0.000007719008400090389,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cpu / BothRev",
+            "value": 0.000007541250000031141,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaX   / cpu / Primal",
+            "value": 0.000005748059100005776,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cpu / Primal",
+            "value": 0.00000575284050000846,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaX   / cpu / Forward",
+            "value": 0.000009591100699981325,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cpu / Forward",
+            "value": 0.000009663654699988911,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaX   / cpu / BothRev",
+            "value": 0.000009365094599979784,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cpu / PreRev",
+            "value": 0.000009412485600023502,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cpu / PostRev",
+            "value": 0.000009707094299983507,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cpu / BothRev",
+            "value": 0.000009370541499993123,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaX   / cpu / Primal",
+            "value": 0.000011026316300558391,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cpu / Primal",
+            "value": 0.000010426041900063864,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaX   / cpu / Forward",
+            "value": 0.000016160921299888285,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cpu / Forward",
+            "value": 0.000016364610299933702,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaX   / cpu / BothRev",
+            "value": 0.000015338420600164683,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cpu / PreRev",
+            "value": 0.000015985360199556455,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cpu / PostRev",
+            "value": 0.000015506456900038756,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cpu / BothRev",
+            "value": 0.00001586534039961407,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaX   / cpu / Primal",
+            "value": 0.000005030708000049344,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cpu / Primal",
+            "value": 0.00000544328800006042,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaX   / cpu / Forward",
+            "value": 0.000007764352000049257,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cpu / Forward",
+            "value": 0.000008357244999933755,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaX   / cpu / BothRev",
+            "value": 0.000008081245999892417,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cpu / PreRev",
+            "value": 0.000008156237000002874,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cpu / PostRev",
+            "value": 0.000008042466000006243,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cpu / BothRev",
+            "value": 0.000008093964100044104,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaX   / tpu / Primal",
+            "value": 0.00006977315419990191,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / tpu / Primal",
+            "value": 0.00006857489719986915,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaX   / tpu / Forward",
+            "value": 0.00009339273229998072,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / tpu / Forward",
+            "value": 0.00009608302830001776,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaX   / tpu / BothRev",
+            "value": 0.0000917937042999256,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / tpu / PreRev",
+            "value": 0.00009314835629993468,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / tpu / PostRev",
+            "value": 0.00009180223130006198,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / tpu / BothRev",
+            "value": 0.00009201807919998828,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaX   / cpu / Primal",
+            "value": 0.000007581847200071933,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cpu / Primal",
+            "value": 0.000007254905800073175,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaX   / cpu / Forward",
+            "value": 0.000011204482199991616,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cpu / Forward",
+            "value": 0.000011540442099976644,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaX   / cpu / BothRev",
+            "value": 0.0000109975468999437,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cpu / PreRev",
+            "value": 0.00001095505619996402,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cpu / PostRev",
+            "value": 0.00001123611160001019,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cpu / BothRev",
+            "value": 0.000011415491400020982,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaX   / cpu / Primal",
+            "value": 0.000007048304199997801,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cpu / Primal",
+            "value": 0.000011174749999918277,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaX   / cpu / Forward",
+            "value": 0.000015128562500103726,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cpu / Forward",
+            "value": 0.000014977112499946088,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaX   / cpu / BothRev",
+            "value": 0.000015144537499872968,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cpu / PreRev",
+            "value": 0.000010840762499901756,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cpu / PostRev",
+            "value": 0.000009166616700167651,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cpu / BothRev",
+            "value": 0.000010081729200101108,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaXPipe / cpu / Primal",
+            "value": 0.0008134456600009,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaX   / cpu / Primal",
+            "value": 0.0008108608500015,
+            "unit": "s"
+          },
+          {
+            "name": "llama / HLOOpt / cpu / Primal",
+            "value": 0.0009045548300036,
+            "unit": "s"
+          },
+          {
+            "name": "llama / PartOpt / cpu / Primal",
+            "value": 0.000801190520001,
+            "unit": "s"
+          },
+          {
+            "name": "llama / DefOpt / cpu / Primal",
+            "value": 0.0008975400799999,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IPartOpt / cpu / Primal",
+            "value": 0.0008081084700006,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IDefOpt / cpu / Primal",
+            "value": 0.0009005310899965,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaXPipe / cpu / Forward",
+            "value": 0.0022990455199987,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaX   / cpu / Forward",
+            "value": 0.0023142215999996,
+            "unit": "s"
+          },
+          {
+            "name": "llama / HLOOpt / cpu / Forward",
+            "value": 0.0022900824099997,
+            "unit": "s"
+          },
+          {
+            "name": "llama / PartOpt / cpu / Forward",
+            "value": 0.0023118219699972,
+            "unit": "s"
+          },
+          {
+            "name": "llama / DefOpt / cpu / Forward",
+            "value": 0.0023153518300023,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IPartOpt / cpu / Forward",
+            "value": 0.0022964704900005,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IDefOpt / cpu / Forward",
+            "value": 0.0022960600099986,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaXPipe / cpu / PreRev",
+            "value": 0.0022012737299974,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaXPipe / cpu / PostRev",
+            "value": 0.0020653734100005,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaXPipe / cpu / BothRev",
+            "value": 0.0021101072600004,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaX   / cpu / BothRev",
+            "value": 0.0021477198000002,
+            "unit": "s"
+          },
+          {
+            "name": "llama / HLOOpt / cpu / PreRev",
+            "value": 0.0021083566599963,
+            "unit": "s"
+          },
+          {
+            "name": "llama / HLOOpt / cpu / PostRev",
+            "value": 0.0020722302400008,
+            "unit": "s"
+          },
+          {
+            "name": "llama / HLOOpt / cpu / BothRev",
+            "value": 0.0021065391899992,
+            "unit": "s"
+          },
+          {
+            "name": "llama / PartOpt / cpu / PreRev",
+            "value": 0.002176395829997,
+            "unit": "s"
+          },
+          {
+            "name": "llama / PartOpt / cpu / PostRev",
+            "value": 0.0020576267099977,
+            "unit": "s"
+          },
+          {
+            "name": "llama / PartOpt / cpu / BothRev",
+            "value": 0.002170032189997,
+            "unit": "s"
+          },
+          {
+            "name": "llama / DefOpt / cpu / PreRev",
+            "value": 0.0021187151499998,
+            "unit": "s"
+          },
+          {
+            "name": "llama / DefOpt / cpu / PostRev",
+            "value": 0.0020600269199985,
+            "unit": "s"
+          },
+          {
+            "name": "llama / DefOpt / cpu / BothRev",
+            "value": 0.0021088078899992,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IPartOpt / cpu / PreRev",
+            "value": 0.0021666005099996,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IPartOpt / cpu / PostRev",
+            "value": 0.002044620810002,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IPartOpt / cpu / BothRev",
+            "value": 0.0021828950600001,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IDefOpt / cpu / PreRev",
+            "value": 0.0021033760099999,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IDefOpt / cpu / PostRev",
+            "value": 0.0021865022799966,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IDefOpt / cpu / BothRev",
+            "value": 0.002202715999997,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaXPipe / gpu / Primal",
+            "value": 0.0004298923239985,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaX   / gpu / Primal",
+            "value": 0.0004316915980016,
+            "unit": "s"
+          },
+          {
+            "name": "llama / HLOOpt / gpu / Primal",
+            "value": 0.0004472711540001,
+            "unit": "s"
+          },
+          {
+            "name": "llama / PartOpt / gpu / Primal",
+            "value": 0.0004361387740063,
+            "unit": "s"
+          },
+          {
+            "name": "llama / DefOpt / gpu / Primal",
+            "value": 0.0004557781860057,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IPartOpt / gpu / Primal",
+            "value": 0.0004410463059903,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IDefOpt / gpu / Primal",
+            "value": 0.0004440418580052,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaXPipe / gpu / Forward",
+            "value": 0.0007046227719984,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaX   / gpu / Forward",
+            "value": 0.0007175423060107,
+            "unit": "s"
+          },
+          {
+            "name": "llama / HLOOpt / gpu / Forward",
+            "value": 0.0007487348480062,
+            "unit": "s"
+          },
+          {
+            "name": "llama / PartOpt / gpu / Forward",
+            "value": 0.0007037276260089,
+            "unit": "s"
+          },
+          {
+            "name": "llama / DefOpt / gpu / Forward",
+            "value": 0.0007009748800046,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IPartOpt / gpu / Forward",
+            "value": 0.0007305893439915,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IDefOpt / gpu / Forward",
+            "value": 0.0007179133660101,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaXPipe / gpu / PreRev",
+            "value": 0.0008050403079978,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaXPipe / gpu / PostRev",
+            "value": 0.0008190197899966,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaXPipe / gpu / BothRev",
+            "value": 0.0008346992119913,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaX   / gpu / BothRev",
+            "value": 0.0007713492719922,
+            "unit": "s"
+          },
+          {
+            "name": "llama / HLOOpt / gpu / PreRev",
+            "value": 0.0008280056320072,
+            "unit": "s"
+          },
+          {
+            "name": "llama / HLOOpt / gpu / PostRev",
+            "value": 0.0008441636760107,
+            "unit": "s"
+          },
+          {
+            "name": "llama / HLOOpt / gpu / BothRev",
+            "value": 0.0008396210380014,
+            "unit": "s"
+          },
+          {
+            "name": "llama / PartOpt / gpu / PreRev",
+            "value": 0.0008236170979944,
+            "unit": "s"
+          },
+          {
+            "name": "llama / PartOpt / gpu / PostRev",
+            "value": 0.0007937265240034,
+            "unit": "s"
+          },
+          {
+            "name": "llama / PartOpt / gpu / BothRev",
+            "value": 0.000769098329998,
+            "unit": "s"
+          },
+          {
+            "name": "llama / DefOpt / gpu / PreRev",
+            "value": 0.0008304411940043,
+            "unit": "s"
+          },
+          {
+            "name": "llama / DefOpt / gpu / PostRev",
+            "value": 0.000792521573996,
+            "unit": "s"
+          },
+          {
+            "name": "llama / DefOpt / gpu / BothRev",
+            "value": 0.0007673597380053,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IPartOpt / gpu / PreRev",
+            "value": 0.0008097415499942,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IPartOpt / gpu / PostRev",
+            "value": 0.0007819886479992,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IPartOpt / gpu / BothRev",
+            "value": 0.0008292279960005,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IDefOpt / gpu / PreRev",
+            "value": 0.0007980527860054,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IDefOpt / gpu / PostRev",
+            "value": 0.0007843412920046,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IDefOpt / gpu / BothRev",
+            "value": 0.0007736059919989,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaXPipe / tpu / Primal",
+            "value": 0.0003721892799985,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaX   / tpu / Primal",
+            "value": 0.0003695800800014,
+            "unit": "s"
+          },
+          {
+            "name": "llama / HLOOpt / tpu / Primal",
+            "value": 0.0003625637799996,
+            "unit": "s"
+          },
+          {
+            "name": "llama / PartOpt / tpu / Primal",
+            "value": 0.0003771573780031,
+            "unit": "s"
+          },
+          {
+            "name": "llama / DefOpt / tpu / Primal",
+            "value": 0.0003550649799981,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IPartOpt / tpu / Primal",
+            "value": 0.0003712905399988,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IDefOpt / tpu / Primal",
+            "value": 0.0003661064799998,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaXPipe / tpu / Forward",
+            "value": 0.0005695240400018,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaX   / tpu / Forward",
+            "value": 0.0006954346380007,
+            "unit": "s"
+          },
+          {
+            "name": "llama / HLOOpt / tpu / Forward",
+            "value": 0.00055398126,
+            "unit": "s"
+          },
+          {
+            "name": "llama / PartOpt / tpu / Forward",
+            "value": 0.0005428060199992,
+            "unit": "s"
+          },
+          {
+            "name": "llama / DefOpt / tpu / Forward",
+            "value": 0.0005498102979981,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IPartOpt / tpu / Forward",
+            "value": 0.0005518704999994,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IDefOpt / tpu / Forward",
+            "value": 0.0005545082200005,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaXPipe / tpu / PreRev",
+            "value": 0.0004073653999985,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaXPipe / tpu / PostRev",
+            "value": 0.0003579039799988,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaXPipe / tpu / BothRev",
+            "value": 0.0003917296399995,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaX   / tpu / BothRev",
+            "value": 0.0003583907399988,
+            "unit": "s"
+          },
+          {
+            "name": "llama / HLOOpt / tpu / PreRev",
+            "value": 0.0003913647000008,
+            "unit": "s"
+          },
+          {
+            "name": "llama / HLOOpt / tpu / PostRev",
+            "value": 0.0003899087999998,
+            "unit": "s"
+          },
+          {
+            "name": "llama / HLOOpt / tpu / BothRev",
+            "value": 0.0003915282800007,
+            "unit": "s"
+          },
+          {
+            "name": "llama / PartOpt / tpu / PreRev",
+            "value": 0.000391502800001,
+            "unit": "s"
+          },
+          {
+            "name": "llama / PartOpt / tpu / PostRev",
+            "value": 0.0003717910000013,
+            "unit": "s"
+          },
+          {
+            "name": "llama / PartOpt / tpu / BothRev",
+            "value": 0.0003914227999994,
+            "unit": "s"
+          },
+          {
+            "name": "llama / DefOpt / tpu / PreRev",
+            "value": 0.0003915220400012,
+            "unit": "s"
+          },
+          {
+            "name": "llama / DefOpt / tpu / PostRev",
+            "value": 0.0003830110400012,
+            "unit": "s"
+          },
+          {
+            "name": "llama / DefOpt / tpu / BothRev",
+            "value": 0.0003914082379997,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IPartOpt / tpu / PreRev",
+            "value": 0.0003914897979993,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IPartOpt / tpu / PostRev",
+            "value": 0.0003720643600026,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IPartOpt / tpu / BothRev",
+            "value": 0.0003914806400025,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IDefOpt / tpu / PreRev",
+            "value": 0.0003911628179994,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IDefOpt / tpu / PostRev",
+            "value": 0.0003991233800006,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IDefOpt / tpu / BothRev",
+            "value": 0.0003913129800021,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaXPipe / cpu / Primal",
+            "value": 0.0011761438599933,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaX   / cpu / Primal",
+            "value": 0.0010769521400015,
+            "unit": "s"
+          },
+          {
+            "name": "llama / HLOOpt / cpu / Primal",
+            "value": 0.0011181009899974,
+            "unit": "s"
+          },
+          {
+            "name": "llama / PartOpt / cpu / Primal",
+            "value": 0.0010998729400034,
+            "unit": "s"
+          },
+          {
+            "name": "llama / DefOpt / cpu / Primal",
+            "value": 0.0011235026400026,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IPartOpt / cpu / Primal",
+            "value": 0.0011432904600042,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IDefOpt / cpu / Primal",
+            "value": 0.0012063752100038,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaXPipe / cpu / Forward",
+            "value": 0.0035674497399941,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaX   / cpu / Forward",
+            "value": 0.0036082429399993,
+            "unit": "s"
+          },
+          {
+            "name": "llama / HLOOpt / cpu / Forward",
+            "value": 0.0035633345299993,
+            "unit": "s"
+          },
+          {
+            "name": "llama / PartOpt / cpu / Forward",
+            "value": 0.0036550317099954,
+            "unit": "s"
+          },
+          {
+            "name": "llama / DefOpt / cpu / Forward",
+            "value": 0.0034998161999919,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IPartOpt / cpu / Forward",
+            "value": 0.0035651275700001,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IDefOpt / cpu / Forward",
+            "value": 0.003690673279998,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaXPipe / cpu / PreRev",
+            "value": 0.0042360603199995,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaXPipe / cpu / PostRev",
+            "value": 0.0039952567799991,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaXPipe / cpu / BothRev",
+            "value": 0.0042352643699996,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaX   / cpu / BothRev",
+            "value": 0.0040993337999952,
+            "unit": "s"
+          },
+          {
+            "name": "llama / HLOOpt / cpu / PreRev",
+            "value": 0.0043137395099984,
+            "unit": "s"
+          },
+          {
+            "name": "llama / HLOOpt / cpu / PostRev",
+            "value": 0.0041593672399994,
+            "unit": "s"
+          },
+          {
+            "name": "llama / HLOOpt / cpu / BothRev",
+            "value": 0.0042994613300015,
+            "unit": "s"
+          },
+          {
+            "name": "llama / PartOpt / cpu / PreRev",
+            "value": 0.0045369967299939,
+            "unit": "s"
+          },
+          {
+            "name": "llama / PartOpt / cpu / PostRev",
+            "value": 0.00383377569,
+            "unit": "s"
+          },
+          {
+            "name": "llama / PartOpt / cpu / BothRev",
+            "value": 0.004551537569996,
+            "unit": "s"
+          },
+          {
+            "name": "llama / DefOpt / cpu / PreRev",
+            "value": 0.0043273952599975,
+            "unit": "s"
+          },
+          {
+            "name": "llama / DefOpt / cpu / PostRev",
+            "value": 0.0038149611799963,
+            "unit": "s"
+          },
+          {
+            "name": "llama / DefOpt / cpu / BothRev",
+            "value": 0.0042801370699999,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IPartOpt / cpu / PreRev",
+            "value": 0.0045980168400001,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IPartOpt / cpu / PostRev",
+            "value": 0.0038875600599931,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IPartOpt / cpu / BothRev",
+            "value": 0.0045706059100029,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IDefOpt / cpu / PreRev",
+            "value": 0.0044749579699964,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IDefOpt / cpu / PostRev",
+            "value": 0.0042141865899975,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IDefOpt / cpu / BothRev",
+            "value": 0.0043223546799981,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaXPipe / cpu / Primal",
+            "value": 0.0020834850000028,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaX   / cpu / Primal",
+            "value": 0.0023676370800058,
+            "unit": "s"
+          },
+          {
+            "name": "llama / HLOOpt / cpu / Primal",
+            "value": 0.0018661583300126,
+            "unit": "s"
+          },
+          {
+            "name": "llama / PartOpt / cpu / Primal",
+            "value": 0.0015581116700013,
+            "unit": "s"
+          },
+          {
+            "name": "llama / DefOpt / cpu / Primal",
+            "value": 0.0016000816700034,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IPartOpt / cpu / Primal",
+            "value": 0.0014804354099942,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IDefOpt / cpu / Primal",
+            "value": 0.0017794216699985,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaXPipe / cpu / Forward",
+            "value": 0.0045191091699962,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaX   / cpu / Forward",
+            "value": 0.0050447691599947,
+            "unit": "s"
+          },
+          {
+            "name": "llama / HLOOpt / cpu / Forward",
+            "value": 0.0054261129100086,
+            "unit": "s"
+          },
+          {
+            "name": "llama / PartOpt / cpu / Forward",
+            "value": 0.006191239159998,
+            "unit": "s"
+          },
+          {
+            "name": "llama / DefOpt / cpu / Forward",
+            "value": 0.0051743175000046,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IPartOpt / cpu / Forward",
+            "value": 0.004564814589994,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IDefOpt / cpu / Forward",
+            "value": 0.0049601649999931,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaXPipe / cpu / PreRev",
+            "value": 0.0063855854199937,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaXPipe / cpu / PostRev",
+            "value": 0.0077430979099881,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaXPipe / cpu / BothRev",
+            "value": 0.0062060608300089,
+            "unit": "s"
+          },
+          {
+            "name": "llama / JaX   / cpu / BothRev",
+            "value": 0.0102029741700062,
+            "unit": "s"
+          },
+          {
+            "name": "llama / HLOOpt / cpu / PreRev",
+            "value": 0.0059797162500035,
+            "unit": "s"
+          },
+          {
+            "name": "llama / HLOOpt / cpu / PostRev",
+            "value": 0.0060215512499962,
+            "unit": "s"
+          },
+          {
+            "name": "llama / HLOOpt / cpu / BothRev",
+            "value": 0.0072587520899833,
+            "unit": "s"
+          },
+          {
+            "name": "llama / PartOpt / cpu / PreRev",
+            "value": 0.0069209887499891,
+            "unit": "s"
+          },
+          {
+            "name": "llama / PartOpt / cpu / PostRev",
+            "value": 0.0103601154199895,
+            "unit": "s"
+          },
+          {
+            "name": "llama / PartOpt / cpu / BothRev",
+            "value": 0.0072245683399887,
+            "unit": "s"
+          },
+          {
+            "name": "llama / DefOpt / cpu / PreRev",
+            "value": 0.0068666591699911,
+            "unit": "s"
+          },
+          {
+            "name": "llama / DefOpt / cpu / PostRev",
+            "value": 0.0070355116700011,
+            "unit": "s"
+          },
+          {
+            "name": "llama / DefOpt / cpu / BothRev",
+            "value": 0.009353624159994,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IPartOpt / cpu / PreRev",
+            "value": 0.0070909445799952,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IPartOpt / cpu / PostRev",
+            "value": 0.0134395008399951,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IPartOpt / cpu / BothRev",
+            "value": 0.0105324020800071,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IDefOpt / cpu / PreRev",
+            "value": 0.0098840862500037,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IDefOpt / cpu / PostRev",
+            "value": 0.0095228804200087,
+            "unit": "s"
+          },
+          {
+            "name": "llama / IDefOpt / cpu / BothRev",
+            "value": 0.0115274491700074,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000005019637999976112,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000005260439099993164,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000008740816100180382,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000008800680399872363,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / gpu / Primal",
+            "value": 0.0000788154393005243,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / gpu / Primal",
+            "value": 0.00007973247579939198,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.00000437956400000985,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.0000043740119999711165,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / tpu / Primal",
+            "value": 0.0001730238734999,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / tpu / Primal",
+            "value": 0.0001567296175,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000006247385400001803,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000005915530299989768,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaX   / cpu / Primal",
+            "value": 0.000008357149999937974,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000004112320899912447,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaX   / cpu / Primal",
+            "value": 0.00000385327200001484,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cpu / Primal",
+            "value": 0.000003734752399986973,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaX   / cpu / Forward",
+            "value": 0.000006099050499960867,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cpu / Forward",
+            "value": 0.000006506563299990375,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaX   / cpu / BothRev",
+            "value": 0.000006695131900005435,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cpu / PreRev",
+            "value": 0.000006746697400012635,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cpu / PostRev",
+            "value": 0.000006637924300002851,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cpu / BothRev",
+            "value": 0.000006823120199987898,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaX   / cpu / Primal",
+            "value": 0.000006905302300583571,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cpu / Primal",
+            "value": 0.000011718606600334167,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaX   / cpu / Forward",
+            "value": 0.00001017154630026198,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cpu / Forward",
+            "value": 0.000010610688399901846,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaX   / cpu / BothRev",
+            "value": 0.000010841940600221278,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cpu / PreRev",
+            "value": 0.000010953470800450303,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cpu / PostRev",
+            "value": 0.000011415323600522245,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cpu / BothRev",
+            "value": 0.000011506406500120648,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaX   / gpu / Primal",
+            "value": 0.00007457136970042484,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / gpu / Primal",
+            "value": 0.00007450853769987589,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaX   / gpu / Forward",
+            "value": 0.0001014701173997,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / gpu / Forward",
+            "value": 0.0001006721327998,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaX   / gpu / BothRev",
+            "value": 0.0001008077326005,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / gpu / PreRev",
+            "value": 0.0001012051065001,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / gpu / PostRev",
+            "value": 0.0001016768229004,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / gpu / BothRev",
+            "value": 0.0001084134754994,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaX   / cpu / Primal",
+            "value": 0.000003754203000062262,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cpu / Primal",
+            "value": 0.0000035097300000416,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaX   / cpu / Forward",
+            "value": 0.000004965548099971784,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cpu / Forward",
+            "value": 0.000005280838999897242,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaX   / cpu / BothRev",
+            "value": 0.000005666165000002366,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cpu / PreRev",
+            "value": 0.000005314444999930856,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cpu / PostRev",
+            "value": 0.000005682203000105801,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cpu / BothRev",
+            "value": 0.000005686387999958242,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaX   / tpu / Primal",
+            "value": 0.0001333067014,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / tpu / Primal",
+            "value": 0.0001317519963999,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaX   / tpu / Forward",
+            "value": 0.0002236618426,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / tpu / Forward",
+            "value": 0.0002190811346999,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaX   / tpu / BothRev",
+            "value": 0.0002099211106,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / tpu / PreRev",
+            "value": 0.0002113474346,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / tpu / PostRev",
+            "value": 0.0002176799647,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / tpu / BothRev",
+            "value": 0.0002201978507,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaX   / cpu / Primal",
+            "value": 0.000005375365499912732,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cpu / Primal",
+            "value": 0.000004958906699994259,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaX   / cpu / Forward",
+            "value": 0.000007171848300004058,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cpu / Forward",
+            "value": 0.00000716923059999317,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaX   / cpu / BothRev",
+            "value": 0.000008122779699988314,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cpu / PreRev",
+            "value": 0.00000765573670005324,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cpu / PostRev",
+            "value": 0.00000817228449996037,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cpu / BothRev",
+            "value": 0.000008160852599939971,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaX   / cpu / Primal",
+            "value": 0.0000029978999999002552,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cpu / Primal",
+            "value": 0.00000396961669994198,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaX   / cpu / Forward",
+            "value": 0.000006310424999901442,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cpu / Forward",
+            "value": 0.000007692799999858835,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaX   / cpu / BothRev",
+            "value": 0.000007772929199927603,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cpu / PreRev",
+            "value": 0.000007088391700017383,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cpu / PostRev",
+            "value": 0.000010201020800013792,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cpu / BothRev",
+            "value": 0.00000957299999990937,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaX   / cpu / Primal",
+            "value": 0.000005219285599969225,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cpu / Primal",
+            "value": 0.000005545567700028187,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaX   / cpu / Forward",
+            "value": 0.000008826894300000276,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cpu / Forward",
+            "value": 0.000008896308699968358,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaX   / cpu / BothRev",
+            "value": 0.000007857128599971475,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cpu / PreRev",
+            "value": 0.00000772113719999652,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cpu / PostRev",
+            "value": 0.000007652371799986214,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cpu / BothRev",
+            "value": 0.000007510498900001039,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaX   / cpu / Primal",
+            "value": 0.000009860145000129703,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cpu / Primal",
+            "value": 0.000009864024000125937,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaX   / cpu / Forward",
+            "value": 0.000015313256700028432,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cpu / Forward",
+            "value": 0.000014695367000240367,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaX   / cpu / BothRev",
+            "value": 0.000013883312299731188,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cpu / PreRev",
+            "value": 0.000013729210200108355,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cpu / PostRev",
+            "value": 0.000013441530899581267,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cpu / BothRev",
+            "value": 0.000013364665800327202,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaX   / gpu / Primal",
+            "value": 0.00007486953379993793,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / gpu / Primal",
+            "value": 0.00007525647649963502,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaX   / gpu / Forward",
+            "value": 0.00009987135120027232,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / gpu / Forward",
+            "value": 0.0001011792045006,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaX   / gpu / BothRev",
+            "value": 0.0001024721704001,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / gpu / PreRev",
+            "value": 0.0001018846650003,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / gpu / PostRev",
+            "value": 0.0001027554271997,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / gpu / BothRev",
+            "value": 0.0001013297482997,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaX   / cpu / Primal",
+            "value": 0.000004357214999981806,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cpu / Primal",
+            "value": 0.000004510739999932412,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaX   / cpu / Forward",
+            "value": 0.000006864970100104984,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cpu / Forward",
+            "value": 0.000006910136999977112,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaX   / cpu / BothRev",
+            "value": 0.000006365417999950295,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cpu / PreRev",
+            "value": 0.000006103745099972002,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cpu / PostRev",
+            "value": 0.000006409573000019009,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cpu / BothRev",
+            "value": 0.000006120290099897829,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaX   / tpu / Primal",
+            "value": 0.0001439864394,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / tpu / Primal",
+            "value": 0.0001444960734001,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaX   / tpu / Forward",
+            "value": 0.0002263228416999,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / tpu / Forward",
+            "value": 0.0002275334707001,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaX   / tpu / BothRev",
+            "value": 0.0002144531517,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / tpu / PreRev",
+            "value": 0.0002146340155999,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / tpu / PostRev",
+            "value": 0.0002087563695999,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / tpu / BothRev",
+            "value": 0.0002032970906,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaX   / cpu / Primal",
+            "value": 0.00000658288740005446,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cpu / Primal",
+            "value": 0.000006735767200007104,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaX   / cpu / Forward",
+            "value": 0.000010469146600007662,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cpu / Forward",
+            "value": 0.000010597234399938316,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaX   / cpu / BothRev",
+            "value": 0.000009562174000075174,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cpu / PreRev",
+            "value": 0.000009247006500027057,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cpu / PostRev",
+            "value": 0.000009214656399944942,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cpu / BothRev",
+            "value": 0.000009607910699924104,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaX   / cpu / Primal",
+            "value": 0.000005084374999933061,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cpu / Primal",
+            "value": 0.000004989812499843538,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaX   / cpu / Forward",
+            "value": 0.000008621083300022292,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cpu / Forward",
+            "value": 0.000013301591699928397,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaX   / cpu / BothRev",
+            "value": 0.000014763175000007325,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cpu / PreRev",
+            "value": 0.000013266124999972815,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cpu / PostRev",
+            "value": 0.000009415262500078823,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cpu / BothRev",
+            "value": 0.000008064470899989828,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / JaXPipe / gpu / Primal",
+            "value": 0.0010119605998625,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / JaX   / gpu / Primal",
+            "value": 0.0010156103999179,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / HLOOpt / gpu / Primal",
+            "value": 0.0009559707999869,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / PartOpt / gpu / Primal",
+            "value": 0.0009438398999918,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / DefOpt / gpu / Primal",
+            "value": 0.0006891893004649,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / IPartOpt / gpu / Primal",
+            "value": 0.0009495122998487,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / IDefOpt / gpu / Primal",
+            "value": 0.0007055450994812,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / JaX   / gpu / Forward",
+            "value": 0.0012605992000317,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / JaXPipe / gpu / PostRev",
+            "value": 0.0040082043997244,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / JaX   / gpu / BothRev",
+            "value": 0.004022264300147,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / HLOOpt / gpu / PostRev",
+            "value": 0.0040032387005339,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / PartOpt / gpu / PostRev",
+            "value": 0.0040853646001778,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / DefOpt / gpu / PostRev",
+            "value": 0.0022244536005018,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / IPartOpt / gpu / PostRev",
+            "value": 0.0040790586994262,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / IDefOpt / gpu / PostRev",
+            "value": 0.0025381562998518,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / JaXPipe / tpu / Primal",
+            "value": 0.00009112899988394928,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / JaX   / tpu / Primal",
+            "value": 0.00009694399996078572,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / HLOOpt / tpu / Primal",
+            "value": 0.0001006390000839,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / PartOpt / tpu / Primal",
+            "value": 0.0001015909998386,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / DefOpt / tpu / Primal",
+            "value": 0.0001018249999106,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / IPartOpt / tpu / Primal",
+            "value": 0.0000992860001133522,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / IDefOpt / tpu / Primal",
+            "value": 0.00009617399991839192,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / JaX   / tpu / Forward",
+            "value": 0.0001846569999543,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / JaXPipe / tpu / PostRev",
+            "value": 0.0001949569999851,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / JaX   / tpu / BothRev",
+            "value": 0.0002048360000117,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / HLOOpt / tpu / PostRev",
+            "value": 0.0001982320000024,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / PartOpt / tpu / PostRev",
+            "value": 0.0002052170000752,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / DefOpt / tpu / PostRev",
+            "value": 0.0001975279999896,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / IPartOpt / tpu / PostRev",
+            "value": 0.0001946989999851,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / IDefOpt / tpu / PostRev",
+            "value": 0.0001955219999217,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / JaXPipe / cpu / Primal",
+            "value": 0.00005227589999776683,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / JaX   / cpu / Primal",
+            "value": 0.0000465070999780437,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / HLOOpt / cpu / Primal",
+            "value": 0.0000616970000010042,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / PartOpt / cpu / Primal",
+            "value": 0.00006511490000775666,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / DefOpt / cpu / Primal",
+            "value": 0.00005632679994960199,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / IPartOpt / cpu / Primal",
+            "value": 0.00006469829995694453,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / IDefOpt / cpu / Primal",
+            "value": 0.00006561259997397428,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / JaX   / cpu / Forward",
+            "value": 0.0001106292999793,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / JaXPipe / cpu / PostRev",
+            "value": 0.0001125165999837,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / JaX   / cpu / BothRev",
+            "value": 0.0001575698999658,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / HLOOpt / cpu / PostRev",
+            "value": 0.0001257736000297,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / PartOpt / cpu / PostRev",
+            "value": 0.0001433484000699,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / DefOpt / cpu / PostRev",
+            "value": 0.0001159483999799,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / IPartOpt / cpu / PostRev",
+            "value": 0.0001435262999621,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / IDefOpt / cpu / PostRev",
+            "value": 0.0001222527999743,
             "unit": "s"
           }
         ]
