@@ -1337,6 +1337,48 @@ struct WrapToPadCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
   }
 };
 
+struct WrapToRotateOptimize : public OpRewritePattern<enzymexla::WrapOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::WrapOp wrap,
+                                PatternRewriter &rewriter) const override {
+    // Check if already inside a manual computation
+    if (wrap->getParentOfType<sdy::ManualComputationOp>())
+      return failure();
+
+    auto wrapDimension = wrap.getDimension();
+    auto lhs = wrap.getLhs();
+    auto rhs = wrap.getRhs();
+
+    // Only optimize symmetric wraps for now (lhs == rhs)
+    if (lhs != rhs)
+      return failure();
+
+    // Create an extend operation with the same lhs/rhs
+    auto extendOp = enzymexla::ExtendOp::create(
+        rewriter, wrap.getLoc(), wrap.getOperand(), lhs, rhs, wrapDimension);
+
+    // Copy sharding if present
+    if (auto wrapSharding = mlir::sdy::getSharding(wrap)) {
+      mlir::sdy::setSharding(extendOp, wrapSharding);
+    }
+
+    // Create a rotate operation to shift by lhs amount
+    auto rotateOp = enzymexla::RotateOp::create(
+        rewriter, wrap.getLoc(), extendOp.getResult(),
+        static_cast<int32_t>(lhs), static_cast<int32_t>(wrapDimension));
+
+    // Copy sharding to rotate
+    if (auto wrapSharding = mlir::sdy::getSharding(wrap)) {
+      mlir::sdy::setSharding(rotateOp, wrapSharding);
+    }
+
+    // Replace the wrap with the rotate
+    rewriter.replaceOp(wrap, rotateOp);
+    return success();
+  }
+};
+
 // TODO: check mesh attr and ensure only applied to iota tile
 struct ExtendCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
   int &channel_id;
@@ -3759,6 +3801,10 @@ struct OptimizeCommunicationPass
     if (wrap_to_pad_comm > 0)
       patterns.add<WrapToPadCommOptimize>(context,
                                           PatternBenefit(wrap_to_pad_comm));
+
+    if (wrap_to_rotate > 0)
+      patterns.add<WrapToRotateOptimize>(context,
+                                         PatternBenefit(wrap_to_rotate));
 
     if (extend_comm > 0)
       patterns.add<ExtendCommOptimize>(channel_id, context,
