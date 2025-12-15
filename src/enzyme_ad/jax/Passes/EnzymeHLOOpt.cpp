@@ -25983,6 +25983,92 @@ struct WhileDUSDSSimplify final
   }
 };
 
+struct ReshapeSliceReshape final
+    : public CheckedOpRewritePattern<stablehlo::ReshapeOp,
+                                     ReshapeSliceReshape> {
+  using CheckedOpRewritePattern<stablehlo::ReshapeOp,
+                                ReshapeSliceReshape>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp bottomReshapeOp,
+                                    PatternRewriter &rewriter) const {
+    auto sliceOp =
+        bottomReshapeOp.getOperand().getDefiningOp<stablehlo::SliceOp>();
+    if (!sliceOp || !llvm::hasSingleElement(sliceOp->getUsers())) {
+      return failure();
+    }
+
+    auto topReshapeOp =
+        sliceOp.getOperand().getDefiningOp<stablehlo::ReshapeOp>();
+    if (!topReshapeOp) {
+      return failure();
+    }
+
+    // compute which dims were inserted by the reshape op
+    auto topReshapeInTy =
+        cast<RankedTensorType>(topReshapeOp.getOperand().getType());
+    auto topReshapeOutTy = cast<RankedTensorType>(topReshapeOp.getType());
+    auto topInsertionDims =
+        findReshapeInsertionDims(topReshapeInTy, topReshapeOutTy);
+    if (topInsertionDims.empty()) {
+      return failure();
+    }
+
+    auto bottomReshapeInTy =
+        cast<RankedTensorType>(bottomReshapeOp.getOperand().getType());
+    auto bottomReshapeOutTy = cast<RankedTensorType>(bottomReshapeOp.getType());
+    auto bottomDeletionDims =
+        findReshapeInsertionDims(bottomReshapeOutTy, bottomReshapeInTy);
+    if (bottomDeletionDims.empty()) {
+      return failure();
+    }
+
+    llvm::SetVector<int64_t> intersection;
+    for (auto i : topInsertionDims) {
+      if (llvm::is_contained(bottomDeletionDims, i)) {
+        intersection.insert(i);
+      }
+    }
+
+    if (intersection.empty()) {
+      return failure();
+    }
+
+    SmallVector<int64_t> topReshapeShape, bottomReshapeShape, sliceStarts,
+        sliceLimits, sliceStrides;
+    for (size_t i = 0; i < topReshapeOutTy.getRank(); i++) {
+      if (llvm::is_contained(intersection, i)) {
+        continue;
+      }
+      topReshapeShape.push_back(topReshapeOutTy.getDimSize(i));
+      sliceStarts.push_back(sliceOp.getStartIndices()[i]);
+      sliceLimits.push_back(sliceOp.getLimitIndices()[i]);
+      sliceStrides.push_back(sliceOp.getStrides()[i]);
+    }
+
+    rewriter.setInsertionPointAfter(topReshapeOp);
+    auto newTopReshape =
+        stablehlo::ReshapeOpCreate(rewriter, bottomReshapeOp.getLoc(),
+                                   topReshapeOp.getOperand(), topReshapeShape);
+
+    // Create the new slice op on the new top reshape
+    rewriter.setInsertionPointAfter(sliceOp);
+    auto newSlice =
+        stablehlo::SliceOp::create(rewriter, sliceOp.getLoc(), newTopReshape,
+                                   rewriter.getDenseI64ArrayAttr(sliceStarts),
+                                   rewriter.getDenseI64ArrayAttr(sliceLimits),
+                                   rewriter.getDenseI64ArrayAttr(sliceStrides));
+
+    // Create the new bottom reshape and replace users
+    rewriter.setInsertionPointAfter(bottomReshapeOp);
+    auto newBottomReshape =
+        stablehlo::ReshapeOpCreate(rewriter, bottomReshapeOp.getLoc(), newSlice,
+                                   bottomReshapeOutTy.getShape());
+
+    rewriter.replaceAllUsesWith(bottomReshapeOp.getResult(), newBottomReshape);
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -26337,8 +26423,8 @@ struct EnzymeHLOOptPass
     patterns.add<
         ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
         SliceElementwise, SliceReshapeElementwise, SlicePad, SliceReshapePad,
-        DotReshapeDot, ChloInfConstProp, GammaConstProp, ConcatFuse,
-        ConcatToBroadcast, PadPad, PadReshapePad,
+        ReshapeSliceReshape, DotReshapeDot, ChloInfConstProp, GammaConstProp,
+        ConcatFuse, ConcatToBroadcast, PadPad, PadReshapePad,
         ConcatPushBinop<stablehlo::AddOp>, ConcatPushBinop<stablehlo::MulOp>,
         ScatterToDynamicUpdateSlice, ReduceConcat, ConcatSlice, ConcatMultiPad,
         ConcatWrap, WidenWrap, WidenExtend, ConcatConcatAxisSwap, SliceConcat,
