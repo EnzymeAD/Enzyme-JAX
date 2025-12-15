@@ -2433,15 +2433,19 @@ static bool isEquivalentTo(Value v1, ArrayRef<int64_t> sliceStart1,
       return false;
     }
     
-    // Slice is (at least partially) in the middle region
+    // Check if slice is completely within the middle region
+    if (sliceStart1[dim] < lhs || sliceLimit1[dim] > middleLimit) {
+      // Slice partially extends into padding regions - not equivalent
+      return false;
+    }
+    
+    // Slice is completely in the middle region
     // Adjust coordinates to be relative to the extend operand
     SmallVector<int64_t> adjustedStart, adjustedLimit;
     for (size_t i = 0; i < sliceStart1.size(); i++) {
       if (i == dim) {
-        adjustedStart.push_back(std::max<int64_t>(0, sliceStart1[i] - lhs));
-        adjustedLimit.push_back(
-            std::min<int64_t>(operandType.getShape()[dim],
-                             sliceLimit1[i] - lhs));
+        adjustedStart.push_back(sliceStart1[i] - lhs);
+        adjustedLimit.push_back(sliceLimit1[i] - lhs);
       } else {
         adjustedStart.push_back(sliceStart1[i]);
         adjustedLimit.push_back(sliceLimit1[i]);
@@ -2588,18 +2592,19 @@ struct DUSDUSToExtend final
       return failure(); // No gap or slices overlap
 
     // Get DUS start indices as constants
-    SmallVector<int64_t> dus1Starts, dus2Starts;
+    // Note: dus is outer DUS, dus2 is inner DUS
+    SmallVector<int64_t> dusOuterStarts, dusInnerStarts;
     for (auto idx : dus.getStartIndices()) {
       DenseIntElementsAttr attr;
       if (!matchPattern(idx, m_Constant(&attr)))
         return failure();
-      dus1Starts.push_back((*attr.begin()).getSExtValue());
+      dusOuterStarts.push_back((*attr.begin()).getSExtValue());
     }
     for (auto idx : dus2.getStartIndices()) {
       DenseIntElementsAttr attr;
       if (!matchPattern(idx, m_Constant(&attr)))
         return failure();
-      dus2Starts.push_back((*attr.begin()).getSExtValue());
+      dusInnerStarts.push_back((*attr.begin()).getSExtValue());
     }
 
     // Calculate padding sizes
@@ -2614,7 +2619,10 @@ struct DUSDUSToExtend final
     for (size_t i = 0; i < slice1.getStartIndices().size(); i++) {
       if (i == diffDim) {
         // Calculate where the middle region should be in the base tensor
-        int64_t baseStart = slice1AtStart ? dus1Starts[i] + lhsPad : dus2Starts[i] + lhsPad;
+        // If slice1 (from outer DUS) is at start, use outer DUS start + lhsPad
+        // If slice2 (from inner DUS) is at start, use inner DUS start + lhsPad
+        int64_t baseStart = slice1AtStart ? dusOuterStarts[i] + lhsPad 
+                                          : dusInnerStarts[i] + lhsPad;
         middleRegionStart.push_back(baseStart);
         middleRegionLimit.push_back(baseStart + (gapEnd - gapStart));
       } else {
