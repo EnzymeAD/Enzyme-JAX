@@ -14,17 +14,15 @@
 #pragma GCC diagnostic pop
 #endif
 #include "shardy/dialect/sdy/ir/utils.h"
-#include "src/enzyme_ad/jax/Dialect/Dialect.h"
+
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Utils.h"
+
 #include "stablehlo/dialect/StablehloOps.h"
-#include "llvm/ADT/DynamicAPInt.h"
-#include "llvm/ADT/SetVector.h"
+
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/LogicalResult.h"
-#include "llvm/Support/MathExtras.h"
+
 #include <algorithm>
 #include <cstdint>
 
@@ -1345,7 +1343,8 @@ struct WrapToPadCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
 //   p0 = pad(x, lhs=L, rhs=R)
 //   p1 = rotate(p0, L)
 //   p2 = rotate(p0, -R)
-//   result = select based on iota to choose between p1 (left), p0 (middle), p2 (right)
+//   result = select based on iota to choose between p1 (left), p0 (middle), p2
+//   (right)
 //
 // Note: Only applied when no sharding is present, to be conservative.
 // This pattern is intended to work in conjunction with other communication
@@ -1382,60 +1381,56 @@ struct WrapToRotateOptimize : public OpRewritePattern<enzymexla::WrapOp> {
     padLow[wrapDimension] = lhs;
     padHigh[wrapDimension] = rhs;
 
-    auto paddedOp = stablehlo::PadOp::create(rewriter, wrap.getLoc(),
-                                             wrap.getOperand(), zero, padLow,
-                                             padHigh, padInner);
+    auto paddedOp =
+        stablehlo::PadOp::create(rewriter, wrap.getLoc(), wrap.getOperand(),
+                                 zero, padLow, padHigh, padInner);
 
     // Create two rotate operations
-    auto rotate1Op = enzymexla::RotateOp::create(
+    auto rotateRhsPart = enzymexla::RotateOp::create(
         rewriter, wrap.getLoc(), paddedOp.getResult(),
-        static_cast<int32_t>(lhs), static_cast<int32_t>(wrapDimension));
+        static_cast<int32_t>(rhs + lhs), static_cast<int32_t>(wrapDimension));
 
-    auto rotate2Op = enzymexla::RotateOp::create(
+    auto rotateLhsPart = enzymexla::RotateOp::create(
         rewriter, wrap.getLoc(), paddedOp.getResult(),
-        -static_cast<int32_t>(rhs), static_cast<int32_t>(wrapDimension));
+        static_cast<int32_t>(wrapShape[wrapDimension] - lhs - rhs),
+        static_cast<int32_t>(wrapDimension));
 
     // Create iota along the wrap dimension
     auto iota = stablehlo::IotaOp::create(
         rewriter, wrap.getLoc(),
-        RankedTensorType::get(wrapShape, rewriter.getI32Type()),
-        wrapDimension);
+        RankedTensorType::get(wrapShape, rewriter.getI32Type()), wrapDimension);
 
     // Use select to choose between the three parts:
     // - left part (iota < lhs): use rotate1 (rotated left by lhs)
     // - middle part (lhs <= iota < lhs + operandShape[dim]): use paddedOp
-    // - right part (iota >= lhs + operandShape[dim]): use rotate2 (rotated right by rhs)
-
-    Value current = rotate2Op;
-
-    // Select middle part (padded original)
-    Value midThreshold = stablehlo::ConstantOp::create(
-        rewriter, wrap.getLoc(),
-        SplatElementsAttr::get(iota.getType(),
-                               rewriter.getI32IntegerAttr(lhs + operandShape[wrapDimension])));
-
-    auto midCond = stablehlo::CompareOp::create(
-        rewriter, wrap.getLoc(), iota, midThreshold,
-        stablehlo::ComparisonDirection::LT);
-
-    current = stablehlo::SelectOp::create(rewriter, wrap.getLoc(), midCond,
-                                         paddedOp, current);
-
-    // Select left part (rotate1)
-    Value lhsThreshold = stablehlo::ConstantOp::create(
+    // - right part (iota >= lhs + operandShape[dim]): use rotate2 (rotated
+    // right by rhs)
+    auto lhsCheckConstOp = stablehlo::ConstantOp::create(
         rewriter, wrap.getLoc(),
         SplatElementsAttr::get(iota.getType(),
                                rewriter.getI32IntegerAttr(lhs)));
 
-    auto lhsCond = stablehlo::CompareOp::create(
-        rewriter, wrap.getLoc(), iota, lhsThreshold,
+    auto rhsCheckConstOp = stablehlo::ConstantOp::create(
+        rewriter, wrap.getLoc(),
+        SplatElementsAttr::get(
+            iota.getType(),
+            rewriter.getI32IntegerAttr(lhs + operandShape[wrapDimension])));
+
+    Value lhsCondOp = stablehlo::CompareOp::create(
+        rewriter, wrap.getLoc(), iota, lhsCheckConstOp,
+        stablehlo::ComparisonDirection::LT);
+    Value midAndLhsCondOp = stablehlo::CompareOp::create(
+        rewriter, wrap.getLoc(), iota, rhsCheckConstOp,
         stablehlo::ComparisonDirection::LT);
 
-    current = stablehlo::SelectOp::create(rewriter, wrap.getLoc(), lhsCond,
-                                         rotate1Op, current);
+    Value midAndLhs = stablehlo::SelectOp::create(
+        rewriter, wrap.getLoc(), lhsCondOp, rotateLhsPart, paddedOp);
+
+    Value result = stablehlo::SelectOp::create(
+        rewriter, wrap.getLoc(), midAndLhsCondOp, midAndLhs, rotateRhsPart);
 
     // Replace the wrap with the select
-    rewriter.replaceOp(wrap, current);
+    rewriter.replaceOp(wrap, result);
     return success();
   }
 };
