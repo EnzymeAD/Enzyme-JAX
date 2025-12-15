@@ -48,72 +48,45 @@ bool anyOpsAreDataDependent(ArrayRef<Operation *> ops) {
   }
 
   Block *parentBlock = ops[0]->getBlock();
-  // dependency analysis for ops in different blocks is hard. conservatively
-  // assume that all ops are data dependent
-  if (llvm::any_of(
-          ops, [&](Operation *op) { return op->getBlock() != parentBlock; })) {
-    return true;
-  }
 
-  // Sort by block order so "earlier" corresponds to program order.
-  SmallVector<Operation *, 8> sortedOps(ops.begin(), ops.end());
-  std::sort(sortedOps.begin(), sortedOps.end(),
-            [](Operation *a, Operation *b) { return a->isBeforeInBlock(b); });
+  SmallVector<Operation *> todo;
 
-  Operation *firstOp = sortedOps.front();
-
-  // Track values defined by subset ops that are earlier in block order.
-  llvm::SmallSetVector<Value, 32> earlierDefinedValues;
-  for (Value result : firstOp->getResults()) {
-    earlierDefinedValues.insert(result);
-  }
-
-  // For each op, check if it (directly or indirectly) depends on any earlier op
-  // in the subset by traversing defining ops backwards in program order.
-  for (Operation *op : llvm::drop_begin(sortedOps)) {
-    SmallVector<Operation *, 32> worklist;
-    llvm::SmallPtrSet<Operation *, 32> visited;
-
-    auto enqueueDef = [&](Operation *defOp, Operation *userOp) {
-      if (!defOp || defOp->getBlock() != parentBlock) {
-        return;
-      }
-      // Only traverse within the window [first_op, user_op) in block order.
-      if (defOp->isBeforeInBlock(firstOp) || !defOp->isBeforeInBlock(userOp)) {
-        return;
-      }
-      worklist.push_back(defOp);
-    };
-
-    for (Value operand : op->getOperands()) {
-      if (earlierDefinedValues.contains(operand)) {
-        return true;
-      }
-      enqueueDef(operand.getDefiningOp(), op);
+  for (auto op : ops) {
+    // dependency analysis for ops in different blocks is hard. conservatively
+    // assume that all ops are data dependent
+    if (op->getBlock() != parentBlock) {
+      return true;
     }
+    todo.push_back(op);
+  }
 
-    while (!worklist.empty()) {
-      Operation *curr = worklist.pop_back_val();
-      if (!visited.insert(curr).second) {
-        continue;
-      }
+  SmallPtrSet<Operation *, 1> toCheck(ops.begin(), ops.end());
 
-      // Once we're before the earliest subset op, this path cannot reach any
-      // earlier subset-defined value.
-      if (curr->isBeforeInBlock(firstOp)) {
-        continue;
-      }
+  SmallPtrSet<Operation *, 1> done;
 
-      for (Value operand : curr->getOperands()) {
-        if (earlierDefinedValues.contains(operand)) {
-          return true;
+  while (!todo.empty()) {
+    auto cur = todo.pop_back_val();
+    if (done.contains(cur))
+      continue;
+    done.insert(cur);
+    // TODO consider with regions
+    if (cur->getNumRegions() != 0) {
+      return true;
+    }
+    for (auto v : cur->getOperands()) {
+      if (auto op2 = v.getDefiningOp()) {
+        if (op2->getBlock() != parentBlock) {
+          continue;
         }
-        enqueueDef(operand.getDefiningOp(), curr);
+        if (toCheck.contains(op2))
+          return true;
+        todo.push_back(op2);
+      } else {
+        // No blockargument can be in the list of ops, since it is
+        // definitionally defined outside the block
+        assert(isa<BlockArgument>(v));
+        continue;
       }
-    }
-
-    for (Value result : op->getResults()) {
-      earlierDefinedValues.insert(result);
     }
   }
 
