@@ -905,6 +905,12 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*default=*/"1",
        /*description=*/"Perform a Wrap with Padding to optimize the communication">,
        Option<
+       /*C++ variable name=*/"wrap_to_rotate",
+       /*CLI argument=*/"wrap_to_rotate",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Rewrite Wrap operations in terms of Extend and Rotate">,
+       Option<
        /*C++ variable name=*/"reorder_associative",
        /*CLI argument=*/"reorder_associative",
        /*type=*/"int",
