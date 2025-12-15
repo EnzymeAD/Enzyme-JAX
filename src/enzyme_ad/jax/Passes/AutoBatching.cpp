@@ -270,13 +270,6 @@ bool IsEquivalentToIgnoringValueEquivalence(Operation *op1, Operation *op2) {
       OperationEquivalence::IgnoreLocations, nullptr);
 }
 
-// Implicitly assumes before in block if ops are in different blocks
-bool isBeforeInBlock(Operation *op, Operation *otherOp) {
-  if (op->getBlock() != otherOp->getBlock())
-    return true;
-  return op->isBeforeInBlock(otherOp);
-}
-
 bool allOpsAreUnique(const SmallVector<Operation *> &ops) {
   SmallPtrSet<Operation *, 8> seen;
   return llvm::all_of(ops,
@@ -677,50 +670,106 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
     return rewriter.notifyMatchFailure(sliceOp, "ops are data dependent");
   }
 
-  // move all the related ops and their operands (and theirs) s.t they are
-  // together
-  Operation *firstRelatedOp = relatedOps[0];
-  for (auto &op : relatedOps) {
-    if (::utils::isBeforeInBlock(op, firstRelatedOp)) {
-      firstRelatedOp = op;
+  // Linear time algorithm to find first and last related ops:
+  // - Build a set for O(1) lookup
+  // - Single pass through block to find first and last
+  llvm::SmallPtrSet<Operation *, 8> relatedOpsSet(relatedOps.begin(),
+                                                  relatedOps.end());
+  Operation *firstRelatedOp = nullptr;
+  Operation *lastRelatedOp = nullptr;
+  for (auto &op : *block) {
+    if (relatedOpsSet.contains(&op)) {
+      if (!firstRelatedOp) {
+        firstRelatedOp = &op;
+      }
+      lastRelatedOp = &op;
     }
   }
-  // if we have to move around too many ops we avoid applying this pattern
-  llvm::SetVector<Operation *> opsToMoveWorklist;
-  for (auto &op : relatedOps) {
-    if (op == firstRelatedOp)
-      continue;
-    SmallVector<Operation *> opsToMove;
-    opsToMove.push_back(op);
-    while (!opsToMove.empty()) {
-      auto currOp = opsToMove.pop_back_val();
-      bool notSeen = opsToMoveWorklist.insert(currOp);
-      if (notSeen) {
-        for (auto operand : currOp->getOperands()) {
-          if (auto operandOp = operand.getDefiningOp()) {
-            if (!::utils::isBeforeInBlock(operandOp, firstRelatedOp)) {
-              opsToMove.push_back(operandOp);
-            }
-          }
+  assert(firstRelatedOp && lastRelatedOp && "No related ops found in block");
+
+  auto rangeBegin = firstRelatedOp->getIterator();
+  auto rangeEnd = std::next(lastRelatedOp->getIterator());
+
+  // First pass: collect all ops in the range and identify which are related
+  llvm::SmallPtrSet<Operation *, 16> opsInRange;
+  llvm::SetVector<Operation *> relatedOpsInRange;
+  llvm::SmallVector<Operation *> nonRelatedOps;
+
+  for (auto it = rangeBegin; it != rangeEnd; ++it) {
+    opsInRange.insert(&*it);
+    if (relatedOpsSet.contains(&*it)) {
+      relatedOpsInRange.insert(&*it);
+    } else {
+      nonRelatedOps.push_back(&*it);
+    }
+  }
+
+  // Use worklist to compute transitive "depends on related op" set
+  // Start with ops that directly depend on related ops, then propagate to users
+  llvm::SmallPtrSet<Operation *, 16> dependsOnRelated;
+  llvm::SmallVector<Operation *> worklist;
+
+  // Initialize worklist with non-related ops that directly depend on related
+  // ops
+  for (Operation *op : nonRelatedOps) {
+    for (Value operand : op->getOperands()) {
+      if (Operation *defOp = operand.getDefiningOp()) {
+        if (relatedOpsSet.contains(defOp)) {
+          dependsOnRelated.insert(op);
+          worklist.push_back(op);
+          break;
         }
       }
     }
   }
 
-  auto opsToMoveSorted = mlir::topologicalSort(opsToMoveWorklist);
-  for (auto op : opsToMoveSorted) {
-    rewriter.moveOpAfter(op, firstRelatedOp);
-    firstRelatedOp = op;
+  // Propagate: if op depends on related, all its users in range also depend
+  while (!worklist.empty()) {
+    Operation *op = worklist.pop_back_val();
+    for (Operation *user : op->getUsers()) {
+      if (opsInRange.contains(user) && !relatedOpsSet.contains(user) &&
+          !dependsOnRelated.contains(user)) {
+        dependsOnRelated.insert(user);
+        worklist.push_back(user);
+      }
+    }
   }
 
-  Operation *insertionPoint = relatedOps[0];
-  for (auto &op : relatedOps) {
-    if (::utils::isBeforeInBlock(op, insertionPoint)) {
-      continue;
+  // Partition non-related ops into preOps and postOps
+  llvm::SetVector<Operation *> preOps;
+  llvm::SetVector<Operation *> postOps;
+
+  for (Operation *op : nonRelatedOps) {
+    if (dependsOnRelated.contains(op)) {
+      postOps.insert(op);
+    } else {
+      preOps.insert(op);
     }
+  }
+
+  // Sort each group topologically
+  auto sortedPreOps = mlir::topologicalSort(preOps);
+  auto sortedRelated = mlir::topologicalSort(relatedOpsInRange);
+  auto sortedPostOps = mlir::topologicalSort(postOps);
+
+  // Move all ops in order: preOps, then relatedOps, then postOps
+  // Strategy: insert all ops just before rangeEnd in reverse order
+  Operation *insertionPoint = &*rangeEnd;
+  for (Operation *op : llvm::reverse(sortedPostOps)) {
+    op->moveBefore(insertionPoint);
     insertionPoint = op;
   }
-  rewriter.setInsertionPoint(insertionPoint);
+  for (Operation *op : llvm::reverse(sortedRelated)) {
+    op->moveBefore(insertionPoint);
+    insertionPoint = op;
+  }
+  for (Operation *op : llvm::reverse(sortedPreOps)) {
+    op->moveBefore(insertionPoint);
+    insertionPoint = op;
+  }
+
+  // The last related op is now the insertion point
+  rewriter.setInsertionPoint(lastRelatedOp);
 
   for (auto &slice : relatedSlices) {
     slice.dimensions = {sliceDim};
