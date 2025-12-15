@@ -238,8 +238,8 @@ void WhileLoopInfo::propagateAffineIndexInfo() {
     }
   }
 
-  llvm::APInt baseScaling(bitWidth, 1, true);
-  llvm::APInt baseOffset(bitWidth, 0, true);
+  APInt baseScaling(bitWidth, 1, true);
+  APInt baseOffset(bitWidth, 0, true);
   SmallVector<Value> newPropagated;
 
   propagateAffineIndexInfo(
@@ -328,7 +328,11 @@ void WhileLoopInfo::propagateAffineIndexInfo(
         return WalkResult::advance();
       }
 
-      if (cast<ShapedType>(sliceOp.getType()).getNumElements() != 1) {
+      auto sliceOutTy = cast<RankedTensorType>(sliceOp.getType());
+      if (sliceOutTy.getNumElements() != 1 ||
+          !sliceOutTy.getElementType().isInteger() ||
+          // skip over boolean types
+          sliceOutTy.getElementType().isInteger(1)) {
         return WalkResult::advance();
       }
 
@@ -362,7 +366,7 @@ void WhileLoopInfo::propagateAffineIndexInfo(
             sliceOp.getResult(),
             WhileLoopInfo::AffineIndexInfo{
                 newScale,
-                llvm::APInt(indexInfo.offset.getBitWidth(), newOffset)},
+                llvm::APInt(indexInfo.offset.getBitWidth(), newOffset, true)},
             newPropagated);
       }
 
