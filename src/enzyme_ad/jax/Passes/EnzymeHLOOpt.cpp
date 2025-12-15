@@ -2343,16 +2343,17 @@ struct DUSDUSConcat final
 
 // Optimization: DUSDUSToExtend
 // Pattern:
-//   %slice1 = stablehlo.slice %source [start1_0:limit1_0, start1_1:limit1_1, ...]
-//   %dus1 = stablehlo.dynamic_update_slice %base, %slice1, %idx1_0, %idx1_1, ...
-//   %slice2 = stablehlo.slice %source [start2_0:limit2_0, start2_1:limit2_1, ...]
-//   %dus2 = stablehlo.dynamic_update_slice %dus1, %slice2, %idx2_0, %idx2_1, ...
+//   %slice_start = stablehlo.slice %source [0:4, 0:1, 0:3056]    // First element in dim 1
+//   %dus1 = stablehlo.dynamic_update_slice %base, %slice_start, %idx0, %idx1, %idx2
+//   %slice_end = stablehlo.slice %source [0:4, 1519:1520, 0:3056]  // Last element in dim 1
+//   %dus2 = stablehlo.dynamic_update_slice %dus1, %slice_end, %idx0, %idx1+offset, %idx2
 // Constraint: Both slices come from the same source tensor
 // Constraint: The slices differ only in one dimension and are at the beginning and end
-// Constraint: All other start indices for DUS operations match
+// Constraint: DUS operations differ only in the same dimension
 // Rewrite to:
-//   %extend = enzymexla.extend %source, lhs=..., rhs=..., dimension=...
-//   %new_dus = stablehlo.dynamic_update_slice %base, %extend, %idx1_0, %idx1_1, ...
+//   %middle = stablehlo.slice %source [0:4, 1:1519, 0:3056]  // The gap in the middle
+//   %extend = enzymexla.extend %middle, lhs=1, rhs=1, dimension=1
+//   %new_dus = stablehlo.dynamic_update_slice %base, %extend, %idx0, %idx1, %idx2
 struct DUSDUSToExtend final
     : CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp, DUSDUSToExtend> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -2379,6 +2380,12 @@ struct DUSDUSToExtend final
     auto sourceType = dyn_cast<RankedTensorType>(slice1.getOperand().getType());
     if (!sourceType)
       return failure();
+
+    // Check that strides are all 1
+    for (size_t i = 0; i < slice1.getStrides().size(); i++) {
+      if (slice1.getStrides()[i] != 1 || slice2.getStrides()[i] != 1)
+        return failure();
+    }
 
     // Find the dimension where the slices differ
     ssize_t diffDim = -1;
@@ -2414,19 +2421,8 @@ struct DUSDUSToExtend final
       }
     }
 
-    // If DUS operations have the same start indices, check if they differ in update size
-    if (dusDiffDim == -1) {
-      for (size_t i = 0; i < dus.getStartIndices().size(); i++) {
-        if (slice1Type.getShape()[i] != slice2Type.getShape()[i]) {
-          if (dusDiffDim != -1)
-            return failure();
-          dusDiffDim = i;
-        }
-      }
-    }
-
     if (dusDiffDim == -1)
-      return failure();
+      return failure(); // DUS operations have same start indices
 
     // Check that the DUS difference dimension matches the slice difference dimension
     if (dusDiffDim != diffDim)
