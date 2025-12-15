@@ -1337,6 +1337,16 @@ struct WrapToPadCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
   }
 };
 
+// Communication optimization pattern to rewrite wrap operations in terms of
+// extend and rotate operations. This can enable better optimization of the
+// resulting operations in distributed/sharded contexts.
+//
+// Pattern: wrap(x, lhs=L, rhs=R) => rotate(extend(x, lhs=L, rhs=R), L)
+//
+// Note: Currently limited to symmetric wraps (lhs == rhs) and only applied
+// when no sharding is present, to be conservative. This pattern is intended
+// to work in conjunction with other communication optimization patterns for
+// extend and rotate operations.
 struct WrapToRotateOptimize : public OpRewritePattern<enzymexla::WrapOp> {
   using OpRewritePattern::OpRewritePattern;
 
