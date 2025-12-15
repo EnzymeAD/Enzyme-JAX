@@ -1125,4 +1125,19 @@ def MPISendOp : EnzymeXLA_Op<"send", []> {
   let assemblyFormat = "`(` operands `)` attr-dict `:` type(operands)";
 }
 
+def MPIRecvOp : EnzymeXLA_Op<"recv", []> {
+  let summary = "Equivalent to "
+                "`MPI_Recv(&buf, count, datatype, source, tag, comm, &status)`";
+  let arguments = (
+    ins AnyTensor : $buf,
+    TensorOf<[I32]> : $count,
+    /* xxx : $dtype */ // TODO 
+    TensorOf<[I32]> : $source,
+    TensorOf<[I32]> : $tag
+    /* xxx : $comm */ // TODO 
+    /* xxx : $status */ // TODO 
+  );
+  let assemblyFormat = "`(` operands `)` attr-dict `:` type(operands)";
+}
+
 #endif // ENZYMEXLA_OPS
