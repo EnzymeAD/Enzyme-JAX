@@ -26708,7 +26708,70 @@ struct ReshapeSliceReshape final
   }
 };
 
-// TODO: add ReduceDeleteDims
+
+// If a reduce is followed by a reshape that deletes certain dimensions,
+// we can absorb those deleted dimensions into the reduce op
+struct ReduceDeleteDims final
+    : public CheckedOpRewritePattern<stablehlo::ReshapeOp, ReduceDeleteDims> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp reshapeOp,
+                                    PatternRewriter &rewriter) const {
+    auto reduceOp = reshapeOp.getOperand().getDefiningOp<stablehlo::ReduceOp>();
+    if (!reduceOp)
+      return failure();
+
+    if (reduceOp.getInputs().size() != 1 || reduceOp.getInitValues().size() != 1)
+      return failure();
+
+    if (!llvm::hasSingleElement(reduceOp->getUsers()))
+      return failure();
+
+    auto reduceOutTy = cast<RankedTensorType>(reduceOp.getResult(0).getType());
+    auto reshapeOutTy = cast<RankedTensorType>(reshapeOp.getType());
+
+    // Find which dimensions are being deleted by the reshape
+    // findReshapeInsertionDims(output, input) returns dims in input not in output
+    auto deletedDims = findReshapeInsertionDims(reshapeOutTy, reduceOutTy);
+    if (deletedDims.empty())
+      return failure();
+
+    // Map reduce output dims to input dims
+    // The reduce output has dimensions: all input dims except the reduced ones
+    auto reduceInputTy =
+        cast<RankedTensorType>(reduceOp.getInputs()[0].getType());
+    auto reduceDims = reduceOp.getDimensions();
+
+    // Build mapping from reduce output dim -> reduce input dim
+    SmallVector<int64_t> reduceOutToInMap;
+    for (int64_t inIdx = 0; inIdx < reduceInputTy.getRank(); ++inIdx) {
+      if (llvm::is_contained(reduceDims, inIdx))
+        continue;
+      reduceOutToInMap.push_back(inIdx);
+    }
+
+    // Map the deleted dimensions from reduce output back to reduce input
+    SmallVector<int64_t> newReduceDims(reduceDims.begin(), reduceDims.end());
+    for (auto dim : deletedDims) {
+      if (dim >= reduceOutToInMap.size())
+        return failure();
+      newReduceDims.push_back(reduceOutToInMap[dim]);
+    }
+
+    // Sort the dimensions since reduce expects them in order
+    llvm::sort(newReduceDims);
+
+    // Create the new reduce op with the additional dimensions
+    auto newReduceOp = stablehlo::ReduceOp::create(
+        rewriter, reduceOp.getLoc(), TypeRange(reshapeOp.getType()),
+        ValueRange(reduceOp.getInputs()), ValueRange(reduceOp.getInitValues()),
+        newReduceDims);
+    newReduceOp.getRegion().takeBody(reduceOp.getRegion());
+
+    rewriter.replaceOp(reshapeOp, newReduceOp.getResults());
+    return success();
+  };
+};
 
 // If reshape deletes certain dimensions followed by a reduce,
 // we can absorb those into the dimensions of the reduce op
@@ -27449,7 +27512,8 @@ struct EnzymeHLOOptPass
         DotGeneralRemoveBatchDimensions,
         DUSDynamicSliceSimplify,
         WhileDUSDSSimplify,
-        DeleteDimsReduce
+        DeleteDimsReduce,
+        ReduceDeleteDims
       >(context);
 
     patterns.add<

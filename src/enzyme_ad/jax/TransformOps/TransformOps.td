@@ -2591,3 +2591,8 @@ def ApplyDeleteDimsReducePatterns : EnzymeHLOPatternOp<
     "delete_dims_reduce"> {
   let patterns = ["DeleteDimsReduce"];
 }
+
+def ApplyReduceDeleteDimsPatterns : EnzymeHLOPatternOp<
+    "reduce_delete_dims"> {
+  let patterns = ["ReduceDeleteDims"];
+}

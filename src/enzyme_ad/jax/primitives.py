@@ -323,6 +323,7 @@ def optimization_passes(
         "reshape_slice_reshape",
         "dot_general_remove_batch_dimensions",
         "delete_dims_reduce",
+        "reduce_delete_dims",
     ]
 
     # constant propagation patterns

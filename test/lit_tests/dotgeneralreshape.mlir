@@ -49,8 +49,6 @@ module attributes {transform.with_named_sequence} {
 // CHECK: func.func @f_generator(%arg0: tensor<6x2xf32>, %arg1: tensor<2x4xf32>) -> (tensor<4xf32>, tensor<6x2xf32>, tensor<2x4xf32>) {
 // CHECK-NEXT:   %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
 // CHECK-NEXT:   %0 = stablehlo.dot_general %arg1, %arg0, contracting_dims = [0] x [1], precision = [DEFAULT, DEFAULT] : (tensor<2x4xf32>, tensor<6x2xf32>) -> tensor<4x6xf32>
-// CHECK-NEXT:   %1 = stablehlo.broadcast_in_dim %0, dims = [1, 0] : (tensor<4x6xf32>) -> tensor<6x4x1xf32>
-// CHECK-NEXT:   %2 = stablehlo.reduce(%1 init: %cst) applies stablehlo.add across dimensions = [0] : (tensor<6x4x1xf32>, tensor<f32>) -> tensor<4x1xf32>
-// CHECK-NEXT:   %3 = stablehlo.reshape %2 : (tensor<4x1xf32>) -> tensor<4xf32>
-// CHECK-NEXT:   return %3, %arg0, %arg1 : tensor<4xf32>, tensor<6x2xf32>, tensor<2x4xf32>
+// CHECK-NEXT:   %1 = stablehlo.reduce(%0 init: %cst) applies stablehlo.add across dimensions = [1] : (tensor<4x6xf32>, tensor<f32>) -> tensor<4xf32>
+// CHECK-NEXT:   return %1, %arg0, %arg1 : tensor<4xf32>, tensor<6x2xf32>, tensor<2x4xf32>
 // CHECK-NEXT: }
