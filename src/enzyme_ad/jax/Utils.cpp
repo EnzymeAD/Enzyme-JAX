@@ -1748,38 +1748,22 @@ bool broadcastInDimIsReshape(BroadcastInDimOp op) {
   auto inputType = input.getType();
   auto broadcastDims = op.getBroadcastDimensions();
 
-  size_t inputSize = 1;
-  for (auto sz : inputType.getShape())
-    inputSize *= sz;
-  size_t outputSize = 1;
-  for (auto sz : outputType.getShape())
-    outputSize *= sz;
-
-  if (inputSize != outputSize)
+  // reshape cannot expand number of elements
+  if (inputType.getNumElements() != outputType.getNumElements()) {
     return false;
+  }
 
+  // singleton dims can be freely moved around
   SmallVector<int64_t> nonSingletonDims;
-
-  for (size_t i = 0; i < broadcastDims.size(); ++i) {
-    int64_t dimIdx = broadcastDims[i];
-    if (inputType.getRank() > i && inputType.getDimSize(i) != 1) {
-      nonSingletonDims.push_back(dimIdx);
+  for (auto [dim, inputSize] : llvm::zip(broadcastDims, inputType.getShape())) {
+    if (inputSize != 1) {
+      nonSingletonDims.push_back(dim);
     }
   }
 
-  for (int i = 1, s = nonSingletonDims.size(); i < s; ++i) {
-    if (nonSingletonDims[i - 1] > nonSingletonDims[i])
-      return false;
-  }
-
-  for (size_t i = 0; i < outputType.getRank(); ++i) {
-    int64_t dimIdx = outputType.getDimSize(i);
-    if (dimIdx == 1)
-      continue;
-    auto it = llvm::find(broadcastDims, dimIdx);
-    if (it == broadcastDims.end()) {
-      return false;
-    }
+  // transposed input is not reshape
+  if (!llvm::is_sorted(nonSingletonDims)) {
+    return false;
   }
 
   return true;
