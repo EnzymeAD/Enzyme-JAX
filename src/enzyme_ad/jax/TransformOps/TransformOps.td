@@ -2581,3 +2581,13 @@ def ApplyReshapeSliceReshapePatterns : EnzymeHLOPatternOp<
     "reshape_slice_reshape"> {
   let patterns = ["ReshapeSliceReshape"];
 }
+
+def ApplyDotGeneralRemoveBatchDimensionsPatterns : EnzymeHLOPatternOp<
+    "dot_general_remove_batch_dimensions"> {
+  let patterns = ["DotGeneralRemoveBatchDimensions"];
+}
+
+def ApplyDeleteDimsReducePatterns : EnzymeHLOPatternOp<
+    "delete_dims_reduce"> {
+  let patterns = ["DeleteDimsReduce"];
+}

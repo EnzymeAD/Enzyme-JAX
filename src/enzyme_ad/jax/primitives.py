@@ -321,6 +321,8 @@ def optimization_passes(
         "dus_dynamic_slice_simplify",
         "while_dus_ds_simplify",
         "reshape_slice_reshape",
+        "dot_general_remove_batch_dimensions",
+        "delete_dims_reduce",
     ]
 
     # constant propagation patterns

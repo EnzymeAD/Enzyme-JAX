@@ -2160,6 +2160,33 @@ Value TransposeOpCreate(
   return transposeOp.getResult();
 }
 
+Type GetDotGeneralResultType(Value lhs, Value rhs, Type resElemType,
+                             stablehlo::DotDimensionNumbersAttr dotDims) {
+  auto lhsType = cast<RankedTensorType>(lhs.getType());
+  auto rhsType = cast<RankedTensorType>(rhs.getType());
+
+  SmallVector<int64_t> resultShape;
+  for (auto dim : dotDims.getLhsBatchingDimensions()) {
+    resultShape.push_back(lhsType.getDimSize(dim));
+  }
+  for (size_t i = 0; i < lhsType.getRank(); ++i) {
+    if (llvm::is_contained(dotDims.getLhsBatchingDimensions(), i) ||
+        llvm::is_contained(dotDims.getLhsContractingDimensions(), i)) {
+      continue;
+    }
+    resultShape.push_back(lhsType.getDimSize(i));
+  }
+  for (size_t i = 0; i < rhsType.getRank(); ++i) {
+    if (llvm::is_contained(dotDims.getRhsBatchingDimensions(), i) ||
+        llvm::is_contained(dotDims.getRhsContractingDimensions(), i)) {
+      continue;
+    }
+    resultShape.push_back(rhsType.getDimSize(i));
+  }
+
+  return RankedTensorType::get(resultShape, resElemType);
+}
+
 } // namespace stablehlo
 
 } // namespace mlir
