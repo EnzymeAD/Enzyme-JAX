@@ -335,6 +335,15 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
     operands.push_back(betaOperand);
     operandRanks.push_back(betaRank);
 
+    enzymexla::LapackUplo uplo2 = op.getUplo();
+    switch (op.getUplo()) {
+    case enzymexla::LapackUplo::F:
+      uplo2 = enzymexla::LapackUplo::U;
+      break;
+    default:
+      break;
+    }
+
     auto customCall = stablehlo::CustomCallOp::create(
         rewriter, op.getLoc(), TypeRange{CType}, operands,
         rewriter.getStringAttr("reactant_cublas_syrk_ffi"),
@@ -344,7 +353,7 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
             rewriter.getNamedAttr("transpose", rewriter.getBoolAttr(transpose)),
             rewriter.getNamedAttr(
                 "uplo",
-                rewriter.getBoolAttr(op.getUplo() == enzymexla::LapackUplo::U)),
+                rewriter.getBoolAttr(uplo2 == enzymexla::LapackUplo::U)),
             rewriter.getNamedAttr("use_alpha_attribute",
                                   rewriter.getBoolAttr(useAlphaAttr)),
             rewriter.getNamedAttr("use_beta_attribute",
@@ -373,9 +382,8 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
         }));
 
     auto result = customCall.getResult(0);
-    if (op.getFill() || op.getUplo() == enzymexla::LapackUplo::L) {
-      result = stablehlo::copyTriangularPart(rewriter, result,
-                                             enzymexla::LapackUplo::U);
+    if (op.getFill()) {
+      result = stablehlo::copyTriangularPart(rewriter, result, uplo2);
     }
     rewriter.replaceAllUsesWith(op.getResult(), result);
 

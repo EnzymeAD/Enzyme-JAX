@@ -321,6 +321,7 @@ def optimization_passes(
         "dus_dynamic_slice_simplify",
         "while_dus_ds_simplify",
         "reshape_slice_reshape",
+        "syrk_fill_remove",
     ]
 
     # constant propagation patterns
