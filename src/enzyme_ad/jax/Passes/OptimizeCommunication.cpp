@@ -100,6 +100,8 @@ computeMeshStrides(const SmallVector<int64_t, 6> &shape) {
 SmallVector<int64_t, 16>
 getShardingDevices(const sdy::TensorShardingAttr &shardingAttr, int dimension,
                    Operation *op) {
+  llvm::errs() << "getShardingDevices\n";
+  llvm::errs() << "shardingAttr: " << shardingAttr << "\n";
   TensorShardingAttr op_shardings[] = {shardingAttr};
 
   auto meshAttr = mlir::sdy::getCommonMesh(op_shardings, op_shardings, op);
@@ -1358,11 +1360,21 @@ struct WrapToRotateOptimize : public OpRewritePattern<enzymexla::WrapOp> {
     if (wrap->getParentOfType<sdy::ManualComputationOp>())
       return failure();
 
-    // Only apply if there's no sharding (for now, to be conservative)
-    if (mlir::sdy::getSharding(wrap))
-      return failure();
-
     auto wrapDimension = wrap.getDimension();
+
+    auto wrapSharding = mlir::sdy::getSharding(wrap);
+    if (!wrapSharding) {
+      return failure();
+    }
+    auto ndevices = getShardingDevices(wrapSharding, wrapDimension, wrap);
+    int64_t numDevicesAlongDimension = ndevices[wrapDimension];
+
+    if (numDevicesAlongDimension == 1) {
+      return rewriter.notifyMatchFailure(
+          wrap,
+          "numDevicesAlongDimension == 1. Communication is already optimized.");
+    }
+
     auto lhs = wrap.getLhs();
     auto rhs = wrap.getRhs();
     auto elemType = wrap.getType().getElementType();
@@ -1384,21 +1396,25 @@ struct WrapToRotateOptimize : public OpRewritePattern<enzymexla::WrapOp> {
     auto paddedOp =
         stablehlo::PadOp::create(rewriter, wrap.getLoc(), wrap.getOperand(),
                                  zero, padLow, padHigh, padInner);
+    mlir::sdy::setSharding(paddedOp, wrapSharding);
 
     // Create two rotate operations
     auto rotateRhsPart = enzymexla::RotateOp::create(
         rewriter, wrap.getLoc(), paddedOp.getResult(),
         static_cast<int32_t>(rhs + lhs), static_cast<int32_t>(wrapDimension));
+    mlir::sdy::setSharding(rotateRhsPart, wrapSharding);
 
     auto rotateLhsPart = enzymexla::RotateOp::create(
         rewriter, wrap.getLoc(), paddedOp.getResult(),
         static_cast<int32_t>(wrapShape[wrapDimension] - lhs - rhs),
         static_cast<int32_t>(wrapDimension));
+    mlir::sdy::setSharding(rotateLhsPart, wrapSharding);
 
     // Create iota along the wrap dimension
     auto iota = stablehlo::IotaOp::create(
         rewriter, wrap.getLoc(),
         RankedTensorType::get(wrapShape, rewriter.getI32Type()), wrapDimension);
+    mlir::sdy::setSharding(iota, wrapSharding);
 
     // Use select to choose between the three parts:
     // - left part (iota < lhs): use rotate1 (rotated left by lhs)
@@ -1409,25 +1425,32 @@ struct WrapToRotateOptimize : public OpRewritePattern<enzymexla::WrapOp> {
         rewriter, wrap.getLoc(),
         SplatElementsAttr::get(iota.getType(),
                                rewriter.getI32IntegerAttr(lhs)));
+    mlir::sdy::setSharding(lhsCheckConstOp, wrapSharding);
 
     auto rhsCheckConstOp = stablehlo::ConstantOp::create(
         rewriter, wrap.getLoc(),
         SplatElementsAttr::get(
             iota.getType(),
             rewriter.getI32IntegerAttr(lhs + operandShape[wrapDimension])));
+    mlir::sdy::setSharding(rhsCheckConstOp, wrapSharding);
 
-    Value lhsCondOp = stablehlo::CompareOp::create(
+    auto lhsCondOp = stablehlo::CompareOp::create(
         rewriter, wrap.getLoc(), iota, lhsCheckConstOp,
         stablehlo::ComparisonDirection::LT);
-    Value midAndLhsCondOp = stablehlo::CompareOp::create(
+    mlir::sdy::setSharding(lhsCondOp, wrapSharding);
+
+    auto midAndLhsCondOp = stablehlo::CompareOp::create(
         rewriter, wrap.getLoc(), iota, rhsCheckConstOp,
         stablehlo::ComparisonDirection::LT);
+    mlir::sdy::setSharding(midAndLhsCondOp, wrapSharding);
 
-    Value midAndLhs = stablehlo::SelectOp::create(
+    auto midAndLhs = stablehlo::SelectOp::create(
         rewriter, wrap.getLoc(), lhsCondOp, rotateLhsPart, paddedOp);
+    mlir::sdy::setSharding(midAndLhs, wrapSharding);
 
-    Value result = stablehlo::SelectOp::create(
+    auto result = stablehlo::SelectOp::create(
         rewriter, wrap.getLoc(), midAndLhsCondOp, midAndLhs, rotateRhsPart);
+    mlir::sdy::setSharding(result, wrapSharding);
 
     // Replace the wrap with the select
     rewriter.replaceOp(wrap, result);

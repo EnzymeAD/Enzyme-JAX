@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --optimize-communication="wrap_to_rotate=1" | FileCheck %s
+// RUN: enzymexlamlir-opt %s --optimize-communication="wrap_to_rotate=1 wrap_to_pad_comm=0" | FileCheck %s
 
 module {
   func.func @test_wrap_to_rotate_symmetric(%arg0: tensor<10xf32>) -> tensor<14xf32> {
@@ -41,3 +41,11 @@ module {
 // CHECK-NEXT:     %7 = stablehlo.select %5, %6, %1 : tensor<15xi1>, tensor<15xf32>
 // CHECK-NEXT:     return %7 : tensor<15xf32>
 // CHECK-NEXT: }
+
+module {
+  sdy.mesh @mesh = <["x"=12]>
+  func.func @wrap(%arg0: tensor<2304xf64> {enzymexla.memory_effects = [], sdy.sharding = #sdy.sharding<@mesh, [{"x"}]>}) -> (tensor<2308xf64> {sdy.sharding = #sdy.sharding<@mesh, [{"x":(1)4}]>}, tensor<2304xf64> {sdy.sharding = #sdy.sharding<@mesh, [{"x"}]>}) attributes {enzymexla.memory_effects = []} {
+    %0 = "enzymexla.wrap"(%arg0) <{dimension = 0 : i64, lhs = 2 : i64, rhs = 2 : i64}> {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}]>]>} : (tensor<2304xf64>) -> tensor<2308xf64>
+    return %0, %arg0 : tensor<2308xf64>, tensor<2304xf64>
+  }
+}
