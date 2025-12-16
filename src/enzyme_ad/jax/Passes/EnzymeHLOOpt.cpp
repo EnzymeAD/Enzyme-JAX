@@ -9377,7 +9377,9 @@ struct BroadcastReduce
     auto checkCommonReduce = mlir::stablehlo::CheckCommonReduceOp(op);
 
     if (!(checkCommonReduce.isAddReduce || checkCommonReduce.isMulReduce ||
-          checkCommonReduce.isMaxReduce || checkCommonReduce.isMinReduce)) {
+          checkCommonReduce.isMaxReduce || checkCommonReduce.isMinReduce ||
+          checkCommonReduce.isAndReduce || checkCommonReduce.isOrReduce ||
+          checkCommonReduce.isXorReduce)) {
       return rewriter.notifyMatchFailure(
           op, "only common reduce ops like add, mul, max, min are currently "
               "supported");
@@ -9486,7 +9488,9 @@ struct BroadcastReduce
       assert(op.getType(0) == converted.getType());
       rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
           op, newReduction.getResult(0), converted.getResult());
-    } else if (checkCommonReduce.isMinReduce || checkCommonReduce.isMaxReduce) {
+    } else if (checkCommonReduce.isMinReduce || checkCommonReduce.isMaxReduce ||
+               checkCommonReduce.isAndReduce || checkCommonReduce.isOrReduce ||
+               checkCommonReduce.isXorReduce) {
       rewriter.replaceAllUsesWith(op.getResult(0), newReduction.getResult(0));
     } else if (checkCommonReduce.isMulReduce) {
       auto constantInt = stablehlo::ConstantOp::create(

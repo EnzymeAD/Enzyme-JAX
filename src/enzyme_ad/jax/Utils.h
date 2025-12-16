@@ -972,6 +972,9 @@ public:
       isMinReduce = false;
       isMaxReduce = false;
       isMulReduce = false;
+      isAndReduce = false;
+      isOrReduce = false;
+      isXorReduce = false;
       return;
     }
 
