@@ -1748,38 +1748,22 @@ bool broadcastInDimIsReshape(BroadcastInDimOp op) {
   auto inputType = input.getType();
   auto broadcastDims = op.getBroadcastDimensions();
 
-  size_t inputSize = 1;
-  for (auto sz : inputType.getShape())
-    inputSize *= sz;
-  size_t outputSize = 1;
-  for (auto sz : outputType.getShape())
-    outputSize *= sz;
-
-  if (inputSize != outputSize)
+  // reshape cannot expand number of elements
+  if (inputType.getNumElements() != outputType.getNumElements()) {
     return false;
+  }
 
+  // singleton dims can be freely moved around
   SmallVector<int64_t> nonSingletonDims;
-
-  for (size_t i = 0; i < broadcastDims.size(); ++i) {
-    int64_t dimIdx = broadcastDims[i];
-    if (inputType.getRank() > i && inputType.getDimSize(i) != 1) {
-      nonSingletonDims.push_back(dimIdx);
+  for (auto [dim, inputSize] : llvm::zip(broadcastDims, inputType.getShape())) {
+    if (inputSize != 1) {
+      nonSingletonDims.push_back(dim);
     }
   }
 
-  for (int i = 1, s = nonSingletonDims.size(); i < s; ++i) {
-    if (nonSingletonDims[i - 1] > nonSingletonDims[i])
-      return false;
-  }
-
-  for (size_t i = 0; i < outputType.getRank(); ++i) {
-    int64_t dimIdx = outputType.getDimSize(i);
-    if (dimIdx == 1)
-      continue;
-    auto it = llvm::find(broadcastDims, dimIdx);
-    if (it == broadcastDims.end()) {
-      return false;
-    }
+  // transposed input is not reshape
+  if (!llvm::is_sorted(nonSingletonDims)) {
+    return false;
   }
 
   return true;
@@ -1808,8 +1792,9 @@ bool canMergeSlicesAlongAxis(int dimension, ArrayRef<int64_t> sliceStarts,
 
 bool canMergeSlicesAlongAxis(int dimension, stablehlo::SliceOp slice,
                              stablehlo::SliceOp otherSlice) {
-  if (otherSlice.getOperand() != slice.getOperand())
+  if (otherSlice.getOperand() != slice.getOperand()) {
     return false;
+  }
 
   // Check that both slices are contiguous only in dim
   ArrayRef<int64_t> sliceStarts = slice.getStartIndices(),
@@ -1873,6 +1858,176 @@ stablehlo::ConcatenateOp lowerWrap(enzymexla::WrapOp wrap,
   if (shard)
     sdy::setShardings(newConcat, shard);
   return newConcat;
+}
+
+LogicalResult concatReshapeSliceSimplify(PatternRewriter &rewriter,
+                                         SmallVectorImpl<Value> &operands,
+                                         int64_t dim,
+                                         SmallVectorImpl<Value> &newOperands) {
+  bool changed = false;
+
+  auto getShapeWithoutDims = [](RankedTensorType type,
+                                int64_t dim) -> SmallVector<int64_t> {
+    SmallVector<int64_t> shape;
+    for (size_t i = 0; i < type.getRank(); ++i) {
+      if (i == dim)
+        continue;
+      shape.push_back(type.getDimSize(i));
+    }
+    return shape;
+  };
+
+  for (size_t i = 0, e = operands.size(); i < e; ++i) {
+    auto operand = operands[i];
+    stablehlo::SliceOp slice;
+    stablehlo::ReshapeOp reshape =
+        operand.getDefiningOp<stablehlo::ReshapeOp>();
+
+    bool insertions = false, deletions = false;
+    int64_t totalMergeSize;
+    SmallVector<int64_t> insertionDims, deletionDims;
+
+    int64_t sliceDim = -1;
+    if (reshape) {
+      slice = reshape.getOperand().getDefiningOp<stablehlo::SliceOp>();
+      if (!slice) {
+        newOperands.push_back(operand);
+        continue;
+      } else {
+        auto sliceInTy = cast<ShapedType>(slice.getOperand().getType());
+        auto sliceTy = cast<ShapedType>(slice.getType());
+        for (size_t idx = 0; idx < slice.getStartIndices().size(); ++idx) {
+          if (sliceTy.getDimSize(idx) == 1 &&
+              !(slice.getStartIndices()[idx] == 0 &&
+                slice.getLimitIndices()[idx] == sliceInTy.getDimSize(idx) &&
+                slice.getStrides()[idx] == 1)) {
+            if (sliceDim != -1) {
+              sliceDim = -1; // TODO: support multiple dims here
+              break;
+            }
+            sliceDim = idx;
+          }
+        }
+
+        if (sliceDim == -1) {
+          newOperands.push_back(operand);
+          continue;
+        }
+
+        auto srcWithoutSliceDim = getShapeWithoutDims(
+            cast<RankedTensorType>(slice.getType()), sliceDim);
+        auto dstWithoutConcatDim =
+            getShapeWithoutDims(cast<RankedTensorType>(reshape.getType()), dim);
+
+        if (srcWithoutSliceDim != dstWithoutConcatDim) {
+          auto curInsertionDims =
+              findReshapeInsertionDims(srcWithoutSliceDim, dstWithoutConcatDim);
+          auto curDeletionDims =
+              findReshapeInsertionDims(dstWithoutConcatDim, srcWithoutSliceDim);
+
+          if (curInsertionDims.empty() && curDeletionDims.empty()) {
+            newOperands.push_back(operand);
+            continue;
+          } else if (!curInsertionDims.empty()) {
+            insertions = true;
+            insertionDims = std::move(curInsertionDims);
+          } else {
+            deletions = true;
+            deletionDims = std::move(curDeletionDims);
+          }
+        }
+
+        totalMergeSize =
+            cast<RankedTensorType>(reshape.getType()).getDimSize(dim);
+      }
+    } else {
+      newOperands.push_back(operand);
+      continue;
+    }
+
+    Value newOperand = operand;
+    bool needsPerm = false;
+    while (i + 1 < e) {
+      if (auto otherReshape =
+              operands[i + 1].getDefiningOp<stablehlo::ReshapeOp>()) {
+        if (auto otherSlice =
+                otherReshape.getOperand().getDefiningOp<stablehlo::SliceOp>()) {
+          // Check if reshapes are the same
+          if (!OperationEquivalence::isEquivalentTo(
+                  reshape, otherReshape,
+                  OperationEquivalence::ignoreValueEquivalence, nullptr,
+                  OperationEquivalence::IgnoreLocations, nullptr)) {
+            break;
+          }
+
+          // Check if slices can be merged
+          if (canMergeSlicesAlongAxis(sliceDim, slice, otherSlice)) {
+            totalMergeSize +=
+                cast<RankedTensorType>(otherReshape.getType()).getDimSize(dim);
+
+            slice = stablehlo::SliceOp::create(
+                rewriter, slice->getLoc(), slice.getOperand(),
+                slice.getStartIndices(), otherSlice.getLimitIndices(),
+                slice.getStrides());
+            newOperand = slice.getResult();
+            changed = true;
+            needsPerm = true;
+            i++;
+            continue;
+          }
+        }
+      }
+
+      break;
+    }
+
+    if (needsPerm) {
+      int64_t ndims = cast<RankedTensorType>(reshape.getType()).getRank();
+      int64_t ndimsCorrected = ndims;
+      if (insertions) {
+        ndimsCorrected -= insertionDims.size();
+      }
+      if (deletions) {
+        ndimsCorrected += deletionDims.size();
+      }
+
+      SmallVector<int64_t> mapping(ndimsCorrected);
+      std::iota(mapping.begin(), mapping.end(), 0);
+      mapping[sliceDim] = dim;
+      if (sliceDim > dim) {
+        for (int64_t i = dim; i < sliceDim; i++) { // shift right
+          mapping[i]++;
+        }
+      } else {
+        for (int64_t i = sliceDim + 1; i <= dim; i++) { // shift left
+          mapping[i]--;
+        }
+      }
+
+      SmallVector<int64_t> permutation(mapping.size(), 0);
+      for (int64_t i = 0; i < mapping.size(); i++) {
+        permutation[mapping[i]] = i;
+      }
+
+      auto transposeOp = stablehlo::TransposeOp::create(
+          rewriter, reshape.getLoc(), newOperand, permutation);
+      if (!insertions && !deletions) {
+        newOperand = transposeOp.getResult();
+      } else {
+        auto reshapeOrigType = cast<RankedTensorType>(reshape.getType());
+        SmallVector<int64_t> newShape =
+            llvm::to_vector(reshapeOrigType.getShape());
+        newShape[dim] = totalMergeSize;
+        newOperand = stablehlo::ReshapeOp::create(
+            rewriter, reshape.getLoc(),
+            RankedTensorType::get(newShape, reshapeOrigType.getElementType()),
+            transposeOp.getResult());
+      }
+    }
+
+    newOperands.push_back(newOperand);
+  }
+  return changed ? success() : failure();
 }
 
 LogicalResult concatSliceSimplify(PatternRewriter &rewriter,

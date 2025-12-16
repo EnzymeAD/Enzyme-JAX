@@ -2431,7 +2431,7 @@ def ApplyTransposeSliceToBatchPatterns : EnzymeHLOPatternOp<
 }
 def ApplyBroadcastInDimSliceToBatchPatterns : EnzymeHLOPatternOp<
     "broadcastindim_slice_to_batch"> {
-  let patterns = ["SliceToBatch<stablehlo::BroadcastInDimOp>"];
+  let patterns = ["SliceToBatchBroadcastInDim"];
 }
 def ApplyConcatenateSliceToBatchPatterns : EnzymeHLOPatternOp<
     "concatenate_slice_to_batch"> {
@@ -2575,4 +2575,9 @@ def ApplyDUSDynamicSliceSimplifyPatterns : EnzymeHLOPatternOp<
 def ApplyWhileDUSDSSimplifyPatterns : EnzymeHLOPatternOp<
     "while_dus_ds_simplify"> {
   let patterns = ["WhileDUSDSSimplify"];
+}
+
+def ApplyReshapeSliceReshapePatterns : EnzymeHLOPatternOp<
+    "reshape_slice_reshape"> {
+  let patterns = ["ReshapeSliceReshape"];
 }

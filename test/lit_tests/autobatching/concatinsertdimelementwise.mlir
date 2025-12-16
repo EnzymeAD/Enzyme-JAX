@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --auto-batching --inline --enzyme-hlo-opt %s | FileCheck %s
+// RUN: enzymexlamlir-opt --auto-batching --enzyme-hlo-opt %s | FileCheck %s
 
 func.func @elem(%arg0: tensor<2xi64>) -> tensor<2xi64> {
     %c = stablehlo.constant dense<1> : tensor<i64>
