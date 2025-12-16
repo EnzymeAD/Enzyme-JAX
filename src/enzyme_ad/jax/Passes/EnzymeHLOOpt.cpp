@@ -25615,6 +25615,7 @@ struct DotGeneralToSyrk
   }
 };
 
+// FIXME: we need to flip the uplo as well???
 struct TransposeSyrkToSyrk
     : public CheckedOpRewritePattern<enzymexla::SyrkOp, TransposeSyrkToSyrk> {
   using CheckedOpRewritePattern<enzymexla::SyrkOp,
@@ -26322,6 +26323,39 @@ struct ReshapeSliceReshape final
   }
 };
 
+struct SyrkFillRemove final
+    : public CheckedOpRewritePattern<enzymexla::SyrkOp, SyrkFillRemove> {
+  using CheckedOpRewritePattern<enzymexla::SyrkOp,
+                                SyrkFillRemove>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SyrkOp op,
+                                    PatternRewriter &rewriter) const {
+    // TODO: maybe we rework the op...
+    if (!op.getFill()) {
+      return failure();
+    }
+
+    // track all users of syrk. if these end at an syrk (via supported
+    // operations) we backtrack and remove the fill if possible
+
+    // syrk codegen fills in uplo = U when uplo is set to F without fill attr
+    // dest uplo = F
+    //      src uplo = F
+    //      src uplo = U
+    //      src uplo = L
+    // dest uplo = U
+    //      src uplo = F
+    //      src uplo = U => remove fill
+    //      src uplo = L
+    // dest uplo = L
+    //      src uplo = F
+    //      src uplo = U
+    //      src uplo = L => remove fill
+
+    return failure();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -26982,7 +27016,8 @@ struct EnzymeHLOOptPass
         DotGeneralBroadcastInDim,
         DotGeneralBroadcastInDimSortDims,
         DUSDynamicSliceSimplify,
-        WhileDUSDSSimplify
+        WhileDUSDSSimplify,
+        SyrkFillRemove
       >(context);
 
     patterns.add<

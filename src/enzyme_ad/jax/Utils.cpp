@@ -1716,6 +1716,9 @@ Value copyTriangularPart(OpBuilder &builder, Value input,
   if (uplo == enzymexla::LapackUplo::F)
     return input;
 
+  // TODO: run a backward propagation to check if input potentially originates
+  // from a Op that create a partially filled output
+
   auto inputType = cast<RankedTensorType>(input.getType());
   assert(inputType.getRank() == 2 && "only 2D matrices supported");
   assert(inputType.getDimSize(0) != ShapedType::kDynamic &&

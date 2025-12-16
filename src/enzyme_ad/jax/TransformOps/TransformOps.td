@@ -2581,3 +2581,8 @@ def ApplyReshapeSliceReshapePatterns : EnzymeHLOPatternOp<
     "reshape_slice_reshape"> {
   let patterns = ["ReshapeSliceReshape"];
 }
+
+def ApplySyrkFillRemovePatterns : EnzymeHLOPatternOp<
+    "syrk_fill_remove"> {
+  let patterns = ["SyrkFillRemove"];
+}
