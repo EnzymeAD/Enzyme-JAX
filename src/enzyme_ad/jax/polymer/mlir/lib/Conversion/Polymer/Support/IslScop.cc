@@ -1951,11 +1951,6 @@ std::unique_ptr<IslScop> IslScopBuilder::build(Operation *f) {
           needToLoadOperands = false;
           needToStoreResults = false;
         } else if (auto rmw = dyn_cast<enzyme::AffineAtomicRMWOp>(op)) {
-          // TODO I am not sure how isl schedule etc analysis will interact with
-          // a read and must_write to the same memory location in the same
-          // statement. Does it make sense to split the operation in two
-          // statements? However, then rescheduling may result in the two
-          // operations no longer being scheduled together which is a problem.
           affine::AffineValueMap vMap;
           mlir::Value memref = rmw.getMemref();
           AffineMap map;
