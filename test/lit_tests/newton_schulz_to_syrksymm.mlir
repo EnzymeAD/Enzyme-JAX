@@ -45,14 +45,13 @@ module {
 // CHECK-NEXT:       stablehlo.return %1 : tensor<i1>
 // CHECK-NEXT:     } do {
 // CHECK-NEXT:       %1 = stablehlo.add %iterArg, %c_5 {enzymexla.bounds = {{.*}}} : tensor<i64>
-// CHECK-NEXT:       %2 = enzymexla.blas.syrk %iterArg_7, %cst_3, %cst_2, %cst_1 {fill, transpose = #enzymexla.transpose<transpose>, uplo = #enzymexla.uplo<F>} : (tensor<5x4xf32>, tensor<4x4xf32>, tensor<f32>, tensor<f32>) -> tensor<4x4xf32>
+// CHECK-NEXT:       %2 = enzymexla.blas.syrk %iterArg_7, %cst_3, %cst_2, %cst_1 {output_uplo = #enzymexla.uplo<F>, transpose = #enzymexla.transpose<transpose>, uplo = #enzymexla.uplo<F>} : (tensor<5x4xf32>, tensor<4x4xf32>, tensor<f32>, tensor<f32>) -> tensor<4x4xf32>
 // CHECK-NEXT:       %3 = stablehlo.multiply %cst_6, %2 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed GUARANTEED>]} : tensor<4x4xf32>
 // CHECK-NEXT:       %4 = stablehlo.add %3, %cst : tensor<4x4xf32>
-// CHECK-NEXT:       %5 = enzymexla.blas.syrk %2, %4, %cst_0, %cst_2 {fill, uplo = #enzymexla.uplo<F>} : (tensor<4x4xf32>, tensor<4x4xf32>, tensor<f32>, tensor<f32>) -> tensor<4x4xf32>
+// CHECK-NEXT:       %5 = enzymexla.blas.syrk %2, %4, %cst_0, %cst_2 {output_uplo = #enzymexla.uplo<F>, uplo = #enzymexla.uplo<F>} : (tensor<4x4xf32>, tensor<4x4xf32>, tensor<f32>, tensor<f32>) -> tensor<4x4xf32>
 // CHECK-NEXT:       %6 = stablehlo.dot_general %iterArg_7, %5, contracting_dims = [1] x [1], precision = [DEFAULT, DEFAULT] : (tensor<5x4xf32>, tensor<4x4xf32>) -> tensor<5x4xf32>
 // CHECK-NEXT:       stablehlo.return %1, %6 : tensor<i64>, tensor<5x4xf32>
 // CHECK-NEXT:     }
 // CHECK-NEXT:     return %0#1 : tensor<5x4xf32>
 // CHECK-NEXT:   }
 // CHECK-NEXT: }
-

@@ -431,11 +431,11 @@ def SyrkOp: EnzymeXLA_Op<"blas.syrk", [Pure, SameOperandsAndResultElementType]> 
   let summary = "Multiplication involving a symmetric matrix";
 
   let description = [{
-    C := alpha*A*A^T + beta*C, or C := alpha*A^T*A + beta*C, where alpha and beta are
-    scalars. C must be a n x n symmetric matrix.
+    C_out := alpha*A*A^T + beta*C, or C_out := alpha*A^T*A + beta*C, where alpha and beta
+    are scalars. C must be a n x n symmetric matrix.
 
-    If `fill` is present, then both the upper and lower triangles of the matrix are filled.
-    Otherwise the values in the non-uplo part of the matrix are undefined.
+    `output_uplo` determines which part of `C_out` is populated. Accessing the values in
+    the non-`output_uplo` part of the matrix is undefined behavior.
   }];
 
   let arguments = (ins
@@ -444,8 +444,8 @@ def SyrkOp: EnzymeXLA_Op<"blas.syrk", [Pure, SameOperandsAndResultElementType]> 
     TensorFloat:$alpha,
     TensorFloat:$beta,
     EnzymeXLA_LapackUploAttr:$uplo,
-    DefaultValuedAttr<EnzymeXLA_LapackTransposeAttr, "::mlir::enzymexla::LapackTranspose::none">:$transpose,
-    OptionalAttr<UnitAttr>:$fill
+    EnzymeXLA_LapackUploAttr:$output_uplo,
+    DefaultValuedAttr<EnzymeXLA_LapackTransposeAttr, "::mlir::enzymexla::LapackTranspose::none">:$transpose
   );
 
   let results = (outs
@@ -455,6 +455,8 @@ def SyrkOp: EnzymeXLA_Op<"blas.syrk", [Pure, SameOperandsAndResultElementType]> 
   let assemblyFormat = [{
     $A `,` $C `,` $alpha `,` $beta attr-dict `:` functional-type(operands, results)
   }];
+
+  let hasVerifier = 1;
 }
 
 def TrmmOp: EnzymeXLA_Op<"blas.trmm", [Pure, SameOperandsAndResultElementType]> {

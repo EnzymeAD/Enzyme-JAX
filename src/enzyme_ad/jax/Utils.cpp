@@ -36,6 +36,7 @@
 
 #include <cassert>
 #include <iterator>
+#include <mlir/IR/Value.h>
 #include <set>
 
 using namespace mlir;
@@ -1182,6 +1183,40 @@ RankedTensorType removeBatchedDims(RankedTensorType Ty,
   return RankedTensorType::get(newShape, Ty.getElementType());
 }
 
+enzymexla::LapackTranspose
+transposeLapackTranspose(enzymexla::LapackTranspose trans, bool canBeComplex) {
+  switch (trans) {
+  case enzymexla::LapackTranspose::none:
+    return enzymexla::LapackTranspose::transpose;
+  case enzymexla::LapackTranspose::transpose:
+    return enzymexla::LapackTranspose::none;
+  case enzymexla::LapackTranspose::adjoint:
+    assert(!canBeComplex &&
+           "cannot trivially tranpose adjoint of complex numbers");
+    return enzymexla::LapackTranspose::none;
+  }
+}
+
+enzymexla::LapackUplo transposeLapackUplo(enzymexla::LapackUplo uplo) {
+  switch (uplo) {
+  case enzymexla::LapackUplo::F:
+    return enzymexla::LapackUplo::F;
+  case enzymexla::LapackUplo::L:
+    return enzymexla::LapackUplo::U;
+  case enzymexla::LapackUplo::U:
+    return enzymexla::LapackUplo::L;
+  }
+}
+
+enzymexla::LapackUplo standardizeUplo(enzymexla::LapackUplo uplo) {
+  switch (uplo) {
+  case enzymexla::LapackUplo::F:
+    return enzymexla::LapackUplo::U;
+  default:
+    return uplo;
+  }
+}
+
 } // namespace enzyme
 
 namespace stablehlo {
@@ -1653,6 +1688,9 @@ Value copyTriangularPart(OpBuilder &builder, Value input,
                          enzymexla::LapackUplo uplo) {
   if (uplo == enzymexla::LapackUplo::F)
     return input;
+
+  // TODO: run a backward propagation to check if input potentially originates
+  // from a Op that create a partially filled output
 
   auto inputType = cast<RankedTensorType>(input.getType());
   assert(inputType.getRank() == 2 && "only 2D matrices supported");
@@ -2184,6 +2222,47 @@ Value DynamicSliceOpCreate(
   return dsOp.getResult();
 }
 
+static Value MaybeBroadcastScalarToMatchShape(
+    OpBuilder &builder, Location loc, Value src, RankedTensorType targetTy,
+    std::optional<sdy::TensorShardingPerValueAttr> sharding) {
+  auto srcTy = cast<RankedTensorType>(src.getType());
+  if (srcTy == targetTy || targetTy.getRank() == 0) {
+    return src;
+  }
+  assert(srcTy.getRank() == 0);
+  auto bcastOp = stablehlo::BroadcastInDimOp::create(
+      builder, loc, targetTy, src, builder.getDenseI64ArrayAttr({}));
+  if (sharding.has_value()) {
+    sdy::setShardings(bcastOp, *sharding);
+  }
+  return bcastOp.getResult();
+}
+
+template <typename OpTy>
+Value BinaryOpCreate(OpBuilder &builder, Location loc, Value lhs, Value rhs,
+                     std::optional<sdy::TensorShardingPerValueAttr> sharding) {
+  auto lhsTy = cast<RankedTensorType>(lhs.getType());
+  auto rhsTy = cast<RankedTensorType>(rhs.getType());
+
+  lhs = MaybeBroadcastScalarToMatchShape(builder, loc, lhs, rhsTy, sharding);
+  rhs = MaybeBroadcastScalarToMatchShape(builder, loc, rhs, lhsTy, sharding);
+  auto newOp = OpTy::create(builder, loc, lhs, rhs);
+  if (sharding.has_value()) {
+    sdy::setShardings(newOp, *sharding);
+  }
+  return newOp.getResult();
+}
+
+Value AddOpCreate(OpBuilder &builder, Location loc, Value lhs, Value rhs,
+                  std::optional<sdy::TensorShardingPerValueAttr> sharding) {
+  return BinaryOpCreate<stablehlo::AddOp>(builder, loc, lhs, rhs, sharding);
+}
+
+Value MulOpCreate(OpBuilder &builder, Location loc, Value lhs, Value rhs,
+                  std::optional<sdy::TensorShardingPerValueAttr> sharding) {
+  return BinaryOpCreate<stablehlo::MulOp>(builder, loc, lhs, rhs, sharding);
+}
+
 Type GetDotGeneralResultType(Value lhs, Value rhs, Type resElemType,
                              stablehlo::DotDimensionNumbersAttr dotDims) {
   auto lhsType = cast<RankedTensorType>(lhs.getType());
@@ -2381,6 +2460,107 @@ bool isFusible(Operation *op, stablehlo::BroadcastInDimOp bcast) {
       .Case<stablehlo::ReshapeOp>(
           [](auto reshape) { return isInsertDimOp(reshape); })
       .Default([](auto other) { return matchPattern(other, m_Constant()); });
+}
+
+bool IsTensorFilled(Value input) {
+  // Use a worklist-based approach to traverse the SSA def-use chain
+  // and determine if the value is known to be a dense (fully-populated) matrix.
+  //
+  // A value is considered dense if it comes from:
+  // - stablehlo ops (except custom_call) - they produce dense outputs if inputs
+  // are dense
+  // - Block arguments (conservatively assume not dense)
+  // - CallOpInterface - check the function body's return values
+  SymbolTableCollection symbolTable;
+
+  std::deque<Value> worklist;
+  llvm::DenseSet<Value> visited;
+
+  worklist.push_back(input);
+
+  while (!worklist.empty()) {
+    Value current = worklist.front();
+    worklist.pop_front();
+
+    if (visited.contains(current)) {
+      continue;
+    }
+    visited.insert(current);
+
+    if (matchPattern(current, m_Constant())) { // constants are always filled
+      continue;
+    }
+
+    // Block arguments are considered dense (inputs to functions)
+    if (auto blockArg = dyn_cast<BlockArgument>(current)) {
+      return false;
+    }
+
+    Operation *op = current.getDefiningOp();
+    if (!op) {
+      return false;
+    }
+
+    // Handle enzymexla dialect ops with special triangular semantics
+    if (auto syrkOp = dyn_cast<enzymexla::SyrkOp>(op)) {
+      // syrk produces a dense output only if output_uplo is F (full)
+      if (syrkOp.getOutputUplo() != enzymexla::LapackUplo::F) {
+        return false;
+      }
+      continue;
+    }
+
+    // Handle CallOpInterface - check the function body
+    if (auto callOp = dyn_cast<CallOpInterface>(op)) {
+      mlir::ModuleOp modOp = op->getParentOfType<ModuleOp>();
+      if (!modOp) {
+        return false;
+      }
+      symbolTable.getSymbolTable(modOp);
+
+      auto callable = callOp.resolveCallableInTable(&symbolTable);
+      if (auto funcOp = dyn_cast_or_null<FunctionOpInterface>(callable)) {
+        // Find which result index corresponds to our value
+        size_t resultIdx = cast<OpResult>(current).getResultNumber();
+
+        // Check function body for return values
+        if (!funcOp.isExternal() && !funcOp.getBlocks().empty()) {
+          for (Block &block : funcOp.getBlocks()) {
+            auto term = block.getTerminator();
+            if (!term || resultIdx >= term->getNumResults()) {
+              return false;
+            }
+            worklist.push_back(term->getOperand(resultIdx));
+          }
+          continue;
+        }
+      }
+
+      // If we can't resolve the call, conservatively assume not dense
+      return false;
+    }
+
+    // Handle stablehlo custom_call - conservatively not dense
+    if (isa<stablehlo::CustomCallOp>(op)) {
+      return false;
+    }
+
+    // All other stablehlo ops produce dense outputs
+    if (op->getDialect()->getNamespace() == "stablehlo") {
+      // Add operands to worklist to continue the traversal
+      // Most stablehlo ops preserve density, so we just need to check
+      // that all inputs are also dense
+      for (auto operand : op->getOperands()) {
+        worklist.push_back(operand);
+      }
+      continue;
+    }
+
+    // For other dialects/ops, conservatively not dense
+    return false;
+  }
+
+  return true;
 }
 
 } // namespace stablehlo

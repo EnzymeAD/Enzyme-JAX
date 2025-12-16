@@ -2627,6 +2627,11 @@ def ApplyReshapeSliceReshapePatterns : EnzymeHLOPatternOp<
   let patterns = ["ReshapeSliceReshape"];
 }
 
+def ApplySyrkSimplifyOutputUploPatterns : EnzymeHLOPatternOp<
+    "syrk_simplify_output_uplo"> {
+  let patterns = ["SyrkSimplifyOutputUplo"];
+}
+
 def ApplyDotGeneralRemoveBatchDimensionsPatterns : EnzymeHLOPatternOp<
     "dot_general_remove_batch_dimensions"> {
   let patterns = ["DotGeneralRemoveBatchDimensions"];
