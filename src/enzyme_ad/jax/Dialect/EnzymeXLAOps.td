@@ -1102,7 +1102,8 @@ def MPIRecvOp : EnzymeXLA_Op<"recv", []> {
                 "`MPI_Recv(&buf, count, datatype, source, tag, comm, &status)`";
 
   let arguments = (
-    ins TensorOf<[I32]> : $count,
+    ins AnyTensor : $inbuf,
+    TensorOf<[I32]> : $count,
     /* xxx : $dtype */ // TODO 
     TensorOf<[I32]> : $source,
     TensorOf<[I32]> : $tag
@@ -1111,7 +1112,7 @@ def MPIRecvOp : EnzymeXLA_Op<"recv", []> {
   );
 
   let results = (
-    outs AnyTensor : $buf
+    outs AnyTensor : $outbuf
   );
 
   let assemblyFormat = "`(` operands `)` attr-dict `:` functional-type(operands, results)";
