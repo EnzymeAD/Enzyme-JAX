@@ -26074,25 +26074,28 @@ struct DotGeneralRemoveBatchDimensions
     // Build new broadcast operation for the side with created dimensions
     Value newLhs = dotOp.getLhs();
     Value newRhs = dotOp.getRhs();
-    DenseMap<int64_t, int64_t> lhsOldToNew, rhsOldToNew;
+    DenseMap<int64_t, int64_t> lhsOldToNew, rhsOldToNew, lhsNewToOld,
+        rhsNewToOld;
 
     if (lhsBcast && !lhsCreatedBatchDims.empty()) {
-      newLhs =
-          createReducedBroadcast(rewriter, dotOp.getLoc(), lhsBcast, lhsType,
-                                 lhsCreatedBatchDims, lhsDims, lhsOldToNew);
+      newLhs = createReducedBroadcast(rewriter, dotOp.getLoc(), lhsBcast,
+                                      lhsType, lhsCreatedBatchDims, lhsDims,
+                                      lhsOldToNew, lhsNewToOld);
     } else {
       for (int64_t i = 0; i < lhsType.getRank(); ++i) {
         lhsOldToNew[i] = i;
+        lhsNewToOld[i] = i;
       }
     }
 
     if (rhsBcast && !rhsCreatedBatchDims.empty()) {
-      newRhs =
-          createReducedBroadcast(rewriter, dotOp.getLoc(), rhsBcast, rhsType,
-                                 rhsCreatedBatchDims, rhsDims, rhsOldToNew);
+      newRhs = createReducedBroadcast(rewriter, dotOp.getLoc(), rhsBcast,
+                                      rhsType, rhsCreatedBatchDims, rhsDims,
+                                      rhsOldToNew, rhsNewToOld);
     } else {
       for (int64_t i = 0; i < rhsType.getRank(); ++i) {
         rhsOldToNew[i] = i;
+        rhsNewToOld[i] = i;
       }
     }
 
@@ -26195,15 +26198,6 @@ struct DotGeneralRemoveBatchDimensions
 
     // We need to figure out which LHS dims are now remaining (non-batch,
     // non-contract)
-    // First, collect all LHS dims that are remaining in the new dot
-    llvm::SmallDenseSet<int64_t> newLhsBatchDimSet(newLhsBatchDims.begin(),
-                                                   newLhsBatchDims.end());
-    llvm::SmallDenseSet<int64_t> lhsContractDimSet(lhsContractDims.begin(),
-                                                   lhsContractDims.end());
-    llvm::SmallDenseSet<int64_t> newRhsBatchDimSet(newRhsBatchDims.begin(),
-                                                   newRhsBatchDims.end());
-    llvm::SmallDenseSet<int64_t> rhsContractDimSet(rhsContractDims.begin(),
-                                                   rhsContractDims.end());
 
     // In the NEW LHS, the remaining dims are those not in newLhsBatchDims and
     // not in newLhsContractDims. But we need to work with the new LHS type.
@@ -26213,7 +26207,7 @@ struct DotGeneralRemoveBatchDimensions
     // LHS remaining dims in NEW LHS (sorted by new LHS position)
     SmallVector<int64_t> newLhsRemainingDims;
     for (int64_t i = 0; i < newLhsType.getRank(); ++i) {
-      if (!newLhsBatchDimSet.contains(i) && !lhsContractDimSet.contains(i) &&
+      if (!llvm::is_contained(newLhsBatchDims, i) &&
           !llvm::is_contained(newLhsContractDims, i)) {
         newLhsRemainingDims.push_back(i);
       }
@@ -26222,7 +26216,7 @@ struct DotGeneralRemoveBatchDimensions
     // RHS remaining dims in NEW RHS (sorted by new RHS position)
     SmallVector<int64_t> newRhsRemainingDims;
     for (int64_t i = 0; i < newRhsType.getRank(); ++i) {
-      if (!newRhsBatchDimSet.contains(i) && !rhsContractDimSet.contains(i) &&
+      if (!llvm::is_contained(newRhsBatchDims, i) &&
           !llvm::is_contained(newRhsContractDims, i)) {
         newRhsRemainingDims.push_back(i);
       }
@@ -26282,15 +26276,7 @@ struct DotGeneralRemoveBatchDimensions
     // For each new LHS remaining dim, find what original LHS dim it corresponds
     // to, then look up that original LHS dim's output position
     for (int64_t newLhsDim : newLhsRemainingDims) {
-      // Reverse the lhsOldToNew mapping
-      int64_t origLhsDim = -1;
-      for (auto &[oldDim, newDim] : lhsOldToNew) {
-        if (newDim == newLhsDim) {
-          origLhsDim = oldDim;
-          break;
-        }
-      }
-      assert(origLhsDim != -1 && "Should find original LHS dim");
+      int64_t origLhsDim = lhsNewToOld[newLhsDim];
 
       // Check if this was originally a batch dim or a remaining dim
       if (llvm::is_contained(lhsBatchDims, origLhsDim)) {
@@ -26309,14 +26295,7 @@ struct DotGeneralRemoveBatchDimensions
 
     // New RHS remaining dims -> map back to original output positions
     for (int64_t newRhsDim : newRhsRemainingDims) {
-      int64_t origRhsDim = -1;
-      for (auto &[oldDim, newDim] : rhsOldToNew) {
-        if (newDim == newRhsDim) {
-          origRhsDim = oldDim;
-          break;
-        }
-      }
-      assert(origRhsDim != -1 && "Should find original RHS dim");
+      int64_t origRhsDim = rhsNewToOld[newRhsDim];
 
       // Check if this was originally a batch dim or a remaining dim
       if (llvm::is_contained(rhsBatchDims, origRhsDim)) {
@@ -26353,7 +26332,8 @@ private:
                                RankedTensorType origType,
                                ArrayRef<int64_t> dimsToRemove,
                                ArrayRef<int64_t> origBcastDims,
-                               DenseMap<int64_t, int64_t> &oldToNew) const {
+                               DenseMap<int64_t, int64_t> &oldToNew,
+                               DenseMap<int64_t, int64_t> &newToOld) const {
     SmallVector<int64_t> newOutputShape;
     SmallVector<int64_t> newBcastDims;
     oldToNew.clear();
@@ -26362,7 +26342,9 @@ private:
       if (llvm::is_contained(dimsToRemove, i)) {
         continue;
       }
-      oldToNew[i] = newOutputShape.size();
+      int64_t dim = newOutputShape.size();
+      oldToNew[i] = dim;
+      newToOld[dim] = i;
       newOutputShape.push_back(origType.getDimSize(i));
     }
 
