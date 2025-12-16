@@ -54,7 +54,7 @@ jobs:
           # - '0123456789abcdef0123456789abcdef01234567'
         reactant_commit:
           # - 'main'
-          - 'ap/test_barch_gb25'
+          - 'ap/enabled_default_batch'
 
     steps:
       - name: Check GPUs
