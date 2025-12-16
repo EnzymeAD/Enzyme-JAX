@@ -19,6 +19,7 @@
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/IRMapping.h"
+#include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "llvm/Support/DebugLog.h"
@@ -40,25 +41,24 @@ struct TestPolymerPass
     : public enzyme::impl::TestPolymerPassBase<TestPolymerPass> {
   using TestPolymerPassBase::TestPolymerPassBase;
   void runOnOperation() override {
-    getOperation()->walk([](func::FuncOp gwo) {
-      LDBG() << "Processing " << gwo;
-      std::unique_ptr<polymer::IslScop> scop =
-          polymer::createIslFromFuncOp(gwo);
-      scop->buildSchedule();
-      llvm::errs() << "Schedule:\n";
-      isl_schedule_dump(scop->getScheduleTree().get());
-      llvm::errs() << "Accesses:\n";
-      scop->dumpAccesses(llvm::errs());
-    });
-    getOperation()->walk([](enzymexla::GPUWrapperOp gwo) {
-      LDBG() << "Processing " << gwo;
-      std::unique_ptr<polymer::IslScop> scop =
-          polymer::createIslFromFuncOp(gwo);
-      scop->buildSchedule();
-      llvm::errs() << "Schedule:\n";
-      isl_schedule_dump(scop->getScheduleTree().get());
-      llvm::errs() << "Accesses:\n";
-      scop->dumpAccesses(llvm::errs());
+    getOperation()->walk([](Operation *op) {
+      if (!isa<func::FuncOp, enzymexla::GPUWrapperOp>(op))
+        return;
+      LDBG() << "Processing " << op;
+      llvm::errs() << "Processing " << op->getName() << "\n";
+      std::unique_ptr<polymer::IslScop> scop = polymer::createIslFromFuncOp(op);
+      if (!scop) {
+        llvm::errs() << "Failed to build scop\n";
+        return;
+      }
+      if (scop->buildSchedule().succeeded()) {
+        llvm::errs() << "Schedule:\n";
+        isl_schedule_dump(scop->getScheduleTree().get());
+        llvm::errs() << "Accesses:\n";
+        scop->dumpAccesses(llvm::errs());
+      } else {
+        llvm::errs() << "Failed to build schedule\n";
+      }
     });
   }
 };
