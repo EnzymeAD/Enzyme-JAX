@@ -2431,7 +2431,7 @@ def ApplyTransposeSliceToBatchPatterns : EnzymeHLOPatternOp<
 }
 def ApplyBroadcastInDimSliceToBatchPatterns : EnzymeHLOPatternOp<
     "broadcastindim_slice_to_batch"> {
-  let patterns = ["SliceToBatch<stablehlo::BroadcastInDimOp>"];
+  let patterns = ["SliceToBatchBroadcastInDim"];
 }
 def ApplyConcatenateSliceToBatchPatterns : EnzymeHLOPatternOp<
     "concatenate_slice_to_batch"> {

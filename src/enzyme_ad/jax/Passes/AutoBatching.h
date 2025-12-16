@@ -9,8 +9,6 @@
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallVector.h"
 
-#include <tuple>
-
 // Loading the header causes a bunch of ambiguous errors
 // #include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
 namespace mlir {
@@ -117,6 +115,25 @@ template <typename OpTy> struct SliceToBatch : public SliceToBatchBase {
       : SliceToBatchBase(
             [](mlir::Operation *op) -> mlir::Operation * {
               return llvm::dyn_cast_or_null<OpTy>(op);
+            },
+            ctx, benefit) {}
+};
+
+struct SliceToBatchBroadcastInDim : public SliceToBatchBase {
+  SliceToBatchBroadcastInDim(mlir::MLIRContext *ctx,
+                             mlir::PatternBenefit benefit = 1)
+      : SliceToBatchBase(
+            [](mlir::Operation *op) -> mlir::Operation * {
+              if (!op) {
+                return nullptr;
+              }
+              if (auto bcastInDim =
+                      llvm::dyn_cast<mlir::stablehlo::BroadcastInDimOp>(op)) {
+                if (!mlir::stablehlo::broadcastInDimIsReshape(bcastInDim)) {
+                  return bcastInDim;
+                }
+              }
+              return nullptr;
             },
             ctx, benefit) {}
 };

@@ -1522,14 +1522,13 @@ struct AutoBatchingPass
           SliceToBatch<stablehlo::GatherOp>, SliceToBatch<stablehlo::IotaOp>,
           SliceToBatch<stablehlo::ReduceOp>, SliceToBatch<stablehlo::SortOp>,
           SliceToBatch<stablehlo::TransposeOp>,
-          SliceToBatch<stablehlo::BroadcastInDimOp>,
           SliceToBatch<stablehlo::ReduceWindowOp>,
           SliceToBatch<stablehlo::ConcatenateOp>,
           SliceToBatch<stablehlo::GetDimensionSizeOp>,
           SliceToBatch<stablehlo::ReverseOp>,
           SliceToBatch<stablehlo::ReduceWindowOp>,
-          SliceToBatch<stablehlo::ConvolutionOp>, SliceToBatchElementwise>(
-          context);
+          SliceToBatch<stablehlo::ConvolutionOp>, SliceToBatchBroadcastInDim,
+          SliceToBatchElementwise>(context);
     }
 
     if (while_loop_batching_mode == "greedy") {
