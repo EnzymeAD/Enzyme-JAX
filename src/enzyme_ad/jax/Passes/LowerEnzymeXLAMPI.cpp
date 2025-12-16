@@ -396,7 +396,13 @@ struct MPISendOpLowering
         Value destPtr = entryBlock->getArgument(2);
         Value tagPtr = entryBlock->getArgument(3);
 
-        // Load the dest, tag, and count values
+        // Load the count, dest, tag values
+        Value count = rewriter.create<LLVM::LoadOp>(
+            op.getLoc(),
+            i32Type,
+            countPtr
+        );
+
         Value dest = rewriter.create<LLVM::LoadOp>(
             op.getLoc(),
             i32Type,
@@ -407,12 +413,6 @@ struct MPISendOpLowering
             op.getLoc(),
             i32Type,
             tagPtr
-        );
-
-        Value count = rewriter.create<LLVM::LoadOp>(
-            op.getLoc(),
-            i32Type,
-            countPtr
         );
 
         // Get the address of the datatype
@@ -494,6 +494,7 @@ struct MPISendOpLowering
       // Get all orinigal op operands
       auto operands = op.getOperands();
 
+      // Call the LLVM function with enzymexla.jit_call
       rewriter.create<enzymexla::JITCallOp>(
           op.getLoc(),
           TypeRange{},
@@ -507,7 +508,6 @@ struct MPISendOpLowering
           /*output_operand_aliases=*/nullptr,
           /*xla_side_effect_free=*/nullptr);
 
-      // rewriter.replaceOp(op);
       rewriter.eraseOp(op);
 
       return success();
@@ -588,7 +588,13 @@ struct MPIRecvOpLowering
         Value srcPtr = entryBlock->getArgument(2);
         Value tagPtr = entryBlock->getArgument(3);
 
-        // Load the src, tag, and count values
+        // Load the count, src, tag, and count values
+        Value count = rewriter.create<LLVM::LoadOp>(
+            op.getLoc(),
+            i32Type,
+            countPtr
+        );
+
         Value src = rewriter.create<LLVM::LoadOp>(
             op.getLoc(),
             i32Type,
@@ -599,12 +605,6 @@ struct MPIRecvOpLowering
             op.getLoc(),
             i32Type,
             tagPtr
-        );
-
-        Value count = rewriter.create<LLVM::LoadOp>(
-            op.getLoc(),
-            i32Type,
-            countPtr
         );
 
         // Get the address of the datatype
@@ -720,9 +720,18 @@ struct MPIRecvOpLowering
       // Get all orinigal op operands
       auto operands = op.getOperands();
 
-      rewriter.create<enzymexla::JITCallOp>(
+      // Call the LLVM function with enzymexla.jit_call
+      SmallVector<Attribute> aliases;
+      aliases.push_back(stablehlo::OutputOperandAliasAttr::get(
+          context,
+          /*output_operand_aliases=*/std::vector<int64_t>{},
+          /*operand_index=*/0,
+          /*operand_tuple_indices=*/std::vector<int64_t>{})
+      );
+
+      auto jitCall = rewriter.create<enzymexla::JITCallOp>(
           op.getLoc(),
-          TypeRange{},
+          op->getResultTypes(),
           mlir::FlatSymbolRefAttr::get(context, wrapperFunctionName),
           ValueRange{operands},
           rewriter.getStringAttr(""),
@@ -730,11 +739,10 @@ struct MPIRecvOpLowering
           /*result_layouts=*/nullptr,
           /*arg_attrs=*/nullptr,
           /*res_attrs=*/nullptr,
-          /*output_operand_aliases=*/nullptr,
+          /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
           /*xla_side_effect_free=*/nullptr);
 
-      // rewriter.replaceOp(op);
-      rewriter.eraseOp(op);
+      rewriter.replaceOp(op, jitCall);
 
       return success();
     } else {
