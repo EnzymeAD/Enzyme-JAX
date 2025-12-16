@@ -18,6 +18,7 @@
 #include "llvm/ADT/TypeSwitch.h"
 
 #include <algorithm>
+#include <cassert>
 
 #define DEBUG_TYPE "auto-batching"
 
@@ -1491,6 +1492,242 @@ GreedyWhileLoopBatchFission::isDynamicSliceValidForBatching(
   return ValidBatchingInfo{IsValidForBatchingResult::VALID, dimensions};
 }
 
+bool RemoveConstantSlicesWithSmallerOperand::indicesMatch(
+    stablehlo::DynamicSliceOp ds, stablehlo::DynamicUpdateSliceOp dus,
+    WhileLoopInfo &info) const {
+  auto dsStartIndices = ds.getStartIndices();
+  auto dusStartIndices = dus.getStartIndices();
+
+  if (dsStartIndices.size() != dusStartIndices.size()) {
+    return false;
+  }
+
+  // Check that slice sizes match update tensor dimensions
+  auto sliceSizes = ds.getSliceSizes();
+  auto updateType = cast<RankedTensorType>(dus.getUpdate().getType());
+  auto updateShape = updateType.getShape();
+
+  if (sliceSizes.size() != updateShape.size()) {
+    return false;
+  }
+
+  for (size_t i = 0; i < sliceSizes.size(); ++i) {
+    if (sliceSizes[i] != updateShape[i] ||
+        dsStartIndices[i] != dusStartIndices[i] ||
+        !info.isConstantAcrossIterations(dsStartIndices[i], true) ||
+        !info.isConstantAcrossIterations(dusStartIndices[i], true)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool RemoveConstantSlicesWithSmallerOperand::getLoadAndStoreOp(
+    BlockArgument arg, Block &body, stablehlo::DynamicSliceOp &dsOp,
+    stablehlo::DynamicUpdateSliceOp &dusOp, WhileLoopInfo &info) const {
+  // Check that arg has exactly 2 users
+  if (llvm::range_size(arg.getUsers()) != 2) {
+    return false;
+  }
+
+  // Find the DynamicSliceOp and DynamicUpdateSliceOp among the users
+  dsOp = nullptr;
+  dusOp = nullptr;
+
+  for (Operation *user : arg.getUsers()) {
+    if (auto dsCandidate = dyn_cast<stablehlo::DynamicSliceOp>(user)) {
+      if (dsOp) { // Multiple DynamicSliceOps - not allowed
+        return false;
+      }
+      dsOp = dsCandidate;
+    } else if (auto dusCandidate =
+                   dyn_cast<stablehlo::DynamicUpdateSliceOp>(user)) {
+      if (dusOp) { // Multiple DynamicUpdateSliceOps - not allowed
+        return false;
+      }
+      dusOp = dusCandidate;
+    } else { // Unknown user type
+      return false;
+    }
+  }
+
+  // Both must be present
+  if (!dsOp || !dusOp) {
+    return false;
+  }
+
+  // Check that the DUS satisfies the conditions from
+  // getDynamicUpdateSliceForIterArg:
+  // 1. The DUS operand must be the block argument
+  if (dusOp.getOperand() != arg) {
+    return false;
+  }
+
+  // 2. The DUS result must be returned at the corresponding arg position
+  auto terminator = body.getTerminator();
+  if (!terminator) {
+    return false;
+  }
+
+  auto returnOp = dyn_cast<stablehlo::ReturnOp>(terminator);
+  if (!returnOp) {
+    return false;
+  }
+
+  size_t argNum = arg.getArgNumber();
+  if (argNum >= returnOp.getNumOperands()) {
+    return false;
+  }
+
+  if (returnOp.getOperand(argNum) != dusOp.getResult()) {
+    return false;
+  }
+
+  // Check that the indices match between DS and DUS
+  return indicesMatch(dsOp, dusOp, info);
+}
+
+LogicalResult RemoveConstantSlicesWithSmallerOperand::matchAndRewriteImpl(
+    stablehlo::WhileOp whileOp, PatternRewriter &rewriter) const {
+  auto &body = whileOp.getBody().front();
+  auto &cond = whileOp.getCond().front();
+  WhileLoopInfo info(whileOp);
+  auto computeInfoSuccess = info.computeInfo();
+  if (!computeInfoSuccess.succeeded()) {
+    return computeInfoSuccess;
+  }
+
+  bool anyRewritten = false;
+
+  // We iterate over block arguments to find candidates
+  for (auto arg : body.getArguments()) {
+    size_t argNum = arg.getArgNumber();
+
+    // Skip if the argument is used in the condition (except as a pass-through
+    // to check loop bounds)
+    auto condArg = cond.getArgument(argNum);
+    if (!condArg.getUsers().empty()) {
+      continue;
+    }
+
+    // Use getLoadAndStoreOp to find the DS and DUS with matching indices
+    stablehlo::DynamicSliceOp ds;
+    stablehlo::DynamicUpdateSliceOp dus;
+    if (!getLoadAndStoreOp(arg, body, ds, dus, info)) {
+      continue;
+    }
+
+    // Now we can perform the transformation:
+    // 1. Replace the iter arg with the update value of the DUS
+    // 2. After the while loop, perform the DUS to update the original tensor
+
+    // Get the original operand passed to the while loop
+    Value originalOperand = whileOp->getOperand(argNum);
+
+    // Create the new operand - the update tensor of the DUS, but we need to
+    // get it from outside the loop. We need to create an initial slice from
+    // the original operand.
+    rewriter.setInsertionPoint(whileOp);
+
+    // Create a dynamic slice of the original operand with the same
+    // indices as the DUS - use isConstantAcrossIterations to get outer values
+    SmallVector<Value> sliceStartIndices;
+    IRMapping hoistMapper;
+
+    for (Value idx : dus.getStartIndices()) {
+      Value outerValue;
+      SmallVector<Operation *> canBeHoisted;
+
+      auto ensureConstant =
+          info.isConstantAcrossIterations(idx, outerValue, canBeHoisted, true);
+      assert(ensureConstant && "expected indices to be constant");
+      (void)ensureConstant;
+
+      // Hoist the chain of operations if needed
+      for (Operation *op : canBeHoisted) {
+        if (hoistMapper.contains(op->getResult(0))) {
+          continue;
+        }
+        auto *hoisted = rewriter.clone(*op, hoistMapper);
+        for (auto [orig, cloned] :
+             llvm::zip(op->getResults(), hoisted->getResults())) {
+          hoistMapper.map(orig, cloned);
+        }
+      }
+
+      // Use the outer value (potentially remapped if hoisted)
+      if (hoistMapper.contains(outerValue)) {
+        sliceStartIndices.push_back(hoistMapper.lookup(outerValue));
+      } else {
+        sliceStartIndices.push_back(outerValue);
+      }
+    }
+
+    auto updateType = cast<RankedTensorType>(dus.getUpdate().getType());
+    auto slicedOperand = stablehlo::DynamicSliceOp::create(
+        rewriter, whileOp.getLoc(), originalOperand, sliceStartIndices,
+        rewriter.getDenseI64ArrayAttr(updateType.getShape()));
+
+    // Modify the while loop operand
+    SmallVector<Value> newOperands(whileOp.getOperands().begin(),
+                                   whileOp.getOperands().end());
+    newOperands[argNum] = slicedOperand;
+    SmallVector<Type> newResultTypes(whileOp.getResultTypes().begin(),
+                                     whileOp.getResultTypes().end());
+    newResultTypes[argNum] = updateType;
+
+    // Update the body - replace uses of the block arg with the update
+    // in DUS, and modify the terminator to return the update directly
+    auto terminator = cast<stablehlo::ReturnOp>(body.getTerminator());
+    SmallVector<Value> newTerminatorOperands(terminator.getOperands().begin(),
+                                             terminator.getOperands().end());
+    newTerminatorOperands[argNum] = dus.getUpdate();
+
+    // Replace the dynamic slice with the block argument directly
+    rewriter.replaceOp(ds, arg);
+
+    // Update the terminator
+    rewriter.setInsertionPoint(terminator);
+    stablehlo::ReturnOp::create(rewriter, terminator.getLoc(),
+                                newTerminatorOperands);
+    rewriter.eraseOp(terminator);
+
+    // Create a new while op with the modified operands
+    rewriter.setInsertionPoint(whileOp);
+    auto newWhileOp = stablehlo::WhileOp::create(rewriter, whileOp.getLoc(),
+                                                 newResultTypes, newOperands);
+
+    // Move the body and cond regions to the new while op
+    rewriter.inlineRegionBefore(whileOp.getCond(), newWhileOp.getCond(),
+                                newWhileOp.getCond().end());
+    rewriter.inlineRegionBefore(whileOp.getBody(), newWhileOp.getBody(),
+                                newWhileOp.getBody().end());
+
+    // After the while loop, perform the DUS to update the original tensor
+    rewriter.setInsertionPointAfter(newWhileOp);
+    auto postLoopDus = stablehlo::DynamicUpdateSliceOp::create(
+        rewriter, whileOp.getLoc(), originalOperand,
+        newWhileOp.getResult(argNum), sliceStartIndices);
+
+    // Replace the result of the original while with the post-loop DUS
+    SmallVector<Value> replacements;
+    for (size_t i = 0; i < whileOp.getNumResults(); ++i) {
+      if (i == argNum) {
+        replacements.push_back(postLoopDus);
+      } else {
+        replacements.push_back(newWhileOp.getResult(i));
+      }
+    }
+
+    rewriter.replaceOp(whileOp, replacements);
+    anyRewritten = true;
+    break; // Only handle one argument at a time
+  }
+
+  return anyRewritten ? success() : failure();
+}
+
 struct AutoBatchingPass
     : public enzyme::impl::AutoBatchingPassBase<AutoBatchingPass> {
   using Base::Base;
@@ -1538,6 +1775,8 @@ struct AutoBatchingPass
                    << while_loop_batching_mode << "\n";
       signalPassFailure();
     }
+
+    patterns.add<RemoveConstantSlicesWithSmallerOperand>(context);
 
     GreedyRewriteConfig config;
     config.setMaxIterations(max_iterations);

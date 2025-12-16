@@ -189,3 +189,34 @@ private:
       llvm::ArrayRef<SliceInfo<mlir::stablehlo::DynamicSliceOp>> slices,
       mlir::Operation *op, mlir::enzyme::WhileLoopInfo info) const;
 };
+
+// For a given iteration argument, if all chain of users end with dynamic
+// slices, and the iter arg is carried forward with a dynamic update slice.
+// If start indices for each of the dynamic slices along with the slice sizes
+// match that of the dynamic update slice, we can replace that iter arg with the
+// sliced tensor directly. Additionally we add an operation post the while
+// to update the original tensor with the update.
+struct RemoveConstantSlicesWithSmallerOperand
+    : public mlir::enzyme::CheckedOpRewritePattern<
+          mlir::stablehlo::WhileOp, RemoveConstantSlicesWithSmallerOperand> {
+  using Base = mlir::enzyme::CheckedOpRewritePattern<
+      mlir::stablehlo::WhileOp, RemoveConstantSlicesWithSmallerOperand>;
+  using Base::Base;
+
+  mlir::LogicalResult
+  matchAndRewriteImpl(mlir::stablehlo::WhileOp whileOp,
+                      mlir::PatternRewriter &rewriter) const;
+
+private:
+  // Check if arg has exactly 2 users: one DynamicSliceOp and one
+  // DynamicUpdateSliceOp with matching indices
+  bool getLoadAndStoreOp(mlir::BlockArgument arg, mlir::Block &body,
+                         mlir::stablehlo::DynamicSliceOp &dsOp,
+                         mlir::stablehlo::DynamicUpdateSliceOp &dusOp,
+                         mlir::enzyme::WhileLoopInfo &info) const;
+
+  // Check if the dynamic slice indices match the dynamic update slice indices
+  bool indicesMatch(mlir::stablehlo::DynamicSliceOp dsOp,
+                    mlir::stablehlo::DynamicUpdateSliceOp dusOp,
+                    mlir::enzyme::WhileLoopInfo &info) const;
+};
