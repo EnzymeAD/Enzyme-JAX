@@ -12,6 +12,7 @@
 #include "llvm/ADT/SmallVector.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/IntegerSet.h"
@@ -912,6 +913,18 @@ bool areValidInsertionDims(RankedTensorType inputType,
                            SmallVector<int64_t> insertionDims);
 
 bool isOnlyUsedInOperation(Operation *operation, Operation *parentOp);
+
+/// Adapt a function to a calling convention with different element types and
+/// byte offsets. Creates a new wrapper function that performs necessary
+/// conversions and slicing before calling the original function.
+/// \param f The original MLIR function to wrap
+/// \param inputTensorTypes The tensor types for the wrapper function arguments
+/// \param byteOffsets Byte offsets for each argument (0 means no offset)
+/// \return A new function that adapts the calling convention
+mlir::func::FuncOp
+adaptToCallingConvention(mlir::func::FuncOp f,
+                         ArrayRef<mlir::Type> inputTensorTypes,
+                         ArrayRef<int64_t> byteOffsets);
 
 } // namespace enzyme
 
