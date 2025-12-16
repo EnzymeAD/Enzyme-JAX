@@ -4569,8 +4569,10 @@ DenseElementsAttr fromTensor(stablehlo::Tensor tensor) {
 /*
 %22 = stablehlo.dot_general %21, %16, contracting_dims = [1] x [0], precision
 = [DEFAULT, DEFAULT] : (tensor<288x288xf32>, tensor<288xf32>) ->
-tensor<288xf32> %27 = stablehlo.reshape %22 : (tensor<288xf32>) ->
-tensor<144x2xf32> %28 = stablehlo.dot_general %6, %27, batching_dims = [0] x
+tensor<288xf32>
+%27 = stablehlo.reshape %22 : (tensor<288xf32>) ->
+tensor<144x2xf32>
+%28 = stablehlo.dot_general %6, %27, batching_dims = [0] x
 [0], contracting_dims = [2] x [1], precision = [DEFAULT, DEFAULT] :
 (tensor<144x2x2xf32>, tensor<144x2xf32>) -> tensor<144x2xf32>
 
@@ -26708,7 +26710,6 @@ struct ReshapeSliceReshape final
   }
 };
 
-
 // If a reduce is followed by a reshape that deletes certain dimensions,
 // we can absorb those deleted dimensions into the reduce op
 struct ReduceDeleteDims final
@@ -26721,7 +26722,8 @@ struct ReduceDeleteDims final
     if (!reduceOp)
       return failure();
 
-    if (reduceOp.getInputs().size() != 1 || reduceOp.getInitValues().size() != 1)
+    if (reduceOp.getInputs().size() != 1 ||
+        reduceOp.getInitValues().size() != 1)
       return failure();
 
     if (!llvm::hasSingleElement(reduceOp->getUsers()))
@@ -26731,7 +26733,8 @@ struct ReduceDeleteDims final
     auto reshapeOutTy = cast<RankedTensorType>(reshapeOp.getType());
 
     // Find which dimensions are being deleted by the reshape
-    // findReshapeInsertionDims(output, input) returns dims in input not in output
+    // findReshapeInsertionDims(output, input) returns dims in input not in
+    // output
     auto deletedDims = findReshapeInsertionDims(reshapeOutTy, reduceOutTy);
     if (deletedDims.empty())
       return failure();
@@ -26847,6 +26850,147 @@ struct DeleteDimsReduce final
 
     rewriter.replaceOp(op, newReduceOp.getResults());
     return success();
+  }
+};
+
+struct DotGeneralInsertDimContractionSimplification final
+    : public CheckedOpRewritePattern<
+          stablehlo::DotGeneralOp,
+          DotGeneralInsertDimContractionSimplification> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp op,
+                                    PatternRewriter &rewriter) const {
+    auto dotDims = op.getDotDimensionNumbers();
+    auto lhs = op.getLhs();
+    auto lhsType = cast<RankedTensorType>(lhs.getType());
+    auto rhs = op.getRhs();
+    auto rhsType = cast<RankedTensorType>(rhs.getType());
+
+    // Find singleton contracting dimensions (size 1 on both sides)
+    SmallVector<int64_t> newLhsContractingDims, newRhsContractingDims;
+    SmallVector<int64_t> lhsSingletonContractDims, rhsSingletonContractDims;
+
+    for (auto [lhsDim, rhsDim] :
+         llvm::zip(dotDims.getLhsContractingDimensions(),
+                   dotDims.getRhsContractingDimensions())) {
+      if (lhsType.getDimSize(lhsDim) == 1 && rhsType.getDimSize(rhsDim) == 1) {
+        lhsSingletonContractDims.push_back(lhsDim);
+        rhsSingletonContractDims.push_back(rhsDim);
+        continue;
+      }
+      newLhsContractingDims.push_back(lhsDim);
+      newRhsContractingDims.push_back(rhsDim);
+    }
+
+    if (lhsSingletonContractDims.empty()) {
+      return failure();
+    }
+
+    // Check that both operands can have their singleton dims removed
+    if (!canRemoveSingletonDim(lhs, lhsSingletonContractDims) ||
+        !canRemoveSingletonDim(rhs, rhsSingletonContractDims)) {
+      return failure();
+    }
+
+    // Build new LHS shape (remove singleton contracting dims)
+    SmallVector<int64_t> newLhsShape;
+    DenseMap<int64_t, int64_t> lhsOldToNew;
+    for (int64_t i = 0; i < lhsType.getRank(); ++i) {
+      if (llvm::is_contained(lhsSingletonContractDims, i))
+        continue;
+      lhsOldToNew[i] = newLhsShape.size();
+      newLhsShape.push_back(lhsType.getDimSize(i));
+    }
+
+    // Build new RHS shape (remove singleton contracting dims)
+    SmallVector<int64_t> newRhsShape;
+    DenseMap<int64_t, int64_t> rhsOldToNew;
+    for (int64_t i = 0; i < rhsType.getRank(); ++i) {
+      if (llvm::is_contained(rhsSingletonContractDims, i))
+        continue;
+      rhsOldToNew[i] = newRhsShape.size();
+      newRhsShape.push_back(rhsType.getDimSize(i));
+    }
+
+    // Map old batch/contracting dims to new positions
+    SmallVector<int64_t> mappedLhsBatchDims, mappedRhsBatchDims;
+    for (auto dim : dotDims.getLhsBatchingDimensions()) {
+      if (lhsOldToNew.count(dim))
+        mappedLhsBatchDims.push_back(lhsOldToNew[dim]);
+    }
+    for (auto dim : dotDims.getRhsBatchingDimensions()) {
+      if (rhsOldToNew.count(dim))
+        mappedRhsBatchDims.push_back(rhsOldToNew[dim]);
+    }
+
+    SmallVector<int64_t> mappedLhsContractDims, mappedRhsContractDims;
+    for (auto dim : newLhsContractingDims) {
+      if (lhsOldToNew.count(dim))
+        mappedLhsContractDims.push_back(lhsOldToNew[dim]);
+    }
+    for (auto dim : newRhsContractingDims) {
+      if (rhsOldToNew.count(dim))
+        mappedRhsContractDims.push_back(rhsOldToNew[dim]);
+    }
+
+    // Create reshaped operands. This will be cleaned up later
+    auto newLhsType =
+        RankedTensorType::get(newLhsShape, lhsType.getElementType());
+    auto newRhsType =
+        RankedTensorType::get(newRhsShape, rhsType.getElementType());
+
+    Value newLhs =
+        stablehlo::ReshapeOp::create(rewriter, op.getLoc(), newLhsType, lhs);
+    Value newRhs =
+        stablehlo::ReshapeOp::create(rewriter, op.getLoc(), newRhsType, rhs);
+
+    // Create new dot dimension numbers
+    auto newDotDims = stablehlo::DotDimensionNumbersAttr::get(
+        op.getContext(), mappedLhsBatchDims, mappedRhsBatchDims,
+        mappedLhsContractDims, mappedRhsContractDims);
+
+    // Create the new dot_general
+    auto newDotOp = stablehlo::DotGeneralOp::create(
+        rewriter, op.getLoc(), op.getType(), newLhs, newRhs, newDotDims,
+        op.getPrecisionConfigAttr(), op.getAlgorithmAttr());
+
+    rewriter.replaceOp(op, newDotOp);
+    return success();
+  }
+
+private:
+  // Check if an operand can have a singleton dimension removed at the given
+  // position. This is safe if the operand is:
+  // 1. A splatted constant (all elements same value)
+  // 2. A broadcast_in_dim that creates the singleton dimension (dim not in
+  //    broadcast_dimensions)
+  // 3. A reshape operation (can be adjusted)
+  bool canRemoveSingletonDim(Value operand,
+                             ArrayRef<int64_t> singletonDims) const {
+    auto defOp = operand.getDefiningOp();
+
+    // Case 1: Splatted constant
+    SplatElementsAttr splat;
+    if (matchPattern(defOp, m_Constant(&splat))) {
+      return true;
+    }
+
+    // Case 2: broadcast_in_dim that creates the singleton dimension
+    if (auto bcastOp = dyn_cast<stablehlo::BroadcastInDimOp>(defOp)) {
+      auto broadcastDims = bcastOp.getBroadcastDimensions();
+      // If dimToRemove is not in broadcastDims, it was created by the broadcast
+      return llvm::all_of(singletonDims, [&](auto dim) {
+        return !llvm::is_contained(broadcastDims, dim);
+      });
+    }
+
+    // Case 3: Reshape operation
+    if (dyn_cast<stablehlo::ReshapeOp>(defOp)) {
+      return true;
+    }
+
+    return false;
   }
 };
 
@@ -27513,7 +27657,8 @@ struct EnzymeHLOOptPass
         DUSDynamicSliceSimplify,
         WhileDUSDSSimplify,
         DeleteDimsReduce,
-        ReduceDeleteDims
+        ReduceDeleteDims,
+        DotGeneralInsertDimContractionSimplification
       >(context);
 
     patterns.add<

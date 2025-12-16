@@ -324,6 +324,7 @@ def optimization_passes(
         "dot_general_remove_batch_dimensions",
         "delete_dims_reduce",
         "reduce_delete_dims",
+        "dot_general_insert_dim_contraction_simplification",
     ]
 
     # constant propagation patterns
