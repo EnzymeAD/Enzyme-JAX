@@ -1,6 +1,6 @@
 import os
 import tempfile
-
+import numpy as np
 
 def fix_paths():
     for nm in [
@@ -492,23 +492,9 @@ def splatjvp(in_fn):
 
 
 def sync(x):
-    return x.block_until_ready()
+    import jax
 
-
-def syncall(x):
-    return map(sync, x)
-
-
-def fwdsync1(x):
-    return (sync(x[0]), sync(x[1]))
-
-
-def fwdsync2(x):
-    return (sync(x[0][0]), sync(x[1][0]))
-
-
-def fwdsync3(x):
-    return (syncall(x[0]), syncall(x[1]))
+    return jax.block_until_ready(x)
 
 
 def splatvjp(in_fn):
@@ -531,22 +517,6 @@ def splatvjp_noprim(in_fn):
         return grads
 
     return rev
-
-
-def revsync0_0(x):
-    return (sync(x[0]), sync(x[1][0]))
-
-
-def revsync0_1(x):
-    return (syncall(x[0]), sync(x[1][0]))
-
-
-def revsync1_0(x):
-    return (sync(x[0]), syncall(x[1]))
-
-
-def revsync1_1(x):
-    return (syncall(x[0]), syncall(x[1]))
 
 
 def to_backend(x, backend):
@@ -591,7 +561,11 @@ def recursive_check(tester, lhs, rhs, atol=1e-8, rtol=1e-5, pname=None):
 
 
 def _dump_mlir_to_file(fn, args, key: str, dump_mlir_dir: str):
-    source = fn.trace(*args).lower().as_text()
+    loweredfn = fn.trace(*args).lower()
+    source = loweredfn.as_text()
+
+    # compiled_fn = loweredfn.compile()
+    # print(compiled_fn.cost_analysis())
 
     # bazel will zip up the outputs in this directory
     env_dir = os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR", None)
@@ -604,7 +578,7 @@ def _dump_mlir_to_file(fn, args, key: str, dump_mlir_dir: str):
     with open(tmpfile.name, "w") as f:
         f.write(str(source))
 
-    print(f"Dumped mlir to {tmpfile.name}")
+    # print(f"Dumped mlir to {tmpfile.name}")
     return tmpfile.name
 
 
@@ -672,47 +646,24 @@ class EnzymeJaxTest(absltest.TestCase):
         if self.mlirad_fwd:
             assert len(ins) == len(dins)
 
-        primalstr = "fn(" + (", ".join(["in" + str(i) for i in range(len(ins))])) + ")"
-        if isinstance(douts, jax.Array):
-            primalstr = "sync(" + primalstr + ")"
-        elif len(douts) == 1:
-            primalstr = "sync(" + primalstr + "[0])"
-        else:
-            primalstr = "syncall(" + primalstr + ")"
+        primalstr = (
+            "sync(fn(" + (", ".join(["in" + str(i) for i in range(len(ins))])) + "))"
+        )
 
         fwdstr = (
-            "fwd("
+            "sync(fwd("
             + (", ".join(["in" + str(i) for i in range(len(ins))]))
             + ", "
             + (", ".join(["din" + str(i) for i in range(len(dins))]))
-            + ")"
+            + "))"
         )
-        if isinstance(douts, jax.Array):
-            fwdstr = "fwdsync1(" + fwdstr + ")"
-        elif len(douts) == 1:
-            fwdstr = "fwdsync2(" + fwdstr + ")"
-        else:
-            fwdstr = "fwdsync3(" + fwdstr + ")"
 
-        revstr0 = (
-            "rev(dout, " + (", ".join(["in" + str(i) for i in range(len(ins))])) + ")"
+        revstr = (
+            "sync(rev(dout, "
+            + (", ".join(["in" + str(i) for i in range(len(ins))]))
+            + "))"
         )
-        if self.revprimal:
-            if len(dins) == 1:
-                if isinstance(douts, jax.Array):
-                    revstr = "revsync0_0(" + revstr0 + ")"
-                else:
-                    revstr = "revsync0_1(" + revstr0 + ")"
-            else:
-                if isinstance(douts, jax.Array):
-                    revstr = "revsync1_0(" + revstr0 + ")"
-                else:
-                    revstr = "revsync1_1(" + revstr0 + ")"
-        else:
-            if len(dins) == 1:
-                revstr = "sync(" + revstr0 + "[0])"
-            else:
-                revstr = "syncall(" + revstr0 + ")"
+
         revtransform = splatvjp if self.revprimal else splatvjp_noprim
 
         for backend in self.AllBackends:
@@ -726,14 +677,6 @@ class EnzymeJaxTest(absltest.TestCase):
 
             primalins = {("in" + str(i)): ins_backend[i] for i in range(len(ins))}
             primalins["sync"] = sync
-            primalins["syncall"] = syncall
-            primalins["fwdsync1"] = fwdsync1
-            primalins["fwdsync2"] = fwdsync2
-            primalins["fwdsync3"] = fwdsync3
-            primalins["revsync0_0"] = revsync0_0
-            primalins["revsync0_1"] = revsync0_1
-            primalins["revsync1_0"] = revsync1_0
-            primalins["revsync1_1"] = revsync1_1
             fwdins = primalins | {
                 ("din" + str(i)): dins_backend[i] for i in range(len(dins))
             }

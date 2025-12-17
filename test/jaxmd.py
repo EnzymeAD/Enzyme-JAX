@@ -67,9 +67,7 @@ class JAXMD(EnzymeJaxTest):
             )
             state = simulate.NVTNoseHooverState(position, momentum, force, mass, chain)
             # new_state, new_nbrs = lax.fori_loop(0, iters, step, (state, nbrs))
-            new_state, new_nbrs = state, nbrs
-            for i in range(iters): # unrolled loop
-                new_state, new_nbrs = step(i, (new_state, new_nbrs))
+            new_state, new_nbrs = step(i, (state, nbrs))
             return (
                 new_state.position,
                 new_state.momentum,
