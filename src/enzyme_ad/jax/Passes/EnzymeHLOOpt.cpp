@@ -6912,7 +6912,7 @@ struct AndSimplify
       return success();
     }
 
-    // false & x -> x
+    // false & x -> false
     for (auto v : op.getOperands()) {
       if (matchPattern(v, m_Zero())) {
         rewriter.replaceOp(op, v);
@@ -6922,7 +6922,7 @@ struct AndSimplify
 
     // true & x -> x
     for (int i = 0; i < 2; i++) {
-      if (matchPattern(op.getOperand(i), m_One())) {
+      if (matchPattern(op.getOperand(i), m_AllOnes())) {
         rewriter.replaceOp(op, op.getOperand(1 - i));
         return success();
       }
@@ -6947,7 +6947,7 @@ struct OrSimplify
 
     // true | x -> true
     for (auto v : op.getOperands()) {
-      if (matchPattern(v, m_One())) {
+      if (matchPattern(v, m_AllOnes())) {
         rewriter.replaceOp(op, v);
         return success();
       }
@@ -6982,7 +6982,7 @@ struct XorSimplify
 
     // true ^ x -> not x
     for (int i = 0; i < 2; i++) {
-      if (matchPattern(op.getOperand(i), m_One())) {
+      if (matchPattern(op.getOperand(i), m_AllOnes())) {
         rewriter.replaceOpWithNewOp<stablehlo::NotOp>(op, op.getOperand(1 - i));
         return success();
       }
