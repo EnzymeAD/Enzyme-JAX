@@ -83,6 +83,7 @@ py_test(
 
 py_test(
     name = "bench_vs_xla",
+    timeout = "long",
     srcs = [
         "bench_vs_xla.py",
         "test_utils.py",
