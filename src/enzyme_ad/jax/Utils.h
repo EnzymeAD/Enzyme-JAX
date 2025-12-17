@@ -150,6 +150,10 @@ inline ::mlir::detail::constant_int_predicate_matcher m_NegOne() {
   return {[](const APInt &value) { return value == -1; }};
 }
 
+inline ::mlir::detail::constant_int_predicate_matcher m_AllOnes() {
+  return {[](const APInt &value) { return value.isAllOnes(); }};
+}
+
 inline ::mlir::detail::constant_float_predicate_matcher m_NegOneFloat() {
   return {[](const APFloat &value) { return value.isExactlyValue(-1.0); }};
 }
