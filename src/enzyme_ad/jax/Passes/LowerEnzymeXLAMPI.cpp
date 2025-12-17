@@ -455,7 +455,7 @@ struct MPIBarrierOpLowering
 
   }
 
-}; //
+};
 
 
 struct MPISendOpLowering
@@ -1444,6 +1444,7 @@ struct LowerEnzymeXLAMPIPass
 
     patterns.add<MPICommRankOpLowering>(backend, context);
     patterns.add<MPICommSizeOpLowering>(backend, context);
+    patterns.add<MPIBarrierOpLowering>(backend, context);
     patterns.add<MPISendOpLowering>(backend, context);
     patterns.add<MPIRecvOpLowering>(backend, context);
     patterns.add<MPIIsendOpLowering>(backend, context);
