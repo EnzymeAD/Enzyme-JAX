@@ -320,6 +320,8 @@ bool isReadNone(mlir::Operation *);
 bool mayReadFrom(mlir::Operation *, mlir::Value);
 bool mayWriteTo(mlir::Operation *, mlir::Value, bool ignoreBarrier = false);
 
+bool mayAlias(Value v, Value v2);
+
 bool mayAlias(mlir::MemoryEffects::EffectInstance a,
               mlir::MemoryEffects::EffectInstance b);
 
