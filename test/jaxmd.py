@@ -1,29 +1,19 @@
 from absl.testing import absltest
 
-from test_utils import *
+from test_utils import EnzymeJaxTest, pipelines
+from jax_md import space, energy, simulate, partition
+from jax import random
+import jax.numpy as jnp
 
 
 class JAXMD(EnzymeJaxTest):
     def setUp(self):
-
-        from jax import jit
-        from jax import random
-        from jax import lax
-
-        import jax.numpy as np
-
-        from jax_md import space
-        from jax_md import energy
-        from jax_md import simulate
-        from jax_md import quantity
-        from jax_md import partition
-
         lattice_constant = 1.37820
         # We hit a GPU memory limit for N_rep = 40
         N_rep = 20 if jax.default_backend() in ["gpu", "tpu"] else 40
         box_size = N_rep * lattice_constant
         # Using float32 for positions / velocities, but float64 for reductions.
-        dtype = np.float32
+        dtype = jnp.float32
 
         # Specify the format of the neighbor list.
         # Options are Dense, Sparse, or OrderedSparse.
@@ -36,7 +26,7 @@ class JAXMD(EnzymeJaxTest):
             for j in range(N_rep):
                 for k in range(N_rep):
                     R += [[i, j, k]]
-        R = np.array(R, dtype=dtype) * lattice_constant
+        R = jnp.array(R, dtype=dtype) * lattice_constant
 
         N = R.shape[0]
         phi = N / (lattice_constant * N_rep) ** 3
@@ -77,7 +67,9 @@ class JAXMD(EnzymeJaxTest):
             )
             state = simulate.NVTNoseHooverState(position, momentum, force, mass, chain)
             # new_state, new_nbrs = lax.fori_loop(0, iters, step, (state, nbrs))
-            new_state, new_nbrs = step(0, (state, nbrs))
+            new_state, new_nbrs = state, nbrs
+            for i in range(iters): # unrolled loop
+                new_state, new_nbrs = step(i, (new_state, new_nbrs))
             return (
                 new_state.position,
                 new_state.momentum,
@@ -93,9 +85,6 @@ class JAXMD(EnzymeJaxTest):
         self.fn = forward
         self.name = "jaxmd40"
         self.count = 10
-        # self.revprimal = False
-        # self.AllPipelines = pipelines
-        # self.AllBackends = CurBackends
 
         self.ins = [
             state.position,
@@ -112,7 +101,7 @@ class JAXMD(EnzymeJaxTest):
         #    print("i=", i, v)
         self.dins = [x.copy() for x in self.ins]
         self.douts = tuple(x.copy() for x in self.ins)
-        self.AllPipelines = pipelines()
+
         # No support for stablehlo.scatter atm
         # self.revfilter = justjax
         self.mlirad_rev = False

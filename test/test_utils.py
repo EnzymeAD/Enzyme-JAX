@@ -1,6 +1,8 @@
-def fix_paths():
-    import os
+import os
+import tempfile
 
+
+def fix_paths():
     for nm in [
         "NV_LIBCUBLAS_VERSION",
         "NVIDIA_VISIBLE_DEVICES",
@@ -588,6 +590,24 @@ def recursive_check(tester, lhs, rhs, atol=1e-8, rtol=1e-5, pname=None):
     tester.assertTrue(False)
 
 
+def _dump_mlir_to_file(fn, args, key: str, dump_mlir_dir: str):
+    source = fn.trace(*args).lower().as_text()
+
+    # bazel will zip up the outputs in this directory
+    env_dir = os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR", None)
+    if env_dir is not None:
+        dump_mlir_dir = env_dir
+
+    tmpfile = tempfile.NamedTemporaryFile(
+        suffix=key.replace(" ", "") + ".mlir", dir=dump_mlir_dir, delete=False
+    )
+    with open(tmpfile.name, "w") as f:
+        f.write(str(source))
+
+    print(f"Dumped mlir to {tmpfile.name}")
+    return tmpfile.name
+
+
 class EnzymeJaxTest(absltest.TestCase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -646,6 +666,8 @@ class EnzymeJaxTest(absltest.TestCase):
         import timeit
         import jax
         from enzyme_ad.jax import enzyme_jax_ir
+
+        dump_mlir_dir = tempfile.gettempdir()
 
         if self.mlirad_fwd:
             assert len(ins) == len(dins)
@@ -730,6 +752,14 @@ class EnzymeJaxTest(absltest.TestCase):
                         ),
                         backend=backend,
                     )
+
+                    _dump_mlir_to_file(
+                        rfn_enzyme,
+                        ins_backend,
+                        pname + "_" + backend + "_primal",
+                        dump_mlir_dir,
+                    )
+
                     ao = rfn_enzyme(*ins_backend)
 
                     if primres is None:
@@ -773,6 +803,13 @@ class EnzymeJaxTest(absltest.TestCase):
                             )
                         )
                         fwd_enzyme = jax.jit(splatjvp(rfn_enzyme), backend=backend)
+
+                        _dump_mlir_to_file(
+                            fwd_enzyme,
+                            ins_backend + dins_backend,
+                            pname + "_" + backend + "_forward",
+                            dump_mlir_dir,
+                        )
 
                         primals, tangents = fwd_enzyme(*(ins_backend + dins_backend))
 
@@ -834,6 +871,13 @@ class EnzymeJaxTest(absltest.TestCase):
                                 revtransform(rfn_enzyme), backend=backend
                             )
 
+                            _dump_mlir_to_file(
+                                rev_enzyme,
+                                [adout] + ins_backend,
+                                pname + "_" + backend + "_prerev",
+                                dump_mlir_dir,
+                            )
+
                             if self.revprimal:
                                 primals, grads = rev_enzyme(adout, *ins_backend)
                             else:
@@ -889,6 +933,13 @@ class EnzymeJaxTest(absltest.TestCase):
                                 )(revtransform(rfn_enzyme))
                             ),
                             backend=backend,
+                        )
+
+                        _dump_mlir_to_file(
+                            rev_enzyme,
+                            [adout] + ins_backend,
+                            pname + "_" + backend + "_postrev",
+                            dump_mlir_dir,
                         )
 
                         if self.revprimal:
@@ -951,6 +1002,13 @@ class EnzymeJaxTest(absltest.TestCase):
                                 )(revtransform(rfn_enzyme))
                             ),
                             backend=backend,
+                        )
+
+                        _dump_mlir_to_file(
+                            rev_enzyme,
+                            [adout] + ins_backend,
+                            pname + "_" + backend + "_bothrev",
+                            dump_mlir_dir,
                         )
 
                         if self.revprimal:
