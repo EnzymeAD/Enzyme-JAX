@@ -431,21 +431,22 @@ bool isStackAlloca(Value v) {
          v.getDefiningOp<memref::AllocOp>() ||
          v.getDefiningOp<LLVM::AllocaOp>();
 }
-static bool mayAlias(Value v, Value v2) {
-  v = getBase(v);
+
+bool mayAlias(Value v1, Value v2) {
+  v1 = getBase(v1);
   v2 = getBase(v2);
-  if (v == v2)
+  if (v1 == v2)
     return true;
 
   // We may now assume neither v1 nor v2 are subindices
 
-  if (auto glob = v.getDefiningOp<memref::GetGlobalOp>()) {
+  if (auto glob = v1.getDefiningOp<memref::GetGlobalOp>()) {
     if (auto Aglob = v2.getDefiningOp<memref::GetGlobalOp>()) {
       return glob.getName() == Aglob.getName();
     }
   }
 
-  if (auto glob = v.getDefiningOp<LLVM::AddressOfOp>()) {
+  if (auto glob = v1.getDefiningOp<LLVM::AddressOfOp>()) {
     if (auto Aglob = v2.getDefiningOp<LLVM::AddressOfOp>()) {
       return glob.getGlobalName() == Aglob.getGlobalName();
     }
@@ -454,9 +455,9 @@ static bool mayAlias(Value v, Value v2) {
   bool isAlloca[2];
   bool isGlobal[2];
 
-  isAlloca[0] = isStackAlloca(v);
-  isGlobal[0] = v.getDefiningOp<memref::GetGlobalOp>() ||
-                v.getDefiningOp<LLVM::AddressOfOp>();
+  isAlloca[0] = isStackAlloca(v1);
+  isGlobal[0] = v1.getDefiningOp<memref::GetGlobalOp>() ||
+                v1.getDefiningOp<LLVM::AddressOfOp>();
 
   isAlloca[1] = isStackAlloca(v2);
 
@@ -467,21 +468,40 @@ static bool mayAlias(Value v, Value v2) {
   if ((isAlloca[0] || isGlobal[0]) && (isAlloca[1] || isGlobal[1]))
     return false;
 
-  bool isArg[2];
-  isArg[0] = isa<BlockArgument>(v) &&
-             isa<FunctionOpInterface>(
-                 cast<BlockArgument>(v).getOwner()->getParentOp());
+  BlockArgument barg1 = dyn_cast<BlockArgument>(v1);
+  BlockArgument barg2 = dyn_cast<BlockArgument>(v2);
 
-  isArg[1] = isa<BlockArgument>(v) &&
-             isa<FunctionOpInterface>(
-                 cast<BlockArgument>(v).getOwner()->getParentOp());
+  FunctionOpInterface f1 =
+      barg1 ? dyn_cast<FunctionOpInterface>(barg1.getOwner()->getParentOp())
+            : nullptr;
+  FunctionOpInterface f2 =
+      barg2 ? dyn_cast<FunctionOpInterface>(barg2.getOwner()->getParentOp())
+            : nullptr;
+
+  bool isNoAlias1 =
+      f1 ? !!f1.getArgAttr(barg1.getArgNumber(),
+                           LLVM::LLVMDialect::getNoAliasAttrName())
+         : false;
+  bool isNoAlias2 =
+      f2 ? !!f2.getArgAttr(barg2.getArgNumber(),
+                           LLVM::LLVMDialect::getNoAliasAttrName())
+         : false;
+
+  if (!isCaptured(v1) && isNoAlias1)
+    return false;
+  if (!isCaptured(v2) && isNoAlias2)
+    return false;
+
+  bool isArg[2];
+  isArg[0] = f1;
+  isArg[1] = f2;
 
   // Stack allocations cannot have been passed as an argument.
   if ((isAlloca[0] && isArg[1]) || (isAlloca[1] && isArg[0]))
     return false;
 
   // Non captured base allocas cannot conflict with another base value.
-  if (isAlloca[0] && !isCaptured(v))
+  if (isAlloca[0] && !isCaptured(v1))
     return false;
 
   if (isAlloca[1] && !isCaptured(v2))
