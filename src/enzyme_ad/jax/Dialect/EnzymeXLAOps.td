@@ -1111,7 +1111,8 @@ def MPICommSizeOp : EnzymeXLA_Op<"comm_size", [Pure]> {
   let assemblyFormat = [{ attr-dict `:` type(results) }];
 }
 
-def MPIBarrierOp : EnzymeXLA_Op<"barrier", []> {
+// We call it "mpi_barrier" to not collide with BarrierOp above
+def MPIBarrierOp : EnzymeXLA_Op<"mpi_barrier", []> {
   let summary = "Equivalent to MPI_Barrier(comm)";
   let assemblyFormat = "attr-dict";
 }
