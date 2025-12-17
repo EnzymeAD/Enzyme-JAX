@@ -754,6 +754,129 @@ struct MPIRecvOpLowering
 };
 
 
+struct MPIWaitOpLowering
+    : public OpRewritePattern<enzymexla::MPIWaitOp> {
+
+  std::string backend;
+  MPIWaitOpLowering(std::string backend, MLIRContext *context, PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit), backend(backend) {}
+
+  LogicalResult matchAndRewrite(enzymexla::MPIWaitOp op,
+                                PatternRewriter &rewriter) const override {
+    auto context = op->getContext();
+
+    if (backend == "cpu") {
+
+      auto moduleOp = op->getParentOfType<ModuleOp>();
+
+      auto llvmPtrType = LLVM::LLVMPointerType::get(context);
+      auto llvmVoidType = LLVM::LLVMVoidType::get(context);
+
+      auto i32Type = IntegerType::get(context, 32);
+
+      std::string mpiFunctionName = "MPI_Wait";
+
+      // Generate the enzymexla_wrapper LLVM function body
+      std::string wrapperFunctionName = "enzymexla_wrapper_" + mpiFunctionName;
+      {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+        // Create the wrapper function decl
+        auto funcType = LLVM::LLVMFunctionType::get(
+            llvmVoidType,
+            {llvmPtrType},
+            false);
+
+        auto wrapperFunc = rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), wrapperFunctionName, funcType);
+
+        // Add function-level memory effects attribute
+        auto memoryEffectsAttr = rewriter.getArrayAttr({
+            rewriter.getStringAttr("read"),
+            rewriter.getStringAttr("write"),
+            rewriter.getStringAttr("allocate"),
+            rewriter.getStringAttr("free")
+        });
+        wrapperFunc->setAttr("enzymexla.memory_effects", memoryEffectsAttr);
+
+        Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
+        rewriter.setInsertionPointToStart(entryBlock);
+
+        // Add argument-level memory effects attribute to all arguments
+        wrapperFunc.setArgAttr(0, "enzymexla.memory_effects", memoryEffectsAttr);
+
+        // Get the function argument
+        Value requestPtr = entryBlock->getArgument(0);
+
+        // Allocate a 1x!llvm.array<6 x i32> that we use in place of MPI_Status
+        // Size of status is implem dependendent, this should cover the max
+        Value numElements = rewriter.create<arith::ConstantOp>(
+            op.getLoc(), i32Type, rewriter.getI32IntegerAttr(1));
+        
+        auto arrayType = LLVM::LLVMArrayType::get(i32Type, 6);
+        
+        Value statusPtr = rewriter.create<LLVM::AllocaOp>(
+            op.getLoc(), 
+            llvmPtrType,
+            arrayType,
+            numElements);
+
+        // Call MPI_Wait
+        // int MPI_Wait(MPI_Request* request, MPI_Status* status)
+        // TODO returns i32 error code which we're ignoring here
+        rewriter.create<LLVM::CallOp>(
+            op.getLoc(),
+            TypeRange{i32Type},
+            SymbolRefAttr::get(context, mpiFunctionName),
+            ValueRange{requestPtr, statusPtr});
+
+        rewriter.create<LLVM::ReturnOp>(op.getLoc(), ValueRange{});
+      }
+
+      // Insert MPI_Wait function declaration if not already present
+      if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(mpiFunctionName)) {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+        auto funcType = LLVM::LLVMFunctionType::get(
+            i32Type,
+            {llvmPtrType, llvmPtrType},
+            false
+        );
+
+        rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), mpiFunctionName, funcType,
+                                 LLVM::Linkage::External);
+      }
+
+      // Get the request operand
+      auto request = op.getInrequest();
+
+      // Call the LLVM function with enzymexla.jit_call
+      rewriter.create<enzymexla::JITCallOp>(
+          op.getLoc(),
+          TypeRange{},
+          mlir::FlatSymbolRefAttr::get(context, wrapperFunctionName),
+          ValueRange{request},
+          rewriter.getStringAttr(""),
+          /*operand_layouts=*/nullptr,
+          /*result_layouts=*/nullptr,
+          /*arg_attrs=*/nullptr,
+          /*res_attrs=*/nullptr,
+          /*output_operand_aliases=*/nullptr,
+          /*xla_side_effect_free=*/nullptr);
+
+      rewriter.eraseOp(op);
+
+      return success();
+    } else {
+      return rewriter.notifyMatchFailure(op, "Backend not supported: " + backend);
+    }
+
+  }
+
+};
+
+
 struct LowerEnzymeXLAMPIPass
     : public enzyme::impl::LowerEnzymeXLAMPIPassBase<
           LowerEnzymeXLAMPIPass> {
@@ -767,6 +890,7 @@ struct LowerEnzymeXLAMPIPass
     patterns.add<MPICommSizeOpLowering>(backend, context);
     patterns.add<MPISendOpLowering>(backend, context);
     patterns.add<MPIRecvOpLowering>(backend, context);
+    patterns.add<MPIWaitOpLowering>(backend, context);
 
     GreedyRewriteConfig config;
     if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
