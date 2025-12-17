@@ -26969,6 +26969,9 @@ private:
   bool canRemoveSingletonDim(Value operand,
                              ArrayRef<int64_t> singletonDims) const {
     auto defOp = operand.getDefiningOp();
+    if (!defOp) {
+      return false;
+    }
 
     // Case 1: Splatted constant
     SplatElementsAttr splat;
