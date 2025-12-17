@@ -1945,6 +1945,20 @@ LogicalResult concatReshapeSliceSimplify(PatternRewriter &rewriter,
       continue;
     }
 
+    int64_t ndims = cast<RankedTensorType>(reshape.getType()).getRank();
+    int64_t ndimsCorrected = ndims;
+    if (insertions) {
+      ndimsCorrected -= insertionDims.size();
+    }
+    if (deletions) {
+      ndimsCorrected += deletionDims.size();
+    }
+
+    if (ndimsCorrected <= dim) {
+      newOperands.push_back(operand);
+      continue;
+    }
+
     Value newOperand = operand;
     bool needsPerm = false;
     while (i + 1 < e) {
@@ -1982,15 +1996,6 @@ LogicalResult concatReshapeSliceSimplify(PatternRewriter &rewriter,
     }
 
     if (needsPerm) {
-      int64_t ndims = cast<RankedTensorType>(reshape.getType()).getRank();
-      int64_t ndimsCorrected = ndims;
-      if (insertions) {
-        ndimsCorrected -= insertionDims.size();
-      }
-      if (deletions) {
-        ndimsCorrected += deletionDims.size();
-      }
-
       SmallVector<int64_t> mapping(ndimsCorrected);
       std::iota(mapping.begin(), mapping.end(), 0);
       mapping[sliceDim] = dim;
