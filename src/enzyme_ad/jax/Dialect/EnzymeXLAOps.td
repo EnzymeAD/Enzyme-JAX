@@ -1204,4 +1204,24 @@ def MPIWaitOp : EnzymeXLA_Op<"wait", []> {
   let assemblyFormat = "`(` operands `)` attr-dict `:` type(operands)";
 }
 
+def MPIAllreduceOp : EnzymeXLA_Op<"allreduce", []> {
+  let summary = "Equivalent to "
+                "`MPI_Allreduce(&sendbuf, &recvbuf, count, datatype, op, comm)`";
+
+  let arguments = (
+    ins AnyTensor : $sendbuf,
+    AnyTensor : $inbuf,
+    TensorOf<[I32]> : $count
+    /* xxx : $dtype */ // TODO 
+    /* xxx : $op */ // TODO 
+    /* xxx : $comm */ // TODO 
+  );
+
+  let results = (
+    outs AnyTensor : $outbuf
+  );
+
+  let assemblyFormat = "`(` operands `)` attr-dict `:` functional-type(operands, results)";
+}
+
 #endif // ENZYMEXLA_OPS
