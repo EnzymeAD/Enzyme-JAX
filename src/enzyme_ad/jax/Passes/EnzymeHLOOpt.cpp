@@ -3269,6 +3269,159 @@ struct TransposeAllUsersSlice final
   }
 };
 
+struct DynamicSliceElementwise final
+    : CheckedOpRewritePattern<stablehlo::DynamicSliceOp,
+                              DynamicSliceElementwise> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DynamicSliceOp op,
+                                    PatternRewriter &rewriter) const {
+    auto elem = op.getOperand().getDefiningOp();
+    if (!elem) {
+      return failure();
+    }
+    if (!stablehlo::hasTraitElementwise(elem)) {
+      return failure();
+    }
+    if (elem->getBlock() !=
+        op->getBlock()) { // very common to use DS inside loops
+      return failure();
+    }
+
+    // simpler case where we trivially move the slice up
+    if (llvm::hasSingleElement(elem->getUsers())) {
+      SmallVector<Value> newOperands;
+
+      for (auto v : elem->getOperands()) {
+        auto newDS = stablehlo::DynamicSliceOp::create(
+            rewriter, op.getLoc(), v, op.getStartIndices(), op.getSliceSizes());
+        newOperands.push_back(newDS.getResult());
+      }
+
+      auto nex = rewriter.create(
+          elem->getLoc(), elem->getName().getIdentifier(),
+          ValueRange(newOperands), TypeRange(op->getResult(0).getType()),
+          elem->getAttrs(), {}, {});
+      rewriter.replaceOp(op, nex);
+      return success();
+    }
+
+    // For all start indices that are not constants we require those to be
+    // equal.
+    // we can do this more aggressively inside loops where we have better
+    // bound / offset information
+    SmallVector<Value> newStartIndices(op.getStartIndices().begin(),
+                                       op.getStartIndices().end());
+    SmallVector<int64_t> newSliceSizes(op.getSliceSizes().begin(),
+                                       op.getSliceSizes().end());
+
+    SmallVector<int64_t> constantStarts(op.getStartIndices().size());
+    for (auto [i, startIndex] : llvm::enumerate(newStartIndices)) {
+      APInt idx;
+      if (matchPattern(startIndex, m_ConstantInt(&idx))) {
+        constantStarts[i] = idx.getSExtValue();
+      } else {
+        constantStarts[i] = -1;
+      }
+    }
+
+    llvm::SetVector<stablehlo::DynamicSliceOp> allDSUsers;
+
+    for (auto user : elem->getUsers()) {
+      auto dsOp = dyn_cast<stablehlo::DynamicSliceOp>(user);
+      if (!dsOp) { // we can support slices too by doing a full slice along the
+                   // non-constant dimensions, but that is too much headache for
+                   // potentially very little gain
+        return failure();
+      }
+
+      if (elem->getBlock() != dsOp->getBlock()) {
+        return failure();
+      }
+
+      allDSUsers.insert(dsOp);
+      auto startIndices = dsOp.getStartIndices();
+      auto sliceSizes = dsOp.getSliceSizes();
+
+      for (size_t i = 0; i < startIndices.size(); ++i) {
+        APInt constIdx;
+        if (matchPattern(startIndices[i], m_ConstantInt(&constIdx))) {
+          if (constantStarts[i] == -1) {
+            return failure();
+          }
+          int64_t startIdx =
+              std::min(constIdx.getSExtValue(), constantStarts[i]);
+          int64_t curLimit = constIdx.getSExtValue() + sliceSizes[i];
+          int64_t prevLimit = constantStarts[i] + newSliceSizes[i];
+          int64_t newLimit = std::max(curLimit, prevLimit);
+
+          constantStarts[i] = startIdx;
+          newSliceSizes[i] = newLimit - startIdx;
+        } else {
+          if (startIndices[i] != newStartIndices[i]) {
+            return failure(); // require all non-constant starts to be the same
+                              // value
+          }
+          // take the biggest slice
+          newSliceSizes[i] = std::max(newSliceSizes[i], sliceSizes[i]);
+        }
+      }
+    }
+
+    auto indexElemType = newStartIndices[0].getType();
+    for (size_t i = 0; i < newStartIndices.size(); ++i) {
+      if (constantStarts[i] != -1) { // construct new constant indices
+        newStartIndices[i] = stablehlo::ConstantOp::create(
+            rewriter, op->getLoc(), indexElemType,
+            cast<ElementsAttr>(makeAttr(indexElemType, constantStarts[i])));
+      }
+    }
+
+    SmallVector<Value> newOperands;
+    for (auto v : elem->getOperands()) {
+      auto newDS = stablehlo::DynamicSliceOp::create(
+          rewriter, op.getLoc(), v, newStartIndices, newSliceSizes);
+      newOperands.push_back(newDS.getResult());
+    }
+    auto nex = rewriter.create(
+        elem->getLoc(), elem->getName().getIdentifier(),
+        ValueRange(newOperands),
+        TypeRange(RankedTensorType::get(
+            newSliceSizes, cast<RankedTensorType>(op->getResult(0).getType())
+                               .getElementType())),
+        elem->getAttrs(), {}, {});
+
+    for (auto dsOp : allDSUsers) {
+      // we need to replace with slices
+      SmallVector<int64_t> sliceStarts(dsOp.getStartIndices().size());
+      SmallVector<int64_t> sliceLimits(dsOp.getStartIndices().size());
+      SmallVector<int64_t> sliceStrides(dsOp.getStartIndices().size(), 1);
+
+      for (size_t i = 0; i < sliceStarts.size(); i++) {
+        if (constantStarts[i] == -1) {
+          sliceStarts[i] = 0;
+          sliceLimits[i] = dsOp.getSliceSizes()[i];
+        } else {
+          APInt origStart;
+          auto matched = matchPattern(dsOp.getStartIndices()[i],
+                                      m_ConstantInt(&origStart));
+          assert(matched);
+          (void)matched;
+          sliceStarts[i] = origStart.getSExtValue() - constantStarts[i];
+          sliceLimits[i] = sliceStarts[i] + dsOp.getSliceSizes()[i];
+        }
+      }
+
+      auto newSliceOp =
+          stablehlo::SliceOp::create(rewriter, op.getLoc(), nex->getResult(0),
+                                     sliceStarts, sliceLimits, sliceStrides);
+      rewriter.replaceOp(dsOp, newSliceOp);
+    }
+
+    return success();
+  }
+};
+
 struct SliceElementwise final
     : CheckedOpRewritePattern<stablehlo::SliceOp, SliceElementwise> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -26673,18 +26826,19 @@ struct EnzymeHLOOptPass
                  DynamicUpdateSliceConstProp, PadSimplify, ScatterConstFold>(
         max_constant_expansion, context, PatternBenefit(65000));
 
-    patterns.add<
-        ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
-        SliceElementwise, SliceReshapeElementwise, SlicePad, SliceReshapePad,
-        ReshapeSliceReshape, DotReshapeDot, ChloInfConstProp, GammaConstProp,
-        ConcatFuse, ConcatToBroadcast, PadPad, PadReshapePad,
-        ConcatPushBinop<stablehlo::AddOp>, ConcatPushBinop<stablehlo::MulOp>,
-        ScatterToDynamicUpdateSlice, ReduceConcat, ConcatSlice, ConcatMultiPad,
-        ConcatWrap, WidenWrap, WidenExtend, ConcatConcatAxisSwap, SliceConcat,
-        SliceIf, SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
-        BinBroadcastSplat<stablehlo::SubtractOp>,
-        BinBroadcastSplat<stablehlo::DivOp>,
-        BinBroadcastSplat<stablehlo::MulOp>, RotatePad, ConjReal>(context);
+    patterns
+        .add<ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
+             SliceElementwise, SliceReshapeElementwise, DynamicSliceElementwise,
+             SlicePad, SliceReshapePad, ReshapeSliceReshape, DotReshapeDot,
+             ChloInfConstProp, GammaConstProp, ConcatFuse, ConcatToBroadcast,
+             PadPad, PadReshapePad, ConcatPushBinop<stablehlo::AddOp>,
+             ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
+             ReduceConcat, ConcatSlice, ConcatMultiPad, ConcatWrap, WidenWrap,
+             WidenExtend, ConcatConcatAxisSwap, SliceConcat, SliceIf,
+             SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
+             BinBroadcastSplat<stablehlo::SubtractOp>,
+             BinBroadcastSplat<stablehlo::DivOp>,
+             BinBroadcastSplat<stablehlo::MulOp>, RotatePad, ConjReal>(context);
 
     // Unary constant propagation patterns
     patterns.add<UnaryConstProp<stablehlo::NotOp, stablehlo::notOp>,
