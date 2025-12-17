@@ -2,6 +2,7 @@ import os
 import tempfile
 import numpy as np
 
+
 def fix_paths():
     for nm in [
         "NV_LIBCUBLAS_VERSION",
@@ -717,14 +718,16 @@ class EnzymeJaxTest(absltest.TestCase):
                         pname,
                         backend,
                         "Primal",
-                        timeit.Timer(
-                            primalstr,
-                            globals={
-                                "fn": rfn_enzyme,
-                            }
-                            | primalins,
-                        ).timeit(self.count)
-                        / self.count,
+                        min(
+                            timeit.Timer(
+                                primalstr,
+                                globals={
+                                    "fn": rfn_enzyme,
+                                }
+                                | primalins,
+                            ).repeat(repeat=10, number=max(self.count // 10, 1))
+                        )
+                        / max(self.count // 10, 1),
                     )
 
             # assert primres is not None
@@ -782,14 +785,16 @@ class EnzymeJaxTest(absltest.TestCase):
                             pname,
                             backend,
                             "Forward",
-                            timeit.Timer(
-                                fwdstr,
-                                globals={
-                                    "fwd": fwd_enzyme,
-                                }
-                                | fwdins,
-                            ).timeit(self.count)
-                            / self.count,
+                            min(
+                                timeit.Timer(
+                                    fwdstr,
+                                    globals={
+                                        "fwd": fwd_enzyme,
+                                    }
+                                    | fwdins,
+                                ).repeat(repeat=10, number=max(self.count // 10, 1))
+                            )
+                            / max(self.count // 10, 1),
                         )
 
             # assert fwdres is not None
@@ -854,14 +859,16 @@ class EnzymeJaxTest(absltest.TestCase):
                                 pname,
                                 backend,
                                 "PreRev",
-                                timeit.Timer(
-                                    revstr,
-                                    globals={
-                                        "rev": rev_enzyme,
-                                    }
-                                    | revins,
-                                ).timeit(self.count)
-                                / self.count,
+                                min(
+                                    timeit.Timer(
+                                        revstr,
+                                        globals={
+                                            "rev": rev_enzyme,
+                                        }
+                                        | revins,
+                                    ).repeat(repeat=10, number=max(self.count // 10, 1))
+                                )
+                                / max(self.count // 10, 1),
                             )
 
                         rfn_enzyme = in_fn
@@ -916,14 +923,16 @@ class EnzymeJaxTest(absltest.TestCase):
                             pname,
                             backend,
                             "PostRev",
-                            timeit.Timer(
-                                revstr,
-                                globals={
-                                    "rev": rev_enzyme,
-                                }
-                                | revins,
-                            ).timeit(self.count)
-                            / self.count,
+                            min(
+                                timeit.Timer(
+                                    revstr,
+                                    globals={
+                                        "rev": rev_enzyme,
+                                    }
+                                    | revins,
+                                ).repeat(repeat=10, number=max(self.count // 10, 1))
+                            )
+                            / max(self.count // 10, 1),
                         )
 
                     if pipeline is None or (pipeline.mlir_ad() and self.mlirad_rev):
@@ -985,12 +994,14 @@ class EnzymeJaxTest(absltest.TestCase):
                             pname,
                             backend,
                             "BothRev",
-                            timeit.Timer(
-                                revstr,
-                                globals={
-                                    "rev": rev_enzyme,
-                                }
-                                | revins,
-                            ).timeit(self.count)
-                            / self.count,
+                            min(
+                                timeit.Timer(
+                                    revstr,
+                                    globals={
+                                        "rev": rev_enzyme,
+                                    }
+                                    | revins,
+                                ).repeat(repeat=10, number=max(self.count // 10, 1))
+                            )
+                            / max(self.count // 10, 1),
                         )
