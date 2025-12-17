@@ -284,7 +284,7 @@ def fix_paths():
         ctypes.cdll.LoadLibrary(cufft_path)
 
 
-from absl.testing import absltest
+from absl.testing import absltest  # noqa: E402
 
 # import logging
 # logging.getLogger("jax").setLevel(logging.INFO)
@@ -316,22 +316,6 @@ def setup_backends():
         AllBackends.append(backend)
 
     backends_initialized = True
-
-
-def AllPipelines():
-    setup_backends()
-    from enzyme_ad.jax import (
-        XLAPipeline,
-        JaXPipeline,
-        optimization_passes,
-        full_optimization_pass_pipeline,
-    )
-
-    return [
-        ("JaX  ", None, AllBackends),
-        ("JaXPipe", JaXPipeline(), AllBackends),
-        # ("XLA", XLAPipeline(), ["cpu"]),
-    ]
 
 
 partialopt = (
@@ -436,9 +420,7 @@ broadcast_reduce<1>;
 def pipelines():
     setup_backends()
     from enzyme_ad.jax import (
-        XLAPipeline,
         JaXPipeline,
-        optimization_passes,
         full_optimization_pass_pipeline,
     )
 
@@ -615,7 +597,7 @@ class EnzymeJaxTest(absltest.TestCase):
         self.revfilter = lambda x: x
         self.count = 10000
         self.AllBackends = AllBackends
-        self.AllPipelines = AllPipelines()
+        self.AllPipelines = pipelines()
         self.revprimal = True
         self.atol = 1e-6
         self.rtol = 0.0
@@ -627,13 +609,14 @@ class EnzymeJaxTest(absltest.TestCase):
         print_str = "{:<20}\t{:<20}\t{:<15}\t{:<10}\t{:<15.8f}".format(
             name, pname, backend, key, time
         )
-        print(print_str)
+        print(print_str, flush=True)
 
         result_str = "{}\t{}\t{}\t{}\t{}".format(name, pname, backend, key, time)
         self.results.append(result_str)
 
     def write_results_csv(self, filename=""):
-        import os, csv
+        import os
+        import csv
 
         if filename == "":
             filename = f"results_{self.__class__.__name__}.csv"
@@ -664,7 +647,8 @@ class EnzymeJaxTest(absltest.TestCase):
         import jax
         from enzyme_ad.jax import enzyme_jax_ir
 
-        assert len(ins) == len(dins)
+        if self.mlirad_fwd:
+            assert len(ins) == len(dins)
 
         primalstr = "fn(" + (", ".join(["in" + str(i) for i in range(len(ins))])) + ")"
         if isinstance(douts, jax.Array):
@@ -747,6 +731,7 @@ class EnzymeJaxTest(absltest.TestCase):
                         backend=backend,
                     )
                     ao = rfn_enzyme(*ins_backend)
+
                     if primres is None:
                         primres = ao
                     else:
