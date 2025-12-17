@@ -929,15 +929,24 @@ struct MPIIrecvOpLowering
       // Get all orinigal op operands
       auto operands = op.getOperands();
 
-      // Call the LLVM function with enzymexla.jit_call
+      // Add buffer to output operand aliases
       SmallVector<Attribute> aliases;
       aliases.push_back(stablehlo::OutputOperandAliasAttr::get(
           context,
-          /*output_operand_aliases=*/std::vector<int64_t>{},
+          /*output_operand_aliases=*/std::vector<int64_t>{0},
           /*operand_index=*/0,
           /*operand_tuple_indices=*/std::vector<int64_t>{})
       );
 
+      // Add request to output operand aliases
+      aliases.push_back(stablehlo::OutputOperandAliasAttr::get(
+          context,
+          /*output_operand_aliases=*/std::vector<int64_t>{1},
+          /*operand_index=*/4,
+          /*operand_tuple_indices=*/std::vector<int64_t>{})
+      );
+
+      // Call the LLVM function with enzymexla.jit_call
       auto jitCall = rewriter.create<enzymexla::JITCallOp>(
           op.getLoc(),
           op->getResultTypes(),
@@ -960,7 +969,7 @@ struct MPIIrecvOpLowering
 
   }
 
-}; //
+};
 
 
 struct MPIWaitOpLowering
