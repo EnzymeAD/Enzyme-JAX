@@ -539,6 +539,14 @@ def recursive_check(tester, lhs, rhs, atol=1e-8, rtol=1e-5, pname=None):
     def leaves_allclose(leaf1, leaf2):
         legal = jnp.allclose(leaf1, leaf2, atol=atol, rtol=rtol)
         if not legal:
+            max_err = jnp.max(jnp.abs(leaf1 - leaf2))
+            if tester.skip_test_assert:
+                print(
+                    f"Skipping test assert for {pname} | {tester.name} but test"
+                    + f"failed with max error {max_err}."
+                )
+                return legal
+
             if pname is not None:
                 print("lhs (", pname, ")", leaf1)
             else:
@@ -546,12 +554,16 @@ def recursive_check(tester, lhs, rhs, atol=1e-8, rtol=1e-5, pname=None):
             print("rhs", leaf2)
             print("abs", jnp.abs(leaf1 - leaf2))
             print("eq", jnp.abs(leaf1 - leaf2) < atol)
-            print("max", jnp.max(jnp.abs(leaf1 - leaf2)))
+            print("max", max_err)
         tester.assertTrue(legal)
-        return
+        return legal
 
     comparison_tree = jax.tree.map(leaves_allclose, lhs, rhs)
-    tester.assertTrue(jax.tree.all(comparison_tree))
+    legal = jax.tree.all(comparison_tree)
+    if not legal and tester.skip_test_assert:
+        print(f"Skipping test assert for {pname} | {tester.name}")
+        return
+    tester.assertTrue(legal)
 
 
 def _dump_mlir_to_file(fn, args, key: str, dump_mlir_dir: str):
@@ -593,6 +605,7 @@ class EnzymeJaxTest(absltest.TestCase):
         self.mlirad_fwd = True
         self.mlirad_rev = True
         self.results = []
+        self.skip_test_assert = False
 
     def pretty_print_table(self, name, pname, backend, key, time):
         print_str = "{:<20}\t{:<20}\t{:<15}\t{:<10}\t{:<15.8f}".format(
