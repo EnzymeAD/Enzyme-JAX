@@ -189,3 +189,16 @@ private:
           &affineIndexInfoMap,
       mlir::Block &whileBody, mlir::stablehlo::WhileOp whileOp) const;
 };
+
+struct WhileElementwiseReductionToReduce
+    : public mlir::enzyme::CheckedOpRewritePattern<
+          mlir::stablehlo::WhileOp, WhileElementwiseReductionToReduce> {
+  using Base =
+      mlir::enzyme::CheckedOpRewritePattern<mlir::stablehlo::WhileOp,
+                                            WhileElementwiseReductionToReduce>;
+  using Base::Base;
+
+  mlir::LogicalResult
+  matchAndRewriteImpl(mlir::stablehlo::WhileOp whileOp,
+                      mlir::PatternRewriter &rewriter) const;
+};

@@ -1491,6 +1491,51 @@ bool liftOperationByBatching(
   return true;
 }
 
+mlir::LogicalResult WhileElementwiseReductionToReduce::matchAndRewriteImpl(
+    stablehlo::WhileOp whileOp, PatternRewriter &rewriter) const {
+  auto &body = whileOp.getBody().front();
+  auto term = body.getTerminator();
+  if (!term) {
+    return failure();
+  }
+  auto returnOp = dyn_cast<stablehlo::ReturnOp>(term);
+  if (!returnOp) {
+    return failure();
+  }
+
+  WhileLoopInfo info(whileOp);
+  auto computedInfo = info.computeInfo();
+  (void)computedInfo;
+  if (!info.isValid()) {
+    return failure();
+  }
+
+  bool anyRewritten = false;
+  SmallVector<SliceInfo<stablehlo::DynamicSliceOp>> slices; // dummy
+
+  for (size_t i = 0; i < whileOp.getNumOperands(); i++) {
+    auto iterArg = body.getArgument(i);
+    if (!llvm::hasSingleElement(iterArg.getUsers())) {
+      continue;
+    }
+    auto user = *iterArg.getUsers().begin();
+
+    if (!stablehlo::hasTraitElementwise(user) && user->getNumOperands() != 2 &&
+        user->getNumResults() != 1) {
+      continue;
+    }
+
+    if (user->getResult(0) != returnOp.getOperand(i)) {
+      continue;
+    }
+
+    anyRewritten |=
+        liftReduceLikeOperation(rewriter, whileOp, slices, user, info);
+  }
+
+  return success(anyRewritten);
+}
+
 struct AutoBatchingPass
     : public enzyme::impl::AutoBatchingPassBase<AutoBatchingPass> {
   using Base::Base;
@@ -1538,6 +1583,8 @@ struct AutoBatchingPass
                    << while_loop_batching_mode << "\n";
       signalPassFailure();
     }
+
+    patterns.add<WhileElementwiseReductionToReduce>(context);
 
     GreedyRewriteConfig config;
     config.setMaxIterations(max_iterations);

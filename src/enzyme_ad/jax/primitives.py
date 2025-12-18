@@ -406,6 +406,7 @@ def optimization_passes(
             "convolution_slice_to_batch",
             "elementwise_slice_to_batch",
             "greedy_while_loop_batch_fission",
+            "while_elementwise_reduction_to_reduce",
         ]
 
     if enable_licm_optimization_passes:

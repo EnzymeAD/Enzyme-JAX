@@ -2621,3 +2621,8 @@ def ApplyFuseReshapeCollapseOrExpandDimsIntoReducePatterns : EnzymeHLOPatternOp<
     "fuse_reshape_collapse_or_expand_dims_into_reduce"> {
   let patterns = ["FuseReshapeCollapseOrExpandDimsIntoReduce"];
 }
+
+def ApplyWhileElementwiseReductionToReducePatterns : EnzymeHLOPatternOp<
+    "while_elementwise_reduction_to_reduce"> {
+  let patterns = ["WhileElementwiseReductionToReduce"];
+}
