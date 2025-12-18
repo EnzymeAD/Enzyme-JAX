@@ -29,9 +29,9 @@ module {
 }
 
 // CHECK: func.func @main(%arg0: tensor<3x5x10xf32> {enzymexla.memory_effects = []}, %arg1: tensor<4x3xf32> {enzymexla.memory_effects = []}) -> tensor<4x5x10xf32> attributes {enzymexla.memory_effects = []} {
-// CHECK-NEXT:   %0 = stablehlo.broadcast_in_dim %arg1, dims = [1, 2] : (tensor<4x3xf32>) -> tensor<5x4x3xf32>
-// CHECK-NEXT:   %1 = stablehlo.dot_general %arg0, %0, batching_dims = [1] x [0], contracting_dims = [0] x [2], precision = [DEFAULT, DEFAULT] : (tensor<3x5x10xf32>, tensor<5x4x3xf32>) -> tensor<5x10x4xf32>
-// CHECK-NEXT:   %2 = stablehlo.transpose %1, dims = [2, 0, 1] : (tensor<5x10x4xf32>) -> tensor<4x5x10xf32>
+// CHECK-NEXT:   %0 = stablehlo.transpose %arg0, dims = [2, 1, 0] : (tensor<3x5x10xf32>) -> tensor<10x5x3xf32>
+// CHECK-NEXT:   %1 = stablehlo.dot_general %0, %arg1, contracting_dims = [2] x [1], precision = [DEFAULT, DEFAULT] : (tensor<10x5x3xf32>, tensor<4x3xf32>) -> tensor<10x5x4xf32>
+// CHECK-NEXT:   %2 = stablehlo.transpose %1, dims = [2, 1, 0] : (tensor<10x5x4xf32>) -> tensor<4x5x10xf32>
 // CHECK-NEXT:   return %2 : tensor<4x5x10xf32>
 // CHECK-NEXT: }
 

@@ -1945,6 +1945,20 @@ LogicalResult concatReshapeSliceSimplify(PatternRewriter &rewriter,
       continue;
     }
 
+    int64_t ndims = cast<RankedTensorType>(reshape.getType()).getRank();
+    int64_t ndimsCorrected = ndims;
+    if (insertions) {
+      ndimsCorrected -= insertionDims.size();
+    }
+    if (deletions) {
+      ndimsCorrected += deletionDims.size();
+    }
+
+    if (ndimsCorrected <= dim) {
+      newOperands.push_back(operand);
+      continue;
+    }
+
     Value newOperand = operand;
     bool needsPerm = false;
     while (i + 1 < e) {
@@ -1982,15 +1996,6 @@ LogicalResult concatReshapeSliceSimplify(PatternRewriter &rewriter,
     }
 
     if (needsPerm) {
-      int64_t ndims = cast<RankedTensorType>(reshape.getType()).getRank();
-      int64_t ndimsCorrected = ndims;
-      if (insertions) {
-        ndimsCorrected -= insertionDims.size();
-      }
-      if (deletions) {
-        ndimsCorrected += deletionDims.size();
-      }
-
       SmallVector<int64_t> mapping(ndimsCorrected);
       std::iota(mapping.begin(), mapping.end(), 0);
       mapping[sliceDim] = dim;
@@ -2158,6 +2163,33 @@ Value TransposeOpCreate(
     sdy::setShardings(transposeOp, *sharding);
   }
   return transposeOp.getResult();
+}
+
+Type GetDotGeneralResultType(Value lhs, Value rhs, Type resElemType,
+                             stablehlo::DotDimensionNumbersAttr dotDims) {
+  auto lhsType = cast<RankedTensorType>(lhs.getType());
+  auto rhsType = cast<RankedTensorType>(rhs.getType());
+
+  SmallVector<int64_t> resultShape;
+  for (auto dim : dotDims.getLhsBatchingDimensions()) {
+    resultShape.push_back(lhsType.getDimSize(dim));
+  }
+  for (size_t i = 0; i < lhsType.getRank(); ++i) {
+    if (llvm::is_contained(dotDims.getLhsBatchingDimensions(), i) ||
+        llvm::is_contained(dotDims.getLhsContractingDimensions(), i)) {
+      continue;
+    }
+    resultShape.push_back(lhsType.getDimSize(i));
+  }
+  for (size_t i = 0; i < rhsType.getRank(); ++i) {
+    if (llvm::is_contained(dotDims.getRhsBatchingDimensions(), i) ||
+        llvm::is_contained(dotDims.getRhsContractingDimensions(), i)) {
+      continue;
+    }
+    resultShape.push_back(rhsType.getDimSize(i));
+  }
+
+  return RankedTensorType::get(resultShape, resElemType);
 }
 
 } // namespace stablehlo
