@@ -46,6 +46,7 @@
 #define DEBUG_TYPE "enzymexla"
 
 using namespace mlir;
+using namespace mlir::enzyme;
 using namespace enzymexla;
 using namespace mlir::arith;
 
