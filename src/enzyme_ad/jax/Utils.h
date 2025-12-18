@@ -972,6 +972,9 @@ public:
       isMinReduce = false;
       isMaxReduce = false;
       isMulReduce = false;
+      isAndReduce = false;
+      isOrReduce = false;
+      isXorReduce = false;
       return;
     }
 
@@ -1085,6 +1088,9 @@ bool canFuseIntoReduce(Operation *op);
 
 template <typename OpTy>
 Value getIdentityValueForOp(OpBuilder &builder, Location loc, Type elemType);
+
+Type GetDotGeneralResultType(Value lhs, Value rhs, Type resElemType,
+                             stablehlo::DotDimensionNumbersAttr dotDims);
 
 // these add additional checks that prevent no-op creation
 Value ConcatenateOpCreate(

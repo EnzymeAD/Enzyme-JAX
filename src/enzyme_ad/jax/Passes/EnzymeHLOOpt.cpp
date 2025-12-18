@@ -4722,8 +4722,10 @@ DenseElementsAttr fromTensor(stablehlo::Tensor tensor) {
 /*
 %22 = stablehlo.dot_general %21, %16, contracting_dims = [1] x [0], precision
 = [DEFAULT, DEFAULT] : (tensor<288x288xf32>, tensor<288xf32>) ->
-tensor<288xf32> %27 = stablehlo.reshape %22 : (tensor<288xf32>) ->
-tensor<144x2xf32> %28 = stablehlo.dot_general %6, %27, batching_dims = [0] x
+tensor<288xf32>
+%27 = stablehlo.reshape %22 : (tensor<288xf32>) ->
+tensor<144x2xf32>
+%28 = stablehlo.dot_general %6, %27, batching_dims = [0] x
 [0], contracting_dims = [2] x [1], precision = [DEFAULT, DEFAULT] :
 (tensor<144x2x2xf32>, tensor<144x2xf32>) -> tensor<144x2xf32>
 
@@ -9530,7 +9532,9 @@ struct BroadcastReduce
     auto checkCommonReduce = mlir::stablehlo::CheckCommonReduceOp(op);
 
     if (!(checkCommonReduce.isAddReduce || checkCommonReduce.isMulReduce ||
-          checkCommonReduce.isMaxReduce || checkCommonReduce.isMinReduce)) {
+          checkCommonReduce.isMaxReduce || checkCommonReduce.isMinReduce ||
+          checkCommonReduce.isAndReduce || checkCommonReduce.isOrReduce ||
+          checkCommonReduce.isXorReduce)) {
       return rewriter.notifyMatchFailure(
           op, "only common reduce ops like add, mul, max, min are currently "
               "supported");
@@ -9639,7 +9643,9 @@ struct BroadcastReduce
       assert(op.getType(0) == converted.getType());
       rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
           op, newReduction.getResult(0), converted.getResult());
-    } else if (checkCommonReduce.isMinReduce || checkCommonReduce.isMaxReduce) {
+    } else if (checkCommonReduce.isMinReduce || checkCommonReduce.isMaxReduce ||
+               checkCommonReduce.isAndReduce || checkCommonReduce.isOrReduce ||
+               checkCommonReduce.isXorReduce) {
       rewriter.replaceAllUsesWith(op.getResult(0), newReduction.getResult(0));
     } else if (checkCommonReduce.isMulReduce) {
       auto constantInt = stablehlo::ConstantOp::create(
@@ -26134,6 +26140,388 @@ private:
   }
 };
 
+// If a dot general batches over a dimension that was newly created for exactly
+// one operand, we can remove batching over that dimension, we do need to make
+// sure to insert a transpose to get the correct dimension ordering.
+//
+// For example:
+//
+// %x : tensor<64x32x1x64xf32>
+// %y = bcast %arg3, dims = [0, 1] : (tensor<64x32xf32>) ->
+//                                    tensor<64x32x64x1xf32>
+// dot_general %x, %y, batching_dims = [0, 3] x [2, 0],
+//                     contracting_dims = [1, 2] x [1, 3]
+//
+// since dimension 2 for %y was created by a broadcast while %x's dimension 0
+// existed from before, we can remove that dimension of %y and the corresponding
+// batching_dims.
+//
+// %x : tensor<64x32x1x64xf32>
+// %y = bcast %arg3, dims = [0, 1] : (tensor<64x32xf32>) -> tensor<64x32x1xf32>
+// %z = dot_general %x, %y, batching_dims = [3] x [0], contracting_dims = [1, 2]
+//      x [1, 3]
+// %res = transpose %z to bring the dimensions to match original
+//        ordering
+struct DotGeneralRemoveBatchDimensions
+    : public CheckedOpRewritePattern<
+          stablehlo::DotGeneralOp,
+          DotGeneralRemoveBatchDimensions>::CheckedOpRewritePattern {
+  using CheckedOpRewritePattern<
+      stablehlo::DotGeneralOp,
+      DotGeneralRemoveBatchDimensions>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp dotOp,
+                                    PatternRewriter &rewriter) const {
+    auto lhsBcast = dotOp.getLhs().getDefiningOp<stablehlo::BroadcastInDimOp>();
+    auto rhsBcast = dotOp.getRhs().getDefiningOp<stablehlo::BroadcastInDimOp>();
+
+    // At least one operand must have a broadcast
+    // while we could do the same for splatted tensors, we apply
+    // DotGeneralSimplify to those
+    if (!lhsBcast && !rhsBcast) {
+      return failure();
+    }
+
+    ArrayRef<int64_t> lhsDims =
+        lhsBcast ? lhsBcast.getBroadcastDimensions() : ArrayRef<int64_t>();
+    ArrayRef<int64_t> rhsDims =
+        rhsBcast ? rhsBcast.getBroadcastDimensions() : ArrayRef<int64_t>();
+
+    auto lhsType = cast<RankedTensorType>(dotOp.getLhs().getType());
+    auto rhsType = cast<RankedTensorType>(dotOp.getRhs().getType());
+
+    auto dotDims = dotOp.getDotDimensionNumbers();
+    auto lhsBatchDims = dotDims.getLhsBatchingDimensions();
+    auto rhsBatchDims = dotDims.getRhsBatchingDimensions();
+    auto lhsContractDims = dotDims.getLhsContractingDimensions();
+    auto rhsContractDims = dotDims.getRhsContractingDimensions();
+
+    // Find batch dimensions where exactly one side has a created (broadcast)
+    // dimension.
+    // lhsCreatedBatchIndices: indices in the batch dim arrays where lhs has
+    // created dim
+    // rhsCreatedBatchIndices: indices in the batch dim arrays where rhs has
+    // created dim
+    SmallVector<int64_t> lhsOnlyCreatedBatchIndices, rhsOnlyCreatedBatchIndices,
+        lhsCreatedBatchDims, rhsCreatedBatchDims;
+
+    for (int64_t i = 0; i < lhsBatchDims.size(); ++i) {
+      int64_t lhsDim = lhsBatchDims[i];
+      int64_t rhsDim = rhsBatchDims[i];
+
+      // Check if this batch dimension was created by broadcast (not in the
+      // original input)
+      bool lhsIsNew = lhsBcast && !llvm::is_contained(lhsDims, lhsDim);
+      bool rhsIsNew = rhsBcast && !llvm::is_contained(rhsDims, rhsDim);
+
+      // We only handle the case where exactly one side has a created dimension
+      if (lhsIsNew && !rhsIsNew) {
+        // LHS has created dimension, RHS has real dimension
+        lhsOnlyCreatedBatchIndices.push_back(i);
+        lhsCreatedBatchDims.push_back(lhsDim);
+      } else if (!lhsIsNew && rhsIsNew) {
+        // RHS has created dimension, LHS has real dimension
+        rhsOnlyCreatedBatchIndices.push_back(i);
+        rhsCreatedBatchDims.push_back(rhsDim);
+      }
+    }
+
+    if (lhsCreatedBatchDims.empty() && rhsCreatedBatchDims.empty()) {
+      return failure();
+    }
+
+    // Build new broadcast operation for the side with created dimensions
+    Value newLhs = dotOp.getLhs();
+    Value newRhs = dotOp.getRhs();
+    DenseMap<int64_t, int64_t> lhsOldToNew, rhsOldToNew, lhsNewToOld,
+        rhsNewToOld;
+
+    if (lhsBcast && !lhsCreatedBatchDims.empty()) {
+      newLhs = createReducedBroadcast(rewriter, dotOp.getLoc(), lhsBcast,
+                                      lhsType, lhsCreatedBatchDims, lhsDims,
+                                      lhsOldToNew, lhsNewToOld);
+    } else {
+      for (int64_t i = 0; i < lhsType.getRank(); ++i) {
+        lhsOldToNew[i] = i;
+        lhsNewToOld[i] = i;
+      }
+    }
+
+    if (rhsBcast && !rhsCreatedBatchDims.empty()) {
+      newRhs = createReducedBroadcast(rewriter, dotOp.getLoc(), rhsBcast,
+                                      rhsType, rhsCreatedBatchDims, rhsDims,
+                                      rhsOldToNew, rhsNewToOld);
+    } else {
+      for (int64_t i = 0; i < rhsType.getRank(); ++i) {
+        rhsOldToNew[i] = i;
+        rhsNewToOld[i] = i;
+      }
+    }
+
+    // Build new dimension numbers, removing the batch dimensions that had
+    // created dims
+    SmallVector<int64_t> newLhsBatchDims, newRhsBatchDims;
+    for (int64_t i = 0; i < lhsBatchDims.size(); ++i) {
+      if (llvm::is_contained(lhsOnlyCreatedBatchIndices, i) ||
+          llvm::is_contained(rhsOnlyCreatedBatchIndices, i)) {
+        continue;
+      }
+      newLhsBatchDims.push_back(lhsOldToNew[lhsBatchDims[i]]);
+      newRhsBatchDims.push_back(rhsOldToNew[rhsBatchDims[i]]);
+    }
+
+    SmallVector<int64_t> newLhsContractDims, newRhsContractDims;
+    for (auto dim : lhsContractDims) {
+      newLhsContractDims.push_back(lhsOldToNew[dim]);
+    }
+    for (auto dim : rhsContractDims) {
+      newRhsContractDims.push_back(rhsOldToNew[dim]);
+    }
+
+    auto newDotDims = stablehlo::DotDimensionNumbersAttr::get(
+        rewriter.getContext(), newLhsBatchDims, newRhsBatchDims,
+        newLhsContractDims, newRhsContractDims);
+    auto oldDotResultType = cast<RankedTensorType>(dotOp.getType());
+
+    auto newDotOp = stablehlo::DotGeneralOp::create(
+        rewriter, dotOp.getLoc(),
+        stablehlo::GetDotGeneralResultType(
+            newLhs, newRhs, oldDotResultType.getElementType(), newDotDims),
+        newLhs, newRhs, newDotDims, dotOp.getPrecisionConfigAttr(),
+        dotOp.getAlgorithmAttr());
+
+    // Compute the transpose permutation to restore original dimension ordering.
+    //
+    // Original dot_general result layout (for N batch dims, M lhs remaining, K
+    // rhs remaining):
+    //   [batch_0, batch_1, ..., batch_{N-1}, lhs_rem_0, ..., lhs_rem_{M-1},
+    //    rhs_rem_0, ..., rhs_rem_{K-1}]
+    //
+    // After removing some batch dims:
+    // - Batch dims where RHS was broadcast-created: the LHS dim becomes a
+    //   LHS remaining dim (moved from batch to lhs_rem section)
+    // - Batch dims where LHS was broadcast-created: the RHS dim becomes a
+    //   RHS remaining dim (moved from batch to rhs_rem section)
+    //
+    // New dot_general result layout:
+    //   [kept_batch_0, ..., kept_batch_{N'-1},
+    //    (dims from rhsCreated), orig_lhs_rem_0, ..., orig_lhs_rem_{M-1},
+    //    (dims from lhsCreated), orig_rhs_rem_0, ..., orig_rhs_rem_{K-1}]
+    //
+    // We need to transpose this back to original ordering.
+
+    // First, let's understand what dimensions are in each section of the
+    // ORIGINAL output:
+    // - Original batch dim count: lhsBatchDims.size()
+    // - Original lhs remaining: lhsType.getRank() - batch - contract
+    // - Original rhs remaining: rhsType.getRank() - batch - contract
+
+    int64_t origNumBatch = lhsBatchDims.size();
+    int64_t lhsNumRemaining =
+        lhsType.getRank() - lhsBatchDims.size() - lhsContractDims.size();
+    int64_t rhsNumRemaining =
+        rhsType.getRank() - rhsBatchDims.size() - rhsContractDims.size();
+
+    // New counts after removing batch dims
+    int64_t newNumBatch = newLhsBatchDims.size();
+    // lhs remaining now includes: dims from rhsOnlyCreatedBatchIndices (those
+    // were batch dims where rhs was created, so lhs was real) + original lhs
+    // remaining
+    int64_t newLhsNumRemaining =
+        rhsOnlyCreatedBatchIndices.size() + lhsNumRemaining;
+    // rhs remaining now includes: dims from lhsOnlyCreatedBatchIndices +
+    // original rhs remaining
+    int64_t newRhsNumRemaining =
+        lhsOnlyCreatedBatchIndices.size() + rhsNumRemaining;
+
+    int64_t newResultRank =
+        newNumBatch + newLhsNumRemaining + newRhsNumRemaining;
+    int64_t origResultRank = origNumBatch + lhsNumRemaining + rhsNumRemaining;
+    (void)origResultRank;
+    assert(newResultRank == origResultRank &&
+           "Result rank should be preserved");
+
+    // Build a mapping from new output dim -> original output dim
+    // Original layout: [batch dims] [lhs rem] [rhs rem]
+    //
+    // New layout after removing some batch dims:
+    // The LHS remaining dims in the new output are ALL LHS dims that are not
+    // in the new batch dims and not contracting - sorted by their LHS tensor
+    // position. This includes:
+    //   - Original LHS remaining dims
+    //   - LHS dims from rhsOnlyCreatedBatchIndices (former batch, now
+    //   remaining)
+    // These are interleaved based on their position in the LHS tensor.
+    //
+    // Similarly for RHS remaining dims.
+
+    // We need to figure out which LHS dims are now remaining (non-batch,
+    // non-contract)
+
+    // In the NEW LHS, the remaining dims are those not in newLhsBatchDims and
+    // not in newLhsContractDims. But we need to work with the new LHS type.
+    auto newLhsType = cast<RankedTensorType>(newLhs.getType());
+    auto newRhsType = cast<RankedTensorType>(newRhs.getType());
+
+    // LHS remaining dims in NEW LHS (sorted by new LHS position)
+    SmallVector<int64_t> newLhsRemainingDims;
+    for (int64_t i = 0; i < newLhsType.getRank(); ++i) {
+      if (!llvm::is_contained(newLhsBatchDims, i) &&
+          !llvm::is_contained(newLhsContractDims, i)) {
+        newLhsRemainingDims.push_back(i);
+      }
+    }
+
+    // RHS remaining dims in NEW RHS (sorted by new RHS position)
+    SmallVector<int64_t> newRhsRemainingDims;
+    for (int64_t i = 0; i < newRhsType.getRank(); ++i) {
+      if (!llvm::is_contained(newRhsBatchDims, i) &&
+          !llvm::is_contained(newRhsContractDims, i)) {
+        newRhsRemainingDims.push_back(i);
+      }
+    }
+
+    // Now we need to map from new output positions to original output
+    // positions. The new dot output layout is:
+    //   [newBatchDim_0, ..., newBatchDim_{n-1},
+    //    newLhsRem_0, ..., newLhsRem_{m-1},
+    //    newRhsRem_0, ..., newRhsRem_{k-1}]
+    //
+    // For each position, we need to find what original output position it
+    // maps to.
+
+    // To do this, we need to understand the mapping:
+    // - A new batch dim corresponds to some original batch dim
+    // - A new LHS remaining dim could be:
+    //   - An original LHS remaining dim, OR
+    //   - A former batch dim (from rhsOnlyCreatedBatchIndices)
+    // - Similarly for RHS
+
+    // Let's build a map from original LHS dim -> original output position
+    // Original LHS remaining dims start at position origNumBatch
+    DenseMap<int64_t, int64_t> origLhsDimToOrigOutputPos;
+    int64_t origOutputPos = origNumBatch;
+    for (int64_t i = 0; i < lhsType.getRank(); ++i) {
+      if (!llvm::is_contained(lhsBatchDims, i) &&
+          !llvm::is_contained(lhsContractDims, i)) {
+        origLhsDimToOrigOutputPos[i] = origOutputPos++;
+      }
+    }
+
+    // Original RHS remaining dims start after LHS remaining
+    DenseMap<int64_t, int64_t> origRhsDimToOrigOutputPos;
+    for (int64_t i = 0; i < rhsType.getRank(); ++i) {
+      if (!llvm::is_contained(rhsBatchDims, i) &&
+          !llvm::is_contained(rhsContractDims, i)) {
+        origRhsDimToOrigOutputPos[i] = origOutputPos++;
+      }
+    }
+
+    // Build newToOrig mapping
+    SmallVector<int64_t> newToOrig(newResultRank);
+    int64_t newIdx = 0;
+
+    // Kept batch dims in new output -> original batch positions
+    for (int64_t origBatchIdx = 0; origBatchIdx < origNumBatch;
+         ++origBatchIdx) {
+      if (llvm::is_contained(lhsOnlyCreatedBatchIndices, origBatchIdx) ||
+          llvm::is_contained(rhsOnlyCreatedBatchIndices, origBatchIdx)) {
+        continue;
+      }
+      newToOrig[newIdx++] = origBatchIdx;
+    }
+
+    // New LHS remaining dims -> map back to original output positions
+    // For each new LHS remaining dim, find what original LHS dim it corresponds
+    // to, then look up that original LHS dim's output position
+    for (int64_t newLhsDim : newLhsRemainingDims) {
+      int64_t origLhsDim = lhsNewToOld[newLhsDim];
+
+      // Check if this was originally a batch dim or a remaining dim
+      if (llvm::is_contained(lhsBatchDims, origLhsDim)) {
+        // This was a batch dim, find its batch index
+        for (int64_t batchIdx = 0; batchIdx < lhsBatchDims.size(); ++batchIdx) {
+          if (lhsBatchDims[batchIdx] == origLhsDim) {
+            newToOrig[newIdx++] = batchIdx;
+            break;
+          }
+        }
+      } else {
+        // This was an original LHS remaining dim
+        newToOrig[newIdx++] = origLhsDimToOrigOutputPos[origLhsDim];
+      }
+    }
+
+    // New RHS remaining dims -> map back to original output positions
+    for (int64_t newRhsDim : newRhsRemainingDims) {
+      int64_t origRhsDim = rhsNewToOld[newRhsDim];
+
+      // Check if this was originally a batch dim or a remaining dim
+      if (llvm::is_contained(rhsBatchDims, origRhsDim)) {
+        // This was a batch dim, find its batch index
+        for (int64_t batchIdx = 0; batchIdx < rhsBatchDims.size(); ++batchIdx) {
+          if (rhsBatchDims[batchIdx] == origRhsDim) {
+            newToOrig[newIdx++] = batchIdx;
+            break;
+          }
+        }
+      } else {
+        // This was an original RHS remaining dim
+        newToOrig[newIdx++] = origRhsDimToOrigOutputPos[origRhsDim];
+      }
+    }
+
+    assert(newIdx == newResultRank && "Should have filled all new dims");
+
+    // Now compute the permutation: origToNew tells us for each original dim,
+    // where is it in the new layout. The transpose op takes [orig positions to
+    // read from], so we need newToOrig (already computed).
+
+    Value transposed = TransposeOpCreate(rewriter, dotOp.getLoc(),
+                                         newDotOp.getResult(), newToOrig);
+    rewriter.replaceOp(dotOp, transposed);
+    return success();
+  }
+
+private:
+  // Helper function to create a new broadcast with certain dimensions removed.
+  // Updates the oldToNew map to reflect the dimension remapping.
+  Value createReducedBroadcast(PatternRewriter &rewriter, Location loc,
+                               stablehlo::BroadcastInDimOp bcast,
+                               RankedTensorType origType,
+                               ArrayRef<int64_t> dimsToRemove,
+                               ArrayRef<int64_t> origBcastDims,
+                               DenseMap<int64_t, int64_t> &oldToNew,
+                               DenseMap<int64_t, int64_t> &newToOld) const {
+    SmallVector<int64_t> newOutputShape;
+    SmallVector<int64_t> newBcastDims;
+    oldToNew.clear();
+
+    for (int64_t i = 0; i < origType.getRank(); ++i) {
+      if (llvm::is_contained(dimsToRemove, i)) {
+        continue;
+      }
+      int64_t dim = newOutputShape.size();
+      oldToNew[i] = dim;
+      newToOld[dim] = i;
+      newOutputShape.push_back(origType.getDimSize(i));
+    }
+
+    for (auto dim : origBcastDims) {
+      if (llvm::is_contained(dimsToRemove, dim)) {
+        continue;
+      }
+      newBcastDims.push_back(oldToNew[dim]);
+    }
+
+    auto newType =
+        RankedTensorType::get(newOutputShape, origType.getElementType());
+    return stablehlo::BroadcastInDimOp::create(
+        rewriter, loc, newType, bcast.getOperand(),
+        rewriter.getDenseI64ArrayAttr(newBcastDims));
+  }
+};
+
 // If there is some overlap between the update and the ds, then we can
 // replace the ds with a slice op (with a potentially padding)
 LogicalResult DUSDSSimplifyWithSomeUpdateOverlapHelper(
@@ -26472,6 +26860,293 @@ struct ReshapeSliceReshape final
 
     rewriter.replaceAllUsesWith(bottomReshapeOp.getResult(), newBottomReshape);
     return success();
+  }
+};
+
+// If a reduce is followed by a reshape that deletes certain dimensions,
+// we can absorb those deleted dimensions into the reduce op
+struct ReduceDeleteDims final
+    : public CheckedOpRewritePattern<stablehlo::ReshapeOp, ReduceDeleteDims> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp reshapeOp,
+                                    PatternRewriter &rewriter) const {
+    auto reduceOp = reshapeOp.getOperand().getDefiningOp<stablehlo::ReduceOp>();
+    if (!reduceOp)
+      return failure();
+
+    if (reduceOp.getInputs().size() != 1 ||
+        reduceOp.getInitValues().size() != 1)
+      return failure();
+
+    if (!llvm::hasSingleElement(reduceOp->getUsers()))
+      return failure();
+
+    auto reduceOutTy = cast<RankedTensorType>(reduceOp.getResult(0).getType());
+    auto reshapeOutTy = cast<RankedTensorType>(reshapeOp.getType());
+
+    // Find which dimensions are being deleted by the reshape
+    // findReshapeInsertionDims(output, input) returns dims in input not in
+    // output
+    auto deletedDims = findReshapeInsertionDims(reshapeOutTy, reduceOutTy);
+    if (deletedDims.empty())
+      return failure();
+
+    // Map reduce output dims to input dims
+    // The reduce output has dimensions: all input dims except the reduced ones
+    auto reduceInputTy =
+        cast<RankedTensorType>(reduceOp.getInputs()[0].getType());
+    auto reduceDims = reduceOp.getDimensions();
+
+    // Build mapping from reduce output dim -> reduce input dim
+    SmallVector<int64_t> reduceOutToInMap;
+    for (int64_t inIdx = 0; inIdx < reduceInputTy.getRank(); ++inIdx) {
+      if (llvm::is_contained(reduceDims, inIdx))
+        continue;
+      reduceOutToInMap.push_back(inIdx);
+    }
+
+    // Map the deleted dimensions from reduce output back to reduce input
+    SmallVector<int64_t> newReduceDims(reduceDims.begin(), reduceDims.end());
+    for (auto dim : deletedDims) {
+      if (dim >= reduceOutToInMap.size())
+        return failure();
+      newReduceDims.push_back(reduceOutToInMap[dim]);
+    }
+
+    // Sort the dimensions since reduce expects them in order
+    llvm::sort(newReduceDims);
+
+    // Create the new reduce op with the additional dimensions
+    auto newReduceOp = stablehlo::ReduceOp::create(
+        rewriter, reduceOp.getLoc(), TypeRange(reshapeOp.getType()),
+        ValueRange(reduceOp.getInputs()), ValueRange(reduceOp.getInitValues()),
+        newReduceDims);
+    newReduceOp.getRegion().takeBody(reduceOp.getRegion());
+
+    rewriter.replaceOp(reshapeOp, newReduceOp.getResults());
+    return success();
+  };
+};
+
+// If reshape deletes certain dimensions followed by a reduce,
+// we can absorb those into the dimensions of the reduce op
+struct DeleteDimsReduce final
+    : public CheckedOpRewritePattern<stablehlo::ReduceOp, DeleteDimsReduce> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op.getInputs().size() != 1 || op.getInitValues().size() != 1)
+      return failure();
+
+    auto reshapeOp = op.getInputs()[0].getDefiningOp<stablehlo::ReshapeOp>();
+    if (!reshapeOp)
+      return failure();
+
+    if (!llvm::hasSingleElement(reshapeOp->getUsers()))
+      return failure();
+
+    auto reshapeInTy = cast<RankedTensorType>(reshapeOp.getOperand().getType());
+    auto reshapeOutTy = cast<RankedTensorType>(reshapeOp.getType());
+
+    // Find which dimensions were deleted by the reshape (size 1 dims)
+    // When we call findReshapeInsertionDims(output, input), we get the
+    // indices in the input that were "inserted" to create the output,
+    // which corresponds to dims that were deleted when going from input to
+    // output
+    auto deletedDims = findReshapeInsertionDims(reshapeOutTy, reshapeInTy);
+    if (deletedDims.empty())
+      return failure();
+
+    // Build a mapping from reshapeOut dimensions to reshapeIn dimensions
+    // For each dimension in reshapeOut, find the corresponding dimension
+    // in reshapeIn
+    SmallVector<int64_t> outToInMap;
+    size_t inIdx = 0;
+    for (int64_t outIdx = 0; outIdx < reshapeOutTy.getRank(); ++outIdx) {
+      // Skip any deleted dimensions
+      while (inIdx < reshapeInTy.getRank() &&
+             llvm::is_contained(deletedDims, inIdx)) {
+        ++inIdx;
+      }
+      if (inIdx >= reshapeInTy.getRank())
+        return failure();
+      outToInMap.push_back(inIdx);
+      ++inIdx;
+    }
+
+    // Map the reduce dimensions from the reshaped tensor back to the
+    // original tensor
+    SmallVector<int64_t> newReduceDims;
+    for (auto reduceDim : op.getDimensions()) {
+      if (reduceDim >= outToInMap.size())
+        return failure();
+      newReduceDims.push_back(outToInMap[reduceDim]);
+    }
+
+    // Add all the deleted dimensions to the reduce dimensions (they're
+    // size 1, so reducing them is a no-op mathematically)
+    for (auto dim : deletedDims) {
+      newReduceDims.push_back(dim);
+    }
+
+    // Sort the dimensions since reduce expects them in order
+    llvm::sort(newReduceDims);
+
+    // Create the new reduce op on the original input
+    auto newReduceOp = stablehlo::ReduceOp::create(
+        rewriter, op.getLoc(), TypeRange(op.getResultTypes()),
+        ValueRange(reshapeOp.getOperand()), ValueRange(op.getInitValues()),
+        newReduceDims);
+    newReduceOp.getRegion().takeBody(op.getRegion());
+
+    rewriter.replaceOp(op, newReduceOp.getResults());
+    return success();
+  }
+};
+
+struct DotGeneralInsertDimContractionSimplification final
+    : public CheckedOpRewritePattern<
+          stablehlo::DotGeneralOp,
+          DotGeneralInsertDimContractionSimplification> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp op,
+                                    PatternRewriter &rewriter) const {
+    auto dotDims = op.getDotDimensionNumbers();
+    auto lhs = op.getLhs();
+    auto lhsType = cast<RankedTensorType>(lhs.getType());
+    auto rhs = op.getRhs();
+    auto rhsType = cast<RankedTensorType>(rhs.getType());
+
+    // Find singleton contracting dimensions (size 1 on both sides)
+    SmallVector<int64_t> newLhsContractingDims, newRhsContractingDims;
+    SmallVector<int64_t> lhsSingletonContractDims, rhsSingletonContractDims;
+
+    for (auto [lhsDim, rhsDim] :
+         llvm::zip(dotDims.getLhsContractingDimensions(),
+                   dotDims.getRhsContractingDimensions())) {
+      if (lhsType.getDimSize(lhsDim) == 1 && rhsType.getDimSize(rhsDim) == 1) {
+        lhsSingletonContractDims.push_back(lhsDim);
+        rhsSingletonContractDims.push_back(rhsDim);
+        continue;
+      }
+      newLhsContractingDims.push_back(lhsDim);
+      newRhsContractingDims.push_back(rhsDim);
+    }
+
+    if (lhsSingletonContractDims.empty()) {
+      return failure();
+    }
+
+    // Check that both operands can have their singleton dims removed
+    if (!canRemoveSingletonDim(lhs, lhsSingletonContractDims) ||
+        !canRemoveSingletonDim(rhs, rhsSingletonContractDims)) {
+      return failure();
+    }
+
+    // Build new LHS shape (remove singleton contracting dims)
+    SmallVector<int64_t> newLhsShape;
+    DenseMap<int64_t, int64_t> lhsOldToNew;
+    for (int64_t i = 0; i < lhsType.getRank(); ++i) {
+      if (llvm::is_contained(lhsSingletonContractDims, i))
+        continue;
+      lhsOldToNew[i] = newLhsShape.size();
+      newLhsShape.push_back(lhsType.getDimSize(i));
+    }
+
+    // Build new RHS shape (remove singleton contracting dims)
+    SmallVector<int64_t> newRhsShape;
+    DenseMap<int64_t, int64_t> rhsOldToNew;
+    for (int64_t i = 0; i < rhsType.getRank(); ++i) {
+      if (llvm::is_contained(rhsSingletonContractDims, i))
+        continue;
+      rhsOldToNew[i] = newRhsShape.size();
+      newRhsShape.push_back(rhsType.getDimSize(i));
+    }
+
+    // Map old batch/contracting dims to new positions
+    SmallVector<int64_t> mappedLhsBatchDims, mappedRhsBatchDims;
+    for (auto dim : dotDims.getLhsBatchingDimensions()) {
+      if (lhsOldToNew.count(dim))
+        mappedLhsBatchDims.push_back(lhsOldToNew[dim]);
+    }
+    for (auto dim : dotDims.getRhsBatchingDimensions()) {
+      if (rhsOldToNew.count(dim))
+        mappedRhsBatchDims.push_back(rhsOldToNew[dim]);
+    }
+
+    SmallVector<int64_t> mappedLhsContractDims, mappedRhsContractDims;
+    for (auto dim : newLhsContractingDims) {
+      if (lhsOldToNew.count(dim))
+        mappedLhsContractDims.push_back(lhsOldToNew[dim]);
+    }
+    for (auto dim : newRhsContractingDims) {
+      if (rhsOldToNew.count(dim))
+        mappedRhsContractDims.push_back(rhsOldToNew[dim]);
+    }
+
+    // Create reshaped operands. This will be cleaned up later
+    auto newLhsType =
+        RankedTensorType::get(newLhsShape, lhsType.getElementType());
+    auto newRhsType =
+        RankedTensorType::get(newRhsShape, rhsType.getElementType());
+
+    Value newLhs =
+        stablehlo::ReshapeOp::create(rewriter, op.getLoc(), newLhsType, lhs);
+    Value newRhs =
+        stablehlo::ReshapeOp::create(rewriter, op.getLoc(), newRhsType, rhs);
+
+    // Create new dot dimension numbers
+    auto newDotDims = stablehlo::DotDimensionNumbersAttr::get(
+        op.getContext(), mappedLhsBatchDims, mappedRhsBatchDims,
+        mappedLhsContractDims, mappedRhsContractDims);
+
+    // Create the new dot_general
+    auto newDotOp = stablehlo::DotGeneralOp::create(
+        rewriter, op.getLoc(), op.getType(), newLhs, newRhs, newDotDims,
+        op.getPrecisionConfigAttr(), op.getAlgorithmAttr());
+
+    rewriter.replaceOp(op, newDotOp);
+    return success();
+  }
+
+private:
+  // Check if an operand can have a singleton dimension removed at the given
+  // position. This is safe if the operand is:
+  // 1. A splatted constant (all elements same value)
+  // 2. A broadcast_in_dim that creates the singleton dimension (dim not in
+  //    broadcast_dimensions)
+  // 3. A reshape operation (can be adjusted)
+  bool canRemoveSingletonDim(Value operand,
+                             ArrayRef<int64_t> singletonDims) const {
+    auto defOp = operand.getDefiningOp();
+    if (!defOp) {
+      return false;
+    }
+
+    // Case 1: Splatted constant
+    SplatElementsAttr splat;
+    if (matchPattern(defOp, m_Constant(&splat))) {
+      return true;
+    }
+
+    // Case 2: broadcast_in_dim that creates the singleton dimension
+    if (auto bcastOp = dyn_cast<stablehlo::BroadcastInDimOp>(defOp)) {
+      auto broadcastDims = bcastOp.getBroadcastDimensions();
+      // If dimToRemove is not in broadcastDims, it was created by the broadcast
+      return llvm::all_of(singletonDims, [&](auto dim) {
+        return !llvm::is_contained(broadcastDims, dim);
+      });
+    }
+
+    // Case 3: Reshape operation
+    if (dyn_cast<stablehlo::ReshapeOp>(defOp)) {
+      return true;
+    }
+
+    return false;
   }
 };
 
@@ -27135,8 +27810,12 @@ struct EnzymeHLOOptPass
         BinaryNegatedOperandsSimplify<stablehlo::DivOp>,
         DotGeneralBroadcastInDim,
         DotGeneralBroadcastInDimSortDims,
+        DotGeneralRemoveBatchDimensions,
         DUSDynamicSliceSimplify,
-        WhileDUSDSSimplify
+        WhileDUSDSSimplify,
+        DeleteDimsReduce,
+        ReduceDeleteDims,
+        DotGeneralInsertDimContractionSimplification
       >(context);
 
     patterns.add<
