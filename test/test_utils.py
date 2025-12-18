@@ -542,8 +542,8 @@ def recursive_check(tester, lhs, rhs, atol=1e-8, rtol=1e-5, pname=None):
             max_err = jnp.max(jnp.abs(leaf1 - leaf2))
             if tester.skip_test_assert:
                 print(
-                    f"Skipping test assert for {pname} | {tester.name} but test"
-                    + f"failed with max error {max_err}."
+                    f"Skipping test assert for {tester.name} {pname} but test"
+                    + f" failed with max error {max_err}."
                 )
                 return legal
 
@@ -561,7 +561,7 @@ def recursive_check(tester, lhs, rhs, atol=1e-8, rtol=1e-5, pname=None):
     comparison_tree = jax.tree.map(leaves_allclose, lhs, rhs)
     legal = jax.tree.all(comparison_tree)
     if not legal and tester.skip_test_assert:
-        print(f"Skipping test assert for {pname} | {tester.name}")
+        print(f"Skipping test assert for {tester.name} {pname}")
         return
     tester.assertTrue(legal)
 
