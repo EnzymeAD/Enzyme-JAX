@@ -911,6 +911,10 @@ bool areValidInsertionDims(RankedTensorType inputType,
                            RankedTensorType outputType,
                            SmallVector<int64_t> insertionDims);
 
+bool getCollapsingMapping(
+    llvm::ArrayRef<int64_t> oldShape, llvm::ArrayRef<int64_t> newShape,
+    llvm::DenseMap<int64_t, llvm::SmallVector<int64_t, 2>> &mapping);
+
 bool isOnlyUsedInOperation(Operation *operation, Operation *parentOp);
 
 } // namespace enzyme
