@@ -1092,17 +1092,19 @@ def AffineStoreVar : EnzymeXLA_Op<"store_var", [Pure]> {
 
 // MPI Ops
 
-def MPICommRankOp : EnzymeXLA_Op<"comm_rank", [Pure]> {
-  let summary = "Get the current rank, equivalent to "
-                "`MPI_Comm_rank(comm, &rank)`";
-  /* let arguments = ( */
-  /*   xxx : $comm // TODO */ 
-  /* ); */
-  let results = ( outs
-    /* Optional<MPI_Retval> : $retval, */
-    TensorOf<[I32]> : $rank
+def MPICommRankOp : EnzymeXLA_Op<"comm_rank", []> {
+  let summary = "Equivalent to " "`MPI_Comm_rank(comm, &rank)`";
+
+  let arguments = (
+    ins AnyTensor : $inrank
+    /* xxx : $comm */ // TODO 
   );
-  let assemblyFormat = [{ attr-dict `:` type(results) }];
+
+  let results = (
+    outs TensorOf<[I32]> : $rank
+  );
+
+  let assemblyFormat = "`(` operands `)` attr-dict `:` functional-type(operands, results)";
 }
 
 def MPICommSizeOp : EnzymeXLA_Op<"comm_size", [Pure]> {
