@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Enzyme/MLIR/Interfaces/Utils.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -320,12 +321,7 @@ bool isReadNone(mlir::Operation *);
 bool mayReadFrom(mlir::Operation *, mlir::Value);
 bool mayWriteTo(mlir::Operation *, mlir::Value, bool ignoreBarrier = false);
 
-bool mayAlias(Value v, Value v2);
-
-bool mayAlias(mlir::MemoryEffects::EffectInstance a,
-              mlir::MemoryEffects::EffectInstance b);
-
-bool mayAlias(mlir::MemoryEffects::EffectInstance a, mlir::Value b);
+using ::mlir::enzyme::oputils::mayAlias;
 
 template <typename AttrTy, typename T>
 SmallVector<Attribute> getUpdatedAttrList(Value val, StringRef attrName,
