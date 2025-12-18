@@ -2605,3 +2605,8 @@ def ApplyDotGeneralInsertDimContractionSimplificationPatterns : EnzymeHLOPattern
     "dot_general_insert_dim_contraction_simplification"> {
   let patterns = ["DotGeneralInsertDimContractionSimplification"];
 }
+
+def ApplyFuseReshapeCollapseOrExpandDimsIntoReducePatterns : EnzymeHLOPatternOp<
+    "fuse_reshape_collapse_or_expand_dims_into_reduce"> {
+  let patterns = ["FuseReshapeCollapseOrExpandDimsIntoReduce"];
+}
