@@ -3339,7 +3339,11 @@ struct DynamicSliceElementwise final
         return failure();
       }
 
+      if (allDSUsers.contains(dsOp)) {
+        continue;
+      }
       allDSUsers.insert(dsOp);
+
       auto startIndices = dsOp.getStartIndices();
       auto sliceSizes = dsOp.getSliceSizes();
 
@@ -3374,6 +3378,8 @@ struct DynamicSliceElementwise final
         newStartIndices[i] = stablehlo::ConstantOp::create(
             rewriter, op->getLoc(), indexElemType,
             cast<ElementsAttr>(makeAttr(indexElemType, constantStarts[i])));
+        llvm::errs() << "new start index[" << i << "]: " << newStartIndices[i]
+                     << "\n";
       }
     }
 
@@ -3382,6 +3388,7 @@ struct DynamicSliceElementwise final
       auto newDS = stablehlo::DynamicSliceOp::create(
           rewriter, op.getLoc(), v, newStartIndices, newSliceSizes);
       newOperands.push_back(newDS.getResult());
+      llvm::errs() << "new DS: " << newDS << "\n";
     }
     auto nex = rewriter.create(
         elem->getLoc(), elem->getName().getIdentifier(),
@@ -3390,6 +3397,8 @@ struct DynamicSliceElementwise final
             newSliceSizes, cast<RankedTensorType>(op->getResult(0).getType())
                                .getElementType())),
         elem->getAttrs(), {}, {});
+
+    llvm::errs() << "new elemwise: " << *nex << "\n";
 
     for (auto dsOp : allDSUsers) {
       // we need to replace with slices
@@ -3405,6 +3414,7 @@ struct DynamicSliceElementwise final
           APInt origStart;
           auto matched = matchPattern(dsOp.getStartIndices()[i],
                                       m_ConstantInt(&origStart));
+          llvm::errs() << "expected true got " << matched << "\n";
           assert(matched);
           (void)matched;
           sliceStarts[i] = origStart.getSExtValue() - constantStarts[i];
@@ -3412,10 +3422,9 @@ struct DynamicSliceElementwise final
         }
       }
 
-      auto newSliceOp =
-          stablehlo::SliceOp::create(rewriter, op.getLoc(), nex->getResult(0),
-                                     sliceStarts, sliceLimits, sliceStrides);
-      rewriter.replaceOp(dsOp, newSliceOp);
+      llvm::errs() << "replacing: " << dsOp << "\n";
+      rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
+          dsOp, nex->getResult(0), sliceStarts, sliceLimits, sliceStrides);
     }
 
     return success();
