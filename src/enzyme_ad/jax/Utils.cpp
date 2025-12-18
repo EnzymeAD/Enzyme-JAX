@@ -1193,9 +1193,9 @@ bool areValidInsertionDims(RankedTensorType inputType,
   return true;
 }
 
-bool getCollapsingMapping(
-    ArrayRef<int64_t> oldShape, ArrayRef<int64_t> newShape,
-    DenseMap<int64_t, SmallVector<int64_t, 2>> &mapping) {
+bool getCollapsingMapping(ArrayRef<int64_t> oldShape,
+                          ArrayRef<int64_t> newShape,
+                          DenseMap<int64_t, SmallVector<int64_t, 2>> &mapping) {
   if (newShape.size() >= oldShape.size()) {
     return false;
   }
