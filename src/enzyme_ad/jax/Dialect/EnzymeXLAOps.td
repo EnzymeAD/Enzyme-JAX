@@ -1101,7 +1101,7 @@ def MPICommRankOp : EnzymeXLA_Op<"comm_rank", []> {
   );
 
   let results = (
-    outs TensorOf<[I32]> : $rank
+    outs TensorOf<[I32]> : $outrank
   );
 
   let assemblyFormat = "`(` operands `)` attr-dict `:` functional-type(operands, results)";
