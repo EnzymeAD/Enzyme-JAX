@@ -81,19 +81,19 @@ func.func @main2(%arg0: tensor<3x4xf32>, %arg1: tensor<6x3xf32>) -> (tensor<4xf3
 }
 
 // CHECK: func.func @main2(%arg0: tensor<3x4xf32>, %arg1: tensor<6x3xf32>) -> (tensor<4xf32>, tensor<4xf32>, tensor<4xf32>, tensor<4xf32>, tensor<4xf32>, tensor<4xf32>) {
-// CHECK-NEXT:     %0 = stablehlo.broadcast_in_dim %arg0, dims = [1, 2] : (tensor<3x4xf32>) -> tensor<6x3x4xf32>
-// CHECK-NEXT:     %1 = stablehlo.dot_general %0, %arg1, batching_dims = [0] x [0], contracting_dims = [1] x [1], precision = [DEFAULT, DEFAULT] : (tensor<6x3x4xf32>, tensor<6x3xf32>) -> tensor<6x4xf32>
-// CHECK-NEXT:     %2 = stablehlo.slice %1 [0:1, 0:4] : (tensor<6x4xf32>) -> tensor<1x4xf32>
-// CHECK-NEXT:     %3 = stablehlo.slice %1 [1:2, 0:4] : (tensor<6x4xf32>) -> tensor<1x4xf32>
-// CHECK-NEXT:     %4 = stablehlo.slice %1 [2:3, 0:4] : (tensor<6x4xf32>) -> tensor<1x4xf32>
-// CHECK-NEXT:     %5 = stablehlo.slice %1 [3:4, 0:4] : (tensor<6x4xf32>) -> tensor<1x4xf32>
-// CHECK-NEXT:     %6 = stablehlo.slice %1 [4:5, 0:4] : (tensor<6x4xf32>) -> tensor<1x4xf32>
-// CHECK-NEXT:     %7 = stablehlo.slice %1 [5:6, 0:4] : (tensor<6x4xf32>) -> tensor<1x4xf32>
-// CHECK-NEXT:     %8 = stablehlo.reshape %2 : (tensor<1x4xf32>) -> tensor<4xf32>
-// CHECK-NEXT:     %9 = stablehlo.reshape %3 : (tensor<1x4xf32>) -> tensor<4xf32>
-// CHECK-NEXT:     %10 = stablehlo.reshape %4 : (tensor<1x4xf32>) -> tensor<4xf32>
-// CHECK-NEXT:     %11 = stablehlo.reshape %5 : (tensor<1x4xf32>) -> tensor<4xf32>
-// CHECK-NEXT:     %12 = stablehlo.reshape %6 : (tensor<1x4xf32>) -> tensor<4xf32>
-// CHECK-NEXT:     %13 = stablehlo.reshape %7 : (tensor<1x4xf32>) -> tensor<4xf32>
+// CHECK-NEXT:     %0 = stablehlo.dot_general %arg0, %arg1, contracting_dims = [0] x [1], precision = [DEFAULT, DEFAULT] : (tensor<3x4xf32>, tensor<6x3xf32>) -> tensor<4x6xf32>
+// CHECK-NEXT:     %1 = stablehlo.broadcast_in_dim %0, dims = [1, 0] : (tensor<4x6xf32>) -> tensor<6x4x1xf32>
+// CHECK-NEXT:     %2 = stablehlo.slice %1 [0:1, 0:4, 0:1] : (tensor<6x4x1xf32>) -> tensor<1x4x1xf32>
+// CHECK-NEXT:     %3 = stablehlo.slice %1 [1:2, 0:4, 0:1] : (tensor<6x4x1xf32>) -> tensor<1x4x1xf32>
+// CHECK-NEXT:     %4 = stablehlo.slice %1 [2:3, 0:4, 0:1] : (tensor<6x4x1xf32>) -> tensor<1x4x1xf32>
+// CHECK-NEXT:     %5 = stablehlo.slice %1 [3:4, 0:4, 0:1] : (tensor<6x4x1xf32>) -> tensor<1x4x1xf32>
+// CHECK-NEXT:     %6 = stablehlo.slice %1 [4:5, 0:4, 0:1] : (tensor<6x4x1xf32>) -> tensor<1x4x1xf32>
+// CHECK-NEXT:     %7 = stablehlo.slice %1 [5:6, 0:4, 0:1] : (tensor<6x4x1xf32>) -> tensor<1x4x1xf32>
+// CHECK-NEXT:     %8 = stablehlo.reshape %2 : (tensor<1x4x1xf32>) -> tensor<4xf32>
+// CHECK-NEXT:     %9 = stablehlo.reshape %3 : (tensor<1x4x1xf32>) -> tensor<4xf32>
+// CHECK-NEXT:     %10 = stablehlo.reshape %4 : (tensor<1x4x1xf32>) -> tensor<4xf32>
+// CHECK-NEXT:     %11 = stablehlo.reshape %5 : (tensor<1x4x1xf32>) -> tensor<4xf32>
+// CHECK-NEXT:     %12 = stablehlo.reshape %6 : (tensor<1x4x1xf32>) -> tensor<4xf32>
+// CHECK-NEXT:     %13 = stablehlo.reshape %7 : (tensor<1x4x1xf32>) -> tensor<4xf32>
 // CHECK-NEXT:     return %8, %9, %10, %11, %12, %13 : tensor<4xf32>, tensor<4xf32>, tensor<4xf32>, tensor<4xf32>, tensor<4xf32>, tensor<4xf32>
 // CHECK-NEXT: }

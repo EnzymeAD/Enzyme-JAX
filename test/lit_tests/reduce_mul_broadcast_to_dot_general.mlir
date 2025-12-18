@@ -12,10 +12,8 @@ module {
 }
 
 // CHECK:  func.func @main(%arg0: tensor<2x3xf64>, %arg1: tensor<100x2xf64>) -> tensor<100x3xf64> {
-// CHECK-NEXT:    %0 = stablehlo.broadcast_in_dim %arg0, dims = [0, 2] : (tensor<2x3xf64>) -> tensor<2x100x3xf64>
-// CHECK-NEXT:    %1 = stablehlo.broadcast_in_dim %arg1, dims = [0, 1] : (tensor<100x2xf64>) -> tensor<100x2x3xf64>
-// CHECK-NEXT:    %2 = stablehlo.dot_general %0, %1, batching_dims = [1, 2] x [0, 2], contracting_dims = [0] x [1] : (tensor<2x100x3xf64>, tensor<100x2x3xf64>) -> tensor<100x3xf64>
-// CHECK-NEXT:    return %2 : tensor<100x3xf64>
+// CHECK-NEXT:    %0 = stablehlo.dot_general %arg1, %arg0, contracting_dims = [1] x [0] : (tensor<100x2xf64>, tensor<2x3xf64>) -> tensor<100x3xf64>
+// CHECK-NEXT:    return %0 : tensor<100x3xf64>
 // CHECK-NEXT:  }
 
 module {
