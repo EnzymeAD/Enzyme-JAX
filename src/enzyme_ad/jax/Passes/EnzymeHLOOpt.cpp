@@ -27150,6 +27150,97 @@ private:
   }
 };
 
+struct FuseReshapeCollapseOrExpandDimsIntoReduce final
+    : CheckedOpRewritePattern<stablehlo::ReduceOp,
+                              FuseReshapeCollapseOrExpandDimsIntoReduce> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp reduceOp,
+                                    PatternRewriter &rewriter) {
+    if (reduceOp.getInputs().size() != 1) {
+      return failure();
+    }
+
+    auto reshapeOp =
+        reduceOp.getInputs()[0].getDefiningOp<stablehlo::ReshapeOp>();
+    if (!reshapeOp || !llvm::hasSingleElement(reshapeOp->getUsers())) {
+      return failure();
+    }
+
+    auto reshapeInTy = cast<RankedTensorType>(reshapeOp.getOperand().getType());
+    auto reshapeOutTy = cast<RankedTensorType>(reshapeOp.getType());
+
+    DenseMap<int64_t, SmallVector<int64_t, 2>> mapping;
+    bool collapsing = false, valid = false;
+    SmallVector<int64_t> newReduceDims;
+
+    if (enzyme::getCollapsingMapping(reshapeInTy.getShape(),
+                                     reshapeOutTy.getShape(), mapping)) {
+      // collapsing dimensions
+      collapsing = true;
+      int64_t originalReduceInDims = reshapeOutTy.getRank();
+      for (auto dim : reduceOp.getDimensions()) {
+        auto mappedDims = mapping[dim];
+        originalReduceInDims += mappedDims.size() - 1;
+        newReduceDims.append(mappedDims.begin(), mappedDims.end());
+      }
+      valid = originalReduceInDims == reshapeInTy.getRank();
+    }
+
+    mapping.clear();
+    if (!collapsing &&
+        enzyme::getCollapsingMapping(reshapeOutTy.getShape(),
+                                     reshapeInTy.getShape(), mapping)) {
+      // expanding dimensions
+      DenseMap<int64_t, int64_t> invMap;
+      DenseMap<int64_t, SmallVector<int64_t, 2>> expandStartToFull;
+      for (auto [key, val] : mapping) {
+        invMap[val[0]] = key;
+        expandStartToFull[val[0]] = val;
+      }
+
+      int64_t originalReduceInDims = reshapeOutTy.getRank();
+      for (int64_t redDimIdx = 0; redDimIdx < reduceOp.getDimensions().size();
+           redDimIdx++) {
+        auto dim = reduceOp.getDimensions()[redDimIdx];
+        if (!expandStartToFull.contains(dim)) {
+          return failure();
+        }
+        auto expandFull = expandStartToFull[dim];
+        if (expandFull.size() == 1) {
+          newReduceDims.push_back(invMap[dim]);
+        } else {
+          auto NExpand = expandFull.size();
+          originalReduceInDims -= NExpand - 1;
+          newReduceDims.push_back(invMap[dim]);
+          if (redDimIdx + NExpand > reduceOp.getDimensions().size()) {
+            return failure();
+          }
+          for (int64_t j = 1; j < NExpand; j++) {
+            if (reduceOp.getDimensions()[redDimIdx + j] != expandFull[j]) {
+              return failure();
+            }
+          }
+          redDimIdx += NExpand - 1;
+        }
+      }
+      valid = originalReduceInDims == reshapeInTy.getRank();
+    }
+
+    if (valid) {
+      llvm::sort(newReduceDims);
+      auto newReduceOp = stablehlo::ReduceOp::create(
+          rewriter, reduceOp.getLoc(), reduceOp.getResultTypes(),
+          reshapeOp.getOperand(), reduceOp.getInitValues(), newReduceDims);
+      newReduceOp.getRegion().takeBody(reduceOp.getRegion());
+      rewriter.replaceOp(reduceOp, newReduceOp.getResults());
+      return success();
+    }
+
+    return failure();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -27815,7 +27906,8 @@ struct EnzymeHLOOptPass
         WhileDUSDSSimplify,
         DeleteDimsReduce,
         ReduceDeleteDims,
-        DotGeneralInsertDimContractionSimplification
+        DotGeneralInsertDimContractionSimplification,
+        FuseReshapeCollapseOrExpandDimsIntoReduce
       >(context);
 
     patterns.add<
