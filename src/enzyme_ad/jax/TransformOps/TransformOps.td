@@ -281,10 +281,6 @@ def ApplySliceElementwisePatterns : EnzymeHLOPatternOp<
     "slice_elementwise"> {
   let patterns = ["SliceElementwise"];
 }
-def ApplyDynamicSliceElementwisePatterns : EnzymeHLOPatternOp<
-    "dynamic_slice_elementwise"> {
-  let patterns = ["DynamicSliceElementwise"];
-}
 def ApplySlicePadPatterns : EnzymeHLOPatternOp<
     "slice_pad"> {
   let patterns = ["SlicePad"];
