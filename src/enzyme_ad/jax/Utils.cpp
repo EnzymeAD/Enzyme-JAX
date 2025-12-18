@@ -1193,6 +1193,55 @@ bool areValidInsertionDims(RankedTensorType inputType,
   return true;
 }
 
+bool getCollapsingMapping(
+    ArrayRef<int64_t> oldShape, ArrayRef<int64_t> newShape,
+    DenseMap<int64_t, SmallVector<int64_t, 2>> &mapping) {
+  if (newShape.size() >= oldShape.size()) {
+    return false;
+  }
+  if (newShape.empty()) {
+    return llvm::product_of(oldShape) == 1;
+  }
+
+  size_t oldIdx = 0;
+  for (size_t newIdx = 0; newIdx < newShape.size(); ++newIdx) {
+    int64_t target = newShape[newIdx];
+    int64_t current = 1;
+    bool consumed = false;
+    SmallVector<int64_t, 2> group;
+
+    while (oldIdx < oldShape.size()) {
+      if (consumed && current == target) {
+        if (newIdx == newShape.size() - 1) {
+          if (oldShape[oldIdx] == 1) {
+            // keep going to consume trailing dims
+          } else {
+            break;
+          }
+        } else {
+          break;
+        }
+      }
+
+      current *= oldShape[oldIdx];
+      group.push_back(oldIdx);
+      consumed = true;
+      oldIdx++;
+
+      if (current > target) {
+        return false;
+      }
+    }
+
+    if (current != target || !consumed) {
+      return false;
+    }
+    mapping[newIdx] = group;
+  }
+
+  return oldIdx == oldShape.size();
+}
+
 bool isOnlyUsedInOperation(Operation *operation, Operation *parentOp) {
   if (!operation || !parentOp)
     return false;
