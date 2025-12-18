@@ -27255,6 +27255,14 @@ void mlir::transform::addConvolutionLICM(RewritePatternSet &patterns,
                                                   benefit);
 }
 
+void mlir::transform::addDynamicSliceLICM(RewritePatternSet &patterns,
+                                          bool single_user,
+                                          MLIRContext &context,
+                                          PatternBenefit benefit) {
+  patterns.insert<LICM<stablehlo::DynamicSliceOp>>(single_user, &context,
+                                                   benefit);
+}
+
 void mlir::transform::addNoNanAddSubSimplify(RewritePatternSet &patterns,
                                              bool allowOnFloatingPointMath,
                                              MLIRContext &context,
@@ -27513,7 +27521,8 @@ struct EnzymeHLOOptPass
                    ConcatAppendingReshape, ReshapeIota, DUSDUS, DUSDUSConcat,
                    DUSConcat, DUSPad, SliceDUSToConcat, ConcatConcatToDUS>(
           context);
-      patterns.add<LICM<stablehlo::DynamicUpdateSliceOp>>(false, context);
+      patterns.add<LICM<stablehlo::DynamicUpdateSliceOp>,
+                   LICM<stablehlo::DynamicSliceOp>>(false, context);
     }
 
     if (passses & 1024)
