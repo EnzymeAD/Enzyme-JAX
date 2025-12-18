@@ -240,17 +240,6 @@ bool getEffectsAfter(Operation *op,
   return !conservative;
 }
 
-const std::set<std::string> &getNonCapturingFunctions() {
-  static std::set<std::string> NonCapturingFunctions = {
-      "free",           "printf",       "fprintf",       "scanf",
-      "fscanf",         "gettimeofday", "clock_gettime", "getenv",
-      "strrchr",        "strlen",       "sprintf",       "sscanf",
-      "mkdir",          "fwrite",       "fread",         "memcpy",
-      "cudaMemcpy",     "memset",       "cudaMemset",    "__isoc99_scanf",
-      "__isoc99_fscanf"};
-  return NonCapturingFunctions;
-}
-
 bool isCaptured(Value v, Operation *potentialUser = nullptr,
                 bool *seenuse = nullptr) {
   SmallVector<Value> todo = {v};
