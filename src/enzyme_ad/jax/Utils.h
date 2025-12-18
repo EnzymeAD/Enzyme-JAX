@@ -40,7 +40,6 @@ namespace mlir {
 namespace enzyme {
 
 using namespace ::mlir::enzyme::oputils;
-inline bool isReadNone(Operation *op) { return isReadOnly(op); }
 
 template <typename T> inline Attribute makeAttr(mlir::Type elemType, T val) {
   if (auto TT = dyn_cast<RankedTensorType>(elemType))
