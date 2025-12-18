@@ -39,6 +39,9 @@
 namespace mlir {
 namespace enzyme {
 
+using namespace ::mlir::enzyme::oputils;
+using isReadNone = isReadOnly;
+
 template <typename T> inline Attribute makeAttr(mlir::Type elemType, T val) {
   if (auto TT = dyn_cast<RankedTensorType>(elemType))
     return SplatElementsAttr::get(
@@ -298,8 +301,6 @@ static inline bool hasElse(mlir::affine::AffineIfOp op) {
   return op.getElseRegion().getBlocks().size() > 0;
 }
 
-const std::set<std::string> &getNonCapturingFunctions();
-
 bool collectEffects(
     mlir::Operation *op,
     llvm::SmallVectorImpl<mlir::MemoryEffects::EffectInstance> &effects,
@@ -315,13 +316,8 @@ bool getEffectsAfter(
     llvm::SmallVectorImpl<mlir::MemoryEffects::EffectInstance> &effects,
     bool stopAtBarrier);
 
-bool isReadOnly(mlir::Operation *);
-bool isReadNone(mlir::Operation *);
-
 bool mayReadFrom(mlir::Operation *, mlir::Value);
 bool mayWriteTo(mlir::Operation *, mlir::Value, bool ignoreBarrier = false);
-
-using ::mlir::enzyme::oputils::mayAlias;
 
 template <typename AttrTy, typename T>
 SmallVector<Attribute> getUpdatedAttrList(Value val, StringRef attrName,
