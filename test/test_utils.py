@@ -1,6 +1,11 @@
 import os
 import tempfile
-import numpy as np
+import jax.numpy as jnp
+import jax
+from enzyme_ad.jax import (
+    JaXPipeline,
+    full_optimization_pass_pipeline,
+)
 
 
 def fix_paths():
@@ -420,43 +425,56 @@ broadcast_reduce<1>;
 )
 
 
-def pipelines():
-    setup_backends()
-    from enzyme_ad.jax import (
-        JaXPipeline,
-        full_optimization_pass_pipeline,
-    )
-
-    return [
-        ("JaXPipe", JaXPipeline(), CurBackends),
-        ("JaX  ", None, CurBackends),
-        (
+def get_pipeline(name: str):
+    if name == "JaxPipe":
+        return ("JaXPipe", JaXPipeline(), CurBackends)
+    elif name == "Jax":
+        return ("Jax", None, CurBackends)
+    elif name == "PartOpt":
+        return ("PartOpt", JaXPipeline(partialopt), CurBackends)
+    elif name == "HLOOpt":
+        return (
             "HLOOpt",
             JaXPipeline(
                 "inline{default-pipeline=canonicalize inlining-threshold=4294967295 max-iterations=4},"
                 + "canonicalize,cse,enzyme-hlo-opt,cse"
             ),
             CurBackends,
-        ),
-        ("PartOpt", JaXPipeline(partialopt), CurBackends),
-        (
+        )
+    elif name == "DefOpt":
+        return (
             "DefOpt",
             JaXPipeline(full_optimization_pass_pipeline(inline=False)),
             CurBackends,
-        ),
-        (
+        )
+    elif name == "IPartOpt":
+        return (
             "IPartOpt",
             JaXPipeline(
                 "inline{default-pipeline=canonicalize inlining-threshold=4294967295 max-iterations=4},"
                 + partialopt
             ),
             CurBackends,
-        ),
-        (
+        )
+    elif name == "IDefOpt":
+        return (
             "IDefOpt",
             JaXPipeline(full_optimization_pass_pipeline()),
             CurBackends,
-        ),
+        )
+
+
+def pipelines():
+    setup_backends()
+
+    return [
+        get_pipeline("JaxPipe"),
+        get_pipeline("Jax"),
+        get_pipeline("HLOOpt"),
+        get_pipeline("PartOpt"),
+        get_pipeline("IPartOpt"),
+        get_pipeline("DefOpt"),
+        get_pipeline("IDefOpt"),
     ]
 
 
@@ -481,8 +499,6 @@ def justjax(x):
 
 
 def splatjvp(in_fn):
-    import jax
-
     def fwd(*args):
         assert len(args) % 2 == 0
         return jax.jvp(
@@ -493,14 +509,10 @@ def splatjvp(in_fn):
 
 
 def sync(x):
-    import jax
-
     return jax.block_until_ready(x)
 
 
 def splatvjp(in_fn):
-    import jax
-
     def rev(dout, *args):
         primals, f_vjp = jax.vjp(in_fn, *args)
         grads = f_vjp(dout)
@@ -510,8 +522,6 @@ def splatvjp(in_fn):
 
 
 def splatvjp_noprim(in_fn):
-    import jax
-
     def rev(dout, *args):
         primals, f_vjp = jax.vjp(in_fn, *args)
         grads = f_vjp(dout)
@@ -521,44 +531,27 @@ def splatvjp_noprim(in_fn):
 
 
 def to_backend(x, backend):
-    import jax
-
     dev = jax.local_devices(backend=backend)[0]
     return jax.device_put(x, dev)
 
 
 def recursive_check(tester, lhs, rhs, atol=1e-8, rtol=1e-5, pname=None):
-    import jax.numpy as jnp
-    import jax
-
-    tester.assertEqual(type(lhs), type(rhs))
-    if isinstance(lhs, jax.Array):
-        legal = jnp.allclose(lhs, rhs, atol=atol, rtol=rtol)
+    def leaves_allclose(leaf1, leaf2):
+        legal = jnp.allclose(leaf1, leaf2, atol=atol, rtol=rtol)
         if not legal:
             if pname is not None:
-                print("lhs (", pname, ")", lhs)
+                print("lhs (", pname, ")", leaf1)
             else:
-                print("lhs", lhs)
-            print("rhs", rhs)
-            print("abs", jnp.abs(lhs - rhs))
-            print("eq", jnp.abs(lhs - rhs) < atol)
-            print("max", jnp.max(jnp.abs(lhs - rhs)))
+                print("lhs", leaf1)
+            print("rhs", leaf2)
+            print("abs", jnp.abs(leaf1 - leaf2))
+            print("eq", jnp.abs(leaf1 - leaf2) < atol)
+            print("max", jnp.max(jnp.abs(leaf1 - leaf2)))
         tester.assertTrue(legal)
         return
 
-    if isinstance(lhs, tuple):
-        for i, (g, g_p) in enumerate(zip(lhs, rhs)):
-            recursive_check(tester, g, g_p, atol, rtol, pname)
-        return
-
-    if isinstance(lhs, dict):
-        tester.assertEqual(lhs.keys(), rhs.keys())
-        for k in lhs.keys():
-            recursive_check(tester, lhs[k], rhs[k], atol, rtol, pname)
-        return
-
-    print("Unknown recursive type", type(lhs), " ", type(rhs))
-    tester.assertTrue(False)
+    comparison_tree = jax.tree.map(leaves_allclose, lhs, rhs)
+    tester.assertTrue(jax.tree.all(comparison_tree))
 
 
 def _dump_mlir_to_file(fn, args, key: str, dump_mlir_dir: str):
@@ -591,6 +584,7 @@ class EnzymeJaxTest(absltest.TestCase):
         self.fwdfilter = lambda x: x
         self.revfilter = lambda x: x
         self.count = 10000
+        self.repeat = 10
         self.AllBackends = AllBackends
         self.AllPipelines = pipelines()
         self.revprimal = True
@@ -639,7 +633,6 @@ class EnzymeJaxTest(absltest.TestCase):
 
     def harness(self, name, in_fn, ins, dins, douts):
         import timeit
-        import jax
         from enzyme_ad.jax import enzyme_jax_ir
 
         dump_mlir_dir = tempfile.gettempdir()
@@ -710,7 +703,12 @@ class EnzymeJaxTest(absltest.TestCase):
                         primres = ao
                     else:
                         recursive_check(
-                            self, ao, primres, self.atol, self.rtol, "Primal " + pname
+                            self,
+                            ao,
+                            primres,
+                            self.atol,
+                            self.rtol,
+                            "Primal " + pname,
                         )
 
                     self.pretty_print_table(
@@ -725,9 +723,9 @@ class EnzymeJaxTest(absltest.TestCase):
                                     "fn": rfn_enzyme,
                                 }
                                 | primalins,
-                            ).repeat(repeat=10, number=max(self.count // 10, 1))
+                            ).repeat(repeat=self.repeat, number=self.count)
                         )
-                        / max(self.count // 10, 1),
+                        / self.count,
                     )
 
             # assert primres is not None
@@ -792,9 +790,9 @@ class EnzymeJaxTest(absltest.TestCase):
                                         "fwd": fwd_enzyme,
                                     }
                                     | fwdins,
-                                ).repeat(repeat=10, number=max(self.count // 10, 1))
+                                ).repeat(repeat=self.repeat, number=self.count)
                             )
-                            / max(self.count // 10, 1),
+                            / self.count,
                         )
 
             # assert fwdres is not None
@@ -866,9 +864,12 @@ class EnzymeJaxTest(absltest.TestCase):
                                             "rev": rev_enzyme,
                                         }
                                         | revins,
-                                    ).repeat(repeat=10, number=max(self.count // 10, 1))
+                                    ).repeat(
+                                        repeat=self.repeat,
+                                        number=self.count,
+                                    )
                                 )
-                                / max(self.count // 10, 1),
+                                / self.count,
                             )
 
                         rfn_enzyme = in_fn
@@ -930,9 +931,9 @@ class EnzymeJaxTest(absltest.TestCase):
                                         "rev": rev_enzyme,
                                     }
                                     | revins,
-                                ).repeat(repeat=10, number=max(self.count // 10, 1))
+                                ).repeat(repeat=self.repeat, number=self.count)
                             )
-                            / max(self.count // 10, 1),
+                            / self.count,
                         )
 
                     if pipeline is None or (pipeline.mlir_ad() and self.mlirad_rev):
@@ -1001,7 +1002,7 @@ class EnzymeJaxTest(absltest.TestCase):
                                         "rev": rev_enzyme,
                                     }
                                     | revins,
-                                ).repeat(repeat=10, number=max(self.count // 10, 1))
+                                ).repeat(repeat=self.repeat, number=self.count)
                             )
-                            / max(self.count // 10, 1),
+                            / self.count,
                         )

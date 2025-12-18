@@ -230,7 +230,6 @@ class ConstScatter(EnzymeJaxTest):
 
         self.fn = forward
         self.name = "const_scatter"
-        self.count = 10
 
         N = 1024**2
         self.ins = [jnp.full(N, 2.7)]

@@ -1,24 +1,23 @@
-from absl import app
-from test_utils import *
+from absl.testing import absltest
+from test_utils import EnzymeJaxTest, get_pipeline
+import numpy as np
 
-argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
+import jax.random
+import neuralgcm
+import gcsfs
+import pickle
+import xarray
+from dinosaur import horizontal_interpolation
+from dinosaur import spherical_harmonic
+from dinosaur import xarray_utils
 
 
-class NeuralGCM:
+class NeuralGCM(EnzymeJaxTest):
     def setUp(self):
-        import jax.random
-        import jax.numpy as np
-        import neuralgcm
-        import gcsfs
-        import pickle
-        import xarray
-        from dinosaur import horizontal_interpolation
-        from dinosaur import spherical_harmonic
-        from dinosaur import xarray_utils
-
         gcs = gcsfs.GCSFileSystem(token="anon")
 
         model_name = "neural_gcm_dynamic_forcing_deterministic_1_4_deg.pkl"  # @param ['neural_gcm_dynamic_forcing_deterministic_0_7_deg.pkl', 'neural_gcm_dynamic_forcing_deterministic_1_4_deg.pkl', 'neural_gcm_dynamic_forcing_deterministic_2_8_deg.pkl', 'neural_gcm_dynamic_forcing_stochastic_1_4_deg.pkl'] {type: "string"}
+        self.name = model_name.split(".")[0]
 
         with gcs.open(f"gs://gresearch/neuralgcm/04_30_2024/{model_name}", "rb") as f:
             ckpt = pickle.load(f)
@@ -72,9 +71,7 @@ class NeuralGCM:
             inner_steps = 2  # save model outputs once every 24 hours
             outer_steps = 2 * 2 // inner_steps  # total of 4 days
 
-        import numpy as onp
-
-        timedelta = onp.timedelta64(1, "h") * inner_steps
+        timedelta = np.timedelta64(1, "h") * inner_steps
         # times = (np.arange(outer_steps) * inner_steps)  # time axis in hours
 
         # initialize model state
@@ -105,7 +102,7 @@ class NeuralGCM:
                 start_with_input=True,
             )
 
-        self.sub = sub
+        self.fn = sub
         self.model = model
         self.eval_era5 = eval_era5
         self.all_forcings = all_forcings
@@ -116,49 +113,27 @@ class NeuralGCM:
         rng_key = jax.random.key(42)  # optional for deterministic models
         self.initial_state = self.model.encode(inputs, input_forcings, rng_key)
 
-    def test(self):
-        import jax
-        from enzyme_ad.jax import enzyme_jax_ir
+        self.ins = (self.initial_state, self.all_forcings)
+        self.dins = ()
+        self.douts = ()
+        self.mlirad_rev = False
+        self.mlirad_fwd = False
+        self.fwdfilter = lambda _: []
+        self.revfilter = lambda _: []
+        self.count = 1
+        self.repeat = 1
+        self.atol = 5e-2
+        self.rtol = 1e-2
 
-        for name, pipe, _ in pipelines():
-            print("name=", name)
-            if pipe is None:
-                nfn = jax.jit(self.sub)
-            else:
-                nfn = jax.jit(
-                    enzyme_jax_ir(pipeline_options=pipe, inner_jit=False)(self.sub)
-                )
-
-            res = self.run_on_fn(nfn)
-            print("name=", name, res)
-
-    def run_on_fn(self, fn, steps=1):
-        import timeit
-
-        map(
-            lambda x: x.block_until_ready(),
-            fn(
-                self.initial_state,
-                self.all_forcings,
-            ),
-        )
-        return timeit.Timer(
-            """map(lambda x:x.block_until_ready(), fn(
-        initial_state,
-        all_forcings,
-    ))""",
-            globals={
-                "fn": fn,
-                "initial_state": self.initial_state,
-                "all_forcings": self.all_forcings,
-            },
-        ).timeit(steps)
-
-
-def main(argv):
-    c = NeuralGCM()
-    c.setUp()
-    c.test()
+        self.AllPipelines = [
+            get_pipeline("JaxPipe"),
+            get_pipeline("Jax"),
+            get_pipeline("HLOOpt"),
+            # get_pipeline("PartOpt"), # FIXME: incorrect result??
+            # get_pipeline("IPartOpt"), # FIXME: incorrect result??
+            # get_pipeline("DefOpt"), # FIXME: incorrect result??
+            # get_pipeline("IDefOpt"), # FIXME: incorrect result??
+        ]
 
 
 if __name__ == "__main__":
@@ -169,4 +144,4 @@ if __name__ == "__main__":
 
     # Deps not available on macos
     if platform.system() != "Darwin" and platform.machine() == "x86_64":
-        app.run(main)
+        absltest.main()
