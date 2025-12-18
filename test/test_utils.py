@@ -583,7 +583,7 @@ class EnzymeJaxTest(absltest.TestCase):
         self.primfilter = lambda x: x
         self.fwdfilter = lambda x: x
         self.revfilter = lambda x: x
-        self.count = 10000
+        self.count = 1000
         self.repeat = 10
         self.AllBackends = AllBackends
         self.AllPipelines = pipelines()

@@ -1,13 +1,14 @@
 from absl.testing import absltest
 
-from test_utils import EnzymeJaxTest, pipelines
-from jax_md import space, energy, simulate, partition
+from test_utils import EnzymeJaxTest
 from jax import random
 import jax.numpy as jnp
 
 
 class JAXMD(EnzymeJaxTest):
     def setUp(self):
+        from jax_md import space, energy, simulate, partition
+
         lattice_constant = 1.37820
         # We hit a GPU memory limit for N_rep = 40
         N_rep = 20 if jax.default_backend() in ["gpu", "tpu"] else 40

@@ -3,17 +3,18 @@ from test_utils import EnzymeJaxTest, get_pipeline
 import numpy as np
 
 import jax.random
-import neuralgcm
-import gcsfs
-import pickle
-import xarray
-from dinosaur import horizontal_interpolation
-from dinosaur import spherical_harmonic
-from dinosaur import xarray_utils
 
 
 class NeuralGCM(EnzymeJaxTest):
     def setUp(self):
+        import neuralgcm
+        import gcsfs
+        import pickle
+        import xarray
+        from dinosaur import horizontal_interpolation
+        from dinosaur import spherical_harmonic
+        from dinosaur import xarray_utils
+
         gcs = gcsfs.GCSFileSystem(token="anon")
 
         model_name = "neural_gcm_dynamic_forcing_deterministic_1_4_deg.pkl"  # @param ['neural_gcm_dynamic_forcing_deterministic_0_7_deg.pkl', 'neural_gcm_dynamic_forcing_deterministic_1_4_deg.pkl', 'neural_gcm_dynamic_forcing_deterministic_2_8_deg.pkl', 'neural_gcm_dynamic_forcing_stochastic_1_4_deg.pkl'] {type: "string"}
