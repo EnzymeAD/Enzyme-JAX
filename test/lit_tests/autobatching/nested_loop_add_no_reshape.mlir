@@ -53,7 +53,7 @@ module {
 // CHECK-NEXT:       %6 = stablehlo.compare  LT, %iterArg, %c_1 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:       stablehlo.return %6 : tensor<i1>
 // CHECK-NEXT:     } do {
-// CHECK-NEXT:       %6 = stablehlo.add %c_2, %iterArg : tensor<i64>
+// CHECK-NEXT:       %6 = stablehlo.add %c_2, %iterArg {enzymexla.bounds = {{.*}}} : tensor<i64>
 // CHECK-NEXT:       stablehlo.return %6 : tensor<i64>
 // CHECK-NEXT:     }
 // CHECK-NEXT:     return %5, %c_2, %c_2, %c_1, %c, %4 : tensor<i64>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<3x2xf64>

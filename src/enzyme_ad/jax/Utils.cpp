@@ -240,78 +240,6 @@ bool getEffectsAfter(Operation *op,
   return !conservative;
 }
 
-bool isReadOnly(Operation *op) {
-  bool hasRecursiveEffects = op->hasTrait<OpTrait::HasRecursiveMemoryEffects>();
-  if (hasRecursiveEffects) {
-    for (Region &region : op->getRegions()) {
-      for (auto &block : region) {
-        for (auto &nestedOp : block)
-          if (!isReadOnly(&nestedOp))
-            return false;
-      }
-    }
-    return true;
-  }
-
-  // If the op has memory effects, try to characterize them to see if the op
-  // is trivially dead here.
-  if (auto effectInterface = dyn_cast<MemoryEffectOpInterface>(op)) {
-    // Check to see if this op either has no effects, or only allocates/reads
-    // memory.
-    SmallVector<MemoryEffects::EffectInstance, 1> effects;
-    effectInterface.getEffects(effects);
-    if (!llvm::all_of(effects, [](const MemoryEffects::EffectInstance &it) {
-          return isa<MemoryEffects::Read>(it.getEffect());
-        })) {
-      return false;
-    }
-    return true;
-  }
-  return false;
-}
-
-bool isReadNone(Operation *op) {
-  bool hasRecursiveEffects = op->hasTrait<OpTrait::HasRecursiveMemoryEffects>();
-  if (hasRecursiveEffects) {
-    for (Region &region : op->getRegions()) {
-      for (auto &block : region) {
-        for (auto &nestedOp : block)
-          if (!isReadNone(&nestedOp))
-            return false;
-      }
-    }
-    return true;
-  }
-
-  // If the op has memory effects, try to characterize them to see if the op
-  // is trivially dead here.
-  if (auto effectInterface = dyn_cast<MemoryEffectOpInterface>(op)) {
-    // Check to see if this op either has no effects, or only allocates/reads
-    // memory.
-    SmallVector<MemoryEffects::EffectInstance, 1> effects;
-    effectInterface.getEffects(effects);
-    if (llvm::any_of(effects, [](const MemoryEffects::EffectInstance &it) {
-          return isa<MemoryEffects::Read>(it.getEffect()) ||
-                 isa<MemoryEffects::Write>(it.getEffect());
-        })) {
-      return false;
-    }
-    return true;
-  }
-  return false;
-}
-
-const std::set<std::string> &getNonCapturingFunctions() {
-  static std::set<std::string> NonCapturingFunctions = {
-      "free",           "printf",       "fprintf",       "scanf",
-      "fscanf",         "gettimeofday", "clock_gettime", "getenv",
-      "strrchr",        "strlen",       "sprintf",       "sscanf",
-      "mkdir",          "fwrite",       "fread",         "memcpy",
-      "cudaMemcpy",     "memset",       "cudaMemset",    "__isoc99_scanf",
-      "__isoc99_fscanf"};
-  return NonCapturingFunctions;
-}
-
 bool isCaptured(Value v, Operation *potentialUser = nullptr,
                 bool *seenuse = nullptr) {
   SmallVector<Value> todo = {v};
@@ -431,83 +359,7 @@ bool isStackAlloca(Value v) {
          v.getDefiningOp<memref::AllocOp>() ||
          v.getDefiningOp<LLVM::AllocaOp>();
 }
-static bool mayAlias(Value v, Value v2) {
-  v = getBase(v);
-  v2 = getBase(v2);
-  if (v == v2)
-    return true;
 
-  // We may now assume neither v1 nor v2 are subindices
-
-  if (auto glob = v.getDefiningOp<memref::GetGlobalOp>()) {
-    if (auto Aglob = v2.getDefiningOp<memref::GetGlobalOp>()) {
-      return glob.getName() == Aglob.getName();
-    }
-  }
-
-  if (auto glob = v.getDefiningOp<LLVM::AddressOfOp>()) {
-    if (auto Aglob = v2.getDefiningOp<LLVM::AddressOfOp>()) {
-      return glob.getGlobalName() == Aglob.getGlobalName();
-    }
-  }
-
-  bool isAlloca[2];
-  bool isGlobal[2];
-
-  isAlloca[0] = isStackAlloca(v);
-  isGlobal[0] = v.getDefiningOp<memref::GetGlobalOp>() ||
-                v.getDefiningOp<LLVM::AddressOfOp>();
-
-  isAlloca[1] = isStackAlloca(v2);
-
-  isGlobal[1] = v2.getDefiningOp<memref::GetGlobalOp>() ||
-                v2.getDefiningOp<LLVM::AddressOfOp>();
-
-  // Non-equivalent allocas/global's cannot conflict with each other
-  if ((isAlloca[0] || isGlobal[0]) && (isAlloca[1] || isGlobal[1]))
-    return false;
-
-  bool isArg[2];
-  isArg[0] = isa<BlockArgument>(v) &&
-             isa<FunctionOpInterface>(
-                 cast<BlockArgument>(v).getOwner()->getParentOp());
-
-  isArg[1] = isa<BlockArgument>(v) &&
-             isa<FunctionOpInterface>(
-                 cast<BlockArgument>(v).getOwner()->getParentOp());
-
-  // Stack allocations cannot have been passed as an argument.
-  if ((isAlloca[0] && isArg[1]) || (isAlloca[1] && isArg[0]))
-    return false;
-
-  // Non captured base allocas cannot conflict with another base value.
-  if (isAlloca[0] && !isCaptured(v))
-    return false;
-
-  if (isAlloca[1] && !isCaptured(v2))
-    return false;
-
-  return true;
-}
-
-bool mayAlias(MemoryEffects::EffectInstance a,
-              MemoryEffects::EffectInstance b) {
-  if (a.getResource()->getResourceID() != b.getResource()->getResourceID())
-    return false;
-  if (Value v2 = b.getValue()) {
-    return mayAlias(a, v2);
-  } else if (Value v = a.getValue()) {
-    return mayAlias(b, v);
-  }
-  return true;
-}
-
-bool mayAlias(MemoryEffects::EffectInstance a, Value v2) {
-  if (Value v = a.getValue()) {
-    return mayAlias(v, v2);
-  }
-  return true;
-}
 bool mayWriteTo(Operation *op, Value val, bool ignoreBarrier) {
   bool hasRecursiveEffects = op->hasTrait<OpTrait::HasRecursiveMemoryEffects>();
   if (hasRecursiveEffects) {
@@ -1193,6 +1045,55 @@ bool areValidInsertionDims(RankedTensorType inputType,
   return true;
 }
 
+bool getCollapsingMapping(ArrayRef<int64_t> oldShape,
+                          ArrayRef<int64_t> newShape,
+                          DenseMap<int64_t, SmallVector<int64_t, 2>> &mapping) {
+  if (newShape.size() >= oldShape.size()) {
+    return false;
+  }
+  if (newShape.empty()) {
+    return llvm::product_of(oldShape) == 1;
+  }
+
+  size_t oldIdx = 0;
+  for (size_t newIdx = 0; newIdx < newShape.size(); ++newIdx) {
+    int64_t target = newShape[newIdx];
+    int64_t current = 1;
+    bool consumed = false;
+    SmallVector<int64_t, 2> group;
+
+    while (oldIdx < oldShape.size()) {
+      if (consumed && current == target) {
+        if (newIdx == newShape.size() - 1) {
+          if (oldShape[oldIdx] == 1) {
+            // keep going to consume trailing dims
+          } else {
+            break;
+          }
+        } else {
+          break;
+        }
+      }
+
+      current *= oldShape[oldIdx];
+      group.push_back(oldIdx);
+      consumed = true;
+      oldIdx++;
+
+      if (current > target) {
+        return false;
+      }
+    }
+
+    if (current != target || !consumed) {
+      return false;
+    }
+    mapping[newIdx] = group;
+  }
+
+  return oldIdx == oldShape.size();
+}
+
 bool isOnlyUsedInOperation(Operation *operation, Operation *parentOp) {
   if (!operation || !parentOp)
     return false;
@@ -1245,6 +1146,109 @@ bool mayReadFrom(Operation *op, Value val) {
 } // namespace enzyme
 
 namespace stablehlo {
+
+// Templated helper (default returns nullptr).
+template <typename OpTy>
+Value getIdentityValueForOp(OpBuilder &builder, Location loc, Type elemType) {
+  return nullptr;
+}
+
+// Specializations for identity values of specific binary ops.
+template <>
+Value getIdentityValueForOp<stablehlo::AddOp>(OpBuilder &builder, Location loc,
+                                              Type elemType) {
+  return stablehlo::ConstantOp::create(builder, loc,
+                                       builder.getZeroAttr(elemType));
+}
+
+template <>
+Value getIdentityValueForOp<stablehlo::MulOp>(OpBuilder &builder, Location loc,
+                                              Type elemType) {
+  return stablehlo::ConstantOp::create(builder, loc,
+                                       builder.getOneAttr(elemType));
+}
+
+template <>
+Value getIdentityValueForOp<stablehlo::MinOp>(OpBuilder &builder, Location loc,
+                                              Type elemType) {
+  if (auto floatType = dyn_cast<FloatType>(elemType)) {
+    auto negInf =
+        APFloat::getInf(floatType.getFloatSemantics(), /*negative=*/false);
+    return stablehlo::ConstantOp::create(
+        builder, loc, builder.getFloatAttr(elemType, negInf));
+  } else if (auto intType = dyn_cast<IntegerType>(elemType)) {
+    auto minVal = APInt::getSignedMaxValue(intType.getWidth());
+    return stablehlo::ConstantOp::create(
+        builder, loc, builder.getIntegerAttr(elemType, minVal));
+  }
+  return nullptr;
+}
+
+template <>
+Value getIdentityValueForOp<stablehlo::MaxOp>(OpBuilder &builder, Location loc,
+                                              Type elemType) {
+  if (auto floatType = dyn_cast<FloatType>(elemType)) {
+    auto inf =
+        APFloat::getInf(floatType.getFloatSemantics(), /*negative=*/true);
+    return stablehlo::ConstantOp::create(builder, loc,
+                                         builder.getFloatAttr(elemType, inf));
+  } else if (auto intType = dyn_cast<IntegerType>(elemType)) {
+    auto maxVal = APInt::getSignedMinValue(intType.getWidth());
+    return stablehlo::ConstantOp::create(
+        builder, loc, builder.getIntegerAttr(elemType, maxVal));
+  }
+  return nullptr;
+}
+
+// Identity values for bitwise logical ops.
+// OR/XOR: identity = 0
+template <>
+Value getIdentityValueForOp<stablehlo::OrOp>(OpBuilder &builder, Location loc,
+                                             Type elemType) {
+  // Zero is a valid identity for OR and XOR across integer and boolean types.
+  return stablehlo::ConstantOp::create(builder, loc,
+                                       builder.getZeroAttr(elemType));
+}
+
+template <>
+Value getIdentityValueForOp<stablehlo::XorOp>(OpBuilder &builder, Location loc,
+                                              Type elemType) {
+  // Zero is a valid identity for XOR as well.
+  return stablehlo::ConstantOp::create(builder, loc,
+                                       builder.getZeroAttr(elemType));
+}
+
+// AND: identity is all-ones bitpattern for integer types (applies to booleans
+// too).
+template <>
+Value getIdentityValueForOp<stablehlo::AndOp>(OpBuilder &builder, Location loc,
+                                              Type elemType) {
+  if (auto intType = dyn_cast<IntegerType>(elemType)) {
+    // All ones value for the integer width (e.g., 0xFFFF...); this yields
+    // the 'all bits set' value which acts as identity for bitwise AND.
+    auto ones = APInt::getAllOnes(intType.getWidth());
+    return stablehlo::ConstantOp::create(
+        builder, loc, builder.getIntegerAttr(elemType, ones));
+  }
+  return nullptr;
+}
+
+Value getIdentityValue(OpBuilder &builder, Location loc, Type elemType,
+                       Operation *op) {
+  return TypeSwitch<Operation *, Value>(op)
+      .Case<stablehlo::AddOp, stablehlo::MulOp, stablehlo::MinOp,
+            stablehlo::MaxOp, stablehlo::OrOp, stablehlo::XorOp,
+            stablehlo::AndOp>([&](auto binOp) {
+        return getIdentityValueForOp<decltype(binOp)>(builder, loc, elemType);
+      })
+      .Default([&](Operation *op) -> Value { return nullptr; });
+}
+
+bool canFuseIntoReduce(Operation *op) {
+  return isa<stablehlo::AddOp, stablehlo::MulOp, stablehlo::MinOp,
+             stablehlo::MaxOp, stablehlo::OrOp, stablehlo::XorOp,
+             stablehlo::AndOp>(op);
+}
 
 stablehlo::GatherDimensionNumbersAttr
 getGatherDims(mlir::MLIRContext *ctx,
@@ -1645,38 +1649,22 @@ bool broadcastInDimIsReshape(BroadcastInDimOp op) {
   auto inputType = input.getType();
   auto broadcastDims = op.getBroadcastDimensions();
 
-  size_t inputSize = 1;
-  for (auto sz : inputType.getShape())
-    inputSize *= sz;
-  size_t outputSize = 1;
-  for (auto sz : outputType.getShape())
-    outputSize *= sz;
-
-  if (inputSize != outputSize)
+  // reshape cannot expand number of elements
+  if (inputType.getNumElements() != outputType.getNumElements()) {
     return false;
+  }
 
+  // singleton dims can be freely moved around
   SmallVector<int64_t> nonSingletonDims;
-
-  for (size_t i = 0; i < broadcastDims.size(); ++i) {
-    int64_t dimIdx = broadcastDims[i];
-    if (inputType.getRank() > i && inputType.getDimSize(i) != 1) {
-      nonSingletonDims.push_back(dimIdx);
+  for (auto [dim, inputSize] : llvm::zip(broadcastDims, inputType.getShape())) {
+    if (inputSize != 1) {
+      nonSingletonDims.push_back(dim);
     }
   }
 
-  for (int i = 1, s = nonSingletonDims.size(); i < s; ++i) {
-    if (nonSingletonDims[i - 1] > nonSingletonDims[i])
-      return false;
-  }
-
-  for (size_t i = 0; i < outputType.getRank(); ++i) {
-    int64_t dimIdx = outputType.getDimSize(i);
-    if (dimIdx == 1)
-      continue;
-    auto it = llvm::find(broadcastDims, dimIdx);
-    if (it == broadcastDims.end()) {
-      return false;
-    }
+  // transposed input is not reshape
+  if (!llvm::is_sorted(nonSingletonDims)) {
+    return false;
   }
 
   return true;
@@ -1705,8 +1693,9 @@ bool canMergeSlicesAlongAxis(int dimension, ArrayRef<int64_t> sliceStarts,
 
 bool canMergeSlicesAlongAxis(int dimension, stablehlo::SliceOp slice,
                              stablehlo::SliceOp otherSlice) {
-  if (otherSlice.getOperand() != slice.getOperand())
+  if (otherSlice.getOperand() != slice.getOperand()) {
     return false;
+  }
 
   // Check that both slices are contiguous only in dim
   ArrayRef<int64_t> sliceStarts = slice.getStartIndices(),
@@ -1770,6 +1759,181 @@ stablehlo::ConcatenateOp lowerWrap(enzymexla::WrapOp wrap,
   if (shard)
     sdy::setShardings(newConcat, shard);
   return newConcat;
+}
+
+LogicalResult concatReshapeSliceSimplify(PatternRewriter &rewriter,
+                                         SmallVectorImpl<Value> &operands,
+                                         int64_t dim,
+                                         SmallVectorImpl<Value> &newOperands) {
+  bool changed = false;
+
+  auto getShapeWithoutDims = [](RankedTensorType type,
+                                int64_t dim) -> SmallVector<int64_t> {
+    SmallVector<int64_t> shape;
+    for (size_t i = 0; i < type.getRank(); ++i) {
+      if (i == dim)
+        continue;
+      shape.push_back(type.getDimSize(i));
+    }
+    return shape;
+  };
+
+  for (size_t i = 0, e = operands.size(); i < e; ++i) {
+    auto operand = operands[i];
+    stablehlo::SliceOp slice;
+    stablehlo::ReshapeOp reshape =
+        operand.getDefiningOp<stablehlo::ReshapeOp>();
+
+    bool insertions = false, deletions = false;
+    int64_t totalMergeSize;
+    SmallVector<int64_t> insertionDims, deletionDims;
+
+    int64_t sliceDim = -1;
+    if (reshape) {
+      slice = reshape.getOperand().getDefiningOp<stablehlo::SliceOp>();
+      if (!slice) {
+        newOperands.push_back(operand);
+        continue;
+      } else {
+        auto sliceInTy = cast<ShapedType>(slice.getOperand().getType());
+        auto sliceTy = cast<ShapedType>(slice.getType());
+        for (size_t idx = 0; idx < slice.getStartIndices().size(); ++idx) {
+          if (sliceTy.getDimSize(idx) == 1 &&
+              !(slice.getStartIndices()[idx] == 0 &&
+                slice.getLimitIndices()[idx] == sliceInTy.getDimSize(idx) &&
+                slice.getStrides()[idx] == 1)) {
+            if (sliceDim != -1) {
+              sliceDim = -1; // TODO: support multiple dims here
+              break;
+            }
+            sliceDim = idx;
+          }
+        }
+
+        if (sliceDim == -1) {
+          newOperands.push_back(operand);
+          continue;
+        }
+
+        auto srcWithoutSliceDim = getShapeWithoutDims(
+            cast<RankedTensorType>(slice.getType()), sliceDim);
+        auto dstWithoutConcatDim =
+            getShapeWithoutDims(cast<RankedTensorType>(reshape.getType()), dim);
+
+        if (srcWithoutSliceDim != dstWithoutConcatDim) {
+          auto curInsertionDims =
+              findReshapeInsertionDims(srcWithoutSliceDim, dstWithoutConcatDim);
+          auto curDeletionDims =
+              findReshapeInsertionDims(dstWithoutConcatDim, srcWithoutSliceDim);
+
+          if (curInsertionDims.empty() && curDeletionDims.empty()) {
+            newOperands.push_back(operand);
+            continue;
+          } else if (!curInsertionDims.empty()) {
+            insertions = true;
+            insertionDims = std::move(curInsertionDims);
+          } else {
+            deletions = true;
+            deletionDims = std::move(curDeletionDims);
+          }
+        }
+
+        totalMergeSize =
+            cast<RankedTensorType>(reshape.getType()).getDimSize(dim);
+      }
+    } else {
+      newOperands.push_back(operand);
+      continue;
+    }
+
+    int64_t ndims = cast<RankedTensorType>(reshape.getType()).getRank();
+    int64_t ndimsCorrected = ndims;
+    if (insertions) {
+      ndimsCorrected -= insertionDims.size();
+    }
+    if (deletions) {
+      ndimsCorrected += deletionDims.size();
+    }
+
+    if (ndimsCorrected <= dim) {
+      newOperands.push_back(operand);
+      continue;
+    }
+
+    Value newOperand = operand;
+    bool needsPerm = false;
+    while (i + 1 < e) {
+      if (auto otherReshape =
+              operands[i + 1].getDefiningOp<stablehlo::ReshapeOp>()) {
+        if (auto otherSlice =
+                otherReshape.getOperand().getDefiningOp<stablehlo::SliceOp>()) {
+          // Check if reshapes are the same
+          if (!OperationEquivalence::isEquivalentTo(
+                  reshape, otherReshape,
+                  OperationEquivalence::ignoreValueEquivalence, nullptr,
+                  OperationEquivalence::IgnoreLocations, nullptr)) {
+            break;
+          }
+
+          // Check if slices can be merged
+          if (canMergeSlicesAlongAxis(sliceDim, slice, otherSlice)) {
+            totalMergeSize +=
+                cast<RankedTensorType>(otherReshape.getType()).getDimSize(dim);
+
+            slice = stablehlo::SliceOp::create(
+                rewriter, slice->getLoc(), slice.getOperand(),
+                slice.getStartIndices(), otherSlice.getLimitIndices(),
+                slice.getStrides());
+            newOperand = slice.getResult();
+            changed = true;
+            needsPerm = true;
+            i++;
+            continue;
+          }
+        }
+      }
+
+      break;
+    }
+
+    if (needsPerm) {
+      SmallVector<int64_t> mapping(ndimsCorrected);
+      std::iota(mapping.begin(), mapping.end(), 0);
+      mapping[sliceDim] = dim;
+      if (sliceDim > dim) {
+        for (int64_t i = dim; i < sliceDim; i++) { // shift right
+          mapping[i]++;
+        }
+      } else {
+        for (int64_t i = sliceDim + 1; i <= dim; i++) { // shift left
+          mapping[i]--;
+        }
+      }
+
+      SmallVector<int64_t> permutation(mapping.size(), 0);
+      for (int64_t i = 0; i < mapping.size(); i++) {
+        permutation[mapping[i]] = i;
+      }
+
+      auto transposeOp = stablehlo::TransposeOp::create(
+          rewriter, reshape.getLoc(), newOperand, permutation);
+      if (!insertions && !deletions) {
+        newOperand = transposeOp.getResult();
+      } else {
+        auto reshapeOrigType = cast<RankedTensorType>(reshape.getType());
+        SmallVector<int64_t> newShape =
+            llvm::to_vector(reshapeOrigType.getShape());
+        newShape[dim] = totalMergeSize;
+        newOperand = stablehlo::ReshapeOp::create(
+            rewriter, reshape.getLoc(),
+            RankedTensorType::get(newShape, reshapeOrigType.getElementType()),
+            transposeOp.getResult());
+      }
+    }
+
+    newOperands.push_back(newOperand);
+  }
+  return changed ? success() : failure();
 }
 
 LogicalResult concatSliceSimplify(PatternRewriter &rewriter,
@@ -1900,6 +2064,33 @@ Value TransposeOpCreate(
     sdy::setShardings(transposeOp, *sharding);
   }
   return transposeOp.getResult();
+}
+
+Type GetDotGeneralResultType(Value lhs, Value rhs, Type resElemType,
+                             stablehlo::DotDimensionNumbersAttr dotDims) {
+  auto lhsType = cast<RankedTensorType>(lhs.getType());
+  auto rhsType = cast<RankedTensorType>(rhs.getType());
+
+  SmallVector<int64_t> resultShape;
+  for (auto dim : dotDims.getLhsBatchingDimensions()) {
+    resultShape.push_back(lhsType.getDimSize(dim));
+  }
+  for (size_t i = 0; i < lhsType.getRank(); ++i) {
+    if (llvm::is_contained(dotDims.getLhsBatchingDimensions(), i) ||
+        llvm::is_contained(dotDims.getLhsContractingDimensions(), i)) {
+      continue;
+    }
+    resultShape.push_back(lhsType.getDimSize(i));
+  }
+  for (size_t i = 0; i < rhsType.getRank(); ++i) {
+    if (llvm::is_contained(dotDims.getRhsBatchingDimensions(), i) ||
+        llvm::is_contained(dotDims.getRhsContractingDimensions(), i)) {
+      continue;
+    }
+    resultShape.push_back(rhsType.getDimSize(i));
+  }
+
+  return RankedTensorType::get(resultShape, resElemType);
 }
 
 } // namespace stablehlo

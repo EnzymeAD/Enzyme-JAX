@@ -14,6 +14,7 @@ include "Enzyme/MLIR/Dialect/Dialect.td"
 include "Dialect.td"
 include "EnzymeXLAAttrs.td"
 
+include "mlir/IR/BuiltinAttributes.td"
 include "mlir/Interfaces/ViewLikeInterface.td"
 include "mlir/IR/SymbolInterfaces.td"
 include "mlir/IR/EnumAttr.td"
@@ -348,6 +349,7 @@ def RotateOp : EnzymeXLA_Op<"rotate", [Pure, SameOperandsAndResultType]> {
     SI32Attr:$amount,
     SI32Attr:$dimension
   );
+  let hasFolder = 1;
   let results = (outs HLO_Tensor:$result);
 }
 
@@ -364,6 +366,7 @@ def WrapOp: EnzymeXLA_Op<
     I64Attr:$dimension
   );
 
+  let hasFolder = 1;
   let results = (outs HLO_Tensor:$result);
 }
 
@@ -380,6 +383,7 @@ def ExtendOp: EnzymeXLA_Op<
     I64Attr:$dimension
   );
 
+  let hasFolder = 1;
   let results = (outs HLO_Tensor:$result);
 }
 
@@ -1046,6 +1050,12 @@ def TypeAlignOp : EnzymeXLA_Op<"typeAlign", [Pure]> {
   let results = (outs AnyType : $result);
   let hasFolder = 1;
   let hasCanonicalizer = 1;
+}
+
+def AffineStoreVar : EnzymeXLA_Op<"store_var", [Pure]> {
+  let arguments = (ins Variadic<AnyType>:$variables,
+                       Builtin_StringAttr:$type);
+  let summary = "Fake store an SSA value for conversion to ISL";
 }
 
 #endif // ENZYMEXLA_OPS

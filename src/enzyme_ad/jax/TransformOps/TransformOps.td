@@ -1211,6 +1211,21 @@ def ApplyConvolutionLICMPatterns : EnzymeHLOParameterizedPatternOp<
   }];
 }
 
+def ApplyDynamicSliceLICMPatterns : EnzymeHLOParameterizedPatternOp<
+    "dynamic_slice_licm"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
 def SelectCompIotaConstSimplify : EnzymeHLOPatternOp<
     "select_comp_iota_const_simplify"> {
   let patterns = ["SelectCompIotaConstSimplify"];
@@ -2346,6 +2361,18 @@ def ApplyMaxReduceSliceFusionPatterns : EnzymeHLOPatternOp<
     "max_reduce_slice_fusion"> {
   let patterns = ["MaxReduceSliceFusion"];
 }
+def ApplyAndReduceSliceFusionPatterns : EnzymeHLOPatternOp<
+    "and_reduce_slice_fusion"> {
+  let patterns = ["AndReduceSliceFusion"];
+}
+def ApplyOrReduceSliceFusionPatterns : EnzymeHLOPatternOp<
+    "or_reduce_slice_fusion"> {
+  let patterns = ["OrReduceSliceFusion"];
+}
+def ApplyXorReduceSliceFusionPatterns : EnzymeHLOPatternOp<
+    "xor_reduce_slice_fusion"> {
+  let patterns = ["XorReduceSliceFusion"];
+}
 
 def ApplyConcatInsertDimDotGeneralPatterns : EnzymeHLOPatternOp<
     "concat_insert_dim_dot_general"> {
@@ -2419,7 +2446,7 @@ def ApplyTransposeSliceToBatchPatterns : EnzymeHLOPatternOp<
 }
 def ApplyBroadcastInDimSliceToBatchPatterns : EnzymeHLOPatternOp<
     "broadcastindim_slice_to_batch"> {
-  let patterns = ["SliceToBatch<stablehlo::BroadcastInDimOp>"];
+  let patterns = ["SliceToBatchBroadcastInDim"];
 }
 def ApplyConcatenateSliceToBatchPatterns : EnzymeHLOPatternOp<
     "concatenate_slice_to_batch"> {
@@ -2558,4 +2585,44 @@ def ApplyDotGeneralBroadcastInDimSortDimsPatterns : EnzymeHLOPatternOp<
 def ApplyDUSDynamicSliceSimplifyPatterns : EnzymeHLOPatternOp<
     "dus_dynamic_slice_simplify"> {
   let patterns = ["DUSDynamicSliceSimplify"];
+}
+
+def ApplyWhileDUSDSSimplifyPatterns : EnzymeHLOPatternOp<
+    "while_dus_ds_simplify"> {
+  let patterns = ["WhileDUSDSSimplify"];
+}
+
+def ApplyReshapeSliceReshapePatterns : EnzymeHLOPatternOp<
+    "reshape_slice_reshape"> {
+  let patterns = ["ReshapeSliceReshape"];
+}
+
+def ApplyDotGeneralRemoveBatchDimensionsPatterns : EnzymeHLOPatternOp<
+    "dot_general_remove_batch_dimensions"> {
+  let patterns = ["DotGeneralRemoveBatchDimensions"];
+}
+
+def ApplyDeleteDimsReducePatterns : EnzymeHLOPatternOp<
+    "delete_dims_reduce"> {
+  let patterns = ["DeleteDimsReduce"];
+}
+
+def ApplyReduceDeleteDimsPatterns : EnzymeHLOPatternOp<
+    "reduce_delete_dims"> {
+  let patterns = ["ReduceDeleteDims"];
+}
+
+def ApplyDotGeneralInsertDimContractionSimplificationPatterns : EnzymeHLOPatternOp<
+    "dot_general_insert_dim_contraction_simplification"> {
+  let patterns = ["DotGeneralInsertDimContractionSimplification"];
+}
+
+def ApplyFuseReshapeCollapseOrExpandDimsIntoReducePatterns : EnzymeHLOPatternOp<
+    "fuse_reshape_collapse_or_expand_dims_into_reduce"> {
+  let patterns = ["FuseReshapeCollapseOrExpandDimsIntoReduce"];
+}
+
+def ApplyWhileElementwiseReductionToReducePatterns : EnzymeHLOPatternOp<
+    "while_elementwise_reduction_to_reduce"> {
+  let patterns = ["WhileElementwiseReductionToReduce"];
 }

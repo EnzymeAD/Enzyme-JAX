@@ -319,6 +319,13 @@ def optimization_passes(
         "dot_general_broadcast_in_dim",
         "dot_general_broadcast_in_dim_sort_dims",
         "dus_dynamic_slice_simplify",
+        "while_dus_ds_simplify",
+        "reshape_slice_reshape",
+        "dot_general_remove_batch_dimensions",
+        "delete_dims_reduce",
+        "reduce_delete_dims",
+        "dot_general_insert_dim_contraction_simplification",
+        "fuse_reshape_collapse_or_expand_dims_into_reduce",
     ]
 
     # constant propagation patterns
@@ -377,6 +384,9 @@ def optimization_passes(
             "mul_reduce_slice_fusion",
             "min_reduce_slice_fusion",
             "max_reduce_slice_fusion",
+            "and_reduce_slice_fusion",
+            "or_reduce_slice_fusion",
+            "xor_reduce_slice_fusion",
             "concat_insert_dim_dot_general",
             "concat_insert_dim_gather",
             "concat_insert_dim_iota",
@@ -396,12 +406,14 @@ def optimization_passes(
             "convolution_slice_to_batch",
             "elementwise_slice_to_batch",
             "greedy_while_loop_batch_fission",
+            "while_elementwise_reduction_to_reduce",
         ]
 
     if enable_licm_optimization_passes:
         transform_passes_list += [
             "dus_licm(0)",
             "slice_licm(0)",
+            "dynamic_slice_licm(0)",
             "elementwise_licm(0)",
             "concatenate_licm(0)",
             "while_licm<1>(1)",

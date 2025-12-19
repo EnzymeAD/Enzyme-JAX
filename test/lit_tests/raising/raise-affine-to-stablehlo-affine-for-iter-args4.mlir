@@ -24,7 +24,7 @@ module {
 // CHECK-NEXT:      %[[ADD:.+]] = stablehlo.add %[[RESHAPE]], %[[CST]] : tensor<10xf32>
 // CHECK-NEXT:      %[[RESHAPE2:.+]] = stablehlo.reshape %[[ADD]] : (tensor<10xf32>) -> tensor<1x1x10xf32>
 // CHECK-NEXT:      %[[NEWVAL:.+]] = stablehlo.dynamic_update_slice %[[VAL]], %[[RESHAPE2]], %[[ZERO]], %[[ITER]], %[[ZERO]] : (tensor<1x4x10xf32>, tensor<1x1x10xf32>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<1x4x10xf32>
-// CHECK-NEXT:      %[[NEWITER:.+]] = stablehlo.add %[[ITER]], %[[ONE]] : tensor<i64>
+// CHECK-NEXT:      %[[NEWITER:.+]] = stablehlo.add %[[ITER]], %[[ONE]] {enzymexla.bounds = {{.*}}} : tensor<i64>
 // CHECK-NEXT:      stablehlo.return %[[NEWITER]], %[[NEWVAL]] : tensor<i64>, tensor<1x4x10xf32>
 // CHECK-NEXT:    }
 // CHECK-NEXT:    return %[[WHILE]]#1 : tensor<1x4x10xf32>
