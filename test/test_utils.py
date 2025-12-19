@@ -1,6 +1,14 @@
-def fix_paths():
-    import os
+import os
+import tempfile
+import jax.numpy as jnp
+import jax
+from enzyme_ad.jax import (
+    JaXPipeline,
+    full_optimization_pass_pipeline,
+)
 
+
+def fix_paths():
     for nm in [
         "NV_LIBCUBLAS_VERSION",
         "NVIDIA_VISIBLE_DEVICES",
@@ -284,7 +292,7 @@ def fix_paths():
         ctypes.cdll.LoadLibrary(cufft_path)
 
 
-from absl.testing import absltest
+from absl.testing import absltest  # noqa: E402
 
 # import logging
 # logging.getLogger("jax").setLevel(logging.INFO)
@@ -316,22 +324,6 @@ def setup_backends():
         AllBackends.append(backend)
 
     backends_initialized = True
-
-
-def AllPipelines():
-    setup_backends()
-    from enzyme_ad.jax import (
-        XLAPipeline,
-        JaXPipeline,
-        optimization_passes,
-        full_optimization_pass_pipeline,
-    )
-
-    return [
-        ("JaX  ", None, AllBackends),
-        ("JaXPipe", JaXPipeline(), AllBackends),
-        # ("XLA", XLAPipeline(), ["cpu"]),
-    ]
 
 
 partialopt = (
@@ -433,45 +425,56 @@ broadcast_reduce<1>;
 )
 
 
-def pipelines():
-    setup_backends()
-    from enzyme_ad.jax import (
-        XLAPipeline,
-        JaXPipeline,
-        optimization_passes,
-        full_optimization_pass_pipeline,
-    )
-
-    return [
-        ("JaXPipe", JaXPipeline(), CurBackends),
-        ("JaX  ", None, CurBackends),
-        (
+def get_pipeline(name: str):
+    if name == "JaxPipe":
+        return ("JaXPipe", JaXPipeline(), CurBackends)
+    elif name == "Jax":
+        return ("Jax", None, CurBackends)
+    elif name == "PartOpt":
+        return ("PartOpt", JaXPipeline(partialopt), CurBackends)
+    elif name == "HLOOpt":
+        return (
             "HLOOpt",
             JaXPipeline(
                 "inline{default-pipeline=canonicalize inlining-threshold=4294967295 max-iterations=4},"
                 + "canonicalize,cse,enzyme-hlo-opt,cse"
             ),
             CurBackends,
-        ),
-        ("PartOpt", JaXPipeline(partialopt), CurBackends),
-        (
+        )
+    elif name == "DefOpt":
+        return (
             "DefOpt",
             JaXPipeline(full_optimization_pass_pipeline(inline=False)),
             CurBackends,
-        ),
-        (
+        )
+    elif name == "IPartOpt":
+        return (
             "IPartOpt",
             JaXPipeline(
                 "inline{default-pipeline=canonicalize inlining-threshold=4294967295 max-iterations=4},"
                 + partialopt
             ),
             CurBackends,
-        ),
-        (
+        )
+    elif name == "IDefOpt":
+        return (
             "IDefOpt",
             JaXPipeline(full_optimization_pass_pipeline()),
             CurBackends,
-        ),
+        )
+
+
+def pipelines():
+    setup_backends()
+
+    return [
+        get_pipeline("JaxPipe"),
+        get_pipeline("Jax"),
+        get_pipeline("HLOOpt"),
+        get_pipeline("PartOpt"),
+        get_pipeline("IPartOpt"),
+        get_pipeline("DefOpt"),
+        get_pipeline("IDefOpt"),
     ]
 
 
@@ -496,8 +499,6 @@ def justjax(x):
 
 
 def splatjvp(in_fn):
-    import jax
-
     def fwd(*args):
         assert len(args) % 2 == 0
         return jax.jvp(
@@ -508,28 +509,10 @@ def splatjvp(in_fn):
 
 
 def sync(x):
-    return x.block_until_ready()
-
-
-def syncall(x):
-    return map(sync, x)
-
-
-def fwdsync1(x):
-    return (sync(x[0]), sync(x[1]))
-
-
-def fwdsync2(x):
-    return (sync(x[0][0]), sync(x[1][0]))
-
-
-def fwdsync3(x):
-    return (syncall(x[0]), syncall(x[1]))
+    return jax.block_until_ready(x)
 
 
 def splatvjp(in_fn):
-    import jax
-
     def rev(dout, *args):
         primals, f_vjp = jax.vjp(in_fn, *args)
         grads = f_vjp(dout)
@@ -539,8 +522,6 @@ def splatvjp(in_fn):
 
 
 def splatvjp_noprim(in_fn):
-    import jax
-
     def rev(dout, *args):
         primals, f_vjp = jax.vjp(in_fn, *args)
         grads = f_vjp(dout)
@@ -549,61 +530,62 @@ def splatvjp_noprim(in_fn):
     return rev
 
 
-def revsync0_0(x):
-    return (sync(x[0]), sync(x[1][0]))
-
-
-def revsync0_1(x):
-    return (syncall(x[0]), sync(x[1][0]))
-
-
-def revsync1_0(x):
-    return (sync(x[0]), syncall(x[1]))
-
-
-def revsync1_1(x):
-    return (syncall(x[0]), syncall(x[1]))
-
-
 def to_backend(x, backend):
-    import jax
-
     dev = jax.local_devices(backend=backend)[0]
     return jax.device_put(x, dev)
 
 
 def recursive_check(tester, lhs, rhs, atol=1e-8, rtol=1e-5, pname=None):
-    import jax.numpy as jnp
-    import jax
-
-    tester.assertEqual(type(lhs), type(rhs))
-    if isinstance(lhs, jax.Array):
-        legal = jnp.allclose(lhs, rhs, atol=atol, rtol=rtol)
+    def leaves_allclose(leaf1, leaf2):
+        legal = jnp.allclose(leaf1, leaf2, atol=atol, rtol=rtol)
         if not legal:
+            max_err = jnp.max(jnp.abs(leaf1 - leaf2))
+            if tester.skip_test_assert:
+                print(
+                    f"Skipping test assert for {tester.name} {pname} but test"
+                    + f" failed with max error {max_err}."
+                )
+                return legal
+
             if pname is not None:
-                print("lhs (", pname, ")", lhs)
+                print("lhs (", pname, ")", leaf1)
             else:
-                print("lhs", lhs)
-            print("rhs", rhs)
-            print("abs", jnp.abs(lhs - rhs))
-            print("eq", jnp.abs(lhs - rhs) < atol)
-            print("max", jnp.max(jnp.abs(lhs - rhs)))
+                print("lhs", leaf1)
+            print("rhs", leaf2)
+            print("abs", jnp.abs(leaf1 - leaf2))
+            print("eq", jnp.abs(leaf1 - leaf2) < atol)
+            print("max", max_err)
         tester.assertTrue(legal)
-        return
+        return legal
 
-    if isinstance(lhs, tuple):
-        for i, (g, g_p) in enumerate(zip(lhs, rhs)):
-            recursive_check(tester, g, g_p, atol, rtol, pname)
+    comparison_tree = jax.tree.map(leaves_allclose, lhs, rhs)
+    legal = jax.tree.all(comparison_tree)
+    if not legal and tester.skip_test_assert:
+        print(f"Skipping test assert for {tester.name} {pname}")
         return
+    tester.assertTrue(legal)
 
-    if isinstance(lhs, dict):
-        tester.assertEqual(lhs.keys(), rhs.keys())
-        for k in lhs.keys():
-            recursive_check(tester, lhs[k], rhs[k], atol, rtol, pname)
-        return
 
-    print("Unknown recursive type", type(lhs), " ", type(rhs))
-    tester.assertTrue(False)
+def _dump_mlir_to_file(fn, args, key: str, dump_mlir_dir: str):
+    loweredfn = fn.trace(*args).lower()
+    source = loweredfn.as_text()
+
+    # compiled_fn = loweredfn.compile()
+    # print(compiled_fn.cost_analysis())
+
+    # bazel will zip up the outputs in this directory
+    env_dir = os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR", None)
+    if env_dir is not None:
+        dump_mlir_dir = env_dir
+
+    tmpfile = tempfile.NamedTemporaryFile(
+        suffix=key.replace(" ", "") + ".mlir", dir=dump_mlir_dir, delete=False
+    )
+    with open(tmpfile.name, "w") as f:
+        f.write(str(source))
+
+    # print(f"Dumped mlir to {tmpfile.name}")
+    return tmpfile.name
 
 
 class EnzymeJaxTest(absltest.TestCase):
@@ -613,27 +595,30 @@ class EnzymeJaxTest(absltest.TestCase):
         self.primfilter = lambda x: x
         self.fwdfilter = lambda x: x
         self.revfilter = lambda x: x
-        self.count = 10000
+        self.count = 1000
+        self.repeat = 10
         self.AllBackends = AllBackends
-        self.AllPipelines = AllPipelines()
+        self.AllPipelines = pipelines()
         self.revprimal = True
         self.atol = 1e-6
         self.rtol = 0.0
         self.mlirad_fwd = True
         self.mlirad_rev = True
         self.results = []
+        self.skip_test_assert = False
 
     def pretty_print_table(self, name, pname, backend, key, time):
         print_str = "{:<20}\t{:<20}\t{:<15}\t{:<10}\t{:<15.8f}".format(
             name, pname, backend, key, time
         )
-        print(print_str)
+        print(print_str, flush=True)
 
         result_str = "{}\t{}\t{}\t{}\t{}".format(name, pname, backend, key, time)
         self.results.append(result_str)
 
     def write_results_csv(self, filename=""):
-        import os, csv
+        import os
+        import csv
 
         if filename == "":
             filename = f"results_{self.__class__.__name__}.csv"
@@ -661,52 +646,31 @@ class EnzymeJaxTest(absltest.TestCase):
 
     def harness(self, name, in_fn, ins, dins, douts):
         import timeit
-        import jax
         from enzyme_ad.jax import enzyme_jax_ir
 
-        assert len(ins) == len(dins)
+        dump_mlir_dir = tempfile.gettempdir()
 
-        primalstr = "fn(" + (", ".join(["in" + str(i) for i in range(len(ins))])) + ")"
-        if isinstance(douts, jax.Array):
-            primalstr = "sync(" + primalstr + ")"
-        elif len(douts) == 1:
-            primalstr = "sync(" + primalstr + "[0])"
-        else:
-            primalstr = "syncall(" + primalstr + ")"
+        if self.mlirad_fwd:
+            assert len(ins) == len(dins)
+
+        primalstr = (
+            "sync(fn(" + (", ".join(["in" + str(i) for i in range(len(ins))])) + "))"
+        )
 
         fwdstr = (
-            "fwd("
+            "sync(fwd("
             + (", ".join(["in" + str(i) for i in range(len(ins))]))
             + ", "
             + (", ".join(["din" + str(i) for i in range(len(dins))]))
-            + ")"
+            + "))"
         )
-        if isinstance(douts, jax.Array):
-            fwdstr = "fwdsync1(" + fwdstr + ")"
-        elif len(douts) == 1:
-            fwdstr = "fwdsync2(" + fwdstr + ")"
-        else:
-            fwdstr = "fwdsync3(" + fwdstr + ")"
 
-        revstr0 = (
-            "rev(dout, " + (", ".join(["in" + str(i) for i in range(len(ins))])) + ")"
+        revstr = (
+            "sync(rev(dout, "
+            + (", ".join(["in" + str(i) for i in range(len(ins))]))
+            + "))"
         )
-        if self.revprimal:
-            if len(dins) == 1:
-                if isinstance(douts, jax.Array):
-                    revstr = "revsync0_0(" + revstr0 + ")"
-                else:
-                    revstr = "revsync0_1(" + revstr0 + ")"
-            else:
-                if isinstance(douts, jax.Array):
-                    revstr = "revsync1_0(" + revstr0 + ")"
-                else:
-                    revstr = "revsync1_1(" + revstr0 + ")"
-        else:
-            if len(dins) == 1:
-                revstr = "sync(" + revstr0 + "[0])"
-            else:
-                revstr = "syncall(" + revstr0 + ")"
+
         revtransform = splatvjp if self.revprimal else splatvjp_noprim
 
         for backend in self.AllBackends:
@@ -720,14 +684,6 @@ class EnzymeJaxTest(absltest.TestCase):
 
             primalins = {("in" + str(i)): ins_backend[i] for i in range(len(ins))}
             primalins["sync"] = sync
-            primalins["syncall"] = syncall
-            primalins["fwdsync1"] = fwdsync1
-            primalins["fwdsync2"] = fwdsync2
-            primalins["fwdsync3"] = fwdsync3
-            primalins["revsync0_0"] = revsync0_0
-            primalins["revsync0_1"] = revsync0_1
-            primalins["revsync1_0"] = revsync1_0
-            primalins["revsync1_1"] = revsync1_1
             fwdins = primalins | {
                 ("din" + str(i)): dins_backend[i] for i in range(len(dins))
             }
@@ -746,12 +702,26 @@ class EnzymeJaxTest(absltest.TestCase):
                         ),
                         backend=backend,
                     )
+
+                    _dump_mlir_to_file(
+                        rfn_enzyme,
+                        ins_backend,
+                        pname + "_" + backend + "_primal",
+                        dump_mlir_dir,
+                    )
+
                     ao = rfn_enzyme(*ins_backend)
+
                     if primres is None:
                         primres = ao
                     else:
                         recursive_check(
-                            self, ao, primres, self.atol, self.rtol, "Primal " + pname
+                            self,
+                            ao,
+                            primres,
+                            self.atol,
+                            self.rtol,
+                            "Primal " + pname,
                         )
 
                     self.pretty_print_table(
@@ -759,13 +729,15 @@ class EnzymeJaxTest(absltest.TestCase):
                         pname,
                         backend,
                         "Primal",
-                        timeit.Timer(
-                            primalstr,
-                            globals={
-                                "fn": rfn_enzyme,
-                            }
-                            | primalins,
-                        ).timeit(self.count)
+                        min(
+                            timeit.Timer(
+                                primalstr,
+                                globals={
+                                    "fn": rfn_enzyme,
+                                }
+                                | primalins,
+                            ).repeat(repeat=self.repeat, number=self.count)
+                        )
                         / self.count,
                     )
 
@@ -788,6 +760,13 @@ class EnzymeJaxTest(absltest.TestCase):
                             )
                         )
                         fwd_enzyme = jax.jit(splatjvp(rfn_enzyme), backend=backend)
+
+                        _dump_mlir_to_file(
+                            fwd_enzyme,
+                            ins_backend + dins_backend,
+                            pname + "_" + backend + "_forward",
+                            dump_mlir_dir,
+                        )
 
                         primals, tangents = fwd_enzyme(*(ins_backend + dins_backend))
 
@@ -817,13 +796,15 @@ class EnzymeJaxTest(absltest.TestCase):
                             pname,
                             backend,
                             "Forward",
-                            timeit.Timer(
-                                fwdstr,
-                                globals={
-                                    "fwd": fwd_enzyme,
-                                }
-                                | fwdins,
-                            ).timeit(self.count)
+                            min(
+                                timeit.Timer(
+                                    fwdstr,
+                                    globals={
+                                        "fwd": fwd_enzyme,
+                                    }
+                                    | fwdins,
+                                ).repeat(repeat=self.repeat, number=self.count)
+                            )
                             / self.count,
                         )
 
@@ -847,6 +828,13 @@ class EnzymeJaxTest(absltest.TestCase):
                             )
                             rev_enzyme = jax.jit(
                                 revtransform(rfn_enzyme), backend=backend
+                            )
+
+                            _dump_mlir_to_file(
+                                rev_enzyme,
+                                [adout] + ins_backend,
+                                pname + "_" + backend + "_prerev",
+                                dump_mlir_dir,
                             )
 
                             if self.revprimal:
@@ -882,13 +870,18 @@ class EnzymeJaxTest(absltest.TestCase):
                                 pname,
                                 backend,
                                 "PreRev",
-                                timeit.Timer(
-                                    revstr,
-                                    globals={
-                                        "rev": rev_enzyme,
-                                    }
-                                    | revins,
-                                ).timeit(self.count)
+                                min(
+                                    timeit.Timer(
+                                        revstr,
+                                        globals={
+                                            "rev": rev_enzyme,
+                                        }
+                                        | revins,
+                                    ).repeat(
+                                        repeat=self.repeat,
+                                        number=self.count,
+                                    )
+                                )
                                 / self.count,
                             )
 
@@ -904,6 +897,13 @@ class EnzymeJaxTest(absltest.TestCase):
                                 )(revtransform(rfn_enzyme))
                             ),
                             backend=backend,
+                        )
+
+                        _dump_mlir_to_file(
+                            rev_enzyme,
+                            [adout] + ins_backend,
+                            pname + "_" + backend + "_postrev",
+                            dump_mlir_dir,
                         )
 
                         if self.revprimal:
@@ -937,13 +937,15 @@ class EnzymeJaxTest(absltest.TestCase):
                             pname,
                             backend,
                             "PostRev",
-                            timeit.Timer(
-                                revstr,
-                                globals={
-                                    "rev": rev_enzyme,
-                                }
-                                | revins,
-                            ).timeit(self.count)
+                            min(
+                                timeit.Timer(
+                                    revstr,
+                                    globals={
+                                        "rev": rev_enzyme,
+                                    }
+                                    | revins,
+                                ).repeat(repeat=self.repeat, number=self.count)
+                            )
                             / self.count,
                         )
 
@@ -966,6 +968,13 @@ class EnzymeJaxTest(absltest.TestCase):
                                 )(revtransform(rfn_enzyme))
                             ),
                             backend=backend,
+                        )
+
+                        _dump_mlir_to_file(
+                            rev_enzyme,
+                            [adout] + ins_backend,
+                            pname + "_" + backend + "_bothrev",
+                            dump_mlir_dir,
                         )
 
                         if self.revprimal:
@@ -999,12 +1008,14 @@ class EnzymeJaxTest(absltest.TestCase):
                             pname,
                             backend,
                             "BothRev",
-                            timeit.Timer(
-                                revstr,
-                                globals={
-                                    "rev": rev_enzyme,
-                                }
-                                | revins,
-                            ).timeit(self.count)
+                            min(
+                                timeit.Timer(
+                                    revstr,
+                                    globals={
+                                        "rev": rev_enzyme,
+                                    }
+                                    | revins,
+                                ).repeat(repeat=self.repeat, number=self.count)
+                            )
                             / self.count,
                         )
