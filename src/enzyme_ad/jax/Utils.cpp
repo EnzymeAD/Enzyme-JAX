@@ -1016,6 +1016,18 @@ SmallVector<int64_t> findReshapeInsertionDims(ArrayRef<int64_t> inputShape,
   return insertionDims;
 }
 
+bool isInsertDimOp(stablehlo::ReshapeOp reshapeOp) {
+  RankedTensorType inputTy = reshapeOp.getOperand().getType();
+  auto inputShape = inputTy.getShape();
+  RankedTensorType outputTy = reshapeOp.getType();
+  auto outputShape = outputTy.getShape();
+  auto insertDims = findReshapeInsertionDims(inputShape, outputShape);
+  if (insertDims.empty()) {
+    return false;
+  }
+  return true;
+}
+
 bool areValidInsertionDims(RankedTensorType inputType,
                            RankedTensorType outputType,
                            SmallVector<int64_t> insertionDims) {
@@ -2287,6 +2299,24 @@ bool isFusible(stablehlo::TransposeOp transpose, Operation *op) {
   }
 
   return false;
+}
+
+// TODO: implement more conditions especially for fusions with transpose
+bool isFusible(Operation *op, stablehlo::ReshapeOp reshape) {
+  return TypeSwitch<Operation *, bool>(op)
+      .Case<stablehlo::ReshapeOp>([](auto prevOp) { return true; })
+      .Case<stablehlo::BroadcastInDimOp>(
+          [&](auto prevOp) { return isInsertDimOp(reshape); })
+      .Default([](auto other) { return false; });
+}
+
+bool isFusible(Operation *op, stablehlo::BroadcastInDimOp bcast) {
+  return TypeSwitch<Operation *, bool>(op)
+      .Case<stablehlo::TransposeOp, stablehlo::BroadcastInDimOp>(
+          [](auto prevOp) { return true; })
+      .Case<stablehlo::ReshapeOp>(
+          [](auto reshape) { return isInsertDimOp(reshape); })
+      .Default([](auto other) { return false; });
 }
 
 } // namespace stablehlo
