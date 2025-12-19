@@ -104,10 +104,10 @@ class JAXMD(EnzymeJaxTest):
 
         # No support for stablehlo.scatter atm
         # self.revfilter = justjax
-        self.mlirad_rev = False
+        # self.mlirad_rev = False
 
         # TODO: This is horribly slow for reasons which are unknown.
-        self.mlirad_fwd = False
+        # self.mlirad_fwd = False
 
         self.atol = 5e-3
         self.rtol = 1e-3
