@@ -947,6 +947,52 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
   return anyOpRewritten ? success() : failure();
 };
 
+GreedyWhileLoopBatchFission::ValidBatchingInfo
+GreedyWhileLoopBatchFission::isDynamicSliceValidForBatching(
+    stablehlo::DynamicSliceOp sliceOp,
+    llvm::MapVector<Value, mlir::enzyme::WhileLoopInfo::AffineIndexInfo>
+        &affineIndexInfoMap,
+    Block &whileBody, stablehlo::WhileOp whileOp) const {
+  auto operand = sliceOp.getOperand();
+
+  if (operand.getParentBlock() == &whileBody) {
+    auto failureRetVal = ValidBatchingInfo{
+        IsValidForBatchingResult::OPERAND_NOT_ACCESSIBLE_FROM_PARENT, {}};
+    if (auto blockArg = dyn_cast<BlockArgument>(operand)) {
+      auto terminator = whileBody.getTerminator();
+      if (!terminator ||
+          terminator->getOperand(blockArg.getArgNumber()) != operand) {
+        return failureRetVal;
+      }
+    } else {
+      return failureRetVal;
+    }
+  }
+
+  SmallVector<int64_t> dimensions;
+  auto sliceSizes = sliceOp.getSliceSizes();
+
+  for (auto [i, startIndex] : llvm::enumerate(sliceOp.getStartIndices())) {
+    if (affineIndexInfoMap.contains(startIndex) && sliceSizes[i] == 1) {
+      dimensions.push_back(i);
+      continue;
+    }
+
+    if (definedOutside(startIndex, whileOp))
+      continue;
+
+    return ValidBatchingInfo{IsValidForBatchingResult::DYNAMIC_START_INDEX, {}};
+  }
+
+  if (dimensions.empty())
+    return ValidBatchingInfo{
+        IsValidForBatchingResult::NO_INDUCTION_VARIABLE_DETECTED, {}};
+
+  // We should have exactly one index from the body, and it should be
+  // a descendant of the induction variable
+  return ValidBatchingInfo{IsValidForBatchingResult::VALID, dimensions};
+}
+
 bool traverseOperandsForHoisting(
     ArrayRef<Value> operands, stablehlo::WhileOp whileOp,
     ArrayRef<SliceInfo<stablehlo::DynamicSliceOp>> slices, WhileLoopInfo &info,
@@ -1206,10 +1252,10 @@ void constructNewOperandsForHoistedOp(
   }
 }
 
-bool GreedyWhileLoopBatchFission::liftReduceLikeOperation(
+bool liftReduceLikeOperation(
     PatternRewriter &rewriter, stablehlo::WhileOp whileOp,
     ArrayRef<SliceInfo<stablehlo::DynamicSliceOp>> slices, Operation *op,
-    WhileLoopInfo info) const {
+    WhileLoopInfo info) {
   // we can hoist `sub` / `div` by emitting a `neg` / `reciprocal` and then
   // apply the hoisting. note that this only applies if the LHS is the loop
   // caried dependency
@@ -1361,10 +1407,10 @@ bool GreedyWhileLoopBatchFission::liftReduceLikeOperation(
   return true;
 }
 
-bool GreedyWhileLoopBatchFission::liftOperationByBatching(
+bool liftOperationByBatching(
     PatternRewriter &rewriter, stablehlo::WhileOp whileOp,
     ArrayRef<SliceInfo<stablehlo::DynamicSliceOp>> slices, Operation *op,
-    WhileLoopInfo info) const {
+    WhileLoopInfo info) {
   auto moduleOp = op->getParentOfType<ModuleOp>();
   auto affineIndexInfoMap = info.getAffineIndexInfo();
 
@@ -1445,50 +1491,49 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
   return true;
 }
 
-GreedyWhileLoopBatchFission::ValidBatchingInfo
-GreedyWhileLoopBatchFission::isDynamicSliceValidForBatching(
-    stablehlo::DynamicSliceOp sliceOp,
-    llvm::MapVector<Value, mlir::enzyme::WhileLoopInfo::AffineIndexInfo>
-        &affineIndexInfoMap,
-    Block &whileBody, stablehlo::WhileOp whileOp) const {
-  auto operand = sliceOp.getOperand();
-
-  if (operand.getParentBlock() == &whileBody) {
-    auto failureRetVal = ValidBatchingInfo{
-        IsValidForBatchingResult::OPERAND_NOT_ACCESSIBLE_FROM_PARENT, {}};
-    if (auto blockArg = dyn_cast<BlockArgument>(operand)) {
-      auto terminator = whileBody.getTerminator();
-      if (!terminator ||
-          terminator->getOperand(blockArg.getArgNumber()) != operand) {
-        return failureRetVal;
-      }
-    } else {
-      return failureRetVal;
-    }
+mlir::LogicalResult WhileElementwiseReductionToReduce::matchAndRewriteImpl(
+    stablehlo::WhileOp whileOp, PatternRewriter &rewriter) const {
+  auto &body = whileOp.getBody().front();
+  auto term = body.getTerminator();
+  if (!term) {
+    return failure();
+  }
+  auto returnOp = dyn_cast<stablehlo::ReturnOp>(term);
+  if (!returnOp) {
+    return failure();
   }
 
-  SmallVector<int64_t> dimensions;
-  auto sliceSizes = sliceOp.getSliceSizes();
+  WhileLoopInfo info(whileOp);
+  auto computedInfo = info.computeInfo();
+  (void)computedInfo;
+  if (!info.isValid()) {
+    return failure();
+  }
 
-  for (auto [i, startIndex] : llvm::enumerate(sliceOp.getStartIndices())) {
-    if (affineIndexInfoMap.contains(startIndex) && sliceSizes[i] == 1) {
-      dimensions.push_back(i);
+  bool anyRewritten = false;
+  SmallVector<SliceInfo<stablehlo::DynamicSliceOp>> slices; // dummy
+
+  for (size_t i = 0; i < whileOp.getNumOperands(); i++) {
+    auto iterArg = body.getArgument(i);
+    if (!llvm::hasSingleElement(iterArg.getUsers())) {
+      continue;
+    }
+    auto user = *iterArg.getUsers().begin();
+
+    if (!stablehlo::hasTraitElementwise(user) && user->getNumOperands() != 2 &&
+        user->getNumResults() != 1) {
       continue;
     }
 
-    if (definedOutside(startIndex, whileOp))
+    if (user->getResult(0) != returnOp.getOperand(i)) {
       continue;
+    }
 
-    return ValidBatchingInfo{IsValidForBatchingResult::DYNAMIC_START_INDEX, {}};
+    anyRewritten |=
+        liftReduceLikeOperation(rewriter, whileOp, slices, user, info);
   }
 
-  if (dimensions.empty())
-    return ValidBatchingInfo{
-        IsValidForBatchingResult::NO_INDUCTION_VARIABLE_DETECTED, {}};
-
-  // We should have exactly one index from the body, and it should be
-  // a descendant of the induction variable
-  return ValidBatchingInfo{IsValidForBatchingResult::VALID, dimensions};
+  return success(anyRewritten);
 }
 
 struct AutoBatchingPass
@@ -1538,6 +1583,8 @@ struct AutoBatchingPass
                    << while_loop_batching_mode << "\n";
       signalPassFailure();
     }
+
+    patterns.add<WhileElementwiseReductionToReduce>(context);
 
     GreedyRewriteConfig config;
     config.setMaxIterations(max_iterations);

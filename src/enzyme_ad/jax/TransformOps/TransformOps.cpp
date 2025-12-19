@@ -134,6 +134,11 @@ void ApplyConvolutionLICMPatterns::populatePatterns(
   addConvolutionLICM(patterns, getParameter(), *getContext(),
                      PatternBenefit(getBenefit().value_or(1)));
 }
+void ApplyDynamicSliceLICMPatterns::populatePatterns(
+    RewritePatternSet &patterns) {
+  addDynamicSliceLICM(patterns, getParameter(), *getContext(),
+                      PatternBenefit(getBenefit().value_or(1)));
+}
 void ApplyIotaSimplifyPatterns::populatePatterns(RewritePatternSet &patterns) {
   addIotaSimplify(patterns, getParameter(), *getContext(),
                   PatternBenefit(getBenefit().value_or(1)));

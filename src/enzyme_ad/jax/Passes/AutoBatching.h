@@ -144,6 +144,16 @@ struct SliceToBatchElementwise : public SliceToBatchBase {
       : SliceToBatchBase(CheckElementwise, ctx, benefit) {}
 };
 
+bool liftOperationByBatching(
+    mlir::PatternRewriter &rewriter, mlir::stablehlo::WhileOp whileOp,
+    llvm::ArrayRef<SliceInfo<mlir::stablehlo::DynamicSliceOp>> slices,
+    mlir::Operation *op, mlir::enzyme::WhileLoopInfo info);
+
+bool liftReduceLikeOperation(
+    mlir::PatternRewriter &rewriter, mlir::stablehlo::WhileOp whileOp,
+    llvm::ArrayRef<SliceInfo<mlir::stablehlo::DynamicSliceOp>> slices,
+    mlir::Operation *op, mlir::enzyme::WhileLoopInfo info);
+
 struct GreedyWhileLoopBatchFission
     : public mlir::enzyme::CheckedOpRewritePattern<
           mlir::stablehlo::WhileOp, GreedyWhileLoopBatchFission> {
@@ -178,14 +188,17 @@ private:
       llvm::MapVector<mlir::Value, mlir::enzyme::WhileLoopInfo::AffineIndexInfo>
           &affineIndexInfoMap,
       mlir::Block &whileBody, mlir::stablehlo::WhileOp whileOp) const;
+};
 
-  bool liftOperationByBatching(
-      mlir::PatternRewriter &rewriter, mlir::stablehlo::WhileOp whileOp,
-      llvm::ArrayRef<SliceInfo<mlir::stablehlo::DynamicSliceOp>> slices,
-      mlir::Operation *op, mlir::enzyme::WhileLoopInfo info) const;
+struct WhileElementwiseReductionToReduce
+    : public mlir::enzyme::CheckedOpRewritePattern<
+          mlir::stablehlo::WhileOp, WhileElementwiseReductionToReduce> {
+  using Base =
+      mlir::enzyme::CheckedOpRewritePattern<mlir::stablehlo::WhileOp,
+                                            WhileElementwiseReductionToReduce>;
+  using Base::Base;
 
-  bool liftReduceLikeOperation(
-      mlir::PatternRewriter &rewriter, mlir::stablehlo::WhileOp whileOp,
-      llvm::ArrayRef<SliceInfo<mlir::stablehlo::DynamicSliceOp>> slices,
-      mlir::Operation *op, mlir::enzyme::WhileLoopInfo info) const;
+  mlir::LogicalResult
+  matchAndRewriteImpl(mlir::stablehlo::WhileOp whileOp,
+                      mlir::PatternRewriter &rewriter) const;
 };
