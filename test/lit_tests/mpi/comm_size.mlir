@@ -1,8 +1,9 @@
 // RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-enzymexla-mpi{backend=cpu})" %s | FileCheck %s --check-prefix=CPU
 
 module {
-  func.func @main() -> tensor<i32> {
-    %0 = enzymexla.comm_size : tensor<i32>
+  func.func @main() -> tensor<i32> attributes {enzymexla.memory_effects = ["read", "write", "allocate", "free"]} {
+    %c = stablehlo.constant dense<-1> : tensor<i32>
+    %0 = enzymexla.comm_size(%c) : (tensor<i32>) -> tensor<i32>
     return %0 : tensor<i32>
   }
 }
@@ -15,8 +16,8 @@ module {
 // CPU-NEXT:      %1 = llvm.call @MPI_Comm_size(%0, %arg0) : (!llvm.ptr, !llvm.ptr) -> i32
 // CPU-NEXT:      llvm.return
 // CPU-NEXT:    }
-// CPU-NEXT:    func.func @main() -> tensor<i32> {
-// CPU-NEXT:      %c = stablehlo.constant dense<0> : tensor<i32>
+// CPU-NEXT:    func.func @main() -> tensor<i32> attributes {enzymexla.memory_effects = ["read", "write", "allocate", "free"]} {
+// CPU-NEXT:      %c = stablehlo.constant dense<-1> : tensor<i32>
 // CPU-NEXT:      %0 = enzymexla.jit_call @enzymexla_wrapper_MPI_Comm_size (%c) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<i32>) -> tensor<i32>
 // CPU-NEXT:      return %0 : tensor<i32>
 // CPU-NEXT:    }
