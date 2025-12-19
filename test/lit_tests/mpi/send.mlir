@@ -20,10 +20,10 @@ module {
 // CPU-NEXT:    llvm.func @enzymexla_wrapper_MPI_SendMPI_DOUBLE(%arg0: !llvm.ptr {enzymexla.memory_effects = ["read", "write", "allocate", "free"]}, %arg1: !llvm.ptr {enzymexla.memory_effects = ["read", "write", "allocate", "free"]}, %arg2: !llvm.ptr {enzymexla.memory_effects = ["read", "write", "allocate", "free"]}, %arg3: !llvm.ptr {enzymexla.memory_effects = ["read", "write", "allocate", "free"]}) attributes {enzymexla.memory_effects = ["read", "write", "allocate", "free"]} {
 // CPU-NEXT:      %0 = llvm.mlir.addressof @MPI_COMM_WORLD : !llvm.ptr
 // CPU-NEXT:      %1 = llvm.mlir.addressof @MPI_DOUBLE : !llvm.ptr
-// CPU-NEXT:      %2 = llvm.load %arg2 : !llvm.ptr -> i32
-// CPU-NEXT:      %3 = llvm.load %arg3 : !llvm.ptr -> i32
-// CPU-NEXT:      %4 = llvm.load %arg1 : !llvm.ptr -> i32
-// CPU-NEXT:      %5 = llvm.call @MPI_Send(%arg0, %4, %1, %2, %3, %0) : (!llvm.ptr, i32, !llvm.ptr, i32, i32, !llvm.ptr) -> i32
+// CPU-NEXT:      %2 = llvm.load %arg1 : !llvm.ptr -> i32
+// CPU-NEXT:      %3 = llvm.load %arg2 : !llvm.ptr -> i32
+// CPU-NEXT:      %4 = llvm.load %arg3 : !llvm.ptr -> i32
+// CPU-NEXT:      %5 = llvm.call @MPI_Send(%arg0, %2, %1, %3, %4, %0) : (!llvm.ptr, i32, !llvm.ptr, i32, i32, !llvm.ptr) -> i32
 // CPU-NEXT:      llvm.return
 // CPU-NEXT:    }
 // CPU-NEXT:    func.func @main(%arg0: tensor<5xf64> {enzymexla.memory_effects = ["read", "write", "allocate", "free"], tf.aliasing_output = 0 : i32}) -> tensor<5xf64> attributes {enzymexla.memory_effects = ["read", "write", "allocate", "free"]} {
