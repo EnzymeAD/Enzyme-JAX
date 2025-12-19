@@ -134,15 +134,8 @@ struct MPICommRankOpLowering
         );
       }
 
-      // Create a placeholder dense tensor constant with arbitrary value
-      auto resultType = op.getResult().getType();
-      auto rankedTensorType = cast<RankedTensorType>(resultType);
-      auto elementType = rankedTensorType.getElementType();
-      auto attr = DenseElementsAttr::get(
-          rankedTensorType,
-          rewriter.getIntegerAttr(elementType, 0));
-      auto placeholderValue = rewriter.create<stablehlo::ConstantOp>(
-          op.getLoc(), attr);
+      // Get all orinigal op operands
+      auto operand = op.getInrank();
 
       // Call the LLVM function with enzymexla.jit_call
       SmallVector<Attribute> aliases;
@@ -155,9 +148,9 @@ struct MPICommRankOpLowering
 
       auto jitCall = rewriter.create<enzymexla::JITCallOp>(
           op.getLoc(),
-          TypeRange{resultType},
+          op->getResultTypes(),
           mlir::FlatSymbolRefAttr::get(context, wrapperFunctionName),
-          ValueRange{placeholderValue},
+          ValueRange{operand},
           rewriter.getStringAttr(""),
           /*operand_layouts=*/nullptr,
           /*result_layouts=*/nullptr,
