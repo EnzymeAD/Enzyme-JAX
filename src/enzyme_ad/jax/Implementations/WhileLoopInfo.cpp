@@ -13,7 +13,6 @@
 #endif
 
 #include "mlir/IR/Matchers.h"
-#include "mlir/IR/PatternMatch.h"
 
 #include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
 #include "src/enzyme_ad/jax/Passes/StructuredTensors.h"

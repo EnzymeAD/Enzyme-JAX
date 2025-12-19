@@ -925,7 +925,8 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
     bool avoidBatching =
         llvm::TypeSwitch<Operation *, bool>(op)
             .Case<stablehlo::DynamicSliceOp, stablehlo::DynamicUpdateSliceOp,
-                  stablehlo::ReshapeOp>([=](auto op) { return true; })
+                  stablehlo::ReshapeOp, stablehlo::SliceOp>(
+                [=](auto op) { return true; })
             .Case<stablehlo::BroadcastInDimOp>(
                 [=](auto op) { return stablehlo::broadcastInDimIsReshape(op); })
             .Default([](auto op) { return false; });
@@ -944,7 +945,7 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
     }
   }
 
-  return anyOpRewritten ? success() : failure();
+  return success(anyOpRewritten);
 };
 
 GreedyWhileLoopBatchFission::ValidBatchingInfo
@@ -1052,6 +1053,10 @@ bool traverseOperandsForHoisting(
       dsOp = reshapeOp.getOperand().getDefiningOp();
     } else {
       dsOp = defOp;
+    }
+
+    if (!dsOp) {
+      return false;
     }
 
     if (auto ds = dyn_cast<stablehlo::DynamicSliceOp>(dsOp)) {
@@ -1295,7 +1300,8 @@ bool liftReduceLikeOperation(
   }
 
   // while dead args is needed to clean this up
-  if (whileOp->getResult(argIdx).getUsers().empty()) {
+  if (argIdx >= whileOp->getNumResults() ||
+      whileOp->getResult(argIdx).getUsers().empty()) {
     return false;
   }
 
@@ -1466,9 +1472,14 @@ bool liftOperationByBatching(
 
   rewriter.setInsertionPointAfter(op);
   SmallVector<Value> dynamicSliceStarts(outputShape.size(), constZero);
-  Value resIndex = stablehlo::SubtractOp::create(rewriter, whileOp->getLoc(),
-                                                 info.getInductionVariable(),
-                                                 info.getStart());
+  Value resIndex;
+  if (info.isConstantStart() && info.getConstantStart() == 0) {
+    resIndex = info.getInductionVariable();
+  } else {
+    resIndex = stablehlo::SubtractOp::create(rewriter, whileOp->getLoc(),
+                                             info.getInductionVariable(),
+                                             info.getStart());
+  }
   if (!info.isStepOne()) {
     resIndex = stablehlo::DivOp::create(rewriter, whileOp->getLoc(), resIndex,
                                         info.getStep(rewriter));
