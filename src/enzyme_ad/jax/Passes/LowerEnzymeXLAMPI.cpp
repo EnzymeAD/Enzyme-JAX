@@ -85,6 +85,7 @@ struct MPICommRankOpLowering
         Value rankPtr = entryBlock->getArgument(0);
 
         // Get the address of the communicator
+        // NOTE these symbols are not ABI-stable until MPI 5.0, but in practice, they are represented as w ord-size values (i.e. `int` or ptr)
         Value addressOfComm = rewriter.create<LLVM::AddressOfOp>(
           op.getLoc(),
           llvmPtrType,
@@ -230,6 +231,7 @@ struct MPICommSizeOpLowering
         Value sizePtr = entryBlock->getArgument(0);
 
         // Get the address of the communicator
+        // NOTE these symbols are not ABI-stable until MPI 5.0, but in practice, they are represented as w ord-size values (i.e. `int` or ptr)
         Value addressOfComm = rewriter.create<LLVM::AddressOfOp>(
           op.getLoc(),
           llvmPtrType,
@@ -368,6 +370,7 @@ struct MPIBarrierOpLowering
         rewriter.setInsertionPointToStart(entryBlock);
 
         // Get the address of the communicator
+        // NOTE these symbols are not ABI-stable until MPI 5.0, but in practice, they are represented as w ord-size values (i.e. `int` or ptr)
         Value addressOfComm = rewriter.create<LLVM::AddressOfOp>(
           op.getLoc(),
           llvmPtrType,
@@ -530,6 +533,7 @@ struct MPISendOpLowering
         );
 
         // Get the address of the datatype
+        // NOTE these symbols are not ABI-stable until MPI 5.0, but in practice, they are represented as w ord-size values (i.e. `int` or ptr)
         Value addressOfDtype = rewriter.create<LLVM::AddressOfOp>(
           op.getLoc(),
           llvmPtrType,
@@ -722,7 +726,7 @@ struct MPIRecvOpLowering
         );
 
         // Get the address of the datatype
-        // TODO make a comment on what exactly we're doing here
+        // NOTE these symbols are not ABI-stable until MPI 5.0, but in practice, they are represented as w ord-size values (i.e. `int` or ptr)
         Value addressOfDtype = rewriter.create<LLVM::AddressOfOp>(
           op.getLoc(),
           llvmPtrType,
@@ -955,7 +959,7 @@ struct MPIIsendOpLowering
         );
 
         // Get the address of the datatype
-        // TODO make a comment on what exactly we're doing here
+        // NOTE these symbols are not ABI-stable until MPI 5.0, but in practice, they are represented as w ord-size values (i.e. `int` or ptr)
         Value addressOfDtype = rewriter.create<LLVM::AddressOfOp>(
           op.getLoc(),
           llvmPtrType,
@@ -1165,7 +1169,7 @@ struct MPIIrecvOpLowering
         );
 
         // Get the address of the datatype
-        // TODO make a comment on what exactly we're doing here
+        // NOTE these symbols are not ABI-stable until MPI 5.0, but in practice, they are represented as w ord-size values (i.e. `int` or ptr)
         Value addressOfDtype = rewriter.create<LLVM::AddressOfOp>(
           op.getLoc(),
           llvmPtrType,
@@ -1500,7 +1504,7 @@ struct MPIAllreduceOpLowering
         );
 
         // Get the address of the datatype
-        // TODO make a comment on what exactly we're doing here
+        // NOTE these symbols are not ABI-stable until MPI 5.0, but in practice, they are represented as w ord-size values (i.e. `int` or ptr)
         Value addressOfDtype = rewriter.create<LLVM::AddressOfOp>(
           op.getLoc(),
           llvmPtrType,
