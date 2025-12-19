@@ -93,17 +93,17 @@ module {
 // CHECK-NEXT:     %17 = stablehlo.subtract %4, %16 : tensor<100x100x1x1xf32>
 // CHECK-NEXT:     %18 = stablehlo.broadcast_in_dim %0, dims = [1, 2] : (tensor<100x1xf32>) -> tensor<100x100x1x1xf32>
 // CHECK-NEXT:     %19 = stablehlo.subtract %3, %18 : tensor<100x100x1x1xf32>
-// CHECK-NEXT:     %20 = stablehlo.multiply %15, %15 : tensor<100x100x1x1xf32>
-// CHECK-NEXT:     %21 = stablehlo.multiply %17, %17 : tensor<100x100x1x1xf32>
+// CHECK-NEXT:     %20 = stablehlo.multiply %17, %17 : tensor<100x100x1x1xf32>
+// CHECK-NEXT:     %21 = stablehlo.multiply %15, %15 : tensor<100x100x1x1xf32>
 // CHECK-NEXT:     %22 = stablehlo.reshape %19 : (tensor<100x100x1x1xf32>) -> tensor<100x100x1x1x1xf32>
 // CHECK-NEXT:     %23 = stablehlo.reshape %17 : (tensor<100x100x1x1xf32>) -> tensor<100x100x1x1x1xf32>
 // CHECK-NEXT:     %24 = stablehlo.reshape %15 : (tensor<100x100x1x1xf32>) -> tensor<100x100x1x1x1xf32>
 // CHECK-NEXT:     %25 = stablehlo.concatenate %22, %23, %24, dim = 4 : (tensor<100x100x1x1x1xf32>, tensor<100x100x1x1x1xf32>, tensor<100x100x1x1x1xf32>) -> tensor<100x100x1x1x3xf32>
 // CHECK-NEXT:     %26 = stablehlo.reshape %19 : (tensor<100x100x1x1xf32>) -> tensor<100x100xf32>
 // CHECK-NEXT:     %27 = stablehlo.multiply %26, %26 : tensor<100x100xf32>
-// CHECK-NEXT:     %28 = stablehlo.reshape %21 : (tensor<100x100x1x1xf32>) -> tensor<100x100xf32>
+// CHECK-NEXT:     %28 = stablehlo.reshape %20 : (tensor<100x100x1x1xf32>) -> tensor<100x100xf32>
 // CHECK-NEXT:     %29 = stablehlo.add %27, %28 : tensor<100x100xf32>
-// CHECK-NEXT:     %30 = stablehlo.reshape %20 : (tensor<100x100x1x1xf32>) -> tensor<100x100xf32>
+// CHECK-NEXT:     %30 = stablehlo.reshape %21 : (tensor<100x100x1x1xf32>) -> tensor<100x100xf32>
 // CHECK-NEXT:     %31 = stablehlo.add %29, %30 : tensor<100x100xf32>
 // CHECK-NEXT:     %32 = stablehlo.divide %cst, %31 : tensor<100x100xf32>
 // CHECK-NEXT:     %33 = stablehlo.select %11, %26, %32 : tensor<100x100xi1>, tensor<100x100xf32>

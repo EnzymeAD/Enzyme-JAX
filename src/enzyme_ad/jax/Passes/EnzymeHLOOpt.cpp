@@ -17797,23 +17797,23 @@ struct TransposeReshapeToBroadcast final
 
     SmallVector<int64_t> insertionDims =
         findReshapeInsertionDims(reshapeOpInputType, reshapeOpOutputType);
-
-    if (insertionDims.size() != 1) // TODO: support more than one insertion dim
+    if (insertionDims.empty()) {
       return failure();
-
-    int64_t insertionDim = insertionDims[0];
+    }
+    llvm::sort(insertionDims);
 
     auto permutation = op.getPermutation();
-    if (permutation.size() != reshapeOpOutputType.getRank())
+    if (permutation.size() != reshapeOpOutputType.getRank()) {
       return failure();
+    }
 
     SmallVector<int64_t> broadcastDimensions;
-    for (int64_t i = 0; i < reshapeOpInputType.getRank(); ++i) {
-      int64_t findIdx = i;
-      if (i >= insertionDim)
-        ++findIdx;
+    for (int64_t i = 0; i < reshapeOpOutputType.getRank(); ++i) {
+      if (llvm::is_contained(insertionDims, i)) {
+        continue;
+      }
 
-      auto it = llvm::find(permutation, findIdx);
+      auto it = llvm::find(permutation, i);
       if (it == permutation.end()) {
         return failure(); // The index was not found in the permutation
       }
@@ -17849,24 +17849,26 @@ struct ReshapeTransposeToBroadcast final
 
     SmallVector<int64_t> insertionDims =
         findReshapeInsertionDims(reshapeOpInputType, reshapeOpOutputType);
-
-    if (insertionDims.size() != 1) // TODO: support more than one deletion dim
+    if (insertionDims.empty()) {
       return failure();
+    }
 
-    int64_t insertionDim = insertionDims[0];
     auto permutation = transposeOp.getPermutation();
 
     SmallVector<int64_t> broadcastDimensions;
     for (int64_t i = 0; i < reshapeOpInputType.getRank(); ++i) {
       auto it = llvm::find(permutation, i);
-      if (it == permutation.end())
+      if (it == permutation.end()) {
         return failure(); // The index was not found in the permutation
+      }
       int64_t dim = std::distance(permutation.begin(), it);
 
-      if (dim >= insertionDim)
-        broadcastDimensions.push_back(dim + 1);
-      else
-        broadcastDimensions.push_back(dim);
+      auto inIt = llvm::lower_bound(insertionDims, dim);
+      int64_t nInsertedBefore = std::distance(insertionDims.begin(), inIt);
+      if (inIt != insertionDims.end() && *inIt == dim) {
+        nInsertedBefore++;
+      }
+      broadcastDimensions.push_back(dim + nInsertedBefore);
     }
 
     // Create a single broadcast_in_dim operation to replace the reshape +
@@ -17874,7 +17876,6 @@ struct ReshapeTransposeToBroadcast final
     rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
         op, op.getResult().getType(), transposeOp.getOperand(),
         rewriter.getDenseI64ArrayAttr(broadcastDimensions));
-
     return success();
   }
 };
@@ -26320,12 +26321,13 @@ struct DotGeneralRemoveBatchDimensions
 
     assert(newIdx == newResultRank && "Should have filled all new dims");
 
-    // Now compute the permutation: origToNew tells us for each original dim,
-    // where is it in the new layout. The transpose op takes [orig positions to
-    // read from], so we need newToOrig (already computed).
+    SmallVector<int64_t> perm(newToOrig.size());
+    for (size_t i = 0; i < newToOrig.size(); i++) {
+      perm[newToOrig[i]] = i;
+    }
 
-    Value transposed = TransposeOpCreate(rewriter, dotOp.getLoc(),
-                                         newDotOp.getResult(), newToOrig);
+    Value transposed =
+        TransposeOpCreate(rewriter, dotOp.getLoc(), newDotOp.getResult(), perm);
     rewriter.replaceOp(dotOp, transposed);
     return success();
   }

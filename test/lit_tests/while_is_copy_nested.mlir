@@ -102,12 +102,9 @@ module {
 // CHECK-NEXT:     %6 = stablehlo.reshape %5 : (tensor<1x4x4x6x2x3xf32>) -> tensor<4x4x12x3xf32>
 // CHECK-NEXT{LITERAL}:     %7 = stablehlo.convolution(%6, %cst) dim_numbers = [0, 1, f, b]x[0, 1, i, o]->[0, 1, f, b], window = {stride = [1, 1], pad = [[0, 0], [0, 0]], rhs_dilate = [1, 1]} {batch_group_count = 1 : i64, feature_group_count = 6 : i64, precision_config = [#stablehlo<precision DEFAULT>, #stablehlo<precision DEFAULT>]} : (tensor<4x4x12x3xf32>, tensor<3x3x2x30xf32>) -> tensor<2x2x30x3xf32>
 // CHECK-NEXT:     %8 = stablehlo.reshape %7 : (tensor<2x2x30x3xf32>) -> tensor<2x2x6x5x3xf32>
-// CHECK-NEXT:     %9 = stablehlo.transpose %8, dims = [2, 0, 1, 3, 4] : (tensor<2x2x6x5x3xf32>) -> tensor<6x2x2x5x3xf32>
-// CHECK-NEXT:     %10 = stablehlo.reshape %9 : (tensor<6x2x2x5x3xf32>) -> tensor<6x2x2x1x5x3x1xf32>
-// CHECK-NEXT:     %11 = stablehlo.transpose %10, dims = [0, 6, 5, 4, 3, 2, 1] : (tensor<6x2x2x1x5x3x1xf32>) -> tensor<6x1x3x5x1x2x2xf32>
-// CHECK-NEXT:     %12 = stablehlo.reshape %11 : (tensor<6x1x3x5x1x2x2xf32>) -> tensor<6x3x5x1x2x2xf32>
-// CHECK-NEXT:     %13 = stablehlo.dynamic_update_slice %iterArg_5, %12, %c, %c, %c, %4, %c, %c : (tensor<6x3x5x5x2x2xf32>, tensor<6x3x5x1x2x2xf32>, tensor<i32>, tensor<i32>, tensor<i32>, tensor<i32>, tensor<i32>, tensor<i32>) -> tensor<6x3x5x5x2x2xf32>
-// CHECK-NEXT:     stablehlo.return %2, %13 : tensor<i64>, tensor<6x3x5x5x2x2xf32>
+// CHECK-NEXT:     %9 = stablehlo.broadcast_in_dim %8, dims = [5, 4, 0, 2, 1] : (tensor<2x2x6x5x3xf32>) -> tensor<6x3x5x1x2x2xf32>
+// CHECK-NEXT:     %10 = stablehlo.dynamic_update_slice %iterArg_5, %9, %c, %c, %c, %4, %c, %c : (tensor<6x3x5x5x2x2xf32>, tensor<6x3x5x1x2x2xf32>, tensor<i32>, tensor<i32>, tensor<i32>, tensor<i32>, tensor<i32>, tensor<i32>) -> tensor<6x3x5x5x2x2xf32>
+// CHECK-NEXT:     stablehlo.return %2, %10 : tensor<i64>, tensor<6x3x5x5x2x2xf32>
 // CHECK-NEXT:   }
 // CHECK-NEXT:   return %1#1 : tensor<6x3x5x5x2x2xf32>
 // CHECK-NEXT: }
