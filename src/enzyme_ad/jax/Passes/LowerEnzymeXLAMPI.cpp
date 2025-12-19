@@ -469,16 +469,18 @@ struct MPISendOpLowering
 
       std::string mpiFunctionName = "MPI_Send";
 
-      // TODO we just assume it's MPI_DOUBLE for now
-      std::string datatypeName = "MPI_DOUBLE";
+      // get the MPI datatype
+      auto datatypeName = op.getDatatype();
 
       // For now we just hard code MPI_COMM_WORLD as the communicator.
       // TODO make this more flexible
       std::string communicatorName = "MPI_COMM_WORLD";
 
       // Generate the enzymexla_wrapper LLVM function body
-      std::string wrapperFunctionName = "enzymexla_wrapper_" + mpiFunctionName + datatypeName;
-      {
+      std::string wrapperFunctionName = 
+        "enzymexla_wrapper_" + mpiFunctionName + "_" + datatypeName.str();
+
+      if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapperFunctionName)) {
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(moduleOp.getBody());
 
