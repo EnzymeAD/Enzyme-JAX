@@ -406,12 +406,14 @@ def optimization_passes(
             "convolution_slice_to_batch",
             "elementwise_slice_to_batch",
             "greedy_while_loop_batch_fission",
+            "while_elementwise_reduction_to_reduce",
         ]
 
     if enable_licm_optimization_passes:
         transform_passes_list += [
             "dus_licm(0)",
             "slice_licm(0)",
+            "dynamic_slice_licm(0)",
             "elementwise_licm(0)",
             "concatenate_licm(0)",
             "while_licm<1>(1)",
