@@ -8,7 +8,7 @@ absl-py==2.3.1 \
     --hash=sha256:a97820526f7fbfd2ec1bce83f3f25e3a14840dac0d8e02a0b71cd75db3f77fc9 \
     --hash=sha256:eeecf07f0c2a93ace0772c92e596ace6d3d3996c042b2128459aaae2a76de11d
     # via
-    #   -r /mnt2/avik-pal/.cache/bazel/_bazel_avik-pal/eca3efba73b0ff73b4ad16c26e74bbd7/execroot/__main__/bazel-out/k8-opt/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
+    #   -r /mnt2/avik-pal/.cache/bazel/_bazel_avik-pal/eca3efba73b0ff73b4ad16c26e74bbd7/execroot/__main__/bazel-out/k8-dbg/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
     #   -r builddeps/requirements.in
     #   array-record
     #   chex
@@ -167,7 +167,7 @@ attrs==24.3.0 \
     #   pytype
 benchmark @ https://github.com/wsmoses/keras-benchmarks/archive/9caedf38085b7fd23cef19e75ab9b7ab31ae99b0.tar.gz \
     --hash=sha256:89e6317f1fa09dfe91e4a3239f82476d4578b59e51edf06453453f9549554527
-    # via -r /mnt2/avik-pal/.cache/bazel/_bazel_avik-pal/eca3efba73b0ff73b4ad16c26e74bbd7/execroot/__main__/bazel-out/k8-opt/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
+    # via -r /mnt2/avik-pal/.cache/bazel/_bazel_avik-pal/eca3efba73b0ff73b4ad16c26e74bbd7/execroot/__main__/bazel-out/k8-dbg/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
 bibtexparser==1.4.3 \
     --hash=sha256:a9c7ded64bc137720e4df0b1b7f12734edc1361185f1c9097048ff7c35af2b8f
     # via pymatgen
@@ -277,6 +277,10 @@ charset-normalizer==3.4.1 \
     --hash=sha256:fd4ec41f914fa74ad1b8304bbc634b3de73d2a0889bd32076342a573e0779e00 \
     --hash=sha256:ffc9202a29ab3920fa812879e95a9e78b2465fd10be7fcbd042899695d75e616
     # via requests
+cheroot==11.1.2 \
+    --hash=sha256:0f6c0ba05c00fbc869fb46b1de4ec2384e1d85418ae963d3bc10ae83b688dbfa \
+    --hash=sha256:bfb70c49663f63b0440f2b54dbc6b0d1650e56dfe4e2641f59b2c6f727b44aca
+    # via xprof
 chex==0.1.87 \
     --hash=sha256:0096d89cc8d898bb521ef4bfbf5c24549022b0e5b301f529ab57238896fe6c5d \
     --hash=sha256:ce536475661fd96d21be0c1728ecdbedd03f8ff950c662dfc338c92ea782cb16
@@ -487,7 +491,7 @@ dm-haiku==0.0.14 \
     --hash=sha256:0c1d56ef20e1e04d8551f788ff8964167092c5d8051b7c17ed3f9ce60c0b0a59 \
     --hash=sha256:79f2fc2bf2985f99687209b72a193769ba2bcfde471ce7746cd36a64ea9ce74a
     # via
-    #   -r /mnt2/avik-pal/.cache/bazel/_bazel_avik-pal/eca3efba73b0ff73b4ad16c26e74bbd7/execroot/__main__/bazel-out/k8-opt/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
+    #   -r /mnt2/avik-pal/.cache/bazel/_bazel_avik-pal/eca3efba73b0ff73b4ad16c26e74bbd7/execroot/__main__/bazel-out/k8-dbg/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
     #   jax-md
     #   neuralgcm
 dm-tree==0.1.8 \
@@ -639,6 +643,7 @@ etils[array-types,edc,enp,epath,epy,etqdm,etree]==1.9.4 \
     #   orbax-checkpoint
     #   tensorflow-datasets
     #   tfds-nightly
+    #   xprof
 fasteners==0.19 \
     --hash=sha256:758819cb5d94cdedf4e836988b74de396ceacb8e2794d21f82d131fd9ee77237 \
     --hash=sha256:b4f37c3ac52d8a445af3a66bce57b33b5e90b97c696b7b984f530cf8f0ded09c
@@ -876,6 +881,7 @@ fsspec==2024.9.0 \
     #   etils
     #   gcsfs
     #   huggingface-hub
+    #   xprof
 gast==0.6.0 \
     --hash=sha256:52b182313f7330389f72b069ba00f174cfe2a06411099547288839c6cbafbd54 \
     --hash=sha256:88fc5300d32c7ac6ca7b515310862f71e6fdf2c029bbec7c66c0f5dd47b6b1fb
@@ -885,7 +891,9 @@ gast==0.6.0 \
 gcsfs==2024.9.0.post1 ; sys_platform == "linux" \
     --hash=sha256:7ca70ee9d7c7dbce1a3e36b4883e14102c2d7b4284f49e242843a437bc684684 \
     --hash=sha256:f3ab9d3bedc45da8cf40baed7c3a1e1694e8f599160d9138d78f0ef25e4a3ca1
-    # via -r /mnt2/avik-pal/.cache/bazel/_bazel_avik-pal/eca3efba73b0ff73b4ad16c26e74bbd7/execroot/__main__/bazel-out/k8-opt/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
+    # via
+    #   -r /mnt2/avik-pal/.cache/bazel/_bazel_avik-pal/eca3efba73b0ff73b4ad16c26e74bbd7/execroot/__main__/bazel-out/k8-dbg/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
+    #   xprof
 gin-config==0.5.0 \
     --hash=sha256:0c6ea5026ded927c8c93c990b01c695257c1df446e45e549a158cfbc79e19ed6 \
     --hash=sha256:bddb7ca221ea2b46cdb59321e79fecf02d6e3b728906047fcd4076c297609fd6
@@ -1023,6 +1031,10 @@ grpcio==1.74.0 \
     #   google-jetstream
     #   tensorboard
     #   tensorflow
+gviz-api==1.10.0 \
+    --hash=sha256:846692dd8cc73224fc31b18e41589bd934e1cc05090c6576af4b4b26c2e71b90 \
+    --hash=sha256:a05055fed8c279f34f4b496eace7648c7fe9c1b06851e8a36e748541f1adbb05
+    # via xprof
 h5py==3.12.1 \
     --hash=sha256:018a4597f35092ae3fb28ee851fdc756d2b88c96336b8480e124ce1ac6fb9166 \
     --hash=sha256:050a4f2c9126054515169c49cb900949814987f0c7ae74c341b0c9f9b5056834 \
@@ -1107,11 +1119,15 @@ isort==6.0.1 \
     --hash=sha256:1cb5df28dfbc742e490c5e41bad6da41b805b0a8be7bc93cd0fb2a8a890ac450 \
     --hash=sha256:2dc5d7f65c9678d94c88dfc29161a320eec67328bc97aad576874cb4be1e9615
     # via pylint
+jaraco-functools==4.3.0 \
+    --hash=sha256:227ff8ed6f7b8f62c56deff101545fa7543cf2c8e7b82a7c2116e672f29c26e8 \
+    --hash=sha256:cfd13ad0dd2c47a3600b439ef72d8615d482cedcff1632930d6f28924d92f294
+    # via cheroot
 jax[cuda12]==0.7.0 ; sys_platform == "linux" \
     --hash=sha256:4dd8924f171ed73a4f1a6191e2f800ae1745069989b69fabc45593d6b6504003 \
     --hash=sha256:62833036cbaf4641d66ae94c61c0446890a91b2c0d153946583a0ebe04877a76
     # via
-    #   -r /mnt2/avik-pal/.cache/bazel/_bazel_avik-pal/eca3efba73b0ff73b4ad16c26e74bbd7/execroot/__main__/bazel-out/k8-opt/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
+    #   -r /mnt2/avik-pal/.cache/bazel/_bazel_avik-pal/eca3efba73b0ff73b4ad16c26e74bbd7/execroot/__main__/bazel-out/k8-dbg/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
     #   -r builddeps/requirements.in
     #   chex
     #   clu
@@ -1144,7 +1160,7 @@ jax-cuda12-plugin[with-cuda]==0.7.0 \
     # via jax
 jax-md @ https://github.com/jax-md/jax-md/archive/6c96978f8412214d842fb52e9a6f259ac0cefd3e.tar.gz \
     --hash=sha256:971fbdc16468abab6516ea9db8052002cb1f3288d83292ee718bcfeaea572294
-    # via -r /mnt2/avik-pal/.cache/bazel/_bazel_avik-pal/eca3efba73b0ff73b4ad16c26e74bbd7/execroot/__main__/bazel-out/k8-opt/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
+    # via -r /mnt2/avik-pal/.cache/bazel/_bazel_avik-pal/eca3efba73b0ff73b4ad16c26e74bbd7/execroot/__main__/bazel-out/k8-dbg/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
 jaxlib==0.7.0 \
     --hash=sha256:005213b6dcbd20b0bd65580b740255950150b489e1a5306f65d8e49f9114ab85 \
     --hash=sha256:074a025664cf439b5965dccaaf20c4aae6cc955dddd74e85342568aba40dda47 \
@@ -1161,7 +1177,7 @@ jaxlib==0.7.0 \
     --hash=sha256:e6f06c5050803f9d149c3ba4fdf85a62e1dae78a31ecb6f25744004977b492a9 \
     --hash=sha256:ffcb4b1e3e012106f43b306d70d0f6a36262824a324f89f7f22bf28867fbe81c
     # via
-    #   -r /mnt2/avik-pal/.cache/bazel/_bazel_avik-pal/eca3efba73b0ff73b4ad16c26e74bbd7/execroot/__main__/bazel-out/k8-opt/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
+    #   -r /mnt2/avik-pal/.cache/bazel/_bazel_avik-pal/eca3efba73b0ff73b4ad16c26e74bbd7/execroot/__main__/bazel-out/k8-dbg/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
     #   -r builddeps/requirements.in
     #   chex
     #   clu
@@ -1194,7 +1210,7 @@ joblib==1.4.2 \
 jraph @ https://github.com/wsmoses/jraph/archive/b00d9a03db76c69a258a86df81638b9a2f28829f.tar.gz \
     --hash=sha256:d996f47fff8c6ac8f5572e4220e3193f2542e9d3d6bc1defc16ac22dadd74dd4
     # via
-    #   -r /mnt2/avik-pal/.cache/bazel/_bazel_avik-pal/eca3efba73b0ff73b4ad16c26e74bbd7/execroot/__main__/bazel-out/k8-opt/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
+    #   -r /mnt2/avik-pal/.cache/bazel/_bazel_avik-pal/eca3efba73b0ff73b4ad16c26e74bbd7/execroot/__main__/bazel-out/k8-dbg/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
     #   jax-md
 kagglehub==0.3.6 \
     --hash=sha256:3e9485f8ff59d87d1055f1cb22369ffd943826492ff586368ba1934a58c11291 \
@@ -1205,7 +1221,7 @@ kagglehub==0.3.6 \
 keras @ https://github.com/avik-pal/keras/archive/7344964561c15611dd2d734a2bdd6b872a07709d.tar.gz \
     --hash=sha256:9b91264f19392dd2f3930b7626f1ce9217396cdc5c89276992771ec665ed86b5
     # via
-    #   -r /mnt2/avik-pal/.cache/bazel/_bazel_avik-pal/eca3efba73b0ff73b4ad16c26e74bbd7/execroot/__main__/bazel-out/k8-opt/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
+    #   -r /mnt2/avik-pal/.cache/bazel/_bazel_avik-pal/eca3efba73b0ff73b4ad16c26e74bbd7/execroot/__main__/bazel-out/k8-dbg/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
     #   keras-hub
     #   tensorflow
 keras-core==0.1.7 \
@@ -1215,11 +1231,11 @@ keras-core==0.1.7 \
 keras-cv==0.9.0 ; sys_platform == "linux" \
     --hash=sha256:507f0214cfba0a30e4c914d10bfac9b8ab39faeb30d4196993ddd02e31fccd7b \
     --hash=sha256:678e3447fdc0834d736b4bde8ef5950d53a1af4dd0c841f00edd8f8cd6e8e42f
-    # via -r /mnt2/avik-pal/.cache/bazel/_bazel_avik-pal/eca3efba73b0ff73b4ad16c26e74bbd7/execroot/__main__/bazel-out/k8-opt/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
+    # via -r /mnt2/avik-pal/.cache/bazel/_bazel_avik-pal/eca3efba73b0ff73b4ad16c26e74bbd7/execroot/__main__/bazel-out/k8-dbg/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
 keras-hub[nlp]==0.21.1 ; sys_platform == "linux" \
     --hash=sha256:3f128d3de56e9eec6a1ede3bdf09cfe0b6aefc1236edf00844fa0bf734fd90e7 \
     --hash=sha256:7f34477ad3417bd727660f847cca24cb23641e9b965537362bf3067951afd187
-    # via -r /mnt2/avik-pal/.cache/bazel/_bazel_avik-pal/eca3efba73b0ff73b4ad16c26e74bbd7/execroot/__main__/bazel-out/k8-opt/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
+    # via -r /mnt2/avik-pal/.cache/bazel/_bazel_avik-pal/eca3efba73b0ff73b4ad16c26e74bbd7/execroot/__main__/bazel-out/k8-dbg/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
 kiwisolver==1.4.9 \
     --hash=sha256:0749fd8f4218ad2e851e11cc4dc05c7cbc0cbc4267bdfdb31782e65aace4ee9c \
     --hash=sha256:0763515d4df10edf6d06a3c19734e2566368980d21ebec439f33f9eb936c07b7 \
@@ -1630,7 +1646,7 @@ matplotlib==3.10.6 \
     # via pymatgen
 maxtext @ https://github.com/wsmoses/maxtext/archive/bc50722be7d89e4003bd830b80e4ac968be658eb.tar.gz \
     --hash=sha256:417a114c26d37f1a131479710799597662879cbd1def5c07589848a9b324b27e
-    # via -r /mnt2/avik-pal/.cache/bazel/_bazel_avik-pal/eca3efba73b0ff73b4ad16c26e74bbd7/execroot/__main__/bazel-out/k8-opt/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
+    # via -r /mnt2/avik-pal/.cache/bazel/_bazel_avik-pal/eca3efba73b0ff73b4ad16c26e74bbd7/execroot/__main__/bazel-out/k8-dbg/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
 mccabe==0.7.0 \
     --hash=sha256:348e0240c33b60bbdf4e523192ef919f28cb2c3d7d5c7794f74009290f236325 \
     --hash=sha256:6c2d30ab6be0e4a46919781807b4f0d834ebdd6c6e3dca0bda5a15f863427b6e
@@ -1681,6 +1697,12 @@ monty==2025.3.3 \
     --hash=sha256:16c1eb54b2372e765c2f3f14cff01cc76ab55c3cc12b27d49962fb8072310ae0 \
     --hash=sha256:5eadb6d748c007bc63c34eceb2d80faff18f3996121d261dbceeea22adc58775
     # via pymatgen
+more-itertools==10.8.0 \
+    --hash=sha256:52d4362373dcf7c52546bc4af9a86ee7c4579df9a8dc268be0a2f949d376cc9b \
+    --hash=sha256:f638ddf8a1a0d134181275fb5d58b086ead7c6a72429ad725c67503f13ba30bd
+    # via
+    #   cheroot
+    #   jaraco-functools
 mpmath==1.3.0 \
     --hash=sha256:7a28eb2a9774d00c7bc92411c19a89209d5da7c4c9a9e227be8330a23a25b91f \
     --hash=sha256:a0b2b9fe80bbcd81a6647ff13108738cfb482d481d826cc0e02f5b35e5c88d2c
@@ -1910,7 +1932,7 @@ networkx==3.5 \
     #   pytype
 neuralgcm @ https://github.com/wsmoses/neuralgcm/archive/d2412377026f41baaec35510423c69657dbcde2c.tar.gz \
     --hash=sha256:ebc4318f8d087db500d422839465423542b436161aad00108f1d3742e847766b
-    # via -r /mnt2/avik-pal/.cache/bazel/_bazel_avik-pal/eca3efba73b0ff73b4ad16c26e74bbd7/execroot/__main__/bazel-out/k8-opt/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
+    # via -r /mnt2/avik-pal/.cache/bazel/_bazel_avik-pal/eca3efba73b0ff73b4ad16c26e74bbd7/execroot/__main__/bazel-out/k8-dbg/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
 ninja==1.11.1.4 \
     --hash=sha256:055f386fb550c2c9d6157e45e20a84d29c47968876b9c5794ae2aec46f952306 \
     --hash=sha256:096487995473320de7f65d622c3f1d16c3ad174797602218ca8c967f51ec38a0 \
@@ -1987,7 +2009,7 @@ numpy==1.26.4 \
     --hash=sha256:f870204a840a60da0b12273ef34f7051e98c3b5961b61b0c2c1be6dfd64fbcd3 \
     --hash=sha256:ffa75af20b44f8dba823498024771d5ac50620e6915abac414251bd971b4529f
     # via
-    #   -r /mnt2/avik-pal/.cache/bazel/_bazel_avik-pal/eca3efba73b0ff73b4ad16c26e74bbd7/execroot/__main__/bazel-out/k8-opt/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
+    #   -r /mnt2/avik-pal/.cache/bazel/_bazel_avik-pal/eca3efba73b0ff73b4ad16c26e74bbd7/execroot/__main__/bazel-out/k8-dbg/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
     #   chex
     #   clu
     #   contourpy
@@ -2616,6 +2638,7 @@ protobuf==5.29.5 \
     #   tensorflow-datasets
     #   tensorflow-metadata
     #   tfds-nightly
+    #   xprof
 psutil==6.1.1 \
     --hash=sha256:018aeae2af92d943fdf1da6b58665124897cfc94faa2ca92098838f83e1b1bca \
     --hash=sha256:0bdd4eab935276290ad3cb718e9809412895ca6b5b334f5a9111ee6d9aff9377 \
@@ -2986,7 +3009,7 @@ requests==2.32.4 ; sys_platform == "linux" \
     --hash=sha256:27babd3cda2a6d50b30443204ee89830707d396671944c998b5975b031ac2b2c \
     --hash=sha256:27d0316682c8a29834d3264820024b62a36942083d52caf2f14c0591336d3422
     # via
-    #   -r /mnt2/avik-pal/.cache/bazel/_bazel_avik-pal/eca3efba73b0ff73b4ad16c26e74bbd7/execroot/__main__/bazel-out/k8-opt/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
+    #   -r /mnt2/avik-pal/.cache/bazel/_bazel_avik-pal/eca3efba73b0ff73b4ad16c26e74bbd7/execroot/__main__/bazel-out/k8-dbg/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
     #   gcsfs
     #   google-api-core
     #   google-cloud-storage
@@ -3213,12 +3236,14 @@ six==1.16.0 \
     # via
     #   astunparse
     #   google-pasta
+    #   gviz-api
     #   ml-collections
     #   promise
     #   python-dateutil
     #   tensorboard
     #   tensorflow
     #   tfp-nightly
+    #   xprof
 spglib==2.6.0 \
     --hash=sha256:02d2e730a3b2cb43e318944493d0c288592b0e2ddbab0d222a548312659ee22a \
     --hash=sha256:046b72f67f0a6e47ea2ec43c160c8f223f5bb557311617aa2043c5d0bb3b39fa \
@@ -3503,7 +3528,9 @@ urllib3==2.6.0 \
 werkzeug==3.1.3 \
     --hash=sha256:54b78bf3716d19a65be4fceccc0d1d7b89e608834989dfae50ea87564639213e \
     --hash=sha256:60723ce945c19328679790e3282cc758aa4a6040e4bb330f53d30fa546d44746
-    # via tensorboard
+    # via
+    #   tensorboard
+    #   xprof
 wheel==0.45.1 \
     --hash=sha256:661e1abd9198507b1409a20c02106d9670b2576e916d58f520316666abca6729 \
     --hash=sha256:708e7481cc80179af0e556bbf0cc00b8444c7321e2700b8d8580231d13017248
@@ -3604,6 +3631,18 @@ xarray-tensorstore==0.1.4 \
     --hash=sha256:1dacec6376912373dbf9b239d96184090f400a49cd66017f5bf0c824793c9552 \
     --hash=sha256:de3558c08891c4a7524cf579cb271d6cc005962efd1b8601dd679b58b13a68c8
     # via dinosaur
+xprof==2.21.3 \
+    --hash=sha256:279df925f48e7653ce01b949eaeafcf59d350725da6b63e806a1ee435463d49d \
+    --hash=sha256:34228f785ddb20f67ad8c5cce90ebce3aefa615580e08ed65f7400930d75719d \
+    --hash=sha256:5fee47c11dfcf4f1f17304252bf2b89dee6b433f107ca61018c60c5190a702c6 \
+    --hash=sha256:72478cd6cd4965d7180dee9641e8bb9dcc3404bf28f4a1ecf5421c2e6f8848df \
+    --hash=sha256:b903f382ade22f62d88d98124415fb705e81c58de124b02503445b54540587c5 \
+    --hash=sha256:b9ab56c2aba80f438aec8e3d2adb5524c08533ebb0b84b023536364236a53f14 \
+    --hash=sha256:e109785fea440b867fbef946dcda06817c00cb97455411f7855c9b410f2f49e5 \
+    --hash=sha256:ec01713b8d5c304d91efd5bd3c3a436177297cdae23ab32c2ee3a1b4b8b75044 \
+    --hash=sha256:ec524473ea3439ca831f5fd5ea4f6a18a4000c1b525216f4a3a01b6dc8df810d \
+    --hash=sha256:f2e453c589a73b8e5bc6c96e702e9b18c4a26b1b981c7dc98f61f7216db092e5
+    # via -r /mnt2/avik-pal/.cache/bazel/_bazel_avik-pal/eca3efba73b0ff73b4ad16c26e74bbd7/execroot/__main__/bazel-out/k8-dbg/bin/builddeps/requirements.update.runfiles/__main__/builddeps/test-requirements.txt
 yarl==1.18.3 \
     --hash=sha256:00e5a1fea0fd4f5bfa7440a47eff01d9822a65b4488f7cff83155a0f31a2ecba \
     --hash=sha256:02ddb6756f8f4517a2d5e99d8b2f272488e18dd0bfbc802f31c16c6c20f22193 \
@@ -3706,3 +3745,4 @@ setuptools==80.9.0 \
     # via
     #   tensorboard
     #   tensorflow
+    #   xprof
