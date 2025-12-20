@@ -119,18 +119,18 @@ template <typename OpTy> struct SliceToBatch : public SliceToBatchBase {
             ctx, benefit) {}
 };
 
-struct SliceToBatchBroadcastInDim : public SliceToBatchBase {
-  SliceToBatchBroadcastInDim(mlir::MLIRContext *ctx,
-                             mlir::PatternBenefit benefit = 1)
+template <typename OpTy>
+struct SliceToBatchWithReshapeLikeCheck : public SliceToBatchBase {
+  SliceToBatchWithReshapeLikeCheck(mlir::MLIRContext *ctx,
+                                   mlir::PatternBenefit benefit = 1)
       : SliceToBatchBase(
             [](mlir::Operation *op) -> mlir::Operation * {
               if (!op) {
                 return nullptr;
               }
-              if (auto bcastInDim =
-                      llvm::dyn_cast<mlir::stablehlo::BroadcastInDimOp>(op)) {
-                if (!mlir::stablehlo::broadcastInDimIsReshape(bcastInDim)) {
-                  return bcastInDim;
+              if (auto reshapeLike = llvm::dyn_cast<OpTy>(op)) {
+                if (!mlir::stablehlo::OpIsReshapeLike(reshapeLike)) {
+                  return reshapeLike;
                 }
               }
               return nullptr;

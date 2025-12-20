@@ -421,7 +421,11 @@ def ApplyFullReduceReshapeOrTransposePatterns : EnzymeHLOPatternOp<
 }
 def ApplySliceTransposePatterns : EnzymeHLOPatternOp<
     "slice_transpose"> {
-  let patterns = ["SliceTranspose"];
+  let patterns = ["SliceTransposeBase<stablehlo::SliceOp>"];
+}
+def ApplyDynamicSliceTransposePatterns : EnzymeHLOPatternOp<
+    "dynamic_slice_transpose"> {
+  let patterns = ["SliceTransposeBase<stablehlo::DynamicSliceOp>"];
 }
 def ApplySliceBroadcastPatterns : EnzymeHLOPatternOp<
     "slice_broadcast"> {
@@ -1462,13 +1466,13 @@ def TransposeWhilePatterns : EnzymeHLOPatternOp<
 def TransposeSlicePatterns : EnzymeHLOPatternOp<
   "transpose_slice"
 > {
-  let patterns = ["TransposeSlice"];
+  let patterns = ["TransposeSliceBase<stablehlo::SliceOp>"];
 }
 
 def TransposeDynamicSlicePatterns : EnzymeHLOPatternOp<
   "transpose_dynamic_slice"
 > {
-  let patterns = ["TransposeDynamicSlice"];
+  let patterns = ["TransposeSliceBase<stablehlo::DynamicSliceOp>"];
 }
 
 def TransposeReshapeToBroadcastPatterns : EnzymeHLOPatternOp<
@@ -2442,11 +2446,11 @@ def ApplySortSliceToBatchPatterns : EnzymeHLOPatternOp<
 }
 def ApplyTransposeSliceToBatchPatterns : EnzymeHLOPatternOp<
     "transpose_slice_to_batch"> {
-  let patterns = ["SliceToBatch<stablehlo::TransposeOp>"];
+  let patterns = ["SliceToBatchWithReshapeLikeCheck<stablehlo::TransposeOp>"];
 }
 def ApplyBroadcastInDimSliceToBatchPatterns : EnzymeHLOPatternOp<
     "broadcastindim_slice_to_batch"> {
-  let patterns = ["SliceToBatchBroadcastInDim"];
+  let patterns = ["SliceToBatchWithReshapeLikeCheck<stablehlo::BroadcastInDimOp>"];
 }
 def ApplyConcatenateSliceToBatchPatterns : EnzymeHLOPatternOp<
     "concatenate_slice_to_batch"> {
@@ -2468,9 +2472,6 @@ def ApplyConvolutionSliceToBatchPatterns : EnzymeHLOPatternOp<
     "convolution_slice_to_batch"> {
   let patterns = ["SliceToBatch<stablehlo::ConvolutionOp>"];
 }
-// def ApplyReshapeSliceToBatchPatterns : EnzymeHLOPatternOp<"reshape_slice_to_batch"> {
-//   let patterns = ["SliceToBatchReshape"];
-// }
 
 def ApplyElementwiseSliceToBatchPatterns : EnzymeHLOPatternOp<
     "elementwise_slice_to_batch"> {

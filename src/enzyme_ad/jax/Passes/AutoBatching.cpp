@@ -927,8 +927,8 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
             .Case<stablehlo::DynamicSliceOp, stablehlo::DynamicUpdateSliceOp,
                   stablehlo::ReshapeOp, stablehlo::SliceOp>(
                 [=](auto op) { return true; })
-            .Case<stablehlo::BroadcastInDimOp>(
-                [=](auto op) { return stablehlo::broadcastInDimIsReshape(op); })
+            .Case<stablehlo::BroadcastInDimOp, stablehlo::TransposeOp>(
+                [=](auto op) { return stablehlo::OpIsReshapeLike(op); })
             .Default([](auto op) { return false; });
     if (avoidBatching) {
       continue;
@@ -1577,13 +1577,14 @@ struct AutoBatchingPass
           SliceToBatch<stablehlo::DotGeneralOp>,
           SliceToBatch<stablehlo::GatherOp>, SliceToBatch<stablehlo::IotaOp>,
           SliceToBatch<stablehlo::ReduceOp>, SliceToBatch<stablehlo::SortOp>,
-          SliceToBatch<stablehlo::TransposeOp>,
           SliceToBatch<stablehlo::ReduceWindowOp>,
           SliceToBatch<stablehlo::ConcatenateOp>,
           SliceToBatch<stablehlo::GetDimensionSizeOp>,
           SliceToBatch<stablehlo::ReverseOp>,
           SliceToBatch<stablehlo::ReduceWindowOp>,
-          SliceToBatch<stablehlo::ConvolutionOp>, SliceToBatchBroadcastInDim,
+          SliceToBatch<stablehlo::ConvolutionOp>,
+          SliceToBatchWithReshapeLikeCheck<stablehlo::BroadcastInDimOp>,
+          SliceToBatchWithReshapeLikeCheck<stablehlo::TransposeOp>,
           SliceToBatchElementwise>(context);
     }
 
