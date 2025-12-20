@@ -436,8 +436,8 @@
               }
             }
             const sortedCommits = Array.from(allCommits.values())
-              .sort((a, b) => b.date - a.date)
-              .slice(0, MAX_COMMITS);
+              .sort((a, b) => a.date - b.date)  // Oldest first, so latest appears on right
+              .slice(-MAX_COMMITS);  // Take the last MAX_COMMITS (most recent)
 
             const data = {
               labels: sortedCommits.map((c) => c.id.slice(0, 7)),
@@ -474,7 +474,7 @@
                 borderColor: color,
                 fill: false,
                 lineTension: 0,
-                spanGaps: false, // Don't connect across missing data
+                spanGaps: true, // Connect across missing data points
               };
               datasets.push(lineData);
               variantIndices.set(datasetIndex, variantName);
@@ -519,9 +519,15 @@
                     const item = items[0];
                     const datasetIndex = item.datasetIndex;
                     const dataIndex = item.index;
-                    const commit = graphData.get(
-                      variantIndices.get(datasetIndex)
-                    )[dataIndex].commit;
+                    const variantName = variantIndices.get(datasetIndex);
+                    const variantData = graphData.get(variantName);
+                    const commitId = sortedCommits[dataIndex].id;
+
+                    // Find the result for this variant and commit
+                    const result = variantData.find(r => r.commit.id === commitId);
+                    if (!result) return ""; // No data for this commit
+
+                    const commit = result.commit;
                     return (
                       "\n" +
                       commit.message +
@@ -542,10 +548,15 @@
                   afterLabel: function (item) {
                     const datasetIndex = item.datasetIndex;
                     const dataIndex = item.index;
-                    const { extra } = graphData.get(
-                      variantIndices.get(datasetIndex)
-                    )[dataIndex].bench;
-                    return extra ? "\n" + extra : "";
+                    const variantName = variantIndices.get(datasetIndex);
+                    const variantData = graphData.get(variantName);
+                    const commitId = sortedCommits[dataIndex].id;
+
+                    // Find the result for this variant and commit
+                    const result = variantData.find(r => r.commit.id === commitId);
+                    if (!result || !result.bench.extra) return "";
+
+                    return "\n" + result.bench.extra;
                   },
                 },
               },
@@ -557,10 +568,15 @@
 
                 const datasetIndex = activeElems[0]._datasetIndex;
                 const dataIndex = activeElems[0]._index;
-                const url = graphData.get(variantIndices.get(datasetIndex))[
-                  dataIndex
-                ].commit.url;
-                window.open(url, "_blank");
+                const variantName = variantIndices.get(datasetIndex);
+                const variantData = graphData.get(variantName);
+                const commitId = sortedCommits[dataIndex].id;
+
+                // Find the result for this variant and commit
+                const result = variantData.find(r => r.commit.id === commitId);
+                if (!result) return; // No data for this commit
+
+                window.open(result.commit.url, "_blank");
               },
             };
 
