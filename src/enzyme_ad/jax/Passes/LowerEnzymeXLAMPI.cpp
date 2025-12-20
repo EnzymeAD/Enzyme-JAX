@@ -662,8 +662,8 @@ struct MPIRecvOpLowering
 
       std::string mpiFunctionName = "MPI_Recv";
 
-      // TODO we just assume it's MPI_DOUBLE for now
-      std::string datatypeName = "MPI_DOUBLE";
+      // get the MPI datatype
+      auto datatypeName = op.getDatatype();
 
       // For now we just hard code MPI_COMM_WORLD as the communicator.
       // TODO make this more flexible
@@ -672,8 +672,10 @@ struct MPIRecvOpLowering
       std::string statusName = "MPI_STATUS_IGNORE";
 
       // Generate the enzymexla_wrapper LLVM function body
-      std::string wrapperFunctionName = "enzymexla_wrapper_" + mpiFunctionName + datatypeName;
-      {
+      std::string wrapperFunctionName = 
+        "enzymexla_wrapper_" + mpiFunctionName + "_" + datatypeName.str();
+
+      if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapperFunctionName)) {
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(moduleOp.getBody());
 
@@ -896,16 +898,17 @@ struct MPIIsendOpLowering
 
       std::string mpiFunctionName = "MPI_Isend";
 
-      // TODO we just assume it's MPI_DOUBLE for now
-      std::string datatypeName = "MPI_DOUBLE";
+      // get the MPI datatype
+      auto datatypeName = op.getDatatype();
 
       // For now we just hard code MPI_COMM_WORLD as the communicator.
       // TODO make this more flexible
       std::string communicatorName = "MPI_COMM_WORLD";
 
-      // Generate the enzymexla_wrapper LLVM function body
-      std::string wrapperFunctionName = "enzymexla_wrapper_" + mpiFunctionName + datatypeName;
-      {
+      std::string wrapperFunctionName = 
+        "enzymexla_wrapper_" + mpiFunctionName + "_" + datatypeName.str();
+
+      if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapperFunctionName)) {
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(moduleOp.getBody());
 
@@ -1106,16 +1109,18 @@ struct MPIIrecvOpLowering
 
       std::string mpiFunctionName = "MPI_Irecv";
 
-      // TODO we just assume it's MPI_DOUBLE for now
-      std::string datatypeName = "MPI_DOUBLE";
+      // get the MPI datatype
+      auto datatypeName = op.getDatatype();
 
       // For now we just hard code MPI_COMM_WORLD as the communicator.
       // TODO make this more flexible
       std::string communicatorName = "MPI_COMM_WORLD";
 
       // Generate the enzymexla_wrapper LLVM function body
-      std::string wrapperFunctionName = "enzymexla_wrapper_" + mpiFunctionName + datatypeName;
-      {
+      std::string wrapperFunctionName = 
+        "enzymexla_wrapper_" + mpiFunctionName + "_" + datatypeName.str();
+
+      if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapperFunctionName)) {
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(moduleOp.getBody());
 
@@ -1447,24 +1452,25 @@ struct MPIAllreduceOpLowering
 
       std::string mpiFunctionName = "MPI_Allreduce";
 
-      // TODO we just assume/hardcode for now
-      std::string datatypeName = "MPI_INT64_T";
+      // get the MPI datatype
+      auto datatypeName = op.getDatatype();
 
-      // TODO we just assume/hardcode for now
-      std::string mpiOpName = "MPI_SUM";
+      // // TODO we just assume/hardcode for now
+      // std::string mpiOpName = "MPI_SUM";
+      // get the MPI Op type
+      auto mpiOpName = op.getOp();
 
       // TODO For now we just hard code MPI_COMM_WORLD as the communicator.
       std::string communicatorName = "MPI_COMM_WORLD";
 
       // Generate the enzymexla_wrapper LLVM function body
-      std::string wrapperFunctionName = "enzymexla_wrapper_" 
-          + mpiFunctionName 
-          + "_" 
-          + mpiOpName
-          + "_"
-          + datatypeName;
+      std::string wrapperFunctionName = 
+        "enzymexla_wrapper_" 
+        + mpiFunctionName + "_" 
+        + mpiOpName.str() + "_"
+        + datatypeName.str();
 
-      {
+      if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapperFunctionName)) {
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(moduleOp.getBody());
 

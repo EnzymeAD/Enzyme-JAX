@@ -1105,7 +1105,6 @@ def MPISendOp : EnzymeXLA_Op<"send", []> {
   let arguments = (
     ins AnyTensor : $buf,
     TensorOf<[I32]> : $count,
-    /* xxx : $dtype */ // TODO 
     TensorOf<[I32]> : $dest,
     TensorOf<[I32]> : $tag,
     /* xxx : $comm */ // TODO 
@@ -1122,11 +1121,11 @@ def MPIRecvOp : EnzymeXLA_Op<"recv", []> {
   let arguments = (
     ins AnyTensor : $inbuf,
     TensorOf<[I32]> : $count,
-    /* xxx : $dtype */ // TODO 
     TensorOf<[I32]> : $source,
-    TensorOf<[I32]> : $tag
+    TensorOf<[I32]> : $tag,
     /* xxx : $comm */ // TODO 
     /* xxx : $status */ // TODO 
+    StrAttr:$datatype
   );
 
   let results = (
@@ -1143,11 +1142,11 @@ def MPIIsendOp : EnzymeXLA_Op<"isend", []> {
   let arguments = (
     ins AnyTensor : $buf,
     TensorOf<[I32]> : $count,
-    /* xxx : $dtype */ // TODO 
     TensorOf<[I32]> : $dest,
     TensorOf<[I32]> : $tag,
     /* xxx : $comm */ // TODO 
-    TensorOf<[I64]> : $inrequest
+    TensorOf<[I64]> : $inrequest,
+    StrAttr:$datatype
   );
 
   let results = (
@@ -1164,11 +1163,11 @@ def MPIIrecvOp : EnzymeXLA_Op<"irecv", []> {
   let arguments = (
     ins AnyTensor : $inbuf,
     TensorOf<[I32]> : $count,
-    /* xxx : $dtype */ // TODO 
     TensorOf<[I32]> : $source,
     TensorOf<[I32]> : $tag,
     /* xxx : $comm */ // TODO 
-    TensorOf<[I64]> : $inrequest
+    TensorOf<[I64]> : $inrequest,
+    StrAttr:$datatype
   );
 
   let results = (
@@ -1193,10 +1192,10 @@ def MPIAllreduceOp : EnzymeXLA_Op<"allreduce", []> {
   let arguments = (
     ins AnyTensor : $sendbuf,
     AnyTensor : $inbuf,
-    TensorOf<[I32]> : $count
-    /* xxx : $dtype */ // TODO 
-    /* xxx : $op */ // TODO 
+    TensorOf<[I32]> : $count,
     /* xxx : $comm */ // TODO 
+    StrAttr:$datatype,
+    StrAttr:$op
   );
 
   let results = (
