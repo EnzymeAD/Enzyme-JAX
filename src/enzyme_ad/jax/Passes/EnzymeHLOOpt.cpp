@@ -82,14 +82,6 @@ bool anyPadSizesNegative(stablehlo::PadOp pad) {
 
 namespace {
 
-llvm::SmallVector<int64_t> getInversePermutation(ArrayRef<int64_t> perm) {
-  llvm::SmallVector<int64_t> inversePerm(perm.size(), -1);
-  for (int64_t i = 0; i < perm.size(); ++i) {
-    inversePerm[perm[i]] = i;
-  }
-  return inversePerm;
-}
-
 class ReshapeDimMapping {
 public:
   void addMapping(int64_t left, int64_t right) {
@@ -2894,52 +2886,31 @@ struct SliceBroadcast final
   }
 };
 
-SmallVector<int64_t> invertPermutation(ArrayRef<int64_t> perm) {
-  SmallVector<int64_t> res(perm.size(), 0);
-  for (auto en : llvm::enumerate(perm)) {
-    res[en.value()] = en.index();
-  }
-  return res;
-}
+// (dyn)slice(transpose x) -> transpose((dyn)slice x)
+template <typename OpTy>
+struct SliceTransposeBase final
+    : CheckedOpRewritePattern<OpTy, SliceTransposeBase<OpTy>> {
+  using CheckedOpRewritePattern<
+      OpTy, SliceTransposeBase<OpTy>>::CheckedOpRewritePattern;
 
-stablehlo::SliceOp sliceTransposeHelper(stablehlo::TransposeOp transpose,
-                                        PatternRewriter &rewriter,
-                                        ArrayRef<int64_t> starts,
-                                        ArrayRef<int64_t> limits,
-                                        ArrayRef<int64_t> strides) {
-  SmallVector<int64_t> start;
-  SmallVector<int64_t> end;
-  SmallVector<int64_t> step;
-  for (auto ind : invertPermutation(transpose.getPermutation())) {
-    start.push_back(starts[ind]);
-    end.push_back(limits[ind]);
-    step.push_back(strides[ind]);
-  }
-
-  return stablehlo::SliceOp::create(rewriter, transpose.getLoc(),
-                                    transpose.getOperand(), start, end, step);
-}
-
-// slice(transpose x) -> transpose(slice x)
-struct SliceTranspose final
-    : CheckedOpRewritePattern<stablehlo::SliceOp, SliceTranspose> {
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
-                                    PatternRewriter &rewriter) const {
+  LogicalResult matchAndRewriteImpl(OpTy op, PatternRewriter &rewriter) const {
     auto type = dyn_cast<RankedTensorType>(op.getType());
     if (!type)
       return failure();
 
-    auto transpose = op.getOperand().getDefiningOp<stablehlo::TransposeOp>();
-    if (!transpose || !llvm::hasSingleElement(transpose->getUsers()))
+    auto transpose =
+        op.getOperand().template getDefiningOp<stablehlo::TransposeOp>();
+    if (!transpose || !llvm::hasSingleElement(transpose->getUsers())) {
       return failure();
+    }
 
-    auto newslice =
-        sliceTransposeHelper(transpose, rewriter, op.getStartIndices(),
-                             op.getLimitIndices(), op.getStrides());
+    if (transpose->getBlock() != op->getBlock()) {
+      return failure();
+    }
+
+    auto sliceOp = sliceTransposeHelper(transpose, rewriter, op);
     rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(
-        op, newslice, transpose.getPermutation());
+        op, sliceOp, transpose.getPermutation());
     return success();
   }
 };
@@ -3071,116 +3042,44 @@ struct SliceReduceWindow
 };
 
 // transpose(dynamic_slice x) -> dynamic_slice(transpose x)
-struct TransposeDynamicSlice final
-    : CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeDynamicSlice> {
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
-                                    PatternRewriter &rewriter) const {
-    auto type = dyn_cast<RankedTensorType>(op.getType());
-    if (!type)
-      return failure();
-
-    auto dynamicSlice =
-        op.getOperand().getDefiningOp<stablehlo::DynamicSliceOp>();
-    if (!dynamicSlice)
-      return failure();
-    bool singleUser = dynamicSlice->getResult(0).hasOneUse();
-    if (!singleUser)
-      return failure();
-
-    auto newTranspose = stablehlo::TransposeOp::create(
-        rewriter, op.getLoc(), dynamicSlice.getOperand(), op.getPermutation());
-
-    // Extract the original permutation, start indices, limit indices, and
-    // strides
-    SmallVector<int64_t> permutation = llvm::to_vector(op.getPermutation());
-
-    SmallVector<Value> startIndices(permutation.size());
-    SmallVector<int64_t> sliceSizes(permutation.size());
-    for (size_t i = 0; i < permutation.size(); ++i) {
-      size_t permIndex = permutation[i];
-      startIndices[i] = dynamicSlice.getStartIndices()[permIndex];
-      sliceSizes[i] = dynamicSlice.getSliceSizes()[permIndex];
-    }
-
-    // Create a new dynamic slice
-    rewriter.replaceOpWithNewOp<stablehlo::DynamicSliceOp>(
-        op, newTranspose, startIndices, sliceSizes);
-    if (singleUser)
-      rewriter.eraseOp(dynamicSlice);
-    return success();
-  }
-};
-
 // transpose(slice x) -> slice(transpose x)
-struct TransposeSlice final
-    : CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeSlice> {
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+template <typename OpTy>
+struct TransposeSliceBase final
+    : CheckedOpRewritePattern<stablehlo::TransposeOp,
+                              TransposeSliceBase<OpTy>> {
+  using CheckedOpRewritePattern<
+      stablehlo::TransposeOp,
+      TransposeSliceBase<OpTy>>::CheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
                                     PatternRewriter &rewriter) const {
-    auto type = dyn_cast<RankedTensorType>(op.getType());
-    if (!type)
+    auto sliceOp = op.getOperand().template getDefiningOp<OpTy>();
+    if (!sliceOp) {
       return failure();
+    }
 
-    auto slice = op.getOperand().getDefiningOp<stablehlo::SliceOp>();
-    // if (!slice || !llvm::hasSingleElement(slice->getUsers()))
-    if (!slice)
+    auto resShape = cast<RankedTensorType>(op.getType()).getShape();
+    if (OpIsReshapeLike(op, resShape)) {
+      return failure(); // transpose_is_reshape has higher priority
+    }
+
+    // If we can fuse the transpose into all of its users then we shouldn't push
+    // it up (or atleast give higher priority to other passes before trying to
+    // move it up)
+    if (llvm::all_of(op->getUsers(),
+                     [&](auto user) { return isFusible(op, user); })) {
       return failure();
+    }
 
-    bool singleUser = slice->getResult(0).hasOneUse();
+    bool singleUser = sliceOp->getResult(0).hasOneUse();
 
-    // First create transpose of the slice's operand
     auto newTranspose = stablehlo::TransposeOp::create(
-        rewriter, op.getLoc(), slice.getOperand(), op.getPermutation());
-
-    // We need to compute the result type for the new slice
-    auto resultType = op.getType();
-
-    // Extract the original permutation, start indices, limit indices, and
-    // strides
-    SmallVector<int64_t> permutation;
-    for (auto val : op.getPermutation()) {
-      permutation.push_back(static_cast<int64_t>(val));
-    }
-
-    // Get the original indices
-    SmallVector<int64_t> startIndices;
-    SmallVector<int64_t> limitIndices;
-    SmallVector<int64_t> strides;
-
-    // Convert DenseI64ArrayAttr to SmallVector<int64_t>
-    for (auto [start, stop, stride] :
-         llvm::zip(slice.getStartIndices(), slice.getLimitIndices(),
-                   slice.getStrides())) {
-      startIndices.push_back(start);
-      limitIndices.push_back(stop);
-      strides.push_back(stride);
-    }
-
-    // Permute the indices
-    SmallVector<int64_t> permutedStartIndices(permutation.size());
-    SmallVector<int64_t> permutedLimitIndices(permutation.size());
-    SmallVector<int64_t> permutedStrides(permutation.size());
-
-    for (size_t i = 0; i < permutation.size(); ++i) {
-      size_t permIndex = permutation[i];
-      permutedStartIndices[i] = startIndices[permIndex];
-      permutedLimitIndices[i] = limitIndices[permIndex];
-      permutedStrides[i] = strides[permIndex];
-    }
-
-    // Create the new slice operation with permuted indices
-    auto newSlice = stablehlo::SliceOp::create(
-        rewriter, op.getLoc(), resultType, newTranspose,
-        rewriter.getDenseI64ArrayAttr(permutedStartIndices),
-        rewriter.getDenseI64ArrayAttr(permutedLimitIndices),
-        rewriter.getDenseI64ArrayAttr(permutedStrides));
-
+        rewriter, op.getLoc(), sliceOp.getOperand(), op.getPermutation());
+    auto newSlice = transposeSliceHelper(newTranspose, rewriter, sliceOp);
     rewriter.replaceOp(op, newSlice);
-    if (singleUser)
-      rewriter.eraseOp(slice);
+    if (singleUser) {
+      rewriter.eraseOp(sliceOp);
+    }
     return success();
   }
 };
@@ -3193,79 +3092,96 @@ struct TransposeAllUsersSlice final
 
   LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
                                     PatternRewriter &rewriter) const {
-    if (llvm::hasSingleElement(op->getUsers()))
-      return rewriter.notifyMatchFailure(op,
-                                         "should be handled by SliceTranspose");
-
-    SmallVector<stablehlo::SliceOp> sliceOps;
+    SetVector<stablehlo::SliceOp> sliceOps;
+    SetVector<stablehlo::DynamicSliceOp> dsOps;
+    SetVector<stablehlo::DynamicUpdateSliceOp> dusOps;
     for (auto user : op->getUsers()) {
-      auto sliceOp = dyn_cast<stablehlo::SliceOp>(user);
-      if (!sliceOp)
-        return failure();
-
-      // only propagate down if we know a different optimization will clean this
-      // up
-      for (auto downstreamUser : sliceOp->getUsers()) {
-        if (isa<stablehlo::TransposeOp, stablehlo::BroadcastInDimOp,
-                stablehlo::DotGeneralOp>(downstreamUser)) {
-          continue;
-        } else if (auto reshapeOp =
-                       dyn_cast<stablehlo::ReshapeOp>(downstreamUser)) {
-          auto inputType =
-              cast<RankedTensorType>(reshapeOp.getOperand().getType());
-          auto outputType =
-              cast<RankedTensorType>(reshapeOp.getResult().getType());
-
-          auto insertionDims = findReshapeInsertionDims(inputType, outputType);
-          if (!insertionDims.empty()) // fused to a broadcast_in_dim
-            continue;
-
-          if (reshapeIsTranspose(reshapeOp)) // transpose_tranpose elimination
-            continue;
-
-          return failure();
-        } else {
-          return failure();
-        }
+      if (user->getBlock() != op->getBlock()) {
+        continue;
       }
 
-      sliceOps.push_back(sliceOp);
+      TypeSwitch<Operation *>(user)
+          .Case<stablehlo::SliceOp>([&](auto sliceOp) {
+            if (shouldPropagateTransposeDown(op, sliceOp)) {
+              sliceOps.insert(sliceOp);
+            }
+          })
+          .Case<stablehlo::DynamicSliceOp>([&](auto sliceOp) {
+            if (sliceOp.getOperand() != op) {
+              return;
+            }
+
+            if (shouldPropagateTransposeDown(op, sliceOp)) {
+              dsOps.insert(sliceOp);
+            }
+          })
+          .Case<stablehlo::DynamicUpdateSliceOp>([&](auto dusOp) {
+            if (dusOp.getOperand() != op) {
+              return;
+            }
+
+            // check that if DUS is consumed by a DS, can we absorb the
+            // transpose due to singleton dims.
+            // Should we have some constraint based on the update? though
+            // transposing an update will likely lead to lower cost than
+            // transposing the operand
+            bool valid = true;
+            for (auto user : dusOp->getUsers()) {
+              if (auto sOp = dyn_cast<stablehlo::SliceOp>(user)) {
+                valid &= shouldPropagateTransposeDown(op, sOp);
+              } else if (auto dsOp =
+                             dyn_cast<stablehlo::DynamicSliceOp>(user)) {
+                valid &= shouldPropagateTransposeDown(op, dsOp);
+              } else {
+                valid = false;
+              }
+
+              if (!valid) {
+                break;
+              }
+            }
+
+            if (valid) {
+              dusOps.insert(dusOp);
+            }
+          });
     }
 
-    auto mapping = getInversePermutation(op.getPermutation());
-
-    for (int64_t i = 0; i < sliceOps.size(); ++i) {
-      auto origSlice = sliceOps[i];
-
-      SmallVector<int64_t> originalStartIndices =
-          llvm::to_vector(origSlice.getStartIndices());
-      SmallVector<int64_t> originalLimitIndices =
-          llvm::to_vector(origSlice.getLimitIndices());
-      SmallVector<int64_t> originalStrides =
-          llvm::to_vector(origSlice.getStrides());
-
-      SmallVector<int64_t> newStartIndices;
-      SmallVector<int64_t> newLimitIndices;
-      SmallVector<int64_t> newStrides;
-
-      for (size_t j = 0; j < mapping.size(); ++j) {
-        size_t permIndex = mapping[j];
-        newStartIndices.push_back(originalStartIndices[permIndex]);
-        newLimitIndices.push_back(originalLimitIndices[permIndex]);
-        newStrides.push_back(originalStrides[permIndex]);
-      }
-
-      auto newSlice = stablehlo::SliceOp::create(
-          rewriter, origSlice.getLoc(), op.getOperand(),
-          rewriter.getDenseI64ArrayAttr(newStartIndices),
-          rewriter.getDenseI64ArrayAttr(newLimitIndices),
-          rewriter.getDenseI64ArrayAttr(newStrides));
-      rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(origSlice, newSlice,
-                                                          op.getPermutation());
+    if (sliceOps.empty() && dsOps.empty() && dusOps.empty()) {
+      return failure();
     }
 
-    rewriter.eraseOp(op);
+    auto replaceSliceOp = [&](auto sliceOp) {
+      return this->replaceOp(sliceOp, rewriter, op);
+    };
+
+    llvm::for_each(dusOps, replaceSliceOp);
+    llvm::for_each(dsOps, replaceSliceOp);
+    llvm::for_each(sliceOps, replaceSliceOp);
     return success();
+  }
+
+private:
+  template <typename OpTy>
+  void replaceOp(OpTy sliceOp, PatternRewriter &rewriter,
+                 stablehlo::TransposeOp op) const {
+    rewriter.setInsertionPoint(sliceOp);
+    auto newSlice = sliceTransposeHelper(op, rewriter, sliceOp);
+    rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(sliceOp, newSlice,
+                                                        op.getPermutation());
+  }
+
+  template <typename OpTy>
+  bool shouldPropagateTransposeDown(stablehlo::TransposeOp tOp,
+                                    OpTy sliceOp) const {
+    if (OpIsReshapeLike(tOp,
+                        cast<RankedTensorType>(sliceOp.getType()).getShape())) {
+      return true;
+    }
+
+    return llvm::all_of(sliceOp->getUsers(), [&](auto downstreamUser) {
+      return isFusible(tOp, downstreamUser);
+    });
   }
 };
 
@@ -13634,23 +13550,15 @@ struct TransposeIsReshape final
     }
 
     RankedTensorType inputTy = input.getType();
-    if (!inputTy.hasStaticShape() || !op.getType().hasStaticShape())
+    if (!inputTy.hasStaticShape() || !op.getType().hasStaticShape()) {
       return rewriter.notifyMatchFailure(
           op, "requires input and output to be of a statically-shaped ranked "
               "tensor type");
-
-    SmallVector<int64_t> permValues(permutation);
-    SmallVector<int64_t> nonZeroPerms;
-    nonZeroPerms.reserve(permValues.size());
-    for (auto idx : permValues) {
-      auto sz = inputTy.getDimSize(idx);
-      if (sz != 1)
-        nonZeroPerms.push_back(idx);
     }
 
-    for (int i = 1, s = nonZeroPerms.size(); i < s; ++i)
-      if (nonZeroPerms[i - 1] > nonZeroPerms[i])
-        return rewriter.notifyMatchFailure(op, "memory layout change");
+    if (!OpIsReshapeLike(op)) {
+      return rewriter.notifyMatchFailure(op, "memory layout change");
+    }
 
     rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(), input);
     return success();
@@ -17889,7 +17797,7 @@ struct BroadcastInDimIsReshape final
 
   LogicalResult matchAndRewriteImpl(stablehlo::BroadcastInDimOp op,
                                     PatternRewriter &rewriter) const {
-    if (stablehlo::broadcastInDimIsReshape(op)) {
+    if (stablehlo::OpIsReshapeLike(op)) {
       rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
                                                         op.getOperand());
       return success();
@@ -23992,68 +23900,18 @@ struct ReduceSliceFusionBase
       return failure();
     }
 
-    // we split up the fusion into 2 subsets: 1 where all have explicit reshape
-    // and 1 where all don't
-    SmallVector<SmallVector<SliceInfo, 4>, 4> slicesPartitioned;
-    SmallVector<std::optional<SmallVector<int64_t>>> partitionShapes;
-
-    // Initialize with the "no reshape" partition
-    slicesPartitioned.emplace_back();
-    partitionShapes.push_back(std::nullopt);
-
-    for (auto slice : slices) {
-      std::optional<SmallVector<int64_t>> shape = slice.explicitReshapeShape;
-      bool matched = false;
-      for (size_t i = 0; i < partitionShapes.size(); ++i) {
-        if (partitionShapes[i] == shape) {
-          slicesPartitioned[i].push_back(slice);
-          matched = true;
-          break;
-        }
-      }
-      if (!matched) {
-        partitionShapes.push_back(shape);
-        slicesPartitioned.push_back({slice});
-      }
-    }
-
-    auto maxIt = llvm::max_element(slicesPartitioned, [](auto &a, auto &b) {
-      return a.size() < b.size();
-    });
-
-    if (maxIt == slicesPartitioned.end() || maxIt->empty()) {
-      return failure();
-    }
-
-    size_t maxIdx = std::distance(slicesPartitioned.begin(), maxIt);
-    auto &slicesToFuse = slicesPartitioned[maxIdx];
-    auto &shapeToFuse = partitionShapes[maxIdx];
-
-    int64_t sliceDim = extractSliceDim(slicesToFuse);
+    int64_t sliceDim = extractSliceDim(slices);
     if (sliceDim == -1) {
       return failure();
     }
 
-    // add values into the extraValues list
-    for (size_t i = 0; i < slicesPartitioned.size(); i++) {
-      if (i == maxIdx) {
-        continue;
-      }
-      for (auto slice : slicesPartitioned[i]) {
-        assert(slice.source);
-        extraValues.push_back(slice.source);
-      }
-    }
-
-    return createFusedReduce(rewriter, binaryOp, slicesToFuse, extraValues,
-                             sliceDim, shapeToFuse);
+    return createFusedReduce(rewriter, binaryOp, slices, extraValues, sliceDim);
   };
 
 private:
   struct SliceInfo {
     stablehlo::SliceOp sliceOp;
     llvm::SmallSetVector<int64_t, 4> sliceDims;
-    std::optional<SmallVector<int64_t>> explicitReshapeShape;
     Value initValue;
     Value source; // needed for partial fusion
   };
@@ -24148,7 +24006,7 @@ private:
 
   std::tuple<bool, SliceInfo>
   matchReshapeSlice(stablehlo::ReshapeOp reshapeOp) const {
-    auto outputType = cast<RankedTensorType>(reshapeOp.getType());
+    // auto outputType = cast<RankedTensorType>(reshapeOp.getType());
 
     auto slice =
         reshapeOp.getOperand().template getDefiningOp<stablehlo::SliceOp>();
@@ -24158,7 +24016,7 @@ private:
 
     SliceInfo info = extractSliceInfo(slice);
     if (info.sliceOp) {
-      info.explicitReshapeShape = llvm::to_vector(outputType.getShape());
+      // info.explicitReshapeShape = llvm::to_vector(outputType.getShape());
       info.source = reshapeOp.getResult();
       return {true, info};
     }
@@ -24267,11 +24125,11 @@ private:
   }
 
   // Create the fused reduce operation
-  LogicalResult createFusedReduce(
-      PatternRewriter &rewriter, BinaryOpType binaryOp,
-      SmallVectorImpl<SliceInfo> &slices, SmallVectorImpl<Value> &extraValues,
-      int64_t sliceDim,
-      std::optional<SmallVector<int64_t>> explicitReshapeShape) const {
+  LogicalResult createFusedReduce(PatternRewriter &rewriter,
+                                  BinaryOpType binaryOp,
+                                  SmallVectorImpl<SliceInfo> &slices,
+                                  SmallVectorImpl<Value> &extraValues,
+                                  int64_t sliceDim) const {
     Value initValue;
     for (auto sliceInfo : slices) {
       if (sliceInfo.initValue) {
@@ -24306,8 +24164,9 @@ private:
       SmallVector<Value> finalConcatInputs;
       auto result = concatSliceSimplify(rewriter, newConcatInputs, sliceDim,
                                         finalConcatInputs);
-      if (!result.succeeded())
+      if (!result.succeeded()) {
         return result;
+      }
       if (finalConcatInputs.size() == 1) {
         sourceOperand = finalConcatInputs[0];
       } else {
@@ -24346,16 +24205,6 @@ private:
         cast<RankedTensorType>(binaryOp.getResult().getType());
     Value result = stablehlo::ReshapeOp::create(
         rewriter, binaryOp.getLoc(), binaryResultType, newReduce.getResult(0));
-
-    if (explicitReshapeShape.has_value()) {
-      assert(binaryResultType.getRank() == explicitReshapeShape.value().size());
-      for (auto [sz1, sz2] : llvm::zip(explicitReshapeShape.value(),
-                                       binaryResultType.getShape())) {
-        (void)sz1;
-        (void)sz2;
-        assert(sz1 == sz2);
-      }
-    }
 
     for (auto &value : extraValues) {
       result = BinaryOpType::create(rewriter, binaryOp.getLoc(), result, value);
@@ -27531,8 +27380,10 @@ struct EnzymeHLOOptPass
       patterns.add<FullReduceReshapeOrTranspose>(context);
 
     if (passses & 1)
-      patterns.add<SliceTranspose, SliceReshapeTranspose, SliceBroadcast,
-                   SliceReduceWindow>(context);
+      patterns.add<SliceTransposeBase<stablehlo::SliceOp>,
+                   SliceTransposeBase<stablehlo::DynamicSliceOp>,
+                   SliceReshapeTranspose, SliceBroadcast, SliceReduceWindow>(
+          context);
 
     if (passses & 2)
       patterns.add<ReducePad, BroadcastPad>(context);
@@ -27601,9 +27452,10 @@ struct EnzymeHLOOptPass
     }
 
     if (passses & (2048 * 32)) {
-      patterns.add<TransposeWhile, TransposeSlice, TransposeConcat,
-                   TransposeDUS, TransposeIota, TransposeReduceWindow,
-                   TransposeReduce, TransposeSelect, TransposeDynamicSlice,
+      patterns.add<TransposeWhile, TransposeSliceBase<stablehlo::SliceOp>,
+                   TransposeConcat, TransposeDUS, TransposeIota,
+                   TransposeReduceWindow, TransposeReduce, TransposeSelect,
+                   TransposeSliceBase<stablehlo::DynamicSliceOp>,
                    TransposeReverse, TransposeBatchNormTraining,
                    TransposeBatchNormInference, TransposeBatchNormGrad,
                    TransposeIf, TransposeFFT, TransposeReshape>(context);

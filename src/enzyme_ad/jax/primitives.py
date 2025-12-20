@@ -546,6 +546,7 @@ def optimization_passes(
         transform_passes_list += [
             "reorder_elementwise_and_shape_op<16>",
             "elementwise_all_transpose_operands_simplify",
+            "dynamic_slice_transpose",
             "slice_transpose",
             "einsum_transpose<1>",
             "slice_reshape_transpose<1>",

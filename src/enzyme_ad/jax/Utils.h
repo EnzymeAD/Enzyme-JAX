@@ -1059,7 +1059,9 @@ bool isScalarValue(Operation *op);
 Value copyTriangularPart(OpBuilder &builder, Value input,
                          enzymexla::LapackUplo uplo);
 
-bool broadcastInDimIsReshape(BroadcastInDimOp op);
+bool OpIsReshapeLike(stablehlo::BroadcastInDimOp op);
+bool OpIsReshapeLike(stablehlo::TransposeOp op);
+bool OpIsReshapeLike(stablehlo::TransposeOp op, ArrayRef<int64_t> shape);
 
 bool canMergeSlicesAlongAxis(int dimension, ArrayRef<int64_t> sliceStarts,
                              ArrayRef<int64_t> otherSliceStarts,
@@ -1087,6 +1089,44 @@ Value getIdentityValue(OpBuilder &builder, Location loc, Type elemType,
 
 bool canFuseIntoReduce(Operation *op);
 
+llvm::SmallVector<int64_t> getInversePermutation(ArrayRef<int64_t> perm);
+
+Value transposeSliceHelper(stablehlo::TransposeOp transpose,
+                           PatternRewriter &rewriter, stablehlo::SliceOp op);
+Value transposeSliceHelper(stablehlo::TransposeOp transpose,
+                           PatternRewriter &rewriter,
+                           stablehlo::DynamicSliceOp op);
+
+Value transposeSliceHelper(stablehlo::TransposeOp transpose,
+                           PatternRewriter &rewriter, ArrayRef<int64_t> starts,
+                           ArrayRef<int64_t> limits, ArrayRef<int64_t> strides);
+
+Value transposeSliceHelper(stablehlo::TransposeOp transpose,
+                           PatternRewriter &rewriter,
+                           ArrayRef<Value> sliceStarts,
+                           ArrayRef<int64_t> sliceSizes);
+
+Value sliceTransposeHelper(stablehlo::TransposeOp transpose,
+                           PatternRewriter &rewriter, stablehlo::SliceOp op);
+Value sliceTransposeHelper(stablehlo::TransposeOp transpose,
+                           PatternRewriter &rewriter,
+                           stablehlo::DynamicSliceOp op);
+Value sliceTransposeHelper(stablehlo::TransposeOp transpose,
+                           PatternRewriter &rewriter,
+                           stablehlo::DynamicUpdateSliceOp op);
+
+Value sliceTransposeHelper(stablehlo::TransposeOp transpose,
+                           PatternRewriter &rewriter, ArrayRef<int64_t> starts,
+                           ArrayRef<int64_t> limits, ArrayRef<int64_t> strides);
+
+Value sliceTransposeHelper(stablehlo::TransposeOp transpose,
+                           PatternRewriter &rewriter,
+                           ArrayRef<Value> sliceStarts,
+                           ArrayRef<int64_t> sliceSizes);
+
+// check if we can fuse transpose with op
+bool isFusible(stablehlo::TransposeOp transpose, Operation *op);
+
 template <typename OpTy>
 Value getIdentityValueForOp(OpBuilder &builder, Location loc, Type elemType);
 
@@ -1105,6 +1145,17 @@ Value ReshapeOpCreate(
 Value TransposeOpCreate(
     OpBuilder &builder, Location loc, Value input,
     ArrayRef<int64_t> permutation,
+    std::optional<sdy::TensorShardingPerValueAttr> sharding = std::nullopt);
+
+Value SliceOpCreate(
+    OpBuilder &builder, Location loc, Value input,
+    ArrayRef<int64_t> sliceStarts, ArrayRef<int64_t> sliceLimits,
+    ArrayRef<int64_t> sliceStrides,
+    std::optional<sdy::TensorShardingPerValueAttr> sharding = std::nullopt);
+
+Value DynamicSliceOpCreate(
+    OpBuilder &builder, Location loc, Value input, ArrayRef<Value> sliceStarts,
+    ArrayRef<int64_t> sliceSizes,
     std::optional<sdy::TensorShardingPerValueAttr> sharding = std::nullopt);
 
 } // namespace stablehlo
