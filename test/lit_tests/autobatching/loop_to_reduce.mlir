@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s -auto-batching -enzyme-hlo-opt | FileCheck %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-opt="enable_auto_batching_passes=true" %s | FileCheck %s
 
 module {
   func.func @main(%arg0: tensor<10x8x5xf32> {enzymexla.memory_effects = []}) -> tensor<10x5xf32> attributes {enzymexla.memory_effects = []} {
@@ -301,11 +301,11 @@ module {
 
 // CHECK: func.func @main(%arg0: tensor<10x8x5xf32> {enzymexla.memory_effects = []}) -> tensor<10x5xf32> attributes {enzymexla.memory_effects = []} {
 // CHECK-NEXT:   %cst = stablehlo.constant dense<2.500000e-01> : tensor<10x5xf32>
-// CHECK-NEXT:   %cst_0 = stablehlo.constant dense<1.000000e+00> : tensor<10x4x5xf32>
-// CHECK-NEXT:   %cst_1 = stablehlo.constant dense<1.000000e+00> : tensor<f32>
+// CHECK-NEXT:   %cst_0 = stablehlo.constant dense<1.000000e+00> : tensor<f32>
+// CHECK-NEXT:   %cst_1 = stablehlo.constant dense<1.000000e+00> : tensor<10x4x5xf32>
 // CHECK-NEXT:   %0 = stablehlo.slice %arg0 [0:10, 1:8:2, 0:5] : (tensor<10x8x5xf32>) -> tensor<10x4x5xf32>
-// CHECK-NEXT:   %1 = stablehlo.divide %cst_0, %0 : tensor<10x4x5xf32>
-// CHECK-NEXT:   %2 = stablehlo.reduce(%1 init: %cst_1) applies stablehlo.multiply across dimensions = [1] : (tensor<10x4x5xf32>, tensor<f32>) -> tensor<10x5xf32>
+// CHECK-NEXT:   %1 = stablehlo.divide %cst_1, %0 : tensor<10x4x5xf32>
+// CHECK-NEXT:   %2 = stablehlo.reduce(%1 init: %cst_0) applies stablehlo.multiply across dimensions = [1] : (tensor<10x4x5xf32>, tensor<f32>) -> tensor<10x5xf32>
 // CHECK-NEXT:   %3 = stablehlo.multiply %2, %cst : tensor<10x5xf32>
 // CHECK-NEXT:   return %3 : tensor<10x5xf32>
 // CHECK-NEXT: }

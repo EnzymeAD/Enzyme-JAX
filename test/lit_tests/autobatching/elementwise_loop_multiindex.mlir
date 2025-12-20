@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --auto-batching --enzyme-hlo-opt %s | FileCheck %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-opt="enable_auto_batching_passes=true" %s | FileCheck %s
 
 module {
   func.func @main(%arg0: tensor<22x20x12xf32>) -> tensor<22x20x12xf32> {
@@ -89,12 +89,10 @@ module {
 // CHECK-NEXT:   %cst = stablehlo.constant dense<0.000000e+00> : tensor<10x10xf32>
 // CHECK-NEXT:   %0 = stablehlo.transpose %arg0, dims = [1, 0] : (tensor<10x10xf32>) -> tensor<10x10xf32>
 // CHECK-NEXT:   %1 = "stablehlo.gather"(%0, %c) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1], start_index_map = [0, 1], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1>}> : (tensor<10x10xf32>, tensor<10x2xi32>) -> tensor<10xf32>
-// CHECK-NEXT:   %2 = stablehlo.reshape %1 : (tensor<10xf32>) -> tensor<10x1x1xf32>
-// CHECK-NEXT:   %3 = stablehlo.multiply %2, %2 : tensor<10x1x1xf32>
-// CHECK-NEXT:   %4 = stablehlo.reshape %3 : (tensor<10x1x1xf32>) -> tensor<10xf32>
-// CHECK-NEXT:   %5 = "stablehlo.scatter"(%cst, %c, %4) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>, unique_indices = true}> ({
+// CHECK-NEXT:   %2 = stablehlo.multiply %1, %1 : tensor<10xf32>
+// CHECK-NEXT:   %3 = "stablehlo.scatter"(%cst, %c, %2) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>, unique_indices = true}> ({
 // CHECK-NEXT:   ^bb0(%arg1: tensor<f32>, %arg2: tensor<f32>):
 // CHECK-NEXT:     stablehlo.return %arg2 : tensor<f32>
 // CHECK-NEXT:   }) : (tensor<10x10xf32>, tensor<10x2xi32>, tensor<10xf32>) -> tensor<10x10xf32>
-// CHECK-NEXT:   return %5 : tensor<10x10xf32>
+// CHECK-NEXT:   return %3 : tensor<10x10xf32>
 // CHECK-NEXT: }

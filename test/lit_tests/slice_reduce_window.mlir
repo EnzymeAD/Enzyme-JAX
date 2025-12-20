@@ -19,8 +19,7 @@ module {
 // CHECK-LABEL: @foo_raised
 // CHECK-SAME:    %[[ARG0:.*]]: tensor<85x180x18xf64>
 // CHECK:         %[[REDUCE:.*]] = stablehlo.reduce(%[[ARG0]] {{.*}} applies stablehlo.add across dimensions = [2]
-// CHECK:         %[[RESHAPE:.*]] = stablehlo.reshape %[[REDUCE]]
-// CHECK:         stablehlo.add %[[RESHAPE]]
+// CHECK:         stablehlo.add %[[REDUCE]]
 
 // -----
 
@@ -43,5 +42,4 @@ module {
 // CHECK-LABEL: @foo_raised
 // CHECK-SAME:    %[[ARG0:.*]]: tensor<85x180x18xf64>
 // CHECK:         %[[REDUCE:.*]] = stablehlo.reduce(%[[ARG0]] {{.*}} applies stablehlo.add across dimensions = [1]
-// CHECK:         %[[RESHAPE:.*]] = stablehlo.reshape %[[REDUCE]]
-// CHECK:         stablehlo.add %[[RESHAPE]]
+// CHECK:         stablehlo.add %[[REDUCE]]
