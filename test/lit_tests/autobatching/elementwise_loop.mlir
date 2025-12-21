@@ -123,10 +123,10 @@ module {
 // CHECK-NEXT:   %c_3 = stablehlo.constant dense<2> : tensor<i32>
 // CHECK-NEXT:   %0 = stablehlo.dynamic_slice %arg0, %c_3, sizes = [10] : (tensor<10xf64>, tensor<i32>) -> tensor<10xf64>
 // CHECK-NEXT:   %1 = stablehlo.slice %0 [0:10:3] : (tensor<10xf64>) -> tensor<4xf64>
-// CHECK-NEXT:   %2 = stablehlo.cosine %1 : tensor<4xf64>
-// CHECK-NEXT:   %3 = stablehlo.dynamic_slice %arg0, %c_3, sizes = [10] : (tensor<10xf64>, tensor<i32>) -> tensor<10xf64>
-// CHECK-NEXT:   %4 = stablehlo.slice %3 [0:10:3] : (tensor<10xf64>) -> tensor<4xf64>
-// CHECK-NEXT:   %5 = stablehlo.sine %4 : tensor<4xf64>
+// CHECK-NEXT:   %2 = stablehlo.dynamic_slice %arg0, %c_3, sizes = [10] : (tensor<10xf64>, tensor<i32>) -> tensor<10xf64>
+// CHECK-NEXT:   %3 = stablehlo.slice %2 [0:10:3] : (tensor<10xf64>) -> tensor<4xf64>
+// CHECK-NEXT:   %4 = stablehlo.cosine %1 : tensor<4xf64>
+// CHECK-NEXT:   %5 = stablehlo.sine %3 : tensor<4xf64>
 // CHECK-NEXT:   %6:2 = stablehlo.while(%iterArg = %c_0, %iterArg_4 = %cst) : tensor<i64>, tensor<10xf64>
 // CHECK-NEXT:   cond {
 // CHECK-NEXT:     %7 = stablehlo.compare  LT, %iterArg, %c_1 : (tensor<i64>, tensor<i64>) -> tensor<i1>
@@ -137,7 +137,7 @@ module {
 // CHECK-NEXT:     %9 = stablehlo.subtract %8, %c {enzymexla.bounds = {{.*}}} : tensor<i32>
 // CHECK-NEXT:     %10 = stablehlo.divide %iterArg, %c_2 {enzymexla.bounds = {{.*}}} : tensor<i64>
 // CHECK-NEXT:     %11 = stablehlo.dynamic_slice %5, %10, sizes = [1] : (tensor<4xf64>, tensor<i64>) -> tensor<1xf64>
-// CHECK-NEXT:     %12 = stablehlo.dynamic_slice %2, %10, sizes = [1] : (tensor<4xf64>, tensor<i64>) -> tensor<1xf64>
+// CHECK-NEXT:     %12 = stablehlo.dynamic_slice %4, %10, sizes = [1] : (tensor<4xf64>, tensor<i64>) -> tensor<1xf64>
 // CHECK-NEXT:     %13 = stablehlo.subtract %12, %11 : tensor<1xf64>
 // CHECK-NEXT:     %14 = stablehlo.dynamic_update_slice %iterArg_4, %13, %9 : (tensor<10xf64>, tensor<1xf64>, tensor<i32>) -> tensor<10xf64>
 // CHECK-NEXT:     stablehlo.return %7, %14 : tensor<i64>, tensor<10xf64>

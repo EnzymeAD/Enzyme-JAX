@@ -11047,33 +11047,51 @@ struct ReshapeReduceWindow final
 struct ReshapeElementwise final
     : CheckedOpRewritePattern<stablehlo::ReshapeOp, ReshapeElementwise> {
   bool onlySingleUser;
+  bool onlyFusible;
 
-  ReshapeElementwise(bool onlySingleUser, MLIRContext *context,
-                     PatternBenefit benefit = 1,
+  ReshapeElementwise(bool onlySingleUser, bool onlyFusible,
+                     MLIRContext *context, PatternBenefit benefit = 1,
                      ArrayRef<StringRef> generatedNames = {})
       : CheckedOpRewritePattern(context, benefit, generatedNames),
-        onlySingleUser(onlySingleUser) {}
+        onlySingleUser(onlySingleUser), onlyFusible(onlyFusible) {}
 
   LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
                                     PatternRewriter &rewriter) const {
     auto elem = op.getOperand().getDefiningOp();
-    if (!elem)
+    if (!elem) {
       return failure();
+    }
 
-    if (onlySingleUser && !llvm::hasSingleElement(elem->getUsers()))
+    if (onlySingleUser && !llvm::hasSingleElement(elem->getUsers())) {
       return failure();
+    }
 
-    if (!stablehlo::hasTraitElementwise(elem))
+    if (!stablehlo::hasTraitElementwise(elem)) {
       return failure();
+    }
+
+    if (onlyFusible) { // check that we can fuse all of the operands
+      if (!llvm::all_of(elem->getOperands(), [&](auto operand) {
+            if (auto defOp = operand.getDefiningOp()) {
+              return isFusible(defOp, op);
+            }
+            return false;
+          })) {
+        return failure();
+      }
+    }
 
     SmallVector<Value> ops;
     for (auto v : elem->getOperands()) {
-      ops.push_back(stablehlo::ReshapeOp::create(
-          rewriter, op.getLoc(),
-          RankedTensorType::get(
-              op.getType().getShape(),
-              cast<RankedTensorType>(v.getType()).getElementType()),
-          v));
+      // doing this prevents a potential infinite loop of patterns (and
+      // generally produces nicer intermediate IR)
+      Value reshapeOperand = v;
+      if (auto reshapeOp = v.getDefiningOp<stablehlo::ReshapeOp>()) {
+        reshapeOperand = reshapeOp.getOperand();
+      }
+      Value newOperand = stablehlo::ReshapeOpCreate(
+          rewriter, op->getLoc(), reshapeOperand, op.getType().getShape());
+      ops.push_back(newOperand);
     }
     auto newOp = rewriter.create(
         elem->getLoc(), elem->getName().getIdentifier(), ValueRange(ops),
@@ -20762,6 +20780,18 @@ struct ElementwiseReshapeLike
       if (!isa<stablehlo::ReshapeOp, stablehlo::BroadcastInDimOp>(defOp))
         return failure();
 
+      auto defOpOperation = defOp->getOperand(0).getDefiningOp();
+      if (defOpOperation) {
+        bool canFuse =
+            TypeSwitch<Operation *, bool>(defOp)
+                .Case<stablehlo::BroadcastInDimOp, stablehlo::ReshapeOp>(
+                    [&](auto op) { return isFusible(defOpOperation, op); })
+                .Default([](auto op) { return false; });
+        if (canFuse) { // other passes get priority here
+          return failure();
+        }
+      }
+
       if (!isOnlyUsedInOperation(defOp, op))
         return rewriter.notifyMatchFailure(
             op, "operand is used in more than one op");
@@ -27218,7 +27248,13 @@ void mlir::transform::addReshapeElementwise(RewritePatternSet &patterns,
                                             bool onlySingleUser,
                                             MLIRContext &context,
                                             PatternBenefit benefit) {
-  patterns.insert<ReshapeElementwise>(onlySingleUser, &context, benefit);
+  patterns.insert<ReshapeElementwise>(onlySingleUser, false, &context, benefit);
+}
+
+void mlir::transform::addReshapeElementwiseOnlyFusible(
+    RewritePatternSet &patterns, bool onlySingleUser, MLIRContext &context,
+    PatternBenefit benefit) {
+  patterns.insert<ReshapeElementwise>(onlySingleUser, true, &context, benefit);
 }
 
 void mlir::transform::addReshapeSlice(RewritePatternSet &patterns,
@@ -27464,8 +27500,8 @@ struct EnzymeHLOOptPass
 
     if (passses & (2048 * 64)) {
       // add reshape push up cases here
-      patterns.add<ReshapeElementwise, ReshapeSlice, ReshapeDynamicSlice>(
-          true, context);
+      patterns.add<ReshapeSlice, ReshapeDynamicSlice>(true, context);
+      patterns.add<ReshapeElementwise>(true, false, context);
       patterns.add<ReshapeOfConcatToConcatOfReshape, ReshapeDUS, ReshapePad,
                    ReshapeReduceWindow, ReshapeSelect>(context);
     }

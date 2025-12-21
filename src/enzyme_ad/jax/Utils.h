@@ -9,7 +9,6 @@
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/MapVector.h"
-#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -904,6 +903,8 @@ SmallVector<int64_t> findReshapeInsertionDims(RankedTensorType inputType,
 SmallVector<int64_t> findReshapeInsertionDims(ArrayRef<int64_t> inputShape,
                                               ArrayRef<int64_t> outputShape);
 
+bool isInsertDimOp(stablehlo::ReshapeOp reshapeOp);
+
 bool areValidInsertionDims(RankedTensorType inputType,
                            RankedTensorType outputType,
                            SmallVector<int64_t> insertionDims);
@@ -1124,8 +1125,10 @@ Value sliceTransposeHelper(stablehlo::TransposeOp transpose,
                            ArrayRef<Value> sliceStarts,
                            ArrayRef<int64_t> sliceSizes);
 
-// check if we can fuse transpose with op
+// checks if operation 1 can be fused with operation 2. ordering is important
 bool isFusible(stablehlo::TransposeOp transpose, Operation *op);
+bool isFusible(Operation *op, stablehlo::BroadcastInDimOp bcast);
+bool isFusible(Operation *op, stablehlo::ReshapeOp reshape);
 
 template <typename OpTy>
 Value getIdentityValueForOp(OpBuilder &builder, Location loc, Type elemType);

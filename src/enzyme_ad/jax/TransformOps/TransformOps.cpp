@@ -185,6 +185,11 @@ void ApplyReshapeElementwisePatterns::populatePatterns(
   addReshapeElementwise(patterns, getParameter(), *getContext(),
                         PatternBenefit(getBenefit().value_or(1)));
 }
+void ApplyReshapeElementwiseOnlyFusiblePatterns::populatePatterns(
+    RewritePatternSet &patterns) {
+  addReshapeElementwiseOnlyFusible(patterns, getParameter(), *getContext(),
+                                   PatternBenefit(getBenefit().value_or(1)));
+}
 void ApplyReshapeSlicePatterns::populatePatterns(RewritePatternSet &patterns) {
   addReshapeSlice(patterns, getParameter(), *getContext(),
                   PatternBenefit(getBenefit().value_or(1)));

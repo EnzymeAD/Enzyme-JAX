@@ -157,8 +157,9 @@ LogicalResult parseTransform(OpBuilder &builder, Location loc,
           opName == "reshape_licm" || opName == "transpose_licm" ||
           opName == "convolution_licm" || opName == "dynamic_slice_licm" ||
           opName == "transpose_elementwise" ||
-          opName == "reshape_elementwise" || opName == "reshape_slice" ||
-          opName == "reshape_dynamic_slice" ||
+          opName == "reshape_elementwise" ||
+          opName == "reshape_elementwise_only_fusible" ||
+          opName == "reshape_slice" || opName == "reshape_dynamic_slice" ||
           opName == "extend_unary_elementwise" ||
           opName == "wrap_unary_elementwise" ||
           opName == "no_nan_mul_simplify" || opName == "no_nan_div_simplify" ||
