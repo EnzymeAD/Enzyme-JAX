@@ -601,9 +601,9 @@ gentbl_cc_library(
 td_library(
     name = "TesseraDialectTdFiles",
     srcs = [
+        "Dialect/Tessera/Attrs.td",
         "Dialect/Tessera/Dialect.td",
         "Dialect/Tessera/Ops.td",
-	"Dialect/Tessera/Attrs.td"
     ],
     deps = [
         "@llvm-project//mlir:BuiltinDialectTdFiles",
