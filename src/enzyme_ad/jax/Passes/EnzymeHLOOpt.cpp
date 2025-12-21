@@ -17781,20 +17781,15 @@ struct ReshapeTransposeToBroadcast final
 
     auto permutation = transposeOp.getPermutation();
 
-    SmallVector<int64_t> broadcastDimensions;
-    for (int64_t i = 0; i < reshapeOpInputType.getRank(); ++i) {
-      auto it = llvm::find(permutation, i);
-      if (it == permutation.end()) {
-        return failure(); // The index was not found in the permutation
+    SmallVector<int64_t> broadcastDimensions(reshapeOpInputType.getRank());
+    int64_t origTensorDim = 0;
+    for (int64_t i = 0; i < reshapeOpOutputType.getRank(); ++i) {
+      if (llvm::is_contained(insertionDims, i)) {
+        continue;
       }
-      int64_t dim = std::distance(permutation.begin(), it);
 
-      auto inIt = llvm::lower_bound(insertionDims, dim);
-      int64_t nInsertedBefore = std::distance(insertionDims.begin(), inIt);
-      if (inIt != insertionDims.end() && *inIt == dim) {
-        nInsertedBefore++;
-      }
-      broadcastDimensions.push_back(dim + nInsertedBefore);
+      broadcastDimensions[permutation[origTensorDim]] = i;
+      origTensorDim++;
     }
 
     // Create a single broadcast_in_dim operation to replace the reshape +
