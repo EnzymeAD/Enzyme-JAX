@@ -123,7 +123,7 @@ struct FuncToTesseraPass
 
   StringRef getArgument() const final { return "func-to-tessera"; }
   StringRef getDescription() const final {
-    return "Convert func dialect to tessera dialect.";
+    return "Convert operations in the func dialect to operations in the tessera dialect.";
   }
 
   void getDependentDialects(DialectRegistry &registry) const override {

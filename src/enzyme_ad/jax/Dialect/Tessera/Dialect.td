@@ -28,6 +28,6 @@ def TesseraDialect : Dialect {
 class TesseraOp<string mnemonic, list<Trait> traits = []>
     : Op<TesseraDialect, mnemonic, traits>;
 
-class TesseraType<string name> : TypeDef<TesseraDialect, name>; // may need to be modified
+class TesseraAttr<string name> : AttrDef<TesseraDialect, name>;
 
 #endif // ENZYME_AD_JAX_DIALECT_TESSERA_DIALECT_TD
