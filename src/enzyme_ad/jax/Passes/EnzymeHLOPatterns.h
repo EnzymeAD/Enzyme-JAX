@@ -97,6 +97,9 @@ void addTransposeElementwise(RewritePatternSet &patterns, bool onlySingleUser,
                              MLIRContext &context, PatternBenefit benefit);
 void addReshapeElementwise(RewritePatternSet &patterns, bool onlySingleUser,
                            MLIRContext &context, PatternBenefit benefit);
+void addReshapeElementwiseOnlyFusible(RewritePatternSet &patterns,
+                                      bool onlySingleUser, MLIRContext &context,
+                                      PatternBenefit benefit);
 void addReshapeSlice(RewritePatternSet &patterns, bool onlySingleUser,
                      MLIRContext &context, PatternBenefit benefit);
 void addReshapeDynamicSlice(RewritePatternSet &patterns, bool onlySingleUser,
