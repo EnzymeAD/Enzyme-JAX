@@ -11085,12 +11085,22 @@ struct ReshapeElementwise final
     for (auto v : elem->getOperands()) {
       // doing this prevents a potential infinite loop of patterns (and
       // generally produces nicer intermediate IR)
-      Value reshapeOperand = v;
-      if (auto reshapeOp = v.getDefiningOp<stablehlo::ReshapeOp>()) {
-        reshapeOperand = reshapeOp.getOperand();
+      DenseElementsAttr cstAttr;
+      Value newOperand;
+      if (matchPattern(v, m_Constant(&cstAttr))) {
+        newOperand = stablehlo::ConstantOp::create(
+            rewriter, op->getLoc(),
+            cstAttr.reshape(RankedTensorType::get(
+                op.getType().getShape(),
+                cast<RankedTensorType>(v.getType()).getElementType())));
+      } else {
+        Value reshapeOperand = v;
+        if (auto reshapeOp = v.getDefiningOp<stablehlo::ReshapeOp>()) {
+          reshapeOperand = reshapeOp.getOperand();
+        }
+        newOperand = stablehlo::ReshapeOpCreate(
+            rewriter, op->getLoc(), reshapeOperand, op.getType().getShape());
       }
-      Value newOperand = stablehlo::ReshapeOpCreate(
-          rewriter, op->getLoc(), reshapeOperand, op.getType().getShape());
       ops.push_back(newOperand);
     }
     auto newOp = rewriter.create(
@@ -24671,264 +24681,6 @@ private:
   };
 };
 
-struct WhileIsCopySimplify
-    : public CheckedOpRewritePattern<stablehlo::WhileOp, WhileIsCopySimplify> {
-  using CheckedOpRewritePattern<stablehlo::WhileOp,
-                                WhileIsCopySimplify>::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::WhileOp whileOp,
-                                    PatternRewriter &rewriter) const {
-    auto info = WhileLoopInfo(whileOp);
-    auto computeInfoSuccess = info.computeInfo();
-    if (computeInfoSuccess.failed())
-      return computeInfoSuccess;
-
-    if (!info.isValid() || !info.isConstant() ||
-        info.getConstantNumIters() <= 0)
-      return failure();
-
-    auto &whileBody = whileOp.getBody().front();
-    auto affineIndexInfo = info.getAffineIndexInfo();
-
-    auto returnOp = dyn_cast<stablehlo::ReturnOp>(whileBody.getTerminator());
-    if (!returnOp)
-      return failure();
-
-    bool anyOpRewritten = false;
-    SmallVector<std::tuple<enzyme::BatchOp, func::FuncOp>> batchOps;
-
-    for (auto [idx, returnValue] : llvm::enumerate(returnOp.getOperands())) {
-      auto dusOp = returnValue.getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
-      if (!dusOp)
-        continue;
-
-      // check if operand is a loop caried variable
-      auto blockArg = dyn_cast<BlockArgument>(dusOp.getOperand());
-      if (!blockArg || blockArg.getOwner() != &whileBody ||
-          blockArg.getArgNumber() != idx)
-        continue;
-
-      if (whileOp.getResult(idx).getUses().empty())
-        continue;
-
-      auto dusInductionVarDims =
-          getInductionVariableDimension(dusOp, affineIndexInfo, whileOp, info);
-      if (dusInductionVarDims.empty())
-        continue;
-
-      auto updateChainOrNone = extractValidUpdateChain(rewriter, dusOp, whileOp,
-                                                       affineIndexInfo, info);
-      if (!updateChainOrNone.has_value())
-        continue;
-
-      auto updateChain = updateChainOrNone.value();
-      if (updateChain.empty())
-        continue;
-
-      auto dsOp = dyn_cast<stablehlo::DynamicSliceOp>(updateChain.back());
-      auto dsInductionVarDims =
-          getInductionVariableDimension(dsOp, affineIndexInfo, whileOp, info);
-      if (dsInductionVarDims.empty())
-        continue;
-
-      if (!info.canHoistOperationFromLoop(dsOp, dsInductionVarDims) ||
-          !info.canHoistOperationFromLoop(dusOp, dusInductionVarDims))
-        continue;
-
-      auto funcOp = createCopyFunction(rewriter, whileOp, updateChain,
-                                       dsInductionVarDims, dusInductionVarDims);
-      if (!funcOp)
-        continue;
-
-      anyOpRewritten = true;
-
-      rewriter.setInsertionPoint(whileOp);
-      Value dsResult;
-      auto successfulHoist = info.hoistOperationFromLoop(
-          rewriter, dsOp.getOperand(), dsOp, dsInductionVarDims, dsResult);
-      assert(successfulHoist && "expected DS hoist to succeed.");
-      (void)successfulHoist;
-      auto dsResTy = cast<RankedTensorType>(dsResult.getType());
-
-      // move the induction var to the front
-      SmallVector<int64_t> dsPerm;
-      dsPerm.push_back(dsInductionVarDims[0]);
-      for (size_t i = 0; i < dsResTy.getRank(); i++) {
-        if (dsInductionVarDims[0] != i)
-          dsPerm.push_back(i);
-      }
-
-      dsResult =
-          stablehlo::TransposeOp::create(rewriter, whileOp.getLoc(), dsResult,
-                                         rewriter.getDenseI64ArrayAttr(dsPerm));
-
-      auto dusOpUpdateTy = cast<RankedTensorType>(dusOp.getUpdate().getType());
-
-      SmallVector<int64_t> dusOpUpdateShapePreTranspose = {
-          info.getConstantNumIters()};
-      for (auto [i, sz] : llvm::enumerate(dusOpUpdateTy.getShape())) {
-        if (!llvm::is_contained(dusInductionVarDims, i))
-          dusOpUpdateShapePreTranspose.push_back(sz);
-      }
-      auto batchOpOutTy = RankedTensorType::get(dusOpUpdateShapePreTranspose,
-                                                dusOpUpdateTy.getElementType());
-
-      auto batchOp = enzyme::BatchOp::create(
-          rewriter, whileOp.getLoc(), batchOpOutTy, funcOp.getSymName(),
-          ValueRange(dsResult),
-          rewriter.getDenseI64ArrayAttr({info.getConstantNumIters()}));
-      batchOps.push_back({batchOp, funcOp});
-
-      Value newDUS;
-      successfulHoist = info.hoistOperationFromLoop(
-          rewriter, whileOp.getOperands()[idx], batchOp.getResult(0), dusOp,
-          dusInductionVarDims, newDUS);
-      assert(successfulHoist && "Expected DUS hoist to succeed.");
-
-      whileOp.getResult(idx).replaceAllUsesWith(newDUS);
-    }
-
-    if (!batchOps.empty()) {
-      for (auto &[batchOp, funcOp] : batchOps) {
-        enzyme::batchutils::batchOperationInline(
-            rewriter, batchOp,
-            cast<FunctionOpInterface>(funcOp.getOperation()));
-      }
-    }
-
-    return anyOpRewritten ? success() : failure();
-  }
-
-private:
-  func::FuncOp
-  createCopyFunction(PatternRewriter &rewriter, stablehlo::WhileOp whileOp,
-                     SmallVectorImpl<Operation *> &updateChain,
-                     SmallVectorImpl<int64_t> &dsInductionVarDims,
-                     SmallVectorImpl<int64_t> &dusInductionVarDims) const {
-    auto dSlice = cast<stablehlo::DynamicSliceOp>(updateChain.back());
-    auto dusOp = cast<stablehlo::DynamicUpdateSliceOp>(updateChain.front());
-
-    auto dSliceResTy = cast<RankedTensorType>(dSlice.getResult().getType());
-    auto dusUpdateTy = cast<RankedTensorType>(dusOp.getUpdate().getType());
-
-    auto funcInType = removeBatchedDims(dSliceResTy, dsInductionVarDims);
-    auto funcOutType = removeBatchedDims(dusUpdateTy, dusInductionVarDims);
-
-    static int64_t counter = 0;
-    std::string funcName =
-        "__enzymexla__copy_inside_while_loop_" + std::to_string(counter++);
-
-    auto modOp = whileOp->getParentOfType<ModuleOp>();
-    if (!modOp)
-      return nullptr;
-
-    rewriter.setInsertionPointToStart(modOp.getBody());
-    auto funcOp =
-        func::FuncOp::create(rewriter, whileOp.getLoc(), funcName,
-                             rewriter.getFunctionType(TypeRange{funcInType},
-                                                      TypeRange{funcOutType}));
-    funcOp.setPrivate();
-
-    auto &entryBlock = *funcOp.addEntryBlock();
-    rewriter.setInsertionPointToStart(&entryBlock);
-
-    auto reshapeIn = stablehlo::ReshapeOp::create(
-        rewriter, whileOp.getLoc(), dSliceResTy, entryBlock.getArgument(0));
-
-    IRMapping mapper;
-    mapper.map(dSlice.getResult(), reshapeIn.getResult());
-    for (int i = updateChain.size() - 2; i >= 1; i--) {
-      auto update = updateChain[i];
-      auto clonedOp = rewriter.clone(*update, mapper);
-      mapper.map(update->getResult(0), clonedOp->getResult(0));
-    }
-
-    auto reshapeOut =
-        stablehlo::ReshapeOp::create(rewriter, whileOp.getLoc(), funcOutType,
-                                     mapper.lookup(dusOp.getUpdate()));
-
-    func::ReturnOp::create(rewriter, whileOp.getLoc(), reshapeOut.getResult());
-
-    return funcOp;
-  }
-
-  RankedTensorType removeBatchedDims(RankedTensorType Ty,
-                                     SmallVectorImpl<int64_t> &dims) const {
-    SmallVector<int64_t> newShape;
-    for (int64_t i = 0; i < Ty.getRank(); i++) {
-      if (!llvm::is_contained(dims, i))
-        newShape.push_back(Ty.getDimSize(i));
-    }
-    return RankedTensorType::get(newShape, Ty.getElementType());
-  }
-
-  std::optional<SmallVector<Operation *>> extractValidUpdateChain(
-      PatternRewriter &rewriter, stablehlo::DynamicUpdateSliceOp dusOp,
-      stablehlo::WhileOp whileOp,
-      llvm::MapVector<Value, WhileLoopInfo::AffineIndexInfo> &affineIndexInfo,
-      WhileLoopInfo &info) const {
-    SmallVector<Operation *> updateChain;
-    updateChain.push_back(dusOp);
-
-    bool success = extractValidUpdateChainInner(
-        rewriter, dusOp.getUpdate().getDefiningOp(), whileOp, updateChain);
-
-    if (!success)
-      return std::nullopt;
-    return updateChain;
-  }
-
-  bool extractValidUpdateChainInner(
-      PatternRewriter &rewriter, Operation *op, stablehlo::WhileOp whileOp,
-      SmallVectorImpl<Operation *> &updateChain) const {
-    if (!op)
-      return false;
-
-    if (auto sliceOp = dyn_cast<stablehlo::DynamicSliceOp>(op)) {
-      // base case, we have reached the dynamic slice
-      updateChain.push_back(sliceOp);
-      return definedOutside(sliceOp.getOperand(), whileOp);
-    }
-
-    if (isa<stablehlo::ConvertOp, stablehlo::BroadcastInDimOp,
-            stablehlo::ReshapeOp, stablehlo::TransposeOp>(op)) {
-      updateChain.push_back(op);
-      return extractValidUpdateChainInner(
-          rewriter, op->getOperand(0).getDefiningOp(), whileOp, updateChain);
-    }
-
-    return false;
-  }
-
-  template <typename OpTy>
-  SmallVector<int64_t> getInductionVariableDimension(
-      OpTy op,
-      llvm::MapVector<Value, WhileLoopInfo::AffineIndexInfo> &affineIndexInfo,
-      stablehlo::WhileOp whileOp, WhileLoopInfo &info) const {
-    return getInductionVariableDimension(op.getStartIndices(), affineIndexInfo,
-                                         whileOp, info);
-  }
-
-  SmallVector<int64_t> getInductionVariableDimension(
-      mlir::OperandRange startIndices,
-      llvm::MapVector<Value, WhileLoopInfo::AffineIndexInfo> &affineIndexInfo,
-      stablehlo::WhileOp whileOp, WhileLoopInfo &info) const {
-    SmallVector<int64_t> inductionVarDimensions;
-
-    for (auto [i, startIndex] : llvm::enumerate(startIndices)) {
-      // we could hoist the other dimensions but licm should fix this
-      if (info.isConstantAcrossIterations(startIndex, false))
-        continue;
-
-      if (!affineIndexInfo.contains(startIndex))
-        return {};
-
-      inductionVarDimensions.push_back(i);
-    }
-    return inductionVarDimensions;
-  }
-};
-
 struct SplitVariadicScatterOp
     : public CheckedOpRewritePattern<stablehlo::ScatterOp,
                                      SplitVariadicScatterOp> {
@@ -27638,7 +27390,6 @@ struct EnzymeHLOOptPass
         DUSToDynamicPad,
         DynamicPadToPad,
         RemoveNoOpsFromWhileLoop,
-        WhileIsCopySimplify,
         SplitVariadicScatterOp,
         DynamicSliceSimplify,
         DotGeneralOnlyDiagonalAccess,
@@ -27654,6 +27405,8 @@ struct EnzymeHLOOptPass
         DotGeneralInsertDimContractionSimplification,
         FuseReshapeCollapseOrExpandDimsIntoReduce
       >(context);
+
+    patterns.add<ReshapeElementwise>(true, true, context);
 
     patterns.add<
         SelfElementwiseToConvolutionLike<stablehlo::SubtractOp>,
@@ -27673,6 +27426,13 @@ struct EnzymeHLOOptPass
                                 PatternBenefit(65000));
     patterns.add<ConcatenateOpCanon>(max_constant_expansion, context,
                                      PatternBenefit(65000));
+
+    if (enable_auto_batching_passes) {
+      mlir::enzyme::AutoBatchingPassPipelineOptions options{
+          true, true, "greedy", true, true};
+      mlir::enzyme::populateAutoBatchingPassPatterns(patterns, context,
+                                                     options);
+    }
 
     GreedyRewriteConfig config;
     config.setMaxIterations(max_iterations);

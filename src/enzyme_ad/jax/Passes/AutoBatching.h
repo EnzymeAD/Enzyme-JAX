@@ -202,3 +202,62 @@ struct WhileElementwiseReductionToReduce
   matchAndRewriteImpl(mlir::stablehlo::WhileOp whileOp,
                       mlir::PatternRewriter &rewriter) const;
 };
+
+struct WhileIsCopySimplify
+    : public mlir::enzyme::CheckedOpRewritePattern<mlir::stablehlo::WhileOp,
+                                                   WhileIsCopySimplify> {
+  using Base = mlir::enzyme::CheckedOpRewritePattern<mlir::stablehlo::WhileOp,
+                                                     WhileIsCopySimplify>;
+  using Base::Base;
+
+  mlir::LogicalResult
+  matchAndRewriteImpl(mlir::stablehlo::WhileOp whileOp,
+                      mlir::PatternRewriter &rewriter) const;
+
+private:
+  std::optional<llvm::SmallVector<mlir::Operation *>> extractValidUpdateChain(
+      mlir::PatternRewriter &rewriter,
+      mlir::stablehlo::DynamicUpdateSliceOp dusOp,
+      mlir::stablehlo::WhileOp whileOp,
+      llvm::MapVector<mlir::Value, mlir::enzyme::WhileLoopInfo::AffineIndexInfo>
+          &affineIndexInfo,
+      mlir::enzyme::WhileLoopInfo &info) const;
+
+  bool extractValidUpdateChainInner(
+      mlir::PatternRewriter &rewriter, mlir::Operation *op,
+      mlir::stablehlo::WhileOp whileOp,
+      llvm::SmallVectorImpl<mlir::Operation *> &updateChain) const;
+
+  template <typename OpTy>
+  llvm::SmallVector<int64_t> getInductionVariableDimension(
+      OpTy op,
+      llvm::MapVector<mlir::Value, mlir::enzyme::WhileLoopInfo::AffineIndexInfo>
+          &affineIndexInfo,
+      mlir::stablehlo::WhileOp whileOp,
+      mlir::enzyme::WhileLoopInfo &info) const;
+
+  llvm::SmallVector<int64_t> getInductionVariableDimension(
+      mlir::OperandRange startIndices,
+      llvm::MapVector<mlir::Value, mlir::enzyme::WhileLoopInfo::AffineIndexInfo>
+          &affineIndexInfo,
+      mlir::stablehlo::WhileOp whileOp,
+      mlir::enzyme::WhileLoopInfo &info) const;
+};
+
+namespace mlir {
+namespace enzyme {
+
+struct AutoBatchingPassPipelineOptions {
+  bool enableSliceToBatch;
+  bool enableConcatInsertDimToBatch;
+  std::string whileLoopBatchingMode;
+  bool enableWhileElementwiseReductionToReduce;
+  bool enableWhileIsCopySimplify;
+};
+
+void populateAutoBatchingPassPatterns(RewritePatternSet &patterns,
+                                      MLIRContext *ctx,
+                                      AutoBatchingPassPipelineOptions options);
+
+} // namespace enzyme
+} // namespace mlir

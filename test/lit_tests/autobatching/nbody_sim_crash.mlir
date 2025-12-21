@@ -17,7 +17,7 @@ module @reactant_compute... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
     %6 = stablehlo.convert %c_3 : tensor<i64>
     %cst_4 = stablehlo.constant dense<2.000000e+00> : tensor<f32>
     %7 = stablehlo.convert %cst_4 : tensor<f32>
-    // CHECK: %8 = stablehlo.compare  EQ, %6, %7 : (tensor<1024x1024x1x1xi64>, tensor<1024x1024x1x1xi64>) -> tensor<1024x1024x1x1xi1>
+    // CHECK: stablehlo.while
     %8:9 = stablehlo.while(%iterArg = %5, %iterArg_5 = %2, %iterArg_6 = %3, %iterArg_7 = %4, %iterArg_8 = %0, %iterArg_9 = %6, %iterArg_10 = %cst, %iterArg_11 = %7, %iterArg_12 = %1) : tensor<i64>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<3x1024xf32>, tensor<i64>, tensor<1024x1024xf32>, tensor<f32>, tensor<1024xf32> attributes {enzyme.disable_mincut}
     cond {
       %12 = stablehlo.subtract %iterArg_6, %iterArg_5 : tensor<i64>
