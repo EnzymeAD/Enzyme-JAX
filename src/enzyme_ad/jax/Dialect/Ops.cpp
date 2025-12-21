@@ -1081,6 +1081,42 @@ LogicalResult ExtendOp::inferReturnTypes(
   return success();
 }
 
+LogicalResult UpdateWithoutCornersOp::inferReturnTypes(
+    MLIRContext * /*context*/, std::optional<Location> location,
+    ValueRange operands, DictionaryAttr attributes, OpaqueProperties properties,
+    RegionRange regions, SmallVectorImpl<Type> &inferredReturnTypes) {
+  UpdateWithoutCornersOpAdaptor adaptor(operands, attributes, properties,
+                                        regions);
+  auto RT = cast<RankedTensorType>(adaptor.getOperand().getType());
+  if (adaptor.getDimensionX() < 0 ||
+      adaptor.getDimensionX() >= RT.getShape().size())
+    return failure();
+  if (adaptor.getDimensionY() < 0 ||
+      adaptor.getDimensionY() >= RT.getShape().size())
+    return failure();
+  if (adaptor.getDimensionX() >= adaptor.getDimensionY())
+    return failure();
+  if (adaptor.getX1() < 0)
+    return failure();
+  if (adaptor.getX2() < 0)
+    return failure();
+  if (adaptor.getX1() >= adaptor.getX2())
+    return failure();
+  if (adaptor.getX2() >= RT.getShape()[adaptor.getDimensionX()])
+    return failure();
+  if (adaptor.getY1() < 0)
+    return failure();
+  if (adaptor.getY2() < 0)
+    return failure();
+  if (adaptor.getY1() >= adaptor.getY2())
+    return failure();
+  if (adaptor.getY2() >= RT.getShape()[adaptor.getDimensionY()])
+    return failure();
+
+  inferredReturnTypes.push_back(RT);
+  return success();
+}
+
 void CommRegionOp::getSuccessorRegions(
     RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
   // If the predecessor is the ExecuteRegionOp, branch into the body.
