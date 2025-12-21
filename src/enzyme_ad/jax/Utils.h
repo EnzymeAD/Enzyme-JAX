@@ -915,6 +915,9 @@ bool getCollapsingMapping(
 
 bool isOnlyUsedInOperation(Operation *operation, Operation *parentOp);
 
+mlir::RankedTensorType removeBatchedDims(mlir::RankedTensorType Ty,
+                                         llvm::ArrayRef<int64_t> dims);
+
 } // namespace enzyme
 
 namespace stablehlo {

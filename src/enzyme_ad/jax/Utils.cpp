@@ -1156,6 +1156,17 @@ bool mayReadFrom(Operation *op, Value val) {
   return true;
 }
 
+RankedTensorType removeBatchedDims(RankedTensorType Ty,
+                                   ArrayRef<int64_t> dims) {
+  SmallVector<int64_t> newShape;
+  for (auto i : llvm::enumerate(Ty.getShape())) {
+    if (!llvm::is_contained(dims, i.index())) {
+      newShape.push_back(i.value());
+    }
+  }
+  return RankedTensorType::get(newShape, Ty.getElementType());
+}
+
 } // namespace enzyme
 
 namespace stablehlo {
@@ -2284,6 +2295,11 @@ bool isFusible(stablehlo::TransposeOp transpose, Operation *op) {
     return true;
   }
 
+  SplatElementsAttr splat;
+  if (matchPattern(op, m_Constant(&splat))) {
+    return true;
+  }
+
   if (auto reshapeOp = dyn_cast<stablehlo::ReshapeOp>(op)) {
     auto inputType = cast<RankedTensorType>(reshapeOp.getOperand().getType());
     auto outputType = cast<RankedTensorType>(reshapeOp.getResult().getType());
@@ -2307,7 +2323,7 @@ bool isFusible(Operation *op, stablehlo::ReshapeOp reshape) {
       .Case<stablehlo::ReshapeOp>([](auto prevOp) { return true; })
       .Case<stablehlo::BroadcastInDimOp>(
           [&](auto prevOp) { return isInsertDimOp(reshape); })
-      .Default([](auto other) { return false; });
+      .Default([](auto other) { return matchPattern(other, m_Constant()); });
 }
 
 bool isFusible(Operation *op, stablehlo::BroadcastInDimOp bcast) {
@@ -2316,7 +2332,7 @@ bool isFusible(Operation *op, stablehlo::BroadcastInDimOp bcast) {
           [](auto prevOp) { return true; })
       .Case<stablehlo::ReshapeOp>(
           [](auto reshape) { return isInsertDimOp(reshape); })
-      .Default([](auto other) { return false; });
+      .Default([](auto other) { return matchPattern(other, m_Constant()); });
 }
 
 } // namespace stablehlo

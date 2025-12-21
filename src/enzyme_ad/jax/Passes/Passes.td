@@ -180,6 +180,12 @@ def EnzymeHLOOptPass : Pass<"enzyme-hlo-opt"> {
         /*type=*/"bool",
         /*default=*/"false",
         /*description=*/"Enable convert to convolution">,
+    Option<
+        /*C++ variable name=*/"enable_auto_batching_passes",
+        /*CLI argument=*/"enable_auto_batching_passes",
+        /*type=*/"bool",
+        /*default=*/"false",
+        /*description=*/"Enable auto batching passes">
   ];
 }
 
@@ -1025,6 +1031,18 @@ def AutoBatchingPass : Pass<"auto-batching"> {
       /*type=*/"std::string",
       /*default=*/"\"greedy\"",
       /*description=*/"Whether to run while loop batching passes (greedy, none)">,
+    Option<
+      /*C++ variable name=*/"while_elementwise_reduction_to_reduce_passes",
+      /*CLI argument=*/"while_elementwise_reduction_to_reduce_passes",
+      /*type=*/"bool",
+      /*default=*/"true",
+      /*description=*/"Whether to run while elementwise reduction to reduce passes">,
+    Option<
+      /*C++ variable name=*/"while_is_copy_simplify_passes",
+      /*CLI argument=*/"while_is_copy_simplify_passes",
+      /*type=*/"bool",
+      /*default=*/"true",
+      /*description=*/"Whether to run while is copy simplify passes">,
     Option<
         /*C++ variable name=*/"max_iterations",
         /*CLI argument=*/"max_iterations",

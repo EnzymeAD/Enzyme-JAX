@@ -548,10 +548,10 @@ bool WhileLoopInfo::hoistOperationFromLoop(
   dSliceStarts[sliceIndex] = idxMinConst;
   dSliceSizes[sliceIndex] = actualSize;
 
-  auto dSlice = stablehlo::DynamicSliceOp::create(
-      builder, sliceOp.getLoc(), operand, dSliceStarts,
-      builder.getDenseI64ArrayAttr(dSliceSizes));
-  auto dType = dSlice.getResult().getType();
+  auto dSlice = stablehlo::DynamicSliceOpCreate(
+      builder, sliceOp.getLoc(), operand, dSliceStarts, dSliceSizes);
+  auto dType = dyn_cast<RankedTensorType>(dSlice.getType());
+  assert(dType);
 
   // j(i) = (scale * i + offset) - idx_min = scale * (i - lb)
   SmallVector<int64_t> sliceStarts(dSliceStarts.size(), 0);
@@ -560,12 +560,8 @@ bool WhileLoopInfo::hoistOperationFromLoop(
   SmallVector<int64_t> sliceLimits(dType.getShape().begin(),
                                    dType.getShape().end());
 
-  auto slice =
-      stablehlo::SliceOp::create(builder, sliceOp.getLoc(), dSlice,
-                                 builder.getDenseI64ArrayAttr(sliceStarts),
-                                 builder.getDenseI64ArrayAttr(sliceLimits),
-                                 builder.getDenseI64ArrayAttr(sliceStrides));
-  result = slice.getResult();
+  result = stablehlo::SliceOpCreate(builder, sliceOp.getLoc(), dSlice,
+                                    sliceStarts, sliceLimits, sliceStrides);
 
   if (scale < 0) {
     result = stablehlo::ReverseOp::create(
