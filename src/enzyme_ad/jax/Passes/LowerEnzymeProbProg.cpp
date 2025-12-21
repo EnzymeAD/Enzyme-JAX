@@ -2753,6 +2753,116 @@ struct WhileLoopOpConversion : public OpConversionPattern<enzyme::WhileLoopOp> {
   }
 };
 
+struct PopcountOpConversion : public OpConversionPattern<enzyme::PopcountOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  std::string backend;
+  PopcountOpConversion(std::string backend, TypeConverter &typeConverter,
+                       MLIRContext *context, PatternBenefit benefit = 1)
+      : OpConversionPattern(typeConverter, context, benefit), backend(backend) {
+  }
+
+  LogicalResult
+  matchAndRewrite(enzyme::PopcountOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto resultType = cast<RankedTensorType>(op.getResult().getType());
+    auto popcntOp = stablehlo::PopulationCountOp::create(
+        rewriter, op.getLoc(), resultType, adaptor.getOperand());
+    rewriter.replaceOp(op, popcntOp.getResult());
+    return success();
+  }
+};
+
+struct DynamicExtractOpConversion
+    : public OpConversionPattern<enzyme::DynamicExtractOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  std::string backend;
+  DynamicExtractOpConversion(std::string backend, TypeConverter &typeConverter,
+                             MLIRContext *context, PatternBenefit benefit = 1)
+      : OpConversionPattern(typeConverter, context, benefit), backend(backend) {
+  }
+
+  LogicalResult
+  matchAndRewrite(enzyme::DynamicExtractOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto input = adaptor.getInput();
+    auto index = adaptor.getIndex();
+    auto inputType = cast<RankedTensorType>(input.getType());
+    auto resultType = cast<RankedTensorType>(op.getResult().getType());
+
+    if (inputType.getRank() != 2) {
+      return rewriter.notifyMatchFailure(op, "Input must be 2D tensor");
+    }
+
+    int64_t positionSize = inputType.getShape()[1];
+    auto elemType = inputType.getElementType();
+
+    auto indexType = cast<RankedTensorType>(index.getType());
+    auto zeroConst = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), indexType,
+        DenseElementsAttr::get(indexType, rewriter.getI64IntegerAttr(0)));
+
+    auto slicedType = RankedTensorType::get({1, positionSize}, elemType);
+    auto dynamicSlice = stablehlo::DynamicSliceOp::create(
+        rewriter, op.getLoc(), slicedType, input, ValueRange{index, zeroConst},
+        rewriter.getDenseI64ArrayAttr({1, positionSize}));
+
+    auto reshapeOp = stablehlo::ReshapeOp::create(rewriter, op.getLoc(),
+                                                  resultType, dynamicSlice);
+
+    rewriter.replaceOp(op, reshapeOp.getResult());
+    return success();
+  }
+};
+
+struct DynamicUpdateOpConversion
+    : public OpConversionPattern<enzyme::DynamicUpdateOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  std::string backend;
+  DynamicUpdateOpConversion(std::string backend, TypeConverter &typeConverter,
+                            MLIRContext *context, PatternBenefit benefit = 1)
+      : OpConversionPattern(typeConverter, context, benefit), backend(backend) {
+  }
+
+  LogicalResult
+  matchAndRewrite(enzyme::DynamicUpdateOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto input = adaptor.getInput();
+    auto index = adaptor.getIndex();
+    auto value = adaptor.getValue();
+    auto inputType = cast<RankedTensorType>(input.getType());
+    auto valueType = cast<RankedTensorType>(value.getType());
+
+    if (inputType.getRank() != 2) {
+      return rewriter.notifyMatchFailure(op, "Input must be 2D tensor");
+    }
+    if (valueType.getRank() != 1) {
+      return rewriter.notifyMatchFailure(op, "Value must be 1D tensor");
+    }
+
+    int64_t positionSize = valueType.getShape()[0];
+    auto elemType = valueType.getElementType();
+
+    auto reshapedValueType = RankedTensorType::get({1, positionSize}, elemType);
+    auto reshapedValue = stablehlo::ReshapeOp::create(rewriter, op.getLoc(),
+                                                      reshapedValueType, value);
+
+    auto indexType = cast<RankedTensorType>(index.getType());
+    auto zeroConst = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), indexType,
+        DenseElementsAttr::get(indexType, rewriter.getI64IntegerAttr(0)));
+
+    auto dynamicUpdateSlice = stablehlo::DynamicUpdateSliceOp::create(
+        rewriter, op.getLoc(), inputType, input, reshapedValue,
+        ValueRange{index, zeroConst});
+
+    rewriter.replaceOp(op, dynamicUpdateSlice.getResult());
+    return success();
+  }
+};
+
 struct UnflattenSliceOpConversion
     : public OpConversionPattern<enzyme::UnflattenSliceOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -2849,15 +2959,20 @@ struct LowerProbProgToStableHLOPass
     target.addIllegalOp<enzyme::UnflattenSliceOp>();
     target.addIllegalOp<enzyme::ForLoopOp>();
     target.addIllegalOp<enzyme::WhileLoopOp>();
+    target.addIllegalOp<enzyme::PopcountOp>();
+    target.addIllegalOp<enzyme::DynamicExtractOp>();
+    target.addIllegalOp<enzyme::DynamicUpdateOp>();
 
     target.addLegalOp<UnrealizedConversionCastOp>();
 
     RewritePatternSet patterns(context);
 
-    patterns.add<RandomOpConversion, CholeskySolveOpConversion, DotOpConversion,
-                 LogAddExpOpConversion, UnflattenSliceOpConversion,
-                 ForLoopOpConversion, WhileLoopOpConversion>(
-        backend, typeConverter, context);
+    patterns
+        .add<RandomOpConversion, CholeskySolveOpConversion, DotOpConversion,
+             LogAddExpOpConversion, UnflattenSliceOpConversion,
+             ForLoopOpConversion, WhileLoopOpConversion, PopcountOpConversion,
+             DynamicExtractOpConversion, DynamicUpdateOpConversion>(
+            backend, typeConverter, context);
     patterns.add<RandomSplitOpConversion>(backend, debugDump, typeConverter,
                                           context);
 
