@@ -770,14 +770,17 @@ class EnzymeJaxTest(absltest.TestCase):
 
                         primals, tangents = fwd_enzyme(*(ins_backend + dins_backend))
 
-                        recursive_check(
-                            self,
-                            primals,
-                            primres,
-                            self.atol,
-                            self.rtol,
-                            "Primal " + pname,
-                        )
+                        if primres is None:
+                            primres = primals
+                        else:
+                            recursive_check(
+                                self,
+                                primals,
+                                primres,
+                                self.atol,
+                                self.rtol,
+                                "Primal " + pname,
+                            )
 
                         if fwdres is None:
                             fwdres = tangents

@@ -100,14 +100,7 @@ class JAXMD(EnzymeJaxTest):
         # for i, v in enumerate(self.ins):
         #    print("i=", i, v)
         self.dins = [x.copy() for x in self.ins]
-        self.douts = tuple(x.copy() for x in self.ins)
-
-        # No support for stablehlo.scatter atm
-        # self.revfilter = justjax
-        self.mlirad_rev = False
-
-        # TODO: This is horribly slow for reasons which are unknown.
-        # self.mlirad_fwd = False
+        self.douts = [x.copy() for x in self.ins]
 
         self.atol = 5e-3
         self.rtol = 1e-3
