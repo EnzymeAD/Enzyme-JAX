@@ -2143,12 +2143,13 @@ public:
 
     auto zeroUpdateType = scatterOp.getUpdates()[0].getType();
     auto elemType = cast<RankedTensorType>(zeroUpdateType).getElementType();
-    Value constMulConstantUpdate, zeroUpdate, zeroScalar;
+    Value zeroUpdate, zeroScalar;
 
     bool noInputDependencies = checkCommonScatterOp.isSetindexScatter ||
                                checkCommonScatterOp.isAddConstantInputScatter ||
                                checkCommonScatterOp.isMulConstantInputScatter;
-    if (noInputDependencies) {
+    if (noInputDependencies ||
+        checkCommonScatterOp.isMulConstantUpdateScatter) {
       zeroUpdate = stablehlo::ConstantOp::create(
           builder, scatterOp.getLoc(), zeroUpdateType,
           cast<ElementsAttr>(makeAttr(zeroUpdateType, 0)));
@@ -2164,18 +2165,11 @@ public:
     for (auto [i, operand] : llvm::enumerate(scatterOp.getInputs())) {
       if (!gutils->isConstantValue(operand)) {
         selectedOutputDiffe.push_back(outputDiffe[i]);
-        if (noInputDependencies) {
-          newScatterUpdates.push_back(zeroUpdate); // no input dependencies
+        if (noInputDependencies ||
+            checkCommonScatterOp.isMulConstantUpdateScatter) {
+          newScatterUpdates.push_back(zeroUpdate); // no update dependencies
         } else if (checkCommonScatterOp.isMulScatter) {
           newScatterUpdates.push_back(cachedUpdates[i]);
-        } else if (checkCommonScatterOp.isMulConstantUpdateScatter) {
-          if (!constMulConstantUpdate) {
-            constMulConstantUpdate = stablehlo::ConstantOp::create(
-                builder, scatterOp.getLoc(),
-                checkCommonScatterOp.constant.resizeSplat(
-                    cast<ShapedType>(scatterOp.getUpdates()[0].getType())));
-          }
-          newScatterUpdates.push_back(constMulConstantUpdate);
         } else {
           llvm_unreachable("Unknown scatter type in generating updates");
         }
@@ -2186,6 +2180,15 @@ public:
     int64_t nNonConsts = selectedOutputDiffe.size();
 
     if (nNonConsts > 0) {
+      auto argType = RankedTensorType::get({}, elemType);
+
+      Value constMulUpdateScalar;
+      if (checkCommonScatterOp.isMulConstantUpdateScatter) {
+        constMulUpdateScalar = stablehlo::ConstantOp::create(
+            builder, scatterOp.getLoc(),
+            checkCommonScatterOp.constant.resizeSplat(argType));
+      }
+
       auto newScatterOp = stablehlo::ScatterOp::create(
           builder, scatterOp.getLoc(), selectedOutputTypes, selectedOutputDiffe,
           scatterIndices, newScatterUpdates,
@@ -2195,7 +2198,6 @@ public:
 
       auto &updateRegion = newScatterOp.getUpdateComputation();
       auto *block = builder.createBlock(&updateRegion);
-      auto argType = RankedTensorType::get({}, elemType);
 
       for (int i = 0; i < 2 * nNonConsts; i++) {
         block->addArgument(argType, scatterOp.getLoc());
@@ -2205,25 +2207,25 @@ public:
         OpBuilder::InsertionGuard guard(builder);
         builder.setInsertionPointToStart(block);
 
-        if (checkCommonScatterOp.isSetindexScatter ||
-            checkCommonScatterOp.isAddConstantInputScatter ||
-            checkCommonScatterOp.isMulConstantInputScatter) {
-          SmallVector<Value> returnValues(nNonConsts, zeroScalar);
-          stablehlo::ReturnOp::create(builder, scatterOp.getLoc(),
-                                      returnValues);
-        } else if (checkCommonScatterOp.isMulScatter ||
-                   checkCommonScatterOp.isMulConstantUpdateScatter) {
-          SmallVector<Value> returnValues(nNonConsts);
+        SmallVector<Value> returnValues;
+        if (noInputDependencies) {
+          returnValues = SmallVector<Value>(nNonConsts, zeroScalar);
+        } else if (checkCommonScatterOp.isMulScatter) {
           for (int i = 0; i < nNonConsts; i++) {
-            returnValues[i] = builder.create<stablehlo::MulOp>(
+            returnValues.push_back(builder.create<stablehlo::MulOp>(
                 scatterOp.getLoc(), block->getArgument(i),
-                block->getArgument(i + nNonConsts));
+                block->getArgument(i + nNonConsts)));
           }
-          stablehlo::ReturnOp::create(builder, scatterOp.getLoc(),
-                                      returnValues);
+        } else if (checkCommonScatterOp.isMulConstantUpdateScatter) {
+          for (int i = 0; i < nNonConsts; i++) {
+            returnValues.push_back(builder.create<stablehlo::MulOp>(
+                scatterOp.getLoc(), block->getArgument(i),
+                constMulUpdateScalar));
+          }
         } else {
           llvm_unreachable("Unknown scatter type in inner function");
         }
+        stablehlo::ReturnOp::create(builder, scatterOp.getLoc(), returnValues);
       }
 
       builder.setInsertionPointAfter(newScatterOp);
@@ -2253,7 +2255,7 @@ public:
       return; // no dependence on the updates
     }
 
-    Value constMulConstantUpdate;
+    Value constMulUpdate;
 
     for (auto [i, update] : llvm::enumerate(scatterOp.getUpdates())) {
       if (!gutils->isConstantValue(update)) {
@@ -2267,15 +2269,14 @@ public:
                   stablehlo::MulOp::create(builder, scatterOp.getLoc(),
                                            gatherOperand, cachedOperands[i]);
             } else {
-              if (!constMulConstantUpdate) {
-                constMulConstantUpdate = stablehlo::ConstantOp::create(
+              if (!constMulUpdate) {
+                constMulUpdate = stablehlo::ConstantOp::create(
                     builder, scatterOp.getLoc(),
                     checkCommonScatterOp.constant.resizeSplat(
                         cast<ShapedType>(gatherOperand.getType())));
               }
               gatherOperand = stablehlo::MulOp::create(
-                  builder, scatterOp.getLoc(), gatherOperand,
-                  constMulConstantUpdate);
+                  builder, scatterOp.getLoc(), gatherOperand, constMulUpdate);
             }
           } else {
             llvm_unreachable("Mul scatter with non-unique indices. This should "
@@ -2290,6 +2291,7 @@ public:
 
         if (checkCommonScatterOp.isSetindexScatter ||
             checkCommonScatterOp.isAddScatter ||
+            checkCommonScatterOp.isAddConstantInputScatter ||
             checkCommonScatterOp.isMulScatter ||
             checkCommonScatterOp.isMulConstantInputScatter) {
           // nothing to do here
