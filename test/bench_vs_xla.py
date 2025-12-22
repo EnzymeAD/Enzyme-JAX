@@ -234,11 +234,7 @@ class ConstScatter(EnzymeJaxTest):
         N = 1024**2
         self.ins = [jnp.full(N, 2.7)]
         self.dins = [jnp.full(N, 3.1)]
-        self.douts = (self.dins[0],)
-
-        # TODO: support multiply for scatter reverse mode
-        self.revfilter = lambda _: []
-        # self.revfilter = justjax
+        self.douts = (jnp.array(5.0),)
 
 
 class ScatterSum(EnzymeJaxTest):
