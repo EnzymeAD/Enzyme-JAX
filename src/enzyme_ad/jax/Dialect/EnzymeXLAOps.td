@@ -13,7 +13,6 @@
 include "Enzyme/MLIR/Dialect/Dialect.td"
 include "Dialect.td"
 include "EnzymeXLAAttrs.td"
-include "EnzymeXLATypes.td"
 
 include "mlir/IR/BuiltinAttributes.td"
 include "mlir/Interfaces/ViewLikeInterface.td"
