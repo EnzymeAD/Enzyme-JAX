@@ -928,7 +928,9 @@ getGatherDims(mlir::MLIRContext *ctx,
 
 bool isSetindexBlock(mlir::Block *block);
 
-template <typename T> bool isCommutativeOpBlock(mlir::Block *block) {
+// rhs is only considered if commutative is false
+template <typename T, bool commutative, bool rhs>
+bool isOnlyOpBlock(mlir::Block *block) {
   if (block->getNumArguments() != 2)
     return false;
 
@@ -942,11 +944,64 @@ template <typename T> bool isCommutativeOpBlock(mlir::Block *block) {
   if (op.getNumOperands() != 2)
     return false;
 
-  if (!(op->getOperand(0) == block->getArgument(0) &&
-        op->getOperand(1) == block->getArgument(1)) &&
-      !(op->getOperand(0) == block->getArgument(1) &&
-        op->getOperand(1) == block->getArgument(0)))
+  if constexpr (commutative) {
+    if (!(op->getOperand(0) == block->getArgument(0) &&
+          op->getOperand(1) == block->getArgument(1)) &&
+        !(op->getOperand(0) == block->getArgument(1) &&
+          op->getOperand(1) == block->getArgument(0)))
+      return false;
+  } else {
+    if constexpr (rhs) {
+      if (!(op->getOperand(0) == block->getArgument(0) &&
+            op->getOperand(1) == block->getArgument(1)))
+        return false;
+    } else {
+      if (!(op->getOperand(0) == block->getArgument(1) &&
+            op->getOperand(1) == block->getArgument(0)))
+        return false;
+    }
+  }
+
+  auto returnOp = block->getTerminator();
+  auto stablehloReturnOp = dyn_cast<stablehlo::ReturnOp>(returnOp);
+  if (!stablehloReturnOp)
     return false;
+
+  if (stablehloReturnOp.getNumOperands() != 1)
+    return false;
+
+  // The returned value should be the result of the addition
+  return stablehloReturnOp.getOperand(0) == op.getResult();
+}
+
+template <typename T, int nonConstantIndex>
+bool isOnlyOpConstantBlock(mlir::Block *block,
+                           mlir::SplatElementsAttr &constant) {
+  if (block->getNumArguments() != 2)
+    return false;
+
+  if (!hasSingleElement(block->without_terminator()))
+    return false;
+
+  auto op = dyn_cast<T>(block->front());
+  if (!op)
+    return false;
+
+  if (op.getNumOperands() != 2)
+    return false;
+
+  // the non constant operand needs to be the first argument
+  auto lhs = op->getOperand(0);
+  auto rhs = op->getOperand(1);
+  if (matchPattern(lhs, m_Constant(&constant))) {
+    if (rhs != block->getArgument(nonConstantIndex))
+      return false;
+  } else if (matchPattern(rhs, m_Constant(&constant))) {
+    if (lhs != block->getArgument(nonConstantIndex))
+      return false;
+  } else {
+    return false;
+  }
 
   auto returnOp = block->getTerminator();
   auto stablehloReturnOp = dyn_cast<stablehlo::ReturnOp>(returnOp);
@@ -984,13 +1039,13 @@ public:
     }
 
     auto &block = region.getBlocks().front();
-    isAddReduce = isCommutativeOpBlock<stablehlo::AddOp>(&block);
-    isMinReduce = isCommutativeOpBlock<stablehlo::MinOp>(&block);
-    isMaxReduce = isCommutativeOpBlock<stablehlo::MaxOp>(&block);
-    isMulReduce = isCommutativeOpBlock<stablehlo::MulOp>(&block);
-    isAndReduce = isCommutativeOpBlock<stablehlo::AndOp>(&block);
-    isOrReduce = isCommutativeOpBlock<stablehlo::OrOp>(&block);
-    isXorReduce = isCommutativeOpBlock<stablehlo::XorOp>(&block);
+    isAddReduce = isOnlyOpBlock<stablehlo::AddOp, true, false>(&block);
+    isMinReduce = isOnlyOpBlock<stablehlo::MinOp, true, false>(&block);
+    isMaxReduce = isOnlyOpBlock<stablehlo::MaxOp, true, false>(&block);
+    isMulReduce = isOnlyOpBlock<stablehlo::MulOp, true, false>(&block);
+    isAndReduce = isOnlyOpBlock<stablehlo::AndOp, true, false>(&block);
+    isOrReduce = isOnlyOpBlock<stablehlo::OrOp, true, false>(&block);
+    isXorReduce = isOnlyOpBlock<stablehlo::XorOp, true, false>(&block);
   }
 };
 
@@ -998,6 +1053,19 @@ struct CheckCommonScatterOp {
 public:
   bool isSetindexScatter;
   bool isAddScatter;
+  bool isMinScatter;
+  bool isMaxScatter;
+  bool isMulScatter;
+  bool isAndScatter;
+  bool isOrScatter;
+  bool isXorScatter;
+  bool isSubScatter;
+
+  bool isMulConstantUpdateScatter;
+  bool isMulConstantInputScatter;
+  bool isAddConstantUpdateScatter;
+  bool isAddConstantInputScatter;
+  SplatElementsAttr constant;
 
   CheckCommonScatterOp(stablehlo::ScatterOp op) {
     auto &updateComputation = op.getUpdateComputation();
@@ -1005,12 +1073,55 @@ public:
     if (!updateComputation.hasOneBlock()) {
       isSetindexScatter = false;
       isAddScatter = false;
+      isMinScatter = false;
+      isMaxScatter = false;
+      isMulScatter = false;
+      isAndScatter = false;
+      isOrScatter = false;
+      isXorScatter = false;
+      isSubScatter = false;
+
+      isMulConstantUpdateScatter = false;
+      isAddConstantUpdateScatter = false;
+      isMulConstantInputScatter = false;
+      isAddConstantInputScatter = false;
       return;
     }
 
     auto &block = updateComputation.front();
     isSetindexScatter = isSetindexBlock(&block);
-    isAddScatter = isCommutativeOpBlock<stablehlo::AddOp>(&block);
+    isAddScatter = isOnlyOpBlock<stablehlo::AddOp, true, false>(&block);
+    isMulScatter = isOnlyOpBlock<stablehlo::MulOp, true, false>(&block);
+    isMinScatter = isOnlyOpBlock<stablehlo::MinOp, true, false>(&block);
+    isMaxScatter = isOnlyOpBlock<stablehlo::MaxOp, true, false>(&block);
+    isAndScatter = isOnlyOpBlock<stablehlo::AndOp, true, false>(&block);
+    isOrScatter = isOnlyOpBlock<stablehlo::OrOp, true, false>(&block);
+    isXorScatter = isOnlyOpBlock<stablehlo::XorOp, true, false>(&block);
+    isSubScatter = isOnlyOpBlock<stablehlo::SubtractOp, false, true>(&block);
+
+    isMulConstantUpdateScatter =
+        isOnlyOpConstantBlock<stablehlo::MulOp, 0>(&block, constant);
+    if (!isMulConstantUpdateScatter) {
+      isMulConstantInputScatter =
+          isOnlyOpConstantBlock<stablehlo::MulOp, 1>(&block, constant);
+      if (!isMulConstantInputScatter) {
+        isAddConstantUpdateScatter =
+            isOnlyOpConstantBlock<stablehlo::AddOp, 0>(&block, constant);
+        if (!isAddConstantUpdateScatter) {
+          isAddConstantInputScatter =
+              isOnlyOpConstantBlock<stablehlo::AddOp, 1>(&block, constant);
+        } else {
+          isAddConstantInputScatter = false;
+        }
+      } else {
+        isAddConstantUpdateScatter = false;
+        isAddConstantInputScatter = false;
+      }
+    } else {
+      isAddConstantUpdateScatter = false;
+      isAddConstantInputScatter = false;
+      isMulConstantInputScatter = false;
+    }
   }
 };
 
