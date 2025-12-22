@@ -139,6 +139,12 @@ def EnzymeHLOOptPass : Pass<"enzyme-hlo-opt"> {
         /*default=*/"false",
         /*description=*/"Whether to raise to assume all variables are finite">,
     Option<
+        /*C++ variable name=*/"licm_passes",
+        /*CLI argument=*/"licm_passes",
+        /*type=*/"bool",
+        /*default=*/"false",
+        /*description=*/"Whether to run LICM passes">,
+    Option<
         /*C++ variable name=*/"no_nan",
         /*CLI argument=*/"no_nan",
         /*type=*/"bool",
