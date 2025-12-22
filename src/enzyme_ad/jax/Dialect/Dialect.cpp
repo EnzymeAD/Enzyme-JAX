@@ -24,9 +24,6 @@
 #include "src/enzyme_ad/jax/Dialect/EnzymeXLAAttrDefs.cpp.inc"
 #include "src/enzyme_ad/jax/Dialect/EnzymeXLAAttrEnums.cpp.inc"
 
-#define GET_TYPEDEF_CLASSES
-#include "src/enzyme_ad/jax/Dialect/EnzymeXLATypes.cpp.inc"
-
 // #include "Dialect/EnzymeEnums.cpp.inc"
 #include "src/enzyme_ad/jax/Dialect/EnzymeXLADialect.cpp.inc"
 

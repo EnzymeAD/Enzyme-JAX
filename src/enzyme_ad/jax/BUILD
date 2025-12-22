@@ -377,7 +377,6 @@ td_library(
     srcs = [
         "Dialect/Dialect.td",
         "Dialect/EnzymeXLAAttrs.td",
-        "Dialect/EnzymeXLATypes.td",
         "Dialect/EnzymeXLAOps.td",
     ],
     includes = ["."],
@@ -422,25 +421,6 @@ gentbl_cc_library(
 )
 
 gentbl_cc_library(
-    name = "EnzymeXLATypesIncGen",
-    tbl_outs = [
-        (
-            ["--gen-typedef-decls"],
-            "Dialect/EnzymeXLATypes.h.inc",
-        ),
-        (
-            ["--gen-typedef-defs"],
-            "Dialect/EnzymeXLATypes.cpp.inc",
-        ),
-    ],
-    tblgen = "@llvm-project//mlir:mlir-tblgen",
-    td_file = "Dialect/EnzymeXLATypes.td",
-    deps = [
-        ":EnzymeXLADialectTdFiles",
-    ],
-)
-
-gentbl_cc_library(
     name = "EnzymeXLAOpsIncGen",
     tbl_outs = [
         (
@@ -469,6 +449,7 @@ gentbl_cc_library(
     tblgen = "@llvm-project//mlir:mlir-tblgen",
     td_file = "Dialect/EnzymeXLAOps.td",
     deps = [
+        ":EnzymeXLAAttrsIncGen",
         ":EnzymeXLADialectTdFiles",
         "@enzyme//:EnzymeDialectTdFiles",
         "@llvm-project//mlir:GPUOpsTdFiles",
@@ -760,7 +741,6 @@ cc_library(
     ],
     deps = [
         ":EnzymeXLAAttrsIncGen",
-        ":EnzymeXLATypesIncGen",
         ":EnzymeXLACanonicalizers",
         ":EnzymeXLADialectUtils",
         ":EnzymeXLAOpsIncGen",
@@ -958,7 +938,6 @@ cc_library(
     deps = [
         ":EnzymeHLOPatternsIncGen",
         ":EnzymeXLAAttrsIncGen",
-        ":EnzymeXLATypesIncGen",
         ":EnzymeXLACanonicalizers",
         ":EnzymeXLADialect",
         ":EnzymeXLADialectUtils",
