@@ -974,7 +974,9 @@ bool isOnlyOpBlock(mlir::Block *block) {
   return stablehloReturnOp.getOperand(0) == op.getResult();
 }
 
-template <typename T> bool isRhsOpBlock(mlir::Block *block) {
+template <typename T, int nonConstantIndex>
+bool isOnlyOpConstantBlock(mlir::Block *block,
+                           mlir::SplatElementsAttr &constant) {
   if (block->getNumArguments() != 2)
     return false;
 
@@ -988,9 +990,18 @@ template <typename T> bool isRhsOpBlock(mlir::Block *block) {
   if (op.getNumOperands() != 2)
     return false;
 
-  if (!(op->getOperand(0) == block->getArgument(0) &&
-        op->getOperand(1) == block->getArgument(1)))
+  // the non constant operand needs to be the first argument
+  auto lhs = op->getOperand(0);
+  auto rhs = op->getOperand(1);
+  if (matchPattern(lhs, m_Constant(&constant))) {
+    if (rhs != block->getArgument(nonConstantIndex))
+      return false;
+  } else if (matchPattern(rhs, m_Constant(&constant))) {
+    if (lhs != block->getArgument(nonConstantIndex))
+      return false;
+  } else {
     return false;
+  }
 
   auto returnOp = block->getTerminator();
   auto stablehloReturnOp = dyn_cast<stablehlo::ReturnOp>(returnOp);
@@ -1050,6 +1061,12 @@ public:
   bool isXorScatter;
   bool isSubScatter;
 
+  bool isMulConstantUpdateScatter;
+  bool isMulConstantInputScatter;
+  bool isAddConstantUpdateScatter;
+  bool isAddConstantInputScatter;
+  SplatElementsAttr constant;
+
   CheckCommonScatterOp(stablehlo::ScatterOp op) {
     auto &updateComputation = op.getUpdateComputation();
 
@@ -1063,6 +1080,11 @@ public:
       isOrScatter = false;
       isXorScatter = false;
       isSubScatter = false;
+
+      isMulConstantUpdateScatter = false;
+      isAddConstantUpdateScatter = false;
+      isMulConstantInputScatter = false;
+      isAddConstantInputScatter = false;
       return;
     }
 
@@ -1076,6 +1098,30 @@ public:
     isOrScatter = isOnlyOpBlock<stablehlo::OrOp, true, false>(&block);
     isXorScatter = isOnlyOpBlock<stablehlo::XorOp, true, false>(&block);
     isSubScatter = isOnlyOpBlock<stablehlo::SubtractOp, false, true>(&block);
+
+    isMulConstantUpdateScatter =
+        isOnlyOpConstantBlock<stablehlo::MulOp, 0>(&block, constant);
+    if (!isMulConstantUpdateScatter) {
+      isMulConstantInputScatter =
+          isOnlyOpConstantBlock<stablehlo::MulOp, 1>(&block, constant);
+      if (!isMulConstantInputScatter) {
+        isAddConstantUpdateScatter =
+            isOnlyOpConstantBlock<stablehlo::AddOp, 0>(&block, constant);
+        if (!isAddConstantUpdateScatter) {
+          isAddConstantInputScatter =
+              isOnlyOpConstantBlock<stablehlo::AddOp, 1>(&block, constant);
+        } else {
+          isAddConstantInputScatter = false;
+        }
+      } else {
+        isAddConstantUpdateScatter = false;
+        isAddConstantInputScatter = false;
+      }
+    } else {
+      isAddConstantUpdateScatter = false;
+      isAddConstantInputScatter = false;
+      isMulConstantInputScatter = false;
+    }
   }
 };
 
