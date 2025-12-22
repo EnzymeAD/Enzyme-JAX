@@ -408,6 +408,14 @@ bool WhileLoopInfo::isConstantAcrossIterations(
   if (!defOp)
     return false;
 
+  // bail out if the operation is not isolated from above. we need to analyze
+  // all the operations in the regions to ensure that this is constant across
+  // iterations
+  if (defOp->getNumRegions() != 0 &&
+      !defOp->hasTrait<mlir::OpTrait::IsIsolatedFromAbove>()) {
+    return false;
+  }
+
   // all operands of the defining op are constant across iterations
   // don't populate the outerValue in this case
   if (llvm::all_of(defOp->getOperands(), [&](Value operand) {
