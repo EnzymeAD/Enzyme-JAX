@@ -1309,30 +1309,28 @@ bool isSetindexBlock(mlir::Block *block) {
 }
 
 SmallVector<int64_t> computeGatherSliceSizes(stablehlo::ScatterOp &scatterOp) {
-  auto inputType = cast<ShapedType>(scatterOp.getInputs()[0].getType());
-  auto updateType = cast<ShapedType>(scatterOp.getUpdates()[0].getType());
+  auto inputType = cast<RankedTensorType>(scatterOp.getInputs()[0].getType());
+  auto updateType = cast<RankedTensorType>(scatterOp.getUpdates()[0].getType());
   auto scatterDimNumbers = scatterOp.getScatterDimensionNumbers();
 
-  auto inputShape = inputType.getShape();
   auto updateShape = updateType.getShape();
 
-  SmallVector<int64_t> sliceSizes(inputShape.size(), 1);
+  SmallVector<int64_t> sliceSizes;
+  sliceSizes.reserve(inputType.getRank());
 
   auto updateWindowDims = scatterDimNumbers.getUpdateWindowDims();
-  auto scatterIndicesBatchingDims =
-      scatterDimNumbers.getScatterIndicesBatchingDims();
+  auto insertedWindowDims = scatterDimNumbers.getInsertedWindowDims();
+  auto operandBatchingDims = scatterDimNumbers.getInputBatchingDims();
 
-  // Map update window dimensions to their corresponding input dimensions
-  for (int64_t i = 0; i < updateWindowDims.size(); ++i) {
-    int64_t inputDim = updateWindowDims[i];
-
-    // Calculate the corresponding dimension in the update tensor
-    // Update tensor layout: [scatter_indices_batching_dims...,
-    // update_window_dims...]
-    int64_t updateDimIndex = scatterIndicesBatchingDims.size() + i;
-
-    if (updateDimIndex < updateShape.size()) {
-      sliceSizes[inputDim] = updateShape[updateDimIndex];
+  // https://github.com/jax-ml/jax/blob/6d41fa0c5a9400f40a4c8fb53c32b45e460903cd/jax/_src/lax/slicing.py#L2799
+  int64_t pos = 0;
+  for (size_t i = 0; i < inputType.getRank(); ++i) {
+    if (llvm::is_contained(insertedWindowDims, i) ||
+        llvm::is_contained(operandBatchingDims, i)) {
+      sliceSizes.push_back(1);
+    } else {
+      sliceSizes.push_back(updateShape[updateWindowDims[pos]]);
+      pos++;
     }
   }
 

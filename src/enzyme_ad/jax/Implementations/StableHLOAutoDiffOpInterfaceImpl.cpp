@@ -2038,10 +2038,22 @@ public:
         mlir::stablehlo::CheckCommonScatterOp(scatterOp);
 
     if (!checkCommonScatterOp.isSetindexScatter &&
-        !checkCommonScatterOp.isAddScatter) {
-      op->emitError("AutoDiffScatterRev only supports Setindex "
-                    "and AddScatter operations");
+        !checkCommonScatterOp.isAddScatter &&
+        !checkCommonScatterOp.isSubScatter &&
+        !checkCommonScatterOp.isMulScatter) {
+      op->emitError("AutoDiffScatterRev only supports Setindex, AddScatter, "
+                    "SubScatter and MulScatter operations");
       return failure();
+    }
+
+    if (checkCommonScatterOp.isMulScatter && !scatterOp.getUniqueIndices()) {
+      for (auto update : scatterOp.getUpdates()) {
+        if (!gutils->isConstantValue(update)) {
+          op->emitError("Mul scatter with non-unique indices and update "
+                        "requires adjoint. This is currently unsupported");
+          return failure();
+        }
+      }
     }
 
     SmallVector<Value> outputDiffe;
@@ -2053,27 +2065,50 @@ public:
 
     auto scatterIndices = gutils->popCache(caches[0], builder);
 
+    SmallVector<Value> cachedOperands;
+    SmallVector<Value> cachedUpdates;
+
+    bool needsOperandCached = needsOperandsCached(checkCommonScatterOp);
+    bool needsUpdateCached = needsUpdatesCached(checkCommonScatterOp);
+
+    if (needsOperandCached) {
+      for (auto [i, opup] : llvm::enumerate(llvm::zip_equal(
+               scatterOp.getInputs(), scatterOp.getUpdates()))) {
+        auto [operand, update] = opup;
+        if (!gutils->isConstantValue(operand)) {
+          cachedOperands.push_back(gutils->popCache(caches[1 + i], builder));
+        }
+      }
+    }
+
+    if (needsUpdateCached) {
+      for (auto [i, opup] : llvm::enumerate(llvm::zip_equal(
+               scatterOp.getInputs(), scatterOp.getUpdates()))) {
+        auto [operand, update] = opup;
+        if (!gutils->isConstantValue(operand)) {
+          cachedUpdates.push_back(
+              gutils->popCache(caches[1 + cachedOperands.size() + i], builder));
+        }
+      }
+    }
+
     auto gatherDims = stablehlo::getGatherDims(
         scatterOp->getContext(), scatterOp.getScatterDimensionNumbers());
+
     auto gatherSliceSizes = builder.getDenseI64ArrayAttr(
         stablehlo::computeGatherSliceSizes(scatterOp));
 
-    if (checkCommonScatterOp.isAddScatter) {
-      createScatterAddGradientInputs(scatterOp, gutils, scatterIndices,
-                                     gatherDims, gatherSliceSizes, outputDiffe,
-                                     builder);
-    } else {
-      createScatterSetindexGradientInputs(scatterOp, gutils, scatterIndices,
-                                          gatherDims, gatherSliceSizes,
-                                          outputDiffe, builder);
-    }
-
+    createScatterGradientInputs(scatterOp, gutils, scatterIndices, gatherDims,
+                                gatherSliceSizes, outputDiffe, builder,
+                                checkCommonScatterOp, cachedOperands,
+                                cachedUpdates);
     createGradientUpdates(scatterOp, gutils, scatterIndices, gatherDims,
-                          gatherSliceSizes, outputDiffe, builder);
+                          gatherSliceSizes, outputDiffe, builder,
+                          checkCommonScatterOp, cachedOperands, cachedUpdates);
     return success();
   }
 
-  void createScatterAddGradientInputs(
+  void createScatterAddSubGradientInputs(
       stablehlo::ScatterOp scatterOp, MGradientUtilsReverse *gutils,
       Value scatterIndices,
       stablehlo::GatherDimensionNumbersAttr gatherDimNumbers,
@@ -2081,22 +2116,27 @@ public:
       OpBuilder &builder) const {
     for (auto [i, operand] : llvm::enumerate(scatterOp.getInputs())) {
       if (!gutils->isConstantValue(operand)) {
-        auto updateDiffe = stablehlo::GatherOp::create(
-            builder, scatterOp.getLoc(), outputDiffe[i], scatterIndices,
-            gatherDimNumbers, gatherSliceSizes,
-            scatterOp.getIndicesAreSortedAttr());
-        gutils->addToDiffe(operand, updateDiffe, builder);
+        gutils->addToDiffe(operand, outputDiffe[i], builder);
       }
     }
     return;
   }
 
-  void createScatterSetindexGradientInputs(
+  void createScatterGradientInputs(
       stablehlo::ScatterOp scatterOp, MGradientUtilsReverse *gutils,
       Value scatterIndices,
       stablehlo::GatherDimensionNumbersAttr gatherDimNumbers,
       DenseI64ArrayAttr gatherSliceSizes, SmallVector<Value> outputDiffe,
-      OpBuilder &builder) const {
+      OpBuilder &builder, CheckCommonScatterOp &checkCommonScatterOp,
+      SmallVectorImpl<Value> &cachedOperands,
+      SmallVectorImpl<Value> &cachedUpdates) const {
+    if (checkCommonScatterOp.isAddScatter ||
+        checkCommonScatterOp.isSubScatter) {
+      return createScatterAddSubGradientInputs(
+          scatterOp, gutils, scatterIndices, gatherDimNumbers, gatherSliceSizes,
+          outputDiffe, builder);
+    }
+
     auto zeroUpdateType = scatterOp.getUpdates()[0].getType();
     auto zeroUpdate = stablehlo::ConstantOp::create(
         builder, scatterOp.getLoc(), zeroUpdateType,
@@ -2113,7 +2153,13 @@ public:
     for (auto [i, operand] : llvm::enumerate(scatterOp.getInputs())) {
       if (!gutils->isConstantValue(operand)) {
         selectedOutputDiffe.push_back(outputDiffe[i]);
-        newScatterUpdates.push_back(zeroUpdate);
+        if (checkCommonScatterOp.isSetindexScatter) {
+          newScatterUpdates.push_back(zeroUpdate);
+        } else if (checkCommonScatterOp.isMulScatter) {
+          newScatterUpdates.push_back(cachedUpdates[i]);
+        } else {
+          llvm_unreachable("Unknown scatter type");
+        }
         selectedOutputTypes.push_back(
             cast<RankedTensorType>(outputDiffe[i].getType()));
       }
@@ -2132,18 +2178,30 @@ public:
       auto *block = builder.createBlock(&updateRegion);
       auto argType = RankedTensorType::get({}, elemType);
 
-      for (int i = 0; i < 2 * nNonConsts; i++)
+      for (int i = 0; i < 2 * nNonConsts; i++) {
         block->addArgument(argType, scatterOp.getLoc());
+      }
 
       {
         OpBuilder::InsertionGuard guard(builder);
         builder.setInsertionPointToStart(block);
 
-        SmallVector<Value> returnValues;
-        for (int i = nNonConsts; i < 2 * nNonConsts; i++)
-          returnValues.push_back(zeroScalar);
-
-        stablehlo::ReturnOp::create(builder, scatterOp.getLoc(), returnValues);
+        if (checkCommonScatterOp.isSetindexScatter) {
+          SmallVector<Value> returnValues(nNonConsts, zeroScalar);
+          stablehlo::ReturnOp::create(builder, scatterOp.getLoc(),
+                                      returnValues);
+        } else if (checkCommonScatterOp.isMulScatter) {
+          SmallVector<Value> returnValues(nNonConsts, zeroScalar);
+          for (int i = 0; i < nNonConsts; i++) {
+            returnValues[i] = builder.create<stablehlo::MulOp>(
+                scatterOp.getLoc(), block->getArgument(i),
+                block->getArgument(i + nNonConsts));
+          }
+          stablehlo::ReturnOp::create(builder, scatterOp.getLoc(),
+                                      returnValues);
+        } else {
+          llvm_unreachable("Unknown scatter type");
+        }
       }
 
       builder.setInsertionPointAfter(newScatterOp);
@@ -2164,14 +2222,40 @@ public:
                         MGradientUtilsReverse *gutils, Value scatterIndices,
                         stablehlo::GatherDimensionNumbersAttr gatherDimNumbers,
                         DenseI64ArrayAttr gatherSliceSizes,
-                        SmallVector<Value> outputDiffe,
-                        OpBuilder &builder) const {
+                        SmallVector<Value> outputDiffe, OpBuilder &builder,
+                        CheckCommonScatterOp &checkCommonScatterOp,
+                        SmallVectorImpl<Value> &cachedOperands,
+                        SmallVectorImpl<Value> &cachedUpdates) const {
     for (auto [i, update] : llvm::enumerate(scatterOp.getUpdates())) {
       if (!gutils->isConstantValue(update)) {
-        auto updateDiffe = stablehlo::GatherOp::create(
-            builder, scatterOp.getLoc(), outputDiffe[i], scatterIndices,
+        Value gatherOperand = outputDiffe[i];
+
+        if (checkCommonScatterOp.isMulScatter) {
+          if (scatterOp.getUniqueIndices()) {
+            gatherOperand = stablehlo::MulOp::create(
+                builder, scatterOp.getLoc(), gatherOperand, cachedOperands[i]);
+          } else {
+            llvm_unreachable("Mul scatter with non-unique indices. This should "
+                             "have been caught early.");
+          }
+        }
+
+        Value updateDiffe = stablehlo::GatherOp::create(
+            builder, scatterOp.getLoc(), gatherOperand, scatterIndices,
             gatherDimNumbers, gatherSliceSizes,
             scatterOp.getIndicesAreSortedAttr());
+
+        if (checkCommonScatterOp.isSetindexScatter ||
+            checkCommonScatterOp.isAddScatter ||
+            checkCommonScatterOp.isMulScatter) {
+          // nothing to do here
+        } else if (checkCommonScatterOp.isSubScatter) {
+          updateDiffe = stablehlo::NegOp::create(builder, scatterOp.getLoc(),
+                                                 updateDiffe);
+        } else {
+          llvm_unreachable("Unknown scatter type");
+        }
+
         gutils->addToDiffe(update, updateDiffe, builder);
       }
     }
@@ -2212,10 +2296,46 @@ public:
           cacheBuilder);
       caches.push_back(scatterIndicesCached);
 
+      auto checkCommonScatterOp =
+          mlir::stablehlo::CheckCommonScatterOp(scatterOp);
+
+      bool needsOperandCached = needsOperandsCached(checkCommonScatterOp);
+      bool needsUpdateCached = needsUpdatesCached(checkCommonScatterOp);
+
+      if (needsOperandCached) {
+        for (auto [input, update] :
+             llvm::zip_equal(scatterOp.getInputs(), scatterOp.getUpdates())) {
+          if (!gutils->isConstantValue(update)) {
+            Value operandCached = gutils->initAndPushCache(
+                gutils->getNewFromOriginal(input), cacheBuilder);
+            caches.push_back(operandCached);
+          }
+        }
+      }
+
+      if (needsUpdateCached) {
+        for (auto [input, update] :
+             llvm::zip_equal(scatterOp.getInputs(), scatterOp.getUpdates())) {
+          if (!gutils->isConstantValue(input)) {
+            Value updateCached = gutils->initAndPushCache(
+                gutils->getNewFromOriginal(update), cacheBuilder);
+            caches.push_back(updateCached);
+          }
+        }
+      }
+
       return caches;
     }
 
     return {};
+  }
+
+  bool needsOperandsCached(CheckCommonScatterOp &checkCommonScatterOp) const {
+    return checkCommonScatterOp.isMulScatter;
+  }
+
+  bool needsUpdatesCached(CheckCommonScatterOp &checkCommonScatterOp) const {
+    return checkCommonScatterOp.isMulScatter;
   }
 };
 
