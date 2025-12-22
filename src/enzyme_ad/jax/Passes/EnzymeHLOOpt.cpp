@@ -19063,9 +19063,8 @@ struct LowerCommRegion
   }
 };
 
-bool isRotateLike(int dimension, Value lhs, Value rhs,
-                  stablehlo::SliceOp *sl0P = nullptr,
-                  stablehlo::SliceOp *sl1P = nullptr) {
+bool isRotateLike(int dimension, Value lhs, Value rhs, stablehlo::SliceOp *sl0P,
+                  stablehlo::SliceOp *sl1P) {
   auto sl0 = lhs.getDefiningOp<stablehlo::SliceOp>();
   if (!sl0)
     return false;
