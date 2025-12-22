@@ -1,5 +1,6 @@
-// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(optimize-communication{rotate_comm=1 rotate_to_pad_comm=0})" %s | FileCheck %s --check-prefix=CPERM
-// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(optimize-communication{rotate_to_pad_comm=1})" %s | FileCheck %s --check-prefix=PAD
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(optimize-communication{rotate_comm=1 rotate_to_pad_comm=0 rotate_spmd=0})" %s | FileCheck %s --check-prefix=CPERM
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(optimize-communication{rotate_comm=0 rotate_to_pad_comm=1 rotate_spmd=0})" %s | FileCheck %s --check-prefix=PAD
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(optimize-communication{rotate_comm=0 rotate_to_pad_comm=0 rotate_spmd=1})" %s | FileCheck %s --check-prefix=SPMD
 
 sdy.mesh @mesh1 = <["z"=1, "x"=4, "y"=4]>
 func.func @main1(%arg0: tensor<20x24x96xf64> {sdy.sharding = #sdy.sharding<@mesh1, [{"z"}, {"y"}, {"x"}]>}) -> (tensor<4x8x80xf64> {sdy.sharding = #sdy.sharding<@mesh1, [{"z"}, {"y"}, {"x"}]>}) {
