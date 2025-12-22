@@ -62,3 +62,14 @@ func.func @main3(%arg0: tensor<20x24x96xf64> {sdy.sharding = #sdy.sharding<@mesh
 // PAD-NEXT:     return %5 : tensor<4x8x80xf64>
 // PAD-NEXT:   }
 // PAD-NEXT: }
+
+// SPMD:  func.func @main1(%arg0: tensor<20x24x96xf64> {sdy.sharding = #sdy.sharding<@mesh1, [{"z"}, {"y"}, {"x"}]>}) -> (tensor<4x8x80xf64> {sdy.sharding = #sdy.sharding<@mesh1, [{"z"}, {"y"}, {"x"}]>}) {
+// SPMD-NEXT:    %0 = stablehlo.slice %arg0 [8:12, 8:16, 8:88] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<20x24x96xf64>) -> tensor<4x8x80xf64>
+// SPMD-NEXT:    %1 = stablehlo.custom_call @_SPMDInternalOp_RotateRight(%0) {backend_config = "dimension=2,amount=78", sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<4x8x80xf64>) -> tensor<4x8x80xf64>
+// SPMD-NEXT:    return %1 : tensor<4x8x80xf64>
+// SPMD-NEXT:  }
+// SPMD:  func.func @main3(%arg0: tensor<20x24x96xf64> {sdy.sharding = #sdy.sharding<@mesh1, [{"z"}, {"y"}, {"x"}]>}) -> (tensor<4x8x80xf64> {sdy.sharding = #sdy.sharding<@mesh1, [{"z"}, {"y"}, {"x"}]>}) {
+// SPMD-NEXT:    %0 = stablehlo.slice %arg0 [8:12, 8:16, 8:88] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<20x24x96xf64>) -> tensor<4x8x80xf64>
+// SPMD-NEXT:    %1 = stablehlo.custom_call @_SPMDInternalOp_RotateRight(%0) {backend_config = "dimension=1,amount=6", sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<4x8x80xf64>) -> tensor<4x8x80xf64>
+// SPMD-NEXT:    return %1 : tensor<4x8x80xf64>
+// SPMD-NEXT:  }
