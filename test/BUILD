@@ -45,7 +45,9 @@ TEST_DEPS = [
         "@pypi_libtpu_nightly//:pkg",
         "@pypi_requests//:pkg",
     ],
-    "@bazel_tools//src/conditions:linux_x86_64": [],
+    "@bazel_tools//src/conditions:linux_x86_64": [
+        "@pypi_xprof//:pkg",
+    ],
     "//conditions:default": [],
 })
 
@@ -87,6 +89,7 @@ py_test(
     srcs = [
         "bench_vs_xla.py",
         "test_utils.py",
+        "xprof_utils.py",
     ],
     imports = ["."],
     tags = ["exclusive"],
@@ -98,6 +101,7 @@ py_test(
     srcs = [
         "test_utils.py",
         "testffi.py",
+        "xprof_utils.py",
     ],
     imports = ["."],
     tags = ["exclusive"],
@@ -110,6 +114,7 @@ py_test(
     srcs = [
         "llama.py",
         "test_utils.py",
+        "xprof_utils.py",
     ],
     imports = ["."],
     tags = ["exclusive"],
@@ -122,6 +127,7 @@ py_test(
     srcs = [
         "jaxmd.py",
         "test_utils.py",
+        "xprof_utils.py",
     ],
     imports = ["."],
     tags = ["exclusive"],
@@ -140,6 +146,7 @@ py_test(
     srcs = [
         "neuralgcm_test.py",
         "test_utils.py",
+        "xprof_utils.py",
     ],
     imports = ["."],
     tags = ["exclusive"],
@@ -149,25 +156,26 @@ py_test(
     }),
 )
 
-py_test(
-    name = "keras_test",
-    timeout = "eternal",
-    srcs = [
-        "keras_test.py",
-        "test_utils.py",
-    ],
-    imports = ["."],
-    tags = ["exclusive"],
-    deps = TEST_DEPS + select({
-        "@bazel_tools//src/conditions:linux_x86_64": [
-            "@pypi_benchmark//:pkg",
-            "@pypi_keras//:pkg",
-            "@pypi_keras_cv//:pkg",
-            "@pypi_keras_hub//:pkg",
-        ],
-        "//conditions:default": [],
-    }),
-)
+# py_test(
+#     name = "keras_test",
+#     timeout = "eternal",
+#     srcs = [
+#         "keras_test.py",
+#         "test_utils.py",
+#         "xprof_utils.py",
+#     ],
+#     imports = ["."],
+#     tags = ["exclusive"],
+#     deps = TEST_DEPS + select({
+#         "@bazel_tools//src/conditions:linux_x86_64": [
+#             "@pypi_benchmark//:pkg",
+#             "@pypi_keras//:pkg",
+#             "@pypi_keras_cv//:pkg",
+#             "@pypi_keras_hub//:pkg",
+#         ],
+#         "//conditions:default": [],
+#     }),
+# )
 
 # py_test(
 #     name = "maxtext",

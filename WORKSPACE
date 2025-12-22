@@ -59,15 +59,21 @@ python_init_rules()
 
 load("@xla//third_party/py:python_init_repositories.bzl", "python_init_repositories")
 
+# Backend requirements selection (cuda/tpu/cpu):
+# - Set ENZYMEXLA_BACKEND=cuda|tpu|cpu to force a specific backend
+# - If not set, auto-detects based on available hardware
+load("//builddeps:device_detect.bzl", "detect_backend", "get_requirements_files")
+
+detect_backend(name = "backend_config")
+
+# Load the detected configuration
+load("@backend_config//:defs.bzl", "BACKEND")
+
 python_init_repositories(
     local_wheel_inclusion_list = [
         "enzyme_ad*",
     ],
-    requirements = {
-        "3.10": "//builddeps:requirements_lock_3_10.txt",
-        "3.11": "//builddeps:requirements_lock_3_11.txt",
-        "3.12": "//builddeps:requirements_lock_3_12.txt",
-    },
+    requirements = get_requirements_files(BACKEND),
 )
 
 load("@xla//third_party/py:python_init_toolchains.bzl", "python_init_toolchains")

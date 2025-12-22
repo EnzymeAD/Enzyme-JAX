@@ -1,0 +1,12 @@
+# TPU requirements
+# Common deps + TPU-specific packages
+
+-r test-requirements-common.txt
+
+# TPU backend (uses official JAX TPU releases)
+jax[tpu]; sys_platform == 'linux'
+
+# Base deps
+jax >= 0.7.0
+jaxlib
+absl_py >= 2.3.0

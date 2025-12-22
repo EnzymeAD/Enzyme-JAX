@@ -4,3 +4,6 @@
 bazel-*
 compile_commands.json
 .vscode/
+
+# Generated Python requirements lock files (regenerated on CI)
+builddeps/requirements_lock_*.txt

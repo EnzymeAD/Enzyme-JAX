@@ -81,6 +81,20 @@ jobs:
           if [ ${{ runner.arch }} == ARM64 ] && [ ${{ runner.os }} == Linux ]; then
               BAZEL_FLAGS="${BAZEL_FLAGS} --linkopt=-fuse-ld=lld"
           fi
+
+          # Determine backend based on runner type
+          if [[ "${{ matrix.os }}" == *"tpu"* ]]; then
+            BAZEL_FLAGS="${BAZEL_FLAGS} --config=tpu"
+            echo "Using TPU backend"
+          elif [[ "${{ matrix.os }}" == *"a100"* ]] || [[ "${{ matrix.os }}" == *"gpu"* ]]; then
+            BAZEL_FLAGS="${BAZEL_FLAGS} --config=cuda"
+            echo "Using CUDA backend"
+          else
+            BAZEL_FLAGS="${BAZEL_FLAGS} --config=cpu"
+            echo "Using CPU backend"
+          fi
+
+          # TPU environment variables
           BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_TOPOLOGY"
           BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_WORKER_ID"
           BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_SKIP_MDS_QUERY=true"
@@ -110,16 +124,23 @@ jobs:
           # Share repository cache between workflows.
           repository-cache: true
           bazelisk-version: 1.x
-      - name: Update TPU
-        if: ${{ contains(matrix.os, 'tpu') }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+      - name: Determine backend variant
+        id: backend
+        shell: bash
         run: |
-          env
-          sed -i.bak0 "s/cuda12/tpu/g" builddeps/test-requirements.txt
-          sed -i.bak0 "s/pypi_jax_cuda12_plugin/pypi_libtpu/g" test/BUILD
-      - name: Only test CUDA on GPU
-        if: ${{ !contains(matrix.os, 'a100') }}
-        run: |
-          sed -i.bak0 "/cuda12/d" builddeps/test-requirements.txt
+          if [[ "${{ matrix.os }}" == *"tpu"* ]]; then
+            echo "variant=tpu" >> $GITHUB_OUTPUT
+          elif [[ "${{ matrix.os }}" == *"a100"* ]] || [[ "${{ matrix.os }}" == *"gpu"* ]]; then
+            echo "variant=cuda" >> $GITHUB_OUTPUT
+          else
+            echo "variant=cpu" >> $GITHUB_OUTPUT
+          fi
+      - name: Update Python requirements files
+        run: ./builddeps/update_requirements.sh ${{ steps.backend.outputs.variant }}
+
       - name: Build enzymexlamlir-opt
         timeout-minutes: 180
         run: |
@@ -140,9 +161,6 @@ jobs:
         run: |
           bazel test $BAZEL_FLAGS -c dbg --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/lit_tests/...
 
-      - name: Update Python requirements files
-        run: |
-          bazel run $BAZEL_FLAGS --color=yes //builddeps:requirements.update
       - name: Build wheel
         timeout-minutes: 240
         run: |
@@ -158,11 +176,11 @@ jobs:
         id: tests
         continue-on-error: true
         run: |
-          bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/...
+          bazel test $BAZEL_FLAGS --color=yes --test_output=streamed --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/...
       - name: Run tests (dbg)
         if: steps.tests.outcome == 'failure'
         run: |
-          bazel test $BAZEL_FLAGS -c dbg --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/...
+          bazel test $BAZEL_FLAGS -c dbg --color=yes --test_output=streamed --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/...
 
       - name: Upload test results
         uses: actions/upload-artifact@v6

@@ -1,0 +1,12 @@
+# CUDA requirements
+# Common deps + CUDA-specific packages
+
+-r test-requirements-common.txt
+
+# CUDA backend
+jax[cuda12]; sys_platform == 'linux'
+
+# Base deps
+jax >= 0.7.0
+jaxlib
+absl_py >= 2.3.0

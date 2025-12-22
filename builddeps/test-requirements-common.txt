@@ -1,0 +1,31 @@
+# Common test requirements shared across all backends (CPU, CUDA, TPU)
+# This file contains only platform-independent dependencies
+
+absl-py
+numpy
+
+xprof < 2.21, >= 2.20; platform_machine != 'aarch64' # protobuf versioning nonsense; not available on ARM
+
+jax-md
+jgraph
+
+# XXX: maxtext installs weird conflicting versions for protobuf
+# https://github.com/wsmoses/maxtext/archive/bc50722be7d89e4003bd830b80e4ac968be658eb.tar.gz; python_version < "3.12"
+# maxtext; python_version < "3.13"
+
+neuralgcm
+dm-haiku >= 0.0.14
+
+# Use gcsfs directly instead of fsspec[gcs] to avoid circular dependency
+# gcsfs depends on fsspec, so fsspec will be installed automatically
+gcsfs; sys_platform == 'linux'
+requests; sys_platform == 'linux'
+
+# https://github.com/avik-pal/keras/archive/7344964561c15611dd2d734a2bdd6b872a07709d.tar.gz; sys_platform == 'linux'
+# https://github.com/wsmoses/keras-benchmarks/archive/9caedf38085b7fd23cef19e75ab9b7ab31ae99b0.tar.gz; sys_platform == 'linux'
+
+# tf_keras; sys_platform == 'linux'
+# keras-hub; sys_platform == 'linux'
+# keras-cv; sys_platform == 'linux'
+
+# tensorflow-cpu-datasets; sys_platform == 'linux'

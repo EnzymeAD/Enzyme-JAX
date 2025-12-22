@@ -57,3 +57,12 @@ common --define=allow_oversize_protos=true
 build --@rules_python//python/config_settings:precompile=force_disabled
 
 build -c opt
+
+# Backend requirements selection (cuda12/cuda13/tpu/cpu)
+# Use --config=cuda to auto-detect CUDA version, or specify explicitly
+# If none specified, auto-detects based on available hardware
+build:cuda --repo_env=ENZYMEXLA_BACKEND=cuda
+build:cuda12 --repo_env=ENZYMEXLA_BACKEND=cuda12
+build:cuda13 --repo_env=ENZYMEXLA_BACKEND=cuda13
+build:tpu --repo_env=ENZYMEXLA_BACKEND=tpu
+build:cpu --repo_env=ENZYMEXLA_BACKEND=cpu

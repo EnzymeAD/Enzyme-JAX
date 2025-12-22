@@ -7,6 +7,8 @@ from enzyme_ad.jax import (
     full_optimization_pass_pipeline,
 )
 
+from xprof_utils import profile_function
+
 
 def fix_paths():
     for nm in [
@@ -535,9 +537,9 @@ def to_backend(x, backend):
     return jax.device_put(x, dev)
 
 
-def recursive_check(tester, lhs, rhs, atol=1e-8, rtol=1e-5, pname=None):
+def recursive_check(tester, lhs, rhs, pname=None):
     def leaves_allclose(leaf1, leaf2):
-        legal = jnp.allclose(leaf1, leaf2, atol=atol, rtol=rtol)
+        legal = jnp.allclose(leaf1, leaf2, atol=tester.atol, rtol=tester.rtol)
         if not legal:
             max_err = jnp.max(jnp.abs(leaf1 - leaf2))
             if tester.skip_test_assert:
@@ -553,7 +555,7 @@ def recursive_check(tester, lhs, rhs, atol=1e-8, rtol=1e-5, pname=None):
                 print("lhs", leaf1)
             print("rhs", leaf2)
             print("abs", jnp.abs(leaf1 - leaf2))
-            print("eq", jnp.abs(leaf1 - leaf2) < atol)
+            print("eq", jnp.abs(leaf1 - leaf2) < tester.atol)
             print("max", max_err)
         tester.assertTrue(legal)
         return legal
@@ -699,8 +701,7 @@ class EnzymeJaxTest(absltest.TestCase):
                             else enzyme_jax_ir(
                                 pipeline_options=pipeline, argv=argv, inner_jit=False
                             )(in_fn)
-                        ),
-                        backend=backend,
+                        )
                     )
 
                     _dump_mlir_to_file(
@@ -715,31 +716,27 @@ class EnzymeJaxTest(absltest.TestCase):
                     if primres is None:
                         primres = ao
                     else:
-                        recursive_check(
-                            self,
-                            ao,
-                            primres,
-                            self.atol,
-                            self.rtol,
-                            "Primal " + pname,
-                        )
+                        recursive_check(self, ao, primres, "Primal " + pname)
 
-                    self.pretty_print_table(
-                        name,
-                        pname,
-                        backend,
-                        "Primal",
-                        min(
-                            timeit.Timer(
-                                primalstr,
-                                globals={
-                                    "fn": rfn_enzyme,
-                                }
-                                | primalins,
-                            ).repeat(repeat=self.repeat, number=self.count)
+                    if backend == "cpu":  # xprof doesn't get correct info for cpu
+                        runtime = (
+                            min(
+                                timeit.Timer(
+                                    primalstr,
+                                    globals={
+                                        "fn": rfn_enzyme,
+                                    }
+                                    | primalins,
+                                ).repeat(repeat=self.repeat, number=self.count)
+                            )
+                            / self.count
                         )
-                        / self.count,
-                    )
+                    else:
+                        runtime = profile_function(
+                            rfn_enzyme, ins_backend, nrepeat=self.repeat
+                        )["avg_time_s"]
+
+                    self.pretty_print_table(name, pname, backend, "Primal", runtime)
 
             # assert primres is not None
             fwdres = None
@@ -755,11 +752,10 @@ class EnzymeJaxTest(absltest.TestCase):
                                     pipeline_options=pipeline,
                                     argv=argv,
                                     inner_jit=False,
-                                )(in_fn),
-                                backend=backend,
+                                )(in_fn)
                             )
                         )
-                        fwd_enzyme = jax.jit(splatjvp(rfn_enzyme), backend=backend)
+                        fwd_enzyme = jax.jit(splatjvp(rfn_enzyme))
 
                         _dump_mlir_to_file(
                             fwd_enzyme,
@@ -773,42 +769,31 @@ class EnzymeJaxTest(absltest.TestCase):
                         if primres is None:
                             primres = primals
                         else:
-                            recursive_check(
-                                self,
-                                primals,
-                                primres,
-                                self.atol,
-                                self.rtol,
-                                "Primal " + pname,
-                            )
+                            recursive_check(self, primals, primres, "Primal " + pname)
 
                         if fwdres is None:
                             fwdres = tangents
                         else:
-                            recursive_check(
-                                self,
-                                tangents,
-                                fwdres,
-                                self.atol,
-                                self.rtol,
-                                "Forward " + pname,
+                            recursive_check(self, tangents, fwdres, "Forward " + pname)
+
+                        if backend == "cpu":  # xprof doesn't get correct info for cpu
+                            runtime = (
+                                min(
+                                    timeit.Timer(
+                                        fwdstr, globals={"fwd": fwd_enzyme} | fwdins
+                                    ).repeat(repeat=self.repeat, number=self.count)
+                                )
+                                / self.count
                             )
+                        else:
+                            runtime = profile_function(
+                                fwd_enzyme,
+                                ins_backend + dins_backend,
+                                nrepeat=self.repeat,
+                            )["avg_time_s"]
 
                         self.pretty_print_table(
-                            name,
-                            pname,
-                            backend,
-                            "Forward",
-                            min(
-                                timeit.Timer(
-                                    fwdstr,
-                                    globals={
-                                        "fwd": fwd_enzyme,
-                                    }
-                                    | fwdins,
-                                ).repeat(repeat=self.repeat, number=self.count)
-                            )
-                            / self.count,
+                            name, pname, backend, "Forward", runtime
                         )
 
             # assert fwdres is not None
@@ -829,9 +814,7 @@ class EnzymeJaxTest(absltest.TestCase):
                                     inner_jit=False,
                                 )(in_fn)
                             )
-                            rev_enzyme = jax.jit(
-                                revtransform(rfn_enzyme), backend=backend
-                            )
+                            rev_enzyme = jax.jit(revtransform(rfn_enzyme))
 
                             _dump_mlir_to_file(
                                 rev_enzyme,
@@ -848,44 +831,34 @@ class EnzymeJaxTest(absltest.TestCase):
 
                             if self.revprimal and primres is not None:
                                 recursive_check(
-                                    self,
-                                    primals,
-                                    primres,
-                                    self.atol,
-                                    self.rtol,
-                                    "Primal " + pname,
+                                    self, primals, primres, "Primal " + pname
                                 )
 
                             if revres is None:
                                 revres = grads
                             else:
-                                recursive_check(
-                                    self,
-                                    grads,
-                                    revres,
-                                    self.atol,
-                                    self.rtol,
-                                    "Reverse " + pname,
+                                recursive_check(self, grads, revres, "Reverse " + pname)
+
+                            if (
+                                backend == "cpu"
+                            ):  # xprof doesn't get correct info for cpu
+                                runtime = (
+                                    min(
+                                        timeit.Timer(
+                                            revstr, globals={"rev": rev_enzyme} | revins
+                                        ).repeat(repeat=self.repeat, number=self.count)
+                                    )
+                                    / self.count
                                 )
+                            else:
+                                runtime = profile_function(
+                                    rev_enzyme,
+                                    [adout] + ins_backend,
+                                    nrepeat=self.repeat,
+                                )["avg_time_s"]
 
                             self.pretty_print_table(
-                                name,
-                                pname,
-                                backend,
-                                "PreRev",
-                                min(
-                                    timeit.Timer(
-                                        revstr,
-                                        globals={
-                                            "rev": rev_enzyme,
-                                        }
-                                        | revins,
-                                    ).repeat(
-                                        repeat=self.repeat,
-                                        number=self.count,
-                                    )
-                                )
-                                / self.count,
+                                name, pname, backend, "PreRev", runtime
                             )
 
                         rfn_enzyme = in_fn
@@ -898,8 +871,7 @@ class EnzymeJaxTest(absltest.TestCase):
                                     argv=argv,
                                     inner_jit=False,
                                 )(revtransform(rfn_enzyme))
-                            ),
-                            backend=backend,
+                            )
                         )
 
                         _dump_mlir_to_file(
@@ -916,40 +888,29 @@ class EnzymeJaxTest(absltest.TestCase):
                             assert grads is not None
 
                         if self.revprimal and primres is not None:
-                            recursive_check(
-                                self,
-                                primals,
-                                primres,
-                                self.atol,
-                                self.rtol,
-                            )
+                            recursive_check(self, primals, primres)
 
                         if revres is None:
                             revres = grads
                         else:
-                            recursive_check(
-                                self,
-                                grads,
-                                revres,
-                                self.atol,
-                                self.rtol,
+                            recursive_check(self, grads, revres)
+
+                        if backend == "cpu":  # xprof doesn't get correct info for cpu
+                            runtime = (
+                                min(
+                                    timeit.Timer(
+                                        revstr, globals={"rev": rev_enzyme} | revins
+                                    ).repeat(repeat=self.repeat, number=self.count)
+                                )
+                                / self.count
                             )
+                        else:
+                            runtime = profile_function(
+                                rev_enzyme, [adout] + ins_backend, nrepeat=self.repeat
+                            )["avg_time_s"]
 
                         self.pretty_print_table(
-                            name,
-                            pname,
-                            backend,
-                            "PostRev",
-                            min(
-                                timeit.Timer(
-                                    revstr,
-                                    globals={
-                                        "rev": rev_enzyme,
-                                    }
-                                    | revins,
-                                ).repeat(repeat=self.repeat, number=self.count)
-                            )
-                            / self.count,
+                            name, pname, backend, "PostRev", runtime
                         )
 
                     if pipeline is None or (pipeline.mlir_ad() and self.mlirad_rev):
@@ -969,8 +930,7 @@ class EnzymeJaxTest(absltest.TestCase):
                                     argv=argv,
                                     inner_jit=False,
                                 )(revtransform(rfn_enzyme))
-                            ),
-                            backend=backend,
+                            )
                         )
 
                         _dump_mlir_to_file(
@@ -987,38 +947,27 @@ class EnzymeJaxTest(absltest.TestCase):
                             assert grads is not None
 
                         if self.revprimal and primres is not None:
-                            recursive_check(
-                                self,
-                                primals,
-                                primres,
-                                self.atol,
-                                self.rtol,
-                            )
+                            recursive_check(self, primals, primres)
 
                         if revres is None:
                             revres = grads
                         else:
-                            recursive_check(
-                                self,
-                                grads,
-                                revres,
-                                self.atol,
-                                self.rtol,
+                            recursive_check(self, grads, revres)
+
+                        if backend == "cpu":  # xprof doesn't get correct info for cpu
+                            runtime = (
+                                min(
+                                    timeit.Timer(
+                                        revstr, globals={"rev": rev_enzyme} | revins
+                                    ).repeat(repeat=self.repeat, number=self.count)
+                                )
+                                / self.count
                             )
+                        else:
+                            runtime = profile_function(
+                                rev_enzyme, [adout] + ins_backend, nrepeat=self.repeat
+                            )["avg_time_s"]
 
                         self.pretty_print_table(
-                            name,
-                            pname,
-                            backend,
-                            "BothRev",
-                            min(
-                                timeit.Timer(
-                                    revstr,
-                                    globals={
-                                        "rev": rev_enzyme,
-                                    }
-                                    | revins,
-                                ).repeat(repeat=self.repeat, number=self.count)
-                            )
-                            / self.count,
+                            name, pname, backend, "BothRev", runtime
                         )
