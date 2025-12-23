@@ -14,17 +14,15 @@
 #pragma GCC diagnostic pop
 #endif
 #include "shardy/dialect/sdy/ir/utils.h"
-#include "src/enzyme_ad/jax/Dialect/Dialect.h"
+
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Utils.h"
+
 #include "stablehlo/dialect/StablehloOps.h"
-#include "llvm/ADT/DynamicAPInt.h"
-#include "llvm/ADT/SetVector.h"
+
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/LogicalResult.h"
-#include "llvm/Support/MathExtras.h"
+
 #include <algorithm>
 #include <cstdint>
 
@@ -1333,6 +1331,146 @@ struct WrapToPadCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
     sdy::setSharding(addOp, wrapSharding);
 
     rewriter.replaceOp(wrap, addOp);
+    return success();
+  }
+};
+
+// Communication optimization pattern to rewrite wrap operations in terms of
+// pad and rotate operations. This can enable better optimization of the
+// resulting operations in distributed/sharded contexts.
+//
+// Pattern: wrap(x, lhs=L, rhs=R) =>
+//   p0 = pad(x, lhs=L, rhs=R)
+//   p1 = rotate(p0, L)
+//   p2 = rotate(p0, -R)
+//   result = select based on iota to choose between p1 (left), p0 (middle), p2
+//   (right)
+//
+// Note: Only applied when no sharding is present, to be conservative.
+// This pattern is intended to work in conjunction with other communication
+// optimization patterns for pad and rotate operations.
+struct WrapToRotateOptimize : public OpRewritePattern<enzymexla::WrapOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::WrapOp wrap,
+                                PatternRewriter &rewriter) const override {
+    // Check if already inside a manual computation
+    if (wrap->getParentOfType<sdy::ManualComputationOp>())
+      return failure();
+
+    auto wrapDimension = wrap.getDimension();
+
+    auto wrapSharding = mlir::sdy::getSharding(wrap);
+    int64_t numDevicesAlongDimension = -1;
+    if (wrapSharding) {
+      auto ndevices = getShardingDevices(wrapSharding, wrapDimension, wrap);
+      numDevicesAlongDimension = ndevices[wrapDimension];
+    }
+
+    if (numDevicesAlongDimension == 1) {
+      return rewriter.notifyMatchFailure(
+          wrap,
+          "numDevicesAlongDimension == 1. Communication is already optimized.");
+    }
+
+    auto lhs = wrap.getLhs();
+    auto rhs = wrap.getRhs();
+    auto elemType = wrap.getType().getElementType();
+    auto ndims = wrap.getType().getRank();
+    auto wrapShape = wrap.getType().getShape();
+    auto operandShape = wrap.getOperand().getType().getShape();
+
+    // Create a zero constant for padding
+    auto zero = stablehlo::ConstantOp::create(rewriter, wrap.getLoc(),
+                                              rewriter.getZeroAttr(elemType));
+
+    // Create pad operation with zeros
+    SmallVector<int64_t> padLow(ndims, 0);
+    SmallVector<int64_t> padHigh(ndims, 0);
+    SmallVector<int64_t> padInner(ndims, 0);
+    padLow[wrapDimension] = lhs;
+    padHigh[wrapDimension] = rhs;
+
+    auto paddedOp =
+        stablehlo::PadOp::create(rewriter, wrap.getLoc(), wrap.getOperand(),
+                                 zero, padLow, padHigh, padInner);
+    if (wrapSharding) {
+      mlir::sdy::setSharding(paddedOp, wrapSharding);
+    }
+
+    // Create two rotate operations
+    auto rotateRhsPart = enzymexla::RotateOp::create(
+        rewriter, wrap.getLoc(), paddedOp.getResult(),
+        static_cast<int32_t>(rhs + lhs), static_cast<int32_t>(wrapDimension));
+    if (wrapSharding) {
+      mlir::sdy::setSharding(rotateRhsPart, wrapSharding);
+    }
+
+    auto rotateLhsPart = enzymexla::RotateOp::create(
+        rewriter, wrap.getLoc(), paddedOp.getResult(),
+        static_cast<int32_t>(wrapShape[wrapDimension] - lhs - rhs),
+        static_cast<int32_t>(wrapDimension));
+    if (wrapSharding) {
+      mlir::sdy::setSharding(rotateLhsPart, wrapSharding);
+    }
+
+    // Create iota along the wrap dimension
+    auto iota = stablehlo::IotaOp::create(
+        rewriter, wrap.getLoc(),
+        RankedTensorType::get(wrapShape, rewriter.getI32Type()), wrapDimension);
+    if (wrapSharding) {
+      mlir::sdy::setSharding(iota, wrapSharding);
+    }
+
+    // Use select to choose between the three parts:
+    // - left part (iota < lhs): use rotateLhsPart
+    // - middle part (lhs <= iota < lhs + operandShape[dim]): use paddedOp
+    // - right part (iota >= lhs + operandShape[dim]): use rotateRhsPart
+    auto lhsCheckConstOp = stablehlo::ConstantOp::create(
+        rewriter, wrap.getLoc(),
+        SplatElementsAttr::get(iota.getType(),
+                               rewriter.getI32IntegerAttr(lhs)));
+    if (wrapSharding) {
+      mlir::sdy::setSharding(lhsCheckConstOp, wrapSharding);
+    }
+
+    auto rhsCheckConstOp = stablehlo::ConstantOp::create(
+        rewriter, wrap.getLoc(),
+        SplatElementsAttr::get(
+            iota.getType(),
+            rewriter.getI32IntegerAttr(lhs + operandShape[wrapDimension])));
+    if (wrapSharding) {
+      mlir::sdy::setSharding(rhsCheckConstOp, wrapSharding);
+    }
+
+    auto lhsCondOp = stablehlo::CompareOp::create(
+        rewriter, wrap.getLoc(), iota, lhsCheckConstOp,
+        stablehlo::ComparisonDirection::LT);
+    if (wrapSharding) {
+      mlir::sdy::setSharding(lhsCondOp, wrapSharding);
+    }
+
+    auto midAndLhsCondOp = stablehlo::CompareOp::create(
+        rewriter, wrap.getLoc(), iota, rhsCheckConstOp,
+        stablehlo::ComparisonDirection::LT);
+    if (wrapSharding) {
+      mlir::sdy::setSharding(midAndLhsCondOp, wrapSharding);
+    }
+
+    auto midAndLhs = stablehlo::SelectOp::create(
+        rewriter, wrap.getLoc(), lhsCondOp, rotateLhsPart, paddedOp);
+    if (wrapSharding) {
+      mlir::sdy::setSharding(midAndLhs, wrapSharding);
+    }
+
+    auto result = stablehlo::SelectOp::create(
+        rewriter, wrap.getLoc(), midAndLhsCondOp, midAndLhs, rotateRhsPart);
+    if (wrapSharding) {
+      mlir::sdy::setSharding(result, wrapSharding);
+    }
+
+    // Replace the wrap with the select
+    rewriter.replaceOp(wrap, result);
     return success();
   }
 };
@@ -3759,6 +3897,10 @@ struct OptimizeCommunicationPass
     if (wrap_to_pad_comm > 0)
       patterns.add<WrapToPadCommOptimize>(context,
                                           PatternBenefit(wrap_to_pad_comm));
+
+    if (wrap_to_rotate > 0)
+      patterns.add<WrapToRotateOptimize>(context,
+                                         PatternBenefit(wrap_to_rotate));
 
     if (extend_comm > 0)
       patterns.add<ExtendCommOptimize>(channel_id, context,
