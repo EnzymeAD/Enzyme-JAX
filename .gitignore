@@ -4,3 +4,7 @@
 bazel-*
 compile_commands.json
 .vscode/
+test/.venvs/
+test/.benchmark-outputs/
+*.csv
+uv.lock

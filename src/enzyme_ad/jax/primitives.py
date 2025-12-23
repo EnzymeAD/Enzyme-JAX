@@ -1071,6 +1071,7 @@ def _enzyme_primal_lowering(
                 raise e
 
             if print_mlir:
+                raise NotImplementedError
                 if not isinstance(print_mlir, bool):
                     print_mlir.write(nmod)
                 else:

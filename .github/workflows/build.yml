@@ -140,9 +140,12 @@ jobs:
         run: |
           bazel test $BAZEL_FLAGS -c dbg --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/lit_tests/...
 
-      - name: Update Python requirements files
-        run: |
-          bazel run $BAZEL_FLAGS --color=yes //builddeps:requirements.update
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Set up Python
+        run: uv python install
+
       - name: Build wheel
         timeout-minutes: 240
         run: |
@@ -155,14 +158,19 @@ jobs:
           path: "bazel-bin/*.whl"
           retention-days: 90
       - name: Run tests
-        id: tests
         continue-on-error: true
         run: |
-          bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/...
-      - name: Run tests (dbg)
-        if: steps.tests.outcome == 'failure'
-        run: |
-          bazel test $BAZEL_FLAGS -c dbg --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/...
+          # Determine backend based on runner
+          if [[ "${{ matrix.os }}" == *"a100"* ]]; then
+            BACKEND="--cuda"
+          elif [[ "${{ matrix.os }}" == *"tpu"* ]]; then
+            BACKEND="--tpu"
+          else
+            BACKEND=""
+          fi
+
+          # Run tests using uv-based runner
+          python test/run_tests.py all $BACKEND --no-cache --verbose
 
       - name: Upload test results
         uses: actions/upload-artifact@v6
@@ -171,6 +179,7 @@ jobs:
           name: Enzyme-JAX-tests-${{ matrix.os }}-${{ matrix.python }}
           path: |
             bazel-out/**/test.log
+            test/.benchmark-outputs/**/*.csv
           retention-days: 90
       - name: Upload benchmark results
         uses: actions/upload-artifact@v6
@@ -179,6 +188,8 @@ jobs:
           name: Enzyme-JAX-benchmark-${{ matrix.os }}-${{ matrix.python }}
           path: |
             bazel-testlogs/test/**/test.outputs/*.zip
+            test/.benchmark-outputs/**/*.csv
+            test/.benchmark-outputs/**/*.mlir
           retention-days: 90
 
   benchmark-summary:

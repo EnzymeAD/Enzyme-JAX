@@ -64,9 +64,9 @@ python_init_repositories(
         "enzyme_ad*",
     ],
     requirements = {
-        "3.10": "//builddeps:requirements_lock_3_10.txt",
-        "3.11": "//builddeps:requirements_lock_3_11.txt",
-        "3.12": "//builddeps:requirements_lock_3_12.txt",
+        "3.10": "//build:requirements_lock_3_10.txt",
+        "3.11": "//build:requirements_lock_3_11.txt",
+        "3.12": "//build:requirements_lock_3_12.txt",
     },
 )
 

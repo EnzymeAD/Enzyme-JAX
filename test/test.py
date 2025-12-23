@@ -8,19 +8,6 @@ jax.config.update("jax_platform_name", "cpu")
 argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
 
 
-class EnzymePipeline(absltest.TestCase):
-    def test_pipeline(self):
-        def fn(x):
-            return x
-
-        x = jnp.ones(3)
-        if hasattr(fn, "trace"):
-            module = jax.jit(fn).trace(x).lower().compiler_ir(dialect="stablehlo")
-            # Only applies if jax-mlir and enzyme-mlir are built on the same version
-            # optimize_module(module)
-            print(str(module))
-
-
 class EnzymeJax(absltest.TestCase):
     def test_custom_cpp_kernel(self):
         @jax.jit

@@ -1,0 +1,91 @@
+[project]
+name = "enzyme-jax-tests"
+version = "0.1.0"
+description = "Test suite for Enzyme-JAX"
+# Pin to Python 3.11 to match the Bazel-built enzyme-ad wheel
+requires-python = "== 3.11.*"
+
+# Base dependencies shared across all test groups
+dependencies = [
+    "absl-py >= 2.3.0",
+    "numpy",
+    "jax >= 0.8.0",
+    "jaxlib",
+    "enzyme-ad",  # Found via --find-links from bazel-bin
+    "xprof",
+]
+
+[project.optional-dependencies]
+# CUDA dependencies for GPU testing (Linux only)
+cuda = [
+    "jax[cuda12] >= 0.8.0",
+]
+
+# TPU dependencies (Linux only)
+tpu = [
+    "libtpu-nightly",
+    "requests",
+]
+
+# JAX-MD molecular dynamics
+jaxmd = [
+    "jax-md",
+    "jraph",
+]
+
+# NeuralGCM
+neuralgcm = [
+    "neuralgcm",
+    "gcsfs",
+]
+
+# Keras
+keras = [
+    "keras",
+    "keras-cv",
+    "keras-hub",
+]
+
+# All extras for full testing (CPU)
+all = [
+    "enzyme-jax-tests[jaxmd]",
+    "enzyme-jax-tests[neuralgcm]",
+    "enzyme-jax-tests[keras]",
+]
+
+# All extras for CUDA testing
+all-cuda = [
+    "enzyme-jax-tests[cuda]",
+    "enzyme-jax-tests[jaxmd]",
+    "enzyme-jax-tests[neuralgcm]",
+    "enzyme-jax-tests[keras]",
+]
+
+# All extras for TPU testing
+all-tpu = [
+    "enzyme-jax-tests[tpu]",
+    "enzyme-jax-tests[jaxmd]",
+    "enzyme-jax-tests[neuralgcm]",
+    "enzyme-jax-tests[keras]",
+]
+
+[project.scripts]
+# Script entry points for running tests
+run-tests = "run_tests:main"
+
+[dependency-groups]
+# Development dependencies for running tests
+dev = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+
+[tool.uv]
+# Use resolution that prefers newest versions
+resolution = "highest"
+# Find enzyme-ad wheel in bazel-bin
+find-links = ["../bazel-bin"]
