@@ -1,5 +1,4 @@
 import os
-import sys
 import tempfile
 import jax.numpy as jnp
 import jax
@@ -320,28 +319,20 @@ from absl.testing import absltest  # noqa: E402
 
 argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
 
-devices = []
 CurBackends = []
 AllBackends = []
 backends_initialized = False
 
 
 def setup_backends():
-    global backends_initialized
-    global devices
-    global CurBackends
-    global AllBackends
+    global backends_initialized, CurBackends, AllBackends
+
     if backends_initialized:
         return
-    import jax
 
-    AllBackends.append("cpu")
-    backend = jax.default_backend()
-    CurBackends.append(backend)
-    if backend != "cpu":
-        devices.append(backend)
-        AllBackends.append(backend)
-
+    backends = list(jax._src.xla_bridge.backends().keys())
+    AllBackends.extend(backends)
+    CurBackends.append(jax.default_backend())
     backends_initialized = True
 
 
@@ -476,11 +467,7 @@ def get_pipeline(name: str):
             CurBackends,
         )
     elif name == "IDefOpt":
-        return (
-            "IDefOpt",
-            JaXPipeline(full_optimization_pass_pipeline()),
-            CurBackends,
-        )
+        return ("IDefOpt", JaXPipeline(full_optimization_pass_pipeline()), CurBackends)
 
 
 def pipelines():
