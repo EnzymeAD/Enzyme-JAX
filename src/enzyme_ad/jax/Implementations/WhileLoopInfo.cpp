@@ -743,6 +743,10 @@ bool WhileLoopInfo::hoistOperationFromLoop(
 }
 
 void WhileLoopInfo::propagateBounds() {
+  if (!isConstant()) {
+    return; // need constant bounds
+  }
+
   auto inductionVariable = getInductionVariable();
 
   auto inductionType = inductionVariable.getType();
@@ -755,7 +759,6 @@ void WhileLoopInfo::propagateBounds() {
   this->boundsBitWidth = bitWidth;
 
   SmallVector<Value> newPropagated;
-
   auto start = getConstantStart().value();
   auto limit = getConstantLimit().value();
   auto step = getConstantStep().value();

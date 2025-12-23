@@ -1573,7 +1573,8 @@ mlir::LogicalResult WhileElementwiseReductionToReduce::matchAndRewriteImpl(
   WhileLoopInfo info(whileOp);
   auto computedInfo = info.computeInfo();
   (void)computedInfo;
-  if (!info.isValid()) {
+  if (!info.isValid() || !info.isConstant() ||
+      info.getConstantNumIters() <= 0) {
     return failure();
   }
 
@@ -1660,6 +1661,13 @@ WhileIsCopySimplify::matchAndRewriteImpl(stablehlo::WhileOp whileOp,
     auto origUpdate = dusOp.getUpdate();
     if (info.isConstantAcrossIterations(origUpdate, outerValue, canBeHoisted,
                                         true)) {
+      RankedTensorType origUpdateTy = origUpdate.getType();
+      if (llvm::any_of(dusInductionVarDims, [&](auto i) {
+            return origUpdateTy.getDimSize(i) != 1;
+          })) {
+        continue;
+      }
+
       anyOpRewritten = true;
       if (outerValue) {
         newDUSUpdate = outerValue;
