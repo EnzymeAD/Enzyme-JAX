@@ -321,6 +321,7 @@ def optimization_passes(
         "dus_dynamic_slice_simplify",
         "while_dus_ds_simplify",
         "reshape_slice_reshape",
+        "dynamic_slice_elementwise",
         "dot_general_remove_batch_dimensions",
         "delete_dims_reduce",
         "reduce_delete_dims",
@@ -495,11 +496,15 @@ def optimization_passes(
             "reshape_dus",
             "dot_reshape_pad<1>",
             "pad_dot_general<1>(0)",
-            "pad_dot_general<1>(1)",
+            # XXX: see https://github.com/EnzymeAD/Enzyme-JAX/issues/1445
+            # "pad_dot_general<1>(1)",
             "reshape_pad",
             "reshape_wrap",
             "reshape_rotate",
             "reshape_extend",
+            "reshape_slice(1)",
+            "reshape_elementwise(1)",
+            "reshape_dynamic_slice(1)",
         ]
     elif reshape_propagate == "down":
         transform_passes_list += [
@@ -514,6 +519,7 @@ def optimization_passes(
             "slice_reshape_dot_general<1>",
             "slice_reshape_pad<1>",
             "elementwise_reshape_like",
+            "reshape_elementwise_only_fusible(1)",
         ]
     else:
         raise ValueError("Invalid value for reshape_propagate")
@@ -546,6 +552,7 @@ def optimization_passes(
         transform_passes_list += [
             "reorder_elementwise_and_shape_op<16>",
             "elementwise_all_transpose_operands_simplify",
+            "dynamic_slice_transpose",
             "slice_transpose",
             "einsum_transpose<1>",
             "slice_reshape_transpose<1>",

@@ -53,7 +53,7 @@ jobs:
           - 'main'
           # - '0123456789abcdef0123456789abcdef01234567'
         reactant_commit:
-          - 'main'
+          - 'wsmoses-patch-13'
           # - 'ap/pass_generalization'
 
     steps:
@@ -68,7 +68,7 @@ jobs:
           # do some sanitisation.
           ARTIFACT_INDEX=${{ matrix.julia_version }}-${{ matrix.xla_commit }}-${{ matrix.gb25_commit }}-${{ matrix.reactant_commit }}
           echo "ARTIFACT_INDEX=${ARTIFACT_INDEX//\//_}" >> "${GITHUB_ENV}"
-      - uses: bazel-contrib/setup-bazel@0.15.0
+      - uses: bazel-contrib/setup-bazel@0.16.0
         name: Set up Bazel
         with:
           # Avoid downloading Bazel every time.
@@ -205,7 +205,7 @@ jobs:
                   echo "----------"
                   echo "${COLLECTIVES}"
                   echo "----------"
-                  if [[ "${OP}" == "all-to-all" && ${NUM_COLLECTIVES} -gt 0 ]] || [[ "${OP}" == "all-gather" && ${NUM_COLLECTIVES} -gt 0 ]] || [[ "${OP}" == "all-reduce" && ${NUM_COLLECTIVES} -gt 24 ]]; then
+                  if [[ "${OP}" == "all-to-all" && ${NUM_COLLECTIVES} -gt 0 ]] || [[ "${OP}" == "all-gather" && ${NUM_COLLECTIVES} -gt 0 ]] || [[ "${OP}" == "all-reduce" && ${NUM_COLLECTIVES} -gt 0 ]]; then
                       OK="false"
                   fi
               fi

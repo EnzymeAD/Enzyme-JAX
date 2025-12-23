@@ -13,7 +13,6 @@
 #endif
 
 #include "mlir/IR/Matchers.h"
-#include "mlir/IR/PatternMatch.h"
 
 #include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
 #include "src/enzyme_ad/jax/Passes/StructuredTensors.h"
@@ -409,6 +408,14 @@ bool WhileLoopInfo::isConstantAcrossIterations(
   if (!defOp)
     return false;
 
+  // bail out if the operation is not isolated from above. we need to analyze
+  // all the operations in the regions to ensure that this is constant across
+  // iterations
+  if (defOp->getNumRegions() != 0 &&
+      !defOp->hasTrait<mlir::OpTrait::IsIsolatedFromAbove>()) {
+    return false;
+  }
+
   // all operands of the defining op are constant across iterations
   // don't populate the outerValue in this case
   if (llvm::all_of(defOp->getOperands(), [&](Value operand) {
@@ -549,10 +556,10 @@ bool WhileLoopInfo::hoistOperationFromLoop(
   dSliceStarts[sliceIndex] = idxMinConst;
   dSliceSizes[sliceIndex] = actualSize;
 
-  auto dSlice = stablehlo::DynamicSliceOp::create(
-      builder, sliceOp.getLoc(), operand, dSliceStarts,
-      builder.getDenseI64ArrayAttr(dSliceSizes));
-  auto dType = dSlice.getResult().getType();
+  auto dSlice = stablehlo::DynamicSliceOpCreate(
+      builder, sliceOp.getLoc(), operand, dSliceStarts, dSliceSizes);
+  auto dType = dyn_cast<RankedTensorType>(dSlice.getType());
+  assert(dType);
 
   // j(i) = (scale * i + offset) - idx_min = scale * (i - lb)
   SmallVector<int64_t> sliceStarts(dSliceStarts.size(), 0);
@@ -561,12 +568,8 @@ bool WhileLoopInfo::hoistOperationFromLoop(
   SmallVector<int64_t> sliceLimits(dType.getShape().begin(),
                                    dType.getShape().end());
 
-  auto slice =
-      stablehlo::SliceOp::create(builder, sliceOp.getLoc(), dSlice,
-                                 builder.getDenseI64ArrayAttr(sliceStarts),
-                                 builder.getDenseI64ArrayAttr(sliceLimits),
-                                 builder.getDenseI64ArrayAttr(sliceStrides));
-  result = slice.getResult();
+  result = stablehlo::SliceOpCreate(builder, sliceOp.getLoc(), dSlice,
+                                    sliceStarts, sliceLimits, sliceStrides);
 
   if (scale < 0) {
     result = stablehlo::ReverseOp::create(
