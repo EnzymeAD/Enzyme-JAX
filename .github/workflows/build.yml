@@ -132,6 +132,13 @@ jobs:
             sed -i.bak0 "s/jax\[cuda12\]/jax[cpu]/g" builddeps/requirements.in
             sed -i.bak0 "/pypi_jax_cuda12_plugin/d" test/BUILD
           fi
+          cat builddeps/requirements.in
+          cat test/BUILD
+        shell: bash
+
+      - name: Update Python requirements files
+        run: |
+          bazel run $BAZEL_FLAGS --color=yes //builddeps:requirements.update
 
       - name: Build enzymexlamlir-opt
         timeout-minutes: 180
@@ -144,30 +151,26 @@ jobs:
           path: "bazel-bin/enzymexlamlir-opt"
           retention-days: 90
 
-      # TODO: Re-enable lit tests
-      # - name: Run lit tests
-      #   id: lit_tests
-      #   continue-on-error: true
-      #   run: |
-      #     bazel test $BAZEL_FLAGS \
-      #       --color=yes \
-      #       --test_output=errors \
-      #       --experimental_ui_max_stdouterr_bytes=-1 \
-      #       --test_verbose_timeout_warnings \
-      #       //test/lit_tests/...
-      # - name: Run lit tests (dbg)
-      #   if: steps.lit_tests.outcome == 'failure'
-      #   run: |
-      #     bazel test $BAZEL_FLAGS -c dbg \
-      #       --color=yes \
-      #       --test_output=errors \
-      #       --experimental_ui_max_stdouterr_bytes=-1 \
-      #       --test_verbose_timeout_warnings \
-      #       //test/lit_tests/...
-
-      - name: Update Python requirements files
+      - name: Run lit tests
+        id: lit_tests
+        continue-on-error: true
         run: |
-          bazel run $BAZEL_FLAGS --color=yes //builddeps:requirements.update
+          bazel test $BAZEL_FLAGS \
+            --color=yes \
+            --test_output=errors \
+            --experimental_ui_max_stdouterr_bytes=-1 \
+            --test_verbose_timeout_warnings \
+            //test/lit_tests/...
+      - name: Run lit tests (dbg)
+        if: steps.lit_tests.outcome == 'failure'
+        run: |
+          bazel test $BAZEL_FLAGS -c dbg \
+            --color=yes \
+            --test_output=errors \
+            --experimental_ui_max_stdouterr_bytes=-1 \
+            --test_verbose_timeout_warnings \
+            //test/lit_tests/...
+
       - name: Build wheel
         timeout-minutes: 240
         run: |
@@ -181,26 +184,25 @@ jobs:
           retention-days: 90
 
       - name: Run tests
-        # id: tests
-        # continue-on-error: true
+        id: tests
+        continue-on-error: true
         run: |
-          TF_CPP_MAX_VLOG_LEVEL=4 bazel test $BAZEL_FLAGS \
+          bazel test $BAZEL_FLAGS \
             --color=yes \
             --test_output=streamed \
             --experimental_ui_max_stdouterr_bytes=-1 \
             --test_verbose_timeout_warnings \
             //test:python_tests
-      # TODO: Re-enable dbg tests
-      # - name: Run tests (dbg)
-      #   if: steps.tests.outcome == 'failure'
-      #   run: |
-      #     bazel test $BAZEL_FLAGS \
-      #       --color=yes \
-      #       --test_output=streamed \
-      #       --experimental_ui_max_stdouterr_bytes=-1 \
-      #       --test_verbose_timeout_warnings \
-      #       -c dbg \
-      #       //test:python_tests
+      - name: Run tests (dbg)
+        if: steps.tests.outcome == 'failure'
+        run: |
+          bazel test $BAZEL_FLAGS \
+            --color=yes \
+            --test_output=streamed \
+            --experimental_ui_max_stdouterr_bytes=-1 \
+            --test_verbose_timeout_warnings \
+            -c dbg \
+            //test:python_tests
 
       - name: Upload test results
         uses: actions/upload-artifact@v6
