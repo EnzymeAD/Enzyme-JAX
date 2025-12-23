@@ -1930,6 +1930,53 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
   }
 };
 
+struct RotateSpmdOptimize : public OpRewritePattern<enzymexla::RotateOp> {
+
+  RotateSpmdOptimize(MLIRContext *context, PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit) {}
+  LogicalResult matchAndRewrite(enzymexla::RotateOp rotate,
+                                PatternRewriter &rewriter) const override {
+    if (rotate->getParentOfType<sdy::ManualComputationOp>())
+      return failure();
+
+    auto rotateDimension = rotate.getDimension();
+    auto rotateSharding = mlir::sdy::getSharding(rotate);
+    if (!rotateSharding)
+      return rewriter.notifyMatchFailure(rotate, "No sharding found.");
+
+    int64_t numDevicesAlongDimension =
+        getNumDevicesAlongDimension(rotateSharding, rotateDimension, rotate);
+
+    if (numDevicesAlongDimension == 1) {
+      return rewriter.notifyMatchFailure(
+          rotate,
+          "numDevicesAlongDimension == 1. Communication is already optimized.");
+    }
+
+    // Our op is rotate left, the spmd one is rotate right. rotateleft(x) =
+    // rotateright(-x), which we add the dim size to make positive.
+    std::string opaque =
+        "dimension=" + std::to_string(rotateDimension) + ",amount=" +
+        std::to_string(rotate.getType().getShape()[rotateDimension] -
+                       rotate.getAmount());
+
+    auto fnSym = rewriter.getStringAttr("_SPMDInternalOp_RotateRight");
+
+    // Replace with a custom call
+    auto ccall = rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
+        rotate, rotate->getResultTypes(), rotate->getOperands(), fnSym,
+        /*has_side_effect=*/rewriter.getBoolAttr(false),
+        /*backend_config=*/rewriter.getStringAttr(opaque),
+        /*api_version=*/nullptr,
+        /*called_computations=*/nullptr,
+        /*operand_layouts=*/nullptr,
+        /*result_layouts=*/nullptr,
+        /*output_operand_aliases=*/nullptr);
+    mlir::sdy::setShardings(ccall, rotateSharding);
+    return success();
+  }
+};
+
 struct RotateToPadCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -3697,6 +3744,9 @@ struct OptimizeCommunicationPass
     if (rotate_comm > 0)
       patterns.add<RotateCommOptimize>(channel_id, context,
                                        PatternBenefit(rotate_comm));
+
+    if (rotate_spmd > 0)
+      patterns.add<RotateSpmdOptimize>(context, PatternBenefit(rotate_comm));
 
     if (rotate_to_pad_comm > 0)
       patterns.add<RotateToPadCommOptimize>(context,
