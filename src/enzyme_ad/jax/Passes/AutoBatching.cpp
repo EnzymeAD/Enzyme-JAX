@@ -1181,7 +1181,7 @@ void hoistChainOfOps(DenseMap<Value, SmallVector<Operation *>> &hoistMap,
   }
 }
 
-void constructNewOperandsForHoistedOp(
+LogicalResult constructNewOperandsForHoistedOp(
     PatternRewriter &rewriter, stablehlo::WhileOp whileOp, WhileLoopInfo &info,
     SmallVectorImpl<BatchLiftingMode> &batchLiftingModes,
     SmallVectorImpl<Value> &batchOperands,
@@ -1222,8 +1222,9 @@ void constructNewOperandsForHoistedOp(
       Value newSlice;
       bool successfulHoist = info.hoistOperationFromLoop(
           rewriter, baseOp, sliceInfo.sliceOp, sliceDim, newSlice);
-      assert(successfulHoist && "Expected DS hoist to succeed");
-      (void)successfulHoist;
+      if (!successfulHoist) {
+        return failure();
+      }
       auto originalShape =
           cast<RankedTensorType>(sliceInfo.sliceOp.getType()).getShape();
 
@@ -1311,6 +1312,8 @@ void constructNewOperandsForHoistedOp(
     }
     }
   }
+
+  return success();
 }
 
 bool liftReduceLikeOperation(
@@ -1390,9 +1393,12 @@ bool liftReduceLikeOperation(
   hoistChainOfOps(hoistMap, rewriter, whileOp, info, hoistedValues);
 
   SmallVector<Value> newOperands;
-  constructNewOperandsForHoistedOp(
-      rewriter, whileOp, info, batchLiftingModes, batchOperands, sliceDims,
-      hoistedDims, mappedSliceInfos, hoistedValues, newOperands, true);
+  if (!constructNewOperandsForHoistedOp(
+           rewriter, whileOp, info, batchLiftingModes, batchOperands, sliceDims,
+           hoistedDims, mappedSliceInfos, hoistedValues, newOperands, true)
+           .succeeded()) {
+    return false;
+  }
 
   auto whileOperand = whileOp->getOperand(argIdx);
 
@@ -1501,9 +1507,12 @@ bool liftOperationByBatching(
   hoistChainOfOps(hoistMap, rewriter, whileOp, info, hoistedValues);
 
   SmallVector<Value> newOperands;
-  constructNewOperandsForHoistedOp(
-      rewriter, whileOp, info, batchLiftingModes, batchOperands, sliceDims,
-      hoistedDims, mappedSliceInfos, hoistedValues, newOperands);
+  if (!constructNewOperandsForHoistedOp(
+           rewriter, whileOp, info, batchLiftingModes, batchOperands, sliceDims,
+           hoistedDims, mappedSliceInfos, hoistedValues, newOperands)
+           .succeeded()) {
+    return false;
+  }
 
   auto resultType = cast<RankedTensorType>(op->getResult(0).getType());
   auto resultShape = resultType.getShape();
@@ -1573,7 +1582,8 @@ mlir::LogicalResult WhileElementwiseReductionToReduce::matchAndRewriteImpl(
   WhileLoopInfo info(whileOp);
   auto computedInfo = info.computeInfo();
   (void)computedInfo;
-  if (!info.isValid()) {
+  if (!info.isValid() || !info.isConstant() ||
+      info.getConstantNumIters() <= 0) {
     return failure();
   }
 
@@ -1660,6 +1670,13 @@ WhileIsCopySimplify::matchAndRewriteImpl(stablehlo::WhileOp whileOp,
     auto origUpdate = dusOp.getUpdate();
     if (info.isConstantAcrossIterations(origUpdate, outerValue, canBeHoisted,
                                         true)) {
+      RankedTensorType origUpdateTy = origUpdate.getType();
+      if (llvm::any_of(dusInductionVarDims, [&](auto i) {
+            return origUpdateTy.getDimSize(i) != 1;
+          })) {
+        continue;
+      }
+
       anyOpRewritten = true;
       if (outerValue) {
         newDUSUpdate = outerValue;
@@ -1722,8 +1739,9 @@ WhileIsCopySimplify::matchAndRewriteImpl(stablehlo::WhileOp whileOp,
       Value dsResult;
       auto successfulHoist = info.hoistOperationFromLoop(
           rewriter, dsOp.getOperand(), dsOp, dsInductionVarDims, dsResult);
-      assert(successfulHoist && "expected DS hoist to succeed.");
-      (void)successfulHoist;
+      if (!successfulHoist) {
+        return failure(); // can happen if user is doing an out of bounds access
+      }
       auto dsResTy = cast<RankedTensorType>(dsResult.getType());
 
       // move the induction var to the front
@@ -1792,8 +1810,9 @@ WhileIsCopySimplify::matchAndRewriteImpl(stablehlo::WhileOp whileOp,
     bool successfulHoist = info.hoistOperationFromLoop(
         rewriter, whileOp.getOperands()[idx], newDUSUpdate, dusOp,
         dusInductionVarDims, newDUS);
-    (void)successfulHoist;
-    assert(successfulHoist && "Expected DUS hoist to succeed.");
+    if (!successfulHoist) {
+      return failure();
+    }
 
     whileOp.getResult(idx).replaceAllUsesWith(newDUS);
   }
