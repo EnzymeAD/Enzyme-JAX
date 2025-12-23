@@ -556,6 +556,19 @@ bool WhileLoopInfo::hoistOperationFromLoop(
   dSliceStarts[sliceIndex] = idxMinConst;
   dSliceSizes[sliceIndex] = actualSize;
 
+  // avoid crashing by doing a size check here. This typically means the user
+  // code was incorrect and they were doing a out of bounds access.
+  auto operandTy = dyn_cast<RankedTensorType>(operand.getType());
+  assert(operandTy);
+  for (size_t i = 0; i < operandTy.getRank(); i++) {
+    if (dSliceSizes[i] > operandTy.getShape()[i]) {
+      sliceOp->emitError("Out of bounds access detected in the array. Bailing "
+                         "out of automatic hoisting of the code from the loop. "
+                         "This typically indicates a bug in the user code.");
+      return false;
+    }
+  }
+
   auto dSlice = stablehlo::DynamicSliceOpCreate(
       builder, sliceOp.getLoc(), operand, dSliceStarts, dSliceSizes);
   auto dType = dyn_cast<RankedTensorType>(dSlice.getType());

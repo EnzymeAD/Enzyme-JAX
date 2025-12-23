@@ -1,4 +1,5 @@
 // RUN: enzymexlamlir-opt --enzyme-hlo-opt %s | FileCheck %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-opt="enable_auto_batching_passes=true" %s | FileCheck %s --check-prefix=AUTOBATCH
 
 // Test 1: Basic case - DS reads the exact slice that DUS wrote (same indices)
 // The DS should be replaced with the update value directly
@@ -282,3 +283,49 @@ func.func @while_dus_ds_partial_read(%arg0: tensor<10x10xf32>, %arg1: tensor<4x4
 // CHECK-NEXT:   }
 // CHECK-NEXT:   return %0#1, %0#2 : tensor<10x10xf32>, tensor<2x2xf32>
 // CHECK-NEXT: }
+
+module {
+  func.func @main(%arg0: tensor<15x20xf32> {enzymexla.memory_effects = []}, %arg1: tensor<15x3xf32> {enzymexla.memory_effects = []}) -> (tensor<5x3xf32>, tensor<15x20xf32>) attributes {enzymexla.memory_effects = []} {
+    %c = stablehlo.constant dense<0> : tensor<i32>
+    %cst = stablehlo.constant dense<0.000000e+00> : tensor<5x3xf32>
+    %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<15x20xf32>
+    %c_1 = stablehlo.constant dense<1> : tensor<i32>
+    %c_2 = stablehlo.constant dense<14> : tensor<i64>
+    %c_3 = stablehlo.constant dense<1> : tensor<i64>
+    %c_4 = stablehlo.constant dense<0> : tensor<i64>
+    %0 = stablehlo.slice %arg1 [0:15, 0:1] : (tensor<15x3xf32>) -> tensor<15x1xf32>
+    %1 = stablehlo.reshape %0 : (tensor<15x1xf32>) -> tensor<1x15xf32>
+    %2:3 = stablehlo.while(%iterArg = %c_4, %iterArg_5 = %cst_0, %iterArg_6 = %cst) : tensor<i64>, tensor<15x20xf32>, tensor<5x3xf32> attributes {enzyme.disable_mincut}
+    cond {
+      %3 = stablehlo.compare  LT, %iterArg, %c_2 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+      stablehlo.return %3 : tensor<i1>
+    } do {
+      %3 = stablehlo.transpose %iterArg_5, dims = [1, 0] : (tensor<15x20xf32>) -> tensor<20x15xf32>
+      %4 = stablehlo.add %c_3, %iterArg {enzymexla.bounds = [[1, 14]]} : tensor<i64>
+      %5 = stablehlo.convert %4 {enzymexla.bounds = [[1, 14]]} : (tensor<i64>) -> tensor<i32>
+      %6 = stablehlo.subtract %5, %c_1 {enzymexla.bounds = [[0, 13]]} : tensor<i32>
+      %7 = stablehlo.dynamic_update_slice %3, %1, %6, %c : (tensor<20x15xf32>, tensor<1x15xf32>, tensor<i32>, tensor<i32>) -> tensor<20x15xf32>
+      // CHECK: %6 = stablehlo.dynamic_slice %0, %4, %c, sizes = [1, 1] : (tensor<15x1xf32>, tensor<i32>, tensor<i32>) -> tensor<1x1xf32>
+      %8 = stablehlo.dynamic_slice %7, %6, %6, sizes = [1, 1] : (tensor<20x15xf32>, tensor<i32>, tensor<i32>) -> tensor<1x1xf32>
+      %9 = stablehlo.reshape %8 : (tensor<1x1xf32>) -> tensor<f32>
+      %10 = stablehlo.broadcast_in_dim %9, dims = [] : (tensor<f32>) -> tensor<5x3xf32>
+      %11 = stablehlo.add %iterArg_6, %10 : tensor<5x3xf32>
+      %12 = stablehlo.transpose %7, dims = [1, 0] : (tensor<20x15xf32>) -> tensor<15x20xf32>
+      stablehlo.return %4, %12, %11 : tensor<i64>, tensor<15x20xf32>, tensor<5x3xf32>
+    }
+    return %2#2, %2#1 : tensor<5x3xf32>, tensor<15x20xf32>
+  }
+}
+
+// AUTOBATCH: func.func @main(%arg0: tensor<15x20xf32> {enzymexla.memory_effects = []}, %arg1: tensor<15x3xf32> {enzymexla.memory_effects = []}) -> (tensor<5x3xf32>, tensor<15x20xf32>) attributes {enzymexla.memory_effects = []} {
+// AUTOBATCH-NEXT:   %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+// AUTOBATCH-NEXT:   %0 = stablehlo.slice %arg1 [0:15, 0:1] : (tensor<15x3xf32>) -> tensor<15x1xf32>
+// AUTOBATCH-NEXT:   %1 = stablehlo.reshape %0 : (tensor<15x1xf32>) -> tensor<15xf32>
+// AUTOBATCH-NEXT:   %2 = stablehlo.broadcast_in_dim %1, dims = [0] : (tensor<15xf32>) -> tensor<15x14xf32>
+// AUTOBATCH-NEXT:   %3 = stablehlo.pad %2, %cst, low = [0, 0], high = [0, 6], interior = [0, 0] : (tensor<15x14xf32>, tensor<f32>) -> tensor<15x20xf32>
+// AUTOBATCH-NEXT:   %4 = stablehlo.slice %arg1 [0:14, 0:1] : (tensor<15x3xf32>) -> tensor<14x1xf32>
+// AUTOBATCH-NEXT:   %5 = stablehlo.reshape %4 : (tensor<14x1xf32>) -> tensor<14xf32>
+// AUTOBATCH-NEXT:   %6 = stablehlo.broadcast_in_dim %5, dims = [0] : (tensor<14xf32>) -> tensor<14x5x3xf32>
+// AUTOBATCH-NEXT:   %7 = stablehlo.reduce(%6 init: %cst) applies stablehlo.add across dimensions = [0] : (tensor<14x5x3xf32>, tensor<f32>) -> tensor<5x3xf32>
+// AUTOBATCH-NEXT:   return %7, %3 : tensor<5x3xf32>, tensor<15x20xf32>
+// AUTOBATCH-NEXT: }

@@ -499,7 +499,7 @@ struct DynamicSliceDynamicSlice final
       return failure();
 
     auto prev = op.getOperand().getDefiningOp<stablehlo::DynamicSliceOp>();
-    if (!prev)
+    if (!prev || !llvm::hasSingleElement(prev->getUsers()))
       return failure();
 
     rewriteDynamicSliceDynamicSlice(op, prev, rewriter);
@@ -518,7 +518,7 @@ struct SliceDynamicSlice final
       return failure();
 
     auto prev = op.getOperand().getDefiningOp<stablehlo::DynamicSliceOp>();
-    if (!prev)
+    if (!prev || !llvm::hasSingleElement(prev->getUsers()))
       return failure();
 
     auto curDS = SliceToDynamicSlice(op, rewriter);
@@ -541,7 +541,7 @@ struct DynamicSliceSlice final
       return failure();
 
     auto prev = op.getOperand().getDefiningOp<stablehlo::SliceOp>();
-    if (!prev)
+    if (!prev || !llvm::hasSingleElement(prev->getUsers()))
       return failure();
 
     auto prevDS = SliceToDynamicSlice(prev, rewriter);
