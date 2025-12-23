@@ -151,15 +151,26 @@ jobs:
           name: enzymexlamlir-opt-${{ matrix.os }}-${{ matrix.python }}
           path: "bazel-bin/enzymexlamlir-opt"
           retention-days: 90
+
       - name: Run lit tests
         id: lit_tests
         continue-on-error: true
         run: |
-          bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/lit_tests/...
+          bazel test $BAZEL_FLAGS \
+            --color=yes \
+            --test_output=errors \
+            --experimental_ui_max_stdouterr_bytes=-1 \
+            --test_verbose_timeout_warnings \
+            //test/lit_tests/...
       - name: Run lit tests (dbg)
         if: steps.lit_tests.outcome == 'failure'
         run: |
-          bazel test $BAZEL_FLAGS -c dbg --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/lit_tests/...
+          bazel test $BAZEL_FLAGS -c dbg \
+            --color=yes \
+            --test_output=errors \
+            --experimental_ui_max_stdouterr_bytes=-1 \
+            --test_verbose_timeout_warnings \
+            //test/lit_tests/...
 
       - name: Update Python requirements files
         run: |
@@ -175,15 +186,23 @@ jobs:
           name: Enzyme-JAX-Wheel-${{ matrix.os }}-${{ matrix.python }}
           path: "bazel-bin/*.whl"
           retention-days: 90
+
       - name: Run tests
-        id: tests
-        continue-on-error: true
+        # id: tests
+        # continue-on-error: true
         run: |
-          bazel test $BAZEL_FLAGS --color=yes --test_output=streamed --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/...
-      - name: Run tests (dbg)
-        if: steps.tests.outcome == 'failure'
-        run: |
-          bazel test $BAZEL_FLAGS -c dbg --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/...
+          bazel test $BAZEL_FLAGS \
+            --color=yes \
+            --test_output=streamed \
+            --experimental_ui_max_stdouterr_bytes=-1 \
+            --test_verbose_timeout_warnings \
+            --test_env=LD_DEBUG=all \
+            --test_env=TF_CPP_MAX_VLOG_LEVEL=4 \
+            //test/...
+      # - name: Run tests (dbg)
+      #   if: steps.tests.outcome == 'failure'
+      #   run: |
+      #     bazel test $BAZEL_FLAGS -c dbg --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/...
 
       - name: Upload test results
         uses: actions/upload-artifact@v6
