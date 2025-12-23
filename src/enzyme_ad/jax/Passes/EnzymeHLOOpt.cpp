@@ -27229,8 +27229,10 @@ struct EnzymeHLOOptPass
         ReshapeDeletionsBroadcastInDimSimplify,
         ReshapeInsertionsBroadcastInDimSimplify, CompareIotaConstSimplify,
         CompareAbs, CompareMul, CompareConvert, AddSelects,
-        CompareNegateConstSimplify, SelectSimplify>(context,
-                                                    PatternBenefit(65000));
+        CompareNegateConstSimplify, SelectSimplify,
+        DynamicSliceReshapeDynamicSlice, DynamicSliceReshapeSlice,
+        SliceReshapeDynamicSlice, SliceReshapeSlice>(context,
+                                                     PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,
                  DynamicUpdateSliceConstProp, PadSimplify, ScatterConstFold>(
@@ -27429,6 +27431,24 @@ struct EnzymeHLOOptPass
     if (passses & (2048 * 2048)) {
       // push reshapes down
       patterns.add<ElementwiseReshapeLike>(context);
+    }
+
+    if (licm_passes) {
+      // LICM passes
+      patterns.add<LICM<stablehlo::SliceOp>>(false, context);
+      patterns.add<LICM<stablehlo::DotGeneralOp>>(false, context);
+      patterns.add<LICM<stablehlo::ReverseOp>>(false, context);
+      patterns.add<LICM<stablehlo::ReduceOp>>(false, context);
+      patterns.add<LICM<stablehlo::ReduceWindowOp>>(false, context);
+      patterns.add<LICM<stablehlo::DynamicUpdateSliceOp>>(false, context);
+      patterns.add<LICM<stablehlo::PadOp>>(false, context);
+      patterns.add<LICMElementwise>(false, context);
+      patterns.add<LICM<stablehlo::ConcatenateOp>>(false, context);
+      patterns.add<LICM<stablehlo::BroadcastInDimOp>>(false, context);
+      patterns.add<LICM<stablehlo::ReshapeOp>>(false, context);
+      patterns.add<LICM<stablehlo::TransposeOp>>(false, context);
+      patterns.add<LICM<stablehlo::ConvolutionOp>>(false, context);
+      patterns.add<WhileLICM>(false, context);
     }
 
     if (all_finite)
