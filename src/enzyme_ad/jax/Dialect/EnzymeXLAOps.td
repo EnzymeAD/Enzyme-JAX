@@ -1058,15 +1058,13 @@ def AffineStoreVar : EnzymeXLA_Op<"store_var", [Pure]> {
   let summary = "Fake store an SSA value for conversion to ISL";
 }
 
-
 // MPI Ops
 
 def MPICommRankOp : EnzymeXLA_Op<"comm_rank", []> {
-  let summary = "Equivalent to " "`MPI_Comm_rank(comm, &rank)`";
+  let summary = "Equivalent to " "`MPI_Comm_rank(MPI_COMM_WORLD, &rank)`";
 
   let arguments = (
     ins AnyTensor : $inrank
-    /* xxx : $comm */ // TODO 
   );
 
   let results = (
@@ -1077,11 +1075,10 @@ def MPICommRankOp : EnzymeXLA_Op<"comm_rank", []> {
 }
 
 def MPICommSizeOp : EnzymeXLA_Op<"comm_size", []> {
-  let summary = "Equivalent to MPI_Comm_size(comm, &size)";
+  let summary = "Equivalent to MPI_Comm_size(MPI_COMM_WORLD, &size)";
 
   let arguments = (
     ins AnyTensor : $insize
-    /* xxx : $comm */ // TODO 
   );
 
   let results = (
@@ -1093,7 +1090,7 @@ def MPICommSizeOp : EnzymeXLA_Op<"comm_size", []> {
 
 // We call it "mpi_barrier" to not collide with BarrierOp above
 def MPIBarrierOp : EnzymeXLA_Op<"mpi_barrier", []> {
-  let summary = "Equivalent to MPI_Barrier(comm)";
+  let summary = "Equivalent to MPI_Barrier(MPI_COMM_WORLD)";
   let assemblyFormat = "attr-dict";
 }
 
@@ -1106,7 +1103,6 @@ def MPISendOp : EnzymeXLA_Op<"send", []> {
     TensorOf<[I32]> : $count,
     TensorOf<[I32]> : $dest,
     TensorOf<[I32]> : $tag,
-    /* xxx : $comm */ // TODO 
     StrAttr:$datatype
   );
 
@@ -1115,15 +1111,13 @@ def MPISendOp : EnzymeXLA_Op<"send", []> {
 
 def MPIRecvOp : EnzymeXLA_Op<"recv", []> {
   let summary = "Equivalent to "
-                "`MPI_Recv(&buf, count, datatype, source, tag, comm, &status)`";
+                "`MPI_Recv(&buf, count, datatype, source, tag, MPI_COMM_WORLD, MPI_STATUS_IGNORE)`";
 
   let arguments = (
     ins AnyTensor : $inbuf,
     TensorOf<[I32]> : $count,
     TensorOf<[I32]> : $source,
     TensorOf<[I32]> : $tag,
-    /* xxx : $comm */ // TODO 
-    /* xxx : $status */ // TODO 
     StrAttr:$datatype
   );
 
@@ -1136,14 +1130,13 @@ def MPIRecvOp : EnzymeXLA_Op<"recv", []> {
 
 def MPIIsendOp : EnzymeXLA_Op<"isend", []> {
   let summary = "Equivalent to "
-                "`MPI_Isend(&buf, count, datatype, dest, tag, comm, &request)`";
+                "`MPI_Isend(&buf, count, datatype, dest, tag, MPI_COMM_WORLD, &request)`";
 
   let arguments = (
     ins AnyTensor : $buf,
     TensorOf<[I32]> : $count,
     TensorOf<[I32]> : $dest,
     TensorOf<[I32]> : $tag,
-    /* xxx : $comm */ // TODO 
     TensorOf<[I64]> : $inrequest,
     StrAttr:$datatype
   );
@@ -1157,14 +1150,13 @@ def MPIIsendOp : EnzymeXLA_Op<"isend", []> {
 
 def MPIIrecvOp : EnzymeXLA_Op<"irecv", []> {
   let summary = "Equivalent to "
-                "`MPI_Irecv(&buf, count, datatype, source, tag, comm, &request)`";
+                "`MPI_Irecv(&buf, count, datatype, source, tag, MPI_COMM_WORLD, &request)`";
 
   let arguments = (
     ins AnyTensor : $inbuf,
     TensorOf<[I32]> : $count,
     TensorOf<[I32]> : $source,
     TensorOf<[I32]> : $tag,
-    /* xxx : $comm */ // TODO 
     TensorOf<[I64]> : $inrequest,
     StrAttr:$datatype
   );
@@ -1186,13 +1178,12 @@ def MPIWaitOp : EnzymeXLA_Op<"wait", []> {
 
 def MPIAllreduceOp : EnzymeXLA_Op<"allreduce", []> {
   let summary = "Equivalent to "
-                "`MPI_Allreduce(&sendbuf, &recvbuf, count, datatype, op, comm)`";
+                "`MPI_Allreduce(&sendbuf, &recvbuf, count, datatype, op, MPI_COMM_WORLD)`";
 
   let arguments = (
     ins AnyTensor : $sendbuf,
     AnyTensor : $inbuf,
     TensorOf<[I32]> : $count,
-    /* xxx : $comm */ // TODO 
     StrAttr:$datatype,
     StrAttr:$op
   );
