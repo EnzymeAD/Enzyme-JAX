@@ -102,7 +102,7 @@ def profile_function(
     xplane_file = xplane_files[0]  # Take the most recent one
 
     # Extract timing data
-    min_time_ms = extract_min_step_time([xplane_file])
+    min_time_ms = extract_min_step_time([xplane_file], nrepeat)
 
     return {
         "min_time_us": min_time_ms * 1000.0,
@@ -115,7 +115,7 @@ def profile_function(
     }
 
 
-def extract_min_step_time(xplane_files: list[str]) -> float:
+def extract_min_step_time(xplane_files: list[str], nrepeat: int) -> float:
     """
     Extract the minimum step time from xprof data.
 
@@ -131,6 +131,25 @@ def extract_min_step_time(xplane_files: list[str]) -> float:
     if not XPROF_AVAILABLE:
         raise RuntimeError("xprof is not available.")
 
+    res = extract_min_step_time_from_overview_data(xplane_files, nrepeat)
+    if res is None:
+        return extract_min_step_time_from_hlo_op_profile(xplane_files, nrepeat)
+    return res
+
+
+def extract_min_step_time_from_hlo_op_profile(
+    xplane_files: list[str], nrepeat: int
+) -> None | float:
+    data = json.loads(
+        xspace_to_tool_data(xplane_files, "op_profile", {})[0].decode("utf-8")
+    )
+    picosec = data["byProgram"]["metrics"]["normalizedTimePs"]
+    return (picosec / 1e9) / nrepeat
+
+
+def extract_min_step_time_from_overview_data(
+    xplane_files: list[str], nrepeat: int
+) -> None | float:
     overview_data = json.loads(
         xspace_to_tool_data(xplane_files, "overview_page", {})[0].decode("utf-8")
     )
@@ -138,7 +157,7 @@ def extract_min_step_time(xplane_files: list[str]) -> float:
     # overview_page returns a list of tables; the second table (index 1)
     # contains step timing information with per-step data in rows
     if not isinstance(overview_data, list) or len(overview_data) <= 1:
-        raise RuntimeError("No step timing data found in overview_page")
+        return None
 
     step_table = overview_data[1]
     cols = step_table.get("cols", [])
@@ -148,11 +167,8 @@ def extract_min_step_time(xplane_files: list[str]) -> float:
     col_indices = {col["id"]: i for i, col in enumerate(cols)}
     step_time_idx = col_indices.get("stepTimeMs")
 
-    if step_time_idx is None:
-        raise RuntimeError("stepTimeMs column not found in step table")
-
-    if not rows:
-        raise RuntimeError("No step rows found in step table")
+    if step_time_idx is None or not rows:
+        return None
 
     # Extract step times from each row with full precision
     step_times_ms = []
@@ -164,7 +180,7 @@ def extract_min_step_time(xplane_files: list[str]) -> float:
                 step_times_ms.append(step_time)
 
     if not step_times_ms:
-        raise RuntimeError("No valid step times found")
+        return None
 
     # Return minimum step time for benchmarking (best case)
     return min(step_times_ms)
