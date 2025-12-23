@@ -4,7 +4,6 @@ from functools import partial
 from collections.abc import Callable, Sequence
 from typing import Any
 import itertools
-import sys
 import os
 import tempfile
 from absl import logging
@@ -16,6 +15,8 @@ from jax.interpreters import ad
 from jaxlib.mlir import ir
 from jaxlib.mlir.dialects import stablehlo, func
 import jax.numpy as jnp
+import jax.extend
+from jax._src.interpreters import partial_eval as pe
 
 from . import enzyme_call
 
@@ -24,10 +25,6 @@ from .utils import default_nowheel_resource, default_linux_cflags
 LANG_CPP = enzyme_call.Language.CPP
 LANG_LLVM = enzyme_call.Language.LLVM
 LANG_MHLO = enzyme_call.Language.MHLO
-
-from enum import Enum
-
-import jax.extend
 
 Primitive = jax.extend.core.Primitive
 
@@ -109,10 +106,14 @@ def optimization_passes(
     transpose_propagate: str = "up",
     reshape_propagate: str = "up",
     max_constant_threshold: int = 1024,
-    enable_batching_passes: bool = True,
     enable_licm_optimization_passes: bool = True,
     enable_scatter_gather_optimization_passes: bool = True,
     enable_pad_optimization_passes: bool = True,
+    enable_structured_tensors_passes: bool = False,
+    enable_slice_to_batch_passes: bool = False,  # this are somewhat expensive to run
+    enable_reduce_slice_fusion_passes: bool = True,
+    enable_concat_to_batch_passes: bool = True,
+    enable_loop_raising_passes: bool = True,
 ):
     transform_passes_list = [
         "compare_op_canon<16>",
@@ -380,23 +381,13 @@ def optimization_passes(
         "clamp_const_prop",
     ]
 
-    if enable_batching_passes:
+    if (
+        enable_structured_tensors_passes
+    ):  # currently we dont register custom_calls on jax end
+        transform_passes_list += ["dot_general_to_syrk"]
+
+    if enable_slice_to_batch_passes:
         transform_passes_list += [
-            "add_reduce_slice_fusion",
-            "mul_reduce_slice_fusion",
-            "min_reduce_slice_fusion",
-            "max_reduce_slice_fusion",
-            "and_reduce_slice_fusion",
-            "or_reduce_slice_fusion",
-            "xor_reduce_slice_fusion",
-            "concat_insert_dim_dot_general",
-            "concat_insert_dim_gather",
-            "concat_insert_dim_iota",
-            "concat_insert_dim_reduce",
-            "concat_insert_dim_sort",
-            "concat_insert_dim_reduce_window",
-            "concat_insert_dim_convolution",
-            "concat_insert_dim_elementwise",
             "dot_general_slice_to_batch",
             "gather_slice_to_batch",
             "iota_slice_to_batch",
@@ -405,9 +396,36 @@ def optimization_passes(
             "transpose_slice_to_batch",
             "broadcastindim_slice_to_batch",
             "reducewindow_slice_to_batch",
-            "convolution_slice_to_batch",
             "elementwise_slice_to_batch",
-            "greedy_while_loop_batch_fission",
+            "convolution_slice_to_batch",
+        ]
+
+    if enable_concat_to_batch_passes:
+        transform_passes_list += [
+            "concat_insert_dim_dot_general",
+            "concat_insert_dim_gather",
+            "concat_insert_dim_iota",
+            "concat_insert_dim_reduce",
+            "concat_insert_dim_sort",
+            "concat_insert_dim_reduce_window",
+            "concat_insert_dim_elementwise",
+            "concat_insert_dim_convolution",
+        ]
+
+    if enable_reduce_slice_fusion_passes:
+        transform_passes_list += [
+            "add_reduce_slice_fusion",
+            "mul_reduce_slice_fusion",
+            "min_reduce_slice_fusion",
+            "max_reduce_slice_fusion",
+            "and_reduce_slice_fusion",
+            "xor_reduce_slice_fusion",
+            "or_reduce_slice_fusion",
+        ]
+
+    if enable_loop_raising_passes:
+        transform_passes_list += [
+            "while_elementwise_reduction_to_reduce",
             "while_elementwise_reduction_to_reduce",
         ]
 
@@ -610,34 +628,18 @@ def optimization_passes(
 
 # TODO: implement options similar to ones in Reactant for benchmarking
 #       currently we mimic the `:all` option from Reactant
-def full_optimization_pass_pipeline(
-    *,
-    inline: bool = True,
-    no_nan: bool = False,
-    transpose_propagate: str = "up",
-    reshape_propagate: str = "up",
-    max_constant_threshold: int = 1024,
-    enable_batching_passes: bool = True,
-):
-    opt_passes = optimization_passes(
-        inline=inline,
-        no_nan=no_nan,
-        transpose_propagate=transpose_propagate,
-        reshape_propagate=reshape_propagate,
-        max_constant_threshold=max_constant_threshold,
-        enable_batching_passes=enable_batching_passes,
-    )
+def full_optimization_pass_pipeline(**kwargs):
+    opt_passes = optimization_passes(**kwargs)
 
     enzyme_pass = 'enzyme{postpasses="arith-raise{stablehlo=true},enzyme-batch-to-stablehlo,canonicalize,cse,canonicalize,remove-unnecessary-enzyme-ops,enzyme-simplify-math,canonicalize,cse,canonicalize"}'
 
     propagate_down_passes = ""
-    if transpose_propagate == "up" or reshape_propagate == "up":
+    if (
+        kwargs.get("transpose_propagate", "up") == "up"
+        or kwargs.get("reshape_propagate", "up") == "up"
+    ):
         propagate_down_passes = optimization_passes(
-            inline=inline,
-            no_nan=no_nan,
-            transpose_propagate=transpose_propagate,
-            reshape_propagate=reshape_propagate,
-            max_constant_threshold=max_constant_threshold,
+            **kwargs, transpose_propagate="down", reshape_propagate="down"
         )
 
     return ",".join(
@@ -662,7 +664,7 @@ DefaultJaXPipeline = JaXPipeline(full_optimization_pass_pipeline())
 
 
 def pass_pipeline(options):
-    if type(options) == type(""):
+    if isinstance(options, str):
         return options
     else:
         return
@@ -919,13 +921,14 @@ def maketup(ty):
 def make_mlir_zero(ty):
     from jax._src.interpreters import mlir
 
-    if type(ty) != mlir.ir.RankedTensorType:
-        ty = jax_mlir.dtype_to_ir_type(ty)
-    elty = ty.element_type
+    if isinstance(ty, mlir.ir.RankedTensorType):
+        elty = ty.element_type
+    else:
+        elty = jax_mlir.dtype_to_ir_type(ty).element_type
     elem = (
-        ir.FloatAttr.get(elty, 0.0)
-        if type(elty) != ir.IntegerType
-        else ir.IntegerAttr.get(elty, 0)
+        ir.IntegerAttr.get(elty, 0)
+        if isinstance(elty, ir.IntegerType)
+        else ir.FloatAttr.get(elty, 0.0)
     )
     return stablehlo.ConstantOp(ir.DenseElementsAttr.get_splat(ty, elem)).results[0]
 
@@ -1013,7 +1016,7 @@ def _enzyme_primal_lowering(
             orig_shapes.append(shape)
             orig_types.append(in_types[i])
         avals = [ctx.avals_in[seen[i]] for i in seen]
-        if type(mfunc) == type(""):
+        if isinstance(mfunc, str):
             avals_in = avals
             kept = [i for (i, v) in enumerate(orig_shapes)]
             source = mfunc
@@ -1375,7 +1378,6 @@ def _enzyme_rev_lowering(
     )
 
     in_shapes = list(map(maketup, pre_in_types))
-    pre_in_shapes = in_shapes
 
     out_shapes = list(map(lambda x: maketup(x.type), args_flat[1:]))
 
@@ -1434,7 +1436,7 @@ def _enzyme_rev_lowering(
     results = custom_call.results
     if tmpBuf != 0:
         results = results[:-1]
-    if kept != None:
+    if kept is not None:
         results = []
         cur_idx = 0
         for i, ty in enumerate(pre_in_types):
@@ -1455,7 +1457,7 @@ def ffi_call(
     lang: int = LANG_CPP,
     pipeline_options=DefaultCPPPipeline,
 ):
-    assert type(source) == type("") or len(source) == 5
+    assert isinstance(source, str) or len(source) == 5
     return _enzyme_primal_p.bind(
         *args,
         source=source,
@@ -1708,9 +1710,6 @@ register_custom_call_target("jaxzyme.rev", enzyme_call.get_callback(), platform=
 register_custom_call_target("jaxzyme.rev", enzyme_call.get_callback(), platform="CUDA")
 register_custom_call_target("jaxzyme.rev", enzyme_call.get_callback(), platform="ROCM")
 register_custom_call_target("jaxzyme.rev", enzyme_call.get_callback(), platform="tpu")
-
-
-from jax._src.interpreters import partial_eval as pe
 
 
 def fwd_partial_eval(trace, *args, **kwargs):
