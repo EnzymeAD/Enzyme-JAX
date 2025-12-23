@@ -425,7 +425,7 @@ def optimization_passes(
 
     if enable_loop_raising_passes:
         transform_passes_list += [
-            "while_elementwise_reduction_to_reduce",
+            "greedy_while_loop_batch_fission",
             "while_elementwise_reduction_to_reduce",
         ]
 

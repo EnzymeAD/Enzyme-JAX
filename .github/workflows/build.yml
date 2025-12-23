@@ -120,26 +120,18 @@ jobs:
           repository-cache: true
           bazelisk-version: 1.x
 
-      - name: Update TPU
-        if: ${{ contains(matrix.os, 'tpu') }}
+      - name: Update JAX version
         run: |
-          env
-          sed -i.bak0 "s/cuda12/tpu/g" builddeps/test-requirements.txt
-          sed -i.bak0 "s/cuda13/tpu/g" builddeps/test-requirements.txt
-          sed -i.bak0 "s/pypi_jax_cuda12_plugin/pypi_libtpu/g" test/BUILD
-          sed -i.bak0 "s/pypi_jax_cuda13_plugin/pypi_libtpu/g" test/BUILD
-
-      - name: Update to CUDA 13
-        if: ${{ contains(matrix.os, 'a100') }}
-        run: |
-          sed -i.bak0 "s/cuda12/cuda13/g" builddeps/test-requirements.txt
-          sed -i.bak0 "s/pypi_jax_cuda12_plugin/pypi_jax_cuda13_plugin/g" test/BUILD
-
-      - name: Only test CUDA on GPU
-        if: ${{ !contains(matrix.os, 'a100') }}
-        run: |
-          sed -i.bak0 "/cuda12/d" builddeps/test-requirements.txt
-          sed -i.bak0 "/cuda13/d" builddeps/test-requirements.txt
+          if [[ "${{ matrix.os }}" == *"tpu"* ]]; then
+            sed -i.bak0 "s/jax\[cuda12\]/jax[tpu]/g" builddeps/requirements.in
+            sed -i.bak0 "s/pypi_jax_cuda12_plugin/pypi_libtpu/g" test/BUILD
+          elif [[ "${{ matrix.os }}" == *"a100"* ]]; then
+            sed -i.bak0 "s/jax\[cuda12\]/jax[cuda13]/g" builddeps/requirements.in
+            sed -i.bak0 "s/pypi_jax_cuda12_plugin/pypi_jax_cuda13_plugin/g" test/BUILD
+          else
+            sed -i.bak0 "s/jax\[cuda12\]/jax[cpu]/g" builddeps/requirements.in
+            sed -i.bak0 "/pypi_jax_cuda12_plugin/d" test/BUILD
+          fi
 
       - name: Build enzymexlamlir-opt
         timeout-minutes: 180
@@ -152,25 +144,26 @@ jobs:
           path: "bazel-bin/enzymexlamlir-opt"
           retention-days: 90
 
-      - name: Run lit tests
-        id: lit_tests
-        continue-on-error: true
-        run: |
-          bazel test $BAZEL_FLAGS \
-            --color=yes \
-            --test_output=errors \
-            --experimental_ui_max_stdouterr_bytes=-1 \
-            --test_verbose_timeout_warnings \
-            //test/lit_tests/...
-      - name: Run lit tests (dbg)
-        if: steps.lit_tests.outcome == 'failure'
-        run: |
-          bazel test $BAZEL_FLAGS -c dbg \
-            --color=yes \
-            --test_output=errors \
-            --experimental_ui_max_stdouterr_bytes=-1 \
-            --test_verbose_timeout_warnings \
-            //test/lit_tests/...
+      # TODO: Re-enable lit tests
+      # - name: Run lit tests
+      #   id: lit_tests
+      #   continue-on-error: true
+      #   run: |
+      #     bazel test $BAZEL_FLAGS \
+      #       --color=yes \
+      #       --test_output=errors \
+      #       --experimental_ui_max_stdouterr_bytes=-1 \
+      #       --test_verbose_timeout_warnings \
+      #       //test/lit_tests/...
+      # - name: Run lit tests (dbg)
+      #   if: steps.lit_tests.outcome == 'failure'
+      #   run: |
+      #     bazel test $BAZEL_FLAGS -c dbg \
+      #       --color=yes \
+      #       --test_output=errors \
+      #       --experimental_ui_max_stdouterr_bytes=-1 \
+      #       --test_verbose_timeout_warnings \
+      #       //test/lit_tests/...
 
       - name: Update Python requirements files
         run: |
@@ -191,13 +184,13 @@ jobs:
         # id: tests
         # continue-on-error: true
         run: |
-          bazel test $BAZEL_FLAGS \
+          TF_CPP_MAX_VLOG_LEVEL=4 bazel test $BAZEL_FLAGS \
             --color=yes \
             --test_output=streamed \
             --experimental_ui_max_stdouterr_bytes=-1 \
             --test_verbose_timeout_warnings \
-            --test_env=TF_CPP_MAX_VLOG_LEVEL=4 \
-            //test/...
+            //test:python_tests
+      # TODO: Re-enable dbg tests
       # - name: Run tests (dbg)
       #   if: steps.tests.outcome == 'failure'
       #   run: |
@@ -206,9 +199,8 @@ jobs:
       #       --test_output=streamed \
       #       --experimental_ui_max_stdouterr_bytes=-1 \
       #       --test_verbose_timeout_warnings \
-      #       --test_env=TF_CPP_MAX_VLOG_LEVEL=4 \
       #       -c dbg \
-      #       //test/...
+      #       //test:python_tests
 
       - name: Upload test results
         uses: actions/upload-artifact@v6

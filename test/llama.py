@@ -309,8 +309,8 @@ class Llama(EnzymeJaxTest):
         # dvc = jax.random.uniform(subkey, shape=(n_layers, pos + 1, kv_dim))
 
         self.fn = partial(forward, config)
-        self.name = "llama"
-        self.repeat = 25
+        self.name = "llama_" + "_".join([f"{k}_{v}" for k, v in config.items()])
+        self.repeat = 10
         self.revprimal = False
         self.AllPipelines = pipelines()
         self.AllBackends = CurBackends

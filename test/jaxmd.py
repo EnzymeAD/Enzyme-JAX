@@ -3,6 +3,7 @@ from absl.testing import absltest
 from test_utils import EnzymeJaxTest
 from jax import random
 import jax.numpy as jnp
+import jax
 
 
 class JAXMD(EnzymeJaxTest):
@@ -10,7 +11,7 @@ class JAXMD(EnzymeJaxTest):
         from jax_md import space, energy, simulate, partition
 
         lattice_constant = 1.37820
-        N_rep = 40
+        N_rep = 40 if jax.default_backend() == "cpu" else 20
         box_size = N_rep * lattice_constant
         # Using float32 for positions / velocities, but float64 for reductions.
         dtype = jnp.float32

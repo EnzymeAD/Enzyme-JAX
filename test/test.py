@@ -1,9 +1,7 @@
 from absl.testing import absltest
 import jax
 import jax.numpy as jnp
-from enzyme_ad.jax import cpp_call, enzyme_jax_ir, optimize_module
-
-jax.config.update("jax_platform_name", "cpu")
+from enzyme_ad.jax import cpp_call, enzyme_jax_ir
 
 argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
 

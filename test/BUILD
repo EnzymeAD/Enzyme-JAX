@@ -185,3 +185,15 @@ py_test(
 #     timeout='long'
 #     tags = ["exclusive"]
 # )
+
+test_suite(
+    name = "python_tests",
+    tests = [
+        ":bench_vs_xla",
+        ":jaxmd",
+        ":llama",
+        ":neuralgcm_test",
+        ":test",
+        ":testffi",
+    ],
+)
