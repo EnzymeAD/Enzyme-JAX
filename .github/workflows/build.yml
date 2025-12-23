@@ -98,6 +98,15 @@ jobs:
           BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=VBAR_CONTROL_SERVICE_URL"
           BAZEL_FLAGS="${BAZEL_FLAGS} --repo_env=CC=`which clang`"
           BAZEL_FLAGS="${BAZEL_FLAGS} --define=using_clang=true"
+
+          if [[ "${{ matrix.os }}" == *"tpu"* ]]; then
+            BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=JAX_PLATFORMS=tpu"
+          elif [[ "${{ matrix.os }}" == *"a100"* ]]; then
+            BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=JAX_PLATFORMS=cuda"
+          else
+            BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=JAX_PLATFORMS=cpu"
+          fi
+
           echo "BAZEL_FLAGS=${BAZEL_FLAGS}" >> "${GITHUB_ENV}"
       - uses: actions/checkout@v6
       - uses: bazel-contrib/setup-bazel@0.16.0
@@ -110,16 +119,28 @@ jobs:
           # Share repository cache between workflows.
           repository-cache: true
           bazelisk-version: 1.x
+
       - name: Update TPU
         if: ${{ contains(matrix.os, 'tpu') }}
         run: |
           env
           sed -i.bak0 "s/cuda12/tpu/g" builddeps/test-requirements.txt
+          sed -i.bak0 "s/cuda13/tpu/g" builddeps/test-requirements.txt
           sed -i.bak0 "s/pypi_jax_cuda12_plugin/pypi_libtpu/g" test/BUILD
+          sed -i.bak0 "s/pypi_jax_cuda13_plugin/pypi_libtpu/g" test/BUILD
+
+      - name: Update to CUDA 13
+        if: ${{ contains(matrix.os, 'a100') }}
+        run: |
+          sed -i.bak0 "s/cuda12/cuda13/g" builddeps/test-requirements.txt
+          sed -i.bak0 "s/pypi_jax_cuda12_plugin/pypi_jax_cuda13_plugin/g" test/BUILD
+
       - name: Only test CUDA on GPU
         if: ${{ !contains(matrix.os, 'a100') }}
         run: |
           sed -i.bak0 "/cuda12/d" builddeps/test-requirements.txt
+          sed -i.bak0 "/cuda13/d" builddeps/test-requirements.txt
+
       - name: Build enzymexlamlir-opt
         timeout-minutes: 180
         run: |
@@ -158,7 +179,7 @@ jobs:
         id: tests
         continue-on-error: true
         run: |
-          bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/...
+          bazel test $BAZEL_FLAGS --color=yes --test_output=streamed --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/...
       - name: Run tests (dbg)
         if: steps.tests.outcome == 'failure'
         run: |

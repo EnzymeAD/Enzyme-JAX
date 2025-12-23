@@ -7,6 +7,45 @@ import os
 import jax.random
 
 
+def _patch_jax_for_old_checkpoints():
+    """Patch JAX to handle old checkpoints with named_shape in ShapedArray.
+
+    NeuralGCM checkpoints on GCS were created with older JAX versions that had
+    a `named_shape` argument in ShapedArray. JAX 0.8+ removed this argument,
+    causing pickle.load() to fail. This patches the pickle machinery to filter
+    out the named_shape argument during unpickling.
+    """
+    try:
+        from jax._src import core
+        from jax._src import array as jax_array
+
+        # Check if we need the patch (JAX 0.8+ doesn't have named_shape)
+        import inspect
+
+        sig = inspect.signature(core.ShapedArray.__init__)
+        if "named_shape" in sig.parameters:
+            # Old JAX version, no patch needed
+            return
+
+        # Patch the _reconstruct_array function to filter out named_shape
+        original_reconstruct = jax_array._reconstruct_array
+
+        def patched_reconstruct(fun, args, arr_state, aval_state):
+            # Filter out named_shape from aval_state if present
+            if "named_shape" in aval_state:
+                aval_state = {k: v for k, v in aval_state.items() if k != "named_shape"}
+            return original_reconstruct(fun, args, arr_state, aval_state)
+
+        jax_array._reconstruct_array = patched_reconstruct
+        print("Applied JAX 0.8+ compatibility patch for old NeuralGCM checkpoints")
+    except Exception as e:
+        print(f"Warning: Could not apply JAX checkpoint compatibility patch: {e}")
+
+
+# Apply the patch before any checkpoint loading
+_patch_jax_for_old_checkpoints()
+
+
 class NeuralGCM(EnzymeJaxTest):
     def setUp(self):
         import neuralgcm
@@ -110,7 +149,6 @@ class NeuralGCM(EnzymeJaxTest):
         self.mlirad_fwd = False
         self.fwdfilter = lambda _: []
         self.revfilter = lambda _: []
-        self.count = 1
         self.repeat = 2
         self.atol = 5e-2
         self.rtol = 1e-2

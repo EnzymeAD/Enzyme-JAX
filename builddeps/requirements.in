@@ -3,6 +3,6 @@
 #
 -r test-requirements.txt
 
-jax >= 0.7.0
+jax >= 0.8.0
 jaxlib
 absl_py >= 2.3.0
