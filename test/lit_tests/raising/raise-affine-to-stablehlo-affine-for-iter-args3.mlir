@@ -1,4 +1,5 @@
 // RUN: enzymexlamlir-opt %s "--pass-pipeline=builtin.module(raise-affine-to-stablehlo{enable_lockstep_for=false},enzyme-hlo-opt)" | FileCheck %s
+// RUN: enzymexlamlir-opt %s "--pass-pipeline=builtin.module(raise-affine-to-stablehlo{enable_lockstep_for=false},arith-raise{stablehlo=true},enzyme-hlo-opt{max_constant_expansion=0 enable_auto_batching_passes=true})" | FileCheck %s --check-prefix=LOOPRAISE
 // RUN: enzymexlamlir-opt %s "--pass-pipeline=builtin.module(raise-affine-to-stablehlo{enable_lockstep_for=true},enzyme-hlo-opt)" | FileCheck %s --check-prefix=LOCKSTEP
 
 module @"reactant_run!" attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas = 1 : i64} {
@@ -33,12 +34,18 @@ module @"reactant_run!" attributes {mhlo.num_partitions = 1 : i64, mhlo.num_repl
 // CHECK:           return %[[VAL_0]], %[[VAL_6]]#1 : tensor<85x180x18xf64>, tensor<85x180xf64>
 // CHECK:         }
 
+// LOOPRAISE: func.func private @foo_raised(%arg0: tensor<85x180x18xf64>, %arg1: tensor<85x180xf64>) -> (tensor<85x180x18xf64>, tensor<85x180xf64>) {
+// LOOPRAISE-NEXT:   %cst = stablehlo.constant dense<5.000000e-01> : tensor<85x180xf64>
+// LOOPRAISE-NEXT:   %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+// LOOPRAISE-NEXT:   %0 = stablehlo.reduce(%arg0 init: %cst_0) applies stablehlo.add across dimensions = [2] : (tensor<85x180x18xf64>, tensor<f64>) -> tensor<85x180xf64>
+// LOOPRAISE-NEXT:   %1 = stablehlo.add %0, %cst : tensor<85x180xf64>
+// LOOPRAISE-NEXT:   return %arg0, %1 : tensor<85x180x18xf64>, tensor<85x180xf64>
+// LOOPRAISE-NEXT: }
+
 // LOCKSTEP:  func.func private @foo_raised(%arg0: tensor<85x180x18xf64>, %arg1: tensor<85x180xf64>) -> (tensor<85x180x18xf64>, tensor<85x180xf64>) {
-// LOCKSTEP-NEXT:    %cst = stablehlo.constant dense<5.000000e-01> : tensor<85x180x1xf64>
+// LOCKSTEP-NEXT:    %cst = stablehlo.constant dense<5.000000e-01> : tensor<85x180xf64>
 // LOCKSTEP-NEXT:    %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<f64>
 // LOCKSTEP-NEXT{LITERAL}:    %0 = stablehlo.reduce(%arg0 init: %cst_0) applies stablehlo.add across dimensions = [2] : (tensor<85x180x18xf64>, tensor<f64>) -> tensor<85x180xf64>
-// LOCKSTEP-NEXT:    %1 = stablehlo.reshape %0 : (tensor<85x180xf64>) -> tensor<85x180x1xf64>
-// LOCKSTEP-NEXT:    %2 = stablehlo.add %1, %cst : tensor<85x180x1xf64>
-// LOCKSTEP-NEXT:    %3 = stablehlo.reshape %2 : (tensor<85x180x1xf64>) -> tensor<85x180xf64>
-// LOCKSTEP-NEXT:    return %arg0, %3 : tensor<85x180x18xf64>, tensor<85x180xf64>
+// LOCKSTEP-NEXT:    %1 = stablehlo.add %0, %cst : tensor<85x180xf64>
+// LOCKSTEP-NEXT:    return %arg0, %1 : tensor<85x180x18xf64>, tensor<85x180xf64>
 // LOCKSTEP-NEXT:  }

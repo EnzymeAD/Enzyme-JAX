@@ -1,7 +1,7 @@
-JAX_COMMIT = "6fccabe4c5e2c6535d0c2e92cf90a8c1502187e6"
+JAX_COMMIT = "ba024e35222f9bebadfe7f67395246e11e1eefc5"
 JAX_SHA256 = ""
 
-ENZYME_COMMIT = "5220a4f4dbb6ded3a05e3e417594292d456bff38"
+ENZYME_COMMIT = "98711689e3cd2d5a7d4521ad46488c7385086b4a"
 ENZYME_SHA256 = ""
 
 ML_TOOLCHAIN_COMMIT = "78ef5eda03c54a912c000f1f872242d4ca6063a4"
@@ -43,10 +43,6 @@ XLA_PATCHES = [
     """,
     """
     sed -i.bak0 "s/patch_file/patch_args = [\\\"-p1\\\"],patches/g" third_party/llvm/workspace.bzl
-    """,
-    # TODO remove
-    """
-    sed -i.bak0 "s/DCHECK_NE(runtime, nullptr/DCHECK_NE(runtime.get(), nullptr/g" xla/backends/cpu/runtime/xnnpack/xnn_fusion_thunk.cc
     """,
     """
     sed -i.bak0 "s/Node::Leaf(std::forward<decltype(value)>/Node::Leaf(std::forward<T>/g" xla/tuple_tree.h

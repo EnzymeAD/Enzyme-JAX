@@ -53,7 +53,7 @@ jobs:
           - 'main'
           # - '0123456789abcdef0123456789abcdef01234567'
         reactant_commit:
-          - 'main'
+          - 'wsmoses-patch-13'
           # - 'ap/pass_generalization'
 
     steps:
@@ -168,7 +168,7 @@ jobs:
           Pkg.gc()
         working-directory: ${{ env.GB25_DIR }}
       - name: Upload Julia project environment
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         timeout-minutes: 10
         if: ${{ always() }}
         with:
@@ -184,11 +184,40 @@ jobs:
           julia --project --color=yes -e "using MPI; MPI.install_mpiexecjl(; destdir=\"${MPIEXECJL_DIR}\")"
           echo "${MPIEXECJL_DIR}" >> "${GITHUB_PATH}"
         working-directory: ${{ env.GB25_DIR }}
-      - name: Run GB-25 simulation (east-west)
+      - name: Compile GB-25 simulation
+        timeout-minutes: 30
+        run: |
+          export XLA_FLAGS='--xla_dump_to=${{ env.GB25_DIR }}/xla_dump_compile'
+          timeout --signal=TERM --verbose 29m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_compile.jl
+        working-directory: ${{ env.GB25_DIR }}
+      - name: Show remaining collective operations
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          OK="true"
+          for OP in all-to-all all-gather all-reduce; do
+              COLLECTIVES=$(find . -name 'optimised_sharded_baroclinic_instability*.xla' -exec grep --with-filename --line-number --extended-regexp "${OP}" '{}' \;)
+              NUM_COLLECTIVES=$(echo "${COLLECTIVES}" | wc -l | xargs)
+              if [[ -n "${COLLECTIVES}" ]]; then
+                  MSG="There are ${NUM_COLLECTIVES} remaining ${OP} operations"
+                  echo "::error title=Remaining ${OP} Operations:: ${MSG}"
+                  echo
+                  echo "----------"
+                  echo "${COLLECTIVES}"
+                  echo "----------"
+                  if [[ "${OP}" == "all-to-all" && ${NUM_COLLECTIVES} -gt 0 ]] || [[ "${OP}" == "all-gather" && ${NUM_COLLECTIVES} -gt 0 ]] || [[ "${OP}" == "all-reduce" && ${NUM_COLLECTIVES} -gt 0 ]]; then
+                      OK="false"
+                  fi
+              fi
+          done
+          if [[ "${OK}" == "false" ]]; then
+              exit 1
+          fi
+      - name: Run GB-25 simulation
         timeout-minutes: 60
         run: |
-          export XLA_FLAGS='--xla_dump_to=${{ env.GB25_DIR }}/xla_dump_east_west'
-          timeout --signal=TERM --verbose 59m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_run.jl --grid-x=6144 --grid-y=1536 --grid-z=4 --test-type=fill_east_west
+          export XLA_FLAGS='--xla_dump_to=${{ env.GB25_DIR }}/xla_dump_run'
+          timeout --signal=TERM --verbose 59m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_run.jl
         working-directory: ${{ env.GB25_DIR }}
       - name: Run GB-25 simulation (north-south)
         timeout-minutes: 60
@@ -208,7 +237,7 @@ jobs:
       #     timeout --signal=TERM --verbose 19m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict correctness/correctness_sharded_baroclinic_instability_simulation_run.jl
       #   working-directory: ${{ env.GB25_DIR }}
       - name: Upload MLIR and XLA modules
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         timeout-minutes: 10
         if: ${{ !cancelled() }}
         with:
@@ -219,7 +248,7 @@ jobs:
           retention-days: 90
           overwrite: false
       - name: Upload XLA dump
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         timeout-minutes: 20
         if: ${{ !cancelled() }}
         with:
@@ -228,7 +257,7 @@ jobs:
           retention-days: 90
           overwrite: false
       - name: Upload XLA profiler traces
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         timeout-minutes: 10
         if: ${{ !cancelled() }}
         with:
@@ -239,7 +268,7 @@ jobs:
       - name: Save Julia depot cache on cancel or failure
         id: julia-cache-save
         if: cancelled() || failure()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with: 
           path: |
             ${{ steps.julia-cache.outputs.cache-paths }}

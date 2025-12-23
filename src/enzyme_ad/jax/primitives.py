@@ -320,6 +320,13 @@ def optimization_passes(
         "dot_general_broadcast_in_dim_sort_dims",
         "dus_dynamic_slice_simplify",
         "while_dus_ds_simplify",
+        "reshape_slice_reshape",
+        "dynamic_slice_elementwise",
+        "dot_general_remove_batch_dimensions",
+        "delete_dims_reduce",
+        "reduce_delete_dims",
+        "dot_general_insert_dim_contraction_simplification",
+        "fuse_reshape_collapse_or_expand_dims_into_reduce",
     ]
 
     # constant propagation patterns
@@ -400,12 +407,14 @@ def optimization_passes(
             "convolution_slice_to_batch",
             "elementwise_slice_to_batch",
             "greedy_while_loop_batch_fission",
+            "while_elementwise_reduction_to_reduce",
         ]
 
     if enable_licm_optimization_passes:
         transform_passes_list += [
             "dus_licm(0)",
             "slice_licm(0)",
+            "dynamic_slice_licm(0)",
             "elementwise_licm(0)",
             "concatenate_licm(0)",
             "while_licm<1>(1)",
@@ -487,11 +496,15 @@ def optimization_passes(
             "reshape_dus",
             "dot_reshape_pad<1>",
             "pad_dot_general<1>(0)",
-            "pad_dot_general<1>(1)",
+            # XXX: see https://github.com/EnzymeAD/Enzyme-JAX/issues/1445
+            # "pad_dot_general<1>(1)",
             "reshape_pad",
             "reshape_wrap",
             "reshape_rotate",
             "reshape_extend",
+            "reshape_slice(1)",
+            "reshape_elementwise(1)",
+            "reshape_dynamic_slice(1)",
         ]
     elif reshape_propagate == "down":
         transform_passes_list += [
@@ -506,6 +519,7 @@ def optimization_passes(
             "slice_reshape_dot_general<1>",
             "slice_reshape_pad<1>",
             "elementwise_reshape_like",
+            "reshape_elementwise_only_fusible(1)",
         ]
     else:
         raise ValueError("Invalid value for reshape_propagate")
@@ -538,6 +552,7 @@ def optimization_passes(
         transform_passes_list += [
             "reorder_elementwise_and_shape_op<16>",
             "elementwise_all_transpose_operands_simplify",
+            "dynamic_slice_transpose",
             "slice_transpose",
             "einsum_transpose<1>",
             "slice_reshape_transpose<1>",

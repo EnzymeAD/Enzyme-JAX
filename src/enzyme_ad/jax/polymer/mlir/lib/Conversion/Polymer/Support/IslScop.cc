@@ -1,6 +1,7 @@
 //===- IslScop.cc -----------------------------------------------*- C++ -*-===//
 
 #include "mlir/Conversion/Polymer/Support/IslScop.h"
+#include "Enzyme/MLIR/Dialect/Ops.h"
 #include "mlir/Analysis/Presburger/PresburgerSpace.h"
 #include "mlir/Conversion/Polymer/Support/ScatteringUtils.h"
 #include "mlir/Conversion/Polymer/Support/ScopStmt.h"
@@ -103,7 +104,14 @@ IslScop::IslScop(Operation *op) {
   root = op;
 }
 
-IslScop::~IslScop() { isl_schedule_free(schedule); }
+IslScop::~IslScop() {
+  isl_schedule_free(schedule);
+  SmallVector<enzymexla::AffineStoreVar> toErase;
+  root->walk([&](enzymexla::AffineStoreVar asv) { toErase.push_back(asv); });
+  for (auto asv : toErase) {
+    asv->erase();
+  }
+}
 
 void IslScop::addContextRelation(affine::FlatAffineValueConstraints cst) {
   // Project out the dim IDs in the context with only the symbol IDs left.
@@ -201,7 +209,6 @@ static isl_schedule *markPermutable(isl_schedule *schedule) {
 isl_schedule *
 IslScop::buildParallelSchedule(affine::AffineParallelOp parallelOp,
                                unsigned depth) {
-  assert(parallelOp->getNumResults() == 0 && "no parallel reductions");
   isl_schedule *schedule =
       buildLoopSchedule(parallelOp, depth, parallelOp.getNumDims(), true);
   return schedule;
@@ -1943,23 +1950,49 @@ std::unique_ptr<IslScop> IslScopBuilder::build(Operation *f) {
           }
           needToLoadOperands = false;
           needToStoreResults = false;
-        } else {
-          if (!isa<memref::AllocOp, memref::AllocaOp, memref::AllocOp,
-                   memref::DeallocOp>(op)) {
-            LDBG() << "Unexpected op " << op;
-            llvm_unreachable("");
-          }
+        } else if (auto rmw = dyn_cast<enzyme::AffineAtomicRMWOp>(op)) {
+          affine::AffineValueMap vMap;
+          mlir::Value memref = rmw.getMemref();
+          AffineMap map;
+          SmallVector<Value, 4> indices;
+          llvm::append_range(indices, rmw.getIndices());
+          map = rmw.getMap();
+          vMap.reset(map, indices);
+          addLoad(rmw.getValue(), unitVMap);
+          addLoad(memref, vMap);
+          addMustStore(memref, vMap);
+          addMustStore(rmw.getResult(), unitVMap);
           needToLoadOperands = false;
           needToStoreResults = false;
+        } else if (isa<memref::AllocOp, memref::AllocaOp, memref::DeallocOp>(
+                       op)) {
+          needToLoadOperands = false;
+          needToStoreResults = false;
+        } else {
+          LDBG() << "Unexpected op " << *op;
+          // TODO we can handle memref load/store here by doing a
+          // read/may-write on the whole memref.
+          return nullptr;
         }
       } else if (auto storeVar = dyn_cast<enzymexla::AffineStoreVar>(op)) {
-        assert(storeVar->getNumOperands() == 2);
-        Value val = storeVar->getOperand(0);
-        Value addr = storeVar->getOperand(1);
-        addLoad(val, unitVMap);
-        addMustStore(addr, unitVMap);
-        needToLoadOperands = false;
-        needToStoreResults = false;
+        auto ty = storeVar.getType().getValue();
+        if (ty == "for.iv.init") {
+          assert(storeVar->getNumOperands() == 2);
+          Value val = storeVar->getOperand(0);
+          Value addr = storeVar->getOperand(1);
+          addLoad(val, unitVMap);
+          addMustStore(addr, unitVMap);
+          needToLoadOperands = false;
+          needToStoreResults = false;
+        } else if (ty == "parallel.iv.init") {
+          assert(storeVar->getNumOperands() == 1);
+          Value addr = storeVar->getOperand(0);
+          addMustStore(addr, unitVMap);
+          needToLoadOperands = false;
+          needToStoreResults = false;
+        } else {
+          llvm_unreachable("??");
+        }
       } else if (auto yield = dyn_cast<affine::AffineYieldOp>(op)) {
         for (auto [res, opr] :
              llvm::zip(ValueRange(yield->getParentOp()->getResults()),
@@ -1994,6 +2027,16 @@ std::unique_ptr<IslScop> IslScopBuilder::build(Operation *f) {
   return scop;
 }
 
+static void createParallelIterArgAccesses(affine::AffineParallelOp parallelOp,
+                                          IRMapping &map) {
+  OpBuilder builder(parallelOp);
+  for (auto res : ValueRange(parallelOp.getResults()))
+    builder.create<enzymexla::AffineStoreVar>(
+        parallelOp.getLoc(), ValueRange{res},
+        builder.getStringAttr("parallel.iv.init"));
+  map.map(parallelOp.getRegionIterArgs(), parallelOp.getResults());
+}
+
 static void createForIterArgAccesses(affine::AffineForOp forOp,
                                      IRMapping &map) {
   OpBuilder builder(forOp);
@@ -2009,9 +2052,10 @@ void IslScopBuilder::gatherStmts(Operation *f, IRMapping &map,
                                  IslScop &S) const {
   f->walk(
       [&](affine::AffineForOp forOp) { createForIterArgAccesses(forOp, map); });
-  // f->walk([&](memref::AtAddrOp atAddr) {
-  //   map.map(atAddr.getResult(), atAddr.getAddr());
-  // });
+  f->walk([&](affine::AffineParallelOp parallelOp) {
+    createParallelIterArgAccesses(parallelOp, map);
+  });
+
   unsigned stmtId = 0;
   f->walk([&](mlir::Operation *op) {
     if (isa<affine::AffineForOp, affine::AffineIfOp, affine::AffineParallelOp>(

@@ -9,18 +9,15 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
-#include "src/enzyme_ad/jax/Passes/StructuredTensors.h"
 #include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
 #include "llvm/ADT/SetOperations.h"
 #include "llvm/ADT/SetVector.h"
-#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 
 #include <algorithm>
-#include <iterator>
 
 #define DEBUG_TYPE "auto-batching"
 
@@ -48,72 +45,69 @@ bool anyOpsAreDataDependent(ArrayRef<Operation *> ops) {
   }
 
   Block *parentBlock = ops[0]->getBlock();
-  // dependency analysis for ops in different blocks is hard. conservatively
-  // assume that all ops are data dependent
-  if (llvm::any_of(
-          ops, [&](Operation *op) { return op->getBlock() != parentBlock; })) {
-    return true;
-  }
 
-  // Sort by block order so "earlier" corresponds to program order.
-  SmallVector<Operation *, 8> sortedOps(ops.begin(), ops.end());
-  std::sort(sortedOps.begin(), sortedOps.end(),
-            [](Operation *a, Operation *b) { return a->isBeforeInBlock(b); });
+  SmallVector<Operation *> todo;
 
-  Operation *firstOp = sortedOps.front();
-
-  // Track values defined by subset ops that are earlier in block order.
-  llvm::SmallSetVector<Value, 32> earlierDefinedValues;
-  for (Value result : firstOp->getResults()) {
-    earlierDefinedValues.insert(result);
-  }
-
-  // For each op, check if it (directly or indirectly) depends on any earlier op
-  // in the subset by traversing defining ops backwards in program order.
-  for (Operation *op : llvm::drop_begin(sortedOps)) {
-    SmallVector<Operation *, 32> worklist;
-    llvm::SmallPtrSet<Operation *, 32> visited;
-
-    auto enqueueDef = [&](Operation *defOp, Operation *userOp) {
-      if (!defOp || defOp->getBlock() != parentBlock) {
-        return;
-      }
-      // Only traverse within the window [first_op, user_op) in block order.
-      if (defOp->isBeforeInBlock(firstOp) || !defOp->isBeforeInBlock(userOp)) {
-        return;
-      }
-      worklist.push_back(defOp);
-    };
-
-    for (Value operand : op->getOperands()) {
-      if (earlierDefinedValues.contains(operand)) {
-        return true;
-      }
-      enqueueDef(operand.getDefiningOp(), op);
+  for (auto op : ops) {
+    // dependency analysis for ops in different blocks is hard. conservatively
+    // assume that all ops are data dependent
+    if (op->getBlock() != parentBlock) {
+      return true;
     }
+    todo.push_back(op);
+  }
 
-    while (!worklist.empty()) {
-      Operation *curr = worklist.pop_back_val();
-      if (!visited.insert(curr).second) {
-        continue;
+  SmallPtrSet<Operation *, 1> toCheck(ops.begin(), ops.end());
+
+  SmallPtrSet<Operation *, 1> done;
+
+  while (!todo.empty()) {
+    auto cur = todo.pop_back_val();
+    if (done.contains(cur))
+      continue;
+    done.insert(cur);
+    // Only consider operations whose values are isolated form above
+    if (cur->getNumRegions() != 0 &&
+        !cur->hasTrait<mlir::OpTrait::IsIsolatedFromAbove>()) {
+      SmallVector<Region *> rtodo;
+      for (auto &reg : cur->getRegions()) {
+        rtodo.push_back(&reg);
       }
-
-      // Once we're before the earliest subset op, this path cannot reach any
-      // earlier subset-defined value.
-      if (curr->isBeforeInBlock(firstOp)) {
-        continue;
-      }
-
-      for (Value operand : curr->getOperands()) {
-        if (earlierDefinedValues.contains(operand)) {
-          return true;
+      bool legal = true;
+      while (!rtodo.empty()) {
+        auto reg = rtodo.pop_back_val();
+        for (auto &b : *reg) {
+          for (auto &o : b) {
+            for (auto v : o.getOperands()) {
+              if (!cur->isAncestor(v.getParentBlock()->getParentOp())) {
+                legal = false;
+                goto endCheck;
+              }
+            }
+            for (auto &reg : o.getRegions()) {
+              rtodo.push_back(&reg);
+            }
+          }
         }
-        enqueueDef(operand.getDefiningOp(), curr);
       }
+    endCheck:;
+      if (!legal)
+        return true;
     }
-
-    for (Value result : op->getResults()) {
-      earlierDefinedValues.insert(result);
+    for (auto v : cur->getOperands()) {
+      if (auto op2 = v.getDefiningOp()) {
+        if (op2->getBlock() != parentBlock) {
+          continue;
+        }
+        if (toCheck.contains(op2))
+          return true;
+        todo.push_back(op2);
+      } else {
+        // No blockargument can be in the list of ops, since it is
+        // definitionally defined outside the block
+        assert(isa<BlockArgument>(v));
+        continue;
+      }
     }
   }
 
@@ -122,13 +116,72 @@ bool anyOpsAreDataDependent(ArrayRef<Operation *> ops) {
 
 func::FuncOp CreateWrapperUnbatchedFunction(
     mlir::ModuleOp modOp, PatternRewriter &rewriter, std::string funcName,
-    SmallVectorImpl<BatchLiftingMode> &batchLiftingModes, Operation *op,
-    std::optional<SmallVector<int64_t>> outShape) {
-  assert(op->getNumResults() == 1 && "only support single result ops");
-
+    std::optional<SmallVector<BatchLiftingMode>> batchLiftingModes,
+    ArrayRef<Operation *> ops, std::optional<SmallVector<int64_t>> inShape,
+    std::optional<SmallVector<int64_t>> outShape, FunctionType calleeType) {
   OpBuilder::InsertionGuard guard(rewriter);
   rewriter.setInsertionPointToStart(modOp.getBody());
 
+  auto lastOp = ops.back();
+  auto firstOp = ops.front();
+
+  func::FuncOp funcOp = func::FuncOp::create(
+      rewriter, lastOp->getLoc(), funcName + std::to_string(batchCounter++),
+      calleeType);
+  funcOp.setPrivate();
+
+  auto &entryBlock = *funcOp.addEntryBlock();
+  rewriter.setInsertionPointToStart(&entryBlock);
+
+  IRMapping mapper;
+  size_t argIdx = 0;
+  for (auto [i, operand] : llvm::enumerate(firstOp->getOperands())) {
+    if (batchLiftingModes.has_value() &&
+        batchLiftingModes.value()[i] ==
+            BatchLiftingMode::CONSTANT) { // clone into fn body
+      auto clonedConst = rewriter.clone(*operand.getDefiningOp());
+      mapper.map(operand, clonedConst->getResult(0));
+      continue;
+    }
+    mapper.map(operand, entryBlock.getArguments()[argIdx++]);
+  }
+
+  if (inShape.has_value()) {
+    for (size_t i = 0; i < firstOp->getNumOperands(); i++) {
+      auto blockArg = mapper.lookup(firstOp->getOperand(i));
+      mapper.map(firstOp->getOperand(i),
+                 stablehlo::ReshapeOpCreate(rewriter, firstOp->getLoc(),
+                                            blockArg, inShape.value()));
+    }
+  }
+
+  for (auto op : ops) {
+    auto clonedOp = rewriter.clone(*op, mapper);
+    for (size_t i = 0; i < op->getNumResults(); i++) {
+      mapper.map(op->getResult(i), clonedOp->getResult(i));
+    }
+  }
+
+  SmallVector<Value> results;
+  for (auto result : lastOp->getResults()) {
+    results.push_back(mapper.lookup(result));
+  }
+
+  if (outShape.has_value()) {
+    for (size_t i = 0; i < results.size(); i++) {
+      results[i] = stablehlo::ReshapeOpCreate(rewriter, lastOp->getLoc(),
+                                              results[i], outShape.value());
+    }
+  }
+  func::ReturnOp::create(rewriter, lastOp->getLoc(), results);
+
+  return funcOp;
+}
+
+func::FuncOp CreateWrapperUnbatchedFunction(
+    mlir::ModuleOp modOp, PatternRewriter &rewriter, std::string funcName,
+    SmallVector<BatchLiftingMode> batchLiftingModes, Operation *op,
+    std::optional<SmallVector<int64_t>> outShape) {
   SmallVector<Type> argTypes;
   for (auto [i, v] : llvm::enumerate(op->getOperands())) {
     if (batchLiftingModes[i] == BatchLiftingMode::CONSTANT) {
@@ -139,34 +192,24 @@ func::FuncOp CreateWrapperUnbatchedFunction(
 
   FunctionType calleeType =
       rewriter.getFunctionType(argTypes, op->getResultTypes());
-  func::FuncOp funcOp = func::FuncOp::create(
-      rewriter, op->getLoc(), funcName + std::to_string(batchCounter++),
-      calleeType);
-  funcOp.setPrivate();
 
-  auto &entryBlock = *funcOp.addEntryBlock();
-  rewriter.setInsertionPointToStart(&entryBlock);
+  SmallVector<Operation *> opList = {op};
+  return CreateWrapperUnbatchedFunction(modOp, rewriter, funcName,
+                                        batchLiftingModes, opList, std::nullopt,
+                                        outShape, calleeType);
+}
 
-  IRMapping mapper;
-  size_t argIdx = 0;
-  for (auto [batchLiftMode, operand] :
-       llvm::zip(batchLiftingModes, op->getOperands())) {
-    if (batchLiftMode == BatchLiftingMode::CONSTANT) { // clone into fn body
-      auto clonedConst = rewriter.clone(*operand.getDefiningOp());
-      mapper.map(operand, clonedConst->getResult(0));
-      continue;
-    }
-    mapper.map(operand, entryBlock.getArguments()[argIdx++]);
-  }
+func::FuncOp
+CreateWrapperUnbatchedFunction(mlir::ModuleOp modOp, PatternRewriter &rewriter,
+                               std::string funcName, ArrayRef<Operation *> ops,
+                               RankedTensorType inTy, RankedTensorType outTy,
+                               std::optional<SmallVector<int64_t>> inShape,
+                               std::optional<SmallVector<int64_t>> outShape) {
+  FunctionType calleeType =
+      rewriter.getFunctionType(TypeRange(inTy), TypeRange(outTy));
 
-  Value result = rewriter.clone(*op, mapper)->getResult(0);
-  if (outShape.has_value()) {
-    result = stablehlo::ReshapeOpCreate(rewriter, op->getLoc(), result,
-                                        outShape.value());
-  }
-  func::ReturnOp::create(rewriter, op->getLoc(), ValueRange(result));
-
-  return funcOp;
+  return CreateWrapperUnbatchedFunction(modOp, rewriter, funcName, std::nullopt,
+                                        ops, inShape, outShape, calleeType);
 }
 
 void ConstructAndExtractBatchOperands(
@@ -274,13 +317,6 @@ bool IsEquivalentToIgnoringValueEquivalence(Operation *op1, Operation *op2) {
   return OperationEquivalence::isEquivalentTo(
       op1, op2, OperationEquivalence::ignoreValueEquivalence, nullptr,
       OperationEquivalence::IgnoreLocations, nullptr);
-}
-
-// Implicitly assumes before in block if ops are in different blocks
-bool isBeforeInBlock(Operation *op, Operation *otherOp) {
-  if (op->getBlock() != otherOp->getBlock())
-    return true;
-  return op->isBeforeInBlock(otherOp);
 }
 
 bool allOpsAreUnique(const SmallVector<Operation *> &ops) {
@@ -683,50 +719,106 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
     return rewriter.notifyMatchFailure(sliceOp, "ops are data dependent");
   }
 
-  // move all the related ops and their operands (and theirs) s.t they are
-  // together
-  Operation *firstRelatedOp = relatedOps[0];
-  for (auto &op : relatedOps) {
-    if (::utils::isBeforeInBlock(op, firstRelatedOp)) {
-      firstRelatedOp = op;
+  // Linear time algorithm to find first and last related ops:
+  // - Build a set for O(1) lookup
+  // - Single pass through block to find first and last
+  llvm::SmallPtrSet<Operation *, 8> relatedOpsSet(relatedOps.begin(),
+                                                  relatedOps.end());
+  Operation *firstRelatedOp = nullptr;
+  Operation *lastRelatedOp = nullptr;
+  for (auto &op : *block) {
+    if (relatedOpsSet.contains(&op)) {
+      if (!firstRelatedOp) {
+        firstRelatedOp = &op;
+      }
+      lastRelatedOp = &op;
     }
   }
-  // if we have to move around too many ops we avoid applying this pattern
-  llvm::SetVector<Operation *> opsToMoveWorklist;
-  for (auto &op : relatedOps) {
-    if (op == firstRelatedOp)
-      continue;
-    SmallVector<Operation *> opsToMove;
-    opsToMove.push_back(op);
-    while (!opsToMove.empty()) {
-      auto currOp = opsToMove.pop_back_val();
-      bool notSeen = opsToMoveWorklist.insert(currOp);
-      if (notSeen) {
-        for (auto operand : currOp->getOperands()) {
-          if (auto operandOp = operand.getDefiningOp()) {
-            if (!::utils::isBeforeInBlock(operandOp, firstRelatedOp)) {
-              opsToMove.push_back(operandOp);
-            }
-          }
+  assert(firstRelatedOp && lastRelatedOp && "No related ops found in block");
+
+  auto rangeBegin = firstRelatedOp->getIterator();
+  auto rangeEnd = std::next(lastRelatedOp->getIterator());
+
+  // First pass: collect all ops in the range and identify which are related
+  llvm::SmallPtrSet<Operation *, 16> opsInRange;
+  llvm::SetVector<Operation *> relatedOpsInRange;
+  llvm::SmallVector<Operation *> nonRelatedOps;
+
+  for (auto it = rangeBegin; it != rangeEnd; ++it) {
+    opsInRange.insert(&*it);
+    if (relatedOpsSet.contains(&*it)) {
+      relatedOpsInRange.insert(&*it);
+    } else {
+      nonRelatedOps.push_back(&*it);
+    }
+  }
+
+  // Use worklist to compute transitive "depends on related op" set
+  // Start with ops that directly depend on related ops, then propagate to users
+  llvm::SmallPtrSet<Operation *, 16> dependsOnRelated;
+  llvm::SmallVector<Operation *> worklist;
+
+  // Initialize worklist with non-related ops that directly depend on related
+  // ops
+  for (Operation *op : nonRelatedOps) {
+    for (Value operand : op->getOperands()) {
+      if (Operation *defOp = operand.getDefiningOp()) {
+        if (relatedOpsSet.contains(defOp)) {
+          dependsOnRelated.insert(op);
+          worklist.push_back(op);
+          break;
         }
       }
     }
   }
 
-  auto opsToMoveSorted = mlir::topologicalSort(opsToMoveWorklist);
-  for (auto op : opsToMoveSorted) {
-    rewriter.moveOpAfter(op, firstRelatedOp);
-    firstRelatedOp = op;
+  // Propagate: if op depends on related, all its users in range also depend
+  while (!worklist.empty()) {
+    Operation *op = worklist.pop_back_val();
+    for (Operation *user : op->getUsers()) {
+      if (opsInRange.contains(user) && !relatedOpsSet.contains(user) &&
+          !dependsOnRelated.contains(user)) {
+        dependsOnRelated.insert(user);
+        worklist.push_back(user);
+      }
+    }
   }
 
-  Operation *insertionPoint = relatedOps[0];
-  for (auto &op : relatedOps) {
-    if (::utils::isBeforeInBlock(op, insertionPoint)) {
-      continue;
+  // Partition non-related ops into preOps and postOps
+  llvm::SetVector<Operation *> preOps;
+  llvm::SetVector<Operation *> postOps;
+
+  for (Operation *op : nonRelatedOps) {
+    if (dependsOnRelated.contains(op)) {
+      postOps.insert(op);
+    } else {
+      preOps.insert(op);
     }
+  }
+
+  // Sort each group topologically
+  auto sortedPreOps = mlir::topologicalSort(preOps);
+  auto sortedRelated = mlir::topologicalSort(relatedOpsInRange);
+  auto sortedPostOps = mlir::topologicalSort(postOps);
+
+  // Move all ops in order: preOps, then relatedOps, then postOps
+  // Strategy: insert all ops just before rangeEnd in reverse order
+  Operation *insertionPoint = &*rangeEnd;
+  for (Operation *op : llvm::reverse(sortedPostOps)) {
+    op->moveBefore(insertionPoint);
     insertionPoint = op;
   }
-  rewriter.setInsertionPoint(insertionPoint);
+  for (Operation *op : llvm::reverse(sortedRelated)) {
+    op->moveBefore(insertionPoint);
+    insertionPoint = op;
+  }
+  for (Operation *op : llvm::reverse(sortedPreOps)) {
+    op->moveBefore(insertionPoint);
+    insertionPoint = op;
+  }
+
+  // The last related op is now the insertion point
+  rewriter.setInsertionPoint(lastRelatedOp);
 
   for (auto &slice : relatedSlices) {
     slice.dimensions = {sliceDim};
@@ -766,7 +858,7 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
   endIndices.append(outputShape.begin(), outputShape.end());
   SmallVector<int64_t> strides(outputShape.size(), 1);
   for (auto [idx, sliceInfoAndOp] :
-       llvm::enumerate(llvm::zip(relatedSlices, relatedOps))) {
+       llvm::enumerate(llvm::zip_equal(relatedSlices, relatedOps))) {
     auto &[sliceInfo, otherOp] = sliceInfoAndOp;
     startIndices[0] = idx;
     endIndices[0] = idx + 1;
@@ -882,9 +974,10 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
     bool avoidBatching =
         llvm::TypeSwitch<Operation *, bool>(op)
             .Case<stablehlo::DynamicSliceOp, stablehlo::DynamicUpdateSliceOp,
-                  stablehlo::ReshapeOp>([=](auto op) { return true; })
-            .Case<stablehlo::BroadcastInDimOp>(
-                [=](auto op) { return stablehlo::broadcastInDimIsReshape(op); })
+                  stablehlo::ReshapeOp, stablehlo::SliceOp>(
+                [=](auto op) { return true; })
+            .Case<stablehlo::BroadcastInDimOp, stablehlo::TransposeOp>(
+                [=](auto op) { return stablehlo::OpIsReshapeLike(op); })
             .Default([](auto op) { return false; });
     if (avoidBatching) {
       continue;
@@ -901,8 +994,54 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
     }
   }
 
-  return anyOpRewritten ? success() : failure();
+  return success(anyOpRewritten);
 };
+
+GreedyWhileLoopBatchFission::ValidBatchingInfo
+GreedyWhileLoopBatchFission::isDynamicSliceValidForBatching(
+    stablehlo::DynamicSliceOp sliceOp,
+    llvm::MapVector<Value, mlir::enzyme::WhileLoopInfo::AffineIndexInfo>
+        &affineIndexInfoMap,
+    Block &whileBody, stablehlo::WhileOp whileOp) const {
+  auto operand = sliceOp.getOperand();
+
+  if (operand.getParentBlock() == &whileBody) {
+    auto failureRetVal = ValidBatchingInfo{
+        IsValidForBatchingResult::OPERAND_NOT_ACCESSIBLE_FROM_PARENT, {}};
+    if (auto blockArg = dyn_cast<BlockArgument>(operand)) {
+      auto terminator = whileBody.getTerminator();
+      if (!terminator ||
+          terminator->getOperand(blockArg.getArgNumber()) != operand) {
+        return failureRetVal;
+      }
+    } else {
+      return failureRetVal;
+    }
+  }
+
+  SmallVector<int64_t> dimensions;
+  auto sliceSizes = sliceOp.getSliceSizes();
+
+  for (auto [i, startIndex] : llvm::enumerate(sliceOp.getStartIndices())) {
+    if (affineIndexInfoMap.contains(startIndex) && sliceSizes[i] == 1) {
+      dimensions.push_back(i);
+      continue;
+    }
+
+    if (definedOutside(startIndex, whileOp))
+      continue;
+
+    return ValidBatchingInfo{IsValidForBatchingResult::DYNAMIC_START_INDEX, {}};
+  }
+
+  if (dimensions.empty())
+    return ValidBatchingInfo{
+        IsValidForBatchingResult::NO_INDUCTION_VARIABLE_DETECTED, {}};
+
+  // We should have exactly one index from the body, and it should be
+  // a descendant of the induction variable
+  return ValidBatchingInfo{IsValidForBatchingResult::VALID, dimensions};
+}
 
 bool traverseOperandsForHoisting(
     ArrayRef<Value> operands, stablehlo::WhileOp whileOp,
@@ -963,6 +1102,10 @@ bool traverseOperandsForHoisting(
       dsOp = reshapeOp.getOperand().getDefiningOp();
     } else {
       dsOp = defOp;
+    }
+
+    if (!dsOp) {
+      return false;
     }
 
     if (auto ds = dyn_cast<stablehlo::DynamicSliceOp>(dsOp)) {
@@ -1029,7 +1172,7 @@ void hoistChainOfOps(DenseMap<Value, SmallVector<Operation *>> &hoistMap,
       }
       auto hoisted = rewriter.clone(*op, mapper);
       for (auto [origRes, newRes] :
-           llvm::zip(op->getResults(), hoisted->getResults())) {
+           llvm::zip_equal(op->getResults(), hoisted->getResults())) {
         mapper.map(origRes, newRes);
       }
     }
@@ -1045,15 +1188,32 @@ void constructNewOperandsForHoistedOp(
     SmallVectorImpl<SmallVector<int64_t>> &sliceDims,
     SmallVectorImpl<int64_t> &hoistedDims,
     SmallVectorImpl<SliceInfo<stablehlo::DynamicSliceOp>> &mappedSliceInfos,
-    DenseMap<Value, Value> &hoistedValues,
-    SmallVectorImpl<Value> &newOperands) {
+    DenseMap<Value, Value> &hoistedValues, SmallVectorImpl<Value> &newOperands,
+    bool batchConstants = false) {
   newOperands.clear();
 
   for (auto [consType, baseOp, sliceDim, sliceInfo, hoistDim] :
-       llvm::zip(batchLiftingModes, batchOperands, sliceDims, mappedSliceInfos,
-                 hoistedDims)) {
+       llvm::zip_equal(batchLiftingModes, batchOperands, sliceDims,
+                       mappedSliceInfos, hoistedDims)) {
     auto operandType = cast<RankedTensorType>(baseOp.getType());
     int operandRank = cast<RankedTensorType>(baseOp.getType()).getRank();
+
+    auto broadcastValue = [&](auto operand) -> Value {
+      auto operandShape = operandType.getShape();
+      SmallVector<int64_t> newOperandShape(operandRank + 1);
+      newOperandShape[0] = info.getConstantNumIters();
+      for (int i = 0; i < operandRank; i++) {
+        newOperandShape[i + 1] = operandShape[i];
+      }
+
+      SmallVector<int64_t> mapping(operandRank);
+      std::iota(mapping.begin(), mapping.end(), 1);
+
+      return stablehlo::BroadcastInDimOp::create(
+          rewriter, whileOp->getLoc(),
+          RankedTensorType::get(newOperandShape, operandType.getElementType()),
+          operand, rewriter.getDenseI64ArrayAttr(mapping));
+    };
 
     switch (consType) {
     case BatchLiftingMode::DYNAMIC_SLICE: {
@@ -1103,27 +1263,17 @@ void constructNewOperandsForHoistedOp(
       break;
     }
     case BatchLiftingMode::NEEDS_HOISTING_OUTSIDE_WHILE: {
-      baseOp = hoistedValues[baseOp];
-      LLVM_FALLTHROUGH;
+      newOperands.push_back(broadcastValue(hoistedValues[baseOp]));
+      break;
     }
     case BatchLiftingMode::DEFINED_OUTSIDE_WHILE: {
-      auto operandShape = operandType.getShape();
-      SmallVector<int64_t> newOperandShape(operandRank + 1);
-      newOperandShape[0] = info.getConstantNumIters();
-      for (int i = 0; i < operandRank; i++)
-        newOperandShape[i + 1] = operandShape[i];
-
-      SmallVector<int64_t> mapping(operandRank);
-      std::iota(mapping.begin(), mapping.end(), 1);
-
-      auto broadcastedOperand = stablehlo::BroadcastInDimOp::create(
-          rewriter, whileOp->getLoc(),
-          RankedTensorType::get(newOperandShape, operandType.getElementType()),
-          baseOp, rewriter.getDenseI64ArrayAttr(mapping));
-      newOperands.push_back(broadcastedOperand->getResult(0));
+      newOperands.push_back(broadcastValue(baseOp));
       break;
     }
     case BatchLiftingMode::CONSTANT: {
+      if (batchConstants) {
+        newOperands.push_back(broadcastValue(baseOp));
+      }
       break; // copied into the function body no need to include in operands
     }
     case BatchLiftingMode::AFFINE_INDEX: {
@@ -1163,10 +1313,10 @@ void constructNewOperandsForHoistedOp(
   }
 }
 
-bool GreedyWhileLoopBatchFission::liftReduceLikeOperation(
+bool liftReduceLikeOperation(
     PatternRewriter &rewriter, stablehlo::WhileOp whileOp,
     ArrayRef<SliceInfo<stablehlo::DynamicSliceOp>> slices, Operation *op,
-    WhileLoopInfo info) const {
+    WhileLoopInfo info) {
   // we can hoist `sub` / `div` by emitting a `neg` / `reciprocal` and then
   // apply the hoisting. note that this only applies if the LHS is the loop
   // caried dependency
@@ -1206,7 +1356,8 @@ bool GreedyWhileLoopBatchFission::liftReduceLikeOperation(
   }
 
   // while dead args is needed to clean this up
-  if (whileOp->getResult(argIdx).getUsers().empty()) {
+  if (argIdx >= whileOp->getNumResults() ||
+      whileOp->getResult(argIdx).getUsers().empty()) {
     return false;
   }
 
@@ -1241,7 +1392,7 @@ bool GreedyWhileLoopBatchFission::liftReduceLikeOperation(
   SmallVector<Value> newOperands;
   constructNewOperandsForHoistedOp(
       rewriter, whileOp, info, batchLiftingModes, batchOperands, sliceDims,
-      hoistedDims, mappedSliceInfos, hoistedValues, newOperands);
+      hoistedDims, mappedSliceInfos, hoistedValues, newOperands, true);
 
   auto whileOperand = whileOp->getOperand(argIdx);
 
@@ -1318,10 +1469,10 @@ bool GreedyWhileLoopBatchFission::liftReduceLikeOperation(
   return true;
 }
 
-bool GreedyWhileLoopBatchFission::liftOperationByBatching(
+bool liftOperationByBatching(
     PatternRewriter &rewriter, stablehlo::WhileOp whileOp,
     ArrayRef<SliceInfo<stablehlo::DynamicSliceOp>> slices, Operation *op,
-    WhileLoopInfo info) const {
+    WhileLoopInfo info) {
   auto moduleOp = op->getParentOfType<ModuleOp>();
   auto affineIndexInfoMap = info.getAffineIndexInfo();
 
@@ -1377,9 +1528,14 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
 
   rewriter.setInsertionPointAfter(op);
   SmallVector<Value> dynamicSliceStarts(outputShape.size(), constZero);
-  Value resIndex = stablehlo::SubtractOp::create(rewriter, whileOp->getLoc(),
-                                                 info.getInductionVariable(),
-                                                 info.getStart());
+  Value resIndex;
+  if (info.isConstantStart() && info.getConstantStart() == 0) {
+    resIndex = info.getInductionVariable();
+  } else {
+    resIndex = stablehlo::SubtractOp::create(rewriter, whileOp->getLoc(),
+                                             info.getInductionVariable(),
+                                             info.getStart());
+  }
   if (!info.isStepOne()) {
     resIndex = stablehlo::DivOp::create(rewriter, whileOp->getLoc(), resIndex,
                                         info.getStep(rewriter));
@@ -1402,51 +1558,381 @@ bool GreedyWhileLoopBatchFission::liftOperationByBatching(
   return true;
 }
 
-GreedyWhileLoopBatchFission::ValidBatchingInfo
-GreedyWhileLoopBatchFission::isDynamicSliceValidForBatching(
-    stablehlo::DynamicSliceOp sliceOp,
-    llvm::MapVector<Value, mlir::enzyme::WhileLoopInfo::AffineIndexInfo>
-        &affineIndexInfoMap,
-    Block &whileBody, stablehlo::WhileOp whileOp) const {
-  auto operand = sliceOp.getOperand();
-
-  if (operand.getParentBlock() == &whileBody) {
-    auto failureRetVal = ValidBatchingInfo{
-        IsValidForBatchingResult::OPERAND_NOT_ACCESSIBLE_FROM_PARENT, {}};
-    if (auto blockArg = dyn_cast<BlockArgument>(operand)) {
-      auto terminator = whileBody.getTerminator();
-      if (!terminator ||
-          terminator->getOperand(blockArg.getArgNumber()) != operand) {
-        return failureRetVal;
-      }
-    } else {
-      return failureRetVal;
-    }
+mlir::LogicalResult WhileElementwiseReductionToReduce::matchAndRewriteImpl(
+    stablehlo::WhileOp whileOp, PatternRewriter &rewriter) const {
+  auto &body = whileOp.getBody().front();
+  auto term = body.getTerminator();
+  if (!term) {
+    return failure();
+  }
+  auto returnOp = dyn_cast<stablehlo::ReturnOp>(term);
+  if (!returnOp) {
+    return failure();
   }
 
-  SmallVector<int64_t> dimensions;
-  auto sliceSizes = sliceOp.getSliceSizes();
+  WhileLoopInfo info(whileOp);
+  auto computedInfo = info.computeInfo();
+  (void)computedInfo;
+  if (!info.isValid()) {
+    return failure();
+  }
 
-  for (auto [i, startIndex] : llvm::enumerate(sliceOp.getStartIndices())) {
-    if (affineIndexInfoMap.contains(startIndex) && sliceSizes[i] == 1) {
-      dimensions.push_back(i);
+  bool anyRewritten = false;
+  SmallVector<SliceInfo<stablehlo::DynamicSliceOp>> slices; // dummy
+
+  for (size_t i = 0; i < whileOp.getNumOperands(); i++) {
+    auto iterArg = body.getArgument(i);
+    if (!llvm::hasSingleElement(iterArg.getUsers())) {
+      continue;
+    }
+    auto user = *iterArg.getUsers().begin();
+
+    if (!stablehlo::hasTraitElementwise(user) || user->getNumOperands() != 2 ||
+        user->getNumResults() != 1) {
       continue;
     }
 
-    if (definedOutside(startIndex, whileOp))
+    if (user->getResult(0) != returnOp.getOperand(i)) {
       continue;
+    }
 
-    return ValidBatchingInfo{IsValidForBatchingResult::DYNAMIC_START_INDEX, {}};
+    anyRewritten |=
+        liftReduceLikeOperation(rewriter, whileOp, slices, user, info);
   }
 
-  if (dimensions.empty())
-    return ValidBatchingInfo{
-        IsValidForBatchingResult::NO_INDUCTION_VARIABLE_DETECTED, {}};
-
-  // We should have exactly one index from the body, and it should be
-  // a descendant of the induction variable
-  return ValidBatchingInfo{IsValidForBatchingResult::VALID, dimensions};
+  return success(anyRewritten);
 }
+
+LogicalResult
+WhileIsCopySimplify::matchAndRewriteImpl(stablehlo::WhileOp whileOp,
+                                         PatternRewriter &rewriter) const {
+  WhileLoopInfo info(whileOp);
+  auto computedInfo = info.computeInfo();
+  (void)computedInfo;
+  if (!info.isValid() || !info.isConstant() ||
+      info.getConstantNumIters() <= 0) {
+    return failure();
+  }
+
+  auto &whileBody = whileOp.getBody().front();
+  auto affineIndexInfo = info.getAffineIndexInfo();
+
+  auto returnOp = dyn_cast<stablehlo::ReturnOp>(whileBody.getTerminator());
+  if (!returnOp) {
+    return failure();
+  }
+
+  auto modOp = whileOp->getParentOfType<mlir::ModuleOp>();
+  if (!modOp) {
+    return failure();
+  }
+
+  bool anyOpRewritten = false;
+  SmallVector<std::tuple<enzyme::BatchOp, func::FuncOp>> batchOps;
+
+  for (auto [idx, returnValue] : llvm::enumerate(returnOp.getOperands())) {
+    auto dusOp = returnValue.getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
+    if (!dusOp) {
+      continue;
+    }
+
+    // check if operand is a loop caried variable
+    auto blockArg = dyn_cast<BlockArgument>(dusOp.getOperand());
+    if (!blockArg || blockArg.getOwner() != &whileBody ||
+        blockArg.getArgNumber() != idx) {
+      continue;
+    }
+
+    if (whileOp.getResult(idx).getUses().empty()) {
+      continue;
+    }
+
+    auto dusInductionVarDims =
+        getInductionVariableDimension(dusOp, affineIndexInfo, whileOp, info);
+    if (dusInductionVarDims.empty() ||
+        !info.canHoistOperationFromLoop(dusOp, dusInductionVarDims)) {
+      continue;
+    }
+
+    Value newDUSUpdate;
+    SmallVector<Operation *> canBeHoisted;
+    Value outerValue;
+    auto origUpdate = dusOp.getUpdate();
+    if (info.isConstantAcrossIterations(origUpdate, outerValue, canBeHoisted,
+                                        true)) {
+      anyOpRewritten = true;
+      if (outerValue) {
+        newDUSUpdate = outerValue;
+      } else {
+        DenseMap<Value, SmallVector<Operation *>> hoistMap;
+        hoistMap[origUpdate] = canBeHoisted;
+        DenseMap<Value, Value> hoistedValues;
+        hoistChainOfOps(hoistMap, rewriter, whileOp, info, hoistedValues);
+        newDUSUpdate = hoistedValues[origUpdate];
+      }
+
+      SmallVector<int64_t> newUpdateShapeWithoutIndVarDims;
+      for (auto [i, sz] : llvm::enumerate(
+               cast<RankedTensorType>(newDUSUpdate.getType()).getShape())) {
+        if (llvm::is_contained(dusInductionVarDims, i)) {
+          continue;
+        }
+        newUpdateShapeWithoutIndVarDims.push_back(sz);
+      }
+
+      newDUSUpdate =
+          stablehlo::ReshapeOpCreate(rewriter, whileOp.getLoc(), newDUSUpdate,
+                                     newUpdateShapeWithoutIndVarDims);
+
+      auto newDusUpdateTy = cast<RankedTensorType>(newDUSUpdate.getType());
+      SmallVector<int64_t> mapping(newDusUpdateTy.getRank());
+      std::iota(mapping.begin(), mapping.end(), 1);
+
+      auto newUpdateShape = llvm::to_vector(newDusUpdateTy.getShape());
+      newUpdateShape.insert(newUpdateShape.begin(), info.getConstantNumIters());
+
+      newDUSUpdate = stablehlo::BroadcastInDimOp::create(
+          rewriter, whileOp.getLoc(),
+          RankedTensorType::get(newUpdateShape,
+                                newDusUpdateTy.getElementType()),
+          newDUSUpdate, rewriter.getDenseI64ArrayAttr(mapping));
+    } else {
+      auto updateChainOrNone = extractValidUpdateChain(rewriter, dusOp, whileOp,
+                                                       affineIndexInfo, info);
+      if (!updateChainOrNone.has_value()) {
+        continue;
+      }
+
+      auto updateChain = updateChainOrNone.value();
+      if (updateChain.empty()) {
+        continue;
+      }
+
+      auto dsOp = dyn_cast<stablehlo::DynamicSliceOp>(updateChain.back());
+      auto dsInductionVarDims =
+          getInductionVariableDimension(dsOp, affineIndexInfo, whileOp, info);
+      if (dsInductionVarDims.empty() ||
+          !info.canHoistOperationFromLoop(dsOp, dsInductionVarDims)) {
+        continue;
+      }
+
+      anyOpRewritten = true;
+
+      rewriter.setInsertionPoint(whileOp);
+      Value dsResult;
+      auto successfulHoist = info.hoistOperationFromLoop(
+          rewriter, dsOp.getOperand(), dsOp, dsInductionVarDims, dsResult);
+      assert(successfulHoist && "expected DS hoist to succeed.");
+      (void)successfulHoist;
+      auto dsResTy = cast<RankedTensorType>(dsResult.getType());
+
+      // move the induction var to the front
+      SmallVector<int64_t> dsPerm;
+      dsPerm.push_back(dsInductionVarDims[0]);
+      for (size_t i = 0; i < dsResTy.getRank(); i++) {
+        if (dsInductionVarDims[0] != i) {
+          dsPerm.push_back(i);
+        }
+      }
+
+      dsResult =
+          stablehlo::TransposeOp::create(rewriter, whileOp.getLoc(), dsResult,
+                                         rewriter.getDenseI64ArrayAttr(dsPerm));
+
+      SmallVector<Operation *> opList;
+      for (size_t i = updateChain.size() - 2; i >= 1; i--) {
+        opList.push_back(updateChain[i]);
+      }
+
+      auto fnInTy =
+          removeBatchedDims(dsOp.getResult().getType(), dsInductionVarDims);
+      auto fnOutTy =
+          removeBatchedDims(dusOp.getUpdate().getType(), dusInductionVarDims);
+
+      if (opList.empty()) {
+        auto resShape = llvm::to_vector(fnOutTy.getShape());
+        resShape.insert(resShape.begin(), info.getConstantNumIters());
+        newDUSUpdate = stablehlo::ReshapeOpCreate(rewriter, whileOp.getLoc(),
+                                                  dsResult, resShape);
+      } else {
+        auto funcOp = ::utils::CreateWrapperUnbatchedFunction(
+            modOp, rewriter, "__enzymexla__copy_inside_while_loop_", opList,
+            fnInTy, fnOutTy,
+            llvm::to_vector(
+                cast<RankedTensorType>(dsOp.getResult().getType()).getShape()),
+            llvm::to_vector(fnOutTy.getShape()));
+        if (!funcOp) {
+          continue;
+        }
+
+        auto dusOpUpdateTy =
+            cast<RankedTensorType>(dusOp.getUpdate().getType());
+
+        SmallVector<int64_t> dusOpUpdateShapePreTranspose = {
+            info.getConstantNumIters()};
+        for (auto [i, sz] : llvm::enumerate(dusOpUpdateTy.getShape())) {
+          if (!llvm::is_contained(dusInductionVarDims, i)) {
+            dusOpUpdateShapePreTranspose.push_back(sz);
+          }
+        }
+        auto batchOpOutTy = RankedTensorType::get(
+            dusOpUpdateShapePreTranspose, dusOpUpdateTy.getElementType());
+
+        auto batchOp = enzyme::BatchOp::create(
+            rewriter, whileOp.getLoc(), batchOpOutTy, funcOp.getSymName(),
+            ValueRange(dsResult),
+            rewriter.getDenseI64ArrayAttr({info.getConstantNumIters()}));
+        batchOps.push_back({batchOp, funcOp});
+
+        newDUSUpdate = batchOp.getResult(0);
+      }
+    }
+
+    Value newDUS;
+    bool successfulHoist = info.hoistOperationFromLoop(
+        rewriter, whileOp.getOperands()[idx], newDUSUpdate, dusOp,
+        dusInductionVarDims, newDUS);
+    (void)successfulHoist;
+    assert(successfulHoist && "Expected DUS hoist to succeed.");
+
+    whileOp.getResult(idx).replaceAllUsesWith(newDUS);
+  }
+
+  if (!batchOps.empty()) {
+    for (auto &[batchOp, funcOp] : batchOps) {
+      enzyme::batchutils::batchOperationInline(
+          rewriter, batchOp, cast<FunctionOpInterface>(funcOp.getOperation()));
+    }
+  }
+
+  return success(anyOpRewritten);
+}
+
+std::optional<SmallVector<Operation *>>
+WhileIsCopySimplify::extractValidUpdateChain(
+    PatternRewriter &rewriter, stablehlo::DynamicUpdateSliceOp dusOp,
+    stablehlo::WhileOp whileOp,
+    llvm::MapVector<Value, WhileLoopInfo::AffineIndexInfo> &affineIndexInfo,
+    WhileLoopInfo &info) const {
+  SmallVector<Operation *> updateChain;
+  updateChain.push_back(dusOp);
+
+  bool success = extractValidUpdateChainInner(
+      rewriter, dusOp.getUpdate().getDefiningOp(), whileOp, updateChain);
+
+  if (!success) {
+    return std::nullopt;
+  }
+  return updateChain;
+}
+
+bool WhileIsCopySimplify::extractValidUpdateChainInner(
+    PatternRewriter &rewriter, Operation *op, stablehlo::WhileOp whileOp,
+    SmallVectorImpl<Operation *> &updateChain) const {
+  if (!op) {
+    return false;
+  }
+
+  if (auto sliceOp = dyn_cast<stablehlo::DynamicSliceOp>(op)) {
+    // base case, we have reached the dynamic slice
+    updateChain.push_back(sliceOp);
+    return definedOutside(sliceOp.getOperand(), whileOp);
+  }
+
+  if (isa<stablehlo::ConvertOp, stablehlo::BroadcastInDimOp,
+          stablehlo::ReshapeOp, stablehlo::TransposeOp>(op)) {
+    updateChain.push_back(op);
+    return extractValidUpdateChainInner(
+        rewriter, op->getOperand(0).getDefiningOp(), whileOp, updateChain);
+  }
+
+  return false;
+}
+
+template <typename OpTy>
+SmallVector<int64_t> WhileIsCopySimplify::getInductionVariableDimension(
+    OpTy op,
+    llvm::MapVector<Value, WhileLoopInfo::AffineIndexInfo> &affineIndexInfo,
+    stablehlo::WhileOp whileOp, WhileLoopInfo &info) const {
+  return getInductionVariableDimension(op.getStartIndices(), affineIndexInfo,
+                                       whileOp, info);
+}
+
+SmallVector<int64_t> WhileIsCopySimplify::getInductionVariableDimension(
+    mlir::OperandRange startIndices,
+    llvm::MapVector<Value, WhileLoopInfo::AffineIndexInfo> &affineIndexInfo,
+    stablehlo::WhileOp whileOp, WhileLoopInfo &info) const {
+  SmallVector<int64_t> inductionVarDimensions;
+
+  for (auto [i, startIndex] : llvm::enumerate(startIndices)) {
+    // we could hoist the other dimensions but licm should fix this
+    if (info.isConstantAcrossIterations(startIndex, false)) {
+      continue;
+    }
+
+    if (!affineIndexInfo.contains(startIndex)) {
+      return {};
+    }
+
+    inductionVarDimensions.push_back(i);
+  }
+  return inductionVarDimensions;
+}
+
+namespace mlir {
+namespace enzyme {
+
+void populateAutoBatchingPassPatterns(RewritePatternSet &patterns,
+                                      MLIRContext *ctx,
+                                      AutoBatchingPassPipelineOptions options) {
+  if (options.enableSliceToBatch) {
+    patterns
+        .add<SliceToBatch<stablehlo::DotGeneralOp>,
+             SliceToBatch<stablehlo::GatherOp>, SliceToBatch<stablehlo::IotaOp>,
+             SliceToBatch<stablehlo::ReduceOp>, SliceToBatch<stablehlo::SortOp>,
+             SliceToBatch<stablehlo::ReduceWindowOp>,
+             SliceToBatch<stablehlo::ConcatenateOp>,
+             SliceToBatch<stablehlo::GetDimensionSizeOp>,
+             SliceToBatch<stablehlo::ReverseOp>,
+             SliceToBatch<stablehlo::ReduceWindowOp>,
+             SliceToBatch<stablehlo::ConvolutionOp>,
+             SliceToBatchWithReshapeLikeCheck<stablehlo::BroadcastInDimOp>,
+             SliceToBatchWithReshapeLikeCheck<stablehlo::TransposeOp>,
+             SliceToBatchElementwise>(ctx);
+  }
+
+  if (options.enableConcatInsertDimToBatch) {
+    patterns.add<ConcatInsertDimToBatch<stablehlo::DotGeneralOp>,
+                 ConcatInsertDimToBatch<stablehlo::GatherOp>,
+                 ConcatInsertDimToBatch<stablehlo::IotaOp>,
+                 ConcatInsertDimToBatch<stablehlo::ReduceOp>,
+                 // ConcatInsertDimToBatch<stablehlo::ScatterOp>, after batch
+                 // op interface is implemented
+                 ConcatInsertDimToBatch<stablehlo::SortOp>,
+                 ConcatInsertDimToBatch<stablehlo::ReduceWindowOp>,
+                 ConcatInsertDimToBatch<stablehlo::ConcatenateOp>,
+                 ConcatInsertDimToBatch<stablehlo::GetDimensionSizeOp>,
+                 ConcatInsertDimToBatch<stablehlo::ReverseOp>,
+                 ConcatInsertDimToBatch<stablehlo::ReduceWindowOp>,
+                 ConcatInsertDimToBatch<stablehlo::ConvolutionOp>,
+                 ConcatInsertDimElementwiseToBatch>(ctx);
+  }
+
+  if (options.whileLoopBatchingMode == "greedy") {
+    patterns.add<GreedyWhileLoopBatchFission>(ctx);
+  }
+
+  if (options.enableWhileElementwiseReductionToReduce) {
+    patterns.add<WhileElementwiseReductionToReduce>(ctx);
+  }
+
+  if (options.enableWhileIsCopySimplify) {
+    patterns.add<WhileIsCopySimplify>(ctx);
+  }
+}
+
+} // namespace enzyme
+} // namespace mlir
 
 struct AutoBatchingPass
     : public enzyme::impl::AutoBatchingPassBase<AutoBatchingPass> {
@@ -1456,46 +1942,11 @@ struct AutoBatchingPass
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
 
-    if (concat_insert_dim_passes) {
-      patterns.add<ConcatInsertDimToBatch<stablehlo::DotGeneralOp>,
-                   ConcatInsertDimToBatch<stablehlo::GatherOp>,
-                   ConcatInsertDimToBatch<stablehlo::IotaOp>,
-                   ConcatInsertDimToBatch<stablehlo::ReduceOp>,
-                   // ConcatInsertDimToBatch<stablehlo::ScatterOp>, after batch
-                   // op interface is implemented
-                   ConcatInsertDimToBatch<stablehlo::SortOp>,
-                   ConcatInsertDimToBatch<stablehlo::ReduceWindowOp>,
-                   ConcatInsertDimToBatch<stablehlo::ConcatenateOp>,
-                   ConcatInsertDimToBatch<stablehlo::GetDimensionSizeOp>,
-                   ConcatInsertDimToBatch<stablehlo::ReverseOp>,
-                   ConcatInsertDimToBatch<stablehlo::ReduceWindowOp>,
-                   ConcatInsertDimToBatch<stablehlo::ConvolutionOp>,
-                   ConcatInsertDimElementwiseToBatch>(context);
-    }
-
-    if (slice_to_batch_passes) {
-      patterns.add<
-          SliceToBatch<stablehlo::DotGeneralOp>,
-          SliceToBatch<stablehlo::GatherOp>, SliceToBatch<stablehlo::IotaOp>,
-          SliceToBatch<stablehlo::ReduceOp>, SliceToBatch<stablehlo::SortOp>,
-          SliceToBatch<stablehlo::TransposeOp>,
-          SliceToBatch<stablehlo::BroadcastInDimOp>,
-          SliceToBatch<stablehlo::ReduceWindowOp>,
-          SliceToBatch<stablehlo::ConcatenateOp>,
-          SliceToBatch<stablehlo::GetDimensionSizeOp>,
-          SliceToBatch<stablehlo::ReverseOp>,
-          SliceToBatch<stablehlo::ReduceWindowOp>,
-          SliceToBatch<stablehlo::ConvolutionOp>, SliceToBatchElementwise>(
-          context);
-    }
-
-    if (while_loop_batching_mode == "greedy") {
-      patterns.add<GreedyWhileLoopBatchFission>(context);
-    } else if (while_loop_batching_mode != "none") {
-      llvm::errs() << "Unknown while loop batching mode: "
-                   << while_loop_batching_mode << "\n";
-      signalPassFailure();
-    }
+    mlir::enzyme::AutoBatchingPassPipelineOptions options{
+        slice_to_batch_passes, concat_insert_dim_passes,
+        while_loop_batching_mode, while_elementwise_reduction_to_reduce_passes,
+        while_is_copy_simplify_passes};
+    mlir::enzyme::populateAutoBatchingPassPatterns(patterns, context, options);
 
     GreedyRewriteConfig config;
     config.setMaxIterations(max_iterations);

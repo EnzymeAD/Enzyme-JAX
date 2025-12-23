@@ -9,8 +9,6 @@
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallVector.h"
 
-#include <tuple>
-
 // Loading the header causes a bunch of ambiguous errors
 // #include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
 namespace mlir {
@@ -121,11 +119,40 @@ template <typename OpTy> struct SliceToBatch : public SliceToBatchBase {
             ctx, benefit) {}
 };
 
+template <typename OpTy>
+struct SliceToBatchWithReshapeLikeCheck : public SliceToBatchBase {
+  SliceToBatchWithReshapeLikeCheck(mlir::MLIRContext *ctx,
+                                   mlir::PatternBenefit benefit = 1)
+      : SliceToBatchBase(
+            [](mlir::Operation *op) -> mlir::Operation * {
+              if (!op) {
+                return nullptr;
+              }
+              if (auto reshapeLike = llvm::dyn_cast<OpTy>(op)) {
+                if (!mlir::stablehlo::OpIsReshapeLike(reshapeLike)) {
+                  return reshapeLike;
+                }
+              }
+              return nullptr;
+            },
+            ctx, benefit) {}
+};
+
 struct SliceToBatchElementwise : public SliceToBatchBase {
   SliceToBatchElementwise(mlir::MLIRContext *ctx,
                           mlir::PatternBenefit benefit = 1)
       : SliceToBatchBase(CheckElementwise, ctx, benefit) {}
 };
+
+bool liftOperationByBatching(
+    mlir::PatternRewriter &rewriter, mlir::stablehlo::WhileOp whileOp,
+    llvm::ArrayRef<SliceInfo<mlir::stablehlo::DynamicSliceOp>> slices,
+    mlir::Operation *op, mlir::enzyme::WhileLoopInfo info);
+
+bool liftReduceLikeOperation(
+    mlir::PatternRewriter &rewriter, mlir::stablehlo::WhileOp whileOp,
+    llvm::ArrayRef<SliceInfo<mlir::stablehlo::DynamicSliceOp>> slices,
+    mlir::Operation *op, mlir::enzyme::WhileLoopInfo info);
 
 struct GreedyWhileLoopBatchFission
     : public mlir::enzyme::CheckedOpRewritePattern<
@@ -161,14 +188,76 @@ private:
       llvm::MapVector<mlir::Value, mlir::enzyme::WhileLoopInfo::AffineIndexInfo>
           &affineIndexInfoMap,
       mlir::Block &whileBody, mlir::stablehlo::WhileOp whileOp) const;
-
-  bool liftOperationByBatching(
-      mlir::PatternRewriter &rewriter, mlir::stablehlo::WhileOp whileOp,
-      llvm::ArrayRef<SliceInfo<mlir::stablehlo::DynamicSliceOp>> slices,
-      mlir::Operation *op, mlir::enzyme::WhileLoopInfo info) const;
-
-  bool liftReduceLikeOperation(
-      mlir::PatternRewriter &rewriter, mlir::stablehlo::WhileOp whileOp,
-      llvm::ArrayRef<SliceInfo<mlir::stablehlo::DynamicSliceOp>> slices,
-      mlir::Operation *op, mlir::enzyme::WhileLoopInfo info) const;
 };
+
+struct WhileElementwiseReductionToReduce
+    : public mlir::enzyme::CheckedOpRewritePattern<
+          mlir::stablehlo::WhileOp, WhileElementwiseReductionToReduce> {
+  using Base =
+      mlir::enzyme::CheckedOpRewritePattern<mlir::stablehlo::WhileOp,
+                                            WhileElementwiseReductionToReduce>;
+  using Base::Base;
+
+  mlir::LogicalResult
+  matchAndRewriteImpl(mlir::stablehlo::WhileOp whileOp,
+                      mlir::PatternRewriter &rewriter) const;
+};
+
+struct WhileIsCopySimplify
+    : public mlir::enzyme::CheckedOpRewritePattern<mlir::stablehlo::WhileOp,
+                                                   WhileIsCopySimplify> {
+  using Base = mlir::enzyme::CheckedOpRewritePattern<mlir::stablehlo::WhileOp,
+                                                     WhileIsCopySimplify>;
+  using Base::Base;
+
+  mlir::LogicalResult
+  matchAndRewriteImpl(mlir::stablehlo::WhileOp whileOp,
+                      mlir::PatternRewriter &rewriter) const;
+
+private:
+  std::optional<llvm::SmallVector<mlir::Operation *>> extractValidUpdateChain(
+      mlir::PatternRewriter &rewriter,
+      mlir::stablehlo::DynamicUpdateSliceOp dusOp,
+      mlir::stablehlo::WhileOp whileOp,
+      llvm::MapVector<mlir::Value, mlir::enzyme::WhileLoopInfo::AffineIndexInfo>
+          &affineIndexInfo,
+      mlir::enzyme::WhileLoopInfo &info) const;
+
+  bool extractValidUpdateChainInner(
+      mlir::PatternRewriter &rewriter, mlir::Operation *op,
+      mlir::stablehlo::WhileOp whileOp,
+      llvm::SmallVectorImpl<mlir::Operation *> &updateChain) const;
+
+  template <typename OpTy>
+  llvm::SmallVector<int64_t> getInductionVariableDimension(
+      OpTy op,
+      llvm::MapVector<mlir::Value, mlir::enzyme::WhileLoopInfo::AffineIndexInfo>
+          &affineIndexInfo,
+      mlir::stablehlo::WhileOp whileOp,
+      mlir::enzyme::WhileLoopInfo &info) const;
+
+  llvm::SmallVector<int64_t> getInductionVariableDimension(
+      mlir::OperandRange startIndices,
+      llvm::MapVector<mlir::Value, mlir::enzyme::WhileLoopInfo::AffineIndexInfo>
+          &affineIndexInfo,
+      mlir::stablehlo::WhileOp whileOp,
+      mlir::enzyme::WhileLoopInfo &info) const;
+};
+
+namespace mlir {
+namespace enzyme {
+
+struct AutoBatchingPassPipelineOptions {
+  bool enableSliceToBatch;
+  bool enableConcatInsertDimToBatch;
+  std::string whileLoopBatchingMode;
+  bool enableWhileElementwiseReductionToReduce;
+  bool enableWhileIsCopySimplify;
+};
+
+void populateAutoBatchingPassPatterns(RewritePatternSet &patterns,
+                                      MLIRContext *ctx,
+                                      AutoBatchingPassPipelineOptions options);
+
+} // namespace enzyme
+} // namespace mlir
