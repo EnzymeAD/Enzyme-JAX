@@ -3717,7 +3717,6 @@ populateCStyleGPUFuncLoweringPatterns(RewritePatternSet &patterns,
       populateLibDeviceConversionPatterns(typeConverter, patterns, benefit);
       patterns.add<GPUBarrierToNVVM>(typeConverter, benefit);
     } else if (gpuTarget == "rocm") {
-      typeConverter.getContext().loadDialect<ROCDL::ROCDLDialect>();
       mlir::populateGpuToROCDLConversionPatterns(typeConverter, patterns,
                                                  mlir::gpu::amd::Runtime::HIP,
                                                  amdgpu::Chipset());
@@ -4024,6 +4023,12 @@ struct ConvertPolygeistToLLVMPass
           ConvertPolygeistToLLVMPass> {
   using ConvertPolygeistToLLVMBase::ConvertPolygeistToLLVMBase;
 
+  void getDependentDialects(DialectRegistry &registry) const override {
+    ConvertPolygeistToLLVMBase::getDependentDialects(registry);
+    registry.insert<NVVM::NVVMDialect>();
+    registry.insert<ROCDL::ROCDLDialect>();
+  }
+  
   void convertModule(ModuleOp m, bool gpuModule) {
     const auto &dataLayoutAnalysis = getAnalysis<DataLayoutAnalysis>();
 
