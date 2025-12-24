@@ -22949,7 +22949,9 @@ struct DiagonalTensorDotGeneralRewrite final
     auto dotDimNumbers = op.getDotDimensionNumbers();
 
     if (dotDimNumbers.getLhsBatchingDimensions().size() != 0 ||
-        dotDimNumbers.getRhsBatchingDimensions().size() != 0) {
+        dotDimNumbers.getRhsBatchingDimensions().size() != 0 ||
+        dotDimNumbers.getLhsContractingDimensions().size() != 1 ||
+        dotDimNumbers.getRhsContractingDimensions().size() != 1) {
       return rewriter.notifyMatchFailure(
           op, "batching is not supported for diagonal tensor dot general");
     }
