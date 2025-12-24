@@ -48,6 +48,8 @@ def fix_paths():
     runfiles = os.path.dirname(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     )
+    # https://github.com/jax-ml/jax/blob/af36ae2cd783aea9eaa7979170df760a52542fcd/jax/_src/lib/__init__.py#L185
+    os.environ["PYTHON_RUNFILES"] = runfiles
     # https://jax.readthedocs.io/en/latest/gpu_memory_allocation.html
     os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.95"
 
@@ -65,18 +67,33 @@ def fix_paths():
         "cuda_nvcc" if cuda_version == 12 else f"cu{cuda_version}",
     )
 
-    if cuda_version >= 13 and not os.path.exists(os.path.join(CUDA_DIR, "nvvm")):
-        NVVM_DIR = os.path.join(
+    NVVM_DIR = ""
+    if cuda_version >= 13:
+        # The nvidia-nvvm package has structure: cu13/nvvm/libdevice/libdevice.10.bc
+        # We need to symlink the inner nvvm/ directory to CUDA_DIR/nvvm
+        NVVM_PKG_DIR = os.path.join(
             runfiles, "pypi_nvidia_nvvm", "site-packages", "nvidia", f"cu{cuda_version}"
         )
+        NVVM_DIR = os.path.join(NVVM_PKG_DIR, "nvvm")
         assert os.path.isdir(NVVM_DIR), f"nvvm dir not found: {NVVM_DIR}"
+        assert os.path.isdir(os.path.join(NVVM_DIR, "libdevice")), \
+            f"libdevice dir not found in {NVVM_DIR}"
 
-        os.symlink(NVVM_DIR, os.path.join(CUDA_DIR, "nvvm"))
+        if not os.path.exists(os.path.join(CUDA_DIR, "nvvm")):
+            os.symlink(NVVM_DIR, os.path.join(CUDA_DIR, "nvvm"))
+
+        assert os.path.isdir(os.path.join(CUDA_DIR, "nvvm", "libdevice"))
 
     assert os.path.isdir(CUDA_DIR), f"CUDA_DIR not found: {CUDA_DIR}"
 
     os.environ["CUDA_DIR"] = CUDA_DIR
-    os.environ["XLA_FLAGS"] = "--xla_gpu_cuda_data_dir=" + CUDA_DIR
+    # CUDA_ROOT is checked by jax._src.lib._cuda_path() and used to set
+    # debug_options.xla_gpu_cuda_data_dir in the compiler. This must be set
+    # before JAX is imported.
+    os.environ["CUDA_ROOT"] = CUDA_DIR
+
+    XLA_FLAGS = os.environ.get("XLA_FLAGS", "")
+    os.environ["XLA_FLAGS"] = XLA_FLAGS + " --xla_gpu_cuda_data_dir=" + CUDA_DIR
 
     def get_cuda_path(lib: str, dir: str) -> str:
         if lib == "cudnn":
@@ -144,6 +161,8 @@ def fix_paths():
         cuda_nvcc_bin_dir
     ), f"cuda_nvcc bin dir not found: {cuda_nvcc_bin_dir}"
     PATH = cuda_nvcc_bin_dir + ":" + PATH
+    if NVVM_DIR:
+        PATH = NVVM_DIR + ":" + PATH
     os.environ["PATH"] = PATH
 
     CUDNN_PATH = os.path.join(

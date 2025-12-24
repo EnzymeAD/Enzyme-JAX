@@ -8,8 +8,6 @@ import timeit
 import warnings
 from typing import Any, Callable
 
-import jax
-
 try:
     from xprof.convert.raw_to_tool_data import xspace_to_tool_data
 
@@ -49,6 +47,8 @@ def profile_function(
     """
     if kwargs is None:
         kwargs = {}
+
+    import jax
 
     compiled_fn = jax.jit(fn).trace(*args, **kwargs).lower().compile()
 
