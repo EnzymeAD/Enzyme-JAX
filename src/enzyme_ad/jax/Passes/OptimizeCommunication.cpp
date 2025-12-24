@@ -3749,7 +3749,7 @@ struct ConcatSliceOptimize
 
     // Check that dimensions other than concatDim are the same
     auto ndims = sourceType.getRank();
-    for (int i = 0; i < ndims; i++) {
+    for (int64_t i = 0; i < ndims; i++) {
       if (i == concatDim)
         continue;
       if (slice0.getStartIndices()[i] != slice1.getStartIndices()[i] ||
@@ -3757,9 +3757,9 @@ struct ConcatSliceOptimize
         return failure();
     }
 
-    // Pattern 1: concat(slice[A:B], slice[0:A]) - taking end piece and beginning
+    // Pattern 1: concat(slice[A:end], slice[0:A]) - taking end piece and beginning
     // Result is a rotation
-    if (end0 == sourceShape && end1 == start0 && start1 == 0) {
+    if (start0 > 0 && end0 == sourceShape && start1 == 0 && end1 == start0) {
       // This is equivalent to: concat(source[A:end], source[0:A])
       // TODO: Implement transformation:
       // 1. Pad sourceOp to result size if needed
@@ -3772,7 +3772,7 @@ struct ConcatSliceOptimize
 
     // Pattern 2: concat(slice[B:end], slice[A:B]) where A < B  
     // Less common but similar
-    if (end0 == sourceShape && start0 == end1 && start1 < start0) {
+    if (start1 == 0 && end0 == sourceShape && start0 == end1 && start1 < start0) {
       // TODO: Similar transformation as Pattern 1
       return rewriter.notifyMatchFailure(
           concat, "Rotate pattern variant detected - full transformation TODO");

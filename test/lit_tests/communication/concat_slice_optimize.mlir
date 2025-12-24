@@ -18,10 +18,9 @@ func.func @test_rotation(%arg0: tensor<20x6144x12272xf32> {sdy.sharding = #sdy.s
 // TODO: Once implemented, should transform into rotate operation
 
 // Test 2: Asymmetric concat - one slice much smaller than other
-func.func @test_asymmetric(%arg0: tensor<20x6144x12272xf32> {sdy.sharding = #sdy.sharding<@mesh1, [{"x"}, {}, {}]>}) -> (tensor<20x6144x12300xf32> {sdy.sharding = #sdy.sharding<@mesh1, [{"x"}, {}, {}]>}) {
+func.func @test_asymmetric(%arg0: tensor<20x6144x12272xf32> {sdy.sharding = #sdy.sharding<@mesh1, [{"x"}, {}, {}]>}) -> (tensor<20x6144x12272xf32> {sdy.sharding = #sdy.sharding<@mesh1, [{"x"}, {}, {}]>}) {
     %0 = stablehlo.slice %arg0 [0:20, 0:6144, 0:10] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"x"}, {}, {}]>]>} : (tensor<20x6144x12272xf32>) -> tensor<20x6144x10xf32>
-    %1 = stablehlo.slice %arg0 [0:20, 0:6144, 10:12300] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"x"}, {}, {}]>]>} : (tensor<20x6144x12272xf32>) -> tensor<20x6144x12262xf32>
-    // Note: This won't match the pattern because second slice extends beyond source
+    %1 = stablehlo.slice %arg0 [0:20, 0:6144, 10:12272] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"x"}, {}, {}]>]>} : (tensor<20x6144x12272xf32>) -> tensor<20x6144x12262xf32>
     %2 = stablehlo.concatenate %0, %1, dim = 2 {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"x"}, {}, {}]>]>} : (tensor<20x6144x10xf32>, tensor<20x6144x12262xf32>) -> tensor<20x6144x12272xf32>
     return %2 : tensor<20x6144x12272xf32>
 }
