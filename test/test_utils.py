@@ -106,9 +106,9 @@ def fix_paths():
     LD_LIB = os.environ.get("LD_LIBRARY_PATH", "")
 
     cusolver_lib_dir = get_lib_path("cusolver")
-    assert os.path.isdir(cusolver_lib_dir), (
-        f"cusolver lib dir not found: {cusolver_lib_dir}"
-    )
+    assert os.path.isdir(
+        cusolver_lib_dir
+    ), f"cusolver lib dir not found: {cusolver_lib_dir}"
     LD_LIB = cusolver_lib_dir + ":" + LD_LIB
 
     cudnn_lib_dir = get_lib_path("cudnn")
@@ -124,24 +124,24 @@ def fix_paths():
     LD_LIB = cufft_lib_dir + ":" + LD_LIB
 
     cuda_cupti_lib_dir = get_lib_path("cuda_cupti")
-    assert os.path.isdir(cuda_cupti_lib_dir), (
-        f"cuda_cupti lib dir not found: {cuda_cupti_lib_dir}"
-    )
+    assert os.path.isdir(
+        cuda_cupti_lib_dir
+    ), f"cuda_cupti lib dir not found: {cuda_cupti_lib_dir}"
     LD_LIB = cuda_cupti_lib_dir + ":" + LD_LIB
 
     cuda_runtime_lib_dir = get_lib_path("cuda_runtime")
-    assert os.path.isdir(cuda_runtime_lib_dir), (
-        f"cuda_runtime lib dir not found: {cuda_runtime_lib_dir}"
-    )
+    assert os.path.isdir(
+        cuda_runtime_lib_dir
+    ), f"cuda_runtime lib dir not found: {cuda_runtime_lib_dir}"
     LD_LIB = cuda_runtime_lib_dir + ":" + LD_LIB
 
     os.environ["LD_LIBRARY_PATH"] = LD_LIB
 
     PATH = os.environ.get("PATH", "")
     cuda_nvcc_bin_dir = get_bin_path("cuda_nvcc")
-    assert os.path.isdir(cuda_nvcc_bin_dir), (
-        f"cuda_nvcc bin dir not found: {cuda_nvcc_bin_dir}"
-    )
+    assert os.path.isdir(
+        cuda_nvcc_bin_dir
+    ), f"cuda_nvcc bin dir not found: {cuda_nvcc_bin_dir}"
     PATH = cuda_nvcc_bin_dir + ":" + PATH
     os.environ["PATH"] = PATH
 
