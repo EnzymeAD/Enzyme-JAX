@@ -162,6 +162,11 @@ void ApplyDynamicUpdateSliceConstPropPatterns::populatePatterns(
   addDynamicUpdateSliceConstProp(patterns, getParameter(), *getContext(),
                                  PatternBenefit(getBenefit().value_or(1)));
 }
+void ApplyReverseConstPropPatterns::populatePatterns(
+    RewritePatternSet &patterns) {
+  addReverseConstProp(patterns, getParameter(), *getContext(),
+                      PatternBenefit(getBenefit().value_or(1)));
+}
 void ApplyBroadcastInDimSimplifyPatterns::populatePatterns(
     RewritePatternSet &patterns) {
   addBroadcastInDimSimplify(patterns, getParameter(), *getContext(),
