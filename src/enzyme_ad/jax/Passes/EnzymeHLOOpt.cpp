@@ -26465,6 +26465,226 @@ struct WhileDUSDSSimplify final
   }
 };
 
+// Helper function for WhileDUSDUSSimplify
+// Analyzes two DynamicUpdateSlice operations to determine their overlap
+// relationship
+LogicalResult
+DUSDUSSimplifyHelper(stablehlo::DynamicUpdateSliceOp outerDUS,
+                     stablehlo::DynamicUpdateSliceOp innerDUS,
+                     PatternRewriter &rewriter,
+                     std::optional<WhileLoopInfo> loopInfo = std::nullopt) {
+  auto outerStartIndices = outerDUS.getStartIndices();
+  auto innerStartIndices = innerDUS.getStartIndices();
+
+  auto outerUpdateTy = cast<RankedTensorType>(outerDUS.getUpdate().getType());
+  auto innerUpdateTy = cast<RankedTensorType>(innerDUS.getUpdate().getType());
+  auto innerOperandTy = cast<RankedTensorType>(innerDUS.getOperand().getType());
+  auto outerUpdateShape = llvm::to_vector(outerUpdateTy.getShape());
+  auto innerUpdateShape = llvm::to_vector(innerUpdateTy.getShape());
+  auto innerOperandShape = llvm::to_vector(innerOperandTy.getShape());
+
+  llvm::MapVector<Value, WhileLoopInfo::AffineIndexInfo> affineIndexInfoMap;
+  if (loopInfo.has_value()) {
+    affineIndexInfoMap = loopInfo.value().getAffineIndexInfo();
+  }
+
+  // Track start indices and whether we could determine them
+  SmallVector<int64_t> outerStarts(outerStartIndices.size());
+  SmallVector<int64_t> innerStarts(outerStartIndices.size());
+  // For each dimension, track if:
+  // - we know the exact indices (hasKnownIndices[i] = true)
+  // - the inner DUS does a full update along this dimension
+  //   (isFullInnerUpdate[i] = true)
+  SmallVector<bool> hasKnownIndices(outerStartIndices.size(), false);
+  SmallVector<bool> isFullInnerUpdate(outerStartIndices.size(), false);
+
+  for (size_t i = 0; i < outerStartIndices.size(); ++i) {
+    auto outerStart = outerStartIndices[i];
+    auto innerStart = innerStartIndices[i];
+
+    // Check if inner DUS does a full update along this dimension
+    // (inner start = 0 and inner update size = operand size)
+    APInt innerStartAP;
+    bool innerIsConstant =
+        matchPattern(innerStart, m_ConstantInt(&innerStartAP));
+    bool innerStartIsZero = innerIsConstant && innerStartAP.getSExtValue() == 0;
+
+    if (innerStartIsZero && innerUpdateShape[i] == innerOperandShape[i]) {
+      isFullInnerUpdate[i] = true;
+      // For full update, any outer position is within inner
+      innerStarts[i] = 0;
+      outerStarts[i] = 0; // Will be dynamically computed if needed
+    }
+
+    // Try to get exact indices
+    APInt outerStartAP;
+    bool outerIsConstant =
+        matchPattern(outerStart, m_ConstantInt(&outerStartAP));
+
+    if (outerIsConstant && innerIsConstant) {
+      outerStarts[i] = outerStartAP.getSExtValue();
+      innerStarts[i] = innerStartAP.getSExtValue();
+      hasKnownIndices[i] = true;
+    } else if (loopInfo.has_value() &&
+               affineIndexInfoMap.contains(outerStart) &&
+               affineIndexInfoMap.contains(innerStart)) {
+      auto outerIndexInfo = affineIndexInfoMap[outerStart];
+      auto innerIndexInfo = affineIndexInfoMap[innerStart];
+      if (outerIndexInfo.scale.isOne() && innerIndexInfo.scale.isOne()) {
+        outerStarts[i] = outerIndexInfo.offset.getSExtValue();
+        innerStarts[i] = innerIndexInfo.offset.getSExtValue();
+        hasKnownIndices[i] = true;
+      }
+    }
+  }
+
+  // Check for complete overlap: outer DUS completely covers inner DUS
+  // i.e., outer starts at or before inner and outer ends at or after inner
+  // This can be determined if:
+  // - We know exact indices and outer covers inner, OR
+  // - The start indices are the same Value and outer update >= inner update
+  bool outerCompletelyCoversInner = true;
+  for (size_t i = 0; i < outerStartIndices.size(); ++i) {
+    auto outerStart = outerStartIndices[i];
+    auto innerStart = innerStartIndices[i];
+
+    if (outerStart == innerStart) {
+      // Same start index - check if outer update size >= inner update size
+      if (outerUpdateShape[i] < innerUpdateShape[i]) {
+        outerCompletelyCoversInner = false;
+        break;
+      }
+    } else if (hasKnownIndices[i]) {
+      // Different start indices but we know their values
+      int64_t outerEnd = outerStarts[i] + outerUpdateShape[i];
+      int64_t innerEnd = innerStarts[i] + innerUpdateShape[i];
+
+      if (outerStarts[i] > innerStarts[i] || outerEnd < innerEnd) {
+        outerCompletelyCoversInner = false;
+        break;
+      }
+    } else {
+      // Can't determine relationship
+      outerCompletelyCoversInner = false;
+      break;
+    }
+  }
+
+  if (outerCompletelyCoversInner) {
+    // Case 1: Outer DUS completely overlaps inner DUS - skip the inner DUS
+    rewriter.modifyOpInPlace(outerDUS, [&]() {
+      outerDUS.getOperandMutable().set(innerDUS.getOperand());
+    });
+    return success();
+  }
+
+  // Check for partial overlap: outer update is entirely within inner update
+  // This can be determined if:
+  // - We know the exact indices and outer is within inner, OR
+  // - The inner DUS does a full update along that dimension (then any outer is
+  //   within)
+  bool outerWithinInner = true;
+  for (size_t i = 0; i < outerStartIndices.size(); ++i) {
+    if (isFullInnerUpdate[i]) {
+      // Inner does full update, so outer is guaranteed to be within
+      continue;
+    }
+
+    if (!hasKnownIndices[i]) {
+      outerWithinInner = false;
+      break;
+    }
+
+    int64_t outerEnd = outerStarts[i] + outerUpdateShape[i];
+    int64_t innerEnd = innerStarts[i] + innerUpdateShape[i];
+
+    if (outerStarts[i] < innerStarts[i] || outerEnd > innerEnd) {
+      outerWithinInner = false;
+      break;
+    }
+  }
+
+  if (outerWithinInner) {
+    // Case 2: Outer update is entirely within inner update
+    // Create a DUS of outer update into inner update, then DUS into inner's
+    // operand
+
+    auto itype = innerStartIndices[0].getType();
+
+    // Calculate the offset of outer update within inner update
+    SmallVector<Value> offsetIndices;
+    for (size_t i = 0; i < outerStartIndices.size(); ++i) {
+      if (isFullInnerUpdate[i] && !hasKnownIndices[i]) {
+        // Inner starts at 0, so offset is just the outer start index
+        offsetIndices.push_back(outerStartIndices[i]);
+      } else {
+        int64_t offset = outerStarts[i] - innerStarts[i];
+        auto offsetConst = stablehlo::ConstantOp::create(
+            rewriter, outerDUS.getLoc(), itype,
+            cast<ElementsAttr>(makeAttr(itype, offset)));
+        offsetIndices.push_back(offsetConst);
+      }
+    }
+
+    // Create a DUS of outer update into inner update
+    auto combinedUpdate = stablehlo::DynamicUpdateSliceOp::create(
+        rewriter, innerDUS.getLoc(), innerDUS.getUpdate(), outerDUS.getUpdate(),
+        offsetIndices);
+
+    // Replace outer DUS with a DUS using the combined update
+    rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
+        outerDUS, innerDUS.getOperand(), combinedUpdate, innerStartIndices);
+    return success();
+  }
+
+  return failure();
+}
+
+// Pattern to simplify DUS(DUS) patterns inside a while body
+// Both DUS operations must have the WhileOp as their owner (be in the while
+// body)
+struct WhileDUSDUSSimplify final
+    : public CheckedOpRewritePattern<stablehlo::WhileOp, WhileDUSDUSSimplify> {
+  using CheckedOpRewritePattern<stablehlo::WhileOp,
+                                WhileDUSDUSSimplify>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::WhileOp op,
+                                    PatternRewriter &rewriter) const {
+    WhileLoopInfo info(op);
+    if (info.computeInfo().failed() || !info.isConstantStep() ||
+        info.getConstantStep() == 0) {
+      return failure();
+    }
+    info.propagateAffineIndexInfo();
+    info.propagateBounds();
+
+    bool anyRewritten = false;
+
+    op.getBody().walk([&](stablehlo::DynamicUpdateSliceOp outerDUS) {
+      auto innerDUS = outerDUS.getOperand()
+                          .getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
+      if (!innerDUS) {
+        return WalkResult::advance();
+      }
+
+      // Check that both DUS are in the while body
+      if (innerDUS->getParentOp() != op) {
+        return WalkResult::advance();
+      }
+
+      rewriter.setInsertionPoint(outerDUS);
+      if (DUSDUSSimplifyHelper(outerDUS, innerDUS, rewriter, info)
+              .succeeded()) {
+        anyRewritten = true;
+      }
+
+      return WalkResult::advance();
+    });
+
+    return anyRewritten ? success() : failure();
+  }
+};
+
 struct ReshapeSliceReshape final
     : public CheckedOpRewritePattern<stablehlo::ReshapeOp,
                                      ReshapeSliceReshape> {
@@ -27629,6 +27849,7 @@ struct EnzymeHLOOptPass
         DotGeneralRemoveBatchDimensions,
         DUSDynamicSliceSimplify,
         WhileDUSDSSimplify,
+        WhileDUSDUSSimplify,
         WhileDUS,
         DeleteDimsReduce,
         ReduceDeleteDims,

@@ -320,6 +320,7 @@ def optimization_passes(
         "dot_general_broadcast_in_dim_sort_dims",
         "dus_dynamic_slice_simplify",
         "while_dus_ds_simplify",
+        "while_dus_dus_simplify",
         "reshape_slice_reshape",
         "dynamic_slice_elementwise",
         "dot_general_remove_batch_dimensions",

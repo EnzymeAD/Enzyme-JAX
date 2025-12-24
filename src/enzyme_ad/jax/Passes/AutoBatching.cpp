@@ -973,9 +973,8 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
   for (auto &[op, slices] : userOpToSlicesMap) {
     bool avoidBatching =
         llvm::TypeSwitch<Operation *, bool>(op)
-            .Case<stablehlo::DynamicSliceOp, stablehlo::DynamicUpdateSliceOp,
-                  stablehlo::ReshapeOp, stablehlo::SliceOp>(
-                [=](auto op) { return true; })
+            .Case<stablehlo::DynamicSliceOp, stablehlo::ReshapeOp,
+                  stablehlo::SliceOp>([=](auto op) { return true; })
             .Case<stablehlo::BroadcastInDimOp, stablehlo::TransposeOp>(
                 [=](auto op) { return stablehlo::OpIsReshapeLike(op); })
             .Default([](auto op) { return false; });
