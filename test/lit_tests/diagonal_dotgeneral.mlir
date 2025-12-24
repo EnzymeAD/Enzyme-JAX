@@ -88,3 +88,9 @@ func.func @fail1(%arg0: tensor<4x32xf64>, %arg1: tensor<7x4xf64>) -> tensor<5xf6
   %2 = stablehlo.slice %1 [67:224:33] : (tensor<224xf64>) -> tensor<5xf64>
   return %2 : tensor<5xf64>
 }
+
+func.func @fail2(%arg0: tensor<128xf32>, %arg1: tensor<79x61xf32>) -> tensor<128x79x61xf32> {
+  // CHECK: stablehlo.dot_general
+  %0 = stablehlo.dot_general %arg0, %arg1, contracting_dims = [] x [], precision = [DEFAULT, DEFAULT] : (tensor<128xf32>, tensor<79x61xf32>) -> tensor<128x79x61xf32>
+  return %0 : tensor<128x79x61xf32>
+}
