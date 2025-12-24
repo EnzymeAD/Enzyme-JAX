@@ -1133,4 +1133,12 @@ def ConvertAllConstantsToSplattedConstantPass : Pass<"convert-all-constants-to-s
   ];
 }
 
+def RemoveAtomicsPass : Pass<"remove-atomics"> {
+  let summary = "Remove unnecessary atomics";
+  let dependentDialects = [
+    "affine::AffineDialect",
+    "enzymexla::EnzymeXLADialect",
+  ];
+}
+
 #endif
