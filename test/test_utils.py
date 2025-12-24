@@ -1,12 +1,29 @@
 import os
+import subprocess
 import tempfile
 import jax.numpy as jnp
 import jax
+import ctypes
+
 from enzyme_ad.jax import (
     JaXPipeline,
     full_optimization_pass_pipeline,
 )
 from xprof_utils import profile_function
+
+
+def _has_cuda():
+    """Check if CUDA is available by running nvidia-smi."""
+    try:
+        subprocess.run(
+            ["nvidia-smi"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True,
+        )
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
 
 
 def fix_paths():
@@ -32,115 +49,100 @@ def fix_paths():
     ]:
         os.environ.pop(nm, None)
 
+    # Skip CUDA path setup if CUDA is not available
+    if not _has_cuda():
+        return
+
     runfiles = os.path.dirname(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     )
     # https://jax.readthedocs.io/en/latest/gpu_memory_allocation.html
-    # os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
+    os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.95"
 
-    cuda_version = "12"
+    cuda_version = 12
+    cuda_postfix = "_cu12"
     if os.path.exists(os.path.join(runfiles, "pypi_jax_cuda13_plugin")):
-        cuda_version = "13"
+        cuda_version = 13
+        cuda_postfix = ""  # from v13 there are no postfixes
 
     CUDA_DIR = os.path.join(
         runfiles,
-        f"pypi_nvidia_cuda_nvcc_cu{cuda_version}",
+        f"pypi_nvidia_cuda_nvcc{cuda_postfix}",
         "site-packages",
         "nvidia",
-        "cuda_nvcc",
+        "cuda_nvcc" if cuda_version == 12 else f"cu{cuda_version}",
     )
+    assert os.path.isdir(CUDA_DIR), f"CUDA_DIR not found: {CUDA_DIR}"
+
     os.environ["CUDA_DIR"] = CUDA_DIR
     os.environ["XLA_FLAGS"] = "--xla_gpu_cuda_data_dir=" + CUDA_DIR
 
+    def get_cuda_path(lib: str, dir: str) -> str:
+        if lib == "cudnn":
+            return os.path.join(
+                runfiles,
+                f"pypi_nvidia_{lib}_cu{cuda_version}",
+                "site-packages",
+                "nvidia",
+                "cudnn",
+                dir,
+            )
+
+        return os.path.join(
+            runfiles,
+            f"pypi_nvidia_{lib}{cuda_postfix}",
+            "site-packages",
+            "nvidia",
+            lib if cuda_version == 12 else f"cu{cuda_version}",
+            dir,
+        )
+
+    def get_lib_path(lib: str) -> str:
+        return get_cuda_path(lib, "lib")
+
+    def get_bin_path(lib: str) -> str:
+        return get_cuda_path(lib, "bin")
+
     LD_LIB = os.environ.get("LD_LIBRARY_PATH", "")
-    LD_LIB = (
-        os.path.join(
-            runfiles,
-            f"pypi_nvidia_cusolver_cu{cuda_version}",
-            "site-packages",
-            "nvidia",
-            "cusolver",
-            "lib",
-        )
-        + ":"
-        + LD_LIB
+
+    cusolver_lib_dir = get_lib_path("cusolver")
+    assert os.path.isdir(cusolver_lib_dir), (
+        f"cusolver lib dir not found: {cusolver_lib_dir}"
     )
-    LD_LIB = (
-        os.path.join(
-            runfiles,
-            f"pypi_nvidia_cudnn_cu{cuda_version}",
-            "site-packages",
-            "nvidia",
-            "cudnn",
-            "lib",
-        )
-        + ":"
-        + LD_LIB
+    LD_LIB = cusolver_lib_dir + ":" + LD_LIB
+
+    cudnn_lib_dir = get_lib_path("cudnn")
+    assert os.path.isdir(cudnn_lib_dir), f"cudnn lib dir not found: {cudnn_lib_dir}"
+    LD_LIB = cudnn_lib_dir + ":" + LD_LIB
+
+    cublas_lib_dir = get_lib_path("cublas")
+    assert os.path.isdir(cublas_lib_dir), f"cublas lib dir not found: {cublas_lib_dir}"
+    LD_LIB = cublas_lib_dir + ":" + LD_LIB
+
+    cufft_lib_dir = get_lib_path("cufft")
+    assert os.path.isdir(cufft_lib_dir), f"cufft lib dir not found: {cufft_lib_dir}"
+    LD_LIB = cufft_lib_dir + ":" + LD_LIB
+
+    cuda_cupti_lib_dir = get_lib_path("cuda_cupti")
+    assert os.path.isdir(cuda_cupti_lib_dir), (
+        f"cuda_cupti lib dir not found: {cuda_cupti_lib_dir}"
     )
-    LD_LIB = (
-        os.path.join(
-            runfiles,
-            f"pypi_nvidia_cublas_cu{cuda_version}",
-            "site-packages",
-            "nvidia",
-            "cublas",
-            "lib",
-        )
-        + ":"
-        + LD_LIB
+    LD_LIB = cuda_cupti_lib_dir + ":" + LD_LIB
+
+    cuda_runtime_lib_dir = get_lib_path("cuda_runtime")
+    assert os.path.isdir(cuda_runtime_lib_dir), (
+        f"cuda_runtime lib dir not found: {cuda_runtime_lib_dir}"
     )
-    LD_LIB = (
-        os.path.join(
-            runfiles,
-            f"pypi_nvidia_cufft_cu{cuda_version}",
-            "site-packages",
-            "nvidia",
-            "cufft",
-            "lib",
-        )
-        + ":"
-        + LD_LIB
-    )
-    LD_LIB = (
-        os.path.join(
-            runfiles,
-            f"pypi_nvidia_cuda_cupti_cu{cuda_version}",
-            "site-packages",
-            "nvidia",
-            "cuda_cupti",
-            "lib",
-        )
-        + ":"
-        + LD_LIB
-    )
-    LD_LIB = (
-        os.path.join(
-            runfiles,
-            f"pypi_nvidia_cuda_runtime_cu{cuda_version}",
-            "site-packages",
-            "nvidia",
-            "cuda_runtime",
-            "lib",
-        )
-        + ":"
-        + LD_LIB
-    )
+    LD_LIB = cuda_runtime_lib_dir + ":" + LD_LIB
 
     os.environ["LD_LIBRARY_PATH"] = LD_LIB
 
     PATH = os.environ.get("PATH", "")
-    PATH = (
-        os.path.join(
-            runfiles,
-            f"pypi_nvidia_cuda_nvcc_cu{cuda_version}",
-            "site-packages",
-            "nvidia",
-            "cuda_nvcc",
-            "bin",
-        )
-        + ":"
-        + PATH
+    cuda_nvcc_bin_dir = get_bin_path("cuda_nvcc")
+    assert os.path.isdir(cuda_nvcc_bin_dir), (
+        f"cuda_nvcc bin dir not found: {cuda_nvcc_bin_dir}"
     )
+    PATH = cuda_nvcc_bin_dir + ":" + PATH
     os.environ["PATH"] = PATH
 
     CUDNN_PATH = os.path.join(
@@ -150,22 +152,23 @@ def fix_paths():
         "nvidia",
         "cudnn",
     )
+    assert os.path.isdir(CUDNN_PATH), f"CUDNN_PATH not found: {CUDNN_PATH}"
     os.environ["CUDNN_PATH"] = CUDNN_PATH
 
     # Somewhere, someone hardcodes the path to the nvidia libs
     src_path = os.path.join(
         runfiles,
-        f"pypi_nvidia_cuda_runtime_cu{cuda_version}",
+        f"pypi_nvidia_cuda_runtime{cuda_postfix}",
         "site-packages",
         "nvidia",
     )
-    if os.path.exists(src_path):
-        for dst_path in [
-            os.path.join(runfiles, f"pypi_jax_cuda{cuda_version}_plugin", "nvidia"),
-            os.path.join(runfiles, f"pypi_jax_cuda{cuda_version}_pjrt", "nvidia"),
-        ]:
-            if not os.path.exists(dst_path):
-                os.symlink(src_path, dst_path)
+    for dst_path in [
+        os.path.join(runfiles, f"pypi_jax_cuda{cuda_version}_plugin", "nvidia"),
+        os.path.join(runfiles, f"pypi_jax_cuda{cuda_version}_pjrt", "nvidia"),
+    ]:
+        assert os.path.isdir(src_path)
+        if not os.path.exists(dst_path):
+            os.symlink(src_path, dst_path)
 
     # Hardcoding also exists in tensorflow....and causes a segfault in jax otherwise???
     for src_path in [
@@ -175,9 +178,8 @@ def fix_paths():
         dst_path = os.path.join(
             runfiles, f"pypi_jax_cuda{cuda_version}_plugin", "nvidia"
         )
-        if os.path.exists(src_path):
-            if not os.path.exists(dst_path):
-                os.symlink(src_path, dst_path)
+        if os.path.exists(src_path) and not os.path.exists(dst_path):
+            os.symlink(src_path, dst_path)
 
     # And finally because a path to cublas can't be found otherwise
     # or worse it will use an incorrect version thereof. The reason is because
@@ -187,127 +189,35 @@ def fix_paths():
     # a full path, and will end up in cublas/cudnn internal errors with mismatched
     # versions. If we force loading the right version, dlopen will not reopen
     # an incorrect library.
-    cublas_path = os.path.join(
-        runfiles,
-        f"pypi_nvidia_cublas_cu{cuda_version}",
-        "site-packages",
-        "nvidia",
-        "cublas",
-        "lib",
-        "libcublas.so.12",
-    )
+    cublas_path = os.path.join(get_lib_path("cublas"), f"libcublas.so.{cuda_version}")
+    ctypes.cdll.LoadLibrary(cublas_path)
 
-    if os.path.exists(cublas_path):
-        import ctypes
+    cudnngraph_path = os.path.join(get_lib_path("cudnn"), "libcudnn_graph.so.9")
+    ctypes.cdll.LoadLibrary(cudnngraph_path)
 
-        ctypes.cdll.LoadLibrary(cublas_path)
-
-    cudnngraph_path = os.path.join(
-        runfiles,
-        f"pypi_nvidia_cudnn_cu{cuda_version}",
-        "site-packages",
-        "nvidia",
-        "cudnn",
-        "lib",
-        "libcudnn_graph.so.9",
-    )
-
-    if os.path.exists(cudnngraph_path):
-        import ctypes
-
-        ctypes.cdll.LoadLibrary(cudnngraph_path)
-
-    cudnn_path = os.path.join(
-        runfiles,
-        f"pypi_nvidia_cudnn_cu{cuda_version}",
-        "site-packages",
-        "nvidia",
-        "cudnn",
-        "lib",
-        "libcudnn.so.9",
-    )
-
-    if os.path.exists(cudnn_path):
-        import ctypes
-
-        ctypes.cdll.LoadLibrary(cudnn_path)
+    cudnn_path = os.path.join(get_lib_path("cudnn"), "libcudnn.so.9")
+    ctypes.cdll.LoadLibrary(cudnn_path)
 
     # jitlink must come before cusolver
     jitlink_path = os.path.join(
-        runfiles,
-        f"pypi_nvidia_nvjitlink_cu{cuda_version}",
-        "site-packages",
-        "nvidia",
-        "nvjitlink",
-        "lib",
-        "libnvJitLink.so.12",
+        get_lib_path("nvjitlink"), f"libnvJitLink.so.{cuda_version}"
     )
-
-    if os.path.exists(jitlink_path):
-        import ctypes
-
-        ctypes.cdll.LoadLibrary(jitlink_path)
+    ctypes.cdll.LoadLibrary(jitlink_path)
 
     # cusparse comes before cusolver but after jitlink
-    cusparse_path = os.path.join(
-        runfiles,
-        f"pypi_nvidia_cusparse_cu{cuda_version}",
-        "site-packages",
-        "nvidia",
-        "cusparse",
-        "lib",
-        "libcusparse.so.12",
-    )
-
-    if os.path.exists(cusparse_path):
-        import ctypes
-
-        ctypes.cdll.LoadLibrary(cusparse_path)
+    cusparse_path = os.path.join(get_lib_path("cusparse"), "libcusparse.so.12")
+    ctypes.cdll.LoadLibrary(cusparse_path)
 
     cusolver_path = os.path.join(
-        runfiles,
-        f"pypi_nvidia_cusolver_cu{cuda_version}",
-        "site-packages",
-        "nvidia",
-        "cusolver",
-        "lib",
-        "libcusolver.so.11",
+        get_lib_path("cusolver"), f"libcusolver.so.{cuda_version - 1}"
     )
+    ctypes.cdll.LoadLibrary(cusolver_path)
 
-    if os.path.exists(cusolver_path):
-        import ctypes
+    cupti_path = os.path.join(get_lib_path("cuda_cupti"), f"libcupti.so.{cuda_version}")
+    ctypes.cdll.LoadLibrary(cupti_path)
 
-        ctypes.cdll.LoadLibrary(cusolver_path)
-
-    cupti_path = os.path.join(
-        runfiles,
-        f"pypi_nvidia_cuda_cupti_cu{cuda_version}",
-        "site-packages",
-        "nvidia",
-        "cuda_cupti",
-        "lib",
-        "libcupti.so.12",
-    )
-
-    if os.path.exists(cupti_path):
-        import ctypes
-
-        ctypes.cdll.LoadLibrary(cupti_path)
-
-    cufft_path = os.path.join(
-        runfiles,
-        f"pypi_nvidia_cufft_cu{cuda_version}",
-        "site-packages",
-        "nvidia",
-        "cufft",
-        "lib",
-        "libcufft.so.11",
-    )
-
-    if os.path.exists(cufft_path):
-        import ctypes
-
-        ctypes.cdll.LoadLibrary(cufft_path)
+    cufft_path = os.path.join(get_lib_path("cufft"), f"libcufft.so.{cuda_version - 1}")
+    ctypes.cdll.LoadLibrary(cufft_path)
 
 
 from absl.testing import absltest  # noqa: E402

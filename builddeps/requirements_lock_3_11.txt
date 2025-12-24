@@ -905,19 +905,16 @@ importlib-metadata==8.7.1 \
 importlib-resources==6.5.2 \
     --hash=sha256:185f87adef5bcc288449d98fb4fba07cea78bc036455dd44c5fc4a2fe78fed2c \
     --hash=sha256:789cfdc3ed28c78b67a06acb8126751ced69a3d5f79c095a98298cd8a760ccec
-    # via
-    #   -r builddeps/test-requirements.txt
-    #   etils
+    # via etils
 jaraco-functools==4.4.0 \
     --hash=sha256:9eec1e36f45c818d9bf307c8948eb03b2b56cd44087b3cdc989abca1f20b9176 \
     --hash=sha256:da21933b0417b89515562656547a77b4931f98176eb173644c0d35032a33d6bb
     # via cheroot
-jax==0.8.2 \
+jax[cuda12]==0.8.2 \
     --hash=sha256:1a685ded06a8223a7b52e45e668e406049dbbead02873f2b5a4d881ba7b421ae \
     --hash=sha256:d0478c5dc74406441efcd25731166a65ee782f13c352fa72dc7d734351909355
     # via
     #   -r builddeps/requirements.in
-    #   -r builddeps/test-requirements.txt
     #   chex
     #   dinosaur
     #   e3nn-jax
@@ -928,12 +925,6 @@ jax==0.8.2 \
     #   optax
     #   orbax-checkpoint
     #   tree-math
-jax[cuda12]==0.8.2 \
-    --hash=sha256:1a685ded06a8223a7b52e45e668e406049dbbead02873f2b5a4d881ba7b421ae \
-    --hash=sha256:d0478c5dc74406441efcd25731166a65ee782f13c352fa72dc7d734351909355
-    # via
-    #   -r builddeps/requirements.in
-    #   -r builddeps/test-requirements.txt
 jax-cuda12-pjrt==0.8.2 \
     --hash=sha256:717a1b196a642409ce195ddf031c20bbeadcc886f55e49a1d3f4927373aeedae \
     --hash=sha256:e3bab41ca7c48e4163db9e7efd271b3aa85f0fe45f5ed0708d6bbed93a59f977
@@ -981,7 +972,6 @@ jaxlib==0.8.2 \
     --hash=sha256:f472cc72e3058e50b5f0230b236d5a1183bf6c3d5423d2a52eff07bcf34908de
     # via
     #   -r builddeps/requirements.in
-    #   -r builddeps/test-requirements.txt
     #   chex
     #   dinosaur
     #   e3nn-jax
