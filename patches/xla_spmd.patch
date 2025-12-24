@@ -1,5 +1,5 @@
 diff --git a/xla/service/spmd/spmd_partitioner.cc b/xla/service/spmd/spmd_partitioner.cc
-index 4f031265de..028d41feba 100644
+index 4f031265de..54fdd9a0fe 100644
 --- a/xla/service/spmd/spmd_partitioner.cc
 +++ b/xla/service/spmd/spmd_partitioner.cc
 @@ -1608,7 +1608,6 @@ PartitionedHlo PartitionedHlo::Broadcast() const {
@@ -98,7 +98,7 @@ index 4f031265de..028d41feba 100644
 +      if (padding_config.dimensions(input_tensor_dim).edge_padding_low() != 0 ||
 +          padding_config.dimensions(input_tensor_dim).edge_padding_high() !=
 +              0) {
-+        if (!absl::c_linear_search(broadcast_dims, input_tensor_dim)) {
++        if (absl::c_linear_search(broadcast_dims, input_tensor_dim)) {
 +          legal = false;
 +          break;
 +        }
@@ -108,8 +108,8 @@ index 4f031265de..028d41feba 100644
 +    // device-specific shape.
 +    if (legal) {
 +      HloInstruction* newBroadcast = add_hlo(HloInstruction::CreateBroadcast(
-+          hlo->shape(), GetPartitionedHlo(update_tensor).hlo(),
-+          broadcast_dims));
++          GetPartitionedHlo(input_tensor).hlo()->shape(),
++          GetPartitionedHlo(update_tensor->operand(0)).hlo(), broadcast_dims));
 +      newBroadcast->set_sharding(hlo->sharding());
 +      newOperand = newBroadcast;
 +    }
@@ -250,10 +250,10 @@ index 4f031265de..028d41feba 100644
        shard_result_shape, HloOpcode::kSelect, maskOp,
        GetPartitionedHlo(input_tensor).hlo(), newOperand));
 diff --git a/xla/service/spmd/spmd_partitioner_test.cc b/xla/service/spmd/spmd_partitioner_test.cc
-index e824fafc00..3ff8e4db5e 100644
+index e824fafc00..a8dea4dfce 100644
 --- a/xla/service/spmd/spmd_partitioner_test.cc
 +++ b/xla/service/spmd/spmd_partitioner_test.cc
-@@ -8237,6 +8237,102 @@ TEST_P(SpmdPartitioningTest,
+@@ -8237,6 +8237,130 @@ TEST_P(SpmdPartitioningTest,
                      op::Shape("s32[4]")));
  }
  
@@ -351,6 +351,34 @@ index e824fafc00..3ff8e4db5e 100644
 +                                   op::DynamicSlice(sharded_input, _, _, _)),
 +                               _)),
 +            op::Shape("f32[20,768,1528]")));
++}
++
++TEST_P(SpmdPartitioningTest, DusOfBroadcastWithEnzymeOpt) {
++  absl::string_view hlo_string = R"hlo(
++  HloModule module
++
++  ENTRY entry {  
++    %dus_in = f32[20,1536,3056]{2,1,0} parameter(0), sharding={devices=[1,2,2]<=[2,2]T(1,0)}
++    %cst = f32[] parameter(1), sharding={replicated}
++    bcast = f32[1,1520,3056]{2,1,0} broadcast(cst), dimensions={}, sharding={devices=[1,2,2]<=[2,2]T(1,0)}
++    c9 = s32[] constant(9)
++    c8 = s32[] constant(8)
++    c0 = s32[] constant(0)
++    ROOT dus_out = f32[20,1536,3056]{2,1,0} dynamic-update-slice(%dus_in, bcast, c9, c8, c0), sharding={devices=[1,2,2]<=[2,2]T(1,0)}
++}
++)hlo";
++
++  TF_ASSERT_OK_AND_ASSIGN(auto module,
++                          PartitionComputation(hlo_string, /*num_devices=*/4,
++                                               SpmdPartitionerOptions(),
++                                               /*enable_enzyme_opt=*/true));
++
++  const auto root = module->entry_computation()->root_instruction();
++  auto sharded_input = AllOf(op::Parameter(1), op::Shape("f32[]"));
++  auto sharded_dus_in = AllOf(op::Parameter(0), op::Shape("f32[20,768,1528]"));
++  EXPECT_THAT(root, AllOf(op::Select(op::Pad(_, _), sharded_dus_in,
++                                     op::Broadcast(sharded_input)),
++                          op::Shape("f32[20,768,1528]")));
 +}
 +
  TEST_P(SpmdPartitioningTest, UnpartitionedGather) {
