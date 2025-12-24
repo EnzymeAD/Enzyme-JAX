@@ -4023,12 +4023,6 @@ struct ConvertPolygeistToLLVMPass
           ConvertPolygeistToLLVMPass> {
   using ConvertPolygeistToLLVMBase::ConvertPolygeistToLLVMBase;
 
-  void getDependentDialects(DialectRegistry &registry) const override {
-    ConvertPolygeistToLLVMBase::getDependentDialects(registry);
-    registry.insert<NVVM::NVVMDialect>();
-    registry.insert<ROCDL::ROCDLDialect>();
-  }
-
   void convertModule(ModuleOp m, bool gpuModule) {
     const auto &dataLayoutAnalysis = getAnalysis<DataLayoutAnalysis>();
 
