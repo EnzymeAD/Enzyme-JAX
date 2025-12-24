@@ -3717,7 +3717,6 @@ populateCStyleGPUFuncLoweringPatterns(RewritePatternSet &patterns,
       populateLibDeviceConversionPatterns(typeConverter, patterns, benefit);
       patterns.add<GPUBarrierToNVVM>(typeConverter, benefit);
     } else if (gpuTarget == "rocm") {
-      typeConverter.getContext().loadDialect<ROCDL::ROCDLDialect>();
       mlir::populateGpuToROCDLConversionPatterns(typeConverter, patterns,
                                                  mlir::gpu::amd::Runtime::HIP,
                                                  amdgpu::Chipset());

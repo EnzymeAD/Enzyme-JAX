@@ -373,6 +373,7 @@ def ConvertPolygeistToLLVM
     "arith::ArithDialect",
     "cf::ControlFlowDialect",
     "scf::SCFDialect",
+    "ROCDL::ROCDLDialect"
   ];
   let options = [
     Option<"useBarePtrCallConv", "use-bare-ptr-memref-call-conv", "bool",
