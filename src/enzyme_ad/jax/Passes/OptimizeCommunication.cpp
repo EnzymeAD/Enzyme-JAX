@@ -3628,6 +3628,12 @@ struct ConcatToPadCommOptimize
           "numDevicesAlongDimension == 1. Communication is already optimized.");
     }
 
+    if (concat.getNumOperands() == 2 &&
+        isRotateLike(concat.getDimension(), concat.getOperands()[0],
+                     concat.getOperands()[1])) {
+      return rewriter.notifyMatchFailure(concat, "Explicit rotate like comm");
+    }
+
     SmallVector<int64_t> padLow(ndims, 0);
     SmallVector<int64_t> padHigh(ndims, 0);
     SmallVector<int64_t> padInner(ndims, 0);
