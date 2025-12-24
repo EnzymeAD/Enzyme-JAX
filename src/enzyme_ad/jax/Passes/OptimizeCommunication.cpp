@@ -3761,16 +3761,21 @@ struct ConcatSliceOptimize
     // Result is a rotation
     if (end0 == sourceShape && end1 == start0 && start1 == 0) {
       // This is equivalent to: concat(source[A:end], source[0:A])
-      // Can be optimized using extend/rotate
+      // TODO: Implement transformation:
+      // 1. Pad sourceOp to result size if needed
+      // 2. Create enzymexla::RotateOp or use collective permute pattern
+      // 3. Replace concat with the rotated result
+      // Similar to existing rotate patterns in this file
       return rewriter.notifyMatchFailure(
-          concat, "Rotate pattern - slice from end + slice from start");
+          concat, "Rotate pattern detected - full transformation TODO");
     }
 
-    // Pattern 2: concat(slice[B:end], slice[A:B]) where A < B
+    // Pattern 2: concat(slice[B:end], slice[A:B]) where A < B  
     // Less common but similar
     if (end0 == sourceShape && start0 == end1 && start1 < start0) {
+      // TODO: Similar transformation as Pattern 1
       return rewriter.notifyMatchFailure(
-          concat, "Rotate pattern - another variant");
+          concat, "Rotate pattern variant detected - full transformation TODO");
     }
 
     // Check if one slice is much smaller than the other
@@ -3781,9 +3786,15 @@ struct ConcatSliceOptimize
     // If one operand is significantly smaller, we might benefit from
     // padding the larger one and using DUS for the smaller
     if (size0 < size1 / 10 || size1 < size0 / 10) {
+      // TODO: Implement transformation:
+      // 1. Identify which slice is larger
+      // 2. Pad the larger slice to result size (with zeros at appropriate position)
+      // 3. Create DUS to insert the smaller slice at correct offset
+      // 4. Replace concat with DUS result
+      // Similar pattern to ConcatTwoDUSLike
       return rewriter.notifyMatchFailure(
           concat,
-          "One slice much smaller - could pad larger and DUS smaller");
+          "Asymmetric concat pattern detected - full transformation TODO");
     }
 
     return failure();
@@ -3848,12 +3859,26 @@ struct ConcatLargestOperandOptimize
     auto elemType = concat.getType().getElementType();
     auto resultShape = concat.getType().getShape();
 
-    // For now, just report that we found a candidate for optimization
-    // The full implementation would:
-    // 1. Pad the largest operand to the full concat result size
-    // 2. For each other operand, create a DUS to insert it at the right position
+    // TODO: Full implementation steps:
+    // 1. Pad the largest operand to full result size along concat dimension
+    //    - Use stablehlo::PadOp with appropriate low/high padding
+    // 2. For each other operand:
+    //    a. Calculate its position offset in the result
+    //    b. Use stablehlo::DynamicUpdateSliceOp to insert it into padded result
+    //    c. Or use ManualComputationOp with multiDimensionalSelect pattern
+    // 3. Handle sharding consistently - all operands should have same sharding
+    // 4. If dimensions not evenly divisible, may need extra slice at end
+    //
+    // Implementation should follow pattern similar to:
+    // - ConcatTwoDUSLike for the padding + DUS approach
+    // - DUSToPadManualCompComm for the manual computation approach
+    //
+    // Benefits:
+    // - Reduces number of concat operations
+    // - Can be more efficient for communication when operands are sharded
+    // - Particularly beneficial when largest operand >> sum of others
     return rewriter.notifyMatchFailure(
-        concat, "Found largest operand pattern - full implementation pending");
+        concat, "Largest operand pattern detected - full transformation TODO");
   }
 };
 
