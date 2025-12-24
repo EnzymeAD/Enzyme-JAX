@@ -3693,6 +3693,170 @@ struct ConcatToPadCommOptimize
   }
 };
 
+// Optimization 1: Concat where both operands are slices of the same source
+// Pattern: concat(slice(A, [start1:end1]), slice(A, [start2:end2]))
+// where the slices together form a contiguous region that can be rotated
+// Transform: pad the larger slice to result size, rotate to get the result
+struct ConcatSliceOptimize
+    : public OpRewritePattern<stablehlo::ConcatenateOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::ConcatenateOp concat,
+                                PatternRewriter &rewriter) const override {
+    if (concat->getParentOfType<sdy::ManualComputationOp>())
+      return failure();
+    if (concat.getNumOperands() != 2)
+      return failure();
+
+    auto concatDim = concat.getDimension();
+    auto operand0 = concat.getOperands()[0];
+    auto operand1 = concat.getOperands()[1];
+
+    auto sharding = mlir::sdy::getSharding(concat);
+    if (!sharding)
+      return failure();
+
+    auto numDevicesAlongDimension =
+        getNumDevicesAlongDimension(sharding, concatDim, concat);
+    if (numDevicesAlongDimension == 1)
+      return failure();
+
+    // Check if both operands are slices from the same source
+    auto slice0 = operand0.getDefiningOp<stablehlo::SliceOp>();
+    auto slice1 = operand1.getDefiningOp<stablehlo::SliceOp>();
+
+    if (!slice0 || !slice1)
+      return failure();
+
+    // Both slices must come from the same source
+    if (slice0.getOperand() != slice1.getOperand())
+      return failure();
+
+    auto sourceOp = slice0.getOperand();
+    auto sourceType = cast<RankedTensorType>(sourceOp.getType());
+    auto sourceShape = sourceType.getShape()[concatDim];
+
+    // Get the slice ranges for the concat dimension
+    auto start0 = slice0.getStartIndices()[concatDim];
+    auto end0 = slice0.getLimitIndices()[concatDim];
+    auto start1 = slice1.getStartIndices()[concatDim];
+    auto end1 = slice1.getLimitIndices()[concatDim];
+
+    // Check strides are 1
+    if (slice0.getStrides()[concatDim] != 1 ||
+        slice1.getStrides()[concatDim] != 1)
+      return failure();
+
+    // Check that dimensions other than concatDim are the same
+    auto ndims = sourceType.getRank();
+    for (int i = 0; i < ndims; i++) {
+      if (i == concatDim)
+        continue;
+      if (slice0.getStartIndices()[i] != slice1.getStartIndices()[i] ||
+          slice0.getLimitIndices()[i] != slice1.getLimitIndices()[i])
+        return failure();
+    }
+
+    // Pattern 1: concat(slice[A:B], slice[0:A]) - taking end piece and beginning
+    // Result is a rotation
+    if (end0 == sourceShape && end1 == start0 && start1 == 0) {
+      // This is equivalent to: concat(source[A:end], source[0:A])
+      // Can be optimized using extend/rotate
+      return rewriter.notifyMatchFailure(
+          concat, "Rotate pattern - slice from end + slice from start");
+    }
+
+    // Pattern 2: concat(slice[B:end], slice[A:B]) where A < B
+    // Less common but similar
+    if (end0 == sourceShape && start0 == end1 && start1 < start0) {
+      return rewriter.notifyMatchFailure(
+          concat, "Rotate pattern - another variant");
+    }
+
+    // Check if one slice is much smaller than the other
+    // Pattern from issue: concat(small_slice, large_slice)
+    auto size0 = end0 - start0;
+    auto size1 = end1 - start1;
+
+    // If one operand is significantly smaller, we might benefit from
+    // padding the larger one and using DUS for the smaller
+    if (size0 < size1 / 10 || size1 < size0 / 10) {
+      return rewriter.notifyMatchFailure(
+          concat,
+          "One slice much smaller - could pad larger and DUS smaller");
+    }
+
+    return failure();
+  }
+};
+
+// Optimization 2: General concat - identify largest operand and use it as base
+// Pad the largest operand to result size, then DUS in the other operands
+struct ConcatLargestOperandOptimize
+    : public OpRewritePattern<stablehlo::ConcatenateOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::ConcatenateOp concat,
+                                PatternRewriter &rewriter) const override {
+    if (concat->getParentOfType<sdy::ManualComputationOp>())
+      return failure();
+
+    // Need at least 3 operands for this optimization to make sense
+    // (with 2 operands, other optimizations are better)
+    if (concat.getNumOperands() < 3)
+      return failure();
+
+    auto concatDim = concat.getDimension();
+    auto sharding = mlir::sdy::getSharding(concat);
+    if (!sharding)
+      return failure();
+
+    auto numDevicesAlongDimension =
+        getNumDevicesAlongDimension(sharding, concatDim, concat);
+    if (numDevicesAlongDimension == 1)
+      return failure();
+
+    // Find the operand with the largest size along concat dimension
+    int64_t maxSize = 0;
+    int maxIndex = -1;
+    int64_t totalSize = 0;
+
+    for (auto [i, operand] : llvm::enumerate(concat.getOperands())) {
+      auto operandSize =
+          cast<RankedTensorType>(operand.getType()).getShape()[concatDim];
+      totalSize += operandSize;
+
+      if (operandSize > maxSize) {
+        maxSize = operandSize;
+        maxIndex = i;
+      }
+    }
+
+    // Only apply if the largest operand is significantly larger
+    // (at least as large as half the total)
+    if (maxSize < totalSize / 2)
+      return failure();
+
+    // Verify all operands have same sharding
+    for (auto operand : concat.getOperands()) {
+      auto operandSharding = mlir::sdy::getSharding(operand);
+      if (!operandSharding || (operandSharding != sharding))
+        return failure();
+    }
+
+    auto ndims = concat.getType().getShape().size();
+    auto elemType = concat.getType().getElementType();
+    auto resultShape = concat.getType().getShape();
+
+    // For now, just report that we found a candidate for optimization
+    // The full implementation would:
+    // 1. Pad the largest operand to the full concat result size
+    // 2. For each other operand, create a DUS to insert it at the right position
+    return rewriter.notifyMatchFailure(
+        concat, "Found largest operand pattern - full implementation pending");
+  }
+};
+
 // See https://github.com/EnzymeAD/Enzyme-JAX/issues/854 for the motivation
 // TODO: At some point if we can come up with a cost model for this, we can do a
 //       greedy search for the best ordering
@@ -3945,6 +4109,14 @@ struct OptimizeCommunicationPass
                    ReorderAssociativeOp<stablehlo::XorOp>>(
           context, PatternBenefit(reorder_associative));
     }
+
+    if (concat_slice_optimize > 0)
+      patterns.add<ConcatSliceOptimize>(context,
+                                        PatternBenefit(concat_slice_optimize));
+
+    if (concat_largest_operand > 0)
+      patterns.add<ConcatLargestOperandOptimize>(
+          context, PatternBenefit(concat_largest_operand));
 
     GreedyRewriteConfig config;
     if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),

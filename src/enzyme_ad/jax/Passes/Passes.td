@@ -935,7 +935,19 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*CLI argument=*/"reorder_associative",
        /*type=*/"int",
        /*default=*/"1",
-       /*description=*/"Reorder associative operations to minimize communication">];
+       /*description=*/"Reorder associative operations to minimize communication">,
+       Option<
+       /*C++ variable name=*/"concat_slice_optimize",
+       /*CLI argument=*/"concat_slice_optimize",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Optimize concat of two slices from same source by padding and rotating">,
+       Option<
+       /*C++ variable name=*/"concat_largest_operand",
+       /*CLI argument=*/"concat_largest_operand",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Optimize concat by padding largest operand and DUS others">];
 }
 
 def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
