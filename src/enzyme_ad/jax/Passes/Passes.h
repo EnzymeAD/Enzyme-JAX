@@ -23,6 +23,10 @@ class PatternRewriter;
 class AffineMap;
 class DominanceInfo;
 
+namespace stablehlo {
+class SliceOp;
+}
+
 namespace enzyme {
 
 void populateAffineCFGPatterns(RewritePatternSet &rpl);
@@ -161,4 +165,7 @@ bool valueCmp(Cmp cmp, mlir::Value bval, ValueOrInt val);
 
 bool valueCmp(Cmp cmp, llvm::APInt bval, ValueOrInt val);
 
+bool isRotateLike(int dimension, mlir::Value lhs, mlir::Value rhs,
+                  mlir::stablehlo::SliceOp *sl0P = nullptr,
+                  mlir::stablehlo::SliceOp *sl1P = nullptr);
 #endif // ENZYMEXLA_PASSES_H
