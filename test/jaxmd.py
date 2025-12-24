@@ -1,13 +1,13 @@
 from absl.testing import absltest
 
 from test_utils import EnzymeJaxTest
-from jax import random
-import jax.numpy as jnp
-import jax
 
 
 class JAXMD(EnzymeJaxTest):
     def setUp(self):
+        from jax import random
+        import jax.numpy as jnp
+        import jax
         from jax_md import space, energy, simulate, partition
 
         lattice_constant = 1.37820

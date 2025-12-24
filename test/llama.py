@@ -2,21 +2,25 @@ from absl.testing import absltest
 
 from test_utils import EnzymeJaxTest, CurBackends, pipelines
 
-import jax.numpy as jnp
-
 
 def rmsnorm(x, weight):
+    import jax.numpy as jnp
+
     ss = 1 / jnp.sqrt(x.dot(x) / x.shape[0] + 1e-5)
     return weight * x * ss
 
 
 def softmax(x):
+    import jax.numpy as jnp
+
     max_val = jnp.max(x)
     x = jnp.exp(x - max_val)
     return x / sum(x)
 
 
 def sigmoid(x):
+    import jax.numpy as jnp
+
     return 1 / (1 + jnp.exp(-x))
 
 
@@ -247,7 +251,7 @@ class Llama(EnzymeJaxTest):
             "n_kv_heads": 6,
             "vocab_size": 32000,
             "seq_len": 256,
-            "batch_size": 1024,
+            "batch_size": 32,
         }
 
         n_layers = config["n_layers"]

@@ -32,14 +32,14 @@ class EnzymeJax(absltest.TestCase):
         void myfn(enzyme::tensor<float, N, M>& out0,
                   enzyme::tensor<float, N, M>& out1,
                   const enzyme::tensor<float, N, M>& in0) {
-          for (int j=0; j<N; j++) {
-            for (int k=0; k<M; k++) {
-                out0[j][k] = in0[j][k] + 42;
+          for (int32_t j = 0; j < N; j++) {
+            for (int32_t k = 0; k < M; k++) {
+                out0[j][k] = in0[j][k] + 42.0f;
             }
           }
-          for (int j=0; j<2; j++) {
-            for (int k=0; k<3; k++) {
-                out1[j][k] = in0[j][k] + 2 * 42;
+          for (int32_t j = 0; j < 2; j++) {
+            for (int32_t k = 0; k < 3; k++) {
+                out1[j][k] = in0[j][k] + 2.0f * 42.0f;
             }
           }
         }
@@ -83,16 +83,7 @@ class EnzymeJax(absltest.TestCase):
         self.assertTrue((primals[1] == 85).all())
         self.assertTrue((primals[2][0] == 56).all())
 
-        self.assertTrue(
-            (
-                grads[1]
-                == jnp.array(
-                    [
-                        [128.0, 128.0, 128.0],
-                    ]
-                )
-            ).all()
-        )
+        self.assertTrue((grads[1] == jnp.array([[128.0, 128.0, 128.0]])).all())
 
     def test_enzyme_mlir_jit(self):
         @jax.jit
@@ -107,61 +98,16 @@ class EnzymeJax(absltest.TestCase):
             (jnp.array([1.0, 2.0, 3.0]), jnp.array([10.0, 20.0, 30.0])),
             (jnp.array([0.1, 0.2, 0.3]), jnp.array([50.0, 70.0, 110.0])),
         )
-        self.assertTrue(
-            (
-                primals
-                == jnp.array(
-                    [
-                        [12.0, 23.0, 34.0],
-                    ]
-                )
-            ).all()
-        )
-        self.assertTrue(
-            (
-                tangents
-                == jnp.array(
-                    [
-                        [50.1, 70.2, 110.3],
-                    ]
-                )
-            ).all()
-        )
+        self.assertTrue((primals == jnp.array([[12.0, 23.0, 34.0]])).all())
+        self.assertTrue((tangents == jnp.array([[50.1, 70.2, 110.3]])).all())
 
         primals, f_vjp = jax.vjp(
             add_one, jnp.array([1.0, 2.0, 3.0]), jnp.array([10.0, 20.0, 30.0])
         )
         grads = f_vjp(jnp.array([500.0, 700.0, 110.0]))
-        self.assertTrue(
-            (
-                primals
-                == jnp.array(
-                    [
-                        [12.0, 23.0, 34.0],
-                    ]
-                )
-            ).all()
-        )
-        self.assertTrue(
-            (
-                grads[0]
-                == jnp.array(
-                    [
-                        [500.0, 700.0, 110.0],
-                    ]
-                )
-            ).all()
-        )
-        self.assertTrue(
-            (
-                grads[1]
-                == jnp.array(
-                    [
-                        [500.0, 700.0, 110.0],
-                    ]
-                )
-            ).all()
-        )
+        self.assertTrue((primals == jnp.array([[12.0, 23.0, 34.0]])).all())
+        self.assertTrue((grads[0] == jnp.array([[500.0, 700.0, 110.0]])).all())
+        self.assertTrue((grads[1] == jnp.array([[500.0, 700.0, 110.0]])).all())
 
 
 if __name__ == "__main__":

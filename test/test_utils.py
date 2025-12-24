@@ -1,15 +1,7 @@
 import os
 import subprocess
 import tempfile
-import jax.numpy as jnp
-import jax
 import ctypes
-
-from enzyme_ad.jax import (
-    JaXPipeline,
-    full_optimization_pass_pipeline,
-)
-from xprof_utils import profile_function
 
 
 def _has_cuda():
@@ -72,6 +64,15 @@ def fix_paths():
         "nvidia",
         "cuda_nvcc" if cuda_version == 12 else f"cu{cuda_version}",
     )
+
+    if cuda_version >= 13 and not os.path.exists(os.path.join(CUDA_DIR, "nvvm")):
+        NVVM_DIR = os.path.join(
+            runfiles, "pypi_nvidia_nvvm", "site-packages", "nvidia", f"cu{cuda_version}"
+        )
+        assert os.path.isdir(NVVM_DIR), f"nvvm dir not found: {NVVM_DIR}"
+
+        os.symlink(NVVM_DIR, os.path.join(CUDA_DIR, "nvvm"))
+
     assert os.path.isdir(CUDA_DIR), f"CUDA_DIR not found: {CUDA_DIR}"
 
     os.environ["CUDA_DIR"] = CUDA_DIR
@@ -220,6 +221,11 @@ def fix_paths():
     ctypes.cdll.LoadLibrary(cufft_path)
 
 
+fix_paths()
+
+import jax.numpy as jnp  # noqa: E402
+import jax  # noqa: E402
+
 from absl.testing import absltest  # noqa: E402
 
 # import logging
@@ -242,7 +248,11 @@ def setup_backends():
 
     backends = list(jax._src.xla_bridge.backends().keys())
     AllBackends.extend(backends)
-    CurBackends.append(jax.default_backend())
+    def_backend = jax.default_backend()
+    if def_backend == "gpu" and def_backend not in AllBackends:
+        CurBackends.append("cuda")
+    else:
+        CurBackends.append(def_backend)
     backends_initialized = True
 
 
@@ -346,6 +356,11 @@ broadcast_reduce<1>;
 
 
 def get_pipeline(name: str):
+    from enzyme_ad.jax import (
+        JaXPipeline,
+        full_optimization_pass_pipeline,
+    )
+
     if name == "JaxPipe":
         return ("JaXPipe", JaXPipeline(), CurBackends)
     elif name == "Jax":
@@ -561,6 +576,7 @@ class EnzymeJaxTest(absltest.TestCase):
 
     def harness(self, name, in_fn, ins, dins, douts):
         from enzyme_ad.jax import enzyme_jax_ir
+        from xprof_utils import profile_function
 
         dump_mlir_dir = tempfile.gettempdir()
 

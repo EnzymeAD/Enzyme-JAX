@@ -3,11 +3,10 @@ from test_utils import EnzymeJaxTest
 import numpy as np
 import os
 
-import jax.random
-
 
 class NeuralGCM(EnzymeJaxTest):
     def setUp(self):
+        import jax.random
         import neuralgcm
         import gcsfs
         import pickle
