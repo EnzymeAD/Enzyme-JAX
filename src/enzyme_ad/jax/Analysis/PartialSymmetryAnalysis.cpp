@@ -88,7 +88,6 @@ PartialSymmetryAnnotation::meet(const PartialSymmetryAnnotation &lhs,
   PartialSymmetryAnnotation result = createNotSymmetric(lhs.getRank());
 
   for (int64_t i = 0; i < lhs.getRank(); ++i) {
-    bool found = false;
     for (int64_t j = 0; j < i; ++j) {
       if (lhs.getSetId(i) == lhs.getSetId(j) &&
           rhs.getSetId(i) == rhs.getSetId(j)) {
