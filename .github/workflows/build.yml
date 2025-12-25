@@ -56,9 +56,9 @@ jobs:
       fail-fast: false
       matrix:
         os:
-          # - linux-x86-n2-32
-          # - linux-arm64-c4a-32
-          # - linux-x86-ct6e-180-4tpu
+          - linux-x86-n2-32
+          - linux-arm64-c4a-32
+          - linux-x86-ct6e-180-4tpu
           - linux-x86-a2-48-a100-4gpu
           - macOS-latest
         python:
@@ -144,44 +144,44 @@ jobs:
         timeout-minutes: 180
         run: |
           bazel build $BAZEL_FLAGS --color=yes //:enzymexlamlir-opt --test_output=errors
-      # - name: Upload enzymexlamlir-opt
-      #   uses: actions/upload-artifact@v6
-      #   with:
-      #     name: enzymexlamlir-opt-${{ matrix.os }}-${{ matrix.python }}
-      #     path: "bazel-bin/enzymexlamlir-opt"
-      #     retention-days: 90
+      - name: Upload enzymexlamlir-opt
+        uses: actions/upload-artifact@v6
+        with:
+          name: enzymexlamlir-opt-${{ matrix.os }}-${{ matrix.python }}
+          path: "bazel-bin/enzymexlamlir-opt"
+          retention-days: 90
 
-      # - name: Run lit tests
-      #   id: lit_tests
-      #   continue-on-error: true
-      #   run: |
-      #     bazel test $BAZEL_FLAGS \
-      #       --color=yes \
-      #       --test_output=errors \
-      #       --experimental_ui_max_stdouterr_bytes=-1 \
-      #       --test_verbose_timeout_warnings \
-      #       //test/lit_tests/...
-      # - name: Run lit tests (dbg)
-      #   if: steps.lit_tests.outcome == 'failure'
-      #   run: |
-      #     bazel test $BAZEL_FLAGS -c dbg \
-      #       --color=yes \
-      #       --test_output=errors \
-      #       --experimental_ui_max_stdouterr_bytes=-1 \
-      #       --test_verbose_timeout_warnings \
-      #       //test/lit_tests/...
+      - name: Run lit tests
+        id: lit_tests
+        continue-on-error: true
+        run: |
+          bazel test $BAZEL_FLAGS \
+            --color=yes \
+            --test_output=errors \
+            --experimental_ui_max_stdouterr_bytes=-1 \
+            --test_verbose_timeout_warnings \
+            //test/lit_tests/...
+      - name: Run lit tests (dbg)
+        if: steps.lit_tests.outcome == 'failure'
+        run: |
+          bazel test $BAZEL_FLAGS -c dbg \
+            --color=yes \
+            --test_output=errors \
+            --experimental_ui_max_stdouterr_bytes=-1 \
+            --test_verbose_timeout_warnings \
+            //test/lit_tests/...
 
       - name: Build wheel
         timeout-minutes: 240
         run: |
           bazel build $BAZEL_FLAGS --color=yes :wheel --test_output=errors
-      # - name: Upload wheel
-      #   uses: actions/upload-artifact@v6
-      #   if: ${{ !endsWith(matrix.os, 'arm') }}
-      #   with:
-      #     name: Enzyme-JAX-Wheel-${{ matrix.os }}-${{ matrix.python }}
-      #     path: "bazel-bin/*.whl"
-      #     retention-days: 90
+      - name: Upload wheel
+        uses: actions/upload-artifact@v6
+        if: ${{ !endsWith(matrix.os, 'arm') }}
+        with:
+          name: Enzyme-JAX-Wheel-${{ matrix.os }}-${{ matrix.python }}
+          path: "bazel-bin/*.whl"
+          retention-days: 90
 
       - name: Run tests
         id: tests
@@ -193,16 +193,16 @@ jobs:
             --experimental_ui_max_stdouterr_bytes=-1 \
             --test_verbose_timeout_warnings \
             //test:python_tests
-      # - name: Run tests (dbg)
-      #   if: steps.tests.outcome == 'failure'
-      #   run: |
-      #     bazel test $BAZEL_FLAGS \
-      #       --color=yes \
-      #       --test_output=streamed \
-      #       --experimental_ui_max_stdouterr_bytes=-1 \
-      #       --test_verbose_timeout_warnings \
-      #       -c dbg \
-      #       //test:python_tests
+      - name: Run tests (dbg)
+        if: steps.tests.outcome == 'failure'
+        run: |
+          bazel test $BAZEL_FLAGS \
+            --color=yes \
+            --test_output=streamed \
+            --experimental_ui_max_stdouterr_bytes=-1 \
+            --test_verbose_timeout_warnings \
+            -c dbg \
+            //test:python_tests
 
       - name: Upload test results
         uses: actions/upload-artifact@v6

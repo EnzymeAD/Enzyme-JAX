@@ -76,8 +76,9 @@ def fix_paths():
         )
         NVVM_DIR = os.path.join(NVVM_PKG_DIR, "nvvm")
         assert os.path.isdir(NVVM_DIR), f"nvvm dir not found: {NVVM_DIR}"
-        assert os.path.isdir(os.path.join(NVVM_DIR, "libdevice")), \
-            f"libdevice dir not found in {NVVM_DIR}"
+        assert os.path.isdir(
+            os.path.join(NVVM_DIR, "libdevice")
+        ), f"libdevice dir not found in {NVVM_DIR}"
 
         if not os.path.exists(os.path.join(CUDA_DIR, "nvvm")):
             os.symlink(NVVM_DIR, os.path.join(CUDA_DIR, "nvvm"))
