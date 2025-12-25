@@ -160,10 +160,8 @@ module {
 }
 
 // CHECK: func.func @main(%arg0: tensor<3x5x10xf32>, %arg1: tensor<4x3xf32>) -> tensor<4x5x10xf32> {
-// CHECK-NEXT:     %0 = stablehlo.broadcast_in_dim %arg1, dims = [1, 2] : (tensor<4x3xf32>) -> tensor<5x4x3xf32>
-// CHECK-NEXT:     %1 = stablehlo.dot_general %arg0, %0, batching_dims = [1] x [0], contracting_dims = [0] x [2], precision = [DEFAULT, DEFAULT] : (tensor<3x5x10xf32>, tensor<5x4x3xf32>) -> tensor<5x10x4xf32>
-// CHECK-NEXT:     %2 = stablehlo.transpose %1, dims = [2, 0, 1] : (tensor<5x10x4xf32>) -> tensor<4x5x10xf32>
-// CHECK-NEXT:     return %2 : tensor<4x5x10xf32>
+// CHECK-NEXT:   %0 = stablehlo.dot_general %arg1, %arg0, contracting_dims = [1] x [0], precision = [DEFAULT, DEFAULT] : (tensor<4x3xf32>, tensor<3x5x10xf32>) -> tensor<4x5x10xf32>
+// CHECK-NEXT:   return %0 : tensor<4x5x10xf32>
 // CHECK-NEXT: }
 
 module {
@@ -285,14 +283,10 @@ module {
 
 // CHECK: func.func @main(%arg0: tensor<1x3x4x1x5xf32>, %arg1: tensor<5x4x3xf32>) -> tensor<1x3x4x1x5xf32> {
 // CHECK-NEXT:   %0 = stablehlo.slice %arg1 [0:5, 0:3, 0:3] : (tensor<5x4x3xf32>) -> tensor<5x3x3xf32>
-// CHECK-NEXT:   %1 = stablehlo.transpose %0, dims = [1, 0, 2] : (tensor<5x3x3xf32>) -> tensor<3x5x3xf32>
-// CHECK-NEXT:   %2 = stablehlo.reshape %1 : (tensor<3x5x3xf32>) -> tensor<3x5x1x1x3x1xf32>
-// CHECK-NEXT:   %3 = stablehlo.transpose %2, dims = [0, 5, 4, 3, 2, 1] : (tensor<3x5x1x1x3x1xf32>) -> tensor<3x1x3x1x1x5xf32>
-// CHECK-NEXT:   %4 = stablehlo.reshape %3 : (tensor<3x1x3x1x1x5xf32>) -> tensor<3x1x3x1x5xf32>
-// CHECK-NEXT:   %5 = stablehlo.transpose %4, dims = [1, 2, 0, 3, 4] : (tensor<3x1x3x1x5xf32>) -> tensor<1x3x3x1x5xf32>
-// CHECK-NEXT:   %6 = stablehlo.slice %arg0 [0:1, 0:3, 3:4, 0:1, 0:5] : (tensor<1x3x4x1x5xf32>) -> tensor<1x3x1x1x5xf32>
-// CHECK-NEXT:   %7 = stablehlo.concatenate %5, %6, dim = 2 : (tensor<1x3x3x1x5xf32>, tensor<1x3x1x1x5xf32>) -> tensor<1x3x4x1x5xf32>
-// CHECK-NEXT:   return %7 : tensor<1x3x4x1x5xf32>
+// CHECK-NEXT:   %1 = stablehlo.broadcast_in_dim %0, dims = [4, 2, 1] : (tensor<5x3x3xf32>) -> tensor<1x3x3x1x5xf32>
+// CHECK-NEXT:   %2 = stablehlo.slice %arg0 [0:1, 0:3, 3:4, 0:1, 0:5] : (tensor<1x3x4x1x5xf32>) -> tensor<1x3x1x1x5xf32>
+// CHECK-NEXT:   %3 = stablehlo.concatenate %1, %2, dim = 2 : (tensor<1x3x3x1x5xf32>, tensor<1x3x1x1x5xf32>) -> tensor<1x3x4x1x5xf32>
+// CHECK-NEXT:   return %3 : tensor<1x3x4x1x5xf32>
 // CHECK-NEXT: }
 
 module {

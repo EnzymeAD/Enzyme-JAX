@@ -71,6 +71,17 @@ static inline DenseIntElementsAttr
 getBroadcastInDimsAttr(OpBuilder &builder, ArrayRef<int64_t> dims) {
   return builder.getI64VectorAttr(dims);
 }
+
+static inline SmallVector<int64_t> shiftDimensions(ArrayRef<int64_t> dims,
+                                                   SmallVector<int64_t> newDims,
+                                                   int64_t addFactor) {
+  SmallVector<int64_t> shiftedDims(newDims.begin(), newDims.end());
+  for (auto dim : dims) {
+    shiftedDims.push_back(dim + addFactor);
+  }
+  return shiftedDims;
+}
+
 namespace {
 #include "src/enzyme_ad/jax/Implementations/MHLODerivatives.inc"
 } // namespace

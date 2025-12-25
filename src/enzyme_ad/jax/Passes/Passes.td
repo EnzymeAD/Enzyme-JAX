@@ -11,6 +11,12 @@
 
 include "mlir/Pass/PassBase.td"
 
+def TestPolymerPass : Pass<"test-polymer"> {
+  let dependentDialects = [
+    "enzymexla::EnzymeXLADialect",
+  ];
+}
+
 def CanonicalizeLoopsPass : InterfacePass<"canonicalize-loops", 
                                           "mlir::FunctionOpInterface"> {
   let summary = "Canonicalize loops";
@@ -133,6 +139,12 @@ def EnzymeHLOOptPass : Pass<"enzyme-hlo-opt"> {
         /*default=*/"false",
         /*description=*/"Whether to raise to assume all variables are finite">,
     Option<
+        /*C++ variable name=*/"licm_passes",
+        /*CLI argument=*/"licm_passes",
+        /*type=*/"bool",
+        /*default=*/"false",
+        /*description=*/"Whether to run LICM passes">,
+    Option<
         /*C++ variable name=*/"no_nan",
         /*CLI argument=*/"no_nan",
         /*type=*/"bool",
@@ -174,6 +186,12 @@ def EnzymeHLOOptPass : Pass<"enzyme-hlo-opt"> {
         /*type=*/"bool",
         /*default=*/"false",
         /*description=*/"Enable convert to convolution">,
+    Option<
+        /*C++ variable name=*/"enable_auto_batching_passes",
+        /*CLI argument=*/"enable_auto_batching_passes",
+        /*type=*/"bool",
+        /*default=*/"false",
+        /*description=*/"Enable auto batching passes">
   ];
 }
 
@@ -355,6 +373,7 @@ def ConvertPolygeistToLLVM
     "arith::ArithDialect",
     "cf::ControlFlowDialect",
     "scf::SCFDialect",
+    "ROCDL::ROCDLDialect"
   ];
   let options = [
     Option<"useBarePtrCallConv", "use-bare-ptr-memref-call-conv", "bool",
@@ -752,6 +771,7 @@ def AffineCFG : Pass<"affine-cfg"> {
   let dependentDialects = [
     "scf::SCFDialect",
     "affine::AffineDialect",
+    "enzyme::EnzymeDialect",
   ];
 }
 
@@ -828,6 +848,12 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*default=*/"0",
        /*description=*/"Convert Rotate to Manual Computation with CollectivePermute">,
        Option<
+       /*C++ variable name=*/"rotate_spmd",
+       /*CLI argument=*/"rotate_spmd",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Convert Rotate to Spmd custom call">,
+       Option<
        /*C++ variable name=*/"rotate_to_pad_comm",
        /*CLI argument=*/"rotate_to_pad_comm",
        /*type=*/"int",
@@ -898,6 +924,12 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*type=*/"int",
        /*default=*/"1",
        /*description=*/"Perform a Wrap with Padding to optimize the communication">,
+       Option<
+       /*C++ variable name=*/"wrap_to_rotate",
+       /*CLI argument=*/"wrap_to_rotate",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Rewrite Wrap operations in terms of Extend and Rotate">,
        Option<
        /*C++ variable name=*/"reorder_associative",
        /*CLI argument=*/"reorder_associative",
@@ -1018,6 +1050,18 @@ def AutoBatchingPass : Pass<"auto-batching"> {
       /*type=*/"std::string",
       /*default=*/"\"greedy\"",
       /*description=*/"Whether to run while loop batching passes (greedy, none)">,
+    Option<
+      /*C++ variable name=*/"while_elementwise_reduction_to_reduce_passes",
+      /*CLI argument=*/"while_elementwise_reduction_to_reduce_passes",
+      /*type=*/"bool",
+      /*default=*/"true",
+      /*description=*/"Whether to run while elementwise reduction to reduce passes">,
+    Option<
+      /*C++ variable name=*/"while_is_copy_simplify_passes",
+      /*CLI argument=*/"while_is_copy_simplify_passes",
+      /*type=*/"bool",
+      /*default=*/"true",
+      /*description=*/"Whether to run while is copy simplify passes">,
     Option<
         /*C++ variable name=*/"max_iterations",
         /*CLI argument=*/"max_iterations",

@@ -134,6 +134,11 @@ void ApplyConvolutionLICMPatterns::populatePatterns(
   addConvolutionLICM(patterns, getParameter(), *getContext(),
                      PatternBenefit(getBenefit().value_or(1)));
 }
+void ApplyDynamicSliceLICMPatterns::populatePatterns(
+    RewritePatternSet &patterns) {
+  addDynamicSliceLICM(patterns, getParameter(), *getContext(),
+                      PatternBenefit(getBenefit().value_or(1)));
+}
 void ApplyIotaSimplifyPatterns::populatePatterns(RewritePatternSet &patterns) {
   addIotaSimplify(patterns, getParameter(), *getContext(),
                   PatternBenefit(getBenefit().value_or(1)));
@@ -179,6 +184,11 @@ void ApplyReshapeElementwisePatterns::populatePatterns(
     RewritePatternSet &patterns) {
   addReshapeElementwise(patterns, getParameter(), *getContext(),
                         PatternBenefit(getBenefit().value_or(1)));
+}
+void ApplyReshapeElementwiseOnlyFusiblePatterns::populatePatterns(
+    RewritePatternSet &patterns) {
+  addReshapeElementwiseOnlyFusible(patterns, getParameter(), *getContext(),
+                                   PatternBenefit(getBenefit().value_or(1)));
 }
 void ApplyReshapeSlicePatterns::populatePatterns(RewritePatternSet &patterns) {
   addReshapeSlice(patterns, getParameter(), *getContext(),

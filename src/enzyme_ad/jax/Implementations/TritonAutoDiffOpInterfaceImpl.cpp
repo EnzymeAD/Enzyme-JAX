@@ -32,6 +32,9 @@ class TritonPointerTypeInterface
     : public AutoDiffTypeInterface::ExternalModel<TritonPointerTypeInterface,
                                                   triton::PointerType> {
 public:
+  mlir::Attribute createNullAttr(mlir::Type self) const {
+    llvm_unreachable("TODO");
+  }
   mlir::Value createNullValue(mlir::Type self, OpBuilder &builder,
                               Location loc) const {
     llvm_unreachable("TODO");

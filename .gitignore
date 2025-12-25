@@ -4,3 +4,4 @@
 bazel-*
 compile_commands.json
 .vscode/
+results*.csv

@@ -464,5 +464,18 @@ struct LowerEnzymeXLABLASPass
                                             config))) {
       signalPassFailure();
     }
+
+    // Verify that all illegal ops have been lowered
+    auto walkResult = getOperation()->walk([&](Operation *op) {
+      if (isa<enzymexla::SyrkOp>(op)) {
+        op->emitError("Failed to lower enzymexla::SyrkOp");
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+
+    if (walkResult.wasInterrupted()) {
+      signalPassFailure();
+    }
   }
 };

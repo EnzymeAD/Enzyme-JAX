@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Enzyme/MLIR/Interfaces/Utils.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -8,13 +9,14 @@
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/MapVector.h"
-#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/IntegerSet.h"
+
+#include "shardy/dialect/sdy/ir/utils.h"
 
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #ifdef __clang__
@@ -35,6 +37,8 @@
 
 namespace mlir {
 namespace enzyme {
+
+using namespace ::mlir::enzyme::oputils;
 
 template <typename T> inline Attribute makeAttr(mlir::Type elemType, T val) {
   if (auto TT = dyn_cast<RankedTensorType>(elemType))
@@ -146,6 +150,10 @@ inline constant_complex_predicate_matcher m_AnyZeroImagComplex() {
 
 inline ::mlir::detail::constant_int_predicate_matcher m_NegOne() {
   return {[](const APInt &value) { return value == -1; }};
+}
+
+inline ::mlir::detail::constant_int_predicate_matcher m_AllOnes() {
+  return {[](const APInt &value) { return value.isAllOnes(); }};
 }
 
 inline ::mlir::detail::constant_float_predicate_matcher m_NegOneFloat() {
@@ -291,8 +299,6 @@ static inline bool hasElse(mlir::affine::AffineIfOp op) {
   return op.getElseRegion().getBlocks().size() > 0;
 }
 
-const std::set<std::string> &getNonCapturingFunctions();
-
 bool collectEffects(
     mlir::Operation *op,
     llvm::SmallVectorImpl<mlir::MemoryEffects::EffectInstance> &effects,
@@ -308,16 +314,154 @@ bool getEffectsAfter(
     llvm::SmallVectorImpl<mlir::MemoryEffects::EffectInstance> &effects,
     bool stopAtBarrier);
 
-bool isReadOnly(mlir::Operation *);
-bool isReadNone(mlir::Operation *);
-
 bool mayReadFrom(mlir::Operation *, mlir::Value);
 bool mayWriteTo(mlir::Operation *, mlir::Value, bool ignoreBarrier = false);
 
-bool mayAlias(mlir::MemoryEffects::EffectInstance a,
-              mlir::MemoryEffects::EffectInstance b);
+template <typename AttrTy, typename T>
+SmallVector<Attribute> getUpdatedAttrList(Value val, StringRef attrName,
+                                          T unknownValue, T newValue) {
+  auto ctx = val.getContext();
 
-bool mayAlias(mlir::MemoryEffects::EffectInstance a, mlir::Value b);
+  if (auto blockArg = dyn_cast<BlockArgument>(val)) {
+    return {AttrTy::get(ctx, newValue)};
+  }
+
+  auto op = val.getDefiningOp();
+  assert(op);
+
+  auto resultNumber = cast<OpResult>(val).getResultNumber();
+
+  auto arrayAttr = op->template getAttrOfType<ArrayAttr>(attrName);
+
+  SmallVector<Attribute> newAttrs;
+
+  // if arrayAttr size doesn't match invalidate the results. can happen
+  // for ops like while where the inputs/results were modified
+  if (!arrayAttr || arrayAttr.size() != op->getNumResults()) {
+    auto unknownAttr = AttrTy::get(ctx, unknownValue);
+
+    for (auto i = 0; i < op->getNumResults(); i++) {
+      newAttrs.push_back(unknownAttr);
+    }
+  } else {
+    Attribute attr = arrayAttr[resultNumber];
+    auto enumAttr = dyn_cast<AttrTy>(attr);
+    (void)enumAttr;
+    assert(enumAttr && "Expected guaranteed analysis result");
+
+    newAttrs = SmallVector<Attribute>(arrayAttr.begin(), arrayAttr.end());
+    assert(newAttrs.size() == op->getNumResults());
+  }
+
+  newAttrs[resultNumber] = AttrTy::get(ctx, newValue);
+  return newAttrs;
+}
+
+template <typename AttrTy, typename T>
+T getAttributeFromIR(Value val, StringRef attrName, T unknownValue) {
+  if (auto blockArg = dyn_cast<BlockArgument>(val)) {
+    auto parentOp = blockArg.getOwner()->getParentOp();
+    if (!parentOp) {
+      return unknownValue;
+    }
+
+    auto funcOpInterface = dyn_cast<mlir::FunctionOpInterface>(parentOp);
+    if (!funcOpInterface) {
+      return unknownValue;
+    }
+
+    auto argAttrs = funcOpInterface.getArgAttrs(blockArg.getArgNumber());
+    for (auto attr : argAttrs) {
+      if (attr.getName() == attrName) {
+        auto enumAttr = dyn_cast<AttrTy>(attr.getValue());
+        assert(enumAttr && "Expected guaranteed analysis result");
+        return enumAttr.getValue();
+      }
+    }
+
+    return unknownValue;
+  }
+
+  auto op = val.getDefiningOp();
+  assert(op);
+
+  auto arrayAttr = op->template getAttrOfType<ArrayAttr>(attrName);
+  if (!arrayAttr || arrayAttr.size() != op->getNumResults()) {
+    return unknownValue;
+  }
+
+  auto opResult = dyn_cast<OpResult>(val);
+  if (!opResult) {
+    return unknownValue;
+  }
+
+  auto attr = arrayAttr[opResult.getResultNumber()];
+  auto enumAttr = dyn_cast<AttrTy>(attr);
+  assert(enumAttr && "Expected guaranteed analysis result");
+  return enumAttr.getValue();
+}
+
+/// Get bounds attribute from IR. Bounds are stored as ArrayAttr with two
+/// IntegerAttr elements [min, max] under the attribute name "enzymexla.bounds".
+/// Returns nullopt if the attribute is not found or malformed.
+inline std::optional<std::pair<APInt, APInt>>
+getBoundsFromIR(Value val, unsigned bitWidth) {
+  if (auto blockArg = dyn_cast<BlockArgument>(val)) {
+    auto parentOp = blockArg.getOwner()->getParentOp();
+    if (!parentOp)
+      return std::nullopt;
+
+    auto funcOpInterface = dyn_cast<mlir::FunctionOpInterface>(parentOp);
+    if (!funcOpInterface)
+      return std::nullopt;
+
+    auto argAttrs = funcOpInterface.getArgAttrs(blockArg.getArgNumber());
+    for (auto attr : argAttrs) {
+      if (attr.getName() == "enzymexla.bounds") {
+        auto boundsAttr = dyn_cast<ArrayAttr>(attr.getValue());
+        if (!boundsAttr || boundsAttr.size() != 2)
+          return std::nullopt;
+
+        auto minAttr = dyn_cast<IntegerAttr>(boundsAttr[0]);
+        auto maxAttr = dyn_cast<IntegerAttr>(boundsAttr[1]);
+        if (!minAttr || !maxAttr)
+          return std::nullopt;
+
+        auto minVal = minAttr.getValue().sextOrTrunc(bitWidth);
+        auto maxVal = maxAttr.getValue().sextOrTrunc(bitWidth);
+        return std::make_pair(minVal, maxVal);
+      }
+    }
+
+    return std::nullopt;
+  }
+
+  auto op = val.getDefiningOp();
+  if (!op)
+    return std::nullopt;
+
+  auto boundsAttr = op->getAttrOfType<ArrayAttr>("enzymexla.bounds");
+  if (!boundsAttr || boundsAttr.size() != op->getNumResults())
+    return std::nullopt;
+
+  auto opResult = dyn_cast<OpResult>(val);
+  if (!opResult)
+    return std::nullopt;
+
+  auto resultBounds =
+      dyn_cast<ArrayAttr>(boundsAttr[opResult.getResultNumber()]);
+  if (!resultBounds || resultBounds.size() != 2)
+    return std::nullopt;
+
+  auto minAttr = dyn_cast<IntegerAttr>(resultBounds[0]);
+  auto maxAttr = dyn_cast<IntegerAttr>(resultBounds[1]);
+  if (!minAttr || !maxAttr)
+    return std::nullopt;
+
+  auto minVal = minAttr.getValue().sextOrTrunc(bitWidth);
+  auto maxVal = maxAttr.getValue().sextOrTrunc(bitWidth);
+  return std::make_pair(minVal, maxVal);
+}
 
 bool checkNotEqual(llvm::APInt a, llvm::APInt b);
 bool checkNotEqual(llvm::APFloat a, llvm::APFloat b);
@@ -559,57 +703,10 @@ private:
   }
 
   State lookupGuaranteedFromIR(Value val, PatternRewriter &rewriter) {
-    auto attrName = ((Child *)this)->getAttrName();
-
-    auto blockArg = dyn_cast<BlockArgument>(val);
-    if (blockArg) {
-      auto op = blockArg.getOwner()->getParentOp();
-      if (!op)
-        return State::UNKNOWN;
-
-      auto funcOpInterface = dyn_cast<FunctionOpInterface>(op);
-      if (!funcOpInterface)
-        return State::UNKNOWN;
-
-      auto argAttrs = funcOpInterface.getArgAttrs(blockArg.getArgNumber());
-      for (auto attr : argAttrs) {
-        if (attr.getName() == attrName) {
-          auto enumAttr = dyn_cast<enzymexla::GuaranteedAnalysisResultAttr>(
-              attr.getValue());
-          assert(enumAttr && "Expected guaranteed analysis result");
-
-          return GuaranteedAnalysisResultToState(enumAttr.getValue());
-        }
-      }
-
-      return State::UNKNOWN;
-    }
-
-    auto op = val.getDefiningOp();
-    if (!op)
-      return State::UNKNOWN;
-
-    auto arrayAttr = op->getAttrOfType<ArrayAttr>(attrName);
-    if (!arrayAttr)
-      return State::UNKNOWN;
-
-    auto opResult = dyn_cast<mlir::OpResult>(val);
-    if (!opResult)
-      return State::UNKNOWN;
-
-    // invalidate if arrayAttr size doesn't match. can happen for ops like while
-    // where the inputs/results were modified
-    if (arrayAttr.size() != op->getNumResults()) {
-      rewriter.modifyOpInPlace(op, [&]() { op->removeAttr(attrName); });
-      return State::UNKNOWN;
-    }
-
-    auto resultNumber = opResult.getResultNumber();
-    auto attr = arrayAttr[resultNumber];
-    auto enumAttr = dyn_cast<enzymexla::GuaranteedAnalysisResultAttr>(attr);
-    assert(enumAttr && "Expected guaranteed analysis result");
-
-    return GuaranteedAnalysisResultToState(enumAttr.getValue());
+    return GuaranteedAnalysisResultToState(
+        getAttributeFromIR<enzymexla::GuaranteedAnalysisResultAttr>(
+            val, ((Child *)this)->getAttrName(),
+            enzymexla::GuaranteedAnalysisResult::UNKNOWN));
   }
 
   void setGuaranteedInIR(Value val, bool guaranteed,
@@ -619,42 +716,16 @@ private:
   }
 
   void setGuaranteedInIR(Value val, State state, PatternRewriter &rewriter) {
-    if (state == State::UNKNOWN || state == State::PENDING)
+    if (state == State::UNKNOWN || state == State::PENDING) {
       return;
+    }
 
     auto op = val.getDefiningOp();
-    if (!op)
+    if (!op) {
       return;
-
-    auto opResult = dyn_cast<mlir::OpResult>(val);
-    if (!opResult)
-      return;
-
-    auto resultNumber = opResult.getResultNumber();
+    }
 
     auto attrName = ((Child *)this)->getAttrName();
-    auto arrayAttr = op->getAttrOfType<ArrayAttr>(attrName);
-
-    SmallVector<Attribute> newAttrs;
-
-    // if arrayAttr size doesn't match invalidate the results. can happen
-    // for ops like while where the inputs/results were modified
-    if (!arrayAttr || arrayAttr.size() != op->getNumResults()) {
-      auto unknownAttr = enzymexla::GuaranteedAnalysisResultAttr::get(
-          val.getContext(), enzymexla::GuaranteedAnalysisResult::UNKNOWN);
-
-      for (auto i = 0; i < op->getNumResults(); i++) {
-        newAttrs.push_back(unknownAttr);
-      }
-    } else {
-      Attribute attr = arrayAttr[resultNumber];
-      auto enumAttr = dyn_cast<enzymexla::GuaranteedAnalysisResultAttr>(attr);
-      (void)enumAttr;
-      assert(enumAttr && "Expected guaranteed analysis result");
-
-      newAttrs = SmallVector<Attribute>(arrayAttr.begin(), arrayAttr.end());
-      assert(newAttrs.size() == op->getNumResults());
-    }
 
     enzymexla::GuaranteedAnalysisResult newValue;
     switch (state) {
@@ -668,10 +739,8 @@ private:
       llvm_unreachable("Unexpected state");
     }
 
-    auto newEnumAttr = enzymexla::GuaranteedAnalysisResultAttr::get(
-        val.getContext(), newValue);
-
-    newAttrs[resultNumber] = newEnumAttr;
+    auto newAttrs = getUpdatedAttrList<enzymexla::GuaranteedAnalysisResultAttr>(
+        val, attrName, enzymexla::GuaranteedAnalysisResult::UNKNOWN, newValue);
 
     rewriter.modifyOpInPlace(op, [&]() {
       op->setAttr(attrName, ArrayAttr::get(val.getContext(), newAttrs));
@@ -837,11 +906,20 @@ SmallVector<int64_t> findReshapeInsertionDims(RankedTensorType inputType,
 SmallVector<int64_t> findReshapeInsertionDims(ArrayRef<int64_t> inputShape,
                                               ArrayRef<int64_t> outputShape);
 
+bool isInsertDimOp(stablehlo::ReshapeOp reshapeOp);
+
 bool areValidInsertionDims(RankedTensorType inputType,
                            RankedTensorType outputType,
                            SmallVector<int64_t> insertionDims);
 
+bool getCollapsingMapping(
+    llvm::ArrayRef<int64_t> oldShape, llvm::ArrayRef<int64_t> newShape,
+    llvm::DenseMap<int64_t, llvm::SmallVector<int64_t, 2>> &mapping);
+
 bool isOnlyUsedInOperation(Operation *operation, Operation *parentOp);
+
+mlir::RankedTensorType removeBatchedDims(mlir::RankedTensorType Ty,
+                                         llvm::ArrayRef<int64_t> dims);
 
 } // namespace enzyme
 
@@ -853,7 +931,9 @@ getGatherDims(mlir::MLIRContext *ctx,
 
 bool isSetindexBlock(mlir::Block *block);
 
-template <typename T> bool isCommutativeOpBlock(mlir::Block *block) {
+// rhs is only considered if commutative is false
+template <typename T, bool commutative, bool rhs>
+bool isOnlyOpBlock(mlir::Block *block) {
   if (block->getNumArguments() != 2)
     return false;
 
@@ -867,11 +947,64 @@ template <typename T> bool isCommutativeOpBlock(mlir::Block *block) {
   if (op.getNumOperands() != 2)
     return false;
 
-  if (!(op->getOperand(0) == block->getArgument(0) &&
-        op->getOperand(1) == block->getArgument(1)) &&
-      !(op->getOperand(0) == block->getArgument(1) &&
-        op->getOperand(1) == block->getArgument(0)))
+  if constexpr (commutative) {
+    if (!(op->getOperand(0) == block->getArgument(0) &&
+          op->getOperand(1) == block->getArgument(1)) &&
+        !(op->getOperand(0) == block->getArgument(1) &&
+          op->getOperand(1) == block->getArgument(0)))
+      return false;
+  } else {
+    if constexpr (rhs) {
+      if (!(op->getOperand(0) == block->getArgument(0) &&
+            op->getOperand(1) == block->getArgument(1)))
+        return false;
+    } else {
+      if (!(op->getOperand(0) == block->getArgument(1) &&
+            op->getOperand(1) == block->getArgument(0)))
+        return false;
+    }
+  }
+
+  auto returnOp = block->getTerminator();
+  auto stablehloReturnOp = dyn_cast<stablehlo::ReturnOp>(returnOp);
+  if (!stablehloReturnOp)
     return false;
+
+  if (stablehloReturnOp.getNumOperands() != 1)
+    return false;
+
+  // The returned value should be the result of the addition
+  return stablehloReturnOp.getOperand(0) == op.getResult();
+}
+
+template <typename T, int nonConstantIndex>
+bool isOnlyOpConstantBlock(mlir::Block *block,
+                           mlir::SplatElementsAttr &constant) {
+  if (block->getNumArguments() != 2)
+    return false;
+
+  if (!hasSingleElement(block->without_terminator()))
+    return false;
+
+  auto op = dyn_cast<T>(block->front());
+  if (!op)
+    return false;
+
+  if (op.getNumOperands() != 2)
+    return false;
+
+  // the non constant operand needs to be the first argument
+  auto lhs = op->getOperand(0);
+  auto rhs = op->getOperand(1);
+  if (matchPattern(lhs, m_Constant(&constant))) {
+    if (rhs != block->getArgument(nonConstantIndex))
+      return false;
+  } else if (matchPattern(rhs, m_Constant(&constant))) {
+    if (lhs != block->getArgument(nonConstantIndex))
+      return false;
+  } else {
+    return false;
+  }
 
   auto returnOp = block->getTerminator();
   auto stablehloReturnOp = dyn_cast<stablehlo::ReturnOp>(returnOp);
@@ -891,6 +1024,9 @@ public:
   bool isMinReduce;
   bool isMaxReduce;
   bool isMulReduce;
+  bool isAndReduce;
+  bool isOrReduce;
+  bool isXorReduce;
 
   CheckCommonReduceOp(stablehlo::ReduceOp op) {
     auto &region = op.getRegion();
@@ -899,18 +1035,20 @@ public:
       isMinReduce = false;
       isMaxReduce = false;
       isMulReduce = false;
+      isAndReduce = false;
+      isOrReduce = false;
+      isXorReduce = false;
       return;
     }
 
     auto &block = region.getBlocks().front();
-    isAddReduce = isCommutativeOpBlock<stablehlo::AddOp>(&block);
-    isMinReduce = isCommutativeOpBlock<stablehlo::MinOp>(&block);
-    isMaxReduce = isCommutativeOpBlock<stablehlo::MaxOp>(&block);
-    isMulReduce = isCommutativeOpBlock<stablehlo::MulOp>(&block);
-  }
-
-  bool isCommonReduce() {
-    return isAddReduce || isMinReduce || isMaxReduce || isMulReduce;
+    isAddReduce = isOnlyOpBlock<stablehlo::AddOp, true, false>(&block);
+    isMinReduce = isOnlyOpBlock<stablehlo::MinOp, true, false>(&block);
+    isMaxReduce = isOnlyOpBlock<stablehlo::MaxOp, true, false>(&block);
+    isMulReduce = isOnlyOpBlock<stablehlo::MulOp, true, false>(&block);
+    isAndReduce = isOnlyOpBlock<stablehlo::AndOp, true, false>(&block);
+    isOrReduce = isOnlyOpBlock<stablehlo::OrOp, true, false>(&block);
+    isXorReduce = isOnlyOpBlock<stablehlo::XorOp, true, false>(&block);
   }
 };
 
@@ -918,6 +1056,19 @@ struct CheckCommonScatterOp {
 public:
   bool isSetindexScatter;
   bool isAddScatter;
+  bool isMinScatter;
+  bool isMaxScatter;
+  bool isMulScatter;
+  bool isAndScatter;
+  bool isOrScatter;
+  bool isXorScatter;
+  bool isSubScatter;
+
+  bool isMulConstantUpdateScatter;
+  bool isMulConstantInputScatter;
+  bool isAddConstantUpdateScatter;
+  bool isAddConstantInputScatter;
+  SplatElementsAttr constant;
 
   CheckCommonScatterOp(stablehlo::ScatterOp op) {
     auto &updateComputation = op.getUpdateComputation();
@@ -925,12 +1076,55 @@ public:
     if (!updateComputation.hasOneBlock()) {
       isSetindexScatter = false;
       isAddScatter = false;
+      isMinScatter = false;
+      isMaxScatter = false;
+      isMulScatter = false;
+      isAndScatter = false;
+      isOrScatter = false;
+      isXorScatter = false;
+      isSubScatter = false;
+
+      isMulConstantUpdateScatter = false;
+      isAddConstantUpdateScatter = false;
+      isMulConstantInputScatter = false;
+      isAddConstantInputScatter = false;
       return;
     }
 
     auto &block = updateComputation.front();
     isSetindexScatter = isSetindexBlock(&block);
-    isAddScatter = isCommutativeOpBlock<stablehlo::AddOp>(&block);
+    isAddScatter = isOnlyOpBlock<stablehlo::AddOp, true, false>(&block);
+    isMulScatter = isOnlyOpBlock<stablehlo::MulOp, true, false>(&block);
+    isMinScatter = isOnlyOpBlock<stablehlo::MinOp, true, false>(&block);
+    isMaxScatter = isOnlyOpBlock<stablehlo::MaxOp, true, false>(&block);
+    isAndScatter = isOnlyOpBlock<stablehlo::AndOp, true, false>(&block);
+    isOrScatter = isOnlyOpBlock<stablehlo::OrOp, true, false>(&block);
+    isXorScatter = isOnlyOpBlock<stablehlo::XorOp, true, false>(&block);
+    isSubScatter = isOnlyOpBlock<stablehlo::SubtractOp, false, true>(&block);
+
+    isMulConstantUpdateScatter =
+        isOnlyOpConstantBlock<stablehlo::MulOp, 0>(&block, constant);
+    if (!isMulConstantUpdateScatter) {
+      isMulConstantInputScatter =
+          isOnlyOpConstantBlock<stablehlo::MulOp, 1>(&block, constant);
+      if (!isMulConstantInputScatter) {
+        isAddConstantUpdateScatter =
+            isOnlyOpConstantBlock<stablehlo::AddOp, 0>(&block, constant);
+        if (!isAddConstantUpdateScatter) {
+          isAddConstantInputScatter =
+              isOnlyOpConstantBlock<stablehlo::AddOp, 1>(&block, constant);
+        } else {
+          isAddConstantInputScatter = false;
+        }
+      } else {
+        isAddConstantUpdateScatter = false;
+        isAddConstantInputScatter = false;
+      }
+    } else {
+      isAddConstantUpdateScatter = false;
+      isAddConstantInputScatter = false;
+      isMulConstantInputScatter = false;
+    }
   }
 };
 
@@ -971,7 +1165,7 @@ bool isAssociativeOp(Operation *op);
 // other operand
 bool extractMultiplicationFactor(Value v, Value &other, Operation *op,
                                  OpBuilder &builder);
-bool extractMultiplicationFactor(Value v, Value &scalar, Value &other,
+void extractMultiplicationFactor(Value v, Value &scalar, Value &other,
                                  Operation *op, OpBuilder &builder);
 
 Value getScalarValue(Value val, OpBuilder &builder);
@@ -983,7 +1177,106 @@ bool isScalarValue(Operation *op);
 Value copyTriangularPart(OpBuilder &builder, Value input,
                          enzymexla::LapackUplo uplo);
 
-bool broadcastInDimIsReshape(BroadcastInDimOp op);
+bool OpIsReshapeLike(stablehlo::BroadcastInDimOp op);
+bool OpIsReshapeLike(stablehlo::TransposeOp op);
+bool OpIsReshapeLike(stablehlo::TransposeOp op, ArrayRef<int64_t> shape);
+
+bool canMergeSlicesAlongAxis(int dimension, ArrayRef<int64_t> sliceStarts,
+                             ArrayRef<int64_t> otherSliceStarts,
+                             ArrayRef<int64_t> sliceLimits,
+                             ArrayRef<int64_t> otherSliceLimits,
+                             ArrayRef<int64_t> sliceStrides,
+                             ArrayRef<int64_t> otherSliceStrides);
+
+bool canMergeSlicesAlongAxis(int dimension, stablehlo::SliceOp slice,
+                             stablehlo::SliceOp otherSlice);
+
+stablehlo::ConcatenateOp lowerWrap(enzymexla::WrapOp wrap,
+                                   PatternRewriter &rewriter, bool replace);
+
+LogicalResult concatSliceSimplify(PatternRewriter &rewriter,
+                                  SmallVectorImpl<Value> &operands, int64_t dim,
+                                  SmallVectorImpl<Value> &newOperands);
+LogicalResult concatReshapeSliceSimplify(PatternRewriter &rewriter,
+                                         SmallVectorImpl<Value> &operands,
+                                         int64_t dim,
+                                         SmallVectorImpl<Value> &newOperands);
+
+Value getIdentityValue(OpBuilder &builder, Location loc, Type elemType,
+                       Operation *op);
+
+bool canFuseIntoReduce(Operation *op);
+
+llvm::SmallVector<int64_t> getInversePermutation(ArrayRef<int64_t> perm);
+
+Value transposeSliceHelper(stablehlo::TransposeOp transpose,
+                           PatternRewriter &rewriter, stablehlo::SliceOp op);
+Value transposeSliceHelper(stablehlo::TransposeOp transpose,
+                           PatternRewriter &rewriter,
+                           stablehlo::DynamicSliceOp op);
+
+Value transposeSliceHelper(stablehlo::TransposeOp transpose,
+                           PatternRewriter &rewriter, ArrayRef<int64_t> starts,
+                           ArrayRef<int64_t> limits, ArrayRef<int64_t> strides);
+
+Value transposeSliceHelper(stablehlo::TransposeOp transpose,
+                           PatternRewriter &rewriter,
+                           ArrayRef<Value> sliceStarts,
+                           ArrayRef<int64_t> sliceSizes);
+
+Value sliceTransposeHelper(stablehlo::TransposeOp transpose,
+                           PatternRewriter &rewriter, stablehlo::SliceOp op);
+Value sliceTransposeHelper(stablehlo::TransposeOp transpose,
+                           PatternRewriter &rewriter,
+                           stablehlo::DynamicSliceOp op);
+Value sliceTransposeHelper(stablehlo::TransposeOp transpose,
+                           PatternRewriter &rewriter,
+                           stablehlo::DynamicUpdateSliceOp op);
+
+Value sliceTransposeHelper(stablehlo::TransposeOp transpose,
+                           PatternRewriter &rewriter, ArrayRef<int64_t> starts,
+                           ArrayRef<int64_t> limits, ArrayRef<int64_t> strides);
+
+Value sliceTransposeHelper(stablehlo::TransposeOp transpose,
+                           PatternRewriter &rewriter,
+                           ArrayRef<Value> sliceStarts,
+                           ArrayRef<int64_t> sliceSizes);
+
+// checks if operation 1 can be fused with operation 2. ordering is important
+bool isFusible(stablehlo::TransposeOp transpose, Operation *op);
+bool isFusible(Operation *op, stablehlo::BroadcastInDimOp bcast);
+bool isFusible(Operation *op, stablehlo::ReshapeOp reshape);
+
+template <typename OpTy>
+Value getIdentityValueForOp(OpBuilder &builder, Location loc, Type elemType);
+
+Type GetDotGeneralResultType(Value lhs, Value rhs, Type resElemType,
+                             stablehlo::DotDimensionNumbersAttr dotDims);
+
+// these add additional checks that prevent no-op creation
+Value ConcatenateOpCreate(
+    OpBuilder &builder, Location loc, ArrayRef<Value> inputs, int64_t dimension,
+    std::optional<sdy::TensorShardingPerValueAttr> sharding = std::nullopt);
+
+Value ReshapeOpCreate(
+    OpBuilder &builder, Location loc, Value input, ArrayRef<int64_t> shape,
+    std::optional<sdy::TensorShardingPerValueAttr> sharding = std::nullopt);
+
+Value TransposeOpCreate(
+    OpBuilder &builder, Location loc, Value input,
+    ArrayRef<int64_t> permutation,
+    std::optional<sdy::TensorShardingPerValueAttr> sharding = std::nullopt);
+
+Value SliceOpCreate(
+    OpBuilder &builder, Location loc, Value input,
+    ArrayRef<int64_t> sliceStarts, ArrayRef<int64_t> sliceLimits,
+    ArrayRef<int64_t> sliceStrides,
+    std::optional<sdy::TensorShardingPerValueAttr> sharding = std::nullopt);
+
+Value DynamicSliceOpCreate(
+    OpBuilder &builder, Location loc, Value input, ArrayRef<Value> sliceStarts,
+    ArrayRef<int64_t> sliceSizes,
+    std::optional<sdy::TensorShardingPerValueAttr> sharding = std::nullopt);
 
 } // namespace stablehlo
 

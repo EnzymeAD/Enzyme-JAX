@@ -247,6 +247,7 @@ prepareForGPUInline(LLVM::CallOp callOp, Operation *hostInsertionPoint,
       newArgs.push_back(newArg);
       newArgAttrs.push_back(
           NamedAttrList().getDictionary(callOp->getContext()));
+      Value argCopy = arg;
       prepArg.push_back([=](OpBuilder &builder, Value v) {
         DataLayout dataLayout = DataLayout::closest(callOp);
         uint64_t minimumAlignment = dataLayout.getTypeABIAlignment(elementType);
@@ -266,7 +267,7 @@ prepareForGPUInline(LLVM::CallOp callOp, Operation *hostInsertionPoint,
             LLVM::ConstantOp::create(builder, v.getLoc(), builder.getI64Type(),
                                      builder.getI64IntegerAttr(1));
         Value allocaOp =
-            LLVM::AllocaOp::create(builder, v.getLoc(), arg.getType(),
+            LLVM::AllocaOp::create(builder, v.getLoc(), argCopy.getType(),
                                    elementType, one, targetAlignment);
         LLVM::StoreOp::create(builder, v.getLoc(), v, allocaOp);
         return allocaOp;

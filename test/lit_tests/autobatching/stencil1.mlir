@@ -41,13 +41,13 @@ module {
 
 // CHECK: func.func @main(%arg0: tensor<5x12x4xf32> {enzymexla.memory_effects = []}) -> tensor<5x8x4xf32> attributes {enzymexla.memory_effects = []} {
 // CHECK-NEXT:     %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
-// CHECK-NEXT:     %0 = stablehlo.slice %arg0 [0:5, 4:12, 0:4] : (tensor<5x12x4xf32>) -> tensor<5x8x4xf32>
-// CHECK-NEXT:     %1 = stablehlo.slice %arg0 [0:5, 0:10, 0:4] : (tensor<5x12x4xf32>) -> tensor<5x10x4xf32>
-// CHECK-NEXT:     %2 = "stablehlo.reduce_window"(%1, %cst) <{window_dilations = array<i64: 1, 2, 1>, window_dimensions = array<i64: 1, 2, 1>}> ({
+// CHECK-NEXT:     %[[s1:.+]] = stablehlo.slice %arg0 [0:5, 0:10, 0:4] : (tensor<5x12x4xf32>) -> tensor<5x10x4xf32>
+// CHECK-NEXT:     %[[rw:.+]] = "stablehlo.reduce_window"(%[[s1]], %cst) <{window_dilations = array<i64: 1, 2, 1>, window_dimensions = array<i64: 1, 2, 1>}> ({
 // CHECK-NEXT:     ^bb0(%arg1: tensor<f32>, %arg2: tensor<f32>):
-// CHECK-NEXT:       %4 = stablehlo.add %arg1, %arg2 : tensor<f32>
-// CHECK-NEXT:       stablehlo.return %4 : tensor<f32>
+// CHECK-NEXT:       %[[a:.+]] = stablehlo.add %arg1, %arg2 : tensor<f32>
+// CHECK-NEXT:       stablehlo.return %[[a]] : tensor<f32>
 // CHECK-NEXT:     }) : (tensor<5x10x4xf32>, tensor<f32>) -> tensor<5x8x4xf32>
-// CHECK-NEXT:     %3 = stablehlo.subtract %2, %0 : tensor<5x8x4xf32>
-// CHECK-NEXT:     return %3 : tensor<5x8x4xf32>
+// CHECK-NEXT:     %[[s0:.+]] = stablehlo.slice %arg0 [0:5, 4:12, 0:4] : (tensor<5x12x4xf32>) -> tensor<5x8x4xf32>
+// CHECK-NEXT:     %[[sub:.+]] = stablehlo.subtract %[[rw]], %[[s0]] : tensor<5x8x4xf32>
+// CHECK-NEXT:     return %[[sub]] : tensor<5x8x4xf32>
 // CHECK-NEXT:   }

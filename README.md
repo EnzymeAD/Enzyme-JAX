@@ -1,9 +1,6 @@
 # Enzyme-JAX
 
-Custom bindings for Enzyme automatic differentiation tool and interfacing with
-JAX. Currently this is set up to allow you to automatically import, and
-automatically differentiate (both jvp and vjp) external C++ code into JAX. As
-Enzyme is language-agnostic, this can be extended for arbitrary programming
+Enzyme-JAX is a C++ project whose original aim was to integrate the Enzyme automatic differentiation tool [1] with JAX, enabling automatic differentiation of external C++ code within JAX. It has since expanded to incorporate Polygeist's [2] high performance raising, parallelization, cross compilation workflow, as well as numerous tensor, linear algerba, and communication optimizations. The project uses LLVM's MLIR framework for intermediate representation and transformation of code. As Enzyme is language-agnostic, this can be extended for arbitrary programming
 languages (Julia, Swift, Fortran, Rust, and even Python)!
 
 You can use
@@ -77,3 +74,8 @@ Enzyme-Jax exposes a bunch of different tensor rewrites as MLIR passes in `src/e
 ```bash
 bazel run :refresh_compile_commands
 ```
+
+# References
+[1] Moses, William, and Valentin Churavy. "Instead of rewriting foreign code for machine learning, automatically synthesize fast gradients." Advances in neural information processing systems 33 (2020): 12472-12485.
+
+[2] Moses, William S., et al. "Polygeist: Raising C to polyhedral MLIR." 2021 30th International Conference on Parallel Architectures and Compilation Techniques (PACT). IEEE, 2021.

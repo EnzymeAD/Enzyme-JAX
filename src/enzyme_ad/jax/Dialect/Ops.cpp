@@ -46,6 +46,7 @@
 #define DEBUG_TYPE "enzymexla"
 
 using namespace mlir;
+using namespace mlir::enzyme;
 using namespace enzymexla;
 using namespace mlir::arith;
 
@@ -1773,7 +1774,7 @@ public:
     auto dims = srcMemRefType.getShape().size();
 
     // For now, restrict subview lowering to statically defined memref's
-    if (!srcMemRefType.hasStaticShape() | !resMemRefType.hasStaticShape())
+    if (!srcMemRefType.hasStaticShape() || !resMemRefType.hasStaticShape())
       return failure();
 
     // For now, restrict to simple rank-reducing indexing
@@ -2414,4 +2415,25 @@ void SubIndexOp::getCanonicalizationPatterns(RewritePatternSet &results,
                  LoadSelect<affine::AffineLoadOp>, LoadSelect<LLVM::LoadOp>>(
       context);
   // Disabled: SubToSubView
+}
+
+OpFoldResult RotateOp::fold(FoldAdaptor adaptor) {
+  if (getAmount() == 0) {
+    return getOperand();
+  }
+  return nullptr;
+}
+
+OpFoldResult WrapOp::fold(FoldAdaptor adaptor) {
+  if (getLhs() == 0 && getRhs() == 0) {
+    return getOperand();
+  }
+  return nullptr;
+}
+
+OpFoldResult ExtendOp::fold(FoldAdaptor adaptor) {
+  if (getLhs() == 0 && getRhs() == 0) {
+    return getOperand();
+  }
+  return nullptr;
 }

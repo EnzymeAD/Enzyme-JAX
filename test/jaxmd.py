@@ -1,29 +1,20 @@
 from absl.testing import absltest
 
-from test_utils import *
+from test_utils import EnzymeJaxTest
 
 
 class JAXMD(EnzymeJaxTest):
     def setUp(self):
-
-        from jax import jit
         from jax import random
-        from jax import lax
-
-        import jax.numpy as np
-
-        from jax_md import space
-        from jax_md import energy
-        from jax_md import simulate
-        from jax_md import quantity
-        from jax_md import partition
+        import jax.numpy as jnp
+        import jax
+        from jax_md import space, energy, simulate, partition
 
         lattice_constant = 1.37820
-        # We hit a GPU memory limit for N_rep = 40
-        N_rep = 20 if jax.default_backend() in ["gpu", "tpu"] else 40
+        N_rep = 40 if jax.default_backend() == "cpu" else 20
         box_size = N_rep * lattice_constant
         # Using float32 for positions / velocities, but float64 for reductions.
-        dtype = np.float32
+        dtype = jnp.float32
 
         # Specify the format of the neighbor list.
         # Options are Dense, Sparse, or OrderedSparse.
@@ -36,7 +27,7 @@ class JAXMD(EnzymeJaxTest):
             for j in range(N_rep):
                 for k in range(N_rep):
                     R += [[i, j, k]]
-        R = np.array(R, dtype=dtype) * lattice_constant
+        R = jnp.array(R, dtype=dtype) * lattice_constant
 
         N = R.shape[0]
         phi = N / (lattice_constant * N_rep) ** 3
@@ -91,11 +82,8 @@ class JAXMD(EnzymeJaxTest):
             )
 
         self.fn = forward
-        self.name = "jaxmd40"
-        self.count = 10
-        # self.revprimal = False
-        # self.AllPipelines = pipelines
-        # self.AllBackends = CurBackends
+        self.name = "jaxmd" + str(N_rep)
+        self.repeat = 2
 
         self.ins = [
             state.position,
@@ -111,14 +99,7 @@ class JAXMD(EnzymeJaxTest):
         # for i, v in enumerate(self.ins):
         #    print("i=", i, v)
         self.dins = [x.copy() for x in self.ins]
-        self.douts = tuple(x.copy() for x in self.ins)
-        self.AllPipelines = pipelines()
-        # No support for stablehlo.scatter atm
-        # self.revfilter = justjax
-        self.mlirad_rev = False
-
-        # TODO: This is horribly slow for reasons which are unknown.
-        self.mlirad_fwd = False
+        self.douts = [x.copy() for x in self.ins]
 
         self.atol = 5e-3
         self.rtol = 1e-3

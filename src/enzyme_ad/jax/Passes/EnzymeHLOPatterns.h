@@ -83,6 +83,8 @@ void addTransposeLICM(RewritePatternSet &patterns, bool single_user,
                       MLIRContext &context, PatternBenefit benefit);
 void addConvolutionLICM(RewritePatternSet &patterns, bool single_user,
                         MLIRContext &context, PatternBenefit benefit);
+void addDynamicSliceLICM(RewritePatternSet &patterns, bool single_user,
+                         MLIRContext &context, PatternBenefit benefit);
 void addBroadcastInDimSimplify(RewritePatternSet &patterns,
                                int64_t maxConstantExpansion,
                                MLIRContext &context, PatternBenefit benefit);
@@ -95,6 +97,9 @@ void addTransposeElementwise(RewritePatternSet &patterns, bool onlySingleUser,
                              MLIRContext &context, PatternBenefit benefit);
 void addReshapeElementwise(RewritePatternSet &patterns, bool onlySingleUser,
                            MLIRContext &context, PatternBenefit benefit);
+void addReshapeElementwiseOnlyFusible(RewritePatternSet &patterns,
+                                      bool onlySingleUser, MLIRContext &context,
+                                      PatternBenefit benefit);
 void addReshapeSlice(RewritePatternSet &patterns, bool onlySingleUser,
                      MLIRContext &context, PatternBenefit benefit);
 void addReshapeDynamicSlice(RewritePatternSet &patterns, bool onlySingleUser,
