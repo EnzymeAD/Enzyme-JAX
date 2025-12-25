@@ -334,10 +334,10 @@
               for (const bench of benches) {
                 const result = { commit, date, tool, bench };
                 const splitted_name = bench.name.split("/");
-                const benchmarkName = splitted_name[0];
-                const variant = splitted_name[1];
-                const device = splitted_name[2];
-                const passes = splitted_name[3];
+                const passes = splitted_name.pop();
+                const device = splitted_name.pop();
+                const variant = splitted_name.pop();
+                const benchmarkName = splitted_name.join("/");
 
                 if (map.get(benchmarkName) === undefined) {
                   map.set(benchmarkName, new Map());
