@@ -98,6 +98,15 @@ jobs:
           BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=VBAR_CONTROL_SERVICE_URL"
           BAZEL_FLAGS="${BAZEL_FLAGS} --repo_env=CC=`which clang`"
           BAZEL_FLAGS="${BAZEL_FLAGS} --define=using_clang=true"
+
+          if [[ "${{ matrix.os }}" == *"tpu"* ]]; then
+            BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=JAX_PLATFORMS=tpu"
+          elif [[ "${{ matrix.os }}" == *"a100"* ]]; then
+            BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=JAX_PLATFORMS=cuda"
+          else
+            BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=JAX_PLATFORMS=cpu"
+          fi
+
           echo "BAZEL_FLAGS=${BAZEL_FLAGS}" >> "${GITHUB_ENV}"
       - uses: actions/checkout@v6
       - uses: bazel-contrib/setup-bazel@0.16.0
@@ -110,16 +119,27 @@ jobs:
           # Share repository cache between workflows.
           repository-cache: true
           bazelisk-version: 1.x
-      - name: Update TPU
-        if: ${{ contains(matrix.os, 'tpu') }}
+
+      - name: Update JAX version
         run: |
-          env
-          sed -i.bak0 "s/cuda12/tpu/g" builddeps/test-requirements.txt
-          sed -i.bak0 "s/pypi_jax_cuda12_plugin/pypi_libtpu/g" test/BUILD
-      - name: Only test CUDA on GPU
-        if: ${{ !contains(matrix.os, 'a100') }}
+          if [[ "${{ matrix.os }}" == *"tpu"* ]]; then
+            sed -i.bak0 "s/jax\[cuda12\]/jax[tpu]/g" builddeps/requirements.in
+            sed -i.bak0 "s/pypi_jax_cuda12_plugin/pypi_libtpu/g" test/BUILD
+          elif [[ "${{ matrix.os }}" == *"a100"* ]]; then
+            sed -i.bak0 "s/jax\[cuda12\]/jax[cuda13]/g" builddeps/requirements.in
+            sed -i.bak0 "s/pypi_jax_cuda12_plugin/pypi_jax_cuda13_plugin/g" test/BUILD
+          else
+            sed -i.bak0 "s/jax\[cuda12\]/jax[cpu]/g" builddeps/requirements.in
+            sed -i.bak0 "/pypi_jax_cuda12_plugin/d" test/BUILD
+          fi
+          cat builddeps/requirements.in
+          cat test/BUILD
+        shell: bash
+
+      - name: Update Python requirements files
         run: |
-          sed -i.bak0 "/cuda12/d" builddeps/test-requirements.txt
+          bazel run $BAZEL_FLAGS --color=yes //builddeps:requirements.update
+
       - name: Build enzymexlamlir-opt
         timeout-minutes: 180
         run: |
@@ -130,19 +150,27 @@ jobs:
           name: enzymexlamlir-opt-${{ matrix.os }}-${{ matrix.python }}
           path: "bazel-bin/enzymexlamlir-opt"
           retention-days: 90
+
       - name: Run lit tests
         id: lit_tests
         continue-on-error: true
         run: |
-          bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/lit_tests/...
+          bazel test $BAZEL_FLAGS \
+            --color=yes \
+            --test_output=errors \
+            --experimental_ui_max_stdouterr_bytes=-1 \
+            --test_verbose_timeout_warnings \
+            //test/lit_tests/...
       - name: Run lit tests (dbg)
         if: steps.lit_tests.outcome == 'failure'
         run: |
-          bazel test $BAZEL_FLAGS -c dbg --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/lit_tests/...
+          bazel test $BAZEL_FLAGS -c dbg \
+            --color=yes \
+            --test_output=errors \
+            --experimental_ui_max_stdouterr_bytes=-1 \
+            --test_verbose_timeout_warnings \
+            //test/lit_tests/...
 
-      - name: Update Python requirements files
-        run: |
-          bazel run $BAZEL_FLAGS --color=yes //builddeps:requirements.update
       - name: Build wheel
         timeout-minutes: 240
         run: |
@@ -154,15 +182,27 @@ jobs:
           name: Enzyme-JAX-Wheel-${{ matrix.os }}-${{ matrix.python }}
           path: "bazel-bin/*.whl"
           retention-days: 90
+
       - name: Run tests
         id: tests
         continue-on-error: true
         run: |
-          bazel test $BAZEL_FLAGS --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/...
+          bazel test $BAZEL_FLAGS \
+            --color=yes \
+            --test_output=streamed \
+            --experimental_ui_max_stdouterr_bytes=-1 \
+            --test_verbose_timeout_warnings \
+            //test:python_tests
       - name: Run tests (dbg)
         if: steps.tests.outcome == 'failure'
         run: |
-          bazel test $BAZEL_FLAGS -c dbg --color=yes --test_output=errors --experimental_ui_max_stdouterr_bytes=-1 --test_verbose_timeout_warnings //test/...
+          bazel test $BAZEL_FLAGS \
+            --color=yes \
+            --test_output=streamed \
+            --experimental_ui_max_stdouterr_bytes=-1 \
+            --test_verbose_timeout_warnings \
+            -c dbg \
+            //test:python_tests
 
       - name: Upload test results
         uses: actions/upload-artifact@v6

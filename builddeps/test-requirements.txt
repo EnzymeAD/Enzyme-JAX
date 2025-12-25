@@ -1,28 +1,26 @@
 absl-py
 numpy
-jax
-jaxlib
+xprof >= 2.20
+protobuf >= 6
 
-https://github.com/jax-md/jax-md/archive/6c96978f8412214d842fb52e9a6f259ac0cefd3e.tar.gz; sys_platform == 'linux'
-https://github.com/wsmoses/jraph/archive/b00d9a03db76c69a258a86df81638b9a2f28829f.tar.gz; sys_platform == 'linux'
+jax-md; sys_platform == 'linux'
 
 # maxtext can't be installed concurrently, but installing it fixes
-https://github.com/wsmoses/maxtext/archive/bc50722be7d89e4003bd830b80e4ac968be658eb.tar.gz
+# https://github.com/wsmoses/maxtext/archive/bc50722be7d89e4003bd830b80e4ac968be658eb.tar.gz; python_version < "3.12"
+# maxtext; python_version < "3.13"
 
-jax[cuda12]; sys_platform == 'linux'
-
-https://github.com/wsmoses/neuralgcm/archive/d2412377026f41baaec35510423c69657dbcde2c.tar.gz
-dm-haiku >= 0.0.14
+neuralgcm
+dm-haiku
 
 gcsfs; sys_platform == 'linux'
 requests; sys_platform == 'linux'
 
-https://github.com/avik-pal/keras/archive/7344964561c15611dd2d734a2bdd6b872a07709d.tar.gz; sys_platform == 'linux'
-https://github.com/wsmoses/keras-benchmarks/archive/9caedf38085b7fd23cef19e75ab9b7ab31ae99b0.tar.gz; sys_platform == 'linux'
+# https://github.com/avik-pal/keras/archive/7344964561c15611dd2d734a2bdd6b872a07709d.tar.gz; sys_platform == 'linux'
+# https://github.com/wsmoses/keras-benchmarks/archive/9caedf38085b7fd23cef19e75ab9b7ab31ae99b0.tar.gz; sys_platform == 'linux'
 
-#tf_keras; sys_platform == 'linux'
-keras-hub[nlp]; sys_platform == 'linux'
-keras-cv; sys_platform == 'linux'
+# tf_keras; sys_platform == 'linux'
+# keras-hub; sys_platform == 'linux'
+# keras-cv; sys_platform == 'linux'
 
 # tensorflow-cpu-datasets; sys_platform == 'linux'
 

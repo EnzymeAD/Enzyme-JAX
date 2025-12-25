@@ -1,9 +1,6 @@
 from absl.testing import absltest
 from test_utils import EnzymeJaxTest, no_newxla, justjax
 
-import jax
-import jax.numpy as jnp
-
 
 class AddOne(EnzymeJaxTest):
     def setUp(self):
@@ -199,6 +196,9 @@ class Concat(EnzymeJaxTest):
 
 class ValueAndGrad(EnzymeJaxTest):
     def setUp(self):
+        import jax
+        import jax.numpy as jnp
+
         def f(x, y):
             return (jnp.sum(x * y[0] + y[1]), y)
 
@@ -223,6 +223,8 @@ class ValueAndGrad(EnzymeJaxTest):
 
 class ConstScatter(EnzymeJaxTest):
     def setUp(self):
+        import jax.numpy as jnp
+
         def forward(c_tau):
             Q = c_tau
             Q = Q.at[0].multiply(3)
@@ -239,6 +241,9 @@ class ConstScatter(EnzymeJaxTest):
 
 class ScatterSum(EnzymeJaxTest):
     def setUp(self):
+        import jax
+        import jax.numpy as jnp
+
         def energy_fn(R, neighbor):
             dR = R[neighbor[0]]
             return jnp.sum(jnp.sin(dR))

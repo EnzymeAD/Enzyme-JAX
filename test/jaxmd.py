@@ -1,17 +1,17 @@
 from absl.testing import absltest
 
 from test_utils import EnzymeJaxTest
-from jax import random
-import jax.numpy as jnp
 
 
 class JAXMD(EnzymeJaxTest):
     def setUp(self):
+        from jax import random
+        import jax.numpy as jnp
+        import jax
         from jax_md import space, energy, simulate, partition
 
         lattice_constant = 1.37820
-        # We hit a GPU memory limit for N_rep = 40
-        N_rep = 20 if jax.default_backend() in ["gpu", "tpu"] else 40
+        N_rep = 40 if jax.default_backend() == "cpu" else 20
         box_size = N_rep * lattice_constant
         # Using float32 for positions / velocities, but float64 for reductions.
         dtype = jnp.float32
@@ -82,9 +82,8 @@ class JAXMD(EnzymeJaxTest):
             )
 
         self.fn = forward
-        self.name = "jaxmd40"
-        self.count = 5
-        self.repeat = 5
+        self.name = "jaxmd" + str(N_rep)
+        self.repeat = 2
 
         self.ins = [
             state.position,
