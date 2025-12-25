@@ -1,14 +1,12 @@
 from absl.testing import absltest
-from test_utils import EnzymeJaxTest, get_pipeline
+from test_utils import EnzymeJaxTest
 import numpy as np
-
 import os
-
-import jax.random
 
 
 class NeuralGCM(EnzymeJaxTest):
     def setUp(self):
+        import jax.random
         import neuralgcm
         import gcsfs
         import pickle
@@ -17,12 +15,10 @@ class NeuralGCM(EnzymeJaxTest):
         from dinosaur import spherical_harmonic
         from dinosaur import xarray_utils
 
+        model_name = "v1/deterministic_2_8_deg.pkl"  # @param ['v1/deterministic_0_7_deg.pkl', 'v1/deterministic_1_4_deg.pkl', 'v1/deterministic_2_8_deg.pkl', 'v1/stochastic_1_4_deg.pkl', 'v1_precip/stochastic_precip_2_8_deg.pkl', 'v1_precip/stochastic_evap_2_8_deg.pkl'] {type: "string"}
+
         gcs = gcsfs.GCSFileSystem(token="anon")
-
-        model_name = "neural_gcm_dynamic_forcing_deterministic_1_4_deg.pkl"  # @param ['neural_gcm_dynamic_forcing_deterministic_0_7_deg.pkl', 'neural_gcm_dynamic_forcing_deterministic_1_4_deg.pkl', 'neural_gcm_dynamic_forcing_deterministic_2_8_deg.pkl', 'neural_gcm_dynamic_forcing_stochastic_1_4_deg.pkl'] {type: "string"}
-        self.name = model_name.split(".")[0]
-
-        with gcs.open(f"gs://gresearch/neuralgcm/04_30_2024/{model_name}", "rb") as f:
+        with gcs.open(f"gs://neuralgcm/models/{model_name}", "rb") as f:
             ckpt = pickle.load(f)
 
         model = neuralgcm.PressureLevelModel.from_checkpoint(ckpt)
@@ -65,7 +61,7 @@ class NeuralGCM(EnzymeJaxTest):
         elif os.getenv("NEURALGCM_MEDIUM") is not None:
             inner_steps = 4  # save model outputs once every 24 hours
             outer_steps = 4 * 4 // inner_steps  # total of 4 days
-        elif jax.default_backend() == "gpu":
+        elif jax.default_backend() == "gpu" or jax.default_backend() == "tpu":
             inner_steps = 24  # save model outputs once every 24 hours
             outer_steps = 4 * 24 // inner_steps  # total of 4 days
         else:
@@ -73,12 +69,12 @@ class NeuralGCM(EnzymeJaxTest):
             outer_steps = 2 * 2 // inner_steps  # total of 4 days
 
         timedelta = np.timedelta64(1, "h") * inner_steps
-        # times = (np.arange(outer_steps) * inner_steps)  # time axis in hours
 
         # initialize model state
         inputs = model.inputs_from_xarray(eval_era5.isel(time=0))
         input_forcings = model.forcings_from_xarray(eval_era5.isel(time=0))
         rng_key = jax.random.key(42)  # optional for deterministic models
+        initial_state = model.encode(inputs, input_forcings, rng_key)
 
         # use persistence for forcing variables (SST and sea ice cover)
         all_forcings = model.forcings_from_xarray(eval_era5.head(time=1))
@@ -92,41 +88,31 @@ class NeuralGCM(EnzymeJaxTest):
                 start_with_input=True,
             )
 
+        self.name = (
+            model_name.split(".")[0]
+            + "_inner_steps_"
+            + str(inner_steps)
+            + "_outer_steps_"
+            + str(outer_steps)
+        )
+
         self.fn = forward
-        self.model = model
-        self.eval_era5 = eval_era5
-        self.all_forcings = all_forcings
-        self.outer_steps = outer_steps
 
-        inputs = self.model.inputs_from_xarray(self.eval_era5.isel(time=0))
-        input_forcings = self.model.forcings_from_xarray(self.eval_era5.isel(time=0))
-        rng_key = jax.random.key(42)  # optional for deterministic models
-        self.initial_state = self.model.encode(inputs, input_forcings, rng_key)
-
-        self.ins = (self.initial_state, self.all_forcings)
+        self.ins = (initial_state, all_forcings)
         self.dins = ()
         self.douts = ()
+
         self.mlirad_rev = False
         self.mlirad_fwd = False
         self.fwdfilter = lambda _: []
         self.revfilter = lambda _: []
-        self.count = 1
+
         self.repeat = 2
         self.atol = 5e-2
         self.rtol = 1e-2
 
         # TODO: we should fix this at some point
         self.skip_test_assert = True
-
-        self.AllPipelines = [
-            get_pipeline("JaxPipe"),
-            get_pipeline("Jax"),
-            get_pipeline("HLOOpt"),
-            get_pipeline("PartOpt"),
-            get_pipeline("IPartOpt"),
-            get_pipeline("DefOpt"),
-            get_pipeline("IDefOpt"),
-        ]
 
 
 if __name__ == "__main__":

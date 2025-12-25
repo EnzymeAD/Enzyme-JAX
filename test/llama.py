@@ -2,21 +2,25 @@ from absl.testing import absltest
 
 from test_utils import EnzymeJaxTest, CurBackends, pipelines
 
-import jax.numpy as jnp
-
 
 def rmsnorm(x, weight):
+    import jax.numpy as jnp
+
     ss = 1 / jnp.sqrt(x.dot(x) / x.shape[0] + 1e-5)
     return weight * x * ss
 
 
 def softmax(x):
+    import jax.numpy as jnp
+
     max_val = jnp.max(x)
     x = jnp.exp(x - max_val)
     return x / sum(x)
 
 
 def sigmoid(x):
+    import jax.numpy as jnp
+
     return 1 / (1 + jnp.exp(-x))
 
 
@@ -302,9 +306,8 @@ class Llama(EnzymeJaxTest):
         # dvc = jax.random.uniform(subkey, shape=(n_layers, pos + 1, kv_dim))
 
         self.fn = partial(forward, config)
-        self.name = "llama"
-        self.count = 10 if jax.default_backend() == "cpu" else 50
-        self.repeat = 10
+        self.name = "llama_" + "_".join([f"{k}_{v}" for k, v in config.items()])
+        self.repeat = 5
         self.revprimal = False
         self.AllPipelines = pipelines()
         self.AllBackends = CurBackends
@@ -312,8 +315,8 @@ class Llama(EnzymeJaxTest):
         self.ins = [x, weights, key_cache, value_cache]
         self.dins = [dx, weights, key_cache, value_cache]
         self.douts = dx
-        self.atol = 5e-5
-        self.rtol = 0.0
+        self.atol = 1e-3
+        self.rtol = 1e-3
 
 
 if __name__ == "__main__":

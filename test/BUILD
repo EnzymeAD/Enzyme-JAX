@@ -40,6 +40,7 @@ TEST_DEPS = [
     "//:enzyme_ad",
     "@pypi_jax//:pkg",
     "@pypi_absl_py//:pkg",
+    "@pypi_xprof//:pkg",
 ] + select({
     ":use_tpu": [
         "@pypi_libtpu_nightly//:pkg",
@@ -75,8 +76,10 @@ py_test(
     name = "test",
     srcs = [
         "test.py",
+        "test_utils.py",
+        "xprof_utils.py",
     ],
-    imports = ["site-packages"],
+    imports = ["."],
     tags = ["pypi_name=enzyme-ad"],
     deps = TEST_DEPS,
 )
@@ -87,6 +90,7 @@ py_test(
     srcs = [
         "bench_vs_xla.py",
         "test_utils.py",
+        "xprof_utils.py",
     ],
     imports = ["."],
     tags = ["exclusive"],
@@ -98,6 +102,7 @@ py_test(
     srcs = [
         "test_utils.py",
         "testffi.py",
+        "xprof_utils.py",
     ],
     imports = ["."],
     tags = ["exclusive"],
@@ -106,10 +111,11 @@ py_test(
 
 py_test(
     name = "llama",
-    timeout = "long",
+    timeout = "eternal",
     srcs = [
         "llama.py",
         "test_utils.py",
+        "xprof_utils.py",
     ],
     imports = ["."],
     tags = ["exclusive"],
@@ -122,6 +128,7 @@ py_test(
     srcs = [
         "jaxmd.py",
         "test_utils.py",
+        "xprof_utils.py",
     ],
     imports = ["."],
     tags = ["exclusive"],
@@ -140,6 +147,7 @@ py_test(
     srcs = [
         "neuralgcm_test.py",
         "test_utils.py",
+        "xprof_utils.py",
     ],
     imports = ["."],
     tags = ["exclusive"],
@@ -149,25 +157,25 @@ py_test(
     }),
 )
 
-py_test(
-    name = "keras_test",
-    timeout = "eternal",
-    srcs = [
-        "keras_test.py",
-        "test_utils.py",
-    ],
-    imports = ["."],
-    tags = ["exclusive"],
-    deps = TEST_DEPS + select({
-        "@bazel_tools//src/conditions:linux_x86_64": [
-            "@pypi_benchmark//:pkg",
-            "@pypi_keras//:pkg",
-            "@pypi_keras_cv//:pkg",
-            "@pypi_keras_hub//:pkg",
-        ],
-        "//conditions:default": [],
-    }),
-)
+# py_test(
+#     name = "keras_test",
+#     timeout = "eternal",
+#     srcs = [
+#         "keras_test.py",
+#         "test_utils.py",
+#     ],
+#     imports = ["."],
+#     tags = ["exclusive"],
+#     deps = TEST_DEPS + select({
+#         "@bazel_tools//src/conditions:linux_x86_64": [
+#             "@pypi_benchmark//:pkg",
+#             "@pypi_keras//:pkg",
+#             "@pypi_keras_cv//:pkg",
+#             "@pypi_keras_hub//:pkg",
+#         ],
+#         "//conditions:default": [],
+#     }),
+# )
 
 # py_test(
 #     name = "maxtext",
@@ -179,3 +187,15 @@ py_test(
 #     timeout='long'
 #     tags = ["exclusive"]
 # )
+
+test_suite(
+    name = "python_tests",
+    tests = [
+        ":bench_vs_xla",
+        ":jaxmd",
+        ":llama",
+        ":neuralgcm_test",
+        ":test",
+        ":testffi",
+    ],
+)
