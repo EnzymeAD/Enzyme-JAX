@@ -1,262 +1,262 @@
-# name: Test GB-25
+name: Test GB-25
 
-# on:
-#   push:
-#     branches:
-#     - main
-#     paths:
-#       - '.github/workflows/test-gb-25.yml'
-#       - '**/BUILD'
-#       - '**/WORKSPACE'
-#       - '**/*.bzl'
-#       - 'patches/**'
-#       - 'src/**'
-#       - 'third_party/**'
-#   pull_request:
-#     branches:
-#     - main
-#     paths:
-#       - '.github/workflows/test-gb-25.yml'
-#       - '**/BUILD'
-#       - '**/WORKSPACE'
-#       - '**/*.bzl'
-#       - 'patches/**'
-#       - 'src/**'
-#       - 'third_party/**'
+on:
+  push:
+    branches:
+    - main
+    paths:
+      - '.github/workflows/test-gb-25.yml'
+      - '**/BUILD'
+      - '**/WORKSPACE'
+      - '**/*.bzl'
+      - 'patches/**'
+      - 'src/**'
+      - 'third_party/**'
+  pull_request:
+    branches:
+    - main
+    paths:
+      - '.github/workflows/test-gb-25.yml'
+      - '**/BUILD'
+      - '**/WORKSPACE'
+      - '**/*.bzl'
+      - 'patches/**'
+      - 'src/**'
+      - 'third_party/**'
 
-# concurrency:
-#   # Skip intermediate builds: always.
-#   # Cancel intermediate builds: only if it is a pull request build.
-#   group: ${{ github.workflow }}-${{ github.ref }}
-#   cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+concurrency:
+  # Skip intermediate builds: always.
+  # Cancel intermediate builds: only if it is a pull request build.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
 
-# jobs:
-#   test-gb-25:
-#     name: 'Test GB-25 - ${{ matrix.os }} - julia ${{ matrix.julia_version }} - XLA ${{ matrix.xla_commit }} - GB-25 ${{ matrix.gb25_commit }}- Reactant ${{ matrix.reactant_commit }}'
-#     runs-on: ${{ matrix.os }}
-#     timeout-minutes: 150
+jobs:
+  test-gb-25:
+    name: 'Test GB-25 - ${{ matrix.os }} - julia ${{ matrix.julia_version }} - XLA ${{ matrix.xla_commit }} - GB-25 ${{ matrix.gb25_commit }}- Reactant ${{ matrix.reactant_commit }}'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 150
 
-#     container:
-#       image: ${{ (contains(matrix.os, 'linux') && 'ghcr.io/enzymead/reactant-docker-images@sha256:14f2f7ae6eff98a0a8e37e9b84542c068eafa0ab4360a8fb08d306c2486cd169' ) || '' }}
+    container:
+      image: ${{ (contains(matrix.os, 'linux') && 'ghcr.io/enzymead/reactant-docker-images@sha256:14f2f7ae6eff98a0a8e37e9b84542c068eafa0ab4360a8fb08d306c2486cd169' ) || '' }}
 
-#     strategy:
-#       fail-fast: false
-#       matrix:
-#         os:
-#           - linux-x86-a2-48-a100-4gpu
-#         julia_version:
-#           - '1.11'
-#         xla_commit:
-#           - ''
-#           # - 'b25f3cbed2bc88c8ffef85f6a5319e2cf7b0454c'
-#         gb25_commit:
-#           - 'main'
-#           # - '0123456789abcdef0123456789abcdef01234567'
-#         reactant_commit:
-#           - 'main'
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - linux-x86-a2-48-a100-4gpu
+        julia_version:
+          - '1.11'
+        xla_commit:
+          - ''
+          # - 'b25f3cbed2bc88c8ffef85f6a5319e2cf7b0454c'
+        gb25_commit:
+          - 'main'
+          # - '0123456789abcdef0123456789abcdef01234567'
+        reactant_commit:
+          - 'main'
 
-#     steps:
-#       - name: Check GPUs
-#         if: ${{ contains(matrix.os, 'a100') }}
-#         run: |
-#           nvidia-smi
-#       - name: Set Artifacts index
-#         shell: bash
-#         run: |
-#           # Artifact names cannot include forward slashes and some other characters, here we
-#           # do some sanitisation.
-#           ARTIFACT_INDEX=${{ matrix.julia_version }}-${{ matrix.xla_commit }}-${{ matrix.gb25_commit }}-${{ matrix.reactant_commit }}
-#           echo "ARTIFACT_INDEX=${ARTIFACT_INDEX//\//_}" >> "${GITHUB_ENV}"
-#       - uses: bazel-contrib/setup-bazel@0.16.0
-#         name: Set up Bazel
-#         with:
-#           # Avoid downloading Bazel every time.
-#           bazelisk-cache: true
-#           # Store build cache per workflow.
-#           disk-cache: gb-25-${{ github.workflow }}-${{ matrix.os }}-${{ matrix.julia_version }}-${{ matrix.xla_commit }}-${{ matrix.gb25_commit }}-${{ matrix.reactant_commit }}
-#           # Share repository cache between workflows.
-#           repository-cache: true
-#           bazelisk-version: 1.x
-#       - name: Checkout Reactant.jl
-#         uses: actions/checkout@v6
-#         with:
-#           repository: 'EnzymeAD/Reactant.jl'
-#           ref: 'main'
-#           path: 'Reactant.jl'
-#       - name: Set REACTANT_DIR
-#         # We have to use `${GITHUB_WORKSPACE}` instead of `github.workspace` because GitHub
-#         # is terrible and the two don't match inside containers:
-#         # https://github.com/actions/runner/issues/2058
-#         run: |
-#           REACTANT_DIR=${GITHUB_WORKSPACE}/Reactant.jl
-#           # Make sure this directory exists, for good measure
-#           ls -lhrt "${REACTANT_DIR}"
-#           echo "REACTANT_DIR=${REACTANT_DIR}" >> ${GITHUB_ENV}
-#       - uses: julia-actions/setup-julia@v2
-#         with:
-#           version: ${{ matrix.julia_version }}
-#       - name: Load Julia packages from cache
-#         id: julia-cache
-#         uses: julia-actions/cache@v2
-#       - name: Modify Enzyme-JAX commit
-#         timeout-minutes: 1
-#         run: |
-#           sed -i.bak 's/ENZYMEXLA_COMMIT = ".*"/ENZYMEXLA_COMMIT = "${{ github.sha }}"/' ReactantExtra/WORKSPACE
+    steps:
+      - name: Check GPUs
+        if: ${{ contains(matrix.os, 'a100') }}
+        run: |
+          nvidia-smi
+      - name: Set Artifacts index
+        shell: bash
+        run: |
+          # Artifact names cannot include forward slashes and some other characters, here we
+          # do some sanitisation.
+          ARTIFACT_INDEX=${{ matrix.julia_version }}-${{ matrix.xla_commit }}-${{ matrix.gb25_commit }}-${{ matrix.reactant_commit }}
+          echo "ARTIFACT_INDEX=${ARTIFACT_INDEX//\//_}" >> "${GITHUB_ENV}"
+      - uses: bazel-contrib/setup-bazel@0.16.0
+        name: Set up Bazel
+        with:
+          # Avoid downloading Bazel every time.
+          bazelisk-cache: true
+          # Store build cache per workflow.
+          disk-cache: gb-25-${{ github.workflow }}-${{ matrix.os }}-${{ matrix.julia_version }}-${{ matrix.xla_commit }}-${{ matrix.gb25_commit }}-${{ matrix.reactant_commit }}
+          # Share repository cache between workflows.
+          repository-cache: true
+          bazelisk-version: 1.x
+      - name: Checkout Reactant.jl
+        uses: actions/checkout@v6
+        with:
+          repository: 'EnzymeAD/Reactant.jl'
+          ref: 'main'
+          path: 'Reactant.jl'
+      - name: Set REACTANT_DIR
+        # We have to use `${GITHUB_WORKSPACE}` instead of `github.workspace` because GitHub
+        # is terrible and the two don't match inside containers:
+        # https://github.com/actions/runner/issues/2058
+        run: |
+          REACTANT_DIR=${GITHUB_WORKSPACE}/Reactant.jl
+          # Make sure this directory exists, for good measure
+          ls -lhrt "${REACTANT_DIR}"
+          echo "REACTANT_DIR=${REACTANT_DIR}" >> ${GITHUB_ENV}
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: ${{ matrix.julia_version }}
+      - name: Load Julia packages from cache
+        id: julia-cache
+        uses: julia-actions/cache@v2
+      - name: Modify Enzyme-JAX commit
+        timeout-minutes: 1
+        run: |
+          sed -i.bak 's/ENZYMEXLA_COMMIT = ".*"/ENZYMEXLA_COMMIT = "${{ github.sha }}"/' ReactantExtra/WORKSPACE
 
-#           cat ReactantExtra/WORKSPACE
-#         working-directory: ${{ env.REACTANT_DIR }}/deps
-#       - name: Modify XLA commit
-#         timeout-minutes: 1
-#         shell: bash
-#         run: |
-#           if [[ -n "${{ matrix.xla_commit }}" ]]; then
-#               sed -E -i.bak \
-#                   -e 's/xla_workspace\(NEW_XLA_PATCHES(, .*)?\)/xla_workspace(NEW_XLA_PATCHES, "${{ matrix.xla_commit }}")/' \
-#                   ReactantExtra/WORKSPACE
+          cat ReactantExtra/WORKSPACE
+        working-directory: ${{ env.REACTANT_DIR }}/deps
+      - name: Modify XLA commit
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          if [[ -n "${{ matrix.xla_commit }}" ]]; then
+              sed -E -i.bak \
+                  -e 's/xla_workspace\(NEW_XLA_PATCHES(, .*)?\)/xla_workspace(NEW_XLA_PATCHES, "${{ matrix.xla_commit }}")/' \
+                  ReactantExtra/WORKSPACE
 
-#               cat ReactantExtra/WORKSPACE
-#           fi
-#         working-directory: ${{ env.REACTANT_DIR }}/deps
-#       - name: Build local libReactant
-#         timeout-minutes: 60
-#         run: |
-#           julia --project --color=yes -e 'using Pkg; Pkg.instantiate()'
-#           julia --project --color=yes -O0 build_local.jl --cc=clang --gcc_host_compiler_path=
-#         working-directory: ${{ env.REACTANT_DIR }}/deps
-#       - name: Copy libdevice
-#         timeout-minutes: 10
-#         shell: bash
-#         run: |
-#           if [[ ! -e bazel-bin/cuda/nvvm/libdevice/libdevice.10.bc ]]; then
-#               mkdir -pv bazel-bin/cuda/nvvm/libdevice
-#               cp -v bazel-bin/libReactantExtra.so.runfiles/cuda_nvcc/nvvm/libdevice/libdevice.10.bc bazel-bin/cuda/nvvm/libdevice/libdevice.10.bc
-#           fi
-#         working-directory: ${{ env.REACTANT_DIR }}/deps/ReactantExtra
-#       - name: Checkout GB-25
-#         uses: actions/checkout@v6
-#         with:
-#           repository: 'PRONTOLab/GB-25'
-#           ref: ${{ matrix.gb25_commit }}
-#           path: 'GB-25'
-#       - name: Set GB25_DIR
-#         # We have to use `${GITHUB_WORKSPACE}` instead of `github.workspace` because GitHub
-#         # is terrible and the two don't match inside containers:
-#         # https://github.com/actions/runner/issues/2058
-#         run: |
-#           GB25_DIR=${GITHUB_WORKSPACE}/GB-25
-#           # Make sure this directory exists, for good measure
-#           ls -lhrt "${GB25_DIR}"
-#           echo "GB25_DIR=${GB25_DIR}" >> ${GITHUB_ENV}
-#       - name: Instantiate GB-25 environment
-#         timeout-minutes: 40
-#         shell: julia --project --color=yes {0}
-#         run: |
-#           # Copy preference file to point to newly built libReactant
-#           cp("${{ env.REACTANT_DIR }}/LocalPreferences.toml", "${{ env.GB25_DIR }}/LocalPreferences.toml")
+              cat ReactantExtra/WORKSPACE
+          fi
+        working-directory: ${{ env.REACTANT_DIR }}/deps
+      - name: Build local libReactant
+        timeout-minutes: 60
+        run: |
+          julia --project --color=yes -e 'using Pkg; Pkg.instantiate()'
+          julia --project --color=yes -O0 build_local.jl --cc=clang --gcc_host_compiler_path=
+        working-directory: ${{ env.REACTANT_DIR }}/deps
+      - name: Copy libdevice
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          if [[ ! -e bazel-bin/cuda/nvvm/libdevice/libdevice.10.bc ]]; then
+              mkdir -pv bazel-bin/cuda/nvvm/libdevice
+              cp -v bazel-bin/libReactantExtra.so.runfiles/cuda_nvcc/nvvm/libdevice/libdevice.10.bc bazel-bin/cuda/nvvm/libdevice/libdevice.10.bc
+          fi
+        working-directory: ${{ env.REACTANT_DIR }}/deps/ReactantExtra
+      - name: Checkout GB-25
+        uses: actions/checkout@v6
+        with:
+          repository: 'PRONTOLab/GB-25'
+          ref: ${{ matrix.gb25_commit }}
+          path: 'GB-25'
+      - name: Set GB25_DIR
+        # We have to use `${GITHUB_WORKSPACE}` instead of `github.workspace` because GitHub
+        # is terrible and the two don't match inside containers:
+        # https://github.com/actions/runner/issues/2058
+        run: |
+          GB25_DIR=${GITHUB_WORKSPACE}/GB-25
+          # Make sure this directory exists, for good measure
+          ls -lhrt "${GB25_DIR}"
+          echo "GB25_DIR=${GB25_DIR}" >> ${GITHUB_ENV}
+      - name: Instantiate GB-25 environment
+        timeout-minutes: 40
+        shell: julia --project --color=yes {0}
+        run: |
+          # Copy preference file to point to newly built libReactant
+          cp("${{ env.REACTANT_DIR }}/LocalPreferences.toml", "${{ env.GB25_DIR }}/LocalPreferences.toml")
 
-#           using Pkg
-#           if !isempty("${{ matrix.reactant_commit }}")
-#               # Install specific commit of Reactant, if necessary
-#               Pkg.add([
-#                   PackageSpec(; name="Reactant", rev="${{ matrix.reactant_commit }}"),
-#               ])
-#           end
-#           # Instantiate environment
-#           Pkg.instantiate()
-#           # Cleanup depot if possible
-#           Pkg.gc()
-#         working-directory: ${{ env.GB25_DIR }}
-#       - name: Upload Julia project environment
-#         uses: actions/upload-artifact@v6
-#         timeout-minutes: 10
-#         if: ${{ always() }}
-#         with:
-#           name: 'julia-environment-${{ env.ARTIFACT_INDEX }}'
-#           path: |
-#             ${{ env.GB25_DIR }}/Manifest.toml
-#             ${{ env.GB25_DIR }}/Project.toml
-#           retention-days: 90
-#           overwrite: false
-#       - name: Install mpiexecjl
-#         run: |
-#           MPIEXECJL_DIR="${GITHUB_WORKSPACE}/bin"
-#           julia --project --color=yes -e "using MPI; MPI.install_mpiexecjl(; destdir=\"${MPIEXECJL_DIR}\")"
-#           echo "${MPIEXECJL_DIR}" >> "${GITHUB_PATH}"
-#         working-directory: ${{ env.GB25_DIR }}
-#       - name: Compile GB-25 simulation
-#         timeout-minutes: 30
-#         run: |
-#           export XLA_FLAGS='--xla_dump_to=${{ env.GB25_DIR }}/xla_dump_compile'
-#           timeout --signal=TERM --verbose 29m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_compile.jl
-#         working-directory: ${{ env.GB25_DIR }}
-#       - name: Show remaining collective operations
-#         timeout-minutes: 10
-#         shell: bash
-#         run: |
-#           OK="true"
-#           for OP in all-to-all all-gather all-reduce; do
-#               COLLECTIVES=$(find . -name 'optimised_sharded_baroclinic_instability*.xla' -exec grep --with-filename --line-number --extended-regexp "${OP}" '{}' \;)
-#               NUM_COLLECTIVES=$(echo "${COLLECTIVES}" | wc -l | xargs)
-#               if [[ -n "${COLLECTIVES}" ]]; then
-#                   MSG="There are ${NUM_COLLECTIVES} remaining ${OP} operations"
-#                   echo "::error title=Remaining ${OP} Operations:: ${MSG}"
-#                   echo
-#                   echo "----------"
-#                   echo "${COLLECTIVES}"
-#                   echo "----------"
-#                   if [[ "${OP}" == "all-to-all" && ${NUM_COLLECTIVES} -gt 0 ]] || [[ "${OP}" == "all-gather" && ${NUM_COLLECTIVES} -gt 0 ]] || [[ "${OP}" == "all-reduce" && ${NUM_COLLECTIVES} -gt 0 ]]; then
-#                       OK="false"
-#                   fi
-#               fi
-#           done
-#           if [[ "${OK}" == "false" ]]; then
-#               exit 1
-#           fi
-#       - name: Run GB-25 simulation
-#         timeout-minutes: 60
-#         run: |
-#           export XLA_FLAGS='--xla_dump_to=${{ env.GB25_DIR }}/xla_dump_run'
-#           timeout --signal=TERM --verbose 59m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_run.jl
-#         working-directory: ${{ env.GB25_DIR }}
-#       - name: Test correctness in GB-25 code
-#         timeout-minutes: 20
-#         run: |
-#           timeout --signal=TERM --verbose 19m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict correctness/correctness_sharded_baroclinic_instability_simulation_run.jl
-#         working-directory: ${{ env.GB25_DIR }}
-#       - name: Upload MLIR and XLA modules
-#         uses: actions/upload-artifact@v6
-#         timeout-minutes: 10
-#         if: ${{ !cancelled() }}
-#         with:
-#           name: 'simulation-mlir-${{ env.ARTIFACT_INDEX }}'
-#           path: |
-#             ${{ env.GB25_DIR }}/**/*.mlir
-#             ${{ env.GB25_DIR }}/**/optimised_*.xla
-#           retention-days: 90
-#           overwrite: false
-#       - name: Upload XLA dump
-#         uses: actions/upload-artifact@v6
-#         timeout-minutes: 20
-#         if: ${{ !cancelled() }}
-#         with:
-#           name: 'simulation-xla-dump-${{ env.ARTIFACT_INDEX }}'
-#           path: '${{ env.GB25_DIR }}/**/xla_dump*'
-#           retention-days: 90
-#           overwrite: false
-#       - name: Upload XLA profiler traces
-#         uses: actions/upload-artifact@v6
-#         timeout-minutes: 10
-#         if: ${{ !cancelled() }}
-#         with:
-#           name: 'simulation-xla-profile-${{ env.ARTIFACT_INDEX }}'
-#           path: '${{ env.GB25_DIR }}/**/plugins'
-#           retention-days: 90
-#           overwrite: false
-#       - name: Save Julia depot cache on cancel or failure
-#         id: julia-cache-save
-#         if: cancelled() || failure()
-#         uses: actions/cache/save@v5
-#         with: 
-#           path: |
-#             ${{ steps.julia-cache.outputs.cache-paths }}
-#           key: ${{ steps.julia-cache.outputs.cache-key }}
+          using Pkg
+          if !isempty("${{ matrix.reactant_commit }}")
+              # Install specific commit of Reactant, if necessary
+              Pkg.add([
+                  PackageSpec(; name="Reactant", rev="${{ matrix.reactant_commit }}"),
+              ])
+          end
+          # Instantiate environment
+          Pkg.instantiate()
+          # Cleanup depot if possible
+          Pkg.gc()
+        working-directory: ${{ env.GB25_DIR }}
+      - name: Upload Julia project environment
+        uses: actions/upload-artifact@v6
+        timeout-minutes: 10
+        if: ${{ always() }}
+        with:
+          name: 'julia-environment-${{ env.ARTIFACT_INDEX }}'
+          path: |
+            ${{ env.GB25_DIR }}/Manifest.toml
+            ${{ env.GB25_DIR }}/Project.toml
+          retention-days: 90
+          overwrite: false
+      - name: Install mpiexecjl
+        run: |
+          MPIEXECJL_DIR="${GITHUB_WORKSPACE}/bin"
+          julia --project --color=yes -e "using MPI; MPI.install_mpiexecjl(; destdir=\"${MPIEXECJL_DIR}\")"
+          echo "${MPIEXECJL_DIR}" >> "${GITHUB_PATH}"
+        working-directory: ${{ env.GB25_DIR }}
+      - name: Compile GB-25 simulation
+        timeout-minutes: 30
+        run: |
+          export XLA_FLAGS='--xla_dump_to=${{ env.GB25_DIR }}/xla_dump_compile'
+          timeout --signal=TERM --verbose 29m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_compile.jl
+        working-directory: ${{ env.GB25_DIR }}
+      - name: Show remaining collective operations
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          OK="true"
+          for OP in all-to-all all-gather all-reduce; do
+              COLLECTIVES=$(find . -name 'optimised_sharded_baroclinic_instability*.xla' -exec grep --with-filename --line-number --extended-regexp "${OP}" '{}' \;)
+              NUM_COLLECTIVES=$(echo "${COLLECTIVES}" | wc -l | xargs)
+              if [[ -n "${COLLECTIVES}" ]]; then
+                  MSG="There are ${NUM_COLLECTIVES} remaining ${OP} operations"
+                  echo "::error title=Remaining ${OP} Operations:: ${MSG}"
+                  echo
+                  echo "----------"
+                  echo "${COLLECTIVES}"
+                  echo "----------"
+                  if [[ "${OP}" == "all-to-all" && ${NUM_COLLECTIVES} -gt 0 ]] || [[ "${OP}" == "all-gather" && ${NUM_COLLECTIVES} -gt 0 ]] || [[ "${OP}" == "all-reduce" && ${NUM_COLLECTIVES} -gt 0 ]]; then
+                      OK="false"
+                  fi
+              fi
+          done
+          if [[ "${OK}" == "false" ]]; then
+              exit 1
+          fi
+      - name: Run GB-25 simulation
+        timeout-minutes: 60
+        run: |
+          export XLA_FLAGS='--xla_dump_to=${{ env.GB25_DIR }}/xla_dump_run'
+          timeout --signal=TERM --verbose 59m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_run.jl
+        working-directory: ${{ env.GB25_DIR }}
+      - name: Test correctness in GB-25 code
+        timeout-minutes: 20
+        run: |
+          timeout --signal=TERM --verbose 19m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict correctness/correctness_sharded_baroclinic_instability_simulation_run.jl
+        working-directory: ${{ env.GB25_DIR }}
+      - name: Upload MLIR and XLA modules
+        uses: actions/upload-artifact@v6
+        timeout-minutes: 10
+        if: ${{ !cancelled() }}
+        with:
+          name: 'simulation-mlir-${{ env.ARTIFACT_INDEX }}'
+          path: |
+            ${{ env.GB25_DIR }}/**/*.mlir
+            ${{ env.GB25_DIR }}/**/optimised_*.xla
+          retention-days: 90
+          overwrite: false
+      - name: Upload XLA dump
+        uses: actions/upload-artifact@v6
+        timeout-minutes: 20
+        if: ${{ !cancelled() }}
+        with:
+          name: 'simulation-xla-dump-${{ env.ARTIFACT_INDEX }}'
+          path: '${{ env.GB25_DIR }}/**/xla_dump*'
+          retention-days: 90
+          overwrite: false
+      - name: Upload XLA profiler traces
+        uses: actions/upload-artifact@v6
+        timeout-minutes: 10
+        if: ${{ !cancelled() }}
+        with:
+          name: 'simulation-xla-profile-${{ env.ARTIFACT_INDEX }}'
+          path: '${{ env.GB25_DIR }}/**/plugins'
+          retention-days: 90
+          overwrite: false
+      - name: Save Julia depot cache on cancel or failure
+        id: julia-cache-save
+        if: cancelled() || failure()
+        uses: actions/cache/save@v5
+        with: 
+          path: |
+            ${{ steps.julia-cache.outputs.cache-paths }}
+          key: ${{ steps.julia-cache.outputs.cache-key }}
