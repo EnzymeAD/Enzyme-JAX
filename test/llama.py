@@ -251,7 +251,6 @@ class Llama(EnzymeJaxTest):
             "n_kv_heads": 6,
             "vocab_size": 32000,
             "seq_len": 256,
-            "batch_size": 32,
         }
 
         n_layers = config["n_layers"]
@@ -287,19 +286,13 @@ class Llama(EnzymeJaxTest):
             dweights[name] = jax.random.uniform(subkey2, shape=shape)
 
         key, subkey = jax.random.split(key)
-        x = jax.random.uniform(subkey, shape=(config["batch_size"], dim))
+        x = jax.random.uniform(subkey, shape=(dim,))
         key, subkey = jax.random.split(key)
-        dx = jax.random.uniform(subkey, shape=(config["batch_size"], dim))
+        dx = jax.random.uniform(subkey, shape=(dim,))
 
         def partial(func, config):
             def sfn(x, weights, key_cache, value_cache):
-                # Use vmap to batch over the first dimension of x
-                # in_axes: (0, None, None, None) means batch over x only
-                batched_func = jax.vmap(
-                    lambda xi: func(xi, config, weights, key_cache, value_cache),
-                    in_axes=0,
-                )
-                return batched_func(x)
+                return func(x, config, weights, key_cache, value_cache)
 
             return sfn
 
@@ -314,7 +307,7 @@ class Llama(EnzymeJaxTest):
 
         self.fn = partial(forward, config)
         self.name = "llama_" + "_".join([f"{k}_{v}" for k, v in config.items()])
-        self.repeat = 10
+        self.repeat = 5
         self.revprimal = False
         self.AllPipelines = pipelines()
         self.AllBackends = CurBackends

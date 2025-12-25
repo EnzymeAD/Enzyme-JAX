@@ -1,13 +1,13 @@
 from absl.testing import absltest
-import jax
-import jax.numpy as jnp
-from enzyme_ad.jax import cpp_call, enzyme_jax_ir
 
 argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
 
 
 class EnzymePipeline(absltest.TestCase):
     def test_pipeline(self):
+        import jax
+        import jax.numpy as jnp
+
         def fn(x):
             return x
 
@@ -21,6 +21,10 @@ class EnzymePipeline(absltest.TestCase):
 
 class EnzymeJax(absltest.TestCase):
     def test_custom_cpp_kernel(self):
+        import jax
+        import jax.numpy as jnp
+        from enzyme_ad.jax import cpp_call
+
         @jax.jit
         def do_something(ones):
             shape = jax.core.ShapedArray(ones.shape, ones.dtype)
@@ -86,6 +90,10 @@ class EnzymeJax(absltest.TestCase):
         self.assertTrue((grads[1] == jnp.array([[128.0, 128.0, 128.0]])).all())
 
     def test_enzyme_mlir_jit(self):
+        import jax
+        import jax.numpy as jnp
+        from enzyme_ad.jax import enzyme_jax_ir
+
         @jax.jit
         @enzyme_jax_ir(argv=argv)
         def add_one(x: jax.Array, y) -> jax.Array:
@@ -111,4 +119,8 @@ class EnzymeJax(absltest.TestCase):
 
 
 if __name__ == "__main__":
+    from test_utils import fix_paths
+
+    fix_paths()
+
     absltest.main()

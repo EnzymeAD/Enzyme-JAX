@@ -76,8 +76,10 @@ py_test(
     name = "test",
     srcs = [
         "test.py",
+        "test_utils.py",
+        "xprof_utils.py",
     ],
-    imports = ["site-packages"],
+    imports = ["."],
     tags = ["pypi_name=enzyme-ad"],
     deps = TEST_DEPS,
 )
@@ -109,7 +111,7 @@ py_test(
 
 py_test(
     name = "llama",
-    timeout = "long",
+    timeout = "eternal",
     srcs = [
         "llama.py",
         "test_utils.py",

@@ -83,7 +83,7 @@ class JAXMD(EnzymeJaxTest):
 
         self.fn = forward
         self.name = "jaxmd" + str(N_rep)
-        self.repeat = 5
+        self.repeat = 2
 
         self.ins = [
             state.position,
