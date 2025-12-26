@@ -3970,6 +3970,7 @@ struct ConcatToRotatePadOptimize
       SmallVector<int64_t> strides(ndims, 1);
       SmallVector<int64_t> limits = llvm::to_vector(rot.getType().getShape());
       limits[concatDimension] =
+          starts[concatDimension] +
           cast<RankedTensorType>(operand.getType()).getShape()[concatDimension];
       auto slice = stablehlo::SliceOp::create(rewriter, concat.getLoc(), rot,
                                               starts, limits, strides);
