@@ -34,6 +34,7 @@
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
+#include <cassert>
 #include <iterator>
 #include <set>
 
@@ -1026,6 +1027,20 @@ bool isInsertDimOp(stablehlo::ReshapeOp reshapeOp) {
     return false;
   }
   return true;
+}
+
+void getSingletonInsertionDims(stablehlo::BroadcastInDimOp bcastOp,
+                               SmallVectorImpl<int64_t> &insertionDims) {
+  RankedTensorType outputTy = bcastOp.getType();
+
+  for (size_t i = 0; i < outputTy.getRank(); ++i) {
+    if (llvm::is_contained(bcastOp.getBroadcastDimensions(), i)) {
+      continue;
+    }
+    if (outputTy.getDimSize(i) == 1) {
+      insertionDims.push_back(i);
+    }
+  }
 }
 
 bool areValidInsertionDims(RankedTensorType inputType,
@@ -2131,24 +2146,42 @@ Value DynamicSliceOpCreate(
     ArrayRef<int64_t> sliceSizes,
     std::optional<sdy::TensorShardingPerValueAttr> sharding) {
   auto inputShape = cast<RankedTensorType>(input.getType()).getShape();
-  bool sliceNeeded = false;
+  SmallVector<int64_t> constStarts, constLimits, constStrides;
+  bool emitSliceOp = true, warnOutOfBoundsAccess = false;
   for (auto [start, size, shape] :
        llvm::zip_equal(sliceStarts, sliceSizes, inputShape)) {
-    if (!matchPattern(start, m_Zero()) || size != shape) {
-      sliceNeeded = true;
+    APInt constStart;
+    if (matchPattern(start, m_ConstantInt(&constStart))) {
+      auto constStartInt = constStart.getSExtValue();
+      auto limit = constStartInt + size;
+      if (limit > shape) {
+        emitSliceOp = false;
+        warnOutOfBoundsAccess = true;
+        break;
+      }
+      constStarts.push_back(constStartInt);
+      constLimits.push_back(limit);
+      constStrides.push_back(1);
+    } else {
+      emitSliceOp = false;
       break;
     }
   }
 
-  if (sliceNeeded) {
-    auto dsOp = stablehlo::DynamicSliceOp::create(builder, loc, input,
-                                                  sliceStarts, sliceSizes);
-    if (sharding.has_value()) {
-      sdy::setShardings(dsOp, *sharding);
-    }
-    return dsOp.getResult();
+  if (emitSliceOp) {
+    return SliceOpCreate(builder, loc, input, constStarts, constLimits,
+                         constStrides);
   }
-  return input;
+
+  auto dsOp = stablehlo::DynamicSliceOp::create(builder, loc, input,
+                                                sliceStarts, sliceSizes);
+  if (warnOutOfBoundsAccess) {
+    dsOp.emitWarning("potential out of bounds indexing detected");
+  }
+  if (sharding.has_value()) {
+    sdy::setShardings(dsOp, *sharding);
+  }
+  return dsOp.getResult();
 }
 
 Type GetDotGeneralResultType(Value lhs, Value rhs, Type resElemType,
@@ -2319,8 +2352,25 @@ bool isFusible(stablehlo::TransposeOp transpose, Operation *op) {
 bool isFusible(Operation *op, stablehlo::ReshapeOp reshape) {
   return TypeSwitch<Operation *, bool>(op)
       .Case<stablehlo::ReshapeOp>([](auto prevOp) { return true; })
-      .Case<stablehlo::BroadcastInDimOp>(
-          [&](auto prevOp) { return isInsertDimOp(reshape); })
+      .Case<stablehlo::BroadcastInDimOp>([&](auto prevOp) {
+        if (isInsertDimOp(reshape)) {
+          return true;
+        }
+        auto deletionDims = findReshapeInsertionDims(
+            reshape.getType(), reshape.getOperand().getType());
+        if (!deletionDims.empty()) {
+          SmallVector<int64_t> bcastInsertionDims;
+          getSingletonInsertionDims(prevOp, bcastInsertionDims);
+          // if all of the dims deleted we part of the insertion dims, we can
+          // do the fusion
+          if (!bcastInsertionDims.empty()) {
+            return llvm::all_of(deletionDims, [&](auto delDim) {
+              return llvm::is_contained(bcastInsertionDims, delDim);
+            });
+          }
+        }
+        return false;
+      })
       .Default([](auto other) { return matchPattern(other, m_Constant()); });
 }
 

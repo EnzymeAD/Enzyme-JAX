@@ -21,11 +21,11 @@ func.func @main(%arg0: tensor<f32>, %arg1: tensor<f32>, %arg2: tensor<32x64xf32>
 // CHECK: func.func @main(%arg0: tensor<f32>, %arg1: tensor<f32>, %arg2: tensor<32x64xf32>, %arg3: tensor<64x32xf32>) -> tensor<64x64xf32> {
 // CHECK-NEXT:    %cst = stablehlo.constant {enzymexla.finite = [#enzymexla<guaranteed GUARANTEED>]} dense<0.000000e+00> : tensor<f32>
 // CHECK-NEXT:    %0 = stablehlo.dot_general %arg2, %arg3, contracting_dims = [0] x [1] {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<32x64xf32>, tensor<64x32xf32>) -> tensor<64x64xf32>
-// CHECK-NEXT:    %1 = stablehlo.broadcast_in_dim %arg0, dims = [] {enzymexla.symmetric_matrix = [#enzymexla<guaranteed GUARANTEED>]} : (tensor<f32>) -> tensor<64x64xf32>
-// CHECK-NEXT:    %2 = stablehlo.multiply %1, %0 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<64x64xf32>
-// CHECK-NEXT:    %3 = stablehlo.multiply %cst, %arg1 {enzymexla.no_nan = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<f32>
-// CHECK-NEXT:    %4 = stablehlo.transpose %2, dims = [1, 0] : (tensor<64x64xf32>) -> tensor<64x64xf32>
-// CHECK-NEXT:    %5 = stablehlo.broadcast_in_dim %3, dims = [] : (tensor<f32>) -> tensor<64x64xf32>
-// CHECK-NEXT:    %6 = stablehlo.add %4, %5 : tensor<64x64xf32>
+// CHECK-NEXT:    %1 = stablehlo.transpose %0, dims = [1, 0] : (tensor<64x64xf32>) -> tensor<64x64xf32>
+// CHECK-NEXT:    %2 = stablehlo.broadcast_in_dim %arg0, dims = [] {enzymexla.symmetric_matrix = [#enzymexla<guaranteed GUARANTEED>]} : (tensor<f32>) -> tensor<64x64xf32>
+// CHECK-NEXT:    %3 = stablehlo.multiply %2, %1 : tensor<64x64xf32>
+// CHECK-NEXT:    %4 = stablehlo.multiply %cst, %arg1 {enzymexla.no_nan = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<f32>
+// CHECK-NEXT:    %5 = stablehlo.broadcast_in_dim %4, dims = [] {enzymexla.symmetric_matrix = [#enzymexla<guaranteed GUARANTEED>]} : (tensor<f32>) -> tensor<64x64xf32>
+// CHECK-NEXT:    %6 = stablehlo.add %3, %5 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<64x64xf32>
 // CHECK-NEXT:    return %6 : tensor<64x64xf32>
-// CHECK-NEXT:  }
+// CHECK-NEXT: }
