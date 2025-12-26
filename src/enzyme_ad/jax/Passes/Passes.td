@@ -889,6 +889,12 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*default=*/"0",
        /*description=*/"Convert Concatenate two operands to Manual Computation with CollectivePermute">,
        Option<
+       /*C++ variable name=*/"concat_to_dus",
+       /*CLI argument=*/"concat_to_dus",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Perform a Concatenate with Padding to optimize the communication">,
+       Option<
        /*C++ variable name=*/"concat_to_pad_comm",
        /*CLI argument=*/"concat_to_pad_comm",
        /*type=*/"int",
