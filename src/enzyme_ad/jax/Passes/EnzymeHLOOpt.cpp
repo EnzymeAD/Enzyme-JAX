@@ -2361,7 +2361,9 @@ struct DUSDUSConcat final
                idxs[0] < idxs[1] + tys[1].getShape()[diffidx] &&
                idxs[0] + tys[0].getShape()[diffidx] >
                    idxs[1] + tys[1].getShape()[diffidx] &&
-               allStatic) {
+               allStatic &&
+               idxs[0] + tys[0].getShape()[diffidx] <=
+                   dus.getOperand().getType().getShape()[diffidx]) {
       // the new update overlaps, following the old update
 
       // Case 5:
@@ -2386,7 +2388,9 @@ struct DUSDUSConcat final
                idxs[1] < idxs[0] + tys[0].getShape()[diffidx] &&
                idxs[0] + tys[0].getShape()[diffidx] <
                    idxs[1] + tys[1].getShape()[diffidx] &&
-               allStatic) {
+               allStatic &&
+               idxs[1] + tys[1].getShape()[diffidx] <=
+                   dus.getOperand().getType().getShape()[diffidx]) {
       // the new update overlaps, following the old update
 
       // Case 5:
