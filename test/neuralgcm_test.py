@@ -111,9 +111,6 @@ class NeuralGCM(EnzymeJaxTest):
         self.atol = 5e-2
         self.rtol = 1e-2
 
-        # TODO: we should fix this at some point
-        self.skip_test_assert = True
-
 
 if __name__ == "__main__":
     from test_utils import fix_paths
