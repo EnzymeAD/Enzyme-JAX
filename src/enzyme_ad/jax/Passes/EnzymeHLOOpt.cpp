@@ -19180,6 +19180,324 @@ bool isRotateLike(int dimension, Value lhs, Value rhs, stablehlo::SliceOp *sl0P,
   return true;
 }
 
+bool isExtendRotateLike(int dimension, Value lhs, Value rhs,
+                        stablehlo::ConcatenateOp *concat = nullptr,
+                        PatternRewriter *rewriter = nullptr) {
+
+  auto shapeL = cast<RankedTensorType>(lhs.getType()).getShape();
+  auto shapeR = cast<RankedTensorType>(rhs.getType()).getShape();
+
+  // The size [and data] of non relevant dimension must be the same.
+  for (size_t i = 0; i < shapeL.size(); i++) {
+    if (shapeL[i] != shapeR[i] && i != dimension) {
+      return false;
+    }
+  }
+
+  if (shapeL[dimension] == 0 || shapeR[dimension] == 0)
+    return false;
+
+  auto sl0 = lhs.getDefiningOp<stablehlo::SliceOp>();
+  auto sl1 = rhs.getDefiningOp<stablehlo::SliceOp>();
+
+  auto r0 = lhs.getDefiningOp<enzymexla::RotateOp>();
+  auto r1 = rhs.getDefiningOp<enzymexla::RotateOp>();
+
+  if (sl0 && sl1 && sl0.getOperand() == sl1.getOperand()) {
+
+    // [0...3056], [0]
+    // %1258 = stablehlo.slice %1257 [8:12, 7:1527, 0:3056] :
+    // (tensor<20x1536x3056xf32>) -> tensor<4x1520x3056xf32> loc(#loc4507) %1262
+    // = stablehlo.slice %1257 [8:12, 7:1527, 0:1] : (tensor<20x1536x3056xf32>)
+    // -> tensor<4x1520x1xf32> loc(#loc3748) %2878 = stablehlo.concatenate
+    // %1258, %1262, dim = 2 : (tensor<4x1520x3056xf32>, tensor<4x1520x1xf32>)
+    // -> tensor<4x1520x3057xf32> loc(#loc2107)
+    //
+    // [1, 2, 3, ... 3056], [0, 1]
+    // %1187 = stablehlo.slice %1179 [0:4, 0:1519, 1:3056] :
+    // (tensor<4x1519x3056xf32>) -> tensor<4x1519x3055xf32> loc(#loc2852) %1183
+    // = stablehlo.slice %1179 [0:4, 0:1519, 0:2] : (tensor<4x1519x3056xf32>) ->
+    // tensor<4x1519x2xf32> loc(#loc2852) %2936 = stablehlo.concatenate %1187,
+    // %1183, dim = 2 : (tensor<4x1519x3055xf32>, tensor<4x1519x2xf32>) ->
+    // tensor<4x1519x3057xf32> loc(#loc3581)
+    //
+    // [2, 3, ... 3056], [0, 1, 2]
+    // %1184 = stablehlo.slice %1179 [0:4, 0:1519, 2:3056] :
+    // (tensor<4x1519x3056xf32>) -> tensor<4x1519x3054xf32> loc(#loc2852) %1182
+    // = stablehlo.slice %1179 [0:4, 0:1519, 0:3] : (tensor<4x1519x3056xf32>) ->
+    // tensor<4x1519x3xf32> loc(#loc2852) %2984 = stablehlo.concatenate %1184,
+    // %1182, dim = 2 : (tensor<4x1519x3054xf32>, tensor<4x1519x3xf32>) ->
+    // tensor<4x1519x3057xf32> loc(#loc3581)
+
+    // sl0[A:end], sl1[start:A+ext]
+    for (int j = 0; j < shapeL.size(); j++) {
+      if (j == dimension) {
+        if (sl0.getStrides()[j] != 1 || sl1.getStrides()[j] != 1) {
+          return false;
+        }
+        if (sl0.getStartIndices()[j] >= sl1.getLimitIndices()[j]) {
+          return false;
+        }
+      } else {
+        if (sl0.getLimitIndices()[j] != sl1.getLimitIndices()[j]) {
+          return false;
+        }
+        if (sl0.getStartIndices()[j] != sl1.getStartIndices()[j]) {
+          return false;
+        }
+        if (sl0.getStrides()[j] != sl1.getStrides()[j]) {
+          return false;
+        }
+      }
+    }
+
+    auto extAmt =
+        sl1.getLimitIndices()[dimension] - sl0.getStartIndices()[dimension];
+    assert(extAmt > 0);
+    if (extAmt != 1)
+      return false;
+
+    if (rewriter) {
+      SmallVector<int64_t> starts = llvm::to_vector(sl1.getStartIndices());
+      SmallVector<int64_t> limits = llvm::to_vector(sl0.getLimitIndices());
+      SmallVector<int64_t> stride = llvm::to_vector(sl0.getStrides());
+      bool needs_slice = false;
+      for (size_t i = 0; i < starts.size(); i++) {
+        if (starts[i] != 0 || stride[i] != 1 ||
+            limits[i] != sl0.getOperand().getType().getShape()[i]) {
+          needs_slice = true;
+        }
+      }
+      Value base = sl0.getOperand();
+      if (needs_slice) {
+        auto slice2 = stablehlo::SliceOp::create(*rewriter, concat->getLoc(),
+                                                 base, starts, limits, stride);
+        if (auto shard = sdy::getShardingPerValue(*concat)) {
+          sdy::setShardings(slice2, shard);
+        }
+        base = slice2;
+      }
+
+      auto A = sl0.getStartIndices()[dimension];
+
+      if (A != 0) {
+        auto rot = enzymexla::RotateOp::create(*rewriter, concat->getLoc(),
+                                               base, /*amt*/ A, dimension);
+        if (auto shard = sdy::getShardingPerValue(*concat)) {
+          sdy::setShardings(rot, shard);
+        }
+        base = rot;
+      }
+
+      auto ext =
+          enzymexla::ExtendOp::create(*rewriter, concat->getLoc(), base,
+                                      /*lhs*/ extAmt, /*rhs*/ 0, dimension);
+      if (auto shard = sdy::getShardingPerValue(*concat)) {
+        sdy::setShardings(ext, shard);
+      }
+      base = ext;
+
+      auto rot = rewriter->replaceOpWithNewOp<enzymexla::RotateOp>(
+          *concat, ext, /*rotateLeftAmt*/ 1, dimension);
+      if (auto shard = sdy::getShardingPerValue(*concat)) {
+        sdy::setShardings(rot, shard);
+      }
+    }
+    return true;
+  }
+
+  if (sl0 && sl0.getOperand() == rhs) {
+
+    //  %2668 = stablehlo.slice %1171 [0:4, 0:1520, 3055:3056] :
+    //  (tensor<4x1520x3056xf32>) -> tensor<4x1520x1xf32> loc(#loc2557)
+    //  ...
+    //  %2669 = stablehlo.concatenate %2668, %1171, dim = 2 :
+    //  (tensor<4x1520x1xf32>, tensor<4x1520x3056xf32>) ->
+    //  tensor<4x1520x3057xf32> loc(#loc2557)
+
+    // sl0[end-ext, end], X[0:end]
+
+    for (int j = 0; j < shapeL.size(); j++) {
+      if (j == dimension) {
+        if (sl0.getStrides()[j] != 1) {
+          return false;
+        }
+        if (sl0.getLimitIndices()[j] != shapeR[j]) {
+          return false;
+        }
+      } else {
+        if (sl0.getLimitIndices()[j] != shapeR[j]) {
+          return false;
+        }
+        if (sl0.getStartIndices()[j] != 0) {
+          return false;
+        }
+        if (sl0.getStrides()[j] != 1) {
+          return false;
+        }
+      }
+    }
+
+    auto extAmt = shapeL[dimension];
+    assert(extAmt > 0);
+    if (extAmt != 1)
+      return false;
+
+    if (rewriter) {
+      Value base = sl0.getOperand();
+      auto dimSize =
+          cast<RankedTensorType>(base.getType()).getShape()[dimension];
+
+      auto ext =
+          enzymexla::ExtendOp::create(*rewriter, concat->getLoc(), base,
+                                      /*lhs*/ 0, /*rhs*/ extAmt, dimension);
+      if (auto shard = sdy::getShardingPerValue(*concat)) {
+        sdy::setShardings(ext, shard);
+      }
+      base = ext;
+
+      auto rot = rewriter->replaceOpWithNewOp<enzymexla::RotateOp>(
+          *concat, ext, /*rotateLeftAmt*/ dimSize - extAmt, dimension);
+      if (auto shard = sdy::getShardingPerValue(*concat)) {
+        sdy::setShardings(rot, shard);
+      }
+    }
+
+    return true;
+  }
+
+  if (sl1 && sl1.getOperand() == lhs) {
+    // ...
+    // %1186 = stablehlo.slice %1179 [0:4, 0:1519, 0:1] :
+    // (tensor<4x1519x3056xf32>) -> tensor<4x1519x1xf32> loc(#loc2852) %2933 =
+    // stablehlo.concatenate %1179, %1186, dim = 2 : (tensor<4x1519x3056xf32>,
+    // tensor<4x1519x1xf32>) -> tensor<4x1519x3057xf32> loc(#loc3581)
+
+    // X[0:end], sl1[0, ext]
+
+    for (int j = 0; j < shapeL.size(); j++) {
+      if (j == dimension) {
+        if (sl1.getStrides()[j] != 1) {
+          return false;
+        }
+        if (sl1.getStartIndices()[j] != 0) {
+          return false;
+        }
+      } else {
+        if (sl1.getLimitIndices()[j] != shapeL[j]) {
+          return false;
+        }
+        if (sl1.getStartIndices()[j] != 0) {
+          return false;
+        }
+        if (sl1.getStrides()[j] != 1) {
+          return false;
+        }
+      }
+    }
+
+    auto extAmt = shapeR[dimension];
+    assert(extAmt > 0);
+    if (extAmt != 1)
+      return false;
+
+    if (rewriter) {
+      Value base = lhs;
+
+      auto ext =
+          enzymexla::ExtendOp::create(*rewriter, concat->getLoc(), base,
+                                      /*lhs*/ extAmt, /*rhs*/ 0, dimension);
+      if (auto shard = sdy::getShardingPerValue(*concat)) {
+        sdy::setShardings(ext, shard);
+      }
+      base = ext;
+
+      auto rot = rewriter->replaceOpWithNewOp<enzymexla::RotateOp>(
+          *concat, ext, /*rotateLeftAmt*/ 1, dimension);
+      if (auto shard = sdy::getShardingPerValue(*concat)) {
+        sdy::setShardings(rot, shard);
+      }
+    }
+    return true;
+  }
+
+  if (sl0 && r1 && sl0.getOperand() == r1.getOperand() &&
+      r1.getDimension() == dimension) {
+
+    //       [3054], [3055, end, ... 0, 3054]
+    //       %2665 = stablehlo.slice %1171 [0:4, 0:1520, 3054:3055] :
+    //       (tensor<4x1520x3056xf32>) -> tensor<4x1520x1xf32> loc(#loc2557)
+    //       %2290 = "enzymexla.rotate"(%1171) <{amount = 3055 : si32, dimension
+    //       = 2 : si32}> : (tensor<4x1520x3056xf32>) -> tensor<4x1520x3056xf32>
+    //       loc(#loc3734) %2666 = stablehlo.concatenate %2665, %2290, dim = 2 :
+    //       (tensor<4x1520x1xf32>, tensor<4x1520x3056xf32>) ->
+    //       tensor<4x1520x3057xf32> loc(#loc2557)
+
+    // sl0[amt-ext, amt], rotateleft(x, amt)
+    for (int j = 0; j < shapeL.size(); j++) {
+      if (j == dimension) {
+        if (sl0.getStrides()[j] != 1) {
+          return false;
+        }
+        if (sl0.getLimitIndices()[j] != r1.getAmount()) {
+          return false;
+        }
+      } else {
+        if (sl0.getLimitIndices()[j] != shapeR[j]) {
+          return false;
+        }
+        if (sl0.getStartIndices()[j] != 0) {
+          return false;
+        }
+        if (sl0.getStrides()[j] != 1) {
+          return false;
+        }
+      }
+    }
+
+    auto extAmt = shapeL[dimension];
+    assert(extAmt > 0);
+    if (extAmt != 1)
+      return false;
+
+    if (rewriter) {
+      Value base = sl0.getOperand();
+
+      auto A = sl0.getStartIndices()[dimension];
+
+      if (A != 0) {
+        auto rot = enzymexla::RotateOp::create(*rewriter, concat->getLoc(),
+                                               base, /*amt*/ A, dimension);
+        if (auto shard = sdy::getShardingPerValue(*concat)) {
+          sdy::setShardings(rot, shard);
+        }
+        base = rot;
+      }
+
+      auto ext =
+          enzymexla::ExtendOp::create(*rewriter, concat->getLoc(), base,
+                                      /*lhs*/ extAmt, /*rhs*/ 0, dimension);
+      if (auto shard = sdy::getShardingPerValue(*concat)) {
+        sdy::setShardings(ext, shard);
+      }
+      base = ext;
+
+      auto rot = rewriter->replaceOpWithNewOp<enzymexla::RotateOp>(
+          *concat, ext, /*rotateLeftAmt*/ 1, dimension);
+      if (auto shard = sdy::getShardingPerValue(*concat)) {
+        sdy::setShardings(rot, shard);
+      }
+    }
+    return true;
+  }
+
+  if (sl1 && r0 && sl1.getOperand() == r0.getOperand() &&
+      r0.getDimension() == dimension) {
+    // TODO
+  }
+  return false;
+}
+
 struct RecognizeRotate
     : public CheckedOpRewritePattern<stablehlo::ConcatenateOp,
                                      RecognizeRotate> {
@@ -19189,6 +19507,10 @@ struct RecognizeRotate
                                     PatternRewriter &rewriter) const {
     if (concat.getOperands().size() < 2)
       return failure();
+    if (concat.getOperands().size() == 2 &&
+        isExtendRotateLike(concat.getDimension(), concat.getOperands()[0],
+                           concat.getOperands()[1], &concat, &rewriter))
+      return success();
     for (int i = 1; i < concat.getOperands().size(); i++) {
       stablehlo::SliceOp sl0, sl1;
       if (!isRotateLike(concat.getDimension(), concat.getOperands()[i - 1],
@@ -19248,6 +19570,7 @@ struct RecognizeRotate
       }
       return success();
     }
+
     return failure();
   }
 };
@@ -19847,6 +20170,9 @@ bool isAxisFusible(int dimension, ArrayRef<Value> vals) {
 
   for (int i = 1; i < vals.size(); i++) {
     if (isRotateLike(dimension, vals[i - 1], vals[i])) {
+      return true;
+    }
+    if (isExtendRotateLike(dimension, vals[i - 1], vals[i])) {
       return true;
     }
   }
