@@ -8,10 +8,9 @@ func.func @rot1(%1171 : tensor<4x1520x3056xf32>) -> tensor<4x1520x3057xf32> {
 }
 
 // CHECK:  func.func @rot1(%arg0: tensor<4x1520x3056xf32>) -> tensor<4x1520x3057xf32> {
-// CHECK-NEXT:    %0 = "enzymexla.rotate"(%arg0) <{amount = 3054 : si32, dimension = 2 : si32}> : (tensor<4x1520x3056xf32>) -> tensor<4x1520x3056xf32>
-// CHECK-NEXT:    %1 = "enzymexla.extend"(%0) <{dimension = 2 : i64, lhs = 1 : i64, rhs = 0 : i64}> : (tensor<4x1520x3056xf32>) -> tensor<4x1520x3057xf32>
-// CHECK-NEXT:    %2 = "enzymexla.rotate"(%1) <{amount = 1 : si32, dimension = 2 : si32}> : (tensor<4x1520x3057xf32>) -> tensor<4x1520x3057xf32>
-// CHECK-NEXT:    stablehlo.return %2 : tensor<4x1520x3057xf32>
+// CHECK-NEXT:    %0 = "enzymexla.rotate"(%arg0) <{amount = 3055 : si32, dimension = 2 : si32}> : (tensor<4x1520x3056xf32>) -> tensor<4x1520x3056xf32>
+// CHECK-NEXT:    %1 = "enzymexla.wrap"(%0) <{dimension = 2 : i64, lhs = 1 : i64, rhs = 0 : i64}> : (tensor<4x1520x3056xf32>) -> tensor<4x1520x3057xf32>
+// CHECK-NEXT:    stablehlo.return %1 : tensor<4x1520x3057xf32>
 // CHECK-NEXT:  }
 
 func.func @rot2(%1179 : tensor<4x1519x3056xf32>) -> tensor<4x1519x3057xf32> {
@@ -24,12 +23,10 @@ func.func @rot2(%1179 : tensor<4x1519x3056xf32>) -> tensor<4x1519x3057xf32> {
 }
 
 // CHECK:  func.func @rot2(%arg0: tensor<4x1519x3056xf32>) -> tensor<4x1519x3057xf32> {
-// CHECK-NEXT:    %0 = "enzymexla.rotate"(%arg0) <{amount = 3053 : si32, dimension = 2 : si32}> : (tensor<4x1519x3056xf32>) -> tensor<4x1519x3056xf32>
-// CHECK-NEXT:    %1 = "enzymexla.extend"(%0) <{dimension = 2 : i64, lhs = 1 : i64, rhs = 0 : i64}> : (tensor<4x1519x3056xf32>) -> tensor<4x1519x3057xf32>
-// CHECK-NEXT:    %2 = "enzymexla.rotate"(%1) <{amount = 1 : si32, dimension = 2 : si32}> : (tensor<4x1519x3057xf32>) -> tensor<4x1519x3057xf32>
-// CHECK-NEXT:    stablehlo.return %2 : tensor<4x1519x3057xf32>
+// CHECK-NEXT:    %0 = "enzymexla.rotate"(%arg0) <{amount = 3054 : si32, dimension = 2 : si32}> : (tensor<4x1519x3056xf32>) -> tensor<4x1519x3056xf32>
+// CHECK-NEXT:    %1 = "enzymexla.wrap"(%0) <{dimension = 2 : i64, lhs = 1 : i64, rhs = 0 : i64}> : (tensor<4x1519x3056xf32>) -> tensor<4x1519x3057xf32>
+// CHECK-NEXT:    stablehlo.return %1 : tensor<4x1519x3057xf32>
 // CHECK-NEXT:  }
-
 
 func.func @argslice(%1171 : tensor<4x1520x3056xf32>) -> tensor<4x1520x3057xf32> {
    %2295 = stablehlo.slice %1171 [0:4, 0:1520, 0:1] : (tensor<4x1520x3056xf32>) -> tensor<4x1520x1xf32>
@@ -38,9 +35,8 @@ func.func @argslice(%1171 : tensor<4x1520x3056xf32>) -> tensor<4x1520x3057xf32> 
 }
 
 // CHECK:  func.func @argslice(%arg0: tensor<4x1520x3056xf32>) -> tensor<4x1520x3057xf32> {
-// CHECK-NEXT:    %0 = "enzymexla.extend"(%arg0) <{dimension = 2 : i64, lhs = 1 : i64, rhs = 0 : i64}> : (tensor<4x1520x3056xf32>) -> tensor<4x1520x3057xf32>
-// CHECK-NEXT:    %1 = "enzymexla.rotate"(%0) <{amount = 1 : si32, dimension = 2 : si32}> : (tensor<4x1520x3057xf32>) -> tensor<4x1520x3057xf32>
-// CHECK-NEXT:    stablehlo.return %1 : tensor<4x1520x3057xf32>
+// CHECK-NEXT:    %0 = "enzymexla.wrap"(%arg0) <{dimension = 2 : i64, lhs = 0 : i64, rhs = 1 : i64}> : (tensor<4x1520x3056xf32>) -> tensor<4x1520x3057xf32>
+// CHECK-NEXT:    stablehlo.return %0 : tensor<4x1520x3057xf32>
 // CHECK-NEXT:  }
 
 
@@ -51,9 +47,8 @@ func.func @argslice2(%1179 : tensor<4x1519x3056xf32>) -> tensor<4x1519x3057xf32>
 }
 
 // CHECK:  func.func @argslice2(%arg0: tensor<4x1519x3056xf32>) -> tensor<4x1519x3057xf32> {
-// CHECK-NEXT:    %0 = "enzymexla.extend"(%arg0) <{dimension = 2 : i64, lhs = 1 : i64, rhs = 0 : i64}> : (tensor<4x1519x3056xf32>) -> tensor<4x1519x3057xf32>
-// CHECK-NEXT:    %1 = "enzymexla.rotate"(%0) <{amount = 1 : si32, dimension = 2 : si32}> : (tensor<4x1519x3057xf32>) -> tensor<4x1519x3057xf32>
-// CHECK-NEXT:    stablehlo.return %1 : tensor<4x1519x3057xf32>
+// CHECK-NEXT:    %0 = "enzymexla.wrap"(%arg0) <{dimension = 2 : i64, lhs = 0 : i64, rhs = 1 : i64}> : (tensor<4x1519x3056xf32>) -> tensor<4x1519x3057xf32>
+// CHECK-NEXT:    stablehlo.return %0 : tensor<4x1519x3057xf32>
 // CHECK-NEXT:  }
 
 func.func @slicearg(%1171 : tensor<4x1520x3056xf32>) -> tensor<4x1520x3057xf32> {
@@ -62,10 +57,9 @@ func.func @slicearg(%1171 : tensor<4x1520x3056xf32>) -> tensor<4x1520x3057xf32> 
   stablehlo.return %2669 : tensor<4x1520x3057xf32> 
 }
 
-// CHECK:  func.func @slicearg(%arg0: tensor<4x1520x3056xf32>) -> tensor<4x1520x3057xf32> {
-// CHECK-NEXT:    %0 = "enzymexla.extend"(%arg0) <{dimension = 2 : i64, lhs = 0 : i64, rhs = 1 : i64}> : (tensor<4x1520x3056xf32>) -> tensor<4x1520x3057xf32>
-// CHECK-NEXT:    %1 = "enzymexla.rotate"(%0) <{amount = 3055 : si32, dimension = 2 : si32}> : (tensor<4x1520x3057xf32>) -> tensor<4x1520x3057xf32>
-// CHECK-NEXT:    stablehlo.return %1 : tensor<4x1520x3057xf32>
+// CHECK-NEXT:  func.func @slicearg(%arg0: tensor<4x1520x3056xf32>) -> tensor<4x1520x3057xf32> {
+// CHECK-NEXT:    %0 = "enzymexla.wrap"(%arg0) <{dimension = 2 : i64, lhs = 1 : i64, rhs = 0 : i64}> : (tensor<4x1520x3056xf32>) -> tensor<4x1520x3057xf32>
+// CHECK-NEXT:    stablehlo.return %0 : tensor<4x1520x3057xf32>
 // CHECK-NEXT:  }
 
 func.func @sliceslice(%1257 : tensor<20x1536x3056xf32>) -> tensor<4x1520x3057xf32> {
@@ -77,9 +71,8 @@ func.func @sliceslice(%1257 : tensor<20x1536x3056xf32>) -> tensor<4x1520x3057xf3
 
 // CHECK:  func.func @sliceslice(%arg0: tensor<20x1536x3056xf32>) -> tensor<4x1520x3057xf32> {
 // CHECK-NEXT:    %0 = stablehlo.slice %arg0 [8:12, 7:1527, 0:3056] : (tensor<20x1536x3056xf32>) -> tensor<4x1520x3056xf32>
-// CHECK-NEXT:    %1 = "enzymexla.extend"(%0) <{dimension = 2 : i64, lhs = 1 : i64, rhs = 0 : i64}> : (tensor<4x1520x3056xf32>) -> tensor<4x1520x3057xf32>
-// CHECK-NEXT:    %2 = "enzymexla.rotate"(%1) <{amount = 1 : si32, dimension = 2 : si32}> : (tensor<4x1520x3057xf32>) -> tensor<4x1520x3057xf32>
-// CHECK-NEXT:    stablehlo.return %2 : tensor<4x1520x3057xf32>
+// CHECK-NEXT:    %1 = "enzymexla.wrap"(%0) <{dimension = 2 : i64, lhs = 0 : i64, rhs = 1 : i64}> : (tensor<4x1520x3056xf32>) -> tensor<4x1520x3057xf32>
+// CHECK-NEXT:    stablehlo.return %1 : tensor<4x1520x3057xf32>
 // CHECK-NEXT:  }
 
 func.func @sliceslice2(%1179 : tensor<4x1519x3056xf32>) -> tensor<4x1520x3057xf32> {
@@ -91,9 +84,8 @@ func.func @sliceslice2(%1179 : tensor<4x1519x3056xf32>) -> tensor<4x1520x3057xf3
 
 // CHECK:  func.func @sliceslice2(%arg0: tensor<4x1519x3056xf32>) -> tensor<4x1520x3057xf32> {
 // CHECK-NEXT:    %0 = "enzymexla.rotate"(%arg0) <{amount = 1 : si32, dimension = 2 : si32}> : (tensor<4x1519x3056xf32>) -> tensor<4x1519x3056xf32>
-// CHECK-NEXT:    %1 = "enzymexla.extend"(%0) <{dimension = 2 : i64, lhs = 1 : i64, rhs = 0 : i64}> : (tensor<4x1519x3056xf32>) -> tensor<4x1519x3057xf32>
-// CHECK-NEXT:    %2 = "enzymexla.rotate"(%1) <{amount = 1 : si32, dimension = 2 : si32}> : (tensor<4x1519x3057xf32>) -> tensor<4x1519x3057xf32>
-// CHECK-NEXT:    stablehlo.return %2 : tensor<4x1519x3057xf32>
+// CHECK-NEXT:    %1 = "enzymexla.wrap"(%0) <{dimension = 2 : i64, lhs = 0 : i64, rhs = 1 : i64}> : (tensor<4x1519x3056xf32>) -> tensor<4x1519x3057xf32>
+// CHECK-NEXT:    stablehlo.return %1 : tensor<4x1519x3057xf32>
 // CHECK-NEXT:  }
 
 func.func @sliceslice3(%1179 : tensor<4x1519x3056xf32>) -> tensor<4x1520x3057xf32> {
@@ -105,8 +97,19 @@ func.func @sliceslice3(%1179 : tensor<4x1519x3056xf32>) -> tensor<4x1520x3057xf3
 
 // CHECK:  func.func @sliceslice3(%arg0: tensor<4x1519x3056xf32>) -> tensor<4x1520x3057xf32> {
 // CHECK-NEXT:    %0 = "enzymexla.rotate"(%arg0) <{amount = 2 : si32, dimension = 2 : si32}> : (tensor<4x1519x3056xf32>) -> tensor<4x1519x3056xf32>
-// CHECK-NEXT:    %1 = "enzymexla.extend"(%0) <{dimension = 2 : i64, lhs = 1 : i64, rhs = 0 : i64}> : (tensor<4x1519x3056xf32>) -> tensor<4x1519x3057xf32>
-// CHECK-NEXT:    %2 = "enzymexla.rotate"(%1) <{amount = 1 : si32, dimension = 2 : si32}> : (tensor<4x1519x3057xf32>) -> tensor<4x1519x3057xf32>
-// CHECK-NEXT:    stablehlo.return %2 : tensor<4x1519x3057xf32>
+// CHECK-NEXT:    %1 = "enzymexla.wrap"(%0) <{dimension = 2 : i64, lhs = 0 : i64, rhs = 1 : i64}> : (tensor<4x1519x3056xf32>) -> tensor<4x1519x3057xf32>
+// CHECK-NEXT:    stablehlo.return %1 : tensor<4x1519x3057xf32>
 // CHECK-NEXT:  }
 
+func.func @sliceslice4(%32 : tensor<20x6144x12288xf32>) -> tensor<4x6128x12273xf32> {
+%2064 = stablehlo.slice %32 [8:12, 9:6137, 12279:12280] : (tensor<20x6144x12288xf32>) -> tensor<4x6128x1xf32>
+%784 = stablehlo.slice %32 [8:12, 9:6137, 8:12280] : (tensor<20x6144x12288xf32>) -> tensor<4x6128x12272xf32>
+%2066 = stablehlo.concatenate %2064, %784, dim = 2 : (tensor<4x6128x1xf32>, tensor<4x6128x12272xf32>) -> tensor<4x6128x12273xf32>
+stablehlo.return %2066 : tensor<4x6128x12273xf32>
+}
+
+// CHECK-NEXT:  func.func @sliceslice4(%arg0: tensor<20x6144x12288xf32>) -> tensor<4x6128x12273xf32> {
+// CHECK-NEXT:    %0 = stablehlo.slice %arg0 [8:12, 9:6137, 8:12280] : (tensor<20x6144x12288xf32>) -> tensor<4x6128x12272xf32>
+// CHECK-NEXT:    %1 = "enzymexla.wrap"(%0) <{dimension = 2 : i64, lhs = 1 : i64, rhs = 0 : i64}> : (tensor<4x6128x12272xf32>) -> tensor<4x6128x12273xf32>
+// CHECK-NEXT:    stablehlo.return %1 : tensor<4x6128x12273xf32>
+// CHECK-NEXT:  }

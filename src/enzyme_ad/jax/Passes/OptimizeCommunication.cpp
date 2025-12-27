@@ -2146,8 +2146,7 @@ struct RotateSpmdOptimize : public OpRewritePattern<enzymexla::RotateOp> {
     }
 
     assert(rotate.getType().getShape()[rotateDimension] > 0);
-    assert(rotate.getType().getShape()[rotateDimension] <
-           rotate.getType().getShape()[rotateDimension]);
+    assert(rotate.getAmount() < rotate.getType().getShape()[rotateDimension]);
 
     // Our op is rotate left, the spmd one is rotate right. rotateleft(x) =
     // rotateright(-x), which we add the dim size to make positive.

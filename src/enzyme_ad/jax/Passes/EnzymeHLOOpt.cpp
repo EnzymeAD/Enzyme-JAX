@@ -19278,32 +19278,38 @@ bool isExtendRotateLike(int dimension, Value lhs, Value rhs,
         base = slice2;
       }
 
-      auto A = sl0.getStartIndices()[dimension];
+      auto A = sl0.getStartIndices()[dimension] - starts[dimension];
 
-      if (A != 0) {
-        assert(A > 0);
-        assert(A <
-               cast<RankedTensorType>(base.getType()).getShape()[dimension]);
-        auto rot = enzymexla::RotateOp::create(*rewriter, concat->getLoc(),
-                                               base, /*amt*/ A, dimension);
+      if (A == 0) {
+        auto wrap = rewriter->replaceOpWithNewOp<enzymexla::WrapOp>(
+            *concat, base, /*lhs*/ 0, /*rhs*/ 1, dimension);
         if (auto shard = sdy::getShardingPerValue(*concat)) {
-          sdy::setShardings(rot, shard);
+          sdy::setShardings(wrap, shard);
         }
-        base = rot;
+        return true;
       }
 
-      auto ext =
-          enzymexla::ExtendOp::create(*rewriter, concat->getLoc(), base,
-                                      /*lhs*/ extAmt, /*rhs*/ 0, dimension);
-      if (auto shard = sdy::getShardingPerValue(*concat)) {
-        sdy::setShardings(ext, shard);
+      if (A ==
+          cast<RankedTensorType>(base.getType()).getShape()[dimension] - 1) {
+        auto wrap = rewriter->replaceOpWithNewOp<enzymexla::WrapOp>(
+            *concat, base, /*lhs*/ 1, /*rhs*/ 0, dimension);
+        if (auto shard = sdy::getShardingPerValue(*concat)) {
+          sdy::setShardings(wrap, shard);
+        }
+        return true;
       }
-      base = ext;
 
-      auto rot = rewriter->replaceOpWithNewOp<enzymexla::RotateOp>(
-          *concat, ext, /*rotateLeftAmt*/ 1, dimension);
+      auto rot = enzymexla::RotateOp::create(*rewriter, concat->getLoc(), base,
+                                             A, dimension);
       if (auto shard = sdy::getShardingPerValue(*concat)) {
         sdy::setShardings(rot, shard);
+      }
+      base = rot;
+
+      auto wrap = rewriter->replaceOpWithNewOp<enzymexla::WrapOp>(
+          *concat, base, /*lhs*/ 0, /*rhs*/ 1, dimension);
+      if (auto shard = sdy::getShardingPerValue(*concat)) {
+        sdy::setShardings(wrap, shard);
       }
     }
     return true;
@@ -19343,27 +19349,13 @@ bool isExtendRotateLike(int dimension, Value lhs, Value rhs,
 
     auto extAmt = shapeL[dimension];
     assert(extAmt > 0);
-    if (extAmt != 1)
-      return false;
 
     if (rewriter) {
       Value base = sl0.getOperand();
-      auto dimSize =
-          cast<RankedTensorType>(base.getType()).getShape()[dimension];
-
-      auto ext =
-          enzymexla::ExtendOp::create(*rewriter, concat->getLoc(), base,
-                                      /*lhs*/ 0, /*rhs*/ extAmt, dimension);
+      auto wrap = rewriter->replaceOpWithNewOp<enzymexla::WrapOp>(
+          *concat, base, /*lhs*/ extAmt, /*rhs*/ 0, dimension);
       if (auto shard = sdy::getShardingPerValue(*concat)) {
-        sdy::setShardings(ext, shard);
-      }
-      base = ext;
-
-      assert(dimSize - extAmt > 0);
-      auto rot = rewriter->replaceOpWithNewOp<enzymexla::RotateOp>(
-          *concat, ext, /*rotateLeftAmt*/ dimSize - extAmt, dimension);
-      if (auto shard = sdy::getShardingPerValue(*concat)) {
-        sdy::setShardings(rot, shard);
+        sdy::setShardings(wrap, shard);
       }
     }
 
@@ -19402,24 +19394,14 @@ bool isExtendRotateLike(int dimension, Value lhs, Value rhs,
 
     auto extAmt = shapeR[dimension];
     assert(extAmt > 0);
-    if (extAmt != 1)
-      return false;
 
     if (rewriter) {
       Value base = lhs;
 
-      auto ext =
-          enzymexla::ExtendOp::create(*rewriter, concat->getLoc(), base,
-                                      /*lhs*/ extAmt, /*rhs*/ 0, dimension);
+      auto wrap = rewriter->replaceOpWithNewOp<enzymexla::WrapOp>(
+          *concat, base, /*lhs*/ 0, /*rhs*/ extAmt, dimension);
       if (auto shard = sdy::getShardingPerValue(*concat)) {
-        sdy::setShardings(ext, shard);
-      }
-      base = ext;
-
-      auto rot = rewriter->replaceOpWithNewOp<enzymexla::RotateOp>(
-          *concat, ext, /*rotateLeftAmt*/ 1, dimension);
-      if (auto shard = sdy::getShardingPerValue(*concat)) {
-        sdy::setShardings(rot, shard);
+        sdy::setShardings(wrap, shard);
       }
     }
     return true;
@@ -19465,34 +19447,10 @@ bool isExtendRotateLike(int dimension, Value lhs, Value rhs,
       return false;
 
     if (rewriter) {
-      Value base = sl0.getOperand();
-
-      auto A = sl0.getStartIndices()[dimension];
-
-      if (A != 0) {
-        assert(A > 0);
-        assert(A <
-               cast<RankedTensorType>(base.getType()).getShape()[dimension]);
-        auto rot = enzymexla::RotateOp::create(*rewriter, concat->getLoc(),
-                                               base, /*amt*/ A, dimension);
-        if (auto shard = sdy::getShardingPerValue(*concat)) {
-          sdy::setShardings(rot, shard);
-        }
-        base = rot;
-      }
-
-      auto ext =
-          enzymexla::ExtendOp::create(*rewriter, concat->getLoc(), base,
-                                      /*lhs*/ extAmt, /*rhs*/ 0, dimension);
+      auto wrap = rewriter->replaceOpWithNewOp<enzymexla::WrapOp>(
+          *concat, r1, /*lhs*/ extAmt, /*rhs*/ 0, dimension);
       if (auto shard = sdy::getShardingPerValue(*concat)) {
-        sdy::setShardings(ext, shard);
-      }
-      base = ext;
-
-      auto rot = rewriter->replaceOpWithNewOp<enzymexla::RotateOp>(
-          *concat, ext, /*rotateLeftAmt*/ 1, dimension);
-      if (auto shard = sdy::getShardingPerValue(*concat)) {
-        sdy::setShardings(rot, shard);
+        sdy::setShardings(wrap, shard);
       }
     }
     return true;
