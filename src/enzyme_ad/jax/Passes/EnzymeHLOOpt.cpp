@@ -19281,6 +19281,7 @@ bool isExtendRotateLike(int dimension, Value lhs, Value rhs,
       auto A = sl0.getStartIndices()[dimension];
 
       if (A != 0) {
+        assert(A > 0);
         auto rot = enzymexla::RotateOp::create(*rewriter, concat->getLoc(),
                                                base, /*amt*/ A, dimension);
         if (auto shard = sdy::getShardingPerValue(*concat)) {
@@ -19356,6 +19357,7 @@ bool isExtendRotateLike(int dimension, Value lhs, Value rhs,
       }
       base = ext;
 
+      assert(dimSize - extAmt > 0);
       auto rot = rewriter->replaceOpWithNewOp<enzymexla::RotateOp>(
           *concat, ext, /*rotateLeftAmt*/ dimSize - extAmt, dimension);
       if (auto shard = sdy::getShardingPerValue(*concat)) {
@@ -19466,6 +19468,7 @@ bool isExtendRotateLike(int dimension, Value lhs, Value rhs,
       auto A = sl0.getStartIndices()[dimension];
 
       if (A != 0) {
+        assert(A > 0);
         auto rot = enzymexla::RotateOp::create(*rewriter, concat->getLoc(),
                                                base, /*amt*/ A, dimension);
         if (auto shard = sdy::getShardingPerValue(*concat)) {
