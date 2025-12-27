@@ -41,13 +41,12 @@ func.func @main2(%arg0: tensor<9x8x7xf64>, %arg1: tensor<i64>) -> tensor<1x3xf64
 }
 
 // CHECK: func.func @main2(%arg0: tensor<9x8x7xf64>, %arg1: tensor<i64>) -> tensor<1x3xf64> {
-// CHECK-NEXT:   %c = stablehlo.constant dense<2> : tensor<i32>
-// CHECK-NEXT:   %c_0 = stablehlo.constant dense<7> : tensor<i32>
-// CHECK-NEXT:   %c_1 = stablehlo.constant dense<1> : tensor<i32>
+// CHECK-NEXT:   %c = stablehlo.constant dense<3> : tensor<i32>
+// CHECK-NEXT:   %c_0 = stablehlo.constant dense<1> : tensor<i32>
 // CHECK-NEXT:   %0 = stablehlo.convert %arg1 : (tensor<i64>) -> tensor<i32>
-// CHECK-NEXT:   %1 = stablehlo.subtract %0, %c_1 : tensor<i32>
-// CHECK-NEXT:   %2 = stablehlo.add %0, %c_0 : tensor<i32>
-// CHECK-NEXT:   %3 = stablehlo.dynamic_slice %arg0, %2, %c, %1, sizes = [1, 1, 3] : (tensor<9x8x7xf64>, tensor<i32>, tensor<i32>, tensor<i32>) -> tensor<1x1x3xf64>
+// CHECK-NEXT:   %1 = stablehlo.subtract %0, %c_0 : tensor<i32>
+// CHECK-NEXT:   %2 = stablehlo.add %0, %c : tensor<i32>
+// CHECK-NEXT:   %3 = stablehlo.dynamic_slice %arg0, %2, %c_0, %1, sizes = [1, 1, 3] : (tensor<9x8x7xf64>, tensor<i32>, tensor<i32>, tensor<i32>) -> tensor<1x1x3xf64>
 // CHECK-NEXT:   %4 = stablehlo.reshape %3 : (tensor<1x1x3xf64>) -> tensor<1x3xf64>
 // CHECK-NEXT:   return %4 : tensor<1x3xf64>
 // CHECK-NEXT: }

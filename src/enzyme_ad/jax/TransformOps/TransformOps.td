@@ -2537,6 +2537,11 @@ def ApplyGreedyWhileLoopBatchFissionPatterns : EnzymeHLOPatternOp<
   let patterns = ["GreedyWhileLoopBatchFission"];
 }
 
+def ApplyRemoveLoopCarriedDependenciesFromWhileLoadOperationsPatterns : EnzymeHLOPatternOp<
+    "remove_loop_carried_dependencies_from_while_load_operations"> {
+  let patterns = ["RemoveLoopCarriedDependenciesFromWhileLoadOperations"];
+}
+
 def EnzymeHLOUnroll : EnzymeHLOParameterizedPatternOp<
     "enzyme_hlo_unroll"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, I64Attr:$parameter);
