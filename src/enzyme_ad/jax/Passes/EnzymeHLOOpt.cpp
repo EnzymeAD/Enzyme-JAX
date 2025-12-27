@@ -1279,8 +1279,8 @@ struct TransposeDUS final
 
     SmallVector<Value> permutedStartIndices;
     permutedStartIndices.resize(dus.getStartIndices().size());
-    for (size_t i = 0; i < permutation.size(); ++i) {
-      permutedStartIndices[permutation[i]] = dus.getStartIndices()[i];
+    for (auto [i, permIndex] : llvm::enumerate(permutation)) {
+      permutedStartIndices[i] = dus.getStartIndices()[permIndex];
     }
 
     auto newDus = stablehlo::DynamicUpdateSliceOp::create(
