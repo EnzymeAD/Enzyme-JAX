@@ -38,13 +38,9 @@ module {
 }
 
 // CHECK:  func.func @main(%arg0: tensor<3x2xf64>, %arg1: tensor<3x2xf64>, %arg2: tensor<3x2xf64>) -> (tensor<i64>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<3x2xf64>) {
-// CHECK-NEXT:     %c = stablehlo.constant dense<3> : tensor<i64>
-// CHECK-NEXT:     %c_0 = stablehlo.constant dense<2> : tensor<i64>
-// CHECK-NEXT:     %c_1 = stablehlo.constant dense<1> : tensor<i64>
-// CHECK-NEXT:     %0 = stablehlo.broadcast_in_dim %arg1, dims = [1, 0] : (tensor<3x2xf64>) -> tensor<2x3x1xf64>
-// CHECK-NEXT:     %1 = stablehlo.broadcast_in_dim %arg2, dims = [1, 0] : (tensor<3x2xf64>) -> tensor<2x3x1xf64>
-// CHECK-NEXT:     %2 = stablehlo.add %0, %1 : tensor<2x3x1xf64>
-// CHECK-NEXT:     %3 = stablehlo.reshape %2 : (tensor<2x3x1xf64>) -> tensor<2x3xf64>
-// CHECK-NEXT:     %4 = stablehlo.transpose %3, dims = [1, 0] : (tensor<2x3xf64>) -> tensor<3x2xf64>
-// CHECK-NEXT:     return %c_0, %c_1, %c_1, %c_0, %c, %4 : tensor<i64>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<3x2xf64>
-// CHECK-NEXT:   }
+// CHECK-NEXT:    %c = stablehlo.constant dense<3> : tensor<i64>
+// CHECK-NEXT:    %c_0 = stablehlo.constant dense<2> : tensor<i64>
+// CHECK-NEXT:    %c_1 = stablehlo.constant dense<1> : tensor<i64>
+// CHECK-NEXT:    %0 = stablehlo.add %arg1, %arg2 : tensor<3x2xf64>
+// CHECK-NEXT:    return %c_0, %c_1, %c_1, %c_0, %c, %0 : tensor<i64>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<3x2xf64>
+// CHECK-NEXT:  }

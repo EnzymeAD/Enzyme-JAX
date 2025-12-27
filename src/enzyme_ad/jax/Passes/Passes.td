@@ -1076,6 +1076,12 @@ def AutoBatchingPass : Pass<"auto-batching"> {
       /*default=*/"true",
       /*description=*/"Whether to run while is copy simplify passes">,
     Option<
+      /*C++ variable name=*/"while_remove_loop_carried_dependencies_from_load_operations",
+      /*CLI argument=*/"while_remove_loop_carried_dependencies_from_load_operations",
+      /*type=*/"bool",
+      /*default=*/"true",
+      /*description=*/"remove loop carried deps from load operations">,
+    Option<
         /*C++ variable name=*/"max_iterations",
         /*CLI argument=*/"max_iterations",
         /*type=*/"int64_t",

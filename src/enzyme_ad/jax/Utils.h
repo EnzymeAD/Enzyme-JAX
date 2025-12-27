@@ -905,6 +905,9 @@ SmallVector<int64_t> findReshapeInsertionDims(ArrayRef<int64_t> inputShape,
 
 bool isInsertDimOp(stablehlo::ReshapeOp reshapeOp);
 
+void getSingletonInsertionDims(stablehlo::BroadcastInDimOp bcastOp,
+                               SmallVectorImpl<int64_t> &insertionDims);
+
 bool areValidInsertionDims(RankedTensorType inputType,
                            RankedTensorType outputType,
                            SmallVector<int64_t> insertionDims);

@@ -31,6 +31,8 @@ struct WhileLoopInfo {
 
   LogicalResult computeInfo();
 
+  stablehlo::WhileOp getOp() { return op; }
+
   bool isValid() { return start && limit && foundStep; }
   bool isConstantStart() { return constStart.has_value(); }
   bool isConstantLimit() { return constLimit.has_value(); }
@@ -144,6 +146,17 @@ private:
   AffineIndexInfo updateAffineIndexInfo(AffineIndexInfo curInfo,
                                         llvm::APInt scale, llvm::APInt offset);
 };
+
+template <typename OpTy>
+void hoistStartIndicesOutsideLoop(OpTy op, OpBuilder &builder,
+                                  SmallVectorImpl<Value> &newStartIndices,
+                                  SmallVectorImpl<int64_t> &dimensions,
+                                  WhileLoopInfo &whileLoopInfo);
+
+void hoistChainOfOps(DenseMap<Value, SmallVector<Operation *>> &hoistMap,
+                     OpBuilder &builder, stablehlo::WhileOp whileOp,
+                     WhileLoopInfo &info,
+                     DenseMap<Value, Value> &hoistedValues);
 
 } // end namespace enzyme
 
