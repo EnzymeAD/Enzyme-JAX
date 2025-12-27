@@ -113,3 +113,34 @@ stablehlo.return %2066 : tensor<4x6128x12273xf32>
 // CHECK-NEXT:    %1 = "enzymexla.wrap"(%0) <{dimension = 2 : i64, lhs = 1 : i64, rhs = 0 : i64}> : (tensor<4x6128x12272xf32>) -> tensor<4x6128x12273xf32>
 // CHECK-NEXT:    stablehlo.return %1 : tensor<4x6128x12273xf32>
 // CHECK-NEXT:  }
+
+func.func @slicerotateslice(%15 : tensor<20x6144x12272xf32>) -> tensor<4x6128x12273xf32>  {
+  %22 = stablehlo.slice %15 [8:12, 8:6136, 12269:12270] : (tensor<20x6144x12272xf32>) -> tensor<4x6128x1xf32> 
+  %23 = stablehlo.slice %15 [8:12, 8:6136, 0:12272] : (tensor<20x6144x12272xf32>) -> tensor<4x6128x12272xf32> 
+  %648 = "enzymexla.rotate"(%23) <{amount = 12270 : si32, dimension = 2 : si32}> : (tensor<4x6128x12272xf32>) -> tensor<4x6128x12272xf32> 
+  %1847 = stablehlo.concatenate %22, %648, dim = 2 : (tensor<4x6128x1xf32>, tensor<4x6128x12272xf32>) -> tensor<4x6128x12273xf32> 
+  stablehlo.return %1847 : tensor<4x6128x12273xf32>
+}
+
+// CHECK-NEXT:  func.func @slicerotateslice(%arg0: tensor<20x6144x12272xf32>) -> tensor<4x6128x12273xf32> {
+// CHECK-NEXT:    %0 = stablehlo.slice %arg0 [8:12, 8:6136, 0:12272] : (tensor<20x6144x12272xf32>) -> tensor<4x6128x12272xf32>
+// CHECK-NEXT:    %1 = "enzymexla.rotate"(%0) <{amount = 12270 : si32, dimension = 2 : si32}> : (tensor<4x6128x12272xf32>) -> tensor<4x6128x12272xf32>
+// CHECK-NEXT:    %2 = "enzymexla.wrap"(%1) <{dimension = 2 : i64, lhs = 1 : i64, rhs = 0 : i64}> : (tensor<4x6128x12272xf32>) -> tensor<4x6128x12273xf32>
+// CHECK-NEXT:    stablehlo.return %2 : tensor<4x6128x12273xf32>
+// CHECK-NEXT:  }
+
+func.func @rotatesliceslice(%arg20 : tensor<20x6144x12288xf32>) -> tensor<4x6128x12273xf32> {
+  %685 = stablehlo.slice %arg20 [8:12, 8:6136, 8:12280] : (tensor<20x6144x12288xf32>) -> tensor<4x6128x12272xf32> 
+  %1235 = "enzymexla.rotate"(%685) <{amount = 2 : si32, dimension = 2 : si32}> : (tensor<4x6128x12272xf32>) -> tensor<4x6128x12272xf32> 
+  %1635 = stablehlo.slice %arg20 [8:12, 8:6136, 10:11] : (tensor<20x6144x12288xf32>) -> tensor<4x6128x1xf32> 
+  %1636 = stablehlo.concatenate %1235, %1635, dim = 2 : (tensor<4x6128x12272xf32>, tensor<4x6128x1xf32>) -> tensor<4x6128x12273xf32> 
+  stablehlo.return %1636 : tensor<4x6128x12273xf32>
+}
+
+// CHECK:  func.func @rotatesliceslice(%arg0: tensor<20x6144x12288xf32>) -> tensor<4x6128x12273xf32> {
+// CHECK-NEXT:    %0 = stablehlo.slice %arg0 [8:12, 8:6136, 8:12280] : (tensor<20x6144x12288xf32>) -> tensor<4x6128x12272xf32>
+// CHECK-NEXT:    %1 = "enzymexla.rotate"(%0) <{amount = 2 : si32, dimension = 2 : si32}> : (tensor<4x6128x12272xf32>) -> tensor<4x6128x12272xf32>
+// CHECK-NEXT:    %2 = "enzymexla.wrap"(%1) <{dimension = 2 : i64, lhs = 0 : i64, rhs = 1 : i64}> : (tensor<4x6128x12272xf32>) -> tensor<4x6128x12273xf32>
+// CHECK-NEXT:    stablehlo.return %2 : tensor<4x6128x12273xf32>
+// CHECK-NEXT:  }
+

@@ -19456,6 +19456,126 @@ bool isExtendRotateLike(int dimension, Value lhs, Value rhs,
     return true;
   }
 
+  if (sl0 && r1 && r1.getDimension() == dimension) {
+    sl1 = r1.getOperand().getDefiningOp<stablehlo::SliceOp>();
+    if (sl1 && sl1.getOperand() == sl0.getOperand()) {
+
+      // %22 = stablehlo.slice %15 [8:12, 8:6136, 12269:12270] :
+      // (tensor<20x6144x12272xf32>) -> tensor<4x6128x1xf32> loc(#loc3742) %23 =
+      // stablehlo.slice %15 [8:12, 8:6136, 0:12272] :
+      // (tensor<20x6144x12272xf32>) -> tensor<4x6128x12272xf32> loc(#loc3742)
+      // [12270, 12271, 0, 1, ... 12269]
+      // %648 = "enzymexla.rotate"(%23) <{amount = 12270 : si32, dimension = 2 :
+      // si32}> : (tensor<4x6128x12272xf32>) -> tensor<4x6128x12272xf32>
+      // loc(#loc3742) [12269], [12270, 12271, 0, 1, ... 12269] %1847 =
+      // stablehlo.concatenate %22, %648, dim = 2 : (tensor<4x6128x1xf32>,
+      // tensor<4x6128x12272xf32>) -> tensor<4x6128x12273xf32> loc(#loc3603)
+
+      // sl0[start+A-ext:start+A], rotate(x[start:end], leftAmt=A)
+      for (int j = 0; j < shapeL.size(); j++) {
+        if (j == dimension) {
+          if (sl0.getStrides()[j] != 1 || sl1.getStrides()[j] != 1) {
+            return false;
+          }
+          if (sl0.getLimitIndices()[j] !=
+              r1.getAmount() + sl1.getStartIndices()[j]) {
+            return false;
+          }
+          if (sl0.getStartIndices()[j] <= sl1.getStartIndices()[j]) {
+            return false;
+          }
+          if (sl0.getLimitIndices()[j] >= sl1.getLimitIndices()[j]) {
+            return false;
+          }
+        } else {
+          if (sl0.getLimitIndices()[j] != sl1.getLimitIndices()[j]) {
+            return false;
+          }
+          if (sl0.getStartIndices()[j] != sl1.getStartIndices()[j]) {
+            return false;
+          }
+          if (sl0.getStrides()[j] != sl1.getStrides()[j]) {
+            return false;
+          }
+        }
+      }
+
+      auto extAmt = sl0.getType().getShape()[dimension];
+      assert(extAmt > 0);
+
+      if (rewriter) {
+        Value base = r1;
+
+        auto wrap = rewriter->replaceOpWithNewOp<enzymexla::WrapOp>(
+            *concat, base, /*lhs*/ extAmt, /*rhs*/ 0, dimension);
+        if (auto shard = sdy::getShardingPerValue(*concat)) {
+          sdy::setShardings(wrap, shard);
+        }
+      }
+      return true;
+    }
+  }
+
+  if (sl1 && r0 && r0.getDimension() == dimension) {
+    sl0 = r0.getOperand().getDefiningOp<stablehlo::SliceOp>();
+    if (sl0 && sl0.getOperand() == sl1.getOperand()) {
+
+      //  %685 = stablehlo.slice %arg20 [8:12, 8:6136, 8:12280] :
+      //  (tensor<20x6144x12288xf32>) -> tensor<4x6128x12272xf32> [10, 11, ...,
+      //  12280, 8, 9] %1235 = "enzymexla.rotate"(%685) <{amount = 2 : si32,
+      //  dimension = 2 : si32}> : (tensor<4x6128x12272xf32>) ->
+      //  tensor<4x6128x12272xf32> [10] %1635 = stablehlo.slice %arg20 [8:12,
+      //  8:6136, 10:11] : (tensor<20x6144x12288xf32>) -> tensor<4x6128x1xf32>
+      //  [10, 11, ..., 12280, 8, 9], [10]
+      //  %1636 = stablehlo.concatenate %1235, %1635, dim = 2 :
+      //  (tensor<4x6128x12272xf32>, tensor<4x6128x1xf32>) ->
+      //  tensor<4x6128x12273xf32>
+
+      // rotate(x[start:end], leftAmt=A), sl1[start+A:start+A+ext]
+      for (int j = 0; j < shapeL.size(); j++) {
+        if (j == dimension) {
+          if (sl0.getStrides()[j] != 1 || sl1.getStrides()[j] != 1) {
+            return false;
+          }
+          if (sl1.getStartIndices()[j] !=
+              r0.getAmount() + sl0.getStartIndices()[j]) {
+            return false;
+          }
+          if (sl1.getStartIndices()[j] <= sl0.getStartIndices()[j]) {
+            return false;
+          }
+          if (sl1.getLimitIndices()[j] >= sl0.getLimitIndices()[j]) {
+            return false;
+          }
+        } else {
+          if (sl0.getLimitIndices()[j] != sl1.getLimitIndices()[j]) {
+            return false;
+          }
+          if (sl0.getStartIndices()[j] != sl1.getStartIndices()[j]) {
+            return false;
+          }
+          if (sl0.getStrides()[j] != sl1.getStrides()[j]) {
+            return false;
+          }
+        }
+      }
+
+      auto extAmt = sl1.getType().getShape()[dimension];
+      assert(extAmt > 0);
+
+      if (rewriter) {
+        Value base = r0;
+
+        auto wrap = rewriter->replaceOpWithNewOp<enzymexla::WrapOp>(
+            *concat, base, /*lhs*/ 0, /*rhs*/ extAmt, dimension);
+        if (auto shard = sdy::getShardingPerValue(*concat)) {
+          sdy::setShardings(wrap, shard);
+        }
+      }
+      return true;
+    }
+  }
+
   if (sl1 && r0 && sl1.getOperand() == r0.getOperand() &&
       r0.getDimension() == dimension) {
     // TODO
