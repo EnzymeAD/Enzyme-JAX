@@ -832,6 +832,7 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
   let summary = "Optimize communication";
   let dependentDialects = [
     "stablehlo::StablehloDialect",
+    "enzymexla::EnzymeXLADialect",
     "sdy::SdyDialect",
   ];
   let options =
@@ -891,6 +892,12 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        Option<
        /*C++ variable name=*/"concat_to_dus",
        /*CLI argument=*/"concat_to_dus",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Perform a Concatenate with Padding to optimize the communication">,
+       Option<
+       /*C++ variable name=*/"concat_to_rotatepad",
+       /*CLI argument=*/"concat_to_rotatepad",
        /*type=*/"int",
        /*default=*/"0",
        /*description=*/"Perform a Concatenate with Padding to optimize the communication">,
