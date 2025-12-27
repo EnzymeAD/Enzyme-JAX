@@ -183,11 +183,11 @@ private:
     llvm::SmallVector<int64_t> dimensions;
   };
 
-  ValidBatchingInfo isDynamicSliceValidForBatching(
-      mlir::stablehlo::DynamicSliceOp sliceOp,
-      llvm::MapVector<mlir::Value, mlir::enzyme::WhileLoopInfo::AffineIndexInfo>
-          &affineIndexInfoMap,
-      mlir::Block &whileBody, mlir::stablehlo::WhileOp whileOp) const;
+  ValidBatchingInfo
+  isDynamicSliceValidForBatching(mlir::stablehlo::DynamicSliceOp sliceOp,
+                                 mlir::enzyme::WhileLoopInfo &loopInfo,
+                                 mlir::Block &whileBody,
+                                 mlir::stablehlo::WhileOp whileOp) const;
 };
 
 struct WhileElementwiseReductionToReduce
@@ -203,11 +203,51 @@ struct WhileElementwiseReductionToReduce
                       mlir::PatternRewriter &rewriter) const;
 };
 
+/*
+Analyzes loop arguments and checks if a
+
+while (%iterarg = %x) {
+  dynamic_slice %iterarg %idxs...
+  ...
+  %iterarg = dynamic_update_slice %iterarg %idxs2...
+}
+
+If dynamic_slice only reads indices of %iterarg only before they are updated,
+we can transform the code into the following:
+
+while (%iterarg = %x) {
+  dynamic_slice %x %idxs...
+  ...
+  %iterarg = dynamic_update_slice %x %idxs2...
+}
+*/
+struct RemoveLoopCarriedDependenciesFromWhileLoadOperations
+    : public mlir::enzyme::CheckedOpRewritePattern<
+          mlir::stablehlo::WhileOp,
+          RemoveLoopCarriedDependenciesFromWhileLoadOperations> {
+  using Base = mlir::enzyme::CheckedOpRewritePattern<
+      mlir::stablehlo::WhileOp,
+      RemoveLoopCarriedDependenciesFromWhileLoadOperations>;
+  using Base::Base;
+
+  mlir::LogicalResult
+  matchAndRewriteImpl(mlir::stablehlo::WhileOp whileOp,
+                      mlir::PatternRewriter &rewriter) const;
+
+private:
+  bool extractDynamicUpdateSliceUpdate(
+      mlir::Operation *op, mlir::BlockArgument blockArg,
+      llvm::SmallVectorImpl<mlir::Value> &startIndices,
+      llvm::SmallVectorImpl<int64_t> &sliceSizes,
+      mlir::enzyme::WhileLoopInfo &info) const;
+};
+
 struct WhileIsCopySimplify
     : public mlir::enzyme::CheckedOpRewritePattern<mlir::stablehlo::WhileOp,
                                                    WhileIsCopySimplify> {
   using Base = mlir::enzyme::CheckedOpRewritePattern<mlir::stablehlo::WhileOp,
                                                      WhileIsCopySimplify>;
+
   using Base::Base;
 
   mlir::LogicalResult
@@ -253,6 +293,7 @@ struct AutoBatchingPassPipelineOptions {
   std::string whileLoopBatchingMode;
   bool enableWhileElementwiseReductionToReduce;
   bool enableWhileIsCopySimplify;
+  bool enableRemoveLoopCarriedDependenciesFromWhileLoadOperations;
 };
 
 void populateAutoBatchingPassPatterns(RewritePatternSet &patterns,
