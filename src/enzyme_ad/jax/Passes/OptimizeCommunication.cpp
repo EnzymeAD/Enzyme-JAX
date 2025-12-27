@@ -702,8 +702,8 @@ Value padWithUndefinedValueInDim(PatternRewriter &rewriter, Location loc,
     auto RTOp = sl.getOperand().getType();
     if (sl.getStrides()[dim] == 1 && sl.getStartIndices()[dim] <= leftPad &&
         RTOp.getShape()[dim] - sl.getLimitIndices()[dim] <= rightPad &&
-        (sl.getStartIndices()[dim] - leftPad > 0 ||
-         RTOp.getShape()[dim] - sl.getLimitIndices()[dim] - rightPad > 0)) {
+        (leftPad - sl.getStartIndices()[dim] > 0 ||
+         rightPad - (RTOp.getShape()[dim] - sl.getLimitIndices()[dim]) > 0)) {
       SmallVector<int64_t> newStart = llvm::to_vector(sl.getStartIndices());
       SmallVector<int64_t> newLimit = llvm::to_vector(sl.getLimitIndices());
       SmallVector<int64_t> newStrides = llvm::to_vector(sl.getStrides());
@@ -724,6 +724,8 @@ Value padWithUndefinedValueInDim(PatternRewriter &rewriter, Location loc,
             rewriter, loc, sl.getOperand(), newStart, newLimit, newStrides);
         sdy::setSharding(newSlice, sharding);
         val = newSlice;
+      } else {
+        val = sl.getOperand();
       }
     }
   }

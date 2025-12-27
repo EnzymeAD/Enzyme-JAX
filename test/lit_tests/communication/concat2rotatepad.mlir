@@ -31,9 +31,11 @@ func.func @main2(%15: tensor<20x6144x12272xf32> {sdy.sharding = #sdy.sharding<@m
 // CHECK-NEXT:    %c_0 = stablehlo.constant dense<0> : tensor<i32>
 // CHECK-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
 // CHECK-NEXT:    %0 = stablehlo.slice %arg0 [8:12, 6:6134, 0:12272] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<20x6144x12272xf32>) -> tensor<4x6128x12272xf32>
-// CHECK-NEXT:    %1 = stablehlo.pad %0, %cst, low = [0, 0, 0], high = [0, 0, 1], interior = [0, 0, 0] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<4x6128x12272xf32>, tensor<f32>) -> tensor<4x6128x12273xf32>
-// CHECK-NEXT:    %2 = stablehlo.pad %0, %cst, low = [0, 0, 1], high = [0, 0, 0], interior = [0, 0, 0] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<4x6128x12272xf32>, tensor<f32>) -> tensor<4x6128x12273xf32>
-// CHECK-NEXT:    %3 = stablehlo.slice %2 [0:4, 0:6128, 12272:12273] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<4x6128x12273xf32>) -> tensor<4x6128x1xf32>
-// CHECK-NEXT:    %4 = stablehlo.dynamic_update_slice %1, %3, %c_0, %c_0, %c {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<4x6128x12273xf32>, tensor<4x6128x1xf32>, tensor<i32>, tensor<i32>, tensor<i32>) -> tensor<4x6128x12273xf32>
-// CHECK-NEXT:    return %4 : tensor<4x6128x12273xf32>
+// CHECK-NEXT:    %[[b1:.+]] = stablehlo.pad %0, %cst, low = [0, 0, 0], high = [0, 0, 1], interior = [0, 0, 0] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<4x6128x12272xf32>, tensor<f32>) -> tensor<4x6128x12273xf32>
+// CHECK-NEXT:    %[[a2:.+]] = stablehlo.slice %arg0 [8:12, 6:6134, 0:12272] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<20x6144x12272xf32>) -> tensor<4x6128x12272xf32>
+
+// CHECK-NEXT:    %[[b2:.+]] = stablehlo.pad %[[a2]], %cst, low = [0, 0, 1], high = [0, 0, 0], interior = [0, 0, 0] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<4x6128x12272xf32>, tensor<f32>) -> tensor<4x6128x12273xf32>
+// CHECK-NEXT:    %[[b3:.+]] = stablehlo.slice %[[b2]] [0:4, 0:6128, 12272:12273] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<4x6128x12273xf32>) -> tensor<4x6128x1xf32>
+// CHECK-NEXT:    %[[b4:.+]] = stablehlo.dynamic_update_slice %[[b1]], %[[b3]], %c_0, %c_0, %c {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<4x6128x12273xf32>, tensor<4x6128x1xf32>, tensor<i32>, tensor<i32>, tensor<i32>) -> tensor<4x6128x12273xf32>
+// CHECK-NEXT:    return %[[b4]] : tensor<4x6128x12273xf32>
 // CHECK-NEXT:  }
