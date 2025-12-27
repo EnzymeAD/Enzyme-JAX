@@ -19282,6 +19282,8 @@ bool isExtendRotateLike(int dimension, Value lhs, Value rhs,
 
       if (A != 0) {
         assert(A > 0);
+        assert(A <
+               cast<RankedTensorType>(base.getType()).getShape()[dimension]);
         auto rot = enzymexla::RotateOp::create(*rewriter, concat->getLoc(),
                                                base, /*amt*/ A, dimension);
         if (auto shard = sdy::getShardingPerValue(*concat)) {
@@ -19469,6 +19471,8 @@ bool isExtendRotateLike(int dimension, Value lhs, Value rhs,
 
       if (A != 0) {
         assert(A > 0);
+        assert(A <
+               cast<RankedTensorType>(base.getType()).getShape()[dimension]);
         auto rot = enzymexla::RotateOp::create(*rewriter, concat->getLoc(),
                                                base, /*amt*/ A, dimension);
         if (auto shard = sdy::getShardingPerValue(*concat)) {
