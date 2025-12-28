@@ -2063,32 +2063,6 @@ struct ConcatReshapeToOneDimDUS final
   }
 };
 
-struct DUSDUS final
-    : CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp, DUSDUS> {
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::DynamicUpdateSliceOp dus,
-                                    PatternRewriter &rewriter) const {
-    auto dus2 =
-        dus.getOperand().getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
-
-    if (!dus2)
-      return failure();
-
-    if (dus.getUpdate().getType() != dus2.getUpdate().getType())
-      return failure();
-
-    for (auto &&[start1, start2] :
-         llvm::zip_equal(dus.getStartIndices(), dus2.getStartIndices())) {
-      if (start1 != start2)
-        return failure();
-    }
-    rewriter.modifyOpInPlace(
-        dus, [&]() { dus.getOperandMutable().set(dus2.getOperand()); });
-    return success();
-  }
-};
-
 // Optimization: DUSPad
 // Pattern:
 //   %padded_val = stablehlo.pad %original_data, %pad_val, low=[L...],
@@ -26540,7 +26514,7 @@ struct WhileDUSDSSimplify final
   }
 };
 
-// Helper function for WhileDUSDUSSimplify
+// Helper function for (While)DUSDUSSimplify
 // Analyzes two DynamicUpdateSlice operations to determine their overlap
 // relationship
 LogicalResult
@@ -26570,8 +26544,11 @@ DUSDUSSimplifyHelper(stablehlo::DynamicUpdateSliceOp outerDUS,
   // - we know the exact indices (hasKnownIndices[i] = true)
   // - the inner DUS does a full update along this dimension
   //   (isFullInnerUpdate[i] = true)
+  // - the outer DUS does a full update along this dimension
+  //   (isFullOuterUpdate[i] = true)
   SmallVector<bool> hasKnownIndices(outerStartIndices.size(), false);
   SmallVector<bool> isFullInnerUpdate(outerStartIndices.size(), false);
+  SmallVector<bool> isFullOuterUpdate(outerStartIndices.size(), false);
 
   for (size_t i = 0; i < outerStartIndices.size(); ++i) {
     auto outerStart = outerStartIndices[i];
@@ -26582,19 +26559,23 @@ DUSDUSSimplifyHelper(stablehlo::DynamicUpdateSliceOp outerDUS,
     APInt innerStartAP;
     bool innerIsConstant =
         matchPattern(innerStart, m_ConstantInt(&innerStartAP));
-    bool innerStartIsZero = innerIsConstant && innerStartAP.getSExtValue() == 0;
+    bool innerStartIsZero = innerIsConstant && innerStartAP.isZero();
 
     if (innerStartIsZero && innerUpdateShape[i] == innerOperandShape[i]) {
       isFullInnerUpdate[i] = true;
-      // For full update, any outer position is within inner
       innerStarts[i] = 0;
-      outerStarts[i] = 0; // Will be dynamically computed if needed
     }
 
     // Try to get exact indices
     APInt outerStartAP;
     bool outerIsConstant =
         matchPattern(outerStart, m_ConstantInt(&outerStartAP));
+    bool outerStartIsZero = outerIsConstant && outerStartAP.isZero();
+
+    if (outerStartIsZero && outerUpdateShape[i] == innerOperandShape[i]) {
+      isFullOuterUpdate[i] = true;
+      outerStarts[i] = 0;
+    }
 
     if (outerIsConstant && innerIsConstant) {
       outerStarts[i] = outerStartAP.getSExtValue();
@@ -26617,6 +26598,7 @@ DUSDUSSimplifyHelper(stablehlo::DynamicUpdateSliceOp outerDUS,
   // i.e., outer starts at or before inner and outer ends at or after inner
   // This can be determined if:
   // - We know exact indices and outer covers inner, OR
+  // - Outer update is a full slice update, OR
   // - The start indices are the same Value and outer update >= inner update
   bool outerCompletelyCoversInner = true;
   for (size_t i = 0; i < outerStartIndices.size(); ++i) {
@@ -26629,6 +26611,9 @@ DUSDUSSimplifyHelper(stablehlo::DynamicUpdateSliceOp outerDUS,
         outerCompletelyCoversInner = false;
         break;
       }
+    } else if (isFullOuterUpdate[i]) {
+      // inner update indices don't matter in this case.
+      continue;
     } else if (hasKnownIndices[i]) {
       // Different start indices but we know their values
       int64_t outerEnd = outerStarts[i] + outerUpdateShape[i];
@@ -26714,6 +26699,22 @@ DUSDUSSimplifyHelper(stablehlo::DynamicUpdateSliceOp outerDUS,
 
   return failure();
 }
+
+struct DUSDUS final
+    : CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp, DUSDUS> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DynamicUpdateSliceOp dus,
+                                    PatternRewriter &rewriter) const {
+    auto dusInner =
+        dus.getOperand().getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
+    if (!dusInner || !llvm::hasSingleElement(dusInner->getUsers())) {
+      return failure();
+    }
+
+    return DUSDUSSimplifyHelper(dus, dusInner, rewriter, std::nullopt);
+  }
+};
 
 // Pattern to simplify DUS(DUS) patterns inside a while body
 // Both DUS operations must have the WhileOp as their owner (be in the while
