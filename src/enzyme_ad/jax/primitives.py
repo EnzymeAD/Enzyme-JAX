@@ -202,6 +202,7 @@ def optimization_passes(
         "dot_general_simplify<16>",
         "transpose_simplify<16>",
         "reshape_empty_broadcast<1>",
+        "reshape_broadcast<1>",
         "broadcast_reshape<1>",
         "transpose_dot_reorder<1>",
         "dot_transpose<1>",
