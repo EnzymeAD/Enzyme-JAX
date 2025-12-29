@@ -2047,6 +2047,12 @@ SmallVector<int64_t> WhileIsCopySimplify::getInductionVariableDimension(
   return inductionVarDimensions;
 }
 
+LogicalResult
+RaiseScanLikeOperations::matchAndRewriteImpl(stablehlo::WhileOp whileOp,
+                                             PatternRewriter &rewriter) const {
+  return failure();
+}
+
 namespace mlir {
 namespace enzyme {
 
@@ -2101,6 +2107,10 @@ void populateAutoBatchingPassPatterns(RewritePatternSet &patterns,
   if (options.enableRemoveLoopCarriedDependenciesFromWhileLoadOperations) {
     patterns.add<RemoveLoopCarriedDependenciesFromWhileLoadOperations>(ctx);
   }
+
+  if (options.enableWhileRaiseScanLikeOperations) {
+    patterns.add<RaiseScanLikeOperations>(ctx);
+  }
 }
 
 } // namespace enzyme
@@ -2120,7 +2130,8 @@ struct AutoBatchingPass
         while_loop_batching_mode,
         while_elementwise_reduction_to_reduce_passes,
         while_is_copy_simplify_passes,
-        while_remove_loop_carried_dependencies_from_load_operations};
+        while_remove_loop_carried_dependencies_from_load_operations,
+        while_raise_scan_like_operations};
     mlir::enzyme::populateAutoBatchingPassPatterns(patterns, context, options);
 
     GreedyRewriteConfig config;

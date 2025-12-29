@@ -27925,7 +27925,7 @@ struct EnzymeHLOOptPass
 
     if (enable_auto_batching_passes) {
       mlir::enzyme::AutoBatchingPassPipelineOptions options{
-          true, true, "greedy", true, true, true};
+          true, true, "greedy", true, true, true, true};
       mlir::enzyme::populateAutoBatchingPassPatterns(patterns, context,
                                                      options);
     }

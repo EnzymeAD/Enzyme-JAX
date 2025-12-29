@@ -1082,6 +1082,12 @@ def AutoBatchingPass : Pass<"auto-batching"> {
       /*default=*/"true",
       /*description=*/"remove loop carried deps from load operations">,
     Option<
+      /*C++ variable name=*/"while_raise_scan_like_operations",
+      /*CLI argument=*/"while_raise_scan_like_operations",
+      /*type=*/"bool",
+      /*default=*/"true",
+      /*description=*/"remove loop carried deps from load operations">,
+    Option<
         /*C++ variable name=*/"max_iterations",
         /*CLI argument=*/"max_iterations",
         /*type=*/"int64_t",
