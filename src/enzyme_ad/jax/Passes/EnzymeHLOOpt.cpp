@@ -24089,6 +24089,10 @@ LogicalResult dotGeneralDistributiveSimplify(OpTy op,
   if (rhsDotGeneralOp && !isOnlyUsedInOperation(rhsDotGeneralOp, op))
     return failure();
 
+  if (lhsDotGeneralOp == rhsDotGeneralOp) {
+    return failure(); // only a single op
+  }
+
   if (lhsDotGeneralOp && rhsDotGeneralOp)
     return dotGeneralDistributiveSimplify<OpTy>(op, lhsDotGeneralOp,
                                                 rhsDotGeneralOp, rewriter);
@@ -25436,6 +25440,23 @@ private:
   }
 };
 
+static void ReduceToDotGeneral(Location loc, OpBuilder &builder,
+                               RankedTensorType resTy, RankedTensorType inTy,
+                               ArrayRef<int64_t> dims, Value lhs, Value rhs,
+                               Value &result) {
+  SmallVector<int64_t> batchDims;
+  for (int i = 0; i < inTy.getRank(); i++) {
+    if (!llvm::is_contained(dims, i)) {
+      batchDims.push_back(i);
+    }
+  }
+
+  auto dotDims = stablehlo::DotDimensionNumbersAttr::get(
+      builder.getContext(), batchDims, batchDims, dims, dims);
+  result = stablehlo::DotGeneralOp::create(builder, loc, resTy, lhs, rhs,
+                                           dotDims, nullptr, nullptr);
+}
+
 struct ReduceMulToDotGeneral
     : public CheckedOpRewritePattern<stablehlo::ReduceOp,
                                      ReduceMulToDotGeneral> {
@@ -25449,32 +25470,134 @@ struct ReduceMulToDotGeneral
           op, "only single-operand single-init reduce is supported");
     }
 
-    auto dims = op.getDimensions();
-
-    Value input = op.getInputs()[0];
-    auto inTy = cast<RankedTensorType>(input.getType());
-
     auto checkCommonReduce = mlir::stablehlo::CheckCommonReduceOp(op);
     if (!checkCommonReduce.isAddReduce ||
-        !matchPattern(op.getInitValues()[0], m_AnyZeroFloat()))
+        !matchPattern(op.getInitValues()[0], m_AnyZeroFloat())) {
       return rewriter.notifyMatchFailure(op, "reduction is not add");
-
-    auto mul = input.getDefiningOp<stablehlo::MulOp>();
-    if (!mul)
-      return rewriter.notifyMatchFailure(op, "input source is not a mul op");
-
-    SmallVector<int64_t> batchDims;
-    for (int i = 0; i < inTy.getRank(); i++) {
-      if (!llvm::is_contained(dims, i))
-        batchDims.push_back(i);
     }
 
-    auto dotDims = stablehlo::DotDimensionNumbersAttr::get(
-        op.getContext(), batchDims, batchDims, dims, dims);
-    rewriter.replaceOpWithNewOp<stablehlo::DotGeneralOp>(
-        op, op.getResult(0).getType(), mul.getLhs(), mul.getRhs(), dotDims,
-        nullptr, nullptr);
+    auto input = op.getInputs()[0];
+    auto mul = input.getDefiningOp<stablehlo::MulOp>();
+    if (!mul) {
+      return rewriter.notifyMatchFailure(op, "input source is not a mul op");
+    }
+    if (!llvm::hasSingleElement(mul->getUsers())) {
+      return rewriter.notifyMatchFailure(op, "mul op has multiple users");
+    }
+
+    Value result;
+    ReduceToDotGeneral(op->getLoc(), rewriter,
+                       cast<RankedTensorType>(op.getResult(0).getType()),
+                       cast<RankedTensorType>(input.getType()),
+                       op.getDimensions(), mul.getLhs(), mul.getRhs(), result);
+    rewriter.replaceOp(op, result);
     return success();
+  }
+};
+
+struct SplitReduceAddMulToAddDotGeneral final
+    : public CheckedOpRewritePattern<stablehlo::ReduceOp,
+                                     SplitReduceAddMulToAddDotGeneral> {
+  using CheckedOpRewritePattern<
+      stablehlo::ReduceOp,
+      SplitReduceAddMulToAddDotGeneral>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op.getInputs().size() != 1 || op.getInitValues().size() != 1) {
+      return rewriter.notifyMatchFailure(
+          op, "only single-operand single-init reduce is supported");
+    }
+
+    auto checkCommonReduce = mlir::stablehlo::CheckCommonReduceOp(op);
+    auto initVal = op.getInitValues()[0];
+    if (!checkCommonReduce.isAddReduce ||
+        !matchPattern(initVal, m_AnyZeroFloat())) {
+      return rewriter.notifyMatchFailure(op, "reduction is not add");
+    }
+
+    auto input = op.getInputs()[0];
+    auto addOp = input.getDefiningOp<stablehlo::AddOp>();
+    if (!addOp || !llvm::hasSingleElement(addOp->getUsers())) {
+      return failure();
+    }
+
+    auto reduceOutTy = cast<RankedTensorType>(op.getResult(0).getType());
+    auto reduceInTy = cast<RankedTensorType>(input.getType());
+
+    // reduce(add, add(lhs, rhs))
+    // atleast one of lhs or rhs must satisfy
+    //    1. is a mul
+    //    2. either of the mul operands is a bcast_in_dim (to enable
+    //       DotGeneralBroadcastInDim simplifications)
+    Value lhs = addOp.getLhs(), rhs = addOp.getRhs();
+    bool lhsRewritten = false, rhsRewritten = false, lhsSameAsRhs = rhs == lhs;
+
+    Value lhsLhs, lhsRhs, rhsLhs, rhsRhs;
+    if (operandSatisfiesSplitCriteria(rewriter, lhs, lhsLhs, lhsRhs, addOp)) {
+      ReduceToDotGeneral(op->getLoc(), rewriter, reduceOutTy, reduceInTy,
+                         op.getDimensions(), lhsLhs, lhsRhs, lhs);
+      lhsRewritten = true;
+    }
+
+    if (lhsSameAsRhs) {
+      rhsRewritten = lhsRewritten;
+      rhs = lhs;
+    } else {
+      if (operandSatisfiesSplitCriteria(rewriter, rhs, rhsLhs, rhsRhs, addOp)) {
+        ReduceToDotGeneral(op->getLoc(), rewriter, reduceOutTy, reduceInTy,
+                           op.getDimensions(), rhsLhs, rhsRhs, rhs);
+        rhsRewritten = true;
+      }
+
+      if (rhsRewritten && !lhsRewritten) { // insert a reduceOp
+        rewriter.setInsertionPointAfterValue(lhs);
+        auto newLhsReduce = stablehlo::ReduceOp::create(
+            rewriter, op->getLoc(), ValueRange(lhs), ValueRange(initVal),
+            op.getDimensions());
+        IRMapping mapper;
+        op.getRegion().cloneInto(&newLhsReduce.getRegion(), mapper);
+        lhs = newLhsReduce->getResult(0);
+      }
+
+      if (lhsRewritten && !rhsRewritten) { // insert a reduceOp
+        rewriter.setInsertionPointAfterValue(rhs);
+        auto newRhsReduce = stablehlo::ReduceOp::create(
+            rewriter, op->getLoc(), ValueRange(rhs), ValueRange(initVal),
+            op.getDimensions());
+        IRMapping mapper;
+        op.getRegion().cloneInto(&newRhsReduce.getRegion(), mapper);
+        rhs = newRhsReduce->getResult(0);
+      }
+    }
+
+    if (lhsRewritten || rhsRewritten) {
+      rewriter.setInsertionPoint(op);
+      auto newAddOp =
+          stablehlo::AddOp::create(rewriter, op->getLoc(), lhs, rhs);
+      rewriter.replaceOp(op, newAddOp);
+      rewriter.eraseOp(addOp);
+      return success();
+    }
+    return failure();
+  }
+
+private:
+  bool operandSatisfiesSplitCriteria(PatternRewriter &rewriter, Value operand,
+                                     Value &lhs, Value &rhs,
+                                     Operation *op) const {
+    auto mulOp = operand.getDefiningOp<stablehlo::MulOp>();
+    if (!mulOp || !isOnlyUsedInOperation(mulOp, op)) {
+      return false;
+    }
+
+    lhs = mulOp.getLhs();
+    rhs = mulOp.getRhs();
+
+    rewriter.setInsertionPoint(mulOp);
+    auto lhsIsBcast = lhs.getDefiningOp<stablehlo::BroadcastInDimOp>();
+    auto rhsIsBcast = rhs.getDefiningOp<stablehlo::BroadcastInDimOp>();
+    return lhsIsBcast || rhsIsBcast;
   }
 };
 
@@ -28012,6 +28135,7 @@ struct EnzymeHLOOptPass
         ElementwiseExtend,
         SubtractMultiplyConstToAddMulConst,
         ReduceMulToDotGeneral,
+        SplitReduceAddMulToAddDotGeneral,
         DotGeneralDistributiveSimplify<stablehlo::AddOp>,
         DotGeneralDistributiveSimplify<stablehlo::SubtractOp>,
         TrivialReduceWindowToReduceOp,
