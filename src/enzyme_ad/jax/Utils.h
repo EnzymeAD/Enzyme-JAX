@@ -904,6 +904,7 @@ SmallVector<int64_t> findReshapeInsertionDims(ArrayRef<int64_t> inputShape,
                                               ArrayRef<int64_t> outputShape);
 
 bool isInsertDimOp(stablehlo::ReshapeOp reshapeOp);
+bool isDeleteDimOp(stablehlo::ReshapeOp reshapeOp);
 
 void getSingletonInsertionDims(stablehlo::BroadcastInDimOp bcastOp,
                                SmallVectorImpl<int64_t> &insertionDims);
