@@ -25753,6 +25753,117 @@ private:
   }
 };
 
+// Shared helper function to compute the transpose permutation needed after
+// changing dot_general operand dimensions.
+//
+// This computes the permutation that, when applied to the new dot_general
+// result, restores the original output dimension ordering.
+//
+// Parameters:
+// - origLhsType, origRhsType: original operand types (before transformation)
+// - origDotDims: original dot dimension numbers
+// - newLhsBatchDims, newRhsBatchDims: new batch dimensions
+// - newLhsContractDims, newRhsContractDims: new contracting dimensions
+// - lhsOldToNew, rhsOldToNew: maps from original operand dims to new dims
+// - newLhsType, newRhsType: new operand types (after transformation)
+//
+// Returns the permutation vector to apply via transpose.
+static SmallVector<int64_t> computeDotGeneralOutputPermutation(
+    RankedTensorType origLhsType, RankedTensorType origRhsType,
+    stablehlo::DotDimensionNumbersAttr origDotDims,
+    ArrayRef<int64_t> newLhsBatchDims, ArrayRef<int64_t> newRhsBatchDims,
+    ArrayRef<int64_t> newLhsContractDims, ArrayRef<int64_t> newRhsContractDims,
+    const DenseMap<int64_t, int64_t> &lhsOldToNew,
+    const DenseMap<int64_t, int64_t> &rhsOldToNew, RankedTensorType newLhsType,
+    RankedTensorType newRhsType) {
+
+  auto origLhsBatchDims = origDotDims.getLhsBatchingDimensions();
+  auto origRhsBatchDims = origDotDims.getRhsBatchingDimensions();
+  auto origLhsContractDims = origDotDims.getLhsContractingDimensions();
+  auto origRhsContractDims = origDotDims.getRhsContractingDimensions();
+
+  int64_t numBatch = origLhsBatchDims.size();
+  int64_t origResultRank =
+      numBatch +
+      (origLhsType.getRank() - numBatch - origLhsContractDims.size()) +
+      (origRhsType.getRank() - numBatch - origRhsContractDims.size());
+
+  // Build mapping from original lhs/rhs dim -> original output position
+  DenseMap<int64_t, int64_t> origLhsDimToOutputPos;
+  DenseMap<int64_t, int64_t> origRhsDimToOutputPos;
+
+  // Batch dims come first in output, in order of lhs batch dims
+  for (int64_t i = 0; i < numBatch; ++i) {
+    origLhsDimToOutputPos[origLhsBatchDims[i]] = i;
+    origRhsDimToOutputPos[origRhsBatchDims[i]] = i;
+  }
+
+  // LHS remaining dims (non-batch, non-contract) come next
+  int64_t outputPos = numBatch;
+  for (int64_t i = 0; i < origLhsType.getRank(); ++i) {
+    if (!llvm::is_contained(origLhsBatchDims, i) &&
+        !llvm::is_contained(origLhsContractDims, i)) {
+      origLhsDimToOutputPos[i] = outputPos++;
+    }
+  }
+
+  // RHS remaining dims come after LHS remaining
+  for (int64_t i = 0; i < origRhsType.getRank(); ++i) {
+    if (!llvm::is_contained(origRhsBatchDims, i) &&
+        !llvm::is_contained(origRhsContractDims, i)) {
+      origRhsDimToOutputPos[i] = outputPos++;
+    }
+  }
+
+  // Build reverse maps: new dim -> old dim
+  DenseMap<int64_t, int64_t> lhsNewToOld, rhsNewToOld;
+  for (auto &[orig, newDim] : lhsOldToNew) {
+    lhsNewToOld[newDim] = orig;
+  }
+  for (auto &[orig, newDim] : rhsOldToNew) {
+    rhsNewToOld[newDim] = orig;
+  }
+
+  // Build the new output position -> original output position mapping
+  SmallVector<int64_t> newToOrigOutput(origResultRank);
+  int64_t newOutputPos = 0;
+
+  // New batch dims (in order of new lhs batch dims)
+  for (int64_t newLhsBatchDim : newLhsBatchDims) {
+    int64_t origLhsDim = lhsNewToOld[newLhsBatchDim];
+    // Check if this was originally a batch dim or something else
+    if (origLhsDimToOutputPos.count(origLhsDim)) {
+      newToOrigOutput[newOutputPos++] = origLhsDimToOutputPos[origLhsDim];
+    }
+  }
+
+  // New LHS remaining dims
+  for (int64_t i = 0; i < newLhsType.getRank(); ++i) {
+    if (!llvm::is_contained(newLhsBatchDims, i) &&
+        !llvm::is_contained(newLhsContractDims, i)) {
+      int64_t origLhsDim = lhsNewToOld[i];
+      newToOrigOutput[newOutputPos++] = origLhsDimToOutputPos[origLhsDim];
+    }
+  }
+
+  // New RHS remaining dims
+  for (int64_t i = 0; i < newRhsType.getRank(); ++i) {
+    if (!llvm::is_contained(newRhsBatchDims, i) &&
+        !llvm::is_contained(newRhsContractDims, i)) {
+      int64_t origRhsDim = rhsNewToOld[i];
+      newToOrigOutput[newOutputPos++] = origRhsDimToOutputPos[origRhsDim];
+    }
+  }
+
+  // Compute inverse permutation: perm[orig_pos] = new_pos
+  SmallVector<int64_t> perm(origResultRank);
+  for (int64_t i = 0; i < origResultRank; ++i) {
+    perm[newToOrigOutput[i]] = i;
+  }
+
+  return perm;
+}
+
 struct DotGeneralBroadcastInDimSortDims
     : public CheckedOpRewritePattern<
           stablehlo::DotGeneralOp,
@@ -25782,35 +25893,67 @@ struct DotGeneralBroadcastInDimSortDims
     SmallVector<int64_t> newRhsContractDims(
         dotDims.getRhsContractingDimensions());
 
+    // Track the old-to-new dimension mappings for computing output transpose
+    DenseMap<int64_t, int64_t> lhsOldToNew, rhsOldToNew;
+    auto lhsType = cast<RankedTensorType>(dotOp.getLhs().getType());
+    auto rhsType = cast<RankedTensorType>(dotOp.getRhs().getType());
+
+    // Initialize to identity mapping
+    for (int64_t i = 0; i < lhsType.getRank(); ++i)
+      lhsOldToNew[i] = i;
+    for (int64_t i = 0; i < rhsType.getRank(); ++i)
+      rhsOldToNew[i] = i;
+
     if (lhsBcast && !llvm::is_sorted(lhsBcast.getBroadcastDimensions())) {
       changed = true;
       lhs = getNewBroadcastWithSortedDims(rewriter, lhsBcast, newLhsBatchDims,
-                                          newLhsContractDims);
+                                          newLhsContractDims, lhsOldToNew);
     }
 
     if (rhsBcast && !llvm::is_sorted(rhsBcast.getBroadcastDimensions())) {
       changed = true;
       rhs = getNewBroadcastWithSortedDims(rewriter, rhsBcast, newRhsBatchDims,
-                                          newRhsContractDims);
+                                          newRhsContractDims, rhsOldToNew);
     }
 
     if (changed) {
+      // Compute the new result type based on the new operand types
+      auto newLhsType = cast<RankedTensorType>(lhs.getType());
+      auto newRhsType = cast<RankedTensorType>(rhs.getType());
+      auto origResultType = cast<RankedTensorType>(dotOp.getType());
+
       auto newDotDims = stablehlo::DotDimensionNumbersAttr::get(
           rewriter.getContext(), newLhsBatchDims, newRhsBatchDims,
           newLhsContractDims, newRhsContractDims);
-      rewriter.replaceOpWithNewOp<stablehlo::DotGeneralOp>(
-          dotOp, dotOp.getType(), lhs, rhs, newDotDims,
+
+      auto newResultType = stablehlo::GetDotGeneralResultType(
+          lhs, rhs, origResultType.getElementType(), newDotDims);
+
+      auto newDotOp = stablehlo::DotGeneralOp::create(
+          rewriter, dotOp.getLoc(), newResultType, lhs, rhs, newDotDims,
           dotOp.getPrecisionConfigAttr(), dotOp.getAlgorithmAttr());
+
+      // Compute transpose permutation using shared helper
+      auto perm = computeDotGeneralOutputPermutation(
+          lhsType, rhsType, dotDims, newLhsBatchDims, newRhsBatchDims,
+          newLhsContractDims, newRhsContractDims, lhsOldToNew, rhsOldToNew,
+          newLhsType, newRhsType);
+
+      Value transposed = TransposeOpCreate(rewriter, dotOp.getLoc(),
+                                           newDotOp.getResult(), perm);
+      rewriter.replaceOp(dotOp, transposed);
       return success();
     }
     return failure();
   }
 
 private:
-  Value getNewBroadcastWithSortedDims(
-      PatternRewriter &rewriter, stablehlo::BroadcastInDimOp oldBroadcast,
-      SmallVectorImpl<int64_t> &newBatchDims,
-      SmallVectorImpl<int64_t> &newContractDims) const {
+  Value
+  getNewBroadcastWithSortedDims(PatternRewriter &rewriter,
+                                stablehlo::BroadcastInDimOp oldBroadcast,
+                                SmallVectorImpl<int64_t> &newBatchDims,
+                                SmallVectorImpl<int64_t> &newContractDims,
+                                DenseMap<int64_t, int64_t> &oldToNewOut) const {
     auto inputType =
         cast<RankedTensorType>(oldBroadcast.getOperand().getType());
     auto outputType = cast<RankedTensorType>(oldBroadcast.getType());
@@ -25834,6 +25977,11 @@ private:
       dim = oldToNew[dim];
     for (auto &dim : newContractDims)
       dim = oldToNew[dim];
+
+    // Populate the output oldToNew mapping for the caller
+    for (size_t i = 0; i < oldToNew.size(); ++i) {
+      oldToNewOut[i] = oldToNew[i];
+    }
 
     SmallVector<int64_t> newMapping(inputType.getRank());
     std::iota(newMapping.begin(), newMapping.end(), 0);
@@ -25987,6 +26135,9 @@ struct DotGeneralRemoveBatchDimensions
         newLhsContractDims, newRhsContractDims);
     auto oldDotResultType = cast<RankedTensorType>(dotOp.getType());
 
+    auto newLhsType = cast<RankedTensorType>(newLhs.getType());
+    auto newRhsType = cast<RankedTensorType>(newRhs.getType());
+
     auto newDotOp = stablehlo::DotGeneralOp::create(
         rewriter, dotOp.getLoc(),
         stablehlo::GetDotGeneralResultType(
@@ -25994,193 +26145,11 @@ struct DotGeneralRemoveBatchDimensions
         newLhs, newRhs, newDotDims, dotOp.getPrecisionConfigAttr(),
         dotOp.getAlgorithmAttr());
 
-    // Compute the transpose permutation to restore original dimension ordering.
-    //
-    // Original dot_general result layout (for N batch dims, M lhs remaining, K
-    // rhs remaining):
-    //   [batch_0, batch_1, ..., batch_{N-1}, lhs_rem_0, ..., lhs_rem_{M-1},
-    //    rhs_rem_0, ..., rhs_rem_{K-1}]
-    //
-    // After removing some batch dims:
-    // - Batch dims where RHS was broadcast-created: the LHS dim becomes a
-    //   LHS remaining dim (moved from batch to lhs_rem section)
-    // - Batch dims where LHS was broadcast-created: the RHS dim becomes a
-    //   RHS remaining dim (moved from batch to rhs_rem section)
-    //
-    // New dot_general result layout:
-    //   [kept_batch_0, ..., kept_batch_{N'-1},
-    //    (dims from rhsCreated), orig_lhs_rem_0, ..., orig_lhs_rem_{M-1},
-    //    (dims from lhsCreated), orig_rhs_rem_0, ..., orig_rhs_rem_{K-1}]
-    //
-    // We need to transpose this back to original ordering.
-
-    // First, let's understand what dimensions are in each section of the
-    // ORIGINAL output:
-    // - Original batch dim count: lhsBatchDims.size()
-    // - Original lhs remaining: lhsType.getRank() - batch - contract
-    // - Original rhs remaining: rhsType.getRank() - batch - contract
-
-    int64_t origNumBatch = lhsBatchDims.size();
-    int64_t lhsNumRemaining =
-        lhsType.getRank() - lhsBatchDims.size() - lhsContractDims.size();
-    int64_t rhsNumRemaining =
-        rhsType.getRank() - rhsBatchDims.size() - rhsContractDims.size();
-
-    // New counts after removing batch dims
-    int64_t newNumBatch = newLhsBatchDims.size();
-    // lhs remaining now includes: dims from rhsOnlyCreatedBatchIndices (those
-    // were batch dims where rhs was created, so lhs was real) + original lhs
-    // remaining
-    int64_t newLhsNumRemaining =
-        rhsOnlyCreatedBatchIndices.size() + lhsNumRemaining;
-    // rhs remaining now includes: dims from lhsOnlyCreatedBatchIndices +
-    // original rhs remaining
-    int64_t newRhsNumRemaining =
-        lhsOnlyCreatedBatchIndices.size() + rhsNumRemaining;
-
-    int64_t newResultRank =
-        newNumBatch + newLhsNumRemaining + newRhsNumRemaining;
-    int64_t origResultRank = origNumBatch + lhsNumRemaining + rhsNumRemaining;
-    (void)origResultRank;
-    assert(newResultRank == origResultRank &&
-           "Result rank should be preserved");
-
-    // Build a mapping from new output dim -> original output dim
-    // Original layout: [batch dims] [lhs rem] [rhs rem]
-    //
-    // New layout after removing some batch dims:
-    // The LHS remaining dims in the new output are ALL LHS dims that are not
-    // in the new batch dims and not contracting - sorted by their LHS tensor
-    // position. This includes:
-    //   - Original LHS remaining dims
-    //   - LHS dims from rhsOnlyCreatedBatchIndices (former batch, now
-    //   remaining)
-    // These are interleaved based on their position in the LHS tensor.
-    //
-    // Similarly for RHS remaining dims.
-
-    // We need to figure out which LHS dims are now remaining (non-batch,
-    // non-contract)
-
-    // In the NEW LHS, the remaining dims are those not in newLhsBatchDims and
-    // not in newLhsContractDims. But we need to work with the new LHS type.
-    auto newLhsType = cast<RankedTensorType>(newLhs.getType());
-    auto newRhsType = cast<RankedTensorType>(newRhs.getType());
-
-    // LHS remaining dims in NEW LHS (sorted by new LHS position)
-    SmallVector<int64_t> newLhsRemainingDims;
-    for (int64_t i = 0; i < newLhsType.getRank(); ++i) {
-      if (!llvm::is_contained(newLhsBatchDims, i) &&
-          !llvm::is_contained(newLhsContractDims, i)) {
-        newLhsRemainingDims.push_back(i);
-      }
-    }
-
-    // RHS remaining dims in NEW RHS (sorted by new RHS position)
-    SmallVector<int64_t> newRhsRemainingDims;
-    for (int64_t i = 0; i < newRhsType.getRank(); ++i) {
-      if (!llvm::is_contained(newRhsBatchDims, i) &&
-          !llvm::is_contained(newRhsContractDims, i)) {
-        newRhsRemainingDims.push_back(i);
-      }
-    }
-
-    // Now we need to map from new output positions to original output
-    // positions. The new dot output layout is:
-    //   [newBatchDim_0, ..., newBatchDim_{n-1},
-    //    newLhsRem_0, ..., newLhsRem_{m-1},
-    //    newRhsRem_0, ..., newRhsRem_{k-1}]
-    //
-    // For each position, we need to find what original output position it
-    // maps to.
-
-    // To do this, we need to understand the mapping:
-    // - A new batch dim corresponds to some original batch dim
-    // - A new LHS remaining dim could be:
-    //   - An original LHS remaining dim, OR
-    //   - A former batch dim (from rhsOnlyCreatedBatchIndices)
-    // - Similarly for RHS
-
-    // Let's build a map from original LHS dim -> original output position
-    // Original LHS remaining dims start at position origNumBatch
-    DenseMap<int64_t, int64_t> origLhsDimToOrigOutputPos;
-    int64_t origOutputPos = origNumBatch;
-    for (int64_t i = 0; i < lhsType.getRank(); ++i) {
-      if (!llvm::is_contained(lhsBatchDims, i) &&
-          !llvm::is_contained(lhsContractDims, i)) {
-        origLhsDimToOrigOutputPos[i] = origOutputPos++;
-      }
-    }
-
-    // Original RHS remaining dims start after LHS remaining
-    DenseMap<int64_t, int64_t> origRhsDimToOrigOutputPos;
-    for (int64_t i = 0; i < rhsType.getRank(); ++i) {
-      if (!llvm::is_contained(rhsBatchDims, i) &&
-          !llvm::is_contained(rhsContractDims, i)) {
-        origRhsDimToOrigOutputPos[i] = origOutputPos++;
-      }
-    }
-
-    // Build newToOrig mapping
-    SmallVector<int64_t> newToOrig(newResultRank);
-    int64_t newIdx = 0;
-
-    // Kept batch dims in new output -> original batch positions
-    for (int64_t origBatchIdx = 0; origBatchIdx < origNumBatch;
-         ++origBatchIdx) {
-      if (llvm::is_contained(lhsOnlyCreatedBatchIndices, origBatchIdx) ||
-          llvm::is_contained(rhsOnlyCreatedBatchIndices, origBatchIdx)) {
-        continue;
-      }
-      newToOrig[newIdx++] = origBatchIdx;
-    }
-
-    // New LHS remaining dims -> map back to original output positions
-    // For each new LHS remaining dim, find what original LHS dim it corresponds
-    // to, then look up that original LHS dim's output position
-    for (int64_t newLhsDim : newLhsRemainingDims) {
-      int64_t origLhsDim = lhsNewToOld[newLhsDim];
-
-      // Check if this was originally a batch dim or a remaining dim
-      if (llvm::is_contained(lhsBatchDims, origLhsDim)) {
-        // This was a batch dim, find its batch index
-        for (int64_t batchIdx = 0; batchIdx < lhsBatchDims.size(); ++batchIdx) {
-          if (lhsBatchDims[batchIdx] == origLhsDim) {
-            newToOrig[newIdx++] = batchIdx;
-            break;
-          }
-        }
-      } else {
-        // This was an original LHS remaining dim
-        newToOrig[newIdx++] = origLhsDimToOrigOutputPos[origLhsDim];
-      }
-    }
-
-    // New RHS remaining dims -> map back to original output positions
-    for (int64_t newRhsDim : newRhsRemainingDims) {
-      int64_t origRhsDim = rhsNewToOld[newRhsDim];
-
-      // Check if this was originally a batch dim or a remaining dim
-      if (llvm::is_contained(rhsBatchDims, origRhsDim)) {
-        // This was a batch dim, find its batch index
-        for (int64_t batchIdx = 0; batchIdx < rhsBatchDims.size(); ++batchIdx) {
-          if (rhsBatchDims[batchIdx] == origRhsDim) {
-            newToOrig[newIdx++] = batchIdx;
-            break;
-          }
-        }
-      } else {
-        // This was an original RHS remaining dim
-        newToOrig[newIdx++] = origRhsDimToOrigOutputPos[origRhsDim];
-      }
-    }
-
-    assert(newIdx == newResultRank && "Should have filled all new dims");
-
-    SmallVector<int64_t> perm(newToOrig.size());
-    for (size_t i = 0; i < newToOrig.size(); i++) {
-      perm[newToOrig[i]] = i;
-    }
+    // Compute transpose permutation using shared helper
+    auto perm = computeDotGeneralOutputPermutation(
+        lhsType, rhsType, dotDims, newLhsBatchDims, newRhsBatchDims,
+        newLhsContractDims, newRhsContractDims, lhsOldToNew, rhsOldToNew,
+        newLhsType, newRhsType);
 
     Value transposed =
         TransposeOpCreate(rewriter, dotOp.getLoc(), newDotOp.getResult(), perm);
