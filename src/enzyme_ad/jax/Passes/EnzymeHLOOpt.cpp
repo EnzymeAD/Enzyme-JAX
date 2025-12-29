@@ -11199,31 +11199,85 @@ struct ReshapeElementwise final
       return failure();
     }
 
-    if (onlySingleUser && !llvm::hasSingleElement(elem->getUsers())) {
+    if (!stablehlo::hasTraitElementwise(elem) ||
+        (onlySingleUser && !llvm::hasSingleElement(elem->getUsers()))) {
       return failure();
     }
 
-    if (!stablehlo::hasTraitElementwise(elem)) {
+    // Collect all elementwise operations in the chain using a worklist
+    SmallVector<Value> worklist;
+    llvm::SetVector<Operation *> chainOps;
+    DenseSet<Operation *> visited;
+    DenseSet<Value> leafOperands;
+
+    worklist.append(elem->getOperands().begin(), elem->getOperands().end());
+    chainOps.insert(elem);
+
+    while (!worklist.empty()) {
+      Value current = worklist.pop_back_val();
+      auto defOp = current.getDefiningOp();
+      if (!defOp) {
+        leafOperands.insert(current);
+        continue;
+      }
+
+      if (!visited.insert(defOp).second) {
+        continue;
+      }
+
+      if (!stablehlo::hasTraitElementwise(defOp)) {
+        // Not elementwise - this is a leaf operand's defining op
+        leafOperands.insert(current);
+        continue;
+      }
+
+      // Check single user constraint for intermediate ops
+      if (onlySingleUser && defOp != elem &&
+          !llvm::hasSingleElement(defOp->getUsers())) {
+        // Treat as a leaf if it has multiple users
+        leafOperands.insert(current);
+        continue;
+      }
+
+      chainOps.insert(defOp);
+
+      // Add operands to the worklist
+      worklist.append(defOp->getOperands().begin(), defOp->getOperands().end());
+    }
+
+    if (chainOps.empty()) {
       return failure();
     }
 
-    if (onlyFusible) { // check that we can fuse all of the operands
-      if (!llvm::all_of(elem->getOperands(), [&](auto operand) {
-            if (auto defOp = operand.getDefiningOp()) {
-              return isFusible(defOp, op);
-            }
-            return false;
-          })) {
-        return failure();
+    // Check fusibility constraint on all leaf operands after collection
+    if (onlyFusible) {
+      for (Value leaf : leafOperands) {
+        if (auto defOp = leaf.getDefiningOp()) {
+          if (!isFusible(defOp, op)) {
+            return failure();
+          }
+        } else { // Block argument - not fusible
+          return failure();
+        }
       }
     }
 
-    SmallVector<Value> ops;
-    for (auto v : elem->getOperands()) {
-      // doing this prevents a potential infinite loop of patterns (and
-      // generally produces nicer intermediate IR)
-      DenseElementsAttr cstAttr;
+    // Topological sort: we need to process ops in dependency order
+    // Since we collected via DFS, we need to reverse and ensure dependencies
+    // come first
+    auto sortedOps = mlir::topologicalSort(chainOps);
+
+    // Map from old values to reshaped values
+    DenseMap<Value, Value> reshapedValues;
+
+    // Helper to get or create reshaped value
+    auto getOrCreateReshapedValue = [&](Value v) -> Value {
+      if (reshapedValues.contains(v)) {
+        return reshapedValues[v];
+      }
+
       Value newOperand;
+      DenseElementsAttr cstAttr;
       if (matchPattern(v, m_Constant(&cstAttr))) {
         newOperand = stablehlo::ConstantOp::create(
             rewriter, op->getLoc(),
@@ -11238,12 +11292,35 @@ struct ReshapeElementwise final
         newOperand = stablehlo::ReshapeOpCreate(
             rewriter, op->getLoc(), reshapeOperand, op.getType().getShape());
       }
-      ops.push_back(newOperand);
+      reshapedValues[v] = newOperand;
+      return newOperand;
+    };
+
+    // Rewrite each operation in the chain in topological order
+    auto sz = cast<RankedTensorType>(op.getType()).getShape();
+
+    for (Operation *elemOp : sortedOps) {
+      SmallVector<Value> newOperands;
+      rewriter.setInsertionPoint(elemOp);
+      for (Value v : elemOp->getOperands()) {
+        newOperands.push_back(getOrCreateReshapedValue(v));
+      }
+
+      auto newOp = rewriter.create(
+          elemOp->getLoc(), elemOp->getName().getIdentifier(),
+          ValueRange(newOperands),
+          TypeRange(RankedTensorType::get(
+              sz, cast<ShapedType>(elemOp->getResult(0).getType())
+                      .getElementType())),
+          elemOp->getAttrs(), {}, {});
+
+      // Map the result of the original op to the result of the new op
+      reshapedValues[elemOp->getResult(0)] = newOp->getResult(0);
     }
-    auto newOp = rewriter.create(
-        elem->getLoc(), elem->getName().getIdentifier(), ValueRange(ops),
-        TypeRange(op.getType()), elem->getAttrs(), {}, {});
-    rewriter.replaceOp(op, newOp);
+
+    // Replace the reshape op with the reshaped version of the top-level
+    // elementwise op
+    rewriter.replaceOp(op, reshapedValues[elem->getResult(0)]);
     return success();
   }
 };
