@@ -34,14 +34,14 @@ func.func @main1(%arg0: tensor<25xf32>) -> tensor<13xf32> {
 }
 
 // CHECK: func.func @main1(%arg0: tensor<25xf32>) -> tensor<13xf32> {
-// CHECK-NEXT:   %cst = stablehlo.constant dense<1.000000e+00> : tensor<10xf32>
-// CHECK-NEXT:   %cst_0 = stablehlo.constant dense<3.000000e+00> : tensor<10xf32>
-// CHECK-NEXT:   %cst_1 = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+// CHECK-NEXT:   %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+// CHECK-NEXT:   %cst_0 = stablehlo.constant dense<1.000000e+00> : tensor<10xf32>
+// CHECK-NEXT:   %cst_1 = stablehlo.constant dense<3.000000e+00> : tensor<10xf32>
 // CHECK-NEXT:   %0 = stablehlo.slice %arg0 [6:25:2] : (tensor<25xf32>) -> tensor<10xf32>
-// CHECK-NEXT:   %1 = stablehlo.multiply %0, %cst_0 : tensor<10xf32>
-// CHECK-NEXT:   %2 = stablehlo.subtract %1, %cst : tensor<10xf32>
+// CHECK-NEXT:   %1 = stablehlo.multiply %0, %cst_1 : tensor<10xf32>
+// CHECK-NEXT:   %2 = stablehlo.subtract %1, %cst_0 : tensor<10xf32>
 // CHECK-NEXT:   %3 = stablehlo.sine %2 : tensor<10xf32>
-// CHECK-NEXT:   %4 = stablehlo.pad %3, %cst_1, low = [2], high = [1], interior = [0] : (tensor<10xf32>, tensor<f32>) -> tensor<13xf32>
+// CHECK-NEXT:   %4 = stablehlo.pad %3, %cst, low = [2], high = [1], interior = [0] : (tensor<10xf32>, tensor<f32>) -> tensor<13xf32>
 // CHECK-NEXT:   return %4 : tensor<13xf32>
 // CHECK-NEXT: }
 
@@ -79,13 +79,13 @@ func.func @main2(%arg0: tensor<25xf32>) -> tensor<13xf32> {
 }
 
 // CHECK: func.func @main2(%arg0: tensor<25xf32>) -> tensor<13xf32> {
-// CHECK-NEXT:   %cst = stablehlo.constant dense<1.000000e+00> : tensor<10xf32>
-// CHECK-NEXT:   %cst_0 = stablehlo.constant dense<3.000000e+00> : tensor<10xf32>
-// CHECK-NEXT:   %cst_1 = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+// CHECK-NEXT:   %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+// CHECK-NEXT:   %cst_0 = stablehlo.constant dense<1.000000e+00> : tensor<10xf32>
+// CHECK-NEXT:   %cst_1 = stablehlo.constant dense<3.000000e+00> : tensor<10xf32>
 // CHECK-NEXT:   %0 = stablehlo.slice %arg0 [6:25:2] : (tensor<25xf32>) -> tensor<10xf32>
-// CHECK-NEXT:   %1 = stablehlo.multiply %0, %cst_0 : tensor<10xf32>
-// CHECK-NEXT:   %2 = stablehlo.subtract %1, %cst : tensor<10xf32>
+// CHECK-NEXT:   %1 = stablehlo.multiply %0, %cst_1 : tensor<10xf32>
+// CHECK-NEXT:   %2 = stablehlo.subtract %1, %cst_0 : tensor<10xf32>
 // CHECK-NEXT:   %3 = stablehlo.sine %2 : tensor<10xf32>
-// CHECK-NEXT:   %4 = stablehlo.pad %3, %cst_1, low = [2], high = [1], interior = [0] : (tensor<10xf32>, tensor<f32>) -> tensor<13xf32>
+// CHECK-NEXT:   %4 = stablehlo.pad %3, %cst, low = [2], high = [1], interior = [0] : (tensor<10xf32>, tensor<f32>) -> tensor<13xf32>
 // CHECK-NEXT:   return %4 : tensor<13xf32>
 // CHECK-NEXT: }

@@ -301,6 +301,10 @@ def ReshapeEmptyBroadcastPatterns : EnzymeHLOPatternOp<
     "reshape_empty_broadcast"> {
   let patterns = ["ReshapeEmptyBroadcast"];
 }
+def ReshapeBroadcastPatterns : EnzymeHLOPatternOp<
+    "reshape_broadcast"> {
+  let patterns = ["ReshapeBroadcast"];
+}
 def ApplySliceReshapePadPatterns : EnzymeHLOPatternOp<
     "slice_reshape_pad"> {
   let patterns = ["SliceReshapePad"];
