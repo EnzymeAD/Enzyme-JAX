@@ -44,6 +44,7 @@
 #include "mlir/Dialect/GPU/Transforms/Passes.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
+#include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/TransformOps/DialectExtension.h"
@@ -62,6 +63,7 @@
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Pass/PassRegistry.h"
 #include "mlir/Target/LLVM/NVVM/Target.h"
+#include "mlir/Target/LLVM/ROCDL/Target.h"
 
 #include "mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/GPU/GPUToLLVMIRTranslation.h"
@@ -84,6 +86,7 @@
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/NVVM/LLVMIRToNVVMTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/NVVM/NVVMToLLVMIRTranslation.h"
+#include "mlir/Target/LLVMIR/Dialect/ROCDL/ROCDLToLLVMIRTranslation.h"
 
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
@@ -196,6 +199,7 @@ void registerDialects(mlir::DialectRegistry &registry) {
   registry.insert<mlir::gpu::GPUDialect>();
   registry.insert<mlir::NVVM::NVVMDialect>();
   registry.insert<mlir::omp::OpenMPDialect>();
+  registry.insert<mlir::ROCDL::ROCDLDialect>();
   registry.insert<mlir::math::MathDialect>();
   registry.insert<mlir::linalg::LinalgDialect>();
   registry.insert<mlir::DLTIDialect>();
@@ -237,6 +241,7 @@ void loadAllRegisteredDialects(mlir::MLIRContext &context) {
   context.loadDialect<mlir::gpu::GPUDialect>();
   context.loadDialect<mlir::NVVM::NVVMDialect>();
   context.loadDialect<mlir::omp::OpenMPDialect>();
+  context.loadDialect<mlir::ROCDL::ROCDLDialect>();
   context.loadDialect<mlir::math::MathDialect>();
   context.loadDialect<mlir::linalg::LinalgDialect>();
   context.loadDialect<mlir::DLTIDialect>();
@@ -281,11 +286,13 @@ void registerInterfaces(mlir::DialectRegistry &registry) {
   mlir::registerConvertMemRefToLLVMInterface(registry);
   mlir::gpu::registerOffloadingLLVMTranslationInterfaceExternalModels(registry);
   mlir::NVVM::registerNVVMTargetInterfaceExternalModels(registry);
+  mlir::ROCDL::registerROCDLTargetInterfaceExternalModels(registry);
   mlir::registerBuiltinDialectTranslation(registry);
   mlir::registerGPUDialectTranslation(registry);
   mlir::registerLLVMDialectTranslation(registry);
   mlir::registerNVVMDialectTranslation(registry);
   mlir::registerOpenMPDialectTranslation(registry);
+  mlir::registerROCDLDialectTranslation(registry);
 
   mlir::registerConvertOpenMPToLLVMInterface(registry);
   mlir::vector::registerConvertVectorToLLVMInterface(registry);
