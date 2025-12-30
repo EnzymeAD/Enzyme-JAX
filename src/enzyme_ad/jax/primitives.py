@@ -307,6 +307,7 @@ def optimization_passes(
         "trivial_reduce_window_to_reduce_op",
         "case_to_if",
         "reduce_mul_to_dot_general",
+        "split_reduce_add_mul_to_add_dot_general",
         "dot_general_add_distributive_simplify",
         "dot_general_subtract_distributive_simplify",
         "remove_no_ops_from_while_loop",
