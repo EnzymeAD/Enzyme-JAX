@@ -1104,6 +1104,20 @@ LogicalResult enzymexla::MemcpyOp::verify() {
   return success();
 }
 
+LogicalResult enzymexla::SyrkOp::verify() {
+  auto CType = cast<RankedTensorType>(getC().getType());
+  bool isComplex = false;
+  if (auto complex_type = dyn_cast<ComplexType>(CType.getElementType())) {
+    isComplex = true;
+  }
+
+  if (isComplex && getTranspose() == enzymexla::LapackTranspose::adjoint) {
+    return emitOpError("Complex matrix not supported for complex transpose");
+  }
+
+  return success();
+}
+
 namespace {
 
 /// Erases a common case of copy ops where a destination value is used only by

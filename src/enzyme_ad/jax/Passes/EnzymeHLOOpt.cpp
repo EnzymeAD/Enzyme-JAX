@@ -55,6 +55,7 @@
 #include "llvm/ADT/MapVector.h"
 #include <cstddef>
 #include <iterator>
+#include <mlir/IR/Value.h>
 #include <numeric>
 #define DEBUG_TYPE "enzymehloopt"
 
@@ -25445,8 +25446,9 @@ struct DotGeneralToSyrk
             cast<ElementsAttr>(makeAttr(alphaType, 0))),
         enzymexla::LapackUploAttr::get(op.getContext(),
                                        enzymexla::LapackUplo::F),
-        enzymexla::LapackTransposeAttr::get(op.getContext(), lapackTranspose),
-        rewriter.getUnitAttr());
+        enzymexla::LapackUploAttr::get(op.getContext(),
+                                       enzymexla::LapackUplo::F),
+        enzymexla::LapackTransposeAttr::get(op.getContext(), lapackTranspose));
     rewriter.replaceOp(op, syrkOp.getResult());
     return success();
   }
@@ -25460,31 +25462,26 @@ struct TransposeSyrkToSyrk
   LogicalResult matchAndRewriteImpl(enzymexla::SyrkOp op,
                                     PatternRewriter &rewriter) const {
     auto input = op.getA();
-    if (cast<RankedTensorType>(input.getType()).getRank() != 2)
+    if (cast<RankedTensorType>(input.getType()).getRank() != 2) {
       return failure(); // support only rank 2 matrices for now
+    }
 
     auto transposeOp = input.getDefiningOp<stablehlo::TransposeOp>();
-    if (!transposeOp)
+    if (!transposeOp) {
       return failure();
+    }
 
     auto perm = transposeOp.getPermutation();
-    if (perm.size() != 2 || perm[0] != 1 || perm[1] != 0)
+    if (perm.size() != 2 || perm[0] != 1 || perm[1] != 0) {
       return failure();
-
-    enzymexla::LapackTranspose lapackTranspose;
-    switch (op.getTranspose()) {
-    case enzymexla::LapackTranspose::none:
-      lapackTranspose = enzymexla::LapackTranspose::transpose;
-      break;
-    default:
-      lapackTranspose = enzymexla::LapackTranspose::none;
     }
 
     rewriter.replaceOpWithNewOp<enzymexla::SyrkOp>(
         op, op.getResult().getType(), transposeOp.getOperand(), op.getC(),
-        op.getAlpha(), op.getBeta(), op.getUploAttr(),
-        enzymexla::LapackTransposeAttr::get(op.getContext(), lapackTranspose),
-        op.getFillAttr());
+        op.getAlpha(), op.getBeta(), op.getUploAttr(), op.getOutputUploAttr(),
+        enzymexla::LapackTransposeAttr::get(
+            op.getContext(),
+            enzyme::transposeLapackTranspose(op.getTranspose(), false)));
     return success();
   }
 };
@@ -25527,7 +25524,8 @@ struct FuseMulIntoSyrk
 
     rewriter.replaceOpWithNewOp<enzymexla::SyrkOp>(
         op, syrkOp.getType(), syrkOp.getA(), syrkOp.getC(), newAlpha, newBeta,
-        syrkOp.getUploAttr(), syrkOp.getTransposeAttr(), syrkOp.getFillAttr());
+        syrkOp.getUploAttr(), syrkOp.getOutputUploAttr(),
+        syrkOp.getTransposeAttr());
     return success();
   }
 };
@@ -25579,7 +25577,159 @@ struct FuseAddIntoSyrk
 
     rewriter.replaceOpWithNewOp<enzymexla::SyrkOp>(
         op, syrkOp.getType(), syrkOp.getA(), newC, syrkOp.getAlpha(), newBeta,
-        syrkOp.getUploAttr(), syrkOp.getTransposeAttr(), syrkOp.getFillAttr());
+        syrkOp.getUploAttr(), syrkOp.getOutputUploAttr(),
+        syrkOp.getTransposeAttr());
+    return success();
+  }
+};
+
+struct SyrkSimplifyOutputUplo final
+    : public CheckedOpRewritePattern<enzymexla::SyrkOp,
+                                     SyrkSimplifyOutputUplo> {
+  using CheckedOpRewritePattern<
+      enzymexla::SyrkOp, SyrkSimplifyOutputUplo>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(enzymexla::SyrkOp op,
+                                    PatternRewriter &rewriter) const {
+    // we can also try to align the uplos for other cases but that would be
+    // less common
+    if (op.getOutputUplo() != enzymexla::LapackUplo::F) {
+      return rewriter.notifyMatchFailure(op, "output_uplo is not F");
+    }
+
+    // Track all users of syrk. If these end at syrk ops (via supported
+    // elementwise operations) we can potentially set a common uplo.
+    SmallVector<enzymexla::SyrkOp> childSyrkOps;
+
+    // Worklist approach: track all children that need to be processed
+    SmallVector<Value> worklist;
+    llvm::SmallPtrSet<Value, 8> visited;
+
+    // Start with the result of the current syrk op
+    worklist.push_back(op.getResult());
+    visited.insert(op.getResult());
+
+    while (!worklist.empty()) {
+      Value current = worklist.pop_back_val();
+
+      // Check all users of the current value
+      for (Operation *user : current.getUsers()) {
+        // If user is a syrk op, add it to our list of child syrk ops
+        if (auto childSyrk = dyn_cast<enzymexla::SyrkOp>(user)) {
+          if (childSyrk.getC() != current) {
+            return failure();
+          }
+          childSyrkOps.push_back(childSyrk);
+          continue;
+        }
+
+        // Check if the operation is a supported elementwise operation
+        // that preserves symmetry (elementwise ops preserve the symmetric
+        // structure)
+        if (!stablehlo::hasTraitElementwise(user)) {
+          // Found a non-elementwise user that is not a syrk op
+          // This is not supported, so we fail
+          return rewriter.notifyMatchFailure(
+              op, "found non-elementwise, non-syrk user");
+        }
+
+        // For elementwise operations, add their results to the worklist
+        for (Value result : user->getResults()) {
+          if (!visited.contains(result)) {
+            visited.insert(result);
+            worklist.push_back(result);
+          }
+        }
+      }
+    }
+
+    // If no child syrk ops were found, nothing to optimize
+    if (childSyrkOps.empty()) {
+      return rewriter.notifyMatchFailure(op, "no child syrk ops found");
+    }
+
+    // Check the uplos for all child syrk ops
+    // Collect all the uplos we see
+    bool hasUpper = false, hasLower = false;
+    int countOutputUpper = 0, countOutputLower = 0;
+
+    for (enzymexla::SyrkOp childSyrk : childSyrkOps) {
+      enzymexla::LapackUplo childUplo = childSyrk.getUplo();
+      switch (childUplo) {
+      case enzymexla::LapackUplo::U:
+        hasUpper = true;
+        break;
+      case enzymexla::LapackUplo::L:
+        hasLower = true;
+        break;
+      case enzymexla::LapackUplo::F:
+        break;
+      }
+
+      enzymexla::LapackUplo childOutputUplo = childSyrk.getOutputUplo();
+      switch (childOutputUplo) {
+      case enzymexla::LapackUplo::U:
+        countOutputUpper++;
+        break;
+      case enzymexla::LapackUplo::L:
+        countOutputLower++;
+        break;
+      case enzymexla::LapackUplo::F:
+        break;
+      }
+    }
+
+    // Check for conflict: if we have both U and L, we cannot satisfy both
+    if (hasUpper && hasLower) {
+      return rewriter.notifyMatchFailure(
+          op, "conflicting uplos among child syrk ops (both U and L)");
+    }
+
+    // Determine the common uplo
+    enzymexla::LapackUplo newOutputUplo;
+    if (hasUpper) {
+      // At least one child requires U, set output to U
+      newOutputUplo = enzymexla::LapackUplo::U;
+    } else if (hasLower) {
+      // At least one child requires L, set output to L
+      newOutputUplo = enzymexla::LapackUplo::L;
+    } else {
+      // All children have uplo F
+      // Check the output_uplo of each child to find the uplo that minimizes
+      // copying. According to LowerEnzymeXLABlas::resolveUplo:
+      // - When uplo is F, needsCopy = (output_uplo == F)
+      // - If output_uplo is U or L, no copy is needed when input matches
+
+      // Choose the uplo that matches the most children's output_uplo
+      // This minimizes the number of copies needed
+      if (countOutputUpper > countOutputLower) {
+        newOutputUplo = enzymexla::LapackUplo::U;
+      } else if (countOutputLower > countOutputUpper) {
+        newOutputUplo = enzymexla::LapackUplo::L;
+      } else {
+        // Tied or all have output_uplo F
+        // Default to U as per standardizeUplo (see LowerEnzymeXLABlas)
+        newOutputUplo = enzymexla::LapackUplo::U;
+      }
+    }
+
+    // If the new output uplo is the same as what we already have, no change
+    if (newOutputUplo == op.getOutputUplo()) {
+      return rewriter.notifyMatchFailure(op, "output_uplo already optimal");
+    }
+
+    auto newUploAttr =
+        enzymexla::LapackUploAttr::get(rewriter.getContext(), newOutputUplo);
+
+    // Create a new syrk op with the updated output_uplo
+    rewriter.modifyOpInPlace(op, [&]() { op.setOutputUploAttr(newUploAttr); });
+
+    // Also update the child syrk ops that have uplo F to use the new uplo
+    // This ensures they don't need to copy
+    for (enzymexla::SyrkOp &childSyrk : childSyrkOps) {
+      rewriter.modifyOpInPlace(childSyrk,
+                               [&]() { childSyrk.setUploAttr(newUploAttr); });
+    }
     return success();
   }
 };
@@ -27894,6 +28044,7 @@ struct EnzymeHLOOptPass
         DotGeneralRemoveBatchDimensions,
         DUSDynamicSliceSimplify,
         WhileDUSDSSimplify,
+        SyrkSimplifyOutputUplo,
         WhileDUSDUSSimplify,
         WhileDUS,
         DeleteDimsReduce,

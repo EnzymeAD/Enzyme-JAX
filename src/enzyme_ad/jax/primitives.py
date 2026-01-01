@@ -323,6 +323,7 @@ def optimization_passes(
         "while_dus_ds_simplify",
         "while_dus_dus_simplify",
         "reshape_slice_reshape",
+        "syrk_simplify_output_uplo",
         "dynamic_slice_elementwise",
         "dot_general_remove_batch_dimensions",
         "delete_dims_reduce",
