@@ -10,6 +10,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallVector.h"
+#include <mlir/IR/Value.h>
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -921,6 +922,13 @@ bool isOnlyUsedInOperation(Operation *operation, Operation *parentOp);
 mlir::RankedTensorType removeBatchedDims(mlir::RankedTensorType Ty,
                                          llvm::ArrayRef<int64_t> dims);
 
+enzymexla::LapackTranspose
+transposeLapackTranspose(enzymexla::LapackTranspose trans, bool canBeComplex);
+
+enzymexla::LapackUplo transposeLapackUplo(enzymexla::LapackUplo uplo);
+
+enzymexla::LapackUplo standardizeUplo(enzymexla::LapackUplo uplo);
+
 } // namespace enzyme
 
 namespace stablehlo {
@@ -1277,6 +1285,20 @@ Value DynamicSliceOpCreate(
     OpBuilder &builder, Location loc, Value input, ArrayRef<Value> sliceStarts,
     ArrayRef<int64_t> sliceSizes,
     std::optional<sdy::TensorShardingPerValueAttr> sharding = std::nullopt);
+
+// allows lhs or rhs to be a scalar in which case it will automatically be
+// broadcasted to the correct shape
+Value AddOpCreate(
+    OpBuilder &builder, Location loc, Value lhs, Value rhs,
+    std::optional<sdy::TensorShardingPerValueAttr> sharding = std::nullopt);
+
+Value MulOpCreate(
+    OpBuilder &builder, Location loc, Value lhs, Value rhs,
+    std::optional<sdy::TensorShardingPerValueAttr> sharding = std::nullopt);
+
+// walk back starting from `input` and track the operations to determine if
+// only part of the matrix is populated.
+bool IsTensorFilled(Value input);
 
 } // namespace stablehlo
 
