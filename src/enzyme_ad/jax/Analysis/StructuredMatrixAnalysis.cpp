@@ -1,0 +1,759 @@
+#include "src/enzyme_ad/jax/Analysis/StructuredMatrixAnalysis.h"
+#include "src/enzyme_ad/jax/Passes/StructuredTensors.h"
+#include "src/enzyme_ad/jax/Utils.h"
+
+#include "mlir/Analysis/DataFlow/ConstantPropagationAnalysis.h"
+#include "mlir/Analysis/DataFlow/DeadCodeAnalysis.h"
+#include "mlir/Analysis/DataFlow/SparseAnalysis.h"
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Matchers.h"
+#include "mlir/IR/PatternMatch.h"
+#include "mlir/Pass/Pass.h"
+
+#include "mlir/Support/LLVM.h"
+#include "llvm/Support/raw_ostream.h"
+
+#include "stablehlo/dialect/StablehloOps.h"
+
+using namespace mlir;
+using namespace mlir::dataflow;
+
+namespace mlir {
+namespace structure_analysis {
+
+//===----------------------------------------------------------------------===//
+// Structured Sparsity Pattern Implementation
+//===----------------------------------------------------------------------===//
+
+StructuredSparsityPattern::StructuredSparsityPattern(Value v) {
+  if (auto blockArg = dyn_cast<BlockArgument>(v)) {
+    // TODO: If block arg is annotated with a pattern we should parse that
+    setUnknown(); // be pessimistic by default
+    return;
+  }
+
+  auto vTy = cast<RankedTensorType>(v.getType());
+  if (!vTy.hasStaticShape() || vTy.getRank() != 2) {
+    setUnknown();
+    return;
+  }
+  int64_t nrows = vTy.getDimSize(0);
+  int64_t ncols = vTy.getDimSize(1);
+
+  auto defOp = v.getDefiningOp();
+  if (!defOp) {
+    setUnknown();
+    return;
+  }
+
+  if (auto compareOp = dyn_cast<stablehlo::CompareOp>(defOp)) {
+    auto lhs = compareOp.getLhs();
+    auto rhs = compareOp.getRhs();
+
+    auto lhsIotaLikeTensor = enzyme::detectIotaLikeTensor(lhs);
+    auto rhsIotaLikeTensor = enzyme::detectIotaLikeTensor(rhs);
+
+    if (lhsIotaLikeTensor && rhsIotaLikeTensor) {
+      auto lhsIotaLikeTensorValue = *lhsIotaLikeTensor;
+      auto rhsIotaLikeTensorValue = *rhsIotaLikeTensor;
+
+      bool lhsIsRow = lhsIotaLikeTensorValue.dimension == 0;
+      bool rhsIsRow = rhsIotaLikeTensorValue.dimension == 0;
+      bool lhsIsCol = lhsIotaLikeTensorValue.dimension == 1;
+      bool rhsIsCol = rhsIotaLikeTensorValue.dimension == 1;
+
+      auto direction = compareOp.getComparisonDirection();
+      int64_t offset;
+
+      if (lhsIsRow && rhsIsCol) {
+        offset = lhsIotaLikeTensorValue.start - rhsIotaLikeTensorValue.start;
+      } else if (lhsIsCol && rhsIsRow) {
+        offset = rhsIotaLikeTensorValue.start - lhsIotaLikeTensorValue.start;
+        direction = reversedComparisonDirection(direction);
+      } else {
+        setUnknown();
+        return;
+      }
+
+      // TODO: verify calculation here
+      switch (direction) {
+      case stablehlo::ComparisonDirection::LT:
+        upperBandwidth = ncols - 1 + offset;
+        lowerBandwidth = -offset;
+        break;
+      case stablehlo::ComparisonDirection::LE:
+        upperBandwidth = ncols - 1 + offset;
+        lowerBandwidth = -offset - 1;
+        break;
+      case stablehlo::ComparisonDirection::GT:
+        upperBandwidth = -offset - 1;
+        lowerBandwidth = nrows - 1 + offset;
+        break;
+      case stablehlo::ComparisonDirection::GE:
+        upperBandwidth = -offset;
+        lowerBandwidth = nrows - 1 + offset;
+        break;
+      case stablehlo::ComparisonDirection::EQ:
+        // row == col => diagonal with offset
+        upperBandwidth = std::max(0L, -offset);
+        lowerBandwidth = std::max(0L, offset);
+        break;
+      case stablehlo::ComparisonDirection::NE:
+        setUnknown();
+        return;
+      }
+
+      lowerBandwidth = std::max(0L, std::min(lowerBandwidth, nrows - 1));
+      upperBandwidth = std::max(0L, std::min(upperBandwidth, ncols - 1));
+      kind = StructuredSparsityKind::Band;
+      refineKind();
+      return;
+    }
+  }
+
+  DenseElementsAttr denseAttr;
+  if (matchPattern(defOp, m_Constant(&denseAttr))) {
+    if (denseAttr.isSplat()) {
+      auto val = denseAttr.getSplatValue<Attribute>();
+      if (utils::isZero(val)) {
+        kind = StructuredSparsityKind::Empty;
+        return;
+      }
+    }
+
+    // TODO: get better sparsity pattern from denseAttr, for now we just
+    //       assume it is dense
+    kind = StructuredSparsityKind::Dense;
+    initializeBandwidths();
+    return;
+  }
+
+  setUnknown();
+  return;
+}
+
+void StructuredSparsityPattern::initializeBandwidths() {
+  switch (kind) {
+  case StructuredSparsityKind::Unknown:
+    break; // leave as is
+  case StructuredSparsityKind::Dense:
+    lowerBandwidth = std::numeric_limits<int64_t>::max();
+    upperBandwidth = std::numeric_limits<int64_t>::max();
+    break;
+  case StructuredSparsityKind::Band:
+    llvm_unreachable("constructing band with no bandwidths");
+  case StructuredSparsityKind::UpperTriangular:
+    lowerBandwidth = 0;
+    upperBandwidth = std::numeric_limits<int64_t>::max();
+    break;
+  case StructuredSparsityKind::UpperBidiagonal:
+    lowerBandwidth = 0;
+    upperBandwidth = 1;
+    break;
+  case StructuredSparsityKind::LowerTriangular:
+    lowerBandwidth = std::numeric_limits<int64_t>::max();
+    upperBandwidth = 0;
+    break;
+  case StructuredSparsityKind::LowerBidiagonal:
+    lowerBandwidth = 1;
+    upperBandwidth = 0;
+    break;
+  case StructuredSparsityKind::Tridiagonal:
+    lowerBandwidth = 1;
+    upperBandwidth = 1;
+    break;
+  case StructuredSparsityKind::Diagonal:
+    lowerBandwidth = 0;
+    upperBandwidth = 0;
+    break;
+  case StructuredSparsityKind::Empty:
+    lowerBandwidth = -1;
+    upperBandwidth = -1;
+    break;
+  }
+}
+
+void StructuredSparsityPattern::refineKind() {
+  if (lowerBandwidth == 0) {
+    if (upperBandwidth == 0) {
+      kind = StructuredSparsityKind::Diagonal;
+      return;
+    }
+    if (upperBandwidth == 1) {
+      kind = StructuredSparsityKind::UpperBidiagonal;
+      return;
+    }
+    if (upperBandwidth == std::numeric_limits<int64_t>::max()) {
+      kind = StructuredSparsityKind::UpperTriangular;
+      return;
+    }
+  }
+
+  // lowerBandwidth != 0
+  if (upperBandwidth == 0) {
+    if (lowerBandwidth == 1) {
+      kind = StructuredSparsityKind::LowerBidiagonal;
+      return;
+    }
+    if (lowerBandwidth == std::numeric_limits<int64_t>::max()) {
+      kind = StructuredSparsityKind::LowerTriangular;
+      return;
+    }
+  }
+
+  if (lowerBandwidth == 1 && upperBandwidth == 1) {
+    kind = StructuredSparsityKind::Tridiagonal;
+    return;
+  }
+
+  if (lowerBandwidth == std::numeric_limits<int64_t>::max() &&
+      upperBandwidth == std::numeric_limits<int64_t>::max()) {
+    kind = StructuredSparsityKind::Dense;
+    return;
+  }
+}
+
+// intersection of the properties
+StructuredSparsityPattern
+StructuredSparsityPattern::meet(const StructuredSparsityPattern &lhs,
+                                const StructuredSparsityPattern &rhs) {
+  if (lhs.kind == StructuredSparsityKind::Unknown)
+    return rhs;
+  if (rhs.kind == StructuredSparsityKind::Unknown)
+    return lhs;
+
+  if (lhs.kind == StructuredSparsityKind::Empty)
+    return rhs;
+  if (rhs.kind == StructuredSparsityKind::Empty)
+    return lhs;
+
+  auto lb = std::max(lhs.lowerBandwidth, rhs.lowerBandwidth);
+  auto ub = std::max(lhs.upperBandwidth, rhs.upperBandwidth);
+  auto newPattern = StructuredSparsityPattern(lb, ub);
+  newPattern.refineKind();
+  return newPattern;
+}
+
+// union of the properties
+StructuredSparsityPattern
+StructuredSparsityPattern::join(const StructuredSparsityPattern &lhs,
+                                const StructuredSparsityPattern &rhs) {
+  if (lhs.kind == StructuredSparsityKind::Unknown)
+    return rhs;
+  if (rhs.kind == StructuredSparsityKind::Unknown)
+    return lhs;
+
+  if (lhs.kind == StructuredSparsityKind::Empty ||
+      rhs.kind == StructuredSparsityKind::Empty)
+    return StructuredSparsityPattern(StructuredSparsityKind::Empty);
+
+  auto lb = std::min(lhs.lowerBandwidth, rhs.lowerBandwidth);
+  auto ub = std::min(lhs.upperBandwidth, rhs.upperBandwidth);
+  auto newPattern = StructuredSparsityPattern(lb, ub);
+  newPattern.refineKind();
+  return newPattern;
+}
+
+StructuredSparsityPattern StructuredSparsityPattern::propagateTranspose(
+    Value val, const StructuredSparsityPattern &op) {
+  if (op.kind == StructuredSparsityKind::Empty ||
+      op.kind == StructuredSparsityKind::Unknown)
+    return StructuredSparsityPattern(op.kind);
+
+  auto newPattern =
+      StructuredSparsityPattern(op.upperBandwidth, op.lowerBandwidth);
+  newPattern.refineKind();
+  return newPattern;
+}
+
+void StructuredSparsityPattern::print(raw_ostream &os) const {
+  switch (kind) {
+  case StructuredSparsityKind::Unknown:
+    os << "Unknown";
+    break;
+  case StructuredSparsityKind::Empty:
+    os << "Empty";
+    break;
+  case StructuredSparsityKind::Dense:
+    os << "Dense";
+    break;
+  case StructuredSparsityKind::Band:
+    os << "Band(" << lowerBandwidth << ", " << upperBandwidth << ")";
+    break;
+  case StructuredSparsityKind::UpperTriangular:
+    os << "UpperTriangular";
+    break;
+  case StructuredSparsityKind::UpperBidiagonal:
+    os << "UpperBidiagonal";
+    break;
+  case StructuredSparsityKind::LowerTriangular:
+    os << "LowerTriangular";
+    break;
+  case StructuredSparsityKind::LowerBidiagonal:
+    os << "LowerBidiagonal";
+    break;
+  case StructuredSparsityKind::Tridiagonal:
+    os << "Tridiagonal";
+    break;
+  case StructuredSparsityKind::Diagonal:
+    os << "Diagonal";
+    break;
+  }
+}
+
+//===----------------------------------------------------------------------===//
+// Value Properties Implementation
+//===----------------------------------------------------------------------===//
+
+ValueProperties::ValueProperties(Value v) {
+  if (auto blockArg = dyn_cast<BlockArgument>(v)) {
+    // TODO: If block arg is annotated with a pattern we should parse that
+    setFlags(0); // be pessimistic by default
+    return;
+  }
+
+  auto vTy = cast<RankedTensorType>(v.getType());
+  if (!vTy.hasStaticShape() || vTy.getRank() != 2)
+    return;
+  auto vShape = vTy.getShape();
+  if (vShape[0] != vShape[1]) // TODO: should we allow rectangular matrices?
+    return;
+
+  DenseElementsAttr denseAttr;
+  if (matchPattern(v, m_Constant(&denseAttr))) {
+    auto props = getPropertiesFromDenseAttr(denseAttr);
+    setFlags(props.getFlags());
+    return;
+  }
+
+  auto defOp = v.getDefiningOp();
+  if (!defOp)
+    return;
+
+  // check that transpose dimensions are [1,0]
+  auto isTrueTranspose = [](stablehlo::TransposeOp tOp) -> bool {
+    auto perm = tOp.getPermutation();
+    return perm.size() == 2 && perm[0] == 1 && perm[1] == 0;
+  };
+
+  // comm_op(A, A^T) will always be symmetric
+  if (stablehlo::hasTraitElementwise(defOp) &&
+      (defOp->hasTrait<OpTrait::IsCommutative>() ||
+       defOp->hasTrait<hlo::OpTrait::IsCommutative>())) {
+    auto lhs = defOp->getOperand(0);
+    auto rhs = defOp->getOperand(1);
+
+    if (auto rhsT = rhs.getDefiningOp<stablehlo::TransposeOp>()) {
+      if (isTrueTranspose(rhsT) && lhs == rhsT.getOperand()) {
+        set(ValueProperty::Symmetric);
+      }
+    }
+
+    if (auto lhsT = lhs.getDefiningOp<stablehlo::TransposeOp>()) {
+      if (isTrueTranspose(lhsT) && rhs == lhsT.getOperand()) {
+        set(ValueProperty::Symmetric);
+      }
+    }
+  }
+
+  if (auto dotGeneralOp = dyn_cast<stablehlo::DotGeneralOp>(defOp)) {
+    auto dotDimNumbers = dotGeneralOp.getDotDimensionNumbers();
+    auto lhs = dotGeneralOp.getLhs();
+    auto rhs = dotGeneralOp.getRhs();
+
+    if (dotDimNumbers.getLhsBatchingDimensions().size() == 0 &&
+        dotDimNumbers.getRhsBatchingDimensions().size() == 0) {
+      // lhs == rhs => check for the dimension numbers
+      if (lhs == rhs) {
+        if (dotDimNumbers.getLhsContractingDimensions().size() == 1 &&
+            dotDimNumbers.getRhsContractingDimensions().size() == 1 &&
+            dotDimNumbers.getLhsContractingDimensions()[0] ==
+                dotDimNumbers.getRhsContractingDimensions()[0]) {
+          set(ValueProperty::Symmetric);
+        }
+      }
+
+      // check operands are transposed: `A x A^T` and `A^T x A`
+      if (auto lhsT = lhs.getDefiningOp<stablehlo::TransposeOp>()) {
+        if (isTrueTranspose(lhsT) && rhs == lhsT.getOperand()) {
+          if (dotDimNumbers.getLhsContractingDimensions().size() == 1 &&
+              dotDimNumbers.getRhsContractingDimensions().size() == 1 &&
+              dotDimNumbers.getLhsContractingDimensions()[0] ==
+                  1 - dotDimNumbers.getRhsContractingDimensions()[0]) {
+            set(ValueProperty::Symmetric);
+          }
+        }
+      }
+
+      if (auto rhsT = rhs.getDefiningOp<stablehlo::TransposeOp>()) {
+        if (isTrueTranspose(rhsT) && lhs == rhsT.getOperand()) {
+          if (dotDimNumbers.getLhsContractingDimensions().size() == 1 &&
+              dotDimNumbers.getRhsContractingDimensions().size() == 1 &&
+              dotDimNumbers.getLhsContractingDimensions()[0] ==
+                  1 - dotDimNumbers.getRhsContractingDimensions()[0]) {
+            set(ValueProperty::Symmetric);
+          }
+        }
+      }
+    }
+  }
+
+  if (auto bcastOp = dyn_cast<stablehlo::BroadcastInDimOp>(defOp)) {
+    auto operand = bcastOp.getOperand();
+    if (cast<RankedTensorType>(operand.getType()).getRank() ==
+        0) {                              // bcast(scalar)
+      if (matchPattern(operand, m_One())) // bcast(1)
+        set(ValueProperty::UnitDiagonal);
+      set(ValueProperty::BroadcastedScalar);
+      set(ValueProperty::Symmetric);
+      return;
+    }
+  }
+
+  // TODO: unit diagonal
+  //       - iota scatter with constant
+
+  return;
+}
+
+ValueProperties
+ValueProperties::getPropertiesFromDenseAttr(DenseElementsAttr attr) {
+  ValueProperties props;
+
+  if (attr.isSplat()) {
+    auto val = attr.getSplatValue<Attribute>();
+    if (utils::isOne(val))
+      props.set(ValueProperty::UnitDiagonal);
+
+    props.set(ValueProperty::BroadcastedScalar);
+    props.set(ValueProperty::Symmetric);
+    props.set(ValueProperty::Hermitian);
+    return props;
+  }
+
+  auto type = dyn_cast<RankedTensorType>(attr.getType());
+  if (!type)
+    return props;
+
+  auto shape = type.getShape();
+  int64_t nrows = shape[0];
+  int64_t ncols = shape[1];
+  if (nrows != ncols)
+    return props;
+
+  if (isUnitDiagonal(attr, nrows, ncols))
+    props.set(ValueProperty::UnitDiagonal);
+
+  auto [isSymmetric, isHermitian] = isSymmetricOrHermitian(attr, nrows, ncols);
+  if (isSymmetric)
+    props.set(ValueProperty::Symmetric);
+  if (isHermitian)
+    props.set(ValueProperty::Hermitian);
+
+  return props;
+}
+
+template <typename T>
+bool isUnitDiagonalImpl(DenseElementsAttr attr, int64_t nrows, int64_t ncols) {
+  auto values = attr.getValues<T>().begin();
+  for (int64_t i = 0; i < std::min(nrows, ncols); i++) {
+    if (!utils::isOne(values[i]))
+      return false;
+  }
+  return true;
+}
+
+bool ValueProperties::isUnitDiagonal(DenseElementsAttr attr, int64_t nrows,
+                                     int64_t ncols) {
+  if (isa<IntegerType>(attr.getElementType())) {
+    return isUnitDiagonalImpl<APInt>(attr, nrows, ncols);
+  } else if (isa<FloatType>(attr.getElementType())) {
+    return isUnitDiagonalImpl<APFloat>(attr, nrows, ncols);
+  }
+  return false;
+}
+
+template <typename T>
+std::tuple<int64_t, int64_t> isSymmetricOrHermitianImpl(DenseElementsAttr attr,
+                                                        int64_t nrows,
+                                                        int64_t ncols) {
+  auto values = attr.getValues<T>().begin();
+  for (int64_t i = 0; i < nrows; i++) {
+    for (int64_t j = i + 1; j < ncols; j++) {
+      auto a = *(values + i * ncols + j);
+      auto b = *(values + j * ncols + i);
+      if (!utils::areEqual(a, b)) {
+        return {false, false}; // TODO: check for hermitian
+      }
+    }
+  }
+
+  return {true, false}; // TODO: check for hermitian
+}
+
+std::tuple<int64_t, int64_t>
+ValueProperties::isSymmetricOrHermitian(DenseElementsAttr attr, int64_t nrows,
+                                        int64_t ncols) {
+  if (isa<IntegerType>(attr.getElementType())) {
+    return isSymmetricOrHermitianImpl<APInt>(attr, nrows, ncols);
+  } else if (isa<FloatType>(attr.getElementType())) {
+    return isSymmetricOrHermitianImpl<APFloat>(attr, nrows, ncols);
+  }
+  return {false, false};
+}
+
+ValueProperties ValueProperties::meet(const ValueProperties &lhs,
+                                      const ValueProperties &rhs) {
+  return ValueProperties(lhs.flags & rhs.flags);
+}
+
+ValueProperties ValueProperties::join(const ValueProperties &lhs,
+                                      const ValueProperties &rhs) {
+  return ValueProperties(lhs.flags | rhs.flags);
+}
+
+void ValueProperties::print(raw_ostream &os) const {
+  os << "{";
+  bool first = true;
+  auto add = [&](const char *s) {
+    if (!first)
+      os << ", ";
+    os << s;
+    first = false;
+  };
+
+  if (hasUnitDiagonal())
+    add("UnitDiagonal");
+  if (isSymmetric())
+    add("Symmetric");
+  if (isHermitian())
+    add("Hermitian");
+  if (isBroadcastedScalar())
+    add("BroadcastedScalar");
+
+  os << "}";
+}
+
+//===----------------------------------------------------------------------===//
+// Structured Matrix Type
+//===----------------------------------------------------------------------===//
+
+StructuredMatrixType
+StructuredMatrixType::meet(const StructuredMatrixType &lhs,
+                           const StructuredMatrixType &rhs) {
+  return StructuredMatrixType(
+      StructuredSparsityPattern::meet(lhs.sparsityPattern, rhs.sparsityPattern),
+      ValueProperties::meet(lhs.valueProperties, rhs.valueProperties));
+}
+
+StructuredMatrixType
+StructuredMatrixType::join(const StructuredMatrixType &lhs,
+                           const StructuredMatrixType &rhs) {
+  return StructuredMatrixType(
+      StructuredSparsityPattern::join(lhs.sparsityPattern, rhs.sparsityPattern),
+      ValueProperties::join(lhs.valueProperties, rhs.valueProperties));
+}
+
+void StructuredMatrixType::print(raw_ostream &os) const {
+  os << "StructuredMatrixType(";
+  sparsityPattern.print(os);
+  os << " ";
+  valueProperties.print(os);
+  os << ")";
+}
+
+StructuredMatrixType
+StructuredMatrixType::propagateTranspose(Value val,
+                                         const StructuredMatrixType &op) {
+  return StructuredMatrixType(
+      StructuredSparsityPattern::propagateTranspose(val, op.sparsityPattern),
+      op.valueProperties);
+}
+
+StructuredMatrixType
+StructuredMatrixType::propagateAdd(Value lhs, Value rhs,
+                                   const StructuredMatrixType &lhsType,
+                                   const StructuredMatrixType &rhsType) {
+  ValueProperties valProps;
+
+  // If one is unit diag and other is zeros, we can propagate the other
+  // to the unit diag
+  SplatElementsAttr lhsSplat, rhsSplat;
+  if (lhsType.getProperties().hasUnitDiagonal() &&
+      matchPattern(lhs, m_Constant(&lhsSplat))) {
+    if (utils::isZero(lhsSplat.getSplatValue<Attribute>())) {
+      valProps.set(ValueProperty::UnitDiagonal);
+    }
+  }
+  if (rhsType.getProperties().hasUnitDiagonal() &&
+      matchPattern(rhs, m_Constant(&rhsSplat))) {
+    if (utils::isZero(rhsSplat.getSplatValue<Attribute>())) {
+      valProps.set(ValueProperty::UnitDiagonal);
+    }
+  }
+
+  if (lhsType.getProperties().isSymmetric() &&
+      rhsType.getProperties().isSymmetric()) {
+    valProps.set(ValueProperty::Symmetric);
+  }
+  if (lhsType.getProperties().isBroadcastedScalar() &&
+      rhsType.getProperties().isBroadcastedScalar()) {
+    valProps.set(ValueProperty::BroadcastedScalar);
+  }
+
+  return StructuredMatrixType(
+      StructuredSparsityPattern::meet(lhsType.sparsityPattern,
+                                      rhsType.sparsityPattern),
+      valProps);
+}
+
+StructuredMatrixType
+StructuredMatrixType::propagateMultiply(Value lhs, Value rhs,
+                                        const StructuredMatrixType &lhsType,
+                                        const StructuredMatrixType &rhsType) {
+  return StructuredMatrixType::meet(lhsType, rhsType);
+}
+
+// TODO: we ideally want to special case elementwise ops that preserve certain
+// properties
+StructuredMatrixType StructuredMatrixType::propagateElementwise(
+    ArrayRef<Value> operands,
+    SmallVectorImpl<StructuredMatrixType> &operandsType) {
+  // TODO: propagate structure
+
+  ValueProperties valueProperties;
+  // TODO: propagate hermitian
+  bool allSymmetric = true, allScalar = true;
+  for (auto opType : operandsType) {
+    if (!opType.getProperties().isSymmetric()) {
+      allSymmetric = false;
+    }
+    if (!opType.getProperties().isBroadcastedScalar()) {
+      allScalar = false;
+    }
+  }
+  if (allSymmetric) {
+    valueProperties.set(ValueProperty::Symmetric);
+  }
+  if (allScalar) {
+    valueProperties.set(ValueProperty::BroadcastedScalar);
+  }
+
+  return StructuredMatrixType(StructuredSparsityPattern(), valueProperties);
+}
+
+//===----------------------------------------------------------------------===//
+// Lattice Element
+//===----------------------------------------------------------------------===//
+
+ChangeResult StructuredMatrixLattice::meet(const AbstractSparseLattice &rhs) {
+  const auto *rhsStruct =
+      reinterpret_cast<const StructuredMatrixLattice *>(&rhs);
+  return meet(*rhsStruct);
+}
+
+ChangeResult StructuredMatrixLattice::meet(StructuredMatrixLattice rhs) {
+  auto newValue = StructuredMatrixType::meet(getValue(), rhs.getValue());
+  if (getValue() == newValue)
+    return ChangeResult::NoChange;
+
+  setValue(newValue);
+  return ChangeResult::Change;
+}
+
+ChangeResult StructuredMatrixLattice::join(const AbstractSparseLattice &rhs) {
+  const auto *rhsStruct =
+      reinterpret_cast<const StructuredMatrixLattice *>(&rhs);
+  return join(*rhsStruct);
+}
+
+ChangeResult StructuredMatrixLattice::join(StructuredMatrixLattice rhs) {
+  auto newValue = StructuredMatrixType::join(getValue(), rhs.getValue());
+  if (getValue() == newValue)
+    return ChangeResult::NoChange;
+
+  setValue(newValue);
+  return ChangeResult::Change;
+}
+
+void StructuredMatrixLattice::print(raw_ostream &os) const {
+  os << "StructuredMatrixLattice(";
+  value.print(os);
+  os << ")";
+}
+
+//===----------------------------------------------------------------------===//
+// Dataflow Analysis
+//===----------------------------------------------------------------------===//
+
+void StructuredMatrixAnalysis::setToEntryState(
+    StructuredMatrixLattice *lattice) {
+  lattice->setValue(StructuredMatrixType());
+}
+
+LogicalResult StructuredMatrixAnalysis::visitOperation(
+    Operation *op, ArrayRef<const StructuredMatrixLattice *> operands,
+    ArrayRef<StructuredMatrixLattice *> results) {
+  SmallVector<bool> updatedProps(results.size(), false);
+  SmallVector<StructuredMatrixType> propagatedProps(results.size());
+
+  SmallVector<StructuredMatrixType> operandValues(operands.size());
+  for (size_t i = 0; i < operands.size(); i++) {
+    operandValues[i] = operands[i]->getValue();
+  }
+
+  // transpose
+  if (auto transposeOp = dyn_cast<stablehlo::TransposeOp>(op)) {
+    updatedProps[0] = true;
+    propagatedProps[0] = StructuredMatrixType::propagateTranspose(
+        transposeOp.getOperand(), operandValues[0]);
+  }
+
+  // elementwise
+  /// add
+  if (auto addOp = dyn_cast<stablehlo::AddOp>(op)) {
+    updatedProps[0] = true;
+    propagatedProps[0] = StructuredMatrixType::propagateAdd(
+        addOp.getLhs(), addOp.getRhs(), operandValues[0], operandValues[1]);
+  }
+
+  /// mul
+  if (auto mulOp = dyn_cast<stablehlo::MulOp>(op)) {
+    updatedProps[0] = true;
+    propagatedProps[0] = StructuredMatrixType::propagateMultiply(
+        mulOp.getLhs(), mulOp.getRhs(), operandValues[0], operandValues[1]);
+  }
+
+  /// fallback for other elementwise ops
+  if (stablehlo::hasTraitElementwise(op)) {
+    updatedProps[0] = true;
+    propagatedProps[0] = StructuredMatrixType::propagateElementwise(
+        llvm::to_vector<3>(op->getOperands()), operandValues);
+  }
+
+  // pass through ops
+  if (isa<stablehlo::ConvertOp>(op)) {
+    updatedProps[0] = true;
+    propagatedProps[0] = operandValues[0];
+  }
+
+  // finalize
+  for (size_t i = 0; i < results.size(); i++) {
+    if (updatedProps[i]) {
+      auto resultOrig = results[i]->getValue();
+      auto resultNew =
+          StructuredMatrixType::join(resultOrig, propagatedProps[i]);
+      results[i]->setValue(resultNew);
+      propagateIfChanged(results[i], resultNew == resultOrig
+                                         ? ChangeResult::NoChange
+                                         : ChangeResult::Change);
+    }
+  }
+
+  return success();
+}
+
+} // namespace structure_analysis
+} // namespace mlir
