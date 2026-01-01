@@ -436,6 +436,14 @@ def SyrkOp: EnzymeXLA_Op<"blas.syrk", [Pure, SameOperandsAndResultElementType]> 
 
     `output_uplo` determines which part of `C_out` is populated. Accessing the values in
     the non-`output_uplo` part of the matrix is undefined behavior.
+
+    LAPACK/BLAS routines typically require a single `uplo` attribute and it is implicitly
+    assumed that the output `uplo` corresponds to the input `uplo`. This means the burden
+    lies on the user to manually copy data if they need to access the other half of the
+    matrix. By specifying the `output_uplo` we can perform transformations that analyze the
+    entire dataflow, and avoid computing/copying half of the tensor all together. Generally,
+    it is recommended to set this attribute to `enzymexla::LapackUplo::F`, and our passes
+    will automatically refine this to minimize data copies.
   }];
 
   let arguments = (ins
