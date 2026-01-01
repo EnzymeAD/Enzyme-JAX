@@ -273,6 +273,9 @@ void StructuredSparsityPattern::print(raw_ostream &os) const {
   case StructuredSparsityKind::Unknown:
     os << "Unknown";
     break;
+  case StructuredSparsityKind::Empty:
+    os << "Empty";
+    break;
   case StructuredSparsityKind::Dense:
     os << "Dense";
     break;
