@@ -900,8 +900,9 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
   auto affineIndexInfoMap = info.getAffineIndexInfo();
 
   auto parentFunc = whileOp->getParentOp();
-  if (!parentFunc)
+  if (!parentFunc) {
     return rewriter.notifyMatchFailure(whileOp, "parent function not found");
+  }
 
   // Find all dynamic slices in the loop body that meet the criteria:
   // 1. All slice variables are constant across iterations
@@ -928,6 +929,22 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
         }
       }
     }
+  }
+
+  bool rewrittenToReduceWindow = false;
+  // first try to raise add operations. traverse bottom up
+  for (auto &op : llvm::reverse(whileBody.without_terminator())) {
+    if (!isa<stablehlo::AddOp>(op)) {
+      continue;
+    }
+    if (liftChainToReduceWindow(rewriter, whileOp, candidateSlices, &op,
+                                info)) {
+      rewrittenToReduceWindow = true;
+    }
+  }
+
+  if (rewrittenToReduceWindow) {
+    return success();
   }
 
   // Create a map of user operations to their corresponding dynamic slices
@@ -1435,6 +1452,431 @@ bool liftReduceLikeOperation(
 
   rewriter.replaceAllUsesWith(whileOp->getResult(argIdx),
                               finalResOp->getResult(0));
+  return true;
+}
+
+// Try to lift a chain of add operations where operands come from dynamic slices
+// at constant offsets to a reduce_window operation. This is a higher priority
+// optimization that produces more efficient code than individual batched ops.
+//
+// Pattern detected:
+//   %ds0 = dynamic_slice %src, %idx0, sizes=[1] (offset 0)
+//   %ds1 = dynamic_slice %src, %idx1, sizes=[1] (offset -1)
+//   %ds2 = dynamic_slice %src, %idx2, sizes=[1] (offset +1)
+//   %add1 = add %ds0, %ds1
+//   %add2 = add %add1, %ds2
+//
+// Transformed to:
+//   %rw = reduce_window %src, window_dims=[3], body={add}
+//
+bool liftChainToReduceWindow(
+    PatternRewriter &rewriter, stablehlo::WhileOp whileOp,
+    ArrayRef<SliceInfo<stablehlo::DynamicSliceOp>> slices, Operation *op,
+    WhileLoopInfo info) {
+  if (!isa<stablehlo::AddOp>(op)) {
+    return false;
+  }
+
+  auto affineIndexInfoMap = info.getAffineIndexInfo();
+
+  // Collect all dynamic slices in the chain of adds
+  SmallVector<stablehlo::DynamicSliceOp> chainSlices;
+  SmallVector<int64_t> offsets;
+  Value sourceOperand;
+  int64_t sliceDim = -1;
+  // Track the non-affine start indices (must be consistent across all slices)
+  SmallVector<Value> otherStartIndices;
+  bool otherStartIndicesInitialized = false;
+
+  // Traverse the add chain to collect all participating dynamic slices
+  std::function<bool(Value)> collectSlices = [&](Value v) -> bool {
+    // If value comes from a dynamic slice (possibly through reshape)
+    Operation *defOp = v.getDefiningOp();
+    if (!defOp) {
+      return false;
+    }
+
+    stablehlo::DynamicSliceOp dsOp;
+    if (auto reshape = dyn_cast<stablehlo::ReshapeOp>(defOp)) {
+      dsOp = dyn_cast_or_null<stablehlo::DynamicSliceOp>(
+          reshape.getOperand().getDefiningOp());
+    } else {
+      dsOp = dyn_cast<stablehlo::DynamicSliceOp>(defOp);
+    }
+
+    if (dsOp) {
+      // Check if this slice is in the candidate slices list
+      auto itr = llvm::find_if(
+          slices, [&](const SliceInfo<stablehlo::DynamicSliceOp> &s) {
+            return s.sliceOp == dsOp;
+          });
+      if (itr == slices.end()) {
+        return false;
+      }
+
+      // Get the source operand
+      Value src = dsOp.getOperand();
+
+      // Check source consistency
+      if (sourceOperand && src != sourceOperand) {
+        return false;
+      }
+      if (!sourceOperand) {
+        sourceOperand = src;
+      }
+
+      // Find which dimension has the affine index and collect other start
+      // indices
+      int64_t foundSliceDim = -1;
+      SmallVector<Value> currentOtherStarts;
+
+      for (auto [i, startIdx] : llvm::enumerate(dsOp.getStartIndices())) {
+        if (affineIndexInfoMap.contains(startIdx)) {
+          if (foundSliceDim >= 0) {
+            // Multiple affine indices in same slice - not supported yet
+            return false;
+          }
+          foundSliceDim = i;
+
+          auto affineInfo = affineIndexInfoMap[startIdx];
+          if (!affineInfo.scale.isOne()) {
+            return false;
+          }
+          int64_t offset = affineInfo.offset.getSExtValue();
+          offsets.push_back(offset);
+        } else {
+          // This is a non-affine start index
+          currentOtherStarts.push_back(startIdx);
+        }
+      }
+
+      if (foundSliceDim < 0) {
+        return false; // No affine index found
+      }
+
+      // Verify slice dimension consistency
+      if (sliceDim >= 0 && sliceDim != foundSliceDim) {
+        return false;
+      }
+      sliceDim = foundSliceDim;
+
+      // Verify other start indices are consistent across slices
+      if (!otherStartIndicesInitialized) {
+        otherStartIndices = currentOtherStarts;
+        otherStartIndicesInitialized = true;
+      } else {
+        if (otherStartIndices.size() != currentOtherStarts.size()) {
+          return false;
+        }
+        for (size_t i = 0; i < otherStartIndices.size(); ++i) {
+          if (otherStartIndices[i] != currentOtherStarts[i]) {
+            return false;
+          }
+        }
+      }
+
+      chainSlices.push_back(dsOp);
+      return true;
+    }
+
+    // If it's an add, recurse on both operands
+    // But only if this intermediate add has a single user (otherwise it's used
+    // elsewhere)
+    if (auto addOp = dyn_cast<stablehlo::AddOp>(defOp)) {
+      if (!addOp.getResult().hasOneUse()) {
+        return false;
+      }
+      return collectSlices(addOp.getLhs()) && collectSlices(addOp.getRhs());
+    }
+
+    return false;
+  };
+
+  // Try to collect slices from the add chain
+  auto addOp = cast<stablehlo::AddOp>(op);
+  if (!collectSlices(addOp.getLhs()) || !collectSlices(addOp.getRhs())) {
+    return false;
+  }
+
+  // Need at least 2 slices to form a meaningful reduce window
+  if (chainSlices.size() < 2 || sliceDim < 0) {
+    return false;
+  }
+
+  // Verify all slices come from same source
+  if (!sourceOperand) {
+    return false;
+  }
+
+  // Sort offsets and check they form a valid (possibly dilated) window
+  SmallVector<std::pair<int64_t, size_t>> sortedOffsets;
+  for (size_t i = 0; i < offsets.size(); ++i) {
+    sortedOffsets.push_back({offsets[i], i});
+  }
+  llvm::sort(sortedOffsets, [](auto &a, auto &b) { return a.first < b.first; });
+
+  int64_t minOffset = sortedOffsets.front().first;
+  int64_t maxOffset = sortedOffsets.back().first;
+
+  // Compute the step between offsets (dilation factor)
+  // For contiguous offsets like [-1, 0, +1], step = 1
+  // For dilated offsets like [-2, 0, +2], step = 2
+  int64_t offsetStep = 1;
+  if (sortedOffsets.size() > 1) {
+    offsetStep = sortedOffsets[1].first - sortedOffsets[0].first;
+    if (offsetStep <= 0) {
+      return false; // Invalid or duplicate offsets
+    }
+  }
+
+  // Verify all offsets are evenly spaced with the same step
+  for (size_t i = 1; i < sortedOffsets.size(); ++i) {
+    if (sortedOffsets[i].first - sortedOffsets[i - 1].first != offsetStep) {
+      return false; // Offsets are not evenly spaced
+    }
+  }
+
+  // Window size is the number of elements in the window (not the span)
+  int64_t windowSize = sortedOffsets.size();
+
+  // Get source operand from outside the while loop using
+  // isConstantAcrossIterations
+  Value outerSource;
+  SmallVector<Operation *> canBeHoisted;
+  if (!info.isConstantAcrossIterations(sourceOperand, outerSource, canBeHoisted,
+                                       true)) {
+    return false;
+  }
+
+  // Check that all other start indices can also be hoisted
+  DenseMap<Value, SmallVector<Operation *>> hoistMap;
+  SmallVector<Value> hoistedOtherStarts;
+  for (Value startIdx : otherStartIndices) {
+    Value outerVal;
+    SmallVector<Operation *> startCanBeHoisted;
+    if (!info.isConstantAcrossIterations(startIdx, outerVal, startCanBeHoisted,
+                                         true)) {
+      return false;
+    }
+    if (outerVal) {
+      hoistedOtherStarts.push_back(outerVal);
+    } else {
+      hoistMap[startIdx] = startCanBeHoisted;
+      hoistedOtherStarts.push_back(startIdx); // placeholder, will be replaced
+    }
+  }
+
+  rewriter.setInsertionPoint(whileOp);
+
+  // Hoist source operand if needed
+  if (!outerSource) {
+    hoistMap[sourceOperand] = canBeHoisted;
+  }
+
+  // Perform hoisting for all values that need it
+  DenseMap<Value, Value> hoistedValues;
+  if (!hoistMap.empty()) {
+    hoistChainOfOps(hoistMap, rewriter, whileOp, info, hoistedValues);
+  }
+
+  if (!outerSource) {
+    outerSource = hoistedValues[sourceOperand];
+  }
+
+  // Update hoisted other starts with their hoisted values
+  for (size_t i = 0; i < hoistedOtherStarts.size(); ++i) {
+    if (hoistedValues.contains(otherStartIndices[i])) {
+      hoistedOtherStarts[i] = hoistedValues[otherStartIndices[i]];
+    }
+  }
+
+  auto sourceTy = cast<RankedTensorType>(outerSource.getType());
+  auto elemType = sourceTy.getElementType();
+  auto sourceShape = llvm::to_vector(sourceTy.getShape());
+
+  // Compute the actual index range accessed by the loop iterations
+  // Loop iterates i in [loopStart, loopLimit) with step
+  // Accessed indices: i + offset for each offset in [minOffset, maxOffset]
+  // So we access: [loopStart + minOffset, loopLimit - 1 + maxOffset]
+  int64_t loopStart = info.getConstantStart().value();
+  int64_t loopLimit = info.getConstantLimit().value();
+  int64_t loopStep = info.getConstantStep().value();
+  int64_t numIters = info.getConstantNumIters();
+
+  // The range of source indices we need to access on sliceDim
+  int64_t srcStartIdx = loopStart + minOffset;
+  int64_t srcEndIdx = (loopLimit - 1) + maxOffset + 1; // exclusive
+  int64_t srcSliceSize = srcEndIdx - srcStartIdx;
+
+  // Clamp to valid source bounds
+  srcStartIdx = std::max(srcStartIdx, int64_t(0));
+  srcEndIdx = std::min(srcEndIdx, sourceShape[sliceDim]);
+  srcSliceSize = srcEndIdx - srcStartIdx;
+
+  // Determine the slice sizes from the original dynamic slices
+  auto firstDsOp = chainSlices[0];
+  auto dsSliceSizes = firstDsOp.getSliceSizes();
+
+  // Slice the source to only the accessed range
+  Value slicedSource = outerSource;
+  SmallVector<int64_t> slicedSourceShape = sourceShape;
+
+  {
+    // Need to use dynamic slice for other dimensions
+    // Build start indices and slice sizes
+    SmallVector<Value> dynSliceStarts;
+    SmallVector<int64_t> dynSliceSizes;
+
+    // Get the index type from the first dynamic slice's start indices
+    auto indexTy =
+        cast<RankedTensorType>(firstDsOp.getStartIndices()[0].getType());
+
+    size_t otherIdx = 0;
+    for (size_t i = 0; i < sourceShape.size(); ++i) {
+      if (static_cast<int64_t>(i) == sliceDim) {
+        // For the slice dimension, use srcStartIdx
+        auto startConst = stablehlo::ConstantOp::create(
+            rewriter, op->getLoc(), indexTy,
+            cast<ElementsAttr>(makeAttr(indexTy, srcStartIdx)));
+        dynSliceStarts.push_back(startConst);
+        dynSliceSizes.push_back(srcSliceSize);
+        slicedSourceShape[i] = srcSliceSize;
+      } else {
+        // For other dimensions, use the hoisted start index
+        dynSliceStarts.push_back(hoistedOtherStarts[otherIdx]);
+        dynSliceSizes.push_back(dsSliceSizes[i]);
+        slicedSourceShape[i] = dsSliceSizes[i];
+        ++otherIdx;
+      }
+    }
+
+    slicedSource = stablehlo::DynamicSliceOpCreate(
+        rewriter, op->getLoc(), outerSource, dynSliceStarts, dynSliceSizes);
+  }
+
+  // Window dimensions and parameters
+  SmallVector<int64_t> windowDimensions(slicedSourceShape.size(), 1);
+  windowDimensions[sliceDim] = windowSize;
+
+  SmallVector<int64_t> windowStrides(slicedSourceShape.size(), 1);
+  SmallVector<int64_t> baseDilations(slicedSourceShape.size(), 1);
+  SmallVector<int64_t> windowDilations(slicedSourceShape.size(), 1);
+  windowDilations[sliceDim] = offsetStep; // Use offset step as window dilation
+
+  // The effective window size with dilation is: (windowSize - 1) * dilation + 1
+  int64_t effectiveWindowSize = (windowSize - 1) * offsetStep + 1;
+
+  // Padding: adjust relative to the sliced source
+  // After slicing, index 0 of sliced source corresponds to srcStartIdx of
+  // original We need padding so that the reduce_window output at position i -
+  // loopStart corresponds to the sum of elements at positions i + minOffset, i
+  // + minOffset + step, ...
+  //
+  // For a dilated window, the window at output position p (with low padding)
+  // accesses:
+  //   slicedSource[p - lowPad], slicedSource[p - lowPad + dilation], ...,
+  //   slicedSource[p - lowPad + (windowSize-1)*dilation]
+  //
+  // We want output at position (i - loopStart) to correspond to loop iteration
+  // i which accesses original indices i + minOffset, i + minOffset + step, ...,
+  // i + maxOffset In the sliced source, these are at positions:
+  //   (i + minOffset - srcStartIdx), ..., (i + maxOffset - srcStartIdx)
+  //
+  // So we need: p - lowPad = i + minOffset - srcStartIdx
+  // With p = i - loopStart: lowPad = loopStart + minOffset - srcStartIdx
+  int64_t lowPad = loopStart + minOffset - srcStartIdx;
+
+  // Compute highPad to get exactly numIters outputs
+  // output_size = (input_size + lowPad + highPad - effectiveWindowSize) /
+  // stride + 1 = numIters With stride = 1: highPad = numIters - srcSliceSize -
+  // lowPad + effectiveWindowSize - 1
+  int64_t highPad = numIters - srcSliceSize - lowPad + effectiveWindowSize - 1;
+
+  SmallVector<int64_t> paddingVec(slicedSourceShape.size() * 2, 0);
+  paddingVec[sliceDim * 2] = lowPad;
+  paddingVec[sliceDim * 2 + 1] = highPad;
+
+  int64_t paddingShape[2] = {static_cast<int64_t>(slicedSourceShape.size()), 2};
+  auto paddingAttr = DenseIntElementsAttr::get(
+      RankedTensorType::get(paddingShape, rewriter.getIntegerType(64)),
+      paddingVec);
+
+  // Create identity value for add (0)
+  auto scalarTy = RankedTensorType::get({}, elemType);
+  Value initVal = stablehlo::ConstantOp::create(rewriter, op->getLoc(),
+                                                rewriter.getZeroAttr(scalarTy));
+
+  // Compute output type - output size on sliceDim is numIters
+  SmallVector<int64_t> outputShape(slicedSourceShape.begin(),
+                                   slicedSourceShape.end());
+  outputShape[sliceDim] = numIters;
+
+  auto outputTy = RankedTensorType::get(outputShape, elemType);
+
+  auto reduceWindowOp = stablehlo::ReduceWindowOp::create(
+      rewriter, op->getLoc(), TypeRange{outputTy}, ValueRange{slicedSource},
+      ValueRange{initVal}, rewriter.getDenseI64ArrayAttr(windowDimensions),
+      rewriter.getDenseI64ArrayAttr(windowStrides),
+      rewriter.getDenseI64ArrayAttr(baseDilations),
+      rewriter.getDenseI64ArrayAttr(windowDilations), paddingAttr);
+
+  // Create the body of the reduce window (add operation)
+  Block *body = rewriter.createBlock(&reduceWindowOp.getBody());
+  body->addArgument(scalarTy, op->getLoc());
+  body->addArgument(scalarTy, op->getLoc());
+
+  {
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(body);
+    auto addRes = stablehlo::AddOp::create(
+        rewriter, op->getLoc(), body->getArgument(0), body->getArgument(1));
+    stablehlo::ReturnOp::create(rewriter, op->getLoc(), addRes.getResult());
+  }
+
+  // Now we need to slice the result to get the value at the current index
+  // inside the loop. The reduce_window output has size numIters on sliceDim,
+  // so we index directly with (inductionVar - loopStart) / step
+  rewriter.setInsertionPointAfter(op);
+
+  auto inductionVar = info.getInductionVariable();
+  auto inductionVarType = cast<RankedTensorType>(inductionVar.getType());
+
+  // Create dynamic slice to get the result at the current iteration
+  auto resultTy = cast<RankedTensorType>(op->getResult(0).getType());
+  SmallVector<int64_t> sliceSizes(outputShape.size(), 1);
+  for (size_t i = 0; i < outputShape.size(); ++i) {
+    if (i != static_cast<size_t>(sliceDim)) {
+      sliceSizes[i] = outputShape[i];
+    }
+  }
+
+  auto constZero = stablehlo::ConstantOp::create(
+      rewriter, op->getLoc(), inductionVarType,
+      cast<ElementsAttr>(makeAttr(inductionVarType, 0)));
+
+  SmallVector<Value> startIndices(outputShape.size(), constZero);
+
+  // Compute (inductionVar - loopStart) / step
+  Value resIndex;
+  if (loopStart == 0) {
+    resIndex = inductionVar;
+  } else {
+    resIndex = stablehlo::SubtractOp::create(rewriter, op->getLoc(),
+                                             inductionVar, info.getStart());
+  }
+  if (loopStep != 1) {
+    resIndex = stablehlo::DivOp::create(rewriter, op->getLoc(), resIndex,
+                                        info.getStep(rewriter));
+  }
+  startIndices[sliceDim] = resIndex;
+
+  auto slicedResult = stablehlo::DynamicSliceOp::create(
+      rewriter, op->getLoc(), reduceWindowOp->getResult(0), startIndices,
+      sliceSizes);
+
+  // Reshape to match the original result type
+  rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, resultTy, slicedResult);
+
   return true;
 }
 

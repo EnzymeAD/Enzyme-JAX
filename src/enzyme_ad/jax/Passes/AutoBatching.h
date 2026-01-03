@@ -154,6 +154,11 @@ bool liftReduceLikeOperation(
     llvm::ArrayRef<SliceInfo<mlir::stablehlo::DynamicSliceOp>> slices,
     mlir::Operation *op, mlir::enzyme::WhileLoopInfo info);
 
+bool liftChainToReduceWindow(
+    mlir::PatternRewriter &rewriter, mlir::stablehlo::WhileOp whileOp,
+    llvm::ArrayRef<SliceInfo<mlir::stablehlo::DynamicSliceOp>> slices,
+    mlir::Operation *op, mlir::enzyme::WhileLoopInfo info);
+
 struct GreedyWhileLoopBatchFission
     : public mlir::enzyme::CheckedOpRewritePattern<
           mlir::stablehlo::WhileOp, GreedyWhileLoopBatchFission> {
