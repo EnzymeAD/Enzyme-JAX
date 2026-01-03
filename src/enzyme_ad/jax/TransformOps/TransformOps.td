@@ -301,6 +301,10 @@ def ReshapeEmptyBroadcastPatterns : EnzymeHLOPatternOp<
     "reshape_empty_broadcast"> {
   let patterns = ["ReshapeEmptyBroadcast"];
 }
+def ReshapeBroadcastPatterns : EnzymeHLOPatternOp<
+    "reshape_broadcast"> {
+  let patterns = ["ReshapeBroadcast"];
+}
 def ApplySliceReshapePadPatterns : EnzymeHLOPatternOp<
     "slice_reshape_pad"> {
   let patterns = ["SliceReshapePad"];
@@ -2560,6 +2564,10 @@ def EnzymeHLOUnroll : EnzymeHLOParameterizedPatternOp<
 def ApplyReduceMulToDotGeneralPatterns : EnzymeHLOPatternOp<
     "reduce_mul_to_dot_general"> {
   let patterns = ["ReduceMulToDotGeneral"];
+}
+def ApplySplitReduceAddMulToAddDotGeneralPatterns : EnzymeHLOPatternOp<
+    "split_reduce_add_mul_to_add_dot_general"> {
+  let patterns = ["SplitReduceAddMulToAddDotGeneral"];
 }
 
 def ApplyDotGeneralOnlyDiagonalAccessPatterns : EnzymeHLOPatternOp<

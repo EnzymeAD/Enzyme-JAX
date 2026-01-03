@@ -32,9 +32,9 @@ module {
 }
 
 // CHECK: func.func @main(%arg0: tensor<10xf64>, %arg1: tensor<10xf64>) -> tensor<10xf32> {
-// CHECK-NEXT:     %0 = stablehlo.add %arg0, %arg1 : tensor<10xf64>
-// CHECK-NEXT:     %1 = stablehlo.maximum %arg0, %arg1 : tensor<10xf64>
-// CHECK-NEXT:     %2 = stablehlo.add %0, %1 : tensor<10xf64>
+// CHECK-NEXT:     %0 = stablehlo.maximum %arg0, %arg1 : tensor<10xf64>
+// CHECK-NEXT:     %1 = stablehlo.add %arg0, %arg1 : tensor<10xf64>
+// CHECK-NEXT:     %2 = stablehlo.add %1, %0 : tensor<10xf64>
 // CHECK-NEXT:     %3 = stablehlo.convert %2 : (tensor<10xf64>) -> tensor<10xf32>
 // CHECK-NEXT:     return %3 : tensor<10xf32>
 // CHECK-NEXT: }

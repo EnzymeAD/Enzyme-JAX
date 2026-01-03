@@ -28,4 +28,4 @@ func.func @main(%arg0: tensor<f32>, %arg1: tensor<f32>, %arg2: tensor<32x64xf32>
 // CHECK-NEXT:    %5 = stablehlo.broadcast_in_dim %4, dims = [] {enzymexla.symmetric_matrix = [#enzymexla<guaranteed GUARANTEED>]} : (tensor<f32>) -> tensor<64x64xf32>
 // CHECK-NEXT:    %6 = stablehlo.add %3, %5 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<64x64xf32>
 // CHECK-NEXT:    return %6 : tensor<64x64xf32>
-// CHECK-NEXT: }
+// CHECK-NEXT:  }
