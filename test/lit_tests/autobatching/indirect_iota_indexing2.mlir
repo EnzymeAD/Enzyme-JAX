@@ -33,8 +33,8 @@ module {
 // CHECK: func.func @main(%arg0: tensor<10xf64>, %arg1: tensor<10xf64>) -> tensor<6xf64> {
 // CHECK-NEXT:   %0 = stablehlo.slice %arg0 [2:8] : (tensor<10xf64>) -> tensor<6xf64>
 // CHECK-NEXT:   %1 = stablehlo.slice %arg1 [2:8] : (tensor<10xf64>) -> tensor<6xf64>
-// CHECK-NEXT:   %2 = stablehlo.add %0, %1 : tensor<6xf64>
-// CHECK-NEXT:   %3 = stablehlo.maximum %0, %1 : tensor<6xf64>
-// CHECK-NEXT:   %4 = stablehlo.add %2, %3 : tensor<6xf64>
+// CHECK-NEXT:   %2 = stablehlo.maximum %0, %1 : tensor<6xf64>
+// CHECK-NEXT:   %3 = stablehlo.add %0, %1 : tensor<6xf64>
+// CHECK-NEXT:   %4 = stablehlo.add %3, %2 : tensor<6xf64>
 // CHECK-NEXT:   return %4 : tensor<6xf64>
 // CHECK-NEXT: }
