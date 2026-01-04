@@ -6,6 +6,7 @@
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
+#include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/IRMapping.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
@@ -39,7 +40,8 @@ struct GPULaunchRecognitionPass
     gpuModule = gpu::GPUModuleOp::create(
         moduleBuilder, getOperation()->getLoc(), gpuModuleName);
 
-    std::string sm;
+    std::string sm;  // NVIDIA Streaming Multiprocessor (sm_80)
+    std::string gfx; // AMD Graphics IP (gfx906)
     if (auto attr = dyn_cast_or_null<ArrayAttr>(func.getPassthroughAttr())) {
       for (auto a : attr) {
         if (auto ar = dyn_cast<ArrayAttr>(a)) {
@@ -49,8 +51,13 @@ struct GPULaunchRecognitionPass
           auto s1 = dyn_cast<StringAttr>(ar[1]);
           if (!s0 || !s1)
             continue;
-          if (s0.getValue() == "target-cpu")
-            sm = s1.getValue();
+          if (s0.getValue() == "target-cpu") {
+            std::string cpu = s1.getValue().str();
+            if (cpu.find("gfx") == 0)
+              gfx = cpu;
+            else
+              sm = cpu;
+          }
         }
       }
     }
@@ -60,18 +67,47 @@ struct GPULaunchRecognitionPass
       feat = attr.getFeaturesString();
     }
 
-    auto chip = sm;
-    if (chip.size() == 0)
-      chip = "sm_80";
-    auto features = feat;
-    if (features.size() == 0)
-      features = "+ptx73";
+    // auto chip = sm;
+    // if (chip.size() == 0)
+    //   chip = "sm_80";
+    // auto features = feat;
+    // if (features.size() == 0)
+    //   features = "+ptx73";
 
-    // TODO get these target attrs from somewhere
-    auto target = moduleBuilder.getAttr<NVVM::NVVMTargetAttr>(
-        /*optLevel=*/2, /*triple=*/"nvptx64-nvidia-cuda", chip, features,
-        /*flags=*/nullptr,
-        /*linkLibs=*/nullptr);
+    // // TODO get these target attrs from somewhere
+    // auto target = moduleBuilder.getAttr<NVVM::NVVMTargetAttr>(
+    //     /*optLevel=*/2, /*triple=*/"nvptx64-nvidia-cuda", chip, features,
+    //     /*flags=*/nullptr,
+    //     /*linkLibs=*/nullptr);
+
+    // I have not find how to get the abiVersion yet
+    Attribute target;
+    if (backend == "rocm") {
+      auto chip = gfx;
+      if (chip.size() == 0)
+        chip = "gfx900";
+      auto features = feat;
+      if (features.size() == 0)
+        features = "\"";
+      // Features come from target_features attribute (e.g., "+wavefrontsize64")
+      target = moduleBuilder.getAttr<ROCDL::ROCDLTargetAttr>(
+          /*optLevel=*/2, /*triple=*/"amdgcn-amd-amdhsa", chip, features,
+          /*abiVersion=*/"",
+          /*flags=*/nullptr,
+          /*linkLibs=*/nullptr);
+    } else {
+      // Default to CUDA/NVVM
+      auto chip = sm;
+      if (chip.size() == 0)
+        chip = "sm_80";
+      auto features = feat;
+      if (features.size() == 0)
+        features = "+ptx73";
+      target = moduleBuilder.getAttr<NVVM::NVVMTargetAttr>(
+          /*optLevel=*/2, /*triple=*/"nvptx64-nvidia-cuda", chip, features,
+          /*flags=*/nullptr,
+          /*linkLibs=*/nullptr);
+    }
     gpuModule.setTargetsAttr(moduleBuilder.getArrayAttr({target}));
 
     DataLayoutSpecInterface dataLayout = {};

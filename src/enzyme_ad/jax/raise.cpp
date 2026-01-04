@@ -85,7 +85,11 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
   std::string pass_pipeline =
       "inline{default-pipeline=canonicalize "
       "max-iterations=4},sroa-wrappers{set_private=false attributor=false},gpu-launch-"
-      "recognition,canonicalize,libdevice-funcs-raise,canonicalize,symbol-dce,";
+      "recognition{backend=";
+      pass_pipeline += backend;
+      pass_pipeline += "}";
+      pass_pipeline += "gpu-lanuch-"
+      "canonicalize,libdevice-funcs-raise,canonicalize,symbol-dce,";
   
   if (backend == "cpu")
     pass_pipeline += "parallel-lower{wrapParallelOps=false},";
