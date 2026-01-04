@@ -2655,6 +2655,11 @@ def ApplyReduceDeleteDimsPatterns : EnzymeHLOPatternOp<
   let patterns = ["ReduceDeleteDims"];
 }
 
+def ApplyDotGeneralDeleteDimsPatterns : EnzymeHLOPatternOp<
+    "dot_general_delete_dims"> {
+  let patterns = ["DotGeneralDeleteDims"];
+}
+
 def ApplyDotGeneralInsertDimContractionSimplificationPatterns : EnzymeHLOPatternOp<
     "dot_general_insert_dim_contraction_simplification"> {
   let patterns = ["DotGeneralInsertDimContractionSimplification"];
