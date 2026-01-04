@@ -2835,31 +2835,45 @@ struct DynamicUpdateOpConversion
     auto inputType = cast<RankedTensorType>(input.getType());
     auto valueType = cast<RankedTensorType>(value.getType());
 
-    if (inputType.getRank() != 2) {
-      return rewriter.notifyMatchFailure(op, "Input must be 2D tensor");
+    if (inputType.getRank() == 1 && valueType.getRank() == 0) {
+      auto elemType = valueType.getElementType();
+
+      auto reshapedValueType = RankedTensorType::get({1}, elemType);
+      auto reshapedValue = stablehlo::ReshapeOp::create(
+          rewriter, op.getLoc(), reshapedValueType, value);
+
+      auto dynamicUpdateSlice = stablehlo::DynamicUpdateSliceOp::create(
+          rewriter, op.getLoc(), inputType, input, reshapedValue,
+          ValueRange{index});
+
+      rewriter.replaceOp(op, dynamicUpdateSlice.getResult());
+      return success();
     }
-    if (valueType.getRank() != 1) {
-      return rewriter.notifyMatchFailure(op, "Value must be 1D tensor");
+
+    if (inputType.getRank() == 2 && valueType.getRank() == 1) {
+      int64_t positionSize = valueType.getShape()[0];
+      auto elemType = valueType.getElementType();
+
+      auto reshapedValueType =
+          RankedTensorType::get({1, positionSize}, elemType);
+      auto reshapedValue = stablehlo::ReshapeOp::create(
+          rewriter, op.getLoc(), reshapedValueType, value);
+
+      auto indexType = cast<RankedTensorType>(index.getType());
+      auto zeroConst = stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(), indexType,
+          DenseElementsAttr::get(indexType, rewriter.getI64IntegerAttr(0)));
+
+      auto dynamicUpdateSlice = stablehlo::DynamicUpdateSliceOp::create(
+          rewriter, op.getLoc(), inputType, input, reshapedValue,
+          ValueRange{index, zeroConst});
+
+      rewriter.replaceOp(op, dynamicUpdateSlice.getResult());
+      return success();
     }
 
-    int64_t positionSize = valueType.getShape()[0];
-    auto elemType = valueType.getElementType();
-
-    auto reshapedValueType = RankedTensorType::get({1, positionSize}, elemType);
-    auto reshapedValue = stablehlo::ReshapeOp::create(rewriter, op.getLoc(),
-                                                      reshapedValueType, value);
-
-    auto indexType = cast<RankedTensorType>(index.getType());
-    auto zeroConst = stablehlo::ConstantOp::create(
-        rewriter, op.getLoc(), indexType,
-        DenseElementsAttr::get(indexType, rewriter.getI64IntegerAttr(0)));
-
-    auto dynamicUpdateSlice = stablehlo::DynamicUpdateSliceOp::create(
-        rewriter, op.getLoc(), inputType, input, reshapedValue,
-        ValueRange{index, zeroConst});
-
-    rewriter.replaceOp(op, dynamicUpdateSlice.getResult());
-    return success();
+    return rewriter.notifyMatchFailure(
+        op, "Unsupported input/value tensor ranks for dynamic_update");
   }
 };
 
@@ -2877,32 +2891,81 @@ struct UnflattenSliceOpConversion
   matchAndRewrite(enzyme::UnflattenSliceOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto resultType = cast<RankedTensorType>(op.getResult().getType());
-
-    int64_t numElements = 1;
-    for (auto dim : resultType.getShape()) {
-      if (dim == ShapedType::kDynamic) {
-        return rewriter.notifyMatchFailure(op, "Dynamic shapes not supported");
-      }
-      numElements *= dim;
-    }
-
+    auto positionType = cast<RankedTensorType>(adaptor.getPosition().getType());
+    auto elemType = resultType.getElementType();
     int64_t offset = op.getOffset();
-    SmallVector<int64_t> startIndices = {offset};
-    SmallVector<int64_t> limitIndices = {offset + numElements};
-    SmallVector<int64_t> strides = {1};
 
-    auto slicedType =
-        RankedTensorType::get({numElements}, resultType.getElementType());
-    auto sliceOp = stablehlo::SliceOp::create(
-        rewriter, op.getLoc(), slicedType, adaptor.getPosition(),
-        rewriter.getDenseI64ArrayAttr(startIndices),
-        rewriter.getDenseI64ArrayAttr(limitIndices),
-        rewriter.getDenseI64ArrayAttr(strides));
+    // Handle both 1D (single sample) and 2D (batched samples) inputs
+    if (positionType.getRank() == 1) {
+      // 1D input: position[positionSize] -> result[...shape...]
+      int64_t numElements = 1;
+      for (auto dim : resultType.getShape()) {
+        if (dim == ShapedType::kDynamic) {
+          return rewriter.notifyMatchFailure(op,
+                                             "Dynamic shapes not supported");
+        }
+        numElements *= dim;
+      }
 
-    auto reshapeOp = stablehlo::ReshapeOp::create(rewriter, op.getLoc(),
-                                                  resultType, sliceOp);
+      SmallVector<int64_t> startIndices = {offset};
+      SmallVector<int64_t> limitIndices = {offset + numElements};
+      SmallVector<int64_t> strides = {1};
 
-    rewriter.replaceOp(op, reshapeOp.getResult());
+      auto slicedType = RankedTensorType::get({numElements}, elemType);
+      auto sliceOp = stablehlo::SliceOp::create(
+          rewriter, op.getLoc(), slicedType, adaptor.getPosition(),
+          rewriter.getDenseI64ArrayAttr(startIndices),
+          rewriter.getDenseI64ArrayAttr(limitIndices),
+          rewriter.getDenseI64ArrayAttr(strides));
+
+      auto reshapeOp = stablehlo::ReshapeOp::create(rewriter, op.getLoc(),
+                                                    resultType, sliceOp);
+      rewriter.replaceOp(op, reshapeOp.getResult());
+    } else if (positionType.getRank() == 2) {
+      // 2D input: position[batchSize, positionSize] -> result[batchSize,
+      // ...shape...]
+      int64_t batchSize = positionType.getShape()[0];
+
+      // Result shape should be [batchSize, ...originalShape...]
+      // Compute numElements from result shape excluding batch dimension
+      if (resultType.getRank() < 1 || resultType.getShape()[0] != batchSize) {
+        return rewriter.notifyMatchFailure(
+            op, "Result type must have batch dimension matching input");
+      }
+
+      int64_t numElements = 1;
+      SmallVector<int64_t> originalShape;
+      for (int64_t i = 1; i < resultType.getRank(); ++i) {
+        auto dim = resultType.getShape()[i];
+        if (dim == ShapedType::kDynamic) {
+          return rewriter.notifyMatchFailure(op,
+                                             "Dynamic shapes not supported");
+        }
+        originalShape.push_back(dim);
+        numElements *= dim;
+      }
+
+      // Slice columns: [batchSize, positionSize] -> [batchSize, numElements]
+      SmallVector<int64_t> startIndices = {0, offset};
+      SmallVector<int64_t> limitIndices = {batchSize, offset + numElements};
+      SmallVector<int64_t> strides = {1, 1};
+
+      auto slicedType =
+          RankedTensorType::get({batchSize, numElements}, elemType);
+      auto sliceOp = stablehlo::SliceOp::create(
+          rewriter, op.getLoc(), slicedType, adaptor.getPosition(),
+          rewriter.getDenseI64ArrayAttr(startIndices),
+          rewriter.getDenseI64ArrayAttr(limitIndices),
+          rewriter.getDenseI64ArrayAttr(strides));
+
+      // Reshape to [batchSize, ...originalShape...]
+      auto reshapeOp = stablehlo::ReshapeOp::create(rewriter, op.getLoc(),
+                                                    resultType, sliceOp);
+      rewriter.replaceOp(op, reshapeOp.getResult());
+    } else {
+      return rewriter.notifyMatchFailure(op,
+                                         "Position must be 1D or 2D tensor");
+    }
 
     return success();
   }
