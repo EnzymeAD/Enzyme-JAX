@@ -1,5 +1,5 @@
 diff --git a/xla/service/spmd/spmd_partitioner.cc b/xla/service/spmd/spmd_partitioner.cc
-index 54fdd9a0fe..08c5f900a5 100644
+index 54fdd9a0fe..d0fde9b443 100644
 --- a/xla/service/spmd/spmd_partitioner.cc
 +++ b/xla/service/spmd/spmd_partitioner.cc
 @@ -570,6 +570,17 @@ PartitionedHlo PartitionedHlo::ReshardNoCache(
@@ -20,3 +20,14 @@ index 54fdd9a0fe..08c5f900a5 100644
    if (CanReshardWithCollectivePermute(sharding(), target)) {
      return ReshardWithCollectivePermute(target);
    }
+@@ -3879,8 +3890,8 @@ SpmdPartitioningVisitor::HandleDUSAllPartitionedSliceDimsHaveConstantIndices(
+   const Shape sharded_update_pred_shape =
+       MakePartitionedShape(update_pred_shape, hlo->sharding());
+ 
+-  auto zeroOperand = CreateZero(sharded_update_pred_shape, &b_);
+-  zeroOperand->set_sharding(hlo->sharding());
++  auto zeroOperand = CreateZero(update_pred_shape, &b_);
++  zeroOperand->set_sharding(HloSharding::Replicate());
+ 
+   HloInstruction* paddingValue = CreateOne(Shape(PRED, {}), &b_);
+   HloInstruction* maskOp = PadHelper(
