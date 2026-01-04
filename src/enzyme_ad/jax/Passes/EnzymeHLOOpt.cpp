@@ -27567,7 +27567,7 @@ struct DotGeneralDeleteDims final
     }
 
     auto dotDims = dotOp.getDotDimensionNumbers();
-    
+
     // Build mapping from reshape output dims to input dims
     // For a reshape that deletes dimensions, we need to map each output dimension
     // back to the corresponding input dimension
@@ -27670,11 +27670,6 @@ struct DotGeneralDeleteDims final
         lhsReshape.getOperand(), rhsReshape.getOperand(), 
         newDotDims,
         dotOp.getPrecisionConfigAttr(), dotOp.getAlgorithmAttr());
-
-    rewriter.replaceOp(dotOp, newDotOp);
-    return success();
-  }
-};
 
     rewriter.replaceOp(dotOp, newDotOp);
     return success();

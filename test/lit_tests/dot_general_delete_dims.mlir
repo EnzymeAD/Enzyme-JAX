@@ -42,4 +42,3 @@ func.func @no_opt_one_reshape(%arg0: tensor<2x3x4x1xf32>, %arg1: tensor<2x3x4xf3
 // CHECK-LABEL: func.func @no_opt_one_reshape
 // CHECK:         stablehlo.reshape
 // CHECK:         stablehlo.dot_general
-
