@@ -27519,8 +27519,7 @@ private:
 };
 
 // If both operands of dot_general have reshape ops that delete dimensions,
-// and those deleted dimensions are in the batching dimensions, we can incorporate
-// them into the contracting dimensions instead
+// we can bypass the reshapes and incorporate the deleted dims into contracting dims
 struct DotGeneralDeleteDims final
     : public CheckedOpRewritePattern<stablehlo::DotGeneralOp,
                                       DotGeneralDeleteDims> {
@@ -27536,6 +27535,11 @@ struct DotGeneralDeleteDims final
     auto rhsReshape = rhs.getDefiningOp<stablehlo::ReshapeOp>();
 
     if (!lhsReshape || !rhsReshape)
+      return failure();
+
+    // Ensure single use
+    if (!llvm::hasSingleElement(lhsReshape->getUsers()) ||
+        !llvm::hasSingleElement(rhsReshape->getUsers()))
       return failure();
 
     // Get types
@@ -27565,74 +27569,60 @@ struct DotGeneralDeleteDims final
     auto dotDims = dotOp.getDotDimensionNumbers();
     
     // Build mapping from reshape output dims to input dims
-    auto buildDimMapping = [](ArrayRef<int64_t> deletedDims, int64_t inputRank) {
+    // For a reshape that deletes dimensions, we need to map each output dimension
+    // back to the corresponding input dimension
+    auto buildDimMapping = [](ArrayRef<int64_t> deletedDims, int64_t inputRank, int64_t outputRank) {
       SmallVector<int64_t> outToInMap;
       int64_t inIdx = 0;
-      for (int64_t outIdx = 0; outIdx < inputRank; ++outIdx) {
-        if (llvm::is_contained(deletedDims, outIdx)) {
-          continue;
+      for (int64_t outIdx = 0; outIdx < outputRank; ++outIdx) {
+        // Skip deleted dimensions in the input
+        while (inIdx < inputRank && llvm::is_contained(deletedDims, inIdx)) {
+          ++inIdx;
         }
-        outToInMap.push_back(outIdx);
-        ++inIdx;
-      }
-      // Fill in the deleted dimensions at the end
-      for (auto dim : deletedDims) {
-        outToInMap.push_back(dim);
+        if (inIdx < inputRank) {
+          outToInMap.push_back(inIdx);
+          ++inIdx;
+        }
       }
       return outToInMap;
     };
 
-    // Map from current dot dimension indices (in reshaped space) to original space
-    SmallVector<int64_t> lhsOutToInMap = buildDimMapping(lhsDeletedDims, lhsReshapeInTy.getRank());
-    SmallVector<int64_t> rhsOutToInMap = buildDimMapping(rhsDeletedDims, rhsReshapeInTy.getRank());
+    // Map from current dot dimension indices (in reshaped/output space) to original/input space
+    SmallVector<int64_t> lhsOutToInMap = buildDimMapping(lhsDeletedDims, lhsReshapeInTy.getRank(), lhsReshapeOutTy.getRank());
+    SmallVector<int64_t> rhsOutToInMap = buildDimMapping(rhsDeletedDims, rhsReshapeInTy.getRank(), rhsReshapeOutTy.getRank());
 
-    // Check if any batching dimensions correspond to deleted singleton dimensions
-    // that could be moved to contracting dimensions
+    // Map the dot_general dimensions from output space to input space
     auto lhsBatchingDims = dotDims.getLhsBatchingDimensions();
     auto rhsBatchingDims = dotDims.getRhsBatchingDimensions();
     auto lhsContractingDims = dotDims.getLhsContractingDimensions();
     auto rhsContractingDims = dotDims.getRhsContractingDimensions();
 
-    // Find batching dimensions that are singleton in the original input
-    SmallVector<std::pair<int64_t, int64_t>> batchingToMove;
+    SmallVector<int64_t> newLhsBatchingDims, newRhsBatchingDims;
+    SmallVector<int64_t> newLhsContractingDims, newRhsContractingDims;
+
+    // Map batching dimensions to original space
     for (auto [lhsBatch, rhsBatch] : llvm::zip(lhsBatchingDims, rhsBatchingDims)) {
-      // Map back to original space
-      int64_t lhsOrigDim = lhsOutToInMap[lhsBatch];
-      int64_t rhsOrigDim = rhsOutToInMap[rhsBatch];
-      
-      // Check if both are size 1 in original space
-      if (lhsReshapeInTy.getDimSize(lhsOrigDim) == 1 &&
-          rhsReshapeInTy.getDimSize(rhsOrigDim) == 1) {
-        batchingToMove.push_back({lhsBatch, rhsBatch});
+      if (lhsBatch < lhsOutToInMap.size() && rhsBatch < rhsOutToInMap.size()) {
+        newLhsBatchingDims.push_back(lhsOutToInMap[lhsBatch]);
+        newRhsBatchingDims.push_back(rhsOutToInMap[rhsBatch]);
       }
     }
 
-    if (batchingToMove.empty())
-      return failure();
-
-    // Build new batching and contracting dimensions
-    SmallVector<int64_t> newLhsBatchingDims, newRhsBatchingDims;
-    SmallVector<int64_t> newLhsContractingDims(lhsContractingDims.begin(), lhsContractingDims.end());
-    SmallVector<int64_t> newRhsContractingDims(rhsContractingDims.begin(), rhsContractingDims.end());
-
-    for (auto [lhsBatch, rhsBatch] : llvm::zip(lhsBatchingDims, rhsBatchingDims)) {
-      bool shouldMove = false;
-      for (auto [moveLhs, moveRhs] : batchingToMove) {
-        if (lhsBatch == moveLhs && rhsBatch == moveRhs) {
-          shouldMove = true;
-          break;
-        }
+    // Map contracting dimensions to original space
+    for (auto [lhsContract, rhsContract] : llvm::zip(lhsContractingDims, rhsContractingDims)) {
+      if (lhsContract < lhsOutToInMap.size() && rhsContract < rhsOutToInMap.size()) {
+        newLhsContractingDims.push_back(lhsOutToInMap[lhsContract]);
+        newRhsContractingDims.push_back(rhsOutToInMap[rhsContract]);
       }
-      
-      if (shouldMove) {
-        // Add to contracting dimensions
-        newLhsContractingDims.push_back(lhsBatch);
-        newRhsContractingDims.push_back(rhsBatch);
-      } else {
-        // Keep in batching dimensions
-        newLhsBatchingDims.push_back(lhsBatch);
-        newRhsBatchingDims.push_back(rhsBatch);
-      }
+    }
+
+    // Add the deleted dimensions as contracting dimensions
+    // They are size 1, so contracting over them is mathematically equivalent
+    for (auto dim : lhsDeletedDims) {
+      newLhsContractingDims.push_back(dim);
+    }
+    for (auto dim : rhsDeletedDims) {
+      newRhsContractingDims.push_back(dim);
     }
 
     // Sort contracting dimensions
@@ -27646,26 +27636,27 @@ struct DotGeneralDeleteDims final
 
     // Compute the new result shape
     // Result has: batching dims + lhs non-contracting dims + rhs non-contracting dims
+    // We work in the original (input) space now
     SmallVector<int64_t> newResultShape;
     
-    // Add batching dimensions
+    // Add batching dimensions from original space
     for (auto dim : newLhsBatchingDims) {
-      newResultShape.push_back(lhsReshapeOutTy.getDimSize(dim));
+      newResultShape.push_back(lhsReshapeInTy.getDimSize(dim));
     }
     
-    // Add non-contracting LHS dimensions
-    for (int64_t i = 0; i < lhsReshapeOutTy.getRank(); ++i) {
+    // Add non-contracting LHS dimensions from original space
+    for (int64_t i = 0; i < lhsReshapeInTy.getRank(); ++i) {
       if (!llvm::is_contained(newLhsBatchingDims, i) &&
           !llvm::is_contained(newLhsContractingDims, i)) {
-        newResultShape.push_back(lhsReshapeOutTy.getDimSize(i));
+        newResultShape.push_back(lhsReshapeInTy.getDimSize(i));
       }
     }
     
-    // Add non-contracting RHS dimensions
-    for (int64_t i = 0; i < rhsReshapeOutTy.getRank(); ++i) {
+    // Add non-contracting RHS dimensions from original space
+    for (int64_t i = 0; i < rhsReshapeInTy.getRank(); ++i) {
       if (!llvm::is_contained(newRhsBatchingDims, i) &&
           !llvm::is_contained(newRhsContractingDims, i)) {
-        newResultShape.push_back(rhsReshapeOutTy.getDimSize(i));
+        newResultShape.push_back(rhsReshapeInTy.getDimSize(i));
       }
     }
 
@@ -27673,10 +27664,17 @@ struct DotGeneralDeleteDims final
         newResultShape,
         cast<RankedTensorType>(dotOp.getType()).getElementType());
 
-    // Create the new dot_general with updated dimensions
+    // Create the new dot_general with original (pre-reshape) tensors
     auto newDotOp = stablehlo::DotGeneralOp::create(
-        rewriter, dotOp.getLoc(), resultType, lhs, rhs, newDotDims,
+        rewriter, dotOp.getLoc(), resultType, 
+        lhsReshape.getOperand(), rhsReshape.getOperand(), 
+        newDotDims,
         dotOp.getPrecisionConfigAttr(), dotOp.getAlgorithmAttr());
+
+    rewriter.replaceOp(dotOp, newDotOp);
+    return success();
+  }
+};
 
     rewriter.replaceOp(dotOp, newDotOp);
     return success();
