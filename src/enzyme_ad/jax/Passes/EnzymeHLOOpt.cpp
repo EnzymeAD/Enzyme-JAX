@@ -20074,6 +20074,171 @@ struct RecognizeRotate
   }
 };
 
+
+
+struct RecognizeUpdateWithoutCorners
+    : public CheckedOpRewritePattern<stablehlo::ConcatenateOp,
+                                     RecognizeRotate> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp concat,
+                                    PatternRewriter &rewriter) const {
+    if (concat.getOperands().size() != 3)
+      return failure();
+
+    auto concat0 = concat.getOperands()[0].getDefiningOp<stablehlo::ConcatenateOp>();
+    if (!concat0) return failure();
+    if (concat0.getOperands().size() != 3) return failure();
+    if (concat0.getDimension() == concat.getDimension()) return failure();
+
+    auto concat2 = concat.getOperands()[2].getDefiningOp<stablehlo::ConcatenateOp>();
+    if (!concat2) return failure();
+    if (concat2.getOperands().size() != 3) return failure();
+    if (concat0.getDimension() != concat2.getDimension()) return failure();
+
+    auto slice00 = concat0.getOperands()[0].getDefiningOp<stablehlo::SliceOp>();
+    if (!slice00) return failure();
+    auto slice02 = concat0.getOperands()[2].getDefiningOp<stablehlo::SliceOp>();
+    if (!slice02) return failure();
+    auto slice20 = concat2.getOperands()[0].getDefiningOp<stablehlo::SliceOp>();
+    if (!slice20) return failure();
+    auto slice22 = concat2.getOperands()[2].getDefiningOp<stablehlo::SliceOp>();
+    if (!slice22) return failure();
+
+    auto dimX = concat.getDimension();
+    auto dimY = concat0.getDimension();
+
+    if (slice00.getOperand() != slice02.getOperand())
+      return failure();
+
+    if (slice00.getOperand() != slice02.getOperand())
+      return failure();
+
+    if (slice00.getOperand() != slice20.getOperand())
+      return failure();
+
+    if (slice00.getOperand() != slice22.getOperand())
+      return failure();
+    if (slice00.getOperand() != slice22.getOperand())
+      return failure();
+
+    ssize_t x1 = -1, x2 = -1, y1 = -1, y2 = -1;
+
+    ///
+    // | dimY [ aka dim1]
+    // v
+    //
+    // -> dimX [aka dim0]
+    //
+    //   [ slice00 ]        [ slice20 ]
+    //                data 
+    //   [ slice02 ]        [ slice22 ]
+    // 
+
+    for (size_t i=0; i<concat.getType().getShape().size(); i++) {
+      for (auto slice : {slice00, slice02, slice20, slice22}) {
+        size_t expectedStart = 0;
+        size_t expectedLimit = concat.getType().getShape()[i];
+
+        if (i == dimX) {
+          if (slice == slice00 || slice == slice02) {
+            if (x1 == -1) {
+              x1 = slice.getType().getShape()[i];
+            }
+            expectedLimit = x1;
+          }
+
+          if (slice == slice20 || slice == slice22) {
+            if (x2 == -1) {
+              x2 = slice.getStartIndices()[i];
+            }
+            expectedStart = x2;
+          }
+        } else if (i == dimY) {
+          if (slice == slice00 || slice == slice20) {
+            if (y1 == -1) {
+              y1 = slice.getType().getShape()[i];
+            }
+            expectedLimit = y1;
+          }
+
+          if (slice == slice02 || slice == slice22) {
+            if (y2 == -1) {
+              y2 = slice.getStartIndices()[i];
+            }
+            expectedStart = y2;
+          }
+        }
+
+        if (slice.getStartIndices()[i] != expectedStart) {
+          return failure();
+        }
+        if (slice.getLimitIndices()[i] != expectedLimit) {
+          return failure();
+        }
+        if (slice.getStrides()[i] != 1) {
+          return failure();
+        }
+      }
+    }
+
+    // We've now established it is indeed UpdateWithoutCorners-like.
+    // Now we must figure out a good same-sized update to use.
+    if (auto extend = concat.getOperands()[1].getDefiningOp<enzymexla::ExtendOp>()) {
+      ///
+      // | dimY [ aka dim1]
+      // v
+      //
+      // -> dimX [aka dim0]
+      //
+      //   [ slice00 ]  data[0]     [ slice20 ]
+      //          extend (data) ........ 
+      //   [ slice02 ]  data[end]   [ slice22 ]
+      // 
+
+      auto eslice0 = concat0.getOperands()[1].getDefiningOp<stablehlo::SliceOp>();
+      auto eslice2 = concat0.getOperands()[1].getDefiningOp<stablehlo::SliceOp>();
+      auto ETy = cast<RankedTensorType>(extend.getOperand().getType());
+
+      if (eslice0 && eslice2 && eslice0.getOperand() == extend.getOperand() && eslice2.getOperand() == extend.getOperand() &&
+          extend.getLhs() == x1 && extend.getRhs() == extend.getType().getShape()[dimX] - x2) {
+
+        for (size_t i=0; i<concat.getType().getShape().size(); i++) {
+          for (auto eslice : {eslice0, eslice2}) {
+            size_t expectedStart = 0;
+            size_t expectedLimit = ETy.getShape()[i];
+
+            if (i == dimY) {
+              if (eslice == eslice0) {
+                expectedLimit = y1;
+              }
+
+              if (eslice == eslice2) {
+                expectedStart = y2;
+              }
+            }
+
+            if (eslice.getStartIndices()[i] != expectedStart) {
+              return failure();
+            }
+            if (eslice.getLimitIndices()[i] != expectedLimit) {
+              return failure();
+            }
+            if (eslice.getStrides()[i] != 1) {
+              return failure();
+            }
+          }
+        }
+
+        auto extend2 = rewriter.create<enzymexla::ExtendOp>(concat0.getLoc(), extend, y1, concat.getType().getShape()[dimY] - y2, dimY);
+        rewriter.replaceOpWithNewOp<enzymexla::UpdateWithoutCornersOp>(concat, slice00.getOperand(), extend2, dimX, x1, x2, dimY, y1, y2);
+        return success();
+      }
+    }
+    return failure();
+  }
+};
+
 bool isWrapLike(int dim, Value lhs, Value mid, Value rhs,
                 stablehlo::SliceOp *sl0P = nullptr,
                 stablehlo::SliceOp *sl1P = nullptr) {
@@ -28863,7 +29028,7 @@ struct EnzymeHLOOptPass
     }
 
     if (passses & (2048 * 256)) {
-      patterns.add<RecognizeRotate, RecognizeWrap, RecognizeExtend>(context);
+      patterns.add<RecognizeRotate, RecognizeWrap, RecognizeExtend, RecognizeUpdateWithoutCorners>(context);
     }
 
     if (passses & (2048 * 512)) {

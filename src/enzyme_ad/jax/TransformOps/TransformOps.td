@@ -278,7 +278,7 @@ def ApplySliceOfDynamicUpdatePatterns : EnzymeHLOPatternOp<
   let patterns = ["SliceOfDynamicUpdate"];
 }
 def ApplySliceOfUpdateWithoutCornersPatterns : EnzymeHLOPatternOp<
-    "slice_of_update_without_corners"> {
+    "slice_of_updatewithoutcorners"> {
   let patterns = ["SliceOfUpdateWithoutCorners"];
 }
 def ApplySliceElementwisePatterns : EnzymeHLOPatternOp<
@@ -1858,6 +1858,11 @@ def GroupCommsTranspose : EnzymeHLOPatternOp<
 def LowerCommRegion : EnzymeHLOPatternOp<
     "lower_comm_region"> {
   let patterns = ["LowerCommRegion"];
+}
+
+def RecognizeUpdateWithoutCorners : EnzymeHLOPatternOp<
+    "recognize_updatewithoutcorners"> {
+  let patterns = ["RecognizeUpdateWithoutCorners"];
 }
 
 def RecognizeRotate : EnzymeHLOPatternOp<
