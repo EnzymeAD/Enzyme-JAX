@@ -148,6 +148,17 @@ struct PermuteOperandOpInterface
   }
 };
 
+struct UpdateWithoutCornersOpShardingInterface
+    : public mlir::sdy::ShardingRuleOpInterface::ExternalModel<
+          PermuteOperandOpInterface<enzymexla::UpdateWithoutCornersOp>,
+          enzymexla::UpdateWithoutCornersOp> {
+  mlir::sdy::OpShardingRuleAttr getShardingRule(mlir::Operation *op) const {
+    return sdy::OpShardingRuleBuilder(op)
+        .addPointwise(sdy::getTensorShape(op->getResult(0)))
+        .build();
+  }
+};
+
 class MemRefInsider
     : public mlir::MemRefElementTypeInterface::FallbackModel<MemRefInsider> {};
 
@@ -178,6 +189,8 @@ void prepareRegistry(mlir::DialectRegistry &registry) {
       +[](mlir::MLIRContext *ctx, enzymexla::EnzymeXLADialect *) {
         enzymexla::WrapOp::attachInterface<
             PermuteOperandOpInterface<enzymexla::WrapOp>>(*ctx);
+        enzymexla::UpdateWithoutCornersOp::attachInterface<
+            UpdateWithoutCornersOpShardingInterface>(*ctx);
         enzymexla::ExtendOp::attachInterface<
             PermuteOperandOpInterface<enzymexla::ExtendOp>>(*ctx);
         enzymexla::RotateOp::attachInterface<

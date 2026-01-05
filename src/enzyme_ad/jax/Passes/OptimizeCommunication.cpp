@@ -22,6 +22,7 @@
 
 #include "stablehlo/dialect/StablehloOps.h"
 
+#include "src/enzyme_ad/jax/Utils.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <algorithm>
@@ -1917,6 +1918,38 @@ struct ExtendToPadCommOptimize2 : public OpRewritePattern<enzymexla::ExtendOp> {
     }
 
     rewriter.replaceOp(extend, current);
+    return success();
+  }
+};
+
+struct UpdateWithoutCornersToSelect
+    : public OpRewritePattern<enzymexla::UpdateWithoutCornersOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::UpdateWithoutCornersOp extend,
+                                PatternRewriter &rewriter) const override {
+    if (extend->getParentOfType<sdy::ManualComputationOp>())
+      return failure();
+
+    auto extendSharding = mlir::sdy::getSharding(extend);
+    if (!extendSharding)
+      return failure();
+
+    auto operandSharding = mlir::sdy::getSharding(extend.getOperand());
+    if (!operandSharding)
+      return failure();
+
+    if (operandSharding != extendSharding)
+      return failure();
+
+    auto updateSharding = mlir::sdy::getSharding(extend.getUpdate());
+    if (!updateSharding)
+      return failure();
+
+    if (updateSharding != extendSharding)
+      return failure();
+
+    mlir::enzyme::commonLowerUpdateWithoutCorners(extend, rewriter);
     return success();
   }
 };
@@ -4281,6 +4314,10 @@ struct OptimizeCommunicationPass
     if (extend_to_pad_comm2 > 0)
       patterns.add<ExtendToPadCommOptimize2>(
           context, PatternBenefit(extend_to_pad_comm2));
+
+    if (updatewithoutcorners_to_select > 0)
+      patterns.add<UpdateWithoutCornersToSelect>(
+          context, PatternBenefit(updatewithoutcorners_to_select));
 
     if (dus_to_pad_manual_comp_comm > 0)
       patterns.add<DUSToPadManualCompComm>(

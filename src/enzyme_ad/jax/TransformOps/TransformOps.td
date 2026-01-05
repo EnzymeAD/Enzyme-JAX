@@ -277,6 +277,10 @@ def ApplySliceOfDynamicUpdatePatterns : EnzymeHLOPatternOp<
     "slice_of_dynamic_update"> {
   let patterns = ["SliceOfDynamicUpdate"];
 }
+def ApplySliceOfUpdateWithoutCornersPatterns : EnzymeHLOPatternOp<
+    "slice_of_updatewithoutcorners"> {
+  let patterns = ["SliceOfUpdateWithoutCorners"];
+}
 def ApplySliceElementwisePatterns : EnzymeHLOPatternOp<
     "slice_elementwise"> {
   let patterns = ["SliceElementwise"];
@@ -839,6 +843,12 @@ def ApplyCSEAbsPatterns : EnzymeHLOPatternOp<
     "cse_abs"> {
   let patterns = ["CSE<stablehlo::AbsOp>"];
 }
+
+def ApplyCSEUpdateWithoutCornersPatterns : EnzymeHLOPatternOp<
+    "cse_updatewithoutcorners"> {
+  let patterns = ["CSE<enzymexla::UpdateWithoutCornersOp>"];
+}
+
 def ApplyCSEWrapPatterns : EnzymeHLOPatternOp<
     "cse_wrap"> {
   let patterns = ["CSE<enzymexla::WrapOp>"];
@@ -1613,6 +1623,11 @@ def WhileDUS : EnzymeHLOPatternOp<
   let patterns = ["WhileDUS"];
 }
 
+def WhileUpdateWithoutCorners : EnzymeHLOPatternOp<
+    "while_updatewithoutcorners"> {
+  let patterns = ["WhileUpdateWithoutCorners"];
+}
+
 def DUSSliceSimplify : EnzymeHLOPatternOp<
     "dus_slice_simplify"> {
   let patterns = ["DUSSliceSimplify"];
@@ -1851,9 +1866,19 @@ def LowerCommRegion : EnzymeHLOPatternOp<
   let patterns = ["LowerCommRegion"];
 }
 
+def RecognizeUpdateWithoutCorners : EnzymeHLOPatternOp<
+    "recognize_updatewithoutcorners"> {
+  let patterns = ["RecognizeUpdateWithoutCorners"];
+}
+
 def RecognizeRotate : EnzymeHLOPatternOp<
     "recognize_rotate"> {
   let patterns = ["RecognizeRotate"];
+}
+
+def LowerUpdateWithoutCorners : EnzymeHLOPatternOp<
+    "lower_updatewithoutcorners"> {
+  let patterns = ["LowerUpdateWithoutCorners"];
 }
 
 def LowerRotate : EnzymeHLOPatternOp<
