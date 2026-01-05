@@ -26805,7 +26805,7 @@ struct EnzymeHLOOptPass
 
     patterns.add<TransposeSymmetricSimplify>(context);
     patterns.add<FactorScalarsInDotGeneral>(context);
-    patterns.add<DotGeneralToSymm>(context);
+    patterns.add<DotGeneralToSymm, FuseAddIntoSymm, FuseMulIntoSymm>(context);
 
     // syrk patterns
     // currently disabled since lowering is missing
