@@ -1197,6 +1197,7 @@ transposeLapackTranspose(enzymexla::LapackTranspose trans, bool canBeComplex) {
            "cannot trivially tranpose adjoint of complex numbers");
     return enzymexla::LapackTranspose::none;
   }
+  llvm_unreachable("Unknown LapackTranspose");
 }
 
 enzymexla::LapackUplo transposeLapackUplo(enzymexla::LapackUplo uplo) {
@@ -1208,6 +1209,7 @@ enzymexla::LapackUplo transposeLapackUplo(enzymexla::LapackUplo uplo) {
   case enzymexla::LapackUplo::U:
     return enzymexla::LapackUplo::L;
   }
+  llvm_unreachable("Unknown LapackUplo");
 }
 
 enzymexla::LapackUplo standardizeUplo(enzymexla::LapackUplo uplo) {
