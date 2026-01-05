@@ -20078,7 +20078,7 @@ struct RecognizeRotate
 
 struct RecognizeUpdateWithoutCorners
     : public CheckedOpRewritePattern<stablehlo::ConcatenateOp,
-                                     RecognizeRotate> {
+                                     RecognizeUpdateWithoutCorners> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp concat,
@@ -20191,30 +20191,31 @@ struct RecognizeUpdateWithoutCorners
       //
       // -> dimX [aka dim0]
       //
-      //   [ slice00 ]  data[0]     [ slice20 ]
-      //          extend (data) ........ 
-      //   [ slice02 ]  data[end]   [ slice22 ]
+      //   [ slice00 ]    lhs        [ slice20 ]
+      //     data[0]    extend(data)   data[end]
+      //   [ slice02 ]    rhs        [ slice22 ]
       // 
 
       auto eslice0 = concat0.getOperands()[1].getDefiningOp<stablehlo::SliceOp>();
-      auto eslice2 = concat0.getOperands()[1].getDefiningOp<stablehlo::SliceOp>();
+      auto eslice2 = concat2.getOperands()[1].getDefiningOp<stablehlo::SliceOp>();
       auto ETy = cast<RankedTensorType>(extend.getOperand().getType());
-
+ 
       if (eslice0 && eslice2 && eslice0.getOperand() == extend.getOperand() && eslice2.getOperand() == extend.getOperand() &&
-          extend.getLhs() == x1 && extend.getRhs() == extend.getType().getShape()[dimX] - x2) {
+	  extend.getDimension() == dimY && 
+          extend.getLhs() == y1 && extend.getRhs() == extend.getType().getShape()[dimY] - y2) {
 
         for (size_t i=0; i<concat.getType().getShape().size(); i++) {
           for (auto eslice : {eslice0, eslice2}) {
             size_t expectedStart = 0;
             size_t expectedLimit = ETy.getShape()[i];
 
-            if (i == dimY) {
+            if (i == dimX) {
               if (eslice == eslice0) {
-                expectedLimit = y1;
+                expectedLimit = x1;
               }
 
               if (eslice == eslice2) {
-                expectedStart = y2;
+                expectedStart = ETy.getShape()[i] - (concat.getType().getShape()[i] - x2);
               }
             }
 
@@ -20233,8 +20234,13 @@ struct RecognizeUpdateWithoutCorners
 
         auto shard = sdy::getShardingPerValue(concat);
 
-        auto extend2 = rewriter.create<enzymexla::ExtendOp>(concat0.getLoc(), extend, y1, concat.getType().getShape()[dimY] - y2, dimY);
-        auto newUpdate = rewriter.replaceOpWithNewOp<enzymexla::UpdateWithoutCornersOp>(concat, slice00.getOperand(), extend2, dimX, x1, x2, dimY, y1, y2);
+        auto extend2 = rewriter.create<enzymexla::ExtendOp>(concat0.getLoc(), extend, x1, concat.getType().getShape()[dimX] - x2, dimX);
+	enzymexla::UpdateWithoutCornersOp newUpdate;
+	if (dimX >= dimY) {
+          newUpdate = rewriter.replaceOpWithNewOp<enzymexla::UpdateWithoutCornersOp>(concat, slice00.getOperand(), extend2, dimY, y1, y2, dimX, x1, x2);
+	} else {
+          newUpdate = rewriter.replaceOpWithNewOp<enzymexla::UpdateWithoutCornersOp>(concat, slice00.getOperand(), extend2, dimX, x1, x2, dimY, y1, y2);
+	}
 
         if (shard) {
           sdy::setShardings(extend2, shard);

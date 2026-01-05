@@ -23,3 +23,10 @@
       func.return %RES : tensor<6x6130x12272xf64>
   }
 
+; CHECK:  func.func @main(%arg0: tensor<6x6130x12272xf64>, %arg1: tensor<4x6128x12272xf64>) -> tensor<6x6130x12272xf64> {
+; CHECK-NEXT:    %0 = "enzymexla.extend"(%arg1) <{dimension = 0 : i64, lhs = 1 : i64, rhs = 1 : i64}> : (tensor<4x6128x12272xf64>) -> tensor<6x6128x12272xf64>
+; CHECK-NEXT:    %1 = "enzymexla.extend"(%0) <{dimension = 1 : i64, lhs = 1 : i64, rhs = 1 : i64}> : (tensor<6x6128x12272xf64>) -> tensor<6x6130x12272xf64>
+; CHECK-NEXT:    %2 = "enzymexla.update_without_corners"(%arg0, %1) <{dimensionX = 0 : i64, dimensionY = 1 : i64, x1 = 1 : i64, x2 = 5 : i64, y1 = 1 : i64, y2 = 6129 : i64}> : (tensor<6x6130x12272xf64>, tensor<6x6130x12272xf64>) -> tensor<6x6130x12272xf64>
+; CHECK-NEXT:    return %2 : tensor<6x6130x12272xf64>
+; CHECK-NEXT:  }
+
