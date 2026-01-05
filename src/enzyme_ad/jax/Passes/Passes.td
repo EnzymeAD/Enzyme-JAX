@@ -944,6 +944,12 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*default=*/"0",
        /*description=*/"Rewrite Wrap operations in terms of Extend and Rotate">,
        Option<
+       /*C++ variable name=*/"updatewithoutcorners_to_select",
+       /*CLI argument=*/"updatewithoutcorners_to_select",
+       /*type=*/"int",
+       /*default=*/"1",
+       /*description=*/"Rewrite updatewithoutcorners_to_select to a select">,
+       Option<
        /*C++ variable name=*/"reorder_associative",
        /*CLI argument=*/"reorder_associative",
        /*type=*/"int",

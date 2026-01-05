@@ -39,6 +39,9 @@
 namespace mlir {
 namespace enzyme {
 
+void commonLowerUpdateWithoutCorners(enzymexla::UpdateWithoutCornersOp extend,
+                                     PatternRewriter &rewriter);
+
 using namespace ::mlir::enzyme::oputils;
 
 template <typename T> inline Attribute makeAttr(mlir::Type elemType, T val) {

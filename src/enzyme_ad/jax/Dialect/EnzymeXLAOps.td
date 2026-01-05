@@ -387,6 +387,26 @@ def ExtendOp: EnzymeXLA_Op<
   let results = (outs HLO_Tensor:$result);
 }
 
+def UpdateWithoutCornersOp: EnzymeXLA_Op<
+      "update_without_corners",
+      [Pure, SameOperandsAndResultElementType,
+       DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+  let summary = "Update without corners operation";
+
+  let arguments = (ins
+    HLO_Tensor:$operand,
+    HLO_Tensor:$update,
+    I64Attr:$dimensionX,
+    I64Attr:$x1,
+    I64Attr:$x2,
+    I64Attr:$dimensionY,
+    I64Attr:$y1,
+    I64Attr:$y2
+  );
+
+  let results = (outs HLO_Tensor:$result);
+}
+
 def CommRegionOp : EnzymeXLA_Op<"comm_region", [
     DeclareOpInterfaceMethods<RegionBranchOpInterface>,
     RecursiveMemoryEffects, RecursivelySpeculatable]> {

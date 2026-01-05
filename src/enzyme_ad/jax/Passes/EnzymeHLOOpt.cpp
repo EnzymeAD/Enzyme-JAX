@@ -1413,6 +1413,18 @@ struct LowerRotate
   }
 };
 
+struct LowerUpdateWithoutCorners
+    : public CheckedOpRewritePattern<enzymexla::UpdateWithoutCornersOp,
+                                     LowerUpdateWithoutCorners> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(enzymexla::UpdateWithoutCornersOp up,
+                                    PatternRewriter &rewriter) const {
+    mlir::enzyme::commonLowerUpdateWithoutCorners(up, rewriter);
+    return success();
+  }
+};
+
 // Optimization: DUSConcat
 // Pattern:
 //   %concat = stablehlo.concatenate %A, %B, %C, dimension = D
@@ -2572,6 +2584,49 @@ struct SliceOfDynamicUpdate final
       }
     }
 
+    return failure();
+  }
+};
+
+struct SliceOfUpdateWithoutCorners final
+    : CheckedOpRewritePattern<stablehlo::SliceOp, SliceOfUpdateWithoutCorners> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
+                                    PatternRewriter &rewriter) const {
+
+    auto dyn =
+        op.getOperand().getDefiningOp<enzymexla::UpdateWithoutCornersOp>();
+    if (!dyn)
+      return failure();
+
+    // Try to use the updated value, currently extremely conservative and checks
+    // everything is within the innermost box This can be extended to just check
+    // that nothing overlaps with the corners.
+    if (op.getStrides()[dyn.getDimensionX()] == 1 &&
+        op.getStrides()[dyn.getDimensionY()] == 1 &&
+        op.getStartIndices()[dyn.getDimensionX()] >= dyn.getX1() &&
+        op.getStartIndices()[dyn.getDimensionY()] >= dyn.getY1() &&
+        op.getLimitIndices()[dyn.getDimensionX()] <= dyn.getX2() &&
+        op.getLimitIndices()[dyn.getDimensionY()] <= dyn.getY2()) {
+      rewriter.modifyOpInPlace(
+          op, [&]() { op.getOperandMutable().assign(dyn.getUpdate()); });
+      return success();
+    }
+
+    // Try to use the old value, currently extremely conservative and checks
+    // everything is within the innermost box This can be extended to just check
+    // that nothing overlaps with the corners.
+    if (op.getStrides()[dyn.getDimensionX()] == 1 &&
+        op.getStrides()[dyn.getDimensionY()] == 1 &&
+        (op.getStartIndices()[dyn.getDimensionX()] >= dyn.getX2() ||
+         op.getLimitIndices()[dyn.getDimensionX()] <= dyn.getX1()) &&
+        (op.getStartIndices()[dyn.getDimensionY()] >= dyn.getY2() ||
+         op.getLimitIndices()[dyn.getDimensionY()] <= dyn.getY1())) {
+      rewriter.modifyOpInPlace(
+          op, [&]() { op.getOperandMutable().assign(dyn.getOperand()); });
+      return success();
+    }
     return failure();
   }
 };
@@ -15097,6 +15152,267 @@ struct WhileDUS : public CheckedOpRewritePattern<stablehlo::WhileOp, WhileDUS> {
   }
 };
 
+struct WhileUpdateWithoutCorners
+    : public CheckedOpRewritePattern<stablehlo::WhileOp,
+                                     WhileUpdateWithoutCorners> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::WhileOp whileOp,
+                                    PatternRewriter &rewriter) const {
+    // Find yield op in the body
+    auto &bodyBlock = whileOp.getBody().front();
+    auto yieldOp = cast<stablehlo::ReturnOp>(bodyBlock.getTerminator());
+
+    // Step 1: Track which results need to be transformed
+    struct DUSCandidate {
+      unsigned idx;
+      enzymexla::UpdateWithoutCornersOp DUS;
+      mlir::Value outerOperand;
+      mlir::Value conditionalOperand;
+    };
+
+    llvm::SmallVector<DUSCandidate, 4> candidates;
+    bool hasConditional = false;
+
+    for (unsigned idx = 0; idx < yieldOp.getNumOperands(); ++idx) {
+
+      auto DUS = yieldOp.getOperand(idx)
+                     .getDefiningOp<enzymexla::UpdateWithoutCornersOp>();
+      if (!DUS)
+        continue;
+      Value DUSOperand = DUS.getOperand();
+
+      // Check that the while result has exactly one use
+
+      mlir::Value conditionalOperand = nullptr;
+      if (DUSOperand == whileOp.getBody().front().getArgument(idx)) {
+      } else if (definedOutside(DUSOperand, whileOp)) {
+
+        bool hasArgUse = !whileOp.getCond().getArgument(idx).use_empty() ||
+                         !whileOp.getBody().getArgument(idx).use_empty();
+
+        if (hasArgUse) {
+          continue;
+        }
+
+        conditionalOperand = DUSOperand;
+        hasConditional = true;
+      } else {
+        continue;
+      }
+
+      candidates.emplace_back(DUSCandidate{idx, DUS, whileOp.getOperands()[idx],
+                                           conditionalOperand});
+    }
+
+    // If no candidates found, no rewrite needed
+    if (candidates.empty())
+      return failure();
+
+    // Step 2 : Make transformations in the original while op
+    // Get the operands of the while op to use later
+    auto whileOperands = llvm::to_vector(whileOp.getOperands());
+
+    // New operands
+    SmallVector<Value> newOperands(whileOp.getOperands().begin(),
+                                   whileOp.getOperands().end());
+
+    // Create input transposes for each candidate
+    for (auto &candidate : candidates) {
+      // Create a new transpose before the while loop
+
+      newOperands[candidate.idx] = candidate.outerOperand;
+    }
+
+    // Update yield op to use the input of the inner transpose
+    {
+      // Save the current insertion point
+      mlir::OpBuilder::InsertionGuard guard(rewriter);
+
+      // New return values
+      SmallVector<Value> newReturnValues(yieldOp.getOperands().begin(),
+                                         yieldOp.getOperands().end());
+
+      rewriter.setInsertionPoint(yieldOp);
+      for (auto &candidate : candidates) {
+        newReturnValues[candidate.idx] = candidate.DUS.getUpdate();
+      }
+      rewriter.replaceOpWithNewOp<stablehlo::ReturnOp>(yieldOp,
+                                                       newReturnValues);
+      // Update the yieldOp
+      yieldOp = cast<stablehlo::ReturnOp>(bodyBlock.getTerminator());
+    }
+
+    // Step 3 : Create a new while op with the new operands and move the body of
+    // original whileOp
+    SmallVector<Type> newResultTypes;
+    newResultTypes.reserve(newOperands.size());
+
+    for (auto operand : newOperands) {
+      newResultTypes.push_back(operand.getType());
+    }
+    auto newWhileOp =
+        stablehlo::WhileOp::create(rewriter, whileOp.getLoc(), newResultTypes,
+                                   newOperands, whileOp->getAttrs());
+
+    SmallVector<Value> results;
+    for (auto res : newWhileOp.getResults())
+      results.push_back(res);
+
+    {
+      mlir::IRMapping mapper;
+      Value useInner = nullptr;
+      if (hasConditional) {
+
+        for (unsigned i = 0; i < whileOp.getCond().getNumArguments(); ++i) {
+          mapper.map(whileOp.getCond().getArgument(i),
+                     whileOp.getOperands()[i]);
+        }
+        for (auto &op : whileOp.getCond().front().getOperations()) {
+          // Skip the terminator - we'll add it after all other operations
+          if (isa<stablehlo::ReturnOp>(op))
+            continue;
+
+          // Clone the operation with the value mapping
+          rewriter.clone(op, mapper);
+        }
+        useInner = whileOp.getCond().front().getTerminator()->getOperand(0);
+        useInner = mapper.lookupOrDefault(useInner);
+      }
+      for (auto &candidate : candidates) {
+        Value operand = candidate.outerOperand;
+        if (candidate.conditionalOperand) {
+          operand = stablehlo::SelectOp::create(
+              rewriter, whileOp.getLoc(), useInner,
+              candidate.conditionalOperand, operand);
+        }
+
+        results[candidate.idx] = enzymexla::UpdateWithoutCornersOp::create(
+            rewriter, candidate.DUS.getLoc(), operand, results[candidate.idx],
+            candidate.DUS.getDimensionX(), candidate.DUS.getX1(),
+            candidate.DUS.getX2(), candidate.DUS.getDimensionY(),
+            candidate.DUS.getY1(), candidate.DUS.getY2());
+      }
+    }
+
+    // Create blocks in both regions first
+    {
+      // Create a block in the condition region
+      Block *condBlock = rewriter.createBlock(&newWhileOp.getCond());
+
+      // Add arguments to the condition block matching operand types
+      for (auto type : newResultTypes) {
+        condBlock->addArgument(type, whileOp.getLoc());
+      }
+
+      // Create a block in the body region
+      Block *bodyBlock = rewriter.createBlock(&newWhileOp.getBody());
+
+      // Add arguments to the body block matching operand types
+      for (auto type : newResultTypes) {
+        bodyBlock->addArgument(type, whileOp.getLoc());
+      }
+    }
+
+    // Create an IR mapper to map values from old op to new op
+    mlir::IRMapping mapper;
+
+    // Clear the new body block but keep its arguments
+    Block &newBodyBlock = newWhileOp.getBody().front();
+    newBodyBlock
+        .clear(); // This clears operations but preserves block arguments
+
+    // Clone operations from old body to new body
+    Block &oldBodyBlock = whileOp.getBody().front();
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(&newBodyBlock);
+
+      // Set up operand mapping for the body region
+      for (unsigned i = 0; i < whileOp.getBody().getNumArguments(); ++i) {
+        auto oldArg = whileOp.getBody().getArgument(i);
+        Value newArg = newWhileOp.getBody().getArgument(i);
+        for (auto &pair : candidates) {
+          if (pair.idx == i) {
+            newArg = enzymexla::UpdateWithoutCornersOp::create(
+                rewriter, pair.DUS.getLoc(), pair.outerOperand, newArg,
+                pair.DUS.getDimensionX(), pair.DUS.getX1(), pair.DUS.getX2(),
+                pair.DUS.getDimensionY(), pair.DUS.getY1(), pair.DUS.getY2());
+            break;
+          }
+        }
+        mapper.map(oldArg, newArg);
+      }
+
+      for (auto &op : oldBodyBlock.getOperations()) {
+        // Skip the terminator - we'll add it after all other operations
+        if (isa<stablehlo::ReturnOp>(op))
+          continue;
+
+        // Clone the operation with the value mapping
+        rewriter.clone(op, mapper);
+      }
+    }
+
+    // Create a new terminator for the body region using new values
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      SmallVector<Value> newReturnValues;
+
+      // Map old return values to new values using the mapper
+      for (auto oldRetVal : yieldOp.getOperands()) {
+        Value newRetVal = mapper.lookupOrNull(oldRetVal);
+        // If the value isn't in the mapper, maybe it was a block argument or
+        // constant
+        if (!newRetVal)
+          newRetVal = oldRetVal; // Consider more robust handling if needed
+        newReturnValues.push_back(newRetVal);
+      }
+
+      // Create the return op at the end of the body
+      rewriter.setInsertionPointToEnd(&newBodyBlock);
+      stablehlo::ReturnOp::create(rewriter, yieldOp.getLoc(), newReturnValues);
+    }
+
+    // Create condition region mapper
+    mlir::IRMapping condMapper;
+
+    // Clear and clone condition region
+    Block &newCondBlock = newWhileOp.getCond().front();
+    newCondBlock.clear();
+    Block &oldCondBlock = whileOp.getCond().front();
+
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(&newCondBlock);
+
+      for (unsigned i = 0; i < whileOp.getCond().getNumArguments(); ++i) {
+        auto oldArg = whileOp.getCond().getArgument(i);
+        Value newArg = newWhileOp.getCond().getArgument(i);
+        for (auto &pair : candidates) {
+          if (pair.idx == i) {
+            newArg = enzymexla::UpdateWithoutCornersOp::create(
+                rewriter, pair.DUS.getLoc(), pair.outerOperand, newArg,
+                pair.DUS.getDimensionX(), pair.DUS.getX1(), pair.DUS.getX2(),
+                pair.DUS.getDimensionY(), pair.DUS.getY1(), pair.DUS.getY2());
+            break;
+          }
+        }
+        condMapper.map(oldArg, newArg);
+      }
+
+      for (auto &op : oldCondBlock.getOperations()) {
+        rewriter.clone(op, condMapper);
+      }
+    }
+
+    // Finally, replace all uses of the old while op with the new one
+    rewriter.replaceOp(whileOp, results);
+
+    return success();
+  }
+};
+
 struct IVInfo {
   int index;    // Index of the induction variable in the while op arguments
   int64_t step; // Step size (how much IV increments each iteration)
@@ -19778,6 +20094,208 @@ struct RecognizeRotate
       return success();
     }
 
+    return failure();
+  }
+};
+
+struct RecognizeUpdateWithoutCorners
+    : public CheckedOpRewritePattern<stablehlo::ConcatenateOp,
+                                     RecognizeUpdateWithoutCorners> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp concat,
+                                    PatternRewriter &rewriter) const {
+    if (concat.getOperands().size() != 3)
+      return failure();
+
+    auto concat0 =
+        concat.getOperands()[0].getDefiningOp<stablehlo::ConcatenateOp>();
+    if (!concat0)
+      return failure();
+    if (concat0.getOperands().size() != 3)
+      return failure();
+    if (concat0.getDimension() == concat.getDimension())
+      return failure();
+
+    auto concat2 =
+        concat.getOperands()[2].getDefiningOp<stablehlo::ConcatenateOp>();
+    if (!concat2)
+      return failure();
+    if (concat2.getOperands().size() != 3)
+      return failure();
+    if (concat0.getDimension() != concat2.getDimension())
+      return failure();
+
+    auto slice00 = concat0.getOperands()[0].getDefiningOp<stablehlo::SliceOp>();
+    if (!slice00)
+      return failure();
+    auto slice02 = concat0.getOperands()[2].getDefiningOp<stablehlo::SliceOp>();
+    if (!slice02)
+      return failure();
+    auto slice20 = concat2.getOperands()[0].getDefiningOp<stablehlo::SliceOp>();
+    if (!slice20)
+      return failure();
+    auto slice22 = concat2.getOperands()[2].getDefiningOp<stablehlo::SliceOp>();
+    if (!slice22)
+      return failure();
+
+    auto dimX = concat.getDimension();
+    auto dimY = concat0.getDimension();
+
+    if (slice00.getOperand() != slice02.getOperand())
+      return failure();
+
+    if (slice00.getOperand() != slice02.getOperand())
+      return failure();
+
+    if (slice00.getOperand() != slice20.getOperand())
+      return failure();
+
+    if (slice00.getOperand() != slice22.getOperand())
+      return failure();
+    if (slice00.getOperand() != slice22.getOperand())
+      return failure();
+
+    ssize_t x1 = -1, x2 = -1, y1 = -1, y2 = -1;
+
+    ///
+    // | dimY [ aka dim1]
+    // v
+    //
+    // -> dimX [aka dim0]
+    //
+    //   [ slice00 ]        [ slice20 ]
+    //                data
+    //   [ slice02 ]        [ slice22 ]
+    //
+
+    for (size_t i = 0; i < concat.getType().getShape().size(); i++) {
+      for (auto slice : {slice00, slice02, slice20, slice22}) {
+        size_t expectedStart = 0;
+        size_t expectedLimit = concat.getType().getShape()[i];
+
+        if (i == dimX) {
+          if (slice == slice00 || slice == slice02) {
+            if (x1 == -1) {
+              x1 = slice.getType().getShape()[i];
+            }
+            expectedLimit = x1;
+          }
+
+          if (slice == slice20 || slice == slice22) {
+            if (x2 == -1) {
+              x2 = slice.getStartIndices()[i];
+            }
+            expectedStart = x2;
+          }
+        } else if (i == dimY) {
+          if (slice == slice00 || slice == slice20) {
+            if (y1 == -1) {
+              y1 = slice.getType().getShape()[i];
+            }
+            expectedLimit = y1;
+          }
+
+          if (slice == slice02 || slice == slice22) {
+            if (y2 == -1) {
+              y2 = slice.getStartIndices()[i];
+            }
+            expectedStart = y2;
+          }
+        }
+
+        if (slice.getStartIndices()[i] != expectedStart) {
+          return failure();
+        }
+        if (slice.getLimitIndices()[i] != expectedLimit) {
+          return failure();
+        }
+        if (slice.getStrides()[i] != 1) {
+          return failure();
+        }
+      }
+    }
+
+    // We've now established it is indeed UpdateWithoutCorners-like.
+    // Now we must figure out a good same-sized update to use.
+    if (auto extend =
+            concat.getOperands()[1].getDefiningOp<enzymexla::ExtendOp>()) {
+      ///
+      // | dimY [ aka dim1]
+      // v
+      //
+      // -> dimX [aka dim0]
+      //
+      //   [ slice00 ]    lhs        [ slice20 ]
+      //     data[0]    extend(data)   data[end]
+      //   [ slice02 ]    rhs        [ slice22 ]
+      //
+
+      auto eslice0 =
+          concat0.getOperands()[1].getDefiningOp<stablehlo::SliceOp>();
+      auto eslice2 =
+          concat2.getOperands()[1].getDefiningOp<stablehlo::SliceOp>();
+      auto ETy = cast<RankedTensorType>(extend.getOperand().getType());
+
+      if (eslice0 && eslice2 && eslice0.getOperand() == extend.getOperand() &&
+          eslice2.getOperand() == extend.getOperand() &&
+          extend.getDimension() == dimY && extend.getLhs() == y1 &&
+          extend.getRhs() == extend.getType().getShape()[dimY] - y2) {
+
+        for (size_t i = 0; i < concat.getType().getShape().size(); i++) {
+          for (auto eslice : {eslice0, eslice2}) {
+            size_t expectedStart = 0;
+            size_t expectedLimit = ETy.getShape()[i];
+
+            if (i == dimX) {
+              if (eslice == eslice0) {
+                expectedLimit = x1;
+              }
+
+              if (eslice == eslice2) {
+                expectedStart =
+                    ETy.getShape()[i] - (concat.getType().getShape()[i] - x2);
+              }
+            }
+
+            if (eslice.getStartIndices()[i] != expectedStart) {
+              return failure();
+            }
+            if (eslice.getLimitIndices()[i] != expectedLimit) {
+              return failure();
+            }
+            if (eslice.getStrides()[i] != 1) {
+              return failure();
+            }
+          }
+        }
+
+        auto shard = sdy::getShardingPerValue(concat);
+
+        auto extend2 = rewriter.create<enzymexla::ExtendOp>(
+            concat0.getLoc(), extend, x1,
+            concat.getType().getShape()[dimX] - x2, dimX);
+        enzymexla::UpdateWithoutCornersOp newUpdate;
+
+        if (dimX >= dimY) {
+          newUpdate =
+              rewriter.replaceOpWithNewOp<enzymexla::UpdateWithoutCornersOp>(
+                  concat, slice00.getOperand(), extend2, dimY, y1, y2, dimX, x1,
+                  x2);
+        } else {
+          newUpdate =
+              rewriter.replaceOpWithNewOp<enzymexla::UpdateWithoutCornersOp>(
+                  concat, slice00.getOperand(), extend2, dimX, x1, x2, dimY, y1,
+                  y2);
+        }
+
+        if (shard) {
+          sdy::setShardings(extend2, shard);
+          sdy::setShardings(newUpdate, shard);
+        }
+        return success();
+      }
+    }
     return failure();
   }
 };
@@ -28392,19 +28910,19 @@ struct EnzymeHLOOptPass
                  DynamicUpdateSliceConstProp, PadSimplify, ScatterConstFold>(
         max_constant_expansion, context, PatternBenefit(65000));
 
-    patterns
-        .add<ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
-             SliceElementwise, SliceReshapeElementwise, DynamicSliceElementwise,
-             SlicePad, SliceReshapePad, ReshapeSliceReshape, DotReshapeDot,
-             ChloInfConstProp, GammaConstProp, ConcatFuse, ConcatToBroadcast,
-             PadPad, PadReshapePad, ConcatPushBinop<stablehlo::AddOp>,
-             ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
-             ReduceConcat, ConcatSlice, ConcatMultiPad, ConcatWrap, WidenWrap,
-             WidenExtend, ConcatConcatAxisSwap, SliceConcat, SliceIf,
-             SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
-             BinBroadcastSplat<stablehlo::SubtractOp>,
-             BinBroadcastSplat<stablehlo::DivOp>,
-             BinBroadcastSplat<stablehlo::MulOp>, RotatePad, ConjReal>(context);
+    patterns.add<
+        ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
+        SliceOfUpdateWithoutCorners, SliceElementwise, SliceReshapeElementwise,
+        DynamicSliceElementwise, SlicePad, SliceReshapePad, ReshapeSliceReshape,
+        DotReshapeDot, ChloInfConstProp, GammaConstProp, ConcatFuse,
+        ConcatToBroadcast, PadPad, PadReshapePad,
+        ConcatPushBinop<stablehlo::AddOp>, ConcatPushBinop<stablehlo::MulOp>,
+        ScatterToDynamicUpdateSlice, ReduceConcat, ConcatSlice, ConcatMultiPad,
+        ConcatWrap, WidenWrap, WidenExtend, ConcatConcatAxisSwap, SliceConcat,
+        SliceIf, SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
+        BinBroadcastSplat<stablehlo::SubtractOp>,
+        BinBroadcastSplat<stablehlo::DivOp>,
+        BinBroadcastSplat<stablehlo::MulOp>, RotatePad, ConjReal>(context);
 
     // Unary constant propagation patterns
     patterns.add<UnaryConstProp<stablehlo::NotOp, stablehlo::notOp>,
@@ -28571,11 +29089,14 @@ struct EnzymeHLOOptPass
     }
 
     if (passses & (2048 * 256)) {
-      patterns.add<RecognizeRotate, RecognizeWrap, RecognizeExtend>(context);
+      patterns.add<RecognizeRotate, RecognizeWrap, RecognizeExtend,
+                   RecognizeUpdateWithoutCorners>(context);
     }
 
     if (passses & (2048 * 512)) {
-      patterns.add<LowerRotate, LowerWrap, LowerExtend>(context);
+      patterns
+          .add<LowerRotate, LowerWrap, LowerExtend, LowerUpdateWithoutCorners>(
+              context);
     }
 
     if (passses & (2048 * 1024)) {
