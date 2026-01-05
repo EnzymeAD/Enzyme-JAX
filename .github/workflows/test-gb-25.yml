@@ -73,7 +73,7 @@ jobs:
           # Avoid downloading Bazel every time.
           bazelisk-cache: true
           # Store build cache per workflow.
-          disk-cache: gb-25-${{ github.workflow }}-${{ matrix.os }}-${{ matrix.julia_version }}-${{ matrix.xla_commit }}-${{ matrix.gb25_commit }}-${{ matrix.reactant_commit }}
+          disk-cache: gb-25-${{ github.workflow }}-${{ matrix.os }}-${{ matrix.xla_commit }}
           # Share repository cache between workflows.
           repository-cache: true
           bazelisk-version: 1.x
