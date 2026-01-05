@@ -1234,18 +1234,17 @@ struct GetSubconstraintOpConversion
   }
 };
 
-struct SelectTraceOpConversion
-    : public OpConversionPattern<enzyme::SelectTraceOp> {
+struct SelectOpConversion : public OpConversionPattern<enzyme::SelectOp> {
   using OpConversionPattern::OpConversionPattern;
 
   std::string backend;
-  SelectTraceOpConversion(std::string backend, TypeConverter &typeConverter,
-                          MLIRContext *context, PatternBenefit benefit = 1)
+  SelectOpConversion(std::string backend, TypeConverter &typeConverter,
+                     MLIRContext *context, PatternBenefit benefit = 1)
       : OpConversionPattern(typeConverter, context, benefit), backend(backend) {
   }
 
   LogicalResult
-  matchAndRewrite(enzyme::SelectTraceOp op, OpAdaptor adaptor,
+  matchAndRewrite(enzyme::SelectOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto newOp = stablehlo::SelectOp::create(
         rewriter, op.getLoc(), adaptor.getTrueValue().getType(),
@@ -3085,7 +3084,7 @@ struct LowerProbProgTraceOpsPass
     target.addIllegalOp<enzyme::GetSubtraceOp>();
     target.addIllegalOp<enzyme::GetWeightFromTraceOp>();
     target.addIllegalOp<enzyme::GetFlattenedSamplesFromTraceOp>();
-    target.addIllegalOp<enzyme::SelectTraceOp>();
+    target.addIllegalOp<enzyme::SelectOp>();
     target.addIllegalOp<enzyme::DumpOp>();
 
     target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp f) {
@@ -3115,7 +3114,7 @@ struct LowerProbProgTraceOpsPass
              AddRetvalToTraceOpConversion, GetSampleFromConstraintOpConversion,
              GetSubconstraintOpConversion, GetSampleFromTraceOpConversion,
              GetSubtraceOpConversion, GetWeightFromTraceOpConversion,
-             GetFlattenedSamplesFromTraceOpConversion, SelectTraceOpConversion,
+             GetFlattenedSamplesFromTraceOpConversion, SelectOpConversion,
              DumpOpConversion, UnrealizedConversionCastOpConversion>(
             backend, typeConverter, context);
 
