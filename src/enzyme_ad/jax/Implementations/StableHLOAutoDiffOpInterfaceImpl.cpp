@@ -1559,7 +1559,8 @@ public:
         auto bc2 = BroadcastInDimOp::create(builder, op.getLoc(),
                                             oprev.getType(), inDiffe, attr);
 
-        auto res = SelectOp::create(builder, op.getLoc(), cmp, bc2, zero);
+        auto res =
+            stablehlo::SelectOp::create(builder, op.getLoc(), cmp, bc2, zero);
         gutils->addToDiffe(op.getInputs()[0], res, builder);
       }
       if (!gutils->isConstantValue(op.getInitValues()[0])) {
@@ -1571,7 +1572,8 @@ public:
         auto cmp = CompareOp::create(builder, op.getLoc(), ores, oprev,
                                      ComparisonDirection::EQ);
 
-        auto res = SelectOp::create(builder, op.getLoc(), cmp, inDiffe, zeroI);
+        auto res = stablehlo::SelectOp::create(builder, op.getLoc(), cmp,
+                                               inDiffe, zeroI);
         gutils->addToDiffe(op.getInitValues()[0], res, builder);
       }
       return success();
@@ -4224,7 +4226,7 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     CustomCallOp::attachInterface<SHLOGenericBatchOpInterface<CustomCallOp>>(
         *context);
     IotaOp::attachInterface<SHLOIotaOpBatchInterface>(*context);
-    SelectOp::attachInterface<SHLOSelectOpBatchInterface>(*context);
+    stablehlo::SelectOp::attachInterface<SHLOSelectOpBatchInterface>(*context);
     SortOp::attachInterface<SHLOSortOpBatchInterface>(*context);
     GetDimensionSizeOp::attachInterface<SHLOGetDimensionSizeOpBatchInterface>(
         *context);
