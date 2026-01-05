@@ -22,6 +22,7 @@
 
 #include "stablehlo/dialect/StablehloOps.h"
 
+#include "src/enzyme_ad/jax/Utils.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <algorithm>
@@ -1948,78 +1949,7 @@ struct UpdateWithoutCornersToSelect
     if (updateSharding != extendSharding)
       return failure();
 
-    auto iotaX = stablehlo::IotaOp::create(
-        rewriter, extend.getLoc(),
-        RankedTensorType::get(extend.getType().getShape(),
-                              rewriter.getI32Type()),
-        extend.getDimensionX());
-    sdy::setSharding(iotaX, extendSharding);
-
-    auto iotaY = stablehlo::IotaOp::create(
-        rewriter, extend.getLoc(),
-        RankedTensorType::get(extend.getType().getShape(),
-                              rewriter.getI32Type()),
-        extend.getDimensionY());
-    sdy::setSharding(iotaY, extendSharding);
-
-    Value x1 = stablehlo::ConstantOp::create(
-        rewriter, extend.getLoc(),
-        SplatElementsAttr::get(iotaX.getType(),
-                               rewriter.getI32IntegerAttr(extend.getX1())));
-
-    Value x2 = stablehlo::ConstantOp::create(
-        rewriter, extend.getLoc(),
-        SplatElementsAttr::get(iotaX.getType(),
-                               rewriter.getI32IntegerAttr(extend.getX2())));
-
-    Value y1 = stablehlo::ConstantOp::create(
-        rewriter, extend.getLoc(),
-        SplatElementsAttr::get(iotaY.getType(),
-                               rewriter.getI32IntegerAttr(extend.getY1())));
-
-    Value y2 = stablehlo::ConstantOp::create(
-        rewriter, extend.getLoc(),
-        SplatElementsAttr::get(iotaY.getType(),
-                               rewriter.getI32IntegerAttr(extend.getY2())));
-
-    auto xCmp1 =
-        stablehlo::CompareOp::create(rewriter, extend.getLoc(), iotaX, x1,
-                                     stablehlo::ComparisonDirection::LT);
-    sdy::setSharding(xCmp1, extendSharding);
-
-    auto xCmp2 =
-        stablehlo::CompareOp::create(rewriter, extend.getLoc(), iotaX, x2,
-                                     stablehlo::ComparisonDirection::GE);
-    sdy::setSharding(xCmp2, extendSharding);
-
-    auto xVals =
-        stablehlo::OrOp::create(rewriter, extend.getLoc(), xCmp1, xCmp2);
-    sdy::setSharding(xVals, extendSharding);
-
-    auto yCmp1 =
-        stablehlo::CompareOp::create(rewriter, extend.getLoc(), iotaY, y1,
-                                     stablehlo::ComparisonDirection::LT);
-    sdy::setSharding(yCmp1, extendSharding);
-
-    auto yCmp2 =
-        stablehlo::CompareOp::create(rewriter, extend.getLoc(), iotaY, y2,
-                                     stablehlo::ComparisonDirection::GE);
-    sdy::setSharding(yCmp2, extendSharding);
-
-    auto yVals =
-        stablehlo::OrOp::create(rewriter, extend.getLoc(), yCmp1, yCmp2);
-    sdy::setSharding(yVals, extendSharding);
-
-    auto inCorner =
-        stablehlo::AndOp::create(rewriter, extend.getLoc(), xVals, yVals);
-    sdy::setSharding(inCorner, extendSharding);
-
-    auto result =
-        stablehlo::SelectOp::create(rewriter, extend.getLoc(), inCorner,
-                                    extend.getOperand(), extend.getUpdate());
-    sdy::setSharding(result, extendSharding);
-
-    rewriter.replaceOp(extend, result);
+    mlir::enzyme::commonLowerUpdateWithoutCorners(extend, rewriter);
     return success();
   }
 };

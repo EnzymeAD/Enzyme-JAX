@@ -1876,6 +1876,11 @@ def RecognizeRotate : EnzymeHLOPatternOp<
   let patterns = ["RecognizeRotate"];
 }
 
+def LowerUpdateWithoutCorners : EnzymeHLOPatternOp<
+    "lower_updatewithoutcorners"> {
+  let patterns = ["LowerUpdateWithoutCorners"];
+}
+
 def LowerRotate : EnzymeHLOPatternOp<
     "lower_rotate"> {
   let patterns = ["LowerRotate"];

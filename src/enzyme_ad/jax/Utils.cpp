@@ -45,6 +45,88 @@ using namespace mlir::arith;
 
 namespace mlir {
 namespace enzyme {
+
+void commonLowerUpdateWithoutCorners(enzymexla::UpdateWithoutCornersOp extend,
+                                     PatternRewriter &rewriter) {
+
+  auto extendSharding = mlir::sdy::getSharding(extend);
+
+  auto iotaX = stablehlo::IotaOp::create(
+      rewriter, extend.getLoc(),
+      RankedTensorType::get(extend.getType().getShape(), rewriter.getI32Type()),
+      extend.getDimensionX());
+  if (extendSharding)
+    sdy::setSharding(iotaX, extendSharding);
+
+  auto iotaY = stablehlo::IotaOp::create(
+      rewriter, extend.getLoc(),
+      RankedTensorType::get(extend.getType().getShape(), rewriter.getI32Type()),
+      extend.getDimensionY());
+  if (extendSharding)
+    sdy::setSharding(iotaY, extendSharding);
+
+  Value x1 = stablehlo::ConstantOp::create(
+      rewriter, extend.getLoc(),
+      SplatElementsAttr::get(iotaX.getType(),
+                             rewriter.getI32IntegerAttr(extend.getX1())));
+
+  Value x2 = stablehlo::ConstantOp::create(
+      rewriter, extend.getLoc(),
+      SplatElementsAttr::get(iotaX.getType(),
+                             rewriter.getI32IntegerAttr(extend.getX2())));
+
+  Value y1 = stablehlo::ConstantOp::create(
+      rewriter, extend.getLoc(),
+      SplatElementsAttr::get(iotaY.getType(),
+                             rewriter.getI32IntegerAttr(extend.getY1())));
+
+  Value y2 = stablehlo::ConstantOp::create(
+      rewriter, extend.getLoc(),
+      SplatElementsAttr::get(iotaY.getType(),
+                             rewriter.getI32IntegerAttr(extend.getY2())));
+
+  auto xCmp1 = stablehlo::CompareOp::create(
+      rewriter, extend.getLoc(), iotaX, x1, stablehlo::ComparisonDirection::LT);
+  if (extendSharding)
+    sdy::setSharding(xCmp1, extendSharding);
+
+  auto xCmp2 = stablehlo::CompareOp::create(
+      rewriter, extend.getLoc(), iotaX, x2, stablehlo::ComparisonDirection::GE);
+  if (extendSharding)
+    sdy::setSharding(xCmp2, extendSharding);
+
+  auto xVals = stablehlo::OrOp::create(rewriter, extend.getLoc(), xCmp1, xCmp2);
+  if (extendSharding)
+    sdy::setSharding(xVals, extendSharding);
+
+  auto yCmp1 = stablehlo::CompareOp::create(
+      rewriter, extend.getLoc(), iotaY, y1, stablehlo::ComparisonDirection::LT);
+  if (extendSharding)
+    sdy::setSharding(yCmp1, extendSharding);
+
+  auto yCmp2 = stablehlo::CompareOp::create(
+      rewriter, extend.getLoc(), iotaY, y2, stablehlo::ComparisonDirection::GE);
+  if (extendSharding)
+    sdy::setSharding(yCmp2, extendSharding);
+
+  auto yVals = stablehlo::OrOp::create(rewriter, extend.getLoc(), yCmp1, yCmp2);
+  if (extendSharding)
+    sdy::setSharding(yVals, extendSharding);
+
+  auto inCorner =
+      stablehlo::AndOp::create(rewriter, extend.getLoc(), xVals, yVals);
+  if (extendSharding)
+    sdy::setSharding(inCorner, extendSharding);
+
+  auto result =
+      stablehlo::SelectOp::create(rewriter, extend.getLoc(), inCorner,
+                                  extend.getOperand(), extend.getUpdate());
+  if (extendSharding)
+    sdy::setSharding(result, extendSharding);
+
+  rewriter.replaceOp(extend, result);
+}
+
 /// Collect the memory effects of the given op in 'effects'. Returns 'true' it
 /// could extract the effect information from the op, otherwise returns 'false'
 /// and conservatively populates the list with all possible effects.
