@@ -844,6 +844,10 @@ def ApplyCSEAbsPatterns : EnzymeHLOPatternOp<
   let patterns = ["CSE<stablehlo::AbsOp>"];
 }
 def ApplyCSEWrapPatterns : EnzymeHLOPatternOp<
+    "cse_updatewithoutcorners"> {
+  let patterns = ["CSE<enzymexla::UpdateWithoutCornersOp>"];
+}
+def ApplyCSEWrapPatterns : EnzymeHLOPatternOp<
     "cse_wrap"> {
   let patterns = ["CSE<enzymexla::WrapOp>"];
 }
