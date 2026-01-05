@@ -75,9 +75,9 @@ bool isValidSymbolInt(Operation *defOp, bool recur, Region *scope) {
     return true;
 
   if (recur) {
-    if (isa<SelectOp, IndexCastOp, IndexCastUIOp, AddIOp, MulIOp, DivSIOp,
-            DivUIOp, RemSIOp, RemUIOp, SubIOp, CmpIOp, TruncIOp, ExtUIOp,
-            ExtSIOp>(defOp))
+    if (isa<arith::SelectOp, IndexCastOp, IndexCastUIOp, AddIOp, MulIOp,
+            DivSIOp, DivUIOp, RemSIOp, RemUIOp, SubIOp, CmpIOp, TruncIOp,
+            ExtUIOp, ExtSIOp>(defOp))
       if (llvm::all_of(defOp->getOperands(), [&](Value v) {
             bool b = isValidSymbolInt(v, recur, scope);
             // if (!b)
@@ -1109,7 +1109,7 @@ struct SimplfyIntegerCastMath : public OpRewritePattern<IndexCastOp> {
                                         iadd.getOperand(1)));
       return success();
     }
-    if (auto iadd = op.getOperand().getDefiningOp<SelectOp>()) {
+    if (auto iadd = op.getOperand().getDefiningOp<arith::SelectOp>()) {
       PatternRewriter b(rewriter);
       setLocationAfter(b, iadd.getTrueValue());
       PatternRewriter b2(rewriter);
@@ -1125,8 +1125,9 @@ struct SimplfyIntegerCastMath : public OpRewritePattern<IndexCastOp> {
                                                     iadd.getTrueValue());
           auto falsev = arith::IndexCastOp::create(b2, op.getLoc(),
 op.getType(), iadd.getFalseValue()); cond = b3CmpIOp::create(b2, cmp.getLoc(),
-cmp.getPredicate(), truev, falsev); rewriter.replaceOpWithNewOp<SelectOp>(op,
-cond, truev, falsev); return success();
+cmp.getPredicate(), truev, falsev);
+rewriter.replaceOpWithNewOp<arith::SelectOp>(op, cond, truev, falsev); return
+success();
         }
       }
     }
@@ -1322,7 +1323,7 @@ bool handleMinMax(Value start, SmallVectorImpl<Value> &out, bool &min,
     if (isValidIndex(cur, scope)) {
       out.push_back(cur);
       continue;
-    } else if (auto selOp = cur.getDefiningOp<SelectOp>()) {
+    } else if (auto selOp = cur.getDefiningOp<arith::SelectOp>()) {
       // UB only has min of operands
       if (auto cmp = selOp.getCondition().getDefiningOp<CmpIOp>()) {
         if (cmp.getLhs() == selOp.getTrueValue() &&
@@ -2574,7 +2575,7 @@ struct ForOpRaising : public OpRewritePattern<scf::ForOp> {
           if (isValidIndex(cur, scope)) {
             lbs.push_back(cur);
             continue;
-          } else if (auto selOp = cur.getDefiningOp<SelectOp>()) {
+          } else if (auto selOp = cur.getDefiningOp<arith::SelectOp>()) {
             // LB only has max of operands
             if (auto cmp = selOp.getCondition().getDefiningOp<CmpIOp>()) {
               if (cmp.getLhs() == selOp.getTrueValue() &&
@@ -2599,7 +2600,7 @@ struct ForOpRaising : public OpRewritePattern<scf::ForOp> {
           if (isValidIndex(cur, scope)) {
             ubs.push_back(cur);
             continue;
-          } else if (auto selOp = cur.getDefiningOp<SelectOp>()) {
+          } else if (auto selOp = cur.getDefiningOp<arith::SelectOp>()) {
             // UB only has min of operands
             if (auto cmp = selOp.getCondition().getDefiningOp<CmpIOp>()) {
               if (cmp.getLhs() == selOp.getTrueValue() &&
