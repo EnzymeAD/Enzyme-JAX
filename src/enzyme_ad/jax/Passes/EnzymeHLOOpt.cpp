@@ -20074,8 +20074,6 @@ struct RecognizeRotate
   }
 };
 
-
-
 struct RecognizeUpdateWithoutCorners
     : public CheckedOpRewritePattern<stablehlo::ConcatenateOp,
                                      RecognizeUpdateWithoutCorners> {
@@ -20086,24 +20084,36 @@ struct RecognizeUpdateWithoutCorners
     if (concat.getOperands().size() != 3)
       return failure();
 
-    auto concat0 = concat.getOperands()[0].getDefiningOp<stablehlo::ConcatenateOp>();
-    if (!concat0) return failure();
-    if (concat0.getOperands().size() != 3) return failure();
-    if (concat0.getDimension() == concat.getDimension()) return failure();
+    auto concat0 =
+        concat.getOperands()[0].getDefiningOp<stablehlo::ConcatenateOp>();
+    if (!concat0)
+      return failure();
+    if (concat0.getOperands().size() != 3)
+      return failure();
+    if (concat0.getDimension() == concat.getDimension())
+      return failure();
 
-    auto concat2 = concat.getOperands()[2].getDefiningOp<stablehlo::ConcatenateOp>();
-    if (!concat2) return failure();
-    if (concat2.getOperands().size() != 3) return failure();
-    if (concat0.getDimension() != concat2.getDimension()) return failure();
+    auto concat2 =
+        concat.getOperands()[2].getDefiningOp<stablehlo::ConcatenateOp>();
+    if (!concat2)
+      return failure();
+    if (concat2.getOperands().size() != 3)
+      return failure();
+    if (concat0.getDimension() != concat2.getDimension())
+      return failure();
 
     auto slice00 = concat0.getOperands()[0].getDefiningOp<stablehlo::SliceOp>();
-    if (!slice00) return failure();
+    if (!slice00)
+      return failure();
     auto slice02 = concat0.getOperands()[2].getDefiningOp<stablehlo::SliceOp>();
-    if (!slice02) return failure();
+    if (!slice02)
+      return failure();
     auto slice20 = concat2.getOperands()[0].getDefiningOp<stablehlo::SliceOp>();
-    if (!slice20) return failure();
+    if (!slice20)
+      return failure();
     auto slice22 = concat2.getOperands()[2].getDefiningOp<stablehlo::SliceOp>();
-    if (!slice22) return failure();
+    if (!slice22)
+      return failure();
 
     auto dimX = concat.getDimension();
     auto dimY = concat0.getDimension();
@@ -20131,11 +20141,11 @@ struct RecognizeUpdateWithoutCorners
     // -> dimX [aka dim0]
     //
     //   [ slice00 ]        [ slice20 ]
-    //                data 
+    //                data
     //   [ slice02 ]        [ slice22 ]
-    // 
+    //
 
-    for (size_t i=0; i<concat.getType().getShape().size(); i++) {
+    for (size_t i = 0; i < concat.getType().getShape().size(); i++) {
       for (auto slice : {slice00, slice02, slice20, slice22}) {
         size_t expectedStart = 0;
         size_t expectedLimit = concat.getType().getShape()[i];
@@ -20184,7 +20194,8 @@ struct RecognizeUpdateWithoutCorners
 
     // We've now established it is indeed UpdateWithoutCorners-like.
     // Now we must figure out a good same-sized update to use.
-    if (auto extend = concat.getOperands()[1].getDefiningOp<enzymexla::ExtendOp>()) {
+    if (auto extend =
+            concat.getOperands()[1].getDefiningOp<enzymexla::ExtendOp>()) {
       ///
       // | dimY [ aka dim1]
       // v
@@ -20194,17 +20205,20 @@ struct RecognizeUpdateWithoutCorners
       //   [ slice00 ]    lhs        [ slice20 ]
       //     data[0]    extend(data)   data[end]
       //   [ slice02 ]    rhs        [ slice22 ]
-      // 
+      //
 
-      auto eslice0 = concat0.getOperands()[1].getDefiningOp<stablehlo::SliceOp>();
-      auto eslice2 = concat2.getOperands()[1].getDefiningOp<stablehlo::SliceOp>();
+      auto eslice0 =
+          concat0.getOperands()[1].getDefiningOp<stablehlo::SliceOp>();
+      auto eslice2 =
+          concat2.getOperands()[1].getDefiningOp<stablehlo::SliceOp>();
       auto ETy = cast<RankedTensorType>(extend.getOperand().getType());
- 
-      if (eslice0 && eslice2 && eslice0.getOperand() == extend.getOperand() && eslice2.getOperand() == extend.getOperand() &&
-	  extend.getDimension() == dimY && 
-          extend.getLhs() == y1 && extend.getRhs() == extend.getType().getShape()[dimY] - y2) {
 
-        for (size_t i=0; i<concat.getType().getShape().size(); i++) {
+      if (eslice0 && eslice2 && eslice0.getOperand() == extend.getOperand() &&
+          eslice2.getOperand() == extend.getOperand() &&
+          extend.getDimension() == dimY && extend.getLhs() == y1 &&
+          extend.getRhs() == extend.getType().getShape()[dimY] - y2) {
+
+        for (size_t i = 0; i < concat.getType().getShape().size(); i++) {
           for (auto eslice : {eslice0, eslice2}) {
             size_t expectedStart = 0;
             size_t expectedLimit = ETy.getShape()[i];
@@ -20215,7 +20229,8 @@ struct RecognizeUpdateWithoutCorners
               }
 
               if (eslice == eslice2) {
-                expectedStart = ETy.getShape()[i] - (concat.getType().getShape()[i] - x2);
+                expectedStart =
+                    ETy.getShape()[i] - (concat.getType().getShape()[i] - x2);
               }
             }
 
@@ -20231,16 +20246,23 @@ struct RecognizeUpdateWithoutCorners
           }
         }
 
-
         auto shard = sdy::getShardingPerValue(concat);
 
-        auto extend2 = rewriter.create<enzymexla::ExtendOp>(concat0.getLoc(), extend, x1, concat.getType().getShape()[dimX] - x2, dimX);
-	enzymexla::UpdateWithoutCornersOp newUpdate;
-	if (dimX >= dimY) {
-          newUpdate = rewriter.replaceOpWithNewOp<enzymexla::UpdateWithoutCornersOp>(concat, slice00.getOperand(), extend2, dimY, y1, y2, dimX, x1, x2);
-	} else {
-          newUpdate = rewriter.replaceOpWithNewOp<enzymexla::UpdateWithoutCornersOp>(concat, slice00.getOperand(), extend2, dimX, x1, x2, dimY, y1, y2);
-	}
+        auto extend2 = rewriter.create<enzymexla::ExtendOp>(
+            concat0.getLoc(), extend, x1,
+            concat.getType().getShape()[dimX] - x2, dimX);
+        enzymexla::UpdateWithoutCornersOp newUpdate;
+        if (dimX >= dimY) {
+          newUpdate =
+              rewriter.replaceOpWithNewOp<enzymexla::UpdateWithoutCornersOp>(
+                  concat, slice00.getOperand(), extend2, dimY, y1, y2, dimX, x1,
+                  x2);
+        } else {
+          newUpdate =
+              rewriter.replaceOpWithNewOp<enzymexla::UpdateWithoutCornersOp>(
+                  concat, slice00.getOperand(), extend2, dimX, x1, x2, dimY, y1,
+                  y2);
+        }
 
         if (shard) {
           sdy::setShardings(extend2, shard);
@@ -29042,7 +29064,8 @@ struct EnzymeHLOOptPass
     }
 
     if (passses & (2048 * 256)) {
-      patterns.add<RecognizeRotate, RecognizeWrap, RecognizeExtend, RecognizeUpdateWithoutCorners>(context);
+      patterns.add<RecognizeRotate, RecognizeWrap, RecognizeExtend,
+                   RecognizeUpdateWithoutCorners>(context);
     }
 
     if (passses & (2048 * 512)) {
