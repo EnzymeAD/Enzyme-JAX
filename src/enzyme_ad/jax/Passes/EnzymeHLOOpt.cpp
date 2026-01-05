@@ -20230,8 +20230,16 @@ struct RecognizeUpdateWithoutCorners
           }
         }
 
+
+        auto shard = sdy::getShardingPerValue(concat);
+
         auto extend2 = rewriter.create<enzymexla::ExtendOp>(concat0.getLoc(), extend, y1, concat.getType().getShape()[dimY] - y2, dimY);
-        rewriter.replaceOpWithNewOp<enzymexla::UpdateWithoutCornersOp>(concat, slice00.getOperand(), extend2, dimX, x1, x2, dimY, y1, y2);
+        auto newUpdate = rewriter.replaceOpWithNewOp<enzymexla::UpdateWithoutCornersOp>(concat, slice00.getOperand(), extend2, dimX, x1, x2, dimY, y1, y2);
+
+        if (shard) {
+          sdy::setShardings(extend2, shard);
+          sdy::setShardings(newUpdate, shard);
+        }
         return success();
       }
     }
