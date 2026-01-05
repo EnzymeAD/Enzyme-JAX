@@ -29620,6 +29620,90 @@ struct DotGeneralToSyrk
   }
 };
 
+// currently limited to non-batched dot_general
+struct DotGeneralToSymm
+    : public CheckedOpRewritePattern<stablehlo::DotGeneralOp,
+                                     DotGeneralToSymm> {
+  using CheckedOpRewritePattern<stablehlo::DotGeneralOp,
+                                DotGeneralToSymm>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp op,
+                                    PatternRewriter &rewriter) const {
+    auto dotDims = op.getDotDimensionNumbers();
+    auto lhs = op.getLhs();
+    auto rhs = op.getRhs();
+
+    if (dotDims.getLhsBatchingDimensions().size() != 0 ||
+        dotDims.getRhsBatchingDimensions().size() != 0) {
+      return failure();
+    }
+
+    if (dotDims.getLhsContractingDimensions().size() != 1 ||
+        dotDims.getRhsContractingDimensions().size() != 1) {
+      return failure();
+    }
+
+    enzymexla::LapackSide side;
+    
+    auto lhsContractingDim = dotDims.getLhsContractingDimensions()[0];
+    auto rhsContractingDim = dotDims.getRhsContractingDimensions()[0];
+
+    // can only replace with symm if either lhs or rhs is symmetric
+    if (canApplySymmetricPattern(lhs, rewriter)) {
+      side == enzymexla::LapackSide::left;
+      if (rhsContractingDim == 0) {
+        auto perm = DenseIntElementsAttr::get(
+            RankedTensorType::get({2}, rewriter.getI64Type()),
+            {1, 0});
+
+        rhs = stablehlo::TransposeOp::create(
+            rewriter,
+            op.getLoc(),
+            rhs,
+            perm);
+      }
+
+    } else if (canApplySymmetricPattern(rhs, rewriter)) {
+      side == enzymexla::LapackSide::right;
+      if (lhsContractingDim == 0) {
+        auto perm = DenseIntElementsAttr::get(
+            RankedTensorType::get({2}, rewriter.getI64Type()),
+            {1, 0});
+
+        lhs = stablehlo::TransposeOp::create(
+            rewriter,
+            op.getLoc(),
+            lhs,
+            perm);
+      }
+    } else {
+      return failure();
+    }
+
+    auto elemType =
+        cast<RankedTensorType>(lhs.getType()).getElementType();
+    auto alphaType = RankedTensorType::get({}, elemType);
+
+    auto symmOp = enzymexla::SymmOp::create(rewriter, op.getLoc(), op.getResult().getType(),
+      lhs, // A
+      rhs, // B
+      stablehlo::ConstantOp::create(
+              rewriter, op.getLoc(), op.getType(),
+              cast<ElementsAttr>(makeAttr(op.getType(), 0))), // C
+      stablehlo::ConstantOp::create(
+              rewriter, op.getLoc(), alphaType,
+              cast<ElementsAttr>(makeAttr(alphaType, 1))), // alpha
+          stablehlo::ConstantOp::create(
+              rewriter, op.getLoc(), alphaType,
+              cast<ElementsAttr>(makeAttr(alphaType, 0))), // beta
+      enzymexla::LapackSideAttr::get(op.getContext(), side), 
+      enzymexla::LapackUploAttr::get(op.getContext(),
+                                    enzymexla::LapackUplo::F),
+    );
+    rewriter.replaceOp(op, symmOp.getResult());
+    return success();
+  }
+};
 struct TransposeSyrkToSyrk
     : public CheckedOpRewritePattern<enzymexla::SyrkOp, TransposeSyrkToSyrk> {
   using CheckedOpRewritePattern<enzymexla::SyrkOp,
@@ -33838,6 +33922,7 @@ struct EnzymeHLOOptPass
 
     patterns.add<TransposeSymmetricSimplify>(context);
     patterns.add<FactorScalarsInDotGeneral>(context);
+    patterns.add<DotGeneralToSymm>(context);
 
     // syrk patterns
     // currently disabled since lowering is missing
