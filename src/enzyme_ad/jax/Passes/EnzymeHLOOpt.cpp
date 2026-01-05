@@ -2091,11 +2091,6 @@ struct DUSPad final
       return rewriter.notifyMatchFailure(dus, "Operand is not a PadOp");
     }
 
-    // 2. Constraint: Check if the pad op has only the DUS as its user.
-    if (!llvm::hasSingleElement(padOp->getUsers())) {
-      return rewriter.notifyMatchFailure(dus, "PadOp has multiple users");
-    }
-
     // 3. Constraint: Check for zero interior padding and non-negative edge
     // padding.
     if (llvm::any_of(padOp.getInteriorPadding(),
@@ -2164,28 +2159,38 @@ struct DUSPad final
       newDusStartIndexValues.push_back(startVal - lowPad);
     }
 
-    for (auto val : newDusStartIndexValues) {
-      auto newStartConst = stablehlo::ConstantOp::create(
-          rewriter, loc, indexScalarType,
-          cast<ElementsAttr>(makeAttr(indexScalarType, val)));
-      newDusStartIndices.push_back(newStartConst);
-    }
+    Value valueToPad = nullptr;
 
-    // 6. Perform the rewrite.
-    // Create the new DUS on the original data.
-    auto newDus = stablehlo::DynamicUpdateSliceOp::create(
-        rewriter, loc,
-        originalDataType,    // Result type matches original data
-        padOp.getOperand(),  // Update the original data
-        dus.getUpdate(),     // Use the same update value
-        newDusStartIndices); // Use the adjusted indices
+    if (padOp.getOperand().getType() == dus.getUpdate().getType()) {
+      valueToPad = dus.getUpdate();
+    } else {
+      // 2. Constraint: Check if the pad op has only the DUS as its user.
+      if (!llvm::hasSingleElement(padOp->getUsers())) {
+        return rewriter.notifyMatchFailure(dus, "PadOp has multiple users");
+      }
+
+      for (auto val : newDusStartIndexValues) {
+        auto newStartConst = stablehlo::ConstantOp::create(
+            rewriter, loc, indexScalarType,
+            cast<ElementsAttr>(makeAttr(indexScalarType, val)));
+        newDusStartIndices.push_back(newStartConst);
+      }
+
+      // 6. Perform the rewrite.
+      // Create the new DUS on the original data.
+      valueToPad = stablehlo::DynamicUpdateSliceOp::create(
+          rewriter, loc,
+          originalDataType,    // Result type matches original data
+          padOp.getOperand(),  // Update the original data
+          dus.getUpdate(),     // Use the same update value
+          newDusStartIndices); // Use the adjusted indices
+    }
 
     // Create the new Pad operation using the result of the new DUS.
     auto newPad = stablehlo::PadOp::create(
         rewriter, padOp.getLoc(),
-        dus.getType(),      // Result type matches original DUS result
-        newDus.getResult(), // Pad the result of the new DUS
-        padOp.getPaddingValue(), padOp.getEdgePaddingLowAttr(),
+        dus.getType(), // Result type matches original DUS result
+        valueToPad, padOp.getPaddingValue(), padOp.getEdgePaddingLowAttr(),
         padOp.getEdgePaddingHighAttr(),
         padOp.getInteriorPaddingAttr()); // Assumed to be zeros by check above
 
