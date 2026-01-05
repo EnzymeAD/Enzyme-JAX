@@ -1667,68 +1667,87 @@ struct GetSampleFromTraceOpConversion
   }
 };
 
-struct CholeskySolveOpConversion
-    : public OpConversionPattern<enzyme::CholeskySolveOp> {
+struct CholeskyOpConversion : public OpConversionPattern<enzyme::CholeskyOp> {
   using OpConversionPattern::OpConversionPattern;
 
   std::string backend;
-  CholeskySolveOpConversion(std::string backend, TypeConverter &typeConverter,
-                            MLIRContext *context, PatternBenefit benefit = 1)
+  CholeskyOpConversion(std::string backend, TypeConverter &typeConverter,
+                       MLIRContext *context, PatternBenefit benefit = 1)
       : OpConversionPattern(typeConverter, context, benefit), backend(backend) {
   }
 
   LogicalResult
-  matchAndRewrite(enzyme::CholeskySolveOp op, OpAdaptor adaptor,
+  matchAndRewrite(enzyme::CholeskyOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto lhs = adaptor.getLhs();
-    auto rhs = adaptor.getRhs();
+    auto input = adaptor.getInput();
     auto resultType = cast<RankedTensorType>(op.getResult().getType());
-    auto lhsType = cast<RankedTensorType>(lhs.getType());
-    auto rhsType = cast<RankedTensorType>(rhs.getType());
+    bool lower = op.getLower();
 
-    // StableHLO triangular_solve requires both operands to have the same rank
-    Value rhsReshaped = rhs;
+    auto choleskyOp = stablehlo::CholeskyOp::create(
+        rewriter, op.getLoc(), resultType, input, rewriter.getBoolAttr(lower));
+
+    rewriter.replaceOp(op, choleskyOp.getResult());
+    return success();
+  }
+};
+
+struct TriangularSolveOpConversion
+    : public OpConversionPattern<enzyme::TriangularSolveOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  std::string backend;
+  TriangularSolveOpConversion(std::string backend, TypeConverter &typeConverter,
+                              MLIRContext *context, PatternBenefit benefit = 1)
+      : OpConversionPattern(typeConverter, context, benefit), backend(backend) {
+  }
+
+  LogicalResult
+  matchAndRewrite(enzyme::TriangularSolveOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto a = adaptor.getA();
+    auto b = adaptor.getB();
+    auto resultType = cast<RankedTensorType>(op.getResult().getType());
+    auto bType = cast<RankedTensorType>(b.getType());
+
+    bool leftSide = op.getLeftSide();
+    bool lower = op.getLower();
+    bool unitDiagonal = op.getUnitDiagonal();
+    auto transposeA = op.getTransposeA();
+
+    stablehlo::Transpose stablehloTranspose;
+    switch (transposeA) {
+    case enzyme::Transpose::NO_TRANSPOSE:
+      stablehloTranspose = stablehlo::Transpose::NO_TRANSPOSE;
+      break;
+    case enzyme::Transpose::TRANSPOSE:
+      stablehloTranspose = stablehlo::Transpose::TRANSPOSE;
+      break;
+    case enzyme::Transpose::ADJOINT:
+      stablehloTranspose = stablehlo::Transpose::ADJOINT;
+      break;
+    }
+
+    // StableHLO triangular_solve requires both operands to have the same rank.
+    // If b is 1D (vector), reshape to 2D column matrix, solve, then reshape
+    // back.
+    Value bReshaped = b;
     Type intermediateResultType = resultType;
 
-    if (rhsType.getRank() == 1) {
-      auto shape = rhsType.getShape();
+    if (bType.getRank() == 1) {
+      auto shape = bType.getShape();
       auto reshapedType =
-          RankedTensorType::get({shape[0], 1}, rhsType.getElementType());
-      rhsReshaped = stablehlo::ReshapeOp::create(rewriter, op.getLoc(),
-                                                 reshapedType, rhs);
+          RankedTensorType::get({shape[0], 1}, bType.getElementType());
+      bReshaped =
+          stablehlo::ReshapeOp::create(rewriter, op.getLoc(), reshapedType, b);
       intermediateResultType = reshapedType;
     }
 
-    // Cholesky decomposition: A = LL^T, A is symmetric positive definite
-    // Then solve: Ly = b, L^T x = y, where L is lower triangular
-    auto choleskyOp =
-        stablehlo::CholeskyOp::create(rewriter, op.getLoc(), lhsType, lhs,
-                                      /*lower=*/rewriter.getBoolAttr(true));
-    Value L = choleskyOp.getResult();
+    auto triangularSolveOp = stablehlo::TriangularSolveOp::create(
+        rewriter, op.getLoc(), intermediateResultType, a, bReshaped, leftSide,
+        lower, unitDiagonal, stablehloTranspose);
 
-    // Forward substitution: solve Ly = b, where L is lower triangular
-    auto forwardSolve = stablehlo::TriangularSolveOp::create(
-        rewriter, op.getLoc(), intermediateResultType,
-        /*a=*/L,
-        /*b=*/rhsReshaped,
-        /*left_side=*/true,
-        /*lower=*/true,
-        /*unit_diagonal=*/false,
-        /*transpose_a=*/stablehlo::Transpose::NO_TRANSPOSE);
-
-    // Backward substitution: solve L^T x = y, where L^T is upper triangular
-    auto backwardSolve = stablehlo::TriangularSolveOp::create(
-        rewriter, op.getLoc(), intermediateResultType,
-        /*a=*/L,
-        /*b=*/forwardSolve.getResult(),
-        /*left_side=*/true,
-        /*lower=*/true,
-        /*unit_diagonal=*/false,
-        /*transpose_a=*/stablehlo::Transpose::TRANSPOSE);
-
-    // If we reshaped to column matrix, reshape back to vector
-    Value result = backwardSolve.getResult();
-    if (rhsType.getRank() == 1) {
+    Value result = triangularSolveOp.getResult();
+    if (bType.getRank() == 1) {
       result = stablehlo::ReshapeOp::create(rewriter, op.getLoc(), resultType,
                                             result);
     }
@@ -3015,7 +3034,8 @@ struct LowerProbProgToStableHLOPass
 
     target.addIllegalOp<enzyme::RandomOp>();
     target.addIllegalOp<enzyme::RandomSplitOp>();
-    target.addIllegalOp<enzyme::CholeskySolveOp>();
+    target.addIllegalOp<enzyme::CholeskyOp>();
+    target.addIllegalOp<enzyme::TriangularSolveOp>();
     target.addIllegalOp<enzyme::DotOp>();
     target.addIllegalOp<enzyme::LogAddExpOp>();
     target.addIllegalOp<enzyme::UnflattenSliceOp>();
@@ -3029,12 +3049,12 @@ struct LowerProbProgToStableHLOPass
 
     RewritePatternSet patterns(context);
 
-    patterns
-        .add<RandomOpConversion, CholeskySolveOpConversion, DotOpConversion,
-             LogAddExpOpConversion, UnflattenSliceOpConversion,
-             ForLoopOpConversion, WhileLoopOpConversion, PopcountOpConversion,
-             DynamicExtractOpConversion, DynamicUpdateOpConversion>(
-            backend, typeConverter, context);
+    patterns.add<
+        RandomOpConversion, CholeskyOpConversion, TriangularSolveOpConversion,
+        DotOpConversion, LogAddExpOpConversion, UnflattenSliceOpConversion,
+        ForLoopOpConversion, WhileLoopOpConversion, PopcountOpConversion,
+        DynamicExtractOpConversion, DynamicUpdateOpConversion>(
+        backend, typeConverter, context);
     patterns.add<RandomSplitOpConversion>(backend, debugDump, typeConverter,
                                           context);
 

@@ -527,7 +527,7 @@ def LowerEnzymeXLABLASPass : Pass<"lower-enzymexla-blas"> {
 def LowerProbProgToStableHLOPass : Pass<"lower-probprog-to-stablehlo"> {
   let summary = "Lower computational enzyme ops to StableHLO";
   let description = [{
-    Lower computational probprog ops (loop, dot, cholesky_solve, random, unflatten_slice)
+    Lower computational probprog ops (loop, dot, cholesky, triangular_solve, random, unflatten_slice)
     to StableHLO dialect operations.
   }];
   let dependentDialects = [
