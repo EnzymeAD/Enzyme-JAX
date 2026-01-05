@@ -15,11 +15,9 @@ namespace enzyme {
 
 using InputValidatorFn = std::function<bool(mlir::Value)>;
 
-
-absl::Status detectConstantSetindexScatterOp(stablehlo::ScatterOp scatterOp,
-                                             bool allowedMultipleUses,
-                                             InputValidatorFn inputValidator,
-                                             SplatElementsAttr &constSetIndexValue);
+absl::Status detectConstantSetindexScatterOp(
+    stablehlo::ScatterOp scatterOp, bool allowedMultipleUses,
+    InputValidatorFn inputValidator, SplatElementsAttr &constSetIndexValue);
 
 absl::Status detectConstantSetindexScatterOp(stablehlo::ScatterOp scatterOp,
                                              bool allowedMultipleUses,

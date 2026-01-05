@@ -18,10 +18,9 @@ absl::Status detectConstantSetindexScatterOp(stablehlo::ScatterOp scatterOp,
                                          inputValidator, constSetIndexValue);
 }
 
-absl::Status detectConstantSetindexScatterOp(stablehlo::ScatterOp scatterOp,
-                                             bool allowedMultipleUses,
-                                             InputValidatorFn inputValidator,
-                                             SplatElementsAttr &constSetIndexValue) {
+absl::Status detectConstantSetindexScatterOp(
+    stablehlo::ScatterOp scatterOp, bool allowedMultipleUses,
+    InputValidatorFn inputValidator, SplatElementsAttr &constSetIndexValue) {
   if (scatterOp.getInputs().size() != 1) {
     return absl::UnimplementedError(
         "Detection not implemented for scatter op with >1 input.");
