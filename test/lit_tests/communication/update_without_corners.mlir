@@ -2,7 +2,7 @@
 
 sdy.mesh @mesh1 = <["z"=1, "x"=4, "y"=4]>
 func.func @main(%arg0: tensor<1x24x96xf64> {sdy.sharding = #sdy.sharding<@mesh1, [{"z"}, {"y"}, {"x"}]>}, %arg1: tensor<1x24x96xf64> {sdy.sharding = #sdy.sharding<@mesh1, [{"z"}, {"y"}, {"x"}]>}) -> (tensor<1x24x96xf64> {sdy.sharding = #sdy.sharding<@mesh1, [{"z"}, {"y"}, {"x"}]>}) {
-    %1 = "enzymexla.update_without_corners"(%arg0, %arg1) <{dimensionX = 1 : i64, x1 = 4 : i64, x2 = 5 : i64, dimensionY = 2 : i64, y1 = 6 : i64, y2 = 7 : i64}> {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<1x24x96xf64>, tensor<1x24x96xf64>) -> tensor<1x24x96xf64>
+    %1 = "enzymexla.update_without_corners"(%arg0, %arg1) <{dimensionX = 1 : i64, x1 = 4 : i64, x2 = 19 : i64, dimensionY = 2 : i64, y1 = 6 : i64, y2 = 89 : i64}> {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"z"}, {"y"}, {"x"}]>]>} : (tensor<1x24x96xf64>, tensor<1x24x96xf64>) -> tensor<1x24x96xf64>
     return %1 : tensor<1x24x96xf64>
 }
 

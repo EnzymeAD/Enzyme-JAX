@@ -1948,7 +1948,6 @@ struct UpdateWithoutCornersToSelect
     if (updateSharding != extendSharding)
       return failure();
 
-    auto RT = extend.getType();
     auto iotaX = stablehlo::IotaOp::create(
         rewriter, extend.getLoc(),
         RankedTensorType::get(extend.getType().getShape(),
@@ -1970,10 +1969,8 @@ struct UpdateWithoutCornersToSelect
 
     Value x2 = stablehlo::ConstantOp::create(
         rewriter, extend.getLoc(),
-        SplatElementsAttr::get(
-            iotaX.getType(),
-            rewriter.getI32IntegerAttr(RT.getShape()[extend.getDimensionX()] -
-                                       extend.getX2())));
+        SplatElementsAttr::get(iotaX.getType(),
+                               rewriter.getI32IntegerAttr(extend.getX2())));
 
     Value y1 = stablehlo::ConstantOp::create(
         rewriter, extend.getLoc(),
@@ -1982,10 +1979,8 @@ struct UpdateWithoutCornersToSelect
 
     Value y2 = stablehlo::ConstantOp::create(
         rewriter, extend.getLoc(),
-        SplatElementsAttr::get(
-            iotaY.getType(),
-            rewriter.getI32IntegerAttr(RT.getShape()[extend.getDimensionY()] -
-                                       extend.getY2())));
+        SplatElementsAttr::get(iotaY.getType(),
+                               rewriter.getI32IntegerAttr(extend.getY2())));
 
     auto xCmp1 =
         stablehlo::CompareOp::create(rewriter, extend.getLoc(), iotaX, x1,

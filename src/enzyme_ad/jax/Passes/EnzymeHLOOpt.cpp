@@ -2595,12 +2595,24 @@ struct SliceOfUpdateWithoutCorners final
         op.getStrides()[dyn.getDimensionY()] == 1 &&
         op.getStartIndices()[dyn.getDimensionX()] >= dyn.getX1() &&
         op.getStartIndices()[dyn.getDimensionY()] >= dyn.getY1() &&
-        op.getLimitIndices()[dyn.getDimensionX()] <=
-            dyn.getType().getShape()[dyn.getDimensionX()] - dyn.getX2() &&
-        op.getLimitIndices()[dyn.getDimensionY()] <=
-            dyn.getType().getShape()[dyn.getDimensionY()] - dyn.getY2()) {
+        op.getLimitIndices()[dyn.getDimensionX()] <= dyn.getX2() &&
+        op.getLimitIndices()[dyn.getDimensionY()] <= dyn.getY2()) {
       rewriter.modifyOpInPlace(
           op, [&]() { op.getOperandMutable().assign(dyn.getUpdate()); });
+      return success();
+    }
+
+    // Try to use the old value, currently extremely conservative and checks
+    // everything is within the innermost box This can be extended to just check
+    // that nothing overlaps with the corners.
+    if (op.getStrides()[dyn.getDimensionX()] == 1 &&
+        op.getStrides()[dyn.getDimensionY()] == 1 &&
+        (op.getStartIndices()[dyn.getDimensionX()] >= dyn.getX2() ||
+         op.getLimitIndices()[dyn.getDimensionX()] <= dyn.getX1()) &&
+        (op.getStartIndices()[dyn.getDimensionY()] >= dyn.getY2() ||
+         op.getLimitIndices()[dyn.getDimensionY()] <= dyn.getY1())) {
+      rewriter.modifyOpInPlace(
+          op, [&]() { op.getOperandMutable().assign(dyn.getOperand()); });
       return success();
     }
     return failure();
@@ -20252,6 +20264,7 @@ struct RecognizeUpdateWithoutCorners
             concat0.getLoc(), extend, x1,
             concat.getType().getShape()[dimX] - x2, dimX);
         enzymexla::UpdateWithoutCornersOp newUpdate;
+
         if (dimX >= dimY) {
           newUpdate =
               rewriter.replaceOpWithNewOp<enzymexla::UpdateWithoutCornersOp>(
