@@ -942,6 +942,8 @@ getGatherDims(mlir::MLIRContext *ctx,
               stablehlo::ScatterDimensionNumbersAttr scatterDimNumbers);
 
 bool isSetindexBlock(mlir::Block *block);
+bool isConstantSetindexBlock(mlir::Block *block,
+                             mlir::SplatElementsAttr &constant);
 
 // rhs is only considered if commutative is false
 template <typename T, bool commutative, bool rhs>
@@ -1067,6 +1069,8 @@ public:
 struct CheckCommonScatterOp {
 public:
   bool isSetindexScatter;
+  bool isConstantSetindexScatter;
+
   bool isAddScatter;
   bool isMinScatter;
   bool isMaxScatter;
@@ -1087,6 +1091,7 @@ public:
 
     if (!updateComputation.hasOneBlock()) {
       isSetindexScatter = false;
+      isConstantSetindexScatter = false;
       isAddScatter = false;
       isMinScatter = false;
       isMaxScatter = false;
@@ -1105,6 +1110,7 @@ public:
 
     auto &block = updateComputation.front();
     isSetindexScatter = isSetindexBlock(&block);
+    isConstantSetindexScatter = isConstantSetindexBlock(&block, constant);
     isAddScatter = isOnlyOpBlock<stablehlo::AddOp, true, false>(&block);
     isMulScatter = isOnlyOpBlock<stablehlo::MulOp, true, false>(&block);
     isMinScatter = isOnlyOpBlock<stablehlo::MinOp, true, false>(&block);

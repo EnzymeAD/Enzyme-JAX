@@ -12,8 +12,16 @@ namespace enzyme {
 
 absl::Status detectConstantSetindexScatterOp(stablehlo::ScatterOp scatterOp,
                                              bool allowedMultipleUses,
-                                             bool onlyConstantZerosAllowed,
-                                             DenseElementsAttr *constAttr) {
+                                             InputValidatorFn inputValidator) {
+  SplatElementsAttr constSetIndexValue = nullptr;
+  return detectConstantSetindexScatterOp(scatterOp, allowedMultipleUses,
+                                         inputValidator, constSetIndexValue);
+}
+
+absl::Status detectConstantSetindexScatterOp(stablehlo::ScatterOp scatterOp,
+                                             bool allowedMultipleUses,
+                                             InputValidatorFn inputValidator,
+                                             SplatElementsAttr &constSetIndexValue) {
   if (scatterOp.getInputs().size() != 1) {
     return absl::UnimplementedError(
         "Detection not implemented for scatter op with >1 input.");
@@ -26,20 +34,18 @@ absl::Status detectConstantSetindexScatterOp(stablehlo::ScatterOp scatterOp,
 
   auto checkCommonScatterOp = mlir::stablehlo::CheckCommonScatterOp(scatterOp);
 
-  if (!checkCommonScatterOp.isSetindexScatter) {
+  if (!checkCommonScatterOp.isSetindexScatter &&
+      !checkCommonScatterOp.isConstantSetindexScatter) {
     return absl::InvalidArgumentError("ScatterOp is not a setindex op.");
   }
 
+  if (checkCommonScatterOp.isConstantSetindexScatter) {
+    constSetIndexValue = checkCommonScatterOp.constant;
+  }
+
   auto input = scatterOp.getInputs()[0];
-  if (onlyConstantZerosAllowed) {
-    if (matchPattern(input, m_AnyZeroFloat()) ||
-        matchPattern(input, m_Zero())) {
-      return absl::OkStatus();
-    }
-  } else {
-    if (matchPattern(input, m_Constant(constAttr))) {
-      return absl::OkStatus();
-    }
+  if (inputValidator(input)) {
+    return absl::OkStatus();
   }
 
   return absl::InvalidArgumentError(
@@ -49,7 +55,11 @@ absl::Status detectConstantSetindexScatterOp(stablehlo::ScatterOp scatterOp,
 // TODO: detect batched diagonal tensors
 absl::Status detectDiagonalTensor(stablehlo::ScatterOp scatterOp,
                                   mlir::Value *outUpdates) {
-  auto status = detectConstantSetindexScatterOp(scatterOp, true, true, nullptr);
+  auto status =
+      detectConstantSetindexScatterOp(scatterOp, true, [](mlir::Value input) {
+        return matchPattern(input, m_AnyZeroFloat()) ||
+               matchPattern(input, m_Zero());
+      });
   if (!status.ok())
     return status;
 

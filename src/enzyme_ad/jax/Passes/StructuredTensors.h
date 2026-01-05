@@ -7,15 +7,23 @@
 
 #include "llvm/ADT/SetVector.h"
 
+#include <functional>
 #include <optional>
 
 namespace mlir {
 namespace enzyme {
 
+using InputValidatorFn = std::function<bool(mlir::Value)>;
+
+
 absl::Status detectConstantSetindexScatterOp(stablehlo::ScatterOp scatterOp,
                                              bool allowedMultipleUses,
-                                             bool onlyConstantZerosAllowed,
-                                             DenseElementsAttr *constAttr);
+                                             InputValidatorFn inputValidator,
+                                             SplatElementsAttr &constSetIndexValue);
+
+absl::Status detectConstantSetindexScatterOp(stablehlo::ScatterOp scatterOp,
+                                             bool allowedMultipleUses,
+                                             InputValidatorFn inputValidator);
 
 absl::Status detectDiagonalTensor(stablehlo::ScatterOp scatterOp,
                                   mlir::Value *outUpdates);
