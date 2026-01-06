@@ -277,6 +277,10 @@ def ApplySliceOfDynamicUpdatePatterns : EnzymeHLOPatternOp<
     "slice_of_dynamic_update"> {
   let patterns = ["SliceOfDynamicUpdate"];
 }
+def ApplySliceOfUpdateWithoutCornersPatterns : EnzymeHLOPatternOp<
+    "slice_of_updatewithoutcorners"> {
+  let patterns = ["SliceOfUpdateWithoutCorners"];
+}
 def ApplySliceElementwisePatterns : EnzymeHLOPatternOp<
     "slice_elementwise"> {
   let patterns = ["SliceElementwise"];
@@ -300,6 +304,10 @@ def ApplyConvolutionPadPatterns : EnzymeHLOPatternOp<
 def ReshapeEmptyBroadcastPatterns : EnzymeHLOPatternOp<
     "reshape_empty_broadcast"> {
   let patterns = ["ReshapeEmptyBroadcast"];
+}
+def ReshapeBroadcastPatterns : EnzymeHLOPatternOp<
+    "reshape_broadcast"> {
+  let patterns = ["ReshapeBroadcast"];
 }
 def ApplySliceReshapePadPatterns : EnzymeHLOPatternOp<
     "slice_reshape_pad"> {
@@ -840,6 +848,12 @@ def ApplyCSEAbsPatterns : EnzymeHLOPatternOp<
     "cse_abs"> {
   let patterns = ["CSE<stablehlo::AbsOp>"];
 }
+
+def ApplyCSEUpdateWithoutCornersPatterns : EnzymeHLOPatternOp<
+    "cse_updatewithoutcorners"> {
+  let patterns = ["CSE<enzymexla::UpdateWithoutCornersOp>"];
+}
+
 def ApplyCSEWrapPatterns : EnzymeHLOPatternOp<
     "cse_wrap"> {
   let patterns = ["CSE<enzymexla::WrapOp>"];
@@ -1614,6 +1628,11 @@ def WhileDUS : EnzymeHLOPatternOp<
   let patterns = ["WhileDUS"];
 }
 
+def WhileUpdateWithoutCorners : EnzymeHLOPatternOp<
+    "while_updatewithoutcorners"> {
+  let patterns = ["WhileUpdateWithoutCorners"];
+}
+
 def DUSSliceSimplify : EnzymeHLOPatternOp<
     "dus_slice_simplify"> {
   let patterns = ["DUSSliceSimplify"];
@@ -1852,9 +1871,19 @@ def LowerCommRegion : EnzymeHLOPatternOp<
   let patterns = ["LowerCommRegion"];
 }
 
+def RecognizeUpdateWithoutCorners : EnzymeHLOPatternOp<
+    "recognize_updatewithoutcorners"> {
+  let patterns = ["RecognizeUpdateWithoutCorners"];
+}
+
 def RecognizeRotate : EnzymeHLOPatternOp<
     "recognize_rotate"> {
   let patterns = ["RecognizeRotate"];
+}
+
+def LowerUpdateWithoutCorners : EnzymeHLOPatternOp<
+    "lower_updatewithoutcorners"> {
+  let patterns = ["LowerUpdateWithoutCorners"];
 }
 
 def LowerRotate : EnzymeHLOPatternOp<
@@ -2542,6 +2571,11 @@ def ApplyGreedyWhileLoopBatchFissionPatterns : EnzymeHLOPatternOp<
   let patterns = ["GreedyWhileLoopBatchFission"];
 }
 
+def ApplyRemoveLoopCarriedDependenciesFromWhileLoadOperationsPatterns : EnzymeHLOPatternOp<
+    "remove_loop_carried_dependencies_from_while_load_operations"> {
+  let patterns = ["RemoveLoopCarriedDependenciesFromWhileLoadOperations"];
+}
+
 def EnzymeHLOUnroll : EnzymeHLOParameterizedPatternOp<
     "enzyme_hlo_unroll"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, I64Attr:$parameter);
@@ -2560,6 +2594,10 @@ def EnzymeHLOUnroll : EnzymeHLOParameterizedPatternOp<
 def ApplyReduceMulToDotGeneralPatterns : EnzymeHLOPatternOp<
     "reduce_mul_to_dot_general"> {
   let patterns = ["ReduceMulToDotGeneral"];
+}
+def ApplySplitReduceAddMulToAddDotGeneralPatterns : EnzymeHLOPatternOp<
+    "split_reduce_add_mul_to_add_dot_general"> {
+  let patterns = ["SplitReduceAddMulToAddDotGeneral"];
 }
 
 def ApplyDotGeneralOnlyDiagonalAccessPatterns : EnzymeHLOPatternOp<
@@ -2625,6 +2663,11 @@ def ApplyWhileDUSDUSSimplifyPatterns : EnzymeHLOPatternOp<
 def ApplyReshapeSliceReshapePatterns : EnzymeHLOPatternOp<
     "reshape_slice_reshape"> {
   let patterns = ["ReshapeSliceReshape"];
+}
+
+def ApplySyrkSimplifyOutputUploPatterns : EnzymeHLOPatternOp<
+    "syrk_simplify_output_uplo"> {
+  let patterns = ["SyrkSimplifyOutputUplo"];
 }
 
 def ApplyDotGeneralRemoveBatchDimensionsPatterns : EnzymeHLOPatternOp<

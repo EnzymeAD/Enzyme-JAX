@@ -34,7 +34,9 @@
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
+#include <cassert>
 #include <iterator>
+#include <mlir/IR/Value.h>
 #include <set>
 
 using namespace mlir;
@@ -43,6 +45,88 @@ using namespace mlir::arith;
 
 namespace mlir {
 namespace enzyme {
+
+void commonLowerUpdateWithoutCorners(enzymexla::UpdateWithoutCornersOp extend,
+                                     PatternRewriter &rewriter) {
+
+  auto extendSharding = mlir::sdy::getSharding(extend);
+
+  auto iotaX = stablehlo::IotaOp::create(
+      rewriter, extend.getLoc(),
+      RankedTensorType::get(extend.getType().getShape(), rewriter.getI32Type()),
+      extend.getDimensionX());
+  if (extendSharding)
+    sdy::setSharding(iotaX, extendSharding);
+
+  auto iotaY = stablehlo::IotaOp::create(
+      rewriter, extend.getLoc(),
+      RankedTensorType::get(extend.getType().getShape(), rewriter.getI32Type()),
+      extend.getDimensionY());
+  if (extendSharding)
+    sdy::setSharding(iotaY, extendSharding);
+
+  Value x1 = stablehlo::ConstantOp::create(
+      rewriter, extend.getLoc(),
+      SplatElementsAttr::get(iotaX.getType(),
+                             rewriter.getI32IntegerAttr(extend.getX1())));
+
+  Value x2 = stablehlo::ConstantOp::create(
+      rewriter, extend.getLoc(),
+      SplatElementsAttr::get(iotaX.getType(),
+                             rewriter.getI32IntegerAttr(extend.getX2())));
+
+  Value y1 = stablehlo::ConstantOp::create(
+      rewriter, extend.getLoc(),
+      SplatElementsAttr::get(iotaY.getType(),
+                             rewriter.getI32IntegerAttr(extend.getY1())));
+
+  Value y2 = stablehlo::ConstantOp::create(
+      rewriter, extend.getLoc(),
+      SplatElementsAttr::get(iotaY.getType(),
+                             rewriter.getI32IntegerAttr(extend.getY2())));
+
+  auto xCmp1 = stablehlo::CompareOp::create(
+      rewriter, extend.getLoc(), iotaX, x1, stablehlo::ComparisonDirection::LT);
+  if (extendSharding)
+    sdy::setSharding(xCmp1, extendSharding);
+
+  auto xCmp2 = stablehlo::CompareOp::create(
+      rewriter, extend.getLoc(), iotaX, x2, stablehlo::ComparisonDirection::GE);
+  if (extendSharding)
+    sdy::setSharding(xCmp2, extendSharding);
+
+  auto xVals = stablehlo::OrOp::create(rewriter, extend.getLoc(), xCmp1, xCmp2);
+  if (extendSharding)
+    sdy::setSharding(xVals, extendSharding);
+
+  auto yCmp1 = stablehlo::CompareOp::create(
+      rewriter, extend.getLoc(), iotaY, y1, stablehlo::ComparisonDirection::LT);
+  if (extendSharding)
+    sdy::setSharding(yCmp1, extendSharding);
+
+  auto yCmp2 = stablehlo::CompareOp::create(
+      rewriter, extend.getLoc(), iotaY, y2, stablehlo::ComparisonDirection::GE);
+  if (extendSharding)
+    sdy::setSharding(yCmp2, extendSharding);
+
+  auto yVals = stablehlo::OrOp::create(rewriter, extend.getLoc(), yCmp1, yCmp2);
+  if (extendSharding)
+    sdy::setSharding(yVals, extendSharding);
+
+  auto inCorner =
+      stablehlo::AndOp::create(rewriter, extend.getLoc(), xVals, yVals);
+  if (extendSharding)
+    sdy::setSharding(inCorner, extendSharding);
+
+  auto result =
+      stablehlo::SelectOp::create(rewriter, extend.getLoc(), inCorner,
+                                  extend.getOperand(), extend.getUpdate());
+  if (extendSharding)
+    sdy::setSharding(result, extendSharding);
+
+  rewriter.replaceOp(extend, result);
+}
+
 /// Collect the memory effects of the given op in 'effects'. Returns 'true' it
 /// could extract the effect information from the op, otherwise returns 'false'
 /// and conservatively populates the list with all possible effects.
@@ -1018,14 +1102,30 @@ SmallVector<int64_t> findReshapeInsertionDims(ArrayRef<int64_t> inputShape,
 
 bool isInsertDimOp(stablehlo::ReshapeOp reshapeOp) {
   RankedTensorType inputTy = reshapeOp.getOperand().getType();
-  auto inputShape = inputTy.getShape();
   RankedTensorType outputTy = reshapeOp.getType();
-  auto outputShape = outputTy.getShape();
-  auto insertDims = findReshapeInsertionDims(inputShape, outputShape);
-  if (insertDims.empty()) {
-    return false;
+  auto insertDims = findReshapeInsertionDims(inputTy, outputTy);
+  return !insertDims.empty();
+}
+
+bool isDeleteDimOp(stablehlo::ReshapeOp reshapeOp) {
+  RankedTensorType inputTy = reshapeOp.getOperand().getType();
+  RankedTensorType outputTy = reshapeOp.getType();
+  auto deleteDims = findReshapeInsertionDims(outputTy, inputTy);
+  return !deleteDims.empty();
+}
+
+void getSingletonInsertionDims(stablehlo::BroadcastInDimOp bcastOp,
+                               SmallVectorImpl<int64_t> &insertionDims) {
+  RankedTensorType outputTy = bcastOp.getType();
+
+  for (size_t i = 0; i < outputTy.getRank(); ++i) {
+    if (llvm::is_contained(bcastOp.getBroadcastDimensions(), i)) {
+      continue;
+    }
+    if (outputTy.getDimSize(i) == 1) {
+      insertionDims.push_back(i);
+    }
   }
-  return true;
 }
 
 bool areValidInsertionDims(RankedTensorType inputType,
@@ -1167,6 +1267,42 @@ RankedTensorType removeBatchedDims(RankedTensorType Ty,
   return RankedTensorType::get(newShape, Ty.getElementType());
 }
 
+enzymexla::LapackTranspose
+transposeLapackTranspose(enzymexla::LapackTranspose trans, bool canBeComplex) {
+  switch (trans) {
+  case enzymexla::LapackTranspose::none:
+    return enzymexla::LapackTranspose::transpose;
+  case enzymexla::LapackTranspose::transpose:
+    return enzymexla::LapackTranspose::none;
+  case enzymexla::LapackTranspose::adjoint:
+    assert(!canBeComplex &&
+           "cannot trivially tranpose adjoint of complex numbers");
+    return enzymexla::LapackTranspose::none;
+  }
+  llvm_unreachable("Unknown LapackTranspose");
+}
+
+enzymexla::LapackUplo transposeLapackUplo(enzymexla::LapackUplo uplo) {
+  switch (uplo) {
+  case enzymexla::LapackUplo::F:
+    return enzymexla::LapackUplo::F;
+  case enzymexla::LapackUplo::L:
+    return enzymexla::LapackUplo::U;
+  case enzymexla::LapackUplo::U:
+    return enzymexla::LapackUplo::L;
+  }
+  llvm_unreachable("Unknown LapackUplo");
+}
+
+enzymexla::LapackUplo standardizeUplo(enzymexla::LapackUplo uplo) {
+  switch (uplo) {
+  case enzymexla::LapackUplo::F:
+    return enzymexla::LapackUplo::U;
+  default:
+    return uplo;
+  }
+}
+
 } // namespace enzyme
 
 namespace stablehlo {
@@ -1286,26 +1422,44 @@ getGatherDims(mlir::MLIRContext *ctx,
       scatterDimNumbers.getIndexVectorDim());
 }
 
-bool isSetindexBlock(mlir::Block *block) {
-  if (block->getNumArguments() != 2)
+bool isSetindexBlockHelper(
+    mlir::Block *block,
+    std::function<bool(stablehlo::ReturnOp retOp, Value updateValue)> fn) {
+  if (block->getNumArguments() != 2) {
     return false;
-
-  auto updateValue = block->getArgument(1);
+  }
 
   // The block should have exactly one operation (the return)
-  if (block->getOperations().size() != 1)
+  if (block->getOperations().size() != 1) {
     return false;
+  }
 
   auto &returnOp = block->front();
   auto stablehloReturnOp = dyn_cast<stablehlo::ReturnOp>(returnOp);
-  if (!stablehloReturnOp)
+  if (!stablehloReturnOp) {
     return false;
+  }
 
-  if (stablehloReturnOp.getNumOperands() != 1)
+  if (stablehloReturnOp.getNumOperands() != 1) {
     return false;
+  }
 
-  // The returned value should be the update value (second argument)
-  return stablehloReturnOp.getOperand(0) == updateValue;
+  return fn(stablehloReturnOp, block->getArgument(1));
+}
+
+bool isSetindexBlock(mlir::Block *block) {
+  return isSetindexBlockHelper(
+      block, [](stablehlo::ReturnOp retOp, Value updateValue) {
+        return retOp.getOperand(0) == updateValue;
+      });
+}
+
+bool isConstantSetindexBlock(mlir::Block *block,
+                             mlir::SplatElementsAttr &constant) {
+  return isSetindexBlockHelper(
+      block, [&constant](stablehlo::ReturnOp retOp, Value updateValue) {
+        return matchPattern(retOp.getOperand(0), m_Constant(&constant));
+      });
 }
 
 SmallVector<int64_t> computeGatherSliceSizes(stablehlo::ScatterOp &scatterOp) {
@@ -1638,6 +1792,9 @@ Value copyTriangularPart(OpBuilder &builder, Value input,
                          enzymexla::LapackUplo uplo) {
   if (uplo == enzymexla::LapackUplo::F)
     return input;
+
+  // TODO: run a backward propagation to check if input potentially originates
+  // from a Op that create a partially filled output
 
   auto inputType = cast<RankedTensorType>(input.getType());
   assert(inputType.getRank() == 2 && "only 2D matrices supported");
@@ -2131,24 +2288,83 @@ Value DynamicSliceOpCreate(
     ArrayRef<int64_t> sliceSizes,
     std::optional<sdy::TensorShardingPerValueAttr> sharding) {
   auto inputShape = cast<RankedTensorType>(input.getType()).getShape();
-  bool sliceNeeded = false;
+  SmallVector<int64_t> constStarts, constLimits, constStrides;
+  bool emitSliceOp = true, warnOutOfBoundsAccess = false;
   for (auto [start, size, shape] :
        llvm::zip_equal(sliceStarts, sliceSizes, inputShape)) {
-    if (!matchPattern(start, m_Zero()) || size != shape) {
-      sliceNeeded = true;
+    APInt constStart;
+    if (matchPattern(start, m_ConstantInt(&constStart))) {
+      auto constStartInt = constStart.getSExtValue();
+      auto limit = constStartInt + size;
+      if (limit > shape) {
+        emitSliceOp = false;
+        warnOutOfBoundsAccess = true;
+        break;
+      }
+      constStarts.push_back(constStartInt);
+      constLimits.push_back(limit);
+      constStrides.push_back(1);
+    } else {
+      emitSliceOp = false;
       break;
     }
   }
 
-  if (sliceNeeded) {
-    auto dsOp = stablehlo::DynamicSliceOp::create(builder, loc, input,
-                                                  sliceStarts, sliceSizes);
-    if (sharding.has_value()) {
-      sdy::setShardings(dsOp, *sharding);
-    }
-    return dsOp.getResult();
+  if (emitSliceOp) {
+    return SliceOpCreate(builder, loc, input, constStarts, constLimits,
+                         constStrides);
   }
-  return input;
+
+  auto dsOp = stablehlo::DynamicSliceOp::create(builder, loc, input,
+                                                sliceStarts, sliceSizes);
+  if (warnOutOfBoundsAccess) {
+    dsOp.emitWarning("potential out of bounds indexing detected");
+  }
+  if (sharding.has_value()) {
+    sdy::setShardings(dsOp, *sharding);
+  }
+  return dsOp.getResult();
+}
+
+static Value MaybeBroadcastScalarToMatchShape(
+    OpBuilder &builder, Location loc, Value src, RankedTensorType targetTy,
+    std::optional<sdy::TensorShardingPerValueAttr> sharding) {
+  auto srcTy = cast<RankedTensorType>(src.getType());
+  if (srcTy == targetTy || targetTy.getRank() == 0) {
+    return src;
+  }
+  assert(srcTy.getRank() == 0);
+  auto bcastOp = stablehlo::BroadcastInDimOp::create(
+      builder, loc, targetTy, src, builder.getDenseI64ArrayAttr({}));
+  if (sharding.has_value()) {
+    sdy::setShardings(bcastOp, *sharding);
+  }
+  return bcastOp.getResult();
+}
+
+template <typename OpTy>
+Value BinaryOpCreate(OpBuilder &builder, Location loc, Value lhs, Value rhs,
+                     std::optional<sdy::TensorShardingPerValueAttr> sharding) {
+  auto lhsTy = cast<RankedTensorType>(lhs.getType());
+  auto rhsTy = cast<RankedTensorType>(rhs.getType());
+
+  lhs = MaybeBroadcastScalarToMatchShape(builder, loc, lhs, rhsTy, sharding);
+  rhs = MaybeBroadcastScalarToMatchShape(builder, loc, rhs, lhsTy, sharding);
+  auto newOp = OpTy::create(builder, loc, lhs, rhs);
+  if (sharding.has_value()) {
+    sdy::setShardings(newOp, *sharding);
+  }
+  return newOp.getResult();
+}
+
+Value AddOpCreate(OpBuilder &builder, Location loc, Value lhs, Value rhs,
+                  std::optional<sdy::TensorShardingPerValueAttr> sharding) {
+  return BinaryOpCreate<stablehlo::AddOp>(builder, loc, lhs, rhs, sharding);
+}
+
+Value MulOpCreate(OpBuilder &builder, Location loc, Value lhs, Value rhs,
+                  std::optional<sdy::TensorShardingPerValueAttr> sharding) {
+  return BinaryOpCreate<stablehlo::MulOp>(builder, loc, lhs, rhs, sharding);
 }
 
 Type GetDotGeneralResultType(Value lhs, Value rhs, Type resElemType,
@@ -2315,12 +2531,30 @@ bool isFusible(stablehlo::TransposeOp transpose, Operation *op) {
   return false;
 }
 
-// TODO: implement more conditions especially for fusions with transpose
 bool isFusible(Operation *op, stablehlo::ReshapeOp reshape) {
   return TypeSwitch<Operation *, bool>(op)
       .Case<stablehlo::ReshapeOp>([](auto prevOp) { return true; })
-      .Case<stablehlo::BroadcastInDimOp>(
-          [&](auto prevOp) { return isInsertDimOp(reshape); })
+      .Case<stablehlo::BroadcastInDimOp>([&](auto prevOp) {
+        if (isInsertDimOp(reshape)) {
+          return true;
+        }
+        auto deletionDims = findReshapeInsertionDims(
+            reshape.getType(), reshape.getOperand().getType());
+        if (!deletionDims.empty()) {
+          SmallVector<int64_t> bcastInsertionDims;
+          getSingletonInsertionDims(prevOp, bcastInsertionDims);
+          // if all of the dims deleted we part of the insertion dims, we can
+          // do the fusion
+          if (!bcastInsertionDims.empty()) {
+            return llvm::all_of(deletionDims, [&](auto delDim) {
+              return llvm::is_contained(bcastInsertionDims, delDim);
+            });
+          }
+        }
+        return false;
+      })
+      .Case<stablehlo::ReduceOp>(
+          [&](auto redOp) { return isDeleteDimOp(reshape); })
       .Default([](auto other) { return matchPattern(other, m_Constant()); });
 }
 
@@ -2331,6 +2565,107 @@ bool isFusible(Operation *op, stablehlo::BroadcastInDimOp bcast) {
       .Case<stablehlo::ReshapeOp>(
           [](auto reshape) { return isInsertDimOp(reshape); })
       .Default([](auto other) { return matchPattern(other, m_Constant()); });
+}
+
+bool IsTensorFilled(Value input) {
+  // Use a worklist-based approach to traverse the SSA def-use chain
+  // and determine if the value is known to be a dense (fully-populated) matrix.
+  //
+  // A value is considered dense if it comes from:
+  // - stablehlo ops (except custom_call) - they produce dense outputs if inputs
+  // are dense
+  // - Block arguments (conservatively assume not dense)
+  // - CallOpInterface - check the function body's return values
+  SymbolTableCollection symbolTable;
+
+  std::deque<Value> worklist;
+  llvm::DenseSet<Value> visited;
+
+  worklist.push_back(input);
+
+  while (!worklist.empty()) {
+    Value current = worklist.front();
+    worklist.pop_front();
+
+    if (visited.contains(current)) {
+      continue;
+    }
+    visited.insert(current);
+
+    if (matchPattern(current, m_Constant())) { // constants are always filled
+      continue;
+    }
+
+    // Block arguments are considered dense (inputs to functions)
+    if (auto blockArg = dyn_cast<BlockArgument>(current)) {
+      return false;
+    }
+
+    Operation *op = current.getDefiningOp();
+    if (!op) {
+      return false;
+    }
+
+    // Handle enzymexla dialect ops with special triangular semantics
+    if (auto syrkOp = dyn_cast<enzymexla::SyrkOp>(op)) {
+      // syrk produces a dense output only if output_uplo is F (full)
+      if (syrkOp.getOutputUplo() != enzymexla::LapackUplo::F) {
+        return false;
+      }
+      continue;
+    }
+
+    // Handle CallOpInterface - check the function body
+    if (auto callOp = dyn_cast<CallOpInterface>(op)) {
+      mlir::ModuleOp modOp = op->getParentOfType<ModuleOp>();
+      if (!modOp) {
+        return false;
+      }
+      symbolTable.getSymbolTable(modOp);
+
+      auto callable = callOp.resolveCallableInTable(&symbolTable);
+      if (auto funcOp = dyn_cast_or_null<FunctionOpInterface>(callable)) {
+        // Find which result index corresponds to our value
+        size_t resultIdx = cast<OpResult>(current).getResultNumber();
+
+        // Check function body for return values
+        if (!funcOp.isExternal() && !funcOp.getBlocks().empty()) {
+          for (Block &block : funcOp.getBlocks()) {
+            auto term = block.getTerminator();
+            if (!term || resultIdx >= term->getNumResults()) {
+              return false;
+            }
+            worklist.push_back(term->getOperand(resultIdx));
+          }
+          continue;
+        }
+      }
+
+      // If we can't resolve the call, conservatively assume not dense
+      return false;
+    }
+
+    // Handle stablehlo custom_call - conservatively not dense
+    if (isa<stablehlo::CustomCallOp>(op)) {
+      return false;
+    }
+
+    // All other stablehlo ops produce dense outputs
+    if (op->getDialect()->getNamespace() == "stablehlo") {
+      // Add operands to worklist to continue the traversal
+      // Most stablehlo ops preserve density, so we just need to check
+      // that all inputs are also dense
+      for (auto operand : op->getOperands()) {
+        worklist.push_back(operand);
+      }
+      continue;
+    }
+
+    // For other dialects/ops, conservatively not dense
+    return false;
+  }
+
+  return true;
 }
 
 } // namespace stablehlo

@@ -10,6 +10,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallVector.h"
+#include <mlir/IR/Value.h>
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -37,6 +38,9 @@
 
 namespace mlir {
 namespace enzyme {
+
+void commonLowerUpdateWithoutCorners(enzymexla::UpdateWithoutCornersOp extend,
+                                     PatternRewriter &rewriter);
 
 using namespace ::mlir::enzyme::oputils;
 
@@ -907,6 +911,10 @@ SmallVector<int64_t> findReshapeInsertionDims(ArrayRef<int64_t> inputShape,
                                               ArrayRef<int64_t> outputShape);
 
 bool isInsertDimOp(stablehlo::ReshapeOp reshapeOp);
+bool isDeleteDimOp(stablehlo::ReshapeOp reshapeOp);
+
+void getSingletonInsertionDims(stablehlo::BroadcastInDimOp bcastOp,
+                               SmallVectorImpl<int64_t> &insertionDims);
 
 bool areValidInsertionDims(RankedTensorType inputType,
                            RankedTensorType outputType,
@@ -921,6 +929,13 @@ bool isOnlyUsedInOperation(Operation *operation, Operation *parentOp);
 mlir::RankedTensorType removeBatchedDims(mlir::RankedTensorType Ty,
                                          llvm::ArrayRef<int64_t> dims);
 
+enzymexla::LapackTranspose
+transposeLapackTranspose(enzymexla::LapackTranspose trans, bool canBeComplex);
+
+enzymexla::LapackUplo transposeLapackUplo(enzymexla::LapackUplo uplo);
+
+enzymexla::LapackUplo standardizeUplo(enzymexla::LapackUplo uplo);
+
 } // namespace enzyme
 
 namespace stablehlo {
@@ -930,6 +945,8 @@ getGatherDims(mlir::MLIRContext *ctx,
               stablehlo::ScatterDimensionNumbersAttr scatterDimNumbers);
 
 bool isSetindexBlock(mlir::Block *block);
+bool isConstantSetindexBlock(mlir::Block *block,
+                             mlir::SplatElementsAttr &constant);
 
 // rhs is only considered if commutative is false
 template <typename T, bool commutative, bool rhs>
@@ -1055,6 +1072,8 @@ public:
 struct CheckCommonScatterOp {
 public:
   bool isSetindexScatter;
+  bool isConstantSetindexScatter;
+
   bool isAddScatter;
   bool isMinScatter;
   bool isMaxScatter;
@@ -1075,6 +1094,7 @@ public:
 
     if (!updateComputation.hasOneBlock()) {
       isSetindexScatter = false;
+      isConstantSetindexScatter = false;
       isAddScatter = false;
       isMinScatter = false;
       isMaxScatter = false;
@@ -1093,6 +1113,7 @@ public:
 
     auto &block = updateComputation.front();
     isSetindexScatter = isSetindexBlock(&block);
+    isConstantSetindexScatter = isConstantSetindexBlock(&block, constant);
     isAddScatter = isOnlyOpBlock<stablehlo::AddOp, true, false>(&block);
     isMulScatter = isOnlyOpBlock<stablehlo::MulOp, true, false>(&block);
     isMinScatter = isOnlyOpBlock<stablehlo::MinOp, true, false>(&block);
@@ -1277,6 +1298,20 @@ Value DynamicSliceOpCreate(
     OpBuilder &builder, Location loc, Value input, ArrayRef<Value> sliceStarts,
     ArrayRef<int64_t> sliceSizes,
     std::optional<sdy::TensorShardingPerValueAttr> sharding = std::nullopt);
+
+// allows lhs or rhs to be a scalar in which case it will automatically be
+// broadcasted to the correct shape
+Value AddOpCreate(
+    OpBuilder &builder, Location loc, Value lhs, Value rhs,
+    std::optional<sdy::TensorShardingPerValueAttr> sharding = std::nullopt);
+
+Value MulOpCreate(
+    OpBuilder &builder, Location loc, Value lhs, Value rhs,
+    std::optional<sdy::TensorShardingPerValueAttr> sharding = std::nullopt);
+
+// walk back starting from `input` and track the operations to determine if
+// only part of the matrix is populated.
+bool IsTensorFilled(Value input);
 
 } // namespace stablehlo
 

@@ -250,8 +250,8 @@ module {
 }
 
 // CHECK: func.func @main(%arg0: tensor<5x4x3xf32>, %arg1: tensor<3x1x4x1x5xf32>) -> tensor<5x4x3xf32> {
-// CHECK-NEXT:   %0 = stablehlo.broadcast_in_dim %arg1, dims = [5, 2, 0, 3, 1] : (tensor<3x1x4x1x5xf32>) -> tensor<4x5x1x1x1x3xf32>
-// CHECK-NEXT:   %1 = stablehlo.reshape %0 : (tensor<4x5x1x1x1x3xf32>) -> tensor<4x5x3xf32>
+// CHECK-NEXT:   %0 = stablehlo.transpose %arg1, dims = [2, 4, 1, 3, 0] : (tensor<3x1x4x1x5xf32>) -> tensor<4x5x1x1x3xf32>
+// CHECK-NEXT:   %1 = stablehlo.reshape %0 : (tensor<4x5x1x1x3xf32>) -> tensor<4x5x3xf32>
 // CHECK-NEXT:   %2 = stablehlo.transpose %1, dims = [1, 0, 2] : (tensor<4x5x3xf32>) -> tensor<5x4x3xf32>
 // CHECK-NEXT:   return %2 : tensor<5x4x3xf32>
 // CHECK-NEXT: }

@@ -202,6 +202,7 @@ def optimization_passes(
         "dot_general_simplify<16>",
         "transpose_simplify<16>",
         "reshape_empty_broadcast<1>",
+        "reshape_broadcast<1>",
         "broadcast_reshape<1>",
         "transpose_dot_reorder<1>",
         "dot_transpose<1>",
@@ -306,6 +307,7 @@ def optimization_passes(
         "trivial_reduce_window_to_reduce_op",
         "case_to_if",
         "reduce_mul_to_dot_general",
+        "split_reduce_add_mul_to_add_dot_general",
         "dot_general_add_distributive_simplify",
         "dot_general_subtract_distributive_simplify",
         "remove_no_ops_from_while_loop",
@@ -323,6 +325,7 @@ def optimization_passes(
         "while_dus_ds_simplify",
         "while_dus_dus_simplify",
         "reshape_slice_reshape",
+        "syrk_simplify_output_uplo",
         "dynamic_slice_elementwise",
         "dot_general_remove_batch_dimensions",
         "delete_dims_reduce",
@@ -427,6 +430,7 @@ def optimization_passes(
         transform_passes_list += [
             "greedy_while_loop_batch_fission",
             "while_elementwise_reduction_to_reduce",
+            "remove_loop_carried_dependencies_from_while_load_operations",
         ]
 
     if enable_licm_optimization_passes:

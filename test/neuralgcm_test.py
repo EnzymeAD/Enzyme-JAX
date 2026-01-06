@@ -89,7 +89,8 @@ class NeuralGCM(EnzymeJaxTest):
             )
 
         self.name = (
-            model_name.split(".")[0]
+            "neuralgcm_"
+            + model_name.split(".")[0]
             + "_inner_steps_"
             + str(inner_steps)
             + "_outer_steps_"

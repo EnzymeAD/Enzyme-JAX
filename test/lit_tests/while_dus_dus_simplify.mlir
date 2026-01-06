@@ -193,3 +193,28 @@ func.func @while_dus_dus_no_overlap(%arg0: tensor<20x20xf32>, %arg1: tensor<4x4x
 // CHECK-NEXT:   }
 // CHECK-NEXT:   return %0#1 : tensor<20x20xf32>
 // CHECK-NEXT: }
+
+
+// Test 6: Outer DUS has covers a full dimension where inner dus is dynamic, we can
+//         simplify
+func.func @while_dus_dus_outer_full_inner_dynamic(%arg0: tensor<20x20xf32>, %arg1: tensor<4x20xf32>, %arg2: tensor<4x4xf32>) -> tensor<20x20xf32> {
+  %c = stablehlo.constant dense<0> : tensor<i64>
+  %c_0 = stablehlo.constant dense<5> : tensor<i64>
+  %c_1 = stablehlo.constant dense<1> : tensor<i64>
+  %c_10 = stablehlo.constant dense<10> : tensor<i64>
+  %0:2 = stablehlo.while(%iterArg = %c, %iterArg_2 = %arg0) : tensor<i64>, tensor<20x20xf32>
+  cond {
+    %1 = stablehlo.compare LT, %iterArg, %c_0 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+    stablehlo.return %1 : tensor<i1>
+  } do {
+    // Inner DUS writes 4x4 at [i:(i + 4), i:(i + 4)]
+    %1 = stablehlo.dynamic_update_slice %iterArg_2, %arg2, %iterArg, %iterArg : (tensor<20x20xf32>, tensor<4x4xf32>, tensor<i64>, tensor<i64>) -> tensor<20x20xf32>
+    // Outer DUS writes 4x20 at [i:(i + 4), :]
+    %2 = stablehlo.dynamic_update_slice %1, %arg1, %iterArg, %c : (tensor<20x20xf32>, tensor<4x20xf32>, tensor<i64>, tensor<i64>) -> tensor<20x20xf32>
+    // CHECK: %1 = stablehlo.dynamic_update_slice %iterArg_2, %arg1, %iterArg, %c : (tensor<20x20xf32>, tensor<4x20xf32>, tensor<i64>, tensor<i64>) -> tensor<20x20xf32>
+    %3 = stablehlo.add %iterArg, %c_1 : tensor<i64>
+    stablehlo.return %3, %2 : tensor<i64>, tensor<20x20xf32>
+    // CHECK: stablehlo.return %2, %1 : tensor<i64>, tensor<20x20xf32>
+  }
+  return %0#1 : tensor<20x20xf32>
+}

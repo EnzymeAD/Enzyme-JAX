@@ -387,6 +387,26 @@ def ExtendOp: EnzymeXLA_Op<
   let results = (outs HLO_Tensor:$result);
 }
 
+def UpdateWithoutCornersOp: EnzymeXLA_Op<
+      "update_without_corners",
+      [Pure, SameOperandsAndResultElementType,
+       DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+  let summary = "Update without corners operation";
+
+  let arguments = (ins
+    HLO_Tensor:$operand,
+    HLO_Tensor:$update,
+    I64Attr:$dimensionX,
+    I64Attr:$x1,
+    I64Attr:$x2,
+    I64Attr:$dimensionY,
+    I64Attr:$y1,
+    I64Attr:$y2
+  );
+
+  let results = (outs HLO_Tensor:$result);
+}
+
 def CommRegionOp : EnzymeXLA_Op<"comm_region", [
     DeclareOpInterfaceMethods<RegionBranchOpInterface>,
     RecursiveMemoryEffects, RecursivelySpeculatable]> {
@@ -431,11 +451,19 @@ def SyrkOp: EnzymeXLA_Op<"blas.syrk", [Pure, SameOperandsAndResultElementType]> 
   let summary = "Multiplication involving a symmetric matrix";
 
   let description = [{
-    C := alpha*A*A^T + beta*C, or C := alpha*A^T*A + beta*C, where alpha and beta are
-    scalars. C must be a n x n symmetric matrix.
+    C_out := alpha*A*A^T + beta*C, or C_out := alpha*A^T*A + beta*C, where alpha and beta
+    are scalars. C must be a n x n symmetric matrix.
 
-    If `fill` is present, then both the upper and lower triangles of the matrix are filled.
-    Otherwise the values in the non-uplo part of the matrix are undefined.
+    `output_uplo` determines which part of `C_out` is populated. Accessing the values in
+    the non-`output_uplo` part of the matrix is undefined behavior.
+
+    LAPACK/BLAS routines typically require a single `uplo` attribute and it is implicitly
+    assumed that the output `uplo` corresponds to the input `uplo`. This means the burden
+    lies on the user to manually copy data if they need to access the other half of the
+    matrix. By specifying the `output_uplo` we can perform transformations that analyze the
+    entire dataflow, and avoid computing/copying half of the tensor all together. Generally,
+    it is recommended to set this attribute to `enzymexla::LapackUplo::F`, and our passes
+    will automatically refine this to minimize data copies.
   }];
 
   let arguments = (ins
@@ -444,8 +472,8 @@ def SyrkOp: EnzymeXLA_Op<"blas.syrk", [Pure, SameOperandsAndResultElementType]> 
     TensorFloat:$alpha,
     TensorFloat:$beta,
     EnzymeXLA_LapackUploAttr:$uplo,
-    DefaultValuedAttr<EnzymeXLA_LapackTransposeAttr, "::mlir::enzymexla::LapackTranspose::none">:$transpose,
-    OptionalAttr<UnitAttr>:$fill
+    EnzymeXLA_LapackUploAttr:$output_uplo,
+    DefaultValuedAttr<EnzymeXLA_LapackTransposeAttr, "::mlir::enzymexla::LapackTranspose::none">:$transpose
   );
 
   let results = (outs
@@ -455,6 +483,8 @@ def SyrkOp: EnzymeXLA_Op<"blas.syrk", [Pure, SameOperandsAndResultElementType]> 
   let assemblyFormat = [{
     $A `,` $C `,` $alpha `,` $beta attr-dict `:` functional-type(operands, results)
   }];
+
+  let hasVerifier = 1;
 }
 
 def TrmmOp: EnzymeXLA_Op<"blas.trmm", [Pure, SameOperandsAndResultElementType]> {
