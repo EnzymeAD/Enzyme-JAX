@@ -28764,6 +28764,53 @@ struct FuseReshapeCollapseOrExpandDimsIntoReduce final
   }
 };
 
+struct GatherOfScatterSimplify final
+    : CheckedOpRewritePattern<stablehlo::GatherOp, GatherOfScatterSimplify> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::GatherOp gatherOp,
+                                    PatternRewriter &rewriter) {
+    auto input = gatherOp.getOperand();
+    auto scatterOp = input.getDefiningOp<stablehlo::ScatterOp>();
+
+    if (!scatterOp ||
+        scatterOp.getScatterIndices() != gatherOp.getStartIndices() ||
+        computeGatherSliceSizes(scatterOp) != gatherOp.getSliceSizes() ||
+        getGatherDims(scatterOp->getContext(),
+                      scatterOp.getScatterDimensionNumbersAttr()) !=
+            gatherOp.getDimensionNumbersAttr()) {
+      return failure();
+    }
+
+    auto opResult = cast<OpResult>(input);
+    auto opNum = opResult.getResultNumber();
+
+    SplatElementsAttr constSetIndexValue;
+    if (!detectConstantSetindexScatterOp(
+             scatterOp, true, [](auto input) { return true; },
+             constSetIndexValue)
+             .ok()) {
+      return failure();
+    }
+
+    if (constSetIndexValue) {
+      auto constResult = stablehlo::ConstantOp::create(
+          rewriter, gatherOp.getLoc(),
+          constSetIndexValue.resizeSplat(cast<ShapedType>(gatherOp.getType())));
+      rewriter.replaceOp(gatherOp, constResult);
+      return success();
+    }
+
+    if (!scatterOp.getUniqueIndices()) {
+      return failure();
+    }
+
+    auto newResult = scatterOp.getUpdates()[opNum];
+    rewriter.replaceOp(gatherOp, newResult);
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -29477,7 +29524,8 @@ struct EnzymeHLOOptPass
         DeleteDimsReduce,
         ReduceDeleteDims,
         DotGeneralInsertDimContractionSimplification,
-        FuseReshapeCollapseOrExpandDimsIntoReduce
+        FuseReshapeCollapseOrExpandDimsIntoReduce,
+        GatherOfScatterSimplify
       >(context);
 
     patterns.add<ReshapeElementwise>(true, true, context);
