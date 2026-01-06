@@ -14,7 +14,9 @@
 namespace mlir {
 namespace enzyme {
 
-// Represents the partial symmetry of a tensor as a partition of its dimensions.
+// Represents the partial symmetry of a tensor as a partition of its dimensions,
+// where each pair of dimensions with the set ID may be swapped without changing
+// the value of the tensor.
 class PartialSymmetryAnnotation {
 public:
   PartialSymmetryAnnotation() : dimensionSetIDs() {}
