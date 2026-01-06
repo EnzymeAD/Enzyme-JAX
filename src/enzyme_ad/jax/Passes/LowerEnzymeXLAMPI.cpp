@@ -2,6 +2,7 @@
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/LinalgUtils.h"
@@ -44,7 +45,6 @@ struct MPICommRankOpLowering
 
       auto llvmPtrType = LLVM::LLVMPointerType::get(context);
       auto llvmVoidType = LLVM::LLVMVoidType::get(context);
-
       auto i32Type = IntegerType::get(context, 32);
 
       std::string mpiFunctionName = "MPI_Comm_rank";
@@ -62,7 +62,7 @@ struct MPICommRankOpLowering
         // Create the function type
         auto funcType =
             LLVM::LLVMFunctionType::get(llvmVoidType,  // void return type
-                                        {},            // parameter types
+                                        {llvmPtrType}, // pointer parameter
                                         false);        // is variadic: false
 
         auto wrapperFunc = rewriter.create<LLVM::LLVMFuncOp>(
@@ -78,16 +78,16 @@ struct MPICommRankOpLowering
         Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
         rewriter.setInsertionPointToStart(entryBlock);
 
-        // Allocate rank pointer
-        Value one = rewriter.create<arith::ConstantOp>(
-            op.getLoc(), i32Type, rewriter.getI32IntegerAttr(1));
+        // Add argument-level memory effects attribute
+        wrapperFunc.setArgAttr(0, "enzymexla.memory_effects",
+                               memoryEffectsAttr);
 
-        Value rankPtr = rewriter.create<LLVM::AllocaOp>(
-            op.getLoc(), llvmPtrType, i32Type, one);
+        // Get the rank pointer from the argument
+        Value rankPtr = entryBlock->getArgument(0);
 
         // Get the address of the communicator
         // NOTE these symbols are not ABI-stable until MPI 5.0, but in practice,
-        // they are represented as w ord-size values (i.e. `int` or ptr)
+        // they are represented as word-size values (i.e. `int` or ptr)
         Value addressOfComm = rewriter.create<LLVM::AddressOfOp>(
             op.getLoc(), llvmPtrType, communicatorName);
 
@@ -126,19 +126,32 @@ struct MPICommRankOpLowering
             /*addrSpace=*/0);
       }
 
+      // Create a constant tensor to hold the result
+      auto tensorType = llvm::cast<RankedTensorType>(op->getResultTypes()[0]);
+      auto constantAttr = DenseIntElementsAttr::get(tensorType,
+          ArrayRef<int32_t>{-1});
+      Value constantTensor = rewriter.create<stablehlo::ConstantOp>(
+          op.getLoc(), tensorType, constantAttr);
+
       // Call the LLVM function with enzymexla.jit_call
+      auto aliasAttr = stablehlo::OutputOperandAliasAttr::get(
+          context,
+          /*outputTupleIndices=*/ArrayRef<int64_t>{},
+          /*operandIndex=*/0,
+          /*operandTupleIndices=*/ArrayRef<int64_t>{});
+
       auto jitCall = rewriter.create<enzymexla::JITCallOp>(
           op.getLoc(), op->getResultTypes(),
           mlir::FlatSymbolRefAttr::get(context, wrapperFunctionName),
-          ValueRange{}, rewriter.getStringAttr(""),
+          ValueRange{constantTensor}, rewriter.getStringAttr(""),
           /*operand_layouts=*/nullptr,
           /*result_layouts=*/nullptr,
           /*arg_attrs=*/nullptr,
           /*res_attrs=*/nullptr,
-          /*output_operand_aliases=*/nullptr,
+          /*output_operand_aliases=*/rewriter.getArrayAttr({aliasAttr}),
           /*xla_side_effect_free=*/nullptr);
 
-      rewriter.replaceOp(op, jitCall);
+      rewriter.replaceOp(op, jitCall.getResult(0));
 
       return success();
     } else {
