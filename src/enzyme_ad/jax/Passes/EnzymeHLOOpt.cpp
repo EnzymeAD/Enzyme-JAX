@@ -33,7 +33,6 @@
 #include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
-#include "src/enzyme_ad/jax/Passes/StructuredTensors.h"
 #include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/Base.h"
 #include "stablehlo/dialect/ChloOps.h"
@@ -55,6 +54,7 @@
 #include "llvm/ADT/MapVector.h"
 #include <cstddef>
 #include <iterator>
+#include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/Value.h>
 #include <numeric>
 #define DEBUG_TYPE "enzymehloopt"
@@ -22676,29 +22676,30 @@ struct SplitConvolutionIntoReverseConvolution final
   }
 };
 
-struct ScatterMultiplySimplify final
-    : public CheckedOpRewritePattern<stablehlo::MulOp,
-                                     ScatterMultiplySimplify> {
-  using CheckedOpRewritePattern<
-      stablehlo::MulOp, ScatterMultiplySimplify>::CheckedOpRewritePattern;
+template <typename OpTy, typename Child>
+struct ScatterBinaryOpSimplifyBase
+    : public CheckedOpRewritePattern<OpTy, Child> {
+  using CheckedOpRewritePattern<OpTy, Child>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewriteImpl(stablehlo::MulOp op,
-                                    PatternRewriter &rewriter) const {
+  LogicalResult matchAndRewriteImpl(OpTy op, PatternRewriter &rewriter) const {
     auto lhs = op.getLhs();
     auto rhs = op.getRhs();
 
     stablehlo::ScatterOp scatterOp;
     mlir::Value otherValue;
 
-    auto lhsScatterOp = lhs.getDefiningOp<stablehlo::ScatterOp>();
-    auto rhsScatterOp = rhs.getDefiningOp<stablehlo::ScatterOp>();
+    auto lhsScatterOp = lhs.template getDefiningOp<stablehlo::ScatterOp>();
+    auto rhsScatterOp = rhs.template getDefiningOp<stablehlo::ScatterOp>();
+    bool lhsIsScatter;
     if (!lhsScatterOp && !rhsScatterOp) {
       return failure();
     } else {
       if (lhsScatterOp) {
+        lhsIsScatter = true;
         scatterOp = lhsScatterOp;
         otherValue = rhs;
       } else {
+        lhsIsScatter = false;
         scatterOp = rhsScatterOp;
         otherValue = lhs;
       }
@@ -22729,30 +22730,46 @@ struct ScatterMultiplySimplify final
 
     SmallVector<int64_t> sliceSizes = computeGatherSliceSizes(scatterOp);
 
-    if (isAllZeros) { // non scattered values before zeros
-      auto gatheredValues = stablehlo::GatherOp::create(
-          rewriter, op.getLoc(), otherValue, scatterOp.getScatterIndices(),
-          getGatherDims(rewriter.getContext(),
-                        scatterOp.getScatterDimensionNumbers()),
-          rewriter.getDenseI64ArrayAttr(sliceSizes),
-          scatterOp.getIndicesAreSortedAttr());
+    return ((Child *)this)
+        ->rewriteScatterElementwise(op, rewriter, scatterOp, otherValue,
+                                    isAllZeros, isAllOnes, lhsIsScatter,
+                                    constSetIndexValue, sliceSizes);
+  }
 
-      Value mulRhs;
-      if (constSetIndexValue) {
-        mulRhs = stablehlo::ConstantOp::create(
-            rewriter, op.getLoc(),
-            constSetIndexValue.resizeSplat(
-                cast<ShapedType>(gatheredValues.getType())));
-      } else {
-        mulRhs = scatterOp.getUpdates()[0];
-      }
-      auto newUpdates =
-          stablehlo::MulOpCreate(rewriter, op.getLoc(), gatheredValues, mulRhs);
+  // if !fuseIntoScatter
+  //     %g = gather(%other_value, %scatter_indices)
+  //     %tmp = elementwise_op(%g, %updates) if !lhsIsScatter else
+  //            elementwise_op(%updates, %g)
+  //     %new_scatter_op = scatter(%input, %scatter_indices, %tmp)
+  // else
+  //     %new_scatter_op = scatter(%input, %scatter_indices, %updates) {
+  //         elementwise_op(%arg1, %arg2) // based on lhsIsScatter
+  //     }
+  template <auto CreateOpFn>
+  void gatherElementwiseSetIndex(OpTy op, PatternRewriter &rewriter,
+                                 stablehlo::ScatterOp scatterOp,
+                                 Value otherValue, Value scatterInput,
+                                 bool lhsIsScatter,
+                                 SplatElementsAttr constSetIndexValue,
+                                 SmallVectorImpl<int64_t> &sliceSizes,
+                                 bool fuseIntoScatter) const {
+    Value updateVal;
+    if (constSetIndexValue) {
+      updateVal = stablehlo::ConstantOp::create(
+          rewriter, scatterOp.getLoc(),
+          constSetIndexValue.resizeSplat(
+              cast<ShapedType>(scatterOp.getUpdates()[0].getType())));
+    } else {
+      updateVal = scatterOp.getUpdates()[0];
+    }
+
+    if (fuseIntoScatter) {
+      assert(scatterInput == otherValue);
 
       auto newScatterOp = stablehlo::ScatterOp::create(
           rewriter, op.getLoc(), scatterOp.getResultTypes(),
-          scatterOp.getInputs(), scatterOp.getScatterIndices(),
-          ValueRange(newUpdates), scatterOp.getScatterDimensionNumbersAttr(),
+          ValueRange(scatterInput), scatterOp.getScatterIndices(),
+          ValueRange(updateVal), scatterOp.getScatterDimensionNumbersAttr(),
           scatterOp.getIndicesAreSortedAttr(),
           scatterOp.getUniqueIndicesAttr());
 
@@ -22764,9 +22781,67 @@ struct ScatterMultiplySimplify final
       block->addArgument(argType, op.getLoc());
       block->addArgument(argType, op.getLoc());
       rewriter.setInsertionPointToStart(block);
-      stablehlo::ReturnOp::create(rewriter, op.getLoc(), block->getArgument(1));
+
+      stablehlo::ReturnOp::create(
+          rewriter, op.getLoc(),
+          CreateOpFn(rewriter, op.getLoc(), block->getArgument(lhsIsScatter),
+                     block->getArgument(!lhsIsScatter), std::nullopt));
 
       rewriter.replaceOp(op, newScatterOp);
+
+      return;
+    }
+
+    auto gatheredValues =
+        stablehlo::GatherOp::create(
+            rewriter, scatterOp.getLoc(), otherValue,
+            scatterOp.getScatterIndices(),
+            getGatherDims(rewriter.getContext(),
+                          scatterOp.getScatterDimensionNumbers()),
+            rewriter.getDenseI64ArrayAttr(sliceSizes),
+            scatterOp.getIndicesAreSortedAttr())
+            .getResult();
+
+    Value newUpdates = CreateOpFn(
+        rewriter, scatterOp.getLoc(), lhsIsScatter ? updateVal : gatheredValues,
+        lhsIsScatter ? gatheredValues : updateVal, std::nullopt);
+
+    auto newScatterOp = stablehlo::ScatterOp::create(
+        rewriter, op.getLoc(), scatterOp.getResultTypes(),
+        ValueRange(scatterInput), scatterOp.getScatterIndices(),
+        ValueRange(newUpdates), scatterOp.getScatterDimensionNumbersAttr(),
+        scatterOp.getIndicesAreSortedAttr(), scatterOp.getUniqueIndicesAttr());
+
+    auto &updateRegion = newScatterOp.getUpdateComputation();
+    auto *block = rewriter.createBlock(&updateRegion);
+    auto elemType =
+        cast<RankedTensorType>(scatterOp.getResultTypes()[0]).getElementType();
+    auto argType = RankedTensorType::get({}, elemType);
+    block->addArgument(argType, op.getLoc());
+    block->addArgument(argType, op.getLoc());
+    rewriter.setInsertionPointToStart(block);
+    stablehlo::ReturnOp::create(rewriter, op.getLoc(), block->getArgument(1));
+
+    rewriter.replaceOp(op, newScatterOp);
+  }
+};
+
+struct ScatterMultiplySimplify final
+    : public ScatterBinaryOpSimplifyBase<stablehlo::MulOp,
+                                         ScatterMultiplySimplify> {
+  using ScatterBinaryOpSimplifyBase<
+      stablehlo::MulOp, ScatterMultiplySimplify>::ScatterBinaryOpSimplifyBase;
+
+  LogicalResult
+  rewriteScatterElementwise(stablehlo::MulOp op, PatternRewriter &rewriter,
+                            stablehlo::ScatterOp scatterOp, Value otherValue,
+                            bool isAllZeros, bool isAllOnes, bool lhsIsScatter,
+                            SplatElementsAttr constSetIndexValue,
+                            SmallVectorImpl<int64_t> &sliceSizes) const {
+    if (isAllZeros) { // non scattered values before zeros
+      gatherElementwiseSetIndex<stablehlo::MulOpCreate>(
+          op, rewriter, scatterOp, otherValue, scatterOp.getInputs()[0],
+          lhsIsScatter, constSetIndexValue, sliceSizes, false);
       return success();
     }
 
@@ -22801,6 +22876,82 @@ struct ScatterMultiplySimplify final
       stablehlo::ReturnOp::create(rewriter, op.getLoc(), mulOp.getResult());
 
       rewriter.replaceOp(op, newScatterOp);
+      return success();
+    }
+
+    return failure();
+  }
+};
+
+struct ScatterDivSimplify final
+    : public ScatterBinaryOpSimplifyBase<stablehlo::DivOp, ScatterDivSimplify> {
+  using ScatterBinaryOpSimplifyBase<
+      stablehlo::DivOp, ScatterDivSimplify>::ScatterBinaryOpSimplifyBase;
+
+  LogicalResult
+  rewriteScatterElementwise(stablehlo::DivOp op, PatternRewriter &rewriter,
+                            stablehlo::ScatterOp scatterOp, Value otherValue,
+                            bool isAllZeros, bool isAllOnes, bool lhsIsScatter,
+                            SplatElementsAttr constSetIndexValue,
+                            SmallVectorImpl<int64_t> &sliceSizes) const {
+    if (isAllOnes && !lhsIsScatter) {
+      // x / 1 -> setindex into x
+      gatherElementwiseSetIndex<stablehlo::DivOpCreate>(
+          op, rewriter, scatterOp, otherValue, otherValue, lhsIsScatter,
+          constSetIndexValue, sliceSizes, true);
+      return success();
+    }
+
+    return failure();
+  }
+};
+
+struct ScatterAddSimplify final
+    : public ScatterBinaryOpSimplifyBase<stablehlo::AddOp, ScatterAddSimplify> {
+  using ScatterBinaryOpSimplifyBase<
+      stablehlo::AddOp, ScatterAddSimplify>::ScatterBinaryOpSimplifyBase;
+
+  LogicalResult
+  rewriteScatterElementwise(stablehlo::AddOp op, PatternRewriter &rewriter,
+                            stablehlo::ScatterOp scatterOp, Value otherValue,
+                            bool isAllZeros, bool isAllOnes, bool lhsIsScatter,
+                            SplatElementsAttr constSetIndexValue,
+                            SmallVectorImpl<int64_t> &sliceSizes) const {
+    if (isAllZeros) {
+      gatherElementwiseSetIndex<stablehlo::AddOpCreate>(
+          op, rewriter, scatterOp, otherValue, otherValue, lhsIsScatter,
+          constSetIndexValue, sliceSizes, true);
+      return success();
+    }
+
+    return failure();
+  }
+};
+
+struct ScatterSubSimplify final
+    : public ScatterBinaryOpSimplifyBase<stablehlo::SubtractOp,
+                                         ScatterSubSimplify> {
+  using ScatterBinaryOpSimplifyBase<
+      stablehlo::SubtractOp, ScatterSubSimplify>::ScatterBinaryOpSimplifyBase;
+
+  LogicalResult
+  rewriteScatterElementwise(stablehlo::SubtractOp op, PatternRewriter &rewriter,
+                            stablehlo::ScatterOp scatterOp, Value otherValue,
+                            bool isAllZeros, bool isAllOnes, bool lhsIsScatter,
+                            SplatElementsAttr constSetIndexValue,
+                            SmallVectorImpl<int64_t> &sliceSizes) const {
+    if (isAllZeros) {
+      if (lhsIsScatter) {
+        otherValue =
+            stablehlo::NegOp::create(rewriter, op.getLoc(), otherValue);
+        gatherElementwiseSetIndex<stablehlo::AddOpCreate>(
+            op, rewriter, scatterOp, otherValue, otherValue, lhsIsScatter,
+            constSetIndexValue, sliceSizes, true);
+      } else {
+        gatherElementwiseSetIndex<stablehlo::SubtractOpCreate>(
+            op, rewriter, scatterOp, otherValue, otherValue, lhsIsScatter,
+            constSetIndexValue, sliceSizes, true);
+      }
       return success();
     }
 
@@ -29108,8 +29259,8 @@ struct EnzymeHLOOptPass
                    CSE<stablehlo::ConcatenateOp>, CSE<stablehlo::MaxOp>,
                    CSE<stablehlo::NegOp>, CSE<stablehlo::AbsOp>,
                    CSE<enzymexla::RotateOp>, CSE<enzymexla::WrapOp>,
-                   CSE<enzymexla::ExtendOp>, CSEIota>(context,
-                                                      PatternBenefit(65000));
+                   CSE<enzymexla::ExtendOp>, CSEIota, CSE<stablehlo::GatherOp>,
+                   CSE<stablehlo::ScatterOp>>(context, PatternBenefit(65000));
     }
 
     if (passses & 256)
@@ -29282,6 +29433,9 @@ struct EnzymeHLOOptPass
         ConjComplexSimplify,
         SplitConvolutionIntoReverseConvolution,
         ScatterMultiplySimplify,
+        ScatterDivSimplify,
+        ScatterAddSimplify,
+        ScatterSubSimplify,
         UnaryElementwiseScatterSimplify,
         GatherElementwise,
         ElementwisePad,

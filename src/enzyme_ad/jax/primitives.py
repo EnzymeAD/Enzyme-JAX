@@ -455,6 +455,9 @@ def optimization_passes(
         transform_passes_list += [
             "scatter_to_dynamic_update_slice<1>",
             "scatter_multiply_simplify",
+            "scatter_div_simplify",
+            "scatter_sub_simplify",
+            "scatter_add_simplify",
             "unary_elementwise_scatter_simplify",
             "scatter_indices_are_unique",
             "diagonal_tensor_dot_general_rewrite",
@@ -467,6 +470,8 @@ def optimization_passes(
             ## const prop patterns
             "gather_const_prop",
             f"scatter_const_fold({max_constant_threshold})",
+            "cse_gather",
+            "cse_scatter",
         ]
 
     if enable_pad_optimization_passes:
