@@ -17,7 +17,6 @@
 #include "mlir/IR/Matchers.h"
 
 #include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
-#include "src/enzyme_ad/jax/Passes/StructuredTensors.h"
 #include "src/enzyme_ad/jax/Utils.h"
 
 #include "llvm/ADT/TypeSwitch.h"
