@@ -1422,26 +1422,44 @@ getGatherDims(mlir::MLIRContext *ctx,
       scatterDimNumbers.getIndexVectorDim());
 }
 
-bool isSetindexBlock(mlir::Block *block) {
-  if (block->getNumArguments() != 2)
+bool isSetindexBlockHelper(
+    mlir::Block *block,
+    std::function<bool(stablehlo::ReturnOp retOp, Value updateValue)> fn) {
+  if (block->getNumArguments() != 2) {
     return false;
-
-  auto updateValue = block->getArgument(1);
+  }
 
   // The block should have exactly one operation (the return)
-  if (block->getOperations().size() != 1)
+  if (block->getOperations().size() != 1) {
     return false;
+  }
 
   auto &returnOp = block->front();
   auto stablehloReturnOp = dyn_cast<stablehlo::ReturnOp>(returnOp);
-  if (!stablehloReturnOp)
+  if (!stablehloReturnOp) {
     return false;
+  }
 
-  if (stablehloReturnOp.getNumOperands() != 1)
+  if (stablehloReturnOp.getNumOperands() != 1) {
     return false;
+  }
 
-  // The returned value should be the update value (second argument)
-  return stablehloReturnOp.getOperand(0) == updateValue;
+  return fn(stablehloReturnOp, block->getArgument(1));
+}
+
+bool isSetindexBlock(mlir::Block *block) {
+  return isSetindexBlockHelper(
+      block, [](stablehlo::ReturnOp retOp, Value updateValue) {
+        return retOp.getOperand(0) == updateValue;
+      });
+}
+
+bool isConstantSetindexBlock(mlir::Block *block,
+                             mlir::SplatElementsAttr &constant) {
+  return isSetindexBlockHelper(
+      block, [&constant](stablehlo::ReturnOp retOp, Value updateValue) {
+        return matchPattern(retOp.getOperand(0), m_Constant(&constant));
+      });
 }
 
 SmallVector<int64_t> computeGatherSliceSizes(stablehlo::ScatterOp &scatterOp) {
