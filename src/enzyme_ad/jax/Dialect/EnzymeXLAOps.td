@@ -1090,18 +1090,14 @@ def AffineStoreVar : EnzymeXLA_Op<"store_var", [Pure]> {
 
 // MPI Ops
 
-def MPICommRankOp : EnzymeXLA_Op<"comm_rank", []> {
+def MPICommRankOp : EnzymeXLA_Op<"mpi.comm_rank", []> {
   let summary = "Equivalent to " "`MPI_Comm_rank(MPI_COMM_WORLD, &rank)`";
 
-  let arguments = (
-    ins AnyTensor : $inrank
-  );
-
   let results = (
-    outs TensorOf<[I32]> : $outrank
+    outs TensorOf<[I32]> : $rank
   );
 
-  let assemblyFormat = "`(` operands `)` attr-dict `:` functional-type(operands, results)";
+  let assemblyFormat = "attr-dict `:` type(results)";
 }
 
 def MPICommSizeOp : EnzymeXLA_Op<"comm_size", []> {

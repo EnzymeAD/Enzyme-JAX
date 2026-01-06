@@ -26,137 +26,137 @@ namespace enzyme {
 
 using namespace mlir;
 
-struct MPICommRankOpLowering
-    : public OpRewritePattern<enzymexla::MPICommRankOp> {
+// struct MPICommRankOpLowering
+//     : public OpRewritePattern<enzymexla::MPICommRankOp> {
 
-  std::string backend;
-  MPICommRankOpLowering(std::string backend, MLIRContext *context,
-                        PatternBenefit benefit = 1)
-      : OpRewritePattern(context, benefit), backend(backend) {}
+//   std::string backend;
+//   MPICommRankOpLowering(std::string backend, MLIRContext *context,
+//                         PatternBenefit benefit = 1)
+//       : OpRewritePattern(context, benefit), backend(backend) {}
 
-  LogicalResult matchAndRewrite(enzymexla::MPICommRankOp op,
-                                PatternRewriter &rewriter) const override {
-    auto context = op->getContext();
+//   LogicalResult matchAndRewrite(enzymexla::MPICommRankOp op,
+//                                 PatternRewriter &rewriter) const override {
+//     auto context = op->getContext();
 
-    if (backend == "cpu") {
+//     if (backend == "cpu") {
 
-      auto moduleOp = op->getParentOfType<ModuleOp>();
+//       auto moduleOp = op->getParentOfType<ModuleOp>();
 
-      auto llvmPtrType = LLVM::LLVMPointerType::get(context);
-      auto llvmVoidType = LLVM::LLVMVoidType::get(context);
+//       auto llvmPtrType = LLVM::LLVMPointerType::get(context);
+//       auto llvmVoidType = LLVM::LLVMVoidType::get(context);
 
-      auto i32Type = IntegerType::get(context, 32);
+//       auto i32Type = IntegerType::get(context, 32);
 
-      std::string mpiFunctionName = "MPI_Comm_rank";
+//       std::string mpiFunctionName = "MPI_Comm_rank";
 
-      // For now we just hard code MPI_COMM_WORLD as the communicator.
-      // TODO make this more flexible
-      std::string communicatorName = "MPI_COMM_WORLD";
+//       // For now we just hard code MPI_COMM_WORLD as the communicator.
+//       // TODO make this more flexible
+//       std::string communicatorName = "MPI_COMM_WORLD";
 
-      // Generate the enzymexla_wrapper_MPI_Comm_rank LLVM function body
-      std::string wrapperFunctionName = "enzymexla_wrapper_" + mpiFunctionName;
-      {
-        OpBuilder::InsertionGuard guard(rewriter);
-        rewriter.setInsertionPointToStart(moduleOp.getBody());
+//       // Generate the enzymexla_wrapper_MPI_Comm_rank LLVM function body
+//       std::string wrapperFunctionName = "enzymexla_wrapper_" + mpiFunctionName;
+//       {
+//         OpBuilder::InsertionGuard guard(rewriter);
+//         rewriter.setInsertionPointToStart(moduleOp.getBody());
 
-        // Create the function type
-        auto funcType =
-            LLVM::LLVMFunctionType::get(llvmVoidType,  // void return type
-                                        {llvmPtrType}, // parameter types
-                                        false);        // is variadic: false
+//         // Create the function type
+//         auto funcType =
+//             LLVM::LLVMFunctionType::get(llvmVoidType,  // void return type
+//                                         {llvmPtrType}, // parameter types
+//                                         false);        // is variadic: false
 
-        auto wrapperFunc = rewriter.create<LLVM::LLVMFuncOp>(
-            op.getLoc(), wrapperFunctionName, funcType);
+//         auto wrapperFunc = rewriter.create<LLVM::LLVMFuncOp>(
+//             op.getLoc(), wrapperFunctionName, funcType);
 
-        // Add function-level memory effects attribute
-        auto memoryEffectsAttr = rewriter.getArrayAttr(
-            {rewriter.getStringAttr("read"), rewriter.getStringAttr("write"),
-             rewriter.getStringAttr("allocate"),
-             rewriter.getStringAttr("free")});
-        wrapperFunc->setAttr("enzymexla.memory_effects", memoryEffectsAttr);
+//         // Add function-level memory effects attribute
+//         auto memoryEffectsAttr = rewriter.getArrayAttr(
+//             {rewriter.getStringAttr("read"), rewriter.getStringAttr("write"),
+//              rewriter.getStringAttr("allocate"),
+//              rewriter.getStringAttr("free")});
+//         wrapperFunc->setAttr("enzymexla.memory_effects", memoryEffectsAttr);
 
-        Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
-        rewriter.setInsertionPointToStart(entryBlock);
+//         Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
+//         rewriter.setInsertionPointToStart(entryBlock);
 
-        // Add argument-level memory effects attribute
-        wrapperFunc.setArgAttr(0, "enzymexla.memory_effects",
-                               memoryEffectsAttr);
+//         // Add argument-level memory effects attribute
+//         wrapperFunc.setArgAttr(0, "enzymexla.memory_effects",
+//                                memoryEffectsAttr);
 
-        // Get the first (and only) argument of the function
-        Value rankPtr = entryBlock->getArgument(0);
+//         // Get the first (and only) argument of the function
+//         Value rankPtr = entryBlock->getArgument(0);
 
-        // Get the address of the communicator
-        // NOTE these symbols are not ABI-stable until MPI 5.0, but in practice,
-        // they are represented as w ord-size values (i.e. `int` or ptr)
-        Value addressOfComm = rewriter.create<LLVM::AddressOfOp>(
-            op.getLoc(), llvmPtrType, communicatorName);
+//         // Get the address of the communicator
+//         // NOTE these symbols are not ABI-stable until MPI 5.0, but in practice,
+//         // they are represented as w ord-size values (i.e. `int` or ptr)
+//         Value addressOfComm = rewriter.create<LLVM::AddressOfOp>(
+//             op.getLoc(), llvmPtrType, communicatorName);
 
-        // TODO error checking
-        // MPI_Comm_rank returns i32 error code which we're ignoring here
-        rewriter.create<LLVM::CallOp>(
-            op.getLoc(), TypeRange{i32Type},
-            SymbolRefAttr::get(context, mpiFunctionName),
-            ValueRange{addressOfComm, rankPtr});
+//         // TODO error checking
+//         // MPI_Comm_rank returns i32 error code which we're ignoring here
+//         rewriter.create<LLVM::CallOp>(
+//             op.getLoc(), TypeRange{i32Type},
+//             SymbolRefAttr::get(context, mpiFunctionName),
+//             ValueRange{addressOfComm, rankPtr});
 
-        rewriter.create<LLVM::ReturnOp>(op.getLoc(), ValueRange{});
-      }
+//         rewriter.create<LLVM::ReturnOp>(op.getLoc(), ValueRange{});
+//       }
 
-      // Insert MPI_Comm_rank function declaration if not already present
-      if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(mpiFunctionName)) {
-        OpBuilder::InsertionGuard guard(rewriter);
-        rewriter.setInsertionPointToStart(moduleOp.getBody());
+//       // Insert MPI_Comm_rank function declaration if not already present
+//       if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(mpiFunctionName)) {
+//         OpBuilder::InsertionGuard guard(rewriter);
+//         rewriter.setInsertionPointToStart(moduleOp.getBody());
 
-        auto funcType = LLVM::LLVMFunctionType::get(
-            i32Type, {llvmPtrType, llvmPtrType}, false);
+//         auto funcType = LLVM::LLVMFunctionType::get(
+//             i32Type, {llvmPtrType, llvmPtrType}, false);
 
-        rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), mpiFunctionName,
-                                          funcType, LLVM::Linkage::External);
-      }
+//         rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), mpiFunctionName,
+//                                           funcType, LLVM::Linkage::External);
+//       }
 
-      // Insert MPI_COMM_WORLD declaration if not already present
-      if (!moduleOp.lookupSymbol<LLVM::GlobalOp>(communicatorName)) {
-        OpBuilder::InsertionGuard guard(rewriter);
-        rewriter.setInsertionPointToStart(moduleOp.getBody());
+//       // Insert MPI_COMM_WORLD declaration if not already present
+//       if (!moduleOp.lookupSymbol<LLVM::GlobalOp>(communicatorName)) {
+//         OpBuilder::InsertionGuard guard(rewriter);
+//         rewriter.setInsertionPointToStart(moduleOp.getBody());
 
-        rewriter.create<LLVM::GlobalOp>(
-            op.getLoc(), llvmPtrType,
-            /*isConstant=*/true, LLVM::Linkage::External, communicatorName,
-            /*value=*/Attribute(),
-            /*alignment=*/0,
-            /*addrSpace=*/0);
-      }
+//         rewriter.create<LLVM::GlobalOp>(
+//             op.getLoc(), llvmPtrType,
+//             /*isConstant=*/true, LLVM::Linkage::External, communicatorName,
+//             /*value=*/Attribute(),
+//             /*alignment=*/0,
+//             /*addrSpace=*/0);
+//       }
 
-      // Get all orinigal op operands
-      auto operand = op.getInrank();
+//       // Get all orinigal op operands
+//       auto operand = op.getInrank();
 
-      // Call the LLVM function with enzymexla.jit_call
-      SmallVector<Attribute> aliases;
-      aliases.push_back(stablehlo::OutputOperandAliasAttr::get(
-          context,
-          /*output_operand_aliases=*/std::vector<int64_t>{},
-          /*operand_index=*/0,
-          /*operand_tuple_indices=*/std::vector<int64_t>{}));
+//       // Call the LLVM function with enzymexla.jit_call
+//       SmallVector<Attribute> aliases;
+//       aliases.push_back(stablehlo::OutputOperandAliasAttr::get(
+//           context,
+//           /*output_operand_aliases=*/std::vector<int64_t>{},
+//           /*operand_index=*/0,
+//           /*operand_tuple_indices=*/std::vector<int64_t>{}));
 
-      auto jitCall = rewriter.create<enzymexla::JITCallOp>(
-          op.getLoc(), op->getResultTypes(),
-          mlir::FlatSymbolRefAttr::get(context, wrapperFunctionName),
-          ValueRange{operand}, rewriter.getStringAttr(""),
-          /*operand_layouts=*/nullptr,
-          /*result_layouts=*/nullptr,
-          /*arg_attrs=*/nullptr,
-          /*res_attrs=*/nullptr,
-          /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
-          /*xla_side_effect_free=*/nullptr);
+//       auto jitCall = rewriter.create<enzymexla::JITCallOp>(
+//           op.getLoc(), op->getResultTypes(),
+//           mlir::FlatSymbolRefAttr::get(context, wrapperFunctionName),
+//           ValueRange{operand}, rewriter.getStringAttr(""),
+//           /*operand_layouts=*/nullptr,
+//           /*result_layouts=*/nullptr,
+//           /*arg_attrs=*/nullptr,
+//           /*res_attrs=*/nullptr,
+//           /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
+//           /*xla_side_effect_free=*/nullptr);
 
-      rewriter.replaceOp(op, jitCall);
+//       rewriter.replaceOp(op, jitCall);
 
-      return success();
-    } else {
-      return rewriter.notifyMatchFailure(op,
-                                         "Backend not supported: " + backend);
-    }
-  }
-};
+//       return success();
+//     } else {
+//       return rewriter.notifyMatchFailure(op,
+//                                          "Backend not supported: " + backend);
+//     }
+//   }
+// };
 
 struct MPICommSizeOpLowering
     : public OpRewritePattern<enzymexla::MPICommSizeOp> {
@@ -1417,7 +1417,7 @@ struct LowerEnzymeXLAMPIPass
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
 
-    patterns.add<MPICommRankOpLowering>(backend, context);
+    // patterns.add<MPICommRankOpLowering>(backend, context);
     patterns.add<MPICommSizeOpLowering>(backend, context);
     patterns.add<MPIBarrierOpLowering>(backend, context);
     patterns.add<MPISendOpLowering>(backend, context);
