@@ -7,8 +7,8 @@ module {
     %c_0 = stablehlo.constant dense<42> : tensor<i32>
     %c_1 = stablehlo.constant dense<5> : tensor<i32>
     %c_2 = stablehlo.constant dense<-1> : tensor<i64>
-    %outbuf, %outrequest = enzymexla.irecv(%0, %c_1, %c, %c_0, %c_2) {datatype = "MPI_DOUBLE"} : (tensor<5xf64>, tensor<i32>, tensor<i32>, tensor<i32>, tensor<i64>) -> (tensor<5xf64>, tensor<i64>)
-    enzymexla.wait(%outrequest) : tensor<i64>
+    %outbuf, %outrequest = enzymexla.mpi.irecv(%0, %c_1, %c, %c_0, %c_2) {datatype = "MPI_DOUBLE"} : (tensor<5xf64>, tensor<i32>, tensor<i32>, tensor<i32>, tensor<i64>) -> (tensor<5xf64>, tensor<i64>)
+    enzymexla.mpi.wait(%outrequest) : tensor<i64>
     %1 = stablehlo.transpose %outbuf, dims = [0] : (tensor<5xf64>) -> tensor<5xf64>
     return %1 : tensor<5xf64>
   }

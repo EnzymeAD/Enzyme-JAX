@@ -1100,7 +1100,7 @@ def MPICommRankOp : EnzymeXLA_Op<"mpi.comm_rank", []> {
   let assemblyFormat = "attr-dict `:` type(results)";
 }
 
-def MPICommSizeOp : EnzymeXLA_Op<"comm_size", []> {
+def MPICommSizeOp : EnzymeXLA_Op<"mpi.comm_size", []> {
   let summary = "Equivalent to MPI_Comm_size(MPI_COMM_WORLD, &size)";
 
   let arguments = (
@@ -1114,13 +1114,12 @@ def MPICommSizeOp : EnzymeXLA_Op<"comm_size", []> {
   let assemblyFormat = "`(` operands `)` attr-dict `:` functional-type(operands, results)";
 }
 
-// We call it "mpi_barrier" to not collide with BarrierOp above
-def MPIBarrierOp : EnzymeXLA_Op<"mpi_barrier", []> {
+def MPIBarrierOp : EnzymeXLA_Op<"mpi.barrier", []> {
   let summary = "Equivalent to MPI_Barrier(MPI_COMM_WORLD)";
   let assemblyFormat = "attr-dict";
 }
 
-def MPISendOp : EnzymeXLA_Op<"send", []> {
+def MPISendOp : EnzymeXLA_Op<"mpi.send", []> {
   let summary = "Equivalent to "
                 "`MPI_Send(&buf, count, datatype, dest, tag, comm)`";
 
@@ -1135,7 +1134,7 @@ def MPISendOp : EnzymeXLA_Op<"send", []> {
   let assemblyFormat = "`(` operands `)` attr-dict `:` type(operands)";
 }
 
-def MPIRecvOp : EnzymeXLA_Op<"recv", []> {
+def MPIRecvOp : EnzymeXLA_Op<"mpi.recv", []> {
   let summary = "Equivalent to "
                 "`MPI_Recv(&buf, count, datatype, source, tag, MPI_COMM_WORLD, MPI_STATUS_IGNORE)`";
 
@@ -1154,7 +1153,7 @@ def MPIRecvOp : EnzymeXLA_Op<"recv", []> {
   let assemblyFormat = "`(` operands `)` attr-dict `:` functional-type(operands, results)";
 }
 
-def MPIIsendOp : EnzymeXLA_Op<"isend", []> {
+def MPIIsendOp : EnzymeXLA_Op<"mpi.isend", []> {
   let summary = "Equivalent to "
                 "`MPI_Isend(&buf, count, datatype, dest, tag, MPI_COMM_WORLD, &request)`";
 
@@ -1174,7 +1173,7 @@ def MPIIsendOp : EnzymeXLA_Op<"isend", []> {
   let assemblyFormat = "`(` operands `)` attr-dict `:` functional-type(operands, results)";
 }
 
-def MPIIrecvOp : EnzymeXLA_Op<"irecv", []> {
+def MPIIrecvOp : EnzymeXLA_Op<"mpi.irecv", []> {
   let summary = "Equivalent to "
                 "`MPI_Irecv(&buf, count, datatype, source, tag, MPI_COMM_WORLD, &request)`";
 
@@ -1195,14 +1194,14 @@ def MPIIrecvOp : EnzymeXLA_Op<"irecv", []> {
   let assemblyFormat = "`(` operands `)` attr-dict `:` functional-type(operands, results)";
 }
 
-def MPIWaitOp : EnzymeXLA_Op<"wait", []> {
+def MPIWaitOp : EnzymeXLA_Op<"mpi.wait", []> {
   let summary = "Equivalent to "
                 "`MPI_Wait(&request, &status)`";
   let arguments = (ins TensorOf<[I64]> : $inrequest);
   let assemblyFormat = "`(` operands `)` attr-dict `:` type(operands)";
 }
 
-def MPIAllreduceOp : EnzymeXLA_Op<"allreduce", []> {
+def MPIAllreduceOp : EnzymeXLA_Op<"mpi.allreduce", []> {
   let summary = "Equivalent to "
                 "`MPI_Allreduce(&sendbuf, &recvbuf, count, datatype, op, MPI_COMM_WORLD)`";
 

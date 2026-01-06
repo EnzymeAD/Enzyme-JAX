@@ -2,7 +2,7 @@
 
 module {
   func.func @main() attributes {enzymexla.memory_effects = ["read", "write", "allocate", "free"]} {
-    enzymexla.mpi_barrier
+    enzymexla.mpi.barrier
     return
   }
 }
