@@ -62,7 +62,7 @@ struct MPICommRankOpLowering
         // Create the function type
         auto funcType =
             LLVM::LLVMFunctionType::get(llvmVoidType,  // void return type
-                                        {llvmPtrType}, // parameter types
+                                        {},            // parameter types
                                         false);        // is variadic: false
 
         auto wrapperFunc = rewriter.create<LLVM::LLVMFuncOp>(
@@ -78,12 +78,12 @@ struct MPICommRankOpLowering
         Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
         rewriter.setInsertionPointToStart(entryBlock);
 
-        // Add argument-level memory effects attribute
-        wrapperFunc.setArgAttr(0, "enzymexla.memory_effects",
-                               memoryEffectsAttr);
+        // Allocate rank pointer
+        Value one = rewriter.create<arith::ConstantOp>(
+            op.getLoc(), i32Type, rewriter.getI32IntegerAttr(1));
 
-        // Get the first (and only) argument of the function
-        Value rankPtr = entryBlock->getArgument(0);
+        Value rankPtr = rewriter.create<LLVM::AllocaOp>(
+            op.getLoc(), llvmPtrType, i32Type, one);
 
         // Get the address of the communicator
         // NOTE these symbols are not ABI-stable until MPI 5.0, but in practice,
@@ -126,26 +126,16 @@ struct MPICommRankOpLowering
             /*addrSpace=*/0);
       }
 
-      // Get all orinigal op operands
-      auto operand = op.getInrank();
-
       // Call the LLVM function with enzymexla.jit_call
-      SmallVector<Attribute> aliases;
-      aliases.push_back(stablehlo::OutputOperandAliasAttr::get(
-          context,
-          /*output_operand_aliases=*/std::vector<int64_t>{},
-          /*operand_index=*/0,
-          /*operand_tuple_indices=*/std::vector<int64_t>{}));
-
       auto jitCall = rewriter.create<enzymexla::JITCallOp>(
           op.getLoc(), op->getResultTypes(),
           mlir::FlatSymbolRefAttr::get(context, wrapperFunctionName),
-          ValueRange{operand}, rewriter.getStringAttr(""),
+          ValueRange{}, rewriter.getStringAttr(""),
           /*operand_layouts=*/nullptr,
           /*result_layouts=*/nullptr,
           /*arg_attrs=*/nullptr,
           /*res_attrs=*/nullptr,
-          /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
+          /*output_operand_aliases=*/nullptr,
           /*xla_side_effect_free=*/nullptr);
 
       rewriter.replaceOp(op, jitCall);
