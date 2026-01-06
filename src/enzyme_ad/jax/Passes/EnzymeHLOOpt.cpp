@@ -56,6 +56,7 @@
 #include <cstddef>
 #include <iterator>
 #include <mlir/IR/Value.h>
+#include <mlir/IR/ValueRange.h>
 #include <numeric>
 #define DEBUG_TYPE "enzymehloopt"
 
@@ -22032,15 +22033,12 @@ struct TransposeReverse final
     if (!reverseOp->getResult(0).hasOneUse())
       return failure();
 
-    auto invPerm = getInversePermutation(op.getPermutation());
-    SmallVector<int64_t> newReverseDims(reverseOp.getDimensions().size());
-    for (auto [i, dim] : llvm::enumerate(reverseOp.getDimensions()))
-      newReverseDims[i] = invPerm[dim];
-
     auto newTranspose = stablehlo::TransposeOp::create(
         rewriter, op.getLoc(), reverseOp.getOperand(), op.getPermutation());
-    rewriter.replaceOpWithNewOp<stablehlo::ReverseOp>(op, newTranspose,
-                                                      newReverseDims);
+    rewriter.replaceOpWithNewOp<stablehlo::ReverseOp>(
+        op, newTranspose,
+        applyInversePermutationToDims(op.getPermutation(),
+                                      reverseOp.getDimensions()));
     return success();
   }
 };
@@ -28613,6 +28611,56 @@ struct FuseReshapeCollapseOrExpandDimsIntoReduce final
   }
 };
 
+struct TransposeScatter final
+    : CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeScatter> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
+                                    PatternRewriter &rewriter) {
+    auto scatterOp = op.getOperand().getDefiningOp<stablehlo::ScatterOp>();
+    if (!scatterOp) {
+      return rewriter.notifyMatchFailure(op,
+                                         "TransposeOp with non-scatter input");
+    }
+
+    if (!isOnlyUsedInOperation(scatterOp, op)) {
+      return failure();
+    }
+
+    SmallVector<Value> transposedInputs;
+    for (auto input : scatterOp.getInputs()) {
+      auto transposedInput = stablehlo::TransposeOp::create(
+          rewriter, op.getLoc(), input, op.getPermutation());
+      transposedInputs.push_back(transposedInput);
+    }
+
+    auto scatterDims = scatterOp.getScatterDimensionNumbers();
+    auto invPerm = getInversePermutation(op.getPermutation());
+
+    auto newInputBatchingDims =
+        applyPermutationToDims(invPerm, scatterDims.getInputBatchingDims());
+    llvm::sort(newInputBatchingDims);
+
+    auto newScatterDimsToOperandDims = applyPermutationToDims(
+        invPerm, scatterDims.getScatterDimsToOperandDims());
+
+    auto newScatterDims = stablehlo::ScatterDimensionNumbersAttr::get(
+        rewriter.getContext(), scatterDims.getUpdateWindowDims(),
+        scatterDims.getInsertedWindowDims(), newInputBatchingDims,
+        scatterDims.getScatterIndicesBatchingDims(),
+        newScatterDimsToOperandDims, scatterDims.getIndexVectorDim());
+
+    auto newScatterOp = stablehlo::ScatterOp::create(
+        rewriter, op.getLoc(), TypeRange(op.getType()), transposedInputs,
+        scatterOp.getScatterIndices(), scatterOp.getUpdates(), newScatterDims,
+        scatterOp.getIndicesAreSortedAttr(), scatterOp.getUniqueIndicesAttr());
+    newScatterOp.getUpdateComputation().takeBody(
+        scatterOp.getUpdateComputation());
+    rewriter.replaceOp(op, newScatterOp->getResults());
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -29135,13 +29183,14 @@ struct EnzymeHLOOptPass
     }
 
     if (passses & (2048 * 32)) {
-      patterns.add<TransposeWhile, TransposeSliceBase<stablehlo::SliceOp>,
-                   TransposeConcat, TransposeDUS, TransposeIota,
-                   TransposeReduceWindow, TransposeReduce, TransposeSelect,
-                   TransposeSliceBase<stablehlo::DynamicSliceOp>,
-                   TransposeReverse, TransposeBatchNormTraining,
-                   TransposeBatchNormInference, TransposeBatchNormGrad,
-                   TransposeIf, TransposeFFT, TransposeReshape>(context);
+      patterns
+          .add<TransposeWhile, TransposeSliceBase<stablehlo::SliceOp>,
+               TransposeConcat, TransposeDUS, TransposeIota,
+               TransposeReduceWindow, TransposeReduce, TransposeSelect,
+               TransposeSliceBase<stablehlo::DynamicSliceOp>, TransposeReverse,
+               TransposeBatchNormTraining, TransposeBatchNormInference,
+               TransposeBatchNormGrad, TransposeIf, TransposeFFT,
+               TransposeReshape, TransposeScatter>(context);
       patterns.add<TransposeElementwise>(true, context);
     }
 

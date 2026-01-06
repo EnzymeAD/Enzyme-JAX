@@ -1227,6 +1227,20 @@ bool canFuseIntoReduce(Operation *op);
 
 llvm::SmallVector<int64_t> getInversePermutation(ArrayRef<int64_t> perm);
 
+llvm::SmallVector<int64_t> applyPermutationToDims(ArrayRef<int64_t> perm,
+                                                  ArrayRef<int64_t> dims);
+
+llvm::SmallVector<int64_t>
+applyInversePermutationToDims(ArrayRef<int64_t> perm, ArrayRef<int64_t> dims);
+
+template <typename T>
+llvm::SmallVector<T> applyPermutation(ArrayRef<int64_t> perm,
+                                      ArrayRef<T> values);
+
+template <typename T>
+llvm::SmallVector<T> applyInversePermutation(ArrayRef<int64_t> perm,
+                                             ArrayRef<T> values);
+
 Value transposeSliceHelper(stablehlo::TransposeOp transpose,
                            PatternRewriter &rewriter, stablehlo::SliceOp op);
 Value transposeSliceHelper(stablehlo::TransposeOp transpose,
@@ -1264,6 +1278,7 @@ Value sliceTransposeHelper(stablehlo::TransposeOp transpose,
 bool isFusible(stablehlo::TransposeOp transpose, Operation *op);
 bool isFusible(Operation *op, stablehlo::BroadcastInDimOp bcast);
 bool isFusible(Operation *op, stablehlo::ReshapeOp reshape);
+bool isFusible(Operation *op, stablehlo::TransposeOp transpose);
 
 template <typename OpTy>
 Value getIdentityValueForOp(OpBuilder &builder, Location loc, Type elemType);

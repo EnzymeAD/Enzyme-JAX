@@ -2694,3 +2694,8 @@ def ApplyWhileElementwiseReductionToReducePatterns : EnzymeHLOPatternOp<
     "while_elementwise_reduction_to_reduce"> {
   let patterns = ["WhileElementwiseReductionToReduce"];
 }
+
+def ApplyTransposeScatterPatterns : EnzymeHLOPatternOp<
+    "transpose_scatter"> {
+  let patterns = ["TransposeScatter"];
+}

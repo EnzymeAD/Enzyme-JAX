@@ -2402,6 +2402,35 @@ SmallVector<int64_t> getInversePermutation(ArrayRef<int64_t> perm) {
   return res;
 }
 
+SmallVector<int64_t> applyPermutationToDims(ArrayRef<int64_t> perm,
+                                            ArrayRef<int64_t> dims) {
+  SmallVector<int64_t> res(dims.size());
+  for (auto en : llvm::enumerate(dims)) {
+    res[en.index()] = perm[en.value()];
+  }
+  return res;
+}
+
+template <typename T>
+SmallVector<T> applyPermutation(ArrayRef<int64_t> perm, ArrayRef<T> values) {
+  SmallVector<T> res;
+  for (auto p : perm) {
+    res.push_back(values[p]);
+  }
+  return res;
+}
+
+SmallVector<int64_t> applyInversePermutationToDims(ArrayRef<int64_t> perm,
+                                                   ArrayRef<int64_t> dims) {
+  return applyPermutationToDims(getInversePermutation(perm), dims);
+}
+
+template <typename T>
+SmallVector<T> applyInversePermutation(ArrayRef<int64_t> perm,
+                                       ArrayRef<T> values) {
+  return applyPermutation(getInversePermutation(perm), values);
+}
+
 Value transposeSliceHelper(stablehlo::TransposeOp transpose,
                            PatternRewriter &rewriter, stablehlo::SliceOp op) {
   return transposeSliceHelper(transpose, rewriter, op.getStartIndices(),
@@ -2467,10 +2496,9 @@ Value sliceTransposeHelper(stablehlo::TransposeOp transpose,
   auto newUpdate =
       TransposeOpCreate(rewriter, transpose->getLoc(), op.getUpdate(),
                         transpose.getPermutation());
-  SmallVector<Value> starts;
-  for (auto ind : getInversePermutation(transpose.getPermutation())) {
-    starts.push_back(op.getStartIndices()[ind]);
-  }
+  SmallVector<Value> startIndices = llvm::to_vector(op.getStartIndices());
+  auto starts = applyInversePermutation(transpose.getPermutation(),
+                                        ArrayRef<Value>(startIndices));
   return stablehlo::DynamicUpdateSliceOp::create(
       rewriter, transpose->getLoc(), transpose.getOperand(), newUpdate, starts);
 }
@@ -2479,12 +2507,10 @@ Value sliceTransposeHelper(stablehlo::TransposeOp transpose,
                            PatternRewriter &rewriter, ArrayRef<int64_t> starts,
                            ArrayRef<int64_t> limits,
                            ArrayRef<int64_t> strides) {
-  SmallVector<int64_t> start, end, step;
-  for (auto ind : getInversePermutation(transpose.getPermutation())) {
-    start.push_back(starts[ind]);
-    end.push_back(limits[ind]);
-    step.push_back(strides[ind]);
-  }
+  auto invPerm = getInversePermutation(transpose.getPermutation());
+  auto start = applyPermutation(invPerm, starts);
+  auto end = applyPermutation(invPerm, limits);
+  auto step = applyPermutation(invPerm, strides);
   return SliceOpCreate(rewriter, transpose.getLoc(), transpose.getOperand(),
                        start, end, step);
 }
@@ -2493,12 +2519,9 @@ Value sliceTransposeHelper(stablehlo::TransposeOp transpose,
                            PatternRewriter &rewriter,
                            ArrayRef<Value> sliceStarts,
                            ArrayRef<int64_t> sliceSizes) {
-  SmallVector<int64_t> sizes;
-  SmallVector<Value> starts;
-  for (auto ind : getInversePermutation(transpose.getPermutation())) {
-    sizes.push_back(sliceSizes[ind]);
-    starts.push_back(sliceStarts[ind]);
-  }
+  auto invPerm = getInversePermutation(transpose.getPermutation());
+  auto sizes = applyPermutation(invPerm, sliceSizes);
+  auto starts = applyPermutation(invPerm, sliceStarts);
   return DynamicSliceOpCreate(rewriter, transpose.getLoc(),
                               transpose.getOperand(), starts, sizes);
 }
@@ -2564,6 +2587,15 @@ bool isFusible(Operation *op, stablehlo::BroadcastInDimOp bcast) {
           [](auto prevOp) { return true; })
       .Case<stablehlo::ReshapeOp>(
           [](auto reshape) { return isInsertDimOp(reshape); })
+      .Default([](auto other) { return matchPattern(other, m_Constant()); });
+}
+
+bool isFusible(Operation *op, stablehlo::TransposeOp transpose) {
+  return TypeSwitch<Operation *, bool>(op)
+      .Case<stablehlo::TransposeOp, stablehlo::BroadcastInDimOp>(
+          [](auto prevOp) { return true; })
+      .Case<stablehlo::ReshapeOp>(
+          [](auto reshape) { return reshapeIsTranspose(reshape); })
       .Default([](auto other) { return matchPattern(other, m_Constant()); });
 }
 
