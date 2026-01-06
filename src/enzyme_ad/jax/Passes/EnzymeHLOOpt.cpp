@@ -22704,36 +22704,107 @@ struct ScatterMultiplySimplify final
       }
     }
 
-    auto status =
-        detectConstantSetindexScatterOp(scatterOp, /*allowedMultipleUses*/
-                                        false,
-                                        /*onlyConstantZerosAllowed*/
-                                        true, nullptr);
-    if (!status.ok())
+    if (!scatterOp.getUniqueIndices()) {
+      return failure();
+    }
+
+    bool isAllZeros = false, isAllOnes = false;
+
+    SplatElementsAttr constSetIndexValue = nullptr;
+    auto status = detectConstantSetindexScatterOp(
+        scatterOp, /*allowedMultipleUses*/ false,
+        [&isAllZeros, &isAllOnes](mlir::Value input) {
+          isAllZeros = matchPattern(input, m_AnyZeroFloat()) ||
+                       matchPattern(input, m_Zero());
+          if (!isAllZeros) {
+            isAllOnes = matchPattern(input, m_OneFloat()) ||
+                        matchPattern(input, m_One());
+          }
+          return isAllZeros || isAllOnes;
+        },
+        constSetIndexValue);
+    if (!status.ok()) {
       return rewriter.notifyMatchFailure(op, status.message());
+    }
 
     SmallVector<int64_t> sliceSizes = computeGatherSliceSizes(scatterOp);
 
-    auto gatheredValues = stablehlo::GatherOp::create(
-        rewriter, op.getLoc(), otherValue, scatterOp.getScatterIndices(),
-        getGatherDims(rewriter.getContext(),
-                      scatterOp.getScatterDimensionNumbers()),
-        rewriter.getDenseI64ArrayAttr(sliceSizes),
-        scatterOp.getIndicesAreSortedAttr());
+    if (isAllZeros) { // non scattered values before zeros
+      auto gatheredValues = stablehlo::GatherOp::create(
+          rewriter, op.getLoc(), otherValue, scatterOp.getScatterIndices(),
+          getGatherDims(rewriter.getContext(),
+                        scatterOp.getScatterDimensionNumbers()),
+          rewriter.getDenseI64ArrayAttr(sliceSizes),
+          scatterOp.getIndicesAreSortedAttr());
 
-    auto newUpdates = stablehlo::MulOp::create(
-        rewriter, op.getLoc(), gatheredValues, scatterOp.getUpdates()[0]);
+      Value mulRhs;
+      if (constSetIndexValue) {
+        mulRhs = stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(),
+            constSetIndexValue.resizeSplat(
+                cast<ShapedType>(gatheredValues.getType())));
+      } else {
+        mulRhs = scatterOp.getUpdates()[0];
+      }
+      auto newUpdates =
+          stablehlo::MulOpCreate(rewriter, op.getLoc(), gatheredValues, mulRhs);
 
-    auto newScatterOp = stablehlo::ScatterOp::create(
-        rewriter, op.getLoc(), scatterOp.getResultTypes(),
-        scatterOp.getInputs(), scatterOp.getScatterIndices(),
-        ValueRange(newUpdates), scatterOp.getScatterDimensionNumbersAttr(),
-        scatterOp.getIndicesAreSortedAttr(), scatterOp.getUniqueIndicesAttr());
-    newScatterOp.getUpdateComputation().takeBody(
-        scatterOp.getUpdateComputation());
-    rewriter.replaceOp(op, newScatterOp);
+      auto newScatterOp = stablehlo::ScatterOp::create(
+          rewriter, op.getLoc(), scatterOp.getResultTypes(),
+          scatterOp.getInputs(), scatterOp.getScatterIndices(),
+          ValueRange(newUpdates), scatterOp.getScatterDimensionNumbersAttr(),
+          scatterOp.getIndicesAreSortedAttr(),
+          scatterOp.getUniqueIndicesAttr());
 
-    return success();
+      auto &updateRegion = newScatterOp.getUpdateComputation();
+      auto *block = rewriter.createBlock(&updateRegion);
+      auto elemType = cast<RankedTensorType>(scatterOp.getResultTypes()[0])
+                          .getElementType();
+      auto argType = RankedTensorType::get({}, elemType);
+      block->addArgument(argType, op.getLoc());
+      block->addArgument(argType, op.getLoc());
+      rewriter.setInsertionPointToStart(block);
+      stablehlo::ReturnOp::create(rewriter, op.getLoc(), block->getArgument(1));
+
+      rewriter.replaceOp(op, newScatterOp);
+      return success();
+    }
+
+    if (isAllOnes) { // non-scattered values stay as is
+      auto newScatterOp = stablehlo::ScatterOp::create(
+          rewriter, op.getLoc(), scatterOp.getResultTypes(),
+          ValueRange(otherValue), scatterOp.getScatterIndices(),
+          scatterOp.getUpdates(), scatterOp.getScatterDimensionNumbersAttr(),
+          scatterOp.getIndicesAreSortedAttr(),
+          scatterOp.getUniqueIndicesAttr());
+
+      auto &updateRegion = newScatterOp.getUpdateComputation();
+      auto *block = rewriter.createBlock(&updateRegion);
+      auto elemType = cast<RankedTensorType>(scatterOp.getResultTypes()[0])
+                          .getElementType();
+      auto argType = RankedTensorType::get({}, elemType);
+      block->addArgument(argType, op.getLoc());
+      block->addArgument(argType, op.getLoc());
+      rewriter.setInsertionPointToStart(block);
+
+      Value mulRhs;
+      if (constSetIndexValue) {
+        mulRhs = stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(),
+            constSetIndexValue.resizeSplat(
+                RankedTensorType::get({}, elemType)));
+      } else {
+        mulRhs = block->getArgument(1);
+      }
+      auto mulOp = stablehlo::MulOp::create(rewriter, op.getLoc(),
+                                            block->getArgument(0), mulRhs);
+      stablehlo::ReturnOp::create(rewriter, op.getLoc(), mulOp.getResult());
+
+      rewriter.replaceOp(op, newScatterOp);
+      return success();
+    }
+
+    return failure();
   }
 };
 
@@ -22807,10 +22878,9 @@ struct UnaryElementwiseScatterSimplify final
     if (!scatterOp)
       return rewriter.notifyMatchFailure(op, "not a scatter op");
 
-    DenseElementsAttr scatterInputAttr;
     auto status = detectConstantSetindexScatterOp(
-        scatterOp, false, /*onlyConstantZerosAllowed*/ false,
-        &scatterInputAttr);
+        scatterOp, false,
+        [](mlir::Value input) { return matchPattern(input, m_Constant()); });
     if (!status.ok()) {
       return rewriter.notifyMatchFailure(op, status.message());
     }
