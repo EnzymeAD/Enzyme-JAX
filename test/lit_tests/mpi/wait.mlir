@@ -3,7 +3,7 @@
 module {
   func.func @main() {
     %c_2 = stablehlo.constant dense<-1> : tensor<i64>
-    enzymexla.wait(%c_2) : tensor<i64>
+    enzymexla.mpi.wait(%c_2) : tensor<i64>
     return
   }
 }

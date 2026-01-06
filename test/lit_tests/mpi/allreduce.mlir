@@ -4,7 +4,7 @@ module {
   func.func @main(%arg0: tensor<i64> {enzymexla.memory_effects = ["read", "write", "allocate", "free"]}) -> tensor<i64> attributes {enzymexla.memory_effects = ["read", "write", "allocate", "free"]} {
     %c = stablehlo.constant dense<0> : tensor<i64>
     %c_0 = stablehlo.constant dense<1> : tensor<i32>
-    %0 = enzymexla.allreduce(%arg0, %c, %c_0) {datatype = "MPI_SOME_TYPE", op="MPI_SOME_OP"} : (tensor<i64>, tensor<i64>, tensor<i32>) -> tensor<i64>
+    %0 = enzymexla.mpi.allreduce(%arg0, %c, %c_0) {datatype = "MPI_SOME_TYPE", op="MPI_SOME_OP"} : (tensor<i64>, tensor<i64>, tensor<i32>) -> tensor<i64>
     return %0 : tensor<i64>
   }
 }
