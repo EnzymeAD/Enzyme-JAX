@@ -1177,13 +1177,12 @@ def MPIIrecvOp : EnzymeXLA_Op<"mpi.irecv", []> {
     TensorOf<[I32]> : $count,
     TensorOf<[I32]> : $source,
     TensorOf<[I32]> : $tag,
-    TensorOf<[I64]> : $inrequest,
     StrAttr:$datatype
   );
 
   let results = (
     outs AnyTensor : $outbuf,
-    TensorOf<[I64]> : $outrequest
+    TensorOf<[I64]> : $request
   );
 
   let assemblyFormat = "`(` operands `)` attr-dict `:` functional-type(operands, results)";
