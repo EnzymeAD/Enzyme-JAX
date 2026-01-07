@@ -2721,3 +2721,8 @@ def ApplyWhileElementwiseReductionToReducePatterns : EnzymeHLOPatternOp<
     "while_elementwise_reduction_to_reduce"> {
   let patterns = ["WhileElementwiseReductionToReduce"];
 }
+
+def ApplyGatherOfScatterSimplifyPatterns : EnzymeHLOPatternOp<
+    "gather_of_scatter_simplify"> {
+  let patterns = ["GatherOfScatterSimplify"];
+}

@@ -472,6 +472,7 @@ def optimization_passes(
             f"scatter_const_fold({max_constant_threshold})",
             "cse_gather",
             "cse_scatter",
+            "gather_of_scatter_simplify",
         ]
 
     if enable_pad_optimization_passes:
