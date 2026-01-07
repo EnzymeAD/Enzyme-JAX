@@ -1090,7 +1090,19 @@ struct MPIIrecvOpLowering : public OpRewritePattern<enzymexla::MPIIrecvOp> {
       }
 
       // Get all orinigal op operands
-      auto operands = op.getOperands();
+      auto opOperands = op.getOperands();
+
+      // Create a constant tensor to hold request
+      auto i64Type = rewriter.getI64Type();
+      auto tensorType = RankedTensorType::get({}, i64Type);
+      auto constantAttr = DenseIntElementsAttr::get(tensorType,
+          ArrayRef<int64_t>{-1});
+      Value constantTensor = rewriter.create<stablehlo::ConstantOp>(
+          op.getLoc(), tensorType, constantAttr);
+
+      // Combine all operands
+      SmallVector<Value> jitCallOperands(opOperands.begin(), opOperands.end());
+      jitCallOperands.push_back(constantTensor);
 
       // Add buffer to output operand aliases
       SmallVector<Attribute> aliases;
@@ -1111,7 +1123,7 @@ struct MPIIrecvOpLowering : public OpRewritePattern<enzymexla::MPIIrecvOp> {
       auto jitCall = rewriter.create<enzymexla::JITCallOp>(
           op.getLoc(), op->getResultTypes(),
           mlir::FlatSymbolRefAttr::get(context, wrapperFunctionName),
-          ValueRange{operands}, rewriter.getStringAttr(""),
+          ValueRange{jitCallOperands}, rewriter.getStringAttr(""),
           /*operand_layouts=*/nullptr,
           /*result_layouts=*/nullptr,
           /*arg_attrs=*/nullptr,
