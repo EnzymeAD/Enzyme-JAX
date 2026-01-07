@@ -977,7 +977,9 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
     bool avoidBatching =
         llvm::TypeSwitch<Operation *, bool>(op)
             .Case<stablehlo::DynamicSliceOp, stablehlo::ReshapeOp,
-                  stablehlo::SliceOp>([=](auto op) { return true; })
+                  stablehlo::SliceOp,
+                  // TODO: avoid scatter since that lowers to loop right now
+                  stablehlo::ScatterOp>([=](auto op) { return true; })
             .Case<stablehlo::BroadcastInDimOp, stablehlo::TransposeOp>(
                 [=](auto op) { return stablehlo::OpIsReshapeLike(op); })
             .Default([](auto op) { return false; });
