@@ -51,7 +51,7 @@ def fix_paths():
     # https://github.com/jax-ml/jax/blob/af36ae2cd783aea9eaa7979170df760a52542fcd/jax/_src/lib/__init__.py#L185
     os.environ["PYTHON_RUNFILES"] = runfiles
     # https://jax.readthedocs.io/en/latest/gpu_memory_allocation.html
-    os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.95"
+    # os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.9"
 
     cuda_version = 12
     cuda_postfix = "_cu12"
@@ -419,11 +419,11 @@ def pipelines():
     setup_backends()
 
     return [
-        get_pipeline("JaxPipe"),
         get_pipeline("Jax"),
-        get_pipeline("HLOOpt"),
+        get_pipeline("JaxPipe"),
         get_pipeline("PartOpt"),
         get_pipeline("IPartOpt"),
+        get_pipeline("HLOOpt"),
         get_pipeline("DefOpt"),
         get_pipeline("IDefOpt"),
     ]

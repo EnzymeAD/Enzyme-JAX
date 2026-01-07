@@ -52,6 +52,7 @@
 #include "llvm/ADT/SmallSet.h"
 
 #include "llvm/ADT/MapVector.h"
+#include <cassert>
 #include <cstddef>
 #include <iterator>
 #include <mlir/IR/BuiltinAttributes.h>
@@ -13293,6 +13294,12 @@ struct BroadcastInDimOpCanon final
     // Eliminate redundant nested BroadcastInDim.
     if (auto definingOp =
             operand.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+      DenseElementsAttr denseAttr;
+      if (matchPattern(definingOp.getOperand(), m_Constant(&denseAttr)) &&
+          !denseAttr.isSplat()) {
+        // TODO: investigate why this leads to incorrect results
+        return failure();
+      }
       auto newIndices = llvm::to_vector(
           llvm::map_range(definingOp.getBroadcastDimensions(),
                           [&dims](int64_t dim) { return dims[dim]; }));
