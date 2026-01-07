@@ -952,13 +952,53 @@ absl::Status detectDiagonalTensor(stablehlo::ScatterOp scatterOp,
 absl::Status detectDiagonalTensor(stablehlo::ScatterOp scatterOp);
 
 struct IotaLikeTensor {
-  int64_t start;
+  mlir::TypedAttr start;
   int64_t dimension;
-  int64_t scale = 1; // multiplicative factor applied to the iota
+  mlir::TypedAttr scale; // multiplicative factor applied to the iota
   mlir::RankedTensorType tensorType;
 };
 
+std::optional<IotaLikeTensor> detectIotaLikeTensor(DenseElementsAttr attr);
 std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor);
+
+// Helper to check if a TypedAttr is zero
+inline bool isZeroAttr(mlir::TypedAttr attr) {
+  if (auto intAttr = llvm::dyn_cast<mlir::IntegerAttr>(attr))
+    return intAttr.getValue().isZero();
+  if (auto floatAttr = llvm::dyn_cast<mlir::FloatAttr>(attr))
+    return floatAttr.getValue().isZero();
+  return false;
+}
+
+// Helper to check if a TypedAttr is one
+inline bool isOneAttr(mlir::TypedAttr attr) {
+  if (auto intAttr = llvm::dyn_cast<mlir::IntegerAttr>(attr))
+    return intAttr.getValue() == 1;
+  if (auto floatAttr = llvm::dyn_cast<mlir::FloatAttr>(attr)) {
+    llvm::APFloat one(floatAttr.getValue().getSemantics(), 1);
+    return floatAttr.getValue().bitwiseIsEqual(one);
+  }
+  return false;
+}
+
+// Helper to get a double value from a TypedAttr
+inline std::optional<double> getDoubleFromAttr(mlir::TypedAttr attr) {
+  if (auto intAttr = llvm::dyn_cast<mlir::IntegerAttr>(attr))
+    return static_cast<double>(intAttr.getValue().getSExtValue());
+  if (auto floatAttr = llvm::dyn_cast<mlir::FloatAttr>(attr))
+    return floatAttr.getValueAsDouble();
+  return std::nullopt;
+}
+
+// Helper to create a TypedAttr from a double value using the given type
+inline mlir::TypedAttr createAttrFromDouble(mlir::MLIRContext *ctx,
+                                            mlir::Type elemType, double value) {
+  if (auto intType = llvm::dyn_cast<mlir::IntegerType>(elemType))
+    return mlir::IntegerAttr::get(intType, static_cast<int64_t>(value));
+  if (auto floatType = llvm::dyn_cast<mlir::FloatType>(elemType))
+    return mlir::FloatAttr::get(floatType, value);
+  return nullptr;
+}
 
 // TODO: we can do a full analysis and return if the access is on a specific set
 // of diagonals. Checks that all accesses for this Op and its users thereoff are

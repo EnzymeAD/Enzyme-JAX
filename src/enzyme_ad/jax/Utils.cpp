@@ -35,6 +35,7 @@
 #include "stablehlo/dialect/StablehloOps.h"
 
 #include <cassert>
+#include <cmath>
 #include <iterator>
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/Value.h>
@@ -1394,8 +1395,8 @@ absl::Status detectDiagonalTensor(stablehlo::ScatterOp scatterOp,
   auto isIotaLikeTensor = detectIotaLikeTensor(indices);
   if (isIotaLikeTensor) {
     auto iotaLikeTensor = isIotaLikeTensor.value();
-    if (iotaLikeTensor.dimension == 0 && iotaLikeTensor.start == 0 &&
-        iotaLikeTensor.scale == 1) {
+    if (iotaLikeTensor.dimension == 0 && isZeroAttr(iotaLikeTensor.start) &&
+        isOneAttr(iotaLikeTensor.scale)) {
       *outUpdates = updates;
       return absl::OkStatus();
     }
@@ -1417,19 +1418,95 @@ absl::Status detectDiagonalTensor(stablehlo::ScatterOp scatterOp,
   });
 }
 
-std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
-  if (!tensor)
+std::optional<IotaLikeTensor> detectIotaLikeTensor(DenseElementsAttr denseAttr) {
+  if (!denseAttr || denseAttr.isSplat()) {
     return std::nullopt;
+  }
 
-  auto elemType =
-      cast<mlir::RankedTensorType>(tensor.getType()).getElementType();
-  if (!isa<mlir::IntegerType>(elemType))
+  auto constType = dyn_cast<RankedTensorType>(denseAttr.getType());
+  if (!constType) {
     return std::nullopt;
+  }
+  auto shape = constType.getShape();
+  auto elemType = constType.getElementType();
+  MLIRContext *ctx = denseAttr.getContext();
+
+  // Calculate strides for indexing
+  SmallVector<int64_t> strides(constType.getRank(), 1);
+  for (int64_t i = constType.getRank() - 2; i >= 0; --i) {
+    strides[i] = strides[i + 1] * shape[i + 1];
+  }
+
+  bool isFloat = isa<FloatType>(elemType);
+
+  for (int64_t dim = 0; dim < constType.getRank(); dim++) {
+    bool isIotaAlongDim = true;
+    std::optional<double> detectedStart;
+    std::optional<double> detectedScale;
+
+    SmallVector<int64_t> indices(constType.getRank(), 0);
+    int64_t numElements = constType.getNumElements();
+
+    for (int64_t idx = 0; idx < numElements && isIotaAlongDim; idx++) {
+      int64_t temp = idx;
+      // linear to cartesian indexing
+      for (int64_t d = 0; d < constType.getRank(); d++) {
+        indices[d] = temp / strides[d];
+        temp = temp % strides[d];
+      }
+
+      double actualValue;
+      if (isFloat) {
+        auto floatValues = denseAttr.getValues<APFloat>();
+        actualValue = floatValues[idx].convertToDouble();
+      } else {
+        auto intValues = denseAttr.getValues<APInt>();
+        actualValue = static_cast<double>(intValues[idx].getSExtValue());
+      }
+
+      if (!detectedStart) {
+        detectedStart = actualValue;
+      } else if (!detectedScale && indices[dim] == 1) {
+        // Detect scale from the second element along this dimension
+        detectedScale = actualValue - detectedStart.value();
+        if (detectedScale.value() == 0.0) {
+          // Scale of 0 means all values are the same, not an iota
+          isIotaAlongDim = false;
+          break;
+        }
+      }
+
+      double expectedValue =
+          detectedStart.value() + indices[dim] * detectedScale.value_or(1.0);
+      // Use a small epsilon for floating-point comparison
+      double epsilon = isFloat ? 1e-9 : 0.0;
+      if (std::abs(actualValue - expectedValue) > epsilon) {
+        isIotaAlongDim = false;
+        break;
+      }
+    }
+
+    if (isIotaAlongDim && detectedStart) {
+      double scale = detectedScale.value_or(1.0);
+      TypedAttr startAttr =
+          createAttrFromDouble(ctx, elemType, detectedStart.value());
+      TypedAttr scaleAttr = createAttrFromDouble(ctx, elemType, scale);
+      return IotaLikeTensor{startAttr, dim, scaleAttr, constType};
+    }
+  }
+
+  return std::nullopt;
+}
+
+std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
+  if (!tensor) {
+    return std::nullopt;
+  }
 
   struct ChainItem {
     mlir::Operation *op;
-    int64_t offset; // only populated for AddOp/SubtractOp
-    int64_t scale;  // only populated for MulOp
+    TypedAttr offset; // only populated for AddOp/SubtractOp (nullptr otherwise)
+    TypedAttr scale;  // only populated for MulOp (nullptr otherwise)
   };
 
   // Build a chain of operations from startOp to the base case
@@ -1443,168 +1520,175 @@ std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
 
     // check if we found a base case
     if (isa<stablehlo::IotaOp, stablehlo::ConstantOp>(currentOp)) {
-      chain.push_back({currentOp, 0, 1});
+      chain.push_back({currentOp, nullptr, nullptr});
       break;
     }
 
     // navigate to the next op. If any unsupported intermediate op is found,
     // then return std::nullopt
-    Operation *nextOp;
-
     // TODO: we might want to support broadcast_in_dim / insert_dims / drop_dims
     // as well
-    if (isa<stablehlo::TransposeOp>(currentOp)) {
-      chain.push_back({currentOp, 0, 1});
-      nextOp = currentOp->getOperand(0).getDefiningOp();
-    } else if (auto convertOp = dyn_cast<stablehlo::ConvertOp>(currentOp)) {
-      // if operand of convertOp is not a integer, then return std::nullopt
-      if (!isa<mlir::IntegerType>(
-              cast<TensorType>(convertOp.getOperand().getType())
-                  .getElementType()))
-        return std::nullopt;
-      chain.push_back({currentOp, 0, 1});
-      nextOp = convertOp.getOperand().getDefiningOp();
-    } else if (auto addOp = dyn_cast<stablehlo::AddOp>(currentOp)) {
-      APInt offsetVal;
-      if (matchPattern(addOp.getRhs(), m_ConstantInt(&offsetVal))) {
-        chain.push_back({currentOp, offsetVal.getSExtValue(), 1});
-        nextOp = addOp.getLhs().getDefiningOp();
-      } else if (matchPattern(addOp.getLhs(), m_ConstantInt(&offsetVal))) {
-        chain.push_back({currentOp, offsetVal.getSExtValue(), 1});
-        nextOp = addOp.getRhs().getDefiningOp();
-      } else {
-        return std::nullopt;
-      }
-    } else if (auto subOp = dyn_cast<stablehlo::SubtractOp>(currentOp)) {
-      APInt offsetVal;
-      if (matchPattern(subOp.getRhs(), m_ConstantInt(&offsetVal))) {
-        chain.push_back({currentOp, -offsetVal.getSExtValue(), 1});
-        nextOp = subOp.getLhs().getDefiningOp();
-      } else {
-        return std::nullopt;
-      }
-    } else if (auto mulOp = dyn_cast<stablehlo::MulOp>(currentOp)) {
-      APInt scaleVal;
-      if (matchPattern(mulOp.getRhs(), m_ConstantInt(&scaleVal))) {
-        chain.push_back({currentOp, 0, scaleVal.getSExtValue()});
-        nextOp = mulOp.getLhs().getDefiningOp();
-      } else if (matchPattern(mulOp.getLhs(), m_ConstantInt(&scaleVal))) {
-        chain.push_back({currentOp, 0, scaleVal.getSExtValue()});
-        nextOp = mulOp.getRhs().getDefiningOp();
-      } else {
-        return std::nullopt;
-      }
-    } else { // unsupported op
+    auto nextOp =
+        llvm::TypeSwitch<Operation *, Operation *>(currentOp)
+            .Case<stablehlo::TransposeOp>([&](auto transposeOp) {
+              chain.push_back({currentOp, nullptr, nullptr});
+              return transposeOp.getOperand().getDefiningOp();
+            })
+            .Case<stablehlo::ConvertOp>([&](auto convertOp) -> Operation * {
+              auto elemType = cast<TensorType>(convertOp.getOperand().getType())
+                                  .getElementType();
+              if (!isa<mlir::IntegerType, mlir::FloatType>(elemType)) {
+                return nullptr;
+              }
+              chain.push_back({currentOp, nullptr, nullptr});
+              return convertOp.getOperand().getDefiningOp();
+            })
+            .Case<stablehlo::AddOp>([&](auto addOp) -> Operation * {
+              SplatElementsAttr rhsAttr, lhsAttr;
+              if (matchPattern(addOp.getRhs(), m_Constant(&rhsAttr))) {
+                chain.push_back(
+                    {currentOp, rhsAttr.getSplatValue<TypedAttr>(), nullptr});
+                return addOp.getLhs().getDefiningOp();
+              } else if (matchPattern(addOp.getLhs(), m_Constant(&lhsAttr))) {
+                chain.push_back(
+                    {currentOp, lhsAttr.getSplatValue<TypedAttr>(), nullptr});
+                return addOp.getRhs().getDefiningOp();
+              }
+              return nullptr;
+            })
+            .Case<stablehlo::SubtractOp>([&](auto subOp) -> Operation * {
+              SplatElementsAttr rhsAttr;
+              if (matchPattern(subOp.getRhs(), m_Constant(&rhsAttr))) {
+                chain.push_back(
+                    {currentOp, rhsAttr.getSplatValue<TypedAttr>(), nullptr});
+                return subOp.getLhs().getDefiningOp();
+              }
+              return nullptr;
+            })
+            .Case<stablehlo::MulOp>([&](auto mulOp) -> Operation * {
+              SplatElementsAttr rhsAttr, lhsAttr;
+              if (matchPattern(mulOp.getRhs(), m_Constant(&rhsAttr))) {
+                chain.push_back(
+                    {currentOp, nullptr, rhsAttr.getSplatValue<TypedAttr>()});
+                return mulOp.getLhs().getDefiningOp();
+              } else if (matchPattern(mulOp.getLhs(), m_Constant(&lhsAttr))) {
+                chain.push_back(
+                    {currentOp, nullptr, lhsAttr.getSplatValue<TypedAttr>()});
+                return mulOp.getRhs().getDefiningOp();
+              }
+              return nullptr;
+            })
+            .Default([](Operation *) -> Operation * { return nullptr; });
+
+    if (!nextOp)
       return std::nullopt;
-    }
 
     currentOp = nextOp;
   }
 
-  if (chain.empty())
+  if (chain.empty()) {
     return std::nullopt;
+  }
 
   // process the base case
   IotaLikeTensor result;
-  if (auto iotaOp = dyn_cast<stablehlo::IotaOp>(chain.back().op)) {
-    auto iotaType = cast<RankedTensorType>(iotaOp.getResult().getType());
-    auto iotaDim = static_cast<int64_t>(iotaOp.getIotaDimension());
-    result = IotaLikeTensor{0, iotaDim, 1, iotaType};
-  } else if (auto constantOp =
-                 dyn_cast<stablehlo::ConstantOp>(chain.back().op)) {
-    auto denseAttr = cast<DenseElementsAttr>(constantOp.getValue());
-    auto constType = cast<RankedTensorType>(constantOp.getResult().getType());
-    auto shape = constType.getShape();
+  MLIRContext *ctx = tensor.getContext();
 
-    if (denseAttr.isSplat())
-      return std::nullopt;
+  auto baseCaseResult =
+      llvm::TypeSwitch<Operation *, std::optional<IotaLikeTensor>>(
+          chain.back().op)
+          .Case<stablehlo::IotaOp>(
+              [&](auto iotaOp) -> std::optional<IotaLikeTensor> {
+                auto iotaType =
+                    cast<RankedTensorType>(iotaOp.getResult().getType());
+                auto iotaDim = static_cast<int64_t>(iotaOp.getIotaDimension());
+                auto elemType = iotaType.getElementType();
+                TypedAttr zeroAttr = createAttrFromDouble(ctx, elemType, 0.0);
+                TypedAttr oneAttr = createAttrFromDouble(ctx, elemType, 1.0);
+                return IotaLikeTensor{zeroAttr, iotaDim, oneAttr, iotaType};
+              })
+          .Case<stablehlo::ConstantOp>(
+              [&](auto constantOp) -> std::optional<IotaLikeTensor> {
+                auto denseAttr = dyn_cast<DenseElementsAttr>(constantOp.getValue());
+                return detectIotaLikeTensor(denseAttr);
+              })
+          .Default([](Operation *) -> std::optional<IotaLikeTensor> {
+            return std::nullopt;
+          });
 
-    // Calculate strides for indexing
-    SmallVector<int64_t> strides(constType.getRank(), 1);
-    for (int64_t i = constType.getRank() - 2; i >= 0; --i) {
-      strides[i] = strides[i + 1] * shape[i + 1];
-    }
-
-    bool isIotaLike = false;
-    auto denseAttrValues = denseAttr.getValues<APInt>();
-
-    for (int64_t dim = 0; dim < constType.getRank(); dim++) {
-      bool isIotaAlongDim = true;
-      std::optional<int64_t> detectedStart;
-      std::optional<int64_t> detectedScale;
-
-      SmallVector<int64_t> indices(constType.getRank(), 0);
-      int64_t numElements = constType.getNumElements();
-
-      for (int64_t idx = 0; idx < numElements && isIotaAlongDim; idx++) {
-        int64_t temp = idx;
-        // linear to cartesian indexing
-        for (int64_t d = 0; d < constType.getRank(); d++) {
-          indices[d] = temp / strides[d];
-          temp = temp % strides[d];
-        }
-
-        int64_t actualValue = denseAttrValues[idx].getSExtValue();
-
-        if (!detectedStart) {
-          detectedStart = actualValue;
-        } else if (!detectedScale && indices[dim] == 1) {
-          // Detect scale from the second element along this dimension
-          detectedScale = actualValue - detectedStart.value();
-          if (detectedScale.value() == 0) {
-            // Scale of 0 means all values are the same, not an iota
-            isIotaAlongDim = false;
-            break;
-          }
-        }
-
-        int64_t expectedValue =
-            detectedStart.value() + indices[dim] * detectedScale.value_or(1);
-        if (actualValue != expectedValue) {
-          isIotaAlongDim = false;
-          break;
-        }
-      }
-
-      if (isIotaAlongDim && detectedStart) {
-        isIotaLike = true;
-        int64_t scale = detectedScale.value_or(1);
-        result = IotaLikeTensor{detectedStart.value(), dim, scale, constType};
-        break;
-      }
-    }
-
-    if (!isIotaLike)
-      return std::nullopt;
-  } else {
+  if (!baseCaseResult)
     return std::nullopt;
-  }
+  result = *baseCaseResult;
 
   // traverse the chain in reverse order
   for (int64_t i = chain.size() - 2; i >= 0; i--) {
     auto item = chain[i];
 
-    if (isa<stablehlo::ConvertOp>(item.op)) {
-      continue;
-    } else if (auto transposeOp = dyn_cast<stablehlo::TransposeOp>(item.op)) {
-      auto permutation = transposeOp.getPermutation();
-      for (int64_t idx = 0; idx < permutation.size(); idx++) {
-        if (permutation[idx] == result.dimension) {
-          result.dimension = idx;
-          break;
-        }
-      }
-      continue;
-    } else if (isa<stablehlo::AddOp, stablehlo::SubtractOp>(item.op)) {
-      result.start += item.offset;
-      continue;
-    } else if (isa<stablehlo::MulOp>(item.op)) {
-      result.start *= item.scale;
-      result.scale *= item.scale;
-      continue;
-    }
+    auto success =
+        llvm::TypeSwitch<Operation *, bool>(item.op)
+            .Case<stablehlo::ConvertOp>([&](auto) {
+              auto newElemType =
+                  cast<TensorType>(item.op->getResult(0).getType())
+                      .getElementType();
+              auto startVal = getDoubleFromAttr(result.start);
+              auto scaleVal = getDoubleFromAttr(result.scale);
+              if (!startVal || !scaleVal)
+                return false;
+              result.start = createAttrFromDouble(ctx, newElemType, *startVal);
+              result.scale = createAttrFromDouble(ctx, newElemType, *scaleVal);
+              return true;
+            })
+            .Case<stablehlo::TransposeOp>([&](auto transposeOp) {
+              auto permutation = transposeOp.getPermutation();
+              for (int64_t idx = 0;
+                   idx < static_cast<int64_t>(permutation.size()); idx++) {
+                if (permutation[idx] == result.dimension) {
+                  result.dimension = idx;
+                  break;
+                }
+              }
+              return true;
+            })
+            .Case<stablehlo::AddOp>([&](auto) {
+              auto startVal = getDoubleFromAttr(result.start);
+              auto offsetVal = getDoubleFromAttr(item.offset);
+              if (!startVal || !offsetVal)
+                return false;
+              auto elemType = result.start.getType();
+              result.start =
+                  createAttrFromDouble(ctx, elemType, *startVal + *offsetVal);
+              return true;
+            })
+            .Case<stablehlo::SubtractOp>([&](auto) {
+              auto startVal = getDoubleFromAttr(result.start);
+              auto offsetVal = getDoubleFromAttr(item.offset);
+              if (!startVal || !offsetVal)
+                return false;
+              auto elemType = result.start.getType();
+              result.start =
+                  createAttrFromDouble(ctx, elemType, *startVal - *offsetVal);
+              return true;
+            })
+            .Case<stablehlo::MulOp>([&](auto) {
+              auto startVal = getDoubleFromAttr(result.start);
+              auto scaleVal = getDoubleFromAttr(result.scale);
+              auto mulVal = getDoubleFromAttr(item.scale);
+              if (!startVal || !scaleVal || !mulVal)
+                return false;
+              auto elemType = result.start.getType();
+              result.start =
+                  createAttrFromDouble(ctx, elemType, *startVal * *mulVal);
+              result.scale =
+                  createAttrFromDouble(ctx, elemType, *scaleVal * *mulVal);
+              return true;
+            })
+            .Default([](Operation *) {
+              assert(false && "reached unreachable case...");
+              return false;
+            });
 
-    assert(false && "reached unreachable case...");
+    if (!success)
+      return std::nullopt;
   }
 
   result.tensorType = cast<RankedTensorType>(tensor.getType());

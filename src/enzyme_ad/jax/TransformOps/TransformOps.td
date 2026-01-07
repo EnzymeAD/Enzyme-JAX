@@ -1829,6 +1829,20 @@ def ApplyIotaSimplifyPatterns : EnzymeHLOParameterizedPatternOp<
     }
   }];
 }
+def ApplyRecognizeFromConstantPatterns : EnzymeHLOParameterizedPatternOp<
+    "recognize_from_constant"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, I64Attr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getI64IntegerAttr(1024)))};
+    }
+  }];
+}
 def ApplyBroadcastInDimSimplifyPatterns : EnzymeHLOParameterizedPatternOp<
     "broadcast_in_dim_simplify"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, I64Attr:$parameter);

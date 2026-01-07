@@ -7514,11 +7514,9 @@ struct IotaSimplify
 
   LogicalResult matchAndRewriteImpl(stablehlo::IotaOp op,
                                     PatternRewriter &rewriter) const {
-    size_t size = 1;
-    for (auto sz : op.getType().getShape())
-      size *= sz;
-    if (size >= max_constant_expansion)
+    if (op.getType().getNumElements() >= max_constant_expansion) {
       return failure();
+    }
 
     auto out = stablehlo::iotaOp(op.getIotaDimension(), op.getType());
     rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(),
@@ -29125,6 +29123,58 @@ struct GatherOfScatterSimplify final
   }
 };
 
+// jax doesn't control size of constants, we try to recover patterns that can
+// produce these constants. We do the following:
+//    1. iota detection
+struct RecognizeFromConstant final
+    : CheckedOpRewritePattern<stablehlo::ConstantOp, RecognizeFromConstant> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  size_t min_fold_size;
+  RecognizeFromConstant(size_t min_fold_size, MLIRContext *context,
+                        PatternBenefit benefit = 1,
+                        ArrayRef<StringRef> generatedNames = {})
+      : CheckedOpRewritePattern(context, benefit, generatedNames),
+        min_fold_size(min_fold_size) {}
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConstantOp op,
+                                    PatternRewriter &rewriter) {
+    DenseElementsAttr val = cast<DenseElementsAttr>(op.getValue());
+    if (val.isSplat() || op.getType().getNumElements() < min_fold_size) {
+      return failure();
+    }
+
+    auto maybeIotaDetect = detectIotaLikeTensor(val);
+    if (maybeIotaDetect.has_value()) {
+      auto iotaDetect = maybeIotaDetect.value();
+
+      // Helper to create a splat constant from a TypedAttr
+      auto createSplatConstant = [&](TypedAttr attr) -> Value {
+        auto splatAttr = SplatElementsAttr::get(iotaDetect.tensorType, attr);
+        return stablehlo::ConstantOp::create(rewriter, op.getLoc(), splatAttr);
+      };
+
+      Value iotaOp =
+          stablehlo::IotaOp::create(rewriter, op.getLoc(),
+                                    iotaDetect.tensorType, iotaDetect.dimension)
+              .getResult();
+      if (!isOneAttr(iotaDetect.scale)) {
+        iotaOp = stablehlo::MulOpCreate(rewriter, op.getLoc(), iotaOp,
+                                        createSplatConstant(iotaDetect.scale));
+      }
+      if (!isZeroAttr(iotaDetect.start)) {
+        iotaOp = stablehlo::AddOpCreate(rewriter, op.getLoc(), iotaOp,
+                                        createSplatConstant(iotaDetect.start));
+      }
+
+      rewriter.replaceOp(op, iotaOp);
+      return success();
+    }
+
+    return failure();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -29158,6 +29208,13 @@ void mlir::transform::addIotaSimplify(RewritePatternSet &patterns,
                                       MLIRContext &context,
                                       PatternBenefit benefit) {
   patterns.insert<IotaSimplify>(maxConstantExpansion, &context, benefit);
+}
+
+void mlir::transform::addRecognizeFromConstant(RewritePatternSet &patterns,
+                                               int64_t minFoldSize,
+                                               MLIRContext &context,
+                                               PatternBenefit benefit) {
+  patterns.insert<RecognizeFromConstant>(minFoldSize, &context, benefit);
 }
 
 void mlir::transform::addConcatConstProp(RewritePatternSet &patterns,
@@ -29507,8 +29564,9 @@ struct EnzymeHLOOptPass
                                                      PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,
-                 DynamicUpdateSliceConstProp, PadSimplify, ScatterConstFold>(
-        max_constant_expansion, context, PatternBenefit(65000));
+                 DynamicUpdateSliceConstProp, PadSimplify, ScatterConstFold,
+                 RecognizeFromConstant>(max_constant_expansion, context,
+                                        PatternBenefit(65000));
 
     patterns.add<
         ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
