@@ -904,7 +904,19 @@ struct MPIIsendOpLowering : public OpRewritePattern<enzymexla::MPIIsendOp> {
       }
 
       // Get all orinigal op operands
-      auto operands = op.getOperands();
+      auto opOperands = op.getOperands();
+
+      // Create a constant tensor to hold request
+      auto i64Type = rewriter.getI64Type();
+      auto tensorType = RankedTensorType::get({}, i64Type);
+      auto constantAttr = DenseIntElementsAttr::get(tensorType,
+          ArrayRef<int64_t>{-1});
+      Value constantTensor = rewriter.create<stablehlo::ConstantOp>(
+          op.getLoc(), tensorType, constantAttr);
+
+      // Combine all operands
+      SmallVector<Value> jitCallOperands(opOperands.begin(), opOperands.end());
+      jitCallOperands.push_back(constantTensor);
 
       // Add request to output operand aliases
       SmallVector<Attribute> aliases;
@@ -918,7 +930,7 @@ struct MPIIsendOpLowering : public OpRewritePattern<enzymexla::MPIIsendOp> {
       auto jitCall = rewriter.create<enzymexla::JITCallOp>(
           op.getLoc(), op->getResultTypes(),
           mlir::FlatSymbolRefAttr::get(context, wrapperFunctionName),
-          ValueRange{operands}, rewriter.getStringAttr(""),
+          jitCallOperands, rewriter.getStringAttr(""),
           /*operand_layouts=*/nullptr,
           /*result_layouts=*/nullptr,
           /*arg_attrs=*/nullptr,
@@ -1429,7 +1441,7 @@ struct LowerEnzymeXLAMPIPass
     patterns.add<MPIBarrierOpLowering>(backend, context);
     patterns.add<MPISendOpLowering>(backend, context);
     patterns.add<MPIRecvOpLowering>(backend, context);
-    // patterns.add<MPIIsendOpLowering>(backend, context);
+    patterns.add<MPIIsendOpLowering>(backend, context);
     patterns.add<MPIIrecvOpLowering>(backend, context);
     patterns.add<MPIWaitOpLowering>(backend, context);
     patterns.add<MPIAllreduceOpLowering>(backend, context);
