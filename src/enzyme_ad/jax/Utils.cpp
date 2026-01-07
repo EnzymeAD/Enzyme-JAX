@@ -1418,11 +1418,11 @@ absl::Status detectDiagonalTensor(stablehlo::ScatterOp scatterOp,
   });
 }
 
-std::optional<IotaLikeTensor> detectIotaLikeTensor(DenseElementsAttr denseAttr) {
-  if (!denseAttr || denseAttr.isSplat()) {
-    return std::nullopt;
-  }
+namespace {
 
+template <typename T>
+std::optional<IotaLikeTensor>
+detectIotaLikeTensorImpl(DenseElementsAttr denseAttr) {
   auto constType = dyn_cast<RankedTensorType>(denseAttr.getType());
   if (!constType) {
     return std::nullopt;
@@ -1431,37 +1431,29 @@ std::optional<IotaLikeTensor> detectIotaLikeTensor(DenseElementsAttr denseAttr) 
   auto elemType = constType.getElementType();
   MLIRContext *ctx = denseAttr.getContext();
 
-  // Calculate strides for indexing
-  SmallVector<int64_t> strides(constType.getRank(), 1);
-  for (int64_t i = constType.getRank() - 2; i >= 0; --i) {
-    strides[i] = strides[i + 1] * shape[i + 1];
-  }
-
+  auto strides = computeStrides(shape);
   bool isFloat = isa<FloatType>(elemType);
+
+  auto values = denseAttr.getValues<T>();
+  int64_t numElements = constType.getNumElements();
 
   for (int64_t dim = 0; dim < constType.getRank(); dim++) {
     bool isIotaAlongDim = true;
     std::optional<double> detectedStart;
     std::optional<double> detectedScale;
 
-    SmallVector<int64_t> indices(constType.getRank(), 0);
-    int64_t numElements = constType.getNumElements();
+    SmallVector<int64_t> indices;
 
     for (int64_t idx = 0; idx < numElements && isIotaAlongDim; idx++) {
-      int64_t temp = idx;
-      // linear to cartesian indexing
-      for (int64_t d = 0; d < constType.getRank(); d++) {
-        indices[d] = temp / strides[d];
-        temp = temp % strides[d];
-      }
+      linearToMultiIndex(idx, strides, indices);
 
       double actualValue;
-      if (isFloat) {
-        auto floatValues = denseAttr.getValues<APFloat>();
-        actualValue = floatValues[idx].convertToDouble();
+      if constexpr (std::is_same_v<T, APFloat>) {
+        actualValue = values[idx].convertToDouble();
+      } else if constexpr (std::is_same_v<T, APInt>) {
+        actualValue = static_cast<double>(values[idx].getSExtValue());
       } else {
-        auto intValues = denseAttr.getValues<APInt>();
-        actualValue = static_cast<double>(intValues[idx].getSExtValue());
+        actualValue = static_cast<double>(values[idx]);
       }
 
       if (!detectedStart) {
@@ -1493,6 +1485,24 @@ std::optional<IotaLikeTensor> detectIotaLikeTensor(DenseElementsAttr denseAttr) 
       TypedAttr scaleAttr = createAttrFromDouble(ctx, elemType, scale);
       return IotaLikeTensor{startAttr, dim, scaleAttr, constType};
     }
+  }
+
+  return std::nullopt;
+}
+
+} // namespace
+
+std::optional<IotaLikeTensor>
+detectIotaLikeTensor(DenseElementsAttr denseAttr) {
+  if (!denseAttr || denseAttr.isSplat()) {
+    return std::nullopt;
+  }
+
+  auto elemType = denseAttr.getType().getElementType();
+  if (isa<FloatType>(elemType)) {
+    return detectIotaLikeTensorImpl<APFloat>(denseAttr);
+  } else if (isa<IntegerType>(elemType)) {
+    return detectIotaLikeTensorImpl<APInt>(denseAttr);
   }
 
   return std::nullopt;
@@ -1609,7 +1619,8 @@ std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
               })
           .Case<stablehlo::ConstantOp>(
               [&](auto constantOp) -> std::optional<IotaLikeTensor> {
-                auto denseAttr = dyn_cast<DenseElementsAttr>(constantOp.getValue());
+                auto denseAttr =
+                    dyn_cast<DenseElementsAttr>(constantOp.getValue());
                 return detectIotaLikeTensor(denseAttr);
               })
           .Default([](Operation *) -> std::optional<IotaLikeTensor> {
@@ -1693,6 +1704,182 @@ std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
 
   result.tensorType = cast<RankedTensorType>(tensor.getType());
   return result;
+}
+
+namespace {
+
+struct PaddingResult {
+  SmallVector<int64_t> lowPadding;
+  SmallVector<int64_t> highPadding;
+  Attribute paddingValueAttr;
+  int64_t totalPaddingElements = 0;
+};
+
+template <typename T>
+std::optional<PaddedTensor> detectPaddedTensorImpl(DenseElementsAttr attr) {
+  auto tensorType = cast<RankedTensorType>(attr.getType());
+  auto shape = tensorType.getShape();
+  int64_t rank = tensorType.getRank();
+
+  auto elemType = tensorType.getElementType();
+  auto strides = computeStrides(shape);
+  int64_t numElements = tensorType.getNumElements();
+
+  auto values = attr.getValues<T>();
+
+  // Generic helper to detect padding using a specific padding value
+  // Optimized O(numElements * rank) algorithm: single pass to find
+  // min/max non-padding indices per dimension
+  auto detectPaddingWithValue = [&](T paddingVal) -> PaddingResult {
+    PaddingResult result;
+    result.lowPadding.resize(rank, 0);
+    result.highPadding.resize(rank, 0);
+    result.paddingValueAttr = makeAttr(elemType, paddingVal);
+
+    // Track the min and max non-padding index for each dimension
+    SmallVector<int64_t> minNonPadIdx(rank);
+    SmallVector<int64_t> maxNonPadIdx(rank);
+    for (int64_t dim = 0; dim < rank; dim++) {
+      minNonPadIdx[dim] = shape[dim]; // Initialize to beyond max valid index
+      maxNonPadIdx[dim] = -1;         // Initialize to before min valid index
+    }
+
+    // Single pass through all elements
+    SmallVector<int64_t> indices;
+    for (int64_t linearIdx = 0; linearIdx < numElements; linearIdx++) {
+      if (values[linearIdx] != paddingVal) {
+        // This element is NOT padding - update min/max for all dimensions
+        linearToMultiIndex(linearIdx, strides, indices);
+        for (int64_t dim = 0; dim < rank; dim++) {
+          minNonPadIdx[dim] = std::min(minNonPadIdx[dim], indices[dim]);
+          maxNonPadIdx[dim] = std::max(maxNonPadIdx[dim], indices[dim]);
+        }
+      }
+    }
+
+    // Convert min/max non-padding indices to low/high padding amounts
+    for (int64_t dim = 0; dim < rank; dim++) {
+      if (maxNonPadIdx[dim] < 0) {
+        // All elements are padding in this dimension (entire tensor is padding)
+        result.lowPadding[dim] = shape[dim];
+        result.highPadding[dim] = 0;
+      } else {
+        result.lowPadding[dim] = minNonPadIdx[dim];
+        result.highPadding[dim] = shape[dim] - 1 - maxNonPadIdx[dim];
+      }
+    }
+
+    // Calculate total padding elements saved
+    int64_t innerElements = 1;
+    for (int64_t dim = 0; dim < rank; dim++) {
+      innerElements *=
+          shape[dim] - result.lowPadding[dim] - result.highPadding[dim];
+    }
+    result.totalPaddingElements = numElements - innerElements;
+
+    return result;
+  };
+
+  // Try both first element and last element as potential padding values
+  // and pick the one that gives maximum padding
+  auto resultFirst = detectPaddingWithValue(values[0]);
+  auto resultLast = detectPaddingWithValue(values[numElements - 1]);
+  PaddingResult bestResult =
+      (resultLast.totalPaddingElements > resultFirst.totalPaddingElements)
+          ? std::move(resultLast)
+          : std::move(resultFirst);
+
+  auto &lowPadding = bestResult.lowPadding;
+  auto &highPadding = bestResult.highPadding;
+  auto &paddingValueAttr = bestResult.paddingValueAttr;
+
+  // Check if we found any padding at all
+  bool hasPadding = false;
+  for (int64_t dim = 0; dim < rank; dim++) {
+    if (lowPadding[dim] > 0 || highPadding[dim] > 0) {
+      hasPadding = true;
+      break;
+    }
+  }
+
+  if (!hasPadding) {
+    return std::nullopt;
+  }
+
+  // Calculate the inner tensor shape
+  SmallVector<int64_t> innerShape(rank);
+  for (int64_t dim = 0; dim < rank; dim++) {
+    innerShape[dim] = shape[dim] - lowPadding[dim] - highPadding[dim];
+    if (innerShape[dim] <= 0) {
+      return std::nullopt;
+    }
+  }
+
+  // Calculate number of elements in inner tensor
+  int64_t innerNumElements = 1;
+  for (int64_t dim = 0; dim < rank; dim++) {
+    innerNumElements *= innerShape[dim];
+  }
+
+  // Ensure we're actually saving something substantial
+  if (innerNumElements * 2 >= numElements) {
+    return std::nullopt;
+  }
+
+  auto innerStrides = computeStrides(innerShape);
+
+  auto innerTensorType = RankedTensorType::get(innerShape, elemType);
+
+  SmallVector<T> innerValues;
+  innerValues.reserve(innerNumElements);
+
+  for (int64_t innerLinear = 0; innerLinear < innerNumElements; innerLinear++) {
+    SmallVector<int64_t> innerIndices;
+    linearToMultiIndex(innerLinear, innerStrides, innerIndices);
+
+    SmallVector<int64_t> origIndices(rank);
+    for (int64_t d = 0; d < rank; d++) {
+      origIndices[d] = innerIndices[d] + lowPadding[d];
+    }
+
+    int64_t origLinear = multiToLinearIndex(origIndices, strides);
+    innerValues.push_back(values[origLinear]);
+  }
+
+  auto innerTensorAttr =
+      DenseElementsAttr::get(innerTensorType, ArrayRef<T>(innerValues));
+
+  PaddedTensor result;
+  result.innerTensorAttr = innerTensorAttr;
+  result.paddingValue = paddingValueAttr;
+  result.lowPadding = std::move(lowPadding);
+  result.highPadding = std::move(highPadding);
+  result.resultType = cast<RankedTensorType>(tensorType);
+  return result;
+}
+
+} // namespace
+
+std::optional<PaddedTensor> detectPaddedTensor(DenseElementsAttr attr) {
+  if (!attr || attr.isSplat()) {
+    return std::nullopt;
+  }
+
+  auto tensorType = attr.getType();
+  int64_t rank = tensorType.getRank();
+
+  if (rank == 0) {
+    return std::nullopt;
+  }
+
+  auto elemType = tensorType.getElementType();
+  if (isa<FloatType>(elemType)) {
+    return detectPaddedTensorImpl<APFloat>(attr);
+  } else if (isa<IntegerType>(elemType)) {
+    return detectPaddedTensorImpl<APInt>(attr);
+  }
+
+  return std::nullopt;
 }
 
 bool allAccessesAreOnMainDiagonalPostReshape(stablehlo::ReshapeOp op,

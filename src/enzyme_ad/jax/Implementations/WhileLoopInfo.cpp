@@ -353,10 +353,8 @@ void WhileLoopInfo::propagateAffineIndexInfo(
           isa<mlir::IntegerType>(
               iotaDetection.value().tensorType.getElementType())) {
         // Extract integer values from TypedAttr
-        auto startAttr =
-            dyn_cast<IntegerAttr>(iotaDetection.value().start);
-        auto scaleAttr =
-            dyn_cast<IntegerAttr>(iotaDetection.value().scale);
+        auto startAttr = dyn_cast<IntegerAttr>(iotaDetection.value().start);
+        auto scaleAttr = dyn_cast<IntegerAttr>(iotaDetection.value().scale);
         if (!startAttr || !scaleAttr) {
           return WalkResult::advance();
         }

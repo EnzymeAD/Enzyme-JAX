@@ -29171,6 +29171,37 @@ struct RecognizeFromConstant final
       return success();
     }
 
+    // Check if the constant can be represented as a pad of a smaller constant
+    auto maybePaddedDetect = enzyme::detectPaddedTensor(val);
+    if (maybePaddedDetect.has_value()) {
+      auto paddedDetect = maybePaddedDetect.value();
+
+      // Create the inner constant
+      auto innerConstant = stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(), paddedDetect.innerTensorAttr);
+
+      // Create the padding value as a scalar constant
+      auto paddingValueType =
+          RankedTensorType::get({}, paddedDetect.resultType.getElementType());
+      auto paddingValueAttr =
+          DenseElementsAttr::get(paddingValueType, paddedDetect.paddingValue);
+      auto paddingValue = stablehlo::ConstantOp::create(rewriter, op.getLoc(),
+                                                        paddingValueAttr);
+
+      // Interior padding is always zeros
+      SmallVector<int64_t> interiorPadding(paddedDetect.lowPadding.size(), 0);
+
+      // Create the pad operation
+      auto padOp = stablehlo::PadOp::create(
+          rewriter, op.getLoc(), paddedDetect.resultType, innerConstant,
+          paddingValue, rewriter.getDenseI64ArrayAttr(paddedDetect.lowPadding),
+          rewriter.getDenseI64ArrayAttr(paddedDetect.highPadding),
+          rewriter.getDenseI64ArrayAttr(interiorPadding));
+
+      rewriter.replaceOp(op, padOp.getResult());
+      return success();
+    }
+
     return failure();
   }
 };
