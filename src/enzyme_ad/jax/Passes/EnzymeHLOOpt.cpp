@@ -13854,9 +13854,100 @@ struct GatherOpCanon final
 
   LogicalResult matchAndRewriteImpl(stablehlo::GatherOp gather,
                                     PatternRewriter &rewriter) const {
-    DenseIntElementsAttr index;
-    if (!matchPattern(gather.getStartIndices(), m_Constant(&index)))
+    if (tryRewriteGatherWithConstantStartIndices(gather, rewriter)
+            .succeeded()) {
+      return success();
+    }
+
+    if (tryRewriteGatherWithIotaIndexing(gather, rewriter).succeeded()) {
+      return success();
+    }
+
+    return failure();
+  }
+
+  LogicalResult
+  tryRewriteGatherWithIotaIndexing(stablehlo::GatherOp op,
+                                   PatternRewriter &rewriter) const {
+    auto operand = op.getOperand();
+    auto operandTy = cast<RankedTensorType>(operand.getType());
+    // TODO: check if this optimization is possible for higher dimenional
+    //       tensors?
+    if (operandTy.getRank() != 1) {
       return failure();
+    }
+
+    for (auto size : op.getSliceSizes()) {
+      if (size != 1) {
+        return failure();
+      }
+    }
+
+    auto indices = op.getStartIndices();
+
+    // size 1 index is implicitly an iota
+    if (indices.getType().getNumElements() == 1) {
+      auto scalarIndex =
+          stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), indices, {});
+      auto dsOp = stablehlo::DynamicSliceOpCreate(rewriter, op.getLoc(),
+                                                  operand, {scalarIndex}, {1});
+      auto res =
+          stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), dsOp,
+                                     cast<ShapedType>(op.getType()).getShape());
+      rewriter.replaceOp(op, res);
+      return success();
+    }
+
+    auto iotaLike = detectIotaLikeTensor(indices);
+    if (!iotaLike) {
+      return failure();
+    }
+
+    auto iota = *iotaLike;
+    auto dimNumbers = op.getDimensionNumbers();
+
+    if (dimNumbers.getStartIndexMap().size() <= iota.dimension ||
+        dimNumbers.getStartIndexMap()[iota.dimension] != 0) {
+      return failure();
+    }
+
+    auto indicesTy = cast<RankedTensorType>(indices.getType());
+    int64_t indexVectorDim = dimNumbers.getIndexVectorDim();
+    if (indexVectorDim < indicesTy.getRank() &&
+        indicesTy.getDimSize(indexVectorDim) != 1) {
+      return failure();
+    }
+
+    int64_t start = cast<IntegerAttr>(iota.start).getValue().getSExtValue();
+    int64_t count = indicesTy.getDimSize(iota.dimension);
+    int64_t stride = cast<IntegerAttr>(iota.scale).getValue().getSExtValue();
+    int64_t limit = start + count * stride;
+
+    auto resultTy = cast<RankedTensorType>(op.getType());
+    if (resultTy.getNumElements() != count) {
+      LLVM_DEBUG(op->emitError("expected num elements of result to match"));
+      return failure();
+    }
+
+    auto s = stablehlo::SliceOpCreate(rewriter, op.getLoc(), operand, {start},
+                                      {limit}, {stride});
+
+    if (s.getType() == resultTy) {
+      rewriter.replaceOp(op, s);
+      return success();
+    }
+
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, resultTy, s);
+    return success();
+  }
+
+  LogicalResult
+  tryRewriteGatherWithConstantStartIndices(stablehlo::GatherOp gather,
+                                           PatternRewriter &rewriter) const {
+    DenseIntElementsAttr index;
+    if (!matchPattern(gather.getStartIndices(), m_Constant(&index))) {
+      return failure();
+    }
 
     stablehlo::GatherDimensionNumbersAttr dnums = gather.getDimensionNumbers();
     if (dnums.getIndexVectorDim() != 0 || index.getType().getRank() > 1)
