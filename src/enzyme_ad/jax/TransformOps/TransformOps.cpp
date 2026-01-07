@@ -139,6 +139,18 @@ void ApplyDynamicSliceLICMPatterns::populatePatterns(
   addDynamicSliceLICM(patterns, getParameter(), *getContext(),
                       PatternBenefit(getBenefit().value_or(1)));
 }
+void ApplyScatterLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
+  addScatterLICM(patterns, getParameter(), *getContext(),
+                 PatternBenefit(getBenefit().value_or(1)));
+}
+void ApplyGatherLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
+  addGatherLICM(patterns, getParameter(), *getContext(),
+                PatternBenefit(getBenefit().value_or(1)));
+}
+void ApplyIotaLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
+  addIotaLICM(patterns, getParameter(), *getContext(),
+              PatternBenefit(getBenefit().value_or(1)));
+}
 void ApplyIotaSimplifyPatterns::populatePatterns(RewritePatternSet &patterns) {
   addIotaSimplify(patterns, getParameter(), *getContext(),
                   PatternBenefit(getBenefit().value_or(1)));
