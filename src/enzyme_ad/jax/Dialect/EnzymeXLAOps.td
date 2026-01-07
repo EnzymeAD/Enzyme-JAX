@@ -1103,15 +1103,11 @@ def MPICommRankOp : EnzymeXLA_Op<"mpi.comm_rank", []> {
 def MPICommSizeOp : EnzymeXLA_Op<"mpi.comm_size", []> {
   let summary = "Equivalent to MPI_Comm_size(MPI_COMM_WORLD, &size)";
 
-  let arguments = (
-    ins AnyTensor : $insize
-  );
-
   let results = (
-    outs TensorOf<[I32]> : $outsize
+    outs TensorOf<[I32]> : $size
   );
 
-  let assemblyFormat = "`(` operands `)` attr-dict `:` functional-type(operands, results)";
+  let assemblyFormat = "attr-dict `:` type(results)";
 }
 
 def MPIBarrierOp : EnzymeXLA_Op<"mpi.barrier", []> {

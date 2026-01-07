@@ -261,8 +261,12 @@ struct MPICommSizeOpLowering
             /*addrSpace=*/0);
       }
 
-      // Get all orinigal op operands
-      auto operand = op.getInsize();
+      // Create a constant tensor to hold the result
+      auto tensorType = llvm::cast<RankedTensorType>(op->getResultTypes()[0]);
+      auto constantAttr = DenseIntElementsAttr::get(tensorType,
+          ArrayRef<int32_t>{-1});
+      Value constantTensor = rewriter.create<stablehlo::ConstantOp>(
+          op.getLoc(), tensorType, constantAttr);
 
       // Call the LLVM function with enzymexla.jit_call
       SmallVector<Attribute> aliases;
@@ -275,7 +279,7 @@ struct MPICommSizeOpLowering
       auto jitCall = rewriter.create<enzymexla::JITCallOp>(
           op.getLoc(), op->getResultTypes(),
           mlir::FlatSymbolRefAttr::get(context, wrapperFunctionName),
-          ValueRange{operand}, rewriter.getStringAttr(""),
+          ValueRange{constantTensor}, rewriter.getStringAttr(""),
           /*operand_layouts=*/nullptr,
           /*result_layouts=*/nullptr,
           /*arg_attrs=*/nullptr,
