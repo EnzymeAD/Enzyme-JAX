@@ -16454,6 +16454,49 @@ struct SinkDUS : public CheckedOpRewritePattern<stablehlo::WhileOp, SinkDUS> {
   }
 };
 
+struct HoistSlice
+    : public CheckedOpRewritePattern<stablehlo::SliceOp, HoistSlice> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp slice,
+                                    PatternRewriter &rewriter) const {
+    auto arg = dyn_cast<BlockArgument>(slice.getOperand());
+    if (!arg)
+      return failure();
+
+    auto whileOp = dyn_cast<stablehlo::WhileOp>(arg.getOwner()->getParentOp());
+
+    if (!whileOp)
+      return failure();
+    if (arg.getOwner() != &whileOp.getBody().front())
+      return failure();
+    auto idx = arg.getArgNumber();
+
+    // Find yield op in the body
+    //
+    auto &bodyBlock = whileOp.getBody().front();
+    auto yieldOp = cast<stablehlo::ReturnOp>(bodyBlock.getTerminator());
+
+    auto operand = yieldOp.getOperands()[idx];
+    while (operand != arg) {
+      if (auto DUS = operand.getDefiningOp<stablehlo::DynamicUpdateSliceOp>()) {
+        if (!mayReadMemoryWrittenTo(slice, DUS)) {
+          operand = DUS.getOperand();
+          continue;
+        }
+      }
+
+      return failure();
+    }
+
+    rewriter.modifyOpInPlace(slice, [&]() {
+      slice.getOperandMutable().assign(whileOp.getOperands()[idx]);
+    });
+
+    return success();
+  }
+};
+
 struct WhileInductionReduction
     : public CheckedOpRewritePattern<stablehlo::WhileOp,
                                      WhileInductionReduction> {

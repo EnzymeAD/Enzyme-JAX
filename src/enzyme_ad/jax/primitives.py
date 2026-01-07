@@ -241,6 +241,7 @@ def optimization_passes(
         "while_op_induction_replacement",
         "dus_concat",
         "slice_dus_to_concat",
+        "hoist_slice",
         "sink_dus",
         "while_induction_reduction",
         "slice_broadcast",

@@ -1697,6 +1697,11 @@ def SinkDUS : EnzymeHLOPatternOp<
   let patterns = ["SinkDUS"];
 }
 
+def HoistSlice : EnzymeHLOPatternOp<
+    "hoist_slice"> {
+  let patterns = ["HoistSlice"];
+}
+
 def WhileRepeatedInductionReduction : EnzymeHLOPatternOp<
     "while_repeated_induction_reduction"> {
   let patterns = ["WhileRepeatedInductionReduction"];
