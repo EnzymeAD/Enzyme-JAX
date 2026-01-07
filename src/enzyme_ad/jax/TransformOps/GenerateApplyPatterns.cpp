@@ -156,7 +156,8 @@ LogicalResult parseTransform(OpBuilder &builder, Location loc,
           opName == "concatenate_licm" || opName == "broadcastindim_licm" ||
           opName == "reshape_licm" || opName == "transpose_licm" ||
           opName == "convolution_licm" || opName == "dynamic_slice_licm" ||
-          opName == "transpose_elementwise" ||
+          opName == "scatter_licm" || opName == "gather_licm" ||
+          opName == "iota_licm" || opName == "transpose_elementwise" ||
           opName == "reshape_elementwise" ||
           opName == "reshape_elementwise_only_fusible" ||
           opName == "reshape_slice" || opName == "reshape_dynamic_slice" ||

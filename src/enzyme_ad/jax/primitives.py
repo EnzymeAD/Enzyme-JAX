@@ -150,6 +150,7 @@ def optimization_passes(
         "cse_neg<16>",
         "cse_abs<16>",
         "cse_concatenate<16>",
+        "cse_compare<16>",
         f"concatenate_op_canon<16>({max_constant_threshold})",
         f"select_op_canon<16>({max_constant_threshold})",
         "add_simplify<16>",
@@ -451,6 +452,9 @@ def optimization_passes(
             "reduce_window_licm(0)",
             "reverse_licm(0)",
             "convolution_licm(0)",
+            "scatter_licm(0)",
+            "gather_licm(0)",
+            "iota_licm(0)",
         ]
 
     if enable_scatter_gather_optimization_passes:

@@ -29300,6 +29300,24 @@ void mlir::transform::addDynamicSliceLICM(RewritePatternSet &patterns,
                                                    benefit);
 }
 
+void mlir::transform::addScatterLICM(RewritePatternSet &patterns,
+                                     bool single_user, MLIRContext &context,
+                                     PatternBenefit benefit) {
+  patterns.insert<LICM<stablehlo::ScatterOp>>(single_user, &context, benefit);
+}
+
+void mlir::transform::addGatherLICM(RewritePatternSet &patterns,
+                                    bool single_user, MLIRContext &context,
+                                    PatternBenefit benefit) {
+  patterns.insert<LICM<stablehlo::GatherOp>>(single_user, &context, benefit);
+}
+
+void mlir::transform::addIotaLICM(RewritePatternSet &patterns, bool single_user,
+                                  MLIRContext &context,
+                                  PatternBenefit benefit) {
+  patterns.insert<LICM<stablehlo::IotaOp>>(single_user, &context, benefit);
+}
+
 void mlir::transform::addNoNanAddSubSimplify(RewritePatternSet &patterns,
                                              bool allowOnFloatingPointMath,
                                              MLIRContext &context,
@@ -29620,8 +29638,9 @@ struct EnzymeHLOOptPass
                    CSE<stablehlo::ConcatenateOp>, CSE<stablehlo::MaxOp>,
                    CSE<stablehlo::NegOp>, CSE<stablehlo::AbsOp>,
                    CSE<enzymexla::RotateOp>, CSE<enzymexla::WrapOp>,
-                   CSE<enzymexla::ExtendOp>, CSEIota, CSE<stablehlo::GatherOp>,
-                   CSE<stablehlo::ScatterOp>>(context, PatternBenefit(65000));
+                   CSE<enzymexla::ExtendOp>, CSEIota, CSE<stablehlo::CompareOp>,
+                   CSE<stablehlo::GatherOp>, CSE<stablehlo::ScatterOp>>(
+          context, PatternBenefit(65000));
     }
 
     if (passses & 256)
@@ -29692,6 +29711,8 @@ struct EnzymeHLOOptPass
 
     if (licm_passes) {
       // LICM passes
+      patterns.add<LICM<stablehlo::ScatterOp>>(false, context);
+      patterns.add<LICM<stablehlo::GatherOp>>(false, context);
       patterns.add<LICM<stablehlo::SliceOp>>(false, context);
       patterns.add<LICM<stablehlo::DotGeneralOp>>(false, context);
       patterns.add<LICM<stablehlo::ReverseOp>>(false, context);
@@ -29706,6 +29727,7 @@ struct EnzymeHLOOptPass
       patterns.add<LICM<stablehlo::TransposeOp>>(false, context);
       patterns.add<LICM<stablehlo::ConvolutionOp>>(false, context);
       patterns.add<WhileLICM>(false, context);
+      patterns.add<LICM<stablehlo::IotaOp>>(false, context);
     }
 
     if (all_finite)
