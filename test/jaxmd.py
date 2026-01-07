@@ -109,7 +109,6 @@ if __name__ == "__main__":
     import platform
 
     # Deps not available on macos
-    # PostRev introduces numerical error -- need to investigate
     if platform.system() != "Darwin" and platform.machine() == "x86_64":
         from test_utils import fix_paths
 

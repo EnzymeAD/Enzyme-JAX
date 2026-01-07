@@ -5,6 +5,9 @@ protobuf >= 6
 
 jax-md; sys_platform == 'linux'
 
+jaxley; sys_platform == 'linux'
+jaxley_mech; sys_platform == 'linux'
+
 # maxtext can't be installed concurrently, but installing it fixes
 # https://github.com/wsmoses/maxtext/archive/bc50722be7d89e4003bd830b80e4ac968be658eb.tar.gz; python_version < "3.12"
 # maxtext; python_version < "3.13"
