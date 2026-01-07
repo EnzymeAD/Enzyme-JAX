@@ -6,8 +6,7 @@ module {
     %c = stablehlo.constant dense<1> : tensor<i32>
     %c_0 = stablehlo.constant dense<42> : tensor<i32>
     %c_1 = stablehlo.constant dense<5> : tensor<i32>
-    %c_2 = stablehlo.constant dense<-1> : tensor<i64>
-    %1 = enzymexla.mpi.isend(%0, %c_1, %c, %c_0, %c_2) {datatype = "MPI_XYZ"} : (tensor<5xf64>, tensor<i32>, tensor<i32>, tensor<i32>, tensor<i64>) -> tensor<i64>
+    %1 = enzymexla.mpi.isend(%0, %c_1, %c, %c_0) {datatype = "MPI_XYZ"} : (tensor<5xf64>, tensor<i32>, tensor<i32>, tensor<i32>) -> tensor<i64>
     // enzymexla.mpi.wait(%1) : tensor<i64>
     %2 = stablehlo.transpose %0, dims = [0] : (tensor<5xf64>) -> tensor<5xf64>
     return %2 : tensor<5xf64>
