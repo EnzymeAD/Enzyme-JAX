@@ -1158,12 +1158,11 @@ def MPIIsendOp : EnzymeXLA_Op<"mpi.isend", []> {
     TensorOf<[I32]> : $count,
     TensorOf<[I32]> : $dest,
     TensorOf<[I32]> : $tag,
-    TensorOf<[I64]> : $inrequest,
     StrAttr:$datatype
   );
 
   let results = (
-    outs TensorOf<[I64]> : $outrequest
+    outs TensorOf<[I64]> : $request
   );
 
   let assemblyFormat = "`(` operands `)` attr-dict `:` functional-type(operands, results)";
@@ -1193,7 +1192,7 @@ def MPIIrecvOp : EnzymeXLA_Op<"mpi.irecv", []> {
 def MPIWaitOp : EnzymeXLA_Op<"mpi.wait", []> {
   let summary = "Equivalent to "
                 "`MPI_Wait(&request, &status)`";
-  let arguments = (ins TensorOf<[I64]> : $inrequest);
+  let arguments = (ins TensorOf<[I64]> : $request);
   let assemblyFormat = "`(` operands `)` attr-dict `:` type(operands)";
 }
 
