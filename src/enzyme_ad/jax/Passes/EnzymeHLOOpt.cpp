@@ -16180,45 +16180,52 @@ struct WhilePadInductionReduction
   }
 };
 
+static bool mayReadMemoryWrittenTo(stablehlo::SliceOp slice,
+                                   stablehlo::DynamicUpdateSliceOp DUS) {
 
-  static bool mayReadMemoryWrittenTo(stablehlo::SliceOp slice, stablehlo::DynamicUpdateSliceOp DUS) {
-
-    size_t i=0;
-    for (auto &&[sstart, slimit, dstartv] : llvm::zip(slice.getStartIndices(), slice.getLimitIndices(), DUS.getStartIndices())) {
-      DenseIntElementsAttr startattr;
-      if (!matchPattern(dstartv, m_Constant(&startattr))) {
-	      i++;
-        continue;
-      }
-      int64_t dstart = (*startattr.begin()).getSExtValue();
-      int64_t dlimit = dstart + DUS.getUpdate().getType().getShape()[i];
+  size_t i = 0;
+  for (auto &&[sstart, slimit, dstartv] :
+       llvm::zip(slice.getStartIndices(), slice.getLimitIndices(),
+                 DUS.getStartIndices())) {
+    DenseIntElementsAttr startattr;
+    if (!matchPattern(dstartv, m_Constant(&startattr))) {
       i++;
-      if (slimit <= dstart) return false;
-      if (dlimit <= sstart) return false;
+      continue;
     }
-    return true;
-  } 
-  
-static bool mustReadMemoryWrittenTo(stablehlo::SliceOp slice, stablehlo::DynamicUpdateSliceOp DUS) {
-
-    size_t i=0;
-    for (auto &&[sstart, slimit, dstartv] : llvm::zip(slice.getStartIndices(), slice.getLimitIndices(), DUS.getStartIndices())) {
-      DenseIntElementsAttr startattr;
-      if (!matchPattern(dstartv, m_Constant(&startattr))) {
-        return false;
-      }
-      int64_t dstart = (*startattr.begin()).getSExtValue();
-      int64_t dlimit = dstart + DUS.getUpdate().getType().getShape()[i];
-      i++;
-      if (sstart < dstart) return false;
-      if (slimit > dlimit) return false;
-    }
-    return true;
+    int64_t dstart = (*startattr.begin()).getSExtValue();
+    int64_t dlimit = dstart + DUS.getUpdate().getType().getShape()[i];
+    i++;
+    if (slimit <= dstart)
+      return false;
+    if (dlimit <= sstart)
+      return false;
   }
+  return true;
+}
 
-struct SinkDUS
-    : public CheckedOpRewritePattern<stablehlo::WhileOp,
-                                     SinkDUS> {
+static bool mustReadMemoryWrittenTo(stablehlo::SliceOp slice,
+                                    stablehlo::DynamicUpdateSliceOp DUS) {
+
+  size_t i = 0;
+  for (auto &&[sstart, slimit, dstartv] :
+       llvm::zip(slice.getStartIndices(), slice.getLimitIndices(),
+                 DUS.getStartIndices())) {
+    DenseIntElementsAttr startattr;
+    if (!matchPattern(dstartv, m_Constant(&startattr))) {
+      return false;
+    }
+    int64_t dstart = (*startattr.begin()).getSExtValue();
+    int64_t dlimit = dstart + DUS.getUpdate().getType().getShape()[i];
+    i++;
+    if (sstart < dstart)
+      return false;
+    if (slimit > dlimit)
+      return false;
+  }
+  return true;
+}
+
+struct SinkDUS : public CheckedOpRewritePattern<stablehlo::WhileOp, SinkDUS> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::WhileOp whileOp,
@@ -16242,16 +16249,19 @@ struct SinkDUS
       bool legal = true;
       // Skip DUS candidates which can be removed in a better form by WhileDUS
       auto DUS = yieldOp.getOperand(idx)
-                         .getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
-      if (!DUS) continue;
-      if (!definedOutside(DUS.getUpdate(), whileOp)) continue;
-      
+                     .getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
+      if (!DUS)
+        continue;
+      if (!definedOutside(DUS.getUpdate(), whileOp))
+        continue;
+
       for (auto s : DUS.getStartIndices()) {
         if (!definedOutside(s, whileOp)) {
-	 legal = false;
-	}
+          legal = false;
+        }
       }
-      if (!legal) continue;
+      if (!legal)
+        continue;
 
       auto argOperand = whileOp.getBody().getArgument(idx);
       auto condOperand = whileOp.getCond().getArgument(idx);
@@ -16273,35 +16283,35 @@ struct SinkDUS
         for (auto &u : cur.getUses()) {
           Operation *user = u.getOwner();
 
-	  if (auto use = dyn_cast<stablehlo::SliceOp>(user)) {
+          if (auto use = dyn_cast<stablehlo::SliceOp>(user)) {
             if (!mayReadMemoryWrittenTo(use, DUS)) {
-	      continue;
-	    }
-	      bool mayReadOther = false;
-	      Value v = DUS.getOperand();
-	      while (v != argOperand && v != condOperand) {
-	        auto DUS2 = v.getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
-		assert(DUS2);
-	        if (mayReadMemoryWrittenTo(use, DUS2)) {
-		  mayReadOther = true;
-		  break;
-		}
-		v = DUS2.getOperand();
-		
-		// Don't handle case where in cond region.
-		if (v == condOperand) {
-		  mayReadOther = true;
-		}
-	      }
-	    if (!mayReadOther) {
-	      if (mustReadMemoryWrittenTo(use, DUS)) {
-	        mustReaders.push_back(use);
-		continue;
-	      } else {
-	        mayReaders.push_back(use);
-		continue;
-	      }
-	    }
+              continue;
+            }
+            bool mayReadOther = false;
+            Value v = DUS.getOperand();
+            while (v != argOperand && v != condOperand) {
+              auto DUS2 = v.getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
+              assert(DUS2);
+              if (mayReadMemoryWrittenTo(use, DUS2)) {
+                mayReadOther = true;
+                break;
+              }
+              v = DUS2.getOperand();
+
+              // Don't handle case where in cond region.
+              if (v == condOperand) {
+                mayReadOther = true;
+              }
+            }
+            if (!mayReadOther) {
+              if (mustReadMemoryWrittenTo(use, DUS)) {
+                mustReaders.push_back(use);
+                continue;
+              } else {
+                mayReaders.push_back(use);
+                continue;
+              }
+            }
           }
 
           if (auto use = dyn_cast<stablehlo::DynamicUpdateSliceOp>(user)) {
@@ -16337,11 +16347,11 @@ struct SinkDUS
       if (!selfYield)
         continue;
 
-
-      if (mustReaders.size()) anyReader = true;
-      if (mayReaders.size()) anyReader = true;
-      candidates.emplace_back(Candidate{
-          idx, DUS, mustReaders, mayReaders});
+      if (mustReaders.size())
+        anyReader = true;
+      if (mayReaders.size())
+        anyReader = true;
+      candidates.emplace_back(Candidate{idx, DUS, mustReaders, mayReaders});
     }
 
     // If no candidates found, no rewrite needed
@@ -16350,79 +16360,92 @@ struct SinkDUS
 
     if (anyReader) {
       // Find the index of IV and the step to check for 1 iteration
-       auto ivInfo = extractSimpleIVInfo(whileOp);
-       if (!ivInfo.isValid)
-         return failure();
+      auto ivInfo = extractSimpleIVInfo(whileOp);
+      if (!ivInfo.isValid)
+        return failure();
 
-       if (ivInfo.step == 0)
-         return failure();
+      if (ivInfo.step == 0)
+        return failure();
     }
 
     Value inPost;
 
-
     rewriter.setInsertionPointAfter(whileOp);
     {
-    mlir::IRMapping condMapper;
+      mlir::IRMapping condMapper;
       for (unsigned i = 0; i < whileOp.getCond().getNumArguments(); ++i) {
         auto oldArg = whileOp.getCond().getArgument(i);
-	condMapper.map(oldArg, whileOp.getOperands()[i]);
+        condMapper.map(oldArg, whileOp.getOperands()[i]);
       }
 
       for (auto &op : whileOp.getCond().front().without_terminator()) {
         rewriter.clone(op, condMapper);
       }
 
-      inPost = condMapper.lookupOrDefault(whileOp.getCond().front().getTerminator()->getOperand(0));
+      inPost = condMapper.lookupOrDefault(
+          whileOp.getCond().front().getTerminator()->getOperand(0));
     }
 
     for (auto &candidate : candidates) {
-      auto newDUS = stablehlo::DynamicUpdateSliceOp::create(rewriter, candidate.DUS.getLoc(), whileOp.getResults()[candidate.idx], candidate.DUS.getUpdate(), candidate.DUS.getStartIndices());
-      auto sel = stablehlo::SelectOp::create(rewriter, whileOp.getLoc(), inPost, newDUS, whileOp.getResults()[candidate.idx]);
-      SmallPtrSet<Operation*,2> except = { sel, newDUS };
-      rewriter.replaceAllUsesExcept(whileOp.getResults()[candidate.idx], sel, except);
+      auto newDUS = stablehlo::DynamicUpdateSliceOp::create(
+          rewriter, candidate.DUS.getLoc(), whileOp.getResults()[candidate.idx],
+          candidate.DUS.getUpdate(), candidate.DUS.getStartIndices());
+      auto sel = stablehlo::SelectOp::create(
+          rewriter, whileOp.getLoc(), inPost, newDUS,
+          whileOp.getResults()[candidate.idx]);
+      SmallPtrSet<Operation *, 2> except = {sel, newDUS};
+      rewriter.replaceAllUsesExcept(whileOp.getResults()[candidate.idx], sel,
+                                    except);
     }
-    
+
     if (anyReader) {
-       auto ivInfo = extractSimpleIVInfo(whileOp);
-       rewriter.setInsertionPointToStart(&whileOp.getBody().front());
-       auto firstIter = 
-              stablehlo::CompareOp::create(
-                  rewriter, whileOp.getLoc(), whileOp.getBody().getArgument(ivInfo.index),
-                  ivInfo.start, stablehlo::ComparisonDirection::EQ);
+      auto ivInfo = extractSimpleIVInfo(whileOp);
+      rewriter.setInsertionPointToStart(&whileOp.getBody().front());
+      auto firstIter = stablehlo::CompareOp::create(
+          rewriter, whileOp.getLoc(),
+          whileOp.getBody().getArgument(ivInfo.index), ivInfo.start,
+          stablehlo::ComparisonDirection::EQ);
 
       for (auto &candidate : candidates) {
         for (auto slice : candidate.mustReaders) {
-	 auto newstarts = llvm::to_vector(slice.getStartIndices());
-	 auto newlimits = llvm::to_vector(slice.getLimitIndices());
-	 for (size_t i=0; i<slice.getType().getShape().size(); i++) {
-           DenseIntElementsAttr startattr;
-      
-	   if (!matchPattern(candidate.DUS.getStartIndices()[i], m_Constant(&startattr))) {
-      llvm_unreachable("expected constant stride");
-	   }
-      int64_t dstart = (*startattr.begin()).getSExtValue();
-	   newstarts[i] -= dstart;
-	   newlimits[i] -= dstart;
-	 }
-	 rewriter.setInsertionPoint(slice);
-	 auto newSlice = stablehlo::SliceOp::create(rewriter, slice.getLoc(), candidate.DUS.getUpdate(), newstarts, newlimits, slice.getStrides());
-	 auto cloneSlice = rewriter.clone(*slice)->getResult(0);
-         auto sel = stablehlo::SelectOp::create(rewriter, whileOp.getLoc(), firstIter, cloneSlice, newSlice);
-	 rewriter.replaceOp(slice, sel);
-	}
-	for (auto slice : candidate.mayReaders) {
-	  rewriter.setInsertionPoint(slice);
-          auto newDUS = stablehlo::DynamicUpdateSliceOp::create(rewriter, candidate.DUS.getLoc(), slice.getOperand(), candidate.DUS.getUpdate(), candidate.DUS.getStartIndices());
-	 auto newSlice = stablehlo::SliceOp::create(rewriter, slice.getLoc(), newDUS, slice.getStartIndices(), slice.getLimitIndices(), slice.getStrides());
-	 auto cloneSlice = rewriter.clone(*slice)->getResult(0);
-         auto sel = stablehlo::SelectOp::create(rewriter, whileOp.getLoc(), firstIter, cloneSlice, newSlice);
-	 rewriter.replaceOp(slice, sel);
+          auto newstarts = llvm::to_vector(slice.getStartIndices());
+          auto newlimits = llvm::to_vector(slice.getLimitIndices());
+          for (size_t i = 0; i < slice.getType().getShape().size(); i++) {
+            DenseIntElementsAttr startattr;
 
-	}
+            if (!matchPattern(candidate.DUS.getStartIndices()[i],
+                              m_Constant(&startattr))) {
+              llvm_unreachable("expected constant stride");
+            }
+            int64_t dstart = (*startattr.begin()).getSExtValue();
+            newstarts[i] -= dstart;
+            newlimits[i] -= dstart;
+          }
+          rewriter.setInsertionPoint(slice);
+          auto newSlice = stablehlo::SliceOp::create(
+              rewriter, slice.getLoc(), candidate.DUS.getUpdate(), newstarts,
+              newlimits, slice.getStrides());
+          auto cloneSlice = rewriter.clone(*slice)->getResult(0);
+          auto sel = stablehlo::SelectOp::create(
+              rewriter, whileOp.getLoc(), firstIter, cloneSlice, newSlice);
+          rewriter.replaceOp(slice, sel);
+        }
+        for (auto slice : candidate.mayReaders) {
+          rewriter.setInsertionPoint(slice);
+          auto newDUS = stablehlo::DynamicUpdateSliceOp::create(
+              rewriter, candidate.DUS.getLoc(), slice.getOperand(),
+              candidate.DUS.getUpdate(), candidate.DUS.getStartIndices());
+          auto newSlice = stablehlo::SliceOp::create(
+              rewriter, slice.getLoc(), newDUS, slice.getStartIndices(),
+              slice.getLimitIndices(), slice.getStrides());
+          auto cloneSlice = rewriter.clone(*slice)->getResult(0);
+          auto sel = stablehlo::SelectOp::create(
+              rewriter, whileOp.getLoc(), firstIter, cloneSlice, newSlice);
+          rewriter.replaceOp(slice, sel);
+        }
       }
     }
-    
+
     for (auto &candidate : candidates) {
       rewriter.replaceOp(candidate.DUS, candidate.DUS.getOperand());
     }
@@ -16430,7 +16453,6 @@ struct SinkDUS
     return success();
   }
 };
-
 
 struct WhileInductionReduction
     : public CheckedOpRewritePattern<stablehlo::WhileOp,
