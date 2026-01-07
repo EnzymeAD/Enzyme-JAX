@@ -867,6 +867,15 @@ def ApplyCSEExtendPatterns : EnzymeHLOPatternOp<
   let patterns = ["CSE<enzymexla::ExtendOp>"];
 }
 
+def ApplyCSEGatherPatterns : EnzymeHLOPatternOp<
+    "cse_gather"> {
+  let patterns = ["CSE<stablehlo::GatherOp>"];
+}
+def ApplyCSEScatterPatterns : EnzymeHLOPatternOp<
+    "cse_scatter"> {
+  let patterns = ["CSE<stablehlo::ScatterOp>"];
+}
+
 def CompareAbs : EnzymeHLOPatternOp<
     "compare_abs"> {
   let patterns = ["CompareAbs"];
@@ -2250,6 +2259,24 @@ def ApplySplitConvolutionIntoReverseConvolution : EnzymeHLOPatternOp<
 def ApplyScatterMultiplySimplify : EnzymeHLOPatternOp<"scatter_multiply_simplify"> {
   let patterns = [
     "ScatterMultiplySimplify"
+  ];
+}
+
+def ApplyScatterAddSimplify : EnzymeHLOPatternOp<"scatter_add_simplify"> {
+  let patterns = [
+    "ScatterAddSimplify"
+  ];
+}
+
+def ApplyScatterSubSimplify : EnzymeHLOPatternOp<"scatter_sub_simplify"> {
+  let patterns = [
+    "ScatterSubSimplify"
+  ];
+}
+
+def ApplyScatterDivSimplify : EnzymeHLOPatternOp<"scatter_div_simplify"> {
+  let patterns = [
+    "ScatterDivSimplify"
   ];
 }
 

@@ -17,6 +17,8 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/IntegerSet.h"
 
+#include "absl/status/status.h"
+
 #include "shardy/dialect/sdy/ir/utils.h"
 
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
@@ -936,6 +938,41 @@ enzymexla::LapackUplo transposeLapackUplo(enzymexla::LapackUplo uplo);
 
 enzymexla::LapackUplo standardizeUplo(enzymexla::LapackUplo uplo);
 
+using InputValidatorFn = std::function<bool(mlir::Value)>;
+
+absl::Status detectConstantSetindexScatterOp(
+    stablehlo::ScatterOp scatterOp, bool allowedMultipleUses,
+    InputValidatorFn inputValidator, SplatElementsAttr &constSetIndexValue);
+absl::Status detectConstantSetindexScatterOp(stablehlo::ScatterOp scatterOp,
+                                             bool allowedMultipleUses,
+                                             InputValidatorFn inputValidator);
+
+absl::Status detectDiagonalTensor(stablehlo::ScatterOp scatterOp,
+                                  mlir::Value *outUpdates,
+                                  InputValidatorFn inputValidator);
+absl::Status detectDiagonalTensor(stablehlo::ScatterOp scatterOp,
+                                  mlir::Value *outUpdates);
+absl::Status detectDiagonalTensor(stablehlo::ScatterOp scatterOp);
+
+struct IotaLikeTensor {
+  int64_t start;
+  int64_t dimension;
+  int64_t scale = 1; // multiplicative factor applied to the iota
+  mlir::RankedTensorType tensorType;
+};
+
+std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor);
+
+// TODO: we can do a full analysis and return if the access is on a specific set
+// of diagonals. Checks that all accesses for this Op and its users thereoff are
+// along the diagonal.
+bool allAccessesAreOnMainDiagonal(
+    mlir::Operation *op, llvm::SetVector<mlir::Operation *> &opsToReplace);
+bool allAccessesAreOnMainDiagonal(
+    stablehlo::ReshapeOp op, llvm::SetVector<mlir::Operation *> &opsToReplace);
+bool allAccessesAreOnMainDiagonal(
+    stablehlo::GatherOp op, llvm::SetVector<mlir::Operation *> &opsToReplace);
+
 } // namespace enzyme
 
 namespace stablehlo {
@@ -1299,15 +1336,52 @@ Value DynamicSliceOpCreate(
     ArrayRef<int64_t> sliceSizes,
     std::optional<sdy::TensorShardingPerValueAttr> sharding = std::nullopt);
 
+static Value MaybeBroadcastScalarToMatchShape(
+    OpBuilder &builder, Location loc, Value src, RankedTensorType targetTy,
+    std::optional<sdy::TensorShardingPerValueAttr> sharding) {
+  auto srcTy = cast<RankedTensorType>(src.getType());
+  if (srcTy == targetTy || targetTy.getRank() == 0) {
+    return src;
+  }
+  assert(srcTy.getRank() == 0);
+  auto bcastOp = stablehlo::BroadcastInDimOp::create(
+      builder, loc, targetTy, src, builder.getDenseI64ArrayAttr({}));
+  if (sharding.has_value()) {
+    sdy::setShardings(bcastOp, *sharding);
+  }
+  return bcastOp.getResult();
+}
+
 // allows lhs or rhs to be a scalar in which case it will automatically be
 // broadcasted to the correct shape
-Value AddOpCreate(
+template <typename OpTy>
+Value BinaryOpCreate(
     OpBuilder &builder, Location loc, Value lhs, Value rhs,
-    std::optional<sdy::TensorShardingPerValueAttr> sharding = std::nullopt);
+    std::optional<sdy::TensorShardingPerValueAttr> sharding = std::nullopt) {
+  auto lhsTy = cast<RankedTensorType>(lhs.getType());
+  auto rhsTy = cast<RankedTensorType>(rhs.getType());
 
-Value MulOpCreate(
-    OpBuilder &builder, Location loc, Value lhs, Value rhs,
-    std::optional<sdy::TensorShardingPerValueAttr> sharding = std::nullopt);
+  lhs = MaybeBroadcastScalarToMatchShape(builder, loc, lhs, rhsTy, sharding);
+  rhs = MaybeBroadcastScalarToMatchShape(builder, loc, rhs, lhsTy, sharding);
+  auto newOp = OpTy::create(builder, loc, lhs, rhs);
+  if (sharding.has_value()) {
+    sdy::setShardings(newOp, *sharding);
+  }
+  return newOp.getResult();
+}
+
+#define DEFINE_BINARY_OP_CREATE(OpTy)                                          \
+  inline Value OpTy##Create(                                                   \
+      OpBuilder &builder, Location loc, Value lhs, Value rhs,                  \
+      std::optional<sdy::TensorShardingPerValueAttr> sharding =                \
+          std::nullopt) {                                                      \
+    return BinaryOpCreate<stablehlo::OpTy>(builder, loc, lhs, rhs, sharding);  \
+  }
+
+DEFINE_BINARY_OP_CREATE(AddOp)
+DEFINE_BINARY_OP_CREATE(MulOp)
+DEFINE_BINARY_OP_CREATE(SubtractOp)
+DEFINE_BINARY_OP_CREATE(DivOp)
 
 // walk back starting from `input` and track the operations to determine if
 // only part of the matrix is populated.

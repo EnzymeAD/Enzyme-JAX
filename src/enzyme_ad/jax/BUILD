@@ -744,6 +744,7 @@ cc_library(
         ":EnzymeXLACanonicalizers",
         ":EnzymeXLADialectUtils",
         ":EnzymeXLAOpsIncGen",
+        "@com_google_absl//absl/status",
         "@enzyme//:EnzymeMLIR",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:AffineDialect",
