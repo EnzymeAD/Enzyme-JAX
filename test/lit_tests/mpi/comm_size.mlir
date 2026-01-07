@@ -2,8 +2,7 @@
 
 module {
   func.func @main() -> tensor<i32> attributes {enzymexla.memory_effects = ["read", "write", "allocate", "free"]} {
-    %c = stablehlo.constant dense<-1> : tensor<i32>
-    %0 = enzymexla.mpi.comm_size(%c) : (tensor<i32>) -> tensor<i32>
+    %0 = enzymexla.mpi.comm_size : tensor<i32>
     return %0 : tensor<i32>
   }
 }
