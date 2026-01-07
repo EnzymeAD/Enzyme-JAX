@@ -2870,9 +2870,6 @@ struct SliceBroadcast final
     if (!bcast)
       return failure();
 
-    if (!llvm::hasSingleElement(bcast->getUsers()))
-      return failure();
-
     SmallVector<int64_t> nbcast_idx;
 
     auto preShape = cast<RankedTensorType>(bcast.getOperand().getType());
