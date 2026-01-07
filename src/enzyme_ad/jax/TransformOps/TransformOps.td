@@ -870,6 +870,10 @@ def ApplyCSEScatterPatterns : EnzymeHLOPatternOp<
     "cse_scatter"> {
   let patterns = ["CSE<stablehlo::ScatterOp>"];
 }
+def ApplyCSEComparePatterns : EnzymeHLOPatternOp<
+    "cse_compare"> {
+  let patterns = ["CSE<stablehlo::CompareOp>"];
+}
 
 def CompareAbs : EnzymeHLOPatternOp<
     "compare_abs"> {
@@ -1244,6 +1248,51 @@ def ApplyConvolutionLICMPatterns : EnzymeHLOParameterizedPatternOp<
 
 def ApplyDynamicSliceLICMPatterns : EnzymeHLOParameterizedPatternOp<
     "dynamic_slice_licm"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
+def ApplyGatherLICMPatterns : EnzymeHLOParameterizedPatternOp<
+    "gather_licm"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
+def ApplyScatterLICMPatterns : EnzymeHLOParameterizedPatternOp<
+    "scatter_licm"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
+def ApplyIotaLICMPatterns : EnzymeHLOParameterizedPatternOp<
+    "iota_licm"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
   let assemblyFormat = "attr-dict";
   // TODO: this should be made better searchable.
