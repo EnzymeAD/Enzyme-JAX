@@ -23,7 +23,7 @@ module {
       %35 = stablehlo.dynamic_update_slice %iterArg_9, %cst, %c_5, %c_3, %c_4 : (tensor<6x3057x6128xf64>, tensor<4x1x6128xf64>, tensor<i32>, tensor<i32>, tensor<i32>) -> tensor<6x3057x6128xf64>
       
       %a33 = stablehlo.slice %35 [4:5, 0:1, 0:6128] : (tensor<6x3057x6128xf64>) -> tensor<1x1x6128xf64>
-      "test.use"(%a33) : tensor<1x1x6128xf64>) -> ()
+      "test.use"(%a33) : (tensor<1x1x6128xf64>) -> ()
 
       %33 = stablehlo.slice %35 [4:5, 0:3056, 0:6128] : (tensor<6x3057x6128xf64>) -> tensor<1x3056x6128xf64>
       // was originally 0:3056, changed for better test
