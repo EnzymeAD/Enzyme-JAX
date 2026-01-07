@@ -3974,10 +3974,18 @@ struct SplitParallelInductions
         auto findBasePattern = [](Value iv, AffineExpr root,
                                   ValueRange operands, ValueOrInt &base,
                                   bool &legal, bool &hasRemainder) {
-          SmallVector<AffineExpr> todo = {root};
+          SmallVector<std::pair<AffineExpr, ssize_t>> todo = {{root, -1}};
           while (!todo.empty()) {
-            auto subExpr = todo.back();
+            auto &&[subExpr, modprefix] = todo.back();
             todo.pop_back();
+
+            bool recur = true;
+            if (auto dimExpr = dyn_cast<AffineDimExpr>(subExpr)) {
+              if (modprefix != -1) {
+                subExpr = dimExpr % modprefix;
+                recur = false;
+              }
+            }
 
             if (auto binExpr = dyn_cast<AffineBinaryOpExpr>(subExpr)) {
               auto dimExpr = dyn_cast<AffineDimExpr>(binExpr.getLHS());
@@ -3986,8 +3994,38 @@ struct SplitParallelInductions
               if (!dimExpr || operands[dimExpr.getPosition()] != iv ||
                   (kind != AffineExprKind::FloorDiv &&
                    kind != AffineExprKind::Mod)) {
-                todo.push_back(binExpr.getLHS());
-                todo.push_back(binExpr.getRHS());
+
+                if (!recur)
+                  continue;
+
+                if (kind == AffineExprKind::Mod) {
+                  if (auto constRHS =
+                          dyn_cast<AffineConstantExpr>(binExpr.getRHS())) {
+                    todo.emplace_back(binExpr.getLHS(), constRHS.getValue());
+                    continue;
+                  }
+                }
+
+                if (kind == AffineExprKind::Mul) {
+                  if (auto constRHS =
+                          dyn_cast<AffineConstantExpr>(binExpr.getRHS())) {
+                    if (modprefix != -1 && constRHS.getValue() > 0 &&
+                        modprefix % constRHS.getValue() == 0) {
+                      todo.emplace_back(binExpr.getLHS(),
+                                        modprefix / constRHS.getValue());
+                      continue;
+                    }
+                  }
+                }
+
+                if (kind == AffineExprKind::Add) {
+                  todo.emplace_back(binExpr.getLHS(), modprefix);
+                  todo.emplace_back(binExpr.getRHS(), modprefix);
+                  continue;
+                }
+
+                todo.emplace_back(binExpr.getLHS(), -1);
+                todo.emplace_back(binExpr.getRHS(), -1);
                 continue;
               }
 
@@ -4004,6 +4042,8 @@ struct SplitParallelInductions
               }
 
               if (kind == AffineExprKind::Mod) {
+                if (newBase == 0)
+                  continue;
                 hasRemainder = true;
               }
 
@@ -4084,7 +4124,8 @@ struct SplitParallelInductions
           continue;
         }
 
-        if (ubound0 == mlir::getAffineConstantExpr(0, op.getContext())) {
+        if (ubound0 == mlir::getAffineConstantExpr(0, op.getContext()) ||
+            ubound0 == mlir::getAffineConstantExpr(1, op.getContext())) {
           continue;
         }
 
