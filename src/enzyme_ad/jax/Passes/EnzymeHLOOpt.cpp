@@ -16379,7 +16379,9 @@ struct DUSDUSToDUSExtend
 
       auto prestart = starts;
       prestart[diffidx] = idxs[0] + tys[0].getShape()[diffidx];
-      auto prelimit = llvm::to_vector(tys[0].getShape());
+      auto prelimit = prestart;
+      for (size_t i = 0; i < dus.getStartIndices().size(); i++)
+        prelimit[i] += tys[0].getShape()[i];
       prelimit[diffidx] = idxs[1];
       auto preslice =
           stablehlo::SliceOp::create(rewriter, dus.getLoc(), dus2.getOperand(),
@@ -16408,7 +16410,9 @@ struct DUSDUSToDUSExtend
 
       auto prestart = starts;
       prestart[diffidx] = idxs[1] + tys[1].getShape()[diffidx];
-      auto prelimit = llvm::to_vector(tys[0].getShape());
+      auto prelimit = prestart;
+      for (size_t i = 0; i < dus.getStartIndices().size(); i++)
+        prelimit[i] += tys[0].getShape()[i];
       prelimit[diffidx] = idxs[0];
       auto preslice =
           stablehlo::SliceOp::create(rewriter, dus.getLoc(), dus2.getOperand(),
