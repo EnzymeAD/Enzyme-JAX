@@ -16224,6 +16224,214 @@ static bool mustReadMemoryWrittenTo(stablehlo::SliceOp slice,
   return true;
 }
 
+// Returns true if the data returned by this slice could equivalently be written
+// as a slice of this other operand
+static bool sliceOperandIsEquivalentTo(stablehlo::SliceOp slice,
+                                       Value operand) {
+  while (true) {
+    if (operand == slice.getOperand())
+      return true;
+    if (auto dus = operand.getDefiningOp<stablehlo::DynamicUpdateSliceOp>()) {
+      if (!mayReadMemoryWrittenTo(slice, dus)) {
+        operand = dus.getOperand();
+        continue;
+      }
+    }
+  }
+  return false;
+}
+
+struct DUSDUSToDUSExtend
+    : public CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp,
+                                     DUSDUSToDUSExtend> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DynamicUpdateSliceOp dus,
+                                    PatternRewriter &rewriter) const {
+
+    auto slice = dus.getUpdate().getDefiningOp<stablehlo::SliceOp>();
+
+    if (!slice)
+      return failure();
+    auto dus2 =
+        dus.getOperand().getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
+
+    if (!dus2)
+      return failure();
+
+    if (!sliceOperandIsEquivalentTo(slice, dus2.getOperand()))
+      return failure();
+
+    auto slice2 = dus2.getUpdate().getDefiningOp<stablehlo::SliceOp>();
+
+    if (!slice2)
+      return failure();
+
+    if (!sliceOperandIsEquivalentTo(slice2, dus2.getOperand()))
+      return failure();
+
+    SmallVector<stablehlo::SliceOp> middleSlices;
+    for (auto u : dus2.getResult().getUsers()) {
+      if (u == dus)
+        continue;
+      if (auto midslice = dyn_cast<stablehlo::SliceOp>(u)) {
+        if (mayReadMemoryWrittenTo(midslice, dus)) {
+          return failure();
+        }
+        middleSlices.push_back(midslice);
+        continue;
+      }
+      return failure();
+    }
+
+    RankedTensorType tys[2];
+    stablehlo::DynamicUpdateSliceOp duses[2] = {dus, dus2};
+    for (auto en : llvm::enumerate(duses)) {
+      auto ty = dyn_cast<RankedTensorType>(en.value().getUpdate().getType());
+      if (!ty)
+        return failure();
+      tys[en.index()] = ty;
+    }
+
+    if (dus.getOperand().getType() != dus2.getOperand().getType())
+      return failure();
+
+    ssize_t diffidx = -1;
+    SmallVector<int64_t> starts;
+    for (size_t i = 0; i < dus.getStartIndices().size(); i++) {
+      DenseIntElementsAttr startattr;
+      if (!matchPattern(dus.getStartIndices()[i], m_Constant(&startattr)))
+        return failure();
+      int64_t ival = (*startattr.begin()).getSExtValue();
+      starts.push_back(ival);
+
+      if (dus.getStartIndices()[i] == dus2.getStartIndices()[i]) {
+        continue;
+      }
+      if (diffidx != -1) {
+        return failure();
+      }
+      diffidx = i;
+    }
+
+    if (diffidx == -1) {
+      for (size_t i = 0; i < dus.getStartIndices().size(); i++) {
+        if (tys[0].getShape()[i] == tys[1].getShape()[i])
+          continue;
+        if (diffidx != -1) {
+          return failure();
+        }
+        diffidx = i;
+      }
+    }
+
+    if (diffidx == -1) {
+      return failure();
+    }
+
+    // Sizes must be the same except for the differing index
+    for (size_t i = 0; i < dus.getStartIndices().size(); i++) {
+      if (slice.getStrides()[i] != 1)
+        return failure();
+      if (slice2.getStrides()[i] != 1)
+        return failure();
+
+      if (i == diffidx)
+        continue;
+      if (tys[0].getShape()[i] != tys[1].getShape()[i])
+        return failure();
+
+      if (slice.getStartIndices()[i] != starts[i])
+        return failure();
+      if (slice2.getStartIndices()[i] != starts[i])
+        return failure();
+      if (slice.getType().getShape()[i] != tys[0].getShape()[i])
+        return failure();
+      if (slice2.getType().getShape()[i] != tys[0].getShape()[i])
+        return failure();
+    }
+
+    int64_t idxs[2];
+
+    for (auto en : llvm::enumerate(duses)) {
+      auto val = en.value().getStartIndices()[diffidx];
+      DenseIntElementsAttr startattr;
+      if (!matchPattern(val, m_Constant(&startattr))) {
+        return failure();
+      }
+      int64_t ival = (*startattr.begin()).getSExtValue();
+      idxs[en.index()] = ival;
+    }
+
+    // We have dus(dus2(operand, update2, start=idxs[1]), update1,
+    // start=idxs[0])
+    //
+    // only one index differs, which may differ in start, size, or both
+    //
+    if (idxs[0] + tys[0].getShape()[diffidx] < idxs[1] &&
+        slice.getStartIndices()[diffidx] ==
+            idxs[0] + tys[0].getShape()[diffidx] &&
+        slice2.getLimitIndices()[diffidx] == idxs[1]) {
+      // Case 1:
+      // [idxs[0]   ... update1 ...  idxs[0] + tys[0].size] .. data .. [idxs[1]
+      // .... update2 ...   ]
+
+      auto prestart = starts;
+      prestart[diffidx] = idxs[0] + tys[0].getShape()[diffidx];
+      auto prelimit = llvm::to_vector(tys[0].getShape());
+      prelimit[diffidx] = idxs[1];
+      auto preslice =
+          stablehlo::SliceOp::create(rewriter, dus.getLoc(), dus2.getOperand(),
+                                     prestart, prelimit, slice.getStrides());
+
+      auto preextend = enzymexla::ExtendOp::create(
+          rewriter, dus.getLoc(), preslice, tys[0].getShape()[diffidx],
+          tys[1].getShape()[diffidx], diffidx);
+
+      auto repdus =
+          rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
+              dus, dus2.getOperand(), preextend, dus.getStartIndices());
+      for (auto midslice : middleSlices) {
+        rewriter.modifyOpInPlace(
+            midslice, [&]() { midslice.getOperandMutable().assign(repdus); });
+      }
+      rewriter.eraseOp(dus2);
+      return success();
+    } else if (idxs[1] + tys[1].getShape()[diffidx] < idxs[0] &&
+               slice2.getStartIndices()[diffidx] ==
+                   idxs[1] + tys[1].getShape()[diffidx] &&
+               slice.getLimitIndices()[diffidx] == idxs[0]) {
+      // Case 2:
+      // [idxs[1]   ... update2 ...  idxs[1] + tys[1].size] .. data .. [idxs[0]
+      // .... update1 ...   ]
+
+      auto prestart = starts;
+      prestart[diffidx] = idxs[1] + tys[1].getShape()[diffidx];
+      auto prelimit = llvm::to_vector(tys[0].getShape());
+      prelimit[diffidx] = idxs[0];
+      auto preslice =
+          stablehlo::SliceOp::create(rewriter, dus.getLoc(), dus2.getOperand(),
+                                     prestart, prelimit, slice.getStrides());
+
+      auto preextend = enzymexla::ExtendOp::create(
+          rewriter, dus.getLoc(), preslice, tys[1].getShape()[diffidx],
+          tys[0].getShape()[diffidx], diffidx);
+
+      auto repdus =
+          rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
+              dus, dus2.getOperand(), preextend, dus2.getStartIndices());
+      for (auto midslice : middleSlices) {
+        rewriter.modifyOpInPlace(
+            midslice, [&]() { midslice.getOperandMutable().assign(repdus); });
+      }
+      rewriter.eraseOp(dus2);
+      return success();
+    }
+
+    return failure();
+  }
+};
+
 struct SinkDUS : public CheckedOpRewritePattern<stablehlo::WhileOp, SinkDUS> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
