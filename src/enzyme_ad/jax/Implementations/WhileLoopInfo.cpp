@@ -1,4 +1,5 @@
 #include <cassert>
+#include <optional>
 #ifdef __clang__
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wmissing-braces"
@@ -947,6 +948,9 @@ WhileLoopInfo::computeBounds(Operation *op) {
             if (auto intType =
                     dyn_cast<IntegerType>(tensorType.getElementType())) {
               unsigned outBitWidth = intType.getWidth();
+              if (boundsBitWidth < outBitWidth) {
+                return std::nullopt;
+              }
               APInt outMin =
                   APInt::getSignedMinValue(outBitWidth).sext(boundsBitWidth);
               APInt outMax =

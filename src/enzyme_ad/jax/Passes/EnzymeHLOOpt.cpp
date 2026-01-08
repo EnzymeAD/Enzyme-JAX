@@ -11720,11 +11720,12 @@ struct SliceReshapeDynamicSlice final
     if (!reshape)
       return failure();
 
-    if (!llvm::hasSingleElement(reshape->getUsers()))
-      return failure();
-
     auto prev = reshape.getOperand().getDefiningOp<stablehlo::DynamicSliceOp>();
     if (!prev)
+      return failure();
+
+    if (!llvm::hasSingleElement(reshape->getUsers()) &&
+        !DSDSSimplificationSingleUserCheckException({reshape, op, prev}))
       return failure();
 
     SmallVector<int64_t> starts, limits, strides;
