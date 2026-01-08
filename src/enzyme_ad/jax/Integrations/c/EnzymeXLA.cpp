@@ -122,3 +122,19 @@ MlirAttribute enzymexlaGuaranteedAnalysisResultAttrGet(MlirContext ctx,
   return wrap(mlir::enzymexla::GuaranteedAnalysisResultAttr::get(unwrap(ctx),
                                                                  analysis));
 }
+
+MlirAttribute enzymexlaMPIDatatypeAttrGet(MlirContext ctx, int32_t mode) {
+  mlir::enzymexla::MPIDatatype datatype;
+  switch (mode) {
+  case 0:
+    datatype = mlir::enzymexla::MPIDatatype::U;
+    break;
+  case 1:
+    datatype = mlir::enzymexla::MPIDatatype::L;
+    break;
+  case 2:
+    datatype = mlir::enzymexla::MPIDatatype::F;
+    break;
+  }
+  return wrap(mlir::enzymexla::MPIDatatypeAttr::get(unwrap(ctx), datatype));
+}
