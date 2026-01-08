@@ -477,6 +477,9 @@ getBoundsFromIR(Value val, unsigned bitWidth) {
   return std::make_pair(minVal, maxVal);
 }
 
+bool checkNotEqual(llvm::APInt a, llvm::APInt b);
+bool checkNotEqual(llvm::APFloat a, llvm::APFloat b);
+
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type Ty);
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type Ty,
                           mlir::Operation *op, PatternRewriter &rewriter);

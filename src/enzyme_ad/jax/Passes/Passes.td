@@ -1152,6 +1152,15 @@ def EnzymeBatchToStableHLOPass : Pass<"enzyme-batch-to-stablehlo"> {
   ];
 }
 
+def PartialSymmetryAnnotatePass : Pass<"partial-symmetry-annotate", "ModuleOp"> {
+  let summary = "Annotate operations using partial symmetry analysis";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "enzymexla::EnzymeXLADialect",
+    "func::FuncDialect",
+  ];
+}
+
 def ConvertAllConstantsToSplattedConstantPass : Pass<"convert-all-constants-to-splatted-constant", "ModuleOp"> {
   let summary = "Convert all constants to splatted constants. This is supposed to be used for debugging purposes when dumping the module.";
   let dependentDialects = [
