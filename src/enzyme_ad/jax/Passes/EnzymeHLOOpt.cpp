@@ -29325,16 +29325,29 @@ struct ReduceWindowWrapSimplify final
       return failure();
     }
 
-    auto wrapSize = wrapInputTy.getDimSize(wrapDim) - 1;
-    if ((wrapOp.getRhs() != wrapSize && wrapOp.getLhs() == 0) ||
-        (wrapOp.getLhs() != wrapSize && wrapOp.getRhs() == 0)) {
-      return failure();
+    int64_t wrapSize;
+    bool origSideLhs;
+    if (wrapOp.getLhs() == 0) {
+      wrapSize = wrapOp.getRhs();
+      origSideLhs = false;
+    } else if (wrapOp.getRhs() == 0) {
+      wrapSize = wrapOp.getLhs();
+      origSideLhs = true;
+    } else {
+      return rewriter.notifyMatchFailure(wrapOp, "needs rhs/lhs to be 0");
+    }
+
+    auto dimSize = wrapInputTy.getDimSize(wrapDim);
+
+    if (wrapSize <= dimSize / 2 || wrapSize > dimSize) {
+      return rewriter.notifyMatchFailure(wrapOp,
+                                         "no savings by switching side");
     }
 
     // being overly conservative for now, we can expand as needed
     // All values must be 1s except:
     //   1. windowDims along wrapDim == 2
-    //   2. windowDilations along wrapDim == size(wrapInput, dim) - 1
+    //   2. windowDilations along wrapDim == wrapSize
     for (size_t i = 0; i < rank; i++) {
       if (i == wrapDim) {
         if (windowDims[i] != 2 ||
@@ -29362,9 +29375,27 @@ struct ReduceWindowWrapSimplify final
       return failure();
     }
 
+    if (wrapSize == dimSize) {
+      // this is effectively op(a, a)
+      auto result = commonReduceWindowOp.createEquivalentOperation(
+          rewriter, op.getLoc(), wrapInput, wrapInput);
+      rewriter.replaceOp(op, result);
+      return success();
+    }
+
+    int64_t newLhs = 0, newRhs = 0, newDilation = dimSize - wrapSize;
+    if (origSideLhs) {
+      newRhs = newDilation;
+    } else {
+      newLhs = newDilation;
+    }
+
     auto newWrapOp = enzymexla::WrapOp::create(rewriter, op.getLoc(), wrapInput,
-                                               1, 0, wrapDim);
+                                               newLhs, newRhs, wrapDim);
+
     SmallVector<int64_t> newWindowDilations(rank, 1);
+    newWindowDilations[wrapDim] = newDilation;
+
     auto newReduceWindowOp = stablehlo::ReduceWindowOp::create(
         rewriter, op.getLoc(), ValueRange(newWrapOp), op.getInitValues(),
         op.getWindowDimensionsAttr(), op.getWindowStridesAttr(),
