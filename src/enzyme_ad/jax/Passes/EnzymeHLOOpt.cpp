@@ -16368,7 +16368,7 @@ struct DUSDUSToDUSExtend
     // start=idxs[0])
     //
     // only one index differs, which may differ in start, size, or both
-    //
+    rewriter.setInsertionPoint(dus2);
     if (idxs[0] + tys[0].getShape()[diffidx] < idxs[1] &&
         slice.getStartIndices()[diffidx] ==
             idxs[0] + tys[0].getShape()[diffidx] &&
