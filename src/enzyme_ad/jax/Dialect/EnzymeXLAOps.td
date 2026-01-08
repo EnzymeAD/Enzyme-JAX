@@ -1094,7 +1094,6 @@ def MPISendOp : EnzymeXLA_Op<"mpi.send", []> {
     TensorOf<[I32]> : $count,
     TensorOf<[I32]> : $dest,
     TensorOf<[I32]> : $tag,
-    /* StrAttr:$datatype */
     EnzymeXLA_MPIDatatypeAttr:$datatype
   );
 
@@ -1110,7 +1109,7 @@ def MPIRecvOp : EnzymeXLA_Op<"mpi.recv", []> {
     TensorOf<[I32]> : $count,
     TensorOf<[I32]> : $source,
     TensorOf<[I32]> : $tag,
-    StrAttr:$datatype
+    EnzymeXLA_MPIDatatypeAttr:$datatype
   );
 
   let results = (
@@ -1129,7 +1128,7 @@ def MPIIsendOp : EnzymeXLA_Op<"mpi.isend", []> {
     TensorOf<[I32]> : $count,
     TensorOf<[I32]> : $dest,
     TensorOf<[I32]> : $tag,
-    StrAttr:$datatype
+    EnzymeXLA_MPIDatatypeAttr:$datatype
   );
 
   let results = (
@@ -1148,7 +1147,7 @@ def MPIIrecvOp : EnzymeXLA_Op<"mpi.irecv", []> {
     TensorOf<[I32]> : $count,
     TensorOf<[I32]> : $source,
     TensorOf<[I32]> : $tag,
-    StrAttr:$datatype
+    EnzymeXLA_MPIDatatypeAttr:$datatype
   );
 
   let results = (
@@ -1174,7 +1173,7 @@ def MPIAllreduceOp : EnzymeXLA_Op<"mpi.allreduce", []> {
     ins AnyTensor : $sendbuf,
     AnyTensor : $inbuf,
     TensorOf<[I32]> : $count,
-    StrAttr:$datatype,
+    EnzymeXLA_MPIDatatypeAttr:$datatype,
     StrAttr:$op
   );
 
