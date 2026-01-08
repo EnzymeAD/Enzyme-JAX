@@ -127,14 +127,122 @@ MlirAttribute enzymexlaMPIDatatypeAttrGet(MlirContext ctx, int32_t mode) {
   mlir::enzymexla::MPIDatatype datatype;
   switch (mode) {
   case 0:
-    datatype = mlir::enzymexla::MPIDatatype::MPI_DOUBLE;
+    datatype = mlir::enzymexla::MPIDatatype::MPI_DATATYPE_NULL;
     break;
   case 1:
-    datatype = mlir::enzymexla::MPIDatatype::MPI_INT;
+    datatype = mlir::enzymexla::MPIDatatype::MPI_BYTE;
     break;
   case 2:
+    datatype = mlir::enzymexla::MPIDatatype::MPI_CHAR;
+    break;
+  case 3:
+    datatype = mlir::enzymexla::MPIDatatype::MPI_SHORT;
+    break;
+  case 4:
+    datatype = mlir::enzymexla::MPIDatatype::MPI_INT;
+    break;
+  case 5:
     datatype = mlir::enzymexla::MPIDatatype::MPI_LONG;
     break;
+  case 6:
+    datatype = mlir::enzymexla::MPIDatatype::MPI_FLOAT;
+    break;
+  case 7:
+    datatype = mlir::enzymexla::MPIDatatype::MPI_DOUBLE;
+    break;
+  case 8:
+    datatype = mlir::enzymexla::MPIDatatype::MPI_UNSIGNED_CHAR;
+    break;
+  case 9:
+    datatype = mlir::enzymexla::MPIDatatype::MPI_SIGNED_CHAR;
+    break;
+  case 10:
+    datatype = mlir::enzymexla::MPIDatatype::MPI_UNSIGNED_SHORT;
+    break;
+  case 11:
+    datatype = mlir::enzymexla::MPIDatatype::MPI_UNSIGNED_LONG;
+    break;
+  case 12:
+    datatype = mlir::enzymexla::MPIDatatype::MPI_UNSIGNED;
+    break;
+  case 13:
+    datatype = mlir::enzymexla::MPIDatatype::MPI_WCHAR;
+    break;
+  case 14:
+    datatype = mlir::enzymexla::MPIDatatype::MPI_LONG_LONG_INT;
+    break;
+  case 15:
+    datatype = mlir::enzymexla::MPIDatatype::MPI_UNSIGNED_LONG_LONG;
+    break;
+  case 16:
+    datatype = mlir::enzymexla::MPIDatatype::MPI_INT8_T;
+    break;
+  case 17:
+    datatype = mlir::enzymexla::MPIDatatype::MPI_UINT8_T;
+    break;
+  case 18:
+    datatype = mlir::enzymexla::MPIDatatype::MPI_INT16_T;
+    break;
+  case 19:
+    datatype = mlir::enzymexla::MPIDatatype::MPI_UINT16_T;
+    break;
+  case 20:
+    datatype = mlir::enzymexla::MPIDatatype::MPI_INT32_T;
+    break;
+  case 21:
+    datatype = mlir::enzymexla::MPIDatatype::MPI_UINT32_T;
+    break;
+  case 22:
+    datatype = mlir::enzymexla::MPIDatatype::MPI_INT64_T;
+    break;
+  case 23:
+    datatype = mlir::enzymexla::MPIDatatype::MPI_UINT64_T;
+    break;
+  case 24:
+    datatype = mlir::enzymexla::MPIDatatype::MPI_AINT;
+    break;
+  case 25:
+    datatype = mlir::enzymexla::MPIDatatype::MPI_OFFSET;
+    break;
+  case 26:
+    datatype = mlir::enzymexla::MPIDatatype::MPI_C_BOOL;
+    break;
+  case 27:
+    datatype = mlir::enzymexla::MPIDatatype::MPI_C_FLOAT_COMPLEX;
+    break;
+  case 28:
+    datatype = mlir::enzymexla::MPIDatatype::MPI_C_DOUBLE_COMPLEX;
+    break;
+  case 29:
+    datatype = mlir::enzymexla::MPIDatatype::MPI_COUNT;
+    break;
+  case 30:
+    datatype = mlir::enzymexla::MPIDatatype::MPI_PACKED;
+    break;
+  case 31:
+    datatype = mlir::enzymexla::MPIDatatype::MPI_FLOAT_INT;
+    break;
+  case 32:
+    datatype = mlir::enzymexla::MPIDatatype::MPI_DOUBLE_INT;
+    break;
+  case 33:
+    datatype = mlir::enzymexla::MPIDatatype::MPI_LONG_DOUBLE_INT;
+    break;
+  case 34:
+    datatype = mlir::enzymexla::MPIDatatype::MPI_LONG_INT;
+    break;
+  case 35:
+    datatype = mlir::enzymexla::MPIDatatype::MPI_SHORT_INT;
+    break;
+  case 36:
+    datatype = mlir::enzymexla::MPIDatatype::MPI_UB;
+    break;
+  case 37:
+    datatype = mlir::enzymexla::MPIDatatype::MPI_LB;
+    break;
+  default:
+    // Handle invalid mode
+    llvm_unreachable("Invalid MPI datatype mode");
   }
   return wrap(mlir::enzymexla::MPIDatatypeAttr::get(unwrap(ctx), datatype));
 }
