@@ -181,4 +181,9 @@ def EnzymeXLA_MPIDatatype : I32EnumAttr<"MPIDatatype",
   let cppNamespace = "::mlir::enzymexla";
 }
 
+def EnzymeXLA_MPIDatatypeAttr : EnumAttr<EnzymeXLA_Dialect,
+    EnzymeXLA_MPIDatatype, "datatype"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
 #endif // ENZYMEXLA_ATTRS
