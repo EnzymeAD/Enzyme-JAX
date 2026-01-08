@@ -8,8 +8,7 @@
             "extensions": [
                 "bazelbuild.vscode-bazel",
                 "ms-vscode.cpptools",
-                "ms-python.python",
-                "llvm-vs-code-extensions.vscode-clangd"
+                "ms-python.python"
             ]
         }
     },
