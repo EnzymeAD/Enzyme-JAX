@@ -878,7 +878,7 @@ def ApplyCSEComparePatterns : EnzymeHLOPatternOp<
     "cse_compare"> {
   let patterns = ["CSE<stablehlo::CompareOp>"];
 }
-def ApplyCSEComparePatterns : EnzymeHLOPatternOp<
+def ApplyCSESelectPatterns : EnzymeHLOPatternOp<
     "cse_select"> {
   let patterns = ["CSE<stablehlo::SelectOp>"];
 }
