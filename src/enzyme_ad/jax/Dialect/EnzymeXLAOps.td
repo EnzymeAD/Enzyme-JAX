@@ -1124,7 +1124,8 @@ def MPISendOp : EnzymeXLA_Op<"mpi.send", []> {
     TensorOf<[I32]> : $count,
     TensorOf<[I32]> : $dest,
     TensorOf<[I32]> : $tag,
-    StrAttr:$datatype
+    /* StrAttr:$datatype */
+    EnzymeXLA_LapackUploAttr:$uplo
   );
 
   let assemblyFormat = "`(` operands `)` attr-dict `:` type(operands)";
