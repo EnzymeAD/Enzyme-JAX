@@ -16237,6 +16237,7 @@ static bool sliceOperandIsEquivalentTo(stablehlo::SliceOp slice,
         continue;
       }
     }
+    return false;
   }
   return false;
 }
