@@ -431,7 +431,9 @@ struct MPISendOpLowering : public OpRewritePattern<enzymexla::MPISendOp> {
       std::string mpiFunctionName = "MPI_Send";
 
       // get the MPI datatype
-      auto datatypeName = op.getDatatype();
+      // auto datatypeName = op.getDatatype();
+      auto datatype = op.getDatatype();
+      StringRef datatypeName = stringifyMPIDatatype(datatype);
 
       // For now we just hard code MPI_COMM_WORLD as the communicator.
       // TODO make this more flexible
