@@ -237,6 +237,7 @@ def optimization_passes(
         "select_comp_iota_const_simplify<1>",
         "sign_abs_simplify<1>",
         "broadcastindim_is_reshape",
+        "reduce_window_wrap<1>",
         "slice_reduce_window<1>",
         "while_deadresult",
         "while_dus",
