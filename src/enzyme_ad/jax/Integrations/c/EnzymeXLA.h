@@ -27,8 +27,8 @@ enzymexlaLapackTransposeAttrGet(MlirContext ctx, int32_t mode);
 MLIR_CAPI_EXPORTED MlirAttribute enzymexlaLapackSideAttrGet(MlirContext ctx,
                                                             uint8_t left_side);
 
-// MLIR_CAPI_EXPORTED MlirAttribute enzymexlaLapackUploAttrGet(MlirContext ctx,
-//                                                             int32_t mode);
+MLIR_CAPI_EXPORTED MlirAttribute enzymexlaLapackUploAttrGet(MlirContext ctx,
+                                                            int32_t mode);
 
 MLIR_CAPI_EXPORTED MlirAttribute enzymexlaQRAlgorithmAttrGet(MlirContext ctx,
                                                              int32_t mode);
