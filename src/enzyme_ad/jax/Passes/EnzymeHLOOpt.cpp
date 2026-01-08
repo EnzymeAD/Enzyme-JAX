@@ -21026,6 +21026,39 @@ struct ExtendSplat
   }
 };
 
+struct ExtendPad
+    : public CheckedOpRewritePattern<enzymexla::ExtendOp, ExtendPad> {
+  using CheckedOpRewritePattern<enzymexla::ExtendOp,
+                                ExtendPad>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(enzymexla::ExtendOp extend,
+                                    PatternRewriter &rewriter) const {
+
+    auto pad = extend.getOperand().getDefiningOp<stablehlo::PadOp>();
+    if (!pad)
+      return failure();
+
+    if (pad.getEdgePaddingLow()[extend.getDimension()] != 0)
+      return failure();
+
+    if (pad.getEdgePaddingHigh()[extend.getDimension()] != 0)
+      return failure();
+
+    if (pad.getInteriorPadding()[extend.getDimension()] != 0)
+      return failure();
+
+    auto newExtend = enzymexla::ExtendOp::create(
+        rewriter, extend.getLoc(), pad.getOperand(), extend.getLhs(),
+        extend.getRhs(), extend.getDimension());
+
+    rewriter.replaceOpWithNewOp<stablehlo::PadOp>(
+        extend, newExtend, pad.getPaddingValue(), pad.getEdgePaddingLow(),
+        pad.getEdgePaddingHigh(), pad.getInteriorPadding());
+
+    return success();
+  }
+};
+
 template <typename EnzymeOp>
 LogicalResult commUnaryOpElementwise(bool onlySingleUser, EnzymeOp op,
                                      PatternRewriter &rewriter) {

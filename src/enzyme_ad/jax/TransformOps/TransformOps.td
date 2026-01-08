@@ -2067,6 +2067,11 @@ def SimplifyRotate : EnzymeHLOPatternOp<
   let patterns = ["SimplifyBoundary<enzymexla::RotateOp>"];
 }
 
+def ExtendPad : EnzymeHLOPatternOp<
+  "extend_pad"> {
+  let patterns = ["ExtendPad"];
+}
+
 def SliceExtend : EnzymeHLOPatternOp<
   "slice_extend"> {
   let patterns = ["SliceExtend"];
