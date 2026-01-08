@@ -133,4 +133,22 @@ def EnzymeXLA_GuaranteedAnalysisResult : I32EnumAttr<"GuaranteedAnalysisResult",
 def EnzymeXLA_GuaranteedAnalysisResultAttr : EnumAttr<EnzymeXLA_Dialect,
     EnzymeXLA_GuaranteedAnalysisResult, "guaranteed">;
 
+// MPI
+
+def EnzymeXLA_MPIDatatype : I32EnumAttr<"MPIDatatype",
+    "MPI Datatype",
+    [
+      I32EnumAttrCase<"U", 0>,
+      I32EnumAttrCase<"L", 1>,
+      I32EnumAttrCase<"F", 2>
+    ]> {
+  let genSpecializedAttr = 0;
+  let cppNamespace = "::mlir::enzymexla";
+}
+
+def EnzymeXLA_MPIDatatypeAttr : EnumAttr<EnzymeXLA_Dialect,
+    EnzymeXLA_MPIDatatype, "datatype"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
 #endif // ENZYMEXLA_ATTRS
