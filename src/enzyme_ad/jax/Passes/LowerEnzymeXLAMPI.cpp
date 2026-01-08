@@ -431,7 +431,6 @@ struct MPISendOpLowering : public OpRewritePattern<enzymexla::MPISendOp> {
       std::string mpiFunctionName = "MPI_Send";
 
       // get the MPI datatype
-      // auto datatypeName = op.getDatatype();
       auto datatype = op.getDatatype();
       StringRef datatypeName = stringifyMPIDatatype(datatype);
 
@@ -597,7 +596,8 @@ struct MPIRecvOpLowering : public OpRewritePattern<enzymexla::MPIRecvOp> {
       std::string mpiFunctionName = "MPI_Recv";
 
       // get the MPI datatype
-      auto datatypeName = op.getDatatype();
+      auto datatype = op.getDatatype();
+      StringRef datatypeName = stringifyMPIDatatype(datatype);
 
       // For now we just hard code MPI_COMM_WORLD as the communicator.
       // TODO make this more flexible
@@ -787,7 +787,8 @@ struct MPIIsendOpLowering : public OpRewritePattern<enzymexla::MPIIsendOp> {
       std::string mpiFunctionName = "MPI_Isend";
 
       // get the MPI datatype
-      auto datatypeName = op.getDatatype();
+      auto datatype = op.getDatatype();
+      StringRef datatypeName = stringifyMPIDatatype(datatype);
 
       // For now we just hard code MPI_COMM_WORLD as the communicator.
       // TODO make this more flexible
@@ -973,7 +974,8 @@ struct MPIIrecvOpLowering : public OpRewritePattern<enzymexla::MPIIrecvOp> {
       std::string mpiFunctionName = "MPI_Irecv";
 
       // get the MPI datatype
-      auto datatypeName = op.getDatatype();
+      auto datatype = op.getDatatype();
+      StringRef datatypeName = stringifyMPIDatatype(datatype);
 
       // For now we just hard code MPI_COMM_WORLD as the communicator.
       // TODO make this more flexible
@@ -1277,7 +1279,8 @@ struct MPIAllreduceOpLowering
       std::string mpiFunctionName = "MPI_Allreduce";
 
       // get the MPI datatype
-      auto datatypeName = op.getDatatype();
+      auto datatype = op.getDatatype();
+      StringRef datatypeName = stringifyMPIDatatype(datatype);
 
       // // TODO we just assume/hardcode for now
       // std::string mpiOpName = "MPI_SUM";
