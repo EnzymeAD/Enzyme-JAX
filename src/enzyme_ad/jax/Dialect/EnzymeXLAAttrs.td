@@ -138,9 +138,9 @@ def EnzymeXLA_GuaranteedAnalysisResultAttr : EnumAttr<EnzymeXLA_Dialect,
 def EnzymeXLA_MPIDatatype : I32EnumAttr<"MPIDatatype",
     "MPI Datatype",
     [
-      I32EnumAttrCase<"U", 0>,
-      I32EnumAttrCase<"L", 1>,
-      I32EnumAttrCase<"F", 2>
+      I32EnumAttrCase<"MPI_DOUBLE", 0>,
+      I32EnumAttrCase<"MPI_INT", 1>,
+      I32EnumAttrCase<"MPI_LONG", 2>
     ]> {
   let genSpecializedAttr = 0;
   let cppNamespace = "::mlir::enzymexla";
