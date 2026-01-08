@@ -127,13 +127,13 @@ MlirAttribute enzymexlaMPIDatatypeAttrGet(MlirContext ctx, int32_t mode) {
   mlir::enzymexla::MPIDatatype datatype;
   switch (mode) {
   case 0:
-    datatype = mlir::enzymexla::MPIDatatype::U;
+    datatype = mlir::enzymexla::MPIDatatype::MPI_DOUBLE;
     break;
   case 1:
-    datatype = mlir::enzymexla::MPIDatatype::L;
+    datatype = mlir::enzymexla::MPIDatatype::MPI_INT;
     break;
   case 2:
-    datatype = mlir::enzymexla::MPIDatatype::F;
+    datatype = mlir::enzymexla::MPIDatatype::MPI_LONG;
     break;
   }
   return wrap(mlir::enzymexla::MPIDatatypeAttr::get(unwrap(ctx), datatype));
