@@ -29289,6 +29289,93 @@ struct RecognizeFromConstant final
   }
 };
 
+struct ReduceWindowWrapSimplify final
+    : CheckedOpRewritePattern<stablehlo::ReduceWindowOp,
+                              ReduceWindowWrapSimplify> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceWindowOp op,
+                                    PatternRewriter &rewriter) {
+    if (op.getInputs().size() != 1) {
+      return failure();
+    }
+
+    auto input = op.getInputs()[0];
+    auto wrapOp = input.getDefiningOp<enzymexla::WrapOp>();
+    if (!wrapOp || !llvm::hasSingleElement(wrapOp->getUsers())) {
+      return failure();
+    }
+
+    auto wrapInput = wrapOp.getOperand();
+    auto wrapInputTy = cast<RankedTensorType>(wrapInput.getType());
+
+    auto inputTy = cast<RankedTensorType>(input.getType());
+    auto rank = inputTy.getRank();
+
+    auto windowDims = op.getWindowDimensions();
+    auto windowDilations = op.getWindowDilations();
+    auto windowStrides = op.getWindowStrides();
+    auto padding = op.getPadding();
+    auto baseDilations = op.getBaseDilations();
+
+    auto wrapDim = wrapOp.getDimension();
+
+    if (padding && !llvm::all_of(padding.value(),
+                                 [](auto pad_val) { return pad_val == 0; })) {
+      return failure();
+    }
+
+    auto wrapSize = wrapInputTy.getDimSize(wrapDim) - 1;
+    if ((wrapOp.getRhs() != wrapSize && wrapOp.getLhs() == 0) ||
+        (wrapOp.getLhs() != wrapSize && wrapOp.getRhs() == 0)) {
+      return failure();
+    }
+
+    // being overly conservative for now, we can expand as needed
+    // All values must be 1s except:
+    //   1. windowDims along wrapDim == 2
+    //   2. windowDilations along wrapDim == size(wrapInput, dim) - 1
+    for (size_t i = 0; i < rank; i++) {
+      if (i == wrapDim) {
+        if (windowDims[i] != 2 ||
+            (windowStrides && windowStrides.value()[i] != 1)) {
+          return failure();
+        }
+        if (!windowDilations || windowDilations.value()[i] != wrapSize) {
+          return failure();
+        }
+        continue;
+      }
+
+      if (windowDims[i] != 1 ||
+          (windowDilations && windowDilations.value()[i] != 1) ||
+          (windowStrides && windowStrides.value()[i] != 1) ||
+          (baseDilations && baseDilations.value()[i] != 1)) {
+        return failure();
+      }
+    }
+
+    auto commonReduceWindowOp = CheckCommonReduceWindowOp(op);
+
+    // We can optimize only for commutative ops
+    if (!commonReduceWindowOp.isCommutativeOp()) {
+      return failure();
+    }
+
+    auto newWrapOp = enzymexla::WrapOp::create(rewriter, op.getLoc(), wrapInput,
+                                               1, 0, wrapDim);
+    SmallVector<int64_t> newWindowDilations(rank, 1);
+    auto newReduceWindowOp = stablehlo::ReduceWindowOp::create(
+        rewriter, op.getLoc(), ValueRange(newWrapOp), op.getInitValues(),
+        op.getWindowDimensionsAttr(), op.getWindowStridesAttr(),
+        op.getBaseDilationsAttr(),
+        rewriter.getDenseI64ArrayAttr(newWindowDilations), op.getPaddingAttr());
+    newReduceWindowOp.getRegion().takeBody(op.getRegion());
+    rewriter.replaceOp(op, newReduceWindowOp);
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -30034,7 +30121,8 @@ struct EnzymeHLOOptPass
         ReduceDeleteDims,
         DotGeneralInsertDimContractionSimplification,
         FuseReshapeCollapseOrExpandDimsIntoReduce,
-        GatherOfScatterSimplify
+        GatherOfScatterSimplify,
+        ReduceWindowWrapSimplify
       >(context);
 
     patterns.add<ReshapeElementwise>(true, true, context);

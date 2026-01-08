@@ -1164,7 +1164,7 @@ bool isOnlyOpConstantBlock(mlir::Block *block,
   return stablehloReturnOp.getOperand(0) == op.getResult();
 }
 
-struct CheckCommonReduceOp {
+template <typename OpTy> struct CheckCommonReduceLikeOp {
 public:
   bool isAddReduce;
   bool isMinReduce;
@@ -1174,8 +1174,8 @@ public:
   bool isOrReduce;
   bool isXorReduce;
 
-  CheckCommonReduceOp(stablehlo::ReduceOp op) {
-    auto &region = op.getRegion();
+  CheckCommonReduceLikeOp(OpTy op) {
+    auto &region = op.getBody();
     if (region.getBlocks().size() != 1) {
       isAddReduce = false;
       isMinReduce = false;
@@ -1196,7 +1196,17 @@ public:
     isOrReduce = isOnlyOpBlock<stablehlo::OrOp, true, false>(&block);
     isXorReduce = isOnlyOpBlock<stablehlo::XorOp, true, false>(&block);
   }
+
+  bool isCommutativeOp() const {
+    return isAddReduce || isMinReduce || isMaxReduce || isMulReduce ||
+           isAndReduce || isOrReduce || isXorReduce;
+  }
 };
+
+// Type alias for backward compatibility
+using CheckCommonReduceOp = CheckCommonReduceLikeOp<stablehlo::ReduceOp>;
+using CheckCommonReduceWindowOp =
+    CheckCommonReduceLikeOp<stablehlo::ReduceWindowOp>;
 
 struct CheckCommonScatterOp {
 public:
