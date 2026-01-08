@@ -35,6 +35,7 @@
 #include "stablehlo/dialect/StablehloOps.h"
 
 #include <cassert>
+#include <cmath>
 #include <iterator>
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/Value.h>
@@ -1394,8 +1395,8 @@ absl::Status detectDiagonalTensor(stablehlo::ScatterOp scatterOp,
   auto isIotaLikeTensor = detectIotaLikeTensor(indices);
   if (isIotaLikeTensor) {
     auto iotaLikeTensor = isIotaLikeTensor.value();
-    if (iotaLikeTensor.dimension == 0 && iotaLikeTensor.start == 0 &&
-        iotaLikeTensor.scale == 1) {
+    if (iotaLikeTensor.dimension == 0 && isZeroAttr(iotaLikeTensor.start) &&
+        isOneAttr(iotaLikeTensor.scale)) {
       *outUpdates = updates;
       return absl::OkStatus();
     }
@@ -1417,19 +1418,105 @@ absl::Status detectDiagonalTensor(stablehlo::ScatterOp scatterOp,
   });
 }
 
-std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
-  if (!tensor)
-    return std::nullopt;
+namespace {
 
-  auto elemType =
-      cast<mlir::RankedTensorType>(tensor.getType()).getElementType();
-  if (!isa<mlir::IntegerType>(elemType))
+template <typename T>
+std::optional<IotaLikeTensor>
+detectIotaLikeTensorImpl(DenseElementsAttr denseAttr) {
+  auto constType = dyn_cast<RankedTensorType>(denseAttr.getType());
+  if (!constType) {
     return std::nullopt;
+  }
+  auto shape = constType.getShape();
+  auto elemType = constType.getElementType();
+  MLIRContext *ctx = denseAttr.getContext();
+
+  auto strides = computeStrides(shape);
+  bool isFloat = isa<FloatType>(elemType);
+
+  auto values = denseAttr.getValues<T>();
+  int64_t numElements = constType.getNumElements();
+
+  for (int64_t dim = 0; dim < constType.getRank(); dim++) {
+    bool isIotaAlongDim = true;
+    std::optional<double> detectedStart;
+    std::optional<double> detectedScale;
+
+    SmallVector<int64_t> indices;
+
+    for (int64_t idx = 0; idx < numElements && isIotaAlongDim; idx++) {
+      linearToMultiIndex(idx, strides, indices);
+
+      double actualValue;
+      if constexpr (std::is_same_v<T, APFloat>) {
+        actualValue = values[idx].convertToDouble();
+      } else if constexpr (std::is_same_v<T, APInt>) {
+        actualValue = static_cast<double>(values[idx].getSExtValue());
+      } else {
+        actualValue = static_cast<double>(values[idx]);
+      }
+
+      if (!detectedStart) {
+        detectedStart = actualValue;
+      } else if (!detectedScale && indices[dim] == 1) {
+        // Detect scale from the second element along this dimension
+        detectedScale = actualValue - detectedStart.value();
+        if (detectedScale.value() == 0.0) {
+          // Scale of 0 means all values are the same, not an iota
+          isIotaAlongDim = false;
+          break;
+        }
+      }
+
+      double expectedValue =
+          detectedStart.value() + indices[dim] * detectedScale.value_or(1.0);
+      // Use a small epsilon for floating-point comparison
+      double epsilon = isFloat ? 1e-9 : 0.0;
+      if (std::abs(actualValue - expectedValue) > epsilon) {
+        isIotaAlongDim = false;
+        break;
+      }
+    }
+
+    if (isIotaAlongDim && detectedStart) {
+      double scale = detectedScale.value_or(1.0);
+      TypedAttr startAttr =
+          createAttrFromDouble(ctx, elemType, detectedStart.value());
+      TypedAttr scaleAttr = createAttrFromDouble(ctx, elemType, scale);
+      return IotaLikeTensor{startAttr, dim, scaleAttr, constType};
+    }
+  }
+
+  return std::nullopt;
+}
+
+} // namespace
+
+std::optional<IotaLikeTensor>
+detectIotaLikeTensor(DenseElementsAttr denseAttr) {
+  if (!denseAttr || denseAttr.isSplat()) {
+    return std::nullopt;
+  }
+
+  auto elemType = denseAttr.getType().getElementType();
+  if (isa<FloatType>(elemType)) {
+    return detectIotaLikeTensorImpl<APFloat>(denseAttr);
+  } else if (isa<IntegerType>(elemType)) {
+    return detectIotaLikeTensorImpl<APInt>(denseAttr);
+  }
+
+  return std::nullopt;
+}
+
+std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
+  if (!tensor) {
+    return std::nullopt;
+  }
 
   struct ChainItem {
     mlir::Operation *op;
-    int64_t offset; // only populated for AddOp/SubtractOp
-    int64_t scale;  // only populated for MulOp
+    TypedAttr offset; // only populated for AddOp/SubtractOp (nullptr otherwise)
+    TypedAttr scale;  // only populated for MulOp (nullptr otherwise)
   };
 
   // Build a chain of operations from startOp to the base case
@@ -1443,172 +1530,356 @@ std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
 
     // check if we found a base case
     if (isa<stablehlo::IotaOp, stablehlo::ConstantOp>(currentOp)) {
-      chain.push_back({currentOp, 0, 1});
+      chain.push_back({currentOp, nullptr, nullptr});
       break;
     }
 
     // navigate to the next op. If any unsupported intermediate op is found,
     // then return std::nullopt
-    Operation *nextOp;
-
     // TODO: we might want to support broadcast_in_dim / insert_dims / drop_dims
     // as well
-    if (isa<stablehlo::TransposeOp>(currentOp)) {
-      chain.push_back({currentOp, 0, 1});
-      nextOp = currentOp->getOperand(0).getDefiningOp();
-    } else if (auto convertOp = dyn_cast<stablehlo::ConvertOp>(currentOp)) {
-      // if operand of convertOp is not a integer, then return std::nullopt
-      if (!isa<mlir::IntegerType>(
-              cast<TensorType>(convertOp.getOperand().getType())
-                  .getElementType()))
-        return std::nullopt;
-      chain.push_back({currentOp, 0, 1});
-      nextOp = convertOp.getOperand().getDefiningOp();
-    } else if (auto addOp = dyn_cast<stablehlo::AddOp>(currentOp)) {
-      APInt offsetVal;
-      if (matchPattern(addOp.getRhs(), m_ConstantInt(&offsetVal))) {
-        chain.push_back({currentOp, offsetVal.getSExtValue(), 1});
-        nextOp = addOp.getLhs().getDefiningOp();
-      } else if (matchPattern(addOp.getLhs(), m_ConstantInt(&offsetVal))) {
-        chain.push_back({currentOp, offsetVal.getSExtValue(), 1});
-        nextOp = addOp.getRhs().getDefiningOp();
-      } else {
-        return std::nullopt;
-      }
-    } else if (auto subOp = dyn_cast<stablehlo::SubtractOp>(currentOp)) {
-      APInt offsetVal;
-      if (matchPattern(subOp.getRhs(), m_ConstantInt(&offsetVal))) {
-        chain.push_back({currentOp, -offsetVal.getSExtValue(), 1});
-        nextOp = subOp.getLhs().getDefiningOp();
-      } else {
-        return std::nullopt;
-      }
-    } else if (auto mulOp = dyn_cast<stablehlo::MulOp>(currentOp)) {
-      APInt scaleVal;
-      if (matchPattern(mulOp.getRhs(), m_ConstantInt(&scaleVal))) {
-        chain.push_back({currentOp, 0, scaleVal.getSExtValue()});
-        nextOp = mulOp.getLhs().getDefiningOp();
-      } else if (matchPattern(mulOp.getLhs(), m_ConstantInt(&scaleVal))) {
-        chain.push_back({currentOp, 0, scaleVal.getSExtValue()});
-        nextOp = mulOp.getRhs().getDefiningOp();
-      } else {
-        return std::nullopt;
-      }
-    } else { // unsupported op
+    auto nextOp =
+        llvm::TypeSwitch<Operation *, Operation *>(currentOp)
+            .Case<stablehlo::TransposeOp>([&](auto transposeOp) {
+              chain.push_back({currentOp, nullptr, nullptr});
+              return transposeOp.getOperand().getDefiningOp();
+            })
+            .Case<stablehlo::ConvertOp>([&](auto convertOp) -> Operation * {
+              auto elemType = cast<TensorType>(convertOp.getOperand().getType())
+                                  .getElementType();
+              if (!isa<mlir::IntegerType, mlir::FloatType>(elemType)) {
+                return nullptr;
+              }
+              chain.push_back({currentOp, nullptr, nullptr});
+              return convertOp.getOperand().getDefiningOp();
+            })
+            .Case<stablehlo::AddOp>([&](auto addOp) -> Operation * {
+              SplatElementsAttr rhsAttr, lhsAttr;
+              if (matchPattern(addOp.getRhs(), m_Constant(&rhsAttr))) {
+                chain.push_back(
+                    {currentOp, rhsAttr.getSplatValue<TypedAttr>(), nullptr});
+                return addOp.getLhs().getDefiningOp();
+              } else if (matchPattern(addOp.getLhs(), m_Constant(&lhsAttr))) {
+                chain.push_back(
+                    {currentOp, lhsAttr.getSplatValue<TypedAttr>(), nullptr});
+                return addOp.getRhs().getDefiningOp();
+              }
+              return nullptr;
+            })
+            .Case<stablehlo::SubtractOp>([&](auto subOp) -> Operation * {
+              SplatElementsAttr rhsAttr;
+              if (matchPattern(subOp.getRhs(), m_Constant(&rhsAttr))) {
+                chain.push_back(
+                    {currentOp, rhsAttr.getSplatValue<TypedAttr>(), nullptr});
+                return subOp.getLhs().getDefiningOp();
+              }
+              return nullptr;
+            })
+            .Case<stablehlo::MulOp>([&](auto mulOp) -> Operation * {
+              SplatElementsAttr rhsAttr, lhsAttr;
+              if (matchPattern(mulOp.getRhs(), m_Constant(&rhsAttr))) {
+                chain.push_back(
+                    {currentOp, nullptr, rhsAttr.getSplatValue<TypedAttr>()});
+                return mulOp.getLhs().getDefiningOp();
+              } else if (matchPattern(mulOp.getLhs(), m_Constant(&lhsAttr))) {
+                chain.push_back(
+                    {currentOp, nullptr, lhsAttr.getSplatValue<TypedAttr>()});
+                return mulOp.getRhs().getDefiningOp();
+              }
+              return nullptr;
+            })
+            .Default([](Operation *) -> Operation * { return nullptr; });
+
+    if (!nextOp)
       return std::nullopt;
-    }
 
     currentOp = nextOp;
   }
 
-  if (chain.empty())
+  if (chain.empty()) {
     return std::nullopt;
+  }
 
   // process the base case
   IotaLikeTensor result;
-  if (auto iotaOp = dyn_cast<stablehlo::IotaOp>(chain.back().op)) {
-    auto iotaType = cast<RankedTensorType>(iotaOp.getResult().getType());
-    auto iotaDim = static_cast<int64_t>(iotaOp.getIotaDimension());
-    result = IotaLikeTensor{0, iotaDim, 1, iotaType};
-  } else if (auto constantOp =
-                 dyn_cast<stablehlo::ConstantOp>(chain.back().op)) {
-    auto denseAttr = cast<DenseElementsAttr>(constantOp.getValue());
-    auto constType = cast<RankedTensorType>(constantOp.getResult().getType());
-    auto shape = constType.getShape();
+  MLIRContext *ctx = tensor.getContext();
 
-    if (denseAttr.isSplat())
-      return std::nullopt;
+  auto baseCaseResult =
+      llvm::TypeSwitch<Operation *, std::optional<IotaLikeTensor>>(
+          chain.back().op)
+          .Case<stablehlo::IotaOp>(
+              [&](auto iotaOp) -> std::optional<IotaLikeTensor> {
+                auto iotaType =
+                    cast<RankedTensorType>(iotaOp.getResult().getType());
+                auto iotaDim = static_cast<int64_t>(iotaOp.getIotaDimension());
+                auto elemType = iotaType.getElementType();
+                TypedAttr zeroAttr = createAttrFromDouble(ctx, elemType, 0.0);
+                TypedAttr oneAttr = createAttrFromDouble(ctx, elemType, 1.0);
+                return IotaLikeTensor{zeroAttr, iotaDim, oneAttr, iotaType};
+              })
+          .Case<stablehlo::ConstantOp>(
+              [&](auto constantOp) -> std::optional<IotaLikeTensor> {
+                auto denseAttr =
+                    dyn_cast<DenseElementsAttr>(constantOp.getValue());
+                return detectIotaLikeTensor(denseAttr);
+              })
+          .Default([](Operation *) -> std::optional<IotaLikeTensor> {
+            return std::nullopt;
+          });
 
-    // Calculate strides for indexing
-    SmallVector<int64_t> strides(constType.getRank(), 1);
-    for (int64_t i = constType.getRank() - 2; i >= 0; --i) {
-      strides[i] = strides[i + 1] * shape[i + 1];
-    }
-
-    bool isIotaLike = false;
-    auto denseAttrValues = denseAttr.getValues<APInt>();
-
-    for (int64_t dim = 0; dim < constType.getRank(); dim++) {
-      bool isIotaAlongDim = true;
-      std::optional<int64_t> detectedStart;
-      std::optional<int64_t> detectedScale;
-
-      SmallVector<int64_t> indices(constType.getRank(), 0);
-      int64_t numElements = constType.getNumElements();
-
-      for (int64_t idx = 0; idx < numElements && isIotaAlongDim; idx++) {
-        int64_t temp = idx;
-        // linear to cartesian indexing
-        for (int64_t d = 0; d < constType.getRank(); d++) {
-          indices[d] = temp / strides[d];
-          temp = temp % strides[d];
-        }
-
-        int64_t actualValue = denseAttrValues[idx].getSExtValue();
-
-        if (!detectedStart) {
-          detectedStart = actualValue;
-        } else if (!detectedScale && indices[dim] == 1) {
-          // Detect scale from the second element along this dimension
-          detectedScale = actualValue - detectedStart.value();
-          if (detectedScale.value() == 0) {
-            // Scale of 0 means all values are the same, not an iota
-            isIotaAlongDim = false;
-            break;
-          }
-        }
-
-        int64_t expectedValue =
-            detectedStart.value() + indices[dim] * detectedScale.value_or(1);
-        if (actualValue != expectedValue) {
-          isIotaAlongDim = false;
-          break;
-        }
-      }
-
-      if (isIotaAlongDim && detectedStart) {
-        isIotaLike = true;
-        int64_t scale = detectedScale.value_or(1);
-        result = IotaLikeTensor{detectedStart.value(), dim, scale, constType};
-        break;
-      }
-    }
-
-    if (!isIotaLike)
-      return std::nullopt;
-  } else {
+  if (!baseCaseResult)
     return std::nullopt;
-  }
+  result = *baseCaseResult;
 
   // traverse the chain in reverse order
   for (int64_t i = chain.size() - 2; i >= 0; i--) {
     auto item = chain[i];
 
-    if (isa<stablehlo::ConvertOp>(item.op)) {
-      continue;
-    } else if (auto transposeOp = dyn_cast<stablehlo::TransposeOp>(item.op)) {
-      auto permutation = transposeOp.getPermutation();
-      for (int64_t idx = 0; idx < permutation.size(); idx++) {
-        if (permutation[idx] == result.dimension) {
-          result.dimension = idx;
-          break;
-        }
-      }
-      continue;
-    } else if (isa<stablehlo::AddOp, stablehlo::SubtractOp>(item.op)) {
-      result.start += item.offset;
-      continue;
-    } else if (isa<stablehlo::MulOp>(item.op)) {
-      result.start *= item.scale;
-      result.scale *= item.scale;
-      continue;
-    }
+    auto success =
+        llvm::TypeSwitch<Operation *, bool>(item.op)
+            .Case<stablehlo::ConvertOp>([&](auto) {
+              auto newElemType =
+                  cast<TensorType>(item.op->getResult(0).getType())
+                      .getElementType();
+              auto startVal = getDoubleFromAttr(result.start);
+              auto scaleVal = getDoubleFromAttr(result.scale);
+              if (!startVal || !scaleVal)
+                return false;
+              result.start = createAttrFromDouble(ctx, newElemType, *startVal);
+              result.scale = createAttrFromDouble(ctx, newElemType, *scaleVal);
+              return true;
+            })
+            .Case<stablehlo::TransposeOp>([&](auto transposeOp) {
+              auto permutation = transposeOp.getPermutation();
+              for (int64_t idx = 0;
+                   idx < static_cast<int64_t>(permutation.size()); idx++) {
+                if (permutation[idx] == result.dimension) {
+                  result.dimension = idx;
+                  break;
+                }
+              }
+              return true;
+            })
+            .Case<stablehlo::AddOp>([&](auto) {
+              auto startVal = getDoubleFromAttr(result.start);
+              auto offsetVal = getDoubleFromAttr(item.offset);
+              if (!startVal || !offsetVal)
+                return false;
+              auto elemType = result.start.getType();
+              result.start =
+                  createAttrFromDouble(ctx, elemType, *startVal + *offsetVal);
+              return true;
+            })
+            .Case<stablehlo::SubtractOp>([&](auto) {
+              auto startVal = getDoubleFromAttr(result.start);
+              auto offsetVal = getDoubleFromAttr(item.offset);
+              if (!startVal || !offsetVal)
+                return false;
+              auto elemType = result.start.getType();
+              result.start =
+                  createAttrFromDouble(ctx, elemType, *startVal - *offsetVal);
+              return true;
+            })
+            .Case<stablehlo::MulOp>([&](auto) {
+              auto startVal = getDoubleFromAttr(result.start);
+              auto scaleVal = getDoubleFromAttr(result.scale);
+              auto mulVal = getDoubleFromAttr(item.scale);
+              if (!startVal || !scaleVal || !mulVal)
+                return false;
+              auto elemType = result.start.getType();
+              result.start =
+                  createAttrFromDouble(ctx, elemType, *startVal * *mulVal);
+              result.scale =
+                  createAttrFromDouble(ctx, elemType, *scaleVal * *mulVal);
+              return true;
+            })
+            .Default([](Operation *) {
+              assert(false && "reached unreachable case...");
+              return false;
+            });
 
-    assert(false && "reached unreachable case...");
+    if (!success)
+      return std::nullopt;
   }
 
   result.tensorType = cast<RankedTensorType>(tensor.getType());
   return result;
+}
+
+namespace {
+
+struct PaddingResult {
+  SmallVector<int64_t> lowPadding;
+  SmallVector<int64_t> highPadding;
+  Attribute paddingValueAttr;
+  int64_t totalPaddingElements = 0;
+};
+
+template <typename T>
+std::optional<PaddedTensor> detectPaddedTensorImpl(DenseElementsAttr attr) {
+  auto tensorType = cast<RankedTensorType>(attr.getType());
+  auto shape = tensorType.getShape();
+  int64_t rank = tensorType.getRank();
+
+  auto elemType = tensorType.getElementType();
+  auto strides = computeStrides(shape);
+  int64_t numElements = tensorType.getNumElements();
+
+  auto values = attr.getValues<T>();
+
+  // Generic helper to detect padding using a specific padding value
+  // Optimized O(numElements * rank) algorithm: single pass to find
+  // min/max non-padding indices per dimension
+  auto detectPaddingWithValue = [&](T paddingVal) -> PaddingResult {
+    PaddingResult result;
+    result.lowPadding.resize(rank, 0);
+    result.highPadding.resize(rank, 0);
+    result.paddingValueAttr = makeAttr(elemType, paddingVal);
+
+    // Track the min and max non-padding index for each dimension
+    SmallVector<int64_t> minNonPadIdx(rank);
+    SmallVector<int64_t> maxNonPadIdx(rank);
+    for (int64_t dim = 0; dim < rank; dim++) {
+      minNonPadIdx[dim] = shape[dim]; // Initialize to beyond max valid index
+      maxNonPadIdx[dim] = -1;         // Initialize to before min valid index
+    }
+
+    // Single pass through all elements
+    SmallVector<int64_t> indices;
+    for (int64_t linearIdx = 0; linearIdx < numElements; linearIdx++) {
+      if (values[linearIdx] != paddingVal) {
+        // This element is NOT padding - update min/max for all dimensions
+        linearToMultiIndex(linearIdx, strides, indices);
+        for (int64_t dim = 0; dim < rank; dim++) {
+          minNonPadIdx[dim] = std::min(minNonPadIdx[dim], indices[dim]);
+          maxNonPadIdx[dim] = std::max(maxNonPadIdx[dim], indices[dim]);
+        }
+      }
+    }
+
+    // Convert min/max non-padding indices to low/high padding amounts
+    for (int64_t dim = 0; dim < rank; dim++) {
+      if (maxNonPadIdx[dim] < 0) {
+        // All elements are padding in this dimension (entire tensor is padding)
+        result.lowPadding[dim] = shape[dim];
+        result.highPadding[dim] = 0;
+      } else {
+        result.lowPadding[dim] = minNonPadIdx[dim];
+        result.highPadding[dim] = shape[dim] - 1 - maxNonPadIdx[dim];
+      }
+    }
+
+    // Calculate total padding elements saved
+    int64_t innerElements = 1;
+    for (int64_t dim = 0; dim < rank; dim++) {
+      innerElements *=
+          shape[dim] - result.lowPadding[dim] - result.highPadding[dim];
+    }
+    result.totalPaddingElements = numElements - innerElements;
+
+    return result;
+  };
+
+  // Try both first element and last element as potential padding values
+  // and pick the one that gives maximum padding
+  auto resultFirst = detectPaddingWithValue(values[0]);
+  auto resultLast = detectPaddingWithValue(values[numElements - 1]);
+  PaddingResult bestResult =
+      (resultLast.totalPaddingElements > resultFirst.totalPaddingElements)
+          ? std::move(resultLast)
+          : std::move(resultFirst);
+
+  auto &lowPadding = bestResult.lowPadding;
+  auto &highPadding = bestResult.highPadding;
+  auto &paddingValueAttr = bestResult.paddingValueAttr;
+
+  // Check if we found any padding at all
+  bool hasPadding = false;
+  for (int64_t dim = 0; dim < rank; dim++) {
+    if (lowPadding[dim] > 0 || highPadding[dim] > 0) {
+      hasPadding = true;
+      break;
+    }
+  }
+
+  if (!hasPadding) {
+    return std::nullopt;
+  }
+
+  // Calculate the inner tensor shape
+  SmallVector<int64_t> innerShape(rank);
+  for (int64_t dim = 0; dim < rank; dim++) {
+    innerShape[dim] = shape[dim] - lowPadding[dim] - highPadding[dim];
+    if (innerShape[dim] <= 0) {
+      return std::nullopt;
+    }
+  }
+
+  // Calculate number of elements in inner tensor
+  int64_t innerNumElements = 1;
+  for (int64_t dim = 0; dim < rank; dim++) {
+    innerNumElements *= innerShape[dim];
+  }
+
+  // Ensure we're actually saving something substantial
+  if (innerNumElements * 2 >= numElements) {
+    return std::nullopt;
+  }
+
+  auto innerStrides = computeStrides(innerShape);
+
+  auto innerTensorType = RankedTensorType::get(innerShape, elemType);
+
+  SmallVector<T> innerValues;
+  innerValues.reserve(innerNumElements);
+
+  for (int64_t innerLinear = 0; innerLinear < innerNumElements; innerLinear++) {
+    SmallVector<int64_t> innerIndices;
+    linearToMultiIndex(innerLinear, innerStrides, innerIndices);
+
+    SmallVector<int64_t> origIndices(rank);
+    for (int64_t d = 0; d < rank; d++) {
+      origIndices[d] = innerIndices[d] + lowPadding[d];
+    }
+
+    int64_t origLinear = multiToLinearIndex(origIndices, strides);
+    innerValues.push_back(values[origLinear]);
+  }
+
+  auto innerTensorAttr =
+      DenseElementsAttr::get(innerTensorType, ArrayRef<T>(innerValues));
+
+  PaddedTensor result;
+  result.innerTensorAttr = innerTensorAttr;
+  result.paddingValue = paddingValueAttr;
+  result.lowPadding = std::move(lowPadding);
+  result.highPadding = std::move(highPadding);
+  result.resultType = cast<RankedTensorType>(tensorType);
+  return result;
+}
+
+} // namespace
+
+std::optional<PaddedTensor> detectPaddedTensor(DenseElementsAttr attr) {
+  if (!attr || attr.isSplat()) {
+    return std::nullopt;
+  }
+
+  auto tensorType = attr.getType();
+  int64_t rank = tensorType.getRank();
+
+  if (rank == 0) {
+    return std::nullopt;
+  }
+
+  auto elemType = tensorType.getElementType();
+  if (isa<FloatType>(elemType)) {
+    return detectPaddedTensorImpl<APFloat>(attr);
+  } else if (isa<IntegerType>(elemType)) {
+    return detectPaddedTensorImpl<APInt>(attr);
+  }
+
+  return std::nullopt;
 }
 
 bool allAccessesAreOnMainDiagonalPostReshape(stablehlo::ReshapeOp op,

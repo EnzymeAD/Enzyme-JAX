@@ -183,6 +183,7 @@ def optimization_passes(
         "broadcast_to_reshape<16>",
         "slice_internal",
         f"iota_simplify<16>({max_constant_threshold})",
+        f"recognize_from_constant<16>({max_constant_threshold})",
         f"broadcast_in_dim_simplify<16>({max_constant_threshold})",
         "convert_concat<1>",
         "dynamic_update_to_concat<1>",

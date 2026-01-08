@@ -75,6 +75,14 @@ template <> inline Attribute makeAttr(mlir::Type elemType, llvm::APFloat val) {
   return FloatAttr::get(elemType, val);
 }
 
+template <> inline Attribute makeAttr(mlir::Type elemType, llvm::APInt val) {
+  if (auto TT = dyn_cast<RankedTensorType>(elemType))
+    return SplatElementsAttr::get(
+        TT, ArrayRef(makeAttr<llvm::APInt>(TT.getElementType(), val)));
+
+  return IntegerAttr::get(elemType, val);
+}
+
 // matcher for complex numbers. should probably be upstreamed at some point.
 // https://github.com/llvm/llvm-project/blob/be6fc0092e44c7fa3981639cbfe692c78a5eb418/mlir/include/mlir/IR/Matchers.h#L162
 struct constant_complex_value_binder {
@@ -951,14 +959,101 @@ absl::Status detectDiagonalTensor(stablehlo::ScatterOp scatterOp,
                                   mlir::Value *outUpdates);
 absl::Status detectDiagonalTensor(stablehlo::ScatterOp scatterOp);
 
+// Tensor indexing utilities for multi-dimensional arrays
+
+// Compute row-major strides for a given shape
+inline llvm::SmallVector<int64_t>
+computeStrides(llvm::ArrayRef<int64_t> shape) {
+  int64_t rank = shape.size();
+  llvm::SmallVector<int64_t> strides(rank, 1);
+  for (int64_t i = rank - 2; i >= 0; --i) {
+    strides[i] = strides[i + 1] * shape[i + 1];
+  }
+  return strides;
+}
+
+// Convert a linear index to multi-dimensional indices
+inline void linearToMultiIndex(int64_t linearIdx,
+                               llvm::ArrayRef<int64_t> strides,
+                               llvm::SmallVectorImpl<int64_t> &indices) {
+  indices.resize(strides.size());
+  for (size_t d = 0; d < strides.size(); d++) {
+    indices[d] = linearIdx / strides[d];
+    linearIdx = linearIdx % strides[d];
+  }
+}
+
+// Convert multi-dimensional indices to a linear index
+inline int64_t multiToLinearIndex(llvm::ArrayRef<int64_t> indices,
+                                  llvm::ArrayRef<int64_t> strides) {
+  int64_t linearIdx = 0;
+  for (size_t d = 0; d < strides.size(); d++) {
+    linearIdx += indices[d] * strides[d];
+  }
+  return linearIdx;
+}
+
 struct IotaLikeTensor {
-  int64_t start;
+  mlir::TypedAttr start;
   int64_t dimension;
-  int64_t scale = 1; // multiplicative factor applied to the iota
+  mlir::TypedAttr scale; // multiplicative factor applied to the iota
   mlir::RankedTensorType tensorType;
 };
 
+std::optional<IotaLikeTensor> detectIotaLikeTensor(DenseElementsAttr attr);
 std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor);
+
+// Represents a constant tensor that can be expressed as
+//   pad(innerTensor, paddingValue, lowPadding, highPadding,
+//   interiorPadding=[0,...])
+struct PaddedTensor {
+  mlir::DenseElementsAttr innerTensorAttr; // The smaller constant tensor
+  mlir::Attribute paddingValue;            // The padding value (scalar)
+  llvm::SmallVector<int64_t> lowPadding;   // Padding at the start of each dim
+  llvm::SmallVector<int64_t> highPadding;  // Padding at the end of each dim
+  mlir::RankedTensorType resultType;       // The resulting padded tensor type
+};
+
+std::optional<PaddedTensor> detectPaddedTensor(mlir::DenseElementsAttr attr);
+
+// Helper to check if a TypedAttr is zero
+inline bool isZeroAttr(mlir::TypedAttr attr) {
+  if (auto intAttr = llvm::dyn_cast<mlir::IntegerAttr>(attr))
+    return intAttr.getValue().isZero();
+  if (auto floatAttr = llvm::dyn_cast<mlir::FloatAttr>(attr))
+    return floatAttr.getValue().isZero();
+  return false;
+}
+
+// Helper to check if a TypedAttr is one
+inline bool isOneAttr(mlir::TypedAttr attr) {
+  if (auto intAttr = llvm::dyn_cast<mlir::IntegerAttr>(attr))
+    return intAttr.getValue() == 1;
+  if (auto floatAttr = llvm::dyn_cast<mlir::FloatAttr>(attr)) {
+    llvm::APFloat one(floatAttr.getValue().getSemantics(), 1);
+    return floatAttr.getValue().bitwiseIsEqual(one);
+  }
+  return false;
+}
+
+// Helper to get a double value from a TypedAttr
+inline std::optional<double> getDoubleFromAttr(mlir::TypedAttr attr) {
+  if (auto intAttr = llvm::dyn_cast<mlir::IntegerAttr>(attr))
+    return static_cast<double>(intAttr.getValue().getSExtValue());
+  if (auto floatAttr = llvm::dyn_cast<mlir::FloatAttr>(attr))
+    return floatAttr.getValueAsDouble();
+  return std::nullopt;
+}
+
+// Helper to create a TypedAttr from a double value using the given type
+inline mlir::TypedAttr createAttrFromDouble(mlir::MLIRContext *ctx,
+                                            mlir::Type elemType, double value) {
+  if (auto intType = llvm::dyn_cast<mlir::IntegerType>(elemType))
+    return mlir::IntegerAttr::get(intType, static_cast<int64_t>(value));
+  if (auto floatType = llvm::dyn_cast<mlir::FloatType>(elemType))
+    return mlir::FloatAttr::get(floatType, value);
+  return nullptr;
+}
 
 // TODO: we can do a full analysis and return if the access is on a specific set
 // of diagonals. Checks that all accesses for this Op and its users thereoff are
