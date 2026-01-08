@@ -2785,3 +2785,8 @@ def ApplyGatherOfScatterSimplifyPatterns : EnzymeHLOPatternOp<
     "gather_of_scatter_simplify"> {
   let patterns = ["GatherOfScatterSimplify"];
 }
+
+def ApplyDeleteDimsBroadcastPatterns : EnzymeHLOPatternOp<
+    "delete_dims_broadcast"> {
+  let patterns = ["DeleteDimsBroadcast"];
+}
