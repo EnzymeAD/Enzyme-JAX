@@ -138,17 +138,47 @@ def EnzymeXLA_GuaranteedAnalysisResultAttr : EnumAttr<EnzymeXLA_Dialect,
 def EnzymeXLA_MPIDatatype : I32EnumAttr<"MPIDatatype",
     "MPI Datatype",
     [
-      I32EnumAttrCase<"MPI_DOUBLE", 0>,
-      I32EnumAttrCase<"MPI_INT", 1>,
-      I32EnumAttrCase<"MPI_LONG", 2>
+      I32EnumAttrCase<"MPI_DATATYPE_NULL", 0>,
+      I32EnumAttrCase<"MPI_BYTE", 1>,
+      I32EnumAttrCase<"MPI_CHAR", 2>,
+      I32EnumAttrCase<"MPI_SHORT", 3>,
+      I32EnumAttrCase<"MPI_INT", 4>,
+      I32EnumAttrCase<"MPI_LONG", 5>,
+      I32EnumAttrCase<"MPI_FLOAT", 6>,
+      I32EnumAttrCase<"MPI_DOUBLE", 7>,
+      I32EnumAttrCase<"MPI_UNSIGNED_CHAR", 8>,
+      I32EnumAttrCase<"MPI_SIGNED_CHAR", 9>,
+      I32EnumAttrCase<"MPI_UNSIGNED_SHORT", 10>,
+      I32EnumAttrCase<"MPI_UNSIGNED_LONG", 11>,
+      I32EnumAttrCase<"MPI_UNSIGNED", 12>,
+      I32EnumAttrCase<"MPI_WCHAR", 13>,
+      I32EnumAttrCase<"MPI_LONG_LONG_INT", 14>,
+      I32EnumAttrCase<"MPI_UNSIGNED_LONG_LONG", 15>,
+      I32EnumAttrCase<"MPI_INT8_T", 16>,
+      I32EnumAttrCase<"MPI_UINT8_T", 17>,
+      I32EnumAttrCase<"MPI_INT16_T", 18>,
+      I32EnumAttrCase<"MPI_UINT16_T", 19>,
+      I32EnumAttrCase<"MPI_INT32_T", 20>,
+      I32EnumAttrCase<"MPI_UINT32_T", 21>,
+      I32EnumAttrCase<"MPI_INT64_T", 22>,
+      I32EnumAttrCase<"MPI_UINT64_T", 23>,
+      I32EnumAttrCase<"MPI_AINT", 24>,
+      I32EnumAttrCase<"MPI_OFFSET", 25>,
+      I32EnumAttrCase<"MPI_C_BOOL", 26>,
+      I32EnumAttrCase<"MPI_C_FLOAT_COMPLEX", 27>,
+      I32EnumAttrCase<"MPI_C_DOUBLE_COMPLEX", 28>,
+      I32EnumAttrCase<"MPI_COUNT", 29>,
+      I32EnumAttrCase<"MPI_PACKED", 30>,
+      I32EnumAttrCase<"MPI_FLOAT_INT", 31>,
+      I32EnumAttrCase<"MPI_DOUBLE_INT", 32>,
+      I32EnumAttrCase<"MPI_LONG_DOUBLE_INT", 33>,
+      I32EnumAttrCase<"MPI_LONG_INT", 34>,
+      I32EnumAttrCase<"MPI_SHORT_INT", 35>,
+      I32EnumAttrCase<"MPI_UB", 36>,
+      I32EnumAttrCase<"MPI_LB", 37>
     ]> {
   let genSpecializedAttr = 0;
   let cppNamespace = "::mlir::enzymexla";
-}
-
-def EnzymeXLA_MPIDatatypeAttr : EnumAttr<EnzymeXLA_Dialect,
-    EnzymeXLA_MPIDatatype, "datatype"> {
-  let assemblyFormat = "`<` $value `>`";
 }
 
 #endif // ENZYMEXLA_ATTRS
