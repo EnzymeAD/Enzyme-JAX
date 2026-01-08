@@ -408,169 +408,169 @@ struct MPIBarrierOpLowering : public OpRewritePattern<enzymexla::MPIBarrierOp> {
   }
 };
 
-// struct MPISendOpLowering : public OpRewritePattern<enzymexla::MPISendOp> {
+struct MPISendOpLowering : public OpRewritePattern<enzymexla::MPISendOp> {
 
-//   std::string backend;
-//   MPISendOpLowering(std::string backend, MLIRContext *context,
-//                     PatternBenefit benefit = 1)
-//       : OpRewritePattern(context, benefit), backend(backend) {}
+  std::string backend;
+  MPISendOpLowering(std::string backend, MLIRContext *context,
+                    PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit), backend(backend) {}
 
-//   LogicalResult matchAndRewrite(enzymexla::MPISendOp op,
-//                                 PatternRewriter &rewriter) const override {
-//     auto context = op->getContext();
+  LogicalResult matchAndRewrite(enzymexla::MPISendOp op,
+                                PatternRewriter &rewriter) const override {
+    auto context = op->getContext();
 
-//     if (backend == "cpu") {
+    if (backend == "cpu") {
 
-//       auto moduleOp = op->getParentOfType<ModuleOp>();
+      auto moduleOp = op->getParentOfType<ModuleOp>();
 
-//       auto llvmPtrType = LLVM::LLVMPointerType::get(context);
-//       auto llvmVoidType = LLVM::LLVMVoidType::get(context);
+      auto llvmPtrType = LLVM::LLVMPointerType::get(context);
+      auto llvmVoidType = LLVM::LLVMVoidType::get(context);
 
-//       auto i32Type = IntegerType::get(context, 32);
+      auto i32Type = IntegerType::get(context, 32);
 
-//       std::string mpiFunctionName = "MPI_Send";
+      std::string mpiFunctionName = "MPI_Send";
 
-//       // get the MPI datatype
-//       auto datatypeName = op.getDatatype();
+      // get the MPI datatype
+      auto datatypeName = op.getDatatype();
 
-//       // For now we just hard code MPI_COMM_WORLD as the communicator.
-//       // TODO make this more flexible
-//       std::string communicatorName = "MPI_COMM_WORLD";
+      // For now we just hard code MPI_COMM_WORLD as the communicator.
+      // TODO make this more flexible
+      std::string communicatorName = "MPI_COMM_WORLD";
 
-//       // Generate the enzymexla_wrapper LLVM function body
-//       std::string wrapperFunctionName =
-//           "enzymexla_wrapper_" + mpiFunctionName + "_" + datatypeName.str();
+      // Generate the enzymexla_wrapper LLVM function body
+      std::string wrapperFunctionName =
+          "enzymexla_wrapper_" + mpiFunctionName + "_" + datatypeName.str();
 
-//       if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapperFunctionName)) {
-//         OpBuilder::InsertionGuard guard(rewriter);
-//         rewriter.setInsertionPointToStart(moduleOp.getBody());
+      if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapperFunctionName)) {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(moduleOp.getBody());
 
-//         // Create the wrapper function decl
-//         auto funcType = LLVM::LLVMFunctionType::get(
-//             llvmVoidType, {llvmPtrType, llvmPtrType, llvmPtrType, llvmPtrType},
-//             false);
+        // Create the wrapper function decl
+        auto funcType = LLVM::LLVMFunctionType::get(
+            llvmVoidType, {llvmPtrType, llvmPtrType, llvmPtrType, llvmPtrType},
+            false);
 
-//         auto wrapperFunc = rewriter.create<LLVM::LLVMFuncOp>(
-//             op.getLoc(), wrapperFunctionName, funcType);
+        auto wrapperFunc = rewriter.create<LLVM::LLVMFuncOp>(
+            op.getLoc(), wrapperFunctionName, funcType);
 
-//         // Add function-level memory effects attribute
-//         auto memoryEffectsAttr = rewriter.getArrayAttr(
-//             {rewriter.getStringAttr("read"), rewriter.getStringAttr("write"),
-//              rewriter.getStringAttr("allocate"),
-//              rewriter.getStringAttr("free")});
-//         wrapperFunc->setAttr("enzymexla.memory_effects", memoryEffectsAttr);
+        // Add function-level memory effects attribute
+        auto memoryEffectsAttr = rewriter.getArrayAttr(
+            {rewriter.getStringAttr("read"), rewriter.getStringAttr("write"),
+             rewriter.getStringAttr("allocate"),
+             rewriter.getStringAttr("free")});
+        wrapperFunc->setAttr("enzymexla.memory_effects", memoryEffectsAttr);
 
-//         Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
-//         rewriter.setInsertionPointToStart(entryBlock);
+        Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
+        rewriter.setInsertionPointToStart(entryBlock);
 
-//         // Add argument-level memory effects attribute to all arguments
-//         for (unsigned i = 0; i < 4; ++i) {
-//           wrapperFunc.setArgAttr(i, "enzymexla.memory_effects",
-//                                  memoryEffectsAttr);
-//         }
+        // Add argument-level memory effects attribute to all arguments
+        for (unsigned i = 0; i < 4; ++i) {
+          wrapperFunc.setArgAttr(i, "enzymexla.memory_effects",
+                                 memoryEffectsAttr);
+        }
 
-//         // Get the function arguments
-//         Value bufPtr = entryBlock->getArgument(0);
-//         Value countPtr = entryBlock->getArgument(1);
-//         Value destPtr = entryBlock->getArgument(2);
-//         Value tagPtr = entryBlock->getArgument(3);
+        // Get the function arguments
+        Value bufPtr = entryBlock->getArgument(0);
+        Value countPtr = entryBlock->getArgument(1);
+        Value destPtr = entryBlock->getArgument(2);
+        Value tagPtr = entryBlock->getArgument(3);
 
-//         // Load the count, dest, tag values
-//         Value count =
-//             rewriter.create<LLVM::LoadOp>(op.getLoc(), i32Type, countPtr);
+        // Load the count, dest, tag values
+        Value count =
+            rewriter.create<LLVM::LoadOp>(op.getLoc(), i32Type, countPtr);
 
-//         Value dest =
-//             rewriter.create<LLVM::LoadOp>(op.getLoc(), i32Type, destPtr);
+        Value dest =
+            rewriter.create<LLVM::LoadOp>(op.getLoc(), i32Type, destPtr);
 
-//         Value tag = rewriter.create<LLVM::LoadOp>(op.getLoc(), i32Type, tagPtr);
+        Value tag = rewriter.create<LLVM::LoadOp>(op.getLoc(), i32Type, tagPtr);
 
-//         // Get the address of the datatype
-//         // NOTE these symbols are not ABI-stable until MPI 5.0, but in practice,
-//         // they are represented as w ord-size values (i.e. `int` or ptr)
-//         Value addressOfDtype = rewriter.create<LLVM::AddressOfOp>(
-//             op.getLoc(), llvmPtrType, datatypeName);
+        // Get the address of the datatype
+        // NOTE these symbols are not ABI-stable until MPI 5.0, but in practice,
+        // they are represented as w ord-size values (i.e. `int` or ptr)
+        Value addressOfDtype = rewriter.create<LLVM::AddressOfOp>(
+            op.getLoc(), llvmPtrType, datatypeName);
 
-//         // Get the address of the communicator
-//         Value addressOfComm = rewriter.create<LLVM::AddressOfOp>(
-//             op.getLoc(), llvmPtrType, communicatorName);
+        // Get the address of the communicator
+        Value addressOfComm = rewriter.create<LLVM::AddressOfOp>(
+            op.getLoc(), llvmPtrType, communicatorName);
 
-//         // Call MPI_Send
-//         // int MPI_Send(const void* buf, int count, MPI_Datatype datatype, int
-//         //     dest, int tag, MPI_Comm comm)
-//         // TODO returns i32 error code which we're ignoring here
-//         rewriter.create<LLVM::CallOp>(
-//             op.getLoc(), TypeRange{i32Type},
-//             SymbolRefAttr::get(context, mpiFunctionName),
-//             ValueRange{bufPtr, count, addressOfDtype, dest, tag,
-//                        addressOfComm});
+        // Call MPI_Send
+        // int MPI_Send(const void* buf, int count, MPI_Datatype datatype, int
+        //     dest, int tag, MPI_Comm comm)
+        // TODO returns i32 error code which we're ignoring here
+        rewriter.create<LLVM::CallOp>(
+            op.getLoc(), TypeRange{i32Type},
+            SymbolRefAttr::get(context, mpiFunctionName),
+            ValueRange{bufPtr, count, addressOfDtype, dest, tag,
+                       addressOfComm});
 
-//         rewriter.create<LLVM::ReturnOp>(op.getLoc(), ValueRange{});
-//       }
+        rewriter.create<LLVM::ReturnOp>(op.getLoc(), ValueRange{});
+      }
 
-//       // Insert MPI_Send function declaration if not already present
-//       if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(mpiFunctionName)) {
-//         OpBuilder::InsertionGuard guard(rewriter);
-//         rewriter.setInsertionPointToStart(moduleOp.getBody());
+      // Insert MPI_Send function declaration if not already present
+      if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(mpiFunctionName)) {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(moduleOp.getBody());
 
-//         auto funcType = LLVM::LLVMFunctionType::get(
-//             i32Type,
-//             {llvmPtrType, i32Type, llvmPtrType, i32Type, i32Type, llvmPtrType},
-//             false);
+        auto funcType = LLVM::LLVMFunctionType::get(
+            i32Type,
+            {llvmPtrType, i32Type, llvmPtrType, i32Type, i32Type, llvmPtrType},
+            false);
 
-//         rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), mpiFunctionName,
-//                                           funcType, LLVM::Linkage::External);
-//       }
+        rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), mpiFunctionName,
+                                          funcType, LLVM::Linkage::External);
+      }
 
-//       // Insert MPI_COMM_WORLD declaration if not already present
-//       if (!moduleOp.lookupSymbol<LLVM::GlobalOp>(communicatorName)) {
-//         OpBuilder::InsertionGuard guard(rewriter);
-//         rewriter.setInsertionPointToStart(moduleOp.getBody());
+      // Insert MPI_COMM_WORLD declaration if not already present
+      if (!moduleOp.lookupSymbol<LLVM::GlobalOp>(communicatorName)) {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(moduleOp.getBody());
 
-//         rewriter.create<LLVM::GlobalOp>(
-//             op.getLoc(), llvmPtrType,
-//             /*isConstant=*/true, LLVM::Linkage::External, communicatorName,
-//             /*value=*/Attribute(),
-//             /*alignment=*/0,
-//             /*addrSpace=*/0);
-//       }
+        rewriter.create<LLVM::GlobalOp>(
+            op.getLoc(), llvmPtrType,
+            /*isConstant=*/true, LLVM::Linkage::External, communicatorName,
+            /*value=*/Attribute(),
+            /*alignment=*/0,
+            /*addrSpace=*/0);
+      }
 
-//       // Insert datatype declaration if not already present
-//       if (!moduleOp.lookupSymbol<LLVM::GlobalOp>(datatypeName)) {
-//         OpBuilder::InsertionGuard guard(rewriter);
-//         rewriter.setInsertionPointToStart(moduleOp.getBody());
+      // Insert datatype declaration if not already present
+      if (!moduleOp.lookupSymbol<LLVM::GlobalOp>(datatypeName)) {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(moduleOp.getBody());
 
-//         rewriter.create<LLVM::GlobalOp>(op.getLoc(), llvmPtrType,
-//                                         /*isConstant=*/true,
-//                                         LLVM::Linkage::External, datatypeName,
-//                                         /*value=*/Attribute(),
-//                                         /*alignment=*/0,
-//                                         /*addrSpace=*/0);
-//       }
+        rewriter.create<LLVM::GlobalOp>(op.getLoc(), llvmPtrType,
+                                        /*isConstant=*/true,
+                                        LLVM::Linkage::External, datatypeName,
+                                        /*value=*/Attribute(),
+                                        /*alignment=*/0,
+                                        /*addrSpace=*/0);
+      }
 
-//       // Get all orinigal op operands
-//       auto operands = op.getOperands();
+      // Get all orinigal op operands
+      auto operands = op.getOperands();
 
-//       // Call the LLVM function with enzymexla.jit_call
-//       rewriter.create<enzymexla::JITCallOp>(
-//           op.getLoc(), TypeRange{},
-//           mlir::FlatSymbolRefAttr::get(context, wrapperFunctionName),
-//           ValueRange{operands}, rewriter.getStringAttr(""),
-//           /*operand_layouts=*/nullptr,
-//           /*result_layouts=*/nullptr,
-//           /*arg_attrs=*/nullptr,
-//           /*res_attrs=*/nullptr,
-//           /*output_operand_aliases=*/nullptr,
-//           /*xla_side_effect_free=*/nullptr);
+      // Call the LLVM function with enzymexla.jit_call
+      rewriter.create<enzymexla::JITCallOp>(
+          op.getLoc(), TypeRange{},
+          mlir::FlatSymbolRefAttr::get(context, wrapperFunctionName),
+          ValueRange{operands}, rewriter.getStringAttr(""),
+          /*operand_layouts=*/nullptr,
+          /*result_layouts=*/nullptr,
+          /*arg_attrs=*/nullptr,
+          /*res_attrs=*/nullptr,
+          /*output_operand_aliases=*/nullptr,
+          /*xla_side_effect_free=*/nullptr);
 
-//       rewriter.eraseOp(op);
+      rewriter.eraseOp(op);
 
-//       return success();
-//     } else {
-//       return rewriter.notifyMatchFailure(op,
-//                                          "Backend not supported: " + backend);
-//     }
-//   }
-// };
+      return success();
+    } else {
+      return rewriter.notifyMatchFailure(op,
+                                         "Backend not supported: " + backend);
+    }
+  }
+};
 
 struct MPIRecvOpLowering : public OpRewritePattern<enzymexla::MPIRecvOp> {
 
@@ -1451,7 +1451,7 @@ struct LowerEnzymeXLAMPIPass
     patterns.add<MPICommRankOpLowering>(backend, context);
     patterns.add<MPICommSizeOpLowering>(backend, context);
     patterns.add<MPIBarrierOpLowering>(backend, context);
-    // patterns.add<MPISendOpLowering>(backend, context);
+    patterns.add<MPISendOpLowering>(backend, context);
     patterns.add<MPIRecvOpLowering>(backend, context);
     patterns.add<MPIIsendOpLowering>(backend, context);
     patterns.add<MPIIrecvOpLowering>(backend, context);
