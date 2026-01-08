@@ -698,6 +698,37 @@ public:
     return state;
   }
 
+protected:
+  template <typename ItTy>
+  State recursivelyCheckOperands(SmallVectorImpl<Value> &localtodo,
+                                 ItTy operands, bool skipIntegerEltypes) {
+    assert(!operands.empty() && "expected operands to not be empty");
+
+    bool allOperandsGuaranteed = true;
+    for (auto operand : operands) {
+      if (skipIntegerEltypes) {
+        if (auto TT = dyn_cast<TensorType>(operand.getType())) {
+          if (TT.getElementType().isInteger()) {
+            continue;
+          }
+        }
+      }
+
+      auto found = valueCache.find(operand);
+      if (found != valueCache.end()) {
+        if (found->second) {
+          continue;
+        }
+        return State::NOTGUARANTEED;
+      }
+
+      localtodo.push_back(operand);
+      allOperandsGuaranteed = false;
+    }
+
+    return allOperandsGuaranteed ? State::GUARANTEED : State::PENDING;
+  }
+
 private:
   State
   GuaranteedAnalysisResultToState(enzymexla::GuaranteedAnalysisResult val) {

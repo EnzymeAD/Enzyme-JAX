@@ -39,6 +39,7 @@
 #include <iterator>
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/Value.h>
+#include <optional>
 #include <set>
 
 using namespace mlir;
@@ -765,19 +766,21 @@ NoNanResultAnalysis::State NoNanResultAnalysis::localGuaranteed(
   }
 
   bool recursiveCheck = false;
+  SmallVector<Value> operandsToCheck;
 
   if (isa<stablehlo::SliceOp, stablehlo::ConcatenateOp,
           stablehlo::BroadcastInDimOp, stablehlo::ReshapeOp,
           stablehlo::TransposeOp>(op)) {
     // data movement ops
     recursiveCheck = true;
+    operandsToCheck.append(op->getOperands().begin(), op->getOperands().end());
   } else if (isa<stablehlo::AbsOp, stablehlo::ExpOp, stablehlo::ConvertOp,
                  stablehlo::CompareOp, stablehlo::TanhOp, stablehlo::LogisticOp,
                  stablehlo::FloorOp, stablehlo::CeilOp>(op)) {
     // elementwise ops that are no-nan if all operands are not nan
     recursiveCheck = true;
+    operandsToCheck.append(op->getOperands().begin(), op->getOperands().end());
   } else if (isa<stablehlo::AddOp, stablehlo::SubtractOp>(op)) {
-
     // If any one of the operands is a Inf, the result is Inf. If both are Inf,
     // the result is NaN.
     auto lhsFinite =
@@ -790,6 +793,7 @@ NoNanResultAnalysis::State NoNanResultAnalysis::localGuaranteed(
     }
 
     recursiveCheck = true;
+    operandsToCheck.append(op->getOperands().begin(), op->getOperands().end());
   } else if (isa<stablehlo::SineOp, stablehlo::CosineOp>(op)) {
 
     if (!finiteResultAnalysis->guaranteed(op->getOperand(0), rewriter)) {
@@ -797,6 +801,7 @@ NoNanResultAnalysis::State NoNanResultAnalysis::localGuaranteed(
     }
 
     recursiveCheck = true;
+    operandsToCheck.append(op->getOperands().begin(), op->getOperands().end());
   } else if (auto mulOp = dyn_cast<stablehlo::MulOp>(op)) {
     // if lhs is Inf & rhs is 0 or the other way around, mul is going to be NaN
 
@@ -808,38 +813,19 @@ NoNanResultAnalysis::State NoNanResultAnalysis::localGuaranteed(
     }
 
     recursiveCheck = true;
-  } else if (isa<mlir::stablehlo::SelectOp>(op)) {
+    operandsToCheck.append(op->getOperands().begin(), op->getOperands().end());
+  } else if (isa<stablehlo::SelectOp>(op)) {
     recursiveCheck = true;
+    operandsToCheck.push_back(op->getOperand(1));
+    operandsToCheck.push_back(op->getOperand(2));
+  } else if (isa<stablehlo::DynamicSliceOp, stablehlo::DynamicUpdateSliceOp>(
+                 op)) {
+    recursiveCheck = true;
+    operandsToCheck.push_back(op->getOperand(0));
   }
 
   if (recursiveCheck) {
-    bool allOperandsGuaranteed = true;
-    for (auto operand : op->getOperands()) {
-      if (auto TT = dyn_cast<TensorType>(operand.getType())) {
-        if (TT.getElementType().isInteger())
-          continue;
-      }
-
-      {
-        auto found = valueCache.find(operand);
-        if (found != valueCache.end()) {
-          if (found->second) {
-            continue;
-          } else {
-            return State::NOTGUARANTEED;
-          }
-        }
-      }
-
-      localtodo.push_back(operand);
-      allOperandsGuaranteed = false;
-    }
-
-    if (allOperandsGuaranteed) {
-      return State::GUARANTEED;
-    } else {
-      return State::PENDING;
-    }
+    return recursivelyCheckOperands(localtodo, operandsToCheck, true);
   } else {
     return State::NOTGUARANTEED;
   }
@@ -878,54 +864,36 @@ FiniteResultAnalysis::State FiniteResultAnalysis::localGuaranteed(
   }
 
   bool recursiveCheck = false;
+  SmallVector<Value> operandsToCheck;
 
   if (isa<stablehlo::SliceOp, stablehlo::ConcatenateOp,
           stablehlo::BroadcastInDimOp, stablehlo::ReshapeOp,
           stablehlo::TransposeOp>(op)) {
     // data movement ops
     recursiveCheck = true;
+    operandsToCheck.append(op->getOperands().begin(), op->getOperands().end());
   } else if (isa<stablehlo::AddOp, stablehlo::SubtractOp, stablehlo::MulOp,
                  stablehlo::AbsOp, stablehlo::ExpOp, stablehlo::ConvertOp,
                  stablehlo::CompareOp>(op)) {
     // if both finite [but possibly nan], the result is finite, or nan
-
     recursiveCheck = true;
+    operandsToCheck.append(op->getOperands().begin(), op->getOperands().end());
   } else if (isa<stablehlo::TanhOp, stablehlo::LogisticOp, stablehlo::SineOp,
                  stablehlo::CosineOp>(op)) {
     // guaranteed finite or nan result, always
     return State::GUARANTEED;
-  } else if (isa<mlir::stablehlo::SelectOp>(op)) {
+  } else if (isa<stablehlo::SelectOp>(op)) {
     recursiveCheck = true;
+    operandsToCheck.push_back(op->getOperand(1));
+    operandsToCheck.push_back(op->getOperand(2));
+  } else if (isa<stablehlo::DynamicSliceOp, stablehlo::DynamicUpdateSliceOp>(
+                 op)) {
+    recursiveCheck = true;
+    operandsToCheck.push_back(op->getOperand(0));
   }
 
   if (recursiveCheck) {
-    bool allOperandsGuaranteed = true;
-    for (auto operand : op->getOperands()) {
-      if (auto TT = dyn_cast<TensorType>(operand.getType())) {
-        if (TT.getElementType().isInteger())
-          continue;
-      }
-
-      {
-        auto found = valueCache.find(operand);
-        if (found != valueCache.end()) {
-          if (found->second) {
-            continue;
-          } else {
-            return State::NOTGUARANTEED;
-          }
-        }
-      }
-
-      localtodo.push_back(operand);
-      allOperandsGuaranteed = false;
-    }
-
-    if (allOperandsGuaranteed) {
-      return State::GUARANTEED;
-    } else {
-      return State::PENDING;
-    }
+    return recursivelyCheckOperands(localtodo, operandsToCheck, true);
   } else {
     return State::NOTGUARANTEED;
   }
@@ -1018,45 +986,27 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
   }
 
   bool recursiveCheck = false;
+  SmallVector<Value> operandsToCheck;
 
   if (isa<stablehlo::MinOp, stablehlo::AddOp, stablehlo::MulOp,
           stablehlo::ConcatenateOp, stablehlo::ReshapeOp,
           stablehlo::TransposeOp, stablehlo::SliceOp,
-          stablehlo::DynamicUpdateSliceOp, stablehlo::BroadcastInDimOp>(op)) {
+          stablehlo::BroadcastInDimOp>(op)) {
     // All non-negative operations that produce a non-negative result
     recursiveCheck = true;
-  } else if (isa<mlir::stablehlo::SelectOp>(op)) {
+    operandsToCheck.append(op->getOperands().begin(), op->getOperands().end());
+  } else if (isa<stablehlo::SelectOp>(op)) {
     recursiveCheck = true;
+    operandsToCheck.push_back(op->getOperand(1));
+    operandsToCheck.push_back(op->getOperand(2));
+  } else if (isa<stablehlo::DynamicSliceOp, stablehlo::DynamicUpdateSliceOp>(
+                 op)) {
+    recursiveCheck = true;
+    operandsToCheck.push_back(op->getOperand(0));
   }
 
   if (recursiveCheck) {
-    bool allOperandsGuaranteed = true;
-    size_t idx = 0;
-    for (auto operand : op->getOperands()) {
-      if (idx == 0 && isa<mlir::stablehlo::SelectOp>(op))
-        continue;
-      idx++;
-
-      {
-        auto found = valueCache.find(operand);
-        if (found != valueCache.end()) {
-          if (found->second) {
-            continue;
-          } else {
-            return State::NOTGUARANTEED;
-          }
-        }
-      }
-
-      localtodo.push_back(operand);
-      allOperandsGuaranteed = false;
-    }
-
-    if (allOperandsGuaranteed) {
-      return State::GUARANTEED;
-    } else {
-      return State::PENDING;
-    }
+    return recursivelyCheckOperands(localtodo, operandsToCheck, false);
   } else {
     return State::NOTGUARANTEED;
   }
