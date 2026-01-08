@@ -1164,130 +1164,6 @@ bool isOnlyOpConstantBlock(mlir::Block *block,
   return stablehloReturnOp.getOperand(0) == op.getResult();
 }
 
-template <typename OpTy> struct CheckCommonReduceLikeOp {
-public:
-  bool isAddReduce;
-  bool isMinReduce;
-  bool isMaxReduce;
-  bool isMulReduce;
-  bool isAndReduce;
-  bool isOrReduce;
-  bool isXorReduce;
-
-  CheckCommonReduceLikeOp(OpTy op) {
-    auto &region = op.getBody();
-    if (region.getBlocks().size() != 1) {
-      isAddReduce = false;
-      isMinReduce = false;
-      isMaxReduce = false;
-      isMulReduce = false;
-      isAndReduce = false;
-      isOrReduce = false;
-      isXorReduce = false;
-      return;
-    }
-
-    auto &block = region.getBlocks().front();
-    isAddReduce = isOnlyOpBlock<stablehlo::AddOp, true, false>(&block);
-    isMinReduce = isOnlyOpBlock<stablehlo::MinOp, true, false>(&block);
-    isMaxReduce = isOnlyOpBlock<stablehlo::MaxOp, true, false>(&block);
-    isMulReduce = isOnlyOpBlock<stablehlo::MulOp, true, false>(&block);
-    isAndReduce = isOnlyOpBlock<stablehlo::AndOp, true, false>(&block);
-    isOrReduce = isOnlyOpBlock<stablehlo::OrOp, true, false>(&block);
-    isXorReduce = isOnlyOpBlock<stablehlo::XorOp, true, false>(&block);
-  }
-
-  bool isCommutativeOp() const {
-    return isAddReduce || isMinReduce || isMaxReduce || isMulReduce ||
-           isAndReduce || isOrReduce || isXorReduce;
-  }
-};
-
-// Type alias for backward compatibility
-using CheckCommonReduceOp = CheckCommonReduceLikeOp<stablehlo::ReduceOp>;
-using CheckCommonReduceWindowOp =
-    CheckCommonReduceLikeOp<stablehlo::ReduceWindowOp>;
-
-struct CheckCommonScatterOp {
-public:
-  bool isSetindexScatter;
-  bool isConstantSetindexScatter;
-
-  bool isAddScatter;
-  bool isMinScatter;
-  bool isMaxScatter;
-  bool isMulScatter;
-  bool isAndScatter;
-  bool isOrScatter;
-  bool isXorScatter;
-  bool isSubScatter;
-
-  bool isMulConstantUpdateScatter;
-  bool isMulConstantInputScatter;
-  bool isAddConstantUpdateScatter;
-  bool isAddConstantInputScatter;
-  SplatElementsAttr constant;
-
-  CheckCommonScatterOp(stablehlo::ScatterOp op) {
-    auto &updateComputation = op.getUpdateComputation();
-
-    if (!updateComputation.hasOneBlock()) {
-      isSetindexScatter = false;
-      isConstantSetindexScatter = false;
-      isAddScatter = false;
-      isMinScatter = false;
-      isMaxScatter = false;
-      isMulScatter = false;
-      isAndScatter = false;
-      isOrScatter = false;
-      isXorScatter = false;
-      isSubScatter = false;
-
-      isMulConstantUpdateScatter = false;
-      isAddConstantUpdateScatter = false;
-      isMulConstantInputScatter = false;
-      isAddConstantInputScatter = false;
-      return;
-    }
-
-    auto &block = updateComputation.front();
-    isSetindexScatter = isSetindexBlock(&block);
-    isConstantSetindexScatter = isConstantSetindexBlock(&block, constant);
-    isAddScatter = isOnlyOpBlock<stablehlo::AddOp, true, false>(&block);
-    isMulScatter = isOnlyOpBlock<stablehlo::MulOp, true, false>(&block);
-    isMinScatter = isOnlyOpBlock<stablehlo::MinOp, true, false>(&block);
-    isMaxScatter = isOnlyOpBlock<stablehlo::MaxOp, true, false>(&block);
-    isAndScatter = isOnlyOpBlock<stablehlo::AndOp, true, false>(&block);
-    isOrScatter = isOnlyOpBlock<stablehlo::OrOp, true, false>(&block);
-    isXorScatter = isOnlyOpBlock<stablehlo::XorOp, true, false>(&block);
-    isSubScatter = isOnlyOpBlock<stablehlo::SubtractOp, false, true>(&block);
-
-    isMulConstantUpdateScatter =
-        isOnlyOpConstantBlock<stablehlo::MulOp, 0>(&block, constant);
-    if (!isMulConstantUpdateScatter) {
-      isMulConstantInputScatter =
-          isOnlyOpConstantBlock<stablehlo::MulOp, 1>(&block, constant);
-      if (!isMulConstantInputScatter) {
-        isAddConstantUpdateScatter =
-            isOnlyOpConstantBlock<stablehlo::AddOp, 0>(&block, constant);
-        if (!isAddConstantUpdateScatter) {
-          isAddConstantInputScatter =
-              isOnlyOpConstantBlock<stablehlo::AddOp, 1>(&block, constant);
-        } else {
-          isAddConstantInputScatter = false;
-        }
-      } else {
-        isAddConstantUpdateScatter = false;
-        isAddConstantInputScatter = false;
-      }
-    } else {
-      isAddConstantUpdateScatter = false;
-      isAddConstantInputScatter = false;
-      isMulConstantInputScatter = false;
-    }
-  }
-};
-
 SmallVector<int64_t> computeGatherSliceSizes(stablehlo::ScatterOp &scatterOp);
 
 template <typename T>
@@ -1484,10 +1360,160 @@ DEFINE_BINARY_OP_CREATE(AddOp)
 DEFINE_BINARY_OP_CREATE(MulOp)
 DEFINE_BINARY_OP_CREATE(SubtractOp)
 DEFINE_BINARY_OP_CREATE(DivOp)
+DEFINE_BINARY_OP_CREATE(MinOp)
+DEFINE_BINARY_OP_CREATE(MaxOp)
+DEFINE_BINARY_OP_CREATE(AndOp)
+DEFINE_BINARY_OP_CREATE(OrOp)
+DEFINE_BINARY_OP_CREATE(XorOp)
 
 // walk back starting from `input` and track the operations to determine if
 // only part of the matrix is populated.
 bool IsTensorFilled(Value input);
+
+template <typename OpTy> struct CheckCommonReduceLikeOp {
+public:
+  bool isAddReduce;
+  bool isMinReduce;
+  bool isMaxReduce;
+  bool isMulReduce;
+  bool isAndReduce;
+  bool isOrReduce;
+  bool isXorReduce;
+
+  CheckCommonReduceLikeOp(OpTy op) {
+    auto &region = op.getBody();
+    if (region.getBlocks().size() != 1) {
+      isAddReduce = false;
+      isMinReduce = false;
+      isMaxReduce = false;
+      isMulReduce = false;
+      isAndReduce = false;
+      isOrReduce = false;
+      isXorReduce = false;
+      return;
+    }
+
+    auto &block = region.getBlocks().front();
+    isAddReduce = isOnlyOpBlock<stablehlo::AddOp, true, false>(&block);
+    isMinReduce = isOnlyOpBlock<stablehlo::MinOp, true, false>(&block);
+    isMaxReduce = isOnlyOpBlock<stablehlo::MaxOp, true, false>(&block);
+    isMulReduce = isOnlyOpBlock<stablehlo::MulOp, true, false>(&block);
+    isAndReduce = isOnlyOpBlock<stablehlo::AndOp, true, false>(&block);
+    isOrReduce = isOnlyOpBlock<stablehlo::OrOp, true, false>(&block);
+    isXorReduce = isOnlyOpBlock<stablehlo::XorOp, true, false>(&block);
+  }
+
+  bool isCommutativeOp() const {
+    return isAddReduce || isMinReduce || isMaxReduce || isMulReduce ||
+           isAndReduce || isOrReduce || isXorReduce;
+  }
+
+  Value createEquivalentOperation(
+      OpBuilder &builder, Location loc, Value lhs, Value rhs,
+      std::optional<sdy::TensorShardingPerValueAttr> sharding = std::nullopt) {
+    if (isAddReduce) {
+      return AddOpCreate(builder, loc, lhs, rhs, sharding);
+    } else if (isMinReduce) {
+      return MinOpCreate(builder, loc, lhs, rhs, sharding);
+    } else if (isMaxReduce) {
+      return MaxOpCreate(builder, loc, lhs, rhs, sharding);
+    } else if (isMulReduce) {
+      return MulOpCreate(builder, loc, lhs, rhs, sharding);
+    } else if (isAndReduce) {
+      return AndOpCreate(builder, loc, lhs, rhs, sharding);
+    } else if (isOrReduce) {
+      return OrOpCreate(builder, loc, lhs, rhs, sharding);
+    } else if (isXorReduce) {
+      return XorOpCreate(builder, loc, lhs, rhs, sharding);
+    }
+    llvm_unreachable("Invalid reduce op");
+  }
+};
+
+// Type alias for backward compatibility
+using CheckCommonReduceOp = CheckCommonReduceLikeOp<stablehlo::ReduceOp>;
+using CheckCommonReduceWindowOp =
+    CheckCommonReduceLikeOp<stablehlo::ReduceWindowOp>;
+
+struct CheckCommonScatterOp {
+public:
+  bool isSetindexScatter;
+  bool isConstantSetindexScatter;
+
+  bool isAddScatter;
+  bool isMinScatter;
+  bool isMaxScatter;
+  bool isMulScatter;
+  bool isAndScatter;
+  bool isOrScatter;
+  bool isXorScatter;
+  bool isSubScatter;
+
+  bool isMulConstantUpdateScatter;
+  bool isMulConstantInputScatter;
+  bool isAddConstantUpdateScatter;
+  bool isAddConstantInputScatter;
+  SplatElementsAttr constant;
+
+  CheckCommonScatterOp(stablehlo::ScatterOp op) {
+    auto &updateComputation = op.getUpdateComputation();
+
+    if (!updateComputation.hasOneBlock()) {
+      isSetindexScatter = false;
+      isConstantSetindexScatter = false;
+      isAddScatter = false;
+      isMinScatter = false;
+      isMaxScatter = false;
+      isMulScatter = false;
+      isAndScatter = false;
+      isOrScatter = false;
+      isXorScatter = false;
+      isSubScatter = false;
+
+      isMulConstantUpdateScatter = false;
+      isAddConstantUpdateScatter = false;
+      isMulConstantInputScatter = false;
+      isAddConstantInputScatter = false;
+      return;
+    }
+
+    auto &block = updateComputation.front();
+    isSetindexScatter = isSetindexBlock(&block);
+    isConstantSetindexScatter = isConstantSetindexBlock(&block, constant);
+    isAddScatter = isOnlyOpBlock<stablehlo::AddOp, true, false>(&block);
+    isMulScatter = isOnlyOpBlock<stablehlo::MulOp, true, false>(&block);
+    isMinScatter = isOnlyOpBlock<stablehlo::MinOp, true, false>(&block);
+    isMaxScatter = isOnlyOpBlock<stablehlo::MaxOp, true, false>(&block);
+    isAndScatter = isOnlyOpBlock<stablehlo::AndOp, true, false>(&block);
+    isOrScatter = isOnlyOpBlock<stablehlo::OrOp, true, false>(&block);
+    isXorScatter = isOnlyOpBlock<stablehlo::XorOp, true, false>(&block);
+    isSubScatter = isOnlyOpBlock<stablehlo::SubtractOp, false, true>(&block);
+
+    isMulConstantUpdateScatter =
+        isOnlyOpConstantBlock<stablehlo::MulOp, 0>(&block, constant);
+    if (!isMulConstantUpdateScatter) {
+      isMulConstantInputScatter =
+          isOnlyOpConstantBlock<stablehlo::MulOp, 1>(&block, constant);
+      if (!isMulConstantInputScatter) {
+        isAddConstantUpdateScatter =
+            isOnlyOpConstantBlock<stablehlo::AddOp, 0>(&block, constant);
+        if (!isAddConstantUpdateScatter) {
+          isAddConstantInputScatter =
+              isOnlyOpConstantBlock<stablehlo::AddOp, 1>(&block, constant);
+        } else {
+          isAddConstantInputScatter = false;
+        }
+      } else {
+        isAddConstantUpdateScatter = false;
+        isAddConstantInputScatter = false;
+      }
+    } else {
+      isAddConstantUpdateScatter = false;
+      isAddConstantInputScatter = false;
+      isMulConstantInputScatter = false;
+    }
+  }
+};
 
 } // namespace stablehlo
 
