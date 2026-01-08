@@ -1,5 +1,9 @@
 # Enzyme-JAX Developer Notes
 
+## Development Environment
+
+**Using the Dev Container is recommended.** The `.devcontainer` configuration provides a pre-configured development environment with all necessary dependencies, tools, and settings already installed. This ensures consistency across different development setups and simplifies the initial setup process.
+
 ## Building the Project
 
 ### Quick Build
