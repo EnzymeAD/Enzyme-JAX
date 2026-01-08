@@ -349,12 +349,21 @@ void WhileLoopInfo::propagateAffineIndexInfo(
 
       auto iotaDetection = detectIotaLikeTensor(sliceOp.getOperand());
 
-      if (iotaDetection && sliceDim == iotaDetection.value().dimension) {
+      if (iotaDetection && sliceDim == iotaDetection.value().dimension &&
+          isa<mlir::IntegerType>(
+              iotaDetection.value().tensorType.getElementType())) {
+        // Extract integer values from TypedAttr
+        auto startAttr = dyn_cast<IntegerAttr>(iotaDetection.value().start);
+        auto scaleAttr = dyn_cast<IntegerAttr>(iotaDetection.value().scale);
+        if (!startAttr || !scaleAttr) {
+          return WalkResult::advance();
+        }
+
         anyNewPropagated = true;
         auto indexInfo = affineIndexInfo[sliceOp.getStartIndices()[sliceDim]];
         auto offset = indexInfo.offset.getSExtValue();
-        auto iotaStart = iotaDetection.value().start;
-        auto iotaScale = iotaDetection.value().scale;
+        auto iotaStart = startAttr.getValue().getSExtValue();
+        auto iotaScale = scaleAttr.getValue().getSExtValue();
         // The slice result is: iotaScale * (indexInfo.scale * i +
         //                       indexInfo.offset) + iotaStart
         //                    = (iotaScale * indexInfo.scale) * i + (iotaScale *
