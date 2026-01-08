@@ -541,6 +541,7 @@ def optimization_passes(
             "reshape_slice(1)",
             "reshape_elementwise(1)",
             "reshape_dynamic_slice(1)",
+            "delete_dims_broadcast",
         ]
     elif reshape_propagate == "down":
         transform_passes_list += [
