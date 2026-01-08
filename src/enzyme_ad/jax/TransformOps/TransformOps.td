@@ -297,6 +297,10 @@ def ApplyPadReduceWindowPatterns : EnzymeHLOPatternOp<
     "pad_reduce_window"> {
   let patterns = ["PadReduceWindow"];
 }
+def ApplyReduceWindowWrapSimplify : EnzymeHLOPatternOp<
+    "reduce_window_wrap"> {
+  let patterns = ["ReduceWindowWrapSimplify"];
+}
 def ApplyConvolutionPadPatterns : EnzymeHLOPatternOp<
     "convolution_pad"> {
   let patterns = ["ConvolutionPad"];
