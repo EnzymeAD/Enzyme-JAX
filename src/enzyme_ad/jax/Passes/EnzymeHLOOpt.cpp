@@ -29929,8 +29929,8 @@ struct EnzymeHLOOptPass
                    CSE<stablehlo::NegOp>, CSE<stablehlo::AbsOp>,
                    CSE<enzymexla::RotateOp>, CSE<enzymexla::WrapOp>,
                    CSE<enzymexla::ExtendOp>, CSEIota, CSE<stablehlo::CompareOp>,
-                   CSE<stablehlo::GatherOp>, CSE<stablehlo::ScatterOp>>(
-          context, PatternBenefit(65000));
+                   CSE<stablehlo::GatherOp>, CSE<stablehlo::ScatterOp>,
+                   CSE<stablehlo::SelectOp>>(context, PatternBenefit(65000));
     }
 
     if (passses & 256)

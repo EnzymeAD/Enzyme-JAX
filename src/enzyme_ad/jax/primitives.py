@@ -258,6 +258,7 @@ def optimization_passes(
         "cse_wrap<16>",
         "cse_rotate<16>",
         "cse_rotate<16>",
+        "cse_select<16>",
         "concat_concat_axis_swap",
         "concat_concat_to_dus",
         "broadcast_iota_simplify",
