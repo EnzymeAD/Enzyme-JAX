@@ -88,7 +88,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       "recognition{backend=";
       pass_pipeline += backend;
       pass_pipeline += "}";
-      pass_pipeline += "gpu-lanuch-"
+      pass_pipeline += ","
       "canonicalize,libdevice-funcs-raise,canonicalize,symbol-dce,";
   
   if (backend == "cpu")

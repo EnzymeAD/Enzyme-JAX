@@ -89,7 +89,7 @@ struct GPULaunchRecognitionPass
       auto features = feat;
       if (features.size() == 0)
         features = "\"";
-      // Features come from target_features attribute (e.g., "+wavefrontsize64")
+      // Features come from target_features attribute (+wavefrontsize64)
       target = moduleBuilder.getAttr<ROCDL::ROCDLTargetAttr>(
           /*optLevel=*/2, /*triple=*/"amdgcn-amd-amdhsa", chip, features,
           /*abiVersion=*/"",
