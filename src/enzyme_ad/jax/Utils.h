@@ -1104,6 +1104,9 @@ stablehlo::GatherDimensionNumbersAttr
 getGatherDims(mlir::MLIRContext *ctx,
               stablehlo::ScatterDimensionNumbersAttr scatterDimNumbers);
 
+bool isSetindexBlock(mlir::Block *block,
+                     std::function<bool(stablehlo::ReturnOp retOp)> fn);
+
 bool isSetindexBlock(mlir::Block *block);
 bool isConstantSetindexBlock(mlir::Block *block,
                              mlir::SplatElementsAttr &constant);

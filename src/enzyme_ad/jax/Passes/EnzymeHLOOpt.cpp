@@ -54,6 +54,7 @@
 #include "llvm/ADT/MapVector.h"
 #include <cstddef>
 #include <iterator>
+#include <llvm/Support/LogicalResult.h>
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/Value.h>
 #include <numeric>
@@ -30047,6 +30048,36 @@ struct ReduceWindowWrapSimplify final
   }
 };
 
+struct ScatterOpCanon final
+    : CheckedOpRewritePattern<stablehlo::ScatterOp, ScatterOpCanon> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ScatterOp op,
+                                    PatternRewriter &rewriter) {
+    if (trySimplifyTrivialScatter(op, rewriter).succeeded()) {
+      return success();
+    }
+
+    return failure();
+  }
+
+private:
+  // if the scatter is essentially `return arg0`, then
+  // we can remove the scatter op altogether
+  LogicalResult trySimplifyTrivialScatter(stablehlo::ScatterOp op,
+                                          PatternRewriter &rewriter) {
+    auto &block = op.getUpdateComputation().front();
+    if (!isSetindexBlock(&block, [&](stablehlo::ReturnOp retOp) {
+          return retOp.getOperand(0) == block.getArgument(0);
+        })) {
+      return failure();
+    }
+
+    rewriter.replaceOp(op, op.getInputs());
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -30717,6 +30748,7 @@ struct EnzymeHLOOptPass
         DynamicReshapeOpCanon,
         EmptyReduceOpCanon,
         GatherOpCanon,
+        ScatterOpCanon,
         GetDimensionSizeOpCanon,
         GetTupleElementOpCanon,
         IfRemoveUnused,
