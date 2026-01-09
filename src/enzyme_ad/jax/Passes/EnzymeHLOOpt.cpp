@@ -75,8 +75,6 @@ using namespace mlir;
 using namespace mlir::enzyme;
 using namespace mlir::stablehlo;
 
-static int64_t scatterRegionToFunctionCounter = 0;
-
 // Check if any of the pad sizes are negative
 bool anyPadSizesNegative(stablehlo::PadOp pad) {
   for (auto &&[low, high, inner] :
@@ -30123,91 +30121,81 @@ private:
 
     auto &block = op.getUpdateComputation().front();
 
-    OpBuilder::InsertionGuard guard(rewriter);
-    rewriter.setInsertionPointToStart(modOp.getBody());
+    SmallVector<Type> returnTypes;
+    ExtractBlockIntoFunction(&block, modOp, func, additionalInputs, returnTypes,
+                             rewriter);
 
-    auto retOp = dyn_cast<stablehlo::ReturnOp>(block.getTerminator());
-    if (!retOp || retOp->getNumOperands() > 1) {
+    if (returnTypes.size() != 1) {
       return failure();
     }
 
-    // traverse the block. we fail if the value is defined outside the block and
-    // is not a constant
-    llvm::MapVector<Value, DenseElementsAttr> constValMap;
-    int64_t argNumCounter = block.getNumArguments();
-    SmallVector<int64_t> additionalInputNum;
-    for (auto &innerOp : block.getOperations()) {
-      for (auto operand : innerOp.getOperands()) {
-        if (auto blockArg = dyn_cast<BlockArgument>(operand)) {
-          if (blockArg.getOwner() == &block) {
-            continue;
-          }
-        } else if (auto defOp = operand.getDefiningOp()) {
-          if (defOp->getBlock() == &block) {
-            continue;
-          }
-        } else {
-          return failure();
-        }
+    resElemType = cast<RankedTensorType>(returnTypes[0]).getElementType();
+    return success();
+  }
 
-        // Operand is a constant - that's fine, we'll clone it
-        DenseElementsAttr attr;
-        if (matchPattern(operand, m_Constant(&attr))) {
-          constValMap[operand] = attr;
-          continue;
-        }
+  /// Helper function to create batched scatter operations.
+  /// This encapsulates the common logic for:
+  /// 1. Calling scatterRegionToFunction to extract the region into a function
+  /// 2. Broadcasting additional inputs to match batch dimensions
+  /// 3. Creating BatchOps and DynamicUpdateSliceOps for each input
+  /// 4. Inlining the batch operations
+  LogicalResult createBatchedScatterOps(
+      stablehlo::ScatterOp op, ValueRange inputs, ArrayRef<Value> slices,
+      ArrayRef<Value> updates, Value startIndex, int64_t count,
+      PatternRewriter &rewriter, SmallVectorImpl<Value> &results) const {
+    // Use batching to compute the result of the region
+    func::FuncOp func;
+    Type resElemType;
+    llvm::SetVector<Value> additionalInputsOrig;
+    if (failed(scatterRegionToFunction(op, func, resElemType,
+                                       additionalInputsOrig, rewriter))) {
+      return failure();
+    }
 
-        if (!additionalInputs.contains(operand)) {
-          additionalInputs.insert(operand);
-          additionalInputNum.push_back(argNumCounter++);
-        }
+    SmallVector<Value> bcastedExtraInputs;
+    for (auto addArg : additionalInputsOrig) {
+      auto origType = cast<RankedTensorType>(addArg.getType());
+      auto outShape = llvm::to_vector(origType.getShape());
+      outShape.insert(outShape.begin(), count);
+
+      if (count == 1) {
+        // For count=1, we can use reshape instead of broadcast
+        bcastedExtraInputs.push_back(stablehlo::ReshapeOpCreate(
+            rewriter, op.getLoc(), addArg, outShape));
+      } else {
+        // For count>1, we need to broadcast
+        SmallVector<int64_t> bcastDims(origType.getRank());
+        std::iota(bcastDims.begin(), bcastDims.end(), 1);
+        bcastedExtraInputs.push_back(stablehlo::BroadcastInDimOp::create(
+            rewriter, op.getLoc(),
+            RankedTensorType::get(outShape, origType.getElementType()), addArg,
+            rewriter.getDenseI64ArrayAttr(bcastDims)));
       }
     }
 
-    auto funcArgTypes = llvm::to_vector(block.getArgumentTypes());
-    for (auto addInput : additionalInputs) {
-      funcArgTypes.push_back(addInput.getType());
+    SmallVector<enzyme::BatchOp> batchOps;
+    for (auto [input, slice, update] :
+         llvm::zip_equal(inputs, slices, updates)) {
+      SmallVector<Value> allInputs = {slice, update};
+      allInputs.append(bcastedExtraInputs.begin(), bcastedExtraInputs.end());
+
+      auto newBatchOp = enzyme::BatchOp::create(
+          rewriter, op.getLoc(), RankedTensorType::get({count}, resElemType),
+          mlir::FlatSymbolRefAttr::get(op.getContext(), func.getName()),
+          allInputs, rewriter.getDenseI64ArrayAttr({count}));
+
+      auto newDusOp = stablehlo::DynamicUpdateSliceOp::create(
+          rewriter, op.getLoc(), input, newBatchOp.getResult(0),
+          ValueRange(startIndex));
+      results.push_back(newDusOp.getResult());
+      batchOps.push_back(newBatchOp);
     }
 
-    FunctionType calleeType =
-        rewriter.getFunctionType(funcArgTypes, retOp.getOperandTypes());
-
-    func = func::FuncOp::create(
-        rewriter, op->getLoc(),
-        "__enzymexla_scatter_region_func" +
-            std::to_string(scatterRegionToFunctionCounter++),
-        calleeType);
-    func.setPrivate();
-
-    // Create the function body by cloning the block
-    Block *entryBlock = func.addEntryBlock();
-    IRMapping mapping;
-    for (int64_t i = 0; i < block.getNumArguments(); i++) {
-      mapping.map(block.getArgument(i), entryBlock->getArgument(i));
+    auto funcOpInterface = cast<FunctionOpInterface>(func.getOperation());
+    for (auto batchOp : batchOps) {
+      enzyme::batchutils::batchOperationInline(rewriter, batchOp,
+                                               funcOpInterface);
     }
-
-    for (auto [idx, operand] :
-         llvm::zip_equal(additionalInputNum, additionalInputs)) {
-      mapping.map(operand, entryBlock->getArgument(idx));
-    }
-
-    rewriter.setInsertionPointToEnd(entryBlock);
-    for (auto &&[operand, attr] : constValMap) {
-      auto newConstOp = stablehlo::ConstantOp::create(rewriter, op.getLoc(),
-                                                      cast<ElementsAttr>(attr));
-      mapping.map(operand, newConstOp);
-    }
-
-    for (auto &innerOp : block.without_terminator()) {
-      rewriter.clone(innerOp, mapping);
-    }
-
-    // Clone the return op as func.return
-    SmallVector<Value> returnValues = {mapping.lookup(retOp->getOperand(0))};
-    func::ReturnOp::create(rewriter, op->getLoc(), returnValues);
-
-    resElemType =
-        cast<RankedTensorType>(retOp->getOperand(0).getType()).getElementType();
 
     return success();
   }
@@ -30238,48 +30226,11 @@ private:
             stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), update, {1}));
       }
 
-      // Use batching to compute the result of the region
-      func::FuncOp func;
-      Type resElemType;
-      llvm::SetVector<Value> additionalInputsOrig;
-      if (!scatterRegionToFunction(op, func, resElemType, additionalInputsOrig,
-                                   rewriter)
-               .succeeded()) {
-        return failure();
-      }
-
-      SmallVector<Value> bcastedExtraInputs;
-      for (auto addArg : additionalInputsOrig) {
-        auto outShape = llvm::to_vector(
-            cast<RankedTensorType>(addArg.getType()).getShape());
-        outShape.insert(outShape.begin(), 1);
-        bcastedExtraInputs.push_back(stablehlo::ReshapeOpCreate(
-            rewriter, op.getLoc(), addArg, outShape));
-      }
-
-      SmallVector<enzyme::BatchOp> batchOps;
       SmallVector<Value> results;
-      for (auto [input, slice, update] :
-           llvm::zip_equal(inputs, slices, updates)) {
-        SmallVector<Value> allInputs = {slice, update};
-        allInputs.append(bcastedExtraInputs.begin(), bcastedExtraInputs.end());
-
-        auto newBatchOp = enzyme::BatchOp::create(
-            rewriter, op.getLoc(), RankedTensorType::get({1}, resElemType),
-            mlir::FlatSymbolRefAttr::get(op.getContext(), func.getName()),
-            allInputs, rewriter.getDenseI64ArrayAttr({1}));
-
-        auto newDusOp = stablehlo::DynamicUpdateSliceOp::create(
-            rewriter, op.getLoc(), input, newBatchOp.getResult(0),
-            ValueRange(scalarIndex));
-        results.push_back(newDusOp.getResult());
-        batchOps.push_back(newBatchOp);
-      }
-
-      auto funcOpInterface = cast<FunctionOpInterface>(func.getOperation());
-      for (auto batchOp : batchOps) {
-        enzyme::batchutils::batchOperationInline(rewriter, batchOp,
-                                                 funcOpInterface);
+      if (failed(createBatchedScatterOps(op, inputs, slices, updates,
+                                         scalarIndex, /*count=*/1, rewriter,
+                                         results))) {
+        return failure();
       }
 
       rewriter.replaceOp(op, results);
@@ -30355,58 +30306,16 @@ private:
       updates.push_back(newUpdate);
     }
 
-    // Use batching to compute the result of the region
-    func::FuncOp func;
-    Type resElemType;
-    llvm::SetVector<Value> additionalInputsOrig;
-    if (!scatterRegionToFunction(op, func, resElemType, additionalInputsOrig,
-                                 rewriter)
-             .succeeded()) {
-      return failure();
-    }
-
-    SmallVector<Value> bcastedExtraInputs;
-    for (auto addArg : additionalInputsOrig) {
-      auto outShape =
-          llvm::to_vector(cast<RankedTensorType>(addArg.getType()).getShape());
-      outShape.insert(outShape.begin(), count);
-      auto origType = cast<RankedTensorType>(addArg.getType());
-      SmallVector<int64_t> bcastDims(origType.getRank());
-      std::iota(bcastDims.begin(), bcastDims.end(), 1);
-      bcastedExtraInputs.push_back(stablehlo::BroadcastInDimOp::create(
-          rewriter, op.getLoc(),
-          RankedTensorType::get(outShape, origType.getElementType()), addArg,
-          rewriter.getDenseI64ArrayAttr(bcastDims)));
-    }
-
     auto constStartVal = stablehlo::ConstantOp::create(
         rewriter, op.getLoc(),
         cast<ElementsAttr>(
             makeAttr(RankedTensorType::get({}, rewriter.getI32Type()), start)));
 
-    SmallVector<enzyme::BatchOp> batchOps;
     SmallVector<Value> results;
-    for (auto [input, slice, update] :
-         llvm::zip_equal(inputs, slices, updates)) {
-      SmallVector<Value> allInputs = {slice, update};
-      allInputs.append(bcastedExtraInputs.begin(), bcastedExtraInputs.end());
-
-      auto newBatchOp = enzyme::BatchOp::create(
-          rewriter, op.getLoc(), RankedTensorType::get({count}, resElemType),
-          mlir::FlatSymbolRefAttr::get(op.getContext(), func.getName()),
-          allInputs, rewriter.getDenseI64ArrayAttr({count}));
-
-      auto newDusOp = stablehlo::DynamicUpdateSliceOp::create(
-          rewriter, op.getLoc(), input, newBatchOp.getResult(0),
-          ValueRange(constStartVal));
-      results.push_back(newDusOp.getResult());
-      batchOps.push_back(newBatchOp);
-    }
-
-    auto funcOpInterface = cast<FunctionOpInterface>(func.getOperation());
-    for (auto batchOp : batchOps) {
-      enzyme::batchutils::batchOperationInline(rewriter, batchOp,
-                                               funcOpInterface);
+    if (failed(createBatchedScatterOps(op, inputs, slices, updates,
+                                       constStartVal, count, rewriter,
+                                       results))) {
+      return failure();
     }
 
     rewriter.replaceOp(op, results);

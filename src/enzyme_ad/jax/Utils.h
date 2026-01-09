@@ -10,6 +10,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallVector.h"
+#include <llvm/Support/LogicalResult.h>
 #include <mlir/IR/Value.h>
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -1537,6 +1538,11 @@ public:
     }
   }
 };
+
+void ExtractBlockIntoFunction(Block *block, ModuleOp modOp, func::FuncOp &func,
+                              llvm::SetVector<Value> &capturedValues,
+                              llvm::SmallVectorImpl<Type> &resultTypes,
+                              OpBuilder &builder);
 
 } // namespace stablehlo
 
