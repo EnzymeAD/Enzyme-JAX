@@ -1,8 +1,8 @@
 // #include "mhlo/IR/hlo_ops.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/LinalgUtils.h"
@@ -128,8 +128,8 @@ struct MPICommRankOpLowering
 
       // Create a constant tensor to hold the result
       auto tensorType = llvm::cast<RankedTensorType>(op->getResultTypes()[0]);
-      auto constantAttr = DenseIntElementsAttr::get(tensorType,
-          ArrayRef<int32_t>{-1});
+      auto constantAttr =
+          DenseIntElementsAttr::get(tensorType, ArrayRef<int32_t>{-1});
       Value constantTensor = rewriter.create<stablehlo::ConstantOp>(
           op.getLoc(), tensorType, constantAttr);
 
@@ -263,8 +263,8 @@ struct MPICommSizeOpLowering
 
       // Create a constant tensor to hold the result
       auto tensorType = llvm::cast<RankedTensorType>(op->getResultTypes()[0]);
-      auto constantAttr = DenseIntElementsAttr::get(tensorType,
-          ArrayRef<int32_t>{-1});
+      auto constantAttr =
+          DenseIntElementsAttr::get(tensorType, ArrayRef<int32_t>{-1});
       Value constantTensor = rewriter.create<stablehlo::ConstantOp>(
           op.getLoc(), tensorType, constantAttr);
 
@@ -912,8 +912,8 @@ struct MPIIsendOpLowering : public OpRewritePattern<enzymexla::MPIIsendOp> {
       // Create a constant tensor to hold request
       auto i64Type = rewriter.getI64Type();
       auto tensorType = RankedTensorType::get({}, i64Type);
-      auto constantAttr = DenseIntElementsAttr::get(tensorType,
-          ArrayRef<int64_t>{-1});
+      auto constantAttr =
+          DenseIntElementsAttr::get(tensorType, ArrayRef<int64_t>{-1});
       Value constantTensor = rewriter.create<stablehlo::ConstantOp>(
           op.getLoc(), tensorType, constantAttr);
 
@@ -1099,8 +1099,8 @@ struct MPIIrecvOpLowering : public OpRewritePattern<enzymexla::MPIIrecvOp> {
       // Create a constant tensor to hold request
       auto i64Type = rewriter.getI64Type();
       auto tensorType = RankedTensorType::get({}, i64Type);
-      auto constantAttr = DenseIntElementsAttr::get(tensorType,
-          ArrayRef<int64_t>{-1});
+      auto constantAttr =
+          DenseIntElementsAttr::get(tensorType, ArrayRef<int64_t>{-1});
       Value constantTensor = rewriter.create<stablehlo::ConstantOp>(
           op.getLoc(), tensorType, constantAttr);
 
