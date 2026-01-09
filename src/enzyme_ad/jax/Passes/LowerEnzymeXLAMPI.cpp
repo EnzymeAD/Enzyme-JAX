@@ -1282,8 +1282,6 @@ struct MPIAllreduceOpLowering
       auto datatype = op.getDatatype();
       StringRef datatypeName = stringifyMPIDatatype(datatype);
 
-      // // TODO we just assume/hardcode for now
-      // std::string mpiOpName = "MPI_SUM";
       // get the MPI Op type
       auto mpiOpName = op.getOp();
 
