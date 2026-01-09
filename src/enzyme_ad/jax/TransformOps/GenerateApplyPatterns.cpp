@@ -152,12 +152,14 @@ LogicalResult parseTransform(OpBuilder &builder, Location loc,
           opName == "slice_licm" || opName == "dot_general_licm" ||
           opName == "reverse_licm" || opName == "reduce_licm" ||
           opName == "reduce_window_licm" || opName == "dus_licm" ||
-          opName == "pad_licm" || opName == "elementwise_licm" ||
-          opName == "concatenate_licm" || opName == "broadcastindim_licm" ||
-          opName == "reshape_licm" || opName == "transpose_licm" ||
-          opName == "convolution_licm" || opName == "dynamic_slice_licm" ||
-          opName == "scatter_licm" || opName == "gather_licm" ||
-          opName == "iota_licm" || opName == "transpose_elementwise" ||
+          opName == "wrap_licm" || opName == "extend_licm" ||
+          opName == "rotate_licm" || opName == "pad_licm" ||
+          opName == "elementwise_licm" || opName == "concatenate_licm" ||
+          opName == "broadcastindim_licm" || opName == "reshape_licm" ||
+          opName == "transpose_licm" || opName == "convolution_licm" ||
+          opName == "dynamic_slice_licm" || opName == "scatter_licm" ||
+          opName == "gather_licm" || opName == "iota_licm" ||
+          opName == "transpose_elementwise" ||
           opName == "reshape_elementwise" ||
           opName == "reshape_elementwise_only_fusible" ||
           opName == "reshape_slice" || opName == "reshape_dynamic_slice" ||
