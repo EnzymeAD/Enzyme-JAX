@@ -51,7 +51,8 @@ static inline void islAssert(const isl_size &size) {
 }
 [[maybe_unused]] static inline unsigned
 unsignedFromIslSize(const isl::size &size) {
-  assert(!size.is_error());
+  if (size.is_error())
+    llvm_unreachable("unrecoverable isl error");
   return static_cast<unsigned>(size);
 }
 [[maybe_unused]] static inline unsigned
