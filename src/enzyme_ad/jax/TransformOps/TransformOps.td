@@ -1769,6 +1769,16 @@ def DUSToConcat : EnzymeHLOPatternOp<
   let patterns = ["DUSToConcat"];
 }
 
+def DUSDUSToDUSExtend : EnzymeHLOPatternOp<
+    "dusdus_to_dusextend"> {
+  let patterns = ["DUSDUSToDUSExtend"];
+}
+
+def DUSDUSToDUSPad : EnzymeHLOPatternOp<
+    "dusdus_to_duspad"> {
+  let patterns = ["DUSDUSToDUSPad"];
+}
+
 def DUSConcat : EnzymeHLOPatternOp<
     "dus_concat"> {
   let patterns = ["DUSConcat"];
@@ -2105,6 +2115,11 @@ def SimplifyWrap : EnzymeHLOPatternOp<
 def SimplifyRotate : EnzymeHLOPatternOp<
   "simplify_rotate"> {
   let patterns = ["SimplifyBoundary<enzymexla::RotateOp>"];
+}
+
+def ExtendPad : EnzymeHLOPatternOp<
+  "extend_pad"> {
+  let patterns = ["ExtendPad"];
 }
 
 def SliceExtend : EnzymeHLOPatternOp<
