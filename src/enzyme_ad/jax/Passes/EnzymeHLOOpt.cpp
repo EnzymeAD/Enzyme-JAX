@@ -26,6 +26,7 @@
 #include "mlir/IR/Visitors.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "mlir/Transforms/RegionUtils.h"
 #include "shardy/dialect/sdy/ir/utils.h"
 #include "src/enzyme_ad/jax/CheckedRewrite.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
@@ -18357,6 +18358,184 @@ struct WhileLICM
   }
 };
 
+// Replace a while op consisting of DUS chains for each iter arg where each DUS
+// doesn't depend on values evolving in the loop. This can be later extended to
+// support other similarly idempotent ops. The loop is expected to have a
+// counter-style condition that will be used as the if condition.
+struct WhileIdempotentDUS
+    : public CheckedOpRewritePattern<stablehlo::WhileOp, WhileIdempotentDUS> {
+  using CheckedOpRewritePattern<stablehlo::WhileOp,
+                                WhileIdempotentDUS>::CheckedOpRewritePattern;
+
+  // Returns true if the value is the block argument of the while body at the
+  // given position.
+  bool isSameBlockArgument(Value value, stablehlo::WhileOp whileOp,
+                           unsigned position) const {
+    auto blockArg = dyn_cast<BlockArgument>(value);
+    if (!blockArg)
+      return false;
+    auto foundWhileOp =
+        dyn_cast<stablehlo::WhileOp>(blockArg.getOwner()->getParentOp());
+    if (whileOp != foundWhileOp ||
+        blockArg.getOwner() != &whileOp.getBody().front())
+      return false;
+    return blockArg.getArgNumber() == position;
+  }
+
+  // Returns true if the value is transitively defined by DUS ops that do not
+  // depend on other iter args than the one at the given position.
+  bool isIdempotent(Value value, stablehlo::WhileOp whileOp,
+                    unsigned position) const {
+    if (areValuesDefinedAbove(ValueRange{value}, whileOp.getBody()))
+      return true;
+    auto dus = value.getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
+    if (!dus)
+      return false;
+    if (!isIdempotent(dus.getOperand(), whileOp, position) &&
+        !isSameBlockArgument(dus.getOperand(), whileOp, position))
+      return false;
+
+    return llvm::all_of(dus->getOperands().drop_front(), [&](Value operand) {
+      return isIdempotent(operand, whileOp, position);
+    });
+  }
+
+  // Returns the block argument corresponding to the loop counter and the step
+  // value it is incremented with. Currently matches an AddOp specifically.
+  FailureOr<std::pair<Value, Value>>
+  getConstantLoopStep(Value value, stablehlo::WhileOp whileOp,
+                      unsigned position) const {
+    auto addOp = value.getDefiningOp<stablehlo::AddOp>();
+    if (!addOp)
+      return failure();
+
+    Value step = nullptr;
+    Value blockArgument = nullptr;
+    if (isSameBlockArgument(addOp.getLhs(), whileOp, position)) {
+      blockArgument = addOp.getLhs();
+      step = addOp.getRhs();
+    } else if (isSameBlockArgument(addOp.getRhs(), whileOp, position)) {
+      blockArgument = addOp.getRhs();
+      step = addOp.getLhs();
+    }
+    if (!step)
+      return failure();
+
+    if (!areValuesDefinedAbove(ValueRange{step}, whileOp.getBody()))
+      return failure();
+
+    return std::make_pair(blockArgument, step);
+  }
+
+  LogicalResult matchAndRewriteImpl(stablehlo::WhileOp op,
+                                    PatternRewriter &rewriter) const {
+    // check yielded value for being the iter arg potentially going through a
+    // chain of DUS that do not depend on other iter args
+    Block &body = op.getBody().front();
+    auto returnOp = cast<stablehlo::ReturnOp>(body.getTerminator());
+    stablehlo::CompareOp compare = nullptr;
+    std::optional<std::tuple<Value, Value, Value>> loopCounter;
+    for (OpOperand &operand : returnOp->getOpOperands()) {
+      // if all operands are idempotent, we can replace the loop with a
+      // conditional
+      if (isIdempotent(operand.get(), op, operand.getOperandNumber()))
+        continue;
+
+      if (loopCounter)
+        return failure();
+
+      // extra care needs to be taken to ignore the primary iter arg / counter
+      // it comes from an addition with a block argument (generally a chain of
+      // ops with idempotent operands except this one?) and is also used in the
+      // condition body
+      FailureOr<std::pair<Value, Value>> stepInfo =
+          getConstantLoopStep(operand.get(), op, operand.getOperandNumber());
+      if (failed(stepInfo))
+        return failure();
+
+      Value bodyBlockArgument = stepInfo->first;
+      Value condBlockArgument = op.getCond().getArgument(
+          cast<BlockArgument>(bodyBlockArgument).getArgNumber());
+      if (!llvm::hasSingleElement(condBlockArgument.getUsers()))
+        return failure();
+      compare =
+          dyn_cast<stablehlo::CompareOp>(*condBlockArgument.getUsers().begin());
+
+      // TODO: support other cases, potentially already present elsewhere in the
+      // codebase.
+      if (compare.getComparisonDirection() !=
+          stablehlo::ComparisonDirection::LT)
+        return failure();
+
+      if (compare.getLhs() != condBlockArgument)
+        return failure();
+
+      if (!areValuesDefinedAbove(ValueRange{compare.getRhs()}, op.getCond()))
+        return failure();
+
+      if (!llvm::hasSingleElement(compare->getResult(0).getUsers()) ||
+          *compare->getResult(0).getUsers().begin() !=
+              op.getCond().front().getTerminator())
+        return failure();
+
+      loopCounter =
+          std::make_tuple(stepInfo->first, stepInfo->second, compare.getRhs());
+    }
+
+    // If no non-idempotent iter arg found, bail.
+    if (!loopCounter || (loopCounter && returnOp->getNumOperands() == 1))
+      return failure();
+
+    // Don't remove loops with memory effects.
+    auto advanceIfNoEffects = [](Operation *nestedOp) {
+      if (!isMemoryEffectFree(nestedOp))
+        return WalkResult::interrupt();
+      return WalkResult::advance();
+    };
+    if (op.getBody().front().walk(advanceIfNoEffects).wasInterrupted() ||
+        op.getCond().front().walk(advanceIfNoEffects).wasInterrupted()) {
+      return failure();
+    }
+
+    // Compute the number of loop iterations from the condition body and
+    // directly generate counted values.
+    auto [bodyBlockArgument, step, upperBound] = *loopCounter;
+    Value initialValue =
+        op->getOperand(cast<BlockArgument>(bodyBlockArgument).getArgNumber());
+
+    IRMapping mapping;
+    for (auto &&[fromCond, fromBody, to] :
+         llvm::zip_equal(op.getCond().getArguments(),
+                         op.getBody().getArguments(), op.getOperands())) {
+      mapping.map(fromCond, to);
+      mapping.map(fromBody, to);
+    }
+    Location loc = op.getLoc();
+    Operation *condition = rewriter.clone(*compare, mapping);
+    stablehlo::IfOp conditional = stablehlo::IfOp::create(
+        rewriter, loc, op->getResultTypes(), condition->getResult(0));
+    rewriter.createBlock(&conditional.getTrueBranch());
+    Value difference = stablehlo::SubtractOp::create(rewriter, op.getLoc(),
+                                                     upperBound, initialValue);
+    // Stablehlo div rounds down, which is what we want here.
+    Value tripCount =
+        stablehlo::DivOp::create(rewriter, op.getLoc(), difference, step);
+    mapping.map(bodyBlockArgument.getUsers().begin()->getResult(0), tripCount);
+
+    for (Operation &opToClone : op.getBody().front().getOperations()) {
+      if (isa<stablehlo::AddOp>(opToClone))
+        continue;
+      rewriter.clone(opToClone, mapping);
+    }
+
+    rewriter.createBlock(&conditional.getFalseBranch());
+    rewriter.create<stablehlo::ReturnOp>(op.getLoc(), op->getOperands());
+
+    rewriter.replaceOp(op, conditional.getResults());
+    return success();
+  }
+};
+
 struct DynamicGatherOpIsNotDynamic
     : public CheckedOpRewritePattern<stablehlo::DynamicGatherOp,
                                      DynamicGatherOpIsNotDynamic> {
@@ -30704,6 +30883,7 @@ struct EnzymeHLOOptPass
         WhileRepeatedInductionReduction,
         WhilePadInductionReduction,
         WhileOpInductionReplacement,
+        WhileIdempotentDUS,
         BroadcastInDimOpCanon,
         ChainedDynamicBroadcastInDimCanonicalization,
         CompareOpCanon,
