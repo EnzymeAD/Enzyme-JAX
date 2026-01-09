@@ -66,20 +66,6 @@ struct GPULaunchRecognitionPass
             func.getTargetFeaturesAttr())) {
       feat = attr.getFeaturesString();
     }
-
-    // auto chip = sm;
-    // if (chip.size() == 0)
-    //   chip = "sm_80";
-    // auto features = feat;
-    // if (features.size() == 0)
-    //   features = "+ptx73";
-
-    // // TODO get these target attrs from somewhere
-    // auto target = moduleBuilder.getAttr<NVVM::NVVMTargetAttr>(
-    //     /*optLevel=*/2, /*triple=*/"nvptx64-nvidia-cuda", chip, features,
-    //     /*flags=*/nullptr,
-    //     /*linkLibs=*/nullptr);
-
     // I have not find how to get the abiVersion yet
     Attribute target;
     if (backend == "rocm") {
@@ -92,7 +78,7 @@ struct GPULaunchRecognitionPass
       // Features come from target_features attribute (+wavefrontsize64)
       target = moduleBuilder.getAttr<ROCDL::ROCDLTargetAttr>(
           /*optLevel=*/2, /*triple=*/"amdgcn-amd-amdhsa", chip, features,
-          /*abiVersion=*/"",
+          /*abiVersion=*/"600",
           /*flags=*/nullptr,
           /*linkLibs=*/nullptr);
     } else {
