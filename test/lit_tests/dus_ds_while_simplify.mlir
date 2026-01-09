@@ -64,27 +64,28 @@ func.func @while_dus_ds_no_overlap(%arg0: tensor<10x10xf32>, %arg1: tensor<2x2xf
   return %1, %0#2 : tensor<2x2xf32>, tensor<2x2xf32>
 }
 
-// CHECK: func.func @while_dus_ds_no_overlap(%arg0: tensor<10x10xf32>, %arg1: tensor<2x2xf32>) -> (tensor<2x2xf32>, tensor<2x2xf32>) {
-// CHECK-NEXT:   %c = stablehlo.constant dense<0> : tensor<i64>
-// CHECK-NEXT:   %c_0 = stablehlo.constant dense<5> : tensor<i64>
-// CHECK-NEXT:   %c_1 = stablehlo.constant dense<1> : tensor<i64>
-// CHECK-NEXT:   %c_2 = stablehlo.constant dense<8> : tensor<i64>
-// CHECK-NEXT:   %cst = stablehlo.constant dense<0.000000e+00> : tensor<2x2xf32>
-// CHECK-NEXT:   %0 = stablehlo.slice %arg0 [0:2, 0:2] : (tensor<10x10xf32>) -> tensor<2x2xf32>
-// CHECK-NEXT:   %1:3 = stablehlo.while(%iterArg = %c, %iterArg_3 = %0, %iterArg_4 = %cst) : tensor<i64>, tensor<2x2xf32>, tensor<2x2xf32>
-// CHECK-NEXT:   cond {
-// CHECK-NEXT:     %2 = stablehlo.compare  LT, %iterArg, %c_0 : (tensor<i64>, tensor<i64>) -> tensor<i1>
-// CHECK-NEXT:     stablehlo.return %2 : tensor<i1>
-// CHECK-NEXT:   } do {
-// CHECK-NEXT:     %2 = stablehlo.add %iterArg, %c_0 {enzymexla.bounds = {{.*}}} : tensor<i64>
-// CHECK-NEXT:     %3 = stablehlo.dynamic_slice %arg0, %c_2, %2, sizes = [2, 2] : (tensor<10x10xf32>, tensor<i64>, tensor<i64>) -> tensor<2x2xf32>
-// CHECK-NEXT:     %4 = stablehlo.add %iterArg, %c_1 {enzymexla.bounds = {{.*}}} : tensor<i64>
-// CHECK-NEXT:     %5 = stablehlo.add %iterArg_4, %3 : tensor<2x2xf32>
-// CHECK-NEXT:     stablehlo.return %4, %arg1, %5 : tensor<i64>, tensor<2x2xf32>, tensor<2x2xf32>
-// CHECK-NEXT:   }
-// CHECK-NEXT:   return %1#1, %1#2 : tensor<2x2xf32>, tensor<2x2xf32>
-// CHECK-NEXT: }
-
+// CHECK:  func.func @while_dus_ds_no_overlap(%arg0: tensor<10x10xf32>, %arg1: tensor<2x2xf32>) -> (tensor<2x2xf32>, tensor<2x2xf32>) {
+// CHECK-NEXT:    %c = stablehlo.constant {enzymexla.non_negative = [#enzymexla<guaranteed GUARANTEED>]} dense<0> : tensor<i64>
+// CHECK-NEXT:    %c_0 = stablehlo.constant dense<5> : tensor<i64>
+// CHECK-NEXT:    %c_1 = stablehlo.constant dense<1> : tensor<i64>
+// CHECK-NEXT:    %c_2 = stablehlo.constant dense<8> : tensor<i64>
+// CHECK-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<2x2xf32>
+// CHECK-NEXT:    %0 = stablehlo.dynamic_update_slice %arg0, %arg1, %c, %c : (tensor<10x10xf32>, tensor<2x2xf32>, tensor<i64>, tensor<i64>) -> tensor<10x10xf32>
+// CHECK-NEXT:    %1:2 = stablehlo.while(%iterArg = %c, %iterArg_3 = %cst) : tensor<i64>, tensor<2x2xf32> attributes {enzymexla.non_negative = [#enzymexla<guaranteed NOTGUARANTEED>, #enzymexla<guaranteed UNKNOWN>, #enzymexla<guaranteed UNKNOWN>]}
+// CHECK-NEXT:    cond {
+// CHECK-NEXT:      %2 = stablehlo.compare  LT, %iterArg, %c_0 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// CHECK-NEXT:      stablehlo.return %2 : tensor<i1>
+// CHECK-NEXT:    } do {
+// CHECK-NEXT:      %2 = stablehlo.compare  EQ, %iterArg, %c : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// CHECK-NEXT:      %3 = stablehlo.select %2, %arg0, %0 : tensor<i1>, tensor<10x10xf32>
+// CHECK-NEXT:      %4 = stablehlo.add %iterArg, %c_0 {enzymexla.bounds = [[5, 9]]} : tensor<i64>
+// CHECK-NEXT:      %5 = stablehlo.dynamic_slice %3, %c_2, %4, sizes = [2, 2] : (tensor<10x10xf32>, tensor<i64>, tensor<i64>) -> tensor<2x2xf32>
+// CHECK-NEXT:      %6 = stablehlo.add %iterArg, %c_1 {enzymexla.bounds = [[1, 5]]} : tensor<i64>
+// CHECK-NEXT:      %7 = stablehlo.add %iterArg_3, %5 : tensor<2x2xf32>
+// CHECK-NEXT:      stablehlo.return %6, %7 : tensor<i64>, tensor<2x2xf32>
+// CHECK-NEXT:    }
+// CHECK-NEXT:    return %arg1, %1#1 : tensor<2x2xf32>, tensor<2x2xf32>
+// CHECK-NEXT:  }
 
 // Test 3: Affine index - DS at iterArg+offset reads from region written by DUS at iterArg
 // When offset makes them non-overlapping

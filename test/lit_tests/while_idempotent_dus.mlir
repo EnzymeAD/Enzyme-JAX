@@ -42,6 +42,7 @@ func.func @idempotent_dus(%arg20: tensor<20x6144x12288xf64>,
   // CHECK-NEXT:  %8 = stablehlo.compare  EQ, %arg2, %c : (tensor<i64>, tensor<i64>) -> tensor<i1>
   // CHECK-NEXT:  %9 = stablehlo.select %8, %arg1, %7 : tensor<i1>, tensor<20x6144x12272xf64>
   // CHECK-NEXT:  return %arg2, %9 : tensor<i64>, tensor<20x6144x12272xf64>
+  
   %456:2 = stablehlo.while(%iterArg = %c_167, %iterArg_169 = %arg37) : tensor<i64>, tensor<20x6144x12272xf64> attributes {enzyme.disable_mincut}
   cond {
     %492 = stablehlo.compare  LT, %iterArg, %arg38 : (tensor<i64>, tensor<i64>) -> tensor<i1>
