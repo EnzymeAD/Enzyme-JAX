@@ -14542,7 +14542,7 @@ struct WhileOpInductionReplacement
       auto constOp = stepValue.getDefiningOp<stablehlo::ConstantOp>();
       if (!constOp)
         continue;
-      
+
       // Similarly replace uses of the result outside the loop
       // with a calculation based on the final counter value
       if (!result.use_empty() && limitValue) {
@@ -18384,33 +18384,33 @@ struct WhileIdempotentDUS
 
   // Returns true if the value is transitively defined by DUS ops that do not
   // depend on other iter args than the one at the given position.
-  bool isIdempotent(Value value, stablehlo::WhileOp whileOp,
-                    unsigned position, SmallPtrSetImpl<Operation*> &updates) const {
+  bool isIdempotent(Value value, stablehlo::WhileOp whileOp, unsigned position,
+                    SmallPtrSetImpl<Operation *> &updates) const {
     if (areValuesDefinedAbove(ValueRange{value}, whileOp.getBody()))
       return true;
-    
+
     if (auto dus = value.getDefiningOp<stablehlo::DynamicUpdateSliceOp>()) {
       for (auto ind : dus.getStartIndices()) {
         if (!isIdempotent(ind, whileOp, position, updates))
-	  return false;
+          return false;
       }
       if (!isIdempotent(dus.getUpdate(), whileOp, position, updates))
         return false;
       if (!isIdempotent(dus.getOperand(), whileOp, position, updates) &&
-        !isSameBlockArgument(dus.getOperand(), whileOp, position))
-      return false;
+          !isSameBlockArgument(dus.getOperand(), whileOp, position))
+        return false;
 
       updates.insert(dus);
       return true;
     }
-    
+
     if (auto dus = value.getDefiningOp<enzymexla::UpdateWithoutCornersOp>()) {
       if (!isIdempotent(dus.getUpdate(), whileOp, position, updates))
         return false;
-      
+
       if (!isIdempotent(dus.getOperand(), whileOp, position, updates) &&
-        !isSameBlockArgument(dus.getOperand(), whileOp, position))
-      return false;
+          !isSameBlockArgument(dus.getOperand(), whileOp, position))
+        return false;
 
       updates.insert(dus);
       return true;
@@ -18421,7 +18421,7 @@ struct WhileIdempotentDUS
 
   LogicalResult matchAndRewriteImpl(stablehlo::WhileOp op,
                                     PatternRewriter &rewriter) const {
-      
+
     // Find the index of IV and the step to check for 1 iteration
     auto ivInfo = extractSimpleIVInfo(op);
     if (!ivInfo.isValid)
@@ -18429,95 +18429,103 @@ struct WhileIdempotentDUS
 
     if (ivInfo.step == 0)
       return failure();
-    
+
     // check yielded value for being the iter arg potentially going through a
     // chain of DUS that do not depend on other iter args
     Block &body = op.getBody().front();
     auto returnOp = cast<stablehlo::ReturnOp>(body.getTerminator());
-    SmallPtrSet<Operation*, 1> toMove;
+    SmallPtrSet<Operation *, 1> toMove;
     SmallVector<size_t> inds;
     for (OpOperand &operand : returnOp->getOpOperands()) {
 
       // Don't bother with arguments with no uses.
       if (body.getArguments()[operand.getOperandNumber()].use_empty() &&
-		      op.getCond().front().getArguments()[operand.getOperandNumber()].use_empty() &&
-		      op.getResults()[operand.getOperandNumber()].use_empty() ) continue;
-    
+          op.getCond()
+              .front()
+              .getArguments()[operand.getOperandNumber()]
+              .use_empty() &&
+          op.getResults()[operand.getOperandNumber()].use_empty())
+        continue;
+
       if (areValuesDefinedAbove(ValueRange{operand.get()}, op.getBody()))
-	 continue;
+        continue;
 
       // if all operands are idempotent, we can replace the loop with a
       // conditional
-      SmallPtrSet<Operation*, 1> localToMove;
-      if (!isIdempotent(operand.get(), op, operand.getOperandNumber(), localToMove))
+      SmallPtrSet<Operation *, 1> localToMove;
+      if (!isIdempotent(operand.get(), op, operand.getOperandNumber(),
+                        localToMove))
         continue;
 
-      for (auto op : localToMove) toMove.insert(op);
+      for (auto op : localToMove)
+        toMove.insert(op);
       inds.push_back(operand.getOperandNumber());
     }
 
-    if (inds.empty()) return failure();
+    if (inds.empty())
+      return failure();
 
     IRMapping mapping;
-    mapping.map( op.getBody().getArguments(), op.getOperands());
-	for (auto &op : body) {
-	  if (toMove.contains(&op))
-		  rewriter.clone(op, mapping);
-	}
-	  
-	auto ogops = llvm::to_vector(returnOp.getOperands());
-        rewriter.modifyOpInPlace(returnOp, [&](){	
-	auto ops = ogops;
-			for (auto ind : inds) {
-			ops[ind] = mapping.lookupOrDefault(ops[ind]);
-			}
-	 returnOp.getResultsMutable().assign(ops);
-	});
+    mapping.map(op.getBody().getArguments(), op.getOperands());
+    for (auto &op : body) {
+      if (toMove.contains(&op))
+        rewriter.clone(op, mapping);
+    }
 
-	{
-	rewriter.setInsertionPointToStart(&op.getCond().front());
-	   auto firstIter = stablehlo::CompareOp::create(
-          rewriter, op.getLoc(),
-          op.getCond().getArgument(ivInfo.index), ivInfo.start,
-          stablehlo::ComparisonDirection::EQ);
-	   for (auto ind : inds) {
-	      if (!op.getCond().getArguments()[ind].use_empty()) {
-	      auto sel = stablehlo::SelectOp::create(
-              rewriter, op.getLoc(), firstIter, op.getOperands()[ind], mapping.lookupOrDefault(ogops[ind]));
-	      rewriter.replaceAllUsesWith(op.getCond().getArguments()[ind], sel);
-	      }
-	   }
-  }
+    auto ogops = llvm::to_vector(returnOp.getOperands());
+    rewriter.modifyOpInPlace(returnOp, [&]() {
+      auto ops = ogops;
+      for (auto ind : inds) {
+        ops[ind] = mapping.lookupOrDefault(ops[ind]);
+      }
+      returnOp.getResultsMutable().assign(ops);
+    });
 
-	{
-	rewriter.setInsertionPointToStart(&op.getBody().front());
-	   auto firstIter = stablehlo::CompareOp::create(
-          rewriter, op.getLoc(),
-          op.getBody().getArgument(ivInfo.index), ivInfo.start,
-          stablehlo::ComparisonDirection::EQ);
+    {
+      rewriter.setInsertionPointToStart(&op.getCond().front());
+      auto firstIter = stablehlo::CompareOp::create(
+          rewriter, op.getLoc(), op.getCond().getArgument(ivInfo.index),
+          ivInfo.start, stablehlo::ComparisonDirection::EQ);
+      for (auto ind : inds) {
+        if (!op.getCond().getArguments()[ind].use_empty()) {
+          auto sel = stablehlo::SelectOp::create(
+              rewriter, op.getLoc(), firstIter, op.getOperands()[ind],
+              mapping.lookupOrDefault(ogops[ind]));
+          rewriter.replaceAllUsesWith(op.getCond().getArguments()[ind], sel);
+        }
+      }
+    }
 
-	   for (auto ind : inds) {
-	      if (!op.getBody().getArguments()[ind].use_empty()) {
-	      auto sel = stablehlo::SelectOp::create(
-              rewriter, op.getLoc(), firstIter, op.getOperands()[ind], mapping.lookupOrDefault(ogops[ind]));
-	      rewriter.replaceAllUsesWith(op.getBody().getArguments()[ind], sel);
-	      }
-	   }
-  }
+    {
+      rewriter.setInsertionPointToStart(&op.getBody().front());
+      auto firstIter = stablehlo::CompareOp::create(
+          rewriter, op.getLoc(), op.getBody().getArgument(ivInfo.index),
+          ivInfo.start, stablehlo::ComparisonDirection::EQ);
 
-	rewriter.setInsertionPointAfter(op);
-	
-	auto zeroIters = stablehlo::CompareOp::create(
-          rewriter, op.getLoc(),
-          op.getResults()[ivInfo.index], op.getOperands()[ivInfo.index],
-          stablehlo::ComparisonDirection::EQ);
+      for (auto ind : inds) {
+        if (!op.getBody().getArguments()[ind].use_empty()) {
+          auto sel = stablehlo::SelectOp::create(
+              rewriter, op.getLoc(), firstIter, op.getOperands()[ind],
+              mapping.lookupOrDefault(ogops[ind]));
+          rewriter.replaceAllUsesWith(op.getBody().getArguments()[ind], sel);
+        }
+      }
+    }
 
-	for (auto ind : inds) {
-	  if (!op.getResults()[ind].use_empty()) {
-	      	auto sel = stablehlo::SelectOp::create(rewriter, op.getLoc(), zeroIters, op.getOperands()[ind], mapping.lookupOrDefault(ogops[ind]));
-		rewriter.replaceAllUsesWith(op.getResults()[ind], sel);
-	  }
-	}
+    rewriter.setInsertionPointAfter(op);
+
+    auto zeroIters = stablehlo::CompareOp::create(
+        rewriter, op.getLoc(), op.getResults()[ivInfo.index],
+        op.getOperands()[ivInfo.index], stablehlo::ComparisonDirection::EQ);
+
+    for (auto ind : inds) {
+      if (!op.getResults()[ind].use_empty()) {
+        auto sel = stablehlo::SelectOp::create(
+            rewriter, op.getLoc(), zeroIters, op.getOperands()[ind],
+            mapping.lookupOrDefault(ogops[ind]));
+        rewriter.replaceAllUsesWith(op.getResults()[ind], sel);
+      }
+    }
     return success();
   }
 };
