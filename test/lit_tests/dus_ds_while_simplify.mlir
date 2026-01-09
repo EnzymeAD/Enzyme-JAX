@@ -78,9 +78,9 @@ func.func @while_dus_ds_no_overlap(%arg0: tensor<10x10xf32>, %arg1: tensor<2x2xf
 // CHECK-NEXT:    } do {
 // CHECK-NEXT:      %2 = stablehlo.compare  EQ, %iterArg, %c : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:      %3 = stablehlo.select %2, %arg0, %0 : tensor<i1>, tensor<10x10xf32>
-// CHECK-NEXT:      %4 = stablehlo.add %iterArg, %c_0 {enzymexla.bounds = [[5, 9]]} : tensor<i64>
+// CHECK-NEXT:      %4 = stablehlo.add %iterArg, %c_0 {enzymexla.bounds = {{\[}}[5, 9]{{\]}}} : tensor<i64>
 // CHECK-NEXT:      %5 = stablehlo.dynamic_slice %3, %c_2, %4, sizes = [2, 2] : (tensor<10x10xf32>, tensor<i64>, tensor<i64>) -> tensor<2x2xf32>
-// CHECK-NEXT:      %6 = stablehlo.add %iterArg, %c_1 {enzymexla.bounds = [[1, 5]]} : tensor<i64>
+// CHECK-NEXT:      %6 = stablehlo.add %iterArg, %c_1 {enzymexla.bounds = {{\[}}[1, 5]{{\]}}} : tensor<i64>
 // CHECK-NEXT:      %7 = stablehlo.add %iterArg_3, %5 : tensor<2x2xf32>
 // CHECK-NEXT:      stablehlo.return %6, %7 : tensor<i64>, tensor<2x2xf32>
 // CHECK-NEXT:    }
