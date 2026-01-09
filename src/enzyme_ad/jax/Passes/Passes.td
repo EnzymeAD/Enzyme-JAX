@@ -460,6 +460,22 @@ def LowerEnzymeXLALinalgPass : Pass<"lower-enzymexla-linalg"> {
   ];
 }
 
+def LowerEnzymeXLAMPIPass : Pass<"lower-enzymexla-mpi"> {
+  let summary = "Lower MPI Ops to LLVM";
+  let dependentDialects = [
+    "enzymexla::EnzymeXLADialect",
+    "LLVM::LLVMDialect",
+  ];
+  let options = [
+    Option<
+        /*C++ variable name=*/"backend",
+        /*CLI argument=*/"backend",
+        /*type=*/"std::string",
+        /*default=*/"\"cpu\"",
+        /*description=*/"HW backend">,
+  ];
+}
+
 def LowerEnzymeXLALapackPass : Pass<"lower-enzymexla-lapack"> {
   let summary = "Lower enzymexla.lapack ops to stablehlo";
   let dependentDialects = [
@@ -953,6 +969,12 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*default=*/"0",
        /*description=*/"Rewrite Wrap operations in terms of Extend and Rotate">,
        Option<
+       /*C++ variable name=*/"updatewithoutcorners_to_select",
+       /*CLI argument=*/"updatewithoutcorners_to_select",
+       /*type=*/"int",
+       /*default=*/"1",
+       /*description=*/"Rewrite updatewithoutcorners_to_select to a select">,
+       Option<
        /*C++ variable name=*/"reorder_associative",
        /*CLI argument=*/"reorder_associative",
        /*type=*/"int",
@@ -1159,6 +1181,14 @@ def ConvertAllConstantsToSplattedConstantPass : Pass<"convert-all-constants-to-s
   let summary = "Convert all constants to splatted constants. This is supposed to be used for debugging purposes when dumping the module.";
   let dependentDialects = [
     "stablehlo::StablehloDialect",
+  ];
+}
+
+def RemoveAtomicsPass : Pass<"remove-atomics"> {
+  let summary = "Remove unnecessary atomics";
+  let dependentDialects = [
+    "affine::AffineDialect",
+    "enzymexla::EnzymeXLADialect",
   ];
 }
 

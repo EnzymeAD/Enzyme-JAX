@@ -1,4 +1,5 @@
 #include <cassert>
+#include <optional>
 #ifdef __clang__
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wmissing-braces"
@@ -17,7 +18,6 @@
 #include "mlir/IR/Matchers.h"
 
 #include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
-#include "src/enzyme_ad/jax/Passes/StructuredTensors.h"
 #include "src/enzyme_ad/jax/Utils.h"
 
 #include "llvm/ADT/TypeSwitch.h"
@@ -350,12 +350,21 @@ void WhileLoopInfo::propagateAffineIndexInfo(
 
       auto iotaDetection = detectIotaLikeTensor(sliceOp.getOperand());
 
-      if (iotaDetection && sliceDim == iotaDetection.value().dimension) {
+      if (iotaDetection && sliceDim == iotaDetection.value().dimension &&
+          isa<mlir::IntegerType>(
+              iotaDetection.value().tensorType.getElementType())) {
+        // Extract integer values from TypedAttr
+        auto startAttr = dyn_cast<IntegerAttr>(iotaDetection.value().start);
+        auto scaleAttr = dyn_cast<IntegerAttr>(iotaDetection.value().scale);
+        if (!startAttr || !scaleAttr) {
+          return WalkResult::advance();
+        }
+
         anyNewPropagated = true;
         auto indexInfo = affineIndexInfo[sliceOp.getStartIndices()[sliceDim]];
         auto offset = indexInfo.offset.getSExtValue();
-        auto iotaStart = iotaDetection.value().start;
-        auto iotaScale = iotaDetection.value().scale;
+        auto iotaStart = startAttr.getValue().getSExtValue();
+        auto iotaScale = scaleAttr.getValue().getSExtValue();
         // The slice result is: iotaScale * (indexInfo.scale * i +
         //                       indexInfo.offset) + iotaStart
         //                    = (iotaScale * indexInfo.scale) * i + (iotaScale *
@@ -939,6 +948,9 @@ WhileLoopInfo::computeBounds(Operation *op) {
             if (auto intType =
                     dyn_cast<IntegerType>(tensorType.getElementType())) {
               unsigned outBitWidth = intType.getWidth();
+              if (boundsBitWidth < outBitWidth) {
+                return std::nullopt;
+              }
               APInt outMin =
                   APInt::getSignedMinValue(outBitWidth).sext(boundsBitWidth);
               APInt outMax =

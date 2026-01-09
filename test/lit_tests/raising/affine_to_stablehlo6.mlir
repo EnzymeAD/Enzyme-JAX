@@ -106,11 +106,11 @@ module {
 // CHECK-NEXT:    %cst_0 = stablehlo.constant dense<0.017453292519943295> : tensor<185xf64>
 // CHECK-NEXT:    %c = stablehlo.constant dense<-93> : tensor<185xi64>
 // CHECK-NEXT:    %cst_1 = stablehlo.constant dense<708422877652.48376> : tensor<185xf64>
-// CHECK-NEXT:    %c_2 = stablehlo.constant dense<-91> : tensor<185xi64>
+// CHECK-NEXT:    %c_2 = stablehlo.constant {enzymexla.non_negative = [#enzymexla<guaranteed NOTGUARANTEED>]} dense<-91> : tensor<185xi64>
 // CHECK-NEXT:    %cst_3 = stablehlo.constant dense<5.000000e-01> : tensor<185xf64>
-// CHECK-NEXT:    %c_4 = stablehlo.constant dense<-92> : tensor<185xi64>
-// CHECK-NEXT:    %0 = stablehlo.iota dim = 0 : tensor<185xi64>
-// CHECK-NEXT:    %1 = stablehlo.add %0, %c_4 : tensor<185xi64>
+// CHECK-NEXT:    %c_4 = stablehlo.constant {enzymexla.non_negative = [#enzymexla<guaranteed NOTGUARANTEED>]} dense<-92> : tensor<185xi64>
+// CHECK-NEXT:    %0 = stablehlo.iota dim = 0 {enzymexla.non_negative = [#enzymexla<guaranteed GUARANTEED>]} : tensor<185xi64>
+// CHECK-NEXT:    %1 = stablehlo.add %0, %c_4 {enzymexla.non_negative = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<185xi64>
 // CHECK-NEXT:    %2 = stablehlo.convert %1 {enzymexla.finite = [#enzymexla<guaranteed GUARANTEED>], enzymexla.no_nan = [#enzymexla<guaranteed GUARANTEED>], enzymexla.non_negative = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<185xi64>) -> tensor<185xf64>
 // CHECK-NEXT:    %3 = stablehlo.add %cst_3, %2 {enzymexla.finite = [#enzymexla<guaranteed GUARANTEED>]} : tensor<185xf64>
 // CHECK-NEXT:    %4 = stablehlo.multiply %3, %cst_0 : tensor<185xf64>
@@ -127,7 +127,7 @@ module {
 // CHECK-NEXT:    %15 = stablehlo.concatenate %14, %11, dim = 0 : (tensor<1xf64>, tensor<185xf64>) -> tensor<186xf64>
 // CHECK-NEXT:    %16 = stablehlo.slice %arg3 [0:1] : (tensor<186xf64>) -> tensor<1xf64>
 // CHECK-NEXT:    %17 = stablehlo.concatenate %16, %6, dim = 0 : (tensor<1xf64>, tensor<185xf64>) -> tensor<186xf64>
-// CHECK-NEXT:    %18 = stablehlo.add %0, %c_2 : tensor<185xi64>
+// CHECK-NEXT:    %18 = stablehlo.add %0, %c_2 {enzymexla.non_negative = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<185xi64>
 // CHECK-NEXT:    %19 = stablehlo.convert %18 {enzymexla.finite = [#enzymexla<guaranteed GUARANTEED>], enzymexla.no_nan = [#enzymexla<guaranteed GUARANTEED>]} : (tensor<185xi64>) -> tensor<185xf64>
 // CHECK-NEXT:    %20 = stablehlo.multiply %19, %cst_0 : tensor<185xf64>
 // CHECK-NEXT:    %21 = stablehlo.sine %20 : tensor<185xf64>

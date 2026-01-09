@@ -106,6 +106,18 @@ void ApplyPadLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
   addPadLICM(patterns, getParameter(), *getContext(),
              PatternBenefit(getBenefit().value_or(1)));
 }
+void ApplyRotateLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
+  addRotateLICM(patterns, getParameter(), *getContext(),
+                PatternBenefit(getBenefit().value_or(1)));
+}
+void ApplyExtendLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
+  addExtendLICM(patterns, getParameter(), *getContext(),
+                PatternBenefit(getBenefit().value_or(1)));
+}
+void ApplyWrapLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
+  addWrapLICM(patterns, getParameter(), *getContext(),
+              PatternBenefit(getBenefit().value_or(1)));
+}
 void ApplyElementwiseLICMPatterns::populatePatterns(
     RewritePatternSet &patterns) {
   addElementwiseLICM(patterns, getParameter(), *getContext(),
@@ -139,9 +151,26 @@ void ApplyDynamicSliceLICMPatterns::populatePatterns(
   addDynamicSliceLICM(patterns, getParameter(), *getContext(),
                       PatternBenefit(getBenefit().value_or(1)));
 }
+void ApplyScatterLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
+  addScatterLICM(patterns, getParameter(), *getContext(),
+                 PatternBenefit(getBenefit().value_or(1)));
+}
+void ApplyGatherLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
+  addGatherLICM(patterns, getParameter(), *getContext(),
+                PatternBenefit(getBenefit().value_or(1)));
+}
+void ApplyIotaLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
+  addIotaLICM(patterns, getParameter(), *getContext(),
+              PatternBenefit(getBenefit().value_or(1)));
+}
 void ApplyIotaSimplifyPatterns::populatePatterns(RewritePatternSet &patterns) {
   addIotaSimplify(patterns, getParameter(), *getContext(),
                   PatternBenefit(getBenefit().value_or(1)));
+}
+void ApplyRecognizeFromConstantPatterns::populatePatterns(
+    RewritePatternSet &patterns) {
+  addRecognizeFromConstant(patterns, getParameter(), *getContext(),
+                           PatternBenefit(getBenefit().value_or(1)));
 }
 void ApplyConcatConstPropPatterns::populatePatterns(
     RewritePatternSet &patterns) {

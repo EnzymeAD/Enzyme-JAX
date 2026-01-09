@@ -150,6 +150,7 @@ def optimization_passes(
         "cse_neg<16>",
         "cse_abs<16>",
         "cse_concatenate<16>",
+        "cse_compare<16>",
         f"concatenate_op_canon<16>({max_constant_threshold})",
         f"select_op_canon<16>({max_constant_threshold})",
         "add_simplify<16>",
@@ -163,6 +164,7 @@ def optimization_passes(
         "div_simplify<16>",
         "rem_simplify<16>",
         "pow_simplify<16>",
+        "extend_splat<16>",
         "simplify_extend<16>",
         "simplify_wrap<16>",
         "simplify_rotate<16>",
@@ -182,6 +184,7 @@ def optimization_passes(
         "broadcast_to_reshape<16>",
         "slice_internal",
         f"iota_simplify<16>({max_constant_threshold})",
+        f"recognize_from_constant<16>({max_constant_threshold})",
         f"broadcast_in_dim_simplify<16>({max_constant_threshold})",
         "convert_concat<1>",
         "dynamic_update_to_concat<1>",
@@ -235,12 +238,15 @@ def optimization_passes(
         "select_comp_iota_const_simplify<1>",
         "sign_abs_simplify<1>",
         "broadcastindim_is_reshape",
+        "reduce_window_wrap<1>",
         "slice_reduce_window<1>",
         "while_deadresult",
         "while_dus",
         "while_op_induction_replacement",
         "dus_concat",
         "slice_dus_to_concat",
+        "hoist_slice",
+        "sink_dus",
         "while_induction_reduction",
         "slice_broadcast",
         "associative_common_mul_op_reordering",
@@ -253,6 +259,7 @@ def optimization_passes(
         "cse_wrap<16>",
         "cse_rotate<16>",
         "cse_rotate<16>",
+        "cse_select<16>",
         "concat_concat_axis_swap",
         "concat_concat_to_dus",
         "broadcast_iota_simplify",
@@ -449,12 +456,21 @@ def optimization_passes(
             "reduce_window_licm(0)",
             "reverse_licm(0)",
             "convolution_licm(0)",
+            "scatter_licm(0)",
+            "gather_licm(0)",
+            "iota_licm(0)",
+            "extend_licm(0)",
+            "wrap_licm(0)",
+            "rotate_licm(0)",
         ]
 
     if enable_scatter_gather_optimization_passes:
         transform_passes_list += [
             "scatter_to_dynamic_update_slice<1>",
             "scatter_multiply_simplify",
+            "scatter_div_simplify",
+            "scatter_sub_simplify",
+            "scatter_add_simplify",
             "unary_elementwise_scatter_simplify",
             "scatter_indices_are_unique",
             "diagonal_tensor_dot_general_rewrite",
@@ -467,10 +483,14 @@ def optimization_passes(
             ## const prop patterns
             "gather_const_prop",
             f"scatter_const_fold({max_constant_threshold})",
+            "cse_gather",
+            "cse_scatter",
+            "gather_of_scatter_simplify",
         ]
 
     if enable_pad_optimization_passes:
         transform_passes_list += [
+            "extend_pad",
             "dus_pad",
             "cse_pad<16>",
             f"pad_simplify<16>({max_constant_threshold})",
@@ -528,6 +548,7 @@ def optimization_passes(
             "reshape_slice(1)",
             "reshape_elementwise(1)",
             "reshape_dynamic_slice(1)",
+            "delete_dims_broadcast",
         ]
     elif reshape_propagate == "down":
         transform_passes_list += [
