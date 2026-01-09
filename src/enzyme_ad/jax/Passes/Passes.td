@@ -460,6 +460,22 @@ def LowerEnzymeXLALinalgPass : Pass<"lower-enzymexla-linalg"> {
   ];
 }
 
+def LowerEnzymeXLAMPIPass : Pass<"lower-enzymexla-mpi"> {
+  let summary = "Lower MPI Ops to LLVM";
+  let dependentDialects = [
+    "enzymexla::EnzymeXLADialect",
+    "LLVM::LLVMDialect",
+  ];
+  let options = [
+    Option<
+        /*C++ variable name=*/"backend",
+        /*CLI argument=*/"backend",
+        /*type=*/"std::string",
+        /*default=*/"\"cpu\"",
+        /*description=*/"HW backend">,
+  ];
+}
+
 def LowerEnzymeXLALapackPass : Pass<"lower-enzymexla-lapack"> {
   let summary = "Lower enzymexla.lapack ops to stablehlo";
   let dependentDialects = [
