@@ -212,3 +212,51 @@ MlirAttribute enzymexlaMPIDatatypeAttrGet(MlirContext ctx, int32_t mode) {
   }
   return wrap(mlir::enzymexla::MPIDatatypeAttr::get(unwrap(ctx), datatype));
 }
+
+MlirAttribute enzymexlaMPIOpAttrGet(MlirContext ctx, int32_t mode) {
+  mlir::enzymexla::MPIOp op;
+  switch (mode) {
+  case 0:
+    op = mlir::enzymexla::MPIOp::MPI_OP_NULL;
+    break;
+  case 1:
+    op = mlir::enzymexla::MPIOp::MPI_BAND;
+    break;
+  case 2:
+    op = mlir::enzymexla::MPIOp::MPI_BOR;
+    break;
+  case 3:
+    op = mlir::enzymexla::MPIOp::MPI_BXOR;
+    break;
+  case 4:
+    op = mlir::enzymexla::MPIOp::MPI_LAND;
+    break;
+  case 5:
+    op = mlir::enzymexla::MPIOp::MPI_LOR;
+    break;
+  case 6:
+    op = mlir::enzymexla::MPIOp::MPI_LXOR;
+    break;
+  case 7:
+    op = mlir::enzymexla::MPIOp::MPI_MAX;
+    break;
+  case 8:
+    op = mlir::enzymexla::MPIOp::MPI_MIN;
+    break;
+  case 9:
+    op = mlir::enzymexla::MPIOp::MPI_PROD;
+    break;
+  case 10:
+    op = mlir::enzymexla::MPIOp::MPI_REPLACE;
+    break;
+  case 11:
+    op = mlir::enzymexla::MPIOp::MPI_SUM;
+    break;
+  case 12:
+    op = mlir::enzymexla::MPIOp::MPI_NO_OP;
+    break;
+  default:
+    llvm_unreachable("Invalid MPI op mode");
+  }
+  return wrap(mlir::enzymexla::MPIOpAttr::get(unwrap(ctx), op));
+}

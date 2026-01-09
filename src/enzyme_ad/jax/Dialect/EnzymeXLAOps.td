@@ -1204,7 +1204,7 @@ def MPIAllreduceOp : EnzymeXLA_Op<"mpi.allreduce", []> {
     AnyTensor : $inbuf,
     TensorOf<[I32]> : $count,
     EnzymeXLA_MPIDatatypeAttr:$datatype,
-    StrAttr:$op
+    EnzymeXLA_MPIOpAttr:$op
   );
 
   let results = (

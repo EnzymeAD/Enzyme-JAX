@@ -175,4 +175,30 @@ def EnzymeXLA_MPIDatatypeAttr : EnumAttr<EnzymeXLA_Dialect,
   let assemblyFormat = "`<` $value `>`";
 }
 
+def EnzymeXLA_MPIOp : I32EnumAttr<"MPIOp",
+    "MPI Operator",
+    [
+      I32EnumAttrCase<"MPI_OP_NULL", 0>,
+      I32EnumAttrCase<"MPI_BAND", 1>,
+      I32EnumAttrCase<"MPI_BOR", 2>,
+      I32EnumAttrCase<"MPI_BXOR", 3>,
+      I32EnumAttrCase<"MPI_LAND", 4>,
+      I32EnumAttrCase<"MPI_LOR", 5>,
+      I32EnumAttrCase<"MPI_LXOR", 6>,
+      I32EnumAttrCase<"MPI_MAX", 7>,
+      I32EnumAttrCase<"MPI_MIN", 8>,
+      I32EnumAttrCase<"MPI_PROD", 9>,
+      I32EnumAttrCase<"MPI_REPLACE", 10>,
+      I32EnumAttrCase<"MPI_SUM", 11>,
+      I32EnumAttrCase<"MPI_NO_OP", 12>
+    ]> {
+  let genSpecializedAttr = 0;
+  let cppNamespace = "::mlir::enzymexla";
+}
+
+def EnzymeXLA_MPIOpAttr : EnumAttr<EnzymeXLA_Dialect,
+    EnzymeXLA_MPIOp, "op"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
 #endif // ENZYMEXLA_ATTRS

@@ -1283,7 +1283,7 @@ struct MPIAllreduceOpLowering
       StringRef datatypeName = stringifyMPIDatatype(datatype);
 
       // get the MPI Op type
-      auto mpiOpName = op.getOp();
+      StringRef mpiOpName = stringifyMPIOp(op.getOp());
 
       // TODO For now we just hard code MPI_COMM_WORLD as the communicator.
       std::string communicatorName = "MPI_COMM_WORLD";
