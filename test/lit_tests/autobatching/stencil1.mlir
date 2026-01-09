@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --auto-batching --enzyme-hlo-opt --enzyme-hlo-opt="passses=4194304" %s | FileCheck %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-opt="enable_auto_batching_passes=true" --enzyme-hlo-opt="passses=65536" --enzyme-hlo-opt %s | FileCheck %s
 
 module {
   func.func @main(%arg0: tensor<5x12x4xf32> {enzymexla.memory_effects = []}) -> tensor<5x8x4xf32> attributes {enzymexla.memory_effects = []} {
@@ -42,7 +42,7 @@ module {
 // CHECK: func.func @main(%arg0: tensor<5x12x4xf32> {enzymexla.memory_effects = []}) -> tensor<5x8x4xf32> attributes {enzymexla.memory_effects = []} {
 // CHECK-NEXT:     %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
 // CHECK-NEXT:     %[[s1:.+]] = stablehlo.slice %arg0 [0:5, 0:10, 0:4] : (tensor<5x12x4xf32>) -> tensor<5x10x4xf32>
-// CHECK-NEXT:     %[[rw:.+]] = "stablehlo.reduce_window"(%[[s1]], %cst) <{window_dilations = array<i64: 1, 2, 1>, window_dimensions = array<i64: 1, 2, 1>}> ({
+// CHECK-NEXT:     %[[rw:.+]] = "stablehlo.reduce_window"(%[[s1]], %cst) <{base_dilations = array<i64: 1, 1, 1>, padding = dense<0> : tensor<3x2xi64>, window_dilations = array<i64: 1, 2, 1>, window_dimensions = array<i64: 1, 2, 1>, window_strides = array<i64: 1, 1, 1>}> ({
 // CHECK-NEXT:     ^bb0(%arg1: tensor<f32>, %arg2: tensor<f32>):
 // CHECK-NEXT:       %[[a:.+]] = stablehlo.add %arg1, %arg2 : tensor<f32>
 // CHECK-NEXT:       stablehlo.return %[[a]] : tensor<f32>
