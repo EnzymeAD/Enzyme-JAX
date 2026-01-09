@@ -164,6 +164,7 @@ def optimization_passes(
         "div_simplify<16>",
         "rem_simplify<16>",
         "pow_simplify<16>",
+        "extend_splat<16>",
         "simplify_extend<16>",
         "simplify_wrap<16>",
         "simplify_rotate<16>",
@@ -489,6 +490,7 @@ def optimization_passes(
 
     if enable_pad_optimization_passes:
         transform_passes_list += [
+            "extend_pad",
             "dus_pad",
             "cse_pad<16>",
             f"pad_simplify<16>({max_constant_threshold})",
