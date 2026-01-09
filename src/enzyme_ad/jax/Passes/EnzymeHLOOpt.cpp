@@ -76,8 +76,6 @@ using namespace mlir;
 using namespace mlir::enzyme;
 using namespace mlir::stablehlo;
 
-static int64_t scatterRegionToFunctionCounter = 0;
-
 // Check if any of the pad sizes are negative
 bool anyPadSizesNegative(stablehlo::PadOp pad) {
   for (auto &&[low, high, inner] :
