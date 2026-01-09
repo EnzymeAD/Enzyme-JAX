@@ -1314,7 +1314,7 @@ def ApplyIotaLICMPatterns : EnzymeHLOParameterizedPatternOp<
   }];
 }
 
-def ApplyIotaLICMPatterns : EnzymeHLOParameterizedPatternOp<
+def ApplyRotateLICMPatterns : EnzymeHLOParameterizedPatternOp<
     "rotate_licm"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
   let assemblyFormat = "attr-dict";
@@ -1329,7 +1329,7 @@ def ApplyIotaLICMPatterns : EnzymeHLOParameterizedPatternOp<
   }];
 }
 
-def ApplyIotaLICMPatterns : EnzymeHLOParameterizedPatternOp<
+def ApplyWrapLICMPatterns : EnzymeHLOParameterizedPatternOp<
     "wrap_licm"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
   let assemblyFormat = "attr-dict";
@@ -1344,7 +1344,7 @@ def ApplyIotaLICMPatterns : EnzymeHLOParameterizedPatternOp<
   }];
 }
 
-def ApplyIotaLICMPatterns : EnzymeHLOParameterizedPatternOp<
+def ApplyExtendLICMPatterns : EnzymeHLOParameterizedPatternOp<
     "extend_licm"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
   let assemblyFormat = "attr-dict";
