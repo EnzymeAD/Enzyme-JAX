@@ -185,3 +185,49 @@ func.func @gather_non_iota_indices(%arg0: tensor<10xi64>) -> tensor<4xi64> {
 }
 // CHECK-LABEL: func.func @gather_non_iota_indices
 // CHECK: stablehlo.gather
+
+// Negative stride iota: gather with indices [4, 3, 2, 1] should become slice + reverse
+func.func @gather_iota_negative_stride_to_slice_reverse(%arg0: tensor<10xi64>) -> tensor<4xi64> {
+    // Indices: 4, 3, 2, 1 (start=4, stride=-1, count=4)
+    // This is equivalent to: start + scale * iota = 4 + (-1) * [0, 1, 2, 3] = [4, 3, 2, 1]
+    %c_offset = stablehlo.constant dense<4> : tensor<4x1xi64>
+    %c_scale = stablehlo.constant dense<-1> : tensor<4x1xi64>
+    %iota = stablehlo.iota dim = 0 : tensor<4x1xi64>
+    %scaled = stablehlo.multiply %iota, %c_scale : tensor<4x1xi64>
+    %indices = stablehlo.add %scaled, %c_offset : tensor<4x1xi64>
+    %0 = "stablehlo.gather"(%arg0, %indices) {
+      dimension_numbers = #stablehlo.gather<
+        collapsed_slice_dims = [0],
+        start_index_map = [0],
+        index_vector_dim = 1
+      >,
+      slice_sizes = array<i64: 1>
+    } : (tensor<10xi64>, tensor<4x1xi64>) -> tensor<4xi64>
+    return %0 : tensor<4xi64>
+}
+// CHECK-LABEL: func.func @gather_iota_negative_stride_to_slice_reverse
+// CHECK-NEXT: %[[SLICE:.+]] = stablehlo.slice %arg0 [1:5]
+// CHECK-NEXT: %[[REVERSE:.+]] = stablehlo.reverse %[[SLICE]], dims = [0]
+// CHECK-NEXT: return %[[REVERSE]]
+
+// Negative stride with offset: gather with indices [7, 5, 3, 1] (start=7, stride=-2)
+func.func @gather_iota_negative_stride_offset_to_slice_reverse(%arg0: tensor<10xi64>) -> tensor<4xi64> {
+    %c_offset = stablehlo.constant dense<7> : tensor<4x1xi64>
+    %c_scale = stablehlo.constant dense<-2> : tensor<4x1xi64>
+    %iota = stablehlo.iota dim = 0 : tensor<4x1xi64>
+    %scaled = stablehlo.multiply %iota, %c_scale : tensor<4x1xi64>
+    %indices = stablehlo.add %scaled, %c_offset : tensor<4x1xi64>
+    %0 = "stablehlo.gather"(%arg0, %indices) {
+      dimension_numbers = #stablehlo.gather<
+        collapsed_slice_dims = [0],
+        start_index_map = [0],
+        index_vector_dim = 1
+      >,
+      slice_sizes = array<i64: 1>
+    } : (tensor<10xi64>, tensor<4x1xi64>) -> tensor<4xi64>
+    return %0 : tensor<4xi64>
+}
+// CHECK-LABEL: func.func @gather_iota_negative_stride_offset_to_slice_reverse
+// CHECK-NEXT: %[[SLICE:.+]] = stablehlo.slice %arg0 [1:8:2]
+// CHECK-NEXT: %[[REVERSE:.+]] = stablehlo.reverse %[[SLICE]], dims = [0]
+// CHECK-NEXT: return %[[REVERSE]]
