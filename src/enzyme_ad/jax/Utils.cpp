@@ -1370,6 +1370,74 @@ absl::Status detectDiagonalTensor(stablehlo::ScatterOp scatterOp,
 
 namespace {
 
+// Helper to get a "one" value for APFloat/APInt
+template <typename T> T getOneValue(T example);
+
+template <> APFloat getOneValue<APFloat>(APFloat example) {
+  return APFloat(example.getSemantics(), 1);
+}
+
+template <> APInt getOneValue<APInt>(APInt example) {
+  return APInt(example.getBitWidth(), (int64_t)1, /*isSigned=*/true);
+}
+
+// Helper to multiply T by an int64_t index
+template <typename T> T multiplyByIndex(T value, int64_t index);
+
+template <> APFloat multiplyByIndex<APFloat>(APFloat value, int64_t index) {
+  APFloat indexFloat(value.getSemantics());
+  indexFloat.convertFromAPInt(APInt(64, index, /*isSigned=*/true),
+                              /*isSigned=*/true, APFloat::rmNearestTiesToEven);
+  value.multiply(indexFloat, APFloat::rmNearestTiesToEven);
+  return value;
+}
+
+template <> APInt multiplyByIndex<APInt>(APInt value, int64_t index) {
+  APInt indexInt(value.getBitWidth(), index, /*isSigned=*/true);
+  return value * indexInt;
+}
+
+// Helper for exact comparison
+template <typename T> bool valuesAreEqual(T lhs, T rhs);
+
+template <> bool valuesAreEqual<APFloat>(APFloat lhs, APFloat rhs) {
+  return lhs.bitwiseIsEqual(rhs);
+}
+
+template <> bool valuesAreEqual<APInt>(APInt lhs, APInt rhs) {
+  return lhs == rhs;
+}
+
+// Helper to create TypedAttr from APFloat/APInt
+template <typename T>
+TypedAttr createAttrFromValue(MLIRContext *ctx, Type elemType, T value);
+
+template <>
+TypedAttr createAttrFromValue<APFloat>(MLIRContext *ctx, Type elemType,
+                                       APFloat value) {
+  if (auto floatType = dyn_cast<FloatType>(elemType)) {
+    // Convert APFloat to the target semantics if needed
+    bool losesInfo = false;
+    value.convert(floatType.getFloatSemantics(), APFloat::rmNearestTiesToEven,
+                  &losesInfo);
+    return FloatAttr::get(floatType, value);
+  }
+  return nullptr;
+}
+
+template <>
+TypedAttr createAttrFromValue<APInt>(MLIRContext *ctx, Type elemType,
+                                     APInt value) {
+  if (auto intType = dyn_cast<IntegerType>(elemType)) {
+    // Extend or truncate to match the target bitwidth
+    if (value.getBitWidth() != intType.getWidth()) {
+      value = value.sextOrTrunc(intType.getWidth());
+    }
+    return IntegerAttr::get(intType, value);
+  }
+  return nullptr;
+}
+
 template <typename T>
 std::optional<IotaLikeTensor>
 detectIotaLikeTensorImpl(DenseElementsAttr denseAttr) {
@@ -1382,57 +1450,51 @@ detectIotaLikeTensorImpl(DenseElementsAttr denseAttr) {
   MLIRContext *ctx = denseAttr.getContext();
 
   auto strides = computeStrides(shape);
-  bool isFloat = isa<FloatType>(elemType);
 
   auto values = denseAttr.getValues<T>();
   int64_t numElements = constType.getNumElements();
 
   for (int64_t dim = 0; dim < constType.getRank(); dim++) {
     bool isIotaAlongDim = true;
-    std::optional<double> detectedStart;
-    std::optional<double> detectedScale;
+    std::optional<T> detectedStart;
+    std::optional<T> detectedScale;
 
     SmallVector<int64_t> indices;
 
     for (int64_t idx = 0; idx < numElements && isIotaAlongDim; idx++) {
       linearToMultiIndex(idx, strides, indices);
 
-      double actualValue;
-      if constexpr (std::is_same_v<T, APFloat>) {
-        actualValue = values[idx].convertToDouble();
-      } else if constexpr (std::is_same_v<T, APInt>) {
-        actualValue = static_cast<double>(values[idx].getSExtValue());
-      } else {
-        actualValue = static_cast<double>(values[idx]);
-      }
+      T actualValue = values[idx];
 
       if (!detectedStart) {
         detectedStart = actualValue;
       } else if (!detectedScale && indices[dim] == 1) {
         // Detect scale from the second element along this dimension
         detectedScale = actualValue - detectedStart.value();
-        if (detectedScale.value() == 0.0) {
+        if (detectedScale.value().isZero()) {
           // Scale of 0 means all values are the same, not an iota
           isIotaAlongDim = false;
           break;
         }
       }
 
-      double expectedValue =
-          detectedStart.value() + indices[dim] * detectedScale.value_or(1.0);
-      // Use a small epsilon for floating-point comparison
-      double epsilon = isFloat ? 1e-9 : 0.0;
-      if (std::abs(actualValue - expectedValue) > epsilon) {
+      // Compute expected value: start + indices[dim] * scale
+      T scale = detectedScale.value_or(getOneValue(actualValue));
+      T expectedValue =
+          detectedStart.value() + multiplyByIndex(scale, indices[dim]);
+
+      if (!valuesAreEqual(actualValue, expectedValue)) {
         isIotaAlongDim = false;
         break;
       }
     }
 
     if (isIotaAlongDim && detectedStart) {
-      double scale = detectedScale.value_or(1.0);
       TypedAttr startAttr =
-          createAttrFromDouble(ctx, elemType, detectedStart.value());
-      TypedAttr scaleAttr = createAttrFromDouble(ctx, elemType, scale);
+          createAttrFromValue(ctx, elemType, detectedStart.value());
+      TypedAttr scaleAttr = createAttrFromValue(
+          ctx, elemType,
+          detectedScale.value_or(getOneValue(detectedStart.value())));
       return IotaLikeTensor{startAttr, dim, scaleAttr, constType};
     }
   }
@@ -1449,6 +1511,10 @@ detectIotaLikeTensor(DenseElementsAttr denseAttr) {
   }
 
   auto elemType = denseAttr.getType().getElementType();
+  if (elemType.getIntOrFloatBitWidth() == 1) {
+    return std::nullopt;
+  }
+
   if (isa<FloatType>(elemType)) {
     return detectIotaLikeTensorImpl<APFloat>(denseAttr);
   } else if (isa<IntegerType>(elemType)) {
