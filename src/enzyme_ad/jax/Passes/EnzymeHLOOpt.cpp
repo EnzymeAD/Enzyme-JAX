@@ -29541,6 +29541,21 @@ void mlir::transform::addPadLICM(RewritePatternSet &patterns, bool single_user,
   patterns.insert<LICM<stablehlo::PadOp>>(single_user, &context, benefit);
 }
 
+void mlir::transform::addRotateLICM(RewritePatternSet &patterns, bool single_user,
+                                 MLIRContext &context, PatternBenefit benefit) {
+  patterns.insert<LICM<enzymexla::RotateOp>>(single_user, &context, benefit);
+}
+
+void mlir::transform::addWrapLICM(RewritePatternSet &patterns, bool single_user,
+                                 MLIRContext &context, PatternBenefit benefit) {
+  patterns.insert<LICM<enzymexla::WrapOp>>(single_user, &context, benefit);
+}
+
+void mlir::transform::addExtendLICM(RewritePatternSet &patterns, bool single_user,
+                                 MLIRContext &context, PatternBenefit benefit) {
+  patterns.insert<LICM<enzymexla::ExtendOp>>(single_user, &context, benefit);
+}
+
 void mlir::transform::addElementwiseLICM(RewritePatternSet &patterns,
                                          bool single_user, MLIRContext &context,
                                          PatternBenefit benefit) {
@@ -30019,6 +30034,9 @@ struct EnzymeHLOOptPass
       patterns.add<LICM<stablehlo::ConvolutionOp>>(false, context);
       patterns.add<WhileLICM>(false, context);
       patterns.add<LICM<stablehlo::IotaOp>>(false, context);
+      patterns.add<LICM<enzymexla::ExtendOp>>(false, context);
+      patterns.add<LICM<enzymexla::WrapOp>>(false, context);
+      patterns.add<LICM<enzymexla::RotateOp>>(false, context);
     }
 
     if (all_finite)

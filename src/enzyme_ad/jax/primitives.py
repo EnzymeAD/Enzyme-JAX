@@ -458,6 +458,9 @@ def optimization_passes(
             "scatter_licm(0)",
             "gather_licm(0)",
             "iota_licm(0)",
+            "extend_licm(0)",
+            "wrap_licm(0)",
+            "rotate_licm(0)",
         ]
 
     if enable_scatter_gather_optimization_passes:

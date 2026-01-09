@@ -152,6 +152,7 @@ LogicalResult parseTransform(OpBuilder &builder, Location loc,
           opName == "slice_licm" || opName == "dot_general_licm" ||
           opName == "reverse_licm" || opName == "reduce_licm" ||
           opName == "reduce_window_licm" || opName == "dus_licm" ||
+          opName == "wrap_licm" || opName == "extend_licm" || opName == "rotate_licm" ||
           opName == "pad_licm" || opName == "elementwise_licm" ||
           opName == "concatenate_licm" || opName == "broadcastindim_licm" ||
           opName == "reshape_licm" || opName == "transpose_licm" ||
