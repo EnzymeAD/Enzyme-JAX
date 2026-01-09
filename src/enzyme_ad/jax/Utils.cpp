@@ -1291,12 +1291,13 @@ absl::Status detectConstantSetindexScatterOp(
 
   auto checkCommonScatterOp = mlir::stablehlo::CheckCommonScatterOp(scatterOp);
 
-  if (!checkCommonScatterOp.isSetindexScatter &&
-      !checkCommonScatterOp.isConstantSetindexScatter) {
+  using ScatterOpKind = mlir::stablehlo::ScatterOpKind;
+  if (checkCommonScatterOp.kind != ScatterOpKind::Setindex &&
+      checkCommonScatterOp.kind != ScatterOpKind::ConstantSetindex) {
     return absl::InvalidArgumentError("ScatterOp is not a setindex op.");
   }
 
-  if (checkCommonScatterOp.isConstantSetindexScatter) {
+  if (checkCommonScatterOp.kind == ScatterOpKind::ConstantSetindex) {
     constSetIndexValue = checkCommonScatterOp.constant;
   }
 

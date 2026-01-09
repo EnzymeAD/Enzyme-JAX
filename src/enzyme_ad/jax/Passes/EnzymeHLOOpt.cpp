@@ -3722,17 +3722,18 @@ struct ReducePad
 
     auto checkCommonReduce = mlir::stablehlo::CheckCommonReduceOp(op);
 
-    if (checkCommonReduce.isAddReduce) {
+    switch (checkCommonReduce.kind) {
+    case stablehlo::ReduceOpKind::Add:
       return matchAndRewriteReduceAdd(op, rewriter, pad, input);
-    } else if (checkCommonReduce.isMinReduce) {
+    case stablehlo::ReduceOpKind::Min:
       return matchAndRewriteReduceMin(op, rewriter, pad, input);
-    } else if (checkCommonReduce.isMaxReduce) {
+    case stablehlo::ReduceOpKind::Max:
       return matchAndRewriteReduceMax(op, rewriter, pad, input);
-    } else if (checkCommonReduce.isMulReduce) {
+    case stablehlo::ReduceOpKind::Mul:
       return matchAndRewriteReduceMul(op, rewriter, pad, input);
+    default:
+      return failure();
     }
-
-    return failure();
   }
 
 private:
@@ -3990,13 +3991,17 @@ struct ReduceConcat final
     auto checkCommonReduce = mlir::stablehlo::CheckCommonReduceOp(op);
 
     Value identity = nullptr;
-    if (checkCommonReduce.isAddReduce) {
+    switch (checkCommonReduce.kind) {
+    case stablehlo::ReduceOpKind::Add:
       identity = stablehlo::ConstantOp::create(
           rewriter, op.getLoc(), prev.getType(),
           cast<ElementsAttr>(makeAttr(prev.getType(), 0)));
-    } else if (checkCommonReduce.isMinReduce || checkCommonReduce.isMaxReduce) {
+      break;
+    case stablehlo::ReduceOpKind::Min:
+    case stablehlo::ReduceOpKind::Max:
       identity = prev;
-    } else {
+      break;
+    default:
       return failure();
     }
 
@@ -9558,10 +9563,16 @@ struct BroadcastReduce
 
     auto checkCommonReduce = mlir::stablehlo::CheckCommonReduceOp(op);
 
-    if (!(checkCommonReduce.isAddReduce || checkCommonReduce.isMulReduce ||
-          checkCommonReduce.isMaxReduce || checkCommonReduce.isMinReduce ||
-          checkCommonReduce.isAndReduce || checkCommonReduce.isOrReduce ||
-          checkCommonReduce.isXorReduce)) {
+    switch (checkCommonReduce.kind) {
+    case stablehlo::ReduceOpKind::Add:
+    case stablehlo::ReduceOpKind::Min:
+    case stablehlo::ReduceOpKind::Max:
+    case stablehlo::ReduceOpKind::And:
+    case stablehlo::ReduceOpKind::Or:
+    case stablehlo::ReduceOpKind::Xor:
+    case stablehlo::ReduceOpKind::Mul:
+      break;
+    default:
       return rewriter.notifyMatchFailure(
           op, "only common reduce ops like add, mul, max, min are currently "
               "supported");
@@ -9660,7 +9671,8 @@ struct BroadcastReduce
 
     auto newResultType = cast<TensorType>(newReduction.getResult(0).getType());
 
-    if (checkCommonReduce.isAddReduce) {
+    switch (checkCommonReduce.kind) {
+    case stablehlo::ReduceOpKind::Add: {
       auto constantInt = stablehlo::ConstantOp::create(
           rewriter, op.getLoc(),
           makeAttr(newResultType.clone(rewriter.getI64Type()), size));
@@ -9670,11 +9682,16 @@ struct BroadcastReduce
       assert(op.getType(0) == converted.getType());
       rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
           op, newReduction.getResult(0), converted.getResult());
-    } else if (checkCommonReduce.isMinReduce || checkCommonReduce.isMaxReduce ||
-               checkCommonReduce.isAndReduce || checkCommonReduce.isOrReduce ||
-               checkCommonReduce.isXorReduce) {
+      break;
+    }
+    case stablehlo::ReduceOpKind::Min:
+    case stablehlo::ReduceOpKind::Max:
+    case stablehlo::ReduceOpKind::And:
+    case stablehlo::ReduceOpKind::Or:
+    case stablehlo::ReduceOpKind::Xor:
       rewriter.replaceAllUsesWith(op.getResult(0), newReduction.getResult(0));
-    } else if (checkCommonReduce.isMulReduce) {
+      break;
+    case stablehlo::ReduceOpKind::Mul: {
       auto constantInt = stablehlo::ConstantOp::create(
           rewriter, op.getLoc(),
           makeAttr(newResultType.clone(rewriter.getI64Type()), size));
@@ -9684,9 +9701,10 @@ struct BroadcastReduce
       assert(op.getType(0) == converted.getType());
       rewriter.replaceOpWithNewOp<stablehlo::PowOp>(
           op, newReduction.getResult(0), converted.getResult());
-    } else {
-      assert(
-          false &&
+      break;
+    }
+    default:
+      llvm_unreachable(
           "probably missed out on a new reduction check introduced elsewhere.");
     }
 
@@ -26718,7 +26736,8 @@ private:
                                 OP##ReduceSliceFusion>::ReduceSliceFusionBase; \
                                                                                \
     bool isCompatibleReduction(stablehlo::ReduceOp reduceOp) const {           \
-      return mlir::stablehlo::CheckCommonReduceOp(reduceOp).is##OP##Reduce;    \
+      return mlir::stablehlo::CheckCommonReduceOp(reduceOp).kind ==            \
+             mlir::stablehlo::ReduceOpKind::OP;                                \
     }                                                                          \
   };
 
@@ -27581,7 +27600,7 @@ struct ReduceMulToDotGeneral
     }
 
     auto checkCommonReduce = mlir::stablehlo::CheckCommonReduceOp(op);
-    if (!checkCommonReduce.isAddReduce ||
+    if (checkCommonReduce.kind != ReduceOpKind::Add ||
         !matchPattern(op.getInitValues()[0], m_AnyZeroFloat())) {
       return rewriter.notifyMatchFailure(op, "reduction is not add");
     }
@@ -27621,7 +27640,7 @@ struct SplitReduceAddMulToAddDotGeneral final
 
     auto checkCommonReduce = mlir::stablehlo::CheckCommonReduceOp(op);
     auto initVal = op.getInitValues()[0];
-    if (!checkCommonReduce.isAddReduce ||
+    if (checkCommonReduce.kind != ReduceOpKind::Add ||
         !matchPattern(initVal, m_AnyZeroFloat())) {
       return rewriter.notifyMatchFailure(op, "reduction is not add");
     }
