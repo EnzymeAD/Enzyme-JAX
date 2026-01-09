@@ -54,6 +54,10 @@
 #include "llvm/ADT/MapVector.h"
 #include <cstddef>
 #include <iterator>
+#include <llvm/ADT/MapVector.h>
+#include <llvm/ADT/STLExtras.h>
+#include <llvm/ADT/SmallVector.h>
+#include <llvm/Support/Casting.h>
 #include <llvm/Support/LogicalResult.h>
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/Value.h>
@@ -70,6 +74,8 @@ namespace enzyme {
 using namespace mlir;
 using namespace mlir::enzyme;
 using namespace mlir::stablehlo;
+
+static int64_t scatterRegionToFunctionCounter = 0;
 
 // Check if any of the pad sizes are negative
 bool anyPadSizesNegative(stablehlo::PadOp pad) {
@@ -18969,15 +18975,19 @@ struct ScatterIndicesAreUnique
       return failure(); // already unique, no need to do anything
 
     auto scatterIndices = op.getScatterIndices();
+    auto dimNumbers = op.getScatterDimensionNumbers();
     Attribute scatterIndicesAttr;
-    if (matchPattern(scatterIndices, m_Constant(&scatterIndicesAttr))) {
+    bool uniqueIndices = false;
+
+    if (scatterIndices.getType().getNumElements() == 1) {
+      uniqueIndices = true;
+    } else if (matchPattern(scatterIndices, m_Constant(&scatterIndicesAttr))) {
       auto denseAttr = dyn_cast<DenseIntElementsAttr>(scatterIndicesAttr);
 
       auto shape = cast<ShapedType>(scatterIndices.getType()).getShape();
       if (shape.empty())
         return failure();
 
-      auto dimNumbers = op.getScatterDimensionNumbers();
       int64_t indexVectorDim = dimNumbers.getIndexVectorDim();
 
       int64_t tupleSize = shape[indexVectorDim];
@@ -19038,19 +19048,20 @@ struct ScatterIndicesAreUnique
 
       extractTuples({}, 0);
 
-      bool uniqueIndices = areIndexTuplesUnique(indexTuples);
-      if (!uniqueIndices && !op.getUniqueIndices())
-        return failure();
-      auto newOp = stablehlo::ScatterOp::create(
-          rewriter, op.getLoc(), op.getResultTypes(), op.getInputs(),
-          scatterIndices, op.getUpdates(), dimNumbers,
-          op.getIndicesAreSortedAttr(), rewriter.getBoolAttr(uniqueIndices));
-      newOp.getUpdateComputation().takeBody(op.getUpdateComputation());
-      rewriter.replaceOp(op, newOp);
-      return success();
+      uniqueIndices = areIndexTuplesUnique(indexTuples);
     }
 
-    return failure();
+    if (!uniqueIndices) {
+      return failure();
+    }
+
+    auto newOp = stablehlo::ScatterOp::create(
+        rewriter, op.getLoc(), op.getResultTypes(), op.getInputs(),
+        scatterIndices, op.getUpdates(), dimNumbers,
+        op.getIndicesAreSortedAttr(), rewriter.getBoolAttr(uniqueIndices));
+    newOp.getUpdateComputation().takeBody(op.getUpdateComputation());
+    rewriter.replaceOp(op, newOp);
+    return success();
   }
 
 private:
@@ -30077,6 +30088,10 @@ struct ScatterOpCanon final
       return success();
     }
 
+    if (trySimplifyWithIotaIndexing(op, rewriter).succeeded()) {
+      return success();
+    }
+
     return failure();
   }
 
@@ -30093,6 +30108,308 @@ private:
     }
 
     rewriter.replaceOp(op, op.getInputs());
+    return success();
+  }
+
+  LogicalResult
+  scatterRegionToFunction(stablehlo::ScatterOp op, func::FuncOp &func,
+                          Type &resElemType,
+                          llvm::SetVector<Value> &additionalInputs,
+                          PatternRewriter &rewriter) const {
+    auto modOp = op->getParentOfType<ModuleOp>();
+    if (!modOp) {
+      return failure();
+    }
+
+    auto &block = op.getUpdateComputation().front();
+
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(modOp.getBody());
+
+    auto retOp = dyn_cast<stablehlo::ReturnOp>(block.getTerminator());
+    if (!retOp || retOp->getNumOperands() > 1) {
+      return failure();
+    }
+
+    // traverse the block. we fail if the value is defined outside the block and
+    // is not a constant
+    llvm::MapVector<Value, DenseElementsAttr> constValMap;
+    int64_t argNumCounter = block.getNumArguments();
+    SmallVector<int64_t> additionalInputNum;
+    for (auto &innerOp : block.getOperations()) {
+      for (auto operand : innerOp.getOperands()) {
+        if (auto blockArg = dyn_cast<BlockArgument>(operand)) {
+          if (blockArg.getOwner() == &block) {
+            continue;
+          }
+        } else if (auto defOp = operand.getDefiningOp()) {
+          if (defOp->getBlock() == &block) {
+            continue;
+          }
+        } else {
+          return failure();
+        }
+
+        // Operand is a constant - that's fine, we'll clone it
+        DenseElementsAttr attr;
+        if (matchPattern(operand, m_Constant(&attr))) {
+          constValMap[operand] = attr;
+          continue;
+        }
+
+        if (!additionalInputs.contains(operand)) {
+          additionalInputs.insert(operand);
+          additionalInputNum.push_back(argNumCounter++);
+        }
+      }
+    }
+
+    auto funcArgTypes = llvm::to_vector(block.getArgumentTypes());
+    for (auto addInput : additionalInputs) {
+      funcArgTypes.push_back(addInput.getType());
+    }
+
+    FunctionType calleeType =
+        rewriter.getFunctionType(funcArgTypes, retOp.getOperandTypes());
+
+    func = func::FuncOp::create(
+        rewriter, op->getLoc(),
+        "__enzymexla_scatter_region_func" +
+            std::to_string(scatterRegionToFunctionCounter++),
+        calleeType);
+    func.setPrivate();
+
+    // Create the function body by cloning the block
+    Block *entryBlock = func.addEntryBlock();
+    IRMapping mapping;
+    for (int64_t i = 0; i < block.getNumArguments(); i++) {
+      mapping.map(block.getArgument(i), entryBlock->getArgument(i));
+    }
+
+    for (auto [idx, operand] :
+         llvm::zip_equal(additionalInputNum, additionalInputs)) {
+      mapping.map(operand, entryBlock->getArgument(idx));
+    }
+
+    rewriter.setInsertionPointToEnd(entryBlock);
+    for (auto &&[operand, attr] : constValMap) {
+      auto newConstOp = stablehlo::ConstantOp::create(rewriter, op.getLoc(),
+                                                      cast<ElementsAttr>(attr));
+      mapping.map(operand, newConstOp);
+    }
+
+    for (auto &innerOp : block.without_terminator()) {
+      rewriter.clone(innerOp, mapping);
+    }
+
+    // Clone the return op as func.return
+    SmallVector<Value> returnValues = {mapping.lookup(retOp->getOperand(0))};
+    func::ReturnOp::create(rewriter, op->getLoc(), returnValues);
+
+    resElemType =
+        cast<RankedTensorType>(retOp->getOperand(0).getType()).getElementType();
+
+    return success();
+  }
+
+  LogicalResult trySimplifyWithIotaIndexing(stablehlo::ScatterOp op,
+                                            PatternRewriter &rewriter) const {
+    auto inputs = op.getInputs();
+    auto inputTy = cast<RankedTensorType>(inputs[0].getType());
+    // TODO: check if this optimization is possible for higher dimenional
+    //       tensors?
+    if (inputTy.getRank() != 1) {
+      return failure();
+    }
+
+    auto indices = op.getScatterIndices();
+
+    // size 1 index can be trivially simplified to a DUS
+    if (indices.getType().getNumElements() == 1) {
+      auto scalarIndex =
+          stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), indices, {});
+
+      // Extract all of the values being updated
+      SmallVector<Value> slices, updates;
+      for (auto [input, update] : llvm::zip_equal(inputs, op.getUpdates())) {
+        slices.push_back(stablehlo::DynamicSliceOpCreate(
+            rewriter, op.getLoc(), input, {scalarIndex}, {1}));
+        updates.push_back(
+            stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), update, {1}));
+      }
+
+      // Use batching to compute the result of the region
+      func::FuncOp func;
+      Type resElemType;
+      llvm::SetVector<Value> additionalInputsOrig;
+      if (!scatterRegionToFunction(op, func, resElemType, additionalInputsOrig,
+                                   rewriter)
+               .succeeded()) {
+        return failure();
+      }
+
+      SmallVector<Value> bcastedExtraInputs;
+      for (auto addArg : additionalInputsOrig) {
+        auto outShape = llvm::to_vector(
+            cast<RankedTensorType>(addArg.getType()).getShape());
+        outShape.insert(outShape.begin(), 1);
+        bcastedExtraInputs.push_back(stablehlo::ReshapeOpCreate(
+            rewriter, op.getLoc(), addArg, outShape));
+      }
+
+      SmallVector<enzyme::BatchOp> batchOps;
+      SmallVector<Value> results;
+      for (auto [input, slice, update] :
+           llvm::zip_equal(inputs, slices, updates)) {
+        SmallVector<Value> allInputs = {slice, update};
+        allInputs.append(bcastedExtraInputs.begin(), bcastedExtraInputs.end());
+
+        auto newBatchOp = enzyme::BatchOp::create(
+            rewriter, op.getLoc(), RankedTensorType::get({1}, resElemType),
+            mlir::FlatSymbolRefAttr::get(op.getContext(), func.getName()),
+            allInputs, rewriter.getDenseI64ArrayAttr({1}));
+
+        auto newDusOp = stablehlo::DynamicUpdateSliceOp::create(
+            rewriter, op.getLoc(), input, newBatchOp.getResult(0),
+            ValueRange(scalarIndex));
+        results.push_back(newDusOp.getResult());
+        batchOps.push_back(newBatchOp);
+      }
+
+      auto funcOpInterface = cast<FunctionOpInterface>(func.getOperation());
+      for (auto batchOp : batchOps) {
+        enzyme::batchutils::batchOperationInline(rewriter, batchOp,
+                                                 funcOpInterface);
+      }
+
+      rewriter.replaceOp(op, results);
+      return success();
+    }
+
+    auto iotaLike = detectIotaLikeTensor(indices);
+    if (!iotaLike) {
+      return failure();
+    }
+
+    auto iota = *iotaLike;
+    auto dimNumbers = op.getScatterDimensionNumbers();
+
+    if (dimNumbers.getScatterDimsToOperandDims().size() <= iota.dimension ||
+        dimNumbers.getScatterDimsToOperandDims()[iota.dimension] != 0) {
+      return failure();
+    }
+
+    auto indicesTy = cast<RankedTensorType>(indices.getType());
+    int64_t indexVectorDim = dimNumbers.getIndexVectorDim();
+    if (indexVectorDim < indicesTy.getRank() &&
+        indicesTy.getDimSize(indexVectorDim) != 1) {
+      return failure();
+    }
+
+    int64_t start = cast<IntegerAttr>(iota.start).getValue().getSExtValue();
+    int64_t count = indicesTy.getDimSize(iota.dimension);
+    int64_t stride = cast<IntegerAttr>(iota.scale).getValue().getSExtValue();
+
+    if (std::abs(stride) != 1) {
+      return failure(); // DUS doesn't support strided store.
+    }
+
+    auto updateTy = cast<RankedTensorType>(op.getUpdates()[0].getType());
+    if (updateTy.getNumElements() != count) {
+      LLVM_DEBUG(op->emitError("expected num elements of result to match"));
+      return failure();
+    }
+
+    int64_t limit;
+    bool needsReverse = false;
+    if (stride > 0) {
+      limit = start + count * stride;
+    } else {
+      needsReverse = true;
+      // For negative stride, the iota accesses indices in descending order:
+      //   start, start+stride, start+2*stride, ... (where stride < 0)
+      // The smallest index is start + (count-1)*stride, the largest is start.
+      // We slice in the forward direction with abs(stride), then reverse.
+      limit = start + 1;                    // one past the largest index
+      start = start + (count - 1) * stride; // smallest index
+      stride = -stride;
+    }
+
+    if (limit > inputTy.getDimSize(0)) { // gather clamps indices
+      return failure();
+    }
+
+    // Extract all of the values being updated
+    SmallVector<Value> slices, updates;
+    for (auto [input, update] : llvm::zip_equal(inputs, op.getUpdates())) {
+      auto slice = stablehlo::SliceOpCreate(rewriter, op.getLoc(), input,
+                                            {start}, {limit}, {stride});
+      Value newUpdate =
+          stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), update, {count});
+      if (needsReverse) {
+        newUpdate =
+            stablehlo::ReverseOp::create(rewriter, op.getLoc(), newUpdate,
+                                         rewriter.getDenseI64ArrayAttr({0}));
+      }
+      slices.push_back(slice);
+      updates.push_back(newUpdate);
+    }
+
+    // Use batching to compute the result of the region
+    func::FuncOp func;
+    Type resElemType;
+    llvm::SetVector<Value> additionalInputsOrig;
+    if (!scatterRegionToFunction(op, func, resElemType, additionalInputsOrig,
+                                 rewriter)
+             .succeeded()) {
+      return failure();
+    }
+
+    SmallVector<Value> bcastedExtraInputs;
+    for (auto addArg : additionalInputsOrig) {
+      auto outShape =
+          llvm::to_vector(cast<RankedTensorType>(addArg.getType()).getShape());
+      outShape.insert(outShape.begin(), count);
+      auto origType = cast<RankedTensorType>(addArg.getType());
+      SmallVector<int64_t> bcastDims(origType.getRank());
+      std::iota(bcastDims.begin(), bcastDims.end(), 1);
+      bcastedExtraInputs.push_back(stablehlo::BroadcastInDimOp::create(
+          rewriter, op.getLoc(),
+          RankedTensorType::get(outShape, origType.getElementType()), addArg,
+          rewriter.getDenseI64ArrayAttr(bcastDims)));
+    }
+
+    auto constStartVal = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(),
+        cast<ElementsAttr>(
+            makeAttr(RankedTensorType::get({}, rewriter.getI32Type()), start)));
+
+    SmallVector<enzyme::BatchOp> batchOps;
+    SmallVector<Value> results;
+    for (auto [input, slice, update] :
+         llvm::zip_equal(inputs, slices, updates)) {
+      SmallVector<Value> allInputs = {slice, update};
+      allInputs.append(bcastedExtraInputs.begin(), bcastedExtraInputs.end());
+
+      auto newBatchOp = enzyme::BatchOp::create(
+          rewriter, op.getLoc(), RankedTensorType::get({count}, resElemType),
+          mlir::FlatSymbolRefAttr::get(op.getContext(), func.getName()),
+          allInputs, rewriter.getDenseI64ArrayAttr({count}));
+
+      auto newDusOp = stablehlo::DynamicUpdateSliceOp::create(
+          rewriter, op.getLoc(), input, newBatchOp.getResult(0),
+          ValueRange(constStartVal));
+      results.push_back(newDusOp.getResult());
+      batchOps.push_back(newBatchOp);
+    }
+
+    auto funcOpInterface = cast<FunctionOpInterface>(func.getOperation());
+    for (auto batchOp : batchOps) {
+      enzyme::batchutils::batchOperationInline(rewriter, batchOp,
+                                               funcOpInterface);
+    }
+
+    rewriter.replaceOp(op, results);
     return success();
   }
 };

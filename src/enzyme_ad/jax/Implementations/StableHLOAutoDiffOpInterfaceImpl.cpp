@@ -2150,9 +2150,10 @@ public:
     auto elemType = cast<RankedTensorType>(zeroUpdateType).getElementType();
     Value zeroUpdate, zeroScalar;
 
-    bool noInputDependencies = checkCommonScatterOp.kind == ScatterOpKind::Setindex ||
-                               checkCommonScatterOp.kind == ScatterOpKind::AddConstantInput ||
-                               checkCommonScatterOp.kind == ScatterOpKind::MulConstantInput;
+    bool noInputDependencies =
+        checkCommonScatterOp.kind == ScatterOpKind::Setindex ||
+        checkCommonScatterOp.kind == ScatterOpKind::AddConstantInput ||
+        checkCommonScatterOp.kind == ScatterOpKind::MulConstantInput;
     if (noInputDependencies ||
         checkCommonScatterOp.kind == ScatterOpKind::MulConstantUpdate) {
       zeroUpdate = stablehlo::ConstantOp::create(
@@ -2221,7 +2222,8 @@ public:
                 scatterOp.getLoc(), block->getArgument(i),
                 block->getArgument(i + nNonConsts)));
           }
-        } else if (checkCommonScatterOp.kind == ScatterOpKind::MulConstantUpdate) {
+        } else if (checkCommonScatterOp.kind ==
+                   ScatterOpKind::MulConstantUpdate) {
           for (int i = 0; i < nNonConsts; i++) {
             returnValues.push_back(builder.create<stablehlo::MulOp>(
                 scatterOp.getLoc(), block->getArgument(i),
