@@ -14006,7 +14006,6 @@ struct GatherOpCanon final
     int64_t start = cast<IntegerAttr>(iota.start).getValue().getSExtValue();
     int64_t count = indicesTy.getDimSize(iota.dimension);
     int64_t stride = cast<IntegerAttr>(iota.scale).getValue().getSExtValue();
-    int64_t limit = start + count * stride;
 
     auto resultTy = cast<RankedTensorType>(op.getType());
     if (resultTy.getNumElements() != count) {
@@ -14014,15 +14013,38 @@ struct GatherOpCanon final
       return failure();
     }
 
-    auto s = stablehlo::SliceOpCreate(rewriter, op.getLoc(), operand, {start},
-                                      {limit}, {stride});
+    int64_t limit;
+    bool needsReverse = false;
+    if (stride > 0) {
+      limit = start + count * stride;
+    } else {
+      needsReverse = true;
+      // For negative stride, the iota accesses indices in descending order:
+      //   start, start+stride, start+2*stride, ... (where stride < 0)
+      // The smallest index is start + (count-1)*stride, the largest is start.
+      // We slice in the forward direction with abs(stride), then reverse.
+      limit = start + 1;                    // one past the largest index
+      start = start + (count - 1) * stride; // smallest index
+      stride = -stride;
+    }
 
-    if (s.getType() == resultTy) {
-      rewriter.replaceOp(op, s);
+    if (limit > operandTy.getDimSize(0)) { // gather clamps indices
+      return failure();
+    }
+
+    Value result = stablehlo::SliceOpCreate(rewriter, op.getLoc(), operand,
+                                            {start}, {limit}, {stride});
+    if (needsReverse) {
+      result = stablehlo::ReverseOp::create(rewriter, op.getLoc(), result,
+                                            rewriter.getDenseI64ArrayAttr({0}));
+    }
+
+    if (result.getType() == resultTy) {
+      rewriter.replaceOp(op, result);
       return success();
     }
 
-    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, resultTy, s);
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, resultTy, result);
     return success();
   }
 
