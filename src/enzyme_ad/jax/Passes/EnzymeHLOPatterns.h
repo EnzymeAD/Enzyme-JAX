@@ -73,6 +73,12 @@ void addDUSLICM(RewritePatternSet &patterns, bool single_user,
                 MLIRContext &context, PatternBenefit benefit);
 void addPadLICM(RewritePatternSet &patterns, bool single_user,
                 MLIRContext &context, PatternBenefit benefit);
+void addRotateLICM(RewritePatternSet &patterns, bool single_user,
+                   MLIRContext &context, PatternBenefit benefit);
+void addWrapLICM(RewritePatternSet &patterns, bool single_user,
+                 MLIRContext &context, PatternBenefit benefit);
+void addExtendLICM(RewritePatternSet &patterns, bool single_user,
+                   MLIRContext &context, PatternBenefit benefit);
 void addElementwiseLICM(RewritePatternSet &patterns, bool single_user,
                         MLIRContext &context, PatternBenefit benefit);
 void addConcatenateLICM(RewritePatternSet &patterns, bool single_user,
