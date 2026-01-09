@@ -1314,6 +1314,51 @@ def ApplyIotaLICMPatterns : EnzymeHLOParameterizedPatternOp<
   }];
 }
 
+def ApplyRotateLICMPatterns : EnzymeHLOParameterizedPatternOp<
+    "rotate_licm"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
+def ApplyWrapLICMPatterns : EnzymeHLOParameterizedPatternOp<
+    "wrap_licm"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
+def ApplyExtendLICMPatterns : EnzymeHLOParameterizedPatternOp<
+    "extend_licm"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
 def SelectCompIotaConstSimplify : EnzymeHLOPatternOp<
     "select_comp_iota_const_simplify"> {
   let patterns = ["SelectCompIotaConstSimplify"];
