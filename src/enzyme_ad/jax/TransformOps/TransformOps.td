@@ -2813,6 +2813,11 @@ def ApplyDUSDynamicSliceSimplifyPatterns : EnzymeHLOPatternOp<
   let patterns = ["DUSDynamicSliceSimplify"];
 }
 
+def ApplyWhileIdempotentDUSPatterns : EnzymeHLOPatternOp<
+    "while_idempotent_dus"> {
+  let patterns = ["WhileIdempotentDUS"];
+}
+
 def ApplyWhileDUSDSSimplifyPatterns : EnzymeHLOPatternOp<
     "while_dus_ds_simplify"> {
   let patterns = ["WhileDUSDSSimplify"];

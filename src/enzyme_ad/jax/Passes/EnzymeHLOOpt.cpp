@@ -14510,10 +14510,6 @@ struct WhileOpInductionReplacement
 
     // Examine each iteration argument and result
     for (unsigned i = 0; i < whileOp.getOperands().size(); ++i) {
-      // Skip the counter variable itself - we don't want to optimize it away
-      if (i == counterIdx)
-        continue;
-
       // Get the input, the body argument, and the yielded value
       Value initValue = whileOp.getOperands()[i];
       BlockArgument iterArg = bodyBlock.getArgument(i);
@@ -14546,6 +14542,37 @@ struct WhileOpInductionReplacement
       auto constOp = stepValue.getDefiningOp<stablehlo::ConstantOp>();
       if (!constOp)
         continue;
+      
+      // Similarly replace uses of the result outside the loop
+      // with a calculation based on the final counter value
+      if (!result.use_empty() && limitValue) {
+        rewriter.setInsertionPointAfter(whileOp);
+
+        // Calculate total iterations: limit - start
+        Value totalIters = stablehlo::SubtractOp::create(
+            rewriter, whileOp.getLoc(), limitValue, startValue);
+
+        // First multiply by the step value (using the same step value
+        // identified earlier)
+        Value scaledOffset = stablehlo::MulOp::create(
+            rewriter, whileOp.getLoc(),
+            getCorrectlySizedValue(totalIters, stepValue, rewriter), stepValue);
+
+        // Then divide by the counter step value to get the correct scaling
+        Value normalizedOffset = stablehlo::DivOp::create(
+            rewriter, whileOp.getLoc(), scaledOffset,
+            getCorrectlySizedValue(counterStepValue, scaledOffset, rewriter));
+
+        Value finalValue = stablehlo::AddOp::create(
+            rewriter, whileOp.getLoc(), initValue, normalizedOffset);
+
+        rewriter.replaceAllUsesWith(result, finalValue);
+        canonicalized = true;
+      }
+
+      // Skip the counter variable itself - we don't want to optimize it away
+      if (i == counterIdx)
+        continue;
 
       // Now we can replace uses of the iterArg inside the loop
       // with a direct calculation based on the counter:
@@ -14573,33 +14600,6 @@ struct WhileOpInductionReplacement
 
         rewriter.modifyOpInPlace(
             whileOp, [&] { iterArg.replaceAllUsesWith(replacement); });
-        canonicalized = true;
-      }
-
-      // Similarly replace uses of the result outside the loop
-      // with a calculation based on the final counter value
-      if (!result.use_empty() && limitValue) {
-        rewriter.setInsertionPointAfter(whileOp);
-
-        // Calculate total iterations: limit - start
-        Value totalIters = stablehlo::SubtractOp::create(
-            rewriter, whileOp.getLoc(), limitValue, startValue);
-
-        // First multiply by the step value (using the same step value
-        // identified earlier)
-        Value scaledOffset = stablehlo::MulOp::create(
-            rewriter, whileOp.getLoc(),
-            getCorrectlySizedValue(totalIters, stepValue, rewriter), stepValue);
-
-        // Then divide by the counter step value to get the correct scaling
-        Value normalizedOffset = stablehlo::DivOp::create(
-            rewriter, whileOp.getLoc(), scaledOffset,
-            getCorrectlySizedValue(counterStepValue, scaledOffset, rewriter));
-
-        Value finalValue = stablehlo::AddOp::create(
-            rewriter, whileOp.getLoc(), initValue, normalizedOffset);
-
-        rewriter.replaceAllUsesWith(result, finalValue);
         canonicalized = true;
       }
     }
@@ -18385,153 +18385,139 @@ struct WhileIdempotentDUS
   // Returns true if the value is transitively defined by DUS ops that do not
   // depend on other iter args than the one at the given position.
   bool isIdempotent(Value value, stablehlo::WhileOp whileOp,
-                    unsigned position) const {
+                    unsigned position, SmallPtrSetImpl<Operation*> &updates) const {
     if (areValuesDefinedAbove(ValueRange{value}, whileOp.getBody()))
       return true;
-    auto dus = value.getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
-    if (!dus)
-      return false;
-    if (!isIdempotent(dus.getOperand(), whileOp, position) &&
+    
+    if (auto dus = value.getDefiningOp<stablehlo::DynamicUpdateSliceOp>()) {
+      for (auto ind : dus.getStartIndices()) {
+        if (!isIdempotent(ind, whileOp, position, updates))
+	  return false;
+      }
+      if (!isIdempotent(dus.getUpdate(), whileOp, position, updates))
+        return false;
+      if (!isIdempotent(dus.getOperand(), whileOp, position, updates) &&
         !isSameBlockArgument(dus.getOperand(), whileOp, position))
       return false;
 
-    return llvm::all_of(dus->getOperands().drop_front(), [&](Value operand) {
-      return isIdempotent(operand, whileOp, position);
-    });
-  }
-
-  // Returns the block argument corresponding to the loop counter and the step
-  // value it is incremented with. Currently matches an AddOp specifically.
-  FailureOr<std::pair<Value, Value>>
-  getConstantLoopStep(Value value, stablehlo::WhileOp whileOp,
-                      unsigned position) const {
-    auto addOp = value.getDefiningOp<stablehlo::AddOp>();
-    if (!addOp)
-      return failure();
-
-    Value step = nullptr;
-    Value blockArgument = nullptr;
-    if (isSameBlockArgument(addOp.getLhs(), whileOp, position)) {
-      blockArgument = addOp.getLhs();
-      step = addOp.getRhs();
-    } else if (isSameBlockArgument(addOp.getRhs(), whileOp, position)) {
-      blockArgument = addOp.getRhs();
-      step = addOp.getLhs();
+      updates.insert(dus);
+      return true;
     }
-    if (!step)
-      return failure();
+    
+    if (auto dus = value.getDefiningOp<enzymexla::UpdateWithoutCornersOp>()) {
+      if (!isIdempotent(dus.getUpdate(), whileOp, position, updates))
+        return false;
+      
+      if (!isIdempotent(dus.getOperand(), whileOp, position, updates) &&
+        !isSameBlockArgument(dus.getOperand(), whileOp, position))
+      return false;
 
-    if (!areValuesDefinedAbove(ValueRange{step}, whileOp.getBody()))
-      return failure();
+      updates.insert(dus);
+      return true;
+    }
 
-    return std::make_pair(blockArgument, step);
+    return false;
   }
 
   LogicalResult matchAndRewriteImpl(stablehlo::WhileOp op,
                                     PatternRewriter &rewriter) const {
+      
+    // Find the index of IV and the step to check for 1 iteration
+    auto ivInfo = extractSimpleIVInfo(op);
+    if (!ivInfo.isValid)
+      return failure();
+
+    if (ivInfo.step == 0)
+      return failure();
+    
     // check yielded value for being the iter arg potentially going through a
     // chain of DUS that do not depend on other iter args
     Block &body = op.getBody().front();
     auto returnOp = cast<stablehlo::ReturnOp>(body.getTerminator());
-    stablehlo::CompareOp compare = nullptr;
-    std::optional<std::tuple<Value, Value, Value>> loopCounter;
+    SmallPtrSet<Operation*, 1> toMove;
+    SmallVector<size_t> inds;
     for (OpOperand &operand : returnOp->getOpOperands()) {
+
+      // Don't bother with arguments with no uses.
+      if (body.getArguments()[operand.getOperandNumber()].use_empty() &&
+		      op.getCond().front().getArguments()[operand.getOperandNumber()].use_empty() &&
+		      op.getResults()[operand.getOperandNumber()].use_empty() ) continue;
+    
+      if (areValuesDefinedAbove(ValueRange{operand.get()}, op.getBody()))
+	 continue;
+
       // if all operands are idempotent, we can replace the loop with a
       // conditional
-      if (isIdempotent(operand.get(), op, operand.getOperandNumber()))
+      SmallPtrSet<Operation*, 1> localToMove;
+      if (!isIdempotent(operand.get(), op, operand.getOperandNumber(), localToMove))
         continue;
 
-      if (loopCounter)
-        return failure();
-
-      // extra care needs to be taken to ignore the primary iter arg / counter
-      // it comes from an addition with a block argument (generally a chain of
-      // ops with idempotent operands except this one?) and is also used in the
-      // condition body
-      FailureOr<std::pair<Value, Value>> stepInfo =
-          getConstantLoopStep(operand.get(), op, operand.getOperandNumber());
-      if (failed(stepInfo))
-        return failure();
-
-      Value bodyBlockArgument = stepInfo->first;
-      Value condBlockArgument = op.getCond().getArgument(
-          cast<BlockArgument>(bodyBlockArgument).getArgNumber());
-      if (!llvm::hasSingleElement(condBlockArgument.getUsers()))
-        return failure();
-      compare =
-          dyn_cast<stablehlo::CompareOp>(*condBlockArgument.getUsers().begin());
-
-      // TODO: support other cases, potentially already present elsewhere in the
-      // codebase.
-      if (compare.getComparisonDirection() !=
-          stablehlo::ComparisonDirection::LT)
-        return failure();
-
-      if (compare.getLhs() != condBlockArgument)
-        return failure();
-
-      if (!areValuesDefinedAbove(ValueRange{compare.getRhs()}, op.getCond()))
-        return failure();
-
-      if (!llvm::hasSingleElement(compare->getResult(0).getUsers()) ||
-          *compare->getResult(0).getUsers().begin() !=
-              op.getCond().front().getTerminator())
-        return failure();
-
-      loopCounter =
-          std::make_tuple(stepInfo->first, stepInfo->second, compare.getRhs());
+      for (auto op : localToMove) toMove.insert(op);
+      inds.push_back(operand.getOperandNumber());
     }
 
-    // If no non-idempotent iter arg found, bail.
-    if (!loopCounter || (loopCounter && returnOp->getNumOperands() == 1))
-      return failure();
-
-    // Don't remove loops with memory effects.
-    auto advanceIfNoEffects = [](Operation *nestedOp) {
-      if (!isMemoryEffectFree(nestedOp))
-        return WalkResult::interrupt();
-      return WalkResult::advance();
-    };
-    if (op.getBody().front().walk(advanceIfNoEffects).wasInterrupted() ||
-        op.getCond().front().walk(advanceIfNoEffects).wasInterrupted()) {
-      return failure();
-    }
-
-    // Compute the number of loop iterations from the condition body and
-    // directly generate counted values.
-    auto [bodyBlockArgument, step, upperBound] = *loopCounter;
-    Value initialValue =
-        op->getOperand(cast<BlockArgument>(bodyBlockArgument).getArgNumber());
+    if (inds.empty()) return failure();
 
     IRMapping mapping;
-    for (auto &&[fromCond, fromBody, to] :
-         llvm::zip_equal(op.getCond().getArguments(),
-                         op.getBody().getArguments(), op.getOperands())) {
-      mapping.map(fromCond, to);
-      mapping.map(fromBody, to);
-    }
-    Location loc = op.getLoc();
-    Operation *condition = rewriter.clone(*compare, mapping);
-    stablehlo::IfOp conditional = stablehlo::IfOp::create(
-        rewriter, loc, op->getResultTypes(), condition->getResult(0));
-    rewriter.createBlock(&conditional.getTrueBranch());
-    Value difference = stablehlo::SubtractOp::create(rewriter, op.getLoc(),
-                                                     upperBound, initialValue);
-    // Stablehlo div rounds down, which is what we want here.
-    Value tripCount =
-        stablehlo::DivOp::create(rewriter, op.getLoc(), difference, step);
-    mapping.map(bodyBlockArgument.getUsers().begin()->getResult(0), tripCount);
+    mapping.map( op.getBody().getArguments(), op.getOperands());
+	for (auto &op : body) {
+	  if (toMove.contains(&op))
+		  rewriter.clone(op, mapping);
+	}
+	  
+	auto ogops = llvm::to_vector(returnOp.getOperands());
+        rewriter.modifyOpInPlace(returnOp, [&](){	
+	auto ops = ogops;
+			for (auto ind : inds) {
+			ops[ind] = mapping.lookupOrDefault(ops[ind]);
+			}
+	 returnOp.getResultsMutable().assign(ops);
+	});
 
-    for (Operation &opToClone : op.getBody().front().getOperations()) {
-      if (isa<stablehlo::AddOp>(opToClone))
-        continue;
-      rewriter.clone(opToClone, mapping);
-    }
+	{
+	rewriter.setInsertionPointToStart(&op.getCond().front());
+	   auto firstIter = stablehlo::CompareOp::create(
+          rewriter, op.getLoc(),
+          op.getCond().getArgument(ivInfo.index), ivInfo.start,
+          stablehlo::ComparisonDirection::EQ);
+	   for (auto ind : inds) {
+	      if (!op.getCond().getArguments()[ind].use_empty()) {
+	      auto sel = stablehlo::SelectOp::create(
+              rewriter, op.getLoc(), firstIter, op.getOperands()[ind], mapping.lookupOrDefault(ogops[ind]));
+	      rewriter.replaceAllUsesWith(op.getCond().getArguments()[ind], sel);
+	      }
+	   }
+  }
 
-    rewriter.createBlock(&conditional.getFalseBranch());
-    rewriter.create<stablehlo::ReturnOp>(op.getLoc(), op->getOperands());
+	{
+	rewriter.setInsertionPointToStart(&op.getBody().front());
+	   auto firstIter = stablehlo::CompareOp::create(
+          rewriter, op.getLoc(),
+          op.getBody().getArgument(ivInfo.index), ivInfo.start,
+          stablehlo::ComparisonDirection::EQ);
 
-    rewriter.replaceOp(op, conditional.getResults());
+	   for (auto ind : inds) {
+	      if (!op.getBody().getArguments()[ind].use_empty()) {
+	      auto sel = stablehlo::SelectOp::create(
+              rewriter, op.getLoc(), firstIter, op.getOperands()[ind], mapping.lookupOrDefault(ogops[ind]));
+	      rewriter.replaceAllUsesWith(op.getBody().getArguments()[ind], sel);
+	      }
+	   }
+  }
+
+	rewriter.setInsertionPointAfter(op);
+	
+	auto zeroIters = stablehlo::CompareOp::create(
+          rewriter, op.getLoc(),
+          op.getResults()[ivInfo.index], op.getOperands()[ivInfo.index],
+          stablehlo::ComparisonDirection::EQ);
+
+	for (auto ind : inds) {
+	  if (!op.getResults()[ind].use_empty()) {
+	      	auto sel = stablehlo::SelectOp::create(rewriter, op.getLoc(), zeroIters, op.getOperands()[ind], mapping.lookupOrDefault(ogops[ind]));
+		rewriter.replaceAllUsesWith(op.getResults()[ind], sel);
+	  }
+	}
     return success();
   }
 };
@@ -30881,8 +30867,8 @@ struct EnzymeHLOOptPass
     // clang-format off
     patterns.add<
         WhileRepeatedInductionReduction,
-        WhilePadInductionReduction,
         WhileOpInductionReplacement,
+        WhilePadInductionReduction,
         WhileIdempotentDUS,
         BroadcastInDimOpCanon,
         ChainedDynamicBroadcastInDimCanonicalization,
