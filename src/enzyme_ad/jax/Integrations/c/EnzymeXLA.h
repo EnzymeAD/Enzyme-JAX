@@ -50,6 +50,9 @@ enzymexlaGeluApproximationAttrGet(MlirContext ctx, int32_t mode);
 MLIR_CAPI_EXPORTED MlirAttribute enzymexlaMPIDatatypeAttrGet(MlirContext ctx,
                                                             int32_t mode);
 
+MLIR_CAPI_EXPORTED MlirAttribute enzymexlaMPIOpAttrGet(MlirContext ctx, 
+                                                       int32_t mode);
+
 //===----------------------------------------------------------------------===//
 // Other Ops / Attributes
 //===----------------------------------------------------------------------===//
