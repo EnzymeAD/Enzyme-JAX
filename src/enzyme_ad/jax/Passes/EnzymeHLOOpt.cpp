@@ -661,23 +661,22 @@ struct DUSSelectSlice final
 
     Value sliceVal = nullptr;
     Value otherVal = nullptr;
+    stablehlo::SliceOp sliceOp;
     bool sliceIsTrue = false;
 
     if (trueSlice && trueSlice.getOperand() == sourceInput) {
       sliceVal = onTrue;
       otherVal = onFalse;
       sliceIsTrue = true;
+      sliceOp = trueSlice;
     } else if (falseSlice && falseSlice.getOperand() == sourceInput) {
       sliceVal = onFalse;
       otherVal = onTrue;
       sliceIsTrue = false;
+      sliceOp = falseSlice;
     } else {
       return failure();
     }
-
-    auto sliceOp = sliceVal.getDefiningOp<stablehlo::SliceOp>();
-    if (!sliceOp)
-      return failure();
 
     // Verify that the slice dimensions match the update dimensions
     auto sliceType = cast<RankedTensorType>(sliceVal.getType());
@@ -692,7 +691,8 @@ struct DUSSelectSlice final
         return failure();
     }
 
-    // Build the new DUS with the other value (not the slice)
+    // Build the new DUS with the other value (not the slice).
+    // otherVal is the non-slice branch that contains the actual update data.
     auto newDUS = stablehlo::DynamicUpdateSliceOp::create(
         rewriter, op.getLoc(), op.getType(), operand, otherVal,
         op.getStartIndices());
