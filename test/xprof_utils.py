@@ -28,7 +28,7 @@ def profile_function(
     Profile a JAX function and return timing data.
 
     Args:
-        fn: The function to profile (should be a compiled JAX function)
+        fn: The function to profile
         args: Positional arguments to pass to the function
         kwargs: Keyword arguments to pass to the function
         nrepeat: Number of times to run the function during profiling
@@ -55,6 +55,41 @@ def profile_function(
     # Warmup runs (ensure compilation is complete)
     for _ in range(warmup):
         jax.block_until_ready(compiled_fn(*args, **kwargs))
+
+    profile_compiled_function(compiled_fn, args, kwargs, nrepeat, trace_dir)
+
+
+def profile_compiled_function(
+    compiled_fn: Callable,
+    args: tuple = (),
+    kwargs: dict | None = None,
+    nrepeat: int = 1,
+    trace_dir: str | None = None,
+) -> dict[str, Any]:
+    """
+    Profile a JAX function and return timing data.
+
+    Args:
+        fn: The function to profile. We assume that the function was AoT compiled.
+        args: Positional arguments to pass to the function
+        kwargs: Keyword arguments to pass to the function
+        nrepeat: Number of times to run the function during profiling
+        trace_dir: Directory to save traces. If None, uses a temporary directory.
+
+    Returns:
+        A dictionary containing:
+            - 'min_time_us': Minimum runtime per iteration in microseconds
+            - 'min_time_ms': Minimum runtime per iteration in milliseconds
+            - 'min_time_s': Minimum runtime per iteration in seconds
+            - 'avg_time_s': Average runtime per iteration in seconds (same as min_time_s)
+            - 'nrepeat': Number of repetitions
+            - 'trace_dir': Directory where traces were saved
+            - 'xplane_file': Path to the xplane.pb file
+    """
+    import jax
+
+    if kwargs is None:
+        kwargs = {}
 
     if not XPROF_AVAILABLE:
         warnings.warn("xprof not found, falling back to timeit for profiling.")
