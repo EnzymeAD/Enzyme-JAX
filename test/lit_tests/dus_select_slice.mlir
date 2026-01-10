@@ -98,3 +98,36 @@ func.func @complex_pattern(%arg20: tensor<20x6144x12288xf64>, %arg_update: tenso
 // CHECK: %[[DUS2:.*]] = stablehlo.dynamic_update_slice %[[SLICE0]], %[[DUS1]]
 // CHECK: %[[SELECT:.*]] = stablehlo.select %arg2, %[[SLICE0]], %[[DUS2]]
 // CHECK: return %[[SELECT]]
+
+// -----
+
+// Test case 6: DUS operand is not a slice, select true branch slices the operand directly
+func.func @dus_direct_operand_slice_true(%arg0: tensor<10x20xf32>, %arg1: tensor<5x10xf32>, %pred: tensor<i1>, %c0: tensor<i32>, %c1: tensor<i32>) -> tensor<10x20xf32> {
+  %0 = stablehlo.slice %arg0 [2:7, 5:15] : (tensor<10x20xf32>) -> tensor<5x10xf32>
+  %1 = stablehlo.select %pred, %0, %arg1 : tensor<i1>, tensor<5x10xf32>
+  %2 = stablehlo.dynamic_update_slice %arg0, %1, %c0, %c1 : (tensor<10x20xf32>, tensor<5x10xf32>, tensor<i32>, tensor<i32>) -> tensor<10x20xf32>
+  return %2 : tensor<10x20xf32>
+}
+
+// CHECK-LABEL: func.func @dus_direct_operand_slice_true
+// CHECK-SAME: (%[[ARG0:.*]]: tensor<10x20xf32>, %[[ARG1:.*]]: tensor<5x10xf32>, %[[PRED:.*]]: tensor<i1>, %[[C0:.*]]: tensor<i32>, %[[C1:.*]]: tensor<i32>)
+// CHECK: %[[DUS:.*]] = stablehlo.dynamic_update_slice %[[ARG0]], %[[ARG1]], %[[C0]], %[[C1]]
+// CHECK: %[[SELECT:.*]] = stablehlo.select %[[PRED]], %[[ARG0]], %[[DUS]]
+// CHECK: return %[[SELECT]]
+
+// -----
+
+// Test case 7: DUS operand is not a slice, select false branch slices the operand directly
+func.func @dus_direct_operand_slice_false(%arg0: tensor<10x20xf32>, %arg1: tensor<5x10xf32>, %pred: tensor<i1>, %c0: tensor<i32>, %c1: tensor<i32>) -> tensor<10x20xf32> {
+  %0 = stablehlo.slice %arg0 [2:7, 5:15] : (tensor<10x20xf32>) -> tensor<5x10xf32>
+  %1 = stablehlo.select %pred, %arg1, %0 : tensor<i1>, tensor<5x10xf32>
+  %2 = stablehlo.dynamic_update_slice %arg0, %1, %c0, %c1 : (tensor<10x20xf32>, tensor<5x10xf32>, tensor<i32>, tensor<i32>) -> tensor<10x20xf32>
+  return %2 : tensor<10x20xf32>
+}
+
+// CHECK-LABEL: func.func @dus_direct_operand_slice_false
+// CHECK-SAME: (%[[ARG0:.*]]: tensor<10x20xf32>, %[[ARG1:.*]]: tensor<5x10xf32>, %[[PRED:.*]]: tensor<i1>, %[[C0:.*]]: tensor<i32>, %[[C1:.*]]: tensor<i32>)
+// CHECK: %[[DUS:.*]] = stablehlo.dynamic_update_slice %[[ARG0]], %[[ARG1]], %[[C0]], %[[C1]]
+// CHECK: %[[SELECT:.*]] = stablehlo.select %[[PRED]], %[[DUS]], %[[ARG0]]
+// CHECK: return %[[SELECT]]
+

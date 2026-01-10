@@ -623,11 +623,12 @@ struct DynamicUpdateSliceElim final
 };
 
 // Optimize DUS of select of slice where the slice contains existing data
-// Pattern: DUS(slice_A(input), select(slice_B(input), other)) 
-//       -> select(slice_A(input), DUS(slice_A(input), other))
-// This handles the case where one branch of the select is a slice of the same
-// source tensor, which becomes a no-op for the DUS operation since we're
-// selecting to keep the original data
+// Pattern 1: DUS(slice_A(input), select(slice_B(input), other)) 
+//         -> select(slice_A(input), DUS(slice_A(input), other))
+// Pattern 2: DUS(operand, select(slice(operand), other))
+//         -> select(operand, DUS(operand, other))
+// This handles cases where one branch of the select is a slice that would
+// preserve the original data, making it a no-op for the DUS operation
 struct DUSSelectSlice final
     : CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp, DUSSelectSlice> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -648,14 +649,7 @@ struct DUSSelectSlice final
     Value onFalse = selectOp.getOnFalse();
     Value operand = op.getOperand();
 
-    // Check if the DUS operand is a slice
-    auto operandSlice = operand.getDefiningOp<stablehlo::SliceOp>();
-    if (!operandSlice)
-      return failure();
-
-    Value sourceInput = operandSlice.getOperand();
-
-    // Check if either branch of the select is a slice of the same source
+    // Check if either branch of the select is a slice
     auto trueSlice = onTrue.getDefiningOp<stablehlo::SliceOp>();
     auto falseSlice = onFalse.getDefiningOp<stablehlo::SliceOp>();
 
@@ -664,18 +658,40 @@ struct DUSSelectSlice final
     stablehlo::SliceOp sliceOp;
     bool sliceIsTrue = false;
 
-    if (trueSlice && trueSlice.getOperand() == sourceInput) {
-      sliceVal = onTrue;
-      otherVal = onFalse;
-      sliceIsTrue = true;
-      sliceOp = trueSlice;
-    } else if (falseSlice && falseSlice.getOperand() == sourceInput) {
-      sliceVal = onFalse;
-      otherVal = onTrue;
-      sliceIsTrue = false;
-      sliceOp = falseSlice;
-    } else {
-      return failure();
+    // Case 1: DUS operand is a slice, and select branch slices the same source
+    auto operandSlice = operand.getDefiningOp<stablehlo::SliceOp>();
+    if (operandSlice) {
+      Value sourceInput = operandSlice.getOperand();
+      
+      if (trueSlice && trueSlice.getOperand() == sourceInput) {
+        sliceVal = onTrue;
+        otherVal = onFalse;
+        sliceIsTrue = true;
+        sliceOp = trueSlice;
+      } else if (falseSlice && falseSlice.getOperand() == sourceInput) {
+        sliceVal = onFalse;
+        otherVal = onTrue;
+        sliceIsTrue = false;
+        sliceOp = falseSlice;
+      } else {
+        return failure();
+      }
+    } 
+    // Case 2: DUS operand is not a slice, but select branch slices the operand
+    else {
+      if (trueSlice && trueSlice.getOperand() == operand) {
+        sliceVal = onTrue;
+        otherVal = onFalse;
+        sliceIsTrue = true;
+        sliceOp = trueSlice;
+      } else if (falseSlice && falseSlice.getOperand() == operand) {
+        sliceVal = onFalse;
+        otherVal = onTrue;
+        sliceIsTrue = false;
+        sliceOp = falseSlice;
+      } else {
+        return failure();
+      }
     }
 
     // Verify that the slice dimensions match the update dimensions
