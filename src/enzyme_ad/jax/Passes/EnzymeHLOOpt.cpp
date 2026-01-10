@@ -707,6 +707,58 @@ struct DUSSelectSlice final
         return failure();
     }
 
+    // Verify that the slice region corresponds to the DUS update region.
+    // For the optimization to be correct, when the predicate selects the slice,
+    // the DUS should be writing to the exact same region that the slice extracts.
+    
+    // Get DUS start indices - these may be dynamic
+    auto dusStartIndices = op.getStartIndices();
+    
+    // Get slice start and limit indices
+    auto sliceStarts = sliceOp.getStartIndices();
+    auto sliceLimits = sliceOp.getLimitIndices();
+    
+    // Case 1: DUS operand is a slice - need to account for operand's offset
+    if (operandSlice) {
+      auto operandStarts = operandSlice.getStartIndices();
+      
+      // For each dimension, verify:
+      // slice_start - operand_start == dus_start (if dus_start is constant)
+      for (size_t i = 0; i < sliceStarts.size(); ++i) {
+        int64_t sliceStart = sliceStarts[i];
+        int64_t operandStart = operandStarts[i];
+        int64_t expectedDusStart = sliceStart - operandStart;
+        
+        // Check if DUS start index is a constant with the expected value
+        DenseIntElementsAttr dusStartAttr;
+        if (!matchPattern(dusStartIndices[i], m_Constant(&dusStartAttr))) {
+          // Dynamic DUS start - we can't verify statically
+          return failure();
+        }
+        
+        int64_t dusStart = (*dusStartAttr.begin()).getSExtValue();
+        if (dusStart != expectedDusStart)
+          return failure();
+      }
+    }
+    // Case 2: DUS operand is not a slice - slice start must equal DUS start
+    else {
+      for (size_t i = 0; i < sliceStarts.size(); ++i) {
+        int64_t sliceStart = sliceStarts[i];
+        
+        // Check if DUS start index is a constant with value == slice start
+        DenseIntElementsAttr dusStartAttr;
+        if (!matchPattern(dusStartIndices[i], m_Constant(&dusStartAttr))) {
+          // Dynamic DUS start - we can't verify statically
+          return failure();
+        }
+        
+        int64_t dusStart = (*dusStartAttr.begin()).getSExtValue();
+        if (dusStart != sliceStart)
+          return failure();
+      }
+    }
+
     // Build the new DUS with the other value (not the slice).
     // otherVal is the non-slice branch that contains the actual update data.
     auto newDUS = stablehlo::DynamicUpdateSliceOp::create(
