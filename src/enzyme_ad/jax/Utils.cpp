@@ -1291,12 +1291,13 @@ absl::Status detectConstantSetindexScatterOp(
 
   auto checkCommonScatterOp = mlir::stablehlo::CheckCommonScatterOp(scatterOp);
 
-  if (!checkCommonScatterOp.isSetindexScatter &&
-      !checkCommonScatterOp.isConstantSetindexScatter) {
+  using ScatterOpKind = mlir::stablehlo::ScatterOpKind;
+  if (checkCommonScatterOp.kind != ScatterOpKind::Setindex &&
+      checkCommonScatterOp.kind != ScatterOpKind::ConstantSetindex) {
     return absl::InvalidArgumentError("ScatterOp is not a setindex op.");
   }
 
-  if (checkCommonScatterOp.isConstantSetindexScatter) {
+  if (checkCommonScatterOp.kind == ScatterOpKind::ConstantSetindex) {
     constSetIndexValue = checkCommonScatterOp.constant;
   }
 
@@ -2101,9 +2102,8 @@ getGatherDims(mlir::MLIRContext *ctx,
       scatterDimNumbers.getIndexVectorDim());
 }
 
-bool isSetindexBlockHelper(
-    mlir::Block *block,
-    std::function<bool(stablehlo::ReturnOp retOp, Value updateValue)> fn) {
+bool isSetindexBlock(mlir::Block *block,
+                     std::function<bool(stablehlo::ReturnOp retOp)> fn) {
   if (block->getNumArguments() != 2) {
     return false;
   }
@@ -2123,22 +2123,20 @@ bool isSetindexBlockHelper(
     return false;
   }
 
-  return fn(stablehloReturnOp, block->getArgument(1));
+  return fn(stablehloReturnOp);
 }
 
 bool isSetindexBlock(mlir::Block *block) {
-  return isSetindexBlockHelper(
-      block, [](stablehlo::ReturnOp retOp, Value updateValue) {
-        return retOp.getOperand(0) == updateValue;
-      });
+  return isSetindexBlock(block, [&](stablehlo::ReturnOp retOp) {
+    return retOp.getOperand(0) == block->getArgument(1);
+  });
 }
 
 bool isConstantSetindexBlock(mlir::Block *block,
                              mlir::SplatElementsAttr &constant) {
-  return isSetindexBlockHelper(
-      block, [&constant](stablehlo::ReturnOp retOp, Value updateValue) {
-        return matchPattern(retOp.getOperand(0), m_Constant(&constant));
-      });
+  return isSetindexBlock(block, [&constant](stablehlo::ReturnOp retOp) {
+    return matchPattern(retOp.getOperand(0), m_Constant(&constant));
+  });
 }
 
 SmallVector<int64_t> computeGatherSliceSizes(stablehlo::ScatterOp &scatterOp) {
@@ -3304,6 +3302,96 @@ bool IsTensorFilled(Value input) {
   }
 
   return true;
+}
+
+void ExtractBlockIntoFunction(Block *block, ModuleOp modOp, func::FuncOp &func,
+                              llvm::SetVector<Value> &capturedValues,
+                              llvm::SmallVectorImpl<Type> &resultTypes,
+                              OpBuilder &builder) {
+  OpBuilder::InsertionGuard guard(builder);
+  builder.setInsertionPointToStart(modOp.getBody());
+
+  auto retOp = block->getTerminator();
+  assert(retOp && "expected block to have a terminator");
+
+  mlir::SymbolTable symbolTable(modOp);
+
+  // traverse the block. we fail if the value is defined outside the block and
+  // is not a constant
+  llvm::MapVector<Value, DenseElementsAttr> constValMap;
+  int64_t argNumCounter = block->getNumArguments();
+  SmallVector<int64_t> additionalInputNum;
+  for (auto &innerOp : block->getOperations()) {
+    for (auto operand : innerOp.getOperands()) {
+      if (auto blockArg = dyn_cast<BlockArgument>(operand)) {
+        if (blockArg.getOwner() == block) {
+          continue;
+        }
+      } else if (auto defOp = operand.getDefiningOp()) {
+        if (defOp->getBlock() == block) {
+          continue;
+        }
+      } else {
+        llvm_unreachable("unknown operand kind");
+      }
+
+      // Operand is a constant - that's fine, we'll clone it
+      DenseElementsAttr attr;
+      if (matchPattern(operand, m_Constant(&attr))) {
+        constValMap[operand] = attr;
+        continue;
+      }
+
+      if (!capturedValues.contains(operand)) {
+        capturedValues.insert(operand);
+        additionalInputNum.push_back(argNumCounter++);
+      }
+    }
+  }
+
+  auto funcArgTypes = llvm::to_vector(block->getArgumentTypes());
+  for (auto addInput : capturedValues) {
+    funcArgTypes.push_back(addInput.getType());
+  }
+
+  FunctionType calleeType =
+      builder.getFunctionType(funcArgTypes, retOp->getOperandTypes());
+
+  func = func::FuncOp::create(builder, retOp->getLoc(),
+                              "extract_block_to_function", calleeType);
+  func.setPrivate();
+  symbolTable.insert(func);
+
+  // Create the function body by cloning the block
+  Block *entryBlock = func.addEntryBlock();
+  IRMapping mapping;
+  for (int64_t i = 0; i < block->getNumArguments(); i++) {
+    mapping.map(block->getArgument(i), entryBlock->getArgument(i));
+  }
+
+  for (auto [idx, operand] :
+       llvm::zip_equal(additionalInputNum, capturedValues)) {
+    mapping.map(operand, entryBlock->getArgument(idx));
+  }
+
+  builder.setInsertionPointToEnd(entryBlock);
+  for (auto &&[operand, attr] : constValMap) {
+    auto newConstOp = stablehlo::ConstantOp::create(builder, retOp->getLoc(),
+                                                    cast<ElementsAttr>(attr));
+    mapping.map(operand, newConstOp);
+  }
+
+  for (auto &innerOp : block->without_terminator()) {
+    builder.clone(innerOp, mapping);
+  }
+
+  // Clone the return op as func.return
+  SmallVector<Value> returnValues;
+  for (auto op : retOp->getOperands()) {
+    returnValues.push_back(mapping.lookup(op));
+    resultTypes.push_back(op.getType());
+  }
+  func::ReturnOp::create(builder, retOp->getLoc(), returnValues);
 }
 
 } // namespace stablehlo

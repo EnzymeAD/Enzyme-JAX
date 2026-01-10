@@ -983,6 +983,11 @@ def GatherOpCanonPatterns : EnzymeHLOPatternOp<
   let patterns = ["GatherOpCanon"];
 }
 
+def ScatterOpCanonPatterns : EnzymeHLOPatternOp<
+    "scatter_op_canon"> {
+  let patterns = ["ScatterOpCanon"];
+}
+
 def ReshapeOpCanonPatterns : EnzymeHLOPatternOp<
     "reshape_op_canon"> {
   let patterns = ["ReshapeOpCanon"];

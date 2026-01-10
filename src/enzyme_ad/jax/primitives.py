@@ -479,6 +479,7 @@ def optimization_passes(
             # gather patterns
             "dynamic_gather_op_is_not_dynamic<16>",
             "gather_op_canon<16>",
+            "scatter_op_canon<16>",
             "gather_elementwise",
             ## const prop patterns
             "gather_const_prop",
