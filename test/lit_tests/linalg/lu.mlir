@@ -40,12 +40,8 @@ module {
 // CPU-NEXT:      %10 = stablehlo.reshape %8 : (tensor<1xi64>) -> tensor<i64>
 // CPU-NEXT:      %11 = stablehlo.dynamic_slice %iterArg_4, %10, sizes = [1] : (tensor<64xi64>, tensor<i64>) -> tensor<1xi64>
 // CPU-NEXT:      %12 = stablehlo.dynamic_update_slice %iterArg_4, %11, %iterArg : (tensor<64xi64>, tensor<1xi64>, tensor<i32>) -> tensor<64xi64>
-// CPU-NEXT:      %13 = stablehlo.reshape %9 : (tensor<1xi64>) -> tensor<i64>
-// CPU-NEXT:      %14 = "stablehlo.scatter"(%12, %8, %13) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0]>, unique_indices = false}> ({
-// CPU-NEXT:      ^bb0(%arg1: tensor<i64>, %arg2: tensor<i64>):
-// CPU-NEXT:        stablehlo.return %arg2 : tensor<i64>
-// CPU-NEXT:      }) : (tensor<64xi64>, tensor<1xi64>, tensor<i64>) -> tensor<64xi64>
-// CPU-NEXT:      stablehlo.return %7, %14 : tensor<i32>, tensor<64xi64>
+// CPU-NEXT:      %13 = stablehlo.dynamic_update_slice %12, %9, %10 : (tensor<64xi64>, tensor<1xi64>, tensor<i64>) -> tensor<64xi64>
+// CPU-NEXT:      stablehlo.return %7, %13 : tensor<i32>, tensor<64xi64>
 // CPU-NEXT:    }
 // CPU-NEXT:    %3 = stablehlo.add %2#1, %c_2 : tensor<64xi64>
 // CPU-NEXT:    %4 = stablehlo.convert %0#1 : (tensor<64xi64>) -> tensor<64xi32>
