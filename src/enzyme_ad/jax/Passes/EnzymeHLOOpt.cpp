@@ -707,13 +707,6 @@ struct DUSSelectSlice final
       }
     }
 
-    // Verify that the slice dimensions match the update dimensions
-    auto sliceType = cast<RankedTensorType>(sliceVal.getType());
-    auto updateType = cast<RankedTensorType>(selectOp.getType());
-    
-    if (sliceType.getShape() != updateType.getShape())
-      return failure();
-
     // Check that all strides are 1
     for (auto stride : sliceOp.getStrides()) {
       if (stride != 1)
