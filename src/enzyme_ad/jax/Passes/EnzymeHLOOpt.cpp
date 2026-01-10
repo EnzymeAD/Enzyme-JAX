@@ -16854,6 +16854,132 @@ struct DUSDUSToDUSPad
   }
 };
 
+struct DUSDUSPadPadToDUSPad
+    : public CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp,
+                                     DUSDUSPadPadToDUSPad> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DynamicUpdateSliceOp dus,
+                                    PatternRewriter &rewriter) const {
+
+    // Match pattern: dus(dus2(operand, pad(slice(operand))), pad(extend(slice(operand))))
+    // where the second dus subsumes the first dus, and we can merge the pads
+    
+    auto pad = dus.getUpdate().getDefiningOp<stablehlo::PadOp>();
+    if (!pad)
+      return failure();
+
+    auto extend = pad.getOperand().getDefiningOp<enzymexla::ExtendOp>();
+    if (!extend)
+      return failure();
+
+    auto slice = extend.getOperand().getDefiningOp<stablehlo::SliceOp>();
+    if (!slice)
+      return failure();
+
+    auto dus2 =
+        dus.getOperand().getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
+    if (!dus2)
+      return failure();
+
+    auto pad2 = dus2.getUpdate().getDefiningOp<stablehlo::PadOp>();
+    if (!pad2)
+      return failure();
+
+    auto slice2 = pad2.getOperand().getDefiningOp<stablehlo::SliceOp>();
+    if (!slice2)
+      return failure();
+
+    // Both slices must be from the same base operand (the operand of dus2)
+    if (!sliceOperandIsEquivalentTo(slice, dus2.getOperand()))
+      return failure();
+
+    if (!sliceOperandIsEquivalentTo(slice2, dus2.getOperand()))
+      return failure();
+
+    // Check if both slices are actually the same slice
+    if (slice != slice2)
+      return failure();
+
+    // Check that padding values are the same
+    if (pad.getPaddingValue() != pad2.getPaddingValue())
+      return failure();
+
+    // Check for any intermediate slices that might read from dus2
+    SmallVector<stablehlo::SliceOp> middleSlices;
+    for (auto u : dus2.getResult().getUsers()) {
+      if (u == dus)
+        continue;
+      if (auto midslice = dyn_cast<stablehlo::SliceOp>(u)) {
+        if (mayReadMemoryWrittenTo(midslice, dus)) {
+          return failure();
+        }
+        middleSlices.push_back(midslice);
+        continue;
+      }
+      return failure();
+    }
+
+    auto operandTy = cast<RankedTensorType>(dus2.getOperand().getType());
+    if (!operandTy)
+      return failure();
+
+    // Interior padding must be zero
+    for (auto p : pad.getInteriorPadding()) {
+      if (p != 0)
+        return failure();
+    }
+    for (auto p : pad2.getInteriorPadding()) {
+      if (p != 0)
+        return failure();
+    }
+
+    // Get extend dimension
+    int64_t extendDim = extend.getDimension();
+    int64_t lhsExtend = extend.getLhs();
+    int64_t rhsExtend = extend.getRhs();
+
+    // Verify the pattern matches the expected layout
+    // The second DUS should subsume the first one
+    rewriter.setInsertionPoint(dus2);
+
+    // Create a new slice that combines both updates
+    auto newSlice = slice;
+
+    // Create an extend operation on the slice
+    auto newExtend = enzymexla::ExtendOp::create(
+        rewriter, dus.getLoc(), newSlice, lhsExtend, rhsExtend, extendDim);
+
+    // Calculate combined padding
+    SmallVector<int64_t> combinedPadLow, combinedPadHigh, combinedPadInner;
+    for (size_t i = 0; i < pad.getEdgePaddingLow().size(); i++) {
+      int64_t low = pad.getEdgePaddingLow()[i] + pad2.getEdgePaddingLow()[i];
+      int64_t high = pad.getEdgePaddingHigh()[i] + pad2.getEdgePaddingHigh()[i];
+      
+      combinedPadLow.push_back(low);
+      combinedPadHigh.push_back(high);
+      combinedPadInner.push_back(0);
+    }
+
+    auto combinedPad = stablehlo::PadOp::create(
+        rewriter, dus.getLoc(), newExtend, pad.getPaddingValue(),
+        combinedPadLow, combinedPadHigh, combinedPadInner);
+
+    // Replace with a single DUS using the start indices from the outer DUS
+    auto repdus = rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
+        dus, dus2.getOperand(), combinedPad, dus.getStartIndices());
+
+    // Update intermediate slices
+    for (auto midslice : middleSlices) {
+      rewriter.modifyOpInPlace(
+          midslice, [&]() { midslice.getOperandMutable().assign(repdus); });
+    }
+
+    rewriter.eraseOp(dus2);
+    return success();
+  }
+};
+
 struct SinkDUS : public CheckedOpRewritePattern<stablehlo::WhileOp, SinkDUS> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
