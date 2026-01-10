@@ -2037,21 +2037,25 @@ public:
     auto checkCommonScatterOp =
         mlir::stablehlo::CheckCommonScatterOp(scatterOp);
 
-    if (!checkCommonScatterOp.isSetindexScatter &&
-        !checkCommonScatterOp.isAddScatter &&
-        !checkCommonScatterOp.isAddConstantUpdateScatter &&
-        !checkCommonScatterOp.isAddConstantInputScatter &&
-        !checkCommonScatterOp.isSubScatter &&
-        !checkCommonScatterOp.isMulScatter &&
-        !checkCommonScatterOp.isMulConstantUpdateScatter &&
-        !checkCommonScatterOp.isMulConstantInputScatter) {
+    using ScatterOpKind = mlir::stablehlo::ScatterOpKind;
+    switch (checkCommonScatterOp.kind) {
+    case stablehlo::ScatterOpKind::Setindex:
+    case stablehlo::ScatterOpKind::Add:
+    case stablehlo::ScatterOpKind::AddConstantUpdate:
+    case stablehlo::ScatterOpKind::AddConstantInput:
+    case stablehlo::ScatterOpKind::Sub:
+    case stablehlo::ScatterOpKind::Mul:
+    case stablehlo::ScatterOpKind::MulConstantUpdate:
+    case stablehlo::ScatterOpKind::MulConstantInput:
+      break;
+    default:
       op->emitError("AutoDiffScatterRev only supports Setindex, AddScatter, "
                     "SubScatter and MulScatter operations");
       return failure();
     }
 
-    if ((checkCommonScatterOp.isMulScatter ||
-         checkCommonScatterOp.isMulConstantInputScatter) &&
+    if ((checkCommonScatterOp.kind == ScatterOpKind::Mul ||
+         checkCommonScatterOp.kind == ScatterOpKind::MulConstantInput) &&
         !scatterOp.getUniqueIndices()) {
       for (auto update : scatterOp.getUpdates()) {
         if (!gutils->isConstantValue(update)) {
@@ -2133,9 +2137,10 @@ public:
       OpBuilder &builder, CheckCommonScatterOp &checkCommonScatterOp,
       SmallVectorImpl<Value> &cachedOperands,
       SmallVectorImpl<Value> &cachedUpdates) const {
-    if (checkCommonScatterOp.isAddScatter ||
-        checkCommonScatterOp.isAddConstantUpdateScatter ||
-        checkCommonScatterOp.isSubScatter) {
+    using ScatterOpKind = mlir::stablehlo::ScatterOpKind;
+    if (checkCommonScatterOp.kind == ScatterOpKind::Add ||
+        checkCommonScatterOp.kind == ScatterOpKind::AddConstantUpdate ||
+        checkCommonScatterOp.kind == ScatterOpKind::Sub) {
       return createScatterAddSubGradientInputs(
           scatterOp, gutils, scatterIndices, gatherDimNumbers, gatherSliceSizes,
           outputDiffe, builder);
@@ -2145,11 +2150,12 @@ public:
     auto elemType = cast<RankedTensorType>(zeroUpdateType).getElementType();
     Value zeroUpdate, zeroScalar;
 
-    bool noInputDependencies = checkCommonScatterOp.isSetindexScatter ||
-                               checkCommonScatterOp.isAddConstantInputScatter ||
-                               checkCommonScatterOp.isMulConstantInputScatter;
+    bool noInputDependencies =
+        checkCommonScatterOp.kind == ScatterOpKind::Setindex ||
+        checkCommonScatterOp.kind == ScatterOpKind::AddConstantInput ||
+        checkCommonScatterOp.kind == ScatterOpKind::MulConstantInput;
     if (noInputDependencies ||
-        checkCommonScatterOp.isMulConstantUpdateScatter) {
+        checkCommonScatterOp.kind == ScatterOpKind::MulConstantUpdate) {
       zeroUpdate = stablehlo::ConstantOp::create(
           builder, scatterOp.getLoc(), zeroUpdateType,
           cast<ElementsAttr>(makeAttr(zeroUpdateType, 0)));
@@ -2166,9 +2172,9 @@ public:
       if (!gutils->isConstantValue(operand)) {
         selectedOutputDiffe.push_back(outputDiffe[i]);
         if (noInputDependencies ||
-            checkCommonScatterOp.isMulConstantUpdateScatter) {
+            checkCommonScatterOp.kind == ScatterOpKind::MulConstantUpdate) {
           newScatterUpdates.push_back(zeroUpdate); // no update dependencies
-        } else if (checkCommonScatterOp.isMulScatter) {
+        } else if (checkCommonScatterOp.kind == ScatterOpKind::Mul) {
           newScatterUpdates.push_back(cachedUpdates[i]);
         } else {
           llvm_unreachable("Unknown scatter type in generating updates");
@@ -2183,7 +2189,7 @@ public:
       auto argType = RankedTensorType::get({}, elemType);
 
       Value constMulUpdateScalar;
-      if (checkCommonScatterOp.isMulConstantUpdateScatter) {
+      if (checkCommonScatterOp.kind == ScatterOpKind::MulConstantUpdate) {
         constMulUpdateScalar = stablehlo::ConstantOp::create(
             builder, scatterOp.getLoc(),
             checkCommonScatterOp.constant.resizeSplat(argType));
@@ -2210,13 +2216,14 @@ public:
         SmallVector<Value> returnValues;
         if (noInputDependencies) {
           returnValues = SmallVector<Value>(nNonConsts, zeroScalar);
-        } else if (checkCommonScatterOp.isMulScatter) {
+        } else if (checkCommonScatterOp.kind == ScatterOpKind::Mul) {
           for (int i = 0; i < nNonConsts; i++) {
             returnValues.push_back(builder.create<stablehlo::MulOp>(
                 scatterOp.getLoc(), block->getArgument(i),
                 block->getArgument(i + nNonConsts)));
           }
-        } else if (checkCommonScatterOp.isMulConstantUpdateScatter) {
+        } else if (checkCommonScatterOp.kind ==
+                   ScatterOpKind::MulConstantUpdate) {
           for (int i = 0; i < nNonConsts; i++) {
             returnValues.push_back(builder.create<stablehlo::MulOp>(
                 scatterOp.getLoc(), block->getArgument(i),
@@ -2250,8 +2257,9 @@ public:
                         CheckCommonScatterOp &checkCommonScatterOp,
                         SmallVectorImpl<Value> &cachedOperands,
                         SmallVectorImpl<Value> &cachedUpdates) const {
-    if (checkCommonScatterOp.isMulConstantUpdateScatter ||
-        checkCommonScatterOp.isAddConstantUpdateScatter) {
+    using ScatterOpKind = mlir::stablehlo::ScatterOpKind;
+    if (checkCommonScatterOp.kind == ScatterOpKind::MulConstantUpdate ||
+        checkCommonScatterOp.kind == ScatterOpKind::AddConstantUpdate) {
       return; // no dependence on the updates
     }
 
@@ -2261,10 +2269,10 @@ public:
       if (!gutils->isConstantValue(update)) {
         Value gatherOperand = outputDiffe[i];
 
-        if (checkCommonScatterOp.isMulScatter ||
-            checkCommonScatterOp.isMulConstantInputScatter) {
+        if (checkCommonScatterOp.kind == ScatterOpKind::Mul ||
+            checkCommonScatterOp.kind == ScatterOpKind::MulConstantInput) {
           if (scatterOp.getUniqueIndices()) {
-            if (checkCommonScatterOp.isMulScatter) {
+            if (checkCommonScatterOp.kind == ScatterOpKind::Mul) {
               gatherOperand =
                   stablehlo::MulOp::create(builder, scatterOp.getLoc(),
                                            gatherOperand, cachedOperands[i]);
@@ -2289,16 +2297,19 @@ public:
             gatherDimNumbers, gatherSliceSizes,
             scatterOp.getIndicesAreSortedAttr());
 
-        if (checkCommonScatterOp.isSetindexScatter ||
-            checkCommonScatterOp.isAddScatter ||
-            checkCommonScatterOp.isAddConstantInputScatter ||
-            checkCommonScatterOp.isMulScatter ||
-            checkCommonScatterOp.isMulConstantInputScatter) {
+        switch (checkCommonScatterOp.kind) {
+        case ScatterOpKind::Setindex:
+        case ScatterOpKind::Add:
+        case ScatterOpKind::AddConstantInput:
+        case ScatterOpKind::Mul:
+        case ScatterOpKind::MulConstantInput:
           // nothing to do here
-        } else if (checkCommonScatterOp.isSubScatter) {
+          break;
+        case ScatterOpKind::Sub:
           updateDiffe = stablehlo::NegOp::create(builder, scatterOp.getLoc(),
                                                  updateDiffe);
-        } else {
+          break;
+        default:
           llvm_unreachable("Unknown scatter type in generating update diffe");
         }
 
@@ -2377,11 +2388,11 @@ public:
   }
 
   bool needsOperandsCached(CheckCommonScatterOp &checkCommonScatterOp) const {
-    return checkCommonScatterOp.isMulScatter;
+    return checkCommonScatterOp.kind == mlir::stablehlo::ScatterOpKind::Mul;
   }
 
   bool needsUpdatesCached(CheckCommonScatterOp &checkCommonScatterOp) const {
-    return checkCommonScatterOp.isMulScatter;
+    return checkCommonScatterOp.kind == mlir::stablehlo::ScatterOpKind::Mul;
   }
 };
 
