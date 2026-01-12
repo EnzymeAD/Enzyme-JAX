@@ -41,7 +41,6 @@ struct GPULaunchRecognitionPass
         moduleBuilder, getOperation()->getLoc(), gpuModuleName);
 
     std::string sm;  // NVIDIA Streaming Multiprocessor (sm_80)
-    std::string gfx; // AMD Graphics IP (gfx906)
     if (auto attr = dyn_cast_or_null<ArrayAttr>(func.getPassthroughAttr())) {
       for (auto a : attr) {
         if (auto ar = dyn_cast<ArrayAttr>(a)) {
@@ -51,34 +50,27 @@ struct GPULaunchRecognitionPass
           auto s1 = dyn_cast<StringAttr>(ar[1]);
           if (!s0 || !s1)
             continue;
-          if (s0.getValue() == "target-cpu") {
-            std::string cpu = s1.getValue().str();
-            if (cpu.find("gfx") == 0)
-              gfx = cpu;
-            else
-              sm = cpu;
-          }
+          if (s0.getValue() == "target-cpu")
+            sm = s1.getValue();
         }
       }
     }
+
     std::string feat;
     if (auto attr = dyn_cast_or_null<LLVM::TargetFeaturesAttr>(
             func.getTargetFeaturesAttr())) {
       feat = attr.getFeaturesString();
     }
-    // I have not find how to get the abiVersion yet
+    
     Attribute target;
     if (backend == "rocm") {
-      auto chip = gfx;
-      if (chip.size() == 0)
-        chip = "gfx900";
-      auto features = feat;
-      if (features.size() == 0)
-        features = "\"";
-      // Features come from target_features attribute (+wavefrontsize64)
+      // Here temporarily set as "" for ROCm backend
+      auto chip = "";
+      auto features = "+wavefrontsize64";
+      
       target = moduleBuilder.getAttr<ROCDL::ROCDLTargetAttr>(
           /*optLevel=*/2, /*triple=*/"amdgcn-amd-amdhsa", chip, features,
-          /*abiVersion=*/"600",
+          /*abiVersion=*/"",
           /*flags=*/nullptr,
           /*linkLibs=*/nullptr);
     } else {
