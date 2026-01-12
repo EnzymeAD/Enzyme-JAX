@@ -20655,10 +20655,11 @@ bool isExtendRotateLike(int dimension, Value lhs, Value rhs,
         }
       }
       Value base = sl0.getOperand();
+      auto shard = sdy::getShardingPerValue(*concat);
       if (needs_slice) {
         auto slice2 = stablehlo::SliceOp::create(*rewriter, concat->getLoc(),
                                                  base, starts, limits, stride);
-        if (auto shard = sdy::getShardingPerValue(*concat)) {
+        if (shard) {
           sdy::setShardings(slice2, shard);
         }
         base = slice2;
@@ -20669,7 +20670,7 @@ bool isExtendRotateLike(int dimension, Value lhs, Value rhs,
       if (A == 0) {
         auto wrap = rewriter->replaceOpWithNewOp<enzymexla::WrapOp>(
             *concat, base, /*lhs*/ 0, /*rhs*/ 1, dimension);
-        if (auto shard = sdy::getShardingPerValue(*concat)) {
+        if (shard) {
           sdy::setShardings(wrap, shard);
         }
         return true;
@@ -20677,9 +20678,10 @@ bool isExtendRotateLike(int dimension, Value lhs, Value rhs,
 
       if (A ==
           cast<RankedTensorType>(base.getType()).getShape()[dimension] - 1) {
+        auto shard = sdy::getShardingPerValue(*concat);
         auto wrap = rewriter->replaceOpWithNewOp<enzymexla::WrapOp>(
             *concat, base, /*lhs*/ 1, /*rhs*/ 0, dimension);
-        if (auto shard = sdy::getShardingPerValue(*concat)) {
+        if (shard) {
           sdy::setShardings(wrap, shard);
         }
         return true;
@@ -20687,14 +20689,14 @@ bool isExtendRotateLike(int dimension, Value lhs, Value rhs,
 
       auto rot = enzymexla::RotateOp::create(*rewriter, concat->getLoc(), base,
                                              A, dimension);
-      if (auto shard = sdy::getShardingPerValue(*concat)) {
+      if (shard) {
         sdy::setShardings(rot, shard);
       }
       base = rot;
 
       auto wrap = rewriter->replaceOpWithNewOp<enzymexla::WrapOp>(
           *concat, base, /*lhs*/ 0, /*rhs*/ 1, dimension);
-      if (auto shard = sdy::getShardingPerValue(*concat)) {
+      if (shard) {
         sdy::setShardings(wrap, shard);
       }
     }
@@ -20738,9 +20740,10 @@ bool isExtendRotateLike(int dimension, Value lhs, Value rhs,
 
     if (rewriter) {
       Value base = sl0.getOperand();
+      auto shard = sdy::getShardingPerValue(*concat);
       auto wrap = rewriter->replaceOpWithNewOp<enzymexla::WrapOp>(
           *concat, base, /*lhs*/ extAmt, /*rhs*/ 0, dimension);
-      if (auto shard = sdy::getShardingPerValue(*concat)) {
+      if (shard) {
         sdy::setShardings(wrap, shard);
       }
     }
@@ -20784,9 +20787,10 @@ bool isExtendRotateLike(int dimension, Value lhs, Value rhs,
     if (rewriter) {
       Value base = lhs;
 
+      auto shard = sdy::getShardingPerValue(*concat);
       auto wrap = rewriter->replaceOpWithNewOp<enzymexla::WrapOp>(
           *concat, base, /*lhs*/ 0, /*rhs*/ extAmt, dimension);
-      if (auto shard = sdy::getShardingPerValue(*concat)) {
+      if (shard) {
         sdy::setShardings(wrap, shard);
       }
     }
@@ -20833,9 +20837,10 @@ bool isExtendRotateLike(int dimension, Value lhs, Value rhs,
       return false;
 
     if (rewriter) {
+      auto shard = sdy::getShardingPerValue(*concat);
       auto wrap = rewriter->replaceOpWithNewOp<enzymexla::WrapOp>(
           *concat, r1, /*lhs*/ extAmt, /*rhs*/ 0, dimension);
-      if (auto shard = sdy::getShardingPerValue(*concat)) {
+      if (shard) {
         sdy::setShardings(wrap, shard);
       }
     }
@@ -20892,9 +20897,10 @@ bool isExtendRotateLike(int dimension, Value lhs, Value rhs,
       if (rewriter) {
         Value base = r1;
 
+        auto shard = sdy::getShardingPerValue(*concat);
         auto wrap = rewriter->replaceOpWithNewOp<enzymexla::WrapOp>(
             *concat, base, /*lhs*/ extAmt, /*rhs*/ 0, dimension);
-        if (auto shard = sdy::getShardingPerValue(*concat)) {
+        if (shard) {
           sdy::setShardings(wrap, shard);
         }
       }
@@ -20951,10 +20957,10 @@ bool isExtendRotateLike(int dimension, Value lhs, Value rhs,
 
       if (rewriter) {
         Value base = r0;
-
+        auto shard = sdy::getShardingPerValue(*concat);
         auto wrap = rewriter->replaceOpWithNewOp<enzymexla::WrapOp>(
             *concat, base, /*lhs*/ 0, /*rhs*/ extAmt, dimension);
-        if (auto shard = sdy::getShardingPerValue(*concat)) {
+        if (shard) {
           sdy::setShardings(wrap, shard);
         }
       }
