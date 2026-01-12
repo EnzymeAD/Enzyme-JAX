@@ -40,7 +40,7 @@ struct GPULaunchRecognitionPass
     gpuModule = gpu::GPUModuleOp::create(
         moduleBuilder, getOperation()->getLoc(), gpuModuleName);
 
-    std::string sm;  // NVIDIA Streaming Multiprocessor (sm_80)
+    std::string sm; // NVIDIA Streaming Multiprocessor (sm_80)
     if (auto attr = dyn_cast_or_null<ArrayAttr>(func.getPassthroughAttr())) {
       for (auto a : attr) {
         if (auto ar = dyn_cast<ArrayAttr>(a)) {
@@ -61,13 +61,13 @@ struct GPULaunchRecognitionPass
             func.getTargetFeaturesAttr())) {
       feat = attr.getFeaturesString();
     }
-    
+
     Attribute target;
     if (backend == "rocm") {
       // Here temporarily set as "" for ROCm backend
       auto chip = "";
       auto features = "+wavefrontsize64";
-      
+
       target = moduleBuilder.getAttr<ROCDL::ROCDLTargetAttr>(
           /*optLevel=*/2, /*triple=*/"amdgcn-amd-amdhsa", chip, features,
           /*abiVersion=*/"",
