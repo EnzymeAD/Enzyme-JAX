@@ -1,4 +1,5 @@
 // RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(gpu-launch-recognition)" | FileCheck %s
+// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(gpu-launch-recognition{backend=rocm})" | FileCheck %s --check-prefix=ROCM
 
 #tbaa_root = #llvm.tbaa_root<id = "Simple C++ TBAA">
 #tbaa_type_desc = #llvm.tbaa_type_desc<id = "omnipotent char", members = {<#tbaa_root, 0>}>
