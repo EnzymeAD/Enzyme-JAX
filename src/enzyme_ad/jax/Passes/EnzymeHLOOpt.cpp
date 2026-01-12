@@ -18457,6 +18457,27 @@ struct WhileIdempotentDUS
                         localToMove))
         continue;
 
+      SmallVector<Value, 2> vals = { body.getArguments()[operand.getOperandNumber()], op.getCond().front().getArguments()[operand.getOperandNumber()] };
+      for (auto op : localToMove) {
+        for (auto res : op->getResults())
+		vals.push_back(res);
+      }
+      bool legal = true;
+      for (auto val : vals) {
+        for (auto &use : val.getUses()) {
+	  if (localToMove.contains(use.getOwner())) {
+		  continue;
+		}
+	  if (use.getOwner() == returnOp) {
+	    if (use.getOperandNumber() == operand.getOperandNumber()) {
+		    continue;
+	    }
+	  } 
+	  legal = false;
+	  break;
+	}
+      }
+      if (!legal) continue;
       for (auto op : localToMove)
         toMove.insert(op);
       inds.push_back(operand.getOperandNumber());
