@@ -2078,6 +2078,11 @@ def LowerRotate : EnzymeHLOPatternOp<
   let patterns = ["LowerRotate"];
 }
 
+def LowerPiecewiseSelect : EnzymeHLOPatternOp<
+    "lower_piecewise_select"> {
+  let patterns = ["LowerPiecewiseSelect"];
+}
+
 def RecognizeWrap : EnzymeHLOPatternOp<
     "recognize_wrap"> {
   let patterns = ["RecognizeWrap"];
@@ -2906,6 +2911,11 @@ def ApplyDotGeneralBroadcastInDimSortDimsPatterns : EnzymeHLOPatternOp<
 def ApplyDUSDynamicSliceSimplifyPatterns : EnzymeHLOPatternOp<
     "dus_dynamic_slice_simplify"> {
   let patterns = ["DUSDynamicSliceSimplify"];
+}
+
+def ApplyDUSDUSSubsumingPatterns : EnzymeHLOPatternOp<
+    "dus_dus_subsuming"> {
+  let patterns = ["DUSDUSSubsuming"];
 }
 
 def ApplyWhileIdempotentDUSPatterns : EnzymeHLOPatternOp<
