@@ -54,6 +54,7 @@
 
 #include "llvm/ADT/MapVector.h"
 #include <cstddef>
+#include <cstdint>
 #include <iterator>
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/Value.h>
@@ -16831,6 +16832,180 @@ struct DUSDUSToDUSPad
     return failure();
   }
 };
+
+struct DUSDUSSubsuming
+    : public ChceckOpRewritePattern<stablehlo::DynamicUpdateSliceOp,
+                                    DUSDUSSubsuming> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  std::tuple<Value, SmallVector<int64_t>, SmallVector<int64_t>>
+  getPaddingAmount(Value value) {
+    if (auto pad = value.getDefiningOp<stablehlo::PadOp>()) {
+      auto [nested, nestedLow, nestedHigh] = getPaddingAmount(pad.getOperand());
+      if (!nested)
+        return std::make_tuple(pad.getOperand(),
+                               llvm::to_vector(pad.getEdgePaddingLow()),
+                               llvm::to_vector(pad.getEdgePaddingHigh()));
+
+      for (auto [i, v] : llvm::enumerate(pad.getEdgePaddingLow())) {
+        nestedLow[i] += v;
+      }
+      for (auto [i, v] : llvm::enumerate(pad.getEdgePaddingHigh())) {
+        nestedHigh[i] += v;
+      }
+      return std::make_tuple(nested, nestedLow, nestedHigh);
+    }
+    if (auto extend = value.getDefiningOp<enzymexla::ExtendOp>()) {
+      auto rank =
+          cast<RankedTensorType>(extend.getOperand().getType()).getRank();
+      SmallVector<int64_t> low(rank, 0);
+      SmallVector<int64_t> high(rank, 0);
+      low[extend.getDimension()] = extend.getLow();
+      high[extend.getDimension()] = extend.getHigh();
+
+      auto [nested, nestedLow, nestedHigh] =
+          getPaddingAmount(extend.getOperand());
+      if (!nested)
+        return std::make_tuple(extend.getOperand(), low, high);
+
+      for (auto [i, v] : llvm::enumerate(low)) {
+        nestedLow[i] += v;
+      }
+      for (auto [i, v] : llvm::enumerate(high)) {
+        nestedHigh[i] += v;
+      }
+      return std::make_tuple(nested, nestedLow, nestedHigh);
+    }
+    return std::make_tuple(Value(), SmallVector<int64_t>(),
+                           SmallVector<int64_t>());
+  }
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DynamicUpdateSliceOp dus,
+                                    PatternRewriter &rewriter) const {
+    auto dus2 =
+        dus.getOperand().getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
+
+    if (!dus2)
+      return failure();
+
+    auto pad2 = dus2.getUpdate().getDefiningOp<stablehlo::PadOp>();
+    if (!pad2)
+      return failure();
+
+    // TODO: potentially relax this
+    auto pad = dus.getUpdate().getDefiningOp<stablehlo::PadOp>();
+    if (!pad)
+      return failure();
+
+    if (pad.getPaddingValue() != pad2.getPaddingValue())
+      return failure();
+
+    if (!llvm::all_of(pad.getInteriorPadding(),
+                      [](int64_t v) { return v == 0; }))
+      return failure();
+    if (!llvm::all_of(pad2.getInteriorPadding(),
+                      [](int64_t v) { return v == 0; }))
+      return failure();
+
+    // Only applies if we can analyze sizes.
+    SmallVector<int64_t> starts, extents, starts2, extents2;
+    auto extractDUSStartAndExtents = [](stablehlo::DynamicUpdateSliceOp dus,
+                                        SmallVectorImpl<int64_t> starts,
+                                        SmallVectorImpl<int64_t> extents) {
+      for (auto [s, e] : llvm::zip_equal(
+               dus.getStartIndices(), dus.getUpdate().getType().getShape())) {
+        DenseIntElementsAttr startattr;
+        if (!matchPattern(s, m_Constant(&startattr)))
+          return failure();
+        int64_t ival = (*startattr.begin()).getSExtValue();
+        starts.push_back(ival);
+        extents.push_back(e);
+        return success();
+      }
+    };
+    if (failed(dus, starts, extents))
+      return failure();
+    if (failed(dus2, starts2, extents2))
+      return failure();
+
+    // The update of dus should be a padded version of dus2's update,
+    // and the interfering reads should not be accessing that padding.
+    auto [source, low, high] = getPaddingAmount(dus.getUpdate());
+    auto [source2, low2, high2] = getPaddingAmount(dus2.getUpdate());
+    if (source != source2 || !source || !source2)
+      return failure();
+
+    // // Find the non-subsumed part and check whether it comes from a pad. The
+    // // tuple is (dimension, start, extent) of the non-subsummed part.
+    // SmallVecor<std::tuple<unsigned, int64_t, int64_t>> nonSubsummed;
+    // for (auto [dim, s, e, s2, e2] :
+    //      llvm::enumerate(starts, extents, starts2, extents2)) {
+    //   if (s <= s2 && s + e >= s2 + e2) {
+    //     // dus subsumes dus2 in this dimension, we are okay with this
+    //     continue;
+    //   }
+
+    //   if (s2 < s && pad2.getEdgePaddingLow()[dim] >= (s - s2)) {
+    //     nonSubsummed.emplace_back(dim, s2, s - s2);
+    //     continue;
+    //   }
+    //   if (s2 + e2 > s + e &&
+    //       pad2.getEdgePaddingHigh()[dim] >= (s2 + e2 - (s + e))) {
+    //     nonSubsummed.emplace_back(dim, s + e, s2 + e2 - (s + e));
+    //     continue;
+    //   }
+
+    //   return failure();
+    // }
+
+    // The pair is (start, extent).
+    SmallVector<std::pair<int64_t, int64_t>> forwardedToDus2;
+    for (auto [l2, h2, start, extent] :
+         llvm::zip_equal(low2, high2, start2, extents2))
+      forwardedToDus2.emplace_back(start2 + low2, extent - low2 - high2);
+  }
+
+  DominanceInfo domInfo;
+  for (Operation *user : dus2.getResult().getUsers()) {
+    if (user == dus)
+      continue;
+    auto slice = dyn_cast<stablehlo::SliceOp>(user);
+    if (!slice)
+      return failure();
+
+    if (!domInfo.dominates(user, dus))
+      continue;
+
+    // Find the if there is a part of the slice that is not reading from the
+    // forwarded or the padding.
+      for (auto &&[dim, sliceStart, sliceLimit, forwardedPair : 
+          llvm::enumerate(slice.getStartIndices(), slice.getLimitInidices(), forwardedToDus)) {
+        auto [forwardedStart, forwardedExtent] = forwardedPair;
+        if (sliceStart < forwardedStart) {
+          if ((forwardedStart - sliceStart) <= pad2.getEdgePaddingLow()[dim])
+            continue;
+        }
+        if (sliceLimit >= forwardedStart + forwardedExtent) {
+          if ((sliceLimit - (forwardedStart + forwardedExtent)) <=
+              pad2.getEdgePaddingHigh()[dim])
+            continue;
+        }
+        return failure();
+      }
+
+      // Find if there is any user of the slice that cannot be moved.
+      for (Operation *sliceUser : slice.getResult().getUsers()) {
+        if (domInfo.dominates(sliceUser, dus))
+          return failure();
+      }
+
+      // TODO: otherwise this slice should be fine to move after the dus, but we
+      // need to make sure the padding is sufficient.
+  }
+
+  return success();
+}
+}
 
 struct SinkDUS : public CheckedOpRewritePattern<stablehlo::WhileOp, SinkDUS> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
