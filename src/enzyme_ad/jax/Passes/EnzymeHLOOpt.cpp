@@ -26,6 +26,7 @@
 #include "mlir/IR/Visitors.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "mlir/Transforms/RegionUtils.h"
 #include "shardy/dialect/sdy/ir/utils.h"
 #include "src/enzyme_ad/jax/CheckedRewrite.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
@@ -14532,10 +14533,6 @@ struct WhileOpInductionReplacement
 
     // Examine each iteration argument and result
     for (unsigned i = 0; i < whileOp.getOperands().size(); ++i) {
-      // Skip the counter variable itself - we don't want to optimize it away
-      if (i == counterIdx)
-        continue;
-
       // Get the input, the body argument, and the yielded value
       Value initValue = whileOp.getOperands()[i];
       BlockArgument iterArg = bodyBlock.getArgument(i);
@@ -14569,6 +14566,37 @@ struct WhileOpInductionReplacement
       if (!constOp)
         continue;
 
+      // Similarly replace uses of the result outside the loop
+      // with a calculation based on the final counter value
+      if (!result.use_empty() && limitValue) {
+        rewriter.setInsertionPointAfter(whileOp);
+
+        // Calculate total iterations: limit - start
+        Value totalIters = stablehlo::SubtractOp::create(
+            rewriter, whileOp.getLoc(), limitValue, startValue);
+
+        // First multiply by the step value (using the same step value
+        // identified earlier)
+        Value scaledOffset = stablehlo::MulOp::create(
+            rewriter, whileOp.getLoc(),
+            getCorrectlySizedValue(totalIters, stepValue, rewriter), stepValue);
+
+        // Then divide by the counter step value to get the correct scaling
+        Value normalizedOffset = stablehlo::DivOp::create(
+            rewriter, whileOp.getLoc(), scaledOffset,
+            getCorrectlySizedValue(counterStepValue, scaledOffset, rewriter));
+
+        Value finalValue = stablehlo::AddOp::create(
+            rewriter, whileOp.getLoc(), initValue, normalizedOffset);
+
+        rewriter.replaceAllUsesWith(result, finalValue);
+        canonicalized = true;
+      }
+
+      // Skip the counter variable itself - we don't want to optimize it away
+      if (i == counterIdx)
+        continue;
+
       // Now we can replace uses of the iterArg inside the loop
       // with a direct calculation based on the counter:
       // replacement = init_value + ((counter - start_value) * step_value) /
@@ -14595,33 +14623,6 @@ struct WhileOpInductionReplacement
 
         rewriter.modifyOpInPlace(
             whileOp, [&] { iterArg.replaceAllUsesWith(replacement); });
-        canonicalized = true;
-      }
-
-      // Similarly replace uses of the result outside the loop
-      // with a calculation based on the final counter value
-      if (!result.use_empty() && limitValue) {
-        rewriter.setInsertionPointAfter(whileOp);
-
-        // Calculate total iterations: limit - start
-        Value totalIters = stablehlo::SubtractOp::create(
-            rewriter, whileOp.getLoc(), limitValue, startValue);
-
-        // First multiply by the step value (using the same step value
-        // identified earlier)
-        Value scaledOffset = stablehlo::MulOp::create(
-            rewriter, whileOp.getLoc(),
-            getCorrectlySizedValue(totalIters, stepValue, rewriter), stepValue);
-
-        // Then divide by the counter step value to get the correct scaling
-        Value normalizedOffset = stablehlo::DivOp::create(
-            rewriter, whileOp.getLoc(), scaledOffset,
-            getCorrectlySizedValue(counterStepValue, scaledOffset, rewriter));
-
-        Value finalValue = stablehlo::AddOp::create(
-            rewriter, whileOp.getLoc(), initValue, normalizedOffset);
-
-        rewriter.replaceAllUsesWith(result, finalValue);
         canonicalized = true;
       }
     }
@@ -18380,6 +18381,202 @@ struct WhileLICM
   }
 };
 
+// Replace a while op consisting of DUS chains for each iter arg where each DUS
+// doesn't depend on values evolving in the loop. This can be later extended to
+// support other similarly idempotent ops. The loop is expected to have a
+// counter-style condition that will be used as the if condition.
+struct WhileIdempotentDUS
+    : public CheckedOpRewritePattern<stablehlo::WhileOp, WhileIdempotentDUS> {
+  using CheckedOpRewritePattern<stablehlo::WhileOp,
+                                WhileIdempotentDUS>::CheckedOpRewritePattern;
+
+  // Returns true if the value is the block argument of the while body at the
+  // given position.
+  bool isSameBlockArgument(Value value, stablehlo::WhileOp whileOp,
+                           unsigned position) const {
+    auto blockArg = dyn_cast<BlockArgument>(value);
+    if (!blockArg)
+      return false;
+    auto foundWhileOp =
+        dyn_cast<stablehlo::WhileOp>(blockArg.getOwner()->getParentOp());
+    if (whileOp != foundWhileOp ||
+        blockArg.getOwner() != &whileOp.getBody().front())
+      return false;
+    return blockArg.getArgNumber() == position;
+  }
+
+  // Returns true if the value is transitively defined by DUS ops that do not
+  // depend on other iter args than the one at the given position.
+  bool isIdempotent(Value value, stablehlo::WhileOp whileOp, unsigned position,
+                    SmallPtrSetImpl<Operation *> &updates) const {
+    if (areValuesDefinedAbove(ValueRange{value}, whileOp.getBody()))
+      return true;
+
+    if (auto dus = value.getDefiningOp<stablehlo::DynamicUpdateSliceOp>()) {
+      for (auto ind : dus.getStartIndices()) {
+        if (!isIdempotent(ind, whileOp, position, updates))
+          return false;
+      }
+      if (!isIdempotent(dus.getUpdate(), whileOp, position, updates))
+        return false;
+      if (!isIdempotent(dus.getOperand(), whileOp, position, updates) &&
+          !isSameBlockArgument(dus.getOperand(), whileOp, position))
+        return false;
+
+      updates.insert(dus);
+      return true;
+    }
+
+    if (auto dus = value.getDefiningOp<enzymexla::UpdateWithoutCornersOp>()) {
+      if (!isIdempotent(dus.getUpdate(), whileOp, position, updates))
+        return false;
+
+      if (!isIdempotent(dus.getOperand(), whileOp, position, updates) &&
+          !isSameBlockArgument(dus.getOperand(), whileOp, position))
+        return false;
+
+      updates.insert(dus);
+      return true;
+    }
+
+    return false;
+  }
+
+  LogicalResult matchAndRewriteImpl(stablehlo::WhileOp op,
+                                    PatternRewriter &rewriter) const {
+
+    // Find the index of IV and the step to check for 1 iteration
+    auto ivInfo = extractSimpleIVInfo(op);
+    if (!ivInfo.isValid)
+      return failure();
+
+    if (ivInfo.step == 0)
+      return failure();
+
+    // check yielded value for being the iter arg potentially going through a
+    // chain of DUS that do not depend on other iter args
+    Block &body = op.getBody().front();
+    auto returnOp = cast<stablehlo::ReturnOp>(body.getTerminator());
+    SmallPtrSet<Operation *, 1> toMove;
+    SmallVector<size_t> inds;
+    for (OpOperand &operand : returnOp->getOpOperands()) {
+
+      // Don't bother with arguments with no uses.
+      if (body.getArguments()[operand.getOperandNumber()].use_empty() &&
+          op.getCond()
+              .front()
+              .getArguments()[operand.getOperandNumber()]
+              .use_empty() &&
+          op.getResults()[operand.getOperandNumber()].use_empty())
+        continue;
+
+      if (areValuesDefinedAbove(ValueRange{operand.get()}, op.getBody()))
+        continue;
+
+      // if all operands are idempotent, we can replace the loop with a
+      // conditional
+      SmallPtrSet<Operation *, 1> localToMove;
+      if (!isIdempotent(operand.get(), op, operand.getOperandNumber(),
+                        localToMove))
+        continue;
+
+      SmallVector<Value, 2> vals = {
+          body.getArguments()[operand.getOperandNumber()],
+          op.getCond().front().getArguments()[operand.getOperandNumber()]};
+      for (auto op : localToMove) {
+        for (auto res : op->getResults())
+          vals.push_back(res);
+      }
+      bool legal = true;
+      for (auto val : vals) {
+        for (auto &use : val.getUses()) {
+          if (localToMove.contains(use.getOwner())) {
+            continue;
+          }
+          if (use.getOwner() == returnOp) {
+            if (use.getOperandNumber() == operand.getOperandNumber()) {
+              continue;
+            }
+          }
+          legal = false;
+          break;
+        }
+      }
+      if (!legal)
+        continue;
+      for (auto op : localToMove)
+        toMove.insert(op);
+      inds.push_back(operand.getOperandNumber());
+    }
+
+    if (inds.empty())
+      return failure();
+
+    IRMapping mapping;
+    mapping.map(op.getBody().getArguments(), op.getOperands());
+    for (auto &op : body) {
+      if (toMove.contains(&op))
+        rewriter.clone(op, mapping);
+    }
+
+    auto ogops = llvm::to_vector(returnOp.getOperands());
+    rewriter.modifyOpInPlace(returnOp, [&]() {
+      auto ops = ogops;
+      for (auto ind : inds) {
+        ops[ind] = mapping.lookupOrDefault(ops[ind]);
+      }
+      returnOp.getResultsMutable().assign(ops);
+    });
+
+    {
+      rewriter.setInsertionPointToStart(&op.getCond().front());
+      auto firstIter = stablehlo::CompareOp::create(
+          rewriter, op.getLoc(), op.getCond().getArgument(ivInfo.index),
+          ivInfo.start, stablehlo::ComparisonDirection::EQ);
+      for (auto ind : inds) {
+        if (!op.getCond().getArguments()[ind].use_empty()) {
+          auto sel = stablehlo::SelectOp::create(
+              rewriter, op.getLoc(), firstIter, op.getOperands()[ind],
+              mapping.lookupOrDefault(ogops[ind]));
+          rewriter.replaceAllUsesWith(op.getCond().getArguments()[ind], sel);
+        }
+      }
+    }
+
+    {
+      rewriter.setInsertionPointToStart(&op.getBody().front());
+      auto firstIter = stablehlo::CompareOp::create(
+          rewriter, op.getLoc(), op.getBody().getArgument(ivInfo.index),
+          ivInfo.start, stablehlo::ComparisonDirection::EQ);
+
+      for (auto ind : inds) {
+        if (!op.getBody().getArguments()[ind].use_empty()) {
+          auto sel = stablehlo::SelectOp::create(
+              rewriter, op.getLoc(), firstIter, op.getOperands()[ind],
+              mapping.lookupOrDefault(ogops[ind]));
+          rewriter.replaceAllUsesWith(op.getBody().getArguments()[ind], sel);
+        }
+      }
+    }
+
+    rewriter.setInsertionPointAfter(op);
+
+    auto zeroIters = stablehlo::CompareOp::create(
+        rewriter, op.getLoc(), op.getResults()[ivInfo.index],
+        op.getOperands()[ivInfo.index], stablehlo::ComparisonDirection::EQ);
+
+    for (auto ind : inds) {
+      if (!op.getResults()[ind].use_empty()) {
+        auto sel = stablehlo::SelectOp::create(
+            rewriter, op.getLoc(), zeroIters, op.getOperands()[ind],
+            mapping.lookupOrDefault(ogops[ind]));
+        rewriter.replaceAllUsesWith(op.getResults()[ind], sel);
+      }
+    }
+    return success();
+  }
+};
+
 struct DynamicGatherOpIsNotDynamic
     : public CheckedOpRewritePattern<stablehlo::DynamicGatherOp,
                                      DynamicGatherOpIsNotDynamic> {
@@ -20655,10 +20852,11 @@ bool isExtendRotateLike(int dimension, Value lhs, Value rhs,
         }
       }
       Value base = sl0.getOperand();
+      auto shard = sdy::getShardingPerValue(*concat);
       if (needs_slice) {
         auto slice2 = stablehlo::SliceOp::create(*rewriter, concat->getLoc(),
                                                  base, starts, limits, stride);
-        if (auto shard = sdy::getShardingPerValue(*concat)) {
+        if (shard) {
           sdy::setShardings(slice2, shard);
         }
         base = slice2;
@@ -20669,7 +20867,7 @@ bool isExtendRotateLike(int dimension, Value lhs, Value rhs,
       if (A == 0) {
         auto wrap = rewriter->replaceOpWithNewOp<enzymexla::WrapOp>(
             *concat, base, /*lhs*/ 0, /*rhs*/ 1, dimension);
-        if (auto shard = sdy::getShardingPerValue(*concat)) {
+        if (shard) {
           sdy::setShardings(wrap, shard);
         }
         return true;
@@ -20677,9 +20875,10 @@ bool isExtendRotateLike(int dimension, Value lhs, Value rhs,
 
       if (A ==
           cast<RankedTensorType>(base.getType()).getShape()[dimension] - 1) {
+        auto shard = sdy::getShardingPerValue(*concat);
         auto wrap = rewriter->replaceOpWithNewOp<enzymexla::WrapOp>(
             *concat, base, /*lhs*/ 1, /*rhs*/ 0, dimension);
-        if (auto shard = sdy::getShardingPerValue(*concat)) {
+        if (shard) {
           sdy::setShardings(wrap, shard);
         }
         return true;
@@ -20687,14 +20886,14 @@ bool isExtendRotateLike(int dimension, Value lhs, Value rhs,
 
       auto rot = enzymexla::RotateOp::create(*rewriter, concat->getLoc(), base,
                                              A, dimension);
-      if (auto shard = sdy::getShardingPerValue(*concat)) {
+      if (shard) {
         sdy::setShardings(rot, shard);
       }
       base = rot;
 
       auto wrap = rewriter->replaceOpWithNewOp<enzymexla::WrapOp>(
           *concat, base, /*lhs*/ 0, /*rhs*/ 1, dimension);
-      if (auto shard = sdy::getShardingPerValue(*concat)) {
+      if (shard) {
         sdy::setShardings(wrap, shard);
       }
     }
@@ -20738,9 +20937,10 @@ bool isExtendRotateLike(int dimension, Value lhs, Value rhs,
 
     if (rewriter) {
       Value base = sl0.getOperand();
+      auto shard = sdy::getShardingPerValue(*concat);
       auto wrap = rewriter->replaceOpWithNewOp<enzymexla::WrapOp>(
           *concat, base, /*lhs*/ extAmt, /*rhs*/ 0, dimension);
-      if (auto shard = sdy::getShardingPerValue(*concat)) {
+      if (shard) {
         sdy::setShardings(wrap, shard);
       }
     }
@@ -20784,9 +20984,10 @@ bool isExtendRotateLike(int dimension, Value lhs, Value rhs,
     if (rewriter) {
       Value base = lhs;
 
+      auto shard = sdy::getShardingPerValue(*concat);
       auto wrap = rewriter->replaceOpWithNewOp<enzymexla::WrapOp>(
           *concat, base, /*lhs*/ 0, /*rhs*/ extAmt, dimension);
-      if (auto shard = sdy::getShardingPerValue(*concat)) {
+      if (shard) {
         sdy::setShardings(wrap, shard);
       }
     }
@@ -20833,9 +21034,10 @@ bool isExtendRotateLike(int dimension, Value lhs, Value rhs,
       return false;
 
     if (rewriter) {
+      auto shard = sdy::getShardingPerValue(*concat);
       auto wrap = rewriter->replaceOpWithNewOp<enzymexla::WrapOp>(
           *concat, r1, /*lhs*/ extAmt, /*rhs*/ 0, dimension);
-      if (auto shard = sdy::getShardingPerValue(*concat)) {
+      if (shard) {
         sdy::setShardings(wrap, shard);
       }
     }
@@ -20892,9 +21094,10 @@ bool isExtendRotateLike(int dimension, Value lhs, Value rhs,
       if (rewriter) {
         Value base = r1;
 
+        auto shard = sdy::getShardingPerValue(*concat);
         auto wrap = rewriter->replaceOpWithNewOp<enzymexla::WrapOp>(
             *concat, base, /*lhs*/ extAmt, /*rhs*/ 0, dimension);
-        if (auto shard = sdy::getShardingPerValue(*concat)) {
+        if (shard) {
           sdy::setShardings(wrap, shard);
         }
       }
@@ -20951,10 +21154,10 @@ bool isExtendRotateLike(int dimension, Value lhs, Value rhs,
 
       if (rewriter) {
         Value base = r0;
-
+        auto shard = sdy::getShardingPerValue(*concat);
         auto wrap = rewriter->replaceOpWithNewOp<enzymexla::WrapOp>(
             *concat, base, /*lhs*/ 0, /*rhs*/ extAmt, dimension);
-        if (auto shard = sdy::getShardingPerValue(*concat)) {
+        if (shard) {
           sdy::setShardings(wrap, shard);
         }
       }
@@ -30978,8 +31181,9 @@ struct EnzymeHLOOptPass
     // clang-format off
     patterns.add<
         WhileRepeatedInductionReduction,
-        WhilePadInductionReduction,
         WhileOpInductionReplacement,
+        WhilePadInductionReduction,
+        WhileIdempotentDUS,
         BroadcastInDimOpCanon,
         ChainedDynamicBroadcastInDimCanonicalization,
         CompareOpCanon,
