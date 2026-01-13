@@ -1503,6 +1503,8 @@ cc_library(
         "@llvm-project//mlir:OpenMPToLLVMIRTranslation",
         "@llvm-project//mlir:LLVMIRToLLVMTranslation",
         "@llvm-project//mlir:LLVMIRToNVVMTranslation",
+        "@llvm-project//mlir:LLVMIRToROCDLTranslation",
+        "@llvm-project//mlir:ROCDLTarget",
 
         # Shardy stuff
         "@shardy//shardy/dialect/sdy/ir:dialect",
@@ -1585,6 +1587,7 @@ pybind_extension(
         "@llvm-project//mlir:IndexToLLVM",
         "@llvm-project//mlir:LLVMIRToLLVMTranslation",
         "@llvm-project//mlir:LLVMIRToNVVMTranslation",
+        "@llvm-project//mlir:LLVMIRToROCDLTranslation",
         "@llvm-project//mlir:LLVMIRTransforms",
         "@llvm-project//mlir:LLVMToLLVMIRTranslation",
         "@llvm-project//mlir:LinalgDialect",
@@ -1605,6 +1608,8 @@ pybind_extension(
         "@llvm-project//mlir:OpenMPToLLVM",
         "@llvm-project//mlir:OpenMPToLLVMIRTranslation",
         "@llvm-project//mlir:RegisterAllPasses",
+        "@llvm-project//mlir:ROCDLTarget",
+        "@llvm-project//mlir:ROCDLToLLVMIRTranslation",
         "@llvm-project//mlir:SCFDialect",
         "@llvm-project//mlir:ShapeTransforms",
         "@llvm-project//mlir:SparseTensorDialect",
