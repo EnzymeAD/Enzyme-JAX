@@ -12,6 +12,7 @@
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
+#include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Dominance.h"
@@ -2510,6 +2511,13 @@ gdgo->erase();
               continue;
             if (s0.getValue() == "target-cpu")
               sm = s1.getValue();
+            if (backend == "rocm") {
+              if (sm.find("sm_") != std::string::npos) {
+                llvm::errs() << "Warning: Found NVIDIA architecture (" << sm 
+                          << ") while targeting ROCm. Overriding to default AMD chip.\n";
+                sm = "gfx900";
+              }
+            }
           }
         }
       }
@@ -2526,15 +2534,24 @@ gdgo->erase();
           return;
         auto gmod = cast<gpu::GPUModuleOp>(gfunc->getParentOp());
         if (!gmod.getTargetsAttr()) {
-          auto chip = sm;
+          Attribute target;
+          if (backend == "rocm") {
+            auto chip = "gfx900";
+            auto features = "+wavefront64";
+            target = ROCDL::ROCDLTargetAttr::get(gmod.getContext(),
+              /*optLevel=*/2, /*triple=*/"amdgcn-amd-amdhsa", chip, features,
+              /*abiVersion=*/"600");
+          } else {
+            auto chip = sm;
           if (chip.size() == 0)
             chip = "sm_80";
           auto features = feat;
           if (features.size() == 0)
             features = "+ptx73";
-          auto target = NVVM::NVVMTargetAttr::get(
+          target = NVVM::NVVMTargetAttr::get(
               gmod.getContext(), /*optLevel*/ 2,
               /*triple*/ "nvptx64-nvidia-cuda", chip, features);
+          }
           gmod.setTargetsAttr(ArrayAttr::get(gmod.getContext(), target));
 
           DataLayoutSpecInterface dataLayout = {};

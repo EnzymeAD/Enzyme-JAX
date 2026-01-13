@@ -840,13 +840,21 @@ def ConvertParallelToGPU1 : Pass<"convert-parallel-to-gpu1"> {
 
 def ConvertParallelToGPU2 : Pass<"convert-parallel-to-gpu2"> {
   let summary = "Convert parallel loops to gpu";
-  let dependentDialects = ["func::FuncDialect", "LLVM::LLVMDialect", "memref::MemRefDialect", "gpu::GPUDialect", "mlir::NVVM::NVVMDialect"];
-  let options = [Option<
+  let dependentDialects = ["func::FuncDialect", "LLVM::LLVMDialect", "memref::MemRefDialect", "gpu::GPUDialect", "mlir::NVVM::NVVMDialect", "mlir::ROCDL::ROCDLDialect"];
+  let options = [
+    Option<
        /*C++ variable name=*/"emitGPUKernelLaunchBounds",
        /*CLI argument=*/"emitGPUKernelLaunchBounds",
        /*type=*/"bool",
        /*default=*/"false",
-       /*description=*/"Convert Periodic Concat to Manual Computation with CollectivePermute">];
+       /*description=*/"Convert Periodic Concat to Manual Computation with CollectivePermute">,
+    Option<
+       /*C++ variable name=*/"backend",
+       /*CLI argument=*/"backend",
+       /*type=*/"std::string",
+       /*default=*/"\"cuda\"",
+       /*description=*/"Target backend (cuda or rocm)">
+  ];
 }
 
 def PolygeistMem2Reg : Pass<"polygeist-mem2reg"> {

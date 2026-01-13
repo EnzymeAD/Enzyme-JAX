@@ -65,12 +65,12 @@ struct GPULaunchRecognitionPass
     Attribute target;
     if (backend == "rocm") {
       // Here temporarily set as "" for ROCm backend
-      auto chip = "";
+      auto chip = "gfx900";
       auto features = "+wavefrontsize64";
 
       target = moduleBuilder.getAttr<ROCDL::ROCDLTargetAttr>(
           /*optLevel=*/2, /*triple=*/"amdgcn-amd-amdhsa", chip, features,
-          /*abiVersion=*/"",
+          /*abiVersion=*/"600",
           /*flags=*/nullptr,
           /*linkLibs=*/nullptr);
     } else {
