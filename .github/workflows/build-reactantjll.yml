@@ -50,7 +50,7 @@ jobs:
   build-jll:
     name: Build Reactant_jll
     if: github.event.pull_request.draft == false
-    uses: EnzymeAD/ReactantBuilder/.github/workflows/build-reactant-reusable.yml@f1f000f1e237ec913c9224cf96a297e6cc28d9ab
+    uses: EnzymeAD/ReactantBuilder/.github/workflows/build-reactant-reusable.yml@main
     needs: get-reactant-commit
     secrets: inherit
     with:
