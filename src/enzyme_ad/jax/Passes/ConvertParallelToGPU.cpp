@@ -2513,8 +2513,9 @@ gdgo->erase();
               sm = s1.getValue();
             if (backend == "rocm") {
               if (sm.find("sm_") != std::string::npos) {
-                llvm::errs() << "Warning: Found NVIDIA architecture (" << sm 
-                          << ") while targeting ROCm. Overriding to default AMD chip.\n";
+                llvm::errs() << "Warning: Found NVIDIA architecture (" << sm
+                             << ") while targeting ROCm. Overriding to default "
+                                "AMD chip.\n";
                 sm = "gfx900";
               }
             }
@@ -2538,19 +2539,20 @@ gdgo->erase();
           if (backend == "rocm") {
             auto chip = "gfx900";
             auto features = "+wavefront64";
-            target = ROCDL::ROCDLTargetAttr::get(gmod.getContext(),
-              /*optLevel=*/2, /*triple=*/"amdgcn-amd-amdhsa", chip, features,
-              /*abiVersion=*/"600");
+            target = ROCDL::ROCDLTargetAttr::get(
+                gmod.getContext(),
+                /*optLevel=*/2, /*triple=*/"amdgcn-amd-amdhsa", chip, features,
+                /*abiVersion=*/"600");
           } else {
             auto chip = sm;
-          if (chip.size() == 0)
-            chip = "sm_80";
-          auto features = feat;
-          if (features.size() == 0)
-            features = "+ptx73";
-          target = NVVM::NVVMTargetAttr::get(
-              gmod.getContext(), /*optLevel*/ 2,
-              /*triple*/ "nvptx64-nvidia-cuda", chip, features);
+            if (chip.size() == 0)
+              chip = "sm_80";
+            auto features = feat;
+            if (features.size() == 0)
+              features = "+ptx73";
+            target = NVVM::NVVMTargetAttr::get(
+                gmod.getContext(), /*optLevel*/ 2,
+                /*triple*/ "nvptx64-nvidia-cuda", chip, features);
           }
           gmod.setTargetsAttr(ArrayAttr::get(gmod.getContext(), target));
 
