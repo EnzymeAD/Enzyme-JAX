@@ -1503,8 +1503,6 @@ cc_library(
         "@llvm-project//mlir:OpenMPToLLVMIRTranslation",
         "@llvm-project//mlir:LLVMIRToLLVMTranslation",
         "@llvm-project//mlir:LLVMIRToNVVMTranslation",
-        "@llvm-project//mlir:LLVMIRToROCDLTranslation",
-        "@llvm-project//mlir:ROCDLTarget",
 
         # Shardy stuff
         "@shardy//shardy/dialect/sdy/ir:dialect",
