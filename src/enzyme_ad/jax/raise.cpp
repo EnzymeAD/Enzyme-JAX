@@ -45,8 +45,13 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
     err_stream.flush();
     exit(1);
   }
-  llvm::InitializeNativeTarget();
-  llvm::InitializeNativeTargetAsmPrinter();
+  // llvm::InitializeNativeTarget();
+  // llvm::InitializeNativeTargetAsmPrinter();
+
+  llvm::InitializeAllTargets();
+  llvm::InitializeAllTargetMCs();
+  llvm::InitializeAllAsmPrinters();
+  llvm::InitializeAllAsmParsers();
 
   mlir::DialectRegistry registry;
   mlir::enzyme::prepareRegistry(registry);
