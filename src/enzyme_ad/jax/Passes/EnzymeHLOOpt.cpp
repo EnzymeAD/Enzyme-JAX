@@ -16833,6 +16833,347 @@ struct DUSDUSToDUSPad
   }
 };
 
+struct TensorValueProvenanceEntry {
+  Value source;
+  SmallVector<int64_t> originalStarts;
+  SmallVector<int64_t> currentStarts;
+  SmallVector<int64_t> extents;
+  bool isBroadcast;
+};
+
+struct TensorValueProvenance {
+  SmallVector<TensorValueProvenanceEntry> entries;
+};
+
+void addSelfProvenance(Value value, DenseMap<Value, TensorValueProvenance> &provenanceInfo) {
+  if (provenanceInfo.contains(value))
+    return;
+
+  TensorValueProvenanceEntry entry;
+  entry.source = value;
+  entry.isBroadcast = false;
+
+  auto type = cast<RankedTensorType>(value.getType());
+  assert(type.hasStaticShape() && "only static shapes supported");
+  size_t rank = type.getRank();
+  entry.originalStarts.resize(rank, 0);
+  entry.currentStarts.resize(rank, 0);
+  entry.extents.resize(rank);
+  for (size_t i = 0; i < rank; i++) {
+    entry.extents[i] = type.getShape()[i];
+  }
+
+  TensorValueProvenance prov;
+  prov.entries.push_back(entry);
+  provenanceInfo[value] = prov;
+}
+
+void visitNonEmptyRegionsAroundCentral(
+    ArrayRef<int64_t> centralStart, ArrayRef<int64_t> centralExtent,
+    ArrayRef<int64_t> totalSizes,
+    function_ref<void(ArrayRef<size_t>, ArrayRef<std::pair<int64_t, int64_t>>)> visitor) {
+  assert(centralStart.size() == centralExtent.size());
+  assert(centralStart.size() == totalSizes.size());
+  size_t rank = centralStart.size();
+
+  // For each dimension, determine the three regions:
+  // 0: before (from 0 to start)
+  // 1: update (from start to start+update_size)
+  // 2: after (from start+update_size to end)
+  // Each region is represented as (result_start, result_extent)
+  SmallVector<SmallVector<std::pair<int64_t, int64_t>>> dimRegions(rank);
+  for (size_t dim = 0; dim < rank; dim++) {
+    int64_t start = centralStart[dim];
+    int64_t updateSize = centralExtent[dim];
+    int64_t totalSize = totalSizes[dim];
+
+    // Before region
+    if (start > 0) {
+      dimRegions[dim].push_back({0, start});
+    } else {
+      dimRegions[dim].push_back({-1, -1}); // placeholder for no region
+    }
+
+    // Update region
+    dimRegions[dim].push_back({start, updateSize});
+
+    // After region
+    if (start + updateSize < totalSize) {
+      dimRegions[dim].push_back(
+          {start + updateSize, totalSize - start - updateSize});
+    } else {
+      dimRegions[dim].push_back({-1, -1}); // placeholder for no region
+    }
+  }
+
+  // Generate all 3^rank combinations
+  size_t numCombinations = 1;
+  for (size_t i = 0; i < rank; i++) {
+    numCombinations *= 3;
+  }
+
+  for (size_t combo = 0; combo < numCombinations; combo++) {
+    // Decode which region to use for each dimension (0=before, 1=update,
+    // 2=after)
+    SmallVector<size_t> regionIndices(rank);
+    size_t temp = combo;
+    for (size_t dim = 0; dim < rank; dim++) {
+      regionIndices[dim] = temp % 3;
+      temp /= 3;
+    }
+
+    // Check if this subregion is non-empty.
+    bool valid = true;
+    for (size_t dim = 0; dim < rank; dim++) {
+      if (dimRegions[dim][regionIndices[dim]].first == -1) {
+        valid = false;
+        break;
+      }
+    }
+
+    if (!valid)
+      continue;
+
+    SmallVector<std::pair<int64_t, int64_t>> dimRegionsLocal(rank);
+    for (size_t dim = 0; dim < rank; dim++) {
+      dimRegionsLocal[dim] = dimRegions[dim][regionIndices[dim]];
+    }
+    visitor(regionIndices, dimRegionsLocal);
+  }
+}
+
+void computeTensorValueProvenanceImpl(
+    SmallVectorImpl<Value> &pendingValues,
+    DenseMap<Value, TensorValueProvenance> &provenanceInfo) {
+  while (!pendingValues.empty()) {
+    Value value = pendingValues.pop_back_val();
+    if (provenanceInfo.contains(value))
+      continue;
+
+    if (auto slice = value.getDefiningOp<stablehlo::SliceOp>()) {
+      auto it = provenanceInfo.find(slice.getOperand());
+      if (it == provenanceInfo.end()) {
+        pendingValues.push_back(value);
+        pendingValues.push_back(slice.getOperand());
+        continue;
+      }
+
+      provenanceInfo[value].entries.reserve(it->second.entries.size());
+      for (const TensorValueProvenanceEntry &parentEntry :
+           it->second.entries) {
+        TensorValueProvenanceEntry entry;
+
+        entry.source = parentEntry.source;
+        entry.isBroadcast = parentEntry.isBroadcast;
+        entry.originalStarts.resize(parentEntry.extents.size());
+        entry.currentStarts.resize(parentEntry.extents.size());         
+        entry.extents.resize(parentEntry.extents.size());
+        for (size_t i = 0; i < parentEntry.extents.size(); i++) {
+          entry.currentStarts[i] = 0;
+          entry.originalStarts[i] =
+              parentEntry.originalStarts[i] + slice.getStartIndices()[i];
+          entry.extents[i] = slice.getType().getShape()[i];
+        }
+        provenanceInfo[value].entries.push_back(entry);
+      }
+      continue;
+    }
+
+    if (auto dus = value.getDefiningOp<stablehlo::DynamicUpdateSliceOp>()) {
+      auto it = provenanceInfo.find(dus.getOperand());
+      if (it == provenanceInfo.end()) {
+        pendingValues.push_back(value);
+        pendingValues.push_back(dus.getOperand());
+        continue;
+      }
+
+      auto up = provenanceInfo.find(dus.getUpdate());
+      if (up == provenanceInfo.end()) {
+        pendingValues.push_back(value);
+        pendingValues.push_back(dus.getUpdate());
+        continue;
+      }
+
+      // Create code that uses the provenance information from the update for the central part of the dus,
+      // and the provenance information from the original value for the remaining parts.
+      // For each dimension, we have an optional before, an update, and an optional after part,
+      // so we have 3**rank combinations.
+      
+      auto resultShape = cast<RankedTensorType>(dus.getType()).getShape();
+      auto updateShape = cast<RankedTensorType>(dus.getUpdate().getType()).getShape();
+      size_t rank = resultShape.size();
+      
+      // Try to extract constant start indices for each dimension
+      SmallVector<std::optional<int64_t>> constantStarts(rank);
+      for (size_t i = 0; i < rank; i++) {
+        DenseIntElementsAttr startAttr;
+        if (matchPattern(dus.getStartIndices()[i], m_Constant(&startAttr))) {
+          constantStarts[i] = (*startAttr.begin()).getSExtValue();
+        }
+      }
+      
+      // Check if all start indices are constant (required for provenance tracking)
+      bool allConstant = true;
+      for (const auto &start : constantStarts) {
+        if (!start.has_value()) {
+          allConstant = false;
+          break;
+        }
+      }
+      
+      if (!allConstant) {
+        // If start indices are dynamic, we can't precisely track provenance
+        addSelfProvenance(value, provenanceInfo);
+        continue;
+      }
+
+      auto knownConstantStarts = llvm::map_to_vector(constantStarts, [](std::optional<int64_t> v) {
+        return v.value();
+      });
+      visitNonEmptyRegionsAroundCentral(
+          knownConstantStarts, updateShape, resultShape,
+          [&](ArrayRef<size_t> regionIndices,
+              ArrayRef<std::pair<int64_t, int64_t>> dimRegions) {
+            // Determine if this combination uses the base tensor or the update
+            // tensor
+            // If all dimensions use region 1 (update), source is update tensor,
+            // otherwise it's the base tensor.
+            bool isUpdate = true;
+            for (size_t dim = 0; dim < rank; dim++) {
+              if (regionIndices[dim] != 1) {
+                isUpdate = false;
+              }
+            }
+
+            if (isUpdate) {
+              // All dimensions use update region - source from update
+              // provenance
+              for (const TensorValueProvenanceEntry &updateEntry :
+                   up->second.entries) {
+                TensorValueProvenanceEntry entry;
+                entry.source = updateEntry.source;
+                entry.isBroadcast = updateEntry.isBroadcast;
+                entry.currentStarts.resize(rank);
+                entry.originalStarts.resize(rank);
+                entry.extents.resize(rank);
+
+                for (size_t dim = 0; dim < rank; dim++) {
+                  entry.currentStarts[dim] = dimRegions[dim].first;
+                  entry.extents[dim] = dimRegions[dim].second;
+                  entry.originalStarts[dim] = updateEntry.originalStarts[dim];
+                }
+                provenanceInfo[value].entries.push_back(entry);
+              }
+            } else {
+              // Some dimensions use before/after region - source from base
+              // provenance
+              for (const TensorValueProvenanceEntry &baseEntry :
+                   it->second.entries) {
+                TensorValueProvenanceEntry entry;
+                entry.source = baseEntry.source;
+                entry.isBroadcast = baseEntry.isBroadcast;
+                entry.currentStarts.resize(rank);
+                entry.originalStarts.resize(rank);
+                entry.extents.resize(rank);
+
+                for (size_t dim = 0; dim < rank; dim++) {
+                  auto [regionStart, regionExtent] = dimRegions[dim];
+                  entry.currentStarts[dim] = regionStart;
+                  entry.extents[dim] = regionExtent;
+                  entry.originalStarts[dim] =
+                      baseEntry.originalStarts[dim] + regionStart;
+                }
+
+                provenanceInfo[value].entries.push_back(entry);
+              }
+            }
+          });
+      continue;
+    }
+
+    if (auto pad = value.getDefiningOp<stablehlo::PadOp>()) {
+      auto it = provenanceInfo.find(pad.getOperand());
+      if (it == provenanceInfo.end()) {
+        pendingValues.push_back(value);
+        pendingValues.push_back(pad.getOperand());
+        continue;
+      }
+
+      auto operandType = cast<RankedTensorType>(pad.getOperand().getType());
+      auto resultType = cast<RankedTensorType>(pad.getResult().getType());
+      
+      if (!operandType.hasStaticShape() || !resultType.hasStaticShape()) {
+        addSelfProvenance(value, provenanceInfo);
+        continue;
+      }
+
+      // for values added by edge padding, their provenance is the padding value
+      // itself with original starts being 0, current starts being 0 for low
+      // padding and low+shape for high padding, and extends being the amount of
+      // padding. We need to handle the cases 
+      
+      visitNonEmptyRegionsAroundCentral(pad.getEdgePaddingLow(), operandType.getShape(), resultType.getShape(), [&](
+        ArrayRef<size_t> regionIndices, ArrayRef<std::pair<int64_t, int64_t>> dimRegions
+      ){
+        // Determine if this combination uses the padded regions
+        bool isPadding = false;
+        size_t rank = regionIndices.size();
+        for (size_t dim = 0; dim < rank; dim++) {
+          if (regionIndices[dim] != 1) {
+            isPadding = true;
+            break;
+          }
+        }
+
+        if (isPadding) {
+          TensorValueProvenanceEntry entry;
+          entry.source = value; // indicate padding source
+          entry.isBroadcast = true;
+
+          entry.currentStarts.resize(rank);
+          entry.originalStarts.resize(rank);
+          entry.extents.resize(rank);
+
+          for (size_t dim = 0; dim < rank; dim++) {
+            auto [regionStart, regionExtent] = dimRegions[dim];
+            entry.currentStarts[dim] = regionStart;
+            entry.extents[dim] = regionExtent;
+            entry.originalStarts[dim] = 0;
+          }
+          provenanceInfo[value].entries.push_back(entry);
+          return;
+        }
+
+        // Carry over from the operand for the central.
+        provenanceInfo[value].entries.reserve(it->second.entries.size());
+        for (const TensorValueProvenanceEntry &parentEntry :
+             it->second.entries) {
+          TensorValueProvenanceEntry entry;
+
+          entry.source = parentEntry.source;
+          entry.isBroadcast = parentEntry.isBroadcast;
+
+          entry.originalStarts.resize(parentEntry.extents.size());
+          entry.currentStarts.resize(parentEntry.extents.size());
+          entry.extents.resize(parentEntry.extents.size());
+          for (size_t i = 0, e = parentEntry.extents.size(); i < e; i++) {
+            entry.currentStarts[i] =
+                parentEntry.currentStarts[i] + pad.getEdgePaddingLow()[i];
+            entry.originalStarts[i] = parentEntry.originalStarts[i];
+            entry.extents[i] = parentEntry.extents[i];
+          }
+          provenanceInfo[value].entries.push_back(entry);
+        }
+      });
+
+      continue;
+    }
+
+    // Base case: no further provenance
+    addSelfProvenance(value, provenanceInfo);
+  }
+}
+
 struct DUSDUSSubsuming
     : public CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp,
                                      DUSDUSSubsuming> {
@@ -16888,6 +17229,72 @@ struct DUSDUSSubsuming
     if (!dus2)
       return failure();
 
+    SmallVector<Value> dusResults = {dus2.getResult(), dus.getResult()};
+    DenseMap<Value, TensorValueProvenance> provenanceInfo;
+    computeTensorValueProvenanceImpl(dusResults, provenanceInfo);
+
+    DominanceInfo domInfo;
+    for (Operation *user : dus2.getResult().getUsers()) {
+      if (user == dus)
+        continue;
+      auto slice = dyn_cast<stablehlo::SliceOp>(user);
+      if (!slice)
+        continue;
+
+      bool isSliceMovable = true;
+      // Find if there is any user of the slice that would need to be moved.
+      for (Operation *sliceUser : slice.getResult().getUsers()) {
+        if (!domInfo.dominates(sliceUser, dus))
+          continue;
+
+        isSliceMovable = false;
+        break;
+      }
+      if (!isSliceMovable)
+        continue;
+
+      IRMapping mapping;
+      rewriter.setInsertionPoint(dus);
+      mapping.map(dus2.getResult(), dus.getResult());
+      Operation *clonedSlice = rewriter.clone(*slice, mapping);
+
+      
+      SmallVector<Value> slices = {slice.getResult(), clonedSlice->getResult(0)};
+      computeTensorValueProvenanceImpl(slices, provenanceInfo);
+
+      llvm::errs() << "Original slice provenance:\n";
+      for (const auto &entry : provenanceInfo[slice.getResult()].entries) {
+        llvm::errs() << "  source: " << entry.source << ", originalStarts: ";
+        for (auto v : entry.originalStarts)
+          llvm::errs() << v << " ";
+        llvm::errs() << ", currentStarts: ";
+        for (auto v : entry.currentStarts)
+          llvm::errs() << v << " ";
+        llvm::errs() << ", extents: ";
+        for (auto v : entry.extents)  
+          llvm::errs() << v << " ";
+        llvm::errs() << ", isBroadcast: " << entry.isBroadcast << "\n";
+      }
+      llvm::errs() << "Cloned slice provenance:\n";
+      for (const auto &entry : provenanceInfo[clonedSlice->getResult(0)].entries) {
+        llvm::errs() << "  source: " << entry.source << ", originalStarts: ";
+        for (auto v : entry.originalStarts)
+          llvm::errs() << v << " ";
+        llvm::errs() << ", currentStarts: ";
+        for (auto v : entry.currentStarts)
+          llvm::errs() << v << " ";
+        llvm::errs() << ", extents: ";
+        for (auto v : entry.extents)  
+          llvm::errs() << v << " ";
+        llvm::errs() << ", isBroadcast: " << entry.isBroadcast << "\n";
+      }
+
+      // TODO: check that provenance of the sliced part would match its provenance after move.
+      // if provenance matches, we can replace the old slice with the new one, otherwise we just erase the new one
+    }
+    return failure();
+
+#if 0
     auto pad2 = dus2.getUpdate().getDefiningOp<stablehlo::PadOp>();
     if (!pad2)
       return failure();
@@ -17083,6 +17490,7 @@ struct DUSDUSSubsuming
     }
 
     return success(movedAny);
+#endif
   }
 };
 
