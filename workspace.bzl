@@ -26,7 +26,7 @@ XLA_PATCHES = [
     sed -i.bak0 "s/namespace/THIS_SHOULD_NEVER_BE_COMPILED/g" xla/tsl/cuda/{cublas,cublasLt,cufft,cusolver,cusparse,cudnn,cudart}_stub.cc
 """,
     """
-	sed -i.bak0 "/amdgpu_backend/d" xla/backends/gpu/codegen/triton/BUILD
+	# sed -i.bak0 "/amdgpu_backend/d" xla/backends/gpu/codegen/triton/BUILD
     """,
     """
     	sed -i.bak0 "s/\\\"\\/\\/xla\\/service\\/gpu\\/llvm_gpu_backend:nvptx_backend\\\"/\\0]) + if_rocm_is_configured([\\\"\\/\\/xla\\/service\\/gpu\\/llvm_gpu_backend:amdgpu_backend\\\"/g" xla/backends/gpu/codegen/triton/BUILD
@@ -164,6 +164,9 @@ sed -i.bak0 "s/patch_cmds = \\[/patch_cmds = \\[\\\"find . -type f -name config.
 """,
     """
 sed -i.bak0 "s/patch_cmds = \\[/patch_cmds = \\[\\\"find . -type f -name config.h -exec sed -i.bak0 's\\/HAVE_PTHREAD_SETNAME_NP\\/FAKE_HAVE_PTHREAD_SETNAME_NP\\/g' {} +\\\",/g" third_party/llvm/workspace.bzl
+""",
+    """
+sed -i.bak0 "s/patch_cmds = \\[/patch_cmds = \\[\\\"find . -type f -name BUILD.bazel -path '*\\/mlir\\/*' -exec sed -i.bak0 's\\/MLIR_ENABLE_ROCM_CONVERSIONS 0\\/MLIR_ENABLE_ROCM_CONVERSIONS 1\\/g' {} +\\\",/g" third_party/llvm/workspace.bzl
 """,
 ]
 
