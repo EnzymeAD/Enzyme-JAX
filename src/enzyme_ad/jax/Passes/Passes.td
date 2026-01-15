@@ -1047,6 +1047,13 @@ def ParallelLower : Pass<"parallel-lower"> {
   ];
 }
 
+def ConvertCudaRTtoHipRT : Pass<"convert-cudart-to-hiprt", "mlir::ModuleOp"> {
+  let summary = "Convert CUDA runtime calls to HIP runtime calls";
+  let dependentDialects = [
+    "mlir::ROCDL::ROCDLDialect",
+  ];
+}
+
 def SCFParallelLoopUnroll : Pass<"scf-parallel-loop-unroll"> {
   let summary = "Unroll and interleave scf parallel loops";
   let dependentDialects = [

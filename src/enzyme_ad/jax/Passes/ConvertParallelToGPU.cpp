@@ -2537,12 +2537,13 @@ gdgo->erase();
         if (!gmod.getTargetsAttr()) {
           Attribute target;
           if (backend == "rocm") {
-            auto chip = "gfx900";
-            auto features = "+wavefront64";
+            // temp set as server
+            auto chip = "gfx1030";
+            auto features = "";
             target = ROCDL::ROCDLTargetAttr::get(
                 gmod.getContext(),
                 /*optLevel=*/2, /*triple=*/"amdgcn-amd-amdhsa", chip, features,
-                /*abiVersion=*/"600");
+                /*abiVersion=*/"");
           } else {
             auto chip = sm;
             if (chip.size() == 0)

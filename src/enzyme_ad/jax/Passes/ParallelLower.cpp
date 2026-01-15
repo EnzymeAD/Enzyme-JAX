@@ -45,6 +45,7 @@ namespace enzyme {
 #define GEN_PASS_DEF_PARALLELLOWER
 #define GEN_PASS_DEF_FIXGPUFUNC
 #define GEN_PASS_DEF_STRIPGPUINFO
+#define GEN_PASS_DEF_CONVERTCUDARTTOHIPRT
 #include "src/enzyme_ad/jax/Passes/Passes.h.inc"
 } // namespace enzyme
 } // namespace mlir
@@ -109,11 +110,12 @@ struct ConvertCudaRTtoCPU : public ConvertCudaRTtoCPUBase<ConvertCudaRTtoCPU> {
 struct ConvertCudaRTtoGPU : public ConvertCudaRTtoGPUBase<ConvertCudaRTtoGPU> {
   void runOnOperation() override;
 };
+*/
 struct ConvertCudaRTtoHipRT
-    : public ConvertCudaRTtoHipRTBase<ConvertCudaRTtoHipRT> {
+    : public enzyme::impl::ConvertCudaRTtoHipRTBase<ConvertCudaRTtoHipRT> {
   void runOnOperation() override;
 };
-*/
+
 struct FixGPUFunc : public enzyme::impl::FixGPUFuncBase<FixGPUFunc> {
   using FixGPUFuncBase::FixGPUFuncBase;
   void runOnOperation() override;
@@ -1331,7 +1333,7 @@ static void setCallee(LLVM::CallOp call, StringRef symName) {
 }
 template <typename CallOpTy, typename FuncOpTy>
 void replaceCallOp(ModuleOp m, CallOpTy call, llvm::StringRef callee) {
-  auto loc = call->getLoc();
+  // auto loc = call->getLoc();
   OpBuilder moduleBuilder = OpBuilder::atBlockEnd(m.getBody());
   OpBuilder callBuilder(call);
   auto funcOp = m.lookupSymbol<FuncOpTy>(callee);
@@ -1351,7 +1353,6 @@ void replaceCallOp(ModuleOp m, CallOpTy call, llvm::StringRef callee) {
   }
 }
 
-#if 0
 void ConvertCudaRTtoHipRT::runOnOperation() {
   getOperation().walk([&](LLVM::CallOp call) {
     if (!call.getCallee())
@@ -1377,6 +1378,7 @@ void ConvertCudaRTtoHipRT::runOnOperation() {
   });
 }
 
+#if 0
 void ConvertCudaRTtoGPU::runOnOperation() {
   std::function<void(Operation * call, llvm::StringRef callee)> replaceWithOp =
       [&](Operation *call, llvm::StringRef callee) {
