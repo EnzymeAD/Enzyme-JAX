@@ -242,8 +242,12 @@ def ShadowLHSDotResTy : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
     shapes.push_back(resShape[i]);
   }
 
-  for (auto i: rhsContracting)
-    shapes.push_back(rhsShape[i]);
+  // Add shapes for RHS kept dims in backward dot (which are original rhsContracting)
+  // Iterate in dimension order to preserve correct shape ordering
+  for (int64_t i = 0; i < rhsRank; i++) {
+    if (llvm::is_contained(rhsContracting, i))
+      shapes.push_back(rhsShape[i]);
+  }
 
   RankedTensorType::get(shapes, elemType);
 }]>;
@@ -355,8 +359,12 @@ def ShadowRHSDotResTy : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
     shapes.push_back(resShape[i]);
   }
 
-  for (auto i: lhsContracting)
-    shapes.push_back(lhsShape[i]);
+  // Add shapes for LHS kept dims in backward dot (which are original lhsContracting)
+  // Iterate in dimension order to preserve correct shape ordering
+  for (int64_t i = 0; i < lhsRank; i++) {
+    if (llvm::is_contained(lhsContracting, i))
+      shapes.push_back(lhsShape[i]);
+  }
 
   RankedTensorType::get(shapes, elemType);
 }]>;
