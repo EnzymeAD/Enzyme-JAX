@@ -168,6 +168,9 @@ sed -i.bak0 "s/patch_cmds = \\[/patch_cmds = \\[\\\"find . -type f -name config.
     """
 sed -i.bak0 "s/patch_cmds = \\[/patch_cmds = \\[\\\"find . -type f -name BUILD.bazel -path '*\\/mlir\\/*' -exec sed -i.bak0 's\\/MLIR_ENABLE_ROCM_CONVERSIONS 0\\/MLIR_ENABLE_ROCM_CONVERSIONS 1\\/g' {} +\\\",/g" third_party/llvm/workspace.bzl
 """,
+    """
+sed -i.bak0 "s/patch_cmds = \\[/patch_cmds = \\[\\\"find . -type f -name BUILD.bazel -path '*\\/mlir\\/*' -exec sed -i.bak0 's\\/LLVMInitializeAMDGPUTarget()\\/LLVMInitializeAMDGPUTarget(); LLVMInitializeAMDGPUAsmParser(); LLVMInitializeAMDGPUAsmPrinter();\\/g' {} +\\\",/g" third_party/llvm/workspace.bzl
+""",
 ]
 
 LLVM_TARGETS = ["X86", "AArch64", "AMDGPU", "NVPTX"]
