@@ -18628,6 +18628,202 @@ struct DynamicGatherOpIsNotDynamic
   }
 };
 
+// dynamic_gather(transpose(x), indices, slice_sizes) ->
+// dynamic_gather(x, permuted_indices, permuted_slice_sizes)
+// This pattern optimizes dynamic_gather operations that operate on transposed
+// tensors by adjusting the gather parameters to work directly on the original
+// tensor.
+struct DynamicGatherTranspose
+    : public CheckedOpRewritePattern<stablehlo::DynamicGatherOp,
+                                     DynamicGatherTranspose> {
+  using CheckedOpRewritePattern<
+      stablehlo::DynamicGatherOp,
+      DynamicGatherTranspose>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DynamicGatherOp op,
+                                    PatternRewriter &rewriter) const {
+    // Check if the operand is a transpose operation
+    auto transposeOp = op.getOperand().getDefiningOp<stablehlo::TransposeOp>();
+    if (!transposeOp)
+      return failure();
+
+    // Get the permutation from the transpose
+    auto permutation = llvm::to_vector(transposeOp.getPermutation());
+    auto inversePermutation = getInversePermutation(permutation);
+
+    // Get dimension numbers
+    auto dimNumbers = op.getDimensionNumbers();
+
+    // Create new start_index_map by applying inverse permutation
+    SmallVector<int64_t> newStartIndexMap;
+    for (auto idx : dimNumbers.getStartIndexMap()) {
+      newStartIndexMap.push_back(inversePermutation[idx]);
+    }
+
+    // Create new offset_dims - these stay relative to result, no change needed
+    auto newOffsetDims = llvm::to_vector(dimNumbers.getOffsetDims());
+
+    // Create new collapsed_slice_dims by applying inverse permutation
+    SmallVector<int64_t> newCollapsedSliceDims;
+    for (auto dim : dimNumbers.getCollapsedSliceDims()) {
+      newCollapsedSliceDims.push_back(inversePermutation[dim]);
+    }
+
+    // Create new dimension numbers
+    auto newDimNumbers = stablehlo::GatherDimensionNumbersAttr::get(
+        op.getContext(), newOffsetDims, newCollapsedSliceDims,
+        /*operandBatchingDims=*/{}, /*startIndicesBatchingDims=*/{},
+        newStartIndexMap, dimNumbers.getIndexVectorDim());
+
+    // We also need to permute the slice_sizes based on the inverse permutation
+    // But slice_sizes is a Value (tensor), not an attribute, so we need to
+    // create a new constant if it's constant, or a gather/reshape if dynamic
+    
+    // For now, only handle the case where slice_sizes is constant
+    DenseIntElementsAttr sliceSizesAttr;
+    if (!matchPattern(op.getSliceSizes(), m_Constant(&sliceSizesAttr))) {
+      return failure();
+    }
+
+    // Permute the slice sizes according to inverse permutation
+    SmallVector<APInt> newSliceSizesVec;
+    auto sliceSizesValues = llvm::to_vector(sliceSizesAttr.getValues<APInt>());
+    for (auto invPermIdx : inversePermutation) {
+      newSliceSizesVec.push_back(sliceSizesValues[invPermIdx]);
+    }
+
+    auto newSliceSizesAttr = DenseElementsAttr::get(
+        sliceSizesAttr.getType(), newSliceSizesVec);
+    
+    auto newSliceSizesConst = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), newSliceSizesAttr);
+
+    // Create the new dynamic gather with the original (non-transposed) tensor
+    rewriter.replaceOpWithNewOp<stablehlo::DynamicGatherOp>(
+        op, op.getType(), transposeOp.getOperand(), op.getStartIndices(),
+        newSliceSizesConst, newDimNumbers);
+
+    return success();
+  }
+};
+
+// Merge consecutive dynamic_gather operations that are concatenated
+// concat(dynamic_gather(x, indices1, sizes1), dynamic_gather(x, indices2, sizes2), ...)
+// -> dynamic_gather(x, combined_indices, combined_sizes)
+// This is complex because we need to ensure the gathers are compatible
+// TODO: This pattern needs more work to handle the complex case properly
+/*
+struct ConcatDynamicGather
+    : public CheckedOpRewritePattern<stablehlo::ConcatenateOp,
+                                     ConcatDynamicGather> {
+  using CheckedOpRewritePattern<
+      stablehlo::ConcatenateOp,
+      ConcatDynamicGather>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp concatOp,
+                                    PatternRewriter &rewriter) const {
+    // Get the concatenation dimension
+    auto concatDim = concatOp.getDimension();
+
+    // Check if all operands are dynamic_gather ops from the same source
+    SmallVector<stablehlo::DynamicGatherOp> gatherOps;
+    Value commonOperand = nullptr;
+    
+    for (auto operand : concatOp.getOperands()) {
+      auto gatherOp = operand.getDefiningOp<stablehlo::DynamicGatherOp>();
+      if (!gatherOp)
+        return failure();
+      
+      if (commonOperand == nullptr) {
+        commonOperand = gatherOp.getOperand();
+      } else if (gatherOp.getOperand() != commonOperand) {
+        return failure();
+      }
+      
+      gatherOps.push_back(gatherOp);
+    }
+
+    if (gatherOps.size() < 2)
+      return failure();
+
+    // Check if all gathers have compatible dimension numbers
+    auto firstDimNumbers = gatherOps[0].getDimensionNumbers();
+    for (size_t i = 1; i < gatherOps.size(); ++i) {
+      auto dimNumbers = gatherOps[i].getDimensionNumbers();
+      // For simplicity, require identical dimension numbers structure
+      if (dimNumbers != firstDimNumbers)
+        return failure();
+    }
+
+    // Check that the concat dimension is in the offset dimensions
+    // This means it's an output dimension that wasn't collapsed
+    auto offsetDims = llvm::to_vector(firstDimNumbers.getOffsetDims());
+    if (std::find(offsetDims.begin(), offsetDims.end(), concatDim) == 
+        offsetDims.end())
+      return failure();
+
+    // For now, only handle simple case where slice_sizes are all constant
+    // and start_indices have compatible shapes
+    SmallVector<DenseIntElementsAttr> sliceSizesAttrs;
+    for (auto gatherOp : gatherOps) {
+      DenseIntElementsAttr sliceSizesAttr;
+      if (!matchPattern(gatherOp.getSliceSizes(), m_Constant(&sliceSizesAttr)))
+        return failure();
+      sliceSizesAttrs.push_back(sliceSizesAttr);
+    }
+
+    // Check that all slice sizes are identical
+    for (size_t i = 1; i < sliceSizesAttrs.size(); ++i) {
+      if (sliceSizesAttrs[i] != sliceSizesAttrs[0])
+        return failure();
+    }
+
+    // Check start_indices compatibility - they should have the same shape
+    // except possibly in one dimension that corresponds to the gather batch
+    auto firstIndicesType = 
+        cast<RankedTensorType>(gatherOps[0].getStartIndices().getType());
+    
+    for (size_t i = 1; i < gatherOps.size(); ++i) {
+      auto indicesType = 
+          cast<RankedTensorType>(gatherOps[i].getStartIndices().getType());
+      if (indicesType.getShape() != firstIndicesType.getShape())
+        return failure();
+    }
+
+    // Now we can concatenate the start_indices along the appropriate dimension
+    // The index_vector_dim tells us which dimension contains the index components
+    auto indexVectorDim = firstDimNumbers.getIndexVectorDim();
+    
+    // We want to concatenate along a dimension that's not index_vector_dim
+    // Typically this would be dimension 0 for batching multiple index sets
+    int64_t indicesToConcatDim = (indexVectorDim == 0) ? 1 : 0;
+    
+    // However, if there's only one non-index-vector dimension, we can't concat
+    if (firstIndicesType.getRank() <= 1)
+      return failure();
+
+    // Concatenate the start indices
+    SmallVector<Value> indicesOperands;
+    for (auto gatherOp : gatherOps) {
+      indicesOperands.push_back(gatherOp.getStartIndices());
+    }
+    
+    auto newStartIndices = rewriter.create<stablehlo::ConcatenateOp>(
+        concatOp.getLoc(), indicesOperands, indicesToConcatDim);
+
+    // The output shape needs to be computed - it's the concat of all gather results
+    // Create the new dynamic gather
+    auto newGather = rewriter.create<stablehlo::DynamicGatherOp>(
+        concatOp.getLoc(), concatOp.getType(), commonOperand,
+        newStartIndices, gatherOps[0].getSliceSizes(), firstDimNumbers);
+
+    rewriter.replaceOp(concatOp, newGather);
+    return success();
+  }
+};
+*/
+
+
 /// Check if a `t` is a tensor with zero extents.
 static std::optional<RankedTensorType> isZeroExtent(Type t) {
   auto type = dyn_cast<RankedTensorType>(t);
@@ -31194,6 +31390,7 @@ struct EnzymeHLOOptPass
         DynamicBroadcastInDimAllDimsNonExpanding,
         DynamicBroadcastInDimOpNotActuallyDynamic,
         DynamicGatherOpIsNotDynamic,
+        DynamicGatherTranspose,
         DynamicReshapeOpCanon,
         EmptyReduceOpCanon,
         GatherOpCanon,
