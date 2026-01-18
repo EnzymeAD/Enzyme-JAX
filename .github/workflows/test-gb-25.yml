@@ -120,6 +120,7 @@ jobs:
       - name: Build local libReactant
         timeout-minutes: 60
         run: |
+          apt install xxd
           julia --project --color=yes -e 'using Pkg; Pkg.instantiate()'
           julia --project --color=yes -O0 build_local.jl --cc=clang --gcc_host_compiler_path=
         working-directory: ${{ env.REACTANT_DIR }}/deps
