@@ -37,7 +37,7 @@ jobs:
     timeout-minutes: 150
 
     container:
-      image: ${{ (contains(matrix.os, 'linux') && 'ghcr.io/enzymead/reactant-docker-images@sha256:14f2f7ae6eff98a0a8e37e9b84542c068eafa0ab4360a8fb08d306c2486cd169' ) || '' }}
+      image: ${{ (contains(matrix.os, 'linux') && 'ghcr.io/enzymead/reactant-docker-images@sha256:cd45d851f5ea544f88d042eafefa53d948c229fffcab6189019324e3b02b505a' ) || '' }}
 
     strategy:
       fail-fast: false
