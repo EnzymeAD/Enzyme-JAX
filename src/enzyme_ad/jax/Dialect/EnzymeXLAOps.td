@@ -820,7 +820,7 @@ def HeevOp : EnzymeXLA_Op<"lapack.heev", [Pure]> {
   let arguments = (ins
     HLO_Tensor:$input,
     EnzymeXLA_LapackUploAttr:$uplo,
-    UnitAttr:$compute_vectors // equivalent to jobz
+    EnzymeXLA_LapackJobAttr:$jobz
   );
 
   let results = (outs
