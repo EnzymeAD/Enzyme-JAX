@@ -1154,6 +1154,11 @@ LogicalResult enzymexla::SyrkOp::verify() {
   return success();
 }
 
+LogicalResult enzymexla::HeevOp::verify() {
+  // TODO
+  return success();
+}
+
 namespace {
 
 /// Erases a common case of copy ops where a destination value is used only by
