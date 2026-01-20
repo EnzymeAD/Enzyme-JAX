@@ -1840,6 +1840,29 @@ struct LogAddExpOpConversion : public OpConversionPattern<enzyme::LogAddExpOp> {
   }
 };
 
+struct LogisticOpConversion : public OpConversionPattern<enzyme::LogisticOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  std::string backend;
+  LogisticOpConversion(std::string backend, TypeConverter &typeConverter,
+                       MLIRContext *context, PatternBenefit benefit = 1)
+      : OpConversionPattern(typeConverter, context, benefit), backend(backend) {
+  }
+
+  LogicalResult
+  matchAndRewrite(enzyme::LogisticOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto operand = adaptor.getOperand();
+    auto resultType = cast<RankedTensorType>(op.getResult().getType());
+
+    auto logisticOp = stablehlo::LogisticOp::create(rewriter, op.getLoc(),
+                                                    resultType, operand);
+
+    rewriter.replaceOp(op, logisticOp.getResult());
+    return success();
+  }
+};
+
 struct RandomOpConversion : public OpConversionPattern<enzyme::RandomOp> {
   using OpConversionPattern::OpConversionPattern;
 
