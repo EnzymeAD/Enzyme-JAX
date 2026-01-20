@@ -1512,8 +1512,10 @@ detectIotaLikeTensor(DenseElementsAttr denseAttr) {
   }
 
   auto elemType = denseAttr.getType().getElementType();
-  if (elemType.getIntOrFloatBitWidth() == 1) {
-    return std::nullopt;
+  if (isa<FloatType, IntegerType>(elemType)) {
+    if (elemType.getIntOrFloatBitWidth() == 1) {
+      return std::nullopt;
+    }
   }
 
   if (isa<FloatType>(elemType)) {
