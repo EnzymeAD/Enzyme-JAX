@@ -2914,28 +2914,42 @@ struct DynamicExtractOpConversion
     auto inputType = cast<RankedTensorType>(input.getType());
     auto resultType = cast<RankedTensorType>(op.getResult().getType());
 
-    if (inputType.getRank() != 2) {
-      return rewriter.notifyMatchFailure(op, "Input must be 2D tensor");
+    if (inputType.getRank() == 1 && resultType.getRank() == 0) {
+      auto elemType = inputType.getElementType();
+      auto slicedType = RankedTensorType::get({1}, elemType);
+      auto dynamicSlice = stablehlo::DynamicSliceOp::create(
+          rewriter, op.getLoc(), slicedType, input, ValueRange{index},
+          rewriter.getDenseI64ArrayAttr({1}));
+      auto reshapeOp = stablehlo::ReshapeOp::create(rewriter, op.getLoc(),
+                                                    resultType, dynamicSlice);
+      rewriter.replaceOp(op, reshapeOp.getResult());
+      return success();
     }
 
-    int64_t positionSize = inputType.getShape()[1];
-    auto elemType = inputType.getElementType();
+    if (inputType.getRank() == 2) {
+      int64_t positionSize = inputType.getShape()[1];
+      auto elemType = inputType.getElementType();
 
-    auto indexType = cast<RankedTensorType>(index.getType());
-    auto zeroConst = stablehlo::ConstantOp::create(
-        rewriter, op.getLoc(), indexType,
-        DenseElementsAttr::get(indexType, rewriter.getI64IntegerAttr(0)));
+      auto indexType = cast<RankedTensorType>(index.getType());
+      auto zeroConst = stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(), indexType,
+          DenseElementsAttr::get(indexType, rewriter.getI64IntegerAttr(0)));
 
-    auto slicedType = RankedTensorType::get({1, positionSize}, elemType);
-    auto dynamicSlice = stablehlo::DynamicSliceOp::create(
-        rewriter, op.getLoc(), slicedType, input, ValueRange{index, zeroConst},
-        rewriter.getDenseI64ArrayAttr({1, positionSize}));
+      auto slicedType = RankedTensorType::get({1, positionSize}, elemType);
+      auto dynamicSlice = stablehlo::DynamicSliceOp::create(
+          rewriter, op.getLoc(), slicedType, input,
+          ValueRange{index, zeroConst},
+          rewriter.getDenseI64ArrayAttr({1, positionSize}));
 
-    auto reshapeOp = stablehlo::ReshapeOp::create(rewriter, op.getLoc(),
-                                                  resultType, dynamicSlice);
+      auto reshapeOp = stablehlo::ReshapeOp::create(rewriter, op.getLoc(),
+                                                    resultType, dynamicSlice);
 
-    rewriter.replaceOp(op, reshapeOp.getResult());
-    return success();
+      rewriter.replaceOp(op, reshapeOp.getResult());
+      return success();
+    }
+
+    return rewriter.notifyMatchFailure(
+        op, "Unsupported input tensor rank for dynamic_extract");
   }
 };
 
