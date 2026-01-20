@@ -3014,18 +3014,18 @@ struct DynamicUpdateOpConversion
   }
 };
 
-struct UnflattenSliceOpConversion
-    : public OpConversionPattern<enzyme::UnflattenSliceOp> {
+struct RecoverSampleOpConversion
+    : public OpConversionPattern<enzyme::RecoverSampleOp> {
   using OpConversionPattern::OpConversionPattern;
 
   std::string backend;
-  UnflattenSliceOpConversion(std::string backend, TypeConverter &typeConverter,
-                             MLIRContext *context, PatternBenefit benefit = 1)
+  RecoverSampleOpConversion(std::string backend, TypeConverter &typeConverter,
+                            MLIRContext *context, PatternBenefit benefit = 1)
       : OpConversionPattern(typeConverter, context, benefit), backend(backend) {
   }
 
   LogicalResult
-  matchAndRewrite(enzyme::UnflattenSliceOp op, OpAdaptor adaptor,
+  matchAndRewrite(enzyme::RecoverSampleOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto resultType = cast<RankedTensorType>(op.getResult().getType());
     auto positionType = cast<RankedTensorType>(adaptor.getPosition().getType());
