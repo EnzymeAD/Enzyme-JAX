@@ -2020,17 +2020,28 @@ struct RandomOpConversion : public OpConversionPattern<enzyme::RandomOp> {
           stablehlo::SubtractOp::create(rewriter, op.getLoc(), rankedType,
                                         randUniform, oneConst)
               .getResult();
-      auto twoConst = stablehlo::ConstantOp::create(
+      double lo = std::nextafter(-1.0, 0.0);
+      double hi = 1.0;
+      double range = hi - lo;
+      auto rangeConst = stablehlo::ConstantOp::create(
           rewriter, op.getLoc(), rankedType,
           DenseElementsAttr::get(rankedType,
-                                 rewriter.getFloatAttr(elemType, 2.0)));
+                                 rewriter.getFloatAttr(elemType, range)));
+      auto loConst = stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(), rankedType,
+          DenseElementsAttr::get(rankedType,
+                                 rewriter.getFloatAttr(elemType, lo)));
       Value scaledUniform =
           stablehlo::MulOp::create(rewriter, op.getLoc(), rankedType,
-                                   randUniform, twoConst)
+                                   randUniform, rangeConst)
               .getResult();
       scaledUniform =
-          stablehlo::SubtractOp::create(rewriter, op.getLoc(), rankedType,
-                                        scaledUniform, oneConst)
+          stablehlo::AddOp::create(rewriter, op.getLoc(), rankedType,
+                                   scaledUniform, loConst)
+              .getResult();
+      scaledUniform =
+          stablehlo::MaxOp::create(rewriter, op.getLoc(), rankedType,
+                                   scaledUniform, loConst)
               .getResult();
       auto probit = chlo::ErfInvOp::create(rewriter, op.getLoc(), rankedType,
                                            scaledUniform);
@@ -2122,17 +2133,28 @@ struct RandomOpConversion : public OpConversionPattern<enzyme::RandomOp> {
                                         randUniform, oneConst)
               .getResult();
 
-      auto twoConst = stablehlo::ConstantOp::create(
+      double lo = std::nextafter(-1.0, 0.0);
+      double hi = 1.0;
+      double range = hi - lo;
+      auto rangeConst = stablehlo::ConstantOp::create(
           rewriter, op.getLoc(), vectorType,
           DenseElementsAttr::get(vectorType,
-                                 rewriter.getFloatAttr(elemType, 2.0)));
+                                 rewriter.getFloatAttr(elemType, range)));
+      auto loConst = stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(), vectorType,
+          DenseElementsAttr::get(vectorType,
+                                 rewriter.getFloatAttr(elemType, lo)));
       Value scaledUniform =
           stablehlo::MulOp::create(rewriter, op.getLoc(), vectorType,
-                                   randUniform, twoConst)
+                                   randUniform, rangeConst)
               .getResult();
       scaledUniform =
-          stablehlo::SubtractOp::create(rewriter, op.getLoc(), vectorType,
-                                        scaledUniform, oneConst)
+          stablehlo::AddOp::create(rewriter, op.getLoc(), vectorType,
+                                   scaledUniform, loConst)
+              .getResult();
+      scaledUniform =
+          stablehlo::MaxOp::create(rewriter, op.getLoc(), vectorType,
+                                   scaledUniform, loConst)
               .getResult();
 
       auto probit = chlo::ErfInvOp::create(rewriter, op.getLoc(), vectorType,
