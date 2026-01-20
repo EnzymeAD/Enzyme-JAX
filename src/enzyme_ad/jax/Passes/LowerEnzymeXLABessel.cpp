@@ -97,18 +97,18 @@ static void buildBesselIBody(OpBuilder &builder, Location loc,
 
     Value iterLtMax = stablehlo::CompareOp::create(
         builder, loc, iter, iterMax, stablehlo::ComparisonDirection::LT);
+    auto scalarBoolType = RankedTensorType::get({}, builder.getI1Type());
     stablehlo::ReduceOp anyActive = stablehlo::ReduceOp::create(
-        builder, loc, TypeRange{builder.getI1Type()}, ValueRange{active},
+        builder, loc, TypeRange{scalarBoolType}, ValueRange{active},
         ValueRange{stablehlo::ConstantOp::create(
-            builder, loc, RankedTensorType::get({}, builder.getI1Type()),
+            builder, loc, scalarBoolType,
             cast<ElementsAttr>(DenseElementsAttr::get(
-                RankedTensorType::get({}, builder.getI1Type()), false)))},
+                scalarBoolType, false)))},
         builder.getDenseI64ArrayAttr(
             llvm::to_vector(llvm::seq<int64_t>(0, tensorType.getRank()))));
     {
       OpBuilder::InsertionGuard reduceGuard(builder);
       Block *reduceBody = builder.createBlock(&anyActive.getBody());
-      auto scalarBoolType = RankedTensorType::get({}, builder.getI1Type());
       reduceBody->addArgument(scalarBoolType, loc);
       reduceBody->addArgument(scalarBoolType, loc);
       builder.setInsertionPointToStart(reduceBody);
@@ -125,17 +125,16 @@ static void buildBesselIBody(OpBuilder &builder, Location loc,
         stablehlo::AndOp::create(builder, loc, iterLtMax, anyActiveBroadcast);
 
     stablehlo::ReduceOp anyContinue = stablehlo::ReduceOp::create(
-        builder, loc, TypeRange{builder.getI1Type()}, ValueRange{continueLoop},
+        builder, loc, TypeRange{scalarBoolType}, ValueRange{continueLoop},
         ValueRange{stablehlo::ConstantOp::create(
-            builder, loc, RankedTensorType::get({}, builder.getI1Type()),
+            builder, loc, scalarBoolType,
             cast<ElementsAttr>(DenseElementsAttr::get(
-                RankedTensorType::get({}, builder.getI1Type()), false)))},
+                scalarBoolType, false)))},
         builder.getDenseI64ArrayAttr(
             llvm::to_vector(llvm::seq<int64_t>(0, tensorType.getRank()))));
     {
       OpBuilder::InsertionGuard reduceGuard(builder);
       Block *reduceBody = builder.createBlock(&anyContinue.getBody());
-      auto scalarBoolType = RankedTensorType::get({}, builder.getI1Type());
       reduceBody->addArgument(scalarBoolType, loc);
       reduceBody->addArgument(scalarBoolType, loc);
       builder.setInsertionPointToStart(reduceBody);
