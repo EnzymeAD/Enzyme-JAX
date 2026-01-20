@@ -2816,6 +2816,66 @@ struct WhileLoopOpConversion : public OpConversionPattern<enzyme::WhileLoopOp> {
   }
 };
 
+struct IfOpConversion : public OpConversionPattern<enzyme::IfOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  std::string backend;
+  IfOpConversion(std::string backend, TypeConverter &typeConverter,
+                 MLIRContext *context, PatternBenefit benefit = 1)
+      : OpConversionPattern(typeConverter, context, benefit), backend(backend) {
+  }
+
+  LogicalResult
+  matchAndRewrite(enzyme::IfOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    SmallVector<Type> resultTypes;
+    for (auto result : op.getResults())
+      resultTypes.push_back(typeConverter->convertType(result.getType()));
+
+    auto ifOp = stablehlo::IfOp::create(rewriter, op.getLoc(), resultTypes,
+                                        adaptor.getPredicate());
+    {
+      Block *trueBlock = rewriter.createBlock(&ifOp.getTrueBranch());
+      rewriter.setInsertionPointToStart(trueBlock);
+
+      Block &origTrue = op.getTrueBranch().front();
+      rewriter.mergeBlocks(&origTrue, trueBlock, {});
+      auto trueYieldOp = cast<enzyme::YieldOp>(trueBlock->getTerminator());
+      rewriter.setInsertionPoint(trueYieldOp);
+
+      SmallVector<Value> trueYieldedVals;
+      for (auto val : trueYieldOp.getOperands()) {
+        Value remappedVal = rewriter.getRemappedValue(val);
+        trueYieldedVals.push_back(remappedVal);
+      }
+
+      stablehlo::ReturnOp::create(rewriter, op.getLoc(), trueYieldedVals);
+      rewriter.eraseOp(trueYieldOp);
+    }
+    {
+      Block *falseBlock = rewriter.createBlock(&ifOp.getFalseBranch());
+      rewriter.setInsertionPointToStart(falseBlock);
+
+      Block &origFalse = op.getFalseBranch().front();
+      rewriter.mergeBlocks(&origFalse, falseBlock, {});
+      auto falseYieldOp = cast<enzyme::YieldOp>(falseBlock->getTerminator());
+      rewriter.setInsertionPoint(falseYieldOp);
+
+      SmallVector<Value> falseYieldedVals;
+      for (auto val : falseYieldOp.getOperands()) {
+        Value remappedVal = rewriter.getRemappedValue(val);
+        falseYieldedVals.push_back(remappedVal);
+      }
+
+      stablehlo::ReturnOp::create(rewriter, op.getLoc(), falseYieldedVals);
+      rewriter.eraseOp(falseYieldOp);
+    }
+
+    rewriter.replaceOp(op, ifOp.getResults());
+    return success();
+  }
+};
+
 struct PopcountOpConversion : public OpConversionPattern<enzyme::PopcountOp> {
   using OpConversionPattern::OpConversionPattern;
 
