@@ -3157,9 +3157,11 @@ struct LowerProbProgToStableHLOPass
     target.addIllegalOp<enzyme::TriangularSolveOp>();
     target.addIllegalOp<enzyme::DotOp>();
     target.addIllegalOp<enzyme::LogAddExpOp>();
-    target.addIllegalOp<enzyme::UnflattenSliceOp>();
+    target.addIllegalOp<enzyme::LogisticOp>();
+    target.addIllegalOp<enzyme::RecoverSampleOp>();
     target.addIllegalOp<enzyme::ForLoopOp>();
     target.addIllegalOp<enzyme::WhileLoopOp>();
+    target.addIllegalOp<enzyme::IfOp>();
     target.addIllegalOp<enzyme::PopcountOp>();
     target.addIllegalOp<enzyme::DynamicExtractOp>();
     target.addIllegalOp<enzyme::DynamicUpdateOp>();
@@ -3168,11 +3170,12 @@ struct LowerProbProgToStableHLOPass
 
     RewritePatternSet patterns(context);
 
-    patterns.add<
-        RandomOpConversion, CholeskyOpConversion, TriangularSolveOpConversion,
-        DotOpConversion, LogAddExpOpConversion, UnflattenSliceOpConversion,
-        ForLoopOpConversion, WhileLoopOpConversion, PopcountOpConversion,
-        DynamicExtractOpConversion, DynamicUpdateOpConversion>(
+    patterns.add<RandomOpConversion, CholeskyOpConversion,
+                 TriangularSolveOpConversion, DotOpConversion,
+                 LogAddExpOpConversion, LogisticOpConversion,
+                 RecoverSampleOpConversion, ForLoopOpConversion,
+                 WhileLoopOpConversion, IfOpConversion, PopcountOpConversion,
+                 DynamicExtractOpConversion, DynamicUpdateOpConversion>(
         backend, typeConverter, context);
     patterns.add<RandomSplitOpConversion>(backend, debugDump, typeConverter,
                                           context);
