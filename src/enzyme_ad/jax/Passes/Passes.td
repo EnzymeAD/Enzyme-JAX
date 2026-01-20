@@ -530,7 +530,8 @@ def LowerEnzymeXLABesselPass : Pass<"lower-enzymexla-bessel"> {
     "stablehlo::StablehloDialect",
     "enzymexla::EnzymeXLADialect",
     "func::FuncDialect",
-    "LLVM::LLVMDialect"
+    "LLVM::LLVMDialect",
+    "chlo::ChloDialect"
   ];
 
   let options = [
