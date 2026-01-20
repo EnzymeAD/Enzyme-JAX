@@ -1183,4 +1183,45 @@ def RemoveAtomicsPass : Pass<"remove-atomics"> {
   ];
 }
 
+def BatchNormExpanderPass : Pass<"batchnorm-expander"> {
+  let summary = "Expand StableHLO batch normalization ops to primitive operations";
+  let description = [{
+    This pass expands StableHLO batch normalization operations
+    (batch_norm_training, batch_norm_inference, batch_norm_grad) into primitive
+    StableHLO operations. This is similar to XLA's batchnorm_expander.
+
+    The expansion replaces batch normalization operations with their mathematical
+    definitions using reduce, broadcast, multiply, divide, add, subtract, and
+    rsqrt operations.
+
+    Options control which operations to expand:
+    - rewrite_training_op: Expand batch_norm_training
+    - rewrite_inference_op: Expand batch_norm_inference
+    - rewrite_grad_op: Expand batch_norm_grad
+  }];
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+  ];
+  let options = [
+    Option<
+        /*C++ variable name=*/"rewriteTrainingOp",
+        /*CLI argument=*/"rewrite-training-op",
+        /*type=*/"bool",
+        /*default=*/"true",
+        /*description=*/"Expand batch_norm_training operations">,
+    Option<
+        /*C++ variable name=*/"rewriteInferenceOp",
+        /*CLI argument=*/"rewrite-inference-op",
+        /*type=*/"bool",
+        /*default=*/"true",
+        /*description=*/"Expand batch_norm_inference operations">,
+    Option<
+        /*C++ variable name=*/"rewriteGradOp",
+        /*CLI argument=*/"rewrite-grad-op",
+        /*type=*/"bool",
+        /*default=*/"true",
+        /*description=*/"Expand batch_norm_grad operations">
+  ];
+}
+
 #endif
