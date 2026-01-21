@@ -1114,7 +1114,7 @@ cc_library(
             "Implementations/*.cpp",
             "Passes/*.cpp",
             "Passes/Tessera/*.cpp",
-        "Dialect/*.cpp",
+            "Dialect/*.cpp",
             "Dialect/Distributed/*.cpp",
             "Dialect/Tessera/*.cpp",
             "Dialect/Perfify/*.cpp",
