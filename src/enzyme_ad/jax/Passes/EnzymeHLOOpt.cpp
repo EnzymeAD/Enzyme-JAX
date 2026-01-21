@@ -30279,6 +30279,123 @@ struct ReduceWindowWrapSimplify final
   }
 };
 
+// Pattern to reduce MultiSliceOp when some results are unused
+struct ReduceUnusedMultiSlice final
+    : CheckedOpRewritePattern<enzymexla::MultiSliceOp, ReduceUnusedMultiSlice> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(enzymexla::MultiSliceOp op,
+                                    PatternRewriter &rewriter) const {
+    int32_t leftAmount = op.getLeftAmount();
+    int32_t rightAmount = op.getRightAmount();
+    int32_t totalResults = leftAmount + rightAmount + 1;
+
+    // Check which results are actually used
+    SmallVector<bool> used(totalResults, false);
+    int usedCount = 0;
+    for (int i = 0; i < totalResults; i++) {
+      if (!op.getResult(i).use_empty()) {
+        used[i] = true;
+        usedCount++;
+      }
+    }
+
+    // If all results are used, nothing to optimize
+    if (usedCount == totalResults)
+      return failure();
+
+    // If no results are used, this should be handled by dead code elimination
+    if (usedCount == 0)
+      return failure();
+
+    // Find the range of used results
+    int firstUsed = -1, lastUsed = -1;
+    for (int i = 0; i < totalResults; i++) {
+      if (used[i]) {
+        if (firstUsed == -1)
+          firstUsed = i;
+        lastUsed = i;
+      }
+    }
+
+    // Calculate new left and right amounts
+    int centerIdx = leftAmount;
+    int newLeftAmount = centerIdx - firstUsed;
+    int newRightAmount = lastUsed - centerIdx;
+
+    // If only one result is used, replace with a single SliceOp
+    if (usedCount == 1) {
+      int usedIdx = firstUsed;
+      int offset = usedIdx - centerIdx; // How much to shift the slice
+
+      auto startIndices = SmallVector<int64_t>(op.getStartIndices());
+      auto limitIndices = SmallVector<int64_t>(op.getLimitIndices());
+      auto strides = SmallVector<int64_t>(op.getStrides());
+      int32_t dim = op.getDimension();
+
+      // Adjust start and limit indices for the offset
+      if (dim >= 0 && dim < (int64_t)startIndices.size()) {
+        startIndices[dim] += offset;
+        limitIndices[dim] += offset;
+      }
+
+      auto sliceOp = rewriter.create<stablehlo::SliceOp>(
+          op.getLoc(), op.getOperand(),
+          rewriter.getDenseI64ArrayAttr(startIndices),
+          rewriter.getDenseI64ArrayAttr(limitIndices),
+          rewriter.getDenseI64ArrayAttr(strides));
+
+      rewriter.replaceAllUsesWith(op.getResult(usedIdx), sliceOp.getResult());
+      rewriter.eraseOp(op);
+      return success();
+    }
+
+    // Otherwise, create a smaller MultiSliceOp
+    if (newLeftAmount != leftAmount || newRightAmount != rightAmount) {
+      // Adjust start indices for the new center
+      int offset = firstUsed - centerIdx;
+      auto startIndices = SmallVector<int64_t>(op.getStartIndices());
+      auto limitIndices = SmallVector<int64_t>(op.getLimitIndices());
+      int32_t dim = op.getDimension();
+
+      if (dim >= 0 && dim < (int64_t)startIndices.size()) {
+        startIndices[dim] += offset;
+        limitIndices[dim] += offset;
+      }
+
+      // Determine result types
+      auto resultType = cast<RankedTensorType>(op.getResultTypes().front());
+      SmallVector<Type> resultTypes;
+      for (int i = 0; i < newLeftAmount + newRightAmount + 1; i++) {
+        resultTypes.push_back(resultType); // Will be properly typed by the op
+      }
+
+      auto newOp = rewriter.create<enzymexla::MultiSliceOp>(
+          op.getLoc(), resultTypes, op.getOperand(), startIndices, limitIndices,
+          op.getStrides(), op.getDimension(), newLeftAmount, newRightAmount);
+
+      // Map old results to new results
+      SmallVector<Value> replacements(totalResults);
+      int newIdx = 0;
+      for (int oldIdx = firstUsed; oldIdx <= lastUsed; oldIdx++) {
+        replacements[oldIdx] = newOp.getResult(newIdx++);
+      }
+
+      // Replace uses
+      for (int i = 0; i < totalResults; i++) {
+        if (used[i]) {
+          op.getResult(i).replaceAllUsesWith(replacements[i]);
+        }
+      }
+
+      rewriter.eraseOp(op);
+      return success();
+    }
+
+    return failure();
+  }
+};
+
 struct ScatterOpCanon final
     : CheckedOpRewritePattern<stablehlo::ScatterOp, ScatterOpCanon> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -30676,6 +30793,18 @@ void mlir::transform::addExtendLICM(RewritePatternSet &patterns,
                                     bool single_user, MLIRContext &context,
                                     PatternBenefit benefit) {
   patterns.insert<LICM<enzymexla::ExtendOp>>(single_user, &context, benefit);
+}
+
+void mlir::transform::addMultiSliceOpt(RewritePatternSet &patterns,
+                                       MLIRContext &context,
+                                       PatternBenefit benefit) {
+  patterns.insert<ReduceUnusedMultiSlice>(&context, benefit);
+}
+void mlir::transform::addMultiSliceLICM(RewritePatternSet &patterns,
+                                        bool single_user, MLIRContext &context,
+                                        PatternBenefit benefit) {
+  patterns.insert<LICM<enzymexla::MultiSliceOp>>(single_user, &context,
+                                                 benefit);
 }
 
 void mlir::transform::addElementwiseLICM(RewritePatternSet &patterns,
