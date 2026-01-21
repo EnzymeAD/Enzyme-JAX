@@ -30722,9 +30722,12 @@ struct ReduceUnusedMultiRotate final
     int newRightAmount = lastUsed - centerIdx;
     
     // If only one result is used, replace with a single RotateOp
+    // MultiRotate indexing: result[i] has rotation amount = (centerIdx - i)
+    // where centerIdx = leftAmount. Result[0] is leftmost (most positive rotation),
+    // result[centerIdx] is center (no rotation), result[totalResults-1] is rightmost.
     if (usedCount == 1) {
       int usedIdx = firstUsed;
-      int amount = centerIdx - usedIdx; // Positive = rotate left, negative = rotate right
+      int amount = centerIdx - usedIdx; // Amount for this result index
       
       auto rotateOp = rewriter.create<enzymexla::RotateOp>(
           op.getLoc(), op.getOperand().getType(), op.getOperand(),
@@ -31008,6 +31011,8 @@ struct RecognizeMultiRotate final
         rewriter.getSI32IntegerAttr(rightAmount));
     
     // Replace all rotate ops with results from MultiRotateOp
+    // MultiRotate result indexing: result[i] = rotate by (leftAmount - i)
+    // So for a rotate with amount A, we need result[leftAmount - A]
     for (auto rotOp : rotateOps) {
       int32_t idx = leftAmount - rotOp.getAmount();
       rewriter.replaceOp(rotOp, multiRotate.getResult(idx));
@@ -31114,6 +31119,8 @@ struct RecognizeMultiSlice final
         rewriter.getSI32IntegerAttr(rightAmount));
     
     // Replace all slice ops with results from MultiSliceOp
+    // MultiSlice result indexing: result[i] has start offset = (i - leftAmount)
+    // For a slice with start S, we need result[leftAmount + (S - centerStart)]
     for (auto sliceOp : sliceOps) {
       int64_t start = sliceOp.getStartIndices()[varyingDim];
       int32_t idx = leftAmount + (start - centerStart);
