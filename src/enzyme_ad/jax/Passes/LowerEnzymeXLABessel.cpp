@@ -27,7 +27,6 @@ namespace {
 
 static Value createSplatConstant(OpBuilder &builder, Location loc,
                                  RankedTensorType type, double value) {
-  // auto elemType = type.getElementType();
   auto attr = mlir::enzyme::makeAttr(type, value);
   return stablehlo::ConstantOp::create(builder, loc, type,
                                        cast<ElementsAttr>(attr));
