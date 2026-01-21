@@ -30891,6 +30891,7 @@ struct LowerMultiRotate final
     int32_t centerIdx = leftAmount;
     
     SmallVector<Value> results;
+    auto shard = sdy::getShardingPerValue(op);
     
     // Create rotate ops for each result
     for (int32_t i = 0; i < leftAmount + rightAmount + 1; i++) {
@@ -30899,6 +30900,9 @@ struct LowerMultiRotate final
       auto rotateOp = rewriter.create<enzymexla::RotateOp>(
           op.getLoc(), op.getOperand().getType(), op.getOperand(),
           rewriter.getSI32IntegerAttr(amount), op.getDimensionAttr());
+      
+      if (shard)
+        sdy::setShardings(rotateOp, shard);
       
       results.push_back(rotateOp.getResult());
     }
@@ -30924,6 +30928,7 @@ struct LowerMultiSlice final
     auto limitIndices = llvm::to_vector(op.getLimitIndices());
     
     SmallVector<Value> results;
+    auto shard = sdy::getShardingPerValue(op);
     
     // Create slice ops for each result
     for (int32_t i = 0; i < leftAmount + rightAmount + 1; i++) {
@@ -30939,6 +30944,9 @@ struct LowerMultiSlice final
           rewriter.getDenseI64ArrayAttr(newStartIndices),
           rewriter.getDenseI64ArrayAttr(newLimitIndices),
           op.getStridesAttr());
+      
+      if (shard)
+        sdy::setShardings(sliceOp, shard);
       
       results.push_back(sliceOp.getResult());
     }
