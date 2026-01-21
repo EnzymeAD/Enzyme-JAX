@@ -9,6 +9,7 @@
 #include "mlir/IR/Region.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Types.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
@@ -16,5 +17,13 @@
 
 // Include the dialect
 #include "src/enzyme_ad/jax/Dialect/Tessera/TesseraDialect.h.inc"
+
+// Attribute declarations
+#define GET_ATTRDEF_CLASSES
+#include "src/enzyme_ad/jax/Dialect/Tessera/TesseraAttrs.h.inc"
+
+// Include ops
+#define GET_OP_CLASSES
+#include "src/enzyme_ad/jax/Dialect/Tessera/TesseraOps.h.inc"
 
 #endif // ENZYME_AD_JAX_DIALECT_TESSERA_DIALECT_H

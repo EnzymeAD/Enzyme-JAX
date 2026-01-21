@@ -17,7 +17,6 @@
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Dialect/Tessera/Dialect.h"
-#include "src/enzyme_ad/jax/Dialect/Tessera/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/Passes.h"
 
 using namespace mlir;

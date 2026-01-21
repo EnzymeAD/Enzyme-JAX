@@ -2,7 +2,6 @@
 #include "llvm/ADT/TypeSwitch.h"
 
 #include "Dialect.h"
-#include "Ops.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Interfaces/FunctionImplementation.h"
@@ -11,6 +10,9 @@
 
 using namespace mlir;
 using namespace mlir::enzyme::tessera;
+
+#define GET_OP_CLASSES
+#include "src/enzyme_ad/jax/Dialect/Tessera/TesseraOps.cpp.inc"
 
 namespace mlir::enzyme::tessera {} // namespace mlir::enzyme::tessera
 
@@ -209,5 +211,3 @@ FunctionType CallOp::getCalleeType() {
   return FunctionType::get(getContext(), getOperandTypes(), getResultTypes());
 }
 
-#define GET_OP_CLASSES
-#include "src/enzyme_ad/jax/Dialect/Tessera/TesseraOps.cpp.inc"

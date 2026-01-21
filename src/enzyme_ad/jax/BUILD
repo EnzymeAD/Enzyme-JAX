@@ -601,8 +601,8 @@ gentbl_cc_library(
 td_library(
     name = "TesseraDialectTdFiles",
     srcs = [
-        "Dialect/Tessera/Attrs.td",
         "Dialect/Tessera/Dialect.td",
+        "Dialect/Tessera/Attrs.td",
         "Dialect/Tessera/Ops.td",
     ],
     deps = [
@@ -642,6 +642,25 @@ gentbl_cc_library(
 )
 
 gentbl_cc_library(
+    name = "TesseraAttrsIncGen",
+    tbl_outs = [
+        (
+            ["--gen-attrdef-decls"],
+            "Dialect/Tessera/TesseraAttrs.h.inc",
+        ),
+        (
+            ["--gen-attrdef-defs"],
+            "Dialect/Tessera/TesseraAttrs.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/Tessera/Attrs.td",
+    deps = [
+        ":TesseraDialectTdFiles",
+    ],
+)
+
+gentbl_cc_library(
     name = "TesseraOpsIncGen",
     tbl_outs = [
         (
@@ -661,25 +680,6 @@ gentbl_cc_library(
         "@llvm-project//mlir:ControlFlowInterfaces",
         "@llvm-project//mlir:FunctionInterfacesTdFiles",
         "@llvm-project//mlir:IR",
-    ],
-)
-
-gentbl_cc_library(
-    name = "TesseraAttrsIncGen",
-    tbl_outs = {
-        "Dialect/TesseraAttrDefs.h.inc": [
-            "--gen-attrdef-decls",
-            "--attrdefs-dialect=tessera",
-        ],
-        "Dialect/TesseraAttrDefs.cpp.inc": [
-            "--gen-attrdef-defs",
-            "--attrdefs-dialect=tessera",
-        ],
-    },
-    tblgen = "@llvm-project//mlir:mlir-tblgen",
-    td_file = "Dialect/Attrs.td",
-    deps = [
-        ":TesseraDialectTdFiles",
     ],
 )
 
@@ -936,6 +936,7 @@ cc_library(
         ":RaisingTransformPatternsIncGen",
         ":StablehloOptPatternsIncGen",
         ":TesseraDialectIncGen",
+	":TesseraAttrsIncGen",
         ":TesseraOpsIncGen",
         ":TesseraPassesIncGen",
         ":TritonExtDialect",
