@@ -110,6 +110,22 @@ void ApplyRotateLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
   addRotateLICM(patterns, getParameter(), *getContext(),
                 PatternBenefit(getBenefit().value_or(1)));
 }
+void ApplyMultiRotateLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
+  addMultiRotateLICM(patterns, getParameter(), *getContext(),
+                     PatternBenefit(getBenefit().value_or(1)));
+}
+void ApplyMultiSliceLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
+  addMultiSliceLICM(patterns, getParameter(), *getContext(),
+                    PatternBenefit(getBenefit().value_or(1)));
+}
+void ApplyMultiRotateOptPatterns::populatePatterns(RewritePatternSet &patterns) {
+  addMultiRotateOpt(patterns, *getContext(),
+                    PatternBenefit(getBenefit().value_or(1)));
+}
+void ApplyMultiSliceOptPatterns::populatePatterns(RewritePatternSet &patterns) {
+  addMultiSliceOpt(patterns, *getContext(),
+                   PatternBenefit(getBenefit().value_or(1)));
+}
 void ApplyExtendLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
   addExtendLICM(patterns, getParameter(), *getContext(),
                 PatternBenefit(getBenefit().value_or(1)));
