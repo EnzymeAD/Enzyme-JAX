@@ -353,6 +353,57 @@ def RotateOp : EnzymeXLA_Op<"rotate", [Pure, SameOperandsAndResultType]> {
   let results = (outs HLO_Tensor:$result);
 }
 
+def MultiRotateOp : EnzymeXLA_Op<"multi_rotate", [Pure]> {
+  let summary = "Produces multiple rotated versions of the input tensor";
+  let description = [{
+    MultiRotate operation produces multiple rotated versions of the input tensor.
+    Given left_amount=L and right_amount=R, it produces L+R+1 results:
+    - L results for left rotations (from L to 1)
+    - 1 result for no rotation (amount=0)
+    - R results for right rotations (from 1 to R)
+    
+    For example, with left_amount=2 and right_amount=2:
+    results[0] = rotate left by 2
+    results[1] = rotate left by 1
+    results[2] = no rotation (amount=0)
+    results[3] = rotate right by 1
+    results[4] = rotate right by 2
+  }];
+  let arguments = (ins
+    HLO_Tensor:$operand,
+    SI32Attr:$dimension,
+    SI32Attr:$left_amount,
+    SI32Attr:$right_amount
+  );
+  let hasFolder = 1;
+  let results = (outs Variadic<HLO_Tensor>:$results);
+}
+
+def MultiSliceOp : EnzymeXLA_Op<"multi_slice", [Pure]> {
+  let summary = "Produces multiple slice versions of the input tensor";
+  let description = [{
+    MultiSlice operation produces multiple slice versions of the input tensor.
+    Given left_amount=L and right_amount=R, it produces L+R+1 results:
+    - L results for slices shifted left
+    - 1 result for the center slice
+    - R results for slices shifted right
+    
+    The slice parameters (start_indices, limit_indices, strides) define the center slice.
+    Each left/right result is offset along the specified dimension.
+  }];
+  let arguments = (ins
+    HLO_Tensor:$operand,
+    I64ArrayAttr:$start_indices,
+    I64ArrayAttr:$limit_indices,
+    I64ArrayAttr:$strides,
+    SI32Attr:$dimension,
+    SI32Attr:$left_amount,
+    SI32Attr:$right_amount
+  );
+  let hasFolder = 1;
+  let results = (outs Variadic<HLO_Tensor>:$results);
+}
+
 def WrapOp: EnzymeXLA_Op<
       "wrap",
       [Pure, SameOperandsAndResultElementType,
