@@ -30678,6 +30678,231 @@ void mlir::transform::addExtendLICM(RewritePatternSet &patterns,
   patterns.insert<LICM<enzymexla::ExtendOp>>(single_user, &context, benefit);
 }
 
+// Pattern to reduce MultiRotateOp when some results are unused
+struct ReduceUnusedMultiRotate final
+    : CheckedOpRewritePattern<enzymexla::MultiRotateOp, ReduceUnusedMultiRotate> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(enzymexla::MultiRotateOp op,
+                                    PatternRewriter &rewriter) const {
+    int32_t leftAmount = op.getLeftAmount();
+    int32_t rightAmount = op.getRightAmount();
+    int32_t totalResults = leftAmount + rightAmount + 1;
+    
+    // Check which results are actually used
+    SmallVector<bool> used(totalResults, false);
+    int usedCount = 0;
+    for (int i = 0; i < totalResults; i++) {
+      if (!op.getResult(i).use_empty()) {
+        used[i] = true;
+        usedCount++;
+      }
+    }
+    
+    // If all results are used, nothing to optimize
+    if (usedCount == totalResults)
+      return failure();
+    
+    // If no results are used, this should be handled by dead code elimination
+    if (usedCount == 0)
+      return failure();
+    
+    // Find the range of used results
+    int firstUsed = -1, lastUsed = -1;
+    for (int i = 0; i < totalResults; i++) {
+      if (used[i]) {
+        if (firstUsed == -1) firstUsed = i;
+        lastUsed = i;
+      }
+    }
+    
+    // Calculate new left and right amounts
+    int centerIdx = leftAmount;
+    int newLeftAmount = centerIdx - firstUsed;
+    int newRightAmount = lastUsed - centerIdx;
+    
+    // If only one result is used, replace with a single RotateOp
+    if (usedCount == 1) {
+      int usedIdx = firstUsed;
+      int amount = centerIdx - usedIdx; // Positive = rotate left, negative = rotate right
+      
+      auto rotateOp = rewriter.create<enzymexla::RotateOp>(
+          op.getLoc(), op.getOperand().getType(), op.getOperand(),
+          rewriter.getSI32IntegerAttr(amount), op.getDimensionAttr());
+      
+      rewriter.replaceOp(op, rotateOp.getResult());
+      return success();
+    }
+    
+    // Otherwise, create a smaller MultiRotateOp
+    if (newLeftAmount != leftAmount || newRightAmount != rightAmount) {
+      auto newOp = rewriter.create<enzymexla::MultiRotateOp>(
+          op.getLoc(), 
+          SmallVector<Type>(newLeftAmount + newRightAmount + 1, op.getOperand().getType()),
+          op.getOperand(), op.getDimensionAttr(),
+          rewriter.getSI32IntegerAttr(newLeftAmount),
+          rewriter.getSI32IntegerAttr(newRightAmount));
+      
+      // Map old results to new results
+      SmallVector<Value> replacements(totalResults);
+      int newIdx = 0;
+      for (int oldIdx = firstUsed; oldIdx <= lastUsed; oldIdx++) {
+        replacements[oldIdx] = newOp.getResult(newIdx++);
+      }
+      
+      // Replace uses
+      for (int i = 0; i < totalResults; i++) {
+        if (used[i]) {
+          op.getResult(i).replaceAllUsesWith(replacements[i]);
+        }
+      }
+      
+      rewriter.eraseOp(op);
+      return success();
+    }
+    
+    return failure();
+  }
+};
+
+// Pattern to reduce MultiSliceOp when some results are unused
+struct ReduceUnusedMultiSlice final
+    : CheckedOpRewritePattern<enzymexla::MultiSliceOp, ReduceUnusedMultiSlice> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(enzymexla::MultiSliceOp op,
+                                    PatternRewriter &rewriter) const {
+    int32_t leftAmount = op.getLeftAmount();
+    int32_t rightAmount = op.getRightAmount();
+    int32_t totalResults = leftAmount + rightAmount + 1;
+    
+    // Check which results are actually used
+    SmallVector<bool> used(totalResults, false);
+    int usedCount = 0;
+    for (int i = 0; i < totalResults; i++) {
+      if (!op.getResult(i).use_empty()) {
+        used[i] = true;
+        usedCount++;
+      }
+    }
+    
+    // If all results are used, nothing to optimize
+    if (usedCount == totalResults)
+      return failure();
+    
+    // If no results are used, this should be handled by dead code elimination
+    if (usedCount == 0)
+      return failure();
+    
+    // Find the range of used results
+    int firstUsed = -1, lastUsed = -1;
+    for (int i = 0; i < totalResults; i++) {
+      if (used[i]) {
+        if (firstUsed == -1) firstUsed = i;
+        lastUsed = i;
+      }
+    }
+    
+    // Calculate new left and right amounts
+    int centerIdx = leftAmount;
+    int newLeftAmount = centerIdx - firstUsed;
+    int newRightAmount = lastUsed - centerIdx;
+    
+    // If only one result is used, replace with a single SliceOp
+    if (usedCount == 1) {
+      int usedIdx = firstUsed;
+      int offset = usedIdx - centerIdx; // How much to shift the slice
+      
+      auto startIndices = llvm::to_vector(op.getStartIndices());
+      auto limitIndices = llvm::to_vector(op.getLimitIndices());
+      int32_t dim = op.getDimension();
+      
+      // Adjust start and limit indices for the offset
+      startIndices[dim] += offset;
+      limitIndices[dim] += offset;
+      
+      auto sliceOp = rewriter.create<stablehlo::SliceOp>(
+          op.getLoc(), op.getOperand(),
+          rewriter.getDenseI64ArrayAttr(startIndices),
+          rewriter.getDenseI64ArrayAttr(limitIndices),
+          op.getStridesAttr());
+      
+      rewriter.replaceOp(op, sliceOp.getResult());
+      return success();
+    }
+    
+    // Otherwise, create a smaller MultiSliceOp
+    if (newLeftAmount != leftAmount || newRightAmount != rightAmount) {
+      // Adjust start indices for the new center
+      int offset = firstUsed - centerIdx;
+      auto startIndices = llvm::to_vector(op.getStartIndices());
+      auto limitIndices = llvm::to_vector(op.getLimitIndices());
+      int32_t dim = op.getDimension();
+      
+      startIndices[dim] += offset;
+      limitIndices[dim] += offset;
+      
+      // Determine result types
+      auto operandType = cast<RankedTensorType>(op.getOperand().getType());
+      SmallVector<Type> resultTypes;
+      for (int i = 0; i < newLeftAmount + newRightAmount + 1; i++) {
+        resultTypes.push_back(operandType); // Will be properly typed by the op
+      }
+      
+      auto newOp = rewriter.create<enzymexla::MultiSliceOp>(
+          op.getLoc(), resultTypes, op.getOperand(),
+          rewriter.getDenseI64ArrayAttr(startIndices),
+          rewriter.getDenseI64ArrayAttr(limitIndices),
+          op.getStridesAttr(), op.getDimensionAttr(),
+          rewriter.getSI32IntegerAttr(newLeftAmount),
+          rewriter.getSI32IntegerAttr(newRightAmount));
+      
+      // Map old results to new results
+      SmallVector<Value> replacements(totalResults);
+      int newIdx = 0;
+      for (int oldIdx = firstUsed; oldIdx <= lastUsed; oldIdx++) {
+        replacements[oldIdx] = newOp.getResult(newIdx++);
+      }
+      
+      // Replace uses
+      for (int i = 0; i < totalResults; i++) {
+        if (used[i]) {
+          op.getResult(i).replaceAllUsesWith(replacements[i]);
+        }
+      }
+      
+      rewriter.eraseOp(op);
+      return success();
+    }
+    
+    return failure();
+  }
+};
+
+void mlir::transform::addMultiRotateOpt(RewritePatternSet &patterns,
+                                        MLIRContext &context,
+                                        PatternBenefit benefit) {
+  patterns.insert<ReduceUnusedMultiRotate>(&context, benefit);
+}
+
+void mlir::transform::addMultiSliceOpt(RewritePatternSet &patterns,
+                                       MLIRContext &context,
+                                       PatternBenefit benefit) {
+  patterns.insert<ReduceUnusedMultiSlice>(&context, benefit);
+}
+
+void mlir::transform::addMultiRotateLICM(RewritePatternSet &patterns,
+                                         bool single_user, MLIRContext &context,
+                                         PatternBenefit benefit) {
+  patterns.insert<LICM<enzymexla::MultiRotateOp>>(single_user, &context, benefit);
+}
+
+void mlir::transform::addMultiSliceLICM(RewritePatternSet &patterns,
+                                        bool single_user, MLIRContext &context,
+                                        PatternBenefit benefit) {
+  patterns.insert<LICM<enzymexla::MultiSliceOp>>(single_user, &context, benefit);
+}
+
 void mlir::transform::addElementwiseLICM(RewritePatternSet &patterns,
                                          bool single_user, MLIRContext &context,
                                          PatternBenefit benefit) {
