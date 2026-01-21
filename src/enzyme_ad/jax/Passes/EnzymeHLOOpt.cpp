@@ -7456,15 +7456,18 @@ struct FftZero
 
   LogicalResult matchAndRewriteImpl(stablehlo::FftOp op,
                                     PatternRewriter &rewriter) const {
-    // FFT of zero is zero, so we can replace the FFT operation with zero
+    // FFT of zero is zero for all FFT types (FFT, IFFT, RFFT, IRFFT).
+    // This optimization eliminates unnecessary FFT computations when the input
+    // is known to be zero at compile time.
     if (matchPattern(op.getOperand(), m_AnyZeroFloat()) ||
         matchPattern(op.getOperand(), m_Zero()) ||
         matchPattern(op.getOperand(), m_AnyZeroComplex())) {
-      // If the input and output types are the same, we can just use the input
+      // When input and output types match (FFT, IFFT), we can directly use the input.
+      // When types differ (RFFT: real->complex, IRFFT: complex->real), we need
+      // to create a new zero constant of the output type.
       if (op.getOperand().getType() == op.getResult().getType()) {
         rewriter.replaceOp(op, op.getOperand());
       } else {
-        // Otherwise, we need to create a constant zero of the output type
         rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
             op, cast<ElementsAttr>(makeAttr(op.getType(), 0)));
       }
