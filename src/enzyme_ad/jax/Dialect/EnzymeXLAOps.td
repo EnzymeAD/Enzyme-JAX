@@ -392,9 +392,9 @@ def MultiSliceOp : EnzymeXLA_Op<"multi_slice", [Pure]> {
   }];
   let arguments = (ins
     HLO_Tensor:$operand,
-    I64ArrayAttr:$start_indices,
-    I64ArrayAttr:$limit_indices,
-    I64ArrayAttr:$strides,
+    DenseI64ArrayAttr:$start_indices,
+    DenseI64ArrayAttr:$limit_indices,
+    DenseI64ArrayAttr:$strides,
     SI32Attr:$dimension,
     SI32Attr:$left_amount,
     SI32Attr:$right_amount
