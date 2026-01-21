@@ -10,12 +10,12 @@
 
 // Initialize the dialect
 void mlir::enzyme::tessera::TesseraDialect::initialize() {
-addAttributes<
+  addAttributes<
 #define GET_ATTRDEF_LIST
 #include "src/enzyme_ad/jax/Dialect/Tessera/TesseraAttrs.cpp.inc"
->();
+      >();
 
-addOperations<
+  addOperations<
 #define GET_OP_LIST
 #include "src/enzyme_ad/jax/Dialect/Tessera/TesseraOps.cpp.inc"
       >();

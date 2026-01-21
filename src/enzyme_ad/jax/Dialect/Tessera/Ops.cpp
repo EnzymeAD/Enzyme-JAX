@@ -210,4 +210,3 @@ LogicalResult CallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
 FunctionType CallOp::getCalleeType() {
   return FunctionType::get(getContext(), getOperandTypes(), getResultTypes());
 }
-

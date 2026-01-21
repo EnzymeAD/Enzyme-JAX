@@ -601,8 +601,8 @@ gentbl_cc_library(
 td_library(
     name = "TesseraDialectTdFiles",
     srcs = [
-        "Dialect/Tessera/Dialect.td",
         "Dialect/Tessera/Attrs.td",
+        "Dialect/Tessera/Dialect.td",
         "Dialect/Tessera/Ops.td",
     ],
     deps = [
@@ -935,8 +935,8 @@ cc_library(
         ":RaisingTransformOpsIncGen",
         ":RaisingTransformPatternsIncGen",
         ":StablehloOptPatternsIncGen",
+        ":TesseraAttrsIncGen",
         ":TesseraDialectIncGen",
-	":TesseraAttrsIncGen",
         ":TesseraOpsIncGen",
         ":TesseraPassesIncGen",
         ":TritonExtDialect",
