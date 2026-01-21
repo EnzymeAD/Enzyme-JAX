@@ -30332,11 +30332,8 @@ struct RecognizeMultiRotate
 
     // Create the MultiRotateOp
     auto newOp = rewriter.create<enzymexla::MultiRotateOp>(
-        op.getLoc(),
-        SmallVector<Type>(totalResults, input.getType()),
-        input,
-        op.getDimensionAttr(),
-        rewriter.getSI32IntegerAttr(leftAmount),
+        op.getLoc(), SmallVector<Type>(totalResults, input.getType()), input,
+        op.getDimensionAttr(), rewriter.getSI32IntegerAttr(leftAmount),
         rewriter.getSI32IntegerAttr(rightAmount));
 
     // Propagate sharding if present
