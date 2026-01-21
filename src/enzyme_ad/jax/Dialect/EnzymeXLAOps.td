@@ -375,7 +375,6 @@ def MultiRotateOp : EnzymeXLA_Op<"multi_rotate", [Pure]> {
     SI32Attr:$left_amount,
     SI32Attr:$right_amount
   );
-  let hasFolder = 1;
   let results = (outs Variadic<HLO_Tensor>:$results);
 }
 
@@ -400,7 +399,6 @@ def MultiSliceOp : EnzymeXLA_Op<"multi_slice", [Pure]> {
     SI32Attr:$left_amount,
     SI32Attr:$right_amount
   );
-  let hasFolder = 1;
   let results = (outs Variadic<HLO_Tensor>:$results);
 }
 

@@ -2487,18 +2487,3 @@ OpFoldResult ExtendOp::fold(FoldAdaptor adaptor) {
   }
   return nullptr;
 }
-
-OpFoldResult MultiRotateOp::fold(FoldAdaptor adaptor) {
-  // If all amounts are zero and only one result, fold to operand
-  if (getLeftAmount() == 0 && getRightAmount() == 0) {
-    // Single result case - return the operand directly
-    return getOperand();
-  }
-  return nullptr;
-}
-
-OpFoldResult MultiSliceOp::fold(FoldAdaptor adaptor) {
-  // Basic folding for multi-slice
-  // More complex folding can be done in patterns
-  return nullptr;
-}
