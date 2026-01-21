@@ -2172,6 +2172,11 @@ def TransposeRotate : EnzymeHLOPatternOp<
   let patterns = ["TransposeRotate"];
 }
 
+def RecognizeMultiRotate : EnzymeHLOPatternOp<
+    "recognize_multirotate"> {
+    let patterns = ["RecognizeMultiRotate"];
+}
+
 def SelectPad : EnzymeHLOPatternOp<
     "select_pad"> {
   let patterns = ["SelectPad"];

@@ -30279,6 +30279,82 @@ struct ReduceWindowWrapSimplify final
   }
 };
 
+struct RecognizeMultiRotate
+    : public CheckedOpRewritePattern<enzymexla::RotateOp,
+                                     RecognizeMultiRotate> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(enzymexla::RotateOp op,
+                                    PatternRewriter &rewriter) const {
+    Value input = op.getOperand();
+    int64_t dimension = op.getDimension();
+    int32_t thisAmount = op.getAmount();
+
+    // Collect all RotateOps operating on the same input with the same dimension
+    SmallVector<enzymexla::RotateOp> rotates;
+    SmallVector<int32_t> amounts;
+
+    for (Operation *user : input.getUsers()) {
+      if (auto rotate = dyn_cast<enzymexla::RotateOp>(user)) {
+        if (rotate.getDimension() == dimension) {
+          rotates.push_back(rotate);
+          amounts.push_back(rotate.getAmount());
+        }
+      }
+    }
+
+    // Need at least 2 rotations to combine
+    if (rotates.size() < 2)
+      return failure();
+
+    // To avoid processing the same set of rotations multiple times,
+    // only proceed if this op has the minimum rotation amount
+    int32_t minAmount = *std::min_element(amounts.begin(), amounts.end());
+    int32_t maxAmount = *std::max_element(amounts.begin(), amounts.end());
+
+    if (thisAmount != minAmount)
+      return failure();
+
+    // Calculate left and right amounts for MultiRotateOp
+    // In MultiRotateOp semantics:
+    //   result[i] corresponds to rotation by (leftAmount - i)
+    //   result[0] = rotate left by leftAmount
+    //   result[leftAmount] = rotate by 0 (center)
+    //   result[leftAmount + rightAmount] = rotate right by rightAmount
+    int32_t leftAmount = maxAmount > 0 ? maxAmount : 0;
+    int32_t rightAmount = minAmount < 0 ? -minAmount : 0;
+    int32_t totalResults = leftAmount + rightAmount + 1;
+
+    // Check density - only combine if utilization is reasonable
+    // Avoid creating a MultiRotateOp with many unused intermediate results
+    if (totalResults > 2 * static_cast<int32_t>(rotates.size()))
+      return failure();
+
+    // Create the MultiRotateOp
+    auto newOp = rewriter.create<enzymexla::MultiRotateOp>(
+        op.getLoc(),
+        SmallVector<Type>(totalResults, input.getType()),
+        input,
+        op.getDimensionAttr(),
+        rewriter.getSI32IntegerAttr(leftAmount),
+        rewriter.getSI32IntegerAttr(rightAmount));
+
+    // Propagate sharding if present
+    if (auto shard = sdy::getShardingPerValue(op)) {
+      sdy::setShardings(newOp, shard);
+    }
+
+    // Replace all individual RotateOps with corresponding MultiRotateOp results
+    for (size_t i = 0; i < rotates.size(); i++) {
+      // For rotation amount 'a', the result index is: leftAmount - a
+      int32_t resultIdx = leftAmount - amounts[i];
+      rewriter.replaceOp(rotates[i], newOp.getResult(resultIdx));
+    }
+
+    return success();
+  }
+};
+
 struct ScatterOpCanon final
     : CheckedOpRewritePattern<stablehlo::ScatterOp, ScatterOpCanon> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
