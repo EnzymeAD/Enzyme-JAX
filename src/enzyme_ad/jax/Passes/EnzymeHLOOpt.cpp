@@ -7449,6 +7449,32 @@ struct NoNanZeroBasePowSimplify final
   }
 };
 
+struct FftZero
+    : public CheckedOpRewritePattern<stablehlo::FftOp, FftZero> {
+  using CheckedOpRewritePattern<stablehlo::FftOp,
+                                FftZero>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::FftOp op,
+                                    PatternRewriter &rewriter) const {
+    // FFT of zero is zero, so we can replace the FFT operation with zero
+    if (matchPattern(op.getOperand(), m_AnyZeroFloat()) ||
+        matchPattern(op.getOperand(), m_Zero()) ||
+        matchPattern(op.getOperand(), m_AnyZeroComplex())) {
+      // If the input and output types are the same, we can just use the input
+      if (op.getOperand().getType() == op.getResult().getType()) {
+        rewriter.replaceOp(op, op.getOperand());
+      } else {
+        // Otherwise, we need to create a constant zero of the output type
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            op, cast<ElementsAttr>(makeAttr(op.getType(), 0)));
+      }
+      return success();
+    }
+
+    return failure();
+  }
+};
+
 bool is_broadcastable_compare(Value operand) {
   if (auto cmp = operand.getDefiningOp<stablehlo::CompareOp>()) {
 
@@ -30910,7 +30936,7 @@ struct EnzymeHLOOptPass
     patterns.add<
         AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
         OrSimplify, XorSimplify, MulSimplify, DivSimplify, RemSimplify,
-        PowSimplify, NoopSlice, NoopReverse, SliceSlice,
+        PowSimplify, FftZero, NoopSlice, NoopReverse, SliceSlice,
         DynamicSliceDynamicSlice, DynamicSliceSlice, SliceDynamicSlice,
         LogSimplify, ShiftRightLogicalSimplify, NegativePadToSlice,
         SliceSimplify, ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
