@@ -26,7 +26,7 @@ module {
 // CPU-NEXT:       %7 = stablehlo.compare  LT, %iterArg, %c_1 : (tensor<i32>, tensor<i32>) -> tensor<i1>
 // CPU-NEXT:       stablehlo.return %7 : tensor<i1>
 // CPU-NEXT:     } do {
-// CPU-NEXT:       %7 = stablehlo.add %iterArg, %c_0 : tensor<i32>
+// CPU-NEXT:       %7 = stablehlo.add %iterArg, %c_0 {enzymexla.bounds = {{.*}}} : tensor<i32>
 // CPU-NEXT:       %8 = stablehlo.dynamic_slice %1, %c_3, %c_3, %iterArg, sizes = [4, 3, 1] : (tensor<4x3x64xi64>, tensor<i32>, tensor<i32>, tensor<i32>) -> tensor<4x3x1xi64>
 // CPU-NEXT:       %9 = stablehlo.dynamic_slice %iterArg_4, %c_3, %c_3, %iterArg, sizes = [4, 3, 1] : (tensor<4x3x64xi64>, tensor<i32>, tensor<i32>, tensor<i32>) -> tensor<4x3x1xi64>
 // CPU-NEXT:       %10 = "stablehlo.gather"(%iterArg_4, %8) <{dimension_numbers = #stablehlo.gather<offset_dims = [2], operand_batching_dims = [0, 1], start_indices_batching_dims = [0, 1], start_index_map = [2], index_vector_dim = 2>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1, 1>}> : (tensor<4x3x64xi64>, tensor<4x3x1xi64>) -> tensor<4x3x1xi64>
@@ -60,9 +60,9 @@ module {
 // CPU-NEXT:       %1 = stablehlo.compare  LT, %iterArg, %c_4 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CPU-NEXT:       stablehlo.return %1 : tensor<i1>
 // CPU-NEXT:     } do {
-// CPU-NEXT:       %1 = stablehlo.add %iterArg, %c_3 : tensor<i64>
-// CPU-NEXT:       %2 = stablehlo.remainder %iterArg, %c_2 : tensor<i64>
-// CPU-NEXT:       %3 = stablehlo.divide %iterArg, %c_2 : tensor<i64>
+// CPU-NEXT:       %1 = stablehlo.add %iterArg, %c_3 {enzymexla.bounds = {{.*}}} : tensor<i64>
+// CPU-NEXT:       %2 = stablehlo.remainder %iterArg, %c_2 {enzymexla.bounds = {{.*}}} : tensor<i64>
+// CPU-NEXT:       %3 = stablehlo.divide %iterArg, %c_2 {enzymexla.bounds = {{.*}}} : tensor<i64>
 // CPU-NEXT:       %4 = stablehlo.dynamic_slice %arg0, %2, %3, %c_7, %c_7, sizes = [1, 1, 64, 64] : (tensor<4x3x64x64xf32>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<1x1x64x64xf32>
 // CPU-NEXT:       %5 = stablehlo.reshape %4 : (tensor<1x1x64x64xf32>) -> tensor<64x64xf32>
 // CPU-NEXT:       %6:3 = enzymexla.jit_call @enzymexla_lapack_sgetrf_wrapper (%c_1, %c_1, %5, %c_1, %c_0, %c) {operand_layouts = [dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[0, 1]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<0> : tensor<1xindex>, dense<> : tensor<0xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 2, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [1], operand_index = 4, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [2], operand_index = 5, operand_tuple_indices = []>], result_layouts = [dense<[0, 1]> : tensor<2xindex>, dense<0> : tensor<1xindex>, dense<> : tensor<0xindex>], xla_side_effect_free} : (tensor<i64>, tensor<i64>, tensor<64x64xf32>, tensor<i64>, tensor<64xi64>, tensor<i64>) -> (tensor<64x64xf32>, tensor<64xi64>, tensor<i64>)

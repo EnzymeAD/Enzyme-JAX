@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=reverse_licm(0);reshape_licm(0);while_simplify(1);while_is_copy_simplify;greedy_while_loop_batch_fission" --transform-interpreter --enzyme-hlo-remove-transform  --enzyme-hlo-opt --auto-batching --enzyme-hlo-opt --enzyme-hlo-generate-td="patterns=reverse_licm(0);reshape_licm(0);while_simplify(1);while_is_copy_simplify;greedy_while_loop_batch_fission;transpose_reshape" --transform-interpreter --enzyme-hlo-remove-transform --enzyme-hlo-opt --auto-batching --enzyme-hlo-opt %s | FileCheck %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=reverse_licm(0);reshape_licm(0);while_simplify(1);while_is_copy_simplify;greedy_while_loop_batch_fission" --transform-interpreter --enzyme-hlo-remove-transform  --enzyme-hlo-opt="enable_auto_batching_passes=true" %s | FileCheck %s
 
 module {
   func.func @main(%arg0: tensor<6x3x2x5x4x4xf32> {enzymexla.memory_effects = []}) -> tensor<6x3x5x5x2x2xf32> attributes {enzymexla.memory_effects = []} {
@@ -54,4 +54,4 @@ module {
 // CHECK-NEXT:     %7 = stablehlo.reshape %6 : (tensor<5x2x2x30x3xf32>) -> tensor<5x2x2x6x5x3xf32>
 // CHECK-NEXT:     %8 = stablehlo.transpose %7, dims = [3, 5, 4, 0, 2, 1] : (tensor<5x2x2x6x5x3xf32>) -> tensor<6x3x5x5x2x2xf32>
 // CHECK-NEXT:     return %8 : tensor<6x3x5x5x2x2xf32>
-// CHECK-NEXT: }
+// CHECK-NEXT:   }

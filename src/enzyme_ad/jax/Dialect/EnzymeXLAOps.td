@@ -14,6 +14,7 @@ include "Enzyme/MLIR/Dialect/Dialect.td"
 include "Dialect.td"
 include "EnzymeXLAAttrs.td"
 
+include "mlir/IR/BuiltinAttributes.td"
 include "mlir/Interfaces/ViewLikeInterface.td"
 include "mlir/IR/SymbolInterfaces.td"
 include "mlir/IR/EnumAttr.td"
@@ -348,6 +349,7 @@ def RotateOp : EnzymeXLA_Op<"rotate", [Pure, SameOperandsAndResultType]> {
     SI32Attr:$amount,
     SI32Attr:$dimension
   );
+  let hasFolder = 1;
   let results = (outs HLO_Tensor:$result);
 }
 
@@ -364,6 +366,7 @@ def WrapOp: EnzymeXLA_Op<
     I64Attr:$dimension
   );
 
+  let hasFolder = 1;
   let results = (outs HLO_Tensor:$result);
 }
 
@@ -378,6 +381,27 @@ def ExtendOp: EnzymeXLA_Op<
     I64Attr:$lhs,
     I64Attr:$rhs,
     I64Attr:$dimension
+  );
+
+  let hasFolder = 1;
+  let results = (outs HLO_Tensor:$result);
+}
+
+def UpdateWithoutCornersOp: EnzymeXLA_Op<
+      "update_without_corners",
+      [Pure, SameOperandsAndResultElementType,
+       DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+  let summary = "Update without corners operation";
+
+  let arguments = (ins
+    HLO_Tensor:$operand,
+    HLO_Tensor:$update,
+    I64Attr:$dimensionX,
+    I64Attr:$x1,
+    I64Attr:$x2,
+    I64Attr:$dimensionY,
+    I64Attr:$y1,
+    I64Attr:$y2
   );
 
   let results = (outs HLO_Tensor:$result);
@@ -427,11 +451,19 @@ def SyrkOp: EnzymeXLA_Op<"blas.syrk", [Pure, SameOperandsAndResultElementType]> 
   let summary = "Multiplication involving a symmetric matrix";
 
   let description = [{
-    C := alpha*A*A^T + beta*C, or C := alpha*A^T*A + beta*C, where alpha and beta are
-    scalars. C must be a n x n symmetric matrix.
+    C_out := alpha*A*A^T + beta*C, or C_out := alpha*A^T*A + beta*C, where alpha and beta
+    are scalars. C must be a n x n symmetric matrix.
 
-    If `fill` is present, then both the upper and lower triangles of the matrix are filled.
-    Otherwise the values in the non-uplo part of the matrix are undefined.
+    `output_uplo` determines which part of `C_out` is populated. Accessing the values in
+    the non-`output_uplo` part of the matrix is undefined behavior.
+
+    LAPACK/BLAS routines typically require a single `uplo` attribute and it is implicitly
+    assumed that the output `uplo` corresponds to the input `uplo`. This means the burden
+    lies on the user to manually copy data if they need to access the other half of the
+    matrix. By specifying the `output_uplo` we can perform transformations that analyze the
+    entire dataflow, and avoid computing/copying half of the tensor all together. Generally,
+    it is recommended to set this attribute to `enzymexla::LapackUplo::F`, and our passes
+    will automatically refine this to minimize data copies.
   }];
 
   let arguments = (ins
@@ -440,8 +472,8 @@ def SyrkOp: EnzymeXLA_Op<"blas.syrk", [Pure, SameOperandsAndResultElementType]> 
     TensorFloat:$alpha,
     TensorFloat:$beta,
     EnzymeXLA_LapackUploAttr:$uplo,
-    DefaultValuedAttr<EnzymeXLA_LapackTransposeAttr, "::mlir::enzymexla::LapackTranspose::none">:$transpose,
-    OptionalAttr<UnitAttr>:$fill
+    EnzymeXLA_LapackUploAttr:$output_uplo,
+    DefaultValuedAttr<EnzymeXLA_LapackTransposeAttr, "::mlir::enzymexla::LapackTranspose::none">:$transpose
   );
 
   let results = (outs
@@ -451,6 +483,8 @@ def SyrkOp: EnzymeXLA_Op<"blas.syrk", [Pure, SameOperandsAndResultElementType]> 
   let assemblyFormat = [{
     $A `,` $C `,` $alpha `,` $beta attr-dict `:` functional-type(operands, results)
   }];
+
+  let hasVerifier = 1;
 }
 
 def TrmmOp: EnzymeXLA_Op<"blas.trmm", [Pure, SameOperandsAndResultElementType]> {
@@ -780,6 +814,202 @@ def GesvjOp : EnzymeXLA_Op<"lapack.gesvj", [Pure]> {
   }];
 }
 
+// Special Functions - Bessel Functions
+
+def BesselJ : EnzymeXLA_Op<"special.besselj", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
+  let summary = "Bessel function of the first kind of order nu at z";
+  
+  let arguments = (ins
+    HLO_Tensor:$nu,
+    HLO_Tensor:$z
+  );
+  
+  let results = (outs
+    HLO_Tensor:$res
+  );
+}
+
+def BesselJX : EnzymeXLA_Op<"special.besseljx", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
+  let summary = "Scaled Bessel function of the first kind of order nu at z";
+  
+  let arguments = (ins
+    HLO_Tensor:$nu,
+    HLO_Tensor:$z
+  );
+  
+  let results = (outs
+    HLO_Tensor:$res
+  );
+}
+
+def SphericalBesselJ : EnzymeXLA_Op<"special.sphericalbesselj", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
+  let summary = "Spherical Bessel function of the first kind of order nu at z";
+  
+  let arguments = (ins
+    HLO_Tensor:$nu,
+    HLO_Tensor:$z
+  );
+  
+  let results = (outs
+    HLO_Tensor:$res
+  );
+}
+
+def BesselY : EnzymeXLA_Op<"special.bessely", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
+  let summary = "Bessel function of the second kind of order nu at z";
+  
+  let arguments = (ins
+    HLO_Tensor:$nu,
+    HLO_Tensor:$z
+  );
+  
+  let results = (outs
+    HLO_Tensor:$res
+  );
+}
+
+def BesselYX : EnzymeXLA_Op<"special.besselyx", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
+  let summary = "Scaled Bessel function of the second kind of order nu at z";
+  
+  let arguments = (ins
+    HLO_Tensor:$nu,
+    HLO_Tensor:$z
+  );
+  
+  let results = (outs
+    HLO_Tensor:$res
+  );
+}
+
+def SphericalBesselY : EnzymeXLA_Op<"special.sphericalbessely", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
+  let summary = "Spherical Bessel function of the second kind of order nu at z";
+  
+  let arguments = (ins
+    HLO_Tensor:$nu,
+    HLO_Tensor:$z
+  );
+  
+  let results = (outs
+    HLO_Tensor:$res
+  );
+}
+
+def BesselH : EnzymeXLA_Op<"special.besselh", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
+  let summary = "Bessel function of the third kind (Hankel function) of order nu at z";
+  
+  let description = [{
+    Computes the Bessel function of the third kind, also known as the Hankel
+    function. The parameter k must be either 1 or 2, selecting between Hankel
+    functions of the first kind (H1) and second kind (H2).
+  }];
+  
+  let arguments = (ins
+    HLO_Tensor:$nu,
+    HLO_Tensor:$k,
+    HLO_Tensor:$z
+  );
+  
+  let results = (outs
+    HLO_Tensor:$res
+  );
+}
+
+def HankelH1X : EnzymeXLA_Op<"special.hankelh1x", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
+  let summary = "Scaled Hankel function of the first kind of order nu at z";
+  
+  let arguments = (ins
+    HLO_Tensor:$nu,
+    HLO_Tensor:$z
+  );
+  
+  let results = (outs
+    HLO_Tensor:$res
+  );
+}
+
+def HankelH2X : EnzymeXLA_Op<"special.hankelh2x", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
+  let summary = "Scaled Hankel function of the second kind of order nu at z";
+  
+  let arguments = (ins
+    HLO_Tensor:$nu,
+    HLO_Tensor:$z
+  );
+  
+  let results = (outs
+    HLO_Tensor:$res
+  );
+}
+
+def BesselI : EnzymeXLA_Op<"special.besseli", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
+  let summary = "Modified Bessel function of the first kind of order nu at z";
+  
+  let arguments = (ins
+    HLO_Tensor:$nu,
+    HLO_Tensor:$z
+  );
+  
+  let results = (outs
+    HLO_Tensor:$res
+  );
+}
+
+def BesselIX : EnzymeXLA_Op<"special.besselix", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
+  let summary = "Scaled modified Bessel function of the first kind of order nu at z";
+  
+  let arguments = (ins
+    HLO_Tensor:$nu,
+    HLO_Tensor:$z
+  );
+  
+  let results = (outs
+    HLO_Tensor:$res
+  );
+}
+
+def BesselK : EnzymeXLA_Op<"special.besselk", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
+  let summary = "Modified Bessel function of the second kind of order nu at z";
+  
+  let arguments = (ins
+    HLO_Tensor:$nu,
+    HLO_Tensor:$z
+  );
+  
+  let results = (outs
+    HLO_Tensor:$res
+  );
+}
+
+def BesselKX : EnzymeXLA_Op<"special.besselkx", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
+  let summary = "Scaled modified Bessel function of the second kind of order nu at z";
+  
+  let arguments = (ins
+    HLO_Tensor:$nu,
+    HLO_Tensor:$z
+  );
+  
+  let results = (outs
+    HLO_Tensor:$res
+  );
+}
+
+def Jinc : EnzymeXLA_Op<"special.jinc", [Pure, SameOperandsAndResultType, Elementwise]> {
+  let summary = "Jinc function (sombrero/besinc): scaled Bessel function of the first kind divided by x";
+  
+  let description = [{
+    Computes the jinc function, also known as the sombrero or besinc function.
+    It is defined as J1(pi*x) / (2*x) where J1 is the Bessel function of the
+    first kind of order 1. At x=0, the function evaluates to pi/4.
+  }];
+  
+  let arguments = (ins
+    HLO_Tensor:$x
+  );
+  
+  let results = (outs
+    HLO_Tensor:$res
+  );
+}
+
 // Machine Learning Ops
 
 def GeluOp: EnzymeXLA_Op<"ml.gelu", [Pure, SameOperandsAndResultType, Elementwise]> {
@@ -850,6 +1080,138 @@ def TypeAlignOp : EnzymeXLA_Op<"typeAlign", [Pure]> {
   let results = (outs AnyType : $result);
   let hasFolder = 1;
   let hasCanonicalizer = 1;
+}
+
+def AffineStoreVar : EnzymeXLA_Op<"store_var", [Pure]> {
+  let arguments = (ins Variadic<AnyType>:$variables,
+                       Builtin_StringAttr:$type);
+  let summary = "Fake store an SSA value for conversion to ISL";
+}
+
+// MPI Ops
+
+def MPICommRankOp : EnzymeXLA_Op<"mpi.comm_rank", [Pure]> {
+  let summary = "Equivalent to " "`MPI_Comm_rank(MPI_COMM_WORLD, &rank)`";
+
+  let results = (
+    outs TensorOf<[I32]> : $rank
+  );
+
+  let assemblyFormat = "attr-dict `:` type(results)";
+}
+
+def MPICommSizeOp : EnzymeXLA_Op<"mpi.comm_size", [Pure]> {
+  let summary = "Equivalent to MPI_Comm_size(MPI_COMM_WORLD, &size)";
+
+  let results = (
+    outs TensorOf<[I32]> : $size
+  );
+
+  let assemblyFormat = "attr-dict `:` type(results)";
+}
+
+def MPIBarrierOp : EnzymeXLA_Op<"mpi.barrier", []> {
+  let summary = "Equivalent to MPI_Barrier(MPI_COMM_WORLD)";
+  let assemblyFormat = "attr-dict";
+}
+
+def MPISendOp : EnzymeXLA_Op<"mpi.send", []> {
+  let summary = "Equivalent to "
+                "`MPI_Send(&buf, count, datatype, dest, tag, comm)`";
+
+  let arguments = (
+    ins AnyTensor : $buf,
+    TensorOf<[I32]> : $count,
+    TensorOf<[I32]> : $dest,
+    TensorOf<[I32]> : $tag,
+    EnzymeXLA_MPIDatatypeAttr:$datatype
+  );
+
+  let assemblyFormat = "`(` operands `)` attr-dict `:` type(operands)";
+}
+
+def MPIRecvOp : EnzymeXLA_Op<"mpi.recv", []> {
+  let summary = "Equivalent to "
+                "`MPI_Recv(&buf, count, datatype, source, tag, MPI_COMM_WORLD, MPI_STATUS_IGNORE)`";
+
+  let arguments = (
+    ins AnyTensor : $inbuf,
+    TensorOf<[I32]> : $count,
+    TensorOf<[I32]> : $source,
+    TensorOf<[I32]> : $tag,
+    EnzymeXLA_MPIDatatypeAttr:$datatype
+  );
+
+  let results = (
+    outs AnyTensor : $outbuf
+  );
+
+  let assemblyFormat = "`(` operands `)` attr-dict `:` functional-type(operands, results)";
+}
+
+def MPIIsendOp : EnzymeXLA_Op<"mpi.isend", []> {
+  let summary = "Equivalent to "
+                "`MPI_Isend(&buf, count, datatype, dest, tag, MPI_COMM_WORLD, &request)`";
+
+  let arguments = (
+    ins AnyTensor : $buf,
+    TensorOf<[I32]> : $count,
+    TensorOf<[I32]> : $dest,
+    TensorOf<[I32]> : $tag,
+    EnzymeXLA_MPIDatatypeAttr:$datatype
+  );
+
+  let results = (
+    outs TensorOf<[I64]> : $request
+  );
+
+  let assemblyFormat = "`(` operands `)` attr-dict `:` functional-type(operands, results)";
+}
+
+def MPIIrecvOp : EnzymeXLA_Op<"mpi.irecv", []> {
+  let summary = "Equivalent to "
+                "`MPI_Irecv(&buf, count, datatype, source, tag, MPI_COMM_WORLD, &request)`";
+
+  let arguments = (
+    ins AnyTensor : $inbuf,
+    TensorOf<[I32]> : $count,
+    TensorOf<[I32]> : $source,
+    TensorOf<[I32]> : $tag,
+    EnzymeXLA_MPIDatatypeAttr:$datatype
+  );
+
+  let results = (
+    outs AnyTensor : $outbuf,
+    TensorOf<[I64]> : $request
+  );
+
+  let assemblyFormat = "`(` operands `)` attr-dict `:` functional-type(operands, results)";
+}
+
+def MPIWaitOp : EnzymeXLA_Op<"mpi.wait", []> {
+  let summary = "Equivalent to "
+                "`MPI_Wait(&request, &status)`";
+  let arguments = (ins TensorOf<[I64]> : $request);
+  let assemblyFormat = "`(` operands `)` attr-dict `:` type(operands)";
+}
+
+def MPIAllreduceOp : EnzymeXLA_Op<"mpi.allreduce", []> {
+  let summary = "Equivalent to "
+                "`MPI_Allreduce(&sendbuf, &recvbuf, count, datatype, op, MPI_COMM_WORLD)`";
+
+  let arguments = (
+    ins AnyTensor : $sendbuf,
+    AnyTensor : $inbuf,
+    TensorOf<[I32]> : $count,
+    EnzymeXLA_MPIDatatypeAttr:$datatype,
+    EnzymeXLA_MPIOpAttr:$op
+  );
+
+  let results = (
+    outs AnyTensor : $outbuf
+  );
+
+  let assemblyFormat = "`(` operands `)` attr-dict `:` functional-type(operands, results)";
 }
 
 #endif // ENZYMEXLA_OPS

@@ -37,7 +37,7 @@ jobs:
     timeout-minutes: 150
 
     container:
-      image: ${{ (contains(matrix.os, 'linux') && 'ghcr.io/enzymead/reactant-docker-images@sha256:14f2f7ae6eff98a0a8e37e9b84542c068eafa0ab4360a8fb08d306c2486cd169' ) || '' }}
+      image: ${{ (contains(matrix.os, 'linux') && 'ghcr.io/enzymead/reactant-docker-images@sha256:cd45d851f5ea544f88d042eafefa53d948c229fffcab6189019324e3b02b505a' ) || '' }}
 
     strategy:
       fail-fast: false
@@ -54,7 +54,6 @@ jobs:
           # - '0123456789abcdef0123456789abcdef01234567'
         reactant_commit:
           - 'main'
-          # - 'ap/pass_generalization'
 
     steps:
       - name: Check GPUs
@@ -68,13 +67,13 @@ jobs:
           # do some sanitisation.
           ARTIFACT_INDEX=${{ matrix.julia_version }}-${{ matrix.xla_commit }}-${{ matrix.gb25_commit }}-${{ matrix.reactant_commit }}
           echo "ARTIFACT_INDEX=${ARTIFACT_INDEX//\//_}" >> "${GITHUB_ENV}"
-      - uses: bazel-contrib/setup-bazel@0.15.0
+      - uses: bazel-contrib/setup-bazel@0.16.0
         name: Set up Bazel
         with:
           # Avoid downloading Bazel every time.
           bazelisk-cache: true
           # Store build cache per workflow.
-          disk-cache: gb-25-${{ github.workflow }}-${{ matrix.os }}-${{ matrix.julia_version }}-${{ matrix.xla_commit }}-${{ matrix.gb25_commit }}-${{ matrix.reactant_commit }}
+          disk-cache: gb-25-${{ github.workflow }}-${{ matrix.os }}-${{ matrix.xla_commit }}
           # Share repository cache between workflows.
           repository-cache: true
           bazelisk-version: 1.x
@@ -168,7 +167,7 @@ jobs:
           Pkg.gc()
         working-directory: ${{ env.GB25_DIR }}
       - name: Upload Julia project environment
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         timeout-minutes: 10
         if: ${{ always() }}
         with:
@@ -184,10 +183,39 @@ jobs:
           julia --project --color=yes -e "using MPI; MPI.install_mpiexecjl(; destdir=\"${MPIEXECJL_DIR}\")"
           echo "${MPIEXECJL_DIR}" >> "${GITHUB_PATH}"
         working-directory: ${{ env.GB25_DIR }}
+      - name: Compile GB-25 simulation
+        timeout-minutes: 30
+        run: |
+          export XLA_FLAGS='--xla_dump_to=${{ env.GB25_DIR }}/xla_dump_compile'
+          timeout --signal=TERM --verbose 29m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_compile.jl
+        working-directory: ${{ env.GB25_DIR }}
+      - name: Show remaining collective operations
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          OK="true"
+          for OP in all-to-all all-gather all-reduce; do
+              COLLECTIVES=$(find . -name 'optimised_sharded_baroclinic_instability*.xla' -exec grep --with-filename --line-number --extended-regexp "${OP}" '{}' \;)
+              NUM_COLLECTIVES=$(echo "${COLLECTIVES}" | wc -l | xargs)
+              if [[ -n "${COLLECTIVES}" ]]; then
+                  MSG="There are ${NUM_COLLECTIVES} remaining ${OP} operations"
+                  echo "::error title=Remaining ${OP} Operations:: ${MSG}"
+                  echo
+                  echo "----------"
+                  echo "${COLLECTIVES}"
+                  echo "----------"
+                  if [[ "${OP}" == "all-to-all" && ${NUM_COLLECTIVES} -gt 0 ]] || [[ "${OP}" == "all-gather" && ${NUM_COLLECTIVES} -gt 0 ]] || [[ "${OP}" == "all-reduce" && ${NUM_COLLECTIVES} -gt 0 ]]; then
+                      OK="false"
+                  fi
+              fi
+          done
+          if [[ "${OK}" == "false" ]]; then
+              exit 1
+          fi
       - name: Run GB-25 simulation
         timeout-minutes: 60
         run: |
-          export XLA_FLAGS='--xla_dump_to=${{ env.GB25_DIR }}/xla_dump'
+          export XLA_FLAGS='--xla_dump_to=${{ env.GB25_DIR }}/xla_dump_run'
           timeout --signal=TERM --verbose 59m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_run.jl
         working-directory: ${{ env.GB25_DIR }}
       - name: Test correctness in GB-25 code
@@ -196,7 +224,7 @@ jobs:
           timeout --signal=TERM --verbose 19m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict correctness/correctness_sharded_baroclinic_instability_simulation_run.jl
         working-directory: ${{ env.GB25_DIR }}
       - name: Upload MLIR and XLA modules
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         timeout-minutes: 10
         if: ${{ !cancelled() }}
         with:
@@ -207,16 +235,16 @@ jobs:
           retention-days: 90
           overwrite: false
       - name: Upload XLA dump
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         timeout-minutes: 20
         if: ${{ !cancelled() }}
         with:
           name: 'simulation-xla-dump-${{ env.ARTIFACT_INDEX }}'
-          path: '${{ env.GB25_DIR }}/**/xla_dump'
+          path: '${{ env.GB25_DIR }}/**/xla_dump*'
           retention-days: 90
           overwrite: false
       - name: Upload XLA profiler traces
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         timeout-minutes: 10
         if: ${{ !cancelled() }}
         with:
@@ -227,7 +255,7 @@ jobs:
       - name: Save Julia depot cache on cancel or failure
         id: julia-cache-save
         if: cancelled() || failure()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with: 
           path: |
             ${{ steps.julia-cache.outputs.cache-paths }}

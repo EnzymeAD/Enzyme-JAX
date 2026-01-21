@@ -19,7 +19,6 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/IR/AffineValueMap.h"
 #include "mlir/Dialect/Affine/LoopUtils.h"
-#include "mlir/Dialect/Affine/Passes.h"
 #include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -899,8 +898,6 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
     int64_t numIndices = 1;
     for (auto s : Ty.getShape())
       numIndices *= s;
-
-    int64_t rank = Ty.getShape().size();
 
     scatterDimsToOperandDims.push_back(i);
 

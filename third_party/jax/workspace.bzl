@@ -14,7 +14,11 @@ JAX_PATCHES = [
     sed -i.bak0 "s/#include \\"jaxlib\\/mosaic\\/dialect\\/tpu\\/tpu_enums.h.inc/#undef ARG_MAX\\n#include \\"jaxlib\\/mosaic\\/dialect\\/tpu\\/tpu_enums.h.inc/g" jaxlib/mosaic/dialect/tpu/tpu_dialect.h
     """,
     """
-    sed -i.bak0 "s/name = \\"triton_cc_proto\\"/name = \\"triton_cc_proto\\",\\n    visibility = [\\"\\/\\/visibility:public\\"]/g" jaxlib/gpu/BUILD
+    sed -i.bak0 "/ \\"\\/\\/jax:internal/d" jaxlib/gpu/BUILD
+    sed -i.bak0 "s,//third_party/py/enzyme_ad:__subpackages__,//visibility:public,g" jaxlib/gpu/BUILD
+    """,
+    """
+    sed -i.bak0 "/:mosaic_gpu_support/d" jaxlib/cuda/BUILD
     """,
 ]
 

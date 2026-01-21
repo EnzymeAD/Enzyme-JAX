@@ -30,9 +30,8 @@ module {
 }
 
 // CHECK: func.func @main(%arg0: tensor<5x4x3xf32>, %arg1: tensor<7x5x2x3xf32>) -> tensor<5x4x3xf32> {
-// CHECK-NEXT:       %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
-// CHECK-NEXT:       %0 = stablehlo.multiply %arg1, %arg1 : tensor<7x5x2x3xf32>
-// CHECK-NEXT:       %1 = stablehlo.reduce(%0 init: %cst) applies stablehlo.add across dimensions = [0] : (tensor<7x5x2x3xf32>, tensor<f32>) -> tensor<5x2x3xf32>
+// CHECK-NEXT:       %0 = stablehlo.dot_general %arg1, %arg1, batching_dims = [2, 3, 1] x [2, 3, 1], contracting_dims = [0] x [0] : (tensor<7x5x2x3xf32>, tensor<7x5x2x3xf32>) -> tensor<2x3x5xf32>
+// CHECK-NEXT:       %1 = stablehlo.transpose %0, dims = [2, 0, 1] : (tensor<2x3x5xf32>) -> tensor<5x2x3xf32>
 // CHECK-NEXT:       %2 = stablehlo.slice %arg0 [0:5, 2:4, 0:3] : (tensor<5x4x3xf32>) -> tensor<5x2x3xf32>
 // CHECK-NEXT:       %3 = stablehlo.concatenate %1, %2, dim = 1 : (tensor<5x2x3xf32>, tensor<5x2x3xf32>) -> tensor<5x4x3xf32>
 // CHECK-NEXT:       return %3 : tensor<5x4x3xf32>
@@ -68,9 +67,8 @@ module {
 }
 
 // CHECK: func.func @main(%arg0: tensor<5x4x3xf32>, %arg1: tensor<7x5x2x3xf32>) -> tensor<5x4x3xf32> {
-// CHECK-NEXT:     %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
-// CHECK-NEXT:     %0 = stablehlo.multiply %arg1, %arg1 : tensor<7x5x2x3xf32>
-// CHECK-NEXT:     %1 = stablehlo.reduce(%0 init: %cst) applies stablehlo.add across dimensions = [0] : (tensor<7x5x2x3xf32>, tensor<f32>) -> tensor<5x2x3xf32>
+// CHECK-NEXT:     %0 = stablehlo.dot_general %arg1, %arg1, batching_dims = [2, 3, 1] x [2, 3, 1], contracting_dims = [0] x [0] : (tensor<7x5x2x3xf32>, tensor<7x5x2x3xf32>) -> tensor<2x3x5xf32>
+// CHECK-NEXT:     %1 = stablehlo.transpose %0, dims = [2, 0, 1] : (tensor<2x3x5xf32>) -> tensor<5x2x3xf32>
 // CHECK-NEXT:     %2 = stablehlo.slice %arg0 [0:5, 2:4, 0:3] : (tensor<5x4x3xf32>) -> tensor<5x2x3xf32>
 // CHECK-NEXT:     %3 = stablehlo.concatenate %1, %2, dim = 1 : (tensor<5x2x3xf32>, tensor<5x2x3xf32>) -> tensor<5x4x3xf32>
 // CHECK-NEXT:     return %3 : tensor<5x4x3xf32>

@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --auto-batching --enzyme-hlo-opt %s | FileCheck %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-opt="enable_auto_batching_passes=true" %s | FileCheck %s
 
 module {
   func.func @main(%arg0: tensor<4x7x3xf32> {enzymexla.memory_effects = []}, %arg1: tensor<4x7x3xf32> {enzymexla.memory_effects = []}) -> tensor<8x7x3xf32> attributes {enzymexla.memory_effects = []} {

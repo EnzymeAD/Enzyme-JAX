@@ -58,7 +58,7 @@ struct SVDFactorizationOpLowering
     if (algorithm == SVDAlgorithm::DEFAULT) {
       if (backend == "cpu") {
         algorithm = SVDAlgorithm::DivideAndConquer;
-      } else if (backend == "cuda" || backend == "tpu") {
+      } else if (backend == "cuda" || backend == "tpu" || backend == "rocm") {
         algorithm = SVDAlgorithm::Jacobi;
       } else {
         op->emitOpError() << "Unsupported backend: " << backend;
@@ -91,6 +91,8 @@ struct SVDFactorizationOpLowering
       rewriter.replaceOp(op, gesvdOp);
       break;
     }
+    case SVDAlgorithm::DEFAULT:
+      llvm_unreachable("Default should have already been handled");
     }
 
     return success();
@@ -112,6 +114,20 @@ struct LowerEnzymeXLALinalgPass
     GreedyRewriteConfig config;
     if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
                                             config))) {
+      signalPassFailure();
+    }
+
+    // Verify that all illegal ops have been lowered
+    auto walkResult = getOperation()->walk([&](Operation *op) {
+      if (isa<enzymexla::LUFactorizationOp, enzymexla::SVDFactorizationOp>(
+              op)) {
+        op->emitError("Failed to lower enzymexla linalg operation");
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+
+    if (walkResult.wasInterrupted()) {
       signalPassFailure();
     }
   }

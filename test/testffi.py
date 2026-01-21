@@ -1,8 +1,6 @@
 from absl.testing import absltest
-import jax
-import jax.numpy as jnp
-from enzyme_ad.jax import hlo_call, enzyme_jax_ir
-from test_utils import *
+from test_utils import EnzymeJaxTest, no_newxla
+from enzyme_ad.jax import hlo_call
 
 
 def do_something(mat, scalar):
@@ -35,10 +33,10 @@ class HLOFFI(EnzymeJaxTest):
             jnp.array(2.7),
         ]
         self.dins = [
-            jnp.array(5 * jnp.ones((2, 2))),
+            jnp.full((2, 2), 5.0),
             jnp.array(3.1),
         ]
-        self.douts = [jnp.array(3.4), jnp.array(7 * jnp.ones((2, 2)))]
+        self.douts = [jnp.array(3.4), jnp.full((2, 2), 7.0)]
 
         self.primfilter = no_newxla
         self.fwdfilter = no_newxla

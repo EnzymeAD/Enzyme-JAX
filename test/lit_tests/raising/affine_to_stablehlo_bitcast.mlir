@@ -62,9 +62,9 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
 }
 
 // CHECK:  func.func private @raised(%arg0: tensor<?xf32>, %arg1: tensor<?xf32>) -> (tensor<?xf32>, tensor<?xf32>) {
-// CHECK-NEXT:    %cst = stablehlo.constant dense<2.000000e-03> : tensor<120x18000xf32>
-// CHECK-NEXT:    %c = stablehlo.constant dense<0> : tensor<120x18000xi32>
-// CHECK-NEXT:    %c_0 = stablehlo.constant dense<2> : tensor<120x18000xi32>
+// CHECK-NEXT:    %cst = stablehlo.constant dense<2.000000e-03> : tensor<2160000xf32>
+// CHECK-NEXT:    %c = stablehlo.constant dense<0> : tensor<2160000xi32>
+// CHECK-NEXT:    %c_0 = stablehlo.constant dense<2> : tensor<2160000xi32>
 // CHECK-NEXT:    %c_1 = stablehlo.constant dense<179773440> : tensor<120x18000xi64>
 // CHECK-NEXT:    %c_2 = stablehlo.constant dense<4> : tensor<120x18000xi64>
 // CHECK-NEXT:    %c_3 = stablehlo.constant dense<512> : tensor<18000xi64>
@@ -79,30 +79,27 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
 // CHECK-NEXT:    %5 = stablehlo.add %4, %c_4 : tensor<120x18000xi64>
 // CHECK-NEXT:    %6 = stablehlo.reshape %5 : (tensor<120x18000xi64>) -> tensor<2160000x1xi64>
 // CHECK-NEXT:    %7 = "stablehlo.gather"(%arg0, %6) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1>}> : (tensor<?xf32>, tensor<2160000x1xi64>) -> tensor<2160000xf32>
-// CHECK-NEXT:    %8 = stablehlo.reshape %7 : (tensor<2160000xf32>) -> tensor<120x18000xf32>
-// CHECK-NEXT:    %9 = stablehlo.bitcast_convert %arg0 : (tensor<?xf32>) -> tensor<?x4xi8>
-// CHECK-NEXT:    %10 = stablehlo.get_dimension_size %arg0, dim = 0 : (tensor<?xf32>) -> tensor<i32>
-// CHECK-NEXT:    %11 = stablehlo.multiply %10, %cst_6 : tensor<i32>
-// CHECK-NEXT:    %12 = stablehlo.reshape %11 : (tensor<i32>) -> tensor<1xi32>
-// CHECK-NEXT:    %13 = stablehlo.dynamic_reshape %9, %12 : (tensor<?x4xi8>, tensor<1xi32>) -> tensor<?xi8>
-// CHECK-NEXT:    %14 = stablehlo.multiply %0, %c_3 : tensor<18000xi64>
-// CHECK-NEXT:    %15 = stablehlo.iota dim = 1 : tensor<120x18000xi64>
-// CHECK-NEXT:    %16 = stablehlo.multiply %15, %c_2 : tensor<120x18000xi64>
-// CHECK-NEXT:    %17 = stablehlo.broadcast_in_dim %14, dims = [1] : (tensor<18000xi64>) -> tensor<120x18000xi64>
-// CHECK-NEXT:    %18 = stablehlo.add %16, %17 : tensor<120x18000xi64>
-// CHECK-NEXT:    %19 = stablehlo.add %18, %c_1 : tensor<120x18000xi64>
-// CHECK-NEXT:    %20 = stablehlo.reshape %19 : (tensor<120x18000xi64>) -> tensor<2160000x1xi64>
-// CHECK-NEXT:    %21 = "stablehlo.gather"(%13, %20) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1>}>
-// CHECK-NEXT:    %22 = arith.extui %21 : tensor<2160000xi8> to tensor<2160000xi32>
-// CHECK-NEXT:    %23 = stablehlo.reshape %22 : (tensor<2160000xi32>) -> tensor<120x18000xi32>
-// CHECK-NEXT:    %24 = arith.andi %23, %c_0 : tensor<120x18000xi32>
-// CHECK-NEXT:    %25 = arith.cmpi eq, %24, %c : tensor<120x18000xi32>
-// CHECK-NEXT:    %26 = arith.select %25, %8, %cst {fastmathFlags = #llvm.fastmath<nsz>} : tensor<120x18000xi1>, tensor<120x18000xf32>
-// CHECK-NEXT:    %27 = stablehlo.reshape %4 : (tensor<120x18000xi64>) -> tensor<2160000x1xi64>
-// CHECK-NEXT:    %28 = stablehlo.reshape %26 : (tensor<120x18000xf32>) -> tensor<2160000xf32>
-// CHECK-NEXT:    %29 = "stablehlo.scatter"(%arg1, %27, %28) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0], index_vector_dim = 1>, unique_indices = true}> ({
+// CHECK-NEXT:    %8 = stablehlo.bitcast_convert %arg0 : (tensor<?xf32>) -> tensor<?x4xi8>
+// CHECK-NEXT:    %9 = stablehlo.get_dimension_size %arg0, dim = 0 : (tensor<?xf32>) -> tensor<i32>
+// CHECK-NEXT:    %10 = stablehlo.multiply %9, %cst_6 : tensor<i32>
+// CHECK-NEXT:    %11 = stablehlo.reshape %10 : (tensor<i32>) -> tensor<1xi32>
+// CHECK-NEXT:    %12 = stablehlo.dynamic_reshape %8, %11 : (tensor<?x4xi8>, tensor<1xi32>) -> tensor<?xi8>
+// CHECK-NEXT:    %13 = stablehlo.multiply %0, %c_3 : tensor<18000xi64>
+// CHECK-NEXT:    %14 = stablehlo.iota dim = 1 : tensor<120x18000xi64>
+// CHECK-NEXT:    %15 = stablehlo.multiply %14, %c_2 : tensor<120x18000xi64>
+// CHECK-NEXT:    %16 = stablehlo.broadcast_in_dim %13, dims = [1] : (tensor<18000xi64>) -> tensor<120x18000xi64>
+// CHECK-NEXT:    %17 = stablehlo.add %15, %16 : tensor<120x18000xi64>
+// CHECK-NEXT:    %18 = stablehlo.add %17, %c_1 : tensor<120x18000xi64>
+// CHECK-NEXT:    %19 = stablehlo.reshape %18 : (tensor<120x18000xi64>) -> tensor<2160000x1xi64>
+// CHECK-NEXT:    %20 = "stablehlo.gather"(%12, %19) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1>}> : (tensor<?xi8>, tensor<2160000x1xi64>) -> tensor<2160000xi8>
+// CHECK-NEXT:    %21 = arith.extui %20 : tensor<2160000xi8> to tensor<2160000xi32>
+// CHECK-NEXT:    %22 = arith.andi %21, %c_0 : tensor<2160000xi32>
+// CHECK-NEXT:    %23 = arith.cmpi eq, %22, %c : tensor<2160000xi32>
+// CHECK-NEXT:    %24 = arith.select %23, %7, %cst {fastmathFlags = #llvm.fastmath<nsz>} : tensor<2160000xi1>, tensor<2160000xf32>
+// CHECK-NEXT:    %25 = stablehlo.reshape %4 : (tensor<120x18000xi64>) -> tensor<2160000x1xi64>
+// CHECK-NEXT:    %26 = "stablehlo.scatter"(%arg1, %25, %24) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0], index_vector_dim = 1>, unique_indices = true}> ({
 // CHECK-NEXT:    ^bb0(%arg2: tensor<f32>, %arg3: tensor<f32>):
 // CHECK-NEXT:      stablehlo.return %arg3 : tensor<f32>
 // CHECK-NEXT:    }) : (tensor<?xf32>, tensor<2160000x1xi64>, tensor<2160000xf32>) -> tensor<?xf32>
-// CHECK-NEXT:    return %arg0, %29 : tensor<?xf32>, tensor<?xf32>
+// CHECK-NEXT:    return %arg0, %26 : tensor<?xf32>, tensor<?xf32>
 // CHECK-NEXT:  }

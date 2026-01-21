@@ -1,8 +1,8 @@
 diff --git a/third_party/gpus/rocm/BUILD.tpl b/third_party/gpus/rocm/BUILD.tpl
-index d6022c80d8..42741e0e6f 100644
+index c95f9a9593..6e9ac4f185 100644
 --- a/third_party/gpus/rocm/BUILD.tpl
 +++ b/third_party/gpus/rocm/BUILD.tpl
-@@ -563,6 +563,24 @@ filegroup(
+@@ -594,6 +594,36 @@ filegroup(
      visibility = ["//visibility:public"],
  )
  
@@ -24,24 +24,36 @@ index d6022c80d8..42741e0e6f 100644
 +    visibility = ["//visibility:public"],
 +)
 +
++filegroup(
++    name = "ocml",
++    srcs = ["%{rocm_root}/lib/llvm/amdgcn/bitcode/ocml.bc"],
++    visibility = ["//visibility:public"],
++)
++
++filegroup(
++    name = "ockl",
++    srcs = ["%{rocm_root}/lib/llvm/amdgcn/bitcode/ockl.bc"],
++    visibility = ["//visibility:public"],
++)
++
  filegroup(
      name = "toolchain_data",
      srcs = glob([
 diff --git a/third_party/rocm_device_libs/build_defs.bzl b/third_party/rocm_device_libs/build_defs.bzl
-index 207102de8c..6aa7e535fe 100644
+index 5b9aee4f08..f55aabe5ad 100644
 --- a/third_party/rocm_device_libs/build_defs.bzl
 +++ b/third_party/rocm_device_libs/build_defs.bzl
 @@ -103,6 +103,7 @@ def _bitcode_library_impl(ctx):
          inputs = [strip_out],
          outputs = [final_bc],
          arguments = [strip_out.path, "-o", final_bc.path],
-+	use_default_shell_env = True,
++        use_default_shell_env = True,
          progress_message = "Preparing final bitcode for {}".format(ctx.label.name),
-         mnemonic = "RocmBitCodeFinalize",
+         mnemonic = "BitcodeFinalize",
      )
-@@ -119,17 +120,17 @@ bitcode_library = rule(
+@@ -118,17 +119,17 @@ bitcode_library = rule(
          "hdrs": attr.label_list(allow_files = [".h"]),
-         "file_specific_flags": attr.string_dict(),
+         "file_specific_flags": attr.string_list_dict(),
          "_clang": attr.label(
 -            default = Label("@llvm-project//clang:clang"),
 +            default = Label("@local_config_rocm//rocm:hipcc"),
@@ -60,3 +72,48 @@ index 207102de8c..6aa7e535fe 100644
              executable = True,
              cfg = "exec",
          ),
+diff --git a/third_party/rocm_device_libs/rocm_device_libs.BUILD b/third_party/rocm_device_libs/rocm_device_libs.BUILD
+index 11795b3537..24ba30ec5e 100644
+--- a/third_party/rocm_device_libs/rocm_device_libs.BUILD
++++ b/third_party/rocm_device_libs/rocm_device_libs.BUILD
+@@ -27,36 +27,12 @@ cc_binary(
+     ],
+ )
+ 
+-bitcode_library(
++alias(
+     name = "ocml",
+-    srcs = glob([
+-        "ocml/src/*.cl",
+-    ]),
+-    hdrs = glob([
+-        "ocml/src/*.h",
+-        "ocml/inc/*.h",
+-        "irif/inc/*.h",
+-        "oclc/inc/*.h",
+-    ]),
+-    file_specific_flags = {
+-        "native_logF.cl": ["-fapprox-func"],
+-        "native_expF.cl": ["-fapprox-func"],
+-        "sqrtF.cl": ["-cl-fp32-correctly-rounded-divide-sqrt"],
+-    },
++    actual = "@local_config_rocm//rocm:ocml"
+ )
+ 
+-bitcode_library(
++alias(
+     name = "ockl",
+-    srcs = glob([
+-        "ockl/src/*.cl",
+-        "ockl/src/*.ll",
+-    ]),
+-    hdrs = glob([
+-        "ockl/inc/*.h",
+-        "irif/inc/*.h",
+-        "oclc/inc/*.h",
+-    ]),
+-    file_specific_flags = {
+-        "gaaf.cl": ["-munsafe-fp-atomics"],
+-    },
++    actual = "@local_config_rocm//rocm:ockl"
+ )

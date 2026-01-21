@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --enzyme-hlo-opt --auto-batching --inline --enzyme-hlo-generate-td="patterns=reshape_dynamic_slice(1);reshape_licm(1);transpose_dynamic_slice;transpose_licm(1);while_is_copy_simplify;reshape_elementwise(1);elementwise_licm(1)" --transform-interpreter --enzyme-hlo-remove-transform --enzyme-hlo-opt %s | FileCheck %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-opt="enable_auto_batching_passes=true" %s | FileCheck %s
 
 module {
   func.func @main(%arg0: tensor<3x5x10xf32> {enzymexla.memory_effects = []}, %arg1: tensor<4x3xf32> {enzymexla.memory_effects = []}) -> tensor<4x5x10xf32> attributes {enzymexla.memory_effects = []} {
@@ -29,10 +29,8 @@ module {
 }
 
 // CHECK: func.func @main(%arg0: tensor<3x5x10xf32> {enzymexla.memory_effects = []}, %arg1: tensor<4x3xf32> {enzymexla.memory_effects = []}) -> tensor<4x5x10xf32> attributes {enzymexla.memory_effects = []} {
-// CHECK-NEXT:   %0 = stablehlo.broadcast_in_dim %arg1, dims = [1, 2] : (tensor<4x3xf32>) -> tensor<5x4x3xf32>
-// CHECK-NEXT:   %1 = stablehlo.dot_general %arg0, %0, batching_dims = [1] x [0], contracting_dims = [0] x [2], precision = [DEFAULT, DEFAULT] : (tensor<3x5x10xf32>, tensor<5x4x3xf32>) -> tensor<5x10x4xf32>
-// CHECK-NEXT:   %2 = stablehlo.transpose %1, dims = [2, 0, 1] : (tensor<5x10x4xf32>) -> tensor<4x5x10xf32>
-// CHECK-NEXT:   return %2 : tensor<4x5x10xf32>
+// CHECK-NEXT:   %0 = stablehlo.dot_general %arg1, %arg0, contracting_dims = [1] x [0], precision = [DEFAULT, DEFAULT] : (tensor<4x3xf32>, tensor<3x5x10xf32>) -> tensor<4x5x10xf32>
+// CHECK-NEXT:   return %0 : tensor<4x5x10xf32>
 // CHECK-NEXT: }
 
 module {

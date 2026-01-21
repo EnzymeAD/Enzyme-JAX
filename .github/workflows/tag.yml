@@ -12,7 +12,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [openstack22-large]
-        python: ["3.10", "3.11", "3.12"]
+        python: ["3.11", "3.12", "3.13"]
     timeout-minutes: 500
     steps:
       - name: add llvm
@@ -36,7 +36,7 @@ jobs:
           cat BUILD
           sed -i.bak "s~\[\"X86\", \"AArch64\", \"AMDGPU\", \"NVPTX\"\]~\[\"X86\", \"NVPTX\"\]~g" WORKSPACE
           cat WORKSPACE
-      - uses: bazel-contrib/setup-bazel@0.15.0
+      - uses: bazel-contrib/setup-bazel@0.16.0
         with:
           # Avoid downloading Bazel every time.
           bazelisk-cache: true

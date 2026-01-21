@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=remove_no_ops_from_while_loop;while_is_copy_simplify;transpose_reshape" --transform-interpreter --enzyme-hlo-remove-transform --enzyme-hlo-opt %s | FileCheck %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=remove_no_ops_from_while_loop;while_is_copy_simplify" --transform-interpreter --enzyme-hlo-remove-transform --enzyme-hlo-opt="max_constant_expansion=0" %s | FileCheck %s
 
 module {
   func.func @main(%arg0: tensor<10xf32> {tf.aliasing_output = 0 : i32}, %arg1: tensor<10xf32>) -> tensor<10xf32> {
@@ -160,10 +160,8 @@ module {
 }
 
 // CHECK: func.func @main(%arg0: tensor<3x5x10xf32>, %arg1: tensor<4x3xf32>) -> tensor<4x5x10xf32> {
-// CHECK-NEXT:     %0 = stablehlo.broadcast_in_dim %arg1, dims = [1, 2] : (tensor<4x3xf32>) -> tensor<5x4x3xf32>
-// CHECK-NEXT:     %1 = stablehlo.dot_general %arg0, %0, batching_dims = [1] x [0], contracting_dims = [0] x [2], precision = [DEFAULT, DEFAULT] : (tensor<3x5x10xf32>, tensor<5x4x3xf32>) -> tensor<5x10x4xf32>
-// CHECK-NEXT:     %2 = stablehlo.transpose %1, dims = [2, 0, 1] : (tensor<5x10x4xf32>) -> tensor<4x5x10xf32>
-// CHECK-NEXT:     return %2 : tensor<4x5x10xf32>
+// CHECK-NEXT:   %0 = stablehlo.dot_general %arg1, %arg0, contracting_dims = [1] x [0], precision = [DEFAULT, DEFAULT] : (tensor<4x3xf32>, tensor<3x5x10xf32>) -> tensor<4x5x10xf32>
+// CHECK-NEXT:   return %0 : tensor<4x5x10xf32>
 // CHECK-NEXT: }
 
 module {
@@ -252,9 +250,10 @@ module {
 }
 
 // CHECK: func.func @main(%arg0: tensor<5x4x3xf32>, %arg1: tensor<3x1x4x1x5xf32>) -> tensor<5x4x3xf32> {
-// CHECK-NEXT:   %0 = stablehlo.transpose %arg1, dims = [4, 1, 2, 3, 0] : (tensor<3x1x4x1x5xf32>) -> tensor<5x1x4x1x3xf32>
-// CHECK-NEXT:   %1 = stablehlo.reshape %0 : (tensor<5x1x4x1x3xf32>) -> tensor<5x4x3xf32>
-// CHECK-NEXT:   return %1 : tensor<5x4x3xf32>
+// CHECK-NEXT:   %0 = stablehlo.transpose %arg1, dims = [2, 4, 1, 3, 0] : (tensor<3x1x4x1x5xf32>) -> tensor<4x5x1x1x3xf32>
+// CHECK-NEXT:   %1 = stablehlo.reshape %0 : (tensor<4x5x1x1x3xf32>) -> tensor<4x5x3xf32>
+// CHECK-NEXT:   %2 = stablehlo.transpose %1, dims = [1, 0, 2] : (tensor<4x5x3xf32>) -> tensor<5x4x3xf32>
+// CHECK-NEXT:   return %2 : tensor<5x4x3xf32>
 // CHECK-NEXT: }
 
 module {
@@ -284,10 +283,47 @@ module {
 
 // CHECK: func.func @main(%arg0: tensor<1x3x4x1x5xf32>, %arg1: tensor<5x4x3xf32>) -> tensor<1x3x4x1x5xf32> {
 // CHECK-NEXT:   %0 = stablehlo.slice %arg1 [0:5, 0:3, 0:3] : (tensor<5x4x3xf32>) -> tensor<5x3x3xf32>
-// CHECK-NEXT:   %1 = stablehlo.transpose %0, dims = [1, 0, 2] : (tensor<5x3x3xf32>) -> tensor<3x5x3xf32>
-// CHECK-NEXT:   %2 = stablehlo.reshape %1 : (tensor<3x5x3xf32>) -> tensor<3x5x1x3x1xf32>
-// CHECK-NEXT:   %3 = stablehlo.transpose %2, dims = [4, 3, 0, 2, 1] : (tensor<3x5x1x3x1xf32>) -> tensor<1x3x3x1x5xf32>
-// CHECK-NEXT:   %4 = stablehlo.slice %arg0 [0:1, 0:3, 3:4, 0:1, 0:5] : (tensor<1x3x4x1x5xf32>) -> tensor<1x3x1x1x5xf32>
-// CHECK-NEXT:   %5 = stablehlo.concatenate %3, %4, dim = 2 : (tensor<1x3x3x1x5xf32>, tensor<1x3x1x1x5xf32>) -> tensor<1x3x4x1x5xf32>
-// CHECK-NEXT:   return %5 : tensor<1x3x4x1x5xf32>
+// CHECK-NEXT:   %1 = stablehlo.broadcast_in_dim %0, dims = [4, 2, 1] : (tensor<5x3x3xf32>) -> tensor<1x3x3x1x5xf32>
+// CHECK-NEXT:   %2 = stablehlo.slice %arg0 [0:1, 0:3, 3:4, 0:1, 0:5] : (tensor<1x3x4x1x5xf32>) -> tensor<1x3x1x1x5xf32>
+// CHECK-NEXT:   %3 = stablehlo.concatenate %1, %2, dim = 2 : (tensor<1x3x3x1x5xf32>, tensor<1x3x1x1x5xf32>) -> tensor<1x3x4x1x5xf32>
+// CHECK-NEXT:   return %3 : tensor<1x3x4x1x5xf32>
+// CHECK-NEXT: }
+
+module {
+  func.func @main(%arg0: tensor<10x10xf32>) -> tensor<10x10xf32> {
+    %cst = stablehlo.constant dense<0.000000e+00> : tensor<10x10xf32>
+    %c = stablehlo.constant dense<1> : tensor<i32>
+    %c_0 = stablehlo.constant dense<0> : tensor<i64>
+    %c_1 = stablehlo.constant dense<10> : tensor<i64>
+    %c_2 = stablehlo.constant dense<1> : tensor<i64>
+    %0 = stablehlo.multiply %arg0, %arg0 : tensor<10x10xf32>
+    %1 = stablehlo.transpose %0, dims = [1, 0] : (tensor<10x10xf32>) -> tensor<10x10xf32>
+    %2:2 = stablehlo.while(%iterArg = %c_0, %iterArg_3 = %cst) : tensor<i64>, tensor<10x10xf32>
+    cond {
+      %3 = stablehlo.compare  LT, %iterArg, %c_1 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+      stablehlo.return %3 : tensor<i1>
+    } do {
+      %3 = stablehlo.add %c_2, %iterArg : tensor<i64>
+      %4 = stablehlo.convert %3 : (tensor<i64>) -> tensor<i32>
+      %5 = stablehlo.subtract %4, %c : tensor<i32>
+      %6 = stablehlo.dynamic_slice %1, %iterArg, %iterArg, sizes = [1, 1] : (tensor<10x10xf32>, tensor<i64>, tensor<i64>) -> tensor<1x1xf32>
+      %7 = stablehlo.dynamic_update_slice %iterArg_3, %6, %5, %5 : (tensor<10x10xf32>, tensor<1x1xf32>, tensor<i32>, tensor<i32>) -> tensor<10x10xf32>
+      stablehlo.return %3, %7 : tensor<i64>, tensor<10x10xf32>
+    }
+    return %2#1 : tensor<10x10xf32>
+  }
+}
+
+// CHECK: func.func @main(%arg0: tensor<10x10xf32>) -> tensor<10x10xf32> {
+// CHECK-NEXT:   %cst = stablehlo.constant dense<0.000000e+00> : tensor<10x10xf32>
+// CHECK-NEXT:   %0 = stablehlo.multiply %arg0, %arg0 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<10x10xf32>
+// CHECK-NEXT:   %1 = stablehlo.transpose %0, dims = [1, 0] : (tensor<10x10xf32>) -> tensor<10x10xf32>
+// CHECK-NEXT:   %2 = stablehlo.iota dim = 0 : tensor<10x2xi64>
+// CHECK-NEXT:   %3 = "stablehlo.gather"(%1, %2) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1], start_index_map = [0, 1], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1>}> : (tensor<10x10xf32>, tensor<10x2xi64>) -> tensor<10xf32>
+// CHECK-NEXT:   %4 = stablehlo.iota dim = 0 : tensor<10x2xi32>
+// CHECK-NEXT:   %5 = "stablehlo.scatter"(%cst, %4, %3) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>, unique_indices = true}> ({
+// CHECK-NEXT:   ^bb0(%arg1: tensor<f32>, %arg2: tensor<f32>):
+// CHECK-NEXT:     stablehlo.return %arg2 : tensor<f32>
+// CHECK-NEXT:   }) : (tensor<10x10xf32>, tensor<10x2xi32>, tensor<10xf32>) -> tensor<10x10xf32>
+// CHECK-NEXT:   return %5 : tensor<10x10xf32>
 // CHECK-NEXT: }
