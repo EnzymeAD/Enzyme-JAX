@@ -2581,6 +2581,21 @@ LogicalResult enzymexla::MultiSliceOp::verify() {
            << " results (left_amount + right_amount + 1), got "
            << getNumResults();
 
+  // Verify limits are in bounds
+  auto operandShape = operandType.getShape();
+  for (int64_t i = 0; i < rank; ++i) {
+    auto begin = startIndices[i];
+    auto end = limitIndices[i];
+    if (i == dimension) {
+      begin -= leftAmount;
+      end += rightAmount;
+    }
+
+    if (begin < 0 || end > operandShape[i]) {
+      return emitOpError("indices at dimension ") << i << " are out of bounds";
+    }
+  }
+
   // Compute expected result shape from slice parameters
   SmallVector<int64_t> expectedShape;
   for (int64_t i = 0; i < rank; ++i) {

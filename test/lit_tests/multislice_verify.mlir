@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --split-input-file --verify-diagnostics %s | FileCheck %s
+// RUN: enzymexlamlir-opt --split-input-file --verify-diagnostics %s
 
 // Valid multi_slice operation (no error expected)
 func.func @multi_slice_valid(%arg0: tensor<20x24x80xf64>) -> tensor<4x24x80xf64> {
@@ -202,6 +202,22 @@ func.func @multi_slice_with_strides(%arg0: tensor<20x24x80xf64>) -> tensor<2x12x
         limit_indices = array<i64: 12, 24, 80>,
         strides = array<i64: 2, 2, 2>,
         dimension = 0 : si32,
+        left_amount = 1 : si32,
+        right_amount = 1 : si32
+    }> : (tensor<20x24x80xf64>) -> (tensor<2x12x40xf64>, tensor<2x12x40xf64>, tensor<2x12x40xf64>)
+    return %1 : tensor<2x12x40xf64>
+}
+
+// -----
+
+// Valid multi_slice with non-unit strides
+func.func @multi_slice_out_of_bounds(%arg0: tensor<20x24x80xf64>) -> tensor<2x12x40xf64> {
+    // expected-error @+1 {{op indices at dimension 1 are out of bounds}}
+    %0, %1, %2 = "enzymexla.multi_slice"(%arg0) <{
+        start_indices = array<i64: 8, 0, 0>,
+        limit_indices = array<i64: 12, 24, 80>,
+        strides = array<i64: 2, 2, 2>,
+        dimension = 1 : si32,
         left_amount = 1 : si32,
         right_amount = 1 : si32
     }> : (tensor<20x24x80xf64>) -> (tensor<2x12x40xf64>, tensor<2x12x40xf64>, tensor<2x12x40xf64>)
