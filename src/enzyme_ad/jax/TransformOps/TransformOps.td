@@ -1334,6 +1334,46 @@ def ApplyRotateLICMPatterns : EnzymeHLOParameterizedPatternOp<
   }];
 }
 
+def ApplyMultiRotateLICMPatterns : EnzymeHLOParameterizedPatternOp<
+    "multi_rotate_licm"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
+def ApplyMultiSliceLICMPatterns : EnzymeHLOParameterizedPatternOp<
+    "multi_slice_licm"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
+def ApplyMultiRotateOptPatterns : EnzymeHLOPatternOp<
+    "multi_rotate_opt"> {
+  let patterns = ["ReduceUnusedMultiRotate", "LowerMultiRotate", 
+                  "RecognizeMultiRotate", "ReuseMultiRotate"];
+}
+
+def ApplyMultiSliceOptPatterns : EnzymeHLOPatternOp<
+    "multi_slice_opt"> {
+  let patterns = ["ReduceUnusedMultiSlice", "LowerMultiSlice",
+                  "RecognizeMultiSlice", "ReuseMultiSlice"];
+}
+
 def ApplyWrapLICMPatterns : EnzymeHLOParameterizedPatternOp<
     "wrap_licm"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);

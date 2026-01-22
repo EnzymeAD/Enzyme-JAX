@@ -30678,6 +30678,574 @@ void mlir::transform::addExtendLICM(RewritePatternSet &patterns,
   patterns.insert<LICM<enzymexla::ExtendOp>>(single_user, &context, benefit);
 }
 
+// Pattern to reduce MultiRotateOp when some results are unused
+struct ReduceUnusedMultiRotate final
+    : CheckedOpRewritePattern<enzymexla::MultiRotateOp, ReduceUnusedMultiRotate> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(enzymexla::MultiRotateOp op,
+                                    PatternRewriter &rewriter) const {
+    int32_t leftAmount = op.getLeftAmount();
+    int32_t rightAmount = op.getRightAmount();
+    int32_t totalResults = leftAmount + rightAmount + 1;
+    
+    // Check which results are actually used
+    SmallVector<bool> used(totalResults, false);
+    int usedCount = 0;
+    for (int i = 0; i < totalResults; i++) {
+      if (!op.getResult(i).use_empty()) {
+        used[i] = true;
+        usedCount++;
+      }
+    }
+    
+    // If all results are used, nothing to optimize
+    if (usedCount == totalResults)
+      return failure();
+    
+    // If no results are used, this should be handled by dead code elimination
+    if (usedCount == 0)
+      return failure();
+    
+    // Find the range of used results
+    int firstUsed = -1, lastUsed = -1;
+    for (int i = 0; i < totalResults; i++) {
+      if (used[i]) {
+        if (firstUsed == -1) firstUsed = i;
+        lastUsed = i;
+      }
+    }
+    
+    // Calculate new left and right amounts
+    int centerIdx = leftAmount;
+    int newLeftAmount = centerIdx - firstUsed;
+    int newRightAmount = lastUsed - centerIdx;
+    
+    // If only one result is used, replace with a single RotateOp
+    // MultiRotate indexing: result[i] has rotation amount = (centerIdx - i)
+    // where centerIdx = leftAmount. Result[0] is leftmost (most positive rotation),
+    // result[centerIdx] is center (no rotation), result[totalResults-1] is rightmost.
+    if (usedCount == 1) {
+      int usedIdx = firstUsed;
+      int amount = centerIdx - usedIdx; // Amount for this result index
+      
+      auto rotateOp = rewriter.create<enzymexla::RotateOp>(
+          op.getLoc(), op.getOperand().getType(), op.getOperand(),
+          rewriter.getSI32IntegerAttr(amount), op.getDimensionAttr());
+      
+      rewriter.replaceOp(op, rotateOp.getResult());
+      return success();
+    }
+    
+    // Otherwise, create a smaller MultiRotateOp
+    if (newLeftAmount != leftAmount || newRightAmount != rightAmount) {
+      auto newOp = rewriter.create<enzymexla::MultiRotateOp>(
+          op.getLoc(), 
+          SmallVector<Type>(newLeftAmount + newRightAmount + 1, op.getOperand().getType()),
+          op.getOperand(), op.getDimensionAttr(),
+          rewriter.getSI32IntegerAttr(newLeftAmount),
+          rewriter.getSI32IntegerAttr(newRightAmount));
+      
+      // Map old results to new results
+      SmallVector<Value> replacements(totalResults);
+      int newIdx = 0;
+      for (int oldIdx = firstUsed; oldIdx <= lastUsed; oldIdx++) {
+        replacements[oldIdx] = newOp.getResult(newIdx++);
+      }
+      
+      // Replace uses
+      for (int i = 0; i < totalResults; i++) {
+        if (used[i]) {
+          op.getResult(i).replaceAllUsesWith(replacements[i]);
+        }
+      }
+      
+      rewriter.eraseOp(op);
+      return success();
+    }
+    
+    return failure();
+  }
+};
+
+// Pattern to reduce MultiSliceOp when some results are unused
+struct ReduceUnusedMultiSlice final
+    : CheckedOpRewritePattern<enzymexla::MultiSliceOp, ReduceUnusedMultiSlice> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(enzymexla::MultiSliceOp op,
+                                    PatternRewriter &rewriter) const {
+    int32_t leftAmount = op.getLeftAmount();
+    int32_t rightAmount = op.getRightAmount();
+    int32_t totalResults = leftAmount + rightAmount + 1;
+    
+    // Check which results are actually used
+    SmallVector<bool> used(totalResults, false);
+    int usedCount = 0;
+    for (int i = 0; i < totalResults; i++) {
+      if (!op.getResult(i).use_empty()) {
+        used[i] = true;
+        usedCount++;
+      }
+    }
+    
+    // If all results are used, nothing to optimize
+    if (usedCount == totalResults)
+      return failure();
+    
+    // If no results are used, this should be handled by dead code elimination
+    if (usedCount == 0)
+      return failure();
+    
+    // Find the range of used results
+    int firstUsed = -1, lastUsed = -1;
+    for (int i = 0; i < totalResults; i++) {
+      if (used[i]) {
+        if (firstUsed == -1) firstUsed = i;
+        lastUsed = i;
+      }
+    }
+    
+    // Calculate new left and right amounts
+    int centerIdx = leftAmount;
+    int newLeftAmount = centerIdx - firstUsed;
+    int newRightAmount = lastUsed - centerIdx;
+    
+    // If only one result is used, replace with a single SliceOp
+    if (usedCount == 1) {
+      int usedIdx = firstUsed;
+      int offset = usedIdx - centerIdx; // How much to shift the slice
+      
+      auto startIndices = llvm::to_vector(op.getStartIndices());
+      auto limitIndices = llvm::to_vector(op.getLimitIndices());
+      int32_t dim = op.getDimension();
+      
+      // Adjust start and limit indices for the offset
+      startIndices[dim] += offset;
+      limitIndices[dim] += offset;
+      
+      auto sliceOp = rewriter.create<stablehlo::SliceOp>(
+          op.getLoc(), op.getOperand(),
+          rewriter.getDenseI64ArrayAttr(startIndices),
+          rewriter.getDenseI64ArrayAttr(limitIndices),
+          op.getStridesAttr());
+      
+      rewriter.replaceOp(op, sliceOp.getResult());
+      return success();
+    }
+    
+    // Otherwise, create a smaller MultiSliceOp
+    if (newLeftAmount != leftAmount || newRightAmount != rightAmount) {
+      // Adjust start indices for the new center
+      int offset = firstUsed - centerIdx;
+      auto startIndices = llvm::to_vector(op.getStartIndices());
+      auto limitIndices = llvm::to_vector(op.getLimitIndices());
+      int32_t dim = op.getDimension();
+      
+      startIndices[dim] += offset;
+      limitIndices[dim] += offset;
+      
+      // Determine result types
+      auto operandType = cast<RankedTensorType>(op.getOperand().getType());
+      SmallVector<Type> resultTypes;
+      for (int i = 0; i < newLeftAmount + newRightAmount + 1; i++) {
+        resultTypes.push_back(operandType); // Will be properly typed by the op
+      }
+      
+      auto newOp = rewriter.create<enzymexla::MultiSliceOp>(
+          op.getLoc(), resultTypes, op.getOperand(),
+          rewriter.getDenseI64ArrayAttr(startIndices),
+          rewriter.getDenseI64ArrayAttr(limitIndices),
+          op.getStridesAttr(), op.getDimensionAttr(),
+          rewriter.getSI32IntegerAttr(newLeftAmount),
+          rewriter.getSI32IntegerAttr(newRightAmount));
+      
+      // Map old results to new results
+      SmallVector<Value> replacements(totalResults);
+      int newIdx = 0;
+      for (int oldIdx = firstUsed; oldIdx <= lastUsed; oldIdx++) {
+        replacements[oldIdx] = newOp.getResult(newIdx++);
+      }
+      
+      // Replace uses
+      for (int i = 0; i < totalResults; i++) {
+        if (used[i]) {
+          op.getResult(i).replaceAllUsesWith(replacements[i]);
+        }
+      }
+      
+      rewriter.eraseOp(op);
+      return success();
+    }
+    
+    return failure();
+  }
+};
+
+// Pattern to lower MultiRotateOp to multiple single RotateOp
+struct LowerMultiRotate final
+    : CheckedOpRewritePattern<enzymexla::MultiRotateOp, LowerMultiRotate> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(enzymexla::MultiRotateOp op,
+                                    PatternRewriter &rewriter) const {
+    int32_t leftAmount = op.getLeftAmount();
+    int32_t rightAmount = op.getRightAmount();
+    int32_t centerIdx = leftAmount;
+    
+    SmallVector<Value> results;
+    auto shard = sdy::getShardingPerValue(op);
+    
+    // Create rotate ops for each result
+    for (int32_t i = 0; i < leftAmount + rightAmount + 1; i++) {
+      int32_t amount = centerIdx - i; // Positive = rotate left, negative = rotate right
+      
+      auto rotateOp = rewriter.create<enzymexla::RotateOp>(
+          op.getLoc(), op.getOperand().getType(), op.getOperand(),
+          rewriter.getSI32IntegerAttr(amount), op.getDimensionAttr());
+      
+      if (shard)
+        sdy::setShardings(rotateOp, shard);
+      
+      results.push_back(rotateOp.getResult());
+    }
+    
+    rewriter.replaceOp(op, results);
+    return success();
+  }
+};
+
+// Pattern to lower MultiSliceOp to multiple single SliceOp
+struct LowerMultiSlice final
+    : CheckedOpRewritePattern<enzymexla::MultiSliceOp, LowerMultiSlice> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(enzymexla::MultiSliceOp op,
+                                    PatternRewriter &rewriter) const {
+    int32_t leftAmount = op.getLeftAmount();
+    int32_t rightAmount = op.getRightAmount();
+    int32_t centerIdx = leftAmount;
+    int32_t dim = op.getDimension();
+    
+    auto startIndices = llvm::to_vector(op.getStartIndices());
+    auto limitIndices = llvm::to_vector(op.getLimitIndices());
+    
+    SmallVector<Value> results;
+    auto shard = sdy::getShardingPerValue(op);
+    
+    // Create slice ops for each result
+    for (int32_t i = 0; i < leftAmount + rightAmount + 1; i++) {
+      int32_t offset = i - centerIdx;
+      
+      auto newStartIndices = startIndices;
+      auto newLimitIndices = limitIndices;
+      newStartIndices[dim] += offset;
+      newLimitIndices[dim] += offset;
+      
+      auto sliceOp = rewriter.create<stablehlo::SliceOp>(
+          op.getLoc(), op.getOperand(),
+          rewriter.getDenseI64ArrayAttr(newStartIndices),
+          rewriter.getDenseI64ArrayAttr(newLimitIndices),
+          op.getStridesAttr());
+      
+      if (shard)
+        sdy::setShardings(sliceOp, shard);
+      
+      results.push_back(sliceOp.getResult());
+    }
+    
+    rewriter.replaceOp(op, results);
+    return success();
+  }
+};
+
+// Pattern to recognize multiple rotates and create a MultiRotateOp
+struct RecognizeMultiRotate final
+    : CheckedOpRewritePattern<enzymexla::RotateOp, RecognizeMultiRotate> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(enzymexla::RotateOp op,
+                                    PatternRewriter &rewriter) const {
+    // Find all rotate ops with the same operand and dimension
+    SmallVector<enzymexla::RotateOp> rotateOps;
+    SmallVector<int32_t> amounts;
+    
+    for (auto user : op.getOperand().getUsers()) {
+      if (auto rotOp = dyn_cast<enzymexla::RotateOp>(user)) {
+        if (rotOp.getDimension() == op.getDimension()) {
+          rotateOps.push_back(rotOp);
+          amounts.push_back(rotOp.getAmount());
+        }
+      }
+    }
+    
+    // Need at least 2 rotates to be worth combining
+    if (rotateOps.size() < 2)
+      return failure();
+    
+    // Find the range of amounts
+    int32_t minAmount = *std::min_element(amounts.begin(), amounts.end());
+    int32_t maxAmount = *std::max_element(amounts.begin(), amounts.end());
+    
+    // Check if amounts form a contiguous range
+    int32_t expectedCount = maxAmount - minAmount + 1;
+    if (expectedCount != static_cast<int32_t>(amounts.size()))
+      return failure(); // Not all amounts present
+    
+    // Verify we have all amounts in the range
+    SmallSet<int32_t, 8> amountSet(amounts.begin(), amounts.end());
+    for (int32_t a = minAmount; a <= maxAmount; a++) {
+      if (!amountSet.contains(a))
+        return failure();
+    }
+    
+    // Create MultiRotateOp
+    int32_t centerAmount = 0;
+    int32_t leftAmount = centerAmount - minAmount;
+    int32_t rightAmount = maxAmount - centerAmount;
+    
+    SmallVector<Type> resultTypes(leftAmount + rightAmount + 1, op.getType());
+    auto multiRotate = rewriter.create<enzymexla::MultiRotateOp>(
+        op.getLoc(), resultTypes, op.getOperand(), op.getDimensionAttr(),
+        rewriter.getSI32IntegerAttr(leftAmount),
+        rewriter.getSI32IntegerAttr(rightAmount));
+    
+    // Replace all rotate ops with results from MultiRotateOp
+    // MultiRotate result indexing: result[i] = rotate by (leftAmount - i)
+    // So for a rotate with amount A, we need result[leftAmount - A]
+    for (auto rotOp : rotateOps) {
+      int32_t idx = leftAmount - rotOp.getAmount();
+      rewriter.replaceOp(rotOp, multiRotate.getResult(idx));
+    }
+    
+    return success();
+  }
+};
+
+// Pattern to recognize multiple slices and create a MultiSliceOp
+struct RecognizeMultiSlice final
+    : CheckedOpRewritePattern<stablehlo::SliceOp, RecognizeMultiSlice> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
+                                    PatternRewriter &rewriter) const {
+    // Find all slice ops with the same operand
+    SmallVector<stablehlo::SliceOp> sliceOps;
+    
+    for (auto user : op.getOperand().getUsers()) {
+      if (auto sliceOp = dyn_cast<stablehlo::SliceOp>(user)) {
+        sliceOps.push_back(sliceOp);
+      }
+    }
+    
+    // Need at least 2 slices to be worth combining
+    if (sliceOps.size() < 2)
+      return failure();
+    
+    // Find the dimension where slices differ and check if they form a pattern
+    auto rank = op.getType().getRank();
+    int32_t varyingDim = -1;
+    
+    // Find which dimension varies across slices
+    for (int32_t dim = 0; dim < rank; dim++) {
+      bool differs = false;
+      auto firstStart = sliceOps[0].getStartIndices()[dim];
+      for (size_t i = 1; i < sliceOps.size(); i++) {
+        if (sliceOps[i].getStartIndices()[dim] != firstStart) {
+          differs = true;
+          break;
+        }
+      }
+      if (differs) {
+        if (varyingDim != -1)
+          return failure(); // Multiple dimensions vary
+        varyingDim = dim;
+      }
+    }
+    
+    if (varyingDim == -1)
+      return failure(); // No dimension varies
+    
+    // Check if all slices have the same limit-start difference and strides
+    int64_t sliceSize = sliceOps[0].getLimitIndices()[varyingDim] - 
+                        sliceOps[0].getStartIndices()[varyingDim];
+    auto strides = sliceOps[0].getStrides();
+    
+    for (auto sliceOp : sliceOps) {
+      int64_t size = sliceOp.getLimitIndices()[varyingDim] - 
+                     sliceOp.getStartIndices()[varyingDim];
+      if (size != sliceSize || sliceOp.getStrides() != strides)
+        return failure();
+    }
+    
+    // Find the range of start indices in the varying dimension
+    SmallVector<int64_t> starts;
+    for (auto sliceOp : sliceOps) {
+      starts.push_back(sliceOp.getStartIndices()[varyingDim]);
+    }
+    
+    int64_t minStart = *std::min_element(starts.begin(), starts.end());
+    int64_t maxStart = *std::max_element(starts.begin(), starts.end());
+    
+    // Check if starts form a contiguous range with step 1
+    int64_t expectedCount = maxStart - minStart + 1;
+    if (expectedCount != static_cast<int64_t>(starts.size()))
+      return failure();
+    
+    // Verify we have all starts in the range
+    SmallSet<int64_t, 8> startSet(starts.begin(), starts.end());
+    for (int64_t s = minStart; s <= maxStart; s++) {
+      if (!startSet.contains(s))
+        return failure();
+    }
+    
+    // Create MultiSliceOp with the center slice
+    int64_t centerStart = minStart + (maxStart - minStart) / 2;
+    int32_t leftAmount = centerStart - minStart;
+    int32_t rightAmount = maxStart - centerStart;
+    
+    auto centerStartIndices = llvm::to_vector(sliceOps[0].getStartIndices());
+    auto centerLimitIndices = llvm::to_vector(sliceOps[0].getLimitIndices());
+    centerStartIndices[varyingDim] = centerStart;
+    centerLimitIndices[varyingDim] = centerStart + sliceSize;
+    
+    SmallVector<Type> resultTypes(leftAmount + rightAmount + 1, op.getType());
+    auto multiSlice = rewriter.create<enzymexla::MultiSliceOp>(
+        op.getLoc(), resultTypes, op.getOperand(),
+        rewriter.getDenseI64ArrayAttr(centerStartIndices),
+        rewriter.getDenseI64ArrayAttr(centerLimitIndices),
+        strides, rewriter.getSI32IntegerAttr(varyingDim),
+        rewriter.getSI32IntegerAttr(leftAmount),
+        rewriter.getSI32IntegerAttr(rightAmount));
+    
+    // Replace all slice ops with results from MultiSliceOp
+    // MultiSlice result indexing: result[i] has start offset = (i - leftAmount)
+    // For a slice with start S, we need result[leftAmount + (S - centerStart)]
+    for (auto sliceOp : sliceOps) {
+      int64_t start = sliceOp.getStartIndices()[varyingDim];
+      int32_t idx = leftAmount + (start - centerStart);
+      rewriter.replaceOp(sliceOp, multiSlice.getResult(idx));
+    }
+    
+    return success();
+  }
+};
+
+// CSE pattern: reuse MultiRotateOp result for single RotateOp
+struct ReuseMultiRotate final
+    : CheckedOpRewritePattern<enzymexla::RotateOp, ReuseMultiRotate> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(enzymexla::RotateOp op,
+                                    PatternRewriter &rewriter) const {
+    // Look for a MultiRotateOp with the same operand and dimension
+    for (auto user : op.getOperand().getUsers()) {
+      if (auto multiRotate = dyn_cast<enzymexla::MultiRotateOp>(user)) {
+        if (multiRotate.getDimension() != op.getDimension())
+          continue;
+        
+        int32_t leftAmount = multiRotate.getLeftAmount();
+        int32_t rightAmount = multiRotate.getRightAmount();
+        int32_t centerIdx = leftAmount;
+        int32_t targetAmount = op.getAmount();
+        
+        // Check if this amount is in the multi-rotate range
+        int32_t idx = centerIdx - targetAmount;
+        if (idx >= 0 && idx < leftAmount + rightAmount + 1) {
+          rewriter.replaceOp(op, multiRotate.getResult(idx));
+          return success();
+        }
+      }
+    }
+    
+    return failure();
+  }
+};
+
+// CSE pattern: reuse MultiSliceOp result for single SliceOp
+struct ReuseMultiSlice final
+    : CheckedOpRewritePattern<stablehlo::SliceOp, ReuseMultiSlice> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
+                                    PatternRewriter &rewriter) const {
+    // Look for a MultiSliceOp with the same operand
+    for (auto user : op.getOperand().getUsers()) {
+      if (auto multiSlice = dyn_cast<enzymexla::MultiSliceOp>(user)) {
+        // Check if this slice matches one of the multi-slice results
+        int32_t leftAmount = multiSlice.getLeftAmount();
+        int32_t rightAmount = multiSlice.getRightAmount();
+        int32_t centerIdx = leftAmount;
+        int32_t dim = multiSlice.getDimension();
+        
+        auto multiStart = multiSlice.getStartIndices()[dim];
+        auto multiLimit = multiSlice.getLimitIndices()[dim];
+        auto opStart = op.getStartIndices()[dim];
+        auto opLimit = op.getLimitIndices()[dim];
+        
+        // Check if strides match
+        if (op.getStrides() != multiSlice.getStrides())
+          continue;
+        
+        // Check if other dimensions match
+        bool otherDimsMatch = true;
+        for (int32_t d = 0; d < op.getType().getRank(); d++) {
+          if (d == dim) continue;
+          if (op.getStartIndices()[d] != multiSlice.getStartIndices()[d] ||
+              op.getLimitIndices()[d] != multiSlice.getLimitIndices()[d]) {
+            otherDimsMatch = false;
+            break;
+          }
+        }
+        
+        if (!otherDimsMatch)
+          continue;
+        
+        // Check if sizes match
+        if (opLimit - opStart != multiLimit - multiStart)
+          continue;
+        
+        // Calculate offset
+        int64_t offset = opStart - multiStart;
+        int32_t idx = centerIdx + offset;
+        
+        if (idx >= 0 && idx < leftAmount + rightAmount + 1) {
+          rewriter.replaceOp(op, multiSlice.getResult(idx));
+          return success();
+        }
+      }
+    }
+    
+    return failure();
+  }
+};
+
+void mlir::transform::addMultiRotateOpt(RewritePatternSet &patterns,
+                                        MLIRContext &context,
+                                        PatternBenefit benefit) {
+  patterns.insert<ReduceUnusedMultiRotate, LowerMultiRotate, 
+                  RecognizeMultiRotate, ReuseMultiRotate>(&context, benefit);
+}
+
+void mlir::transform::addMultiSliceOpt(RewritePatternSet &patterns,
+                                       MLIRContext &context,
+                                       PatternBenefit benefit) {
+  patterns.insert<ReduceUnusedMultiSlice, LowerMultiSlice,
+                  RecognizeMultiSlice, ReuseMultiSlice>(&context, benefit);
+}
+
+void mlir::transform::addMultiRotateLICM(RewritePatternSet &patterns,
+                                         bool single_user, MLIRContext &context,
+                                         PatternBenefit benefit) {
+  patterns.insert<LICM<enzymexla::MultiRotateOp>>(single_user, &context, benefit);
+}
+
+void mlir::transform::addMultiSliceLICM(RewritePatternSet &patterns,
+                                        bool single_user, MLIRContext &context,
+                                        PatternBenefit benefit) {
+  patterns.insert<LICM<enzymexla::MultiSliceOp>>(single_user, &context, benefit);
+}
+
 void mlir::transform::addElementwiseLICM(RewritePatternSet &patterns,
                                          bool single_user, MLIRContext &context,
                                          PatternBenefit benefit) {
