@@ -30292,43 +30292,110 @@ struct RecognizeMultiRotate
 
     // Collect all RotateOps operating on the same input with the same dimension
     SmallVector<enzymexla::RotateOp> rotates;
-    SmallVector<int32_t> amounts;
+    DenseSet<int32_t> amountSet;
 
     for (Operation *user : input.getUsers()) {
       if (auto rotate = dyn_cast<enzymexla::RotateOp>(user)) {
-        if (rotate.getDimension() == dimension) {
+        if (rotate.getDimension() == dimension && !rotate.use_empty()) {
           rotates.push_back(rotate);
-          amounts.push_back(rotate.getAmount());
+          amountSet.insert(rotate.getAmount());
         }
       }
     }
 
-    // Need at least 2 rotations to combine
+    // Need at least 2 rotations to consider combining
     if (rotates.size() < 2)
       return failure();
 
-    // To avoid processing the same set of rotations multiple times,
-    // only proceed if this op has the minimum rotation amount
-    int32_t minAmount = *std::min_element(amounts.begin(), amounts.end());
-    int32_t maxAmount = *std::max_element(amounts.begin(), amounts.end());
+    // Sort amounts to find contiguous groups
+    SmallVector<int32_t> sortedAmounts(amountSet.begin(), amountSet.end());
+    llvm::sort(sortedAmounts);
 
-    if (thisAmount != minAmount)
+    // Find all contiguous groups (no gaps in amounts)
+    SmallVector<std::pair<int32_t, int32_t>>
+        contiguousGroups; // (start, end) inclusive
+    int32_t groupStart = sortedAmounts[0];
+    int32_t groupEnd = sortedAmounts[0];
+
+    for (size_t i = 1; i < sortedAmounts.size(); i++) {
+      if (sortedAmounts[i] == groupEnd + 1) {
+        // Extend current group
+        groupEnd = sortedAmounts[i];
+      } else {
+        // Save current group and start new one
+        contiguousGroups.push_back({groupStart, groupEnd});
+        groupStart = sortedAmounts[i];
+        groupEnd = sortedAmounts[i];
+      }
+    }
+    contiguousGroups.push_back({groupStart, groupEnd});
+
+    // Collect all amounts from groups that contain identity or neighbor it
+    // Groups that neighbor identity will be connected through 0
+    SmallVector<int32_t> qualifyingAmounts;
+
+    for (auto &[start, end] : contiguousGroups) {
+      bool containsIdentity = (start <= 0 && end >= 0);
+      bool neighborsIdentity = (end == -1 || start == 1);
+
+      if (containsIdentity || neighborsIdentity) {
+        // Add all actual rotate amounts from this group
+        for (int32_t a = start; a <= end; a++) {
+          if (amountSet.contains(a)) {
+            qualifyingAmounts.push_back(a);
+          }
+        }
+      }
+    }
+
+    // No qualifying groups found
+    if (qualifyingAmounts.size() < 2)
+      return failure();
+
+    // Determine the multirotate range from qualifying amounts, extended to
+    // include 0
+    int32_t rangeStart =
+        *std::min_element(qualifyingAmounts.begin(), qualifyingAmounts.end());
+    int32_t rangeEnd =
+        *std::max_element(qualifyingAmounts.begin(), qualifyingAmounts.end());
+
+    // Extend to include identity (0) if not already included
+    if (rangeStart > 0)
+      rangeStart = 0;
+    if (rangeEnd < 0)
+      rangeEnd = 0;
+
+    // Check if this op is part of the selected range
+    if (thisAmount < rangeStart || thisAmount > rangeEnd)
+      return failure();
+
+    // Find the minimum amount among actual rotates in the selected range
+    // to use as the canonical trigger (prevents processing same group multiple
+    // times)
+    int32_t minAmountInRange = INT32_MAX;
+    int rotatesToCombine = 0;
+    for (auto rotate : rotates) {
+      int32_t amt = rotate.getAmount();
+      if (amt >= rangeStart && amt <= rangeEnd) {
+        minAmountInRange = std::min(minAmountInRange, amt);
+        rotatesToCombine++;
+      }
+    }
+
+    // Only proceed if this op has the minimum amount in the range
+    if (thisAmount != minAmountInRange)
+      return failure();
+
+    // Need at least 2 rotations in the selected range to combine
+    if (rotatesToCombine < 2)
       return failure();
 
     // Calculate left and right amounts for MultiRotateOp
-    // In MultiRotateOp semantics:
-    //   result[i] corresponds to rotation by (leftAmount - i)
-    //   result[0] = rotate left by leftAmount
-    //   result[leftAmount] = rotate by 0 (center)
-    //   result[leftAmount + rightAmount] = rotate right by rightAmount
-    int32_t leftAmount = maxAmount > 0 ? maxAmount : 0;
-    int32_t rightAmount = minAmount < 0 ? -minAmount : 0;
+    // leftAmount covers positive rotations (rotate left)
+    // rightAmount covers negative rotations (rotate right)
+    int32_t leftAmount = rangeEnd > 0 ? rangeEnd : 0;
+    int32_t rightAmount = rangeStart < 0 ? -rangeStart : 0;
     int32_t totalResults = leftAmount + rightAmount + 1;
-
-    // Check density - only combine if utilization is reasonable
-    // Avoid creating a MultiRotateOp with many unused intermediate results
-    if (totalResults > 2 * static_cast<int32_t>(rotates.size()))
-      return failure();
 
     // Create the MultiRotateOp
     auto newOp = rewriter.create<enzymexla::MultiRotateOp>(
@@ -30341,11 +30408,15 @@ struct RecognizeMultiRotate
       sdy::setShardings(newOp, shard);
     }
 
-    // Replace all individual RotateOps with corresponding MultiRotateOp results
-    for (size_t i = 0; i < rotates.size(); i++) {
-      // For rotation amount 'a', the result index is: leftAmount - a
-      int32_t resultIdx = leftAmount - amounts[i];
-      rewriter.replaceOp(rotates[i], newOp.getResult(resultIdx));
+    // Replace rotations that fall within the selected range
+    for (auto rotate : rotates) {
+      int32_t amt = rotate.getAmount();
+      if (amt >= rangeStart && amt <= rangeEnd) {
+        // Result index for amount 'a' is: leftAmount - a
+        int32_t resultIdx = leftAmount - amt;
+        rewriter.replaceOp(rotate, newOp.getResult(resultIdx));
+      }
+      // Rotations outside the range are left unchanged
     }
 
     return success();
