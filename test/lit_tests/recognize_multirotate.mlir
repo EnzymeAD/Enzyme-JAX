@@ -149,8 +149,8 @@ func.func @partial_combination(%arg0: tensor<10x20xf32>) -> (tensor<10x20xf32>, 
 
 // CHECK-LABEL:   func.func @partial_combination(
 // CHECK-SAME:                                   %[[VAL_0:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: tensor<10x20xf32>) -> (tensor<10x20xf32>, tensor<10x20xf32>, tensor<10x20xf32>) {
-// CHECK:           %[[VAL_1:.*]] = "enzymexla.rotate"(%[[VAL_0]]) <{amount = -2 : si32, dimension = 0 : si32}> : (tensor<10x20xf32>) -> tensor<10x20xf32>
 // CHECK:           %[[VAL_2:.*]]:3 = "enzymexla.multi_rotate"(%[[VAL_0]]) <{dimension = 0 : si32, left_amount = 2 : si32, right_amount = 0 : si32}> : (tensor<10x20xf32>) -> (tensor<10x20xf32>, tensor<10x20xf32>, tensor<10x20xf32>)
+// CHECK:           %[[VAL_1:.*]] = "enzymexla.rotate"(%[[VAL_0]]) <{amount = -2 : si32, dimension = 0 : si32}> : (tensor<10x20xf32>) -> tensor<10x20xf32>
 // CHECK:           return %[[VAL_1]], %[[VAL_2]]#1, %[[VAL_2]]#0 : tensor<10x20xf32>, tensor<10x20xf32>, tensor<10x20xf32>
 // CHECK:         }
 

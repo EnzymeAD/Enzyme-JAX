@@ -30398,6 +30398,7 @@ struct RecognizeMultiRotate
     int32_t totalResults = leftAmount + rightAmount + 1;
 
     // Create the MultiRotateOp
+    rewriter.setInsertionPointAfterValue(input);
     auto newOp = rewriter.create<enzymexla::MultiRotateOp>(
         op.getLoc(), SmallVector<Type>(totalResults, input.getType()), input,
         op.getDimensionAttr(), rewriter.getSI32IntegerAttr(leftAmount),
