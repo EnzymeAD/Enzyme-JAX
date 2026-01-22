@@ -1379,6 +1379,9 @@ struct LowerExtend
 
 stablehlo::ConcatenateOp lowerRotate(enzymexla::RotateOp rotate,
                                      PatternRewriter &rewriter, bool replace) {
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPoint(rotate);
+
   // sl0[A:end], sl1[0:A]
   auto shard = sdy::getShardingPerValue(rotate);
   SmallVector<int64_t> strides(rotate.getType().getShape().size(), 1);
