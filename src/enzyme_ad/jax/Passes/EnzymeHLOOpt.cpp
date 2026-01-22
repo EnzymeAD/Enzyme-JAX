@@ -30346,6 +30346,10 @@ struct ReduceUnusedMultiSlice final
           rewriter.getDenseI64ArrayAttr(startIndices),
           rewriter.getDenseI64ArrayAttr(limitIndices),
           rewriter.getDenseI64ArrayAttr(strides));
+      // Propagate sharding if present
+      if (auto shard = sdy::getShardingPerValue(op)) {
+        sdy::setShardings(sliceOp, shard);
+      }
 
       rewriter.replaceAllUsesWith(op.getResult(usedIdx), sliceOp.getResult());
       rewriter.eraseOp(op);
@@ -30375,6 +30379,10 @@ struct ReduceUnusedMultiSlice final
       auto newOp = rewriter.create<enzymexla::MultiSliceOp>(
           op.getLoc(), resultTypes, op.getOperand(), startIndices, limitIndices,
           op.getStrides(), op.getDimension(), newLeftAmount, newRightAmount);
+      // Propagate sharding if present
+      if (auto shard = sdy::getShardingPerValue(op)) {
+        sdy::setShardings(newOp, shard);
+      }
 
       // Map old results to new results
       SmallVector<Value> replacements(totalResults);
