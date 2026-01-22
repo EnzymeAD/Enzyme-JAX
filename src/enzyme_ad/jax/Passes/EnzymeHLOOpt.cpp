@@ -30307,7 +30307,7 @@ struct ReduceUnusedMultiRotate final
 
     // If no results are used, this should be handled by dead code elimination
     if (usedCount == 0)
-      return failure();
+        rewriter.eraseOp(op);
 
     // Find the range of used results
     int firstUsed = -1, lastUsed = -1;
