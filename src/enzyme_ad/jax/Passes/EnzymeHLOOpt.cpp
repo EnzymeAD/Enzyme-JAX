@@ -30305,8 +30305,10 @@ struct ReduceUnusedMultiSlice final
       return failure();
 
     // If no results are used, this should be handled by dead code elimination
-    if (usedCount == 0)
+    if (usedCount == 0) {
+      rewriter.eraseOp(op);
       return failure();
+    }
 
     // Find the range of used results
     int firstUsed = -1, lastUsed = -1;
