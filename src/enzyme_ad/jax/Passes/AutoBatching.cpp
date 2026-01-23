@@ -929,14 +929,29 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
     }
   }
 
+  auto avoidBatching = [](Operation *op) {
+    if (!op) {
+      return true;
+    }
+
+    return llvm::TypeSwitch<Operation *, bool>(op)
+        .Case<stablehlo::ReshapeOp, stablehlo::SliceOp,
+              // avoid ops that use SHLOGenericBatchOpInterface since that
+              // lowers to loop
+              stablehlo::ScatterOp, stablehlo::IfOp, stablehlo::CaseOp,
+              stablehlo::WhileOp, stablehlo::CustomCallOp>(
+            [](auto op) { return true; })
+        .Case<stablehlo::BroadcastInDimOp, stablehlo::TransposeOp>(
+            [](auto op) { return stablehlo::OpIsReshapeLike(op); })
+        .Default([](auto op) { return false; });
+  };
+
   // Create a map of user operations to their corresponding dynamic slices
   llvm::MapVector<Operation *,
                   SmallVector<SliceInfo<stablehlo::DynamicSliceOp>>>
       userOpToSlicesMap;
   for (auto ds : candidateSlices) {
     for (auto op : ds.sliceOp->getUsers()) {
-      userOpToSlicesMap[op].push_back(ds);
-
       if (isa<stablehlo::ReshapeOp>(op)) {
         auto operandTy = cast<RankedTensorType>(op->getOperand(0).getType());
         auto resultTy = cast<RankedTensorType>(op->getResult(0).getType());
@@ -947,10 +962,16 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
         }
 
         for (auto user : op->getUsers()) {
+          if (avoidBatching(user)) {
+            continue;
+          }
+
           userOpToSlicesMap[user].push_back(
               SliceInfo<stablehlo::DynamicSliceOp>{ds.sliceOp, ds.dimensions,
                                                    true, reshapeShape});
         }
+      } else {
+        userOpToSlicesMap[op].push_back(ds);
       }
     }
   }
@@ -959,6 +980,10 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
   // those out of the loop and then perform indirect indexing
   for (auto &[val, info] : affineIndexInfoMap) {
     for (auto user : val.getUsers()) {
+      if (avoidBatching(user)) {
+        continue;
+      }
+
       if (isa<stablehlo::CompareOp, stablehlo::BroadcastInDimOp>(user)) {
         userOpToSlicesMap[user].push_back(
             SliceInfo<stablehlo::DynamicSliceOp>{});
@@ -973,17 +998,7 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
   bool anyOpRewritten = false;
 
   for (auto &[op, slices] : userOpToSlicesMap) {
-    bool avoidBatching =
-        llvm::TypeSwitch<Operation *, bool>(op)
-            .Case<stablehlo::ReshapeOp, stablehlo::SliceOp,
-                  // TODO: avoid scatter since that lowers to loop right now
-                  stablehlo::ScatterOp>([=](auto op) { return true; })
-            .Case<stablehlo::BroadcastInDimOp, stablehlo::TransposeOp>(
-                [=](auto op) { return stablehlo::OpIsReshapeLike(op); })
-            .Default([](auto op) { return false; });
-    if (avoidBatching) {
-      continue;
-    }
+    assert(!avoidBatching(op));
 
     if (auto dsOp = dyn_cast<stablehlo::DynamicSliceOp>(op)) {
       if (raiseDynamicSliceToGather(rewriter, whileOp, slices, dsOp, info)) {
