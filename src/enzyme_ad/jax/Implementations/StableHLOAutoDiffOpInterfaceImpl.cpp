@@ -3939,6 +3939,42 @@ struct SHLOReverseOpBatchInterface
   }
 };
 
+struct SHLOPadOpBatchInterface
+    : public BatchOpInterface::ExternalModel<SHLOPadOpBatchInterface,
+                                             stablehlo::PadOp> {
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto op = cast<stablehlo::PadOp>(src);
+
+    auto batchedPadValue = mapper.lookup(op.getPaddingValue());
+    auto scalarPadValue =
+        getScalarValue(batchedPadValue.getDefiningOp(), builder);
+    if (!scalarPadValue) {
+      return genericCreateBatch(src, builder, mapper, batchSizes);
+    }
+
+    int64_t nBatches = batchSizes.size();
+    SmallVector<int64_t> newLow(nBatches, 0);
+    newLow.append(op.getEdgePaddingLow().begin(), op.getEdgePaddingLow().end());
+    SmallVector<int64_t> newHigh(nBatches, 0);
+    newHigh.append(op.getEdgePaddingHigh().begin(),
+                   op.getEdgePaddingHigh().end());
+    SmallVector<int64_t> newInterior(nBatches, 0);
+    newInterior.append(op.getInteriorPadding().begin(),
+                       op.getInteriorPadding().end());
+
+    auto newPadOp = stablehlo::PadOp::create(
+        builder, op.getLoc(), mapper.lookup(op.getOperand()), scalarPadValue,
+        builder.getDenseI64ArrayAttr(newLow),
+        builder.getDenseI64ArrayAttr(newHigh),
+        builder.getDenseI64ArrayAttr(newInterior));
+
+    mapper.map(src->getResult(0), newPadOp.getResult());
+    return success();
+  }
+};
+
 // https://github.com/jax-ml/jax/blob/2a8cb54b82f1b0d17181d43f9be78d2b349df333/jax/_src/lax/convolution.py#L613-L629
 struct SHLOConvolutionOpBatchInterface
     : public BatchOpInterface::ExternalModel<SHLOConvolutionOpBatchInterface,
@@ -4110,6 +4146,7 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
         *context);
     ReverseOp::attachInterface<SHLOReverseOpBatchInterface>(*context);
     ConvolutionOp::attachInterface<SHLOConvolutionOpBatchInterface>(*context);
+    PadOp::attachInterface<SHLOPadOpBatchInterface>(*context);
 
     ScatterOp::attachInterface<SHLOGenericBatchOpInterface<ScatterOp>>(
         *context); // TODO: simpler version with newly named dims
