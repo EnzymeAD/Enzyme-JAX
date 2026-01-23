@@ -144,6 +144,11 @@ struct SliceToBatchElementwise : public SliceToBatchBase {
       : SliceToBatchBase(CheckElementwise, ctx, benefit) {}
 };
 
+bool raiseDynamicSliceToGather(
+    mlir::PatternRewriter &rewriter, mlir::stablehlo::WhileOp whileOp,
+    llvm::ArrayRef<SliceInfo<mlir::stablehlo::DynamicSliceOp>> slices,
+    mlir::stablehlo::DynamicSliceOp dsOp, mlir::enzyme::WhileLoopInfo info);
+
 bool liftOperationByBatching(
     mlir::PatternRewriter &rewriter, mlir::stablehlo::WhileOp whileOp,
     llvm::ArrayRef<SliceInfo<mlir::stablehlo::DynamicSliceOp>> slices,

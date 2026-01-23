@@ -1316,6 +1316,9 @@ struct LowerWrap
 
 stablehlo::ConcatenateOp lowerExtend(enzymexla::ExtendOp extend,
                                      PatternRewriter &rewriter, bool replace) {
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPoint(extend);
+
   auto loc = extend.getLoc();
   auto operand = extend.getOperand();
 
@@ -1376,6 +1379,9 @@ struct LowerExtend
 
 stablehlo::ConcatenateOp lowerRotate(enzymexla::RotateOp rotate,
                                      PatternRewriter &rewriter, bool replace) {
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPoint(rotate);
+
   // sl0[A:end], sl1[0:A]
   auto shard = sdy::getShardingPerValue(rotate);
   SmallVector<int64_t> strides(rotate.getType().getShape().size(), 1);
@@ -28963,6 +28969,12 @@ LogicalResult DUSDSSimplifyWithSomeUpdateOverlapHelper(
           dusStartIsConstant) {
         int64_t dsStartInt = dsStartAP.getSExtValue();
         int64_t dusStartInt = dusStartAP.getSExtValue();
+
+        if (dusStartInt + updateShape[i] <= dsStartInt) { // no overlap
+          canReplace = false;
+          break;
+        }
+
         sliceStarts[i] = dsStartInt - dusStartInt;
         continue;
       }
@@ -29039,6 +29051,7 @@ LogicalResult DUSDSSimplifyWithSomeUpdateOverlapHelper(
       }
     }
 
+    rewriter.setInsertionPoint(dsOp);
     auto newDS = stablehlo::DynamicSliceOpCreate(
         rewriter, dsOp.getLoc(), dusOp.getUpdate(), dynamicSliceStarts,
         dsOp.getSliceSizes());
@@ -29051,7 +29064,7 @@ LogicalResult DUSDSSimplifyWithSomeUpdateOverlapHelper(
 
   // simple case
   if (allOffsetsZero && updateShape == dsSliceSizes) {
-    rewriter.replaceAllUsesWith(dsOp.getResult(), dusOp.getUpdate());
+    rewriter.replaceOp(dsOp, dusOp.getUpdate());
     return success();
   }
 
@@ -29081,6 +29094,7 @@ LogicalResult DUSDSSimplifyWithSomeUpdateOverlapHelper(
     return failure();
   }
 
+  rewriter.setInsertionPoint(dsOp);
   Value result =
       stablehlo::SliceOp::create(rewriter, dsOp.getLoc(), dusOp.getUpdate(),
                                  sliceStarts, sliceLimits, sliceStrides);

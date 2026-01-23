@@ -2487,3 +2487,133 @@ OpFoldResult ExtendOp::fold(FoldAdaptor adaptor) {
   }
   return nullptr;
 }
+
+LogicalResult enzymexla::MultiRotateOp::verify() {
+  auto operandType = cast<RankedTensorType>(getOperand().getType());
+  int64_t rank = operandType.getRank();
+
+  // Verify left_amount and right_amount are non-negative
+  int32_t leftAmount = getLeftAmount();
+  int32_t rightAmount = getRightAmount();
+
+  if (leftAmount < 0)
+    return emitOpError("left_amount must be non-negative, got ") << leftAmount;
+
+  if (rightAmount < 0)
+    return emitOpError("right_amount must be non-negative, got ")
+           << rightAmount;
+
+  // Verify dimension is valid
+  int32_t dimension = getDimension();
+  if (dimension < 0 || dimension >= rank)
+    return emitOpError("dimension ")
+           << dimension << " is out of range for tensor of rank " << rank;
+
+  // Verify number of results
+  int64_t expectedNumResults = leftAmount + rightAmount + 1;
+  if ((int64_t)getNumResults() != expectedNumResults)
+    return emitOpError("expected ")
+           << expectedNumResults
+           << " results (left_amount + right_amount + 1), got "
+           << getNumResults();
+
+  // Verify all result types match the operand type (rotation preserves shape)
+  for (auto result : getResults()) {
+    if (result.getType() != operandType)
+      return emitOpError("all results must have the same type as the operand, "
+                         "expected ")
+             << operandType << " but got " << result.getType();
+  }
+
+  return success();
+}
+
+LogicalResult enzymexla::MultiSliceOp::verify() {
+  auto operandType = cast<RankedTensorType>(getOperand().getType());
+  int64_t rank = operandType.getRank();
+
+  // Verify left_amount and right_amount are non-negative
+  int32_t leftAmount = getLeftAmount();
+  int32_t rightAmount = getRightAmount();
+
+  if (leftAmount < 0)
+    return emitOpError("left_amount must be non-negative, got ") << leftAmount;
+
+  if (rightAmount < 0)
+    return emitOpError("right_amount must be non-negative, got ")
+           << rightAmount;
+
+  // Verify dimension is valid
+  int32_t dimension = getDimension();
+  if (dimension < 0 || dimension >= rank)
+    return emitOpError("dimension ")
+           << dimension << " is out of range for tensor of rank " << rank;
+
+  // Verify slice parameter arrays have correct size
+  auto startIndices = getStartIndices();
+  auto limitIndices = getLimitIndices();
+  auto strides = getStrides();
+
+  if ((int64_t)startIndices.size() != rank)
+    return emitOpError("start_indices size ")
+           << startIndices.size() << " does not match tensor rank " << rank;
+
+  if ((int64_t)limitIndices.size() != rank)
+    return emitOpError("limit_indices size ")
+           << limitIndices.size() << " does not match tensor rank " << rank;
+
+  if ((int64_t)strides.size() != rank)
+    return emitOpError("strides size ")
+           << strides.size() << " does not match tensor rank " << rank;
+
+  // Verify strides are positive
+  for (int64_t i = 0; i < rank; ++i) {
+    if (strides[i] <= 0)
+      return emitOpError("strides must be positive, got ")
+             << strides[i] << " at index " << i;
+  }
+
+  // Verify number of results
+  int64_t expectedNumResults = leftAmount + rightAmount + 1;
+  if ((int64_t)getNumResults() != expectedNumResults)
+    return emitOpError("expected ")
+           << expectedNumResults
+           << " results (left_amount + right_amount + 1), got "
+           << getNumResults();
+
+  // Verify limits are in bounds
+  auto operandShape = operandType.getShape();
+  for (int64_t i = 0; i < rank; ++i) {
+    auto begin = startIndices[i];
+    auto end = limitIndices[i];
+    if (i == dimension) {
+      begin -= leftAmount;
+      end += rightAmount;
+    }
+
+    if (begin < 0 || end > operandShape[i]) {
+      return emitOpError("indices at dimension ") << i << " are out of bounds";
+    }
+  }
+
+  // Compute expected result shape from slice parameters
+  SmallVector<int64_t> expectedShape;
+  for (int64_t i = 0; i < rank; ++i) {
+    int64_t sliceSize =
+        (limitIndices[i] - startIndices[i] + strides[i] - 1) / strides[i];
+    expectedShape.push_back(sliceSize);
+  }
+
+  auto expectedResultType =
+      RankedTensorType::get(expectedShape, operandType.getElementType());
+
+  // Verify all result types have the expected shape
+  for (auto [idx, result] : llvm::enumerate(getResults())) {
+    if (result.getType() != expectedResultType)
+      return emitOpError("result #")
+             << idx << " has type " << result.getType() << " but expected "
+             << expectedResultType << " based on slice parameters";
+  }
+
+  return success();
+}
