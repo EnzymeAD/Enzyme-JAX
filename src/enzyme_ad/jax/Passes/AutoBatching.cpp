@@ -363,20 +363,19 @@ bool CheckIsValidForBatching(
     return false; // bcast in dim cannot perform deletion
   }
 
-  auto inputType = cast<RankedTensorType>(op.getOperand().getType());
   auto outputType = cast<RankedTensorType>(op.getType());
 
   // If concat dim is present in broadcast dims, then it is not a valid insert
-  if ((dim != -1 && llvm::is_contained(op.getBroadcastDimensions(), dim)) ||
-      !llvm::is_sorted(op.getBroadcastDimensions())) {
+  if (dim != -1 && llvm::is_contained(op.getBroadcastDimensions(), dim)) {
     return false;
   }
 
-  // all bcasted dim but preserve size
-  for (auto [i, bDim] : llvm::enumerate(op.getBroadcastDimensions())) {
-    if (outputType.getDimSize(bDim) != inputType.getDimSize(i)) {
-      return false;
-    }
+  if (!stablehlo::OpIsReshapeLike(op)) {
+    return false;
+  }
+
+  if (dim == -1) {
+    return true;
   }
 
   bool found = false;
@@ -390,7 +389,7 @@ bool CheckIsValidForBatching(
       intermediateInsertions.push_back(i);
     }
   }
-  return dim == -1 || found;
+  return found;
 }
 
 } // namespace utils
@@ -533,14 +532,6 @@ LogicalResult ConcatInsertDimToBatchBase::matchAndRewriteImpl(
     concatOpOperands.push_back(vdefOp);
   }
 
-  for (auto operand : concatOpOperands) {
-    llvm::errs() << "operand: " << *operand << "\n";
-    for (auto opOperands : operand->getOperands()) {
-      llvm::errs() << "  opOperands: " << opOperands << "\n";
-    }
-  }
-  llvm::errs() << "concat: " << *concatOp << "\n";
-
   SmallVector<Value> batchOpOperands;
   SmallVector<BatchLiftingMode> liftingModes;
   ::utils::ConstructAndExtractBatchOperands(rewriter, concatOpOperands,
@@ -580,8 +571,6 @@ LogicalResult ConcatInsertDimToBatchBase::matchAndRewriteImpl(
   for (int i = concatDim + 1; i < concatShape.size(); i++) {
     permutation.push_back(i);
   }
-
-  llvm::errs() << "func: " << func << "\n";
 
   rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(
       concatOp, batchOp->getResult(0), permutation);
