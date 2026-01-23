@@ -90,6 +90,31 @@ struct ConcatInsertDimElementwiseToBatch : public ConcatInsertDimToBatchBase {
       : ConcatInsertDimToBatchBase(CheckElementwise, ctx, benefit) {}
 };
 
+// TODO: we can support the general case once our batch op allows batching
+//       specific inputs or once we define the reduce op batching to
+//       support batched init values
+template <typename OpTy>
+mlir::Operation *checkValidReduceOpForBatching(mlir::Operation *op) {
+  if (auto reduceOp = llvm::dyn_cast_or_null<OpTy>(op)) {
+    return llvm::all_of(reduceOp.getInitValues(),
+                        [](mlir::Value v) {
+                          mlir::SplatElementsAttr attr;
+                          return matchPattern(v, m_Constant(&attr));
+                        })
+               ? reduceOp
+               : nullptr;
+  }
+  return nullptr;
+}
+
+template <typename OpTy>
+struct ConcatInsertDimToBatchReduceLike : public ConcatInsertDimToBatchBase {
+  ConcatInsertDimToBatchReduceLike(mlir::MLIRContext *ctx,
+                                   mlir::PatternBenefit benefit = 1)
+      : ConcatInsertDimToBatchBase(checkValidReduceOpForBatching<OpTy>, ctx,
+                                   benefit) {}
+};
+
 struct SliceToBatchBase
     : public mlir::enzyme::CheckedOpRewritePattern<mlir::stablehlo::SliceOp,
                                                    SliceToBatchBase> {
@@ -136,6 +161,13 @@ struct SliceToBatchWithReshapeLikeCheck : public SliceToBatchBase {
               return nullptr;
             },
             ctx, benefit) {}
+};
+
+template <typename OpTy>
+struct SliceToBatchReduceLike : public SliceToBatchBase {
+  SliceToBatchReduceLike(mlir::MLIRContext *ctx,
+                         mlir::PatternBenefit benefit = 1)
+      : SliceToBatchBase(checkValidReduceOpForBatching<OpTy>, ctx, benefit) {}
 };
 
 struct SliceToBatchElementwise : public SliceToBatchBase {
