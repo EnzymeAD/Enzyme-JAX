@@ -935,7 +935,7 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
     }
 
     return llvm::TypeSwitch<Operation *, bool>(op)
-        .Case<stablehlo::ReshapeOp, stablehlo::SliceOp,
+        .Case<stablehlo::ReshapeOp, stablehlo::SliceOp, stablehlo::ReturnOp,
               // avoid ops that use SHLOGenericBatchOpInterface since that
               // lowers to loop
               stablehlo::ScatterOp, stablehlo::IfOp, stablehlo::CaseOp,
@@ -971,6 +971,9 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
                                                    true, reshapeShape});
         }
       } else {
+        if (avoidBatching(op)) {
+          continue;
+        }
         userOpToSlicesMap[op].push_back(ds);
       }
     }
