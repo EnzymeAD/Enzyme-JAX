@@ -30322,7 +30322,7 @@ struct ReduceUnusedMultiRotate final
     // If no results are used, this should be handled by dead code elimination
     if (usedCount == 0) {
       rewriter.eraseOp(op);
-      return failure();
+      return success();
     }
 
     // Find the range of used results
@@ -30346,16 +30346,16 @@ struct ReduceUnusedMultiRotate final
       int amount = centerIdx -
                    usedIdx; // Positive = rotate left, negative = rotate right
 
-      auto rotateOp = rewriter.create<enzymexla::RotateOp>(
-          op.getLoc(), op.getOperand().getType(), op.getOperand(),
+      auto shard = sdy::getShardingPerValue(op);
+
+      auto rotateOp = rewriter.replaceOpWithNewOp<enzymexla::RotateOp>(
+          op, op.getLoc(), op.getOperand().getType(), op.getOperand(),
           rewriter.getSI32IntegerAttr(amount), op.getDimensionAttr());
+
       // Propagate sharding if present
-      if (auto shard = sdy::getShardingPerValue(op)) {
+      if (shard) {
         sdy::setShardings(rotateOp, shard);
       }
-
-      rewriter.replaceAllUsesWith(op.getResult(usedIdx), rotateOp.getResult());
-      rewriter.eraseOp(op);
       return success();
     }
 
