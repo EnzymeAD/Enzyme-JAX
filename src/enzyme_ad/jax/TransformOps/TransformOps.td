@@ -2127,6 +2127,11 @@ def ExtendPad : EnzymeHLOPatternOp<
   let patterns = ["ExtendPad"];
 }
 
+def ExtendToBroadcast : EnzymeHLOPatternOp<
+  "extend_to_broadcast"> {
+  let patterns = ["ExtendToBroadcast"];
+}
+
 def SliceExtend : EnzymeHLOPatternOp<
   "slice_extend"> {
   let patterns = ["SliceExtend"];

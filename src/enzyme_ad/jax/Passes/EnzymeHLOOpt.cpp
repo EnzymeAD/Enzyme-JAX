@@ -21690,6 +21690,41 @@ struct ExtendPad
   }
 };
 
+struct ExtendToBroadcast
+    : public CheckedOpRewritePattern<enzymexla::ExtendOp, ExtendToBroadcast> {
+  using CheckedOpRewritePattern<enzymexla::ExtendOp,
+                                ExtendToBroadcast>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(enzymexla::ExtendOp extend,
+                                    PatternRewriter &rewriter) const {
+    // Check if the input is a ranked tensor
+    auto inputType = dyn_cast<RankedTensorType>(extend.getOperand().getType());
+    if (!inputType)
+      return failure();
+
+    // Get the dimension being extended
+    int64_t dim = extend.getDimension();
+    
+    // Check if the dimension is a singleton (size = 1)
+    if (inputType.getDimSize(dim) != 1)
+      return failure();
+
+    // Build the broadcast_dimensions attribute
+    // This maps each dimension of the input to the corresponding dimension in the output
+    SmallVector<int64_t> broadcastDims;
+    for (int64_t i = 0; i < inputType.getRank(); i++) {
+      broadcastDims.push_back(i);
+    }
+
+    // Replace the extend with a broadcast_in_dim
+    rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+        extend, extend.getType(), extend.getOperand(),
+        rewriter.getDenseI64ArrayAttr(broadcastDims));
+
+    return success();
+  }
+};
+
 template <typename EnzymeOp>
 LogicalResult commUnaryOpElementwise(bool onlySingleUser, EnzymeOp op,
                                      PatternRewriter &rewriter) {
