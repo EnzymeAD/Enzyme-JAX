@@ -21704,7 +21704,7 @@ struct ExtendToBroadcast
 
     // Get the dimension being extended
     int64_t dim = extend.getDimension();
-    
+
     // Check if the dimension is a singleton (size = 1)
     if (inputType.getDimSize(dim) != 1)
       return failure();
