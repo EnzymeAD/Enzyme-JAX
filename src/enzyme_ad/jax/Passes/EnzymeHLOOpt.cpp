@@ -30321,7 +30321,7 @@ struct ReduceUnusedMultiSlice final
     // If no results are used, this should be handled by dead code elimination
     if (usedCount == 0) {
       rewriter.eraseOp(op);
-      return failure();
+      return success();
     }
 
     // Find the range of used results
@@ -30355,18 +30355,17 @@ struct ReduceUnusedMultiSlice final
         limitIndices[dim] += offset;
       }
 
-      auto sliceOp = rewriter.create<stablehlo::SliceOp>(
-          op.getLoc(), op.getOperand(),
+      auto shard = sdy::getShardingPerValue(op);
+
+      auto sliceOp = rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
+          op, op.getLoc(), op.getOperand(),
           rewriter.getDenseI64ArrayAttr(startIndices),
           rewriter.getDenseI64ArrayAttr(limitIndices),
           rewriter.getDenseI64ArrayAttr(strides));
       // Propagate sharding if present
-      if (auto shard = sdy::getShardingPerValue(op)) {
+      if (shard) {
         sdy::setShardings(sliceOp, shard);
       }
-
-      rewriter.replaceAllUsesWith(op.getResult(usedIdx), sliceOp.getResult());
-      rewriter.eraseOp(op);
       return success();
     }
 
