@@ -533,6 +533,14 @@ LogicalResult ConcatInsertDimToBatchBase::matchAndRewriteImpl(
     concatOpOperands.push_back(vdefOp);
   }
 
+  for (auto operand : concatOpOperands) {
+    llvm::errs() << "operand: " << *operand << "\n";
+    for (auto opOperands : operand->getOperands()) {
+      llvm::errs() << "  opOperands: " << opOperands << "\n";
+    }
+  }
+  llvm::errs() << "concat: " << *concatOp << "\n";
+
   SmallVector<Value> batchOpOperands;
   SmallVector<BatchLiftingMode> liftingModes;
   ::utils::ConstructAndExtractBatchOperands(rewriter, concatOpOperands,
@@ -572,6 +580,8 @@ LogicalResult ConcatInsertDimToBatchBase::matchAndRewriteImpl(
   for (int i = concatDim + 1; i < concatShape.size(); i++) {
     permutation.push_back(i);
   }
+
+  llvm::errs() << "func: " << func << "\n";
 
   rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(
       concatOp, batchOp->getResult(0), permutation);
@@ -2303,12 +2313,12 @@ void populateAutoBatchingPassPatterns(RewritePatternSet &patterns,
     patterns
         .add<SliceToBatch<stablehlo::DotGeneralOp>,
              SliceToBatch<stablehlo::GatherOp>, SliceToBatch<stablehlo::IotaOp>,
-             SliceToBatch<stablehlo::ReduceOp>, SliceToBatch<stablehlo::SortOp>,
-             SliceToBatch<stablehlo::ReduceWindowOp>,
+             SliceToBatch<stablehlo::SortOp>,
+             SliceToBatchReduceLike<stablehlo::ReduceOp>,
+             SliceToBatchReduceLike<stablehlo::ReduceWindowOp>,
              SliceToBatch<stablehlo::ConcatenateOp>,
              SliceToBatch<stablehlo::GetDimensionSizeOp>,
              SliceToBatch<stablehlo::ReverseOp>,
-             SliceToBatch<stablehlo::ReduceWindowOp>,
              SliceToBatch<stablehlo::ConvolutionOp>,
              SliceToBatchWithReshapeLikeCheck<stablehlo::BroadcastInDimOp>,
              SliceToBatchWithReshapeLikeCheck<stablehlo::TransposeOp>,
@@ -2319,11 +2329,11 @@ void populateAutoBatchingPassPatterns(RewritePatternSet &patterns,
     patterns.add<ConcatInsertDimToBatch<stablehlo::DotGeneralOp>,
                  ConcatInsertDimToBatch<stablehlo::GatherOp>,
                  ConcatInsertDimToBatch<stablehlo::IotaOp>,
-                 ConcatInsertDimToBatch<stablehlo::ReduceOp>,
+                 ConcatInsertDimToBatchReduceLike<stablehlo::ReduceOp>,
+                 ConcatInsertDimToBatchReduceLike<stablehlo::ReduceWindowOp>,
                  // ConcatInsertDimToBatch<stablehlo::ScatterOp>, after batch
                  // op interface is implemented
                  ConcatInsertDimToBatch<stablehlo::SortOp>,
-                 ConcatInsertDimToBatch<stablehlo::ReduceWindowOp>,
                  ConcatInsertDimToBatch<stablehlo::ConcatenateOp>,
                  ConcatInsertDimToBatch<stablehlo::GetDimensionSizeOp>,
                  ConcatInsertDimToBatch<stablehlo::ReverseOp>,
