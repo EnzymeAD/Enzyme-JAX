@@ -363,20 +363,19 @@ bool CheckIsValidForBatching(
     return false; // bcast in dim cannot perform deletion
   }
 
-  auto inputType = cast<RankedTensorType>(op.getOperand().getType());
   auto outputType = cast<RankedTensorType>(op.getType());
 
   // If concat dim is present in broadcast dims, then it is not a valid insert
-  if ((dim != -1 && llvm::is_contained(op.getBroadcastDimensions(), dim)) ||
-      !llvm::is_sorted(op.getBroadcastDimensions())) {
+  if (dim != -1 && llvm::is_contained(op.getBroadcastDimensions(), dim)) {
     return false;
   }
 
-  // all bcasted dim but preserve size
-  for (auto [i, bDim] : llvm::enumerate(op.getBroadcastDimensions())) {
-    if (outputType.getDimSize(bDim) != inputType.getDimSize(i)) {
-      return false;
-    }
+  if (!stablehlo::OpIsReshapeLike(op)) {
+    return false;
+  }
+
+  if (dim == -1) {
+    return true;
   }
 
   bool found = false;
@@ -390,7 +389,7 @@ bool CheckIsValidForBatching(
       intermediateInsertions.push_back(i);
     }
   }
-  return dim == -1 || found;
+  return found;
 }
 
 } // namespace utils
@@ -2303,12 +2302,12 @@ void populateAutoBatchingPassPatterns(RewritePatternSet &patterns,
     patterns
         .add<SliceToBatch<stablehlo::DotGeneralOp>,
              SliceToBatch<stablehlo::GatherOp>, SliceToBatch<stablehlo::IotaOp>,
-             SliceToBatch<stablehlo::ReduceOp>, SliceToBatch<stablehlo::SortOp>,
-             SliceToBatch<stablehlo::ReduceWindowOp>,
+             SliceToBatch<stablehlo::SortOp>,
+             SliceToBatchReduceLike<stablehlo::ReduceOp>,
+             SliceToBatchReduceLike<stablehlo::ReduceWindowOp>,
              SliceToBatch<stablehlo::ConcatenateOp>,
              SliceToBatch<stablehlo::GetDimensionSizeOp>,
              SliceToBatch<stablehlo::ReverseOp>,
-             SliceToBatch<stablehlo::ReduceWindowOp>,
              SliceToBatch<stablehlo::ConvolutionOp>,
              SliceToBatchWithReshapeLikeCheck<stablehlo::BroadcastInDimOp>,
              SliceToBatchWithReshapeLikeCheck<stablehlo::TransposeOp>,
@@ -2319,11 +2318,11 @@ void populateAutoBatchingPassPatterns(RewritePatternSet &patterns,
     patterns.add<ConcatInsertDimToBatch<stablehlo::DotGeneralOp>,
                  ConcatInsertDimToBatch<stablehlo::GatherOp>,
                  ConcatInsertDimToBatch<stablehlo::IotaOp>,
-                 ConcatInsertDimToBatch<stablehlo::ReduceOp>,
+                 ConcatInsertDimToBatchReduceLike<stablehlo::ReduceOp>,
+                 ConcatInsertDimToBatchReduceLike<stablehlo::ReduceWindowOp>,
                  // ConcatInsertDimToBatch<stablehlo::ScatterOp>, after batch
                  // op interface is implemented
                  ConcatInsertDimToBatch<stablehlo::SortOp>,
-                 ConcatInsertDimToBatch<stablehlo::ReduceWindowOp>,
                  ConcatInsertDimToBatch<stablehlo::ConcatenateOp>,
                  ConcatInsertDimToBatch<stablehlo::GetDimensionSizeOp>,
                  ConcatInsertDimToBatch<stablehlo::ReverseOp>,
