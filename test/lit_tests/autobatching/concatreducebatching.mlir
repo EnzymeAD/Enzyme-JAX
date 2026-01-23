@@ -111,3 +111,40 @@ module {
     return %103 : tensor<3x10xf32>
   }
 }
+
+// CHECK: %42 = stablehlo.broadcast_in_dim %17, dims = [1] : (tensor<32xf32>) -> tensor<1x32x10xf32>
+// CHECK-NEXT: %43 = stablehlo.broadcast_in_dim %29, dims = [1] : (tensor<32xf32>) -> tensor<1x32x10xf32>
+// CHECK-NEXT: %44 = stablehlo.broadcast_in_dim %41, dims = [1] : (tensor<32xf32>) -> tensor<1x32x10xf32>
+// CHECK-NEXT: %45 = stablehlo.concatenate %42, %43, %44, dim = 0 : (tensor<1x32x10xf32>, tensor<1x32x10xf32>, tensor<1x32x10xf32>) -> tensor<3x32x10xf32>
+// CHECK-NEXT: %46 = stablehlo.broadcast_in_dim %15, dims = [1] : (tensor<32xf32>) -> tensor<1x32x10xf32>
+// CHECK-NEXT: %47 = stablehlo.broadcast_in_dim %27, dims = [1] : (tensor<32xf32>) -> tensor<1x32x10xf32>
+// CHECK-NEXT: %48 = stablehlo.broadcast_in_dim %39, dims = [1] : (tensor<32xf32>) -> tensor<1x32x10xf32>
+// CHECK-NEXT: %49 = stablehlo.concatenate %46, %47, %48, dim = 0 : (tensor<1x32x10xf32>, tensor<1x32x10xf32>, tensor<1x32x10xf32>) -> tensor<3x32x10xf32>
+// CHECK-NEXT: %50 = stablehlo.broadcast_in_dim %2, dims = [1, 2] : (tensor<32x10xf32>) -> tensor<3x32x10xf32>
+// CHECK-NEXT: %51 = stablehlo.multiply %49, %50 : tensor<3x32x10xf32>
+// CHECK-NEXT: %52 = stablehlo.add %45, %51 : tensor<3x32x10xf32>
+// CHECK-NEXT: %53 = stablehlo.dot_general %arg6, %52, contracting_dims = [0] x [1], precision = [DEFAULT, DEFAULT] : (tensor<32x16xf32>, tensor<3x32x10xf32>) -> tensor<16x3x10xf32>
+// CHECK-NEXT: %54 = stablehlo.transpose %53, dims = [1, 0, 2] : (tensor<16x3x10xf32>) -> tensor<3x16x10xf32>
+// CHECK-NEXT: %55 = stablehlo.broadcast_in_dim %arg7, dims = [1] : (tensor<16xf32>) -> tensor<3x16x10xf32>
+// CHECK-NEXT: %56 = stablehlo.add %54, %55 : tensor<3x16x10xf32>
+// CHECK-NEXT: %57 = stablehlo.broadcast_in_dim %9, dims = [1, 2] : (tensor<32x10xf32>) -> tensor<3x32x10xf32>
+// CHECK-NEXT: %58 = stablehlo.tanh %57 : tensor<3x32x10xf32>
+// CHECK-NEXT: %59 = stablehlo.dot_general %arg10, %58, contracting_dims = [0] x [1], precision = [DEFAULT, DEFAULT] : (tensor<32x32xf32>, tensor<3x32x10xf32>) -> tensor<32x3x10xf32>
+// CHECK-NEXT: %60 = stablehlo.transpose %59, dims = [1, 0, 2] : (tensor<32x3x10xf32>) -> tensor<3x32x10xf32>
+// CHECK-NEXT: %61 = stablehlo.broadcast_in_dim %arg11, dims = [1] : (tensor<32xf32>) -> tensor<3x32x10xf32>
+// CHECK-NEXT: %62 = stablehlo.add %60, %61 : tensor<3x32x10xf32>
+// CHECK-NEXT: %63 = stablehlo.tanh %62 : tensor<3x32x10xf32>
+// CHECK-NEXT: %64 = stablehlo.subtract %cst, %63 : tensor<3x32x10xf32>
+// CHECK-NEXT: %65 = stablehlo.broadcast_in_dim %6, dims = [1] : (tensor<32xf32>) -> tensor<1x32x10xf32>
+// CHECK-NEXT: %66 = stablehlo.broadcast_in_dim %21, dims = [1] : (tensor<32xf32>) -> tensor<1x32x10xf32>
+// CHECK-NEXT: %67 = stablehlo.broadcast_in_dim %33, dims = [1] : (tensor<32xf32>) -> tensor<1x32x10xf32>
+// CHECK-NEXT: %68 = stablehlo.concatenate %65, %66, %67, dim = 0 : (tensor<1x32x10xf32>, tensor<1x32x10xf32>, tensor<1x32x10xf32>) -> tensor<3x32x10xf32>
+// CHECK-NEXT: %69 = stablehlo.multiply %64, %68 : tensor<3x32x10xf32>
+// CHECK-NEXT: %70 = stablehlo.multiply %63, %50 : tensor<3x32x10xf32>
+// CHECK-NEXT: %71 = stablehlo.add %69, %70 : tensor<3x32x10xf32>
+// CHECK-NEXT: %72 = stablehlo.dot_general %arg12, %71, contracting_dims = [0] x [1], precision = [DEFAULT, DEFAULT] : (tensor<32x16xf32>, tensor<3x32x10xf32>) -> tensor<16x3x10xf32>
+// CHECK-NEXT: %73 = stablehlo.transpose %72, dims = [1, 0, 2] : (tensor<16x3x10xf32>) -> tensor<3x16x10xf32>
+// CHECK-NEXT: %74 = stablehlo.broadcast_in_dim %arg13, dims = [1] : (tensor<16xf32>) -> tensor<3x16x10xf32>
+// CHECK-NEXT: %75 = stablehlo.add %73, %74 : tensor<3x16x10xf32>
+// CHECK-NEXT: %76 = stablehlo.dot_general %56, %75, batching_dims = [0, 2] x [0, 2], contracting_dims = [1] x [1] : (tensor<3x16x10xf32>, tensor<3x16x10xf32>) -> tensor<3x10xf32>
+// CHECK-NEXT: return %76 : tensor<3x10xf32>
