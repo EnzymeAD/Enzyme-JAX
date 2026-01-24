@@ -30819,11 +30819,6 @@ void mlir::transform::addExtendLICM(RewritePatternSet &patterns,
   patterns.insert<LICM<enzymexla::ExtendOp>>(single_user, &context, benefit);
 }
 
-void mlir::transform::addMultiSliceOpt(RewritePatternSet &patterns,
-                                       MLIRContext &context,
-                                       PatternBenefit benefit) {
-  patterns.insert<ReduceUnusedMultiSlice>(&context, benefit);
-}
 void mlir::transform::addMultiSliceLICM(RewritePatternSet &patterns,
                                         bool single_user, MLIRContext &context,
                                         PatternBenefit benefit) {
