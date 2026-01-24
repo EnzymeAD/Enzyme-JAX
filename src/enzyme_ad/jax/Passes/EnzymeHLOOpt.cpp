@@ -30795,12 +30795,6 @@ void mlir::transform::addExtendLICM(RewritePatternSet &patterns,
   patterns.insert<LICM<enzymexla::ExtendOp>>(single_user, &context, benefit);
 }
 
-void mlir::transform::addMultiRotateOpt(RewritePatternSet &patterns,
-                                        MLIRContext &context,
-                                        PatternBenefit benefit) {
-  patterns.insert<ReduceUnusedMultiRotate>(&context, benefit);
-}
-
 void mlir::transform::addMultiRotateLICM(RewritePatternSet &patterns,
                                          bool single_user, MLIRContext &context,
                                          PatternBenefit benefit) {
