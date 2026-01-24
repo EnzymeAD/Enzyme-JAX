@@ -136,5 +136,7 @@ void addEnzymeHLOUnroll(RewritePatternSet &patterns, int64_t maxNumIterations,
                         MLIRContext &context, PatternBenefit benefit);
 void addMultiSliceLICM(RewritePatternSet &patterns, bool single_user,
                        MLIRContext &context, PatternBenefit benefit);
+void addMultiRotateLICM(RewritePatternSet &patterns, bool single_user,
+                        MLIRContext &context, PatternBenefit benefit);
 
 } // namespace mlir::transform
