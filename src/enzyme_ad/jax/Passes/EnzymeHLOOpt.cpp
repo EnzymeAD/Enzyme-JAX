@@ -30352,16 +30352,16 @@ struct ReduceUnusedMultiRotate final
         amount += operandType.getShape()[op.getDimensionAttr().getSInt()];
       }
 
-      auto shard = sdy::getShardingPerValue(op);
-
-      auto rotateOp = rewriter.replaceOpWithNewOp<enzymexla::RotateOp>(
-          op, operandType, op.getOperand(), rewriter.getSI32IntegerAttr(amount),
-          op.getDimensionAttr());
-
+      auto rotateOp = rewriter.create<enzymexla::RotateOp>(
+          op.getLoc(), op.getOperand().getType(), op.getOperand(),
+          rewriter.getSI32IntegerAttr(amount), op.getDimensionAttr());
       // Propagate sharding if present
-      if (shard) {
+      if (auto shard = sdy::getShardingPerValue(op)) {
         sdy::setShardings(rotateOp, shard);
       }
+
+      rewriter.replaceAllUsesWith(op.getResult(usedIdx), rotateOp.getResult());
+      rewriter.eraseOp(op);
       return success();
     }
 
