@@ -2613,7 +2613,7 @@ def ApplyConcatInsertDimIotaPatterns : EnzymeHLOPatternOp<
 }
 def ApplyConcatInsertDimReducePatterns : EnzymeHLOPatternOp<
     "concat_insert_dim_reduce"> {
-  let patterns = ["ConcatInsertDimToBatch<stablehlo::ReduceOp>"];
+  let patterns = ["ConcatInsertDimToBatchReduceLike<stablehlo::ReduceOp>"];
 }
 def ApplyConcatInsertDimSortPatterns : EnzymeHLOPatternOp<
     "concat_insert_dim_sort"> {
@@ -2633,7 +2633,7 @@ def ApplyConcatInsertDimReversePatterns : EnzymeHLOPatternOp<
 }
 def ApplyConcatInsertDimReduceWindowPatterns : EnzymeHLOPatternOp<
     "concat_insert_dim_reduce_window"> {
-  let patterns = ["ConcatInsertDimToBatch<stablehlo::ReduceWindowOp>"];
+  let patterns = ["ConcatInsertDimToBatchReduceLike<stablehlo::ReduceWindowOp>"];
 }
 def ApplyConcatInsertDimConvolutionPatterns : EnzymeHLOPatternOp<
     "concat_insert_dim_convolution"> {
@@ -2659,7 +2659,7 @@ def ApplyIotaSliceToBatchPatterns : EnzymeHLOPatternOp<
 }
 def ApplyReduceSliceToBatchPatterns : EnzymeHLOPatternOp<
     "reduce_slice_to_batch"> {
-  let patterns = ["SliceToBatch<stablehlo::ReduceOp>"];
+  let patterns = ["SliceToBatchReduceLike<stablehlo::ReduceOp>"];
 }
 def ApplySortSliceToBatchPatterns : EnzymeHLOPatternOp<
     "sort_slice_to_batch"> {
@@ -2687,7 +2687,7 @@ def ApplyReverseSliceToBatchPatterns : EnzymeHLOPatternOp<
 }
 def ApplyReduceWindowSliceToBatchPatterns : EnzymeHLOPatternOp<
     "reducewindow_slice_to_batch"> {
-  let patterns = ["SliceToBatch<stablehlo::ReduceWindowOp>"];
+  let patterns = ["SliceToBatchReduceLike<stablehlo::ReduceWindowOp>"];
 }
 def ApplyConvolutionSliceToBatchPatterns : EnzymeHLOPatternOp<
     "convolution_slice_to_batch"> {

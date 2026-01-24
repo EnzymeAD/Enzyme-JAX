@@ -704,6 +704,12 @@ def LowerJITPass : Pass<"lower-jit"> {
         /*type=*/"bool",
         /*default=*/"true",
         /*description=*/"whether to use openmp for lowering">,
+    Option<
+        /*C++ variable name=*/"dump_final_module",
+        /*CLI argument=*/"dump_final_module",
+        /*type=*/"bool",
+        /*default=*/"false",
+        /*description=*/"whether to dump the final module before jit">,
   ];
 }
 

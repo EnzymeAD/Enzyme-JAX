@@ -363,20 +363,19 @@ bool CheckIsValidForBatching(
     return false; // bcast in dim cannot perform deletion
   }
 
-  auto inputType = cast<RankedTensorType>(op.getOperand().getType());
   auto outputType = cast<RankedTensorType>(op.getType());
 
   // If concat dim is present in broadcast dims, then it is not a valid insert
-  if ((dim != -1 && llvm::is_contained(op.getBroadcastDimensions(), dim)) ||
-      !llvm::is_sorted(op.getBroadcastDimensions())) {
+  if (dim != -1 && llvm::is_contained(op.getBroadcastDimensions(), dim)) {
     return false;
   }
 
-  // all bcasted dim but preserve size
-  for (auto [i, bDim] : llvm::enumerate(op.getBroadcastDimensions())) {
-    if (outputType.getDimSize(bDim) != inputType.getDimSize(i)) {
-      return false;
-    }
+  if (!stablehlo::OpIsReshapeLike(op)) {
+    return false;
+  }
+
+  if (dim == -1) {
+    return true;
   }
 
   bool found = false;
@@ -390,7 +389,7 @@ bool CheckIsValidForBatching(
       intermediateInsertions.push_back(i);
     }
   }
-  return dim == -1 || found;
+  return found;
 }
 
 } // namespace utils
@@ -976,8 +975,7 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
   for (auto &[op, slices] : userOpToSlicesMap) {
     bool avoidBatching =
         llvm::TypeSwitch<Operation *, bool>(op)
-            .Case<stablehlo::DynamicSliceOp, stablehlo::ReshapeOp,
-                  stablehlo::SliceOp,
+            .Case<stablehlo::ReshapeOp, stablehlo::SliceOp,
                   // TODO: avoid scatter since that lowers to loop right now
                   stablehlo::ScatterOp>([=](auto op) { return true; })
             .Case<stablehlo::BroadcastInDimOp, stablehlo::TransposeOp>(
@@ -987,9 +985,13 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
       continue;
     }
 
-    if ((dyn_cast<BatchOpInterface>(op) ||
-         stablehlo::hasTraitElementwise(op)) &&
-        op->getNumResults() == 1) {
+    if (auto dsOp = dyn_cast<stablehlo::DynamicSliceOp>(op)) {
+      if (raiseDynamicSliceToGather(rewriter, whileOp, slices, dsOp, info)) {
+        anyOpRewritten = true;
+      }
+    } else if ((dyn_cast<BatchOpInterface>(op) ||
+                stablehlo::hasTraitElementwise(op)) &&
+               op->getNumResults() == 1) {
       if (liftOperationByBatching(rewriter, whileOp, slices, op, info)) {
         anyOpRewritten = true;
       } else if (liftReduceLikeOperation(rewriter, whileOp, slices, op, info)) {
@@ -1437,6 +1439,247 @@ bool liftReduceLikeOperation(
 
   rewriter.replaceAllUsesWith(whileOp->getResult(argIdx),
                               finalResOp->getResult(0));
+  return true;
+}
+
+bool raiseDynamicSliceToGather(
+    PatternRewriter &rewriter, stablehlo::WhileOp whileOp,
+    ArrayRef<SliceInfo<stablehlo::DynamicSliceOp>> slices,
+    stablehlo::DynamicSliceOp dsOp, WhileLoopInfo info) {
+  // Pattern: x[..., y[idx], z[idx], ...] where idx is an affine function of
+  // the loop induction variable. We need to:
+  // 1. Hoist the computation of y[idx], z[idx], etc. for all loop iterations
+  // 2. Create a gather operation from x using those indices
+  // 3. Replace dsOp uses with a dynamic slice into the gather result
+
+  // Find all start indices that are dependent on the loop and come from inner
+  // dynamic slices (through possible reshape)
+  SmallVector<int64_t> dependentDims;
+  SmallVector<Value> innerSliceOperands;
+  SmallVector<SliceInfo<stablehlo::DynamicSliceOp>> innerSliceInfos;
+
+  for (auto [i, startIndex] : llvm::enumerate(dsOp.getStartIndices())) {
+    // Use traverseOperandsForHoisting to classify this operand
+    SmallVector<BatchLiftingMode> modes;
+    SmallVector<Value> operands;
+    SmallVector<SmallVector<int64_t>> dims;
+    SmallVector<int64_t> hoisted;
+    SmallVector<SliceInfo<stablehlo::DynamicSliceOp>> mapped;
+    DenseMap<Value, SmallVector<Operation *>> hoistMap;
+
+    SmallVector<Value> singleOperand = {startIndex};
+    if (!traverseOperandsForHoisting(singleOperand, whileOp, slices, info,
+                                     modes, operands, dims, hoisted, mapped,
+                                     hoistMap)) {
+      return false;
+    }
+
+    if (modes[0] == BatchLiftingMode::DYNAMIC_SLICE) {
+      dependentDims.push_back(i);
+      innerSliceOperands.push_back(operands[0]);
+      innerSliceInfos.push_back(mapped[0]);
+    }
+  }
+
+  if (dependentDims.empty()) {
+    return false;
+  }
+
+  // Get outer operand - it must be constant across iterations (loop invariant)
+  Value outerOperand;
+  Value dsOperand = dsOp.getOperand();
+  SmallVector<Operation *> canBeHoisted;
+  if (!info.isConstantAcrossIterations(dsOperand, outerOperand, canBeHoisted,
+                                       true)) {
+    return false;
+  }
+  if (!outerOperand) {
+    // The operand is defined inside the loop but is hoistable - hoist it
+    DenseMap<Value, SmallVector<Operation *>> hoistMap;
+    hoistMap[dsOperand] = canBeHoisted;
+    DenseMap<Value, Value> hoistedValues;
+    hoistChainOfOps(hoistMap, rewriter, whileOp, info, hoistedValues);
+    outerOperand = hoistedValues[dsOperand];
+  }
+
+  // Verify all non-dependent start indices are constant across iterations
+  for (auto [i, startIndex] : llvm::enumerate(dsOp.getStartIndices())) {
+    if (llvm::is_contained(dependentDims, i)) {
+      continue;
+    }
+    if (!info.isConstantAcrossIterations(startIndex, true)) {
+      return false;
+    }
+  }
+
+  int64_t numIters = info.getConstantNumIters();
+  Location loc = dsOp.getLoc();
+
+  rewriter.setInsertionPoint(whileOp);
+
+  // Step 1: Hoist each inner slice operand and construct the gather indices
+  // We need to gather all indices for all loop iterations and concatenate them.
+  SmallVector<Value> hoistedIndicesList;
+  Type hoistedIndicesElemTy;
+
+  for (size_t idx = 0; idx < dependentDims.size(); idx++) {
+    Value hoistedIndices;
+    if (!info.hoistOperationFromLoop(
+            rewriter, innerSliceOperands[idx], innerSliceInfos[idx].sliceOp,
+            innerSliceInfos[idx].dimensions, hoistedIndices)) {
+      return false;
+    }
+
+    auto hoistedTy = cast<RankedTensorType>(hoistedIndices.getType());
+    if (idx == 0) {
+      hoistedIndicesElemTy = hoistedTy.getElementType();
+    }
+
+    // Reshape to [numIters, 1] for use as gather indices
+    SmallVector<int64_t> reshapeShape = {numIters, 1};
+    auto reshapeTy = RankedTensorType::get(reshapeShape, hoistedIndicesElemTy);
+
+    // Convert type if needed
+    if (hoistedTy.getElementType() != hoistedIndicesElemTy) {
+      hoistedIndices = stablehlo::ConvertOp::create(
+          rewriter, loc,
+          RankedTensorType::get(hoistedTy.getShape(), hoistedIndicesElemTy),
+          hoistedIndices);
+    }
+
+    Value reshaped =
+        stablehlo::ReshapeOp::create(rewriter, loc, reshapeTy, hoistedIndices);
+    hoistedIndicesList.push_back(reshaped);
+  }
+
+  // Concatenate all hoisted indices along the last dimension
+  Value gatherIndices;
+  if (hoistedIndicesList.size() == 1) {
+    gatherIndices = hoistedIndicesList[0];
+  } else {
+    // Result shape: [numIters, numDependentDims]
+    SmallVector<int64_t> concatShape = {numIters,
+                                        (int64_t)dependentDims.size()};
+    auto concatTy = RankedTensorType::get(concatShape, hoistedIndicesElemTy);
+    gatherIndices = stablehlo::ConcatenateOp::create(
+        rewriter, loc, concatTy, hoistedIndicesList, /*dimension=*/1);
+  }
+
+  // Step 2: Create the gather operation from the outer operand
+  auto outerOperandTy = cast<RankedTensorType>(outerOperand.getType());
+  auto dsSliceSizes = dsOp.getSliceSizes();
+
+  // The gather slice sizes: dependent dimensions get 1, others get original
+  SmallVector<int64_t> gatherSliceSizes;
+  for (size_t i = 0; i < dsSliceSizes.size(); i++) {
+    if (llvm::is_contained(dependentDims, i)) {
+      gatherSliceSizes.push_back(1);
+    } else {
+      gatherSliceSizes.push_back(dsSliceSizes[i]);
+    }
+  }
+
+  // offsetDims: output dimensions corresponding to non-collapsed slice dims
+  // Start at 1 since batch dim is at position 0, then consecutive for each
+  // non-collapsed dimension
+  SmallVector<int64_t> offsetDims;
+  int64_t offsetDimIdx = 1; // Start after the batch dimension
+  for (size_t i = 0; i < outerOperandTy.getRank(); i++) {
+    if (!llvm::is_contained(dependentDims, i)) {
+      offsetDims.push_back(offsetDimIdx);
+      offsetDimIdx++;
+    }
+  }
+
+  // collapsedSliceDims: the dimensions we're indexing into
+  SmallVector<int64_t> collapsedSliceDims = llvm::to_vector(dependentDims);
+
+  // startIndexMap: maps index vector dimensions to operand dimensions
+  SmallVector<int64_t> startIndexMap = llvm::to_vector(dependentDims);
+
+  // Calculate output shape: [numIters, ...sliceSizes for non-dependent dims...]
+  SmallVector<int64_t> gatherOutputShape;
+  gatherOutputShape.push_back(numIters);
+  for (size_t i = 0; i < dsSliceSizes.size(); i++) {
+    if (!llvm::is_contained(dependentDims, i)) {
+      gatherOutputShape.push_back(dsSliceSizes[i]);
+    }
+  }
+
+  auto gatherResultTy =
+      RankedTensorType::get(gatherOutputShape, outerOperandTy.getElementType());
+
+  auto gatherOp = stablehlo::GatherOp::create(
+      rewriter, loc, gatherResultTy, outerOperand, gatherIndices,
+      stablehlo::GatherDimensionNumbersAttr::get(
+          rewriter.getContext(),
+          /*offsetDims=*/offsetDims,
+          /*collapsedSliceDims=*/collapsedSliceDims,
+          /*operandBatchingDims=*/{},
+          /*startIndicesBatchingDims=*/{},
+          /*startIndexMap=*/startIndexMap,
+          /*indexVectorDim=*/1),
+      gatherSliceSizes);
+
+  // Step 3: Replace the dsOp with a dynamic slice into the gather result
+  // The dynamic slice will index using the loop induction variable
+  rewriter.setInsertionPointAfter(dsOp);
+
+  auto inductionVar = info.getInductionVariable();
+  auto inductionVarType = cast<RankedTensorType>(inductionVar.getType());
+
+  // Compute the index for the dynamic slice
+  Value sliceIndex;
+  if (info.isConstantStart() && info.getConstantStart() == 0) {
+    sliceIndex = inductionVar;
+  } else {
+    sliceIndex = stablehlo::SubtractOp::create(rewriter, loc, inductionVar,
+                                               info.getStart());
+  }
+  if (!info.isStepOne()) {
+    sliceIndex = stablehlo::DivOp::create(rewriter, loc, sliceIndex,
+                                          info.getStep(rewriter));
+  }
+
+  // Convert sliceIndex to the same type as gather indices if needed
+  if (inductionVarType.getElementType() != hoistedIndicesElemTy) {
+    auto newIndexTy = RankedTensorType::get({}, hoistedIndicesElemTy);
+    sliceIndex =
+        stablehlo::ConvertOp::create(rewriter, loc, newIndexTy, sliceIndex);
+  }
+
+  // Create constZero with the same type as sliceIndex (after conversion)
+  auto sliceIndexTy = cast<RankedTensorType>(sliceIndex.getType());
+  auto constZero = stablehlo::ConstantOp::create(
+      rewriter, loc, sliceIndexTy,
+      cast<ElementsAttr>(makeAttr(sliceIndexTy, 0)));
+  // Build the start indices for dynamic slice
+  SmallVector<Value> dynSliceStarts;
+  dynSliceStarts.push_back(sliceIndex);
+  for (size_t i = 0; i < dsSliceSizes.size(); i++) {
+    if (!llvm::is_contained(dependentDims, i)) {
+      dynSliceStarts.push_back(constZero);
+    }
+  }
+
+  // Build the slice sizes (1 for the batch dim, original sizes for others)
+  SmallVector<int64_t> dynSliceSizes;
+  dynSliceSizes.push_back(1);
+  for (size_t i = 0; i < dsSliceSizes.size(); i++) {
+    if (!llvm::is_contained(dependentDims, i)) {
+      dynSliceSizes.push_back(dsSliceSizes[i]);
+    }
+  }
+
+  auto dynSlice = stablehlo::DynamicSliceOp::create(
+      rewriter, loc, gatherOp.getResult(), dynSliceStarts, dynSliceSizes);
+
+  // Reshape to match the original dsOp output type
+  auto replacement =
+      stablehlo::ReshapeOp::create(rewriter, loc, dsOp.getType(), dynSlice);
+
+  rewriter.replaceOp(dsOp, replacement.getResult());
+
   return true;
 }
 
@@ -2059,12 +2302,12 @@ void populateAutoBatchingPassPatterns(RewritePatternSet &patterns,
     patterns
         .add<SliceToBatch<stablehlo::DotGeneralOp>,
              SliceToBatch<stablehlo::GatherOp>, SliceToBatch<stablehlo::IotaOp>,
-             SliceToBatch<stablehlo::ReduceOp>, SliceToBatch<stablehlo::SortOp>,
-             SliceToBatch<stablehlo::ReduceWindowOp>,
+             SliceToBatch<stablehlo::SortOp>,
+             SliceToBatchReduceLike<stablehlo::ReduceOp>,
+             SliceToBatchReduceLike<stablehlo::ReduceWindowOp>,
              SliceToBatch<stablehlo::ConcatenateOp>,
              SliceToBatch<stablehlo::GetDimensionSizeOp>,
              SliceToBatch<stablehlo::ReverseOp>,
-             SliceToBatch<stablehlo::ReduceWindowOp>,
              SliceToBatch<stablehlo::ConvolutionOp>,
              SliceToBatchWithReshapeLikeCheck<stablehlo::BroadcastInDimOp>,
              SliceToBatchWithReshapeLikeCheck<stablehlo::TransposeOp>,
@@ -2075,11 +2318,11 @@ void populateAutoBatchingPassPatterns(RewritePatternSet &patterns,
     patterns.add<ConcatInsertDimToBatch<stablehlo::DotGeneralOp>,
                  ConcatInsertDimToBatch<stablehlo::GatherOp>,
                  ConcatInsertDimToBatch<stablehlo::IotaOp>,
-                 ConcatInsertDimToBatch<stablehlo::ReduceOp>,
+                 ConcatInsertDimToBatchReduceLike<stablehlo::ReduceOp>,
+                 ConcatInsertDimToBatchReduceLike<stablehlo::ReduceWindowOp>,
                  // ConcatInsertDimToBatch<stablehlo::ScatterOp>, after batch
                  // op interface is implemented
                  ConcatInsertDimToBatch<stablehlo::SortOp>,
-                 ConcatInsertDimToBatch<stablehlo::ReduceWindowOp>,
                  ConcatInsertDimToBatch<stablehlo::ConcatenateOp>,
                  ConcatInsertDimToBatch<stablehlo::GetDimensionSizeOp>,
                  ConcatInsertDimToBatch<stablehlo::ReverseOp>,
