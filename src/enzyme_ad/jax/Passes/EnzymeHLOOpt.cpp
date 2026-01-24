@@ -13,6 +13,7 @@
 #include "Enzyme/MLIR/Dialect/Dialect.h"
 #include "Enzyme/MLIR/Dialect/Ops.h"
 #include "Enzyme/MLIR/Passes/EnzymeBatchPass.h"
+#include "mlir/Analysis/Presburger/PresburgerRelation.h"
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Analysis/TopologicalSortUtils.h"
 #include "mlir/Dialect/CommonFolders.h"
@@ -16833,6 +16834,18 @@ struct DUSDUSToDUSPad
   }
 };
 
+struct TensorValueProvenance2 {
+  SmallVector<Value> sources;
+  // Relation mapping positions in the result tensor to value (leading
+  // dimension) and positions in the source tensor. The leading dimension is the
+  // index of the source value in `sources`.
+  presburger::PresburgerRelation provenanceRelation;
+
+  TensorValueProvenance2(ArrayRef<Value> sources,
+                         const presburger::PresburgerRelation &relation)
+      : sources(sources.begin(), sources.end()), provenanceRelation(relation) {}
+};
+
 struct TensorValueProvenanceEntry {
   Value source;
   SmallVector<int64_t> originalStarts;
@@ -16942,63 +16955,150 @@ void visitNonEmptyRegionsAroundCentral(
   }
 }
 
+static presburger::IntegerPolyhedron
+getBoundedDomain(const presburger::PresburgerSpace &space,
+                 ArrayRef<int64_t> starts, ArrayRef<int64_t> extents) {
+  auto domain = presburger::IntegerPolyhedron::getUniverse(space);
+  size_t rank = starts.size();
+  for (size_t i = 0; i < rank; ++i) {
+    domain.addBound(presburger::BoundType::LB, i, starts[i]);
+    domain.addBound(presburger::BoundType::UB, i, starts[i] + extents[i] - 1);
+  }
+  return domain;
+}
+
+static void alignSourceValues(presburger::PresburgerRelation &relation,
+                              SmallVectorImpl<Value> &allSources,
+                              ArrayRef<Value> currentSources) {
+  if (allSources == currentSources)
+    return;
+
+  presburger::PresburgerSpace rangeSpace = relation.getSpace().getRangeSpace();
+  size_t rank = rangeSpace.getNumSetDimVars();
+  auto remappingSpace = presburger::PresburgerSpace::getRelationSpace(
+      rangeSpace.getNumSetDimVars(), rangeSpace.getNumSetDimVars(),
+      rangeSpace.getNumSymbolVars());
+  presburger::PresburgerRelation remapping =
+      presburger::PresburgerRelation::getEmpty(remappingSpace);
+  for (auto [i, source] : llvm::enumerate(currentSources)) {
+    auto it = llvm::find(allSources, source);
+    size_t position;
+    if (it == allSources.end()) {
+      position = allSources.size();
+      allSources.push_back(source);
+    } else {
+      position = std::distance(allSources.begin(), it);
+    }
+
+    auto remappingElement =
+        presburger::IntegerRelation::getUniverse(remappingSpace);
+    remappingElement.addBound(presburger::BoundType::EQ, 0, i);
+    remappingElement.addBound(presburger::BoundType::EQ, rank, position);
+    remapping.unionInPlace(remappingElement);
+  }
+  relation.applyRange(remapping);
+}
+
+static presburger::IntegerRelation
+getOffsetRelation(const presburger::PresburgerSpace &space,
+                  ArrayRef<int64_t> offsets, bool positive = true) {
+  assert(space.getNumSetDimVars() == offsets.size());
+  auto offsetSpace = presburger::PresburgerSpace::getRelationSpace(
+      space.getNumSetDimVars(), space.getNumSetDimVars(),
+      space.getNumSymbolVars());
+  auto offset = presburger::IntegerRelation::getUniverse(offsetSpace);
+  size_t rank = offsets.size();
+  for (size_t i = 0; i < rank; ++i) {
+    SmallVector<int64_t> offsetCoefficients(2 * rank + 1, 0);
+    offsetCoefficients[i] = -1;
+    offsetCoefficients[rank + i] = 1;
+    offsetCoefficients.back() = (positive ? 1 : -1) * offsets[i];
+    offset.addEquality(offsetCoefficients);
+  }
+  return offset;
+}
+
+static void
+addSelfProvenance2(Value value,
+                   DenseMap<Value, TensorValueProvenance2> &provenanceInfo2) {
+  assert(!provenanceInfo2.contains(value));
+
+  size_t rank = cast<RankedTensorType>(value.getType()).getRank();
+
+  presburger::PresburgerSpace space =
+      presburger::PresburgerSpace::getRelationSpace(
+          /*numDomainVars=*/rank,
+          /*numRangeVars=*/rank + 1,
+          /*numSymbolVars=*/0);
+  auto relation = presburger::IntegerRelation::getUniverse(space);
+  for (size_t i = 0; i < rank; ++i) {
+    SmallVector<int64_t> equalityCoefficients(2 * rank + 2, 0);
+    equalityCoefficients[i] = -1;
+    equalityCoefficients[rank + i + 1] = 1;
+    relation.addEquality(equalityCoefficients);
+  }
+  SmallVector<int64_t> sourceIndexCoefficients(2 * rank + 2, 0);
+  sourceIndexCoefficients[rank] = -1;
+  sourceIndexCoefficients.back() = 0;
+  relation.addEquality(sourceIndexCoefficients);
+
+  provenanceInfo2.try_emplace(value, ArrayRef<Value>(value),
+                              presburger::PresburgerRelation(relation));
+}
+
 void computeTensorValueProvenanceImpl(
     SmallVectorImpl<Value> &pendingValues,
-    DenseMap<Value, TensorValueProvenance> &provenanceInfo) {
+    DenseMap<Value, TensorValueProvenance2> &provenanceInfo2) {
   while (!pendingValues.empty()) {
     Value value = pendingValues.pop_back_val();
-    if (provenanceInfo.contains(value))
+    if (provenanceInfo2.contains(value))
       continue;
 
     if (auto slice = value.getDefiningOp<stablehlo::SliceOp>()) {
-      auto it = provenanceInfo.find(slice.getOperand());
-      if (it == provenanceInfo.end()) {
+      // If we don't know the provenance of the operand, figure it out before
+      // coming back to this value.
+      auto it = provenanceInfo2.find(slice.getOperand());
+      if (it == provenanceInfo2.end()) {
         pendingValues.push_back(value);
         pendingValues.push_back(slice.getOperand());
         continue;
       }
 
-      provenanceInfo[value].entries.reserve(it->second.entries.size());
-      for (const TensorValueProvenanceEntry &parentEntry :
-           it->second.entries) {
-        TensorValueProvenanceEntry entry;
+      // Intersect domain with that defined by the slice, than shift by offsets
+      // (start indices).
+      presburger::PresburgerSpace domainSpace =
+          it->second.provenanceRelation.getSpace().getDomainSpace();
+      presburger::IntegerPolyhedron restriction = getBoundedDomain(
+          domainSpace, slice.getStartIndices(), slice.getType().getShape());
+      presburger::IntegerRelation offset =
+          getOffsetRelation(domainSpace, slice.getStartIndices());
 
-        entry.source = parentEntry.source;
-        entry.isBroadcast = parentEntry.isBroadcast;
-        entry.originalStarts.resize(parentEntry.extents.size());
-        entry.currentStarts.resize(parentEntry.extents.size());         
-        entry.extents.resize(parentEntry.extents.size());
-        for (size_t i = 0; i < parentEntry.extents.size(); i++) {
-          entry.currentStarts[i] = 0;
-          entry.originalStarts[i] =
-              parentEntry.originalStarts[i] + slice.getStartIndices()[i];
-          entry.extents[i] = slice.getType().getShape()[i];
-        }
-        provenanceInfo[value].entries.push_back(entry);
-      }
+      auto [insertIt, _] = provenanceInfo2.try_emplace(
+          value, it->second.sources, it->second.provenanceRelation);
+      insertIt->second.provenanceRelation.intersectDomain(
+          presburger::PresburgerSet(restriction));
+      insertIt->second.provenanceRelation.applyDomain(
+          presburger::PresburgerRelation(offset));
+      insertIt->second.provenanceRelation =
+          insertIt->second.provenanceRelation.simplify().coalesce();
       continue;
     }
 
     if (auto dus = value.getDefiningOp<stablehlo::DynamicUpdateSliceOp>()) {
-      auto it = provenanceInfo.find(dus.getOperand());
-      if (it == provenanceInfo.end()) {
+      auto it = provenanceInfo2.find(dus.getOperand());
+      if (it == provenanceInfo2.end()) {
         pendingValues.push_back(value);
         pendingValues.push_back(dus.getOperand());
         continue;
       }
 
-      auto up = provenanceInfo.find(dus.getUpdate());
-      if (up == provenanceInfo.end()) {
+      auto up = provenanceInfo2.find(dus.getUpdate());
+      if (up == provenanceInfo2.end()) {
         pendingValues.push_back(value);
         pendingValues.push_back(dus.getUpdate());
         continue;
       }
 
-      // Create code that uses the provenance information from the update for the central part of the dus,
-      // and the provenance information from the original value for the remaining parts.
-      // For each dimension, we have an optional before, an update, and an optional after part,
-      // so we have 3**rank combinations.
-      
       auto resultShape = cast<RankedTensorType>(dus.getType()).getShape();
       auto updateShape = cast<RankedTensorType>(dus.getUpdate().getType()).getShape();
       size_t rank = resultShape.size();
@@ -17022,78 +17122,39 @@ void computeTensorValueProvenanceImpl(
       }
       
       if (!allConstant) {
-        // If start indices are dynamic, we can't precisely track provenance
-        addSelfProvenance(value, provenanceInfo);
+        // If start indices are dynamic, we can't precisely track provenance.
+        // Assume constant propagation has run before this.
+        addSelfProvenance2(value, provenanceInfo2);
         continue;
       }
 
-      auto knownConstantStarts = llvm::map_to_vector(constantStarts, [](std::optional<int64_t> v) {
-        return v.value();
-      });
-      visitNonEmptyRegionsAroundCentral(
-          knownConstantStarts, updateShape, resultShape,
-          [&](ArrayRef<size_t> regionIndices,
-              ArrayRef<std::pair<int64_t, int64_t>> dimRegions) {
-            // Determine if this combination uses the base tensor or the update
-            // tensor
-            // If all dimensions use region 1 (update), source is update tensor,
-            // otherwise it's the base tensor.
-            bool isUpdate = true;
-            for (size_t dim = 0; dim < rank; dim++) {
-              if (regionIndices[dim] != 1) {
-                isUpdate = false;
-              }
-            }
+      auto knownConstantStarts = llvm::map_to_vector(
+          constantStarts, [](std::optional<int64_t> v) { return v.value(); });
 
-            if (isUpdate) {
-              // All dimensions use update region - source from update
-              // provenance
-              for (const TensorValueProvenanceEntry &updateEntry :
-                   up->second.entries) {
-                TensorValueProvenanceEntry entry;
-                entry.source = updateEntry.source;
-                entry.isBroadcast = updateEntry.isBroadcast;
-                entry.currentStarts.resize(rank);
-                entry.originalStarts.resize(rank);
-                entry.extents.resize(rank);
+      // Update provenance to that of the DUS update operand for the slice.
+      presburger::PresburgerRelation provenanceUnion(
+          it->second.provenanceRelation);
+      presburger::PresburgerSet provenanceRemainingDomain =
+          provenanceUnion.getDomainSet();
+      provenanceRemainingDomain.subtract(presburger::PresburgerRelation(
+          getBoundedDomain(provenanceUnion.getSpace().getDomainSpace(),
+                           knownConstantStarts, updateShape)));
+      provenanceUnion.intersectDomain(provenanceRemainingDomain);
 
-                for (size_t dim = 0; dim < rank; dim++) {
-                  entry.currentStarts[dim] = dimRegions[dim].first;
-                  entry.extents[dim] = dimRegions[dim].second;
-                  entry.originalStarts[dim] = updateEntry.originalStarts[dim];
-                }
-                provenanceInfo[value].entries.push_back(entry);
-              }
-            } else {
-              // Some dimensions use before/after region - source from base
-              // provenance
-              for (const TensorValueProvenanceEntry &baseEntry :
-                   it->second.entries) {
-                TensorValueProvenanceEntry entry;
-                entry.source = baseEntry.source;
-                entry.isBroadcast = baseEntry.isBroadcast;
-                entry.currentStarts.resize(rank);
-                entry.originalStarts.resize(rank);
-                entry.extents.resize(rank);
-
-                for (size_t dim = 0; dim < rank; dim++) {
-                  auto [regionStart, regionExtent] = dimRegions[dim];
-                  entry.currentStarts[dim] = regionStart;
-                  entry.extents[dim] = regionExtent;
-                  entry.originalStarts[dim] =
-                      baseEntry.originalStarts[dim] + regionStart;
-                }
-
-                provenanceInfo[value].entries.push_back(entry);
-              }
-            }
-          });
+      presburger::PresburgerRelation update = up->second.provenanceRelation;
+      update.applyDomain(presburger::PresburgerRelation(getOffsetRelation(
+          update.getSpace().getDomainSpace(), knownConstantStarts, false)));
+      SmallVector<Value> allSources = it->second.sources;
+      alignSourceValues(update, allSources, up->second.sources);
+      provenanceUnion.unionInPlace(update);
+      provenanceInfo2.try_emplace(value, allSources,
+                                  provenanceUnion.simplify().coalesce());
       continue;
     }
 
     if (auto pad = value.getDefiningOp<stablehlo::PadOp>()) {
-      auto it = provenanceInfo.find(pad.getOperand());
-      if (it == provenanceInfo.end()) {
+      auto it = provenanceInfo2.find(pad.getOperand());
+      if (it == provenanceInfo2.end()) {
         pendingValues.push_back(value);
         pendingValues.push_back(pad.getOperand());
         continue;
@@ -17103,74 +17164,81 @@ void computeTensorValueProvenanceImpl(
       auto resultType = cast<RankedTensorType>(pad.getResult().getType());
       
       if (!operandType.hasStaticShape() || !resultType.hasStaticShape()) {
-        addSelfProvenance(value, provenanceInfo);
+        addSelfProvenance2(value, provenanceInfo2);
         continue;
       }
 
-      // for values added by edge padding, their provenance is the padding value
-      // itself with original starts being 0, current starts being 0 for low
-      // padding and low+shape for high padding, and extends being the amount of
-      // padding. We need to handle the cases 
-      
-      visitNonEmptyRegionsAroundCentral(pad.getEdgePaddingLow(), operandType.getShape(), resultType.getShape(), [&](
-        ArrayRef<size_t> regionIndices, ArrayRef<std::pair<int64_t, int64_t>> dimRegions
-      ){
-        // Determine if this combination uses the padded regions
-        bool isPadding = false;
-        size_t rank = regionIndices.size();
-        for (size_t dim = 0; dim < rank; dim++) {
-          if (regionIndices[dim] != 1) {
-            isPadding = true;
-            break;
-          }
-        }
+      size_t rank = resultType.getRank();
 
-        if (isPadding) {
-          TensorValueProvenanceEntry entry;
-          entry.source = value; // indicate padding source
-          entry.isBroadcast = true;
+      // 1. Create a relation for the entire output marking the padding constant
+      // as source.
+      SmallVector<Value> allSources = it->second.sources;
+      auto sourcesIt = llvm::find(allSources, pad.getPaddingValue());
+      size_t position;
+      if (sourcesIt == allSources.end()) {
+        position = allSources.size();
+        allSources.push_back(pad.getPaddingValue());
+      } else {
+        position = std::distance(allSources.begin(), sourcesIt);
+      }
 
-          entry.currentStarts.resize(rank);
-          entry.originalStarts.resize(rank);
-          entry.extents.resize(rank);
+      presburger::PresburgerSpace paddingSpace =
+          presburger::PresburgerSpace::getRelationSpace(
+              /*numDomainVars=*/rank,
+              /*numRangeVars=*/rank + 1,
+              /*numSymbolVars=*/0);
+      auto paddingRelation =
+          presburger::IntegerRelation::getUniverse(paddingSpace);
 
-          for (size_t dim = 0; dim < rank; dim++) {
-            auto [regionStart, regionExtent] = dimRegions[dim];
-            entry.currentStarts[dim] = regionStart;
-            entry.extents[dim] = regionExtent;
-            entry.originalStarts[dim] = 0;
-          }
-          provenanceInfo[value].entries.push_back(entry);
-          return;
-        }
+      // Add bounds for the entire output tensor.
+      for (size_t i = 0; i < rank; ++i) {
+        paddingRelation.addBound(presburger::BoundType::LB, i, 0);
+        paddingRelation.addBound(presburger::BoundType::UB, i,
+                                 resultType.getShape()[i] - 1);
+      }
 
-        // Carry over from the operand for the central.
-        provenanceInfo[value].entries.reserve(it->second.entries.size());
-        for (const TensorValueProvenanceEntry &parentEntry :
-             it->second.entries) {
-          TensorValueProvenanceEntry entry;
+      // Set target offsets to zero as we are broadcasting.
+      for (size_t i = 0; i < rank; ++i) {
+        paddingRelation.addBound(presburger::BoundType::EQ, rank + 1 + i, 0);
+      }
 
-          entry.source = parentEntry.source;
-          entry.isBroadcast = parentEntry.isBroadcast;
+      // Mark source as the padding value (index will be assigned later)
+      SmallVector<int64_t> paddingSourceCoefficients(2 * rank + 2, 0);
+      paddingSourceCoefficients[rank] = -1;
+      paddingSourceCoefficients.back() = position;
+      paddingRelation.addEquality(paddingSourceCoefficients);
 
-          entry.originalStarts.resize(parentEntry.extents.size());
-          entry.currentStarts.resize(parentEntry.extents.size());
-          entry.extents.resize(parentEntry.extents.size());
-          for (size_t i = 0, e = parentEntry.extents.size(); i < e; i++) {
-            entry.currentStarts[i] =
-                parentEntry.currentStarts[i] + pad.getEdgePaddingLow()[i];
-            entry.originalStarts[i] = parentEntry.originalStarts[i];
-            entry.extents[i] = parentEntry.extents[i];
-          }
-          provenanceInfo[value].entries.push_back(entry);
-        }
-      });
+      // 2. Subtract the central region from it.
+      presburger::PresburgerSpace centralSpace =
+          paddingRelation.getSpace().getDomainSpace();
+      presburger::IntegerPolyhedron centralRegion = getBoundedDomain(
+          centralSpace, pad.getEdgePaddingLow(), operandType.getShape());
 
+      auto [insertedIt, _] = provenanceInfo2.try_emplace(
+          value, allSources, presburger::PresburgerRelation(paddingRelation));
+      insertedIt->second.provenanceRelation.intersectDomain(
+          insertedIt->second.provenanceRelation.getDomainSet().subtract(
+              presburger::PresburgerSet(centralRegion)));
+
+      // 3. Add the provenance from the operand for the central region, shifted
+      // by the low padding amounts. No need to adjust positions since we
+      // accounted for it above, the original indexing is fine.
+      presburger::PresburgerRelation operandProvenance =
+          it->second.provenanceRelation;
+      operandProvenance.applyDomain(presburger::PresburgerRelation(
+          getOffsetRelation(operandProvenance.getSpace().getDomainSpace(),
+                            pad.getEdgePaddingLow(),
+                            /*positive=*/false)));
+
+      // Union the padding and operand provenances
+      insertedIt->second.provenanceRelation.unionInPlace(operandProvenance);
+      insertedIt->second.provenanceRelation =
+          insertedIt->second.provenanceRelation.simplify().coalesce();
       continue;
     }
 
     // Base case: no further provenance
-    addSelfProvenance(value, provenanceInfo);
+    addSelfProvenance2(value, provenanceInfo2);
   }
 }
 
@@ -17230,10 +17298,11 @@ struct DUSDUSSubsuming
       return failure();
 
     SmallVector<Value> dusResults = {dus2.getResult(), dus.getResult()};
-    DenseMap<Value, TensorValueProvenance> provenanceInfo;
+    DenseMap<Value, TensorValueProvenance2> provenanceInfo;
     computeTensorValueProvenanceImpl(dusResults, provenanceInfo);
 
     DominanceInfo domInfo;
+    DenseMap<Operation *, Operation *> movedSlices;
     for (Operation *user : dus2.getResult().getUsers()) {
       if (user == dus)
         continue;
@@ -17263,36 +17332,44 @@ struct DUSDUSSubsuming
       computeTensorValueProvenanceImpl(slices, provenanceInfo);
 
       llvm::errs() << "Original slice provenance:\n";
-      for (const auto &entry : provenanceInfo[slice.getResult()].entries) {
-        llvm::errs() << "  source: " << entry.source << ", originalStarts: ";
-        for (auto v : entry.originalStarts)
-          llvm::errs() << v << " ";
-        llvm::errs() << ", currentStarts: ";
-        for (auto v : entry.currentStarts)
-          llvm::errs() << v << " ";
-        llvm::errs() << ", extents: ";
-        for (auto v : entry.extents)  
-          llvm::errs() << v << " ";
-        llvm::errs() << ", isBroadcast: " << entry.isBroadcast << "\n";
+      auto it = provenanceInfo.find(slice.getResult());
+      assert(it != provenanceInfo.end());
+      it->second.provenanceRelation.print(llvm::errs());
+      llvm::errs() << "\n";
+      for (auto [i, source] : llvm::enumerate(it->second.sources)) {
+        llvm::errs() << "  source index " << i << ": " << source << "\n";
       }
       llvm::errs() << "Cloned slice provenance:\n";
-      for (const auto &entry : provenanceInfo[clonedSlice->getResult(0)].entries) {
-        llvm::errs() << "  source: " << entry.source << ", originalStarts: ";
-        for (auto v : entry.originalStarts)
-          llvm::errs() << v << " ";
-        llvm::errs() << ", currentStarts: ";
-        for (auto v : entry.currentStarts)
-          llvm::errs() << v << " ";
-        llvm::errs() << ", extents: ";
-        for (auto v : entry.extents)  
-          llvm::errs() << v << " ";
-        llvm::errs() << ", isBroadcast: " << entry.isBroadcast << "\n";
+      auto it2 = provenanceInfo.find(clonedSlice->getResult(0));
+      assert(it2 != provenanceInfo.end());
+      it2->second.provenanceRelation.print(llvm::errs());
+      llvm::errs() << "\n";
+      for (auto [i, source] : llvm::enumerate(it2->second.sources)) {
+        llvm::errs() << "  source index " << i << ": " << source << "\n";
       }
+      llvm::errs() << "----\n";
 
       // TODO: check that provenance of the sliced part would match its provenance after move.
       // if provenance matches, we can replace the old slice with the new one, otherwise we just erase the new one
+      presburger::PresburgerRelation originalProvenance =
+          it->second.provenanceRelation;
+      SmallVector<Value> originalSources = it->second.sources;
+      alignSourceValues(originalProvenance, originalSources,
+                        it2->second.sources);
+      if (originalSources == it2->second.sources &&
+          originalProvenance.isEqual(it2->second.provenanceRelation)) {
+        movedSlices.try_emplace(slice.getOperation(), clonedSlice);
+      } else {
+        rewriter.eraseOp(clonedSlice);
+      }
     }
-    return failure();
+    if (movedSlices.empty())
+      return failure();
+
+    for (auto [oldSliceOp, newSliceOp] : movedSlices) {
+      rewriter.replaceOp(oldSliceOp, newSliceOp->getResult(0));
+    }
+    return success();
 
 #if 0
     auto pad2 = dus2.getUpdate().getDefiningOp<stablehlo::PadOp>();
