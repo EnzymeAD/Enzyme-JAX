@@ -54,6 +54,7 @@
 
 #include "llvm/ADT/MapVector.h"
 #include <cstddef>
+#include <iostream>
 #include <iterator>
 #include <llvm/ADT/MapVector.h>
 #include <llvm/ADT/STLExtras.h>
@@ -63,6 +64,7 @@
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/Value.h>
 #include <numeric>
+#include <ostream>
 #define DEBUG_TYPE "enzymehloopt"
 
 namespace mlir {
@@ -30293,6 +30295,113 @@ struct ReduceWindowWrapSimplify final
   }
 };
 
+// Pattern to reduce MultiRotateOp when some results are unused
+struct ReduceUnusedMultiRotate final
+    : CheckedOpRewritePattern<enzymexla::MultiRotateOp,
+                              ReduceUnusedMultiRotate> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(enzymexla::MultiRotateOp op,
+                                    PatternRewriter &rewriter) const {
+    int32_t leftAmount = op.getLeftAmount();
+    int32_t rightAmount = op.getRightAmount();
+    int32_t totalResults = leftAmount + rightAmount + 1;
+
+    // Check which results are actually used
+    SmallVector<bool> used(totalResults, false);
+    int usedCount = 0;
+    for (int i = 0; i < totalResults; i++) {
+      if (!op.getResult(i).use_empty()) {
+        used[i] = true;
+        usedCount++;
+      }
+    }
+
+    // If all results are used, nothing to optimize
+    if (usedCount == totalResults)
+      return failure();
+
+    // If no results are used, this should be handled by dead code elimination
+    if (usedCount == 0) {
+      rewriter.eraseOp(op);
+      return success();
+    }
+
+    // Find the range of used results
+    int firstUsed = -1, lastUsed = -1;
+    for (int i = 0; i < totalResults; i++) {
+      if (used[i]) {
+        if (firstUsed == -1)
+          firstUsed = i;
+        lastUsed = i;
+      }
+    }
+
+    // Calculate new left and right amounts
+    int centerIdx = leftAmount;
+    int newLeftAmount = centerIdx - firstUsed;
+    int newRightAmount = lastUsed - centerIdx;
+
+    // If only one result is used, replace with a single RotateOp
+    if (usedCount == 1) {
+      int usedIdx = firstUsed;
+      int amount = centerIdx -
+                   usedIdx; // Positive = rotate left, negative = rotate right
+      auto operandType = op.getOperand().getType();
+      if (amount < 0) {
+        amount += operandType.getShape()[op.getDimensionAttr().getSInt()];
+      }
+
+      auto rotateOp = rewriter.create<enzymexla::RotateOp>(
+          op.getLoc(), op.getOperand().getType(), op.getOperand(),
+          rewriter.getSI32IntegerAttr(amount), op.getDimensionAttr());
+      // Propagate sharding if present
+      if (auto shard = sdy::getShardingPerValue(op)) {
+        sdy::setShardings(rotateOp, shard);
+      }
+
+      rewriter.replaceAllUsesWith(op.getResult(usedIdx), rotateOp.getResult());
+      rewriter.eraseOp(op);
+      return success();
+    }
+
+    // Otherwise, create a smaller MultiRotateOp
+    if (newLeftAmount != leftAmount || newRightAmount != rightAmount) {
+      auto newOp = rewriter.create<enzymexla::MultiRotateOp>(
+          op.getLoc(),
+          SmallVector<Type>(newLeftAmount + newRightAmount + 1,
+                            op.getOperand().getType()),
+          op.getOperand(), op.getDimensionAttr(),
+          rewriter.getSI32IntegerAttr(newLeftAmount),
+          rewriter.getSI32IntegerAttr(newRightAmount));
+
+      // Propagate sharding if present
+      if (auto shard = sdy::getShardingPerValue(op)) {
+        sdy::setShardings(newOp, shard);
+      }
+
+      // Map old results to new results
+      SmallVector<Value> replacements(totalResults);
+      int newIdx = 0;
+      for (int oldIdx = firstUsed; oldIdx <= lastUsed; oldIdx++) {
+        replacements[oldIdx] = newOp.getResult(newIdx++);
+      }
+
+      // Replace uses
+      for (int i = 0; i < totalResults; i++) {
+        if (used[i]) {
+          op.getResult(i).replaceAllUsesWith(replacements[i]);
+        }
+      }
+
+      rewriter.eraseOp(op);
+      return success();
+    }
+
+    return failure();
+  }
+};
+
 struct ScatterOpCanon final
     : CheckedOpRewritePattern<stablehlo::ScatterOp, ScatterOpCanon> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -30690,6 +30799,13 @@ void mlir::transform::addExtendLICM(RewritePatternSet &patterns,
                                     bool single_user, MLIRContext &context,
                                     PatternBenefit benefit) {
   patterns.insert<LICM<enzymexla::ExtendOp>>(single_user, &context, benefit);
+}
+
+void mlir::transform::addMultiRotateLICM(RewritePatternSet &patterns,
+                                         bool single_user, MLIRContext &context,
+                                         PatternBenefit benefit) {
+  patterns.insert<LICM<enzymexla::MultiRotateOp>>(single_user, &context,
+                                                  benefit);
 }
 
 void mlir::transform::addElementwiseLICM(RewritePatternSet &patterns,
