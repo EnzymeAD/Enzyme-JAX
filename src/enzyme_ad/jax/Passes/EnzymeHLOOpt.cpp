@@ -3296,6 +3296,7 @@ struct DynamicSliceElementwise final
     }
 
     llvm::SetVector<stablehlo::DynamicSliceOp> allDSUsers;
+    stablehlo::DynamicSliceOp firstDSOp;
 
     for (auto user : elem->getUsers()) {
       auto dsOp = dyn_cast<stablehlo::DynamicSliceOp>(user);
@@ -3313,6 +3314,11 @@ struct DynamicSliceElementwise final
         continue;
       }
       allDSUsers.insert(dsOp);
+      if (!firstDSOp) {
+        firstDSOp = dsOp;
+      } else if (dsOp->isBeforeInBlock(firstDSOp)) {
+        firstDSOp = dsOp;
+      }
 
       auto startIndices = dsOp.getStartIndices();
       auto sliceSizes = dsOp.getSliceSizes();
@@ -3351,11 +3357,12 @@ struct DynamicSliceElementwise final
       }
     }
 
+    rewriter.setInsertionPoint(firstDSOp);
+
     SmallVector<Value> newOperands;
     for (auto v : elem->getOperands()) {
-      auto newDS = stablehlo::DynamicSliceOp::create(
-          rewriter, op.getLoc(), v, newStartIndices, newSliceSizes);
-      newOperands.push_back(newDS.getResult());
+      newOperands.push_back(stablehlo::DynamicSliceOpCreate(
+          rewriter, op.getLoc(), v, newStartIndices, newSliceSizes));
     }
     auto nex = rewriter.create(
         elem->getLoc(), elem->getName().getIdentifier(),
@@ -3386,8 +3393,10 @@ struct DynamicSliceElementwise final
         }
       }
 
-      rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
-          dsOp, nex->getResult(0), sliceStarts, sliceLimits, sliceStrides);
+      auto newSliceOp =
+          stablehlo::SliceOpCreate(rewriter, dsOp.getLoc(), nex->getResult(0),
+                                   sliceStarts, sliceLimits, sliceStrides);
+      rewriter.replaceOp(dsOp, newSliceOp);
     }
 
     return success();
