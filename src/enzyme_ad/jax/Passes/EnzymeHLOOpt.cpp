@@ -30355,16 +30355,18 @@ struct ReduceUnusedMultiSlice final
         limitIndices[dim] += offset;
       }
 
-      auto shard = sdy::getShardingPerValue(op);
-
-      auto sliceOp = rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
-          op, op.getOperand(), rewriter.getDenseI64ArrayAttr(startIndices),
+      auto sliceOp = rewriter.create<stablehlo::SliceOp>(
+          op.getLoc(), op.getOperand(),
+          rewriter.getDenseI64ArrayAttr(startIndices),
           rewriter.getDenseI64ArrayAttr(limitIndices),
           rewriter.getDenseI64ArrayAttr(strides));
       // Propagate sharding if present
-      if (shard) {
+      if (auto shard = sdy::getShardingPerValue(op)) {
         sdy::setShardings(sliceOp, shard);
       }
+
+      rewriter.replaceAllUsesWith(op.getResult(usedIdx), sliceOp.getResult());
+      rewriter.eraseOp(op);
       return success();
     }
 
