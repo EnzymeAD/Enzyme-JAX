@@ -30349,7 +30349,7 @@ struct ReduceUnusedMultiRotate final
       auto shard = sdy::getShardingPerValue(op);
 
       auto rotateOp = rewriter.replaceOpWithNewOp<enzymexla::RotateOp>(
-          op, op.getLoc(), op.getOperand().getType(), op.getOperand(),
+          op, op.getOperand().getType(), op.getOperand(),
           rewriter.getSI32IntegerAttr(amount), op.getDimensionAttr());
 
       // Propagate sharding if present
