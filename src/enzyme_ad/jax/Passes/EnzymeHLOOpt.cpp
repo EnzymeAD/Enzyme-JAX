@@ -21710,7 +21710,8 @@ struct ExtendToBroadcast
       return failure();
 
     // Build the broadcast_dimensions attribute
-    // This maps each dimension of the input to the corresponding dimension in the output
+    // This maps each dimension of the input to the corresponding dimension in
+    // the output
     SmallVector<int64_t> broadcastDims;
     for (int64_t i = 0; i < inputType.getRank(); i++) {
       broadcastDims.push_back(i);
