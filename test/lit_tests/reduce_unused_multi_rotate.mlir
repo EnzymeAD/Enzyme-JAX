@@ -1,7 +1,7 @@
 // RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=reduce_unused_multirotate" --transform-interpreter --enzyme-hlo-remove-transform %s | FileCheck %s
 
 // CHECK:      func.func @multirotate(%arg0: tensor<20x24x80xf64>) -> (tensor<20x24x80xf64>, tensor<20x24x80xf64>, tensor<20x24x80xf64>, tensor<20x24x80xf64>) {
-// CHECK-NEXT:   %0 = "enzymexla.rotate"(%arg0) <{amount = -1 : si32, dimension = 2 : si32}> : (tensor<20x24x80xf64>) -> tensor<20x24x80xf64>
+// CHECK-NEXT:   %0 = "enzymexla.rotate"(%arg0) <{amount = 79 : si32, dimension = 2 : si32}> : (tensor<20x24x80xf64>) -> tensor<20x24x80xf64>
 // CHECK-NEXT:   %1:3 = "enzymexla.multi_rotate"(%arg0) <{dimension = 2 : si32, left_amount = 1 : si32, right_amount = 1 : si32}> : (tensor<20x24x80xf64>) -> (tensor<20x24x80xf64>, tensor<20x24x80xf64>, tensor<20x24x80xf64>)
 // CHECK-NEXT:   return %arg0, %0, %1#0, %1#2 : tensor<20x24x80xf64>, tensor<20x24x80xf64>, tensor<20x24x80xf64>, tensor<20x24x80xf64>
 
