@@ -1512,8 +1512,10 @@ detectIotaLikeTensor(DenseElementsAttr denseAttr) {
   }
 
   auto elemType = denseAttr.getType().getElementType();
-  if (elemType.getIntOrFloatBitWidth() == 1) {
-    return std::nullopt;
+  if (isa<FloatType, IntegerType>(elemType)) {
+    if (elemType.getIntOrFloatBitWidth() == 1) {
+      return std::nullopt;
+    }
   }
 
   if (isa<FloatType>(elemType)) {
@@ -2580,6 +2582,9 @@ bool canMergeSlicesAlongAxis(int dimension, stablehlo::SliceOp slice,
 
 stablehlo::ConcatenateOp lowerWrap(enzymexla::WrapOp wrap,
                                    PatternRewriter &rewriter, bool replace) {
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPoint(wrap);
+
   // sl0[end-lhs:end], mid, sl1[0:rhs]
   auto wrapOpT = cast<RankedTensorType>(wrap.getOperand().getType());
   SmallVector<int64_t> strides(wrapOpT.getShape().size(), 1);
