@@ -54,6 +54,7 @@
 
 #include "llvm/ADT/MapVector.h"
 #include <cstddef>
+#include <iostream>
 #include <iterator>
 #include <llvm/ADT/MapVector.h>
 #include <llvm/ADT/STLExtras.h>
@@ -63,6 +64,7 @@
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/Value.h>
 #include <numeric>
+#include <ostream>
 #define DEBUG_TYPE "enzymehloopt"
 
 namespace mlir {
@@ -30345,12 +30347,16 @@ struct ReduceUnusedMultiRotate final
       int usedIdx = firstUsed;
       int amount = centerIdx -
                    usedIdx; // Positive = rotate left, negative = rotate right
+      auto operandType = op.getOperand().getType();
+      if (amount < 0) {
+        amount += operandType.getShape()[op.getDimensionAttr().getSInt()];
+      }
 
       auto shard = sdy::getShardingPerValue(op);
 
       auto rotateOp = rewriter.replaceOpWithNewOp<enzymexla::RotateOp>(
-          op, op.getOperand().getType(), op.getOperand(),
-          rewriter.getSI32IntegerAttr(amount), op.getDimensionAttr());
+          op, operandType, op.getOperand(), rewriter.getSI32IntegerAttr(amount),
+          op.getDimensionAttr());
 
       // Propagate sharding if present
       if (shard) {
