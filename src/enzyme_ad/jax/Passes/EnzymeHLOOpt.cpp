@@ -30358,8 +30358,7 @@ struct ReduceUnusedMultiSlice final
       auto shard = sdy::getShardingPerValue(op);
 
       auto sliceOp = rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
-          op, op.getLoc(), op.getOperand(),
-          rewriter.getDenseI64ArrayAttr(startIndices),
+          op, op.getOperand(), rewriter.getDenseI64ArrayAttr(startIndices),
           rewriter.getDenseI64ArrayAttr(limitIndices),
           rewriter.getDenseI64ArrayAttr(strides));
       // Propagate sharding if present
