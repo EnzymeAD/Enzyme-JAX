@@ -363,20 +363,19 @@ bool CheckIsValidForBatching(
     return false; // bcast in dim cannot perform deletion
   }
 
-  auto inputType = cast<RankedTensorType>(op.getOperand().getType());
   auto outputType = cast<RankedTensorType>(op.getType());
 
   // If concat dim is present in broadcast dims, then it is not a valid insert
-  if ((dim != -1 && llvm::is_contained(op.getBroadcastDimensions(), dim)) ||
-      !llvm::is_sorted(op.getBroadcastDimensions())) {
+  if (dim != -1 && llvm::is_contained(op.getBroadcastDimensions(), dim)) {
     return false;
   }
 
-  // all bcasted dim but preserve size
-  for (auto [i, bDim] : llvm::enumerate(op.getBroadcastDimensions())) {
-    if (outputType.getDimSize(bDim) != inputType.getDimSize(i)) {
-      return false;
-    }
+  if (!stablehlo::OpIsReshapeLike(op)) {
+    return false;
+  }
+
+  if (dim == -1) {
+    return true;
   }
 
   bool found = false;
@@ -390,7 +389,7 @@ bool CheckIsValidForBatching(
       intermediateInsertions.push_back(i);
     }
   }
-  return dim == -1 || found;
+  return found;
 }
 
 } // namespace utils
@@ -930,14 +929,29 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
     }
   }
 
+  auto avoidBatching = [](Operation *op) {
+    if (!op) {
+      return true;
+    }
+
+    return llvm::TypeSwitch<Operation *, bool>(op)
+        .Case<stablehlo::ReshapeOp, stablehlo::SliceOp, stablehlo::ReturnOp,
+              // avoid ops that use SHLOGenericBatchOpInterface since that
+              // lowers to loop
+              stablehlo::ScatterOp, stablehlo::IfOp, stablehlo::CaseOp,
+              stablehlo::WhileOp, stablehlo::CustomCallOp>(
+            [](auto op) { return true; })
+        .Case<stablehlo::BroadcastInDimOp, stablehlo::TransposeOp>(
+            [](auto op) { return stablehlo::OpIsReshapeLike(op); })
+        .Default([](auto op) { return false; });
+  };
+
   // Create a map of user operations to their corresponding dynamic slices
   llvm::MapVector<Operation *,
                   SmallVector<SliceInfo<stablehlo::DynamicSliceOp>>>
       userOpToSlicesMap;
   for (auto ds : candidateSlices) {
     for (auto op : ds.sliceOp->getUsers()) {
-      userOpToSlicesMap[op].push_back(ds);
-
       if (isa<stablehlo::ReshapeOp>(op)) {
         auto operandTy = cast<RankedTensorType>(op->getOperand(0).getType());
         auto resultTy = cast<RankedTensorType>(op->getResult(0).getType());
@@ -948,10 +962,19 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
         }
 
         for (auto user : op->getUsers()) {
+          if (avoidBatching(user)) {
+            continue;
+          }
+
           userOpToSlicesMap[user].push_back(
               SliceInfo<stablehlo::DynamicSliceOp>{ds.sliceOp, ds.dimensions,
                                                    true, reshapeShape});
         }
+      } else {
+        if (avoidBatching(op)) {
+          continue;
+        }
+        userOpToSlicesMap[op].push_back(ds);
       }
     }
   }
@@ -960,6 +983,10 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
   // those out of the loop and then perform indirect indexing
   for (auto &[val, info] : affineIndexInfoMap) {
     for (auto user : val.getUsers()) {
+      if (avoidBatching(user)) {
+        continue;
+      }
+
       if (isa<stablehlo::CompareOp, stablehlo::BroadcastInDimOp>(user)) {
         userOpToSlicesMap[user].push_back(
             SliceInfo<stablehlo::DynamicSliceOp>{});
@@ -974,17 +1001,7 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
   bool anyOpRewritten = false;
 
   for (auto &[op, slices] : userOpToSlicesMap) {
-    bool avoidBatching =
-        llvm::TypeSwitch<Operation *, bool>(op)
-            .Case<stablehlo::ReshapeOp, stablehlo::SliceOp,
-                  // TODO: avoid scatter since that lowers to loop right now
-                  stablehlo::ScatterOp>([=](auto op) { return true; })
-            .Case<stablehlo::BroadcastInDimOp, stablehlo::TransposeOp>(
-                [=](auto op) { return stablehlo::OpIsReshapeLike(op); })
-            .Default([](auto op) { return false; });
-    if (avoidBatching) {
-      continue;
-    }
+    assert(!avoidBatching(op));
 
     if (auto dsOp = dyn_cast<stablehlo::DynamicSliceOp>(op)) {
       if (raiseDynamicSliceToGather(rewriter, whileOp, slices, dsOp, info)) {
@@ -2303,12 +2320,12 @@ void populateAutoBatchingPassPatterns(RewritePatternSet &patterns,
     patterns
         .add<SliceToBatch<stablehlo::DotGeneralOp>,
              SliceToBatch<stablehlo::GatherOp>, SliceToBatch<stablehlo::IotaOp>,
-             SliceToBatch<stablehlo::ReduceOp>, SliceToBatch<stablehlo::SortOp>,
-             SliceToBatch<stablehlo::ReduceWindowOp>,
+             SliceToBatch<stablehlo::SortOp>,
+             SliceToBatchReduceLike<stablehlo::ReduceOp>,
+             SliceToBatchReduceLike<stablehlo::ReduceWindowOp>,
              SliceToBatch<stablehlo::ConcatenateOp>,
              SliceToBatch<stablehlo::GetDimensionSizeOp>,
              SliceToBatch<stablehlo::ReverseOp>,
-             SliceToBatch<stablehlo::ReduceWindowOp>,
              SliceToBatch<stablehlo::ConvolutionOp>,
              SliceToBatchWithReshapeLikeCheck<stablehlo::BroadcastInDimOp>,
              SliceToBatchWithReshapeLikeCheck<stablehlo::TransposeOp>,
@@ -2319,11 +2336,11 @@ void populateAutoBatchingPassPatterns(RewritePatternSet &patterns,
     patterns.add<ConcatInsertDimToBatch<stablehlo::DotGeneralOp>,
                  ConcatInsertDimToBatch<stablehlo::GatherOp>,
                  ConcatInsertDimToBatch<stablehlo::IotaOp>,
-                 ConcatInsertDimToBatch<stablehlo::ReduceOp>,
+                 ConcatInsertDimToBatchReduceLike<stablehlo::ReduceOp>,
+                 ConcatInsertDimToBatchReduceLike<stablehlo::ReduceWindowOp>,
                  // ConcatInsertDimToBatch<stablehlo::ScatterOp>, after batch
                  // op interface is implemented
                  ConcatInsertDimToBatch<stablehlo::SortOp>,
-                 ConcatInsertDimToBatch<stablehlo::ReduceWindowOp>,
                  ConcatInsertDimToBatch<stablehlo::ConcatenateOp>,
                  ConcatInsertDimToBatch<stablehlo::GetDimensionSizeOp>,
                  ConcatInsertDimToBatch<stablehlo::ReverseOp>,
