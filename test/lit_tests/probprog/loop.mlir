@@ -139,7 +139,7 @@ module {
   // SHLO-NEXT:      %4 = builtin.unrealized_conversion_cast %iterArg_2 : tensor<ui64> to !enzyme.Trace
   // SHLO-NEXT:      %5 = stablehlo.convert %iterArg : (tensor<i64>) -> tensor<f64>
   // SHLO-NEXT:      %6 = stablehlo.add %iterArg_1, %5 : tensor<f64>
-  // SHLO-NEXT:      %7 = enzyme.addWeightToTrace(%6 : tensor<f64>) into %4
+  // SHLO-NEXT:      %7 = enzyme.addWeightToTrace %6 into %4 : (!enzyme.Trace, tensor<f64>) -> !enzyme.Trace
   // SHLO-NEXT:      %8 = builtin.unrealized_conversion_cast %7 : !enzyme.Trace to tensor<ui64>
   // SHLO-NEXT:      %9 = stablehlo.add %iterArg, %c_0 : tensor<i64>
   // SHLO-NEXT:      stablehlo.return %9, %6, %8 : tensor<i64>, tensor<f64>, tensor<ui64>
@@ -179,7 +179,7 @@ module {
     ^bb0(%iv: tensor<i64>, %s_iter: tensor<f64>, %t_iter: !enzyme.Trace):
       %iv_f64 = stablehlo.convert %iv : (tensor<i64>) -> tensor<f64>
       %s_next = stablehlo.add %s_iter, %iv_f64 : tensor<f64>
-      %t_next = enzyme.addWeightToTrace(%s_next : tensor<f64>) into %t_iter
+      %t_next = enzyme.addWeightToTrace %s_next into %t_iter : (!enzyme.Trace, tensor<f64>) -> !enzyme.Trace
       enzyme.yield %s_next, %t_next : tensor<f64>, !enzyme.Trace
     }
 
