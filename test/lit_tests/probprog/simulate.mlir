@@ -15,13 +15,13 @@ module {
     %1:2 = call @normal(%arg0, %arg1, %arg2) : (tensor<2xui64>, tensor<f64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
     %2 = call @logpdf(%1#1, %arg1, %arg2) : (tensor<f64>, tensor<f64>, tensor<f64>) -> tensor<f64>
     %3 = stablehlo.add %2, %cst : tensor<f64>
-    %4 = enzyme.addSampleToTrace(%1#1 : tensor<f64>) into %0 {symbol = #enzyme.symbol<1>}
+    %4 = enzyme.addSampleToTrace %1#1 into %0 {symbol = #enzyme.symbol<1>} : (!enzyme.Trace, tensor<f64>) -> !enzyme.Trace
     %5:5 = call @two_normals.simulate(%1#0, %1#1, %arg2) : (tensor<2xui64>, tensor<f64>, tensor<f64>) -> (!enzyme.Trace, tensor<f64>, tensor<2xui64>, tensor<f64>, tensor<f64>)
-    %6 = enzyme.addSubtrace %5#0 into %4 {symbol = #enzyme.symbol<2>}
+    %6 = enzyme.addSubtrace %5#0 into %4 {symbol = #enzyme.symbol<2>} : (!enzyme.Trace, !enzyme.Trace) -> !enzyme.Trace
     %7 = stablehlo.add %3, %5#1 : tensor<f64>
-    %8 = enzyme.addSampleToTrace(%5#3, %5#4 : tensor<f64>, tensor<f64>) into %6 {symbol = #enzyme.symbol<2>}
-    %9 = enzyme.addWeightToTrace(%7 : tensor<f64>) into %8
-    %10 = enzyme.addRetvalToTrace(%5#3, %5#4 : tensor<f64>, tensor<f64>) into %9
+    %8 = enzyme.addSampleToTrace %5#3, %5#4 into %6 {symbol = #enzyme.symbol<2>} : (!enzyme.Trace, tensor<f64>, tensor<f64>) -> !enzyme.Trace
+    %9 = enzyme.addWeightToTrace %7 into %8 : (!enzyme.Trace, tensor<f64>) -> !enzyme.Trace
+    %10 = enzyme.addRetvalToTrace %5#3, %5#4 into %9 : (!enzyme.Trace, tensor<f64>, tensor<f64>) -> !enzyme.Trace
     return %10, %7, %5#2, %5#3, %5#4 : !enzyme.Trace, tensor<f64>, tensor<2xui64>, tensor<f64>, tensor<f64>
   }
 
@@ -31,13 +31,13 @@ module {
     %1:2 = call @normal(%arg0, %arg1, %arg2) : (tensor<2xui64>, tensor<f64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
     %2 = call @logpdf(%1#1, %arg1, %arg2) : (tensor<f64>, tensor<f64>, tensor<f64>) -> tensor<f64>
     %3 = stablehlo.add %2, %cst : tensor<f64>
-    %4 = enzyme.addSampleToTrace(%1#1 : tensor<f64>) into %0 {symbol = #enzyme.symbol<3>}
+    %4 = enzyme.addSampleToTrace %1#1 into %0 {symbol = #enzyme.symbol<3>} : (!enzyme.Trace, tensor<f64>) -> !enzyme.Trace
     %5:2 = call @normal(%1#0, %arg1, %arg2) : (tensor<2xui64>, tensor<f64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
     %6 = call @logpdf(%5#1, %arg1, %arg2) : (tensor<f64>, tensor<f64>, tensor<f64>) -> tensor<f64>
     %7 = stablehlo.add %3, %6 : tensor<f64>
-    %8 = enzyme.addSampleToTrace(%5#1 : tensor<f64>) into %4 {symbol = #enzyme.symbol<4>}
-    %9 = enzyme.addWeightToTrace(%7 : tensor<f64>) into %8
-    %10 = enzyme.addRetvalToTrace(%1#1, %5#1 : tensor<f64>, tensor<f64>) into %9
+    %8 = enzyme.addSampleToTrace %5#1 into %4 {symbol = #enzyme.symbol<4>} : (!enzyme.Trace, tensor<f64>) -> !enzyme.Trace
+    %9 = enzyme.addWeightToTrace %7 into %8 : (!enzyme.Trace, tensor<f64>) -> !enzyme.Trace
+    %10 = enzyme.addRetvalToTrace %1#1, %5#1 into %9 : (!enzyme.Trace, tensor<f64>, tensor<f64>) -> !enzyme.Trace
     return %10, %7, %5#0, %1#1, %5#1 : !enzyme.Trace, tensor<f64>, tensor<2xui64>, tensor<f64>, tensor<f64>
   }
 }

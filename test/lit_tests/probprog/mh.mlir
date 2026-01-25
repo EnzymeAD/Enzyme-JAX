@@ -3,8 +3,8 @@ module {
   func.func private @model.regenerate(%arg0: !enzyme.Trace, %arg1: tensor<2xui64>) -> (!enzyme.Trace, tensor<f64>, tensor<2xui64>) {
     %cst = arith.constant dense<0.000000e+00> : tensor<f64>
     %0 = enzyme.initTrace : !enzyme.Trace
-    %1 = enzyme.getSampleFromTrace %arg0 {symbol = #enzyme.symbol<1>} : tensor<2xf64>
-    %2 = enzyme.addSampleToTrace(%1 : tensor<2xf64>) into %0 {symbol = #enzyme.symbol<2>}
+    %1 = enzyme.getSampleFromTrace %arg0 {symbol = #enzyme.symbol<1>} : (!enzyme.Trace) -> tensor<2xf64>
+    %2 = enzyme.addSampleToTrace %1 into %0 {symbol = #enzyme.symbol<2>} : (!enzyme.Trace, tensor<2xf64>) -> !enzyme.Trace
     return %2, %cst, %arg1 : !enzyme.Trace, tensor<f64>, tensor<2xui64>
   }
 
@@ -24,12 +24,12 @@ module {
       %iter_next = stablehlo.add %iterArg, %c1 : tensor<i64>
       %old_trace = builtin.unrealized_conversion_cast %iterArg_trace : tensor<ui64> to !enzyme.Trace
       %new_trace, %new_weight, %rng1 = func.call @model.regenerate(%old_trace, %iterArg_rng) : (!enzyme.Trace, tensor<2xui64>) -> (!enzyme.Trace, tensor<f64>, tensor<2xui64>)
-      %old_weight = enzyme.getWeightFromTrace %old_trace : tensor<f64>
+      %old_weight = enzyme.getWeightFromTrace %old_trace : (!enzyme.Trace) -> tensor<f64>
       %log_alpha = arith.subf %new_weight, %old_weight : tensor<f64>
       %rng2, %uniform = enzyme.random %rng1, %zero, %one {rng_distribution = #enzyme<rng_distribution UNIFORM>} : (tensor<2xui64>, tensor<f64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
       %log_uniform = math.log %uniform : tensor<f64>
       %accept = arith.cmpf olt, %log_uniform, %log_alpha : tensor<f64>
-      %selected_trace = enzyme.selectTrace %accept, %new_trace, %old_trace : tensor<i1>
+      %selected_trace = enzyme.select %accept, %new_trace, %old_trace : (tensor<i1>, !enzyme.Trace, !enzyme.Trace) -> !enzyme.Trace
       %selected_trace_ui64 = builtin.unrealized_conversion_cast %selected_trace : !enzyme.Trace to tensor<ui64>
       stablehlo.return %iter_next, %selected_trace_ui64, %rng2 : tensor<i64>, tensor<ui64>, tensor<2xui64>
     }
