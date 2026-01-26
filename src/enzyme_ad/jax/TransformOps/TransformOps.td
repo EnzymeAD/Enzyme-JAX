@@ -2754,6 +2754,11 @@ def ApplyRemoveLoopCarriedDependenciesFromWhileLoadOperationsPatterns : EnzymeHL
   let patterns = ["RemoveLoopCarriedDependenciesFromWhileLoadOperations"];
 }
 
+def ApplyRaiseScanLikeOperationsPatterns : EnzymeHLOPatternOp<
+    "raise_scan_like_operations"> {
+  let patterns = ["RaiseScanLikeOperations"];
+}
+
 def EnzymeHLOUnroll : EnzymeHLOParameterizedPatternOp<
     "enzyme_hlo_unroll"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, I64Attr:$parameter);
