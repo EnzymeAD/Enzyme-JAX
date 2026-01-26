@@ -30576,6 +30576,61 @@ struct RecognizeMultiRotate
   }
 };
 
+// Pattern to lower MultiRotateOp into individual RotateOps
+struct LowerMultiRotate final
+    : CheckedOpRewritePattern<enzymexla::MultiRotateOp, LowerMultiRotate> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(enzymexla::MultiRotateOp op,
+                                    PatternRewriter &rewriter) const {
+    int32_t leftAmount = op.getLeftAmount();
+    int32_t rightAmount = op.getRightAmount();
+    int32_t totalResults = leftAmount + rightAmount + 1;
+    int32_t centerIdx = leftAmount;
+
+    Value input = op.getOperand();
+    auto inputType = cast<RankedTensorType>(input.getType());
+    int64_t dimSize = inputType.getShape()[op.getDimensionAttr().getSInt()];
+
+    // Get sharding info if present
+    auto shard = sdy::getShardingPerValue(op);
+
+    SmallVector<Value> replacements(totalResults);
+
+    for (int i = 0; i < totalResults; i++) {
+      // Calculate rotation amount for this result
+      // Result at centerIdx corresponds to amount 0 (identity)
+      // Results before centerIdx have positive amounts (rotate left)
+      // Results after centerIdx have negative amounts (rotate right)
+      int32_t amount = centerIdx - i;
+
+      // Normalize negative amounts to positive equivalent
+      if (amount < 0) {
+        amount += dimSize;
+      }
+
+      auto rotateOp = rewriter.create<enzymexla::RotateOp>(
+          op.getLoc(), inputType, input, rewriter.getSI32IntegerAttr(amount),
+          op.getDimensionAttr());
+
+      // Propagate sharding if present
+      if (shard) {
+        sdy::setShardings(rotateOp, shard);
+      }
+
+      replacements[i] = rotateOp.getResult();
+    }
+
+    // Replace all uses
+    for (int i = 0; i < totalResults; i++) {
+      op.getResult(i).replaceAllUsesWith(replacements[i]);
+    }
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 // Pattern to reduce MultiRotateOp when some results are unused
 struct ReduceUnusedMultiRotate final
     : CheckedOpRewritePattern<enzymexla::MultiRotateOp,
