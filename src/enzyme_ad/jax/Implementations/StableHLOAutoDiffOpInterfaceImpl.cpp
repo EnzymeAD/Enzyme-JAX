@@ -337,7 +337,8 @@ public:
 };
 
 class AutoDiffIfFwd
-    : public AutoDiffOpInterface::ExternalModel<AutoDiffIfFwd, IfOp> {
+    : public AutoDiffOpInterface::ExternalModel<AutoDiffIfFwd,
+                                                stablehlo::IfOp> {
 public:
   LogicalResult createForwardModeTangent(Operation *orig, OpBuilder &builder,
                                          MGradientUtils *gutils) const {
@@ -356,26 +357,28 @@ public:
 };
 
 class AutoDiffIfCF
-    : public ControlFlowAutoDiffOpInterface::ExternalModel<AutoDiffIfCF, IfOp> {
+    : public ControlFlowAutoDiffOpInterface::ExternalModel<AutoDiffIfCF,
+                                                           stablehlo::IfOp> {
 public:
   Operation *createWithShadows(Operation *op, OpBuilder &builder,
                                MGradientUtils *gutils, Operation *original,
                                ValueRange remappedOperands,
                                TypeRange rettys) const {
-    return IfOp::create(builder, original->getLoc(), rettys, remappedOperands,
-                        original->getAttrs());
+    return stablehlo::IfOp::create(builder, original->getLoc(), rettys,
+                                   remappedOperands, original->getAttrs());
   }
 };
 
 class AutoDiffIfRev
-    : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffIfRev, IfOp> {
+    : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffIfRev,
+                                                       stablehlo::IfOp> {
 public:
   LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
                                          MGradientUtilsReverse *gutils,
                                          SmallVector<Value> caches) const {
-    auto revOp =
-        IfOp::create(builder, orig->getLoc(), ArrayRef<mlir::Type>{},
-                     gutils->popCache(caches[0], builder), orig->getAttrs());
+    auto revOp = stablehlo::IfOp::create(
+        builder, orig->getLoc(), ArrayRef<mlir::Type>{},
+        gutils->popCache(caches[0], builder), orig->getAttrs());
 
     bool valid = true;
     for (auto &&[origReg, newReg] :
@@ -419,7 +422,7 @@ public:
                                  MGradientUtilsReverse *gutils) const {
     SmallVector<Value> caches;
 
-    auto op = cast<IfOp>(orig);
+    auto op = cast<stablehlo::IfOp>(orig);
 
     Operation *newOp = gutils->getNewFromOriginal(orig);
     OpBuilder cacheBuilder(newOp);
@@ -1559,7 +1562,8 @@ public:
         auto bc2 = BroadcastInDimOp::create(builder, op.getLoc(),
                                             oprev.getType(), inDiffe, attr);
 
-        auto res = SelectOp::create(builder, op.getLoc(), cmp, bc2, zero);
+        auto res =
+            stablehlo::SelectOp::create(builder, op.getLoc(), cmp, bc2, zero);
         gutils->addToDiffe(op.getInputs()[0], res, builder);
       }
       if (!gutils->isConstantValue(op.getInitValues()[0])) {
@@ -1571,8 +1575,63 @@ public:
         auto cmp = CompareOp::create(builder, op.getLoc(), ores, oprev,
                                      ComparisonDirection::EQ);
 
-        auto res = SelectOp::create(builder, op.getLoc(), cmp, inDiffe, zeroI);
+        auto res = stablehlo::SelectOp::create(builder, op.getLoc(), cmp,
+                                               inDiffe, zeroI);
         gutils->addToDiffe(op.getInitValues()[0], res, builder);
+      }
+      return success();
+    }
+
+    if (isa<MulOp>(innerOp)) {
+      Value value = op->getOperand(0);
+      Value init = op->getOperand(1);
+
+      Value cachedValue = gutils->popCache(caches[0], builder);
+      Value cachedInit = gutils->popCache(caches[1], builder);
+      Value cachedResult = gutils->popCache(caches[2], builder);
+
+      if (!gutils->isConstantValue(value)) {
+        auto binDiffe = stablehlo::BroadcastInDimOp::create(
+            builder, op.getLoc(), gutils->getShadowType(inTy), inDiffe,
+            builder.getDenseI64ArrayAttr(toBroadcast));
+
+        auto resultBroadcasted = stablehlo::BroadcastInDimOp::create(
+            builder, op.getLoc(), inTy, cachedResult,
+            builder.getDenseI64ArrayAttr(toBroadcast));
+
+        // valueDiffe = inDiffe * cachedResult / cachedValue
+        Value outDiffe = stablehlo::MulOp::create(
+            builder, op.getLoc(), binDiffe,
+            stablehlo::DivOp::create(builder, op.getLoc(), resultBroadcasted,
+                                     cachedValue));
+
+        gutils->addToDiffe(value, outDiffe, builder);
+      }
+      if (!gutils->isConstantValue(init)) {
+        Value broadcastedInit = stablehlo::BroadcastInDimOp::create(
+            builder, op.getLoc(), cachedResult.getType(), cachedInit,
+            builder.getDenseI64ArrayAttr({}));
+        Value divResInit = stablehlo::DivOp::create(
+            builder, op.getLoc(), cachedResult, broadcastedInit);
+        Value broadcastedInitDiffe =
+            stablehlo::MulOp::create(builder, op.getLoc(), divResInit, inDiffe);
+
+        SmallVector<int64_t> allDims;
+        int64_t N = cast<RankedTensorType>(cachedResult.getType()).getRank();
+        for (int64_t i = 0; i < N; ++i)
+          allDims.push_back(i);
+
+        Value zero = cast<AutoDiffTypeInterface>(
+                         gutils->getShadowType(cachedInit.getType()))
+                         .createNullValue(builder, op.getLoc());
+        auto initDiffeSum = stablehlo::ReduceOp::create(
+            builder, op.getLoc(), TypeRange{cachedInit.getType()},
+            ValueRange{broadcastedInitDiffe}, ValueRange{zero}, allDims);
+        createAddRegion(initDiffeSum);
+        Value initDiffe = initDiffeSum->getResult(0);
+
+        // initDiffe = sum(inDifffe * result / init);
+        gutils->addToDiffe(init, initDiffe, builder);
       }
       return success();
     }
@@ -1584,6 +1643,33 @@ public:
 
   SmallVector<Value> cacheValues(Operation *orig,
                                  MGradientUtilsReverse *gutils) const {
+    auto op = cast<ReduceOp>(orig);
+    if (!isEligibleForCompactPrint(op)) {
+      return {};
+    }
+
+    Operation &innerOp = op.getBody().front().front();
+    if (isa<MulOp>(innerOp)) {
+      SmallVector<Value> caches;
+
+      auto result = op.getResult(0);
+      auto value = orig->getOperand(0);
+      auto init = orig->getOperand(1);
+
+      Operation *newOp = gutils->getNewFromOriginal(orig);
+      OpBuilder cacheBuilder(newOp);
+
+      caches.push_back(gutils->initAndPushCache(
+          gutils->getNewFromOriginal(value), cacheBuilder));
+      caches.push_back(gutils->initAndPushCache(
+          gutils->getNewFromOriginal(init), cacheBuilder));
+      cacheBuilder.setInsertionPointAfter(newOp);
+      caches.push_back(gutils->initAndPushCache(
+          gutils->getNewFromOriginal(result), cacheBuilder));
+
+      return caches;
+    }
+
     return {};
   }
 
@@ -2040,6 +2126,7 @@ public:
     using ScatterOpKind = mlir::stablehlo::ScatterOpKind;
     switch (checkCommonScatterOp.kind) {
     case stablehlo::ScatterOpKind::Setindex:
+    case stablehlo::ScatterOpKind::ConstantSetindex:
     case stablehlo::ScatterOpKind::Add:
     case stablehlo::ScatterOpKind::AddConstantUpdate:
     case stablehlo::ScatterOpKind::AddConstantInput:
@@ -2152,6 +2239,7 @@ public:
 
     bool noInputDependencies =
         checkCommonScatterOp.kind == ScatterOpKind::Setindex ||
+        checkCommonScatterOp.kind == ScatterOpKind::ConstantSetindex ||
         checkCommonScatterOp.kind == ScatterOpKind::AddConstantInput ||
         checkCommonScatterOp.kind == ScatterOpKind::MulConstantInput;
     if (noInputDependencies ||
@@ -2218,15 +2306,15 @@ public:
           returnValues = SmallVector<Value>(nNonConsts, zeroScalar);
         } else if (checkCommonScatterOp.kind == ScatterOpKind::Mul) {
           for (int i = 0; i < nNonConsts; i++) {
-            returnValues.push_back(builder.create<stablehlo::MulOp>(
-                scatterOp.getLoc(), block->getArgument(i),
+            returnValues.push_back(stablehlo::MulOp::create(
+                builder, scatterOp.getLoc(), block->getArgument(i),
                 block->getArgument(i + nNonConsts)));
           }
         } else if (checkCommonScatterOp.kind ==
                    ScatterOpKind::MulConstantUpdate) {
           for (int i = 0; i < nNonConsts; i++) {
-            returnValues.push_back(builder.create<stablehlo::MulOp>(
-                scatterOp.getLoc(), block->getArgument(i),
+            returnValues.push_back(stablehlo::MulOp::create(
+                builder, scatterOp.getLoc(), block->getArgument(i),
                 constMulUpdateScalar));
           }
         } else {
@@ -2259,7 +2347,8 @@ public:
                         SmallVectorImpl<Value> &cachedUpdates) const {
     using ScatterOpKind = mlir::stablehlo::ScatterOpKind;
     if (checkCommonScatterOp.kind == ScatterOpKind::MulConstantUpdate ||
-        checkCommonScatterOp.kind == ScatterOpKind::AddConstantUpdate) {
+        checkCommonScatterOp.kind == ScatterOpKind::AddConstantUpdate ||
+        checkCommonScatterOp.kind == ScatterOpKind::ConstantSetindex) {
       return; // no dependence on the updates
     }
 
@@ -3251,7 +3340,7 @@ struct IfOpEnzymeOpsRemover
     // For each pop in the reverse if, pop before the if instead of inside a
     // branch.
 
-    auto ifOp = cast<IfOp>(op);
+    auto ifOp = cast<stablehlo::IfOp>(op);
 
     Block *trueBlock = &ifOp.getTrueBranch().front(),
           *falseBlock = &ifOp.getFalseBranch().front();
@@ -4090,7 +4179,7 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     registerInterfaces(context);
 
     WhileOp::attachInterface<WhileOpEnzymeOpsRemover>(*context);
-    IfOp::attachInterface<IfOpEnzymeOpsRemover>(*context);
+    stablehlo::IfOp::attachInterface<IfOpEnzymeOpsRemover>(*context);
 
     WhileOp::attachInterface<ADDataFlowWhileOp>(*context);
     SortOp::attachInterface<ADDataFlowSortOp>(*context);
@@ -4104,9 +4193,9 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     ReturnOp::attachInterface<AutoDiffHLOReturn>(*context);
 
     ReduceOp::attachInterface<AutoDiffReduceFwd<ReduceOp>>(*context);
-    IfOp::attachInterface<AutoDiffIfRev>(*context);
-    IfOp::attachInterface<AutoDiffIfFwd>(*context);
-    IfOp::attachInterface<AutoDiffIfCF>(*context);
+    stablehlo::IfOp::attachInterface<AutoDiffIfRev>(*context);
+    stablehlo::IfOp::attachInterface<AutoDiffIfFwd>(*context);
+    stablehlo::IfOp::attachInterface<AutoDiffIfCF>(*context);
 
     SortOp::attachInterface<AutoDiffSortFwd>(*context);
     SortOp::attachInterface<AutoDiffSortRev>(*context);
@@ -4124,7 +4213,8 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
 
     ConstantOp::attachInterface<SHLOConstantOpBatchInterface>(*context);
     TransposeOp::attachInterface<SHLOTransposeOpBatchInterface>(*context);
-    IfOp::attachInterface<SHLOGenericBatchOpInterface<IfOp>>(*context);
+    stablehlo::IfOp::attachInterface<
+        SHLOGenericBatchOpInterface<stablehlo::IfOp>>(*context);
     WhileOp::attachInterface<SHLOGenericBatchOpInterface<WhileOp>>(*context);
     ReduceOp::attachInterface<SHLOReduceOpBatchInterface>(*context);
     ReduceWindowOp::attachInterface<SHLOReduceWindowOpBatchInterface>(*context);
@@ -4140,7 +4230,7 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     CustomCallOp::attachInterface<SHLOGenericBatchOpInterface<CustomCallOp>>(
         *context);
     IotaOp::attachInterface<SHLOIotaOpBatchInterface>(*context);
-    SelectOp::attachInterface<SHLOSelectOpBatchInterface>(*context);
+    stablehlo::SelectOp::attachInterface<SHLOSelectOpBatchInterface>(*context);
     SortOp::attachInterface<SHLOSortOpBatchInterface>(*context);
     GetDimensionSizeOp::attachInterface<SHLOGetDimensionSizeOpBatchInterface>(
         *context);

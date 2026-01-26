@@ -23,7 +23,7 @@ module {
     %c1 = stablehlo.constant dense<1> : tensor<i64>
     %init = stablehlo.constant dense<0.0> : tensor<f64>
 
-    %result = enzyme.loop (%c0 : tensor<i64>) to (%n : tensor<i64>) step (%c1 : tensor<i64>)
+    %result = enzyme.for_loop (%c0 : tensor<i64>) to (%n : tensor<i64>) step (%c1 : tensor<i64>)
       iter_args(%init : tensor<f64>)
       -> tensor<f64> {
     ^bb0(%iv: tensor<i64>, %sum_iter: tensor<f64>):
@@ -64,11 +64,11 @@ module {
     %c1 = stablehlo.constant dense<1> : tensor<i64>
     %init = stablehlo.constant dense<0.0> : tensor<f64>
 
-    %result = enzyme.loop (%c0 : tensor<i64>) to (%m : tensor<i64>) step (%c1 : tensor<i64>)
+    %result = enzyme.for_loop (%c0 : tensor<i64>) to (%m : tensor<i64>) step (%c1 : tensor<i64>)
       iter_args(%init : tensor<f64>)
       -> tensor<f64> {
     ^bb0(%i: tensor<i64>, %outer_sum_iter: tensor<f64>):
-      %inner_result = enzyme.loop (%c0 : tensor<i64>) to (%n : tensor<i64>) step (%c1 : tensor<i64>)
+      %inner_result = enzyme.for_loop (%c0 : tensor<i64>) to (%n : tensor<i64>) step (%c1 : tensor<i64>)
         iter_args(%outer_sum_iter : tensor<f64>)
         -> tensor<f64> {
       ^bb1(%j: tensor<i64>, %inner_sum_iter: tensor<f64>):
@@ -108,7 +108,7 @@ module {
     %init_sum = stablehlo.constant dense<0.0> : tensor<f64>
     %init_prod = stablehlo.constant dense<1.0> : tensor<f64>
 
-    %sum, %prod = enzyme.loop (%c0 : tensor<i64>) to (%n : tensor<i64>) step (%c1 : tensor<i64>)
+    %sum, %prod = enzyme.for_loop (%c0 : tensor<i64>) to (%n : tensor<i64>) step (%c1 : tensor<i64>)
       iter_args(%init_sum, %init_prod : tensor<f64>, tensor<f64>)
       -> tensor<f64>, tensor<f64> {
     ^bb0(%iv: tensor<i64>, %s_iter: tensor<f64>, %p_iter: tensor<f64>):
@@ -139,7 +139,7 @@ module {
   // SHLO-NEXT:      %4 = builtin.unrealized_conversion_cast %iterArg_2 : tensor<ui64> to !enzyme.Trace
   // SHLO-NEXT:      %5 = stablehlo.convert %iterArg : (tensor<i64>) -> tensor<f64>
   // SHLO-NEXT:      %6 = stablehlo.add %iterArg_1, %5 : tensor<f64>
-  // SHLO-NEXT:      %7 = enzyme.addWeightToTrace(%6 : tensor<f64>) into %4
+  // SHLO-NEXT:      %7 = enzyme.addWeightToTrace %6 into %4 : (!enzyme.Trace, tensor<f64>) -> !enzyme.Trace
   // SHLO-NEXT:      %8 = builtin.unrealized_conversion_cast %7 : !enzyme.Trace to tensor<ui64>
   // SHLO-NEXT:      %9 = stablehlo.add %iterArg, %c_0 : tensor<i64>
   // SHLO-NEXT:      stablehlo.return %9, %6, %8 : tensor<i64>, tensor<f64>, tensor<ui64>
@@ -173,16 +173,55 @@ module {
     %init_sum = stablehlo.constant dense<0.0> : tensor<f64>
     %init_trace = enzyme.initTrace : !enzyme.Trace
 
-    %sum, %trace = enzyme.loop (%c0 : tensor<i64>) to (%n : tensor<i64>) step (%c1 : tensor<i64>)
+    %sum, %trace = enzyme.for_loop (%c0 : tensor<i64>) to (%n : tensor<i64>) step (%c1 : tensor<i64>)
       iter_args(%init_sum, %init_trace : tensor<f64>, !enzyme.Trace)
       -> tensor<f64>, !enzyme.Trace {
     ^bb0(%iv: tensor<i64>, %s_iter: tensor<f64>, %t_iter: !enzyme.Trace):
       %iv_f64 = stablehlo.convert %iv : (tensor<i64>) -> tensor<f64>
       %s_next = stablehlo.add %s_iter, %iv_f64 : tensor<f64>
-      %t_next = enzyme.addWeightToTrace(%s_next : tensor<f64>) into %t_iter
+      %t_next = enzyme.addWeightToTrace %s_next into %t_iter : (!enzyme.Trace, tensor<f64>) -> !enzyme.Trace
       enzyme.yield %s_next, %t_next : tensor<f64>, !enzyme.Trace
     }
 
     return %sum, %trace : tensor<f64>, !enzyme.Trace
+  }
+
+  // SHLO:  func.func @test_while_loop(%arg0: tensor<i64>) -> tensor<f64> {
+  // SHLO-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+  // SHLO-NEXT:    %c = stablehlo.constant dense<0> : tensor<i64>
+  // SHLO-NEXT:    %c_0 = stablehlo.constant dense<1> : tensor<i64>
+  // SHLO-NEXT:    %0:2 = stablehlo.while(%iterArg = %cst, %iterArg_1 = %c) : tensor<f64>, tensor<i64>
+  // SHLO-NEXT:    cond {
+  // SHLO-NEXT:      %1 = stablehlo.compare  LT, %iterArg_1, %arg0 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+  // SHLO-NEXT:      stablehlo.return %1 : tensor<i1>
+  // SHLO-NEXT:    } do {
+  // SHLO-NEXT:      %1 = stablehlo.convert %iterArg_1 : (tensor<i64>) -> tensor<f64>
+  // SHLO-NEXT:      %2 = stablehlo.add %iterArg, %1 : tensor<f64>
+  // SHLO-NEXT:      %3 = stablehlo.add %iterArg_1, %c_0 : tensor<i64>
+  // SHLO-NEXT:      stablehlo.return %2, %3 : tensor<f64>, tensor<i64>
+  // SHLO-NEXT:    }
+  // SHLO-NEXT:    return %0#0 : tensor<f64>
+  // SHLO-NEXT:  }
+  func.func @test_while_loop(%n: tensor<i64>) -> tensor<f64> {
+    %init_sum = stablehlo.constant dense<0.0> : tensor<f64>
+    %init_counter = stablehlo.constant dense<0> : tensor<i64>
+    %c1 = stablehlo.constant dense<1> : tensor<i64>
+
+    %sum, %counter = enzyme.while_loop (%init_sum, %init_counter : tensor<f64>, tensor<i64>)
+      -> tensor<f64>, tensor<i64>
+      condition {
+      ^bb0(%s_cond: tensor<f64>, %c_cond: tensor<i64>):
+        %cond = stablehlo.compare LT, %c_cond, %n : (tensor<i64>, tensor<i64>) -> tensor<i1>
+        enzyme.yield %cond : tensor<i1>
+      }
+      body {
+      ^bb0(%s_body: tensor<f64>, %c_body: tensor<i64>):
+        %c_f64 = stablehlo.convert %c_body : (tensor<i64>) -> tensor<f64>
+        %s_next = stablehlo.add %s_body, %c_f64 : tensor<f64>
+        %c_next = stablehlo.add %c_body, %c1 : tensor<i64>
+        enzyme.yield %s_next, %c_next : tensor<f64>, tensor<i64>
+      }
+
+    return %sum : tensor<f64>
   }
 }

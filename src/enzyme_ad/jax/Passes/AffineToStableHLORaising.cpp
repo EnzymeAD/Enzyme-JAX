@@ -78,11 +78,9 @@ struct InductionVariableRange {
   int64_t getNumIters() { return (ub - lb) / step; }
 };
 
-// Assumes a single IV per Expr. (i) -> (i * 3 + 2)
-static Value getIVForExpr(affine::AffineValueMap map, AffineExpr expr) {
+static unsigned getIVPos(affine::AffineValueMap map, AffineExpr expr) {
   assert(!expr.isSymbolicOrConstant());
   unsigned pos;
-
   expr.walk([&pos](AffineExpr expr) {
     if (auto dimExpr = dyn_cast<AffineDimExpr>(expr)) {
       pos = dimExpr.getPosition();
@@ -90,8 +88,41 @@ static Value getIVForExpr(affine::AffineValueMap map, AffineExpr expr) {
     }
     return WalkResult::advance();
   });
+  return pos;
+}
 
+// Assumes a single IV per Expr. (i) -> (i * 3 + 2)
+static Value getIVForExpr(affine::AffineValueMap map, AffineExpr expr) {
+  unsigned pos = getIVPos(map, expr);
   return map.getOperand(pos);
+}
+
+// has single (or zero) iv per dim.
+// iv are present only at one dim.
+static bool needsGeneralScatterGather(affine::AffineValueMap accessValueMap) {
+  bool repeatingIV = false;
+  auto map = accessValueMap.getAffineMap();
+  auto sz = map.getNumDims();
+  SmallVector<bool> ivseen(sz, false);
+  for (auto E : map.getResults()) {
+    if (E.isSymbolicOrConstant())
+      continue;
+    bool moreThanOneIV = false;
+    for (int iv = 0; iv < sz; ++iv) {
+      if (!E.isFunctionOfDim(iv))
+        continue;
+      if (ivseen[iv]) {
+        repeatingIV = true;
+        break;
+      }
+      if (moreThanOneIV) {
+        return true;
+      }
+      moreThanOneIV = true;
+      ivseen[iv] = true;
+    }
+  }
+  return repeatingIV;
 }
 
 static std::optional<int64_t> getConstant(AffineMap map) {
@@ -911,9 +942,7 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
         Value updateIV = getIVForExpr(updateValueMap, E);
         if (updateIV == iv) {
           if (broadcastDims[updateIdx] != -1) {
-            LLVM_DEBUG(llvm::dbgs()
-                       << "todo: same iv in different indices for load\n");
-            return nullptr;
+            continue;
           }
 
           broadcastDims[updateIdx] =
@@ -955,6 +984,7 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
     return nullptr;
   }
 
+  // Align update to the store indices.
   update = stablehlo::BroadcastInDimOp::create(
       builder, loc, cast<RankedTensorType>(update.getType()).clone(updateShape),
       update, broadcastDims);
@@ -1673,12 +1703,14 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       return success();
     }
 
+    bool repeatingIV = needsGeneralScatterGather(accessValueMap);
     bool dynIndices = llvm::any_of(accessValueMap.getOperands(), [](Value iv) {
       return affine::isAffineForInductionVar(iv);
     });
-    bool emitAsGather = dynIndices && llvm::any_of(strides, [](int64_t stride) {
-                          return stride != 1;
-                        });
+    bool emitAsGather =
+        dynIndices &&
+            llvm::any_of(strides, [](int64_t stride) { return stride != 1; }) ||
+        repeatingIV;
 
     if (emitAsGather) {
       SmallVector<Value> lIndices;
@@ -1847,8 +1879,10 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       return success();
     }
 
+    bool repeatingIV = needsGeneralScatterGather(accessValueMap);
     bool emitAsScatter =
-        llvm::any_of(strides, [](int64_t stride) { return stride != 1; });
+        llvm::any_of(strides, [](int64_t stride) { return stride != 1; }) ||
+        repeatingIV;
 
     if (emitAsScatter) {
       // Cannot emit as a dynamic_update_slice, emit as scatter instead

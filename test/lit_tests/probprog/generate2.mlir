@@ -17,19 +17,19 @@ module {
     %1 = enzyme.getSampleFromConstraint %arg0 {symbol = #enzyme.symbol<1>} : tensor<f64>
     %2 = call @logpdf(%1, %arg2, %arg3) : (tensor<f64>, tensor<f64>, tensor<f64>) -> tensor<f64>
     %3 = arith.addf %2, %cst : tensor<f64>
-    %4 = enzyme.addSampleToTrace(%1 : tensor<f64>) into %0 {symbol = #enzyme.symbol<1>}
+    %4 = enzyme.addSampleToTrace %1 into %0 {symbol = #enzyme.symbol<1>} : (!enzyme.Trace, tensor<f64>) -> !enzyme.Trace
     %5 = enzyme.getSubconstraint %arg0 {symbol = #enzyme.symbol<2>}
     %6:5 = call @two_normals.generate_0(%5, %arg1, %1, %arg3) : (!enzyme.Constraint, tensor<2xui64>, tensor<f64>, tensor<f64>) -> (!enzyme.Trace, tensor<f64>, tensor<2xui64>, tensor<f64>, tensor<f64>)
-    %7 = enzyme.addSubtrace %6#0 into %4 {symbol = #enzyme.symbol<2>}
+    %7 = enzyme.addSubtrace %6#0 into %4 {symbol = #enzyme.symbol<2>} : (!enzyme.Trace, !enzyme.Trace) -> !enzyme.Trace
     %8 = arith.addf %3, %6#1 : tensor<f64>
-    %9 = enzyme.addSampleToTrace(%6#3, %6#4 : tensor<f64>, tensor<f64>) into %7 {symbol = #enzyme.symbol<2>}
+    %9 = enzyme.addSampleToTrace %6#3, %6#4 into %7 {symbol = #enzyme.symbol<2>} : (!enzyme.Trace, tensor<f64>, tensor<f64>) -> !enzyme.Trace
     %10 = enzyme.getSubconstraint %arg0 {symbol = #enzyme.symbol<6>}
     %11:5 = call @two_normals.generate(%10, %6#2, %6#3, %arg3) : (!enzyme.Constraint, tensor<2xui64>, tensor<f64>, tensor<f64>) -> (!enzyme.Trace, tensor<f64>, tensor<2xui64>, tensor<f64>, tensor<f64>)
-    %12 = enzyme.addSubtrace %11#0 into %9 {symbol = #enzyme.symbol<6>}
+    %12 = enzyme.addSubtrace %11#0 into %9 {symbol = #enzyme.symbol<6>} : (!enzyme.Trace, !enzyme.Trace) -> !enzyme.Trace
     %13 = arith.addf %8, %11#1 : tensor<f64>
-    %14 = enzyme.addSampleToTrace(%11#3, %11#4 : tensor<f64>, tensor<f64>) into %12 {symbol = #enzyme.symbol<6>}
-    %15 = enzyme.addWeightToTrace(%13 : tensor<f64>) into %14
-    %16 = enzyme.addRetvalToTrace(%11#3, %11#4 : tensor<f64>, tensor<f64>) into %15
+    %14 = enzyme.addSampleToTrace %11#3, %11#4 into %12 {symbol = #enzyme.symbol<6>} : (!enzyme.Trace, tensor<f64>, tensor<f64>) -> !enzyme.Trace
+    %15 = enzyme.addWeightToTrace %13 into %14 : (!enzyme.Trace, tensor<f64>) -> !enzyme.Trace
+    %16 = enzyme.addRetvalToTrace %11#3, %11#4 into %15 : (!enzyme.Trace, tensor<f64>, tensor<f64>) -> !enzyme.Trace
     return %16, %13, %11#2, %11#3, %11#4 : !enzyme.Trace, tensor<f64>, tensor<2xui64>, tensor<f64>, tensor<f64>
   }
   func.func @two_normals.generate(%arg0: !enzyme.Constraint, %arg1: tensor<2xui64>, %arg2: tensor<f64>, %arg3: tensor<f64>) -> (!enzyme.Trace, tensor<f64>, tensor<2xui64>, tensor<f64>, tensor<f64>) {
@@ -38,13 +38,13 @@ module {
     %1:2 = call @normal(%arg1, %arg2, %arg3) : (tensor<2xui64>, tensor<f64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
     %2 = call @logpdf(%1#1, %arg2, %arg3) : (tensor<f64>, tensor<f64>, tensor<f64>) -> tensor<f64>
     %3 = arith.addf %2, %cst : tensor<f64>
-    %4 = enzyme.addSampleToTrace(%1#1 : tensor<f64>) into %0 {symbol = #enzyme.symbol<3>}
+    %4 = enzyme.addSampleToTrace %1#1 into %0 {symbol = #enzyme.symbol<3>} : (!enzyme.Trace, tensor<f64>) -> !enzyme.Trace
     %5 = enzyme.getSampleFromConstraint %arg0 {symbol = #enzyme.symbol<4>} : tensor<f64>
     %6 = call @logpdf(%5, %arg2, %arg3) : (tensor<f64>, tensor<f64>, tensor<f64>) -> tensor<f64>
     %7 = arith.addf %3, %6 : tensor<f64>
-    %8 = enzyme.addSampleToTrace(%5 : tensor<f64>) into %4 {symbol = #enzyme.symbol<4>}
-    %9 = enzyme.addWeightToTrace(%7 : tensor<f64>) into %8
-    %10 = enzyme.addRetvalToTrace(%1#1, %5 : tensor<f64>, tensor<f64>) into %9
+    %8 = enzyme.addSampleToTrace %5 into %4 {symbol = #enzyme.symbol<4>} : (!enzyme.Trace, tensor<f64>) -> !enzyme.Trace
+    %9 = enzyme.addWeightToTrace %7 into %8 : (!enzyme.Trace, tensor<f64>) -> !enzyme.Trace
+    %10 = enzyme.addRetvalToTrace %1#1, %5 into %9 : (!enzyme.Trace, tensor<f64>, tensor<f64>) -> !enzyme.Trace
     return %10, %7, %1#0, %1#1, %5 : !enzyme.Trace, tensor<f64>, tensor<2xui64>, tensor<f64>, tensor<f64>
   }
   func.func @two_normals.generate_0(%arg0: !enzyme.Constraint, %arg1: tensor<2xui64>, %arg2: tensor<f64>, %arg3: tensor<f64>) -> (!enzyme.Trace, tensor<f64>, tensor<2xui64>, tensor<f64>, tensor<f64>) {
@@ -53,13 +53,13 @@ module {
     %1 = enzyme.getSampleFromConstraint %arg0 {symbol = #enzyme.symbol<3>} : tensor<f64>
     %2 = call @logpdf(%1, %arg2, %arg3) : (tensor<f64>, tensor<f64>, tensor<f64>) -> tensor<f64>
     %3 = arith.addf %2, %cst : tensor<f64>
-    %4 = enzyme.addSampleToTrace(%1 : tensor<f64>) into %0 {symbol = #enzyme.symbol<3>}
+    %4 = enzyme.addSampleToTrace %1 into %0 {symbol = #enzyme.symbol<3>} : (!enzyme.Trace, tensor<f64>) -> !enzyme.Trace
     %5:2 = call @normal(%arg1, %arg2, %arg3) : (tensor<2xui64>, tensor<f64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
     %6 = call @logpdf(%5#1, %arg2, %arg3) : (tensor<f64>, tensor<f64>, tensor<f64>) -> tensor<f64>
     %7 = arith.addf %3, %6 : tensor<f64>
-    %8 = enzyme.addSampleToTrace(%5#1 : tensor<f64>) into %4 {symbol = #enzyme.symbol<4>}
-    %9 = enzyme.addWeightToTrace(%7 : tensor<f64>) into %8
-    %10 = enzyme.addRetvalToTrace(%1, %5#1 : tensor<f64>, tensor<f64>) into %9
+    %8 = enzyme.addSampleToTrace %5#1 into %4 {symbol = #enzyme.symbol<4>} : (!enzyme.Trace, tensor<f64>) -> !enzyme.Trace
+    %9 = enzyme.addWeightToTrace %7 into %8 : (!enzyme.Trace, tensor<f64>) -> !enzyme.Trace
+    %10 = enzyme.addRetvalToTrace %1, %5#1 into %9 : (!enzyme.Trace, tensor<f64>, tensor<f64>) -> !enzyme.Trace
     return %10, %7, %5#0, %1, %5#1 : !enzyme.Trace, tensor<f64>, tensor<2xui64>, tensor<f64>, tensor<f64>
   }
 }

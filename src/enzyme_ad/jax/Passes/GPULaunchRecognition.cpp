@@ -6,6 +6,7 @@
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
+#include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/IRMapping.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
@@ -39,7 +40,7 @@ struct GPULaunchRecognitionPass
     gpuModule = gpu::GPUModuleOp::create(
         moduleBuilder, getOperation()->getLoc(), gpuModuleName);
 
-    std::string sm;
+    std::string sm; // NVIDIA Streaming Multiprocessor (sm_80)
     if (auto attr = dyn_cast_or_null<ArrayAttr>(func.getPassthroughAttr())) {
       for (auto a : attr) {
         if (auto ar = dyn_cast<ArrayAttr>(a)) {
@@ -54,24 +55,36 @@ struct GPULaunchRecognitionPass
         }
       }
     }
+
     std::string feat;
     if (auto attr = dyn_cast_or_null<LLVM::TargetFeaturesAttr>(
             func.getTargetFeaturesAttr())) {
       feat = attr.getFeaturesString();
     }
 
-    auto chip = sm;
-    if (chip.size() == 0)
-      chip = "sm_80";
-    auto features = feat;
-    if (features.size() == 0)
-      features = "+ptx73";
+    Attribute target;
+    if (backend == "rocm") {
+      auto chip = "gfx1030";
+      auto features = "+wavefrontsize64";
 
-    // TODO get these target attrs from somewhere
-    auto target = moduleBuilder.getAttr<NVVM::NVVMTargetAttr>(
-        /*optLevel=*/2, /*triple=*/"nvptx64-nvidia-cuda", chip, features,
-        /*flags=*/nullptr,
-        /*linkLibs=*/nullptr);
+      target = moduleBuilder.getAttr<ROCDL::ROCDLTargetAttr>(
+          /*optLevel=*/3, /*triple=*/"amdgcn-amd-amdhsa", chip, features,
+          /*abiVersion=*/"600",
+          /*flags=*/nullptr,
+          /*linkLibs=*/nullptr);
+    } else {
+      // Default to CUDA/NVVM
+      auto chip = sm;
+      if (chip.size() == 0)
+        chip = "sm_80";
+      auto features = feat;
+      if (features.size() == 0)
+        features = "+ptx73";
+      target = moduleBuilder.getAttr<NVVM::NVVMTargetAttr>(
+          /*optLevel=*/3, /*triple=*/"nvptx64-nvidia-cuda", chip, features,
+          /*flags=*/nullptr,
+          /*linkLibs=*/nullptr);
+    }
     gpuModule.setTargetsAttr(moduleBuilder.getArrayAttr({target}));
 
     DataLayoutSpecInterface dataLayout = {};
