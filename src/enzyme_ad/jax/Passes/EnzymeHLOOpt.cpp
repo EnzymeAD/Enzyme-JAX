@@ -30668,6 +30668,11 @@ struct LowerMultiRotate final
         amount += dimSize;
       }
 
+      if (amount == 0) {
+        replacements[i] = input;
+        continue;
+      }
+
       auto rotateOp = rewriter.create<enzymexla::RotateOp>(
           op.getLoc(), inputType, input, rewriter.getSI32IntegerAttr(amount),
           op.getDimensionAttr());
@@ -30680,12 +30685,7 @@ struct LowerMultiRotate final
       replacements[i] = rotateOp.getResult();
     }
 
-    // Replace all uses
-    for (int i = 0; i < totalResults; i++) {
-      op.getResult(i).replaceAllUsesWith(replacements[i]);
-    }
-
-    rewriter.eraseOp(op);
+    rewriter.replaceOp(op, replacements);
     return success();
   }
 };
@@ -30782,14 +30782,7 @@ struct ReduceUnusedMultiRotate final
         replacements[oldIdx] = newOp.getResult(newIdx++);
       }
 
-      // Replace uses
-      for (int i = 0; i < totalResults; i++) {
-        if (used[i]) {
-          op.getResult(i).replaceAllUsesWith(replacements[i]);
-        }
-      }
-
-      rewriter.eraseOp(op);
+      rewriter.replaceOp(op, replacements);
       return success();
     }
 
