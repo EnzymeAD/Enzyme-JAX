@@ -2513,7 +2513,8 @@ gdgo->erase();
               sm = s1.getValue();
             if (backend == "rocm") {
               if (sm.find("sm_") != std::string::npos) {
-                llvm::errs() << "Error: Found NVIDIA architecture while targeting ROCm.\n";
+                llvm::errs() << "Error: Found NVIDIA architecture while "
+                                "targeting ROCm.\n";
                 std::abort();
               }
             }
