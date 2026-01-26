@@ -69,7 +69,7 @@ struct GPULaunchRecognitionPass
       auto features = "+wavefrontsize64";
 
       target = moduleBuilder.getAttr<ROCDL::ROCDLTargetAttr>(
-          /*optLevel=*/2, /*triple=*/"amdgcn-amd-amdhsa", chip, features,
+          /*optLevel=*/3, /*triple=*/"amdgcn-amd-amdhsa", chip, features,
           /*abiVersion=*/"",
           /*flags=*/nullptr,
           /*linkLibs=*/nullptr);
@@ -82,7 +82,7 @@ struct GPULaunchRecognitionPass
       if (features.size() == 0)
         features = "+ptx73";
       target = moduleBuilder.getAttr<NVVM::NVVMTargetAttr>(
-          /*optLevel=*/2, /*triple=*/"nvptx64-nvidia-cuda", chip, features,
+          /*optLevel=*/3, /*triple=*/"nvptx64-nvidia-cuda", chip, features,
           /*flags=*/nullptr,
           /*linkLibs=*/nullptr);
     }
