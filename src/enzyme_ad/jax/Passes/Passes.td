@@ -545,6 +545,12 @@ def LowerProbProgToStableHLOPass : Pass<"lower-probprog-to-stablehlo"> {
         /*type=*/"std::string",
         /*default=*/"\"cpu\"",
         /*description=*/"HW backend">,
+    Option<
+        /*C++ variable name=*/"debugDump",
+        /*CLI argument=*/"debug-dump",
+        /*type=*/"bool",
+        /*default=*/"false",
+        /*description=*/"Enable debug dump">,
   ];
 }
 
