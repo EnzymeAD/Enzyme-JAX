@@ -2177,6 +2177,11 @@ def ReduceUnusedMultiSlice : EnzymeHLOPatternOp<
   let patterns = ["ReduceUnusedMultiSlice"];
 }
 
+def LowerMultiSlice : EnzymeHLOPatternOp<
+    "lower_multislice"> {
+  let patterns = ["LowerMultiSlice"];
+}
+
 def RecognizeMultiRotate : EnzymeHLOPatternOp<
     "recognize_multirotate"> {
   let patterns = ["RecognizeMultiRotate"];
