@@ -344,6 +344,15 @@ def AffineScopeOp : EnzymeXLA_Op<"scope", [
 
 def RotateOp : EnzymeXLA_Op<"rotate", [Pure, SameOperandsAndResultType]> {
   let summary = "Takes `amount` from the start of the tensor in `dimension` and appends it to the end";
+  let description = [{
+    Performs a left rotation (circular shift) along `dimension` by `amount` elements.
+    Elements are shifted left, with the first `amount` elements wrapping around to the end.
+    
+    i.e.:
+    ```
+    rotate([a, b, c, d, e], amount=2, dimension=0) → [c, d, e, a, b]
+    ```
+  }];
   let arguments = (ins
     HLO_Tensor:$operand,
     SI32Attr:$amount,

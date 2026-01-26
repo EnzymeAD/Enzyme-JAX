@@ -680,11 +680,10 @@ bool WhileLoopInfo::hoistOperationFromLoop(
     gatherSliceSizes.push_back(1);
   }
 
-  SmallVector<int64_t> offsetDims;
-  for (size_t i = 0; i < sliceSizes.size(); i++) {
-    if (!llvm::is_contained(dimensions, i))
-      offsetDims.push_back(i);
-  }
+  auto operandTy = dyn_cast<RankedTensorType>(operand.getType());
+
+  SmallVector<int64_t> offsetDims(operandTy.getRank() - dimensions.size());
+  std::iota(offsetDims.begin(), offsetDims.end(), 0);
 
   SmallVector<int64_t> startIndexMap(sliceSizes.size());
   std::iota(startIndexMap.begin(), startIndexMap.end(), 0);

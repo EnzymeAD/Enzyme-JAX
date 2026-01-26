@@ -806,20 +806,29 @@ def CuDNNHLOOpt : Pass<"enzymexla-cudnn-hlo-opt"> {
 }
 
 def GPULaunchRecognition : Pass<"gpu-launch-recognition"> {
-  let summary = "Optimize stablehlo to emit cuDNN specific optimizations";
+  let summary = "Recognize and convert GPU kernel launches to GPU dialect operations";
   let dependentDialects = [
     "enzymexla::EnzymeXLADialect",
     "arith::ArithDialect", 
     "gpu::GPUDialect",
     "mlir::NVVM::NVVMDialect",
+    "mlir::ROCDL::ROCDLDialect",
     "mlir::DLTIDialect"
   ];
-  let options = [Option<
+  let options = [
+    Option<
        /*C++ variable name=*/"use_launch_func",
        /*CLI argument=*/"use_launch_func",
        /*type=*/"bool",
        /*default=*/"false",
-       /*description=*/"Convert Periodic Concat to Manual Computation with CollectivePermute">];
+       /*description=*/"Convert Periodic Concat to Manual Computation with CollectivePermute">,
+    Option<
+      /*C++ variable name=*/"backend",
+        /*CLI argument=*/"backend",
+        /*type=*/"std::string",
+        /*default=*/"\"cuda\"",
+        /*description=*/"HW backend">,
+    ];
 }
 
 def MergeGPUModulesPass : Pass<"merge-gpu-modules", "mlir::ModuleOp"> {
@@ -837,13 +846,21 @@ def ConvertParallelToGPU1 : Pass<"convert-parallel-to-gpu1"> {
 
 def ConvertParallelToGPU2 : Pass<"convert-parallel-to-gpu2"> {
   let summary = "Convert parallel loops to gpu";
-  let dependentDialects = ["func::FuncDialect", "LLVM::LLVMDialect", "memref::MemRefDialect", "gpu::GPUDialect", "mlir::NVVM::NVVMDialect"];
-  let options = [Option<
+  let dependentDialects = ["func::FuncDialect", "LLVM::LLVMDialect", "memref::MemRefDialect", "gpu::GPUDialect", "mlir::NVVM::NVVMDialect", "mlir::ROCDL::ROCDLDialect"];
+  let options = [
+    Option<
        /*C++ variable name=*/"emitGPUKernelLaunchBounds",
        /*CLI argument=*/"emitGPUKernelLaunchBounds",
        /*type=*/"bool",
        /*default=*/"false",
-       /*description=*/"Convert Periodic Concat to Manual Computation with CollectivePermute">];
+       /*description=*/"Convert Periodic Concat to Manual Computation with CollectivePermute">,
+    Option<
+       /*C++ variable name=*/"backend",
+       /*CLI argument=*/"backend",
+       /*type=*/"std::string",
+       /*default=*/"\"cuda\"",
+       /*description=*/"Target backend (cuda or rocm)">
+  ];
 }
 
 def PolygeistMem2Reg : Pass<"polygeist-mem2reg"> {
@@ -876,6 +893,12 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*type=*/"int",
        /*default=*/"0",
        /*description=*/"Convert Rotate to Spmd custom call">,
+       Option<
+       /*C++ variable name=*/"multirotate_spmd",
+       /*CLI argument=*/"multirotate_spmd",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Convert MultiRotate to Spmd custom call">,
        Option<
        /*C++ variable name=*/"rotate_to_pad_comm",
        /*CLI argument=*/"rotate_to_pad_comm",

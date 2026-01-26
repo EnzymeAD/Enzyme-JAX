@@ -277,8 +277,7 @@ def setup_backends():
 
 
 partialopt = (
-    "inline{default-pipeline=canonicalize max-iterations=4},"
-    + """canonicalize,cse,
+    "inline{default-pipeline=canonicalize max-iterations=4}," + """canonicalize,cse,
 enzyme-hlo-generate-td{
             patterns=compare_op_canon<16>;
 transpose_transpose<16>;
