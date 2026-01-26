@@ -485,11 +485,11 @@ class AutoDiffWhileRev
     : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffWhileRev,
                                                        WhileOp> {
 
-  enum ReverseMode { CONSTANT, CONSTANT_CHECKPOINTING, PERIODIC_CHECKPOINTING, UNKNOWN };
+  enum ReverseMode { CONSTANT, CONSTANT_CHECKPOINTING, UNKNOWN };
   struct ReverseModeInfo {
     enum ReverseMode mode = UNKNOWN;
     WhileLoopInfo info;
-    int64_t checkpointPeriod = 0; // Used for PERIODIC_CHECKPOINTING (the M value)
+    int64_t checkpointPeriod = 0; // Used for CONSTANT_CHECKPOINTING (the M value)
 
     ReverseModeInfo(stablehlo::WhileOp op) : info(op) {}
   };
@@ -505,14 +505,24 @@ class AutoDiffWhileRev
       const char *periodicCheckpointAttrName = "enzymexla.checkpoint_period";
       auto checkpointPeriod =
           orig->getAttrOfType<IntegerAttr>(periodicCheckpointAttrName);
-      if (enableCheckpointing && enableCheckpointing.getValue())
+      
+      if (enableCheckpointing && enableCheckpointing.getValue()) {
+        // CONSTANT_CHECKPOINTING mode: use provided period or default to sqrt(numIters)
         revInfo.mode = CONSTANT_CHECKPOINTING;
-      else if (checkpointPeriod && checkpointPeriod.getInt() > 0) {
-        revInfo.mode = PERIODIC_CHECKPOINTING;
+        if (checkpointPeriod && checkpointPeriod.getInt() > 0) {
+          revInfo.checkpointPeriod = checkpointPeriod.getInt();
+        } else {
+          // Default to sqrt checkpointing when no period is specified
+          int64_t numIters = revInfo.info.getConstantNumIters();
+          revInfo.checkpointPeriod = std::sqrt(numIters);
+        }
+      } else if (checkpointPeriod && checkpointPeriod.getInt() > 0) {
+        // Explicit period specified without enable_checkpointing
+        revInfo.mode = CONSTANT_CHECKPOINTING;
         revInfo.checkpointPeriod = checkpointPeriod.getInt();
-      }
-      else
+      } else {
         revInfo.mode = CONSTANT;
+      }
     }
 
     return revInfo;
@@ -567,7 +577,7 @@ class AutoDiffWhileRev
     return whileOp;
   }
 
-  // Combined reverse pass for CONSTANT_CHECKPOINTING and PERIODIC_CHECKPOINTING
+  // Reverse pass for CONSTANT_CHECKPOINTING (handles both explicit period and default sqrt)
   static LogicalResult reverseWithCheckpointing(stablehlo::WhileOp orig,
                                                 struct ReverseModeInfo revInfo,
                                                 OpBuilder &builder,
@@ -577,21 +587,17 @@ class AutoDiffWhileRev
     int64_t numIters = revInfo.info.getConstantNumIters();
     int64_t nInner, nOuter;
 
-    if (revInfo.mode == CONSTANT_CHECKPOINTING) {
-      // sqrt scheme
-      nInner = std::sqrt(numIters);
-      nOuter = nInner;
-      if (nInner * nOuter != numIters) {
-        orig->emitError()
-            << "Non square number of iterations for checkpointing, nInner="
-            << nInner << " nOuter=" << nOuter
-            << " iters=" << numIters << "\n";
-        return failure();
-      }
-    } else {
-      // PERIODIC_CHECKPOINTING with user-specified period
-      nInner = revInfo.checkpointPeriod;
-      nOuter = (numIters + nInner - 1) / nInner;  // ceil(N/M)
+    // CONSTANT_CHECKPOINTING: use checkpointPeriod (defaults to sqrt(numIters) if not specified)
+    nInner = revInfo.checkpointPeriod;
+    nOuter = (numIters + nInner - 1) / nInner;  // ceil(N/M)
+    
+    // Validate that nInner * nOuter >= numIters (should be true due to ceil)
+    if (nInner * nOuter < numIters) {
+      orig->emitError()
+          << "Invalid checkpoint period calculation, nInner="
+          << nInner << " nOuter=" << nOuter
+          << " iters=" << numIters << "\n";
+      return failure();
     }
 
     SetVector<Value> outsideRefs;
@@ -630,13 +636,14 @@ class AutoDiffWhileRev
 
     // Compute the actual number of iterations for this block
     // actualInner = min(nInner, numIters - outerStart)
-    // For CONSTANT_CHECKPOINTING (sqrt scheme), nInner * nOuter == numIters, so
-    // actualInner is always nInner. For PERIODIC_CHECKPOINTING, if numIters is
+    // For CONSTANT_CHECKPOINTING with default sqrt scheme, nInner * nOuter == numIters, so
+    // actualInner is always nInner. For CONSTANT_CHECKPOINTING, if numIters is
     // evenly divisible by nInner, actualInner is also always nInner.
     // Using a static value enables static tensor sizes in the generated code.
     Value actualInner;
-    bool useStaticInner = (revInfo.mode == CONSTANT_CHECKPOINTING) ||
-                          (revInfo.mode == PERIODIC_CHECKPOINTING &&
+    // useStaticInner: true when numIters is exactly divisible by nInner
+    // (this happens when checkpointPeriod divides numIters evenly, or when using sqrt with perfect square)
+    bool useStaticInner = (revInfo.mode == CONSTANT_CHECKPOINTING &&
                            numIters % nInner == 0);
     if (useStaticInner) {
       actualInner = makeI64Constant(orig.getLoc(), builder, nInner);
@@ -833,8 +840,7 @@ public:
     // The reverse of the while loop is a for loop where the number
     // of iterations is either known or cached from the augmented primal.
     Value numIters;
-    if (revInfo.mode == CONSTANT_CHECKPOINTING ||
-        revInfo.mode == PERIODIC_CHECKPOINTING) {
+    if (revInfo.mode == CONSTANT_CHECKPOINTING) {
       return reverseWithCheckpointing(cast<stablehlo::WhileOp>(orig), revInfo,
                                       builder, gutils, caches, operandsActive);
     } else if (revInfo.mode == CONSTANT) {
@@ -1012,12 +1018,10 @@ public:
         // push/pop from outside the outer really.
 
         auto revModeInfo = getReverseMode(orig);
-        if (revModeInfo.mode == CONSTANT_CHECKPOINTING ||
-            revModeInfo.mode == PERIODIC_CHECKPOINTING) {
-          // Both modes split loop into outer and inner loops, differing only
-          // in how nInner/nOuter are computed:
-          // - CONSTANT_CHECKPOINTING (sqrt scheme): nInner = nOuter = sqrt(N)
-          // - PERIODIC_CHECKPOINTING: nInner = M (period), nOuter = ceil(N/M)
+        if (revModeInfo.mode == CONSTANT_CHECKPOINTING) {
+          // CONSTANT_CHECKPOINTING splits loop into outer and inner loops:
+          // - nInner = checkpointPeriod (defaults to sqrt(N) if not specified)
+          // - nOuter = ceil(N/nInner)
           OpBuilder builder(newWhile);
 
           SetVector<Value> outsideRefs;
@@ -1027,21 +1031,17 @@ public:
           int64_t numIters = info.getConstantNumIters();
           int64_t nInner, nOuter;
 
-          if (revModeInfo.mode == CONSTANT_CHECKPOINTING) {
-            // sqrt scheme
-            nInner = std::sqrt(numIters);
-            nOuter = nInner;
-            if (nInner * nOuter != numIters) {
-              orig->emitError()
-                  << "Non square number of iterations for checkpointing, nInner="
-                  << nInner << " nOuter=" << nOuter
-                  << " iters=" << numIters << "\n";
-              return {};
-            }
-          } else {
-            // Periodic checkpointing with user-specified period
-            nInner = revModeInfo.checkpointPeriod;
-            nOuter = (numIters + nInner - 1) / nInner;  // ceil(N/M)
+          // CONSTANT_CHECKPOINTING: use checkpointPeriod (defaults to sqrt(numIters) if not specified)
+          nInner = revModeInfo.checkpointPeriod;
+          nOuter = (numIters + nInner - 1) / nInner;  // ceil(N/M)
+          
+          // Validate that nInner * nOuter >= numIters (should be true due to ceil)
+          if (nInner * nOuter < numIters) {
+            orig->emitError()
+                << "Invalid checkpoint period calculation, nInner="
+                << nInner << " nOuter=" << nOuter
+                << " iters=" << numIters << "\n";
+            return {};
           }
 
           auto outer = makeForLoop(builder, orig->getLoc(), 0, nOuter, 1,
@@ -1074,13 +1074,10 @@ public:
 
           // Compute the actual limit for this inner loop iteration
           // limit = min(nInner, numIters - outerIV)
-          // For CONSTANT_CHECKPOINTING (sqrt scheme), nInner * nOuter == numIters,
-          // so innerLimit is always nInner. For PERIODIC_CHECKPOINTING, if numIters
-          // is evenly divisible by nInner, innerLimit is also always nInner.
+          // If numIters is evenly divisible by nInner, innerLimit is always nInner.
           // Using a static value enables static tensor sizes in the generated code.
           Value innerLimit;
-          bool useStaticInner = (revModeInfo.mode == CONSTANT_CHECKPOINTING) ||
-                                (revModeInfo.mode == PERIODIC_CHECKPOINTING &&
+          bool useStaticInner = (revModeInfo.mode == CONSTANT_CHECKPOINTING &&
                                  numIters % nInner == 0);
           if (useStaticInner) {
             innerLimit = makeI64Constant(newWhile.getLoc(), builder, nInner);
