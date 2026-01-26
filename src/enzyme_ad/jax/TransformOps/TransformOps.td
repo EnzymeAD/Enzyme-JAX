@@ -2127,6 +2127,11 @@ def ExtendPad : EnzymeHLOPatternOp<
   let patterns = ["ExtendPad"];
 }
 
+def ExtendToBroadcast : EnzymeHLOPatternOp<
+  "extend_to_broadcast"> {
+  let patterns = ["ExtendToBroadcast"];
+}
+
 def SliceExtend : EnzymeHLOPatternOp<
   "slice_extend"> {
   let patterns = ["SliceExtend"];
@@ -2170,6 +2175,21 @@ def TransposeExtend : EnzymeHLOPatternOp<
 def TransposeRotate : EnzymeHLOPatternOp<
     "transpose_rotate"> {
   let patterns = ["TransposeRotate"];
+}
+
+def ReduceUnusedMultiSlice : EnzymeHLOPatternOp<
+    "reduce_unused_multislice"> {
+  let patterns = ["ReduceUnusedMultiSlice"];
+}
+
+def RecognizeMultiRotate : EnzymeHLOPatternOp<
+    "recognize_multirotate"> {
+  let patterns = ["RecognizeMultiRotate"];
+}
+    
+def ReduceUnusedMultiRotate : EnzymeHLOPatternOp<
+    "reduce_unused_multirotate"> {
+  let patterns = ["ReduceUnusedMultiRotate"];
 }
 
 def SelectPad : EnzymeHLOPatternOp<
