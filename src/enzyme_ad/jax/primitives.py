@@ -340,6 +340,7 @@ def optimization_passes(
         "reduce_delete_dims",
         "dot_general_insert_dim_contraction_simplification",
         "fuse_reshape_collapse_or_expand_dims_into_reduce",
+        "extend_to_broadcast",
     ]
 
     # constant propagation patterns
