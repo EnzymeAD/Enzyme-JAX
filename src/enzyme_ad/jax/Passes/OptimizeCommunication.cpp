@@ -2425,16 +2425,6 @@ struct MultiRotateSpmdOptimize
     Value rightHalo = nullptr; // From Left Neighbor (for Right Rotate)
 
     // Generate Left Halo (Data from Right Neighbor)
-    // We want localInput[0..left_amount] from the Right Neighbor.
-    // The Right Neighbor sends us its localInput[0..left_amount].
-    // We send our localInput[0..left_amount] to our Left Neighbor.
-    // Wait, collective permute pairs (src -> dst).
-    // If I want data FROM Right, Right must send TO me.
-    // Right is (mypid + 1). So (mypid + 1) -> mypid.
-    // Or mypid -> (mypid - 1).
-    // This is "Move Left".
-    // generateShiftPairs(..., leftToRight=false) generates mypid -> (mypid -
-    // 1).
     if (left_amount > 0) {
       auto pairs =
           generateShiftPairs(rotateSharding, rotateDimension, rotate,
@@ -2458,13 +2448,6 @@ struct MultiRotateSpmdOptimize
     }
 
     // Generate Right Halo (Data from Left Neighbor)
-    // We want localInput[End-right_amount..End] from Left Neighbor.
-    // Left Neighbor sends us its tail.
-    // Left Neighbor is (mypid - 1).
-    // So (mypid - 1) -> mypid.
-    // Or mypid -> (mypid + 1).
-    // This is "Move Right".
-    // generateShiftPairs(..., leftToRight=true) generates mypid -> (mypid + 1).
     if (right_amount > 0) {
       auto pairs =
           generateShiftPairs(rotateSharding, rotateDimension, rotate,
@@ -2558,99 +2541,6 @@ struct MultiRotateSpmdOptimize
 
     // Slice Results
     SmallVector<Value> results;
-    // Base offset in superShard.
-    // If leftHalo exists, localInput starts at left_amount.
-    // If we want result for "rotate left by L", it corresponds to
-    // localInput[L]... which is at index L in localInput. In superShard,
-    // localInput starts at `leftHalo.len` (which is `left_amount`). So
-    // localInput[k] is at superShard[left_amount + k].
-
-    // Rotate Op: rotate(amount=A)
-    // result[i] = input[(i + A) % N].
-    // We are generating chunks for specific amounts.
-    // For MultiRotate, we have outputs corresponding to amounts:
-    // [L, L-1, ..., 1, 0, -1, ..., -R] (Left shifts ... Right shifts)
-    // Wait, let's check MultiRotateOp definition for result order.
-    // "results[0] = rotate left by L ... results[L] = amount 0 ... results[L+R]
-    // = rotate right by R" (Actually rotate right by R is typically amount -R
-    // or similar, but let's check doc).
-
-    // Doc said:
-    // results[0] = rotate left by L (amount=L)
-    // results[1] = rotate left by L-1
-    // ...
-    // results[L] = amount 0
-    // ...
-    // results[L+R] = rotate right by R (amount = -R? or just "right by R")
-    // "rotate right" usually means amount is negative in `rotate` op context if
-    // "rotate left" is positive.
-
-    // Let's assume standard "Left Rotate" convention for indices.
-    // Rotate Left by A: result[i] = input[i+A].
-    // Local result[i] comes from Global input[shard_offset + i + A].
-    // In superShard, we have:
-    // [LeftHalo (size L) | LocalInput (size S) | RightHalo (size R)]
-    // LeftHalo contains data that WAS at `RightNeighbor[0..L]`.
-    // Wait, LeftHalo (from `generateShiftPairs` "move left") contains
-    // `localInput[0..L]` from Right Neighbor. Right Neighbor's `localInput[k]`
-    // is Global `input[shard_offset + S + k]`. So LeftHalo[k] = Global
-    // `input[shard_offset + S + k]`.
-
-    // RightHalo (from "move right") contains `localInput[S-R..S]` from Left
-    // Neighbor. Left Neighbor's `localInput[k]` is Global `input[shard_offset -
-    // S + k]`. So RightHalo[k] = Global `input[shard_offset - S + (S-R+k)]` =
-    // `input[shard_offset - R + k]`.
-
-    // SuperShard layout:
-    // [0..L]: Left Halo (Global `shard_offset + S` to `shard_offset + S + L`)
-    // <-- Wait. [L..L+S]: Local Input (Global `shard_offset` to `shard_offset +
-    // S`) [L+S..L+S+R]: Right Halo (Global `shard_offset - R` to
-    // `shard_offset`) <-- Wait.
-
-    // This order seems wrong for "contiguous" access.
-    // Typically we want: `[Preceding Data | Local Data | Succeeding Data]`
-    // Preceding Data comes from Left Neighbor (Right Halo).
-    // Succeeding Data comes from Right Neighbor (Left Halo).
-
-    // So we should concatenate: `[RightHalo, LocalInput, LeftHalo]`.
-    // RightHalo (from Left Neighbor): `Global[Offset - R .. Offset]`
-    // LocalInput: `Global[Offset .. Offset + S]`
-    // LeftHalo (from Right Neighbor): `Global[Offset + S .. Offset + S + L]`
-
-    // Then `SuperShard` covers `Global[Offset - R .. Offset + S + L]`.
-
-    // Now we want result for rotate amount `A`.
-    // `result[i] = input[i + A]`.
-    // Local `result` at shard offset `Offset` wants Global `input[Offset + i +
-    // A]`. `Offset + i + A` must be within our SuperShard window `[Offset - R,
-    // Offset + S + L]`. i ranges `[0, S)`. Min index check: `Offset + 0 + A >=
-    // Offset - R` => `A >= -R`. (Rotate Right by R is amount -R). Max index
-    // check: `Offset + S - 1 + A < Offset + S + L` => `A - 1 < L` => `A <= L`.
-
-    // So `Concatenate [RightHalo, LocalInput, LeftHalo]`.
-    // Index 0 of SuperShard corresponds to Global `Offset - R`.
-    // We want Global `Offset + A`.
-    // Relative index in SuperShard: `(Offset + A) - (Offset - R) = A + R`.
-    // So for amount `A`, we slice from `SuperShard` at offset `A + R`.
-    // Length `S`.
-
-    // Correct.
-
-    // Re-verify Halo generation:
-    // RightHalo (from Left Neighbor): We want `Global[Offset-R .. Offset]`.
-    // Left Neighbor covers `[Offset-S .. Offset]`.
-    // So we want `[S-R .. S]` from Left Neighbor.
-    // This matches my "Right Halo" logic (slice tail of left neighbor). ok.
-
-    // LeftHalo (from Right Neighbor): We want `Global[Offset+S .. Offset+S+L]`.
-    // Right Neighbor covers `[Offset+S .. Offset+2S]`.
-    // So we want `[0 .. L]` from Right Neighbor.
-    // This matches my "Left Halo" logic (slice head of right neighbor). ok.
-
-    // So the concatenation order is `[RightHalo, LocalInput, LeftHalo]`.
-    // And `RightHalo` corresponds to `right_amount` (from Left Neighbor).
-    // `LeftHalo` corresponds to `left_amount` (from Right Neighbor).
-
     concatOps.clear();
     if (rightHalo)
       concatOps.push_back(rightHalo); // "Preceding" data
