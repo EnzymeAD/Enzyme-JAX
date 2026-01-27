@@ -2127,6 +2127,11 @@ def ExtendPad : EnzymeHLOPatternOp<
   let patterns = ["ExtendPad"];
 }
 
+def ExtendToBroadcast : EnzymeHLOPatternOp<
+  "extend_to_broadcast"> {
+  let patterns = ["ExtendToBroadcast"];
+}
+
 def SliceExtend : EnzymeHLOPatternOp<
   "slice_extend"> {
   let patterns = ["SliceExtend"];
@@ -2896,4 +2901,9 @@ def ApplyGatherOfScatterSimplifyPatterns : EnzymeHLOPatternOp<
 def ApplyDeleteDimsBroadcastPatterns : EnzymeHLOPatternOp<
     "delete_dims_broadcast"> {
   let patterns = ["DeleteDimsBroadcast"];
+}
+
+def ApplySplitComplexScatterSetIndexPatterns: EnzymeHLOPatternOp<
+    "split_complex_scatter_setindex"> {
+  let patterns = ["SplitComplexScatterSetIndex"];
 }
