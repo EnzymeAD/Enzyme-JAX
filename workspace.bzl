@@ -165,6 +165,16 @@ sed -i.bak0 "s/patch_cmds = \\[/patch_cmds = \\[\\\"find . -type f -name config.
     """
 sed -i.bak0 "s/patch_cmds = \\[/patch_cmds = \\[\\\"find . -type f -name config.h -exec sed -i.bak0 's\\/HAVE_PTHREAD_SETNAME_NP\\/FAKE_HAVE_PTHREAD_SETNAME_NP\\/g' {} +\\\",/g" third_party/llvm/workspace.bzl
 """,
+"""
+    # 1. Update Eigen workspace to use standard http_archive so we can use patch_cmds
+    sed -i.bak0 "s/def repo/load(\\\"@bazel_tools\\/\\/tools\\/build_defs\\/repo:http.bzl\\\", \\\"http_archive\\\")\\ndef repo/g" third_party/eigen_archive/workspace.bzl
+    sed -i.bak0 "s/tf_http_archive(/http_archive(/g" third_party/eigen_archive/workspace.bzl
+
+    # 2. Injected sed patches into the Eigen archive setup
+    # Patch 1: Fix Bitwise INT comparison return type
+    # Patch 2: Fix Bitwise FLOAT comparison by using a decltype-style cast based on the macro argument
+    sed -i.bak0 "s/strip_prefix = \\\"eigen-\\(.*\\)\\\",/strip_prefix = \\\"eigen-\\\\1\\\", patch_cmds = [\\\"sed -i.bak 's\\/return PACKET_TYPE(0) == PACKET_TYPE(0);\\/return (PACKET_TYPE)(PACKET_TYPE(0) == PACKET_TYPE(0));\\/' Eigen\\/src\\/Core\\/arch\\/clang\\/PacketMath.h\\\", \\\"sed -i.bak 's\\/return CAST_FROM_INT(CAST_TO_INT(a) == CAST_TO_INT(a));\\/return CAST_FROM_INT((typename decltype(\\\\2)::return_type)(CAST_TO_INT(a) == CAST_TO_INT(a)));\\/' Eigen\\/src\\/Core\\/arch\\/clang\\/PacketMath.h\\\"],/g" third_party/eigen_archive/workspace.bzl
+    """,
 ]
 
 LLVM_TARGETS = ["X86", "AArch64", "AMDGPU", "NVPTX"]
