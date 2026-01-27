@@ -30966,6 +30966,94 @@ private:
   }
 };
 
+// See discussion in
+// https://github.com/EnzymeAD/Reactant.jl/pull/2219#issuecomment-3801834108
+struct SplitComplexScatterSetIndex final
+    : CheckedOpRewritePattern<stablehlo::ScatterOp,
+                              SplitComplexScatterSetIndex> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ScatterOp op,
+                                    PatternRewriter &rewriter) const {
+    auto checkCommonScatterOp = mlir::stablehlo::CheckCommonScatterOp(op);
+
+    if (checkCommonScatterOp.kind != stablehlo::ScatterOpKind::Setindex) {
+      return failure();
+    }
+
+    auto elemType = cast<RankedTensorType>(op.getType(0)).getElementType();
+    if (!isa<ComplexType>(elemType)) {
+      return failure();
+    }
+
+    // Get the inner element type (e.g., f32 from complex<f32>)
+    auto complexType = cast<ComplexType>(elemType);
+    auto innerElemType = complexType.getElementType();
+
+    SmallVector<Value> realInputs, imagInputs, realUpdates, imagUpdates;
+    for (auto [input, update] :
+         llvm::zip_equal(op.getInputs(), op.getUpdates())) {
+      realInputs.push_back(
+          stablehlo::RealOp::create(rewriter, op.getLoc(), input));
+      imagInputs.push_back(
+          stablehlo::ImagOp::create(rewriter, op.getLoc(), input));
+      realUpdates.push_back(
+          stablehlo::RealOp::create(rewriter, op.getLoc(), update));
+      imagUpdates.push_back(
+          stablehlo::ImagOp::create(rewriter, op.getLoc(), update));
+    }
+
+    // Create the real scatter op
+    auto realScatterOp = stablehlo::ScatterOp::create(
+        rewriter, op.getLoc(), realInputs, op.getScatterIndices(), realUpdates,
+        op.getScatterDimensionNumbersAttr(), op.getIndicesAreSortedAttr(),
+        op.getUniqueIndicesAttr());
+
+    // Build setindex update computation region for real scatter
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      auto &updateRegion = realScatterOp.getUpdateComputation();
+      auto *block = rewriter.createBlock(&updateRegion);
+      auto argType = RankedTensorType::get({}, innerElemType);
+      block->addArgument(argType, op.getLoc());
+      block->addArgument(argType, op.getLoc());
+      rewriter.setInsertionPointToStart(block);
+      // Setindex: return the update value (arg1)
+      stablehlo::ReturnOp::create(rewriter, op.getLoc(), block->getArgument(1));
+    }
+
+    // Create the imaginary scatter op
+    auto imagScatterOp = stablehlo::ScatterOp::create(
+        rewriter, op.getLoc(), imagInputs, op.getScatterIndices(), imagUpdates,
+        op.getScatterDimensionNumbersAttr(), op.getIndicesAreSortedAttr(),
+        op.getUniqueIndicesAttr());
+
+    // Build setindex update computation region for imaginary scatter
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      auto &updateRegion = imagScatterOp.getUpdateComputation();
+      auto *block = rewriter.createBlock(&updateRegion);
+      auto argType = RankedTensorType::get({}, innerElemType);
+      block->addArgument(argType, op.getLoc());
+      block->addArgument(argType, op.getLoc());
+      rewriter.setInsertionPointToStart(block);
+      // Setindex: return the update value (arg1)
+      stablehlo::ReturnOp::create(rewriter, op.getLoc(), block->getArgument(1));
+    }
+
+    // Combine real and imaginary results using stablehlo::ComplexOp
+    SmallVector<Value> results;
+    for (auto [realResult, imagResult] : llvm::zip_equal(
+             realScatterOp.getResults(), imagScatterOp.getResults())) {
+      results.push_back(stablehlo::ComplexOp::create(rewriter, op.getLoc(),
+                                                     realResult, imagResult));
+    }
+
+    rewriter.replaceOp(op, results);
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -31749,7 +31837,8 @@ struct EnzymeHLOOptPass
         DotGeneralInsertDimContractionSimplification,
         FuseReshapeCollapseOrExpandDimsIntoReduce,
         GatherOfScatterSimplify,
-        ReduceWindowWrapSimplify
+        ReduceWindowWrapSimplify,
+        SplitComplexScatterSetIndex
       >(context);
 
     patterns.add<ReshapeElementwise>(true, true, context);
