@@ -484,6 +484,7 @@ def optimization_passes(
             "gather_op_canon<16>",
             "scatter_op_canon<16>",
             "gather_elementwise",
+            "elementwise_gather",
             ## const prop patterns
             "gather_const_prop",
             f"scatter_const_fold({max_constant_threshold})",

@@ -2456,6 +2456,9 @@ def ApplyUnaryElementwiseScatterSimplify : EnzymeHLOPatternOp<"unary_elementwise
 def ApplyGatherElementwise : EnzymeHLOPatternOp<"gather_elementwise"> {
   let patterns = ["GatherElementwise"];
 }
+def ApplyElementwiseGather : EnzymeHLOPatternOp<"elementwise_gather"> {
+  let patterns = ["ElementwiseGather"];
+}
 
 def ApplyChainedMultiplyToPower : EnzymeHLOPatternOp<"chained_multiply_to_power"> {
   let patterns = ["ChainedMultiplyToPower"];
