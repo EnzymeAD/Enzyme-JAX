@@ -23853,6 +23853,24 @@ struct RealConjSimplify final
   }
 };
 
+struct RealConvertSimplify final
+    : public CheckedOpRewritePattern<stablehlo::RealOp, RealConvertSimplify> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::RealOp op,
+                                    PatternRewriter &rewriter) const {
+    auto operandOp = op.getOperand().getDefiningOp<stablehlo::ConvertOp>();
+    if (!operandOp || isa<ComplexType>(cast<RankedTensorType>(
+                                           operandOp.getOperand().getType())
+                                           .getElementType())) {
+      return failure();
+    }
+
+    rewriter.replaceOp(op, operandOp.getOperand());
+    return success();
+  }
+};
+
 struct ConjComplexSimplify final
     : public CheckedOpRewritePattern<chlo::ConjOp, ConjComplexSimplify> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -23864,13 +23882,113 @@ struct ConjComplexSimplify final
       return failure();
 
     auto rhs = operandOp.getRhs();
-    auto rhsConstantOp = rhs.getDefiningOp<stablehlo::ConstantOp>();
-    if (!rhsConstantOp)
+    if (!matchPattern(rhs, m_Constant())) {
       return failure();
+    }
 
     auto negateRhs = stablehlo::NegOp::create(rewriter, op.getLoc(), rhs);
     rewriter.replaceOpWithNewOp<stablehlo::ComplexOp>(op, operandOp.getLhs(),
                                                       negateRhs);
+    return success();
+  }
+};
+
+struct ConjConvertSimplify final
+    : public CheckedOpRewritePattern<chlo::ConjOp, ConjConvertSimplify> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(chlo::ConjOp op,
+                                    PatternRewriter &rewriter) const {
+    auto operandOp = op.getOperand().getDefiningOp<stablehlo::ConvertOp>();
+    if (!operandOp || isa<ComplexType>(cast<RankedTensorType>(
+                                           operandOp.getOperand().getType())
+                                           .getElementType())) {
+      return failure();
+    }
+
+    rewriter.replaceOp(op, operandOp.getResult());
+    return success();
+  }
+};
+
+// elementwise_op(all operands have zero imag) -> do the op in real domain and
+// convert to complex
+struct ElementwiseComplexSimplify final
+    : public CheckedOpTraitRewritePattern<OpTrait::Elementwise,
+                                          ElementwiseComplexSimplify> {
+  using CheckedOpTraitRewritePattern::CheckedOpTraitRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(Operation *op,
+                                    PatternRewriter &rewriter) const {
+    if (isa<stablehlo::ConvertOp, stablehlo::ComplexOp>(op)) {
+      return failure();
+    }
+
+    if (op->getNumResults() != 1) {
+      return failure();
+    }
+
+    auto origRes = op->getResult(0);
+    auto resElemType =
+        cast<RankedTensorType>(origRes.getType()).getElementType();
+    auto complexEltype = dyn_cast<ComplexType>(resElemType);
+    if (!complexEltype) {
+      return failure();
+    }
+    auto realEltype = complexEltype.getElementType();
+
+    auto isComplexEltype = [](auto val) {
+      auto elemType = cast<RankedTensorType>(val.getType()).getElementType();
+      return isa<ComplexType>(elemType);
+    };
+
+    auto isZeroImagPart = [=](Value val) {
+      if (!isComplexEltype(val)) {
+        return true;
+      }
+
+      auto defOp = val.getDefiningOp();
+      if (!defOp) {
+        return false;
+      }
+
+      return TypeSwitch<Operation *, bool>(defOp)
+          .Case<stablehlo::ConvertOp>([=](auto convertOp) {
+            return !isComplexEltype(convertOp.getOperand());
+          })
+          .Case<stablehlo::ComplexOp>([](auto complexOp) {
+            return matchPattern(complexOp.getOperand(1), m_AnyZeroFloat());
+          })
+          .Default([](auto otherOp) {
+            return matchPattern(otherOp, m_AnyZeroImagComplex());
+          });
+    };
+
+    if (!llvm::all_of(op->getOperands(), [&](auto val) {
+          return isZeroImagPart(val) && isValueOnlyUsedInOperation(val, op);
+        })) {
+      return failure();
+    }
+
+    // extract the real operands
+    auto newOperands =
+        llvm::map_to_vector(op->getOperands(), [&](auto operand) -> Value {
+          if (!isComplexEltype(operand)) {
+            return operand;
+          }
+          return stablehlo::RealOp::create(rewriter, operand.getLoc(), operand)
+              .getResult();
+        });
+
+    auto nex = rewriter.create(
+        op->getLoc(), op->getName().getIdentifier(), ValueRange(newOperands),
+        TypeRange(RankedTensorType::get(
+            cast<ShapedType>(op->getResult(0).getType()).getShape(),
+            realEltype)),
+        op->getAttrs(), {}, {});
+
+    rewriter.replaceOpWithNewOp<stablehlo::ConvertOp>(
+        op, op->getResultTypes()[0], nex->getResult(0));
     return success();
   }
 };
@@ -31609,7 +31727,9 @@ struct EnzymeHLOOptPass
                    CSE<enzymexla::RotateOp>, CSE<enzymexla::WrapOp>,
                    CSE<enzymexla::ExtendOp>, CSEIota, CSE<stablehlo::CompareOp>,
                    CSE<stablehlo::GatherOp>, CSE<stablehlo::ScatterOp>,
-                   CSE<stablehlo::SelectOp>>(context, PatternBenefit(65000));
+                   CSE<stablehlo::SelectOp>, CSE<stablehlo::RealOp>,
+                   CSE<chlo::ConjOp>, CSE<stablehlo::ImagOp>>(
+          context, PatternBenefit(65000));
     }
 
     if (passses & 256)
@@ -31788,7 +31908,10 @@ struct EnzymeHLOOptPass
         InvolutionSimplify<stablehlo::NotOp>,
         InvolutionSimplify<chlo::ConjOp>,
         RealConjSimplify,
+        RealConvertSimplify,
         ConjComplexSimplify,
+        ConjConvertSimplify,
+        ElementwiseComplexSimplify,
         SplitConvolutionIntoReverseConvolution,
         ScatterMultiplySimplify,
         ScatterDivSimplify,

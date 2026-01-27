@@ -964,6 +964,7 @@ bool getCollapsingMapping(
     llvm::DenseMap<int64_t, llvm::SmallVector<int64_t, 2>> &mapping);
 
 bool isOnlyUsedInOperation(Operation *operation, Operation *parentOp);
+bool isValueOnlyUsedInOperation(Value value, Operation *parentOp);
 
 mlir::RankedTensorType removeBatchedDims(mlir::RankedTensorType Ty,
                                          llvm::ArrayRef<int64_t> dims);
