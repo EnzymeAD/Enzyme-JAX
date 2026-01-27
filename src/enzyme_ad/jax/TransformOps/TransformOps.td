@@ -2902,3 +2902,8 @@ def ApplyDeleteDimsBroadcastPatterns : EnzymeHLOPatternOp<
     "delete_dims_broadcast"> {
   let patterns = ["DeleteDimsBroadcast"];
 }
+
+def ApplySplitComplexScatterSetIndexPatterns: EnzymeHLOPatternOp<
+    "split_complex_scatter_setindex"> {
+  let patterns = ["SplitComplexScatterSetIndex"];
+}
