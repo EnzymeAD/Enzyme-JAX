@@ -2313,6 +2313,10 @@ struct MultiRotateSpmdOptimize
     TensorShardingAttr op_shardings[] = {rotateSharding};
     auto meshAttr =
         mlir::sdy::getCommonMesh(op_shardings, op_shardings, rotate);
+    if (meshAttr == nullptr) {
+      return rewriter.notifyMatchFailure(rotate,
+                                         "operands have different shardings");
+    }
     int64_t total_mesh_size = 1;
     for (auto dimSharding :
          rotateSharding.getDimShardings()[rotateDimension].getAxes()) {
