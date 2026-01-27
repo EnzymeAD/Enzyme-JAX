@@ -883,6 +883,21 @@ def ApplyCSESelectPatterns : EnzymeHLOPatternOp<
   let patterns = ["CSE<stablehlo::SelectOp>"];
 }
 
+def ApplyCSERealPatterns : EnzymeHLOPatternOp<
+    "cse_real"> {
+  let patterns = ["CSE<stablehlo::RealOp>"];
+}
+
+def ApplyCSEImagPatterns : EnzymeHLOPatternOp<
+    "cse_imag"> {
+  let patterns = ["CSE<stablehlo::ImagOp>"];
+}
+
+def ApplyCSEConjPatterns : EnzymeHLOPatternOp<
+    "cse_conj"> {
+  let patterns = ["CSE<chlo::ConjOp>"];
+}
+
 def CompareAbs : EnzymeHLOPatternOp<
     "compare_abs"> {
   let patterns = ["CompareAbs"];
@@ -2352,9 +2367,24 @@ def ApplyRealConjSimplifyPatterns : EnzymeHLOPatternOp<
   let patterns = ["RealConjSimplify"];
 }
 
+def ApplyRealConvertSimplifyPatterns : EnzymeHLOPatternOp<
+    "real_convert_simplify"> {
+  let patterns = ["RealConvertSimplify"];
+}
+
 def ApplyConjComplexSimplifyPatterns : EnzymeHLOPatternOp<
     "conj_complex_simplify"> {
   let patterns = ["ConjComplexSimplify"];
+}
+
+def ApplyConjConvertSimplifyPatterns : EnzymeHLOPatternOp<
+    "conj_convert_simplify"> {
+  let patterns = ["ConjConvertSimplify"];
+}
+
+def ApplyElementwiseComplexSimplifyPatterns : EnzymeHLOPatternOp<
+    "elementwise_complex_simplify"> {
+  let patterns = ["ElementwiseComplexSimplify"];
 }
 
 def ApplyAddConstPropPatterns : EnzymeHLOPatternOp<
@@ -2455,6 +2485,9 @@ def ApplyUnaryElementwiseScatterSimplify : EnzymeHLOPatternOp<"unary_elementwise
 
 def ApplyGatherElementwise : EnzymeHLOPatternOp<"gather_elementwise"> {
   let patterns = ["GatherElementwise"];
+}
+def ApplyElementwiseGather : EnzymeHLOPatternOp<"elementwise_gather"> {
+  let patterns = ["ElementwiseGather"];
 }
 
 def ApplyChainedMultiplyToPower : EnzymeHLOPatternOp<"chained_multiply_to_power"> {

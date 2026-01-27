@@ -261,6 +261,9 @@ def optimization_passes(
         "cse_rotate<16>",
         "cse_rotate<16>",
         "cse_select<16>",
+        "cse_real<16>",
+        "cse_imag<16>",
+        "cse_conj<16>",
         "concat_concat_axis_swap",
         "concat_concat_to_dus",
         "broadcast_iota_simplify",
@@ -286,7 +289,10 @@ def optimization_passes(
         "involution_conj_simplify",
         "involution_not_simplify",
         "real_conj_simplify",
+        "real_convert_simplify",
         "conj_complex_simplify",
+        "conj_convert_simplify",
+        "elementwise_complex_simplify",
         "split_convolution_into_reverse_convolution",
         # TODO we want to enable but may cause an infinite compile time
         # "concat_to_onedim_dusslice",
@@ -484,6 +490,7 @@ def optimization_passes(
             "gather_op_canon<16>",
             "scatter_op_canon<16>",
             "gather_elementwise",
+            "elementwise_gather",
             ## const prop patterns
             "gather_const_prop",
             f"scatter_const_fold({max_constant_threshold})",
