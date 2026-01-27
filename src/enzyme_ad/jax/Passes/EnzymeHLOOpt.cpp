@@ -30480,12 +30480,8 @@ struct LowerMultiSlice final
       replacements[i] = sliceOp.getResult();
     }
 
-    // Replace all uses
-    for (int i = 0; i < totalResults; i++) {
-      op.getResult(i).replaceAllUsesWith(replacements[i]);
-    }
+    rewriter.replaceOp(op, replacements);
 
-    rewriter.eraseOp(op);
     return success();
   }
 };
