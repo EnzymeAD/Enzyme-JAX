@@ -875,10 +875,10 @@ def _enzyme_aug_abstract_eval(
     in_shapes = [absmaketup(a) for a in in_shapes]
 
     if lang == LANG_MHLO:
-        (in_tree, _, _, mfunc, jit_options) = source
+        in_tree, _, _, mfunc, jit_options = source
         if "print_mlir" in jit_options:
             del jit_options["print_mlir"]
-        (avals_in, avals_inkw) = jax.tree_util.tree_unflatten(in_tree, args_flat)
+        avals_in, avals_inkw = jax.tree_util.tree_unflatten(in_tree, args_flat)
         jit_options = dict(jit_options)
         lowered_func = lower(jax.jit(mfunc, **jit_options), avals_in, kwargs=avals_inkw)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
@@ -1023,7 +1023,7 @@ def _enzyme_primal_lowering(
     argv = argv + ("-resource-dir", resource_dir()) + cflags()
 
     if lang == LANG_MHLO:
-        (in_tree, in_idx_map, out_idx_map, mfunc, jit_options) = source
+        in_tree, in_idx_map, out_idx_map, mfunc, jit_options = source
         in_idx_map = dict(in_idx_map)
         out_idx_map = dict(out_idx_map)
         jit_options = dict(jit_options)
@@ -1050,7 +1050,7 @@ def _enzyme_primal_lowering(
             kept = [i for (i, v) in enumerate(orig_shapes)]
             source = mfunc
         else:
-            (avals_in, avals_inkw) = jax.tree_util.tree_unflatten(in_tree, avals)
+            avals_in, avals_inkw = jax.tree_util.tree_unflatten(in_tree, avals)
             lowered_func = lower(
                 jax.jit(mfunc, **jit_options),
                 avals_in,
@@ -1266,12 +1266,10 @@ def _enzyme_fwd_lowering(
     in_args = (*args_flat,)
 
     if lang == LANG_MHLO:
-        (in_tree, _, _, mfunc, jit_options) = source
+        in_tree, _, _, mfunc, jit_options = source
         if "print_mlir" in jit_options:
             del jit_options["print_mlir"]
-        (avals_in, avals_inkw) = jax.tree_util.tree_unflatten(
-            in_tree, ctx.avals_in[::2]
-        )
+        avals_in, avals_inkw = jax.tree_util.tree_unflatten(in_tree, ctx.avals_in[::2])
         jit_options = dict(jit_options)
         lowered_func = lower(jax.jit(mfunc, **jit_options), avals_in, kwargs=avals_inkw)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
@@ -1340,10 +1338,10 @@ def _enzyme_aug_lowering(
     in_args = (*args_flat,)
 
     if lang == LANG_MHLO:
-        (in_tree, _, _, mfunc, jit_options) = source
+        in_tree, _, _, mfunc, jit_options = source
         if "print_mlir" in jit_options:
             del jit_options["print_mlir"]
-        (avals_in, avals_inkw) = jax.tree_util.tree_unflatten(in_tree, ctx.avals_in)
+        avals_in, avals_inkw = jax.tree_util.tree_unflatten(in_tree, ctx.avals_in)
         jit_options = dict(jit_options)
         lowered_func = lower(jax.jit(mfunc, **jit_options), avals_in, kwargs=avals_inkw)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
@@ -1416,10 +1414,10 @@ def _enzyme_rev_lowering(
 
     kept = None
     if lang == LANG_MHLO:
-        (in_tree, _, _, mfunc, jit_options) = source
+        in_tree, _, _, mfunc, jit_options = source
         if "print_mlir" in jit_options:
             del jit_options["print_mlir"]
-        (avals_in, avals_inkw) = jax.tree_util.tree_unflatten(in_tree, ctx.avals_out)
+        avals_in, avals_inkw = jax.tree_util.tree_unflatten(in_tree, ctx.avals_out)
         jit_options = dict(jit_options)
         lowered_func = lower(jax.jit(mfunc, **jit_options), avals_in, kwargs=avals_inkw)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
@@ -1613,7 +1611,7 @@ def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
 
     shadconv = None
     if pipeline_options.mlir_ad() and kwargs["lang"] == LANG_MHLO:
-        (in_tree, in_idx_map, out_idx_map, mfunc, jit_options) = kwargs["source"]
+        in_tree, in_idx_map, out_idx_map, mfunc, jit_options = kwargs["source"]
         in_idx_map = dict(in_idx_map)
         out_idx_map = dict(out_idx_map)
         act_tup = []
@@ -1775,7 +1773,7 @@ def primal_partial_eval(trace, *args, **kwargs):
 
     _, acts, _ = arg_activity_from_pipeline(pipeline_options.pass_pipeline())
 
-    (in_tree, in_idx_map, out_idx_map, mfunc, jit_options) = kwargs["source"]
+    in_tree, in_idx_map, out_idx_map, mfunc, jit_options = kwargs["source"]
     in_idx_map = dict(in_idx_map)
     out_idx_map = dict(out_idx_map)
     primals = []
@@ -1880,7 +1878,7 @@ def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
 
         pipeline_options = JaXPipeline(newpasses)
 
-        (in_tree, in_idx_map, out_idx_map, mfunc, jit_options) = kwargs["source"]
+        in_tree, in_idx_map, out_idx_map, mfunc, jit_options = kwargs["source"]
         in_idx_map = dict(in_idx_map)
 
         prim_args = prim_args[: len(acts)]
@@ -2017,7 +2015,7 @@ def enzyme_jax_ir(
                 else:
                     return jnp.zeros(arg.shape, dtype=arg.dtype)
 
-            (avals_in, avals_kwin) = jax.tree_util.tree_unflatten(
+            avals_in, avals_kwin = jax.tree_util.tree_unflatten(
                 in_tree,
                 [zero_like(arg) for arg in args_flat],
             )
