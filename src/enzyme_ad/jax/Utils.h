@@ -1110,6 +1110,7 @@ bool isSetindexBlock(mlir::Block *block,
                      std::function<bool(stablehlo::ReturnOp retOp)> fn);
 
 bool isSetindexBlock(mlir::Block *block);
+bool isSetindexBlock(mlir::Block *block, mlir::Value &val);
 bool isConstantSetindexBlock(mlir::Block *block,
                              mlir::SplatElementsAttr &constant);
 
@@ -1476,6 +1477,7 @@ enum class ScatterOpKind {
   Unknown,
   Setindex,
   ConstantSetindex,
+  SetindexOutsideValue,
   Add,
   Min,
   Max,
@@ -1494,6 +1496,7 @@ struct CheckCommonScatterOp {
 public:
   ScatterOpKind kind;
   SplatElementsAttr constant;
+  Value outsideValue;
 
   CheckCommonScatterOp(stablehlo::ScatterOp op) {
     auto &updateComputation = op.getUpdateComputation();
@@ -1518,6 +1521,8 @@ public:
       kind = ScatterOpKind::ConstantSetindex;
     } else if (isSetindexBlock(&block)) {
       kind = ScatterOpKind::Setindex;
+    } else if (isSetindexBlock(&block, outsideValue)) {
+      kind = ScatterOpKind::SetindexOutsideValue;
     } else if (isOnlyOpBlock<stablehlo::AddOp, true, false>(&block)) {
       kind = ScatterOpKind::Add;
     } else if (isOnlyOpBlock<stablehlo::MulOp, true, false>(&block)) {

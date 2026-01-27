@@ -2145,6 +2145,23 @@ bool isSetindexBlock(mlir::Block *block) {
   });
 }
 
+bool isSetindexBlock(mlir::Block *block, mlir::Value &val) {
+  return isSetindexBlock(block, [&val, block](stablehlo::ReturnOp retOp) {
+    val = retOp.getOperand(0);
+    // Check that val is defined outside the block
+    if (auto *definingOp = val.getDefiningOp()) {
+      if (definingOp->getBlock() == block) {
+        return false;
+      }
+    } else if (auto blockArg = dyn_cast<BlockArgument>(val)) {
+      if (blockArg.getOwner() == block) {
+        return false;
+      }
+    }
+    return true;
+  });
+}
+
 bool isConstantSetindexBlock(mlir::Block *block,
                              mlir::SplatElementsAttr &constant) {
   return isSetindexBlock(block, [&constant](stablehlo::ReturnOp retOp) {

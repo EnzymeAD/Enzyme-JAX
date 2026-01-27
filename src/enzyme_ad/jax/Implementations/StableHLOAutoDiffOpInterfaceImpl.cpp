@@ -2040,6 +2040,7 @@ public:
     using ScatterOpKind = mlir::stablehlo::ScatterOpKind;
     switch (checkCommonScatterOp.kind) {
     case stablehlo::ScatterOpKind::Setindex:
+    case stablehlo::ScatterOpKind::ConstantSetindex:
     case stablehlo::ScatterOpKind::Add:
     case stablehlo::ScatterOpKind::AddConstantUpdate:
     case stablehlo::ScatterOpKind::AddConstantInput:
@@ -2152,6 +2153,7 @@ public:
 
     bool noInputDependencies =
         checkCommonScatterOp.kind == ScatterOpKind::Setindex ||
+        checkCommonScatterOp.kind == ScatterOpKind::ConstantSetindex ||
         checkCommonScatterOp.kind == ScatterOpKind::AddConstantInput ||
         checkCommonScatterOp.kind == ScatterOpKind::MulConstantInput;
     if (noInputDependencies ||
@@ -2218,15 +2220,15 @@ public:
           returnValues = SmallVector<Value>(nNonConsts, zeroScalar);
         } else if (checkCommonScatterOp.kind == ScatterOpKind::Mul) {
           for (int i = 0; i < nNonConsts; i++) {
-            returnValues.push_back(builder.create<stablehlo::MulOp>(
-                scatterOp.getLoc(), block->getArgument(i),
+            returnValues.push_back(stablehlo::MulOp::create(
+                builder, scatterOp.getLoc(), block->getArgument(i),
                 block->getArgument(i + nNonConsts)));
           }
         } else if (checkCommonScatterOp.kind ==
                    ScatterOpKind::MulConstantUpdate) {
           for (int i = 0; i < nNonConsts; i++) {
-            returnValues.push_back(builder.create<stablehlo::MulOp>(
-                scatterOp.getLoc(), block->getArgument(i),
+            returnValues.push_back(stablehlo::MulOp::create(
+                builder, scatterOp.getLoc(), block->getArgument(i),
                 constMulUpdateScalar));
           }
         } else {
@@ -2259,7 +2261,8 @@ public:
                         SmallVectorImpl<Value> &cachedUpdates) const {
     using ScatterOpKind = mlir::stablehlo::ScatterOpKind;
     if (checkCommonScatterOp.kind == ScatterOpKind::MulConstantUpdate ||
-        checkCommonScatterOp.kind == ScatterOpKind::AddConstantUpdate) {
+        checkCommonScatterOp.kind == ScatterOpKind::AddConstantUpdate ||
+        checkCommonScatterOp.kind == ScatterOpKind::ConstantSetindex) {
       return; // no dependence on the updates
     }
 
