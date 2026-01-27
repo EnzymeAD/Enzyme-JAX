@@ -23853,6 +23853,24 @@ struct RealConjSimplify final
   }
 };
 
+struct RealConvertSimplify final
+    : public CheckedOpRewritePattern<stablehlo::RealOp, RealConvertSimplify> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::RealOp op,
+                                    PatternRewriter &rewriter) const {
+    auto operandOp = op.getOperand().getDefiningOp<stablehlo::ConvertOp>();
+    if (!operandOp || isa<ComplexType>(cast<RankedTensorType>(
+                                           operandOp.getOperand().getType())
+                                           .getElementType())) {
+      return failure();
+    }
+
+    rewriter.replaceOp(op, operandOp.getOperand());
+    return success();
+  }
+};
+
 struct ConjComplexSimplify final
     : public CheckedOpRewritePattern<chlo::ConjOp, ConjComplexSimplify> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -23864,13 +23882,113 @@ struct ConjComplexSimplify final
       return failure();
 
     auto rhs = operandOp.getRhs();
-    auto rhsConstantOp = rhs.getDefiningOp<stablehlo::ConstantOp>();
-    if (!rhsConstantOp)
+    if (!matchPattern(rhs, m_Constant())) {
       return failure();
+    }
 
     auto negateRhs = stablehlo::NegOp::create(rewriter, op.getLoc(), rhs);
     rewriter.replaceOpWithNewOp<stablehlo::ComplexOp>(op, operandOp.getLhs(),
                                                       negateRhs);
+    return success();
+  }
+};
+
+struct ConjConvertSimplify final
+    : public CheckedOpRewritePattern<chlo::ConjOp, ConjConvertSimplify> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(chlo::ConjOp op,
+                                    PatternRewriter &rewriter) const {
+    auto operandOp = op.getOperand().getDefiningOp<stablehlo::ConvertOp>();
+    if (!operandOp || isa<ComplexType>(cast<RankedTensorType>(
+                                           operandOp.getOperand().getType())
+                                           .getElementType())) {
+      return failure();
+    }
+
+    rewriter.replaceOp(op, operandOp.getResult());
+    return success();
+  }
+};
+
+// elementwise_op(all operands have zero imag) -> do the op in real domain and
+// convert to complex
+struct ElementwiseComplexSimplify final
+    : public CheckedOpTraitRewritePattern<OpTrait::Elementwise,
+                                          ElementwiseComplexSimplify> {
+  using CheckedOpTraitRewritePattern::CheckedOpTraitRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(Operation *op,
+                                    PatternRewriter &rewriter) const {
+    if (isa<stablehlo::ConvertOp, stablehlo::ComplexOp>(op)) {
+      return failure();
+    }
+
+    if (op->getNumResults() != 1) {
+      return failure();
+    }
+
+    auto origRes = op->getResult(0);
+    auto resElemType =
+        cast<RankedTensorType>(origRes.getType()).getElementType();
+    auto complexEltype = dyn_cast<ComplexType>(resElemType);
+    if (!complexEltype) {
+      return failure();
+    }
+    auto realEltype = complexEltype.getElementType();
+
+    auto isComplexEltype = [](auto val) {
+      auto elemType = cast<RankedTensorType>(val.getType()).getElementType();
+      return isa<ComplexType>(elemType);
+    };
+
+    auto isZeroImagPart = [=](Value val) {
+      if (!isComplexEltype(val)) {
+        return true;
+      }
+
+      auto defOp = val.getDefiningOp();
+      if (!defOp) {
+        return false;
+      }
+
+      return TypeSwitch<Operation *, bool>(defOp)
+          .Case<stablehlo::ConvertOp>([=](auto convertOp) {
+            return !isComplexEltype(convertOp.getOperand());
+          })
+          .Case<stablehlo::ComplexOp>([](auto complexOp) {
+            return matchPattern(complexOp.getOperand(1), m_AnyZeroFloat());
+          })
+          .Default([](auto otherOp) {
+            return matchPattern(otherOp, m_AnyZeroImagComplex());
+          });
+    };
+
+    if (!llvm::all_of(op->getOperands(), [&](auto val) {
+          return isZeroImagPart(val) && isValueOnlyUsedInOperation(val, op);
+        })) {
+      return failure();
+    }
+
+    // extract the real operands
+    auto newOperands =
+        llvm::map_to_vector(op->getOperands(), [&](auto operand) -> Value {
+          if (!isComplexEltype(operand)) {
+            return operand;
+          }
+          return stablehlo::RealOp::create(rewriter, operand.getLoc(), operand)
+              .getResult();
+        });
+
+    auto nex = rewriter.create(
+        op->getLoc(), op->getName().getIdentifier(), ValueRange(newOperands),
+        TypeRange(RankedTensorType::get(
+            cast<ShapedType>(op->getResult(0).getType()).getShape(),
+            realEltype)),
+        op->getAttrs(), {}, {});
+
+    rewriter.replaceOpWithNewOp<stablehlo::ConvertOp>(
+        op, op->getResultTypes()[0], nex->getResult(0));
     return success();
   }
 };
@@ -24336,11 +24454,10 @@ struct GatherElementwise
     if (!isOnlyUsedInOperation(defOp, op))
       return failure();
 
-    int64_t outElemCount = 1, inElemCount = 1;
-    for (auto dim : cast<RankedTensorType>(op.getType()).getShape())
-      outElemCount *= dim;
-    for (auto dim : cast<RankedTensorType>(gatherInput.getType()).getShape())
-      inElemCount *= dim;
+    int64_t outElemCount =
+        cast<RankedTensorType>(op.getType()).getNumElements();
+    int64_t inElemCount =
+        cast<RankedTensorType>(gatherInput.getType()).getNumElements();
 
     if (outElemCount >= inElemCount)
       return rewriter.notifyMatchFailure(
@@ -24360,6 +24477,72 @@ struct GatherElementwise
         ValueRange(newElementwiseInputs), TypeRange{op.getResult().getType()},
         defOp->getAttrs(), {}, {});
     rewriter.replaceOp(op, newElemOp->getResult(0));
+    return success();
+  }
+};
+
+struct ElementwiseGather
+    : public CheckedOpTraitRewritePattern<OpTrait::Elementwise,
+                                          ElementwiseGather> {
+  using CheckedOpTraitRewritePattern::CheckedOpTraitRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(Operation *op,
+                                    PatternRewriter &rewriter) const {
+    if (op->getNumResults() != 1) {
+      return failure();
+    }
+
+    stablehlo::GatherOp gatherOp;
+    SmallVector<Value> gatherOperands;
+
+    for (auto [i, operand] : llvm::enumerate(op->getOperands())) {
+      auto defOp = operand.getDefiningOp<stablehlo::GatherOp>();
+      if (!defOp || !isOnlyUsedInOperation(defOp, op)) {
+        return failure();
+      }
+
+      auto gatherOutType = cast<RankedTensorType>(defOp.getType());
+      auto gatherInType = cast<RankedTensorType>(defOp.getOperand().getType());
+      if (!gatherOutType.hasStaticShape() || !gatherInType.hasStaticShape()) {
+        return failure();
+      }
+
+      if (i == 0) {
+        gatherOp = defOp;
+
+        int64_t gatherOutElemCount = gatherOutType.getNumElements();
+        int64_t gatherInElemCount = gatherInType.getNumElements();
+        if (gatherOutElemCount <= gatherInElemCount) {
+          return failure();
+        }
+      } else {
+        // operands can be different, start_indices must be the same
+        if (!OperationEquivalence::isEquivalentTo(
+                gatherOp, defOp, OperationEquivalence::ignoreValueEquivalence,
+                nullptr, OperationEquivalence::IgnoreLocations, nullptr) ||
+            gatherOp.getStartIndices() != defOp.getStartIndices()) {
+          return failure();
+        }
+      }
+
+      gatherOperands.push_back(defOp.getOperand());
+    }
+
+    if (gatherOperands.empty()) {
+      return failure();
+    }
+
+    auto newElemOp = rewriter.create(
+        op->getLoc(), op->getName().getIdentifier(), ValueRange(gatherOperands),
+        TypeRange{RankedTensorType::get(
+            cast<RankedTensorType>(gatherOperands[0].getType()).getShape(),
+            cast<TensorType>(op->getResult(0).getType()).getElementType())},
+        op->getAttrs(), {}, {});
+    auto newGatherOp = stablehlo::GatherOp::create(
+        rewriter, op->getLoc(), newElemOp->getResult(0),
+        gatherOp.getStartIndices(), gatherOp.getDimensionNumbersAttr(),
+        gatherOp.getSliceSizesAttr(), gatherOp.getIndicesAreSortedAttr());
+    rewriter.replaceOp(op, newGatherOp);
     return success();
   }
 };
@@ -30966,6 +31149,94 @@ private:
   }
 };
 
+// See discussion in
+// https://github.com/EnzymeAD/Reactant.jl/pull/2219#issuecomment-3801834108
+struct SplitComplexScatterSetIndex final
+    : CheckedOpRewritePattern<stablehlo::ScatterOp,
+                              SplitComplexScatterSetIndex> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ScatterOp op,
+                                    PatternRewriter &rewriter) const {
+    auto checkCommonScatterOp = mlir::stablehlo::CheckCommonScatterOp(op);
+
+    if (checkCommonScatterOp.kind != stablehlo::ScatterOpKind::Setindex) {
+      return failure();
+    }
+
+    auto elemType = cast<RankedTensorType>(op.getType(0)).getElementType();
+    if (!isa<ComplexType>(elemType)) {
+      return failure();
+    }
+
+    // Get the inner element type (e.g., f32 from complex<f32>)
+    auto complexType = cast<ComplexType>(elemType);
+    auto innerElemType = complexType.getElementType();
+
+    SmallVector<Value> realInputs, imagInputs, realUpdates, imagUpdates;
+    for (auto [input, update] :
+         llvm::zip_equal(op.getInputs(), op.getUpdates())) {
+      realInputs.push_back(
+          stablehlo::RealOp::create(rewriter, op.getLoc(), input));
+      imagInputs.push_back(
+          stablehlo::ImagOp::create(rewriter, op.getLoc(), input));
+      realUpdates.push_back(
+          stablehlo::RealOp::create(rewriter, op.getLoc(), update));
+      imagUpdates.push_back(
+          stablehlo::ImagOp::create(rewriter, op.getLoc(), update));
+    }
+
+    // Create the real scatter op
+    auto realScatterOp = stablehlo::ScatterOp::create(
+        rewriter, op.getLoc(), realInputs, op.getScatterIndices(), realUpdates,
+        op.getScatterDimensionNumbersAttr(), op.getIndicesAreSortedAttr(),
+        op.getUniqueIndicesAttr());
+
+    // Build setindex update computation region for real scatter
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      auto &updateRegion = realScatterOp.getUpdateComputation();
+      auto *block = rewriter.createBlock(&updateRegion);
+      auto argType = RankedTensorType::get({}, innerElemType);
+      block->addArgument(argType, op.getLoc());
+      block->addArgument(argType, op.getLoc());
+      rewriter.setInsertionPointToStart(block);
+      // Setindex: return the update value (arg1)
+      stablehlo::ReturnOp::create(rewriter, op.getLoc(), block->getArgument(1));
+    }
+
+    // Create the imaginary scatter op
+    auto imagScatterOp = stablehlo::ScatterOp::create(
+        rewriter, op.getLoc(), imagInputs, op.getScatterIndices(), imagUpdates,
+        op.getScatterDimensionNumbersAttr(), op.getIndicesAreSortedAttr(),
+        op.getUniqueIndicesAttr());
+
+    // Build setindex update computation region for imaginary scatter
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      auto &updateRegion = imagScatterOp.getUpdateComputation();
+      auto *block = rewriter.createBlock(&updateRegion);
+      auto argType = RankedTensorType::get({}, innerElemType);
+      block->addArgument(argType, op.getLoc());
+      block->addArgument(argType, op.getLoc());
+      rewriter.setInsertionPointToStart(block);
+      // Setindex: return the update value (arg1)
+      stablehlo::ReturnOp::create(rewriter, op.getLoc(), block->getArgument(1));
+    }
+
+    // Combine real and imaginary results using stablehlo::ComplexOp
+    SmallVector<Value> results;
+    for (auto [realResult, imagResult] : llvm::zip_equal(
+             realScatterOp.getResults(), imagScatterOp.getResults())) {
+      results.push_back(stablehlo::ComplexOp::create(rewriter, op.getLoc(),
+                                                     realResult, imagResult));
+    }
+
+    rewriter.replaceOp(op, results);
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -31521,7 +31792,9 @@ struct EnzymeHLOOptPass
                    CSE<enzymexla::RotateOp>, CSE<enzymexla::WrapOp>,
                    CSE<enzymexla::ExtendOp>, CSEIota, CSE<stablehlo::CompareOp>,
                    CSE<stablehlo::GatherOp>, CSE<stablehlo::ScatterOp>,
-                   CSE<stablehlo::SelectOp>>(context, PatternBenefit(65000));
+                   CSE<stablehlo::SelectOp>, CSE<stablehlo::RealOp>,
+                   CSE<chlo::ConjOp>, CSE<stablehlo::ImagOp>>(
+          context, PatternBenefit(65000));
     }
 
     if (passses & 256)
@@ -31700,7 +31973,10 @@ struct EnzymeHLOOptPass
         InvolutionSimplify<stablehlo::NotOp>,
         InvolutionSimplify<chlo::ConjOp>,
         RealConjSimplify,
+        RealConvertSimplify,
         ConjComplexSimplify,
+        ConjConvertSimplify,
+        ElementwiseComplexSimplify,
         SplitConvolutionIntoReverseConvolution,
         ScatterMultiplySimplify,
         ScatterDivSimplify,
@@ -31708,6 +31984,7 @@ struct EnzymeHLOOptPass
         ScatterSubSimplify,
         UnaryElementwiseScatterSimplify,
         GatherElementwise,
+        ElementwiseGather,
         ElementwisePad,
         ConcatenateSubtractToSubtractPad,
         ConcatenateBroadcastInDim,
@@ -31749,7 +32026,8 @@ struct EnzymeHLOOptPass
         DotGeneralInsertDimContractionSimplification,
         FuseReshapeCollapseOrExpandDimsIntoReduce,
         GatherOfScatterSimplify,
-        ReduceWindowWrapSimplify
+        ReduceWindowWrapSimplify,
+        SplitComplexScatterSetIndex
       >(context);
 
     patterns.add<ReshapeElementwise>(true, true, context);
