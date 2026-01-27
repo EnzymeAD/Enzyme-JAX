@@ -1183,6 +1183,17 @@ bool isOnlyUsedInOperation(Operation *operation, Operation *parentOp) {
   return true;
 }
 
+bool isValueOnlyUsedInOperation(Value value, Operation *parentOp) {
+  if (!parentOp)
+    return false;
+
+  for (Operation *user : value.getUsers()) {
+    if (user != parentOp)
+      return false;
+  }
+  return true;
+}
+
 bool mayReadFrom(Operation *op, Value val) {
   bool hasRecursiveEffects = op->hasTrait<OpTrait::HasRecursiveMemoryEffects>();
   if (hasRecursiveEffects) {

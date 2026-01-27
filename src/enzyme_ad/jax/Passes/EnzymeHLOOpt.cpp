@@ -23964,11 +23964,11 @@ struct ElementwiseComplexSimplify final
           });
     };
 
-    if (!llvm::all_of(op->getOperands(), isZeroImagPart)) {
+    if (!llvm::all_of(op->getOperands(), [&](auto val) {
+          return isZeroImagPart(val) && isValueOnlyUsedInOperation(val, op);
+        })) {
       return failure();
     }
-
-    // TODO: check that intermediates have single usage
 
     // extract the real operands
     auto newOperands =
