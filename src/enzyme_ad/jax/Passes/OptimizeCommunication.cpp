@@ -4245,6 +4245,196 @@ struct ReorderAssociativeOp : public OpRewritePattern<opTy> {
   }
 };
 
+struct MultiSliceSpmdOptimize
+    : public OpRewritePattern<enzymexla::MultiSliceOp> {
+  using OpRewritePattern<enzymexla::MultiSliceOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::MultiSliceOp op,
+                                PatternRewriter &rewriter) const override {
+
+    // We only support sharding along one dimension for now
+    if (!llvm::isa<RankedTensorType>(op.getOperand().getType()))
+      return failure();
+
+    auto operandType = llvm::cast<RankedTensorType>(op.getOperand().getType());
+    auto sharding = sdy::getSharding(op.getOperand());
+    if (!sharding)
+      return failure();
+
+    int64_t dimension = op.getDimension();
+
+    // Check if the dimension is sharded
+    if (sharding.getDimShardings()[dimension].getAxes().empty())
+      return failure();
+
+    int64_t numDevices = getNumDevicesAlongDimension(sharding, dimension, op);
+    if (numDevices <= 1)
+      return failure();
+
+    SmallVector<StringAttr> manualAxes;
+    SmallVector<int64_t> localShape = llvm::to_vector(operandType.getShape());
+    updateManualComputationAxesShape(sharding, rewriter, op, manualAxes,
+                                     localShape, dimension);
+
+    int64_t globalDimSize = operandType.getShape()[dimension];
+    int64_t shardSize = localShape[dimension];
+
+    // Calculate if we need padding
+    int64_t paddedSize = shardSize * numDevices;
+    int64_t paddingAmount = 0;
+    Value paddedInput = op.getOperand();
+
+    if (paddedSize != globalDimSize) {
+      int64_t remainder = globalDimSize % numDevices;
+      if (remainder != 0) {
+        paddingAmount = numDevices - remainder;
+        paddedInput =
+            padWithUndefinedValueInDim(rewriter, op.getLoc(), op.getOperand(),
+                                       sharding, dimension, 0, paddingAmount);
+        localShape[dimension] = (globalDimSize + paddingAmount) / numDevices;
+        shardSize = localShape[dimension];
+      }
+    }
+
+    SmallVector<Value> manualInputs = {paddedInput};
+    SmallVector<Type> resultTypes;
+    SmallVector<sdy::TensorShardingAttr> outShardingsVec;
+
+    for (auto res : op.getResults()) {
+      auto resSharding = sdy::getSharding(res);
+      if (!resSharding)
+        return failure();
+      outShardingsVec.push_back(resSharding);
+      resultTypes.push_back(
+          getLocalType(llvm::cast<RankedTensorType>(res.getType()), resSharding,
+                       manualAxes, op));
+    }
+
+    SmallVector<sdy::TensorShardingAttr> inShardingsVec = {sharding};
+    auto inShardings =
+        sdy::TensorShardingPerValueAttr::get(op.getContext(), inShardingsVec);
+    auto outShardings =
+        sdy::TensorShardingPerValueAttr::get(op.getContext(), outShardingsVec);
+
+    auto manualComp = rewriter.create<sdy::ManualComputationOp>(
+        op.getLoc(), resultTypes, manualInputs, inShardings, outShardings,
+        manualAxes);
+
+    SmallVector<Type> inputTypes;
+    SmallVector<Location> inputLocs;
+    for (auto i : manualInputs) {
+      inputTypes.push_back(getLocalType(
+          llvm::cast<RankedTensorType>(i.getType()), sharding, manualAxes, op));
+      inputLocs.push_back(i.getLoc());
+    }
+
+    Block *block = rewriter.createBlock(&manualComp.getRegion(),
+                                        manualComp.getRegion().begin(),
+                                        inputTypes, inputLocs);
+
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(block);
+
+      Value localInput = block->getArgument(0);
+
+      int channel = 0;
+
+      auto leftPairs = generateShiftPairs(
+          sharding, dimension, op, /*leftToRight=*/true, /*onlyEdges=*/false);
+      auto leftPermute = rewriter.create<stablehlo::CollectivePermuteOp>(
+          op.getLoc(), localInput,
+          DenseIntElementsAttr::get(
+              RankedTensorType::get({(int64_t)leftPairs.size() / 2, 2},
+                                    rewriter.getI64Type()),
+              leftPairs),
+          stablehlo::ChannelHandleAttr::get(op.getContext(), channel++, 0));
+
+      auto rightPairs = generateShiftPairs(
+          sharding, dimension, op, /*leftToRight=*/false, /*onlyEdges=*/false);
+      auto rightPermute = rewriter.create<stablehlo::CollectivePermuteOp>(
+          op.getLoc(), localInput,
+          DenseIntElementsAttr::get(
+              RankedTensorType::get({(int64_t)rightPairs.size() / 2, 2},
+                                    rewriter.getI64Type()),
+              rightPairs),
+          stablehlo::ChannelHandleAttr::get(op.getContext(), channel++, 0));
+
+      Value concatArgs[] = {leftPermute, localInput, rightPermute};
+      auto superBuffer = rewriter.create<stablehlo::ConcatenateOp>(
+          op.getLoc(), concatArgs, dimension);
+
+      auto partitionId =
+          stablehlo::PartitionIdOp::create(rewriter, op.getLoc());
+
+      // partitionId is already ui32 scalar (rank 0 or 1 depending on version,
+      // but here we requested rank 0) Convert to i32 for arithmetic partitionId
+      // is already ui32 scalar (rank 0 or 1 depending on version, but here we
+      // requested rank 0) Convert to i32 for arithmetic
+      auto partitionIdPromoted = rewriter.create<stablehlo::ConvertOp>(
+          op.getLoc(), RankedTensorType::get({}, rewriter.getI32Type()),
+          partitionId);
+
+      // Calculate offset difference factor: OutShardSize - InShardSize
+      int64_t outShardSize = localShape[dimension];
+      int64_t diff = outShardSize - shardSize;
+
+      auto diffVal = rewriter.create<stablehlo::ConstantOp>(
+          op.getLoc(), rewriter.getI32IntegerAttr(diff));
+
+      // idTerm = partitionId * diff
+      auto idTerm = rewriter.create<stablehlo::MulOp>(
+          op.getLoc(), partitionIdPromoted, diffVal);
+
+      SmallVector<Value> results;
+      int32_t L = op.getLeftAmount();
+      int32_t R = op.getRightAmount();
+
+      auto startIndices = op.getStartIndices();
+
+      for (int k = 0; k < L + 1 + R; ++k) {
+        SmallVector<Value> dynExecIndices;
+        SmallVector<int64_t> sliceSizes;
+
+        for (int d = 0; d < localShape.size(); ++d) {
+          sliceSizes.push_back(localShape[d]);
+
+          if (d == dimension) {
+            int64_t shift = k - L;
+            // Base = Start + L + Shift
+            int64_t base =
+                startIndices[d] + L + shift; // TODO checking overflow?
+
+            auto baseVal = rewriter.create<stablehlo::ConstantOp>(
+                op.getLoc(), rewriter.getI32IntegerAttr(base));
+
+            // Offset = Base + idTerm
+            auto offset =
+                rewriter.create<stablehlo::AddOp>(op.getLoc(), baseVal, idTerm);
+
+            dynExecIndices.push_back(offset);
+          } else {
+            auto idxVal = rewriter.create<stablehlo::ConstantOp>(
+                op.getLoc(), rewriter.getI32IntegerAttr(startIndices[d]));
+            dynExecIndices.push_back(idxVal);
+          }
+        }
+
+        auto slice = stablehlo::DynamicSliceOp::create(
+            rewriter, op.getLoc(), superBuffer, dynExecIndices, sliceSizes);
+
+        results.push_back(slice);
+      }
+
+      rewriter.create<sdy::ReturnOp>(op.getLoc(), results);
+    }
+
+    rewriter.replaceOp(op, manualComp.getResults());
+
+    return success();
+  }
+};
+
 struct OptimizeCommunicationPass
     : public enzyme::impl::OptimizeCommunicationBase<
           OptimizeCommunicationPass> {
@@ -4286,6 +4476,10 @@ struct OptimizeCommunicationPass
 
     if (rotate_spmd > 0)
       patterns.add<RotateSpmdOptimize>(context, PatternBenefit(rotate_comm));
+
+    if (multislice_spmd > 0)
+      patterns.add<MultiSliceSpmdOptimize>(context,
+                                           PatternBenefit(multislice_spmd));
 
     if (rotate_to_pad_comm > 0)
       patterns.add<RotateToPadCommOptimize>(context,
