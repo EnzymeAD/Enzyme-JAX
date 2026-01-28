@@ -126,14 +126,13 @@ reshapeMemref2(Value memref, ArrayRef<int64_t> shape,
       for (auto &ainfo : affineAccesses) {
         auto access = ainfo.access;
         AffineMap map = ainfo.map;
-        if (map.getNumResults() <= resultId) {
-           continue; 
-        }
         AffineExpr expr = map.getResult(resultId);
         LLVM_DEBUG(llvm::dbgs() << "For access " << *access.opInst
                                 << " with expr " << expr << "\n");
         auto mod = expr % cst;
         auto floor = expr.floorDiv(cst);
+        LLVM_DEBUG(llvm::dbgs() << "Mod: " << mod << "\n");
+        LLVM_DEBUG(llvm::dbgs() << "Floor: " << floor << "\n");
 
         SmallVector<AffineExpr> exprs(map.getResults().begin(),
                                       map.getResults().end());
@@ -144,10 +143,6 @@ reshapeMemref2(Value memref, ArrayRef<int64_t> shape,
             AffineMap::get(map.getNumDims(), map.getNumSymbols(), exprs, ctx);
         LLVM_DEBUG(llvm::dbgs() << "New map: " << ainfo.map << "\n");
         AffineValueMap avm;
-        // Check if access is valid
-        if (!ainfo.access.opInst) {
-             continue;
-        }
         access.getAccessMap(&avm);
         avm.reset(ainfo.map, avm.getOperands());
       }
@@ -158,14 +153,14 @@ reshapeMemref2(Value memref, ArrayRef<int64_t> shape,
         rewriter.setInsertionPoint(ainfo.mOpInst);
         auto dim_size = arith::ConstantIndexOp::create(
             rewriter, ainfo.mOpInst->getLoc(), cst);
-        auto modOp = arith::RemUIOp::create(rewriter, ainfo.mOpInst->getLoc(),
+        auto mod = arith::RemUIOp::create(rewriter, ainfo.mOpInst->getLoc(),
                                           last_dim_key, dim_size);
-        auto floorOp = arith::DivUIOp::create(rewriter, ainfo.mOpInst->getLoc(),
+        auto floor = arith::DivUIOp::create(rewriter, ainfo.mOpInst->getLoc(),
                                             last_dim_key, dim_size);
-        ainfo.updated_indices.push_back(modOp.getResult());
+        ainfo.updated_indices.push_back(mod);
 
         // floor is the new last dim key
-        ainfo.last_dim_key = floorOp.getResult();
+        ainfo.last_dim_key = floor;
       }
     }
   }
@@ -227,7 +222,6 @@ LogicalResult reshapeAtAddr(enzymexla::Pointer2MemrefOp &atAddr) {
                << "Failed: shape has dynamic dimensions beyond the first\n");
     return failure();
   }
-
 
   // // Count users by type for debugging
   // unsigned affineLoads = 0, affineStores = 0, memrefLoads = 0, memrefStores =
