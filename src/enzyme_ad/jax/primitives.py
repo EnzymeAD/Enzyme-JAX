@@ -347,6 +347,7 @@ def optimization_passes(
         "dot_general_insert_dim_contraction_simplification",
         "fuse_reshape_collapse_or_expand_dims_into_reduce",
         "extend_to_broadcast",
+        "reduce_max_min_mul_positive_scalar",
     ]
 
     # constant propagation patterns
@@ -397,7 +398,6 @@ def optimization_passes(
         f"concat_const_prop<1>({max_constant_threshold})",
         f"dynamic_update_slice_const_prop({max_constant_threshold})",
         "clamp_const_prop",
-        "reduce_max_min_mul_positive_scalar",
     ]
 
     if (
