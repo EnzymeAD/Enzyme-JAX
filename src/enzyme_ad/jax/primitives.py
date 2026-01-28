@@ -483,7 +483,7 @@ def optimization_passes(
             "unary_elementwise_scatter_simplify",
             "scatter_indices_are_unique",
             "diagonal_tensor_dot_general_rewrite",
-            "split_complex_scatter_setindex",
+            "split_complex_scatter",
             ## const prop patterns
             "scatter_update_computation_const_prop",
             # gather patterns
