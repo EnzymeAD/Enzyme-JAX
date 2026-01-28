@@ -4298,6 +4298,7 @@ struct MultiSliceSpmdOptimize
 
     SmallVector<Value> manualInputs = {paddedInput};
     SmallVector<Type> resultTypes;
+    SmallVector<Type> localResultTypes;
     SmallVector<sdy::TensorShardingAttr> outShardingsVec;
 
     for (auto res : op.getResults()) {
@@ -4305,7 +4306,8 @@ struct MultiSliceSpmdOptimize
       if (!resSharding)
         return failure();
       outShardingsVec.push_back(resSharding);
-      resultTypes.push_back(
+      resultTypes.push_back(res.getType());
+      localResultTypes.push_back(
           getLocalType(llvm::cast<RankedTensorType>(res.getType()), resSharding,
                        manualAxes, op));
     }
@@ -4376,7 +4378,10 @@ struct MultiSliceSpmdOptimize
           partitionId);
 
       // Calculate offset difference factor: OutShardSize - InShardSize
-      int64_t outShardSize = localShape[dimension];
+      // We assume all outputs have the same sharding layout along the dimension
+      int64_t outShardSize =
+          llvm::cast<RankedTensorType>(localResultTypes[0])
+              .getShape()[dimension];
       int64_t diff = outShardSize - shardSize;
 
       auto diffVal = rewriter.create<stablehlo::ConstantOp>(
@@ -4395,9 +4400,11 @@ struct MultiSliceSpmdOptimize
       for (int k = 0; k < L + 1 + R; ++k) {
         SmallVector<Value> dynExecIndices;
         SmallVector<int64_t> sliceSizes;
+        auto resLocalShape =
+            llvm::cast<RankedTensorType>(localResultTypes[k]).getShape();
 
         for (int d = 0; d < localShape.size(); ++d) {
-          sliceSizes.push_back(localShape[d]);
+          sliceSizes.push_back(resLocalShape[d]);
 
           if (d == dimension) {
             int64_t shift = k - L;
