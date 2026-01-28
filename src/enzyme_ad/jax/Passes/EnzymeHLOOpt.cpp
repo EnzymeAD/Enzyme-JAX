@@ -23136,13 +23136,14 @@ struct SquareAbsSimplify
     if (isa<ComplexType>(operandType.getElementType())) {
       // abs(z)^2 = real(z * conj(z)) -- only applied if abs(z) is used in this
       // operation
-      if (!isOnlyUsedInOperation(absOp, op))
-        return failure();
-      rewriter.replaceOpWithNewOp<stablehlo::RealOp>(
-          op, stablehlo::MulOp::create(
-                  rewriter, op.getLoc(), operand,
-                  chlo::ConjOp::create(rewriter, op.getLoc(), operand)));
-      return success();
+      // if (!isOnlyUsedInOperation(absOp, op))
+      //   return failure();
+      // rewriter.replaceOpWithNewOp<stablehlo::RealOp>(
+      //     op, stablehlo::MulOp::create(
+      //             rewriter, op.getLoc(), operand,
+      //             chlo::ConjOp::create(rewriter, op.getLoc(), operand)));
+      // return success();
+      return failure();
     } else {
       // abs(x)^2 = x * x
       rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, operand, operand);
