@@ -51,6 +51,9 @@ cc_binary(
         "@llvm-project//mlir:NVVMToLLVMIRTranslation",
         "@tsl//tsl/platform:env",
         "@tsl//tsl/platform:env_impl",
+        "@llvm-project//llvm:NVPTXCodeGen",
+        "@llvm-project//llvm:AMDGPUAsmParser",
+        "@llvm-project//llvm:AMDGPUCodeGen",
     ] + if_llvm_aarch32_available([
         "@llvm-project//llvm:ARMAsmParser",
         "@llvm-project//llvm:ARMCodeGen",
@@ -87,8 +90,12 @@ cc_library(
         "@llvm-project//mlir:LLVMToLLVMIRTranslation",
         "@llvm-project//mlir:MlirOptLib",
         "@llvm-project//mlir:NVVMToLLVMIRTranslation",
+        "@llvm-project//mlir:ROCDLToLLVMIRTranslation",
         "@tsl//tsl/platform:env",
         "@tsl//tsl/platform:env_impl",
+        "@llvm-project//llvm:NVPTXCodeGen",
+        "@llvm-project//llvm:AMDGPUAsmParser",
+        "@llvm-project//llvm:AMDGPUCodeGen",
     ] + if_llvm_aarch32_available([
         "@llvm-project//llvm:ARMAsmParser",
         "@llvm-project//llvm:ARMCodeGen",

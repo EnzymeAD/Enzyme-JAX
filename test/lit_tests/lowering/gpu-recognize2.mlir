@@ -1,4 +1,5 @@
 // RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(gpu-launch-recognition)" | FileCheck %s
+// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(gpu-launch-recognition{backend=rocm})" | FileCheck %s --check-prefix=CHECK-ROCM
 
 #tbaa_root = #llvm.tbaa_root<id = "Simple C++ TBAA">
 #tbaa_type_desc = #llvm.tbaa_type_desc<id = "omnipotent char", members = {<#tbaa_root, 0>}>
@@ -144,3 +145,80 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
 // CHECK-NEXT:    llvm.store %0, %2 {alignment = 4 : i64, tbaa = [#tbaa_tag]} : i32, !llvm.ptr
 // CHECK-NEXT:    llvm.return
 // CHECK-NEXT:  }
+
+// CHECK-ROCM:  gpu.module @__mlir_gpu_module [#rocdl.target<chip = "", features = "+wavefrontsize64", abi = "">] attributes {dlti.dl_spec = #dlti.dl_spec<index = 32 : i64>} {
+// CHECK-ROCM-NEXT:    gpu.func @reactant$_Z18__device_stub__fooPi(%arg0: !llvm.ptr {llvm.nocapture, llvm.noundef, llvm.writeonly}) kernel {
+// CHECK-ROCM-NEXT:      %0 = nvvm.read.ptx.sreg.tid.x : i32
+// CHECK-ROCM-NEXT:      %1 = llvm.zext nneg %0 : i32 to i64
+// CHECK-ROCM-NEXT:      %2 = llvm.getelementptr inbounds|nuw %arg0[%1] : (!llvm.ptr, i64) -> !llvm.ptr, i32
+// CHECK-ROCM-NEXT:      llvm.store %0, %2 {alignment = 4 : i64, tbaa = [#tbaa_tag]} : i32, !llvm.ptr
+// CHECK-ROCM-NEXT:      gpu.return
+// CHECK-ROCM-NEXT:    }
+// CHECK-ROCM-NEXT:  }
+// CHECK-ROCM-NEXT:  llvm.comdat @__llvm_global_comdat {
+// CHECK-ROCM-NEXT:  }
+// CHECK-ROCM-NEXT:  llvm.module_flags [#llvm.mlir.module_flag<error, "wchar_size", 4 : i32>, #llvm.mlir.module_flag<min, "PIC Level", 0 : i32>, #llvm.mlir.module_flag<max, "PIE Level", 2 : i32>, #llvm.mlir.module_flag<max, "uwtable", 2 : i32>, #llvm.mlir.module_flag<override, "nvvm-reflect-ftz", 0 : i32>, #llvm.mlir.module_flag<max, "frame-pointer", 2 : i32>]
+// CHECK-ROCM-NEXT:  llvm.mlir.global private unnamed_addr constant @".str"("res = %d\0A\00") {addr_space = 0 : i32, alignment = 1 : i64, dso_local, sym_visibility = "private"}
+// CHECK-ROCM-NEXT:  llvm.func local_unnamed_addr @main() -> (i32 {llvm.noundef}) attributes {dso_local, no_infs_fp_math = true, no_nans_fp_math = true, no_signed_zeros_fp_math = true, passthrough = ["mustprogress", "norecurse", ["approx-func-fp-math", "true"], ["min-legal-vector-width", "0"], ["no-trapping-math", "true"], ["stack-protector-buffer-size", "8"], ["target-cpu", "x86-64"]], target_cpu = "x86-64", target_features = #llvm.target_features<["+cmov", "+cx8", "+fxsr", "+mmx", "+sse", "+sse2", "+x87"]>, tune_cpu = "generic", unsafe_fp_math = true, uwtable_kind = #llvm.uwtableKind<async>} {
+// CHECK-ROCM-NEXT:    %0 = llvm.mlir.constant(1 : i32) : i32
+// CHECK-ROCM-NEXT:    %1 = llvm.mlir.constant(512 : i64) : i64
+// CHECK-ROCM-NEXT:    %2 = llvm.mlir.constant(true) : i1
+// CHECK-ROCM-NEXT:    %3 = "enzymexla.gpu_kernel_address"() <{fn = @__mlir_gpu_module::@reactant$_Z18__device_stub__fooPi}> : () -> !llvm.ptr
+// CHECK-ROCM-NEXT:    %4 = llvm.mlir.constant(128 : i32) : i32
+// CHECK-ROCM-NEXT:    %5 = llvm.mlir.constant(0 : i64) : i64
+// CHECK-ROCM-NEXT:    %6 = llvm.mlir.zero : !llvm.ptr
+// CHECK-ROCM-NEXT:    %7 = llvm.mlir.constant(0 : i32) : i32
+// CHECK-ROCM-NEXT:    %8 = llvm.mlir.addressof @".str" : !llvm.ptr
+// CHECK-ROCM-NEXT:    %9 = llvm.mlir.constant(2 : i32) : i32
+// CHECK-ROCM-NEXT:    %10 = llvm.alloca %0 x !llvm.ptr {alignment = 8 : i64} : (i32) -> !llvm.ptr
+// CHECK-ROCM-NEXT:    %11 = llvm.alloca %0 x !llvm.array<128 x i32> {alignment = 16 : i64} : (i32) -> !llvm.ptr
+// CHECK-ROCM-NEXT:    %12 = llvm.alloca %0 x i32 {alignment = 4 : i64} : (i32) -> !llvm.ptr
+// CHECK-ROCM-NEXT:    llvm.intr.lifetime.start %10 : !llvm.ptr
+// CHECK-ROCM-NEXT:    %13 = arith.index_cast %1 : i64 to index
+// CHECK-ROCM-NEXT:    %memref = gpu.alloc  (%13) : memref<?xi8, 1>
+// CHECK-ROCM-NEXT:    %14 = "enzymexla.memref2pointer"(%memref) : (memref<?xi8, 1>) -> !llvm.ptr
+// CHECK-ROCM-NEXT:    llvm.store %14, %10 : !llvm.ptr, !llvm.ptr
+// CHECK-ROCM-NEXT:    %15 = llvm.mlir.zero : i32
+// CHECK-ROCM-NEXT:    llvm.intr.lifetime.start %11 : !llvm.ptr
+// CHECK-ROCM-NEXT:    llvm.cond_br %2, ^bb1, ^bb2
+// CHECK-ROCM-NEXT:  ^bb1:  // pred: ^bb0
+// CHECK-ROCM-NEXT:    %16 = llvm.load %10 {alignment = 8 : i64, tbaa = [#tbaa_tag1]} : !llvm.ptr -> !llvm.ptr
+// CHECK-ROCM-NEXT:    %17 = llvm.trunc %5 : i64 to i32
+// CHECK-ROCM-NEXT:    %18 = llvm.sext %0 : i32 to i64
+// CHECK-ROCM-NEXT:    %19 = llvm.sext %0 : i32 to i64
+// CHECK-ROCM-NEXT:    %20 = llvm.sext %0 : i32 to i64
+// CHECK-ROCM-NEXT:    %21 = llvm.sext %4 : i32 to i64
+// CHECK-ROCM-NEXT:    %22 = llvm.sext %0 : i32 to i64
+// CHECK-ROCM-NEXT:    %23 = llvm.sext %0 : i32 to i64
+// CHECK-ROCM-NEXT:    gpu.launch_func  @__mlir_gpu_module::@reactant$_Z18__device_stub__fooPi blocks in (%18, %19, %20) threads in (%21, %22, %23) : i64 dynamic_shared_memory_size %17 args(%16 : !llvm.ptr)
+// CHECK-ROCM-NEXT:    llvm.br ^bb2
+// CHECK-ROCM-NEXT:  ^bb2:  // 2 preds: ^bb0, ^bb1
+// CHECK-ROCM-NEXT:    llvm.intr.lifetime.start %12 : !llvm.ptr
+// CHECK-ROCM-NEXT:    llvm.store %7, %12 {alignment = 4 : i64, tbaa = [#tbaa_tag]} : i32, !llvm.ptr
+// CHECK-ROCM-NEXT:    %24 = "enzymexla.gpu_occupancy"(%0, %5, %7) <{fn = @__mlir_gpu_module::@reactant$_Z18__device_stub__fooPi}> : (i32, i64, i32) -> i32
+// CHECK-ROCM-NEXT:    llvm.store %24, %12 : i32, !llvm.ptr
+// CHECK-ROCM-NEXT:    %25 = llvm.mlir.zero : i32
+// CHECK-ROCM-NEXT:    %26 = llvm.alloca %0 x !llvm.struct<"struct.cudaFuncAttributes", (i64, i64, i64, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, array<16 x i32>)> {alignment = 8 : i64} : (i32) -> !llvm.ptr
+// CHECK-ROCM-NEXT:    %27 = llvm.call @cudaFuncGetAttributes(%26, %3) {no_unwind} : (!llvm.ptr {llvm.nonnull, llvm.noundef}, !llvm.ptr {llvm.nonnull, llvm.noundef}) -> (i32 {llvm.noundef})
+// CHECK-ROCM-NEXT:    %28 = llvm.load %12 {alignment = 4 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr -> i32
+// CHECK-ROCM-NEXT:    %29 = llvm.call @printf(%8, %28) vararg(!llvm.func<i32 (ptr, ...)>) : (!llvm.ptr {llvm.dereferenceable = 1 : i64, llvm.nonnull, llvm.noundef}, i32 {llvm.noundef}) -> i32
+// CHECK-ROCM-NEXT:    %30 = llvm.load %10 {alignment = 8 : i64, tbaa = [#tbaa_tag1]} : !llvm.ptr -> !llvm.ptr
+// CHECK-ROCM-NEXT:    %31 = "enzymexla.pointer2memref"(%11) : (!llvm.ptr) -> memref<?xi8>
+// CHECK-ROCM-NEXT:    %32 = "enzymexla.pointer2memref"(%30) : (!llvm.ptr) -> memref<?xi8, 1>
+// CHECK-ROCM-NEXT:    %33 = arith.index_cast %1 : i64 to index
+// CHECK-ROCM-NEXT:    enzymexla.memcpy  %31, %32, %33 : memref<?xi8>, memref<?xi8, 1>
+// CHECK-ROCM-NEXT:    %34 = llvm.mlir.zero : i32
+// CHECK-ROCM-NEXT:    %35 = llvm.load %10 {alignment = 8 : i64, tbaa = [#tbaa_tag1]} : !llvm.ptr -> !llvm.ptr
+// CHECK-ROCM-NEXT:    %36 = llvm.call @cudaFree(%35) : (!llvm.ptr {llvm.noundef}) -> i32
+// CHECK-ROCM-NEXT:    llvm.intr.lifetime.end %12 : !llvm.ptr
+// CHECK-ROCM-NEXT:    llvm.intr.lifetime.end %11 : !llvm.ptr
+// CHECK-ROCM-NEXT:    llvm.intr.lifetime.end %10 : !llvm.ptr
+// CHECK-ROCM-NEXT:    llvm.return %7 : i32
+// CHECK-ROCM-NEXT:  }
+// CHECK-ROCM:  llvm.func internal @reactant$_Z18__device_stub__fooPi(%arg0: !llvm.ptr {llvm.nocapture, llvm.noundef, llvm.writeonly}) attributes {dso_local, frame_pointer = #llvm.framePointerKind<all>, no_infs_fp_math = true, no_inline, no_nans_fp_math = true, no_signed_zeros_fp_math = true, no_unwind, passthrough = ["mustprogress", "nofree", "norecurse", "nosync", ["approx-func-fp-math", "true"], ["no-trapping-math", "true"], ["stack-protector-buffer-size", "8"], ["target-cpu", "sm_120"], ["uniform-work-group-size", "true"]], sym_visibility = "private", target_cpu = "sm_120", target_features = #llvm.target_features<["+ptx88", "+sm_120"]>, unsafe_fp_math = true, will_return} {
+// CHECK-ROCM-NEXT:    %0 = nvvm.read.ptx.sreg.tid.x : i32
+// CHECK-ROCM-NEXT:    %1 = llvm.zext nneg %0 : i32 to i64
+// CHECK-ROCM-NEXT:    %2 = llvm.getelementptr inbounds|nuw %arg0[%1] : (!llvm.ptr, i64) -> !llvm.ptr, i32
+// CHECK-ROCM-NEXT:    llvm.store %0, %2 {alignment = 4 : i64, tbaa = [#tbaa_tag]} : i32, !llvm.ptr
+// CHECK-ROCM-NEXT:    llvm.return
+// CHECK-ROCM-NEXT:  }
