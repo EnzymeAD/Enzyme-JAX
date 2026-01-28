@@ -28405,6 +28405,168 @@ struct DotGeneralToSyrk
   }
 };
 
+// currently limited to non-batched dot_general
+struct DotGeneralToSymm
+    : public CheckedOpRewritePattern<stablehlo::DotGeneralOp,
+                                     DotGeneralToSymm> {
+  using CheckedOpRewritePattern<stablehlo::DotGeneralOp,
+                                DotGeneralToSymm>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp op,
+                                    PatternRewriter &rewriter) const {
+    auto dotDims = op.getDotDimensionNumbers();
+    auto lhs = op.getLhs();
+    auto rhs = op.getRhs();
+
+    if (dotDims.getLhsBatchingDimensions().size() != 0 ||
+        dotDims.getRhsBatchingDimensions().size() != 0) {
+      return failure();
+    }
+
+    if (dotDims.getLhsContractingDimensions().size() != 1 ||
+        dotDims.getRhsContractingDimensions().size() != 1) {
+      return failure();
+    }
+
+    enzymexla::LapackSide side;
+    
+    auto lhsContractingDim = dotDims.getLhsContractingDimensions()[0];
+    auto rhsContractingDim = dotDims.getRhsContractingDimensions()[0];
+
+    // can only replace with symm if either lhs or rhs is symmetric
+    if (canApplySymmetricPattern(lhs, rewriter)) {
+      side == enzymexla::LapackSide::left;
+      if (rhsContractingDim == 0) {
+        auto perm = rewriter.getDenseI64ArrayAttr({1, 0});
+        rhs = stablehlo::TransposeOp::create(
+            rewriter,
+            op.getLoc(),
+            rhs,
+            perm);
+      }
+
+    } else if (canApplySymmetricPattern(rhs, rewriter)) {
+      side == enzymexla::LapackSide::right;
+      if (lhsContractingDim == 0) {
+        auto perm = rewriter.getDenseI64ArrayAttr({1, 0});
+        lhs = stablehlo::TransposeOp::create(
+            rewriter,
+            op.getLoc(),
+            lhs,
+            perm);
+      }
+    } else {
+      return failure();
+    }
+
+    auto elemType =
+        cast<RankedTensorType>(lhs.getType()).getElementType();
+    auto alphaType = RankedTensorType::get({}, elemType);
+
+    auto symmOp = enzymexla::SymmOp::create(rewriter, op.getLoc(), op.getResult().getType(),
+      lhs, // A
+      rhs, // B
+      stablehlo::ConstantOp::create(
+              rewriter, op.getLoc(), op.getType(),
+              cast<ElementsAttr>(makeAttr(op.getType(), 0))), // C
+      stablehlo::ConstantOp::create(
+              rewriter, op.getLoc(), alphaType,
+              cast<ElementsAttr>(makeAttr(alphaType, 1))), // alpha
+          stablehlo::ConstantOp::create(
+              rewriter, op.getLoc(), alphaType,
+              cast<ElementsAttr>(makeAttr(alphaType, 0))), // beta
+      enzymexla::LapackSideAttr::get(op.getContext(), side), 
+      enzymexla::LapackUploAttr::get(op.getContext(), enzymexla::LapackUplo::F)
+    );
+    rewriter.replaceOp(op, symmOp.getResult());
+    return success();
+  }
+};
+
+struct FuseMulIntoSymm
+    : public CheckedOpRewritePattern<stablehlo::MulOp, FuseMulIntoSymm> {
+  using CheckedOpRewritePattern<stablehlo::MulOp,
+                                FuseMulIntoSymm>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::MulOp op,
+                                    PatternRewriter &rewriter) const {
+    auto lhs = op.getLhs();
+    auto rhs = op.getRhs();
+
+    enzymexla::SymmOp symmOp;
+    Value other;
+
+    if (auto lhsSymm = lhs.getDefiningOp<enzymexla::SymmOp>()) {
+      symmOp = lhsSymm;
+      other = rhs;
+    } else if (auto rhsSymm = rhs.getDefiningOp<enzymexla::SymmOp>()) {
+      symmOp = rhsSymm;
+      other = lhs;
+    } else {
+      return failure();
+    }
+
+    Value scalarVal =
+        stablehlo::getScalarValue(other.getDefiningOp(), rewriter);
+    if (!scalarVal)
+      return failure();
+
+    auto newBeta = stablehlo::MulOp::create(rewriter, op.getLoc(),
+                                            symmOp.getBeta(), scalarVal);
+    auto newAlpha = stablehlo::MulOp::create(rewriter, op.getLoc(),
+                                             symmOp.getAlpha(), scalarVal);
+
+    rewriter.replaceOpWithNewOp<enzymexla::SymmOp>(
+        op, symmOp.getType(), symmOp.getA(), symmOp.getB(), symmOp.getC(), newAlpha, newBeta,
+        symmOp.getSideAttr(), symmOp.getUploAttr());
+    return success();
+  }
+};
+
+struct FuseAddIntoSymm
+    : public CheckedOpRewritePattern<stablehlo::AddOp,
+                                     FuseAddIntoSymm>::CheckedOpRewritePattern {
+  using CheckedOpRewritePattern<stablehlo::AddOp,
+                                FuseAddIntoSymm>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::AddOp op,
+                                    PatternRewriter &rewriter) const {
+    auto lhs = op.getLhs();
+    auto rhs = op.getRhs();
+
+    enzymexla::SymmOp symmOp;
+    Value other;
+
+    if (auto lhsSymm = lhs.getDefiningOp<enzymexla::SymmOp>()) {
+      symmOp = lhsSymm;
+      other = rhs;
+    } else if (auto rhsSymm = rhs.getDefiningOp<enzymexla::SymmOp>()) {
+      symmOp = rhsSymm;
+      other = lhs;
+    } else {
+      return failure();
+    }
+
+    auto oldBeta = symmOp.getBeta();
+    auto bcastedBeta = stablehlo::BroadcastInDimOp::create(
+        rewriter, op.getLoc(), symmOp.getType(), oldBeta,
+        rewriter.getDenseI64ArrayAttr({}));
+
+    auto scaledC = stablehlo::MulOp::create(rewriter, op.getLoc(),
+                                            symmOp.getC(), bcastedBeta);
+
+    auto newC = stablehlo::AddOp::create(rewriter, op.getLoc(), scaledC, other);
+
+    auto newBeta = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), oldBeta.getType(),
+        cast<ElementsAttr>(makeAttr(oldBeta.getType(), 1)));
+
+    rewriter.replaceOpWithNewOp<enzymexla::SymmOp>(
+        op, symmOp.getType(), symmOp.getA(), symmOp.getB(), newC, symmOp.getAlpha(), newBeta,
+        symmOp.getSideAttr(), symmOp.getUploAttr());
+    return success();
+  }
+};
 struct TransposeSyrkToSyrk
     : public CheckedOpRewritePattern<enzymexla::SyrkOp, TransposeSyrkToSyrk> {
   using CheckedOpRewritePattern<enzymexla::SyrkOp,
@@ -32076,6 +32238,7 @@ struct EnzymeHLOOptPass
 
     patterns.add<TransposeSymmetricSimplify>(context);
     patterns.add<FactorScalarsInDotGeneral>(context);
+    patterns.add<DotGeneralToSymm, FuseAddIntoSymm, FuseMulIntoSymm>(context);
 
     // syrk patterns
     // currently disabled since lowering is missing
