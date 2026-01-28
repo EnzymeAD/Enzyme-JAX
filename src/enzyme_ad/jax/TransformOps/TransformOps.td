@@ -2940,3 +2940,8 @@ def ApplySplitComplexScatterSetIndexPatterns: EnzymeHLOPatternOp<
     "split_complex_scatter_setindex"> {
   let patterns = ["SplitComplexScatterSetIndex"];
 }
+
+def ApplyReduceMaxMinMulPositiveScalarPatterns: EnzymeHLOPatternOp<
+    "reduce_max_min_mul_positive_scalar"> {
+  let patterns = ["ReduceMaxMinMulPositiveScalar"];
+}
