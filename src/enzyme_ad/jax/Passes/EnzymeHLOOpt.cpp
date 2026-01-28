@@ -23134,8 +23134,8 @@ struct SquareAbsSimplify
       return failure();
 
     if (isa<ComplexType>(operandType.getElementType())) {
-      // abs(z)^2 = real(z)^2 + imag(z)^2 -- only applied if abs(z) is used in this
-      // operation
+      // abs(z)^2 = real(z)^2 + imag(z)^2 -- only applied if abs(z) is used in
+      // this operation
       if (!isOnlyUsedInOperation(absOp, op)) {
         return failure();
       }
