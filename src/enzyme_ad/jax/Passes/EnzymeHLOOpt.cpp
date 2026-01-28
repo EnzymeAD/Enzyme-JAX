@@ -5297,12 +5297,10 @@ struct NegativePadToSlice final
 };
 
 /*
+%1192 = stablehlo.pad %1189, %cst_0, low = [0], high = [1], interior = [0] :
+  (tensor<1xf32>, tensor<f32>) -> tensor<2xf32>
 
-    %1192 = stablehlo.pad %1189, %cst_0, low = [0], high = [1], interior =
-    [0] :
-   (tensor<1xf32>, tensor<f32>) -> tensor<2xf32> %1193 = arith.addf %1191,
-   %1192 : tensor<2xf32>
-
+%1193 = arith.addf %1191, %1192 : tensor<2xf32>
 */
 template <typename T>
 struct BinopPadToConcat final
@@ -5352,7 +5350,7 @@ struct BinopPadToConcat final
         bool legal = true;
         for (auto step : lhs.getInteriorPadding()) {
           if (step != 0) {
-            legal = true;
+            legal = false;
             break;
           }
         }
@@ -31261,18 +31259,92 @@ private:
   }
 };
 
+// Helper function to build scatter update computation region based on the
+// scatter operation kind. For constant-based operations, the constant value
+// must be provided as the real or imaginary part (caller extracts from
+// complex).
+static void buildScatterUpdateRegion(PatternRewriter &rewriter, Location loc,
+                                     stablehlo::ScatterOp scatterOp,
+                                     stablehlo::ScatterOpKind kind,
+                                     Type elemType,
+                                     Attribute constantValue = nullptr) {
+  OpBuilder::InsertionGuard guard(rewriter);
+  auto &updateRegion = scatterOp.getUpdateComputation();
+  auto *block = rewriter.createBlock(&updateRegion);
+  auto argType = RankedTensorType::get({}, elemType);
+  block->addArgument(argType, loc);
+  block->addArgument(argType, loc);
+  rewriter.setInsertionPointToStart(block);
+
+  Value result;
+  switch (kind) {
+  case stablehlo::ScatterOpKind::Setindex:
+    // Setindex: return the update value (arg1)
+    result = block->getArgument(1);
+    break;
+  case stablehlo::ScatterOpKind::ConstantSetindex: {
+    // ConstantSetindex: return the constant value
+    assert(constantValue && "ConstantSetindex requires a constant value");
+    auto constAttr = DenseElementsAttr::get(argType, constantValue);
+    result = stablehlo::ConstantOp::create(rewriter, loc, constAttr);
+    break;
+  }
+  case stablehlo::ScatterOpKind::Add:
+    // Add: return arg0 + arg1
+    result = stablehlo::AddOp::create(rewriter, loc, block->getArgument(0),
+                                      block->getArgument(1));
+    break;
+  case stablehlo::ScatterOpKind::AddConstantUpdate: {
+    // AddConstantUpdate: return arg0 + constant (constant replaces update/arg1)
+    assert(constantValue && "AddConstantUpdate requires a constant value");
+    auto constAttr = DenseElementsAttr::get(argType, constantValue);
+    auto constOp = stablehlo::ConstantOp::create(rewriter, loc, constAttr);
+    result =
+        stablehlo::AddOp::create(rewriter, loc, block->getArgument(0), constOp);
+    break;
+  }
+  case stablehlo::ScatterOpKind::AddConstantInput: {
+    // AddConstantInput: return constant + arg1 (constant replaces input/arg0)
+    assert(constantValue && "AddConstantInput requires a constant value");
+    auto constAttr = DenseElementsAttr::get(argType, constantValue);
+    auto constOp = stablehlo::ConstantOp::create(rewriter, loc, constAttr);
+    result =
+        stablehlo::AddOp::create(rewriter, loc, constOp, block->getArgument(1));
+    break;
+  }
+  case stablehlo::ScatterOpKind::Sub:
+    // Sub: return arg0 - arg1
+    result = stablehlo::SubtractOp::create(rewriter, loc, block->getArgument(0),
+                                           block->getArgument(1));
+    break;
+  default:
+    llvm_unreachable("Unsupported scatter operation kind");
+  }
+
+  stablehlo::ReturnOp::create(rewriter, loc, result);
+}
+
 // See discussion in
 // https://github.com/EnzymeAD/Reactant.jl/pull/2219#issuecomment-3801834108
-struct SplitComplexScatterSetIndex final
-    : CheckedOpRewritePattern<stablehlo::ScatterOp,
-                              SplitComplexScatterSetIndex> {
+struct SplitComplexScatter final
+    : CheckedOpRewritePattern<stablehlo::ScatterOp, SplitComplexScatter> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::ScatterOp op,
                                     PatternRewriter &rewriter) const {
     auto checkCommonScatterOp = mlir::stablehlo::CheckCommonScatterOp(op);
 
-    if (checkCommonScatterOp.kind != stablehlo::ScatterOpKind::Setindex) {
+    // Support Setindex, ConstantSetindex, Add, AddConstantUpdate,
+    // AddConstantInput, and Sub scatter operations
+    if (checkCommonScatterOp.kind != stablehlo::ScatterOpKind::Setindex &&
+        checkCommonScatterOp.kind !=
+            stablehlo::ScatterOpKind::ConstantSetindex &&
+        checkCommonScatterOp.kind != stablehlo::ScatterOpKind::Add &&
+        checkCommonScatterOp.kind !=
+            stablehlo::ScatterOpKind::AddConstantUpdate &&
+        checkCommonScatterOp.kind !=
+            stablehlo::ScatterOpKind::AddConstantInput &&
+        checkCommonScatterOp.kind != stablehlo::ScatterOpKind::Sub) {
       return failure();
     }
 
@@ -31284,6 +31356,16 @@ struct SplitComplexScatterSetIndex final
     // Get the inner element type (e.g., f32 from complex<f32>)
     auto complexType = cast<ComplexType>(elemType);
     auto innerElemType = complexType.getElementType();
+
+    // Extract real and imaginary parts of the constant if present
+    Attribute realConstant = nullptr;
+    Attribute imagConstant = nullptr;
+    if (checkCommonScatterOp.constant) {
+      auto complexVal =
+          checkCommonScatterOp.constant.getSplatValue<std::complex<APFloat>>();
+      realConstant = FloatAttr::get(innerElemType, complexVal.real());
+      imagConstant = FloatAttr::get(innerElemType, complexVal.imag());
+    }
 
     SmallVector<Value> realInputs, imagInputs, realUpdates, imagUpdates;
     for (auto [input, update] :
@@ -31304,18 +31386,10 @@ struct SplitComplexScatterSetIndex final
         op.getScatterDimensionNumbersAttr(), op.getIndicesAreSortedAttr(),
         op.getUniqueIndicesAttr());
 
-    // Build setindex update computation region for real scatter
-    {
-      OpBuilder::InsertionGuard guard(rewriter);
-      auto &updateRegion = realScatterOp.getUpdateComputation();
-      auto *block = rewriter.createBlock(&updateRegion);
-      auto argType = RankedTensorType::get({}, innerElemType);
-      block->addArgument(argType, op.getLoc());
-      block->addArgument(argType, op.getLoc());
-      rewriter.setInsertionPointToStart(block);
-      // Setindex: return the update value (arg1)
-      stablehlo::ReturnOp::create(rewriter, op.getLoc(), block->getArgument(1));
-    }
+    // Build update computation region for real scatter
+    buildScatterUpdateRegion(rewriter, op.getLoc(), realScatterOp,
+                             checkCommonScatterOp.kind, innerElemType,
+                             realConstant);
 
     // Create the imaginary scatter op
     auto imagScatterOp = stablehlo::ScatterOp::create(
@@ -31323,18 +31397,10 @@ struct SplitComplexScatterSetIndex final
         op.getScatterDimensionNumbersAttr(), op.getIndicesAreSortedAttr(),
         op.getUniqueIndicesAttr());
 
-    // Build setindex update computation region for imaginary scatter
-    {
-      OpBuilder::InsertionGuard guard(rewriter);
-      auto &updateRegion = imagScatterOp.getUpdateComputation();
-      auto *block = rewriter.createBlock(&updateRegion);
-      auto argType = RankedTensorType::get({}, innerElemType);
-      block->addArgument(argType, op.getLoc());
-      block->addArgument(argType, op.getLoc());
-      rewriter.setInsertionPointToStart(block);
-      // Setindex: return the update value (arg1)
-      stablehlo::ReturnOp::create(rewriter, op.getLoc(), block->getArgument(1));
-    }
+    // Build update computation region for imaginary scatter
+    buildScatterUpdateRegion(rewriter, op.getLoc(), imagScatterOp,
+                             checkCommonScatterOp.kind, innerElemType,
+                             imagConstant);
 
     // Combine real and imaginary results using stablehlo::ComplexOp
     SmallVector<Value> results;
@@ -32139,7 +32205,7 @@ struct EnzymeHLOOptPass
         FuseReshapeCollapseOrExpandDimsIntoReduce,
         GatherOfScatterSimplify,
         ReduceWindowWrapSimplify,
-        SplitComplexScatterSetIndex,
+        SplitComplexScatter,
         ReduceMaxMinMulPositiveScalar
       >(context);
 
