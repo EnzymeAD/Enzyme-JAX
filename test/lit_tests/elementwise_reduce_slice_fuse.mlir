@@ -204,3 +204,58 @@ func.func @main_with_reshape2(%arg0: tensor<7x5x3xf32>) -> tensor<7x3xf32> {
 // CHECK-NEXT:     %0 = stablehlo.reduce(%arg0 init: %cst) applies stablehlo.add across dimensions = [1] : (tensor<7x5x3xf32>, tensor<f32>) -> tensor<7x3xf32>
 // CHECK-NEXT:     return %0 : tensor<7x3xf32>
 // CHECK-NEXT: }
+
+func.func @main_complex_add(%arg0: tensor<8x2xcomplex<f64>>) -> tensor<2xcomplex<f64>> {
+    %0 = stablehlo.transpose %arg0, dims = [1, 0] : (tensor<8x2xcomplex<f64>>) -> tensor<2x8xcomplex<f64>>
+    %1 = stablehlo.slice %0 [0:2, 0:1] : (tensor<2x8xcomplex<f64>>) -> tensor<2x1xcomplex<f64>>
+    %17 = stablehlo.slice %0 [0:2, 1:2] : (tensor<2x8xcomplex<f64>>) -> tensor<2x1xcomplex<f64>>
+    %4 = stablehlo.slice %0 [0:2, 2:3] : (tensor<2x8xcomplex<f64>>) -> tensor<2x1xcomplex<f64>>
+    %6 = stablehlo.slice %0 [0:2, 3:4] : (tensor<2x8xcomplex<f64>>) -> tensor<2x1xcomplex<f64>>
+    %8 = stablehlo.slice %0 [0:2, 4:5] : (tensor<2x8xcomplex<f64>>) -> tensor<2x1xcomplex<f64>>
+    %10 = stablehlo.slice %0 [0:2, 5:6] : (tensor<2x8xcomplex<f64>>) -> tensor<2x1xcomplex<f64>>
+    %12 = stablehlo.slice %0 [0:2, 6:7] : (tensor<2x8xcomplex<f64>>) -> tensor<2x1xcomplex<f64>>
+    %14 = stablehlo.slice %0 [0:2, 7:8] : (tensor<2x8xcomplex<f64>>) -> tensor<2x1xcomplex<f64>>
+    %3 = stablehlo.add %17, %1 : tensor<2x1xcomplex<f64>>
+    %5 = stablehlo.add %3, %4 : tensor<2x1xcomplex<f64>>
+    %7 = stablehlo.add %5, %6 : tensor<2x1xcomplex<f64>>
+    %9 = stablehlo.add %8, %12 : tensor<2x1xcomplex<f64>>
+    %11 = stablehlo.add %10, %14 : tensor<2x1xcomplex<f64>>
+    %13 = stablehlo.add %11, %9 : tensor<2x1xcomplex<f64>>
+    %15 = stablehlo.add %13, %7 : tensor<2x1xcomplex<f64>>
+    %16 = stablehlo.reshape %15 : (tensor<2x1xcomplex<f64>>) -> tensor<2xcomplex<f64>>
+    return %16 : tensor<2xcomplex<f64>>
+}
+
+// CHECK: func.func @main_complex_add(%arg0: tensor<8x2xcomplex<f64>>) -> tensor<2xcomplex<f64>> {
+// CHECK-NEXT:     %cst = stablehlo.constant dense<(0.000000e+00,0.000000e+00)> : tensor<complex<f64>>
+// CHECK-NEXT:     %0 = stablehlo.reduce(%arg0 init: %cst) applies stablehlo.add across dimensions = [0] : (tensor<8x2xcomplex<f64>>, tensor<complex<f64>>) -> tensor<2xcomplex<f64>>
+// CHECK-NEXT:     return %0 : tensor<2xcomplex<f64>>
+// CHECK-NEXT: }
+
+func.func @main_complex_mul(%arg0: tensor<8x2xcomplex<f64>>) -> tensor<2xcomplex<f64>> {
+    %0 = stablehlo.transpose %arg0, dims = [1, 0] : (tensor<8x2xcomplex<f64>>) -> tensor<2x8xcomplex<f64>>
+    %1 = stablehlo.slice %0 [0:2, 0:1] : (tensor<2x8xcomplex<f64>>) -> tensor<2x1xcomplex<f64>>
+    %17 = stablehlo.slice %0 [0:2, 1:2] : (tensor<2x8xcomplex<f64>>) -> tensor<2x1xcomplex<f64>>
+    %4 = stablehlo.slice %0 [0:2, 2:3] : (tensor<2x8xcomplex<f64>>) -> tensor<2x1xcomplex<f64>>
+    %6 = stablehlo.slice %0 [0:2, 3:4] : (tensor<2x8xcomplex<f64>>) -> tensor<2x1xcomplex<f64>>
+    %8 = stablehlo.slice %0 [0:2, 4:5] : (tensor<2x8xcomplex<f64>>) -> tensor<2x1xcomplex<f64>>
+    %10 = stablehlo.slice %0 [0:2, 5:6] : (tensor<2x8xcomplex<f64>>) -> tensor<2x1xcomplex<f64>>
+    %12 = stablehlo.slice %0 [0:2, 6:7] : (tensor<2x8xcomplex<f64>>) -> tensor<2x1xcomplex<f64>>
+    %14 = stablehlo.slice %0 [0:2, 7:8] : (tensor<2x8xcomplex<f64>>) -> tensor<2x1xcomplex<f64>>
+    %3 = stablehlo.multiply %17, %1 : tensor<2x1xcomplex<f64>>
+    %5 = stablehlo.multiply %3, %4 : tensor<2x1xcomplex<f64>>
+    %7 = stablehlo.multiply %5, %6 : tensor<2x1xcomplex<f64>>
+    %9 = stablehlo.multiply %8, %12 : tensor<2x1xcomplex<f64>>
+    %11 = stablehlo.multiply %10, %14 : tensor<2x1xcomplex<f64>>
+    %13 = stablehlo.multiply %11, %9 : tensor<2x1xcomplex<f64>>
+    %15 = stablehlo.multiply %13, %7 : tensor<2x1xcomplex<f64>>
+    %16 = stablehlo.reshape %15 : (tensor<2x1xcomplex<f64>>) -> tensor<2xcomplex<f64>>
+    return %16 : tensor<2xcomplex<f64>>
+}
+
+// CHECK: func.func @main_complex_mul(%arg0: tensor<8x2xcomplex<f64>>) -> tensor<2xcomplex<f64>> {
+// CHECK-NEXT:     %cst = stablehlo.constant dense<(1.000000e+00,0.000000e+00)> : tensor<complex<f64>>
+// CHECK-NEXT:     %0 = stablehlo.reduce(%arg0 init: %cst) applies stablehlo.multiply across dimensions = [0] : (tensor<8x2xcomplex<f64>>, tensor<complex<f64>>) -> tensor<2xcomplex<f64>>
+// CHECK-NEXT:     return %0 : tensor<2xcomplex<f64>>
+// CHECK-NEXT: }
+
