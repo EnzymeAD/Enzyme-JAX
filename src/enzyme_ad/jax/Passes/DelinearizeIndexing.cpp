@@ -190,7 +190,6 @@ reshapeMemref2(Value memref, ArrayRef<int64_t> shape,
       rewriter.replaceOpWithNewOp<memref::LoadOp>(load, load.getMemref(),
                                                   ainfo.updated_indices);
     } else if (auto store = dyn_cast<memref::StoreOp>(ainfo.mOpInst)) {
-
       ainfo.updated_indices.push_back(ainfo.last_dim_key);
       std::reverse(ainfo.updated_indices.begin(), ainfo.updated_indices.end());
       rewriter.setInsertionPoint(store);
