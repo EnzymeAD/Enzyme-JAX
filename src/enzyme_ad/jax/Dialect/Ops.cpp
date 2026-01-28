@@ -2608,8 +2608,11 @@ LogicalResult enzymexla::MultiSliceOp::verify() {
       RankedTensorType::get(expectedShape, operandType.getElementType());
 
   // Verify all result types have the expected shape
+  // Verify all result types have the expected shape
   for (auto [idx, result] : llvm::enumerate(getResults())) {
-    if (result.getType() != expectedResultType)
+    auto resType = cast<RankedTensorType>(result.getType());
+    if (!resType.getShape().equals(expectedShape) ||
+        resType.getElementType() != operandType.getElementType())
       return emitOpError("result #")
              << idx << " has type " << result.getType() << " but expected "
              << expectedResultType << " based on slice parameters";
