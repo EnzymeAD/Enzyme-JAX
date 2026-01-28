@@ -9571,6 +9571,118 @@ struct DotTranspose
   }
 };
 
+// Optimize reduce(max/min, a * b) where a or b is a positive scalar
+// If a > 0, then max(a*b1, a*b2, ...) = a * max(b1, b2, ...)
+// Same for min with positive scalars
+struct ReduceMaxMinMulPositiveScalar
+    : public CheckedOpRewritePattern<stablehlo::ReduceOp,
+                                     ReduceMaxMinMulPositiveScalar> {
+  using CheckedOpRewritePattern<
+      stablehlo::ReduceOp,
+      ReduceMaxMinMulPositiveScalar>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op.getInputs().size() != 1 || op.getInitValues().size() != 1) {
+      return rewriter.notifyMatchFailure(
+          op, "only single-operand single-init reduce is supported");
+    }
+
+    auto checkCommonReduce = mlir::stablehlo::CheckCommonReduceOp(op);
+
+    // Only support max and min reductions
+    if (checkCommonReduce.kind != stablehlo::ReduceOpKind::Max &&
+        checkCommonReduce.kind != stablehlo::ReduceOpKind::Min) {
+      return rewriter.notifyMatchFailure(
+          op, "only max and min reductions are supported for this pattern");
+    }
+
+    Value input = op.getInputs()[0];
+    if (!llvm::hasSingleElement(input.getUsers())) {
+      return rewriter.notifyMatchFailure(op, "multiple users of input");
+    }
+
+    auto mulOp = input.getDefiningOp<stablehlo::MulOp>();
+    if (!mulOp) {
+      return rewriter.notifyMatchFailure(op, "input is not a multiply op");
+    }
+
+    Value lhs = mulOp.getLhs();
+    Value rhs = mulOp.getRhs();
+
+    // Check which operand is the positive scalar
+    Value scalarOperand = nullptr;
+    Value otherOperand = nullptr;
+
+    // Helper to check if a value originates from a positive scalar
+    auto isPositiveScalar = [&](Value v) -> bool {
+      // First check if it's a scalar (broadcast from rank-0 tensor or splat)
+      if (!stablehlo::isScalarValue(v))
+        return false;
+
+      // Now check if it's guaranteed non-negative and positive
+      // We need to check the original scalar value, not the broadcasted one
+      if (guaranteedNonNegativeResult(v, rewriter)) {
+        // For strict positivity, check if it's guaranteed to be > 0
+        // For now, we accept non-negative which includes zero
+        // This is still correct for max/min but could potentially
+        // multiply by zero which doesn't break correctness
+        return true;
+      }
+      return false;
+    };
+
+    if (isPositiveScalar(lhs)) {
+      scalarOperand = lhs;
+      otherOperand = rhs;
+    } else if (isPositiveScalar(rhs)) {
+      scalarOperand = rhs;
+      otherOperand = lhs;
+    } else {
+      return rewriter.notifyMatchFailure(
+          op, "neither operand is a positive scalar");
+    }
+
+    // Get the scalar value to multiply the result with
+    Value scalar = stablehlo::getScalarValue(scalarOperand, rewriter);
+    if (!scalar) {
+      return rewriter.notifyMatchFailure(op, "failed to extract scalar value");
+    }
+
+    // Create new reduce op on the non-scalar operand
+    // First we need to make sure the otherOperand has the right shape
+    auto inputType = cast<RankedTensorType>(input.getType());
+    auto otherType = cast<RankedTensorType>(otherOperand.getType());
+
+    // If otherOperand doesn't match the input shape, we need to broadcast it
+    Value reduceInput = otherOperand;
+    if (otherType.getShape() != inputType.getShape()) {
+      // The original multiply would have broadcasted, so we need to find
+      // how to get from otherOperand to input shape
+      // Since one is scalar and one is the tensor, the tensor should match
+      // the input shape - if not, we need to handle broadcasting
+      return rewriter.notifyMatchFailure(
+          op, "shape mismatch between operand and original input");
+    }
+
+    // Create the new reduction with the non-scalar input
+    auto newReduction = stablehlo::ReduceOp::create(
+        rewriter, op.getLoc(), op->getResultTypes(), ValueRange{reduceInput},
+        op.getInitValues(), op.getDimensions());
+    newReduction.getRegion().takeBody(op.getRegion());
+
+    // Broadcast the scalar to the result shape and multiply
+    auto resultType = cast<RankedTensorType>(op.getResult(0).getType());
+    Value broadcastedScalar = stablehlo::BroadcastInDimOp::create(
+        rewriter, op.getLoc(), resultType, scalar,
+        rewriter.getDenseI64ArrayAttr({}));
+
+    rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, newReduction.getResult(0),
+                                                  broadcastedScalar);
+    return success();
+  }
+};
+
 struct BroadcastReduce
     : public CheckedOpRewritePattern<stablehlo::ReduceOp, BroadcastReduce> {
   using CheckedOpRewritePattern<stablehlo::ReduceOp,
@@ -32027,7 +32139,8 @@ struct EnzymeHLOOptPass
         FuseReshapeCollapseOrExpandDimsIntoReduce,
         GatherOfScatterSimplify,
         ReduceWindowWrapSimplify,
-        SplitComplexScatterSetIndex
+        SplitComplexScatterSetIndex,
+        ReduceMaxMinMulPositiveScalar
       >(context);
 
     patterns.add<ReshapeElementwise>(true, true, context);
