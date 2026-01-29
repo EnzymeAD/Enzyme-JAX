@@ -2010,15 +2010,34 @@ Value getIdentityValueForOp(OpBuilder &builder, Location loc, Type elemType) {
 template <>
 Value getIdentityValueForOp<stablehlo::AddOp>(OpBuilder &builder, Location loc,
                                               Type elemType) {
-  return stablehlo::ConstantOp::create(builder, loc,
-                                       builder.getZeroAttr(elemType));
+  TypedAttr zeroVal;
+  if (auto complexType = dyn_cast<ComplexType>(elemType)) {
+    auto floatType = cast<FloatType>(complexType.getElementType());
+    auto zero = APFloat::getZero(floatType.getFloatSemantics());
+    auto complexZero = std::complex<APFloat>(zero, zero);
+    zeroVal = DenseElementsAttr::get(RankedTensorType::get({}, elemType),
+                                     complexZero);
+  } else {
+    zeroVal = builder.getZeroAttr(elemType);
+  }
+  return stablehlo::ConstantOp::create(builder, loc, zeroVal);
 }
 
 template <>
 Value getIdentityValueForOp<stablehlo::MulOp>(OpBuilder &builder, Location loc,
                                               Type elemType) {
-  return stablehlo::ConstantOp::create(builder, loc,
-                                       builder.getOneAttr(elemType));
+  TypedAttr identityVal;
+  if (auto complexType = dyn_cast<ComplexType>(elemType)) {
+    auto floatType = cast<FloatType>(complexType.getElementType());
+    auto one = APFloat(floatType.getFloatSemantics(), 1);
+    auto zero = APFloat::getZero(floatType.getFloatSemantics());
+    auto complexOne = std::complex<APFloat>(one, zero);
+    identityVal =
+        DenseElementsAttr::get(RankedTensorType::get({}, elemType), complexOne);
+  } else {
+    identityVal = builder.getOneAttr(elemType);
+  }
+  return stablehlo::ConstantOp::create(builder, loc, identityVal);
 }
 
 template <>
