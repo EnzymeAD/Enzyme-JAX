@@ -337,7 +337,8 @@ public:
 };
 
 class AutoDiffIfFwd
-    : public AutoDiffOpInterface::ExternalModel<AutoDiffIfFwd, IfOp> {
+    : public AutoDiffOpInterface::ExternalModel<AutoDiffIfFwd,
+                                                stablehlo::IfOp> {
 public:
   LogicalResult createForwardModeTangent(Operation *orig, OpBuilder &builder,
                                          MGradientUtils *gutils) const {
@@ -356,26 +357,28 @@ public:
 };
 
 class AutoDiffIfCF
-    : public ControlFlowAutoDiffOpInterface::ExternalModel<AutoDiffIfCF, IfOp> {
+    : public ControlFlowAutoDiffOpInterface::ExternalModel<AutoDiffIfCF,
+                                                           stablehlo::IfOp> {
 public:
   Operation *createWithShadows(Operation *op, OpBuilder &builder,
                                MGradientUtils *gutils, Operation *original,
                                ValueRange remappedOperands,
                                TypeRange rettys) const {
-    return IfOp::create(builder, original->getLoc(), rettys, remappedOperands,
-                        original->getAttrs());
+    return stablehlo::IfOp::create(builder, original->getLoc(), rettys,
+                                   remappedOperands, original->getAttrs());
   }
 };
 
 class AutoDiffIfRev
-    : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffIfRev, IfOp> {
+    : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffIfRev,
+                                                       stablehlo::IfOp> {
 public:
   LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
                                          MGradientUtilsReverse *gutils,
                                          SmallVector<Value> caches) const {
-    auto revOp =
-        IfOp::create(builder, orig->getLoc(), ArrayRef<mlir::Type>{},
-                     gutils->popCache(caches[0], builder), orig->getAttrs());
+    auto revOp = stablehlo::IfOp::create(
+        builder, orig->getLoc(), ArrayRef<mlir::Type>{},
+        gutils->popCache(caches[0], builder), orig->getAttrs());
 
     bool valid = true;
     for (auto &&[origReg, newReg] :
@@ -419,7 +422,7 @@ public:
                                  MGradientUtilsReverse *gutils) const {
     SmallVector<Value> caches;
 
-    auto op = cast<IfOp>(orig);
+    auto op = cast<stablehlo::IfOp>(orig);
 
     Operation *newOp = gutils->getNewFromOriginal(orig);
     OpBuilder cacheBuilder(newOp);
@@ -1559,7 +1562,8 @@ public:
         auto bc2 = BroadcastInDimOp::create(builder, op.getLoc(),
                                             oprev.getType(), inDiffe, attr);
 
-        auto res = SelectOp::create(builder, op.getLoc(), cmp, bc2, zero);
+        auto res =
+            stablehlo::SelectOp::create(builder, op.getLoc(), cmp, bc2, zero);
         gutils->addToDiffe(op.getInputs()[0], res, builder);
       }
       if (!gutils->isConstantValue(op.getInitValues()[0])) {
@@ -1571,7 +1575,8 @@ public:
         auto cmp = CompareOp::create(builder, op.getLoc(), ores, oprev,
                                      ComparisonDirection::EQ);
 
-        auto res = SelectOp::create(builder, op.getLoc(), cmp, inDiffe, zeroI);
+        auto res = stablehlo::SelectOp::create(builder, op.getLoc(), cmp,
+                                               inDiffe, zeroI);
         gutils->addToDiffe(op.getInitValues()[0], res, builder);
       }
       return success();
@@ -3335,7 +3340,7 @@ struct IfOpEnzymeOpsRemover
     // For each pop in the reverse if, pop before the if instead of inside a
     // branch.
 
-    auto ifOp = cast<IfOp>(op);
+    auto ifOp = cast<stablehlo::IfOp>(op);
 
     Block *trueBlock = &ifOp.getTrueBranch().front(),
           *falseBlock = &ifOp.getFalseBranch().front();
@@ -4174,7 +4179,7 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     registerInterfaces(context);
 
     WhileOp::attachInterface<WhileOpEnzymeOpsRemover>(*context);
-    IfOp::attachInterface<IfOpEnzymeOpsRemover>(*context);
+    stablehlo::IfOp::attachInterface<IfOpEnzymeOpsRemover>(*context);
 
     WhileOp::attachInterface<ADDataFlowWhileOp>(*context);
     SortOp::attachInterface<ADDataFlowSortOp>(*context);
@@ -4188,9 +4193,9 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     ReturnOp::attachInterface<AutoDiffHLOReturn>(*context);
 
     ReduceOp::attachInterface<AutoDiffReduceFwd<ReduceOp>>(*context);
-    IfOp::attachInterface<AutoDiffIfRev>(*context);
-    IfOp::attachInterface<AutoDiffIfFwd>(*context);
-    IfOp::attachInterface<AutoDiffIfCF>(*context);
+    stablehlo::IfOp::attachInterface<AutoDiffIfRev>(*context);
+    stablehlo::IfOp::attachInterface<AutoDiffIfFwd>(*context);
+    stablehlo::IfOp::attachInterface<AutoDiffIfCF>(*context);
 
     SortOp::attachInterface<AutoDiffSortFwd>(*context);
     SortOp::attachInterface<AutoDiffSortRev>(*context);
@@ -4208,7 +4213,8 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
 
     ConstantOp::attachInterface<SHLOConstantOpBatchInterface>(*context);
     TransposeOp::attachInterface<SHLOTransposeOpBatchInterface>(*context);
-    IfOp::attachInterface<SHLOGenericBatchOpInterface<IfOp>>(*context);
+    stablehlo::IfOp::attachInterface<
+        SHLOGenericBatchOpInterface<stablehlo::IfOp>>(*context);
     WhileOp::attachInterface<SHLOGenericBatchOpInterface<WhileOp>>(*context);
     ReduceOp::attachInterface<SHLOReduceOpBatchInterface>(*context);
     ReduceWindowOp::attachInterface<SHLOReduceWindowOpBatchInterface>(*context);
@@ -4224,7 +4230,7 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     CustomCallOp::attachInterface<SHLOGenericBatchOpInterface<CustomCallOp>>(
         *context);
     IotaOp::attachInterface<SHLOIotaOpBatchInterface>(*context);
-    SelectOp::attachInterface<SHLOSelectOpBatchInterface>(*context);
+    stablehlo::SelectOp::attachInterface<SHLOSelectOpBatchInterface>(*context);
     SortOp::attachInterface<SHLOSortOpBatchInterface>(*context);
     GetDimensionSizeOp::attachInterface<SHLOGetDimensionSizeOpBatchInterface>(
         *context);

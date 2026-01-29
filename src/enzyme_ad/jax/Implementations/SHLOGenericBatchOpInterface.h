@@ -79,7 +79,7 @@ inline void batchCloneBlock(Block *srcBlock, Block *destBlock,
 inline LogicalResult tryToBatchInner(Operation *src, OpBuilder &builder,
                                      IRMapping &mapper,
                                      ArrayRef<int64_t> batchSizes) {
-  if (auto ifOp = dyn_cast<IfOp>(src)) {
+  if (auto ifOp = dyn_cast<stablehlo::IfOp>(src)) {
     auto predBroadcast =
         mapper.lookup(ifOp.getPred()).getDefiningOp<BroadcastInDimOp>();
     if (predBroadcast && predBroadcast.isSimpleBroadcast() &&
@@ -91,8 +91,8 @@ inline LogicalResult tryToBatchInner(Operation *src, OpBuilder &builder,
       for (auto resTy : src->getResultTypes()) {
         results.push_back(applyBatchSizes(resTy, batchSizes));
       }
-      auto newIf = IfOp::create(builder, src->getLoc(), results,
-                                predBroadcast.getOperand());
+      auto newIf = stablehlo::IfOp::create(builder, src->getLoc(), results,
+                                           predBroadcast.getOperand());
       newIf.getTrueBranch().push_back(new Block());
       newIf.getFalseBranch().push_back(new Block());
 

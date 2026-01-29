@@ -527,7 +527,7 @@ def LowerEnzymeXLABLASPass : Pass<"lower-enzymexla-blas"> {
 def LowerProbProgToStableHLOPass : Pass<"lower-probprog-to-stablehlo"> {
   let summary = "Lower computational enzyme ops to StableHLO";
   let description = [{
-    Lower computational probprog ops (loop, dot, cholesky_solve, random, unflatten_slice)
+    Lower computational probprog ops (loop, dot, cholesky, triangular_solve, random, recover_sample)
     to StableHLO dialect operations.
   }];
   let dependentDialects = [
@@ -545,6 +545,12 @@ def LowerProbProgToStableHLOPass : Pass<"lower-probprog-to-stablehlo"> {
         /*type=*/"std::string",
         /*default=*/"\"cpu\"",
         /*description=*/"HW backend">,
+    Option<
+        /*C++ variable name=*/"debugDump",
+        /*CLI argument=*/"debug-dump",
+        /*type=*/"bool",
+        /*default=*/"false",
+        /*description=*/"Enable debug dump">,
   ];
 }
 
