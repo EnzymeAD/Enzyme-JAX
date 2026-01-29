@@ -26785,64 +26785,67 @@ LogicalResult dotGeneralDistributiveSimplify(OpTy op,
     return dotGeneralDistributiveSimplify<OpTy>(op, lhsDotGeneralOp,
                                                 rhsDotGeneralOp, rewriter);
 
-  Value newLhs, newRhs;
-  stablehlo::DotGeneralOp dotGeneralOp;
+  // FIXME: This is currently incorrect. We can't replace with a simple
+  //        elementwise, instead we need to use scatter_op to perform
+  //        this operation (on the diagonal indices of Y)
+  // Value newLhs, newRhs;
+  // stablehlo::DotGeneralOp dotGeneralOp;
 
-  auto constructOtherOp = [&](Value other, Value scalar, bool scalarIsLhs) {
-    auto bcastedScalar = stablehlo::BroadcastInDimOp::create(
-        rewriter, op.getLoc(), other.getType(), scalar,
-        rewriter.getDenseI64ArrayAttr({}));
-    auto lhs = scalarIsLhs ? bcastedScalar : other;
-    auto rhs = scalarIsLhs ? other : bcastedScalar;
-    return OpTy::create(rewriter, op.getLoc(), lhs, rhs);
-  };
+  // auto constructOtherOp = [&](Value other, Value scalar, bool scalarIsLhs) {
+  //   auto bcastedScalar = stablehlo::BroadcastInDimOp::create(
+  //       rewriter, op.getLoc(), other.getType(), scalar,
+  //       rewriter.getDenseI64ArrayAttr({}));
+  //   auto lhs = scalarIsLhs ? bcastedScalar : other;
+  //   auto rhs = scalarIsLhs ? other : bcastedScalar;
+  //   return OpTy::create(rewriter, op.getLoc(), lhs, rhs);
+  // };
 
-  if (lhsDotGeneralOp) {
-    Value scalar, other;
-    dotGeneralOp = lhsDotGeneralOp;
-    if (extractMultiplicationFactor(rhs, other, op, rewriter)) {
-      if (other == lhsDotGeneralOp.getLhs()) {
-        extractMultiplicationFactor(rhs, scalar, other, op, rewriter);
+  // if (lhsDotGeneralOp) {
+  //   Value scalar, other;
+  //   dotGeneralOp = lhsDotGeneralOp;
+  //   if (extractMultiplicationFactor(rhs, other, op, rewriter)) {
+  //     if (other == lhsDotGeneralOp.getLhs()) {
+  //       extractMultiplicationFactor(rhs, scalar, other, op, rewriter);
 
-        // op(X × Y, a * X) -> X × op(Y, a)
-        newLhs = lhsDotGeneralOp.getLhs();
-        newRhs = constructOtherOp(lhsDotGeneralOp.getRhs(), scalar, false);
-      } else if (other == lhsDotGeneralOp.getRhs()) {
-        extractMultiplicationFactor(rhs, scalar, other, op, rewriter);
+  //       // op(X × Y, a * X) -> X × op(Y, a)
+  //       newLhs = lhsDotGeneralOp.getLhs();
+  //       newRhs = constructOtherOp(lhsDotGeneralOp.getRhs(), scalar, false);
+  //     } else if (other == lhsDotGeneralOp.getRhs()) {
+  //       extractMultiplicationFactor(rhs, scalar, other, op, rewriter);
 
-        // op(Y × X, a * X) -> op(Y, a) × X
-        newLhs = constructOtherOp(lhsDotGeneralOp.getLhs(), scalar, false);
-        newRhs = lhsDotGeneralOp.getRhs();
-      }
-    }
-  }
+  //       // op(Y × X, a * X) -> op(Y, a) × X
+  //       newLhs = constructOtherOp(lhsDotGeneralOp.getLhs(), scalar, false);
+  //       newRhs = lhsDotGeneralOp.getRhs();
+  //     }
+  //   }
+  // }
 
-  if (rhsDotGeneralOp) {
-    Value scalar, other;
-    dotGeneralOp = rhsDotGeneralOp;
-    if (extractMultiplicationFactor(lhs, other, op, rewriter)) {
-      if (other == rhsDotGeneralOp.getLhs()) {
-        extractMultiplicationFactor(lhs, scalar, other, op, rewriter);
+  // if (rhsDotGeneralOp) {
+  //   Value scalar, other;
+  //   dotGeneralOp = rhsDotGeneralOp;
+  //   if (extractMultiplicationFactor(lhs, other, op, rewriter)) {
+  //     if (other == rhsDotGeneralOp.getLhs()) {
+  //       extractMultiplicationFactor(lhs, scalar, other, op, rewriter);
 
-        // op(a * X, X × Y) -> X × op(a, Y)
-        newLhs = rhsDotGeneralOp.getLhs();
-        newRhs = constructOtherOp(rhsDotGeneralOp.getRhs(), scalar, true);
-      } else if (other == rhsDotGeneralOp.getRhs()) {
-        extractMultiplicationFactor(lhs, scalar, other, op, rewriter);
+  //       // op(a * X, X × Y) -> X × op(a, Y)
+  //       newLhs = rhsDotGeneralOp.getLhs();
+  //       newRhs = constructOtherOp(rhsDotGeneralOp.getRhs(), scalar, true);
+  //     } else if (other == rhsDotGeneralOp.getRhs()) {
+  //       extractMultiplicationFactor(lhs, scalar, other, op, rewriter);
 
-        // op(a * X, Y × X) -> op(a, Y) × X
-        newLhs = constructOtherOp(rhsDotGeneralOp.getLhs(), scalar, true);
-        newRhs = rhsDotGeneralOp.getRhs();
-      }
-    }
-  }
+  //       // op(a * X, Y × X) -> op(a, Y) × X
+  //       newLhs = constructOtherOp(rhsDotGeneralOp.getLhs(), scalar, true);
+  //       newRhs = rhsDotGeneralOp.getRhs();
+  //     }
+  //   }
+  // }
 
-  if (newLhs && newRhs) {
-    rewriter.replaceOpWithNewOp<stablehlo::DotGeneralOp>(
-        op, TypeRange{op.getType()}, ValueRange{newLhs, newRhs},
-        dotGeneralOp->getAttrs());
-    return success();
-  }
+  // if (newLhs && newRhs) {
+  //   rewriter.replaceOpWithNewOp<stablehlo::DotGeneralOp>(
+  //       op, TypeRange{op.getType()}, ValueRange{newLhs, newRhs},
+  //       dotGeneralOp->getAttrs());
+  //   return success();
+  // }
 
   return failure();
 }
