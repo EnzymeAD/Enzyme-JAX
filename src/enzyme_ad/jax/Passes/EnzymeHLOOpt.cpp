@@ -29650,7 +29650,7 @@ struct DotGeneralToSymm
 
     // can only replace with symm if either lhs or rhs is symmetric
     if (canApplySymmetricPattern(lhs, rewriter)) {
-      side == enzymexla::LapackSide::left;
+      side = enzymexla::LapackSide::left;
       if (rhsContractingDim == 0) {
         auto perm = rewriter.getDenseI64ArrayAttr({1, 0});
         rhs = stablehlo::TransposeOp::create(
@@ -29661,7 +29661,7 @@ struct DotGeneralToSymm
       }
 
     } else if (canApplySymmetricPattern(rhs, rewriter)) {
-      side == enzymexla::LapackSide::right;
+      side = enzymexla::LapackSide::right;
       if (lhsContractingDim == 0) {
         auto perm = rewriter.getDenseI64ArrayAttr({1, 0});
         lhs = stablehlo::TransposeOp::create(
