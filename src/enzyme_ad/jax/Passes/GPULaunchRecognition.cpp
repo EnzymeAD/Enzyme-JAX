@@ -64,7 +64,6 @@ struct GPULaunchRecognitionPass
 
     Attribute target;
     if (backend == "rocm") {
-      // Here temporarily set as "" for ROCm backend
       auto chip = "gfx1030";
       auto features = "+wavefrontsize64";
 
