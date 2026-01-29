@@ -30642,9 +30642,8 @@ struct ReduceUnusedMultiSlice final
 
   LogicalResult matchAndRewriteImpl(enzymexla::MultiSliceOp op,
                                     PatternRewriter &rewriter) const {
-    int32_t leftAmount = op.getLeftAmount();
-    int32_t rightAmount = op.getRightAmount();
-    int32_t totalResults = leftAmount + rightAmount + 1;
+    int32_t amount = op.getAmount();
+    int32_t totalResults = amount + 1;
 
     // Check which results are actually used
     SmallVector<bool> used(totalResults, false);
@@ -30676,25 +30675,20 @@ struct ReduceUnusedMultiSlice final
       }
     }
 
-    // Calculate new left and right amounts
-    int centerIdx = leftAmount;
-    int newLeftAmount = centerIdx - firstUsed;
-    int newRightAmount = lastUsed - centerIdx;
+    // Calculate new amount
+    int newAmount = lastUsed - firstUsed;
 
     // If only one result is used, replace with a single SliceOp
     if (usedCount == 1) {
-      int usedIdx = firstUsed;
-      int offset = usedIdx - centerIdx; // How much to shift the slice
-
       auto startIndices = SmallVector<int64_t>(op.getStartIndices());
       auto limitIndices = SmallVector<int64_t>(op.getLimitIndices());
       auto strides = SmallVector<int64_t>(op.getStrides());
       int32_t dim = op.getDimension();
 
-      // Adjust start and limit indices for the offset
+      // Adjust start and limit indices for the used result's offset
       if (dim >= 0 && dim < (int64_t)startIndices.size()) {
-        startIndices[dim] += offset;
-        limitIndices[dim] += offset;
+        startIndices[dim] += firstUsed;
+        limitIndices[dim] += firstUsed;
       }
 
       auto sliceOp = rewriter.create<stablehlo::SliceOp>(
@@ -30702,56 +30696,52 @@ struct ReduceUnusedMultiSlice final
           rewriter.getDenseI64ArrayAttr(startIndices),
           rewriter.getDenseI64ArrayAttr(limitIndices),
           rewriter.getDenseI64ArrayAttr(strides));
+
       // Propagate sharding if present
       if (auto shard = sdy::getShardingPerValue(op)) {
         sdy::setShardings(sliceOp, shard);
       }
 
-      rewriter.replaceAllUsesWith(op.getResult(usedIdx), sliceOp.getResult());
+      rewriter.replaceAllUsesWith(op.getResult(firstUsed), sliceOp.getResult());
       rewriter.eraseOp(op);
       return success();
     }
 
-    // Otherwise, create a smaller MultiSliceOp
-    if (newLeftAmount != leftAmount || newRightAmount != rightAmount) {
-      // Adjust start indices for the new center
-      int offset = firstUsed - centerIdx;
+    // Otherwise, create a smaller MultiSliceOp if we can reduce the range
+    if (newAmount != amount) {
       auto startIndices = SmallVector<int64_t>(op.getStartIndices());
       auto limitIndices = SmallVector<int64_t>(op.getLimitIndices());
       int32_t dim = op.getDimension();
 
+      // Shift indices to account for trimmed results at the beginning
       if (dim >= 0 && dim < (int64_t)startIndices.size()) {
-        startIndices[dim] += offset;
-        limitIndices[dim] += offset;
+        startIndices[dim] += firstUsed;
+        limitIndices[dim] += firstUsed;
       }
 
       // Determine result types
       auto resultType = cast<RankedTensorType>(op.getResultTypes().front());
       SmallVector<Type> resultTypes;
-      for (int i = 0; i < newLeftAmount + newRightAmount + 1; i++) {
-        resultTypes.push_back(resultType); // Will be properly typed by the op
+      for (int i = 0; i < newAmount + 1; i++) {
+        resultTypes.push_back(resultType);
       }
 
       auto newOp = rewriter.create<enzymexla::MultiSliceOp>(
           op.getLoc(), resultTypes, op.getOperand(), startIndices, limitIndices,
-          op.getStrides(), op.getDimension(), newLeftAmount, newRightAmount);
+          op.getStrides(), op.getDimension(), newAmount);
+
       // Propagate sharding if present
       if (auto shard = sdy::getShardingPerValue(op)) {
         sdy::setShardings(newOp, shard);
       }
 
       // Map old results to new results
-      SmallVector<Value> replacements(totalResults);
       int newIdx = 0;
       for (int oldIdx = firstUsed; oldIdx <= lastUsed; oldIdx++) {
-        replacements[oldIdx] = newOp.getResult(newIdx++);
-      }
-
-      // Replace uses
-      for (int i = 0; i < totalResults; i++) {
-        if (used[i]) {
-          op.getResult(i).replaceAllUsesWith(replacements[i]);
+        if (used[oldIdx]) {
+          op.getResult(oldIdx).replaceAllUsesWith(newOp.getResult(newIdx));
         }
+        newIdx++;
       }
 
       rewriter.eraseOp(op);
@@ -30759,6 +30749,56 @@ struct ReduceUnusedMultiSlice final
     }
 
     return failure();
+  }
+};
+
+// Pattern to lower MultiSliceOp into individual SliceOps
+struct LowerMultiSlice final
+    : CheckedOpRewritePattern<enzymexla::MultiSliceOp, LowerMultiSlice> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(enzymexla::MultiSliceOp op,
+                                    PatternRewriter &rewriter) const {
+    int32_t amount = op.getAmount();
+    int32_t totalResults = amount + 1;
+    int32_t dim = op.getDimension();
+
+    auto baseStartIndices = SmallVector<int64_t>(op.getStartIndices());
+    auto baseLimitIndices = SmallVector<int64_t>(op.getLimitIndices());
+    auto strides = SmallVector<int64_t>(op.getStrides());
+
+    // Get sharding info if present
+    auto shard = sdy::getShardingPerValue(op);
+
+    SmallVector<Value> replacements(totalResults);
+
+    for (int i = 0; i < totalResults; i++) {
+      // Copy and adjust indices for this slice
+      auto startIndices = baseStartIndices;
+      auto limitIndices = baseLimitIndices;
+
+      if (dim >= 0 && dim < (int64_t)startIndices.size()) {
+        startIndices[dim] += i;
+        limitIndices[dim] += i;
+      }
+
+      auto sliceOp = rewriter.create<stablehlo::SliceOp>(
+          op.getLoc(), op.getOperand(),
+          rewriter.getDenseI64ArrayAttr(startIndices),
+          rewriter.getDenseI64ArrayAttr(limitIndices),
+          rewriter.getDenseI64ArrayAttr(strides));
+
+      // Propagate sharding if present
+      if (shard) {
+        sdy::setShardings(sliceOp, shard);
+      }
+
+      replacements[i] = sliceOp.getResult();
+    }
+
+    rewriter.replaceOp(op, replacements);
+
+    return success();
   }
 };
 
@@ -30907,6 +30947,61 @@ struct RecognizeMultiRotate
   }
 };
 
+// Pattern to lower MultiRotateOp into individual RotateOps
+struct LowerMultiRotate final
+    : CheckedOpRewritePattern<enzymexla::MultiRotateOp, LowerMultiRotate> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(enzymexla::MultiRotateOp op,
+                                    PatternRewriter &rewriter) const {
+    int32_t leftAmount = op.getLeftAmount();
+    int32_t rightAmount = op.getRightAmount();
+    int32_t totalResults = leftAmount + rightAmount + 1;
+    int32_t centerIdx = leftAmount;
+
+    Value input = op.getOperand();
+    auto inputType = cast<RankedTensorType>(input.getType());
+    int64_t dimSize = inputType.getShape()[op.getDimensionAttr().getSInt()];
+
+    // Get sharding info if present
+    auto shard = sdy::getShardingPerValue(op);
+
+    SmallVector<Value> replacements(totalResults);
+
+    for (int i = 0; i < totalResults; i++) {
+      // Calculate rotation amount for this result
+      // Result at centerIdx corresponds to amount 0 (identity)
+      // Results before centerIdx have positive amounts (rotate left)
+      // Results after centerIdx have negative amounts (rotate right)
+      int32_t amount = centerIdx - i;
+
+      // Normalize negative amounts to positive equivalent
+      if (amount < 0) {
+        amount += dimSize;
+      }
+
+      if (amount == 0) {
+        replacements[i] = input;
+        continue;
+      }
+
+      auto rotateOp = rewriter.create<enzymexla::RotateOp>(
+          op.getLoc(), inputType, input, rewriter.getSI32IntegerAttr(amount),
+          op.getDimensionAttr());
+
+      // Propagate sharding if present
+      if (shard) {
+        sdy::setShardings(rotateOp, shard);
+      }
+
+      replacements[i] = rotateOp.getResult();
+    }
+
+    rewriter.replaceOp(op, replacements);
+    return success();
+  }
+};
+
 // Pattern to reduce MultiRotateOp when some results are unused
 struct ReduceUnusedMultiRotate final
     : CheckedOpRewritePattern<enzymexla::MultiRotateOp,
@@ -30999,14 +31094,7 @@ struct ReduceUnusedMultiRotate final
         replacements[oldIdx] = newOp.getResult(newIdx++);
       }
 
-      // Replace uses
-      for (int i = 0; i < totalResults; i++) {
-        if (used[i]) {
-          op.getResult(i).replaceAllUsesWith(replacements[i]);
-        }
-      }
-
-      rewriter.eraseOp(op);
+      rewriter.replaceOp(op, replacements);
       return success();
     }
 
