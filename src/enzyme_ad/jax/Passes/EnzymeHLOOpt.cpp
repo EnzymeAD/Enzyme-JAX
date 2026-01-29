@@ -5297,12 +5297,10 @@ struct NegativePadToSlice final
 };
 
 /*
+%1192 = stablehlo.pad %1189, %cst_0, low = [0], high = [1], interior = [0] :
+  (tensor<1xf32>, tensor<f32>) -> tensor<2xf32>
 
-    %1192 = stablehlo.pad %1189, %cst_0, low = [0], high = [1], interior =
-    [0] :
-   (tensor<1xf32>, tensor<f32>) -> tensor<2xf32> %1193 = arith.addf %1191,
-   %1192 : tensor<2xf32>
-
+%1193 = arith.addf %1191, %1192 : tensor<2xf32>
 */
 template <typename T>
 struct BinopPadToConcat final
@@ -5352,7 +5350,7 @@ struct BinopPadToConcat final
         bool legal = true;
         for (auto step : lhs.getInteriorPadding()) {
           if (step != 0) {
-            legal = true;
+            legal = false;
             break;
           }
         }
@@ -9567,6 +9565,118 @@ struct DotTranspose
         dot, dot.getType(), fuseLhs ? lhsTrans.getOperand() : dot.getLhs(),
         fuseRhs ? rhsTrans.getOperand() : dot.getRhs(), ndim,
         dot.getPrecisionConfigAttr(), dot.getAlgorithmAttr());
+    return success();
+  }
+};
+
+// Optimize reduce(max/min, a * b) where a or b is a positive scalar
+// If a > 0, then max(a*b1, a*b2, ...) = a * max(b1, b2, ...)
+// Same for min with positive scalars
+struct ReduceMaxMinMulPositiveScalar
+    : public CheckedOpRewritePattern<stablehlo::ReduceOp,
+                                     ReduceMaxMinMulPositiveScalar> {
+  using CheckedOpRewritePattern<
+      stablehlo::ReduceOp,
+      ReduceMaxMinMulPositiveScalar>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op.getInputs().size() != 1 || op.getInitValues().size() != 1) {
+      return rewriter.notifyMatchFailure(
+          op, "only single-operand single-init reduce is supported");
+    }
+
+    auto checkCommonReduce = mlir::stablehlo::CheckCommonReduceOp(op);
+
+    // Only support max and min reductions
+    if (checkCommonReduce.kind != stablehlo::ReduceOpKind::Max &&
+        checkCommonReduce.kind != stablehlo::ReduceOpKind::Min) {
+      return rewriter.notifyMatchFailure(
+          op, "only max and min reductions are supported for this pattern");
+    }
+
+    Value input = op.getInputs()[0];
+    if (!llvm::hasSingleElement(input.getUsers())) {
+      return rewriter.notifyMatchFailure(op, "multiple users of input");
+    }
+
+    auto mulOp = input.getDefiningOp<stablehlo::MulOp>();
+    if (!mulOp) {
+      return rewriter.notifyMatchFailure(op, "input is not a multiply op");
+    }
+
+    Value lhs = mulOp.getLhs();
+    Value rhs = mulOp.getRhs();
+
+    // Check which operand is the positive scalar
+    Value scalarOperand = nullptr;
+    Value otherOperand = nullptr;
+
+    // Helper to check if a value originates from a positive scalar
+    auto isPositiveScalar = [&](Value v) -> bool {
+      // First check if it's a scalar (broadcast from rank-0 tensor or splat)
+      if (!stablehlo::isScalarValue(v))
+        return false;
+
+      // Now check if it's guaranteed non-negative and positive
+      // We need to check the original scalar value, not the broadcasted one
+      if (guaranteedNonNegativeResult(v, rewriter)) {
+        // For strict positivity, check if it's guaranteed to be > 0
+        // For now, we accept non-negative which includes zero
+        // This is still correct for max/min but could potentially
+        // multiply by zero which doesn't break correctness
+        return true;
+      }
+      return false;
+    };
+
+    if (isPositiveScalar(lhs)) {
+      scalarOperand = lhs;
+      otherOperand = rhs;
+    } else if (isPositiveScalar(rhs)) {
+      scalarOperand = rhs;
+      otherOperand = lhs;
+    } else {
+      return rewriter.notifyMatchFailure(
+          op, "neither operand is a positive scalar");
+    }
+
+    // Get the scalar value to multiply the result with
+    Value scalar = stablehlo::getScalarValue(scalarOperand, rewriter);
+    if (!scalar) {
+      return rewriter.notifyMatchFailure(op, "failed to extract scalar value");
+    }
+
+    // Create new reduce op on the non-scalar operand
+    // First we need to make sure the otherOperand has the right shape
+    auto inputType = cast<RankedTensorType>(input.getType());
+    auto otherType = cast<RankedTensorType>(otherOperand.getType());
+
+    // If otherOperand doesn't match the input shape, we need to broadcast it
+    Value reduceInput = otherOperand;
+    if (otherType.getShape() != inputType.getShape()) {
+      // The original multiply would have broadcasted, so we need to find
+      // how to get from otherOperand to input shape
+      // Since one is scalar and one is the tensor, the tensor should match
+      // the input shape - if not, we need to handle broadcasting
+      return rewriter.notifyMatchFailure(
+          op, "shape mismatch between operand and original input");
+    }
+
+    // Create the new reduction with the non-scalar input
+    auto newReduction = stablehlo::ReduceOp::create(
+        rewriter, op.getLoc(), op->getResultTypes(), ValueRange{reduceInput},
+        op.getInitValues(), op.getDimensions());
+    newReduction.getRegion().takeBody(op.getRegion());
+
+    // Broadcast the scalar to the result shape and multiply
+    auto resultType = cast<RankedTensorType>(op.getResult(0).getType());
+    Value broadcastedScalar = stablehlo::BroadcastInDimOp::create(
+        rewriter, op.getLoc(), resultType, scalar,
+        rewriter.getDenseI64ArrayAttr({}));
+
+    rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, newReduction.getResult(0),
+                                                  broadcastedScalar);
     return success();
   }
 };
@@ -23024,14 +23134,16 @@ struct SquareAbsSimplify
       return failure();
 
     if (isa<ComplexType>(operandType.getElementType())) {
-      // abs(z)^2 = real(z * conj(z)) -- only applied if abs(z) is used in this
-      // operation
-      if (!isOnlyUsedInOperation(absOp, op))
+      // abs(z)^2 = real(z)^2 + imag(z)^2 -- only applied if abs(z) is used in
+      // this operation
+      if (!isOnlyUsedInOperation(absOp, op)) {
         return failure();
-      rewriter.replaceOpWithNewOp<stablehlo::RealOp>(
-          op, stablehlo::MulOp::create(
-                  rewriter, op.getLoc(), operand,
-                  chlo::ConjOp::create(rewriter, op.getLoc(), operand)));
+      }
+      auto real = stablehlo::RealOp::create(rewriter, op.getLoc(), operand);
+      auto imag = stablehlo::ImagOp::create(rewriter, op.getLoc(), operand);
+      auto realSq = stablehlo::MulOp::create(rewriter, op.getLoc(), real, real);
+      auto imagSq = stablehlo::MulOp::create(rewriter, op.getLoc(), imag, imag);
+      rewriter.replaceOpWithNewOp<stablehlo::AddOp>(op, realSq, imagSq);
       return success();
     } else {
       // abs(x)^2 = x * x
@@ -31237,18 +31349,92 @@ private:
   }
 };
 
+// Helper function to build scatter update computation region based on the
+// scatter operation kind. For constant-based operations, the constant value
+// must be provided as the real or imaginary part (caller extracts from
+// complex).
+static void buildScatterUpdateRegion(PatternRewriter &rewriter, Location loc,
+                                     stablehlo::ScatterOp scatterOp,
+                                     stablehlo::ScatterOpKind kind,
+                                     Type elemType,
+                                     Attribute constantValue = nullptr) {
+  OpBuilder::InsertionGuard guard(rewriter);
+  auto &updateRegion = scatterOp.getUpdateComputation();
+  auto *block = rewriter.createBlock(&updateRegion);
+  auto argType = RankedTensorType::get({}, elemType);
+  block->addArgument(argType, loc);
+  block->addArgument(argType, loc);
+  rewriter.setInsertionPointToStart(block);
+
+  Value result;
+  switch (kind) {
+  case stablehlo::ScatterOpKind::Setindex:
+    // Setindex: return the update value (arg1)
+    result = block->getArgument(1);
+    break;
+  case stablehlo::ScatterOpKind::ConstantSetindex: {
+    // ConstantSetindex: return the constant value
+    assert(constantValue && "ConstantSetindex requires a constant value");
+    auto constAttr = DenseElementsAttr::get(argType, constantValue);
+    result = stablehlo::ConstantOp::create(rewriter, loc, constAttr);
+    break;
+  }
+  case stablehlo::ScatterOpKind::Add:
+    // Add: return arg0 + arg1
+    result = stablehlo::AddOp::create(rewriter, loc, block->getArgument(0),
+                                      block->getArgument(1));
+    break;
+  case stablehlo::ScatterOpKind::AddConstantUpdate: {
+    // AddConstantUpdate: return arg0 + constant (constant replaces update/arg1)
+    assert(constantValue && "AddConstantUpdate requires a constant value");
+    auto constAttr = DenseElementsAttr::get(argType, constantValue);
+    auto constOp = stablehlo::ConstantOp::create(rewriter, loc, constAttr);
+    result =
+        stablehlo::AddOp::create(rewriter, loc, block->getArgument(0), constOp);
+    break;
+  }
+  case stablehlo::ScatterOpKind::AddConstantInput: {
+    // AddConstantInput: return constant + arg1 (constant replaces input/arg0)
+    assert(constantValue && "AddConstantInput requires a constant value");
+    auto constAttr = DenseElementsAttr::get(argType, constantValue);
+    auto constOp = stablehlo::ConstantOp::create(rewriter, loc, constAttr);
+    result =
+        stablehlo::AddOp::create(rewriter, loc, constOp, block->getArgument(1));
+    break;
+  }
+  case stablehlo::ScatterOpKind::Sub:
+    // Sub: return arg0 - arg1
+    result = stablehlo::SubtractOp::create(rewriter, loc, block->getArgument(0),
+                                           block->getArgument(1));
+    break;
+  default:
+    llvm_unreachable("Unsupported scatter operation kind");
+  }
+
+  stablehlo::ReturnOp::create(rewriter, loc, result);
+}
+
 // See discussion in
 // https://github.com/EnzymeAD/Reactant.jl/pull/2219#issuecomment-3801834108
-struct SplitComplexScatterSetIndex final
-    : CheckedOpRewritePattern<stablehlo::ScatterOp,
-                              SplitComplexScatterSetIndex> {
+struct SplitComplexScatter final
+    : CheckedOpRewritePattern<stablehlo::ScatterOp, SplitComplexScatter> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::ScatterOp op,
                                     PatternRewriter &rewriter) const {
     auto checkCommonScatterOp = mlir::stablehlo::CheckCommonScatterOp(op);
 
-    if (checkCommonScatterOp.kind != stablehlo::ScatterOpKind::Setindex) {
+    // Support Setindex, ConstantSetindex, Add, AddConstantUpdate,
+    // AddConstantInput, and Sub scatter operations
+    if (checkCommonScatterOp.kind != stablehlo::ScatterOpKind::Setindex &&
+        checkCommonScatterOp.kind !=
+            stablehlo::ScatterOpKind::ConstantSetindex &&
+        checkCommonScatterOp.kind != stablehlo::ScatterOpKind::Add &&
+        checkCommonScatterOp.kind !=
+            stablehlo::ScatterOpKind::AddConstantUpdate &&
+        checkCommonScatterOp.kind !=
+            stablehlo::ScatterOpKind::AddConstantInput &&
+        checkCommonScatterOp.kind != stablehlo::ScatterOpKind::Sub) {
       return failure();
     }
 
@@ -31260,6 +31446,16 @@ struct SplitComplexScatterSetIndex final
     // Get the inner element type (e.g., f32 from complex<f32>)
     auto complexType = cast<ComplexType>(elemType);
     auto innerElemType = complexType.getElementType();
+
+    // Extract real and imaginary parts of the constant if present
+    Attribute realConstant = nullptr;
+    Attribute imagConstant = nullptr;
+    if (checkCommonScatterOp.constant) {
+      auto complexVal =
+          checkCommonScatterOp.constant.getSplatValue<std::complex<APFloat>>();
+      realConstant = FloatAttr::get(innerElemType, complexVal.real());
+      imagConstant = FloatAttr::get(innerElemType, complexVal.imag());
+    }
 
     SmallVector<Value> realInputs, imagInputs, realUpdates, imagUpdates;
     for (auto [input, update] :
@@ -31280,18 +31476,10 @@ struct SplitComplexScatterSetIndex final
         op.getScatterDimensionNumbersAttr(), op.getIndicesAreSortedAttr(),
         op.getUniqueIndicesAttr());
 
-    // Build setindex update computation region for real scatter
-    {
-      OpBuilder::InsertionGuard guard(rewriter);
-      auto &updateRegion = realScatterOp.getUpdateComputation();
-      auto *block = rewriter.createBlock(&updateRegion);
-      auto argType = RankedTensorType::get({}, innerElemType);
-      block->addArgument(argType, op.getLoc());
-      block->addArgument(argType, op.getLoc());
-      rewriter.setInsertionPointToStart(block);
-      // Setindex: return the update value (arg1)
-      stablehlo::ReturnOp::create(rewriter, op.getLoc(), block->getArgument(1));
-    }
+    // Build update computation region for real scatter
+    buildScatterUpdateRegion(rewriter, op.getLoc(), realScatterOp,
+                             checkCommonScatterOp.kind, innerElemType,
+                             realConstant);
 
     // Create the imaginary scatter op
     auto imagScatterOp = stablehlo::ScatterOp::create(
@@ -31299,18 +31487,10 @@ struct SplitComplexScatterSetIndex final
         op.getScatterDimensionNumbersAttr(), op.getIndicesAreSortedAttr(),
         op.getUniqueIndicesAttr());
 
-    // Build setindex update computation region for imaginary scatter
-    {
-      OpBuilder::InsertionGuard guard(rewriter);
-      auto &updateRegion = imagScatterOp.getUpdateComputation();
-      auto *block = rewriter.createBlock(&updateRegion);
-      auto argType = RankedTensorType::get({}, innerElemType);
-      block->addArgument(argType, op.getLoc());
-      block->addArgument(argType, op.getLoc());
-      rewriter.setInsertionPointToStart(block);
-      // Setindex: return the update value (arg1)
-      stablehlo::ReturnOp::create(rewriter, op.getLoc(), block->getArgument(1));
-    }
+    // Build update computation region for imaginary scatter
+    buildScatterUpdateRegion(rewriter, op.getLoc(), imagScatterOp,
+                             checkCommonScatterOp.kind, innerElemType,
+                             imagConstant);
 
     // Combine real and imaginary results using stablehlo::ComplexOp
     SmallVector<Value> results;
@@ -32115,7 +32295,8 @@ struct EnzymeHLOOptPass
         FuseReshapeCollapseOrExpandDimsIntoReduce,
         GatherOfScatterSimplify,
         ReduceWindowWrapSimplify,
-        SplitComplexScatterSetIndex
+        SplitComplexScatter,
+        ReduceMaxMinMulPositiveScalar
       >(context);
 
     patterns.add<ReshapeElementwise>(true, true, context);

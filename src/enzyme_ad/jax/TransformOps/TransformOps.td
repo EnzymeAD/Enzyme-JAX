@@ -2946,7 +2946,18 @@ def ApplyDeleteDimsBroadcastPatterns : EnzymeHLOPatternOp<
   let patterns = ["DeleteDimsBroadcast"];
 }
 
-def ApplySplitComplexScatterSetIndexPatterns: EnzymeHLOPatternOp<
+def ApplySplitComplexScatterPatterns: EnzymeHLOPatternOp<
+    "split_complex_scatter"> {
+  let patterns = ["SplitComplexScatter"];
+}
+
+// TODO: remove this once we have removed it from reactant
+def ApplySplitComplexScatterSetindexPatterns: EnzymeHLOPatternOp<
     "split_complex_scatter_setindex"> {
-  let patterns = ["SplitComplexScatterSetIndex"];
+  let patterns = ["SplitComplexScatter"];
+}
+
+def ApplyReduceMaxMinMulPositiveScalarPatterns: EnzymeHLOPatternOp<
+    "reduce_max_min_mul_positive_scalar"> {
+  let patterns = ["ReduceMaxMinMulPositiveScalar"];
 }

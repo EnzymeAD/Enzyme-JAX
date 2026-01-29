@@ -1,4 +1,4 @@
-JAX_COMMIT = "0d66c53139b0b62e73c0700e2bd82c64e1874bad"
+JAX_COMMIT = "0e19c82147bda9af19426d5d87e2e802e90b3111"
 JAX_SHA256 = ""
 
 ENZYME_COMMIT = "a6c97ea34ee70ed4592652528f27bebe1a94ed40"
@@ -100,7 +100,10 @@ sed -i.bak0 "s/= \\[\\"@xla\\/\\/third_party\\/protobuf:protobuf.patch\\"/= \\[\
 
 """,
     """
-sed -i.bak0 "s/__chkstk/__chkstk_ms/g" xla/backends/cpu/codegen/builtin_definition_generator.cc
+sed -i.bak0 's/registry\\["__chkstk"\\] = SymbolDef(__chkstk)/registry["__chkstk"] = SymbolDef(__chkstk_ms);\\nregistry["__chkstk_ms"] = SymbolDef(__chkstk_ms)/g' xla/backends/cpu/codegen/builtin_definition_generator.cc
+""",
+    """
+sed -i.bak0 's/void __chkstk(size_t)/void __chkstk_ms(size_t)/g' xla/backends/cpu/codegen/builtin_definition_generator.cc
 """,
     """
 sed -i.bak0 "1s/^/#include \\"llvm\\/Support\\/DynamicLibrary.h\\"\\n/g" xla/backends/cpu/codegen/builtin_definition_generator.cc
