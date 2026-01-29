@@ -404,7 +404,10 @@ def optimization_passes(
     if (
         enable_structured_tensors_passes
     ):  # currently we dont register custom_calls on jax end
-        transform_passes_list += ["dot_general_to_syrk"]
+        transform_passes_list += [
+            "dot_general_to_syrk",
+            "dot_general_to_symm",
+        ]
 
     if enable_slice_to_batch_passes:
         transform_passes_list += [

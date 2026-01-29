@@ -2901,6 +2901,11 @@ def ApplyDotGeneralToSyrkPatterns : EnzymeHLOPatternOp<
   let patterns = ["DotGeneralToSyrk"];
 }
 
+
+def ApplyDotGeneralToSymmPatterns : EnzymeHLOPatternOp<
+    "dot_general_to_symm"> {
+  let patterns = ["DotGeneralToSymm"];
+}
 def ApplyTransposeSyrkToSyrkPatterns : EnzymeHLOPatternOp<
     "transpose_syrk_to_syrk"> {
   let patterns = ["TransposeSyrkToSyrk"];
