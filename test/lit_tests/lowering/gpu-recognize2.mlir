@@ -146,7 +146,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
 // CHECK-NEXT:    llvm.return
 // CHECK-NEXT:  }
 
-// CHECK-ROCM:  gpu.module @__mlir_gpu_module [#rocdl.target<O = 3, chip = "gfx1030", features = "+wavefrontsize64", abi = "600">] attributes {dlti.dl_spec = #dlti.dl_spec<index = 32 : i64>} {
+// CHECK-ROCM:  gpu.module @__mlir_gpu_module [#rocdl.target<O = 3, chip = "gfx1030", features = "+wavefrontsize64">] attributes {dlti.dl_spec = #dlti.dl_spec<index = 32 : i64>} {
 // CHECK-ROCM-NEXT:    gpu.func @reactant$_Z18__device_stub__fooPi(%arg0: !llvm.ptr {llvm.nocapture, llvm.noundef, llvm.writeonly}) kernel {
 // CHECK-ROCM-NEXT:      %0 = nvvm.read.ptx.sreg.tid.x : i32
 // CHECK-ROCM-NEXT:      %1 = llvm.zext nneg %0 : i32 to i64
