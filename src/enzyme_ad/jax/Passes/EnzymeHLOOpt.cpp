@@ -30647,10 +30647,8 @@ struct LowerMultiSlice final
 
   LogicalResult matchAndRewriteImpl(enzymexla::MultiSliceOp op,
                                     PatternRewriter &rewriter) const {
-    int32_t leftAmount = op.getLeftAmount();
-    int32_t rightAmount = op.getRightAmount();
-    int32_t totalResults = leftAmount + rightAmount + 1;
-    int32_t centerIdx = leftAmount;
+    int32_t amount = op.getAmount();
+    int32_t totalResults = amount + 1;
     int32_t dim = op.getDimension();
 
     auto baseStartIndices = SmallVector<int64_t>(op.getStartIndices());
@@ -30663,16 +30661,13 @@ struct LowerMultiSlice final
     SmallVector<Value> replacements(totalResults);
 
     for (int i = 0; i < totalResults; i++) {
-      // Calculate offset from center for this result
-      int32_t offset = i - centerIdx;
-
       // Copy and adjust indices for this slice
       auto startIndices = baseStartIndices;
       auto limitIndices = baseLimitIndices;
 
       if (dim >= 0 && dim < (int64_t)startIndices.size()) {
-        startIndices[dim] += offset;
-        limitIndices[dim] += offset;
+        startIndices[dim] += i;
+        limitIndices[dim] += i;
       }
 
       auto sliceOp = rewriter.create<stablehlo::SliceOp>(

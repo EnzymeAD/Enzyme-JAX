@@ -1,8 +1,8 @@
 // RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=lower_multislice" --transform-interpreter --enzyme-hlo-remove-transform %s | FileCheck %s
 
-// Test basic lowering of MultiSliceOp with both left and right amounts
+// Test basic lowering of MultiSliceOp
 func.func @basic_lower_multislice(%arg0: tensor<10x20xf32>) -> (tensor<10x5xf32>, tensor<10x5xf32>, tensor<10x5xf32>) {
-    %0:3 = "enzymexla.multi_slice"(%arg0) <{dimension = 1 : si32, left_amount = 1 : si32, limit_indices = array<i64: 10, 10>, right_amount = 1 : si32, start_indices = array<i64: 0, 5>, strides = array<i64: 1, 1>}> : (tensor<10x20xf32>) -> (tensor<10x5xf32>, tensor<10x5xf32>, tensor<10x5xf32>)
+    %0:3 = "enzymexla.multi_slice"(%arg0) <{dimension = 1 : si32, limit_indices = array<i64: 10, 9>, amount = 2 : si32, start_indices = array<i64: 0, 4>, strides = array<i64: 1, 1>}> : (tensor<10x20xf32>) -> (tensor<10x5xf32>, tensor<10x5xf32>, tensor<10x5xf32>)
     return %0#0, %0#1, %0#2 : tensor<10x5xf32>, tensor<10x5xf32>, tensor<10x5xf32>
 }
 
@@ -15,13 +15,13 @@ func.func @basic_lower_multislice(%arg0: tensor<10x20xf32>) -> (tensor<10x5xf32>
 // CHECK:         }
 
 
-// Test lowering with only left amounts
-func.func @left_only_multislice(%arg0: tensor<8x16xf64>) -> (tensor<8x4xf64>, tensor<8x4xf64>, tensor<8x4xf64>) {
-    %0:3 = "enzymexla.multi_slice"(%arg0) <{dimension = 1 : si32, left_amount = 2 : si32, limit_indices = array<i64: 8, 10>, right_amount = 0 : si32, start_indices = array<i64: 0, 6>, strides = array<i64: 1, 1>}> : (tensor<8x16xf64>) -> (tensor<8x4xf64>, tensor<8x4xf64>, tensor<8x4xf64>)
+// Test lowering starting from a lower index
+func.func @lower_start_multislice(%arg0: tensor<8x16xf64>) -> (tensor<8x4xf64>, tensor<8x4xf64>, tensor<8x4xf64>) {
+    %0:3 = "enzymexla.multi_slice"(%arg0) <{dimension = 1 : si32, limit_indices = array<i64: 8, 8>, amount = 2 : si32, start_indices = array<i64: 0, 4>, strides = array<i64: 1, 1>}> : (tensor<8x16xf64>) -> (tensor<8x4xf64>, tensor<8x4xf64>, tensor<8x4xf64>)
     return %0#0, %0#1, %0#2 : tensor<8x4xf64>, tensor<8x4xf64>, tensor<8x4xf64>
 }
 
-// CHECK-LABEL:   func.func @left_only_multislice(
+// CHECK-LABEL:   func.func @lower_start_multislice(
 // CHECK-SAME:                                    %[[VAL_0:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: tensor<8x16xf64>) -> (tensor<8x4xf64>, tensor<8x4xf64>, tensor<8x4xf64>) {
 // CHECK:           %[[VAL_1:.*]] = stablehlo.slice %[[VAL_0]] [0:8, 4:8] : (tensor<8x16xf64>) -> tensor<8x4xf64>
 // CHECK:           %[[VAL_2:.*]] = stablehlo.slice %[[VAL_0]] [0:8, 5:9] : (tensor<8x16xf64>) -> tensor<8x4xf64>
@@ -30,13 +30,13 @@ func.func @left_only_multislice(%arg0: tensor<8x16xf64>) -> (tensor<8x4xf64>, te
 // CHECK:         }
 
 
-// Test lowering with only right amounts
-func.func @right_only_multislice(%arg0: tensor<8x16xf64>) -> (tensor<8x4xf64>, tensor<8x4xf64>, tensor<8x4xf64>) {
-    %0:3 = "enzymexla.multi_slice"(%arg0) <{dimension = 1 : si32, left_amount = 0 : si32, limit_indices = array<i64: 8, 10>, right_amount = 2 : si32, start_indices = array<i64: 0, 6>, strides = array<i64: 1, 1>}> : (tensor<8x16xf64>) -> (tensor<8x4xf64>, tensor<8x4xf64>, tensor<8x4xf64>)
+// Test lowering starting from a higher index
+func.func @higher_start_multislice(%arg0: tensor<8x16xf64>) -> (tensor<8x4xf64>, tensor<8x4xf64>, tensor<8x4xf64>) {
+    %0:3 = "enzymexla.multi_slice"(%arg0) <{dimension = 1 : si32, limit_indices = array<i64: 8, 10>, amount = 2 : si32, start_indices = array<i64: 0, 6>, strides = array<i64: 1, 1>}> : (tensor<8x16xf64>) -> (tensor<8x4xf64>, tensor<8x4xf64>, tensor<8x4xf64>)
     return %0#0, %0#1, %0#2 : tensor<8x4xf64>, tensor<8x4xf64>, tensor<8x4xf64>
 }
 
-// CHECK-LABEL:   func.func @right_only_multislice(
+// CHECK-LABEL:   func.func @higher_start_multislice(
 // CHECK-SAME:                                     %[[VAL_0:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: tensor<8x16xf64>) -> (tensor<8x4xf64>, tensor<8x4xf64>, tensor<8x4xf64>) {
 // CHECK:           %[[VAL_1:.*]] = stablehlo.slice %[[VAL_0]] [0:8, 6:10] : (tensor<8x16xf64>) -> tensor<8x4xf64>
 // CHECK:           %[[VAL_2:.*]] = stablehlo.slice %[[VAL_0]] [0:8, 7:11] : (tensor<8x16xf64>) -> tensor<8x4xf64>
@@ -47,7 +47,7 @@ func.func @right_only_multislice(%arg0: tensor<8x16xf64>) -> (tensor<8x4xf64>, t
 
 // Test lowering on different dimension
 func.func @different_dim_multislice(%arg0: tensor<20x24x80xf64>) -> (tensor<5x24x80xf64>, tensor<5x24x80xf64>, tensor<5x24x80xf64>, tensor<5x24x80xf64>) {
-    %0:4 = "enzymexla.multi_slice"(%arg0) <{dimension = 0 : si32, left_amount = 2 : si32, limit_indices = array<i64: 15, 24, 80>, right_amount = 1 : si32, start_indices = array<i64: 10, 0, 0>, strides = array<i64: 1, 1, 1>}> : (tensor<20x24x80xf64>) -> (tensor<5x24x80xf64>, tensor<5x24x80xf64>, tensor<5x24x80xf64>, tensor<5x24x80xf64>)
+    %0:4 = "enzymexla.multi_slice"(%arg0) <{dimension = 0 : si32, limit_indices = array<i64: 13, 24, 80>, amount = 3 : si32, start_indices = array<i64: 8, 0, 0>, strides = array<i64: 1, 1, 1>}> : (tensor<20x24x80xf64>) -> (tensor<5x24x80xf64>, tensor<5x24x80xf64>, tensor<5x24x80xf64>, tensor<5x24x80xf64>)
     return %0#0, %0#1, %0#2, %0#3 : tensor<5x24x80xf64>, tensor<5x24x80xf64>, tensor<5x24x80xf64>, tensor<5x24x80xf64>
 }
 
@@ -63,7 +63,7 @@ func.func @different_dim_multislice(%arg0: tensor<20x24x80xf64>) -> (tensor<5x24
 
 // Test lowering with non-unit strides
 func.func @strided_multislice(%arg0: tensor<10x20xf32>) -> (tensor<10x3xf32>, tensor<10x3xf32>) {
-    %0:2 = "enzymexla.multi_slice"(%arg0) <{dimension = 1 : si32, left_amount = 1 : si32, limit_indices = array<i64: 10, 12>, right_amount = 0 : si32, start_indices = array<i64: 0, 6>, strides = array<i64: 1, 2>}> : (tensor<10x20xf32>) -> (tensor<10x3xf32>, tensor<10x3xf32>)
+    %0:2 = "enzymexla.multi_slice"(%arg0) <{dimension = 1 : si32, limit_indices = array<i64: 10, 11>, amount = 1 : si32, start_indices = array<i64: 0, 5>, strides = array<i64: 1, 2>}> : (tensor<10x20xf32>) -> (tensor<10x3xf32>, tensor<10x3xf32>)
     return %0#0, %0#1 : tensor<10x3xf32>, tensor<10x3xf32>
 }
 
