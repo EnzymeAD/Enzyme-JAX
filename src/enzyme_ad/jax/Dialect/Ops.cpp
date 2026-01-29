@@ -2532,16 +2532,11 @@ LogicalResult enzymexla::MultiSliceOp::verify() {
   auto operandType = cast<RankedTensorType>(getOperand().getType());
   int64_t rank = operandType.getRank();
 
-  // Verify left_amount and right_amount are non-negative
-  int32_t leftAmount = getLeftAmount();
-  int32_t rightAmount = getRightAmount();
+  // Verify amount is non-negative
+  int32_t amount = getAmount();
 
-  if (leftAmount < 0)
-    return emitOpError("left_amount must be non-negative, got ") << leftAmount;
-
-  if (rightAmount < 0)
-    return emitOpError("right_amount must be non-negative, got ")
-           << rightAmount;
+  if (amount < 0)
+    return emitOpError("amount must be non-negative, got ") << amount;
 
   // Verify dimension is valid
   int32_t dimension = getDimension();
@@ -2574,21 +2569,23 @@ LogicalResult enzymexla::MultiSliceOp::verify() {
   }
 
   // Verify number of results
-  int64_t expectedNumResults = leftAmount + rightAmount + 1;
+  int64_t expectedNumResults = amount + 1;
   if ((int64_t)getNumResults() != expectedNumResults)
     return emitOpError("expected ")
-           << expectedNumResults
-           << " results (left_amount + right_amount + 1), got "
+           << expectedNumResults << " results (amount + 1), got "
            << getNumResults();
 
-  // Verify limits are in bounds
+  // Verify indices are in bounds for all slices
+  // Result i uses indices shifted by +i along the slice dimension
   auto operandShape = operandType.getShape();
   for (int64_t i = 0; i < rank; ++i) {
     auto begin = startIndices[i];
     auto end = limitIndices[i];
+
+    // For the slice dimension, the last result (at index `amount`)
+    // has its indices shifted by `amount`
     if (i == dimension) {
-      begin -= leftAmount;
-      end += rightAmount;
+      end += amount;
     }
 
     if (begin < 0 || end > operandShape[i]) {

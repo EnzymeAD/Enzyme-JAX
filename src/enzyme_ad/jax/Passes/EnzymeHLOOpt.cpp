@@ -30642,9 +30642,8 @@ struct ReduceUnusedMultiSlice final
 
   LogicalResult matchAndRewriteImpl(enzymexla::MultiSliceOp op,
                                     PatternRewriter &rewriter) const {
-    int32_t leftAmount = op.getLeftAmount();
-    int32_t rightAmount = op.getRightAmount();
-    int32_t totalResults = leftAmount + rightAmount + 1;
+    int32_t amount = op.getAmount();
+    int32_t totalResults = amount + 1;
 
     // Check which results are actually used
     SmallVector<bool> used(totalResults, false);
@@ -30676,25 +30675,20 @@ struct ReduceUnusedMultiSlice final
       }
     }
 
-    // Calculate new left and right amounts
-    int centerIdx = leftAmount;
-    int newLeftAmount = centerIdx - firstUsed;
-    int newRightAmount = lastUsed - centerIdx;
+    // Calculate new amount
+    int newAmount = lastUsed - firstUsed;
 
     // If only one result is used, replace with a single SliceOp
     if (usedCount == 1) {
-      int usedIdx = firstUsed;
-      int offset = usedIdx - centerIdx; // How much to shift the slice
-
       auto startIndices = SmallVector<int64_t>(op.getStartIndices());
       auto limitIndices = SmallVector<int64_t>(op.getLimitIndices());
       auto strides = SmallVector<int64_t>(op.getStrides());
       int32_t dim = op.getDimension();
 
-      // Adjust start and limit indices for the offset
+      // Adjust start and limit indices for the used result's offset
       if (dim >= 0 && dim < (int64_t)startIndices.size()) {
-        startIndices[dim] += offset;
-        limitIndices[dim] += offset;
+        startIndices[dim] += firstUsed;
+        limitIndices[dim] += firstUsed;
       }
 
       auto sliceOp = rewriter.create<stablehlo::SliceOp>(
@@ -30702,56 +30696,52 @@ struct ReduceUnusedMultiSlice final
           rewriter.getDenseI64ArrayAttr(startIndices),
           rewriter.getDenseI64ArrayAttr(limitIndices),
           rewriter.getDenseI64ArrayAttr(strides));
+
       // Propagate sharding if present
       if (auto shard = sdy::getShardingPerValue(op)) {
         sdy::setShardings(sliceOp, shard);
       }
 
-      rewriter.replaceAllUsesWith(op.getResult(usedIdx), sliceOp.getResult());
+      rewriter.replaceAllUsesWith(op.getResult(firstUsed), sliceOp.getResult());
       rewriter.eraseOp(op);
       return success();
     }
 
-    // Otherwise, create a smaller MultiSliceOp
-    if (newLeftAmount != leftAmount || newRightAmount != rightAmount) {
-      // Adjust start indices for the new center
-      int offset = firstUsed - centerIdx;
+    // Otherwise, create a smaller MultiSliceOp if we can reduce the range
+    if (newAmount != amount) {
       auto startIndices = SmallVector<int64_t>(op.getStartIndices());
       auto limitIndices = SmallVector<int64_t>(op.getLimitIndices());
       int32_t dim = op.getDimension();
 
+      // Shift indices to account for trimmed results at the beginning
       if (dim >= 0 && dim < (int64_t)startIndices.size()) {
-        startIndices[dim] += offset;
-        limitIndices[dim] += offset;
+        startIndices[dim] += firstUsed;
+        limitIndices[dim] += firstUsed;
       }
 
       // Determine result types
       auto resultType = cast<RankedTensorType>(op.getResultTypes().front());
       SmallVector<Type> resultTypes;
-      for (int i = 0; i < newLeftAmount + newRightAmount + 1; i++) {
-        resultTypes.push_back(resultType); // Will be properly typed by the op
+      for (int i = 0; i < newAmount + 1; i++) {
+        resultTypes.push_back(resultType);
       }
 
       auto newOp = rewriter.create<enzymexla::MultiSliceOp>(
           op.getLoc(), resultTypes, op.getOperand(), startIndices, limitIndices,
-          op.getStrides(), op.getDimension(), newLeftAmount, newRightAmount);
+          op.getStrides(), op.getDimension(), newAmount);
+
       // Propagate sharding if present
       if (auto shard = sdy::getShardingPerValue(op)) {
         sdy::setShardings(newOp, shard);
       }
 
       // Map old results to new results
-      SmallVector<Value> replacements(totalResults);
       int newIdx = 0;
       for (int oldIdx = firstUsed; oldIdx <= lastUsed; oldIdx++) {
-        replacements[oldIdx] = newOp.getResult(newIdx++);
-      }
-
-      // Replace uses
-      for (int i = 0; i < totalResults; i++) {
-        if (used[i]) {
-          op.getResult(i).replaceAllUsesWith(replacements[i]);
+        if (used[oldIdx]) {
+          op.getResult(oldIdx).replaceAllUsesWith(newOp.getResult(newIdx));
         }
+        newIdx++;
       }
 
       rewriter.eraseOp(op);
