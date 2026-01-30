@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(lower-probprog-to-stablehlo{backend=cpu},canonicalize,cse,canonicalize)" --mlir-print-ir-after=canonicalize | FileCheck %s --check-prefix=CPU
+// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(lower-probprog-to-stablehlo{backend=cpu},canonicalize,cse,canonicalize)" | FileCheck %s --check-prefix=CPU
 
 module {
   // CPU:  func.func @test_split_2(%arg0: tensor<2xui64>) -> (tensor<2xui64>, tensor<2xui64>) {
