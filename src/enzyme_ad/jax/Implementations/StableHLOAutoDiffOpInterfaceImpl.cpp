@@ -1577,6 +1577,60 @@ public:
       return success();
     }
 
+    if (isa<MulOp>(innerOp)) {
+      Value value = op->getOperand(0);
+      Value init = op->getOperand(1);
+
+      Value cachedValue = gutils->popCache(caches[0], builder);
+      Value cachedInit = gutils->popCache(caches[1], builder);
+      Value cachedResult = gutils->popCache(caches[2], builder);
+
+      if (!gutils->isConstantValue(value)) {
+        auto binDiffe = stablehlo::BroadcastInDimOp::create(
+            builder, op.getLoc(), gutils->getShadowType(inTy), inDiffe,
+            builder.getDenseI64ArrayAttr(toBroadcast));
+
+        auto resultBroadcasted = stablehlo::BroadcastInDimOp::create(
+            builder, op.getLoc(), inTy, cachedResult,
+            builder.getDenseI64ArrayAttr(toBroadcast));
+
+        // valueDiffe = inDiffe * cachedResult / cachedValue
+        Value outDiffe = stablehlo::MulOp::create(
+            builder, op.getLoc(), binDiffe,
+            stablehlo::DivOp::create(builder, op.getLoc(), resultBroadcasted,
+                                     cachedValue));
+
+        gutils->addToDiffe(value, outDiffe, builder);
+      }
+      if (!gutils->isConstantValue(init)) {
+        Value broadcastedInit = stablehlo::BroadcastInDimOp::create(
+            builder, op.getLoc(), cachedResult.getType(), cachedInit,
+            builder.getDenseI64ArrayAttr({}));
+        Value divResInit = stablehlo::DivOp::create(
+            builder, op.getLoc(), cachedResult, broadcastedInit);
+        Value broadcastedInitDiffe =
+            stablehlo::MulOp::create(builder, op.getLoc(), divResInit, inDiffe);
+
+        SmallVector<int64_t> allDims;
+        int64_t N = cast<RankedTensorType>(cachedResult.getType()).getRank();
+        for (int64_t i = 0; i < N; ++i)
+          allDims.push_back(i);
+
+        Value zero = cast<AutoDiffTypeInterface>(
+                         gutils->getShadowType(cachedInit.getType()))
+                         .createNullValue(builder, op.getLoc());
+        auto initDiffeSum = stablehlo::ReduceOp::create(
+            builder, op.getLoc(), TypeRange{cachedInit.getType()},
+            ValueRange{broadcastedInitDiffe}, ValueRange{zero}, allDims);
+        createAddRegion(initDiffeSum);
+        Value initDiffe = initDiffeSum->getResult(0);
+
+        // initDiffe = sum(inDifffe * result / init);
+        gutils->addToDiffe(init, initDiffe, builder);
+      }
+      return success();
+    }
+
     orig->emitError() << "Unsupported operation in reduction rev autodiff(1): "
                       << *orig << "\n";
     return failure();
@@ -1584,6 +1638,33 @@ public:
 
   SmallVector<Value> cacheValues(Operation *orig,
                                  MGradientUtilsReverse *gutils) const {
+    auto op = cast<ReduceOp>(orig);
+    if (!isEligibleForCompactPrint(op)) {
+      return {};
+    }
+
+    Operation &innerOp = op.getBody().front().front();
+    if (isa<MulOp>(innerOp)) {
+      SmallVector<Value> caches;
+
+      auto result = op.getResult(0);
+      auto value = orig->getOperand(0);
+      auto init = orig->getOperand(1);
+
+      Operation *newOp = gutils->getNewFromOriginal(orig);
+      OpBuilder cacheBuilder(newOp);
+
+      caches.push_back(gutils->initAndPushCache(
+          gutils->getNewFromOriginal(value), cacheBuilder));
+      caches.push_back(gutils->initAndPushCache(
+          gutils->getNewFromOriginal(init), cacheBuilder));
+      cacheBuilder.setInsertionPointAfter(newOp);
+      caches.push_back(gutils->initAndPushCache(
+          gutils->getNewFromOriginal(result), cacheBuilder));
+
+      return caches;
+    }
+
     return {};
   }
 
@@ -2040,6 +2121,7 @@ public:
     using ScatterOpKind = mlir::stablehlo::ScatterOpKind;
     switch (checkCommonScatterOp.kind) {
     case stablehlo::ScatterOpKind::Setindex:
+    case stablehlo::ScatterOpKind::ConstantSetindex:
     case stablehlo::ScatterOpKind::Add:
     case stablehlo::ScatterOpKind::AddConstantUpdate:
     case stablehlo::ScatterOpKind::AddConstantInput:
@@ -2152,6 +2234,7 @@ public:
 
     bool noInputDependencies =
         checkCommonScatterOp.kind == ScatterOpKind::Setindex ||
+        checkCommonScatterOp.kind == ScatterOpKind::ConstantSetindex ||
         checkCommonScatterOp.kind == ScatterOpKind::AddConstantInput ||
         checkCommonScatterOp.kind == ScatterOpKind::MulConstantInput;
     if (noInputDependencies ||
@@ -2218,15 +2301,15 @@ public:
           returnValues = SmallVector<Value>(nNonConsts, zeroScalar);
         } else if (checkCommonScatterOp.kind == ScatterOpKind::Mul) {
           for (int i = 0; i < nNonConsts; i++) {
-            returnValues.push_back(builder.create<stablehlo::MulOp>(
-                scatterOp.getLoc(), block->getArgument(i),
+            returnValues.push_back(stablehlo::MulOp::create(
+                builder, scatterOp.getLoc(), block->getArgument(i),
                 block->getArgument(i + nNonConsts)));
           }
         } else if (checkCommonScatterOp.kind ==
                    ScatterOpKind::MulConstantUpdate) {
           for (int i = 0; i < nNonConsts; i++) {
-            returnValues.push_back(builder.create<stablehlo::MulOp>(
-                scatterOp.getLoc(), block->getArgument(i),
+            returnValues.push_back(stablehlo::MulOp::create(
+                builder, scatterOp.getLoc(), block->getArgument(i),
                 constMulUpdateScalar));
           }
         } else {
@@ -2259,7 +2342,8 @@ public:
                         SmallVectorImpl<Value> &cachedUpdates) const {
     using ScatterOpKind = mlir::stablehlo::ScatterOpKind;
     if (checkCommonScatterOp.kind == ScatterOpKind::MulConstantUpdate ||
-        checkCommonScatterOp.kind == ScatterOpKind::AddConstantUpdate) {
+        checkCommonScatterOp.kind == ScatterOpKind::AddConstantUpdate ||
+        checkCommonScatterOp.kind == ScatterOpKind::ConstantSetindex) {
       return; // no dependence on the updates
     }
 
@@ -3939,6 +4023,42 @@ struct SHLOReverseOpBatchInterface
   }
 };
 
+struct SHLOPadOpBatchInterface
+    : public BatchOpInterface::ExternalModel<SHLOPadOpBatchInterface,
+                                             stablehlo::PadOp> {
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto op = cast<stablehlo::PadOp>(src);
+
+    auto batchedPadValue = mapper.lookup(op.getPaddingValue());
+    auto scalarPadValue =
+        getScalarValue(batchedPadValue.getDefiningOp(), builder);
+    if (!scalarPadValue) {
+      return genericCreateBatch(src, builder, mapper, batchSizes);
+    }
+
+    int64_t nBatches = batchSizes.size();
+    SmallVector<int64_t> newLow(nBatches, 0);
+    newLow.append(op.getEdgePaddingLow().begin(), op.getEdgePaddingLow().end());
+    SmallVector<int64_t> newHigh(nBatches, 0);
+    newHigh.append(op.getEdgePaddingHigh().begin(),
+                   op.getEdgePaddingHigh().end());
+    SmallVector<int64_t> newInterior(nBatches, 0);
+    newInterior.append(op.getInteriorPadding().begin(),
+                       op.getInteriorPadding().end());
+
+    auto newPadOp = stablehlo::PadOp::create(
+        builder, op.getLoc(), mapper.lookup(op.getOperand()), scalarPadValue,
+        builder.getDenseI64ArrayAttr(newLow),
+        builder.getDenseI64ArrayAttr(newHigh),
+        builder.getDenseI64ArrayAttr(newInterior));
+
+    mapper.map(src->getResult(0), newPadOp.getResult());
+    return success();
+  }
+};
+
 // https://github.com/jax-ml/jax/blob/2a8cb54b82f1b0d17181d43f9be78d2b349df333/jax/_src/lax/convolution.py#L613-L629
 struct SHLOConvolutionOpBatchInterface
     : public BatchOpInterface::ExternalModel<SHLOConvolutionOpBatchInterface,
@@ -4110,6 +4230,7 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
         *context);
     ReverseOp::attachInterface<SHLOReverseOpBatchInterface>(*context);
     ConvolutionOp::attachInterface<SHLOConvolutionOpBatchInterface>(*context);
+    PadOp::attachInterface<SHLOPadOpBatchInterface>(*context);
 
     ScatterOp::attachInterface<SHLOGenericBatchOpInterface<ScatterOp>>(
         *context); // TODO: simpler version with newly named dims

@@ -964,6 +964,7 @@ bool getCollapsingMapping(
     llvm::DenseMap<int64_t, llvm::SmallVector<int64_t, 2>> &mapping);
 
 bool isOnlyUsedInOperation(Operation *operation, Operation *parentOp);
+bool isValueOnlyUsedInOperation(Value value, Operation *parentOp);
 
 mlir::RankedTensorType removeBatchedDims(mlir::RankedTensorType Ty,
                                          llvm::ArrayRef<int64_t> dims);
@@ -1109,6 +1110,7 @@ bool isSetindexBlock(mlir::Block *block,
                      std::function<bool(stablehlo::ReturnOp retOp)> fn);
 
 bool isSetindexBlock(mlir::Block *block);
+bool isSetindexBlock(mlir::Block *block, mlir::Value &val);
 bool isConstantSetindexBlock(mlir::Block *block,
                              mlir::SplatElementsAttr &constant);
 
@@ -1475,6 +1477,7 @@ enum class ScatterOpKind {
   Unknown,
   Setindex,
   ConstantSetindex,
+  SetindexOutsideValue,
   Add,
   Min,
   Max,
@@ -1493,6 +1496,7 @@ struct CheckCommonScatterOp {
 public:
   ScatterOpKind kind;
   SplatElementsAttr constant;
+  Value outsideValue;
 
   CheckCommonScatterOp(stablehlo::ScatterOp op) {
     auto &updateComputation = op.getUpdateComputation();
@@ -1517,6 +1521,8 @@ public:
       kind = ScatterOpKind::ConstantSetindex;
     } else if (isSetindexBlock(&block)) {
       kind = ScatterOpKind::Setindex;
+    } else if (isSetindexBlock(&block, outsideValue)) {
+      kind = ScatterOpKind::SetindexOutsideValue;
     } else if (isOnlyOpBlock<stablehlo::AddOp, true, false>(&block)) {
       kind = ScatterOpKind::Add;
     } else if (isOnlyOpBlock<stablehlo::MulOp, true, false>(&block)) {

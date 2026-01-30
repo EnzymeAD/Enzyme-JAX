@@ -84,8 +84,12 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
   // clang-format off
   std::string pass_pipeline =
       "inline{default-pipeline=canonicalize "
-      "max-iterations=4},sroa-wrappers{set_private=false attributor=false},tessera-annotation-to-attribute,func-attr-to-tessera-attr,"
-      "gpu-launch-recognition,canonicalize,libdevice-funcs-raise,canonicalize,symbol-dce,";
+      "max-iterations=4},sroa-wrappers{set_private=false attributor=false},gpu-launch-"
+      "recognition{backend=";
+      pass_pipeline += backend;
+      pass_pipeline += "}";
+      pass_pipeline += ","
+      "canonicalize,libdevice-funcs-raise,canonicalize,symbol-dce,";
   
   if (backend == "cpu")
     pass_pipeline += "parallel-lower{wrapParallelOps=false},";
@@ -128,7 +132,11 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       }
       pass_pipeline += "symbol-dce,enzyme,remove-unnecessary-enzyme-ops,lower-affine";
       if (backend != "cpu")
-	pass_pipeline += ",convert-parallel-to-gpu1,gpu-kernel-outlining,canonicalize,convert-parallel-to-gpu2,lower-affine";
+	pass_pipeline += ",convert-parallel-to-gpu1,gpu-kernel-outlining,canonicalize,convert-parallel-to-gpu2{backend=";
+      pass_pipeline += backend;
+      pass_pipeline += "}";
+      pass_pipeline += ","
+      "lower-affine";
       if (getenv("REACTANT_OMP")) {
         pass_pipeline += ",convert-scf-to-openmp,";
       } else {

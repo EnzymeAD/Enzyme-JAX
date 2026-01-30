@@ -1183,6 +1183,17 @@ bool isOnlyUsedInOperation(Operation *operation, Operation *parentOp) {
   return true;
 }
 
+bool isValueOnlyUsedInOperation(Value value, Operation *parentOp) {
+  if (!parentOp)
+    return false;
+
+  for (Operation *user : value.getUsers()) {
+    if (user != parentOp)
+      return false;
+  }
+  return true;
+}
+
 bool mayReadFrom(Operation *op, Value val) {
   bool hasRecursiveEffects = op->hasTrait<OpTrait::HasRecursiveMemoryEffects>();
   if (hasRecursiveEffects) {
@@ -1999,15 +2010,34 @@ Value getIdentityValueForOp(OpBuilder &builder, Location loc, Type elemType) {
 template <>
 Value getIdentityValueForOp<stablehlo::AddOp>(OpBuilder &builder, Location loc,
                                               Type elemType) {
-  return stablehlo::ConstantOp::create(builder, loc,
-                                       builder.getZeroAttr(elemType));
+  TypedAttr zeroVal;
+  if (auto complexType = dyn_cast<ComplexType>(elemType)) {
+    auto floatType = cast<FloatType>(complexType.getElementType());
+    auto zero = APFloat::getZero(floatType.getFloatSemantics());
+    auto complexZero = std::complex<APFloat>(zero, zero);
+    zeroVal = DenseElementsAttr::get(RankedTensorType::get({}, elemType),
+                                     complexZero);
+  } else {
+    zeroVal = builder.getZeroAttr(elemType);
+  }
+  return stablehlo::ConstantOp::create(builder, loc, zeroVal);
 }
 
 template <>
 Value getIdentityValueForOp<stablehlo::MulOp>(OpBuilder &builder, Location loc,
                                               Type elemType) {
-  return stablehlo::ConstantOp::create(builder, loc,
-                                       builder.getOneAttr(elemType));
+  TypedAttr identityVal;
+  if (auto complexType = dyn_cast<ComplexType>(elemType)) {
+    auto floatType = cast<FloatType>(complexType.getElementType());
+    auto one = APFloat(floatType.getFloatSemantics(), 1);
+    auto zero = APFloat::getZero(floatType.getFloatSemantics());
+    auto complexOne = std::complex<APFloat>(one, zero);
+    identityVal =
+        DenseElementsAttr::get(RankedTensorType::get({}, elemType), complexOne);
+  } else {
+    identityVal = builder.getOneAttr(elemType);
+  }
+  return stablehlo::ConstantOp::create(builder, loc, identityVal);
 }
 
 template <>
@@ -2131,6 +2161,23 @@ bool isSetindexBlock(mlir::Block *block,
 bool isSetindexBlock(mlir::Block *block) {
   return isSetindexBlock(block, [&](stablehlo::ReturnOp retOp) {
     return retOp.getOperand(0) == block->getArgument(1);
+  });
+}
+
+bool isSetindexBlock(mlir::Block *block, mlir::Value &val) {
+  return isSetindexBlock(block, [&val, block](stablehlo::ReturnOp retOp) {
+    val = retOp.getOperand(0);
+    // Check that val is defined outside the block
+    if (auto *definingOp = val.getDefiningOp()) {
+      if (definingOp->getBlock() == block) {
+        return false;
+      }
+    } else if (auto blockArg = dyn_cast<BlockArgument>(val)) {
+      if (blockArg.getOwner() == block) {
+        return false;
+      }
+    }
+    return true;
   });
 }
 
@@ -2582,6 +2629,9 @@ bool canMergeSlicesAlongAxis(int dimension, stablehlo::SliceOp slice,
 
 stablehlo::ConcatenateOp lowerWrap(enzymexla::WrapOp wrap,
                                    PatternRewriter &rewriter, bool replace) {
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPoint(wrap);
+
   // sl0[end-lhs:end], mid, sl1[0:rhs]
   auto wrapOpT = cast<RankedTensorType>(wrap.getOperand().getType());
   SmallVector<int64_t> strides(wrapOpT.getShape().size(), 1);

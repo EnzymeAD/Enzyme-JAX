@@ -54,6 +54,7 @@
 
 #include "llvm/ADT/MapVector.h"
 #include <cstddef>
+#include <iostream>
 #include <iterator>
 #include <llvm/ADT/MapVector.h>
 #include <llvm/ADT/STLExtras.h>
@@ -63,6 +64,7 @@
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/Value.h>
 #include <numeric>
+#include <ostream>
 #define DEBUG_TYPE "enzymehloopt"
 
 namespace mlir {
@@ -1316,6 +1318,9 @@ struct LowerWrap
 
 stablehlo::ConcatenateOp lowerExtend(enzymexla::ExtendOp extend,
                                      PatternRewriter &rewriter, bool replace) {
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPoint(extend);
+
   auto loc = extend.getLoc();
   auto operand = extend.getOperand();
 
@@ -1376,6 +1381,9 @@ struct LowerExtend
 
 stablehlo::ConcatenateOp lowerRotate(enzymexla::RotateOp rotate,
                                      PatternRewriter &rewriter, bool replace) {
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPoint(rotate);
+
   // sl0[A:end], sl1[0:A]
   auto shard = sdy::getShardingPerValue(rotate);
   SmallVector<int64_t> strides(rotate.getType().getShape().size(), 1);
@@ -3288,6 +3296,7 @@ struct DynamicSliceElementwise final
     }
 
     llvm::SetVector<stablehlo::DynamicSliceOp> allDSUsers;
+    stablehlo::DynamicSliceOp firstDSOp;
 
     for (auto user : elem->getUsers()) {
       auto dsOp = dyn_cast<stablehlo::DynamicSliceOp>(user);
@@ -3305,6 +3314,11 @@ struct DynamicSliceElementwise final
         continue;
       }
       allDSUsers.insert(dsOp);
+      if (!firstDSOp) {
+        firstDSOp = dsOp;
+      } else if (dsOp->isBeforeInBlock(firstDSOp)) {
+        firstDSOp = dsOp;
+      }
 
       auto startIndices = dsOp.getStartIndices();
       auto sliceSizes = dsOp.getSliceSizes();
@@ -3343,11 +3357,12 @@ struct DynamicSliceElementwise final
       }
     }
 
+    rewriter.setInsertionPoint(firstDSOp);
+
     SmallVector<Value> newOperands;
     for (auto v : elem->getOperands()) {
-      auto newDS = stablehlo::DynamicSliceOp::create(
-          rewriter, op.getLoc(), v, newStartIndices, newSliceSizes);
-      newOperands.push_back(newDS.getResult());
+      newOperands.push_back(stablehlo::DynamicSliceOpCreate(
+          rewriter, op.getLoc(), v, newStartIndices, newSliceSizes));
     }
     auto nex = rewriter.create(
         elem->getLoc(), elem->getName().getIdentifier(),
@@ -3378,8 +3393,10 @@ struct DynamicSliceElementwise final
         }
       }
 
-      rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
-          dsOp, nex->getResult(0), sliceStarts, sliceLimits, sliceStrides);
+      auto newSliceOp =
+          stablehlo::SliceOpCreate(rewriter, dsOp.getLoc(), nex->getResult(0),
+                                   sliceStarts, sliceLimits, sliceStrides);
+      rewriter.replaceOp(dsOp, newSliceOp);
     }
 
     return success();
@@ -5280,12 +5297,10 @@ struct NegativePadToSlice final
 };
 
 /*
+%1192 = stablehlo.pad %1189, %cst_0, low = [0], high = [1], interior = [0] :
+  (tensor<1xf32>, tensor<f32>) -> tensor<2xf32>
 
-    %1192 = stablehlo.pad %1189, %cst_0, low = [0], high = [1], interior =
-    [0] :
-   (tensor<1xf32>, tensor<f32>) -> tensor<2xf32> %1193 = arith.addf %1191,
-   %1192 : tensor<2xf32>
-
+%1193 = arith.addf %1191, %1192 : tensor<2xf32>
 */
 template <typename T>
 struct BinopPadToConcat final
@@ -5335,7 +5350,7 @@ struct BinopPadToConcat final
         bool legal = true;
         for (auto step : lhs.getInteriorPadding()) {
           if (step != 0) {
-            legal = true;
+            legal = false;
             break;
           }
         }
@@ -9550,6 +9565,118 @@ struct DotTranspose
         dot, dot.getType(), fuseLhs ? lhsTrans.getOperand() : dot.getLhs(),
         fuseRhs ? rhsTrans.getOperand() : dot.getRhs(), ndim,
         dot.getPrecisionConfigAttr(), dot.getAlgorithmAttr());
+    return success();
+  }
+};
+
+// Optimize reduce(max/min, a * b) where a or b is a positive scalar
+// If a > 0, then max(a*b1, a*b2, ...) = a * max(b1, b2, ...)
+// Same for min with positive scalars
+struct ReduceMaxMinMulPositiveScalar
+    : public CheckedOpRewritePattern<stablehlo::ReduceOp,
+                                     ReduceMaxMinMulPositiveScalar> {
+  using CheckedOpRewritePattern<
+      stablehlo::ReduceOp,
+      ReduceMaxMinMulPositiveScalar>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op.getInputs().size() != 1 || op.getInitValues().size() != 1) {
+      return rewriter.notifyMatchFailure(
+          op, "only single-operand single-init reduce is supported");
+    }
+
+    auto checkCommonReduce = mlir::stablehlo::CheckCommonReduceOp(op);
+
+    // Only support max and min reductions
+    if (checkCommonReduce.kind != stablehlo::ReduceOpKind::Max &&
+        checkCommonReduce.kind != stablehlo::ReduceOpKind::Min) {
+      return rewriter.notifyMatchFailure(
+          op, "only max and min reductions are supported for this pattern");
+    }
+
+    Value input = op.getInputs()[0];
+    if (!llvm::hasSingleElement(input.getUsers())) {
+      return rewriter.notifyMatchFailure(op, "multiple users of input");
+    }
+
+    auto mulOp = input.getDefiningOp<stablehlo::MulOp>();
+    if (!mulOp) {
+      return rewriter.notifyMatchFailure(op, "input is not a multiply op");
+    }
+
+    Value lhs = mulOp.getLhs();
+    Value rhs = mulOp.getRhs();
+
+    // Check which operand is the positive scalar
+    Value scalarOperand = nullptr;
+    Value otherOperand = nullptr;
+
+    // Helper to check if a value originates from a positive scalar
+    auto isPositiveScalar = [&](Value v) -> bool {
+      // First check if it's a scalar (broadcast from rank-0 tensor or splat)
+      if (!stablehlo::isScalarValue(v))
+        return false;
+
+      // Now check if it's guaranteed non-negative and positive
+      // We need to check the original scalar value, not the broadcasted one
+      if (guaranteedNonNegativeResult(v, rewriter)) {
+        // For strict positivity, check if it's guaranteed to be > 0
+        // For now, we accept non-negative which includes zero
+        // This is still correct for max/min but could potentially
+        // multiply by zero which doesn't break correctness
+        return true;
+      }
+      return false;
+    };
+
+    if (isPositiveScalar(lhs)) {
+      scalarOperand = lhs;
+      otherOperand = rhs;
+    } else if (isPositiveScalar(rhs)) {
+      scalarOperand = rhs;
+      otherOperand = lhs;
+    } else {
+      return rewriter.notifyMatchFailure(
+          op, "neither operand is a positive scalar");
+    }
+
+    // Get the scalar value to multiply the result with
+    Value scalar = stablehlo::getScalarValue(scalarOperand, rewriter);
+    if (!scalar) {
+      return rewriter.notifyMatchFailure(op, "failed to extract scalar value");
+    }
+
+    // Create new reduce op on the non-scalar operand
+    // First we need to make sure the otherOperand has the right shape
+    auto inputType = cast<RankedTensorType>(input.getType());
+    auto otherType = cast<RankedTensorType>(otherOperand.getType());
+
+    // If otherOperand doesn't match the input shape, we need to broadcast it
+    Value reduceInput = otherOperand;
+    if (otherType.getShape() != inputType.getShape()) {
+      // The original multiply would have broadcasted, so we need to find
+      // how to get from otherOperand to input shape
+      // Since one is scalar and one is the tensor, the tensor should match
+      // the input shape - if not, we need to handle broadcasting
+      return rewriter.notifyMatchFailure(
+          op, "shape mismatch between operand and original input");
+    }
+
+    // Create the new reduction with the non-scalar input
+    auto newReduction = stablehlo::ReduceOp::create(
+        rewriter, op.getLoc(), op->getResultTypes(), ValueRange{reduceInput},
+        op.getInitValues(), op.getDimensions());
+    newReduction.getRegion().takeBody(op.getRegion());
+
+    // Broadcast the scalar to the result shape and multiply
+    auto resultType = cast<RankedTensorType>(op.getResult(0).getType());
+    Value broadcastedScalar = stablehlo::BroadcastInDimOp::create(
+        rewriter, op.getLoc(), resultType, scalar,
+        rewriter.getDenseI64ArrayAttr({}));
+
+    rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, newReduction.getResult(0),
+                                                  broadcastedScalar);
     return success();
   }
 };
@@ -21684,6 +21811,42 @@ struct ExtendPad
   }
 };
 
+struct ExtendToBroadcast
+    : public CheckedOpRewritePattern<enzymexla::ExtendOp, ExtendToBroadcast> {
+  using CheckedOpRewritePattern<enzymexla::ExtendOp,
+                                ExtendToBroadcast>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(enzymexla::ExtendOp extend,
+                                    PatternRewriter &rewriter) const {
+    // Check if the input is a ranked tensor
+    auto inputType = dyn_cast<RankedTensorType>(extend.getOperand().getType());
+    if (!inputType)
+      return failure();
+
+    // Get the dimension being extended
+    int64_t dim = extend.getDimension();
+
+    // Check if the dimension is a singleton (size = 1)
+    if (inputType.getDimSize(dim) != 1)
+      return failure();
+
+    // Build the broadcast_dimensions attribute
+    // This maps each dimension of the input to the corresponding dimension in
+    // the output
+    SmallVector<int64_t> broadcastDims;
+    for (int64_t i = 0; i < inputType.getRank(); i++) {
+      broadcastDims.push_back(i);
+    }
+
+    // Replace the extend with a broadcast_in_dim
+    rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+        extend, extend.getType(), extend.getOperand(),
+        rewriter.getDenseI64ArrayAttr(broadcastDims));
+
+    return success();
+  }
+};
+
 template <typename EnzymeOp>
 LogicalResult commUnaryOpElementwise(bool onlySingleUser, EnzymeOp op,
                                      PatternRewriter &rewriter) {
@@ -22971,14 +23134,16 @@ struct SquareAbsSimplify
       return failure();
 
     if (isa<ComplexType>(operandType.getElementType())) {
-      // abs(z)^2 = real(z * conj(z)) -- only applied if abs(z) is used in this
-      // operation
-      if (!isOnlyUsedInOperation(absOp, op))
+      // abs(z)^2 = real(z)^2 + imag(z)^2 -- only applied if abs(z) is used in
+      // this operation
+      if (!isOnlyUsedInOperation(absOp, op)) {
         return failure();
-      rewriter.replaceOpWithNewOp<stablehlo::RealOp>(
-          op, stablehlo::MulOp::create(
-                  rewriter, op.getLoc(), operand,
-                  chlo::ConjOp::create(rewriter, op.getLoc(), operand)));
+      }
+      auto real = stablehlo::RealOp::create(rewriter, op.getLoc(), operand);
+      auto imag = stablehlo::ImagOp::create(rewriter, op.getLoc(), operand);
+      auto realSq = stablehlo::MulOp::create(rewriter, op.getLoc(), real, real);
+      auto imagSq = stablehlo::MulOp::create(rewriter, op.getLoc(), imag, imag);
+      rewriter.replaceOpWithNewOp<stablehlo::AddOp>(op, realSq, imagSq);
       return success();
     } else {
       // abs(x)^2 = x * x
@@ -23800,6 +23965,24 @@ struct RealConjSimplify final
   }
 };
 
+struct RealConvertSimplify final
+    : public CheckedOpRewritePattern<stablehlo::RealOp, RealConvertSimplify> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::RealOp op,
+                                    PatternRewriter &rewriter) const {
+    auto operandOp = op.getOperand().getDefiningOp<stablehlo::ConvertOp>();
+    if (!operandOp || isa<ComplexType>(cast<RankedTensorType>(
+                                           operandOp.getOperand().getType())
+                                           .getElementType())) {
+      return failure();
+    }
+
+    rewriter.replaceOp(op, operandOp.getOperand());
+    return success();
+  }
+};
+
 struct ConjComplexSimplify final
     : public CheckedOpRewritePattern<chlo::ConjOp, ConjComplexSimplify> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -23811,13 +23994,113 @@ struct ConjComplexSimplify final
       return failure();
 
     auto rhs = operandOp.getRhs();
-    auto rhsConstantOp = rhs.getDefiningOp<stablehlo::ConstantOp>();
-    if (!rhsConstantOp)
+    if (!matchPattern(rhs, m_Constant())) {
       return failure();
+    }
 
     auto negateRhs = stablehlo::NegOp::create(rewriter, op.getLoc(), rhs);
     rewriter.replaceOpWithNewOp<stablehlo::ComplexOp>(op, operandOp.getLhs(),
                                                       negateRhs);
+    return success();
+  }
+};
+
+struct ConjConvertSimplify final
+    : public CheckedOpRewritePattern<chlo::ConjOp, ConjConvertSimplify> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(chlo::ConjOp op,
+                                    PatternRewriter &rewriter) const {
+    auto operandOp = op.getOperand().getDefiningOp<stablehlo::ConvertOp>();
+    if (!operandOp || isa<ComplexType>(cast<RankedTensorType>(
+                                           operandOp.getOperand().getType())
+                                           .getElementType())) {
+      return failure();
+    }
+
+    rewriter.replaceOp(op, operandOp.getResult());
+    return success();
+  }
+};
+
+// elementwise_op(all operands have zero imag) -> do the op in real domain and
+// convert to complex
+struct ElementwiseComplexSimplify final
+    : public CheckedOpTraitRewritePattern<OpTrait::Elementwise,
+                                          ElementwiseComplexSimplify> {
+  using CheckedOpTraitRewritePattern::CheckedOpTraitRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(Operation *op,
+                                    PatternRewriter &rewriter) const {
+    if (isa<stablehlo::ConvertOp, stablehlo::ComplexOp>(op)) {
+      return failure();
+    }
+
+    if (op->getNumResults() != 1) {
+      return failure();
+    }
+
+    auto origRes = op->getResult(0);
+    auto resElemType =
+        cast<RankedTensorType>(origRes.getType()).getElementType();
+    auto complexEltype = dyn_cast<ComplexType>(resElemType);
+    if (!complexEltype) {
+      return failure();
+    }
+    auto realEltype = complexEltype.getElementType();
+
+    auto isComplexEltype = [](auto val) {
+      auto elemType = cast<RankedTensorType>(val.getType()).getElementType();
+      return isa<ComplexType>(elemType);
+    };
+
+    auto isZeroImagPart = [=](Value val) {
+      if (!isComplexEltype(val)) {
+        return true;
+      }
+
+      auto defOp = val.getDefiningOp();
+      if (!defOp) {
+        return false;
+      }
+
+      return TypeSwitch<Operation *, bool>(defOp)
+          .Case<stablehlo::ConvertOp>([=](auto convertOp) {
+            return !isComplexEltype(convertOp.getOperand());
+          })
+          .Case<stablehlo::ComplexOp>([](auto complexOp) {
+            return matchPattern(complexOp.getOperand(1), m_AnyZeroFloat());
+          })
+          .Default([](auto otherOp) {
+            return matchPattern(otherOp, m_AnyZeroImagComplex());
+          });
+    };
+
+    if (!llvm::all_of(op->getOperands(), [&](auto val) {
+          return isZeroImagPart(val) && isValueOnlyUsedInOperation(val, op);
+        })) {
+      return failure();
+    }
+
+    // extract the real operands
+    auto newOperands =
+        llvm::map_to_vector(op->getOperands(), [&](auto operand) -> Value {
+          if (!isComplexEltype(operand)) {
+            return operand;
+          }
+          return stablehlo::RealOp::create(rewriter, operand.getLoc(), operand)
+              .getResult();
+        });
+
+    auto nex = rewriter.create(
+        op->getLoc(), op->getName().getIdentifier(), ValueRange(newOperands),
+        TypeRange(RankedTensorType::get(
+            cast<ShapedType>(op->getResult(0).getType()).getShape(),
+            realEltype)),
+        op->getAttrs(), {}, {});
+
+    rewriter.replaceOpWithNewOp<stablehlo::ConvertOp>(
+        op, op->getResultTypes()[0], nex->getResult(0));
     return success();
   }
 };
@@ -24283,11 +24566,10 @@ struct GatherElementwise
     if (!isOnlyUsedInOperation(defOp, op))
       return failure();
 
-    int64_t outElemCount = 1, inElemCount = 1;
-    for (auto dim : cast<RankedTensorType>(op.getType()).getShape())
-      outElemCount *= dim;
-    for (auto dim : cast<RankedTensorType>(gatherInput.getType()).getShape())
-      inElemCount *= dim;
+    int64_t outElemCount =
+        cast<RankedTensorType>(op.getType()).getNumElements();
+    int64_t inElemCount =
+        cast<RankedTensorType>(gatherInput.getType()).getNumElements();
 
     if (outElemCount >= inElemCount)
       return rewriter.notifyMatchFailure(
@@ -24307,6 +24589,72 @@ struct GatherElementwise
         ValueRange(newElementwiseInputs), TypeRange{op.getResult().getType()},
         defOp->getAttrs(), {}, {});
     rewriter.replaceOp(op, newElemOp->getResult(0));
+    return success();
+  }
+};
+
+struct ElementwiseGather
+    : public CheckedOpTraitRewritePattern<OpTrait::Elementwise,
+                                          ElementwiseGather> {
+  using CheckedOpTraitRewritePattern::CheckedOpTraitRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(Operation *op,
+                                    PatternRewriter &rewriter) const {
+    if (op->getNumResults() != 1) {
+      return failure();
+    }
+
+    stablehlo::GatherOp gatherOp;
+    SmallVector<Value> gatherOperands;
+
+    for (auto [i, operand] : llvm::enumerate(op->getOperands())) {
+      auto defOp = operand.getDefiningOp<stablehlo::GatherOp>();
+      if (!defOp || !isOnlyUsedInOperation(defOp, op)) {
+        return failure();
+      }
+
+      auto gatherOutType = cast<RankedTensorType>(defOp.getType());
+      auto gatherInType = cast<RankedTensorType>(defOp.getOperand().getType());
+      if (!gatherOutType.hasStaticShape() || !gatherInType.hasStaticShape()) {
+        return failure();
+      }
+
+      if (i == 0) {
+        gatherOp = defOp;
+
+        int64_t gatherOutElemCount = gatherOutType.getNumElements();
+        int64_t gatherInElemCount = gatherInType.getNumElements();
+        if (gatherOutElemCount <= gatherInElemCount) {
+          return failure();
+        }
+      } else {
+        // operands can be different, start_indices must be the same
+        if (!OperationEquivalence::isEquivalentTo(
+                gatherOp, defOp, OperationEquivalence::ignoreValueEquivalence,
+                nullptr, OperationEquivalence::IgnoreLocations, nullptr) ||
+            gatherOp.getStartIndices() != defOp.getStartIndices()) {
+          return failure();
+        }
+      }
+
+      gatherOperands.push_back(defOp.getOperand());
+    }
+
+    if (gatherOperands.empty()) {
+      return failure();
+    }
+
+    auto newElemOp = rewriter.create(
+        op->getLoc(), op->getName().getIdentifier(), ValueRange(gatherOperands),
+        TypeRange{RankedTensorType::get(
+            cast<RankedTensorType>(gatherOperands[0].getType()).getShape(),
+            cast<TensorType>(op->getResult(0).getType()).getElementType())},
+        op->getAttrs(), {}, {});
+    auto newGatherOp = stablehlo::GatherOp::create(
+        rewriter, op->getLoc(), newElemOp->getResult(0),
+        gatherOp.getStartIndices(), gatherOp.getDimensionNumbersAttr(),
+        gatherOp.getSliceSizesAttr(), gatherOp.getIndicesAreSortedAttr());
+    rewriter.replaceOp(op, newGatherOp);
     return success();
   }
 };
@@ -26437,64 +26785,67 @@ LogicalResult dotGeneralDistributiveSimplify(OpTy op,
     return dotGeneralDistributiveSimplify<OpTy>(op, lhsDotGeneralOp,
                                                 rhsDotGeneralOp, rewriter);
 
-  Value newLhs, newRhs;
-  stablehlo::DotGeneralOp dotGeneralOp;
+  // FIXME: This is currently incorrect. We can't replace with a simple
+  //        elementwise, instead we need to use scatter_op to perform
+  //        this operation (on the diagonal indices of Y)
+  // Value newLhs, newRhs;
+  // stablehlo::DotGeneralOp dotGeneralOp;
 
-  auto constructOtherOp = [&](Value other, Value scalar, bool scalarIsLhs) {
-    auto bcastedScalar = stablehlo::BroadcastInDimOp::create(
-        rewriter, op.getLoc(), other.getType(), scalar,
-        rewriter.getDenseI64ArrayAttr({}));
-    auto lhs = scalarIsLhs ? bcastedScalar : other;
-    auto rhs = scalarIsLhs ? other : bcastedScalar;
-    return OpTy::create(rewriter, op.getLoc(), lhs, rhs);
-  };
+  // auto constructOtherOp = [&](Value other, Value scalar, bool scalarIsLhs) {
+  //   auto bcastedScalar = stablehlo::BroadcastInDimOp::create(
+  //       rewriter, op.getLoc(), other.getType(), scalar,
+  //       rewriter.getDenseI64ArrayAttr({}));
+  //   auto lhs = scalarIsLhs ? bcastedScalar : other;
+  //   auto rhs = scalarIsLhs ? other : bcastedScalar;
+  //   return OpTy::create(rewriter, op.getLoc(), lhs, rhs);
+  // };
 
-  if (lhsDotGeneralOp) {
-    Value scalar, other;
-    dotGeneralOp = lhsDotGeneralOp;
-    if (extractMultiplicationFactor(rhs, other, op, rewriter)) {
-      if (other == lhsDotGeneralOp.getLhs()) {
-        extractMultiplicationFactor(rhs, scalar, other, op, rewriter);
+  // if (lhsDotGeneralOp) {
+  //   Value scalar, other;
+  //   dotGeneralOp = lhsDotGeneralOp;
+  //   if (extractMultiplicationFactor(rhs, other, op, rewriter)) {
+  //     if (other == lhsDotGeneralOp.getLhs()) {
+  //       extractMultiplicationFactor(rhs, scalar, other, op, rewriter);
 
-        // op(X × Y, a * X) -> X × op(Y, a)
-        newLhs = lhsDotGeneralOp.getLhs();
-        newRhs = constructOtherOp(lhsDotGeneralOp.getRhs(), scalar, false);
-      } else if (other == lhsDotGeneralOp.getRhs()) {
-        extractMultiplicationFactor(rhs, scalar, other, op, rewriter);
+  //       // op(X × Y, a * X) -> X × op(Y, a)
+  //       newLhs = lhsDotGeneralOp.getLhs();
+  //       newRhs = constructOtherOp(lhsDotGeneralOp.getRhs(), scalar, false);
+  //     } else if (other == lhsDotGeneralOp.getRhs()) {
+  //       extractMultiplicationFactor(rhs, scalar, other, op, rewriter);
 
-        // op(Y × X, a * X) -> op(Y, a) × X
-        newLhs = constructOtherOp(lhsDotGeneralOp.getLhs(), scalar, false);
-        newRhs = lhsDotGeneralOp.getRhs();
-      }
-    }
-  }
+  //       // op(Y × X, a * X) -> op(Y, a) × X
+  //       newLhs = constructOtherOp(lhsDotGeneralOp.getLhs(), scalar, false);
+  //       newRhs = lhsDotGeneralOp.getRhs();
+  //     }
+  //   }
+  // }
 
-  if (rhsDotGeneralOp) {
-    Value scalar, other;
-    dotGeneralOp = rhsDotGeneralOp;
-    if (extractMultiplicationFactor(lhs, other, op, rewriter)) {
-      if (other == rhsDotGeneralOp.getLhs()) {
-        extractMultiplicationFactor(lhs, scalar, other, op, rewriter);
+  // if (rhsDotGeneralOp) {
+  //   Value scalar, other;
+  //   dotGeneralOp = rhsDotGeneralOp;
+  //   if (extractMultiplicationFactor(lhs, other, op, rewriter)) {
+  //     if (other == rhsDotGeneralOp.getLhs()) {
+  //       extractMultiplicationFactor(lhs, scalar, other, op, rewriter);
 
-        // op(a * X, X × Y) -> X × op(a, Y)
-        newLhs = rhsDotGeneralOp.getLhs();
-        newRhs = constructOtherOp(rhsDotGeneralOp.getRhs(), scalar, true);
-      } else if (other == rhsDotGeneralOp.getRhs()) {
-        extractMultiplicationFactor(lhs, scalar, other, op, rewriter);
+  //       // op(a * X, X × Y) -> X × op(a, Y)
+  //       newLhs = rhsDotGeneralOp.getLhs();
+  //       newRhs = constructOtherOp(rhsDotGeneralOp.getRhs(), scalar, true);
+  //     } else if (other == rhsDotGeneralOp.getRhs()) {
+  //       extractMultiplicationFactor(lhs, scalar, other, op, rewriter);
 
-        // op(a * X, Y × X) -> op(a, Y) × X
-        newLhs = constructOtherOp(rhsDotGeneralOp.getLhs(), scalar, true);
-        newRhs = rhsDotGeneralOp.getRhs();
-      }
-    }
-  }
+  //       // op(a * X, Y × X) -> op(a, Y) × X
+  //       newLhs = constructOtherOp(rhsDotGeneralOp.getLhs(), scalar, true);
+  //       newRhs = rhsDotGeneralOp.getRhs();
+  //     }
+  //   }
+  // }
 
-  if (newLhs && newRhs) {
-    rewriter.replaceOpWithNewOp<stablehlo::DotGeneralOp>(
-        op, TypeRange{op.getType()}, ValueRange{newLhs, newRhs},
-        dotGeneralOp->getAttrs());
-    return success();
-  }
+  // if (newLhs && newRhs) {
+  //   rewriter.replaceOpWithNewOp<stablehlo::DotGeneralOp>(
+  //       op, TypeRange{op.getType()}, ValueRange{newLhs, newRhs},
+  //       dotGeneralOp->getAttrs());
+  //   return success();
+  // }
 
   return failure();
 }
@@ -26809,6 +27160,9 @@ private:
             extraValues.push_back(current);
             continue;
           }
+        } else {
+          extraValues.push_back(current);
+          continue;
         }
       } else if (auto reduce =
                      current.template getDefiningOp<stablehlo::ReduceOp>()) {
@@ -28963,6 +29317,12 @@ LogicalResult DUSDSSimplifyWithSomeUpdateOverlapHelper(
           dusStartIsConstant) {
         int64_t dsStartInt = dsStartAP.getSExtValue();
         int64_t dusStartInt = dusStartAP.getSExtValue();
+
+        if (dusStartInt + updateShape[i] <= dsStartInt) { // no overlap
+          canReplace = false;
+          break;
+        }
+
         sliceStarts[i] = dsStartInt - dusStartInt;
         continue;
       }
@@ -29039,6 +29399,7 @@ LogicalResult DUSDSSimplifyWithSomeUpdateOverlapHelper(
       }
     }
 
+    rewriter.setInsertionPoint(dsOp);
     auto newDS = stablehlo::DynamicSliceOpCreate(
         rewriter, dsOp.getLoc(), dusOp.getUpdate(), dynamicSliceStarts,
         dsOp.getSliceSizes());
@@ -29051,7 +29412,7 @@ LogicalResult DUSDSSimplifyWithSomeUpdateOverlapHelper(
 
   // simple case
   if (allOffsetsZero && updateShape == dsSliceSizes) {
-    rewriter.replaceAllUsesWith(dsOp.getResult(), dusOp.getUpdate());
+    rewriter.replaceOp(dsOp, dusOp.getUpdate());
     return success();
   }
 
@@ -29081,6 +29442,7 @@ LogicalResult DUSDSSimplifyWithSomeUpdateOverlapHelper(
     return failure();
   }
 
+  rewriter.setInsertionPoint(dsOp);
   Value result =
       stablehlo::SliceOp::create(rewriter, dsOp.getLoc(), dusOp.getUpdate(),
                                  sliceStarts, sliceLimits, sliceStrides);
@@ -30279,6 +30641,385 @@ struct ReduceWindowWrapSimplify final
   }
 };
 
+// Pattern to reduce MultiSliceOp when some results are unused
+struct ReduceUnusedMultiSlice final
+    : CheckedOpRewritePattern<enzymexla::MultiSliceOp, ReduceUnusedMultiSlice> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(enzymexla::MultiSliceOp op,
+                                    PatternRewriter &rewriter) const {
+    int32_t leftAmount = op.getLeftAmount();
+    int32_t rightAmount = op.getRightAmount();
+    int32_t totalResults = leftAmount + rightAmount + 1;
+
+    // Check which results are actually used
+    SmallVector<bool> used(totalResults, false);
+    int usedCount = 0;
+    for (int i = 0; i < totalResults; i++) {
+      if (!op.getResult(i).use_empty()) {
+        used[i] = true;
+        usedCount++;
+      }
+    }
+
+    // If all results are used, nothing to optimize
+    if (usedCount == totalResults)
+      return failure();
+
+    // If no results are used, this should be handled by dead code elimination
+    if (usedCount == 0) {
+      rewriter.eraseOp(op);
+      return success();
+    }
+
+    // Find the range of used results
+    int firstUsed = -1, lastUsed = -1;
+    for (int i = 0; i < totalResults; i++) {
+      if (used[i]) {
+        if (firstUsed == -1)
+          firstUsed = i;
+        lastUsed = i;
+      }
+    }
+
+    // Calculate new left and right amounts
+    int centerIdx = leftAmount;
+    int newLeftAmount = centerIdx - firstUsed;
+    int newRightAmount = lastUsed - centerIdx;
+
+    // If only one result is used, replace with a single SliceOp
+    if (usedCount == 1) {
+      int usedIdx = firstUsed;
+      int offset = usedIdx - centerIdx; // How much to shift the slice
+
+      auto startIndices = SmallVector<int64_t>(op.getStartIndices());
+      auto limitIndices = SmallVector<int64_t>(op.getLimitIndices());
+      auto strides = SmallVector<int64_t>(op.getStrides());
+      int32_t dim = op.getDimension();
+
+      // Adjust start and limit indices for the offset
+      if (dim >= 0 && dim < (int64_t)startIndices.size()) {
+        startIndices[dim] += offset;
+        limitIndices[dim] += offset;
+      }
+
+      auto sliceOp = rewriter.create<stablehlo::SliceOp>(
+          op.getLoc(), op.getOperand(),
+          rewriter.getDenseI64ArrayAttr(startIndices),
+          rewriter.getDenseI64ArrayAttr(limitIndices),
+          rewriter.getDenseI64ArrayAttr(strides));
+      // Propagate sharding if present
+      if (auto shard = sdy::getShardingPerValue(op)) {
+        sdy::setShardings(sliceOp, shard);
+      }
+
+      rewriter.replaceAllUsesWith(op.getResult(usedIdx), sliceOp.getResult());
+      rewriter.eraseOp(op);
+      return success();
+    }
+
+    // Otherwise, create a smaller MultiSliceOp
+    if (newLeftAmount != leftAmount || newRightAmount != rightAmount) {
+      // Adjust start indices for the new center
+      int offset = firstUsed - centerIdx;
+      auto startIndices = SmallVector<int64_t>(op.getStartIndices());
+      auto limitIndices = SmallVector<int64_t>(op.getLimitIndices());
+      int32_t dim = op.getDimension();
+
+      if (dim >= 0 && dim < (int64_t)startIndices.size()) {
+        startIndices[dim] += offset;
+        limitIndices[dim] += offset;
+      }
+
+      // Determine result types
+      auto resultType = cast<RankedTensorType>(op.getResultTypes().front());
+      SmallVector<Type> resultTypes;
+      for (int i = 0; i < newLeftAmount + newRightAmount + 1; i++) {
+        resultTypes.push_back(resultType); // Will be properly typed by the op
+      }
+
+      auto newOp = rewriter.create<enzymexla::MultiSliceOp>(
+          op.getLoc(), resultTypes, op.getOperand(), startIndices, limitIndices,
+          op.getStrides(), op.getDimension(), newLeftAmount, newRightAmount);
+      // Propagate sharding if present
+      if (auto shard = sdy::getShardingPerValue(op)) {
+        sdy::setShardings(newOp, shard);
+      }
+
+      // Map old results to new results
+      SmallVector<Value> replacements(totalResults);
+      int newIdx = 0;
+      for (int oldIdx = firstUsed; oldIdx <= lastUsed; oldIdx++) {
+        replacements[oldIdx] = newOp.getResult(newIdx++);
+      }
+
+      // Replace uses
+      for (int i = 0; i < totalResults; i++) {
+        if (used[i]) {
+          op.getResult(i).replaceAllUsesWith(replacements[i]);
+        }
+      }
+
+      rewriter.eraseOp(op);
+      return success();
+    }
+
+    return failure();
+  }
+};
+
+struct RecognizeMultiRotate
+    : public CheckedOpRewritePattern<enzymexla::RotateOp,
+                                     RecognizeMultiRotate> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(enzymexla::RotateOp op,
+                                    PatternRewriter &rewriter) const {
+    Value input = op.getOperand();
+    int64_t dimension = op.getDimension();
+    int32_t thisAmount = op.getAmount();
+
+    // Collect all RotateOps operating on the same input with the same dimension
+    SmallVector<enzymexla::RotateOp> rotates;
+    DenseSet<int32_t> amountSet;
+
+    for (Operation *user : input.getUsers()) {
+      if (auto rotate = dyn_cast<enzymexla::RotateOp>(user)) {
+        if (rotate.getDimension() == dimension && !rotate.use_empty()) {
+          rotates.push_back(rotate);
+          amountSet.insert(rotate.getAmount());
+        }
+      }
+    }
+
+    // Need at least 2 rotations to consider combining
+    if (rotates.size() < 2)
+      return failure();
+
+    // Sort amounts to find contiguous groups
+    SmallVector<int32_t> sortedAmounts(amountSet.begin(), amountSet.end());
+    llvm::sort(sortedAmounts);
+
+    // Find all contiguous groups (no gaps in amounts)
+    SmallVector<std::pair<int32_t, int32_t>>
+        contiguousGroups; // (start, end) inclusive
+    int32_t groupStart = sortedAmounts[0];
+    int32_t groupEnd = sortedAmounts[0];
+
+    for (size_t i = 1; i < sortedAmounts.size(); i++) {
+      if (sortedAmounts[i] == groupEnd + 1) {
+        // Extend current group
+        groupEnd = sortedAmounts[i];
+      } else {
+        // Save current group and start new one
+        contiguousGroups.push_back({groupStart, groupEnd});
+        groupStart = sortedAmounts[i];
+        groupEnd = sortedAmounts[i];
+      }
+    }
+    contiguousGroups.push_back({groupStart, groupEnd});
+
+    // Collect all amounts from groups that contain identity or neighbor it
+    // Groups that neighbor identity will be connected through 0
+    SmallVector<int32_t> qualifyingAmounts;
+
+    for (auto &[start, end] : contiguousGroups) {
+      bool containsIdentity = (start <= 0 && end >= 0);
+      bool neighborsIdentity = (end == -1 || start == 1);
+
+      if (containsIdentity || neighborsIdentity) {
+        // Add all actual rotate amounts from this group
+        for (int32_t a = start; a <= end; a++) {
+          if (amountSet.contains(a)) {
+            qualifyingAmounts.push_back(a);
+          }
+        }
+      }
+    }
+
+    // No qualifying groups found
+    if (qualifyingAmounts.size() < 2)
+      return failure();
+
+    // Determine the multirotate range from qualifying amounts, extended to
+    // include 0
+    int32_t rangeStart =
+        *std::min_element(qualifyingAmounts.begin(), qualifyingAmounts.end());
+    int32_t rangeEnd =
+        *std::max_element(qualifyingAmounts.begin(), qualifyingAmounts.end());
+
+    // Extend to include identity (0) if not already included
+    if (rangeStart > 0)
+      rangeStart = 0;
+    if (rangeEnd < 0)
+      rangeEnd = 0;
+
+    // Check if this op is part of the selected range
+    if (thisAmount < rangeStart || thisAmount > rangeEnd)
+      return failure();
+
+    // Find the minimum amount among actual rotates in the selected range
+    // to use as the canonical trigger (prevents processing same group multiple
+    // times)
+    int32_t minAmountInRange = INT32_MAX;
+    int rotatesToCombine = 0;
+    for (auto rotate : rotates) {
+      int32_t amt = rotate.getAmount();
+      if (amt >= rangeStart && amt <= rangeEnd) {
+        minAmountInRange = std::min(minAmountInRange, amt);
+        rotatesToCombine++;
+      }
+    }
+
+    // Only proceed if this op has the minimum amount in the range
+    if (thisAmount != minAmountInRange)
+      return failure();
+
+    // Need at least 2 rotations in the selected range to combine
+    if (rotatesToCombine < 2)
+      return failure();
+
+    // Calculate left and right amounts for MultiRotateOp
+    // leftAmount covers positive rotations (rotate left)
+    // rightAmount covers negative rotations (rotate right)
+    int32_t leftAmount = rangeEnd > 0 ? rangeEnd : 0;
+    int32_t rightAmount = rangeStart < 0 ? -rangeStart : 0;
+    int32_t totalResults = leftAmount + rightAmount + 1;
+
+    // Create the MultiRotateOp
+    rewriter.setInsertionPointAfterValue(input);
+    auto newOp = rewriter.create<enzymexla::MultiRotateOp>(
+        op.getLoc(), SmallVector<Type>(totalResults, input.getType()), input,
+        op.getDimensionAttr(), rewriter.getSI32IntegerAttr(leftAmount),
+        rewriter.getSI32IntegerAttr(rightAmount));
+
+    // Propagate sharding if present
+    if (auto shard = sdy::getShardingPerValue(op)) {
+      sdy::setShardings(newOp, shard);
+    }
+
+    // Replace rotations that fall within the selected range
+    for (auto rotate : rotates) {
+      int32_t amt = rotate.getAmount();
+      if (amt >= rangeStart && amt <= rangeEnd) {
+        // Result index for amount 'a' is: leftAmount - a
+        int32_t resultIdx = leftAmount - amt;
+        rewriter.replaceOp(rotate, newOp.getResult(resultIdx));
+      }
+      // Rotations outside the range are left unchanged
+    }
+
+    return success();
+  }
+};
+
+// Pattern to reduce MultiRotateOp when some results are unused
+struct ReduceUnusedMultiRotate final
+    : CheckedOpRewritePattern<enzymexla::MultiRotateOp,
+                              ReduceUnusedMultiRotate> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(enzymexla::MultiRotateOp op,
+                                    PatternRewriter &rewriter) const {
+    int32_t leftAmount = op.getLeftAmount();
+    int32_t rightAmount = op.getRightAmount();
+    int32_t totalResults = leftAmount + rightAmount + 1;
+
+    // Check which results are actually used
+    SmallVector<bool> used(totalResults, false);
+    int usedCount = 0;
+    for (int i = 0; i < totalResults; i++) {
+      if (!op.getResult(i).use_empty()) {
+        used[i] = true;
+        usedCount++;
+      }
+    }
+
+    // If all results are used, nothing to optimize
+    if (usedCount == totalResults)
+      return failure();
+
+    // If no results are used, this should be handled by dead code elimination
+    if (usedCount == 0) {
+      rewriter.eraseOp(op);
+      return success();
+    }
+
+    // Find the range of used results
+    int firstUsed = -1, lastUsed = -1;
+    for (int i = 0; i < totalResults; i++) {
+      if (used[i]) {
+        if (firstUsed == -1)
+          firstUsed = i;
+        lastUsed = i;
+      }
+    }
+
+    // Calculate new left and right amounts
+    int centerIdx = leftAmount;
+    int newLeftAmount = centerIdx - firstUsed;
+    int newRightAmount = lastUsed - centerIdx;
+
+    // If only one result is used, replace with a single RotateOp
+    if (usedCount == 1) {
+      int usedIdx = firstUsed;
+      int amount = centerIdx -
+                   usedIdx; // Positive = rotate left, negative = rotate right
+      auto operandType = op.getOperand().getType();
+      if (amount < 0) {
+        amount += operandType.getShape()[op.getDimensionAttr().getSInt()];
+      }
+
+      auto rotateOp = rewriter.create<enzymexla::RotateOp>(
+          op.getLoc(), op.getOperand().getType(), op.getOperand(),
+          rewriter.getSI32IntegerAttr(amount), op.getDimensionAttr());
+      // Propagate sharding if present
+      if (auto shard = sdy::getShardingPerValue(op)) {
+        sdy::setShardings(rotateOp, shard);
+      }
+
+      rewriter.replaceAllUsesWith(op.getResult(usedIdx), rotateOp.getResult());
+      rewriter.eraseOp(op);
+      return success();
+    }
+
+    // Otherwise, create a smaller MultiRotateOp
+    if (newLeftAmount != leftAmount || newRightAmount != rightAmount) {
+      auto newOp = rewriter.create<enzymexla::MultiRotateOp>(
+          op.getLoc(),
+          SmallVector<Type>(newLeftAmount + newRightAmount + 1,
+                            op.getOperand().getType()),
+          op.getOperand(), op.getDimensionAttr(),
+          rewriter.getSI32IntegerAttr(newLeftAmount),
+          rewriter.getSI32IntegerAttr(newRightAmount));
+
+      // Propagate sharding if present
+      if (auto shard = sdy::getShardingPerValue(op)) {
+        sdy::setShardings(newOp, shard);
+      }
+
+      // Map old results to new results
+      SmallVector<Value> replacements(totalResults);
+      int newIdx = 0;
+      for (int oldIdx = firstUsed; oldIdx <= lastUsed; oldIdx++) {
+        replacements[oldIdx] = newOp.getResult(newIdx++);
+      }
+
+      // Replace uses
+      for (int i = 0; i < totalResults; i++) {
+        if (used[i]) {
+          op.getResult(i).replaceAllUsesWith(replacements[i]);
+        }
+      }
+
+      rewriter.eraseOp(op);
+      return success();
+    }
+
+    return failure();
+  }
+};
+
 struct ScatterOpCanon final
     : CheckedOpRewritePattern<stablehlo::ScatterOp, ScatterOpCanon> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -30526,6 +31267,162 @@ private:
   }
 };
 
+// Helper function to build scatter update computation region based on the
+// scatter operation kind. For constant-based operations, the constant value
+// must be provided as the real or imaginary part (caller extracts from
+// complex).
+static void buildScatterUpdateRegion(PatternRewriter &rewriter, Location loc,
+                                     stablehlo::ScatterOp scatterOp,
+                                     stablehlo::ScatterOpKind kind,
+                                     Type elemType,
+                                     Attribute constantValue = nullptr) {
+  OpBuilder::InsertionGuard guard(rewriter);
+  auto &updateRegion = scatterOp.getUpdateComputation();
+  auto *block = rewriter.createBlock(&updateRegion);
+  auto argType = RankedTensorType::get({}, elemType);
+  block->addArgument(argType, loc);
+  block->addArgument(argType, loc);
+  rewriter.setInsertionPointToStart(block);
+
+  Value result;
+  switch (kind) {
+  case stablehlo::ScatterOpKind::Setindex:
+    // Setindex: return the update value (arg1)
+    result = block->getArgument(1);
+    break;
+  case stablehlo::ScatterOpKind::ConstantSetindex: {
+    // ConstantSetindex: return the constant value
+    assert(constantValue && "ConstantSetindex requires a constant value");
+    auto constAttr = DenseElementsAttr::get(argType, constantValue);
+    result = stablehlo::ConstantOp::create(rewriter, loc, constAttr);
+    break;
+  }
+  case stablehlo::ScatterOpKind::Add:
+    // Add: return arg0 + arg1
+    result = stablehlo::AddOp::create(rewriter, loc, block->getArgument(0),
+                                      block->getArgument(1));
+    break;
+  case stablehlo::ScatterOpKind::AddConstantUpdate: {
+    // AddConstantUpdate: return arg0 + constant (constant replaces update/arg1)
+    assert(constantValue && "AddConstantUpdate requires a constant value");
+    auto constAttr = DenseElementsAttr::get(argType, constantValue);
+    auto constOp = stablehlo::ConstantOp::create(rewriter, loc, constAttr);
+    result =
+        stablehlo::AddOp::create(rewriter, loc, block->getArgument(0), constOp);
+    break;
+  }
+  case stablehlo::ScatterOpKind::AddConstantInput: {
+    // AddConstantInput: return constant + arg1 (constant replaces input/arg0)
+    assert(constantValue && "AddConstantInput requires a constant value");
+    auto constAttr = DenseElementsAttr::get(argType, constantValue);
+    auto constOp = stablehlo::ConstantOp::create(rewriter, loc, constAttr);
+    result =
+        stablehlo::AddOp::create(rewriter, loc, constOp, block->getArgument(1));
+    break;
+  }
+  case stablehlo::ScatterOpKind::Sub:
+    // Sub: return arg0 - arg1
+    result = stablehlo::SubtractOp::create(rewriter, loc, block->getArgument(0),
+                                           block->getArgument(1));
+    break;
+  default:
+    llvm_unreachable("Unsupported scatter operation kind");
+  }
+
+  stablehlo::ReturnOp::create(rewriter, loc, result);
+}
+
+// See discussion in
+// https://github.com/EnzymeAD/Reactant.jl/pull/2219#issuecomment-3801834108
+struct SplitComplexScatter final
+    : CheckedOpRewritePattern<stablehlo::ScatterOp, SplitComplexScatter> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ScatterOp op,
+                                    PatternRewriter &rewriter) const {
+    auto checkCommonScatterOp = mlir::stablehlo::CheckCommonScatterOp(op);
+
+    // Support Setindex, ConstantSetindex, Add, AddConstantUpdate,
+    // AddConstantInput, and Sub scatter operations
+    if (checkCommonScatterOp.kind != stablehlo::ScatterOpKind::Setindex &&
+        checkCommonScatterOp.kind !=
+            stablehlo::ScatterOpKind::ConstantSetindex &&
+        checkCommonScatterOp.kind != stablehlo::ScatterOpKind::Add &&
+        checkCommonScatterOp.kind !=
+            stablehlo::ScatterOpKind::AddConstantUpdate &&
+        checkCommonScatterOp.kind !=
+            stablehlo::ScatterOpKind::AddConstantInput &&
+        checkCommonScatterOp.kind != stablehlo::ScatterOpKind::Sub) {
+      return failure();
+    }
+
+    auto elemType = cast<RankedTensorType>(op.getType(0)).getElementType();
+    if (!isa<ComplexType>(elemType)) {
+      return failure();
+    }
+
+    // Get the inner element type (e.g., f32 from complex<f32>)
+    auto complexType = cast<ComplexType>(elemType);
+    auto innerElemType = complexType.getElementType();
+
+    // Extract real and imaginary parts of the constant if present
+    Attribute realConstant = nullptr;
+    Attribute imagConstant = nullptr;
+    if (checkCommonScatterOp.constant) {
+      auto complexVal =
+          checkCommonScatterOp.constant.getSplatValue<std::complex<APFloat>>();
+      realConstant = FloatAttr::get(innerElemType, complexVal.real());
+      imagConstant = FloatAttr::get(innerElemType, complexVal.imag());
+    }
+
+    SmallVector<Value> realInputs, imagInputs, realUpdates, imagUpdates;
+    for (auto [input, update] :
+         llvm::zip_equal(op.getInputs(), op.getUpdates())) {
+      realInputs.push_back(
+          stablehlo::RealOp::create(rewriter, op.getLoc(), input));
+      imagInputs.push_back(
+          stablehlo::ImagOp::create(rewriter, op.getLoc(), input));
+      realUpdates.push_back(
+          stablehlo::RealOp::create(rewriter, op.getLoc(), update));
+      imagUpdates.push_back(
+          stablehlo::ImagOp::create(rewriter, op.getLoc(), update));
+    }
+
+    // Create the real scatter op
+    auto realScatterOp = stablehlo::ScatterOp::create(
+        rewriter, op.getLoc(), realInputs, op.getScatterIndices(), realUpdates,
+        op.getScatterDimensionNumbersAttr(), op.getIndicesAreSortedAttr(),
+        op.getUniqueIndicesAttr());
+
+    // Build update computation region for real scatter
+    buildScatterUpdateRegion(rewriter, op.getLoc(), realScatterOp,
+                             checkCommonScatterOp.kind, innerElemType,
+                             realConstant);
+
+    // Create the imaginary scatter op
+    auto imagScatterOp = stablehlo::ScatterOp::create(
+        rewriter, op.getLoc(), imagInputs, op.getScatterIndices(), imagUpdates,
+        op.getScatterDimensionNumbersAttr(), op.getIndicesAreSortedAttr(),
+        op.getUniqueIndicesAttr());
+
+    // Build update computation region for imaginary scatter
+    buildScatterUpdateRegion(rewriter, op.getLoc(), imagScatterOp,
+                             checkCommonScatterOp.kind, innerElemType,
+                             imagConstant);
+
+    // Combine real and imaginary results using stablehlo::ComplexOp
+    SmallVector<Value> results;
+    for (auto [realResult, imagResult] : llvm::zip_equal(
+             realScatterOp.getResults(), imagScatterOp.getResults())) {
+      results.push_back(stablehlo::ComplexOp::create(rewriter, op.getLoc(),
+                                                     realResult, imagResult));
+    }
+
+    rewriter.replaceOp(op, results);
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -30676,6 +31573,20 @@ void mlir::transform::addExtendLICM(RewritePatternSet &patterns,
                                     bool single_user, MLIRContext &context,
                                     PatternBenefit benefit) {
   patterns.insert<LICM<enzymexla::ExtendOp>>(single_user, &context, benefit);
+}
+
+void mlir::transform::addMultiSliceLICM(RewritePatternSet &patterns,
+                                        bool single_user, MLIRContext &context,
+                                        PatternBenefit benefit) {
+  patterns.insert<LICM<enzymexla::MultiSliceOp>>(single_user, &context,
+                                                 benefit);
+}
+
+void mlir::transform::addMultiRotateLICM(RewritePatternSet &patterns,
+                                         bool single_user, MLIRContext &context,
+                                         PatternBenefit benefit) {
+  patterns.insert<LICM<enzymexla::MultiRotateOp>>(single_user, &context,
+                                                  benefit);
 }
 
 void mlir::transform::addElementwiseLICM(RewritePatternSet &patterns,
@@ -31067,7 +31978,9 @@ struct EnzymeHLOOptPass
                    CSE<enzymexla::RotateOp>, CSE<enzymexla::WrapOp>,
                    CSE<enzymexla::ExtendOp>, CSEIota, CSE<stablehlo::CompareOp>,
                    CSE<stablehlo::GatherOp>, CSE<stablehlo::ScatterOp>,
-                   CSE<stablehlo::SelectOp>>(context, PatternBenefit(65000));
+                   CSE<stablehlo::SelectOp>, CSE<stablehlo::RealOp>,
+                   CSE<chlo::ConjOp>, CSE<stablehlo::ImagOp>>(
+          context, PatternBenefit(65000));
     }
 
     if (passses & 256)
@@ -31246,7 +32159,10 @@ struct EnzymeHLOOptPass
         InvolutionSimplify<stablehlo::NotOp>,
         InvolutionSimplify<chlo::ConjOp>,
         RealConjSimplify,
+        RealConvertSimplify,
         ConjComplexSimplify,
+        ConjConvertSimplify,
+        ElementwiseComplexSimplify,
         SplitConvolutionIntoReverseConvolution,
         ScatterMultiplySimplify,
         ScatterDivSimplify,
@@ -31254,6 +32170,7 @@ struct EnzymeHLOOptPass
         ScatterSubSimplify,
         UnaryElementwiseScatterSimplify,
         GatherElementwise,
+        ElementwiseGather,
         ElementwisePad,
         ConcatenateSubtractToSubtractPad,
         ConcatenateBroadcastInDim,
@@ -31295,7 +32212,9 @@ struct EnzymeHLOOptPass
         DotGeneralInsertDimContractionSimplification,
         FuseReshapeCollapseOrExpandDimsIntoReduce,
         GatherOfScatterSimplify,
-        ReduceWindowWrapSimplify
+        ReduceWindowWrapSimplify,
+        SplitComplexScatter,
+        ReduceMaxMinMulPositiveScalar
       >(context);
 
     patterns.add<ReshapeElementwise>(true, true, context);
