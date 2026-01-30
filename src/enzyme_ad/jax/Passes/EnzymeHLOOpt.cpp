@@ -27160,6 +27160,9 @@ private:
             extraValues.push_back(current);
             continue;
           }
+        } else {
+          extraValues.push_back(current);
+          continue;
         }
       } else if (auto reduce =
                      current.template getDefiningOp<stablehlo::ReduceOp>()) {
