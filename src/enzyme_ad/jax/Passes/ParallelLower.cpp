@@ -1336,19 +1336,22 @@ static void setCallee(LLVM::CallOp call, StringRef symName) {
 }
 template <typename CallOpTy, typename FuncOpTy>
 void replaceCallOp(ModuleOp m, CallOpTy call, llvm::StringRef callee) {
-  OpBuilder moduleBuilder = OpBuilder::atBlockEnd(m.getBody());
-  OpBuilder callBuilder(call);
   auto funcOp = m.lookupSymbol<FuncOpTy>(callee);
   if (isHipCallEquivalent(callee)) {
     assert(funcOp);
     auto hipName = getHipName(callee);
     if (!m.lookupSymbol<FuncOpTy>(hipName)) {
+      // Insert at the same location as old CUDA function
+      OpBuilder moduleBuilder(funcOp.getOperation());
       auto hipFuncOp =
           cast<FuncOpTy>(moduleBuilder.clone(*funcOp.getOperation()));
       hipFuncOp.setSymName(hipName);
+      // Mark old CUDA function for erasure
+      toErase.insert(funcOp.getOperation());
     }
     setCallee(call, hipName);
   } else {
+    OpBuilder callBuilder(call);
     llvm::errs() << "warning: Unsupported CUDART call " << callee
                  << " for conversion to HIP, will be removed instead\n";
     replaceCallWithSuccess(call, callBuilder);
@@ -1356,12 +1359,7 @@ void replaceCallOp(ModuleOp m, CallOpTy call, llvm::StringRef callee) {
 }
 
 void ConvertCudaRTtoHipRT::runOnOperation() {
-  getOperation().walk([&](LLVM::LLVMFuncOp funcOp) {
-    StringRef name = funcOp.getName();
-    if (isCudartCall(name) && funcOp.isExternal()) {
-      funcOp.setSymName("hip" + name.drop_front(4).str());
-    }
-  });
+  SmallPtrSet<Operation *, 8> toErase;
 
   getOperation().walk([&](LLVM::CallOp call) {
     if (!call.getCallee())
@@ -1369,15 +1367,20 @@ void ConvertCudaRTtoHipRT::runOnOperation() {
     auto name = *call.getCallee();
     if (!isCudartCall(name))
       return;
-    replaceCallOp<LLVM::CallOp, LLVM::LLVMFuncOp>(getOperation(), call, name);
+    replaceCallOp<LLVM::CallOp, LLVM::LLVMFuncOp>(getOperation(), call, name,
+                                                   toErase);
   });
 
   getOperation().walk([&](CallOp call) {
     auto name = call.getCallee();
     if (!isCudartCall(name))
       return;
-    replaceCallOp<CallOp, func::FuncOp>(getOperation(), call, name);
+    replaceCallOp<CallOp, func::FuncOp>(getOperation(), call, name, toErase);
   });
+
+  // Erase old CUDA function declarations after all calls are updated
+  for (Operation *op : toErase)
+    op->erase();
 
   OpBuilder builder(&getContext());
   getOperation().walk([&](mlir::NVVM::Barrier0Op op) {
