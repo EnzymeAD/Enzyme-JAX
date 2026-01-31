@@ -1335,7 +1335,8 @@ static void setCallee(LLVM::CallOp call, StringRef symName) {
   call.setCallee(symName);
 }
 template <typename CallOpTy, typename FuncOpTy>
-void replaceCallOp(ModuleOp m, CallOpTy call, llvm::StringRef callee, SmallPtrSetImpl<Operation *> &toErase) {
+void replaceCallOp(ModuleOp m, CallOpTy call, llvm::StringRef callee,
+                   SmallPtrSetImpl<Operation *> &toErase) {
   OpBuilder callBuilder(call);
   auto funcOp = m.lookupSymbol<FuncOpTy>(callee);
   if (isHipCallEquivalent(callee)) {
