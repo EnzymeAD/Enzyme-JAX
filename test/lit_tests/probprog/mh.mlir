@@ -3,8 +3,8 @@ module {
   func.func private @model.regenerate(%arg0: !enzyme.Trace, %arg1: tensor<2xui64>) -> (!enzyme.Trace, tensor<f64>, tensor<2xui64>) {
     %cst = arith.constant dense<0.000000e+00> : tensor<f64>
     %0 = enzyme.initTrace : !enzyme.Trace
-    %1 = enzyme.getSampleFromTrace %arg0 {symbol = #enzyme.symbol<1>} : tensor<2xf64>
-    %2 = enzyme.addSampleToTrace(%1 : tensor<2xf64>) into %0 {symbol = #enzyme.symbol<2>}
+    %1 = enzyme.getSampleFromTrace %arg0 {symbol = #enzyme.symbol<1>} : (!enzyme.Trace) -> tensor<2xf64>
+    %2 = enzyme.addSampleToTrace %1 into %0 {symbol = #enzyme.symbol<2>} : (!enzyme.Trace, tensor<2xf64>) -> !enzyme.Trace
     return %2, %cst, %arg1 : !enzyme.Trace, tensor<f64>, tensor<2xui64>
   }
 
@@ -24,12 +24,12 @@ module {
       %iter_next = stablehlo.add %iterArg, %c1 : tensor<i64>
       %old_trace = builtin.unrealized_conversion_cast %iterArg_trace : tensor<ui64> to !enzyme.Trace
       %new_trace, %new_weight, %rng1 = func.call @model.regenerate(%old_trace, %iterArg_rng) : (!enzyme.Trace, tensor<2xui64>) -> (!enzyme.Trace, tensor<f64>, tensor<2xui64>)
-      %old_weight = enzyme.getWeightFromTrace %old_trace : tensor<f64>
+      %old_weight = enzyme.getWeightFromTrace %old_trace : (!enzyme.Trace) -> tensor<f64>
       %log_alpha = arith.subf %new_weight, %old_weight : tensor<f64>
       %rng2, %uniform = enzyme.random %rng1, %zero, %one {rng_distribution = #enzyme<rng_distribution UNIFORM>} : (tensor<2xui64>, tensor<f64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
       %log_uniform = math.log %uniform : tensor<f64>
       %accept = arith.cmpf olt, %log_uniform, %log_alpha : tensor<f64>
-      %selected_trace = enzyme.selectTrace %accept, %new_trace, %old_trace : tensor<i1>
+      %selected_trace = enzyme.select %accept, %new_trace, %old_trace : (tensor<i1>, !enzyme.Trace, !enzyme.Trace) -> !enzyme.Trace
       %selected_trace_ui64 = builtin.unrealized_conversion_cast %selected_trace : !enzyme.Trace to tensor<ui64>
       stablehlo.return %iter_next, %selected_trace_ui64, %rng2 : tensor<i64>, tensor<ui64>, tensor<2xui64>
     }
@@ -154,10 +154,15 @@ module {
 // CPU-NEXT:      %7 = stablehlo.bitcast_convert %6 : (tensor<ui64>) -> tensor<f64>
 // CPU-NEXT:      %cst_9 = stablehlo.constant dense<1.000000e+00> : tensor<f64>
 // CPU-NEXT:      %8 = stablehlo.subtract %7, %cst_9 : tensor<f64>
-// CPU-NEXT:      %9 = stablehlo.log %8 : tensor<f64>
-// CPU-NEXT:      %10 = stablehlo.compare  LT, %9, %4,  FLOAT : (tensor<f64>, tensor<f64>) -> tensor<i1>
-// CPU-NEXT:      %11 = stablehlo.select %10, %2#0, %iterArg_4 : tensor<i1>, tensor<ui64>
-// CPU-NEXT:      stablehlo.return %1, %11, %output_state : tensor<i64>, tensor<ui64>, tensor<2xui64>
+// CPU-NEXT:      %9 = stablehlo.broadcast_in_dim %cst, dims = [] : (tensor<f64>) -> tensor<f64>
+// CPU-NEXT:      %10 = stablehlo.broadcast_in_dim %cst_0, dims = [] : (tensor<f64>) -> tensor<f64>
+// CPU-NEXT:      %11 = stablehlo.subtract %10, %9 : tensor<f64>
+// CPU-NEXT:      %12 = stablehlo.multiply %11, %8 : tensor<f64>
+// CPU-NEXT:      %13 = stablehlo.add %9, %12 : tensor<f64>
+// CPU-NEXT:      %14 = stablehlo.log %13 : tensor<f64>
+// CPU-NEXT:      %15 = stablehlo.compare  LT, %14, %4,  FLOAT : (tensor<f64>, tensor<f64>) -> tensor<i1>
+// CPU-NEXT:      %16 = stablehlo.select %15, %2#0, %iterArg_4 : tensor<i1>, tensor<ui64>
+// CPU-NEXT:      stablehlo.return %1, %16, %output_state : tensor<i64>, tensor<ui64>, tensor<2xui64>
 // CPU-NEXT:    }
 // CPU-NEXT:    return %0#1, %0#2 : tensor<ui64>, tensor<2xui64>
 // CPU-NEXT:  }
