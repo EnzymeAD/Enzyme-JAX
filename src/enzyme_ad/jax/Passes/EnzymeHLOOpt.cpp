@@ -30758,6 +30758,56 @@ struct ReduceUnusedMultiSlice final
   }
 };
 
+// Pattern to lower MultiSliceOp into individual SliceOps
+struct LowerMultiSlice final
+    : CheckedOpRewritePattern<enzymexla::MultiSliceOp, LowerMultiSlice> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(enzymexla::MultiSliceOp op,
+                                    PatternRewriter &rewriter) const {
+    int32_t amount = op.getAmount();
+    int32_t totalResults = amount + 1;
+    int32_t dim = op.getDimension();
+
+    auto baseStartIndices = SmallVector<int64_t>(op.getStartIndices());
+    auto baseLimitIndices = SmallVector<int64_t>(op.getLimitIndices());
+    auto strides = SmallVector<int64_t>(op.getStrides());
+
+    // Get sharding info if present
+    auto shard = sdy::getShardingPerValue(op);
+
+    SmallVector<Value> replacements(totalResults);
+
+    for (int i = 0; i < totalResults; i++) {
+      // Copy and adjust indices for this slice
+      auto startIndices = baseStartIndices;
+      auto limitIndices = baseLimitIndices;
+
+      if (dim >= 0 && dim < (int64_t)startIndices.size()) {
+        startIndices[dim] += i;
+        limitIndices[dim] += i;
+      }
+
+      auto sliceOp = rewriter.create<stablehlo::SliceOp>(
+          op.getLoc(), op.getOperand(),
+          rewriter.getDenseI64ArrayAttr(startIndices),
+          rewriter.getDenseI64ArrayAttr(limitIndices),
+          rewriter.getDenseI64ArrayAttr(strides));
+
+      // Propagate sharding if present
+      if (shard) {
+        sdy::setShardings(sliceOp, shard);
+      }
+
+      replacements[i] = sliceOp.getResult();
+    }
+
+    rewriter.replaceOp(op, replacements);
+
+    return success();
+  }
+};
+
 struct RecognizeMultiRotate
     : public CheckedOpRewritePattern<enzymexla::RotateOp,
                                      RecognizeMultiRotate> {
@@ -30903,6 +30953,61 @@ struct RecognizeMultiRotate
   }
 };
 
+// Pattern to lower MultiRotateOp into individual RotateOps
+struct LowerMultiRotate final
+    : CheckedOpRewritePattern<enzymexla::MultiRotateOp, LowerMultiRotate> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(enzymexla::MultiRotateOp op,
+                                    PatternRewriter &rewriter) const {
+    int32_t leftAmount = op.getLeftAmount();
+    int32_t rightAmount = op.getRightAmount();
+    int32_t totalResults = leftAmount + rightAmount + 1;
+    int32_t centerIdx = leftAmount;
+
+    Value input = op.getOperand();
+    auto inputType = cast<RankedTensorType>(input.getType());
+    int64_t dimSize = inputType.getShape()[op.getDimensionAttr().getSInt()];
+
+    // Get sharding info if present
+    auto shard = sdy::getShardingPerValue(op);
+
+    SmallVector<Value> replacements(totalResults);
+
+    for (int i = 0; i < totalResults; i++) {
+      // Calculate rotation amount for this result
+      // Result at centerIdx corresponds to amount 0 (identity)
+      // Results before centerIdx have positive amounts (rotate left)
+      // Results after centerIdx have negative amounts (rotate right)
+      int32_t amount = centerIdx - i;
+
+      // Normalize negative amounts to positive equivalent
+      if (amount < 0) {
+        amount += dimSize;
+      }
+
+      if (amount == 0) {
+        replacements[i] = input;
+        continue;
+      }
+
+      auto rotateOp = rewriter.create<enzymexla::RotateOp>(
+          op.getLoc(), inputType, input, rewriter.getSI32IntegerAttr(amount),
+          op.getDimensionAttr());
+
+      // Propagate sharding if present
+      if (shard) {
+        sdy::setShardings(rotateOp, shard);
+      }
+
+      replacements[i] = rotateOp.getResult();
+    }
+
+    rewriter.replaceOp(op, replacements);
+    return success();
+  }
+};
+
 // Pattern to reduce MultiRotateOp when some results are unused
 struct ReduceUnusedMultiRotate final
     : CheckedOpRewritePattern<enzymexla::MultiRotateOp,
@@ -30995,14 +31100,7 @@ struct ReduceUnusedMultiRotate final
         replacements[oldIdx] = newOp.getResult(newIdx++);
       }
 
-      // Replace uses
-      for (int i = 0; i < totalResults; i++) {
-        if (used[i]) {
-          op.getResult(i).replaceAllUsesWith(replacements[i]);
-        }
-      }
-
-      rewriter.eraseOp(op);
+      rewriter.replaceOp(op, replacements);
       return success();
     }
 
