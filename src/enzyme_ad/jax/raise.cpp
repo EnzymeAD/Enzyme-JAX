@@ -137,6 +137,8 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       pass_pipeline += "}";
       pass_pipeline += ","
       "lower-affine";
+      if (backend == "rocm")
+        pass_pipeline += ",convert-cudart-to-hiprt";
       if (getenv("REACTANT_OMP")) {
         pass_pipeline += ",convert-scf-to-openmp,";
       } else {
