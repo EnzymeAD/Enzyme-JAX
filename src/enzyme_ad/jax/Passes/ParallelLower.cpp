@@ -1335,23 +1335,21 @@ static void setCallee(LLVM::CallOp call, StringRef symName) {
   call.setCallee(symName);
 }
 template <typename CallOpTy, typename FuncOpTy>
-void replaceCallOp(ModuleOp m, CallOpTy call, llvm::StringRef callee) {
+void replaceCallOp(ModuleOp m, CallOpTy call, llvm::StringRef callee, SmallPtrSetImpl<Operation *> &toErase) {
+  OpBuilder callBuilder(call);
   auto funcOp = m.lookupSymbol<FuncOpTy>(callee);
   if (isHipCallEquivalent(callee)) {
     assert(funcOp);
     auto hipName = getHipName(callee);
     if (!m.lookupSymbol<FuncOpTy>(hipName)) {
-      // Insert at the same location as old CUDA function
       OpBuilder moduleBuilder(funcOp.getOperation());
       auto hipFuncOp =
           cast<FuncOpTy>(moduleBuilder.clone(*funcOp.getOperation()));
       hipFuncOp.setSymName(hipName);
-      // Mark old CUDA function for erasure
       toErase.insert(funcOp.getOperation());
     }
     setCallee(call, hipName);
   } else {
-    OpBuilder callBuilder(call);
     llvm::errs() << "warning: Unsupported CUDART call " << callee
                  << " for conversion to HIP, will be removed instead\n";
     replaceCallWithSuccess(call, callBuilder);
@@ -1368,7 +1366,7 @@ void ConvertCudaRTtoHipRT::runOnOperation() {
     if (!isCudartCall(name))
       return;
     replaceCallOp<LLVM::CallOp, LLVM::LLVMFuncOp>(getOperation(), call, name,
-                                                   toErase);
+                                                  toErase);
   });
 
   getOperation().walk([&](CallOp call) {
