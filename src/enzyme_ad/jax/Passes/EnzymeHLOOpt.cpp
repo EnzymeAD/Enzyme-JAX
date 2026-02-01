@@ -27082,8 +27082,6 @@ private:
 
   std::tuple<bool, SliceInfo>
   matchReshapeSlice(stablehlo::ReshapeOp reshapeOp) const {
-    // auto outputType = cast<RankedTensorType>(reshapeOp.getType());
-
     auto slice =
         reshapeOp.getOperand().template getDefiningOp<stablehlo::SliceOp>();
     if (!slice) {
@@ -27092,7 +27090,6 @@ private:
 
     SliceInfo info = extractSliceInfo(slice);
     if (info.sliceOp) {
-      // info.explicitReshapeShape = llvm::to_vector(outputType.getShape());
       info.source = reshapeOp.getResult();
       return {true, info};
     }
@@ -27223,16 +27220,6 @@ private:
       }
     }
 
-    auto elemType = cast<ShapedType>(binaryOp.getType()).getElementType();
-    if (!initValue) {
-      initValue = stablehlo::getIdentityValueForOp<BinaryOpType>(
-          rewriter, binaryOp.getLoc(), elemType);
-      if (!initValue) {
-        return rewriter.notifyMatchFailure(
-            binaryOp, "could not find identity value for element type");
-      }
-    }
-
     Value sourceOperand = slices[0].sliceOp.getOperand();
 
     {
@@ -27251,6 +27238,16 @@ private:
       } else {
         sourceOperand = stablehlo::ConcatenateOp::create(
             rewriter, binaryOp.getLoc(), finalConcatInputs, sliceDim);
+      }
+    }
+
+    auto elemType = cast<ShapedType>(binaryOp.getType()).getElementType();
+    if (!initValue) {
+      initValue = stablehlo::getIdentityValueForOp<BinaryOpType>(
+          rewriter, binaryOp.getLoc(), elemType);
+      if (!initValue) {
+        return rewriter.notifyMatchFailure(
+            binaryOp, "could not find identity value for element type");
       }
     }
 
