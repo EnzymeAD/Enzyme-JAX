@@ -32007,12 +32007,18 @@ struct RecognizeMultiSlice
       if (slicesToCombine < 2)
         continue;
 
-      // Calculate left and right amounts for MultiSliceOp
-      // leftAmount covers negative offsets (slices shifted left/earlier)
-      // rightAmount covers positive offsets (slices shifted right/later)
-      int32_t leftAmount = rangeStart < 0 ? (int32_t)(-rangeStart) : 0;
-      int32_t rightAmount = rangeEnd > 0 ? (int32_t)rangeEnd : 0;
-      int32_t totalResults = leftAmount + rightAmount + 1;
+      // Calculate the shift amount
+      // leftShift covers negative offsets (slices shifted left/earlier)
+      int32_t leftShift = rangeStart < 0 ? (int32_t)(-rangeStart) : 0;
+      int32_t rightExtent = rangeEnd > 0 ? (int32_t)rangeEnd : 0;
+      int32_t amount = leftShift + rightExtent;
+      int32_t totalResults = amount + 1;
+
+      // Adjust start and limit indices by shifting left along the dimension
+      SmallVector<int64_t> adjustedStartIndices = startIndices;
+      SmallVector<int64_t> adjustedLimitIndices = limitIndices;
+      adjustedStartIndices[dim] -= leftShift;
+      adjustedLimitIndices[dim] -= leftShift;
 
       // Create the MultiSliceOp
       auto resultType = op.getResult().getType();
@@ -32020,8 +32026,8 @@ struct RecognizeMultiSlice
 
       rewriter.setInsertionPointAfterValue(input);
       auto newOp = rewriter.create<enzymexla::MultiSliceOp>(
-          op.getLoc(), resultTypes, input, startIndices, limitIndices, strides,
-          (int32_t)dim, leftAmount, rightAmount);
+          op.getLoc(), resultTypes, input, adjustedStartIndices,
+          adjustedLimitIndices, strides, (int32_t)dim, amount);
 
       // Propagate sharding if present
       if (auto shard = sdy::getShardingPerValue(op)) {
@@ -32031,8 +32037,9 @@ struct RecognizeMultiSlice
       // Replace slices that fall within the selected range
       for (auto &[slice, offset] : matchingSlices) {
         if (offset >= rangeStart && offset <= rangeEnd) {
-          // Result index for offset 'o' is: leftAmount + o
-          int32_t resultIdx = leftAmount + (int32_t)offset;
+          // Result index for offset 'o' is: leftShift + o
+          // (since we shifted start_indices left by leftShift)
+          int32_t resultIdx = leftShift + (int32_t)offset;
           rewriter.replaceOp(slice, newOp.getResult(resultIdx));
         }
         // Slices outside the range are left unchanged
