@@ -100,18 +100,9 @@ sed -i.bak0 "s/= \\[\\"@xla\\/\\/third_party\\/protobuf:protobuf.patch\\"/= \\[\
 
 """,
     """
-sed -i.bak0 's/registry\\["__chkstk"\\] = SymbolDef(__chkstk)/registry["__chkstk"] = SymbolDef(__chkstk_ms);\\nregistry["__chkstk_ms"] = SymbolDef(__chkstk_ms)/g' xla/backends/cpu/codegen/builtin_definition_generator.cc
+sed -i.bak0 '/registry\\["__chkstk"\\] = SymbolDef(__chkstk)/d' xla/backends/cpu/codegen/builtin_definition_generator.cc
 sed -i.bak0 's/= StaticRegistry();/= StaticRegistry();llvm::errs() << \\"searching for: \\" << name << \\"\\\\n\\";/g'  xla/backends/cpu/codegen/builtin_definition_generator.cc
 sed -i.bak0 's/return std::nullopt/llvm::errs() << \\"failed search for: \\" << name << \\"\\\\n\\";return std::nullopt/g' xla/backends/cpu/codegen/builtin_definition_generator.cc
-""",
-    """
-sed -i.bak0 's/void __chkstk(size_t);/void __chkstk_ms(size_t);extern "C" void __chkstk(size_t s) { __chkstk_ms(s); }/g' xla/backends/cpu/codegen/builtin_definition_generator.cc
-""",
-    """
-sed -i.bak0 "1s/^/#include \\"llvm\\/Support\\/DynamicLibrary.h\\"\\n/g" xla/backends/cpu/codegen/builtin_definition_generator.cc
-""",
-    """
-sed -i.bak0 "s/SymbolDef(__chkstk_ms)/SymbolDef(reinterpret_cast<void* (*)(size_t)>(llvm::sys::DynamicLibrary::SearchForAddressOfSymbol(\\"__chkstk_ms\\")))/g" xla/backends/cpu/codegen/builtin_definition_generator.cc
 """,
     """
 sed -i.bak0 "s/Shlwapi/shlwapi/g" xla/tsl/platform/windows/load_library.cc xla/tsl/platform/windows/windows_file_system.cc xla/tsl/platform/windows/env.cc
