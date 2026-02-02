@@ -181,10 +181,10 @@ public:
   /// function calls `InferIntRangeInterface` to provide values for block
   /// arguments or tries to reduce the range on loop induction variables with
   /// known bounds.
-  void
-  visitNonControlFlowArguments(Operation *op, const RegionSuccessor &successor,
-                               ArrayRef<IntegerValueRangeLattice *> argLattices,
-                               unsigned firstIndex) override;
+  void visitNonControlFlowArguments(
+      Operation *op, const RegionSuccessor &successor,
+      ValueRange nonSuccessorInputs,
+      ArrayRef<IntegerValueRangeLattice *> nonSuccessorInputLattices) override;
 
   /// Gets the constant lower and upper bounds for a given index of an
   /// AffineParallelOp. The upper bound is adjusted to be inclusive (subtracts 1
@@ -239,7 +239,8 @@ public:
 
 void AffineIntegerRangeAnalysis::visitNonControlFlowArguments(
     Operation *op, const RegionSuccessor &successor,
-    ArrayRef<IntegerValueRangeLattice *> argLattices, unsigned firstIndex) {
+    ValueRange nonSuccessorInputs,
+    ArrayRef<IntegerValueRangeLattice *> nonSuccessorInputLattices) {
   LLVM_DEBUG(llvm::dbgs() << "Inferring ranges for " << op->getName() << "\n");
   if (auto inferrable = dyn_cast<InferIntRangeInterface>(op)) {
     auto argRanges = llvm::map_to_vector(op->getOperands(), [&](Value value) {
@@ -254,7 +255,8 @@ void AffineIntegerRangeAnalysis::visitNonControlFlowArguments(
         return;
 
       LLVM_DEBUG(llvm::dbgs() << "Inferred range " << attrs << "\n");
-      IntegerValueRangeLattice *lattice = argLattices[arg.getArgNumber()];
+      IntegerValueRangeLattice *lattice =
+          nonSuccessorInputLattices[arg.getArgNumber()];
       IntegerValueRange oldRange = lattice->getValue();
 
       ChangeResult changed = lattice->join(attrs);
@@ -292,7 +294,7 @@ void AffineIntegerRangeAnalysis::visitNonControlFlowArguments(
   } // AffineParallelOp
 
   return SparseForwardDataFlowAnalysis::visitNonControlFlowArguments(
-      op, successor, argLattices, firstIndex);
+      op, successor, nonSuccessorInputs, nonSuccessorInputLattices);
 }
 
 LogicalResult AffineIntegerRangeAnalysis::visitOperation(
