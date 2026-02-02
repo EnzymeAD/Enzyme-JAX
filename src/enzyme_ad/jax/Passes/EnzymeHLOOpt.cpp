@@ -32007,6 +32007,23 @@ struct RecognizeMultiSlice
       if (slicesToCombine < 2)
         continue;
 
+      // Check that all slices in the range have the same sharding
+      std::optional<sdy::TensorShardingPerValueAttr> commonSharding;
+      bool shardingMismatch = false;
+      for (auto &[slice, offset] : matchingSlices) {
+        if (offset >= rangeStart && offset <= rangeEnd) {
+          auto shardPerValue = sdy::getShardingPerValue(slice);
+          if (!commonSharding.has_value()) {
+            commonSharding = shardPerValue;
+          } else if (commonSharding.value() != shardPerValue) {
+            shardingMismatch = true;
+            break;
+          }
+        }
+      }
+      if (shardingMismatch)
+        return failure();
+
       // Calculate the shift amount
       // leftShift covers negative offsets (slices shifted left/earlier)
       int32_t leftShift = rangeStart < 0 ? (int32_t)(-rangeStart) : 0;
@@ -32029,9 +32046,16 @@ struct RecognizeMultiSlice
           op.getLoc(), resultTypes, input, adjustedStartIndices,
           adjustedLimitIndices, strides, (int32_t)dim, amount);
 
-      // Propagate sharding if present
-      if (auto shard = sdy::getShardingPerValue(op)) {
-        sdy::setShardings(newOp, shard);
+      // Propagate sharding if present (all slices have the same sharding)
+      if (commonSharding.has_value() && commonSharding.value()) {
+        auto shardings = commonSharding.value().getShardings();
+        if (!shardings.empty()) {
+          sdy::TensorShardingAttr singleShard = shardings[0];
+          SmallVector<sdy::TensorShardingAttr> newShardings(totalResults,
+                                                            singleShard);
+          sdy::setShardings(newOp, sdy::TensorShardingPerValueAttr::get(
+                                       op.getContext(), newShardings));
+        }
       }
 
       // Replace slices that fall within the selected range
