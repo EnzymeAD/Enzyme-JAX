@@ -253,6 +253,21 @@ extern "C" MLIR_CAPI_EXPORTED void EnzymeJaXMapSymbol(const char *name,
       llvm::orc::ExecutorAddr::fromPtr(symbol), llvm::JITSymbolFlags());
 }
 
+#if defined(_WIN32)
+#ifdef __MINGW32__
+#if defined(__i386__)
+#undef _alloca
+extern "C" void _alloca(void);
+#elif defined(__x86_64__)
+extern "C" void ___chkstk_ms(void);
+#else
+extern "C" void __chkstk(void);
+#endif
+#else
+extern "C" void __chkstk(void);
+#endif
+#endif
+
 bool initJIT() {
   if (!JIT) {
     auto tJIT =
@@ -298,17 +313,15 @@ bool initJIT() {
 
 #if defined(_WIN32)
 #ifdef __MINGW32__
-// This is a MinGW version of #pragma comment(linker, "...") that doesn't
-// require compiling with -fms-extensions.
 #if defined(__i386__)
-    EnzymeJaXMapSymbol("__chkstk", &_alloca);
+    EnzymeJaXMapSymbol("__chkstk", (void *)&_alloca);
 #elif defined(__x86_64__)
-    EnzymeJaXMapSymbol("__chkstk", &___chkstk_ms);
+    EnzymeJaXMapSymbol("__chkstk", (void *)&___chkstk_ms);
 #else
-    EnzymeJaXMapSymbol("__chkstk", &___chkstk);
+    EnzymeJaXMapSymbol("__chkstk", (void *)&__chkstk);
 #endif
 #else
-    EnzymeJaXMapSymbol("__chkstk", &___chkstk);
+    EnzymeJaXMapSymbol("__chkstk", (void *)&__chkstk);
 #endif
 #endif
   }
