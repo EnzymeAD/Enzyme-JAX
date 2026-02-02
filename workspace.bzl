@@ -105,7 +105,7 @@ sed -i.bak0 's/= StaticRegistry();/= StaticRegistry();llvm::errs() << \\"searchi
 sed -i.bak0 's/return std::nullopt/llvm::errs() << \\"failed search for: \\" << name << \\"\\\\n\\";return std::nullopt/g' xla/backends/cpu/codegen/builtin_definition_generator.cc
 """,
     """
-sed -i.bak0 's/void __chkstk(size_t)/void __chkstk_ms(size_t)/g' xla/backends/cpu/codegen/builtin_definition_generator.cc
+sed -i.bak0 's/void __chkstk(size_t);/void __chkstk_ms(size_t);extern "C" void __chkstk(size_t s) { __chkstk_ms(s); }/g' xla/backends/cpu/codegen/builtin_definition_generator.cc
 """,
     """
 sed -i.bak0 "1s/^/#include \\"llvm\\/Support\\/DynamicLibrary.h\\"\\n/g" xla/backends/cpu/codegen/builtin_definition_generator.cc
