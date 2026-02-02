@@ -6,6 +6,7 @@ load("//:workspace.bzl", "ML_TOOLCHAIN_COMMIT", "ML_TOOLCHAIN_SHA256")
 ML_TOOLCHAIN_PATCHES = [
     """
 	sed -i.bak0 "/D_FORTIFY_SOURCE/d" cc/features/BUILD third_party/gpus/crosstool/cc_toolchain_config.bzl.tpl
+	sed -i.bak0 "/DNDEBUG/d" cc/features/BUILD third_party/gpus/crosstool/cc_toolchain_config.bzl.tpl
 	""",
 ]
 
