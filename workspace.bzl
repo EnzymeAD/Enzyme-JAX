@@ -100,7 +100,6 @@ sed -i.bak0 "s/= \\[\\"@xla\\/\\/third_party\\/protobuf:protobuf.patch\\"/= \\[\
 
 """,
     """
-sed -i.bak0 '/registry\\["__chkstk"\\] = SymbolDef(__chkstk)/d' xla/backends/cpu/codegen/builtin_definition_generator.cc
 sed -i.bak0 's/= StaticRegistry();/= StaticRegistry();llvm::errs() << \\"searching for: \\" << name << \\"\\\\n\\";/g'  xla/backends/cpu/codegen/builtin_definition_generator.cc
 sed -i.bak0 's/return std::nullopt/llvm::errs() << \\"failed search for: \\" << name << \\"\\\\n\\";return std::nullopt/g' xla/backends/cpu/codegen/builtin_definition_generator.cc
 """,
