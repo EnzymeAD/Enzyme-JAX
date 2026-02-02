@@ -815,7 +815,7 @@ def GesvjOp : EnzymeXLA_Op<"lapack.gesvj", [Pure]> {
 }
 
 def HeevOp : EnzymeXLA_Op<"lapack.heev", [Pure]> {
-  let summary = "Eigenvalue decomposition for Hermitian/symmetric matrices.";
+  let summary = "Eigenvalue decomposition for Hermitian/symmetric matrices using QR iteration.";
 
   let arguments = (ins
     HLO_Tensor:$input,
