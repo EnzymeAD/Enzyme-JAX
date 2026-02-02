@@ -244,6 +244,15 @@ llvm::sys::SmartRWMutex<true> jit_kernel_mutex;
 std::unique_ptr<llvm::orc::LLJIT> JIT = nullptr;
 llvm::orc::SymbolMap MappedSymbols;
 
+bool initJIT();
+
+extern "C" MLIR_CAPI_EXPORTED void EnzymeJaXMapSymbol(const char *name,
+                                                      void *symbol) {
+  initJIT();
+  MappedSymbols[JIT->mangleAndIntern(name)] = llvm::orc::ExecutorSymbolDef(
+      llvm::orc::ExecutorAddr::fromPtr(symbol), llvm::JITSymbolFlags());
+}
+
 bool initJIT() {
   if (!JIT) {
     auto tJIT =
@@ -286,15 +295,24 @@ bool initJIT() {
     }
 
     JIT->getMainJITDylib().addGenerator(std::move(ProcessSymsGenerator.get()));
+
+#if defined(_WIN32)
+#ifdef __MINGW32__
+// This is a MinGW version of #pragma comment(linker, "...") that doesn't
+// require compiling with -fms-extensions.
+#if defined(__i386__)
+    EnzymeJaXMapSymbol("__chkstk", &_alloca);
+#elif defined(__x86_64__)
+    EnzymeJaXMapSymbol("__chkstk", &___chkstk_ms);
+#else
+    EnzymeJaXMapSymbol("__chkstk", &___chkstk);
+#endif
+#else
+    EnzymeJaXMapSymbol("__chkstk", &___chkstk);
+#endif
+#endif
   }
   return true;
-}
-
-extern "C" MLIR_CAPI_EXPORTED void EnzymeJaXMapSymbol(const char *name,
-                                                      void *symbol) {
-  initJIT();
-  MappedSymbols[JIT->mangleAndIntern(name)] = llvm::orc::ExecutorSymbolDef(
-      llvm::orc::ExecutorAddr::fromPtr(symbol), llvm::JITSymbolFlags());
 }
 
 CallInfo CompileHostModule(std::string &key, mlir::ModuleOp modOp,
