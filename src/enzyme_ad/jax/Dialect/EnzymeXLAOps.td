@@ -1278,6 +1278,18 @@ def MPIWaitOp : EnzymeXLA_Op<"mpi.wait", []> {
   let assemblyFormat = "`(` operands `)` attr-dict `:` type(operands)";
 }
 
+def MPIWaitallOp : EnzymeXLA_Op<"mpi.waitall", []> {
+  let summary = "Equivalent to "
+                "`MPI_Waitall(&request, &status)`";
+
+  let arguments = (
+    ins TensorOf<[I32]> : $count,
+    TensorOf<[I64]> : $request
+  );
+
+  let assemblyFormat = "`(` operands `)` attr-dict `:` type(operands)";
+}
+
 def MPIAllreduceOp : EnzymeXLA_Op<"mpi.allreduce", []> {
   let summary = "Equivalent to "
                 "`MPI_Allreduce(&sendbuf, &recvbuf, count, datatype, op, MPI_COMM_WORLD)`";
