@@ -32354,6 +32354,24 @@ struct RecognizeMultiRotate
     if (rotatesToCombine < 2)
       return failure();
 
+    // Check that all rotates in the range have the same sharding
+    std::optional<sdy::TensorShardingPerValueAttr> commonSharding;
+    bool shardingMismatch = false;
+    for (auto rotate : rotates) {
+      int32_t amt = rotate.getAmount();
+      if (amt >= rangeStart && amt <= rangeEnd) {
+        auto shardPerValue = sdy::getShardingPerValue(rotate);
+        if (!commonSharding.has_value()) {
+          commonSharding = shardPerValue;
+        } else if (commonSharding.value() != shardPerValue) {
+          shardingMismatch = true;
+          break;
+        }
+      }
+    }
+    if (shardingMismatch)
+      return failure();
+
     // Calculate left and right amounts for MultiRotateOp
     // leftAmount covers positive rotations (rotate left)
     // rightAmount covers negative rotations (rotate right)
@@ -32368,9 +32386,16 @@ struct RecognizeMultiRotate
         op.getDimensionAttr(), rewriter.getSI32IntegerAttr(leftAmount),
         rewriter.getSI32IntegerAttr(rightAmount));
 
-    // Propagate sharding if present
-    if (auto shard = sdy::getShardingPerValue(op)) {
-      sdy::setShardings(newOp, shard);
+    // Propagate sharding if present (all rotates have the same sharding)
+    if (commonSharding.has_value() && commonSharding.value()) {
+      auto shardings = commonSharding.value().getShardings();
+      if (!shardings.empty()) {
+        sdy::TensorShardingAttr singleShard = shardings[0];
+        SmallVector<sdy::TensorShardingAttr> newShardings(totalResults,
+                                                          singleShard);
+        sdy::setShardings(newOp, sdy::TensorShardingPerValueAttr::get(
+                                     op.getContext(), newShardings));
+      }
     }
 
     // Replace rotations that fall within the selected range
