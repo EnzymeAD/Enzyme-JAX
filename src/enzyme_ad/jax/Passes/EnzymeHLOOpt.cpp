@@ -16994,7 +16994,7 @@ struct SinkDUS : public CheckedOpRewritePattern<stablehlo::WhileOp, SinkDUS> {
     // Step 1: Track which results need to be transformed
     struct Candidate {
       unsigned idx;
-      DynamicUpdateSliceOp DUS;
+      stablehlo::DynamicUpdateSliceOp DUS;
       SmallVector<stablehlo::SliceOp> mustReaders;
       SmallVector<stablehlo::SliceOp> mayReaders;
     };
