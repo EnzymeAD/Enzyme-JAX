@@ -17,9 +17,9 @@ module {
     %1:2 = enzyme.getSampleFromConstraint %arg0 {symbol = #enzyme.symbol<5>} : tensor<f64>, tensor<2xf64>
     %2 = call @joint_logpdf(%1#0, %1#1, %arg2, %arg3) : (tensor<f64>, tensor<2xf64>, tensor<f64>, tensor<f64>) -> tensor<f64>
     %3 = stablehlo.add %2, %cst : tensor<f64>
-    %4 = enzyme.addSampleToTrace(%1#0, %1#1 : tensor<f64>, tensor<2xf64>) into %0 {symbol = #enzyme.symbol<5>}
-    %5 = enzyme.addWeightToTrace(%3 : tensor<f64>) into %4
-    %6 = enzyme.addRetvalToTrace(%1#0, %1#1 : tensor<f64>, tensor<2xf64>) into %5
+    %4 = enzyme.addSampleToTrace %1#0, %1#1 into %0 {symbol = #enzyme.symbol<5>} : (!enzyme.Trace, tensor<f64>, tensor<2xf64>) -> !enzyme.Trace
+    %5 = enzyme.addWeightToTrace %3 into %4 : (!enzyme.Trace, tensor<f64>) -> !enzyme.Trace
+    %6 = enzyme.addRetvalToTrace %1#0, %1#1 into %5 : (!enzyme.Trace, tensor<f64>, tensor<2xf64>) -> !enzyme.Trace
     return %6, %3, %arg1, %1#0, %1#1 : !enzyme.Trace, tensor<f64>, tensor<2xui64>, tensor<f64>, tensor<2xf64>
   }
 }
