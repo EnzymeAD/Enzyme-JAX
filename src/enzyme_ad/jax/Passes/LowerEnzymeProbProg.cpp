@@ -1,7 +1,6 @@
 #include "Enzyme/MLIR/Dialect/Dialect.h"
 #include "Enzyme/MLIR/Dialect/Ops.h"
 #include "mhlo/IR/hlo_ops.h"
-#include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Func/Transforms/FuncConversions.h"
@@ -220,21 +219,34 @@ struct SelectOpConversion : public OpConversionPattern<enzyme::SelectOp> {
   using OpConversionPattern::OpConversionPattern;
 
   std::string backend;
-  SelectOpConversion(std::string backend, TypeConverter &typeConverter,
-                     MLIRContext *context, PatternBenefit benefit = 1)
-      : OpConversionPattern(typeConverter, context, benefit), backend(backend) {
-  }
+  SelectOpConversion(std::string backend, MLIRContext *context,
+                     PatternBenefit benefit = 1)
+      : OpConversionPattern(context, benefit), backend(backend) {}
 
   LogicalResult
   matchAndRewrite(enzyme::SelectOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto newOp = stablehlo::SelectOp::create(
-        rewriter, op.getLoc(), adaptor.getTrueValue().getType(),
-        adaptor.getCondition(), adaptor.getTrueValue(),
-        adaptor.getFalseValue());
+    rewriter.replaceOpWithNewOp<stablehlo::SelectOp>(
+        op, adaptor.getTrueValue().getType(), adaptor.getCondition(),
+        adaptor.getTrueValue(), adaptor.getFalseValue());
+    return success();
+  }
+};
 
-    rewriter.replaceOp(op, newOp.getResult());
+struct ReshapeOpConversion : public OpConversionPattern<enzyme::ReshapeOp> {
+  using OpConversionPattern::OpConversionPattern;
 
+  std::string backend;
+  ReshapeOpConversion(std::string backend, MLIRContext *context,
+                      PatternBenefit benefit = 1)
+      : OpConversionPattern(context, benefit), backend(backend) {}
+
+  LogicalResult
+  matchAndRewrite(enzyme::ReshapeOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto resultType = cast<RankedTensorType>(op.getResult().getType());
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, resultType,
+                                                      adaptor.getInput());
     return success();
   }
 };
@@ -243,10 +255,9 @@ struct DumpOpConversion : public OpConversionPattern<enzyme::DumpOp> {
   using OpConversionPattern::OpConversionPattern;
 
   std::string backend;
-  DumpOpConversion(std::string backend, TypeConverter &typeConverter,
-                   MLIRContext *context, PatternBenefit benefit = 1)
-      : OpConversionPattern(typeConverter, context, benefit), backend(backend) {
-  }
+  DumpOpConversion(std::string backend, MLIRContext *context,
+                   PatternBenefit benefit = 1)
+      : OpConversionPattern(context, benefit), backend(backend) {}
 
   LogicalResult
   matchAndRewrite(enzyme::DumpOp op, OpAdaptor adaptor,
@@ -435,22 +446,18 @@ struct CholeskyOpConversion : public OpConversionPattern<enzyme::CholeskyOp> {
   using OpConversionPattern::OpConversionPattern;
 
   std::string backend;
-  CholeskyOpConversion(std::string backend, TypeConverter &typeConverter,
-                       MLIRContext *context, PatternBenefit benefit = 1)
-      : OpConversionPattern(typeConverter, context, benefit), backend(backend) {
-  }
+  CholeskyOpConversion(std::string backend, MLIRContext *context,
+                       PatternBenefit benefit = 1)
+      : OpConversionPattern(context, benefit), backend(backend) {}
 
   LogicalResult
   matchAndRewrite(enzyme::CholeskyOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto input = adaptor.getInput();
     auto resultType = cast<RankedTensorType>(op.getResult().getType());
-    bool lower = op.getLower();
 
-    auto choleskyOp = stablehlo::CholeskyOp::create(
-        rewriter, op.getLoc(), resultType, input, rewriter.getBoolAttr(lower));
-
-    rewriter.replaceOp(op, choleskyOp.getResult());
+    rewriter.replaceOpWithNewOp<stablehlo::CholeskyOp>(
+        op, resultType, input, rewriter.getBoolAttr(op.getLower()));
     return success();
   }
 };
@@ -460,10 +467,9 @@ struct TriangularSolveOpConversion
   using OpConversionPattern::OpConversionPattern;
 
   std::string backend;
-  TriangularSolveOpConversion(std::string backend, TypeConverter &typeConverter,
-                              MLIRContext *context, PatternBenefit benefit = 1)
-      : OpConversionPattern(typeConverter, context, benefit), backend(backend) {
-  }
+  TriangularSolveOpConversion(std::string backend, MLIRContext *context,
+                              PatternBenefit benefit = 1)
+      : OpConversionPattern(context, benefit), backend(backend) {}
 
   LogicalResult
   matchAndRewrite(enzyme::TriangularSolveOp op, OpAdaptor adaptor,
@@ -489,6 +495,8 @@ struct TriangularSolveOpConversion
     case enzyme::Transpose::ADJOINT:
       stablehloTranspose = stablehlo::Transpose::ADJOINT;
       break;
+    default:
+      return failure();
     }
 
     // StableHLO triangular_solve requires both operands to have the same rank.
@@ -525,10 +533,9 @@ struct DotOpConversion : public OpConversionPattern<enzyme::DotOp> {
   using OpConversionPattern::OpConversionPattern;
 
   std::string backend;
-  DotOpConversion(std::string backend, TypeConverter &typeConverter,
-                  MLIRContext *context, PatternBenefit benefit = 1)
-      : OpConversionPattern(typeConverter, context, benefit), backend(backend) {
-  }
+  DotOpConversion(std::string backend, MLIRContext *context,
+                  PatternBenefit benefit = 1)
+      : OpConversionPattern(context, benefit), backend(backend) {}
 
   LogicalResult
   matchAndRewrite(enzyme::DotOp op, OpAdaptor adaptor,
@@ -549,12 +556,10 @@ struct DotOpConversion : public OpConversionPattern<enzyme::DotOp> {
         SmallVector<int64_t>(lhsContracting.begin(), lhsContracting.end()),
         SmallVector<int64_t>(rhsContracting.begin(), rhsContracting.end()));
 
-    auto dotOp = stablehlo::DotGeneralOp::create(
-        rewriter, op.getLoc(), resultType, lhs, rhs, dotDimensionNumbers,
+    rewriter.replaceOpWithNewOp<stablehlo::DotGeneralOp>(
+        op, resultType, lhs, rhs, dotDimensionNumbers,
         /*precision_config=*/ArrayAttr(),
         /*algorithm=*/stablehlo::DotAlgorithmAttr());
-
-    rewriter.replaceOp(op, dotOp.getResult());
     return success();
   }
 };
@@ -565,10 +570,9 @@ struct LogAddExpOpConversion : public OpConversionPattern<enzyme::LogAddExpOp> {
   using OpConversionPattern::OpConversionPattern;
 
   std::string backend;
-  LogAddExpOpConversion(std::string backend, TypeConverter &typeConverter,
-                        MLIRContext *context, PatternBenefit benefit = 1)
-      : OpConversionPattern(typeConverter, context, benefit), backend(backend) {
-  }
+  LogAddExpOpConversion(std::string backend, MLIRContext *context,
+                        PatternBenefit benefit = 1)
+      : OpConversionPattern(context, benefit), backend(backend) {}
 
   LogicalResult
   matchAndRewrite(enzyme::LogAddExpOp op, OpAdaptor adaptor,
@@ -608,10 +612,9 @@ struct LogisticOpConversion : public OpConversionPattern<enzyme::LogisticOp> {
   using OpConversionPattern::OpConversionPattern;
 
   std::string backend;
-  LogisticOpConversion(std::string backend, TypeConverter &typeConverter,
-                       MLIRContext *context, PatternBenefit benefit = 1)
-      : OpConversionPattern(typeConverter, context, benefit), backend(backend) {
-  }
+  LogisticOpConversion(std::string backend, MLIRContext *context,
+                       PatternBenefit benefit = 1)
+      : OpConversionPattern(context, benefit), backend(backend) {}
 
   LogicalResult
   matchAndRewrite(enzyme::LogisticOp op, OpAdaptor adaptor,
@@ -619,10 +622,7 @@ struct LogisticOpConversion : public OpConversionPattern<enzyme::LogisticOp> {
     auto operand = adaptor.getOperand();
     auto resultType = cast<RankedTensorType>(op.getResult().getType());
 
-    auto logisticOp = stablehlo::LogisticOp::create(rewriter, op.getLoc(),
-                                                    resultType, operand);
-
-    rewriter.replaceOp(op, logisticOp.getResult());
+    rewriter.replaceOpWithNewOp<stablehlo::LogisticOp>(op, resultType, operand);
     return success();
   }
 };
@@ -631,10 +631,9 @@ struct RandomOpConversion : public OpConversionPattern<enzyme::RandomOp> {
   using OpConversionPattern::OpConversionPattern;
 
   std::string backend;
-  RandomOpConversion(std::string backend, TypeConverter &typeConverter,
-                     MLIRContext *context, PatternBenefit benefit = 1)
-      : OpConversionPattern(typeConverter, context, benefit), backend(backend) {
-  }
+  RandomOpConversion(std::string backend, MLIRContext *context,
+                     PatternBenefit benefit = 1)
+      : OpConversionPattern(context, benefit), backend(backend) {}
 
   LogicalResult
   matchAndRewrite(enzyme::RandomOp op, OpAdaptor adaptor,
@@ -978,9 +977,8 @@ struct RandomSplitOpConversion
   std::string backend;
   bool debugDump;
   RandomSplitOpConversion(std::string backend, bool debugDump,
-                          TypeConverter &typeConverter, MLIRContext *context,
-                          PatternBenefit benefit = 1)
-      : OpConversionPattern(typeConverter, context, benefit), backend(backend),
+                          MLIRContext *context, PatternBenefit benefit = 1)
+      : OpConversionPattern(context, benefit), backend(backend),
         debugDump(debugDump) {}
 
   LogicalResult
@@ -1120,10 +1118,9 @@ struct ForLoopOpConversion : public OpConversionPattern<enzyme::ForLoopOp> {
   using OpConversionPattern::OpConversionPattern;
 
   std::string backend;
-  ForLoopOpConversion(std::string backend, TypeConverter &typeConverter,
-                      MLIRContext *context, PatternBenefit benefit = 1)
-      : OpConversionPattern(typeConverter, context, benefit), backend(backend) {
-  }
+  ForLoopOpConversion(std::string backend, MLIRContext *context,
+                      PatternBenefit benefit = 1)
+      : OpConversionPattern(context, benefit), backend(backend) {}
 
   LogicalResult
   matchAndRewrite(enzyme::ForLoopOp op, OpAdaptor adaptor,
@@ -1133,7 +1130,7 @@ struct ForLoopOpConversion : public OpConversionPattern<enzyme::ForLoopOp> {
 
     SmallVector<Type> loopTypes = {adaptor.getLowerBound().getType()};
     for (auto result : op.getResults())
-      loopTypes.push_back(typeConverter->convertType(result.getType()));
+      loopTypes.push_back(result.getType());
 
     auto whileOp =
         stablehlo::WhileOp::create(rewriter, op.getLoc(), loopTypes, initVals);
@@ -1183,17 +1180,16 @@ struct WhileLoopOpConversion : public OpConversionPattern<enzyme::WhileLoopOp> {
   using OpConversionPattern::OpConversionPattern;
 
   std::string backend;
-  WhileLoopOpConversion(std::string backend, TypeConverter &typeConverter,
-                        MLIRContext *context, PatternBenefit benefit = 1)
-      : OpConversionPattern(typeConverter, context, benefit), backend(backend) {
-  }
+  WhileLoopOpConversion(std::string backend, MLIRContext *context,
+                        PatternBenefit benefit = 1)
+      : OpConversionPattern(context, benefit), backend(backend) {}
 
   LogicalResult
   matchAndRewrite(enzyme::WhileLoopOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     SmallVector<Type> loopTypes;
     for (auto result : op.getResults())
-      loopTypes.push_back(typeConverter->convertType(result.getType()));
+      loopTypes.push_back(result.getType());
 
     auto whileOp = stablehlo::WhileOp::create(rewriter, op.getLoc(), loopTypes,
                                               adaptor.getInitArgs());
@@ -1247,17 +1243,16 @@ struct IfOpConversion : public OpConversionPattern<enzyme::IfOp> {
   using OpConversionPattern::OpConversionPattern;
 
   std::string backend;
-  IfOpConversion(std::string backend, TypeConverter &typeConverter,
-                 MLIRContext *context, PatternBenefit benefit = 1)
-      : OpConversionPattern(typeConverter, context, benefit), backend(backend) {
-  }
+  IfOpConversion(std::string backend, MLIRContext *context,
+                 PatternBenefit benefit = 1)
+      : OpConversionPattern(context, benefit), backend(backend) {}
 
   LogicalResult
   matchAndRewrite(enzyme::IfOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     SmallVector<Type> resultTypes;
     for (auto result : op.getResults())
-      resultTypes.push_back(typeConverter->convertType(result.getType()));
+      resultTypes.push_back(result.getType());
 
     auto ifOp = stablehlo::IfOp::create(rewriter, op.getLoc(), resultTypes,
                                         adaptor.getPredicate());
@@ -1307,10 +1302,9 @@ struct PopcountOpConversion : public OpConversionPattern<enzyme::PopcountOp> {
   using OpConversionPattern::OpConversionPattern;
 
   std::string backend;
-  PopcountOpConversion(std::string backend, TypeConverter &typeConverter,
-                       MLIRContext *context, PatternBenefit benefit = 1)
-      : OpConversionPattern(typeConverter, context, benefit), backend(backend) {
-  }
+  PopcountOpConversion(std::string backend, MLIRContext *context,
+                       PatternBenefit benefit = 1)
+      : OpConversionPattern(context, benefit), backend(backend) {}
 
   LogicalResult
   matchAndRewrite(enzyme::PopcountOp op, OpAdaptor adaptor,
@@ -1323,214 +1317,62 @@ struct PopcountOpConversion : public OpConversionPattern<enzyme::PopcountOp> {
   }
 };
 
-struct DynamicExtractOpConversion
-    : public OpConversionPattern<enzyme::DynamicExtractOp> {
+struct SliceOpConversion : public OpConversionPattern<enzyme::SliceOp> {
   using OpConversionPattern::OpConversionPattern;
 
   std::string backend;
-  DynamicExtractOpConversion(std::string backend, TypeConverter &typeConverter,
-                             MLIRContext *context, PatternBenefit benefit = 1)
-      : OpConversionPattern(typeConverter, context, benefit), backend(backend) {
-  }
+  SliceOpConversion(std::string backend, MLIRContext *context,
+                    PatternBenefit benefit = 1)
+      : OpConversionPattern(context, benefit), backend(backend) {}
 
   LogicalResult
-  matchAndRewrite(enzyme::DynamicExtractOp op, OpAdaptor adaptor,
+  matchAndRewrite(enzyme::SliceOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto input = adaptor.getInput();
-    auto index = adaptor.getIndex();
-    auto inputType = cast<RankedTensorType>(input.getType());
     auto resultType = cast<RankedTensorType>(op.getResult().getType());
-
-    if (inputType.getRank() == 1 && resultType.getRank() == 0) {
-      auto elemType = inputType.getElementType();
-      auto slicedType = RankedTensorType::get({1}, elemType);
-      auto dynamicSlice = stablehlo::DynamicSliceOp::create(
-          rewriter, op.getLoc(), slicedType, input, ValueRange{index},
-          rewriter.getDenseI64ArrayAttr({1}));
-      auto reshapeOp = stablehlo::ReshapeOp::create(rewriter, op.getLoc(),
-                                                    resultType, dynamicSlice);
-      rewriter.replaceOp(op, reshapeOp.getResult());
-      return success();
-    }
-
-    if (inputType.getRank() == 2) {
-      int64_t positionSize = inputType.getShape()[1];
-      auto elemType = inputType.getElementType();
-
-      auto indexType = cast<RankedTensorType>(index.getType());
-      auto zeroConst = stablehlo::ConstantOp::create(
-          rewriter, op.getLoc(), indexType,
-          DenseElementsAttr::get(indexType, rewriter.getI64IntegerAttr(0)));
-
-      auto slicedType = RankedTensorType::get({1, positionSize}, elemType);
-      auto dynamicSlice = stablehlo::DynamicSliceOp::create(
-          rewriter, op.getLoc(), slicedType, input,
-          ValueRange{index, zeroConst},
-          rewriter.getDenseI64ArrayAttr({1, positionSize}));
-
-      auto reshapeOp = stablehlo::ReshapeOp::create(rewriter, op.getLoc(),
-                                                    resultType, dynamicSlice);
-
-      rewriter.replaceOp(op, reshapeOp.getResult());
-      return success();
-    }
-
-    return rewriter.notifyMatchFailure(
-        op, "Unsupported input tensor rank for dynamic_extract");
+    rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
+        op, resultType, adaptor.getOperand(), op.getStartIndices(),
+        op.getLimitIndices(), op.getStrides());
+    return success();
   }
 };
 
-struct DynamicUpdateOpConversion
-    : public OpConversionPattern<enzyme::DynamicUpdateOp> {
+struct DynamicSliceOpConversion
+    : public OpConversionPattern<enzyme::DynamicSliceOp> {
   using OpConversionPattern::OpConversionPattern;
 
   std::string backend;
-  DynamicUpdateOpConversion(std::string backend, TypeConverter &typeConverter,
-                            MLIRContext *context, PatternBenefit benefit = 1)
-      : OpConversionPattern(typeConverter, context, benefit), backend(backend) {
-  }
+  DynamicSliceOpConversion(std::string backend, MLIRContext *context,
+                           PatternBenefit benefit = 1)
+      : OpConversionPattern(context, benefit), backend(backend) {}
 
   LogicalResult
-  matchAndRewrite(enzyme::DynamicUpdateOp op, OpAdaptor adaptor,
+  matchAndRewrite(enzyme::DynamicSliceOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto input = adaptor.getInput();
-    auto index = adaptor.getIndex();
-    auto value = adaptor.getValue();
-    auto inputType = cast<RankedTensorType>(input.getType());
-    auto valueType = cast<RankedTensorType>(value.getType());
-
-    if (inputType.getRank() == 1 && valueType.getRank() == 0) {
-      auto elemType = valueType.getElementType();
-
-      auto reshapedValueType = RankedTensorType::get({1}, elemType);
-      auto reshapedValue = stablehlo::ReshapeOp::create(
-          rewriter, op.getLoc(), reshapedValueType, value);
-
-      auto dynamicUpdateSlice = stablehlo::DynamicUpdateSliceOp::create(
-          rewriter, op.getLoc(), inputType, input, reshapedValue,
-          ValueRange{index});
-
-      rewriter.replaceOp(op, dynamicUpdateSlice.getResult());
-      return success();
-    }
-
-    if (inputType.getRank() == 2 && valueType.getRank() == 1) {
-      int64_t positionSize = valueType.getShape()[0];
-      auto elemType = valueType.getElementType();
-
-      auto reshapedValueType =
-          RankedTensorType::get({1, positionSize}, elemType);
-      auto reshapedValue = stablehlo::ReshapeOp::create(
-          rewriter, op.getLoc(), reshapedValueType, value);
-
-      auto indexType = cast<RankedTensorType>(index.getType());
-      auto zeroConst = stablehlo::ConstantOp::create(
-          rewriter, op.getLoc(), indexType,
-          DenseElementsAttr::get(indexType, rewriter.getI64IntegerAttr(0)));
-
-      auto dynamicUpdateSlice = stablehlo::DynamicUpdateSliceOp::create(
-          rewriter, op.getLoc(), inputType, input, reshapedValue,
-          ValueRange{index, zeroConst});
-
-      rewriter.replaceOp(op, dynamicUpdateSlice.getResult());
-      return success();
-    }
-
-    return rewriter.notifyMatchFailure(
-        op, "Unsupported input/value tensor ranks for dynamic_update");
+    auto resultType = cast<RankedTensorType>(op.getResult().getType());
+    rewriter.replaceOpWithNewOp<stablehlo::DynamicSliceOp>(
+        op, resultType, adaptor.getOperand(), adaptor.getStartIndices(),
+        op.getSliceSizes());
+    return success();
   }
 };
 
-struct RecoverSampleOpConversion
-    : public OpConversionPattern<enzyme::RecoverSampleOp> {
+struct DynamicUpdateSliceOpConversion
+    : public OpConversionPattern<enzyme::DynamicUpdateSliceOp> {
   using OpConversionPattern::OpConversionPattern;
 
   std::string backend;
-  RecoverSampleOpConversion(std::string backend, TypeConverter &typeConverter,
-                            MLIRContext *context, PatternBenefit benefit = 1)
-      : OpConversionPattern(typeConverter, context, benefit), backend(backend) {
-  }
+  DynamicUpdateSliceOpConversion(std::string backend, MLIRContext *context,
+                                 PatternBenefit benefit = 1)
+      : OpConversionPattern(context, benefit), backend(backend) {}
 
   LogicalResult
-  matchAndRewrite(enzyme::RecoverSampleOp op, OpAdaptor adaptor,
+  matchAndRewrite(enzyme::DynamicUpdateSliceOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto resultType = cast<RankedTensorType>(op.getResult().getType());
-    auto positionType = cast<RankedTensorType>(adaptor.getPosition().getType());
-    auto elemType = resultType.getElementType();
-    int64_t offset = op.getOffset();
-
-    // Handle both 1D (single sample) and 2D (batched samples) inputs
-    if (positionType.getRank() == 1) {
-      // 1D input: position[positionSize] -> result[...shape...]
-      int64_t numElements = 1;
-      for (auto dim : resultType.getShape()) {
-        if (dim == ShapedType::kDynamic) {
-          return rewriter.notifyMatchFailure(op,
-                                             "Dynamic shapes not supported");
-        }
-        numElements *= dim;
-      }
-
-      SmallVector<int64_t> startIndices = {offset};
-      SmallVector<int64_t> limitIndices = {offset + numElements};
-      SmallVector<int64_t> strides = {1};
-
-      auto slicedType = RankedTensorType::get({numElements}, elemType);
-      auto sliceOp = stablehlo::SliceOp::create(
-          rewriter, op.getLoc(), slicedType, adaptor.getPosition(),
-          rewriter.getDenseI64ArrayAttr(startIndices),
-          rewriter.getDenseI64ArrayAttr(limitIndices),
-          rewriter.getDenseI64ArrayAttr(strides));
-
-      auto reshapeOp = stablehlo::ReshapeOp::create(rewriter, op.getLoc(),
-                                                    resultType, sliceOp);
-      rewriter.replaceOp(op, reshapeOp.getResult());
-    } else if (positionType.getRank() == 2) {
-      // 2D input: position[batchSize, positionSize] -> result[batchSize,
-      // ...shape...]
-      int64_t batchSize = positionType.getShape()[0];
-
-      // Result shape should be [batchSize, ...originalShape...]
-      // Compute numElements from result shape excluding batch dimension
-      if (resultType.getRank() < 1 || resultType.getShape()[0] != batchSize) {
-        return rewriter.notifyMatchFailure(
-            op, "Result type must have batch dimension matching input");
-      }
-
-      int64_t numElements = 1;
-      SmallVector<int64_t> originalShape;
-      for (int64_t i = 1; i < resultType.getRank(); ++i) {
-        auto dim = resultType.getShape()[i];
-        if (dim == ShapedType::kDynamic) {
-          return rewriter.notifyMatchFailure(op,
-                                             "Dynamic shapes not supported");
-        }
-        originalShape.push_back(dim);
-        numElements *= dim;
-      }
-
-      // Slice columns: [batchSize, positionSize] -> [batchSize, numElements]
-      SmallVector<int64_t> startIndices = {0, offset};
-      SmallVector<int64_t> limitIndices = {batchSize, offset + numElements};
-      SmallVector<int64_t> strides = {1, 1};
-
-      auto slicedType =
-          RankedTensorType::get({batchSize, numElements}, elemType);
-      auto sliceOp = stablehlo::SliceOp::create(
-          rewriter, op.getLoc(), slicedType, adaptor.getPosition(),
-          rewriter.getDenseI64ArrayAttr(startIndices),
-          rewriter.getDenseI64ArrayAttr(limitIndices),
-          rewriter.getDenseI64ArrayAttr(strides));
-
-      // Reshape to [batchSize, ...originalShape...]
-      auto reshapeOp = stablehlo::ReshapeOp::create(rewriter, op.getLoc(),
-                                                    resultType, sliceOp);
-      rewriter.replaceOp(op, reshapeOp.getResult());
-    } else {
-      return rewriter.notifyMatchFailure(op,
-                                         "Position must be 1D or 2D tensor");
-    }
-
+    auto newOp = stablehlo::DynamicUpdateSliceOp::create(
+        rewriter, op.getLoc(), resultType, adaptor.getOperand(),
+        adaptor.getUpdate(), adaptor.getStartIndices());
+    rewriter.replaceOp(op, newOp.getResult());
     return success();
   }
 };
@@ -1559,13 +1401,15 @@ struct LowerProbProgToStableHLOPass
     target.addIllegalOp<enzyme::DotOp>();
     target.addIllegalOp<enzyme::LogAddExpOp>();
     target.addIllegalOp<enzyme::LogisticOp>();
-    target.addIllegalOp<enzyme::RecoverSampleOp>();
     target.addIllegalOp<enzyme::ForLoopOp>();
     target.addIllegalOp<enzyme::WhileLoopOp>();
     target.addIllegalOp<enzyme::IfOp>();
     target.addIllegalOp<enzyme::PopcountOp>();
-    target.addIllegalOp<enzyme::DynamicExtractOp>();
-    target.addIllegalOp<enzyme::DynamicUpdateOp>();
+    target.addIllegalOp<enzyme::SliceOp>();
+    target.addIllegalOp<enzyme::DynamicSliceOp>();
+    target.addIllegalOp<enzyme::DynamicUpdateSliceOp>();
+    target.addIllegalOp<enzyme::SelectOp>();
+    target.addIllegalOp<enzyme::ReshapeOp>();
 
     target.addLegalOp<UnrealizedConversionCastOp>();
 
@@ -1574,12 +1418,11 @@ struct LowerProbProgToStableHLOPass
     patterns.add<RandomOpConversion, CholeskyOpConversion,
                  TriangularSolveOpConversion, DotOpConversion,
                  LogAddExpOpConversion, LogisticOpConversion,
-                 RecoverSampleOpConversion, ForLoopOpConversion,
-                 WhileLoopOpConversion, IfOpConversion, PopcountOpConversion,
-                 DynamicExtractOpConversion, DynamicUpdateOpConversion>(
-        backend, typeConverter, context);
-    patterns.add<RandomSplitOpConversion>(backend, debugDump, typeConverter,
-                                          context);
+                 ForLoopOpConversion, WhileLoopOpConversion, IfOpConversion,
+                 PopcountOpConversion, SliceOpConversion,
+                 DynamicSliceOpConversion, DynamicUpdateSliceOpConversion,
+                 SelectOpConversion, ReshapeOpConversion>(backend, context);
+    patterns.add<RandomSplitOpConversion>(backend, debugDump, context);
 
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns)))) {
@@ -1603,12 +1446,11 @@ struct LowerProbProgTraceOpsPass
     target.addLegalDialect<enzymexla::EnzymeXLADialect>();
     target.addLegalDialect<stablehlo::StablehloDialect>();
 
-    target.addIllegalOp<enzyme::SelectOp>();
     target.addIllegalOp<enzyme::DumpOp>();
 
     RewritePatternSet patterns(context);
 
-    patterns.add<SelectOpConversion, DumpOpConversion>(context);
+    patterns.add<DumpOpConversion>(context);
 
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns)))) {
