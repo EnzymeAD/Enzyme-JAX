@@ -160,8 +160,10 @@ struct FuncToTesseraPass
     patterns.add<FuncOpRewrite, CallOpRewrite, ReturnOpRewrite>(ctx);
 
     if (failed(applyPartialConversion(getOperation(), target,
-                                      std::move(patterns))))
+                                      std::move(patterns)))) {
+      llvm::errs() << "Failed to convert func dialect operations to tessera dialect operations\n";
       signalPassFailure();
+    }
   }
 };
 

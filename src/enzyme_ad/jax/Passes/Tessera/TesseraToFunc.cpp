@@ -118,8 +118,10 @@ struct TesseraToFuncPass
     patterns.add<DefineOpRewrite, CallOpRewrite, ReturnOpRewrite>(ctx);
 
     if (failed(
-            applyPatternsAndFoldGreedily(getOperation(), std::move(patterns))))
+            applyPatternsAndFoldGreedily(getOperation(), std::move(patterns)))) {
       signalPassFailure();
+      llvm::errs() << "Failed to convert tessera dialect operations to func dialect operations\n";
+    }
   }
 };
 

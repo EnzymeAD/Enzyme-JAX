@@ -64,11 +64,8 @@ public:
 
         if (module.lookupSymbol<LLVM::LLVMFuncOp>(globalName)) {
           valueToFunction[result] = globalName;
-          llvm::errs() << "Found function address: " << globalName << "\n";
         } else if (stringGlobals.count(globalName)) {
           valueToAnnotation[result] = stringGlobals[globalName];
-          llvm::errs() << "Found annotation string: "
-                       << stringGlobals[globalName] << "\n";
         }
       }
     }
@@ -108,9 +105,6 @@ public:
       if (structToAnnotation.count(structValue)) {
         StringRef annotStr = structToAnnotation[structValue];
         functionToAnnotation[funcName] = annotStr;
-        llvm::errs() << "Complete annotation: " << funcName << " -> "
-                     << annotStr << "\n";
-      }
     }
 
     // Apply annotations as attributes to functions
@@ -131,15 +125,6 @@ public:
 
     // Delete annotation array
     annotationGlobal.erase();
-
-    for (auto func : module.getOps<LLVM::LLVMFuncOp>()) {
-      llvm::errs() << "Function: " << func.getName() << "\n";
-      llvm::errs() << "All attributes:\n";
-      for (auto attr : func->getAttrs()) {
-        llvm::errs() << "  " << attr.getName() << " = " << attr.getValue()
-                     << "\n";
-      }
-    }
   }
 };
 } // namespace
