@@ -105,6 +105,7 @@ public:
       if (structToAnnotation.count(structValue)) {
         StringRef annotStr = structToAnnotation[structValue];
         functionToAnnotation[funcName] = annotStr;
+      }
     }
 
     // Apply annotations as attributes to functions
