@@ -35,7 +35,18 @@ struct FuncAttrToTesseraAttrPass
     ModuleOp module = getOperation();
     OpBuilder builder(module.getContext());
 
-    for (auto func : module.getOps<LLVM::LLVMFuncOp>()) {
+    for (auto llvmfunc : module.getOps<LLVM::LLVMFuncOp>()) {
+      if (auto attr = llvmfunc->getAttrOfType<StringAttr>("tessera_op")) {
+
+        auto tesseraAttr = enzyme::tessera::ConvertAttr::get(
+            builder.getContext(), attr.getValue().str());
+
+        llvmfunc->setAttr("tessera.convert", tesseraAttr);
+        llvmfunc->removeAttr("tessera_op");
+      }
+    }
+
+    for (auto func : module.getOps<func::FuncOp>()) {
       if (auto attr = func->getAttrOfType<StringAttr>("tessera_op")) {
 
         auto tesseraAttr = enzyme::tessera::ConvertAttr::get(
