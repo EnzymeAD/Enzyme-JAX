@@ -131,6 +131,8 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
         pass_pipeline += "print{filename="+outfile+".mlir},";
       }
       pass_pipeline += "symbol-dce,enzyme,remove-unnecessary-enzyme-ops,lower-affine";
+      if (backend == "rocm")
+        pass_pipeline += ",convert-cudart-to-hiprt";
       if (backend != "cpu")
 	pass_pipeline += ",convert-parallel-to-gpu1,gpu-kernel-outlining,canonicalize,convert-parallel-to-gpu2{backend=";
       pass_pipeline += backend;
