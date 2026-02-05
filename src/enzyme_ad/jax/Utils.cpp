@@ -3105,27 +3105,31 @@ Value transposeSliceHelper(stablehlo::TransposeOp transpose,
 }
 
 Value transposeLikeSliceHelper(stablehlo::BroadcastInDimOp transpose,
-                           PatternRewriter &rewriter, stablehlo::SliceOp op) {
+                               PatternRewriter &rewriter,
+                               stablehlo::SliceOp op) {
   return transposeLikeSliceHelper(transpose, rewriter, op.getStartIndices(),
-                              op.getLimitIndices(), op.getStrides());
+                                  op.getLimitIndices(), op.getStrides());
 }
 
 Value transposeLikeSliceHelper(stablehlo::BroadcastInDimOp transpose,
-                           PatternRewriter &rewriter,
-                           stablehlo::DynamicSliceOp op) {
+                               PatternRewriter &rewriter,
+                               stablehlo::DynamicSliceOp op) {
   return transposeLikeSliceHelper(transpose, rewriter,
-                              llvm::to_vector(op.getStartIndices()),
-                              op.getSliceSizes());
+                                  llvm::to_vector(op.getStartIndices()),
+                                  op.getSliceSizes());
 }
 
 Value transposeLikeSliceHelper(stablehlo::BroadcastInDimOp transpose,
-                           PatternRewriter &rewriter, ArrayRef<int64_t> starts,
-                           ArrayRef<int64_t> limits,
-                           ArrayRef<int64_t> strides) {
+                               PatternRewriter &rewriter,
+                               ArrayRef<int64_t> starts,
+                               ArrayRef<int64_t> limits,
+                               ArrayRef<int64_t> strides) {
   SmallVector<int64_t> permutedLimit(transpose.getType().getShape().size(), 1);
-  SmallVector<int64_t> permutedStrides(transpose.getType().getShape().size(), 1);
+  SmallVector<int64_t> permutedStrides(transpose.getType().getShape().size(),
+                                       1);
   SmallVector<int64_t> permutedStart(transpose.getType().getShape().size(), 0);
-  for (auto [permIndex, i] : llvm::enumerate(transpose.getBroadcastDimensions())) {
+  for (auto [permIndex, i] :
+       llvm::enumerate(transpose.getBroadcastDimensions())) {
     permutedStart[i] = starts[permIndex];
     permutedLimit[i] = limits[permIndex];
     permutedStrides[i] = strides[permIndex];
@@ -3135,15 +3139,18 @@ Value transposeLikeSliceHelper(stablehlo::BroadcastInDimOp transpose,
 }
 
 Value transposeLikeSliceHelper(stablehlo::BroadcastInDimOp transpose,
-                           PatternRewriter &rewriter,
-                           ArrayRef<Value> sliceStarts,
-                           ArrayRef<int64_t> sliceSizes) {
+                               PatternRewriter &rewriter,
+                               ArrayRef<Value> sliceStarts,
+                               ArrayRef<int64_t> sliceSizes) {
   SmallVector<int64_t> sizes(transpose.getType().getShape().size(), 1);
   Type eT = RankedTensorType::get({}, rewriter.getI32Type());
-  if (sliceStarts.size()) eT = sliceStarts[0].getType();
-  Value zero = stablehlo::ConstantOp::create(rewriter, transpose.getLoc(), eT, cast<ElementsAttr>(makeAttr(eT, 0)));
+  if (sliceStarts.size())
+    eT = sliceStarts[0].getType();
+  Value zero = stablehlo::ConstantOp::create(
+      rewriter, transpose.getLoc(), eT, cast<ElementsAttr>(makeAttr(eT, 0)));
   SmallVector<Value> starts(transpose.getType().getShape().size(), zero);
-  for (auto [i, permIndex] : llvm::enumerate(transpose.getBroadcastDimensions())) {
+  for (auto [i, permIndex] :
+       llvm::enumerate(transpose.getBroadcastDimensions())) {
     sizes[permIndex] = sliceSizes[i];
     starts[permIndex] = sliceStarts[i];
   }
@@ -3181,7 +3188,6 @@ Value transposeSliceHelper(stablehlo::TransposeOp transpose,
   return DynamicSliceOpCreate(rewriter, transpose.getLoc(),
                               transpose.getResult(), starts, sizes);
 }
-
 
 Value sliceTransposeHelper(stablehlo::TransposeOp transpose,
                            PatternRewriter &rewriter, stablehlo::SliceOp op) {

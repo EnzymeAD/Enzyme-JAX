@@ -2910,37 +2910,36 @@ static TypedAttr foldBinaryOpIntOrFloat(TypedAttr lhs, TypedAttr rhs,
 }
 
 static bool isTransposeReshapeLikeBroadcast(stablehlo::BroadcastInDimOp op) {
-    TypedValue<RankedTensorType> operand = op.getOperand();
-    RankedTensorType operandTy = operand.getType();
-    RankedTensorType type = op.getType();
+  TypedValue<RankedTensorType> operand = op.getOperand();
+  RankedTensorType operandTy = operand.getType();
+  RankedTensorType type = op.getType();
 
-    // Fold when broadcast is a noop.
-    auto dims = op.getBroadcastDimensions();
-    bool isDimsIota = isIotaRange(dims);
-    if (type == operandTy && isDimsIota) {
-      return false;
-    }
-
-    // Handle splat broadcasts.
-    if (SplatElementsAttr cstAttr;
-        matchPattern(operand, m_Constant(&cstAttr))) {
-      return false;
-    }
-
-    if (operandTy.hasStaticShape() && type.hasStaticShape() &&
-        type.getNumElements() == operandTy.getNumElements()) {
-      // BroadcastInDim equivalent to reshape.
-      if (isDimsIota) {
-        return false;
-      }
-      // BroadcastInDim equivalent to transpose.
-      if (type.getRank() == operandTy.getRank()) {
-	     return false;
-      }
-
-      return true;
-    }
+  // Fold when broadcast is a noop.
+  auto dims = op.getBroadcastDimensions();
+  bool isDimsIota = isIotaRange(dims);
+  if (type == operandTy && isDimsIota) {
     return false;
+  }
+
+  // Handle splat broadcasts.
+  if (SplatElementsAttr cstAttr; matchPattern(operand, m_Constant(&cstAttr))) {
+    return false;
+  }
+
+  if (operandTy.hasStaticShape() && type.hasStaticShape() &&
+      type.getNumElements() == operandTy.getNumElements()) {
+    // BroadcastInDim equivalent to reshape.
+    if (isDimsIota) {
+      return false;
+    }
+    // BroadcastInDim equivalent to transpose.
+    if (type.getRank() == operandTy.getRank()) {
+      return false;
+    }
+
+    return true;
+  }
+  return false;
 }
 
 // slice(broadcast x) -> broadcast(slice x)
@@ -2958,7 +2957,8 @@ struct SliceBroadcast final
     if (!bcast)
       return failure();
 
-    if (isTransposeReshapeLikeBroadcast(bcast)) return failure();
+    if (isTransposeReshapeLikeBroadcast(bcast))
+      return failure();
 
     SmallVector<int64_t> nbcast_idx;
 
@@ -3214,7 +3214,6 @@ struct TransposeSliceBase final
   }
 };
 
-
 // transpose(dynamic_slice x) -> dynamic_slice(transpose x)
 // transpose(slice x) -> slice(transpose x)
 template <typename OpTy>
@@ -3227,7 +3226,8 @@ struct TransposeLikeBroadcastSliceBase final
 
   LogicalResult matchAndRewriteImpl(stablehlo::BroadcastInDimOp op,
                                     PatternRewriter &rewriter) const {
-    if (!isTransposeReshapeLikeBroadcast(op)) return failure();
+    if (!isTransposeReshapeLikeBroadcast(op))
+      return failure();
     auto sliceOp = op.getOperand().template getDefiningOp<OpTy>();
     if (!sliceOp) {
       return failure();
@@ -3245,10 +3245,12 @@ struct TransposeLikeBroadcastSliceBase final
 
     SmallVector<int64_t> shape = llvm::to_vector(op.getType().getShape());
     for (auto &&[i, v] : llvm::enumerate(op.getBroadcastDimensions())) {
-	    shape[v] = sliceOp.getOperand().getType().getShape()[i];
+      shape[v] = sliceOp.getOperand().getType().getShape()[i];
     }
     auto newTranspose = stablehlo::BroadcastInDimOp::create(
-        rewriter, op.getLoc(), RankedTensorType::get(shape, op.getType().getElementType()), sliceOp.getOperand(), op.getBroadcastDimensions());
+        rewriter, op.getLoc(),
+        RankedTensorType::get(shape, op.getType().getElementType()),
+        sliceOp.getOperand(), op.getBroadcastDimensions());
     auto newSlice = transposeLikeSliceHelper(newTranspose, rewriter, sliceOp);
     rewriter.replaceOp(op, newSlice);
     if (singleUser) {
@@ -6674,48 +6676,49 @@ struct BroadcastReshape final
       return failure();
 
     if (reshape.getType().hasStaticShape() && type.hasStaticShape() &&
-        type.getShape().size() >= reshape.getOperand().getType().getShape().size()) {
+        type.getShape().size() >=
+            reshape.getOperand().getType().getShape().size()) {
 
-      auto deletionDims =
-        findReshapeInsertionDims(reshape.getType(), reshape.getOperand().getType());
+      auto deletionDims = findReshapeInsertionDims(
+          reshape.getType(), reshape.getOperand().getType());
       if (!deletionDims.empty()) {
-	      SmallVector<int64_t> unusedSingletons;
-	      
-	      for (auto &&[i, s] : llvm::enumerate(type.getShape())) {
-		      if (llvm::is_contained(op.getBroadcastDimensions(), i)) continue;
-		      unusedSingletons.push_back(i);
-	      }
+        SmallVector<int64_t> unusedSingletons;
 
-	      SmallVector<int64_t> bcast(reshape.getOperand().getType().getShape().size(), 0);
+        for (auto &&[i, s] : llvm::enumerate(type.getShape())) {
+          if (llvm::is_contained(op.getBroadcastDimensions(), i))
+            continue;
+          unusedSingletons.push_back(i);
+        }
 
-	      size_t bcast_idx = 0;
-	      size_t unused_idx = 0;
+        SmallVector<int64_t> bcast(
+            reshape.getOperand().getType().getShape().size(), 0);
 
-	      for (size_t i=0; i<reshape.getOperand().getType().getShape().size(); i++) {
-	        if (llvm::is_contained(deletionDims, i)) {
-		   bcast[i] = unusedSingletons[unused_idx];
-		      	unused_idx++;
+        size_t bcast_idx = 0;
+        size_t unused_idx = 0;
 
-		} else {
-		  bcast[i] = op.getBroadcastDimensions()[bcast_idx];
-				  bcast_idx++;
-		}
-	      }
-    
-	     rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
-        op, op.getType(), reshape.getOperand(), bcast);
+        for (size_t i = 0; i < reshape.getOperand().getType().getShape().size();
+             i++) {
+          if (llvm::is_contained(deletionDims, i)) {
+            bcast[i] = unusedSingletons[unused_idx];
+            unused_idx++;
 
-	      return success();
+          } else {
+            bcast[i] = op.getBroadcastDimensions()[bcast_idx];
+            bcast_idx++;
+          }
+        }
+
+        rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+            op, op.getType(), reshape.getOperand(), bcast);
+
+        return success();
       }
-
     }
-
 
     SmallVector<int64_t> dims;
 
     size_t pre_reshape_idx = 0;
     size_t postidx = 0;
-
 
     SmallVector<int64_t> oneOutIdxs;
     for (auto en : llvm::enumerate(op.getType().getShape()))
@@ -11221,21 +11224,23 @@ struct SliceReshapeElementwise final
 };
 
 struct TransposeLikeBroadcastElementwise final
-    : CheckedOpRewritePattern<stablehlo::BroadcastInDimOp, TransposeLikeBroadcastElementwise> {
+    : CheckedOpRewritePattern<stablehlo::BroadcastInDimOp,
+                              TransposeLikeBroadcastElementwise> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
   bool onlySingleUser;
 
   TransposeLikeBroadcastElementwise(bool onlySingleUser, MLIRContext *context,
-                       PatternBenefit benefit = 1,
-                       ArrayRef<StringRef> generatedNames = {})
+                                    PatternBenefit benefit = 1,
+                                    ArrayRef<StringRef> generatedNames = {})
       : CheckedOpRewritePattern(context, benefit, generatedNames),
         onlySingleUser(onlySingleUser) {}
 
   LogicalResult matchAndRewriteImpl(stablehlo::BroadcastInDimOp op,
                                     PatternRewriter &rewriter) const {
-    if (!isTransposeReshapeLikeBroadcast(op)) return failure();
-      	  auto elem = op.getOperand().getDefiningOp();
+    if (!isTransposeReshapeLikeBroadcast(op))
+      return failure();
+    auto elem = op.getOperand().getDefiningOp();
     if (!elem)
       return failure();
 
@@ -11253,11 +11258,11 @@ struct TransposeLikeBroadcastElementwise final
       } else if (auto ba = dyn_cast<BlockArgument>(v)) {
         rewriter.setInsertionPointToStart(ba.getOwner());
       }
-			    auto nt = RankedTensorType::get(
-                op.getType().getShape(),
-                cast<RankedTensorType>(v.getType()).getElementType());
-      ops.push_back(stablehlo::BroadcastInDimOp::create(rewriter, op.getLoc(), nt, v,
-                                                   op.getBroadcastDimensions()));
+      auto nt = RankedTensorType::get(
+          op.getType().getShape(),
+          cast<RankedTensorType>(v.getType()).getElementType());
+      ops.push_back(stablehlo::BroadcastInDimOp::create(
+          rewriter, op.getLoc(), nt, v, op.getBroadcastDimensions()));
     }
     if (singleUser) {
       rewriter.modifyOpInPlace(elem, [&]() {
@@ -32017,13 +32022,12 @@ void mlir::transform::addTransposeElementwise(RewritePatternSet &patterns,
   patterns.insert<TransposeElementwise>(onlySingleUser, &context, benefit);
 }
 
-void mlir::transform::addTransposeLikeBroadcastElementwise(RewritePatternSet &patterns,
-                                              bool onlySingleUser,
-                                              MLIRContext &context,
-                                              PatternBenefit benefit) {
-  patterns.insert<TransposeLikeBroadcastElementwise>(onlySingleUser, &context, benefit);
+void mlir::transform::addTransposeLikeBroadcastElementwise(
+    RewritePatternSet &patterns, bool onlySingleUser, MLIRContext &context,
+    PatternBenefit benefit) {
+  patterns.insert<TransposeLikeBroadcastElementwise>(onlySingleUser, &context,
+                                                     benefit);
 }
-
 
 void mlir::transform::addReshapeElementwise(RewritePatternSet &patterns,
                                             bool onlySingleUser,
@@ -32277,7 +32281,7 @@ struct EnzymeHLOOptPass
 
     if (passses & (2048 * 32)) {
       patterns.add<TransposeWhile, TransposeSliceBase<stablehlo::SliceOp>,
-	           TransposeLikeBroadcastSliceBase<stablehlo::SliceOp>,
+                   TransposeLikeBroadcastSliceBase<stablehlo::SliceOp>,
                    TransposeConcat, TransposeDUS, TransposeIota,
                    TransposeReduceWindow, TransposeReduce, TransposeSelect,
                    TransposeSliceBase<stablehlo::DynamicSliceOp>,

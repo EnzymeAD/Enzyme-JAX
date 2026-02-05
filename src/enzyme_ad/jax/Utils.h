@@ -1298,19 +1298,22 @@ Value transposeSliceHelper(stablehlo::TransposeOp transpose,
                            ArrayRef<int64_t> sliceSizes);
 
 Value transposeLikeSliceHelper(stablehlo::BroadcastInDimOp transpose,
-                           PatternRewriter &rewriter, stablehlo::SliceOp op);
+                               PatternRewriter &rewriter,
+                               stablehlo::SliceOp op);
 Value transposeLikeSliceHelper(stablehlo::BroadcastInDimOp transpose,
-                           PatternRewriter &rewriter,
-                           stablehlo::DynamicSliceOp op);
+                               PatternRewriter &rewriter,
+                               stablehlo::DynamicSliceOp op);
 
 Value transposeLikeSliceHelper(stablehlo::BroadcastInDimOp transpose,
-                           PatternRewriter &rewriter, ArrayRef<int64_t> starts,
-                           ArrayRef<int64_t> limits, ArrayRef<int64_t> strides);
+                               PatternRewriter &rewriter,
+                               ArrayRef<int64_t> starts,
+                               ArrayRef<int64_t> limits,
+                               ArrayRef<int64_t> strides);
 
 Value transposeLikeSliceHelper(stablehlo::BroadcastInDimOp transpose,
-                           PatternRewriter &rewriter,
-                           ArrayRef<Value> sliceStarts,
-                           ArrayRef<int64_t> sliceSizes);
+                               PatternRewriter &rewriter,
+                               ArrayRef<Value> sliceStarts,
+                               ArrayRef<int64_t> sliceSizes);
 
 Value sliceTransposeHelper(stablehlo::TransposeOp transpose,
                            PatternRewriter &rewriter, stablehlo::SliceOp op);
