@@ -3122,7 +3122,6 @@ Value transposeLikeSliceHelper(stablehlo::BroadcastInDimOp transpose,
                            PatternRewriter &rewriter, ArrayRef<int64_t> starts,
                            ArrayRef<int64_t> limits,
                            ArrayRef<int64_t> strides) {
-  auto permutation = transpose.getPermutation();
   SmallVector<int64_t> permutedLimit(transpose.getType().getShape().size(), 1);
   SmallVector<int64_t> permutedStrides(transpose.getType().getShape().size(), 1);
   SmallVector<int64_t> permutedStart(transpose.getType().getShape().size(), 0);
@@ -3139,11 +3138,10 @@ Value transposeLikeSliceHelper(stablehlo::BroadcastInDimOp transpose,
                            PatternRewriter &rewriter,
                            ArrayRef<Value> sliceStarts,
                            ArrayRef<int64_t> sliceSizes) {
-  auto permutation = transpose.getPermutation();
   SmallVector<int64_t> sizes(transpose.getType().getShape().size(), 1);
-  Type eT = RankedTensorType::get({}, rewriter.getInt32Type());
+  Type eT = RankedTensorType::get({}, rewriter.getI32Type());
   if (sliceStarts.size()) eT = sliceStarts[0].getType();
-  Value zero = stablehlo::ConstantOp::create(rewriter, transpose.getLoc(), eT, cast<ElementsAttr>(makeAttr(0, eT)));
+  Value zero = stablehlo::ConstantOp::create(rewriter, transpose.getLoc(), eT, cast<ElementsAttr>(makeAttr(eT, 0)));
   SmallVector<Value> starts(transpose.getType().getShape().size(), zero);
   for (auto [i, permIndex] : llvm::enumerate(transpose.getBroadcastDimensions())) {
     sizes[permIndex] = sliceSizes[i];

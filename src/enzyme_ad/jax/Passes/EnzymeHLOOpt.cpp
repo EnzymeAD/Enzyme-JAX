@@ -2869,6 +2869,80 @@ struct LICMElementwise
   }
 };
 
+static bool isIotaRange(ArrayRef<int64_t> dims) {
+  return llvm::all_of(llvm::enumerate(dims), [](const auto &it) {
+    return static_cast<int64_t>(it.index()) == it.value();
+  });
+}
+
+/// Matches when either of the submatchers match.
+template <typename MatcherA, typename MatcherB> struct m_AnyOf {
+  m_AnyOf(MatcherA a, MatcherB b) : matcherA(a), matcherB(b) {}
+
+  bool match(Operation *op) { return matcherA.match(op) || matcherB.match(op); }
+
+  MatcherA matcherA;
+  MatcherB matcherB;
+};
+
+template <typename MatcherA, typename MatcherB>
+m_AnyOf(MatcherA, MatcherB) -> m_AnyOf<MatcherA, MatcherB>;
+
+/// Binary constant folder that used a generic folder function to handle both
+/// ints and floats.
+template <typename Fn>
+static TypedAttr foldBinaryOpIntOrFloat(TypedAttr lhs, TypedAttr rhs,
+                                        Fn &&folder) {
+  Attribute operands[2] = {lhs, rhs};
+  Type elemTy = getElementTypeOrSelf(lhs);
+
+  Attribute res;
+  if (isa<IntegerType>(elemTy))
+    res = constFoldBinaryOp<IntegerAttr, IntegerAttr::ValueType, void>(operands,
+                                                                       folder);
+  if (isa<FloatType>(elemTy))
+    res = constFoldBinaryOp<FloatAttr, FloatAttr::ValueType, void>(operands,
+                                                                   folder);
+  if (res)
+    return cast<TypedAttr>(res);
+
+  return nullptr;
+}
+
+static bool isTransposeReshapeLikeBroadcast(stablehlo::BroadcastInDimOp op) {
+    TypedValue<RankedTensorType> operand = op.getOperand();
+    RankedTensorType operandTy = operand.getType();
+    RankedTensorType type = op.getType();
+
+    // Fold when broadcast is a noop.
+    auto dims = op.getBroadcastDimensions();
+    bool isDimsIota = isIotaRange(dims);
+    if (type == operandTy && isDimsIota) {
+      return false;
+    }
+
+    // Handle splat broadcasts.
+    if (SplatElementsAttr cstAttr;
+        matchPattern(operand, m_Constant(&cstAttr))) {
+      return false;
+    }
+
+    if (operandTy.hasStaticShape() && type.hasStaticShape() &&
+        type.getNumElements() == operandTy.getNumElements()) {
+      // BroadcastInDim equivalent to reshape.
+      if (isDimsIota) {
+        return false;
+      }
+      // BroadcastInDim equivalent to transpose.
+      if (type.getRank() == operandTy.getRank()) {
+	     return false;
+      }
+
+      return true;
+    }
+    return false;
+}
+
 // slice(broadcast x) -> broadcast(slice x)
 struct SliceBroadcast final
     : CheckedOpRewritePattern<stablehlo::SliceOp, SliceBroadcast> {
@@ -2883,6 +2957,8 @@ struct SliceBroadcast final
     auto bcast = op.getOperand().getDefiningOp<stablehlo::BroadcastInDimOp>();
     if (!bcast)
       return failure();
+
+    if (isTransposeReshapeLikeBroadcast(bcast)) return failure();
 
     SmallVector<int64_t> nbcast_idx;
 
@@ -3138,6 +3214,7 @@ struct TransposeSliceBase final
   }
 };
 
+
 // transpose(dynamic_slice x) -> dynamic_slice(transpose x)
 // transpose(slice x) -> slice(transpose x)
 template <typename OpTy>
@@ -3156,8 +3233,6 @@ struct TransposeLikeBroadcastSliceBase final
       return failure();
     }
 
-    auto resShape = cast<RankedTensorType>(op.getType()).getShape();
-
     // If we can fuse the transpose into all of its users then we shouldn't push
     // it up (or atleast give higher priority to other passes before trying to
     // move it up)
@@ -3168,7 +3243,7 @@ struct TransposeLikeBroadcastSliceBase final
 
     bool singleUser = sliceOp->getResult(0).hasOneUse();
 
-    SmallVector<int64_t> shape = op.getType().getShape();
+    SmallVector<int64_t> shape = llvm::to_vector(op.getType().getShape());
     for (auto &&[i, v] : llvm::enumerate(op.getBroadcastDimensions())) {
 	    shape[v] = sliceOp.getOperand().getType().getShape()[i];
     }
@@ -6598,10 +6673,49 @@ struct BroadcastReshape final
     if (!type)
       return failure();
 
+    if (reshape.getType().hasStaticShape() && type.hasStaticShape() &&
+        type.getShape().size() >= reshape.getOperand().getType().getShape().size()) {
+
+      auto deletionDims =
+        findReshapeInsertionDims(reshape.getType(), reshape.getOperand().getType());
+      if (!deletionDims.empty()) {
+	      SmallVector<int64_t> unusedSingletons;
+	      
+	      for (auto &&[i, s] : llvm::enumerate(type.getShape())) {
+		      if (llvm::is_contained(op.getBroadcastDimensions(), i)) continue;
+		      unusedSingletons.push_back(i);
+	      }
+
+	      SmallVector<int64_t> bcast(reshape.getOperand().getType().getShape().size(), 0);
+
+	      size_t bcast_idx = 0;
+	      size_t unused_idx = 0;
+
+	      for (size_t i=0; i<reshape.getOperand().getType().getShape().size(); i++) {
+	        if (llvm::is_contained(deletionDims, i)) {
+		   bcast[i] = unusedSingletons[unused_idx];
+		      	unused_idx++;
+
+		} else {
+		  bcast[i] = op.getBroadcastDimensions()[bcast_idx];
+				  bcast_idx++;
+		}
+	      }
+    
+	     rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+        op, op.getType(), reshape.getOperand(), bcast);
+
+	      return success();
+      }
+
+    }
+
+
     SmallVector<int64_t> dims;
 
     size_t pre_reshape_idx = 0;
     size_t postidx = 0;
+
 
     SmallVector<int64_t> oneOutIdxs;
     for (auto en : llvm::enumerate(op.getType().getShape()))
@@ -11105,80 +11219,6 @@ struct SliceReshapeElementwise final
     return success();
   }
 };
-
-static bool isIotaRange(ArrayRef<int64_t> dims) {
-  return llvm::all_of(llvm::enumerate(dims), [](const auto &it) {
-    return static_cast<int64_t>(it.index()) == it.value();
-  });
-}
-
-/// Matches when either of the submatchers match.
-template <typename MatcherA, typename MatcherB> struct m_AnyOf {
-  m_AnyOf(MatcherA a, MatcherB b) : matcherA(a), matcherB(b) {}
-
-  bool match(Operation *op) { return matcherA.match(op) || matcherB.match(op); }
-
-  MatcherA matcherA;
-  MatcherB matcherB;
-};
-
-template <typename MatcherA, typename MatcherB>
-m_AnyOf(MatcherA, MatcherB) -> m_AnyOf<MatcherA, MatcherB>;
-
-/// Binary constant folder that used a generic folder function to handle both
-/// ints and floats.
-template <typename Fn>
-static TypedAttr foldBinaryOpIntOrFloat(TypedAttr lhs, TypedAttr rhs,
-                                        Fn &&folder) {
-  Attribute operands[2] = {lhs, rhs};
-  Type elemTy = getElementTypeOrSelf(lhs);
-
-  Attribute res;
-  if (isa<IntegerType>(elemTy))
-    res = constFoldBinaryOp<IntegerAttr, IntegerAttr::ValueType, void>(operands,
-                                                                       folder);
-  if (isa<FloatType>(elemTy))
-    res = constFoldBinaryOp<FloatAttr, FloatAttr::ValueType, void>(operands,
-                                                                   folder);
-  if (res)
-    return cast<TypedAttr>(res);
-
-  return nullptr;
-}
-
-static bool isTransposeReshapeLikeBroadcast(stablehlo::BroadcastInDimOp op) {
-    TypedValue<RankedTensorType> operand = op.getOperand();
-    RankedTensorType operandTy = operand.getType();
-    RankedTensorType type = op.getType();
-
-    // Fold when broadcast is a noop.
-    auto dims = op.getBroadcastDimensions();
-    bool isDimsIota = isIotaRange(dims);
-    if (type == operandTy && isDimsIota) {
-      return false;
-    }
-
-    // Handle splat broadcasts.
-    if (SplatElementsAttr cstAttr;
-        matchPattern(operand, m_Constant(&cstAttr))) {
-      return false;
-    }
-
-    if (operandTy.hasStaticShape() && type.hasStaticShape() &&
-        type.getNumElements() == operandTy.getNumElements()) {
-      // BroadcastInDim equivalent to reshape.
-      if (isDimsIota) {
-        return false;
-      }
-      // BroadcastInDim equivalent to transpose.
-      if (type.getRank() == operandTy.getRank()) {
-	     return false;
-      }
-
-      return true;
-    }
-    return false;
-}
 
 struct TransposeLikeBroadcastElementwise final
     : CheckedOpRewritePattern<stablehlo::BroadcastInDimOp, TransposeLikeBroadcastElementwise> {
