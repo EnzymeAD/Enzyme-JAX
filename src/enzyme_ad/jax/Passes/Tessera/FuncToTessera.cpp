@@ -161,7 +161,8 @@ struct FuncToTesseraPass
 
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns)))) {
-      llvm::errs() << "Failed to convert func dialect operations to tessera dialect operations\n";
+      llvm::errs() << "Failed to convert func dialect operations to tessera "
+                      "dialect operations\n";
       signalPassFailure();
     }
   }
