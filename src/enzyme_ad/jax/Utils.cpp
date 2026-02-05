@@ -3118,7 +3118,7 @@ Value transposeLikeSliceHelper(stablehlo::BroadcastInDimOp transpose,
                               op.getSliceSizes());
 }
 
-Value transposeSliceHelper(stablehlo::TransposeOp transpose,
+Value transposeLikeSliceHelper(stablehlo::BroadcastInDimOp transpose,
                            PatternRewriter &rewriter, ArrayRef<int64_t> starts,
                            ArrayRef<int64_t> limits,
                            ArrayRef<int64_t> strides) {
@@ -3135,7 +3135,7 @@ Value transposeSliceHelper(stablehlo::TransposeOp transpose,
                        permutedStart, permutedLimit, permutedStrides);
 }
 
-Value transposeSliceHelper(stablehlo::TransposeOp transpose,
+Value transposeLikeSliceHelper(stablehlo::BroadcastInDimOp transpose,
                            PatternRewriter &rewriter,
                            ArrayRef<Value> sliceStarts,
                            ArrayRef<int64_t> sliceSizes) {
@@ -3242,6 +3242,34 @@ Value sliceTransposeHelper(stablehlo::TransposeOp transpose,
 }
 
 bool isFusible(stablehlo::TransposeOp transpose, Operation *op) {
+  if (isa<stablehlo::TransposeOp, stablehlo::BroadcastInDimOp,
+          stablehlo::DotGeneralOp>(op)) {
+    return true;
+  }
+
+  SplatElementsAttr splat;
+  if (matchPattern(op, m_Constant(&splat))) {
+    return true;
+  }
+
+  if (auto reshapeOp = dyn_cast<stablehlo::ReshapeOp>(op)) {
+    auto inputType = cast<RankedTensorType>(reshapeOp.getOperand().getType());
+    auto outputType = cast<RankedTensorType>(reshapeOp.getResult().getType());
+
+    auto insertionDims = findReshapeInsertionDims(inputType, outputType);
+    if (!insertionDims.empty()) { // fused to a broadcast_in_dim
+      return true;
+    }
+
+    if (reshapeIsTranspose(reshapeOp)) { // transpose_tranpose elimination
+      return true;
+    }
+  }
+
+  return false;
+}
+
+bool isFusible(stablehlo::BroadcastInDimOp transpose, Operation *op) {
   if (isa<stablehlo::TransposeOp, stablehlo::BroadcastInDimOp,
           stablehlo::DotGeneralOp>(op)) {
     return true;
