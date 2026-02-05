@@ -26107,6 +26107,9 @@ struct ConcatenateBroadcastInDim
           return failure();
         if (bcastInDimDimensions[input_dim] != op.getDimension())
           return failure();
+        if (broadcastInDimOp.getOperand().getType().getShape()[input_dim] !=
+            broadcastInDimOp.getType().getShape()[op.getDimension()])
+          return failure();
         operandOperands.push_back(broadcastInDimOp.getOperand());
         continue;
       }
