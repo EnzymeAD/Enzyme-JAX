@@ -28,3 +28,17 @@ func.func @main2(%arg0: tensor<2xi1>, %arg1: tensor<2xi1>) -> (tensor<3x4xi1>) {
 // CHECK-NEXT:    %1 = stablehlo.broadcast_in_dim %0, dims = [1] : (tensor<4xi1>) -> tensor<3x4xi1>
 // CHECK-NEXT:    return %1 : tensor<3x4xi1>
 // CHECK-NEXT:  }
+
+func.func @main3(%arg0: tensor<1xf32>, %arg1: tensor<1xf32>) -> tensor<8xf32> {
+  %0 = stablehlo.broadcast_in_dim %arg0, dims = [0] : (tensor<1xf32>) -> tensor<4xf32>
+  %1 = stablehlo.broadcast_in_dim %arg1, dims = [0] : (tensor<1xf32>) -> tensor<4xf32>
+  %2 = stablehlo.concatenate %0, %1, dim = 0 : (tensor<4xf32>, tensor<4xf32>) -> tensor<8xf32>
+  return %2 : tensor<8xf32>
+}
+
+// CHECK: func.func @main3(%[[ARG0:.+]]: tensor<1xf32>, %[[ARG1:.+]]: tensor<1xf32>) -> tensor<8xf32> {
+// CHECK-NEXT:   %[[B0:.+]] = stablehlo.broadcast_in_dim %[[ARG0]], dims = [0] : (tensor<1xf32>) -> tensor<4xf32>
+// CHECK-NEXT:   %[[B1:.+]] = stablehlo.broadcast_in_dim %[[ARG1]], dims = [0] : (tensor<1xf32>) -> tensor<4xf32>
+// CHECK-NEXT:   %[[CAT:.+]] = stablehlo.concatenate %[[B0]], %[[B1]], dim = 0 : (tensor<4xf32>, tensor<4xf32>) -> tensor<8xf32>
+// CHECK-NEXT:   return %[[CAT]] : tensor<8xf32>
+// CHECK-NEXT: }
