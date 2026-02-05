@@ -489,7 +489,8 @@ class AutoDiffWhileRev
   struct ReverseModeInfo {
     enum ReverseMode mode = UNKNOWN;
     WhileLoopInfo info;
-    int64_t checkpointPeriod = 0; // Used for CONSTANT_CHECKPOINTING (the M value)
+    int64_t checkpointPeriod =
+        0; // Used for CONSTANT_CHECKPOINTING (the M value)
 
     ReverseModeInfo(stablehlo::WhileOp op) : info(op) {}
   };
@@ -505,9 +506,9 @@ class AutoDiffWhileRev
       const char *periodicCheckpointAttrName = "enzymexla.checkpoint_period";
       auto checkpointPeriod =
           orig->getAttrOfType<IntegerAttr>(periodicCheckpointAttrName);
-      
+
       if (enableCheckpointing && enableCheckpointing.getValue()) {
-        // CONSTANT_CHECKPOINTING mode: use provided period or default to sqrt(numIters)
+        // CONSTANT_CHECKPOINTING: use provided period or default to sqrt(N).
         revInfo.mode = CONSTANT_CHECKPOINTING;
         if (checkpointPeriod && checkpointPeriod.getInt() > 0) {
           revInfo.checkpointPeriod = checkpointPeriod.getInt();
@@ -540,8 +541,7 @@ class AutoDiffWhileRev
                                         int64_t start, Value limit,
                                         int64_t step, ValueRange operands) {
     return makeForLoop(builder, loc, makeI64Constant(loc, builder, start),
-                       limit,
-                       makeI64Constant(loc, builder, step), operands);
+                       limit, makeI64Constant(loc, builder, step), operands);
   }
 
   static stablehlo::WhileOp makeForLoop(OpBuilder &builder, Location loc,
@@ -577,7 +577,7 @@ class AutoDiffWhileRev
     return whileOp;
   }
 
-  // Reverse pass for CONSTANT_CHECKPOINTING (handles both explicit period and default sqrt)
+  // Reverse pass for CONSTANT_CHECKPOINTING (explicit period or default sqrt).
   static LogicalResult reverseWithCheckpointing(stablehlo::WhileOp orig,
                                                 struct ReverseModeInfo revInfo,
                                                 OpBuilder &builder,
@@ -587,16 +587,15 @@ class AutoDiffWhileRev
     int64_t numIters = revInfo.info.getConstantNumIters();
     int64_t nInner, nOuter;
 
-    // CONSTANT_CHECKPOINTING: use checkpointPeriod (defaults to sqrt(numIters) if not specified)
+    // Use checkpointPeriod (defaults to sqrt(numIters) if not specified).
     nInner = revInfo.checkpointPeriod;
-    nOuter = (numIters + nInner - 1) / nInner;  // ceil(N/M)
-    
+    nOuter = (numIters + nInner - 1) / nInner; // ceil(N/M)
+
     // Validate that nInner * nOuter >= numIters (should be true due to ceil)
     if (nInner * nOuter < numIters) {
-      orig->emitError()
-          << "Invalid checkpoint period calculation, nInner="
-          << nInner << " nOuter=" << nOuter
-          << " iters=" << numIters << "\n";
+      orig->emitError() << "Invalid checkpoint period calculation, nInner="
+                        << nInner << " nOuter=" << nOuter
+                        << " iters=" << numIters << "\n";
       return failure();
     }
 
@@ -636,26 +635,26 @@ class AutoDiffWhileRev
 
     // Compute the actual number of iterations for this block
     // actualInner = min(nInner, numIters - outerStart)
-    // For CONSTANT_CHECKPOINTING with default sqrt scheme, nInner * nOuter == numIters, so
-    // actualInner is always nInner. For CONSTANT_CHECKPOINTING, if numIters is
-    // evenly divisible by nInner, actualInner is also always nInner.
-    // Using a static value enables static tensor sizes in the generated code.
+    // For CONSTANT_CHECKPOINTING with default sqrt scheme, nInner * nOuter ==
+    // numIters, so actualInner is always nInner. For CONSTANT_CHECKPOINTING, if
+    // numIters is evenly divisible by nInner, actualInner is also always
+    // nInner. Using a static value enables static tensor sizes in the generated
+    // code.
     Value actualInner;
     // useStaticInner: true when numIters is exactly divisible by nInner
-    // (this happens when checkpointPeriod divides numIters evenly, or when using sqrt with perfect square)
-    bool useStaticInner = (revInfo.mode == CONSTANT_CHECKPOINTING &&
-                           numIters % nInner == 0);
+    // (this happens when checkpointPeriod divides numIters evenly, or when
+    // using sqrt with perfect square)
+    bool useStaticInner =
+        (revInfo.mode == CONSTANT_CHECKPOINTING && numIters % nInner == 0);
     if (useStaticInner) {
       actualInner = makeI64Constant(orig.getLoc(), builder, nInner);
     } else {
       Value remainingIters = stablehlo::SubtractOp::create(
           builder, orig.getLoc(),
-          makeI64Constant(orig.getLoc(), builder, numIters),
-          outerStart);
+          makeI64Constant(orig.getLoc(), builder, numIters), outerStart);
       actualInner = stablehlo::MinOp::create(
           builder, orig.getLoc(),
-          makeI64Constant(orig.getLoc(), builder, nInner),
-          remainingIters);
+          makeI64Constant(orig.getLoc(), builder, nInner), remainingIters);
     }
 
     Value lastCache = nullptr;
@@ -685,7 +684,8 @@ class AutoDiffWhileRev
     }
 
     // Recompute forward within this block
-    auto revInner = makeForLoop(builder, orig.getLoc(), 0, actualInner, 1, carried);
+    auto revInner =
+        makeForLoop(builder, orig.getLoc(), 0, actualInner, 1, carried);
     Block *revInnerBody = &revInner.getBody().front();
 
     revInner->setAttrs(orig->getAttrs());
@@ -702,8 +702,9 @@ class AutoDiffWhileRev
     // innerIV iterates in reverse: actualInner - 1 - idx
     Value innerIV = stablehlo::SubtractOp::create(
         builder, orig.getLoc(),
-        stablehlo::SubtractOp::create(builder, orig.getLoc(), actualInner,
-                                      makeI64Constant(orig.getLoc(), builder, 1)),
+        stablehlo::SubtractOp::create(
+            builder, orig.getLoc(), actualInner,
+            makeI64Constant(orig.getLoc(), builder, 1)),
         revInnerBody->getArgument(0));
 
     Value currentStep =
@@ -1031,22 +1032,22 @@ public:
           int64_t numIters = info.getConstantNumIters();
           int64_t nInner, nOuter;
 
-          // CONSTANT_CHECKPOINTING: use checkpointPeriod (defaults to sqrt(numIters) if not specified)
+          // Use checkpointPeriod (defaults to sqrt(numIters) if not specified).
           nInner = revModeInfo.checkpointPeriod;
-          nOuter = (numIters + nInner - 1) / nInner;  // ceil(N/M)
-          
-          // Validate that nInner * nOuter >= numIters (should be true due to ceil)
+          nOuter = (numIters + nInner - 1) / nInner; // ceil(N/M)
+
+          // Validate that nInner * nOuter >= numIters (should be true due to
+          // ceil)
           if (nInner * nOuter < numIters) {
             orig->emitError()
-                << "Invalid checkpoint period calculation, nInner="
-                << nInner << " nOuter=" << nOuter
-                << " iters=" << numIters << "\n";
+                << "Invalid checkpoint period calculation, nInner=" << nInner
+                << " nOuter=" << nOuter << " iters=" << numIters << "\n";
             return {};
           }
 
-          auto outer = makeForLoop(builder, orig->getLoc(), 0, nOuter, 1,
-                                   newWhile->getOperands().slice(
-                                       1, newWhile->getNumOperands() - 1));
+          auto outer = makeForLoop(
+              builder, orig->getLoc(), 0, nOuter, 1,
+              newWhile->getOperands().slice(1, newWhile->getNumOperands() - 1));
 
           Block *outerBody = &outer.getBody().front();
           builder.setInsertionPointToStart(outerBody);
@@ -1074,8 +1075,9 @@ public:
 
           // Compute the actual limit for this inner loop iteration
           // limit = min(nInner, numIters - outerIV)
-          // If numIters is evenly divisible by nInner, innerLimit is always nInner.
-          // Using a static value enables static tensor sizes in the generated code.
+          // If numIters is evenly divisible by nInner, innerLimit is always
+          // nInner. Using a static value enables static tensor sizes in the
+          // generated code.
           Value innerLimit;
           bool useStaticInner = (revModeInfo.mode == CONSTANT_CHECKPOINTING &&
                                  numIters % nInner == 0);
@@ -1084,15 +1086,15 @@ public:
           } else {
             Value remainingIters = stablehlo::SubtractOp::create(
                 builder, newWhile.getLoc(),
-                makeI64Constant(newWhile.getLoc(), builder, numIters),
-                outerIV);
+                makeI64Constant(newWhile.getLoc(), builder, numIters), outerIV);
             innerLimit = stablehlo::MinOp::create(
                 builder, newWhile.getLoc(),
                 makeI64Constant(newWhile.getLoc(), builder, nInner),
                 remainingIters);
           }
 
-          auto inner = makeForLoop(builder, orig->getLoc(), 0, innerLimit, 1, operands);
+          auto inner =
+              makeForLoop(builder, orig->getLoc(), 0, innerLimit, 1, operands);
 
           outerBody->getTerminator()->setOperands(
               1, inner.getNumResults() - 1,
@@ -1120,8 +1122,7 @@ public:
           }
 
           SmallVector<Value> newReturns;
-          for (auto oldRes :
-               oldInnerBody->getTerminator()->getOperands().slice(
+          for (auto oldRes : oldInnerBody->getTerminator()->getOperands().slice(
                    1, oldInnerBody->getTerminator()->getNumOperands() - 1)) {
             newReturns.push_back(mapping.lookupOrDefault(oldRes));
           }
@@ -1132,9 +1133,7 @@ public:
           SmallVector<Value> newResults{makeI64Constant(
               oldIV.getLoc(), builder, *info.getConstantLimit())};
           newResults.append(
-              outer->getResults()
-                  .slice(1, outer->getNumResults() - 1)
-                  .begin(),
+              outer->getResults().slice(1, outer->getNumResults() - 1).begin(),
               outer->getResults().slice(1, outer->getNumResults() - 1).end());
 
           gutils->replaceOrigOpWith(orig, newResults);
