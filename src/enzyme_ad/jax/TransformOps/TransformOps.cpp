@@ -209,6 +209,11 @@ void ApplyTransposeElementwisePatterns::populatePatterns(
   addTransposeElementwise(patterns, getParameter(), *getContext(),
                           PatternBenefit(getBenefit().value_or(1)));
 }
+void ApplyTransposeLikeBroadcastElementwisePatterns::populatePatterns(
+    RewritePatternSet &patterns) {
+  addTransposeLikeBroadcastElementwise(patterns, getParameter(), *getContext(),
+                          PatternBenefit(getBenefit().value_or(1)));
+}
 void ApplyReshapeElementwisePatterns::populatePatterns(
     RewritePatternSet &patterns) {
   addReshapeElementwise(patterns, getParameter(), *getContext(),

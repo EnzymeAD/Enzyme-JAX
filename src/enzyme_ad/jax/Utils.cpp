@@ -3104,6 +3104,55 @@ Value transposeSliceHelper(stablehlo::TransposeOp transpose,
                               op.getSliceSizes());
 }
 
+Value transposeLikeSliceHelper(stablehlo::BroadcastInDimOp transpose,
+                           PatternRewriter &rewriter, stablehlo::SliceOp op) {
+  return transposeLikeSliceHelper(transpose, rewriter, op.getStartIndices(),
+                              op.getLimitIndices(), op.getStrides());
+}
+
+Value transposeLikeSliceHelper(stablehlo::BroadcastInDimOp transpose,
+                           PatternRewriter &rewriter,
+                           stablehlo::DynamicSliceOp op) {
+  return transposeLikeSliceHelper(transpose, rewriter,
+                              llvm::to_vector(op.getStartIndices()),
+                              op.getSliceSizes());
+}
+
+Value transposeSliceHelper(stablehlo::TransposeOp transpose,
+                           PatternRewriter &rewriter, ArrayRef<int64_t> starts,
+                           ArrayRef<int64_t> limits,
+                           ArrayRef<int64_t> strides) {
+  auto permutation = transpose.getPermutation();
+  SmallVector<int64_t> permutedLimit(transpose.getType().getShape().size(), 1);
+  SmallVector<int64_t> permutedStrides(transpose.getType().getShape().size(), 1);
+  SmallVector<int64_t> permutedStart(transpose.getType().getShape().size(), 0);
+  for (auto [permIndex, i] : llvm::enumerate(transpose.getBroadcastDimensions())) {
+    permutedStart[i] = starts[permIndex];
+    permutedLimit[i] = limits[permIndex];
+    permutedStrides[i] = strides[permIndex];
+  }
+  return SliceOpCreate(rewriter, transpose.getLoc(), transpose.getResult(),
+                       permutedStart, permutedLimit, permutedStrides);
+}
+
+Value transposeSliceHelper(stablehlo::TransposeOp transpose,
+                           PatternRewriter &rewriter,
+                           ArrayRef<Value> sliceStarts,
+                           ArrayRef<int64_t> sliceSizes) {
+  auto permutation = transpose.getPermutation();
+  SmallVector<int64_t> sizes(transpose.getType().getShape().size(), 1);
+  Type eT = RankedTensorType::get({}, rewriter.getInt32Type());
+  if (sliceStarts.size()) eT = sliceStarts[0].getType();
+  Value zero = stablehlo::ConstantOp::create(rewriter, transpose.getLoc(), eT, cast<ElementsAttr>(makeAttr(0, eT)));
+  SmallVector<Value> starts(transpose.getType().getShape().size(), zero);
+  for (auto [i, permIndex] : llvm::enumerate(transpose.getBroadcastDimensions())) {
+    sizes[permIndex] = sliceSizes[i];
+    starts[permIndex] = sliceStarts[i];
+  }
+  return DynamicSliceOpCreate(rewriter, transpose.getLoc(),
+                              transpose.getResult(), starts, sizes);
+}
+
 Value transposeSliceHelper(stablehlo::TransposeOp transpose,
                            PatternRewriter &rewriter, ArrayRef<int64_t> starts,
                            ArrayRef<int64_t> limits,
@@ -3134,6 +3183,7 @@ Value transposeSliceHelper(stablehlo::TransposeOp transpose,
   return DynamicSliceOpCreate(rewriter, transpose.getLoc(),
                               transpose.getResult(), starts, sizes);
 }
+
 
 Value sliceTransposeHelper(stablehlo::TransposeOp transpose,
                            PatternRewriter &rewriter, stablehlo::SliceOp op) {

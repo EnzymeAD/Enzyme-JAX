@@ -160,6 +160,7 @@ LogicalResult parseTransform(OpBuilder &builder, Location loc,
           opName == "dynamic_slice_licm" || opName == "scatter_licm" ||
           opName == "gather_licm" || opName == "iota_licm" ||
           opName == "transpose_elementwise" ||
+	  opName == "transpose_like_broadcast_elementwise" ||
           opName == "reshape_elementwise" ||
           opName == "reshape_elementwise_only_fusible" ||
           opName == "reshape_slice" || opName == "reshape_dynamic_slice" ||
