@@ -1285,7 +1285,9 @@ struct MPIWaitallOpLowering : public OpRewritePattern<enzymexla::MPIWaitallOp> {
 
         // Create the wrapper function decl
         auto funcType =
-            LLVM::LLVMFunctionType::get(llvmVoidType, {llvmPtrType}, false);
+            LLVM::LLVMFunctionType::get(llvmVoidType,
+                                        {llvmPtrType, llvmPtrType},
+                                        false);
 
         auto wrapperFunc = rewriter.create<LLVM::LLVMFuncOp>(
             op.getLoc(), wrapperFunctionName, funcType);
@@ -1301,21 +1303,25 @@ struct MPIWaitallOpLowering : public OpRewritePattern<enzymexla::MPIWaitallOp> {
         rewriter.setInsertionPointToStart(entryBlock);
 
         // Add argument-level memory effects attribute to all arguments
-        wrapperFunc.setArgAttr(0, "enzymexla.memory_effects",
-                               memoryEffectsAttr);
+        for (unsigned i = 0; i < 2; ++i) {
+          wrapperFunc.setArgAttr(i, "enzymexla.memory_effects",
+                                 memoryEffectsAttr);
+        }
 
         // Get the function argument
-        Value requestPtr = entryBlock->getArgument(0);
+        Value countPtr = entryBlock->getArgument(0);
+        Value requestPtr = entryBlock->getArgument(1);
 
-        // Allocate a 1x!llvm.array<6 x i32> that we use in place of MPI_Status
-        // Size of status is implem dependendent, this should cover the max
-        Value numElements = rewriter.create<arith::ConstantOp>(
-            op.getLoc(), i32Type, rewriter.getI32IntegerAttr(1));
+        // Load the count value
+        Value count =
+            rewriter.create<LLVM::LoadOp>(op.getLoc(), i32Type, countPtr);
 
+        // Allocate a count x !llvm.array<6 x i32> for the array of statuses
+        // Size of status is implem dependendent, 6 should cover the max
         auto arrayType = LLVM::LLVMArrayType::get(i32Type, 6);
 
         Value statusPtr = rewriter.create<LLVM::AllocaOp>(
-            op.getLoc(), llvmPtrType, arrayType, numElements);
+            op.getLoc(), llvmPtrType, arrayType, count);
 
         // Call MPI_Waitall
         // int MPI_Waitall(int count, MPI_Request array_of_requests[], MPI_Status *array_of_statuses)
@@ -1323,7 +1329,7 @@ struct MPIWaitallOpLowering : public OpRewritePattern<enzymexla::MPIWaitallOp> {
         rewriter.create<LLVM::CallOp>(
             op.getLoc(), TypeRange{i32Type},
             SymbolRefAttr::get(context, mpiFunctionName),
-            ValueRange{requestPtr, statusPtr});
+            ValueRange{count, requestPtr, statusPtr});
 
         rewriter.create<LLVM::ReturnOp>(op.getLoc(), ValueRange{});
       }
@@ -1334,20 +1340,20 @@ struct MPIWaitallOpLowering : public OpRewritePattern<enzymexla::MPIWaitallOp> {
         rewriter.setInsertionPointToStart(moduleOp.getBody());
 
         auto funcType = LLVM::LLVMFunctionType::get(
-            i32Type, {llvmPtrType, llvmPtrType}, false);
+            i32Type, {i32Type, llvmPtrType, llvmPtrType}, false);
 
         rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), mpiFunctionName,
                                           funcType, LLVM::Linkage::External);
       }
 
-      // Get the request operand
-      auto request = op.getRequest();
+      // Get all orinigal op operands
+      auto opOperands = op.getOperands();
 
       // Call the LLVM function with enzymexla.jit_call
       rewriter.create<enzymexla::JITCallOp>(
           op.getLoc(), TypeRange{},
           mlir::FlatSymbolRefAttr::get(context, wrapperFunctionName),
-          ValueRange{request}, rewriter.getStringAttr(""),
+          ValueRange{opOperands}, rewriter.getStringAttr(""),
           /*operand_layouts=*/nullptr,
           /*result_layouts=*/nullptr,
           /*arg_attrs=*/nullptr,
@@ -1568,8 +1574,8 @@ struct LowerEnzymeXLAMPIPass
     patterns.add<MPIRecvOpLowering>(backend, context);
     patterns.add<MPIIsendOpLowering>(backend, context);
     patterns.add<MPIIrecvOpLowering>(backend, context);
-    // patterns.add<MPIWaitOpLowering>(backend, context);
     patterns.add<MPIWaitOpLowering>(backend, context);
+    patterns.add<MPIWaitallOpLowering>(backend, context);
     patterns.add<MPIAllreduceOpLowering>(backend, context);
 
     GreedyRewriteConfig config;
