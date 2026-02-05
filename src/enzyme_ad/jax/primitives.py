@@ -953,6 +953,8 @@ def maketup(ty):
         "i64": "int64_t",
         "ui32": "uint32_t",
         "ui64": "uint64_t",
+        "complex<f32>": "std::complex<float>",
+        "complex<f64>": "std::complex<double>",
     }[tystr]
     return (tystr, ty.shape)
 
