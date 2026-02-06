@@ -19,10 +19,18 @@
 #include "src/enzyme_ad/jax/Dialect/Tessera/Dialect.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/Passes.h"
 
+namespace mlir {
+namespace enzyme {
+namespace tessera {
+#define GEN_PASS_DEF_FUNCTOTESSERAPASS
+#include "src/enzyme_ad/jax/Passes/Tessera/Passes.h.inc"
+} // namespace tessera
+} // namespace enzyme
+} // namespace mlir
+
 using namespace mlir;
 using namespace mlir::enzyme;
-
-namespace {} // namespace
+using namespace mlir::enzyme::tessera;
 
 //===----------------------------------------------------------------------===//
 // Rewrite Patterns
@@ -109,26 +117,14 @@ public:
     return success();
   }
 };
-} // namespace
 
 //===----------------------------------------------------------------------===//
 // Pass to convert Func operations into Tessera operations
 //===----------------------------------------------------------------------===//
 
-namespace mlir::enzyme::tessera {
-
 struct FuncToTesseraPass
-    : public PassWrapper<FuncToTesseraPass, OperationPass<ModuleOp>> {
-
-  StringRef getArgument() const final { return "func-to-tessera"; }
-  StringRef getDescription() const final {
-    return "Convert operations in the func dialect to operations in the "
-           "tessera dialect.";
-  }
-
-  void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<tessera::TesseraDialect>();
-  }
+    : public enzyme::tessera::impl::FuncToTesseraPassBase<FuncToTesseraPass> {
+  using FuncToTesseraPassBase::FuncToTesseraPassBase;
 
   void runOnOperation() override {
     MLIRContext *ctx = &getContext();
@@ -167,8 +163,4 @@ struct FuncToTesseraPass
     }
   }
 };
-
-std::unique_ptr<mlir::Pass> createFuncToTesseraPass() {
-  return std::make_unique<FuncToTesseraPass>();
-}
-} // namespace mlir::enzyme::tessera
+} // namespace
