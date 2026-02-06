@@ -1450,7 +1450,7 @@ struct LowerProbProgTraceOpsPass
 
     RewritePatternSet patterns(context);
 
-    patterns.add<DumpOpConversion>(context);
+    patterns.add<DumpOpConversion>(backend, context);
 
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns)))) {
