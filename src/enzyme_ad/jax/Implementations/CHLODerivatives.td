@@ -80,6 +80,7 @@ def IsInf : HLOInst<"IsInfOp">;
 def IsNegInf : HLOInst<"IsNegInfOp">;
 def IsPosInf : HLOInst<"IsPosInfOp">;
 def Lgamma : HLOInst<"LgammaOp">;
+def Square : HLOInst<"SquareOp">;
 
 /// CHLO - broadcasting compare operation
 def BroadcastCompare : HLOInst<"BroadcastCompareOp">;
@@ -141,4 +142,8 @@ def : HLODerivative<"SinhOp", (Op $x), [(Mul (DiffeRet), (Cosh $x))]>;
 
 def : HLODerivative<"TanOp", (Op $x), [
   (Div (DiffeRet), (Mul (Cos $x), (Cos $x)))
+]>;
+
+def : HLODerivative<"SquareOp", (Op $x), [
+  (Mul (DiffeRet), (Mul (HLOConstantFP<"2"> $x), $x))
 ]>;
