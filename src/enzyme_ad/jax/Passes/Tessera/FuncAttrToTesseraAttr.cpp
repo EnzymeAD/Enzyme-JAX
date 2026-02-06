@@ -12,24 +12,25 @@
 #include "src/enzyme_ad/jax/Dialect/Tessera/Dialect.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/Passes.h"
 
+namespace mlir {
+namespace enzyme {
+namespace tessera {
+#define GEN_PASS_DEF_FUNCATTRTOTESSERAATTRPASS
+#include "src/enzyme_ad/jax/Passes/Tessera/Passes.h.inc"
+} // namespace tessera
+} // namespace enzyme
+} // namespace mlir
+
 using namespace mlir;
+using namespace mlir::enzyme;
+using namespace mlir::enzyme::tessera;
 
 namespace {
 
 struct FuncAttrToTesseraAttrPass
-    : public PassWrapper<FuncAttrToTesseraAttrPass, OperationPass<ModuleOp>> {
-
-  StringRef getArgument() const final { return "func-attr-to-tessera-attr"; }
-
-  StringRef getDescription() const final {
-    return "Convert generic tessera_op func attribute into tessera.convert "
-           "attribute.";
-  }
-
-  void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<enzyme::tessera::TesseraDialect>();
-    registry.insert<LLVM::LLVMDialect>();
-  }
+    : public enzyme::tessera::impl::FuncAttrToTesseraAttrPassBase<
+          FuncAttrToTesseraAttrPass> {
+  using FuncAttrToTesseraAttrPassBase::FuncAttrToTesseraAttrPassBase;
 
   void runOnOperation() override {
     ModuleOp module = getOperation();
@@ -49,11 +50,3 @@ struct FuncAttrToTesseraAttrPass
 };
 
 } // namespace
-
-namespace mlir::enzyme::tessera {
-
-std::unique_ptr<mlir::Pass> createFuncAttrToTesseraAttrPass() {
-  return std::make_unique<FuncAttrToTesseraAttrPass>();
-}
-
-} // namespace mlir::enzyme::tessera

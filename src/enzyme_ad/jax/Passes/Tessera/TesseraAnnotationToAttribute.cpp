@@ -5,22 +5,26 @@
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/StringRef.h"
 
+namespace mlir {
+namespace enzyme {
+namespace tessera {
+#define GEN_PASS_DEF_TESSERAANNOTATIONTOATTRIBUTEPASS
+#include "src/enzyme_ad/jax/Passes/Tessera/Passes.h.inc"
+} // namespace tessera
+} // namespace enzyme
+} // namespace mlir
+
 using namespace mlir;
+using namespace mlir::enzyme;
+using namespace mlir::enzyme::tessera;
 
 namespace {
 
-class TesseraAnnotationToAttributePass
-    : public PassWrapper<TesseraAnnotationToAttributePass,
-                         OperationPass<ModuleOp>> {
-
-public:
-  StringRef getArgument() const final {
-    return "tessera-annotation-to-attribute";
-  }
-  StringRef getDescription() const final {
-    return "Convert LLVM global annotations to function attributes for tessera "
-           "ops";
-  }
+struct TesseraAnnotationToAttributePass
+    : public enzyme::tessera::impl::TesseraAnnotationToAttributePassBase<
+          TesseraAnnotationToAttributePass> {
+  using TesseraAnnotationToAttributePassBase::
+      TesseraAnnotationToAttributePassBase;
 
   void runOnOperation() override {
     ModuleOp module = getOperation();
@@ -129,11 +133,3 @@ public:
   }
 };
 } // namespace
-
-namespace mlir::enzyme::tessera {
-
-std::unique_ptr<Pass> createTesseraAnnotationToAttributePass() {
-  return std::make_unique<TesseraAnnotationToAttributePass>();
-}
-
-} // namespace mlir::enzyme::tessera
