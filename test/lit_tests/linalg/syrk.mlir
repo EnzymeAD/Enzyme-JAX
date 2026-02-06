@@ -154,13 +154,13 @@ module {
 // CUDA-NEXT: }
 
 // TPU: func.func @main3(%arg0: tensor<64x32xf32>, %arg1: tensor<64x64xf32>) -> tensor<64x64xf32> {
-// TPU-NEXT:     %cst = stablehlo.constant dense<3.000000e+00> : tensor<64x64xf32>
-// TPU-NEXT:     %cst_0 = stablehlo.constant dense<2.000000e+00> : tensor<64x64xf32>
-// TPU-NEXT:     %0 = stablehlo.dot_general %arg0, %arg0, contracting_dims = [1] x [1] : (tensor<64x32xf32>, tensor<64x32xf32>) -> tensor<64x64xf32>
-// TPU-NEXT:     %1 = stablehlo.multiply %cst_0, %0 : tensor<64x64xf32>
-// TPU-NEXT:     %2 = stablehlo.multiply %cst, %arg1 : tensor<64x64xf32>
-// TPU-NEXT:     %3 = stablehlo.add %1, %2 : tensor<64x64xf32>
-// TPU-NEXT:     return %3 : tensor<64x64xf32>
+// TPU-NEXT:     %[[cst2:.+]] = stablehlo.constant dense<2.000000e+00> : tensor<64x64xf32>
+// TPU-NEXT:     %[[cst3:.+]] = stablehlo.constant dense<3.000000e+00> : tensor<64x64xf32>
+// TPU-NEXT:     %[[a0:.+]] = stablehlo.dot_general %arg0, %arg0, contracting_dims = [1] x [1] : (tensor<64x32xf32>, tensor<64x32xf32>) -> tensor<64x64xf32>
+// TPU-NEXT:     %[[a1:.+]] = stablehlo.multiply %[[cst2]], %[[a0]] : tensor<64x64xf32>
+// TPU-NEXT:     %[[a2:.+]] = stablehlo.multiply %[[cst3]], %arg1 : tensor<64x64xf32>
+// TPU-NEXT:     %[[a3:.+]] = stablehlo.add %[[a1]], %[[a2]] : tensor<64x64xf32>
+// TPU-NEXT:     return %[[a3]] : tensor<64x64xf32>
 // TPU-NEXT: }
 
 module {
