@@ -320,7 +320,7 @@ module {
 // AUTOBATCH: func.func @main(%arg0: tensor<15x20xf32> {enzymexla.memory_effects = []}, %arg1: tensor<15x3xf32> {enzymexla.memory_effects = []}) -> (tensor<5x3xf32>, tensor<15x20xf32>) attributes {enzymexla.memory_effects = []} {
 // AUTOBATCH-NEXT:   %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
 // AUTOBATCH-NEXT:   %0 = stablehlo.slice %arg1 [0:15, 0:1] : (tensor<15x3xf32>) -> tensor<15x1xf32>
-// AUTOBATCH-NEXT:   %[[a2:.+]] = stablehlo.broadcast_in_dim %0, dims = [0, 1] : (tensor<15xf32>) -> tensor<15x14xf32>
+// AUTOBATCH-NEXT:   %[[a2:.+]] = stablehlo.broadcast_in_dim %0, dims = [0, 1] : (tensor<15x1xf32>) -> tensor<15x14xf32>
 // AUTOBATCH-NEXT:   %[[a3:.+]] = stablehlo.pad %[[a2]], %cst, low = [0, 0], high = [0, 6], interior = [0, 0] : (tensor<15x14xf32>, tensor<f32>) -> tensor<15x20xf32>
 // AUTOBATCH-NEXT:   %[[a4:.+]] = stablehlo.slice %arg1 [0:14, 0:1] : (tensor<15x3xf32>) -> tensor<14x1xf32>
 // AUTOBATCH-NEXT:   %[[a5:.+]] = stablehlo.reshape %[[a4]] : (tensor<14x1xf32>) -> tensor<14xf32>

@@ -58,10 +58,10 @@ module {
 // TPU-NEXT:     %3 = stablehlo.transpose %arg1, dims = [1, 0] : (tensor<64x64xf32>) -> tensor<64x64xf32>
 // TPU-NEXT:     %4 = stablehlo.select %2, %arg1, %3 : tensor<64x64xi1>, tensor<64x64xf32>
 // TPU-NEXT:     %5 = stablehlo.dot_general %arg0, %arg0, contracting_dims = [1] x [1] : (tensor<64x32xf32>, tensor<64x32xf32>) -> tensor<64x64xf32>
-// TPU-NEXT:     %6 = stablehlo.multiply %[[c2]], %5 : tensor<64x64xf32>
-// TPU-NEXT:     %7 = stablehlo.multiply %[[c3]], %4 : tensor<64x64xf32>
-// TPU-NEXT:     %8 = stablehlo.add %6, %7 : tensor<64x64xf32>
-// TPU-NEXT:     return %8 : tensor<64x64xf32>
+// TPU-NEXT:     %[[a7:.+]] = stablehlo.multiply %[[c3]], %4 : tensor<64x64xf32>
+// TPU-NEXT:     %[[a6:.+]] = stablehlo.multiply %[[c2]], %5 : tensor<64x64xf32>
+// TPU-NEXT:     %[[a8:.+]] = stablehlo.add %[[a6]], %[[a7]] : tensor<64x64xf32>
+// TPU-NEXT:     return %[[a8:.+]] : tensor<64x64xf32>
 // TPU-NEXT: }
 
 module {

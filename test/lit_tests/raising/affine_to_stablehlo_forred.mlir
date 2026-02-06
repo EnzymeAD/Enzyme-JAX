@@ -81,7 +81,7 @@ module {
 // CHECK-NEXT:      %[[a5:.+]] = stablehlo.broadcast_in_dim %3, dims = [0, 1] : (tensor<20x1xf64>) -> tensor<20x45xf64>
 // CHECK-NEXT:      %[[a6:.+]] = arith.subf %[[a5]], %iterArg_5 : tensor<20x45xf64>
 // CHECK-NEXT:      %[[a7:.+]] = stablehlo.reshape %[[a6]] : (tensor<20x45xf64>) -> tensor<1x20x45xf64>
-// CHECK-NEXT:      %[[a8:.+]] = stablehlo.dynamic_update_slice %iterArg_6, %7, %iterArg, %c, %c : (tensor<9x27x59xf64>, tensor<1x20x45xf64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<9x27x59xf64>
+// CHECK-NEXT:      %[[a8:.+]] = stablehlo.dynamic_update_slice %iterArg_6, %[[a7]], %iterArg, %c, %c : (tensor<9x27x59xf64>, tensor<1x20x45xf64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<9x27x59xf64>
 // CHECK-NEXT:      %[[a9:.+]] = stablehlo.add %iterArg, %c_2 {enzymexla.bounds = {{.*}}} : tensor<i64>
 // CHECK-NEXT:      stablehlo.return %[[a9]], %[[a6]], %[[a8]] : tensor<i64>, tensor<20x45xf64>, tensor<9x27x59xf64>
 // CHECK-NEXT:    }

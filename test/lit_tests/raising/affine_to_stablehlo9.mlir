@@ -55,6 +55,6 @@ module {
 // CHECK-NEXT:    %[[a19:.+]] = stablehlo.transpose %[[a18]], dims = [1, 0, 2] : (tensor<20x85x180xf64>) -> tensor<85x20x180xf64>
 // CHECK-NEXT:    %[[a20:.+]] = stablehlo.select %[[a17]], %cst, %[[a19]] : tensor<85x20x180xi1>, tensor<85x20x180xf64>
 // CHECK-NEXT:    %[[a21:.+]] = stablehlo.transpose %[[a20:.+]], dims = [1, 0, 2] : (tensor<85x20x180xf64>) -> tensor<20x85x180xf64>
-// CHECK-NEXT:    %[[a22:.+]] = stablehlo.dynamic_update_slice %arg0, %21, %c_3, %c_3, %c_3 : (tensor<34x99x194xf64>, tensor<20x85x180xf64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<34x99x194xf64>
+// CHECK-NEXT:    %[[a22:.+]] = stablehlo.dynamic_update_slice %arg0, %[[a21]], %c_3, %c_3, %c_3 : (tensor<34x99x194xf64>, tensor<20x85x180xf64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<34x99x194xf64>
 // CHECK-NEXT:    return %[[a22]], %arg1, %arg2 : tensor<34x99x194xf64>, tensor<34xf64>, tensor<1x99x194xf64>
 // CHECK-NEXT:  }
