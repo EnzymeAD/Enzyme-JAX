@@ -89,6 +89,8 @@ cc_library(
         "@llvm-project//mlir:NVVMToLLVMIRTranslation",
         "@tsl//tsl/platform:env",
         "@tsl//tsl/platform:env_impl",
+        "@llvm-project//llvm:AMDGPUAsmParser",
+        "@llvm-project//llvm:AMDGPUCodeGen",
     ] + if_llvm_aarch32_available([
         "@llvm-project//llvm:ARMAsmParser",
         "@llvm-project//llvm:ARMCodeGen",
