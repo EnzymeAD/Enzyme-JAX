@@ -109,6 +109,10 @@ void addConcatenateOpCanon(RewritePatternSet &patterns,
                            PatternBenefit benefit);
 void addTransposeElementwise(RewritePatternSet &patterns, bool onlySingleUser,
                              MLIRContext &context, PatternBenefit benefit);
+void addTransposeLikeBroadcastElementwise(RewritePatternSet &patterns,
+                                          bool onlySingleUser,
+                                          MLIRContext &context,
+                                          PatternBenefit benefit);
 void addReshapeElementwise(RewritePatternSet &patterns, bool onlySingleUser,
                            MLIRContext &context, PatternBenefit benefit);
 void addReshapeElementwiseOnlyFusible(RewritePatternSet &patterns,

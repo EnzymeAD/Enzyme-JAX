@@ -485,10 +485,11 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
         rewriter, op.getLoc(), cast<RankedTensorType>(op.getC().getType()),
         op.getA(), op.getA(), dotDims, nullptr, nullptr);
 
-    auto res = stablehlo::AddOpCreate(
-        rewriter, op->getLoc(),
-        stablehlo::MulOpCreate(rewriter, op->getLoc(), op.getAlpha(), AAT),
-        stablehlo::MulOpCreate(rewriter, op->getLoc(), op.getBeta(), C));
+    auto aop =
+        stablehlo::MulOpCreate(rewriter, op->getLoc(), op.getAlpha(), AAT);
+    auto bop = stablehlo::MulOpCreate(rewriter, op->getLoc(), op.getBeta(), C);
+
+    auto res = stablehlo::AddOpCreate(rewriter, op->getLoc(), aop, bop);
     rewriter.replaceOp(op, res);
     return success();
   }
