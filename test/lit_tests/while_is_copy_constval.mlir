@@ -58,14 +58,13 @@ func.func @main2(%arg0: tensor<64x64xf32>, %arg1: tensor<64xf32>, %arg2: tensor<
 }
 
 // CHECK: func.func @main2(%arg0: tensor<64x64xf32>, %arg1: tensor<64xf32>, %arg2: tensor<32x1xf32>) -> tensor<64x32xf32> {
-// CHECK-NEXT:   %0 = stablehlo.reshape %arg2 : (tensor<32x1xf32>) -> tensor<32xf32>
-// CHECK-NEXT:   %1 = stablehlo.broadcast_in_dim %0, dims = [0] : (tensor<32xf32>) -> tensor<32x32xf32>
-// CHECK-NEXT:   %2 = stablehlo.dot_general %arg0, %arg1, contracting_dims = [0] x [0] : (tensor<64x64xf32>, tensor<64xf32>) -> tensor<64xf32>
-// CHECK-NEXT:   %3 = stablehlo.dot_general %arg0, %2, contracting_dims = [1] x [0] : (tensor<64x64xf32>, tensor<64xf32>) -> tensor<64xf32>
-// CHECK-NEXT:   %4 = stablehlo.broadcast_in_dim %3, dims = [0] : (tensor<64xf32>) -> tensor<64x32xf32>
-// CHECK-NEXT:   %5 = stablehlo.slice %4 [0:32, 0:32] : (tensor<64x32xf32>) -> tensor<32x32xf32>
-// CHECK-NEXT:   %6 = stablehlo.add %5, %1 : tensor<32x32xf32>
-// CHECK-NEXT:   %7 = stablehlo.slice %4 [32:64, 0:32] : (tensor<64x32xf32>) -> tensor<32x32xf32>
-// CHECK-NEXT:   %8 = stablehlo.concatenate %6, %7, dim = 0 : (tensor<32x32xf32>, tensor<32x32xf32>) -> tensor<64x32xf32>
-// CHECK-NEXT:   return %8 : tensor<64x32xf32>
+// CHECK-NEXT:   %[[a1:.+]] = stablehlo.broadcast_in_dim %[[a0]], dims = [0, 1] : (tensor<32x1xf32>) -> tensor<32x32xf32>
+// CHECK-NEXT:   %[[a2:.+]] = stablehlo.dot_general %arg0, %arg1, contracting_dims = [0] x [0] : (tensor<64x64xf32>, tensor<64xf32>) -> tensor<64xf32>
+// CHECK-NEXT:   %[[a3:.+]] = stablehlo.dot_general %arg0, %[[a2]], contracting_dims = [1] x [0] : (tensor<64x64xf32>, tensor<64xf32>) -> tensor<64xf32>
+// CHECK-NEXT:   %[[a4:.+]] = stablehlo.broadcast_in_dim %[[a3]], dims = [0] : (tensor<64xf32>) -> tensor<64x32xf32>
+// CHECK-NEXT:   %[[a5:.+]] = stablehlo.slice %[[a4]] [0:32, 0:32] : (tensor<64x32xf32>) -> tensor<32x32xf32>
+// CHECK-NEXT:   %[[a6:.+]] = stablehlo.add %[[a5]], %[[a1]] : tensor<32x32xf32>
+// CHECK-NEXT:   %[[a7:.+]] = stablehlo.slice %[[a4]] [32:64, 0:32] : (tensor<64x32xf32>) -> tensor<32x32xf32>
+// CHECK-NEXT:   %[[a8:.+]] = stablehlo.concatenate %[[a6]], %[[a7]], dim = 0 : (tensor<32x32xf32>, tensor<32x32xf32>) -> tensor<64x32xf32>
+// CHECK-NEXT:   return %[[a8]] : tensor<64x32xf32>
 // CHECK-NEXT: }
