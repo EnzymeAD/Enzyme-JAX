@@ -273,11 +273,14 @@ load(
 nccl_configure(name = "local_config_nccl")
 
 load("//third_party/enzyme:workspace.bzl", enzyme_workspace = "repo")
+load("//third_party/cuda_tile:workspace.bzl", cuda_tile_workspace = "repo")
 
 # add support for generating compile_commands
 load("//third_party/hedron_compile_commands:workspace.bzl", hedron_compile_commands_workspace = "repo")
 
 enzyme_workspace()
+
+cuda_tile_workspace()
 
 hedron_compile_commands_workspace()
 
