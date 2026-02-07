@@ -9114,6 +9114,8 @@ struct BinBroadcastSplat final
     for (int i = 0; i < 2; i++) {
       mlir::Value opi = op->getOperand(i);
       if (auto broadcast = opi.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+        if (isTransposeReshapeLikeBroadcast(broadcast))
+          continue;
         SplatElementsAttr other;
         if (matchPattern(op->getOperand(1 - i), m_Constant(&other))) {
           IRMapping map;
