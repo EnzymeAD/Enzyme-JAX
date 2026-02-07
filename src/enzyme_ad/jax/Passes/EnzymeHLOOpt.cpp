@@ -2993,7 +2993,8 @@ struct SliceBroadcast final
           in_start[idx] = start;
           in_end[idx] = end;
           in_stride[idx] = step;
-          innerSlice = true;
+          if (start != 0 || step != 1 || end != preShape.getShape()[idx])
+            innerSlice = true;
         } else if (preShapeIdx != 1) {
           return failure();
         }
