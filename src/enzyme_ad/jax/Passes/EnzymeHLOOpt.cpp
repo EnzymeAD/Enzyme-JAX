@@ -13718,6 +13718,37 @@ struct BroadcastInDimOpCanon final
       return success();
     }
 
+    // Attempt to rewrite which dims are broadcast or not
+    {
+      bool changed = false;
+      SmallVector<int64_t> dims = llvm::to_vector(op.getBroadcastDimensions());
+      for (size_t i = 0; i < dims.size(); i++) {
+        if (operandTy.getShape()[i] != 1)
+          continue;
+        if (type.getShape()[dims[i]] == 1)
+          continue;
+        bool found = true;
+        size_t newidx = 0;
+        for (size_t j = 0; j < type.getShape().size(); j++) {
+          if (type.getShape()[j] != 1)
+            continue;
+          if (llvm::is_contained(dims, j))
+            continue;
+          found = true;
+          newidx = j;
+          break;
+        }
+        if (found) {
+          changed = true;
+          dims[i] = newidx;
+        }
+      }
+      if (changed) {
+        rewriter.modifyOpInPlace(op,
+                                 [&]() { op.setBroadcastDimensions(dims); });
+        return success();
+      }
+    }
     return failure();
   }
 };
