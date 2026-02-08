@@ -2921,6 +2921,16 @@ def ApplyFuseAddIntoSyrkPatterns : EnzymeHLOPatternOp<
   let patterns = ["FuseAddIntoSyrk"];
 }
 
+def ApplyFuseMulIntoSymmPatterns : EnzymeHLOPatternOp<
+    "fuse_mul_into_symm"> {
+  let patterns = ["FuseMulIntoSymm"];
+}
+
+def ApplyFuseAddIntoSymmPatterns : EnzymeHLOPatternOp<
+    "fuse_add_into_symm"> {
+  let patterns = ["FuseAddIntoSymm"];
+}
+
 def ApplyDotGeneralBroadcastInDimPatterns : EnzymeHLOPatternOp<
     "dot_general_broadcast_in_dim"> {
   let patterns = ["DotGeneralBroadcastInDim"];

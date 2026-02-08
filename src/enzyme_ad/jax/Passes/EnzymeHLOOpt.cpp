@@ -29698,24 +29698,24 @@ struct DotGeneralToSymm
   }
 };
 
-struct FuseMulIntoSymm
-    : public CheckedOpRewritePattern<stablehlo::MulOp, FuseMulIntoSymm> {
-  using CheckedOpRewritePattern<stablehlo::MulOp,
-                                FuseMulIntoSymm>::CheckedOpRewritePattern;
+template <typename ST, typename Child>
+struct FuseMulBase : public CheckedOpRewritePattern<stablehlo::MulOp, FuseMulBase<ST, Child>>
+{
+  using CheckedOpRewritePattern<stablehlo::MulOp, FuseMulBase<ST, Child>>::CheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::MulOp op,
                                     PatternRewriter &rewriter) const {
     auto lhs = op.getLhs();
     auto rhs = op.getRhs();
 
-    enzymexla::SymmOp symmOp;
+    ST targetOp;
     Value other;
 
-    if (auto lhsSymm = lhs.getDefiningOp<enzymexla::SymmOp>()) {
-      symmOp = lhsSymm;
+    if (auto lhsTarget = lhs.getDefiningOp<ST>()) {
+      targetOp = lhsTarget;
       other = rhs;
-    } else if (auto rhsSymm = rhs.getDefiningOp<enzymexla::SymmOp>()) {
-      symmOp = rhsSymm;
+    } else if (auto rhsTarget = rhs.getDefiningOp<ST>()) {
+      targetOp = rhsTarget;
       other = lhs;
     } else {
       return failure();
@@ -29726,62 +29726,144 @@ struct FuseMulIntoSymm
     if (!scalarVal)
       return failure();
 
-    auto newBeta = stablehlo::MulOp::create(rewriter, op.getLoc(),
-                                            symmOp.getBeta(), scalarVal);
-    auto newAlpha = stablehlo::MulOp::create(rewriter, op.getLoc(),
-                                             symmOp.getAlpha(), scalarVal);
-
-    rewriter.replaceOpWithNewOp<enzymexla::SymmOp>(
-        op, symmOp.getType(), symmOp.getA(), symmOp.getB(), symmOp.getC(), newAlpha, newBeta,
-        symmOp.getSideAttr(), symmOp.getUploAttr());
-    return success();
+      ((Child *)this)->fuseMul(rewriter, targetOp, op, scalarVal);
+      return success();
   }
 };
 
-struct FuseAddIntoSymm
-    : public CheckedOpRewritePattern<stablehlo::AddOp,
-                                     FuseAddIntoSymm>::CheckedOpRewritePattern {
-  using CheckedOpRewritePattern<stablehlo::AddOp,
-                                FuseAddIntoSymm>::CheckedOpRewritePattern;
+template <typename ST, typename Child>
+struct FuseAddBase : public CheckedOpRewritePattern<stablehlo::AddOp, FuseAddBase<ST, Child>>
+{
+  using CheckedOpRewritePattern<stablehlo::AddOp, FuseAddBase<ST, Child>>::CheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::AddOp op,
                                     PatternRewriter &rewriter) const {
     auto lhs = op.getLhs();
     auto rhs = op.getRhs();
 
-    enzymexla::SymmOp symmOp;
+    ST targetOp;
     Value other;
 
-    if (auto lhsSymm = lhs.getDefiningOp<enzymexla::SymmOp>()) {
-      symmOp = lhsSymm;
+    if (auto lhsTarget = lhs.getDefiningOp<ST>()) {
+      targetOp = lhsTarget;
       other = rhs;
-    } else if (auto rhsSymm = rhs.getDefiningOp<enzymexla::SymmOp>()) {
-      symmOp = rhsSymm;
+    } else if (auto rhsTarget = rhs.getDefiningOp<ST>()) {
+      targetOp = rhsTarget;
       other = lhs;
     } else {
       return failure();
     }
+   
+    ((Child *)this)->fuseAdd(rewriter, targetOp, op, other);
+    return success();
+  }
 
-    auto oldBeta = symmOp.getBeta();
+  std::pair<stablehlo::AddOp, stablehlo::ConstantOp> computeNewCBeta(PatternRewriter &rewriter, Value oldBeta, Type type, stablehlo::AddOp op, Value c, Value other) {
     auto bcastedBeta = stablehlo::BroadcastInDimOp::create(
-        rewriter, op.getLoc(), symmOp.getType(), oldBeta,
+        rewriter, op.getLoc(), type, oldBeta,
         rewriter.getDenseI64ArrayAttr({}));
 
     auto scaledC = stablehlo::MulOp::create(rewriter, op.getLoc(),
-                                            symmOp.getC(), bcastedBeta);
+                                            c, bcastedBeta);
 
     auto newC = stablehlo::AddOp::create(rewriter, op.getLoc(), scaledC, other);
 
     auto newBeta = stablehlo::ConstantOp::create(
         rewriter, op.getLoc(), oldBeta.getType(),
         cast<ElementsAttr>(makeAttr(oldBeta.getType(), 1)));
+    return {newC, newBeta};
+  }
+
+};
+
+struct FuseMulIntoSymm: public FuseMulBase<enzymexla::SymmOp, FuseMulIntoSymm> {
+  
+  FuseMulIntoSymm(MLIRContext *context, PatternBenefit benefit = 1,
+    ArrayRef<StringRef> generatedNames = {})
+    : FuseMulBase<enzymexla::SymmOp, FuseMulIntoSymm>(context, benefit,
+      generatedNames) {}
+      
+  using FuseMulBase<enzymexla::SymmOp, FuseMulIntoSymm>::matchAndRewrite;
+
+  void fuseMul(PatternRewriter &rewriter, enzymexla::SymmOp symmOp, stablehlo::MulOp op, Value scalarVal) {
+    auto newBeta = stablehlo::MulOp::create(rewriter, op.getLoc(),
+                                            symmOp.getBeta(), scalarVal);
+    auto newAlpha = stablehlo::MulOp::create(rewriter, op.getLoc(),
+                                            symmOp.getAlpha(), scalarVal);
+
+    rewriter.replaceOpWithNewOp<enzymexla::SymmOp>(
+        op, symmOp.getType(), symmOp.getA(), symmOp.getB(), symmOp.getC(), newAlpha, newBeta,
+        symmOp.getSideAttr(), symmOp.getUploAttr());
+      }
+};
+
+struct FuseMulIntoSyrk: public FuseMulBase<enzymexla::SyrkOp, FuseMulIntoSyrk> {
+  
+  FuseMulIntoSyrk(MLIRContext *context, PatternBenefit benefit = 1,
+    ArrayRef<StringRef> generatedNames = {})
+    : FuseMulBase<enzymexla::SyrkOp, FuseMulIntoSyrk>(context, benefit,
+      generatedNames) {}
+      
+  using FuseMulBase<enzymexla::SyrkOp, FuseMulIntoSyrk>::matchAndRewrite;
+
+  void fuseMul(PatternRewriter &rewriter, enzymexla::SyrkOp syrkOp, stablehlo::MulOp op, Value scalarVal) {
+    auto newBeta = stablehlo::MulOp::create(rewriter, op.getLoc(),
+                                            syrkOp.getBeta(), scalarVal);
+    auto newAlpha = stablehlo::MulOp::create(rewriter, op.getLoc(),
+                                             syrkOp.getAlpha(), scalarVal);
+
+    rewriter.replaceOpWithNewOp<enzymexla::SyrkOp>(
+        op, syrkOp.getType(), syrkOp.getA(), syrkOp.getC(), newAlpha, newBeta,
+        syrkOp.getUploAttr(), syrkOp.getOutputUploAttr(),
+        syrkOp.getTransposeAttr());
+    }
+};
+
+struct FuseAddIntoSymm
+    : public FuseAddBase<enzymexla::SymmOp,
+                                     FuseAddIntoSymm> {
+  FuseAddIntoSymm(MLIRContext *context, PatternBenefit benefit = 1,
+    ArrayRef<StringRef> generatedNames = {})
+    : FuseAddBase<enzymexla::SymmOp, FuseAddIntoSymm>(context, benefit,
+      generatedNames) {}
+      
+  using FuseAddBase<enzymexla::SymmOp, FuseAddIntoSymm>::matchAndRewrite;
+
+  void fuseAdd(PatternRewriter &rewriter, enzymexla::SymmOp symmOp, stablehlo::AddOp op, Value other) {
+    stablehlo::AddOp newC;
+    stablehlo::ConstantOp newBeta;
+    std::tie(newC, newBeta) = computeNewCBeta(rewriter, symmOp.getBeta(), symmOp.getType(), op, symmOp.getC(), other);
 
     rewriter.replaceOpWithNewOp<enzymexla::SymmOp>(
         op, symmOp.getType(), symmOp.getA(), symmOp.getB(), newC, symmOp.getAlpha(), newBeta,
         symmOp.getSideAttr(), symmOp.getUploAttr());
-    return success();
+    
   }
 };
+
+struct FuseAddIntoSyrk
+    : public FuseAddBase<enzymexla::SyrkOp,
+                                     FuseAddIntoSyrk> {
+  FuseAddIntoSyrk(MLIRContext *context, PatternBenefit benefit = 1,
+    ArrayRef<StringRef> generatedNames = {})
+    : FuseAddBase<enzymexla::SyrkOp, FuseAddIntoSyrk>(context, benefit,
+      generatedNames) {}
+      
+  using FuseAddBase<enzymexla::SyrkOp, FuseAddIntoSyrk>::matchAndRewrite;
+
+  void fuseAdd(PatternRewriter &rewriter, enzymexla::SyrkOp syrkOp, stablehlo::AddOp op, Value other) {
+    stablehlo::AddOp newC;
+    stablehlo::ConstantOp newBeta;
+    std::tie(newC, newBeta) = computeNewCBeta(rewriter, syrkOp.getBeta(), syrkOp.getType(), op, syrkOp.getC(), other);
+
+    rewriter.replaceOpWithNewOp<enzymexla::SyrkOp>(
+        op, syrkOp.getType(), syrkOp.getA(), newC, syrkOp.getAlpha(), newBeta,
+        syrkOp.getUploAttr(), syrkOp.getOutputUploAttr(),
+        syrkOp.getTransposeAttr()
+    );
+  }
+};
+
 struct TransposeSyrkToSyrk
     : public CheckedOpRewritePattern<enzymexla::SyrkOp, TransposeSyrkToSyrk> {
   using CheckedOpRewritePattern<enzymexla::SyrkOp,
@@ -29810,103 +29892,6 @@ struct TransposeSyrkToSyrk
         enzymexla::LapackTransposeAttr::get(
             op.getContext(),
             enzyme::transposeLapackTranspose(op.getTranspose(), false)));
-    return success();
-  }
-};
-
-struct FuseMulIntoSyrk
-    : public CheckedOpRewritePattern<stablehlo::MulOp, FuseMulIntoSyrk> {
-  using CheckedOpRewritePattern<stablehlo::MulOp,
-                                FuseMulIntoSyrk>::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::MulOp op,
-                                    PatternRewriter &rewriter) const {
-    auto lhs = op.getLhs();
-    auto rhs = op.getRhs();
-
-    enzymexla::SyrkOp syrkOp;
-    Value other;
-
-    if (auto lhsSyrk = lhs.getDefiningOp<enzymexla::SyrkOp>()) {
-      syrkOp = lhsSyrk;
-      other = rhs;
-    } else if (auto rhsSyrk = rhs.getDefiningOp<enzymexla::SyrkOp>()) {
-      syrkOp = rhsSyrk;
-      other = lhs;
-    } else {
-      return failure();
-    }
-
-    if (!isOnlyUsedInOperation(syrkOp, op))
-      return failure();
-
-    Value scalarVal =
-        stablehlo::getScalarValue(other.getDefiningOp(), rewriter);
-    if (!scalarVal)
-      return failure();
-
-    auto newBeta = stablehlo::MulOp::create(rewriter, op.getLoc(),
-                                            syrkOp.getBeta(), scalarVal);
-    auto newAlpha = stablehlo::MulOp::create(rewriter, op.getLoc(),
-                                             syrkOp.getAlpha(), scalarVal);
-
-    rewriter.replaceOpWithNewOp<enzymexla::SyrkOp>(
-        op, syrkOp.getType(), syrkOp.getA(), syrkOp.getC(), newAlpha, newBeta,
-        syrkOp.getUploAttr(), syrkOp.getOutputUploAttr(),
-        syrkOp.getTransposeAttr());
-    return success();
-  }
-};
-
-struct FuseAddIntoSyrk
-    : public CheckedOpRewritePattern<stablehlo::AddOp,
-                                     FuseAddIntoSyrk>::CheckedOpRewritePattern {
-  using CheckedOpRewritePattern<stablehlo::AddOp,
-                                FuseAddIntoSyrk>::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::AddOp op,
-                                    PatternRewriter &rewriter) const {
-    auto lhs = op.getLhs();
-    auto rhs = op.getRhs();
-
-    enzymexla::SyrkOp syrkOp;
-    Value other;
-
-    if (auto lhsSyrk = lhs.getDefiningOp<enzymexla::SyrkOp>()) {
-      syrkOp = lhsSyrk;
-      other = rhs;
-    } else if (auto rhsSyrk = rhs.getDefiningOp<enzymexla::SyrkOp>()) {
-      syrkOp = rhsSyrk;
-      other = lhs;
-    } else {
-      return failure();
-    }
-
-    if (!isOnlyUsedInOperation(syrkOp, op))
-      return failure();
-
-    // we can fuse this addition iff the other operand is a symmetric matrix
-    if (!canApplySymmetricPattern(other, rewriter))
-      return failure();
-
-    auto oldBeta = syrkOp.getBeta();
-    auto bcastedBeta = stablehlo::BroadcastInDimOp::create(
-        rewriter, op.getLoc(), syrkOp.getType(), oldBeta,
-        rewriter.getDenseI64ArrayAttr({}));
-
-    auto scaledC = stablehlo::MulOp::create(rewriter, op.getLoc(),
-                                            syrkOp.getC(), bcastedBeta);
-
-    auto newC = stablehlo::AddOp::create(rewriter, op.getLoc(), scaledC, other);
-
-    auto newBeta = stablehlo::ConstantOp::create(
-        rewriter, op.getLoc(), oldBeta.getType(),
-        cast<ElementsAttr>(makeAttr(oldBeta.getType(), 1)));
-
-    rewriter.replaceOpWithNewOp<enzymexla::SyrkOp>(
-        op, syrkOp.getType(), syrkOp.getA(), newC, syrkOp.getAlpha(), newBeta,
-        syrkOp.getUploAttr(), syrkOp.getOutputUploAttr(),
-        syrkOp.getTransposeAttr());
     return success();
   }
 };
