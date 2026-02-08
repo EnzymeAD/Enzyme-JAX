@@ -13,6 +13,7 @@
 #include "Enzyme/MLIR/Dialect/Dialect.h"
 #include "Enzyme/MLIR/Dialect/Ops.h"
 #include "Enzyme/MLIR/Passes/EnzymeBatchPass.h"
+#include "mlir/Analysis/Presburger/PresburgerRelation.h"
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Analysis/TopologicalSortUtils.h"
 #include "mlir/Dialect/CommonFolders.h"
@@ -54,7 +55,7 @@
 
 #include "llvm/ADT/MapVector.h"
 #include <cstddef>
-#include <iostream>
+#include <cstdint>
 #include <iterator>
 #include <llvm/ADT/MapVector.h>
 #include <llvm/ADT/STLExtras.h>
@@ -1435,6 +1436,68 @@ struct LowerUpdateWithoutCorners
   LogicalResult matchAndRewriteImpl(enzymexla::UpdateWithoutCornersOp up,
                                     PatternRewriter &rewriter) const {
     mlir::enzyme::commonLowerUpdateWithoutCorners(up, rewriter);
+    return success();
+  }
+};
+
+static Value createInBoxCondition(OpBuilder &rewriter, Location loc,
+                                  ArrayRef<int64_t> shape,
+                                  ArrayRef<int64_t> bounds) {
+  Value condition;
+  for (int64_t dim = 0; dim < shape.size(); dim++) {
+    auto i32TensorType = RankedTensorType::get(shape, rewriter.getI32Type());
+    Value iota = stablehlo::IotaOp::create(rewriter, loc, i32TensorType, dim);
+
+    Value lb = stablehlo::ConstantOp::create(
+        rewriter, loc,
+        SplatElementsAttr::get(i32TensorType,
+                               rewriter.getI32IntegerAttr(bounds[2 * dim])));
+    Value ub = stablehlo::ConstantOp::create(
+        rewriter, loc,
+        SplatElementsAttr::get(
+            i32TensorType, rewriter.getI32IntegerAttr(bounds[2 * dim + 1])));
+
+    Value cmp1 = stablehlo::CompareOp::create(
+        rewriter, loc, iota, lb, stablehlo::ComparisonDirection::GE);
+    Value cmp2 = stablehlo::CompareOp::create(
+        rewriter, loc, iota, ub, stablehlo::ComparisonDirection::LT);
+    Value cmp = stablehlo::AndOp::create(rewriter, loc, cmp1, cmp2);
+    if (!condition) {
+      condition = cmp;
+      continue;
+    }
+    condition = stablehlo::AndOp::create(rewriter, loc, condition, cmp);
+  }
+  return condition;
+}
+
+struct LowerPiecewiseSelect
+    : public CheckedOpRewritePattern<enzymexla::PiecewiseSelectOp,
+                                     LowerPiecewiseSelect> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(enzymexla::PiecewiseSelectOp op,
+                                    PatternRewriter &rewriter) const {
+    Value condition;
+    for (Attribute box : op.getBoxes()) {
+      SmallVector boxCoords = llvm::map_to_vector(
+          cast<ArrayAttr>(box).getAsValueRange<IntegerAttr>(),
+          [](APInt apInt) { return apInt.getSExtValue(); });
+      Value boxCondition = createInBoxCondition(
+          rewriter, op.getLoc(), op.getType().getShape(), boxCoords);
+      if (!condition) {
+        condition = boxCondition;
+        continue;
+      }
+      condition = stablehlo::OrOp::create(rewriter, op.getLoc(), condition,
+                                          boxCondition);
+    }
+
+    auto select =
+        stablehlo::SelectOp::create(rewriter, op.getLoc(), condition,
+                                    op.getWhenInBox(), op.getWhenOutOfBox());
+    rewriter.replaceOp(op, select);
+
     return success();
   }
 };
@@ -17197,6 +17260,826 @@ struct DUSDUSToDUSPad
   }
 };
 
+// Information about the provenance of a tensor value. Contains a potentially
+// disjoint relation mapping tensor subscripts to source tensor values and
+// subscripts in it. The first dimension of the relation range is a position in
+// the `sources` vector pointing to the source value, the remaining dimensions
+// are subscripts. This currently assumes that the rank of the tensor for which
+// the provenance is computed matches the rank of all source tensors, except for
+// broadcasted constants. This means expand/collapse operations cannot be
+// supported. This is fundamentally possible using Presburger relations, but
+// requires handling a disjoint relation with potentially different number of
+// range dimensions, which isn't directly supported by the Presburger library.
+// (It is in theory possible to use the maximum of all range ranks and pin the
+// unnecessary trailing dimensions to zero).
+struct TensorValueProvenance {
+  SmallVector<Value> sources;
+  presburger::PresburgerRelation provenanceRelation;
+
+  TensorValueProvenance(ArrayRef<Value> sources,
+                        const presburger::PresburgerRelation &relation)
+      : sources(sources.begin(), sources.end()), provenanceRelation(relation) {}
+};
+
+// Returns an integer set representing a hyperrectangle with the given start
+// coordiantes and the given size.
+static presburger::IntegerPolyhedron
+getBoundedDomain(const presburger::PresburgerSpace &space,
+                 ArrayRef<int64_t> starts, ArrayRef<int64_t> extents) {
+  auto domain = presburger::IntegerPolyhedron::getUniverse(space);
+  size_t rank = starts.size();
+  for (size_t i = 0; i < rank; ++i) {
+    domain.addBound(presburger::BoundType::LB, i, starts[i]);
+    domain.addBound(presburger::BoundType::UB, i, starts[i] + extents[i] - 1);
+  }
+  return domain;
+}
+
+// Projects out local dimensions from the given relation. This is useful since
+// the Presburger library, unlike isl, does not automatically remove original
+// dimensions when a relation is applied to the domain or range of another
+// relation.
+static void
+presburgerRelationProjectOutLocals(presburger::PresburgerRelation &relation) {
+  auto updated = presburger::PresburgerRelation::getEmpty(
+      relation.getSpace().getSpaceWithoutLocals());
+  for (auto disjunct : relation.getAllDisjuncts()) {
+    disjunct.projectOut(disjunct.getNumDimAndSymbolVars(),
+                        disjunct.getNumLocalVars());
+    updated.unionInPlace(disjunct);
+  }
+  relation = updated;
+}
+
+// Update the relation so that the indices of source values (leading range
+// dimension) provided as `currentSources` match their positions in
+// `allSources`, appending missing values when necessary.
+static void alignSourceValues(presburger::PresburgerRelation &relation,
+                              SmallVectorImpl<Value> &allSources,
+                              ArrayRef<Value> currentSources) {
+  if (allSources == currentSources)
+    return;
+
+  presburger::PresburgerSpace rangeSpace = relation.getSpace().getRangeSpace();
+  size_t rank = rangeSpace.getNumSetDimVars() - 1;
+  auto remappingSpace = presburger::PresburgerSpace::getRelationSpace(
+      rangeSpace.getNumSetDimVars(), rangeSpace.getNumSetDimVars(),
+      rangeSpace.getNumSymbolVars());
+  presburger::PresburgerRelation remapping =
+      presburger::PresburgerRelation::getEmpty(remappingSpace);
+  for (auto [i, source] : llvm::enumerate(currentSources)) {
+    auto it = llvm::find(allSources, source);
+    size_t position;
+    if (it == allSources.end()) {
+      position = allSources.size();
+      allSources.push_back(source);
+    } else {
+      position = std::distance(allSources.begin(), it);
+    }
+
+    auto remappingElement =
+        presburger::IntegerRelation::getUniverse(remappingSpace);
+    remappingElement.addBound(presburger::BoundType::EQ, 0, i);
+    remappingElement.addBound(presburger::BoundType::EQ, rank + 1, position);
+    for (size_t dim = 0; dim < rank; ++dim) {
+      SmallVector<int64_t> equalityCoefficients(2 * rank + 3, 0);
+      equalityCoefficients[dim + 1] = -1;
+      equalityCoefficients[rank + dim + 2] = 1;
+      remappingElement.addEquality(equalityCoefficients);
+    }
+    remapping.unionInPlace(remappingElement);
+  }
+  relation.applyRange(remapping);
+  presburgerRelationProjectOutLocals(relation);
+}
+
+// Create an integer relation mapping dimensions in the given space to the
+// co-indexed positions with the given offsets. That is, x_i is mapped to x_i +
+// offset_i. If `positive` is not set, map to x_i - offset_i instead.
+static presburger::IntegerRelation
+getOffsetRelation(const presburger::PresburgerSpace &space,
+                  ArrayRef<int64_t> offsets, bool positive = true) {
+  assert(space.getNumSetDimVars() == offsets.size());
+  auto offsetSpace = presburger::PresburgerSpace::getRelationSpace(
+      space.getNumSetDimVars(), space.getNumSetDimVars(),
+      space.getNumSymbolVars());
+  auto offset = presburger::IntegerRelation::getUniverse(offsetSpace);
+  size_t rank = offsets.size();
+  for (size_t i = 0; i < rank; ++i) {
+    SmallVector<int64_t> offsetCoefficients(2 * rank + 1, 0);
+    offsetCoefficients[i] = -1;
+    offsetCoefficients[rank + i] = 1;
+    offsetCoefficients.back() = (positive ? 1 : -1) * offsets[i];
+    offset.addEquality(offsetCoefficients);
+  }
+  return offset;
+}
+
+// Mark the value as the provenance source by indicating it as its own source
+// for all valid subscripts.
+static void
+addSelfProvenance(Value value,
+                  DenseMap<Value, TensorValueProvenance> &provenanceInfo) {
+  assert(!provenanceInfo.contains(value));
+
+  size_t rank = cast<RankedTensorType>(value.getType()).getRank();
+
+  presburger::PresburgerSpace space =
+      presburger::PresburgerSpace::getRelationSpace(
+          /*numDomainVars=*/rank,
+          /*numRangeVars=*/rank + 1,
+          /*numSymbolVars=*/0);
+  auto relation = presburger::IntegerRelation::getUniverse(space);
+  for (size_t i = 0; i < rank; ++i) {
+    SmallVector<int64_t> equalityCoefficients(2 * rank + 2, 0);
+    equalityCoefficients[i] = -1;
+    equalityCoefficients[rank + i + 1] = 1;
+    relation.addEquality(equalityCoefficients);
+
+    relation.addBound(presburger::BoundType::LB, i, 0);
+    relation.addBound(presburger::BoundType::UB, i,
+                      cast<RankedTensorType>(value.getType()).getShape()[i] -
+                          1);
+  }
+  SmallVector<int64_t> sourceIndexCoefficients(2 * rank + 2, 0);
+  sourceIndexCoefficients[rank] = -1;
+  sourceIndexCoefficients.back() = 0;
+  relation.addEquality(sourceIndexCoefficients);
+
+  // Sanity check that all elements are present in the mapping.
+  if (auto volume = relation.getDomainSet().computeVolume()) {
+    assert(*volume == cast<RankedTensorType>(value.getType()).getNumElements());
+  }
+
+  provenanceInfo.try_emplace(value, ArrayRef<Value>(value),
+                             presburger::PresburgerRelation(relation));
+}
+
+// Compute provenance for all given values and popupate the provenance info data
+// structure with it.
+void computeTensorValueProvenanceImpl(
+    SmallVectorImpl<Value> &pendingValues,
+    DenseMap<Value, TensorValueProvenance> &provenanceInfo2) {
+  while (!pendingValues.empty()) {
+    Value value = pendingValues.pop_back_val();
+    if (provenanceInfo2.contains(value))
+      continue;
+
+    if (auto slice = value.getDefiningOp<stablehlo::SliceOp>()) {
+      // If we don't know the provenance of the operand, figure it out before
+      // coming back to this value.
+      auto it = provenanceInfo2.find(slice.getOperand());
+      if (it == provenanceInfo2.end()) {
+        pendingValues.push_back(value);
+        pendingValues.push_back(slice.getOperand());
+        continue;
+      }
+
+      // Intersect domain with that defined by the slice, than shift by offsets
+      // (start indices).
+      presburger::PresburgerSpace domainSpace =
+          it->second.provenanceRelation.getSpace().getDomainSpace();
+      presburger::IntegerPolyhedron restriction = getBoundedDomain(
+          domainSpace, slice.getStartIndices(), slice.getType().getShape());
+      presburger::IntegerRelation offset =
+          getOffsetRelation(domainSpace, slice.getStartIndices());
+
+      auto [insertIt, _] = provenanceInfo2.try_emplace(
+          value, it->second.sources, it->second.provenanceRelation);
+      insertIt->second.provenanceRelation =
+          insertIt->second.provenanceRelation.intersectDomain(
+              presburger::PresburgerSet(restriction));
+      insertIt->second.provenanceRelation.applyDomain(
+          presburger::PresburgerRelation(offset));
+      presburgerRelationProjectOutLocals(insertIt->second.provenanceRelation);
+      insertIt->second.provenanceRelation =
+          insertIt->second.provenanceRelation.simplify().coalesce();
+
+      if (std::optional<DynamicAPInt> volume =
+              insertIt->second.provenanceRelation.getDomainSet()
+                  .computeVolume()) {
+        assert(*volume ==
+               cast<RankedTensorType>(value.getType()).getNumElements());
+      }
+      continue;
+    }
+
+    if (auto dus = value.getDefiningOp<stablehlo::DynamicUpdateSliceOp>()) {
+      auto it = provenanceInfo2.find(dus.getOperand());
+      if (it == provenanceInfo2.end()) {
+        pendingValues.push_back(value);
+        pendingValues.push_back(dus.getOperand());
+        continue;
+      }
+
+      auto up = provenanceInfo2.find(dus.getUpdate());
+      if (up == provenanceInfo2.end()) {
+        pendingValues.push_back(value);
+        pendingValues.push_back(dus.getUpdate());
+        continue;
+      }
+
+      auto resultShape = cast<RankedTensorType>(dus.getType()).getShape();
+      auto updateShape =
+          cast<RankedTensorType>(dus.getUpdate().getType()).getShape();
+      size_t rank = resultShape.size();
+
+      // Try to extract constant start indices for each dimension
+      SmallVector<std::optional<int64_t>> constantStarts(rank);
+      for (size_t i = 0; i < rank; i++) {
+        DenseIntElementsAttr startAttr;
+        if (matchPattern(dus.getStartIndices()[i], m_Constant(&startAttr))) {
+          constantStarts[i] = (*startAttr.begin()).getSExtValue();
+        }
+      }
+
+      // Check if all start indices are constant (required for provenance
+      // tracking)
+      bool allConstant = true;
+      for (const auto &start : constantStarts) {
+        if (!start.has_value()) {
+          allConstant = false;
+          break;
+        }
+      }
+
+      if (!allConstant) {
+        // If start indices are dynamic, we can't precisely track provenance.
+        // Assume constant propagation has run before this.
+        addSelfProvenance(value, provenanceInfo2);
+        continue;
+      }
+
+      auto knownConstantStarts = llvm::map_to_vector(
+          constantStarts, [](std::optional<int64_t> v) { return v.value(); });
+
+      // Update provenance to that of the DUS update operand for the slice.
+      presburger::PresburgerRelation provenanceUnion(
+          it->second.provenanceRelation);
+      presburger::PresburgerSet provenanceRemainingDomain =
+          provenanceUnion.getDomainSet();
+      presburgerRelationProjectOutLocals(provenanceRemainingDomain);
+      provenanceRemainingDomain =
+          provenanceRemainingDomain.subtract(presburger::PresburgerRelation(
+              getBoundedDomain(provenanceUnion.getSpace().getDomainSpace(),
+                               knownConstantStarts, updateShape)));
+      provenanceUnion =
+          provenanceUnion.intersectDomain(provenanceRemainingDomain);
+
+      presburger::PresburgerRelation update = up->second.provenanceRelation;
+      update.applyDomain(presburger::PresburgerRelation(getOffsetRelation(
+          update.getSpace().getDomainSpace(), knownConstantStarts, false)));
+      presburgerRelationProjectOutLocals(update);
+
+      SmallVector<Value> allSources = it->second.sources;
+      alignSourceValues(update, allSources, up->second.sources);
+      provenanceUnion.unionInPlace(update);
+      auto [insertIt, _] = provenanceInfo2.try_emplace(
+          value, allSources, provenanceUnion.simplify().coalesce());
+
+      // Sanity check that all elements remain covered.
+      if (std::optional<DynamicAPInt> volume =
+              insertIt->second.provenanceRelation.getDomainSet()
+                  .computeVolume()) {
+        assert(*volume ==
+               cast<RankedTensorType>(value.getType()).getNumElements());
+      }
+      continue;
+    }
+
+    if (auto pad = value.getDefiningOp<stablehlo::PadOp>()) {
+      auto it = provenanceInfo2.find(pad.getOperand());
+      if (it == provenanceInfo2.end()) {
+        pendingValues.push_back(value);
+        pendingValues.push_back(pad.getOperand());
+        continue;
+      }
+
+      auto operandType = cast<RankedTensorType>(pad.getOperand().getType());
+      auto resultType = cast<RankedTensorType>(pad.getResult().getType());
+
+      if (!operandType.hasStaticShape() || !resultType.hasStaticShape()) {
+        addSelfProvenance(value, provenanceInfo2);
+        continue;
+      }
+
+      size_t rank = resultType.getRank();
+
+      // 1. Create a relation for the entire output marking the padding constant
+      // as source.
+      SmallVector<Value> allSources = it->second.sources;
+      auto sourcesIt = llvm::find(allSources, pad.getPaddingValue());
+      size_t position;
+      if (sourcesIt == allSources.end()) {
+        position = allSources.size();
+        allSources.push_back(pad.getPaddingValue());
+      } else {
+        position = std::distance(allSources.begin(), sourcesIt);
+      }
+
+      presburger::PresburgerSpace paddingSpace =
+          presburger::PresburgerSpace::getRelationSpace(
+              /*numDomainVars=*/rank,
+              /*numRangeVars=*/rank + 1,
+              /*numSymbolVars=*/0);
+      auto paddingRelation =
+          presburger::IntegerRelation::getUniverse(paddingSpace);
+
+      // Add bounds for the entire output tensor.
+      for (size_t i = 0; i < rank; ++i) {
+        paddingRelation.addBound(presburger::BoundType::LB, i, 0);
+        paddingRelation.addBound(presburger::BoundType::UB, i,
+                                 resultType.getShape()[i] - 1);
+      }
+
+      // Set target offsets to zero as we are broadcasting.
+      for (size_t i = 0; i < rank; ++i) {
+        paddingRelation.addBound(presburger::BoundType::EQ, rank + 1 + i, 0);
+      }
+
+      // Mark source as the padding value.
+      SmallVector<int64_t> paddingSourceCoefficients(2 * rank + 2, 0);
+      paddingSourceCoefficients[rank] = -1;
+      paddingSourceCoefficients.back() = position;
+      paddingRelation.addEquality(paddingSourceCoefficients);
+
+      // 2. Subtract the central region from it.
+      presburger::PresburgerSpace centralSpace =
+          paddingRelation.getSpace().getDomainSpace();
+      presburger::IntegerPolyhedron centralRegion = getBoundedDomain(
+          centralSpace, pad.getEdgePaddingLow(), operandType.getShape());
+
+      auto [insertedIt, _] = provenanceInfo2.try_emplace(
+          value, allSources, presburger::PresburgerRelation(paddingRelation));
+      insertedIt->second.provenanceRelation =
+          insertedIt->second.provenanceRelation.intersectDomain(
+              insertedIt->second.provenanceRelation.getDomainSet().subtract(
+                  presburger::PresburgerSet(centralRegion)));
+
+      insertedIt->second.provenanceRelation =
+          insertedIt->second.provenanceRelation.simplify();
+      presburgerRelationProjectOutLocals(insertedIt->second.provenanceRelation);
+
+      // 3. Add the provenance from the operand for the central region, shifted
+      // by the low padding amounts. No need to adjust positions since we
+      // accounted for it above, the original indexing is fine.
+      presburger::PresburgerRelation operandProvenance =
+          it->second.provenanceRelation;
+      operandProvenance.applyDomain(presburger::PresburgerRelation(
+          getOffsetRelation(operandProvenance.getSpace().getDomainSpace(),
+                            pad.getEdgePaddingLow(),
+                            /*positive=*/false)));
+      presburgerRelationProjectOutLocals(operandProvenance);
+
+      // Union the padding and operand provenances
+      insertedIt->second.provenanceRelation.unionInPlace(operandProvenance);
+      insertedIt->second.provenanceRelation =
+          insertedIt->second.provenanceRelation.simplify().coalesce();
+
+      if (std::optional<DynamicAPInt> volume =
+              insertedIt->second.provenanceRelation.getDomainSet()
+                  .computeVolume()) {
+        assert(*volume ==
+               cast<RankedTensorType>(value.getType()).getNumElements());
+      }
+      continue;
+    }
+
+    // Base case: no further provenance
+    addSelfProvenance(value, provenanceInfo2);
+  }
+}
+
+static Value
+rematerializeByPiecewiseSelect(RewriterBase &rewriter, Location loc,
+                               ArrayRef<int64_t> expectedShape,
+                               const TensorValueProvenance &provenance) {
+  unsigned rank = expectedShape.size();
+  llvm::MapVector<int64_t, SmallVector<int64_t>> sourcePosToDisjunctIdx;
+  SmallVector<Attribute> boxes;
+  boxes.reserve(provenance.provenanceRelation.getNumDisjuncts());
+  for (auto &&[i, disjunct] :
+       llvm::enumerate(provenance.provenanceRelation.getAllDisjuncts())) {
+    std::optional<DynamicAPInt> sourcePos =
+        disjunct.getConstantBound(presburger::BoundType::EQ, rank);
+    if (!sourcePos.has_value()) {
+      return nullptr;
+    }
+
+    Value source = provenance.sources[static_cast<int64_t>(*sourcePos)];
+    auto sourceType = cast<RankedTensorType>(source.getType());
+    if (sourceType.getRank() != 0 && sourceType.getShape() != expectedShape)
+      return nullptr;
+
+    // If the source is not a broadcasted scalar, we need to check that it the
+    // mapping is identity, otherwise we cannot simply update the value.
+    // TODO: we can see whether we can then reconstruct it differently, e.g., if
+    // it is a shifted equality, we can emit a slice. The general problem is
+    // similar to "opening the polyhedral compiler black box" paper.
+    if (sourceType.getRank() != 0) {
+      auto identityRelation = presburger::IntegerRelation::getUniverse(
+          disjunct.getSpace().getSpaceWithoutLocals());
+      for (unsigned i = 0; i < rank; ++i) {
+        SmallVector<int64_t> coefficients(2 * rank + 2, 0);
+        coefficients[i] = -1;
+        coefficients[rank + i + 1] = 1;
+        identityRelation.addEquality(coefficients);
+      }
+      SmallVector<int64_t> coefficients(2 * rank + 2, 0);
+      coefficients[rank] = -1;
+      coefficients.back() = static_cast<int64_t>(*sourcePos);
+      identityRelation.addEquality(coefficients);
+      // The identity relation is not bounded unlike the disjunct, so we check
+      // for subset rather than full equality. It is also cheaper to do so.
+      if (!disjunct.isSubsetOf(identityRelation)) {
+        return nullptr;
+      }
+    }
+
+    sourcePosToDisjunctIdx[static_cast<int64_t>(*sourcePos)].push_back(i);
+
+    SmallVector<int64_t> box;
+    box.reserve(2 * rank);
+    for (unsigned i = 0; i < rank; ++i) {
+      auto lb = disjunct.getConstantBound(presburger::BoundType::LB, i);
+      auto ub = disjunct.getConstantBound(presburger::BoundType::UB, i);
+      if (!lb.has_value() || !ub.has_value()) {
+        return nullptr;
+      }
+      box.push_back(static_cast<int64_t>(*lb));
+      box.push_back(static_cast<int64_t>(*ub) + 1);
+    }
+    boxes.push_back(rewriter.getI64ArrayAttr(box));
+  }
+
+  auto materializeSource = [&](int64_t sourcePos) -> Value {
+    Value source = provenance.sources[sourcePos];
+    if (cast<RankedTensorType>(source.getType()).getRank() != 0)
+      return source;
+    return stablehlo::BroadcastOp::create(rewriter, loc, source, expectedShape);
+  };
+
+  Value current;
+  for (auto &&[sourcePos, disjuncts] : sourcePosToDisjunctIdx) {
+    Value source = materializeSource(sourcePos);
+    if (!current) {
+      current = source;
+      continue;
+    }
+    SmallVector<Attribute> sourceBoxes;
+    for (int64_t i = 0, e = boxes.size(); i < e; ++i) {
+      if (llvm::is_contained(disjuncts, i)) {
+        sourceBoxes.push_back(boxes[i]);
+      }
+    }
+    current = enzymexla::PiecewiseSelectOp::create(
+        rewriter, loc, current.getType(), source, current,
+        rewriter.getArrayAttr(sourceBoxes));
+  }
+  return current;
+}
+
+// Materialize a value given its provenance by emitting concat operations to
+// create a full value from individual chunks. It is under responsibility of the
+// caller to ensure that all values are visible at the insertion point of the
+// rewriter. Assumes that provenance disjuncts are adjacent hyperrectangles.
+// NOTE: Presburger relation does not support coalescing beyond trivial
+// overlaps. This function implements a simple coalescing algorithm for adjacent
+// hyperrectangles.
+static Value rematerializeByConcat(RewriterBase &rewriter, Location loc,
+                                   const TensorValueProvenance &provenance) {
+  auto materializeValueForProvenanceDisjunct =
+      [](presburger::IntegerRelation disjunct, ArrayRef<Value> sources,
+         Location loc, RewriterBase &rewriter) -> Value {
+    std::optional<DynamicAPInt> sourcePos = disjunct.getConstantBound(
+        presburger::BoundType::EQ, disjunct.getNumDomainVars());
+    assert(sourcePos.has_value());
+    Value source = sources[static_cast<int64_t>(*sourcePos)];
+
+    unsigned rank = disjunct.getNumDomainVars();
+    // If the source is a constant, create a broadcast.
+    if (auto constantOp = source.getDefiningOp<stablehlo::ConstantOp>()) {
+      assert(constantOp.getResult().getType().getNumElements() == 1);
+      SmallVector<int64_t> shape;
+      for (size_t i = 0; i < rank; ++i) {
+        auto lb = disjunct.getConstantBound(presburger::BoundType::LB, i);
+        auto ub = disjunct.getConstantBound(presburger::BoundType::UB, i);
+        assert(lb.has_value() && ub.has_value());
+        shape.push_back(static_cast<int64_t>((*ub - *lb) + 1));
+      }
+      return stablehlo::BroadcastOp::create(rewriter, loc, constantOp, shape);
+    }
+
+    // Otherwise create a slice.
+    SmallVector<int64_t> starts, limits, shape;
+    SmallVector<int64_t> strides(rank, 1);
+    for (size_t i = 0; i < rank; ++i) {
+      auto lb =
+          disjunct.getConstantBound(presburger::BoundType::LB, rank + i + 1);
+      auto ub =
+          disjunct.getConstantBound(presburger::BoundType::UB, rank + i + 1);
+      assert(lb.has_value() && ub.has_value());
+      starts.push_back(static_cast<int64_t>(*lb));
+      limits.push_back(static_cast<int64_t>((*ub) + 1));
+      shape.push_back(static_cast<int64_t>((*ub - *lb) + 1));
+    }
+    return stablehlo::SliceOp::create(rewriter, loc, source, starts, limits,
+                                      strides);
+  };
+
+  llvm::MapVector<Value, presburger::IntegerPolyhedron> rematerializedValues;
+  for (const auto &disjunct : provenance.provenanceRelation.getAllDisjuncts()) {
+    auto domain = disjunct.getDomainSet();
+    domain.projectOut(domain.getNumDimAndSymbolVars(),
+                      domain.getNumLocalVars());
+    rematerializedValues.try_emplace(
+        materializeValueForProvenanceDisjunct(disjunct, provenance.sources, loc,
+                                              rewriter),
+        domain);
+  }
+
+  while (rematerializedValues.size() != 1) {
+    bool found = false;
+    auto array = rematerializedValues.getArrayRef();
+    for (size_t i = 0, e = array.size(); i < e; ++i) {
+      for (size_t j = i + 1; j < e; ++j) {
+        auto &&[left, leftDisjunct] = array[i];
+        auto &&[right, rightDisjunct] = array[j];
+        if (left == right)
+          continue;
+
+        // coalescing is not sufficiently powerful, it only handles subsets but
+        // not adjacencies
+
+        // Find the dimension along which they are adjacent.
+        size_t concatDim = size_t(-1);
+        std::optional<bool> concatLeft = std::nullopt;
+        SmallVector<int64_t> lowerBounds, extents;
+
+        for (unsigned j = 0, e = leftDisjunct.getNumRangeVars(); j < e; ++j) {
+          auto leftLb =
+              leftDisjunct.getConstantBound(presburger::BoundType::LB, j);
+          auto leftUb =
+              leftDisjunct.getConstantBound(presburger::BoundType::UB, j);
+          auto rightLb =
+              rightDisjunct.getConstantBound(presburger::BoundType::LB, j);
+          auto rightUb =
+              rightDisjunct.getConstantBound(presburger::BoundType::UB, j);
+          assert(leftLb.has_value() && leftUb.has_value() &&
+                 rightLb.has_value() && rightUb.has_value());
+
+          // This dimension remains the same.
+          if (*leftLb == *rightLb && *leftUb == *rightUb) {
+            lowerBounds.push_back(static_cast<int64_t>(*leftLb));
+            extents.push_back(static_cast<int64_t>((*leftUb - *leftLb) + 1));
+            continue;
+          }
+
+          // If we already found a concat dimension, cannot have another one.
+          if (concatLeft) {
+            concatLeft = std::nullopt;
+            break;
+          }
+
+          // Check if they are adjacent along this dimension and concat.
+          if (*leftUb + 1 == *rightLb) {
+            concatLeft = true;
+            concatDim = j;
+            lowerBounds.push_back(static_cast<int64_t>(*leftLb));
+            extents.push_back(static_cast<int64_t>((*rightUb - *leftLb) + 1));
+            continue;
+          } else if (*rightUb + 1 == *leftLb) {
+            concatLeft = false;
+            concatDim = j;
+            lowerBounds.push_back(static_cast<int64_t>(*rightLb));
+            extents.push_back(static_cast<int64_t>((*leftUb - *rightLb) + 1));
+            continue;
+          }
+
+          // If a dimension is neither equal nor concat, fail.
+          concatLeft = std::nullopt;
+          break;
+        }
+        if (!concatLeft)
+          continue;
+
+        // TODO: assert that the product of extents corresponds to the sum of
+        // volumes of the domain to merge as a proxy of them being
+        // hyper-rectangular.
+        assert(concatDim != size_t(-1));
+
+        Value joined = stablehlo::ConcatenateOp::create(
+            rewriter, loc,
+            {*concatLeft ? left : right, *concatLeft ? right : left},
+            concatDim);
+
+        rematerializedValues.erase(right);
+        rematerializedValues.erase(left);
+        rematerializedValues.try_emplace(
+            joined,
+            getBoundedDomain(leftDisjunct.getSpace(), lowerBounds, extents));
+
+        found = true;
+        break;
+      }
+
+      if (found)
+        break;
+    }
+    assert(found);
+  }
+  return rematerializedValues.begin()->first;
+}
+
+struct DUSDUSSubsuming
+    : public CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp,
+                                     DUSDUSSubsuming> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DynamicUpdateSliceOp dus,
+                                    PatternRewriter &rewriter) const {
+    auto dus2 =
+        dus.getOperand().getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
+
+    if (!dus2)
+      return failure();
+
+    SmallVector<Value> dusResults = {dus2.getResult(), dus.getResult()};
+    DenseMap<Value, TensorValueProvenance> provenanceInfo;
+    computeTensorValueProvenanceImpl(dusResults, provenanceInfo);
+
+    DominanceInfo domInfo;
+    DenseMap<Operation *, Operation *> movedSlices;
+    SmallVector<Operation *> originalUsers =
+        llvm::to_vector(dus2.getResult().getUsers());
+    for (Operation *user : originalUsers) {
+      if (user == dus)
+        continue;
+      auto slice = dyn_cast<stablehlo::SliceOp>(user);
+      if (!slice)
+        continue;
+
+      bool isSliceMovable = true;
+      // Find if there is any user of the slice that would need to be moved.
+      for (Operation *sliceUser : slice.getResult().getUsers()) {
+        if (!domInfo.dominates(sliceUser, dus))
+          continue;
+
+        isSliceMovable = false;
+        break;
+      }
+      if (!isSliceMovable)
+        continue;
+
+      IRMapping mapping;
+      rewriter.setInsertionPointAfter(dus);
+      mapping.map(dus2.getResult(), dus.getResult());
+      Operation *clonedSlice = rewriter.clone(*slice, mapping);
+
+      SmallVector<Value> slices = {slice.getResult(),
+                                   clonedSlice->getResult(0)};
+      computeTensorValueProvenanceImpl(slices, provenanceInfo);
+      auto it = provenanceInfo.find(slice.getResult());
+      assert(it != provenanceInfo.end());
+      auto it2 = provenanceInfo.find(clonedSlice->getResult(0));
+      assert(it2 != provenanceInfo.end());
+
+      // Check that provenance of the sliced part would match its provenance
+      // after move. if provenance matches, we can replace the old slice with
+      // the new one, otherwise we just erase the new one
+      presburger::PresburgerRelation originalProvenance =
+          it->second.provenanceRelation;
+      SmallVector<Value> originalSources = it->second.sources;
+      alignSourceValues(originalProvenance, originalSources,
+                        it2->second.sources);
+
+      if (originalSources == it2->second.sources &&
+          originalProvenance.isEqual(it2->second.provenanceRelation)) {
+        movedSlices.try_emplace(slice.getOperation(), clonedSlice);
+      } else {
+        rewriter.eraseOp(clonedSlice);
+
+        // Don't forget to erase the provenance info for the op result we just
+        // erased since that value address may be reused for something entirely
+        // different!
+        provenanceInfo.erase(clonedSlice->getResult(0));
+      }
+    }
+
+    bool didSomething = false;
+    for (auto [oldSliceOp, newSliceOp] : movedSlices) {
+      rewriter.replaceOp(oldSliceOp, newSliceOp->getResult(0));
+      didSomething = true;
+    }
+
+    auto dusProvenance = provenanceInfo.find(dus.getResult())->second;
+    rewriter.setInsertionPoint(dus);
+    Value replacement = rematerializeByPiecewiseSelect(
+        rewriter, dus.getLoc(), dus.getResult().getType().getShape(),
+        dusProvenance);
+    if (replacement && replacement != dus) {
+      rewriter.replaceOp(dus, replacement);
+      didSomething = true;
+      // TODO: this is a WORKING fallback to create a lot of concats
+      // } else {
+      //   Value rematerializedValue =
+      //       rematerializeByConcat(rewriter, dus.getLoc(), dusProvenance);
+      //   rewriter.replaceOp(dus, rematerializedValue);
+      //   didSomething = true;
+    }
+    return success(didSomething);
+  }
+};
+
+struct SliceBroadcast2
+    : public CheckedOpRewritePattern<stablehlo::SliceOp, SliceBroadcast2> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
+                                    PatternRewriter &rewriter) const {
+    auto broadcastOp =
+        sliceOp.getOperand().getDefiningOp<stablehlo::BroadcastOp>();
+    if (!broadcastOp ||
+        broadcastOp.getOperand().getType().getNumElements() != 1)
+      return failure();
+
+    SmallVector<int64_t> shape;
+    for (auto [s, l, str] :
+         llvm::zip_equal(sliceOp.getStartIndices(), sliceOp.getLimitIndices(),
+                         sliceOp.getStrides())) {
+      shape.push_back(l - s);
+      if (str != 1)
+        return failure();
+    }
+    auto newBroadcast = stablehlo::BroadcastOp::create(
+        rewriter, sliceOp.getLoc(), broadcastOp.getOperand(), shape);
+    rewriter.replaceOp(sliceOp, newBroadcast.getResult());
+    return success();
+  }
+};
+
+struct ConcatBroadcastToPad
+    : public CheckedOpRewritePattern<stablehlo::ConcatenateOp,
+                                     ConcatBroadcastToPad> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp concatOp,
+                                    PatternRewriter &rewriter) const {
+    unsigned axis = concatOp.getDimension();
+    auto leftBroadcast =
+        concatOp->getOperand(0).getDefiningOp<stablehlo::BroadcastOp>();
+    auto rightBroadcast = concatOp->getOperand(concatOp->getNumOperands() - 1)
+                              .getDefiningOp<stablehlo::BroadcastOp>();
+    if (!leftBroadcast && !rightBroadcast)
+      return failure();
+
+    unsigned rank = concatOp.getResult().getType().getRank();
+    SmallVector<int64_t> leftPad(rank, 0), rightPad(rank, 0),
+        interiorPad(rank, 0);
+    if (rightBroadcast && leftBroadcast &&
+        rightBroadcast.getOperand() != leftBroadcast.getOperand()) {
+      rightBroadcast = nullptr;
+    }
+    Value broadcastedValue;
+    if (leftBroadcast) {
+      leftPad[axis] = leftBroadcast.getResult().getType().getShape()[axis];
+      broadcastedValue = leftBroadcast.getOperand();
+    }
+    if (rightBroadcast) {
+      rightPad[axis] = rightBroadcast.getResult().getType().getShape()[axis];
+      broadcastedValue = rightBroadcast.getOperand();
+    }
+
+    if (leftBroadcast && rightBroadcast && concatOp->getNumOperands() == 2) {
+      // Just create a bigger broadcast.
+      stablehlo::BroadcastOp::create(rewriter, concatOp.getLoc(),
+                                     broadcastedValue,
+                                     concatOp.getResult().getType().getShape());
+      rewriter.replaceOp(concatOp, leftBroadcast.getResult());
+      return success();
+    }
+
+    Value middle;
+    unsigned start = leftBroadcast ? 1 : 0;
+    unsigned end = rightBroadcast ? concatOp.getNumOperands() - 1
+                                  : concatOp.getNumOperands();
+    if (end - start == 1) {
+      middle = concatOp->getOperand(start);
+    } else {
+      middle = stablehlo::ConcatenateOp::create(
+                   rewriter, concatOp.getLoc(),
+                   concatOp.getOperands().slice(start, end - start), axis)
+                   .getResult();
+    }
+
+    auto pad = stablehlo::PadOp::create(rewriter, concatOp.getLoc(), middle,
+                                        broadcastedValue, leftPad, rightPad,
+                                        interiorPad);
+    rewriter.replaceOp(concatOp, pad.getResult());
+    return success();
+  }
+};
+
 struct SinkDUS : public CheckedOpRewritePattern<stablehlo::WhileOp, SinkDUS> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
@@ -32337,8 +33220,8 @@ struct EnzymeHLOOptPass
                    TransposeConvolution, EinsumTranspose, TransposeEinsum,
                    ConvertConvertFloat, ConvertConvertInt, ConcatToPad,
                    ConcatAppendingReshape, ReshapeIota, DUSDUS, DUSDUSConcat,
-                   DUSConcat, DUSPad, SliceDUSToConcat, ConcatConcatToDUS>(
-          context);
+                   DUSConcat, DUSPad, DUSDUSSubsuming, SliceDUSToConcat,
+                   ConcatConcatToDUS>(context);
       patterns.add<LICM<stablehlo::DynamicUpdateSliceOp>,
                    LICM<stablehlo::DynamicSliceOp>>(false, context);
     }
@@ -32454,9 +33337,8 @@ struct EnzymeHLOOptPass
     }
 
     if (passses & (2048 * 512)) {
-      patterns
-          .add<LowerRotate, LowerWrap, LowerExtend, LowerUpdateWithoutCorners>(
-              context);
+      patterns.add<LowerRotate, LowerWrap, LowerExtend,
+                   LowerUpdateWithoutCorners, LowerPiecewiseSelect>(context);
     }
 
     if (passses & (2048 * 1024)) {
@@ -32515,6 +33397,8 @@ struct EnzymeHLOOptPass
         WhileOpInductionReplacement,
         WhilePadInductionReduction,
         WhileIdempotentDUS,
+        ConcatBroadcastToPad,
+        SliceBroadcast2,
         BroadcastInDimOpCanon,
         ChainedDynamicBroadcastInDimCanonicalization,
         CompareOpCanon,
