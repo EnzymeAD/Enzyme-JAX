@@ -16,4 +16,3 @@ def repo(repo_name = ""):
         urls = ["https://github.com/NVIDIA/cuda-tile/archive/{commit}.tar.gz".format(commit = CUDA_TILE_COMMIT)],
         build_file = build_file_label,
     )
-
