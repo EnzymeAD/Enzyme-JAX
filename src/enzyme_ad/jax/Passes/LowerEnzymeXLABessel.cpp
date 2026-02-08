@@ -55,11 +55,10 @@ static void buildBesselIBody(OpBuilder &builder, Location loc,
   Value quarter = createSplatConstant(builder, loc, tensorType, 0.25);
   Value two = createSplatConstant(builder, loc, tensorType, 2.0);
   Value pi = createSplatConstant(builder, loc, tensorType, M_PI);
-  Value twoDivPi =
-      createSplatConstant(builder, loc, tensorType, 2.0 / M_PI);
+  Value twoDivPi = createSplatConstant(builder, loc, tensorType, 2.0 / M_PI);
 
-  Value nuGe0 = stablehlo::CompareOp::create(builder, loc, nu, zero,
-                                             stablehlo::ComparisonDirection::GE);
+  Value nuGe0 = stablehlo::CompareOp::create(
+      builder, loc, nu, zero, stablehlo::ComparisonDirection::GE);
   Value xGe0 = stablehlo::CompareOp::create(builder, loc, x, zero,
                                             stablehlo::ComparisonDirection::GE);
 
@@ -101,8 +100,7 @@ static void buildBesselIBody(OpBuilder &builder, Location loc,
         builder, loc, TypeRange{scalarBoolType}, ValueRange{active},
         ValueRange{stablehlo::ConstantOp::create(
             builder, loc, scalarBoolType,
-            cast<ElementsAttr>(DenseElementsAttr::get(
-                scalarBoolType, false)))},
+            cast<ElementsAttr>(DenseElementsAttr::get(scalarBoolType, false)))},
         builder.getDenseI64ArrayAttr(
             llvm::to_vector(llvm::seq<int64_t>(0, tensorType.getRank()))));
     {
@@ -111,9 +109,8 @@ static void buildBesselIBody(OpBuilder &builder, Location loc,
       reduceBody->addArgument(scalarBoolType, loc);
       reduceBody->addArgument(scalarBoolType, loc);
       builder.setInsertionPointToStart(reduceBody);
-      Value orResult = stablehlo::OrOp::create(builder, loc,
-                                               reduceBody->getArgument(0),
-                                               reduceBody->getArgument(1));
+      Value orResult = stablehlo::OrOp::create(
+          builder, loc, reduceBody->getArgument(0), reduceBody->getArgument(1));
       stablehlo::ReturnOp::create(builder, loc, orResult);
     }
 
@@ -127,8 +124,7 @@ static void buildBesselIBody(OpBuilder &builder, Location loc,
         builder, loc, TypeRange{scalarBoolType}, ValueRange{continueLoop},
         ValueRange{stablehlo::ConstantOp::create(
             builder, loc, scalarBoolType,
-            cast<ElementsAttr>(DenseElementsAttr::get(
-                scalarBoolType, false)))},
+            cast<ElementsAttr>(DenseElementsAttr::get(scalarBoolType, false)))},
         builder.getDenseI64ArrayAttr(
             llvm::to_vector(llvm::seq<int64_t>(0, tensorType.getRank()))));
     {
@@ -137,9 +133,8 @@ static void buildBesselIBody(OpBuilder &builder, Location loc,
       reduceBody->addArgument(scalarBoolType, loc);
       reduceBody->addArgument(scalarBoolType, loc);
       builder.setInsertionPointToStart(reduceBody);
-      Value orResult = stablehlo::OrOp::create(builder, loc,
-                                               reduceBody->getArgument(0),
-                                               reduceBody->getArgument(1));
+      Value orResult = stablehlo::OrOp::create(
+          builder, loc, reduceBody->getArgument(0), reduceBody->getArgument(1));
       stablehlo::ReturnOp::create(builder, loc, orResult);
     }
 
@@ -160,9 +155,9 @@ static void buildBesselIBody(OpBuilder &builder, Location loc,
 
     Value newS = stablehlo::AddOp::create(builder, loc, s, t);
 
-    Value iterFloat = stablehlo::ConvertOp::create(builder, loc, tensorType, iter);
-    Value iterPlusOne =
-        stablehlo::AddOp::create(builder, loc, iterFloat, one);
+    Value iterFloat =
+        stablehlo::ConvertOp::create(builder, loc, tensorType, iter);
+    Value iterPlusOne = stablehlo::AddOp::create(builder, loc, iterFloat, one);
     Value nuPlusIterPlusOne =
         stablehlo::AddOp::create(builder, loc, absNu, iterPlusOne);
     Value denom =
@@ -170,9 +165,8 @@ static void buildBesselIBody(OpBuilder &builder, Location loc,
     Value factor = stablehlo::DivOp::create(builder, loc, xx, denom);
     Value newT = stablehlo::MulOp::create(builder, loc, t, factor);
 
-    Value eps = createSplatConstant(
-        builder, loc, tensorType,
-        isa<Float32Type>(elemType) ? 1e-7 : 1e-15);
+    Value eps = createSplatConstant(builder, loc, tensorType,
+                                    isa<Float32Type>(elemType) ? 1e-7 : 1e-15);
     Value absT = stablehlo::AbsOp::create(builder, loc, newT);
     Value absS = stablehlo::AbsOp::create(builder, loc, newS);
     Value relChange = stablehlo::DivOp::create(builder, loc, absT, absS);
@@ -182,7 +176,8 @@ static void buildBesselIBody(OpBuilder &builder, Location loc,
         builder, loc, absS, eps, stablehlo::ComparisonDirection::LT);
     Value stillActive =
         stablehlo::OrOp::create(builder, loc, notConverged, sIsZero);
-    Value newActive = stablehlo::AndOp::create(builder, loc, active, stillActive);
+    Value newActive =
+        stablehlo::AndOp::create(builder, loc, active, stillActive);
 
     Value newIter = stablehlo::AddOp::create(builder, loc, iter, iterOne);
 
@@ -196,9 +191,11 @@ static void buildBesselIBody(OpBuilder &builder, Location loc,
   Value xHalfPowNu = stablehlo::PowOp::create(builder, loc, xHalf, absNu);
   Value nuPlusOne = stablehlo::AddOp::create(builder, loc, absNu, one);
   Value lgammaNuPlusOne = chlo::LgammaOp::create(builder, loc, nuPlusOne);
-  Value gammaNuPlusOne = stablehlo::ExpOp::create(builder, loc, lgammaNuPlusOne);
+  Value gammaNuPlusOne =
+      stablehlo::ExpOp::create(builder, loc, lgammaNuPlusOne);
 
-  Value prefactor = stablehlo::DivOp::create(builder, loc, xHalfPowNu, gammaNuPlusOne);
+  Value prefactor =
+      stablehlo::DivOp::create(builder, loc, xHalfPowNu, gammaNuPlusOne);
   Value besselIPositive = stablehlo::MulOp::create(builder, loc, s, prefactor);
 
   Value nuTimesFloor = stablehlo::FloorOp::create(builder, loc, absNu);
@@ -222,8 +219,8 @@ static void buildBesselIBody(OpBuilder &builder, Location loc,
   Value resultForNegX = stablehlo::SelectOp::create(
       builder, loc, nuIsInteger, resultForNegXInteger, resultForNegXNonInteger);
   Value resultForPosX = besselIPositive;
-  Value besselIPosNu = stablehlo::SelectOp::create(builder, loc, xGe0,
-                                                   resultForPosX, resultForNegX);
+  Value besselIPosNu = stablehlo::SelectOp::create(
+      builder, loc, xGe0, resultForPosX, resultForNegX);
 
   Value piTimesNu = stablehlo::MulOp::create(builder, loc, pi, absNu);
   Value sinPiNu = stablehlo::SineOp::create(builder, loc, piTimesNu);
