@@ -259,6 +259,13 @@ load(
 cuda_configure(name = "local_config_cuda")
 
 load(
+    "@xla//third_party/gpus:rocm_configure.bzl",
+    "rocm_configure",
+)
+
+rocm_configure(name = "local_config_rocm")
+
+load(
     "@xla//third_party/nccl/hermetic:nccl_redist_init_repository.bzl",
     "nccl_redist_init_repository",
 )
