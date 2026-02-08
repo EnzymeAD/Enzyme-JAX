@@ -4689,5 +4689,32 @@ struct OptimizeCommunicationPass
                                             config))) {
       signalPassFailure();
     }
+
+    SmallVector<stablehlo::SliceOp> slices;
+    getOperation()->walk([&](stablehlo::SliceOp slice) {
+      bool needed = false;
+      for (auto u : slice.getResult().getUsers()) {
+        if (!isa<stablehlo::DynamicUpdateSliceOp>(u))
+          continue;
+        if (u->getParentOp() == slice->getParentOp())
+          continue;
+        needed = true;
+        break;
+      }
+      if (needed)
+        slices.push_back(slice);
+    });
+    for (auto slice : slices) {
+      DenseMap<Block *, Value> map;
+      for (auto &u : llvm::make_early_inc_range(slice.getResult().getUses())) {
+        auto blk = u.getOwner()->getBlock();
+        if (!map.contains(blk)) {
+          OpBuilder b(u.getOwner());
+          b.setInsertionPointToStart(blk);
+          map[blk] = b.clone(*slice)->getResult(0);
+        }
+        u.assign(map[blk]);
+      }
+    }
   }
 };
