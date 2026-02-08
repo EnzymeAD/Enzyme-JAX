@@ -13727,7 +13727,7 @@ struct BroadcastInDimOpCanon final
           continue;
         if (type.getShape()[dims[i]] == 1)
           continue;
-        bool found = true;
+        bool found = false;
         size_t newidx = 0;
         for (size_t j = 0; j < type.getShape().size(); j++) {
           if (type.getShape()[j] != 1)
