@@ -896,14 +896,12 @@ struct ReshapeDUS final
                                         /*checkRemoved*/ &one))
       return failure();
 
-    auto newOperand = stablehlo::ReshapeOp::create(
-        rewriter, op.getLoc(), op.getType(), dus.getOperand());
+    auto newOperand = stablehlo::ReshapeOpCreate(
+        rewriter, op.getLoc(), dus.getOperand(),
+        cast<RankedTensorType>(op.getType()).getShape());
 
-    auto newUpdate = stablehlo::ReshapeOp::create(
-        rewriter, op.getLoc(),
-        RankedTensorType::get(updateShape,
-                              dus.getUpdate().getType().getElementType()),
-        dus.getUpdate());
+    auto newUpdate = stablehlo::ReshapeOpCreate(
+        rewriter, op.getLoc(), dus.getUpdate(), updateShape);
 
     rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
         op, newOperand, newUpdate, startIndices);
@@ -963,11 +961,8 @@ struct ReshapeSlice final
                                         /*checkRemoved*/ &one))
       return failure();
 
-    auto newOperand = stablehlo::ReshapeOp::create(
-        rewriter, op.getLoc(),
-        RankedTensorType::get(operandShape,
-                              slice.getOperand().getType().getElementType()),
-        slice.getOperand());
+    auto newOperand = stablehlo::ReshapeOpCreate(
+        rewriter, op.getLoc(), slice.getOperand(), operandShape);
 
     rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
         op, newOperand, startIndices, limitIndices, stepIndices);
@@ -1035,11 +1030,8 @@ struct ReshapeDynamicSlice final
                                         /*checkRemoved*/ &one))
       return failure();
 
-    auto newOperand = stablehlo::ReshapeOp::create(
-        rewriter, op.getLoc(),
-        RankedTensorType::get(operandShape,
-                              slice.getOperand().getType().getElementType()),
-        slice.getOperand());
+    auto newOperand = stablehlo::ReshapeOpCreate(
+        rewriter, op.getLoc(), slice.getOperand(), operandShape);
 
     rewriter.replaceOpWithNewOp<stablehlo::DynamicSliceOp>(
         op, newOperand, startIndices,
@@ -1100,11 +1092,8 @@ struct ReshapeExtend final
       return failure();
 
     // First reshape the extend's operand
-    auto newReshapeOp = stablehlo::ReshapeOp::create(
-        rewriter, op.getLoc(),
-        RankedTensorType::get(operandShape,
-                              extendOp.getOperand().getType().getElementType()),
-        extendOp.getOperand());
+    auto newReshapeOp = stablehlo::ReshapeOpCreate(
+        rewriter, op.getLoc(), extendOp.getOperand(), operandShape);
 
     // Then create a new extend operation on the reshaped data
     auto newExtendOp = enzymexla::ExtendOp::create(rewriter, op.getLoc(),
@@ -1170,15 +1159,12 @@ struct ReshapeWrap final
       return failure();
 
     // First reshape the wrap's operand
-    auto newReshapeOp = stablehlo::ReshapeOp::create(
-        rewriter, op.getLoc(),
-        RankedTensorType::get(operandShape,
-                              wrapOp.getOperand().getType().getElementType()),
-        wrapOp.getOperand());
+    auto newReshapeOp = stablehlo::ReshapeOpCreate(
+        rewriter, op.getLoc(), wrapOp.getOperand(), operandShape);
 
     // Then create a new wrap operation on the reshaped data
     auto newWrapOp = enzymexla::WrapOp::create(
-        rewriter, op.getLoc(), op.getType(), newReshapeOp.getResult(), lhs, rhs,
+        rewriter, op.getLoc(), op.getType(), newReshapeOp, lhs, rhs,
         newWrapDim);
 
     // Replace the original reshape op with the new wrap operation
@@ -1239,15 +1225,12 @@ struct ReshapeRotate final
       return failure();
 
     // First reshape the rotate's operand
-    auto newReshapeOp = stablehlo::ReshapeOp::create(
-        rewriter, op.getLoc(),
-        RankedTensorType::get(operandShape,
-                              rotateOp.getOperand().getType().getElementType()),
-        rotateOp.getOperand());
+    auto newReshapeOp = stablehlo::ReshapeOpCreate(
+        rewriter, op.getLoc(), rotateOp.getOperand(), operandShape);
 
     // Then create a new rotate operation on the reshaped data
     auto newRotateOp = enzymexla::RotateOp::create(rewriter, op.getLoc(),
-                                                   newReshapeOp.getResult(),
+                                                   newReshapeOp,
                                                    rotateAmount, newRotateDim);
 
     // Replace the original reshape op with the new rotate operation
@@ -1302,11 +1285,8 @@ struct ReshapePad final
                                         /*checkRemoved*/ &one))
       return failure();
 
-    auto newOperand = stablehlo::ReshapeOp::create(
-        rewriter, op.getLoc(),
-        RankedTensorType::get(operandShape,
-                              pad.getOperand().getType().getElementType()),
-        pad.getOperand());
+    auto newOperand = stablehlo::ReshapeOpCreate(
+        rewriter, op.getLoc(), pad.getOperand(), operandShape);
 
     rewriter.replaceOpWithNewOp<stablehlo::PadOp>(
         op, newOperand, pad.getPaddingValue(), low, high, interior);
@@ -3277,8 +3257,9 @@ struct SliceReduceWindow
                                 reduceOp.getBody().end());
 
     // Create a reshape to match the slice output shape
-    Value result = stablehlo::ReshapeOp::create(
-        rewriter, op.getLoc(), op.getResult().getType(), reduceOp.getResult(0));
+    Value result = stablehlo::ReshapeOpCreate(
+        rewriter, op.getLoc(), reduceOp.getResult(0),
+        cast<RankedTensorType>(op.getResult().getType()).getShape());
 
     // Replace the slice with the reduce result
     rewriter.replaceOp(op, result);
@@ -3944,8 +3925,9 @@ struct ReduceToReshape final
         return failure();
     }
 
-    auto reshaped = stablehlo::ReshapeOp::create(
-        rewriter, op.getLoc(), op.getResult(0).getType(), op.getInputs()[0]);
+    auto reshaped = stablehlo::ReshapeOpCreate(
+        rewriter, op.getLoc(), op.getInputs()[0],
+        cast<RankedTensorType>(op.getResult(0).getType()).getShape());
 
     Operation &innerOp = op.getBody().front().front();
 
@@ -5794,10 +5776,8 @@ LogicalResult reshapePadHelper(stablehlo::ReshapeOp op,
     }
     return failure();
   }
-  auto inner = stablehlo::ReshapeOp::create(
-      rewriter, op.getLoc(),
-      RankedTensorType::get(inner_shape, op.getType().getElementType()),
-      pad.getOperand());
+  auto inner = stablehlo::ReshapeOpCreate(
+      rewriter, op.getLoc(), pad.getOperand(), inner_shape);
   rewriter.replaceOpWithNewOp<stablehlo::PadOp>(
       op, inner, pad.getPaddingValue(), lows, highs, interiors);
   return success();
@@ -5977,11 +5957,8 @@ struct ConcatAppendingReshape final
     auto lhs2 = stablehlo::ConcatenateOp::create(rewriter, op.getLoc(),
                                                  nextType, lhs, nextDim);
 
-    Value res2 = stablehlo::ReshapeOp::create(
-        rewriter, op.getLoc(),
-        RankedTensorType::get(op.getType().getShape(),
-                              nextType.getElementType()),
-        lhs2);
+    Value res2 = stablehlo::ReshapeOpCreate(
+        rewriter, op.getLoc(), lhs2, op.getType().getShape());
 
     if (typeconvert)
       res2 = stablehlo::ConvertOp::create(rewriter, op.getLoc(), op.getType(),
@@ -6174,10 +6151,8 @@ struct ConcatToBroadcast final
     } else {
       SmallVector<int64_t> reshaped = llvm::to_vector(InTy.getShape());
       reshaped.insert(reshaped.begin() + op.getDimension(), 1);
-      auto reshapeVal = stablehlo::ReshapeOp::create(
-          rewriter, op.getLoc(),
-          RankedTensorType::get(reshaped, op.getType().getElementType()),
-          op->getOperand(0));
+      auto reshapeVal = stablehlo::ReshapeOpCreate(
+          rewriter, op.getLoc(), op->getOperand(0), reshaped);
 
       SmallVector<int64_t> bcast;
       for (auto en : llvm::enumerate(reshapeVal.getType().getShape())) {
@@ -11139,9 +11114,9 @@ struct SliceReshape
 
     auto newSlice = stablehlo::SliceOp::create(
         rewriter, op->getLoc(), reshape.getOperand(), starts, limits, strides);
-    auto newReshape = stablehlo::ReshapeOp::create(rewriter, reshape->getLoc(),
-                                                   op.getResult().getType(),
-                                                   newSlice.getResult());
+    auto newReshape = stablehlo::ReshapeOpCreate(
+        rewriter, reshape->getLoc(), newSlice.getResult(),
+        cast<RankedTensorType>(op.getResult().getType()).getShape());
     rewriter.replaceOp(op, newReshape);
 
     return success();
@@ -11649,10 +11624,8 @@ struct ReshapeOfConcatToConcatOfReshape final
       if (!transformReshapeSlice<int64_t>(reshapeOp, shape, /*toFill*/ 1, &one))
         return failure();
 
-      auto newReshapeType =
-          RankedTensorType::get(shape, operandType.getElementType());
-      auto newReshapeOp = stablehlo::ReshapeOp::create(
-          rewriter, reshapeOp.getLoc(), newReshapeType, operand);
+      auto newReshapeOp = stablehlo::ReshapeOpCreate(
+          rewriter, reshapeOp.getLoc(), operand, shape);
       concatOperands.push_back(newReshapeOp);
     }
 
@@ -11778,11 +11751,12 @@ struct ReshapeReduceWindow final
       reshapeDim++;
     }
 
-    auto newReshapeOp = stablehlo::ReshapeOp::create(
-        rewriter, reshapeOp.getLoc(), reshapeType, reduceWindow.getInputs()[0]);
+    auto newReshapeOp = stablehlo::ReshapeOpCreate(
+        rewriter, reshapeOp.getLoc(), reduceWindow.getInputs()[0],
+        reshapeType.getShape());
     auto newReduceWindowOp =
         rewriter.replaceOpWithNewOp<stablehlo::ReduceWindowOp>(
-            reshapeOp, TypeRange(reshapeType), newReshapeOp->getResults(),
+            reshapeOp, TypeRange(reshapeType), newReshapeOp,
             reduceWindow.getInitValues(),
             rewriter.getDenseI64ArrayAttr(windowDims),
             rewriter.getDenseI64ArrayAttr(windowStrides),
@@ -14587,9 +14561,8 @@ struct GatherOpCanon final
         if (!llvm::is_contained(collapsedSliceDims, idx))
           reshapeShape.push_back(dim);
       }
-      auto reshapeType = RankedTensorType::get(reshapeShape, elementType);
-      result = stablehlo::ReshapeOp::create(rewriter, gather.getLoc(),
-                                            reshapeType, result);
+      result = stablehlo::ReshapeOpCreate(rewriter, gather.getLoc(),
+                                          result, reshapeShape);
     }
 
     result.setType(gather.getType());
@@ -21657,9 +21630,8 @@ struct SumToConv : public SumToReductionBase<ST, SumToConv<ST>> {
         for (int i = 1; i < RT.getShape().size(); i++) {
           newDims[1] *= RT.getShape()[i];
         }
-        input = stablehlo::ReshapeOp::create(
-            rewriter, input.getLoc(),
-            RankedTensorType::get(newDims, T.getElementType()), input);
+        input = stablehlo::ReshapeOpCreate(
+            rewriter, input.getLoc(), input, newDims);
       } else {
         assert(newOffsetDim == T.getShape().size() - 1);
 
@@ -21670,9 +21642,8 @@ struct SumToConv : public SumToReductionBase<ST, SumToConv<ST>> {
         for (int i = 0; i < RT.getShape().size() - 1; i++) {
           newDims[0] *= RT.getShape()[i];
         }
-        input = stablehlo::ReshapeOp::create(
-            rewriter, input.getLoc(),
-            RankedTensorType::get(newDims, T.getElementType()), input);
+        input = stablehlo::ReshapeOpCreate(
+            rewriter, input.getLoc(), input, newDims);
         newOffsetDim = 2;
       }
     } else if (T.getShape().size() < 3) {
@@ -21684,9 +21655,8 @@ struct SumToConv : public SumToReductionBase<ST, SumToConv<ST>> {
         newOffsetDim++;
       }
       pre_reshape = cast<RankedTensorType>(input.getType());
-      input = stablehlo::ReshapeOp::create(
-          rewriter, input.getLoc(),
-          RankedTensorType::get(newDims, T.getElementType()), input);
+      input = stablehlo::ReshapeOpCreate(
+          rewriter, input.getLoc(), input, newDims);
     }
     SmallVector<int64_t> nonOffsetDims;
     auto CT = cast<RankedTensorType>(input.getType()).getShape();
@@ -21698,12 +21668,9 @@ struct SumToConv : public SumToReductionBase<ST, SumToConv<ST>> {
       std::swap(nonOffsetDims[1], nonOffsetDims[0]);
     }
 
-    filter = stablehlo::ReshapeOp::create(
-                 rewriter, input.getLoc(),
-                 RankedTensorType::get({lastidx + 1 - startidx, 1, 1},
-                                       T.getElementType()),
-                 filter)
-                 .getResult();
+    filter = stablehlo::ReshapeOpCreate(
+                 rewriter, input.getLoc(), filter,
+                 {lastidx + 1 - startidx, 1, 1});
 
     // Create convolution dimension numbers
     auto convDims = stablehlo::ConvDimensionNumbersAttr::get(
@@ -21740,8 +21707,8 @@ struct SumToConv : public SumToReductionBase<ST, SumToConv<ST>> {
       post_shape[reshapeOffsetDim] -= (lastidx - startidx);
       RankedTensorType post_reshape =
           RankedTensorType::get(post_shape, pre_reshape.getElementType());
-      conv = stablehlo::ReshapeOp::create(rewriter, input.getLoc(),
-                                          post_reshape, conv);
+      conv = stablehlo::ReshapeOpCreate(rewriter, input.getLoc(),
+                                        conv, post_shape);
     }
     if (permutation.size())
       conv = stablehlo::TransposeOp::create(rewriter, input.getLoc(), conv,
@@ -21890,22 +21857,20 @@ struct ReshapeSelect
 
     Value newPred;
     if (!scalar_pred) {
-      newPred = stablehlo::ReshapeOp::create(
-          rewriter, reshapeOp.getLoc(),
-          RankedTensorType::get(
-              reshapeOp.getType().getShape(),
-              cast<RankedTensorType>(pred.getType()).getElementType()),
-          pred);
+      newPred = stablehlo::ReshapeOpCreate(
+          rewriter, reshapeOp.getLoc(), pred,
+          reshapeOp.getType().getShape());
     } else {
       newPred = pred;
     }
 
     auto onTrueReshaped =
-        stablehlo::ReshapeOp::create(rewriter, reshapeOp.getLoc(),
-                                     reshapeOp.getType(), selectOp.getOnTrue());
-    auto onFalseReshaped = stablehlo::ReshapeOp::create(
-        rewriter, reshapeOp.getLoc(), reshapeOp.getType(),
-        selectOp.getOnFalse());
+        stablehlo::ReshapeOpCreate(rewriter, reshapeOp.getLoc(),
+                                   selectOp.getOnTrue(),
+                                   reshapeOp.getType().getShape());
+    auto onFalseReshaped = stablehlo::ReshapeOpCreate(
+        rewriter, reshapeOp.getLoc(), selectOp.getOnFalse(),
+        reshapeOp.getType().getShape());
 
     rewriter.replaceOpWithNewOp<stablehlo::SelectOp>(
         reshapeOp, newPred, onTrueReshaped, onFalseReshaped);
@@ -22879,10 +22844,8 @@ struct RecognizeWrap
               llvm::to_vector(wrap.getType().getShape());
           assert(newShape[0] == 1);
           newShape.erase(newShape.begin());
-          auto reshape = stablehlo::ReshapeOp::create(
-              rewriter, concat.getLoc(),
-              RankedTensorType::get(newShape, wrap.getType().getElementType()),
-              wrap);
+          auto reshape = stablehlo::ReshapeOpCreate(
+              rewriter, concat.getLoc(), wrap, newShape);
           if (auto shard = sdy::getShardingPerValue(rs0)) {
             sdy::setShardings(reshape, shard);
           }
@@ -23321,11 +23284,8 @@ struct RecognizeExtend
         assert(shape[*removedDim] == 1);
         shape.erase(std::next(shape.begin(), *removedDim),
                     std::next(shape.begin(), *removedDim + 1));
-        auto reshape = stablehlo::ReshapeOp::create(
-            rewriter, concat.getLoc(),
-            RankedTensorType::get(
-                shape, concat.getResult().getType().getElementType()),
-            extend);
+        auto reshape = stablehlo::ReshapeOpCreate(
+            rewriter, concat.getLoc(), extend, shape);
         if (auto shard = sdy::getShardingPerValue(concat)) {
           sdy::setShardings(reshape, shard);
         }
@@ -24466,9 +24426,8 @@ struct ConcatReshapeReduce final
     }
 
     for (int64_t i = 0; i < reduceOpOperands.size(); i++) {
-      newConcatOperands.push_back(stablehlo::ReshapeOp::create(
-          rewriter, concatOp.getLoc(),
-          RankedTensorType::get(preConcatShape, elemTy), reduceOpOperands[i]));
+      newConcatOperands.push_back(stablehlo::ReshapeOpCreate(
+          rewriter, concatOp.getLoc(), reduceOpOperands[i], preConcatShape));
     }
 
     auto newConcatOp = stablehlo::ConcatenateOp::create(
@@ -24818,11 +24777,9 @@ struct ConcatReshapeElementwise final
         for (int j = concatDim + 1; j < (inputShape.size() + 1); j++)
           outputShape.push_back(inputShape[j - 1]);
 
-        auto newReshapeOp = stablehlo::ReshapeOp::create(
-            rewriter, concatOp.getLoc(),
-            RankedTensorType::get(outputShape, inputType.getElementType()),
-            inputOp);
-        newConcatOperands.push_back(newReshapeOp.getResult());
+        auto newReshapeOp = stablehlo::ReshapeOpCreate(
+            rewriter, concatOp.getLoc(), inputOp, outputShape);
+        newConcatOperands.push_back(newReshapeOp);
       }
       auto newConcatOp = stablehlo::ConcatenateOp::create(
           rewriter, concatOp.getLoc(), newConcatOperands, concatDim);
@@ -24967,10 +24924,8 @@ struct SelectBroadcastInDim final
         return failure();
 
       // 1-dim tensor of size (1,)
-      auto reshapedPred = stablehlo::ReshapeOp::create(
-          rewriter, op.getLoc(),
-          RankedTensorType::get({}, bcastOpOperandType.getElementType()),
-          bcastOpOperand);
+      auto reshapedPred = stablehlo::ReshapeOpCreate(
+          rewriter, op.getLoc(), bcastOpOperand, ArrayRef<int64_t>{});
       rewriter.replaceOpWithNewOp<stablehlo::SelectOp>(
           op, reshapedPred, op.getOnTrue(), op.getOnFalse());
       return success();
@@ -27832,10 +27787,8 @@ struct SelfElementwiseToConvolutionLike
     auto convOutType =
         RankedTensorType::get(newOutShape, outType.getElementType());
 
-    auto convLhs = stablehlo::ReshapeOp::create(
-        rewriter, loc,
-        RankedTensorType::get(newShape, outType.getElementType()),
-        newBaseOp->getResult(0));
+    auto convLhs = stablehlo::ReshapeOpCreate(
+        rewriter, loc, newBaseOp->getResult(0), newShape);
 
     // construct the conv rhs
     SmallVector<int64_t> filterShape(outRank + 2, 1);
@@ -27881,14 +27834,10 @@ struct SelfElementwiseToConvolutionLike
       secondElement = rhsElement;
     }
 
-    firstElement = stablehlo::ReshapeOp::create(
-        rewriter, loc,
-        RankedTensorType::get(filterShape, outType.getElementType()),
-        firstElement);
-    secondElement = stablehlo::ReshapeOp::create(
-        rewriter, loc,
-        RankedTensorType::get(filterShape, outType.getElementType()),
-        secondElement);
+    firstElement = stablehlo::ReshapeOpCreate(
+        rewriter, loc, firstElement, filterShape);
+    secondElement = stablehlo::ReshapeOpCreate(
+        rewriter, loc, secondElement, filterShape);
 
     auto filter = stablehlo::ConcatenateOp::create(
         rewriter, loc, ValueRange{firstElement, secondElement},
@@ -28217,9 +28166,10 @@ struct TrivialReduceWindowToReduceOp
     newReduceOp.getRegion().takeBody(op.getRegion());
 
     for (int64_t i = 0; i < op.getNumResults(); i++) {
-      auto newReshape = stablehlo::ReshapeOp::create(
-          rewriter, op.getLoc(), op.getType(i), newReduceOp.getResults()[i]);
-      rewriter.replaceAllUsesWith(op.getResult(i), newReshape.getResult());
+      auto newReshape = stablehlo::ReshapeOpCreate(
+          rewriter, op.getLoc(), newReduceOp.getResults()[i],
+          cast<RankedTensorType>(op.getType(i)).getShape());
+      rewriter.replaceAllUsesWith(op.getResult(i), newReshape);
     }
     return success();
   }
@@ -28545,8 +28495,9 @@ private:
     rewriter.setInsertionPointAfter(newReduce);
     auto binaryResultType =
         cast<RankedTensorType>(binaryOp.getResult().getType());
-    Value result = stablehlo::ReshapeOp::create(
-        rewriter, binaryOp.getLoc(), binaryResultType, newReduce.getResult(0));
+    Value result = stablehlo::ReshapeOpCreate(
+        rewriter, binaryOp.getLoc(), newReduce.getResult(0),
+        binaryResultType.getShape());
 
     for (auto &value : extraValues) {
       result = BinaryOpType::create(rewriter, binaryOp.getLoc(), result, value);
@@ -28654,12 +28605,9 @@ struct DUSToDynamicPad
               cast<ElementsAttr>(
                   makeAttr(cType, operandShape[i] - updateShape[i]))));
 
-      auto reshapedIndex = stablehlo::ReshapeOp::create(
-          rewriter, op.getLoc(),
-          RankedTensorType::get(
-              {1}, cast<RankedTensorType>(index.getType()).getElementType()),
-          clampedIndex);
-      edgePaddingLowValues.push_back(reshapedIndex.getResult());
+      auto reshapedIndex = stablehlo::ReshapeOpCreate(
+          rewriter, op.getLoc(), clampedIndex, ArrayRef<int64_t>{1});
+      edgePaddingLowValues.push_back(reshapedIndex);
 
       auto iType = RankedTensorType::get(
           {1}, cast<RankedTensorType>(index.getType()).getElementType());
@@ -31429,9 +31377,9 @@ struct DotGeneralInsertDimContractionSimplification final
         RankedTensorType::get(newRhsShape, rhsType.getElementType());
 
     Value newLhs =
-        stablehlo::ReshapeOp::create(rewriter, op.getLoc(), newLhsType, lhs);
+        stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), lhs, newLhsShape);
     Value newRhs =
-        stablehlo::ReshapeOp::create(rewriter, op.getLoc(), newRhsType, rhs);
+        stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), rhs, newRhsShape);
 
     // Create new dot dimension numbers
     auto newDotDims = stablehlo::DotDimensionNumbersAttr::get(
@@ -31537,8 +31485,8 @@ struct DeleteDimsBroadcast final
     // Create the reshape on the input
     auto newInputTy =
         RankedTensorType::get(newInputShape, bcastInputTy.getElementType());
-    auto reshapeInput = stablehlo::ReshapeOp::create(
-        rewriter, op.getLoc(), newInputTy, bcastOp.getOperand());
+    auto reshapeInput = stablehlo::ReshapeOpCreate(
+        rewriter, op.getLoc(), bcastOp.getOperand(), newInputShape);
 
     // Compute new broadcast dimensions by:
     // 1. Removing deleted dims from bcastDims
