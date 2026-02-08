@@ -2583,6 +2583,10 @@ def ApplyConcatenateSubtractToSubtractPadPatterns : EnzymeHLOPatternOp<"concaten
   let patterns = ["ConcatenateSubtractToSubtractPad"];
 }
 
+def ApplyConcatenateAddToAddPadPatterns : EnzymeHLOPatternOp<"concatenate_add_to_add_pad"> {
+  let patterns = ["ConcatenateAddToAddPad"];
+}
+
 def ApplyConcatenateBroadcastInDimPatterns : EnzymeHLOPatternOp<"concatenate_broadcast_in_dim"> {
   let patterns = ["ConcatenateBroadcastInDim"];
 }
