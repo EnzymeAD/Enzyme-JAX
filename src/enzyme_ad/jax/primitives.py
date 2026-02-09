@@ -407,6 +407,8 @@ def optimization_passes(
         transform_passes_list += [
             "dot_general_to_syrk",
             "dot_general_to_symm",
+            "fuse_add_into_symm",
+            "fuse_mul_into_symm",
         ]
 
     if enable_slice_to_batch_passes:
