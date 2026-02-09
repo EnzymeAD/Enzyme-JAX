@@ -1571,4 +1571,19 @@ void ExtractBlockIntoFunction(Block *block, ModuleOp modOp, func::FuncOp &func,
 
 } // namespace stablehlo
 
+static InFlightDiagnostic &operator<<(InFlightDiagnostic &diag, AffineMap map) {
+  std::string str;
+  llvm::raw_string_ostream os(str);
+  map.print(os);
+  return diag << str;
+}
+
+static void printAsOperand(InFlightDiagnostic &diag, Value value, const OpPrintingFlags &flags) {
+  std::string str;
+  llvm::raw_string_ostream os(str);
+  value.printAsOperand(os, flags);
+  diag << str;
+}
+
 } // namespace mlir
+
