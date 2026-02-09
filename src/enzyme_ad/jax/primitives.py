@@ -485,6 +485,7 @@ def optimization_passes(
             "scatter_indices_are_unique",
             "diagonal_tensor_dot_general_rewrite",
             "split_complex_scatter",
+            "split_complex_gather",
             ## const prop patterns
             "scatter_update_computation_const_prop",
             # gather patterns

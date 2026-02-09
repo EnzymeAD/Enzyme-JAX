@@ -2992,6 +2992,11 @@ def ApplySplitComplexScatterPatterns: EnzymeHLOPatternOp<
   let patterns = ["SplitComplexScatter"];
 }
 
+def ApplySplitComplexGatherPatterns: EnzymeHLOPatternOp<
+    "split_complex_gather"> {
+  let patterns = ["SplitComplexGather"];
+}
+
 // TODO: remove this once we have removed it from reactant
 def ApplySplitComplexScatterSetindexPatterns: EnzymeHLOPatternOp<
     "split_complex_scatter_setindex"> {
