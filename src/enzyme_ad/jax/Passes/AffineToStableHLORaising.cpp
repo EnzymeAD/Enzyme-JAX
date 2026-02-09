@@ -1689,7 +1689,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       Value res =
           emitLoadAsGather(op->getLoc(), inputTen, lIndices, builder, maps);
       if (!res) {
-        return op->emitError("failed to raise load (indices of rank > 1)");
+        return op->emitError("failed to raise load (indices of rank > 1)")
+               << *op;
       }
       mapping.map(loadOp.getResult(), res);
       return success();
@@ -1717,7 +1718,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       Value res =
           emitLoadAsGather(op->getLoc(), inputTen, lIndices, builder, maps);
       if (!res) {
-        return op->emitError("failed to raise load (indices of rank > 1)");
+        return op->emitError("failed to raise load (indices of rank > 1)")
+               << *op;
       }
 
       mapping.map(loadOp.getResult(), res);
@@ -1851,7 +1853,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
                                      builder, maps);
       if (!res) {
         auto err = op->emitError("affine.store (scatter) is dependent on "
-                                 "less dims than stored value: ");
+                                 "less dims than stored value: ")
+                   << *op;
         for (auto iv : accessValueMap.getOperands()) {
           printAsOperand(err, iv, OpPrintingFlags());
           err << ", ";
@@ -1886,7 +1889,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
                                      builder, maps);
       if (!res) {
         auto err = op->emitError("affine.store (scatter) is dependent on "
-                                 "less dims than stored value: ");
+                                 "less dims than stored value: ")
+                   << *op;
         for (auto iv : accessValueMap.getOperands()) {
           printAsOperand(err, iv, OpPrintingFlags());
           err << ", ";
@@ -1976,8 +1980,10 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     // Store has less ivs than load which can signify a reduction that is not
     // handled.
     if (llvm::any_of(broadcastDims, [](int64_t dim) { return dim == -1; })) {
-      auto err = op->emitError(
-          "affine.store is dependent on less dims than stored value:\n");
+      auto err =
+          op->emitError(
+              "affine.store is dependent on less dims than stored value:\n")
+          << *op;
       for (auto iv : accessValueMap.getOperands()) {
         printAsOperand(err, iv, OpPrintingFlags());
         err << ", ";
@@ -2042,7 +2048,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
                            mapping.lookup(memref), sIndices, builder, maps);
     if (!res) {
       return op->emitError(
-          "memref.store is dependent on less dims than stored value: ");
+                 "memref.store is dependent on less dims than stored value: ")
+             << *op;
     }
 
     mapping.map(memref, res);
@@ -2295,7 +2302,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         llvm::any_of(*ifOp.elseBlock(), [ifOp](Operation &op) {
           return !isSafeToSpeculativelyExecuteAtScope(ifOp, &op);
         })) {
-      return op->emitError("cannot raise if yet (non-pure or yielded values)");
+      return op->emitError("cannot raise if yet (non-pure or yielded values)")
+             << *op;
     }
 
     Value cond = mapping.lookup(ifOp.getCondition());
@@ -2315,13 +2323,14 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         llvm::any_of(*ifOp.getElseBlock(), [ifOp](Operation &op) {
           return !isSafeToSpeculativelyExecuteAtScope(ifOp, &op);
         })) {
-      return op->emitError(
-          "cannot raise if yet (non-pure or yielded values): ");
+      return op->emitError("cannot raise if yet (non-pure or yielded values): ")
+             << *op;
     }
 
     auto is = ifOp.getIntegerSet();
     if (is.getNumSymbols() != 0) {
-      return op->emitError("cannot raise integer set with symbols yet\n");
+      return op->emitError("cannot raise integer set with symbols yet\n")
+             << *op;
     }
 
     Value cond = nullptr;
@@ -2390,7 +2399,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     return success();
   }
 
-  return op->emitError("cannot raise op to stablehlo");
+  return op->emitError("cannot raise op to stablehlo") << *op;
 }
 
 static void
