@@ -883,140 +883,6 @@ public:
   }
 };
 
-// Taken from RemoveDeadRegionBranchOpSuccessorInputs canonicalizer (and its
-// dependencies)
-// (https://github.com/llvm/llvm-project/blob/88dff28c9f67e4a73ee8dea85a6c69f2171f1759/mlir/lib/Interfaces/ControlFlowInterfaces.cpp#L829)
-namespace {
-static RegionBranchInverseSuccessorMapping invertRegionBranchSuccessorMapping(
-    const RegionBranchSuccessorMapping &operandToInputs) {
-  RegionBranchInverseSuccessorMapping inputToOperands;
-  for (const auto &[operand, inputs] : operandToInputs) {
-    for (Value input : inputs)
-      inputToOperands[input].push_back(operand);
-  }
-  return inputToOperands;
-}
-template <typename MappingTy, typename KeyTy>
-static BitVector &lookupOrCreateBitVector(MappingTy &mapping, KeyTy key,
-                                          unsigned size) {
-  return mapping.try_emplace(key, size, false).first->second;
-}
-llvm::EquivalenceClasses<Value> computeTiedSuccessorInputs(
-    const RegionBranchSuccessorMapping &operandToInputs) {
-  llvm::EquivalenceClasses<Value> tiedSuccessorInputs;
-  for (const auto &[operand, inputs] : operandToInputs) {
-    assert(!inputs.empty() && "expected non-empty inputs");
-    Value firstInput = inputs.front();
-    tiedSuccessorInputs.insert(firstInput);
-    for (Value nextInput : llvm::drop_begin(inputs)) {
-      // As we explore more successor operand to successor input mappings,
-      // existing sets may get merged.
-      tiedSuccessorInputs.unionSets(firstInput, nextInput);
-    }
-  }
-  return tiedSuccessorInputs;
-}
-
-LogicalResult
-removeDeadRegionBranchOpSuccessorInputs(Operation *op,
-                                        PatternRewriter &rewriter) {
-  assert(!op->hasTrait<OpTrait::IsIsolatedFromAbove>() &&
-         "isolated-from-above ops are not supported");
-
-  // Compute tied values: values that must come as a set. If you remove one,
-  // you must remove all. If a successor op operand is forwarded to two
-  // successor inputs %a and %b, both %a and %b are in the same set.
-  auto regionBranchOp = cast<RegionBranchOpInterface>(op);
-  RegionBranchSuccessorMapping operandToInputs;
-  regionBranchOp.getSuccessorOperandInputMapping(operandToInputs);
-  llvm::EquivalenceClasses<Value> tiedSuccessorInputs =
-      computeTiedSuccessorInputs(operandToInputs);
-
-  // Determine which values to remove and group them by block and operation.
-  SmallVector<Value> valuesToRemove;
-  DenseMap<Block *, BitVector> blockArgsToRemove;
-  BitVector resultsToRemove(regionBranchOp->getNumResults(), false);
-  // Iterate over all sets of tied successor inputs.
-  for (auto it = tiedSuccessorInputs.begin(), e = tiedSuccessorInputs.end();
-       it != e; ++it) {
-    if (!(*it)->isLeader())
-      continue;
-
-    // Value can be removed if it is dead and all other tied values are also
-    // dead.
-    bool allDead = true;
-    for (auto memberIt = tiedSuccessorInputs.member_begin(**it);
-         memberIt != tiedSuccessorInputs.member_end(); ++memberIt) {
-      // Iterate over all values in the set and check their liveness.
-      if (!memberIt->use_empty()) {
-        allDead = false;
-        break;
-      }
-    }
-    if (!allDead)
-      continue;
-
-    // The entire set is dead. Group values by block and operation to
-    // simplify removal.
-    for (auto memberIt = tiedSuccessorInputs.member_begin(**it);
-         memberIt != tiedSuccessorInputs.member_end(); ++memberIt) {
-      if (auto arg = dyn_cast<BlockArgument>(*memberIt)) {
-        // Set blockArgsToRemove[block][arg_number] = true.
-        BitVector &vector =
-            lookupOrCreateBitVector(blockArgsToRemove, arg.getOwner(),
-                                    arg.getOwner()->getNumArguments());
-        vector.set(arg.getArgNumber());
-      } else {
-        // Set resultsToRemove[result_number] = true.
-        OpResult result = cast<OpResult>(*memberIt);
-        assert(result.getDefiningOp() == regionBranchOp &&
-               "result must be a region branch op result");
-        resultsToRemove.set(result.getResultNumber());
-      }
-      valuesToRemove.push_back(*memberIt);
-    }
-  }
-
-  if (valuesToRemove.empty())
-    return rewriter.notifyMatchFailure(op, "no values to remove");
-
-  // Find operands that must be removed together with the values.
-  RegionBranchInverseSuccessorMapping inputsToOperands =
-      invertRegionBranchSuccessorMapping(operandToInputs);
-  DenseMap<Operation *, llvm::BitVector> operandsToRemove;
-  for (Value value : valuesToRemove) {
-    for (OpOperand *operand : inputsToOperands[value]) {
-      // Set operandsToRemove[op][operand_number] = true.
-      BitVector &vector =
-          lookupOrCreateBitVector(operandsToRemove, operand->getOwner(),
-                                  operand->getOwner()->getNumOperands());
-      vector.set(operand->getOperandNumber());
-    }
-  }
-
-  // Erase operands.
-  for (auto &pair : operandsToRemove) {
-    Operation *op = pair.first;
-    BitVector &operands = pair.second;
-    rewriter.modifyOpInPlace(op, [&]() { op->eraseOperands(operands); });
-  }
-
-  // Erase block arguments.
-  for (auto &pair : blockArgsToRemove) {
-    Block *block = pair.first;
-    BitVector &blockArg = pair.second;
-    rewriter.modifyOpInPlace(block->getParentOp(),
-                             [&]() { block->eraseArguments(blockArg); });
-  }
-
-  // Erase op results.
-  if (resultsToRemove.any())
-    rewriter.eraseOpResults(regionBranchOp, resultsToRemove);
-
-  return success();
-}
-} // namespace
-
 class PartialIfToSelect final : public OpRewritePattern<scf::IfOp> {
 public:
   using OpRewritePattern<scf::IfOp>::OpRewritePattern;
@@ -1039,8 +905,13 @@ public:
 
     rewriter.setInsertionPoint(ifOp);
     bool succeeded = false;
-    for (auto [i, thenYieldVal, elseYieldVal] :
-         llvm::enumerate(thenYield.getOperands(), elseYield.getOperands())) {
+    for (auto [i, thenYieldVal, elseYieldVal, res] :
+         llvm::enumerate(thenYield.getOperands(), elseYield.getOperands(),
+                         ifOp.getResults())) {
+      // Ignore cases where the result is not used - these will be cleaned up by
+      // a canonicalization
+      if (res.use_empty())
+        continue;
       SmallVector<Operation *> rOps;
       IRMapping rVals;
       std::function<std::optional<Value>(Value)> recomputeOutsideIf =
@@ -1082,10 +953,6 @@ public:
       rewriter.replaceAllUsesWith(ifOp->getResult(i), select);
       succeeded = true;
     }
-    // Clean up the now-unused values from the if yields and results
-    LogicalResult res = removeDeadRegionBranchOpSuccessorInputs(ifOp, rewriter);
-    (void)res;
-    assert(res.succeeded());
     return success(succeeded);
   }
 };
