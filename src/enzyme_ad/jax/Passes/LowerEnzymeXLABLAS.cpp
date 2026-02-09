@@ -28,54 +28,6 @@ using namespace mlir::enzyme;
 using namespace mlir::enzymexla;
 using namespace mlir::stablehlo;
 
-// TODO: finish generalizing (for syrk, symm, etc.)
-enum CopyMode { NOT_NEEDED, COPY, TRANSPOSE };
-template <typename Child>
-struct UploBase {
-  void resolveUplo(enzymexla::LapackUplo &customCallUplo,
-                   CopyMode &needsCopy) const {
-
-    
-    auto op = (Child *)this;
-    switch (op->getUplo()) {
-    case enzymexla::LapackUplo::F:
-      customCallUplo = standardizeUplo(op->getOutputUplo());
-      needsCopy = op->getOutputUplo() == enzymexla::LapackUplo::F
-                      ? CopyMode::COPY
-                      : CopyMode::NOT_NEEDED;
-      break;
-    case enzymexla::LapackUplo::L:
-      customCallUplo = op->getUplo();
-      switch (op->getOutputUplo()) {
-      case enzymexla::LapackUplo::F:
-        needsCopy = CopyMode::COPY;
-        break;
-      case enzymexla::LapackUplo::L:
-        needsCopy = CopyMode::NOT_NEEDED;
-        break;
-      case enzymexla::LapackUplo::U:
-        needsCopy = CopyMode::TRANSPOSE;
-        break;
-      }
-      break;
-    case enzymexla::LapackUplo::U:
-      customCallUplo = op->getUplo();
-      switch (op->getOutputUplo()) {
-      case enzymexla::LapackUplo::F:
-        needsCopy = CopyMode::COPY;
-        break;
-      case enzymexla::LapackUplo::L:
-        needsCopy = CopyMode::TRANSPOSE;
-        break;
-      case enzymexla::LapackUplo::U:
-        needsCopy = CopyMode::NOT_NEEDED;
-        break;
-      }
-      break;
-    }
-  }
-}
-
 // Helper function to extract constant scalar value (real/imag parts)
 static bool extractConstantScalar(Value val, double &realPart,
                                   double &imagPart) {
@@ -142,7 +94,7 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
     //   return matchAndRewriteTPU(op, rewriter);
 
     else
-      return matchAndRewriteFallback(enzymexla::SymmOp op, PatternRewriter &rewriter);
+      return matchAndRewriteFallback(op, rewriter);
   }
 
   LogicalResult matchAndRewriteCPU(enzymexla::SymmOp op,
@@ -154,8 +106,6 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
     Value a = op.getOperand(0);
     Value b = op.getOperand(1);
     Value c = op.getOperand(2);
-    Value alpha_value = op.getAlpha();
-    Value beta_value = op.getBeta();
     auto side_value = op.getSide() == enzymexla::LapackSide::left ? 'L' : 'R';
     auto uplo_value = op.getUplo() == enzymexla::LapackUplo::L ? 'L' : 'U';
 
@@ -249,14 +199,10 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
       args.push_back(const1);
       args.push_back(const1);
 
-      auto callOp = LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{},
-                                         SymbolRefAttr::get(ctx, blasFn), args);
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{},
+                           SymbolRefAttr::get(ctx, blasFn), args);
       LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
     }
-    
-    CopyMode needsCopy;
-    enzymexla::LapackUplo customCallUplo;
-    resolveUplo(op, customCallUplo, needsCopy);
 
     static int64_t fn_counter = 0;
     std::string funcFnName = blasFnWrapper + "_" + std::to_string(fn_counter++);
@@ -325,8 +271,7 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
 
       auto jitCall = enzymexla::JITCallOp::create(
           rewriter, op.getLoc(), TypeRange{op.getC().getType()},
-          mlir::FlatSymbolRefAttr::get(
-              ctx, blasFnWrapper), // TODO CHECK blasFnWrapper vs fn
+          mlir::FlatSymbolRefAttr::get(ctx, blasFnWrapper),
           ValueRange{side, uplo, mSize, nSize, alpha, A, lda, B, ldb, beta, C,
                      ldc},
           rewriter.getStringAttr(""),
@@ -337,9 +282,8 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
           /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
           /*xla_side_effect_free=*/rewriter.getUnitAttr());
 
-      func::ReturnOp::create(
-          rewriter, op.getLoc(),
-          ValueRange{jitCall.getResult(0)}); // could be empty?
+      func::ReturnOp::create(rewriter, op.getLoc(),
+                             ValueRange{jitCall.getResult(0)});
     }
 
     auto callOp =
@@ -347,10 +291,7 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
                              ValueRange{op.getA(), op.getB(), op.getC(),
                                         op.getAlpha(), op.getBeta()});
 
-    auto result = callOp.getResult(0);
-
-    rewriter.replaceAllUsesWith(op.getResult(), result);
-    // rewriter.eraseOp(op); // remove?
+    rewriter.replaceOp(op, callOp);
 
     return success();
   }
@@ -364,18 +305,18 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
     return failure();
   }
 
-   LogicalResult matchAndRewriteFallback(enzymexla::SymmOp op,
+  LogicalResult matchAndRewriteFallback(enzymexla::SymmOp op,
                                         PatternRewriter &rewriter) const {
     auto AType = cast<RankedTensorType>(op.getA().getType());
     auto nBatchDims = AType.getRank() - 2;
     SmallVector<int64_t> batchDims(nBatchDims, 0);
     std::iota(batchDims.begin(), batchDims.end(), 0);
 
-    Value C = op.getC();
-    if (!stablehlo::IsTensorFilled(C)) {
+    Value A = op.getA();
+    if (!stablehlo::IsTensorFilled(A)) {
       // If the tensor is not filled, we copy to the non-uplo region for safety
-      C = stablehlo::copyTriangularPart(rewriter, C, op.getUplo());
-      if (!C) {
+      A = stablehlo::copyTriangularPart(rewriter, A, op.getUplo());
+      if (!A) {
         return failure();
       }
     }
@@ -385,8 +326,7 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
     //   alpha*B*A + beta*C if side = 'R'
     stablehlo::DotDimensionNumbersAttr dotDims;
     dotDims = stablehlo::DotDimensionNumbersAttr::get(
-        op.getContext(), batchDims, batchDims, {nBatchDims + 1},
-        {nBatchDims});
+        op.getContext(), batchDims, batchDims, {nBatchDims + 1}, {nBatchDims});
 
     stablehlo::DotGeneralOp dotGeneralOp;
     if (op.getSide() == enzymexla::LapackSide::left) {
@@ -401,8 +341,10 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
 
     auto res = stablehlo::AddOpCreate(
         rewriter, op->getLoc(),
-        stablehlo::MulOpCreate(rewriter, op->getLoc(), op.getAlpha(), dotGeneralOp),
-        stablehlo::MulOpCreate(rewriter, op->getLoc(), op.getBeta(), C));
+        stablehlo::MulOpCreate(rewriter, op->getLoc(), op.getAlpha(),
+                               dotGeneralOp),
+        stablehlo::MulOpCreate(rewriter, op->getLoc(), op.getBeta(),
+                               op.getC()));
     rewriter.replaceOp(op, res);
     return success();
   }
@@ -430,6 +372,48 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
     }
 
     return matchAndRewriteFallback(op, rewriter);
+  }
+
+  enum CopyMode { NOT_NEEDED, COPY, TRANSPOSE };
+
+  void resolveUplo(enzymexla::SyrkOp op, enzymexla::LapackUplo &customCallUplo,
+                   CopyMode &needsCopy) const {
+    switch (op.getUplo()) {
+    case enzymexla::LapackUplo::F:
+      customCallUplo = standardizeUplo(op.getOutputUplo());
+      needsCopy = op.getOutputUplo() == enzymexla::LapackUplo::F
+                      ? CopyMode::COPY
+                      : CopyMode::NOT_NEEDED;
+      break;
+    case enzymexla::LapackUplo::L:
+      customCallUplo = op.getUplo();
+      switch (op.getOutputUplo()) {
+      case enzymexla::LapackUplo::F:
+        needsCopy = CopyMode::COPY;
+        break;
+      case enzymexla::LapackUplo::L:
+        needsCopy = CopyMode::NOT_NEEDED;
+        break;
+      case enzymexla::LapackUplo::U:
+        needsCopy = CopyMode::TRANSPOSE;
+        break;
+      }
+      break;
+    case enzymexla::LapackUplo::U:
+      customCallUplo = op.getUplo();
+      switch (op.getOutputUplo()) {
+      case enzymexla::LapackUplo::F:
+        needsCopy = CopyMode::COPY;
+        break;
+      case enzymexla::LapackUplo::L:
+        needsCopy = CopyMode::TRANSPOSE;
+        break;
+      case enzymexla::LapackUplo::U:
+        needsCopy = CopyMode::NOT_NEEDED;
+        break;
+      }
+      break;
+    }
   }
 
   LogicalResult matchAndRewriteCPU(enzymexla::SyrkOp op,
