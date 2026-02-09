@@ -32739,19 +32739,15 @@ struct SplitComplexGather final
     auto imagOperand =
         stablehlo::ImagOp::create(rewriter, op.getLoc(), op.getOperand());
 
-    // Create the result type for the real and imaginary gather ops
-    auto realResultShape = resultType.getShape();
-    auto realResultType = RankedTensorType::get(realResultShape, innerElemType);
-
     // Create the real gather op
     auto realGatherOp = stablehlo::GatherOp::create(
-        rewriter, op.getLoc(), realResultType, realOperand,
+        rewriter, op.getLoc(), realOperand,
         op.getStartIndices(), op.getDimensionNumbersAttr(),
         op.getSliceSizesAttr(), op.getIndicesAreSortedAttr());
 
     // Create the imaginary gather op
     auto imagGatherOp = stablehlo::GatherOp::create(
-        rewriter, op.getLoc(), realResultType, imagOperand,
+        rewriter, op.getLoc(), imagOperand,
         op.getStartIndices(), op.getDimensionNumbersAttr(),
         op.getSliceSizesAttr(), op.getIndicesAreSortedAttr());
 
