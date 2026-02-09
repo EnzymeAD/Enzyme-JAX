@@ -1279,7 +1279,7 @@ struct MPIWaitallOpLowering : public OpRewritePattern<enzymexla::MPIWaitallOp> {
 
       // Generate the enzymexla_wrapper LLVM function body
       std::string wrapperFunctionName = "enzymexla_wrapper_" + mpiFunctionName;
-      {
+      if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapperFunctionName)) {
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(moduleOp.getBody());
 
