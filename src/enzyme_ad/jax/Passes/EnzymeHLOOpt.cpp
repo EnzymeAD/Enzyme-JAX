@@ -32715,6 +32715,55 @@ struct SplitComplexScatter final
   }
 };
 
+struct SplitComplexGather final
+    : CheckedOpRewritePattern<stablehlo::GatherOp, SplitComplexGather> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::GatherOp op,
+                                    PatternRewriter &rewriter) const {
+    auto resultType = cast<RankedTensorType>(op.getType());
+    auto elemType = resultType.getElementType();
+    
+    // Only match if the result is a complex type
+    if (!isa<ComplexType>(elemType)) {
+      return failure();
+    }
+
+    // Get the inner element type (e.g., f32 from complex<f32>)
+    auto complexType = cast<ComplexType>(elemType);
+    auto innerElemType = complexType.getElementType();
+
+    // Extract real and imaginary parts of the operand
+    auto realOperand =
+        stablehlo::RealOp::create(rewriter, op.getLoc(), op.getOperand());
+    auto imagOperand =
+        stablehlo::ImagOp::create(rewriter, op.getLoc(), op.getOperand());
+
+    // Create the result type for the real and imaginary gather ops
+    auto realResultShape = resultType.getShape();
+    auto realResultType = RankedTensorType::get(realResultShape, innerElemType);
+
+    // Create the real gather op
+    auto realGatherOp = stablehlo::GatherOp::create(
+        rewriter, op.getLoc(), realResultType, realOperand,
+        op.getStartIndices(), op.getDimensionNumbersAttr(),
+        op.getSliceSizesAttr(), op.getIndicesAreSortedAttr());
+
+    // Create the imaginary gather op
+    auto imagGatherOp = stablehlo::GatherOp::create(
+        rewriter, op.getLoc(), realResultType, imagOperand,
+        op.getStartIndices(), op.getDimensionNumbersAttr(),
+        op.getSliceSizesAttr(), op.getIndicesAreSortedAttr());
+
+    // Combine real and imaginary results using stablehlo::ComplexOp
+    auto complexResult = stablehlo::ComplexOp::create(
+        rewriter, op.getLoc(), realGatherOp, imagGatherOp);
+
+    rewriter.replaceOp(op, complexResult);
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -33517,6 +33566,7 @@ struct EnzymeHLOOptPass
         GatherOfScatterSimplify,
         ReduceWindowWrapSimplify,
         SplitComplexScatter,
+        SplitComplexGather,
         ReduceMaxMinMulPositiveScalar
       >(context);
 
