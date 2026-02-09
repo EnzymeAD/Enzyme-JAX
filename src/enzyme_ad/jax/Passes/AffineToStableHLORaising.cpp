@@ -1104,8 +1104,7 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
     llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc) {
   IRMapping mapping = parentMapping;
   if (!forOp.hasConstantBounds()) {
-    LLVM_DEBUG(llvm::dbgs() << "ForOp does not have constant bounds\n");
-    return failure();
+    return forOp.emitError("CPU kernels do not support cluster");
   }
 
   Value iv = forOp.getInductionVar();
@@ -1147,9 +1146,7 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
     auto broadcastInit =
         pc.getBroadcast(builder, maps.lookup(tensorInit), tensorInit);
     if (!broadcastInit) {
-      LLVM_DEBUG(llvm::dbgs() << "Could not broadcast an init\n"
-                              << init << "\n");
-      return failure();
+      return forOp->emitError("Could not broadcast an init");
     }
     inits.push_back(broadcastInit->v);
     mapping.map(iterArg, iterArgInBody);
@@ -1205,11 +1202,9 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
                    forOp.getBody()->getTerminator()->getOperands())) {
       if (maps.lookup(mapping.lookup(iterArg)) !=
           maps.lookup(mapping.lookup(yieldedIterArgs))) {
-        LLVM_DEBUG(llvm::dbgs() << "invalid init for iterArg: ";
-                   iterArg.printAsOperand(llvm::dbgs(), OpPrintingFlags());
-                   llvm::dbgs() << "\n");
+        auto err = forOp.emitError("invalid init for iterArg: ") << iterArg;
         whileOp->erase();
-        return failure();
+        return err;
       }
       loopCarried.push_back(mapping.lookup(yieldedIterArgs));
     }
@@ -1657,7 +1652,7 @@ static LogicalResult tryRaisingLockStepForOpToStableHLO(
   if (pc.options.dump_failed_lockstep) {
     llvm::errs() << " failed lockstep of for raise: " << *forOp << "\n";
   }
-  return failure();
+  return forOp.emitError("Not lockstep executable");
 }
 
 static LogicalResult
@@ -1694,10 +1689,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       Value res =
           emitLoadAsGather(op->getLoc(), inputTen, lIndices, builder, maps);
       if (!res) {
-        LLVM_DEBUG(llvm::dbgs()
-                   << "failed to raise load (indices of rank > 1): " << *op
-                   << "\n");
-        return failure();
+        return op->emitError("failed to raise load (indices of rank > 1)");
       }
       mapping.map(loadOp.getResult(), res);
       return success();
@@ -1725,11 +1717,9 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       Value res =
           emitLoadAsGather(op->getLoc(), inputTen, lIndices, builder, maps);
       if (!res) {
-        LLVM_DEBUG(llvm::dbgs()
-                   << "failed to raise load (indices of rank > 1): " << *op
-                   << "\n");
-        return failure();
+        return op->emitError("failed to raise load (indices of rank > 1)");
       }
+
       mapping.map(loadOp.getResult(), res);
 
       return success();
@@ -1860,20 +1850,16 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       Value res = emitStoreAsScatter(op->getLoc(), update, operand, sIndices,
                                      builder, maps);
       if (!res) {
-        LLVM_DEBUG(llvm::dbgs() << "affine.store (scatter) is dependent on "
-                                   "less dims than stored value: "
-                                << *op << "\n";
-                   auto flags = OpPrintingFlags();
-                   for (auto iv
-                        : accessValueMap.getOperands()) {
-                     iv.printAsOperand(llvm::dbgs(), flags);
-                     llvm::dbgs() << ", ";
-                   } llvm::dbgs()
-                   << "\n";
-                   accessValueMap.getAffineMap().dump();
+        auto err = op->emitError("affine.store (scatter) is dependent on "
+                                 "less dims than stored value: ");
+        for (auto iv : accessValueMap.getOperands()) {
+          printAsOperand(err, iv, OpPrintingFlags());
+          err << ", ";
+        }
+        err << "\n";
+        err << accessValueMap.getAffineMap();
 
-        );
-        return failure();
+        return err;
       }
       mapping.map(storeOp.getMemref(), res);
       return success();
@@ -1899,20 +1885,15 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       Value res = emitStoreAsScatter(op->getLoc(), update, operand, sIndices,
                                      builder, maps);
       if (!res) {
-        LLVM_DEBUG(llvm::dbgs() << "affine.store (scatter) is dependent on "
-                                   "less dims than stored value: "
-                                << *op << "\n";
-                   auto flags = OpPrintingFlags();
-                   for (auto iv
-                        : accessValueMap.getOperands()) {
-                     iv.printAsOperand(llvm::dbgs(), flags);
-                     llvm::dbgs() << ", ";
-                   } llvm::dbgs()
-                   << "\n";
-                   accessValueMap.getAffineMap().dump();
-
-        );
-        return failure();
+        auto err = op->emitError("affine.store (scatter) is dependent on "
+                                 "less dims than stored value: ");
+        for (auto iv : accessValueMap.getOperands()) {
+          printAsOperand(err, iv, OpPrintingFlags());
+          err << ", ";
+        }
+        err << "\n";
+        err << accessValueMap.getAffineMap();
+        return err;
       }
       mapping.map(storeOp.getMemref(), res);
       return success();
@@ -1995,24 +1976,21 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     // Store has less ivs than load which can signify a reduction that is not
     // handled.
     if (llvm::any_of(broadcastDims, [](int64_t dim) { return dim == -1; })) {
-      LLVM_DEBUG(
-          llvm::dbgs()
-              << "affine.store is dependent on less dims than stored value: "
-              << *op << "\n";
-          auto flags = OpPrintingFlags(); for (auto iv
-                                               : accessValueMap.getOperands()) {
-            iv.printAsOperand(llvm::dbgs(), flags);
-            llvm::dbgs() << ", ";
-          } llvm::dbgs() << "\n";
-          accessValueMap.getAffineMap().dump();
-          for (auto iv
-               : updateValueMap.getOperands()) {
-            iv.printAsOperand(llvm::dbgs(), flags);
-            llvm::dbgs() << ", ";
-          } llvm::dbgs()
-          << "\n";
-          updateValueMap.getAffineMap().dump(););
-      return failure();
+      auto err = op->emitError(
+          "affine.store is dependent on less dims than stored value:\n");
+      for (auto iv : accessValueMap.getOperands()) {
+        printAsOperand(err, iv, OpPrintingFlags());
+        err << ", ";
+      }
+      err << "\n";
+      err << accessValueMap.getAffineMap();
+      for (auto iv : updateValueMap.getOperands()) {
+        printAsOperand(err, iv, OpPrintingFlags());
+        err << ", ";
+      }
+      err << "\n";
+      err << updateValueMap.getAffineMap();
+      return err;
     }
 
     update = stablehlo::BroadcastInDimOp::create(
@@ -2063,10 +2041,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         emitStoreAsScatter(op->getLoc(), mapping.lookup(value),
                            mapping.lookup(memref), sIndices, builder, maps);
     if (!res) {
-      LLVM_DEBUG(llvm::dbgs()
-                 << "memref.store is dependent on less dims than stored value: "
-                 << *op << "\n");
-      return failure();
+      return op->emitError(
+          "memref.store is dependent on less dims than stored value: ");
     }
 
     mapping.map(memref, res);
@@ -2319,10 +2295,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         llvm::any_of(*ifOp.elseBlock(), [ifOp](Operation &op) {
           return !isSafeToSpeculativelyExecuteAtScope(ifOp, &op);
         })) {
-      LLVM_DEBUG(llvm::dbgs()
-                 << "cannot raise if yet (non-pure or yielded values): " << *op
-                 << "\n");
-      return failure();
+      return op->emitError("cannot raise if yet (non-pure or yielded values)");
     }
 
     Value cond = mapping.lookup(ifOp.getCondition());
@@ -2342,16 +2315,13 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         llvm::any_of(*ifOp.getElseBlock(), [ifOp](Operation &op) {
           return !isSafeToSpeculativelyExecuteAtScope(ifOp, &op);
         })) {
-      LLVM_DEBUG(llvm::dbgs()
-                 << "cannot raise if yet (non-pure or yielded values): " << *op
-                 << "\n");
-      return failure();
+      return op->emitError(
+          "cannot raise if yet (non-pure or yielded values): ");
     }
 
     auto is = ifOp.getIntegerSet();
     if (is.getNumSymbols() != 0) {
-      LLVM_DEBUG(llvm::dbgs() << "cannot raise integer set with symbols yet\n");
-      return failure(); // TODO
+      return op->emitError("cannot raise integer set with symbols yet\n");
     }
 
     Value cond = nullptr;
@@ -2420,9 +2390,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     return success();
   }
 
-  LLVM_DEBUG(llvm::dbgs() << "cannot raise op to stablehlo: " << *op << "\n";);
-
-  return failure();
+  return op->emitError("cannot raise op to stablehlo");
 }
 
 static void
