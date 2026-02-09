@@ -32729,10 +32729,6 @@ struct SplitComplexGather final
       return failure();
     }
 
-    // Get the inner element type (e.g., f32 from complex<f32>)
-    auto complexType = cast<ComplexType>(elemType);
-    auto innerElemType = complexType.getElementType();
-
     // Extract real and imaginary parts of the operand
     auto realOperand =
         stablehlo::RealOp::create(rewriter, op.getLoc(), op.getOperand());
