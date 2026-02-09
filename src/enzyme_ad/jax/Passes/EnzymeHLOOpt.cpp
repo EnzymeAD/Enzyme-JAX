@@ -25664,6 +25664,9 @@ struct GatherElementwise
     if (!isOnlyUsedInOperation(defOp, op))
       return failure();
 
+    if (isa<stablehlo::RealOp, stablehlo::ImagOp, stablehlo::ComplexOp>(defOp))
+      return failure();
+
     int64_t outElemCount =
         cast<RankedTensorType>(op.getType()).getNumElements();
     int64_t inElemCount =
@@ -25699,6 +25702,9 @@ struct ElementwiseGather
   LogicalResult matchAndRewriteImpl(Operation *op,
                                     PatternRewriter &rewriter) const {
     if (op->getNumResults() != 1) {
+      return failure();
+    }
+    if (isa<stablehlo::ComplexOp>(op)) {
       return failure();
     }
 

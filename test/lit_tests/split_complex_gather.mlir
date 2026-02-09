@@ -5,7 +5,6 @@
 func.func @test_basic_gather(%input: tensor<4xcomplex<f32>>, %indices: tensor<2x1xi64>) -> tensor<2xcomplex<f32>> {
   %0 = "stablehlo.gather"(%input, %indices) {
     dimension_numbers = #stablehlo.gather<
-      offset_dims = [],
       collapsed_slice_dims = [0],
       start_index_map = [0],
       index_vector_dim = 1
@@ -19,7 +18,6 @@ func.func @test_basic_gather(%input: tensor<4xcomplex<f32>>, %indices: tensor<2x
 // CHECK: %[[IMAG_INPUT:.*]] = stablehlo.imag %arg0
 // CHECK: %[[REAL_GATHER:.*]] = "stablehlo.gather"(%[[REAL_INPUT]], %arg1)
 // CHECK-SAME: dimension_numbers = #stablehlo.gather<
-// CHECK-SAME:   offset_dims = [],
 // CHECK-SAME:   collapsed_slice_dims = [0],
 // CHECK-SAME:   start_index_map = [0],
 // CHECK-SAME:   index_vector_dim = 1
@@ -28,7 +26,6 @@ func.func @test_basic_gather(%input: tensor<4xcomplex<f32>>, %indices: tensor<2x
 // CHECK-SAME: (tensor<4xf32>, tensor<2x1xi64>) -> tensor<2xf32>
 // CHECK: %[[IMAG_GATHER:.*]] = "stablehlo.gather"(%[[IMAG_INPUT]], %arg1)
 // CHECK-SAME: dimension_numbers = #stablehlo.gather<
-// CHECK-SAME:   offset_dims = [],
 // CHECK-SAME:   collapsed_slice_dims = [0],
 // CHECK-SAME:   start_index_map = [0],
 // CHECK-SAME:   index_vector_dim = 1
