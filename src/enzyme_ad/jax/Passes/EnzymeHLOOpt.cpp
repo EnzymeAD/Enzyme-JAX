@@ -32723,7 +32723,7 @@ struct SplitComplexGather final
                                     PatternRewriter &rewriter) const {
     auto resultType = cast<RankedTensorType>(op.getType());
     auto elemType = resultType.getElementType();
-    
+
     // Only match if the result is a complex type
     if (!isa<ComplexType>(elemType)) {
       return failure();
@@ -32741,15 +32741,15 @@ struct SplitComplexGather final
 
     // Create the real gather op
     auto realGatherOp = stablehlo::GatherOp::create(
-        rewriter, op.getLoc(), realOperand,
-        op.getStartIndices(), op.getDimensionNumbersAttr(),
-        op.getSliceSizesAttr(), op.getIndicesAreSortedAttr());
+        rewriter, op.getLoc(), realOperand, op.getStartIndices(),
+        op.getDimensionNumbersAttr(), op.getSliceSizesAttr(),
+        op.getIndicesAreSortedAttr());
 
     // Create the imaginary gather op
     auto imagGatherOp = stablehlo::GatherOp::create(
-        rewriter, op.getLoc(), imagOperand,
-        op.getStartIndices(), op.getDimensionNumbersAttr(),
-        op.getSliceSizesAttr(), op.getIndicesAreSortedAttr());
+        rewriter, op.getLoc(), imagOperand, op.getStartIndices(),
+        op.getDimensionNumbersAttr(), op.getSliceSizesAttr(),
+        op.getIndicesAreSortedAttr());
 
     // Combine real and imaginary results using stablehlo::ComplexOp
     auto complexResult = stablehlo::ComplexOp::create(
