@@ -784,8 +784,8 @@ emitLoadAsGather(Location loc, Value mappedMemref, ValueRange lIndices,
                  llvm::DenseMap<Value, affine::AffineValueMap> &maps) {
   Value indices = nullptr;
 
+  SmallVector<int64_t> sliceSizes(lIndices.size(), 1);
   SmallVector<int64_t> startIndexMap;
-  SmallVector<int64_t> sliceSizes;
   SmallVector<int64_t> outputShape;
   SmallVector<Value> ivs;
   for (auto raisedIdx : lIndices) {
@@ -793,46 +793,27 @@ emitLoadAsGather(Location loc, Value mappedMemref, ValueRange lIndices,
 
     auto Ty = cast<RankedTensorType>(raisedIdx.getType());
 
-    SmallVector<int64_t> indicesShape(Ty.getShape().begin(),
-                                      Ty.getShape().end());
-    indicesShape.push_back(1);
-
-    auto rank = Ty.getShape().size();
-    // if (rank > 1) {
-    //   LLVM_DEBUG(llvm::dbgs()
-    //              << "failed to raised load (indices with rank > 1)\n");
-    //   return nullptr;
-    // }
-
-    sliceSizes.push_back(1);
-
     SmallVector<int64_t> dimsToBroadcast;
-    if (rank == 0) {
-      raisedIdx = stablehlo::ReshapeOp::create(builder, loc, Ty.clone({1}),
-                                               raisedIdx); // tensor<1xi64>
-      dimsToBroadcast.push_back(0);
-      indicesShape.push_back(1);
-    } else {
-      auto map = maps.lookup(raisedIdx);
 
-      for (auto [i, E] : llvm::enumerate(map.getAffineMap().getResults())) {
-        auto iv = getIVForExpr(map, E);
+    auto map = maps.lookup(raisedIdx);
 
-        unsigned ivPos = 0;
-        for (unsigned e = ivs.size(); ivPos < e; ++ivPos) {
-          if (ivs[ivPos] == iv) {
-            break;
-          }
+    for (auto [i, E] : llvm::enumerate(map.getAffineMap().getResults())) {
+      auto iv = getIVForExpr(map, E);
+
+      unsigned ivPos = 0;
+      for (unsigned e = ivs.size(); ivPos < e; ++ivPos) {
+        if (ivs[ivPos] == iv) {
+          break;
         }
+      }
 
-        if (ivPos == ivs.size()) {
-          outputShape.push_back(Ty.getShape()[i]);
-          dimsToBroadcast.push_back(ivs.size());
-          ivs.push_back(iv);
-        } else {
-          // this dim is already present
-          dimsToBroadcast.push_back((int64_t)ivPos);
-        }
+      if (ivPos == ivs.size()) {
+        outputShape.push_back(Ty.getShape()[i]);
+        dimsToBroadcast.push_back(ivs.size());
+        ivs.push_back(iv);
+      } else {
+        // this dim is already present
+        dimsToBroadcast.push_back((int64_t)ivPos);
       }
     }
 
