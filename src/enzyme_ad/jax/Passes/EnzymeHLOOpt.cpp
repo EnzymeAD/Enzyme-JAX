@@ -32991,8 +32991,7 @@ struct SplitComplexScatter final
       // Process update: depends on scatter kind
       auto curUpdateType = cast<RankedTensorType>(update.getType());
       auto updateShape = curUpdateType.getShape();
-      auto realUpdateType =
-          RankedTensorType::get(updateShape, innerElemType);
+      auto realUpdateType = RankedTensorType::get(updateShape, innerElemType);
 
       Value realUpdate, imagUpdate;
       if (checkCommonScatterOp.kind ==
@@ -33149,7 +33148,6 @@ struct SplitComplexGather final
     auto complexType = cast<ComplexType>(elemType);
     auto innerElemType = complexType.getElementType();
     auto operandType = cast<RankedTensorType>(op.getOperand().getType());
-    auto loc = op.getLoc();
     int64_t operandRank = operandType.getRank();
     int64_t resultRank = resultType.getRank();
 
@@ -33160,9 +33158,9 @@ struct SplitComplexGather final
     //                                 imag: tensor<4xf32> -> tensor<4x1xf32>
     //                                 concat: tensor<4x2xf32>
     auto realOperand =
-        stablehlo::RealOp::create(rewriter, loc, op.getOperand());
+        stablehlo::RealOp::create(rewriter, op.getLoc(), op.getOperand());
     auto imagOperand =
-        stablehlo::ImagOp::create(rewriter, loc, op.getOperand());
+        stablehlo::ImagOp::create(rewriter, op.getLoc(), op.getOperand());
 
     auto operandShape = operandType.getShape();
     SmallVector<int64_t> reshapedOperandShape(operandShape.begin(),
@@ -33171,22 +33169,14 @@ struct SplitComplexGather final
     auto reshapedOperandType =
         RankedTensorType::get(reshapedOperandShape, innerElemType);
 
-    auto realReshaped =
-        stablehlo::ReshapeOp::create(rewriter, loc, reshapedOperandType,
-                                     realOperand);
-    auto imagReshaped =
-        stablehlo::ReshapeOp::create(rewriter, loc, reshapedOperandType,
-                                     imagOperand);
-
-    SmallVector<int64_t> concatOperandShape(operandShape.begin(),
-                                            operandShape.end());
-    concatOperandShape.push_back(2);
-    auto concatType =
-        RankedTensorType::get(concatOperandShape, innerElemType);
+    auto realReshaped = stablehlo::ReshapeOp::create(
+        rewriter, op.getLoc(), reshapedOperandType, realOperand);
+    auto imagReshaped = stablehlo::ReshapeOp::create(
+        rewriter, op.getLoc(), reshapedOperandType, imagOperand);
 
     // Concatenate along the last dimension (operandRank)
     auto concatOperand = stablehlo::ConcatenateOp::create(
-        rewriter, loc, concatType, ValueRange{realReshaped, imagReshaped},
+        rewriter, op.getLoc(), ValueRange{realReshaped, imagReshaped},
         rewriter.getI64IntegerAttr(operandRank));
 
     // Step 2: Adjust the gather dimension numbers and slice sizes to account
@@ -33214,15 +33204,14 @@ struct SplitComplexGather final
     // Step 3: Perform the gather on the concatenated operand
     // Result type: original result shape + trailing dim of size 2
     auto resultShape = resultType.getShape();
-    SmallVector<int64_t> newResultShape(resultShape.begin(),
-                                        resultShape.end());
+    SmallVector<int64_t> newResultShape(resultShape.begin(), resultShape.end());
     newResultShape.push_back(2);
-    auto newResultType =
-        RankedTensorType::get(newResultShape, innerElemType);
+    auto newResultType = RankedTensorType::get(newResultShape, innerElemType);
 
     auto gatherOp = stablehlo::GatherOp::create(
-        rewriter, loc, newResultType, concatOperand, op.getStartIndices(),
-        newDnums, newSliceSizesAttr, op.getIndicesAreSortedAttr());
+        rewriter, op.getLoc(), newResultType, concatOperand,
+        op.getStartIndices(), newDnums, newSliceSizesAttr,
+        op.getIndicesAreSortedAttr());
 
     // Step 4: Slice the result along the trailing dimension to extract
     // real and imag parts, reshape, and recombine.
@@ -33235,35 +33224,26 @@ struct SplitComplexGather final
 
     // Real part: slice [..., 0:1]
     sliceLimit.back() = 1;
-    SmallVector<int64_t> slicedShape(resultShape.begin(), resultShape.end());
-    slicedShape.push_back(1);
-    auto slicedType = RankedTensorType::get(slicedShape, innerElemType);
 
-    auto realSlice = stablehlo::SliceOp::create(
-        rewriter, loc, slicedType, gatherOp,
-        rewriter.getDenseI64ArrayAttr(sliceStart),
-        rewriter.getDenseI64ArrayAttr(sliceLimit),
-        rewriter.getDenseI64ArrayAttr(sliceStride));
+    auto realSlice = stablehlo::SliceOpCreate(
+        rewriter, op.getLoc(), gatherOp, sliceStart, sliceLimit, sliceStride);
 
     // Imag part: slice [..., 1:2]
     sliceStart.back() = 1;
     sliceLimit.back() = 2;
-    auto imagSlice = stablehlo::SliceOp::create(
-        rewriter, loc, slicedType, gatherOp,
-        rewriter.getDenseI64ArrayAttr(sliceStart),
-        rewriter.getDenseI64ArrayAttr(sliceLimit),
-        rewriter.getDenseI64ArrayAttr(sliceStride));
+
+    auto imagSlice = stablehlo::SliceOpCreate(
+        rewriter, op.getLoc(), gatherOp, sliceStart, sliceLimit, sliceStride);
 
     // Reshape to remove the trailing dimension of size 1
-    auto realResultType = RankedTensorType::get(resultShape, innerElemType);
-    auto realResult =
-        stablehlo::ReshapeOp::create(rewriter, loc, realResultType, realSlice);
-    auto imagResult =
-        stablehlo::ReshapeOp::create(rewriter, loc, realResultType, imagSlice);
+    auto realResult = stablehlo::ReshapeOpCreate(rewriter, op.getLoc(),
+                                                 realSlice, resultShape);
+    auto imagResult = stablehlo::ReshapeOpCreate(rewriter, op.getLoc(),
+                                                 imagSlice, resultShape);
 
     // Combine real and imaginary results
-    auto complexResult =
-        stablehlo::ComplexOp::create(rewriter, loc, realResult, imagResult);
+    auto complexResult = stablehlo::ComplexOp::create(rewriter, op.getLoc(),
+                                                      realResult, imagResult);
 
     rewriter.replaceOp(op, complexResult);
     return success();
