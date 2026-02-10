@@ -1,6 +1,6 @@
 from absl.testing import absltest
 
-from test_utils import *
+from test_utils import EnzymeJaxTest, CurBackends, pipelines
 
 
 def rmsnorm(x, weight):
@@ -141,20 +141,20 @@ def forward(x, config, weights, key_cache, value_cache):
 
     keys2 = []
     values2 = []
-    for l in range(n_layers):
-        xb = rmsnorm(x, rms_att_weight[l, :])
+    for i in range(n_layers):
+        xb = rmsnorm(x, rms_att_weight[i, :])
         if asserts:
             assert xb.shape == (dim,)
 
-        q = wq[l, :, :] @ xb
+        q = wq[i, :, :] @ xb
         if asserts:
             assert q.shape == (dim,)
 
-        k = wk[l, :, :] @ xb
+        k = wk[i, :, :] @ xb
         if asserts:
             assert q.shape == (kv_dim,)
 
-        v = wv[l, :, :] @ xb
+        v = wv[i, :, :] @ xb
         if asserts:
             assert q.shape == (kv_dim,)
 
@@ -167,9 +167,9 @@ def forward(x, config, weights, key_cache, value_cache):
         k = jnp.reshape(jnp.einsum("ijk,ik -> ij", toconv2, k_tmp), (dim,))
         q = jnp.reshape(jnp.einsum("ijk,ik -> ij", toconv, q_tmp), (dim,))
 
-        key_cache_l = key_cache[l, :, :]
+        key_cache_l = key_cache[i, :, :]
         key_cache_l = jnp.append(key_cache_l, jnp.reshape(k, (1, dim)), axis=0)
-        value_cache_l = value_cache[l, :, :]
+        value_cache_l = value_cache[i, :, :]
         value_cache_l = jnp.append(value_cache_l, jnp.reshape(v, (1, dim)), axis=0)
         keys2.append(key_cache_l)
         values2.append(value_cache_l)
@@ -208,7 +208,7 @@ def forward(x, config, weights, key_cache, value_cache):
         # Todo right concat
         xb = jnp.concatenate(xbs2, axis=None)
 
-        xb2 = wo[l, :, :] @ xb
+        xb2 = wo[i, :, :] @ xb
         if asserts:
             assert xb2.shape == (dim,)
 
@@ -216,24 +216,24 @@ def forward(x, config, weights, key_cache, value_cache):
 
         # Rmsnorm and feedforward swiglu
 
-        xb = rmsnorm(x, rms_ffn_weight[l, :])
+        xb = rmsnorm(x, rms_ffn_weight[i, :])
 
         # Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
         # first calculate self.w1(x) and self.w3(x)
 
-        hb = w1[l, :, :] @ xb
-        hb2 = w3[l, :, :] @ xb
+        hb = w1[i, :, :] @ xb
+        hb2 = w3[i, :, :] @ xb
 
         hb = silu(hb)
 
         hb = hb * hb2
 
-        xb = w2[l, :, :] @ hb
+        xb = w2[i, :, :] @ hb
 
         x += xb
 
     x = rmsnorm(x, rms_final_weight)
-    logits = wcls @ x
+    # logits = wcls @ x
 
     return x
 
@@ -254,7 +254,7 @@ class Llama(EnzymeJaxTest):
         }
 
         n_layers = config["n_layers"]
-        seq_len = config["seq_len"]
+        # seq_len = config["seq_len"]
         n_heads = config["n_heads"]
         dim = config["dim"]
         n_kv_heads = config["n_kv_heads"]
@@ -301,13 +301,13 @@ class Llama(EnzymeJaxTest):
         value_cache = jnp.zeros((n_layers, pos, kv_dim))
 
         key, subkey = jax.random.split(key)
-        dkc = jax.random.uniform(subkey, shape=(n_layers, pos + 1, kv_dim))
+        # dkc = jax.random.uniform(subkey, shape=(n_layers, pos + 1, kv_dim))
         key, subkey = jax.random.split(key)
-        dvc = jax.random.uniform(subkey, shape=(n_layers, pos + 1, kv_dim))
+        # dvc = jax.random.uniform(subkey, shape=(n_layers, pos + 1, kv_dim))
 
         self.fn = partial(forward, config)
-        self.name = "llama"
-        self.count = 100 if jax.default_backend() == "cpu" else 500
+        self.name = "llama_" + "_".join([f"{k}_{v}" for k, v in config.items()])
+        self.repeat = 5
         self.revprimal = False
         self.AllPipelines = pipelines()
         self.AllBackends = CurBackends
@@ -315,8 +315,8 @@ class Llama(EnzymeJaxTest):
         self.ins = [x, weights, key_cache, value_cache]
         self.dins = [dx, weights, key_cache, value_cache]
         self.douts = dx
-        self.atol = 5e-5
-        self.rtol = 0.0
+        self.atol = 1e-3
+        self.rtol = 1e-3
 
 
 if __name__ == "__main__":

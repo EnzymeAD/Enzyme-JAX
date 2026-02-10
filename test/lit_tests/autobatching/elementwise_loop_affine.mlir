@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --auto-batching --enzyme-hlo-opt %s | FileCheck %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-opt="enable_auto_batching_passes=true" %s | FileCheck %s
 
 func.func @main1(%arg0: tensor<25xf32>) -> tensor<13xf32> {
   %cst = stablehlo.constant dense<3.000000e+00> : tensor<1xf32>

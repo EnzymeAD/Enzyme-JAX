@@ -46,6 +46,7 @@
 #define DEBUG_TYPE "enzymexla"
 
 using namespace mlir;
+using namespace mlir::enzyme;
 using namespace enzymexla;
 using namespace mlir::arith;
 
@@ -1080,6 +1081,42 @@ LogicalResult ExtendOp::inferReturnTypes(
   return success();
 }
 
+LogicalResult UpdateWithoutCornersOp::inferReturnTypes(
+    MLIRContext * /*context*/, std::optional<Location> location,
+    ValueRange operands, DictionaryAttr attributes, OpaqueProperties properties,
+    RegionRange regions, SmallVectorImpl<Type> &inferredReturnTypes) {
+  UpdateWithoutCornersOpAdaptor adaptor(operands, attributes, properties,
+                                        regions);
+  auto RT = cast<RankedTensorType>(adaptor.getOperand().getType());
+  if (adaptor.getDimensionX() < 0 ||
+      adaptor.getDimensionX() >= RT.getShape().size())
+    return failure();
+  if (adaptor.getDimensionY() < 0 ||
+      adaptor.getDimensionY() >= RT.getShape().size())
+    return failure();
+  if (adaptor.getDimensionX() >= adaptor.getDimensionY())
+    return failure();
+  if (adaptor.getX1() < 0)
+    return failure();
+  if (adaptor.getX2() < 0)
+    return failure();
+  if (adaptor.getX1() >= adaptor.getX2())
+    return failure();
+  if (adaptor.getX2() >= RT.getShape()[adaptor.getDimensionX()])
+    return failure();
+  if (adaptor.getY1() < 0)
+    return failure();
+  if (adaptor.getY2() < 0)
+    return failure();
+  if (adaptor.getY1() >= adaptor.getY2())
+    return failure();
+  if (adaptor.getY2() >= RT.getShape()[adaptor.getDimensionY()])
+    return failure();
+
+  inferredReturnTypes.push_back(RT);
+  return success();
+}
+
 void CommRegionOp::getSuccessorRegions(
     RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
   // If the predecessor is the ExecuteRegionOp, branch into the body.
@@ -1099,6 +1136,20 @@ LogicalResult enzymexla::MemcpyOp::verify() {
 
   if (getElementTypeOrSelf(srcType) != getElementTypeOrSelf(dstType))
     return emitOpError("arguments have incompatible element type");
+
+  return success();
+}
+
+LogicalResult enzymexla::SyrkOp::verify() {
+  auto CType = cast<RankedTensorType>(getC().getType());
+  bool isComplex = false;
+  if (auto complex_type = dyn_cast<ComplexType>(CType.getElementType())) {
+    isComplex = true;
+  }
+
+  if (isComplex && getTranspose() == enzymexla::LapackTranspose::adjoint) {
+    return emitOpError("Complex matrix not supported for complex transpose");
+  }
 
   return success();
 }
@@ -1773,7 +1824,7 @@ public:
     auto dims = srcMemRefType.getShape().size();
 
     // For now, restrict subview lowering to statically defined memref's
-    if (!srcMemRefType.hasStaticShape() | !resMemRefType.hasStaticShape())
+    if (!srcMemRefType.hasStaticShape() || !resMemRefType.hasStaticShape())
       return failure();
 
     // For now, restrict to simple rank-reducing indexing
@@ -2414,4 +2465,152 @@ void SubIndexOp::getCanonicalizationPatterns(RewritePatternSet &results,
                  LoadSelect<affine::AffineLoadOp>, LoadSelect<LLVM::LoadOp>>(
       context);
   // Disabled: SubToSubView
+}
+
+OpFoldResult RotateOp::fold(FoldAdaptor adaptor) {
+  if (getAmount() == 0) {
+    return getOperand();
+  }
+  return nullptr;
+}
+
+OpFoldResult WrapOp::fold(FoldAdaptor adaptor) {
+  if (getLhs() == 0 && getRhs() == 0) {
+    return getOperand();
+  }
+  return nullptr;
+}
+
+OpFoldResult ExtendOp::fold(FoldAdaptor adaptor) {
+  if (getLhs() == 0 && getRhs() == 0) {
+    return getOperand();
+  }
+  return nullptr;
+}
+
+LogicalResult enzymexla::MultiRotateOp::verify() {
+  auto operandType = cast<RankedTensorType>(getOperand().getType());
+  int64_t rank = operandType.getRank();
+
+  // Verify left_amount and right_amount are non-negative
+  int32_t leftAmount = getLeftAmount();
+  int32_t rightAmount = getRightAmount();
+
+  if (leftAmount < 0)
+    return emitOpError("left_amount must be non-negative, got ") << leftAmount;
+
+  if (rightAmount < 0)
+    return emitOpError("right_amount must be non-negative, got ")
+           << rightAmount;
+
+  // Verify dimension is valid
+  int32_t dimension = getDimension();
+  if (dimension < 0 || dimension >= rank)
+    return emitOpError("dimension ")
+           << dimension << " is out of range for tensor of rank " << rank;
+
+  // Verify number of results
+  int64_t expectedNumResults = leftAmount + rightAmount + 1;
+  if ((int64_t)getNumResults() != expectedNumResults)
+    return emitOpError("expected ")
+           << expectedNumResults
+           << " results (left_amount + right_amount + 1), got "
+           << getNumResults();
+
+  // Verify all result types match the operand type (rotation preserves shape)
+  for (auto result : getResults()) {
+    if (result.getType() != operandType)
+      return emitOpError("all results must have the same type as the operand, "
+                         "expected ")
+             << operandType << " but got " << result.getType();
+  }
+
+  return success();
+}
+
+LogicalResult enzymexla::MultiSliceOp::verify() {
+  auto operandType = cast<RankedTensorType>(getOperand().getType());
+  int64_t rank = operandType.getRank();
+
+  // Verify amount is non-negative
+  int32_t amount = getAmount();
+
+  if (amount < 0)
+    return emitOpError("amount must be non-negative, got ") << amount;
+
+  // Verify dimension is valid
+  int32_t dimension = getDimension();
+  if (dimension < 0 || dimension >= rank)
+    return emitOpError("dimension ")
+           << dimension << " is out of range for tensor of rank " << rank;
+
+  // Verify slice parameter arrays have correct size
+  auto startIndices = getStartIndices();
+  auto limitIndices = getLimitIndices();
+  auto strides = getStrides();
+
+  if ((int64_t)startIndices.size() != rank)
+    return emitOpError("start_indices size ")
+           << startIndices.size() << " does not match tensor rank " << rank;
+
+  if ((int64_t)limitIndices.size() != rank)
+    return emitOpError("limit_indices size ")
+           << limitIndices.size() << " does not match tensor rank " << rank;
+
+  if ((int64_t)strides.size() != rank)
+    return emitOpError("strides size ")
+           << strides.size() << " does not match tensor rank " << rank;
+
+  // Verify strides are positive
+  for (int64_t i = 0; i < rank; ++i) {
+    if (strides[i] <= 0)
+      return emitOpError("strides must be positive, got ")
+             << strides[i] << " at index " << i;
+  }
+
+  // Verify number of results
+  int64_t expectedNumResults = amount + 1;
+  if ((int64_t)getNumResults() != expectedNumResults)
+    return emitOpError("expected ")
+           << expectedNumResults << " results (amount + 1), got "
+           << getNumResults();
+
+  // Verify indices are in bounds for all slices
+  // Result i uses indices shifted by +i along the slice dimension
+  auto operandShape = operandType.getShape();
+  for (int64_t i = 0; i < rank; ++i) {
+    auto begin = startIndices[i];
+    auto end = limitIndices[i];
+
+    // For the slice dimension, the last result (at index `amount`)
+    // has its indices shifted by `amount`
+    if (i == dimension) {
+      end += amount;
+    }
+
+    if (begin < 0 || end > operandShape[i]) {
+      return emitOpError("indices at dimension ") << i << " are out of bounds";
+    }
+  }
+
+  // Compute expected result shape from slice parameters
+  SmallVector<int64_t> expectedShape;
+  for (int64_t i = 0; i < rank; ++i) {
+    int64_t sliceSize =
+        (limitIndices[i] - startIndices[i] + strides[i] - 1) / strides[i];
+    expectedShape.push_back(sliceSize);
+  }
+
+  auto expectedResultType =
+      RankedTensorType::get(expectedShape, operandType.getElementType());
+
+  // Verify all result types have the expected shape
+  for (auto [idx, result] : llvm::enumerate(getResults())) {
+    if (result.getType() != expectedResultType)
+      return emitOpError("result #")
+             << idx << " has type " << result.getType() << " but expected "
+             << expectedResultType << " based on slice parameters";
+  }
+
+  return success();
 }

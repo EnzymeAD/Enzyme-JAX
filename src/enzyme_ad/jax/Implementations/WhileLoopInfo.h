@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 #pragma once
 
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/MapVector.h"
 
 #include "stablehlo/dialect/StablehloOps.h"
@@ -21,9 +22,16 @@ struct WhileLoopInfo {
     llvm::APInt offset;
   };
 
+  struct Bounds {
+    llvm::APInt min;
+    llvm::APInt max;
+  };
+
   WhileLoopInfo(stablehlo::WhileOp op_) : op(op_) {}
 
   LogicalResult computeInfo();
+
+  stablehlo::WhileOp getOp() { return op; }
 
   bool isValid() { return start && limit && foundStep; }
   bool isConstantStart() { return constStart.has_value(); }
@@ -50,6 +58,10 @@ struct WhileLoopInfo {
     auto condTerm = cast<stablehlo::ReturnOp>(condBlk.getTerminator());
     auto condV = condTerm->getOperand(0);
     auto cond = condV.getDefiningOp<stablehlo::CompareOp>();
+    if (!cond ||
+        cond.getComparisonDirection() != stablehlo::ComparisonDirection::LT) {
+      return nullptr;
+    }
     auto induct = dyn_cast<BlockArgument>(cond.getOperand(0));
     auto blockArgNum = induct.getArgNumber();
     return op.getBody().front().getArgument(blockArgNum);
@@ -59,9 +71,22 @@ struct WhileLoopInfo {
   Value getNumIters(OpBuilder &builder);
 
   void propagateAffineIndexInfo();
+  void propagateAffineIndexInfo(Value v, AffineIndexInfo curInfo,
+                                SmallVectorImpl<Value> &newPropagated);
+
+  void propagateBounds();
+  void propagateBounds(Value v, Bounds curBounds,
+                       SmallVectorImpl<Value> &newPropagated);
+
+  std::optional<Bounds> getBounds(Value v);
+
   llvm::MapVector<Value, AffineIndexInfo> getAffineIndexInfo() {
     return affineIndexInfo;
   }
+
+  llvm::DenseMap<Value, Bounds> &getBoundsMap() { return boundsMap; }
+
+  unsigned getBoundsBitWidth() const { return boundsBitWidth; }
 
   bool isConstantAcrossIterations(Value v, bool checkOperands = true);
   bool isConstantAcrossIterations(Value v, Value &outerValue,
@@ -103,6 +128,12 @@ private:
   std::optional<int64_t> constStep;
 
   llvm::MapVector<Value, AffineIndexInfo> affineIndexInfo;
+  DenseSet<Value> affineIndexPropagationVisited;
+
+  llvm::DenseMap<Value, Bounds> boundsMap;
+  unsigned int boundsBitWidth;
+
+  std::optional<Bounds> computeBounds(Operation *op);
 
   void computeConstantValues();
 
@@ -115,6 +146,17 @@ private:
   AffineIndexInfo updateAffineIndexInfo(AffineIndexInfo curInfo,
                                         llvm::APInt scale, llvm::APInt offset);
 };
+
+template <typename OpTy>
+void hoistStartIndicesOutsideLoop(OpTy op, OpBuilder &builder,
+                                  SmallVectorImpl<Value> &newStartIndices,
+                                  SmallVectorImpl<int64_t> &dimensions,
+                                  WhileLoopInfo &whileLoopInfo);
+
+void hoistChainOfOps(DenseMap<Value, SmallVector<Operation *>> &hoistMap,
+                     OpBuilder &builder, stablehlo::WhileOp whileOp,
+                     WhileLoopInfo &info,
+                     DenseMap<Value, Value> &hoistedValues);
 
 } // end namespace enzyme
 

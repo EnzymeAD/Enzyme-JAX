@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --auto-batching --inline --enzyme-hlo-opt %s | FileCheck %s
+// RUN: enzymexlamlir-opt --auto-batching --enzyme-hlo-opt %s | FileCheck %s
 
 module @reactant_sliced_... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas = 1 : i64} {
   func.func @main(%arg0: tensor<5x4x3xf32>) -> tensor<5x1x3xf32> {

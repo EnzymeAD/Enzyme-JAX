@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=reshape_dynamic_slice(1);while_is_copy_simplify;greedy_while_loop_batch_fission;broadcast_to_reshape;merge_consecutive_reshapes;reshape_licm(0)" --transform-interpreter --enzyme-hlo-remove-transform --inline --enzyme-hlo-opt --enzyme-hlo-generate-td="patterns=reshape_dynamic_slice(1);while_is_copy_simplify;greedy_while_loop_batch_fission;broadcast_to_reshape;merge_consecutive_reshapes;reshape_licm(0);reshape_elementwise(0)" --transform-interpreter --enzyme-hlo-remove-transform %s | FileCheck %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-opt="enable_auto_batching_passes=true" --enzyme-hlo-generate-td="patterns=reshape_elementwise(1)" --transform-interpreter --enzyme-hlo-remove-transform --enzyme-hlo-opt="enable_auto_batching_passes=true" %s | FileCheck %s
 
 module {
   func.func @main(%arg0: tensor<10xf64>, %arg1: tensor<10xf64>) -> tensor<6xf64> {
@@ -33,8 +33,8 @@ module {
 // CHECK: func.func @main(%arg0: tensor<10xf64>, %arg1: tensor<10xf64>) -> tensor<6xf64> {
 // CHECK-NEXT:   %0 = stablehlo.slice %arg0 [2:8] : (tensor<10xf64>) -> tensor<6xf64>
 // CHECK-NEXT:   %1 = stablehlo.slice %arg1 [2:8] : (tensor<10xf64>) -> tensor<6xf64>
-// CHECK-NEXT:   %2 = stablehlo.add %0, %1 : tensor<6xf64>
-// CHECK-NEXT:   %3 = stablehlo.maximum %0, %1 : tensor<6xf64>
-// CHECK-NEXT:   %4 = stablehlo.add %2, %3 : tensor<6xf64>
+// CHECK-NEXT:   %2 = stablehlo.maximum %0, %1 : tensor<6xf64>
+// CHECK-NEXT:   %3 = stablehlo.add %0, %1 : tensor<6xf64>
+// CHECK-NEXT:   %4 = stablehlo.add %3, %2 : tensor<6xf64>
 // CHECK-NEXT:   return %4 : tensor<6xf64>
 // CHECK-NEXT: }

@@ -1,7 +1,7 @@
-JAX_COMMIT = "a1c8fadb66e372bacf16c93aa6e90fa0aa6ac3af"
+JAX_COMMIT = "dc1eedbe737ee3c45783ade935eb95319925b9f8"
 JAX_SHA256 = ""
 
-ENZYME_COMMIT = "a60b57849c63792e66f88f7b74fee9ca2f74c53d"
+ENZYME_COMMIT = "53a46ca7bb6268aabd3960034dd0295848f6d5e1"
 ENZYME_SHA256 = ""
 
 ML_TOOLCHAIN_COMMIT = "78ef5eda03c54a912c000f1f872242d4ca6063a4"
@@ -16,6 +16,9 @@ HEDRON_COMPILE_COMMANDS_SHA256 = ""
 
 XLA_PATCHES = [
     """
+    sed -i.bak0 "s/\\\"-lamd_comgr\\\",//g" third_party/gpus/rocm/BUILD.tpl 
+    """,
+    """
     sed -i.bak0 "s/return TryDlopenCUDALibraries()/LOG(INFO) << \\"GPU libraries are statically linked, skip dlopen check.\\";\\nreturn absl::OkStatus();/g" xla/tsl/platform/default/dlopen_checker.cc
 """,
     """
@@ -29,7 +32,7 @@ XLA_PATCHES = [
     	sed -i.bak0 "s/\\\"\\/\\/xla\\/service\\/gpu\\/llvm_gpu_backend:nvptx_backend\\\"/\\0]) + if_rocm_is_configured([\\\"\\/\\/xla\\/service\\/gpu\\/llvm_gpu_backend:amdgpu_backend\\\"/g" xla/backends/gpu/codegen/triton/BUILD
     """,
     """
-    sed -i.bak0 "s/load(\\\"\\/\\/xla\\/tsl:tsl.bzl\\\", \\\"if_google\\\")/\\0\\nload(\\\"@local_config_rocm\\/\\/rocm:build_defs.bzl\\\", \\\"if_rocm_is_configured\\\")/g" xla/backends/gpu/codegen/triton/BUILD
+    sed -i.bak0 "s/load(\\\"\\/\\/xla\\/tsl:tsl.bzl\\\", \\\"if_google\\\")/load(\\\"\\/\\/xla\\/tsl:tsl.bzl\\\", \\\"if_google\\\")\\nload(\\\"@local_config_rocm\\/\\/rocm:build_defs.bzl\\\", \\\"if_rocm_is_configured\\\")/g" xla/backends/gpu/codegen/triton/BUILD
     """,
     """
     sed -i.bak0 "s,third_party/llvm/llvm-project/llvm/include/,,g" third_party/stablehlo/temporary.patch
@@ -41,14 +44,6 @@ XLA_PATCHES = [
     """
     sed -i.bak0 "s/patch_file/patch_args = [\\\"-p1\\\"],patches/g" third_party/llvm/workspace.bzl
     """,
-    # TODO remove
-    """
-    sed -i.bak0 "s/DCHECK_NE(runtime, nullptr/DCHECK_NE(runtime.get(), nullptr/g" xla/backends/cpu/runtime/xnnpack/xnn_fusion_thunk.cc
-    """,
-    # TODO remove
-    #"""
-    #sed -i.bak0 "s/^bool IsSupportedType/static inline bool IsSupportedType/g" xla/backends/cpu/runtime/convolution_lib.cc
-    #""",
     """
     sed -i.bak0 "s/Node::Leaf(std::forward<decltype(value)>/Node::Leaf(std::forward<T>/g" xla/tuple_tree.h
     """,
@@ -101,12 +96,14 @@ echo "" >> third_party/proto.patch
 echo " #ifndef bswap_16" >> third_party/proto.patch
 echo " static inline uint16_t bswap_16(uint16_t x) {" >> third_party/proto.patch
 sed -i.bak0 "s/protobuf.patch\\"/protobuf.patch\\", \\":proto.patch\\"/g" workspace2.bzl
-sed -i.bak0 "s/patch_file = \\[\\"@xla\\/\\/third_party\\/protobuf:protobuf.patch\\"/patches = \\[Label(\\"@xla\\/\\/third_party\\/protobuf:protobuf.patch\\"), Label(\\"\\/\\/third_party:proto.patch\\"\\)], patch_args = \\[\\"-p1\\"/g" third_party/py/python_init_rules.bzl
-sed -i.bak0 "s/tf_http_archive(/http_archive(/g" third_party/py/python_init_rules.bzl
+sed -i.bak0 "s/= \\[\\"@xla\\/\\/third_party\\/protobuf:protobuf.patch\\"/= \\[\\"@xla\\/\\/third_party\\/protobuf:protobuf.patch\\", \\"\\/\\/third_party:proto.patch\\"/g" third_party/py/python_init_rules.bzl
 
 """,
     """
-sed -i.bak0 "s/__chkstk/__chkstk_ms/g" xla/backends/cpu/codegen/builtin_definition_generator.cc
+sed -i.bak0 's/registry\\["__chkstk"\\] = SymbolDef(__chkstk)/registry["__chkstk"] = SymbolDef(__chkstk_ms);\\nregistry["__chkstk_ms"] = SymbolDef(__chkstk_ms)/g' xla/backends/cpu/codegen/builtin_definition_generator.cc
+""",
+    """
+sed -i.bak0 's/void __chkstk(size_t)/void __chkstk_ms(size_t)/g' xla/backends/cpu/codegen/builtin_definition_generator.cc
 """,
     """
 sed -i.bak0 "1s/^/#include \\"llvm\\/Support\\/DynamicLibrary.h\\"\\n/g" xla/backends/cpu/codegen/builtin_definition_generator.cc
@@ -171,6 +168,13 @@ sed -i.bak0 "s/patch_cmds = \\[/patch_cmds = \\[\\\"find . -type f -name config.
     """
 sed -i.bak0 "s/patch_cmds = \\[/patch_cmds = \\[\\\"find . -type f -name config.h -exec sed -i.bak0 's\\/HAVE_PTHREAD_SETNAME_NP\\/FAKE_HAVE_PTHREAD_SETNAME_NP\\/g' {} +\\\",/g" third_party/llvm/workspace.bzl
 """,
+    """
+    sed -i.bak0 "s/def repo/load(\\\"@bazel_tools\\/\\/tools\\/build_defs\\/repo:http.bzl\\\", \\\"http_archive\\\")\\ndef repo/g" third_party/eigen3/workspace.bzl
+    sed -i.bak0 "s/tf_http_archive(/http_archive(/g" third_party/eigen3/workspace.bzl
+    sed -i.bak0 "s/build_file = \\\"/build_file = \\\"@xla/g" third_party/eigen3/workspace.bzl
+
+    sed -i.bak0 "s/urls = /patch_cmds = \\[\\\"sed -i.bak -e 's\\/return PACKET_TYPE(0) == PACKET_TYPE(0);\\/return (PACKET_TYPE)(PACKET_TYPE(0) == PACKET_TYPE(0));\\/g' -e 's\\/return CAST_FROM_INT(CAST_TO_INT(a) == CAST_TO_INT(a));\\/return CAST_FROM_INT((decltype(CAST_TO_INT(a)))(CAST_TO_INT(a) == CAST_TO_INT(a)));\\/' Eigen\\/src\\/Core\\/arch\\/clang\\/PacketMath.h\\\"\\],urls = /g" third_party/eigen3/workspace.bzl
+    """,
 ]
 
 LLVM_TARGETS = ["X86", "AArch64", "AMDGPU", "NVPTX"]

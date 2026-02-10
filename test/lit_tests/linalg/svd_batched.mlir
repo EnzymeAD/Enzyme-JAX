@@ -53,9 +53,9 @@ module {
 // CPU-NEXT:       %1 = stablehlo.compare  LT, %iterArg, %c_3 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CPU-NEXT:       stablehlo.return %1 : tensor<i1>
 // CPU-NEXT:     } do {
-// CPU-NEXT:       %1 = stablehlo.add %iterArg, %c_2 : tensor<i64>
-// CPU-NEXT:       %2 = stablehlo.remainder %iterArg, %c_1 : tensor<i64>
-// CPU-NEXT:       %3 = stablehlo.divide %iterArg, %c_1 : tensor<i64>
+// CPU-NEXT:       %1 = stablehlo.add %iterArg, %c_2 {enzymexla.bounds = {{.*}}} : tensor<i64>
+// CPU-NEXT:       %2 = stablehlo.remainder %iterArg, %c_1 {enzymexla.bounds = {{.*}}} : tensor<i64>
+// CPU-NEXT:       %3 = stablehlo.divide %iterArg, %c_1 {enzymexla.bounds = {{.*}}} : tensor<i64>
 // CPU-NEXT:       %4 = stablehlo.dynamic_slice %arg0, %2, %3, %c_7, %c_7, sizes = [1, 1, 64, 64] : (tensor<4x3x64x64xf32>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<1x1x64x64xf32>
 // CPU-NEXT:       %5 = stablehlo.reshape %4 : (tensor<1x1x64x64xf32>) -> tensor<64x64xf32>
 // CPU-NEXT:       %6:5 = enzymexla.jit_call @enzymexla_wrapper_lapack_sgesdd_ (%c, %c, %5, %c, %cst_0, %cst, %c, %cst, %c, %c_7) {operand_layouts = [dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[0, 1]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<0> : tensor<1xindex>, dense<[0, 1]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<[0, 1]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 5, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [1], operand_index = 4, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [2], operand_index = 7, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [3], operand_index = 9, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [4], operand_index = 2, operand_tuple_indices = []>], result_layouts = [dense<[0, 1]> : tensor<2xindex>, dense<0> : tensor<1xindex>, dense<[0, 1]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<[0, 1]> : tensor<2xindex>], xla_side_effect_free} : (tensor<i64>, tensor<i64>, tensor<64x64xf32>, tensor<i64>, tensor<64xf32>, tensor<64x64xf32>, tensor<i64>, tensor<64x64xf32>, tensor<i64>, tensor<i64>) -> (tensor<64x64xf32>, tensor<64xf32>, tensor<64x64xf32>, tensor<i64>, tensor<64x64xf32>)

@@ -1,6 +1,24 @@
-def fix_paths():
-    import os
+import os
+import subprocess
+import tempfile
+import ctypes
 
+
+def _has_cuda():
+    """Check if CUDA is available by running nvidia-smi."""
+    try:
+        subprocess.run(
+            ["nvidia-smi"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True,
+        )
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
+
+def fix_paths():
     for nm in [
         "NV_LIBCUBLAS_VERSION",
         "NVIDIA_VISIBLE_DEVICES",
@@ -23,135 +41,166 @@ def fix_paths():
     ]:
         os.environ.pop(nm, None)
 
+    # Skip CUDA path setup if CUDA is not available
+    if not _has_cuda():
+        return
+
     runfiles = os.path.dirname(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     )
+    # https://github.com/jax-ml/jax/blob/af36ae2cd783aea9eaa7979170df760a52542fcd/jax/_src/lib/__init__.py#L185
+    os.environ["PYTHON_RUNFILES"] = runfiles
     # https://jax.readthedocs.io/en/latest/gpu_memory_allocation.html
-    # os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
+    os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.95"
+
+    cuda_version = 12
+    cuda_postfix = "_cu12"
+    if os.path.exists(os.path.join(runfiles, "pypi_jax_cuda13_plugin")):
+        cuda_version = 13
+        cuda_postfix = ""  # from v13 there are no postfixes
 
     CUDA_DIR = os.path.join(
-        runfiles, "pypi_nvidia_cuda_nvcc_cu12", "site-packages", "nvidia", "cuda_nvcc"
+        runfiles,
+        f"pypi_nvidia_cuda_nvcc{cuda_postfix}",
+        "site-packages",
+        "nvidia",
+        "cuda_nvcc" if cuda_version == 12 else f"cu{cuda_version}",
     )
+
+    NVVM_DIR = ""
+    if cuda_version >= 13:
+        # The nvidia-nvvm package has structure: cu13/nvvm/libdevice/libdevice.10.bc
+        # We need to symlink the inner nvvm/ directory to CUDA_DIR/nvvm
+        NVVM_PKG_DIR = os.path.join(
+            runfiles, "pypi_nvidia_nvvm", "site-packages", "nvidia", f"cu{cuda_version}"
+        )
+        NVVM_DIR = os.path.join(NVVM_PKG_DIR, "nvvm")
+        assert os.path.isdir(NVVM_DIR), f"nvvm dir not found: {NVVM_DIR}"
+        assert os.path.isdir(
+            os.path.join(NVVM_DIR, "libdevice")
+        ), f"libdevice dir not found in {NVVM_DIR}"
+
+        if not os.path.exists(os.path.join(CUDA_DIR, "nvvm")):
+            os.symlink(NVVM_DIR, os.path.join(CUDA_DIR, "nvvm"))
+
+        assert os.path.isdir(os.path.join(CUDA_DIR, "nvvm", "libdevice"))
+
+    assert os.path.isdir(CUDA_DIR), f"CUDA_DIR not found: {CUDA_DIR}"
+
     os.environ["CUDA_DIR"] = CUDA_DIR
-    os.environ["XLA_FLAGS"] = "--xla_gpu_cuda_data_dir=" + CUDA_DIR
+    # CUDA_ROOT is checked by jax._src.lib._cuda_path() and used to set
+    # debug_options.xla_gpu_cuda_data_dir in the compiler. This must be set
+    # before JAX is imported.
+    os.environ["CUDA_ROOT"] = CUDA_DIR
+
+    XLA_FLAGS = os.environ.get("XLA_FLAGS", "")
+    os.environ["XLA_FLAGS"] = XLA_FLAGS + " --xla_gpu_cuda_data_dir=" + CUDA_DIR
+
+    def get_cuda_path(lib: str, dir: str) -> str:
+        if lib == "cudnn":
+            return os.path.join(
+                runfiles,
+                f"pypi_nvidia_{lib}_cu{cuda_version}",
+                "site-packages",
+                "nvidia",
+                "cudnn",
+                dir,
+            )
+
+        return os.path.join(
+            runfiles,
+            f"pypi_nvidia_{lib}{cuda_postfix}",
+            "site-packages",
+            "nvidia",
+            lib if cuda_version == 12 else f"cu{cuda_version}",
+            dir,
+        )
+
+    def get_lib_path(lib: str) -> str:
+        return get_cuda_path(lib, "lib")
+
+    def get_bin_path(lib: str) -> str:
+        return get_cuda_path(lib, "bin")
 
     LD_LIB = os.environ.get("LD_LIBRARY_PATH", "")
-    LD_LIB = (
-        os.path.join(
-            runfiles,
-            "pypi_nvidia_cusolver_cu12",
-            "site-packages",
-            "nvidia",
-            "cusolver",
-            "lib",
-        )
-        + ":"
-        + LD_LIB
-    )
-    LD_LIB = (
-        os.path.join(
-            runfiles,
-            "pypi_nvidia_cudnn_cu12",
-            "site-packages",
-            "nvidia",
-            "cudnn",
-            "lib",
-        )
-        + ":"
-        + LD_LIB
-    )
-    LD_LIB = (
-        os.path.join(
-            runfiles,
-            "pypi_nvidia_cublas_cu12",
-            "site-packages",
-            "nvidia",
-            "cublas",
-            "lib",
-        )
-        + ":"
-        + LD_LIB
-    )
-    LD_LIB = (
-        os.path.join(
-            runfiles,
-            "pypi_nvidia_cufft_cu12",
-            "site-packages",
-            "nvidia",
-            "cufft",
-            "lib",
-        )
-        + ":"
-        + LD_LIB
-    )
-    LD_LIB = (
-        os.path.join(
-            runfiles,
-            "pypi_nvidia_cuda_cupti_cu12",
-            "site-packages",
-            "nvidia",
-            "cuda_cupti",
-            "lib",
-        )
-        + ":"
-        + LD_LIB
-    )
-    LD_LIB = (
-        os.path.join(
-            runfiles,
-            "pypi_nvidia_cuda_runtime_cu12",
-            "site-packages",
-            "nvidia",
-            "cuda_runtime",
-            "lib",
-        )
-        + ":"
-        + LD_LIB
-    )
+
+    cusolver_lib_dir = get_lib_path("cusolver")
+    assert os.path.isdir(
+        cusolver_lib_dir
+    ), f"cusolver lib dir not found: {cusolver_lib_dir}"
+    LD_LIB = cusolver_lib_dir + ":" + LD_LIB
+
+    cudnn_lib_dir = get_lib_path("cudnn")
+    assert os.path.isdir(cudnn_lib_dir), f"cudnn lib dir not found: {cudnn_lib_dir}"
+    LD_LIB = cudnn_lib_dir + ":" + LD_LIB
+
+    cublas_lib_dir = get_lib_path("cublas")
+    assert os.path.isdir(cublas_lib_dir), f"cublas lib dir not found: {cublas_lib_dir}"
+    LD_LIB = cublas_lib_dir + ":" + LD_LIB
+
+    cufft_lib_dir = get_lib_path("cufft")
+    assert os.path.isdir(cufft_lib_dir), f"cufft lib dir not found: {cufft_lib_dir}"
+    LD_LIB = cufft_lib_dir + ":" + LD_LIB
+
+    cuda_cupti_lib_dir = get_lib_path("cuda_cupti")
+    assert os.path.isdir(
+        cuda_cupti_lib_dir
+    ), f"cuda_cupti lib dir not found: {cuda_cupti_lib_dir}"
+    LD_LIB = cuda_cupti_lib_dir + ":" + LD_LIB
+
+    cuda_runtime_lib_dir = get_lib_path("cuda_runtime")
+    assert os.path.isdir(
+        cuda_runtime_lib_dir
+    ), f"cuda_runtime lib dir not found: {cuda_runtime_lib_dir}"
+    LD_LIB = cuda_runtime_lib_dir + ":" + LD_LIB
 
     os.environ["LD_LIBRARY_PATH"] = LD_LIB
 
     PATH = os.environ.get("PATH", "")
-    PATH = (
-        os.path.join(
-            runfiles,
-            "pypi_nvidia_cuda_nvcc_cu12",
-            "site-packages",
-            "nvidia",
-            "cuda_nvcc",
-            "bin",
-        )
-        + ":"
-        + PATH
-    )
+    cuda_nvcc_bin_dir = get_bin_path("cuda_nvcc")
+    assert os.path.isdir(
+        cuda_nvcc_bin_dir
+    ), f"cuda_nvcc bin dir not found: {cuda_nvcc_bin_dir}"
+    PATH = cuda_nvcc_bin_dir + ":" + PATH
+    if NVVM_DIR:
+        PATH = NVVM_DIR + ":" + PATH
     os.environ["PATH"] = PATH
 
     CUDNN_PATH = os.path.join(
-        runfiles, "pypi_nvidia_cudnn_cu12", "site-packages", "nvidia", "cudnn"
+        runfiles,
+        f"pypi_nvidia_cudnn_cu{cuda_version}",
+        "site-packages",
+        "nvidia",
+        "cudnn",
     )
+    assert os.path.isdir(CUDNN_PATH), f"CUDNN_PATH not found: {CUDNN_PATH}"
     os.environ["CUDNN_PATH"] = CUDNN_PATH
 
     # Somewhere, someone hardcodes the path to the nvidia libs
     src_path = os.path.join(
-        runfiles, "pypi_nvidia_cuda_runtime_cu12", "site-packages", "nvidia"
+        runfiles,
+        f"pypi_nvidia_cuda_runtime{cuda_postfix}",
+        "site-packages",
+        "nvidia",
     )
-    if os.path.exists(src_path):
-        for dst_path in [
-            os.path.join(runfiles, "pypi_jax_cuda12_plugin", "nvidia"),
-            os.path.join(runfiles, "pypi_jax_cuda12_pjrt", "nvidia"),
-        ]:
-            if not os.path.exists(dst_path):
-                os.symlink(src_path, dst_path)
+    for dst_path in [
+        os.path.join(runfiles, f"pypi_jax_cuda{cuda_version}_plugin", "nvidia"),
+        os.path.join(runfiles, f"pypi_jax_cuda{cuda_version}_pjrt", "nvidia"),
+    ]:
+        assert os.path.isdir(src_path)
+        if not os.path.exists(dst_path):
+            os.symlink(src_path, dst_path)
 
     # Hardcoding also exists in tensorflow....and causes a segfault in jax otherwise???
     for src_path in [
         os.path.join(runfiles, "pypi_tensorflow", "site-packages", "nvidia"),
         os.path.join(runfiles, "pypi_tensorflow_cpu", "site-packages", "nvidia"),
     ]:
-        dst_path = os.path.join(runfiles, "pypi_jax_cuda12_plugin", "nvidia")
-        if os.path.exists(src_path):
-            if not os.path.exists(dst_path):
-                os.symlink(src_path, dst_path)
+        dst_path = os.path.join(
+            runfiles, f"pypi_jax_cuda{cuda_version}_plugin", "nvidia"
+        )
+        if os.path.exists(src_path) and not os.path.exists(dst_path):
+            os.symlink(src_path, dst_path)
 
     # And finally because a path to cublas can't be found otherwise
     # or worse it will use an incorrect version thereof. The reason is because
@@ -161,130 +210,43 @@ def fix_paths():
     # a full path, and will end up in cublas/cudnn internal errors with mismatched
     # versions. If we force loading the right version, dlopen will not reopen
     # an incorrect library.
-    cublas_path = os.path.join(
-        runfiles,
-        "pypi_nvidia_cublas_cu12",
-        "site-packages",
-        "nvidia",
-        "cublas",
-        "lib",
-        "libcublas.so.12",
-    )
+    cublas_path = os.path.join(get_lib_path("cublas"), f"libcublas.so.{cuda_version}")
+    ctypes.cdll.LoadLibrary(cublas_path)
 
-    if os.path.exists(cublas_path):
-        import ctypes
+    cudnngraph_path = os.path.join(get_lib_path("cudnn"), "libcudnn_graph.so.9")
+    ctypes.cdll.LoadLibrary(cudnngraph_path)
 
-        ctypes.cdll.LoadLibrary(cublas_path)
-
-    cudnngraph_path = os.path.join(
-        runfiles,
-        "pypi_nvidia_cudnn_cu12",
-        "site-packages",
-        "nvidia",
-        "cudnn",
-        "lib",
-        "libcudnn_graph.so.9",
-    )
-
-    if os.path.exists(cudnngraph_path):
-        import ctypes
-
-        ctypes.cdll.LoadLibrary(cudnngraph_path)
-
-    cudnn_path = os.path.join(
-        runfiles,
-        "pypi_nvidia_cudnn_cu12",
-        "site-packages",
-        "nvidia",
-        "cudnn",
-        "lib",
-        "libcudnn.so.9",
-    )
-
-    if os.path.exists(cudnn_path):
-        import ctypes
-
-        ctypes.cdll.LoadLibrary(cudnn_path)
+    cudnn_path = os.path.join(get_lib_path("cudnn"), "libcudnn.so.9")
+    ctypes.cdll.LoadLibrary(cudnn_path)
 
     # jitlink must come before cusolver
     jitlink_path = os.path.join(
-        runfiles,
-        "pypi_nvidia_nvjitlink_cu12",
-        "site-packages",
-        "nvidia",
-        "nvjitlink",
-        "lib",
-        "libnvJitLink.so.12",
+        get_lib_path("nvjitlink"), f"libnvJitLink.so.{cuda_version}"
     )
-
-    if os.path.exists(jitlink_path):
-        import ctypes
-
-        ctypes.cdll.LoadLibrary(jitlink_path)
+    ctypes.cdll.LoadLibrary(jitlink_path)
 
     # cusparse comes before cusolver but after jitlink
-    cusparse_path = os.path.join(
-        runfiles,
-        "pypi_nvidia_cusparse_cu12",
-        "site-packages",
-        "nvidia",
-        "cusparse",
-        "lib",
-        "libcusparse.so.12",
-    )
-
-    if os.path.exists(cusparse_path):
-        import ctypes
-
-        ctypes.cdll.LoadLibrary(cusparse_path)
+    cusparse_path = os.path.join(get_lib_path("cusparse"), "libcusparse.so.12")
+    ctypes.cdll.LoadLibrary(cusparse_path)
 
     cusolver_path = os.path.join(
-        runfiles,
-        "pypi_nvidia_cusolver_cu12",
-        "site-packages",
-        "nvidia",
-        "cusolver",
-        "lib",
-        "libcusolver.so.11",
+        get_lib_path("cusolver"), f"libcusolver.so.{cuda_version - 1}"
     )
+    ctypes.cdll.LoadLibrary(cusolver_path)
 
-    if os.path.exists(cusolver_path):
-        import ctypes
+    cupti_path = os.path.join(get_lib_path("cuda_cupti"), f"libcupti.so.{cuda_version}")
+    ctypes.cdll.LoadLibrary(cupti_path)
 
-        ctypes.cdll.LoadLibrary(cusolver_path)
-
-    cupti_path = os.path.join(
-        runfiles,
-        "pypi_nvidia_cuda_cupti_cu12",
-        "site-packages",
-        "nvidia",
-        "cuda_cupti",
-        "lib",
-        "libcupti.so.12",
-    )
-
-    if os.path.exists(cupti_path):
-        import ctypes
-
-        ctypes.cdll.LoadLibrary(cupti_path)
-
-    cufft_path = os.path.join(
-        runfiles,
-        "pypi_nvidia_cufft_cu12",
-        "site-packages",
-        "nvidia",
-        "cufft",
-        "lib",
-        "libcufft.so.11",
-    )
-
-    if os.path.exists(cufft_path):
-        import ctypes
-
-        ctypes.cdll.LoadLibrary(cufft_path)
+    cufft_path = os.path.join(get_lib_path("cufft"), f"libcufft.so.{cuda_version - 1}")
+    ctypes.cdll.LoadLibrary(cufft_path)
 
 
-from absl.testing import absltest
+fix_paths()
+
+import jax.numpy as jnp  # noqa: E402
+import jax  # noqa: E402
+
+from absl.testing import absltest  # noqa: E402
 
 # import logging
 # logging.getLogger("jax").setLevel(logging.INFO)
@@ -293,50 +255,29 @@ from absl.testing import absltest
 
 argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
 
-devices = []
 CurBackends = []
 AllBackends = []
 backends_initialized = False
 
 
 def setup_backends():
-    global backends_initialized
-    global devices
-    global CurBackends
-    global AllBackends
+    global backends_initialized, CurBackends, AllBackends
+
     if backends_initialized:
         return
-    import jax
 
-    AllBackends.append("cpu")
-    backend = jax.default_backend()
-    CurBackends.append(backend)
-    if backend != "cpu":
-        devices.append(backend)
-        AllBackends.append(backend)
-
+    backends = list(jax._src.xla_bridge.backends().keys())
+    AllBackends.extend(backends)
+    def_backend = jax.default_backend()
+    if def_backend == "gpu" and def_backend not in AllBackends:
+        CurBackends.append("cuda")
+    else:
+        CurBackends.append(def_backend)
     backends_initialized = True
 
 
-def AllPipelines():
-    setup_backends()
-    from enzyme_ad.jax import (
-        XLAPipeline,
-        JaXPipeline,
-        optimization_passes,
-        full_optimization_pass_pipeline,
-    )
-
-    return [
-        ("JaX  ", None, AllBackends),
-        ("JaXPipe", JaXPipeline(), AllBackends),
-        # ("XLA", XLAPipeline(), ["cpu"]),
-    ]
-
-
 partialopt = (
-    "inline{default-pipeline=canonicalize max-iterations=4},"
-    + """canonicalize,cse,
+    "inline{default-pipeline=canonicalize max-iterations=4}," + """canonicalize,cse,
 enzyme-hlo-generate-td{
             patterns=compare_op_canon<16>;
 transpose_transpose<16>;
@@ -433,45 +374,57 @@ broadcast_reduce<1>;
 )
 
 
-def pipelines():
-    setup_backends()
+def get_pipeline(name: str):
     from enzyme_ad.jax import (
-        XLAPipeline,
         JaXPipeline,
-        optimization_passes,
         full_optimization_pass_pipeline,
     )
 
-    return [
-        ("JaXPipe", JaXPipeline(), CurBackends),
-        ("JaX  ", None, CurBackends),
-        (
+    if name == "JaxPipe":
+        return ("JaXPipe", JaXPipeline(), CurBackends)
+    elif name == "Jax":
+        return ("Jax", None, CurBackends)
+    elif name == "PartOpt":
+        return ("PartOpt", JaXPipeline(partialopt), CurBackends)
+    elif name == "HLOOpt":
+        return (
             "HLOOpt",
             JaXPipeline(
                 "inline{default-pipeline=canonicalize inlining-threshold=4294967295 max-iterations=4},"
                 + "canonicalize,cse,enzyme-hlo-opt,cse"
             ),
             CurBackends,
-        ),
-        ("PartOpt", JaXPipeline(partialopt), CurBackends),
-        (
+        )
+    elif name == "DefOpt":
+        return (
             "DefOpt",
             JaXPipeline(full_optimization_pass_pipeline(inline=False)),
             CurBackends,
-        ),
-        (
+        )
+    elif name == "IPartOpt":
+        return (
             "IPartOpt",
             JaXPipeline(
                 "inline{default-pipeline=canonicalize inlining-threshold=4294967295 max-iterations=4},"
                 + partialopt
             ),
             CurBackends,
-        ),
-        (
-            "IDefOpt",
-            JaXPipeline(full_optimization_pass_pipeline()),
-            CurBackends,
-        ),
+        )
+    elif name == "IDefOpt":
+        return ("IDefOpt", JaXPipeline(full_optimization_pass_pipeline()), CurBackends)
+
+
+def pipelines():
+    setup_backends()
+
+    return [
+        get_pipeline("JaxPipe"),
+        get_pipeline("Jax"),
+        get_pipeline("HLOOpt"),
+        get_pipeline("PartOpt"),
+        get_pipeline("IPartOpt"),
+        get_pipeline("DefOpt"),
+        get_pipeline("IDefOpt"),
     ]
 
 
@@ -496,8 +449,6 @@ def justjax(x):
 
 
 def splatjvp(in_fn):
-    import jax
-
     def fwd(*args):
         assert len(args) % 2 == 0
         return jax.jvp(
@@ -508,28 +459,10 @@ def splatjvp(in_fn):
 
 
 def sync(x):
-    return x.block_until_ready()
-
-
-def syncall(x):
-    return map(sync, x)
-
-
-def fwdsync1(x):
-    return (sync(x[0]), sync(x[1]))
-
-
-def fwdsync2(x):
-    return (sync(x[0][0]), sync(x[1][0]))
-
-
-def fwdsync3(x):
-    return (syncall(x[0]), syncall(x[1]))
+    return jax.block_until_ready(x)
 
 
 def splatvjp(in_fn):
-    import jax
-
     def rev(dout, *args):
         primals, f_vjp = jax.vjp(in_fn, *args)
         grads = f_vjp(dout)
@@ -539,8 +472,6 @@ def splatvjp(in_fn):
 
 
 def splatvjp_noprim(in_fn):
-    import jax
-
     def rev(dout, *args):
         primals, f_vjp = jax.vjp(in_fn, *args)
         grads = f_vjp(dout)
@@ -549,61 +480,58 @@ def splatvjp_noprim(in_fn):
     return rev
 
 
-def revsync0_0(x):
-    return (sync(x[0]), sync(x[1][0]))
-
-
-def revsync0_1(x):
-    return (syncall(x[0]), sync(x[1][0]))
-
-
-def revsync1_0(x):
-    return (sync(x[0]), syncall(x[1]))
-
-
-def revsync1_1(x):
-    return (syncall(x[0]), syncall(x[1]))
-
-
 def to_backend(x, backend):
-    import jax
-
     dev = jax.local_devices(backend=backend)[0]
     return jax.device_put(x, dev)
 
 
-def recursive_check(tester, lhs, rhs, atol=1e-8, rtol=1e-5, pname=None):
-    import jax.numpy as jnp
-    import jax
-
-    tester.assertEqual(type(lhs), type(rhs))
-    if isinstance(lhs, jax.Array):
-        legal = jnp.allclose(lhs, rhs, atol=atol, rtol=rtol)
+def recursive_check(tester, lhs, rhs, pname=None):
+    def leaves_allclose(leaf1, leaf2):
+        legal = jnp.allclose(leaf1, leaf2, atol=tester.atol, rtol=tester.rtol)
         if not legal:
+            max_err = jnp.max(jnp.abs(leaf1 - leaf2))
+            if tester.skip_test_assert:
+                print(
+                    f"Skipping test assert for {tester.name} {pname} but test"
+                    + f" failed with max error {max_err}."
+                )
+                return legal
+
             if pname is not None:
-                print("lhs (", pname, ")", lhs)
+                print("lhs (", pname, ")", leaf1)
             else:
-                print("lhs", lhs)
-            print("rhs", rhs)
-            print("abs", jnp.abs(lhs - rhs))
-            print("eq", jnp.abs(lhs - rhs) < atol)
-            print("max", jnp.max(jnp.abs(lhs - rhs)))
+                print("lhs", leaf1)
+            print("rhs", leaf2)
+            print("abs", jnp.abs(leaf1 - leaf2))
+            print("eq", jnp.abs(leaf1 - leaf2) < tester.atol)
+            print("max", max_err)
         tester.assertTrue(legal)
-        return
+        return legal
 
-    if isinstance(lhs, tuple):
-        for i, (g, g_p) in enumerate(zip(lhs, rhs)):
-            recursive_check(tester, g, g_p, atol, rtol, pname)
+    comparison_tree = jax.tree.map(leaves_allclose, lhs, rhs)
+    legal = jax.tree.all(comparison_tree)
+    if not legal and tester.skip_test_assert:
+        print(f"Skipping test assert for {tester.name} {pname}")
         return
+    tester.assertTrue(legal)
 
-    if isinstance(lhs, dict):
-        tester.assertEqual(lhs.keys(), rhs.keys())
-        for k in lhs.keys():
-            recursive_check(tester, lhs[k], rhs[k], atol, rtol, pname)
-        return
 
-    print("Unknown recursive type", type(lhs), " ", type(rhs))
-    tester.assertTrue(False)
+def _dump_mlir_to_file(loweredfn, key: str, dump_mlir_dir: str):
+    source = loweredfn.as_text()
+
+    # bazel will zip up the outputs in this directory
+    env_dir = os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR", None)
+    if env_dir is not None:
+        dump_mlir_dir = env_dir
+
+    tmpfile = tempfile.NamedTemporaryFile(
+        suffix=key.replace(" ", "") + ".mlir", dir=dump_mlir_dir, delete=False
+    )
+    with open(tmpfile.name, "w") as f:
+        f.write(str(source))
+
+    # print(f"Dumped mlir to {tmpfile.name}")
+    return tmpfile.name
 
 
 class EnzymeJaxTest(absltest.TestCase):
@@ -613,27 +541,29 @@ class EnzymeJaxTest(absltest.TestCase):
         self.primfilter = lambda x: x
         self.fwdfilter = lambda x: x
         self.revfilter = lambda x: x
-        self.count = 10000
+        self.repeat = 50
         self.AllBackends = AllBackends
-        self.AllPipelines = AllPipelines()
+        self.AllPipelines = pipelines()
         self.revprimal = True
         self.atol = 1e-6
         self.rtol = 0.0
         self.mlirad_fwd = True
         self.mlirad_rev = True
         self.results = []
+        self.skip_test_assert = False
 
     def pretty_print_table(self, name, pname, backend, key, time):
         print_str = "{:<20}\t{:<20}\t{:<15}\t{:<10}\t{:<15.8f}".format(
             name, pname, backend, key, time
         )
-        print(print_str)
+        print(print_str, flush=True)
 
         result_str = "{}\t{}\t{}\t{}\t{}".format(name, pname, backend, key, time)
         self.results.append(result_str)
 
     def write_results_csv(self, filename=""):
-        import os, csv
+        import os
+        import csv
 
         if filename == "":
             filename = f"results_{self.__class__.__name__}.csv"
@@ -660,53 +590,14 @@ class EnzymeJaxTest(absltest.TestCase):
         self.write_results_csv()
 
     def harness(self, name, in_fn, ins, dins, douts):
-        import timeit
-        import jax
         from enzyme_ad.jax import enzyme_jax_ir
+        from xprof_utils import profile_compiled_function
 
-        assert len(ins) == len(dins)
+        dump_mlir_dir = tempfile.gettempdir()
 
-        primalstr = "fn(" + (", ".join(["in" + str(i) for i in range(len(ins))])) + ")"
-        if isinstance(douts, jax.Array):
-            primalstr = "sync(" + primalstr + ")"
-        elif len(douts) == 1:
-            primalstr = "sync(" + primalstr + "[0])"
-        else:
-            primalstr = "syncall(" + primalstr + ")"
+        if self.mlirad_fwd:
+            assert len(ins) == len(dins)
 
-        fwdstr = (
-            "fwd("
-            + (", ".join(["in" + str(i) for i in range(len(ins))]))
-            + ", "
-            + (", ".join(["din" + str(i) for i in range(len(dins))]))
-            + ")"
-        )
-        if isinstance(douts, jax.Array):
-            fwdstr = "fwdsync1(" + fwdstr + ")"
-        elif len(douts) == 1:
-            fwdstr = "fwdsync2(" + fwdstr + ")"
-        else:
-            fwdstr = "fwdsync3(" + fwdstr + ")"
-
-        revstr0 = (
-            "rev(dout, " + (", ".join(["in" + str(i) for i in range(len(ins))])) + ")"
-        )
-        if self.revprimal:
-            if len(dins) == 1:
-                if isinstance(douts, jax.Array):
-                    revstr = "revsync0_0(" + revstr0 + ")"
-                else:
-                    revstr = "revsync0_1(" + revstr0 + ")"
-            else:
-                if isinstance(douts, jax.Array):
-                    revstr = "revsync1_0(" + revstr0 + ")"
-                else:
-                    revstr = "revsync1_1(" + revstr0 + ")"
-        else:
-            if len(dins) == 1:
-                revstr = "sync(" + revstr0 + "[0])"
-            else:
-                revstr = "syncall(" + revstr0 + ")"
         revtransform = splatvjp if self.revprimal else splatvjp_noprim
 
         for backend in self.AllBackends:
@@ -720,54 +611,45 @@ class EnzymeJaxTest(absltest.TestCase):
 
             primalins = {("in" + str(i)): ins_backend[i] for i in range(len(ins))}
             primalins["sync"] = sync
-            primalins["syncall"] = syncall
-            primalins["fwdsync1"] = fwdsync1
-            primalins["fwdsync2"] = fwdsync2
-            primalins["fwdsync3"] = fwdsync3
-            primalins["revsync0_0"] = revsync0_0
-            primalins["revsync0_1"] = revsync0_1
-            primalins["revsync1_0"] = revsync1_0
-            primalins["revsync1_1"] = revsync1_1
-            fwdins = primalins | {
-                ("din" + str(i)): dins_backend[i] for i in range(len(dins))
-            }
-            revins = primalins | {"dout": douts_backend}
             primres = None
 
             for pname, pipeline, pbackends in self.primfilter(self.AllPipelines):
                 if backend in pbackends:
-                    rfn_enzyme = jax.jit(
-                        (
-                            in_fn
-                            if pipeline is None
-                            else enzyme_jax_ir(
-                                pipeline_options=pipeline, argv=argv, inner_jit=False
-                            )(in_fn)
-                        ),
-                        backend=backend,
+                    rfn_enzyme = (
+                        jax.jit(
+                            (
+                                in_fn
+                                if pipeline is None
+                                else enzyme_jax_ir(
+                                    pipeline_options=pipeline,
+                                    argv=argv,
+                                    inner_jit=False,
+                                )(in_fn)
+                            )
+                        )
+                        .trace(*ins_backend)
+                        .lower()
                     )
+
+                    _dump_mlir_to_file(
+                        rfn_enzyme,
+                        pname + "_" + backend + "_primal",
+                        dump_mlir_dir,
+                    )
+
+                    rfn_enzyme = rfn_enzyme.compile()
+
                     ao = rfn_enzyme(*ins_backend)
+
                     if primres is None:
                         primres = ao
                     else:
-                        recursive_check(
-                            self, ao, primres, self.atol, self.rtol, "Primal " + pname
-                        )
+                        recursive_check(self, ao, primres, "Primal " + pname)
 
-                    self.pretty_print_table(
-                        name,
-                        pname,
-                        backend,
-                        "Primal",
-                        timeit.Timer(
-                            primalstr,
-                            globals={
-                                "fn": rfn_enzyme,
-                            }
-                            | primalins,
-                        ).timeit(self.count)
-                        / self.count,
-                    )
+                    runtime = profile_compiled_function(
+                        rfn_enzyme, ins_backend, nrepeat=self.repeat
+                    )["avg_time_s"]
+                    self.pretty_print_table(name, pname, backend, "Primal", runtime)
 
             # assert primres is not None
             fwdres = None
@@ -775,6 +657,8 @@ class EnzymeJaxTest(absltest.TestCase):
             for pname, pipeline, pbackends in self.fwdfilter(self.AllPipelines):
                 if backend in pbackends:
                     if self.mlirad_fwd or pipeline is None:
+                        all_ins = ins_backend + dins_backend
+
                         rfn_enzyme = (
                             in_fn
                             if pipeline is None
@@ -783,48 +667,37 @@ class EnzymeJaxTest(absltest.TestCase):
                                     pipeline_options=pipeline,
                                     argv=argv,
                                     inner_jit=False,
-                                )(in_fn),
-                                backend=backend,
+                                )(in_fn)
                             )
                         )
-                        fwd_enzyme = jax.jit(splatjvp(rfn_enzyme), backend=backend)
-
-                        primals, tangents = fwd_enzyme(*(ins_backend + dins_backend))
-
-                        recursive_check(
-                            self,
-                            primals,
-                            primres,
-                            self.atol,
-                            self.rtol,
-                            "Primal " + pname,
+                        fwd_enzyme = (
+                            jax.jit(splatjvp(rfn_enzyme)).trace(*all_ins).lower()
                         )
+
+                        _dump_mlir_to_file(
+                            fwd_enzyme,
+                            pname + "_" + backend + "_forward",
+                            dump_mlir_dir,
+                        )
+
+                        fwd_enzyme = fwd_enzyme.compile()
+                        primals, tangents = fwd_enzyme(*all_ins)
+
+                        if primres is None:
+                            primres = primals
+                        else:
+                            recursive_check(self, primals, primres, "Primal " + pname)
 
                         if fwdres is None:
                             fwdres = tangents
                         else:
-                            recursive_check(
-                                self,
-                                tangents,
-                                fwdres,
-                                self.atol,
-                                self.rtol,
-                                "Forward " + pname,
-                            )
+                            recursive_check(self, tangents, fwdres, "Forward " + pname)
 
+                        runtime = profile_compiled_function(
+                            fwd_enzyme, all_ins, nrepeat=self.repeat
+                        )["avg_time_s"]
                         self.pretty_print_table(
-                            name,
-                            pname,
-                            backend,
-                            "Forward",
-                            timeit.Timer(
-                                fwdstr,
-                                globals={
-                                    "fwd": fwd_enzyme,
-                                }
-                                | fwdins,
-                            ).timeit(self.count)
-                            / self.count,
+                            name, pname, backend, "Forward", runtime
                         )
 
             # assert fwdres is not None
@@ -835,6 +708,7 @@ class EnzymeJaxTest(absltest.TestCase):
                 if backend in pbackends:
                     adout = douts_backend
                     if pipeline is not None:
+                        all_ins = [adout] + ins_backend
                         if self.mlirad_rev or pipeline is None:
                             rfn_enzyme = (
                                 in_fn
@@ -845,106 +719,85 @@ class EnzymeJaxTest(absltest.TestCase):
                                     inner_jit=False,
                                 )(in_fn)
                             )
-                            rev_enzyme = jax.jit(
-                                revtransform(rfn_enzyme), backend=backend
+                            rev_enzyme = (
+                                jax.jit(revtransform(rfn_enzyme))
+                                .trace(*all_ins)
+                                .lower()
                             )
 
+                            _dump_mlir_to_file(
+                                rev_enzyme,
+                                pname + "_" + backend + "_prerev",
+                                dump_mlir_dir,
+                            )
+
+                            rev_enzyme = rev_enzyme.compile()
                             if self.revprimal:
-                                primals, grads = rev_enzyme(adout, *ins_backend)
+                                primals, grads = rev_enzyme(*all_ins)
                             else:
-                                grads = rev_enzyme(adout, *ins_backend)
+                                grads = rev_enzyme(*all_ins)
                                 assert grads is not None
 
                             if self.revprimal and primres is not None:
                                 recursive_check(
-                                    self,
-                                    primals,
-                                    primres,
-                                    self.atol,
-                                    self.rtol,
-                                    "Primal " + pname,
+                                    self, primals, primres, "Primal " + pname
                                 )
 
                             if revres is None:
                                 revres = grads
                             else:
-                                recursive_check(
-                                    self,
-                                    grads,
-                                    revres,
-                                    self.atol,
-                                    self.rtol,
-                                    "Reverse " + pname,
-                                )
+                                recursive_check(self, grads, revres, "Reverse " + pname)
 
+                            runtime = profile_compiled_function(
+                                rev_enzyme, all_ins, nrepeat=self.repeat
+                            )["avg_time_s"]
                             self.pretty_print_table(
-                                name,
-                                pname,
-                                backend,
-                                "PreRev",
-                                timeit.Timer(
-                                    revstr,
-                                    globals={
-                                        "rev": rev_enzyme,
-                                    }
-                                    | revins,
-                                ).timeit(self.count)
-                                / self.count,
+                                name, pname, backend, "PreRev", runtime
                             )
 
                         rfn_enzyme = in_fn
-                        rev_enzyme = jax.jit(
-                            (
-                                revtransform(rfn_enzyme)
-                                if pipeline is None
-                                else enzyme_jax_ir(
-                                    pipeline_options=pipeline,
-                                    argv=argv,
-                                    inner_jit=False,
-                                )(revtransform(rfn_enzyme))
-                            ),
-                            backend=backend,
+                        rev_enzyme = (
+                            jax.jit(
+                                (
+                                    revtransform(rfn_enzyme)
+                                    if pipeline is None
+                                    else enzyme_jax_ir(
+                                        pipeline_options=pipeline,
+                                        argv=argv,
+                                        inner_jit=False,
+                                    )(revtransform(rfn_enzyme))
+                                )
+                            )
+                            .trace(*all_ins)
+                            .lower()
                         )
 
+                        _dump_mlir_to_file(
+                            rev_enzyme,
+                            pname + "_" + backend + "_postrev",
+                            dump_mlir_dir,
+                        )
+
+                        rev_enzyme = rev_enzyme.compile()
                         if self.revprimal:
-                            primals, grads = rev_enzyme(adout, *ins_backend)
+                            primals, grads = rev_enzyme(*all_ins)
                         else:
-                            grads = rev_enzyme(adout, *ins_backend)
+                            grads = rev_enzyme(*all_ins)
                             assert grads is not None
 
                         if self.revprimal and primres is not None:
-                            recursive_check(
-                                self,
-                                primals,
-                                primres,
-                                self.atol,
-                                self.rtol,
-                            )
+                            recursive_check(self, primals, primres)
 
                         if revres is None:
                             revres = grads
                         else:
-                            recursive_check(
-                                self,
-                                grads,
-                                revres,
-                                self.atol,
-                                self.rtol,
-                            )
+                            recursive_check(self, grads, revres)
 
+                        runtime = profile_compiled_function(
+                            rev_enzyme, all_ins, nrepeat=self.repeat
+                        )["avg_time_s"]
                         self.pretty_print_table(
-                            name,
-                            pname,
-                            backend,
-                            "PostRev",
-                            timeit.Timer(
-                                revstr,
-                                globals={
-                                    "rev": rev_enzyme,
-                                }
-                                | revins,
-                            ).timeit(self.count)
-                            / self.count,
+                            name, pname, backend, "PostRev", runtime
                         )
 
                     if pipeline is None or (pipeline.mlir_ad() and self.mlirad_rev):
@@ -955,56 +808,46 @@ class EnzymeJaxTest(absltest.TestCase):
                                 pipeline_options=pipeline, argv=argv, inner_jit=False
                             )(in_fn)
                         )
-                        rev_enzyme = jax.jit(
-                            (
-                                revtransform(rfn_enzyme)
-                                if pipeline is None
-                                else enzyme_jax_ir(
-                                    pipeline_options=pipeline,
-                                    argv=argv,
-                                    inner_jit=False,
-                                )(revtransform(rfn_enzyme))
-                            ),
-                            backend=backend,
+                        rev_enzyme = (
+                            jax.jit(
+                                (
+                                    revtransform(rfn_enzyme)
+                                    if pipeline is None
+                                    else enzyme_jax_ir(
+                                        pipeline_options=pipeline,
+                                        argv=argv,
+                                        inner_jit=False,
+                                    )(revtransform(rfn_enzyme))
+                                )
+                            )
+                            .trace(*all_ins)
+                            .lower()
                         )
 
+                        _dump_mlir_to_file(
+                            rev_enzyme,
+                            pname + "_" + backend + "_bothrev",
+                            dump_mlir_dir,
+                        )
+
+                        rev_enzyme = rev_enzyme.compile()
                         if self.revprimal:
-                            primals, grads = rev_enzyme(adout, *ins_backend)
+                            primals, grads = rev_enzyme(*all_ins)
                         else:
-                            grads = rev_enzyme(adout, *ins_backend)
+                            grads = rev_enzyme(*all_ins)
                             assert grads is not None
 
                         if self.revprimal and primres is not None:
-                            recursive_check(
-                                self,
-                                primals,
-                                primres,
-                                self.atol,
-                                self.rtol,
-                            )
+                            recursive_check(self, primals, primres)
 
                         if revres is None:
                             revres = grads
                         else:
-                            recursive_check(
-                                self,
-                                grads,
-                                revres,
-                                self.atol,
-                                self.rtol,
-                            )
+                            recursive_check(self, grads, revres)
 
+                        runtime = profile_compiled_function(
+                            rev_enzyme, all_ins, nrepeat=self.repeat
+                        )["avg_time_s"]
                         self.pretty_print_table(
-                            name,
-                            pname,
-                            backend,
-                            "BothRev",
-                            timeit.Timer(
-                                revstr,
-                                globals={
-                                    "rev": rev_enzyme,
-                                }
-                                | revins,
-                            ).timeit(self.count)
-                            / self.count,
+                            name, pname, backend, "BothRev", runtime
                         )

@@ -1,3 +1,5 @@
+#include <cassert>
+#include <optional>
 #ifdef __clang__
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wmissing-braces"
@@ -12,8 +14,13 @@
 #pragma GCC diagnostic pop
 #endif
 
+#include "mlir/Analysis/TopologicalSortUtils.h"
+#include "mlir/IR/Matchers.h"
+
 #include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
 #include "src/enzyme_ad/jax/Utils.h"
+
+#include "llvm/ADT/TypeSwitch.h"
 
 using namespace mlir;
 using namespace mlir::enzyme;
@@ -224,11 +231,6 @@ bool WhileLoopInfo::isConstantValue(Value v, llvm::APInt &constVal) {
 void WhileLoopInfo::propagateAffineIndexInfo() {
   auto inductionVar = getInductionVariable();
 
-  SmallVector<Value> worklist;
-  DenseSet<Value> visited;
-
-  worklist.push_back(inductionVar);
-
   auto inductionType = inductionVar.getType();
   unsigned bitWidth = 64;
   if (auto tensorType = dyn_cast<RankedTensorType>(inductionType)) {
@@ -237,15 +239,31 @@ void WhileLoopInfo::propagateAffineIndexInfo() {
     }
   }
 
-  llvm::APInt baseScaling(bitWidth, 1, true);
-  llvm::APInt baseOffset(bitWidth, 0, true);
-  affineIndexInfo[inductionVar] = AffineIndexInfo{baseScaling, baseOffset};
+  APInt baseScaling(bitWidth, 1, true);
+  APInt baseOffset(bitWidth, 0, true);
+  SmallVector<Value> newPropagated;
+
+  propagateAffineIndexInfo(
+      inductionVar, AffineIndexInfo{baseScaling, baseOffset}, newPropagated);
+  return;
+}
+
+void WhileLoopInfo::propagateAffineIndexInfo(
+    Value v, AffineIndexInfo vInfo, SmallVectorImpl<Value> &newPropagated) {
+  SmallVector<Value> worklist;
+  worklist.push_back(v);
+  affineIndexInfo[v] = vInfo;
+
+  auto bitWidth = vInfo.scale.getBitWidth();
+  APInt baseScaling(vInfo.scale.getBitWidth(), 1, true);
+  APInt baseOffset(vInfo.offset.getBitWidth(), 0, true);
 
   while (!worklist.empty()) {
     auto cur = worklist.pop_back_val();
-    if (visited.contains(cur))
+    if (affineIndexPropagationVisited.contains(cur)) {
       continue;
-    visited.insert(cur);
+    }
+    affineIndexPropagationVisited.insert(cur);
 
     AffineIndexInfo curInfo = affineIndexInfo[cur];
 
@@ -284,14 +302,88 @@ void WhileLoopInfo::propagateAffineIndexInfo() {
       } else if (auto negOp = dyn_cast<stablehlo::NegOp>(user)) {
         newInfo = updateAffineIndexInfo(curInfo, -baseScaling, baseOffset);
         result = negOp.getResult();
+      } else if (auto reshapeOp = dyn_cast<stablehlo::ReshapeOp>(user)) {
+        if (cast<ShapedType>(reshapeOp.getType()).getNumElements() == 1) {
+          newInfo = updateAffineIndexInfo(curInfo, baseScaling, baseOffset);
+          result = reshapeOp.getResult();
+        }
       }
 
       if (result && !affineIndexInfo.contains(result)) {
         affineIndexInfo[result] = newInfo;
+        newPropagated.push_back(result);
         worklist.push_back(result);
       }
     }
   }
+
+  int64_t totalIterations = 0;
+  bool anyNewPropagated;
+  do {
+    anyNewPropagated = false;
+    // if any slice operand is an iota, then we can try to infer the offset
+    // and scale
+    op.getBody().front().walk([&](stablehlo::DynamicSliceOp sliceOp) {
+      // Skip if we've already processed this slice's result
+      if (affineIndexInfo.contains(sliceOp.getResult())) {
+        return WalkResult::advance();
+      }
+
+      auto sliceOutTy = cast<RankedTensorType>(sliceOp.getType());
+      if (sliceOutTy.getNumElements() != 1 ||
+          !sliceOutTy.getElementType().isInteger() ||
+          // skip over boolean types
+          sliceOutTy.getElementType().isInteger(1)) {
+        return WalkResult::advance();
+      }
+
+      int64_t sliceDim = -1;
+      for (int64_t i = 0; i < sliceOp.getSliceSizes().size(); i++) {
+        if (matchPattern(sliceOp.getStartIndices()[i], m_Zero())) {
+          continue;
+        }
+        if (sliceDim != -1) {
+          return WalkResult::advance(); // can't do anything here
+        }
+        sliceDim = i;
+      }
+
+      auto iotaDetection = detectIotaLikeTensor(sliceOp.getOperand());
+
+      if (iotaDetection && sliceDim == iotaDetection.value().dimension &&
+          isa<mlir::IntegerType>(
+              iotaDetection.value().tensorType.getElementType())) {
+        // Extract integer values from TypedAttr
+        auto startAttr = dyn_cast<IntegerAttr>(iotaDetection.value().start);
+        auto scaleAttr = dyn_cast<IntegerAttr>(iotaDetection.value().scale);
+        if (!startAttr || !scaleAttr) {
+          return WalkResult::advance();
+        }
+
+        anyNewPropagated = true;
+        auto indexInfo = affineIndexInfo[sliceOp.getStartIndices()[sliceDim]];
+        auto offset = indexInfo.offset.getSExtValue();
+        auto iotaStart = startAttr.getValue().getSExtValue();
+        auto iotaScale = scaleAttr.getValue().getSExtValue();
+        // The slice result is: iotaScale * (indexInfo.scale * i +
+        //                       indexInfo.offset) + iotaStart
+        //                    = (iotaScale * indexInfo.scale) * i + (iotaScale *
+        //                    indexInfo.offset + iotaStart)
+        auto newScale = indexInfo.scale * iotaScale;
+        auto newOffset = iotaScale * offset + iotaStart;
+
+        propagateAffineIndexInfo(
+            sliceOp.getResult(),
+            WhileLoopInfo::AffineIndexInfo{
+                newScale,
+                llvm::APInt(indexInfo.offset.getBitWidth(), newOffset, true)},
+            newPropagated);
+      }
+
+      return WalkResult::advance();
+    });
+    totalIterations++;
+  } while (anyNewPropagated && totalIterations < 4);
 }
 
 bool WhileLoopInfo::isConstantAcrossIterations(Value v, bool checkOperands) {
@@ -327,6 +419,14 @@ bool WhileLoopInfo::isConstantAcrossIterations(
   if (!defOp)
     return false;
 
+  // bail out if the operation is not isolated from above. we need to analyze
+  // all the operations in the regions to ensure that this is constant across
+  // iterations
+  if (defOp->getNumRegions() != 0 &&
+      !defOp->hasTrait<mlir::OpTrait::IsIsolatedFromAbove>()) {
+    return false;
+  }
+
   // all operands of the defining op are constant across iterations
   // don't populate the outerValue in this case
   if (llvm::all_of(defOp->getOperands(), [&](Value operand) {
@@ -340,11 +440,60 @@ bool WhileLoopInfo::isConstantAcrossIterations(
   return false;
 }
 
+namespace mlir {
+namespace enzyme {
+
+template <typename OpTy>
+void hoistStartIndicesOutsideLoop(OpTy op, OpBuilder &builder,
+                                  SmallVectorImpl<Value> &newStartIndices,
+                                  SmallVectorImpl<int64_t> &dimensions,
+                                  WhileLoopInfo &whileLoopInfo) {
+  newStartIndices.resize(op.getStartIndices().size());
+
+  DenseMap<Value, SmallVector<Operation *>> hoistMap;
+  SmallVector<int64_t> needToHoist;
+  for (size_t i = 0; i < op.getStartIndices().size(); i++) {
+    auto startIndex = op.getStartIndices()[i];
+
+    if (llvm::is_contained(dimensions, i)) {
+      newStartIndices[i] = startIndex;
+      continue;
+    }
+
+    SmallVector<Operation *> canBeHoisted;
+    Value outerValue;
+    auto isConst = whileLoopInfo.isConstantAcrossIterations(
+        startIndex, outerValue, canBeHoisted, true);
+    assert(isConst);
+    (void)isConst;
+    if (outerValue) {
+      newStartIndices[i] = outerValue;
+      continue;
+    }
+
+    needToHoist.push_back(i);
+    hoistMap[startIndex] = canBeHoisted;
+  }
+
+  if (!hoistMap.empty()) {
+    DenseMap<Value, Value> hoistedValues;
+    hoistChainOfOps(hoistMap, builder, whileLoopInfo.getOp(), whileLoopInfo,
+                    hoistedValues);
+    for (auto i : needToHoist) {
+      auto startIndex = op.getStartIndices()[i];
+      newStartIndices[i] = hoistedValues[startIndex];
+    }
+  }
+}
+
 template <typename OpTy>
 void constructScatterGatherIndices(OpTy op, Value &result, OpBuilder &builder,
                                    SmallVectorImpl<int64_t> &dimensions,
                                    WhileLoopInfo &whileLoopInfo) {
-  auto startIndices = op.getStartIndices();
+  SmallVector<Value> startIndices;
+  mlir::enzyme::hoistStartIndicesOutsideLoop(op, builder, startIndices,
+                                             dimensions, whileLoopInfo);
+
   auto indexTy = startIndices[0].getType();
   auto indexElemTy = cast<ShapedType>(indexTy).getElementType();
   Location loc = op.getLoc();
@@ -452,8 +601,9 @@ bool WhileLoopInfo::hoistOperationFromLoop(
   auto actualMax = std::max(rawMin, rawMax);
   auto actualSize = actualMax - actualMin + 1;
 
-  SmallVector<Value> dSliceStarts(sliceOp.getStartIndices().begin(),
-                                  sliceOp.getStartIndices().end());
+  SmallVector<Value> dSliceStarts;
+  mlir::enzyme::hoistStartIndicesOutsideLoop(sliceOp, builder, dSliceStarts,
+                                             dimensions, *this);
   SmallVector<int64_t> dSliceSizes(sliceOp.getSliceSizes().begin(),
                                    sliceOp.getSliceSizes().end());
 
@@ -467,10 +617,23 @@ bool WhileLoopInfo::hoistOperationFromLoop(
   dSliceStarts[sliceIndex] = idxMinConst;
   dSliceSizes[sliceIndex] = actualSize;
 
-  auto dSlice = stablehlo::DynamicSliceOp::create(
-      builder, sliceOp.getLoc(), operand, dSliceStarts,
-      builder.getDenseI64ArrayAttr(dSliceSizes));
-  auto dType = dSlice.getResult().getType();
+  // avoid crashing by doing a size check here. This typically means the user
+  // code was incorrect and they were doing a out of bounds access.
+  auto operandTy = dyn_cast<RankedTensorType>(operand.getType());
+  assert(operandTy);
+  for (size_t i = 0; i < operandTy.getRank(); i++) {
+    if (dSliceSizes[i] > operandTy.getShape()[i]) {
+      sliceOp->emitError("Out of bounds access detected in the array. Bailing "
+                         "out of automatic hoisting of the code from the loop. "
+                         "This typically indicates a bug in the user code.");
+      return false;
+    }
+  }
+
+  auto dSlice = stablehlo::DynamicSliceOpCreate(
+      builder, sliceOp.getLoc(), operand, dSliceStarts, dSliceSizes);
+  auto dType = dyn_cast<RankedTensorType>(dSlice.getType());
+  assert(dType);
 
   // j(i) = (scale * i + offset) - idx_min = scale * (i - lb)
   SmallVector<int64_t> sliceStarts(dSliceStarts.size(), 0);
@@ -479,12 +642,8 @@ bool WhileLoopInfo::hoistOperationFromLoop(
   SmallVector<int64_t> sliceLimits(dType.getShape().begin(),
                                    dType.getShape().end());
 
-  auto slice =
-      stablehlo::SliceOp::create(builder, sliceOp.getLoc(), dSlice,
-                                 builder.getDenseI64ArrayAttr(sliceStarts),
-                                 builder.getDenseI64ArrayAttr(sliceLimits),
-                                 builder.getDenseI64ArrayAttr(sliceStrides));
-  result = slice.getResult();
+  result = stablehlo::SliceOpCreate(builder, sliceOp.getLoc(), dSlice,
+                                    sliceStarts, sliceLimits, sliceStrides);
 
   if (scale < 0) {
     result = stablehlo::ReverseOp::create(
@@ -521,11 +680,10 @@ bool WhileLoopInfo::hoistOperationFromLoop(
     gatherSliceSizes.push_back(1);
   }
 
-  SmallVector<int64_t> offsetDims;
-  for (size_t i = 0; i < sliceSizes.size(); i++) {
-    if (!llvm::is_contained(dimensions, i))
-      offsetDims.push_back(i);
-  }
+  auto operandTy = dyn_cast<RankedTensorType>(operand.getType());
+
+  SmallVector<int64_t> offsetDims(operandTy.getRank() - dimensions.size());
+  std::iota(offsetDims.begin(), offsetDims.end(), 0);
 
   SmallVector<int64_t> startIndexMap(sliceSizes.size());
   std::iota(startIndexMap.begin(), startIndexMap.end(), 0);
@@ -565,15 +723,17 @@ bool WhileLoopInfo::hoistOperationFromLoop(
   if (!canHoistOperationFromLoop(dusOp, dimensions) || !isStepOne())
     return false;
 
-  SmallVector<Value> dusStartIndices(dusOp.getStartIndices().begin(),
-                                     dusOp.getStartIndices().end());
+  SmallVector<Value> dusStartIndices;
+  mlir::enzyme::hoistStartIndicesOutsideLoop(dusOp, builder, dusStartIndices,
+                                             dimensions, *this);
 
   auto depIndex = dusOp.getStartIndices()[dusIndex];
   auto indexTy = depIndex.getType();
   auto indexInfo = affineIndexInfo[depIndex];
 
-  if (!indexInfo.scale.isOne())
+  if (!indexInfo.scale.isOne()) {
     return false;
+  }
 
   // move the update dim = 0 to dusIndex
   SmallVector<int64_t> perm(dusOp.getStartIndices().size() - 1);
@@ -656,3 +816,290 @@ bool WhileLoopInfo::hoistOperationFromLoop(
   }
   return true;
 }
+
+void WhileLoopInfo::propagateBounds() {
+  if (!isConstant()) {
+    return; // need constant bounds
+  }
+
+  auto inductionVariable = getInductionVariable();
+
+  auto inductionType = inductionVariable.getType();
+  unsigned bitWidth = 64;
+  if (auto tensorType = dyn_cast<RankedTensorType>(inductionType)) {
+    if (auto intType = dyn_cast<IntegerType>(tensorType.getElementType())) {
+      bitWidth = intType.getWidth();
+    }
+  }
+  this->boundsBitWidth = bitWidth;
+
+  SmallVector<Value> newPropagated;
+  auto start = getConstantStart().value();
+  auto limit = getConstantLimit().value();
+  auto step = getConstantStep().value();
+
+  // Initialize bounds for the induction variable
+  Bounds inductionBounds;
+  if (step > 0) {
+    inductionBounds =
+        Bounds{APInt(bitWidth, start, true), APInt(bitWidth, limit - 1, true)};
+  } else {
+    inductionBounds =
+        Bounds{APInt(bitWidth, limit + 1, true), APInt(bitWidth, start, true)};
+  }
+
+  propagateBounds(inductionVariable, inductionBounds, newPropagated);
+  return;
+}
+
+void WhileLoopInfo::propagateBounds(Value v, Bounds curBounds,
+                                    SmallVectorImpl<Value> &newPropagated) {
+  SmallVector<Value> worklist;
+  DenseSet<Operation *> visited;
+  worklist.push_back(v);
+  boundsMap[v] = curBounds;
+
+  while (!worklist.empty()) {
+    auto cur = worklist.pop_back_val();
+
+    for (auto user : cur.getUsers()) {
+      if (visited.contains(user)) {
+        continue;
+      }
+      visited.insert(user);
+
+      auto bounds = computeBounds(user);
+      if (bounds.has_value()) {
+        for (auto result : user->getResults()) {
+          boundsMap[result] = bounds.value();
+          newPropagated.push_back(result);
+          worklist.push_back(result);
+        }
+      }
+    }
+  }
+}
+
+std::optional<WhileLoopInfo::Bounds> WhileLoopInfo::getBounds(Value value) {
+  if (boundsMap.contains(value)) {
+    return boundsMap.lookup(value);
+  }
+
+  // Try to read bounds from IR attribute using the utility function
+  if (auto irBounds = enzyme::getBoundsFromIR(value, boundsBitWidth)) {
+    return Bounds{irBounds->first, irBounds->second};
+  }
+
+  SplatElementsAttr splatAttr;
+  if (matchPattern(value, m_Constant(&splatAttr))) {
+    auto attr = splatAttr.getSplatValue<Attribute>();
+    if (auto intAttr = dyn_cast<IntegerAttr>(attr)) {
+      auto intVal = intAttr.getValue().sextOrTrunc(boundsBitWidth);
+      return Bounds{intVal, intVal};
+    }
+  }
+  return std::nullopt;
+}
+
+// Helper functions for APInt min/max since std::min/max don't work with APInt
+static APInt smin(const APInt &a, const APInt &b) { return a.slt(b) ? a : b; }
+static APInt smax(const APInt &a, const APInt &b) { return a.sgt(b) ? a : b; }
+
+std::optional<WhileLoopInfo::Bounds>
+WhileLoopInfo::computeBounds(Operation *op) {
+  if (!op || !stablehlo::hasTraitElementwise(op)) {
+    return std::nullopt;
+  }
+
+  if (op->getNumOperands() == 1) {
+    if (isa<stablehlo::SineOp, stablehlo::CosineOp>(op)) {
+      APInt one(boundsBitWidth, 1);
+      return Bounds{-one, one};
+    }
+
+    auto optionalBounds = getBounds(op->getOperand(0));
+    if (!optionalBounds.has_value()) {
+      return std::nullopt;
+    }
+    auto bounds = optionalBounds.value();
+
+    return TypeSwitch<Operation *, std::optional<Bounds>>(op)
+        .Case<stablehlo::NegOp>([&](stablehlo::NegOp negOp) {
+          return Bounds{-bounds.max, -bounds.min};
+        })
+        .Case<stablehlo::AbsOp>([&](stablehlo::AbsOp absOp) {
+          APInt zero(boundsBitWidth, 0);
+          if (bounds.min.sge(zero)) { // all positive
+            return Bounds{bounds.min, bounds.max};
+          } else if (bounds.max.sle(zero)) { // all negative
+            return Bounds{-bounds.max, -bounds.min};
+          } else { // mixed signs
+            APInt newMax = bounds.max.abs().sgt(bounds.min.abs())
+                               ? bounds.max.abs()
+                               : (-bounds.min).abs();
+            return Bounds{zero, newMax};
+          }
+        })
+        .Case<stablehlo::ConvertOp>([&](stablehlo::ConvertOp convertOp)
+                                        -> std::optional<Bounds> {
+          auto outType = convertOp.getResult().getType();
+          if (auto tensorType = dyn_cast<RankedTensorType>(outType)) {
+            if (auto intType =
+                    dyn_cast<IntegerType>(tensorType.getElementType())) {
+              unsigned outBitWidth = intType.getWidth();
+              if (boundsBitWidth < outBitWidth) {
+                return std::nullopt;
+              }
+              APInt outMin =
+                  APInt::getSignedMinValue(outBitWidth).sext(boundsBitWidth);
+              APInt outMax =
+                  APInt::getSignedMaxValue(outBitWidth).sext(boundsBitWidth);
+              if (bounds.min.sge(outMin) && bounds.max.sle(outMax)) {
+                return Bounds{bounds.min, bounds.max};
+              }
+            }
+          }
+          return std::nullopt;
+        })
+        .Default([&](Operation *) { return std::nullopt; });
+  }
+
+  if (op->getNumOperands() == 2) {
+    auto lhsOptionalBounds = getBounds(op->getOperand(0));
+    auto rhsOptionalBounds = getBounds(op->getOperand(1));
+
+    if (!lhsOptionalBounds.has_value() || !rhsOptionalBounds.has_value()) {
+      return std::nullopt;
+    }
+
+    auto lhsBounds = lhsOptionalBounds.value();
+    auto rhsBounds = rhsOptionalBounds.value();
+
+    return TypeSwitch<Operation *, std::optional<Bounds>>(op)
+        .Case<stablehlo::AddOp>([&](stablehlo::AddOp addOp) {
+          return Bounds{lhsBounds.min + rhsBounds.min,
+                        lhsBounds.max + rhsBounds.max};
+        })
+        .Case<stablehlo::SubtractOp>([&](stablehlo::SubtractOp subOp) {
+          return Bounds{lhsBounds.min - rhsBounds.max,
+                        lhsBounds.max - rhsBounds.min};
+        })
+        .Case<stablehlo::MulOp>([&](stablehlo::MulOp mulOp) {
+          auto p1 = lhsBounds.min * rhsBounds.min;
+          auto p2 = lhsBounds.min * rhsBounds.max;
+          auto p3 = lhsBounds.max * rhsBounds.min;
+          auto p4 = lhsBounds.max * rhsBounds.max;
+          return Bounds{smin(smin(p1, p2), smin(p3, p4)),
+                        smax(smax(p1, p2), smax(p3, p4))};
+        })
+        .Case<stablehlo::DivOp>(
+            [&](stablehlo::DivOp divOp) -> std::optional<Bounds> {
+              APInt zero(boundsBitWidth, 0);
+              if (rhsBounds.min.sle(zero) && rhsBounds.max.sge(zero)) {
+                // divisor range includes zero, cannot compute safe bounds
+                return std::nullopt;
+              }
+              auto d1 = lhsBounds.min.sdiv(rhsBounds.min);
+              auto d2 = lhsBounds.min.sdiv(rhsBounds.max);
+              auto d3 = lhsBounds.max.sdiv(rhsBounds.min);
+              auto d4 = lhsBounds.max.sdiv(rhsBounds.max);
+
+              return Bounds{smin(smin(d1, d2), smin(d3, d4)),
+                            smax(smax(d1, d2), smax(d3, d4))};
+            })
+        .Case<stablehlo::MinOp>([&](stablehlo::MinOp minOp) {
+          return Bounds{smin(lhsBounds.min, rhsBounds.min),
+                        smin(lhsBounds.max, rhsBounds.max)};
+        })
+        .Case<stablehlo::MaxOp>([&](stablehlo::MaxOp maxOp) {
+          return Bounds{smax(lhsBounds.min, rhsBounds.min),
+                        smax(lhsBounds.max, rhsBounds.max)};
+        })
+        .Case<stablehlo::RemOp>(
+            [&](stablehlo::RemOp remOp) -> std::optional<Bounds> {
+              // Only handle constant positive RHS for now
+              if (rhsBounds.min != rhsBounds.max) {
+                return std::nullopt;
+              }
+              APInt zero(boundsBitWidth, 0);
+              APInt rhsVal = rhsBounds.min;
+              if (rhsVal.sle(zero)) {
+                return std::nullopt;
+              }
+              // For x % M where M > 0:
+              // If lhs >= 0: result is in [0, min(lhs_max, M-1)]
+              // If lhs < 0: result is in [max(lhs_min, -(M-1)), 0]
+              // If mixed: result is in [max(lhs_min, -(M-1)), min(lhs_max,
+              // M-1)]
+              APInt maxRemainder = rhsVal - 1;
+              APInt minRemainder = -(rhsVal - 1);
+
+              if (lhsBounds.min.sge(zero)) {
+                // All non-negative
+                return Bounds{zero, smin(lhsBounds.max, maxRemainder)};
+              } else if (lhsBounds.max.sle(zero)) {
+                // All non-positive
+                return Bounds{smax(lhsBounds.min, minRemainder), zero};
+              } else {
+                // Mixed signs
+                return Bounds{smax(lhsBounds.min, minRemainder),
+                              smin(lhsBounds.max, maxRemainder)};
+              }
+            })
+        .Default([&](Operation *) { return std::nullopt; });
+  }
+
+  return std::nullopt;
+}
+
+void hoistChainOfOps(DenseMap<Value, SmallVector<Operation *>> &hoistMap,
+                     OpBuilder &builder, stablehlo::WhileOp whileOp,
+                     WhileLoopInfo &info,
+                     DenseMap<Value, Value> &hoistedValues) {
+  IRMapping mapper;
+  for (auto &[val, ops] : hoistMap) {
+    llvm::SetVector<Operation *> toHoist(ops.begin(), ops.end());
+    auto sorted = topologicalSort(toHoist);
+
+    for (auto &op : sorted) {
+      if (llvm::all_of(op->getResults(),
+                       [&](Value v) { return mapper.contains(v); }))
+        continue;
+
+      for (auto operand : op->getOperands()) {
+        if (mapper.contains(operand)) {
+          continue;
+        }
+
+        if (!definedOutside(operand, whileOp)) {
+          Value outerValue;
+          SmallVector<Operation *> canBeHoisted;
+          if (info.isConstantAcrossIterations(operand, outerValue, canBeHoisted,
+                                              false)) {
+            mapper.map(operand, outerValue);
+          }
+        }
+      }
+      auto hoisted = builder.clone(*op, mapper);
+      for (auto [origRes, newRes] :
+           llvm::zip_equal(op->getResults(), hoisted->getResults())) {
+        mapper.map(origRes, newRes);
+      }
+    }
+
+    hoistedValues[val] = mapper.lookup(val);
+  }
+}
+
+template void hoistStartIndicesOutsideLoop<stablehlo::DynamicSliceOp>(
+    stablehlo::DynamicSliceOp op, OpBuilder &builder,
+    SmallVectorImpl<Value> &newStartIndices,
+    SmallVectorImpl<int64_t> &dimensions, WhileLoopInfo &whileLoopInfo);
+
+template void hoistStartIndicesOutsideLoop<stablehlo::DynamicUpdateSliceOp>(
+    stablehlo::DynamicUpdateSliceOp op, OpBuilder &builder,
+    SmallVectorImpl<Value> &newStartIndices,
+    SmallVectorImpl<int64_t> &dimensions, WhileLoopInfo &whileLoopInfo);
+
+} // namespace enzyme
+} // namespace mlir

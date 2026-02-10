@@ -1,5 +1,51 @@
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
+http_archive(
+    name = "platforms",
+    sha256 = "218efe8ee736d26a3572663b374a253c012b716d8af0c07e842e82f238a0a7ee",
+    urls = [
+        "https://mirror.bazel.build/github.com/bazelbuild/platforms/releases/download/0.0.10/platforms-0.0.10.tar.gz",
+        "https://github.com/bazelbuild/platforms/releases/download/0.0.10/platforms-0.0.10.tar.gz",
+    ],
+)
+
+load("@platforms//host:extension.bzl", "host_platform_repo")
+
+http_archive(
+    name = "bazel_skylib",
+    sha256 = "bc283cdfcd526a52c3201279cda4bc298652efa898b10b4db0837dc51652756f",
+    urls = [
+        "https://mirror.bazel.build/github.com/bazelbuild/bazel-skylib/releases/download/1.7.1/bazel-skylib-1.7.1.tar.gz",
+        "https://github.com/bazelbuild/bazel-skylib/releases/download/1.7.1/bazel-skylib-1.7.1.tar.gz",
+    ],
+)
+
+load("@bazel_skylib//:workspace.bzl", "bazel_skylib_workspace")
+
+bazel_skylib_workspace()
+
+http_archive(
+    name = "bazel_lib",
+    sha256 = "bc283cdfcd526a52c3201279cda4bc298652efa898b10b4db0837dc51652756f",
+    urls = [
+        "https://mirror.bazel.build/github.com/bazelbuild/bazel-skylib/releases/download/1.7.1/bazel-skylib-1.7.1.tar.gz",
+        "https://github.com/bazelbuild/bazel-skylib/releases/download/1.7.1/bazel-skylib-1.7.1.tar.gz",
+    ],
+)
+
+http_archive(
+    name = "aspect_bazel_lib",
+    sha256 = "688354ee6beeba7194243d73eb0992b9a12e8edeeeec5b6544f4b531a3112237",
+    strip_prefix = "bazel-lib-2.8.1",
+    url = "https://github.com/aspect-build/bazel-lib/releases/download/v2.8.1/bazel-lib-v2.8.1.tar.gz",
+)
+
+load("@aspect_bazel_lib//lib:repositories.bzl", "aspect_bazel_lib_dependencies", "aspect_bazel_lib_register_toolchains")
+
+aspect_bazel_lib_dependencies()
+
+aspect_bazel_lib_register_toolchains()
+
 # LLVM_COMMIT = "cdd31610fdde4848a6260864c7bd73115be6ea74"
 # LLVM_SHA256 = ""
 # http_archive(
@@ -33,6 +79,47 @@ load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 #     ],
 # )
 
+load("@bazel_tools//tools/build_defs/repo:utils.bzl", "maybe")
+
+maybe(
+    host_platform_repo,
+    name = "host_platform",
+)
+
+http_archive(
+    name = "bazel_features",
+    sha256 = "07271d0f6b12633777b69020c4cb1eb67b1939c0cf84bb3944dc85cc250c0c01",
+    strip_prefix = "bazel_features-1.38.0",
+    url = "https://github.com/bazel-contrib/bazel_features/releases/download/v1.38.0/bazel_features-v1.38.0.tar.gz",
+)
+
+load("@bazel_features//:deps.bzl", "bazel_features_deps")
+
+bazel_features_deps()
+
+http_archive(
+    name = "rules_multitool",
+    strip_prefix = "rules_multitool-1.11.1",
+    url = "https://github.com/bazel-contrib/rules_multitool/releases/download/v1.11.1/rules_multitool-1.11.1.tar.gz",
+)
+
+load("@rules_multitool//multitool:multitool.bzl", "multitool")
+
+multitool(
+    name = "multitool",
+    lockfile = "//:multitool.lock.json",
+)
+
+load("@multitool//:tools.bzl", "register_tools")
+
+register_tools()
+
+http_archive(
+    name = "rules_uv",
+    strip_prefix = "rules_uv-0.89.2",
+    url = "https://github.com/bazel-contrib/rules_uv/releases/download/v0.89.2/rules_uv-0.89.2.tar.gz",
+)
+
 load("//third_party/ml_toolchain:workspace.bzl", ml_toolchain_workspace = "repo")
 
 ml_toolchain_workspace()
@@ -64,9 +151,9 @@ python_init_repositories(
         "enzyme_ad*",
     ],
     requirements = {
-        "3.10": "//builddeps:requirements_lock_3_10.txt",
         "3.11": "//builddeps:requirements_lock_3_11.txt",
         "3.12": "//builddeps:requirements_lock_3_12.txt",
+        "3.13": "//builddeps:requirements_lock_3_13.txt",
     },
 )
 
@@ -82,9 +169,9 @@ load("@pypi//:requirements.bzl", "install_deps")
 
 install_deps()
 
+load("@jax//third_party/flatbuffers:workspace.bzl", flatbuffers = "repo")
 load("@xla//third_party/llvm:workspace.bzl", llvm = "repo")
 load("//:workspace.bzl", "LLVM_TARGETS")
-load("@jax//third_party/flatbuffers:workspace.bzl", flatbuffers = "repo")
 
 flatbuffers()
 
@@ -185,9 +272,10 @@ load(
 
 nccl_configure(name = "local_config_nccl")
 
+load("//third_party/enzyme:workspace.bzl", enzyme_workspace = "repo")
+
 # add support for generating compile_commands
 load("//third_party/hedron_compile_commands:workspace.bzl", hedron_compile_commands_workspace = "repo")
-load("//third_party/enzyme:workspace.bzl", enzyme_workspace = "repo")
 
 enzyme_workspace()
 

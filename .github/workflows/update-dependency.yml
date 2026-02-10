@@ -31,7 +31,12 @@ on:
         required: false
         type: 'string'
         default: 'workspace.bzl'
-
+      upstream_branch:
+        description: 'Name of upstream branch to get commit from (optional, defaults to main)'
+        required: false
+        type: 'string'
+        default: 'main'
+         
 
 jobs:
   pr-update-dep:
@@ -60,7 +65,7 @@ jobs:
           if [[ -n '${{ inputs.upstream_commit }}' ]]; then
               NEW_UPSTREAM_COMMIT="${{ inputs.upstream_commit }}"
           else
-              NEW_UPSTREAM_COMMIT="$(git ls-remote https://github.com/${{ inputs.upstream_repo }}.git main | awk '{print $1}')"
+              NEW_UPSTREAM_COMMIT="$(git ls-remote https://github.com/${{ inputs.upstream_repo }}.git ${{ inputs.upstream_branch }} | awk '{print $1}')"
           fi
 
           echo "OLD_UPSTREAM_COMMIT=${OLD_UPSTREAM_COMMIT}" >> "${GITHUB_ENV}"
@@ -91,7 +96,7 @@ jobs:
           fi
       - name: Create Pull Request
         if: ${{ steps.decide.outputs.should_pr == 'true' }}
-        uses: peter-evans/create-pull-request@v7
+        uses: peter-evans/create-pull-request@v8
         with:
           token: ${{ steps.generate_token.outputs.token }}
           commit-message: |

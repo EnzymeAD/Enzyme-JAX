@@ -1,20 +1,18 @@
 load("@python_version_repo//:py_version.bzl", "REQUIREMENTS")
-load("@rules_python//python:pip.bzl", "compile_pip_requirements")
+load("@rules_uv//uv:pip.bzl", "pip_compile")
 
-licenses(["notice"])
-
-compile_pip_requirements(
+pip_compile(
     name = "requirements",
-    data = ["test-requirements.txt"],
+    data = [
+        "overrides.txt",
+        "test-requirements.txt",
+    ],
     extra_args = [
-        "--allow-unsafe",
         "--build-isolation",
-        "--rebuild",
+        "--prerelease=allow",
+        "--override=builddeps/overrides.txt",
+        "--resolution=highest",
     ],
-    extra_deps = [
-        # "@pypi_wheel//:pkg"
-    ],
-    generate_hashes = True,
     requirements_in = "requirements.in",
     requirements_txt = REQUIREMENTS,
 )

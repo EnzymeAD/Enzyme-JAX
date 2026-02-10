@@ -31,6 +31,8 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/DebugLog.h"
+#include <llvm/ADT/SmallVector.h>
+#include <mlir/Dialect/LLVMIR/LLVMDialect.h>
 
 #include "Enzyme/MLIR/Dialect/Ops.h"
 #include "Enzyme/MLIR/Passes/Passes.h"
@@ -45,6 +47,7 @@ namespace enzyme {
 #define GEN_PASS_DEF_PARALLELLOWER
 #define GEN_PASS_DEF_FIXGPUFUNC
 #define GEN_PASS_DEF_STRIPGPUINFO
+#define GEN_PASS_DEF_CONVERTCUDARTTOHIPRT
 #include "src/enzyme_ad/jax/Passes/Passes.h.inc"
 } // namespace enzyme
 } // namespace mlir
@@ -109,11 +112,13 @@ struct ConvertCudaRTtoCPU : public ConvertCudaRTtoCPUBase<ConvertCudaRTtoCPU> {
 struct ConvertCudaRTtoGPU : public ConvertCudaRTtoGPUBase<ConvertCudaRTtoGPU> {
   void runOnOperation() override;
 };
+*/
+
 struct ConvertCudaRTtoHipRT
-    : public ConvertCudaRTtoHipRTBase<ConvertCudaRTtoHipRT> {
+    : public enzyme::impl::ConvertCudaRTtoHipRTBase<ConvertCudaRTtoHipRT> {
   void runOnOperation() override;
 };
-*/
+
 struct FixGPUFunc : public enzyme::impl::FixGPUFuncBase<FixGPUFunc> {
   using FixGPUFuncBase::FixGPUFuncBase;
   void runOnOperation() override;
@@ -247,6 +252,7 @@ prepareForGPUInline(LLVM::CallOp callOp, Operation *hostInsertionPoint,
       newArgs.push_back(newArg);
       newArgAttrs.push_back(
           NamedAttrList().getDictionary(callOp->getContext()));
+      Value argCopy = arg;
       prepArg.push_back([=](OpBuilder &builder, Value v) {
         DataLayout dataLayout = DataLayout::closest(callOp);
         uint64_t minimumAlignment = dataLayout.getTypeABIAlignment(elementType);
@@ -266,7 +272,7 @@ prepareForGPUInline(LLVM::CallOp callOp, Operation *hostInsertionPoint,
             LLVM::ConstantOp::create(builder, v.getLoc(), builder.getI64Type(),
                                      builder.getI64IntegerAttr(1));
         Value allocaOp =
-            LLVM::AllocaOp::create(builder, v.getLoc(), arg.getType(),
+            LLVM::AllocaOp::create(builder, v.getLoc(), argCopy.getType(),
                                    elementType, one, targetAlignment);
         LLVM::StoreOp::create(builder, v.getLoc(), v, allocaOp);
         return allocaOp;
@@ -1329,18 +1335,19 @@ static void setCallee(LLVM::CallOp call, StringRef symName) {
   call.setCallee(symName);
 }
 template <typename CallOpTy, typename FuncOpTy>
-void replaceCallOp(ModuleOp m, CallOpTy call, llvm::StringRef callee) {
-  auto loc = call->getLoc();
-  OpBuilder moduleBuilder = OpBuilder::atBlockEnd(m.getBody());
+void replaceCallOp(ModuleOp m, CallOpTy call, llvm::StringRef callee,
+                   SmallPtrSetImpl<Operation *> &toErase) {
   OpBuilder callBuilder(call);
   auto funcOp = m.lookupSymbol<FuncOpTy>(callee);
   if (isHipCallEquivalent(callee)) {
     assert(funcOp);
     auto hipName = getHipName(callee);
     if (!m.lookupSymbol<FuncOpTy>(hipName)) {
+      OpBuilder moduleBuilder(funcOp.getOperation());
       auto hipFuncOp =
           cast<FuncOpTy>(moduleBuilder.clone(*funcOp.getOperation()));
       hipFuncOp.setSymName(hipName);
+      toErase.insert(funcOp.getOperation());
     }
     setCallee(call, hipName);
   } else {
@@ -1350,23 +1357,29 @@ void replaceCallOp(ModuleOp m, CallOpTy call, llvm::StringRef callee) {
   }
 }
 
-#if 0
 void ConvertCudaRTtoHipRT::runOnOperation() {
+  SmallPtrSet<Operation *, 8> toErase;
+
   getOperation().walk([&](LLVM::CallOp call) {
     if (!call.getCallee())
       return;
     auto name = *call.getCallee();
     if (!isCudartCall(name))
       return;
-    replaceCallOp<LLVM::CallOp, LLVM::LLVMFuncOp>(getOperation(), call, name);
+    replaceCallOp<LLVM::CallOp, LLVM::LLVMFuncOp>(getOperation(), call, name,
+                                                  toErase);
   });
 
   getOperation().walk([&](CallOp call) {
     auto name = call.getCallee();
     if (!isCudartCall(name))
       return;
-    replaceCallOp<CallOp, func::FuncOp>(getOperation(), call, name);
+    replaceCallOp<CallOp, func::FuncOp>(getOperation(), call, name, toErase);
   });
+
+  // Erase old CUDA function declarations after all calls are updated
+  for (Operation *op : toErase)
+    op->erase();
 
   OpBuilder builder(&getContext());
   getOperation().walk([&](mlir::NVVM::Barrier0Op op) {
@@ -1376,6 +1389,7 @@ void ConvertCudaRTtoHipRT::runOnOperation() {
   });
 }
 
+#if 0
 void ConvertCudaRTtoGPU::runOnOperation() {
   std::function<void(Operation * call, llvm::StringRef callee)> replaceWithOp =
       [&](Operation *call, llvm::StringRef callee) {

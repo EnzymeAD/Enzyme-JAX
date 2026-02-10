@@ -1,5 +1,5 @@
 from absl.testing import absltest
-from test_utils import *
+from test_utils import EnzymeJaxTest, no_newxla, justjax
 
 
 class AddOne(EnzymeJaxTest):
@@ -194,79 +194,31 @@ class Concat(EnzymeJaxTest):
         self.name = "Concat"
 
 
-class ValueAndGrad(absltest.TestCase):
+class ValueAndGrad(EnzymeJaxTest):
     def setUp(self):
-        pass
-
-    def test(self):
-        from enzyme_ad.jax import enzyme_jax_ir
+        import jax
         import jax.numpy as jnp
 
         def f(x, y):
             return (jnp.sum(x * y[0] + y[1]), y)
 
-        filt = justjax
+        self.mlirad_fwd = False
+        self.mlirad_rev = False
+        self.revfilter = lambda _: []
+        self.fwdfilter = lambda _: []
 
-        for pname, pipeline, backends in AllPipelines():
-            prevres = None
-            for backend in backends:
-                if (pname, pipeline) in filt(AllPipelines()):
-                    args = (
-                        to_backend(3 * jnp.ones((1,), dtype=jnp.float32), backend),
-                        (
-                            to_backend(5 * jnp.ones((1,), dtype=jnp.float64), backend),
-                            to_backend(7 * jnp.ones((1,), dtype=jnp.int32), backend),
-                        ),
-                    )
+        self.ins = [
+            jnp.full((1,), 3, dtype=jnp.float32),
+            (
+                jnp.full((1,), 5, dtype=jnp.float64),
+                jnp.full((1,), 7, dtype=jnp.int32),
+            ),
+        ]
+        self.dins = []
+        self.douts = []
 
-                    g = jax.value_and_grad(
-                        (
-                            f
-                            if pipeline is None
-                            else jax.jit(
-                                enzyme_jax_ir(pipeline_options=pipeline, argv=argv)(f),
-                                # backend=backend
-                            )
-                        ),
-                        has_aux=True,
-                        allow_int=True,
-                    )
-
-                    res = g(*args)
-                    if prevres is None:
-                        prevres = res
-                    else:
-                        name = "valueandgrad"
-                        print(name + " JaX(", pname, "): ", prevres)
-                        print(name + " EnzymeMLIR(", pname, "): ", res)
-                        self.assertTrue(
-                            (
-                                jnp.abs(res[0][0] - to_backend(prevres[0][0], backend))
-                                < 1e-6
-                            ).all()
-                        )
-                        self.assertTrue(
-                            (
-                                jnp.abs(
-                                    res[0][1][0] - to_backend(prevres[0][1][0], backend)
-                                )
-                                < 1e-6
-                            ).all()
-                        )
-                        self.assertTrue(
-                            (
-                                jnp.abs(
-                                    res[0][1][1] - to_backend(prevres[0][1][1], backend)
-                                )
-                                < 1e-6
-                            ).all()
-                        )
-
-                        self.assertTrue(
-                            (
-                                jnp.abs(res[1] - to_backend(prevres[1], backend)) < 1e-6
-                            ).all()
-                        )
+        self.fn = jax.value_and_grad(f, allow_int=True, has_aux=True)
+        self.name = "value_and_grad"
 
 
 class ConstScatter(EnzymeJaxTest):
@@ -276,20 +228,15 @@ class ConstScatter(EnzymeJaxTest):
         def forward(c_tau):
             Q = c_tau
             Q = Q.at[0].multiply(3)
-            chain = (Q,)
-            return (chain[0],)
+            return (Q[0],)
 
         self.fn = forward
         self.name = "const_scatter"
-        self.count = 10
 
-        self.ins = [
-            jnp.array([2.7, 2.7, 2.7]),
-        ]
-        self.dins = [jnp.array([3.1, 3.1, 3.1])]
-        self.douts = (self.dins[0],)
-        self.revfilter = lambda _: []
-        # self.revfilter = justjax
+        N = 1024**2
+        self.ins = [jnp.full(N, 2.7)]
+        self.dins = [jnp.full(N, 3.1)]
+        self.douts = (jnp.array(5.0),)
 
 
 class ScatterSum(EnzymeJaxTest):
@@ -313,9 +260,6 @@ class ScatterSum(EnzymeJaxTest):
         self.ins = [jnp.array([2.0, 4.0, 6.0, 8.0])]
         self.dins = [jnp.array([2.7, 3.1, 5.9, 4.2])]
         self.douts = self.fn(*self.ins)
-        # XLA proper is broken, our derivative is correct: https://github.com/openxla/xla/issues/29362
-        self.fwdfilter = lambda _: []
-        self.revfilter = lambda _: []
 
 
 if __name__ == "__main__":

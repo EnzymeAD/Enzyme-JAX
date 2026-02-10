@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=reverse_licm(0);reshape_licm(0);while_simplify(1);while_is_copy_simplify;greedy_while_loop_batch_fission" --transform-interpreter --enzyme-hlo-remove-transform  --enzyme-hlo-opt --auto-batching --enzyme-hlo-opt --enzyme-hlo-generate-td="patterns=reverse_licm(0);reshape_licm(0);while_simplify(1);while_is_copy_simplify;greedy_while_loop_batch_fission;transpose_reshape" --transform-interpreter --enzyme-hlo-remove-transform --enzyme-hlo-opt --auto-batching --enzyme-hlo-opt %s | FileCheck %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=reverse_licm(0);reshape_licm(0);while_simplify(1);while_is_copy_simplify;greedy_while_loop_batch_fission" --transform-interpreter --enzyme-hlo-remove-transform  --enzyme-hlo-opt="enable_auto_batching_passes=true" %s | FileCheck %s
 
 module {
   func.func @main(%arg0: tensor<6x3x2x5x4x4xf32> {enzymexla.memory_effects = []}) -> tensor<6x3x5x5x2x2xf32> attributes {enzymexla.memory_effects = []} {
@@ -52,9 +52,6 @@ module {
 // CHECK-NEXT:     %5 = stablehlo.reshape %4 : (tensor<2x2x150x3xf32>) -> tensor<2x2x5x30x3xf32>
 // CHECK-NEXT:     %6 = stablehlo.transpose %5, dims = [2, 0, 1, 3, 4] : (tensor<2x2x5x30x3xf32>) -> tensor<5x2x2x30x3xf32>
 // CHECK-NEXT:     %7 = stablehlo.reshape %6 : (tensor<5x2x2x30x3xf32>) -> tensor<5x2x2x6x5x3xf32>
-// CHECK-NEXT:     %8 = stablehlo.transpose %7, dims = [0, 3, 1, 2, 4, 5] : (tensor<5x2x2x6x5x3xf32>) -> tensor<5x6x2x2x5x3xf32>
-// CHECK-NEXT:     %9 = stablehlo.reshape %8 : (tensor<5x6x2x2x5x3xf32>) -> tensor<5x6x2x2x1x5x3x1xf32>
-// CHECK-NEXT:     %10 = stablehlo.transpose %9, dims = [1, 6, 7, 5, 0, 4, 3, 2] : (tensor<5x6x2x2x1x5x3x1xf32>) -> tensor<6x3x1x5x5x1x2x2xf32>
-// CHECK-NEXT:     %11 = stablehlo.reshape %10 : (tensor<6x3x1x5x5x1x2x2xf32>) -> tensor<6x3x5x5x2x2xf32>
-// CHECK-NEXT:     return %11 : tensor<6x3x5x5x2x2xf32>
+// CHECK-NEXT:     %8 = stablehlo.transpose %7, dims = [3, 5, 4, 0, 2, 1] : (tensor<5x2x2x6x5x3xf32>) -> tensor<6x3x5x5x2x2xf32>
+// CHECK-NEXT:     return %8 : tensor<6x3x5x5x2x2xf32>
 // CHECK-NEXT:   }

@@ -34,16 +34,13 @@ module {
 // CPU-NEXT:      %7 = stablehlo.compare  LT, %iterArg, %c_1 : (tensor<i32>, tensor<i32>) -> tensor<i1>
 // CPU-NEXT:      stablehlo.return %7 : tensor<i1>
 // CPU-NEXT:    } do {
-// CPU-NEXT:      %7 = stablehlo.add %iterArg, %c_0 : tensor<i32>
+// CPU-NEXT:      %7 = stablehlo.add %iterArg, %c_0 {enzymexla.bounds = {{.*}}} : tensor<i32>
 // CPU-NEXT:      %8 = stablehlo.dynamic_slice %1, %iterArg, sizes = [1] : (tensor<64xi64>, tensor<i32>) -> tensor<1xi64>
 // CPU-NEXT:      %9 = stablehlo.dynamic_slice %iterArg_4, %iterArg, sizes = [1] : (tensor<64xi64>, tensor<i32>) -> tensor<1xi64>
-// CPU-NEXT:      %10 = "stablehlo.gather"(%iterArg_4, %8) <{dimension_numbers = #stablehlo.gather<offset_dims = [0], start_index_map = [0]>, indices_are_sorted = false, slice_sizes = array<i64: 1>}> : (tensor<64xi64>, tensor<1xi64>) -> tensor<1xi64>
-// CPU-NEXT:      %11 = stablehlo.dynamic_update_slice %iterArg_4, %10, %iterArg : (tensor<64xi64>, tensor<1xi64>, tensor<i32>) -> tensor<64xi64>
-// CPU-NEXT:      %12 = stablehlo.reshape %9 : (tensor<1xi64>) -> tensor<i64>
-// CPU-NEXT:      %13 = "stablehlo.scatter"(%11, %8, %12) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0]>, unique_indices = false}> ({
-// CPU-NEXT:      ^bb0(%arg1: tensor<i64>, %arg2: tensor<i64>):
-// CPU-NEXT:        stablehlo.return %arg2 : tensor<i64>
-// CPU-NEXT:      }) : (tensor<64xi64>, tensor<1xi64>, tensor<i64>) -> tensor<64xi64>
+// CPU-NEXT:      %10 = stablehlo.reshape %8 : (tensor<1xi64>) -> tensor<i64>
+// CPU-NEXT:      %11 = stablehlo.dynamic_slice %iterArg_4, %10, sizes = [1] : (tensor<64xi64>, tensor<i64>) -> tensor<1xi64>
+// CPU-NEXT:      %12 = stablehlo.dynamic_update_slice %iterArg_4, %11, %iterArg : (tensor<64xi64>, tensor<1xi64>, tensor<i32>) -> tensor<64xi64>
+// CPU-NEXT:      %13 = stablehlo.dynamic_update_slice %12, %9, %10 : (tensor<64xi64>, tensor<1xi64>, tensor<i64>) -> tensor<64xi64>
 // CPU-NEXT:      stablehlo.return %7, %13 : tensor<i32>, tensor<64xi64>
 // CPU-NEXT:    }
 // CPU-NEXT:    %3 = stablehlo.add %2#1, %c_2 : tensor<64xi64>

@@ -244,6 +244,30 @@ llvm::sys::SmartRWMutex<true> jit_kernel_mutex;
 std::unique_ptr<llvm::orc::LLJIT> JIT = nullptr;
 llvm::orc::SymbolMap MappedSymbols;
 
+bool initJIT();
+
+extern "C" MLIR_CAPI_EXPORTED void EnzymeJaXMapSymbol(const char *name,
+                                                      void *symbol) {
+  initJIT();
+  MappedSymbols[JIT->mangleAndIntern(name)] = llvm::orc::ExecutorSymbolDef(
+      llvm::orc::ExecutorAddr::fromPtr(symbol), llvm::JITSymbolFlags());
+}
+
+#if defined(_WIN32)
+#ifdef __MINGW32__
+#if defined(__i386__)
+#undef _alloca
+extern "C" void _alloca(void);
+#elif defined(__x86_64__)
+extern "C" void ___chkstk_ms(void);
+#else
+extern "C" void __chkstk(void);
+#endif
+#else
+extern "C" void __chkstk(void);
+#endif
+#endif
+
 bool initJIT() {
   if (!JIT) {
     auto tJIT =
@@ -286,19 +310,26 @@ bool initJIT() {
     }
 
     JIT->getMainJITDylib().addGenerator(std::move(ProcessSymsGenerator.get()));
+
+#if defined(_WIN32)
+#ifdef __MINGW32__
+#if defined(__i386__)
+    EnzymeJaXMapSymbol("__chkstk", (void *)&_alloca);
+#elif defined(__x86_64__)
+    EnzymeJaXMapSymbol("__chkstk", (void *)&___chkstk_ms);
+#else
+    EnzymeJaXMapSymbol("__chkstk", (void *)&__chkstk);
+#endif
+#else
+    EnzymeJaXMapSymbol("__chkstk", (void *)&__chkstk);
+#endif
+#endif
   }
   return true;
 }
 
-extern "C" MLIR_CAPI_EXPORTED void EnzymeJaXMapSymbol(const char *name,
-                                                      void *symbol) {
-  initJIT();
-  MappedSymbols[JIT->mangleAndIntern(name)] = llvm::orc::ExecutorSymbolDef(
-      llvm::orc::ExecutorAddr::fromPtr(symbol), llvm::JITSymbolFlags());
-}
-
 CallInfo CompileHostModule(std::string &key, mlir::ModuleOp modOp,
-                           bool compileInit) {
+                           bool compileInit, bool dump_final_module) {
   std::unique_ptr<llvm::LLVMContext> ctx(new llvm::LLVMContext);
   auto llvmModule = translateModuleToLLVMIR(modOp, *ctx);
   if (!llvmModule) {
@@ -312,6 +343,9 @@ CallInfo CompileHostModule(std::string &key, mlir::ModuleOp modOp,
   llvmModule->setDataLayout(JIT->getDataLayout());
   llvmModule->setTargetTriple(JIT->getTargetTriple());
 
+  if (dump_final_module) {
+    llvm::errs() << " final_llvm_module before jit: " << *llvmModule << "\n";
+  }
   auto LibA =
       JIT->createJITDylib("enzymejitdl_" + std::to_string(jitkernels.size()));
   if (auto Err = JIT->addIRModule(
@@ -650,7 +684,7 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
                      const std::string &cubinFormat, int cuOptLevel,
                      const std::string &toolkitPath,
                      const llvm::SmallVectorImpl<std::string> &linkFiles,
-                     bool debug, bool returnPtr) {
+                     bool debug, bool returnPtr, bool dump_final_module) {
 
   OpBuilder builder(op);
 
@@ -899,7 +933,8 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
                            cubinFormat, cuOptLevel, toolkitPath, linkFiles);
     }
 
-    auto ptr = CompileHostModule(ss.str(), submod, numGPUModule != 0);
+    auto ptr = CompileHostModule(ss.str(), submod, numGPUModule != 0,
+                                 dump_final_module);
     jitkernels[ss.str()] = ptr;
     submod.erase();
     return ptr;
@@ -1007,7 +1042,7 @@ struct LowerJITPass
           symbolTable, op.getLoc(), fn, jit, op, openmp, cuResultHandlerPtr,
           cuStreamSynchronizePtr, indexBitWidth, cubinTriple, cubinChip,
           cubinFeatures, cubinFormat, cuOptLevel, toolkitPath, linkFilesArray,
-          debug, hasReturn);
+          debug, hasReturn, dump_final_module);
 
       std::string backendinfo((char *)&cdata, sizeof(CallInfo));
       if (jit) {
