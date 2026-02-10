@@ -32987,27 +32987,124 @@ struct SplitComplexGather final
       return failure();
     }
 
-    // Extract real and imaginary parts of the operand
+    auto complexType = cast<ComplexType>(elemType);
+    auto innerElemType = complexType.getElementType();
+    auto operandType = cast<RankedTensorType>(op.getOperand().getType());
+    auto loc = op.getLoc();
+    int64_t operandRank = operandType.getRank();
+    int64_t resultRank = resultType.getRank();
+
+    // Step 1: Extract real and imaginary parts, reshape each to add a
+    // trailing dimension of size 1, then concatenate along the trailing
+    // dimension to form a float tensor with trailing dim 2.
+    // e.g., tensor<4xcomplex<f32>> -> real: tensor<4xf32> -> tensor<4x1xf32>
+    //                                 imag: tensor<4xf32> -> tensor<4x1xf32>
+    //                                 concat: tensor<4x2xf32>
     auto realOperand =
-        stablehlo::RealOp::create(rewriter, op.getLoc(), op.getOperand());
+        stablehlo::RealOp::create(rewriter, loc, op.getOperand());
     auto imagOperand =
-        stablehlo::ImagOp::create(rewriter, op.getLoc(), op.getOperand());
+        stablehlo::ImagOp::create(rewriter, loc, op.getOperand());
 
-    // Create the real gather op
-    auto realGatherOp = stablehlo::GatherOp::create(
-        rewriter, op.getLoc(), realOperand, op.getStartIndices(),
-        op.getDimensionNumbersAttr(), op.getSliceSizesAttr(),
-        op.getIndicesAreSortedAttr());
+    auto operandShape = operandType.getShape();
+    SmallVector<int64_t> reshapedOperandShape(operandShape.begin(),
+                                              operandShape.end());
+    reshapedOperandShape.push_back(1);
+    auto reshapedOperandType =
+        RankedTensorType::get(reshapedOperandShape, innerElemType);
 
-    // Create the imaginary gather op
-    auto imagGatherOp = stablehlo::GatherOp::create(
-        rewriter, op.getLoc(), imagOperand, op.getStartIndices(),
-        op.getDimensionNumbersAttr(), op.getSliceSizesAttr(),
-        op.getIndicesAreSortedAttr());
+    auto realReshaped =
+        stablehlo::ReshapeOp::create(rewriter, loc, reshapedOperandType,
+                                     realOperand);
+    auto imagReshaped =
+        stablehlo::ReshapeOp::create(rewriter, loc, reshapedOperandType,
+                                     imagOperand);
 
-    // Combine real and imaginary results using stablehlo::ComplexOp
-    auto complexResult = stablehlo::ComplexOp::create(
-        rewriter, op.getLoc(), realGatherOp, imagGatherOp);
+    SmallVector<int64_t> concatOperandShape(operandShape.begin(),
+                                            operandShape.end());
+    concatOperandShape.push_back(2);
+    auto concatType =
+        RankedTensorType::get(concatOperandShape, innerElemType);
+
+    // Concatenate along the last dimension (operandRank)
+    auto concatOperand = stablehlo::ConcatenateOp::create(
+        rewriter, loc, concatType, ValueRange{realReshaped, imagReshaped},
+        rewriter.getI64IntegerAttr(operandRank));
+
+    // Step 2: Adjust the gather dimension numbers and slice sizes to account
+    // for the extra trailing dimension.
+    auto dnums = op.getDimensionNumbers();
+
+    // Add the new trailing dimension to offset_dims
+    SmallVector<int64_t> newOffsetDims(dnums.getOffsetDims().begin(),
+                                       dnums.getOffsetDims().end());
+    // The new offset dim corresponds to the last dimension of the new result
+    newOffsetDims.push_back(resultRank);
+
+    auto newDnums = stablehlo::GatherDimensionNumbersAttr::get(
+        op.getContext(), newOffsetDims, dnums.getCollapsedSliceDims(),
+        dnums.getOperandBatchingDims(), dnums.getStartIndicesBatchingDims(),
+        dnums.getStartIndexMap(), dnums.getIndexVectorDim());
+
+    // Append 2 to slice_sizes for the new trailing dimension
+    SmallVector<int64_t> newSliceSizes(op.getSliceSizes().begin(),
+                                       op.getSliceSizes().end());
+    newSliceSizes.push_back(2);
+    auto newSliceSizesAttr =
+        DenseI64ArrayAttr::get(op.getContext(), newSliceSizes);
+
+    // Step 3: Perform the gather on the concatenated operand
+    // Result type: original result shape + trailing dim of size 2
+    auto resultShape = resultType.getShape();
+    SmallVector<int64_t> newResultShape(resultShape.begin(),
+                                        resultShape.end());
+    newResultShape.push_back(2);
+    auto newResultType =
+        RankedTensorType::get(newResultShape, innerElemType);
+
+    auto gatherOp = stablehlo::GatherOp::create(
+        rewriter, loc, newResultType, concatOperand, op.getStartIndices(),
+        newDnums, newSliceSizesAttr, op.getIndicesAreSortedAttr());
+
+    // Step 4: Slice the result along the trailing dimension to extract
+    // real and imag parts, reshape, and recombine.
+    // e.g., tensor<2x2xf32> -> slice [0]: tensor<2x1xf32> -> tensor<2xf32>
+    //                          slice [1]: tensor<2x1xf32> -> tensor<2xf32>
+    SmallVector<int64_t> sliceStart(resultRank + 1, 0);
+    SmallVector<int64_t> sliceLimit(newResultShape.begin(),
+                                    newResultShape.end());
+    SmallVector<int64_t> sliceStride(resultRank + 1, 1);
+
+    // Real part: slice [..., 0:1]
+    sliceLimit.back() = 1;
+    SmallVector<int64_t> slicedShape(resultShape.begin(), resultShape.end());
+    slicedShape.push_back(1);
+    auto slicedType = RankedTensorType::get(slicedShape, innerElemType);
+
+    auto realSlice = stablehlo::SliceOp::create(
+        rewriter, loc, slicedType, gatherOp,
+        rewriter.getDenseI64ArrayAttr(sliceStart),
+        rewriter.getDenseI64ArrayAttr(sliceLimit),
+        rewriter.getDenseI64ArrayAttr(sliceStride));
+
+    // Imag part: slice [..., 1:2]
+    sliceStart.back() = 1;
+    sliceLimit.back() = 2;
+    auto imagSlice = stablehlo::SliceOp::create(
+        rewriter, loc, slicedType, gatherOp,
+        rewriter.getDenseI64ArrayAttr(sliceStart),
+        rewriter.getDenseI64ArrayAttr(sliceLimit),
+        rewriter.getDenseI64ArrayAttr(sliceStride));
+
+    // Reshape to remove the trailing dimension of size 1
+    auto realResultType = RankedTensorType::get(resultShape, innerElemType);
+    auto realResult =
+        stablehlo::ReshapeOp::create(rewriter, loc, realResultType, realSlice);
+    auto imagResult =
+        stablehlo::ReshapeOp::create(rewriter, loc, realResultType, imagSlice);
+
+    // Combine real and imaginary results
+    auto complexResult =
+        stablehlo::ComplexOp::create(rewriter, loc, realResult, imagResult);
 
     rewriter.replaceOp(op, complexResult);
     return success();
