@@ -17,6 +17,7 @@
 
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Utils.h"
 
@@ -2300,9 +2301,7 @@ struct MultiRotateSpmdOptimize
         getNumDevicesAlongDimension(rotateSharding, rotateDimension, rotate);
 
     if (numDevicesAlongDimension == 1) {
-      return rewriter.notifyMatchFailure(
-          rotate,
-          "numDevicesAlongDimension == 1. Communication is already optimized.");
+      return lowerMultiRotateToRotates(rotate, rewriter);
     }
 
     auto rotateShape =
