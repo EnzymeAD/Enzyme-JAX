@@ -76,7 +76,7 @@ mlir::Location rewriteLocation(mlir::Location loc, bool strip_llvm_debuginfo) {
   }
   if (auto si = dyn_cast<FusedLocWith<LLVM::DISubprogramAttr>>(loc)) {
     if (strip_llvm_debuginfo)
-      return UnknownLoc::get(si->getContext());
+      return UnknownLoc::get(si.getContext());
     auto attr = si.getMetadata();
     auto fl = FileLineColLoc::get(attr.getContext(), attr.getFile().getName(),
                                   attr.getLine(), 0);
