@@ -469,7 +469,7 @@ public:
           if (gutils->isConstantValue(arg)) {
             nb->insertArgument(
                 curidx,
-                cast<AutoDiffTypeInterface>(arg.getType()).getShadowType(),
+                cast<AutoDiffTypeInterface>(arg.getType()).getShadowType(gutils->width),
                 op.getLoc());
           }
           curidx++;
