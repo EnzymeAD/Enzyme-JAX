@@ -977,14 +977,6 @@ def : HLODerivative<"Atan2Op", (Op $y, $x),
                     (CheckedDiv (Sub (Mul $x, (Shadow $y)), (Mul $y, (Shadow $x))), (Add (Mul $x, $x), (Mul $y, $y)))
                   >;
 
-def : HLODerivative<"Atan2Op", (Op $x, $y),
-                    [
-                      (CheckedMul (DiffeRet), (Div $y, (Add (Mul $x, $x), (Mul $y, $y)))),
-                      (CheckedMul (DiffeRet), (Div (Neg $x), (Add (Mul $x, $x), (Mul $y, $y))))
-                    ],
-                    (CheckedDiv (Sub (Mul $y, (Shadow $x)), (Mul (Neg $x), (Shadow $y))), (Add (Mul $x, $x), (Mul $y, $y)))
-                  >;
-
 def : HLOReadOnlyIdentityOp<"BroadcastInDimOp">;
 
 // Gather Adjoint
