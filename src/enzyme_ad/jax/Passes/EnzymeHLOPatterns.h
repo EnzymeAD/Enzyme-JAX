@@ -156,6 +156,6 @@ class MultiRotateOp;
 
 // Helper function to lower MultiRotateOp into individual RotateOps
 LogicalResult lowerMultiRotateToRotates(enzymexla::MultiRotateOp op,
-                                         PatternRewriter &rewriter);
+                                        PatternRewriter &rewriter);
 
 } // namespace mlir

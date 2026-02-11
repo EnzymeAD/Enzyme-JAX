@@ -80,9 +80,10 @@ using namespace mlir::enzyme;
 using namespace mlir::stablehlo;
 
 namespace mlir {
-// Implementation of helper function to lower MultiRotateOp into individual RotateOps
+// Implementation of helper function to lower MultiRotateOp into individual
+// RotateOps
 LogicalResult lowerMultiRotateToRotates(enzymexla::MultiRotateOp op,
-                                         PatternRewriter &rewriter) {
+                                        PatternRewriter &rewriter) {
   int32_t leftAmount = op.getLeftAmount();
   int32_t rightAmount = op.getRightAmount();
   int32_t totalResults = leftAmount + rightAmount + 1;
@@ -32465,18 +32466,18 @@ struct RecognizeMultiRotate
 
     return success();
   }
-  };
+};
 
-  // Pattern to lower MultiRotateOp into individual RotateOps
-  struct LowerMultiRotate final
-   : CheckedOpRewritePattern<enzymexla::MultiRotateOp, LowerMultiRotate> {
+// Pattern to lower MultiRotateOp into individual RotateOps
+struct LowerMultiRotate final
+    : CheckedOpRewritePattern<enzymexla::MultiRotateOp, LowerMultiRotate> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(enzymexla::MultiRotateOp op,
-                                   PatternRewriter &rewriter) const {
-   return lowerMultiRotateToRotates(op, rewriter);
+                                    PatternRewriter &rewriter) const {
+    return lowerMultiRotateToRotates(op, rewriter);
   }
-  };
+};
 
 // Pattern to reduce MultiRotateOp when some results are unused
 struct ReduceUnusedMultiRotate final

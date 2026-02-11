@@ -17,8 +17,8 @@
 
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
-#include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.h"
+#include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Utils.h"
 
 #include "stablehlo/dialect/StablehloOps.h"
@@ -2301,7 +2301,7 @@ struct MultiRotateSpmdOptimize
         getNumDevicesAlongDimension(rotateSharding, rotateDimension, rotate);
 
     if (numDevicesAlongDimension == 1) {
-        return lowerMultiRotateToRotates(rotate, rewriter);
+      return lowerMultiRotateToRotates(rotate, rewriter);
     }
 
     auto rotateShape =
