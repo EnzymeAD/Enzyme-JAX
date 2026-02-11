@@ -31,14 +31,13 @@ module {
 // The constant input (0.0 + 5.0i) gets decomposed, reshaped, and folded into a pad op.
 // CHECK: %[[REAL:.*]] = stablehlo.real %3
 // CHECK-NEXT: %[[IMAG:.*]] = stablehlo.imag %3
-// CHECK-NEXT: %[[REAL_R:.*]] = stablehlo.reshape %[[REAL]]
-// CHECK-NEXT: %[[IMAG_R:.*]] = stablehlo.reshape %[[IMAG]]
-// CHECK-NEXT: %[[CONCAT:.*]] = stablehlo.concatenate %[[REAL_R]], %[[IMAG_R]], dim = 1
+// CHECK-NEXT: %[[CONCAT_RAW:.*]] = stablehlo.concatenate %[[REAL]], %[[IMAG]], dim = 0
+// CHECK-NEXT: %[[CONCAT:.*]] = stablehlo.reshape %[[CONCAT_RAW]]
 // CHECK-NEXT: %[[SCATTER:.*]] = "stablehlo.scatter"(%{{.*}}, %7, %[[CONCAT]])
-// CHECK-SAME: update_window_dims = [1]
-// CHECK-SAME: inserted_window_dims = [0, 1]
+// CHECK-SAME: update_window_dims = [0]
+// CHECK-SAME: inserted_window_dims = [1, 2]
 // CHECK: ^bb0(%{{.*}}: tensor<f64>, %[[ARG8:.*]]: tensor<f64>):
 // CHECK-NEXT:   stablehlo.return %[[ARG8]] : tensor<f64>
-// CHECK: stablehlo.slice %[[SCATTER]] [0:128, 0:128, 0:1]
-// CHECK: stablehlo.slice %[[SCATTER]] [0:128, 0:128, 1:2]
+// CHECK: stablehlo.slice %[[SCATTER]] [0:1, 0:128, 0:128]
+// CHECK: stablehlo.slice %[[SCATTER]] [1:2, 0:128, 0:128]
 // CHECK: stablehlo.complex

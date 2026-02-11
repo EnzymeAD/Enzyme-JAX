@@ -32885,24 +32885,24 @@ static void buildScatterUpdateRegion(PatternRewriter &rewriter, Location loc,
 static Value concatRealAndImag(PatternRewriter &rewriter, Location loc,
                                Value realPart, Value imagPart) {
   auto tensorType = cast<RankedTensorType>(realPart.getType());
-  int64_t rank = tensorType.getRank();
   auto shape = tensorType.getShape();
 
-  // Reshape each to add a trailing dimension of size 1:
-  //   [d0, ..., dn] -> [d0, ..., dn, 1]
-  SmallVector<int64_t> reshapedShape(shape.begin(), shape.end());
+  // Reshape each to add a leading dimension of size 1:
+  //   [d0, ..., dn] -> [1, d0, ..., dn]
+  SmallVector<int64_t> reshapedShape;
   reshapedShape.push_back(1);
+  reshapedShape.append(shape.begin(), shape.end());
 
   auto realReshaped =
       stablehlo::ReshapeOpCreate(rewriter, loc, realPart, reshapedShape);
   auto imagReshaped =
       stablehlo::ReshapeOpCreate(rewriter, loc, imagPart, reshapedShape);
 
-  // Concatenate along the new trailing dimension (dim = rank):
-  //   [d0, ..., dn, 1] + [d0, ..., dn, 1] -> [d0, ..., dn, 2]
+  // Concatenate along the new leading dimension (dim = 0):
+  //   [1, d0, ..., dn] + [1, d0, ..., dn] -> [2, d0, ..., dn]
   return stablehlo::ConcatenateOp::create(
              rewriter, loc, ValueRange{realReshaped, imagReshaped},
-             rewriter.getI64IntegerAttr(rank))
+             rewriter.getI64IntegerAttr(0))
       .getResult();
 }
 
@@ -32928,26 +32928,26 @@ static Value sliceAndCombineComplex(PatternRewriter &rewriter, Location loc,
   int64_t rank = tensorType.getRank();
 
   // Result shape: [d0, ..., dn]
-  SmallVector<int64_t> resultShape(shape.begin(), shape.end() - 1);
+  SmallVector<int64_t> resultShape(shape.begin() + 1, shape.end());
 
   SmallVector<int64_t> sliceStart(rank, 0);
   SmallVector<int64_t> sliceLimit(shape.begin(), shape.end());
   SmallVector<int64_t> sliceStride(rank, 1);
 
-  // Real part: slice [..., 0:1]
-  sliceLimit.back() = 1;
+  // Real part: slice [0:1, ...]
+  sliceLimit[0] = 1;
 
   auto realSlice = stablehlo::SliceOpCreate(
       rewriter, loc, splitTensor, sliceStart, sliceLimit, sliceStride);
 
-  // Imag part: slice [..., 1:2]
-  sliceStart.back() = 1;
-  sliceLimit.back() = 2;
+  // Imag part: slice [1:2, ...]
+  sliceStart[0] = 1;
+  sliceLimit[0] = 2;
 
   auto imagSlice = stablehlo::SliceOpCreate(
       rewriter, loc, splitTensor, sliceStart, sliceLimit, sliceStride);
 
-  // Reshape to remove trailing dim of 1
+  // Reshape to remove leading dim of 1
   auto realResult =
       stablehlo::ReshapeOpCreate(rewriter, loc, realSlice, resultShape);
   auto imagResult =
@@ -33027,11 +33027,8 @@ struct SplitComplexScatter final
       return failure();
     }
 
-    auto updateType = cast<RankedTensorType>(op.getUpdates()[0].getType());
-    int64_t updateRank = updateType.getRank();
-
     // Step 1: For each input/update pair, split into real/imag, reshape,
-    // and concatenate along a new trailing dimension of size 2.
+    // and concatenate along a new leading dimension of size 2.
     SmallVector<Value> concatInputs, concatUpdates;
     for (auto [input, update] :
          llvm::zip_equal(op.getInputs(), op.getUpdates())) {
@@ -33083,41 +33080,41 @@ struct SplitComplexScatter final
         imagUpdate = stablehlo::ImagOp::create(rewriter, loc, update);
       }
 
-      SmallVector<int64_t> reshapedUpdateShape(updateShape.begin(),
-                                               updateShape.end());
-      reshapedUpdateShape.push_back(1);
-      auto reshapedUpdateType =
-          RankedTensorType::get(reshapedUpdateShape, innerElemType);
-      auto realUpdateReshaped = stablehlo::ReshapeOp::create(
-          rewriter, loc, reshapedUpdateType, realUpdate);
-      auto imagUpdateReshaped = stablehlo::ReshapeOp::create(
-          rewriter, loc, reshapedUpdateType, imagUpdate);
-
-      SmallVector<int64_t> concatUpdateShape(updateShape.begin(),
-                                             updateShape.end());
-      concatUpdateShape.push_back(2);
-      auto concatUpdateType =
-          RankedTensorType::get(concatUpdateShape, innerElemType);
-      auto concatUpdate = stablehlo::ConcatenateOp::create(
-          rewriter, loc, concatUpdateType,
-          ValueRange{realUpdateReshaped, imagUpdateReshaped},
-          rewriter.getI64IntegerAttr(updateRank));
+      auto concatUpdate =
+          concatRealAndImag(rewriter, loc, realUpdate, imagUpdate);
       concatUpdates.push_back(concatUpdate);
     }
 
-    // Step 2: Adjust scatter dimension numbers for the extra trailing
-    // dimension. The new trailing input dim maps to the new trailing update
+    // Step 2: Adjust scatter dimension numbers for the extra leading
+    // dimension. The new leading input dim maps to the new leading update
     // dim via update_window_dims.
     auto dnums = op.getScatterDimensionNumbers();
 
-    SmallVector<int64_t> newUpdateWindowDims(
-        dnums.getUpdateWindowDims().begin(), dnums.getUpdateWindowDims().end());
-    newUpdateWindowDims.push_back(updateRank);
+    SmallVector<int64_t> newUpdateWindowDims;
+    newUpdateWindowDims.push_back(0);
+    for (auto d : dnums.getUpdateWindowDims()) {
+      newUpdateWindowDims.push_back(d + 1);
+    }
+
+    SmallVector<int64_t> newInsertedWindowDims;
+    for (auto d : dnums.getInsertedWindowDims()) {
+      newInsertedWindowDims.push_back(d + 1);
+    }
+
+    SmallVector<int64_t> newInputBatchingDims;
+    for (auto d : dnums.getInputBatchingDims()) {
+      newInputBatchingDims.push_back(d + 1);
+    }
+
+    SmallVector<int64_t> newScatterDimsToOperandDims;
+    for (auto d : dnums.getScatterDimsToOperandDims()) {
+      newScatterDimsToOperandDims.push_back(d + 1);
+    }
 
     auto newDnumsAttr = stablehlo::ScatterDimensionNumbersAttr::get(
-        op.getContext(), newUpdateWindowDims, dnums.getInsertedWindowDims(),
-        dnums.getInputBatchingDims(), dnums.getScatterIndicesBatchingDims(),
-        dnums.getScatterDimsToOperandDims(), dnums.getIndexVectorDim());
+        op.getContext(), newUpdateWindowDims, newInsertedWindowDims,
+        newInputBatchingDims, dnums.getScatterIndicesBatchingDims(),
+        newScatterDimsToOperandDims, dnums.getIndexVectorDim());
 
     // Step 3: Create a single scatter op on the concatenated tensors
     auto scatterOp = stablehlo::ScatterOp::create(
@@ -33156,44 +33153,61 @@ struct SplitComplexGather final
 
     auto complexType = cast<ComplexType>(elemType);
     auto innerElemType = complexType.getElementType();
-    int64_t resultRank = resultType.getRank();
 
     // Step 1: Extract real and imaginary parts, reshape each to add a
-    // trailing dimension of size 1, then concatenate along the trailing
-    // dimension to form a float tensor with trailing dim 2.
-    // e.g., tensor<4xcomplex<f32>> -> real: tensor<4xf32> -> tensor<4x1xf32>
-    //                                 imag: tensor<4xf32> -> tensor<4x1xf32>
-    //                                 concat: tensor<4x2xf32>
+    // leading dimension of size 1, then concatenate along the leading
+    // dimension to form a float tensor with leading dim 2.
+    // e.g., tensor<4xcomplex<f32>> -> real: tensor<4xf32> -> tensor<1x4xf32>
+    //                                 imag: tensor<4xf32> -> tensor<1x4xf32>
+    //                                 concat: tensor<2x4xf32>
     auto concatOperand =
         splitComplexAndConcat(rewriter, op.getLoc(), op.getOperand());
 
     // Step 2: Adjust the gather dimension numbers and slice sizes to account
-    // for the extra trailing dimension.
+    // for the extra leading dimension.
     auto dnums = op.getDimensionNumbers();
 
-    // Add the new trailing dimension to offset_dims
-    SmallVector<int64_t> newOffsetDims(dnums.getOffsetDims().begin(),
-                                       dnums.getOffsetDims().end());
-    // The new offset dim corresponds to the last dimension of the new result
-    newOffsetDims.push_back(resultRank);
+    // Add the new leading dimension to offset_dims
+    SmallVector<int64_t> newOffsetDims;
+    newOffsetDims.push_back(0);
+    for (auto d : dnums.getOffsetDims()) {
+      newOffsetDims.push_back(d + 1);
+    }
+    // The new offset dim corresponds to the first dimension of the new result
+
+    SmallVector<int64_t> newCollapsedSliceDims;
+    for (auto d : dnums.getCollapsedSliceDims()) {
+      newCollapsedSliceDims.push_back(d + 1);
+    }
+
+    SmallVector<int64_t> newOperandBatchingDims;
+    for (auto d : dnums.getOperandBatchingDims()) {
+      newOperandBatchingDims.push_back(d + 1);
+    }
+
+    SmallVector<int64_t> newStartIndexMap;
+    for (auto d : dnums.getStartIndexMap()) {
+      newStartIndexMap.push_back(d + 1);
+    }
 
     auto newDnums = stablehlo::GatherDimensionNumbersAttr::get(
-        op.getContext(), newOffsetDims, dnums.getCollapsedSliceDims(),
-        dnums.getOperandBatchingDims(), dnums.getStartIndicesBatchingDims(),
-        dnums.getStartIndexMap(), dnums.getIndexVectorDim());
+        op.getContext(), newOffsetDims, newCollapsedSliceDims,
+        newOperandBatchingDims, dnums.getStartIndicesBatchingDims(),
+        newStartIndexMap, dnums.getIndexVectorDim());
 
-    // Append 2 to slice_sizes for the new trailing dimension
-    SmallVector<int64_t> newSliceSizes(op.getSliceSizes().begin(),
-                                       op.getSliceSizes().end());
+    // Prepend 2 to slice_sizes for the new leading dimension
+    SmallVector<int64_t> newSliceSizes;
     newSliceSizes.push_back(2);
+    newSliceSizes.append(op.getSliceSizes().begin(), op.getSliceSizes().end());
     auto newSliceSizesAttr =
         DenseI64ArrayAttr::get(op.getContext(), newSliceSizes);
 
     // Step 3: Perform the gather on the concatenated operand
-    // Result type: original result shape + trailing dim of size 2
+    // Result type: trailing dim of size 2 + original result shape
     auto resultShape = resultType.getShape();
-    SmallVector<int64_t> newResultShape(resultShape.begin(), resultShape.end());
+    SmallVector<int64_t> newResultShape;
     newResultShape.push_back(2);
+    newResultShape.append(resultShape.begin(), resultShape.end());
     auto newResultType = RankedTensorType::get(newResultShape, innerElemType);
 
     auto gatherOp = stablehlo::GatherOp::create(
@@ -33201,7 +33215,7 @@ struct SplitComplexGather final
         op.getStartIndices(), newDnums, newSliceSizesAttr,
         op.getIndicesAreSortedAttr());
 
-    // Step 4: Slice the result along the trailing dimension to extract
+    // Step 4: Slice the result along the leading dimension to extract
     // real and imag parts, reshape, and recombine.
     auto complexResult =
         sliceAndCombineComplex(rewriter, op.getLoc(), gatherOp);
