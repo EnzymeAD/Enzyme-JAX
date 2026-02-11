@@ -971,10 +971,10 @@ def : HLODerivative<"AddOp", (Op $x, $y),
 
 def : HLODerivative<"Atan2Op", (Op $x, $y),
                     [
-                      (CheckedMul (DiffeRet), (Div $y, (Add (Pow $x, (HLOConstantFP<"2">)), (Pow $y, (HLOConstantFP<"2"> $y))))),
-                      (CheckedMul (DiffeRet), (Div (Neg $x), (Add (Pow $x, (HLOConstantFP<"2">)), (Pow $y, (HLOConstantFP<"2"> $y)))))
+                      (CheckedMul (DiffeRet), (Div $y, (Add (Mul $x, $x), (Mul $y, $y)))),
+                      (CheckedMul (DiffeRet), (Div (Neg $x), (Add (Mul $x, $x), (Mul $y, $y))))
                     ],
-                    (CheckedDiv (Sub (Mul $x, (Shadow $y)), (Mul $y, (Shadow $x))), (Add (Pow $x, (HLOConstantFP<"2">)), (Pow $y, (HLOConstantFP<"2"> $y))))
+                    (CheckedDiv (Sub (Mul $x, (Shadow $y)), (Mul $y, (Shadow $x))), (Add (Mul $x, $x), (Mul $y, $y)))
                   >;
 
 def : HLOReadOnlyIdentityOp<"BroadcastInDimOp">;
