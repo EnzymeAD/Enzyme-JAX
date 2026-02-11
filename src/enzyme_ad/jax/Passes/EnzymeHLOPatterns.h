@@ -8,11 +8,12 @@
 
 #include <stdint.h>
 
+#include "mlir/Support/LogicalResult.h"
+
 namespace mlir {
 class MLIRContext;
 class PatternBenefit;
 class RewritePatternSet;
-class LogicalResult;
 } // namespace mlir
 
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.h.inc"
