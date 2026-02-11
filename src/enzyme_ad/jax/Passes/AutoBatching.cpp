@@ -938,9 +938,8 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
         .Case<stablehlo::ReshapeOp, stablehlo::SliceOp, stablehlo::ReturnOp,
               // avoid ops that use SHLOGenericBatchOpInterface since that
               // lowers to loop
-              stablehlo::ScatterOp, stablehlo::IfOp, stablehlo::CaseOp,
-              stablehlo::WhileOp, stablehlo::CustomCallOp>(
-            [](auto op) { return true; })
+              stablehlo::IfOp, stablehlo::CaseOp, stablehlo::WhileOp,
+              stablehlo::CustomCallOp>([](auto op) { return true; })
         .Case<stablehlo::BroadcastInDimOp, stablehlo::TransposeOp>(
             [](auto op) { return stablehlo::OpIsReshapeLike(op); })
         .Default([](auto op) { return false; });
@@ -2327,6 +2326,7 @@ void populateAutoBatchingPassPatterns(RewritePatternSet &patterns,
              SliceToBatch<stablehlo::GetDimensionSizeOp>,
              SliceToBatch<stablehlo::ReverseOp>,
              SliceToBatch<stablehlo::ConvolutionOp>,
+             SliceToBatch<stablehlo::ScatterOp>,
              SliceToBatchWithReshapeLikeCheck<stablehlo::BroadcastInDimOp>,
              SliceToBatchWithReshapeLikeCheck<stablehlo::TransposeOp>,
              SliceToBatchElementwise>(ctx);
@@ -2338,8 +2338,7 @@ void populateAutoBatchingPassPatterns(RewritePatternSet &patterns,
                  ConcatInsertDimToBatch<stablehlo::IotaOp>,
                  ConcatInsertDimToBatchReduceLike<stablehlo::ReduceOp>,
                  ConcatInsertDimToBatchReduceLike<stablehlo::ReduceWindowOp>,
-                 // ConcatInsertDimToBatch<stablehlo::ScatterOp>, after batch
-                 // op interface is implemented
+                 ConcatInsertDimToBatch<stablehlo::ScatterOp>,
                  ConcatInsertDimToBatch<stablehlo::SortOp>,
                  ConcatInsertDimToBatch<stablehlo::ConcatenateOp>,
                  ConcatInsertDimToBatch<stablehlo::GetDimensionSizeOp>,
