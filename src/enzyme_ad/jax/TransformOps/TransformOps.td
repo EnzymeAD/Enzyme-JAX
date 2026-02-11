@@ -2744,6 +2744,11 @@ def ApplyConcatInsertDimConvolutionPatterns : EnzymeHLOPatternOp<
   let patterns = ["ConcatInsertDimToBatch<stablehlo::ConvolutionOp>"];
 }
 
+def ApplyConcatInsertDimScatterPatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_scatter"> {
+  let patterns = ["ConcatInsertDimToBatch<stablehlo::ScatterOp>"];
+}
+
 def ApplyConcatInsertDimElementwisePatterns : EnzymeHLOPatternOp<
     "concat_insert_dim_elementwise"> {
   let patterns = ["ConcatInsertDimElementwiseToBatch"];
@@ -2768,6 +2773,10 @@ def ApplyReduceSliceToBatchPatterns : EnzymeHLOPatternOp<
 def ApplySortSliceToBatchPatterns : EnzymeHLOPatternOp<
     "sort_slice_to_batch"> {
   let patterns = ["SliceToBatch<stablehlo::SortOp>"];
+}
+def ApplyScatterSliceToBatchPatterns : EnzymeHLOPatternOp<
+    "scatter_slice_to_batch"> {
+  let patterns = ["SliceToBatch<stablehlo::ScatterOp>"];
 }
 def ApplyTransposeSliceToBatchPatterns : EnzymeHLOPatternOp<
     "transpose_slice_to_batch"> {

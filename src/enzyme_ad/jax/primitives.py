@@ -395,7 +395,7 @@ def optimization_passes(
         "sub_const_prop",
         "xor_const_prop",
         # other constant propagations
-        "const_prop_through_barrier<16>",
+        # "const_prop_through_barrier<16>",
         f"concat_const_prop<1>({max_constant_threshold})",
         f"dynamic_update_slice_const_prop({max_constant_threshold})",
         "clamp_const_prop",
@@ -418,6 +418,7 @@ def optimization_passes(
             "reducewindow_slice_to_batch",
             "elementwise_slice_to_batch",
             "convolution_slice_to_batch",
+            "scatter_slice_to_batch",
         ]
 
     if enable_concat_to_batch_passes:
@@ -430,6 +431,7 @@ def optimization_passes(
             "concat_insert_dim_reduce_window",
             "concat_insert_dim_elementwise",
             "concat_insert_dim_convolution",
+            "concat_insert_dim_scatter",
         ]
 
     if enable_reduce_slice_fusion_passes:
