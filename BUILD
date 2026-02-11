@@ -51,6 +51,7 @@ cc_binary(
         "@llvm-project//mlir:NVVMToLLVMIRTranslation",
         "@tsl//tsl/platform:env",
         "@tsl//tsl/platform:env_impl",
+        "//third_party/lean:lean4",
     ] + if_llvm_aarch32_available([
         "@llvm-project//llvm:ARMAsmParser",
         "@llvm-project//llvm:ARMCodeGen",
