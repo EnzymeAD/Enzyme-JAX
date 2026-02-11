@@ -66,6 +66,16 @@ def EnzymeXLA_LapackUplo : I32EnumAttr<"LapackUplo",
 def EnzymeXLA_LapackUploAttr : EnumAttr<EnzymeXLA_Dialect,
     EnzymeXLA_LapackUplo, "uplo"> {
   let assemblyFormat = "`<` $value `>`";
+  let extraClassDeclaration = [{
+    char asChar() {
+      switch (getValue()) {
+        case ::mlir::enzymexla::LapackUplo::U: return 'U';
+        case ::mlir::enzymexla::LapackUplo::L: return 'L';
+        case ::mlir::enzymexla::LapackUplo::F: return 'F';
+        default: llvm_unreachable("Invalid LapackUplo enum value");
+      }
+    }
+  }];
 }
 
 def EnzymeXLA_LapackJob : I32EnumAttr<"LapackJob",
