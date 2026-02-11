@@ -467,10 +467,10 @@ public:
         auto idx = arg.getArgNumber();
         if (resultPositionsToShadow.count(idx)) {
           if (gutils->isConstantValue(arg)) {
-            nb->insertArgument(
-                curidx,
-                cast<AutoDiffTypeInterface>(arg.getType()).getShadowType(gutils->width),
-                op.getLoc());
+            nb->insertArgument(curidx,
+                               cast<AutoDiffTypeInterface>(arg.getType())
+                                   .getShadowType(gutils->width),
+                               op.getLoc());
           }
           curidx++;
         }

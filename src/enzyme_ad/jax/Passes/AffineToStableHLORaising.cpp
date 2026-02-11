@@ -1668,7 +1668,7 @@ static LogicalResult tryRaisingLockStepForOpToStableHLO(
   if (pc.options.dump_failed_lockstep) {
     llvm::errs() << " failed lockstep of for raise: " << *forOp << "\n";
   }
-  return forOp.emitError("Not lockstep executable");
+  return forOp.emitError("Not lockstep executable") << *forOp;
 }
 
 static LogicalResult
