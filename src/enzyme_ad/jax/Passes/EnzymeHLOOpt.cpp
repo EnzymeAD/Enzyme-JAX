@@ -32882,6 +32882,81 @@ static void buildScatterUpdateRegion(PatternRewriter &rewriter, Location loc,
   stablehlo::ReturnOp::create(rewriter, loc, result);
 }
 
+static Value concatRealAndImag(PatternRewriter &rewriter, Location loc,
+                               Value realPart, Value imagPart) {
+  auto tensorType = cast<RankedTensorType>(realPart.getType());
+  auto shape = tensorType.getShape();
+
+  // Reshape each to add a leading dimension of size 1:
+  //   [d0, ..., dn] -> [1, d0, ..., dn]
+  SmallVector<int64_t> reshapedShape;
+  reshapedShape.push_back(1);
+  reshapedShape.append(shape.begin(), shape.end());
+
+  auto realReshaped =
+      stablehlo::ReshapeOpCreate(rewriter, loc, realPart, reshapedShape);
+  auto imagReshaped =
+      stablehlo::ReshapeOpCreate(rewriter, loc, imagPart, reshapedShape);
+
+  // Concatenate along the new leading dimension (dim = 0):
+  //   [1, d0, ..., dn] + [1, d0, ..., dn] -> [2, d0, ..., dn]
+  return stablehlo::ConcatenateOp::create(
+             rewriter, loc, ValueRange{realReshaped, imagReshaped},
+             rewriter.getI64IntegerAttr(0))
+      .getResult();
+}
+
+// Helper: Split a complex tensor into real+imag and concatenate along a new
+// trailing dimension. Given a complex tensor of shape [d0, ..., dn],
+// returns a real-valued tensor of shape [d0, ..., dn, 2] where [..., 0] =
+// real and [..., 1] = imag.
+static Value splitComplexAndConcat(PatternRewriter &rewriter, Location loc,
+                                   Value complexTensor) {
+  auto realPart = stablehlo::RealOp::create(rewriter, loc, complexTensor);
+  auto imagPart = stablehlo::ImagOp::create(rewriter, loc, complexTensor);
+  return concatRealAndImag(rewriter, loc, realPart, imagPart);
+}
+
+// Helper: Combine real and imaginary parts from a trailing dimension into a
+// complex tensor. Given a real-valued tensor of shape [d0, ..., dn, 2],
+// returns a complex tensor of shape [d0, ..., dn] where real comes from
+// [..., 0] and imag from [..., 1].
+static Value sliceAndCombineComplex(PatternRewriter &rewriter, Location loc,
+                                    Value splitTensor) {
+  auto tensorType = cast<RankedTensorType>(splitTensor.getType());
+  auto shape = tensorType.getShape();
+  int64_t rank = tensorType.getRank();
+
+  // Result shape: [d0, ..., dn]
+  SmallVector<int64_t> resultShape(shape.begin() + 1, shape.end());
+
+  SmallVector<int64_t> sliceStart(rank, 0);
+  SmallVector<int64_t> sliceLimit(shape.begin(), shape.end());
+  SmallVector<int64_t> sliceStride(rank, 1);
+
+  // Real part: slice [0:1, ...]
+  sliceLimit[0] = 1;
+
+  auto realSlice = stablehlo::SliceOpCreate(
+      rewriter, loc, splitTensor, sliceStart, sliceLimit, sliceStride);
+
+  // Imag part: slice [1:2, ...]
+  sliceStart[0] = 1;
+  sliceLimit[0] = 2;
+
+  auto imagSlice = stablehlo::SliceOpCreate(
+      rewriter, loc, splitTensor, sliceStart, sliceLimit, sliceStride);
+
+  // Reshape to remove leading dim of 1
+  auto realResult =
+      stablehlo::ReshapeOpCreate(rewriter, loc, realSlice, resultShape);
+  auto imagResult =
+      stablehlo::ReshapeOpCreate(rewriter, loc, imagSlice, resultShape);
+
+  // Combine
+  return stablehlo::ComplexOp::create(rewriter, loc, realResult, imagResult);
+}
+
 // See discussion in
 // https://github.com/EnzymeAD/Reactant.jl/pull/2219#issuecomment-3801834108
 struct SplitComplexScatter final
@@ -32914,6 +32989,7 @@ struct SplitComplexScatter final
     // Get the inner element type (e.g., f32 from complex<f32>)
     auto complexType = cast<ComplexType>(elemType);
     auto innerElemType = complexType.getElementType();
+    auto loc = op.getLoc();
 
     // Extract real and imaginary parts of the constant if present
     Attribute realConstant = nullptr;
@@ -32925,47 +33001,135 @@ struct SplitComplexScatter final
       imagConstant = FloatAttr::get(innerElemType, complexVal.imag());
     }
 
-    SmallVector<Value> realInputs, imagInputs, realUpdates, imagUpdates;
-    for (auto [input, update] :
-         llvm::zip_equal(op.getInputs(), op.getUpdates())) {
-      realInputs.push_back(
-          stablehlo::RealOp::create(rewriter, op.getLoc(), input));
-      imagInputs.push_back(
-          stablehlo::ImagOp::create(rewriter, op.getLoc(), input));
-      realUpdates.push_back(
-          stablehlo::RealOp::create(rewriter, op.getLoc(), update));
-      imagUpdates.push_back(
-          stablehlo::ImagOp::create(rewriter, op.getLoc(), update));
+    // Determine the effective scatter kind for the float scatter.
+    // For constant-based operations, we materialize the constants into
+    // update tensors and convert to simpler operations.
+    stablehlo::ScatterOpKind effectiveKind;
+    switch (checkCommonScatterOp.kind) {
+    case stablehlo::ScatterOpKind::Setindex:
+    case stablehlo::ScatterOpKind::Add:
+    case stablehlo::ScatterOpKind::Sub:
+      effectiveKind = checkCommonScatterOp.kind;
+      break;
+    case stablehlo::ScatterOpKind::ConstantSetindex:
+      // Materialize constant as update, use Setindex
+      effectiveKind = stablehlo::ScatterOpKind::Setindex;
+      break;
+    case stablehlo::ScatterOpKind::AddConstantUpdate:
+      // Materialize constant as update, use Add
+      effectiveKind = stablehlo::ScatterOpKind::Add;
+      break;
+    case stablehlo::ScatterOpKind::AddConstantInput:
+      // Precompute constant + update, use Setindex
+      effectiveKind = stablehlo::ScatterOpKind::Setindex;
+      break;
+    default:
+      return failure();
     }
 
-    // Create the real scatter op
-    auto realScatterOp = stablehlo::ScatterOp::create(
-        rewriter, op.getLoc(), realInputs, op.getScatterIndices(), realUpdates,
-        op.getScatterDimensionNumbersAttr(), op.getIndicesAreSortedAttr(),
-        op.getUniqueIndicesAttr());
+    // Step 1: For each input/update pair, split into real/imag, reshape,
+    // and concatenate along a new leading dimension of size 2.
+    SmallVector<Value> concatInputs, concatUpdates;
+    for (auto [input, update] :
+         llvm::zip_equal(op.getInputs(), op.getUpdates())) {
+      // Process input: real/imag -> reshape -> concat
+      concatInputs.push_back(splitComplexAndConcat(rewriter, loc, input));
 
-    // Build update computation region for real scatter
-    buildScatterUpdateRegion(rewriter, op.getLoc(), realScatterOp,
-                             checkCommonScatterOp.kind, innerElemType,
-                             realConstant);
+      // Process update: depends on scatter kind
+      auto curUpdateType = cast<RankedTensorType>(update.getType());
+      auto updateShape = curUpdateType.getShape();
+      auto realUpdateType = RankedTensorType::get(updateShape, innerElemType);
 
-    // Create the imaginary scatter op
-    auto imagScatterOp = stablehlo::ScatterOp::create(
-        rewriter, op.getLoc(), imagInputs, op.getScatterIndices(), imagUpdates,
-        op.getScatterDimensionNumbersAttr(), op.getIndicesAreSortedAttr(),
-        op.getUniqueIndicesAttr());
+      Value realUpdate, imagUpdate;
+      if (checkCommonScatterOp.kind ==
+          stablehlo::ScatterOpKind::ConstantSetindex) {
+        // Create constant update tensors to replace the ignored updates
+        realUpdate = stablehlo::ConstantOp::create(
+            rewriter, loc,
+            DenseElementsAttr::get(realUpdateType, realConstant));
+        imagUpdate = stablehlo::ConstantOp::create(
+            rewriter, loc,
+            DenseElementsAttr::get(realUpdateType, imagConstant));
+      } else if (checkCommonScatterOp.kind ==
+                 stablehlo::ScatterOpKind::AddConstantUpdate) {
+        // Materialize constants as updates (arg0 + constant in region)
+        realUpdate = stablehlo::ConstantOp::create(
+            rewriter, loc,
+            DenseElementsAttr::get(realUpdateType, realConstant));
+        imagUpdate = stablehlo::ConstantOp::create(
+            rewriter, loc,
+            DenseElementsAttr::get(realUpdateType, imagConstant));
+      } else if (checkCommonScatterOp.kind ==
+                 stablehlo::ScatterOpKind::AddConstantInput) {
+        // Precompute constant + update, then use Setindex
+        auto realUp = stablehlo::RealOp::create(rewriter, loc, update);
+        auto imagUp = stablehlo::ImagOp::create(rewriter, loc, update);
+        auto realConstOp = stablehlo::ConstantOp::create(
+            rewriter, loc,
+            DenseElementsAttr::get(realUpdateType, realConstant));
+        auto imagConstOp = stablehlo::ConstantOp::create(
+            rewriter, loc,
+            DenseElementsAttr::get(realUpdateType, imagConstant));
+        realUpdate =
+            stablehlo::AddOp::create(rewriter, loc, realConstOp, realUp);
+        imagUpdate =
+            stablehlo::AddOp::create(rewriter, loc, imagConstOp, imagUp);
+      } else {
+        // Setindex, Add, Sub: just extract real/imag of update
+        realUpdate = stablehlo::RealOp::create(rewriter, loc, update);
+        imagUpdate = stablehlo::ImagOp::create(rewriter, loc, update);
+      }
 
-    // Build update computation region for imaginary scatter
-    buildScatterUpdateRegion(rewriter, op.getLoc(), imagScatterOp,
-                             checkCommonScatterOp.kind, innerElemType,
-                             imagConstant);
+      auto concatUpdate =
+          concatRealAndImag(rewriter, loc, realUpdate, imagUpdate);
+      concatUpdates.push_back(concatUpdate);
+    }
 
-    // Combine real and imaginary results using stablehlo::ComplexOp
+    // Step 2: Adjust scatter dimension numbers for the extra leading
+    // dimension. The new leading input dim maps to the new leading update
+    // dim via update_window_dims.
+    auto dnums = op.getScatterDimensionNumbers();
+
+    SmallVector<int64_t> newUpdateWindowDims;
+    newUpdateWindowDims.push_back(0);
+    for (auto d : dnums.getUpdateWindowDims()) {
+      newUpdateWindowDims.push_back(d + 1);
+    }
+
+    SmallVector<int64_t> newInsertedWindowDims;
+    for (auto d : dnums.getInsertedWindowDims()) {
+      newInsertedWindowDims.push_back(d + 1);
+    }
+
+    SmallVector<int64_t> newInputBatchingDims;
+    for (auto d : dnums.getInputBatchingDims()) {
+      newInputBatchingDims.push_back(d + 1);
+    }
+
+    SmallVector<int64_t> newScatterDimsToOperandDims;
+    for (auto d : dnums.getScatterDimsToOperandDims()) {
+      newScatterDimsToOperandDims.push_back(d + 1);
+    }
+
+    auto newDnumsAttr = stablehlo::ScatterDimensionNumbersAttr::get(
+        op.getContext(), newUpdateWindowDims, newInsertedWindowDims,
+        newInputBatchingDims, dnums.getScatterIndicesBatchingDims(),
+        newScatterDimsToOperandDims, dnums.getIndexVectorDim());
+
+    // Step 3: Create a single scatter op on the concatenated tensors
+    auto scatterOp = stablehlo::ScatterOp::create(
+        rewriter, loc, concatInputs, op.getScatterIndices(), concatUpdates,
+        newDnumsAttr, op.getIndicesAreSortedAttr(), op.getUniqueIndicesAttr());
+
+    // Build update computation region with the effective kind
+    buildScatterUpdateRegion(rewriter, loc, scatterOp, effectiveKind,
+                             innerElemType);
+
+    // Step 4: Slice results back into real and imag parts, reshape, and
+    // recombine with ComplexOp.
     SmallVector<Value> results;
-    for (auto [realResult, imagResult] : llvm::zip_equal(
-             realScatterOp.getResults(), imagScatterOp.getResults())) {
-      results.push_back(stablehlo::ComplexOp::create(rewriter, op.getLoc(),
-                                                     realResult, imagResult));
+    for (auto result : scatterOp.getResults()) {
+      results.push_back(sliceAndCombineComplex(rewriter, loc, result));
     }
 
     rewriter.replaceOp(op, results);
@@ -32987,27 +33151,74 @@ struct SplitComplexGather final
       return failure();
     }
 
-    // Extract real and imaginary parts of the operand
-    auto realOperand =
-        stablehlo::RealOp::create(rewriter, op.getLoc(), op.getOperand());
-    auto imagOperand =
-        stablehlo::ImagOp::create(rewriter, op.getLoc(), op.getOperand());
+    auto complexType = cast<ComplexType>(elemType);
+    auto innerElemType = complexType.getElementType();
 
-    // Create the real gather op
-    auto realGatherOp = stablehlo::GatherOp::create(
-        rewriter, op.getLoc(), realOperand, op.getStartIndices(),
-        op.getDimensionNumbersAttr(), op.getSliceSizesAttr(),
+    // Step 1: Extract real and imaginary parts, reshape each to add a
+    // leading dimension of size 1, then concatenate along the leading
+    // dimension to form a float tensor with leading dim 2.
+    // e.g., tensor<4xcomplex<f32>> -> real: tensor<4xf32> -> tensor<1x4xf32>
+    //                                 imag: tensor<4xf32> -> tensor<1x4xf32>
+    //                                 concat: tensor<2x4xf32>
+    auto concatOperand =
+        splitComplexAndConcat(rewriter, op.getLoc(), op.getOperand());
+
+    // Step 2: Adjust the gather dimension numbers and slice sizes to account
+    // for the extra leading dimension.
+    auto dnums = op.getDimensionNumbers();
+
+    // Add the new leading dimension to offset_dims
+    SmallVector<int64_t> newOffsetDims;
+    newOffsetDims.push_back(0);
+    for (auto d : dnums.getOffsetDims()) {
+      newOffsetDims.push_back(d + 1);
+    }
+    // The new offset dim corresponds to the first dimension of the new result
+
+    SmallVector<int64_t> newCollapsedSliceDims;
+    for (auto d : dnums.getCollapsedSliceDims()) {
+      newCollapsedSliceDims.push_back(d + 1);
+    }
+
+    SmallVector<int64_t> newOperandBatchingDims;
+    for (auto d : dnums.getOperandBatchingDims()) {
+      newOperandBatchingDims.push_back(d + 1);
+    }
+
+    SmallVector<int64_t> newStartIndexMap;
+    for (auto d : dnums.getStartIndexMap()) {
+      newStartIndexMap.push_back(d + 1);
+    }
+
+    auto newDnums = stablehlo::GatherDimensionNumbersAttr::get(
+        op.getContext(), newOffsetDims, newCollapsedSliceDims,
+        newOperandBatchingDims, dnums.getStartIndicesBatchingDims(),
+        newStartIndexMap, dnums.getIndexVectorDim());
+
+    // Prepend 2 to slice_sizes for the new leading dimension
+    SmallVector<int64_t> newSliceSizes;
+    newSliceSizes.push_back(2);
+    newSliceSizes.append(op.getSliceSizes().begin(), op.getSliceSizes().end());
+    auto newSliceSizesAttr =
+        DenseI64ArrayAttr::get(op.getContext(), newSliceSizes);
+
+    // Step 3: Perform the gather on the concatenated operand
+    // Result type: trailing dim of size 2 + original result shape
+    auto resultShape = resultType.getShape();
+    SmallVector<int64_t> newResultShape;
+    newResultShape.push_back(2);
+    newResultShape.append(resultShape.begin(), resultShape.end());
+    auto newResultType = RankedTensorType::get(newResultShape, innerElemType);
+
+    auto gatherOp = stablehlo::GatherOp::create(
+        rewriter, op.getLoc(), newResultType, concatOperand,
+        op.getStartIndices(), newDnums, newSliceSizesAttr,
         op.getIndicesAreSortedAttr());
 
-    // Create the imaginary gather op
-    auto imagGatherOp = stablehlo::GatherOp::create(
-        rewriter, op.getLoc(), imagOperand, op.getStartIndices(),
-        op.getDimensionNumbersAttr(), op.getSliceSizesAttr(),
-        op.getIndicesAreSortedAttr());
-
-    // Combine real and imaginary results using stablehlo::ComplexOp
-    auto complexResult = stablehlo::ComplexOp::create(
-        rewriter, op.getLoc(), realGatherOp, imagGatherOp);
+    // Step 4: Slice the result along the leading dimension to extract
+    // real and imag parts, reshape, and recombine.
+    auto complexResult =
+        sliceAndCombineComplex(rewriter, op.getLoc(), gatherOp);
 
     rewriter.replaceOp(op, complexResult);
     return success();
