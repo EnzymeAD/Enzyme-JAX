@@ -79,6 +79,58 @@ using namespace mlir;
 using namespace mlir::enzyme;
 using namespace mlir::stablehlo;
 
+namespace mlir {
+// Implementation of helper function to lower MultiRotateOp into individual RotateOps
+LogicalResult lowerMultiRotateToRotates(enzymexla::MultiRotateOp op,
+                                         PatternRewriter &rewriter) {
+  int32_t leftAmount = op.getLeftAmount();
+  int32_t rightAmount = op.getRightAmount();
+  int32_t totalResults = leftAmount + rightAmount + 1;
+  int32_t centerIdx = leftAmount;
+
+  Value input = op.getOperand();
+  auto inputType = cast<RankedTensorType>(input.getType());
+  int64_t dimSize = inputType.getShape()[op.getDimensionAttr().getSInt()];
+
+  // Get sharding info if present
+  auto shard = sdy::getShardingPerValue(op);
+
+  SmallVector<Value> replacements(totalResults);
+
+  for (int i = 0; i < totalResults; i++) {
+    // Calculate rotation amount for this result
+    // Result at centerIdx corresponds to amount 0 (identity)
+    // Results before centerIdx have positive amounts (rotate left)
+    // Results after centerIdx have negative amounts (rotate right)
+    int32_t amount = centerIdx - i;
+
+    // Normalize negative amounts to positive equivalent
+    if (amount < 0) {
+      amount += dimSize;
+    }
+
+    if (amount == 0) {
+      replacements[i] = input;
+      continue;
+    }
+
+    auto rotateOp = rewriter.create<enzymexla::RotateOp>(
+        op.getLoc(), inputType, input, rewriter.getSI32IntegerAttr(amount),
+        op.getDimensionAttr());
+
+    // Propagate sharding if present
+    if (shard) {
+      sdy::setShardings(rotateOp, shard);
+    }
+
+    replacements[i] = rotateOp.getResult();
+  }
+
+  rewriter.replaceOp(op, replacements);
+  return success();
+}
+} // namespace mlir
+
 // Check if any of the pad sizes are negative
 bool anyPadSizesNegative(stablehlo::PadOp pad) {
   for (auto &&[low, high, inner] :
@@ -32413,62 +32465,18 @@ struct RecognizeMultiRotate
 
     return success();
   }
-};
+  };
 
-// Pattern to lower MultiRotateOp into individual RotateOps
-struct LowerMultiRotate final
-    : CheckedOpRewritePattern<enzymexla::MultiRotateOp, LowerMultiRotate> {
+  // Pattern to lower MultiRotateOp into individual RotateOps
+  struct LowerMultiRotate final
+   : CheckedOpRewritePattern<enzymexla::MultiRotateOp, LowerMultiRotate> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(enzymexla::MultiRotateOp op,
-                                    PatternRewriter &rewriter) const {
-    int32_t leftAmount = op.getLeftAmount();
-    int32_t rightAmount = op.getRightAmount();
-    int32_t totalResults = leftAmount + rightAmount + 1;
-    int32_t centerIdx = leftAmount;
-
-    Value input = op.getOperand();
-    auto inputType = cast<RankedTensorType>(input.getType());
-    int64_t dimSize = inputType.getShape()[op.getDimensionAttr().getSInt()];
-
-    // Get sharding info if present
-    auto shard = sdy::getShardingPerValue(op);
-
-    SmallVector<Value> replacements(totalResults);
-
-    for (int i = 0; i < totalResults; i++) {
-      // Calculate rotation amount for this result
-      // Result at centerIdx corresponds to amount 0 (identity)
-      // Results before centerIdx have positive amounts (rotate left)
-      // Results after centerIdx have negative amounts (rotate right)
-      int32_t amount = centerIdx - i;
-
-      // Normalize negative amounts to positive equivalent
-      if (amount < 0) {
-        amount += dimSize;
-      }
-
-      if (amount == 0) {
-        replacements[i] = input;
-        continue;
-      }
-
-      auto rotateOp = rewriter.create<enzymexla::RotateOp>(
-          op.getLoc(), inputType, input, rewriter.getSI32IntegerAttr(amount),
-          op.getDimensionAttr());
-
-      // Propagate sharding if present
-      if (shard) {
-        sdy::setShardings(rotateOp, shard);
-      }
-
-      replacements[i] = rotateOp.getResult();
-    }
-
-    rewriter.replaceOp(op, replacements);
-    return success();
+                                   PatternRewriter &rewriter) const {
+   return lowerMultiRotateToRotates(op, rewriter);
   }
-};
+  };
 
 // Pattern to reduce MultiRotateOp when some results are unused
 struct ReduceUnusedMultiRotate final

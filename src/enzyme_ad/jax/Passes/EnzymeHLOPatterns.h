@@ -144,3 +144,17 @@ void addMultiRotateLICM(RewritePatternSet &patterns, bool single_user,
                         MLIRContext &context, PatternBenefit benefit);
 
 } // namespace mlir::transform
+
+// Forward declarations for helper function
+namespace mlir {
+class PatternRewriter;
+
+namespace enzymexla {
+class MultiRotateOp;
+} // namespace enzymexla
+
+// Helper function to lower MultiRotateOp into individual RotateOps
+LogicalResult lowerMultiRotateToRotates(enzymexla::MultiRotateOp op,
+                                         PatternRewriter &rewriter);
+
+} // namespace mlir
