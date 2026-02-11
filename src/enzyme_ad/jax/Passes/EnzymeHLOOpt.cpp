@@ -28666,8 +28666,10 @@ private:
     if (!matchPattern(operand, m_Constant(&splatAttr)))
       return nullptr;
 
-    return stablehlo::ConstantOp::create(rewriter, operand.getLoc(),
-                                         splatAttr.getSplatValue<Attribute>());
+    return stablehlo::ConstantOp::create(
+        rewriter, operand.getLoc(),
+        splatAttr.resizeSplat(
+            RankedTensorType::get({}, splatAttr.getType().getElementType())));
   }
 };
 
