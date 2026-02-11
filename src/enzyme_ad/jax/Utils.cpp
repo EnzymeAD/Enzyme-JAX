@@ -3104,6 +3104,60 @@ Value transposeSliceHelper(stablehlo::TransposeOp transpose,
                               op.getSliceSizes());
 }
 
+Value transposeLikeSliceHelper(stablehlo::BroadcastInDimOp transpose,
+                               PatternRewriter &rewriter,
+                               stablehlo::SliceOp op) {
+  return transposeLikeSliceHelper(transpose, rewriter, op.getStartIndices(),
+                                  op.getLimitIndices(), op.getStrides());
+}
+
+Value transposeLikeSliceHelper(stablehlo::BroadcastInDimOp transpose,
+                               PatternRewriter &rewriter,
+                               stablehlo::DynamicSliceOp op) {
+  return transposeLikeSliceHelper(transpose, rewriter,
+                                  llvm::to_vector(op.getStartIndices()),
+                                  op.getSliceSizes());
+}
+
+Value transposeLikeSliceHelper(stablehlo::BroadcastInDimOp transpose,
+                               PatternRewriter &rewriter,
+                               ArrayRef<int64_t> starts,
+                               ArrayRef<int64_t> limits,
+                               ArrayRef<int64_t> strides) {
+  SmallVector<int64_t> permutedLimit(transpose.getType().getShape().size(), 1);
+  SmallVector<int64_t> permutedStrides(transpose.getType().getShape().size(),
+                                       1);
+  SmallVector<int64_t> permutedStart(transpose.getType().getShape().size(), 0);
+  for (auto [permIndex, i] :
+       llvm::enumerate(transpose.getBroadcastDimensions())) {
+    permutedStart[i] = starts[permIndex];
+    permutedLimit[i] = limits[permIndex];
+    permutedStrides[i] = strides[permIndex];
+  }
+  return SliceOpCreate(rewriter, transpose.getLoc(), transpose.getResult(),
+                       permutedStart, permutedLimit, permutedStrides);
+}
+
+Value transposeLikeSliceHelper(stablehlo::BroadcastInDimOp transpose,
+                               PatternRewriter &rewriter,
+                               ArrayRef<Value> sliceStarts,
+                               ArrayRef<int64_t> sliceSizes) {
+  SmallVector<int64_t> sizes(transpose.getType().getShape().size(), 1);
+  Type eT = RankedTensorType::get({}, rewriter.getI32Type());
+  if (sliceStarts.size())
+    eT = sliceStarts[0].getType();
+  Value zero = stablehlo::ConstantOp::create(
+      rewriter, transpose.getLoc(), eT, cast<ElementsAttr>(makeAttr(eT, 0)));
+  SmallVector<Value> starts(transpose.getType().getShape().size(), zero);
+  for (auto [i, permIndex] :
+       llvm::enumerate(transpose.getBroadcastDimensions())) {
+    sizes[permIndex] = sliceSizes[i];
+    starts[permIndex] = sliceStarts[i];
+  }
+  return DynamicSliceOpCreate(rewriter, transpose.getLoc(),
+                              transpose.getResult(), starts, sizes);
+}
+
 Value transposeSliceHelper(stablehlo::TransposeOp transpose,
                            PatternRewriter &rewriter, ArrayRef<int64_t> starts,
                            ArrayRef<int64_t> limits,
@@ -3192,6 +3246,34 @@ Value sliceTransposeHelper(stablehlo::TransposeOp transpose,
 }
 
 bool isFusible(stablehlo::TransposeOp transpose, Operation *op) {
+  if (isa<stablehlo::TransposeOp, stablehlo::BroadcastInDimOp,
+          stablehlo::DotGeneralOp>(op)) {
+    return true;
+  }
+
+  SplatElementsAttr splat;
+  if (matchPattern(op, m_Constant(&splat))) {
+    return true;
+  }
+
+  if (auto reshapeOp = dyn_cast<stablehlo::ReshapeOp>(op)) {
+    auto inputType = cast<RankedTensorType>(reshapeOp.getOperand().getType());
+    auto outputType = cast<RankedTensorType>(reshapeOp.getResult().getType());
+
+    auto insertionDims = findReshapeInsertionDims(inputType, outputType);
+    if (!insertionDims.empty()) { // fused to a broadcast_in_dim
+      return true;
+    }
+
+    if (reshapeIsTranspose(reshapeOp)) { // transpose_tranpose elimination
+      return true;
+    }
+  }
+
+  return false;
+}
+
+bool isFusible(stablehlo::BroadcastInDimOp transpose, Operation *op) {
   if (isa<stablehlo::TransposeOp, stablehlo::BroadcastInDimOp,
           stablehlo::DotGeneralOp>(op)) {
     return true;

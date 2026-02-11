@@ -1231,13 +1231,13 @@ public:
     // for simplicity we do grad -> reduce -> reshape (restore 1 dims) ->
     // transpose -> reshape
     // The repeated reshapes are then eliminated via `enzyme-hlo-opt`.
-    auto reshapedRed = ReshapeOp::create(
+    auto reshapedRed = stablehlo::ReshapeOp::create(
         builder, op.getLoc(),
         RankedTensorType::get(reshapedShape, inTy.getElementType()),
         red->getResult(0));
     auto transposedVal =
         TransposeOp::create(builder, op.getLoc(), reshapedRed, perm);
-    auto res = ReshapeOp::create(
+    auto res = stablehlo::ReshapeOp::create(
         builder, op.getLoc(), gutils->getShadowType(op.getOperand().getType()),
         transposedVal);
 
@@ -1256,12 +1256,12 @@ public:
 
 class AutoDiffSliceRev
     : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffSliceRev,
-                                                       SliceOp> {
+                                                       stablehlo::SliceOp> {
 public:
   LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
                                          MGradientUtilsReverse *gutils,
                                          SmallVector<Value> caches) const {
-    auto op = cast<SliceOp>(orig);
+    auto op = cast<stablehlo::SliceOp>(orig);
     auto inTy = op.getOperand().getType();
     auto inDiffe = gutils->diffe(op, builder);
     gutils->zeroDiffe(op, builder);
@@ -1714,10 +1714,10 @@ public:
       }
       if (gutils->isConstantValue(op))
         continue;
-      auto res = SliceOp::create(
+      auto res = stablehlo::SliceOp::create(
           builder, op.getLoc(), RankedTensorType::get(tys, RT.getElementType()),
           inDiffe, start, limit, strides);
-      auto res2 = ReshapeOp::create(builder, op.getLoc(), inTy, res);
+      auto res2 = stablehlo::ReshapeOp::create(builder, op.getLoc(), inTy, res);
       gutils->addToDiffe(op, res2, builder);
     }
     return success();
@@ -4204,7 +4204,7 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     ReduceOp::attachInterface<AutoDiffReduceCF<ReduceOp>>(*context);
     WhileOp::attachInterface<AutoDiffReduceCF<WhileOp>>(*context);
     BroadcastInDimOp::attachInterface<AutoDiffBroadcastInDimRev>(*context);
-    SliceOp::attachInterface<AutoDiffSliceRev>(*context);
+    stablehlo::SliceOp::attachInterface<AutoDiffSliceRev>(*context);
     ReduceOp::attachInterface<AutoDiffReduceRev>(*context);
     ReduceWindowOp::attachInterface<AutoDiffReduceWindowRev>(*context);
     ConcatenateOp::attachInterface<AutoDiffConcatenateRev>(*context);
@@ -4223,9 +4223,10 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
         *context);
     ConcatenateOp::attachInterface<SHLOConcatenateOpBatchInterface>(*context);
     GatherOp::attachInterface<SHLOGatherOpBatchInterface>(*context);
-    SliceOp::attachInterface<SHLOSliceOpBatchInterface>(*context);
-    DynamicSliceOp::attachInterface<SHLODynamicSliceOpBatchInterface>(*context);
-    DynamicUpdateSliceOp::attachInterface<
+    stablehlo::SliceOp::attachInterface<SHLOSliceOpBatchInterface>(*context);
+    stablehlo::DynamicSliceOp::attachInterface<
+        SHLODynamicSliceOpBatchInterface>(*context);
+    stablehlo::DynamicUpdateSliceOp::attachInterface<
         SHLODynamicUpdateSliceOpBatchInterface>(*context);
     CustomCallOp::attachInterface<SHLOGenericBatchOpInterface<CustomCallOp>>(
         *context);

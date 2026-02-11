@@ -648,6 +648,21 @@ def ApplyTransposeElementwisePatterns : EnzymeHLOParameterizedPatternOp<
   }];
 }
 
+def ApplyTransposeLikeBroadcastElementwisePatterns : EnzymeHLOParameterizedPatternOp<
+    "transpose_like_broadcast_elementwise"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
 def ApplyConcatPushBinopAddPatterns : EnzymeHLOPatternOp<
     "concat_push_binop_add"> {
   let patterns = ["ConcatPushBinop<stablehlo::AddOp>"];
@@ -1624,6 +1639,18 @@ def TransposeDynamicSlicePatterns : EnzymeHLOPatternOp<
   let patterns = ["TransposeSliceBase<stablehlo::DynamicSliceOp>"];
 }
 
+def TransposeLikeBroadcastSlicePatterns : EnzymeHLOPatternOp<
+  "transpose_like_broadcast_slice"
+> {
+  let patterns = ["TransposeLikeBroadcastSliceBase<stablehlo::SliceOp>"];
+}
+
+def TransposeLikeBroadcastDynamicSlicePatterns : EnzymeHLOPatternOp<
+  "transpose_like_broadcast_dynamic_slice"
+> {
+  let patterns = ["TransposeLikeBroadcastSliceBase<stablehlo::DynamicSliceOp>"];
+}
+
 def TransposeReshapeToBroadcastPatterns : EnzymeHLOPatternOp<
   "transpose_reshape_to_broadcast"
 > {
@@ -2051,6 +2078,11 @@ def LowerRotate : EnzymeHLOPatternOp<
   let patterns = ["LowerRotate"];
 }
 
+def LowerPiecewiseSelect : EnzymeHLOPatternOp<
+    "lower_piecewise_select"> {
+  let patterns = ["LowerPiecewiseSelect"];
+}
+
 def RecognizeWrap : EnzymeHLOPatternOp<
     "recognize_wrap"> {
   let patterns = ["RecognizeWrap"];
@@ -2190,6 +2222,11 @@ def TransposeExtend : EnzymeHLOPatternOp<
 def TransposeRotate : EnzymeHLOPatternOp<
     "transpose_rotate"> {
   let patterns = ["TransposeRotate"];
+}
+
+def RecognizeMultiSlice : EnzymeHLOPatternOp<
+    "recognize_multislice"> {
+  let patterns = ["RecognizeMultiSlice"];
 }
 
 def ReduceUnusedMultiSlice : EnzymeHLOPatternOp<
@@ -2556,6 +2593,10 @@ def ApplyConcatenateSubtractToSubtractPadPatterns : EnzymeHLOPatternOp<"concaten
   let patterns = ["ConcatenateSubtractToSubtractPad"];
 }
 
+def ApplyConcatenateAddToAddPadPatterns : EnzymeHLOPatternOp<"concatenate_add_to_add_pad"> {
+  let patterns = ["ConcatenateAddToAddPad"];
+}
+
 def ApplyConcatenateBroadcastInDimPatterns : EnzymeHLOPatternOp<"concatenate_broadcast_in_dim"> {
   let patterns = ["ConcatenateBroadcastInDim"];
 }
@@ -2881,6 +2922,11 @@ def ApplyDUSDynamicSliceSimplifyPatterns : EnzymeHLOPatternOp<
   let patterns = ["DUSDynamicSliceSimplify"];
 }
 
+def ApplyDUSDUSSubsumingPatterns : EnzymeHLOPatternOp<
+    "dus_dus_subsuming"> {
+  let patterns = ["DUSDUSSubsuming"];
+}
+
 def ApplyWhileIdempotentDUSPatterns : EnzymeHLOPatternOp<
     "while_idempotent_dus"> {
   let patterns = ["WhileIdempotentDUS"];
@@ -2949,6 +2995,11 @@ def ApplyDeleteDimsBroadcastPatterns : EnzymeHLOPatternOp<
 def ApplySplitComplexScatterPatterns: EnzymeHLOPatternOp<
     "split_complex_scatter"> {
   let patterns = ["SplitComplexScatter"];
+}
+
+def ApplySplitComplexGatherPatterns: EnzymeHLOPatternOp<
+    "split_complex_gather"> {
+  let patterns = ["SplitComplexGather"];
 }
 
 // TODO: remove this once we have removed it from reactant

@@ -121,7 +121,7 @@ jobs:
         timeout-minutes: 60
         run: |
           julia --project --color=yes -e 'using Pkg; Pkg.instantiate()'
-          julia --project --color=yes -O0 build_local.jl --cc=clang --gcc_host_compiler_path=
+          julia --project --color=yes -O0 build_local.jl --cc=clang --gcc_host_compiler_path= --push-cache
         working-directory: ${{ env.REACTANT_DIR }}/deps
       - name: Copy libdevice
         timeout-minutes: 10

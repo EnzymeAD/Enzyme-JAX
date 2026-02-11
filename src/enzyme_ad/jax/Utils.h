@@ -1297,6 +1297,24 @@ Value transposeSliceHelper(stablehlo::TransposeOp transpose,
                            ArrayRef<Value> sliceStarts,
                            ArrayRef<int64_t> sliceSizes);
 
+Value transposeLikeSliceHelper(stablehlo::BroadcastInDimOp transpose,
+                               PatternRewriter &rewriter,
+                               stablehlo::SliceOp op);
+Value transposeLikeSliceHelper(stablehlo::BroadcastInDimOp transpose,
+                               PatternRewriter &rewriter,
+                               stablehlo::DynamicSliceOp op);
+
+Value transposeLikeSliceHelper(stablehlo::BroadcastInDimOp transpose,
+                               PatternRewriter &rewriter,
+                               ArrayRef<int64_t> starts,
+                               ArrayRef<int64_t> limits,
+                               ArrayRef<int64_t> strides);
+
+Value transposeLikeSliceHelper(stablehlo::BroadcastInDimOp transpose,
+                               PatternRewriter &rewriter,
+                               ArrayRef<Value> sliceStarts,
+                               ArrayRef<int64_t> sliceSizes);
+
 Value sliceTransposeHelper(stablehlo::TransposeOp transpose,
                            PatternRewriter &rewriter, stablehlo::SliceOp op);
 Value sliceTransposeHelper(stablehlo::TransposeOp transpose,
@@ -1316,6 +1334,7 @@ Value sliceTransposeHelper(stablehlo::TransposeOp transpose,
                            ArrayRef<int64_t> sliceSizes);
 
 // checks if operation 1 can be fused with operation 2. ordering is important
+bool isFusible(stablehlo::BroadcastInDimOp transpose, Operation *op);
 bool isFusible(stablehlo::TransposeOp transpose, Operation *op);
 bool isFusible(Operation *op, stablehlo::BroadcastInDimOp bcast);
 bool isFusible(Operation *op, stablehlo::ReshapeOp reshape);
@@ -1551,5 +1570,20 @@ void ExtractBlockIntoFunction(Block *block, ModuleOp modOp, func::FuncOp &func,
                               OpBuilder &builder);
 
 } // namespace stablehlo
+
+static InFlightDiagnostic &operator<<(InFlightDiagnostic &diag, AffineMap map) {
+  std::string str;
+  llvm::raw_string_ostream os(str);
+  map.print(os);
+  return diag << str;
+}
+
+static void printAsOperand(InFlightDiagnostic &diag, Value value,
+                           const OpPrintingFlags &flags) {
+  std::string str;
+  llvm::raw_string_ostream os(str);
+  value.printAsOperand(os, flags);
+  diag << str;
+}
 
 } // namespace mlir
