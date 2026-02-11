@@ -32882,6 +32882,81 @@ static void buildScatterUpdateRegion(PatternRewriter &rewriter, Location loc,
   stablehlo::ReturnOp::create(rewriter, loc, result);
 }
 
+static Value concatRealAndImag(PatternRewriter &rewriter, Location loc,
+                               Value realPart, Value imagPart) {
+  auto tensorType = cast<RankedTensorType>(realPart.getType());
+  int64_t rank = tensorType.getRank();
+  auto shape = tensorType.getShape();
+
+  // Reshape each to add a trailing dimension of size 1:
+  //   [d0, ..., dn] -> [d0, ..., dn, 1]
+  SmallVector<int64_t> reshapedShape(shape.begin(), shape.end());
+  reshapedShape.push_back(1);
+
+  auto realReshaped =
+      stablehlo::ReshapeOpCreate(rewriter, loc, realPart, reshapedShape);
+  auto imagReshaped =
+      stablehlo::ReshapeOpCreate(rewriter, loc, imagPart, reshapedShape);
+
+  // Concatenate along the new trailing dimension (dim = rank):
+  //   [d0, ..., dn, 1] + [d0, ..., dn, 1] -> [d0, ..., dn, 2]
+  return stablehlo::ConcatenateOp::create(
+             rewriter, loc, ValueRange{realReshaped, imagReshaped},
+             rewriter.getI64IntegerAttr(rank))
+      .getResult();
+}
+
+// Helper: Split a complex tensor into real+imag and concatenate along a new
+// trailing dimension. Given a complex tensor of shape [d0, ..., dn],
+// returns a real-valued tensor of shape [d0, ..., dn, 2] where [..., 0] =
+// real and [..., 1] = imag.
+static Value splitComplexAndConcat(PatternRewriter &rewriter, Location loc,
+                                   Value complexTensor) {
+  auto realPart = stablehlo::RealOp::create(rewriter, loc, complexTensor);
+  auto imagPart = stablehlo::ImagOp::create(rewriter, loc, complexTensor);
+  return concatRealAndImag(rewriter, loc, realPart, imagPart);
+}
+
+// Helper: Combine real and imaginary parts from a trailing dimension into a
+// complex tensor. Given a real-valued tensor of shape [d0, ..., dn, 2],
+// returns a complex tensor of shape [d0, ..., dn] where real comes from
+// [..., 0] and imag from [..., 1].
+static Value sliceAndCombineComplex(PatternRewriter &rewriter, Location loc,
+                                    Value splitTensor) {
+  auto tensorType = cast<RankedTensorType>(splitTensor.getType());
+  auto shape = tensorType.getShape();
+  int64_t rank = tensorType.getRank();
+
+  // Result shape: [d0, ..., dn]
+  SmallVector<int64_t> resultShape(shape.begin(), shape.end() - 1);
+
+  SmallVector<int64_t> sliceStart(rank, 0);
+  SmallVector<int64_t> sliceLimit(shape.begin(), shape.end());
+  SmallVector<int64_t> sliceStride(rank, 1);
+
+  // Real part: slice [..., 0:1]
+  sliceLimit.back() = 1;
+
+  auto realSlice = stablehlo::SliceOpCreate(
+      rewriter, loc, splitTensor, sliceStart, sliceLimit, sliceStride);
+
+  // Imag part: slice [..., 1:2]
+  sliceStart.back() = 1;
+  sliceLimit.back() = 2;
+
+  auto imagSlice = stablehlo::SliceOpCreate(
+      rewriter, loc, splitTensor, sliceStart, sliceLimit, sliceStride);
+
+  // Reshape to remove trailing dim of 1
+  auto realResult =
+      stablehlo::ReshapeOpCreate(rewriter, loc, realSlice, resultShape);
+  auto imagResult =
+      stablehlo::ReshapeOpCreate(rewriter, loc, imagSlice, resultShape);
+
+  // Combine
+  return stablehlo::ComplexOp::create(rewriter, loc, realResult, imagResult);
+}
+
 // See discussion in
 // https://github.com/EnzymeAD/Reactant.jl/pull/2219#issuecomment-3801834108
 struct SplitComplexScatter final
@@ -32952,9 +33027,7 @@ struct SplitComplexScatter final
       return failure();
     }
 
-    auto inputType = cast<RankedTensorType>(op.getInputs()[0].getType());
     auto updateType = cast<RankedTensorType>(op.getUpdates()[0].getType());
-    int64_t inputRank = inputType.getRank();
     int64_t updateRank = updateType.getRank();
 
     // Step 1: For each input/update pair, split into real/imag, reshape,
@@ -32963,30 +33036,7 @@ struct SplitComplexScatter final
     for (auto [input, update] :
          llvm::zip_equal(op.getInputs(), op.getUpdates())) {
       // Process input: real/imag -> reshape -> concat
-      auto realInput = stablehlo::RealOp::create(rewriter, loc, input);
-      auto imagInput = stablehlo::ImagOp::create(rewriter, loc, input);
-
-      auto inputShape = cast<RankedTensorType>(input.getType()).getShape();
-      SmallVector<int64_t> reshapedInputShape(inputShape.begin(),
-                                              inputShape.end());
-      reshapedInputShape.push_back(1);
-      auto reshapedInputType =
-          RankedTensorType::get(reshapedInputShape, innerElemType);
-      auto realInputReshaped = stablehlo::ReshapeOp::create(
-          rewriter, loc, reshapedInputType, realInput);
-      auto imagInputReshaped = stablehlo::ReshapeOp::create(
-          rewriter, loc, reshapedInputType, imagInput);
-
-      SmallVector<int64_t> concatInputShape(inputShape.begin(),
-                                            inputShape.end());
-      concatInputShape.push_back(2);
-      auto concatInputType =
-          RankedTensorType::get(concatInputShape, innerElemType);
-      auto concatInput = stablehlo::ConcatenateOp::create(
-          rewriter, loc, concatInputType,
-          ValueRange{realInputReshaped, imagInputReshaped},
-          rewriter.getI64IntegerAttr(inputRank));
-      concatInputs.push_back(concatInput);
+      concatInputs.push_back(splitComplexAndConcat(rewriter, loc, input));
 
       // Process update: depends on scatter kind
       auto curUpdateType = cast<RankedTensorType>(update.getType());
@@ -33082,48 +33132,7 @@ struct SplitComplexScatter final
     // recombine with ComplexOp.
     SmallVector<Value> results;
     for (auto result : scatterOp.getResults()) {
-      auto resType = cast<RankedTensorType>(result.getType());
-      auto resShape = resType.getShape();
-      int64_t resRank = resType.getRank();
-
-      // Original result shape (without trailing dim of 2)
-      auto origShape = resShape.drop_back();
-
-      SmallVector<int64_t> sliceStart(resRank, 0);
-      SmallVector<int64_t> sliceLimit(resShape.begin(), resShape.end());
-      SmallVector<int64_t> sliceStride(resRank, 1);
-
-      // Real part: [..., 0:1]
-      sliceLimit.back() = 1;
-      SmallVector<int64_t> slicedShape(origShape.begin(), origShape.end());
-      slicedShape.push_back(1);
-      auto slicedType = RankedTensorType::get(slicedShape, innerElemType);
-
-      auto realSlice = stablehlo::SliceOp::create(
-          rewriter, loc, slicedType, result,
-          rewriter.getDenseI64ArrayAttr(sliceStart),
-          rewriter.getDenseI64ArrayAttr(sliceLimit),
-          rewriter.getDenseI64ArrayAttr(sliceStride));
-
-      // Imag part: [..., 1:2]
-      sliceStart.back() = 1;
-      sliceLimit.back() = 2;
-      auto imagSlice = stablehlo::SliceOp::create(
-          rewriter, loc, slicedType, result,
-          rewriter.getDenseI64ArrayAttr(sliceStart),
-          rewriter.getDenseI64ArrayAttr(sliceLimit),
-          rewriter.getDenseI64ArrayAttr(sliceStride));
-
-      // Reshape to remove trailing dim of 1
-      auto origType = RankedTensorType::get(origShape, innerElemType);
-      auto realResult =
-          stablehlo::ReshapeOp::create(rewriter, loc, origType, realSlice);
-      auto imagResult =
-          stablehlo::ReshapeOp::create(rewriter, loc, origType, imagSlice);
-
-      // Combine
-      results.push_back(
-          stablehlo::ComplexOp::create(rewriter, loc, realResult, imagResult));
+      results.push_back(sliceAndCombineComplex(rewriter, loc, result));
     }
 
     rewriter.replaceOp(op, results);
@@ -33147,8 +33156,6 @@ struct SplitComplexGather final
 
     auto complexType = cast<ComplexType>(elemType);
     auto innerElemType = complexType.getElementType();
-    auto operandType = cast<RankedTensorType>(op.getOperand().getType());
-    int64_t operandRank = operandType.getRank();
     int64_t resultRank = resultType.getRank();
 
     // Step 1: Extract real and imaginary parts, reshape each to add a
@@ -33157,27 +33164,8 @@ struct SplitComplexGather final
     // e.g., tensor<4xcomplex<f32>> -> real: tensor<4xf32> -> tensor<4x1xf32>
     //                                 imag: tensor<4xf32> -> tensor<4x1xf32>
     //                                 concat: tensor<4x2xf32>
-    auto realOperand =
-        stablehlo::RealOp::create(rewriter, op.getLoc(), op.getOperand());
-    auto imagOperand =
-        stablehlo::ImagOp::create(rewriter, op.getLoc(), op.getOperand());
-
-    auto operandShape = operandType.getShape();
-    SmallVector<int64_t> reshapedOperandShape(operandShape.begin(),
-                                              operandShape.end());
-    reshapedOperandShape.push_back(1);
-    auto reshapedOperandType =
-        RankedTensorType::get(reshapedOperandShape, innerElemType);
-
-    auto realReshaped = stablehlo::ReshapeOp::create(
-        rewriter, op.getLoc(), reshapedOperandType, realOperand);
-    auto imagReshaped = stablehlo::ReshapeOp::create(
-        rewriter, op.getLoc(), reshapedOperandType, imagOperand);
-
-    // Concatenate along the last dimension (operandRank)
-    auto concatOperand = stablehlo::ConcatenateOp::create(
-        rewriter, op.getLoc(), ValueRange{realReshaped, imagReshaped},
-        rewriter.getI64IntegerAttr(operandRank));
+    auto concatOperand =
+        splitComplexAndConcat(rewriter, op.getLoc(), op.getOperand());
 
     // Step 2: Adjust the gather dimension numbers and slice sizes to account
     // for the extra trailing dimension.
@@ -33215,35 +33203,8 @@ struct SplitComplexGather final
 
     // Step 4: Slice the result along the trailing dimension to extract
     // real and imag parts, reshape, and recombine.
-    // e.g., tensor<2x2xf32> -> slice [0]: tensor<2x1xf32> -> tensor<2xf32>
-    //                          slice [1]: tensor<2x1xf32> -> tensor<2xf32>
-    SmallVector<int64_t> sliceStart(resultRank + 1, 0);
-    SmallVector<int64_t> sliceLimit(newResultShape.begin(),
-                                    newResultShape.end());
-    SmallVector<int64_t> sliceStride(resultRank + 1, 1);
-
-    // Real part: slice [..., 0:1]
-    sliceLimit.back() = 1;
-
-    auto realSlice = stablehlo::SliceOpCreate(
-        rewriter, op.getLoc(), gatherOp, sliceStart, sliceLimit, sliceStride);
-
-    // Imag part: slice [..., 1:2]
-    sliceStart.back() = 1;
-    sliceLimit.back() = 2;
-
-    auto imagSlice = stablehlo::SliceOpCreate(
-        rewriter, op.getLoc(), gatherOp, sliceStart, sliceLimit, sliceStride);
-
-    // Reshape to remove the trailing dimension of size 1
-    auto realResult = stablehlo::ReshapeOpCreate(rewriter, op.getLoc(),
-                                                 realSlice, resultShape);
-    auto imagResult = stablehlo::ReshapeOpCreate(rewriter, op.getLoc(),
-                                                 imagSlice, resultShape);
-
-    // Combine real and imaginary results
-    auto complexResult = stablehlo::ComplexOp::create(rewriter, op.getLoc(),
-                                                      realResult, imagResult);
+    auto complexResult =
+        sliceAndCombineComplex(rewriter, op.getLoc(), gatherOp);
 
     rewriter.replaceOp(op, complexResult);
     return success();
