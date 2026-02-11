@@ -412,20 +412,50 @@ def get_pipeline(name: str):
         )
     elif name == "IDefOpt":
         return ("IDefOpt", JaXPipeline(full_optimization_pass_pipeline()), CurBackends)
+    elif name == "NoScatterGatherOpts":
+        return (
+            "NoScatterGatherOpts",
+            JaXPipeline(
+                full_optimization_pass_pipeline(
+                    enable_scatter_gather_optimization_passes=False
+                )
+            ),
+            CurBackends,
+        )
 
 
-def pipelines():
+def pipelines(
+    *,
+    jaxpipe=True,
+    jax=True,
+    hloopt=True,
+    partopt=True,
+    ipartopt=True,
+    defopt=True,
+    idefopt=True,
+    noscattergather=False,
+):
     setup_backends()
 
-    return [
-        get_pipeline("JaxPipe"),
-        get_pipeline("Jax"),
-        get_pipeline("HLOOpt"),
-        get_pipeline("PartOpt"),
-        get_pipeline("IPartOpt"),
-        get_pipeline("DefOpt"),
-        get_pipeline("IDefOpt"),
-    ]
+    pipelines = []
+    if jaxpipe:
+        pipelines.append(get_pipeline("JaxPipe"))
+    if jax:
+        pipelines.append(get_pipeline("Jax"))
+    if hloopt:
+        pipelines.append(get_pipeline("HLOOpt"))
+    if partopt:
+        pipelines.append(get_pipeline("PartOpt"))
+    if ipartopt:
+        pipelines.append(get_pipeline("IPartOpt"))
+    if defopt:
+        pipelines.append(get_pipeline("DefOpt"))
+    if idefopt:
+        pipelines.append(get_pipeline("IDefOpt"))
+    if noscattergather:
+        pipelines.append(get_pipeline("NoScatterGatherOpts"))
+
+    return pipelines
 
 
 def no_newxla(x):
@@ -551,6 +581,7 @@ class EnzymeJaxTest(absltest.TestCase):
         self.mlirad_rev = True
         self.results = []
         self.skip_test_assert = False
+        self.use_xprof = True
 
     def pretty_print_table(self, name, pname, backend, key, time):
         print_str = "{:<20}\t{:<20}\t{:<15}\t{:<10}\t{:<15.8f}".format(
@@ -647,7 +678,10 @@ class EnzymeJaxTest(absltest.TestCase):
                         recursive_check(self, ao, primres, "Primal " + pname)
 
                     runtime = profile_compiled_function(
-                        rfn_enzyme, ins_backend, nrepeat=self.repeat
+                        rfn_enzyme,
+                        ins_backend,
+                        nrepeat=self.repeat,
+                        use_xprof=self.use_xprof,
                     )["avg_time_s"]
                     self.pretty_print_table(name, pname, backend, "Primal", runtime)
 
@@ -694,7 +728,10 @@ class EnzymeJaxTest(absltest.TestCase):
                             recursive_check(self, tangents, fwdres, "Forward " + pname)
 
                         runtime = profile_compiled_function(
-                            fwd_enzyme, all_ins, nrepeat=self.repeat
+                            fwd_enzyme,
+                            all_ins,
+                            nrepeat=self.repeat,
+                            use_xprof=self.use_xprof,
                         )["avg_time_s"]
                         self.pretty_print_table(
                             name, pname, backend, "Forward", runtime
@@ -749,7 +786,10 @@ class EnzymeJaxTest(absltest.TestCase):
                                 recursive_check(self, grads, revres, "Reverse " + pname)
 
                             runtime = profile_compiled_function(
-                                rev_enzyme, all_ins, nrepeat=self.repeat
+                                rev_enzyme,
+                                all_ins,
+                                nrepeat=self.repeat,
+                                use_xprof=self.use_xprof,
                             )["avg_time_s"]
                             self.pretty_print_table(
                                 name, pname, backend, "PreRev", runtime
@@ -794,7 +834,10 @@ class EnzymeJaxTest(absltest.TestCase):
                             recursive_check(self, grads, revres)
 
                         runtime = profile_compiled_function(
-                            rev_enzyme, all_ins, nrepeat=self.repeat
+                            rev_enzyme,
+                            all_ins,
+                            nrepeat=self.repeat,
+                            use_xprof=self.use_xprof,
                         )["avg_time_s"]
                         self.pretty_print_table(
                             name, pname, backend, "PostRev", runtime
@@ -846,7 +889,10 @@ class EnzymeJaxTest(absltest.TestCase):
                             recursive_check(self, grads, revres)
 
                         runtime = profile_compiled_function(
-                            rev_enzyme, all_ins, nrepeat=self.repeat
+                            rev_enzyme,
+                            all_ins,
+                            nrepeat=self.repeat,
+                            use_xprof=self.use_xprof,
                         )["avg_time_s"]
                         self.pretty_print_table(
                             name, pname, backend, "BothRev", runtime
