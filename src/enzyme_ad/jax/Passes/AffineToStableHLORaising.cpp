@@ -2439,13 +2439,14 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
 static void
 replaceAffineFuncWithStableHLOFunc(func::FuncOp oldFunc, func::FuncOp newFunc,
-                                   llvm::ArrayRef<Operation *> users) {
+                                   llvm::ArrayRef<Operation *> users,
+                                   bool strip_llvm_debuginfo) {
   for (auto op : users) {
     auto user = dyn_cast<enzymexla::JITCallOp>(op);
 
     OpBuilder builder(user);
     auto newCall = func::CallOp::create(
-        builder, rewriteLocation(user->getLoc()), newFunc, user->getOperands());
+        builder, rewriteLocation(user->getLoc(), strip_llvm_debuginfo), newFunc, user->getOperands());
 
     auto operand_aliases = user.getOutputOperandAliases();
     assert(operand_aliases.size() == user.getNumResults());
@@ -2527,7 +2528,7 @@ static bool tryRaisingToStableHLO(func::FuncOp func,
   func::ReturnOp::create(builder, rewriteLocation(func->getLoc(), options.strip_llvm_debuginfo), results);
   modOp.getBody()->push_back(newFunc);
 
-  replaceAffineFuncWithStableHLOFunc(func, newFunc, users);
+  replaceAffineFuncWithStableHLOFunc(func, newFunc, users, options.strip_llvm_debuginfo);
 
   return true;
 }
@@ -2556,7 +2557,7 @@ struct PushReductionsDown : public OpRewritePattern<arith::AddFOp> {
         if (!isa<affine::AffineForOp>(ba.getOwner()->getParentOp()))
           continue;
         auto add2 =
-            arith::AddFOp::create(rewriter, rewriteLocation(op.getLoc()), rhs,
+            arith::AddFOp::create(rewriter, rewriteLocation(op.getLoc(), false), rhs,
                                   lhs->getOperand(1 - j));
         rewriter.replaceOpWithNewOp<arith::AddFOp>(op, add2, ba);
         return success();
