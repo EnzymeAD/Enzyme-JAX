@@ -180,6 +180,7 @@ def optimization_passes(
         "convert_simplify<16>",
         "dynamic_slice_to_static<16>",
         "dynamic_update_slice_elim<16>",
+        "dus_select_slice<16>",
         "concat_to_broadcast<16>",
         "reduce_to_reshape<16>",
         "broadcast_to_reshape<16>",

@@ -631,6 +631,149 @@ struct DynamicUpdateSliceElim final
   }
 };
 
+// Optimize DUS of select of slice where the slice contains existing data
+// Pattern 1: DUS(slice_A(input), select(slice_B(input), other)) 
+//         -> select(slice_A(input), DUS(slice_A(input), other))
+// Pattern 2: DUS(operand, select(slice(operand), other))
+//         -> select(operand, DUS(operand, other))
+// This handles cases where one branch of the select is a slice that would
+// preserve the original data, making it a no-op for the DUS operation
+struct DUSSelectSlice final
+    : CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp, DUSSelectSlice> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DynamicUpdateSliceOp op,
+                                    PatternRewriter &rewriter) const {
+    auto type = dyn_cast<RankedTensorType>(op.getType());
+    if (!type)
+      return failure();
+
+    // Check if the update is a select operation
+    auto selectOp = op.getUpdate().getDefiningOp<stablehlo::SelectOp>();
+    if (!selectOp || !selectOp->hasOneUse())
+      return failure();
+
+    Value pred = selectOp.getPred();
+    Value onTrue = selectOp.getOnTrue();
+    Value onFalse = selectOp.getOnFalse();
+    Value operand = op.getOperand();
+
+    // Extract DUS start indices as constants early, or fail if any are dynamic
+    auto dusStartIndices = op.getStartIndices();
+    SmallVector<int64_t> dusStarts;
+    dusStarts.reserve(dusStartIndices.size());
+    for (auto startIdx : dusStartIndices) {
+      DenseIntElementsAttr startAttr;
+      if (!matchPattern(startIdx, m_Constant(&startAttr))) {
+        // Dynamic DUS start - we can't verify statically
+        return failure();
+      }
+      dusStarts.push_back((*startAttr.begin()).getSExtValue());
+    }
+
+    // Check if either branch of the select is a slice
+    auto trueSlice = onTrue.getDefiningOp<stablehlo::SliceOp>();
+    auto falseSlice = onFalse.getDefiningOp<stablehlo::SliceOp>();
+
+    Value sliceVal = nullptr;
+    Value otherVal = nullptr;
+    stablehlo::SliceOp sliceOp;
+    bool sliceIsTrue = false;
+
+    // Case 1: DUS operand is a slice, and select branch slices the same source
+    auto operandSlice = operand.getDefiningOp<stablehlo::SliceOp>();
+    if (operandSlice) {
+      Value sourceInput = operandSlice.getOperand();
+      
+      if (trueSlice && trueSlice.getOperand() == sourceInput) {
+        sliceVal = onTrue;
+        otherVal = onFalse;
+        sliceIsTrue = true;
+        sliceOp = trueSlice;
+      } else if (falseSlice && falseSlice.getOperand() == sourceInput) {
+        sliceVal = onFalse;
+        otherVal = onTrue;
+        sliceIsTrue = false;
+        sliceOp = falseSlice;
+      } else {
+        return failure();
+      }
+    } 
+    // Case 2: DUS operand is not a slice, but select branch slices the operand
+    else {
+      if (trueSlice && trueSlice.getOperand() == operand) {
+        sliceVal = onTrue;
+        otherVal = onFalse;
+        sliceIsTrue = true;
+        sliceOp = trueSlice;
+      } else if (falseSlice && falseSlice.getOperand() == operand) {
+        sliceVal = onFalse;
+        otherVal = onTrue;
+        sliceIsTrue = false;
+        sliceOp = falseSlice;
+      } else {
+        return failure();
+      }
+    }
+
+    // Check that all strides are 1
+    for (auto stride : sliceOp.getStrides()) {
+      if (stride != 1)
+        return failure();
+    }
+
+    // Verify that the slice region corresponds to the DUS update region.
+    // For the optimization to be correct, when the predicate selects the slice,
+    // the DUS should be writing to the exact same region that the slice extracts.
+    auto sliceStarts = sliceOp.getStartIndices();
+    
+    // Case 1: DUS operand is a slice - need to account for operand's offset
+    if (operandSlice) {
+      auto operandStarts = operandSlice.getStartIndices();
+      
+      // For each dimension, verify: slice_start - operand_start == dus_start
+      for (size_t i = 0; i < sliceStarts.size(); ++i) {
+        int64_t sliceStart = sliceStarts[i];
+        int64_t operandStart = operandStarts[i];
+        int64_t expectedDusStart = sliceStart - operandStart;
+        
+        if (dusStarts[i] != expectedDusStart)
+          return failure();
+      }
+    }
+    // Case 2: DUS operand is not a slice - slice start must equal DUS start
+    else {
+      for (size_t i = 0; i < sliceStarts.size(); ++i) {
+        if (dusStarts[i] != sliceStarts[i])
+          return failure();
+      }
+    }
+
+    // Build the new DUS with the other value (not the slice).
+    // otherVal is the non-slice branch that contains the actual update data.
+    auto newDUS = stablehlo::DynamicUpdateSliceOp::create(
+        rewriter, op.getLoc(), op.getType(), operand, otherVal,
+        op.getStartIndices());
+
+    // Create the select: select(pred, operand, newDUS) or select(pred, newDUS, operand)
+    Value newSelect;
+    if (sliceIsTrue) {
+      // Original: DUS(operand, select(pred, slice(source), other))
+      // New: select(pred, operand, DUS(operand, other))
+      newSelect = stablehlo::SelectOp::create(rewriter, op.getLoc(), pred,
+                                              operand, newDUS);
+    } else {
+      // Original: DUS(operand, select(pred, other, slice(source)))
+      // New: select(pred, DUS(operand, other), operand)
+      newSelect = stablehlo::SelectOp::create(rewriter, op.getLoc(), pred,
+                                              newDUS, operand);
+    }
+
+    rewriter.replaceOp(op, newSelect);
+    return success();
+  }
+};
+
 // Given a reshape fromType to toType, remove the eliminated indices from start,
 // and fill any new dimensions with toFill. Check that any removed indices have
 // value checkRemoved, if set
@@ -33424,7 +33567,7 @@ struct EnzymeHLOOptPass
         LogSimplify, ShiftRightLogicalSimplify, NegativePadToSlice,
         SliceSimplify, ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
         DotGeneralReshape, DiagonalTensorDotGeneralRewrite,
-        DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
+        DynamicSliceToStatic, DynamicUpdateSliceElim, DUSSelectSlice, ReduceToReshape,
         BroadcastToReshape, ReshapeEmptyBroadcast, ReshapeBroadcast,
         BroadcastReshape, ConstPropThroughBarrier, ReplaceNegAddWithSubtract,
         ReplaceSubtractNegWithAdd, SignAbsSimplify, AbsPositiveSimplify,
