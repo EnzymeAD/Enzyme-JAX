@@ -7,13 +7,11 @@ func.func @main(%a : tensor<2xf32>, %b : tensor<2xf32>) -> tensor<2xf32> {
 }
 
 // FORWARD:  func.func @main(%arg0: tensor<2xf32>, %arg1: tensor<2xf32>, %arg2: tensor<2xf32>, %arg3: tensor<2xf32>) -> (tensor<2xf32>, tensor<2xf32>) {
-// FORWARD-NEXT:    %0 = stablehlo.multiply %arg0, %arg3 : tensor<2xf32>
-// FORWARD-NEXT:    %1 = stablehlo.multiply %arg2, %arg1 : tensor<2xf32>
+// FORWARD-NEXT:    %0 = stablehlo.multiply %arg2, %arg1 : tensor<2xf32>
+// FORWARD-NEXT:    %1 = stablehlo.multiply %arg0, %arg3 : tensor<2xf32>
 // FORWARD-NEXT:    %2 = stablehlo.subtract %0, %1 : tensor<2xf32>
-// FORWARD-NEXT:    %cst = stablehlo.constant dense<2.000000e+00> : tensor<2xf32>
-// FORWARD-NEXT:    %3 = stablehlo.power %arg0, %cst : tensor<2xf32>
-// FORWARD-NEXT:    %cst_0 = stablehlo.constant dense<2.000000e+00> : tensor<2xf32>
-// FORWARD-NEXT:    %4 = stablehlo.power %arg2, %cst_0 : tensor<2xf32>
+// FORWARD-NEXT:    %3 = stablehlo.multiply %arg2, %arg2 : tensor<2xf32>
+// FORWARD-NEXT:    %4 = stablehlo.multiply %arg0, %arg0 : tensor<2xf32>
 // FORWARD-NEXT:    %5 = stablehlo.add %3, %4 : tensor<2xf32>
 // FORWARD-NEXT:    %6 = stablehlo.divide %2, %5 : tensor<2xf32>
 // FORWARD-NEXT:    %7 = stablehlo.atan2 %arg0, %arg2 : tensor<2xf32>
