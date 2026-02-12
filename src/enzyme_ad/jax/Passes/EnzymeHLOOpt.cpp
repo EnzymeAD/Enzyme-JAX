@@ -1097,7 +1097,7 @@ struct ReshapeExtend final
 
     // Then create a new extend operation on the reshaped data
     auto newExtendOp = enzymexla::ExtendOp::create(rewriter, op.getLoc(),
-                                                   newReshapeOp.getResult(),
+                                                   newReshapeOp,
                                                    lhs, rhs, newExtendDim);
 
     // Replace the original reshape op with the new extend operation
@@ -6155,7 +6155,7 @@ struct ConcatToBroadcast final
           rewriter, op.getLoc(), op->getOperand(0), reshaped);
 
       SmallVector<int64_t> bcast;
-      for (auto en : llvm::enumerate(reshapeVal.getType().getShape())) {
+      for (auto en : llvm::enumerate(cast<RankedTensorType>(reshapeVal.getType()).getShape())) {
         bcast.push_back(en.index());
       }
       reshaped[op.getDimension()] = op->getNumOperands();
@@ -21705,8 +21705,6 @@ struct SumToConv : public SumToReductionBase<ST, SumToConv<ST>> {
     if (conv.getType() != pre_reshape) {
       SmallVector<int64_t> post_shape = llvm::to_vector(pre_reshape.getShape());
       post_shape[reshapeOffsetDim] -= (lastidx - startidx);
-      RankedTensorType post_reshape =
-          RankedTensorType::get(post_shape, pre_reshape.getElementType());
       conv = stablehlo::ReshapeOpCreate(rewriter, input.getLoc(),
                                         conv, post_shape);
     }
@@ -22847,7 +22845,7 @@ struct RecognizeWrap
           auto reshape = stablehlo::ReshapeOpCreate(
               rewriter, concat.getLoc(), wrap, newShape);
           if (auto shard = sdy::getShardingPerValue(rs0)) {
-            sdy::setShardings(reshape, shard);
+            sdy::setShardings(reshape.getDefiningOp(), shard);
           }
           toConcat.push_back(reshape);
           for (int j = i + 1; j < operands.size(); j++)
@@ -22859,7 +22857,7 @@ struct RecognizeWrap
             rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
                 concat, toConcat, concatDim);
             if (shard) {
-              sdy::setShardings(reshape, shard);
+              sdy::setShardings(reshape.getDefiningOp(), shard);
             }
           }
           return success();
@@ -23287,7 +23285,7 @@ struct RecognizeExtend
         auto reshape = stablehlo::ReshapeOpCreate(
             rewriter, concat.getLoc(), extend, shape);
         if (auto shard = sdy::getShardingPerValue(concat)) {
-          sdy::setShardings(reshape, shard);
+          sdy::setShardings(reshape.getDefiningOp(), shard);
         }
         finish(reshape);
         return success();
@@ -31371,11 +31369,6 @@ struct DotGeneralInsertDimContractionSimplification final
     }
 
     // Create reshaped operands. This will be cleaned up later
-    auto newLhsType =
-        RankedTensorType::get(newLhsShape, lhsType.getElementType());
-    auto newRhsType =
-        RankedTensorType::get(newRhsShape, rhsType.getElementType());
-
     Value newLhs =
         stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), lhs, newLhsShape);
     Value newRhs =
@@ -31483,8 +31476,6 @@ struct DeleteDimsBroadcast final
     }
 
     // Create the reshape on the input
-    auto newInputTy =
-        RankedTensorType::get(newInputShape, bcastInputTy.getElementType());
     auto reshapeInput = stablehlo::ReshapeOpCreate(
         rewriter, op.getLoc(), bcastOp.getOperand(), newInputShape);
 
