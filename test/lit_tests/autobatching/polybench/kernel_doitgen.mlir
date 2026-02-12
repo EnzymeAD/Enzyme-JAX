@@ -38,8 +38,8 @@ module attributes {transform.with_named_sequence} {
 // CHECK-NEXT: }
 
 // FULL: func.func @kernel_doitgen(%arg0: tensor<18x15x12xf32>, %arg1: tensor<18x18xf32>) -> (tensor<18x15x12xf32>, tensor<18x18xf32>) {
-// FULL-NEXT:   %0 = stablehlo.slice %arg1 [0:15, 0:15] : (tensor<18x18xf32>) -> tensor<15x15xf32>
-// FULL-NEXT:   %1 = stablehlo.slice %arg0 [0:15, 0:15, 0:12] : (tensor<18x15x12xf32>) -> tensor<15x15x12xf32>
+// FULL-NEXT:   %0 = stablehlo.slice %arg1 [0:15, 0:15] {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<18x18xf32>) -> tensor<15x15xf32>
+// FULL-NEXT:   %1 = stablehlo.slice %arg0 [0:15, 0:15, 0:12] {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<18x15x12xf32>) -> tensor<15x15x12xf32>
 // FULL-NEXT:   %2 = stablehlo.dot_general %0, %1, contracting_dims = [1] x [0] : (tensor<15x15xf32>, tensor<15x15x12xf32>) -> tensor<15x15x12xf32>
 // FULL-NEXT:   %3 = stablehlo.slice %arg0 [15:18, 0:15, 0:12] : (tensor<18x15x12xf32>) -> tensor<3x15x12xf32>
 // FULL-NEXT:   %4 = stablehlo.concatenate %2, %3, dim = 0 : (tensor<15x15x12xf32>, tensor<3x15x12xf32>) -> tensor<18x15x12xf32>

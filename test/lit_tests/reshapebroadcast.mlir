@@ -57,7 +57,7 @@ module {
 // CHECK-NEXT:     %11 = stablehlo.broadcast_in_dim %arg1, dims = [] : (tensor<f32>) -> tensor<64xf32>
 // CHECK-NEXT:     %12 = stablehlo.multiply %11, %10 : tensor<64xf32>
 // CHECK-NEXT:     %13 = stablehlo.add %12, %arg7 : tensor<64xf32>
-// CHECK-NEXT:     %14 = stablehlo.add %13, %arg9 : tensor<64xf32>
+// CHECK-NEXT:     %14 = stablehlo.add %13, %arg9 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<64xf32>
 // CHECK-NEXT:     %15 = stablehlo.dot_general %8, %14, contracting_dims = [1] x [0] : (tensor<64x64xf32>, tensor<64xf32>) -> tensor<64xf32>
 // CHECK-NEXT:     %16 = stablehlo.broadcast_in_dim %arg0, dims = [] : (tensor<f32>) -> tensor<64xf32>
 // CHECK-NEXT:     %17 = stablehlo.multiply %16, %15 : tensor<64xf32>

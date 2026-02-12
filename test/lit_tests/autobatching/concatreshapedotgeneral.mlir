@@ -67,7 +67,7 @@ module @reactant_batched... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
 // CHECK-NEXT:   }
 
 // FULL:   func.func @main(%arg0: tensor<5x4x3xf64>, %arg1: tensor<7x4xf64>) -> tensor<5x7x3xf64> {
-// FULL-NEXT:    %0 = stablehlo.transpose %arg0, dims = [0, 2, 1] : (tensor<5x4x3xf64>) -> tensor<5x3x4xf64>
+// FULL-NEXT:    %0 = stablehlo.transpose %arg0, dims = [0, 2, 1] {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<5x4x3xf64>) -> tensor<5x3x4xf64>
 // FULL-NEXT:    %1 = stablehlo.dot_general %0, %arg1, contracting_dims = [2] x [1], precision = [DEFAULT, DEFAULT] : (tensor<5x3x4xf64>, tensor<7x4xf64>) -> tensor<5x3x7xf64>
 // FULL-NEXT:    %2 = stablehlo.transpose %1, dims = [0, 2, 1] : (tensor<5x3x7xf64>) -> tensor<5x7x3xf64>
 // FULL-NEXT:    return %2 : tensor<5x7x3xf64>

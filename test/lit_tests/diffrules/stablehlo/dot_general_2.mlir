@@ -19,7 +19,7 @@ module @reactant_fgrad attributes {mhlo.num_partitions = 1 : i64, mhlo.num_repli
 }
 
 // CHECK: func.func @main(%arg0: tensor<4x3x8x2xf64> {tf.aliasing_output = 3 : i32}, %arg1: tensor<3x8x2xf64> {tf.aliasing_output = 4 : i32}, %arg2: tensor<4xf64> {tf.aliasing_output = 5 : i32}) -> (tensor<4x3x8x2xf64>, tensor<3x8x2xf64>, tensor<4xf64>, tensor<4x3x8x2xf64>, tensor<3x8x2xf64>, tensor<4xf64>) {
-// CHECK-NEXT:     %0 = stablehlo.transpose %arg0, dims = [3, 2, 1, 0] : (tensor<4x3x8x2xf64>) -> tensor<2x8x3x4xf64>
+// CHECK-NEXT:     %0 = stablehlo.transpose %arg0, dims = [3, 2, 1, 0] {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<4x3x8x2xf64>) -> tensor<2x8x3x4xf64>
 // CHECK-NEXT:     %1 = stablehlo.transpose %arg1, dims = [2, 1, 0] : (tensor<3x8x2xf64>) -> tensor<2x8x3xf64>
 // CHECK-NEXT:     %2 = stablehlo.dot_general %arg0, %arg1, contracting_dims = [3, 2, 1] x [2, 1, 0], precision = [DEFAULT, DEFAULT] : (tensor<4x3x8x2xf64>, tensor<3x8x2xf64>) -> tensor<4xf64>
 // CHECK-NEXT:     %3 = stablehlo.dot_general %arg2, %1, contracting_dims = [] x [], precision = [DEFAULT, DEFAULT] : (tensor<4xf64>, tensor<2x8x3xf64>) -> tensor<4x2x8x3xf64>

@@ -9,8 +9,13 @@ module {
   }
 }
 
-// CHECK: func.func @main(%arg0: tensor<32x64xf32>) -> tensor<32x32x1x1xf32> {
-// CHECK-NEXT:     %0 = stablehlo.dot_general %arg0, %arg0, contracting_dims = [1] x [1] : (tensor<32x64xf32>, tensor<32x64xf32>) -> tensor<32x32xf32>
+// CHECK: module {
+// CHECK-NEXT:   func.func @main(%arg0: tensor<32x64xf32>) -> tensor<32x32x1x1xf32> {
+// CHECK-NEXT:     %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+// CHECK-NEXT:     %cst_0 = stablehlo.constant dense<1.000000e+00> : tensor<f32>
+// CHECK-NEXT:     %cst_1 = stablehlo.constant dense<0.000000e+00> : tensor<32x32xf32>
+// CHECK-NEXT:     %0 = enzymexla.blas.syrk %arg0, %cst_1, %cst_0, %cst {output_uplo = #enzymexla.uplo<F>, uplo = #enzymexla.uplo<F>} : (tensor<32x64xf32>, tensor<32x32xf32>, tensor<f32>, tensor<f32>) -> tensor<32x32xf32>
 // CHECK-NEXT:     %1 = stablehlo.reshape %0 : (tensor<32x32xf32>) -> tensor<32x32x1x1xf32>
 // CHECK-NEXT:     return %1 : tensor<32x32x1x1xf32>
+// CHECK-NEXT:   }
 // CHECK-NEXT: }

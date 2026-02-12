@@ -45,4 +45,4 @@ module {
 }
 
 // CHECK-LABEL: func.func @syrk
-// CHECK:    %0 = stablehlo.dot_general %arg2, %arg2, contracting_dims = [0] x [0] : (tensor<2048x2048xf32>, tensor<2048x2048xf32>) -> tensor<2048x2048xf32>
+// CHECK:     %0 = enzymexla.blas.syrk %arg2, %cst_1, %cst_0, %cst {output_uplo = #enzymexla.uplo<F>, transpose = #enzymexla.transpose<transpose>, uplo = #enzymexla.uplo<F>} : (tensor<2048x2048xf32>, tensor<2048x2048xf32>, tensor<f32>, tensor<f32>) -> tensor<2048x2048xf32>

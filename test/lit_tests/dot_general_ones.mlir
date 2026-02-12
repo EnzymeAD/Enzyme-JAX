@@ -91,18 +91,18 @@ func.func @main4(%arg0: tensor<2x16xf32> {enzymexla.memory_effects = []}, %arg1:
 // CHECK-NEXT:     %cst = stablehlo.constant dense<1.000000e+00> : tensor<16xf32>
 // CHECK-NEXT:     %0 = stablehlo.dot_general %arg0, %arg6, contracting_dims = [0] x [0], precision = [DEFAULT, DEFAULT] : (tensor<2x16xf32>, tensor<2xf32>) -> tensor<16xf32>
 // CHECK-NEXT:     %1 = stablehlo.add %0, %arg1 : tensor<16xf32>
-// CHECK-NEXT:     %2 = stablehlo.tanh %1 : tensor<16xf32>
+// CHECK-NEXT:     %2 = stablehlo.tanh %1 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<16xf32>
 // CHECK-NEXT:     %3 = stablehlo.dot_general %arg2, %2, contracting_dims = [0] x [0], precision = [DEFAULT, DEFAULT] : (tensor<16x16xf32>, tensor<16xf32>) -> tensor<16xf32>
 // CHECK-NEXT:     %4 = stablehlo.add %3, %arg3 : tensor<16xf32>
 // CHECK-NEXT:     %5 = stablehlo.reshape %arg4 : (tensor<16x1xf32>) -> tensor<16xf32>
 // CHECK-NEXT:     %6 = stablehlo.tanh %4 : tensor<16xf32>
 // CHECK-NEXT:     %7 = stablehlo.multiply %6, %6 : tensor<16xf32>
 // CHECK-NEXT:     %8 = stablehlo.subtract %cst, %7 : tensor<16xf32>
-// CHECK-NEXT:     %9 = stablehlo.multiply %5, %8 : tensor<16xf32>
+// CHECK-NEXT:     %9 = stablehlo.multiply %5, %8 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<16xf32>
 // CHECK-NEXT:     %10 = stablehlo.dot_general %9, %arg2, contracting_dims = [0] x [1], precision = [DEFAULT, DEFAULT] : (tensor<16xf32>, tensor<16x16xf32>) -> tensor<16xf32>
 // CHECK-NEXT:     %11 = stablehlo.multiply %2, %2 : tensor<16xf32>
 // CHECK-NEXT:     %12 = stablehlo.subtract %cst, %11 : tensor<16xf32>
-// CHECK-NEXT:     %13 = stablehlo.multiply %10, %12 : tensor<16xf32>
+// CHECK-NEXT:     %13 = stablehlo.multiply %10, %12 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<16xf32>
 // CHECK-NEXT:     %14 = stablehlo.dot_general %13, %arg0, contracting_dims = [0] x [1], precision = [DEFAULT, DEFAULT] : (tensor<16xf32>, tensor<2x16xf32>) -> tensor<2xf32>
 // CHECK-NEXT:     return %14 : tensor<2xf32>
 // CHECK-NEXT: }

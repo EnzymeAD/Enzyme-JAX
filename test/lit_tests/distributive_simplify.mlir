@@ -32,7 +32,7 @@ func.func @main1(%arg0: tensor<2x4xf64>, %arg1: tensor<2xf64>, %arg2: tensor<2xf
 // CHECK-NEXT:     %5 = stablehlo.add %4, %arg7 : tensor<2xf64>
 // CHECK-NEXT:     %6 = stablehlo.add %5, %arg8 : tensor<2xf64>
 // CHECK-NEXT:     %7 = stablehlo.add %6, %arg9 : tensor<2xf64>
-// CHECK-NEXT:     %8 = stablehlo.add %7, %arg10 : tensor<2xf64>
+// CHECK-NEXT:     %8 = stablehlo.add %7, %arg10 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<2xf64>
 // CHECK-NEXT:     %9 = stablehlo.dot_general %arg0, %8, contracting_dims = [0] x [0], precision = [DEFAULT, DEFAULT] : (tensor<2x4xf64>, tensor<2xf64>) -> tensor<4xf64>
 // CHECK-NEXT:     return %9 : tensor<4xf64>
 // CHECK-NEXT: }
@@ -48,7 +48,7 @@ func.func @main2(%arg0: tensor<2x4xf64>, %arg1: tensor<2xf64>, %arg2: tensor<2xf
 
 // CHECK: func.func @main2(%arg0: tensor<2x4xf64>, %arg1: tensor<2xf64>, %arg2: tensor<2xf64>, %arg3: tensor<2xf64>) -> tensor<4xf64> {
 // CHECK-NEXT:     %0 = stablehlo.subtract %arg1, %arg2 : tensor<2xf64>
-// CHECK-NEXT:     %1 = stablehlo.subtract %0, %arg3 : tensor<2xf64>
+// CHECK-NEXT:     %1 = stablehlo.subtract %0, %arg3 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<2xf64>
 // CHECK-NEXT:     %2 = stablehlo.dot_general %arg0, %1, contracting_dims = [0] x [0], precision = [DEFAULT, DEFAULT] : (tensor<2x4xf64>, tensor<2xf64>) -> tensor<4xf64>
 // CHECK-NEXT:     return %2 : tensor<4xf64>
 // CHECK-NEXT: }
@@ -71,7 +71,7 @@ func.func @main3(%arg0: tensor<4x2xf64>, %arg1: tensor<2x1xf64>, %arg2: tensor<2
 // CHECK-NEXT:     %1 = stablehlo.reshape %arg2 : (tensor<2x1xf64>) -> tensor<1x2xf64>
 // CHECK-NEXT:     %2 = stablehlo.reshape %arg3 : (tensor<2x1xf64>) -> tensor<1x2xf64>
 // CHECK-NEXT:     %3 = stablehlo.add %0, %1 : tensor<1x2xf64>
-// CHECK-NEXT:     %4 = stablehlo.add %3, %2 : tensor<1x2xf64>
+// CHECK-NEXT:     %4 = stablehlo.add %3, %2 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<1x2xf64>
 // CHECK-NEXT:     %5 = stablehlo.dot_general %4, %arg0, contracting_dims = [1] x [1], precision = [DEFAULT, DEFAULT] : (tensor<1x2xf64>, tensor<4x2xf64>) -> tensor<1x4xf64>
 // CHECK-NEXT:     %6 = stablehlo.reshape %5 : (tensor<1x4xf64>) -> tensor<4x1xf64>
 // CHECK-NEXT:     return %6 : tensor<4x1xf64>
