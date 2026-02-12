@@ -14918,8 +14918,9 @@ struct IfBinaryOpToSelectBinaryOp final
       }
     }
 
-    if (!anyHoisted)
+    if (!anyHoisted) {
       return failure();
+    }
 
     // If all results can be hoisted, replace the entire if op
     bool allHoisted = llvm::all_of(hoistedResults,
@@ -14988,8 +14989,9 @@ private:
                          Region &branchRegion, bool isTrueBranch,
                          PatternRewriter &rewriter) const {
     auto binOp = branchVal.getDefiningOp<BinaryOpType>();
-    if (!binOp)
+    if (!binOp) {
       return nullptr;
+    }
 
     Value base = nullptr;
     Value other = nullptr;
@@ -15006,26 +15008,32 @@ private:
       matchLhs = false;
     }
 
-    if (!base || !other)
+    if (!base || !other) {
       return nullptr;
+    }
 
-    bool isCommutative = binOp->template hasTrait<mlir::OpTrait::IsCommutative>();
+    bool isCommutative =
+        binOp->template hasTrait<mlir::hlo::OpTrait::IsCommutative>() ||
+        binOp->template hasTrait<mlir::OpTrait::IsCommutative>();
 
     // For non-commutative ops, we only support hoisting if the identity works.
     // We assume getIdentityValueForOp returns a right identity.
     // Thus, for non-commutative ops, the base MUST be the LHS.
-    if (!isCommutative && !matchLhs)
+    if (!isCommutative && !matchLhs) {
       return nullptr;
+    }
 
     // Check if 'other' can be hoisted (not defined in the current branch)
-    if (&branchRegion == other.getParentRegion())
+    if (&branchRegion == other.getParentRegion()) {
       return nullptr;
+    }
 
     auto elemType = cast<ShapedType>(branchVal.getType()).getElementType();
     Value identity = stablehlo::getIdentityValueForOp<BinaryOpType>(
         rewriter, op.getLoc(), elemType);
-    if (!identity)
+    if (!identity) {
       return nullptr;
+    }
 
     // Broadcast identity to match the type of 'other'
     auto otherType = cast<RankedTensorType>(other.getType());
@@ -15040,10 +15048,11 @@ private:
 
     Value selected = stablehlo::SelectOp::create(rewriter, op.getLoc(), pred,
                                                  trueSelectVal, falseSelectVal);
-    if (matchLhs)
+    if (matchLhs) {
       return BinaryOpType::create(rewriter, op.getLoc(), base, selected);
-    else
+    } else {
       return BinaryOpType::create(rewriter, op.getLoc(), selected, base);
+    }
   }
 };
 

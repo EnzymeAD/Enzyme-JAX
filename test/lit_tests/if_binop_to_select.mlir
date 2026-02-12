@@ -38,7 +38,7 @@ module {
   // Case with Mul and identity 1.0
   func.func @hoist_mul(%pred: tensor<i1>, %base: tensor<f32>, %other: tensor<f32>) -> tensor<f32> {
     %0 = "stablehlo.if"(%pred) ({
-      %1 = stablehlo.mul %other, %base : tensor<f32>
+      %1 = stablehlo.multiply %other, %base : tensor<f32>
       "stablehlo.return"(%1) : (tensor<f32>) -> ()
     }, {
       "stablehlo.return"(%base) : (tensor<f32>) -> ()
@@ -48,7 +48,7 @@ module {
   // CHECK-LABEL: func.func @hoist_mul
   // CHECK: %[[ONE:.+]] = stablehlo.constant dense<1.000000e+00> : tensor<f32>
   // CHECK: %[[SEL:.+]] = stablehlo.select %{{.+}}, %{{.+}}, %[[ONE]]
-  // CHECK: %[[MUL:.+]] = stablehlo.mul %{{.+}}, %[[SEL]]
+  // CHECK: %[[MUL:.+]] = stablehlo.multiply %[[SEL]], %{{.+}}
 
   // Case with Max and identity -Inf
   func.func @hoist_max(%pred: tensor<i1>, %base: tensor<f32>, %other: tensor<f32>) -> tensor<f32> {
@@ -92,12 +92,34 @@ module {
     return %0#0, %0#1 : tensor<f32>, tensor<f32>
   }
   // CHECK-LABEL: func.func @hoist_multiple
+  // CHECK-SAME: (%[[PRED:.+]]: tensor<i1>, %[[BASE1:.+]]: tensor<f32>, %[[OTHER1:.+]]: tensor<f32>, %[[VAL2:.+]]: tensor<f32>)
+  // CHECK: %[[ZERO:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+  // CHECK: %[[C2:.+]] = stablehlo.constant dense<2.000000e+00>
+  // CHECK: %[[SEL2:.+]] = stablehlo.select %[[PRED]], %[[VAL2]], %[[C2]]
+  // CHECK: %[[SEL1:.+]] = stablehlo.select %[[PRED]], %[[OTHER1]], %[[ZERO]]
+  // CHECK: %[[HOISTED1:.+]] = stablehlo.add %[[BASE1]], %[[SEL1]]
+  // CHECK: return %[[HOISTED1]], %[[SEL2]]
+
+  // Case with multiple results
+  func.func @hoist_multiple2(%pred: tensor<i1>, %base1: tensor<f32>, %other1: tensor<f32>, %val2: tensor<f32>) -> (tensor<f32>, tensor<f32>) {
+    %0:2 = "stablehlo.if"(%pred) ({
+      %1 = stablehlo.add %base1, %other1 : tensor<f32>
+      "stablehlo.return"(%1, %val2) : (tensor<f32>, tensor<f32>) -> ()
+    }, {
+      %pow = stablehlo.power %base1, %base1 : (tensor<f32>, tensor<f32>) -> tensor<f32>
+      "stablehlo.return"(%base1, %pow) : (tensor<f32>, tensor<f32>) -> ()
+    }) : (tensor<i1>) -> (tensor<f32>, tensor<f32>)
+    return %0#0, %0#1 : tensor<f32>, tensor<f32>
+  }
+  // CHECK-LABEL: func.func @hoist_multiple2
+  // CHECK-SAME: (%[[PRED:.+]]: tensor<i1>, %[[BASE1:.+]]: tensor<f32>, %[[OTHER1:.+]]: tensor<f32>, %[[VAL2:.+]]: tensor<f32>)
   // CHECK: %[[ZERO:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<f32>
   // CHECK: %[[SEL1:.+]] = stablehlo.select %[[PRED]], %[[OTHER1]], %[[ZERO]]
   // CHECK: %[[HOISTED1:.+]] = stablehlo.add %[[BASE1]], %[[SEL1]]
   // CHECK: %[[IF_RES:.+]] = "stablehlo.if"(%[[PRED]])
-  // CHECK:   %[[C2:.+]] = stablehlo.constant dense<2.000000e+00>
-  // CHECK:   stablehlo.return %[[C2]]
+  // CHECK:   stablehlo.return %[[VAL2]]
+  // CHECK:   %[[POW:.+]] = stablehlo.power %[[BASE1]], %[[BASE1]]
+  // CHECK:   stablehlo.return %[[POW]]
   // CHECK: return %[[HOISTED1]], %[[IF_RES]]
 
   // Case with broadcasting
@@ -111,9 +133,8 @@ module {
     return %0 : tensor<10xf32>
   }
   // CHECK-LABEL: func.func @hoist_add_broadcast
-  // CHECK: %[[ZERO_SCALAR:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<f32>
-  // CHECK: %[[ZERO_VEC:.+]] = stablehlo.broadcast_in_dim %[[ZERO_SCALAR]], dims = [] : (tensor<f32>) -> tensor<10xf32>
-  // CHECK: %[[SEL:.+]] = stablehlo.select %{{.+}}, %{{.+}}, %[[ZERO_VEC]] : tensor<i1>, tensor<10xf32>
+  // CHECK: %[[ZERO:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<10xf32>
+  // CHECK: %[[SEL:.+]] = stablehlo.select %{{.+}}, %{{.+}}, %[[ZERO]] : tensor<i1>, tensor<10xf32>
   // CHECK: %[[ADD:.+]] = stablehlo.add %{{.+}}, %[[SEL]]
 
   // TEST: Commutativity - add(other, base)
