@@ -14899,92 +14899,22 @@ struct IfBinaryOpToSelectBinaryOp final
           &op.getFalseBranch() != falseVal.getParentRegion();
 
       // Case 1: true branch has binop, false branch returns base
-      // if(pred) { binop(base, other) } else { base }
-      // => binop(base, select(pred, other, identity))
-      if (auto binOp = trueVal.getDefiningOp<BinaryOpType>()) {
-        Value base = nullptr;
-        Value other = nullptr;
-
-        // Check if one operand of binop matches the false branch return
-        if (binOp.getLhs() == falseVal && falseDefinedOutside) {
-          base = falseVal;
-          other = binOp.getRhs();
-        } else if (binOp.getRhs() == falseVal && falseDefinedOutside) {
-          base = falseVal;
-          other = binOp.getLhs();
-        }
-
-        if (base && other) {
-          // Check if 'other' can be hoisted (defined outside true branch)
-          if (&op.getTrueBranch() != other.getParentRegion()) {
-            auto elemType =
-                cast<ShapedType>(op.getResult(i).getType()).getElementType();
-            Value identity = stablehlo::getIdentityValueForOp<BinaryOpType>(
-                rewriter, op.getLoc(), elemType);
-            if (identity) {
-              // Broadcast identity to match the type of 'other'
-              auto otherType = cast<RankedTensorType>(other.getType());
-              if (identity.getType() != otherType) {
-                identity = stablehlo::BroadcastInDimOp::create(
-                    rewriter, op.getLoc(), otherType, identity,
-                    rewriter.getDenseI64ArrayAttr({}));
-              }
-
-              Value selected = stablehlo::SelectOp::create(
-                  rewriter, op.getLoc(), pred, other, identity);
-              Value result =
-                  BinaryOpType::create(rewriter, op.getLoc(), base, selected);
-              hoistedResults[i] = result;
-              anyHoisted = true;
-              continue;
-            }
-          }
-        }
+      if (Value hoisted = tryHoistBinaryOp(
+              op, pred, trueVal, falseVal, falseDefinedOutside,
+              op.getTrueBranch(), /*isTrueBranch=*/true, rewriter)) {
+        hoistedResults[i] = hoisted;
+        anyHoisted = true;
+        continue;
       }
 
       // Case 2: false branch has binop, true branch returns base (symmetric
-      // case) if(pred) { base } else { binop(base, other) }
-      // => binop(base, select(pred, identity, other))
-      if (auto binOp = falseVal.getDefiningOp<BinaryOpType>()) {
-        Value base = nullptr;
-        Value other = nullptr;
-
-        // Check if one operand of binop matches the true branch return
-        if (binOp.getLhs() == trueVal && trueDefinedOutside) {
-          base = trueVal;
-          other = binOp.getRhs();
-        } else if (binOp.getRhs() == trueVal && trueDefinedOutside) {
-          base = trueVal;
-          other = binOp.getLhs();
-        }
-
-        if (base && other) {
-          // Check if 'other' can be hoisted (defined outside false branch)
-          if (&op.getFalseBranch() != other.getParentRegion()) {
-            auto elemType =
-                cast<ShapedType>(op.getResult(i).getType()).getElementType();
-            Value identity = stablehlo::getIdentityValueForOp<BinaryOpType>(
-                rewriter, op.getLoc(), elemType);
-            if (identity) {
-              // Broadcast identity to match the type of 'other'
-              auto otherType = cast<RankedTensorType>(other.getType());
-              if (identity.getType() != otherType) {
-                identity = stablehlo::BroadcastInDimOp::create(
-                    rewriter, op.getLoc(), otherType, identity,
-                    rewriter.getDenseI64ArrayAttr({}));
-              }
-
-              // Note: pred is true => use identity, pred is false => use other
-              Value selected = stablehlo::SelectOp::create(
-                  rewriter, op.getLoc(), pred, identity, other);
-              Value result =
-                  BinaryOpType::create(rewriter, op.getLoc(), base, selected);
-              hoistedResults[i] = result;
-              anyHoisted = true;
-              continue;
-            }
-          }
-        }
+      // case)
+      if (Value hoisted = tryHoistBinaryOp(
+              op, pred, falseVal, trueVal, trueDefinedOutside,
+              op.getFalseBranch(), /*isTrueBranch=*/false, rewriter)) {
+        hoistedResults[i] = hoisted;
+        anyHoisted = true;
+        continue;
       }
     }
 
@@ -15050,6 +14980,70 @@ struct IfBinaryOpToSelectBinaryOp final
 
     rewriter.replaceOp(op, finalResults);
     return success();
+  }
+
+private:
+  Value tryHoistBinaryOp(stablehlo::IfOp op, Value pred, Value branchVal,
+                         Value otherBranchVal, bool otherBranchDefinedOutside,
+                         Region &branchRegion, bool isTrueBranch,
+                         PatternRewriter &rewriter) const {
+    auto binOp = branchVal.getDefiningOp<BinaryOpType>();
+    if (!binOp)
+      return nullptr;
+
+    Value base = nullptr;
+    Value other = nullptr;
+    bool matchLhs = false;
+
+    // Check if one operand of binop matches the other branch return
+    if (binOp.getLhs() == otherBranchVal && otherBranchDefinedOutside) {
+      base = otherBranchVal;
+      other = binOp.getRhs();
+      matchLhs = true;
+    } else if (binOp.getRhs() == otherBranchVal && otherBranchDefinedOutside) {
+      base = otherBranchVal;
+      other = binOp.getLhs();
+      matchLhs = false;
+    }
+
+    if (!base || !other)
+      return nullptr;
+
+    bool isCommutative = binOp->template hasTrait<mlir::OpTrait::IsCommutative>();
+
+    // For non-commutative ops, we only support hoisting if the identity works.
+    // We assume getIdentityValueForOp returns a right identity.
+    // Thus, for non-commutative ops, the base MUST be the LHS.
+    if (!isCommutative && !matchLhs)
+      return nullptr;
+
+    // Check if 'other' can be hoisted (not defined in the current branch)
+    if (&branchRegion == other.getParentRegion())
+      return nullptr;
+
+    auto elemType = cast<ShapedType>(branchVal.getType()).getElementType();
+    Value identity = stablehlo::getIdentityValueForOp<BinaryOpType>(
+        rewriter, op.getLoc(), elemType);
+    if (!identity)
+      return nullptr;
+
+    // Broadcast identity to match the type of 'other'
+    auto otherType = cast<RankedTensorType>(other.getType());
+    if (identity.getType() != otherType) {
+      identity = stablehlo::BroadcastInDimOp::create(
+          rewriter, op.getLoc(), otherType, identity,
+          rewriter.getDenseI64ArrayAttr({}));
+    }
+
+    Value trueSelectVal = isTrueBranch ? other : identity;
+    Value falseSelectVal = isTrueBranch ? identity : other;
+
+    Value selected = stablehlo::SelectOp::create(rewriter, op.getLoc(), pred,
+                                                 trueSelectVal, falseSelectVal);
+    if (matchLhs)
+      return BinaryOpType::create(rewriter, op.getLoc(), base, selected);
+    else
+      return BinaryOpType::create(rewriter, op.getLoc(), selected, base);
   }
 };
 
@@ -34195,6 +34189,8 @@ struct EnzymeHLOOptPass
         IfBinaryOpToSelectBinaryOp<stablehlo::MulOp>,
         IfBinaryOpToSelectBinaryOp<stablehlo::MinOp>,
         IfBinaryOpToSelectBinaryOp<stablehlo::MaxOp>,
+        IfBinaryOpToSelectBinaryOp<stablehlo::SubtractOp>,
+        IfBinaryOpToSelectBinaryOp<stablehlo::DivOp>,
         IfPredPropagation,
         ImagOpCanon,
         MergeConsecutiveReshapes,

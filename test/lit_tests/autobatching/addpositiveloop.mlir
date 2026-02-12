@@ -14,9 +14,9 @@ module {
       %2 = stablehlo.compare  LT, %iterArg, %c_2 : (tensor<i64>, tensor<i64>) -> tensor<i1>
       stablehlo.return %2 : tensor<i1>
     } do {
-      %2 = stablehlo.add %c_0, %iterArg {enzymexla.bounds = [[1, 10]]} : tensor<i64>
-      %3 = stablehlo.convert %2 {enzymexla.bounds = [[1, 10]]} : (tensor<i64>) -> tensor<i32>
-      %4 = stablehlo.subtract %3, %c {enzymexla.bounds = [[0, 9]]} : tensor<i32>
+      %2 = stablehlo.add %c_0, %iterArg : tensor<i64>
+      %3 = stablehlo.convert %2 : (tensor<i64>) -> tensor<i32>
+      %4 = stablehlo.subtract %3, %c : tensor<i32>
       %5 = stablehlo.dynamic_slice %arg0, %4, sizes = [1] : (tensor<10xf64>, tensor<i32>) -> tensor<1xf64>
       %6 = stablehlo.reshape %5 : (tensor<1xf64>) -> tensor<f64>
       %7 = stablehlo.dynamic_slice %0, %iterArg, sizes = [1] : (tensor<10xi1>, tensor<i64>) -> tensor<1xi1>
