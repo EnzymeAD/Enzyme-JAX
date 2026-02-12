@@ -1,11 +1,12 @@
 // RUN: enzymexlamlir-opt %s --enzyme --canonicalize --remove-unnecessary-enzyme-ops --enzyme-simplify-math --arith-raise --canonicalize | stablehlo-translate --interpret
 
-// Test for CONSTANT_CHECKPOINTING with different checkpoint periods
-// This test verifies that checkpointing works correctly with:
-// 1. Default sqrt checkpointing (enable_checkpointing = true, no period)
-// 2. Explicit periods: 2, 3, 5, 7
-// 3. Edge cases: period = 1, period = numIters
-// 4. Both evenly divisible and non-evenly divisible cases
+// Test for CONSTANT_CHECKPOINTING with different checkpoint periods.
+//
+// This file is kept *fully interpretable* by `stablehlo-translate --interpret`,
+// so all periods here evenly divide N (static inner loop trip count).
+//
+// Non-evenly-divisible periods are tested separately without interpretation
+// (the StableHLO interpreter does not support dynamic result types).
 
 module {
   // Reference function without any checkpointing
@@ -50,60 +51,6 @@ module {
     %c_0 = stablehlo.constant dense<16> : tensor<i64>
     %c_1 = stablehlo.constant dense<0> : tensor<i64>
     %0:2 = stablehlo.while(%iterArg = %c_1, %iterArg_2 = %arg0) : tensor<i64>, tensor<f64> attributes {enzyme.disable_mincut, enzymexla.checkpoint_period = 2 : i64}
-     cond {
-      %1 = stablehlo.compare  LT, %iterArg, %c_0 : (tensor<i64>, tensor<i64>) -> tensor<i1>
-      stablehlo.return %1 : tensor<i1>
-    } do {
-      %1 = stablehlo.add %iterArg, %c : tensor<i64>
-      %2 = stablehlo.convert %1 : (tensor<i64>) -> tensor<f64>
-      %3 = stablehlo.multiply %iterArg_2, %2 : tensor<f64>
-      stablehlo.return %1, %3 : tensor<i64>, tensor<f64>
-    }
-    return %0#1 : tensor<f64>
-  }
-
-  // Period = 3 (16 iterations / 3 = 6 outer iterations (5*3 + 1), not evenly divisible)
-  func.func @with_period_3(%arg0: tensor<f64>) -> tensor<f64> {
-    %c = stablehlo.constant dense<1> : tensor<i64>
-    %c_0 = stablehlo.constant dense<16> : tensor<i64>
-    %c_1 = stablehlo.constant dense<0> : tensor<i64>
-    %0:2 = stablehlo.while(%iterArg = %c_1, %iterArg_2 = %arg0) : tensor<i64>, tensor<f64> attributes {enzyme.disable_mincut, enzymexla.checkpoint_period = 3 : i64}
-     cond {
-      %1 = stablehlo.compare  LT, %iterArg, %c_0 : (tensor<i64>, tensor<i64>) -> tensor<i1>
-      stablehlo.return %1 : tensor<i1>
-    } do {
-      %1 = stablehlo.add %iterArg, %c : tensor<i64>
-      %2 = stablehlo.convert %1 : (tensor<i64>) -> tensor<f64>
-      %3 = stablehlo.multiply %iterArg_2, %2 : tensor<f64>
-      stablehlo.return %1, %3 : tensor<i64>, tensor<f64>
-    }
-    return %0#1 : tensor<f64>
-  }
-
-  // Period = 5 (16 iterations / 5 = 4 outer iterations (3*5 + 1), not evenly divisible)
-  func.func @with_period_5(%arg0: tensor<f64>) -> tensor<f64> {
-    %c = stablehlo.constant dense<1> : tensor<i64>
-    %c_0 = stablehlo.constant dense<16> : tensor<i64>
-    %c_1 = stablehlo.constant dense<0> : tensor<i64>
-    %0:2 = stablehlo.while(%iterArg = %c_1, %iterArg_2 = %arg0) : tensor<i64>, tensor<f64> attributes {enzyme.disable_mincut, enzymexla.checkpoint_period = 5 : i64}
-     cond {
-      %1 = stablehlo.compare  LT, %iterArg, %c_0 : (tensor<i64>, tensor<i64>) -> tensor<i1>
-      stablehlo.return %1 : tensor<i1>
-    } do {
-      %1 = stablehlo.add %iterArg, %c : tensor<i64>
-      %2 = stablehlo.convert %1 : (tensor<i64>) -> tensor<f64>
-      %3 = stablehlo.multiply %iterArg_2, %2 : tensor<f64>
-      stablehlo.return %1, %3 : tensor<i64>, tensor<f64>
-    }
-    return %0#1 : tensor<f64>
-  }
-
-  // Period = 7 (16 iterations / 7 = 3 outer iterations (2*7 + 2), not evenly divisible)
-  func.func @with_period_7(%arg0: tensor<f64>) -> tensor<f64> {
-    %c = stablehlo.constant dense<1> : tensor<i64>
-    %c_0 = stablehlo.constant dense<16> : tensor<i64>
-    %c_1 = stablehlo.constant dense<0> : tensor<i64>
-    %0:2 = stablehlo.while(%iterArg = %c_1, %iterArg_2 = %arg0) : tensor<i64>, tensor<f64> attributes {enzyme.disable_mincut, enzymexla.checkpoint_period = 7 : i64}
      cond {
       %1 = stablehlo.compare  LT, %iterArg, %c_0 : (tensor<i64>, tensor<i64>) -> tensor<i1>
       stablehlo.return %1 : tensor<i1>
@@ -210,21 +157,6 @@ module {
       ret_activity=[#enzyme<activity enzyme_active>]
     } : (tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
 
-    %diffe_period_3:2 = enzyme.autodiff @with_period_3(%input, %diffe) {
-      activity=[#enzyme<activity enzyme_active>],
-      ret_activity=[#enzyme<activity enzyme_active>]
-    } : (tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
-
-    %diffe_period_5:2 = enzyme.autodiff @with_period_5(%input, %diffe) {
-      activity=[#enzyme<activity enzyme_active>],
-      ret_activity=[#enzyme<activity enzyme_active>]
-    } : (tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
-
-    %diffe_period_7:2 = enzyme.autodiff @with_period_7(%input, %diffe) {
-      activity=[#enzyme<activity enzyme_active>],
-      ret_activity=[#enzyme<activity enzyme_active>]
-    } : (tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
-
     %diffe_period_1:2 = enzyme.autodiff @with_period_1(%input, %diffe) {
       activity=[#enzyme<activity enzyme_active>],
       ret_activity=[#enzyme<activity enzyme_active>]
@@ -251,15 +183,6 @@ module {
 
     check.expect_almost_eq %diffe_period_2#0, %diffe_no_checkpointing#0 : tensor<f64>
     check.expect_almost_eq %diffe_period_2#1, %diffe_no_checkpointing#1 : tensor<f64>
-
-    check.expect_almost_eq %diffe_period_3#0, %diffe_no_checkpointing#0 : tensor<f64>
-    check.expect_almost_eq %diffe_period_3#1, %diffe_no_checkpointing#1 : tensor<f64>
-
-    check.expect_almost_eq %diffe_period_5#0, %diffe_no_checkpointing#0 : tensor<f64>
-    check.expect_almost_eq %diffe_period_5#1, %diffe_no_checkpointing#1 : tensor<f64>
-
-    check.expect_almost_eq %diffe_period_7#0, %diffe_no_checkpointing#0 : tensor<f64>
-    check.expect_almost_eq %diffe_period_7#1, %diffe_no_checkpointing#1 : tensor<f64>
 
     check.expect_almost_eq %diffe_period_1#0, %diffe_no_checkpointing#0 : tensor<f64>
     check.expect_almost_eq %diffe_period_1#1, %diffe_no_checkpointing#1 : tensor<f64>
