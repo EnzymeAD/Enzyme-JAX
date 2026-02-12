@@ -3151,6 +3151,11 @@ public:
       auto newType =
           cast<ShapedType>(cast<AutoDiffTypeInterface>(cinfo.cachedType())
                                .getShadowType(numIters));
+      // dynamic_update_slice requires operand rank >= 1. For scalar cache use
+      // 1D.
+      if (newType.getRank() == 0) {
+        newType = RankedTensorType::get({numIters}, newType.getElementType());
+      }
 
       Value initValue;
       if (info.isConstant()) {
@@ -3332,6 +3337,11 @@ public:
       auto newType =
           cast<ShapedType>(cast<AutoDiffTypeInterface>(info.cachedType())
                                .getShadowType(numIters));
+      // Must match step 3: use 1D cache type for scalar so dynamic_update_slice
+      // is valid.
+      if (newType.getRank() == 0) {
+        newType = RankedTensorType::get({numIters}, newType.getElementType());
+      }
       enzyme::InitOp newInit = ({
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPoint(info.initOp);
