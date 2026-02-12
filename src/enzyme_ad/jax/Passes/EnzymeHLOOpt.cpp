@@ -29644,7 +29644,7 @@ struct DotGeneralToSymm
     }
 
     enzymexla::LapackSide side;
-    
+
     auto lhsContractingDim = dotDims.getLhsContractingDimensions()[0];
     auto rhsContractingDim = dotDims.getRhsContractingDimensions()[0];
 
@@ -29653,55 +29653,47 @@ struct DotGeneralToSymm
       side = enzymexla::LapackSide::left;
       if (rhsContractingDim == 0) {
         auto perm = rewriter.getDenseI64ArrayAttr({1, 0});
-        rhs = stablehlo::TransposeOp::create(
-            rewriter,
-            op.getLoc(),
-            rhs,
-            perm);
+        rhs = stablehlo::TransposeOp::create(rewriter, op.getLoc(), rhs, perm);
       }
-
     } else if (canApplySymmetricPattern(rhs, rewriter)) {
       side = enzymexla::LapackSide::right;
       if (lhsContractingDim == 0) {
         auto perm = rewriter.getDenseI64ArrayAttr({1, 0});
-        lhs = stablehlo::TransposeOp::create(
-            rewriter,
-            op.getLoc(),
-            lhs,
-            perm);
+        lhs = stablehlo::TransposeOp::create(rewriter, op.getLoc(), lhs, perm);
       }
     } else {
       return failure();
     }
 
-    auto elemType =
-        cast<RankedTensorType>(lhs.getType()).getElementType();
+    auto elemType = cast<RankedTensorType>(lhs.getType()).getElementType();
     auto alphaType = RankedTensorType::get({}, elemType);
 
-    auto symmOp = enzymexla::SymmOp::create(rewriter, op.getLoc(), op.getResult().getType(),
-      lhs, // A
-      rhs, // B
-      stablehlo::ConstantOp::create(
-              rewriter, op.getLoc(), op.getType(),
-              cast<ElementsAttr>(makeAttr(op.getType(), 0))), // C
-      stablehlo::ConstantOp::create(
-              rewriter, op.getLoc(), alphaType,
-              cast<ElementsAttr>(makeAttr(alphaType, 1))), // alpha
-          stablehlo::ConstantOp::create(
-              rewriter, op.getLoc(), alphaType,
-              cast<ElementsAttr>(makeAttr(alphaType, 0))), // beta
-      enzymexla::LapackSideAttr::get(op.getContext(), side), 
-      enzymexla::LapackUploAttr::get(op.getContext(), enzymexla::LapackUplo::F)
-    );
+    auto symmOp = enzymexla::SymmOp::create(
+        rewriter, op.getLoc(), op.getResult().getType(),
+        lhs, // A
+        rhs, // B
+        stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), op.getType(),
+            cast<ElementsAttr>(makeAttr(op.getType(), 0))), // C
+        stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), alphaType,
+            cast<ElementsAttr>(makeAttr(alphaType, 1))), // alpha
+        stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), alphaType,
+            cast<ElementsAttr>(makeAttr(alphaType, 0))), // beta
+        enzymexla::LapackSideAttr::get(op.getContext(), side),
+        enzymexla::LapackUploAttr::get(op.getContext(),
+                                       enzymexla::LapackUplo::F));
     rewriter.replaceOp(op, symmOp.getResult());
     return success();
   }
 };
 
 template <typename ST, typename Child>
-struct FuseMulBase : public CheckedOpRewritePattern<stablehlo::MulOp, FuseMulBase<ST, Child>>
-{
-  using CheckedOpRewritePattern<stablehlo::MulOp, FuseMulBase<ST, Child>>::CheckedOpRewritePattern;
+struct FuseMulBase
+    : public CheckedOpRewritePattern<stablehlo::MulOp, FuseMulBase<ST, Child>> {
+  using CheckedOpRewritePattern<
+      stablehlo::MulOp, FuseMulBase<ST, Child>>::CheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::MulOp op,
                                     PatternRewriter &rewriter) const {
@@ -29721,20 +29713,25 @@ struct FuseMulBase : public CheckedOpRewritePattern<stablehlo::MulOp, FuseMulBas
       return failure();
     }
 
+    if (!isOnlyUsedInOperation(targetOp, op)) {
+      return failure();
+    }
+
     Value scalarVal =
         stablehlo::getScalarValue(other.getDefiningOp(), rewriter);
     if (!scalarVal)
       return failure();
 
-      ((Child *)this)->fuseMul(rewriter, targetOp, op, scalarVal);
-      return success();
+    ((Child *)this)->fuseMul(rewriter, targetOp, op, scalarVal);
+    return success();
   }
 };
 
 template <typename ST, typename Child>
-struct FuseAddBase : public CheckedOpRewritePattern<stablehlo::AddOp, FuseAddBase<ST, Child>>
-{
-  using CheckedOpRewritePattern<stablehlo::AddOp, FuseAddBase<ST, Child>>::CheckedOpRewritePattern;
+struct FuseAddBase
+    : public CheckedOpRewritePattern<stablehlo::AddOp, FuseAddBase<ST, Child>> {
+  using CheckedOpRewritePattern<
+      stablehlo::AddOp, FuseAddBase<ST, Child>>::CheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::AddOp op,
                                     PatternRewriter &rewriter) const {
@@ -29753,60 +29750,53 @@ struct FuseAddBase : public CheckedOpRewritePattern<stablehlo::AddOp, FuseAddBas
     } else {
       return failure();
     }
-   
+
+    if (!isOnlyUsedInOperation(targetOp, op)) {
+      return failure();
+    }
+
     ((Child *)this)->fuseAdd(rewriter, targetOp, op, other);
     return success();
   }
 
-  std::pair<stablehlo::AddOp, stablehlo::ConstantOp> computeNewCBeta(PatternRewriter &rewriter, Value oldBeta, Type type, stablehlo::AddOp op, Value c, Value other) {
-    auto bcastedBeta = stablehlo::BroadcastInDimOp::create(
-        rewriter, op.getLoc(), type, oldBeta,
-        rewriter.getDenseI64ArrayAttr({}));
+  std::pair<mlir::Value, mlir::Value> computeNewCBeta(PatternRewriter &rewriter,
+                                                      Value oldBeta, Type type,
+                                                      stablehlo::AddOp op,
+                                                      Value c, Value other) {
+    auto scaledC = stablehlo::MulOpCreate(rewriter, op.getLoc(), c, oldBeta);
 
-    auto scaledC = stablehlo::MulOp::create(rewriter, op.getLoc(),
-                                            c, bcastedBeta);
-
-    auto newC = stablehlo::AddOp::create(rewriter, op.getLoc(), scaledC, other);
+    auto newC = stablehlo::AddOpCreate(rewriter, op.getLoc(), scaledC, other);
 
     auto newBeta = stablehlo::ConstantOp::create(
         rewriter, op.getLoc(), oldBeta.getType(),
         cast<ElementsAttr>(makeAttr(oldBeta.getType(), 1)));
     return {newC, newBeta};
   }
-
 };
 
-struct FuseMulIntoSymm: public FuseMulBase<enzymexla::SymmOp, FuseMulIntoSymm> {
-  
-  FuseMulIntoSymm(MLIRContext *context, PatternBenefit benefit = 1,
-    ArrayRef<StringRef> generatedNames = {})
-    : FuseMulBase<enzymexla::SymmOp, FuseMulIntoSymm>(context, benefit,
-      generatedNames) {}
-      
-  using FuseMulBase<enzymexla::SymmOp, FuseMulIntoSymm>::matchAndRewrite;
+struct FuseMulIntoSymm
+    : public FuseMulBase<enzymexla::SymmOp, FuseMulIntoSymm> {
+  using FuseMulBase<enzymexla::SymmOp, FuseMulIntoSymm>::FuseMulBase;
 
-  void fuseMul(PatternRewriter &rewriter, enzymexla::SymmOp symmOp, stablehlo::MulOp op, Value scalarVal) {
+  void fuseMul(PatternRewriter &rewriter, enzymexla::SymmOp symmOp,
+               stablehlo::MulOp op, Value scalarVal) {
     auto newBeta = stablehlo::MulOp::create(rewriter, op.getLoc(),
                                             symmOp.getBeta(), scalarVal);
     auto newAlpha = stablehlo::MulOp::create(rewriter, op.getLoc(),
-                                            symmOp.getAlpha(), scalarVal);
+                                             symmOp.getAlpha(), scalarVal);
 
     rewriter.replaceOpWithNewOp<enzymexla::SymmOp>(
-        op, symmOp.getType(), symmOp.getA(), symmOp.getB(), symmOp.getC(), newAlpha, newBeta,
-        symmOp.getSideAttr(), symmOp.getUploAttr());
-      }
+        op, symmOp.getType(), symmOp.getA(), symmOp.getB(), symmOp.getC(),
+        newAlpha, newBeta, symmOp.getSideAttr(), symmOp.getUploAttr());
+  }
 };
 
-struct FuseMulIntoSyrk: public FuseMulBase<enzymexla::SyrkOp, FuseMulIntoSyrk> {
-  
-  FuseMulIntoSyrk(MLIRContext *context, PatternBenefit benefit = 1,
-    ArrayRef<StringRef> generatedNames = {})
-    : FuseMulBase<enzymexla::SyrkOp, FuseMulIntoSyrk>(context, benefit,
-      generatedNames) {}
-      
-  using FuseMulBase<enzymexla::SyrkOp, FuseMulIntoSyrk>::matchAndRewrite;
+struct FuseMulIntoSyrk
+    : public FuseMulBase<enzymexla::SyrkOp, FuseMulIntoSyrk> {
+  using FuseMulBase<enzymexla::SyrkOp, FuseMulIntoSyrk>::FuseMulBase;
 
-  void fuseMul(PatternRewriter &rewriter, enzymexla::SyrkOp syrkOp, stablehlo::MulOp op, Value scalarVal) {
+  void fuseMul(PatternRewriter &rewriter, enzymexla::SyrkOp syrkOp,
+               stablehlo::MulOp op, Value scalarVal) {
     auto newBeta = stablehlo::MulOp::create(rewriter, op.getLoc(),
                                             syrkOp.getBeta(), scalarVal);
     auto newAlpha = stablehlo::MulOp::create(rewriter, op.getLoc(),
@@ -29816,51 +29806,37 @@ struct FuseMulIntoSyrk: public FuseMulBase<enzymexla::SyrkOp, FuseMulIntoSyrk> {
         op, syrkOp.getType(), syrkOp.getA(), syrkOp.getC(), newAlpha, newBeta,
         syrkOp.getUploAttr(), syrkOp.getOutputUploAttr(),
         syrkOp.getTransposeAttr());
-    }
+  }
 };
 
 struct FuseAddIntoSymm
-    : public FuseAddBase<enzymexla::SymmOp,
-                                     FuseAddIntoSymm> {
-  FuseAddIntoSymm(MLIRContext *context, PatternBenefit benefit = 1,
-    ArrayRef<StringRef> generatedNames = {})
-    : FuseAddBase<enzymexla::SymmOp, FuseAddIntoSymm>(context, benefit,
-      generatedNames) {}
-      
-  using FuseAddBase<enzymexla::SymmOp, FuseAddIntoSymm>::matchAndRewrite;
+    : public FuseAddBase<enzymexla::SymmOp, FuseAddIntoSymm> {
+  using FuseAddBase<enzymexla::SymmOp, FuseAddIntoSymm>::FuseAddBase;
 
-  void fuseAdd(PatternRewriter &rewriter, enzymexla::SymmOp symmOp, stablehlo::AddOp op, Value other) {
-    stablehlo::AddOp newC;
-    stablehlo::ConstantOp newBeta;
-    std::tie(newC, newBeta) = computeNewCBeta(rewriter, symmOp.getBeta(), symmOp.getType(), op, symmOp.getC(), other);
+  void fuseAdd(PatternRewriter &rewriter, enzymexla::SymmOp symmOp,
+               stablehlo::AddOp op, Value other) {
+    auto [newC, newBeta] = computeNewCBeta(
+        rewriter, symmOp.getBeta(), symmOp.getType(), op, symmOp.getC(), other);
 
     rewriter.replaceOpWithNewOp<enzymexla::SymmOp>(
-        op, symmOp.getType(), symmOp.getA(), symmOp.getB(), newC, symmOp.getAlpha(), newBeta,
-        symmOp.getSideAttr(), symmOp.getUploAttr());
-    
+        op, symmOp.getType(), symmOp.getA(), symmOp.getB(), newC,
+        symmOp.getAlpha(), newBeta, symmOp.getSideAttr(), symmOp.getUploAttr());
   }
 };
 
 struct FuseAddIntoSyrk
-    : public FuseAddBase<enzymexla::SyrkOp,
-                                     FuseAddIntoSyrk> {
-  FuseAddIntoSyrk(MLIRContext *context, PatternBenefit benefit = 1,
-    ArrayRef<StringRef> generatedNames = {})
-    : FuseAddBase<enzymexla::SyrkOp, FuseAddIntoSyrk>(context, benefit,
-      generatedNames) {}
-      
-  using FuseAddBase<enzymexla::SyrkOp, FuseAddIntoSyrk>::matchAndRewrite;
+    : public FuseAddBase<enzymexla::SyrkOp, FuseAddIntoSyrk> {
+  using FuseAddBase<enzymexla::SyrkOp, FuseAddIntoSyrk>::FuseAddBase;
 
-  void fuseAdd(PatternRewriter &rewriter, enzymexla::SyrkOp syrkOp, stablehlo::AddOp op, Value other) {
-    stablehlo::AddOp newC;
-    stablehlo::ConstantOp newBeta;
-    std::tie(newC, newBeta) = computeNewCBeta(rewriter, syrkOp.getBeta(), syrkOp.getType(), op, syrkOp.getC(), other);
+  void fuseAdd(PatternRewriter &rewriter, enzymexla::SyrkOp syrkOp,
+               stablehlo::AddOp op, Value other) {
+    auto [newC, newBeta] = computeNewCBeta(
+        rewriter, syrkOp.getBeta(), syrkOp.getType(), op, syrkOp.getC(), other);
 
     rewriter.replaceOpWithNewOp<enzymexla::SyrkOp>(
         op, syrkOp.getType(), syrkOp.getA(), newC, syrkOp.getAlpha(), newBeta,
         syrkOp.getUploAttr(), syrkOp.getOutputUploAttr(),
-        syrkOp.getTransposeAttr()
-    );
+        syrkOp.getTransposeAttr());
   }
 };
 
@@ -33985,13 +33961,13 @@ struct EnzymeHLOOptPass
 
     patterns.add<TransposeSymmetricSimplify>(context);
     patterns.add<FactorScalarsInDotGeneral>(context);
+
+    // symm patterns
     patterns.add<DotGeneralToSymm, FuseAddIntoSymm, FuseMulIntoSymm>(context);
 
     // syrk patterns
-    // currently disabled since lowering is missing
-    // patterns.add<DotGeneralToSyrk>(context);
-    patterns.add<TransposeSyrkToSyrk, FuseMulIntoSyrk, FuseAddIntoSyrk>(
-        context);
+    patterns.add<DotGeneralToSyrk, TransposeSyrkToSyrk, FuseMulIntoSyrk,
+                 FuseAddIntoSyrk>(context);
 
     // clang-format off
     patterns.add<

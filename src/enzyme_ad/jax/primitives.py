@@ -109,7 +109,8 @@ def optimization_passes(
     enable_licm_optimization_passes: bool = True,
     enable_scatter_gather_optimization_passes: bool = True,
     enable_pad_optimization_passes: bool = True,
-    enable_structured_tensors_passes: bool = False,
+    enable_structured_tensors_detection_passes: bool = False,
+    enable_structured_tensors_passes: bool = True,
     enable_slice_to_batch_passes: bool = False,  # this are somewhat expensive to run
     enable_reduce_slice_fusion_passes: bool = True,
     enable_concat_to_batch_passes: bool = True,
@@ -330,7 +331,6 @@ def optimization_passes(
         "split_variadic_scatter_op",
         "dynamic_slice_simplify",
         "enzyme_hlo_unroll(4)",
-        "dot_general_only_diagonal_access",
         "divide_negated_operands_simplify",
         "multiply_negated_operands_simplify",
         "factor_scalars_in_dot_general",
@@ -340,7 +340,6 @@ def optimization_passes(
         "while_dus_ds_simplify",
         "while_dus_dus_simplify",
         "reshape_slice_reshape",
-        "syrk_simplify_output_uplo",
         "dynamic_slice_elementwise",
         "dot_general_remove_batch_dimensions",
         "delete_dims_reduce",
@@ -402,13 +401,23 @@ def optimization_passes(
     ]
 
     if (
-        enable_structured_tensors_passes
+        enable_structured_tensors_detection_passes
     ):  # currently we dont register custom_calls on jax end
         transform_passes_list += [
             "dot_general_to_syrk",
             "dot_general_to_symm",
+        ]
+
+    if enable_structured_tensors_passes:
+        transform_passes_list += [
             "fuse_add_into_symm",
             "fuse_mul_into_symm",
+            "transpose_syrk_to_syrk",
+            "fuse_mul_into_syrk",
+            "fuse_add_into_syrk",
+            "dot_general_only_diagonal_access",
+            "transpose_symmetric_simplify",
+            "syrk_simplify_output_uplo",
         ]
 
     if enable_slice_to_batch_passes:
