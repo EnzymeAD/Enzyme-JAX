@@ -897,6 +897,27 @@ def GesvjOp : EnzymeXLA_Op<"lapack.gesvj", [Pure]> {
   }];
 }
 
+def HeevOp : EnzymeXLA_Op<"lapack.heev", [Pure]> {
+  let summary = "Eigenvalue decomposition for Hermitian/symmetric matrices using QR iteration.";
+
+  let arguments = (ins
+    HLO_Tensor:$input,
+    EnzymeXLA_LapackUploAttr:$uplo,
+    EnzymeXLA_LapackJobAttr:$jobz
+  );
+
+  let results = (outs
+    HLO_Tensor:$info,
+    Variadic<HLO_Tensor>:$res
+  );
+
+  let assemblyFormat = [{
+    $input `,` attr-dict `:` functional-type(operands, results)
+  }];
+
+  let hasVerifier = 1;
+}
+
 // Special Functions - Bessel Functions
 
 def BesselJ : EnzymeXLA_Op<"special.besselj", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {

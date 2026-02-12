@@ -66,6 +66,46 @@ def EnzymeXLA_LapackUplo : I32EnumAttr<"LapackUplo",
 def EnzymeXLA_LapackUploAttr : EnumAttr<EnzymeXLA_Dialect,
     EnzymeXLA_LapackUplo, "uplo"> {
   let assemblyFormat = "`<` $value `>`";
+  let extraClassDeclaration = [{
+    char asChar() {
+      switch (getValue()) {
+        case ::mlir::enzymexla::LapackUplo::U: return 'U';
+        case ::mlir::enzymexla::LapackUplo::L: return 'L';
+        case ::mlir::enzymexla::LapackUplo::F: return 'F';
+        default: llvm_unreachable("Invalid LapackUplo enum value");
+      }
+    }
+  }];
+}
+
+def EnzymeXLA_LapackJob : I32EnumAttr<"LapackJob",
+    "Selects the computation on routines that can compute multiple results (e.g. eigendecomposition, SVD, ...).",
+    [
+      I32EnumAttrCase<"N", 0>,
+      I32EnumAttrCase<"V", 1>,
+      I32EnumAttrCase<"A", 2>,
+      I32EnumAttrCase<"S", 3>,
+      I32EnumAttrCase<"O", 4>
+    ]> {
+  let genSpecializedAttr = 0;
+  let cppNamespace = "::mlir::enzymexla";
+}
+
+def EnzymeXLA_LapackJobAttr : EnumAttr<EnzymeXLA_Dialect,
+    EnzymeXLA_LapackJob, "job"> {
+  let assemblyFormat = "`<` $value `>`";
+  let extraClassDeclaration = [{
+    char asChar() {
+      switch (getValue()) {
+        case ::mlir::enzymexla::LapackJob::N: return 'N';
+        case ::mlir::enzymexla::LapackJob::V: return 'V';
+        case ::mlir::enzymexla::LapackJob::A: return 'A';
+        case ::mlir::enzymexla::LapackJob::S: return 'S';
+        case ::mlir::enzymexla::LapackJob::O: return 'O';
+        default: llvm_unreachable("Invalid LapackJob enum value");
+      }
+    }
+  }];
 }
 
 def EnzymeXLA_QrAlgorithm : I32EnumAttr<"QrAlgorithm",
