@@ -1,3 +1,4 @@
+// RUN: enzymexlamlir-opt %s --enzyme --canonicalize --remove-unnecessary-enzyme-ops --enzyme-simplify-math --arith-raise --canonicalize | FileCheck %s
 // RUN: enzymexlamlir-opt %s --enzyme --canonicalize --remove-unnecessary-enzyme-ops --enzyme-simplify-math --arith-raise --canonicalize | stablehlo-translate --interpret
 
 // Test for CONSTANT_CHECKPOINTING with non-perfect square number of iterations
@@ -121,3 +122,10 @@ module {
     return
   }
 }
+
+// FileCheck: verify checkpointing structure in generated diff (like while_checkpointing.mlir)
+// CHECK: func.func private @diffe
+// CHECK: stablehlo.while
+// CHECK: dynamic_update_slice
+// CHECK: dynamic_slice
+// CHECK: stablehlo.subtract {{.*}} tensor<i64>

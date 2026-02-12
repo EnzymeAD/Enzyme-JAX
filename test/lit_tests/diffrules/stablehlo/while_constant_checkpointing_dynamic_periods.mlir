@@ -12,6 +12,10 @@
 // CHECK: func.func @with_period_7
 // CHECK: stablehlo.min
 // CHECK: stablehlo.while
+// CHECK: func.func private @diffe
+// CHECK: dynamic_update_slice
+// CHECK: dynamic_slice
+// CHECK: stablehlo.subtract {{.*}} tensor<i64>
 
 module {
   // Period = 3 (16 iterations, 3 does not divide 16; last segment has 1 iter)
