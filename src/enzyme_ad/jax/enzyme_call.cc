@@ -76,6 +76,8 @@
 
 #include "stablehlo/transforms/Passes.h"
 
+#include "Integrations/c/EnzymeXLAOptPasses.h"
+
 enum class ABI { Primal, Forward, Augmented, Reverse, Tape };
 
 enum class Language : int { CPP = 0, LLVM = 1, MHLO = 2 };
@@ -1275,5 +1277,74 @@ NB_MODULE(enzyme_call, m) {
           compile_mhlo_to_llvm_with_xla(mhlo_text, llvm_ir, xla_runtime,
                                         pass_pipeline);
           return llvm_ir;
+        });
+
+  m.def("get_transform_passes_list",
+        [](int64_t max_constant_threshold, int64_t while_unroll_threshold,
+           int reshape_propagate, int transpose_propagate, bool no_nan,
+           bool all_finite, bool dus_to_concat, bool dus_slice_simplify,
+           bool sum_to_reducewindow, bool sum_to_conv,
+           bool aggressive_sum_to_conv, bool while_concat,
+           bool aggressive_propagation, bool is_sharded,
+           bool raise_shlo_to_blas_lapack, bool recognize_comms,
+           bool lower_comms, bool enable_structured_tensors_detection_passes,
+           bool enable_structured_tensors_passes,
+           bool enable_scatter_gather_optimization_passes,
+           bool enable_slice_to_batch_passes,
+           bool enable_reduce_slice_fusion_passes,
+           bool enable_concat_to_batch_passes,
+           bool enable_loop_raising_passes,
+           bool enable_licm_optimization_passes,
+           bool enable_pad_optimization_passes)
+            -> std::pair<std::string, std::string> {
+          EnzymeXLATransformPassesOptions options;
+          options.max_constant_threshold = max_constant_threshold;
+          options.while_unroll_threshold = while_unroll_threshold;
+          options.reshape_propagate =
+              (EnzymeXLAPropagateDirection)reshape_propagate;
+          options.transpose_propagate =
+              (EnzymeXLAPropagateDirection)transpose_propagate;
+          options.no_nan = no_nan;
+          options.all_finite = all_finite;
+          options.dus_to_concat = dus_to_concat;
+          options.dus_slice_simplify = dus_slice_simplify;
+          options.sum_to_reducewindow = sum_to_reducewindow;
+          options.sum_to_conv = sum_to_conv;
+          options.aggressive_sum_to_conv = aggressive_sum_to_conv;
+          options.while_concat = while_concat;
+          options.aggressive_propagation = aggressive_propagation;
+          options.is_sharded = is_sharded;
+          options.raise_shlo_to_blas_lapack = raise_shlo_to_blas_lapack;
+          options.recognize_comms = recognize_comms;
+          options.lower_comms = lower_comms;
+          options.enable_structured_tensors_detection_passes =
+              enable_structured_tensors_detection_passes;
+          options.enable_structured_tensors_passes =
+              enable_structured_tensors_passes;
+          options.enable_scatter_gather_optimization_passes =
+              enable_scatter_gather_optimization_passes;
+          options.enable_slice_to_batch_passes =
+              enable_slice_to_batch_passes;
+          options.enable_reduce_slice_fusion_passes =
+              enable_reduce_slice_fusion_passes;
+          options.enable_concat_to_batch_passes =
+              enable_concat_to_batch_passes;
+          options.enable_loop_raising_passes = enable_loop_raising_passes;
+          options.enable_licm_optimization_passes =
+              enable_licm_optimization_passes;
+          options.enable_pad_optimization_passes =
+              enable_pad_optimization_passes;
+
+          char *mainPasses = nullptr;
+          char *lowerPasses = nullptr;
+          enzymexlaGetTransformPassesList(&options, &mainPasses, &lowerPasses);
+
+          std::string main_str(mainPasses ? mainPasses : "");
+          std::string lower_str(lowerPasses ? lowerPasses : "");
+
+          enzymexlaFreeTransformPassesList(mainPasses);
+          enzymexlaFreeTransformPassesList(lowerPasses);
+
+          return std::make_pair(main_str, lower_str);
         });
 }
