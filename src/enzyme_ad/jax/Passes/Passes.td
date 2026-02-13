@@ -191,7 +191,13 @@ def EnzymeHLOOptPass : Pass<"enzyme-hlo-opt"> {
         /*CLI argument=*/"enable_auto_batching_passes",
         /*type=*/"bool",
         /*default=*/"false",
-        /*description=*/"Enable auto batching passes">
+        /*description=*/"Enable auto batching passes">,
+    Option<
+        /*C++ variable name=*/"structured_tensors_detection",
+        /*CLI argument=*/"structured_tensors_detection",
+        /*type=*/"bool",
+        /*default=*/"false",
+        /*description=*/"Enable detection of structured tensor operations (syrk, symm, etc.)">
   ];
 }
 
