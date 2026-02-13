@@ -72,6 +72,9 @@ mlir::Location rewriteLocation(mlir::Location loc, bool strip_llvm_debuginfo) {
   if (auto csl = dyn_cast<CallSiteLoc>(loc)) {
     auto callee = rewriteLocation(csl.getCallee(), strip_llvm_debuginfo);
     auto caller = rewriteLocation(csl.getCaller(), strip_llvm_debuginfo);
+    if (isa<UnknownLoc>(callee)) {
+      return caller;
+    }
     return CallSiteLoc::get(callee, caller);
   }
   if (auto si = dyn_cast<FusedLocWith<LLVM::DISubprogramAttr>>(loc)) {

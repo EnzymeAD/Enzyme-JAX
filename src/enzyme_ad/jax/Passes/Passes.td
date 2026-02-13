@@ -1185,6 +1185,19 @@ def DropUnsupportedAttributesPass : Pass<"drop-unsupported-attributes", "ModuleO
   ];
 }
 
+def TrimCallsites : Pass<"trim-callsites"> {
+  let summary = "Trim callsite debug info";
+  let dependentDialects = [];
+  let options = [
+    Option<
+        /*C++ variable name=*/"to_trim",
+        /*CLI argument=*/"to_trim",
+        /*type=*/"std::string",
+        /*default=*/"\"\"",
+        /*description=*/";-separated list of prefixes to trim">,
+  ];
+}
+
 def SCFCPUify : Pass<"cpuify"> {
   let summary = "remove barrier ig";
   let dependentDialects =
