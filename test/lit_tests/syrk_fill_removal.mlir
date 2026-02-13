@@ -93,6 +93,8 @@ func.func @test_elementwise_chain(%arg0: tensor<32x32xf32>, %arg1: tensor<32x32x
 // CHECK-LABEL: func.func @test_elementwise_chain
 // CHECK: enzymexla.blas.syrk
 // CHECK-SAME: output_uplo = #enzymexla.uplo<U>
+// CHECK: stablehlo.add
+// CHECK: stablehlo.multiply
 // CHECK: enzymexla.blas.syrk
 // CHECK-SAME: uplo = #enzymexla.uplo<U>
 

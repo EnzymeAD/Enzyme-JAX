@@ -29726,10 +29726,47 @@ struct FuseMulBase
 
     Value scalarVal =
         stablehlo::getScalarValue(other.getDefiningOp(), rewriter);
-    if (!scalarVal)
+    if (!scalarVal) {
       return failure();
+    }
 
-    ((Child *)this)->fuseMul(rewriter, targetOp, op, scalarVal);
+    return ((Child *)this)->fuseMul(rewriter, targetOp, op, scalarVal);
+  }
+};
+
+struct FuseMulIntoSymm
+    : public FuseMulBase<enzymexla::SymmOp, FuseMulIntoSymm> {
+  using FuseMulBase<enzymexla::SymmOp, FuseMulIntoSymm>::FuseMulBase;
+
+  LogicalResult fuseMul(PatternRewriter &rewriter, enzymexla::SymmOp symmOp,
+                        stablehlo::MulOp op, Value scalarVal) {
+    auto newBeta = stablehlo::MulOp::create(rewriter, op.getLoc(),
+                                            symmOp.getBeta(), scalarVal);
+    auto newAlpha = stablehlo::MulOp::create(rewriter, op.getLoc(),
+                                             symmOp.getAlpha(), scalarVal);
+
+    rewriter.replaceOpWithNewOp<enzymexla::SymmOp>(
+        op, symmOp.getType(), symmOp.getA(), symmOp.getB(), symmOp.getC(),
+        newAlpha, newBeta, symmOp.getSideAttr(), symmOp.getUploAttr());
+    return success();
+  }
+};
+
+struct FuseMulIntoSyrk
+    : public FuseMulBase<enzymexla::SyrkOp, FuseMulIntoSyrk> {
+  using FuseMulBase<enzymexla::SyrkOp, FuseMulIntoSyrk>::FuseMulBase;
+
+  LogicalResult fuseMul(PatternRewriter &rewriter, enzymexla::SyrkOp syrkOp,
+                        stablehlo::MulOp op, Value scalarVal) {
+    auto newBeta = stablehlo::MulOp::create(rewriter, op.getLoc(),
+                                            syrkOp.getBeta(), scalarVal);
+    auto newAlpha = stablehlo::MulOp::create(rewriter, op.getLoc(),
+                                             syrkOp.getAlpha(), scalarVal);
+
+    rewriter.replaceOpWithNewOp<enzymexla::SyrkOp>(
+        op, syrkOp.getType(), syrkOp.getA(), syrkOp.getC(), newAlpha, newBeta,
+        syrkOp.getUploAttr(), syrkOp.getOutputUploAttr(),
+        syrkOp.getTransposeAttr());
     return success();
   }
 };
@@ -29762,8 +29799,12 @@ struct FuseAddBase
       return failure();
     }
 
-    ((Child *)this)->fuseAdd(rewriter, targetOp, op, other);
-    return success();
+    // we can fuse this addition iff the other operand is a symmetric matrix
+    if (!canApplySymmetricPattern(other, rewriter)) {
+      return failure();
+    }
+
+    return ((Child *)this)->fuseAdd(rewriter, targetOp, op, other);
   }
 
   std::pair<mlir::Value, mlir::Value> computeNewCBeta(PatternRewriter &rewriter,
@@ -29781,53 +29822,19 @@ struct FuseAddBase
   }
 };
 
-struct FuseMulIntoSymm
-    : public FuseMulBase<enzymexla::SymmOp, FuseMulIntoSymm> {
-  using FuseMulBase<enzymexla::SymmOp, FuseMulIntoSymm>::FuseMulBase;
-
-  void fuseMul(PatternRewriter &rewriter, enzymexla::SymmOp symmOp,
-               stablehlo::MulOp op, Value scalarVal) {
-    auto newBeta = stablehlo::MulOp::create(rewriter, op.getLoc(),
-                                            symmOp.getBeta(), scalarVal);
-    auto newAlpha = stablehlo::MulOp::create(rewriter, op.getLoc(),
-                                             symmOp.getAlpha(), scalarVal);
-
-    rewriter.replaceOpWithNewOp<enzymexla::SymmOp>(
-        op, symmOp.getType(), symmOp.getA(), symmOp.getB(), symmOp.getC(),
-        newAlpha, newBeta, symmOp.getSideAttr(), symmOp.getUploAttr());
-  }
-};
-
-struct FuseMulIntoSyrk
-    : public FuseMulBase<enzymexla::SyrkOp, FuseMulIntoSyrk> {
-  using FuseMulBase<enzymexla::SyrkOp, FuseMulIntoSyrk>::FuseMulBase;
-
-  void fuseMul(PatternRewriter &rewriter, enzymexla::SyrkOp syrkOp,
-               stablehlo::MulOp op, Value scalarVal) {
-    auto newBeta = stablehlo::MulOp::create(rewriter, op.getLoc(),
-                                            syrkOp.getBeta(), scalarVal);
-    auto newAlpha = stablehlo::MulOp::create(rewriter, op.getLoc(),
-                                             syrkOp.getAlpha(), scalarVal);
-
-    rewriter.replaceOpWithNewOp<enzymexla::SyrkOp>(
-        op, syrkOp.getType(), syrkOp.getA(), syrkOp.getC(), newAlpha, newBeta,
-        syrkOp.getUploAttr(), syrkOp.getOutputUploAttr(),
-        syrkOp.getTransposeAttr());
-  }
-};
-
 struct FuseAddIntoSymm
     : public FuseAddBase<enzymexla::SymmOp, FuseAddIntoSymm> {
   using FuseAddBase<enzymexla::SymmOp, FuseAddIntoSymm>::FuseAddBase;
 
-  void fuseAdd(PatternRewriter &rewriter, enzymexla::SymmOp symmOp,
-               stablehlo::AddOp op, Value other) {
+  LogicalResult fuseAdd(PatternRewriter &rewriter, enzymexla::SymmOp symmOp,
+                        stablehlo::AddOp op, Value other) {
     auto [newC, newBeta] = computeNewCBeta(
         rewriter, symmOp.getBeta(), symmOp.getType(), op, symmOp.getC(), other);
 
     rewriter.replaceOpWithNewOp<enzymexla::SymmOp>(
         op, symmOp.getType(), symmOp.getA(), symmOp.getB(), newC,
         symmOp.getAlpha(), newBeta, symmOp.getSideAttr(), symmOp.getUploAttr());
+    return success();
   }
 };
 
@@ -29835,8 +29842,8 @@ struct FuseAddIntoSyrk
     : public FuseAddBase<enzymexla::SyrkOp, FuseAddIntoSyrk> {
   using FuseAddBase<enzymexla::SyrkOp, FuseAddIntoSyrk>::FuseAddBase;
 
-  void fuseAdd(PatternRewriter &rewriter, enzymexla::SyrkOp syrkOp,
-               stablehlo::AddOp op, Value other) {
+  LogicalResult fuseAdd(PatternRewriter &rewriter, enzymexla::SyrkOp syrkOp,
+                        stablehlo::AddOp op, Value other) {
     auto [newC, newBeta] = computeNewCBeta(
         rewriter, syrkOp.getBeta(), syrkOp.getType(), op, syrkOp.getC(), other);
 
@@ -29844,6 +29851,7 @@ struct FuseAddIntoSyrk
         op, syrkOp.getType(), syrkOp.getA(), newC, syrkOp.getAlpha(), newBeta,
         syrkOp.getUploAttr(), syrkOp.getOutputUploAttr(),
         syrkOp.getTransposeAttr());
+    return success();
   }
 };
 

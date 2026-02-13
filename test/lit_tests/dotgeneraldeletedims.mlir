@@ -45,4 +45,4 @@ module {
 }
 
 // CHECK-LABEL: func.func @syrk
-// CHECK:     %0 = stablehlo.dot_general %arg2, %arg2, contracting_dims = [0] x [0] : (tensor<2048x2048xf32>, tensor<2048x2048xf32>) -> tensor<2048x2048xf32>
+// CHECK:    %0 = stablehlo.dot_general %arg2, %arg2, contracting_dims = [0] x [0] : (tensor<2048x2048xf32>, tensor<2048x2048xf32>) -> tensor<2048x2048xf32>
