@@ -55,7 +55,8 @@ struct MPICommRankOpLowering
 
       // Generate the enzymexla_wrapper_MPI_Comm_rank LLVM function body
       std::string wrapperFunctionName = "enzymexla_wrapper_" + mpiFunctionName;
-      {
+
+      if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapperFunctionName)) {
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(moduleOp.getBody());
 
@@ -190,7 +191,8 @@ struct MPICommSizeOpLowering
 
       // Generate the enzymexla_wrapper_MPI_Comm_size LLVM function body
       std::string wrapperFunctionName = "enzymexla_wrapper_" + mpiFunctionName;
-      {
+
+      if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapperFunctionName)) {
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(moduleOp.getBody());
 
@@ -324,7 +326,8 @@ struct MPIBarrierOpLowering : public OpRewritePattern<enzymexla::MPIBarrierOp> {
 
       // Generate the enzymexla_wrapper_MPI_Barrier LLVM function body
       std::string wrapperFunctionName = "enzymexla_wrapper_" + mpiFunctionName;
-      {
+
+      if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapperFunctionName)) {
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(moduleOp.getBody());
 
@@ -1167,7 +1170,8 @@ struct MPIWaitOpLowering : public OpRewritePattern<enzymexla::MPIWaitOp> {
 
       // Generate the enzymexla_wrapper LLVM function body
       std::string wrapperFunctionName = "enzymexla_wrapper_" + mpiFunctionName;
-      {
+
+      if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapperFunctionName)) {
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(moduleOp.getBody());
 
