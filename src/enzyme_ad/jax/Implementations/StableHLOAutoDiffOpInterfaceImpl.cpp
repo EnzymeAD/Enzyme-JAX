@@ -467,10 +467,10 @@ public:
         auto idx = arg.getArgNumber();
         if (resultPositionsToShadow.count(idx)) {
           if (gutils->isConstantValue(arg)) {
-            nb->insertArgument(
-                curidx,
-                cast<AutoDiffTypeInterface>(arg.getType()).getShadowType(),
-                op.getLoc());
+            nb->insertArgument(curidx,
+                               cast<AutoDiffTypeInterface>(arg.getType())
+                                   .getShadowType(gutils->width),
+                               op.getLoc());
           }
           curidx++;
         }
@@ -1231,13 +1231,13 @@ public:
     // for simplicity we do grad -> reduce -> reshape (restore 1 dims) ->
     // transpose -> reshape
     // The repeated reshapes are then eliminated via `enzyme-hlo-opt`.
-    auto reshapedRed = ReshapeOp::create(
+    auto reshapedRed = stablehlo::ReshapeOp::create(
         builder, op.getLoc(),
         RankedTensorType::get(reshapedShape, inTy.getElementType()),
         red->getResult(0));
     auto transposedVal =
         TransposeOp::create(builder, op.getLoc(), reshapedRed, perm);
-    auto res = ReshapeOp::create(
+    auto res = stablehlo::ReshapeOp::create(
         builder, op.getLoc(), gutils->getShadowType(op.getOperand().getType()),
         transposedVal);
 
@@ -1256,12 +1256,12 @@ public:
 
 class AutoDiffSliceRev
     : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffSliceRev,
-                                                       SliceOp> {
+                                                       stablehlo::SliceOp> {
 public:
   LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
                                          MGradientUtilsReverse *gutils,
                                          SmallVector<Value> caches) const {
-    auto op = cast<SliceOp>(orig);
+    auto op = cast<stablehlo::SliceOp>(orig);
     auto inTy = op.getOperand().getType();
     auto inDiffe = gutils->diffe(op, builder);
     gutils->zeroDiffe(op, builder);
@@ -1714,10 +1714,10 @@ public:
       }
       if (gutils->isConstantValue(op))
         continue;
-      auto res = SliceOp::create(
+      auto res = stablehlo::SliceOp::create(
           builder, op.getLoc(), RankedTensorType::get(tys, RT.getElementType()),
           inDiffe, start, limit, strides);
-      auto res2 = ReshapeOp::create(builder, op.getLoc(), inTy, res);
+      auto res2 = stablehlo::ReshapeOp::create(builder, op.getLoc(), inTy, res);
       gutils->addToDiffe(op, res2, builder);
     }
     return success();
@@ -4124,6 +4124,81 @@ struct SHLOConvolutionOpBatchInterface
   }
 };
 
+struct SHLOScatterOpBatchInterface
+    : public BatchOpInterface::ExternalModel<SHLOScatterOpBatchInterface,
+                                             stablehlo::ScatterOp> {
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto op = cast<stablehlo::ScatterOp>(src);
+
+    SmallVector<Value> newInputs;
+    newInputs.reserve(op.getInputs().size());
+    for (auto input : op.getInputs()) {
+      newInputs.push_back(mapper.lookup(input));
+    }
+
+    auto newScatterIndices = mapper.lookup(op.getScatterIndices());
+
+    SmallVector<Value> newUpdates;
+    newUpdates.reserve(op.getUpdates().size());
+    for (auto update : op.getUpdates()) {
+      newUpdates.push_back(mapper.lookup(update));
+    }
+
+    auto dimNumbers = op.getScatterDimensionNumbers();
+    int64_t nBatch = batchSizes.size();
+
+    SmallVector<int64_t> newUpdateWindowDims;
+    for (auto dim : dimNumbers.getUpdateWindowDims()) {
+      newUpdateWindowDims.push_back(dim + nBatch);
+    }
+
+    SmallVector<int64_t> newInsertedWindowDims;
+    for (auto dim : dimNumbers.getInsertedWindowDims()) {
+      newInsertedWindowDims.push_back(dim + nBatch);
+    }
+
+    SmallVector<int64_t> newInputBatchingDims, newScatterIndicesBatchingDims;
+    for (int64_t i = 0; i < nBatch; ++i) {
+      newInputBatchingDims.push_back(i);
+      newScatterIndicesBatchingDims.push_back(i);
+    }
+    for (auto dim : dimNumbers.getInputBatchingDims()) {
+      newInputBatchingDims.push_back(dim + nBatch);
+    }
+    for (auto dim : dimNumbers.getScatterIndicesBatchingDims()) {
+      newScatterIndicesBatchingDims.push_back(dim + nBatch);
+    }
+
+    SmallVector<int64_t> newScatterDimsToOperandDims;
+    for (auto dim : dimNumbers.getScatterDimsToOperandDims()) {
+      newScatterDimsToOperandDims.push_back(dim + nBatch);
+    }
+
+    auto newIndexVectorDim = dimNumbers.getIndexVectorDim() + nBatch;
+
+    auto newDimNumbers = stablehlo::ScatterDimensionNumbersAttr::get(
+        builder.getContext(), newUpdateWindowDims, newInsertedWindowDims,
+        newInputBatchingDims, newScatterIndicesBatchingDims,
+        newScatterDimsToOperandDims, newIndexVectorDim);
+
+    auto newScatterOp = stablehlo::ScatterOp::create(
+        builder, op.getLoc(), newInputs, newScatterIndices, newUpdates,
+        newDimNumbers, op.getIndicesAreSortedAttr(), op.getUniqueIndicesAttr());
+
+    IRMapping regionMapper;
+    op.getUpdateComputation().cloneInto(&newScatterOp.getUpdateComputation(),
+                                        regionMapper);
+
+    for (int i = 0; i < op.getNumResults(); ++i) {
+      mapper.map(op.getResult(i), newScatterOp.getResult(i));
+    }
+
+    return success();
+  }
+};
+
 struct StablehloAddSimplifyMathInterface
     : public MathSimplifyInterface::ExternalModel<
           StablehloAddSimplifyMathInterface, stablehlo::AddOp> {
@@ -4204,7 +4279,7 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     ReduceOp::attachInterface<AutoDiffReduceCF<ReduceOp>>(*context);
     WhileOp::attachInterface<AutoDiffReduceCF<WhileOp>>(*context);
     BroadcastInDimOp::attachInterface<AutoDiffBroadcastInDimRev>(*context);
-    SliceOp::attachInterface<AutoDiffSliceRev>(*context);
+    stablehlo::SliceOp::attachInterface<AutoDiffSliceRev>(*context);
     ReduceOp::attachInterface<AutoDiffReduceRev>(*context);
     ReduceWindowOp::attachInterface<AutoDiffReduceWindowRev>(*context);
     ConcatenateOp::attachInterface<AutoDiffConcatenateRev>(*context);
@@ -4223,9 +4298,10 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
         *context);
     ConcatenateOp::attachInterface<SHLOConcatenateOpBatchInterface>(*context);
     GatherOp::attachInterface<SHLOGatherOpBatchInterface>(*context);
-    SliceOp::attachInterface<SHLOSliceOpBatchInterface>(*context);
-    DynamicSliceOp::attachInterface<SHLODynamicSliceOpBatchInterface>(*context);
-    DynamicUpdateSliceOp::attachInterface<
+    stablehlo::SliceOp::attachInterface<SHLOSliceOpBatchInterface>(*context);
+    stablehlo::DynamicSliceOp::attachInterface<
+        SHLODynamicSliceOpBatchInterface>(*context);
+    stablehlo::DynamicUpdateSliceOp::attachInterface<
         SHLODynamicUpdateSliceOpBatchInterface>(*context);
     CustomCallOp::attachInterface<SHLOGenericBatchOpInterface<CustomCallOp>>(
         *context);
@@ -4238,8 +4314,7 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     ConvolutionOp::attachInterface<SHLOConvolutionOpBatchInterface>(*context);
     PadOp::attachInterface<SHLOPadOpBatchInterface>(*context);
 
-    ScatterOp::attachInterface<SHLOGenericBatchOpInterface<ScatterOp>>(
-        *context); // TODO: simpler version with newly named dims
+    ScatterOp::attachInterface<SHLOScatterOpBatchInterface>(*context);
 
     AddOp::attachInterface<StablehloAddSimplifyMathInterface>(*context);
     SubtractOp::attachInterface<StablehloSubSimplifyMathInterface>(*context);

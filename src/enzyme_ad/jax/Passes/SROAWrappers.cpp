@@ -81,7 +81,16 @@ struct SROAWrappersPass
           if (llvm::isa<mlir::LLVM::LLVMDialect>(op.getDialect())) {
             // There should be no need for mapping because all top level
             // operations in the module should be isolated from above
-            b.clone(op);
+            auto cloned = b.clone(op);
+            if (auto func = llvm::dyn_cast<mlir::LLVM::LLVMFuncOp>(cloned)) {
+              if (func->hasAttr("enzymexla.memory_effects")) {
+                func->removeAttr("enzymexla.memory_effects");
+              }
+              size_t numArgs = func.getNumArguments();
+              for (size_t i = 0; i < numArgs; i++) {
+                func.removeArgAttr(i, "enzymexla.memory_effects");
+              }
+            }
             toOpt.push_back(&op);
           }
         }

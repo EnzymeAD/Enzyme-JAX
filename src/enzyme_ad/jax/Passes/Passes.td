@@ -1035,6 +1035,12 @@ def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
            /*default=*/"false",
            /*description=*/"Whether to enable the lockstep for raising">,
        Option<
+           /*C++ variable name=*/"strip_llvm_debuginfo",
+           /*CLI argument=*/"strip_llvm_debuginfo",
+           /*type=*/"bool",
+           /*default=*/"false",
+           /*description=*/"Whether to strip llvm debug info">,
+       Option<
            /*C++ variable name=*/"prefer_while_raising",
            /*CLI argument=*/"prefer_while_raising",
            /*type=*/"bool",
@@ -1176,6 +1182,19 @@ def DropUnsupportedAttributesPass : Pass<"drop-unsupported-attributes", "ModuleO
         /*type=*/"bool",
         /*default=*/"true",
         /*description=*/"Drop attribute from various analysis results">,
+  ];
+}
+
+def TrimCallsites : Pass<"trim-callsites"> {
+  let summary = "Trim callsite debug info";
+  let dependentDialects = [];
+  let options = [
+    Option<
+        /*C++ variable name=*/"to_trim",
+        /*CLI argument=*/"to_trim",
+        /*type=*/"std::string",
+        /*default=*/"\"\"",
+        /*description=*/";-separated list of prefixes to trim">,
   ];
 }
 

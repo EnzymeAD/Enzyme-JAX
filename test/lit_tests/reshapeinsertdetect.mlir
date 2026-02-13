@@ -20,9 +20,8 @@ module @reactant_vcat attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replic
 // CHECK-NEXT:     %cst = stablehlo.constant dense<0.000000e+00> : tensor<4x1xf32>
 // CHECK-NEXT:     %cst_1 = stablehlo.constant dense<1.000000e+00> : tensor<1x1xf32>
 // CHECK-NEXT:     %0 = stablehlo.reshape %cst : (tensor<4x1xf32>) -> tensor<1x4xf32>
-// CHECK-NEXT:     %1 = stablehlo.reshape %cst_1 : (tensor<1x1xf32>) -> tensor<1x1xf32>
-// CHECK-NEXT:     %2 = stablehlo.dynamic_update_slice %0, %1, %c, %c : (tensor<1x4xf32>, tensor<1x1xf32>, tensor<i32>, tensor<i32>) -> tensor<1x4xf32>
-// CHECK-NEXT:     %3 = stablehlo.reshape %arg0 : (tensor<3x1xf32>) -> tensor<1x3xf32>
-// CHECK-NEXT:     %4 = stablehlo.dynamic_update_slice %2, %3, %c, %c_0 : (tensor<1x4xf32>, tensor<1x3xf32>, tensor<i32>, tensor<i32>) -> tensor<1x4xf32>
-// CHECK-NEXT:     return %4 : tensor<1x4xf32>
+// CHECK-NEXT:     %1 = stablehlo.dynamic_update_slice %0, %cst_1, %c, %c : (tensor<1x4xf32>, tensor<1x1xf32>, tensor<i32>, tensor<i32>) -> tensor<1x4xf32>
+// CHECK-NEXT:     %2 = stablehlo.reshape %arg0 : (tensor<3x1xf32>) -> tensor<1x3xf32>
+// CHECK-NEXT:     %3 = stablehlo.dynamic_update_slice %1, %2, %c, %c_0 : (tensor<1x4xf32>, tensor<1x3xf32>, tensor<i32>, tensor<i32>) -> tensor<1x4xf32>
+// CHECK-NEXT:     return %3 : tensor<1x4xf32>
 // CHECK-NEXT: }

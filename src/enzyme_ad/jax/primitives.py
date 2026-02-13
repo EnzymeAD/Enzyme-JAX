@@ -114,6 +114,7 @@ def optimization_passes(
     enable_reduce_slice_fusion_passes: bool = True,
     enable_concat_to_batch_passes: bool = True,
     enable_loop_raising_passes: bool = True,
+    aggressive_propagation: bool = True,
 ):
     transform_passes_list = [
         "compare_op_canon<16>",
@@ -394,7 +395,7 @@ def optimization_passes(
         "sub_const_prop",
         "xor_const_prop",
         # other constant propagations
-        "const_prop_through_barrier<16>",
+        # "const_prop_through_barrier<16>",
         f"concat_const_prop<1>({max_constant_threshold})",
         f"dynamic_update_slice_const_prop({max_constant_threshold})",
         "clamp_const_prop",
@@ -417,6 +418,7 @@ def optimization_passes(
             "reducewindow_slice_to_batch",
             "elementwise_slice_to_batch",
             "convolution_slice_to_batch",
+            "scatter_slice_to_batch",
         ]
 
     if enable_concat_to_batch_passes:
@@ -429,6 +431,7 @@ def optimization_passes(
             "concat_insert_dim_reduce_window",
             "concat_insert_dim_elementwise",
             "concat_insert_dim_convolution",
+            "concat_insert_dim_scatter",
         ]
 
     if enable_reduce_slice_fusion_passes:
@@ -484,6 +487,7 @@ def optimization_passes(
             "scatter_indices_are_unique",
             "diagonal_tensor_dot_general_rewrite",
             "split_complex_scatter",
+            "split_complex_gather",
             ## const prop patterns
             "scatter_update_computation_const_prop",
             # gather patterns
@@ -587,6 +591,7 @@ def optimization_passes(
             "transpose_select",
             "transpose_while",
             "transpose_slice",
+            "transpose_like_broadcast_slice",
             "transpose_concat",
             "transpose_iota",
             "transpose_reduce",
@@ -598,6 +603,7 @@ def optimization_passes(
             "transpose_extend",
             "transpose_rotate",
             "transpose_dynamic_slice",
+            "transpose_like_broadcast_dynamic_slice",
             "transpose_reverse",
             "transpose_batch_norm_training",
             "transpose_batch_norm_inference",
@@ -606,6 +612,13 @@ def optimization_passes(
             "transpose_fft",
             "transpose_reshape",
         ]
+
+        if aggressive_propagation:
+            transform_passes_list.append("transpose_elementwise(0)")
+            transform_passes_list.append("transpose_like_broadcast_elementwise(0)")
+        else:
+            transform_passes_list.append("transpose_elementwise(1)")
+            transform_passes_list.append("transpose_like_broadcast_elementwise(1)")
     elif transpose_propagate == "down":
         transform_passes_list += [
             "reorder_elementwise_and_shape_op<16>",

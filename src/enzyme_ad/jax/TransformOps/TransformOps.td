@@ -2078,6 +2078,11 @@ def LowerRotate : EnzymeHLOPatternOp<
   let patterns = ["LowerRotate"];
 }
 
+def LowerPiecewiseSelect : EnzymeHLOPatternOp<
+    "lower_piecewise_select"> {
+  let patterns = ["LowerPiecewiseSelect"];
+}
+
 def RecognizeWrap : EnzymeHLOPatternOp<
     "recognize_wrap"> {
   let patterns = ["RecognizeWrap"];
@@ -2217,6 +2222,11 @@ def TransposeExtend : EnzymeHLOPatternOp<
 def TransposeRotate : EnzymeHLOPatternOp<
     "transpose_rotate"> {
   let patterns = ["TransposeRotate"];
+}
+
+def RecognizeMultiSlice : EnzymeHLOPatternOp<
+    "recognize_multislice"> {
+  let patterns = ["RecognizeMultiSlice"];
 }
 
 def ReduceUnusedMultiSlice : EnzymeHLOPatternOp<
@@ -2583,6 +2593,10 @@ def ApplyConcatenateSubtractToSubtractPadPatterns : EnzymeHLOPatternOp<"concaten
   let patterns = ["ConcatenateSubtractToSubtractPad"];
 }
 
+def ApplyConcatenateAddToAddPadPatterns : EnzymeHLOPatternOp<"concatenate_add_to_add_pad"> {
+  let patterns = ["ConcatenateAddToAddPad"];
+}
+
 def ApplyConcatenateBroadcastInDimPatterns : EnzymeHLOPatternOp<"concatenate_broadcast_in_dim"> {
   let patterns = ["ConcatenateBroadcastInDim"];
 }
@@ -2730,6 +2744,11 @@ def ApplyConcatInsertDimConvolutionPatterns : EnzymeHLOPatternOp<
   let patterns = ["ConcatInsertDimToBatch<stablehlo::ConvolutionOp>"];
 }
 
+def ApplyConcatInsertDimScatterPatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_scatter"> {
+  let patterns = ["ConcatInsertDimToBatch<stablehlo::ScatterOp>"];
+}
+
 def ApplyConcatInsertDimElementwisePatterns : EnzymeHLOPatternOp<
     "concat_insert_dim_elementwise"> {
   let patterns = ["ConcatInsertDimElementwiseToBatch"];
@@ -2754,6 +2773,10 @@ def ApplyReduceSliceToBatchPatterns : EnzymeHLOPatternOp<
 def ApplySortSliceToBatchPatterns : EnzymeHLOPatternOp<
     "sort_slice_to_batch"> {
   let patterns = ["SliceToBatch<stablehlo::SortOp>"];
+}
+def ApplyScatterSliceToBatchPatterns : EnzymeHLOPatternOp<
+    "scatter_slice_to_batch"> {
+  let patterns = ["SliceToBatch<stablehlo::ScatterOp>"];
 }
 def ApplyTransposeSliceToBatchPatterns : EnzymeHLOPatternOp<
     "transpose_slice_to_batch"> {
@@ -2908,6 +2931,11 @@ def ApplyDUSDynamicSliceSimplifyPatterns : EnzymeHLOPatternOp<
   let patterns = ["DUSDynamicSliceSimplify"];
 }
 
+def ApplyDUSDUSSubsumingPatterns : EnzymeHLOPatternOp<
+    "dus_dus_subsuming"> {
+  let patterns = ["DUSDUSSubsuming"];
+}
+
 def ApplyWhileIdempotentDUSPatterns : EnzymeHLOPatternOp<
     "while_idempotent_dus"> {
   let patterns = ["WhileIdempotentDUS"];
@@ -2976,6 +3004,11 @@ def ApplyDeleteDimsBroadcastPatterns : EnzymeHLOPatternOp<
 def ApplySplitComplexScatterPatterns: EnzymeHLOPatternOp<
     "split_complex_scatter"> {
   let patterns = ["SplitComplexScatter"];
+}
+
+def ApplySplitComplexGatherPatterns: EnzymeHLOPatternOp<
+    "split_complex_gather"> {
+  let patterns = ["SplitComplexGather"];
 }
 
 // TODO: remove this once we have removed it from reactant
