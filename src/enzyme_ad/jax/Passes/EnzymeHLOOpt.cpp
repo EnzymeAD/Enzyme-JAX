@@ -14386,6 +14386,53 @@ private:
   }
 };
 
+// reverse(reverse(x)) -> x or reverse(x) with reduced dimensions
+// When we have two consecutive reverse operations, dimensions that appear
+// in both cancel out, and we only need to reverse the symmetric difference.
+struct ReverseReverse final
+    : CheckedOpRewritePattern<stablehlo::ReverseOp, ReverseReverse> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReverseOp op,
+                                    PatternRewriter &rewriter) const {
+    auto prevReverse = op.getOperand().getDefiningOp<stablehlo::ReverseOp>();
+    if (!prevReverse)
+      return failure();
+
+    // Get dimensions from both reverse operations
+    auto outerDims = op.getDimensions();
+    auto innerDims = prevReverse.getDimensions();
+
+    // Compute the symmetric difference of dimensions using a single set:
+    // - Dimensions in both cancel out (reverse twice = identity)
+    // - Dimensions in only one remain
+    // XOR-like operation: add if not present, remove if already present
+    llvm::SmallDenseSet<int64_t> dimSet;
+    for (int64_t dim : innerDims) {
+      dimSet.insert(dim);
+    }
+    for (int64_t dim : outerDims) {
+      auto [it, inserted] = dimSet.insert(dim);
+      if (!inserted) {
+        // Dimension was in both - cancel out
+        dimSet.erase(it);
+      }
+    }
+
+    if (dimSet.empty()) {
+      // Both reverses cancel out completely
+      rewriter.replaceOp(op, prevReverse.getOperand());
+    } else {
+      // Convert set to sorted vector for canonical form
+      SmallVector<int64_t> newDimensions(dimSet.begin(), dimSet.end());
+      llvm::sort(newDimensions);
+      rewriter.replaceOpWithNewOp<stablehlo::ReverseOp>(
+          op, prevReverse.getOperand(), newDimensions);
+    }
+    return success();
+  }
+};
+
 /// Converts gather ops to slice ops in case we have a single set of constant
 /// indices.
 struct GatherOpCanon final
@@ -33712,7 +33759,7 @@ struct EnzymeHLOOptPass
     patterns.add<
         AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
         OrSimplify, XorSimplify, MulSimplify, DivSimplify, RemSimplify,
-        PowSimplify, NoopSlice, NoopReverse, SliceSlice,
+        PowSimplify, NoopSlice, NoopReverse, ReverseReverse, SliceSlice,
         DynamicSliceDynamicSlice, DynamicSliceSlice, SliceDynamicSlice,
         LogSimplify, ShiftRightLogicalSimplify, NegativePadToSlice,
         SliceSimplify, ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
