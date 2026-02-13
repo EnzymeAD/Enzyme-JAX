@@ -29633,6 +29633,13 @@ struct DotGeneralToSymm
     auto lhs = op.getLhs();
     auto rhs = op.getRhs();
 
+    auto lhsType = cast<RankedTensorType>(lhs.getType());
+    auto rhsType = cast<RankedTensorType>(rhs.getType());
+
+    if (lhsType.getRank() != 2 || rhsType.getRank() != 2) {
+      return failure();
+    }
+
     if (dotDims.getLhsBatchingDimensions().size() != 0 ||
         dotDims.getRhsBatchingDimensions().size() != 0) {
       return failure();
@@ -33962,12 +33969,21 @@ struct EnzymeHLOOptPass
     patterns.add<TransposeSymmetricSimplify>(context);
     patterns.add<FactorScalarsInDotGeneral>(context);
 
-    // symm patterns
-    patterns.add<DotGeneralToSymm, FuseAddIntoSymm, FuseMulIntoSymm>(context);
+    // clang-format off
+    // structured tensor optimization patterns
+    patterns.add<
+        TransposeSyrkToSyrk,
+        FuseMulIntoSyrk,
+        FuseAddIntoSyrk,
+        FuseAddIntoSymm,
+        FuseMulIntoSymm,
+        SyrkSimplifyOutputUplo
+      >(context);
+    // clang-format on
 
-    // syrk patterns
-    patterns.add<DotGeneralToSyrk, TransposeSyrkToSyrk, FuseMulIntoSyrk,
-                 FuseAddIntoSyrk>(context);
+    if (structured_tensors_detection) {
+      patterns.add<DotGeneralToSymm, DotGeneralToSyrk>(context);
+    }
 
     // clang-format off
     patterns.add<
@@ -34085,7 +34101,6 @@ struct EnzymeHLOOptPass
         DotGeneralRemoveBatchDimensions,
         DUSDynamicSliceSimplify,
         WhileDUSDSSimplify,
-        SyrkSimplifyOutputUplo,
         WhileDUSDUSSimplify,
         WhileDUS,
         DeleteDimsReduce,

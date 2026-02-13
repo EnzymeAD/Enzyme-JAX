@@ -129,7 +129,7 @@ module {
 // CHECK-NEXT:    %1 = stablehlo.transpose %arg1, dims = [1, 0] : (tensor<3x3xf32>) -> tensor<3x3xf32>
 // CHECK-NEXT:    %2 = stablehlo.transpose %arg2, dims = [1, 0] : (tensor<3x3xf32>) -> tensor<3x3xf32>
 // CHECK-NEXT:    %3 = stablehlo.slice %arg0 [0:1, 0:2, 0:3] : (tensor<6x2x3xf32>) -> tensor<1x2x3xf32>
-// CHECK-NEXT:    %4 = stablehlo.reshape %3 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<1x2x3xf32>) -> tensor<2x3xf32>
+// CHECK-NEXT:    %4 = stablehlo.reshape %3 : (tensor<1x2x3xf32>) -> tensor<2x3xf32>
 // CHECK-NEXT:    %5 = stablehlo.broadcast_in_dim %arg4, dims = [0] : (tensor<3xf32>) -> tensor<3x2xf32>
 // CHECK-NEXT:    %6 = stablehlo.dot_general %arg1, %4, contracting_dims = [0] x [1] : (tensor<3x3xf32>, tensor<2x3xf32>) -> tensor<3x2xf32>
 // CHECK-NEXT:    %7 = stablehlo.broadcast_in_dim %arg3, dims = [0] : (tensor<3xf32>) -> tensor<3x2xf32>
@@ -152,7 +152,7 @@ module {
 // CHECK-NEXT:      %44 = stablehlo.reshape %43 : (tensor<3x2x1xf32>) -> tensor<1x3x2x1xf32>
 // CHECK-NEXT:      %45 = stablehlo.dynamic_update_slice %iterArg_16, %44, %iterArg, %c_4, %c_4, %c_4 : (tensor<5x3x2x1xf32>, tensor<1x3x2x1xf32>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<5x3x2x1xf32>
 // CHECK-NEXT:      %46 = stablehlo.transpose %43, dims = [2, 1, 0] : (tensor<3x2x1xf32>) -> tensor<1x2x3xf32>
-// CHECK-NEXT:      %47 = stablehlo.reshape %46 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<1x2x3xf32>) -> tensor<2x3xf32>
+// CHECK-NEXT:      %47 = stablehlo.reshape %46 : (tensor<1x2x3xf32>) -> tensor<2x3xf32>
 // CHECK-NEXT:      %48 = stablehlo.dot_general %iterArg_10, %iterArg_11, contracting_dims = [1] x [0] : (tensor<3x3xf32>, tensor<3x2xf32>) -> tensor<3x2xf32>
 // CHECK-NEXT:      %49 = stablehlo.broadcast_in_dim %arg4, dims = [0] : (tensor<3xf32>) -> tensor<3x2xf32>
 // CHECK-NEXT:      %50 = stablehlo.add %48, %49 : tensor<3x2xf32>
@@ -191,12 +191,12 @@ module {
 // CHECK-NEXT:      %42 = stablehlo.dynamic_slice %11#8, %iterArg_14, %c_4, %c_4, %c_4, sizes = [1, 3, 2, 1] : (tensor<5x3x2x1xf32>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<1x3x2x1xf32>
 // CHECK-NEXT:      %43 = stablehlo.reshape %42 : (tensor<1x3x2x1xf32>) -> tensor<3x2x1xf32>
 // CHECK-NEXT:      %44 = stablehlo.transpose %43, dims = [2, 1, 0] : (tensor<3x2x1xf32>) -> tensor<1x2x3xf32>
-// CHECK-NEXT:      %45 = stablehlo.reshape %44 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<1x2x3xf32>) -> tensor<2x3xf32>
+// CHECK-NEXT:      %45 = stablehlo.reshape %44 : (tensor<1x2x3xf32>) -> tensor<2x3xf32>
 // CHECK-NEXT:      %46 = stablehlo.add %iterArg, %c_6 {enzymexla.bounds = {{.*}}} : tensor<i64>
 // CHECK-NEXT:      %47 = stablehlo.tanh %41 : tensor<3x2xf32>
 // CHECK-NEXT:      %48 = stablehlo.multiply %47, %47 : tensor<3x2xf32>
 // CHECK-NEXT:      %49 = stablehlo.subtract %cst_3, %48 : tensor<3x2xf32>
-// CHECK-NEXT:      %50 = stablehlo.multiply %iterArg_13, %49 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<3x2xf32>
+// CHECK-NEXT:      %50 = stablehlo.multiply %iterArg_13, %49 : tensor<3x2xf32>
 // CHECK-NEXT:      %51 = stablehlo.reduce(%50 init: %cst_7) applies stablehlo.add across dimensions = [1] : (tensor<3x2xf32>, tensor<f32>) -> tensor<3xf32>
 // CHECK-NEXT:      %52 = stablehlo.add %iterArg_11, %51 : tensor<3xf32>
 // CHECK-NEXT:      %53 = stablehlo.dot_general %50, %45, contracting_dims = [1] x [0] : (tensor<3x2xf32>, tensor<2x3xf32>) -> tensor<3x3xf32>
@@ -210,7 +210,7 @@ module {
 // CHECK-NEXT:    }
 // CHECK-NEXT:    %25 = stablehlo.multiply %10, %10 : tensor<3x2xf32>
 // CHECK-NEXT:    %26 = stablehlo.subtract %cst_3, %25 : tensor<3x2xf32>
-// CHECK-NEXT:    %27 = stablehlo.multiply %24#5, %26 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<3x2xf32>
+// CHECK-NEXT:    %27 = stablehlo.multiply %24#5, %26 : tensor<3x2xf32>
 // CHECK-NEXT:    %28 = stablehlo.reduce(%27 init: %cst_7) applies stablehlo.add across dimensions = [1] : (tensor<3x2xf32>, tensor<f32>) -> tensor<3xf32>
 // CHECK-NEXT:    %29 = stablehlo.add %24#3, %28 : tensor<3xf32>
 // CHECK-NEXT:    %30 = stablehlo.dot_general %27, %4, contracting_dims = [1] x [0] {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<3x2xf32>, tensor<2x3xf32>) -> tensor<3x3xf32>

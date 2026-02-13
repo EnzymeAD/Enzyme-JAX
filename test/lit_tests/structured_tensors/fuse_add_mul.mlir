@@ -60,21 +60,21 @@ func.func @test3(%arg0: tensor<64x64xf32>, %arg1: tensor<64x64xf32>, %arg2: tens
 }
 
 // CHECK: func.func @test3(%arg0: tensor<64x64xf32>, %arg1: tensor<64x64xf32>, %arg2: tensor<64x64xf32>) -> tensor<64x64xf32> {
-// CHECK-NEXT:     %cst = stablehlo.constant dense<0.000000e+00> : tensor<64x64xf32>
+// CHECK-NEXT:     %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
 // CHECK-NEXT:     %cst_0 = stablehlo.constant dense<1.000000e+00> : tensor<f32>
-// CHECK-NEXT:     %cst_1 = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+// CHECK-NEXT:     %cst_1 = stablehlo.constant dense<0.000000e+00> : tensor<64x64xf32>
 // CHECK-NEXT:     %cst_2 = stablehlo.constant dense<3.000000e+00> : tensor<f32>
 // CHECK-NEXT:     %cst_3 = stablehlo.constant dense<2.000000e+00> : tensor<f32>
 // CHECK-NEXT:     %0 = stablehlo.transpose %arg0, dims = [1, 0] : (tensor<64x64xf32>) -> tensor<64x64xf32>
 // CHECK-NEXT:     %1 = stablehlo.add %arg0, %0 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed GUARANTEED>]} : tensor<64x64xf32>
 // CHECK-NEXT:     %2 = stablehlo.transpose %arg1, dims = [1, 0] : (tensor<64x64xf32>) -> tensor<64x64xf32>
-// CHECK-NEXT:     %3 = stablehlo.multiply %cst_1, %cst_3 : tensor<f32>
+// CHECK-NEXT:     %3 = stablehlo.multiply %cst, %cst_3 : tensor<f32>
 // CHECK-NEXT:     %4 = stablehlo.multiply %cst_0, %cst_3 : tensor<f32>
 // CHECK-NEXT:     %5 = stablehlo.broadcast_in_dim %cst_2, dims = [] : (tensor<f32>) -> tensor<64x64xf32>
 // CHECK-NEXT:     %6 = stablehlo.multiply %arg2, %5 : tensor<64x64xf32>
 // CHECK-NEXT:     %7 = stablehlo.broadcast_in_dim %3, dims = [] : (tensor<f32>) -> tensor<64x64xf32>
-// CHECK-NEXT:     %8 = stablehlo.multiply %cst, %7 : tensor<64x64xf32>
+// CHECK-NEXT:     %8 = stablehlo.multiply %cst_1, %7 : tensor<64x64xf32>
 // CHECK-NEXT:     %9 = stablehlo.add %8, %6 : tensor<64x64xf32>
 // CHECK-NEXT:     %10 = enzymexla.blas.symm %1, %2, %9, %4, %cst_0 {side = #enzymexla.side<left>, uplo = #enzymexla.uplo<F>} : (tensor<64x64xf32>, tensor<64x64xf32>, tensor<64x64xf32>, tensor<f32>, tensor<f32>) -> tensor<64x64xf32>
 // CHECK-NEXT:     return %10 : tensor<64x64xf32>
-// CHECK-NEXT: }
+// CHECK-NEXT:   }

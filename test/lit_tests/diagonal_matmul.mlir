@@ -22,7 +22,7 @@ func.func @main1(%arg0: tensor<50xf64> {tf.aliasing_output = 0 : i32}, %arg1: te
 }
 
 // CHECK: func.func @main1(%arg0: tensor<50xf64> {tf.aliasing_output = 0 : i32}, %arg1: tensor<50x8000xf64>, %arg2: tensor<8000xf64> {tf.aliasing_output = 1 : i32}, %arg3: tensor<8000xf64>, %arg4: tensor<50x8000xf64>, %arg5: tensor<8000xf64>, %arg6: tensor<8000xf64> {tf.aliasing_output = 2 : i32}) -> (tensor<50xf64>, tensor<8000xf64>, tensor<8000xf64>) {
-// CHECK-NEXT:     %0 = stablehlo.dot_general %arg1, %arg5, contracting_dims = [1] x [0], precision = [DEFAULT, DEFAULT] {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<50x8000xf64>, tensor<8000xf64>) -> tensor<50xf64>
+// CHECK-NEXT:     %0 = stablehlo.dot_general %arg1, %arg5, contracting_dims = [1] x [0], precision = [DEFAULT, DEFAULT] : (tensor<50x8000xf64>, tensor<8000xf64>) -> tensor<50xf64>
 // CHECK-NEXT:     %1 = stablehlo.dot_general %arg4, %0, contracting_dims = [0] x [0], precision = [DEFAULT, DEFAULT] : (tensor<50x8000xf64>, tensor<50xf64>) -> tensor<8000xf64>
 // CHECK-NEXT:     %2 = stablehlo.subtract %arg5, %1 : tensor<8000xf64>
 // CHECK-NEXT:     %3 = stablehlo.multiply %2, %arg3 : tensor<8000xf64>

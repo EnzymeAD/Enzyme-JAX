@@ -128,7 +128,7 @@ module @reactant_f_gener... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
 
 // CHECK: func.func @main(%arg0: tensor<6x2xf32> {tf.aliasing_output = 1 : i32}, %arg1: tensor<2x4xf32> {tf.aliasing_output = 2 : i32}) -> (tensor<4xf32>, tensor<6x2xf32>, tensor<2x4xf32>) attributes {enzymexla.memory_effects = []} {
 // CHECK-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
-// CHECK-NEXT:    %0 = stablehlo.reduce(%arg0 init: %cst) applies stablehlo.add across dimensions = [0] {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<6x2xf32>, tensor<f32>) -> tensor<2xf32>
+// CHECK-NEXT:    %0 = stablehlo.reduce(%arg0 init: %cst) applies stablehlo.add across dimensions = [0] : (tensor<6x2xf32>, tensor<f32>) -> tensor<2xf32>
 // CHECK-NEXT:    %1 = stablehlo.dot_general %arg1, %0, contracting_dims = [0] x [0], precision = [DEFAULT, DEFAULT] : (tensor<2x4xf32>, tensor<2xf32>) -> tensor<4xf32>
 // CHECK-NEXT:    return %1, %arg0, %arg1 : tensor<4xf32>, tensor<6x2xf32>, tensor<2x4xf32>
 // CHECK-NEXT:  }

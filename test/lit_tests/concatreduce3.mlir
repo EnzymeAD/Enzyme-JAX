@@ -50,7 +50,7 @@ module @reactant_Boltz.L... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
 // CHECK-NEXT:    %3 = stablehlo.dot_general %2, %2, batching_dims = [0] x [0], contracting_dims = [1, 2] x [1, 2] : (tensor<3x2x1xf32>, tensor<3x2x1xf32>) -> tensor<3xf32>
 // CHECK-NEXT:    %4 = stablehlo.reshape %3 : (tensor<3xf32>) -> tensor<3x1xf32>
 // CHECK-NEXT:    %5 = stablehlo.broadcast_in_dim %arg1, dims = [1] : (tensor<2xf32>) -> tensor<3x2xf32>
-// CHECK-NEXT:    %6 = stablehlo.subtract %arg0, %5 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<3x2xf32>
+// CHECK-NEXT:    %6 = stablehlo.subtract %arg0, %5 : tensor<3x2xf32>
 // CHECK-NEXT:    %7 = stablehlo.dot_general %6, %6, batching_dims = [0] x [0], contracting_dims = [1] x [1] : (tensor<3x2xf32>, tensor<3x2xf32>) -> tensor<3xf32>
 // CHECK-NEXT:    %8 = stablehlo.reshape %7 : (tensor<3xf32>) -> tensor<3x1xf32>
 // CHECK-NEXT:    %9 = stablehlo.add %4, %8 : tensor<3x1xf32>

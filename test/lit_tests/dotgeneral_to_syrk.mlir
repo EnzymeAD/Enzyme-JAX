@@ -79,7 +79,7 @@ func.func @fail1(%arg0: tensor<5x2xf32>) -> tensor<f32> {
 }
 
 // CHECK: func.func @fail1(%arg0: tensor<5x2xf32>) -> tensor<f32> {
-// CHECK-NEXT:   %0 = stablehlo.reshape %arg0 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<5x2xf32>) -> tensor<10xf32>
+// CHECK-NEXT:   %0 = stablehlo.reshape %arg0 : (tensor<5x2xf32>) -> tensor<10xf32>
 // CHECK-NEXT:   %1 = stablehlo.dot_general %0, %0, contracting_dims = [0] x [0], precision = [DEFAULT, DEFAULT] : (tensor<10xf32>, tensor<10xf32>) -> tensor<f32>
 // CHECK-NEXT:   return %1 : tensor<f32>
 // CHECK-NEXT: }

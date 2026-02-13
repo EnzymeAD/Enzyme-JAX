@@ -19,7 +19,7 @@ module {
 }
 
 // CHECK:  func.func @main(%arg0: tensor<20xf32>, %arg1: tensor<20xf32>) -> tensor<f32> {
-// CHECK-NEXT:    %[[i0:.+]] = stablehlo.add %arg0, %arg1 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<20xf32>
+// CHECK-NEXT:    %[[i0:.+]] = stablehlo.add %arg0, %arg1 : tensor<20xf32>
 // CHECK-NEXT:    %[[i1:.+]] = stablehlo.dot_general %0, %0, contracting_dims = [0] x [0] : (tensor<20xf32>, tensor<20xf32>) -> tensor<f32>
 // CHECK-NEXT:    return %[[i1]] : tensor<f32>
 // CHECK-NEXT:  }
