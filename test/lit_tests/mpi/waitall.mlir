@@ -21,10 +21,10 @@ module {
 // CPU-NEXT:    }
 // CPU-NEXT:    func.func @main() {
 // CPU-NEXT:      %c = stablehlo.constant dense<1> : tensor<i32>
-// CPU-NEXT:      %c_0 = stablehlo.constant dense<-1> : tensor<i64>
-// CPU-NEXT:      %0 = stablehlo.broadcast_in_dim %c_0, dims = [] : (tensor<i64>) -> tensor<1xi64>
-// CPU-NEXT:      %1 = stablehlo.concatenate %0, dim = 0 : (tensor<1xi64>) -> tensor<1xi64>
-// CPU-NEXT:      enzymexla.jit_call @enzymexla_wrapper_MPI_Waitall (%c, %1) : (tensor<i32>, tensor<1xi64>) -> ()
+// CPU-NEXT:      %c_0 = stablehlo.constant dense<-1> : tensor<i32>
+// CPU-NEXT:      %0 = stablehlo.broadcast_in_dim %c_0, dims = [] : (tensor<i32>) -> tensor<1xi32>
+// CPU-NEXT:      %1 = stablehlo.concatenate %0, dim = 0 : (tensor<1xi32>) -> tensor<1xi32>
+// CPU-NEXT:      enzymexla.jit_call @enzymexla_wrapper_MPI_Waitall (%c, %1) : (tensor<i32>, tensor<1xi32>) -> ()
 // CPU-NEXT:      return
 // CPU-NEXT:    }
 // CPU-NEXT:  }

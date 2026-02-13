@@ -6,9 +6,9 @@ module {
     %c = stablehlo.constant dense<1> : tensor<i32>
     %c_0 = stablehlo.constant dense<42> : tensor<i32>
     %c_1 = stablehlo.constant dense<5> : tensor<i32>
-    %c_2 = stablehlo.constant dense<-1> : tensor<i64>
-    %outbuf, %request = enzymexla.mpi.irecv(%0, %c_1, %c, %c_0) {datatype = #enzymexla.datatype<MPI_INT>} : (tensor<5xf64>, tensor<i32>, tensor<i32>, tensor<i32>) -> (tensor<5xf64>, tensor<i64>) 
-    // enzymexla.mpi.wait(%request) : tensor<i64>
+    %c_2 = stablehlo.constant dense<-1> : tensor<i32>
+    %outbuf, %request = enzymexla.mpi.irecv(%0, %c_1, %c, %c_0) {datatype = #enzymexla.datatype<MPI_INT>} : (tensor<5xf64>, tensor<i32>, tensor<i32>, tensor<i32>) -> (tensor<5xf64>, tensor<i32>) 
+    // enzymexla.mpi.wait(%request) : tensor<i32>
     %1 = stablehlo.transpose %outbuf, dims = [0] : (tensor<5xf64>) -> tensor<5xf64>
     return %1 : tensor<5xf64>
   }
@@ -28,12 +28,12 @@ module {
 // CPU-NEXT:      llvm.return
 // CPU-NEXT:    }
 // CPU-NEXT:    func.func @main(%arg0: tensor<5xf64> {enzymexla.memory_effects = ["read", "write", "allocate", "free"], tf.aliasing_output = 0 : i32}) -> tensor<5xf64> attributes {enzymexla.memory_effects = ["read", "write", "allocate", "free"]} {
-// CPU-NEXT:      %c = stablehlo.constant dense<-1> : tensor<i64>
+// CPU-NEXT:      %c = stablehlo.constant dense<-1> : tensor<i32>
 // CPU-NEXT:      %c_0 = stablehlo.constant dense<5> : tensor<i32>
 // CPU-NEXT:      %c_1 = stablehlo.constant dense<42> : tensor<i32>
 // CPU-NEXT:      %c_2 = stablehlo.constant dense<1> : tensor<i32>
 // CPU-NEXT:      %0 = stablehlo.transpose %arg0, dims = [0] : (tensor<5xf64>) -> tensor<5xf64>
-// CPU-NEXT:      %1:2 = enzymexla.jit_call @enzymexla_wrapper_MPI_Irecv_MPI_INT (%0, %c_0, %c_2, %c_1, %c) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 0, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [1], operand_index = 4, operand_tuple_indices = []>]} : (tensor<5xf64>, tensor<i32>, tensor<i32>, tensor<i32>, tensor<i64>) -> (tensor<5xf64>, tensor<i64>)
+// CPU-NEXT:      %1:2 = enzymexla.jit_call @enzymexla_wrapper_MPI_Irecv_MPI_INT (%0, %c_0, %c_2, %c_1, %c) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 0, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [1], operand_index = 4, operand_tuple_indices = []>]} : (tensor<5xf64>, tensor<i32>, tensor<i32>, tensor<i32>, tensor<i32>) -> (tensor<5xf64>, tensor<i32>)
 // CPU-NEXT:      %2 = stablehlo.transpose %1#0, dims = [0] : (tensor<5xf64>) -> tensor<5xf64>
 // CPU-NEXT:      return %2 : tensor<5xf64>
 // CPU-NEXT:    }
