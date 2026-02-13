@@ -118,25 +118,29 @@ def TorchIndexSelect : HLOInst<"TorchIndexSelectOp">;
 def UnaryEinsum : HLOInst<"UnaryEinsumOp">;
 
 /// Helpers - Max/Min
-def EQ : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::EQ">;
-def GE : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::GE">;
-def LT : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::LT">;
-def GT : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::GT">;
+def EQ : GlobalExpr</*needsprimal*/ 0, /*needsshadow*/ 0,
+                    "ComparisonDirection::EQ">;
+def GE : GlobalExpr</*needsprimal*/ 0, /*needsshadow*/ 0,
+                    "ComparisonDirection::GE">;
+def LT : GlobalExpr</*needsprimal*/ 0, /*needsshadow*/ 0,
+                    "ComparisonDirection::LT">;
+def GT : GlobalExpr</*needsprimal*/ 0, /*needsshadow*/ 0,
+                    "ComparisonDirection::GT">;
 
 // Others
 def CheckedMul : SubRoutine<(Op $diffret, $x),
-                  (
-                    SelectIfStrongZero
-                    (Select (Compare $diffret, (HLOConstantFP<"0">):$zero, (EQ)), $zero, (Mul $diffret, $x)),
-                    (Mul $diffret, $x)
-                  )>;
+                            (SelectIfStrongZero(
+                                 Select(Compare $diffret, (HLOConstantFP<"0">)
+                                        : $zero, (EQ)),
+                                 $zero, (Mul $diffret, $x)),
+                             (Mul $diffret, $x))>;
 
 def CheckedDiv : SubRoutine<(Op $diffret, $x),
-                  (
-                    SelectIfStrongZero
-                    (Select (Compare $diffret, (HLOConstantFP<"0">):$zero, (EQ)), $zero, (Div $diffret, $x)),
-                    (Div $diffret, $x)
-                  )>;
+                            (SelectIfStrongZero(
+                                 Select(Compare $diffret, (HLOConstantFP<"0">)
+                                        : $zero, (EQ)),
+                                 $zero, (Div $diffret, $x)),
+                             (Div $diffret, $x))>;
 
 // Helpers
 def PadToSliceStart : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
@@ -287,16 +291,15 @@ def ShadowLHSTranspose : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
 
   SmallVector<int64_t> outAxes(unsortedAxes.size());
   std::iota(outAxes.begin(), outAxes.end(), 0);
-  std::sort(outAxes.begin(), outAxes.end(),
-            [&](int64_t a, int64_t b) { return unsortedAxes[a] < unsortedAxes[b]; });
+std::sort(outAxes.begin(), outAxes.end(), [&](int64_t a, int64_t b) {
+  return unsortedAxes[a] < unsortedAxes[b];
+});
 
-  builder.getNamedAttr(
-    TransposeOp::getAttributeNames()[0],
-    builder.getDenseI64ArrayAttr(outAxes)
-  );
+builder.getNamedAttr(TransposeOp::getAttributeNames()[0],
+                     builder.getDenseI64ArrayAttr(outAxes));
 }]>;
 
-def ShadowRHSDotDim : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+def ShadowRHSDotDim : GlobalExpr < /*needsprimal*/ 0, /*needsshadow*/ 0, [{
   auto existingattr = op.getDotDimensionNumbersAttr();
 
   auto lhsBatching = existingattr.getLhsBatchingDimensions();
@@ -677,13 +680,16 @@ def GradDataConvPadding : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
     newPaddingValues[2 * i + 1] = lhsShape + rhsShape - 1 - outShape - newPadBefore;
   }
 
-  auto paddingType = mlir::RankedTensorType::get({N, 2}, builder.getI64Type());
-  auto newPaddingAttr = mlir::DenseIntElementsAttr::get(paddingType, newPaddingValues);
+  auto  paddingType = mlir::RankedTensorType::get({N, 2}, builder.getI64Type());
+auto newPaddingAttr =
+    mlir::DenseIntElementsAttr::get(paddingType, newPaddingValues);
 
-  newPaddingAttr;
+newPaddingAttr;
 }]>;
 
-def GradDataConvLhsDilation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+def GradDataConvLhsDilation
+    : GlobalExpr</*needsprimal*/ 0, /*needsshadow*/ 0,
+                 [{
   op.getWindowStridesAttr();
 }]>;
 
@@ -1314,31 +1320,30 @@ def : HLODerivative<"SubtractOp", (Op $x, $y),
                   >;
 
 def : HLODerivative<"SqrtOp", (Op $x),
-                    [
-                      (Select (Compare $x, (HLOConstantFP<"0">), (EQ)), (HLOConstantFP<"0">), (Div (DiffeRet), (Mul (HLOConstantFP<"2"> $x), (Sqrt $x))))
-                    ]
-                  >;
+              [(Select(Compare $x, (HLOConstantFP<"0">), (EQ)),
+                 (HLOConstantFP<"0">),
+                 (Div(DiffeRet), (Mul(HLOConstantFP<"2"> $x), (Sqrt $x))))]>;
 
 def : HLODerivative<"TanhOp", (Op $x),
-                    [
-                      (CheckedMul (DiffeRet), (Sub (HLOConstantFP<"1">), (Mul (Tanh $x), (Tanh $x))))
-                    ]
-                  >;
+                    [(CheckedMul(DiffeRet),
+                      (Sub(HLOConstantFP<"1">), (Mul(Tanh $x), (Tanh $x))))]>;
 
 def : HLOInactiveOp<"TorchIndexSelectOp">;
 
 def : HLODerivative<"TransposeOp", (Op $x),
                     [
-                        (Transpose (TypeOf $x), (DiffeRet), (InversePermutation)),
+                      (Transpose(TypeOf $x), (DiffeRet), (InversePermutation)),
                     ],
-                    (SelectIfActive $x, (Transpose (Shadow $x), (Permutation)), (HLOConstantFP<"0">))
-                  >;
+                    (SelectIfActive $x, (Transpose(Shadow $x), (Permutation)),
+                     (HLOConstantFP<"0">))>;
 
 // FFT rules
-def SelectIfRFFT : StaticSelect<"cast<FftOp>(op).getFftType() == FftType::RFFT">;
-def SelectIfIRFFT : StaticSelect<"cast<FftOp>(op).getFftType() == FftType::IRFFT">;
+def SelectIfRFFT
+    : StaticSelect<"cast<FftOp>(op).getFftType() == FftType::RFFT">;
+def SelectIfIRFFT
+    : StaticSelect<"cast<FftOp>(op).getFftType() == FftType::IRFFT">;
 
-def FftType : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+def FftType : GlobalExpr < /*needsprimal*/ 0, /*needsshadow*/ 0, [{
   op.getFftType();
 }]>;
 
@@ -1466,9 +1471,7 @@ def : HLODerivative<"FftOp",
           ),
           (
             Conj
-            (
-              Fft (DiffeRet), (FftType), (FftLength)
-            )
+            (Fft (DiffeRet), (FftType), (FftLength))
           )
         )
       )
