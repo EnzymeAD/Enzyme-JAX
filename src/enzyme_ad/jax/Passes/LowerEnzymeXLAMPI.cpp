@@ -1257,7 +1257,7 @@ struct MPIWaitallOpLowering : public OpRewritePattern<enzymexla::MPIWaitallOp> {
 
   std::string backend;
   MPIWaitallOpLowering(std::string backend, MLIRContext *context,
-                    PatternBenefit benefit = 1)
+                       PatternBenefit benefit = 1)
       : OpRewritePattern(context, benefit), backend(backend) {}
 
   LogicalResult matchAndRewrite(enzymexla::MPIWaitallOp op,
@@ -1283,10 +1283,8 @@ struct MPIWaitallOpLowering : public OpRewritePattern<enzymexla::MPIWaitallOp> {
         rewriter.setInsertionPointToStart(moduleOp.getBody());
 
         // Create the wrapper function decl
-        auto funcType =
-            LLVM::LLVMFunctionType::get(llvmVoidType,
-                                        {llvmPtrType, llvmPtrType},
-                                        false);
+        auto funcType = LLVM::LLVMFunctionType::get(
+            llvmVoidType, {llvmPtrType, llvmPtrType}, false);
 
         auto wrapperFunc = rewriter.create<LLVM::LLVMFuncOp>(
             op.getLoc(), wrapperFunctionName, funcType);
@@ -1323,7 +1321,8 @@ struct MPIWaitallOpLowering : public OpRewritePattern<enzymexla::MPIWaitallOp> {
             op.getLoc(), llvmPtrType, arrayType, count);
 
         // Call MPI_Waitall
-        // int MPI_Waitall(int count, MPI_Request array_of_requests[], MPI_Status *array_of_statuses)
+        // int MPI_Waitall(int count, MPI_Request array_of_requests[],
+        // MPI_Status *array_of_statuses)
         // TODO returns i32 error code which we're ignoring here
         rewriter.create<LLVM::CallOp>(
             op.getLoc(), TypeRange{i32Type},
