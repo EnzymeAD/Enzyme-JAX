@@ -2,11 +2,11 @@
 
 module {
   func.func @main() {
-    %request = stablehlo.constant dense<-1> : tensor<i64>
-    %5 = stablehlo.broadcast_in_dim %request, dims = [] : (tensor<i64>) -> tensor<1xi64>
-    %6 = stablehlo.concatenate %5, dim = 0 : (tensor<1xi64>) -> tensor<1xi64>
+    %request = stablehlo.constant dense<-1> : tensor<i32>
+    %5 = stablehlo.broadcast_in_dim %request, dims = [] : (tensor<i32>) -> tensor<1xi32>
+    %6 = stablehlo.concatenate %5, dim = 0 : (tensor<1xi32>) -> tensor<1xi32>
     %c_2 = stablehlo.constant dense<1> : tensor<i32>
-    enzymexla.mpi.waitall(%c_2, %6) : tensor<i32>, tensor<1xi64>
+    enzymexla.mpi.waitall(%c_2, %6) : tensor<i32>, tensor<1xi32>
     return
   }
 }
