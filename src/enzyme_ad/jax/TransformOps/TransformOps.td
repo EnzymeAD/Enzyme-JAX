@@ -3038,3 +3038,13 @@ def ApplyReduceMaxMinMulPositiveScalarPatterns: EnzymeHLOPatternOp<
     "reduce_max_min_mul_positive_scalar"> {
   let patterns = ["ReduceMaxMinMulPositiveScalar"];
 }
+
+def ApplyAddComplexSimplifyPatterns: EnzymeHLOPatternOp<
+    "add_complex_simplify"> {
+  let patterns = ["BinaryOpComplexSimplifyBase<stablehlo::AddOp>"];
+}
+
+def ApplySubComplexSimplifyPatterns: EnzymeHLOPatternOp<
+    "sub_complex_simplify"> {
+  let patterns = ["BinaryOpComplexSimplifyBase<stablehlo::SubtractOp>"];
+}

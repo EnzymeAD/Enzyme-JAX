@@ -33277,6 +33277,35 @@ struct SplitComplexGather final
   }
 };
 
+// binop(complex, complex) -> complex(binop, binop)
+template <typename OpTy>
+struct BinaryOpComplexSimplifyBase
+    : public CheckedOpRewritePattern<OpTy, BinaryOpComplexSimplifyBase<OpTy>> {
+  using CheckedOpRewritePattern<
+      OpTy, BinaryOpComplexSimplifyBase<OpTy>>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(OpTy op, PatternRewriter &rewriter) const {
+    auto lhs = op.getLhs();
+    auto rhs = op.getRhs();
+
+    auto lhsComplexOp = lhs.template getDefiningOp<stablehlo::ComplexOp>();
+    auto rhsComplexOp = rhs.template getDefiningOp<stablehlo::ComplexOp>();
+
+    if (!lhsComplexOp && !rhsComplexOp &&
+        !isOnlyUsedInOperation(lhsComplexOp, op) &&
+        !isOnlyUsedInOperation(rhsComplexOp, op)) {
+      return failure();
+    }
+
+    auto newReal = OpTy::create(rewriter, op.getLoc(), lhsComplexOp.getLhs(),
+                                rhsComplexOp.getLhs());
+    auto newImag = OpTy::create(rewriter, op.getLoc(), lhsComplexOp.getRhs(),
+                                rhsComplexOp.getRhs());
+    rewriter.replaceOpWithNewOp<stablehlo::ComplexOp>(op, newReal, newImag);
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -34088,7 +34117,9 @@ struct EnzymeHLOOptPass
         ReduceWindowWrapSimplify,
         SplitComplexScatter,
         SplitComplexGather,
-        ReduceMaxMinMulPositiveScalar
+        ReduceMaxMinMulPositiveScalar,
+        BinaryOpComplexSimplifyBase<stablehlo::AddOp>,
+        BinaryOpComplexSimplifyBase<stablehlo::SubtractOp>
       >(context);
 
     patterns.add<ReshapeElementwise>(true, true, context);
