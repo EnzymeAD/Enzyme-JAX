@@ -1439,6 +1439,10 @@ cc_library(
         "@xla//xla/service/spmd/shardy/stablehlo_round_trip:stablehlo_import",
         "@xla//xla/service/spmd/shardy/stablehlo_round_trip:stablehlo_export",
         "@xla//xla/service/spmd/shardy/sdy_round_trip:pipelines",
+
+        # CUDA Tile
+        "@cuda_tile//:CudaTileDialect",
+        "@cuda_tile//:CudaTileTransforms",
     ],
 )
 
