@@ -19,7 +19,7 @@ func.func @rfft(%x : tensor<4xf32>) -> tensor<3xcomplex<f32>> {
 // REVERSE-RFFT-NEXT:    %cst = stablehlo.constant dense<(0.000000e+00,0.000000e+00)> : tensor<complex<f32>>
 // REVERSE-RFFT-NEXT:    %0 = chlo.conj %arg1 : tensor<3xcomplex<f32>> -> tensor<3xcomplex<f32>>
 // REVERSE-RFFT-NEXT:    %1 = stablehlo.pad %0, %cst, low = [0], high = [1], interior = [0] : (tensor<3xcomplex<f32>>, tensor<complex<f32>>) -> tensor<4xcomplex<f32>>
-// REVERSE-RFFT-NEXT:    %2 = stablehlo.fft %1, type = FFT, length = [4] : (tensor<4xcomplex<f32>>) -> tensor<4xcomplex<f32>>
+// REVERSE-RFFT-NEXT:    %2 = stablehlo.fft %1, type = FFT, length = [4] {enzymexla.complex_is_purely_imaginary = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<4xcomplex<f32>>) -> tensor<4xcomplex<f32>>
 // REVERSE-RFFT-NEXT:    %3 = stablehlo.real %2 : (tensor<4xcomplex<f32>>) -> tensor<4xf32>
 // REVERSE-RFFT-NEXT:    return %3 : tensor<4xf32>
 // REVERSE-RFFT-NEXT:  }

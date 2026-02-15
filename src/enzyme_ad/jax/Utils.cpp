@@ -1094,8 +1094,47 @@ bool PurelyImagResultAnalysis::constantComplexCheck(DenseElementsAttr attr) {
 
 PurelyImagResultAnalysis::State PurelyImagResultAnalysis::localGuaranteed(
     Value val, SmallVectorImpl<Value> &localtodo, PatternRewriter &rewriter) {
-  // TODO: implement
-  return State::NOTGUARANTEED;
+  auto elT = cast<RankedTensorType>(val.getType()).getElementType();
+  if (!isa<ComplexType>(elT)) {
+    return State::NOTGUARANTEED;
+  }
+
+  auto op = val.getDefiningOp();
+  if (!op) {
+    return State::NOTGUARANTEED;
+  }
+
+  bool recursiveCheck = false;
+  SmallVector<Value> operandsToCheck;
+
+  if (auto complexOp = dyn_cast<stablehlo::ComplexOp>(op)) {
+    // TODO: use a general analysis to determine if the real values are zero
+    if (matchPattern(complexOp.getLhs(), m_AnyZeroFloat()) ||
+        matchPattern(complexOp.getLhs(), m_Zero())) {
+      return State::GUARANTEED;
+    }
+    return State::NOTGUARANTEED;
+  } else if (isa<stablehlo::AddOp, stablehlo::SubtractOp,
+                 stablehlo::ConcatenateOp, stablehlo::ReshapeOp,
+                 stablehlo::TransposeOp, stablehlo::SliceOp,
+                 stablehlo::BroadcastInDimOp>(op)) {
+    recursiveCheck = true;
+    operandsToCheck.append(op->getOperands().begin(), op->getOperands().end());
+  } else if (isa<stablehlo::SelectOp>(op)) {
+    recursiveCheck = true;
+    operandsToCheck.push_back(op->getOperand(1));
+    operandsToCheck.push_back(op->getOperand(2));
+  } else if (isa<stablehlo::DynamicSliceOp, stablehlo::DynamicUpdateSliceOp>(
+                 op)) {
+    recursiveCheck = true;
+    operandsToCheck.push_back(op->getOperand(0));
+  }
+
+  if (recursiveCheck) {
+    return recursivelyCheckOperands(localtodo, operandsToCheck, false);
+  } else {
+    return State::NOTGUARANTEED;
+  }
 }
 
 bool anyOperandIsConstant(mlir::Operation *op) {
