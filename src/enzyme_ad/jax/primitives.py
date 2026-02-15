@@ -348,6 +348,8 @@ def optimization_passes(
         "fuse_reshape_collapse_or_expand_dims_into_reduce",
         "extend_to_broadcast",
         "reduce_max_min_mul_positive_scalar",
+        "add_complex_simplify",
+        "sub_complex_simplify",
     ]
 
     # constant propagation patterns

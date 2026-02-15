@@ -50,12 +50,12 @@ module {
 // CHECK-NEXT:   %5 = "stablehlo.gather"(%arg10, %4) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1>}> : (tensor<126xf64>, tensor<274x1xi32>) -> tensor<274xf64>
 // CHECK-NEXT:   %6 = stablehlo.reshape %arg5 : (tensor<274xi32>) -> tensor<274x1xi32>
 // CHECK-NEXT:   %7 = "stablehlo.gather"(%arg9, %6) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1>}> : (tensor<126xf64>, tensor<274x1xi32>) -> tensor<274xf64>
-// CHECK-NEXT:   %8 = stablehlo.complex %7, %5 : tensor<274xcomplex<f64>>
-// CHECK-NEXT:   %9 = stablehlo.complex %3, %1 : tensor<274xcomplex<f64>>
-// CHECK-NEXT:   %10 = stablehlo.exponential %9 : tensor<274xcomplex<f64>>
+// CHECK-NEXT:   %8 = stablehlo.complex %7, %5 {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<274xcomplex<f64>>
+// CHECK-NEXT:   %9 = stablehlo.complex %3, %1 {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<274xcomplex<f64>>
+// CHECK-NEXT:   %10 = stablehlo.exponential %9 {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<274xcomplex<f64>>
 // CHECK-NEXT:   %11 = chlo.conj %10 : tensor<274xcomplex<f64>> -> tensor<274xcomplex<f64>>
-// CHECK-NEXT:   %12 = stablehlo.exponential %8 : tensor<274xcomplex<f64>>
-// CHECK-NEXT:   %13 = stablehlo.multiply %12, %arg0 : tensor<274xcomplex<f64>>
+// CHECK-NEXT:   %12 = stablehlo.exponential %8 {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<274xcomplex<f64>>
+// CHECK-NEXT:   %13 = stablehlo.multiply %12, %arg0 {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<274xcomplex<f64>>
 // CHECK-NEXT:   %14 = stablehlo.multiply %13, %11 : tensor<274xcomplex<f64>>
 // CHECK-NEXT:   return %14 : tensor<274xcomplex<f64>>
 // CHECK-NEXT: }
