@@ -33299,19 +33299,44 @@ struct BinaryOpComplexSimplifyBase
 
     // If any of the components are zero, we can potentially do more aggressive
     // constant folding
-    auto isZeroRealOrImag = [&](mlir::Value val) {
-      return guaranteedPurelyImagResult(val, rewriter) ||
-             guaranteedPurelyRealResult(val, rewriter);
-    };
+    bool lhsRealIsZero =
+        guaranteedPurelyImagResult(lhsComplexOp.getResult(), rewriter);
+    bool lhsImagIsZero =
+        guaranteedPurelyRealResult(lhsComplexOp.getResult(), rewriter);
+    bool rhsRealIsZero =
+        guaranteedPurelyImagResult(rhsComplexOp.getResult(), rewriter);
+    bool rhsImagIsZero =
+        guaranteedPurelyRealResult(rhsComplexOp.getResult(), rewriter);
 
-    if (!isZeroRealOrImag(lhsComplexOp) && !isZeroRealOrImag(rhsComplexOp)) {
+    if (!(lhsRealIsZero || lhsImagIsZero || rhsRealIsZero || rhsImagIsZero)) {
       return failure();
     }
 
-    auto newReal = OpTy::create(rewriter, op.getLoc(), lhsComplexOp.getLhs(),
-                                rhsComplexOp.getLhs());
-    auto newImag = OpTy::create(rewriter, op.getLoc(), lhsComplexOp.getRhs(),
-                                rhsComplexOp.getRhs());
+    auto createOrFold = [&](Value lhs, Value rhs, bool lhsIsZero,
+                            bool rhsIsZero) -> Value {
+      if constexpr (std::is_same_v<OpTy, stablehlo::AddOp>) {
+        if (lhsIsZero) {
+          return rhs;
+        }
+        if (rhsIsZero) {
+          return lhs;
+        }
+      }
+      if constexpr (std::is_same_v<OpTy, stablehlo::SubtractOp>) {
+        if (rhsIsZero) {
+          return lhs;
+        }
+        if (lhsIsZero) {
+          return stablehlo::NegOp::create(rewriter, op.getLoc(), rhs);
+        }
+      }
+      return OpTy::create(rewriter, op.getLoc(), lhs, rhs);
+    };
+
+    auto newReal = createOrFold(lhsComplexOp.getLhs(), rhsComplexOp.getLhs(),
+                                lhsRealIsZero, rhsRealIsZero);
+    auto newImag = createOrFold(lhsComplexOp.getRhs(), rhsComplexOp.getRhs(),
+                                lhsImagIsZero, rhsImagIsZero);
     rewriter.replaceOpWithNewOp<stablehlo::ComplexOp>(op, newReal, newImag);
     return success();
   }
