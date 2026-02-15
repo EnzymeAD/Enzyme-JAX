@@ -33291,9 +33291,20 @@ struct BinaryOpComplexSimplifyBase
     auto lhsComplexOp = lhs.template getDefiningOp<stablehlo::ComplexOp>();
     auto rhsComplexOp = rhs.template getDefiningOp<stablehlo::ComplexOp>();
 
-    if (!lhsComplexOp && !rhsComplexOp &&
-        !isOnlyUsedInOperation(lhsComplexOp, op) &&
+    if (!lhsComplexOp || !rhsComplexOp ||
+        !isOnlyUsedInOperation(lhsComplexOp, op) ||
         !isOnlyUsedInOperation(rhsComplexOp, op)) {
+      return failure();
+    }
+
+    // If any of the components are zero, we can potentially do more aggressive
+    // constant folding
+    auto isZeroRealOrImag = [&](mlir::Value val) {
+      return guaranteedPurelyImagResult(val, rewriter) ||
+             guaranteedPurelyRealResult(val, rewriter);
+    };
+
+    if (!isZeroRealOrImag(lhsComplexOp) && !isZeroRealOrImag(rhsComplexOp)) {
       return failure();
     }
 
