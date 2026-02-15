@@ -536,6 +536,14 @@ SymmetricResultAnalysis initSymmetricResultAnalysis() {
   return SymmetricResultAnalysis();
 }
 
+PurelyRealResultAnalysis initPurelyRealResultAnalysis() {
+  return PurelyRealResultAnalysis();
+}
+
+PurelyImagResultAnalysis initPurelyImagResultAnalysis() {
+  return PurelyImagResultAnalysis();
+}
+
 bool checkNotEqual(APInt a, APInt b) { return a != b; }
 
 bool checkNotEqual(APFloat a, APFloat b) {
@@ -1010,6 +1018,84 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
   } else {
     return State::NOTGUARANTEED;
   }
+}
+
+bool PurelyRealResultAnalysis::constantComplexCheck(DenseElementsAttr attr) {
+  for (auto value : attr.getValues<std::complex<llvm::APFloat>>()) {
+    if (!value.imag().isZero()) {
+      return false;
+    }
+  }
+  return true;
+}
+
+PurelyRealResultAnalysis::State PurelyRealResultAnalysis::localGuaranteed(
+    Value val, SmallVectorImpl<Value> &localtodo, PatternRewriter &rewriter) {
+  auto elT = cast<RankedTensorType>(val.getType()).getElementType();
+  if (!isa<ComplexType>(elT)) {
+    return State::GUARANTEED;
+  }
+
+  auto op = val.getDefiningOp();
+  if (!op) {
+    return State::NOTGUARANTEED;
+  }
+
+  bool recursiveCheck = false;
+  SmallVector<Value> operandsToCheck;
+
+  if (auto convertOp = dyn_cast<stablehlo::ConvertOp>(op)) {
+    // real -> complex conversion means no imag component
+    auto operand = convertOp.getOperand();
+    if (!isa<ComplexType>(
+            cast<RankedTensorType>(operand.getType()).getElementType())) {
+      return State::GUARANTEED;
+    }
+    recursiveCheck = true;
+    operandsToCheck.push_back(operand);
+  } else if (auto complexOp = dyn_cast<stablehlo::ComplexOp>(op)) {
+    // TODO: use a general analysis to determine if the imag values are zero
+    if (matchPattern(complexOp.getRhs(), m_AnyZeroFloat()) ||
+        matchPattern(complexOp.getRhs(), m_Zero())) {
+      return State::GUARANTEED;
+    }
+    return State::NOTGUARANTEED;
+  } else if (isa<stablehlo::AddOp, stablehlo::SubtractOp,
+                 stablehlo::ConcatenateOp, stablehlo::ReshapeOp,
+                 stablehlo::TransposeOp, stablehlo::SliceOp,
+                 stablehlo::BroadcastInDimOp>(op)) {
+    recursiveCheck = true;
+    operandsToCheck.append(op->getOperands().begin(), op->getOperands().end());
+  } else if (isa<stablehlo::SelectOp>(op)) {
+    recursiveCheck = true;
+    operandsToCheck.push_back(op->getOperand(1));
+    operandsToCheck.push_back(op->getOperand(2));
+  } else if (isa<stablehlo::DynamicSliceOp, stablehlo::DynamicUpdateSliceOp>(
+                 op)) {
+    recursiveCheck = true;
+    operandsToCheck.push_back(op->getOperand(0));
+  }
+
+  if (recursiveCheck) {
+    return recursivelyCheckOperands(localtodo, operandsToCheck, false);
+  } else {
+    return State::NOTGUARANTEED;
+  }
+}
+
+bool PurelyImagResultAnalysis::constantComplexCheck(DenseElementsAttr attr) {
+  for (auto value : attr.getValues<std::complex<llvm::APFloat>>()) {
+    if (!value.real().isZero()) {
+      return false;
+    }
+  }
+  return true;
+}
+
+PurelyImagResultAnalysis::State PurelyImagResultAnalysis::localGuaranteed(
+    Value val, SmallVectorImpl<Value> &localtodo, PatternRewriter &rewriter) {
+  // TODO: implement
+  return State::NOTGUARANTEED;
 }
 
 bool anyOperandIsConstant(mlir::Operation *op) {
