@@ -128,9 +128,15 @@ load("//third_party/jax:workspace.bzl", jax_workspace = "repo")
 
 jax_workspace()
 
+load("//third_party/enzyme_rocm:enzyme_rocm.bzl", "enzyme_rocm_configure")
+
+enzyme_rocm_configure(name = "enzyme_rocm_config")
+
+load("@enzyme_rocm_config//:defs.bzl", "ENZYME_ROCM_XLA_PATCHES")
+
 load("//third_party/xla:workspace.bzl", xla_workspace = "repo")
 
-xla_workspace()
+xla_workspace(extra_patches = ENZYME_ROCM_XLA_PATCHES)
 
 load("@xla//:workspace4.bzl", "xla_workspace4")
 
@@ -257,13 +263,6 @@ load(
 )
 
 cuda_configure(name = "local_config_cuda")
-
-load(
-    "@xla//third_party/gpus:rocm_configure.bzl",
-    "rocm_configure",
-)
-
-rocm_configure(name = "local_config_rocm")
 
 load(
     "@xla//third_party/nccl/hermetic:nccl_redist_init_repository.bzl",

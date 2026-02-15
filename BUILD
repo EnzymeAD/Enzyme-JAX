@@ -10,7 +10,7 @@ load(
     "if_llvm_system_z_available",
     "if_llvm_x86_available",
 )
-load("//third_party/amdgpu:workspace.bzl", "if_llvm_amdgpu_available")
+load("@enzyme_rocm_config//:defs.bzl", "if_enzyme_rocm_available")
 load(":package.bzl", "py_package")
 
 licenses(["notice"])
@@ -18,12 +18,6 @@ licenses(["notice"])
 package(
     default_applicable_licenses = [],
     default_visibility = ["//:__subpackages__"],
-)
-
-config_setting(
-    name = "with_amdgpu",
-    define_values = {"with_amdgpu": "true"},
-    visibility = ["//visibility:public"],
 )
 
 py_package(
@@ -73,7 +67,7 @@ cc_binary(
     ]) + if_llvm_x86_available([
         "@llvm-project//llvm:X86AsmParser",
         "@llvm-project//llvm:X86CodeGen",
-    ]) + if_llvm_amdgpu_available([
+    ]) + if_enzyme_rocm_available([
         "@llvm-project//llvm:AMDGPUAsmParser",
         "@llvm-project//llvm:AMDGPUCodeGen",
     ]),
@@ -114,7 +108,7 @@ cc_library(
     ]) + if_llvm_x86_available([
         "@llvm-project//llvm:X86AsmParser",
         "@llvm-project//llvm:X86CodeGen",
-    ]) + if_llvm_amdgpu_available([
+    ]) + if_enzyme_rocm_available([
         "@llvm-project//llvm:AMDGPUAsmParser",
         "@llvm-project//llvm:AMDGPUCodeGen",
     ]),

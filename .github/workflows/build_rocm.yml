@@ -1,0 +1,215 @@
+name: Build Enzyme-JAX (ROCm)
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-rocm.yml"
+      - "**/BUILD"
+      - "**/WORKSPACE"
+      - "**/*.bzl"
+      - "builddeps/**"
+      - "patches/**"
+      - "src/**"
+      - "test/**"
+      - "third_party/**"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-rocm.yml"
+      - "**/BUILD"
+      - "**/WORKSPACE"
+      - "**/*.bzl"
+      - "builddeps/**"
+      - "patches/**"
+      - "src/**"
+      - "test/**"
+      - "third_party/**"
+  merge_group:
+
+concurrency:
+  # Skip intermediate builds: always.
+  # Cancel intermediate builds: only if it is a pull request build.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+
+jobs:
+  build-rocm:
+    name: Build ROCm - linux-x86
+    runs-on: linux-x86-n2-32
+    timeout-minutes: 240
+
+    container:
+      image: ghcr.io/enzymead/reactant-docker-images@sha256:cd45d851f5ea544f88d042eafefa53d948c229fffcab6189019324e3b02b505a
+
+    env:
+      HERMETIC_PYTHON_VERSION: "3.12"
+      ROCM_VERSION: "6.4"
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: bazel-contrib/setup-bazel@0.16.0
+        name: Set up Bazel
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}-rocm-3.12
+          repository-cache: true
+          bazelisk-version: 1.x
+
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: "1.11"
+
+      - name: Provision ROCm via ReactantBuilder
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Clone ReactantBuilder to get TheRock tarball URL/SHA for the
+          # requested ROCM_VERSION.
+          git clone --depth 1 https://github.com/EnzymeAD/ReactantBuilder.git /tmp/ReactantBuilder
+
+          # Extract TheRock URL and SHA from build_tarballs.jl
+          THEROCK_INFO=$(julia -e '
+            content = read("/tmp/ReactantBuilder/R/Reactant/build_tarballs.jl", String)
+            version = ENV["ROCM_VERSION"]
+
+            # Find the if/elseif block for this rocm_version and extract URL+SHA
+            pattern = Regex(
+              "rocm_version == \"" * escape_string(version) * "\"" *
+              raw".*?FileSource\(\"(https://[^\"]+)\",\s*\n?\s*\"([0-9a-f]+)\"\)",
+              "s"
+            )
+            m = match(pattern, content)
+            if m === nothing
+              error("ROCm version $(version) not found in ReactantBuilder build_tarballs.jl")
+            end
+            println(m[1])
+            println(m[2])
+          ')
+
+          THEROCK_URL=$(echo "$THEROCK_INFO" | head -1)
+          THEROCK_SHA=$(echo "$THEROCK_INFO" | tail -1)
+
+          echo "TheRock URL: ${THEROCK_URL}"
+          echo "TheRock SHA: ${THEROCK_SHA}"
+
+          # Download and verify
+          curl -fSL -o /tmp/therock-dist.tar.gz "${THEROCK_URL}"
+          echo "${THEROCK_SHA}  /tmp/therock-dist.tar.gz" | sha256sum -c -
+
+          # Extract
+          mkdir -p /opt/rocm-therock
+          tar xzf /tmp/therock-dist.tar.gz -C /opt/rocm-therock
+          rm /tmp/therock-dist.tar.gz
+
+          export ROCM_PATH=/opt/rocm-therock
+
+          cd "${ROCM_PATH}/lib"
+          for lib in libhiprtc-builtins libhiprtc libamdhip64; do
+            FULL=$(ls ${lib}.so.*-* 2>/dev/null | head -1) || true
+            if [ -n "${FULL}" ]; then
+              CLEAN=$(echo "${FULL}" | sed 's/-[0-9a-f]*$//')
+              mv "${FULL}" "${CLEAN}"
+              # Create major-version symlink
+              MAJOR=$(echo "${CLEAN}" | sed 's/\(\.so\.[0-9]*\)\..*/\1/')
+              rm -f "${MAJOR}" 2>/dev/null || true
+              ln -s "${CLEAN}" "${MAJOR}"
+              echo "Fixed: ${FULL} -> ${CLEAN}, symlink ${MAJOR}"
+            fi
+          done
+          cd -
+
+          # Create amdgcn symlink
+          if [ -d "${ROCM_PATH}/lib/llvm/amdgcn" ] && [ ! -e "${ROCM_PATH}/amdgcn" ]; then
+            ln -s "${ROCM_PATH}/lib/llvm/amdgcn" "${ROCM_PATH}/amdgcn"
+          fi
+
+          for tool in llvm-link opt; do
+            TOOL_PATH="${ROCM_PATH}/lib/llvm/bin/${tool}"
+            if [ -f "${TOOL_PATH}" ] && [ ! -f "${TOOL_PATH}.real" ]; then
+              mv "${TOOL_PATH}" "${TOOL_PATH}.real"
+              cat > "${TOOL_PATH}" <<WRAPPER
+          #!/bin/bash
+          LD_LIBRARY_PATH="${ROCM_PATH}/lib:\${LD_LIBRARY_PATH:-}" exec "${TOOL_PATH}.real" "\$@"
+          WRAPPER
+              chmod +x "${TOOL_PATH}"
+              echo "Wrapped: ${tool}"
+            fi
+          done
+
+          echo "ROCM_PATH=${ROCM_PATH}" >> "${GITHUB_ENV}"
+
+          echo "=== ROCm directory structure ==="
+          ls -la "${ROCM_PATH}/bin/" 2>/dev/null | head -20 || echo "No bin/"
+          ls -la "${ROCM_PATH}/lib/" 2>/dev/null | head -20 || echo "No lib/"
+          ls -la "${ROCM_PATH}/lib/llvm/bin/" 2>/dev/null | head -20 || echo "No lib/llvm/bin/"
+          ls -la "${ROCM_PATH}/lib/llvm/amdgcn/bitcode/" 2>/dev/null | head -10 || echo "No amdgcn/bitcode/"
+
+      - name: Set BAZEL_FLAGS
+        shell: bash
+        run: |
+          set -e
+          BAZEL_FLAGS=""
+          BAZEL_FLAGS="${BAZEL_FLAGS} --repo_env=CC=$(which clang)"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --define=using_clang=true"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --action_env=ROCM_PATH=${ROCM_PATH}"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --repo_env=ROCM_PATH=${ROCM_PATH}"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --config=public_cache_push"
+          echo "BAZEL_FLAGS=${BAZEL_FLAGS}" >> "${GITHUB_ENV}"
+
+      - name: Update JAX version
+        shell: bash
+        run: |
+          sed -i.bak0 "s/jax\[cuda12\]/jax[cpu]/g" builddeps/requirements.in
+          sed -i.bak0 "/pypi_jax_cuda12_plugin/d" test/BUILD
+          cat builddeps/requirements.in
+
+      - name: Update Python requirements files
+        run: |
+          bazel run $BAZEL_FLAGS --color=yes //builddeps:requirements.update
+
+      - name: Build enzymexlamlir-opt
+        timeout-minutes: 180
+        run: |
+          bazel build $BAZEL_FLAGS --color=yes //:enzymexlamlir-opt
+
+      - name: Upload enzymexlamlir-opt
+        uses: actions/upload-artifact@v6
+        with:
+          name: enzymexlamlir-opt-rocm-linux-x86
+          path: "bazel-bin/enzymexlamlir-opt"
+          retention-days: 90
+
+      - name: Run lit tests
+        id: lit_tests
+        continue-on-error: true
+        run: |
+          bazel test $BAZEL_FLAGS \
+            --color=yes \
+            --test_output=errors \
+            --experimental_ui_max_stdouterr_bytes=-1 \
+            --test_verbose_timeout_warnings \
+            //test/lit_tests/...
+
+      - name: Run lit tests (dbg)
+        if: steps.lit_tests.outcome == 'failure'
+        run: |
+          bazel test $BAZEL_FLAGS -c dbg \
+            --color=yes \
+            --test_output=errors \
+            --experimental_ui_max_stdouterr_bytes=-1 \
+            --test_verbose_timeout_warnings \
+            //test/lit_tests/...
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v6
+        if: ${{ !cancelled() }}
+        with:
+          name: Enzyme-JAX-rocm-tests
+          path: |
+            bazel-out/**/test.log
+          retention-days: 90
