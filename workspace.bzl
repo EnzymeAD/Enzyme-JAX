@@ -175,6 +175,9 @@ sed -i.bak0 "s/patch_cmds = \\[/patch_cmds = \\[\\\"find . -type f -name config.
 
     sed -i.bak0 "s/urls = /patch_cmds = \\[\\\"sed -i.bak -e 's\\/return PACKET_TYPE(0) == PACKET_TYPE(0);\\/return (PACKET_TYPE)(PACKET_TYPE(0) == PACKET_TYPE(0));\\/g' -e 's\\/return CAST_FROM_INT(CAST_TO_INT(a) == CAST_TO_INT(a));\\/return CAST_FROM_INT((decltype(CAST_TO_INT(a)))(CAST_TO_INT(a) == CAST_TO_INT(a)));\\/' Eigen\\/src\\/Core\\/arch\\/clang\\/PacketMath.h\\\"\\],urls = /g" third_party/eigen3/workspace.bzl
     """,
+    """
+sed -i.bak0 "s/patch_cmds = \\[/patch_cmds = \\[\\\"find . -type f -name BUILD.bazel -path '*\\/mlir\\/*' -exec sed -i.bak0 's\\/MLIR_ENABLE_ROCM_CONVERSIONS 0\\/MLIR_ENABLE_ROCM_CONVERSIONS 1\\/g' {} +\\\",/g" third_party/llvm/workspace.bzl
+""",
 ]
 
 LLVM_TARGETS = ["X86", "AArch64", "AMDGPU", "NVPTX"]
