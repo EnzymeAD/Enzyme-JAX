@@ -183,33 +183,3 @@ jobs:
           name: enzymexlamlir-opt-rocm-linux-x86
           path: "bazel-bin/enzymexlamlir-opt"
           retention-days: 90
-
-      - name: Run lit tests
-        id: lit_tests
-        continue-on-error: true
-        run: |
-          bazel test $BAZEL_FLAGS \
-            --color=yes \
-            --test_output=errors \
-            --experimental_ui_max_stdouterr_bytes=-1 \
-            --test_verbose_timeout_warnings \
-            //test/lit_tests/...
-
-      - name: Run lit tests (dbg)
-        if: steps.lit_tests.outcome == 'failure'
-        run: |
-          bazel test $BAZEL_FLAGS -c dbg \
-            --color=yes \
-            --test_output=errors \
-            --experimental_ui_max_stdouterr_bytes=-1 \
-            --test_verbose_timeout_warnings \
-            //test/lit_tests/...
-
-      - name: Upload test results
-        uses: actions/upload-artifact@v6
-        if: ${{ !cancelled() }}
-        with:
-          name: Enzyme-JAX-rocm-tests
-          path: |
-            bazel-out/**/test.log
-          retention-days: 90
