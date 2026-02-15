@@ -1048,6 +1048,26 @@ def IfToSelect : EnzymeHLOPatternOp<
   let patterns = ["IfToSelect"];
 }
 
+def IfAddToSelectAdd : EnzymeHLOPatternOp<
+    "if_add_to_select_add"> {
+  let patterns = ["IfBinaryOpToSelectBinaryOp<stablehlo::AddOp>"];
+}
+
+def IfMulToSelectMul : EnzymeHLOPatternOp<
+    "if_mul_to_select_mul"> {
+  let patterns = ["IfBinaryOpToSelectBinaryOp<stablehlo::MulOp>"];
+}
+
+def IfMinToSelectMin : EnzymeHLOPatternOp<
+    "if_min_to_select_min"> {
+  let patterns = ["IfBinaryOpToSelectBinaryOp<stablehlo::MinOp>"];
+}
+
+def IfMaxToSelectMax : EnzymeHLOPatternOp<
+    "if_max_to_select_max"> {
+  let patterns = ["IfBinaryOpToSelectBinaryOp<stablehlo::MaxOp>"];
+}
+
 def IfPredPropagation : EnzymeHLOPatternOp<
     "if_pred_propagation"> {
   let patterns = ["IfPredPropagation"];
