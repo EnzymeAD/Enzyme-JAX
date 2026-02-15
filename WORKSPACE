@@ -133,7 +133,6 @@ load("//third_party/enzyme_rocm:enzyme_rocm.bzl", "enzyme_rocm_configure")
 enzyme_rocm_configure(name = "enzyme_rocm_config")
 
 load("@enzyme_rocm_config//:defs.bzl", "ENZYME_ROCM_XLA_PATCHES")
-
 load("//third_party/xla:workspace.bzl", xla_workspace = "repo")
 
 xla_workspace(extra_patches = ENZYME_ROCM_XLA_PATCHES)

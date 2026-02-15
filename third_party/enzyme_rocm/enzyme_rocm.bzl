@@ -25,7 +25,7 @@ def _enzyme_rocm_configure_impl(ctx):
     if found:
         # Helper characters for building the multi-escaped sed command.
         BS = "\\"  # single backslash
-        DQ = '"'   # double quote
+        DQ = '"'  # double quote
 
         # Build the sed patch command for defs.bzl.
         patch_line = (
