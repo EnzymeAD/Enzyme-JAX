@@ -14249,12 +14249,19 @@ struct RealOpCanon final
       return success();
     }
 
-    auto complex = op.getOperand().getDefiningOp<stablehlo::ComplexOp>();
-    if (!complex)
-      return failure();
+    if (auto complex = op.getOperand().getDefiningOp<stablehlo::ComplexOp>()) {
+      rewriter.replaceOp(op, complex.getLhs());
+      return success();
+    }
 
-    rewriter.replaceOp(op, complex.getLhs());
-    return success();
+    if (guaranteedPurelyImagResult(op.getOperand(), rewriter)) {
+      rewriter.replaceOp(
+          op, stablehlo::ConstantOp::create(rewriter, op->getLoc(),
+                                            makeAttr(op.getType(), 0)));
+      return success();
+    }
+
+    return failure();
   }
 };
 
@@ -14264,20 +14271,21 @@ struct ImagOpCanon final
 
   LogicalResult matchAndRewriteImpl(stablehlo::ImagOp op,
                                     PatternRewriter &rewriter) const {
+    if (auto complex = op.getOperand().getDefiningOp<stablehlo::ComplexOp>()) {
+      rewriter.replaceOp(op, complex.getRhs());
+      return success();
+    }
+
     auto elTy = op.getOperand().getType().getElementType();
-    if (!isa<ComplexType>(elTy)) {
+    if (!isa<ComplexType>(elTy) ||
+        guaranteedPurelyRealResult(op.getOperand(), rewriter)) {
       rewriter.replaceOp(
           op, stablehlo::ConstantOp::create(rewriter, op->getLoc(),
                                             makeAttr(op.getType(), 0)));
       return success();
     }
 
-    auto complex = op.getOperand().getDefiningOp<stablehlo::ComplexOp>();
-    if (!complex)
-      return failure();
-
-    rewriter.replaceOp(op, complex.getRhs());
-    return success();
+    return failure();
   }
 };
 
@@ -24689,12 +24697,13 @@ struct ConjReal final : public CheckedOpRewritePattern<chlo::ConjOp, ConjReal> {
   LogicalResult matchAndRewriteImpl(chlo::ConjOp op,
                                     PatternRewriter &rewriter) const {
     auto input = op.getOperand();
-    auto elemType = cast<RankedTensorType>(input.getType()).getElementType();
-    if (isa<ComplexType>(elemType))
-      return rewriter.notifyMatchFailure(op, "can't apply to complex numbers");
 
-    rewriter.replaceAllUsesWith(op.getResult(), input);
-    return success();
+    if (guaranteedPurelyRealResult(input, rewriter)) {
+      rewriter.replaceOp(op, input);
+      return success();
+    }
+
+    return failure();
   }
 };
 
@@ -25105,24 +25114,6 @@ struct ConjComplexSimplify final
   }
 };
 
-struct ConjConvertSimplify final
-    : public CheckedOpRewritePattern<chlo::ConjOp, ConjConvertSimplify> {
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(chlo::ConjOp op,
-                                    PatternRewriter &rewriter) const {
-    auto operandOp = op.getOperand().getDefiningOp<stablehlo::ConvertOp>();
-    if (!operandOp || isa<ComplexType>(cast<RankedTensorType>(
-                                           operandOp.getOperand().getType())
-                                           .getElementType())) {
-      return failure();
-    }
-
-    rewriter.replaceOp(op, operandOp.getResult());
-    return success();
-  }
-};
-
 // elementwise_op(all operands have zero imag) -> do the op in real domain and
 // convert to complex
 struct ElementwiseComplexSimplify final
@@ -25154,30 +25145,9 @@ struct ElementwiseComplexSimplify final
       return isa<ComplexType>(elemType);
     };
 
-    auto isZeroImagPart = [=](Value val) {
-      if (!isComplexEltype(val)) {
-        return true;
-      }
-
-      auto defOp = val.getDefiningOp();
-      if (!defOp) {
-        return false;
-      }
-
-      return TypeSwitch<Operation *, bool>(defOp)
-          .Case<stablehlo::ConvertOp>([=](auto convertOp) {
-            return !isComplexEltype(convertOp.getOperand());
-          })
-          .Case<stablehlo::ComplexOp>([](auto complexOp) {
-            return matchPattern(complexOp.getOperand(1), m_AnyZeroFloat());
-          })
-          .Default([](auto otherOp) {
-            return matchPattern(otherOp, m_AnyZeroImagComplex());
-          });
-    };
-
     if (!llvm::all_of(op->getOperands(), [&](auto val) {
-          return isZeroImagPart(val) && isValueOnlyUsedInOperation(val, op);
+          return guaranteedPurelyRealResult(val, rewriter) &&
+                 isValueOnlyUsedInOperation(val, op);
         })) {
       return failure();
     }
@@ -34065,7 +34035,6 @@ struct EnzymeHLOOptPass
         RealConjSimplify,
         RealConvertSimplify,
         ConjComplexSimplify,
-        ConjConvertSimplify,
         ElementwiseComplexSimplify,
         SplitConvolutionIntoReverseConvolution,
         ScatterMultiplySimplify,

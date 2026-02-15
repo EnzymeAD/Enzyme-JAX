@@ -17,8 +17,8 @@ func.func @irfft(%x : tensor<3xcomplex<f32>>) -> tensor<4xf32> {
 
 // REVERSE-IRFFT: func.func private @irfft_revdiff(%arg0: tensor<3xcomplex<f32>>, %arg1: tensor<4xf32>) -> tensor<3xcomplex<f32>> {
 // REVERSE-IRFFT-NEXT:      %cst = stablehlo.constant dense<[(2.500000e-01,0.000000e+00), (5.000000e-01,0.000000e+00), (2.500000e-01,0.000000e+00)]> : tensor<3xcomplex<f32>>
-// REVERSE-IRFFT-NEXT:      %0 = stablehlo.fft %arg1, type =  RFFT, length = [4] : (tensor<4xf32>) -> tensor<3xcomplex<f32>>
-// REVERSE-IRFFT-NEXT:      %1 = stablehlo.multiply %0, %cst : tensor<3xcomplex<f32>>
+// REVERSE-IRFFT-NEXT:      %0 = stablehlo.fft %arg1, type =  RFFT, length = [4] {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<4xf32>) -> tensor<3xcomplex<f32>>
+// REVERSE-IRFFT-NEXT:      %1 = stablehlo.multiply %0, %cst {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<3xcomplex<f32>>
 // REVERSE-IRFFT-NEXT:      %2 = chlo.conj %1 : tensor<3xcomplex<f32>> -> tensor<3xcomplex<f32>>
 // REVERSE-IRFFT-NEXT:      return %2 : tensor<3xcomplex<f32>>
 // REVERSE-IRFFT-NEXT:    }
