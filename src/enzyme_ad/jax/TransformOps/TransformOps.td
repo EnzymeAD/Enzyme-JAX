@@ -2424,9 +2424,11 @@ def ApplyConjComplexSimplifyPatterns : EnzymeHLOPatternOp<
   let patterns = ["ConjComplexSimplify"];
 }
 
+// TODO: remove this pattern once we have deleted it from Reactant.
+//       ConjReal now performs a detailed analysis that covers this case.
 def ApplyConjConvertSimplifyPatterns : EnzymeHLOPatternOp<
     "conj_convert_simplify"> {
-  let patterns = ["ConjConvertSimplify"];
+  let patterns = ["ConjReal"];
 }
 
 def ApplyElementwiseComplexSimplifyPatterns : EnzymeHLOPatternOp<
@@ -3035,4 +3037,14 @@ def ApplySplitComplexScatterSetindexPatterns: EnzymeHLOPatternOp<
 def ApplyReduceMaxMinMulPositiveScalarPatterns: EnzymeHLOPatternOp<
     "reduce_max_min_mul_positive_scalar"> {
   let patterns = ["ReduceMaxMinMulPositiveScalar"];
+}
+
+def ApplyAddComplexSimplifyPatterns: EnzymeHLOPatternOp<
+    "add_complex_simplify"> {
+  let patterns = ["BinaryOpComplexSimplifyBase<stablehlo::AddOp>"];
+}
+
+def ApplySubComplexSimplifyPatterns: EnzymeHLOPatternOp<
+    "sub_complex_simplify"> {
+  let patterns = ["BinaryOpComplexSimplifyBase<stablehlo::SubtractOp>"];
 }
