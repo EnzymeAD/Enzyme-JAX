@@ -33277,6 +33277,71 @@ struct SplitComplexGather final
   }
 };
 
+// binop(complex, complex) -> complex(binop, binop)
+template <typename OpTy>
+struct BinaryOpComplexSimplifyBase
+    : public CheckedOpRewritePattern<OpTy, BinaryOpComplexSimplifyBase<OpTy>> {
+  using CheckedOpRewritePattern<
+      OpTy, BinaryOpComplexSimplifyBase<OpTy>>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(OpTy op, PatternRewriter &rewriter) const {
+    auto lhs = op.getLhs();
+    auto rhs = op.getRhs();
+
+    auto lhsComplexOp = lhs.template getDefiningOp<stablehlo::ComplexOp>();
+    auto rhsComplexOp = rhs.template getDefiningOp<stablehlo::ComplexOp>();
+
+    if (!lhsComplexOp || !rhsComplexOp ||
+        !isOnlyUsedInOperation(lhsComplexOp, op) ||
+        !isOnlyUsedInOperation(rhsComplexOp, op)) {
+      return failure();
+    }
+
+    // If any of the components are zero, we can potentially do more aggressive
+    // constant folding
+    bool lhsRealIsZero =
+        guaranteedPurelyImagResult(lhsComplexOp.getResult(), rewriter);
+    bool lhsImagIsZero =
+        guaranteedPurelyRealResult(lhsComplexOp.getResult(), rewriter);
+    bool rhsRealIsZero =
+        guaranteedPurelyImagResult(rhsComplexOp.getResult(), rewriter);
+    bool rhsImagIsZero =
+        guaranteedPurelyRealResult(rhsComplexOp.getResult(), rewriter);
+
+    if (!(lhsRealIsZero || lhsImagIsZero || rhsRealIsZero || rhsImagIsZero)) {
+      return failure();
+    }
+
+    auto createOrFold = [&](Value lhs, Value rhs, bool lhsIsZero,
+                            bool rhsIsZero) -> Value {
+      if constexpr (std::is_same_v<OpTy, stablehlo::AddOp>) {
+        if (lhsIsZero) {
+          return rhs;
+        }
+        if (rhsIsZero) {
+          return lhs;
+        }
+      }
+      if constexpr (std::is_same_v<OpTy, stablehlo::SubtractOp>) {
+        if (rhsIsZero) {
+          return lhs;
+        }
+        if (lhsIsZero) {
+          return stablehlo::NegOp::create(rewriter, op.getLoc(), rhs);
+        }
+      }
+      return OpTy::create(rewriter, op.getLoc(), lhs, rhs);
+    };
+
+    auto newReal = createOrFold(lhsComplexOp.getLhs(), rhsComplexOp.getLhs(),
+                                lhsRealIsZero, rhsRealIsZero);
+    auto newImag = createOrFold(lhsComplexOp.getRhs(), rhsComplexOp.getRhs(),
+                                lhsImagIsZero, rhsImagIsZero);
+    rewriter.replaceOpWithNewOp<stablehlo::ComplexOp>(op, newReal, newImag);
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -34088,7 +34153,9 @@ struct EnzymeHLOOptPass
         ReduceWindowWrapSimplify,
         SplitComplexScatter,
         SplitComplexGather,
-        ReduceMaxMinMulPositiveScalar
+        ReduceMaxMinMulPositiveScalar,
+        BinaryOpComplexSimplifyBase<stablehlo::AddOp>,
+        BinaryOpComplexSimplifyBase<stablehlo::SubtractOp>
       >(context);
 
     patterns.add<ReshapeElementwise>(true, true, context);
