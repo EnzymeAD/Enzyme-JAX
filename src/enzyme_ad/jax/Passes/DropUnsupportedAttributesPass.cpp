@@ -83,9 +83,13 @@ struct DropUnsupportedAttributesPass
 
     if (enzymexla_analysis_result) {
       auto moduleOp = getOperation();
-      SmallVector<StringRef, 4> enzymexlaAnalysisResultAttrs = {
-          "enzymexla.symmetric_matrix", "enzymexla.non_negative",
-          "enzymexla.finite", "enzymexla.no_nan"};
+      SmallVector<StringRef, 6> enzymexlaAnalysisResultAttrs = {
+          "enzymexla.symmetric_matrix",
+          "enzymexla.non_negative",
+          "enzymexla.finite",
+          "enzymexla.no_nan",
+          "enzymexla.complex_is_purely_real",
+          "enzymexla.complex_is_purely_imaginary"};
 
       moduleOp.walk([&](Operation *op) {
         for (auto removeAttr : enzymexlaAnalysisResultAttrs) {

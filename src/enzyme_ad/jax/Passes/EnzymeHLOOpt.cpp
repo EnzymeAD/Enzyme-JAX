@@ -19975,6 +19975,21 @@ struct ReorderElementwiseAndShapeOp final
     auto intermediateType = cast<ShapedType>(input.getType())
                                 .clone(getElementTypeOrSelf(result.getType()));
 
+    // avoid reordering if we have high-priority fusions
+    auto inputDefOp = input.getDefiningOp();
+    if (inputDefOp) {
+      if (auto reshapeDefOp = dyn_cast<stablehlo::ReshapeOp>(definingOp)) {
+        if (isFusible(inputDefOp, reshapeDefOp)) {
+          return failure();
+        }
+      } else if (auto bcastDefOp =
+                     dyn_cast<stablehlo::BroadcastInDimOp>(definingOp)) {
+        if (isFusible(inputDefOp, bcastDefOp)) {
+          return failure();
+        }
+      }
+    }
+
     // Reorder the operation and rewire the inputs/outputs.
     op->moveBefore(definingOp);
     definingOp->getResult(0).setType(result.getType());
