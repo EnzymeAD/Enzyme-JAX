@@ -7722,6 +7722,35 @@ struct NoNanZeroBasePowSimplify final
   }
 };
 
+struct FftZero
+    : public CheckedOpRewritePattern<stablehlo::FftOp, FftZero> {
+  using CheckedOpRewritePattern<stablehlo::FftOp,
+                                FftZero>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::FftOp op,
+                                    PatternRewriter &rewriter) const {
+    // FFT of zero is zero for all FFT types (FFT, IFFT, RFFT, IRFFT).
+    // This optimization eliminates unnecessary FFT computations when the input
+    // is known to be zero at compile time.
+    if (matchPattern(op.getOperand(), m_AnyZeroFloat()) ||
+        matchPattern(op.getOperand(), m_Zero()) ||
+        matchPattern(op.getOperand(), m_AnyZeroComplex())) {
+      // When input and output types match (FFT, IFFT), we can directly use the input.
+      // When types differ (RFFT: real->complex, IRFFT: complex->real), we need
+      // to create a new zero constant of the output type.
+      if (op.getOperand().getType() == op.getResult().getType()) {
+        rewriter.replaceOp(op, op.getOperand());
+      } else {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            op, cast<ElementsAttr>(makeAttr(op.getType(), 0)));
+      }
+      return success();
+    }
+
+    return failure();
+  }
+};
+
 bool is_broadcastable_compare(Value operand) {
   if (auto cmp = operand.getDefiningOp<stablehlo::CompareOp>()) {
 
@@ -33765,7 +33794,7 @@ struct EnzymeHLOOptPass
     patterns.add<
         AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
         OrSimplify, XorSimplify, MulSimplify, DivSimplify, RemSimplify,
-        PowSimplify, NoopSlice, NoopReverse, SliceSlice,
+        PowSimplify, FftZero, NoopSlice, NoopReverse, SliceSlice,
         DynamicSliceDynamicSlice, DynamicSliceSlice, SliceDynamicSlice,
         LogSimplify, ShiftRightLogicalSimplify, NegativePadToSlice,
         SliceSimplify, ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
