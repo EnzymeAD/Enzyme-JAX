@@ -121,7 +121,10 @@ LogicalResult lowerMultiRotateToRotates(enzymexla::MultiRotateOp op,
 
     // Propagate sharding if present
     if (shard) {
-      sdy::setShardings(rotateOp, shard);
+      sdy::TensorShardingAttr shards[1] = {shard.getShardings()[i]};
+      auto shard2 =
+          sdy::TensorShardingPerValueAttr::get(rotateOp.getContext(), shards);
+      sdy::setShardings(rotateOp, shard2);
     }
 
     replacements[i] = rotateOp.getResult();
@@ -19974,6 +19977,21 @@ struct ReorderElementwiseAndShapeOp final
     Value result = op->getResult(0);
     auto intermediateType = cast<ShapedType>(input.getType())
                                 .clone(getElementTypeOrSelf(result.getType()));
+
+    // avoid reordering if we have high-priority fusions
+    auto inputDefOp = input.getDefiningOp();
+    if (inputDefOp) {
+      if (auto reshapeDefOp = dyn_cast<stablehlo::ReshapeOp>(definingOp)) {
+        if (isFusible(inputDefOp, reshapeDefOp)) {
+          return failure();
+        }
+      } else if (auto bcastDefOp =
+                     dyn_cast<stablehlo::BroadcastInDimOp>(definingOp)) {
+        if (isFusible(inputDefOp, bcastDefOp)) {
+          return failure();
+        }
+      }
+    }
 
     // Reorder the operation and rewire the inputs/outputs.
     op->moveBefore(definingOp);

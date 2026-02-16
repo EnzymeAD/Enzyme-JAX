@@ -53,10 +53,10 @@ module {
 // CHECK-NEXT:   %8 = stablehlo.complex %7, %5 {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<274xcomplex<f64>>
 // CHECK-NEXT:   %9 = stablehlo.complex %3, %1 {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<274xcomplex<f64>>
 // CHECK-NEXT:   %10 = stablehlo.exponential %9 {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<274xcomplex<f64>>
-// CHECK-NEXT:   %11 = chlo.conj %10 : tensor<274xcomplex<f64>> -> tensor<274xcomplex<f64>>
-// CHECK-NEXT:   %12 = stablehlo.exponential %8 {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<274xcomplex<f64>>
-// CHECK-NEXT:   %13 = stablehlo.multiply %12, %arg0 {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<274xcomplex<f64>>
-// CHECK-NEXT:   %14 = stablehlo.multiply %13, %11 : tensor<274xcomplex<f64>>
+// CHECK-NEXT:   %11 = stablehlo.exponential %8 {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<274xcomplex<f64>>
+// CHECK-NEXT:   %12 = stablehlo.multiply %11, %arg0 {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<274xcomplex<f64>>
+// CHECK-NEXT:   %13 = chlo.conj %10 : tensor<274xcomplex<f64>> -> tensor<274xcomplex<f64>>
+// CHECK-NEXT:   %14 = stablehlo.multiply %12, %13 : tensor<274xcomplex<f64>>
 // CHECK-NEXT:   return %14 : tensor<274xcomplex<f64>>
 // CHECK-NEXT: }
 
