@@ -121,7 +121,10 @@ LogicalResult lowerMultiRotateToRotates(enzymexla::MultiRotateOp op,
 
     // Propagate sharding if present
     if (shard) {
-      sdy::setShardings(rotateOp, shard);
+      sdy::TensorShardingAttr shards[1] = {shard.getShardings()[i]};
+      auto shard2 =
+          sdy::TensorShardingPerValueAttr::get(rotateOp.getContext(), shards);
+      sdy::setShardings(rotateOp, shard2);
     }
 
     replacements[i] = rotateOp.getResult();
