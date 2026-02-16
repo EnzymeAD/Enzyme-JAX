@@ -229,8 +229,7 @@ jobs:
           tag: nightly
           name: Nightly Release
           body: "Latest nightly build of Enzyme-JAX."
-          artifacts:
-            - "bazel-bin/enzymexlamlir-opt,bazel-bin/*.whl"
+          artifacts: "bazel-bin/enzymexlamlir-opt,bazel-bin/*.whl"
           allowUpdates: true
           removeArtifacts: true
           replacesArtifacts: true
