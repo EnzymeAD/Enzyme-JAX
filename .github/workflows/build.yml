@@ -221,6 +221,20 @@ jobs:
           path: |
             bazel-testlogs/test/**/test.outputs/*.zip
           retention-days: 90
+          
+      - name: Update Nightly Release
+        uses: ncipollo/release-action@v1
+        if: ${{ !cancelled() && github.ref == 'refs/heads/main' }} 
+        with:
+          tag: nightly
+          name: Nightly Release
+          body: "Latest nightly build of Enzyme-JAX."
+          artifacts:
+            - "bazel-bin/enzymexlamlir-opt,bazel-bin/*.whl"
+          allowUpdates: true
+          removeArtifacts: true
+          replacesArtifacts: true
+          token: ${{ secrets.GITHUB_TOKEN }}
 
   benchmark-summary:
     name: Benchmark Summary
