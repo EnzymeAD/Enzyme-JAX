@@ -355,8 +355,8 @@ def RotateOp : EnzymeXLA_Op<"rotate", [Pure, SameOperandsAndResultType]> {
   }];
   let arguments = (ins
     HLO_Tensor:$operand,
-    SI32Attr:$amount,
-    SI32Attr:$dimension
+    I32Attr:$amount,
+    I32Attr:$dimension
   );
   let hasFolder = 1;
   let results = (outs HLO_Tensor:$result);
@@ -380,9 +380,9 @@ def MultiRotateOp : EnzymeXLA_Op<"multi_rotate", [Pure]> {
   }];
   let arguments = (ins
     HLO_Tensor:$operand,
-    SI32Attr:$dimension,
-    SI32Attr:$left_amount,
-    SI32Attr:$right_amount
+    I32Attr:$dimension,
+    I32Attr:$left_amount,
+    I32Attr:$right_amount
   );
   let results = (outs Variadic<HLO_Tensor>:$results);
   let hasVerifier = 1;
