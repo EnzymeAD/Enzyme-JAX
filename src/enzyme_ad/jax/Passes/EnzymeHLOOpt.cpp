@@ -14855,6 +14855,210 @@ struct IfToSelect final
   }
 };
 
+// Transforms conditional binary operations into binary op with select.
+// Pattern: if(pred) { binop(base, other) } else { base } => binop(base,
+// select(pred, other, identity))
+// This is beneficial especially inside loops where it can enable further
+// optimizations.
+// Handles multiple results - any result that matches the pattern can be
+// hoisted.
+template <typename BinaryOpType>
+struct IfBinaryOpToSelectBinaryOp final
+    : public CheckedOpRewritePattern<stablehlo::IfOp,
+                                     IfBinaryOpToSelectBinaryOp<BinaryOpType>> {
+  using CheckedOpRewritePattern<
+      stablehlo::IfOp,
+      IfBinaryOpToSelectBinaryOp<BinaryOpType>>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::IfOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op->getNumResults() == 0 || op.getTrueBranch().empty() ||
+        op.getFalseBranch().empty())
+      return failure();
+
+    auto pred = op.getPred();
+    auto trueTerm = op.getTrueBranch().front().getTerminator();
+    auto falseTerm = op.getFalseBranch().front().getTerminator();
+    auto trueOperands = trueTerm->getOperands();
+    auto falseOperands = falseTerm->getOperands();
+
+    // Track which results can be hoisted and their replacements
+    SmallVector<std::optional<Value>> hoistedResults(op->getNumResults(),
+                                                     std::nullopt);
+    bool anyHoisted = false;
+
+    rewriter.setInsertionPoint(op);
+
+    for (unsigned i = 0; i < op->getNumResults(); ++i) {
+      Value trueVal = trueOperands[i];
+      Value falseVal = falseOperands[i];
+
+      // Check if values are defined outside the if regions (can be hoisted)
+      bool trueDefinedOutside =
+          &op.getTrueBranch() != trueVal.getParentRegion() &&
+          &op.getFalseBranch() != trueVal.getParentRegion();
+      bool falseDefinedOutside =
+          &op.getTrueBranch() != falseVal.getParentRegion() &&
+          &op.getFalseBranch() != falseVal.getParentRegion();
+
+      // Case 1: true branch has binop, false branch returns base
+      if (Value hoisted = tryHoistBinaryOp(
+              op, pred, trueVal, falseVal, falseDefinedOutside,
+              op.getTrueBranch(), /*isTrueBranch=*/true, rewriter)) {
+        hoistedResults[i] = hoisted;
+        anyHoisted = true;
+        continue;
+      }
+
+      // Case 2: false branch has binop, true branch returns base (symmetric
+      // case)
+      if (Value hoisted = tryHoistBinaryOp(
+              op, pred, falseVal, trueVal, trueDefinedOutside,
+              op.getFalseBranch(), /*isTrueBranch=*/false, rewriter)) {
+        hoistedResults[i] = hoisted;
+        anyHoisted = true;
+        continue;
+      }
+    }
+
+    if (!anyHoisted) {
+      return failure();
+    }
+
+    // If all results can be hoisted, replace the entire if op
+    bool allHoisted = llvm::all_of(hoistedResults,
+                                   [](const auto &v) { return v.has_value(); });
+
+    if (allHoisted) {
+      SmallVector<Value> results;
+      for (auto &v : hoistedResults)
+        results.push_back(*v);
+      rewriter.replaceOp(op, results);
+      return success();
+    }
+
+    // Build a new if op with only the non-hoisted results
+    SmallVector<Type> newResultTypes;
+    SmallVector<unsigned> nonHoistedIndices;
+    for (unsigned i = 0; i < op->getNumResults(); ++i) {
+      if (!hoistedResults[i].has_value()) {
+        newResultTypes.push_back(op.getResult(i).getType());
+        nonHoistedIndices.push_back(i);
+      }
+    }
+
+    auto newIf =
+        stablehlo::IfOp::create(rewriter, op.getLoc(), newResultTypes, pred);
+    newIf.getTrueBranch().takeBody(op.getTrueBranch());
+    newIf.getFalseBranch().takeBody(op.getFalseBranch());
+
+    // Update the terminators to only return non-hoisted values
+    auto newTrueTerm = newIf.getTrueBranch().front().getTerminator();
+    auto newFalseTerm = newIf.getFalseBranch().front().getTerminator();
+
+    SmallVector<Value> newTrueReturns;
+    SmallVector<Value> newFalseReturns;
+    for (unsigned idx : nonHoistedIndices) {
+      newTrueReturns.push_back(newTrueTerm->getOperand(idx));
+      newFalseReturns.push_back(newFalseTerm->getOperand(idx));
+    }
+
+    rewriter.setInsertionPointToEnd(&newIf.getTrueBranch().front());
+    rewriter.replaceOpWithNewOp<stablehlo::ReturnOp>(newTrueTerm,
+                                                     newTrueReturns);
+
+    rewriter.setInsertionPointToEnd(&newIf.getFalseBranch().front());
+    rewriter.replaceOpWithNewOp<stablehlo::ReturnOp>(newFalseTerm,
+                                                     newFalseReturns);
+
+    // Build final results: hoisted values or new if results
+    SmallVector<Value> finalResults(op->getNumResults());
+    unsigned newIfResultIdx = 0;
+    for (unsigned i = 0; i < op->getNumResults(); ++i) {
+      if (hoistedResults[i].has_value()) {
+        finalResults[i] = *hoistedResults[i];
+      } else {
+        finalResults[i] = newIf.getResult(newIfResultIdx++);
+      }
+    }
+
+    rewriter.replaceOp(op, finalResults);
+    return success();
+  }
+
+private:
+  Value tryHoistBinaryOp(stablehlo::IfOp op, Value pred, Value branchVal,
+                         Value otherBranchVal, bool otherBranchDefinedOutside,
+                         Region &branchRegion, bool isTrueBranch,
+                         PatternRewriter &rewriter) const {
+    auto binOp = branchVal.getDefiningOp<BinaryOpType>();
+    if (!binOp) {
+      return nullptr;
+    }
+
+    Value base = nullptr;
+    Value other = nullptr;
+    bool matchLhs = false;
+
+    // Check if one operand of binop matches the other branch return
+    if (binOp.getLhs() == otherBranchVal && otherBranchDefinedOutside) {
+      base = otherBranchVal;
+      other = binOp.getRhs();
+      matchLhs = true;
+    } else if (binOp.getRhs() == otherBranchVal && otherBranchDefinedOutside) {
+      base = otherBranchVal;
+      other = binOp.getLhs();
+      matchLhs = false;
+    }
+
+    if (!base || !other) {
+      return nullptr;
+    }
+
+    bool isCommutative =
+        binOp->template hasTrait<mlir::hlo::OpTrait::IsCommutative>() ||
+        binOp->template hasTrait<mlir::OpTrait::IsCommutative>();
+
+    // For non-commutative ops, we only support hoisting if the identity works.
+    // We assume getIdentityValueForOp returns a right identity.
+    // Thus, for non-commutative ops, the base MUST be the LHS.
+    if (!isCommutative && !matchLhs) {
+      return nullptr;
+    }
+
+    // Check if 'other' can be hoisted (not defined in the current branch)
+    if (&branchRegion == other.getParentRegion()) {
+      return nullptr;
+    }
+
+    auto elemType = cast<ShapedType>(branchVal.getType()).getElementType();
+    Value identity = stablehlo::getIdentityValueForOp<BinaryOpType>(
+        rewriter, op.getLoc(), elemType);
+    if (!identity) {
+      return nullptr;
+    }
+
+    // Broadcast identity to match the type of 'other'
+    auto otherType = cast<RankedTensorType>(other.getType());
+    if (identity.getType() != otherType) {
+      identity = stablehlo::BroadcastInDimOp::create(
+          rewriter, op.getLoc(), otherType, identity,
+          rewriter.getDenseI64ArrayAttr({}));
+    }
+
+    Value trueSelectVal = isTrueBranch ? other : identity;
+    Value falseSelectVal = isTrueBranch ? identity : other;
+
+    Value selected = stablehlo::SelectOp::create(rewriter, op.getLoc(), pred,
+                                                 trueSelectVal, falseSelectVal);
+    if (matchLhs) {
+      return BinaryOpType::create(rewriter, op.getLoc(), base, selected);
+    } else {
+      return BinaryOpType::create(rewriter, op.getLoc(), selected, base);
+    }
+  }
+};
+
 // https://github.com/llvm/llvm-project/blob/74d8f3952c4acf6d57948983d7c5b0d0a7763c28/mlir/lib/Dialect/SCF/IR/SCF.cpp#L2313
 struct SpeculateIfPadToSelect final
     : public CheckedOpRewritePattern<stablehlo::IfOp, SpeculateIfPadToSelect> {
@@ -34073,6 +34277,12 @@ struct EnzymeHLOOptPass
         IfRemoveUnused,
         IfInline,
         IfToSelect,
+        IfBinaryOpToSelectBinaryOp<stablehlo::AddOp>,
+        IfBinaryOpToSelectBinaryOp<stablehlo::MulOp>,
+        IfBinaryOpToSelectBinaryOp<stablehlo::MinOp>,
+        IfBinaryOpToSelectBinaryOp<stablehlo::MaxOp>,
+        IfBinaryOpToSelectBinaryOp<stablehlo::SubtractOp>,
+        IfBinaryOpToSelectBinaryOp<stablehlo::DivOp>,
         IfPredPropagation,
         ImagOpCanon,
         MergeConsecutiveReshapes,
