@@ -27,6 +27,7 @@ def PerfifyDialect : Dialect {
 class PerfifyOp<string mnemonic, list<Trait> traits = []>
     : Op<PerfifyDialect, mnemonic, traits>;
 
-class PerfifyType<string name> : TypeDef<PerfifyDialect, name>; // may need to be modified
-
+class PerfifyType<string name, string type_mnemonic, list<Trait> traits = []> : TypeDef<PerfifyDialect, name, traits>{
+    let mnemonic = type_mnemonic;
+}
 #endif // ENZYME_AD_JAX_DIALECT_PERFIFY_DIALECT_TD

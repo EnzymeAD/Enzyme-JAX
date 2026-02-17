@@ -687,6 +687,7 @@ gentbl_cc_library(
 td_library(
     name = "PerfifyDialectFiles",
     srcs = [
+        "Dialect/Perfify/Types.td",
         "Dialect/Perfify/Dialect.td",
         "Dialect/Perfify/Ops.td",
     ],
@@ -737,6 +738,25 @@ gentbl_cc_library(
     ],
     tblgen = "@llvm-project//mlir:mlir-tblgen",
     td_file = "Dialect/Perfify/Ops.td",
+    deps = [
+        ":PerfifyDialectFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "PerfifyTypesIncGen",
+    tbl_outs = [
+        (
+            ["--gen-typedef-decls"],
+            "Dialect/Perfify/PerfifyTypes.h.inc",
+        ),
+        (
+            ["--gen-typedef-defs"],
+            "Dialect/Perfify/PerfifyTypes.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/Perfify/Types.td",
     deps = [
         ":PerfifyDialectFiles",
     ],
@@ -1156,6 +1176,7 @@ cc_library(
         ":EnzymeXLAPassesIncGen",
         ":PerfifyDialectIncGen",
         ":PerfifyOpsIncGen",
+        ":PerfifyTypesIncGen",
         ":Polymer",
         ":RaisingTransformOps",
         ":RaisingTransformOpsImplIncGen",

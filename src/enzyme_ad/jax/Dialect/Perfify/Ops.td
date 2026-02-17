@@ -6,6 +6,7 @@ include "mlir/IR/OpBase.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "Dialect.td"
+include "Types.td"
 
 // Perfify.cost op
 def CostOp : PerfifyOp<"cost", []> {
@@ -16,6 +17,13 @@ def CostOp : PerfifyOp<"cost", []> {
                   APIntAttr:$cycle_cost);
   let assemblyFormat = "$target_op $cycle_cost attr-dict";
   
+}
+
+// Perfify.constant_cost op
+def ConstantCostOp : PerfifyOp<"constant_cost", []> {
+  let arguments = (ins APIntAttr:$cycle_cost);
+  let assemblyFormat = "$cycle_cost attr-dict"; 
+  let results = (outs CostType:$out_cost);
 }
 
 def ArgOp : PerfifyOp<"arg", []> {
