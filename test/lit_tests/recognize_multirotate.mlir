@@ -197,3 +197,19 @@ func.func @with_unused_value(%arg0: tensor<10x20xf32>) -> (tensor<10x20xf32>, te
 // CHECK:           %[[VAL_1:.*]] = "enzymexla.rotate"(%[[VAL_0]]) <{amount = 2 : si32, dimension = 1 : si32}> : (tensor<10x20xf32>) -> tensor<10x20xf32>
 // CHECK:           return %[[VAL_0]], %[[VAL_1]] : tensor<10x20xf32>, tensor<10x20xf32>
 // CHECK:         }
+
+
+sdy.mesh @mesh = <["x"=2, "y"=2]>
+func.func @recognize_multirotate_negative(%1604: tensor<4x1520x3056xf32>) -> (tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>) {
+    %2706 = "enzymexla.rotate"(%1604) <{amount = 3054 : si32, dimension = 2 : si32}> {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{}, {"y"}, {"x"}]>]>} : (tensor<4x1520x3056xf32>) -> tensor<4x1520x3056xf32>
+    %2707 = "enzymexla.rotate"(%1604) <{amount = 3053 : si32, dimension = 2 : si32}> {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{}, {"y"}, {"x"}]>]>} : (tensor<4x1520x3056xf32>) -> tensor<4x1520x3056xf32>
+    %2710 = "enzymexla.rotate"(%1604) <{amount = 3055 : si32, dimension = 2 : si32}> {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{}, {"y"}, {"x"}]>]>} : (tensor<4x1520x3056xf32>) -> tensor<4x1520x3056xf32>
+    %2715 = "enzymexla.rotate"(%1604) <{amount = 1 : si32, dimension = 2 : si32}> {enzymexla.non_negative = [#enzymexla<guaranteed NOTGUARANTEED>], sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{}, {"y"}, {"x"}]>]>} : (tensor<4x1520x3056xf32>) -> tensor<4x1520x3056xf32>
+    %2719 = "enzymexla.rotate"(%1604) <{amount = 2 : si32, dimension = 2 : si32}> {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{}, {"y"}, {"x"}]>]>} : (tensor<4x1520x3056xf32>) -> tensor<4x1520x3056xf32>
+    return %2706, %2707, %2710, %2715, %2719 : tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>
+}
+
+// CHECK-LABEL:   func.func @recognize_multirotate_negative
+// CHECK-SAME:         (%[[ARG:.+]]: tensor<4x1520x3056xf32>) -> (
+// CHECK:          %{{.*}}:6 = "enzymexla.multi_rotate"(%arg0) <{dimension = 2 : si32, left_amount = 2 : si32, right_amount = 3 : si32}> {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{}, {"y"}, {"x"}]>, <@mesh, [{}, {"y"}, {"x"}]>, <@mesh, [{}, {"y"}, {"x"}]>, <@mesh, [{}, {"y"}, {"x"}]>, <@mesh, [{}, {"y"}, {"x"}]>, <@mesh, [{}, {"y"}, {"x"}]>]>} : (tensor<4x1520x3056xf32>) -> (tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>)
+// CHECK-NOT:      enzymexla.rotate
