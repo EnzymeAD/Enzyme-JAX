@@ -224,7 +224,7 @@ jobs:
           
       - name: Update Nightly Release
         uses: ncipollo/release-action@v1
-        if: ${{ !cancelled() && github.ref == 'refs/heads/main' }} 
+        if: ${{ !cancelled() && github.ref == 'refs/heads/main' && matrix.os == 'linux-x86-n2-32' }} 
         with:
           tag: nightly
           name: Nightly Release

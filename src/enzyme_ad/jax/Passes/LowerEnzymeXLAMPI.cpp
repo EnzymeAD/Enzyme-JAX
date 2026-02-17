@@ -915,7 +915,7 @@ struct MPIIsendOpLowering : public OpRewritePattern<enzymexla::MPIIsendOp> {
       // Create a constant tensor to hold request
       auto tensorType = RankedTensorType::get({}, i32Type);
       auto constantAttr =
-          DenseIntElementsAttr::get(tensorType, ArrayRef<int64_t>{-1});
+          DenseIntElementsAttr::get(tensorType, ArrayRef<int32_t>{-1});
       Value constantTensor = rewriter.create<stablehlo::ConstantOp>(
           op.getLoc(), tensorType, constantAttr);
 
@@ -1101,7 +1101,7 @@ struct MPIIrecvOpLowering : public OpRewritePattern<enzymexla::MPIIrecvOp> {
       // Create a constant tensor to hold request
       auto tensorType = RankedTensorType::get({}, i32Type);
       auto constantAttr =
-          DenseIntElementsAttr::get(tensorType, ArrayRef<int64_t>{-1});
+          DenseIntElementsAttr::get(tensorType, ArrayRef<int32_t>{-1});
       Value constantTensor = rewriter.create<stablehlo::ConstantOp>(
           op.getLoc(), tensorType, constantAttr);
 
