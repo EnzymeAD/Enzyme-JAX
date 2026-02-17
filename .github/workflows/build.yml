@@ -223,13 +223,13 @@ jobs:
           retention-days: 90
           
       - name: Extract opt and debug enzymexlamlir-opt for release
-        uses: ncipollo/release-action@v1
         if: ${{ !cancelled() && github.ref == 'refs/heads/main' && matrix.os == 'linux-x86-n2-32' }} 
         run: |
           bazel build $BAZEL_FLAGS --color=yes //:enzymexlamlir-opt --test_output=errors
           cp bazel-bin/enzymexlamlir-opt enzymexlamlir-opt
           bazel build $BAZEL_FLAGS --color=yes -c dbg //:enzymexlamlir-opt --test_output=errors
           cp bazel-bin/enzymexlamlir-opt enzymexlamlir-opt-dbg
+          
       - name: Update Nightly Release
         uses: ncipollo/release-action@v1
         if: ${{ !cancelled() && github.ref == 'refs/heads/main' && matrix.os == 'linux-x86-n2-32' }} 
