@@ -2322,7 +2322,8 @@ struct MultiRotateSpmdOptimize
       total_mesh_size *= meshAttr.getAxisSize(dimSharding.getName());
     }
 
-    int64_t shard_size = (full_size + total_mesh_size - 1) / total_mesh_size;
+    const int64_t shard_size =
+        (full_size + total_mesh_size - 1) / total_mesh_size;
     int64_t padding = shard_size * total_mesh_size - full_size;
 
     int64_t left_amount = rotate.getLeftAmount();
@@ -2362,14 +2363,37 @@ struct MultiRotateSpmdOptimize
       sdy::setSharding(input, rotateSharding);
     }
 
-    SmallVector<StringAttr> manualAxes;
     // localShape is derived from shard_size, which is correct for padded input
     SmallVector<int64_t> localShape(rotateShape.begin(), rotateShape.end());
     // We calculated shard_size earlier using ceil
     localShape[rotateDimension] = shard_size;
 
-    updateManualComputationAxesShape(rotateSharding, rewriter, rotate,
-                                     manualAxes, localShape, rotateDimension);
+    SmallVector<StringAttr> manualAxes;
+
+    if (false) {
+      // TODO this is legal, but can cause some downstream xla gather issues
+      // that merit further investigation
+      localShape[rotateDimension] /= total_mesh_size;
+
+      for (auto axis :
+           rotateSharding.getDimShardings()[rotateDimension].getAxes()) {
+        manualAxes.push_back(rewriter.getStringAttr(axis.getName()));
+      }
+    } else {
+      updateManualComputationAxesShape(rotateSharding, rewriter, rotate,
+                                       manualAxes, localShape, rotateDimension);
+      bool nonDivisible = false;
+      for (size_t i = 0; i < rotateShape.size(); i++) {
+        if (i == rotateDimension)
+          continue;
+        if (rotateShape[i] % localShape[i] != 0) {
+          nonDivisible = true;
+          break;
+        }
+      }
+      if (nonDivisible)
+        return lowerMultiRotateToRotates(rotate, rewriter);
+    }
 
     // Create Manual Computation
     SmallVector<Value> manualOps = {input};
