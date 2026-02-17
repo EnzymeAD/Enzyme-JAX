@@ -408,8 +408,8 @@ def MultiSliceOp : EnzymeXLA_Op<"multi_slice", [Pure]> {
     DenseI64ArrayAttr:$start_indices,
     DenseI64ArrayAttr:$limit_indices,
     DenseI64ArrayAttr:$strides,
-    SI32Attr:$dimension,
-    SI32Attr:$amount
+    I32Attr:$dimension,
+    I32Attr:$amount
   );
   let results = (outs Variadic<HLO_Tensor>:$results);
   let hasVerifier = 1;

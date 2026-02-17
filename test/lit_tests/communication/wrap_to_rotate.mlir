@@ -17,8 +17,8 @@ module {
 // CHECK-NEXT:     %c_0 = stablehlo.constant dense<2> : tensor<14xi32>
 // CHECK-NEXT:     %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
 // CHECK-NEXT:     %0 = stablehlo.pad %arg0, %cst, low = [2], high = [2], interior = [0] : (tensor<10xf32>, tensor<f32>) -> tensor<14xf32>
-// CHECK-NEXT:     %1 = "enzymexla.rotate"(%0) <{amount = 4 : si32, dimension = 0 : si32}> : (tensor<14xf32>) -> tensor<14xf32>
-// CHECK-NEXT:     %2 = "enzymexla.rotate"(%0) <{amount = 10 : si32, dimension = 0 : si32}> : (tensor<14xf32>) -> tensor<14xf32>
+// CHECK-NEXT:     %1 = "enzymexla.rotate"(%0) <{amount = 4 : i32, dimension = 0 : i32}> : (tensor<14xf32>) -> tensor<14xf32>
+// CHECK-NEXT:     %2 = "enzymexla.rotate"(%0) <{amount = 10 : i32, dimension = 0 : i32}> : (tensor<14xf32>) -> tensor<14xf32>
 // CHECK-NEXT:     %3 = stablehlo.iota dim = 0 : tensor<14xi32>
 // CHECK-NEXT:     %4 = stablehlo.compare  LT, %3, %c_0 : (tensor<14xi32>, tensor<14xi32>) -> tensor<14xi1>
 // CHECK-NEXT:     %5 = stablehlo.compare  LT, %3, %c : (tensor<14xi32>, tensor<14xi32>) -> tensor<14xi1>
@@ -32,8 +32,8 @@ module {
 // CHECK-NEXT:     %c_0 = stablehlo.constant dense<3> : tensor<15xi32>
 // CHECK-NEXT:     %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
 // CHECK-NEXT:     %0 = stablehlo.pad %arg0, %cst, low = [3], high = [2], interior = [0] : (tensor<10xf32>, tensor<f32>) -> tensor<15xf32>
-// CHECK-NEXT:     %1 = "enzymexla.rotate"(%0) <{amount = 5 : si32, dimension = 0 : si32}> : (tensor<15xf32>) -> tensor<15xf32>
-// CHECK-NEXT:     %2 = "enzymexla.rotate"(%0) <{amount = 10 : si32, dimension = 0 : si32}> : (tensor<15xf32>) -> tensor<15xf32>
+// CHECK-NEXT:     %1 = "enzymexla.rotate"(%0) <{amount = 5 : i32, dimension = 0 : i32}> : (tensor<15xf32>) -> tensor<15xf32>
+// CHECK-NEXT:     %2 = "enzymexla.rotate"(%0) <{amount = 10 : i32, dimension = 0 : i32}> : (tensor<15xf32>) -> tensor<15xf32>
 // CHECK-NEXT:     %3 = stablehlo.iota dim = 0 : tensor<15xi32>
 // CHECK-NEXT:     %4 = stablehlo.compare  LT, %3, %c_0 : (tensor<15xi32>, tensor<15xi32>) -> tensor<15xi1>
 // CHECK-NEXT:     %5 = stablehlo.compare  LT, %3, %c : (tensor<15xi32>, tensor<15xi32>) -> tensor<15xi1>
