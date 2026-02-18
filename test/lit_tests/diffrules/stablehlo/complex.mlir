@@ -19,8 +19,8 @@ func.func @main(%a : tensor<2xf32>, %b : tensor<2xf32>) -> tensor<2xcomplex<f32>
 // REVERSE-NEXT:    %1 = chlo.conj %0 : tensor<2xcomplex<f32>> -> tensor<2xcomplex<f32>>
 // REVERSE-NEXT:    %2 = stablehlo.real %1 : (tensor<2xcomplex<f32>>) -> tensor<2xf32>
 // REVERSE-NEXT:    %3 = stablehlo.add %cst_0, %2 : tensor<2xf32>
-// REVERSE-NEXT:    %4 = stablehlo.negate %1 : tensor<2xcomplex<f32>>
-// REVERSE-NEXT:    %5 = stablehlo.imag %4 : (tensor<2xcomplex<f32>>) -> tensor<2xf32>
+// REVERSE-NEXT:    %4 = stablehlo.imag %1 : (tensor<2xcomplex<f32>>) -> tensor<2xf32>
+// REVERSE-NEXT:    %5 = stablehlo.negate %4 : tensor<2xf32>
 // REVERSE-NEXT:    %6 = stablehlo.add %cst_0, %5 : tensor<2xf32>
 // REVERSE-NEXT:    return %3, %6 : tensor<2xf32>, tensor<2xf32>
 // REVERSE-NEXT:  }
