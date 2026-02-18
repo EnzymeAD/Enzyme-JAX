@@ -57,7 +57,7 @@ func.func @dgpu_wrapper() {
 // CHECK:               %[[MULF_2:.*]] = arith.mulf %[[LOAD_2]], %[[LOAD_1]] : f32
 // CHECK:               %[[ADDF_0:.*]] = arith.addf %[[MULF_1]], %[[MULF_2]] : f32
 // CHECK:               %[[APPLY_2:.*]] = affine.apply #[[$ATTR_0]](%[[VAL_6]], %[[VAL_7]])
-// CHECK:               %[[ATOMIC_RMW_0:.*]] = memref.atomic_rmw addf %[[ADDF_0]], %[[VAL_0]]{{\[}}%[[APPLY_2]]] : (f32, memref<?xf32>) -> f32
+// CHECK:               %[[ATOMIC_RMW_0:.*]] = enzyme.atomic_rmw addf %[[ADDF_0]], %[[VAL_0]]{{\[}}%[[APPLY_2]]] monotonic : (f32, memref<?xf32>) -> f32
 // CHECK:             }
 // CHECK:             "enzymexla.polygeist_yield"() : () -> ()
 // CHECK:           }) : (index, index, index, index, index, index) -> index
