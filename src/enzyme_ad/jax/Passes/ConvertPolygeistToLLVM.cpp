@@ -51,6 +51,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/ImplicitLocOpBuilder.h"
+#include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Target/LLVMIR/Import.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -557,6 +558,14 @@ public:
   }
 };
 
+static func::FuncOp lookupFunc(Operation *op, StringRef funcName) {
+  if (auto gpuModule = op->getParentOfType<gpu::GPUModuleOp>()) {
+    return gpuModule.lookupSymbol<func::FuncOp>(funcName);
+  }
+  auto moduleOp = op->getParentOfType<ModuleOp>();
+  return moduleOp.lookupSymbol<func::FuncOp>(funcName);
+}
+
 /// Pattern for lowering heap allocations via malloc.
 struct CAllocOpLowering : public AllocLikeOpLowering<memref::AllocOp> {
 public:
@@ -565,7 +574,7 @@ public:
   LogicalResult
   matchAndRewrite(memref::AllocOp allocOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto module = allocOp->getParentOfType<ModuleOp>();
+    Operation *module = allocOp->getParentWithTrait<OpTrait::SymbolTable>();
     Location loc = allocOp.getLoc();
     MemRefType originalType = allocOp.getType();
     auto convertedType = dyn_cast_or_null<LLVM::LLVMPointerType>(
@@ -595,7 +604,7 @@ public:
     getMemRefDescriptorSizes(loc, originalType, adaptor.getDynamicSizes(),
                              rewriter, shape, strides, sizeBytes);
 
-    if (auto F = module.lookupSymbol<mlir::func::FuncOp>("malloc")) {
+    if (auto F = lookupFunc(allocOp, "malloc")) {
       Value allocated =
           func::CallOp::create(rewriter, loc, F, sizeBytes).getResult(0);
       rewriter.replaceOpWithNewOp<enzymexla::Memref2PointerOp>(
@@ -626,8 +635,8 @@ public:
   LogicalResult
   matchAndRewrite(memref::DeallocOp deallocOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto module = deallocOp->getParentOfType<ModuleOp>();
-    if (auto F = module.lookupSymbol<mlir::func::FuncOp>("free")) {
+    Operation *module = deallocOp->getParentWithTrait<OpTrait::SymbolTable>();
+    if (auto F = lookupFunc(deallocOp, "free")) {
       Value casted = enzymexla::Pointer2MemrefOp::create(
           rewriter, deallocOp->getLoc(),
           MemRefType::get({-1}, rewriter.getI8Type()), adaptor.getMemref());
@@ -3103,6 +3112,35 @@ private:
   }
 };
 
+// TODO(jacob): probably should be its own pass, just testing to see if this
+// fixes the issue currently
+template <typename IntrOp>
+class AddIntrinsicBody : public OpRewritePattern<LLVM::LLVMFuncOp> {
+private:
+  StringAttr funcName;
+
+public:
+  AddIntrinsicBody(MLIRContext *context, StringRef funcNameStr)
+      : OpRewritePattern<LLVM::LLVMFuncOp>(context),
+        funcName(StringAttr::get(context, funcNameStr)) {}
+
+  LogicalResult matchAndRewrite(LLVM::LLVMFuncOp funcOp,
+                                PatternRewriter &rewriter) const override {
+    if (funcOp.getCallableRegion())
+      return failure();
+    if (!funcOp.getName().starts_with(funcName))
+      return failure();
+
+    OpBuilder::InsertionGuard guard(rewriter);
+    Block *entryBlock = funcOp.addEntryBlock(rewriter);
+    rewriter.setInsertionPointToStart(entryBlock);
+    auto mathOp =
+        IntrOp::create(rewriter, funcOp.getLoc(), entryBlock->getArgument(0));
+    LLVM::ReturnOp::create(rewriter, funcOp.getLoc(), mathOp.getResult());
+    return success();
+  }
+};
+
 class ConvertGPUKernelAddressOp
     : public ConvertOpToGpuRuntimeCallPattern<enzymexla::GPUKernelAddressOp> {
 public:
@@ -4700,6 +4738,17 @@ struct ConvertPolygeistToLLVMPass
       return;
     }
 
+    {
+      RewritePatternSet patterns(&getContext());
+      // patterns.insert<AddIntrinsicBody<LLVM::SqrtOp>>(&getContext(),
+      //                                                 "__nv_sqrt");
+      // patterns.insert<AddIntrinsicBody<LLVM::CosOp>>(&getContext(),
+      // "__nv_cos");
+      if (failed(applyPatternsGreedily(m, std::move(patterns)))) {
+        llvm::errs() << " failed to add intrinsic bodies\n";
+        return signalPassFailure();
+      }
+    }
     {
       RewritePatternSet patterns(&getContext());
       patterns.insert<ReconcileUnrealizedPointerCasts>(&getContext());
