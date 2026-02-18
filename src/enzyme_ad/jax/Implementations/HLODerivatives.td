@@ -1086,7 +1086,7 @@ def : HLOInactiveOp<"CompareOp">;
 
 def : HLODerivative<"ComplexOp", (Op $re, $im), [
   (Real (DiffeRet)),
-  (Imag (DiffeRet)),
+  (Neg (Imag (DiffeRet))),
 ], (Complex (Shadow $re), (Shadow $im))>;
 
 def : HLOMemoryIdentityOp<"ConcatenateOp", [], [-1]>;
