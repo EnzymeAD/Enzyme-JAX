@@ -489,6 +489,8 @@ class AutoDiffWhileRev
   struct ReverseModeInfo {
     enum ReverseMode mode = UNKNOWN;
     WhileLoopInfo info;
+    int64_t checkpointPeriod =
+        0; // Used for CONSTANT_CHECKPOINTING (the M value)
 
     ReverseModeInfo(stablehlo::WhileOp op) : info(op) {}
   };
@@ -501,10 +503,27 @@ class AutoDiffWhileRev
       const char *checkpointAttrName = "enzymexla.enable_checkpointing";
       auto enableCheckpointing =
           orig->getAttrOfType<BoolAttr>(checkpointAttrName);
-      if (enableCheckpointing && enableCheckpointing.getValue())
+      const char *periodicCheckpointAttrName = "enzymexla.checkpoint_period";
+      auto checkpointPeriod =
+          orig->getAttrOfType<IntegerAttr>(periodicCheckpointAttrName);
+
+      if (enableCheckpointing && enableCheckpointing.getValue()) {
+        // CONSTANT_CHECKPOINTING: use provided period or default to sqrt(N).
         revInfo.mode = CONSTANT_CHECKPOINTING;
-      else
+        if (checkpointPeriod && checkpointPeriod.getInt() > 0) {
+          revInfo.checkpointPeriod = checkpointPeriod.getInt();
+        } else {
+          // Default to sqrt checkpointing when no period is specified
+          int64_t numIters = revInfo.info.getConstantNumIters();
+          revInfo.checkpointPeriod = std::sqrt(numIters);
+        }
+      } else if (checkpointPeriod && checkpointPeriod.getInt() > 0) {
+        // Explicit period specified without enable_checkpointing
+        revInfo.mode = CONSTANT_CHECKPOINTING;
+        revInfo.checkpointPeriod = checkpointPeriod.getInt();
+      } else {
         revInfo.mode = CONSTANT;
+      }
     }
 
     return revInfo;
@@ -516,6 +535,13 @@ class AutoDiffWhileRev
     return makeForLoop(builder, loc, makeI64Constant(loc, builder, start),
                        makeI64Constant(loc, builder, limit),
                        makeI64Constant(loc, builder, step), operands);
+  }
+
+  static stablehlo::WhileOp makeForLoop(OpBuilder &builder, Location loc,
+                                        int64_t start, Value limit,
+                                        int64_t step, ValueRange operands) {
+    return makeForLoop(builder, loc, makeI64Constant(loc, builder, start),
+                       limit, makeI64Constant(loc, builder, step), operands);
   }
 
   static stablehlo::WhileOp makeForLoop(OpBuilder &builder, Location loc,
@@ -551,6 +577,7 @@ class AutoDiffWhileRev
     return whileOp;
   }
 
+  // Reverse pass for CONSTANT_CHECKPOINTING (explicit period or default sqrt).
   static LogicalResult reverseWithCheckpointing(stablehlo::WhileOp orig,
                                                 struct ReverseModeInfo revInfo,
                                                 OpBuilder &builder,
@@ -558,13 +585,17 @@ class AutoDiffWhileRev
                                                 SmallVector<Value> caches,
                                                 ArrayRef<bool> operandsActive) {
     int64_t numIters = revInfo.info.getConstantNumIters();
-    int64_t nInner = std::sqrt(numIters);
-    int64_t nOuter = nInner;
-    if (nInner * nOuter != revInfo.info.getConstantNumIters()) {
-      orig->emitError()
-          << "Non square number of iterations for checkpointing, nInner="
-          << nInner << " nOuter=" << nOuter
-          << " iters=" << revInfo.info.getConstantNumIters() << "\n";
+    int64_t nInner, nOuter;
+
+    // Use checkpointPeriod (defaults to sqrt(numIters) if not specified).
+    nInner = revInfo.checkpointPeriod;
+    nOuter = (numIters + nInner - 1) / nInner; // ceil(N/M)
+
+    // Validate that nInner * nOuter >= numIters (should be true due to ceil)
+    if (nInner * nOuter < numIters) {
+      orig->emitError() << "Invalid checkpoint period calculation, nInner="
+                        << nInner << " nOuter=" << nOuter
+                        << " iters=" << numIters << "\n";
       return failure();
     }
 
@@ -592,13 +623,39 @@ class AutoDiffWhileRev
     Block *revOuterBody = &revOuter.getBody().front();
     builder.setInsertionPointToStart(revOuterBody);
 
+    // outerStep = nOuter - 1 - outerIdx (reverse iteration)
     Value outerStep = stablehlo::SubtractOp::create(
         builder, orig.getLoc(),
         makeI64Constant(orig.getLoc(), builder, nOuter - 1),
         revOuterBody->getArgument(0));
+    // outerStart = nInner * outerStep (starting iteration of this block)
     Value outerStart = stablehlo::MulOp::create(
         builder, orig.getLoc(), makeI64Constant(orig.getLoc(), builder, nInner),
         outerStep);
+
+    // Compute the actual number of iterations for this block
+    // actualInner = min(nInner, numIters - outerStart)
+    // For CONSTANT_CHECKPOINTING with default sqrt scheme, nInner * nOuter ==
+    // numIters, so actualInner is always nInner. For CONSTANT_CHECKPOINTING, if
+    // numIters is evenly divisible by nInner, actualInner is also always
+    // nInner. Using a static value enables static tensor sizes in the generated
+    // code.
+    Value actualInner;
+    // useStaticInner: true when numIters is exactly divisible by nInner
+    // (this happens when checkpointPeriod divides numIters evenly, or when
+    // using sqrt with perfect square)
+    bool useStaticInner =
+        (revInfo.mode == CONSTANT_CHECKPOINTING && numIters % nInner == 0);
+    if (useStaticInner) {
+      actualInner = makeI64Constant(orig.getLoc(), builder, nInner);
+    } else {
+      Value remainingIters = stablehlo::SubtractOp::create(
+          builder, orig.getLoc(),
+          makeI64Constant(orig.getLoc(), builder, numIters), outerStart);
+      actualInner = stablehlo::MinOp::create(
+          builder, orig.getLoc(),
+          makeI64Constant(orig.getLoc(), builder, nInner), remainingIters);
+    }
 
     Value lastCache = nullptr;
 
@@ -626,21 +683,28 @@ class AutoDiffWhileRev
       carried.push_back(cacheVals[i]);
     }
 
-    auto revInner = makeForLoop(builder, orig.getLoc(), 0, nInner, 1, carried);
+    // Recompute forward within this block
+    auto revInner =
+        makeForLoop(builder, orig.getLoc(), 0, actualInner, 1, carried);
     Block *revInnerBody = &revInner.getBody().front();
 
     revInner->setAttrs(orig->getAttrs());
     revInner->removeAttr("enzymexla.enable_checkpointing");
+    revInner->removeAttr("enzymexla.checkpoint_period");
 
-    auto revLoop = makeForLoop(builder, orig.getLoc(), 0, nInner, 1,
+    // Reverse pass within this block
+    auto revLoop = makeForLoop(builder, orig.getLoc(), 0, actualInner, 1,
                                revOuterBody->getArguments().drop_front());
     Block *revLoopBody = &revLoop.getBody().front();
 
     builder.setInsertionPointToStart(revInnerBody);
 
+    // innerIV iterates in reverse: actualInner - 1 - idx
     Value innerIV = stablehlo::SubtractOp::create(
         builder, orig.getLoc(),
-        makeI64Constant(orig.getLoc(), builder, nInner - 1),
+        stablehlo::SubtractOp::create(
+            builder, orig.getLoc(), actualInner,
+            makeI64Constant(orig.getLoc(), builder, 1)),
         revInnerBody->getArgument(0));
 
     Value currentStep =
@@ -954,102 +1018,129 @@ public:
         // for any value that is a reference from the outside we can hoist the
         // push/pop from outside the outer really.
 
-        if (getReverseMode(orig).mode == CONSTANT_CHECKPOINTING) {
+        auto revModeInfo = getReverseMode(orig);
+        if (revModeInfo.mode == CONSTANT_CHECKPOINTING) {
+          // CONSTANT_CHECKPOINTING splits loop into outer and inner loops:
+          // - nInner = checkpointPeriod (defaults to sqrt(N) if not specified)
+          // - nOuter = ceil(N/nInner)
           OpBuilder builder(newWhile);
 
           SetVector<Value> outsideRefs;
           getUsedValuesDefinedAbove(orig->getRegions(), outsideRefs);
           SmallVector<Value> caches;
 
-          // sqrt scheme
-          int64_t nInner = std::sqrt(info.getConstantNumIters());
-          int64_t nOuter = nInner;
+          int64_t numIters = info.getConstantNumIters();
+          int64_t nInner, nOuter;
 
-          if (nInner * nOuter != info.getConstantNumIters()) {
+          // Use checkpointPeriod (defaults to sqrt(numIters) if not specified).
+          nInner = revModeInfo.checkpointPeriod;
+          nOuter = (numIters + nInner - 1) / nInner; // ceil(N/M)
+
+          // Validate that nInner * nOuter >= numIters (should be true due to
+          // ceil)
+          if (nInner * nOuter < numIters) {
             orig->emitError()
-                << "Non square number of iterations for checkpointing, nInner="
-                << nInner << " nOuter=" << nOuter
-                << " iters=" << info.getConstantNumIters() << "\n";
-          } else {
-            auto outer = makeForLoop(builder, orig->getLoc(), 0, nOuter, 1,
-                                     newWhile->getOperands().slice(
-                                         1, newWhile->getNumOperands() - 1));
-
-            Block *outerBody = &outer.getBody().front();
-            builder.setInsertionPointToStart(outerBody);
-
-            Value outerIV = stablehlo::MulOp::create(
-                builder, newWhile.getLoc(), outerBody->getArgument(0),
-                makeI64Constant(newWhile.getLoc(), builder, nOuter));
-
-            for (auto arg : outerBody->getArguments().slice(1)) {
-              caches.push_back(gutils->initAndPushCache(arg, builder));
-            }
-
-            builder.setInsertionPoint(outer);
-
-            for (auto ref : outsideRefs) {
-              caches.push_back(gutils->initAndPushCache(
-                  gutils->getNewFromOriginal(ref), builder));
-            }
-
-            builder.setInsertionPointAfterValue(outerIV);
-
-            SmallVector<Value> operands(
-                outerBody->getArguments().slice(1).begin(),
-                outerBody->getArguments().slice(1).end());
-            auto inner =
-                makeForLoop(builder, orig->getLoc(), 0, nInner, 1, operands);
-
-            outerBody->getTerminator()->setOperands(
-                1, inner.getNumResults() - 1,
-                inner.getResults().slice(1, inner.getNumResults() - 1));
-
-            Block *innerBody = &inner.getBody().front();
-            Block *oldInnerBody = &newWhile.getBody().front();
-            builder.setInsertionPointToStart(innerBody);
-
-            IRMapping mapping;
-
-            for (auto [oldArg, newArg] : llvm::zip_equal(
-                     oldInnerBody->getArguments(), innerBody->getArguments())) {
-              mapping.map(oldArg, newArg);
-            }
-
-            Value oldIV = oldInnerBody->getArgument(0);
-            Value newIV = stablehlo::AddOp::create(
-                builder, oldIV.getLoc(), innerBody->getArgument(0), outerIV);
-
-            mapping.map(oldIV, newIV);
-
-            for (Operation &innerOp : oldInnerBody->without_terminator()) {
-              builder.clone(innerOp, mapping);
-            }
-
-            SmallVector<Value> newReturns;
-            for (auto oldRes :
-                 oldInnerBody->getTerminator()->getOperands().slice(
-                     1, oldInnerBody->getTerminator()->getNumOperands() - 1)) {
-              newReturns.push_back(mapping.lookupOrDefault(oldRes));
-            }
-            Operation *term = innerBody->getTerminator();
-            term->setOperands(1, term->getNumOperands() - 1, newReturns);
-
-            builder.setInsertionPointAfter(outer);
-            SmallVector<Value> newResults{makeI64Constant(
-                oldIV.getLoc(), builder, *info.getConstantLimit())};
-            newResults.append(
-                outer->getResults()
-                    .slice(1, outer->getNumResults() - 1)
-                    .begin(),
-                outer->getResults().slice(1, outer->getNumResults() - 1).end());
-
-            gutils->replaceOrigOpWith(orig, newResults);
-            gutils->erase(newWhile);
-            gutils->originalToNewFnOps[orig] = outer;
-
-            return caches;
+                << "Invalid checkpoint period calculation, nInner=" << nInner
+                << " nOuter=" << nOuter << " iters=" << numIters << "\n";
+            return {};
           }
+
+          auto outer = makeForLoop(
+              builder, orig->getLoc(), 0, nOuter, 1,
+              newWhile->getOperands().slice(1, newWhile->getNumOperands() - 1));
+
+          Block *outerBody = &outer.getBody().front();
+          builder.setInsertionPointToStart(outerBody);
+
+          Value outerIV = stablehlo::MulOp::create(
+              builder, newWhile.getLoc(), outerBody->getArgument(0),
+              makeI64Constant(newWhile.getLoc(), builder, nInner));
+
+          for (auto arg : outerBody->getArguments().slice(1)) {
+            caches.push_back(gutils->initAndPushCache(arg, builder));
+          }
+
+          builder.setInsertionPoint(outer);
+
+          for (auto ref : outsideRefs) {
+            caches.push_back(gutils->initAndPushCache(
+                gutils->getNewFromOriginal(ref), builder));
+          }
+
+          builder.setInsertionPointAfterValue(outerIV);
+
+          SmallVector<Value> operands(
+              outerBody->getArguments().slice(1).begin(),
+              outerBody->getArguments().slice(1).end());
+
+          // Compute the actual limit for this inner loop iteration
+          // limit = min(nInner, numIters - outerIV)
+          // If numIters is evenly divisible by nInner, innerLimit is always
+          // nInner. Using a static value enables static tensor sizes in the
+          // generated code.
+          Value innerLimit;
+          bool useStaticInner = (revModeInfo.mode == CONSTANT_CHECKPOINTING &&
+                                 numIters % nInner == 0);
+          if (useStaticInner) {
+            innerLimit = makeI64Constant(newWhile.getLoc(), builder, nInner);
+          } else {
+            Value remainingIters = stablehlo::SubtractOp::create(
+                builder, newWhile.getLoc(),
+                makeI64Constant(newWhile.getLoc(), builder, numIters), outerIV);
+            innerLimit = stablehlo::MinOp::create(
+                builder, newWhile.getLoc(),
+                makeI64Constant(newWhile.getLoc(), builder, nInner),
+                remainingIters);
+          }
+
+          auto inner =
+              makeForLoop(builder, orig->getLoc(), 0, innerLimit, 1, operands);
+
+          outerBody->getTerminator()->setOperands(
+              1, inner.getNumResults() - 1,
+              inner.getResults().slice(1, inner.getNumResults() - 1));
+
+          Block *innerBody = &inner.getBody().front();
+          Block *oldInnerBody = &newWhile.getBody().front();
+          builder.setInsertionPointToStart(innerBody);
+
+          IRMapping mapping;
+
+          for (auto [oldArg, newArg] : llvm::zip_equal(
+                   oldInnerBody->getArguments(), innerBody->getArguments())) {
+            mapping.map(oldArg, newArg);
+          }
+
+          Value oldIV = oldInnerBody->getArgument(0);
+          Value newIV = stablehlo::AddOp::create(
+              builder, oldIV.getLoc(), innerBody->getArgument(0), outerIV);
+
+          mapping.map(oldIV, newIV);
+
+          for (Operation &innerOp : oldInnerBody->without_terminator()) {
+            builder.clone(innerOp, mapping);
+          }
+
+          SmallVector<Value> newReturns;
+          for (auto oldRes : oldInnerBody->getTerminator()->getOperands().slice(
+                   1, oldInnerBody->getTerminator()->getNumOperands() - 1)) {
+            newReturns.push_back(mapping.lookupOrDefault(oldRes));
+          }
+          Operation *term = innerBody->getTerminator();
+          term->setOperands(1, term->getNumOperands() - 1, newReturns);
+
+          builder.setInsertionPointAfter(outer);
+          SmallVector<Value> newResults{makeI64Constant(
+              oldIV.getLoc(), builder, *info.getConstantLimit())};
+          newResults.append(
+              outer->getResults().slice(1, outer->getNumResults() - 1).begin(),
+              outer->getResults().slice(1, outer->getNumResults() - 1).end());
+
+          gutils->replaceOrigOpWith(orig, newResults);
+          gutils->erase(newWhile);
+          gutils->originalToNewFnOps[orig] = outer;
+
+          return caches;
         }
 
         return {};
@@ -3060,6 +3151,11 @@ public:
       auto newType =
           cast<ShapedType>(cast<AutoDiffTypeInterface>(cinfo.cachedType())
                                .getShadowType(numIters));
+      // dynamic_update_slice requires operand rank >= 1. For scalar cache use
+      // 1D.
+      if (newType.getRank() == 0) {
+        newType = RankedTensorType::get({numIters}, newType.getElementType());
+      }
 
       Value initValue;
       if (info.isConstant()) {
@@ -3241,6 +3337,11 @@ public:
       auto newType =
           cast<ShapedType>(cast<AutoDiffTypeInterface>(info.cachedType())
                                .getShadowType(numIters));
+      // Must match step 3: use 1D cache type for scalar so dynamic_update_slice
+      // is valid.
+      if (newType.getRank() == 0) {
+        newType = RankedTensorType::get({numIters}, newType.getElementType());
+      }
       enzyme::InitOp newInit = ({
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPoint(info.initOp);

@@ -2254,6 +2254,11 @@ def ReduceUnusedMultiRotate : EnzymeHLOPatternOp<
   let patterns = ["ReduceUnusedMultiRotate"];
 }
 
+def UseMultiRotateNeutralResult : EnzymeHLOPatternOp<
+    "use_multirotate_neutral_result"> {
+  let patterns = ["UseMultiRotateNeutralResult"];
+}
+
 def SelectPad : EnzymeHLOPatternOp<
     "select_pad"> {
   let patterns = ["SelectPad"];

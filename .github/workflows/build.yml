@@ -221,6 +221,25 @@ jobs:
           path: |
             bazel-testlogs/test/**/test.outputs/*.zip
           retention-days: 90
+          
+      - name: Extract opt and debug enzymexlamlir-opt for release
+        if: ${{ !cancelled() && github.ref == 'refs/heads/main' && matrix.os == 'linux-x86-n2-32' }} 
+        run: |
+          bazel build $BAZEL_FLAGS --color=yes //:enzymexlamlir-opt @xla//xla/hlo/tools:hlo-translate --test_output=errors
+          cp bazel-bin/enzymexlamlir-opt enzymexlamlir-opt
+          cp bazel-bin/external/xla/xla/hlo/tools/hlo-translate hlo-translate 
+      - name: Update Nightly Release
+        uses: ncipollo/release-action@v1
+        if: ${{ !cancelled() && github.ref == 'refs/heads/main' && matrix.os == 'linux-x86-n2-32' }} 
+        with:
+          tag: nightly
+          name: Nightly Release
+          body: "Latest nightly build of Enzyme-JAX."
+          artifacts: "enzymexlamlir-opt,hlo-translate,bazel-bin/*.whl"
+          allowUpdates: true
+          removeArtifacts: true
+          replacesArtifacts: true
+          token: ${{ secrets.GITHUB_TOKEN }}
 
   benchmark-summary:
     name: Benchmark Summary

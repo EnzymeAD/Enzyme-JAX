@@ -91,7 +91,7 @@ LogicalResult lowerMultiRotateToRotates(enzymexla::MultiRotateOp op,
 
   Value input = op.getOperand();
   auto inputType = cast<RankedTensorType>(input.getType());
-  int64_t dimSize = inputType.getShape()[op.getDimensionAttr().getSInt()];
+  int64_t dimSize = inputType.getShape()[op.getDimension()];
 
   // Get sharding info if present
   auto shard = sdy::getShardingPerValue(op);
@@ -116,8 +116,7 @@ LogicalResult lowerMultiRotateToRotates(enzymexla::MultiRotateOp op,
     }
 
     auto rotateOp = rewriter.create<enzymexla::RotateOp>(
-        op.getLoc(), inputType, input, rewriter.getSI32IntegerAttr(amount),
-        op.getDimensionAttr());
+        op.getLoc(), inputType, input, amount, op.getDimension());
 
     // Propagate sharding if present
     if (shard) {
@@ -32364,11 +32363,31 @@ struct RecognizeMultiRotate
                                      RecognizeMultiRotate> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
+  // Convert rotate amounts to a (smaller) amount around using negative avlues
+  // to indicate right rotation.
+  static int32_t getBidirectionalAmount(enzymexla::RotateOp op) {
+    RankedTensorType type = op.getOperand().getType();
+    int32_t amount = op.getAmount();
+    int64_t dimSize = type.getDimSize(op.getDimension());
+    if (ShapedType::isDynamic(dimSize) || dimSize > INT32_MAX ||
+        dimSize < INT32_MIN) {
+      // Can't determine size, return original amount
+      return amount;
+    }
+
+    if (amount > dimSize / 2) {
+      amount = amount - (int32_t)dimSize; // rotate right instead of left
+    } else if (amount < -dimSize / 2) {
+      amount = amount + (int32_t)dimSize; // rotate left instead of right
+    }
+    return amount;
+  }
+
   LogicalResult matchAndRewriteImpl(enzymexla::RotateOp op,
                                     PatternRewriter &rewriter) const {
     Value input = op.getOperand();
     int64_t dimension = op.getDimension();
-    int32_t thisAmount = op.getAmount();
+    int32_t thisAmount = getBidirectionalAmount(op);
 
     // Collect all RotateOps operating on the same input with the same dimension
     SmallVector<enzymexla::RotateOp> rotates;
@@ -32378,7 +32397,7 @@ struct RecognizeMultiRotate
       if (auto rotate = dyn_cast<enzymexla::RotateOp>(user)) {
         if (rotate.getDimension() == dimension && !rotate.use_empty()) {
           rotates.push_back(rotate);
-          amountSet.insert(rotate.getAmount());
+          amountSet.insert(getBidirectionalAmount(rotate));
         }
       }
     }
@@ -32455,7 +32474,7 @@ struct RecognizeMultiRotate
     int32_t minAmountInRange = INT32_MAX;
     int rotatesToCombine = 0;
     for (auto rotate : rotates) {
-      int32_t amt = rotate.getAmount();
+      int32_t amt = getBidirectionalAmount(rotate);
       if (amt >= rangeStart && amt <= rangeEnd) {
         minAmountInRange = std::min(minAmountInRange, amt);
         rotatesToCombine++;
@@ -32474,7 +32493,7 @@ struct RecognizeMultiRotate
     std::optional<sdy::TensorShardingPerValueAttr> commonSharding;
     bool shardingMismatch = false;
     for (auto rotate : rotates) {
-      int32_t amt = rotate.getAmount();
+      int32_t amt = getBidirectionalAmount(rotate);
       if (amt >= rangeStart && amt <= rangeEnd) {
         auto shardPerValue = sdy::getShardingPerValue(rotate);
         if (!commonSharding.has_value()) {
@@ -32499,8 +32518,7 @@ struct RecognizeMultiRotate
     rewriter.setInsertionPointAfterValue(input);
     auto newOp = rewriter.create<enzymexla::MultiRotateOp>(
         op.getLoc(), SmallVector<Type>(totalResults, input.getType()), input,
-        op.getDimensionAttr(), rewriter.getSI32IntegerAttr(leftAmount),
-        rewriter.getSI32IntegerAttr(rightAmount));
+        op.getDimension(), leftAmount, rightAmount);
 
     // Propagate sharding if present (all rotates have the same sharding)
     if (commonSharding.has_value() && commonSharding.value()) {
@@ -32516,7 +32534,7 @@ struct RecognizeMultiRotate
 
     // Replace rotations that fall within the selected range
     for (auto rotate : rotates) {
-      int32_t amt = rotate.getAmount();
+      int32_t amt = getBidirectionalAmount(rotate);
       if (amt >= rangeStart && amt <= rangeEnd) {
         // Result index for amount 'a' is: leftAmount - a
         int32_t resultIdx = leftAmount - amt;
@@ -32594,12 +32612,12 @@ struct ReduceUnusedMultiRotate final
                    usedIdx; // Positive = rotate left, negative = rotate right
       auto operandType = op.getOperand().getType();
       if (amount < 0) {
-        amount += operandType.getShape()[op.getDimensionAttr().getSInt()];
+        amount += operandType.getShape()[op.getDimension()];
       }
 
       auto rotateOp = rewriter.create<enzymexla::RotateOp>(
-          op.getLoc(), op.getOperand().getType(), op.getOperand(),
-          rewriter.getSI32IntegerAttr(amount), op.getDimensionAttr());
+          op.getLoc(), op.getOperand().getType(), op.getOperand(), amount,
+          op.getDimension());
       // Propagate sharding if present
       if (auto shard = sdy::getShardingPerValue(op)) {
         sdy::setShardings(rotateOp, shard);
@@ -32616,9 +32634,7 @@ struct ReduceUnusedMultiRotate final
           op.getLoc(),
           SmallVector<Type>(newLeftAmount + newRightAmount + 1,
                             op.getOperand().getType()),
-          op.getOperand(), op.getDimensionAttr(),
-          rewriter.getSI32IntegerAttr(newLeftAmount),
-          rewriter.getSI32IntegerAttr(newRightAmount));
+          op.getOperand(), op.getDimension(), newLeftAmount, newRightAmount);
 
       // Propagate sharding if present
       if (auto shard = sdy::getShardingPerValue(op)) {
@@ -32637,6 +32653,30 @@ struct ReduceUnusedMultiRotate final
     }
 
     return failure();
+  }
+};
+
+// Replace other uses of multirotate with the unrotated result of the
+// multirotate when possible.
+struct UseMultiRotateNeutralResult
+    : public CheckedOpRewritePattern<enzymexla::MultiRotateOp,
+                                     UseMultiRotateNeutralResult> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(enzymexla::MultiRotateOp op,
+                                    PatternRewriter &rewriter) const {
+    Value neutral = op.getResult(op.getLeftAmount());
+    DominanceInfo domInfo;
+    bool anyReplaced = false;
+    rewriter.replaceUsesWithIf(op.getOperand(), neutral, [&](OpOperand &use) {
+      Operation *user = use.getOwner();
+      if (!domInfo.properlyDominates(op, user))
+        return false;
+
+      anyReplaced = true;
+      return true;
+    });
+    return success(anyReplaced);
   }
 };
 
