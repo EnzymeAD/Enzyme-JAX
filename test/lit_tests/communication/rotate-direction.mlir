@@ -16,7 +16,7 @@ module {
 // CHECK:         }
 
   func.func @left_to_right(%arg: tensor<4x8x80xf64>) -> (tensor<4x8x80xf64>) {
-    %res = "enzymexla.rotate"(%arg) <{amount = 1 : si32, dimension = 2 : si32}> {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"z", ?}, {"y", ?}, {"x", ?}]>]>} : (tensor<4x8x80xf64>) -> tensor<4x8x80xf64>
+    %res = "enzymexla.rotate"(%arg) <{amount = 1 : i32, dimension = 2 : i32}> {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"z", ?}, {"y", ?}, {"x", ?}]>]>} : (tensor<4x8x80xf64>) -> tensor<4x8x80xf64>
     func.return %res : tensor<4x8x80xf64>
   }
 
@@ -33,7 +33,7 @@ module {
 // CHECK:         }
 
   func.func @right_to_left(%arg: tensor<4x8x80xf64>) -> (tensor<4x8x80xf64>) {
-    %res = "enzymexla.rotate"(%arg) <{amount = 79 : si32, dimension = 2 : si32}> {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"z", ?}, {"y", ?}, {"x", ?}]>]>} : (tensor<4x8x80xf64>) -> tensor<4x8x80xf64>
+    %res = "enzymexla.rotate"(%arg) <{amount = 79 : i32, dimension = 2 : i32}> {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"z", ?}, {"y", ?}, {"x", ?}]>]>} : (tensor<4x8x80xf64>) -> tensor<4x8x80xf64>
     func.return %res : tensor<4x8x80xf64>
   }
 }

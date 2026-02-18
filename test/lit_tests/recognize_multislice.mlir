@@ -10,7 +10,7 @@ func.func @basic_multislice(%arg0: tensor<20x24x80xf64>) -> (tensor<20x24x10xf64
 
 // CHECK-LABEL:   func.func @basic_multislice(
 // CHECK-SAME:                                %[[VAL_0:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: tensor<20x24x80xf64>) -> (tensor<20x24x10xf64>, tensor<20x24x10xf64>, tensor<20x24x10xf64>) {
-// CHECK:           %[[VAL_1:.*]]:3 = "enzymexla.multi_slice"(%[[VAL_0]]) <{amount = 2 : si32, dimension = 2 : si32, limit_indices = array<i64: 20, 24, 15>, start_indices = array<i64: 0, 0, 5>, strides = array<i64: 1, 1, 1>}> : (tensor<20x24x80xf64>) -> (tensor<20x24x10xf64>, tensor<20x24x10xf64>, tensor<20x24x10xf64>)
+// CHECK:           %[[VAL_1:.*]]:3 = "enzymexla.multi_slice"(%[[VAL_0]]) <{amount = 2 : i32, dimension = 2 : i32, limit_indices = array<i64: 20, 24, 15>, start_indices = array<i64: 0, 0, 5>, strides = array<i64: 1, 1, 1>}> : (tensor<20x24x80xf64>) -> (tensor<20x24x10xf64>, tensor<20x24x10xf64>, tensor<20x24x10xf64>)
 // CHECK:           return %[[VAL_1]]#0, %[[VAL_1]]#1, %[[VAL_1]]#2 : tensor<20x24x10xf64>, tensor<20x24x10xf64>, tensor<20x24x10xf64>
 // CHECK:         }
 
@@ -25,7 +25,7 @@ func.func @negative_offsets(%arg0: tensor<20x24x80xf64>) -> (tensor<20x24x10xf64
 
 // CHECK-LABEL:   func.func @negative_offsets(
 // CHECK-SAME:                                %[[VAL_0:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: tensor<20x24x80xf64>) -> (tensor<20x24x10xf64>, tensor<20x24x10xf64>, tensor<20x24x10xf64>) {
-// CHECK:           %[[VAL_1:.*]]:3 = "enzymexla.multi_slice"(%[[VAL_0]]) <{amount = 2 : si32, dimension = 2 : si32, limit_indices = array<i64: 20, 24, 13>, start_indices = array<i64: 0, 0, 3>, strides = array<i64: 1, 1, 1>}> : (tensor<20x24x80xf64>) -> (tensor<20x24x10xf64>, tensor<20x24x10xf64>, tensor<20x24x10xf64>)
+// CHECK:           %[[VAL_1:.*]]:3 = "enzymexla.multi_slice"(%[[VAL_0]]) <{amount = 2 : i32, dimension = 2 : i32, limit_indices = array<i64: 20, 24, 13>, start_indices = array<i64: 0, 0, 3>, strides = array<i64: 1, 1, 1>}> : (tensor<20x24x80xf64>) -> (tensor<20x24x10xf64>, tensor<20x24x10xf64>, tensor<20x24x10xf64>)
 // CHECK:           return %[[VAL_1]]#0, %[[VAL_1]]#1, %[[VAL_1]]#2 : tensor<20x24x10xf64>, tensor<20x24x10xf64>, tensor<20x24x10xf64>
 // CHECK:         }
 
@@ -40,7 +40,7 @@ func.func @both_directions(%arg0: tensor<20x24x80xf64>) -> (tensor<20x24x10xf64>
 
 // CHECK-LABEL:   func.func @both_directions(
 // CHECK-SAME:                               %[[VAL_0:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: tensor<20x24x80xf64>) -> (tensor<20x24x10xf64>, tensor<20x24x10xf64>, tensor<20x24x10xf64>) {
-// CHECK:           %[[VAL_1:.*]]:3 = "enzymexla.multi_slice"(%[[VAL_0]]) <{amount = 2 : si32, dimension = 2 : si32, limit_indices = array<i64: 20, 24, 14>, start_indices = array<i64: 0, 0, 4>, strides = array<i64: 1, 1, 1>}> : (tensor<20x24x80xf64>) -> (tensor<20x24x10xf64>, tensor<20x24x10xf64>, tensor<20x24x10xf64>)
+// CHECK:           %[[VAL_1:.*]]:3 = "enzymexla.multi_slice"(%[[VAL_0]]) <{amount = 2 : i32, dimension = 2 : i32, limit_indices = array<i64: 20, 24, 14>, start_indices = array<i64: 0, 0, 4>, strides = array<i64: 1, 1, 1>}> : (tensor<20x24x80xf64>) -> (tensor<20x24x10xf64>, tensor<20x24x10xf64>, tensor<20x24x10xf64>)
 // CHECK:           return %[[VAL_1]]#0, %[[VAL_1]]#1, %[[VAL_1]]#2 : tensor<20x24x10xf64>, tensor<20x24x10xf64>, tensor<20x24x10xf64>
 // CHECK:         }
 
@@ -129,7 +129,7 @@ func.func @slice_dim0(%arg0: tensor<20x24x80xf64>) -> (tensor<5x24x80xf64>, tens
 
 // CHECK-LABEL:   func.func @slice_dim0(
 // CHECK-SAME:                          %[[VAL_0:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: tensor<20x24x80xf64>) -> (tensor<5x24x80xf64>, tensor<5x24x80xf64>, tensor<5x24x80xf64>) {
-// CHECK:           %[[VAL_1:.*]]:3 = "enzymexla.multi_slice"(%[[VAL_0]]) <{amount = 2 : si32, dimension = 0 : si32, limit_indices = array<i64: 5, 24, 80>, start_indices = array<i64: 0, 0, 0>, strides = array<i64: 1, 1, 1>}> : (tensor<20x24x80xf64>) -> (tensor<5x24x80xf64>, tensor<5x24x80xf64>, tensor<5x24x80xf64>)
+// CHECK:           %[[VAL_1:.*]]:3 = "enzymexla.multi_slice"(%[[VAL_0]]) <{amount = 2 : i32, dimension = 0 : i32, limit_indices = array<i64: 5, 24, 80>, start_indices = array<i64: 0, 0, 0>, strides = array<i64: 1, 1, 1>}> : (tensor<20x24x80xf64>) -> (tensor<5x24x80xf64>, tensor<5x24x80xf64>, tensor<5x24x80xf64>)
 // CHECK:           return %[[VAL_1]]#0, %[[VAL_1]]#1, %[[VAL_1]]#2 : tensor<5x24x80xf64>, tensor<5x24x80xf64>, tensor<5x24x80xf64>
 // CHECK:         }
 
@@ -143,7 +143,7 @@ func.func @slice_dim1(%arg0: tensor<20x24x80xf64>) -> (tensor<20x8x80xf64>, tens
 
 // CHECK-LABEL:   func.func @slice_dim1(
 // CHECK-SAME:                          %[[VAL_0:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: tensor<20x24x80xf64>) -> (tensor<20x8x80xf64>, tensor<20x8x80xf64>) {
-// CHECK:           %[[VAL_1:.*]]:2 = "enzymexla.multi_slice"(%[[VAL_0]]) <{amount = 1 : si32, dimension = 1 : si32, limit_indices = array<i64: 20, 11, 80>, start_indices = array<i64: 0, 3, 0>, strides = array<i64: 1, 1, 1>}> : (tensor<20x24x80xf64>) -> (tensor<20x8x80xf64>, tensor<20x8x80xf64>)
+// CHECK:           %[[VAL_1:.*]]:2 = "enzymexla.multi_slice"(%[[VAL_0]]) <{amount = 1 : i32, dimension = 1 : i32, limit_indices = array<i64: 20, 11, 80>, start_indices = array<i64: 0, 3, 0>, strides = array<i64: 1, 1, 1>}> : (tensor<20x24x80xf64>) -> (tensor<20x8x80xf64>, tensor<20x8x80xf64>)
 // CHECK:           return %[[VAL_1]]#0, %[[VAL_1]]#1 : tensor<20x8x80xf64>, tensor<20x8x80xf64>
 // CHECK:         }
 
@@ -157,7 +157,7 @@ func.func @non_unit_strides(%arg0: tensor<20x40xf32>) -> (tensor<20x10xf32>, ten
 
 // CHECK-LABEL:   func.func @non_unit_strides(
 // CHECK-SAME:                                %[[VAL_0:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: tensor<20x40xf32>) -> (tensor<20x10xf32>, tensor<20x10xf32>) {
-// CHECK:           %[[VAL_1:.*]]:2 = "enzymexla.multi_slice"(%[[VAL_0]]) <{amount = 1 : si32, dimension = 1 : si32, limit_indices = array<i64: 20, 20>, start_indices = array<i64: 0, 0>, strides = array<i64: 1, 2>}> : (tensor<20x40xf32>) -> (tensor<20x10xf32>, tensor<20x10xf32>)
+// CHECK:           %[[VAL_1:.*]]:2 = "enzymexla.multi_slice"(%[[VAL_0]]) <{amount = 1 : i32, dimension = 1 : i32, limit_indices = array<i64: 20, 20>, start_indices = array<i64: 0, 0>, strides = array<i64: 1, 2>}> : (tensor<20x40xf32>) -> (tensor<20x10xf32>, tensor<20x10xf32>)
 // CHECK:           return %[[VAL_1]]#0, %[[VAL_1]]#1 : tensor<20x10xf32>, tensor<20x10xf32>
 // CHECK:         }
 
@@ -173,7 +173,7 @@ func.func @partial_combination(%arg0: tensor<10x20xf32>) -> (tensor<10x5xf32>, t
 
 // CHECK-LABEL:   func.func @partial_combination(
 // CHECK-SAME:                                   %[[VAL_0:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: tensor<10x20xf32>) -> (tensor<10x5xf32>, tensor<10x5xf32>, tensor<10x5xf32>) {
-// CHECK:           %[[VAL_1:.*]]:2 = "enzymexla.multi_slice"(%[[VAL_0]]) <{amount = 1 : si32, dimension = 1 : si32, limit_indices = array<i64: 10, 7>, start_indices = array<i64: 0, 2>, strides = array<i64: 1, 1>}> : (tensor<10x20xf32>) -> (tensor<10x5xf32>, tensor<10x5xf32>)
+// CHECK:           %[[VAL_1:.*]]:2 = "enzymexla.multi_slice"(%[[VAL_0]]) <{amount = 1 : i32, dimension = 1 : i32, limit_indices = array<i64: 10, 7>, start_indices = array<i64: 0, 2>, strides = array<i64: 1, 1>}> : (tensor<10x20xf32>) -> (tensor<10x5xf32>, tensor<10x5xf32>)
 // CHECK:           %[[VAL_2:.*]] = stablehlo.slice %[[VAL_0]] [0:10, 5:10] : (tensor<10x20xf32>) -> tensor<10x5xf32>
 // CHECK:           return %[[VAL_1]]#0, %[[VAL_1]]#1, %[[VAL_2]] : tensor<10x5xf32>, tensor<10x5xf32>, tensor<10x5xf32>
 // CHECK:         }
@@ -207,7 +207,7 @@ func.func @with_unused_slice_no_gap(%arg0: tensor<10x20xf32>) -> (tensor<10x5xf3
 
 // CHECK-LABEL:   func.func @with_unused_slice_no_gap(
 // CHECK-SAME:                                        %[[VAL_0:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: tensor<10x20xf32>) -> (tensor<10x5xf32>, tensor<10x5xf32>) {
-// CHECK:           %[[VAL_1:.*]]:2 = "enzymexla.multi_slice"(%[[VAL_0]]) <{amount = 1 : si32, dimension = 1 : si32, limit_indices = array<i64: 10, 7>, start_indices = array<i64: 0, 2>, strides = array<i64: 1, 1>}> : (tensor<10x20xf32>) -> (tensor<10x5xf32>, tensor<10x5xf32>)
+// CHECK:           %[[VAL_1:.*]]:2 = "enzymexla.multi_slice"(%[[VAL_0]]) <{amount = 1 : i32, dimension = 1 : i32, limit_indices = array<i64: 10, 7>, start_indices = array<i64: 0, 2>, strides = array<i64: 1, 1>}> : (tensor<10x20xf32>) -> (tensor<10x5xf32>, tensor<10x5xf32>)
 // CHECK:           return %[[VAL_1]]#0, %[[VAL_1]]#1 : tensor<10x5xf32>, tensor<10x5xf32>
 // CHECK:         }
 
@@ -222,7 +222,7 @@ func.func @slice_2d(%arg0: tensor<100x200xf32>) -> (tensor<100x50xf32>, tensor<1
 
 // CHECK-LABEL:   func.func @slice_2d(
 // CHECK-SAME:                        %[[VAL_0:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: tensor<100x200xf32>) -> (tensor<100x50xf32>, tensor<100x50xf32>, tensor<100x50xf32>) {
-// CHECK:           %[[VAL_1:.*]]:3 = "enzymexla.multi_slice"(%[[VAL_0]]) <{amount = 2 : si32, dimension = 1 : si32, limit_indices = array<i64: 100, 60>, start_indices = array<i64: 0, 10>, strides = array<i64: 1, 1>}> : (tensor<100x200xf32>) -> (tensor<100x50xf32>, tensor<100x50xf32>, tensor<100x50xf32>)
+// CHECK:           %[[VAL_1:.*]]:3 = "enzymexla.multi_slice"(%[[VAL_0]]) <{amount = 2 : i32, dimension = 1 : i32, limit_indices = array<i64: 100, 60>, start_indices = array<i64: 0, 10>, strides = array<i64: 1, 1>}> : (tensor<100x200xf32>) -> (tensor<100x50xf32>, tensor<100x50xf32>, tensor<100x50xf32>)
 // CHECK:           return %[[VAL_1]]#0, %[[VAL_1]]#1, %[[VAL_1]]#2 : tensor<100x50xf32>, tensor<100x50xf32>, tensor<100x50xf32>
 // CHECK:         }
 
@@ -236,7 +236,7 @@ func.func @slice_4d(%arg0: tensor<8x16x32x64xf32>) -> (tensor<8x16x10x64xf32>, t
 
 // CHECK-LABEL:   func.func @slice_4d(
 // CHECK-SAME:                        %[[VAL_0:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: tensor<8x16x32x64xf32>) -> (tensor<8x16x10x64xf32>, tensor<8x16x10x64xf32>) {
-// CHECK:           %[[VAL_1:.*]]:2 = "enzymexla.multi_slice"(%[[VAL_0]]) <{amount = 1 : si32, dimension = 2 : si32, limit_indices = array<i64: 8, 16, 15, 64>, start_indices = array<i64: 0, 0, 5, 0>, strides = array<i64: 1, 1, 1, 1>}> : (tensor<8x16x32x64xf32>) -> (tensor<8x16x10x64xf32>, tensor<8x16x10x64xf32>)
+// CHECK:           %[[VAL_1:.*]]:2 = "enzymexla.multi_slice"(%[[VAL_0]]) <{amount = 1 : i32, dimension = 2 : i32, limit_indices = array<i64: 8, 16, 15, 64>, start_indices = array<i64: 0, 0, 5, 0>, strides = array<i64: 1, 1, 1, 1>}> : (tensor<8x16x32x64xf32>) -> (tensor<8x16x10x64xf32>, tensor<8x16x10x64xf32>)
 // CHECK:           return %[[VAL_1]]#0, %[[VAL_1]]#1 : tensor<8x16x10x64xf32>, tensor<8x16x10x64xf32>
 // CHECK:         }
 
@@ -253,7 +253,7 @@ func.func @many_slices(%arg0: tensor<20x100xf64>) -> (tensor<20x10xf64>, tensor<
 
 // CHECK-LABEL:   func.func @many_slices(
 // CHECK-SAME:                           %[[VAL_0:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: tensor<20x100xf64>) -> (tensor<20x10xf64>, tensor<20x10xf64>, tensor<20x10xf64>, tensor<20x10xf64>, tensor<20x10xf64>) {
-// CHECK:           %[[VAL_1:.*]]:5 = "enzymexla.multi_slice"(%[[VAL_0]]) <{amount = 4 : si32, dimension = 1 : si32, limit_indices = array<i64: 20, 10>, start_indices = array<i64: 0, 0>, strides = array<i64: 1, 1>}> : (tensor<20x100xf64>) -> (tensor<20x10xf64>, tensor<20x10xf64>, tensor<20x10xf64>, tensor<20x10xf64>, tensor<20x10xf64>)
+// CHECK:           %[[VAL_1:.*]]:5 = "enzymexla.multi_slice"(%[[VAL_0]]) <{amount = 4 : i32, dimension = 1 : i32, limit_indices = array<i64: 20, 10>, start_indices = array<i64: 0, 0>, strides = array<i64: 1, 1>}> : (tensor<20x100xf64>) -> (tensor<20x10xf64>, tensor<20x10xf64>, tensor<20x10xf64>, tensor<20x10xf64>, tensor<20x10xf64>)
 // CHECK:           return %[[VAL_1]]#0, %[[VAL_1]]#1, %[[VAL_1]]#2, %[[VAL_1]]#3, %[[VAL_1]]#4 : tensor<20x10xf64>, tensor<20x10xf64>, tensor<20x10xf64>, tensor<20x10xf64>, tensor<20x10xf64>
 // CHECK:         }
 

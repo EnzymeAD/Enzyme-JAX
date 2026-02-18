@@ -39,9 +39,9 @@ module @"reactant_loop!" {
 
 // ROTATE:  func.func @main(%arg0: tensor<20x24x96xf64>, %arg1: tensor<4x7x80xf64>, %arg2: tensor<f64>) -> tensor<4x8x80xf64> {
 // ROTATE-NEXT:    %0 = stablehlo.slice %arg0 [8:12, 6:8, 8:88] : (tensor<20x24x96xf64>) -> tensor<4x2x80xf64>
-// ROTATE-NEXT:    %1 = "enzymexla.rotate"(%0) <{amount = 79 : si32, dimension = 2 : si32}> : (tensor<4x2x80xf64>) -> tensor<4x2x80xf64>
+// ROTATE-NEXT:    %1 = "enzymexla.rotate"(%0) <{amount = 79 : i32, dimension = 2 : i32}> : (tensor<4x2x80xf64>) -> tensor<4x2x80xf64>
 // ROTATE-NEXT:    %2 = stablehlo.slice %arg1 [0:4, 0:5, 0:80] : (tensor<4x7x80xf64>) -> tensor<4x5x80xf64>
-// ROTATE-NEXT:    %3 = "enzymexla.rotate"(%2) <{amount = 79 : si32, dimension = 2 : si32}> : (tensor<4x5x80xf64>) -> tensor<4x5x80xf64>
+// ROTATE-NEXT:    %3 = "enzymexla.rotate"(%2) <{amount = 79 : i32, dimension = 2 : i32}> : (tensor<4x5x80xf64>) -> tensor<4x5x80xf64>
 // ROTATE-NEXT:    %4 = stablehlo.pad %3, %arg2, low = [0, 1, 0], high = [0, 0, 0], interior = [0, 0, 0] : (tensor<4x5x80xf64>, tensor<f64>) -> tensor<4x6x80xf64>
 // ROTATE-NEXT:    %5 = stablehlo.concatenate %1, %4, dim = 1 : (tensor<4x2x80xf64>, tensor<4x6x80xf64>) -> tensor<4x8x80xf64>
 // ROTATE-NEXT:    stablehlo.return %5 : tensor<4x8x80xf64>
