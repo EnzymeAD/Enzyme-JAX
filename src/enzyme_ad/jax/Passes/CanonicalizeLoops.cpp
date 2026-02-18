@@ -23,6 +23,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/Support/Debug.h"
 
+#include <llvm/ADT/STLExtras.h>
 #include <numeric>
 
 #define DEBUG_TYPE "affine-int-range-analysis"
@@ -882,6 +883,80 @@ public:
   }
 };
 
+class PartialIfToSelect final : public OpRewritePattern<scf::IfOp> {
+public:
+  using OpRewritePattern<scf::IfOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::IfOp ifOp,
+                                PatternRewriter &rewriter) const override {
+    // Check if if has both then and else regions
+    bool hasElse = !ifOp.getElseRegion().empty();
+    if (!hasElse)
+      return failure();
+
+    Location loc = ifOp.getLoc();
+    Value condition = ifOp.getCondition();
+
+    // Get the yield ops from both branches
+    Block *thenBlock = ifOp.thenBlock();
+    Block *elseBlock = ifOp.elseBlock();
+    auto thenYield = cast<scf::YieldOp>(thenBlock->getTerminator());
+    auto elseYield = cast<scf::YieldOp>(elseBlock->getTerminator());
+
+    rewriter.setInsertionPoint(ifOp);
+    bool succeeded = false;
+    for (auto [i, thenYieldVal, elseYieldVal, res] :
+         llvm::enumerate(thenYield.getOperands(), elseYield.getOperands(),
+                         ifOp.getResults())) {
+      // Ignore cases where the result is not used - these will be cleaned up by
+      // a canonicalization
+      if (res.use_empty())
+        continue;
+      SmallVector<Operation *> rOps;
+      IRMapping rVals;
+      std::function<std::optional<Value>(Value)> recomputeOutsideIf =
+          [&](Value v) -> std::optional<Value> {
+        auto rVal = rVals.lookupOrNull(v);
+        if (rVal)
+          return rVal;
+        Operation *op = v.getDefiningOp();
+        if (!op)
+          return v;
+        if (!ifOp->isAncestor(op))
+          return v;
+        if (!isPure(op))
+          return std::nullopt;
+        SmallVector<Value> rOprs;
+        for (auto opr : op->getOperands()) {
+          auto rOpr = recomputeOutsideIf(opr);
+          if (!rOpr)
+            return std::nullopt;
+          rOprs.push_back(*rOpr);
+        }
+        auto rOp = rewriter.clone(*op);
+        rOp->setOperands(rOprs);
+        rVals.map(op->getResults(), rOp->getResults());
+        rOps.push_back(rOp);
+        return rOp->getResult(cast<OpResult>(v).getResultNumber());
+      };
+      auto rThenYieldVal = recomputeOutsideIf(thenYieldVal);
+      auto rElseYieldVal = recomputeOutsideIf(elseYieldVal);
+      if (!rThenYieldVal || !rElseYieldVal) {
+        for (auto rOp : rOps)
+          rewriter.eraseOp(rOp);
+        continue;
+      }
+
+      // Create select op with same attributes as original if op
+      auto select = arith::SelectOp::create(rewriter, loc, condition,
+                                            *rThenYieldVal, *rElseYieldVal);
+      rewriter.replaceAllUsesWith(ifOp->getResult(i), select);
+      succeeded = true;
+    }
+    return success(succeeded);
+  }
+};
+
 class IfToSelect final : public OpRewritePattern<scf::IfOp> {
 public:
   using OpRewritePattern<scf::IfOp>::OpRewritePattern;
@@ -962,8 +1037,10 @@ struct CanonicalizeLoopsPass
     // Step 0: Canonicalize loops when possible.
     {
       RewritePatternSet patterns(&getContext());
-      patterns.add<RemoveAffineParallelSingleIter, SwitchToIf,
-                   SimplifyIfByRemovingEmptyThen, IfToSelect>(&getContext());
+      patterns
+          .add<RemoveAffineParallelSingleIter, SwitchToIf,
+               SimplifyIfByRemovingEmptyThen, PartialIfToSelect, IfToSelect>(
+              &getContext());
 
       if (failed(applyPatternsAndFoldGreedily(getOperation(),
                                               std::move(patterns)))) {

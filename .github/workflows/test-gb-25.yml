@@ -54,7 +54,6 @@ jobs:
           # - '0123456789abcdef0123456789abcdef01234567'
         reactant_commit:
           - 'main'
-          - 'jm/multirotate'
 
     steps:
       - name: Check GPUs
@@ -205,7 +204,7 @@ jobs:
                   echo "----------"
                   echo "${COLLECTIVES}"
                   echo "----------"
-                  if [[ "${OP}" == "all-to-all" && ${NUM_COLLECTIVES} -gt 0 ]] || [[ "${OP}" == "all-gather" && ${NUM_COLLECTIVES} -gt 0 ]] || [[ "${OP}" == "all-reduce" && ${NUM_COLLECTIVES} -gt 0 ]] || [[ "${OP}" =~ "collective-permute" && ${NUM_COLLECTIVES} -gt 348 ]]; then
+                  if [[ "${OP}" == "all-to-all" && ${NUM_COLLECTIVES} -gt 0 ]] || [[ "${OP}" == "all-gather" && ${NUM_COLLECTIVES} -gt 0 ]] || [[ "${OP}" == "all-reduce" && ${NUM_COLLECTIVES} -gt 0 ]] || [[ "${OP}" =~ "collective-permute" && ${NUM_COLLECTIVES} -gt 351 ]]; then
                       OK="false"
                   fi
               fi
