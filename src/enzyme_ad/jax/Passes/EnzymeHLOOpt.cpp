@@ -12554,8 +12554,7 @@ struct DUSSliceSimplify final
         });
 
     LLVM_DEBUG(
-        for (auto [idx, operandSize, updateSize]
-             : llvm::zip_equal(
+        for (auto [idx, operandSize, updateSize] : llvm::zip_equal(
                  newDusIndices,
                  cast<RankedTensorType>(preSliceOperand.getType()).getShape(),
                  cast<RankedTensorType>(preSliceUpdate.getType()).getShape())) {
@@ -14328,7 +14327,7 @@ struct NegateImagConj final
       return failure();
 
     rewriter.replaceOpWithNewOp<stablehlo::ImagOp>(op, op.getType(),
-                                                     conj.getOperand());
+                                                   conj.getOperand());
     return success();
   }
 };
