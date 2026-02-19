@@ -105,16 +105,17 @@ module {
 // CHECK-NEXT:    %35 = llvm.getelementptr %33[0, 1] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<2 x i64>
 // CHECK-NEXT:    llvm.store %28, %35 : !llvm.ptr<1>, !llvm.ptr
 // CHECK-NEXT:    llvm.call @reactantXLAExec(%4, %32, %1, %33) vararg(!llvm.func<void (ptr, ptr, i64, ptr, ...)>) : (!llvm.ptr, !llvm.ptr, i64, !llvm.ptr) -> ()
+// CHECK-NEXT:    %36 = llvm.mlir.zero : i32 
 // CHECK-NEXT:    llvm.call @reactantXLAMemcpy(%4, %14, %20, %7, %0) : (!llvm.ptr, !llvm.ptr, !llvm.ptr, i64, i32) -> ()
 // CHECK-NEXT:    llvm.call @reactantXLAMemcpy(%4, %15, %24, %7, %0) : (!llvm.ptr, !llvm.ptr, !llvm.ptr, i64, i32) -> ()
 // CHECK-NEXT:    llvm.call @reactantXLAMemcpy(%4, %16, %27, %7, %0) : (!llvm.ptr, !llvm.ptr, !llvm.ptr, i64, i32) -> ()
 // CHECK-NEXT:    llvm.call @reactantXLAMemcpy(%4, %17, %31, %7, %0) : (!llvm.ptr, !llvm.ptr, !llvm.ptr, i64, i32) -> ()
-// CHECK-NEXT:    %36 = llvm.load %14 : !llvm.ptr -> f64
-// CHECK-NEXT:    %37 = llvm.load %16 : !llvm.ptr -> f64
-// CHECK-NEXT:    %38 = llvm.call @printf(%11, %36, %37) vararg(!llvm.func<i32 (ptr, ...)>) {no_unwind} : (!llvm.ptr {llvm.dereferenceable = 1 : i64, llvm.nonnull, llvm.noundef}, f64 {llvm.noundef}, f64 {llvm.noundef}) -> i32
-// CHECK-NEXT:    %39 = llvm.load %15 : !llvm.ptr -> f64
-// CHECK-NEXT:    %40 = llvm.load %17 : !llvm.ptr -> f64
-// CHECK-NEXT:    %41 = llvm.call @printf(%11, %39, %40) vararg(!llvm.func<i32 (ptr, ...)>) {no_unwind} : (!llvm.ptr {llvm.dereferenceable = 1 : i64, llvm.nonnull, llvm.noundef}, f64 {llvm.noundef}, f64 {llvm.noundef}) -> i32
+// CHECK-NEXT:    %37 = llvm.load %14 : !llvm.ptr -> f64
+// CHECK-NEXT:    %38 = llvm.load %16 : !llvm.ptr -> f64
+// CHECK-NEXT:    %39 = llvm.call @printf(%11, %37, %38) vararg(!llvm.func<i32 (ptr, ...)>) {no_unwind} : (!llvm.ptr {llvm.dereferenceable = 1 : i64, llvm.nonnull, llvm.noundef}, f64 {llvm.noundef}, f64 {llvm.noundef}) -> i32
+// CHECK-NEXT:    %40 = llvm.load %15 : !llvm.ptr -> f64
+// CHECK-NEXT:    %41 = llvm.load %17 : !llvm.ptr -> f64
+// CHECK-NEXT:    %42 = llvm.call @printf(%11, %40, %41) vararg(!llvm.func<i32 (ptr, ...)>) {no_unwind} : (!llvm.ptr {llvm.dereferenceable = 1 : i64, llvm.nonnull, llvm.noundef}, f64 {llvm.noundef}, f64 {llvm.noundef}) -> i32
 // CHECK-NEXT:    llvm.return %12 : i32
 // CHECK-NEXT:  }
 // CHECK:  llvm.func local_unnamed_addr @printf(!llvm.ptr {llvm.nocapture, llvm.noundef, llvm.readonly}, ...) -> (i32 {llvm.noundef}) attributes {no_unwind, passthrough = ["nofree", ["no-trapping-math", "true"], ["stack-protector-buffer-size", "8"], ["target-cpu", "x86-64"]], sym_visibility = "private", target_cpu = "x86-64", target_features = #llvm.target_features<["+cmov", "+cx8", "+fxsr", "+mmx", "+sse", "+sse2", "+x87"]>}

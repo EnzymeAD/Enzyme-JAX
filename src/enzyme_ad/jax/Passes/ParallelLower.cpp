@@ -239,47 +239,56 @@ prepareForGPUInline(LLVM::CallOp callOp, Operation *hostInsertionPoint,
   SmallVector<Value> newArgs;
   SmallVector<DictionaryAttr> newArgAttrs;
   std::optional<mlir::ArrayAttr> argAttrs = lfn.getArgAttrs();
-  assert(argAttrs);
   SmallVector<std::function<Value(OpBuilder &, Value)>> prepArg;
-  for (auto [arg, argumentAttrsA] :
-       llvm::zip(callOp.getArgOperands(), argAttrs->getValue())) {
-    DictionaryAttr argumentAttrs = cast<DictionaryAttr>(argumentAttrsA);
-    if (std::optional<NamedAttribute> attr =
-            argumentAttrs.getNamed(LLVM::LLVMDialect::getByValAttrName())) {
-      Type elementType = cast<TypeAttr>(attr->getValue()).getValue();
-      Value newArg =
-          LLVM::LoadOp::create(hostBuilder, arg.getLoc(), elementType, arg);
-      newArgs.push_back(newArg);
-      newArgAttrs.push_back(
-          NamedAttrList().getDictionary(callOp->getContext()));
-      Value argCopy = arg;
-      prepArg.push_back([=](OpBuilder &builder, Value v) {
-        DataLayout dataLayout = DataLayout::closest(callOp);
-        uint64_t minimumAlignment = dataLayout.getTypeABIAlignment(elementType);
-        uint64_t requestedAlignment = 1;
-        if (std::optional<NamedAttribute> alignAttr =
-                argumentAttrs.getNamed(LLVM::LLVMDialect::getAlignAttrName())) {
-          requestedAlignment = cast<IntegerAttr>(alignAttr->getValue())
-                                   .getValue()
-                                   .getLimitedValue();
-        }
-        uint64_t targetAlignment =
-            std::max(requestedAlignment, minimumAlignment);
-        // Since this is a static alloca, we can put it directly in the entry
-        // block, so they can be absorbed into the prologue/epilogue at code
-        // generation.
-        Value one =
-            LLVM::ConstantOp::create(builder, v.getLoc(), builder.getI64Type(),
-                                     builder.getI64IntegerAttr(1));
-        Value allocaOp =
-            LLVM::AllocaOp::create(builder, v.getLoc(), argCopy.getType(),
-                                   elementType, one, targetAlignment);
-        LLVM::StoreOp::create(builder, v.getLoc(), v, allocaOp);
-        return allocaOp;
-      });
-    } else {
+
+  if (argAttrs) {
+    for (auto [arg, argumentAttrsA] :
+         llvm::zip(callOp.getArgOperands(), argAttrs->getValue())) {
+      DictionaryAttr argumentAttrs = cast<DictionaryAttr>(argumentAttrsA);
+      if (std::optional<NamedAttribute> attr =
+              argumentAttrs.getNamed(LLVM::LLVMDialect::getByValAttrName())) {
+        Type elementType = cast<TypeAttr>(attr->getValue()).getValue();
+        Value newArg =
+            LLVM::LoadOp::create(hostBuilder, arg.getLoc(), elementType, arg);
+        newArgs.push_back(newArg);
+        newArgAttrs.push_back(
+            NamedAttrList().getDictionary(callOp->getContext()));
+        Value argCopy = arg;
+        prepArg.push_back([=](OpBuilder &builder, Value v) {
+          DataLayout dataLayout = DataLayout::closest(callOp);
+          uint64_t minimumAlignment =
+              dataLayout.getTypeABIAlignment(elementType);
+          uint64_t requestedAlignment = 1;
+          if (std::optional<NamedAttribute> alignAttr = argumentAttrs.getNamed(
+                  LLVM::LLVMDialect::getAlignAttrName())) {
+            requestedAlignment = cast<IntegerAttr>(alignAttr->getValue())
+                                     .getValue()
+                                     .getLimitedValue();
+          }
+          uint64_t targetAlignment =
+              std::max(requestedAlignment, minimumAlignment);
+          // Since this is a static alloca, we can put it directly in the entry
+          // block, so they can be absorbed into the prologue/epilogue at code
+          // generation.
+          Value one = LLVM::ConstantOp::create(builder, v.getLoc(),
+                                               builder.getI64Type(),
+                                               builder.getI64IntegerAttr(1));
+          Value allocaOp =
+              LLVM::AllocaOp::create(builder, v.getLoc(), argCopy.getType(),
+                                     elementType, one, targetAlignment);
+          LLVM::StoreOp::create(builder, v.getLoc(), v, allocaOp);
+          return allocaOp;
+        });
+      } else {
+        newArgs.push_back(arg);
+        newArgAttrs.push_back(argumentAttrs);
+        prepArg.push_back([](OpBuilder &, Value v) { return v; });
+      }
+    }
+  } else {
+    for (auto arg : callOp.getArgOperands()) {
       newArgs.push_back(arg);
-      newArgAttrs.push_back(argumentAttrs);
+      newArgAttrs.push_back(DictionaryAttr::get(arg.getContext(), {}));
       prepArg.push_back([](OpBuilder &, Value v) { return v; });
     }
   }

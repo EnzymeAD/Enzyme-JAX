@@ -91,7 +91,7 @@ LogicalResult lowerMultiRotateToRotates(enzymexla::MultiRotateOp op,
 
   Value input = op.getOperand();
   auto inputType = cast<RankedTensorType>(input.getType());
-  int64_t dimSize = inputType.getShape()[op.getDimensionAttr().getSInt()];
+  int64_t dimSize = inputType.getShape()[op.getDimension()];
 
   // Get sharding info if present
   auto shard = sdy::getShardingPerValue(op);
@@ -116,8 +116,7 @@ LogicalResult lowerMultiRotateToRotates(enzymexla::MultiRotateOp op,
     }
 
     auto rotateOp = rewriter.create<enzymexla::RotateOp>(
-        op.getLoc(), inputType, input, rewriter.getSI32IntegerAttr(amount),
-        op.getDimensionAttr());
+        op.getLoc(), inputType, input, amount, op.getDimension());
 
     // Propagate sharding if present
     if (shard) {
@@ -14309,6 +14308,27 @@ struct ConjComplexNegate final
 
     rewriter.replaceOpWithNewOp<stablehlo::ComplexOp>(
         op, op.getType(), complex.getLhs(), neg.getOperand());
+    return success();
+  }
+};
+
+// (neg (imag (conj x))) -> (imag x)
+struct NegateImagConj final
+    : CheckedOpRewritePattern<stablehlo::NegOp, NegateImagConj> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::NegOp op,
+                                    PatternRewriter &rewriter) const {
+    auto imag = op.getOperand().getDefiningOp<stablehlo::ImagOp>();
+    if (!imag)
+      return failure();
+
+    auto conj = imag.getOperand().getDefiningOp<chlo::ConjOp>();
+    if (!conj)
+      return failure();
+
+    rewriter.replaceOpWithNewOp<stablehlo::ImagOp>(op, op.getType(),
+                                                   conj.getOperand());
     return success();
   }
 };
@@ -32519,8 +32539,7 @@ struct RecognizeMultiRotate
     rewriter.setInsertionPointAfterValue(input);
     auto newOp = rewriter.create<enzymexla::MultiRotateOp>(
         op.getLoc(), SmallVector<Type>(totalResults, input.getType()), input,
-        op.getDimensionAttr(), rewriter.getSI32IntegerAttr(leftAmount),
-        rewriter.getSI32IntegerAttr(rightAmount));
+        op.getDimension(), leftAmount, rightAmount);
 
     // Propagate sharding if present (all rotates have the same sharding)
     if (commonSharding.has_value() && commonSharding.value()) {
@@ -32614,12 +32633,12 @@ struct ReduceUnusedMultiRotate final
                    usedIdx; // Positive = rotate left, negative = rotate right
       auto operandType = op.getOperand().getType();
       if (amount < 0) {
-        amount += operandType.getShape()[op.getDimensionAttr().getSInt()];
+        amount += operandType.getShape()[op.getDimension()];
       }
 
       auto rotateOp = rewriter.create<enzymexla::RotateOp>(
-          op.getLoc(), op.getOperand().getType(), op.getOperand(),
-          rewriter.getSI32IntegerAttr(amount), op.getDimensionAttr());
+          op.getLoc(), op.getOperand().getType(), op.getOperand(), amount,
+          op.getDimension());
       // Propagate sharding if present
       if (auto shard = sdy::getShardingPerValue(op)) {
         sdy::setShardings(rotateOp, shard);
@@ -32636,9 +32655,7 @@ struct ReduceUnusedMultiRotate final
           op.getLoc(),
           SmallVector<Type>(newLeftAmount + newRightAmount + 1,
                             op.getOperand().getType()),
-          op.getOperand(), op.getDimensionAttr(),
-          rewriter.getSI32IntegerAttr(newLeftAmount),
-          rewriter.getSI32IntegerAttr(newRightAmount));
+          op.getOperand(), op.getDimension(), newLeftAmount, newRightAmount);
 
       // Propagate sharding if present
       if (auto shard = sdy::getShardingPerValue(op)) {
@@ -34103,6 +34120,7 @@ struct EnzymeHLOOptPass
         CompareOpCanon,
         CompareExt,
         ConjComplexNegate,
+        NegateImagConj,
         ConvertOpCanon,
         DivideSqrtToMultiplyRsqrt,
         DynamicBroadcastInDimAllDimsNonExpanding,

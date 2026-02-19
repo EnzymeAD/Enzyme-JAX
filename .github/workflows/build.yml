@@ -225,11 +225,9 @@ jobs:
       - name: Extract opt and debug enzymexlamlir-opt for release
         if: ${{ !cancelled() && github.ref == 'refs/heads/main' && matrix.os == 'linux-x86-n2-32' }} 
         run: |
-          bazel build $BAZEL_FLAGS --color=yes //:enzymexlamlir-opt --test_output=errors
+          bazel build $BAZEL_FLAGS --color=yes //:enzymexlamlir-opt @xla//xla/hlo/tools:hlo-translate --test_output=errors
           cp bazel-bin/enzymexlamlir-opt enzymexlamlir-opt
-          bazel build $BAZEL_FLAGS --color=yes -c dbg //:enzymexlamlir-opt --test_output=errors
-          cp bazel-bin/enzymexlamlir-opt enzymexlamlir-opt-dbg
-          
+          cp bazel-bin/external/xla/xla/hlo/tools/hlo-translate hlo-translate 
       - name: Update Nightly Release
         uses: ncipollo/release-action@v1
         if: ${{ !cancelled() && github.ref == 'refs/heads/main' && matrix.os == 'linux-x86-n2-32' }} 
@@ -237,7 +235,7 @@ jobs:
           tag: nightly
           name: Nightly Release
           body: "Latest nightly build of Enzyme-JAX."
-          artifacts: "enzymexlamlir-opt,enzymexlamlir-opt-dbg,bazel-bin/*.whl"
+          artifacts: "enzymexlamlir-opt,hlo-translate,bazel-bin/*.whl"
           allowUpdates: true
           removeArtifacts: true
           replacesArtifacts: true
