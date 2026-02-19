@@ -359,12 +359,34 @@ void initializePasses() {
   mlir::enzyme::registerRemoveTransformPass();
 
   // shardy passes
-  xla::sdy::registerSdyRoundTripExportPipeline();
-  xla::sdy::registerSdyRoundTripImportPipeline();
   mlir::sdy::registerAllSdyPassesAndPipelines();
-  xla::sdy::registerStablehloExportPipeline();
+
   xla::sdy::registerStablehloImportPipeline();
   xla::sdy::registerStablehloImportShardingsPass();
+  xla::sdy::registerStablehloRoundTripShardMapImportPass();
+  xla::sdy::registerImportSdyCustomCallsPass();
+  xla::sdy::registerOpenWhileFreeVarsShardingPass();
+  xla::sdy::registerImportFuncCallsPass();
+  xla::sdy::registerImportConstantsPass();
+
+  xla::sdy::registerStablehloExportPipeline();
+  xla::sdy::registerStablehloExportShardingsPass();
+  xla::sdy::registerStablehloExportManualReductionCollectivesPass();
+  xla::sdy::registerStablehloRoundTripExportCallbackCustomCallsPass();
+  xla::sdy::registerStablehloRoundTripShardMapExportPass();
+  xla::sdy::registerExportNamedComputationsPass();
+  xla::sdy::registerExportOpsPass();
+
+  xla::sdy::registerSdyRoundTripStablehloToHloToStablehloPass();
+  xla::sdy::registerSdyRoundTripExportShardyAttrsPass();
+  xla::sdy::registerSdyRoundTripImportShardyAttrsPass();
+  xla::sdy::registerSdyRoundTripExportOpsPass();
+  xla::sdy::registerSdyRoundTripExportPipeline();
+  xla::sdy::registerSdyRoundTripDedupMeshesPass();
+  xla::sdy::registerSdyRoundTripShardMapExportPass();
+  xla::sdy::registerSdyRoundTripShardMapImportPass();
+  xla::sdy::registerSdyRoundTripImportPipeline();
+  xla::sdy::registerSdyRoundTripTestingPipeline();
 
   // SHLO / MHLO passes
   stablehlo::registerStablehloAggressiveSimplificationPass();
