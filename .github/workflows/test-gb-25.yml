@@ -125,6 +125,7 @@ jobs:
           julia --project --color=yes -O0 build_local.jl --cc=clang --gcc_host_compiler_path= --push-cache
         working-directory: ${{ env.REACTANT_DIR }}/deps
       - name: Copy libdevice
+        if: ${{ contains(matrix.os, 'a100') }}
         timeout-minutes: 10
         shell: bash
         run: |
