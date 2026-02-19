@@ -153,10 +153,13 @@ class PatternRewriter;
 
 namespace enzymexla {
 class MultiRotateOp;
+class MultiSliceOp;
 } // namespace enzymexla
 
 // Helper function to lower MultiRotateOp into individual RotateOps
 LogicalResult lowerMultiRotateToRotates(enzymexla::MultiRotateOp op,
                                         PatternRewriter &rewriter);
+LogicalResult lowerMultiSliceToSlices(enzymexla::MultiSliceOp op,
+                                      PatternRewriter &rewriter);
 
 } // namespace mlir
