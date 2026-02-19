@@ -44,6 +44,7 @@ jobs:
       matrix:
         os:
           - linux-x86-a2-48-a100-4gpu
+          - linux-x86-ct6e-180-4tpu
         julia_version:
           - '1.11'
         xla_commit:
@@ -65,7 +66,7 @@ jobs:
         run: |
           # Artifact names cannot include forward slashes and some other characters, here we
           # do some sanitisation.
-          ARTIFACT_INDEX=${{ matrix.julia_version }}-${{ matrix.xla_commit }}-${{ matrix.gb25_commit }}-${{ matrix.reactant_commit }}
+          ARTIFACT_INDEX=${{ matrix.os}}-${{ matrix.julia_version }}-${{ matrix.xla_commit }}-${{ matrix.gb25_commit }}-${{ matrix.reactant_commit }}
           echo "ARTIFACT_INDEX=${ARTIFACT_INDEX//\//_}" >> "${GITHUB_ENV}"
       - uses: bazel-contrib/setup-bazel@0.16.0
         name: Set up Bazel
