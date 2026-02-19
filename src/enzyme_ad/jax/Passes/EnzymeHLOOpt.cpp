@@ -14312,6 +14312,27 @@ struct ConjComplexNegate final
   }
 };
 
+// (neg (imag (conj x))) -> (imag x)
+struct NegateImagConj final
+    : CheckedOpRewritePattern<stablehlo::NegOp, NegateImagConj> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::NegOp op,
+                                    PatternRewriter &rewriter) const {
+    auto imag = op.getOperand().getDefiningOp<stablehlo::ImagOp>();
+    if (!imag)
+      return failure();
+
+    auto conj = imag.getOperand().getDefiningOp<chlo::ConjOp>();
+    if (!conj)
+      return failure();
+
+    rewriter.replaceOpWithNewOp<stablehlo::ImagOp>(op, op.getType(),
+                                                   conj.getOperand());
+    return success();
+  }
+};
+
 struct GetDimensionSizeOpCanon final
     : CheckedOpRewritePattern<stablehlo::GetDimensionSizeOp,
                               GetDimensionSizeOpCanon> {
@@ -34099,6 +34120,7 @@ struct EnzymeHLOOptPass
         CompareOpCanon,
         CompareExt,
         ConjComplexNegate,
+        NegateImagConj,
         ConvertOpCanon,
         DivideSqrtToMultiplyRsqrt,
         DynamicBroadcastInDimAllDimsNonExpanding,
