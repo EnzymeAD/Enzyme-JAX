@@ -53,7 +53,8 @@ jobs:
           - 'main'
           # - '0123456789abcdef0123456789abcdef01234567'
         reactant_commit:
-          - 'main'
+          # - 'main'
+          - 'ap/cuda_tile_integration'
 
     steps:
       - name: Check GPUs
@@ -81,7 +82,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: 'EnzymeAD/Reactant.jl'
-          ref: 'main'
+          ref: ${{ matrix.reactant_commit }}
           path: 'Reactant.jl'
       - name: Set REACTANT_DIR
         # We have to use `${GITHUB_WORKSPACE}` instead of `github.workspace` because GitHub
