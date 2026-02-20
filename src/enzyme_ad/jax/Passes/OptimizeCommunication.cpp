@@ -2227,9 +2227,7 @@ struct MultiRotateCustomCallOptimize
         getNumDevicesAlongDimension(rotateSharding, rotateDimension, rotate);
 
     if (numDevicesAlongDimension == 1) {
-      return rewriter.notifyMatchFailure(
-          rotate,
-          "numDevicesAlongDimension == 1. Communication is already optimized.");
+      return lowerMultiRotateToRotates(rotate, rewriter);
     }
 
     auto rotateShape =
