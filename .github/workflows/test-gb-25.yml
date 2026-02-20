@@ -44,6 +44,7 @@ jobs:
       matrix:
         os:
           - linux-x86-a2-48-a100-4gpu
+          # - linux-x86-ct6e-180-4tpu
         julia_version:
           - '1.11'
         xla_commit:
@@ -66,7 +67,7 @@ jobs:
         run: |
           # Artifact names cannot include forward slashes and some other characters, here we
           # do some sanitisation.
-          ARTIFACT_INDEX=${{ matrix.julia_version }}-${{ matrix.xla_commit }}-${{ matrix.gb25_commit }}-${{ matrix.reactant_commit }}
+          ARTIFACT_INDEX=${{ matrix.os}}-${{ matrix.julia_version }}-${{ matrix.xla_commit }}-${{ matrix.gb25_commit }}-${{ matrix.reactant_commit }}
           echo "ARTIFACT_INDEX=${ARTIFACT_INDEX//\//_}" >> "${GITHUB_ENV}"
       - uses: bazel-contrib/setup-bazel@0.16.0
         name: Set up Bazel
@@ -125,6 +126,7 @@ jobs:
           julia --project --color=yes -O0 build_local.jl --cc=clang --gcc_host_compiler_path= --push-cache
         working-directory: ${{ env.REACTANT_DIR }}/deps
       - name: Copy libdevice
+        if: ${{ contains(matrix.os, 'a100') }}
         timeout-minutes: 10
         shell: bash
         run: |
@@ -195,6 +197,18 @@ jobs:
         shell: bash
         run: |
           OK="true"
+          if [[ '${{ contains(matrix.os, 'a100') }}' == 'true' ]]; then
+              ALL_TO_ALL_THRESHOLD=0
+              ALL_GATHER_THRESHOLD=0
+              ALL_REDUCE_THRESHOLD=0
+              COLLECTIVE_PERMUTE_THRESHOLD=354
+          elif [[ '${{ contains(matrix.os, 'tpu') }}' == 'true' ]]; then
+              ALL_TO_ALL_THRESHOLD=0
+              ALL_GATHER_THRESHOLD=20
+              ALL_REDUCE_THRESHOLD=21
+              COLLECTIVE_PERMUTE_THRESHOLD=1256
+          fi
+
           for OP in "all-to-all" "all-gather" "all-reduce" "%collective-permute-start.* ="; do
               COLLECTIVES=$(find . -name 'optimised_sharded_baroclinic_instability*.xla' -exec grep --with-filename --line-number --extended-regexp "${OP}" '{}' \;)
               NUM_COLLECTIVES=$(echo "${COLLECTIVES}" | wc -l | xargs)
@@ -205,7 +219,7 @@ jobs:
                   echo "----------"
                   echo "${COLLECTIVES}"
                   echo "----------"
-                  if [[ "${OP}" == "all-to-all" && ${NUM_COLLECTIVES} -gt 0 ]] || [[ "${OP}" == "all-gather" && ${NUM_COLLECTIVES} -gt 0 ]] || [[ "${OP}" == "all-reduce" && ${NUM_COLLECTIVES} -gt 0 ]] || [[ "${OP}" =~ "collective-permute" && ${NUM_COLLECTIVES} -gt 354 ]]; then
+                  if [[ "${OP}" == "all-to-all" && ${NUM_COLLECTIVES} -gt ${ALL_TO_ALL_THRESHOLD} ]] || [[ "${OP}" == "all-gather" && ${NUM_COLLECTIVES} -gt ${ALL_GATHER_THRESHOLD} ]] || [[ "${OP}" == "all-reduce" && ${NUM_COLLECTIVES} -gt ${ALL_REDUCE_THRESHOLD} ]] || [[ "${OP}" =~ "collective-permute" && ${NUM_COLLECTIVES} -gt ${COLLECTIVE_PERMUTE_THRESHOLD} ]]; then
                       OK="false"
                   fi
               fi
