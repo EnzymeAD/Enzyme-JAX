@@ -56,7 +56,7 @@ index dab26f5985..384036ea1d 100644
 +  auto create_slice = [&](HloInstruction* val, int64_t start, int64_t limit) {
 +    Shape slice_shape = val->shape();
 +    slice_shape.set_dimensions(dim, limit - start);
-+    std::vector<int64_t> slice_starts(full_shape.rank(), 0);
++    std::vector<int64_t> slice_starts(full_shape.dimensions_size(), 0);
 +    slice_starts[dim] = start;
 +    std::vector<int64_t> slice_limits(
 +        val->shape().dimensions().begin(),
@@ -64,14 +64,14 @@ index dab26f5985..384036ea1d 100644
 +    slice_limits[dim] = limit;
 +    return b_.AddInstruction(HloInstruction::CreateSlice(
 +        slice_shape, val, slice_starts, slice_limits,
-+        std::vector<int64_t>(full_shape.rank(), 1)));
++        std::vector<int64_t>(full_shape.dimensions_size(), 1)));
 +  };
 +
 +  HloInstruction* local_input = input.hlo();
 +  HloInstruction* padded_local_input = local_input;
 +  
 +  if (right_padding > 0) {
-+    auto paddingConfig = MakeNoPaddingConfig(full_shape.rank());
++    auto paddingConfig = MakeNoPaddingConfig(full_shape.dimensions_size());
 +    paddingConfig.mutable_dimensions(dim)->set_edge_padding_high(right_padding);
 +    auto zero = b_.AddInstruction(HloInstruction::CreateConstant(
 +        LiteralUtil::Zero(full_shape.element_type())));
@@ -95,7 +95,7 @@ index dab26f5985..384036ea1d 100644
 +          pairs.emplace_back(device, element_sharding.tile_assignment()(dst_idx));
 +        });
 +    HloInstruction* slice_to_send = create_slice(padded_local_input, 0, left_amount);
-+    left_halo = collective_ops_creator_.create_cross_partition_collective_permute(
++    left_halo = collective_ops_creator_.create_collective_permute(
 +        &b_, slice_to_send, pairs, NewChannel());
 +  }
 +
@@ -148,8 +148,8 @@ index dab26f5985..384036ea1d 100644
 +    Shape dynamic_slice_shape = padded_local_input->shape();
 +    dynamic_slice_shape.set_dimensions(dim, right_amount);
 +    
-+    std::vector<HloInstruction*> start_indices(full_shape.rank());
-+    for(int i = 0; i < full_shape.rank(); i++) {
++    std::vector<HloInstruction*> start_indices(full_shape.dimensions_size());
++    for(int i = 0; i < full_shape.dimensions_size(); i++) {
 +        start_indices[i] = zero_offset;
 +    }
 +    start_indices[dim] = start_idx;
@@ -160,7 +160,7 @@ index dab26f5985..384036ea1d 100644
 +    HloInstruction* slice_to_send = b_.AddInstruction(HloInstruction::CreateDynamicSlice(
 +        dynamic_slice_shape, padded_local_input, start_indices, slice_sizes));
 +
-+    right_halo = collective_ops_creator_.create_cross_partition_collective_permute(
++    right_halo = collective_ops_creator_.create_collective_permute(
 +        &b_, slice_to_send, pairs, NewChannel());
 +  }
 +
