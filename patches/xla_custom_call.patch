@@ -10,7 +10,7 @@ index dab26f5985..384036ea1d 100644
  
  }  // namespace
  
-@@ -385,6 +386,199 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCallSPMDInternal_RotateRight(
+@@ -385,6 +386,329 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCallSPMDInternal_RotateRight(
    return absl::OkStatus();
  }
  
@@ -164,7 +164,7 @@ index dab26f5985..384036ea1d 100644
 +        &b_, slice_to_send, pairs, NewChannel());
 +  }
 +
-+  std::vector<HloInstruction* const> concat_ops;
++  std::vector<HloInstruction*> concat_ops;
 +  if (left_halo) concat_ops.push_back(left_halo);
 +  concat_ops.push_back(padded_local_input);
 +  if (right_halo) concat_ops.push_back(right_halo);
@@ -207,15 +207,148 @@ index dab26f5985..384036ea1d 100644
 +  return absl::OkStatus();
 +}
 +
++absl::Status SpmdPartitioningVisitor::HandleCustomCallSPMDEnzymeInternal_Wrap(
++    HloInstruction* hlo) {
++  TF_ASSIGN_OR_RETURN(auto attrs, ParseOpaqueAsAttributes(hlo));
++  auto dim_it = attrs.find("dimension");
++  TF_RET_CHECK(dim_it != attrs.end())
++      << "No dimension attribute in SPMD wrap op";
++  int64_t dim = std::stoll(dim_it->second);
++
++  auto left_it = attrs.find("left_amount");
++  TF_RET_CHECK(left_it != attrs.end())
++      << "No left_amount attribute in SPMD wrap op";
++  int64_t left_amount = std::stoll(left_it->second);
++
++  auto right_it = attrs.find("right_amount");
++  TF_RET_CHECK(right_it != attrs.end())
++      << "No right_amount attribute in SPMD wrap op";
++  int64_t right_amount = std::stoll(right_it->second);
++
++  PartitionedHlo input = GetPartitionedHlo(hlo->operand(0));
++  HloSharding element_sharding = hlo->sharding().IsTuple() ? hlo->sharding().tuple_elements()[0] : hlo->sharding();
++  
++  if (element_sharding.IsReplicated() || element_sharding.IsTileMaximal()) {
++    // Leave it as is for unpartitioned cases (or pad similarly). For now just return Ok.
++  }
++
++  input = input.Reshard(element_sharding);
++  
++  const Shape& full_shape = hlo->operand(0)->shape();
++  const int64_t full_size = full_shape.dimensions(dim);
++  HloInstruction* local_input = input.hlo();
++  const int64_t shard_size = local_input->shape().dimensions(dim);
++
++  const int64_t participating_shards = CeilOfRatio(full_size, shard_size);
++  const int64_t right_padding = participating_shards * shard_size - full_size;
++
++  auto create_slice = [&](HloInstruction* val, int64_t start, int64_t limit) {
++    Shape slice_shape = val->shape();
++    slice_shape.set_dimensions(dim, limit - start);
++    std::vector<int64_t> slice_starts(full_shape.dimensions_size(), 0);
++    slice_starts[dim] = start;
++    std::vector<int64_t> slice_limits(
++        val->shape().dimensions().begin(),
++        val->shape().dimensions().end());
++    slice_limits[dim] = limit;
++    return b_.AddInstruction(HloInstruction::CreateSlice(
++        slice_shape, val, slice_starts, slice_limits,
++        std::vector<int64_t>(full_shape.dimensions_size(), 1)));
++  };
++
++  HloInstruction* left_halo = nullptr;
++  if (left_amount > 0) {
++    std::vector<std::pair<int64_t, int64_t>> pairs;
++    element_sharding.tile_assignment().Each(
++        [&](absl::Span<const int64_t> indices, int64_t device) {
++          if (indices[dim] >= participating_shards) return;
++          std::vector<int64_t> dst_idx(indices.begin(), indices.end());
++          dst_idx[dim] += 1;
++          dst_idx[dim] %= participating_shards;
++          pairs.emplace_back(device, element_sharding.tile_assignment()(dst_idx));
++        });
++
++    // We send our rightmost valid elements to our right neighbor
++    // The right neighbor receives it as its left halo.
++    HloInstruction* base_start_left = b_.AddInstruction(HloInstruction::CreateConstant(
++        LiteralUtil::CreateR0<int32_t>(shard_size - left_amount)));
++    HloInstruction* padding_val = b_.AddInstruction(HloInstruction::CreateConstant(
++        LiteralUtil::CreateR0<int32_t>(right_padding)));
++    HloInstruction* shard_offset = MakePartitionOffsets(
++      full_shape, element_sharding, MakePartitioningState().partition_id, &b_,
++      {dim})[dim];
++    HloInstruction* total_mesh_size = b_.AddInstruction(HloInstruction::CreateConstant(
++        LiteralUtil::CreateR0<int32_t>(participating_shards * shard_size)));
++    HloInstruction* shard_size_inst = b_.AddInstruction(HloInstruction::CreateConstant(
++        LiteralUtil::CreateR0<int32_t>(shard_size)));
++    HloInstruction* current_shard_end = b_.AddInstruction(HloInstruction::CreateBinary(
++        shard_offset->shape(), HloOpcode::kAdd, shard_offset, shard_size_inst));
++    HloInstruction* is_last = b_.AddInstruction(HloInstruction::CreateCompare(
++        ShapeUtil::ChangeElementType(shard_offset->shape(), PRED), 
++        current_shard_end, total_mesh_size, Comparison::Direction::kEq));
++    HloInstruction* zero_offset = b_.AddInstruction(HloInstruction::CreateConstant(
++        LiteralUtil::CreateR0<int32_t>(0LL)));
++    HloInstruction* offset = b_.AddInstruction(HloInstruction::CreateTernary(
++        shard_offset->shape(), HloOpcode::kSelect, is_last, padding_val, zero_offset));
++    HloInstruction* start_idx = b_.AddInstruction(HloInstruction::CreateBinary(
++        base_start_left->shape(), HloOpcode::kSubtract, base_start_left, offset));
++
++    Shape dynamic_slice_shape = local_input->shape();
++    dynamic_slice_shape.set_dimensions(dim, left_amount);
++    std::vector<HloInstruction*> start_indices(full_shape.dimensions_size(), zero_offset);
++    start_indices[dim] = start_idx;
++    std::vector<int64_t> slice_sizes(local_input->shape().dimensions().begin(), local_input->shape().dimensions().end());
++    slice_sizes[dim] = left_amount;
++
++    HloInstruction* slice_to_send = b_.AddInstruction(HloInstruction::CreateDynamicSlice(
++        dynamic_slice_shape, local_input, start_indices, slice_sizes));
++
++    left_halo = collective_ops_creator_.create_collective_permute(
++        &b_, slice_to_send, pairs, NewChannel());
++  }
++
++  HloInstruction* right_halo = nullptr;
++  if (right_amount > 0) {
++    std::vector<std::pair<int64_t, int64_t>> pairs;
++    element_sharding.tile_assignment().Each(
++        [&](absl::Span<const int64_t> indices, int64_t device) {
++          if (indices[dim] >= participating_shards) return;
++          std::vector<int64_t> dst_idx(indices.begin(), indices.end());
++          dst_idx[dim] += participating_shards - 1;
++          dst_idx[dim] %= participating_shards;
++          pairs.emplace_back(device, element_sharding.tile_assignment()(dst_idx));
++        });
++
++    // Send our leftmost elements to our left neighbor
++    HloInstruction* slice_to_send = create_slice(local_input, 0LL, right_amount);
++    right_halo = collective_ops_creator_.create_collective_permute(
++        &b_, slice_to_send, pairs, NewChannel());
++  }
++
++  std::vector<HloInstruction*> concat_ops;
++  if (left_halo) concat_ops.push_back(left_halo);
++  concat_ops.push_back(local_input);
++  if (right_halo) concat_ops.push_back(right_halo);
++
++  std::vector<HloInstruction* const> const_concat_ops(concat_ops.begin(), concat_ops.end());
++  HloInstruction* result = b_.AddInstruction(HloInstruction::CreateConcatenate(
++      hlo->shape(), const_concat_ops, dim));
++
++  SetPartitionedHlo(hlo, [&] { return result; });
++  return absl::OkStatus();
++}
  std::unique_ptr<HloInstruction> CreateCustomCallSPMDInternal_RotateRight(
      HloInstruction* input, int64_t dim, int64_t amount) {
    std::string opaque = absl::StrCat("dimension=", dim, ",amount=", amount);
-@@ -428,6 +622,10 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCall(HloInstruction* hlo) {
+@@ -428,6 +622,13 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCall(HloInstruction* hlo) {
      return HandleCustomCallSPMDInternal_RotateRight(hlo);
    }
  
 +  if (hlo->custom_call_target() == kSPMDOpMultiRotate) {
 +    return HandleCustomCallSPMDEnzymeInternal_MultiRotate(hlo);
++  }
++  if (hlo->custom_call_target() == "_SPMDEnzymeInternalOp_Wrap") {
++    return HandleCustomCallSPMDEnzymeInternal_Wrap(hlo);
 +  }
 +
    if (hlo->sharding().HasUniqueDevice()) {
