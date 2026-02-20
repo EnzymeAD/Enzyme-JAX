@@ -132,6 +132,51 @@ LogicalResult lowerMultiRotateToRotates(enzymexla::MultiRotateOp op,
   rewriter.replaceOp(op, replacements);
   return success();
 }
+
+LogicalResult lowerMultiSliceToSlices(enzymexla::MultiSliceOp op,
+                                      PatternRewriter &rewriter) {
+  int32_t amount = op.getAmount();
+  int32_t totalResults = amount + 1;
+  int32_t dim = op.getDimension();
+
+  auto baseStartIndices = SmallVector<int64_t>(op.getStartIndices());
+  auto baseLimitIndices = SmallVector<int64_t>(op.getLimitIndices());
+  auto strides = SmallVector<int64_t>(op.getStrides());
+
+  // Get sharding info if present
+  auto shard = sdy::getShardingPerValue(op);
+
+  SmallVector<Value> replacements(totalResults);
+
+  for (int i = 0; i < totalResults; i++) {
+    // Copy and adjust indices for this slice
+    auto startIndices = baseStartIndices;
+    auto limitIndices = baseLimitIndices;
+
+    if (dim >= 0 && dim < (int64_t)startIndices.size()) {
+      startIndices[dim] += i;
+      limitIndices[dim] += i;
+    }
+
+    auto sliceOp = rewriter.create<stablehlo::SliceOp>(
+        op.getLoc(), op.getOperand(),
+        rewriter.getDenseI64ArrayAttr(startIndices),
+        rewriter.getDenseI64ArrayAttr(limitIndices),
+        rewriter.getDenseI64ArrayAttr(strides));
+
+    // Propagate sharding if present
+    if (shard) {
+      sdy::setShardings(sliceOp, shard);
+    }
+
+    replacements[i] = sliceOp.getResult();
+  }
+
+  rewriter.replaceOp(op, replacements);
+
+  return success();
+}
+
 } // namespace mlir
 
 // Check if any of the pad sizes are negative
@@ -32336,46 +32381,7 @@ struct LowerMultiSlice final
 
   LogicalResult matchAndRewriteImpl(enzymexla::MultiSliceOp op,
                                     PatternRewriter &rewriter) const {
-    int32_t amount = op.getAmount();
-    int32_t totalResults = amount + 1;
-    int32_t dim = op.getDimension();
-
-    auto baseStartIndices = SmallVector<int64_t>(op.getStartIndices());
-    auto baseLimitIndices = SmallVector<int64_t>(op.getLimitIndices());
-    auto strides = SmallVector<int64_t>(op.getStrides());
-
-    // Get sharding info if present
-    auto shard = sdy::getShardingPerValue(op);
-
-    SmallVector<Value> replacements(totalResults);
-
-    for (int i = 0; i < totalResults; i++) {
-      // Copy and adjust indices for this slice
-      auto startIndices = baseStartIndices;
-      auto limitIndices = baseLimitIndices;
-
-      if (dim >= 0 && dim < (int64_t)startIndices.size()) {
-        startIndices[dim] += i;
-        limitIndices[dim] += i;
-      }
-
-      auto sliceOp = rewriter.create<stablehlo::SliceOp>(
-          op.getLoc(), op.getOperand(),
-          rewriter.getDenseI64ArrayAttr(startIndices),
-          rewriter.getDenseI64ArrayAttr(limitIndices),
-          rewriter.getDenseI64ArrayAttr(strides));
-
-      // Propagate sharding if present
-      if (shard) {
-        sdy::setShardings(sliceOp, shard);
-      }
-
-      replacements[i] = sliceOp.getResult();
-    }
-
-    rewriter.replaceOp(op, replacements);
-
-    return success();
+    return lowerMultiSliceToSlices(op, rewriter);
   }
 };
 

@@ -1,5 +1,6 @@
 #include "mhlo/IR/hlo_ops.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include <llvm/ADT/STLExtras.h>
 #ifdef __clang__
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wmissing-braces"
@@ -25,6 +26,7 @@
 
 #include "src/enzyme_ad/jax/Utils.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/DebugLog.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -2275,6 +2277,131 @@ struct RotateToPadCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
 
     rewriter.replaceOp(rotate, addOp);
     return success();
+  }
+};
+
+template <typename T> T ceilDiv(T a, T b) { return (a + b - 1) / b; }
+
+struct MultiSliceSpmdOptimize
+    : public OpRewritePattern<enzymexla::MultiSliceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::MultiSliceOp slice,
+                                PatternRewriter &rewriter) const override {
+    if (slice->getParentOfType<sdy::ManualComputationOp>()) {
+      return failure();
+    }
+
+    auto sliceDimension = slice.getDimension();
+    auto shardings = mlir::sdy::getShardingPerValue(slice);
+    if (!shardings) {
+      return rewriter.notifyMatchFailure(slice, "No sharding found.");
+    }
+    auto sliceSharding = shardings.getSharding(0);
+
+    int64_t numDevicesAlongDimension =
+        getNumDevicesAlongDimension(sliceSharding, sliceDimension, slice);
+
+    if (numDevicesAlongDimension == 1) {
+      return lowerMultiSliceToSlices(slice, rewriter);
+    }
+
+    auto sliceShape =
+        cast<RankedTensorType>(slice.getOperand().getType()).getShape();
+    auto sliceOutputShape =
+        cast<RankedTensorType>(slice->getResult(0).getType()).getShape();
+
+    // We need to calculate shard size and padding
+    TensorShardingAttr op_shardings[] = {sliceSharding};
+    auto meshAttr = mlir::sdy::getCommonMesh(op_shardings, op_shardings, slice);
+    if (meshAttr == nullptr) {
+      return rewriter.notifyMatchFailure(slice,
+                                         "operands have different shardings");
+    }
+
+    Value input = slice.getOperand();
+    size_t rank = sliceShape.size();
+    RankedTensorType inputTy = cast<RankedTensorType>(input.getType());
+    RankedTensorType outputTy =
+        cast<RankedTensorType>(slice->getResult(0).getType());
+
+    SmallVector<int64_t> meshSize(sliceShape.size());
+    LDBG() << "meshSize";
+    for (unsigned i = 0; i < rank; i++) {
+      meshSize[i] = 1;
+      for (auto dimSharding : sliceSharding.getDimShardings()[i].getAxes()) {
+        meshSize[i] *= meshAttr.getAxisSize(dimSharding.getName());
+      }
+      LDBG() << meshSize[i];
+    }
+
+    LDBG() << "localShape";
+    SmallVector<int64_t> localShape(sliceShape.size());
+    for (unsigned i = 0; i < rank; i++) {
+      localShape[i] = sliceShape[i] / meshSize[i];
+      LDBG() << localShape[i];
+    }
+    LDBG() << "localOutputShape";
+    SmallVector<int64_t> localOutputShape(sliceShape.size());
+    for (unsigned i = 0; i < rank; i++) {
+      localOutputShape[i] = sliceOutputShape[i] / meshSize[i];
+      LDBG() << localOutputShape[i];
+    }
+
+    SmallVector<StringAttr> manualAxes;
+    if (false) {
+    } else {
+      updateManualComputationAxesShape(sliceSharding, rewriter, slice,
+                                       manualAxes, localShape, sliceDimension);
+    }
+
+    // Create Manual Computation
+    SmallVector<Value> manualOps = {input};
+    auto inputLocalType =
+        getLocalType(inputTy, sliceSharding, manualAxes, slice);
+
+    SmallVector<Type> manualTypes;
+    for (auto res : slice.getResults()) {
+      (void)res;
+      manualTypes.push_back(outputTy);
+    }
+
+    TensorShardingPerValueAttr in_shardings =
+        TensorShardingPerValueAttr::get(slice.getContext(), {sliceSharding});
+
+    SmallVector<TensorShardingAttr> out_shardings_vec(slice.getNumResults(),
+                                                      sliceSharding);
+    TensorShardingPerValueAttr out_shardings = TensorShardingPerValueAttr::get(
+        slice.getContext(), ArrayRef<TensorShardingAttr>(out_shardings_vec));
+
+    auto manual = sdy::ManualComputationOp::create(
+        rewriter, slice.getLoc(), manualTypes, manualOps, in_shardings,
+        out_shardings, ArrayRef<StringAttr>(manualAxes));
+
+    SmallVector<Type, 1> entryTypes;
+    entryTypes.push_back(inputLocalType);
+    SmallVector<Location, 1> entryLocs;
+    entryLocs.push_back(slice.getLoc());
+
+    Block *blk = rewriter.createBlock(
+        &manual.getBody(), manual.getBody().begin(), entryTypes, entryLocs);
+
+    Value localInput = blk->getArgument(0);
+    LDBG() << localInput;
+
+    // rewriter.create<stablehlo::CollectivePermuteOp>(
+    //   slice.getLoc(), sliceToSend, pairAttr,
+    //   stablehlo::ChannelHandleAttr::get(
+    //     slice.getContext(), /*handle*/ 1, /*type*/ 0))
+    //   .getResult();
+
+    LDBG() << localInput;
+    LDBG() << inputLocalType;
+    LDBG() << manual;
+
+    // rewriter.create<sdy::ReturnOp>(rotate.getLoc(), results);
+
+    return failure();
   }
 };
 
@@ -4648,6 +4775,10 @@ struct OptimizeCommunicationPass
     if (multirotate_spmd > 0)
       patterns.add<MultiRotateSpmdOptimize>(context,
                                             PatternBenefit(multirotate_spmd));
+
+    if (multislice_spmd > 0)
+      patterns.add<MultiSliceSpmdOptimize>(context,
+                                           PatternBenefit(multislice_spmd));
 
     if (rotate_to_pad_comm > 0)
       patterns.add<RotateToPadCommOptimize>(context,
