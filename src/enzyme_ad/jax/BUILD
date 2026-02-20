@@ -1436,6 +1436,7 @@ cc_library(
         "@shardy//shardy/dialect/sdy/transforms/export:passes",
         "@shardy//shardy/dialect/sdy/transforms/import:passes",
         "@xla//xla/service/spmd/shardy/stablehlo_round_trip:export_shardings",
+        "@xla//xla/service/spmd/shardy/stablehlo_round_trip:export_ops",
         "@xla//xla/service/spmd/shardy/stablehlo_round_trip:stablehlo_import",
         "@xla//xla/service/spmd/shardy/stablehlo_round_trip:stablehlo_export",
         "@xla//xla/service/spmd/shardy/sdy_round_trip/test_utils:testing_pipeline",
