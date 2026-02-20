@@ -1,4 +1,4 @@
-// RUN: %enzymexlamlir-opt %s --optimize-communication="multislice_custom_call=1" | FileCheck %s
+// RUN: enzymexlamlir-opt %s --optimize-communication="multislice_custom_call=1" | FileCheck %s
 
 module  {
   sdy.mesh @mesh = <["a"=2]>
