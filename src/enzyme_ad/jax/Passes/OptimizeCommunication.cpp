@@ -2206,6 +2206,129 @@ struct RotateSpmdOptimize : public OpRewritePattern<enzymexla::RotateOp> {
   }
 };
 
+struct MultiRotateCustomCallOptimize
+    : public OpRewritePattern<enzymexla::MultiRotateOp> {
+
+  MultiRotateCustomCallOptimize(MLIRContext *context,
+                                PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit) {}
+  LogicalResult matchAndRewrite(enzymexla::MultiRotateOp rotate,
+                                PatternRewriter &rewriter) const override {
+    if (rotate->getParentOfType<sdy::ManualComputationOp>())
+      return failure();
+
+    auto rotateDimension = rotate.getDimension();
+    auto shardings = mlir::sdy::getShardingPerValue(rotate);
+    if (!shardings)
+      return rewriter.notifyMatchFailure(rotate, "No sharding found.");
+    auto rotateSharding = shardings.getSharding(0);
+
+    int64_t numDevicesAlongDimension =
+        getNumDevicesAlongDimension(rotateSharding, rotateDimension, rotate);
+
+    if (numDevicesAlongDimension == 1) {
+      return lowerMultiRotateToRotates(rotate, rewriter);
+    }
+
+    auto rotateShape =
+        cast<RankedTensorType>(rotate.getOperand().getType()).getShape();
+    (void)rotateShape;
+    assert(rotateShape[rotateDimension] > 0);
+
+    std::string opaque =
+        "dimension=" + std::to_string(rotateDimension) +
+        ",left_amount=" + std::to_string(rotate.getLeftAmount()) +
+        ",right_amount=" + std::to_string(rotate.getRightAmount());
+
+    auto fnSym = rewriter.getStringAttr("_SPMDEnzymeInternalOp_MultiRotate");
+
+    SmallVector<TensorShardingAttr> opShardings(rotate.getNumResults(),
+                                                rotateSharding);
+
+    auto ccall = rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
+        rotate, rotate->getResultTypes(), rotate->getOperands(), fnSym,
+        /*has_side_effect=*/rewriter.getBoolAttr(false),
+        /*backend_config=*/rewriter.getStringAttr(opaque),
+        /*api_version=*/nullptr,
+        /*called_computations=*/nullptr,
+        /*operand_layouts=*/nullptr,
+        /*result_layouts=*/nullptr,
+        /*output_operand_aliases=*/nullptr);
+    mlir::sdy::setShardings(ccall, TensorShardingPerValueAttr::get(
+                                       rotate.getContext(), opShardings));
+    return success();
+  }
+};
+
+struct MultiSliceCustomCallOptimize
+    : public OpRewritePattern<enzymexla::MultiSliceOp> {
+
+  MultiSliceCustomCallOptimize(MLIRContext *context, PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit) {}
+
+  std::string serializeDenseI64ArrayAttr(ArrayRef<int64_t> array) const {
+    std::string result = "[";
+    for (size_t i = 0; i < array.size(); ++i) {
+      result += std::to_string(array[i]);
+      if (i < array.size() - 1)
+        result += ", ";
+    }
+    result += "]";
+    return result;
+  }
+
+  LogicalResult matchAndRewrite(enzymexla::MultiSliceOp slice,
+                                PatternRewriter &rewriter) const override {
+    if (slice->getParentOfType<sdy::ManualComputationOp>())
+      return failure();
+
+    auto rotateDimension = slice.getDimension();
+    auto shardings = mlir::sdy::getShardingPerValue(slice);
+    if (!shardings)
+      return rewriter.notifyMatchFailure(slice, "No sharding found.");
+    auto rotateSharding = shardings.getSharding(0);
+
+    int64_t numDevicesAlongDimension =
+        getNumDevicesAlongDimension(rotateSharding, rotateDimension, slice);
+
+    if (numDevicesAlongDimension == 1) {
+      return rewriter.notifyMatchFailure(
+          slice,
+          "numDevicesAlongDimension == 1. Communication is already optimized.");
+    }
+
+    std::string start_indices =
+        serializeDenseI64ArrayAttr(slice.getStartIndices());
+    std::string limit_indices =
+        serializeDenseI64ArrayAttr(slice.getLimitIndices());
+    std::string strides = serializeDenseI64ArrayAttr(slice.getStrides());
+
+    std::string opaque = "dimension=" + std::to_string(rotateDimension) +
+                         ",amount=" + std::to_string(slice.getAmount()) +
+                         ",start_indices=" + start_indices +
+                         ",limit_indices=" + limit_indices +
+                         ",strides=" + strides;
+
+    auto fnSym = rewriter.getStringAttr("_SPMDEnzymeInternalOp_MultiSlice");
+
+    SmallVector<TensorShardingAttr> opShardings(slice.getNumResults(),
+                                                rotateSharding);
+
+    auto ccall = rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
+        slice, slice->getResultTypes(), slice->getOperands(), fnSym,
+        /*has_side_effect=*/rewriter.getBoolAttr(false),
+        /*backend_config=*/rewriter.getStringAttr(opaque),
+        /*api_version=*/nullptr,
+        /*called_computations=*/nullptr,
+        /*operand_layouts=*/nullptr,
+        /*result_layouts=*/nullptr,
+        /*output_operand_aliases=*/nullptr);
+    mlir::sdy::setShardings(ccall, TensorShardingPerValueAttr::get(
+                                       slice.getContext(), opShardings));
+    return success();
+  }
+};
+
 struct RotateToPadCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -4648,6 +4771,14 @@ struct OptimizeCommunicationPass
     if (multirotate_spmd > 0)
       patterns.add<MultiRotateSpmdOptimize>(context,
                                             PatternBenefit(multirotate_spmd));
+
+    if (multirotate_custom_call > 0)
+      patterns.add<MultiRotateCustomCallOptimize>(
+          context, PatternBenefit(multirotate_custom_call));
+
+    if (multislice_custom_call > 0)
+      patterns.add<MultiSliceCustomCallOptimize>(
+          context, PatternBenefit(multislice_custom_call));
 
     if (rotate_to_pad_comm > 0)
       patterns.add<RotateToPadCommOptimize>(context,

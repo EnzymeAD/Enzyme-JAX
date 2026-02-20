@@ -910,7 +910,19 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*CLI argument=*/"multirotate_spmd",
        /*type=*/"int",
        /*default=*/"0",
+       /*description=*/"Convert MultiRotate to Manual Computation with CollectivePermute">,
+       Option<
+       /*C++ variable name=*/"multirotate_custom_call",
+       /*CLI argument=*/"multirotate_custom_call",
+       /*type=*/"int",
+       /*default=*/"0",
        /*description=*/"Convert MultiRotate to Spmd custom call">,
+       Option<
+       /*C++ variable name=*/"multislice_custom_call",
+       /*CLI argument=*/"multislice_custom_call",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Convert MultiSlice to Spmd custom call">,
        Option<
        /*C++ variable name=*/"rotate_to_pad_comm",
        /*CLI argument=*/"rotate_to_pad_comm",
