@@ -2209,7 +2209,8 @@ struct RotateSpmdOptimize : public OpRewritePattern<enzymexla::RotateOp> {
 struct MultiRotateCustomCallOptimize
     : public OpRewritePattern<enzymexla::MultiRotateOp> {
 
-  MultiRotateCustomCallOptimize(MLIRContext *context, PatternBenefit benefit = 1)
+  MultiRotateCustomCallOptimize(MLIRContext *context,
+                                PatternBenefit benefit = 1)
       : OpRewritePattern(context, benefit) {}
   LogicalResult matchAndRewrite(enzymexla::MultiRotateOp rotate,
                                 PatternRewriter &rewriter) const override {
@@ -2237,9 +2238,9 @@ struct MultiRotateCustomCallOptimize
     assert(rotateShape[rotateDimension] > 0);
 
     std::string opaque =
-        "dimension=" + std::to_string(rotateDimension) + ",left_amount=" +
-        std::to_string(rotate.getLeftAmount()) + ",right_amount=" + 
-        std::to_string(rotate.getRightAmount());
+        "dimension=" + std::to_string(rotateDimension) +
+        ",left_amount=" + std::to_string(rotate.getLeftAmount()) +
+        ",right_amount=" + std::to_string(rotate.getRightAmount());
 
     auto fnSym = rewriter.getStringAttr("_SPMDEnzymeInternalOp_MultiRotate");
 
@@ -2255,7 +2256,8 @@ struct MultiRotateCustomCallOptimize
         /*operand_layouts=*/nullptr,
         /*result_layouts=*/nullptr,
         /*output_operand_aliases=*/nullptr);
-    mlir::sdy::setShardings(ccall, TensorShardingPerValueAttr::get(rotate.getContext(), opShardings));
+    mlir::sdy::setShardings(ccall, TensorShardingPerValueAttr::get(
+                                       rotate.getContext(), opShardings));
     return success();
   }
 };
@@ -2297,16 +2299,17 @@ struct MultiSliceCustomCallOptimize
           "numDevicesAlongDimension == 1. Communication is already optimized.");
     }
 
-    std::string start_indices = serializeDenseI64ArrayAttr(slice.getStartIndices());
-    std::string limit_indices = serializeDenseI64ArrayAttr(slice.getLimitIndices());
+    std::string start_indices =
+        serializeDenseI64ArrayAttr(slice.getStartIndices());
+    std::string limit_indices =
+        serializeDenseI64ArrayAttr(slice.getLimitIndices());
     std::string strides = serializeDenseI64ArrayAttr(slice.getStrides());
 
-    std::string opaque =
-        "dimension=" + std::to_string(rotateDimension) + 
-        ",amount=" + std::to_string(slice.getAmount()) +
-        ",start_indices=" + start_indices +
-        ",limit_indices=" + limit_indices + 
-        ",strides=" + strides;
+    std::string opaque = "dimension=" + std::to_string(rotateDimension) +
+                         ",amount=" + std::to_string(slice.getAmount()) +
+                         ",start_indices=" + start_indices +
+                         ",limit_indices=" + limit_indices +
+                         ",strides=" + strides;
 
     auto fnSym = rewriter.getStringAttr("_SPMDEnzymeInternalOp_MultiSlice");
 
@@ -2322,7 +2325,8 @@ struct MultiSliceCustomCallOptimize
         /*operand_layouts=*/nullptr,
         /*result_layouts=*/nullptr,
         /*output_operand_aliases=*/nullptr);
-    mlir::sdy::setShardings(ccall, TensorShardingPerValueAttr::get(slice.getContext(), opShardings));
+    mlir::sdy::setShardings(ccall, TensorShardingPerValueAttr::get(
+                                       slice.getContext(), opShardings));
     return success();
   }
 };
@@ -4771,12 +4775,12 @@ struct OptimizeCommunicationPass
                                             PatternBenefit(multirotate_spmd));
 
     if (multirotate_custom_call > 0)
-      patterns.add<MultiRotateCustomCallOptimize>(context,
-                                            PatternBenefit(multirotate_custom_call));
+      patterns.add<MultiRotateCustomCallOptimize>(
+          context, PatternBenefit(multirotate_custom_call));
 
     if (multislice_custom_call > 0)
-      patterns.add<MultiSliceCustomCallOptimize>(context,
-                                            PatternBenefit(multislice_custom_call));
+      patterns.add<MultiSliceCustomCallOptimize>(
+          context, PatternBenefit(multislice_custom_call));
 
     if (rotate_to_pad_comm > 0)
       patterns.add<RotateToPadCommOptimize>(context,
