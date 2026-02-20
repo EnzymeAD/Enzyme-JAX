@@ -2329,6 +2329,51 @@ struct MultiSliceCustomCallOptimize
   }
 };
 
+
+struct WrapCustomCallOptimize : public OpRewritePattern<enzymexla::WrapOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::WrapOp wrap,
+                                PatternRewriter &rewriter) const override {
+    if (wrap->getParentOfType<sdy::ManualComputationOp>())
+      return failure();
+
+    auto rotateDimension = wrap.getDimension();
+    auto rotateSharding = mlir::sdy::getSharding(wrap);
+    if (!rotateSharding)
+      return failure();
+
+    int64_t numDevicesAlongDimension =
+        getNumDevicesAlongDimension(rotateSharding, rotateDimension, wrap);
+
+    if (numDevicesAlongDimension == 1) {
+      return rewriter.notifyMatchFailure(
+          wrap,
+          "numDevicesAlongDimension == 1. Communication is already optimized.");
+    }
+
+    auto leftAmount = wrap.getLhs();
+    auto rightAmount = wrap.getRhs();
+
+    std::string opaque = "dimension=" + std::to_string(rotateDimension) +
+                         ",left_amount=" + std::to_string(leftAmount) +
+                         ",right_amount=" + std::to_string(rightAmount);
+
+    auto fnSym = rewriter.getStringAttr("_SPMDEnzymeInternalOp_Wrap");
+
+    auto ccall = rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
+        wrap, wrap->getResultTypes(), wrap->getOperands(), fnSym,
+        /*has_side_effect=*/rewriter.getBoolAttr(false),
+        /*backend_config=*/rewriter.getStringAttr(opaque),
+        /*api_version=*/nullptr,
+        /*called_computations=*/nullptr,
+        /*operand_layouts=*/nullptr,
+        /*result_layouts=*/nullptr,
+        /*output_operand_aliases=*/nullptr);
+    mlir::sdy::setSharding(ccall.getResult(0), rotateSharding);
+    return success();
+  }
+};
 struct RotateToPadCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -4783,6 +4828,10 @@ struct OptimizeCommunicationPass
     if (rotate_to_pad_comm > 0)
       patterns.add<RotateToPadCommOptimize>(context,
                                             PatternBenefit(rotate_to_pad_comm));
+
+    if (wrap_custom_call > 0)
+
+      patterns.add<WrapCustomCallOptimize>(context, PatternBenefit(wrap_custom_call));
 
     if (wrap_comm > 0)
       patterns.add<WrapCommOptimize>(channel_id, context,

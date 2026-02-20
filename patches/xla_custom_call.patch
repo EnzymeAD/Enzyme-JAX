@@ -164,7 +164,7 @@ index dab26f5985..384036ea1d 100644
 +        &b_, slice_to_send, pairs, NewChannel());
 +  }
 +
-+  std::vector<HloInstruction*> concat_ops;
++  std::vector<HloInstruction* const> concat_ops;
 +  if (left_halo) concat_ops.push_back(left_halo);
 +  concat_ops.push_back(padded_local_input);
 +  if (right_halo) concat_ops.push_back(right_halo);
@@ -225,11 +225,12 @@ diff --git a/xla/service/spmd/spmd_partitioner.h b/xla/service/spmd/spmd_partiti
 index 21bf958a2b..bc2f0a59b3 100644
 --- a/xla/service/spmd/spmd_partitioner.h
 +++ b/xla/service/spmd/spmd_partitioner.h
-@@ -617,6 +617,7 @@ class SpmdPartitioningVisitor : public DfsHloVisitorWithDefault {
+@@ -617,6 +617,8 @@ class SpmdPartitioningVisitor : public DfsHloVisitorWithDefault {
    absl::Status HandleCustomCallTopK(HloInstruction* hlo);
    // Convenient custom ops defined by the partitioner itself.
    absl::Status HandleCustomCallSPMDInternal_RotateRight(HloInstruction* hlo);
 +  absl::Status HandleCustomCallSPMDEnzymeInternal_MultiRotate(HloInstruction* hlo);
++  absl::Status HandleCustomCallSPMDEnzymeInternal_Wrap(HloInstruction* hlo);
  
    virtual std::unique_ptr<SpmdPartitioningVisitor> Clone() const;
  
