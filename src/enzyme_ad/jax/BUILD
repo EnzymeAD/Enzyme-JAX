@@ -1456,6 +1456,11 @@ cc_library(
         "@xla//xla/service/spmd/shardy/sdy_round_trip:export_shardy_attrs",
         "@xla//xla/service/spmd/shardy/sdy_round_trip:import_shardy_attrs",
         "@xla//xla/service/spmd/shardy/sdy_round_trip:dedup_meshes",
+        "@xla//xla/service/spmd/shardy/sdy_round_trip:pipelines",
+
+        # CUDA Tile
+        "@cuda_tile//:CudaTileDialect",
+        "@cuda_tile//:CudaTileTransforms",
     ],
 )
 

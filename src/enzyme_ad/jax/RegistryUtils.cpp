@@ -141,6 +141,9 @@
 #include "triton/Dialect/TritonNvidiaGPU/Transforms/Passes.h"
 #include "triton/Target/LLVMIR/Passes.h"
 
+#include "cuda_tile/Dialect/CudaTile/IR/Dialect.h"
+#include "cuda_tile/Dialect/CudaTile/Transforms/Passes.h"
+
 #include "src/enzyme_ad/jax/TransformOps/TransformOps.h"
 
 namespace mlir {
@@ -241,9 +244,7 @@ void registerDialects(mlir::DialectRegistry &registry) {
   registry.insert<mlir::stablehlo::check::CheckDialect>();
   registry.insert<mlir::chlo::ChloDialect>();
   registry.insert<mlir::vector::VectorDialect>();
-  // FIXME: add once https://github.com/triton-lang/triton/issues/8348 is fixed
-  // upstream
-  // registry.insert<mlir::nvgpu::NVGPUDialect>();
+  registry.insert<mlir::nvgpu::NVGPUDialect>();
   registry.insert<mlir::transform::TransformDialect>();
   registry.insert<mlir::ub::UBDialect>();
   registry.insert<mlir::sparse_tensor::SparseTensorDialect>();
@@ -258,6 +259,7 @@ void registerDialects(mlir::DialectRegistry &registry) {
   registry.insert<mlir::triton::TritonDialect>();
   registry.insert<mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect>();
   registry.insert<mlir::triton::gpu::TritonGPUDialect>();
+  registry.insert<mlir::cuda_tile::CudaTileDialect>();
 }
 
 void loadAllRegisteredDialects(mlir::MLIRContext &context) {
@@ -283,9 +285,7 @@ void loadAllRegisteredDialects(mlir::MLIRContext &context) {
   context.loadDialect<mlir::stablehlo::check::CheckDialect>();
   context.loadDialect<mlir::chlo::ChloDialect>();
   context.loadDialect<mlir::vector::VectorDialect>();
-  // FIXME: add once https://github.com/triton-lang/triton/issues/8348 is fixed
-  // upstream
-  // context.loadDialect<mlir::nvgpu::NVGPUDialect>();
+  context.loadDialect<mlir::nvgpu::NVGPUDialect>();
   context.loadDialect<mlir::transform::TransformDialect>();
   context.loadDialect<mlir::ub::UBDialect>();
   context.loadDialect<mlir::sparse_tensor::SparseTensorDialect>();
@@ -297,6 +297,7 @@ void loadAllRegisteredDialects(mlir::MLIRContext &context) {
   context.loadDialect<mlir::triton::TritonDialect>();
   context.loadDialect<mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect>();
   context.loadDialect<mlir::triton::gpu::TritonGPUDialect>();
+  context.loadDialect<mlir::cuda_tile::CudaTileDialect>();
 }
 
 void registerInterfaces(mlir::DialectRegistry &registry) {
@@ -446,6 +447,9 @@ void initializePasses() {
   mlir::triton::registerConvertTritonGPUToLLVMPass();
   mlir::triton::registerConvertNVGPUToLLVMPass();
   mlir::registerLLVMDIScopePass();
+
+  // CUDA Tile passes
+  mlir::cuda_tile::registerCudaTilePasses();
 }
 
 } // namespace enzyme
