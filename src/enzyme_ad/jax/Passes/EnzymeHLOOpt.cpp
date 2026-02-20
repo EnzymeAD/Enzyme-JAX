@@ -33096,6 +33096,114 @@ struct UseMultiRotateNeutralResult
   }
 };
 
+// When a MultiRotateOp's results are all consumed by PadOps that pad along
+// a dimension OTHER than the rotate dimension, hoist the pad before the
+// multi_rotate. This enables MultiRotateSpmdOptimize to succeed when a
+// non-rotate dimension is not evenly divisible by the mesh device count.
+// Pad and rotate commute on independent dimensions because rotation moves
+// entire slices along its dimension without inspecting other dimensions.
+struct HoistPadThroughMultiRotate final
+    : CheckedOpRewritePattern<enzymexla::MultiRotateOp,
+                              HoistPadThroughMultiRotate> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(enzymexla::MultiRotateOp op,
+                                    PatternRewriter &rewriter) const {
+    int32_t rotateDim = op.getDimension();
+    int32_t totalResults = op.getLeftAmount() + op.getRightAmount() + 1;
+
+    stablehlo::PadOp referencePad = nullptr;
+
+    for (int i = 0; i < totalResults; i++) {
+      Value result = op.getResult(i);
+      if (result.use_empty())
+        continue;
+
+      if (!result.hasOneUse())
+        return failure();
+
+      auto pad = dyn_cast<stablehlo::PadOp>(*result.getUsers().begin());
+      if (!pad)
+        return failure();
+
+      if (pad.getOperand() != result)
+        return failure();
+
+      if (!referencePad) {
+        referencePad = pad;
+
+        if (llvm::any_of(pad.getInteriorPadding(),
+                         [](int64_t v) { return v != 0; }))
+          return failure();
+
+        if (pad.getEdgePaddingLow()[rotateDim] != 0 ||
+            pad.getEdgePaddingHigh()[rotateDim] != 0)
+          return failure();
+
+        continue;
+      }
+
+      if (pad.getEdgePaddingLow() != referencePad.getEdgePaddingLow())
+        return failure();
+      if (pad.getEdgePaddingHigh() != referencePad.getEdgePaddingHigh())
+        return failure();
+      if (pad.getInteriorPadding() != referencePad.getInteriorPadding())
+        return failure();
+      if (pad.getPaddingValue() != referencePad.getPaddingValue())
+        return failure();
+    }
+
+    if (!referencePad)
+      return failure();
+
+    auto paddedResultType = referencePad.getType();
+
+    rewriter.setInsertionPoint(op);
+    auto inputPad = stablehlo::PadOp::create(
+        rewriter, op.getLoc(), paddedResultType, op.getOperand(),
+        referencePad.getPaddingValue(), referencePad.getEdgePaddingLow(),
+        referencePad.getEdgePaddingHigh(), referencePad.getInteriorPadding());
+
+    if (auto *defOp = op.getOperand().getDefiningOp()) {
+      if (auto inputSharding = sdy::getShardingPerValue(defOp)) {
+        for (auto [idx, res] : llvm::enumerate(defOp->getResults())) {
+          if (res == op.getOperand()) {
+            sdy::setSharding(inputPad, inputSharding.getShardings()[idx]);
+            break;
+          }
+        }
+      }
+    }
+
+    SmallVector<Type> newResultTypes(totalResults, paddedResultType);
+    auto newMultiRotate = enzymexla::MultiRotateOp::create(
+        rewriter, op.getLoc(), newResultTypes, inputPad.getResult(),
+        op.getDimension(), op.getLeftAmount(), op.getRightAmount());
+
+    auto oldShardings = sdy::getShardingPerValue(op);
+    if (oldShardings) {
+      SmallVector<sdy::TensorShardingAttr> newShardings;
+      for (int i = 0; i < totalResults; i++) {
+        newShardings.push_back(oldShardings.getShardings()[i]);
+      }
+      sdy::setShardings(newMultiRotate, sdy::TensorShardingPerValueAttr::get(
+                                            op.getContext(), newShardings));
+    }
+
+    for (int i = 0; i < totalResults; i++) {
+      Value oldResult = op.getResult(i);
+      if (oldResult.use_empty())
+        continue;
+
+      auto pad = cast<stablehlo::PadOp>(*oldResult.getUsers().begin());
+      rewriter.replaceOp(pad, newMultiRotate.getResult(i));
+    }
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 struct ScatterOpCanon final
     : CheckedOpRewritePattern<stablehlo::ScatterOp, ScatterOpCanon> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
