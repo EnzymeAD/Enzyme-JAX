@@ -20627,6 +20627,12 @@ struct AssociativeCommonMulOpReordering final
 // Case 2: (op x (op (op x y) y)) -> (op (op x y) (op x y))
 // Case 3: (op x (op y (op x y))) -> (op (op x y) (op x y))
 // Case 4: (op x (op y (op y x))) -> (op (op x y) (op x y))
+// Case 5: (op (op x cst1) cst2) -> (op x (op cst1 cst2))
+// Case 6: (op (op cst1 x) cst2) -> (op x (op cst1 cst2)) only if op is
+// commutative
+// Case 7: (op cst2 (op x cst1)) -> (op (op cst1 cst2) x) only if op is
+// commutative
+// Case 8: (op cst2 (op cst1 x)) -> (op (op cst1 cst2) x)
 struct AssociativeBinaryOpReordering
     : public CheckedOpTraitRewritePattern<OpTrait::Elementwise,
                                           AssociativeBinaryOpReordering> {
@@ -20642,40 +20648,120 @@ struct AssociativeBinaryOpReordering
 
     auto lhs = op->getOperand(0);
     auto rhs = op->getOperand(1);
+    auto lhsOp = lhs.getDefiningOp();
     auto rhsOp = rhs.getDefiningOp();
-    if (!rhsOp || rhsOp->getName() != op->getName())
-      return failure();
 
-    auto rhslhs = rhsOp->getOperand(0);
-    auto rhsrhs = rhsOp->getOperand(1);
+    if (rhsOp && rhsOp->getName() == op->getName()) {
+      auto rhslhs = rhsOp->getOperand(0);
+      auto rhsrhs = rhsOp->getOperand(1);
 
-    auto rhslhsOp = rhslhs.getDefiningOp();
-    if (rhslhsOp && rhslhsOp->getName() == op->getName()) {
-      auto rhslhslhs = rhslhsOp->getOperand(0);
-      auto rhslhsrhs = rhslhsOp->getOperand(1);
+      auto rhslhsOp = rhslhs.getDefiningOp();
+      if (rhslhsOp && rhslhsOp->getName() == op->getName()) {
+        auto rhslhslhs = rhslhsOp->getOperand(0);
+        auto rhslhsrhs = rhslhsOp->getOperand(1);
 
-      // Case 1 || Case 2
-      if ((lhs == rhslhsrhs && rhslhslhs == rhsrhs) ||
-          (lhs == rhslhslhs && rhslhsrhs == rhsrhs)) {
+        // Case 1 || Case 2
+        if ((lhs == rhslhsrhs && rhslhslhs == rhsrhs) ||
+            (lhs == rhslhslhs && rhslhsrhs == rhsrhs)) {
+          rewriter.modifyOpInPlace(op, [&] {
+            op->setOperand(0, rhslhsOp->getResult(0));
+            op->setOperand(1, rhslhsOp->getResult(0));
+          });
+          return success();
+        }
+      }
+
+      auto rhsrhsOp = rhsrhs.getDefiningOp();
+      if (rhsrhsOp && rhsrhsOp->getName() == op->getName()) {
+        auto rhsrhslhs = rhsrhsOp->getOperand(0);
+        auto rhsrhsrhs = rhsrhsOp->getOperand(1);
+
+        // Case 3 || Case 4
+        if ((lhs == rhsrhslhs && rhslhs == rhsrhsrhs) ||
+            (lhs == rhsrhsrhs && rhslhs == rhsrhslhs)) {
+          rewriter.modifyOpInPlace(op, [&] {
+            op->setOperand(0, rhsrhsOp->getResult(0));
+            op->setOperand(1, rhsrhsOp->getResult(0));
+          });
+          return success();
+        }
+      }
+    }
+
+    bool isCommutative = op->hasTrait<mlir::hlo::OpTrait::IsCommutative>() ||
+                         op->hasTrait<mlir::OpTrait::IsCommutative>();
+
+    auto isConstant = [](Value v) -> bool {
+      return matchPattern(v, m_Constant());
+    };
+
+    // Case 5: (op (op x cst1) cst2) -> (op x (op cst1 cst2))
+    if (lhsOp && lhsOp->getName() == op->getName() && isConstant(rhs)) {
+      auto innerRhs = lhsOp->getOperand(1);
+      auto innerLhs = lhsOp->getOperand(0);
+      if (isConstant(innerRhs) && !isConstant(innerLhs)) {
+        // Create (op cst1 cst2) as the new rhs
+        auto cstCombined = rewriter.clone(*op);
+        cstCombined->setOperand(0, innerRhs);
+        cstCombined->setOperand(1, rhs);
         rewriter.modifyOpInPlace(op, [&] {
-          op->setOperand(0, rhslhsOp->getResult(0));
-          op->setOperand(1, rhslhsOp->getResult(0));
+          op->setOperand(0, innerLhs);
+          op->setOperand(1, cstCombined->getResult(0));
         });
         return success();
       }
     }
 
-    auto rhsrhsOp = rhsrhs.getDefiningOp();
-    if (rhsrhsOp && rhsrhsOp->getName() == op->getName()) {
-      auto rhsrhslhs = rhsrhsOp->getOperand(0);
-      auto rhsrhsrhs = rhsrhsOp->getOperand(1);
-
-      // Case 3 || Case 4
-      if ((lhs == rhsrhslhs && rhslhs == rhsrhsrhs) ||
-          (lhs == rhsrhsrhs && rhslhs == rhsrhslhs)) {
+    // Case 6: (op (op cst1 x) cst2) -> (op x (op cst1 cst2))
+    // only if op is commutative
+    if (isCommutative && lhsOp && lhsOp->getName() == op->getName() &&
+        isConstant(rhs)) {
+      auto innerLhs = lhsOp->getOperand(0);
+      auto innerRhs = lhsOp->getOperand(1);
+      if (isConstant(innerLhs) && !isConstant(innerRhs)) {
+        // Create (op cst1 cst2) as the new rhs
+        auto cstCombined = rewriter.clone(*op);
+        cstCombined->setOperand(0, innerLhs);
+        cstCombined->setOperand(1, rhs);
         rewriter.modifyOpInPlace(op, [&] {
-          op->setOperand(0, rhsrhsOp->getResult(0));
-          op->setOperand(1, rhsrhsOp->getResult(0));
+          op->setOperand(0, innerRhs);
+          op->setOperand(1, cstCombined->getResult(0));
+        });
+        return success();
+      }
+    }
+
+    // Case 7: (op cst2 (op x cst1)) -> (op (op cst2 cst1) x)
+    // only if op is commutative
+    if (isCommutative && rhsOp && rhsOp->getName() == op->getName() &&
+        isConstant(lhs)) {
+      auto innerRhs = rhsOp->getOperand(1);
+      auto innerLhs = rhsOp->getOperand(0);
+      if (isConstant(innerRhs) && !isConstant(innerLhs)) {
+        // Create (op cst2 cst1) as the new lhs
+        auto cstCombined = rewriter.clone(*op);
+        cstCombined->setOperand(0, lhs);
+        cstCombined->setOperand(1, innerRhs);
+        rewriter.modifyOpInPlace(op, [&] {
+          op->setOperand(0, cstCombined->getResult(0));
+          op->setOperand(1, innerLhs);
+        });
+        return success();
+      }
+    }
+
+    // Case 8: (op cst2 (op cst1 x)) -> (op (op cst2 cst1) x)
+    if (rhsOp && rhsOp->getName() == op->getName() && isConstant(lhs)) {
+      auto innerLhs = rhsOp->getOperand(0);
+      auto innerRhs = rhsOp->getOperand(1);
+      if (isConstant(innerLhs) && !isConstant(innerRhs)) {
+        // Create (op cst2 cst1) as the new lhs
+        auto cstCombined = rewriter.clone(*op);
+        cstCombined->setOperand(0, lhs);
+        cstCombined->setOperand(1, innerLhs);
+        rewriter.modifyOpInPlace(op, [&] {
+          op->setOperand(0, cstCombined->getResult(0));
+          op->setOperand(1, innerRhs);
         });
         return success();
       }
