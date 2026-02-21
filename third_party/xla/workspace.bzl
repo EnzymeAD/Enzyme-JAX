@@ -7,6 +7,7 @@ load("//:workspace.bzl", "XLA_PATCHES")
 def repo(extra_patches = [], override_commit = ""):
     commit = XLA_COMMIT
     sha = XLA_SHA256
+    override_commit = "26da0d0ecac93e888026558f606cfb4dd50d81b6"
     if len(override_commit):
         commit = override_commit
         sha = ""
@@ -17,6 +18,6 @@ def repo(extra_patches = [], override_commit = ""):
         strip_prefix = "xla-{commit}".format(commit = commit),
         urls = ["https://github.com/openxla/xla/archive/{commit}.tar.gz".format(commit = commit)],
         patch_cmds = XLA_PATCHES + extra_patches,
-        patches = ["//:patches/xla.patch", "//:patches/xla_spmd.patch", "//:patches/xla_custom_call.patch", "//:patches/xla_tile_assignment.patch"],
+        patches = ["//:patches/xla.patch", "//:patches/xla_spmd.patch", "//:patches/xla_tile_assignment.patch"],
         patch_args = ["-p1"],
     )

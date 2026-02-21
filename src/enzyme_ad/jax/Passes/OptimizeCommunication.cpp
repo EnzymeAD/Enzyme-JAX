@@ -2240,7 +2240,7 @@ struct MultiRotateCustomCallOptimize
         ",left_amount=" + std::to_string(rotate.getLeftAmount()) +
         ",right_amount=" + std::to_string(rotate.getRightAmount());
 
-    auto fnSym = rewriter.getStringAttr("_SPMDEnzymeInternalOp_MultiRotate");
+    auto fnSym = rewriter.getStringAttr("_SPMDInternalOp_MultiRotate");
 
     SmallVector<TensorShardingAttr> opShardings(rotate.getNumResults(),
                                                 rotateSharding);
@@ -2329,7 +2329,6 @@ struct MultiSliceCustomCallOptimize
   }
 };
 
-
 struct WrapCustomCallOptimize : public OpRewritePattern<enzymexla::WrapOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -2359,7 +2358,7 @@ struct WrapCustomCallOptimize : public OpRewritePattern<enzymexla::WrapOp> {
                          ",left_amount=" + std::to_string(leftAmount) +
                          ",right_amount=" + std::to_string(rightAmount);
 
-    auto fnSym = rewriter.getStringAttr("_SPMDEnzymeInternalOp_Wrap");
+    auto fnSym = rewriter.getStringAttr("_SPMDInternalOp_Wrap");
 
     auto ccall = rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
         wrap, wrap->getResultTypes(), wrap->getOperands(), fnSym,
@@ -4831,7 +4830,8 @@ struct OptimizeCommunicationPass
 
     if (wrap_custom_call > 0)
 
-      patterns.add<WrapCustomCallOptimize>(context, PatternBenefit(wrap_custom_call));
+      patterns.add<WrapCustomCallOptimize>(context,
+                                           PatternBenefit(wrap_custom_call));
 
     if (wrap_comm > 0)
       patterns.add<WrapCommOptimize>(channel_id, context,
