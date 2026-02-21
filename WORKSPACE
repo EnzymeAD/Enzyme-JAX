@@ -272,18 +272,38 @@ load(
 cuda_configure(name = "local_config_cuda")
 
 load(
-    "@xla//third_party/nccl/hermetic:nccl_redist_init_repository.bzl",
+    "@rules_ml_toolchain//gpu/nccl:nccl_redist_init_repository.bzl",
     "nccl_redist_init_repository",
 )
 
 nccl_redist_init_repository()
 
 load(
-    "@xla//third_party/nccl/hermetic:nccl_configure.bzl",
+    "@rules_ml_toolchain//gpu/nccl:nccl_configure.bzl",
     "nccl_configure",
 )
 
 nccl_configure(name = "local_config_nccl")
+
+load(
+    "@rules_ml_toolchain//gpu/nvshmem:nvshmem_json_init_repository.bzl",
+    "nvshmem_json_init_repository",
+)
+
+nvshmem_json_init_repository()
+
+load(
+    "@nvshmem_redist_json//:distributions.bzl",
+    "NVSHMEM_REDISTRIBUTIONS",
+)
+load(
+    "@rules_ml_toolchain//gpu/nvshmem:nvshmem_redist_init_repository.bzl",
+    "nvshmem_redist_init_repository",
+)
+
+nvshmem_redist_init_repository(
+    nvshmem_redistributions = NVSHMEM_REDISTRIBUTIONS,
+)
 
 load("//third_party/enzyme:workspace.bzl", enzyme_workspace = "repo")
 load("//third_party/cuda_tile:workspace.bzl", cuda_tile_workspace = "repo")
