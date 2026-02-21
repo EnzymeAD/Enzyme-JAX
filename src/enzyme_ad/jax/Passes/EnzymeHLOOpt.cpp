@@ -3142,7 +3142,8 @@ struct SliceTransposeBase final
   }
 };
 
-// slice(reduce_window x, last_idx) -> reduce x
+// 1. slice(reduce_window x, last_idx) -> reduce x
+// 2. slice(reduce_window x) -> reduce_window(slice x)
 struct SliceReduceWindow
     : public CheckedOpRewritePattern<stablehlo::SliceOp, SliceReduceWindow> {
   using CheckedOpRewritePattern<stablehlo::SliceOp,
@@ -3158,32 +3159,80 @@ struct SliceReduceWindow
     if (!llvm::hasSingleElement(reduceWindow->getUsers()))
       return failure();
 
+    if (reduceWindow.getInputs().size() != 1 ||
+        reduceWindow.getInitValues().size() != 1)
+      return failure();
+
     // Check window parameters indicate full reduction along one dimension
     auto windowDims = reduceWindow.getWindowDimensions();
     auto windowStrides = reduceWindow.getWindowStrides();
     auto windowDilations = reduceWindow.getWindowDilations();
     auto baseDilations = reduceWindow.getBaseDilations();
 
-    if (!reduceWindow.getPadding())
-      return failure();
-    auto padding = reduceWindow.getPadding()->getValues<int64_t>();
-
     // Check if the window strides are all 1 or unspecified
-    if (windowStrides && !llvm::all_of(*windowStrides, [](int64_t stride) {
+    bool stridesAllOne =
+        !windowStrides || llvm::all_of(*windowStrides, [](int64_t stride) {
           return stride == 1;
-        }))
-      return failure();
+        });
 
     // Check if the window dilations are all 1 or unspecified
-    if (windowDilations &&
-        !llvm::all_of(*windowDilations,
-                      [](int64_t dilation) { return dilation == 1; }))
-      return failure();
+    bool windowDilationsAllOne =
+        !windowDilations ||
+        llvm::all_of(*windowDilations,
+                     [](int64_t dilation) { return dilation == 1; });
 
     // Check if the base dilations are all 1 or unspecified
-    if (baseDilations && !llvm::all_of(*baseDilations, [](int64_t dilation) {
+    bool baseDilationsAllOne =
+        !baseDilations || llvm::all_of(*baseDilations, [](int64_t dilation) {
           return dilation == 1;
-        }))
+        });
+
+    auto padding = reduceWindow.getPadding();
+    bool zeroPadding =
+        !padding || llvm::all_of(padding->getValues<int64_t>(),
+                                 [](int64_t val) { return val == 0; });
+
+    auto sliceStarts = op.getStartIndices();
+    auto sliceLimits = op.getLimitIndices();
+    auto sliceStrides = op.getStrides();
+
+    bool sliceStridesAllOne =
+        sliceStrides.empty() ||
+        llvm::all_of(sliceStrides, [](int64_t stride) { return stride == 1; });
+
+    // Case 2: slice(reduce_window x) -> reduce_window(slice x)
+    if (stridesAllOne && windowDilationsAllOne && baseDilationsAllOne &&
+        zeroPadding && sliceStridesAllOne) {
+      int64_t rank = sliceStarts.size();
+      SmallVector<int64_t> newInputStarts(rank);
+      SmallVector<int64_t> newInputLimits(rank);
+      SmallVector<int64_t> newSliceStrides(rank, 1);
+
+      for (int64_t i = 0; i < rank; ++i) {
+        newInputStarts[i] = sliceStarts[i];
+        newInputLimits[i] = sliceLimits[i] + windowDims[i] - 1;
+      }
+
+      auto newSlice = stablehlo::SliceOp::create(
+          rewriter, op.getLoc(), reduceWindow.getInputs()[0], newInputStarts,
+          newInputLimits, newSliceStrides);
+
+      auto newRw = rewriter.replaceOpWithNewOp<stablehlo::ReduceWindowOp>(
+          op, op.getType(), ValueRange{newSlice.getResult()},
+          reduceWindow.getInitValues(), reduceWindow.getWindowDimensionsAttr(),
+          reduceWindow.getWindowStridesAttr(),
+          reduceWindow.getBaseDilationsAttr(),
+          reduceWindow.getWindowDilationsAttr(), reduceWindow.getPaddingAttr());
+
+      newRw.getBody().takeBody(reduceWindow.getBody());
+      return success();
+    }
+
+    if (!padding)
+      return failure();
+    auto paddingVals = padding->getValues<int64_t>();
+
+    if (!stridesAllOne || !windowDilationsAllOne || !baseDilationsAllOne)
       return failure();
 
     // Find which dimension has window size > 1 (the reduction dimension)
@@ -3208,17 +3257,13 @@ struct SliceReduceWindow
     // FIXME: do other padding values have to be 0?
     for (unsigned i = 0; i < windowDims.size(); ++i) {
       if (i == reductionDim) {
-        if (padding[2 * i] != windowDims[i] - 1)
+        if (paddingVals[2 * i] != windowDims[i] - 1)
           return failure();
       }
     }
 
     // Check this is a slice taking the last element in reduction dim
-    auto sliceStarts = op.getStartIndices();
-    auto sliceLimits = op.getLimitIndices();
-    auto sliceStrides = op.getStrides();
-
-    for (int64_t i = 0; i < sliceStarts.size(); ++i) {
+    for (int64_t i = 0; i < (int64_t)sliceStarts.size(); ++i) {
       if (!sliceStrides.empty() && sliceStrides[i] != 1)
         return failure();
 
