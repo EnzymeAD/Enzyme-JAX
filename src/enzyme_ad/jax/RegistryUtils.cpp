@@ -105,10 +105,29 @@
 #include "shardy/dialect/sdy/transforms/propagation/op_sharding_rule_builder.h"
 #include "shardy/dialect/sdy/transforms/propagation/passes.h"
 #include "shardy/dialect/sdy/transforms/propagation/user_priority_propagation.h"
+#include "xla/service/spmd/shardy/round_trip_common/import_constants.h"
+#include "xla/service/spmd/shardy/round_trip_common/import_func_calls.h"
+#include "xla/service/spmd/shardy/round_trip_common/import_sdy_custom_calls.h"
+#include "xla/service/spmd/shardy/round_trip_common/open_while_free_vars_sharding.h"
 #include "xla/service/spmd/shardy/sdy_round_trip/pipelines.h"
+#include "xla/service/spmd/shardy/sdy_round_trip/shard_map_export.h"
+#include "xla/service/spmd/shardy/sdy_round_trip/shard_map_import.h"
+#include "xla/service/spmd/shardy/sdy_round_trip/test_utils/testing_pipeline.h"
 #include "xla/service/spmd/shardy/stablehlo_round_trip/export_shardings.h"
+#include "xla/service/spmd/shardy/stablehlo_round_trip/shard_map_import.h"
 #include "xla/service/spmd/shardy/stablehlo_round_trip/stablehlo_export.h"
 #include "xla/service/spmd/shardy/stablehlo_round_trip/stablehlo_import.h"
+
+#include "xla/service/spmd/shardy/round_trip_common/export_named_computations.h"
+#include "xla/service/spmd/shardy/sdy_round_trip/dedup_meshes.h"
+#include "xla/service/spmd/shardy/sdy_round_trip/export_ops.h"
+#include "xla/service/spmd/shardy/sdy_round_trip/export_shardy_attrs.h"
+#include "xla/service/spmd/shardy/sdy_round_trip/import_shardy_attrs.h"
+#include "xla/service/spmd/shardy/sdy_round_trip/test_utils/stablehlo_to_hlo_to_stablehlo.h"
+#include "xla/service/spmd/shardy/stablehlo_round_trip/export_callback_custom_calls.h"
+#include "xla/service/spmd/shardy/stablehlo_round_trip/export_manual_reduction_collectives.h"
+#include "xla/service/spmd/shardy/stablehlo_round_trip/export_ops.h"
+#include "xla/service/spmd/shardy/stablehlo_round_trip/shard_map_export.h"
 
 #include "nvidia/include/NVGPUToLLVM/Passes.h"
 #include "nvidia/include/TritonNVIDIAGPUToLLVM/Passes.h"
@@ -360,12 +379,34 @@ void initializePasses() {
   mlir::enzyme::registerRemoveTransformPass();
 
   // shardy passes
-  xla::sdy::registerSdyRoundTripExportPipeline();
-  xla::sdy::registerSdyRoundTripImportPipeline();
   mlir::sdy::registerAllSdyPassesAndPipelines();
-  xla::sdy::registerStablehloExportPipeline();
+
   xla::sdy::registerStablehloImportPipeline();
   xla::sdy::registerStablehloImportShardingsPass();
+  xla::sdy::registerStablehloRoundTripShardMapImportPass();
+  xla::sdy::registerImportSdyCustomCallsPass();
+  xla::sdy::registerOpenWhileFreeVarsShardingPass();
+  xla::sdy::registerImportFuncCallsPass();
+  xla::sdy::registerImportConstantsPass();
+
+  xla::sdy::registerStablehloExportPipeline();
+  xla::sdy::registerStablehloExportShardingsPass();
+  xla::sdy::registerStablehloExportManualReductionCollectivesPass();
+  xla::sdy::registerStablehloRoundTripExportCallbackCustomCallsPass();
+  xla::sdy::registerStablehloRoundTripShardMapExportPass();
+  xla::sdy::registerExportNamedComputationsPass();
+  xla::sdy::registerExportOpsPass();
+
+  xla::sdy::registerSdyRoundTripStablehloToHloToStablehloPass();
+  xla::sdy::registerSdyRoundTripExportShardyAttrsPass();
+  xla::sdy::registerSdyRoundTripImportShardyAttrsPass();
+  xla::sdy::registerSdyRoundTripExportOpsPass();
+  xla::sdy::registerSdyRoundTripExportPipeline();
+  xla::sdy::registerSdyRoundTripDedupMeshesPass();
+  xla::sdy::registerSdyRoundTripShardMapExportPass();
+  xla::sdy::registerSdyRoundTripShardMapImportPass();
+  xla::sdy::registerSdyRoundTripImportPipeline();
+  xla::sdy::registerSdyRoundTripTestingPipeline();
 
   // SHLO / MHLO passes
   stablehlo::registerStablehloAggressiveSimplificationPass();
