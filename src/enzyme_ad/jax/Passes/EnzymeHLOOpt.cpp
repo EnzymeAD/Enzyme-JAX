@@ -20622,6 +20622,110 @@ struct AssociativeCommonMulOpReordering final
   }
 };
 
+// Helper to check if two SplatElementsAttrs are negations of each other.
+static bool areSplatNegationsOf(SplatElementsAttr a, SplatElementsAttr b) {
+
+  auto elementType = a.getElementType();
+  if (elementType != b.getElementType())
+    return false;
+
+  if (isa<FloatType>(elementType)) {
+    APFloat aVal = a.getSplatValue<APFloat>();
+    APFloat bVal = b.getSplatValue<APFloat>();
+    APFloat negA = aVal;
+    negA.changeSign();
+    return negA.bitwiseIsEqual(bVal);
+  }
+
+  if (isa<IntegerType>(elementType)) {
+    APInt aVal = a.getSplatValue<APInt>();
+    APInt bVal = b.getSplatValue<APInt>();
+    return (-aVal) == bVal;
+  }
+
+  return false;
+}
+
+// Optimizes the following patterns:
+// OuterOp=AddOp:
+//   (a * cst) + (b * -cst) -> (a - b) * cst
+// OuterOp=SubtractOp:
+//   (a * cst) - (b * -cst) -> (a + b) * cst
+//
+// All commutative combinations of the multiply operands are considered:
+//   (cst * a), (a * cst), (-cst * b), (b * -cst)
+template <typename OuterOp>
+struct NegatedConstantMulFactoring final
+    : public CheckedOpRewritePattern<OuterOp,
+                                     NegatedConstantMulFactoring<OuterOp>> {
+  using CheckedOpRewritePattern<
+      OuterOp, NegatedConstantMulFactoring<OuterOp>>::CheckedOpRewritePattern;
+
+  // AddOp -> SubtractOp, SubtractOp -> AddOp
+  using ResultOp = std::conditional_t<std::is_same_v<OuterOp, stablehlo::AddOp>,
+                                      stablehlo::SubtractOp, stablehlo::AddOp>;
+
+  LogicalResult matchAndRewriteImpl(OuterOp op,
+                                    PatternRewriter &rewriter) const {
+    auto lhs = op.getLhs();
+    auto rhs = op.getRhs();
+
+    auto lhsMul = lhs.template getDefiningOp<stablehlo::MulOp>();
+    auto rhsMul = rhs.template getDefiningOp<stablehlo::MulOp>();
+
+    if (!lhsMul || !rhsMul) {
+      return failure();
+    }
+
+    // For each mul op, try to extract (nonConst, constAttr) where the constant
+    // side is a splat DenseElementsAttr. We try both operand orders.
+    struct MulInfo {
+      Value nonConst;
+      Value constOperand;
+      SplatElementsAttr constAttr;
+    };
+
+    auto extractMulInfo = [](stablehlo::MulOp mul) -> std::optional<MulInfo> {
+      SplatElementsAttr attr;
+      // Try rhs as constant
+      if (matchPattern(mul.getRhs(), m_Constant(&attr))) {
+        return MulInfo{mul.getLhs(), mul.getRhs(), attr};
+      }
+      // Try lhs as constant
+      if (matchPattern(mul.getLhs(), m_Constant(&attr))) {
+        return MulInfo{mul.getRhs(), mul.getLhs(), attr};
+      }
+      return std::nullopt;
+    };
+
+    auto lhsInfo = extractMulInfo(lhsMul);
+    auto rhsInfo = extractMulInfo(rhsMul);
+
+    if (!lhsInfo || !rhsInfo) {
+      return failure();
+    }
+
+    // Check if the two constants are negations of each other.
+    // areSplatNegationsOf checks if lhsConst == -rhsConst.
+    // This is symmetric, so we only need one check.
+    if (!areSplatNegationsOf(lhsInfo->constAttr, rhsInfo->constAttr)) {
+      return failure();
+    }
+
+    // For OuterOp=AddOp (ResultOp=SubtractOp):
+    //   a * lhsConst + b * rhsConst  (where rhsConst = -lhsConst)
+    //   = a * lhsConst - b * lhsConst = (a - b) * lhsConst
+    // For OuterOp=SubtractOp (ResultOp=AddOp):
+    //   a * lhsConst - b * rhsConst  (where rhsConst = -lhsConst)
+    //   = a * lhsConst + b * lhsConst = (a + b) * lhsConst
+    auto newBinop = ResultOp::create(rewriter, op.getLoc(), lhsInfo->nonConst,
+                                     rhsInfo->nonConst);
+    rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, newBinop.getResult(),
+                                                  lhsInfo->constOperand);
+    return success();
+  }
+};
+
 // This lets us reorder the following
 // Case 1: (op x (op (op y x) y)) -> (op (op x y) (op x y))
 // Case 2: (op x (op (op x y) y)) -> (op (op x y) (op x y))
@@ -34086,6 +34190,8 @@ struct EnzymeHLOOptPass
         SimplifyBoundary<enzymexla::RotateOp>, TransposeReshapeToBroadcast,
         ReshapeTransposeToBroadcast, SelectBroadcastInDim, PowerMultiplyToPower,
         NegMulConstSimplify, NegDivConstSimplify,
+        NegatedConstantMulFactoring<stablehlo::AddOp>,
+        NegatedConstantMulFactoring<stablehlo::SubtractOp>,
         ReshapeDeletionsBroadcastInDimSimplify,
         ReshapeInsertionsBroadcastInDimSimplify, CompareIotaConstSimplify,
         CompareAbs, CompareMul, CompareConvert, AddSelects,
