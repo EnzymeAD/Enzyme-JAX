@@ -233,7 +233,7 @@ python_wheel_version_suffix_repository(
 )
 
 load(
-    "@xla//third_party/gpus/cuda/hermetic:cuda_json_init_repository.bzl",
+    "@rules_ml_toolchain//gpu/cuda:cuda_json_init_repository.bzl",
     "cuda_json_init_repository",
 )
 
