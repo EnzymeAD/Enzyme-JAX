@@ -122,8 +122,6 @@ http_archive(
 
 load("//third_party/ml_toolchain:workspace.bzl", ml_toolchain_workspace = "repo")
 
-ml_toolchain_workspace()
-
 load("//third_party/jax:workspace.bzl", jax_workspace = "repo")
 
 jax_workspace()
@@ -139,6 +137,10 @@ xla_workspace4()
 load("@xla//:workspace3.bzl", "xla_workspace3")
 
 xla_workspace3()
+
+ml_toolchain_workspace()
+load("@rules_ml_toolchain//cc/deps:cc_toolchain_deps.bzl", "cc_toolchain_deps")
+cc_toolchain_deps()
 
 load("@xla//third_party/py:python_init_rules.bzl", "python_init_rules")
 
@@ -169,21 +171,10 @@ load("@pypi//:requirements.bzl", "install_deps")
 
 install_deps()
 
-load("@jax//third_party/flatbuffers:workspace.bzl", flatbuffers = "repo")
+
+
 load("@xla//third_party/llvm:workspace.bzl", llvm = "repo")
 load("//:workspace.bzl", "LLVM_TARGETS")
-
-flatbuffers()
-
-load("@jax//third_party/external_deps:workspace.bzl", "external_deps_repository")
-
-external_deps_repository(name = "rocm_external_test_deps")
-
-load("@jax//:test_shard_count.bzl", "test_shard_count_repository")
-
-test_shard_count_repository(
-    name = "test_shard_count",
-)
 
 load("@xla//:workspace2.bzl", "xla_workspace2")
 
@@ -205,6 +196,23 @@ xla_workspace1()
 load("@xla//:workspace0.bzl", "xla_workspace0")
 
 xla_workspace0()
+
+
+
+load("@jax//third_party/flatbuffers:workspace.bzl", flatbuffers = "repo")
+
+flatbuffers()
+
+load("@jax//third_party/external_deps:workspace.bzl", "external_deps_repository")
+
+external_deps_repository(name = "rocm_external_test_deps")
+
+load("@jax//:test_shard_count.bzl", "test_shard_count_repository")
+
+test_shard_count_repository(
+    name = "test_shard_count",
+)
+
 
 load("@jax//jaxlib:jax_python_wheel.bzl", "jax_python_wheel_repository")
 
@@ -242,11 +250,14 @@ load(
     "CUDNN_REDISTRIBUTIONS",
 )
 load(
-    "@xla//third_party/gpus/cuda/hermetic:cuda_redist_init_repositories.bzl",
+    "@rules_ml_toolchain//gpu/cuda:cuda_redist_init_repositories.bzl",
     "cuda_redist_init_repositories",
     "cudnn_redist_init_repository",
 )
-
+load(
+    "@rules_ml_toolchain//gpu/cuda:cuda_redist_versions.bzl",
+    "REDIST_VERSIONS_TO_BUILD_TEMPLATES",
+)
 load("@xla//third_party/cccl:workspace.bzl", "CCCL_3_2_0_DIST_DICT", "CCCL_GITHUB_VERSIONS_TO_BUILD_TEMPLATES")
 
 cuda_redist_init_repositories(
