@@ -1,4 +1,6 @@
+#include "xla/ffi/api/c_api_internal.h"
 #include "xla/ffi/api/ffi.h"
+#include "xla/ffi/execution_state.h"
 #include "xla/ffi/ffi_api.h"
 #include "xla/stream_executor/stream.h"
 
