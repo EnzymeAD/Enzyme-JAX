@@ -265,7 +265,7 @@ cudnn_redist_init_repository(
 )
 
 load(
-    "@xla//third_party/gpus/cuda/hermetic:cuda_configure.bzl",
+    "@rules_ml_toolchain//gpu/cuda:cuda_configure.bzl",
     "cuda_configure",
 )
 
