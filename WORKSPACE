@@ -121,7 +121,6 @@ http_archive(
 )
 
 load("//third_party/ml_toolchain:workspace.bzl", ml_toolchain_workspace = "repo")
-
 load("//third_party/jax:workspace.bzl", jax_workspace = "repo")
 
 jax_workspace()
@@ -139,7 +138,9 @@ load("@xla//:workspace3.bzl", "xla_workspace3")
 xla_workspace3()
 
 ml_toolchain_workspace()
+
 load("@rules_ml_toolchain//cc/deps:cc_toolchain_deps.bzl", "cc_toolchain_deps")
+
 cc_toolchain_deps()
 
 load("@xla//third_party/py:python_init_rules.bzl", "python_init_rules")
@@ -171,11 +172,8 @@ load("@pypi//:requirements.bzl", "install_deps")
 
 install_deps()
 
-
-
 load("@xla//third_party/llvm:workspace.bzl", llvm = "repo")
 load("//:workspace.bzl", "LLVM_TARGETS")
-
 load("@xla//:workspace2.bzl", "xla_workspace2")
 
 xla_workspace2()
@@ -197,8 +195,6 @@ load("@xla//:workspace0.bzl", "xla_workspace0")
 
 xla_workspace0()
 
-
-
 load("@jax//third_party/flatbuffers:workspace.bzl", flatbuffers = "repo")
 
 flatbuffers()
@@ -212,7 +208,6 @@ load("@jax//:test_shard_count.bzl", "test_shard_count_repository")
 test_shard_count_repository(
     name = "test_shard_count",
 )
-
 
 load("@jax//jaxlib:jax_python_wheel.bzl", "jax_python_wheel_repository")
 
