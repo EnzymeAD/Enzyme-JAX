@@ -47,6 +47,9 @@ struct CanonicalizeFor
 };
 } // namespace
 
+namespace mlir {
+namespace enzyme {
+namespace {
 // %f = scf.for %c = true, %a = ...
 //    %r = if %c {
 //      %d = cond()
@@ -3408,6 +3411,9 @@ struct ForLoopApplyEnzymeAttributes
     return success();
   }
 };
+} // namespace
+} // namespace enzyme
+} // namespace mlir
 
 void CanonicalizeFor::runOnOperation() {
   mlir::RewritePatternSet rpl(getOperation()->getContext());
