@@ -2492,16 +2492,21 @@ LogicalResult enzymexla::MultiRotateOp::verify() {
   auto operandType = cast<RankedTensorType>(getOperand().getType());
   int64_t rank = operandType.getRank();
 
-  // Verify left_amount and right_amount are non-negative
+  // Verify left_amount and right_amount are valid
   int32_t leftAmount = getLeftAmount();
   int32_t rightAmount = getRightAmount();
 
-  if (leftAmount < 0)
-    return emitOpError("left_amount must be non-negative, got ") << leftAmount;
+  if (leftAmount < 0 && rightAmount < 0)
+    return emitOpError("both left_amount and right_amount must not be negative at the same time, got ")
+           << leftAmount << " (left) and " << rightAmount << " (right)";
 
-  if (rightAmount < 0)
-    return emitOpError("right_amount must be non-negative, got ")
-           << rightAmount;
+  if (leftAmount < 0 &&  - leftAmount > rightAmount)
+    return emitOpError("if left_amount is negative, its absolute value must be less than or equal to right_amount, got ")
+           << leftAmount << " (left) and " << rightAmount << " (right)";
+
+  if (rightAmount < 0 && - rightAmount > leftAmount)
+    return emitOpError("if right_amount is negative, its absolute value must be less than or equal to left_amount, got ")
+           << leftAmount << " (left) and " << rightAmount << " (right)";
 
   // Verify dimension is valid
   int32_t dimension = getDimension();
