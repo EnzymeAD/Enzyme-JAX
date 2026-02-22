@@ -1,5 +1,5 @@
 diff --git a/xla/service/spmd/custom_call_handler.cc b/xla/service/spmd/custom_call_handler.cc
-index de35fda597..f1bcf38dfb 100644
+index de35fda597..8c23d37f22 100644
 --- a/xla/service/spmd/custom_call_handler.cc
 +++ b/xla/service/spmd/custom_call_handler.cc
 @@ -84,6 +84,7 @@ ParseOpaqueAsAttributes(const HloInstruction* hlo) {
@@ -223,7 +223,7 @@ index de35fda597..f1bcf38dfb 100644
 +
 +      HloInstruction* last_offset = b_.AddInstruction(
 +          HloInstruction::CreateConstant(LiteralUtil::CreateR0<int32_t>(
-+              right_amount + (full_size % participating_shards))));
++              right_amount + (full_size % shard_size))));
 +      HloInstruction* other_offset =
 +          b_.AddInstruction(HloInstruction::CreateConstant(
 +              LiteralUtil::CreateR0<int32_t>(right_amount + shard_size)));
