@@ -1,5 +1,5 @@
 diff --git a/xla/service/spmd/custom_call_handler.cc b/xla/service/spmd/custom_call_handler.cc
-index de35fda597..10813b81c7 100644
+index de35fda597..2bbfb1697c 100644
 --- a/xla/service/spmd/custom_call_handler.cc
 +++ b/xla/service/spmd/custom_call_handler.cc
 @@ -84,6 +84,7 @@ ParseOpaqueAsAttributes(const HloInstruction* hlo) {
@@ -143,7 +143,7 @@ index de35fda597..10813b81c7 100644
      dynamic_slice_shape.set_dimensions(dim, right_amount);
  
      std::vector<HloInstruction*> start_indices(full_shape.dimensions_size());
-@@ -528,48 +522,89 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCallSPMDInternal_MultiRotate(
+@@ -528,45 +522,86 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCallSPMDInternal_MultiRotate(
      }
      start_indices[dim] = start_idx;
  
@@ -249,11 +249,7 @@ index de35fda597..10813b81c7 100644
 +    int64_t slice_start = amount + right_amount;
  
      HloInstruction* sliced =
--        create_slice(super_shard, slice_start, slice_start + shard_size);
-+        create_slice(super_shard, i, i + shard_size);
-     sliced_results.push_back(sliced);
-   }
- 
+         create_slice(super_shard, slice_start, slice_start + shard_size);
 @@ -579,6 +614,277 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCallSPMDInternal_MultiRotate(
    return absl::OkStatus();
  }
