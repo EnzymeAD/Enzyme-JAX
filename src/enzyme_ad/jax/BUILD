@@ -515,6 +515,7 @@ td_library(
     ],
     deps = [
         "@llvm-project//mlir:BuiltinDialectTdFiles",
+        "@llvm-project//mlir:InferTypeOpInterfaceTdFiles",
         "@llvm-project//mlir:OpBaseTdFiles",
     ],
 )
@@ -560,6 +561,7 @@ gentbl_cc_library(
     td_file = "Dialect/Distributed/Ops.td",
     deps = [
         ":DistributedDialectFiles",
+        "@llvm-project//mlir:InferTypeOpInterface",
     ],
 )
 
