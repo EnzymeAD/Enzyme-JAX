@@ -2569,6 +2569,11 @@ def ApplyNegDivConstSimplify : EnzymeHLOPatternOp<"neg_div_const_simplify"> {
   let patterns = ["NegDivConstSimplify"];
 }
 
+def ApplyNegatedConstantMulFactoring : EnzymeHLOPatternOp<"negated_constant_mul_factoring"> {
+  let patterns = ["NegatedConstantMulFactoring<stablehlo::AddOp>",
+                  "NegatedConstantMulFactoring<stablehlo::SubtractOp>"];
+}
+
 def ApplyReshapeDeletionsBroadcastInDimSimplify : EnzymeHLOPatternOp<"reshape_deletions_broadcast_in_dim_simplify"> {
   let patterns = ["ReshapeDeletionsBroadcastInDimSimplify"];
 }

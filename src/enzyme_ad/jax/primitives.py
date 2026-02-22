@@ -305,6 +305,7 @@ def optimization_passes(
         "log_simplify",
         "neg_mul_const_simplify",
         "neg_div_const_simplify",
+        "negated_constant_mul_factoring",
         "reshape_deletions_broadcast_in_dim_simplify",
         "reshape_insertions_broadcast_in_dim_simplify",
         "dot_general_reshape",
