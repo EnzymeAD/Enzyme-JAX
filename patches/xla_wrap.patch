@@ -1,5 +1,5 @@
 diff --git a/xla/service/spmd/custom_call_handler.cc b/xla/service/spmd/custom_call_handler.cc
-index de35fda597..43291905b7 100644
+index de35fda597..fdb9ecb76f 100644
 --- a/xla/service/spmd/custom_call_handler.cc
 +++ b/xla/service/spmd/custom_call_handler.cc
 @@ -84,6 +84,7 @@ ParseOpaqueAsAttributes(const HloInstruction* hlo) {
@@ -10,7 +10,250 @@ index de35fda597..43291905b7 100644
  
  }  // namespace
  
-@@ -579,6 +580,277 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCallSPMDInternal_MultiRotate(
+@@ -415,7 +416,19 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCallSPMDInternal_MultiRotate(
+   const int64_t shard_size = input.hlo()->shape().dimensions(dim);
+ 
+   const int64_t participating_shards = CeilOfRatio(full_size, shard_size);
+-  const int64_t right_padding = participating_shards * shard_size - full_size;
++
++  TF_RET_CHECK(left_amount < shard_size)
++      << "Left amount must be entirely within a shard";
++
++  bool divisible_by_participating_shards =
++      full_size % participating_shards == 0;
++
++  if (divisible_by_participating_shards)
++    TF_RET_CHECK(right_amount < shard_size)
++        << "Right amount must be entirely within a shard";
++  else
++    TF_RET_CHECK(right_amount < full_size % participating_shards)
++        << "Right amount must be entirely within final shard";
+ 
+   auto create_slice = [&](HloInstruction* val, int64_t start, int64_t limit) {
+     Shape slice_shape = val->shape();
+@@ -431,22 +444,9 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCallSPMDInternal_MultiRotate(
+   };
+ 
+   HloInstruction* local_input = input.hlo();
+-  HloInstruction* padded_local_input = local_input;
+ 
+-  if (right_padding > 0) {
+-    auto paddingConfig = MakeNoPaddingConfig(full_shape.dimensions_size());
+-    paddingConfig.mutable_dimensions(dim)->set_edge_padding_high(right_padding);
+-    auto zero = b_.AddInstruction(HloInstruction::CreateConstant(
+-        LiteralUtil::Zero(full_shape.element_type())));
+-    Shape padded_shape = local_input->shape();
+-    padded_shape.set_dimensions(dim,
+-                                padded_shape.dimensions(dim) + right_padding);
+-    padded_local_input = b_.AddInstruction(HloInstruction::CreatePad(
+-        padded_shape, local_input, zero, paddingConfig));
+-  }
+-
+-  HloInstruction* left_halo = nullptr;
+-  if (left_amount > 0) {
++  HloInstruction* right_halo = nullptr;
++  if (right_amount > 0) {
+     std::vector<std::pair<int64_t, int64_t>> pairs;
+     element_sharding.tile_assignment().Each(
+         [&](absl::Span<const int64_t> indices, int64_t device) {
+@@ -459,14 +459,23 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCallSPMDInternal_MultiRotate(
+           pairs.emplace_back(device,
+                              element_sharding.tile_assignment()(dst_idx));
+         });
+-    HloInstruction* slice_to_send =
+-        create_slice(padded_local_input, 0, left_amount);
+-    left_halo = collective_ops_creator_.create_collective_permute(
++    HloInstruction* slice_to_send = create_slice(local_input, 0, right_amount);
++    right_halo = collective_ops_creator_.create_collective_permute(
+         &b_, slice_to_send, pairs, NewChannel());
+   }
+ 
+-  HloInstruction* right_halo = nullptr;
+-  if (right_amount > 0) {
++  Shape single_element_per_device_shape = full_shape;
++  single_element_per_device_shape.set_dimensions(dim, participating_shards);
++  HloInstruction* shard_offset = MakePartitionOffsets(
++      single_element_per_device_shape, element_sharding,
++      MakePartitioningState().partition_id, &b_, {dim})[dim];
++
++  HloInstruction* zero_offset = b_.AddInstruction(
++      HloInstruction::CreateConstant(LiteralUtil::CreateR0<int32_t>(0)));
++
++  HloInstruction* left_halo = nullptr;
++  HloInstruction* is_last;
++  if (left_amount > 0) {
+     std::vector<std::pair<int64_t, int64_t>> pairs;
+     element_sharding.tile_assignment().Each(
+         [&](absl::Span<const int64_t> indices, int64_t device) {
+@@ -480,47 +489,32 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCallSPMDInternal_MultiRotate(
+                              element_sharding.tile_assignment()(dst_idx));
+         });
+ 
+-    HloInstruction* base_start =
+-        b_.AddInstruction(HloInstruction::CreateConstant(
+-            LiteralUtil::CreateR0<int32_t>(shard_size - right_amount)));
+-    HloInstruction* padding_val =
++    HloInstruction* participating_shards_minus_one_op =
+         b_.AddInstruction(HloInstruction::CreateConstant(
+-            LiteralUtil::CreateR0<int32_t>(right_padding)));
++            LiteralUtil::CreateR0<int32_t>(participating_shards - 1)));
+ 
+-    HloInstruction* shard_offset = MakePartitionOffsets(
+-        full_shape, element_sharding, MakePartitioningState().partition_id, &b_,
+-        {dim})[dim];
++    is_last = b_.AddInstruction(HloInstruction::CreateCompare(
++        ShapeUtil::ChangeElementType(shard_offset->shape(), PRED), shard_offset,
++        participating_shards_minus_one_op, Comparison::Direction::kEq));
+ 
+-    HloInstruction* total_mesh_size =
++    HloInstruction* other_offset =
+         b_.AddInstruction(HloInstruction::CreateConstant(
+-            LiteralUtil::CreateR0<int32_t>(participating_shards * shard_size)));
+-
+-    // shard_offset tells us the current start index.
+-    // The last shard is the one where shard_offset + shard_size ==
+-    // total_mesh_size.
+-    HloInstruction* shard_size_inst =
+-        b_.AddInstruction(HloInstruction::CreateConstant(
+-            LiteralUtil::CreateR0<int32_t>(shard_size)));
+-    HloInstruction* current_shard_end = b_.AddInstruction(
+-        HloInstruction::CreateBinary(shard_offset->shape(), HloOpcode::kAdd,
+-                                     shard_offset, shard_size_inst));
+-
+-    HloInstruction* is_last = b_.AddInstruction(HloInstruction::CreateCompare(
+-        ShapeUtil::ChangeElementType(shard_offset->shape(), PRED),
+-        current_shard_end, total_mesh_size, Comparison::Direction::kEq));
+-
+-    HloInstruction* zero_offset = b_.AddInstruction(
+-        HloInstruction::CreateConstant(LiteralUtil::CreateR0<int32_t>(0)));
+-
+-    HloInstruction* offset = b_.AddInstruction(
+-        HloInstruction::CreateTernary(shard_offset->shape(), HloOpcode::kSelect,
+-                                      is_last, padding_val, zero_offset));
+-
+-    HloInstruction* start_idx = b_.AddInstruction(HloInstruction::CreateBinary(
+-        base_start->shape(), HloOpcode::kSubtract, base_start, offset));
++            LiteralUtil::CreateR0<int32_t>(shard_size - left_amount)));
++    HloInstruction* start_idx = nullptr;
++    if (divisible_by_participating_shards) {
++      start_idx = other_offset;
++    } else {
++      HloInstruction* last_offset = b_.AddInstruction(
++          HloInstruction::CreateConstant(LiteralUtil::CreateR0<int32_t>(
++              (full_size - shard_size * (participating_shards - 1)) -
++              left_amount)));
++      start_idx = b_.AddInstruction(HloInstruction::CreateTernary(
++          shard_offset->shape(), HloOpcode::kSelect, is_last, last_offset,
++          other_offset));
++    }
+ 
+-    Shape dynamic_slice_shape = padded_local_input->shape();
+-    dynamic_slice_shape.set_dimensions(dim, right_amount);
++    Shape dynamic_slice_shape = local_input->shape();
++    dynamic_slice_shape.set_dimensions(dim, left_amount);
+ 
+     std::vector<HloInstruction*> start_indices(full_shape.dimensions_size());
+     for (int i = 0; i < full_shape.dimensions_size(); i++) {
+@@ -528,36 +522,79 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCallSPMDInternal_MultiRotate(
+     }
+     start_indices[dim] = start_idx;
+ 
+-    std::vector<int64_t> slice_sizes(
+-        padded_local_input->shape().dimensions().begin(),
+-        padded_local_input->shape().dimensions().end());
+-    slice_sizes[dim] = right_amount;
++    std::vector<int64_t> slice_sizes(local_input->shape().dimensions().begin(),
++                                     local_input->shape().dimensions().end());
++    slice_sizes[dim] = left_amount;
+ 
+     HloInstruction* slice_to_send =
+         b_.AddInstruction(HloInstruction::CreateDynamicSlice(
+-            dynamic_slice_shape, padded_local_input, start_indices,
+-            slice_sizes));
++            dynamic_slice_shape, local_input, start_indices, slice_sizes));
+ 
+-    right_halo = collective_ops_creator_.create_collective_permute(
++    left_halo = collective_ops_creator_.create_collective_permute(
+         &b_, slice_to_send, pairs, NewChannel());
+   }
+ 
+-  std::vector<HloInstruction*> concat_ops;
+-  if (left_halo) {
+-    concat_ops.push_back(left_halo);
+-  }
+-  concat_ops.push_back(padded_local_input);
+-  if (right_halo) {
+-    concat_ops.push_back(right_halo);
+-  }
++  HloInstruction* super_shard = local_input;
+ 
+-  HloInstruction* super_shard = padded_local_input;
+-  if (concat_ops.size() > 1) {
++  if (divisible_by_participating_shards) {
++    std::vector<HloInstruction*> concat_ops;
++    if (left_halo) {
++      concat_ops.push_back(left_halo);
++    }
++    concat_ops.push_back(local_input);
++    if (right_halo) {
++      concat_ops.push_back(right_halo);
++    }
+     Shape concat_shape = local_input->shape();
+-    concat_shape.set_dimensions(
+-        dim, shard_size + right_padding + left_amount + right_amount);
++    concat_shape.set_dimensions(dim, shard_size + left_amount + right_amount);
+     super_shard = b_.AddInstruction(
+         HloInstruction::CreateConcatenate(concat_shape, concat_ops, dim));
++  } else {
++    if (left_halo) {
++      Shape concat_shape = local_input->shape();
++      concat_shape.set_dimensions(dim, shard_size + left_amount);
++
++      HloInstruction* mid_concat_ops[2] = {left_halo, local_input};
++      super_shard = b_.AddInstruction(
++          HloInstruction::CreateConcatenate(concat_shape, mid_concat_ops, dim));
++    }
++
++    if (right_halo) {
++      auto paddingConfig =
++          MakeNoPaddingConfig(super_shard->shape().dimensions_size());
++      paddingConfig.mutable_dimensions(dim)->set_edge_padding_high(
++          right_amount);
++      auto zero = b_.AddInstruction(HloInstruction::CreateConstant(
++          LiteralUtil::Zero(super_shard->shape().element_type())));
++      Shape padded_shape = super_shard->shape();
++      padded_shape.set_dimensions(dim,
++                                  padded_shape.dimensions(dim) + right_amount);
++
++      auto padded_super_shard = b_.AddInstruction(HloInstruction::CreatePad(
++          padded_shape, super_shard, zero, paddingConfig));
++
++      std::vector<HloInstruction*> start_indices(full_shape.dimensions_size());
++      for (int i = 0; i < full_shape.dimensions_size(); i++) {
++        start_indices[i] = zero_offset;
++      }
++
++      HloInstruction* last_offset = b_.AddInstruction(
++          HloInstruction::CreateConstant(LiteralUtil::CreateR0<int32_t>(
++              left_amount + (full_size % participating_shards))));
++      HloInstruction* other_offset =
++          b_.AddInstruction(HloInstruction::CreateConstant(
++              LiteralUtil::CreateR0<int32_t>(left_amount + shard_size)));
++
++      HloInstruction* start_idx =
++          b_.AddInstruction(HloInstruction::CreateTernary(
++              shard_offset->shape(), HloOpcode::kSelect, is_last, last_offset,
++              other_offset));
++
++      start_indices[dim] = start_idx;
++
++      super_shard = b_.AddInstruction(HloInstruction::CreateDynamicUpdateSlice(
++          padded_shape, padded_super_shard, right_halo, start_indices));
++    }
+   }
+ 
+   std::vector<HloInstruction*> sliced_results;
+@@ -579,6 +616,277 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCallSPMDInternal_MultiRotate(
    return absl::OkStatus();
  }
  
@@ -288,7 +531,7 @@ index de35fda597..43291905b7 100644
  std::unique_ptr<HloInstruction> CreateCustomCallSPMDInternal_RotateRight(
      HloInstruction* input, int64_t dim, int64_t amount) {
    std::string opaque = absl::StrCat("dimension=", dim, ",amount=", amount);
-@@ -624,6 +896,9 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCall(HloInstruction* hlo) {
+@@ -624,6 +932,9 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCall(HloInstruction* hlo) {
    if (hlo->custom_call_target() == kSPMDOpMultiRotate) {
      return HandleCustomCallSPMDInternal_MultiRotate(hlo);
    }
