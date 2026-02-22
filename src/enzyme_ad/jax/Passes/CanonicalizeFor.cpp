@@ -47,6 +47,9 @@ struct CanonicalizeFor
 };
 } // namespace
 
+namespace mlir {
+namespace enzyme {
+namespace {
 // %f = scf.for %c = true, %a = ...
 //    %r = if %c {
 //      %d = cond()
@@ -697,8 +700,8 @@ struct ReplaceRedundantArgs : public OpRewritePattern<ForOp> {
 };
 
 /*
-+struct RemoveNotIf : public OpRewritePattern<IfOp> {
-+  using OpRewritePattern<IfOp>::OpRewritePattern;
++struct RemoveNotIf : public OpRewritePattern<scf::IfOp> {
++  using OpRewritePattern<scf::IfOp>::OpRewritePattern;
 +
 +  LogicalResult matchAndRewrite(IfOp op,
 +                                PatternRewriter &rewriter) const override {
@@ -746,8 +749,8 @@ cast<scf::YieldOp>(op.thenRegion().back().getTerminator());
 +    return changed ? success() : failure();
 +  }
 +};
-+struct RemoveBoolean : public OpRewritePattern<IfOp> {
-+  using OpRewritePattern<IfOp>::OpRewritePattern;
++struct RemoveBoolean : public OpRewritePattern<scf::IfOp> {
++  using OpRewritePattern<scf::IfOp>::OpRewritePattern;
 +
 +  LogicalResult matchAndRewrite(IfOp op,
 +                                PatternRewriter &rewriter) const override {
@@ -1177,7 +1180,7 @@ struct WhileToForHelper {
           negateLookThrough = !negateLookThrough;
         }
 
-      if (auto ifOp = steppingVal.getDefiningOp<IfOp>()) {
+      if (auto ifOp = steppingVal.getDefiningOp<scf::IfOp>()) {
         Value condition = ifOp.getCondition();
         while (auto neg = condition.getDefiningOp<XOrIOp>())
           if (matchPattern(neg.getOperand(1), m_One())) {
@@ -2721,8 +2724,8 @@ struct ReturnSq : public OpRewritePattern<ReturnOp> {
 
 // From SCF.cpp
 // Pattern to remove unused IfOp results.
-struct RemoveUnusedResults : public OpRewritePattern<IfOp> {
-  using OpRewritePattern<IfOp>::OpRewritePattern;
+struct RemoveUnusedResults : public OpRewritePattern<scf::IfOp> {
+  using OpRewritePattern<scf::IfOp>::OpRewritePattern;
 
   void transferBody(Block *source, Block *dest, ArrayRef<OpResult> usedResults,
                     PatternRewriter &rewriter) const {
@@ -3408,6 +3411,9 @@ struct ForLoopApplyEnzymeAttributes
     return success();
   }
 };
+} // namespace
+} // namespace enzyme
+} // namespace mlir
 
 void CanonicalizeFor::runOnOperation() {
   mlir::RewritePatternSet rpl(getOperation()->getContext());

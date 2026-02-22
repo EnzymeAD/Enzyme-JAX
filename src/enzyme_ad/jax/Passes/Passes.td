@@ -912,6 +912,17 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*default=*/"0",
        /*description=*/"Convert MultiRotate to Manual Computation with CollectivePermute">,
        Option<
+
+       /*C++ variable name=*/"wrap_custom_call",
+
+       /*CLI argument=*/"wrap_custom_call",
+
+       /*type=*/"int",
+
+       /*default=*/"0",
+
+       /*description=*/"Convert Wrap to Spmd custom call">,
+       Option<
        /*C++ variable name=*/"multirotate_custom_call",
        /*CLI argument=*/"multirotate_custom_call",
        /*type=*/"int",
