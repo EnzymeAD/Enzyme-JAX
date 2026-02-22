@@ -1,5 +1,5 @@
 diff --git a/xla/service/spmd/custom_call_handler.cc b/xla/service/spmd/custom_call_handler.cc
-index de35fda597..8c23d37f22 100644
+index de35fda597..7249d3fbc5 100644
 --- a/xla/service/spmd/custom_call_handler.cc
 +++ b/xla/service/spmd/custom_call_handler.cc
 @@ -84,6 +84,7 @@ ParseOpaqueAsAttributes(const HloInstruction* hlo) {
@@ -26,7 +26,7 @@ index de35fda597..8c23d37f22 100644
 +    TF_RET_CHECK(right_amount < shard_size)
 +        << "Right amount must be entirely within a shard";
 +  else
-+    TF_RET_CHECK(right_amount < full_size % participating_shards)
++    TF_RET_CHECK(right_amount < full_size % shard_size)
 +        << "Right amount must be entirely within final shard";
  
    auto create_slice = [&](HloInstruction* val, int64_t start, int64_t limit) {
