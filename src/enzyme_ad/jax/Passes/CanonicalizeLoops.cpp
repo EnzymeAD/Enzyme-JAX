@@ -942,7 +942,7 @@ public:
       auto rThenYieldVal = recomputeOutsideIf(thenYieldVal);
       auto rElseYieldVal = recomputeOutsideIf(elseYieldVal);
       if (!rThenYieldVal || !rElseYieldVal) {
-        for (auto rOp : rOps)
+        for (auto rOp : llvm::reverse(rOps))
           rewriter.eraseOp(rOp);
         continue;
       }
