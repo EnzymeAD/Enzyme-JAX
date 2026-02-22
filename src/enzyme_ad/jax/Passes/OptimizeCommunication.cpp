@@ -2219,8 +2219,9 @@ struct MultiRotateCustomCallOptimize
 
     auto rotateDimension = rotate.getDimension();
     auto shardings = mlir::sdy::getShardingPerValue(rotate);
-    if (!shardings)
-      return rewriter.notifyMatchFailure(rotate, "No sharding found.");
+    if (!shardings) {
+      return lowerMultiRotateToRotates(rotate, rewriter);
+    }
     auto rotateSharding = shardings.getSharding(0);
 
     int64_t numDevicesAlongDimension =
