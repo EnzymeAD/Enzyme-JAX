@@ -3,6 +3,14 @@
 
 include "Dialect.td"
 
+// A natural axis defined by the hardware topology.
+def PhysicalCommAxisType : DistributedType<"PhysicalCommAxis", "physical_comm_axis">;
+// Includes physical axis factors and products of other logical axis.
+def LogicalCommAxisType : DistributedType<"LogicalCommAxis", "logical_comm_axis">;
+
+def PhysicalMeshType : DistributedType<"PhysicalMesh", "physical_mesh">;
+def LogicalMeshType : DistributedType<"LogicalMesh", "logical_mesh">;
+
 def TokenType : DistributedType<"Token", "token">;
 
 #endif // ENZYME_DISTRIBUTED_DIALECT_TYPES_H
