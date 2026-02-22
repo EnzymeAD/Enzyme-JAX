@@ -1,5 +1,5 @@
 diff --git a/xla/service/spmd/custom_call_handler.cc b/xla/service/spmd/custom_call_handler.cc
-index de35fda597..70d4df6388 100644
+index de35fda597..f1bcf38dfb 100644
 --- a/xla/service/spmd/custom_call_handler.cc
 +++ b/xla/service/spmd/custom_call_handler.cc
 @@ -84,6 +84,7 @@ ParseOpaqueAsAttributes(const HloInstruction* hlo) {
@@ -236,7 +236,7 @@ index de35fda597..70d4df6388 100644
 +      start_indices[dim] = start_idx;
 +
 +      super_shard = b_.AddInstruction(HloInstruction::CreateDynamicUpdateSlice(
-+          padded_shape, padded_super_shard, right_halo, start_indices));
++          padded_shape, padded_super_shard, left_halo, start_indices));
 +    }
    }
  
