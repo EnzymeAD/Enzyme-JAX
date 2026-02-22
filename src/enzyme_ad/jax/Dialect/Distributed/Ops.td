@@ -21,6 +21,31 @@ def PhysicalMeshOp : DistributedOp<"PhysicalMesh"> {
     let assemblyFormat = "$axes attr-dict";
 }
 
+def LogicalMeshOp : DistributedOp<"LogicalMesh"> {
+    let description = [{Defines a logical mesh of devices, intended to represent the mesh used by the program. Defined in terms of its projection
+    onto a physical mesh via a product of logical axes.}];
+    let arguments = (ins
+        Variadic<LogicalCommAxisType>:$axes
+    );
+    let results = (outs LogicalMeshType:$mesh);
+    let assemblyFormat = "$axes attr-dict";
+}
+
+def AxisAllToAllOp : DistributedOp<"AxisAllToAll"> {
+    let description = [{
+       A communication channel where any device can communicate to any other device without
+       bandwidth conflict or latency scaling with index distance. 
+     }];
+    let arguments = (ins
+        I32ArrayAttr:$axis_size,
+        // TODO should these be floats?
+        UI64Attr:$bandwidth, // in bytes per picosecond
+        UI64Attr:$latency // in picoseconds.
+    );
+    let results = (outs PhysicalCommAxisType:$axis);
+    let assemblyFormat = "$axis_size $bandwidth $latency attr-dict";
+}
+
 def AxisFactorOp : DistributedOp<"AxisFactor", [DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
     let description = [{
        Factors a physical axis into multiple logical axes, according to a static array of factor sizes.
