@@ -4,7 +4,7 @@ on:
   push:
     branches:
     - main
-    paths:
+    paths: &paths
       - '.github/workflows/test-gb-25.yml'
       - '**/BUILD'
       - '**/WORKSPACE'
@@ -15,14 +15,7 @@ on:
   pull_request:
     branches:
     - main
-    paths:
-      - '.github/workflows/test-gb-25.yml'
-      - '**/BUILD'
-      - '**/WORKSPACE'
-      - '**/*.bzl'
-      - 'patches/**'
-      - 'src/**'
-      - 'third_party/**'
+    paths: *paths
 
 concurrency:
   # Skip intermediate builds: always.
@@ -44,7 +37,7 @@ jobs:
       matrix:
         os:
           - linux-x86-a2-48-a100-4gpu
-          # - linux-x86-ct6e-180-4tpu
+          - linux-x86-ct6e-180-4tpu
         julia_version:
           - '1.11'
         xla_commit:
