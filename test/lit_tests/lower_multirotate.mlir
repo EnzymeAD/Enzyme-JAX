@@ -11,6 +11,7 @@ func.func @multirotate_no_amount(%arg0: tensor<10xf32>) -> tensor<10xf32> {
 // CHECK-NEXT:           return %[[VAL_0]] : tensor<10xf32>
 // CHECK-NEXT:         }
 
+
 // Test basic lowering of MultiRotateOp with both left and right amounts
 func.func @basic_lower_multirotate(%arg0: tensor<10x20xf32>) -> (tensor<10x20xf32>, tensor<10x20xf32>, tensor<10x20xf32>) {
     %0:3 = "enzymexla.multi_rotate"(%arg0) <{dimension = 1 : i32, left_amount = 1 : i32, right_amount = 1 : i32}> : (tensor<10x20xf32>) -> (tensor<10x20xf32>, tensor<10x20xf32>, tensor<10x20xf32>)
@@ -81,6 +82,7 @@ func.func @multirotate_left_neg_equal(%arg0: tensor<10xf32>) -> tensor<10xf32> {
 // CHECK-NEXT:           %[[VAL_1:.*]] = "enzymexla.rotate"(%[[VAL_0]]) <{amount = 9 : i32, dimension = 0 : i32}> : (tensor<10xf32>) -> tensor<10xf32>
 // CHECK-NEXT:           return %[[VAL_1]] : tensor<10xf32>
 // CHECK-NEXT:         }
+
 
 // Test lowering with negative right_amout
 func.func @multirotate_right_neg_equal(%arg0: tensor<10xf32>) -> tensor<10xf32> {

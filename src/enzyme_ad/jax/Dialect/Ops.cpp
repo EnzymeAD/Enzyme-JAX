@@ -2497,15 +2497,18 @@ LogicalResult enzymexla::MultiRotateOp::verify() {
   int32_t rightAmount = getRightAmount();
 
   if (leftAmount < 0 && rightAmount < 0)
-    return emitOpError("both left_amount and right_amount must not be negative at the same time, got ")
+    return emitOpError("both left_amount and right_amount must not be negative "
+                       "at the same time, got ")
            << leftAmount << " (left) and " << rightAmount << " (right)";
 
-  if (leftAmount < 0 &&  - leftAmount > rightAmount)
-    return emitOpError("if left_amount is negative, its absolute value must be less than or equal to right_amount, got ")
+  if (leftAmount < 0 && -leftAmount > rightAmount)
+    return emitOpError("if left_amount is negative, its absolute value must be "
+                       "less than or equal to right_amount, got ")
            << leftAmount << " (left) and " << rightAmount << " (right)";
 
-  if (rightAmount < 0 && - rightAmount > leftAmount)
-    return emitOpError("if right_amount is negative, its absolute value must be less than or equal to left_amount, got ")
+  if (rightAmount < 0 && -rightAmount > leftAmount)
+    return emitOpError("if right_amount is negative, its absolute value must "
+                       "be less than or equal to left_amount, got ")
            << leftAmount << " (left) and " << rightAmount << " (right)";
 
   // Verify dimension is valid
