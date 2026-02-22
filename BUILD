@@ -48,6 +48,7 @@ cc_binary(
         "@llvm-project//mlir:GPUToLLVMIRTranslation",
         "@llvm-project//mlir:LLVMToLLVMIRTranslation",
         "@llvm-project//mlir:MlirOptLib",
+        "@llvm-project//mlir:Transforms",
         "@llvm-project//mlir:NVVMToLLVMIRTranslation",
         "@tsl//tsl/platform:env",
         "@tsl//tsl/platform:env_impl",

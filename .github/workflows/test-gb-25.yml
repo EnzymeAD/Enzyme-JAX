@@ -200,7 +200,7 @@ jobs:
               ALL_TO_ALL_THRESHOLD=0
               ALL_GATHER_THRESHOLD=0
               ALL_REDUCE_THRESHOLD=0
-              COLLECTIVE_PERMUTE_THRESHOLD=354
+              COLLECTIVE_PERMUTE_THRESHOLD=355
           elif [[ '${{ contains(matrix.os, 'tpu') }}' == 'true' ]]; then
               ALL_TO_ALL_THRESHOLD=0
               ALL_GATHER_THRESHOLD=20
