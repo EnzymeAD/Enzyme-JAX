@@ -29,8 +29,8 @@ cc_library(
     deps = [
         "@xla//xla/ffi:execution_state",
         "@xla//xla/ffi:ffi_api",
-        "@xla//xla/ffi/api:ffi",
         "@xla//xla/ffi/api:c_api_internal",
+        "@xla//xla/ffi/api:ffi",
         "@xla//xla/stream_executor:stream",
     ],
 )
