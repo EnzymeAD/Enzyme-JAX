@@ -825,6 +825,33 @@ gentbl_cc_library(
     ],
 )
 
+td_library(
+    name = "DistributedPassesTdFiles",
+    srcs = [],
+    deps = [
+        "@llvm-project//mlir:PassBaseTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "DistributedPassesIncGen",
+    tbl_outs = [
+        (
+            [
+                "-gen-pass-decls",
+                "-name=distributed",
+            ],
+            "Passes/Distributed/Passes.h.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Passes/Distributed/Passes.td",
+    deps = [
+        ":DistributedPassesTdFiles",
+        "@llvm-project//mlir:FunctionInterfacesTdFiles",
+    ],
+)
+
 cc_library(
     name = "CheckedRewrite",
     hdrs = ["CheckedRewrite.h"],
@@ -1171,6 +1198,7 @@ cc_library(
             "Analysis/*.cpp",
             "Implementations/*.cpp",
             "Passes/*.cpp",
+            "Passes/Distributed/*.cpp",
             "Passes/Tessera/*.cpp",
             "Dialect/*.cpp",
             "Dialect/Distributed/*.cpp",
@@ -1189,6 +1217,7 @@ cc_library(
         "Analysis/*.h",
         "Implementations/*.h",
         "Passes/*.h",
+        "Passes/Distributed/*.h",
         "Passes/Tessera/*.h",
         "Dialect/*.h",
         "Dialect/Distributed/*.h",
@@ -1211,6 +1240,7 @@ cc_library(
         ":CheckedRewrite",
         ":DistributedDialectIncGen",
         ":DistributedInterfacesIncGen",
+        ":DistributedPassesIncGen",
         ":DistributedOpsIncGen",
         ":DistributedTypesIncGen",
         ":EnzymeHLOPatternsIncGen",
