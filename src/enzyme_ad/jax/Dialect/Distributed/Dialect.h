@@ -10,6 +10,7 @@
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Types.h"
 #include "mlir/Interfaces/InferTypeOpInterface.h"
+#include "mlir/Support/LLVM.h"
 
 
 // Include the dialect
@@ -26,6 +27,17 @@
 
 
 // Utilities
+namespace mlir::enzyme::distributed {
+
+::mlir::FailureOr<PhysicalCommAxisOpInterface>
+resolvePhysicalAxisInterfaceFromAttr(::mlir::Operation *from,
+			     ::mlir::Attribute axisAttr);
+
+::mlir::LogicalResult resolveLogicalAxisToAtomicFactors(
+	::mlir::Value logicalAxis,
+	::llvm::SmallVectorImpl<::mlir::Value> &atomicFactors);
+
+} // namespace mlir::enzyme::distributed
 
 
 #endif // ENZYME_AD_JAX_DIALECT_DISTRIBUTED_DIALECT_H

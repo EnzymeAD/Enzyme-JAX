@@ -10,19 +10,55 @@ using llvm::report_fatal_error;
 
 namespace mlir::enzyme::distributed {
 
+LogicalResult resolveLogicalAxisToAtomicFactors(
+    Value logicalAxis, SmallVectorImpl<Value> &atomicFactors) {
+   Operation *definingOp = logicalAxis.getDefiningOp();
+  if (!definingOp)
+    return failure();
+
+  if (auto axisProduct = dyn_cast<AxisProductOp>(definingOp)) {
+    for (Value operandAxis : axisProduct.getLogicalAxes()) {
+      if (failed(resolveLogicalAxisToAtomicFactors(operandAxis, atomicFactors)))
+        return failure();
+    }
+    return success();
+  } else if (isa<LogicalCommAxisOpInterface>(definingOp)) {
+    atomicFactors.push_back(logicalAxis);
+    return success();
+  }
+
+  return failure();
+}
+
+FailureOr<PhysicalCommAxisOpInterface> resolvePhysicalAxisInterfaceFromAttr(
+    Operation *from, Attribute axisAttr) {
+  auto axisSymRef = dyn_cast_or_null<FlatSymbolRefAttr>(axisAttr);
+  if (!axisSymRef) {
+    from->emitOpError() << "requires a flat symbol ref to a physical axis";
+    return failure();
+  }
+
+  Operation *axisOp = SymbolTable::lookupNearestSymbolFrom(from, axisSymRef);
+  if (!axisOp) {
+    from->emitOpError() << "references unknown physical axis symbol "
+                        << axisSymRef;
+    return failure();
+  }
+
+  auto axisInterface = dyn_cast<PhysicalCommAxisOpInterface>(axisOp);
+  if (!axisInterface) {
+    from->emitOpError() << "requires symbol to reference an op implementing "
+                        << "PhysicalCommAxisOpInterface";
+    return failure();
+  }
+
+  return axisInterface;
+}
+
 LogicalResult PhysicalMeshOp::verify() {
   for (auto axisRef : getAxes()) {
-    auto axisSymRef = dyn_cast<FlatSymbolRefAttr>(axisRef);
-    if (!axisSymRef)
-      return emitOpError() << "requires axes to be flat symbol refs";
-    Operation *axisOp = SymbolTable::lookupNearestSymbolFrom(*this, axisSymRef);
-    if (!axisOp)
-      return emitOpError() << "references unknown physical axis symbol "
-                           << axisSymRef;
-    if (!isa<PhysicalCommAxisOpInterface>(axisOp)) {
-      return emitOpError() << "requires all referenced axes to implement "
-                           << "PhysicalCommAxisOpInterface";
-    }
+    if (failed(resolvePhysicalAxisInterfaceFromAttr(*this, axisRef)))
+      return failure();
   }
   return mlir::success();
 }
@@ -32,20 +68,11 @@ int64_t AxisAllToAllOp::getPhysicalAxisSize() {
 }
 
 LogicalResult AxisFactorOp::verify() {
-  auto physicalAxisRef = (*this)->getAttrOfType<FlatSymbolRefAttr>("physical_axis");
-  if (!physicalAxisRef)
-    return emitOpError() << "requires physical_axis symbol reference";
-
-  Operation *physicalAxisOp =
-      SymbolTable::lookupNearestSymbolFrom(*this, physicalAxisRef);
-  if (!physicalAxisOp)
-    return emitOpError() << "references unknown physical axis symbol "
-                         << physicalAxisRef;
-
-  auto physicalAxis = dyn_cast<PhysicalCommAxisOpInterface>(physicalAxisOp);
-  if (!physicalAxis)
-    return emitOpError() << "requires physical_axis to reference an op "
-                         << "implementing PhysicalCommAxisOpInterface";
+  FailureOr<PhysicalCommAxisOpInterface> physicalAxis =
+      resolvePhysicalAxisInterfaceFromAttr(*this,
+                                           (*this)->getAttr("physical_axis"));
+  if (failed(physicalAxis))
+    return failure();
 
   auto factors = getFactors();
   int64_t factorProduct = 1;
@@ -61,7 +88,7 @@ LogicalResult AxisFactorOp::verify() {
     }
   }
 
-  int64_t physicalAxisSize = physicalAxis.getPhysicalAxisSize();
+  int64_t physicalAxisSize = physicalAxis->getPhysicalAxisSize();
   if (factorProduct != physicalAxisSize) {
     return emitOpError()
            << "requires product(factors) == referenced physical axis size ("
@@ -111,7 +138,39 @@ LogicalResult AxisProductOp::verify() {
                            << "implementing the LogicalCommAxisOpInterface";
     }
   }
-  // TODO disjointness
+
+  llvm::SmallVector<Value> atomicFactors;
+  if (failed(resolveLogicalAxisToAtomicFactors(getLogicalAxis(), atomicFactors))) {
+    return emitOpError() << "logical axis does not resolve to atomic factors";
+  }
+  // Disjointness of factors: all factors refering to the same symbol/physical
+  // axis should be defined by the same factor op and should be distinct values.
+  llvm::SmallDenseMap<Attribute, llvm::SmallVector<Value>> factorGroups;
+
+  for (auto atomicFactor : atomicFactors) {
+    auto defining_op = atomicFactor.getDefiningOp();
+    auto axisFactorOp = cast<AxisFactorOp>(defining_op);
+    auto physicalAxisAttr = axisFactorOp.getPhysicalAxisAttr();
+    if (factorGroups.count(physicalAxisAttr)) {
+        // Check if the atomic factor is already in the group
+        auto &group = factorGroups[physicalAxisAttr];
+        for (auto existingFactor : group) {
+          if (existingFactor == atomicFactor) {
+            return emitOpError() << "logical axis has duplicate atomic factors "
+                                 << "referring to the same physical axis";
+          }
+          if (existingFactor.getDefiningOp() != axisFactorOp) {
+            return emitOpError() << "logical axis has atomic factors referring "
+                                 << "to the same physical axis but defined by "
+                                 << "different factorization ops";
+          }
+        }
+        group.push_back(atomicFactor);
+    } else {
+      factorGroups[physicalAxisAttr].push_back(atomicFactor);
+    }
+  }
+
   return mlir::success();
 }
 
