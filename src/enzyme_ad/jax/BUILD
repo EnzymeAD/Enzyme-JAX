@@ -11,6 +11,7 @@ package(
 
 exports_files([
     "enzymexlamlir-opt.cpp",
+    "raise.h",
     "raise.cpp",
     "RegistryUtils.cpp",
 ])

@@ -76,6 +76,9 @@ cc_library(
         "//src/enzyme_ad/jax:RegistryUtils.cpp",
         "//src/enzyme_ad/jax:raise.cpp",
     ],
+    hdrs = [
+        "//src/enzyme_ad/jax:raise.h",
+    ],
     copts = [
         "-Wno-unused-variable",
         "-Wno-return-type",
