@@ -1006,9 +1006,9 @@ struct PeriodicConcatSimplify
     TensorShardingAttr op_shardings[] = {concatSharding};
     TensorShardingAttr op_shardings_in[] = {concatSharding, concatSharding};
     TensorShardingPerValueAttr in_shardings =
-        TensorShardingPerValueAttr::get(concat.getContext(), op_shardings_in);
+        TensorShardingPerValueAttr::get(rewriter.getContext(), op_shardings_in);
     TensorShardingPerValueAttr out_shardings =
-        TensorShardingPerValueAttr::get(concat.getContext(), op_shardings);
+        TensorShardingPerValueAttr::get(rewriter.getContext(), op_shardings);
 
     SmallVector<StringAttr> manualAxes;
     SmallVector<int64_t> localShape =
@@ -1184,9 +1184,9 @@ struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
 
     TensorShardingAttr opShardings[] = {wrapSharding};
     TensorShardingPerValueAttr inShardings =
-        TensorShardingPerValueAttr::get(wrap.getContext(), opShardings);
+        TensorShardingPerValueAttr::get(rewriter.getContext(), opShardings);
     TensorShardingPerValueAttr outShardings =
-        TensorShardingPerValueAttr::get(wrap.getContext(), opShardings);
+        TensorShardingPerValueAttr::get(rewriter.getContext(), opShardings);
 
     SmallVector<StringAttr> manualAxes;
     SmallVector<int64_t> localShape = llvm::to_vector(wrapOperandShape);
@@ -1579,9 +1579,9 @@ struct ExtendCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
 
     TensorShardingAttr opShardings[] = {extendSharding};
     TensorShardingPerValueAttr inShardings =
-        TensorShardingPerValueAttr::get(extend.getContext(), opShardings);
+        TensorShardingPerValueAttr::get(rewriter.getContext(), opShardings);
     TensorShardingPerValueAttr outShardings =
-        TensorShardingPerValueAttr::get(extend.getContext(), opShardings);
+        TensorShardingPerValueAttr::get(rewriter.getContext(), opShardings);
 
     SmallVector<StringAttr> manualAxes;
     SmallVector<int64_t> localShape = llvm::to_vector(extendOperandShape);
@@ -1977,9 +1977,9 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
 
     TensorShardingAttr opShardings[] = {rotateSharding};
     TensorShardingPerValueAttr inShardings =
-        TensorShardingPerValueAttr::get(rotate.getContext(), opShardings);
+        TensorShardingPerValueAttr::get(rewriter.getContext(), opShardings);
     TensorShardingPerValueAttr outShardings =
-        TensorShardingPerValueAttr::get(rotate.getContext(), opShardings);
+        TensorShardingPerValueAttr::get(rewriter.getContext(), opShardings);
 
     SmallVector<StringAttr> manualAxes;
     SmallVector<int64_t> localShape = llvm::to_vector(rotateShape);
@@ -2102,7 +2102,7 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
                   {(int64_t)(sourceTargetIdxs.size() / 2), (int64_t)2},
                   rewriter.getI64Type()),
               sourceTargetIdxs),
-          stablehlo::ChannelHandleAttr::get(rotate.getContext(),
+          stablehlo::ChannelHandleAttr::get(rewriter.getContext(),
                                             /*handle*/ channel_id,
                                             /*type*/ 0));
       channel_id++;
@@ -2256,7 +2256,7 @@ struct MultiRotateCustomCallOptimize
         /*result_layouts=*/nullptr,
         /*output_operand_aliases=*/nullptr);
     mlir::sdy::setShardings(ccall, TensorShardingPerValueAttr::get(
-                                       rotate.getContext(), opShardings));
+                                       rewriter.getContext(), opShardings));
     return success();
   }
 };
@@ -2325,7 +2325,7 @@ struct MultiSliceCustomCallOptimize
         /*result_layouts=*/nullptr,
         /*output_operand_aliases=*/nullptr);
     mlir::sdy::setShardings(ccall, TensorShardingPerValueAttr::get(
-                                       slice.getContext(), opShardings));
+                                       rewriter.getContext(), opShardings));
     return success();
   }
 };
@@ -2577,13 +2577,13 @@ struct MultiRotateSpmdOptimize
       manualTypes.push_back(input.getType());
     }
 
-    TensorShardingPerValueAttr in_shardings =
-        TensorShardingPerValueAttr::get(rotate.getContext(), {rotateSharding});
+    TensorShardingPerValueAttr in_shardings = TensorShardingPerValueAttr::get(
+        rewriter.getContext(), {rotateSharding});
 
     SmallVector<TensorShardingAttr> out_shardings_vec(rotate.getNumResults(),
                                                       rotateSharding);
     TensorShardingPerValueAttr out_shardings = TensorShardingPerValueAttr::get(
-        rotate.getContext(), ArrayRef<TensorShardingAttr>(out_shardings_vec));
+        rewriter.getContext(), ArrayRef<TensorShardingAttr>(out_shardings_vec));
 
     auto manual = sdy::ManualComputationOp::create(
         rewriter, rotate.getLoc(), manualTypes, manualOps, in_shardings,
@@ -2634,7 +2634,7 @@ struct MultiRotateSpmdOptimize
                      .create<stablehlo::CollectivePermuteOp>(
                          rotate.getLoc(), sliceToSend, pairAttr,
                          stablehlo::ChannelHandleAttr::get(
-                             rotate.getContext(), /*handle*/ 1, /*type*/ 0))
+                             rewriter.getContext(), /*handle*/ 1, /*type*/ 0))
                      .getResult();
     }
 
@@ -2666,7 +2666,7 @@ struct MultiRotateSpmdOptimize
       // manual mesh. Since we have 1 manual axis, this is the scalar index.
       auto partitionId = rewriter.create<stablehlo::PartitionIdOp>(
           rotate.getLoc(),
-          RankedTensorType::get({}, IntegerType::get(rotate.getContext(), 32,
+          RankedTensorType::get({}, IntegerType::get(rewriter.getContext(), 32,
                                                      IntegerType::Unsigned)));
 
       Value dimId = rewriter.create<stablehlo::ConvertOp>(
@@ -2708,7 +2708,7 @@ struct MultiRotateSpmdOptimize
                       .create<stablehlo::CollectivePermuteOp>(
                           rotate.getLoc(), sliceToSend, pairAttr,
                           stablehlo::ChannelHandleAttr::get(
-                              rotate.getContext(), /*handle*/ 2, /*type*/ 0))
+                              rewriter.getContext(), /*handle*/ 2, /*type*/ 0))
                       .getResult();
     }
 
@@ -2930,9 +2930,9 @@ struct ConcatTwoOperandsCommOptimize
 
     TensorShardingAttr opShardingsIn[] = {concatSharding, concatSharding};
     TensorShardingPerValueAttr inShardings =
-        TensorShardingPerValueAttr::get(concat.getContext(), opShardingsIn);
+        TensorShardingPerValueAttr::get(rewriter.getContext(), opShardingsIn);
     TensorShardingPerValueAttr outShardings =
-        TensorShardingPerValueAttr::get(concat.getContext(), opShardings);
+        TensorShardingPerValueAttr::get(rewriter.getContext(), opShardings);
 
     Type manualTypes[] = {globalResultType};
 
@@ -2997,7 +2997,7 @@ struct ConcatTwoOperandsCommOptimize
                   {(int64_t)(shiftPairs.size() / 2), (int64_t)2},
                   rewriter.getI64Type()),
               shiftPairs),
-          stablehlo::ChannelHandleAttr::get(concat.getContext(),
+          stablehlo::ChannelHandleAttr::get(rewriter.getContext(),
                                             /*handle*/ channel_id,
                                             /*type*/ 0));
       channel_id++;
@@ -3773,9 +3773,9 @@ struct ConcatTwoDUSLike : public OpRewritePattern<stablehlo::ConcatenateOp> {
     Type manualTypes[] = {globalResultType};
 
     TensorShardingPerValueAttr in_shardings = TensorShardingPerValueAttr::get(
-        concat.getContext(), in_shardings_array);
+        rewriter.getContext(), in_shardings_array);
     TensorShardingPerValueAttr out_shardings = TensorShardingPerValueAttr::get(
-        concat.getContext(), out_shardings_array);
+        rewriter.getContext(), out_shardings_array);
 
     auto manual = sdy::ManualComputationOp::create(
         rewriter, concat.getLoc(), manualTypes, manualOps, in_shardings,
@@ -3927,9 +3927,9 @@ struct ExtendDUSLike : public OpRewritePattern<enzymexla::ExtendOp> {
     Type manualTypes[] = {globalResultType};
 
     TensorShardingPerValueAttr in_shardings = TensorShardingPerValueAttr::get(
-        concat.getContext(), in_shardings_array);
+        rewriter.getContext(), in_shardings_array);
     TensorShardingPerValueAttr out_shardings = TensorShardingPerValueAttr::get(
-        concat.getContext(), out_shardings_array);
+        rewriter.getContext(), out_shardings_array);
 
     auto manual = sdy::ManualComputationOp::create(
         rewriter, concat.getLoc(), manualTypes, manualOps, in_shardings,
@@ -4172,10 +4172,10 @@ struct DUSToPadManualCompComm
       manualOps.push_back(pad2);
     Type manualTypes[] = {globalResultType};
 
-    TensorShardingPerValueAttr in_shardings =
-        TensorShardingPerValueAttr::get(dus.getContext(), in_shardings_array);
-    TensorShardingPerValueAttr out_shardings =
-        TensorShardingPerValueAttr::get(dus.getContext(), out_shardings_array);
+    TensorShardingPerValueAttr in_shardings = TensorShardingPerValueAttr::get(
+        rewriter.getContext(), in_shardings_array);
+    TensorShardingPerValueAttr out_shardings = TensorShardingPerValueAttr::get(
+        rewriter.getContext(), out_shardings_array);
 
     auto manual = sdy::ManualComputationOp::create(rewriter, loc, manualTypes,
                                                    manualOps, in_shardings,
