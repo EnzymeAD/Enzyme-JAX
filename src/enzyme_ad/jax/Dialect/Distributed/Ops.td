@@ -37,13 +37,16 @@ def LogicalMeshOp : DistributedOp<"LogicalMesh"> {
     let assemblyFormat = "$axes attr-dict";
 }
 
-def AxisAllToAllOp : DistributedOp<"AxisAllToAll"> {
+def AxisAllToAllOp : DistributedOp<"AxisAllToAll", [
+    DeclareOpInterfaceMethods<CommAxisOpInterface>,
+    DeclareOpInterfaceMethods<PhysicalCommAxisOpInterface>
+] > {
     let description = [{
        A communication channel where any device can communicate to any other device without
        bandwidth conflict or latency scaling with index distance. 
      }];
     let arguments = (ins
-        I32ArrayAttr:$axis_size,
+        UI32Attr:$axis_size,
         // TODO should these be floats?
         UI64Attr:$bandwidth, // in bytes per picosecond
         UI64Attr:$latency // in picoseconds.
@@ -52,7 +55,11 @@ def AxisAllToAllOp : DistributedOp<"AxisAllToAll"> {
     let assemblyFormat = "$axis_size $bandwidth $latency attr-dict";
 }
 
-def AxisFactorOp : DistributedOp<"AxisFactor", [DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+def AxisFactorOp : DistributedOp<"AxisFactor", [
+    DeclareOpInterfaceMethods<InferTypeOpInterface>,
+    DeclareOpInterfaceMethods<CommAxisOpInterface>,
+    DeclareOpInterfaceMethods<LogicalCommAxisOpInterface>
+]> {
     let description = [{
        Factors a physical axis into multiple logical axes, according to a static array of factor sizes.
        The lowest index of factors corresponds to the lowest-significance / most contiguous new axis.
@@ -69,7 +76,10 @@ def AxisFactorOp : DistributedOp<"AxisFactor", [DeclareOpInterfaceMethods<InferT
 }
 
 
-def AxisProductOp : DistributedOp<"AxisProduct"> {
+def AxisProductOp : DistributedOp<"AxisProduct", [
+    DeclareOpInterfaceMethods<CommAxisOpInterface>,
+    DeclareOpInterfaceMethods<LogicalCommAxisOpInterface>
+]> {
     let description = [{
        Combines multiple logical axes into a single logical axis. Logical axis must be disjoint,
        but may come from any mix of physical axes, including different strides over the same physical
@@ -88,16 +98,35 @@ def AxisProductOp : DistributedOp<"AxisProduct"> {
 
 def MeshComputationOp : DistributedOp<"MeshComputation"> {
     let description = [{
-       A computation performed across a mesh. SIMD style with collectives.
+       A computation performed across a mesh. SPMD style with collectives.
        (Multiple) "Region" computations can be inserted into a mesh computation
-       to break SIMD and perform different computations on devices within the region.
+       to break SPMD and perform different computations on devices within the region.
      }];
     let arguments = (ins
         LogicalMeshType:$mesh, Variadic<ShardedTensorType>:$input_tensors
     );
     let results = (outs Variadic<ShardedTensorType>:$output_tensors);
-    let regions = (region MaxSizedRegion<1>:$body);
+    let regions = (region SizedRegion<1>:$body);
     let assemblyFormat = "$mesh $input_tensors type($input_tensors) `->` type($output_tensors) $body attr-dict";
+}
+
+def RegionComputationOp : DistributedOp<"RegionComputation"> {
+    let description = [{
+       A computation performed across a submesh region of a parent MeshComputation. Any axis (factors) within the 
+       region are decomposed into individual programs, while axes outside the region replicate the same program. 
+     }];
+    let arguments = (ins
+        LogicalMeshType:$submesh, Variadic<ShardedTensorType>:$input_tensors
+    );
+    let results = (outs Variadic<ShardedTensorType>:$output_tensors);
+    let regions = (region VariadicRegion<SizedRegion<1>>:$device_bodies);
+    let assemblyFormat = "$submesh $input_tensors type($input_tensors) `->` type($output_tensors) $device_bodies attr-dict";
+    // TODO: verify number of regoins matches number of devices in submesh,
+    // each region has only one block, the block arguments match the shard componets
+    // of the input tensors, and the region outputs match the output tensors.
+    // Additionally, this op can only be called within a MeshComputationOp, and the submesh
+    // must be subset or equal to the parent mesh.
+    let hasVerifier = 1;
 }
 
 #endif // ENZYME_AD_JAX_DIALECT_DISTRIBUTED_OPS_TD
