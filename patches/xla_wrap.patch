@@ -1,5 +1,5 @@
 diff --git a/xla/service/spmd/custom_call_handler.cc b/xla/service/spmd/custom_call_handler.cc
-index de35fda597..7249d3fbc5 100644
+index de35fda597..2004aa9e94 100644
 --- a/xla/service/spmd/custom_call_handler.cc
 +++ b/xla/service/spmd/custom_call_handler.cc
 @@ -84,6 +84,7 @@ ParseOpaqueAsAttributes(const HloInstruction* hlo) {
@@ -251,7 +251,7 @@ index de35fda597..7249d3fbc5 100644
  
      HloInstruction* sliced =
          create_slice(super_shard, slice_start, slice_start + shard_size);
-@@ -579,6 +613,277 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCallSPMDInternal_MultiRotate(
+@@ -579,6 +613,275 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCallSPMDInternal_MultiRotate(
    return absl::OkStatus();
  }
  
@@ -345,7 +345,13 @@ index de35fda597..7249d3fbc5 100644
 +      HloInstruction::CreateConstant(LiteralUtil::CreateR0<int32_t>(0)));
 +
 +  HloInstruction* left_halo = nullptr;
-+  HloInstruction* is_last;
++    HloInstruction* participating_shards_minus_one_op =
++        b_.AddInstruction(HloInstruction::CreateConstant(
++            LiteralUtil::CreateR0<int32_t>(participating_shards - 1)));
++
++    HloInstruction* is_last = b_.AddInstruction(HloInstruction::CreateCompare(
++        ShapeUtil::ChangeElementType(shard_offset->shape(), PRED), shard_offset,
++        participating_shards_minus_one_op, Comparison::Direction::kEq));
 +  if (left_amount > 0) {
 +    std::vector<std::pair<int64_t, int64_t>> pairs;
 +    element_sharding.tile_assignment().Each(
@@ -359,14 +365,6 @@ index de35fda597..7249d3fbc5 100644
 +          pairs.emplace_back(device,
 +                             element_sharding.tile_assignment()(dst_idx));
 +        });
-+
-+    HloInstruction* participating_shards_minus_one_op =
-+        b_.AddInstruction(HloInstruction::CreateConstant(
-+            LiteralUtil::CreateR0<int32_t>(participating_shards - 1)));
-+
-+    is_last = b_.AddInstruction(HloInstruction::CreateCompare(
-+        ShapeUtil::ChangeElementType(shard_offset->shape(), PRED), shard_offset,
-+        participating_shards_minus_one_op, Comparison::Direction::kEq));
 +
 +    HloInstruction* other_offset =
 +        b_.AddInstruction(HloInstruction::CreateConstant(
@@ -529,7 +527,7 @@ index de35fda597..7249d3fbc5 100644
  std::unique_ptr<HloInstruction> CreateCustomCallSPMDInternal_RotateRight(
      HloInstruction* input, int64_t dim, int64_t amount) {
    std::string opaque = absl::StrCat("dimension=", dim, ",amount=", amount);
-@@ -624,6 +929,9 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCall(HloInstruction* hlo) {
+@@ -624,6 +927,9 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCall(HloInstruction* hlo) {
    if (hlo->custom_call_target() == kSPMDOpMultiRotate) {
      return HandleCustomCallSPMDInternal_MultiRotate(hlo);
    }
