@@ -1,8 +1,10 @@
 #ifndef DISTRIBUTED_PASSES_H
 #define DISTRIBUTED_PASSES_H
 
+#include "mlir/IR/BuiltinDialect.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "shardy/dialect/sdy/ir/dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/Dialect.h"
 

@@ -50,8 +50,8 @@ def AxisAllToAllOp : DistributedOp<"AxisAllToAll", [
     let arguments = (ins
         SymbolNameAttr:$sym_name,
         UI32Attr:$axis_size,
-        // TODO should these be floats?
-        UI64Attr:$bandwidth, // in bytes per picosecond
+        // TODO should these be floats? Units library?
+        UI64Attr:$bandwidth, // in bytes per second
         UI64Attr:$latency, // in picoseconds.
         OptionalAttr<StrAttr>:$sym_visibility
     );
