@@ -130,4 +130,15 @@ def RegionComputationOp : DistributedOp<"RegionComputation"> {
     let hasVerifier = 1;
 }
 
+
+// Need a "return" terminator for both mesh and region computations.
+def DistributedYieldOp : DistributedOp<"DistributedYield", [Terminator]> {
+    let description = [{
+       Terminator for MeshComputation and RegionComputation ops. Returns values from the computation. 
+     }];
+    let arguments = (ins Variadic<ShardedTensorType>:$output_tensors);
+    let assemblyFormat = "$output_tensors type($output_tensors) attr-dict";
+}
+
+
 #endif // ENZYME_AD_JAX_DIALECT_DISTRIBUTED_OPS_TD
