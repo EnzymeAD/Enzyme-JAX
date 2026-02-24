@@ -159,4 +159,19 @@ def CollectiveReshardOp : DistributedOp<"CollectiveReshard"> {
     let assemblyFormat = "$mesh $input_tensor type($input_tensor) `->` type($token) `,` type($output_tensor) attr-dict";
 }
 
+def SubmeshCollectivePartsOp : DistributedOp<"SubmeshCollectiveParts", [SameVariadicResultSize, DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+    let description = [{
+       Decomposes a submesh collective into distince send/recieve tokens 
+       per submesh device, which can then be manipulated individually
+       }];
+    let arguments = (ins
+    CollectiveTokenType:$collective,
+    LogicalMeshType:$submesh,
+    TypeAttr:$input_tensor_type,
+    TypeAttr:$output_tensor_type
+    );
+    let results = (outs Variadic<CollectiveTokenType>:$input_tokens, Variadic<CollectiveTokenType>:$output_tokens);
+    let assemblyFormat = "$collective $submesh $input_tensor_type`->` $output_tensor_type attr-dict";
+}
+
 #endif // ENZYME_AD_JAX_DIALECT_DISTRIBUTED_OPS_TD

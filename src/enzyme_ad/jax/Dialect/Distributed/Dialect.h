@@ -61,6 +61,12 @@ bool isLogicalMeshDisjoint(LogicalMeshOp logicalMesh);
  */
 bool isLogicalMeshSubmesh(LogicalMeshOp logicalMesh, LogicalMeshOp submesh);
 
+/**
+ * Returns the total number of devices in a logical mesh, computed as the
+ * product of the sizes of all of its atomic factors.
+ */
+::mlir::FailureOr<int64_t> getLogicalMeshSize(LogicalMeshOp logicalMesh);
+
 } // namespace mlir::enzyme::distributed
 
 #endif // ENZYME_AD_JAX_DIALECT_DISTRIBUTED_DIALECT_H
