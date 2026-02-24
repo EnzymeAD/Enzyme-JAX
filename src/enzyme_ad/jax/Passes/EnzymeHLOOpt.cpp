@@ -7359,6 +7359,82 @@ struct SubSimplify
   }
 };
 
+struct ExponentialMinusOneFuse
+    : public CheckedOpRewritePattern<stablehlo::SubtractOp,
+                                     ExponentialMinusOneFuse> {
+  using CheckedOpRewritePattern<
+      stablehlo::SubtractOp, ExponentialMinusOneFuse>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SubtractOp op,
+                                    PatternRewriter &rewriter) const {
+    auto lhs = op.getLhs();
+    auto rhs = op.getRhs();
+
+    { // exp(x) - 1 -> expm1(x)
+      auto defOp = lhs.getDefiningOp<stablehlo::ExpOp>();
+      if (defOp && llvm::hasSingleElement(defOp->getUsers()) &&
+          (matchPattern(rhs, m_One()) || matchPattern(rhs, m_OneFloat()))) {
+        rewriter.replaceOpWithNewOp<stablehlo::Expm1Op>(op, defOp.getOperand());
+        return success();
+      }
+    }
+
+    { // 1 - exp(x) -> -expm1(x)
+      auto defOp = rhs.getDefiningOp<stablehlo::ExpOp>();
+      if (defOp && llvm::hasSingleElement(defOp->getUsers()) &&
+          (matchPattern(lhs, m_One()) || matchPattern(lhs, m_OneFloat()))) {
+        auto expm1 = stablehlo::Expm1Op::create(
+            rewriter, op.getLoc(), op.getType(), defOp.getOperand());
+        rewriter.replaceOpWithNewOp<stablehlo::NegOp>(op, expm1);
+        return success();
+      }
+    }
+
+    return failure();
+  }
+};
+
+struct ExponentialMinusOneAddFuse
+    : public CheckedOpRewritePattern<stablehlo::AddOp,
+                                     ExponentialMinusOneAddFuse> {
+  using CheckedOpRewritePattern<
+      stablehlo::AddOp, ExponentialMinusOneAddFuse>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::AddOp op,
+                                    PatternRewriter &rewriter) const {
+    auto lhs = op.getLhs();
+    auto rhs = op.getRhs();
+
+    auto isMinusOne = [](Value val) {
+      SplatElementsAttr attr;
+      if (!matchPattern(val, m_Constant(&attr)))
+        return false;
+      auto doubleVal = getDoubleFromAttr(attr.getSplatValue<mlir::TypedAttr>());
+      return doubleVal && *doubleVal == -1.0;
+    };
+
+    { // exp(x) + -1 -> expm1(x)
+      auto defOp = lhs.getDefiningOp<stablehlo::ExpOp>();
+      if (defOp && llvm::hasSingleElement(defOp->getUsers()) &&
+          isMinusOne(rhs)) {
+        rewriter.replaceOpWithNewOp<stablehlo::Expm1Op>(op, defOp.getOperand());
+        return success();
+      }
+    }
+
+    { // -1 + exp(x) -> expm1(x)
+      auto defOp = rhs.getDefiningOp<stablehlo::ExpOp>();
+      if (defOp && llvm::hasSingleElement(defOp->getUsers()) &&
+          isMinusOne(lhs)) {
+        rewriter.replaceOpWithNewOp<stablehlo::Expm1Op>(op, defOp.getOperand());
+        return success();
+      }
+    }
+
+    return failure();
+  }
+};
+
 struct TransposeSymmetricSimplify
     : public CheckedOpRewritePattern<stablehlo::TransposeOp,
                                      TransposeSymmetricSimplify> {
@@ -26476,6 +26552,18 @@ struct LogSimplify final
               stablehlo::LogOp::create(rewriter, op.getLoc(), lhs));
           return success();
         }
+
+        if (matchPattern(rhs, m_One()) ||
+            matchPattern(rhs, m_OneFloat())) { // log(x + 1) -> log1p(x)
+          rewriter.replaceOpWithNewOp<stablehlo::Log1pOp>(op, lhs);
+          return success();
+        }
+
+        if (matchPattern(lhs, m_One()) ||
+            matchPattern(lhs, m_OneFloat())) { // log(1 + x) -> log1p(x)
+          rewriter.replaceOpWithNewOp<stablehlo::Log1pOp>(op, rhs);
+          return success();
+        }
       }
     }
 
@@ -34242,8 +34330,8 @@ struct EnzymeHLOOptPass
         CompareAbs, CompareMul, CompareConvert, AddSelects,
         CompareNegateConstSimplify, SelectSimplify,
         DynamicSliceReshapeDynamicSlice, DynamicSliceReshapeSlice,
-        SliceReshapeDynamicSlice, SliceReshapeSlice>(context,
-                                                     PatternBenefit(65000));
+        SliceReshapeDynamicSlice, SliceReshapeSlice, ExponentialMinusOneFuse,
+        ExponentialMinusOneAddFuse>(context, PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,
                  DynamicUpdateSliceConstProp, PadSimplify, ScatterConstFold,
