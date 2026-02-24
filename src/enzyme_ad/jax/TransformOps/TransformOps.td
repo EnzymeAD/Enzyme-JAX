@@ -2561,6 +2561,10 @@ def ApplyLogSimplify : EnzymeHLOPatternOp<"log_simplify"> {
   let patterns = ["LogSimplify"];
 }
 
+def ApplyExponentialMinusOneFuse : EnzymeHLOPatternOp<"exponential_minus_one_fuse"> {
+  let patterns = ["ExponentialMinusOneFuse", "ExponentialMinusOneAddFuse"];
+}
+
 def ApplyNegMulConstSimplify : EnzymeHLOPatternOp<"neg_mul_const_simplify"> {
   let patterns = ["NegMulConstSimplify"];
 }
