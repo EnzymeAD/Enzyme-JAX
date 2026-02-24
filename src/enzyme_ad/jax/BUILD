@@ -513,11 +513,16 @@ td_library(
         "Dialect/Distributed/Ops.td",
         "Dialect/Distributed/Types.td",
     ],
+    includes = [
+        ".",
+        "../../../external/shardy",
+    ],
     deps = [
         "@llvm-project//mlir:BuiltinDialectTdFiles",
         "@llvm-project//mlir:InferTypeOpInterfaceTdFiles",
         "@llvm-project//mlir:OpBaseTdFiles",
         "@stablehlo//:stablehlo_ops_td_files",
+        "@shardy//shardy/dialect/sdy/ir:sdy_td_files",
     ],
 )
 
@@ -563,6 +568,7 @@ gentbl_cc_library(
     deps = [
         ":DistributedDialectFiles",
         "@llvm-project//mlir:InferTypeOpInterface",
+        "@shardy//shardy/dialect/sdy/ir:sdy_td_files",
     ],
 )
 

@@ -5,6 +5,7 @@ include "mlir/IR/BuiltinAttributes.td"
 include "mlir/IR/SymbolInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "stablehlo/dialect/Base.td"
+include "shardy/dialect/sdy/ir/attrs.td"
 
 include "Dialect.td"
 include "Types.td"
@@ -12,6 +13,7 @@ include "Interfaces.td"
 
 defvar TensorType = HLO_Tensor;
 defvar ShardedTensorType = HLO_Tensor; // Subject to change, for now shardy just adds attributes on top of a regular tensor.
+defvar ShardingAttribute = Sdy_TensorSharding;
 
 // Mesh definition ops
 def PhysicalMeshOp : DistributedOp<"PhysicalMesh", [Symbol]> {
@@ -37,6 +39,7 @@ def LogicalMeshOp : DistributedOp<"LogicalMesh"> {
     );
     let results = (outs LogicalMeshType:$mesh);
     let assemblyFormat = "$axes attr-dict";
+    let hasVerifier = 1;
 }
 
 def AxisAllToAllOp : DistributedOp<"AxisAllToAll", [
@@ -140,5 +143,20 @@ def DistributedYieldOp : DistributedOp<"DistributedYield", [Terminator]> {
     let assemblyFormat = "$output_tensors type($output_tensors) attr-dict";
 }
 
+// Communication Ops
+def CollectiveReshardOp : DistributedOp<"CollectiveReshard"> {
+    let description = [{
+       A resharding collective communication where the resharding pattern dictates the 
+       communication pattern.
+     }];
+    let arguments = (ins
+        LogicalMeshType:$mesh,
+        ShardedTensorType:$input_tensor,
+        ShardingAttribute:$input_sharding,
+        ShardingAttribute:$output_sharding
+    );
+    let results = (outs CollectiveTokenType:$token, ShardedTensorType:$output_tensor);
+    let assemblyFormat = "$mesh $input_tensor type($input_tensor) `->` type($token) `,` type($output_tensor) attr-dict";
+}
 
 #endif // ENZYME_AD_JAX_DIALECT_DISTRIBUTED_OPS_TD

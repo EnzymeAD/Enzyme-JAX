@@ -10,55 +10,19 @@ using llvm::report_fatal_error;
 
 namespace mlir::enzyme::distributed {
 
-LogicalResult resolveLogicalAxisToAtomicFactors(
-    Value logicalAxis, SmallVectorImpl<Value> &atomicFactors) {
-   Operation *definingOp = logicalAxis.getDefiningOp();
-  if (!definingOp)
-    return failure();
-
-  if (auto axisProduct = dyn_cast<AxisProductOp>(definingOp)) {
-    for (Value operandAxis : axisProduct.getLogicalAxes()) {
-      if (failed(resolveLogicalAxisToAtomicFactors(operandAxis, atomicFactors)))
-        return failure();
-    }
-    return success();
-  } else if (isa<LogicalCommAxisOpInterface>(definingOp)) {
-    atomicFactors.push_back(logicalAxis);
-    return success();
-  }
-
-  return failure();
-}
-
-FailureOr<PhysicalCommAxisOpInterface> resolvePhysicalAxisInterfaceFromAttr(
-    Operation *from, Attribute axisAttr) {
-  auto axisSymRef = dyn_cast_or_null<FlatSymbolRefAttr>(axisAttr);
-  if (!axisSymRef) {
-    from->emitOpError() << "requires a flat symbol ref to a physical axis";
-    return failure();
-  }
-
-  Operation *axisOp = SymbolTable::lookupNearestSymbolFrom(from, axisSymRef);
-  if (!axisOp) {
-    from->emitOpError() << "references unknown physical axis symbol "
-                        << axisSymRef;
-    return failure();
-  }
-
-  auto axisInterface = dyn_cast<PhysicalCommAxisOpInterface>(axisOp);
-  if (!axisInterface) {
-    from->emitOpError() << "requires symbol to reference an op implementing "
-                        << "PhysicalCommAxisOpInterface";
-    return failure();
-  }
-
-  return axisInterface;
-}
-
 LogicalResult PhysicalMeshOp::verify() {
   for (auto axisRef : getAxes()) {
     if (failed(resolvePhysicalAxisInterfaceFromAttr(*this, axisRef)))
       return failure();
+  }
+  return mlir::success();
+}
+
+LogicalResult LogicalMeshOp::verify() {
+  if (!isLogicalMeshDisjoint(*this)) {
+    return emitOpError()
+           << "requires mesh factors to be disjoint, and all factors for the "
+           << "same physical axis to come from a single factorization op";
   }
   return mlir::success();
 }

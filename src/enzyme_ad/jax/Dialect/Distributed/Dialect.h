@@ -12,6 +12,7 @@
 #include "mlir/Interfaces/InferTypeOpInterface.h"
 #include "mlir/Support/LLVM.h"
 
+#include "shardy/dialect/sdy/ir/dialect.h"
 
 // Include the dialect
 #include "src/enzyme_ad/jax/Dialect/Distributed/DistributedDialect.h.inc"
@@ -25,19 +26,41 @@
 #define GET_OP_CLASSES
 #include "src/enzyme_ad/jax/Dialect/Distributed/DistributedOps.h.inc"
 
-
 // Utilities
 namespace mlir::enzyme::distributed {
 
 ::mlir::FailureOr<PhysicalCommAxisOpInterface>
 resolvePhysicalAxisInterfaceFromAttr(::mlir::Operation *from,
-			     ::mlir::Attribute axisAttr);
+                                     ::mlir::Attribute axisAttr);
 
+/**
+ * Decomposes a logical axis into the SSA values resulting from 
+ * the `factor` calls on a physical axis.
+ */
 ::mlir::LogicalResult resolveLogicalAxisToAtomicFactors(
-	::mlir::Value logicalAxis,
-	::llvm::SmallVectorImpl<::mlir::Value> &atomicFactors);
+    ::mlir::Value logicalAxis,
+    ::llvm::SmallVectorImpl<::mlir::Value> &atomicFactors);
+
+::mlir::LogicalResult resolveLogicalMeshToAtomicFactors(
+    LogicalMeshOp logicalMesh,
+    ::llvm::SmallVectorImpl<::mlir::Value> &atomicFactors);
+
+/**
+ * Returns true if a logical mesh is disjoint: all atomic factors are unique,
+ * and all factors referencing the same physical axis come from the same
+ * AxisFactorOp.
+ */
+bool isLogicalMeshDisjoint(LogicalMeshOp logicalMesh);
+
+/**
+ * Returns true if a mesh is a submesh. A submesh is defined as any logical mesh
+ * whose physical axis factors are a subset of the parents physical axis
+ * factors. This is distinct from another potential definition of submesh as a
+ * contiguous slice of a parent mehs, or as a subset of the logical axis of the
+ * parent mesh.
+ */
+bool isLogicalMeshSubmesh(LogicalMeshOp logicalMesh, LogicalMeshOp submesh);
 
 } // namespace mlir::enzyme::distributed
-
 
 #endif // ENZYME_AD_JAX_DIALECT_DISTRIBUTED_DIALECT_H

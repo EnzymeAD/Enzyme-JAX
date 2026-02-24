@@ -11,6 +11,8 @@ def LogicalCommAxisType : DistributedType<"LogicalCommAxis", "logical_comm_axis"
 def PhysicalMeshType : DistributedType<"PhysicalMesh", "physical_mesh">;
 def LogicalMeshType : DistributedType<"LogicalMesh", "logical_mesh">;
 
-def TokenType : DistributedType<"Token", "token">;
+def CollectiveTokenType : DistributedType<"CollectiveToken", "collective_token">;
+// TODO: split this into send and recieve token types?
+def MessageTokenType : DistributedType<"MessageToken", "message_token">;
 
 #endif // ENZYME_DISTRIBUTED_DIALECT_TYPES_H
