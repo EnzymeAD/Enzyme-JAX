@@ -59,6 +59,10 @@
 #include "mlir/Dialect/Transform/IR/TransformDialect.h"
 #include "mlir/Dialect/Transform/Transforms/Passes.h"
 
+#include "mlir/Conversion/PDLToPDLInterp/PDLToPDLInterp.h"
+#include "mlir/Dialect/PDL/IR/PDL.h"
+#include "mlir/Dialect/PDLInterp/IR/PDLInterp.h"
+
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Pass/PassRegistry.h"
@@ -227,6 +231,8 @@ void registerDialects(mlir::DialectRegistry &registry) {
   registry.insert<mlir::vector::VectorDialect>();
   registry.insert<mlir::nvgpu::NVGPUDialect>();
   registry.insert<mlir::transform::TransformDialect>();
+  registry.insert<mlir::pdl::PDLDialect>();
+  registry.insert<mlir::pdl_interp::PDLInterpDialect>();
   registry.insert<mlir::ub::UBDialect>();
   registry.insert<mlir::sparse_tensor::SparseTensorDialect>();
   registry.insert<mlir::enzyme::EnzymeDialect>();
@@ -268,6 +274,8 @@ void loadAllRegisteredDialects(mlir::MLIRContext &context) {
   context.loadDialect<mlir::vector::VectorDialect>();
   context.loadDialect<mlir::nvgpu::NVGPUDialect>();
   context.loadDialect<mlir::transform::TransformDialect>();
+  context.loadDialect<mlir::pdl::PDLDialect>();
+  context.loadDialect<mlir::pdl_interp::PDLInterpDialect>();
   context.loadDialect<mlir::ub::UBDialect>();
   context.loadDialect<mlir::sparse_tensor::SparseTensorDialect>();
   context.loadDialect<mlir::enzyme::EnzymeDialect>();
@@ -351,6 +359,7 @@ void initializePasses() {
   mlir::registerConvertIndexToLLVMPass();
   mlir::registerArithToLLVMConversionPass();
   mlir::registerConvertNVVMToLLVMPass();
+  mlir::registerConvertPDLToPDLInterpPass();
 
   mlir::registerGPUPasses();
 
