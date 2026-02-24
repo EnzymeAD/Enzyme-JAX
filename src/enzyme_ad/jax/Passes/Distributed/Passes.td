@@ -12,7 +12,30 @@ def ShardyToDistributedPass : Pass<"shardy-to-distributed", "ModuleOp"> {
   }];
   let dependentDialects = [
     "sdy::SdyDialect",
-    "enzyme::distributed::DistributedDialect"
+    "enzyme::distributed::DistributedDialect",
+    "func::FuncDialect",
+  ];
+}
+
+def ShardyFunctionToDistributedPass
+    : Pass<"shardy-function-to-distributed", "func::FuncOp"> {
+  let summary = "Convert one shardy function to Distributed dialect";
+  let description = [{
+    This pass converts a single function from shardy annotations/ops to the
+    Distributed dialect using a selected physical mesh as context.
+  }];
+  let options = [
+    Option<
+      /*C++ variable name=*/"physicalMeshSymName",
+      /*CLI argument=*/"physical-mesh-sym-name",
+      /*type=*/"std::string",
+      /*default=*/"\"\"",
+      /*description=*/"Symbol name of the top-level distributed.PhysicalMeshOp used for conversion context">
+  ];
+  let dependentDialects = [
+    "sdy::SdyDialect",
+    "enzyme::distributed::DistributedDialect",
+    "func::FuncDialect",
   ];
 }
 

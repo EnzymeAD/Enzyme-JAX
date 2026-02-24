@@ -110,7 +110,7 @@ LogicalResult AxisFactorOp::inferReturnTypes(
   }
 
   inferredReturnTypes.reserve(adaptor.getFactors().size());
-  for (auto _ : adaptor.getFactors()) {
+  for (int i = 0; i < adaptor.getFactors().size(); ++i) {
     inferredReturnTypes.push_back(LogicalCommAxisType::get(context));
   }
   return mlir::success();
