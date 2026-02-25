@@ -24,6 +24,9 @@ func.func @log_plus_one(%x : tensor<2xf32>) -> tensor<2xf32> {
 
 func.func @main() {
   %input = stablehlo.constant dense<[0.0, 1.0]> : tensor<2xf32>
+  %output = stablehlo.constant dense<[0.0, 0.6931471805599453]> : tensor<2xf32>
+  %expected = stablehlo.constant dense<[1.0, 0.5]> : tensor<2xf32>
+
   %dinput = stablehlo.constant dense<1.0> : tensor<2xf32>
 
   // fwd diff
@@ -32,8 +35,8 @@ func.func @main() {
     ret_activity=[#enzyme<activity enzyme_dup>]
   } : (tensor<2xf32>, tensor<2xf32>) -> (tensor<2xf32>, tensor<2xf32>)
 
-  check.expect_almost_eq_const %fwd_res#0, dense<[0.0, 0.6931471805599453]> : tensor<2xf32>
-  check.expect_almost_eq_const %fwd_res#1, dense<[1.0, 0.5]> : tensor<2xf32>
+  check.expect_almost_eq %fwd_res#0, %output : tensor<2xf32>
+  check.expect_almost_eq %fwd_res#1, %expected : tensor<2xf32>
 
   // rev diff
   %rev_res:2 = enzyme.autodiff @log_plus_one(%input, %dinput) {
@@ -41,8 +44,8 @@ func.func @main() {
     ret_activity=[#enzyme<activity enzyme_active>]
   } : (tensor<2xf32>, tensor<2xf32>) -> (tensor<2xf32>, tensor<2xf32>)
 
-  check.expect_almost_eq_const %rev_res#0, dense<[0.0, 0.6931471805599453]> : tensor<2xf32>
-  check.expect_almost_eq_const %rev_res#1, dense<[1.0, 0.5]> : tensor<2xf32>
+  check.expect_almost_eq %rev_res#0, %output : tensor<2xf32>
+  check.expect_almost_eq %rev_res#1, %expected : tensor<2xf32>
 
   func.return
 }
