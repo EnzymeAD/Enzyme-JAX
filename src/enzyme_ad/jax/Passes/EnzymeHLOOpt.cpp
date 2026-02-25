@@ -12592,6 +12592,98 @@ struct DUSSliceSimplify final
   }
 };
 
+// Given B = dus(A, update_b, idx_b), redirect slice(A) → slice(B) when the
+// slice region does not overlap B's update region. This lets the bufferizer
+// reuse A's buffer for B in-place once A has no other non-B users.
+struct RedirectSliceThroughDUS final
+    : CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp,
+                              RedirectSliceThroughDUS> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DynamicUpdateSliceOp dusOp,
+                                    PatternRewriter &rewriter) const {
+    Value operand = dusOp.getOperand();
+    Value result = dusOp.getResult();
+
+    auto updateShape =
+        cast<RankedTensorType>(dusOp.getUpdate().getType()).getShape();
+
+    // Only works for static shapes
+    SmallVector<int64_t> dusStarts;
+    for (Value idx : dusOp.getStartIndices()) {
+      DenseIntElementsAttr idxAttr;
+      if (!matchPattern(idx, m_Constant(&idxAttr)) ||
+          idxAttr.getNumElements() != 1)
+        return failure();
+      dusStarts.push_back((*idxAttr.begin()).getSExtValue());
+    }
+
+    bool anyRedirected = false;
+
+    for (auto &use : llvm::make_early_inc_range(operand.getUses())) {
+      Operation *user = use.getOwner();
+      // Skip B itself
+      if (user == dusOp.getOperation())
+        continue;
+      
+      // Check to see if B dominates slice and and is in same basic block
+      if (user->getBlock() != dusOp->getBlock() ||
+          !dusOp->isBeforeInBlock(user))
+        continue;
+
+      // Check range for sliceOp and DynamicSliceOp
+      // Two intervals [a, b) and [c, d) do not overlap if b <= c
+      // (slice ends before update starts) or a >= d (slice starts 
+      // after update ends)
+      if (auto sliceOp = dyn_cast<stablehlo::SliceOp>(user)) {
+        bool noOverlap = false;
+        for (auto [sliceStart, sliceLimit, dusStart, uSize] :
+             llvm::zip(sliceOp.getStartIndices(), sliceOp.getLimitIndices(),
+                       dusStarts, updateShape)) {
+          if (sliceLimit <= dusStart || sliceStart >= dusStart + uSize) {
+            noOverlap = true;
+            break;
+          }
+        }
+        if (noOverlap) {
+          rewriter.modifyOpInPlace(sliceOp, [&]() { use.set(result); });
+          anyRedirected = true;
+        }
+      } else if (auto dsOp = dyn_cast<stablehlo::DynamicSliceOp>(user)) {
+        SmallVector<int64_t> dsStarts;
+        bool allConstant = true;
+        for (Value idx : dsOp.getStartIndices()) {
+          APInt val;
+          if (!matchPattern(idx, m_ConstantInt(&val))) {
+            allConstant = false;
+            break;
+          }
+          dsStarts.push_back(val.getSExtValue());
+        }
+        // Only works if start indices can be extracted as constants
+        if (!allConstant)
+          continue;
+
+        auto dsSliceSizes = dsOp.getSliceSizes();
+        bool noOverlap = false;
+        for (auto [dsStart, sliceSize, dusStart, uSize] :
+             llvm::zip(dsStarts, dsSliceSizes, dusStarts, updateShape)) {
+          if (dsStart + sliceSize <= dusStart || dsStart >= dusStart + uSize) {
+            noOverlap = true;
+            break;
+          }
+        }
+        if (noOverlap) {
+          rewriter.modifyOpInPlace(dsOp, [&]() { use.set(result); });
+          anyRedirected = true;
+        }
+      }
+    }
+
+    return anyRedirected ? success() : failure();
+  }
+};
+
 struct DUSToI32 final
     : CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp, DUSToI32> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
