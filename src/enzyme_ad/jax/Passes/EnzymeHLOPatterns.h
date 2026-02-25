@@ -53,6 +53,9 @@ void addScatterConstFold(RewritePatternSet &patterns,
                          PatternBenefit benefit);
 void addPadSimplify(RewritePatternSet &patterns, int64_t maxConstantExpansion,
                     MLIRContext &context, PatternBenefit benefit);
+void addReduceConstProp(RewritePatternSet &patterns,
+                        int64_t maxConstantExpansion, MLIRContext &context,
+                        PatternBenefit benefit);
 void addDynamicUpdateSliceConstProp(RewritePatternSet &patterns,
                                     int64_t maxConstantExpansion,
                                     MLIRContext &context,
