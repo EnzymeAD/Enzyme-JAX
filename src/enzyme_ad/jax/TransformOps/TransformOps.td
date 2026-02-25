@@ -1796,6 +1796,11 @@ def DUSSliceSimplify : EnzymeHLOPatternOp<
   let patterns = ["DUSSliceSimplify"];
 }
 
+def RedirectSliceThroughDUS : EnzymeHLOPatternOp<
+    "redirect_slice_through_dus"> {
+  let patterns = ["RedirectSliceThroughDUS"];
+}
+
 def WhileConcat : EnzymeHLOPatternOp<
     "while_concat"> {
   let patterns = ["WhileConcat"];
