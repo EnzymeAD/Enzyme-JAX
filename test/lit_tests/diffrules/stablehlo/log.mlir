@@ -1,21 +1,44 @@
-// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=main outfn= retTys=enzyme_dup argTys=enzyme_dup mode=ForwardMode" | FileCheck %s --check-prefix=FORWARD
-// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=main outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops | FileCheck %s --check-prefix=REVERSE
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=log outfn= retTys=enzyme_dup argTys=enzyme_dup mode=ForwardMode" --enzyme-hlo-opt  | FileCheck %s --check-prefix=FORWARD
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=log outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --enzyme-hlo-opt | FileCheck %s --check-prefix=REVERSE
+// RUN: enzymexlamlir-opt %s --enzyme --canonicalize --remove-unnecessary-enzyme-ops --arith-raise | stablehlo-translate - --interpret
 
-func.func @main(%x : tensor<2xf32>) -> tensor<2xf32> {
-  %y = stablehlo.log %x : tensor<2xf32>
-  func.return %y : tensor<2xf32>
+func.func @log(%x : tensor<3xf32>) -> tensor<3xf32> {
+  %y = stablehlo.log %x : tensor<3xf32>
+  func.return %y : tensor<3xf32>
 }
 
-// FORWARD:  func.func @main(%arg0: tensor<2xf32>, %arg1: tensor<2xf32>) -> (tensor<2xf32>, tensor<2xf32>) {
-// FORWARD-NEXT:    %0 = stablehlo.divide %arg1, %arg0 : tensor<2xf32>
-// FORWARD-NEXT:    %1 = stablehlo.log %arg0 : tensor<2xf32>
-// FORWARD-NEXT:    return %1, %0 : tensor<2xf32>, tensor<2xf32>
+// FORWARD:  func.func @log(%arg0: tensor<3xf32>, %arg1: tensor<3xf32>) -> (tensor<3xf32>, tensor<3xf32>) {
+// FORWARD-NEXT:    %0 = stablehlo.divide %arg1, %arg0 : tensor<3xf32>
+// FORWARD-NEXT:    %1 = stablehlo.log %arg0 : tensor<3xf32>
+// FORWARD-NEXT:    return %1, %0 : tensor<3xf32>, tensor<3xf32>
 // FORWARD-NEXT:  }
 
-// REVERSE:  func.func @main(%arg0: tensor<2xf32>, %arg1: tensor<2xf32>) -> tensor<2xf32> {
-// REVERSE-NEXT:    %cst = arith.constant dense<0.000000e+00> : tensor<2xf32>
-// REVERSE-NEXT:    %0 = arith.addf %arg1, %cst : tensor<2xf32>
-// REVERSE-NEXT:    %1 = stablehlo.divide %0, %arg0 : tensor<2xf32>
-// REVERSE-NEXT:    %2 = arith.addf %1, %cst : tensor<2xf32>
-// REVERSE-NEXT:    return %2 : tensor<2xf32>
+// REVERSE:  func.func @log(%arg0: tensor<3xf32>, %arg1: tensor<3xf32>) -> tensor<3xf32> {
+// REVERSE-NEXT:    %0 = stablehlo.divide %arg1, %arg0 : tensor<3xf32>
+// REVERSE-NEXT:    return %0 : tensor<3xf32>
 // REVERSE-NEXT:  }
+
+func.func @main() {
+  %input = stablehlo.constant dense<[0.1, 1.0, 10.0]> : tensor<3xf32>
+  %dinput = stablehlo.constant dense<1.0> : tensor<3xf32>
+
+  // fwd diff
+  %fwd_res:2 = enzyme.fwddiff @log(%input, %dinput) {
+    activity=[#enzyme<activity enzyme_dup>],
+    ret_activity=[#enzyme<activity enzyme_dup>]
+  } : (tensor<3xf32>, tensor<3xf32>) -> (tensor<3xf32>, tensor<3xf32>)
+
+  check.expect_almost_eq_const %fwd_res#0, dense<[-2.3025850929940455, 0.0, 2.3025850929940455]> : tensor<3xf32>
+  check.expect_almost_eq_const %fwd_res#1, dense<[10.0, 1.0, 0.1]> : tensor<3xf32>
+
+  // rev diff
+  %rev_res:2 = enzyme.autodiff @log(%input, %dinput) {
+    activity=[#enzyme<activity enzyme_active>],
+    ret_activity=[#enzyme<activity enzyme_active>]
+  } : (tensor<3xf32>, tensor<3xf32>) -> (tensor<3xf32>, tensor<3xf32>)
+
+  check.expect_almost_eq_const %rev_res#0, dense<[-2.3025850929940455, 0.0, 2.3025850929940455]> : tensor<3xf32>
+  check.expect_almost_eq_const %rev_res#1, dense<[10.0, 1.0, 0.1]> : tensor<3xf32>
+
+  func.return
+}
