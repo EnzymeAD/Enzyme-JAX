@@ -2735,6 +2735,7 @@ struct AffineToStableHLORaisingPass
     }
     std::vector<enzymexla::GPUWrapperOp> gwrap;
     op->walk([&](enzymexla::GPUWrapperOp g) { gwrap.push_back(g); });
+    size_t raised_count = 0;
     for (auto g : gwrap) {
       auto modOp = g->getParentOfType<ModuleOp>();
       Block *body = &g->getRegion(0).front();
@@ -2971,7 +2972,8 @@ struct AffineToStableHLORaisingPass
       auto newFuncType =
           FunctionType::get(g->getContext(), tensorTypes, tensorTypes);
 
-      std::string name = "raised";
+      std::string name = "rxla$raised_" + std::to_string(raised_count);
+      raised_count++;
 
       auto newFunc = func::FuncOp::create(
           rewriteLocation(g->getLoc(), options.strip_llvm_debuginfo), name,
