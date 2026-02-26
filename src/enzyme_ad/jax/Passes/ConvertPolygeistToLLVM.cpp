@@ -2891,7 +2891,9 @@ private:
     stream << fn << "\n" << '\0';
 
     auto stringval = mlir::LLVM::createGlobalString(
-        loc, rewriter, "xlamod", str, LLVM::Linkage::Internal);
+        loc, rewriter,
+        "xlamod$" + cast<FlatSymbolRefAttr>(wrap.getFn()).getValue().str(), str,
+        LLVM::Linkage::Internal);
 
     auto ptrty = LLVM::LLVMPointerType::get(rewriter.getContext());
 
