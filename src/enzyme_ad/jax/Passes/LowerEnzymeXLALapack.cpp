@@ -2887,11 +2887,11 @@ struct LowerEnzymeXLALapackPass
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
 
-    patterns
-        .add<GeqrfOpLowering, GeqrtOpLowering, OrgqrOpLowering, OrmqrOpLowering,
-             GemqrtOpLowering, GetrfOpLowering, GetriOpLowering,
-             GesvdOpLowering, GesddOpLowering, GesvjOpLowering>(
-            backend, blasIntWidth, context);
+    patterns.add<GeqrfOpLowering, GeqrtOpLowering, OrgqrOpLowering,
+                 OrmqrOpLowering, GemqrtOpLowering, GetrfOpLowering,
+                 GetriOpLowering, GesvdOpLowering, GesddOpLowering,
+                 GesvjOpLowering, PotrfOpLowering>(backend, blasIntWidth,
+                                                   context);
 
     GreedyRewriteConfig config;
     if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
