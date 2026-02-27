@@ -2708,6 +2708,176 @@ struct GesvjOpLowering : public OpRewritePattern<enzymexla::GesvjOp> {
   }
 };
 
+struct PotrfOpLowering : public OpRewritePattern<enzymexla::PotrfOp> {
+  std::string backend;
+  int64_t blasIntWidth;
+
+  PotrfOpLowering(std::string backend, int64_t blasIntWidth,
+                  MLIRContext *context, PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit), backend(backend),
+        blasIntWidth(blasIntWidth) {}
+
+  LogicalResult matchAndRewrite(enzymexla::PotrfOp op,
+                                PatternRewriter &rewriter) const override {
+    if (backend == "cpu")
+      return matchAndRewriteCPU(op, rewriter);
+    else if (backend == "cuda" || backend == "rocm")
+      return matchAndRewriteGPU(op, rewriter, backend);
+
+    op->emitOpError() << "Unsupported backend: " << backend;
+    return failure();
+  }
+
+  LogicalResult matchAndRewriteCPU(enzymexla::PotrfOp op,
+                                   PatternRewriter &rewriter) const {
+    auto ctx = op->getContext();
+    LLVMTypeConverter typeConverter(ctx);
+
+    auto input = op.getOperand();
+    auto inputType = cast<RankedTensorType>(input.getType());
+    auto inputShape = inputType.getShape();
+    auto inputRank = inputType.getRank();
+    auto inputElementType = inputType.getElementType();
+
+    const int64_t numBatchDims = inputRank - 2;
+    if (numBatchDims > 0)
+      return rewriter.notifyMatchFailure(
+          op,
+          "Cholesky factorization with batch dimensions is not yet supported");
+
+    auto type_lapack_int = rewriter.getIntegerType(blasIntWidth);
+    auto type_lapack_char = rewriter.getIntegerType(sizeof(char) * 8);
+    auto type_llvm_lapack_int = typeConverter.convertType(type_lapack_int);
+    auto type_llvm_ptr = LLVM::LLVMPointerType::get(ctx);
+    auto type_llvm_void = LLVM::LLVMVoidType::get(ctx);
+
+    std::string fn = "potrf_";
+    if (auto prefix = lapackPrecisionPrefix(inputElementType)) {
+      fn = *prefix + fn;
+    } else {
+      op->emitOpError() << "Unsupported element type: " << inputElementType;
+      return rewriter.notifyMatchFailure(op, "unsupported element type");
+    }
+
+    std::string bind_fn = "enzymexla_lapack_" + fn;
+    std::string wrapper_fn = "enzymexla_wrapper_lapack_" + fn;
+
+    // declare LAPACK function declarations if not present
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(bind_fn)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      // Fortran subroutine signature: void fn(char* uplo, int* n, T* a, int*
+      // lda, int* info)
+      SmallVector<Type> argTypes = {type_llvm_ptr, type_llvm_ptr, type_llvm_ptr,
+                                    type_llvm_ptr, type_llvm_ptr};
+      auto func_type =
+          LLVM::LLVMFunctionType::get(type_llvm_void, argTypes, false);
+      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), bind_fn, func_type,
+                               LLVM::Linkage::External);
+    }
+
+    // create a unique wrapper
+    static int64_t fn_counter = 0;
+    wrapper_fn += std::to_string(fn_counter++);
+
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      // wrapper takes: pointer to A, pointer to info
+      auto func_type = LLVM::LLVMFunctionType::get(
+          type_llvm_void, {type_llvm_ptr, type_llvm_ptr}, false);
+
+      auto func = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), wrapper_fn,
+                                           func_type);
+      rewriter.setInsertionPointToStart(func.addEntryBlock(rewriter));
+
+      // constants
+      auto const1 =
+          LLVM::ConstantOp::create(rewriter, op.getLoc(), type_llvm_lapack_int,
+                                   rewriter.getIntegerAttr(type_lapack_int, 1));
+
+      // allocate storage for uplo, n, lda
+      auto uplo_ptr = LLVM::AllocaOp::create(
+          rewriter, op.getLoc(), type_llvm_ptr, type_lapack_char, const1);
+      auto n_ptr = LLVM::AllocaOp::create(rewriter, op.getLoc(), type_llvm_ptr,
+                                          type_lapack_int, const1);
+      auto lda_ptr = LLVM::AllocaOp::create(
+          rewriter, op.getLoc(), type_llvm_ptr, type_lapack_int, const1);
+
+      // store uplo
+      char uploChar = (op.getUplo() == enzymexla::LapackUplo::U) ? 'U' : 'L';
+      auto uplo_const = LLVM::ConstantOp::create(
+          rewriter, op.getLoc(), type_lapack_char,
+          rewriter.getIntegerAttr(type_lapack_char, uploChar));
+      LLVM::StoreOp::create(rewriter, op.getLoc(), uplo_const, uplo_ptr);
+
+      // store n and lda
+      auto n_const = LLVM::ConstantOp::create(
+          rewriter, op.getLoc(), type_llvm_lapack_int,
+          rewriter.getIntegerAttr(type_lapack_int, inputShape[inputRank - 2]));
+      auto lda_const = LLVM::ConstantOp::create(
+          rewriter, op.getLoc(), type_llvm_lapack_int,
+          rewriter.getIntegerAttr(type_lapack_int, inputShape[inputRank - 1]));
+      LLVM::StoreOp::create(rewriter, op.getLoc(), n_const, n_ptr);
+      LLVM::StoreOp::create(rewriter, op.getLoc(), lda_const, lda_ptr);
+
+      // call Fortran LAPACK routine
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{},
+                           SymbolRefAttr::get(ctx, bind_fn),
+                           ValueRange{uplo_ptr, n_ptr, func.getArgument(0),
+                                      lda_ptr, func.getArgument(1)});
+
+      LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
+    }
+
+    // emit the `enzymexla.jit_call` op to `potrf` wrapper
+    auto type_info = RankedTensorType::get({}, type_lapack_int);
+    auto info = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), type_info,
+        cast<ElementsAttr>(makeAttr(type_info, -1)));
+
+    SmallVector<bool> isColMajorArr = {true, true};
+    SmallVector<int64_t> operandRanks = {2, 0};
+    SmallVector<int64_t> outputRanks = {2, 0};
+    auto operandLayouts =
+        getSHLOLayout(rewriter, operandRanks, isColMajorArr, 2);
+    auto resultLayouts = getSHLOLayout(rewriter, outputRanks, isColMajorArr, 2);
+
+    SmallVector<Attribute> aliases;
+    for (int i = 0; i < 2; ++i) {
+      aliases.push_back(stablehlo::OutputOperandAliasAttr::get(ctx, {}, i, {}));
+    }
+
+    auto jit_call_op = enzymexla::JITCallOp::create(
+        rewriter, op.getLoc(), TypeRange{inputType, type_info},
+        mlir::FlatSymbolRefAttr::get(ctx, wrapper_fn),
+        ValueRange{input, info.getResult()}, rewriter.getStringAttr(""),
+        /*operand_layouts=*/operandLayouts,
+        /*result_layouts=*/resultLayouts,
+        /*arg_attrs=*/nullptr,
+        /*res_attrs=*/nullptr,
+        /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
+        /*xla_side_effect_free=*/rewriter.getUnitAttr());
+
+    // replace enzymexla.lapack.potrf with the jit_call
+    rewriter.replaceAllUsesWith(op.getResult(0), jit_call_op.getResult(0));
+    rewriter.replaceAllUsesWith(op.getResult(1), jit_call_op.getResult(1));
+    rewriter.eraseOp(op);
+
+    return success();
+  }
+
+  LogicalResult matchAndRewriteGPU(enzymexla::PotrfOp op,
+                                   PatternRewriter &rewriter,
+                                   const std::string &backend) const {
+    // TODO
+    return failure();
+  }
+};
+
 struct LowerEnzymeXLALapackPass
     : public enzyme::impl::LowerEnzymeXLALapackPassBase<
           LowerEnzymeXLALapackPass> {
@@ -2734,7 +2904,7 @@ struct LowerEnzymeXLALapackPass
       if (isa<enzymexla::GeqrfOp, enzymexla::GeqrtOp, enzymexla::OrgqrOp,
               enzymexla::OrmqrOp, enzymexla::GemqrtOp, enzymexla::GetrfOp,
               enzymexla::GetriOp, enzymexla::GesvdOp, enzymexla::GesddOp,
-              enzymexla::GesvjOp>(op)) {
+              enzymexla::GesvjOp, enzymexla::PotrfOp>(op)) {
         op->emitError("Failed to lower enzymexla lapack operation");
         return WalkResult::interrupt();
       }
