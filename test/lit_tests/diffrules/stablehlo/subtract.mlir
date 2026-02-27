@@ -56,4 +56,3 @@ func.func @main() {
 
   func.return
 }
-
