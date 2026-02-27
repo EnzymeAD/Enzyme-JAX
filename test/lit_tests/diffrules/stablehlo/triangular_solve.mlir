@@ -11,10 +11,6 @@ func.func @tri_solve_lower_nt(%arg0: tensor<3x3xf64>, %arg1: tensor<3x2xf64>) ->
   return %0 : tensor<3x2xf64>
 }
 
-// Reverse-mode AD for triangular solve (AX = B, left_side=true, no transpose):
-//   B_bar = solve(A^T, X_bar)
-//   A_bar = -B_bar @ X^T, masked to lower triangle
-//
 // REVERSE-LABEL: func.func @tri_solve_lower_nt
 // REVERSE-SAME: (%[[A:.+]]: tensor<3x3xf64>, %[[B:.+]]: tensor<3x2xf64>, %[[XBAR:.+]]: tensor<3x2xf64>) -> (tensor<3x3xf64>, tensor<3x2xf64>) {
 // REVERSE-NEXT:   %[[ZERO33:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<3x3xf64>
@@ -44,10 +40,6 @@ func.func @tri_solve_lower_t(%arg0: tensor<3x3xf64>, %arg1: tensor<3x2xf64>) -> 
   return %0 : tensor<3x2xf64>
 }
 
-// Reverse-mode AD for A^T X = B (left_side=true, transpose):
-//   B_bar = solve(A, X_bar)   [flipped: TRANSPOSE -> NO_TRANSPOSE]
-//   A_bar = -X @ B_bar^T, masked to lower triangle
-//
 // REVERSE-T-LABEL: func.func @tri_solve_lower_t
 // REVERSE-T-SAME: (%[[A:.+]]: tensor<3x3xf64>, %[[B:.+]]: tensor<3x2xf64>, %[[XBAR:.+]]: tensor<3x2xf64>) -> (tensor<3x3xf64>, tensor<3x2xf64>) {
 // REVERSE-T-NEXT:   %[[ZERO33:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<3x3xf64>
