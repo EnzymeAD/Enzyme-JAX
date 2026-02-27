@@ -2747,7 +2747,6 @@ struct PotrfOpLowering : public OpRewritePattern<enzymexla::PotrfOp> {
 
     auto type_lapack_int = rewriter.getIntegerType(blasIntWidth);
     auto type_lapack_char = rewriter.getIntegerType(sizeof(char) * 8);
-    auto type_llvm_lapack_int = typeConverter.convertType(type_lapack_int);
     auto type_llvm_ptr = LLVM::LLVMPointerType::get(ctx);
     auto type_llvm_void = LLVM::LLVMVoidType::get(ctx);
 
@@ -2778,83 +2777,78 @@ struct PotrfOpLowering : public OpRewritePattern<enzymexla::PotrfOp> {
                                LLVM::Linkage::External);
     }
 
-    // create a unique wrapper
-    static int64_t fn_counter = 0;
-    wrapper_fn += std::to_string(fn_counter++);
-
-    {
+    // generate wrapper if not present
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_fn)) {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(moduleOp.getBody());
 
-      // wrapper takes: pointer to A, pointer to info
+      // wrapper takes: pointers to uplo, A, n, lda and info
       auto func_type = LLVM::LLVMFunctionType::get(
-          type_llvm_void, {type_llvm_ptr, type_llvm_ptr}, false);
+          type_llvm_void,
+          {type_llvm_ptr, type_llvm_ptr, type_llvm_ptr, type_llvm_ptr,
+           type_llvm_ptr},
+          false);
 
       auto func = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), wrapper_fn,
                                            func_type);
       rewriter.setInsertionPointToStart(func.addEntryBlock(rewriter));
 
-      // constants
-      auto const1 =
-          LLVM::ConstantOp::create(rewriter, op.getLoc(), type_llvm_lapack_int,
-                                   rewriter.getIntegerAttr(type_lapack_int, 1));
-
-      // allocate storage for uplo, n, lda
-      auto uplo_ptr = LLVM::AllocaOp::create(
-          rewriter, op.getLoc(), type_llvm_ptr, type_lapack_char, const1);
-      auto n_ptr = LLVM::AllocaOp::create(rewriter, op.getLoc(), type_llvm_ptr,
-                                          type_lapack_int, const1);
-      auto lda_ptr = LLVM::AllocaOp::create(
-          rewriter, op.getLoc(), type_llvm_ptr, type_lapack_int, const1);
-
-      // store uplo
-      char uploChar = (op.getUplo() == enzymexla::LapackUplo::U) ? 'U' : 'L';
-      auto uplo_const = LLVM::ConstantOp::create(
-          rewriter, op.getLoc(), type_lapack_char,
-          rewriter.getIntegerAttr(type_lapack_char, uploChar));
-      LLVM::StoreOp::create(rewriter, op.getLoc(), uplo_const, uplo_ptr);
-
-      // store n and lda
-      auto n_const = LLVM::ConstantOp::create(
-          rewriter, op.getLoc(), type_llvm_lapack_int,
-          rewriter.getIntegerAttr(type_lapack_int, inputShape[inputRank - 2]));
-      auto lda_const = LLVM::ConstantOp::create(
-          rewriter, op.getLoc(), type_llvm_lapack_int,
-          rewriter.getIntegerAttr(type_lapack_int, inputShape[inputRank - 1]));
-      LLVM::StoreOp::create(rewriter, op.getLoc(), n_const, n_ptr);
-      LLVM::StoreOp::create(rewriter, op.getLoc(), lda_const, lda_ptr);
+      auto uplo_ptr = func.getArgument(0);
+      auto n_ptr = func.getArgument(1);
+      auto a_ptr = func.getArgument(2);
+      auto lda_ptr = func.getArgument(3);
+      auto info_ptr = func.getArgument(4);
 
       // call Fortran LAPACK routine
-      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{},
-                           SymbolRefAttr::get(ctx, bind_fn),
-                           ValueRange{uplo_ptr, n_ptr, func.getArgument(0),
-                                      lda_ptr, func.getArgument(1)});
+      LLVM::CallOp::create(
+          rewriter, op.getLoc(), TypeRange{}, SymbolRefAttr::get(ctx, bind_fn),
+          ValueRange{uplo_ptr, n_ptr, a_ptr, lda_ptr, info_ptr});
 
       LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
     }
 
-    // emit the `enzymexla.jit_call` op to `potrf` wrapper
+    // emit constants for the wrapper function call
+    auto type_uplo = RankedTensorType::get({}, type_lapack_char);
+    auto uplo = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), type_uplo,
+        cast<ElementsAttr>(makeAttr(type_uplo, 'L')));
+
+    auto type_n = RankedTensorType::get({}, type_lapack_int);
+    auto n = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), type_n,
+        cast<ElementsAttr>(makeAttr(type_n, inputShape[inputRank - 1])));
+
+    auto type_lda = RankedTensorType::get({}, type_lapack_int);
+    auto lda = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), type_lda,
+        cast<ElementsAttr>(makeAttr(type_lda, inputShape[inputRank - 1])));
+
+    // emit placeholder for info
     auto type_info = RankedTensorType::get({}, type_lapack_int);
     auto info = stablehlo::ConstantOp::create(
         rewriter, op.getLoc(), type_info,
         cast<ElementsAttr>(makeAttr(type_info, -1)));
 
-    SmallVector<bool> isColMajorArr = {true, true};
-    SmallVector<int64_t> operandRanks = {2, 0};
+    SmallVector<bool> isColMajorArr = {true, true, true, true, true};
+    SmallVector<int64_t> operandRanks = {0, 0, 2, 0, 0};
     SmallVector<int64_t> outputRanks = {2, 0};
     auto operandLayouts =
         getSHLOLayout(rewriter, operandRanks, isColMajorArr, 2);
     auto resultLayouts = getSHLOLayout(rewriter, outputRanks, isColMajorArr, 2);
 
-    SmallVector<Attribute> aliases;
-    for (int i = 0; i < 2; ++i) {
-      aliases.push_back(stablehlo::OutputOperandAliasAttr::get(ctx, {}, i, {}));
-    }
+    SmallVector<Attribute> aliases{
+        // `A` is overwritten with the output
+        stablehlo::OutputOperandAliasAttr::get(ctx, {}, 2, {}),
+
+        // `info` is output argument
+        stablehlo::OutputOperandAliasAttr::get(ctx, {}, 4, {}),
+    };
 
     auto jit_call_op = enzymexla::JITCallOp::create(
         rewriter, op.getLoc(), TypeRange{inputType, type_info},
         mlir::FlatSymbolRefAttr::get(ctx, wrapper_fn),
-        ValueRange{input, info.getResult()}, rewriter.getStringAttr(""),
+        ValueRange{uplo, n, input, lda, info.getResult()},
+        rewriter.getStringAttr(""),
         /*operand_layouts=*/operandLayouts,
         /*result_layouts=*/resultLayouts,
         /*arg_attrs=*/nullptr,
