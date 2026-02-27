@@ -2,7 +2,7 @@
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=abs outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --enzyme-hlo-opt --cse --verify-each=0 | FileCheck %s --check-prefix=REVERSE
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=abs_complex outfn= retTys=enzyme_dup argTys=enzyme_dup mode=ForwardMode" --enzyme-hlo-opt --cse | FileCheck %s --check-prefix=FORWARD-COMPLEX
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=abs_complex outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --enzyme-hlo-opt --cse --verify-each=0 | FileCheck %s --check-prefix=REVERSE-COMPLEX
-// RUN: enzymexlamlir-opt %s --enzyme --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --enzyme-hlo-opt | stablehlo-translate - --interpret --allow-unregistered-dialect
+// RUN: enzymexlamlir-opt %s --enzyme --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --chlo-legalize-to-stablehlo --enzyme-hlo-opt --verify-each=0 | stablehlo-translate - --interpret --allow-unregistered-dialect
 
 func.func @abs(%arg0 : tensor<2xf32>) -> tensor<2xf32> {
   %0 = stablehlo.abs %arg0 : (tensor<2xf32>) -> tensor<2xf32>
@@ -55,7 +55,7 @@ func.func @abs_complex(%arg0 : tensor<2xcomplex<f32>>) -> tensor<2xf32> {
 func.func @main() {
   // real
   %input = stablehlo.constant dense<[-1.0, 2.0]> : tensor<2xf32>
-  %out = stablehlo.constant dense<[1.0, 2.0]> : tensor<2xf32>
+  %output = stablehlo.constant dense<[1.0, 2.0]> : tensor<2xf32>
   %expected = stablehlo.constant dense<[-1.0, 1.0]> : tensor<2xf32>
 
   %dinput = stablehlo.constant dense<1.0> : tensor<2xf32>
@@ -65,7 +65,7 @@ func.func @main() {
     ret_activity=[#enzyme<activity enzyme_dup>]
   } : (tensor<2xf32>, tensor<2xf32>) -> (tensor<2xf32>, tensor<2xf32>)
 
-  check.expect_almost_eq %fwd#0, %out : tensor<2xf32>
+  check.expect_almost_eq %fwd#0, %output : tensor<2xf32>
   check.expect_almost_eq %fwd#1, %expected : tensor<2xf32>
 
   %rev:2 = enzyme.autodiff @abs(%input, %dinput) {
@@ -73,32 +73,39 @@ func.func @main() {
     ret_activity=[#enzyme<activity enzyme_active>]
   } : (tensor<2xf32>, tensor<2xf32>) -> (tensor<2xf32>, tensor<2xf32>)
 
-  check.expect_almost_eq %rev#0, %out : tensor<2xf32>
+  check.expect_almost_eq %rev#0, %output : tensor<2xf32>
   check.expect_almost_eq %rev#1, %expected : tensor<2xf32>
 
   // complex
-  // TODO `chlo.conj` does not have interpreter support
   %cinput = stablehlo.constant dense<[(-1.0, 0.0), (3.0, -4.0)]> : tensor<2xcomplex<f32>>
-  %cout = stablehlo.constant dense<[1.0, 5.0]> : tensor<2xf32>
-  %cexpected = stablehlo.constant dense<[(-1.0, 0.0), (1.0, 0.0)]> : tensor<2xcomplex<f32>>
+  %coutput = stablehlo.constant dense<[1.0, 5.0]> : tensor<2xf32>
 
   %dcinput = stablehlo.constant dense<(1.0, 0.0)> : tensor<2xcomplex<f32>>
+  %dcinput_imag = stablehlo.constant dense<(0.0, 1.0)> : tensor<2xcomplex<f32>>
 
-  %cfwd:2 = enzyme.fwddiff @abs_complex(%cinput, %dcinput) {
+  %cfwd_real:2 = enzyme.fwddiff @abs_complex(%cinput, %dcinput) {
     activity=[#enzyme<activity enzyme_dup>],
     ret_activity=[#enzyme<activity enzyme_dup>]
-  } : (tensor<2xcomplex<f32>>, tensor<2xcomplex<f32>>) -> (tensor<2xf32>, tensor<2xcomplex<f32>>)
+  } : (tensor<2xcomplex<f32>>, tensor<2xcomplex<f32>>) -> (tensor<2xf32>, tensor<2xf32>)
 
-  check.expect_almost_eq %cfwd#0, %cout : tensor<2xf32>
-  // check.expect_almost_eq %cfwd#1, %cexpected : tensor<2xcomplex<f32>>s
+  check.expect_almost_eq %cfwd_real#0, %coutput : tensor<2xf32>
+  check.expect_almost_eq_const %cfwd_real#1, dense <[-1.0, 0.6]> : tensor<2xf32>
+
+  %cfwd_imag:2 = enzyme.fwddiff @abs_complex(%cinput, %dcinput_imag) {
+    activity=[#enzyme<activity enzyme_dup>],
+    ret_activity=[#enzyme<activity enzyme_dup>]
+  } : (tensor<2xcomplex<f32>>, tensor<2xcomplex<f32>>) -> (tensor<2xf32>, tensor<2xf32>)
+
+  check.expect_almost_eq %cfwd_imag#0, %coutput : tensor<2xf32>
+  check.expect_almost_eq_const %cfwd_imag#1, dense <[0.0, 0.8]> : tensor<2xf32>
 
   %crev:2 = enzyme.autodiff @abs_complex(%cinput, %dinput) {
     activity=[#enzyme<activity enzyme_active>],
     ret_activity=[#enzyme<activity enzyme_active>]
   } : (tensor<2xcomplex<f32>>, tensor<2xf32>) -> (tensor<2xf32>, tensor<2xcomplex<f32>>)
 
-  check.expect_almost_eq %crev#0, %cout : tensor<2xf32>
-  // check.expect_almost_eq %crev#1, %cexpected : tensor<2xcomplex<f32>>
+  check.expect_almost_eq %crev#0, %coutput : tensor<2xf32>
+  check.expect_almost_eq_const %crev#1, dense <[(-1.0, 0.0), (0.6, 0.8)]> : tensor<2xcomplex<f32>>
 
   func.return
 }
