@@ -21,7 +21,7 @@ func.func @real(%x : tensor<2xcomplex<f32>>) -> tensor<2xf32> {
 
 func.func @main() {
   %input = stablehlo.constant dense<[(1.0,2.0),(-3.0,4.0)]> : tensor<2xcomplex<f32>>
-  %out = stablehlo.constant dense<[1.0, -3.0]> : tensor<2xf32>
+  %output = stablehlo.constant dense<[1.0, -3.0]> : tensor<2xf32>
 
   %dreal = stablehlo.constant dense<(1.0, 0.0)> : tensor<2xcomplex<f32>>
   %dimag = stablehlo.constant dense<(0.0, 1.0)> : tensor<2xcomplex<f32>>
@@ -33,7 +33,7 @@ func.func @main() {
     ret_activity=[#enzyme<activity enzyme_dup>]
   } : (tensor<2xcomplex<f32>>, tensor<2xcomplex<f32>>) -> (tensor<2xf32>, tensor<2xf32>)
 
-  check.expect_almost_eq %fwd_real#0, %out : tensor<2xf32>
+  check.expect_almost_eq %fwd_real#0, %output : tensor<2xf32>
   check.expect_almost_eq_const %fwd_real#1, dense<1.0> : tensor<2xf32>
 
   %fwd_imag:2 = enzyme.fwddiff @real(%input, %dimag) {
@@ -41,7 +41,7 @@ func.func @main() {
     ret_activity=[#enzyme<activity enzyme_dup>]
   } : (tensor<2xcomplex<f32>>, tensor<2xcomplex<f32>>) -> (tensor<2xf32>, tensor<2xf32>)
 
-  check.expect_almost_eq %fwd_imag#0, %out : tensor<2xf32>
+  check.expect_almost_eq %fwd_imag#0, %output : tensor<2xf32>
   check.expect_almost_eq_const %fwd_imag#1, dense<0.0> : tensor<2xf32>
 
   // rev diff
@@ -50,7 +50,7 @@ func.func @main() {
     ret_activity=[#enzyme<activity enzyme_active>]
   } : (tensor<2xcomplex<f32>>, tensor<2xf32>) -> (tensor<2xf32>, tensor<2xcomplex<f32>>)
 
-  check.expect_almost_eq %rev#0, %out : tensor<2xf32>
+  check.expect_almost_eq %rev#0, %output : tensor<2xf32>
   check.expect_almost_eq_const %rev#1, dense<[(1.0,0.0),(1.0,0.0)]> : tensor<2xcomplex<f32>>
 
   func.return
