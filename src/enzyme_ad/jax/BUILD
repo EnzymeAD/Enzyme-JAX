@@ -603,6 +603,102 @@ gentbl_cc_library(
 )
 
 td_library(
+    name = "PactDialectFiles",
+    srcs = [
+        "Dialect/Pact/Attrs.td",
+        "Dialect/Pact/Dialect.td",
+        "Dialect/Pact/Ops.td",
+    ],
+    deps = [
+        "@llvm-project//mlir:BuiltinDialectTdFiles",
+        "@llvm-project//mlir:OpBaseTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "PactDialectIncGen",
+    tbl_outs = [
+        (
+            [
+                "-gen-dialect-decls",
+                "-dialect=pact",
+            ],
+            "Dialect/Pact/PactDialect.h.inc",
+        ),
+        (
+            [
+                "-gen-dialect-defs",
+                "-dialect=pact",
+            ],
+            "Dialect/Pact/PactDialect.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/Pact/Dialect.td",
+    deps = [":PactDialectFiles"],
+)
+
+gentbl_cc_library(
+    name = "PactAttrsIncGen",
+    tbl_outs = [
+        (
+            ["--gen-attrdef-decls"],
+            "Dialect/Pact/PactAttrs.h.inc",
+        ),
+        (
+            ["--gen-attrdef-defs"],
+            "Dialect/Pact/PactAttrs.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/Pact/Attrs.td",
+    deps = [":PactDialectFiles"],
+)
+
+gentbl_cc_library(
+    name = "PactOpsIncGen",
+    tbl_outs = [
+        (
+            ["-gen-op-decls"],
+            "Dialect/Pact/PactOps.h.inc",
+        ),
+        (
+            ["-gen-op-defs"],
+            "Dialect/Pact/PactOps.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/Pact/Ops.td",
+    deps = [":PactDialectFiles"],
+)
+
+td_library(
+    name = "PactPassesTdFiles",
+    srcs = [],
+    deps = [
+        "@llvm-project//mlir:PassBaseTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "PactPassesIncGen",
+    tbl_outs = [
+        (
+            [
+                "-gen-pass-decls",
+                "-name=pact",
+            ],
+            "Passes/Pact/Passes.h.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Passes/Pact/Passes.td",
+    deps = [
+        ":PactPassesTdFiles",
+    ],
+)
+
+td_library(
     name = "TesseraDialectTdFiles",
     srcs = [
         "Dialect/Tessera/Attrs.td",
@@ -1117,10 +1213,17 @@ cc_library(
             "Implementations/*.cpp",
             "Passes/*.cpp",
             "Passes/Tessera/*.cpp",
+            "Passes/Pact/*.cpp",
+            "Passes/Pact/Analysis/*.cpp",
+            "Passes/Pact/Analysis/Capabilities/*.cpp",
+            "Passes/Pact/Target/*.cpp",
+            "Passes/Pact/Target/Targets/*.cpp",
+            "Passes/Pact/Transforms/*.cpp",
             "Dialect/*.cpp",
             "Dialect/Distributed/*.cpp",
             "Dialect/Tessera/*.cpp",
             "Dialect/Perfify/*.cpp",
+            "Dialect/Pact/*.cpp",
         ],
         exclude = ["Dialect/Utils.cpp"],
     ) + [
@@ -1131,10 +1234,15 @@ cc_library(
         "Implementations/*.h",
         "Passes/*.h",
         "Passes/Tessera/*.h",
+        "Passes/Pact/*.h",
+        "Passes/Pact/Analysis/*.h",
+        "Passes/Pact/Analysis/Capabilities/*.h",
+        "Passes/Pact/Target/*.h",
         "Dialect/*.h",
         "Dialect/Distributed/*.h",
         "Dialect/Tessera/*.h",
         "Dialect/Perfify/*.h",
+        "Dialect/Pact/*.h",
     ]) + [
         "Utils.h",
     ],
@@ -1159,6 +1267,10 @@ cc_library(
         ":EnzymeXLADialectUtils",
         ":EnzymeXLAOpsIncGen",
         ":EnzymeXLAPassesIncGen",
+        ":PactAttrsIncGen",
+        ":PactDialectIncGen",
+        ":PactOpsIncGen",
+        ":PactPassesIncGen",
         ":PerfifyDialectIncGen",
         ":PerfifyOpsIncGen",
         ":Polymer",
