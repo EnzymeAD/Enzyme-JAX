@@ -49,7 +49,7 @@ func.func @main() {
   check.expect_almost_eq %fwd_y#0, %out : tensor<5xf32>
   check.expect_almost_eq %fwd_y#1, %expected_dy : tensor<5xf32>
 
-  %fwd_x:2 = enzyme.fwddiff @atan2(%y, %done, %x, %dzero) {
+  %fwd_x:2 = enzyme.fwddiff @atan2(%y, %dzero, %x, %done) {
     activity=[#enzyme<activity enzyme_dup>, #enzyme<activity enzyme_dup>],
     ret_activity=[#enzyme<activity enzyme_dup>]
   } : (tensor<5xf32>, tensor<5xf32>, tensor<5xf32>, tensor<5xf32>) -> (tensor<5xf32>, tensor<5xf32>)
