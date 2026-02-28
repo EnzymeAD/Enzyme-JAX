@@ -2721,8 +2721,6 @@ struct PotrfOpLowering : public OpRewritePattern<enzymexla::PotrfOp> {
                                 PatternRewriter &rewriter) const override {
     if (backend == "cpu")
       return matchAndRewriteCPU(op, rewriter);
-    else if (backend == "cuda" || backend == "rocm")
-      return matchAndRewriteGPU(op, rewriter, backend);
 
     op->emitOpError() << "Unsupported backend: " << backend;
     return failure();
@@ -2862,13 +2860,6 @@ struct PotrfOpLowering : public OpRewritePattern<enzymexla::PotrfOp> {
     rewriter.eraseOp(op);
 
     return success();
-  }
-
-  LogicalResult matchAndRewriteGPU(enzymexla::PotrfOp op,
-                                   PatternRewriter &rewriter,
-                                   const std::string &backend) const {
-    // TODO
-    return failure();
   }
 };
 
