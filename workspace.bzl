@@ -17,7 +17,7 @@ HEDRON_COMPILE_COMMANDS_SHA256 = ""
 XLA_PATCHES = [
     """
     # Fix support for musl stacktrace issue where execinfo.h is otherwise included
-    sed -i.bak0 "s/defined(__clang__) || defined(__GNUC__)/defined(__GNUC__)/g" xla/tsl/platform/default/stacktrace.h
+    sed -i.bak0 "s/defined(__clang__) || defined(__GNUC__)/defined(__GLIBC__)/g" xla/tsl/platform/default/stacktrace.h
     """,
     """
     sed -i.bak0 "s/\\\"-lamd_comgr\\\",//g" third_party/gpus/rocm/BUILD.tpl 
