@@ -84,28 +84,26 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
 
   LogicalResult matchAndRewrite(enzymexla::SymmOp op,
                                 PatternRewriter &rewriter) const override {
-    if (backend == "cpu")
-      return matchAndRewriteCPU(op, rewriter);
+    auto AType = cast<RankedTensorType>(op.getA().getType());
+    auto nBatchDims = AType.getRank() - 2;
 
-    // else if (backend == "cuda")
-    //   return matchAndRewriteCUDA(op, rewriter);
+    if (nBatchDims == 0) {
+      if (backend == "cpu") {
+        return matchAndRewriteCPU(op, rewriter);
+      }
+    }
 
-    // else if (backend == "tpu")
-    //   return matchAndRewriteTPU(op, rewriter);
-
-    else
-      return matchAndRewriteFallback(op, rewriter);
+    return matchAndRewriteFallback(op, rewriter);
   }
 
   LogicalResult matchAndRewriteCPU(enzymexla::SymmOp op,
                                    PatternRewriter &rewriter) const {
-
     auto ctx = op->getContext();
     LLVMTypeConverter typeConverter(ctx);
 
-    Value a = op.getOperand(0);
-    Value b = op.getOperand(1);
-    Value c = op.getOperand(2);
+    Value a = op.getA();
+    Value b = op.getB();
+    Value c = op.getC();
     auto side_value = op.getSide() == enzymexla::LapackSide::left ? 'L' : 'R';
     auto uplo_value = op.getUplo() == enzymexla::LapackUplo::L ? 'L' : 'U';
 
@@ -213,7 +211,8 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
     SmallVector<int64_t> outputRanks = {2};
     auto operandLayouts =
         getSHLOLayout(rewriter, operandRanks, isColMajorArr, 2);
-    auto resultLayouts = getSHLOLayout(rewriter, outputRanks, isColMajorArr, 2);
+    auto resultLayouts =
+        getSHLOLayout(rewriter, outputRanks, SmallVector<bool>{true}, 2);
 
     SmallVector<Attribute> aliases;
     aliases.push_back(
@@ -248,11 +247,11 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
       auto alpha = entryBlock.getArgument(3);
       auto beta = entryBlock.getArgument(4);
 
-      auto side = rewriter.create<stablehlo::ConstantOp>(
-          op.getLoc(), uint8Type,
+      auto side = stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(), uint8Type,
           cast<ElementsAttr>(makeAttr(uint8Type, side_value)));
-      auto uplo = rewriter.create<stablehlo::ConstantOp>(
-          op.getLoc(), uint8Type,
+      auto uplo = stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(), uint8Type,
           cast<ElementsAttr>(makeAttr(uint8Type, uplo_value)));
 
       auto lda = stablehlo::ConvertOp::create(
@@ -294,15 +293,6 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
     rewriter.replaceOp(op, callOp);
 
     return success();
-  }
-
-  LogicalResult matchAndRewriteCUDA(enzymexla::SymmOp op,
-                                    PatternRewriter &rewriter) const {
-    return failure();
-  }
-  LogicalResult matchAndRewriteTPU(enzymexla::SymmOp op,
-                                   PatternRewriter &rewriter) const {
-    return failure();
   }
 
   LogicalResult matchAndRewriteFallback(enzymexla::SymmOp op,
