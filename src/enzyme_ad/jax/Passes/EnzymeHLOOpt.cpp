@@ -30151,7 +30151,7 @@ struct DotGeneralToSymm
     if (canApplySymmetricPattern(lhs, rewriter)) {
       side = enzymexla::LapackSide::left;
       symmMatrix = lhs;
-      if (rhsContractingDim == 0) {
+      if (rhsContractingDim == 1) {
         auto perm = rewriter.getDenseI64ArrayAttr({1, 0});
         rhs = stablehlo::TransposeOp::create(rewriter, op.getLoc(), rhs, perm);
       }
