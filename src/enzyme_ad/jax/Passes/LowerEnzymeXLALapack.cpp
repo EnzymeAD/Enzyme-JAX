@@ -2891,7 +2891,7 @@ struct LowerEnzymeXLALapackPass
               enzymexla::OrmqrOp, enzymexla::GemqrtOp, enzymexla::GetrfOp,
               enzymexla::GetriOp, enzymexla::GesvdOp, enzymexla::GesddOp,
               enzymexla::GesvjOp, enzymexla::PotrfOp>(op)) {
-        op->emitError("Failed to lower enzymexla lapack operation");
+        op->emitError("Failed to lower enzymexla.lapack operation");
         return WalkResult::interrupt();
       }
       return WalkResult::advance();

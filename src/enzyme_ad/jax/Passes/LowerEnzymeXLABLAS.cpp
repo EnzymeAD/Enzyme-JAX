@@ -705,7 +705,7 @@ struct LowerEnzymeXLABLASPass
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
 
-    patterns.add<SyrkOpLowering>(backend, blasIntWidth, context);
+    patterns.add<SyrkOpLowering, TrsmOpLowering>(backend, blasIntWidth, context);
 
     GreedyRewriteConfig config;
     config.setUseTopDownTraversal(true);
@@ -716,8 +716,8 @@ struct LowerEnzymeXLABLASPass
 
     // Verify that all illegal ops have been lowered
     auto walkResult = getOperation()->walk([&](Operation *op) {
-      if (isa<enzymexla::SyrkOp>(op)) {
-        op->emitError("Failed to lower enzymexla::SyrkOp");
+      if (isa<enzymexla::SyrkOp, enzymexla::TrsmOp>(op)) {
+        op->emitError("Failed to lower enzymexla.blas operation");
         return WalkResult::interrupt();
       }
       return WalkResult::advance();
