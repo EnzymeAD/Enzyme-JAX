@@ -16,6 +16,15 @@ def EnzymeXLA_LapackLayout : I32EnumAttr<"LapackLayout",
     ]> {
   let genSpecializedAttr = 0;
   let cppNamespace = "::mlir::enzymexla";
+  let extraClassDeclaration = [{
+    char getLapackChar() const {
+      switch (getValue()) {
+        case LapackLayout::col_major: return 'C';
+        case LapackLayout::row_major: return 'R';
+        default: llvm_unreachable("invalid LapackLayout");
+      }
+    }
+  }];
 }
 
 def EnzymeXLA_LapackLayoutAttr : EnumAttr<EnzymeXLA_Dialect,
@@ -30,6 +39,16 @@ def EnzymeXLA_LapackTranspose : I32EnumAttr<"LapackTranspose",
     ]> {
   let genSpecializedAttr = 0;
   let cppNamespace = "::mlir::enzymexla";
+  let extraClassDeclaration = [{
+    char getLapackChar() const {
+      switch(getValue()) {
+        case LapackTranspose::none : return 'N';
+        case LapackTranspose::transpose : return 'T';
+        case LapackTranspose::adjoint : return 'C';
+        default : llvm_unreachable("invalid LapackTranspose");
+      }
+    }
+  }];
 }
 
 def EnzymeXLA_LapackTransposeAttr : EnumAttr<EnzymeXLA_Dialect,
@@ -45,6 +64,15 @@ def EnzymeXLA_LapackSide : I32EnumAttr<"LapackSide",
     ]> {
   let genSpecializedAttr = 0;
   let cppNamespace = "::mlir::enzymexla";
+  let extraClassDeclaration = [{
+    char getLapackChar() const {
+      switch (getValue()) {
+        case LapackSide::left: return 'L';
+        case LapackSide::right: return 'R';
+        default: llvm_unreachable("invalid LapackSide");
+      }
+    }
+  }];
 }
 
 def EnzymeXLA_LapackSideAttr : EnumAttr<EnzymeXLA_Dialect,
@@ -61,6 +89,16 @@ def EnzymeXLA_LapackUplo : I32EnumAttr<"LapackUplo",
     ]> {
   let genSpecializedAttr = 0;
   let cppNamespace = "::mlir::enzymexla";
+  let extraClassDeclaration = [{
+    char getLapackChar() const {
+      switch (getValue()) {
+        case LapackUplo::U: return 'U';
+        case LapackUplo::L: return 'L';
+        case LapackUplo::F: return 'F';
+        default: llvm_unreachable("invalid LapackUplo");
+      }
+    }
+  }];
 }
 
 def EnzymeXLA_LapackUploAttr : EnumAttr<EnzymeXLA_Dialect,
