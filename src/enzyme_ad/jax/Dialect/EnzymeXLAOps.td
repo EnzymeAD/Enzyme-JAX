@@ -210,16 +210,16 @@ def XLAWrapperOp : EnzymeXLA_Op<"xla_wrapper", [
   DeclareOpInterfaceMethods<CallOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
-    let summary = "XLA Call operation";
+  let summary = "XLA Call operation";
 
-    let arguments = (ins
+  let arguments = (ins
     SymbolRefAttr:$fn,
     Variadic<AnyType>:$inputs,
     OptionalAttr<DictArrayAttr>:$arg_attrs,
     OptionalAttr<DictArrayAttr>:$res_attrs
   );
 
-    let assemblyFormat = [{
+  let assemblyFormat = [{
     $fn ` ` `(` $inputs `)` attr-dict `:` functional-type($inputs, results)
   }];
 
@@ -472,9 +472,9 @@ def UpdateWithoutCornersOp: EnzymeXLA_Op<
 def PiecewiseSelectOp : EnzymeXLA_Op<"piecewise_select", [Pure, SameOperandsAndResultType]> {
   let summary = "Piecewise selection operation";
   let description = [{
-    For coordinates that fit insid e any of the boxes defined by the attribute,
-        the result contains the element from the first operand,
-        for other coordinates, it contains the element from the second operand.
+    For coordinates that fit inside any of the boxes defined by the attribute,
+    the result contains the element from the first operand, for other coordinates,
+    it contains the element from the second operand.
   }];
 
   let arguments =
@@ -490,13 +490,12 @@ def PiecewiseSelectOp : EnzymeXLA_Op<"piecewise_select", [Pure, SameOperandsAndR
          ArrayAttr
        : $boxes);
 
-  let results = (outs HLO_Tensor : $result);
+  let results = (outs HLO_Tensor:$result);
 }
 
 def CommRegionOp : EnzymeXLA_Op<"comm_region", [
-  DeclareOpInterfaceMethods<RegionBranchOpInterface>, RecursiveMemoryEffects,
-  RecursivelySpeculatable
-]> {
+    DeclareOpInterfaceMethods<RegionBranchOpInterface>,
+    RecursiveMemoryEffects, RecursivelySpeculatable]> {
   let summary = "container op for grouping communication";
 
   let results = (outs Variadic<AnyType>);
@@ -508,8 +507,7 @@ def CommRegionOp : EnzymeXLA_Op<"comm_region", [
 
 // Linear Algebra Ops
 
-def SymmOp
-    : EnzymeXLA_Op<"blas.symm", [Pure, SameOperandsAndResultElementType]> {
+def SymmOp : EnzymeXLA_Op<"blas.symm", [Pure, SameOperandsAndResultElementType]> {
   let summary = "Multiplication involving a symmetric matrix";
 
   let description = [{
