@@ -16,6 +16,9 @@ HEDRON_COMPILE_COMMANDS_SHA256 = ""
 
 XLA_PATCHES = [
     """
+    sed -i.bak0 "s/{num_groups, num_devices_per_group}/absl::Span<const long int>{num_groups, num_devices_per_group}/g" xla/hlo/utils/hlo_sharding_util.h
+    """,
+    """
     sed -i.bak0 "s/\\\"-lamd_comgr\\\",//g" third_party/gpus/rocm/BUILD.tpl 
     """,
     """
