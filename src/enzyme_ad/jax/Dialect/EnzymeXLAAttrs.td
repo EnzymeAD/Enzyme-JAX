@@ -13,7 +13,7 @@ def EnzymeXLA_LapackLayout : I32EnumAttr<"LapackLayout",
     [
       I32EnumAttrCase<"col_major", 0>,
       I32EnumAttrCase<"row_major", 1>
-    ]> {
+    ]>, Deprecated<"use `BLAS_Layout` instead"> {
   let genSpecializedAttr = 0;
   let cppNamespace = "::mlir::enzymexla";
 }
@@ -38,7 +38,7 @@ def EnzymeXLA_LapackTranspose : I32EnumAttr<"LapackTranspose",
       I32EnumAttrCase<"none", 0>,
       I32EnumAttrCase<"transpose", 1>,
       I32EnumAttrCase<"adjoint", 2>
-    ]> {
+    ]>, Deprecated<"use `BLAS_Transpose` instead"> {
   let genSpecializedAttr = 0;
   let cppNamespace = "::mlir::enzymexla";
 }
@@ -63,7 +63,7 @@ def EnzymeXLA_LapackSide : I32EnumAttr<"LapackSide",
     [
       I32EnumAttrCase<"left", 0>,
       I32EnumAttrCase<"right", 1>
-    ]> {
+    ]>, Deprecated<"use `BLAS_Side` instead"> {
   let genSpecializedAttr = 0;
   let cppNamespace = "::mlir::enzymexla";
 }
@@ -88,7 +88,7 @@ def EnzymeXLA_LapackUplo : I32EnumAttr<"LapackUplo",
       I32EnumAttrCase<"U", 0>,
       I32EnumAttrCase<"L", 1>,
       I32EnumAttrCase<"F", 2>
-    ]> {
+    ]>, Deprecated<"use `BLAS_Uplo` instead"> {
   let genSpecializedAttr = 0;
   let cppNamespace = "::mlir::enzymexla";
 }

@@ -504,7 +504,7 @@ def CommRegionOp : EnzymeXLA_Op<"comm_region", [
 
 // Linear Algebra Ops
 
-def SymmOp : EnzymeXLA_Op<"blas.symm", [Pure, SameOperandsAndResultElementType]> {
+def SymmOp : EnzymeXLA_Op<"blas.symm", [Pure, SameOperandsAndResultElementType]>, CppDeprecated<"Use `blas.symm` from the BLAS dialect instead"> {
   let summary = "Multiplication involving a symmetric matrix";
 
   let description = [{
@@ -530,7 +530,7 @@ def SymmOp : EnzymeXLA_Op<"blas.symm", [Pure, SameOperandsAndResultElementType]>
   }];
 }
 
-def SyrkOp: EnzymeXLA_Op<"blas.syrk", [Pure, SameOperandsAndResultElementType]> {
+def SyrkOp: EnzymeXLA_Op<"blas.syrk", [Pure, SameOperandsAndResultElementType]>, CppDeprecated<"Use `blas.syrk` from the BLAS dialect instead"> {
   let summary = "Multiplication involving a symmetric matrix";
 
   let description = [{
@@ -570,7 +570,7 @@ def SyrkOp: EnzymeXLA_Op<"blas.syrk", [Pure, SameOperandsAndResultElementType]> 
   let hasVerifier = 1;
 }
 
-def TrmmOp: EnzymeXLA_Op<"blas.trmm", [Pure, SameOperandsAndResultElementType]> {
+def TrmmOp: EnzymeXLA_Op<"blas.trmm", [Pure, SameOperandsAndResultElementType]>, CppDeprecated<"Use `blas.trmm` from the BLAS dialect instead"> {
   let summary = "Multiplication involving a triangular matrix";
 
   let description = [{
