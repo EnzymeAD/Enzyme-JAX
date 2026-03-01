@@ -6,7 +6,7 @@ func.func @main(%alpha: tensor<f32>, %a: tensor<64x64xf32>, %b: tensor<64x64xf32
 }
 
 // CPU-LABEL:  llvm.func @enzymexla_wrapper_lapack_strsm_
-// CPU-LABEL:  llvm.func @enzymexla_lapack_strsm_(!llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr)
+// CPU-LABEL:  llvm.func @enzymexla_lapack_strsm_
 
 // CPU:  func.func @main(%arg0: tensor<f32>, %arg1: tensor<64x64xf32>, %arg2: tensor<64x64xf32>) -> tensor<64x64xf32> {
 // CPU-NEXT:    %c = stablehlo.constant dense<76> : tensor<i8>
