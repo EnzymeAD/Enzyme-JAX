@@ -930,6 +930,102 @@ cc_library(
     ],
 )
 
+td_library(
+    name = "BlasDialectTdFiles",
+    srcs = [
+        "Dialect/BLAS/Attrs.td",
+        "Dialect/BLAS/Dialect.td",
+        "Dialect/BLAS/Ops.td",
+    ],
+    deps = [
+        "@llvm-project//mlir:BuiltinDialectTdFiles",
+        "@llvm-project//mlir:OpBaseTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "BlasDialectIncGen",
+    tbl_outs = [
+        (
+            [
+                "-gen-dialect-decls",
+                "-dialect=blas",
+            ],
+            "Dialect/BLAS/BlasDialect.h.inc",
+        ),
+        (
+            [
+                "-gen-dialect-defs",
+                "-dialect=blas",
+            ],
+            "Dialect/BLAS/BlasDialect.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/BLAS/Dialect.td",
+    deps = [
+        ":BlasDialectTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "BlasAttrsIncGen",
+    tbl_outs = [
+        (
+            ["--gen-attrdef-decls"],
+            "Dialect/BLAS/BlasAttrs.h.inc",
+        ),
+        (
+            ["--gen-attrdef-defs"],
+            "Dialect/BLAS/BlasAttrs.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/BLAS/Attrs.td",
+    deps = [
+        ":BlasDialectTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "BlasOpsIncGen",
+    tbl_outs = [
+        (
+            ["-gen-op-decls"],
+            "Dialect/BLAS/BlasOps.h.inc",
+        ),
+        (
+            ["-gen-op-defs"],
+            "Dialect/BLAS/BlasOps.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/BLAS/Ops.td",
+    deps = [
+        ":BlasDialectTdFiles",
+    ],
+)
+
+cc_library(
+    name = "BlasDialect",
+    srcs = [
+        "Dialect/BLAS/Dialect.cpp",
+        "Dialect/BLAS/Ops.cpp"
+    ],
+    hdrs = [
+        "Dialect/BLAS/Dialect.h",
+        "Dialect/BLAS/Attrs.h",
+        "Dialect/BLAS/Ops.h"
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":BlasDialectIncGen",
+        ":BlasAttrsIncGen",
+        ":BlasOpsIncGen",
+        "@llvm-project//mlir:IR",
+    ],
+)
+
 cc_library(
     name = "EnzymeXLADialectUtils",
     srcs = ["Dialect/Utils.cpp"],
