@@ -2810,7 +2810,7 @@ struct PotrfOpLowering : public OpRewritePattern<enzymexla::PotrfOp> {
     auto uplo = stablehlo::ConstantOp::create(
         rewriter, op.getLoc(), type_uplo,
         cast<ElementsAttr>(
-            makeAttr(type_uplo, op.getUploAttr().getLapackChar())));
+            makeAttr(type_uplo, op.getUploAttr().getBlasChar())));
 
     auto type_n = RankedTensorType::get({}, type_lapack_int);
     auto n = stablehlo::ConstantOp::create(
@@ -2864,204 +2864,6 @@ struct PotrfOpLowering : public OpRewritePattern<enzymexla::PotrfOp> {
   }
 };
 
-struct TrsmOpLowering : public OpRewritePattern<enzymexla::TrsmOp> {
-  std::string backend;
-  int64_t blasIntWidth;
-
-  TrsmOpLowering(std::string backend, int64_t blasIntWidth,
-                 MLIRContext *context, PatternBenefit benefit = 1)
-      : OpRewritePattern(context, benefit), backend(backend),
-        blasIntWidth(blasIntWidth) {}
-
-  LogicalResult matchAndRewrite(enzymexla::TrsmOp op,
-                                PatternRewriter &rewriter) const override {
-    if (backend == "cpu")
-      return matchAndRewriteCPU(op, rewriter);
-
-    op->emitOpError() << "Unsupported backend: " << backend;
-    return failure();
-  }
-
-  LogicalResult matchAndRewriteCPU(enzymexla::TrsmOp op,
-                                   PatternRewriter &rewriter) const {
-    auto ctx = op->getContext();
-    LLVMTypeConverter typeConverter(ctx);
-
-    auto alpha = op.getOperand(0);
-    auto A = op.getOperand(1);
-    auto B = op.getOperand(2);
-    auto type_alpha = cast<RankedTensorType>(alpha.getType());
-    auto type_A = cast<RankedTensorType>(A.getType());
-    auto type_B = cast<RankedTensorType>(B.getType());
-    auto type_element = type_alpha.getElementType();
-    auto rank = type_A.getRank();
-    auto shape = type_A.getShape();
-
-    if (type_A.getElementType() != type_element ||
-        type_B.getElementType() != type_element) {
-      return rewriter.notifyMatchFailure(
-          op, "Element types of alpha, A and B must match");
-    }
-
-    if (type_A.getShape() != type_B.getShape()) {
-      return rewriter.notifyMatchFailure(op, "Shapes of A and B must match");
-    }
-
-    const int64_t numBatchDims = rank - 2;
-    if (numBatchDims > 0)
-      return rewriter.notifyMatchFailure(
-          op, "Batch dimensions is not yet supported");
-
-    auto type_lapack_int = rewriter.getIntegerType(blasIntWidth);
-    auto type_lapack_char = rewriter.getIntegerType(sizeof(char) * 8);
-    auto type_llvm_ptr = LLVM::LLVMPointerType::get(ctx);
-    auto type_llvm_void = LLVM::LLVMVoidType::get(ctx);
-
-    std::string fn = "trsm_";
-    if (auto prefix = lapackPrecisionPrefix(type_element)) {
-      fn = *prefix + fn;
-    } else {
-      op->emitOpError() << "Unsupported element type: " << type_element;
-      return rewriter.notifyMatchFailure(op, "unsupported element type");
-    }
-
-    std::string bind_fn = "enzymexla_lapack_" + fn;
-    std::string wrapper_fn = "enzymexla_wrapper_lapack_" + fn;
-
-    // declare LAPACK function declarations if not present
-    auto moduleOp = op->getParentOfType<ModuleOp>();
-    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(bind_fn)) {
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPointToStart(moduleOp.getBody());
-
-      // Fortran subroutine signature: void fn(char* uplo, int* n, T* a, int*
-      // lda, int* info)
-      SmallVector<Type> argTypes = {type_llvm_ptr, type_llvm_ptr, type_llvm_ptr,
-                                    type_llvm_ptr, type_llvm_ptr, type_llvm_ptr,
-                                    type_llvm_ptr, type_llvm_ptr, type_llvm_ptr,
-                                    type_llvm_ptr, type_llvm_ptr};
-      auto func_type =
-          LLVM::LLVMFunctionType::get(type_llvm_void, argTypes, false);
-      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), bind_fn, func_type,
-                               LLVM::Linkage::External);
-    }
-
-    // generate wrapper if not present
-    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_fn)) {
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPointToStart(moduleOp.getBody());
-
-      // wrapper takes: pointers to uplo, A, n, lda and info
-      auto func_type = LLVM::LLVMFunctionType::get(
-          type_llvm_void,
-          {type_llvm_ptr, type_llvm_ptr, type_llvm_ptr, type_llvm_ptr,
-           type_llvm_ptr, type_llvm_ptr, type_llvm_ptr, type_llvm_ptr,
-           type_llvm_ptr, type_llvm_ptr, type_llvm_ptr},
-          false);
-
-      auto func = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), wrapper_fn,
-                                           func_type);
-      rewriter.setInsertionPointToStart(func.addEntryBlock(rewriter));
-
-      auto side_ptr = func.getArgument(0);
-      auto uplo_ptr = func.getArgument(1);
-      auto transa_ptr = func.getArgument(2);
-      auto diag_ptr = func.getArgument(3);
-      auto m_ptr = func.getArgument(4);
-      auto n_ptr = func.getArgument(5);
-      auto alpha_ptr = func.getArgument(6);
-      auto a_ptr = func.getArgument(7);
-      auto lda_ptr = func.getArgument(8);
-      auto b_ptr = func.getArgument(9);
-      auto ldb_ptr = func.getArgument(10);
-
-      // call Fortran LAPACK routine
-      LLVM::CallOp::create(
-          rewriter, op.getLoc(), TypeRange{}, SymbolRefAttr::get(ctx, bind_fn),
-          ValueRange{side_ptr, uplo_ptr, transa_ptr, diag_ptr, m_ptr, n_ptr,
-                     alpha_ptr, a_ptr, lda_ptr, b_ptr, ldb_ptr});
-
-      LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
-    }
-
-    // emit constants for the wrapper function call
-    auto type_side = RankedTensorType::get({}, type_lapack_char);
-    auto side = stablehlo::ConstantOp::create(
-        rewriter, op.getLoc(), type_side,
-        cast<ElementsAttr>(
-            makeAttr(type_side, op.getSideAttr().getLapackChar())));
-
-    auto type_uplo = RankedTensorType::get({}, type_lapack_char);
-    auto uplo = stablehlo::ConstantOp::create(
-        rewriter, op.getLoc(), type_uplo,
-        cast<ElementsAttr>(
-            makeAttr(type_uplo, op.getUploAttr().getLapackChar())));
-
-    auto type_transa = RankedTensorType::get({}, type_lapack_char);
-    auto transa = stablehlo::ConstantOp::create(
-        rewriter, op.getLoc(), type_transa,
-        cast<ElementsAttr>(
-            makeAttr(type_transa, op.getTransaAttr().getLapackChar())));
-
-    auto type_diag = RankedTensorType::get({}, type_lapack_char);
-    auto diag = stablehlo::ConstantOp::create(
-        rewriter, op.getLoc(), type_diag,
-        cast<ElementsAttr>(
-            makeAttr(type_diag, op.getDiagAttr().getLapackChar())));
-
-    auto type_m = RankedTensorType::get({}, type_lapack_int);
-    auto m = stablehlo::ConstantOp::create(
-        rewriter, op.getLoc(), type_m,
-        cast<ElementsAttr>(makeAttr(type_m, shape[rank - 2])));
-
-    auto type_n = RankedTensorType::get({}, type_lapack_int);
-    auto n = stablehlo::ConstantOp::create(
-        rewriter, op.getLoc(), type_n,
-        cast<ElementsAttr>(makeAttr(type_n, shape[rank - 1])));
-
-    auto type_lda = RankedTensorType::get({}, type_lapack_int);
-    auto lda = stablehlo::ConstantOp::create(
-        rewriter, op.getLoc(), type_lda,
-        cast<ElementsAttr>(makeAttr(type_lda, shape[rank - 1])));
-
-    auto type_ldb = RankedTensorType::get({}, type_lapack_int);
-    auto ldb = stablehlo::ConstantOp::create(
-        rewriter, op.getLoc(), type_ldb,
-        cast<ElementsAttr>(makeAttr(type_ldb, shape[rank - 1])));
-
-    SmallVector<bool> isColMajorArr = {true, true, true, true, true, true,
-                                       true, true, true, true, true};
-    SmallVector<int64_t> operandRanks = {0, 0, 0, 0, 0, 0, 0, 2, 0, 2, 0};
-    SmallVector<int64_t> outputRanks = {2};
-    auto operandLayouts =
-        getSHLOLayout(rewriter, operandRanks, isColMajorArr, 2);
-    auto resultLayouts = getSHLOLayout(rewriter, outputRanks, isColMajorArr, 2);
-
-    SmallVector<Attribute> aliases{
-        // `B` is overwritten with the output
-        stablehlo::OutputOperandAliasAttr::get(ctx, {}, 9, {}),
-    };
-
-    auto jit_call_op = enzymexla::JITCallOp::create(
-        rewriter, op.getLoc(), TypeRange{type_B},
-        mlir::FlatSymbolRefAttr::get(ctx, wrapper_fn),
-        ValueRange{side, uplo, transa, diag, m, n, alpha, A, lda, B, ldb},
-        rewriter.getStringAttr(""),
-        /*operand_layouts=*/operandLayouts,
-        /*result_layouts=*/resultLayouts,
-        /*arg_attrs=*/nullptr,
-        /*res_attrs=*/nullptr,
-        /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
-        /*xla_side_effect_free=*/rewriter.getUnitAttr());
-
-    // replace enzymexla.lapack.potrf with the jit_call
-    rewriter.replaceAllUsesWith(op.getResult(), jit_call_op.getResult(0));
-    rewriter.eraseOp(op);
-
-    return success();
-  }
-};
-
 struct LowerEnzymeXLALapackPass
     : public enzyme::impl::LowerEnzymeXLALapackPassBase<
           LowerEnzymeXLALapackPass> {
@@ -3074,8 +2876,8 @@ struct LowerEnzymeXLALapackPass
     patterns.add<GeqrfOpLowering, GeqrtOpLowering, OrgqrOpLowering,
                  OrmqrOpLowering, GemqrtOpLowering, GetrfOpLowering,
                  GetriOpLowering, GesvdOpLowering, GesddOpLowering,
-                 GesvjOpLowering, PotrfOpLowering, TrsmOpLowering>(
-        backend, blasIntWidth, context);
+                 GesvjOpLowering, PotrfOpLowering>(backend, blasIntWidth,
+                                                   context);
 
     GreedyRewriteConfig config;
     if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
@@ -3088,7 +2890,7 @@ struct LowerEnzymeXLALapackPass
       if (isa<enzymexla::GeqrfOp, enzymexla::GeqrtOp, enzymexla::OrgqrOp,
               enzymexla::OrmqrOp, enzymexla::GemqrtOp, enzymexla::GetrfOp,
               enzymexla::GetriOp, enzymexla::GesvdOp, enzymexla::GesddOp,
-              enzymexla::GesvjOp, enzymexla::PotrfOp, enzymexla::TrsmOp>(op)) {
+              enzymexla::GesvjOp, enzymexla::PotrfOp>(op)) {
         op->emitError("Failed to lower enzymexla lapack operation");
         return WalkResult::interrupt();
       }

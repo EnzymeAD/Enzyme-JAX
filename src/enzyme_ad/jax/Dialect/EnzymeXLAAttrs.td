@@ -22,7 +22,7 @@ def EnzymeXLA_LapackLayoutAttr
     : EnumAttr<EnzymeXLA_Dialect, EnzymeXLA_LapackLayout, "layout"> {
   let assemblyFormat = "`<` $value `>`";
   let extraClassDeclaration = [{
-    char getLapackChar() const {
+    char getBlasChar() const {
       switch (getValue()) {
         case LapackLayout::col_major: return 'C';
         case LapackLayout::row_major: return 'R';
@@ -47,7 +47,7 @@ def EnzymeXLA_LapackTransposeAttr : EnumAttr<EnzymeXLA_Dialect,
     EnzymeXLA_LapackTranspose, "transpose"> {
   let assemblyFormat = "`<` $value `>`";
   let extraClassDeclaration = [{
-    char getLapackChar() const {
+    char getBlasChar() const {
       switch(getValue()) {
         case LapackTranspose::none : return 'N';
         case LapackTranspose::transpose : return 'T';
@@ -72,7 +72,7 @@ def EnzymeXLA_LapackSideAttr : EnumAttr<EnzymeXLA_Dialect,
     EnzymeXLA_LapackSide, "side"> {
   let assemblyFormat = "`<` $value `>`";
   let extraClassDeclaration = [{
-    char getLapackChar() const {
+    char getBlasChar() const {
       switch (getValue()) {
         case LapackSide::left: return 'L';
         case LapackSide::right: return 'R';
@@ -97,7 +97,7 @@ def EnzymeXLA_LapackUploAttr : EnumAttr<EnzymeXLA_Dialect,
     EnzymeXLA_LapackUplo, "uplo"> {
   let assemblyFormat = "`<` $value `>`";
   let extraClassDeclaration = [{
-    char getLapackChar() const {
+    char getBlasChar() const {
       switch (getValue()) {
         case LapackUplo::U: return 'U';
         case LapackUplo::L: return 'L';
@@ -122,7 +122,7 @@ def EnzymeXLA_LapackDiagAttr : EnumAttr<EnzymeXLA_Dialect,
     EnzymeXLA_LapackDiag, "diag" > {
   let assemblyFormat = "`<` $value `>`";
   let extraClassDeclaration = [{
-    char getLapackChar() const {
+    char getBlasChar() const {
       switch (getValue()) {
         case LapackDiag::nonunit: return 'N';
         case LapackDiag::unit: return 'U';
