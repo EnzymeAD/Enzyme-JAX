@@ -106,6 +106,30 @@ def EnzymeXLA_LapackUploAttr : EnumAttr<EnzymeXLA_Dialect,
   let assemblyFormat = "`<` $value `>`";
 }
 
+def EnzymeXLA_LapackDiag : I32EnumAttr<"LapackDiag",
+    "Whether the matrix is unit triangular",
+    [
+      I32EnumAttrCase<"nonunit", 0>,
+      I32EnumAttrCase<"unit", 1>
+    ]> {
+  let genSpecializedAttr = 0;
+  let cppNamespace = "::mlir::enzymexla";
+  let extraClassDeclaration = [{
+    char getLapackChar() const {
+      switch (getValue()) {
+        case LapackDiag::nonunit: return 'N';
+        case LapackDiag::unit: return 'U';
+        default: llvm_unreachable("invalid LapackDiag");
+      }
+    }
+  }];
+}
+
+def EnzymeXLA_LapackDiagAttr : EnumAttr<EnzymeXLA_Dialect,
+    EnzymeXLA_LapackDiag, "diag"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
 def EnzymeXLA_QrAlgorithm : I32EnumAttr<"QrAlgorithm",
     "Algorithm to use for the QR factorization",
     [
