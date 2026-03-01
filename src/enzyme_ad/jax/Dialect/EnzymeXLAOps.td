@@ -477,18 +477,15 @@ def PiecewiseSelectOp : EnzymeXLA_Op<"piecewise_select", [Pure, SameOperandsAndR
     it contains the element from the second operand.
   }];
 
-  let arguments =
-      (ins HLO_Tensor
-       : $whenInBox, HLO_Tensor
-       : $whenOutOfBox,
-         // Boxes is an array where each element is itself an array of integers
-         // defining one box. Each box is defined by 2 * rank values: min
-         // (inclusive) and max (non-inclusive) for each dimension, e.g, [2, 8,
-         // 4, 12] defines a box in 2D space with min corner at (2, 4) and max
-         // corner at (8, 12). Alternatively, the box spans [2, 8) along x and
-         // [4, 12) along y.
-         ArrayAttr
-       : $boxes);
+  let arguments = (ins
+    HLO_Tensor:$whenInBox,
+    HLO_Tensor:$whenOutOfBox,
+    // Boxes is an array where each element is itself an array of integers defining one box.
+    // Each box is defined by 2 * rank values: min (inclusive) and max (non-inclusive) for each dimension, e.g,
+    // [2, 8, 4, 12] defines a box in 2D space with min corner at (2, 4) and max corner at (8, 12).
+    // Alternatively, the box spans [2, 8) along x and [4, 12) along y.
+    ArrayAttr:$boxes
+  );
 
   let results = (outs HLO_Tensor:$result);
 }
