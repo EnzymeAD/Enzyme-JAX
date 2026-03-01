@@ -705,7 +705,8 @@ struct LowerEnzymeXLABLASPass
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
 
-    patterns.add<SyrkOpLowering, TrsmOpLowering>(backend, blasIntWidth, context);
+    patterns.add<SyrkOpLowering, TrsmOpLowering>(backend, blasIntWidth,
+                                                 context);
 
     GreedyRewriteConfig config;
     config.setUseTopDownTraversal(true);
