@@ -920,6 +920,33 @@ def PotrfOp : EnzymeXLA_Op<"lapack.potrf", [Pure]> {
   }];
 }
 
+def TrsmOp : EnzymeXLA_Op<"lapack.trsm", [Pure]> {
+  let summary = "Solves a triangular linear system with multiple right-hand sides";
+  let description = [{
+    Solves op(A) * X = alpha * B, or X * op(A) = alpha * B, where alpha is a scalar,
+    X and B are m x n matrices, A is a unit, or non-unit, upper or lower triangular
+    matrix, and op(A) is one of op(A) = A, or op(A) = A^T or A^H.
+  }];
+
+  let arguments = (ins
+    TensorFloat:$alpha,
+    HLO_Tensor:$A,
+    HLO_Tensor:$B,
+    EnzymeXLA_LapackSideAttr:$side,
+    EnzymeXLA_LapackUploAttr:$uplo,
+    EnzymeXLA_LapackTransposeAttr:$transa,
+    EnzymeXLA_LapackDiagAttr:$diag
+  );
+
+  let results = (outs
+    HLO_Tensor:$output
+  );
+
+  let assemblyFormat = [{
+    $alpha `,` $A `,` $B attr-dict `:` functional-type(operands, results)
+  }];
+}
+
 // Special Functions - Bessel Functions
 
 def BesselJ : EnzymeXLA_Op<"special.besselj", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
