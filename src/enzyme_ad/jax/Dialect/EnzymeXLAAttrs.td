@@ -16,6 +16,11 @@ def EnzymeXLA_LapackLayout : I32EnumAttr<"LapackLayout",
     ]> {
   let genSpecializedAttr = 0;
   let cppNamespace = "::mlir::enzymexla";
+}
+
+def EnzymeXLA_LapackLayoutAttr
+    : EnumAttr<EnzymeXLA_Dialect, EnzymeXLA_LapackLayout, "layout"> {
+  let assemblyFormat = "`<` $value `>`";
   let extraClassDeclaration = [{
     char getLapackChar() const {
       switch (getValue()) {
@@ -27,9 +32,6 @@ def EnzymeXLA_LapackLayout : I32EnumAttr<"LapackLayout",
   }];
 }
 
-def EnzymeXLA_LapackLayoutAttr : EnumAttr<EnzymeXLA_Dialect,
-    EnzymeXLA_LapackLayout, "layout">;
-
 def EnzymeXLA_LapackTranspose : I32EnumAttr<"LapackTranspose",
     "Whether to transpose the matrix",
     [
@@ -39,6 +41,11 @@ def EnzymeXLA_LapackTranspose : I32EnumAttr<"LapackTranspose",
     ]> {
   let genSpecializedAttr = 0;
   let cppNamespace = "::mlir::enzymexla";
+}
+
+def EnzymeXLA_LapackTransposeAttr : EnumAttr<EnzymeXLA_Dialect,
+    EnzymeXLA_LapackTranspose, "transpose"> {
+  let assemblyFormat = "`<` $value `>`";
   let extraClassDeclaration = [{
     char getLapackChar() const {
       switch(getValue()) {
@@ -51,11 +58,6 @@ def EnzymeXLA_LapackTranspose : I32EnumAttr<"LapackTranspose",
   }];
 }
 
-def EnzymeXLA_LapackTransposeAttr : EnumAttr<EnzymeXLA_Dialect,
-    EnzymeXLA_LapackTranspose, "transpose"> {
-  let assemblyFormat = "`<` $value `>`";
-}
-
 def EnzymeXLA_LapackSide : I32EnumAttr<"LapackSide",
     "Side of the matrix to apply the operation",
     [
@@ -64,6 +66,11 @@ def EnzymeXLA_LapackSide : I32EnumAttr<"LapackSide",
     ]> {
   let genSpecializedAttr = 0;
   let cppNamespace = "::mlir::enzymexla";
+}
+
+def EnzymeXLA_LapackSideAttr : EnumAttr<EnzymeXLA_Dialect,
+    EnzymeXLA_LapackSide, "side"> {
+  let assemblyFormat = "`<` $value `>`";
   let extraClassDeclaration = [{
     char getLapackChar() const {
       switch (getValue()) {
@@ -75,11 +82,6 @@ def EnzymeXLA_LapackSide : I32EnumAttr<"LapackSide",
   }];
 }
 
-def EnzymeXLA_LapackSideAttr : EnumAttr<EnzymeXLA_Dialect,
-    EnzymeXLA_LapackSide, "side"> {
-  let assemblyFormat = "`<` $value `>`";
-}
-
 def EnzymeXLA_LapackUplo : I32EnumAttr<"LapackUplo",
     "Uplo of the matrix to apply the operation. If `F` is specified, either the upper or lower triangle of the matrix (which must be symmetric) can be used for the operation.",
     [
@@ -89,6 +91,11 @@ def EnzymeXLA_LapackUplo : I32EnumAttr<"LapackUplo",
     ]> {
   let genSpecializedAttr = 0;
   let cppNamespace = "::mlir::enzymexla";
+}
+
+def EnzymeXLA_LapackUploAttr : EnumAttr<EnzymeXLA_Dialect,
+    EnzymeXLA_LapackUplo, "uplo"> {
+  let assemblyFormat = "`<` $value `>`";
   let extraClassDeclaration = [{
     char getLapackChar() const {
       switch (getValue()) {
@@ -101,11 +108,6 @@ def EnzymeXLA_LapackUplo : I32EnumAttr<"LapackUplo",
   }];
 }
 
-def EnzymeXLA_LapackUploAttr : EnumAttr<EnzymeXLA_Dialect,
-    EnzymeXLA_LapackUplo, "uplo"> {
-  let assemblyFormat = "`<` $value `>`";
-}
-
 def EnzymeXLA_LapackDiag : I32EnumAttr<"LapackDiag",
     "Whether the matrix is unit triangular",
     [
@@ -114,6 +116,11 @@ def EnzymeXLA_LapackDiag : I32EnumAttr<"LapackDiag",
     ]> {
   let genSpecializedAttr = 0;
   let cppNamespace = "::mlir::enzymexla";
+}
+
+def EnzymeXLA_LapackDiagAttr : EnumAttr<EnzymeXLA_Dialect,
+    EnzymeXLA_LapackDiag, "diag" > {
+  let assemblyFormat = "`<` $value `>`";
   let extraClassDeclaration = [{
     char getLapackChar() const {
       switch (getValue()) {
@@ -123,11 +130,6 @@ def EnzymeXLA_LapackDiag : I32EnumAttr<"LapackDiag",
       }
     }
   }];
-}
-
-def EnzymeXLA_LapackDiagAttr : EnumAttr<EnzymeXLA_Dialect,
-    EnzymeXLA_LapackDiag, "diag"> {
-  let assemblyFormat = "`<` $value `>`";
 }
 
 def EnzymeXLA_QrAlgorithm : I32EnumAttr<"QrAlgorithm",

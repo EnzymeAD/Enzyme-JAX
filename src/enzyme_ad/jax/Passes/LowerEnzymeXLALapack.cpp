@@ -2809,7 +2809,8 @@ struct PotrfOpLowering : public OpRewritePattern<enzymexla::PotrfOp> {
     auto type_uplo = RankedTensorType::get({}, type_lapack_char);
     auto uplo = stablehlo::ConstantOp::create(
         rewriter, op.getLoc(), type_uplo,
-        cast<ElementsAttr>(makeAttr(type_uplo, op.getUplo().getLapackChar())));
+        cast<ElementsAttr>(
+            makeAttr(type_uplo, op.getUploAttr().getLapackChar())));
 
     auto type_n = RankedTensorType::get({}, type_lapack_int);
     auto n = stablehlo::ConstantOp::create(
