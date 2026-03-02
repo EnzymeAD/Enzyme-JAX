@@ -500,25 +500,11 @@ private:
 };
 
 struct TrsmOpLowering : public OpRewritePattern<enzymexla::TrsmOp> {
-  std::string backend;
-  int64_t blasIntWidth;
-
-  TrsmOpLowering(std::string backend, int64_t blasIntWidth,
-                 MLIRContext *context, PatternBenefit benefit = 1)
-      : OpRewritePattern(context, benefit), backend(backend),
-        blasIntWidth(blasIntWidth) {}
+  TrsmOpLowering(MLIRContext *context, PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit) {}
 
   LogicalResult matchAndRewrite(enzymexla::TrsmOp op,
                                 PatternRewriter &rewriter) const override {
-    if (backend == "cpu")
-      return matchAndRewriteCPU(op, rewriter);
-
-    op->emitOpError() << "Unsupported backend: " << backend;
-    return failure();
-  }
-
-  LogicalResult matchAndRewriteCPU(enzymexla::TrsmOp op,
-                                   PatternRewriter &rewriter) const {
     auto ctx = op->getContext();
     LLVMTypeConverter typeConverter(ctx);
 
@@ -609,8 +595,8 @@ struct LowerEnzymeXLABLASPass
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
 
-    patterns.add<SyrkOpLowering, TrsmOpLowering>(backend, blasIntWidth,
-                                                 context);
+    patterns.add<SyrkOpLowering>(backend, blasIntWidth, context);
+    patterns.add<TrsmOpLowering>(context);
 
     GreedyRewriteConfig config;
     config.setUseTopDownTraversal(true);
