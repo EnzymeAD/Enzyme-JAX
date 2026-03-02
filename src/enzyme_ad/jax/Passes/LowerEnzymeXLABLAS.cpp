@@ -553,11 +553,7 @@ struct TrsmOpLowering : public OpRewritePattern<enzymexla::TrsmOp> {
       return rewriter.notifyMatchFailure(op, "Result type must match B's type");
     }
 
-    auto alpha_bcast = stablehlo::BroadcastInDimOp::create(
-        rewriter, op.getLoc(), type_B, alpha, ArrayRef<int64_t>());
-
-    auto mul_op =
-        stablehlo::MulOp::create(rewriter, op.getLoc(), B, alpha_bcast);
+    auto scaledB = stablehlo::MulOpCreate(rewriter, op.getLoc(), B, alpha);
 
     auto transa = stablehlo::Transpose::NO_TRANSPOSE;
     switch (op.getTransa()) {
@@ -573,7 +569,7 @@ struct TrsmOpLowering : public OpRewritePattern<enzymexla::TrsmOp> {
     }
 
     auto trisolve_op = stablehlo::TriangularSolveOp::create(
-        rewriter, op.getLoc(), TypeRange{type_B}, A, mul_op,
+        rewriter, op.getLoc(), TypeRange{type_B}, A, scaledB,
         /*left_side=*/op.getSide() == enzymexla::LapackSide::left,
         /*lower=*/op.getUplo() == enzymexla::LapackUplo::L,
         /*unit_diagonal=*/op.getDiag() == enzymexla::LapackDiag::unit,
