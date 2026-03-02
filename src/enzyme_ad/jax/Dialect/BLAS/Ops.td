@@ -31,7 +31,7 @@ def SymmOp: BLAS_Op<"symm", [Pure, SameOperandsAndResultElementType]> {
   );
 
   let assemblyFormat = [{
-    $alpha `,` $A `,` $B `,` $C `,` $alpha `,` $beta attr-dict `:` functional-type(operands, results)
+    $alpha `,` $A `,` $B `,` $beta `,` $C attr-dict `:` functional-type(operands, results)
   }];
 
   let hasVerifier = 1;
@@ -71,7 +71,7 @@ def SyrkOp: BLAS_Op<"syrk", [Pure, SameOperandsAndResultElementType]> {
   );
 
   let assemblyFormat = [{
-    $alpha `,` $A `,` $C `,` $beta attr-dict `:` functional-type(operands, results)
+    $alpha `,` $A `,` $beta `,` $C attr-dict `:` functional-type(operands, results)
   }];
 
   let hasVerifier = 1;
