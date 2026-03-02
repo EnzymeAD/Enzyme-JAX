@@ -90,6 +90,8 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
     if (nBatchDims == 0) {
       if (backend == "cpu") {
         return matchAndRewriteCPU(op, rewriter);
+      } else if (backend == "cuda") {
+        return matchAndRewriteCUDA(op, rewriter);
       }
     }
 
@@ -291,6 +293,105 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
                                         op.getAlpha(), op.getBeta()});
 
     rewriter.replaceOp(op, callOp);
+
+    return success();
+  }
+
+  LogicalResult matchAndRewriteCUDA(enzymexla::SymmOp op,
+  PatternRewriter &rewriter) const {
+    auto CType = cast<RankedTensorType>(op.getC().getType());
+    auto rank = CType.getRank();
+
+    // Try to extract alpha and beta as constants
+    double alphaReal = 0.0, alphaImag = 0.0;
+    double betaReal = 0.0, betaImag = 0.0;
+    bool useAlphaAttr =
+        extractConstantScalar(op.getAlpha(), alphaReal, alphaImag);
+    bool useBetaAttr = extractConstantScalar(op.getBeta(), betaReal, betaImag);
+
+    // Build operands list - use empty tensors for constant alpha/beta
+    SmallVector<Value> operands;
+    SmallVector<int64_t> operandRanks;
+    SmallVector<bool> areColMajor;
+
+    auto A = op.getA();
+    auto B = op.getB();
+    auto C = op.getC();
+
+    auto [alphaOperand, alphaRank] =
+        createScalarOperand(rewriter, op.getLoc(), op.getAlpha(), useAlphaAttr);
+    operands.push_back(alphaOperand);
+    operandRanks.push_back(alphaRank);
+
+    auto [betaOperand, betaRank] =
+        createScalarOperand(rewriter, op.getLoc(), op.getBeta(), useBetaAttr);
+    operands.push_back(betaOperand);
+    operandRanks.push_back(betaRank);
+
+    StringAttr customCallTarget;
+    ArrayAttr aliases;
+
+    SmallVector<NamedAttribute> configAttrs = {
+        rewriter.getNamedAttr(
+            "side",
+            rewriter.getBoolAttr(op.getSide() !=
+                                 enzymexla::LapackSide::left)),
+        rewriter.getNamedAttr(
+            "uplo",
+            rewriter.getBoolAttr(op.getUplo() == enzymexla::LapackUplo::U)),
+        rewriter.getNamedAttr("use_alpha_attribute",
+                              rewriter.getBoolAttr(useAlphaAttr)),
+        rewriter.getNamedAttr("alpha_real",
+                              rewriter.getF64FloatAttr(alphaReal)),
+        rewriter.getNamedAttr("alpha_imag",
+                              rewriter.getF64FloatAttr(alphaImag))};
+
+    if (matchPattern(betaOperand, m_AnyZeroFloat()) ||
+        matchPattern(betaOperand, m_Zero()) ||
+        matchPattern(op.getC(), m_AnyZeroFloat()) ||
+        matchPattern(op.getC(), m_Zero())) {
+      customCallTarget =
+          rewriter.getStringAttr("reactant_cublas_symm_no_c_ffi");
+      operands = {A, B, alphaOperand};
+      operandRanks = {rank, rank, alphaRank};
+      aliases = rewriter.getArrayAttr({});
+      areColMajor = {false, false, false};
+    } else {
+      customCallTarget = rewriter.getStringAttr("reactant_cublas_symm_ffi");
+      operands = {A, B, C, alphaOperand, betaOperand};
+      operandRanks = {rank, rank, rank, alphaRank, betaRank};
+
+      configAttrs.push_back(rewriter.getNamedAttr(
+          "use_beta_attribute", rewriter.getBoolAttr(useBetaAttr)));
+      configAttrs.push_back(rewriter.getNamedAttr(
+          "beta_real", rewriter.getF64FloatAttr(betaReal)));
+      configAttrs.push_back(rewriter.getNamedAttr(
+          "beta_imag", rewriter.getF64FloatAttr(betaImag)));
+
+      aliases = rewriter.getArrayAttr(
+          {stablehlo::OutputOperandAliasAttr::get(op.getContext(), {}, 1, {})});
+      areColMajor = {false, false, false, true, true};
+    }
+
+    DictionaryAttr backendConfig = rewriter.getDictionaryAttr(configAttrs);
+
+    auto customCall = stablehlo::CustomCallOp::create(
+        rewriter, op.getLoc(), TypeRange{CType}, operands, customCallTarget,
+        /*has_side_effect*/ nullptr,
+        /*backend_config*/ backendConfig,
+        /*api_version*/
+        stablehlo::CustomCallApiVersionAttr::get(
+            rewriter.getContext(),
+            mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
+        /*calledcomputations*/ nullptr,
+        /*operand_layouts*/
+        getSHLOLayout(rewriter, operandRanks, areColMajor, rank),
+        /*result_layouts*/
+        getSHLOLayout(rewriter, {rank}, SmallVector<bool>(rank, false), rank),
+        /*output_operand_aliases*/ aliases);
+
+    Value result = customCall.getResult(0);
+    rewriter.replaceAllUsesWith(op.getResult(), result);
 
     return success();
   }
