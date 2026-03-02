@@ -92,7 +92,7 @@ def TrmmOp: BLAS_Op<"trmm", [Pure, SameOperandsAndResultElementType]> {
     HLO_Tensor:$B,
     BLAS_SideAttr:$side,
     BLAS_UploAttr:$uplo,
-    BLAS_TransposeAttr:$transpose
+    DefaultValuedAttr<BLAS_TransposeAttr, "::mlir::enzymexla::blas::BlasTranspose::none">:$transpose
   );
 
   let results = (outs
