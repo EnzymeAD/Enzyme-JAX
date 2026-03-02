@@ -20,4 +20,4 @@ index 088411939..8a8ae857e 100644
 +	,
      # compatible with libtpu
      deps = [
-         ":tpu_inc_gen",
+         ":stringify_util",

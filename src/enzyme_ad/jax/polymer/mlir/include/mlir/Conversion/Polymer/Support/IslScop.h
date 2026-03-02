@@ -255,7 +255,8 @@ public:
                          mlir::affine::FlatAffineValueConstraints &cst);
   /// Add the access relation.
   mlir::LogicalResult
-  addAccessRelation(ScopStmt &, polymer::MemoryAccess::AccessType, mlir::Value,
+  addAccessRelation(ScopStmt &, MemoryAccess::MemoryKind,
+                    polymer::MemoryAccess::AccessType, mlir::Value,
                     mlir::affine::AffineValueMap &, bool,
                     mlir::affine::FlatAffineValueConstraints &);
 

@@ -1,4 +1,5 @@
 #include <cassert>
+#include <optional>
 #ifdef __clang__
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wmissing-braces"
@@ -349,12 +350,21 @@ void WhileLoopInfo::propagateAffineIndexInfo(
 
       auto iotaDetection = detectIotaLikeTensor(sliceOp.getOperand());
 
-      if (iotaDetection && sliceDim == iotaDetection.value().dimension) {
+      if (iotaDetection && sliceDim == iotaDetection.value().dimension &&
+          isa<mlir::IntegerType>(
+              iotaDetection.value().tensorType.getElementType())) {
+        // Extract integer values from TypedAttr
+        auto startAttr = dyn_cast<IntegerAttr>(iotaDetection.value().start);
+        auto scaleAttr = dyn_cast<IntegerAttr>(iotaDetection.value().scale);
+        if (!startAttr || !scaleAttr) {
+          return WalkResult::advance();
+        }
+
         anyNewPropagated = true;
         auto indexInfo = affineIndexInfo[sliceOp.getStartIndices()[sliceDim]];
         auto offset = indexInfo.offset.getSExtValue();
-        auto iotaStart = iotaDetection.value().start;
-        auto iotaScale = iotaDetection.value().scale;
+        auto iotaStart = startAttr.getValue().getSExtValue();
+        auto iotaScale = scaleAttr.getValue().getSExtValue();
         // The slice result is: iotaScale * (indexInfo.scale * i +
         //                       indexInfo.offset) + iotaStart
         //                    = (iotaScale * indexInfo.scale) * i + (iotaScale *
@@ -670,11 +680,10 @@ bool WhileLoopInfo::hoistOperationFromLoop(
     gatherSliceSizes.push_back(1);
   }
 
-  SmallVector<int64_t> offsetDims;
-  for (size_t i = 0; i < sliceSizes.size(); i++) {
-    if (!llvm::is_contained(dimensions, i))
-      offsetDims.push_back(i);
-  }
+  auto operandTy = dyn_cast<RankedTensorType>(operand.getType());
+
+  SmallVector<int64_t> offsetDims(operandTy.getRank() - dimensions.size());
+  std::iota(offsetDims.begin(), offsetDims.end(), 0);
 
   SmallVector<int64_t> startIndexMap(sliceSizes.size());
   std::iota(startIndexMap.begin(), startIndexMap.end(), 0);
@@ -938,6 +947,9 @@ WhileLoopInfo::computeBounds(Operation *op) {
             if (auto intType =
                     dyn_cast<IntegerType>(tensorType.getElementType())) {
               unsigned outBitWidth = intType.getWidth();
+              if (boundsBitWidth < outBitWidth) {
+                return std::nullopt;
+              }
               APInt outMin =
                   APInt::getSignedMinValue(outBitWidth).sext(boundsBitWidth);
               APInt outMax =

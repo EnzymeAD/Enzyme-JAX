@@ -111,6 +111,7 @@ IslScop::~IslScop() {
   for (auto asv : toErase) {
     asv->erase();
   }
+  root->walk([](Operation *op) { op->removeAttr("polymer.stmt.name"); });
 }
 
 void IslScop::addContextRelation(affine::FlatAffineValueConstraints cst) {
@@ -512,9 +513,9 @@ void IslScop::addDomainRelation(ScopStmt &stmt,
 }
 
 LogicalResult
-IslScop::addAccessRelation(ScopStmt &stmt, MemoryAccess::AccessType type,
-                           mlir::Value memref, affine::AffineValueMap &vMap,
-                           bool universe,
+IslScop::addAccessRelation(ScopStmt &stmt, MemoryAccess::MemoryKind kind,
+                           MemoryAccess::AccessType type, mlir::Value memref,
+                           affine::AffineValueMap &vMap, bool universe,
                            affine::FlatAffineValueConstraints &domain) {
   affine::FlatAffineValueConstraints cst;
   isl_map *map = nullptr;
@@ -592,8 +593,8 @@ IslScop::addAccessRelation(ScopStmt &stmt, MemoryAccess::AccessType type,
   map = isl_map_set_tuple_id(map, isl_dim_out, arrayId.copy());
   map = isl_map_set_tuple_id(map, isl_dim_in, stmtId.copy());
   POLYMER_ISL_DEBUG("Created relation: ", isl_map_dump(map));
-  stmt.memoryAccesses.push_back(new MemoryAccess{
-      accessId, isl::manage(map), MemoryAccess::MT_Array, type, &ai});
+  stmt.memoryAccesses.push_back(
+      new MemoryAccess{accessId, isl::manage(map), kind, type, &ai});
 
   return success();
 }
@@ -1887,32 +1888,35 @@ std::unique_ptr<IslScop> IslScopBuilder::build(Operation *f) {
 
         return true;
       };
-      auto addLoad = [&](Value memref, affine::AffineValueMap map) {
+      auto addLoad = [&](Value memref, MemoryAccess::MemoryKind kind,
+                         affine::AffineValueMap map) {
         if (needsMemEffects(memref))
-          (void)scop->addAccessRelation(stmt, polymer::MemoryAccess::READ,
+          (void)scop->addAccessRelation(stmt, kind, polymer::MemoryAccess::READ,
                                         redirectMap.lookupOrDefault(memref),
                                         map, false, domain);
       };
-      auto addMayStore = [&](Value memref, affine::AffineValueMap map) {
+      auto addMayStore = [&](Value memref, MemoryAccess::MemoryKind kind,
+                             affine::AffineValueMap map) {
         if (needsMemEffects(memref))
-          (void)scop->addAccessRelation(stmt, polymer::MemoryAccess::MAY_WRITE,
-                                        redirectMap.lookupOrDefault(memref),
-                                        map, false, domain);
+          (void)scop->addAccessRelation(
+              stmt, kind, polymer::MemoryAccess::MAY_WRITE,
+              redirectMap.lookupOrDefault(memref), map, false, domain);
       };
       (void)addMayStore;
-      auto addMustStore = [&](Value memref, affine::AffineValueMap map) {
+      auto addMustStore = [&](Value memref, MemoryAccess::MemoryKind kind,
+                              affine::AffineValueMap map) {
         if (needsMemEffects(memref))
-          (void)scop->addAccessRelation(stmt, polymer::MemoryAccess::MUST_WRITE,
-                                        redirectMap.lookupOrDefault(memref),
-                                        map, false, domain);
+          (void)scop->addAccessRelation(
+              stmt, kind, polymer::MemoryAccess::MUST_WRITE,
+              redirectMap.lookupOrDefault(memref), map, false, domain);
       };
-      auto addKill = [&](Value memref, affine::AffineValueMap map,
-                         bool universe) {
+      auto addKill = [&](Value memref, MemoryAccess::MemoryKind kind,
+                         affine::AffineValueMap map, bool universe) {
         auto redirected = redirectMap.lookupOrDefault(memref);
         if (redirected.getParentBlock()->getParentOp() == f)
           return;
         if (needsMemEffects(memref))
-          (void)scop->addAccessRelation(stmt, polymer::MemoryAccess::KILL,
+          (void)scop->addAccessRelation(stmt, kind, polymer::MemoryAccess::KILL,
                                         redirected, map, universe, domain);
       };
       bool needToLoadOperands = true;
@@ -1935,8 +1939,9 @@ std::unique_ptr<IslScop> IslScopBuilder::build(Operation *f) {
             llvm::append_range(indices, loadOp.getMapOperands());
             map = loadOp.getAffineMap();
             vMap.reset(map, indices);
-            addLoad(memref, vMap);
-            addMustStore(loadOp.getValue(), unitVMap);
+            addLoad(memref, polymer::MemoryAccess::MT_Array, vMap);
+            addMustStore(loadOp.getValue(), polymer::MemoryAccess::MT_Value,
+                         unitVMap);
           } else {
             assert(isa<affine::AffineWriteOpInterface>(op) &&
                    "Affine read/write op expected");
@@ -1945,8 +1950,9 @@ std::unique_ptr<IslScop> IslScopBuilder::build(Operation *f) {
             llvm::append_range(indices, storeOp.getMapOperands());
             map = cast<affine::AffineWriteOpInterface>(op).getAffineMap();
             vMap.reset(map, indices);
-            addMustStore(memref, vMap);
-            addLoad(storeOp.getValueToStore(), unitVMap);
+            addMustStore(memref, polymer::MemoryAccess::MT_Array, vMap);
+            addLoad(storeOp.getValueToStore(), polymer::MemoryAccess::MT_Value,
+                    unitVMap);
           }
           needToLoadOperands = false;
           needToStoreResults = false;
@@ -1958,10 +1964,11 @@ std::unique_ptr<IslScop> IslScopBuilder::build(Operation *f) {
           llvm::append_range(indices, rmw.getIndices());
           map = rmw.getMap();
           vMap.reset(map, indices);
-          addLoad(rmw.getValue(), unitVMap);
-          addLoad(memref, vMap);
-          addMustStore(memref, vMap);
-          addMustStore(rmw.getResult(), unitVMap);
+          addLoad(rmw.getValue(), polymer::MemoryAccess::MT_Value, unitVMap);
+          addLoad(memref, polymer::MemoryAccess::MT_Array, vMap);
+          addMustStore(memref, polymer::MemoryAccess::MT_Array, vMap);
+          addMustStore(rmw.getResult(), polymer::MemoryAccess::MT_Value,
+                       unitVMap);
           needToLoadOperands = false;
           needToStoreResults = false;
         } else if (isa<memref::AllocOp, memref::AllocaOp, memref::DeallocOp>(
@@ -1980,14 +1987,14 @@ std::unique_ptr<IslScop> IslScopBuilder::build(Operation *f) {
           assert(storeVar->getNumOperands() == 2);
           Value val = storeVar->getOperand(0);
           Value addr = storeVar->getOperand(1);
-          addLoad(val, unitVMap);
-          addMustStore(addr, unitVMap);
+          addLoad(val, polymer::MemoryAccess::MT_Value, unitVMap);
+          addMustStore(addr, polymer::MemoryAccess::MT_Value, unitVMap);
           needToLoadOperands = false;
           needToStoreResults = false;
         } else if (ty == "parallel.iv.init") {
           assert(storeVar->getNumOperands() == 1);
           Value addr = storeVar->getOperand(0);
-          addMustStore(addr, unitVMap);
+          addMustStore(addr, polymer::MemoryAccess::MT_Value, unitVMap);
           needToLoadOperands = false;
           needToStoreResults = false;
         } else {
@@ -1997,8 +2004,8 @@ std::unique_ptr<IslScop> IslScopBuilder::build(Operation *f) {
         for (auto [res, opr] :
              llvm::zip(ValueRange(yield->getParentOp()->getResults()),
                        ValueRange(yield->getOperands()))) {
-          addMustStore(res, unitVMap);
-          addLoad(opr, unitVMap);
+          addMustStore(res, polymer::MemoryAccess::MT_Value, unitVMap);
+          addLoad(opr, polymer::MemoryAccess::MT_Value, unitVMap);
         }
         needToLoadOperands = false;
         needToStoreResults = false;
@@ -2007,7 +2014,7 @@ std::unique_ptr<IslScop> IslScopBuilder::build(Operation *f) {
       if (op->getBlock()->getTerminator() == op)
         for (auto &toKill : op->getBlock()->without_terminator())
           for (auto res : toKill.getResults())
-            addKill(res, {}, true);
+            addKill(res, polymer::MemoryAccess::MT_Value, {}, true);
 
       if (llvm::all_of(op->getOpResults(),
                        [&](Value v) { return redirectMap.contains(v); }))
@@ -2015,10 +2022,10 @@ std::unique_ptr<IslScop> IslScopBuilder::build(Operation *f) {
 
       if (needToStoreResults)
         for (auto res : op->getResults())
-          addMustStore(res, unitVMap);
+          addMustStore(res, polymer::MemoryAccess::MT_Value, unitVMap);
       if (needToLoadOperands)
         for (auto opr : op->getOperands())
-          addLoad(opr, unitVMap);
+          addLoad(opr, polymer::MemoryAccess::MT_Value, unitVMap);
     }
   }
 

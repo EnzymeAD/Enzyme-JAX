@@ -56,7 +56,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
 // Define arg2 = 0 - 18000
 // Define arg3 = 0 - 120
 
-// CHECK:  func.func private @raised(%arg0: tensor<?xf32>, %arg1: tensor<?xf32>) -> (tensor<?xf32>, tensor<?xf32>) {
+// CHECK:  func.func private @rxla$raised_0(%arg0: tensor<?xf32>, %arg1: tensor<?xf32>) -> (tensor<?xf32>, tensor<?xf32>) {
 
 // arg2
 // CHECK-NEXT:    %0 = stablehlo.iota dim = 0 : tensor<18000xi64>          

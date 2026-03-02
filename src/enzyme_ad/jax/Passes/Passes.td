@@ -191,7 +191,13 @@ def EnzymeHLOOptPass : Pass<"enzyme-hlo-opt"> {
         /*CLI argument=*/"enable_auto_batching_passes",
         /*type=*/"bool",
         /*default=*/"false",
-        /*description=*/"Enable auto batching passes">
+        /*description=*/"Enable auto batching passes">,
+    Option<
+        /*C++ variable name=*/"structured_tensors_detection",
+        /*CLI argument=*/"structured_tensors_detection",
+        /*type=*/"bool",
+        /*default=*/"false",
+        /*description=*/"Enable detection of structured tensor operations (syrk, symm, etc.)">
   ];
 }
 
@@ -460,6 +466,22 @@ def LowerEnzymeXLALinalgPass : Pass<"lower-enzymexla-linalg"> {
   ];
 }
 
+def LowerEnzymeXLAMPIPass : Pass<"lower-enzymexla-mpi"> {
+  let summary = "Lower MPI Ops to LLVM";
+  let dependentDialects = [
+    "enzymexla::EnzymeXLADialect",
+    "LLVM::LLVMDialect",
+  ];
+  let options = [
+    Option<
+        /*C++ variable name=*/"backend",
+        /*CLI argument=*/"backend",
+        /*type=*/"std::string",
+        /*default=*/"\"cpu\"",
+        /*description=*/"HW backend">,
+  ];
+}
+
 def LowerEnzymeXLALapackPass : Pass<"lower-enzymexla-lapack"> {
   let summary = "Lower enzymexla.lapack ops to stablehlo";
   let dependentDialects = [
@@ -511,7 +533,7 @@ def LowerEnzymeXLABLASPass : Pass<"lower-enzymexla-blas"> {
 def LowerProbProgToStableHLOPass : Pass<"lower-probprog-to-stablehlo"> {
   let summary = "Lower computational enzyme ops to StableHLO";
   let description = [{
-    Lower computational probprog ops (loop, dot, cholesky_solve, random, unflatten_slice)
+    Lower computational probprog ops (loop, dot, cholesky, triangular_solve, random, recover_sample)
     to StableHLO dialect operations.
   }];
   let dependentDialects = [
@@ -529,6 +551,12 @@ def LowerProbProgToStableHLOPass : Pass<"lower-probprog-to-stablehlo"> {
         /*type=*/"std::string",
         /*default=*/"\"cpu\"",
         /*description=*/"HW backend">,
+    Option<
+        /*C++ variable name=*/"debugDump",
+        /*CLI argument=*/"debug-dump",
+        /*type=*/"bool",
+        /*default=*/"false",
+        /*description=*/"Enable debug dump">,
   ];
 }
 
@@ -688,6 +716,12 @@ def LowerJITPass : Pass<"lower-jit"> {
         /*type=*/"bool",
         /*default=*/"true",
         /*description=*/"whether to use openmp for lowering">,
+    Option<
+        /*C++ variable name=*/"dump_final_module",
+        /*CLI argument=*/"dump_final_module",
+        /*type=*/"bool",
+        /*default=*/"false",
+        /*description=*/"whether to dump the final module before jit">,
   ];
 }
 
@@ -784,20 +818,29 @@ def CuDNNHLOOpt : Pass<"enzymexla-cudnn-hlo-opt"> {
 }
 
 def GPULaunchRecognition : Pass<"gpu-launch-recognition"> {
-  let summary = "Optimize stablehlo to emit cuDNN specific optimizations";
+  let summary = "Recognize and convert GPU kernel launches to GPU dialect operations";
   let dependentDialects = [
     "enzymexla::EnzymeXLADialect",
     "arith::ArithDialect", 
     "gpu::GPUDialect",
     "mlir::NVVM::NVVMDialect",
+    "mlir::ROCDL::ROCDLDialect",
     "mlir::DLTIDialect"
   ];
-  let options = [Option<
+  let options = [
+    Option<
        /*C++ variable name=*/"use_launch_func",
        /*CLI argument=*/"use_launch_func",
        /*type=*/"bool",
        /*default=*/"false",
-       /*description=*/"Convert Periodic Concat to Manual Computation with CollectivePermute">];
+       /*description=*/"Convert Periodic Concat to Manual Computation with CollectivePermute">,
+    Option<
+      /*C++ variable name=*/"backend",
+        /*CLI argument=*/"backend",
+        /*type=*/"std::string",
+        /*default=*/"\"cuda\"",
+        /*description=*/"HW backend">,
+    ];
 }
 
 def MergeGPUModulesPass : Pass<"merge-gpu-modules", "mlir::ModuleOp"> {
@@ -815,13 +858,21 @@ def ConvertParallelToGPU1 : Pass<"convert-parallel-to-gpu1"> {
 
 def ConvertParallelToGPU2 : Pass<"convert-parallel-to-gpu2"> {
   let summary = "Convert parallel loops to gpu";
-  let dependentDialects = ["func::FuncDialect", "LLVM::LLVMDialect", "memref::MemRefDialect", "gpu::GPUDialect", "mlir::NVVM::NVVMDialect"];
-  let options = [Option<
+  let dependentDialects = ["func::FuncDialect", "LLVM::LLVMDialect", "memref::MemRefDialect", "gpu::GPUDialect", "mlir::NVVM::NVVMDialect", "mlir::ROCDL::ROCDLDialect"];
+  let options = [
+    Option<
        /*C++ variable name=*/"emitGPUKernelLaunchBounds",
        /*CLI argument=*/"emitGPUKernelLaunchBounds",
        /*type=*/"bool",
        /*default=*/"false",
-       /*description=*/"Convert Periodic Concat to Manual Computation with CollectivePermute">];
+       /*description=*/"Convert Periodic Concat to Manual Computation with CollectivePermute">,
+    Option<
+       /*C++ variable name=*/"backend",
+       /*CLI argument=*/"backend",
+       /*type=*/"std::string",
+       /*default=*/"\"cuda\"",
+       /*description=*/"Target backend (cuda or rocm)">
+  ];
 }
 
 def PolygeistMem2Reg : Pass<"polygeist-mem2reg"> {
@@ -854,6 +905,35 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*type=*/"int",
        /*default=*/"0",
        /*description=*/"Convert Rotate to Spmd custom call">,
+       Option<
+       /*C++ variable name=*/"multirotate_spmd",
+       /*CLI argument=*/"multirotate_spmd",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Convert MultiRotate to Manual Computation with CollectivePermute">,
+       Option<
+
+       /*C++ variable name=*/"wrap_custom_call",
+
+       /*CLI argument=*/"wrap_custom_call",
+
+       /*type=*/"int",
+
+       /*default=*/"0",
+
+       /*description=*/"Convert Wrap to Spmd custom call">,
+       Option<
+       /*C++ variable name=*/"multirotate_custom_call",
+       /*CLI argument=*/"multirotate_custom_call",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Convert MultiRotate to Spmd custom call">,
+       Option<
+       /*C++ variable name=*/"multislice_custom_call",
+       /*CLI argument=*/"multislice_custom_call",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Convert MultiSlice to Spmd custom call">,
        Option<
        /*C++ variable name=*/"rotate_to_pad_comm",
        /*CLI argument=*/"rotate_to_pad_comm",
@@ -984,6 +1064,12 @@ def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
            /*default=*/"false",
            /*description=*/"Whether to enable the lockstep for raising">,
        Option<
+           /*C++ variable name=*/"strip_llvm_debuginfo",
+           /*CLI argument=*/"strip_llvm_debuginfo",
+           /*type=*/"bool",
+           /*default=*/"false",
+           /*description=*/"Whether to strip llvm debug info">,
+       Option<
            /*C++ variable name=*/"prefer_while_raising",
            /*CLI argument=*/"prefer_while_raising",
            /*type=*/"bool",
@@ -1011,6 +1097,13 @@ def ParallelLower : Pass<"parallel-lower"> {
            /*type=*/"bool",
            /*default=*/"false",
            /*description=*/"Whether to throw a pass error if not fully raised">,
+  ];
+}
+
+def ConvertCudaRTtoHipRT : Pass<"convert-cudart-to-hiprt", "mlir::ModuleOp"> {
+  let summary = "Convert CUDA runtime calls to HIP runtime calls";
+  let dependentDialects = [
+    "mlir::ROCDL::ROCDLDialect",
   ];
 }
 
@@ -1121,6 +1214,19 @@ def DropUnsupportedAttributesPass : Pass<"drop-unsupported-attributes", "ModuleO
   ];
 }
 
+def TrimCallsites : Pass<"trim-callsites"> {
+  let summary = "Trim callsite debug info";
+  let dependentDialects = [];
+  let options = [
+    Option<
+        /*C++ variable name=*/"to_trim",
+        /*CLI argument=*/"to_trim",
+        /*type=*/"std::string",
+        /*default=*/"\"\"",
+        /*description=*/";-separated list of prefixes to trim">,
+  ];
+}
+
 def SCFCPUify : Pass<"cpuify"> {
   let summary = "remove barrier ig";
   let dependentDialects =
@@ -1156,6 +1262,14 @@ def ConvertAllConstantsToSplattedConstantPass : Pass<"convert-all-constants-to-s
   let summary = "Convert all constants to splatted constants. This is supposed to be used for debugging purposes when dumping the module.";
   let dependentDialects = [
     "stablehlo::StablehloDialect",
+  ];
+}
+
+def RemoveAtomicsPass : Pass<"remove-atomics"> {
+  let summary = "Remove unnecessary atomics";
+  let dependentDialects = [
+    "affine::AffineDialect",
+    "enzymexla::EnzymeXLADialect",
   ];
 }
 

@@ -3,7 +3,6 @@
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/LoopAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
-#include "mlir/Dialect/Affine/Passes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -75,9 +74,9 @@ bool isValidSymbolInt(Operation *defOp, bool recur, Region *scope) {
     return true;
 
   if (recur) {
-    if (isa<SelectOp, IndexCastOp, IndexCastUIOp, AddIOp, MulIOp, DivSIOp,
-            DivUIOp, RemSIOp, RemUIOp, SubIOp, CmpIOp, TruncIOp, ExtUIOp,
-            ExtSIOp>(defOp))
+    if (isa<arith::SelectOp, IndexCastOp, IndexCastUIOp, AddIOp, MulIOp,
+            DivSIOp, DivUIOp, RemSIOp, RemUIOp, SubIOp, CmpIOp, TruncIOp,
+            ExtUIOp, ExtSIOp>(defOp))
       if (llvm::all_of(defOp->getOperands(), [&](Value v) {
             bool b = isValidSymbolInt(v, recur, scope);
             // if (!b)
@@ -1109,7 +1108,7 @@ struct SimplfyIntegerCastMath : public OpRewritePattern<IndexCastOp> {
                                         iadd.getOperand(1)));
       return success();
     }
-    if (auto iadd = op.getOperand().getDefiningOp<SelectOp>()) {
+    if (auto iadd = op.getOperand().getDefiningOp<arith::SelectOp>()) {
       PatternRewriter b(rewriter);
       setLocationAfter(b, iadd.getTrueValue());
       PatternRewriter b2(rewriter);
@@ -1125,8 +1124,9 @@ struct SimplfyIntegerCastMath : public OpRewritePattern<IndexCastOp> {
                                                     iadd.getTrueValue());
           auto falsev = arith::IndexCastOp::create(b2, op.getLoc(),
 op.getType(), iadd.getFalseValue()); cond = b3CmpIOp::create(b2, cmp.getLoc(),
-cmp.getPredicate(), truev, falsev); rewriter.replaceOpWithNewOp<SelectOp>(op,
-cond, truev, falsev); return success();
+cmp.getPredicate(), truev, falsev);
+rewriter.replaceOpWithNewOp<arith::SelectOp>(op, cond, truev, falsev); return
+success();
         }
       }
     }
@@ -1322,7 +1322,7 @@ bool handleMinMax(Value start, SmallVectorImpl<Value> &out, bool &min,
     if (isValidIndex(cur, scope)) {
       out.push_back(cur);
       continue;
-    } else if (auto selOp = cur.getDefiningOp<SelectOp>()) {
+    } else if (auto selOp = cur.getDefiningOp<arith::SelectOp>()) {
       // UB only has min of operands
       if (auto cmp = selOp.getCondition().getDefiningOp<CmpIOp>()) {
         if (cmp.getLhs() == selOp.getTrueValue() &&
@@ -2574,7 +2574,7 @@ struct ForOpRaising : public OpRewritePattern<scf::ForOp> {
           if (isValidIndex(cur, scope)) {
             lbs.push_back(cur);
             continue;
-          } else if (auto selOp = cur.getDefiningOp<SelectOp>()) {
+          } else if (auto selOp = cur.getDefiningOp<arith::SelectOp>()) {
             // LB only has max of operands
             if (auto cmp = selOp.getCondition().getDefiningOp<CmpIOp>()) {
               if (cmp.getLhs() == selOp.getTrueValue() &&
@@ -2599,7 +2599,7 @@ struct ForOpRaising : public OpRewritePattern<scf::ForOp> {
           if (isValidIndex(cur, scope)) {
             ubs.push_back(cur);
             continue;
-          } else if (auto selOp = cur.getDefiningOp<SelectOp>()) {
+          } else if (auto selOp = cur.getDefiningOp<arith::SelectOp>()) {
             // UB only has min of operands
             if (auto cmp = selOp.getCondition().getDefiningOp<CmpIOp>()) {
               if (cmp.getLhs() == selOp.getTrueValue() &&
@@ -2859,6 +2859,19 @@ struct AffineIfSimplification : public OpRewritePattern<affine::AffineIfOp> {
     for (auto cst : llvm::enumerate(op.getIntegerSet().getConstraints())) {
       auto opd = dyn_cast<AffineConstantExpr>(cst.value());
       if (!opd) {
+        if (auto bop = dyn_cast<AffineBinaryOpExpr>(cst.value())) {
+          if (bop.getKind() == AffineExprKind::Mod &&
+              bop.getRHS().getKind() == AffineExprKind::Constant) {
+            if (valueCmp(Cmp::LT, bop.getLHS(), op.getIntegerSet().getNumDims(),
+                         op.getOperands(),
+                         cast<AffineConstantExpr>(bop.getRHS()).getValue())) {
+              removed = true;
+              todo.push_back(bop.getLHS());
+              eqFlags.push_back(op.getIntegerSet().isEq(cst.index()));
+              continue;
+            }
+          }
+        }
         if (op.getIntegerSet().isEq(cst.index())) {
           if (auto bop = dyn_cast<AffineBinaryOpExpr>(cst.value())) {
             if (bop.getKind() == AffineExprKind::Mul &&
@@ -3789,6 +3802,11 @@ struct OptimizeRem : public OpRewritePattern<arith::RemUIOp> {
 
   LogicalResult matchAndRewrite(arith::RemUIOp op,
                                 PatternRewriter &rewriter) const override {
+    if (valueCmp(Cmp::LT, op.getLhs(), op.getRhs()) &&
+        valueCmp(Cmp::GE, op.getLhs(), 0)) {
+      rewriter.replaceOp(op, op.getLhs());
+      return success();
+    }
     AddIOp sum = op.getLhs().getDefiningOp<arith::AddIOp>();
     if (!sum)
       return failure();
@@ -3974,10 +3992,18 @@ struct SplitParallelInductions
         auto findBasePattern = [](Value iv, AffineExpr root,
                                   ValueRange operands, ValueOrInt &base,
                                   bool &legal, bool &hasRemainder) {
-          SmallVector<AffineExpr> todo = {root};
+          SmallVector<std::pair<AffineExpr, ssize_t>> todo = {{root, -1}};
           while (!todo.empty()) {
-            auto subExpr = todo.back();
+            auto &&[subExpr, modprefix] = todo.back();
             todo.pop_back();
+
+            bool recur = true;
+            if (auto dimExpr = dyn_cast<AffineDimExpr>(subExpr)) {
+              if (modprefix != -1) {
+                subExpr = dimExpr % modprefix;
+                recur = false;
+              }
+            }
 
             if (auto binExpr = dyn_cast<AffineBinaryOpExpr>(subExpr)) {
               auto dimExpr = dyn_cast<AffineDimExpr>(binExpr.getLHS());
@@ -3986,8 +4012,38 @@ struct SplitParallelInductions
               if (!dimExpr || operands[dimExpr.getPosition()] != iv ||
                   (kind != AffineExprKind::FloorDiv &&
                    kind != AffineExprKind::Mod)) {
-                todo.push_back(binExpr.getLHS());
-                todo.push_back(binExpr.getRHS());
+
+                if (!recur)
+                  continue;
+
+                if (kind == AffineExprKind::Mod) {
+                  if (auto constRHS =
+                          dyn_cast<AffineConstantExpr>(binExpr.getRHS())) {
+                    todo.emplace_back(binExpr.getLHS(), constRHS.getValue());
+                    continue;
+                  }
+                }
+
+                if (kind == AffineExprKind::Mul) {
+                  if (auto constRHS =
+                          dyn_cast<AffineConstantExpr>(binExpr.getRHS())) {
+                    if (modprefix != -1 && constRHS.getValue() > 0 &&
+                        modprefix % constRHS.getValue() == 0) {
+                      todo.emplace_back(binExpr.getLHS(),
+                                        modprefix / constRHS.getValue());
+                      continue;
+                    }
+                  }
+                }
+
+                if (kind == AffineExprKind::Add) {
+                  todo.emplace_back(binExpr.getLHS(), modprefix);
+                  todo.emplace_back(binExpr.getRHS(), modprefix);
+                  continue;
+                }
+
+                todo.emplace_back(binExpr.getLHS(), -1);
+                todo.emplace_back(binExpr.getRHS(), -1);
                 continue;
               }
 
@@ -4004,6 +4060,8 @@ struct SplitParallelInductions
               }
 
               if (kind == AffineExprKind::Mod) {
+                if (newBase == 0)
+                  continue;
                 hasRemainder = true;
               }
 
@@ -4084,7 +4142,8 @@ struct SplitParallelInductions
           continue;
         }
 
-        if (ubound0 == mlir::getAffineConstantExpr(0, op.getContext())) {
+        if (ubound0 == mlir::getAffineConstantExpr(0, op.getContext()) ||
+            ubound0 == mlir::getAffineConstantExpr(1, op.getContext())) {
           continue;
         }
 
@@ -4296,75 +4355,75 @@ struct MergeParallelInductions
     : public OpRewritePattern<affine::AffineParallelOp> {
   using OpRewritePattern<affine::AffineParallelOp>::OpRewritePattern;
 
+  AffineExpr getIndUsage(AffineParallelOp op, AffineExpr cst,
+                         ValueRange operands,
+                         std::map<size_t, AffineExpr> &indUsage,
+                         bool &legal) const {
+    AffineExpr rhs = getAffineConstantExpr(0, cst.getContext());
+    SmallVector<AffineExpr> todo = {cst};
+    legal = true;
+    while (todo.size()) {
+      auto cur = todo.back();
+      todo.pop_back();
+      if (isa<AffineConstantExpr, AffineSymbolExpr>(cur)) {
+        rhs = rhs + cur;
+        continue;
+      }
+      if (auto dim = dyn_cast<AffineDimExpr>(cur)) {
+        auto ival = dyn_cast<BlockArgument>(operands[dim.getPosition()]);
+        if (!ival || ival.getOwner()->getParentOp() != op) {
+          rhs = rhs + dim;
+          continue;
+        }
+        if (indUsage.find(ival.getArgNumber()) != indUsage.end()) {
+          LLVM_DEBUG(llvm::dbgs() << "Already used index " << ival << "\n");
+          legal = false;
+          continue;
+        }
+        indUsage[ival.getArgNumber()] =
+            getAffineConstantExpr(1, op.getContext());
+        continue;
+      }
+      if (auto bop = dyn_cast<AffineBinaryOpExpr>(cur)) {
+        if (bop.getKind() == AffineExprKind::Add) {
+          todo.push_back(bop.getLHS());
+          todo.push_back(bop.getRHS());
+          continue;
+        }
+        if (bop.getKind() == AffineExprKind::Mul) {
+          if (!isa<AffineConstantExpr, AffineSymbolExpr>(bop.getRHS())) {
+            legal = false;
+            continue;
+          }
+
+          if (auto dim = dyn_cast<AffineDimExpr>(bop.getLHS())) {
+            auto ival = dyn_cast<BlockArgument>(operands[dim.getPosition()]);
+            if (!ival || ival.getOwner()->getParentOp() != op) {
+              rhs = rhs + bop;
+              continue;
+            }
+            if (indUsage.find(ival.getArgNumber()) != indUsage.end()) {
+              legal = false;
+              continue;
+            }
+            indUsage[ival.getArgNumber()] = bop.getRHS();
+            continue;
+          }
+        }
+      }
+      LLVM_DEBUG(llvm::dbgs() << "Unknown affine expression in parallel merge "
+                              << cur << "\n");
+      legal = false;
+      break;
+    }
+    return rhs;
+  }
+
   LogicalResult matchAndRewrite(affine::AffineParallelOp op,
                                 PatternRewriter &rewriter) const override {
     // Reductions are not supported yet.
     if (!op.getReductions().empty())
       return failure();
-
-    auto getIndUsage = [&op](AffineExpr cst, ValueRange operands,
-                             std::map<size_t, AffineExpr> &indUsage,
-                             bool &legal) -> AffineExpr {
-      AffineExpr rhs = getAffineConstantExpr(0, cst.getContext());
-      SmallVector<AffineExpr> todo = {cst};
-      legal = true;
-      while (todo.size()) {
-        auto cur = todo.back();
-        todo.pop_back();
-        if (isa<AffineConstantExpr, AffineSymbolExpr>(cur)) {
-          rhs = rhs + cur;
-          continue;
-        }
-        if (auto dim = dyn_cast<AffineDimExpr>(cur)) {
-          auto ival = dyn_cast<BlockArgument>(operands[dim.getPosition()]);
-          if (!ival || ival.getOwner()->getParentOp() != op) {
-            rhs = rhs + dim;
-            continue;
-          }
-          if (indUsage.find(ival.getArgNumber()) != indUsage.end()) {
-            LLVM_DEBUG(llvm::dbgs() << "Already used index " << ival << "\n");
-            legal = false;
-            continue;
-          }
-          indUsage[ival.getArgNumber()] =
-              getAffineConstantExpr(1, op.getContext());
-          continue;
-        }
-        if (auto bop = dyn_cast<AffineBinaryOpExpr>(cur)) {
-          if (bop.getKind() == AffineExprKind::Add) {
-            todo.push_back(bop.getLHS());
-            todo.push_back(bop.getRHS());
-            continue;
-          }
-          if (bop.getKind() == AffineExprKind::Mul) {
-            if (!isa<AffineConstantExpr, AffineSymbolExpr>(bop.getRHS())) {
-              legal = false;
-              continue;
-            }
-
-            if (auto dim = dyn_cast<AffineDimExpr>(bop.getLHS())) {
-              auto ival = dyn_cast<BlockArgument>(operands[dim.getPosition()]);
-              if (!ival || ival.getOwner()->getParentOp() != op) {
-                rhs = rhs + bop;
-                continue;
-              }
-              if (indUsage.find(ival.getArgNumber()) != indUsage.end()) {
-                legal = false;
-                continue;
-              }
-              indUsage[ival.getArgNumber()] = bop.getRHS();
-              continue;
-            }
-          }
-        }
-        LLVM_DEBUG(llvm::dbgs()
-                   << "Unknown affine expression in parallel merge " << cur
-                   << "\n");
-        legal = false;
-        break;
-      }
-      return rhs;
-    };
 
     std::map<size_t, arith::AddIOp> addIndices;
     std::map<size_t, SmallVector<std::tuple<std::map<size_t, AffineExpr>,
@@ -4571,7 +4630,7 @@ struct MergeParallelInductions
         for (auto expr : exprs) {
           bool flegal = true;
           std::map<size_t, AffineExpr> indUsage;
-          getIndUsage(expr, operands, indUsage, flegal);
+          getIndUsage(op, expr, operands, indUsage, flegal);
           if (!flegal)
             LLVM_DEBUG(llvm::dbgs() << "Illegal indUsage expr: " << expr
                                     << " of " << *U << " from " << val << "\n");

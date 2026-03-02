@@ -11,6 +11,7 @@ package(
 
 exports_files([
     "enzymexlamlir-opt.cpp",
+    "raise.h",
     "raise.cpp",
     "RegistryUtils.cpp",
 ])
@@ -27,7 +28,9 @@ cc_library(
     srcs = ["gpu.cc"],
     copts = ["-Wno-vla-cxx-extension"],
     deps = [
+        "@xla//xla/ffi:execution_state",
         "@xla//xla/ffi:ffi_api",
+        "@xla//xla/ffi/api:c_api_internal",
         "@xla//xla/ffi/api:ffi",
         "@xla//xla/stream_executor:stream",
     ],
@@ -602,6 +605,7 @@ gentbl_cc_library(
 td_library(
     name = "TesseraDialectTdFiles",
     srcs = [
+        "Dialect/Tessera/Attrs.td",
         "Dialect/Tessera/Dialect.td",
         "Dialect/Tessera/Ops.td",
     ],
@@ -642,6 +646,25 @@ gentbl_cc_library(
 )
 
 gentbl_cc_library(
+    name = "TesseraAttrsIncGen",
+    tbl_outs = [
+        (
+            ["--gen-attrdef-decls"],
+            "Dialect/Tessera/TesseraAttrs.h.inc",
+        ),
+        (
+            ["--gen-attrdef-defs"],
+            "Dialect/Tessera/TesseraAttrs.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/Tessera/Attrs.td",
+    deps = [
+        ":TesseraDialectTdFiles",
+    ],
+)
+
+gentbl_cc_library(
     name = "TesseraOpsIncGen",
     tbl_outs = [
         (
@@ -657,6 +680,10 @@ gentbl_cc_library(
     td_file = "Dialect/Tessera/Ops.td",
     deps = [
         ":TesseraDialectTdFiles",
+        "@llvm-project//mlir:CallOpInterfaces",
+        "@llvm-project//mlir:ControlFlowInterfaces",
+        "@llvm-project//mlir:FunctionInterfacesTdFiles",
+        "@llvm-project//mlir:IR",
     ],
 )
 
@@ -715,6 +742,33 @@ gentbl_cc_library(
     td_file = "Dialect/Perfify/Ops.td",
     deps = [
         ":PerfifyDialectFiles",
+    ],
+)
+
+td_library(
+    name = "TesseraPassesTdFiles",
+    srcs = [],
+    deps = [
+        "@llvm-project//mlir:PassBaseTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "TesseraPassesIncGen",
+    tbl_outs = [
+        (
+            [
+                "-gen-pass-decls",
+                "-name=tessera",
+            ],
+            "Passes/Tessera/Passes.h.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Passes/Tessera/Passes.td",
+    deps = [
+        ":TesseraPassesTdFiles",
+        "@llvm-project//mlir:FunctionInterfacesTdFiles",
     ],
 )
 
@@ -1061,6 +1115,7 @@ cc_library(
         [
             "Implementations/*.cpp",
             "Passes/*.cpp",
+            "Passes/Tessera/*.cpp",
             "Dialect/*.cpp",
             "Dialect/Distributed/*.cpp",
             "Dialect/Tessera/*.cpp",
@@ -1073,6 +1128,7 @@ cc_library(
     hdrs = glob([
         "Implementations/*.h",
         "Passes/*.h",
+        "Passes/Tessera/*.h",
         "Dialect/*.h",
         "Dialect/Distributed/*.h",
         "Dialect/Tessera/*.h",
@@ -1109,8 +1165,10 @@ cc_library(
         ":RaisingTransformOpsIncGen",
         ":RaisingTransformPatternsIncGen",
         ":StablehloOptPatternsIncGen",
+        ":TesseraAttrsIncGen",
         ":TesseraDialectIncGen",
         ":TesseraOpsIncGen",
+        ":TesseraPassesIncGen",
         ":TritonExtDialect",
         ":chlo-derivatives",
         ":enzymexla-derivatives",
@@ -1189,6 +1247,7 @@ cc_library(
         "@llvm-project//mlir:NVVMToLLVM",
         "@llvm-project//mlir:OpenMPDialect",
         "@llvm-project//mlir:OpenMPToLLVM",
+        "@llvm-project//mlir:PDLInterpDialect",
         "@llvm-project//mlir:Parser",
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:QuantOps",
@@ -1329,6 +1388,9 @@ cc_library(
         "@llvm-project//mlir:LLVMDialect",
         "@llvm-project//mlir:LLVMCommonConversion",
         "@llvm-project//mlir:Transforms",
+        "@llvm-project//mlir:PDLDialect",
+        "@llvm-project//mlir:PDLInterpDialect",
+        "@llvm-project//mlir:PDLToPDLInterp",
 
         # Triton
         "@triton//:TritonDialects",
@@ -1384,6 +1446,10 @@ cc_library(
         "@xla//xla/service/spmd/shardy/stablehlo_round_trip:stablehlo_import",
         "@xla//xla/service/spmd/shardy/stablehlo_round_trip:stablehlo_export",
         "@xla//xla/service/spmd/shardy/sdy_round_trip:pipelines",
+
+        # CUDA Tile
+        "@cuda_tile//:CudaTileDialect",
+        "@cuda_tile//:CudaTileTransforms",
     ],
 )
 

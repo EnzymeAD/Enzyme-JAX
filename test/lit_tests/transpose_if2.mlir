@@ -43,7 +43,7 @@ module @reactant_conditi... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
 // CHECK-NEXT:     %cst_1 = stablehlo.constant dense<1.000000e+00> : tensor<10x2xf64>
 // CHECK-NEXT:     %0 = stablehlo.add %arg0, %cst_1 : tensor<10x2xf64>
 // CHECK-NEXT:     %1 = stablehlo.negate %0 : tensor<10x2xf64>
-// CHECK-NEXT:     %2 = stablehlo.reduce(%0 init: %cst_0) applies stablehlo.add across dimensions = [0, 1] : (tensor<10x2xf64>, tensor<f64>) -> tensor<f64>
+// CHECK-NEXT:     %2 = stablehlo.reduce(%0 init: %cst_0) applies stablehlo.add across dimensions = [0, 1] {enzymexla.non_negative = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<10x2xf64>, tensor<f64>) -> tensor<f64>
 // CHECK-NEXT:     %3 = stablehlo.compare  GT, %2, %cst_0 : (tensor<f64>, tensor<f64>) -> tensor<i1>
 // CHECK-NEXT:     %4 = stablehlo.select %3, %arg0, %0 : tensor<i1>, tensor<10x2xf64>
 // CHECK-NEXT:     %5 = stablehlo.select %3, %0, %1 : tensor<i1>, tensor<10x2xf64>

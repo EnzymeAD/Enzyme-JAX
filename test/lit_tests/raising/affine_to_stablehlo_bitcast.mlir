@@ -61,7 +61,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
   }
 }
 
-// CHECK:  func.func private @raised(%arg0: tensor<?xf32>, %arg1: tensor<?xf32>) -> (tensor<?xf32>, tensor<?xf32>) {
+// CHECK:  func.func private @rxla$raised_0(%arg0: tensor<?xf32>, %arg1: tensor<?xf32>) -> (tensor<?xf32>, tensor<?xf32>) {
 // CHECK-NEXT:    %cst = stablehlo.constant dense<2.000000e-03> : tensor<2160000xf32>
 // CHECK-NEXT:    %c = stablehlo.constant dense<0> : tensor<2160000xi32>
 // CHECK-NEXT:    %c_0 = stablehlo.constant dense<2> : tensor<2160000xi32>

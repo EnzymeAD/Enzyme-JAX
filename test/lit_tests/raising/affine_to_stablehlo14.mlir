@@ -10,12 +10,7 @@ module {
   }
 }
 // CHECK:  func.func private @single_dim_raised(%arg0: tensor<3xi64>, %arg1: tensor<3xi64>) -> (tensor<3xi64>, tensor<3xi64>) {
-// CHECK-NEXT:    %0 = stablehlo.iota dim = 0 : tensor<3x1xi64>
-// CHECK-NEXT:    %1 = "stablehlo.scatter"(%arg0, %0, %arg1) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0], index_vector_dim = 1>, unique_indices = true}> ({
-// CHECK-NEXT:    ^bb0(%arg2: tensor<i64>, %arg3: tensor<i64>):
-// CHECK-NEXT:      stablehlo.return %arg3 : tensor<i64>
-// CHECK-NEXT:    }) : (tensor<3xi64>, tensor<3x1xi64>, tensor<3xi64>) -> tensor<3xi64>
-// CHECK-NEXT:    return %1, %arg1 : tensor<3xi64>, tensor<3xi64>
+// CHECK-NEXT:    return %arg1, %arg1 : tensor<3xi64>, tensor<3xi64>
 // CHECK-NEXT:  }
 
 module {
