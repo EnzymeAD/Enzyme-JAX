@@ -780,8 +780,9 @@ struct LowerEnzymeXLABLASPass
 
     GreedyRewriteConfig config;
     config.setUseTopDownTraversal(true);
-    if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
-                                            config))) {
+    config.enableFolding();
+    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
+                                     config))) {
       signalPassFailure();
     }
 
