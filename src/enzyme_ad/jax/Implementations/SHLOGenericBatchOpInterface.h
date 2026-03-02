@@ -79,7 +79,7 @@ inline void batchCloneBlock(Block *srcBlock, Block *destBlock,
 inline LogicalResult tryToBatchInner(Operation *src, OpBuilder &builder,
                                      IRMapping &mapper,
                                      ArrayRef<int64_t> batchSizes) {
-  if (auto ifOp = dyn_cast<IfOp>(src)) {
+  if (auto ifOp = dyn_cast<stablehlo::IfOp>(src)) {
     auto predBroadcast =
         mapper.lookup(ifOp.getPred()).getDefiningOp<BroadcastInDimOp>();
     if (predBroadcast && predBroadcast.isSimpleBroadcast() &&
@@ -91,8 +91,8 @@ inline LogicalResult tryToBatchInner(Operation *src, OpBuilder &builder,
       for (auto resTy : src->getResultTypes()) {
         results.push_back(applyBatchSizes(resTy, batchSizes));
       }
-      auto newIf = IfOp::create(builder, src->getLoc(), results,
-                                predBroadcast.getOperand());
+      auto newIf = stablehlo::IfOp::create(builder, src->getLoc(), results,
+                                           predBroadcast.getOperand());
       newIf.getTrueBranch().push_back(new Block());
       newIf.getFalseBranch().push_back(new Block());
 
@@ -239,11 +239,11 @@ inline LogicalResult genericCreateBatch(Operation *src, OpBuilder &builder,
       for (auto i = 0; i < Ty.getShape().size(); i++)
         operandStartIndices.push_back(zeroIdx);
 
-      auto sliceOp =
-          DynamicSliceOp::create(bodyBuilder, src->getLoc(), sliceTy, batched,
-                                 operandStartIndices, shape);
+      auto sliceOp = stablehlo::DynamicSliceOp::create(
+          bodyBuilder, src->getLoc(), sliceTy, batched, operandStartIndices,
+          shape);
 
-      auto reshapeOp = ReshapeOp::create(
+      auto reshapeOp = stablehlo::ReshapeOp::create(
           bodyBuilder, src->getLoc(), operand.getType(), sliceOp->getResult(0));
 
       origToUnbatch.map(operand, reshapeOp->getResult(0));
@@ -260,15 +260,15 @@ inline LogicalResult genericCreateBatch(Operation *src, OpBuilder &builder,
       shape.append(Ty.getShape().begin(), Ty.getShape().end());
       auto reshapeTy = Ty.clone(shape);
 
-      auto reshapeOp =
-          ReshapeOp::create(bodyBuilder, src->getLoc(), reshapeTy, newRes);
+      auto reshapeOp = stablehlo::ReshapeOp::create(bodyBuilder, src->getLoc(),
+                                                    reshapeTy, newRes);
 
       SmallVector<Value> operandStartIndices;
       operandStartIndices.append(startIndices.begin(), startIndices.end());
       for (int i = 0; i < Ty.getShape().size(); ++i)
         operandStartIndices.push_back(zeroIdx);
 
-      auto update = DynamicUpdateSliceOp::create(
+      auto update = stablehlo::DynamicUpdateSliceOp::create(
           bodyBuilder, src->getLoc(), batched, reshapeOp, operandStartIndices);
 
       whileBodyOutputs.push_back(update);

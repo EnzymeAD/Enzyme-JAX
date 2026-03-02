@@ -120,6 +120,8 @@ struct ArithRaisingPass
     RAISE_UNARY(math::CbrtOp, stablehlo::CbrtOp, mhlo::CbrtOp);
     RAISE_UNARY(math::AbsFOp, stablehlo::AbsOp, mhlo::AbsOp);
     RAISE_UNARY(math::IsFiniteOp, stablehlo::IsFiniteOp, mhlo::IsFiniteOp);
+    RAISE_UNARY(math::CeilOp, stablehlo::CeilOp, mhlo::CeilOp);
+    RAISE_UNARY(math::FloorOp, stablehlo::FloorOp, mhlo::FloorOp);
     RAISE_UNARY(arith::NegFOp, stablehlo::NegOp, mhlo::NegOp);
 
 #undef RAISE_UNARY

@@ -24,9 +24,8 @@ func.func public @r3(%1056: tensor<1x3072xi32>) -> (tensor<3072x1xi32>) {
 // CHECK-NEXT:    return %0 : tensor<1x4x1x2048x14xf32>
 // CHECK-NEXT:  }
 // CHECK:  func.func public @r2(%arg0: tensor<1xf32>) -> tensor<288xf32> {
-// CHECK-NEXT:    %0 = stablehlo.reshape %arg0 : (tensor<1xf32>) -> tensor<f32>
-// CHECK-NEXT:    %1 = stablehlo.broadcast_in_dim %0, dims = [] : (tensor<f32>) -> tensor<288xf32>
-// CHECK-NEXT:    return %1 : tensor<288xf32>
+// CHECK-NEXT:    %0 = stablehlo.broadcast_in_dim %arg0, dims = [0] : (tensor<1xf32>) -> tensor<288xf32>
+// CHECK-NEXT:    return %0 : tensor<288xf32>
 // CHECK-NEXT:  }
 // CHECK:  func.func public @r3(%arg0: tensor<1x3072xi32>) -> tensor<3072x1xi32> {
 // CHECK-NEXT:    %0 = stablehlo.broadcast_in_dim %arg0, dims = [1, 0] : (tensor<1x3072xi32>) -> tensor<3072x1xi32>

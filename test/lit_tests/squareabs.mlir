@@ -18,10 +18,12 @@ func.func @squareabscomplex(%arg0: tensor<2x2xcomplex<f32>>) -> tensor<2x2xf32> 
 }
 
 // CHECK: func.func @squareabscomplex(%arg0: tensor<2x2xcomplex<f32>>) -> tensor<2x2xf32>
-// CHECK-NEXT:   %0 = chlo.conj %arg0 : tensor<2x2xcomplex<f32>> -> tensor<2x2xcomplex<f32>>
-// CHECK-NEXT:   %1 = stablehlo.multiply %arg0, %0 : tensor<2x2xcomplex<f32>>
-// CHECK-NEXT:   %2 = stablehlo.real %1 : (tensor<2x2xcomplex<f32>>) -> tensor<2x2xf32>
-// CHECK-NEXT:   return %2 : tensor<2x2xf32>
+// CHECK-NEXT:   %0 = stablehlo.real %arg0 : (tensor<2x2xcomplex<f32>>) -> tensor<2x2xf32>
+// CHECK-NEXT:   %1 = stablehlo.imag %arg0 : (tensor<2x2xcomplex<f32>>) -> tensor<2x2xf32>
+// CHECK-NEXT:   %2 = stablehlo.multiply %0, %0 : tensor<2x2xf32>
+// CHECK-NEXT:   %3 = stablehlo.multiply %1, %1 : tensor<2x2xf32>
+// CHECK-NEXT:   %4 = stablehlo.add %2, %3 : tensor<2x2xf32>
+// CHECK-NEXT:   return %4 : tensor<2x2xf32>
 // CHECK-NEXT: }
 
 // doesn't apply here

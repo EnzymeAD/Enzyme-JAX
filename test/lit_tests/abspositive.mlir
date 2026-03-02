@@ -69,3 +69,18 @@ func.func @test6(%arg0: tensor<12xf64>, %arg1: tensor<12xf64>, %arg2: tensor<12x
     %3 = stablehlo.abs %2 : tensor<12xf64>
     return %3 : tensor<12xf64>
 }
+
+func.func @test7(%arg0: tensor<12xf64>, %idx: tensor<i32>) -> tensor<2x3xf64> {
+    %0 = stablehlo.multiply %arg0, %arg0 : tensor<12xf64>
+    %1 = stablehlo.reshape %0 : (tensor<12xf64>) -> tensor<4x3xf64>
+    %2 = stablehlo.dynamic_slice %1, %idx, %idx, sizes = [2, 3] : (tensor<4x3xf64>, tensor<i32>, tensor<i32>) -> tensor<2x3xf64>
+    %3 = stablehlo.abs %2 : tensor<2x3xf64>
+    return %3 : tensor<2x3xf64>
+}
+
+// CHECK: func.func @test7(%arg0: tensor<12xf64>, %arg1: tensor<i32>) -> tensor<2x3xf64> {
+// CHECK-NEXT:     %0 = stablehlo.multiply %arg0, %arg0 {enzymexla.non_negative = [#enzymexla<guaranteed GUARANTEED>]} : tensor<12xf64>
+// CHECK-NEXT:     %1 = stablehlo.reshape %0 : (tensor<12xf64>) -> tensor<4x3xf64>
+// CHECK-NEXT:     %2 = stablehlo.dynamic_slice %1, %arg1, %arg1, sizes = [2, 3] {enzymexla.non_negative = [#enzymexla<guaranteed GUARANTEED>]} : (tensor<4x3xf64>, tensor<i32>, tensor<i32>) -> tensor<2x3xf64>
+// CHECK-NEXT:     return %2 : tensor<2x3xf64>
+// CHECK-NEXT: }

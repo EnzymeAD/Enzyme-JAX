@@ -110,9 +110,6 @@ struct RaiseTritonCustomCallPattern final
 
     uint64_t gridx = kCall.grid_0(), gridy = kCall.grid_1(),
              gridz = kCall.grid_2();
-    uint64_t clusterx = kCall.kernel().cluster_dim_0(),
-             clustery = kCall.kernel().cluster_dim_1(),
-             clusterz = kCall.kernel().cluster_dim_2();
 
     SmallVector<FlatSymbolRefAttr, 2> nestedRefs = {
         FlatSymbolRefAttr::get(innerMod.getSymNameAttr()),
@@ -135,7 +132,7 @@ struct RaiseTritonCustomCallPattern final
 
         TI64(gridx), TI64(gridy), TI64(gridz),
 
-        TI64(clusterx), TI64(clustery), TI64(clusterz),
+        TI64(1), TI64(1), TI64(1),
 
         callOp.getInputs(),
         /* backendConfig */ StringAttr::get(callOp.getContext(), ""),

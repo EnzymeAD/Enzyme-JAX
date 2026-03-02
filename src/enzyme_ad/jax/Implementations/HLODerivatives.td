@@ -242,8 +242,12 @@ def ShadowLHSDotResTy : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
     shapes.push_back(resShape[i]);
   }
 
-  for (auto i: rhsContracting)
-    shapes.push_back(rhsShape[i]);
+  // Add shapes for RHS kept dims in backward dot (which are original rhsContracting)
+  // Iterate in dimension order to preserve correct shape ordering
+  for (int64_t i = 0; i < rhsRank; i++) {
+    if (llvm::is_contained(rhsContracting, i))
+      shapes.push_back(rhsShape[i]);
+  }
 
   RankedTensorType::get(shapes, elemType);
 }]>;
@@ -355,8 +359,12 @@ def ShadowRHSDotResTy : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
     shapes.push_back(resShape[i]);
   }
 
-  for (auto i: lhsContracting)
-    shapes.push_back(lhsShape[i]);
+  // Add shapes for LHS kept dims in backward dot (which are original lhsContracting)
+  // Iterate in dimension order to preserve correct shape ordering
+  for (int64_t i = 0; i < lhsRank; i++) {
+    if (llvm::is_contained(lhsContracting, i))
+      shapes.push_back(lhsShape[i]);
+  }
 
   RankedTensorType::get(shapes, elemType);
 }]>;
@@ -961,12 +969,12 @@ def : HLODerivative<"AddOp", (Op $x, $y),
                     (Add (Shadow $x), (Shadow $y))
                   >;
 
-def : HLODerivative<"Atan2Op", (Op $x, $y),
+def : HLODerivative<"Atan2Op", (Op $y, $x),
                     [
-                      (CheckedMul (DiffeRet), (Div (Neg $y), (Add (Pow $x, (HLOConstantFP<"2">)), (Pow $y, (HLOConstantFP<"2"> $y))))),
-                      (CheckedMul (DiffeRet), (Div $x, (Add (Pow $x, (HLOConstantFP<"2">)), (Pow $y, (HLOConstantFP<"2"> $y)))))
+                      (CheckedMul (DiffeRet), (Div $x, (Add (Mul $x, $x), (Mul $y, $y)))),
+                      (CheckedMul (DiffeRet), (Div (Neg $y), (Add (Mul $x, $x), (Mul $y,  $y)))),
                     ],
-                    (CheckedDiv (Sub (Mul $x, (Shadow $y)), (Mul $y, (Shadow $x))), (Add (Pow $x, (HLOConstantFP<"2">)), (Pow $y, (HLOConstantFP<"2"> $y))))
+                    (CheckedDiv (Sub (Mul $x, (Shadow $y)), (Mul $y, (Shadow $x))), (Add (Mul $x, $x), (Mul $y, $y)))
                   >;
 
 def : HLOReadOnlyIdentityOp<"BroadcastInDimOp">;
@@ -1078,7 +1086,7 @@ def : HLOInactiveOp<"CompareOp">;
 
 def : HLODerivative<"ComplexOp", (Op $re, $im), [
   (Real (DiffeRet)),
-  (Imag (DiffeRet)),
+  (Neg (Imag (DiffeRet))),
 ], (Complex (Shadow $re), (Shadow $im))>;
 
 def : HLOMemoryIdentityOp<"ConcatenateOp", [], [-1]>;
@@ -1233,8 +1241,8 @@ def : HLODerivative<"AbsOp", (Op $x),
                   [
                     (SelectIfComplex $x,
                       (Complex
-                        (Div (Real $x), (Abs $x)),
-                        (Neg (Div (Imag $x), (Abs $x)))
+                        (CheckedMul (DiffeRet), (Div (Real $x), (Abs $x))),
+                        (CheckedMul (DiffeRet), (Div (Imag $x), (Abs $x)))
                       ),
                       (Select (Compare $x, (HLOConstantFP<"0"> (Shadow $x)), (GE)), (DiffeRet), (Neg (DiffeRet))))
                   ], (SelectIfComplex $x,
@@ -1452,15 +1460,13 @@ def : HLODerivative<"FftOp",
         (
           SelectIfIRFFT
           (
-            Conj
-            (
-              Mul
-              (Fft (DiffeRet), (RFFTType), (FftLength)),
-              (IRFFTMaskedScaling)
-            )
+            Mul
+            (Fft (DiffeRet), (RFFTType), (FftLength)),
+            (IRFFTMaskedScaling)
           ),
           (
-            Fft (DiffeRet), (FftType), (FftLength)
+            Conj
+            (Fft (DiffeRet), (FftType), (FftLength))
           )
         )
       )

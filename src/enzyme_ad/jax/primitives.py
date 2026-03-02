@@ -109,11 +109,13 @@ def optimization_passes(
     enable_licm_optimization_passes: bool = True,
     enable_scatter_gather_optimization_passes: bool = True,
     enable_pad_optimization_passes: bool = True,
-    enable_structured_tensors_passes: bool = False,
+    enable_structured_tensors_detection_passes: bool = False,
+    enable_structured_tensors_passes: bool = True,
     enable_slice_to_batch_passes: bool = False,  # this are somewhat expensive to run
     enable_reduce_slice_fusion_passes: bool = True,
     enable_concat_to_batch_passes: bool = True,
     enable_loop_raising_passes: bool = True,
+    aggressive_propagation: bool = True,
 ):
     transform_passes_list = [
         "compare_op_canon<16>",
@@ -130,6 +132,7 @@ def optimization_passes(
         "real_op_canon<16>",
         "imag_op_canon<16>",
         "conj_complex_negate<16>",
+        "negate_imag_conj<16>",
         "get_dimension_size_op_canon<16>",
         "reshape_op_canon<16>",
         "merge_consecutive_reshapes<16>",
@@ -150,6 +153,7 @@ def optimization_passes(
         "cse_neg<16>",
         "cse_abs<16>",
         "cse_concatenate<16>",
+        "cse_compare<16>",
         f"concatenate_op_canon<16>({max_constant_threshold})",
         f"select_op_canon<16>({max_constant_threshold})",
         "add_simplify<16>",
@@ -163,6 +167,7 @@ def optimization_passes(
         "div_simplify<16>",
         "rem_simplify<16>",
         "pow_simplify<16>",
+        "extend_splat<16>",
         "simplify_extend<16>",
         "simplify_wrap<16>",
         "simplify_rotate<16>",
@@ -182,6 +187,7 @@ def optimization_passes(
         "broadcast_to_reshape<16>",
         "slice_internal",
         f"iota_simplify<16>({max_constant_threshold})",
+        f"recognize_from_constant<16>({max_constant_threshold})",
         f"broadcast_in_dim_simplify<16>({max_constant_threshold})",
         "convert_concat<1>",
         "dynamic_update_to_concat<1>",
@@ -235,12 +241,16 @@ def optimization_passes(
         "select_comp_iota_const_simplify<1>",
         "sign_abs_simplify<1>",
         "broadcastindim_is_reshape",
+        "reduce_window_wrap<1>",
         "slice_reduce_window<1>",
         "while_deadresult",
+        "while_idempotent_dus",
         "while_dus",
         "while_op_induction_replacement",
         "dus_concat",
         "slice_dus_to_concat",
+        "hoist_slice",
+        "sink_dus",
         "while_induction_reduction",
         "slice_broadcast",
         "associative_common_mul_op_reordering",
@@ -253,6 +263,10 @@ def optimization_passes(
         "cse_wrap<16>",
         "cse_rotate<16>",
         "cse_rotate<16>",
+        "cse_select<16>",
+        "cse_real<16>",
+        "cse_imag<16>",
+        "cse_conj<16>",
         "concat_concat_axis_swap",
         "concat_concat_to_dus",
         "broadcast_iota_simplify",
@@ -278,7 +292,10 @@ def optimization_passes(
         "involution_conj_simplify",
         "involution_not_simplify",
         "real_conj_simplify",
+        "real_convert_simplify",
         "conj_complex_simplify",
+        "conj_convert_simplify",
+        "elementwise_complex_simplify",
         "split_convolution_into_reverse_convolution",
         # TODO we want to enable but may cause an infinite compile time
         # "concat_to_onedim_dusslice",
@@ -286,8 +303,10 @@ def optimization_passes(
         "power_multiply_to_power",
         "common_associative_commutative_op_reorder",
         "log_simplify",
+        "exponential_minus_one_fuse",
         "neg_mul_const_simplify",
         "neg_div_const_simplify",
+        "negated_constant_mul_factoring",
         "reshape_deletions_broadcast_in_dim_simplify",
         "reshape_insertions_broadcast_in_dim_simplify",
         "dot_general_reshape",
@@ -315,7 +334,6 @@ def optimization_passes(
         "split_variadic_scatter_op",
         "dynamic_slice_simplify",
         "enzyme_hlo_unroll(4)",
-        "dot_general_only_diagonal_access",
         "divide_negated_operands_simplify",
         "multiply_negated_operands_simplify",
         "factor_scalars_in_dot_general",
@@ -325,13 +343,16 @@ def optimization_passes(
         "while_dus_ds_simplify",
         "while_dus_dus_simplify",
         "reshape_slice_reshape",
-        "syrk_simplify_output_uplo",
         "dynamic_slice_elementwise",
         "dot_general_remove_batch_dimensions",
         "delete_dims_reduce",
         "reduce_delete_dims",
         "dot_general_insert_dim_contraction_simplification",
         "fuse_reshape_collapse_or_expand_dims_into_reduce",
+        "extend_to_broadcast",
+        "reduce_max_min_mul_positive_scalar",
+        "add_complex_simplify",
+        "sub_complex_simplify",
     ]
 
     # constant propagation patterns
@@ -378,16 +399,31 @@ def optimization_passes(
         "sub_const_prop",
         "xor_const_prop",
         # other constant propagations
-        "const_prop_through_barrier<16>",
+        # "const_prop_through_barrier<16>",
         f"concat_const_prop<1>({max_constant_threshold})",
         f"dynamic_update_slice_const_prop({max_constant_threshold})",
         "clamp_const_prop",
     ]
 
     if (
-        enable_structured_tensors_passes
+        enable_structured_tensors_detection_passes
     ):  # currently we dont register custom_calls on jax end
-        transform_passes_list += ["dot_general_to_syrk"]
+        transform_passes_list += [
+            "dot_general_to_syrk",
+            "dot_general_to_symm",
+        ]
+
+    if enable_structured_tensors_passes:
+        transform_passes_list += [
+            "fuse_add_into_symm",
+            "fuse_mul_into_symm",
+            "transpose_syrk_to_syrk",
+            "fuse_mul_into_syrk",
+            "fuse_add_into_syrk",
+            "dot_general_only_diagonal_access",
+            "transpose_symmetric_simplify",
+            "syrk_simplify_output_uplo",
+        ]
 
     if enable_slice_to_batch_passes:
         transform_passes_list += [
@@ -401,6 +437,7 @@ def optimization_passes(
             "reducewindow_slice_to_batch",
             "elementwise_slice_to_batch",
             "convolution_slice_to_batch",
+            "scatter_slice_to_batch",
         ]
 
     if enable_concat_to_batch_passes:
@@ -413,6 +450,7 @@ def optimization_passes(
             "concat_insert_dim_reduce_window",
             "concat_insert_dim_elementwise",
             "concat_insert_dim_convolution",
+            "concat_insert_dim_scatter",
         ]
 
     if enable_reduce_slice_fusion_passes:
@@ -449,28 +487,45 @@ def optimization_passes(
             "reduce_window_licm(0)",
             "reverse_licm(0)",
             "convolution_licm(0)",
+            "scatter_licm(0)",
+            "gather_licm(0)",
+            "iota_licm(0)",
+            "extend_licm(0)",
+            "wrap_licm(0)",
+            "rotate_licm(0)",
         ]
 
     if enable_scatter_gather_optimization_passes:
         transform_passes_list += [
             "scatter_to_dynamic_update_slice<1>",
             "scatter_multiply_simplify",
+            "scatter_div_simplify",
+            "scatter_sub_simplify",
+            "scatter_add_simplify",
             "unary_elementwise_scatter_simplify",
             "scatter_indices_are_unique",
             "diagonal_tensor_dot_general_rewrite",
+            "split_complex_scatter",
+            "split_complex_gather",
             ## const prop patterns
             "scatter_update_computation_const_prop",
             # gather patterns
             "dynamic_gather_op_is_not_dynamic<16>",
             "gather_op_canon<16>",
+            "scatter_op_canon<16>",
             "gather_elementwise",
+            "elementwise_gather",
             ## const prop patterns
             "gather_const_prop",
             f"scatter_const_fold({max_constant_threshold})",
+            "cse_gather",
+            "cse_scatter",
+            "gather_of_scatter_simplify",
         ]
 
     if enable_pad_optimization_passes:
         transform_passes_list += [
+            "extend_pad",
             "dus_pad",
             "cse_pad<16>",
             f"pad_simplify<16>({max_constant_threshold})",
@@ -488,6 +543,8 @@ def optimization_passes(
             "mul_zero_pad<1>",
             "div_zero_pad<1>",
             "binop_const_reshape_pad<1>",
+            "binop_pad_to_concat_add<1>",
+            "binop_pad_to_concat_mul<1>",
             "binop_const_pad_add<1>",
             "binop_const_pad_subtract<1>",
             "binop_const_pad_mul<1>",
@@ -528,6 +585,7 @@ def optimization_passes(
             "reshape_slice(1)",
             "reshape_elementwise(1)",
             "reshape_dynamic_slice(1)",
+            "delete_dims_broadcast",
         ]
     elif reshape_propagate == "down":
         transform_passes_list += [
@@ -552,6 +610,7 @@ def optimization_passes(
             "transpose_select",
             "transpose_while",
             "transpose_slice",
+            "transpose_like_broadcast_slice",
             "transpose_concat",
             "transpose_iota",
             "transpose_reduce",
@@ -563,6 +622,7 @@ def optimization_passes(
             "transpose_extend",
             "transpose_rotate",
             "transpose_dynamic_slice",
+            "transpose_like_broadcast_dynamic_slice",
             "transpose_reverse",
             "transpose_batch_norm_training",
             "transpose_batch_norm_inference",
@@ -571,6 +631,13 @@ def optimization_passes(
             "transpose_fft",
             "transpose_reshape",
         ]
+
+        if aggressive_propagation:
+            transform_passes_list.append("transpose_elementwise(0)")
+            transform_passes_list.append("transpose_like_broadcast_elementwise(0)")
+        else:
+            transform_passes_list.append("transpose_elementwise(1)")
+            transform_passes_list.append("transpose_like_broadcast_elementwise(1)")
     elif transpose_propagate == "down":
         transform_passes_list += [
             "reorder_elementwise_and_shape_op<16>",
@@ -850,10 +917,10 @@ def _enzyme_aug_abstract_eval(
     in_shapes = [absmaketup(a) for a in in_shapes]
 
     if lang == LANG_MHLO:
-        (in_tree, _, _, mfunc, jit_options) = source
+        in_tree, _, _, mfunc, jit_options = source
         if "print_mlir" in jit_options:
             del jit_options["print_mlir"]
-        (avals_in, avals_inkw) = jax.tree_util.tree_unflatten(in_tree, args_flat)
+        avals_in, avals_inkw = jax.tree_util.tree_unflatten(in_tree, args_flat)
         jit_options = dict(jit_options)
         lowered_func = lower(jax.jit(mfunc, **jit_options), avals_in, kwargs=avals_inkw)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
@@ -918,6 +985,8 @@ def maketup(ty):
         "i64": "int64_t",
         "ui32": "uint32_t",
         "ui64": "uint64_t",
+        "complex<f32>": "std::complex<float>",
+        "complex<f64>": "std::complex<double>",
     }[tystr]
     return (tystr, ty.shape)
 
@@ -998,7 +1067,7 @@ def _enzyme_primal_lowering(
     argv = argv + ("-resource-dir", resource_dir()) + cflags()
 
     if lang == LANG_MHLO:
-        (in_tree, in_idx_map, out_idx_map, mfunc, jit_options) = source
+        in_tree, in_idx_map, out_idx_map, mfunc, jit_options = source
         in_idx_map = dict(in_idx_map)
         out_idx_map = dict(out_idx_map)
         jit_options = dict(jit_options)
@@ -1025,7 +1094,7 @@ def _enzyme_primal_lowering(
             kept = [i for (i, v) in enumerate(orig_shapes)]
             source = mfunc
         else:
-            (avals_in, avals_inkw) = jax.tree_util.tree_unflatten(in_tree, avals)
+            avals_in, avals_inkw = jax.tree_util.tree_unflatten(in_tree, avals)
             lowered_func = lower(
                 jax.jit(mfunc, **jit_options),
                 avals_in,
@@ -1241,12 +1310,10 @@ def _enzyme_fwd_lowering(
     in_args = (*args_flat,)
 
     if lang == LANG_MHLO:
-        (in_tree, _, _, mfunc, jit_options) = source
+        in_tree, _, _, mfunc, jit_options = source
         if "print_mlir" in jit_options:
             del jit_options["print_mlir"]
-        (avals_in, avals_inkw) = jax.tree_util.tree_unflatten(
-            in_tree, ctx.avals_in[::2]
-        )
+        avals_in, avals_inkw = jax.tree_util.tree_unflatten(in_tree, ctx.avals_in[::2])
         jit_options = dict(jit_options)
         lowered_func = lower(jax.jit(mfunc, **jit_options), avals_in, kwargs=avals_inkw)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
@@ -1315,10 +1382,10 @@ def _enzyme_aug_lowering(
     in_args = (*args_flat,)
 
     if lang == LANG_MHLO:
-        (in_tree, _, _, mfunc, jit_options) = source
+        in_tree, _, _, mfunc, jit_options = source
         if "print_mlir" in jit_options:
             del jit_options["print_mlir"]
-        (avals_in, avals_inkw) = jax.tree_util.tree_unflatten(in_tree, ctx.avals_in)
+        avals_in, avals_inkw = jax.tree_util.tree_unflatten(in_tree, ctx.avals_in)
         jit_options = dict(jit_options)
         lowered_func = lower(jax.jit(mfunc, **jit_options), avals_in, kwargs=avals_inkw)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
@@ -1391,10 +1458,10 @@ def _enzyme_rev_lowering(
 
     kept = None
     if lang == LANG_MHLO:
-        (in_tree, _, _, mfunc, jit_options) = source
+        in_tree, _, _, mfunc, jit_options = source
         if "print_mlir" in jit_options:
             del jit_options["print_mlir"]
-        (avals_in, avals_inkw) = jax.tree_util.tree_unflatten(in_tree, ctx.avals_out)
+        avals_in, avals_inkw = jax.tree_util.tree_unflatten(in_tree, ctx.avals_out)
         jit_options = dict(jit_options)
         lowered_func = lower(jax.jit(mfunc, **jit_options), avals_in, kwargs=avals_inkw)
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
@@ -1588,7 +1655,7 @@ def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
 
     shadconv = None
     if pipeline_options.mlir_ad() and kwargs["lang"] == LANG_MHLO:
-        (in_tree, in_idx_map, out_idx_map, mfunc, jit_options) = kwargs["source"]
+        in_tree, in_idx_map, out_idx_map, mfunc, jit_options = kwargs["source"]
         in_idx_map = dict(in_idx_map)
         out_idx_map = dict(out_idx_map)
         act_tup = []
@@ -1750,7 +1817,7 @@ def primal_partial_eval(trace, *args, **kwargs):
 
     _, acts, _ = arg_activity_from_pipeline(pipeline_options.pass_pipeline())
 
-    (in_tree, in_idx_map, out_idx_map, mfunc, jit_options) = kwargs["source"]
+    in_tree, in_idx_map, out_idx_map, mfunc, jit_options = kwargs["source"]
     in_idx_map = dict(in_idx_map)
     out_idx_map = dict(out_idx_map)
     primals = []
@@ -1855,7 +1922,7 @@ def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
 
         pipeline_options = JaXPipeline(newpasses)
 
-        (in_tree, in_idx_map, out_idx_map, mfunc, jit_options) = kwargs["source"]
+        in_tree, in_idx_map, out_idx_map, mfunc, jit_options = kwargs["source"]
         in_idx_map = dict(in_idx_map)
 
         prim_args = prim_args[: len(acts)]
@@ -1992,7 +2059,7 @@ def enzyme_jax_ir(
                 else:
                     return jnp.zeros(arg.shape, dtype=arg.dtype)
 
-            (avals_in, avals_kwin) = jax.tree_util.tree_unflatten(
+            avals_in, avals_kwin = jax.tree_util.tree_unflatten(
                 in_tree,
                 [zero_like(arg) for arg in args_flat],
             )

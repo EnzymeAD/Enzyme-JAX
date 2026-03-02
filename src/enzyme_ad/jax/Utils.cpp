@@ -35,8 +35,11 @@
 #include "stablehlo/dialect/StablehloOps.h"
 
 #include <cassert>
+#include <cmath>
 #include <iterator>
+#include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/Value.h>
+#include <optional>
 #include <set>
 
 using namespace mlir;
@@ -533,6 +536,14 @@ SymmetricResultAnalysis initSymmetricResultAnalysis() {
   return SymmetricResultAnalysis();
 }
 
+PurelyRealResultAnalysis initPurelyRealResultAnalysis() {
+  return PurelyRealResultAnalysis();
+}
+
+PurelyImagResultAnalysis initPurelyImagResultAnalysis() {
+  return PurelyImagResultAnalysis();
+}
+
 bool checkNotEqual(APInt a, APInt b) { return a != b; }
 
 bool checkNotEqual(APFloat a, APFloat b) {
@@ -678,6 +689,19 @@ SymmetricResultAnalysis::State SymmetricResultAnalysis::localGuaranteed(
     }
   }
 
+  // diagonal implies symmetric
+  if (auto scatterOp = dyn_cast<stablehlo::ScatterOp>(op)) {
+    Value outValues;
+    // TODO: technically we only need that the scatter indices touch exclusively
+    // the diagonal indices
+    if (detectDiagonalTensor(scatterOp, &outValues, [](auto scatterInput) {
+          SplatElementsAttr attr;
+          return matchPattern(scatterInput, m_Constant(&attr));
+        }).ok()) {
+      return State::GUARANTEED;
+    }
+  }
+
   bool recursiveCheck = false;
 
   // elementwise ops
@@ -750,19 +774,21 @@ NoNanResultAnalysis::State NoNanResultAnalysis::localGuaranteed(
   }
 
   bool recursiveCheck = false;
+  SmallVector<Value> operandsToCheck;
 
   if (isa<stablehlo::SliceOp, stablehlo::ConcatenateOp,
           stablehlo::BroadcastInDimOp, stablehlo::ReshapeOp,
           stablehlo::TransposeOp>(op)) {
     // data movement ops
     recursiveCheck = true;
+    operandsToCheck.append(op->getOperands().begin(), op->getOperands().end());
   } else if (isa<stablehlo::AbsOp, stablehlo::ExpOp, stablehlo::ConvertOp,
                  stablehlo::CompareOp, stablehlo::TanhOp, stablehlo::LogisticOp,
                  stablehlo::FloorOp, stablehlo::CeilOp>(op)) {
     // elementwise ops that are no-nan if all operands are not nan
     recursiveCheck = true;
+    operandsToCheck.append(op->getOperands().begin(), op->getOperands().end());
   } else if (isa<stablehlo::AddOp, stablehlo::SubtractOp>(op)) {
-
     // If any one of the operands is a Inf, the result is Inf. If both are Inf,
     // the result is NaN.
     auto lhsFinite =
@@ -775,6 +801,7 @@ NoNanResultAnalysis::State NoNanResultAnalysis::localGuaranteed(
     }
 
     recursiveCheck = true;
+    operandsToCheck.append(op->getOperands().begin(), op->getOperands().end());
   } else if (isa<stablehlo::SineOp, stablehlo::CosineOp>(op)) {
 
     if (!finiteResultAnalysis->guaranteed(op->getOperand(0), rewriter)) {
@@ -782,6 +809,7 @@ NoNanResultAnalysis::State NoNanResultAnalysis::localGuaranteed(
     }
 
     recursiveCheck = true;
+    operandsToCheck.append(op->getOperands().begin(), op->getOperands().end());
   } else if (auto mulOp = dyn_cast<stablehlo::MulOp>(op)) {
     // if lhs is Inf & rhs is 0 or the other way around, mul is going to be NaN
 
@@ -793,38 +821,19 @@ NoNanResultAnalysis::State NoNanResultAnalysis::localGuaranteed(
     }
 
     recursiveCheck = true;
-  } else if (isa<mlir::stablehlo::SelectOp>(op)) {
+    operandsToCheck.append(op->getOperands().begin(), op->getOperands().end());
+  } else if (isa<stablehlo::SelectOp>(op)) {
     recursiveCheck = true;
+    operandsToCheck.push_back(op->getOperand(1));
+    operandsToCheck.push_back(op->getOperand(2));
+  } else if (isa<stablehlo::DynamicSliceOp, stablehlo::DynamicUpdateSliceOp>(
+                 op)) {
+    recursiveCheck = true;
+    operandsToCheck.push_back(op->getOperand(0));
   }
 
   if (recursiveCheck) {
-    bool allOperandsGuaranteed = true;
-    for (auto operand : op->getOperands()) {
-      if (auto TT = dyn_cast<TensorType>(operand.getType())) {
-        if (TT.getElementType().isInteger())
-          continue;
-      }
-
-      {
-        auto found = valueCache.find(operand);
-        if (found != valueCache.end()) {
-          if (found->second) {
-            continue;
-          } else {
-            return State::NOTGUARANTEED;
-          }
-        }
-      }
-
-      localtodo.push_back(operand);
-      allOperandsGuaranteed = false;
-    }
-
-    if (allOperandsGuaranteed) {
-      return State::GUARANTEED;
-    } else {
-      return State::PENDING;
-    }
+    return recursivelyCheckOperands(localtodo, operandsToCheck, true);
   } else {
     return State::NOTGUARANTEED;
   }
@@ -863,54 +872,36 @@ FiniteResultAnalysis::State FiniteResultAnalysis::localGuaranteed(
   }
 
   bool recursiveCheck = false;
+  SmallVector<Value> operandsToCheck;
 
   if (isa<stablehlo::SliceOp, stablehlo::ConcatenateOp,
           stablehlo::BroadcastInDimOp, stablehlo::ReshapeOp,
           stablehlo::TransposeOp>(op)) {
     // data movement ops
     recursiveCheck = true;
+    operandsToCheck.append(op->getOperands().begin(), op->getOperands().end());
   } else if (isa<stablehlo::AddOp, stablehlo::SubtractOp, stablehlo::MulOp,
                  stablehlo::AbsOp, stablehlo::ExpOp, stablehlo::ConvertOp,
                  stablehlo::CompareOp>(op)) {
     // if both finite [but possibly nan], the result is finite, or nan
-
     recursiveCheck = true;
+    operandsToCheck.append(op->getOperands().begin(), op->getOperands().end());
   } else if (isa<stablehlo::TanhOp, stablehlo::LogisticOp, stablehlo::SineOp,
                  stablehlo::CosineOp>(op)) {
     // guaranteed finite or nan result, always
     return State::GUARANTEED;
-  } else if (isa<mlir::stablehlo::SelectOp>(op)) {
+  } else if (isa<stablehlo::SelectOp>(op)) {
     recursiveCheck = true;
+    operandsToCheck.push_back(op->getOperand(1));
+    operandsToCheck.push_back(op->getOperand(2));
+  } else if (isa<stablehlo::DynamicSliceOp, stablehlo::DynamicUpdateSliceOp>(
+                 op)) {
+    recursiveCheck = true;
+    operandsToCheck.push_back(op->getOperand(0));
   }
 
   if (recursiveCheck) {
-    bool allOperandsGuaranteed = true;
-    for (auto operand : op->getOperands()) {
-      if (auto TT = dyn_cast<TensorType>(operand.getType())) {
-        if (TT.getElementType().isInteger())
-          continue;
-      }
-
-      {
-        auto found = valueCache.find(operand);
-        if (found != valueCache.end()) {
-          if (found->second) {
-            continue;
-          } else {
-            return State::NOTGUARANTEED;
-          }
-        }
-      }
-
-      localtodo.push_back(operand);
-      allOperandsGuaranteed = false;
-    }
-
-    if (allOperandsGuaranteed) {
-      return State::GUARANTEED;
-    } else {
-      return State::PENDING;
-    }
+    return recursivelyCheckOperands(localtodo, operandsToCheck, true);
   } else {
     return State::NOTGUARANTEED;
   }
@@ -1003,45 +994,144 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
   }
 
   bool recursiveCheck = false;
+  SmallVector<Value> operandsToCheck;
 
   if (isa<stablehlo::MinOp, stablehlo::AddOp, stablehlo::MulOp,
           stablehlo::ConcatenateOp, stablehlo::ReshapeOp,
           stablehlo::TransposeOp, stablehlo::SliceOp,
-          stablehlo::DynamicUpdateSliceOp, stablehlo::BroadcastInDimOp>(op)) {
+          stablehlo::BroadcastInDimOp>(op)) {
     // All non-negative operations that produce a non-negative result
     recursiveCheck = true;
-  } else if (isa<mlir::stablehlo::SelectOp>(op)) {
+    operandsToCheck.append(op->getOperands().begin(), op->getOperands().end());
+  } else if (isa<stablehlo::SelectOp>(op)) {
     recursiveCheck = true;
+    operandsToCheck.push_back(op->getOperand(1));
+    operandsToCheck.push_back(op->getOperand(2));
+  } else if (isa<stablehlo::DynamicSliceOp, stablehlo::DynamicUpdateSliceOp>(
+                 op)) {
+    recursiveCheck = true;
+    operandsToCheck.push_back(op->getOperand(0));
   }
 
   if (recursiveCheck) {
-    bool allOperandsGuaranteed = true;
-    size_t idx = 0;
-    for (auto operand : op->getOperands()) {
-      if (idx == 0 && isa<mlir::stablehlo::SelectOp>(op))
-        continue;
-      idx++;
+    return recursivelyCheckOperands(localtodo, operandsToCheck, false);
+  } else {
+    return State::NOTGUARANTEED;
+  }
+}
 
-      {
-        auto found = valueCache.find(operand);
-        if (found != valueCache.end()) {
-          if (found->second) {
-            continue;
-          } else {
-            return State::NOTGUARANTEED;
-          }
-        }
-      }
-
-      localtodo.push_back(operand);
-      allOperandsGuaranteed = false;
+bool PurelyRealResultAnalysis::constantComplexCheck(DenseElementsAttr attr) {
+  for (auto value : attr.getValues<std::complex<llvm::APFloat>>()) {
+    if (!value.imag().isZero()) {
+      return false;
     }
+  }
+  return true;
+}
 
-    if (allOperandsGuaranteed) {
+PurelyRealResultAnalysis::State PurelyRealResultAnalysis::localGuaranteed(
+    Value val, SmallVectorImpl<Value> &localtodo, PatternRewriter &rewriter) {
+  auto elT = cast<RankedTensorType>(val.getType()).getElementType();
+  if (!isa<ComplexType>(elT)) {
+    return State::GUARANTEED;
+  }
+
+  auto op = val.getDefiningOp();
+  if (!op) {
+    return State::NOTGUARANTEED;
+  }
+
+  bool recursiveCheck = false;
+  SmallVector<Value> operandsToCheck;
+
+  if (auto convertOp = dyn_cast<stablehlo::ConvertOp>(op)) {
+    // real -> complex conversion means no imag component
+    auto operand = convertOp.getOperand();
+    if (!isa<ComplexType>(
+            cast<RankedTensorType>(operand.getType()).getElementType())) {
       return State::GUARANTEED;
-    } else {
-      return State::PENDING;
     }
+    recursiveCheck = true;
+    operandsToCheck.push_back(operand);
+  } else if (auto complexOp = dyn_cast<stablehlo::ComplexOp>(op)) {
+    // TODO: use a general analysis to determine if the imag values are zero
+    if (matchPattern(complexOp.getRhs(), m_AnyZeroFloat()) ||
+        matchPattern(complexOp.getRhs(), m_Zero())) {
+      return State::GUARANTEED;
+    }
+    return State::NOTGUARANTEED;
+  } else if (isa<stablehlo::AddOp, stablehlo::SubtractOp,
+                 stablehlo::ConcatenateOp, stablehlo::ReshapeOp,
+                 stablehlo::TransposeOp, stablehlo::SliceOp,
+                 stablehlo::BroadcastInDimOp>(op)) {
+    recursiveCheck = true;
+    operandsToCheck.append(op->getOperands().begin(), op->getOperands().end());
+  } else if (isa<stablehlo::SelectOp>(op)) {
+    recursiveCheck = true;
+    operandsToCheck.push_back(op->getOperand(1));
+    operandsToCheck.push_back(op->getOperand(2));
+  } else if (isa<stablehlo::DynamicSliceOp, stablehlo::DynamicUpdateSliceOp>(
+                 op)) {
+    recursiveCheck = true;
+    operandsToCheck.push_back(op->getOperand(0));
+  }
+
+  if (recursiveCheck) {
+    return recursivelyCheckOperands(localtodo, operandsToCheck, false);
+  } else {
+    return State::NOTGUARANTEED;
+  }
+}
+
+bool PurelyImagResultAnalysis::constantComplexCheck(DenseElementsAttr attr) {
+  for (auto value : attr.getValues<std::complex<llvm::APFloat>>()) {
+    if (!value.real().isZero()) {
+      return false;
+    }
+  }
+  return true;
+}
+
+PurelyImagResultAnalysis::State PurelyImagResultAnalysis::localGuaranteed(
+    Value val, SmallVectorImpl<Value> &localtodo, PatternRewriter &rewriter) {
+  auto elT = cast<RankedTensorType>(val.getType()).getElementType();
+  if (!isa<ComplexType>(elT)) {
+    return State::NOTGUARANTEED;
+  }
+
+  auto op = val.getDefiningOp();
+  if (!op) {
+    return State::NOTGUARANTEED;
+  }
+
+  bool recursiveCheck = false;
+  SmallVector<Value> operandsToCheck;
+
+  if (auto complexOp = dyn_cast<stablehlo::ComplexOp>(op)) {
+    // TODO: use a general analysis to determine if the real values are zero
+    if (matchPattern(complexOp.getLhs(), m_AnyZeroFloat()) ||
+        matchPattern(complexOp.getLhs(), m_Zero())) {
+      return State::GUARANTEED;
+    }
+    return State::NOTGUARANTEED;
+  } else if (isa<stablehlo::AddOp, stablehlo::SubtractOp,
+                 stablehlo::ConcatenateOp, stablehlo::ReshapeOp,
+                 stablehlo::TransposeOp, stablehlo::SliceOp,
+                 stablehlo::BroadcastInDimOp>(op)) {
+    recursiveCheck = true;
+    operandsToCheck.append(op->getOperands().begin(), op->getOperands().end());
+  } else if (isa<stablehlo::SelectOp>(op)) {
+    recursiveCheck = true;
+    operandsToCheck.push_back(op->getOperand(1));
+    operandsToCheck.push_back(op->getOperand(2));
+  } else if (isa<stablehlo::DynamicSliceOp, stablehlo::DynamicUpdateSliceOp>(
+                 op)) {
+    recursiveCheck = true;
+    operandsToCheck.push_back(op->getOperand(0));
+  }
+
+  if (recursiveCheck) {
+    return recursivelyCheckOperands(localtodo, operandsToCheck, false);
   } else {
     return State::NOTGUARANTEED;
   }
@@ -1218,6 +1308,17 @@ bool isOnlyUsedInOperation(Operation *operation, Operation *parentOp) {
   return true;
 }
 
+bool isValueOnlyUsedInOperation(Value value, Operation *parentOp) {
+  if (!parentOp)
+    return false;
+
+  for (Operation *user : value.getUsers()) {
+    if (user != parentOp)
+      return false;
+  }
+  return true;
+}
+
 bool mayReadFrom(Operation *op, Value val) {
   bool hasRecursiveEffects = op->hasTrait<OpTrait::HasRecursiveMemoryEffects>();
   if (hasRecursiveEffects) {
@@ -1303,6 +1404,723 @@ enzymexla::LapackUplo standardizeUplo(enzymexla::LapackUplo uplo) {
   }
 }
 
+absl::Status detectConstantSetindexScatterOp(stablehlo::ScatterOp scatterOp,
+                                             bool allowedMultipleUses,
+                                             InputValidatorFn inputValidator) {
+  SplatElementsAttr constSetIndexValue = nullptr;
+  return detectConstantSetindexScatterOp(scatterOp, allowedMultipleUses,
+                                         inputValidator, constSetIndexValue);
+}
+
+absl::Status detectConstantSetindexScatterOp(
+    stablehlo::ScatterOp scatterOp, bool allowedMultipleUses,
+    InputValidatorFn inputValidator, SplatElementsAttr &constSetIndexValue) {
+  if (scatterOp.getInputs().size() != 1) {
+    return absl::UnimplementedError(
+        "Detection not implemented for scatter op with >1 input.");
+  }
+
+  if (!scatterOp.getResult(0).hasOneUse() && !allowedMultipleUses) {
+    return absl::InvalidArgumentError(
+        "ScatterOp has multiple uses, not supported.");
+  }
+
+  auto checkCommonScatterOp = mlir::stablehlo::CheckCommonScatterOp(scatterOp);
+
+  using ScatterOpKind = mlir::stablehlo::ScatterOpKind;
+  if (checkCommonScatterOp.kind != ScatterOpKind::Setindex &&
+      checkCommonScatterOp.kind != ScatterOpKind::ConstantSetindex) {
+    return absl::InvalidArgumentError("ScatterOp is not a setindex op.");
+  }
+
+  if (checkCommonScatterOp.kind == ScatterOpKind::ConstantSetindex) {
+    constSetIndexValue = checkCommonScatterOp.constant;
+  }
+
+  auto input = scatterOp.getInputs()[0];
+  if (inputValidator(input)) {
+    return absl::OkStatus();
+  }
+
+  return absl::InvalidArgumentError(
+      "Scatter Op is not a constant setindex op.");
+}
+
+// TODO: detect batched diagonal tensors
+absl::Status detectDiagonalTensor(stablehlo::ScatterOp scatterOp,
+                                  mlir::Value *outUpdates,
+                                  InputValidatorFn inputValidator) {
+  auto status =
+      detectConstantSetindexScatterOp(scatterOp, true, inputValidator);
+  if (!status.ok())
+    return status;
+
+  auto input = scatterOp.getInputs()[0];
+  auto inputShape = cast<ShapedType>(input.getType()).getShape();
+  // TODO: support the non-square case
+  if (inputShape.size() != 2 || inputShape[0] != inputShape[1])
+    return absl::InvalidArgumentError("Input is not a diagonal tensor.");
+
+  auto indices = scatterOp.getScatterIndices();
+  auto indicesShape = cast<ShapedType>(indices.getType()).getShape();
+  if (indicesShape.size() != 2 || indicesShape[0] != inputShape[0] ||
+      indicesShape[1] != 2)
+    return absl::InvalidArgumentError("Indices are not for a diagonal tensor.");
+
+  auto updates = scatterOp.getUpdates()[0];
+  if (cast<RankedTensorType>(updates.getType()).getRank() != 1)
+    return absl::InvalidArgumentError("Updates are not a vector.");
+
+  auto scatterDimNumbers = scatterOp.getScatterDimensionNumbers();
+  auto validScatterDimNumbers = stablehlo::ScatterDimensionNumbersAttr::get(
+      scatterOp.getContext(), ArrayRef<int64_t>(), ArrayRef<int64_t>({0, 1}),
+      ArrayRef<int64_t>(), ArrayRef<int64_t>(), ArrayRef<int64_t>({0, 1}), 1);
+  if (scatterDimNumbers != validScatterDimNumbers)
+    return absl::InvalidArgumentError(
+        "Scatter dimension numbers are not valid for a diagonal tensor.");
+
+  auto isIotaLikeTensor = detectIotaLikeTensor(indices);
+  if (isIotaLikeTensor) {
+    auto iotaLikeTensor = isIotaLikeTensor.value();
+    if (iotaLikeTensor.dimension == 0 && isZeroAttr(iotaLikeTensor.start) &&
+        isOneAttr(iotaLikeTensor.scale)) {
+      *outUpdates = updates;
+      return absl::OkStatus();
+    }
+  }
+
+  return absl::InvalidArgumentError("Not a diagonal tensor.");
+}
+
+absl::Status detectDiagonalTensor(stablehlo::ScatterOp scatterOp) {
+  mlir::Value updates;
+  return detectDiagonalTensor(scatterOp, &updates);
+}
+
+absl::Status detectDiagonalTensor(stablehlo::ScatterOp scatterOp,
+                                  mlir::Value *outUpdates) {
+  return detectDiagonalTensor(scatterOp, outUpdates, [](mlir::Value input) {
+    return matchPattern(input, m_AnyZeroFloat()) ||
+           matchPattern(input, m_Zero());
+  });
+}
+
+namespace {
+
+// Helper to get a "one" value for APFloat/APInt
+template <typename T> T getOneValue(T example);
+
+template <> APFloat getOneValue<APFloat>(APFloat example) {
+  return APFloat(example.getSemantics(), 1);
+}
+
+template <> APInt getOneValue<APInt>(APInt example) {
+  return APInt(example.getBitWidth(), (int64_t)1, /*isSigned=*/true);
+}
+
+// Helper to multiply T by an int64_t index
+template <typename T> T multiplyByIndex(T value, int64_t index);
+
+template <> APFloat multiplyByIndex<APFloat>(APFloat value, int64_t index) {
+  APFloat indexFloat(value.getSemantics());
+  indexFloat.convertFromAPInt(APInt(64, index, /*isSigned=*/true),
+                              /*isSigned=*/true, APFloat::rmNearestTiesToEven);
+  value.multiply(indexFloat, APFloat::rmNearestTiesToEven);
+  return value;
+}
+
+template <> APInt multiplyByIndex<APInt>(APInt value, int64_t index) {
+  APInt indexInt(value.getBitWidth(), index, /*isSigned=*/true);
+  return value * indexInt;
+}
+
+// Helper for exact comparison
+template <typename T> bool valuesAreEqual(T lhs, T rhs);
+
+template <> bool valuesAreEqual<APFloat>(APFloat lhs, APFloat rhs) {
+  return lhs.bitwiseIsEqual(rhs);
+}
+
+template <> bool valuesAreEqual<APInt>(APInt lhs, APInt rhs) {
+  return lhs == rhs;
+}
+
+// Helper to create TypedAttr from APFloat/APInt
+template <typename T>
+TypedAttr createAttrFromValue(MLIRContext *ctx, Type elemType, T value);
+
+template <>
+TypedAttr createAttrFromValue<APFloat>(MLIRContext *ctx, Type elemType,
+                                       APFloat value) {
+  if (auto floatType = dyn_cast<FloatType>(elemType)) {
+    // Convert APFloat to the target semantics if needed
+    bool losesInfo = false;
+    value.convert(floatType.getFloatSemantics(), APFloat::rmNearestTiesToEven,
+                  &losesInfo);
+    return FloatAttr::get(floatType, value);
+  }
+  return nullptr;
+}
+
+template <>
+TypedAttr createAttrFromValue<APInt>(MLIRContext *ctx, Type elemType,
+                                     APInt value) {
+  if (auto intType = dyn_cast<IntegerType>(elemType)) {
+    // Extend or truncate to match the target bitwidth
+    if (value.getBitWidth() != intType.getWidth()) {
+      value = value.sextOrTrunc(intType.getWidth());
+    }
+    return IntegerAttr::get(intType, value);
+  }
+  return nullptr;
+}
+
+template <typename T>
+std::optional<IotaLikeTensor>
+detectIotaLikeTensorImpl(DenseElementsAttr denseAttr) {
+  auto constType = dyn_cast<RankedTensorType>(denseAttr.getType());
+  if (!constType) {
+    return std::nullopt;
+  }
+  auto shape = constType.getShape();
+  auto elemType = constType.getElementType();
+  MLIRContext *ctx = denseAttr.getContext();
+
+  auto strides = computeStrides(shape);
+
+  auto values = denseAttr.getValues<T>();
+  int64_t numElements = constType.getNumElements();
+
+  for (int64_t dim = 0; dim < constType.getRank(); dim++) {
+    bool isIotaAlongDim = true;
+    std::optional<T> detectedStart;
+    std::optional<T> detectedScale;
+
+    SmallVector<int64_t> indices;
+
+    for (int64_t idx = 0; idx < numElements && isIotaAlongDim; idx++) {
+      linearToMultiIndex(idx, strides, indices);
+
+      T actualValue = values[idx];
+
+      if (!detectedStart) {
+        detectedStart = actualValue;
+      } else if (!detectedScale && indices[dim] == 1) {
+        // Detect scale from the second element along this dimension
+        detectedScale = actualValue - detectedStart.value();
+        if (detectedScale.value().isZero()) {
+          // Scale of 0 means all values are the same, not an iota
+          isIotaAlongDim = false;
+          break;
+        }
+      }
+
+      // Compute expected value: start + indices[dim] * scale
+      T scale = detectedScale.value_or(getOneValue(actualValue));
+      T expectedValue =
+          detectedStart.value() + multiplyByIndex(scale, indices[dim]);
+
+      if (!valuesAreEqual(actualValue, expectedValue)) {
+        isIotaAlongDim = false;
+        break;
+      }
+    }
+
+    if (isIotaAlongDim && detectedStart) {
+      TypedAttr startAttr =
+          createAttrFromValue(ctx, elemType, detectedStart.value());
+      TypedAttr scaleAttr = createAttrFromValue(
+          ctx, elemType,
+          detectedScale.value_or(getOneValue(detectedStart.value())));
+      return IotaLikeTensor{startAttr, dim, scaleAttr, constType};
+    }
+  }
+
+  return std::nullopt;
+}
+
+} // namespace
+
+std::optional<IotaLikeTensor>
+detectIotaLikeTensor(DenseElementsAttr denseAttr) {
+  if (!denseAttr || denseAttr.isSplat()) {
+    return std::nullopt;
+  }
+
+  auto elemType = denseAttr.getType().getElementType();
+  if (isa<FloatType, IntegerType>(elemType)) {
+    if (elemType.getIntOrFloatBitWidth() == 1) {
+      return std::nullopt;
+    }
+  }
+
+  if (isa<FloatType>(elemType)) {
+    return detectIotaLikeTensorImpl<APFloat>(denseAttr);
+  } else if (isa<IntegerType>(elemType)) {
+    return detectIotaLikeTensorImpl<APInt>(denseAttr);
+  }
+
+  return std::nullopt;
+}
+
+std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
+  if (!tensor) {
+    return std::nullopt;
+  }
+
+  struct ChainItem {
+    mlir::Operation *op;
+    TypedAttr offset; // only populated for AddOp/SubtractOp (nullptr otherwise)
+    TypedAttr scale;  // only populated for MulOp (nullptr otherwise)
+  };
+
+  // Build a chain of operations from startOp to the base case
+  SmallVector<ChainItem> chain;
+  llvm::DenseSet<mlir::Operation *> visited;
+  mlir::Operation *currentOp = tensor.getDefiningOp();
+
+  // Traverse to find base case
+  while (currentOp && !visited.contains(currentOp)) {
+    visited.insert(currentOp);
+
+    // check if we found a base case
+    if (isa<stablehlo::IotaOp, stablehlo::ConstantOp>(currentOp)) {
+      chain.push_back({currentOp, nullptr, nullptr});
+      break;
+    }
+
+    // navigate to the next op. If any unsupported intermediate op is found,
+    // then return std::nullopt
+    // TODO: we might want to support broadcast_in_dim / insert_dims / drop_dims
+    // as well
+    auto nextOp =
+        llvm::TypeSwitch<Operation *, Operation *>(currentOp)
+            .Case<stablehlo::TransposeOp>([&](auto transposeOp) {
+              chain.push_back({currentOp, nullptr, nullptr});
+              return transposeOp.getOperand().getDefiningOp();
+            })
+            .Case<stablehlo::ConvertOp>([&](auto convertOp) -> Operation * {
+              auto elemType = cast<TensorType>(convertOp.getOperand().getType())
+                                  .getElementType();
+              if (!isa<mlir::IntegerType, mlir::FloatType>(elemType)) {
+                return nullptr;
+              }
+              chain.push_back({currentOp, nullptr, nullptr});
+              return convertOp.getOperand().getDefiningOp();
+            })
+            .Case<stablehlo::AddOp>([&](auto addOp) -> Operation * {
+              SplatElementsAttr rhsAttr, lhsAttr;
+              if (matchPattern(addOp.getRhs(), m_Constant(&rhsAttr))) {
+                chain.push_back(
+                    {currentOp, rhsAttr.getSplatValue<TypedAttr>(), nullptr});
+                return addOp.getLhs().getDefiningOp();
+              } else if (matchPattern(addOp.getLhs(), m_Constant(&lhsAttr))) {
+                chain.push_back(
+                    {currentOp, lhsAttr.getSplatValue<TypedAttr>(), nullptr});
+                return addOp.getRhs().getDefiningOp();
+              }
+              return nullptr;
+            })
+            .Case<stablehlo::SubtractOp>([&](auto subOp) -> Operation * {
+              SplatElementsAttr rhsAttr;
+              if (matchPattern(subOp.getRhs(), m_Constant(&rhsAttr))) {
+                chain.push_back(
+                    {currentOp, rhsAttr.getSplatValue<TypedAttr>(), nullptr});
+                return subOp.getLhs().getDefiningOp();
+              }
+              return nullptr;
+            })
+            .Case<stablehlo::MulOp>([&](auto mulOp) -> Operation * {
+              SplatElementsAttr rhsAttr, lhsAttr;
+              if (matchPattern(mulOp.getRhs(), m_Constant(&rhsAttr))) {
+                chain.push_back(
+                    {currentOp, nullptr, rhsAttr.getSplatValue<TypedAttr>()});
+                return mulOp.getLhs().getDefiningOp();
+              } else if (matchPattern(mulOp.getLhs(), m_Constant(&lhsAttr))) {
+                chain.push_back(
+                    {currentOp, nullptr, lhsAttr.getSplatValue<TypedAttr>()});
+                return mulOp.getRhs().getDefiningOp();
+              }
+              return nullptr;
+            })
+            .Default([](Operation *) -> Operation * { return nullptr; });
+
+    if (!nextOp)
+      return std::nullopt;
+
+    currentOp = nextOp;
+  }
+
+  if (chain.empty()) {
+    return std::nullopt;
+  }
+
+  // process the base case
+  IotaLikeTensor result;
+  MLIRContext *ctx = tensor.getContext();
+
+  auto baseCaseResult =
+      llvm::TypeSwitch<Operation *, std::optional<IotaLikeTensor>>(
+          chain.back().op)
+          .Case<stablehlo::IotaOp>(
+              [&](auto iotaOp) -> std::optional<IotaLikeTensor> {
+                auto iotaType =
+                    cast<RankedTensorType>(iotaOp.getResult().getType());
+                auto iotaDim = static_cast<int64_t>(iotaOp.getIotaDimension());
+                auto elemType = iotaType.getElementType();
+                TypedAttr zeroAttr = createAttrFromDouble(ctx, elemType, 0.0);
+                TypedAttr oneAttr = createAttrFromDouble(ctx, elemType, 1.0);
+                return IotaLikeTensor{zeroAttr, iotaDim, oneAttr, iotaType};
+              })
+          .Case<stablehlo::ConstantOp>(
+              [&](auto constantOp) -> std::optional<IotaLikeTensor> {
+                auto denseAttr =
+                    dyn_cast<DenseElementsAttr>(constantOp.getValue());
+                return detectIotaLikeTensor(denseAttr);
+              })
+          .Default([](Operation *) -> std::optional<IotaLikeTensor> {
+            return std::nullopt;
+          });
+
+  if (!baseCaseResult)
+    return std::nullopt;
+  result = *baseCaseResult;
+
+  // traverse the chain in reverse order
+  for (int64_t i = chain.size() - 2; i >= 0; i--) {
+    auto item = chain[i];
+
+    auto success =
+        llvm::TypeSwitch<Operation *, bool>(item.op)
+            .Case<stablehlo::ConvertOp>([&](auto) {
+              auto newElemType =
+                  cast<TensorType>(item.op->getResult(0).getType())
+                      .getElementType();
+              auto startVal = getDoubleFromAttr(result.start);
+              auto scaleVal = getDoubleFromAttr(result.scale);
+              if (!startVal || !scaleVal)
+                return false;
+              result.start = createAttrFromDouble(ctx, newElemType, *startVal);
+              result.scale = createAttrFromDouble(ctx, newElemType, *scaleVal);
+              return true;
+            })
+            .Case<stablehlo::TransposeOp>([&](auto transposeOp) {
+              auto permutation = transposeOp.getPermutation();
+              for (int64_t idx = 0;
+                   idx < static_cast<int64_t>(permutation.size()); idx++) {
+                if (permutation[idx] == result.dimension) {
+                  result.dimension = idx;
+                  break;
+                }
+              }
+              return true;
+            })
+            .Case<stablehlo::AddOp>([&](auto) {
+              auto startVal = getDoubleFromAttr(result.start);
+              auto offsetVal = getDoubleFromAttr(item.offset);
+              if (!startVal || !offsetVal)
+                return false;
+              auto elemType = result.start.getType();
+              result.start =
+                  createAttrFromDouble(ctx, elemType, *startVal + *offsetVal);
+              return true;
+            })
+            .Case<stablehlo::SubtractOp>([&](auto) {
+              auto startVal = getDoubleFromAttr(result.start);
+              auto offsetVal = getDoubleFromAttr(item.offset);
+              if (!startVal || !offsetVal)
+                return false;
+              auto elemType = result.start.getType();
+              result.start =
+                  createAttrFromDouble(ctx, elemType, *startVal - *offsetVal);
+              return true;
+            })
+            .Case<stablehlo::MulOp>([&](auto) {
+              auto startVal = getDoubleFromAttr(result.start);
+              auto scaleVal = getDoubleFromAttr(result.scale);
+              auto mulVal = getDoubleFromAttr(item.scale);
+              if (!startVal || !scaleVal || !mulVal)
+                return false;
+              auto elemType = result.start.getType();
+              result.start =
+                  createAttrFromDouble(ctx, elemType, *startVal * *mulVal);
+              result.scale =
+                  createAttrFromDouble(ctx, elemType, *scaleVal * *mulVal);
+              return true;
+            })
+            .Default([](Operation *) {
+              assert(false && "reached unreachable case...");
+              return false;
+            });
+
+    if (!success)
+      return std::nullopt;
+  }
+
+  result.tensorType = cast<RankedTensorType>(tensor.getType());
+  return result;
+}
+
+namespace {
+
+struct PaddingResult {
+  SmallVector<int64_t> lowPadding;
+  SmallVector<int64_t> highPadding;
+  Attribute paddingValueAttr;
+  int64_t totalPaddingElements = 0;
+};
+
+template <typename T>
+std::optional<PaddedTensor> detectPaddedTensorImpl(DenseElementsAttr attr) {
+  auto tensorType = cast<RankedTensorType>(attr.getType());
+  auto shape = tensorType.getShape();
+  int64_t rank = tensorType.getRank();
+
+  auto elemType = tensorType.getElementType();
+  auto strides = computeStrides(shape);
+  int64_t numElements = tensorType.getNumElements();
+
+  auto values = attr.getValues<T>();
+
+  // Generic helper to detect padding using a specific padding value
+  // Optimized O(numElements * rank) algorithm: single pass to find
+  // min/max non-padding indices per dimension
+  auto detectPaddingWithValue = [&](T paddingVal) -> PaddingResult {
+    PaddingResult result;
+    result.lowPadding.resize(rank, 0);
+    result.highPadding.resize(rank, 0);
+    result.paddingValueAttr = makeAttr(elemType, paddingVal);
+
+    // Track the min and max non-padding index for each dimension
+    SmallVector<int64_t> minNonPadIdx(rank);
+    SmallVector<int64_t> maxNonPadIdx(rank);
+    for (int64_t dim = 0; dim < rank; dim++) {
+      minNonPadIdx[dim] = shape[dim]; // Initialize to beyond max valid index
+      maxNonPadIdx[dim] = -1;         // Initialize to before min valid index
+    }
+
+    // Single pass through all elements
+    SmallVector<int64_t> indices;
+    for (int64_t linearIdx = 0; linearIdx < numElements; linearIdx++) {
+      if (values[linearIdx] != paddingVal) {
+        // This element is NOT padding - update min/max for all dimensions
+        linearToMultiIndex(linearIdx, strides, indices);
+        for (int64_t dim = 0; dim < rank; dim++) {
+          minNonPadIdx[dim] = std::min(minNonPadIdx[dim], indices[dim]);
+          maxNonPadIdx[dim] = std::max(maxNonPadIdx[dim], indices[dim]);
+        }
+      }
+    }
+
+    // Convert min/max non-padding indices to low/high padding amounts
+    for (int64_t dim = 0; dim < rank; dim++) {
+      if (maxNonPadIdx[dim] < 0) {
+        // All elements are padding in this dimension (entire tensor is padding)
+        result.lowPadding[dim] = shape[dim];
+        result.highPadding[dim] = 0;
+      } else {
+        result.lowPadding[dim] = minNonPadIdx[dim];
+        result.highPadding[dim] = shape[dim] - 1 - maxNonPadIdx[dim];
+      }
+    }
+
+    // Calculate total padding elements saved
+    int64_t innerElements = 1;
+    for (int64_t dim = 0; dim < rank; dim++) {
+      innerElements *=
+          shape[dim] - result.lowPadding[dim] - result.highPadding[dim];
+    }
+    result.totalPaddingElements = numElements - innerElements;
+
+    return result;
+  };
+
+  // Try both first element and last element as potential padding values
+  // and pick the one that gives maximum padding
+  auto resultFirst = detectPaddingWithValue(values[0]);
+  auto resultLast = detectPaddingWithValue(values[numElements - 1]);
+  PaddingResult bestResult =
+      (resultLast.totalPaddingElements > resultFirst.totalPaddingElements)
+          ? std::move(resultLast)
+          : std::move(resultFirst);
+
+  auto &lowPadding = bestResult.lowPadding;
+  auto &highPadding = bestResult.highPadding;
+  auto &paddingValueAttr = bestResult.paddingValueAttr;
+
+  // Check if we found any padding at all
+  bool hasPadding = false;
+  for (int64_t dim = 0; dim < rank; dim++) {
+    if (lowPadding[dim] > 0 || highPadding[dim] > 0) {
+      hasPadding = true;
+      break;
+    }
+  }
+
+  if (!hasPadding) {
+    return std::nullopt;
+  }
+
+  // Calculate the inner tensor shape
+  SmallVector<int64_t> innerShape(rank);
+  for (int64_t dim = 0; dim < rank; dim++) {
+    innerShape[dim] = shape[dim] - lowPadding[dim] - highPadding[dim];
+    if (innerShape[dim] <= 0) {
+      return std::nullopt;
+    }
+  }
+
+  // Calculate number of elements in inner tensor
+  int64_t innerNumElements = 1;
+  for (int64_t dim = 0; dim < rank; dim++) {
+    innerNumElements *= innerShape[dim];
+  }
+
+  // Ensure we're actually saving something substantial
+  if (innerNumElements * 2 >= numElements) {
+    return std::nullopt;
+  }
+
+  auto innerStrides = computeStrides(innerShape);
+
+  auto innerTensorType = RankedTensorType::get(innerShape, elemType);
+
+  SmallVector<T> innerValues;
+  innerValues.reserve(innerNumElements);
+
+  for (int64_t innerLinear = 0; innerLinear < innerNumElements; innerLinear++) {
+    SmallVector<int64_t> innerIndices;
+    linearToMultiIndex(innerLinear, innerStrides, innerIndices);
+
+    SmallVector<int64_t> origIndices(rank);
+    for (int64_t d = 0; d < rank; d++) {
+      origIndices[d] = innerIndices[d] + lowPadding[d];
+    }
+
+    int64_t origLinear = multiToLinearIndex(origIndices, strides);
+    innerValues.push_back(values[origLinear]);
+  }
+
+  auto innerTensorAttr =
+      DenseElementsAttr::get(innerTensorType, ArrayRef<T>(innerValues));
+
+  PaddedTensor result;
+  result.innerTensorAttr = innerTensorAttr;
+  result.paddingValue = paddingValueAttr;
+  result.lowPadding = std::move(lowPadding);
+  result.highPadding = std::move(highPadding);
+  result.resultType = cast<RankedTensorType>(tensorType);
+  return result;
+}
+
+} // namespace
+
+std::optional<PaddedTensor> detectPaddedTensor(DenseElementsAttr attr) {
+  if (!attr || attr.isSplat()) {
+    return std::nullopt;
+  }
+
+  auto tensorType = attr.getType();
+  int64_t rank = tensorType.getRank();
+
+  if (rank == 0) {
+    return std::nullopt;
+  }
+
+  auto elemType = tensorType.getElementType();
+  if (isa<FloatType>(elemType)) {
+    return detectPaddedTensorImpl<APFloat>(attr);
+  } else if (isa<IntegerType>(elemType)) {
+    return detectPaddedTensorImpl<APInt>(attr);
+  }
+
+  return std::nullopt;
+}
+
+bool allAccessesAreOnMainDiagonalPostReshape(stablehlo::ReshapeOp op,
+                                             stablehlo::SliceOp sliceOp) {
+  auto reshapeInTy = cast<RankedTensorType>(op.getOperand().getType());
+  auto reshapeOutTy = cast<RankedTensorType>(op.getType());
+
+  if (reshapeOutTy.getRank() != 1 ||
+      reshapeInTy.getRank() != 2) // [M, N] -> [M * N] vector
+    return false;
+
+  auto M = reshapeInTy.getDimSize(0);
+  auto N = reshapeInTy.getDimSize(1);
+  auto diagLen = std::min(M, N);
+  auto diagStride = N + 1;
+
+  int64_t start = sliceOp.getStartIndices()[0];
+  int64_t limit = sliceOp.getLimitIndices()[0];
+  int64_t stride = sliceOp.getStrides()[0];
+
+  if (stride % diagStride != 0)
+    return false;
+
+  // start can be on any of the diagonal elements
+  if (start % diagStride != 0)
+    return false;
+
+  if (limit > M * N)
+    return false; // technically this is illegal
+
+  // sanity check
+  int64_t count = (limit - start + stride - 1) / stride;
+  if (count <= 0 || count > diagLen)
+    return false;
+
+  return true;
+}
+
+bool allAccessesAreOnMainDiagonalPostReshape(
+    stablehlo::ReshapeOp op, Operation *user,
+    llvm::SetVector<Operation *> &opsToReplace) {
+  if (auto sliceOp = dyn_cast<stablehlo::SliceOp>(user)) {
+    if (allAccessesAreOnMainDiagonalPostReshape(op, sliceOp)) {
+      opsToReplace.insert(sliceOp);
+      return true;
+    }
+    return false;
+  }
+  return false;
+}
+
+bool allAccessesAreOnMainDiagonal(Operation *op,
+                                  llvm::SetVector<Operation *> &opsToReplace) {
+  if (auto reshapeOp = dyn_cast<stablehlo::ReshapeOp>(op)) {
+    return allAccessesAreOnMainDiagonal(reshapeOp, opsToReplace);
+  } else if (auto gatherOp = dyn_cast<stablehlo::GatherOp>(op)) {
+    return allAccessesAreOnMainDiagonal(gatherOp, opsToReplace);
+  }
+  return false;
+}
+
+bool allAccessesAreOnMainDiagonal(stablehlo::ReshapeOp op,
+                                  llvm::SetVector<Operation *> &opsToReplace) {
+  auto reshapeInTy = cast<RankedTensorType>(op.getOperand().getType());
+  if (reshapeInTy.getRank() != 2) // [M, N] matrix
+    return false;                 // quick exit
+
+  llvm::SmallPtrSet<Operation *, 4> seenOps;
+  for (auto user : op->getUsers()) {
+    if (seenOps.count(user))
+      continue;
+
+    if (!allAccessesAreOnMainDiagonalPostReshape(op, user, opsToReplace))
+      return false;
+
+    seenOps.insert(user);
+  }
+
+  return true;
+}
+
+bool allAccessesAreOnMainDiagonal(stablehlo::GatherOp op,
+                                  llvm::SetVector<Operation *> &opsToReplace) {
+  return false; // TODO: implement this where we are doing gather with iota
+}
+
 } // namespace enzyme
 
 namespace stablehlo {
@@ -1317,15 +2135,34 @@ Value getIdentityValueForOp(OpBuilder &builder, Location loc, Type elemType) {
 template <>
 Value getIdentityValueForOp<stablehlo::AddOp>(OpBuilder &builder, Location loc,
                                               Type elemType) {
-  return stablehlo::ConstantOp::create(builder, loc,
-                                       builder.getZeroAttr(elemType));
+  TypedAttr zeroVal;
+  if (auto complexType = dyn_cast<ComplexType>(elemType)) {
+    auto floatType = cast<FloatType>(complexType.getElementType());
+    auto zero = APFloat::getZero(floatType.getFloatSemantics());
+    auto complexZero = std::complex<APFloat>(zero, zero);
+    zeroVal = DenseElementsAttr::get(RankedTensorType::get({}, elemType),
+                                     complexZero);
+  } else {
+    zeroVal = builder.getZeroAttr(elemType);
+  }
+  return stablehlo::ConstantOp::create(builder, loc, zeroVal);
 }
 
 template <>
 Value getIdentityValueForOp<stablehlo::MulOp>(OpBuilder &builder, Location loc,
                                               Type elemType) {
-  return stablehlo::ConstantOp::create(builder, loc,
-                                       builder.getOneAttr(elemType));
+  TypedAttr identityVal;
+  if (auto complexType = dyn_cast<ComplexType>(elemType)) {
+    auto floatType = cast<FloatType>(complexType.getElementType());
+    auto one = APFloat(floatType.getFloatSemantics(), 1);
+    auto zero = APFloat::getZero(floatType.getFloatSemantics());
+    auto complexOne = std::complex<APFloat>(one, zero);
+    identityVal =
+        DenseElementsAttr::get(RankedTensorType::get({}, elemType), complexOne);
+  } else {
+    identityVal = builder.getOneAttr(elemType);
+  }
+  return stablehlo::ConstantOp::create(builder, loc, identityVal);
 }
 
 template <>
@@ -1422,9 +2259,8 @@ getGatherDims(mlir::MLIRContext *ctx,
       scatterDimNumbers.getIndexVectorDim());
 }
 
-bool isSetindexBlockHelper(
-    mlir::Block *block,
-    std::function<bool(stablehlo::ReturnOp retOp, Value updateValue)> fn) {
+bool isSetindexBlock(mlir::Block *block,
+                     std::function<bool(stablehlo::ReturnOp retOp)> fn) {
   if (block->getNumArguments() != 2) {
     return false;
   }
@@ -1444,22 +2280,37 @@ bool isSetindexBlockHelper(
     return false;
   }
 
-  return fn(stablehloReturnOp, block->getArgument(1));
+  return fn(stablehloReturnOp);
 }
 
 bool isSetindexBlock(mlir::Block *block) {
-  return isSetindexBlockHelper(
-      block, [](stablehlo::ReturnOp retOp, Value updateValue) {
-        return retOp.getOperand(0) == updateValue;
-      });
+  return isSetindexBlock(block, [&](stablehlo::ReturnOp retOp) {
+    return retOp.getOperand(0) == block->getArgument(1);
+  });
+}
+
+bool isSetindexBlock(mlir::Block *block, mlir::Value &val) {
+  return isSetindexBlock(block, [&val, block](stablehlo::ReturnOp retOp) {
+    val = retOp.getOperand(0);
+    // Check that val is defined outside the block
+    if (auto *definingOp = val.getDefiningOp()) {
+      if (definingOp->getBlock() == block) {
+        return false;
+      }
+    } else if (auto blockArg = dyn_cast<BlockArgument>(val)) {
+      if (blockArg.getOwner() == block) {
+        return false;
+      }
+    }
+    return true;
+  });
 }
 
 bool isConstantSetindexBlock(mlir::Block *block,
                              mlir::SplatElementsAttr &constant) {
-  return isSetindexBlockHelper(
-      block, [&constant](stablehlo::ReturnOp retOp, Value updateValue) {
-        return matchPattern(retOp.getOperand(0), m_Constant(&constant));
-      });
+  return isSetindexBlock(block, [&constant](stablehlo::ReturnOp retOp) {
+    return matchPattern(retOp.getOperand(0), m_Constant(&constant));
+  });
 }
 
 SmallVector<int64_t> computeGatherSliceSizes(stablehlo::ScatterOp &scatterOp) {
@@ -1903,6 +2754,9 @@ bool canMergeSlicesAlongAxis(int dimension, stablehlo::SliceOp slice,
 
 stablehlo::ConcatenateOp lowerWrap(enzymexla::WrapOp wrap,
                                    PatternRewriter &rewriter, bool replace) {
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPoint(wrap);
+
   // sl0[end-lhs:end], mid, sl1[0:rhs]
   auto wrapOpT = cast<RankedTensorType>(wrap.getOperand().getType());
   SmallVector<int64_t> strides(wrapOpT.getShape().size(), 1);
@@ -2326,47 +3180,6 @@ Value DynamicSliceOpCreate(
   return dsOp.getResult();
 }
 
-static Value MaybeBroadcastScalarToMatchShape(
-    OpBuilder &builder, Location loc, Value src, RankedTensorType targetTy,
-    std::optional<sdy::TensorShardingPerValueAttr> sharding) {
-  auto srcTy = cast<RankedTensorType>(src.getType());
-  if (srcTy == targetTy || targetTy.getRank() == 0) {
-    return src;
-  }
-  assert(srcTy.getRank() == 0);
-  auto bcastOp = stablehlo::BroadcastInDimOp::create(
-      builder, loc, targetTy, src, builder.getDenseI64ArrayAttr({}));
-  if (sharding.has_value()) {
-    sdy::setShardings(bcastOp, *sharding);
-  }
-  return bcastOp.getResult();
-}
-
-template <typename OpTy>
-Value BinaryOpCreate(OpBuilder &builder, Location loc, Value lhs, Value rhs,
-                     std::optional<sdy::TensorShardingPerValueAttr> sharding) {
-  auto lhsTy = cast<RankedTensorType>(lhs.getType());
-  auto rhsTy = cast<RankedTensorType>(rhs.getType());
-
-  lhs = MaybeBroadcastScalarToMatchShape(builder, loc, lhs, rhsTy, sharding);
-  rhs = MaybeBroadcastScalarToMatchShape(builder, loc, rhs, lhsTy, sharding);
-  auto newOp = OpTy::create(builder, loc, lhs, rhs);
-  if (sharding.has_value()) {
-    sdy::setShardings(newOp, *sharding);
-  }
-  return newOp.getResult();
-}
-
-Value AddOpCreate(OpBuilder &builder, Location loc, Value lhs, Value rhs,
-                  std::optional<sdy::TensorShardingPerValueAttr> sharding) {
-  return BinaryOpCreate<stablehlo::AddOp>(builder, loc, lhs, rhs, sharding);
-}
-
-Value MulOpCreate(OpBuilder &builder, Location loc, Value lhs, Value rhs,
-                  std::optional<sdy::TensorShardingPerValueAttr> sharding) {
-  return BinaryOpCreate<stablehlo::MulOp>(builder, loc, lhs, rhs, sharding);
-}
-
 Type GetDotGeneralResultType(Value lhs, Value rhs, Type resElemType,
                              stablehlo::DotDimensionNumbersAttr dotDims) {
   auto lhsType = cast<RankedTensorType>(lhs.getType());
@@ -2414,6 +3227,60 @@ Value transposeSliceHelper(stablehlo::TransposeOp transpose,
   return transposeSliceHelper(transpose, rewriter,
                               llvm::to_vector(op.getStartIndices()),
                               op.getSliceSizes());
+}
+
+Value transposeLikeSliceHelper(stablehlo::BroadcastInDimOp transpose,
+                               PatternRewriter &rewriter,
+                               stablehlo::SliceOp op) {
+  return transposeLikeSliceHelper(transpose, rewriter, op.getStartIndices(),
+                                  op.getLimitIndices(), op.getStrides());
+}
+
+Value transposeLikeSliceHelper(stablehlo::BroadcastInDimOp transpose,
+                               PatternRewriter &rewriter,
+                               stablehlo::DynamicSliceOp op) {
+  return transposeLikeSliceHelper(transpose, rewriter,
+                                  llvm::to_vector(op.getStartIndices()),
+                                  op.getSliceSizes());
+}
+
+Value transposeLikeSliceHelper(stablehlo::BroadcastInDimOp transpose,
+                               PatternRewriter &rewriter,
+                               ArrayRef<int64_t> starts,
+                               ArrayRef<int64_t> limits,
+                               ArrayRef<int64_t> strides) {
+  SmallVector<int64_t> permutedLimit(transpose.getType().getShape().size(), 1);
+  SmallVector<int64_t> permutedStrides(transpose.getType().getShape().size(),
+                                       1);
+  SmallVector<int64_t> permutedStart(transpose.getType().getShape().size(), 0);
+  for (auto [permIndex, i] :
+       llvm::enumerate(transpose.getBroadcastDimensions())) {
+    permutedStart[i] = starts[permIndex];
+    permutedLimit[i] = limits[permIndex];
+    permutedStrides[i] = strides[permIndex];
+  }
+  return SliceOpCreate(rewriter, transpose.getLoc(), transpose.getResult(),
+                       permutedStart, permutedLimit, permutedStrides);
+}
+
+Value transposeLikeSliceHelper(stablehlo::BroadcastInDimOp transpose,
+                               PatternRewriter &rewriter,
+                               ArrayRef<Value> sliceStarts,
+                               ArrayRef<int64_t> sliceSizes) {
+  SmallVector<int64_t> sizes(transpose.getType().getShape().size(), 1);
+  Type eT = RankedTensorType::get({}, rewriter.getI32Type());
+  if (sliceStarts.size())
+    eT = sliceStarts[0].getType();
+  Value zero = stablehlo::ConstantOp::create(
+      rewriter, transpose.getLoc(), eT, cast<ElementsAttr>(makeAttr(eT, 0)));
+  SmallVector<Value> starts(transpose.getType().getShape().size(), zero);
+  for (auto [i, permIndex] :
+       llvm::enumerate(transpose.getBroadcastDimensions())) {
+    sizes[permIndex] = sliceSizes[i];
+    starts[permIndex] = sliceStarts[i];
+  }
+  return DynamicSliceOpCreate(rewriter, transpose.getLoc(),
+                              transpose.getResult(), starts, sizes);
 }
 
 Value transposeSliceHelper(stablehlo::TransposeOp transpose,
@@ -2504,6 +3371,34 @@ Value sliceTransposeHelper(stablehlo::TransposeOp transpose,
 }
 
 bool isFusible(stablehlo::TransposeOp transpose, Operation *op) {
+  if (isa<stablehlo::TransposeOp, stablehlo::BroadcastInDimOp,
+          stablehlo::DotGeneralOp>(op)) {
+    return true;
+  }
+
+  SplatElementsAttr splat;
+  if (matchPattern(op, m_Constant(&splat))) {
+    return true;
+  }
+
+  if (auto reshapeOp = dyn_cast<stablehlo::ReshapeOp>(op)) {
+    auto inputType = cast<RankedTensorType>(reshapeOp.getOperand().getType());
+    auto outputType = cast<RankedTensorType>(reshapeOp.getResult().getType());
+
+    auto insertionDims = findReshapeInsertionDims(inputType, outputType);
+    if (!insertionDims.empty()) { // fused to a broadcast_in_dim
+      return true;
+    }
+
+    if (reshapeIsTranspose(reshapeOp)) { // transpose_tranpose elimination
+      return true;
+    }
+  }
+
+  return false;
+}
+
+bool isFusible(stablehlo::BroadcastInDimOp transpose, Operation *op) {
   if (isa<stablehlo::TransposeOp, stablehlo::BroadcastInDimOp,
           stablehlo::DotGeneralOp>(op)) {
     return true;
@@ -2666,6 +3561,96 @@ bool IsTensorFilled(Value input) {
   }
 
   return true;
+}
+
+void ExtractBlockIntoFunction(Block *block, ModuleOp modOp, func::FuncOp &func,
+                              llvm::SetVector<Value> &capturedValues,
+                              llvm::SmallVectorImpl<Type> &resultTypes,
+                              OpBuilder &builder) {
+  OpBuilder::InsertionGuard guard(builder);
+  builder.setInsertionPointToStart(modOp.getBody());
+
+  auto retOp = block->getTerminator();
+  assert(retOp && "expected block to have a terminator");
+
+  mlir::SymbolTable symbolTable(modOp);
+
+  // traverse the block. we fail if the value is defined outside the block and
+  // is not a constant
+  llvm::MapVector<Value, DenseElementsAttr> constValMap;
+  int64_t argNumCounter = block->getNumArguments();
+  SmallVector<int64_t> additionalInputNum;
+  for (auto &innerOp : block->getOperations()) {
+    for (auto operand : innerOp.getOperands()) {
+      if (auto blockArg = dyn_cast<BlockArgument>(operand)) {
+        if (blockArg.getOwner() == block) {
+          continue;
+        }
+      } else if (auto defOp = operand.getDefiningOp()) {
+        if (defOp->getBlock() == block) {
+          continue;
+        }
+      } else {
+        llvm_unreachable("unknown operand kind");
+      }
+
+      // Operand is a constant - that's fine, we'll clone it
+      DenseElementsAttr attr;
+      if (matchPattern(operand, m_Constant(&attr))) {
+        constValMap[operand] = attr;
+        continue;
+      }
+
+      if (!capturedValues.contains(operand)) {
+        capturedValues.insert(operand);
+        additionalInputNum.push_back(argNumCounter++);
+      }
+    }
+  }
+
+  auto funcArgTypes = llvm::to_vector(block->getArgumentTypes());
+  for (auto addInput : capturedValues) {
+    funcArgTypes.push_back(addInput.getType());
+  }
+
+  FunctionType calleeType =
+      builder.getFunctionType(funcArgTypes, retOp->getOperandTypes());
+
+  func = func::FuncOp::create(builder, retOp->getLoc(),
+                              "extract_block_to_function", calleeType);
+  func.setPrivate();
+  symbolTable.insert(func);
+
+  // Create the function body by cloning the block
+  Block *entryBlock = func.addEntryBlock();
+  IRMapping mapping;
+  for (int64_t i = 0; i < block->getNumArguments(); i++) {
+    mapping.map(block->getArgument(i), entryBlock->getArgument(i));
+  }
+
+  for (auto [idx, operand] :
+       llvm::zip_equal(additionalInputNum, capturedValues)) {
+    mapping.map(operand, entryBlock->getArgument(idx));
+  }
+
+  builder.setInsertionPointToEnd(entryBlock);
+  for (auto &&[operand, attr] : constValMap) {
+    auto newConstOp = stablehlo::ConstantOp::create(builder, retOp->getLoc(),
+                                                    cast<ElementsAttr>(attr));
+    mapping.map(operand, newConstOp);
+  }
+
+  for (auto &innerOp : block->without_terminator()) {
+    builder.clone(innerOp, mapping);
+  }
+
+  // Clone the return op as func.return
+  SmallVector<Value> returnValues;
+  for (auto op : retOp->getOperands()) {
+    returnValues.push_back(mapping.lookup(op));
+    resultTypes.push_back(op.getType());
+  }
+  func::ReturnOp::create(builder, retOp->getLoc(), returnValues);
 }
 
 } // namespace stablehlo
