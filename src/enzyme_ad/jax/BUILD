@@ -615,6 +615,7 @@ td_library(
         "@llvm-project//mlir:ControlFlowInterfacesTdFiles",
         "@llvm-project//mlir:FunctionInterfacesTdFiles",
         "@llvm-project//mlir:InferTypeOpInterfaceTdFiles",
+        "@llvm-project//mlir:LLVMOpsTdFiles",
         "@llvm-project//mlir:OpBaseTdFiles",
         "@llvm-project//mlir:SideEffectInterfacesTdFiles",
     ],
@@ -1250,7 +1251,7 @@ cc_library(
         "@llvm-project//mlir:NVVMToLLVM",
         "@llvm-project//mlir:OpenMPDialect",
         "@llvm-project//mlir:OpenMPToLLVM",
-        "@llvm-project//mlir:PDLInterpDialect",
+        "@llvm-project//mlir:PDLDialect",
         "@llvm-project//mlir:Parser",
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:QuantOps",
@@ -1392,8 +1393,6 @@ cc_library(
         "@llvm-project//mlir:LLVMCommonConversion",
         "@llvm-project//mlir:Transforms",
         "@llvm-project//mlir:PDLDialect",
-        "@llvm-project//mlir:PDLInterpDialect",
-        "@llvm-project//mlir:PDLToPDLInterp",
 
         # Triton
         "@triton//:TritonDialects",

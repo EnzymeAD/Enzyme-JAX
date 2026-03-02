@@ -1,5 +1,6 @@
 #include "Dialect.h"
 
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/Builders.h"
 #include "llvm/ADT/TypeSwitch.h"
 
@@ -10,6 +11,7 @@
 
 // Initialize the dialect
 void mlir::enzyme::tessera::TesseraDialect::initialize() {
+  getContext()->loadDialect<mlir::LLVM::LLVMDialect>();
   addAttributes<
 #define GET_ATTRDEF_LIST
 #include "src/enzyme_ad/jax/Dialect/Tessera/TesseraAttrs.cpp.inc"

@@ -85,7 +85,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
   std::string pass_pipeline =
       "inline{default-pipeline=canonicalize "
       "max-iterations=4},sroa-wrappers{set_private=false attributor=false},"
-      "tessera-annotation-to-attribute,func-attr-to-tessera-attr,gpu-launch-"
+      "lift-tessera-annotations,func-attr-to-tessera-attr,gpu-launch-"
       "recognition{backend=";
   pass_pipeline += backend;
   pass_pipeline += "}";
