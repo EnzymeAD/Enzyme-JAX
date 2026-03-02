@@ -10,7 +10,7 @@ include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/FunctionInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
-
+include "mlir/Dialect/LLVMIR/LLVMTypes.td"
 
 include "Dialect.td"
 
@@ -29,7 +29,7 @@ def DefineOp : TesseraOp<"define", [
   }];
 
   let arguments = (ins SymbolNameAttr:$sym_name,
-                       TypeAttrOf<FunctionType>:$function_type,
+                       TypeAttrOf<LLVM_FunctionType>:$function_type,
                        OptionalAttr<StrAttr>:$sym_visibility,
                        OptionalAttr<DictArrayAttr>:$arg_attrs,
                        OptionalAttr<DictArrayAttr>:$res_attrs
@@ -37,19 +37,11 @@ def DefineOp : TesseraOp<"define", [
   let regions = (region AnyRegion:$body);
 
   let builders = [OpBuilder<(ins
-    "StringRef":$name, "FunctionType":$type,
+    "StringRef":$name, "LLVM::LLVMFunctionType":$type,
     CArg<"ArrayRef<NamedAttribute>", "{}">:$attrs,
     CArg<"ArrayRef<DictionaryAttr>", "{}">:$argAttrs)
   >];
   let extraClassDeclaration = [{
-    static DefineOp create(Location location, StringRef name, FunctionType type,
-                         ArrayRef<NamedAttribute> attrs = {});
-    static DefineOp create(Location location, StringRef name, FunctionType type,
-                         Operation::dialect_attr_range attrs);
-    static DefineOp create(Location location, StringRef name, FunctionType type,
-                         ArrayRef<NamedAttribute> attrs,
-                         ArrayRef<DictionaryAttr> argAttrs);
-
     /// Create a deep copy of this function and all of its blocks, remapping any
     /// operands that use values outside of the function using the map that is
     /// provided (leaving them alone if no entry is present). If the mapper
@@ -76,10 +68,10 @@ def DefineOp : TesseraOp<"define", [
     ::mlir::Region *getCallableRegion() { return isExternal() ? nullptr : &getBody(); }
 
     /// Returns the argument types of this function.
-    ArrayRef<Type> getArgumentTypes() { return getFunctionType().getInputs(); }
+    ArrayRef<Type> getArgumentTypes() { return getFunctionType().getParams(); }
 
     /// Returns the result types of this function.
-    ArrayRef<Type> getResultTypes() { return getFunctionType().getResults(); }
+    ArrayRef<Type> getResultTypes() { return getFunctionType().getReturnTypes(); }
 
     //===------------------------------------------------------------------===//
     // SymbolOpInterface Methods
@@ -120,7 +112,7 @@ def CallOp : TesseraOp<"call",
     OpBuilder<(ins "DefineOp":$callee, CArg<"ValueRange", "{}">:$operands), [{
       $_state.addOperands(operands);
       $_state.addAttribute("callee", SymbolRefAttr::get(callee));
-      $_state.addTypes(callee.getFunctionType().getResults());
+      $_state.addTypes(callee.getFunctionType().getReturnTypes());
     }]>,
     OpBuilder<(ins "SymbolRefAttr":$callee, "TypeRange":$results,
       CArg<"ValueRange", "{}">:$operands), [{
@@ -151,7 +143,7 @@ def CallOp : TesseraOp<"call",
     }]>];
 
   let extraClassDeclaration = [{
-    FunctionType getCalleeType();
+    LLVM::LLVMFunctionType getCalleeType();
 
     /// Get the argument operands to the called function.
     operand_range getArgOperands() {
@@ -198,5 +190,50 @@ def ReturnOp : TesseraOp<"return", [Pure, HasParent<"DefineOp">, ReturnLike, Ter
   let hasVerifier = 1;
 }
 
+//===----------------------------------------------------------------------===//
+// OptimizationOp
+//===----------------------------------------------------------------------===//
+
+def OptimizationOp : TesseraOp<"optimization", [Pure]> {
+  let summary = "A tessera optimization rule";
+  let description = [{
+    The 'tessera.optimization' operation represents a single optimization rule defined by the user in string form.
+
+    Example: 
+```mlir
+    tessera.optimization "inv(inv(x)) -> x"
+```
+  }];
+
+  let arguments = (ins StrAttr:$rule);
+  let results = (outs);
+
+  let assemblyFormat = "$rule attr-dict";
+}
+
+//===----------------------------------------------------------------------===//
+// OptimizationsOp
+//===----------------------------------------------------------------------===//
+
+def OptimizationsOp : TesseraOp<"optimizations", [Pure, NoTerminator]> {
+  let summary = "A set of tessera optimization rules";
+  let description = [{
+    The 'tessera.optimizations' operation groups multiple optimization rules into a single container.
+
+    Example: 
+```mlir
+    tessera.optimizations {
+      tessera.optimization "inv(inv(x)) -> x"
+      tessera.optimization "mag(-x,y,z) -> mag(x,y,z)"
+    }
+```
+  }];
+
+  let arguments = (ins);
+  let results = (outs);
+  let regions = (region SizedRegion<1>:$body);
+
+  let assemblyFormat = "$body attr-dict";
+}
 
 #endif // ENZYME_AD_JAX_DIALECT_TESSERA_OPS_TD

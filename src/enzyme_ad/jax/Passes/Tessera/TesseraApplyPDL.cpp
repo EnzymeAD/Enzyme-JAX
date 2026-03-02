@@ -1,11 +1,12 @@
 //===----------------------------------------------------------------------===//
 //
-// This file implements a pass to raise the generic tessera_op attribute
-// into a proper MLIR Tessera convert attribute on the operation.
+// This file implements a pass to apply the PDL patterns created from the
+// tessera optimization rewrite rules to the IR.
 //
 //===----------------------------------------------------------------------===//
 
-#include "mlir/Dialect/PDLInterp/IR/PDLInterp.h"
+#include "mlir/Dialect/PDL/IR/PDL.h"
+#include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Dialect/Tessera/Dialect.h"
@@ -14,7 +15,7 @@
 namespace mlir {
 namespace enzyme {
 namespace tessera {
-#define GEN_PASS_DEF_TESSERAPDLPASS
+#define GEN_PASS_DEF_TESSERAAPPLYPDLPASS
 #include "src/enzyme_ad/jax/Passes/Tessera/Passes.h.inc"
 } // namespace tessera
 } // namespace enzyme
@@ -26,19 +27,18 @@ using namespace mlir::enzyme::tessera;
 
 namespace {
 
-struct TesseraPDLPass
-    : public enzyme::tessera::impl::TesseraPDLPassBase<TesseraPDLPass> {
-  using TesseraPDLPassBase::TesseraPDLPassBase;
+struct TesseraApplyPDLPass
+    : public enzyme::tessera::impl::TesseraApplyPDLPassBase<
+          TesseraApplyPDLPass> {
+  using TesseraApplyPDLPassBase::TesseraApplyPDLPassBase;
 
   void runOnOperation() override {
     ModuleOp module = getOperation();
 
     ModuleOp patternModule = module.lookupSymbol<ModuleOp>(
         StringAttr::get(module->getContext(), "patterns"));
-    ModuleOp irModule = module.lookupSymbol<ModuleOp>(
-        StringAttr::get(module->getContext(), "ir"));
 
-    if (!patternModule || !irModule)
+    if (!patternModule)
       return;
 
     RewritePatternSet patternList(module->getContext());
@@ -50,8 +50,10 @@ struct TesseraPDLPass
     patternList.add(std::move(pdlPattern));
 
     // Invoke the pattern driver with the provided patterns.
-    (void)applyPatternsGreedily(irModule.getBodyRegion(),
-                                std::move(patternList));
+    if (failed(applyPatternsGreedily(module, std::move(patternList)))) {
+      llvm::errs() << "Failed to apply PDL patterns\n";
+      signalPassFailure();
+    }
   }
 };
 
