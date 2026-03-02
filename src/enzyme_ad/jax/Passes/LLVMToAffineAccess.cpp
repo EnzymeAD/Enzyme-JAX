@@ -887,6 +887,47 @@ struct LoadSelect : public OpRewritePattern<affine::AffineLoadOp> {
 
 } // namespace
 
+// The memref `convertToMemref` builds has an i8 element type, so its extent is
+// a count of bytes, not of the allocated element type.
+static inline SmallVector<int64_t> getMemrefShapeForAddress(Value addressArg) {
+  auto defOp = addressArg.getDefiningOp();
+  if (!defOp) {
+    return {ShapedType::kDynamic};
+  }
+
+  // A constant-sized alloca gives the memref a static extent.
+  if (auto allocaOp = dyn_cast<LLVM::AllocaOp>(defOp)) {
+    auto sizeVal = getConstant(allocaOp.getArraySize());
+    if (!sizeVal || *sizeVal < 0) {
+      return {ShapedType::kDynamic};
+    }
+    auto elSize =
+        DataLayout::closest(allocaOp).getTypeSize(allocaOp.getElemType());
+    return {static_cast<int64_t>(elSize) * (*sizeVal)};
+  }
+
+  // Anything else (VLA, function argument, global): extent unknown.
+  return {ShapedType::kDynamic};
+}
+
+// Reinterpreting a byte-extent memref as one of `elSize`-byte elements scales
+// the extent down. A dynamic extent stays dynamic, and so does one that does
+// not divide evenly -- rounding down would put the trailing partial element out
+// of bounds.
+static inline SmallVector<int64_t> retypedShape(ArrayRef<int64_t> shape,
+                                                llvm::TypeSize elSize) {
+  SmallVector<int64_t> res(shape);
+  if (res.size() != 1 || ShapedType::isDynamic(res[0]))
+    return res;
+  uint64_t bytes = static_cast<uint64_t>(elSize);
+  if (bytes == 0 || res[0] % static_cast<int64_t>(bytes) != 0) {
+    res[0] = ShapedType::kDynamic;
+    return res;
+  }
+  res[0] /= static_cast<int64_t>(bytes);
+  return res;
+}
+
 static MemRefVal convertToMemref(PtrVal addr) {
   OpBuilder builder(addr.getContext());
   setInsertionPointAfterValue(builder, addr);
@@ -896,13 +937,13 @@ static MemRefVal convertToMemref(PtrVal addr) {
   else
     addrSpace = IntegerAttr::get(IntegerType::get(addr.getContext(), 64),
                                  addr.getType().getAddressSpace());
-  // TODO we can actually plug in the size of the memref here if `addr` is
-  // defined by an llvm.alloca
+
+  auto shape = getMemrefShapeForAddress(addr);
 
   auto ptr2memref = enzymexla::Pointer2MemrefOp::create(
       builder, addr.getLoc(),
-      MemRefType::get({ShapedType::kDynamic}, builder.getI8Type(),
-                      MemRefLayoutAttrInterface{}, Attribute(addrSpace)),
+      MemRefType::get(shape, builder.getI8Type(), MemRefLayoutAttrInterface{},
+                      Attribute(addrSpace)),
       addr);
   return cast<MemRefVal>(ptr2memref.getResult());
 }
@@ -2148,13 +2189,14 @@ convertLLVMToAffineAccess(Operation *op,
             memref = enzymexla::Memref2PointerOp::create(
                 rewriter, load.getLoc(),
                 LLVM::LLVMPointerType::get(ty.getContext()), memref);
-          memref = enzymexla::Pointer2MemrefOp::create(
-                       rewriter, load.getLoc(),
-                       MemRefType::get(memrefTy.getShape(), ty,
-                                       MemRefLayoutAttrInterface{},
-                                       memrefTy.getMemorySpace()),
-                       memref)
-                       .getResult();
+          memref =
+              enzymexla::Pointer2MemrefOp::create(
+                  rewriter, load.getLoc(),
+                  MemRefType::get(retypedShape(memrefTy.getShape(), tySize), ty,
+                                  MemRefLayoutAttrInterface{},
+                                  memrefTy.getMemorySpace()),
+                  memref)
+                  .getResult();
         }
 
         auto mao = aab.getMap();
@@ -2235,13 +2277,14 @@ convertLLVMToAffineAccess(Operation *op,
             memref = enzymexla::Memref2PointerOp::create(
                 rewriter, store.getLoc(),
                 LLVM::LLVMPointerType::get(ty.getContext()), memref);
-          memref = enzymexla::Pointer2MemrefOp::create(
-                       rewriter, store.getLoc(),
-                       MemRefType::get(memrefTy.getShape(), ty,
-                                       MemRefLayoutAttrInterface{},
-                                       memrefTy.getMemorySpace()),
-                       memref)
-                       .getResult();
+          memref =
+              enzymexla::Pointer2MemrefOp::create(
+                  rewriter, store.getLoc(),
+                  MemRefType::get(retypedShape(memrefTy.getShape(), tySize), ty,
+                                  MemRefLayoutAttrInterface{},
+                                  memrefTy.getMemorySpace()),
+                  memref)
+                  .getResult();
         }
         auto mao = aab.getMap();
         if (mao.map.getResult(0).isMultipleOf(tySize) ||
@@ -2355,13 +2398,14 @@ convertLLVMToAffineAccess(Operation *op,
             memref = enzymexla::Memref2PointerOp::create(
                 rewriter, rmw.getLoc(),
                 LLVM::LLVMPointerType::get(ty.getContext()), memref);
-          memref = enzymexla::Pointer2MemrefOp::create(
-                       rewriter, rmw.getLoc(),
-                       MemRefType::get(memrefTy.getShape(), ty,
-                                       MemRefLayoutAttrInterface{},
-                                       memrefTy.getMemorySpace()),
-                       memref)
-                       .getResult();
+          memref =
+              enzymexla::Pointer2MemrefOp::create(
+                  rewriter, rmw.getLoc(),
+                  MemRefType::get(retypedShape(memrefTy.getShape(), tySize), ty,
+                                  MemRefLayoutAttrInterface{},
+                                  memrefTy.getMemorySpace()),
+                  memref)
+                  .getResult();
         }
 
         auto mao = aab.getMap();
