@@ -13,6 +13,22 @@ def repo(repo_name = ""):
         urls = ["https://github.com/openxla/xprof/archive/{commit}.tar.gz".format(commit = XPROF_COMMIT)],
     )
 
+
+    http_archive(
+        name = "opentelemetry-cpp",
+        build_file_content = """
+    cc_library(
+        name = "api",
+        hdrs = glob(["api/include/**/*.h"]),
+        includes = ["api/include"],
+        visibility = ["//visibility:public"],
+    )
+    """,
+        sha256 = "b149109d5983cf8290d614654a878899a68b0c8902b64c934d06f47cd50ffe2e",
+        strip_prefix = "opentelemetry-cpp-1.18.0",
+        urls = ["https://github.com/open-telemetry/opentelemetry-cpp/archive/v1.18.0.tar.gz"],
+    )
+
     http_archive(
         name = "com_github_googlecloudplatform_google_cloud_cpp",
         patch_args = ["-p1"],
