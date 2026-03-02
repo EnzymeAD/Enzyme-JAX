@@ -26,6 +26,12 @@ module {
     return %284, %43 : tensor<1515x4xf64>, tensor<1520x4xf64>
   }
 
+  func.func @main5(%389: tensor<1520xf32>) -> (tensor<4x1519x3056xf32>, tensor<4x1517x3056xf32>) {
+    %398 = stablehlo.broadcast_in_dim %389, dims = [1] : (tensor<1520xf32>) -> tensor<4x1520x3056xf32>
+    %455 = stablehlo.slice %398 [0:4, 1:1520, 0:3056] : (tensor<4x1520x3056xf32>) -> tensor<4x1519x3056xf32>
+    %623 = stablehlo.slice %398 [0:4, 2:1519, 0:3056]  : (tensor<4x1520x3056xf32>) -> tensor<4x1517x3056xf32>
+    return %455, %623 : tensor<4x1519x3056xf32>, tensor<4x1517x3056xf32>
+  }
 }
 
 // CHECK:  func.func @main(%arg0: tensor<2x3x50xf32>) -> tensor<4x1x25x15x2x3xf32> {
@@ -51,3 +57,10 @@ module {
 // CHECK-NEXT:    return %1, %0 : tensor<1515x4xf64>, tensor<1520x4xf64>
 // CHECK-NEXT:  }
 
+// CHECK:  func.func @main5(%arg0: tensor<1520xf32>) -> (tensor<4x1519x3056xf32>, tensor<4x1517x3056xf32>) {
+// CHECK-NEXT:    %0 = stablehlo.slice %arg0 [1:1520] : (tensor<1520xf32>) -> tensor<1519xf32>
+// CHECK-NEXT:    %1 = stablehlo.broadcast_in_dim %0, dims = [1] : (tensor<1519xf32>) -> tensor<4x1519x3056xf32>
+// CHECK-NEXT:    %2 = stablehlo.slice %arg0 [2:1519] : (tensor<1520xf32>) -> tensor<1517xf32>
+// CHECK-NEXT:    %3 = stablehlo.broadcast_in_dim %2, dims = [1] : (tensor<1517xf32>) -> tensor<4x1517x3056xf32>
+// CHECK-NEXT:    return %1, %3 : tensor<4x1519x3056xf32>, tensor<4x1517x3056xf32>
+// CHECK-NEXT:  }
