@@ -78,7 +78,7 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
   SyrkOpLowering(std::string backend, int64_t blasIntWidth,
                  MLIRContext *context, PatternBenefit benefit = 1)
       : OpRewritePattern(context, benefit), backend(backend),
-        blasIntWidth(blasIntWidth){};
+        blasIntWidth(blasIntWidth) {};
 
   LogicalResult matchAndRewrite(enzymexla::SyrkOp op,
                                 PatternRewriter &rewriter) const override {
@@ -529,168 +529,72 @@ struct TrsmOpLowering : public OpRewritePattern<enzymexla::TrsmOp> {
     auto type_A = cast<RankedTensorType>(A.getType());
     auto type_B = cast<RankedTensorType>(B.getType());
     auto type_element = type_alpha.getElementType();
-    auto rank = type_A.getRank();
-    auto shape = type_A.getShape();
 
+    // (C1)
     if (type_A.getElementType() != type_element ||
         type_B.getElementType() != type_element) {
       return rewriter.notifyMatchFailure(
           op, "Element types of alpha, A and B must match");
     }
+    auto rank = type_A.getRank();
 
-    if (type_A.getShape() != type_B.getShape()) {
-      return rewriter.notifyMatchFailure(op, "Shapes of A and B must match");
+    // (C2)
+    if (type_A.getRank() != type_B.getRank()) {
+      return rewriter.notifyMatchFailure(op, "Ranks of A and B must match");
     }
 
-    const int64_t numBatchDims = rank - 2;
-    if (numBatchDims > 0)
+    // (C3)
+    auto shape_A = type_A.getShape();
+    auto shape_B = type_B.getShape();
+    if (shape_A.drop_back(2) != shape_B.drop_back(2)) {
       return rewriter.notifyMatchFailure(
-          op, "Batch dimensions is not yet supported");
-
-    auto type_blas_int = rewriter.getIntegerType(blasIntWidth);
-    auto type_blas_char = rewriter.getIntegerType(sizeof(char) * 8);
-    auto type_llvm_ptr = LLVM::LLVMPointerType::get(ctx);
-    auto type_llvm_void = LLVM::LLVMVoidType::get(ctx);
-
-    std::string fn = "trsm_";
-    if (auto prefix = lapackPrecisionPrefix(type_element)) {
-      fn = *prefix + fn;
-    } else {
-      op->emitOpError() << "Unsupported element type: " << type_element;
-      return rewriter.notifyMatchFailure(op, "unsupported element type");
+          op, "Batch dimensions of A and B must match");
     }
 
-    std::string bind_fn = "enzymexla_blas_" + fn;
-    std::string wrapper_fn = "enzymexla_wrapper_blas_" + fn;
-
-    // declare BLAS function declarations if not present
-    auto moduleOp = op->getParentOfType<ModuleOp>();
-    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(bind_fn)) {
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPointToStart(moduleOp.getBody());
-
-      // Fortran subroutine signature: void fn(char* uplo, int* n, T* a, int*
-      // lda, int* info)
-      SmallVector<Type> argTypes = {type_llvm_ptr, type_llvm_ptr, type_llvm_ptr,
-                                    type_llvm_ptr, type_llvm_ptr, type_llvm_ptr,
-                                    type_llvm_ptr, type_llvm_ptr, type_llvm_ptr,
-                                    type_llvm_ptr, type_llvm_ptr};
-      auto func_type =
-          LLVM::LLVMFunctionType::get(type_llvm_void, argTypes, false);
-      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), bind_fn, func_type,
-                               LLVM::Linkage::External);
+    if (shape_A[rank - 1] != shape_A[rank - 2]) {
+      return rewriter.notifyMatchFailure(
+          op, "Inner two dimensions of A must be square");
     }
 
-    // generate wrapper if not present
-    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_fn)) {
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPointToStart(moduleOp.getBody());
-
-      // wrapper takes: pointers to uplo, A, n, lda and info
-      auto func_type = LLVM::LLVMFunctionType::get(
-          type_llvm_void,
-          {type_llvm_ptr, type_llvm_ptr, type_llvm_ptr, type_llvm_ptr,
-           type_llvm_ptr, type_llvm_ptr, type_llvm_ptr, type_llvm_ptr,
-           type_llvm_ptr, type_llvm_ptr, type_llvm_ptr},
-          false);
-
-      auto func = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), wrapper_fn,
-                                           func_type);
-      rewriter.setInsertionPointToStart(func.addEntryBlock(rewriter));
-
-      auto side_ptr = func.getArgument(0);
-      auto uplo_ptr = func.getArgument(1);
-      auto transa_ptr = func.getArgument(2);
-      auto diag_ptr = func.getArgument(3);
-      auto m_ptr = func.getArgument(4);
-      auto n_ptr = func.getArgument(5);
-      auto alpha_ptr = func.getArgument(6);
-      auto a_ptr = func.getArgument(7);
-      auto lda_ptr = func.getArgument(8);
-      auto b_ptr = func.getArgument(9);
-      auto ldb_ptr = func.getArgument(10);
-
-      // call Fortran BLAS routine
-      LLVM::CallOp::create(
-          rewriter, op.getLoc(), TypeRange{}, SymbolRefAttr::get(ctx, bind_fn),
-          ValueRange{side_ptr, uplo_ptr, transa_ptr, diag_ptr, m_ptr, n_ptr,
-                     alpha_ptr, a_ptr, lda_ptr, b_ptr, ldb_ptr});
-
-      LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
+    if (shape_A[rank - 1] !=
+        shape_B[rank - (op.getSide() == enzymexla::LapackSide::left ? 2 : 1)]) {
+      return rewriter.notifyMatchFailure(
+          op, "Inner dimensions of A and B must match");
     }
 
-    // emit constants for the wrapper function call
-    auto type_side = RankedTensorType::get({}, type_blas_char);
-    auto side = stablehlo::ConstantOp::create(
-        rewriter, op.getLoc(), type_side,
-        cast<ElementsAttr>(
-            makeAttr(type_side, op.getSideAttr().getBlasChar())));
+    // (C4)
+    if (op.getResult().getType() != type_B) {
+      return rewriter.notifyMatchFailure(op, "Result type must match B's type");
+    }
 
-    auto type_uplo = RankedTensorType::get({}, type_blas_char);
-    auto uplo = stablehlo::ConstantOp::create(
-        rewriter, op.getLoc(), type_uplo,
-        cast<ElementsAttr>(
-            makeAttr(type_uplo, op.getUploAttr().getBlasChar())));
+    auto alpha_bcast = stablehlo::BroadcastInDimOp::create(
+        rewriter, op.getLoc(), type_B, alpha, ArrayRef<int64_t>());
 
-    auto type_transa = RankedTensorType::get({}, type_blas_char);
-    auto transa = stablehlo::ConstantOp::create(
-        rewriter, op.getLoc(), type_transa,
-        cast<ElementsAttr>(
-            makeAttr(type_transa, op.getTransaAttr().getBlasChar())));
+    auto mul_op =
+        stablehlo::MulOp::create(rewriter, op.getLoc(), B, alpha_bcast);
 
-    auto type_diag = RankedTensorType::get({}, type_blas_char);
-    auto diag = stablehlo::ConstantOp::create(
-        rewriter, op.getLoc(), type_diag,
-        cast<ElementsAttr>(
-            makeAttr(type_diag, op.getDiagAttr().getBlasChar())));
+    auto transa = stablehlo::Transpose::NO_TRANSPOSE;
+    switch (op.getTransa()) {
+    case enzymexla::LapackTranspose::none:
+      transa = stablehlo::Transpose::NO_TRANSPOSE;
+      break;
+    case enzymexla::LapackTranspose::transpose:
+      transa = stablehlo::Transpose::TRANSPOSE;
+      break;
+    case enzymexla::LapackTranspose::adjoint:
+      transa = stablehlo::Transpose::ADJOINT;
+      break;
+    }
 
-    auto type_m = RankedTensorType::get({}, type_blas_int);
-    auto m = stablehlo::ConstantOp::create(
-        rewriter, op.getLoc(), type_m,
-        cast<ElementsAttr>(makeAttr(type_m, shape[rank - 2])));
+    auto trisolve_op = stablehlo::TriangularSolveOp::create(
+        rewriter, op.getLoc(), TypeRange{type_B}, A, mul_op,
+        /*left_side=*/op.getSide() == enzymexla::LapackSide::left,
+        /*lower=*/op.getUplo() == enzymexla::LapackUplo::L,
+        /*unit_diagonal=*/op.getDiag() == enzymexla::LapackDiag::unit,
+        /*transpose_a=*/transa);
 
-    auto type_n = RankedTensorType::get({}, type_blas_int);
-    auto n = stablehlo::ConstantOp::create(
-        rewriter, op.getLoc(), type_n,
-        cast<ElementsAttr>(makeAttr(type_n, shape[rank - 1])));
-
-    auto type_lda = RankedTensorType::get({}, type_blas_int);
-    auto lda = stablehlo::ConstantOp::create(
-        rewriter, op.getLoc(), type_lda,
-        cast<ElementsAttr>(makeAttr(type_lda, shape[rank - 1])));
-
-    auto type_ldb = RankedTensorType::get({}, type_blas_int);
-    auto ldb = stablehlo::ConstantOp::create(
-        rewriter, op.getLoc(), type_ldb,
-        cast<ElementsAttr>(makeAttr(type_ldb, shape[rank - 1])));
-
-    SmallVector<bool> isColMajorArr = {true, true, true, true, true, true,
-                                       true, true, true, true, true};
-    SmallVector<int64_t> operandRanks = {0, 0, 0, 0, 0, 0, 0, 2, 0, 2, 0};
-    SmallVector<int64_t> outputRanks = {2};
-    auto operandLayouts =
-        getSHLOLayout(rewriter, operandRanks, isColMajorArr, 2);
-    auto resultLayouts = getSHLOLayout(rewriter, outputRanks, isColMajorArr, 2);
-
-    SmallVector<Attribute> aliases{
-        // `B` is overwritten with the output
-        stablehlo::OutputOperandAliasAttr::get(ctx, {}, 9, {}),
-    };
-
-    auto jit_call_op = enzymexla::JITCallOp::create(
-        rewriter, op.getLoc(), TypeRange{type_B},
-        mlir::FlatSymbolRefAttr::get(ctx, wrapper_fn),
-        ValueRange{side, uplo, transa, diag, m, n, alpha, A, lda, B, ldb},
-        rewriter.getStringAttr(""),
-        /*operand_layouts=*/operandLayouts,
-        /*result_layouts=*/resultLayouts,
-        /*arg_attrs=*/nullptr,
-        /*res_attrs=*/nullptr,
-        /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
-        /*xla_side_effect_free=*/rewriter.getUnitAttr());
-
-    // replace enzymexla.blas.trsm with the jit_call
-    rewriter.replaceAllUsesWith(op.getResult(), jit_call_op.getResult(0));
+    // replace enzymexla.blas.trsm with the trisolve_op
+    rewriter.replaceAllUsesWith(op.getResult(), trisolve_op.getResult());
     rewriter.eraseOp(op);
 
     return success();
