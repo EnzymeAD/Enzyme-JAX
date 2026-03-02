@@ -3099,8 +3099,11 @@ struct SliceBroadcast final
       outidx++;
     }
 
-    if (innerSlice && !llvm::hasSingleElement(bcast->getUsers()))
-      return failure();
+    // if (innerSlice && !llvm::hasSingleElement(bcast->getUsers())) {
+    //   printf("[@] SliceBroadcast [[failure]]: innerSlice && "
+    //          "!llvm::hasSingleElement(bcast->getUsers()))\n");
+    //   return failure();
+    // }
 
     Value tobcast = bcast.getOperand();
     if (innerSlice)
