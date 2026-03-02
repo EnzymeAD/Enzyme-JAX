@@ -38,9 +38,9 @@ module {
 // TPU-DAG:     %[[cst2:.+]] = stablehlo.constant dense<2.000000e+00> : tensor<64x32xf32>
 // TPU-DAG:     %[[cst3:.+]] = stablehlo.constant dense<3.000000e+00> : tensor<64x32xf32>
 // TPU-NEXT:     %0 = stablehlo.dot_general %arg0, %arg1, contracting_dims = [1] x [0] : (tensor<64x64xf32>, tensor<64x32xf32>) -> tensor<64x32xf32>
-// TPU-NEXT:     %1 = stablehlo.multiply %[[cst3]], %arg2 : tensor<64x32xf32>
-// TPU-NEXT:     %2 = stablehlo.multiply %[[cst2]], %0 : tensor<64x32xf32>
-// TPU-NEXT:     %3 = stablehlo.add %2, %1 : tensor<64x32xf32>
+// TPU-NEXT:     %1 = stablehlo.multiply %[[cst2]], %0 : tensor<64x32xf32>
+// TPU-NEXT:     %2 = stablehlo.multiply %[[cst3]], %arg2 : tensor<64x32xf32>
+// TPU-NEXT:     %3 = stablehlo.add %1, %2 : tensor<64x32xf32>
 // TPU-NEXT:     return %3 : tensor<64x32xf32>
 // TPU-NEXT:   }
 // TPU-NEXT: }

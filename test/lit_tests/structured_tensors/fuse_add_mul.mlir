@@ -60,11 +60,11 @@ func.func @test3(%arg0: tensor<64x64xf32>, %arg1: tensor<64x64xf32>, %arg2: tens
 }
 
 // CHECK: func.func @test3(%arg0: tensor<64x64xf32>, %arg1: tensor<64x64xf32>, %arg2: tensor<64x64xf32>) -> tensor<64x64xf32> {
-// CHECK-NEXT:   %[[cstC:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<64x64xf32>
-// CHECK-NEXT:   %[[cst1:.+]] = stablehlo.constant dense<1.000000e+00> : tensor<f32>
-// CHECK-NEXT:   %[[cstm0:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<f32>
-// CHECK-NEXT:   %[[cst3:.+]] = stablehlo.constant dense<3.000000e+00> : tensor<f32>
-// CHECK-NEXT:   %[[cst2:.+]] = stablehlo.constant dense<2.000000e+00> : tensor<f32>
+// CHECK-DAG:   %[[cstC:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<64x64xf32>
+// CHECK-DAG:   %[[cst1:.+]] = stablehlo.constant dense<1.000000e+00> : tensor<f32>
+// CHECK-DAG:   %[[cstm0:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+// CHECK-DAG:   %[[cst3:.+]] = stablehlo.constant dense<3.000000e+00> : tensor<f32>
+// CHECK-DAG:   %[[cst2:.+]] = stablehlo.constant dense<2.000000e+00> : tensor<f32>
 // CHECK-NEXT:   %0 = stablehlo.transpose %arg0, dims = [1, 0] : (tensor<64x64xf32>) -> tensor<64x64xf32>
 // CHECK-NEXT:   %1 = stablehlo.add %arg0, %0 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed GUARANTEED>]} : tensor<64x64xf32>
 // CHECK-NEXT:   %2 = stablehlo.multiply %[[cstm0]], %[[cst2]] : tensor<f32>
