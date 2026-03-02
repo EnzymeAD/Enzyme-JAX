@@ -30439,6 +30439,7 @@ struct SyrkSimplifyOutputUplo final
     // Track all users of syrk. If these end at syrk ops (via supported
     // elementwise operations) we can potentially set a common uplo.
     SmallVector<enzymexla::SyrkOp> childSyrkOps;
+    SmallVector<enzymexla::SymmOp> childSymmOps;
 
     // Worklist approach: track all children that need to be processed
     SmallVector<Value> worklist;
@@ -30459,6 +30460,15 @@ struct SyrkSimplifyOutputUplo final
             return failure();
           }
           childSyrkOps.push_back(childSyrk);
+          continue;
+        }
+
+        // If user is a symm op, add it to our list of child symm ops
+        if (auto childSymm = dyn_cast<enzymexla::SymmOp>(user)) {
+          if (childSymm.getA() != current) {
+            return failure();
+          }
+          childSymmOps.push_back(childSymm);
           continue;
         }
 
@@ -30483,7 +30493,7 @@ struct SyrkSimplifyOutputUplo final
     }
 
     // If no child syrk ops were found, nothing to optimize
-    if (childSyrkOps.empty()) {
+    if (childSyrkOps.empty() && childSymmOps.empty()) {
       return rewriter.notifyMatchFailure(op, "no child syrk ops found");
     }
 
@@ -30493,8 +30503,7 @@ struct SyrkSimplifyOutputUplo final
     int countOutputUpper = 0, countOutputLower = 0;
 
     for (enzymexla::SyrkOp childSyrk : childSyrkOps) {
-      enzymexla::LapackUplo childUplo = childSyrk.getUplo();
-      switch (childUplo) {
+      switch (childSyrk.getUplo()) {
       case enzymexla::LapackUplo::U:
         hasUpper = true;
         break;
@@ -30505,13 +30514,25 @@ struct SyrkSimplifyOutputUplo final
         break;
       }
 
-      enzymexla::LapackUplo childOutputUplo = childSyrk.getOutputUplo();
-      switch (childOutputUplo) {
+      switch (childSyrk.getOutputUplo()) {
       case enzymexla::LapackUplo::U:
         countOutputUpper++;
         break;
       case enzymexla::LapackUplo::L:
         countOutputLower++;
+        break;
+      case enzymexla::LapackUplo::F:
+        break;
+      }
+    }
+
+    for (enzymexla::SymmOp childSymm : childSymmOps) {
+      switch (childSymm.getUplo()) {
+      case enzymexla::LapackUplo::U:
+        hasUpper = true;
+        break;
+      case enzymexla::LapackUplo::L:
+        hasLower = true;
         break;
       case enzymexla::LapackUplo::F:
         break;
@@ -30568,6 +30589,10 @@ struct SyrkSimplifyOutputUplo final
     for (enzymexla::SyrkOp &childSyrk : childSyrkOps) {
       rewriter.modifyOpInPlace(childSyrk,
                                [&]() { childSyrk.setUploAttr(newUploAttr); });
+    }
+    for (enzymexla::SymmOp &childSymm : childSymmOps) {
+      rewriter.modifyOpInPlace(childSymm,
+                               [&]() { childSymm.setUploAttr(newUploAttr); });
     }
     return success();
   }
