@@ -597,7 +597,7 @@ def TrmmOp: EnzymeXLA_Op<"blas.trmm", [Pure, SameOperandsAndResultElementType]> 
   }];
 }
 
-def TrsmOp : EnzymeXLA_Op<"black.trsm", [Pure]> {
+def TrsmOp : EnzymeXLA_Op<"blas.trsm", [Pure]> {
   let summary = "Triangular matrix-matrix solve operation";
   let description = [{
     Solves op(A) * X = alpha * B, or X * op(A) = alpha * B, where alpha is a scalar,
