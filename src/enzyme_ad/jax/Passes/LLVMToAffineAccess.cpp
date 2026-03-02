@@ -774,6 +774,35 @@ struct LoadSelect : public OpRewritePattern<affine::AffineLoadOp> {
 
 } // namespace
 
+static inline SmallVector<int64_t> getMemrefShapeForAddress(Value addressArg) {
+  auto defOp = addressArg.getDefiningOp();
+  if (!defOp) {
+    return {ShapedType::kDynamic};
+  }
+
+  // Case 1: Global-backed pointer -> fixed size 1
+  // if (auto addrOf = dyn_cast<LLVM::AddressOfOp>(defOp)) {
+  //   FlatSymbolRefAttr symRef = addrOf.getGlobalNameAttr();
+  //   Operation *symbol = SymbolTable::lookupNearestSymbolFrom(addrOf, symRef);
+  //   if (auto global = dyn_cast_or_null<LLVM::GlobalOp>(symbol)) {
+  //     LLVM_DEBUG(DBGS() << "Found global op for symbol: " << symRef.getValue() << " and set shape to 1\n");
+  //     return {1};  // fixed size for global
+  //   }
+  // }
+
+  // Case 2: AllocaOp -> dynamic size
+  if (auto allocaOp = dyn_cast<LLVM::AllocaOp>(defOp)) {
+    auto sizeVal = getConstant(allocaOp.getArraySize());
+    if (!sizeVal) {
+      return {ShapedType::kDynamic};
+    }
+    return {*sizeVal};
+  }
+
+  // Other cases -> fallback dynamic
+  return {ShapedType::kDynamic};
+}
+
 static MemRefVal convertToMemref(PtrVal addr) {
   OpBuilder builder(addr.getContext());
   if (auto ba = dyn_cast<BlockArgument>(addr))
@@ -786,12 +815,12 @@ static MemRefVal convertToMemref(PtrVal addr) {
   else
     addrSpace = IntegerAttr::get(IntegerType::get(addr.getContext(), 64),
                                  addr.getType().getAddressSpace());
-  // TODO we can actually plug in the size of the memref here if `addr` is
-  // defined by an llvm.alloca
+
+  auto shape = getMemrefShapeForAddress(addr);
 
   auto ptr2memref = enzymexla::Pointer2MemrefOp::create(
       builder, addr.getLoc(),
-      MemRefType::get({ShapedType::kDynamic}, builder.getI8Type(),
+      MemRefType::get(shape, builder.getI8Type(),
                       MemRefLayoutAttrInterface{}, Attribute(addrSpace)),
       addr);
   return cast<MemRefVal>(ptr2memref.getResult());
