@@ -17,10 +17,10 @@ def SymmOp: BLAS_Op<"symm", [Pure, SameOperandsAndResultElementType]> {
   }];
 
   let arguments = (ins
-    TensorFloat:$alpha, // TODO use or remove TensorFloat?
+    HLO_Tensor:$alpha,
     HLO_Tensor:$A,
     HLO_Tensor:$B,
-    TensorFloat:$beta, // TODO use or remove TensorFloat?
+    HLO_Tensor:$beta,
     HLO_Tensor:$C,
     BLAS_SideAttr:$side,
     BLAS_UploAttr:$uplo
@@ -33,6 +33,8 @@ def SymmOp: BLAS_Op<"symm", [Pure, SameOperandsAndResultElementType]> {
   let assemblyFormat = [{
     $alpha `,` $A `,` $B `,` $C `,` $alpha `,` $beta attr-dict `:` functional-type(operands, results)
   }];
+
+  let hasVerifier = 1;
 }
 
 def SyrkOp: BLAS_Op<"syrk", [Pure, SameOperandsAndResultElementType]> {
@@ -55,9 +57,9 @@ def SyrkOp: BLAS_Op<"syrk", [Pure, SameOperandsAndResultElementType]> {
   }];
 
   let arguments = (ins
-    TensorFloat:$alpha, // TODO use or remove TensorFloat?
+    HLO_Tensor:$alpha,
     HLO_Tensor:$A,
-    TensorFloat:$beta, // TODO use or remove TensorFloat?
+    HLO_Tensor:$beta,
     HLO_Tensor:$C,
     BLAS_UploAttr:$uplo,
     BLAS_UploAttr:$output_uplo,
@@ -85,7 +87,7 @@ def TrmmOp: BLAS_Op<"trmm", [Pure, SameOperandsAndResultElementType]> {
   }];
 
   let arguments = (ins
-    TensorFloat:$alpha, // TODO use or remove TensorFloat?
+    HLO_Tensor:$alpha,
     HLO_Tensor:$A,
     HLO_Tensor:$B,
     BLAS_SideAttr:$side,
@@ -100,6 +102,8 @@ def TrmmOp: BLAS_Op<"trmm", [Pure, SameOperandsAndResultElementType]> {
   let assemblyFormat = [{
     $alpha `,` $A `,` $B `,` attr-dict `:` functional-type(operands, results)
   }];
+
+  let hasVerifier = 1;
 }
 
 
