@@ -314,7 +314,7 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
   }
 
   LogicalResult matchAndRewriteCUDA(enzymexla::SymmOp op,
-  PatternRewriter &rewriter) const {
+                                    PatternRewriter &rewriter) const {
     auto CType = cast<RankedTensorType>(op.getC().getType());
     auto rank = CType.getRank();
 
@@ -350,8 +350,7 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
     SmallVector<NamedAttribute> configAttrs = {
         rewriter.getNamedAttr(
             "side",
-            rewriter.getBoolAttr(op.getSide() !=
-                                 enzymexla::LapackSide::left)),
+            rewriter.getBoolAttr(op.getSide() != enzymexla::LapackSide::left)),
         rewriter.getNamedAttr(
             "uplo",
             rewriter.getBoolAttr(op.getUplo() == enzymexla::LapackUplo::U)),
