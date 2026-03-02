@@ -30141,6 +30141,7 @@ struct DotGeneralToSymm
       return failure();
     }
 
+    Value symmMatrix, genMatrix;
     enzymexla::LapackSide side;
 
     auto lhsContractingDim = dotDims.getLhsContractingDimensions()[0];
@@ -30149,16 +30150,20 @@ struct DotGeneralToSymm
     // can only replace with symm if either lhs or rhs is symmetric
     if (canApplySymmetricPattern(lhs, rewriter)) {
       side = enzymexla::LapackSide::left;
-      if (rhsContractingDim == 0) {
+      symmMatrix = lhs;
+      if (rhsContractingDim == 1) {
         auto perm = rewriter.getDenseI64ArrayAttr({1, 0});
         rhs = stablehlo::TransposeOp::create(rewriter, op.getLoc(), rhs, perm);
       }
+      genMatrix = rhs;
     } else if (canApplySymmetricPattern(rhs, rewriter)) {
       side = enzymexla::LapackSide::right;
+      symmMatrix = rhs;
       if (lhsContractingDim == 0) {
         auto perm = rewriter.getDenseI64ArrayAttr({1, 0});
         lhs = stablehlo::TransposeOp::create(rewriter, op.getLoc(), lhs, perm);
       }
+      genMatrix = lhs;
     } else {
       return failure();
     }
@@ -30168,8 +30173,8 @@ struct DotGeneralToSymm
 
     auto symmOp = enzymexla::SymmOp::create(
         rewriter, op.getLoc(), op.getResult().getType(),
-        lhs, // A
-        rhs, // B
+        symmMatrix, // A (symmetric)
+        genMatrix,  // B (general)
         stablehlo::ConstantOp::create(
             rewriter, op.getLoc(), op.getType(),
             cast<ElementsAttr>(makeAttr(op.getType(), 0))), // C
