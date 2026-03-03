@@ -30146,6 +30146,7 @@ struct DotGeneralToSymm
       return failure();
     }
 
+    Value symmMatrix, genMatrix;
     enzymexla::LapackSide side;
 
     auto lhsContractingDim = dotDims.getLhsContractingDimensions()[0];
@@ -30154,16 +30155,20 @@ struct DotGeneralToSymm
     // can only replace with symm if either lhs or rhs is symmetric
     if (canApplySymmetricPattern(lhs, rewriter)) {
       side = enzymexla::LapackSide::left;
-      if (rhsContractingDim == 0) {
+      symmMatrix = lhs;
+      if (rhsContractingDim == 1) {
         auto perm = rewriter.getDenseI64ArrayAttr({1, 0});
         rhs = stablehlo::TransposeOp::create(rewriter, op.getLoc(), rhs, perm);
       }
+      genMatrix = rhs;
     } else if (canApplySymmetricPattern(rhs, rewriter)) {
       side = enzymexla::LapackSide::right;
+      symmMatrix = rhs;
       if (lhsContractingDim == 0) {
         auto perm = rewriter.getDenseI64ArrayAttr({1, 0});
         lhs = stablehlo::TransposeOp::create(rewriter, op.getLoc(), lhs, perm);
       }
+      genMatrix = lhs;
     } else {
       return failure();
     }
@@ -30173,8 +30178,8 @@ struct DotGeneralToSymm
 
     auto symmOp = enzymexla::SymmOp::create(
         rewriter, op.getLoc(), op.getResult().getType(),
-        lhs, // A
-        rhs, // B
+        symmMatrix, // A (symmetric)
+        genMatrix,  // B (general)
         stablehlo::ConstantOp::create(
             rewriter, op.getLoc(), op.getType(),
             cast<ElementsAttr>(makeAttr(op.getType(), 0))), // C
@@ -30400,6 +30405,7 @@ struct SyrkSimplifyOutputUplo final
     // Track all users of syrk. If these end at syrk ops (via supported
     // elementwise operations) we can potentially set a common uplo.
     SmallVector<enzymexla::SyrkOp> childSyrkOps;
+    SmallVector<enzymexla::SymmOp> childSymmOps;
 
     // Worklist approach: track all children that need to be processed
     SmallVector<Value> worklist;
@@ -30420,6 +30426,15 @@ struct SyrkSimplifyOutputUplo final
             return failure();
           }
           childSyrkOps.push_back(childSyrk);
+          continue;
+        }
+
+        // If user is a symm op, add it to our list of child symm ops
+        if (auto childSymm = dyn_cast<enzymexla::SymmOp>(user)) {
+          if (childSymm.getA() != current) {
+            return failure();
+          }
+          childSymmOps.push_back(childSymm);
           continue;
         }
 
@@ -30444,7 +30459,7 @@ struct SyrkSimplifyOutputUplo final
     }
 
     // If no child syrk ops were found, nothing to optimize
-    if (childSyrkOps.empty()) {
+    if (childSyrkOps.empty() && childSymmOps.empty()) {
       return rewriter.notifyMatchFailure(op, "no child syrk ops found");
     }
 
@@ -30454,8 +30469,7 @@ struct SyrkSimplifyOutputUplo final
     int countOutputUpper = 0, countOutputLower = 0;
 
     for (enzymexla::SyrkOp childSyrk : childSyrkOps) {
-      enzymexla::LapackUplo childUplo = childSyrk.getUplo();
-      switch (childUplo) {
+      switch (childSyrk.getUplo()) {
       case enzymexla::LapackUplo::U:
         hasUpper = true;
         break;
@@ -30466,13 +30480,25 @@ struct SyrkSimplifyOutputUplo final
         break;
       }
 
-      enzymexla::LapackUplo childOutputUplo = childSyrk.getOutputUplo();
-      switch (childOutputUplo) {
+      switch (childSyrk.getOutputUplo()) {
       case enzymexla::LapackUplo::U:
         countOutputUpper++;
         break;
       case enzymexla::LapackUplo::L:
         countOutputLower++;
+        break;
+      case enzymexla::LapackUplo::F:
+        break;
+      }
+    }
+
+    for (enzymexla::SymmOp childSymm : childSymmOps) {
+      switch (childSymm.getUplo()) {
+      case enzymexla::LapackUplo::U:
+        hasUpper = true;
+        break;
+      case enzymexla::LapackUplo::L:
+        hasLower = true;
         break;
       case enzymexla::LapackUplo::F:
         break;
@@ -30529,6 +30555,10 @@ struct SyrkSimplifyOutputUplo final
     for (enzymexla::SyrkOp &childSyrk : childSyrkOps) {
       rewriter.modifyOpInPlace(childSyrk,
                                [&]() { childSyrk.setUploAttr(newUploAttr); });
+    }
+    for (enzymexla::SymmOp &childSymm : childSymmOps) {
+      rewriter.modifyOpInPlace(childSymm,
+                               [&]() { childSymm.setUploAttr(newUploAttr); });
     }
     return success();
   }
@@ -34759,8 +34789,9 @@ struct EnzymeHLOOptPass
     GreedyRewriteConfig config;
     config.setMaxIterations(max_iterations);
     config.setUseTopDownTraversal(top_down);
-    if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
-                                            config))) {
+    config.enableFolding();
+    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
+                                     config))) {
       signalPassFailure();
     }
   }

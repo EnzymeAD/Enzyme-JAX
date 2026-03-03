@@ -1,7 +1,7 @@
-JAX_COMMIT = "8dac162f0495127e5626d23ee29d8f8e86ded733"
+JAX_COMMIT = "c6d2109c362803f0d2b868ff6f4269fa20a10529"
 JAX_SHA256 = ""
 
-ENZYME_COMMIT = "fba597f66bdb7ad4478d74432a1150f00692f8ce"
+ENZYME_COMMIT = "a4f2e4a09068c4d36e5da975a831ad7b90c3ec8f"
 ENZYME_SHA256 = ""
 
 ML_TOOLCHAIN_COMMIT = "86d3d02d85f8ad6e3425042c1532a698a6bcbd67"
@@ -15,6 +15,10 @@ HEDRON_COMPILE_COMMANDS_COMMIT = "d107d9c9025915902fd52346f1c6e18d87f7013a"
 HEDRON_COMPILE_COMMANDS_SHA256 = ""
 
 XLA_PATCHES = [
+    """
+    # Fix support for musl stacktrace issue where execinfo.h is otherwise included
+    sed -i.bak0 "s/defined(__clang__) || defined(__GNUC__)/defined(__GLIBC__)/g" xla/tsl/platform/default/stacktrace.h
+    """,
     """
     sed -i.bak0 "s/\\\"-lamd_comgr\\\",//g" third_party/gpus/rocm/BUILD.tpl 
     """,

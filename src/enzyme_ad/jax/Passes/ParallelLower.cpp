@@ -993,7 +993,8 @@ void ParallelLower::runOnOperation() {
   {
     mlir::RewritePatternSet rpl(getOperation()->getContext());
     GreedyRewriteConfig config;
-    (void)applyPatternsAndFoldGreedily(getOperation(), std::move(rpl), config);
+    config.enableFolding();
+    (void)applyPatternsGreedily(getOperation(), std::move(rpl), config);
   }
 
   {
@@ -1288,7 +1289,8 @@ void ConvertCudaRTtoCPU::runOnOperation() {
   {
     mlir::RewritePatternSet rpl(getOperation()->getContext());
     GreedyRewriteConfig config;
-    (void)applyPatternsAndFoldGreedily(getOperation(), std::move(rpl), config);
+    config.enableFolding();
+    (void)applyPatternsGreedily(getOperation(), std::move(rpl), config);
   }
 }
 #endif

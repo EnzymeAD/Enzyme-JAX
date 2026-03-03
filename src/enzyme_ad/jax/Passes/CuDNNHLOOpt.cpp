@@ -172,8 +172,9 @@ struct CuDNNHLOOptPass : public enzyme::impl::CuDNNHLOOptBase<CuDNNHLOOptPass> {
         context);
 
     GreedyRewriteConfig config;
-    if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
-                                            config))) {
+    config.enableFolding();
+    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
+                                     config))) {
       signalPassFailure();
     }
   }
