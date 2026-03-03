@@ -1022,6 +1022,16 @@ gentbl_cc_library(
 )
 
 cc_library(
+    name = "BlasDialectUtils",
+    srcs = ["Dialect/BLAS/Utils.cpp"],
+    hdrs = ["Dialect/BLAS/Utils.h"],
+    deps = [
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:SideEffectInterfaces",
+    ],
+)
+
+cc_library(
     name = "BlasDialect",
     srcs = [
         "Dialect/BLAS/Dialect.cpp",
@@ -1035,6 +1045,7 @@ cc_library(
         ":BlasAttrsIncGen",
         ":BlasDialectIncGen",
         ":BlasOpsIncGen",
+        ":BlasDialectUtils",
         "@llvm-project//mlir:IR",
         "@stablehlo//:base",
     ],
@@ -1281,6 +1292,7 @@ cc_library(
         ":TesseraDialectIncGen",
         ":TesseraOpsIncGen",
         ":TesseraPassesIncGen",
+        ":BlasDialectUtils",
         ":TritonExtDialect",
         ":chlo-derivatives",
         ":enzymexla-derivatives",
