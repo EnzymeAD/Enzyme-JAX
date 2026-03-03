@@ -321,8 +321,8 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
     stablehlo::DotGeneralOp dotGeneralOp;
     if (op.getSide() == enzymexla::LapackSide::left) {
       dotGeneralOp = stablehlo::DotGeneralOp::create(
-          rewriter, op.getLoc(), cast<RankedTensorType>(op.getC().getType()),
-          A, op.getB(), dotDims, nullptr, nullptr);
+          rewriter, op.getLoc(), cast<RankedTensorType>(op.getC().getType()), A,
+          op.getB(), dotDims, nullptr, nullptr);
     } else {
       dotGeneralOp = stablehlo::DotGeneralOp::create(
           rewriter, op.getLoc(), cast<RankedTensorType>(op.getC().getType()),

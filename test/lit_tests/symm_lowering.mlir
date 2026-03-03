@@ -33,14 +33,17 @@ module {
 // CPU-NEXT:   }
 // CPU-NEXT: }
 
-// TPU: module {
-// TPU-NEXT:   func.func @main1(%arg0: tensor<64x64xf32>, %arg1: tensor<64x32xf32>, %arg2: tensor<64x32xf32>) -> tensor<64x32xf32> {
-// TPU-DAG:     %[[cst2:.+]] = stablehlo.constant dense<2.000000e+00> : tensor<64x32xf32>
-// TPU-DAG:     %[[cst3:.+]] = stablehlo.constant dense<3.000000e+00> : tensor<64x32xf32>
-// TPU-NEXT:     %0 = stablehlo.dot_general %arg0, %arg1, contracting_dims = [1] x [0] : (tensor<64x64xf32>, tensor<64x32xf32>) -> tensor<64x32xf32>
-// TPU-NEXT:     %1 = stablehlo.multiply %[[cst2]], %0 : tensor<64x32xf32>
-// TPU-NEXT:     %2 = stablehlo.multiply %[[cst3]], %arg2 : tensor<64x32xf32>
-// TPU-NEXT:     %3 = stablehlo.add %1, %2 : tensor<64x32xf32>
-// TPU-NEXT:     return %3 : tensor<64x32xf32>
-// TPU-NEXT:   }
-// TPU-NEXT: }
+// TPU:  func.func @main1(%arg0: tensor<64x64xf32>, %arg1: tensor<64x32xf32>, %arg2: tensor<64x32xf32>) -> tensor<64x32xf32> {
+// TPU-NEXT:    %cst = stablehlo.constant dense<3.000000e+00> : tensor<64x32xf32>
+// TPU-NEXT:    %cst_0 = stablehlo.constant dense<2.000000e+00> : tensor<64x32xf32>
+// TPU-NEXT:    %0 = stablehlo.iota dim = 0 : tensor<64x64xi32>
+// TPU-NEXT:    %1 = stablehlo.iota dim = 1 : tensor<64x64xi32>
+// TPU-NEXT:    %2 = stablehlo.compare  LT, %0, %1 : (tensor<64x64xi32>, tensor<64x64xi32>) -> tensor<64x64xi1>
+// TPU-NEXT:    %3 = stablehlo.transpose %arg0, dims = [1, 0] : (tensor<64x64xf32>) -> tensor<64x64xf32>
+// TPU-NEXT:    %4 = stablehlo.select %2, %arg0, %3 : tensor<64x64xi1>, tensor<64x64xf32>
+// TPU-NEXT:    %5 = stablehlo.dot_general %4, %arg1, contracting_dims = [1] x [0] : (tensor<64x64xf32>, tensor<64x32xf32>) -> tensor<64x32xf32>
+// TPU-NEXT:    %6 = stablehlo.multiply %cst_0, %5 : tensor<64x32xf32>
+// TPU-NEXT:    %7 = stablehlo.multiply %cst, %arg2 : tensor<64x32xf32>
+// TPU-NEXT:    %8 = stablehlo.add %6, %7 : tensor<64x32xf32>
+// TPU-NEXT:    return %8 : tensor<64x32xf32>
+// TPU-NEXT:  }
