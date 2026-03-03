@@ -972,6 +972,20 @@ gentbl_cc_library(
     name = "BlasAttrsIncGen",
     tbl_outs = [
         (
+            [
+                "--gen-enum-decls",
+                "--attrdefs-dialect=blas",
+            ],
+            "Dialect/BLAS/BlasEnums.h.inc",
+        ),
+        (
+            [
+                "--gen-enum-defs",
+                "--attrdefs-dialect=blas",
+            ],
+            "Dialect/BLAS/BlasEnums.cpp.inc",
+        ),
+        (
             ["--gen-attrdef-decls"],
             "Dialect/BLAS/BlasAttrs.h.inc",
         ),
