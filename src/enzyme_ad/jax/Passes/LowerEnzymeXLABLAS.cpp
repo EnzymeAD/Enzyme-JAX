@@ -1,8 +1,8 @@
 #include "Enzyme/MLIR/Dialect/Dialect.h"
 #include "Enzyme/MLIR/Passes/EnzymeBatchPass.h"
+#include "src/enzyme_ad/jax/Dialect/BLAS/Utils.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
-#include "src/enzyme_ad/jax/Dialect/BLAS/Utils.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Utils.h"
 
@@ -423,7 +423,7 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
     auto llvmIntType = typeConverter.convertType(blasIntType);
 
     std::string blasFn;
-    auto prefix = lapackPrecisionPrefix(AType.getElementType());
+    auto prefix = blasPrecisionPrefix(AType.getElementType());
     if (prefix) {
       blasFn = "enzymexla_blas_" + *prefix + "syrk_";
     } else {

@@ -4,9 +4,9 @@
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "src/enzyme_ad/jax/Dialect/BLAS/Utils.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
-#include "src/enzyme_ad/jax/Dialect/BLAS/Utils.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/StablehloOps.h"
@@ -79,7 +79,7 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
     auto type_llvm_void = LLVM::LLVMVoidType::get(ctx);
 
     std::string fn = "geqrf_";
-    if (auto prefix = lapackPrecisionPrefix(inputElementType)) {
+    if (auto prefix = blasPrecisionPrefix(inputElementType)) {
       fn = *prefix + fn;
     } else {
       op->emitOpError() << "Unsupported element type: " << inputElementType;
@@ -350,7 +350,7 @@ struct GeqrtOpLowering : public OpRewritePattern<enzymexla::GeqrtOp> {
     auto type_llvm_void = LLVM::LLVMVoidType::get(ctx);
 
     std::string fn = "geqrt_";
-    if (auto prefix = lapackPrecisionPrefix(inputElementType)) {
+    if (auto prefix = blasPrecisionPrefix(inputElementType)) {
       fn = *prefix + fn;
     } else {
       op->emitOpError() << "Unsupported element type: " << inputElementType;
@@ -557,7 +557,7 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
     auto type_llvm_void = LLVM::LLVMVoidType::get(ctx);
 
     std::string fn = "gqr_";
-    if (auto prefix = lapackPrecisionPrefix(inputElementType)) {
+    if (auto prefix = blasPrecisionPrefix(inputElementType)) {
       if (prefix == "s" || prefix == "d")
         fn = *prefix + "or" + fn;
       else
@@ -866,7 +866,7 @@ struct OrmqrOpLowering : public OpRewritePattern<enzymexla::OrmqrOp> {
     auto type_llvm_char = rewriter.getIntegerType(8);
 
     std::string fn = "mqr_";
-    if (auto prefix = lapackPrecisionPrefix(A_eltype)) {
+    if (auto prefix = blasPrecisionPrefix(A_eltype)) {
       if (prefix == "s" || prefix == "d")
         fn = *prefix + "or" + fn;
       else
@@ -1132,7 +1132,7 @@ struct GemqrtOpLowering : public OpRewritePattern<enzymexla::GemqrtOp> {
     auto type_llvm_char = rewriter.getIntegerType(8);
 
     std::string fn = "gemqrt_";
-    if (auto prefix = lapackPrecisionPrefix(C_eltype)) {
+    if (auto prefix = blasPrecisionPrefix(C_eltype)) {
       fn = *prefix + fn;
     } else {
       op->emitOpError() << "Unsupported element type: " << C_eltype;
@@ -1447,7 +1447,7 @@ private:
     auto llvmVoidType = LLVM::LLVMVoidType::get(ctx);
 
     std::string lapackFn;
-    auto prefix = lapackPrecisionPrefix(inputElementType);
+    auto prefix = blasPrecisionPrefix(inputElementType);
     if (prefix) {
       lapackFn = "enzymexla_lapack_" + *prefix + "getrf_";
     } else {
@@ -2088,7 +2088,7 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
     type_input_element_real = complex_type.getElementType();
   }
 
-  if (auto prefix = lapackPrecisionPrefix(inputElementType)) {
+  if (auto prefix = blasPrecisionPrefix(inputElementType)) {
     fn = *prefix + fn;
   } else {
     op->emitOpError() << "Unsupported element type: " << inputElementType;

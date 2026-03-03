@@ -38,7 +38,7 @@ mlir::ArrayAttr getSHLOLayout(PatternRewriter &rewriter,
   return rewriter.getArrayAttr(attrs);
 }
 
-std::optional<std::string> lapackPrecisionPrefix(Type elementType) {
+std::optional<std::string> blasPrecisionPrefix(Type elementType) {
 
   // single-precision float
   if (elementType.isF32()) {
