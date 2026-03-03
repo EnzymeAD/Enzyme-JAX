@@ -1,7 +1,7 @@
 #ifndef ENZYMEXLA_DIALECT_BLAS_ATTRS_TD
 #define ENZYMEXLA_DIALECT_BLAS_ATTRS_TD
 
-include "Dialect.td"
+include "src/enzyme_ad/jax/Dialect/BLAS/Dialect.td"
 
 include "mlir/IR/EnumAttr.td"
 
