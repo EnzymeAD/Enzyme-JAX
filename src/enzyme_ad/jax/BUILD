@@ -930,131 +930,6 @@ cc_library(
     ],
 )
 
-td_library(
-    name = "BlasDialectTdFiles",
-    srcs = [
-        "Dialect/BLAS/Attrs.td",
-        "Dialect/BLAS/Dialect.td",
-        "Dialect/BLAS/Ops.td",
-    ],
-    deps = [
-        "@llvm-project//mlir:BuiltinDialectTdFiles",
-        "@llvm-project//mlir:OpBaseTdFiles",
-    ],
-)
-
-gentbl_cc_library(
-    name = "BlasDialectIncGen",
-    tbl_outs = [
-        (
-            [
-                "-gen-dialect-decls",
-                "-dialect=blas",
-            ],
-            "Dialect/BLAS/BlasDialect.h.inc",
-        ),
-        (
-            [
-                "-gen-dialect-defs",
-                "-dialect=blas",
-            ],
-            "Dialect/BLAS/BlasDialect.cpp.inc",
-        ),
-    ],
-    tblgen = "@llvm-project//mlir:mlir-tblgen",
-    td_file = "Dialect/BLAS/Dialect.td",
-    deps = [
-        ":BlasDialectTdFiles",
-    ],
-)
-
-gentbl_cc_library(
-    name = "BlasAttrsIncGen",
-    tbl_outs = [
-        (
-            [
-                "--gen-enum-decls",
-                "--attrdefs-dialect=blas",
-            ],
-            "Dialect/BLAS/BlasEnums.h.inc",
-        ),
-        (
-            [
-                "--gen-enum-defs",
-                "--attrdefs-dialect=blas",
-            ],
-            "Dialect/BLAS/BlasEnums.cpp.inc",
-        ),
-        (
-            ["--gen-attrdef-decls"],
-            "Dialect/BLAS/BlasAttrs.h.inc",
-        ),
-        (
-            ["--gen-attrdef-defs"],
-            "Dialect/BLAS/BlasAttrs.cpp.inc",
-        ),
-    ],
-    tblgen = "@llvm-project//mlir:mlir-tblgen",
-    td_file = "Dialect/BLAS/Attrs.td",
-    deps = [
-        ":BlasDialectTdFiles",
-    ],
-)
-
-gentbl_cc_library(
-    name = "BlasOpsIncGen",
-    tbl_outs = [
-        (
-            ["-gen-op-decls"],
-            "Dialect/BLAS/BlasOps.h.inc",
-        ),
-        (
-            ["-gen-op-defs"],
-            "Dialect/BLAS/BlasOps.cpp.inc",
-        ),
-    ],
-    tblgen = "@llvm-project//mlir:mlir-tblgen",
-    td_file = "Dialect/BLAS/Ops.td",
-    deps = [
-        ":BlasDialectTdFiles",
-        "@stablehlo//:stablehlo_ops_td_files",
-    ],
-)
-
-cc_library(
-    name = "BlasDialectUtils",
-    srcs = ["Dialect/BLAS/Utils.cpp"],
-    hdrs = ["Dialect/BLAS/Utils.h"],
-    deps = [
-        "@llvm-project//llvm:Support",
-        "@llvm-project//mlir:IR",
-    ],
-)
-
-cc_library(
-    name = "BlasDialect",
-    srcs = [
-        "Dialect/BLAS/Dialect.cpp",
-        "Dialect/BLAS/Ops.cpp",
-    ],
-    hdrs = [
-        "Dialect/BLAS/Dialect.h",
-    ],
-    visibility = ["//visibility:public"],
-    deps = [
-        ":BlasAttrsIncGen",
-        ":BlasDialectIncGen",
-        ":BlasDialectUtils",
-        ":BlasOpsIncGen",
-        "@llvm-project//llvm:Support",
-        "@llvm-project//mlir:BytecodeOpInterface",
-        "@llvm-project//mlir:IR",
-        "@llvm-project//mlir:QuantOps",
-        "@llvm-project//mlir:SideEffectInterfaces",
-        "@stablehlo//:base",
-    ],
-)
-
 cc_library(
     name = "EnzymeXLADialectUtils",
     srcs = ["Dialect/Utils.cpp"],
@@ -1274,7 +1149,7 @@ cc_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
-        ":BlasDialectUtils",
+        "//src/enzyme_ad/jax/Dialect/BLAS:BlasDialectUtils",
         ":CheckedRewrite",
         ":DistributedDialectIncGen",
         ":DistributedOpsIncGen",
@@ -1435,7 +1310,7 @@ cc_library(
         ":TransformOps",
         ":XLADerivatives",
         ":TritonExtDialect",
-        ":BlasDialect",
+        "//src/enzyme_ad/jax/Dialect/BLAS:BlasDialect",
         ":EnzymeXLAPassesIncGen",
         "@com_google_protobuf//:protobuf",
         "@tsl//tsl/platform:env",
