@@ -2,11 +2,11 @@
 #define ENZYMEXLA_DIALECT_BLAS_DIALECT_H
 
 #include "mlir/Bytecode/BytecodeOpInterface.h"
-#include "mlir/IR/Region.h"
-#include "mlir/IR/OpDefinition.h"
-#include "mlir/IR/Dialect.h"
-#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Dialect/Quant/IR/QuantTypes.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Dialect.h"
+#include "mlir/IR/OpDefinition.h"
+#include "mlir/IR/Region.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "stablehlo/dialect/Base.h"
