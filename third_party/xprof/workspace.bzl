@@ -47,6 +47,9 @@ cc_library(
         name = "com_github_googlecloudplatform_google_cloud_cpp",
         patch_args = ["-p1"],
         patches = ["@org_xprof//third_party:google_cloud_cpp.patch"],
+        patch_cmds = [
+	"""find . -iname "*.cc" -exec sed -i.bak "s/Windows.h/windows.h" "s/Ntstatus.h/ntstatus.h" {} \;""",
+	],
         repo_mapping = {
             "@com_github_curl_curl": "@curl",
             "@com_github_nlohmann_json": "@nlohmann_json",
