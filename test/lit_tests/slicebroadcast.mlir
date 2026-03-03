@@ -34,7 +34,7 @@ module {
     return %455, %623 : tensor<4x1519x3056xf32>, tensor<4x1517x3056xf32>
   }
 
-  // multi-use of broadcast by slices and other users
+  // multi-use of broadcast by slices and other users doesn't take effect
   func.func @main6(%389: tensor<1520xf32>, %2277: tensor<4x1520x3056xf32>, %3337: tensor<4x1520x3056xf32>) -> (tensor<4x1519x3056xf32>, tensor<4x1517x3056xf32>, tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>) {
     %398 = stablehlo.broadcast_in_dim %389, dims = [1] : (tensor<1520xf32>) -> tensor<4x1520x3056xf32>
     %455 = stablehlo.slice %398 [0:4, 1:1520, 0:3056] : (tensor<4x1520x3056xf32>) -> tensor<4x1519x3056xf32>
@@ -78,11 +78,9 @@ module {
 
 // CHECK:  func.func @main6(%arg0: tensor<1520xf32>, %arg1: tensor<4x1520x3056xf32>, %arg2: tensor<4x1520x3056xf32>) -> (tensor<4x1519x3056xf32>, tensor<4x1517x3056xf32>, tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>) {
 // CHECK-NEXT:    %0 = stablehlo.broadcast_in_dim %arg0, dims = [1] : (tensor<1520xf32>) -> tensor<4x1520x3056xf32>
-// CHECK-NEXT:    %1 = stablehlo.slice %arg0 [1:1520] : (tensor<1520xf32>) -> tensor<1519xf32>
-// CHECK-NEXT:    %2 = stablehlo.broadcast_in_dim %1, dims = [1] : (tensor<1519xf32>) -> tensor<4x1519x3056xf32>
-// CHECK-NEXT:    %3 = stablehlo.slice %arg0 [2:1519] : (tensor<1520xf32>) -> tensor<1517xf32>
-// CHECK-NEXT:    %4 = stablehlo.broadcast_in_dim %3, dims = [1] : (tensor<1517xf32>) -> tensor<4x1517x3056xf32>
-// CHECK-NEXT:    %5 = stablehlo.multiply %0, %arg1 : tensor<4x1520x3056xf32>
-// CHECK-NEXT:    %6 = stablehlo.multiply %0, %arg2 : tensor<4x1520x3056xf32>
-// CHECK-NEXT:    return %2, %4, %5, %6 : tensor<4x1519x3056xf32>, tensor<4x1517x3056xf32>, tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>
+// CHECK-NEXT:    %1 = stablehlo.slice %0 [0:4, 1:1520, 0:3056] : (tensor<4x1520x3056xf32>) -> tensor<4x1519x3056xf32>
+// CHECK-NEXT:    %2 = stablehlo.slice %0 [0:4, 2:1519, 0:3056]  : (tensor<4x1520x3056xf32>) -> tensor<4x1517x3056xf32>
+// CHECK-NEXT:    %3 = stablehlo.multiply %0, %arg1 : tensor<4x1520x3056xf32>
+// CHECK-NEXT:    %4 = stablehlo.multiply %0, %arg2 : tensor<4x1520x3056xf32>
+// CHECK-NEXT:    return %1, %2, %3, %4 : tensor<4x1519x3056xf32>, tensor<4x1517x3056xf32>, tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>
 // CHECK-NEXT:  }

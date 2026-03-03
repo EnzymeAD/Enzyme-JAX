@@ -3099,11 +3099,13 @@ struct SliceBroadcast final
       outidx++;
     }
 
-    // if (innerSlice && !llvm::hasSingleElement(bcast->getUsers())) {
-    //   printf("[@] SliceBroadcast [[failure]]: innerSlice && "
-    //          "!llvm::hasSingleElement(bcast->getUsers()))\n");
-    //   return failure();
-    // }
+    // NOTE if other ops use BroadcastInDimOp, then the it is not safe to remove
+    bool allUsersAreSlices =
+        llvm::all_of(bcast->getUsers(), [](Operation *user) {
+          return isa<stablehlo::SliceOp>(user);
+        });
+    if (innerSlice && !allUsersAreSlices)
+      return failure();
 
     Value tobcast = bcast.getOperand();
     if (innerSlice)
