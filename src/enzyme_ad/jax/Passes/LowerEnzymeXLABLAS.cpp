@@ -131,7 +131,7 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
     auto llvmVoidType = LLVM::LLVMVoidType::get(ctx);
 
     std::string blasFn;
-    if (auto prefix = lapackPrecisionPrefix(elementType)) {
+    if (auto prefix = blasPrecisionPrefix(elementType)) {
       blasFn = "enzymexla_blas_" + *prefix + "symm_";
     } else {
       op->emitOpError() << "Unsupported element type: " << elementType;
