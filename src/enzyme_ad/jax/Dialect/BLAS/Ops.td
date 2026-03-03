@@ -5,11 +5,14 @@ include "Dialect.td"
 include "Attrs.td"
 
 include "mlir/IR/OpBase.td"
+include "mlir/IR/AttrTypeBase.td"
+include "mlir/Interfaces/SideEffectInterfaces.td"
+include "stablehlo/dialect/Base.td"
 
-def BLAS_Op<string mnemonic, list<Trait> traits = []>
+class BLAS_Op<string mnemonic, list<Trait> traits = []>
     : Op<BLAS_Dialect, mnemonic, traits>;
 
-def SymmOp: BLAS_Op<"symm", [Pure, SameOperandsAndResultElementType]> {
+def SymmOp : BLAS_Op<"symm", [Pure, SameOperandsAndResultElementType]> {
   let summary = "Multiplication involving a symmetric matrix";
 
   let description = [{
@@ -17,10 +20,10 @@ def SymmOp: BLAS_Op<"symm", [Pure, SameOperandsAndResultElementType]> {
   }];
 
   let arguments = (ins
-    HLO_Tensor:$alpha,
+    HLO_ScalarTensor:$alpha,
     HLO_Tensor:$A,
     HLO_Tensor:$B,
-    HLO_Tensor:$beta,
+    HLO_ScalarTensor:$beta,
     HLO_Tensor:$C,
     BLAS_SideAttr:$side,
     BLAS_UploAttr:$uplo
@@ -37,7 +40,7 @@ def SymmOp: BLAS_Op<"symm", [Pure, SameOperandsAndResultElementType]> {
   let hasVerifier = 1;
 }
 
-def SyrkOp: BLAS_Op<"syrk", [Pure, SameOperandsAndResultElementType]> {
+def SyrkOp : BLAS_Op<"syrk", [Pure, SameOperandsAndResultElementType]> {
   let summary = "Multiplication involving a symmetric matrix";
 
   let description = [{
@@ -57,9 +60,9 @@ def SyrkOp: BLAS_Op<"syrk", [Pure, SameOperandsAndResultElementType]> {
   }];
 
   let arguments = (ins
-    HLO_Tensor:$alpha,
+    HLO_ScalarTensor:$alpha,
     HLO_Tensor:$A,
-    HLO_Tensor:$beta,
+    HLO_ScalarTensor:$beta,
     HLO_Tensor:$C,
     BLAS_UploAttr:$uplo,
     BLAS_UploAttr:$output_uplo,
@@ -77,7 +80,7 @@ def SyrkOp: BLAS_Op<"syrk", [Pure, SameOperandsAndResultElementType]> {
   let hasVerifier = 1;
 }
 
-def TrmmOp: BLAS_Op<"trmm", [Pure, SameOperandsAndResultElementType]> {
+def TrmmOp : BLAS_Op<"trmm", [Pure, SameOperandsAndResultElementType]> {
   let summary = "Multiplication involving a triangular matrix";
 
   let description = [{
@@ -87,9 +90,9 @@ def TrmmOp: BLAS_Op<"trmm", [Pure, SameOperandsAndResultElementType]> {
   }];
 
   let arguments = (ins
-    HLO_Tensor:$alpha,
+    HLO_ScalarTensor:$alpha,
     HLO_Tensor:$A,
-    HLO_Tensor:$B,
+    HLO_ScalarTensor:$B,
     BLAS_SideAttr:$side,
     BLAS_UploAttr:$uplo,
     DefaultValuedAttr<BLAS_TransposeAttr, "::mlir::enzymexla::blas::BlasTranspose::none">:$transpose

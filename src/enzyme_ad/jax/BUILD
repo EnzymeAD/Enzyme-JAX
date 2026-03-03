@@ -1017,6 +1017,7 @@ gentbl_cc_library(
     td_file = "Dialect/BLAS/Ops.td",
     deps = [
         ":BlasDialectTdFiles",
+        "@stablehlo//:stablehlo_ops_td_files",
     ],
 )
 
@@ -1024,19 +1025,18 @@ cc_library(
     name = "BlasDialect",
     srcs = [
         "Dialect/BLAS/Dialect.cpp",
-        "Dialect/BLAS/Ops.cpp"
+        "Dialect/BLAS/Ops.cpp",
     ],
     hdrs = [
         "Dialect/BLAS/Dialect.h",
-        "Dialect/BLAS/Attrs.h",
-        "Dialect/BLAS/Ops.h"
     ],
     visibility = ["//visibility:public"],
     deps = [
-        ":BlasDialectIncGen",
         ":BlasAttrsIncGen",
+        ":BlasDialectIncGen",
         ":BlasOpsIncGen",
         "@llvm-project//mlir:IR",
+        "@stablehlo//:base",
     ],
 )
 
@@ -1419,6 +1419,7 @@ cc_library(
         ":TransformOps",
         ":XLADerivatives",
         ":TritonExtDialect",
+        ":BlasDialect",
         ":EnzymeXLAPassesIncGen",
         "@com_google_protobuf//:protobuf",
         "@tsl//tsl/platform:env",
