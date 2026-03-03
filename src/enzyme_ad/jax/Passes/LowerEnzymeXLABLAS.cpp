@@ -329,12 +329,11 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
           op.getB(), op.getA(), dotDims, nullptr, nullptr);
     }
 
-    auto res = stablehlo::AddOpCreate(
-        rewriter, op->getLoc(),
-        stablehlo::MulOpCreate(rewriter, op->getLoc(), op.getAlpha(),
-                               dotGeneralOp),
-        stablehlo::MulOpCreate(rewriter, op->getLoc(), op.getBeta(),
-                               op.getC()));
+    auto mul0 = stablehlo::MulOpCreate(rewriter, op->getLoc(), op.getAlpha(),
+                                       dotGeneralOp);
+    auto mul1 =
+        stablehlo::MulOpCreate(rewriter, op->getLoc(), op.getBeta(), op.getC());
+    auto res = stablehlo::AddOpCreate(rewriter, op->getLoc(), mul0, mul1);
     rewriter.replaceOp(op, res);
     return success();
   }
@@ -780,8 +779,9 @@ struct LowerEnzymeXLABLASPass
 
     GreedyRewriteConfig config;
     config.setUseTopDownTraversal(true);
-    if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
-                                            config))) {
+    config.enableFolding();
+    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
+                                     config))) {
       signalPassFailure();
     }
 

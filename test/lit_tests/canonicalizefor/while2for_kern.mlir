@@ -62,7 +62,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
 // CHECK-NEXT:      %5 = arith.addi %arg1, %c1_i32 : i32
 // CHECK-NEXT:      scf.for %arg3 = %c1_i32 to %5 step %c1_i32  : i32 {
 // CHECK-NEXT:        %6 = arith.addi %arg3, %c-1_i32 : i32
-// CHECK-NEXT:        %7 = arith.extui %6 {nonNeg} : i32 to i64
+// CHECK-NEXT:        %7 = arith.extui %6 nneg : i32 to i64
 // CHECK-NEXT:        %8 = llvm.getelementptr inbounds|nuw %4[%7, 2] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.struct<"struct.Particle.1", (struct<"struct.Vec3.1", (f64, f64, f64)>, struct<"struct.Vec3.1", (f64, f64, f64)>, struct<"struct.Vec3.1", (f64, f64, f64)>)>
 // CHECK-NEXT:        %9 = llvm.load %8 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr -> f64
 // CHECK-NEXT:        %10 = arith.negf %9 {fastmathFlags = #llvm.fastmath<contract>} : f64
