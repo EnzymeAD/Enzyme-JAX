@@ -322,11 +322,11 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
     if (op.getSide() == enzymexla::LapackSide::left) {
       dotGeneralOp = stablehlo::DotGeneralOp::create(
           rewriter, op.getLoc(), cast<RankedTensorType>(op.getC().getType()),
-          op.getA(), op.getB(), dotDims, nullptr, nullptr);
+          A, op.getB(), dotDims, nullptr, nullptr);
     } else {
       dotGeneralOp = stablehlo::DotGeneralOp::create(
           rewriter, op.getLoc(), cast<RankedTensorType>(op.getC().getType()),
-          op.getB(), op.getA(), dotDims, nullptr, nullptr);
+          op.getB(), A, dotDims, nullptr, nullptr);
     }
 
     auto mul0 = stablehlo::MulOpCreate(rewriter, op->getLoc(), op.getAlpha(),
