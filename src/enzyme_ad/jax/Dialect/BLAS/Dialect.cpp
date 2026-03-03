@@ -5,6 +5,7 @@
 #include "llvm/ADT/TypeSwitch.h"
 
 #include "src/enzyme_ad/jax/Dialect/BLAS/BlasDialect.cpp.inc"
+#include "src/enzyme_ad/jax/Dialect/BLAS/BlasEnums.cpp.inc"
 
 #define GET_ATTRDEF_CLASSES
 #include "src/enzyme_ad/jax/Dialect/BLAS/BlasAttrs.cpp.inc"
