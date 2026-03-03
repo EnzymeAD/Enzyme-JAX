@@ -1939,8 +1939,8 @@ struct ConvertParallelToGPU1Pass
       RewritePatternSet patterns(&getContext());
       patterns.insert<InnerParallelSerialization>(&getContext());
       GreedyRewriteConfig config;
-      if (failed(
-              applyPatternsAndFoldGreedily(m, std::move(patterns), config))) {
+      config.enableFolding();
+      if (failed(applyPatternsGreedily(m, std::move(patterns), config))) {
         signalPassFailure();
         return;
       }
@@ -1958,8 +1958,8 @@ struct ConvertParallelToGPU1Pass
         >(&getContext());
       // clang-format on
       GreedyRewriteConfig config;
-      if (failed(
-              applyPatternsAndFoldGreedily(m, std::move(patterns), config))) {
+      config.enableFolding();
+      if (failed(applyPatternsGreedily(m, std::move(patterns), config))) {
         signalPassFailure();
         return;
       }
@@ -1983,8 +1983,8 @@ struct ConvertParallelToGPU1Pass
       RewritePatternSet patterns(&getContext());
       populateNormalizationPatterns(patterns);
       GreedyRewriteConfig config;
-      if (failed(
-              applyPatternsAndFoldGreedily(m, std::move(patterns), config))) {
+      config.enableFolding();
+      if (failed(applyPatternsGreedily(m, std::move(patterns), config))) {
         signalPassFailure();
         return;
       }
@@ -2403,8 +2403,8 @@ struct ConvertParallelToGPU1Pass
         >(&getContext());
       // clang-format on
       GreedyRewriteConfig config;
-      if (failed(
-              applyPatternsAndFoldGreedily(m, std::move(patterns), config))) {
+      config.enableFolding();
+      if (failed(applyPatternsGreedily(m, std::move(patterns), config))) {
         signalPassFailure();
         return;
       }
@@ -2417,8 +2417,8 @@ struct ConvertParallelToGPU1Pass
         >(&getContext());
       // clang-format on
       GreedyRewriteConfig config;
-      if (failed(
-              applyPatternsAndFoldGreedily(m, std::move(patterns), config))) {
+      config.enableFolding();
+      if (failed(applyPatternsGreedily(m, std::move(patterns), config))) {
         signalPassFailure();
         return;
       }
@@ -2490,8 +2490,9 @@ gdgo->erase();
                 RemoveFunction<func::FuncOp>, RemoveFunction<LLVM::LLVMFuncOp>>(
             &getContext());
     GreedyRewriteConfig config;
-    if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
-                                            config))) {
+    config.enableFolding();
+    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
+                                     config))) {
       signalPassFailure();
       return;
     }

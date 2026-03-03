@@ -146,7 +146,7 @@ jobs:
         run: |
           bazel build $BAZEL_FLAGS --color=yes //:enzymexlamlir-opt --test_output=errors
       - name: Upload enzymexlamlir-opt
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: enzymexlamlir-opt-${{ matrix.os }}-${{ matrix.python }}
           path: "bazel-bin/enzymexlamlir-opt"
@@ -177,7 +177,7 @@ jobs:
         run: |
           bazel build $BAZEL_FLAGS --color=yes :wheel --test_output=errors
       - name: Upload wheel
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         if: ${{ !endsWith(matrix.os, 'arm') }}
         with:
           name: Enzyme-JAX-Wheel-${{ matrix.os }}-${{ matrix.python }}
@@ -206,7 +206,7 @@ jobs:
             //test:python_tests
 
       - name: Upload test results
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         if: ${{ !cancelled() }}
         with:
           name: Enzyme-JAX-tests-${{ matrix.os }}-${{ matrix.python }}
@@ -214,7 +214,7 @@ jobs:
             bazel-out/**/test.log
           retention-days: 90
       - name: Upload benchmark results
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         if: ${{ !cancelled() }}
         with:
           name: Enzyme-JAX-benchmark-${{ matrix.os }}-${{ matrix.python }}
@@ -257,7 +257,7 @@ jobs:
           curl -LsSf https://astral.sh/uv/install.sh | sh
       - uses: actions/checkout@v6
       - name: Download all benchmark artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           pattern: Enzyme-JAX-benchmark-*
           path: benchmark-results
@@ -269,7 +269,7 @@ jobs:
             --csv_file=combined_results.csv \
             --json_file=combined_results.json
       - name: Upload benchmark results
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         if: ${{ !cancelled() }}
         with:
           name: Enzyme-JAX-combined-benchmark-results

@@ -34784,8 +34784,9 @@ struct EnzymeHLOOptPass
     GreedyRewriteConfig config;
     config.setMaxIterations(max_iterations);
     config.setUseTopDownTraversal(top_down);
-    if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
-                                            config))) {
+    config.enableFolding();
+    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
+                                     config))) {
       signalPassFailure();
     }
   }
