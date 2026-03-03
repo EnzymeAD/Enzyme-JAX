@@ -576,7 +576,7 @@ def SVDFactorizationOp : EnzymeXLA_Op<"linalg.svd", [Pure]> {
   }];
 }
 
-def GeqrfOp : EnzymeXLA_Op<"lapack.geqrf", [Pure]> {
+def GeqrfOp : EnzymeXLA_Op<"lapack.geqrf", [Pure]>, CppDeprecated<"Use `lapack.geqrf` from the LAPACK dialect instead"> {
   let summary = "QR factorization operation (low-level op)";
 
   let description = [{
@@ -602,7 +602,7 @@ def GeqrfOp : EnzymeXLA_Op<"lapack.geqrf", [Pure]> {
   }];
 }
 
-def GeqrtOp : EnzymeXLA_Op<"lapack.geqrt", [Pure]> {
+def GeqrtOp : EnzymeXLA_Op<"lapack.geqrt", [Pure]>, CppDeprecated<"Use `lapack.geqrt` from the LAPACK dialect instead"> {
   let summary = "QR factorization operation (low-level op)";
 
   let description = [{
@@ -630,7 +630,7 @@ def GeqrtOp : EnzymeXLA_Op<"lapack.geqrt", [Pure]> {
   }];
 }
 
-def OrgqrOp : EnzymeXLA_Op<"lapack.orgqr", [Pure]> {
+def OrgqrOp : EnzymeXLA_Op<"lapack.orgqr", [Pure]>, CppDeprecated<"Use `lapack.orgqr` from the LAPACK dialect instead"> {
   let summary = [{
     Generate orthonormal/unitary matrix from a product of
     elementary Householder reflectors
@@ -654,7 +654,7 @@ def OrgqrOp : EnzymeXLA_Op<"lapack.orgqr", [Pure]> {
   }];
 }
 
-def OrmqrOp : EnzymeXLA_Op<"lapack.ormqr", [Pure]> {
+def OrmqrOp : EnzymeXLA_Op<"lapack.ormqr", [Pure]>, CppDeprecated<"Use `lapack.ormqr` from the LAPACK dialect instead"> {
   let summary = [{
     Perform a matrix multiplication with the Q matrix from a QR
     decomposition, given only the householder reflections.
@@ -681,7 +681,7 @@ def OrmqrOp : EnzymeXLA_Op<"lapack.ormqr", [Pure]> {
   }];
 }
 
-def GemqrtOp : EnzymeXLA_Op<"lapack.gemqrt", [Pure]> {
+def GemqrtOp : EnzymeXLA_Op<"lapack.gemqrt", [Pure]>, CppDeprecated<"Use `lapack.gemqrt` from the LAPACK dialect instead"> {
   let summary = [{
     Perform a matrix multiplication with the Q matrix from a QR
     decomposition, given the WY decomposition (i.e. geqrt).
@@ -708,7 +708,7 @@ def GemqrtOp : EnzymeXLA_Op<"lapack.gemqrt", [Pure]> {
   }];
 }
 
-def GetrfOp : EnzymeXLA_Op<"lapack.getrf", [Pure]> {
+def GetrfOp : EnzymeXLA_Op<"lapack.getrf", [Pure]>, CppDeprecated<"Use `lapack.getrf` from the LAPACK dialect instead"> {
   let summary = "LU factorization operation with row-major pivoting.";
 
   let arguments = (ins HLO_Tensor:$input);
@@ -725,7 +725,7 @@ def GetrfOp : EnzymeXLA_Op<"lapack.getrf", [Pure]> {
   }];
 }
 
-def GetriOp : EnzymeXLA_Op<"lapack.getri", [Pure]> {
+def GetriOp : EnzymeXLA_Op<"lapack.getri", [Pure]>, CppDeprecated<"Use `lapack.getri` from the LAPACK dialect instead"> {
   let summary = "Computes the inverse of a matrix using the LU factorization.";
 
   let arguments = (ins
@@ -742,7 +742,7 @@ def GetriOp : EnzymeXLA_Op<"lapack.getri", [Pure]> {
   }];
 }
 
-def GesddOp : EnzymeXLA_Op<"lapack.gesdd", [Pure]> {
+def GesddOp : EnzymeXLA_Op<"lapack.gesdd", [Pure]>, CppDeprecated<"Use `lapack.gesdd` from the LAPACK dialect instead"> {
   let summary = "Singular Value Decomposition (SVD) factorization operation.";
 
   let arguments = (ins
@@ -763,7 +763,7 @@ def GesddOp : EnzymeXLA_Op<"lapack.gesdd", [Pure]> {
   }];
 }
 
-def GesvdOp : EnzymeXLA_Op<"lapack.gesvd", [Pure]> {
+def GesvdOp : EnzymeXLA_Op<"lapack.gesvd", [Pure]>, CppDeprecated<"Use `lapack.gesvd` from the LAPACK dialect instead"> {
   let summary = "Singular Value Decomposition (SVD) factorization operation.";
 
   let arguments = (ins
@@ -784,7 +784,7 @@ def GesvdOp : EnzymeXLA_Op<"lapack.gesvd", [Pure]> {
   }];
 }
 
-def GesvjOp : EnzymeXLA_Op<"lapack.gesvj", [Pure]> {
+def GesvjOp : EnzymeXLA_Op<"lapack.gesvj", [Pure]>, CppDeprecated<"Use `lapack.gesvj` from the LAPACK dialect instead"> {
   let summary = "Singular Value Decomposition (SVD) factorization operation.";
 
   let arguments = (ins
