@@ -766,6 +766,90 @@ private:
   int64_t blasIntWidth;
 };
 
+struct TrsmOpLowering : public OpRewritePattern<enzymexla::TrsmOp> {
+  TrsmOpLowering(MLIRContext *context, PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit) {}
+
+  LogicalResult matchAndRewrite(enzymexla::TrsmOp op,
+                                PatternRewriter &rewriter) const override {
+    auto ctx = op->getContext();
+    LLVMTypeConverter typeConverter(ctx);
+
+    auto alpha = op.getOperand(0);
+    auto A = op.getOperand(1);
+    auto B = op.getOperand(2);
+    auto type_alpha = cast<RankedTensorType>(alpha.getType());
+    auto type_A = cast<RankedTensorType>(A.getType());
+    auto type_B = cast<RankedTensorType>(B.getType());
+    auto type_element = type_alpha.getElementType();
+
+    // (C1)
+    if (type_A.getElementType() != type_element ||
+        type_B.getElementType() != type_element) {
+      return rewriter.notifyMatchFailure(
+          op, "Element types of alpha, A and B must match");
+    }
+    auto rank = type_A.getRank();
+
+    // (C2)
+    if (type_A.getRank() != type_B.getRank()) {
+      return rewriter.notifyMatchFailure(op, "Ranks of A and B must match");
+    }
+
+    // (C3)
+    auto shape_A = type_A.getShape();
+    auto shape_B = type_B.getShape();
+    if (shape_A.drop_back(2) != shape_B.drop_back(2)) {
+      return rewriter.notifyMatchFailure(
+          op, "Batch dimensions of A and B must match");
+    }
+
+    if (shape_A[rank - 1] != shape_A[rank - 2]) {
+      return rewriter.notifyMatchFailure(
+          op, "Inner two dimensions of A must be square");
+    }
+
+    if (shape_A[rank - 1] !=
+        shape_B[rank - (op.getSide() == enzymexla::LapackSide::left ? 2 : 1)]) {
+      return rewriter.notifyMatchFailure(
+          op, "Inner dimensions of A and B must match");
+    }
+
+    // (C4)
+    if (op.getResult().getType() != type_B) {
+      return rewriter.notifyMatchFailure(op, "Result type must match B's type");
+    }
+
+    auto scaledB = stablehlo::MulOpCreate(rewriter, op.getLoc(), B, alpha);
+
+    auto transa = stablehlo::Transpose::NO_TRANSPOSE;
+    switch (op.getTransa()) {
+    case enzymexla::LapackTranspose::none:
+      transa = stablehlo::Transpose::NO_TRANSPOSE;
+      break;
+    case enzymexla::LapackTranspose::transpose:
+      transa = stablehlo::Transpose::TRANSPOSE;
+      break;
+    case enzymexla::LapackTranspose::adjoint:
+      transa = stablehlo::Transpose::ADJOINT;
+      break;
+    }
+
+    auto trisolve_op = stablehlo::TriangularSolveOp::create(
+        rewriter, op.getLoc(), TypeRange{type_B}, A, scaledB,
+        /*left_side=*/op.getSide() == enzymexla::LapackSide::left,
+        /*lower=*/op.getUplo() == enzymexla::LapackUplo::L,
+        /*unit_diagonal=*/op.getDiag() == enzymexla::LapackDiag::unit,
+        /*transpose_a=*/transa);
+
+    // replace enzymexla.blas.trsm with the trisolve_op
+    rewriter.replaceAllUsesWith(op.getResult(), trisolve_op.getResult());
+    rewriter.eraseOp(op);
+
+    return success();
+  }
+};
+
 struct LowerEnzymeXLABLASPass
     : public enzyme::impl::LowerEnzymeXLABLASPassBase<LowerEnzymeXLABLASPass> {
   using Base::Base;
@@ -776,6 +860,7 @@ struct LowerEnzymeXLABLASPass
 
     patterns.add<SyrkOpLowering, SymmOpLowering>(backend, blasIntWidth,
                                                  context);
+    patterns.add<TrsmOpLowering>(context);
 
     GreedyRewriteConfig config;
     config.setUseTopDownTraversal(true);
@@ -787,8 +872,8 @@ struct LowerEnzymeXLABLASPass
 
     // Verify that all illegal ops have been lowered
     auto walkResult = getOperation()->walk([&](Operation *op) {
-      if (isa<enzymexla::SyrkOp>(op)) {
-        op->emitError("Failed to lower enzymexla::SyrkOp");
+      if (isa<enzymexla::SyrkOp, enzymexla::TrsmOp>(op)) {
+        op->emitError("Failed to lower enzymexla.blas operation");
         return WalkResult::interrupt();
       }
       return WalkResult::advance();

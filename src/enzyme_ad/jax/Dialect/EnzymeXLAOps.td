@@ -504,7 +504,7 @@ def CommRegionOp : EnzymeXLA_Op<"comm_region", [
 
 // Linear Algebra Ops
 
-def SymmOp: EnzymeXLA_Op<"blas.symm", [Pure, SameOperandsAndResultElementType]> {
+def SymmOp : EnzymeXLA_Op<"blas.symm", [Pure, SameOperandsAndResultElementType]> {
   let summary = "Multiplication involving a symmetric matrix";
 
   let description = [{
@@ -594,6 +594,33 @@ def TrmmOp: EnzymeXLA_Op<"blas.trmm", [Pure, SameOperandsAndResultElementType]> 
 
   let assemblyFormat = [{
     $A `,` $B `,` $alpha `,` attr-dict `:` functional-type(operands, results)
+  }];
+}
+
+def TrsmOp : EnzymeXLA_Op<"blas.trsm", [Pure]> {
+  let summary = "Triangular matrix-matrix solve operation";
+  let description = [{
+    Solves op(A) * X = alpha * B, or X * op(A) = alpha * B, where alpha is a scalar,
+    X and B are m x n matrices, A is a unit, or non-unit, upper or lower triangular
+    matrix, and op(A) is one of op(A) = A, or op(A) = A^T or A^H.
+  }];
+
+  let arguments = (ins
+    TensorFloat:$alpha,
+    HLO_Tensor:$A,
+    HLO_Tensor:$B,
+    EnzymeXLA_LapackSideAttr:$side,
+    EnzymeXLA_LapackUploAttr:$uplo,
+    EnzymeXLA_LapackTransposeAttr:$transa,
+    EnzymeXLA_LapackDiagAttr:$diag
+  );
+
+  let results = (outs
+    HLO_Tensor:$output
+  );
+
+  let assemblyFormat = [{
+    $alpha `,` $A `,` $B attr-dict `:` functional-type(operands, results)
   }];
 }
 
@@ -894,6 +921,24 @@ def GesvjOp : EnzymeXLA_Op<"lapack.gesvj", [Pure]> {
 
   let assemblyFormat = [{
     $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
+def PotrfOp : EnzymeXLA_Op<"lapack.potrf", [Pure]> {
+  let summary = "Cholesky factorization of symmetric/Hermitian positive-definite matrix";
+
+  let arguments = (ins
+    HLO_Tensor:$input,
+    EnzymeXLA_LapackUploAttr:$uplo
+  );
+
+  let results = (outs
+    HLO_Tensor:$output,
+    HLO_Tensor:$info
+  );
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type(operands, results)
   }];
 }
 
