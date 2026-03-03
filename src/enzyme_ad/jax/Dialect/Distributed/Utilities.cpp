@@ -50,6 +50,39 @@ resolvePhysicalAxisInterfaceFromAttr(Operation *from, Attribute axisAttr) {
   return axisInterface;
 }
 
+FailureOr<PhysicalMeshOp>
+resolvePhysicalMeshFromLogicalMesh(LogicalMeshOp logicalMesh) {
+  Attribute physicalMeshAttr = logicalMesh->getAttr("physical_mesh");
+
+  if (auto meshRef = dyn_cast_or_null<FlatSymbolRefAttr>(physicalMeshAttr)) {
+    Operation *meshOp = SymbolTable::lookupNearestSymbolFrom(logicalMesh, meshRef);
+    if (!meshOp) {
+      logicalMesh.emitOpError() << "references unknown physical mesh symbol "
+                                << meshRef;
+      return failure();
+    }
+    auto physicalMesh = dyn_cast<PhysicalMeshOp>(meshOp);
+    if (!physicalMesh) {
+      logicalMesh.emitOpError()
+          << "requires physical_mesh to reference a PhysicalMesh op";
+      return failure();
+    }
+    return physicalMesh;
+  }
+  return failure();
+}
+
+unsigned getPhysicalAxisPosition(PhysicalMeshOp mesh, FlatSymbolRefAttr axis) {
+  auto axes = mesh.getAxes();
+  for (unsigned i = 0; i < axes.size(); ++i) {
+    if (axes[i] == axis) {
+      return i;
+    }
+  }
+  assert(false && "factor physical axis must be present in mesh axes");
+  return 0;
+}
+
 LogicalResult
 resolveLogicalMeshToAtomicFactors(LogicalMeshOp logicalMesh,
                                   SmallVectorImpl<Value> &atomicFactors) {

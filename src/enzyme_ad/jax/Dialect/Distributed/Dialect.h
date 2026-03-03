@@ -33,6 +33,11 @@ namespace mlir::enzyme::distributed {
 resolvePhysicalAxisInterfaceFromAttr(::mlir::Operation *from,
                                      ::mlir::Attribute axisAttr);
 
+::mlir::FailureOr<PhysicalMeshOp>
+resolvePhysicalMeshFromLogicalMesh(LogicalMeshOp logicalMesh);
+
+unsigned getPhysicalAxisPosition(PhysicalMeshOp mesh, FlatSymbolRefAttr axis);
+
 /**
  * Decomposes a logical axis into the SSA values resulting from 
  * the `factor` calls on a physical axis.

@@ -35,6 +35,7 @@ def LogicalMeshOp : DistributedOp<"LogicalMesh"> {
     the mesh used by the program. Defined in terms of its projection
     onto a physical mesh via a product of logical axes.}];
     let arguments = (ins
+        FlatSymbolRefAttr:$physical_mesh,
         Variadic<LogicalCommAxisType>:$axes
     );
     let results = (outs LogicalMeshType:$mesh);
