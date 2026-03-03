@@ -48,8 +48,8 @@ cc_library(
         patch_args = ["-p1"],
         patches = ["@org_xprof//third_party:google_cloud_cpp.patch"],
         patch_cmds = [
-	"""find . -type f -exec sed -i.bak -e 's/Windows.h/windows.h/g' -e 's/Ntstatus.h/ntstatus.h/g' {} +"""
-	],
+            """find . -type f -exec sed -i.bak -e 's/Windows.h/windows.h/g' -e 's/Ntstatus.h/ntstatus.h/g' {} +""",
+        ],
         repo_mapping = {
             "@com_github_curl_curl": "@curl",
             "@com_github_nlohmann_json": "@nlohmann_json",

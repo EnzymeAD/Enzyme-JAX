@@ -6,8 +6,9 @@ CUDA_TILE_COMMIT = "8a775693b18303d6c696be6ffd06dadad1b32a8e"  # v13.1.3
 CUDA_TILE_SHA256 = ""
 
 CUTILE_PATCHES = [
-   """sed -i.bak "/usePropertiesForAttributes/d" include/cuda_tile/Dialect/CudaTile/IR/Dialect.td""",
+    """sed -i.bak "/usePropertiesForAttributes/d" include/cuda_tile/Dialect/CudaTile/IR/Dialect.td""",
 ]
+
 def repo(repo_name = ""):
     # When used as an external dependency, repo_name should be "@enzyme_ad"
     # When used standalone, repo_name should be "" (empty string)

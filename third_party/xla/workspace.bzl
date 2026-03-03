@@ -18,6 +18,6 @@ def repo(extra_patches = [], override_commit = ""):
         strip_prefix = "xla-{commit}".format(commit = commit),
         urls = ["https://github.com/openxla/xla/archive/{commit}.tar.gz".format(commit = commit)],
         patch_cmds = XLA_PATCHES + extra_patches,
-	patches = ["//:patches/xla.patch", "//:patches/xla_spmd.patch", "//:patches/xla_win.patch"],
+        patches = ["//:patches/xla.patch", "//:patches/xla_spmd.patch", "//:patches/xla_win.patch"],
         patch_args = ["-p1"],
     )
