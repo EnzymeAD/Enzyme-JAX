@@ -11,6 +11,9 @@ namespace mlir {
 namespace enzyme {
 namespace distributed {
 
+static constexpr llvm::StringLiteral kShardyAxisNamesAttr =
+  "enzyme.shardy_axis_names";
+
 #define GEN_PASS_DEF_SHARDYFUNCTIONTODISTRIBUTEDPASS
 #include "src/enzyme_ad/jax/Passes/Distributed/Passes.h.inc"
 
@@ -263,6 +266,14 @@ struct ShardyFunctionToDistributedPass
         funcOp.getLoc(), logicalMeshType, physicalMesh.getSymNameAttr(),
         newLogicalAxes);
 
+    llvm::SmallVector<Attribute> shardyAxisNameAttrs;
+    shardyAxisNameAttrs.reserve(sdyAxes.size());
+    for (auto shardyAxis : sdyAxes) {
+      shardyAxisNameAttrs.push_back(builder.getStringAttr(shardyAxis.getName()));
+    }
+    logicalMesh->setAttr(kShardyAxisNamesAttr,
+                         builder.getArrayAttr(shardyAxisNameAttrs));
+
     return logicalMesh.getMesh();
   }
 
@@ -365,6 +376,21 @@ struct ShardyFunctionToDistributedPass
     builder.setInsertionPointToEnd(newEntryBlock);
     builder.create<func::ReturnOp>(funcOp.getLoc(),
                                    meshComputationOp.getResults());
+
+    if (failed(rewriteShardyCollectivesInFunction(funcOp))) {
+      funcOp.emitError() << "failed to rewrite shardy collectives to "
+                            "distributed collectives";
+      signalPassFailure();
+      return;
+    }
+
+    {// TODO remove
+      mlir::OpPrintingFlags flags;
+      flags.assumeVerified(true);
+      llvm::outs() << "After ShardyFunctionToDistributedPass:\n";
+      funcOp.print(llvm::outs(), flags);
+      llvm::outs() << "\n";
+    }
   }
 };
 

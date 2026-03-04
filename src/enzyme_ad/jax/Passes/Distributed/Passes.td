@@ -39,6 +39,20 @@ def ShardyFunctionToDistributedPass
   ];
 }
 
+def ShardyCollectivesToDistributedPass
+    : Pass<"shardy-collectives-to-distributed", "func::FuncOp"> {
+  let summary = "Rewrite Shardy collectives to Distributed collectives";
+  let description = [{
+    This pass rewrites Shardy collective ops in a function to the Distributed
+    collective/send/recv form, intended to run after shardy-function-to-distributed.
+  }];
+  let dependentDialects = [
+    "sdy::SdyDialect",
+    "enzyme::distributed::DistributedDialect",
+    "func::FuncDialect",
+  ];
+}
+
 // def LocalizeDistributedPass : Pass<"localize-distributed", "distributed::MeshComputationOp"> {
 //   let summary = "Based on a localization and partitioning strategy, localize a mesh computation op to a region computation.";
 //   let description = [{
