@@ -584,6 +584,27 @@ def LowerProbProgTraceOpsPass : Pass<"lower-probprog-trace-ops"> {
   ];
 }
 
+def SICMPass : Pass<"sicm"> {
+  let summary = "Sample-invariant code motion with domain-specific rewrites";
+  let description = [{
+    For each enzyme.mcmc_region, iterates to fixpoint:
+    1. Apply domain-specific StableHLO pattern rewrites that split expensive
+       sample-dependent ops into cheap sample-dependent + expensive invariant parts.
+    2. Hoist sample-invariant operations out of the region.
+  }];
+  let dependentDialects = [
+    "arith::ArithDialect",
+    "stablehlo::StablehloDialect",
+    "math::MathDialect",
+    "enzyme::EnzymeDialect",
+    "enzymexla::EnzymeXLADialect",
+  ];
+  let options = [
+    Option<"maxIterations", "max-iterations", "int64_t", "10",
+           "Maximum rewrite+hoist iterations per region">,
+  ];
+}
+
 def LowerEnzymeXLAMLPass : Pass<"lower-enzymexla-ml"> {
   let summary = "Lower enzymexla mlops to stablehlo";
   let dependentDialects = [
