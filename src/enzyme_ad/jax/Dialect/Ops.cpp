@@ -1166,15 +1166,15 @@ LogicalResult enzymexla::HeevOp::verify() {
     return emitOpError("Input matrix must be square");
   }
 
-  auto jobz = getJobz();
-  if (jobz != enzymexla::Jobz::N && jobz != enzymexla::Jobz::V) {
-    return emitOpError("Invalid jobz value; only 'N' and 'V' are supported");
+  auto job = getJob();
+  if (job != enzymexla::LapackJob::N && job != enzymexla::LapackJob::V) {
+    return emitOpError("Invalid job value; only 'N' and 'V' are supported");
   }
 
-  if (jobz == enzymexla::Jobz::V) {
+  if (job == enzymexla::LapackJob::V) {
     auto res = getRes();
     if (res.size() != 2) {
-      return emitOpError("When jobz is 'V', two tensors are returned");
+      return emitOpError("When job is 'V', two tensors are returned");
     }
 
     auto eigvecs = res[1];
@@ -1186,7 +1186,7 @@ LogicalResult enzymexla::HeevOp::verify() {
   } else {
     auto res = getRes();
     if (res.size() != 1) {
-      return emitOpError("When jobz is 'N', only one tensor is returned");
+      return emitOpError("When job is 'N', only one tensor is returned");
     }
   }
 
