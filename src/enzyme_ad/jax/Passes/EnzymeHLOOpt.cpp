@@ -32882,8 +32882,8 @@ struct LowerMultiSlice final
       if (shard) {
         sdy::TensorShardingAttr shards[1] = {shard.getShardings()[i]};
         auto shard2 =
-            sdy::TensorShardingPerValueAttr::get(rotateOp.getContext(), shards);
-        sdy::setShardings(rotateOp, shard2);
+            sdy::TensorShardingPerValueAttr::get(sliceOp.getContext(), shards);
+        sdy::setShardings(sliceOp, shard2);
       }
 
       replacements[i] = sliceOp.getResult();
