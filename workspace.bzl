@@ -1,4 +1,4 @@
-JAX_COMMIT = "c6d2109c362803f0d2b868ff6f4269fa20a10529"
+JAX_COMMIT = "d36ae3ba7decdcf6cecc745ea9b2c878b64f46ef"
 JAX_SHA256 = ""
 
 ENZYME_COMMIT = "a4f2e4a09068c4d36e5da975a831ad7b90c3ec8f"
@@ -100,7 +100,7 @@ echo "" >> third_party/proto.patch
 echo " #ifndef bswap_16" >> third_party/proto.patch
 echo " static inline uint16_t bswap_16(uint16_t x) {" >> third_party/proto.patch
 sed -i.bak0 "s/protobuf.patch\\"/protobuf.patch\\", \\":proto.patch\\"/g" workspace2.bzl
-sed -i.bak0 "s/= \\[\\"@xla\\/\\/third_party\\/protobuf:protobuf.patch\\"/= \\[\\"@xla\\/\\/third_party\\/protobuf:protobuf.patch\\", \\"\\/\\/third_party:proto.patch\\"/g" third_party/py/python_init_rules.bzl
+sed -i.bak0 "s/\\"@xla\\/\\/third_party\\/protobuf:protobuf.patch\\"/\\"@xla\\/\\/third_party\\/protobuf:protobuf.patch\\", \\"\\/\\/third_party:proto.patch\\"/g" third_party/py/python_init_rules.bzl
 
 """,
     """
