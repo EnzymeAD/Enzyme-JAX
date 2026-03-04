@@ -6037,8 +6037,8 @@ void AffineCFGPass::runOnOperation() {
   IslAnalysis islAnalysis;
   populateAffineExprSimplificationPatterns(islAnalysis, rpl);
   GreedyRewriteConfig config;
-  if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(rpl),
-                                          config))) {
+  config.enableFolding();
+  if (failed(applyPatternsGreedily(getOperation(), std::move(rpl), config))) {
     signalPassFailure();
   }
 }

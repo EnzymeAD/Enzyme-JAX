@@ -136,7 +136,7 @@ func.func @f(%119: memref<?xf64>, %arg0: i32 {llvm.noundef}, %arg1: i32 {llvm.no
 // CHECK-NEXT:    %1 = llvm.alloca %c1_i32 x !llvm.ptr {alignment = 8 : i64} : (i32) -> !llvm.ptr
 // CHECK-NEXT:    %2 = "enzymexla.pointer2memref"(%1) : (!llvm.ptr) -> memref<?x!llvm.ptr>
 // CHECK-NEXT:    affine.store %0, %2[0] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag1]} : memref<?x!llvm.ptr>
-// CHECK-NEXT:    %3 = arith.extui %arg1 {nonNeg} : i32 to i64
+// CHECK-NEXT:    %3 = arith.extui %arg1 nneg : i32 to i64
 // CHECK-NEXT:    %4 = arith.cmpi sgt, %3, %c-1_i64 : i64
 // CHECK-NEXT:    %5 = scf.if %4 -> (i32) {
 // CHECK-NEXT:      scf.yield %c-2_i32 : i32
