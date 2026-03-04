@@ -109,5 +109,33 @@ def TrmmOp : BLAS_Op<"trmm", [Pure, SameOperandsAndResultElementType]> {
   let hasVerifier = 1;
 }
 
+def TrsmOp : BLAS_Op<"trsm", [Pure]> {
+  let summary = "Triangular matrix-matrix solve operation";
+  let description = [{
+    Solves op(A) * X = alpha * B, or X * op(A) = alpha * B, where alpha is a scalar,
+    X and B are m x n matrices, A is a unit, or non-unit, upper or lower triangular
+    matrix, and op(A) is one of op(A) = A, or op(A) = A^T or A^H.
+  }];
+
+  let arguments = (ins
+    HLO_Tensor:$alpha,
+    HLO_Tensor:$A,
+    HLO_Tensor:$B,
+    BLAS_SideAttr:$side,
+    BLAS_UploAttr:$uplo,
+    BLAS_TransposeAttr:$transa,
+    BLAS_DiagAttr:$diag
+  );
+
+  let results = (outs
+    HLO_Tensor:$output
+  );
+
+  let assemblyFormat = [{
+    $alpha `,` $A `,` $B attr-dict `:` functional-type(operands, results)
+  }];
+
+  // TODO let hasVerifier = 1;
+}
 
 #endif // ENZYME_AD_JAX_DIALECT_BLAS_OPS_TD

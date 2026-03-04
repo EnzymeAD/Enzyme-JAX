@@ -2639,6 +2639,7 @@ bool isScalarValue(Operation *op) {
   return false;
 }
 
+// TODO replace `enzymexla::LapackUplo` with `blas::BlasUplo` once the latter is
 Value copyTriangularPart(OpBuilder &builder, Value input,
                          enzymexla::LapackUplo uplo) {
   if (uplo == enzymexla::LapackUplo::F)
