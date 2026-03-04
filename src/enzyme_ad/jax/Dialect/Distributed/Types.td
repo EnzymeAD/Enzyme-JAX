@@ -7,6 +7,8 @@ include "Dialect.td"
 def PhysicalCommAxisType : DistributedType<"PhysicalCommAxis", "physical_comm_axis">;
 // Includes physical axis factors and products of other logical axis.
 def LogicalCommAxisType : DistributedType<"LogicalCommAxis", "logical_comm_axis">;
+// Small (unecessary?) type wrapping products of logical axis and "reduce" for sharding annotations.
+def ShardingAxisType : DistributedType<"Sharding", "sharding">;
 
 def PhysicalMeshType : DistributedType<"PhysicalMesh", "physical_mesh">;
 def LogicalMeshType : DistributedType<"LogicalMesh", "logical_mesh">;

@@ -144,20 +144,47 @@ def DistributedYieldOp : DistributedOp<"DistributedYield", [Terminator]> {
     let assemblyFormat = "$output_tensors type($output_tensors) attr-dict";
 }
 
+def ShardingReduceOp : DistributedOp<"ShardingReduce", []> {
+    let description = [{
+       An axis used exclusively to indicate a reduction axis in the right hand side of a collective
+       communication. 
+     }];
+    let arguments = (ins
+    );
+    let results = (outs ShardingAxisType:$reduction_axis);
+}
+
+def ShardingOp : DistributedOp<"Sharding", []> {
+    let description = [{
+       A product of logical axes and/or reduction axes used to indicate the sharding of a tensor.
+       The presence of a reduction axis indicates that the tensor is replicated along that axis, and
+       that dimension is reduced across in collectives. 
+     }];
+    let arguments = (ins
+        Variadic<LogicalCommAxisType>:$axes
+    );
+    let results = (outs ShardingAxisType:$sharding);
+}
+
+
 // Communication Ops
-def CollectiveReshardOp : DistributedOp<"CollectiveReshard"> {
+def CollectiveOp : DistributedOp<"Collective", [DeclareOpInterfaceMethods<InferTypeOpInterface>, SameVariadicOperandSize]> {
     let description = [{
        A resharding collective communication where the resharding pattern dictates the 
        communication pattern.
      }];
     let arguments = (ins
         LogicalMeshType:$mesh,
-        ShardedTensorType:$input_tensor,
-        ShardingAttribute:$input_sharding,
-        ShardingAttribute:$output_sharding
+        TypeAttr:$global_input_tensor_type,
+        TypeAttr:$global_output_tensor_type,
+        TypeAttr:$local_input_tensor_type,
+        TypeAttr:$local_output_tensor_type,
+        Variadic<ShardingAxisType>:$input_sharding,
+        Variadic<ShardingAxisType>:$output_sharding
     );
-    let results = (outs CollectiveTokenType:$token, ShardedTensorType:$output_tensor);
-    let assemblyFormat = "$mesh $input_tensor type($input_tensor) `->` type($token) `,` type($output_tensor) attr-dict";
+    let results = (outs CollectiveTokenType:$token);
+    let assemblyFormat = "$mesh `(`$global_input_tensor_type `>` $local_input_tensor_type`,` $input_sharding `)` `->` `(`$global_output_tensor_type `>` $local_output_tensor_type`,` $output_sharding`)` attr-dict";
+    // let hasVerifier = 1; // TODO verify sharding axes match the mesh, and that the input and output shardings are compatible with each other and the global/local tensor shapes.
 }
 
 def SubmeshCollectivePartsOp : DistributedOp<"SubmeshCollectiveParts", [SameVariadicResultSize, DeclareOpInterfaceMethods<InferTypeOpInterface>]> {

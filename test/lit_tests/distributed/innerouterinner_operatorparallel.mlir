@@ -5,6 +5,8 @@
 // (not entirely unrealistic- maybe there is a low-rank approximation being used).
 
 sdy.mesh @mesh = <["x"=2]>
+distributed.AxisAllToAll @ax1 2 1600000000 0
+distributed.PhysicalMesh @phys_mesh [@ax1]
 
 func.func @innerouterinneroperatorparallel(
     %x: tensor<512x1024xf32> {sdy.sharding = #sdy.sharding<@mesh, [{}, {"x"}]>},
