@@ -2749,7 +2749,7 @@ struct PotrfOpLowering : public OpRewritePattern<enzymexla::PotrfOp> {
     auto type_llvm_void = LLVM::LLVMVoidType::get(ctx);
 
     std::string fn = "potrf_";
-    if (auto prefix = lapackPrecisionPrefix(inputElementType)) {
+    if (auto prefix = blasPrecisionPrefix(inputElementType)) {
       fn = *prefix + fn;
     } else {
       op->emitOpError() << "Unsupported element type: " << inputElementType;
