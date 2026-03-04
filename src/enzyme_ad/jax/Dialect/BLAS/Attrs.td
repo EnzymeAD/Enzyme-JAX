@@ -1,5 +1,5 @@
-#ifndef ENZYMEXLA_DIALECT_BLAS_ATTRS_TD
-#define ENZYMEXLA_DIALECT_BLAS_ATTRS_TD
+#ifndef ENZYME_AD_JAX_DIALECT_BLAS_ATTRS_TD
+#define ENZYME_AD_JAX_DIALECT_BLAS_ATTRS_TD
 
 include "src/enzyme_ad/jax/Dialect/BLAS/Dialect.td"
 
@@ -124,4 +124,4 @@ def BLAS_DiagAttr : EnumAttr<BLAS_Dialect, BLAS_Diag, "diag"> {
   }];
 }
 
-#endif // ENZYMEXLA_DIALECT_BLAS_ATTRS_TD
+#endif // ENZYME_AD_JAX_DIALECT_BLAS_ATTRS_TD

@@ -1,5 +1,5 @@
-#ifndef ENZYMEXLA_DIALECT_BLAS_OPS_TD
-#define ENZYMEXLA_DIALECT_BLAS_OPS_TD
+#ifndef ENZYME_AD_JAX_DIALECT_BLAS_OPS_TD
+#define ENZYME_AD_JAX_DIALECT_BLAS_OPS_TD
 
 include "src/enzyme_ad/jax/Dialect/BLAS/Dialect.td"
 include "src/enzyme_ad/jax/Dialect/BLAS/Attrs.td"
@@ -110,4 +110,4 @@ def TrmmOp : BLAS_Op<"trmm", [Pure, SameOperandsAndResultElementType]> {
 }
 
 
-#endif // ENZYMEXLA_DIALECT_BLAS_OPS_TD
+#endif // ENZYME_AD_JAX_DIALECT_BLAS_OPS_TD

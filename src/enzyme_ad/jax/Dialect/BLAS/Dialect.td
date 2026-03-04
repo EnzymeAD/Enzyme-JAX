@@ -1,5 +1,5 @@
-#ifndef ENZYMEXLA_DIALECT_BLAS_DIALECT_TD
-#define ENZYMEXLA_DIALECT_BLAS_DIALECT_TD
+#ifndef ENZYME_AD_JAX_DIALECT_BLAS_DIALECT_TD
+#define ENZYME_AD_JAX_DIALECT_BLAS_DIALECT_TD
 
 include "mlir/IR/DialectBase.td"
 
@@ -16,4 +16,4 @@ def BLAS_Dialect : Dialect {
   let useDefaultAttributePrinterParser = 1;
 }
 
-#endif // ENZYMEXLA_DIALECT_BLAS_DIALECT_TD
+#endif // ENZYME_AD_JAX_DIALECT_BLAS_DIALECT_TD

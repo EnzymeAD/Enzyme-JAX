@@ -1,5 +1,5 @@
-#ifndef ENZYMEXLA_DIALECT_BLAS_DIALECT_H
-#define ENZYMEXLA_DIALECT_BLAS_DIALECT_H
+#ifndef ENZYME_AD_JAX_DIALECT_BLAS_DIALECT_H
+#define ENZYME_AD_JAX_DIALECT_BLAS_DIALECT_H
 
 #include "mlir/Bytecode/BytecodeOpInterface.h"
 #include "mlir/Dialect/Quant/IR/QuantTypes.h"
