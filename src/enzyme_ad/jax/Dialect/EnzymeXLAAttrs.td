@@ -18,8 +18,19 @@ def EnzymeXLA_LapackLayout : I32EnumAttr<"LapackLayout",
   let cppNamespace = "::mlir::enzymexla";
 }
 
-def EnzymeXLA_LapackLayoutAttr : EnumAttr<EnzymeXLA_Dialect,
-    EnzymeXLA_LapackLayout, "layout">;
+def EnzymeXLA_LapackLayoutAttr
+    : EnumAttr<EnzymeXLA_Dialect, EnzymeXLA_LapackLayout, "layout"> {
+  let assemblyFormat = "`<` $value `>`";
+  let extraClassDeclaration = [{
+    char getBlasChar() const {
+      switch (getValue()) {
+        case LapackLayout::col_major: return 'C';
+        case LapackLayout::row_major: return 'R';
+        default: llvm_unreachable("invalid LapackLayout");
+      }
+    }
+  }];
+}
 
 def EnzymeXLA_LapackTranspose : I32EnumAttr<"LapackTranspose",
     "Whether to transpose the matrix",
@@ -35,6 +46,16 @@ def EnzymeXLA_LapackTranspose : I32EnumAttr<"LapackTranspose",
 def EnzymeXLA_LapackTransposeAttr : EnumAttr<EnzymeXLA_Dialect,
     EnzymeXLA_LapackTranspose, "transpose"> {
   let assemblyFormat = "`<` $value `>`";
+  let extraClassDeclaration = [{
+    char getBlasChar() const {
+      switch(getValue()) {
+        case LapackTranspose::none : return 'N';
+        case LapackTranspose::transpose : return 'T';
+        case LapackTranspose::adjoint : return 'C';
+        default : llvm_unreachable("invalid LapackTranspose");
+      }
+    }
+  }];
 }
 
 def EnzymeXLA_LapackSide : I32EnumAttr<"LapackSide",
@@ -50,6 +71,15 @@ def EnzymeXLA_LapackSide : I32EnumAttr<"LapackSide",
 def EnzymeXLA_LapackSideAttr : EnumAttr<EnzymeXLA_Dialect,
     EnzymeXLA_LapackSide, "side"> {
   let assemblyFormat = "`<` $value `>`";
+  let extraClassDeclaration = [{
+    char getBlasChar() const {
+      switch (getValue()) {
+        case LapackSide::left: return 'L';
+        case LapackSide::right: return 'R';
+        default: llvm_unreachable("invalid LapackSide");
+      }
+    }
+  }];
 }
 
 def EnzymeXLA_LapackUplo : I32EnumAttr<"LapackUplo",
@@ -66,6 +96,40 @@ def EnzymeXLA_LapackUplo : I32EnumAttr<"LapackUplo",
 def EnzymeXLA_LapackUploAttr : EnumAttr<EnzymeXLA_Dialect,
     EnzymeXLA_LapackUplo, "uplo"> {
   let assemblyFormat = "`<` $value `>`";
+  let extraClassDeclaration = [{
+    char getBlasChar() const {
+      switch (getValue()) {
+        case LapackUplo::U: return 'U';
+        case LapackUplo::L: return 'L';
+        case LapackUplo::F: return 'F';
+        default: llvm_unreachable("invalid LapackUplo");
+      }
+    }
+  }];
+}
+
+def EnzymeXLA_LapackDiag : I32EnumAttr<"LapackDiag",
+    "Whether the matrix is unit triangular",
+    [
+      I32EnumAttrCase<"nonunit", 0>,
+      I32EnumAttrCase<"unit", 1>
+    ]> {
+  let genSpecializedAttr = 0;
+  let cppNamespace = "::mlir::enzymexla";
+}
+
+def EnzymeXLA_LapackDiagAttr : EnumAttr<EnzymeXLA_Dialect,
+    EnzymeXLA_LapackDiag, "diag" > {
+  let assemblyFormat = "`<` $value `>`";
+  let extraClassDeclaration = [{
+    char getBlasChar() const {
+      switch (getValue()) {
+        case LapackDiag::nonunit: return 'N';
+        case LapackDiag::unit: return 'U';
+        default: llvm_unreachable("invalid LapackDiag");
+      }
+    }
+  }];
 }
 
 def EnzymeXLA_QrAlgorithm : I32EnumAttr<"QrAlgorithm",
