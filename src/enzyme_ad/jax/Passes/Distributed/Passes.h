@@ -12,6 +12,8 @@ namespace mlir {
 namespace enzyme {
 namespace distributed {
 
+llvm::LogicalResult rewriteShardyCollectivesInFunction(func::FuncOp funcOp);
+
 #define GEN_PASS_DECL
 #include "src/enzyme_ad/jax/Passes/Distributed/Passes.h.inc"
 

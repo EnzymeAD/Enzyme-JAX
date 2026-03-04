@@ -202,4 +202,26 @@ def SubmeshCollectivePartsOp : DistributedOp<"SubmeshCollectiveParts", [SameVari
     let assemblyFormat = "$collective $submesh $input_tensor_type`->` $output_tensor_type attr-dict";
 }
 
+def SendOp : DistributedOp<"Send", []> {
+    let description = [{
+       Sends a tensor into a collective routine or a communication channel. 
+       Asynchronous.
+     }];
+    let arguments = (ins
+    CollectiveTokenType:$token,
+    TensorType:$message
+    );
+    let assemblyFormat = "$token $message type($message) attr-dict";
+}
+
+def RecvOp : DistributedOp<"Recv", []> {
+    let description = [{
+       Receives a tensor from a collective routine or a communication channel. 
+       Blocks.
+     }];
+    let arguments = (ins CollectiveTokenType:$token);
+    let results = (outs TensorType:$message);
+    let assemblyFormat = "$token type($message) attr-dict";
+}
+
 #endif // ENZYME_AD_JAX_DIALECT_DISTRIBUTED_OPS_TD
