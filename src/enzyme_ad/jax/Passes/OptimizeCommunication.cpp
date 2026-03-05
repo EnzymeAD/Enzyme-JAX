@@ -2361,7 +2361,9 @@ struct WrapCustomCallOptimize : public OpRewritePattern<enzymexla::WrapOp> {
     // TODO remove this assert once we deal with the problem
     auto pre_wrap_shape = wrap.getOperand().getType().getShape();
     auto full_pre_wrap_size = pre_wrap_shape[rotateDimension];
-    auto shard_size = rotateSharding.getTileSizes()[rotateDimension];
+    auto mesh = rotateSharding.getMesh(wrap);
+    auto shard_size =
+        rotateSharding.getDimSharding(rotateDimension).getShardedSize(mesh);
     int64_t participating_shards =
         (full_pre_wrap_size + shard_size - 1) / shard_size; // CeilOfRatio
     bool divisible_by_participating_shards =
