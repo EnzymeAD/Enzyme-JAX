@@ -368,7 +368,7 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
           "beta_imag", rewriter.getF64FloatAttr(betaImag)));
 
       aliases = rewriter.getArrayAttr(
-          {stablehlo::OutputOperandAliasAttr::get(op.getContext(), {}, 1, {})});
+          {stablehlo::OutputOperandAliasAttr::get(op.getContext(), {}, 2, {})});
       areColMajor = {false, false, false, true, true};
     }
 
