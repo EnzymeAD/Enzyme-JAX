@@ -25,10 +25,12 @@
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Visitors.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/RegionUtils.h"
 #include "shardy/dialect/sdy/ir/utils.h"
+#include "src/enzyme_ad/jax/Analysis/PartialSymmetryAnalysis.h"
 #include "src/enzyme_ad/jax/CheckedRewrite.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
@@ -65,6 +67,7 @@
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/Value.h>
 #include <numeric>
+#include <optional>
 #include <ostream>
 #define DEBUG_TYPE "enzymehloopt"
 
@@ -7458,6 +7461,42 @@ struct TransposeSymmetricSimplify
       rewriter.replaceOp(op, operand);
       return success();
     }
+    return failure();
+  }
+};
+
+struct TransposePartialSymmetrySimplify
+    : public CheckedOpRewritePattern<stablehlo::TransposeOp,
+                                     TransposePartialSymmetrySimplify> {
+  using CheckedOpRewritePattern<
+      stablehlo::TransposeOp,
+      TransposePartialSymmetrySimplify>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
+                                    PatternRewriter &rewriter) const {
+    auto operand = op.getOperand();
+    auto perm = op.getPermutation();
+
+    auto annotationOpt =
+        enzyme::PartialSymmetryAnnotation::createFromIR(operand);
+    if (!annotationOpt.has_value())
+      return failure();
+
+    auto annotation = annotationOpt.value();
+
+    bool isIdentity = true;
+    for (int64_t i = 0; i < (int64_t)perm.size(); ++i) {
+      if (annotation.getSetId(i) != annotation.getSetId(perm[i])) {
+        isIdentity = false;
+        break;
+      }
+    }
+
+    if (isIdentity) {
+      rewriter.replaceOp(op, operand);
+      return success();
+    }
+
     return failure();
   }
 };
@@ -34606,7 +34645,8 @@ struct EnzymeHLOOptPass
                  NoNanAddSubSimplify, NoNanMulSimplify, NoNanDivSimplify>(
         (no_nan || all_finite), context);
 
-    patterns.add<TransposeSymmetricSimplify>(context);
+    patterns.add<TransposeSymmetricSimplify, TransposePartialSymmetrySimplify>(
+        context);
     patterns.add<FactorScalarsInDotGeneral>(context);
 
     // clang-format off
