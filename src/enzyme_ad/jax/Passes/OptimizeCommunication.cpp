@@ -2362,8 +2362,18 @@ struct WrapCustomCallOptimize : public OpRewritePattern<enzymexla::WrapOp> {
     auto pre_wrap_shape = wrap.getOperand().getType().getShape();
     auto full_pre_wrap_size = pre_wrap_shape[rotateDimension];
     auto shard_size = rotateSharding.getTileSizes()[rotateDimension];
-    if (rightAmount < full_pre_wrap_size % shard_size)
-      return failure();
+    int64_t participating_shards =
+        (full_pre_wrap_size + shard_size - 1) / shard_size; // CeilOfRatio
+    bool divisible_by_participating_shards =
+        full_pre_wrap_size % participating_shards == 0;
+
+    if (divisible_by_participating_shards) {
+      if (rightAmount < shard_size)
+        return failure();
+    } else {
+      if (rightAmount < full_pre_wrap_size % shard_size)
+        return failure();
+    }
 
     std::string opaque = "dimension=" + std::to_string(rotateDimension) +
                          ",left_amount=" + std::to_string(leftAmount) +
