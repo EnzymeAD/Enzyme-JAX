@@ -342,7 +342,7 @@ void initializePasses() {
   mlir::registerLowerAffinePass();
   mlir::registerSCCPPass();
   mlir::registerInlinerPass();
-  mlir::registerStripDebugInfo();
+  mlir::registerStripDebugInfoPass();
   mlir::registerCanonicalizerPass();
   mlir::registerSymbolDCEPass();
   mlir::registerSymbolPrivatizePass();
