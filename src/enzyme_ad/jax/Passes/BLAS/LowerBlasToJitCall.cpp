@@ -76,6 +76,7 @@ struct SymmOpLowering : public OpRewritePattern<blas::SymmOp> {
 
   std::string backend;
   int64_t blasIntWidth;
+
   SymmOpLowering(std::string backend, int64_t blasIntWidth,
                  MLIRContext *context, PatternBenefit benefit = 1)
       : OpRewritePattern(context, benefit), backend(backend),
@@ -679,7 +680,7 @@ struct LowerBlasToJitCallPass
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
 
-    patterns.add<SyrkOpLowering, SymmOpLowering>(backend, blasIntWidth,
+    patterns.add<SymmOpLowering, SyrkOpLowering>(backend, blasIntWidth,
                                                  context);
 
     GreedyRewriteConfig config;
@@ -692,7 +693,7 @@ struct LowerBlasToJitCallPass
 
     // Verify that all illegal ops have been lowered
     auto walkResult = getOperation()->walk([&](Operation *op) {
-      if (isa<blas::SyrkOp, blas::SymmOp>(op)) {
+      if (isa<blas::SymmOp, blas::SyrkOp>(op)) {
         op->emitError("Failed to lower blas operation");
         return WalkResult::interrupt();
       }
