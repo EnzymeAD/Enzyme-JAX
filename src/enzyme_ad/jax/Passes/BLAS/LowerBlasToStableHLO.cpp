@@ -139,8 +139,8 @@ struct LowerBlasToStableHLOPass
     //   return WalkResult::advance();
     // });
 
-    if (walkResult.wasInterrupted()) {
-      signalPassFailure();
-    }
+    // if (walkResult.wasInterrupted()) {
+    //   signalPassFailure();
+    // }
   }
 };
