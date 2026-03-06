@@ -11,6 +11,7 @@
 #define ENZYMEXLA_OPS
 
 include "Enzyme/MLIR/Dialect/Dialect.td"
+include "src/enzyme_ad/jax/Dialect/BLAS/Attrs.td"
 include "Dialect.td"
 include "EnzymeXLAAttrs.td"
 
@@ -667,8 +668,8 @@ def OrmqrOp : EnzymeXLA_Op<"lapack.ormqr", [Pure]> {
     HLO_Tensor:$A,
     HLO_Tensor:$tau,
     HLO_Tensor:$C,
-    EnzymeXLA_LapackSideAttr:$side,
-    DefaultValuedAttr<EnzymeXLA_LapackTransposeAttr, "::mlir::blas::BlasTranspose::none">:$transpose
+    BLAS_SideAttr:$side,
+    DefaultValuedAttr<BLAS_TransposeAttr, "::mlir::blas::BlasTranspose::none">:$transpose
   );
 
   let results = (outs
@@ -694,8 +695,8 @@ def GemqrtOp : EnzymeXLA_Op<"lapack.gemqrt", [Pure]> {
     HLO_Tensor:$V,
     HLO_Tensor:$T,
     HLO_Tensor:$C,
-    EnzymeXLA_LapackSideAttr:$side,
-    DefaultValuedAttr<EnzymeXLA_LapackTransposeAttr, "::mlir::blas::BlasTranspose::none">:$transpose
+    BLAS_SideAttr:$side,
+    DefaultValuedAttr<BLAS_TransposeAttr, "::mlir::blas::BlasTranspose::none">:$transpose
   );
 
   let results = (outs
@@ -809,7 +810,7 @@ def PotrfOp : EnzymeXLA_Op<"lapack.potrf", [Pure]> {
 
   let arguments = (ins
     HLO_Tensor:$input,
-    EnzymeXLA_LapackUploAttr:$uplo
+    BLAS_UploAttr:$uplo
   );
 
   let results = (outs

@@ -454,6 +454,7 @@ gentbl_cc_library(
     deps = [
         ":EnzymeXLAAttrsIncGen",
         ":EnzymeXLADialectTdFiles",
+        "//src/enzyme_ad/jax/Dialect/BLAS:BlasDialectTdFiles",
         "@enzyme//:EnzymeDialectTdFiles",
         "@llvm-project//mlir:GPUOpsTdFiles",
         "@stablehlo//:stablehlo_ops_td_files",
@@ -798,6 +799,7 @@ cc_library(
         ":EnzymeXLACanonicalizers",
         ":EnzymeXLADialectUtils",
         ":EnzymeXLAOpsIncGen",
+        "//src/enzyme_ad/jax/Dialect/BLAS:BlasDialect",
         "@com_google_absl//absl/status",
         "@enzyme//:EnzymeMLIR",
         "@llvm-project//llvm:Support",
@@ -1149,7 +1151,6 @@ cc_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
-        "//src/enzyme_ad/jax/Dialect/BLAS:BlasDialectUtils",
         ":CheckedRewrite",
         ":DistributedDialectIncGen",
         ":DistributedOpsIncGen",
@@ -1178,6 +1179,7 @@ cc_library(
         ":mhlo-derivatives",
         ":stablehlo-derivatives",
         ":triton-derivatives",
+        "//src/enzyme_ad/jax/Dialect/BLAS:BlasDialectUtils",
         "//src/external/isl:Isl",
         "//src/external/polly:Polly",
         "@com_google_absl//absl/status",
