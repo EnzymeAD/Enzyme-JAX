@@ -1,11 +1,11 @@
 // RUN: enzymexlamlir-opt --lower-blas-to-jit_call="backend=cpu" --enzyme-hlo-opt %s | FileCheck %s --check-prefix=CPU
-// RUN: enzymexlamlir-opt --lower-blas-to-jit_call="backend=tpu" --enzyme-hlo-opt %s | FileCheck %s --check-prefix=TPU
+// RUN: enzymexlamlir-opt --lower-blas-to-stablehlo="symm=true" --enzyme-hlo-opt %s | FileCheck %s --check-prefix=TPU
 
 module {
     func.func @main1(%arg0: tensor<64x64xf32>, %arg1: tensor<64x32xf32>, %arg2: tensor<64x32xf32>) -> tensor<64x32xf32> {
         %alpha = stablehlo.constant dense<2.0> : tensor<f32>
         %beta = stablehlo.constant dense<3.0> : tensor<f32>
-        %0 = blas.symm %arg0, %arg1, %arg2, %alpha, %beta {side = #blas.side<left>, uplo = #blas.uplo<upper>} : (tensor<64x64xf32>, tensor<64x32xf32>, tensor<64x32xf32>, tensor<f32>, tensor<f32>) -> tensor<64x32xf32>
+        %0 = blas.symm %alpha, %arg0, %arg1, %beta, %arg2 {side = #blas.side<left>, uplo = #blas.uplo<upper>} : (tensor<f32>, tensor<64x64xf32>, tensor<64x32xf32>, tensor<f32>, tensor<64x32xf32>) -> tensor<64x32xf32>
         return %0 : tensor<64x32xf32>
     }
 }

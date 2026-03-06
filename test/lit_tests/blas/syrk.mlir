@@ -1,6 +1,6 @@
 // RUN: enzymexlamlir-opt --lower-blas-to-jit_call="backend=cpu" --enzyme-hlo-opt %s | FileCheck %s --check-prefix=CPU
 // RUN: enzymexlamlir-opt --lower-blas-to-jit_call="backend=cuda" --enzyme-hlo-opt %s | FileCheck %s --check-prefix=CUDA
-// RUN: enzymexlamlir-opt --lower-blas-to-jit_call="backend=tpu" --enzyme-hlo-opt %s | FileCheck %s --check-prefix=TPU
+// RUN: enzymexlamlir-opt --lower-blas-to-stablehlo="syrk=true" --enzyme-hlo-opt %s | FileCheck %s --check-prefix=TPU
 
 module {
     func.func @main1(%arg0: tensor<64x32xf32>, %arg1: tensor<64x64xf32>) -> tensor<64x64xf32> {
