@@ -191,7 +191,13 @@ def EnzymeHLOOptPass : Pass<"enzyme-hlo-opt"> {
         /*CLI argument=*/"enable_auto_batching_passes",
         /*type=*/"bool",
         /*default=*/"false",
-        /*description=*/"Enable auto batching passes">
+        /*description=*/"Enable auto batching passes">,
+    Option<
+        /*C++ variable name=*/"structured_tensors_detection",
+        /*CLI argument=*/"structured_tensors_detection",
+        /*type=*/"bool",
+        /*default=*/"false",
+        /*description=*/"Enable detection of structured tensor operations (syrk, symm, etc.)">
   ];
 }
 
@@ -904,7 +910,30 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*CLI argument=*/"multirotate_spmd",
        /*type=*/"int",
        /*default=*/"0",
+       /*description=*/"Convert MultiRotate to Manual Computation with CollectivePermute">,
+       Option<
+
+       /*C++ variable name=*/"wrap_custom_call",
+
+       /*CLI argument=*/"wrap_custom_call",
+
+       /*type=*/"int",
+
+       /*default=*/"0",
+
+       /*description=*/"Convert Wrap to Spmd custom call">,
+       Option<
+       /*C++ variable name=*/"multirotate_custom_call",
+       /*CLI argument=*/"multirotate_custom_call",
+       /*type=*/"int",
+       /*default=*/"0",
        /*description=*/"Convert MultiRotate to Spmd custom call">,
+       Option<
+       /*C++ variable name=*/"multislice_custom_call",
+       /*CLI argument=*/"multislice_custom_call",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Convert MultiSlice to Spmd custom call">,
        Option<
        /*C++ variable name=*/"rotate_to_pad_comm",
        /*CLI argument=*/"rotate_to_pad_comm",
@@ -1034,6 +1063,12 @@ def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
            /*type=*/"bool",
            /*default=*/"false",
            /*description=*/"Whether to enable the lockstep for raising">,
+       Option<
+           /*C++ variable name=*/"strip_llvm_debuginfo",
+           /*CLI argument=*/"strip_llvm_debuginfo",
+           /*type=*/"bool",
+           /*default=*/"false",
+           /*description=*/"Whether to strip llvm debug info">,
        Option<
            /*C++ variable name=*/"prefer_while_raising",
            /*CLI argument=*/"prefer_while_raising",
@@ -1179,6 +1214,19 @@ def DropUnsupportedAttributesPass : Pass<"drop-unsupported-attributes", "ModuleO
   ];
 }
 
+def TrimCallsites : Pass<"trim-callsites"> {
+  let summary = "Trim callsite debug info";
+  let dependentDialects = [];
+  let options = [
+    Option<
+        /*C++ variable name=*/"to_trim",
+        /*CLI argument=*/"to_trim",
+        /*type=*/"std::string",
+        /*default=*/"\"\"",
+        /*description=*/";-separated list of prefixes to trim">,
+  ];
+}
+
 def SCFCPUify : Pass<"cpuify"> {
   let summary = "remove barrier ig";
   let dependentDialects =
@@ -1207,6 +1255,15 @@ def EnzymeBatchToStableHLOPass : Pass<"enzyme-batch-to-stablehlo"> {
   let dependentDialects = [
     "stablehlo::StablehloDialect",
     "enzyme::EnzymeDialect"
+  ];
+}
+
+def PartialSymmetryAnnotatePass : Pass<"partial-symmetry-annotate", "ModuleOp"> {
+  let summary = "Annotate operations using partial symmetry analysis";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "enzymexla::EnzymeXLADialect",
+    "func::FuncDialect",
   ];
 }
 

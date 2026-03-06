@@ -1001,7 +1001,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<6> = dense<32> : vecto
 // CHECK-NEXT:              %64 = arith.ori %63, %c-2147483648_i32 : i32
 // CHECK-NEXT:              %65:2 = affine.for %arg2 = 0 to 6 iter_args(%arg3 = %c0_i32, %arg4 = %0) -> (i32, i32) {
 // CHECK-NEXT:                %110 = arith.index_cast %arg2 : index to i32
-// CHECK-NEXT:                %111 = arith.extui %110 {nonNeg} : i32 to i64
+// CHECK-NEXT:                %111 = arith.extui %110 nneg : i32 to i64
 // CHECK-NEXT:                %112 = llvm.getelementptr inbounds|nuw %1[0, %111] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, !llvm.array<6 x i32>
 // CHECK-NEXT:                %113 = llvm.load %112 {alignment = 4 : i64} : !llvm.ptr<1> -> i32
 // CHECK-NEXT:                %114 = llvm.inline_asm tail_call_kind = <tail> asm_dialect = att "{\0A\09mad.lo.cc.u32   $0, $2, $3, $4;\0A\09madc.hi.u32     $1, $2, $3,  0;\0A\09}", "=r,=r,r,r,r" %113, %64, %arg3 : (i32, i32, i32) -> !llvm.struct<(i32, i32)>
@@ -1072,7 +1072,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<6> = dense<32> : vecto
 // CHECK-NEXT:            scf.yield %25, %29 : i32, f32
 // CHECK-NEXT:          }
 // CHECK-NEXT:          %33 = arith.andi %32#0, %c3_i32 : i32
-// CHECK-NEXT:          %34 = arith.uitofp %33 {nonNeg} : i32 to f32
+// CHECK-NEXT:          %34 = arith.uitofp %33 nneg : i32 to f32 
 // CHECK-NEXT:          %35 = math.fma %34, %cst_35, %cst_73 : f32
 // CHECK-NEXT:          %36 = arith.addf %32#1, %35 {fastmathFlags = #llvm.fastmath<none>} : f32
 // CHECK-NEXT:          %37 = arith.mulf %36, %cst_29 {fastmathFlags = #llvm.fastmath<none>} : f32
@@ -1169,7 +1169,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<6> = dense<32> : vecto
 // CHECK-NEXT:              %70 = arith.ori %69, %c-2147483648_i32 : i32
 // CHECK-NEXT:              %71:2 = affine.for %arg2 = 0 to 6 iter_args(%arg3 = %c0_i32, %arg4 = %0) -> (i32, i32) {
 // CHECK-NEXT:                %116 = arith.index_cast %arg2 : index to i32
-// CHECK-NEXT:                %117 = arith.extui %116 {nonNeg} : i32 to i64
+// CHECK-NEXT:                %117 = arith.extui %116 nneg : i32 to i64
 // CHECK-NEXT:                %118 = llvm.getelementptr inbounds|nuw %1[0, %117] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, !llvm.array<6 x i32>
 // CHECK-NEXT:                %119 = llvm.load %118 {alignment = 4 : i64} : !llvm.ptr<1> -> i32
 // CHECK-NEXT:                %120 = llvm.inline_asm tail_call_kind = <tail> asm_dialect = att "{\0A\09mad.lo.cc.u32   $0, $2, $3, $4;\0A\09madc.hi.u32     $1, $2, $3,  0;\0A\09}", "=r,=r,r,r,r" %119, %70, %arg3 : (i32, i32, i32) -> !llvm.struct<(i32, i32)>
@@ -1240,7 +1240,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<6> = dense<32> : vecto
 // CHECK-NEXT:            scf.yield %31, %35 : i32, f32
 // CHECK-NEXT:          }
 // CHECK-NEXT:          %39 = arith.andi %38#0, %c3_i32 : i32
-// CHECK-NEXT:          %40 = arith.uitofp %39 {nonNeg} : i32 to f32
+// CHECK-NEXT:          %40 = arith.uitofp %39 nneg : i32 to f32
 // CHECK-NEXT:          %41 = math.fma %40, %cst_35, %cst_36 : f32
 // CHECK-NEXT:          %42 = arith.addf %38#1, %41 {fastmathFlags = #llvm.fastmath<none>} : f32
 // CHECK-NEXT:          %43 = arith.mulf %42, %cst_29 {fastmathFlags = #llvm.fastmath<none>} : f32
@@ -1308,7 +1308,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<6> = dense<32> : vecto
 // CHECK-NEXT:        %8 = arith.cmpi ugt, %arg0, %c4_i32 : i32
 // CHECK-NEXT:        %9 = arith.extui %8 : i1 to i32
 // CHECK-NEXT:        %10 = arith.addi %arg0, %9 : i32
-// CHECK-NEXT:        %11 = arith.uitofp %10 {nonNeg} : i32 to f32
+// CHECK-NEXT:        %11 = arith.uitofp %10 nneg : i32 to f32
 // CHECK-NEXT:        %12 = arith.cmpf ogt, %7, %11 {fastmathFlags = #llvm.fastmath<none>} : f32
 // CHECK-NEXT:        %13 = scf.if %12 -> (f32) {
 // CHECK-NEXT:          %14 = arith.divf %cst_76, %arg1 {fastmathFlags = #llvm.fastmath<none>} : f32
@@ -1372,7 +1372,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<6> = dense<32> : vecto
 // CHECK-NEXT:                  %81 = arith.ori %80, %c-2147483648_i32 : i32
 // CHECK-NEXT:                  %82:2 = affine.for %arg2 = 0 to 6 iter_args(%arg3 = %c0_i32, %arg4 = %0) -> (i32, i32) {
 // CHECK-NEXT:                    %127 = arith.index_cast %arg2 : index to i32
-// CHECK-NEXT:                    %128 = arith.extui %127 {nonNeg} : i32 to i64
+// CHECK-NEXT:                    %128 = arith.extui %127 nneg : i32 to i64
 // CHECK-NEXT:                    %129 = llvm.getelementptr inbounds|nuw %1[0, %128] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, !llvm.array<6 x i32>
 // CHECK-NEXT:                    %130 = llvm.load %129 {alignment = 4 : i64} : !llvm.ptr<1> -> i32
 // CHECK-NEXT:                    %131 = llvm.inline_asm tail_call_kind = <tail> asm_dialect = att "{\0A\09mad.lo.cc.u32   $0, $2, $3, $4;\0A\09madc.hi.u32     $1, $2, $3,  0;\0A\09}", "=r,=r,r,r,r" %130, %81, %arg3 : (i32, i32, i32) -> !llvm.struct<(i32, i32)>
@@ -1443,7 +1443,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<6> = dense<32> : vecto
 // CHECK-NEXT:                scf.yield %42, %46 : i32, f32
 // CHECK-NEXT:              }
 // CHECK-NEXT:              %50 = arith.andi %49#0, %c3_i32 : i32
-// CHECK-NEXT:              %51 = arith.uitofp %50 {nonNeg} : i32 to f32
+// CHECK-NEXT:              %51 = arith.uitofp %50 nneg : i32 to f32
 // CHECK-NEXT:              %52 = math.fma %51, %cst_35, %cst_36 : f32
 // CHECK-NEXT:              %53 = arith.addf %49#1, %52 {fastmathFlags = #llvm.fastmath<none>} : f32
 // CHECK-NEXT:              %54 = arith.mulf %53, %cst_29 {fastmathFlags = #llvm.fastmath<none>} : f32
@@ -1541,7 +1541,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<6> = dense<32> : vecto
 // CHECK-NEXT:                  %81 = arith.ori %80, %c-2147483648_i32 : i32
 // CHECK-NEXT:                  %82:2 = affine.for %arg2 = 0 to 6 iter_args(%arg3 = %c0_i32, %arg4 = %0) -> (i32, i32) {
 // CHECK-NEXT:                    %127 = arith.index_cast %arg2 : index to i32
-// CHECK-NEXT:                    %128 = arith.extui %127 {nonNeg} : i32 to i64
+// CHECK-NEXT:                    %128 = arith.extui %127 nneg : i32 to i64
 // CHECK-NEXT:                    %129 = llvm.getelementptr inbounds|nuw %1[0, %128] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, !llvm.array<6 x i32>
 // CHECK-NEXT:                    %130 = llvm.load %129 {alignment = 4 : i64} : !llvm.ptr<1> -> i32
 // CHECK-NEXT:                    %131 = llvm.inline_asm tail_call_kind = <tail> asm_dialect = att "{\0A\09mad.lo.cc.u32   $0, $2, $3, $4;\0A\09madc.hi.u32     $1, $2, $3,  0;\0A\09}", "=r,=r,r,r,r" %130, %81, %arg3 : (i32, i32, i32) -> !llvm.struct<(i32, i32)>
@@ -1612,7 +1612,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<6> = dense<32> : vecto
 // CHECK-NEXT:                scf.yield %42, %46 : i32, f32
 // CHECK-NEXT:              }
 // CHECK-NEXT:              %50 = arith.andi %49#0, %c3_i32 : i32
-// CHECK-NEXT:              %51 = arith.uitofp %50 {nonNeg} : i32 to f32
+// CHECK-NEXT:              %51 = arith.uitofp %50 nneg : i32 to f32
 // CHECK-NEXT:              %52 = math.fma %51, %cst_35, %cst_73 : f32
 // CHECK-NEXT:              %53 = arith.addf %49#1, %52 {fastmathFlags = #llvm.fastmath<none>} : f32
 // CHECK-NEXT:              %54 = arith.mulf %53, %cst_29 {fastmathFlags = #llvm.fastmath<none>} : f32
@@ -1644,7 +1644,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<6> = dense<32> : vecto
 // CHECK-NEXT:          }
 // CHECK-NEXT:          %24:3 = scf.while (%arg2 = %23, %arg3 = %22, %arg4 = %c2_i32) : (f32, f32, i32) -> (f32, f32, i32) {
 // CHECK-NEXT:            %25 = arith.addi %arg4, %c-1_i32 : i32
-// CHECK-NEXT:            %26 = arith.uitofp %25 {nonNeg} : i32 to f32
+// CHECK-NEXT:            %26 = arith.uitofp %25 nneg : i32 to f32
 // CHECK-NEXT:            %27 = arith.mulf %arg3, %26 {fastmathFlags = #llvm.fastmath<none>} : f32
 // CHECK-NEXT:            %28 = arith.negf %arg2 {fastmathFlags = #llvm.fastmath<none>} : f32
 // CHECK-NEXT:            %29 = math.fma %27, %14, %28 : f32
@@ -1658,7 +1658,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<6> = dense<32> : vecto
 // CHECK-NEXT:          scf.yield %24#1 : f32
 // CHECK-NEXT:        } else {
 // CHECK-NEXT:          %14 = arith.muli %arg0, %c40_i32 : i32
-// CHECK-NEXT:          %15 = arith.uitofp %14 {nonNeg} : i32 to f32
+// CHECK-NEXT:          %15 = arith.uitofp %14 nneg : i32 to f32
 // CHECK-NEXT:          %16 = llvm.call_intrinsic "llvm.nvvm.sqrt.approx.f"(%15) : (f32) -> f32
 // CHECK-NEXT:          %17 = arith.fptosi %16 : f32 to i32
 // CHECK-NEXT:          %18 = arith.addi %arg0, %17 : i32
@@ -1666,7 +1666,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<6> = dense<32> : vecto
 // CHECK-NEXT:          %20 = scf.if %19 -> (f32) {
 // CHECK-NEXT:            %21 = arith.andi %18, %c2147483646_i32 : i32
 // CHECK-NEXT:            %22:5 = scf.while (%arg2 = %cst_23, %arg3 = %21, %arg4 = %cst_18, %arg5 = %cst_18, %arg6 = %cst_18) : (f32, i32, f32, f32, f32) -> (f32, i32, f32, f32, f32) {
-// CHECK-NEXT:              %25 = arith.uitofp %arg3 {nonNeg} : i32 to f32
+// CHECK-NEXT:              %25 = arith.uitofp %arg3 nneg : i32 to f32
 // CHECK-NEXT:              %26 = arith.mulf %25, %cst_76 {fastmathFlags = #llvm.fastmath<none>} : f32
 // CHECK-NEXT:              %27 = arith.divf %26, %arg1 {fastmathFlags = #llvm.fastmath<none>} : f32
 // CHECK-NEXT:              %28 = arith.mulf %arg2, %27 {fastmathFlags = #llvm.fastmath<none>} : f32

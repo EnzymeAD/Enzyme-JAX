@@ -1,37 +1,25 @@
-// RUN: enzymexlamlir-opt --pass-pipeline='builtin.module(enzyme{postpasses="arith-raise{stablehlo=true},canonicalize,cse,canonicalize,remove-unnecessary-enzyme-ops,enzyme-simplify-math,canonicalize,cse,canonicalize"},remove-unnecessary-enzyme-ops,inline,enzyme-hlo-opt)' %s | FileCheck %s
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=rfft outfn=rfft_fwddiff retTys=enzyme_dup argTys=enzyme_dup mode=ForwardMode" | FileCheck %s --check-prefix=FORWARD-RFFT
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=rfft outfn=rfft_revdiff retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --arith-raise --verify-each=0 --canonicalize --remove-unnecessary-enzyme-ops --enzyme-hlo-opt | FileCheck %s --check-prefix=REVERSE-RFFT
 
-module @"reactant_\E2\88\87test_fft" attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas = 1 : i64} {
-  func.func private @"Const{typeof(test_fft)}(Main.test_fft)_autodiff"(%arg0: tensor<3x4xf32>) -> (tensor<f32>, tensor<3x4xf32>) {
-    %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
-    %0 = stablehlo.fft %arg0, type =  RFFT, length = [3, 4] : (tensor<3x4xf32>) -> tensor<3x3xcomplex<f32>>
-    %1 = stablehlo.fft %0, type =  IRFFT, length = [3, 4] : (tensor<3x3xcomplex<f32>>) -> tensor<3x4xf32>
-    %2 = stablehlo.multiply %1, %1 : tensor<3x4xf32>
-    %3 = stablehlo.reduce(%2 init: %cst) applies stablehlo.add across dimensions = [0, 1] : (tensor<3x4xf32>, tensor<f32>) -> tensor<f32>
-    return %3, %arg0 : tensor<f32>, tensor<3x4xf32>
-  }
-  func.func @main(%arg0: tensor<3x4xf32> {tf.aliasing_output = 1 : i32}) -> (tensor<3x4xf32>, tensor<3x4xf32>) {
-    %cst = stablehlo.constant dense<1.000000e+00> : tensor<f32>
-    %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<3x4xf32>
-    %0:2 = enzyme.autodiff @"Const{typeof(test_fft)}(Main.test_fft)_autodiff"(%arg0, %cst, %cst_0) {activity = [#enzyme<activity enzyme_active>], ret_activity = [#enzyme<activity enzyme_activenoneed>, #enzyme<activity enzyme_active>]} : (tensor<3x4xf32>, tensor<f32>, tensor<3x4xf32>) -> (tensor<3x4xf32>, tensor<3x4xf32>)
-    return %0#1, %0#0 : tensor<3x4xf32>, tensor<3x4xf32>
-  }
+func.func @rfft(%x : tensor<4xf32>) -> tensor<3xcomplex<f32>> {
+  %y = "stablehlo.fft"(%x) {
+    fft_type = #stablehlo<fft_type RFFT>,
+    fft_length = array<i64 : 4>
+  } : (tensor<4xf32>) -> tensor<3xcomplex<f32>>
+  func.return %y : tensor<3xcomplex<f32>>
 }
 
-// CHECK: func.func @main(%arg0: tensor<3x4xf32> {tf.aliasing_output = 1 : i32}) -> (tensor<3x4xf32>, tensor<3x4xf32>) {
-// CHECK-NEXT{LITERAL}:    %cst = stablehlo.constant dense<[[(0.0833333358,0.000000e+00), (0.166666672,0.000000e+00), (0.0833333358,0.000000e+00)], [(0.0833333358,0.000000e+00), (0.166666672,0.000000e+00), (0.0833333358,0.000000e+00)], [(0.0833333358,0.000000e+00), (0.166666672,0.000000e+00), (0.0833333358,0.000000e+00)]]> : tensor<3x3xcomplex<f32>>
-// CHECK-NEXT:    %cst_0 = stablehlo.constant dense<(0.000000e+00,0.000000e+00)> : tensor<complex<f32>>
+// FORWARD-RFFT:  func.func private @rfft_fwddiff(%arg0: tensor<4xf32>, %arg1: tensor<4xf32>) -> (tensor<3xcomplex<f32>>, tensor<3xcomplex<f32>>) {
+// FORWARD-RFFT-NEXT:       %0 = stablehlo.fft %arg1, type =  RFFT, length = [4] : (tensor<4xf32>) -> tensor<3xcomplex<f32>>
+// FORWARD-RFFT-NEXT:       %1 = stablehlo.fft %arg0, type =  RFFT, length = [4] : (tensor<4xf32>) -> tensor<3xcomplex<f32>>
+// FORWARD-RFFT-NEXT:       return %1, %0 : tensor<3xcomplex<f32>>, tensor<3xcomplex<f32>>
+// FORWARD-RFFT-NEXT:   }
 
-// CHECK-NEXT:    %0 = stablehlo.fft %arg0, type =  RFFT, length = [3, 4] : (tensor<3x4xf32>) -> tensor<3x3xcomplex<f32>>
-// CHECK-NEXT:    %1 = stablehlo.fft %0, type =  IRFFT, length = [3, 4] : (tensor<3x3xcomplex<f32>>) -> tensor<3x4xf32>
-// CHECK-NEXT:    %2 = stablehlo.add %1, %1 : tensor<3x4xf32>
-
-// CHECK-NEXT:    %3 = stablehlo.fft %2, type =  RFFT, length = [3, 4] : (tensor<3x4xf32>) -> tensor<3x3xcomplex<f32>>
-// CHECK-NEXT:    %4 = stablehlo.multiply %3, %cst : tensor<3x3xcomplex<f32>>
-
-// CHECK-NEXT:    %5 = chlo.conj %4 : tensor<3x3xcomplex<f32>> -> tensor<3x3xcomplex<f32>>
-// CHECK-NEXT:    %6 = stablehlo.pad %5, %cst_0, low = [0, 0], high = [0, 1], interior = [0, 0] : (tensor<3x3xcomplex<f32>>, tensor<complex<f32>>) -> tensor<3x4xcomplex<f32>>
-// CHECK-NEXT:    %7 = stablehlo.fft %6, type =  FFT, length = [3, 4] : (tensor<3x4xcomplex<f32>>) -> tensor<3x4xcomplex<f32>>
-// CHECK-NEXT:    %8 = stablehlo.real %7 : (tensor<3x4xcomplex<f32>>) -> tensor<3x4xf32>
-
-// CHECK-NEXT:    return %8, %arg0 : tensor<3x4xf32>, tensor<3x4xf32>
-// CHECK-NEXT:  }
+// REVERSE-RFFT:  func.func private @rfft_revdiff(%arg0: tensor<4xf32>, %arg1: tensor<3xcomplex<f32>>) -> tensor<4xf32> {
+// REVERSE-RFFT-NEXT:    %cst = stablehlo.constant dense<(0.000000e+00,0.000000e+00)> : tensor<complex<f32>>
+// REVERSE-RFFT-NEXT:    %0 = chlo.conj %arg1 : tensor<3xcomplex<f32>> -> tensor<3xcomplex<f32>>
+// REVERSE-RFFT-NEXT:    %1 = stablehlo.pad %0, %cst, low = [0], high = [1], interior = [0] : (tensor<3xcomplex<f32>>, tensor<complex<f32>>) -> tensor<4xcomplex<f32>>
+// REVERSE-RFFT-NEXT:    %2 = stablehlo.fft %1, type = FFT, length = [4] {enzymexla.complex_is_purely_imaginary = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<4xcomplex<f32>>) -> tensor<4xcomplex<f32>>
+// REVERSE-RFFT-NEXT:    %3 = stablehlo.real %2 : (tensor<4xcomplex<f32>>) -> tensor<4xf32>
+// REVERSE-RFFT-NEXT:    return %3 : tensor<4xf32>
+// REVERSE-RFFT-NEXT:  }

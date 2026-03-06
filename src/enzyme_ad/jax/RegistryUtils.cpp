@@ -59,6 +59,10 @@
 #include "mlir/Dialect/Transform/IR/TransformDialect.h"
 #include "mlir/Dialect/Transform/Transforms/Passes.h"
 
+#include "mlir/Conversion/PDLToPDLInterp/PDLToPDLInterp.h"
+#include "mlir/Dialect/PDL/IR/PDL.h"
+#include "mlir/Dialect/PDLInterp/IR/PDLInterp.h"
+
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Pass/PassRegistry.h"
@@ -90,6 +94,7 @@
 
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Passes/Tessera/Passes.h"
 
 #include "src/enzyme_ad/jax/Dialect/Distributed/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Perfify/Dialect.h"
@@ -120,6 +125,9 @@
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/Transforms/Passes.h"
 #include "triton/Target/LLVMIR/Passes.h"
+
+#include "cuda_tile/Dialect/CudaTile/IR/Dialect.h"
+#include "cuda_tile/Dialect/CudaTile/Transforms/Passes.h"
 
 #include "src/enzyme_ad/jax/TransformOps/TransformOps.h"
 
@@ -221,10 +229,10 @@ void registerDialects(mlir::DialectRegistry &registry) {
   registry.insert<mlir::stablehlo::check::CheckDialect>();
   registry.insert<mlir::chlo::ChloDialect>();
   registry.insert<mlir::vector::VectorDialect>();
-  // FIXME: add once https://github.com/triton-lang/triton/issues/8348 is fixed
-  // upstream
-  // registry.insert<mlir::nvgpu::NVGPUDialect>();
+  registry.insert<mlir::nvgpu::NVGPUDialect>();
   registry.insert<mlir::transform::TransformDialect>();
+  registry.insert<mlir::pdl::PDLDialect>();
+  registry.insert<mlir::pdl_interp::PDLInterpDialect>();
   registry.insert<mlir::ub::UBDialect>();
   registry.insert<mlir::sparse_tensor::SparseTensorDialect>();
   registry.insert<mlir::enzyme::EnzymeDialect>();
@@ -238,6 +246,7 @@ void registerDialects(mlir::DialectRegistry &registry) {
   registry.insert<mlir::triton::TritonDialect>();
   registry.insert<mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect>();
   registry.insert<mlir::triton::gpu::TritonGPUDialect>();
+  registry.insert<mlir::cuda_tile::CudaTileDialect>();
 }
 
 void loadAllRegisteredDialects(mlir::MLIRContext &context) {
@@ -263,10 +272,10 @@ void loadAllRegisteredDialects(mlir::MLIRContext &context) {
   context.loadDialect<mlir::stablehlo::check::CheckDialect>();
   context.loadDialect<mlir::chlo::ChloDialect>();
   context.loadDialect<mlir::vector::VectorDialect>();
-  // FIXME: add once https://github.com/triton-lang/triton/issues/8348 is fixed
-  // upstream
-  // context.loadDialect<mlir::nvgpu::NVGPUDialect>();
+  context.loadDialect<mlir::nvgpu::NVGPUDialect>();
   context.loadDialect<mlir::transform::TransformDialect>();
+  context.loadDialect<mlir::pdl::PDLDialect>();
+  context.loadDialect<mlir::pdl_interp::PDLInterpDialect>();
   context.loadDialect<mlir::ub::UBDialect>();
   context.loadDialect<mlir::sparse_tensor::SparseTensorDialect>();
   context.loadDialect<mlir::enzyme::EnzymeDialect>();
@@ -277,6 +286,7 @@ void loadAllRegisteredDialects(mlir::MLIRContext &context) {
   context.loadDialect<mlir::triton::TritonDialect>();
   context.loadDialect<mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect>();
   context.loadDialect<mlir::triton::gpu::TritonGPUDialect>();
+  context.loadDialect<mlir::cuda_tile::CudaTileDialect>();
 }
 
 void registerInterfaces(mlir::DialectRegistry &registry) {
@@ -325,6 +335,7 @@ void registerInterfaces(mlir::DialectRegistry &registry) {
 void initializePasses() {
   registerenzymePasses();
   enzyme::registerenzymexlaPasses();
+  mlir::enzyme::tessera::registertesseraPasses();
 
   // Register the standard passes we want.
   mlir::registerCSEPass();
@@ -348,6 +359,7 @@ void initializePasses() {
   mlir::registerConvertIndexToLLVMPass();
   mlir::registerArithToLLVMConversionPass();
   mlir::registerConvertNVVMToLLVMPass();
+  mlir::registerConvertPDLToPDLInterpPass();
 
   mlir::registerGPUPasses();
 
@@ -403,6 +415,9 @@ void initializePasses() {
   mlir::triton::registerConvertTritonGPUToLLVMPass();
   mlir::triton::registerConvertNVGPUToLLVMPass();
   mlir::registerLLVMDIScopePass();
+
+  // CUDA Tile passes
+  mlir::cuda_tile::registerCudaTilePasses();
 }
 
 } // namespace enzyme

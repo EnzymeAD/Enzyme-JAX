@@ -26,6 +26,7 @@
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Conversion/MathToLLVM/MathToLLVM.h"
 #include "mlir/Conversion/MathToLibm/MathToLibm.h"
+#include "mlir/Conversion/MathToNVVM/MathToNVVM.h"
 #include "mlir/Conversion/MathToROCDL/MathToROCDL.h"
 #include "mlir/Conversion/MemRefToLLVM/MemRefToLLVM.h"
 #include "mlir/Conversion/OpenMPToLLVM/ConvertOpenMPToLLVM.h"
@@ -2891,7 +2892,9 @@ private:
     stream << fn << "\n" << '\0';
 
     auto stringval = mlir::LLVM::createGlobalString(
-        loc, rewriter, "xlamod", str, LLVM::Linkage::Internal);
+        loc, rewriter,
+        "xlamod$" + cast<FlatSymbolRefAttr>(wrap.getFn()).getValue().str(), str,
+        LLVM::Linkage::Internal);
 
     auto ptrty = LLVM::LLVMPointerType::get(rewriter.getContext());
 
@@ -4123,7 +4126,8 @@ struct ConvertPolygeistToLLVMPass
         mod->emitError() << "failed to apply conversion patterns";
         return signalPassFailure();
       }
-      if (failed(applyPatternsAndFoldGreedily(mod, {}))) {
+      if (failed(applyPatternsGreedily(
+              mod, {}, GreedyRewriteConfig().enableFolding()))) {
         mod->emitError() << "failed to apply folding";
         return signalPassFailure();
       }
@@ -4281,8 +4285,7 @@ struct ConvertPolygeistToLLVMPass
     }
 
     if (StringRef(gpuTarget).starts_with("xla")) {
-      const char *toErase[] = {"cudaDeviceSetLimit", "cudaDeviceSynchronize",
-                               "cudaThreadSynchronize"};
+      const char *toErase[] = {"cudaDeviceSetLimit", "cudaThreadSynchronize"};
       m->walk([=](LLVM::CallOp call) {
         if (auto callee = call.getCallee()) {
           for (auto e : toErase) {
@@ -4311,16 +4314,18 @@ struct ConvertPolygeistToLLVMPass
       });
     }
     if (StringRef(gpuTarget).starts_with("xla") || gpuTarget == "cpu") {
-      const char *toErase[] = {"cudaGetLastError"};
+      const char *toErase[] = {"cudaGetLastError", "cudaDeviceSynchronize"};
       m->walk([=](LLVM::CallOp call) {
         if (auto callee = call.getCallee()) {
           for (auto e : toErase) {
             if (callee == e) {
 
               OpBuilder builder(call);
-              auto replace =
-                  LLVM::ZeroOp::create(builder, call.getLoc(), call.getType(0));
-              call->replaceAllUsesWith(replace);
+              if (call.getNumResults()) {
+                auto replace = LLVM::ZeroOp::create(builder, call.getLoc(),
+                                                    call.getType(0));
+                call->replaceAllUsesWith(replace);
+              }
               call->erase();
             }
           }

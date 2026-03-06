@@ -37,7 +37,7 @@ func.func @test_while_induction_2(%other_value: tensor<i32>, %dynamic_limit: ten
 // CHECK-DAG: %[[C7:.*]] = stablehlo.constant dense<7> : tensor<i32>
 // CHECK-DAG: %[[C3:.*]] = stablehlo.constant dense<3> : tensor<i32>
 // CHECK-DAG: %[[C2:.*]] = stablehlo.constant dense<2> : tensor<i32>
-// CHECK-DAG: %[[C5:.*]] = stablehlo.constant dense<5> : tensor<i32>
+// CHECK-DAG: %[[C8:.*]] = stablehlo.constant dense<8> : tensor<i32>
 // CHECK-NEXT: %[[CUSTOM_INIT:.*]] = "test.unknown_state"() : () -> tensor<i32>
 
 // CHECK: %[[WHILE:.*]]:2 = stablehlo.while(%[[ITER_CTR:.*]] = %[[C7]], %[[ITER_CUSTOM:.*]] = %[[CUSTOM_INIT]])
@@ -47,10 +47,10 @@ func.func @test_while_induction_2(%other_value: tensor<i32>, %dynamic_limit: ten
 // CHECK: } do {
 // CHECK:   %[[OFFSET:.*]] = stablehlo.subtract %[[ITER_CTR]], %[[C7]]
 // CHECK:   %[[SCALED:.*]] = stablehlo.multiply %[[OFFSET]], %[[C2]]
-// CHECK:   %[[CALCULATED_SUM:.*]] = stablehlo.add %[[C3]], %[[SCALED]]
 // CHECK:   %[[NEW_CTR:.*]] = stablehlo.add %[[ITER_CTR]], %[[C2]]
+// CHECK:   %[[CALCULATED_SUM:.*]] = stablehlo.add %[[SCALED]], %[[C8]]
 // CHECK:   %[[UPDATE1:.*]] = "test.unknown_update"(%[[ITER_CUSTOM]], %[[ITER_CTR]])
-// CHECK:   %[[UPDATE2:.*]] = "test.unknown_update"(%[[UPDATE1]], %{{.*}})
+// CHECK:   %[[UPDATE2:.*]] = "test.unknown_update"(%[[UPDATE1]], %[[CALCULATED_SUM]])
 // CHECK:   stablehlo.return %[[NEW_CTR]], %[[UPDATE2]]
 // CHECK: }
 

@@ -109,11 +109,13 @@ def optimization_passes(
     enable_licm_optimization_passes: bool = True,
     enable_scatter_gather_optimization_passes: bool = True,
     enable_pad_optimization_passes: bool = True,
-    enable_structured_tensors_passes: bool = False,
+    enable_structured_tensors_detection_passes: bool = False,
+    enable_structured_tensors_passes: bool = True,
     enable_slice_to_batch_passes: bool = False,  # this are somewhat expensive to run
     enable_reduce_slice_fusion_passes: bool = True,
     enable_concat_to_batch_passes: bool = True,
     enable_loop_raising_passes: bool = True,
+    aggressive_propagation: bool = True,
 ):
     transform_passes_list = [
         "compare_op_canon<16>",
@@ -130,6 +132,7 @@ def optimization_passes(
         "real_op_canon<16>",
         "imag_op_canon<16>",
         "conj_complex_negate<16>",
+        "negate_imag_conj<16>",
         "get_dimension_size_op_canon<16>",
         "reshape_op_canon<16>",
         "merge_consecutive_reshapes<16>",
@@ -300,8 +303,10 @@ def optimization_passes(
         "power_multiply_to_power",
         "common_associative_commutative_op_reorder",
         "log_simplify",
+        "exponential_minus_one_fuse",
         "neg_mul_const_simplify",
         "neg_div_const_simplify",
+        "negated_constant_mul_factoring",
         "reshape_deletions_broadcast_in_dim_simplify",
         "reshape_insertions_broadcast_in_dim_simplify",
         "dot_general_reshape",
@@ -329,7 +334,6 @@ def optimization_passes(
         "split_variadic_scatter_op",
         "dynamic_slice_simplify",
         "enzyme_hlo_unroll(4)",
-        "dot_general_only_diagonal_access",
         "divide_negated_operands_simplify",
         "multiply_negated_operands_simplify",
         "factor_scalars_in_dot_general",
@@ -339,7 +343,6 @@ def optimization_passes(
         "while_dus_ds_simplify",
         "while_dus_dus_simplify",
         "reshape_slice_reshape",
-        "syrk_simplify_output_uplo",
         "dynamic_slice_elementwise",
         "dot_general_remove_batch_dimensions",
         "delete_dims_reduce",
@@ -348,6 +351,8 @@ def optimization_passes(
         "fuse_reshape_collapse_or_expand_dims_into_reduce",
         "extend_to_broadcast",
         "reduce_max_min_mul_positive_scalar",
+        "add_complex_simplify",
+        "sub_complex_simplify",
     ]
 
     # constant propagation patterns
@@ -394,16 +399,31 @@ def optimization_passes(
         "sub_const_prop",
         "xor_const_prop",
         # other constant propagations
-        "const_prop_through_barrier<16>",
+        # "const_prop_through_barrier<16>",
         f"concat_const_prop<1>({max_constant_threshold})",
         f"dynamic_update_slice_const_prop({max_constant_threshold})",
         "clamp_const_prop",
     ]
 
     if (
-        enable_structured_tensors_passes
+        enable_structured_tensors_detection_passes
     ):  # currently we dont register custom_calls on jax end
-        transform_passes_list += ["dot_general_to_syrk"]
+        transform_passes_list += [
+            "dot_general_to_syrk",
+            "dot_general_to_symm",
+        ]
+
+    if enable_structured_tensors_passes:
+        transform_passes_list += [
+            "fuse_add_into_symm",
+            "fuse_mul_into_symm",
+            "transpose_syrk_to_syrk",
+            "fuse_mul_into_syrk",
+            "fuse_add_into_syrk",
+            "dot_general_only_diagonal_access",
+            "transpose_symmetric_simplify",
+            "syrk_simplify_output_uplo",
+        ]
 
     if enable_slice_to_batch_passes:
         transform_passes_list += [
@@ -417,6 +437,7 @@ def optimization_passes(
             "reducewindow_slice_to_batch",
             "elementwise_slice_to_batch",
             "convolution_slice_to_batch",
+            "scatter_slice_to_batch",
         ]
 
     if enable_concat_to_batch_passes:
@@ -429,6 +450,7 @@ def optimization_passes(
             "concat_insert_dim_reduce_window",
             "concat_insert_dim_elementwise",
             "concat_insert_dim_convolution",
+            "concat_insert_dim_scatter",
         ]
 
     if enable_reduce_slice_fusion_passes:
@@ -484,6 +506,7 @@ def optimization_passes(
             "scatter_indices_are_unique",
             "diagonal_tensor_dot_general_rewrite",
             "split_complex_scatter",
+            "split_complex_gather",
             ## const prop patterns
             "scatter_update_computation_const_prop",
             # gather patterns
@@ -587,6 +610,7 @@ def optimization_passes(
             "transpose_select",
             "transpose_while",
             "transpose_slice",
+            "transpose_like_broadcast_slice",
             "transpose_concat",
             "transpose_iota",
             "transpose_reduce",
@@ -598,6 +622,7 @@ def optimization_passes(
             "transpose_extend",
             "transpose_rotate",
             "transpose_dynamic_slice",
+            "transpose_like_broadcast_dynamic_slice",
             "transpose_reverse",
             "transpose_batch_norm_training",
             "transpose_batch_norm_inference",
@@ -606,6 +631,13 @@ def optimization_passes(
             "transpose_fft",
             "transpose_reshape",
         ]
+
+        if aggressive_propagation:
+            transform_passes_list.append("transpose_elementwise(0)")
+            transform_passes_list.append("transpose_like_broadcast_elementwise(0)")
+        else:
+            transform_passes_list.append("transpose_elementwise(1)")
+            transform_passes_list.append("transpose_like_broadcast_elementwise(1)")
     elif transpose_propagate == "down":
         transform_passes_list += [
             "reorder_elementwise_and_shape_op<16>",

@@ -2,8 +2,8 @@
 
 module {
   func.func @main() {
-    %c_2 = stablehlo.constant dense<-1> : tensor<i64>
-    enzymexla.mpi.wait(%c_2) : tensor<i64>
+    %c_2 = stablehlo.constant dense<-1> : tensor<i32>
+    enzymexla.mpi.wait(%c_2) : tensor<i32>
     return
   }
 }
@@ -17,8 +17,8 @@ module {
 // CPU-NEXT:      llvm.return
 // CPU-NEXT:    }
 // CPU-NEXT:    func.func @main() {
-// CPU-NEXT:      %c = stablehlo.constant dense<-1> : tensor<i64>
-// CPU-NEXT:      enzymexla.jit_call @enzymexla_wrapper_MPI_Wait (%c) : (tensor<i64>) -> ()
+// CPU-NEXT:      %c = stablehlo.constant dense<-1> : tensor<i32>
+// CPU-NEXT:      enzymexla.jit_call @enzymexla_wrapper_MPI_Wait (%c) : (tensor<i32>) -> ()
 // CPU-NEXT:      return
 // CPU-NEXT:    }
 // CPU-NEXT:  }

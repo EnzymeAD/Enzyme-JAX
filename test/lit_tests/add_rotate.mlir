@@ -1,7 +1,7 @@
 // RUN: enzymexlamlir-opt --enzyme-hlo-opt="enable_convert_to_convolution=true" %s | FileCheck %s
 
 func.func @main1(%arg0: tensor<1520x3056xf64>) -> tensor<1520x3056xf64> {
-    %0 = "enzymexla.rotate"(%arg0) <{amount = 235 : si32, dimension = 1 : si32}> : (tensor<1520x3056xf64>) -> tensor<1520x3056xf64>
+    %0 = "enzymexla.rotate"(%arg0) <{amount = 235 : i32, dimension = 1 : i32}> : (tensor<1520x3056xf64>) -> tensor<1520x3056xf64>
     %1 = stablehlo.add %arg0, %0 : tensor<1520x3056xf64>
     return %1 : tensor<1520x3056xf64>
 }
@@ -20,7 +20,7 @@ func.func @main1(%arg0: tensor<1520x3056xf64>) -> tensor<1520x3056xf64> {
 func.func @main2(%arg0: tensor<1520x3056xf64>) -> tensor<1520x3056xf64> {
     %cst_1 = stablehlo.constant dense<5.000000e+00> : tensor<1520x3056xf64>
     %cst_2 = stablehlo.constant dense<-2.000000e+00> : tensor<1520x3056xf64>
-    %0 = "enzymexla.rotate"(%arg0) <{amount = 235 : si32, dimension = 1 : si32}> : (tensor<1520x3056xf64>) -> tensor<1520x3056xf64>
+    %0 = "enzymexla.rotate"(%arg0) <{amount = 235 : i32, dimension = 1 : i32}> : (tensor<1520x3056xf64>) -> tensor<1520x3056xf64>
     %1 = stablehlo.multiply %0, %cst_2 : tensor<1520x3056xf64>
     %2 = stablehlo.multiply %cst_1, %arg0 : tensor<1520x3056xf64>
     %3 = stablehlo.add %2, %1 : tensor<1520x3056xf64>
@@ -38,7 +38,7 @@ func.func @main2(%arg0: tensor<1520x3056xf64>) -> tensor<1520x3056xf64> {
 
 func.func @main3(%arg0: tensor<1520x3056xf64>) -> tensor<1520x3056xf64> {
     %cst_1 = stablehlo.constant dense<5.000000e+00> : tensor<1520x3056xf64>
-    %0 = "enzymexla.rotate"(%arg0) <{amount = 235 : si32, dimension = 1 : si32}> : (tensor<1520x3056xf64>) -> tensor<1520x3056xf64>
+    %0 = "enzymexla.rotate"(%arg0) <{amount = 235 : i32, dimension = 1 : i32}> : (tensor<1520x3056xf64>) -> tensor<1520x3056xf64>
     %1 = stablehlo.multiply %cst_1, %arg0 : tensor<1520x3056xf64>
     %2 = stablehlo.add %0, %1 : tensor<1520x3056xf64>
     return %2 : tensor<1520x3056xf64>
@@ -54,7 +54,7 @@ func.func @main3(%arg0: tensor<1520x3056xf64>) -> tensor<1520x3056xf64> {
 // CHECK-NEXT:  }
 
 func.func @main4(%arg0: tensor<1520x3056xf64>, %arg1: tensor<f64>) -> tensor<1520x3056xf64> {
-    %0 = "enzymexla.rotate"(%arg0) <{amount = 235 : si32, dimension = 1 : si32}> : (tensor<1520x3056xf64>) -> tensor<1520x3056xf64>
+    %0 = "enzymexla.rotate"(%arg0) <{amount = 235 : i32, dimension = 1 : i32}> : (tensor<1520x3056xf64>) -> tensor<1520x3056xf64>
     %1 = stablehlo.broadcast_in_dim %arg1, dims = [] : (tensor<f64>) -> tensor<1520x3056xf64>
     %2 = stablehlo.multiply %1, %arg0 : tensor<1520x3056xf64>
     %3 = stablehlo.add %0, %2 : tensor<1520x3056xf64>

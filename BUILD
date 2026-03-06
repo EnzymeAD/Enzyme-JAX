@@ -48,6 +48,7 @@ cc_binary(
         "@llvm-project//mlir:GPUToLLVMIRTranslation",
         "@llvm-project//mlir:LLVMToLLVMIRTranslation",
         "@llvm-project//mlir:MlirOptLib",
+        "@llvm-project//mlir:Transforms",
         "@llvm-project//mlir:NVVMToLLVMIRTranslation",
         "@tsl//tsl/platform:env",
         "@tsl//tsl/platform:env_impl",
@@ -74,6 +75,9 @@ cc_library(
     srcs = [
         "//src/enzyme_ad/jax:RegistryUtils.cpp",
         "//src/enzyme_ad/jax:raise.cpp",
+    ],
+    hdrs = [
+        "//src/enzyme_ad/jax:raise.h",
     ],
     copts = [
         "-Wno-unused-variable",

@@ -628,6 +628,11 @@ def ApplyTransposeSymmetricSimplify : EnzymeHLOPatternOp<
   let patterns = ["TransposeSymmetricSimplify"];
 }
 
+def ApplyTransposePartialSymmetrySimplify : EnzymeHLOPatternOp<
+    "transpose_partial_symmetry_simplify"> {
+  let patterns = ["TransposePartialSymmetrySimplify"];
+}
+
 def ApplyFactorScalarsInDotGeneral : EnzymeHLOPatternOp<
     "factor_scalars_in_dot_general"> {
   let patterns = ["FactorScalarsInDotGeneral"];
@@ -1001,6 +1006,11 @@ def ImagOpCanonPatterns : EnzymeHLOPatternOp<
 def ConjComplexNegatePatterns : EnzymeHLOPatternOp<
     "conj_complex_negate"> {
   let patterns = ["ConjComplexNegate"];
+}
+
+def NegateImagConjPatterns : EnzymeHLOPatternOp<
+    "negate_imag_conj"> {
+  let patterns = ["NegateImagConj"];
 }
 
 def GetDimensionSizeOpCanonPatterns : EnzymeHLOPatternOp<
@@ -2078,6 +2088,11 @@ def LowerRotate : EnzymeHLOPatternOp<
   let patterns = ["LowerRotate"];
 }
 
+def LowerPiecewiseSelect : EnzymeHLOPatternOp<
+    "lower_piecewise_select"> {
+  let patterns = ["LowerPiecewiseSelect"];
+}
+
 def RecognizeWrap : EnzymeHLOPatternOp<
     "recognize_wrap"> {
   let patterns = ["RecognizeWrap"];
@@ -2219,6 +2234,11 @@ def TransposeRotate : EnzymeHLOPatternOp<
   let patterns = ["TransposeRotate"];
 }
 
+def RecognizeMultiSlice : EnzymeHLOPatternOp<
+    "recognize_multislice"> {
+  let patterns = ["RecognizeMultiSlice"];
+}
+
 def ReduceUnusedMultiSlice : EnzymeHLOPatternOp<
     "reduce_unused_multislice"> {
   let patterns = ["ReduceUnusedMultiSlice"];
@@ -2242,6 +2262,11 @@ def LowerMultiRotate : EnzymeHLOPatternOp<
 def ReduceUnusedMultiRotate : EnzymeHLOPatternOp<
     "reduce_unused_multirotate"> {
   let patterns = ["ReduceUnusedMultiRotate"];
+}
+
+def UseMultiRotateNeutralResult : EnzymeHLOPatternOp<
+    "use_multirotate_neutral_result"> {
+  let patterns = ["UseMultiRotateNeutralResult"];
 }
 
 def SelectPad : EnzymeHLOPatternOp<
@@ -2414,9 +2439,11 @@ def ApplyConjComplexSimplifyPatterns : EnzymeHLOPatternOp<
   let patterns = ["ConjComplexSimplify"];
 }
 
+// TODO: remove this pattern once we have deleted it from Reactant.
+//       ConjReal now performs a detailed analysis that covers this case.
 def ApplyConjConvertSimplifyPatterns : EnzymeHLOPatternOp<
     "conj_convert_simplify"> {
-  let patterns = ["ConjConvertSimplify"];
+  let patterns = ["ConjReal"];
 }
 
 def ApplyElementwiseComplexSimplifyPatterns : EnzymeHLOPatternOp<
@@ -2539,12 +2566,21 @@ def ApplyLogSimplify : EnzymeHLOPatternOp<"log_simplify"> {
   let patterns = ["LogSimplify"];
 }
 
+def ApplyExponentialMinusOneFuse : EnzymeHLOPatternOp<"exponential_minus_one_fuse"> {
+  let patterns = ["ExponentialMinusOneFuse", "ExponentialMinusOneAddFuse"];
+}
+
 def ApplyNegMulConstSimplify : EnzymeHLOPatternOp<"neg_mul_const_simplify"> {
   let patterns = ["NegMulConstSimplify"];
 }
 
 def ApplyNegDivConstSimplify : EnzymeHLOPatternOp<"neg_div_const_simplify"> {
   let patterns = ["NegDivConstSimplify"];
+}
+
+def ApplyNegatedConstantMulFactoring : EnzymeHLOPatternOp<"negated_constant_mul_factoring"> {
+  let patterns = ["NegatedConstantMulFactoring<stablehlo::AddOp>",
+                  "NegatedConstantMulFactoring<stablehlo::SubtractOp>"];
 }
 
 def ApplyReshapeDeletionsBroadcastInDimSimplify : EnzymeHLOPatternOp<"reshape_deletions_broadcast_in_dim_simplify"> {
@@ -2581,6 +2617,10 @@ def ApplyElementwisePadPatterns : EnzymeHLOPatternOp<"elementwise_pad"> {
 
 def ApplyConcatenateSubtractToSubtractPadPatterns : EnzymeHLOPatternOp<"concatenate_subtract_to_subtract_pad"> {
   let patterns = ["ConcatenateSubtractToSubtractPad"];
+}
+
+def ApplyConcatenateAddToAddPadPatterns : EnzymeHLOPatternOp<"concatenate_add_to_add_pad"> {
+  let patterns = ["ConcatenateAddToAddPad"];
 }
 
 def ApplyConcatenateBroadcastInDimPatterns : EnzymeHLOPatternOp<"concatenate_broadcast_in_dim"> {
@@ -2730,6 +2770,11 @@ def ApplyConcatInsertDimConvolutionPatterns : EnzymeHLOPatternOp<
   let patterns = ["ConcatInsertDimToBatch<stablehlo::ConvolutionOp>"];
 }
 
+def ApplyConcatInsertDimScatterPatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_scatter"> {
+  let patterns = ["ConcatInsertDimToBatch<stablehlo::ScatterOp>"];
+}
+
 def ApplyConcatInsertDimElementwisePatterns : EnzymeHLOPatternOp<
     "concat_insert_dim_elementwise"> {
   let patterns = ["ConcatInsertDimElementwiseToBatch"];
@@ -2754,6 +2799,10 @@ def ApplyReduceSliceToBatchPatterns : EnzymeHLOPatternOp<
 def ApplySortSliceToBatchPatterns : EnzymeHLOPatternOp<
     "sort_slice_to_batch"> {
   let patterns = ["SliceToBatch<stablehlo::SortOp>"];
+}
+def ApplyScatterSliceToBatchPatterns : EnzymeHLOPatternOp<
+    "scatter_slice_to_batch"> {
+  let patterns = ["SliceToBatch<stablehlo::ScatterOp>"];
 }
 def ApplyTransposeSliceToBatchPatterns : EnzymeHLOPatternOp<
     "transpose_slice_to_batch"> {
@@ -2878,6 +2927,11 @@ def ApplyDotGeneralToSyrkPatterns : EnzymeHLOPatternOp<
   let patterns = ["DotGeneralToSyrk"];
 }
 
+
+def ApplyDotGeneralToSymmPatterns : EnzymeHLOPatternOp<
+    "dot_general_to_symm"> {
+  let patterns = ["DotGeneralToSymm"];
+}
 def ApplyTransposeSyrkToSyrkPatterns : EnzymeHLOPatternOp<
     "transpose_syrk_to_syrk"> {
   let patterns = ["TransposeSyrkToSyrk"];
@@ -2893,6 +2947,16 @@ def ApplyFuseAddIntoSyrkPatterns : EnzymeHLOPatternOp<
   let patterns = ["FuseAddIntoSyrk"];
 }
 
+def ApplyFuseMulIntoSymmPatterns : EnzymeHLOPatternOp<
+    "fuse_mul_into_symm"> {
+  let patterns = ["FuseMulIntoSymm"];
+}
+
+def ApplyFuseAddIntoSymmPatterns : EnzymeHLOPatternOp<
+    "fuse_add_into_symm"> {
+  let patterns = ["FuseAddIntoSymm"];
+}
+
 def ApplyDotGeneralBroadcastInDimPatterns : EnzymeHLOPatternOp<
     "dot_general_broadcast_in_dim"> {
   let patterns = ["DotGeneralBroadcastInDim"];
@@ -2906,6 +2970,11 @@ def ApplyDotGeneralBroadcastInDimSortDimsPatterns : EnzymeHLOPatternOp<
 def ApplyDUSDynamicSliceSimplifyPatterns : EnzymeHLOPatternOp<
     "dus_dynamic_slice_simplify"> {
   let patterns = ["DUSDynamicSliceSimplify"];
+}
+
+def ApplyDUSDUSSubsumingPatterns : EnzymeHLOPatternOp<
+    "dus_dus_subsuming"> {
+  let patterns = ["DUSDUSSubsuming"];
 }
 
 def ApplyWhileIdempotentDUSPatterns : EnzymeHLOPatternOp<
@@ -2978,6 +3047,11 @@ def ApplySplitComplexScatterPatterns: EnzymeHLOPatternOp<
   let patterns = ["SplitComplexScatter"];
 }
 
+def ApplySplitComplexGatherPatterns: EnzymeHLOPatternOp<
+    "split_complex_gather"> {
+  let patterns = ["SplitComplexGather"];
+}
+
 // TODO: remove this once we have removed it from reactant
 def ApplySplitComplexScatterSetindexPatterns: EnzymeHLOPatternOp<
     "split_complex_scatter_setindex"> {
@@ -2987,4 +3061,14 @@ def ApplySplitComplexScatterSetindexPatterns: EnzymeHLOPatternOp<
 def ApplyReduceMaxMinMulPositiveScalarPatterns: EnzymeHLOPatternOp<
     "reduce_max_min_mul_positive_scalar"> {
   let patterns = ["ReduceMaxMinMulPositiveScalar"];
+}
+
+def ApplyAddComplexSimplifyPatterns: EnzymeHLOPatternOp<
+    "add_complex_simplify"> {
+  let patterns = ["BinaryOpComplexSimplifyBase<stablehlo::AddOp>"];
+}
+
+def ApplySubComplexSimplifyPatterns: EnzymeHLOPatternOp<
+    "sub_complex_simplify"> {
+  let patterns = ["BinaryOpComplexSimplifyBase<stablehlo::SubtractOp>"];
 }

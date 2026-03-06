@@ -355,8 +355,8 @@ def RotateOp : EnzymeXLA_Op<"rotate", [Pure, SameOperandsAndResultType]> {
   }];
   let arguments = (ins
     HLO_Tensor:$operand,
-    SI32Attr:$amount,
-    SI32Attr:$dimension
+    I32Attr:$amount,
+    I32Attr:$dimension
   );
   let hasFolder = 1;
   let results = (outs HLO_Tensor:$result);
@@ -380,9 +380,9 @@ def MultiRotateOp : EnzymeXLA_Op<"multi_rotate", [Pure]> {
   }];
   let arguments = (ins
     HLO_Tensor:$operand,
-    SI32Attr:$dimension,
-    SI32Attr:$left_amount,
-    SI32Attr:$right_amount
+    I32Attr:$dimension,
+    I32Attr:$left_amount,
+    I32Attr:$right_amount
   );
   let results = (outs Variadic<HLO_Tensor>:$results);
   let hasVerifier = 1;
@@ -408,8 +408,8 @@ def MultiSliceOp : EnzymeXLA_Op<"multi_slice", [Pure]> {
     DenseI64ArrayAttr:$start_indices,
     DenseI64ArrayAttr:$limit_indices,
     DenseI64ArrayAttr:$strides,
-    SI32Attr:$dimension,
-    SI32Attr:$amount
+    I32Attr:$dimension,
+    I32Attr:$amount
   );
   let results = (outs Variadic<HLO_Tensor>:$results);
   let hasVerifier = 1;
@@ -469,6 +469,27 @@ def UpdateWithoutCornersOp: EnzymeXLA_Op<
   let results = (outs HLO_Tensor:$result);
 }
 
+def PiecewiseSelectOp : EnzymeXLA_Op<"piecewise_select", [Pure, SameOperandsAndResultType]> {
+  let summary = "Piecewise selection operation";
+  let description = [{
+    For coordinates that fit inside any of the boxes defined by the attribute,
+    the result contains the element from the first operand, for other coordinates,
+    it contains the element from the second operand.
+  }];
+
+  let arguments = (ins
+    HLO_Tensor:$whenInBox,
+    HLO_Tensor:$whenOutOfBox,
+    // Boxes is an array where each element is itself an array of integers defining one box.
+    // Each box is defined by 2 * rank values: min (inclusive) and max (non-inclusive) for each dimension, e.g,
+    // [2, 8, 4, 12] defines a box in 2D space with min corner at (2, 4) and max corner at (8, 12).
+    // Alternatively, the box spans [2, 8) along x and [4, 12) along y.
+    ArrayAttr:$boxes
+  );
+
+  let results = (outs HLO_Tensor:$result);
+}
+
 def CommRegionOp : EnzymeXLA_Op<"comm_region", [
     DeclareOpInterfaceMethods<RegionBranchOpInterface>,
     RecursiveMemoryEffects, RecursivelySpeculatable]> {
@@ -483,7 +504,7 @@ def CommRegionOp : EnzymeXLA_Op<"comm_region", [
 
 // Linear Algebra Ops
 
-def SymmOp: EnzymeXLA_Op<"blas.symm", [Pure, SameOperandsAndResultElementType]> {
+def SymmOp : EnzymeXLA_Op<"blas.symm", [Pure, SameOperandsAndResultElementType]> {
   let summary = "Multiplication involving a symmetric matrix";
 
   let description = [{
@@ -573,6 +594,33 @@ def TrmmOp: EnzymeXLA_Op<"blas.trmm", [Pure, SameOperandsAndResultElementType]> 
 
   let assemblyFormat = [{
     $A `,` $B `,` $alpha `,` attr-dict `:` functional-type(operands, results)
+  }];
+}
+
+def TrsmOp : EnzymeXLA_Op<"blas.trsm", [Pure]> {
+  let summary = "Triangular matrix-matrix solve operation";
+  let description = [{
+    Solves op(A) * X = alpha * B, or X * op(A) = alpha * B, where alpha is a scalar,
+    X and B are m x n matrices, A is a unit, or non-unit, upper or lower triangular
+    matrix, and op(A) is one of op(A) = A, or op(A) = A^T or A^H.
+  }];
+
+  let arguments = (ins
+    TensorFloat:$alpha,
+    HLO_Tensor:$A,
+    HLO_Tensor:$B,
+    EnzymeXLA_LapackSideAttr:$side,
+    EnzymeXLA_LapackUploAttr:$uplo,
+    EnzymeXLA_LapackTransposeAttr:$transa,
+    EnzymeXLA_LapackDiagAttr:$diag
+  );
+
+  let results = (outs
+    HLO_Tensor:$output
+  );
+
+  let assemblyFormat = [{
+    $alpha `,` $A `,` $B attr-dict `:` functional-type(operands, results)
   }];
 }
 
@@ -873,6 +921,24 @@ def GesvjOp : EnzymeXLA_Op<"lapack.gesvj", [Pure]> {
 
   let assemblyFormat = [{
     $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
+def PotrfOp : EnzymeXLA_Op<"lapack.potrf", [Pure]> {
+  let summary = "Cholesky factorization of symmetric/Hermitian positive-definite matrix";
+
+  let arguments = (ins
+    HLO_Tensor:$input,
+    EnzymeXLA_LapackUploAttr:$uplo
+  );
+
+  let results = (outs
+    HLO_Tensor:$output,
+    HLO_Tensor:$info
+  );
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type(operands, results)
   }];
 }
 
@@ -1224,7 +1290,7 @@ def MPIIsendOp : EnzymeXLA_Op<"mpi.isend", []> {
   );
 
   let results = (
-    outs TensorOf<[I64]> : $request
+    outs TensorOf<[I32]> : $request
   );
 
   let assemblyFormat = "`(` operands `)` attr-dict `:` functional-type(operands, results)";
@@ -1244,7 +1310,7 @@ def MPIIrecvOp : EnzymeXLA_Op<"mpi.irecv", []> {
 
   let results = (
     outs AnyTensor : $outbuf,
-    TensorOf<[I64]> : $request
+    TensorOf<[I32]> : $request
   );
 
   let assemblyFormat = "`(` operands `)` attr-dict `:` functional-type(operands, results)";
@@ -1253,7 +1319,19 @@ def MPIIrecvOp : EnzymeXLA_Op<"mpi.irecv", []> {
 def MPIWaitOp : EnzymeXLA_Op<"mpi.wait", []> {
   let summary = "Equivalent to "
                 "`MPI_Wait(&request, &status)`";
-  let arguments = (ins TensorOf<[I64]> : $request);
+  let arguments = (ins TensorOf<[I32]> : $request);
+  let assemblyFormat = "`(` operands `)` attr-dict `:` type(operands)";
+}
+
+def MPIWaitallOp : EnzymeXLA_Op<"mpi.waitall", []> {
+  let summary = "Equivalent to "
+                "`MPI_Waitall(&request, &status)`";
+
+  let arguments = (
+    ins TensorOf<[I32]> : $count,
+    TensorOf<[I32]> : $request
+  );
+
   let assemblyFormat = "`(` operands `)` attr-dict `:` type(operands)";
 }
 
