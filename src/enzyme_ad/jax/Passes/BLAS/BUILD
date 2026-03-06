@@ -17,7 +17,7 @@ gentbl_cc_library(
         (
             [
                 "-gen-pass-decls",
-                "-name=blass",
+                "-name=blas",
             ],
             "Passes.h.inc",
         ),

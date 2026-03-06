@@ -1313,6 +1313,7 @@ cc_library(
         ":XLADerivatives",
         ":TritonExtDialect",
         "//src/enzyme_ad/jax/Dialect/BLAS:BlasDialect",
+        "//src/enzyme_ad/jax/Passes/BLAS:BlasPasses",
         ":EnzymeXLAPassesIncGen",
         "@com_google_protobuf//:protobuf",
         "@tsl//tsl/platform:env",
