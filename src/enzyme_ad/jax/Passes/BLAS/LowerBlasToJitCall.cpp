@@ -5,7 +5,7 @@
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/BLAS/Passes.h"
-// #include "src/enzyme_ad/jax/Utils.h"
+#include "src/enzyme_ad/jax/Utils.h"
 
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -20,7 +20,6 @@
 // #include "stablehlo/transforms/PassUtils.h"
 // #include "stablehlo/transforms/Passes.h"
 // #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
-#include "src/enzyme_ad/jax/Utils.h"
 
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/SmallVector.h"
@@ -81,17 +80,6 @@ static std::pair<Value, int64_t> createScalarOperand(PatternRewriter &rewriter,
     return {emptyTensor, 1};
   }
   return {originalVal, 0};
-}
-
-enzymexla::LapackUplo convertBlasUploToLegacyLapackUplo(blas::BlasUplo uplo) {
-  switch (uplo) {
-  case blas::BlasUplo::lower:
-    return enzymexla::LapackUplo::L;
-  case blas::BlasUplo::upper:
-    return enzymexla::LapackUplo::U;
-  case blas::BlasUplo::any:
-    return enzymexla::LapackUplo::F;
-  }
 }
 
 struct SymmOpLowering : public OpRewritePattern<blas::SymmOp> {
@@ -328,8 +316,7 @@ struct SymmOpLowering : public OpRewritePattern<blas::SymmOp> {
     Value A = op.getA();
     if (!stablehlo::IsTensorFilled(A)) {
       // If the tensor is not filled, we copy to the non-uplo region for safety
-      A = stablehlo::copyTriangularPart(
-          rewriter, A, convertBlasUploToLegacyLapackUplo(op.getUplo()));
+      A = stablehlo::copyTriangularPart(rewriter, A, op.getUplo());
       if (!A) {
         return failure();
       }
@@ -392,35 +379,35 @@ struct SyrkOpLowering : public OpRewritePattern<blas::SyrkOp> {
   void resolveUplo(blas::SyrkOp op, BlasUplo &customCallUplo,
                    CopyMode &needsCopy) const {
     switch (op.getUplo()) {
-    case BlasUplo::F:
+    case BlasUplo::any:
       customCallUplo = standardizeUplo(op.getOutputUplo());
-      needsCopy = op.getOutputUplo() == BlasUplo::F ? CopyMode::COPY
+      needsCopy = op.getOutputUplo() == BlasUplo::any ? CopyMode::COPY
                                                     : CopyMode::NOT_NEEDED;
       break;
-    case BlasUplo::L:
+    case BlasUplo::lower:
       customCallUplo = op.getUplo();
       switch (op.getOutputUplo()) {
-      case BlasUplo::F:
+      case BlasUplo::any:
         needsCopy = CopyMode::COPY;
         break;
-      case BlasUplo::L:
+      case BlasUplo::lower:
         needsCopy = CopyMode::NOT_NEEDED;
         break;
-      case BlasUplo::U:
+      case BlasUplo::upper:
         needsCopy = CopyMode::TRANSPOSE;
         break;
       }
       break;
-    case BlasUplo::U:
+    case BlasUplo::upper:
       customCallUplo = op.getUplo();
       switch (op.getOutputUplo()) {
-      case BlasUplo::F:
+      case BlasUplo::any:
         needsCopy = CopyMode::COPY;
         break;
-      case BlasUplo::L:
+      case BlasUplo::lower:
         needsCopy = CopyMode::TRANSPOSE;
         break;
-      case BlasUplo::U:
+      case BlasUplo::upper:
         needsCopy = CopyMode::NOT_NEEDED;
         break;
       }
@@ -573,7 +560,7 @@ struct SyrkOpLowering : public OpRewritePattern<blas::SyrkOp> {
       auto uploConst = stablehlo::ConstantOp::create(
           rewriter, op.getLoc(), uint8Type,
           cast<ElementsAttr>(
-              makeAttr(uint8Type, customCallUplo == BlasUplo::U ? 'L' : 'U')));
+              makeAttr(uint8Type, customCallUplo == BlasUplo::upper ? 'L' : 'U')));
       // We intentionally flip transpose here, this allows us to pass in
       // the data as a row-major format without paying the cost of
       // layout transformation to a col-major (which CPU BLAS uses)
@@ -664,7 +651,7 @@ struct SyrkOpLowering : public OpRewritePattern<blas::SyrkOp> {
             "transpose",
             rewriter.getBoolAttr(op.getTranspose() != BlasTranspose::none)),
         rewriter.getNamedAttr(
-            "uplo", rewriter.getBoolAttr(customCallUplo == BlasUplo::U)),
+            "uplo", rewriter.getBoolAttr(customCallUplo == BlasUplo::upper)),
         rewriter.getNamedAttr("use_alpha_attribute",
                               rewriter.getBoolAttr(useAlphaAttr)),
         rewriter.getNamedAttr("alpha_real",
@@ -743,10 +730,7 @@ struct SyrkOpLowering : public OpRewritePattern<blas::SyrkOp> {
     Value C = op.getC();
     if (!stablehlo::IsTensorFilled(C)) {
       // If the tensor is not filled, we copy to the non-uplo region for safety
-
-      // TODO import copyTriangularPart from Utils.h/.cpp
-      C = stablehlo::copyTriangularPart(
-          rewriter, C, convertBlasUploToLegacyLapackUplo(op.getUplo()));
+      C = stablehlo::copyTriangularPart(rewriter, C, op.getUplo());
       if (!C) {
         return failure();
       }

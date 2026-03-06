@@ -6,56 +6,56 @@
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 
-MlirAttribute enzymexlaLapackLayoutAttrGet(MlirContext ctx, uint8_t col_major) {
-  mlir::enzymexla::LapackLayout layout;
+MlirAttribute blasLayoutAttrGet(MlirContext ctx, uint8_t col_major) {
+  mlir::blas::BlasLayout layout;
   if (col_major) {
-    layout = mlir::enzymexla::LapackLayout::col_major;
+    layout = mlir::blas::BlasLayout::col_major;
   } else {
-    layout = mlir::enzymexla::LapackLayout::row_major;
+    layout = mlir::blas::BlasLayout::row_major;
   }
-  return wrap(mlir::enzymexla::LapackLayoutAttr::get(unwrap(ctx), layout));
+  return wrap(mlir::blas::BlasLayoutAttr::get(unwrap(ctx), layout));
 }
 
-MlirAttribute enzymexlaLapackTransposeAttrGet(MlirContext ctx, int32_t mode) {
-  mlir::enzymexla::LapackTranspose transpose;
+MlirAttribute blasTransposeAttrGet(MlirContext ctx, int32_t mode) {
+  mlir::blas::BlasTranspose transpose;
   switch (mode) {
   case 0:
-    transpose = mlir::enzymexla::LapackTranspose::none;
+    transpose = mlir::blas::BlasTranspose::none;
     break;
   case 1:
-    transpose = mlir::enzymexla::LapackTranspose::transpose;
+    transpose = mlir::blas::BlasTranspose::transpose;
     break;
   case 2:
-    transpose = mlir::enzymexla::LapackTranspose::adjoint;
+    transpose = mlir::blas::BlasTranspose::adjoint;
   }
   return wrap(
-      mlir::enzymexla::LapackTransposeAttr::get(unwrap(ctx), transpose));
+      mlir::blas::BlasTransposeAttr::get(unwrap(ctx), transpose));
 }
 
-MlirAttribute enzymexlaLapackSideAttrGet(MlirContext ctx, uint8_t left_side) {
-  mlir::enzymexla::LapackSide side;
+MlirAttribute blasSideAttrGet(MlirContext ctx, uint8_t left_side) {
+  mlir::blas::BlasSide side;
   if (left_side) {
-    side = mlir::enzymexla::LapackSide::left;
+    side = mlir::blas::BlasSide::left;
   } else {
-    side = mlir::enzymexla::LapackSide::right;
+    side = mlir::blas::BlasSide::right;
   }
-  return wrap(mlir::enzymexla::LapackSideAttr::get(unwrap(ctx), side));
+  return wrap(mlir::blas::BlasSideAttr::get(unwrap(ctx), side));
 }
 
-MlirAttribute enzymexlaLapackUploAttrGet(MlirContext ctx, int32_t mode) {
-  mlir::enzymexla::LapackUplo uplo;
+MlirAttribute blasUploAttrGet(MlirContext ctx, int32_t mode) {
+  mlir::blas::BlasUplo uplo;
   switch (mode) {
   case 0:
-    uplo = mlir::enzymexla::LapackUplo::U;
+    uplo = mlir::blas::BlasUplo::upper;
     break;
   case 1:
-    uplo = mlir::enzymexla::LapackUplo::L;
+    uplo = mlir::blas::BlasUplo::lower;
     break;
   case 2:
-    uplo = mlir::enzymexla::LapackUplo::F;
+    uplo = mlir::blas::BlasUplo::any;
     break;
   }
-  return wrap(mlir::enzymexla::LapackUploAttr::get(unwrap(ctx), uplo));
+  return wrap(mlir::blas::BlasUploAttr::get(unwrap(ctx), uplo));
 }
 
 MlirAttribute enzymexlaQRAlgorithmAttrGet(MlirContext ctx, int32_t mode) {

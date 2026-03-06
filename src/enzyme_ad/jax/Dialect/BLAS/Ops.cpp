@@ -78,6 +78,12 @@ LogicalResult SyrkOp::verify() {
 
   // TODO check shapes of A, B, and C
 
+  bool is_complex = isa<ComplexType>(eltype);
+  auto trans = getTranspose();
+  if (!is_complex && trans == BlasTranspose::adjoint) {
+    return emitOpError("cannot do the adjoint of a complex tensor");
+  }
+
   return success();
 }
 

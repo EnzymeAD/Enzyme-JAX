@@ -55,7 +55,7 @@ def SyrkOp : BLAS_Op<"syrk", [Pure, SameOperandsAndResultElementType]> {
     lies on the user to manually copy data if they need to access the other half of the
     matrix. By specifying the `output_uplo` we can perform transformations that analyze the
     entire dataflow, and avoid computing/copying half of the tensor all together. Generally,
-    it is recommended to set this attribute to `enzymexla::LapackUplo::F`, and our passes
+    it is recommended to set this attribute to `blas::BlasUplo::any`, and our passes
     will automatically refine this to minimize data copies.
   }];
 

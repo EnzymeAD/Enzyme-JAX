@@ -799,16 +799,16 @@ struct OrmqrOpLowering : public OpRewritePattern<enzymexla::OrmqrOp> {
     auto output_type = cast<RankedTensorType>(output.getType());
     auto output_shape = output_type.getShape();
 
-    auto side_value = op.getSide() == enzymexla::LapackSide::left ? 'L' : 'R';
+    auto side_value = op.getSide() == blas::BlasSide::left ? 'L' : 'R';
     char trans_value = 'N';
     switch (op.getTranspose()) {
-    case enzymexla::LapackTranspose::none:
+    case blas::BlasTranspose::none:
       trans_value = 'N';
       break;
-    case enzymexla::LapackTranspose::transpose:
+    case blas::BlasTranspose::transpose:
       trans_value = 'T';
       break;
-    case enzymexla::LapackTranspose::adjoint:
+    case blas::BlasTranspose::adjoint:
       trans_value = 'C';
       break;
     }
@@ -1063,16 +1063,16 @@ struct GemqrtOpLowering : public OpRewritePattern<enzymexla::GemqrtOp> {
     auto output_type = cast<RankedTensorType>(output.getType());
     auto output_shape = output_type.getShape();
 
-    auto side_value = op.getSide() == enzymexla::LapackSide::left ? 'L' : 'R';
+    auto side_value = op.getSide() == blas::BlasSide::left ? 'L' : 'R';
     char trans_value = 'N';
     switch (op.getTranspose()) {
-    case enzymexla::LapackTranspose::none:
+    case blas::BlasTranspose::none:
       trans_value = 'N';
       break;
-    case enzymexla::LapackTranspose::transpose:
+    case blas::BlasTranspose::transpose:
       trans_value = 'T';
       break;
-    case enzymexla::LapackTranspose::adjoint:
+    case blas::BlasTranspose::adjoint:
       trans_value = 'C';
       break;
     }

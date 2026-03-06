@@ -129,14 +129,15 @@ struct LowerBlasToStableHLOPass
       signalPassFailure();
     }
 
+    // NOTE we don't verify because we might want to lower to jit_call
     // Verify that all illegal ops have been lowered
-    auto walkResult = getOperation()->walk([&](Operation *op) {
-      if (isa<blas::TrsmOp>(op)) {
-        op->emitError("Failed to lower enzymexla.blas operation");
-        return WalkResult::interrupt();
-      }
-      return WalkResult::advance();
-    });
+    // auto walkResult = getOperation()->walk([&](Operation *op) {
+    //   if (isa<blas::TrsmOp>(op)) {
+    //     op->emitError("Failed to lower enzymexla.blas operation");
+    //     return WalkResult::interrupt();
+    //   }
+    //   return WalkResult::advance();
+    // });
 
     if (walkResult.wasInterrupted()) {
       signalPassFailure();

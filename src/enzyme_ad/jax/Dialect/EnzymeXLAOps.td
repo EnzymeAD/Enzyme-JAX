@@ -504,126 +504,6 @@ def CommRegionOp : EnzymeXLA_Op<"comm_region", [
 
 // Linear Algebra Ops
 
-def SymmOp : EnzymeXLA_Op<"blas.symm", [Pure, SameOperandsAndResultElementType]>, CppDeprecated<"Use `blas.symm` from the BLAS dialect instead"> {
-  let summary = "Multiplication involving a symmetric matrix";
-
-  let description = [{
-    C := alpha*A*B + beta*C, or C := alpha*B*A + beta*C, where alpha and beta are scalars,  A is a symmetric matrix"
-  }];
-
-  let arguments = (ins
-    HLO_Tensor:$A,
-    HLO_Tensor:$B,
-    HLO_Tensor:$C,
-    TensorFloat:$alpha,
-    TensorFloat:$beta,
-    EnzymeXLA_LapackSideAttr:$side,
-    EnzymeXLA_LapackUploAttr:$uplo
-  );
-
-  let results = (outs
-    HLO_Tensor: $output
-  );
-
-  let assemblyFormat = [{
-    $A `,` $B `,` $C `,` $alpha `,` $beta attr-dict `:` functional-type(operands, results)
-  }];
-}
-
-def SyrkOp: EnzymeXLA_Op<"blas.syrk", [Pure, SameOperandsAndResultElementType]>, CppDeprecated<"Use `blas.syrk` from the BLAS dialect instead"> {
-  let summary = "Multiplication involving a symmetric matrix";
-
-  let description = [{
-    C_out := alpha*A*A^T + beta*C, or C_out := alpha*A^T*A + beta*C, where alpha and beta
-    are scalars. C must be a n x n symmetric matrix.
-
-    `output_uplo` determines which part of `C_out` is populated. Accessing the values in
-    the non-`output_uplo` part of the matrix is undefined behavior.
-
-    LAPACK/BLAS routines typically require a single `uplo` attribute and it is implicitly
-    assumed that the output `uplo` corresponds to the input `uplo`. This means the burden
-    lies on the user to manually copy data if they need to access the other half of the
-    matrix. By specifying the `output_uplo` we can perform transformations that analyze the
-    entire dataflow, and avoid computing/copying half of the tensor all together. Generally,
-    it is recommended to set this attribute to `enzymexla::LapackUplo::F`, and our passes
-    will automatically refine this to minimize data copies.
-  }];
-
-  let arguments = (ins
-    HLO_Tensor:$A,
-    HLO_Tensor:$C,
-    TensorFloat:$alpha,
-    TensorFloat:$beta,
-    EnzymeXLA_LapackUploAttr:$uplo,
-    EnzymeXLA_LapackUploAttr:$output_uplo,
-    DefaultValuedAttr<EnzymeXLA_LapackTransposeAttr, "::mlir::enzymexla::LapackTranspose::none">:$transpose
-  );
-
-  let results = (outs
-    HLO_Tensor: $output
-  );
-
-  let assemblyFormat = [{
-    $A `,` $C `,` $alpha `,` $beta attr-dict `:` functional-type(operands, results)
-  }];
-
-  let hasVerifier = 1;
-}
-
-def TrmmOp: EnzymeXLA_Op<"blas.trmm", [Pure, SameOperandsAndResultElementType]>, CppDeprecated<"Use `blas.trmm` from the BLAS dialect instead"> {
-  let summary = "Multiplication involving a triangular matrix";
-
-  let description = [{
-    B := alpha * op(A) x B, or B := alpha * B x op(A), where alpha is a scalar,
-    B is a m x n matrix, A is a unit, or non-unit, upper or lower triangular
-    matrix, and op(A) is one of op(A) = A, or op(A) = A^T or A^H.
-  }];
-
-  let arguments = (ins
-    HLO_Tensor:$A,
-    HLO_Tensor:$B,
-    TensorFloat:$alpha,
-    EnzymeXLA_LapackSideAttr:$side,
-    EnzymeXLA_LapackUploAttr:$uplo,
-    EnzymeXLA_LapackTransposeAttr:$transpose
-  );
-
-  let results = (outs
-    HLO_Tensor: $output
-  );
-
-  let assemblyFormat = [{
-    $A `,` $B `,` $alpha `,` attr-dict `:` functional-type(operands, results)
-  }];
-}
-
-def TrsmOp : EnzymeXLA_Op<"blas.trsm", [Pure]>, CppDeprecated<"Use `blas.trmm` from the BLAS dialect instead"> {
-  let summary = "Triangular matrix-matrix solve operation";
-  let description = [{
-    Solves op(A) * X = alpha * B, or X * op(A) = alpha * B, where alpha is a scalar,
-    X and B are m x n matrices, A is a unit, or non-unit, upper or lower triangular
-    matrix, and op(A) is one of op(A) = A, or op(A) = A^T or A^H.
-  }];
-
-  let arguments = (ins
-    TensorFloat:$alpha,
-    HLO_Tensor:$A,
-    HLO_Tensor:$B,
-    EnzymeXLA_LapackSideAttr:$side,
-    EnzymeXLA_LapackUploAttr:$uplo,
-    EnzymeXLA_LapackTransposeAttr:$transa,
-    EnzymeXLA_LapackDiagAttr:$diag
-  );
-
-  let results = (outs
-    HLO_Tensor:$output
-  );
-
-  let assemblyFormat = [{
-    $alpha `,` $A `,` $B attr-dict `:` functional-type(operands, results)
-  }];
-}
-
 def LUFactorizationOp: EnzymeXLA_Op<"linalg.lu", [Pure]> {
   let summary = "LU factorization operation with RowMaximum pivoting.";
 
@@ -788,7 +668,7 @@ def OrmqrOp : EnzymeXLA_Op<"lapack.ormqr", [Pure]> {
     HLO_Tensor:$tau,
     HLO_Tensor:$C,
     EnzymeXLA_LapackSideAttr:$side,
-    DefaultValuedAttr<EnzymeXLA_LapackTransposeAttr, "::mlir::enzymexla::LapackTranspose::none">:$transpose // true if apply Q^T
+    DefaultValuedAttr<EnzymeXLA_LapackTransposeAttr, "::mlir::blas::BlasTranspose::none">:$transpose
   );
 
   let results = (outs
@@ -815,7 +695,7 @@ def GemqrtOp : EnzymeXLA_Op<"lapack.gemqrt", [Pure]> {
     HLO_Tensor:$T,
     HLO_Tensor:$C,
     EnzymeXLA_LapackSideAttr:$side,
-    DefaultValuedAttr<EnzymeXLA_LapackTransposeAttr, "::mlir::enzymexla::LapackTranspose::none">:$transpose // true if apply Q^T
+    DefaultValuedAttr<EnzymeXLA_LapackTransposeAttr, "::mlir::blas::BlasTranspose::none">:$transpose
   );
 
   let results = (outs

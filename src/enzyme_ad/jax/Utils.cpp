@@ -612,7 +612,7 @@ SymmetricResultAnalysis::State SymmetricResultAnalysis::localGuaranteed(
   if (!op)
     return State::NOTGUARANTEED;
 
-  if (isa<enzymexla::SyrkOp>(op))
+  if (isa<blas::SyrkOp>(op))
     return State::GUARANTEED;
 
   // check that transpose dimensions are [1,0]
@@ -1368,37 +1368,37 @@ RankedTensorType removeBatchedDims(RankedTensorType Ty,
   return RankedTensorType::get(newShape, Ty.getElementType());
 }
 
-enzymexla::LapackTranspose
-transposeLapackTranspose(enzymexla::LapackTranspose trans, bool canBeComplex) {
+blas::BlasTranspose
+transposeBlasTranspose(blas::BlasTranspose trans, bool canBeComplex) {
   switch (trans) {
-  case enzymexla::LapackTranspose::none:
-    return enzymexla::LapackTranspose::transpose;
-  case enzymexla::LapackTranspose::transpose:
-    return enzymexla::LapackTranspose::none;
-  case enzymexla::LapackTranspose::adjoint:
+  case blas::BlasTranspose::none:
+    return blas::BlasTranspose::transpose;
+  case blas::BlasTranspose::transpose:
+    return blas::BlasTranspose::none;
+  case blas::BlasTranspose::adjoint:
     assert(!canBeComplex &&
            "cannot trivially tranpose adjoint of complex numbers");
-    return enzymexla::LapackTranspose::none;
+    return blas::BlasTranspose::none;
   }
   llvm_unreachable("Unknown LapackTranspose");
 }
 
-enzymexla::LapackUplo transposeLapackUplo(enzymexla::LapackUplo uplo) {
+blas::BlasUplo transposeBlasUplo(blas::BlasUplo uplo) {
   switch (uplo) {
-  case enzymexla::LapackUplo::F:
-    return enzymexla::LapackUplo::F;
-  case enzymexla::LapackUplo::L:
-    return enzymexla::LapackUplo::U;
-  case enzymexla::LapackUplo::U:
-    return enzymexla::LapackUplo::L;
+  case blas::BlasUplo::any:
+    return blas::BlasUplo::any;
+  case blas::BlasUplo::lower:
+    return blas::BlasUplo::upper;
+  case blas::BlasUplo::upper:
+    return blas::BlasUplo::lower;
   }
   llvm_unreachable("Unknown LapackUplo");
 }
 
-enzymexla::LapackUplo standardizeUplo(enzymexla::LapackUplo uplo) {
+blas::BlasUplo standardizeUplo(blas::BlasUplo uplo) {
   switch (uplo) {
-  case enzymexla::LapackUplo::F:
-    return enzymexla::LapackUplo::U;
+  case blas::BlasUplo::any:
+    return blas::BlasUplo::upper;
   default:
     return uplo;
   }
@@ -2639,10 +2639,10 @@ bool isScalarValue(Operation *op) {
   return false;
 }
 
-// TODO replace `enzymexla::LapackUplo` with `blas::BlasUplo` once the latter is
+// TODO replace `blas::BlasUplo` with `blas::BlasUplo` once the latter is
 Value copyTriangularPart(OpBuilder &builder, Value input,
-                         enzymexla::LapackUplo uplo) {
-  if (uplo == enzymexla::LapackUplo::F)
+                         blas::BlasUplo uplo) {
+  if (uplo == blas::BlasUplo::any)
     return input;
 
   // TODO: run a backward propagation to check if input potentially originates
@@ -2664,7 +2664,7 @@ Value copyTriangularPart(OpBuilder &builder, Value input,
 
   Value indicator = stablehlo::CompareOp::create(
       builder, input.getLoc(), rowIdxs, colIdxs,
-      uplo == enzymexla::LapackUplo::U ? ComparisonDirection::LT
+      uplo == blas::BlasUplo::upper ? ComparisonDirection::LT
                                        : ComparisonDirection::GT);
 
   Value transposedInput = stablehlo::TransposeOp::create(
@@ -3503,9 +3503,9 @@ bool IsTensorFilled(Value input) {
     }
 
     // Handle enzymexla dialect ops with special triangular semantics
-    if (auto syrkOp = dyn_cast<enzymexla::SyrkOp>(op)) {
+    if (auto syrkOp = dyn_cast<blas::SyrkOp>(op)) {
       // syrk produces a dense output only if output_uplo is F (full)
-      if (syrkOp.getOutputUplo() != enzymexla::LapackUplo::F) {
+      if (syrkOp.getOutputUplo() != blas::BlasUplo::any) {
         return false;
       }
       continue;

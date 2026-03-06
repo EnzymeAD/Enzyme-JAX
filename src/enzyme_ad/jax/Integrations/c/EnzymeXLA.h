@@ -19,15 +19,15 @@ extern "C" {
 //===----------------------------------------------------------------------===//
 
 MLIR_CAPI_EXPORTED MlirAttribute
-enzymexlaLapackLayoutAttrGet(MlirContext ctx, uint8_t col_major);
+blasLayoutAttrGet(MlirContext ctx, uint8_t col_major);
 
 MLIR_CAPI_EXPORTED MlirAttribute
-enzymexlaLapackTransposeAttrGet(MlirContext ctx, int32_t mode);
+blasTransposeAttrGet(MlirContext ctx, int32_t mode);
 
-MLIR_CAPI_EXPORTED MlirAttribute enzymexlaLapackSideAttrGet(MlirContext ctx,
+MLIR_CAPI_EXPORTED MlirAttribute blasSideAttrGet(MlirContext ctx,
                                                             uint8_t left_side);
 
-MLIR_CAPI_EXPORTED MlirAttribute enzymexlaLapackUploAttrGet(MlirContext ctx,
+MLIR_CAPI_EXPORTED MlirAttribute blasUploAttrGet(MlirContext ctx,
                                                             int32_t mode);
 
 MLIR_CAPI_EXPORTED MlirAttribute enzymexlaQRAlgorithmAttrGet(MlirContext ctx,
