@@ -5,7 +5,7 @@ func.func @test1(%arg0: tensor<64x64xf32>, %arg1: tensor<64xf32>, %arg2: tensor<
     %beta = stablehlo.constant dense<3.0> : tensor<f32>
     %scalar = stablehlo.constant dense<3.0> : tensor<f32>
     %scalar_bcast = stablehlo.broadcast_in_dim %scalar, dims = []: (tensor<f32>) -> tensor<64x64xf32>
-    %0 = blas.symm %arg0, %arg1, %arg2, %alpha, %beta {side = #blas.side<left>, uplo = #blas.uplo<U>} : (tensor<64x64xf32>, tensor<64xf32>, tensor<64x64xf32>, tensor<f32>, tensor<f32>) -> tensor<64x64xf32>
+    %0 = blas.symm %arg0, %arg1, %arg2, %alpha, %beta {side = #blas.side<left>, uplo = #blas.uplo<upper>} : (tensor<64x64xf32>, tensor<64xf32>, tensor<64x64xf32>, tensor<f32>, tensor<f32>) -> tensor<64x64xf32>
     %1 = stablehlo.multiply %scalar_bcast, %0 : tensor<64x64xf32>
     return %1 : tensor<64x64xf32>
 }
@@ -16,7 +16,7 @@ func.func @test1(%arg0: tensor<64x64xf32>, %arg1: tensor<64xf32>, %arg2: tensor<
 // CHECK-DAG:    %[[cst3:.+]] = stablehlo.constant dense<3.000000e+00> : tensor<f32>
 // CHECK-NEXT:    %0 = stablehlo.multiply %[[cst3]], %[[cst3]] : tensor<f32>
 // CHECK-NEXT:    %1 = stablehlo.multiply %[[cst2]], %[[cst3]] : tensor<f32>
-// CHECK-NEXT:    %2 = blas.symm %arg0, %arg1, %arg2, %1, %0 {side = #blas.side<left>, uplo = #blas.uplo<U>} : (tensor<64x64xf32>, tensor<64xf32>, tensor<64x64xf32>, tensor<f32>, tensor<f32>) -> tensor<64x64xf32>
+// CHECK-NEXT:    %2 = blas.symm %arg0, %arg1, %arg2, %1, %0 {side = #blas.side<left>, uplo = #blas.uplo<upper>} : (tensor<64x64xf32>, tensor<64xf32>, tensor<64x64xf32>, tensor<f32>, tensor<f32>) -> tensor<64x64xf32>
 // CHECK-NEXT:    return %2 : tensor<64x64xf32>
 // CHECK-NEXT:  }
 
@@ -25,7 +25,7 @@ func.func @test2(%arg0: tensor<64x64xf32>, %arg1: tensor<64xf32>, %arg2: tensor<
     %beta = stablehlo.constant dense<3.0> : tensor<f32>
     %const = stablehlo.constant dense<4.0> : tensor<f32>
     %const_bcast = stablehlo.broadcast_in_dim %const, dims = []: (tensor<f32>) -> tensor<64x64xf32>
-    %0 = blas.symm %arg0, %arg1, %arg2, %alpha, %beta {side = #blas.side<left>, uplo = #blas.uplo<U>} : (tensor<64x64xf32>, tensor<64xf32>, tensor<64x64xf32>, tensor<f32>, tensor<f32>) -> tensor<64x64xf32>
+    %0 = blas.symm %arg0, %arg1, %arg2, %alpha, %beta {side = #blas.side<left>, uplo = #blas.uplo<upper>} : (tensor<64x64xf32>, tensor<64xf32>, tensor<64x64xf32>, tensor<f32>, tensor<f32>) -> tensor<64x64xf32>
     %1 = stablehlo.add %const_bcast, %0 : tensor<64x64xf32>
     return %1 : tensor<64x64xf32>
 }
@@ -39,7 +39,7 @@ func.func @test2(%arg0: tensor<64x64xf32>, %arg1: tensor<64xf32>, %arg2: tensor<
 // CHECK-NEXT:    %1 = stablehlo.broadcast_in_dim %[[cst3]], dims = [] : (tensor<f32>) -> tensor<64x64xf32>
 // CHECK-NEXT:    %2 = stablehlo.multiply %arg2, %1 : tensor<64x64xf32>
 // CHECK-NEXT:    %3 = stablehlo.add %2, %0 : tensor<64x64xf32>
-// CHECK-NEXT:    %4 = blas.symm %arg0, %arg1, %3, %[[cst2]], %[[cst]] {side = #blas.side<left>, uplo = #blas.uplo<U>} : (tensor<64x64xf32>, tensor<64xf32>, tensor<64x64xf32>, tensor<f32>, tensor<f32>) -> tensor<64x64xf32>
+// CHECK-NEXT:    %4 = blas.symm %arg0, %arg1, %3, %[[cst2]], %[[cst]] {side = #blas.side<left>, uplo = #blas.uplo<upper>} : (tensor<64x64xf32>, tensor<64xf32>, tensor<64x64xf32>, tensor<f32>, tensor<f32>) -> tensor<64x64xf32>
 // CHECK-NEXT:    return %4 : tensor<64x64xf32>
 // CHECK-NEXT:  }
 
@@ -74,6 +74,6 @@ func.func @test3(%arg0: tensor<64x64xf32>, %arg1: tensor<64x64xf32>, %arg2: tens
 // CHECK-NEXT:   %6 = stablehlo.broadcast_in_dim %2, dims = [] : (tensor<f32>) -> tensor<64x64xf32>
 // CHECK-NEXT:   %7 = stablehlo.multiply %[[cstC]], %6 : tensor<64x64xf32>
 // CHECK-NEXT:   %8 = stablehlo.add %7, %5 : tensor<64x64xf32>
-// CHECK-NEXT:   %9 = blas.symm %1, %arg1, %8, %3, %[[cst1]] {side = #blas.side<left>, uplo = #blas.uplo<F>} : (tensor<64x64xf32>, tensor<64x64xf32>, tensor<64x64xf32>, tensor<f32>, tensor<f32>) -> tensor<64x64xf32>
+// CHECK-NEXT:   %9 = blas.symm %1, %arg1, %8, %3, %[[cst1]] {side = #blas.side<left>, uplo = #blas.uplo<any>} : (tensor<64x64xf32>, tensor<64x64xf32>, tensor<64x64xf32>, tensor<f32>, tensor<f32>) -> tensor<64x64xf32>
 // CHECK-NEXT:   return %9 : tensor<64x64xf32>
 // CHECK-NEXT: }

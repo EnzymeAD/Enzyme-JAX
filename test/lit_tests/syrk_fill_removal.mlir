@@ -9,16 +9,16 @@ func.func @test_basic_chain_upper(%arg0: tensor<32x32xf32>) -> tensor<32x32xf32>
 
     // First SYRK with output_uplo=F
     %0 = blas.syrk %arg0, %cst_1, %cst, %cst_0 {
-        output_uplo = #blas.uplo<F>,
+        output_uplo = #blas.uplo<any>,
         transpose = #blas.transpose<transpose>,
-        uplo = #blas.uplo<F>
+        uplo = #blas.uplo<any>
     } : (tensor<32x32xf32>, tensor<32x32xf32>, tensor<f32>, tensor<f32>) -> tensor<32x32xf32>
 
     // Second SYRK with uplo=U requires the input C to have U layout
     %1 = blas.syrk %arg0, %0, %cst, %cst_0 {
-        output_uplo = #blas.uplo<F>,
+        output_uplo = #blas.uplo<any>,
         transpose = #blas.transpose<transpose>,
-        uplo = #blas.uplo<U>
+        uplo = #blas.uplo<upper>
     } : (tensor<32x32xf32>, tensor<32x32xf32>, tensor<f32>, tensor<f32>) -> tensor<32x32xf32>
 
     return %1 : tensor<32x32xf32>
@@ -26,9 +26,9 @@ func.func @test_basic_chain_upper(%arg0: tensor<32x32xf32>) -> tensor<32x32xf32>
 
 // CHECK-LABEL: func.func @test_basic_chain_upper
 // CHECK: blas.syrk
-// CHECK-SAME: output_uplo = #blas.uplo<U>
+// CHECK-SAME: output_uplo = #blas.uplo<upper>
 // CHECK: blas.syrk
-// CHECK-SAME: uplo = #blas.uplo<U>
+// CHECK-SAME: uplo = #blas.uplo<upper>
 
 
 // Test 2: Chain with lower triangular - syrk feeds into syrk with uplo=L
@@ -39,15 +39,15 @@ func.func @test_basic_chain_lower(%arg0: tensor<32x32xf32>) -> tensor<32x32xf32>
     %cst_1 = stablehlo.constant dense<0.000000e+00> : tensor<32x32xf32>
 
     %0 = blas.syrk %arg0, %cst_1, %cst, %cst_0 {
-        output_uplo = #blas.uplo<F>,
+        output_uplo = #blas.uplo<any>,
         transpose = #blas.transpose<none>,
-        uplo = #blas.uplo<F>
+        uplo = #blas.uplo<any>
     } : (tensor<32x32xf32>, tensor<32x32xf32>, tensor<f32>, tensor<f32>) -> tensor<32x32xf32>
 
     %1 = blas.syrk %arg0, %0, %cst, %cst_0 {
-        output_uplo = #blas.uplo<L>,
+        output_uplo = #blas.uplo<lower>,
         transpose = #blas.transpose<none>,
-        uplo = #blas.uplo<L>
+        uplo = #blas.uplo<lower>
     } : (tensor<32x32xf32>, tensor<32x32xf32>, tensor<f32>, tensor<f32>) -> tensor<32x32xf32>
 
     return %1 : tensor<32x32xf32>
@@ -55,9 +55,9 @@ func.func @test_basic_chain_lower(%arg0: tensor<32x32xf32>) -> tensor<32x32xf32>
 
 // CHECK-LABEL: func.func @test_basic_chain_lower
 // CHECK: blas.syrk
-// CHECK-SAME: output_uplo = #blas.uplo<L>
+// CHECK-SAME: output_uplo = #blas.uplo<lower>
 // CHECK: blas.syrk
-// CHECK-SAME: uplo = #blas.uplo<L>
+// CHECK-SAME: uplo = #blas.uplo<lower>
 
 
 // Test 3: Chain with elementwise ops in between
@@ -72,9 +72,9 @@ func.func @test_elementwise_chain(%arg0: tensor<32x32xf32>, %arg1: tensor<32x32x
 
     // First SYRK with output_uplo=F
     %0 = blas.syrk %arg0, %cst_3, %cst_2, %cst_1 {
-        output_uplo = #blas.uplo<F>,
+        output_uplo = #blas.uplo<any>,
         transpose = #blas.transpose<transpose>,
-        uplo = #blas.uplo<F>
+        uplo = #blas.uplo<any>
     } : (tensor<32x32xf32>, tensor<32x32xf32>, tensor<f32>, tensor<f32>) -> tensor<32x32xf32>
 
     // Elementwise operations
@@ -83,8 +83,8 @@ func.func @test_elementwise_chain(%arg0: tensor<32x32xf32>, %arg1: tensor<32x32x
 
     // Second SYRK uses %2 as C (derived from %0)
     %3 = blas.syrk %arg0, %2, %cst_0, %cst_2 {
-        output_uplo = #blas.uplo<F>,
-        uplo = #blas.uplo<U>
+        output_uplo = #blas.uplo<any>,
+        uplo = #blas.uplo<upper>
     } : (tensor<32x32xf32>, tensor<32x32xf32>, tensor<f32>, tensor<f32>) -> tensor<32x32xf32>
 
     return %3 : tensor<32x32xf32>
@@ -92,11 +92,11 @@ func.func @test_elementwise_chain(%arg0: tensor<32x32xf32>, %arg1: tensor<32x32x
 
 // CHECK-LABEL: func.func @test_elementwise_chain
 // CHECK: blas.syrk
-// CHECK-SAME: output_uplo = #blas.uplo<U>
+// CHECK-SAME: output_uplo = #blas.uplo<upper>
 // CHECK: stablehlo.add
 // CHECK: stablehlo.multiply
 // CHECK: blas.syrk
-// CHECK-SAME: uplo = #blas.uplo<U>
+// CHECK-SAME: uplo = #blas.uplo<upper>
 
 
 // Test 4: Multiple child syrk ops with same uplo
@@ -108,22 +108,22 @@ func.func @test_multiple_children_same_uplo(%arg0: tensor<32x32xf32>) -> (tensor
 
     // Parent SYRK
     %0 = blas.syrk %arg0, %cst_1, %cst, %cst_0 {
-        output_uplo = #blas.uplo<F>,
+        output_uplo = #blas.uplo<any>,
         transpose = #blas.transpose<transpose>,
-        uplo = #blas.uplo<F>
+        uplo = #blas.uplo<any>
     } : (tensor<32x32xf32>, tensor<32x32xf32>, tensor<f32>, tensor<f32>) -> tensor<32x32xf32>
 
     // Two child SYRKs, both with uplo=L
     %1 = blas.syrk %arg0, %0, %cst, %cst_0 {
-        output_uplo = #blas.uplo<L>,
+        output_uplo = #blas.uplo<lower>,
         transpose = #blas.transpose<transpose>,
-        uplo = #blas.uplo<L>
+        uplo = #blas.uplo<lower>
     } : (tensor<32x32xf32>, tensor<32x32xf32>, tensor<f32>, tensor<f32>) -> tensor<32x32xf32>
 
     %2 = blas.syrk %arg0, %0, %cst, %cst_0 {
-        output_uplo = #blas.uplo<L>,
+        output_uplo = #blas.uplo<lower>,
         transpose = #blas.transpose<transpose>,
-        uplo = #blas.uplo<L>
+        uplo = #blas.uplo<lower>
     } : (tensor<32x32xf32>, tensor<32x32xf32>, tensor<f32>, tensor<f32>) -> tensor<32x32xf32>
 
     return %1, %2 : tensor<32x32xf32>, tensor<32x32xf32>
@@ -131,11 +131,11 @@ func.func @test_multiple_children_same_uplo(%arg0: tensor<32x32xf32>) -> (tensor
 
 // CHECK-LABEL: func.func @test_multiple_children_same_uplo
 // CHECK: blas.syrk
-// CHECK-SAME: output_uplo = #blas.uplo<L>
+// CHECK-SAME: output_uplo = #blas.uplo<lower>
 // CHECK: blas.syrk
-// CHECK-SAME: uplo = #blas.uplo<L>
+// CHECK-SAME: uplo = #blas.uplo<lower>
 // CHECK: blas.syrk
-// CHECK-SAME: uplo = #blas.uplo<L>
+// CHECK-SAME: uplo = #blas.uplo<lower>
 
 
 // Test 5: Conflicting uplos - should NOT transform
@@ -147,22 +147,22 @@ func.func @test_conflicting_uplos(%arg0: tensor<32x32xf32>) -> (tensor<32x32xf32
 
     // Parent SYRK
     %0 = blas.syrk %arg0, %cst_1, %cst, %cst_0 {
-        output_uplo = #blas.uplo<F>,
+        output_uplo = #blas.uplo<any>,
         transpose = #blas.transpose<transpose>,
-        uplo = #blas.uplo<F>
+        uplo = #blas.uplo<any>
     } : (tensor<32x32xf32>, tensor<32x32xf32>, tensor<f32>, tensor<f32>) -> tensor<32x32xf32>
 
     // Two child SYRKs with CONFLICTING uplos
     %1 = blas.syrk %arg0, %0, %cst, %cst_0 {
-        output_uplo = #blas.uplo<U>,
+        output_uplo = #blas.uplo<upper>,
         transpose = #blas.transpose<transpose>,
-        uplo = #blas.uplo<U>
+        uplo = #blas.uplo<upper>
     } : (tensor<32x32xf32>, tensor<32x32xf32>, tensor<f32>, tensor<f32>) -> tensor<32x32xf32>
 
     %2 = blas.syrk %arg0, %0, %cst, %cst_0 {
-        output_uplo = #blas.uplo<L>,
+        output_uplo = #blas.uplo<lower>,
         transpose = #blas.transpose<transpose>,
-        uplo = #blas.uplo<L>
+        uplo = #blas.uplo<lower>
     } : (tensor<32x32xf32>, tensor<32x32xf32>, tensor<f32>, tensor<f32>) -> tensor<32x32xf32>
 
     return %1, %2 : tensor<32x32xf32>, tensor<32x32xf32>
@@ -171,7 +171,7 @@ func.func @test_conflicting_uplos(%arg0: tensor<32x32xf32>) -> (tensor<32x32xf32
 // CHECK-LABEL: func.func @test_conflicting_uplos
 // Parent SYRK should still have output_uplo = F due to conflict
 // CHECK: blas.syrk
-// CHECK-SAME: output_uplo = #blas.uplo<F>
+// CHECK-SAME: output_uplo = #blas.uplo<any>
 
 
 // Test 6: Non-elementwise user blocks optimization
@@ -183,16 +183,16 @@ func.func @test_non_elementwise_user(%arg0: tensor<32x32xf32>) -> (tensor<32x32x
 
     // Parent SYRK
     %0 = blas.syrk %arg0, %cst_1, %cst, %cst_0 {
-        output_uplo = #blas.uplo<F>,
+        output_uplo = #blas.uplo<any>,
         transpose = #blas.transpose<transpose>,
-        uplo = #blas.uplo<F>
+        uplo = #blas.uplo<any>
     } : (tensor<32x32xf32>, tensor<32x32xf32>, tensor<f32>, tensor<f32>) -> tensor<32x32xf32>
 
     // One user is a syrk
     %1 = blas.syrk %arg0, %0, %cst, %cst_0 {
-        output_uplo = #blas.uplo<U>,
+        output_uplo = #blas.uplo<upper>,
         transpose = #blas.transpose<transpose>,
-        uplo = #blas.uplo<U>
+        uplo = #blas.uplo<upper>
     } : (tensor<32x32xf32>, tensor<32x32xf32>, tensor<f32>, tensor<f32>) -> tensor<32x32xf32>
 
     // Return the original result - this creates an escape that prevents optimization
@@ -202,7 +202,7 @@ func.func @test_non_elementwise_user(%arg0: tensor<32x32xf32>) -> (tensor<32x32x
 // CHECK-LABEL: func.func @test_non_elementwise_user
 // Parent SYRK should still have output_uplo = F due to non-syrk user
 // CHECK: blas.syrk
-// CHECK-SAME: output_uplo = #blas.uplo<F>
+// CHECK-SAME: output_uplo = #blas.uplo<any>
 
 
 // Test 7: All children have uplo=F, choose based on output_uplo majority (upper wins)
@@ -213,22 +213,22 @@ func.func @test_all_f_children_upper_majority(%arg0: tensor<32x32xf32>) -> (tens
 
     // Parent SYRK
     %0 = blas.syrk %arg0, %cst_1, %cst, %cst_0 {
-        output_uplo = #blas.uplo<F>,
+        output_uplo = #blas.uplo<any>,
         transpose = #blas.transpose<transpose>,
-        uplo = #blas.uplo<F>
+        uplo = #blas.uplo<any>
     } : (tensor<32x32xf32>, tensor<32x32xf32>, tensor<f32>, tensor<f32>) -> tensor<32x32xf32>
 
     // Children with uplo=F but different output_uplo preferences
     %1 = blas.syrk %arg0, %0, %cst, %cst_0 {
-        output_uplo = #blas.uplo<U>,
+        output_uplo = #blas.uplo<upper>,
         transpose = #blas.transpose<transpose>,
-        uplo = #blas.uplo<F>
+        uplo = #blas.uplo<any>
     } : (tensor<32x32xf32>, tensor<32x32xf32>, tensor<f32>, tensor<f32>) -> tensor<32x32xf32>
 
     %2 = blas.syrk %arg0, %0, %cst, %cst_0 {
-        output_uplo = #blas.uplo<U>,
+        output_uplo = #blas.uplo<upper>,
         transpose = #blas.transpose<transpose>,
-        uplo = #blas.uplo<F>
+        uplo = #blas.uplo<any>
     } : (tensor<32x32xf32>, tensor<32x32xf32>, tensor<f32>, tensor<f32>) -> tensor<32x32xf32>
 
     return %1, %2 : tensor<32x32xf32>, tensor<32x32xf32>
@@ -236,11 +236,11 @@ func.func @test_all_f_children_upper_majority(%arg0: tensor<32x32xf32>) -> (tens
 
 // CHECK-LABEL: func.func @test_all_f_children_upper_majority
 // CHECK: blas.syrk
-// CHECK-SAME: output_uplo = #blas.uplo<U>
+// CHECK-SAME: output_uplo = #blas.uplo<upper>
 // CHECK: blas.syrk
-// CHECK-SAME: uplo = #blas.uplo<U>
+// CHECK-SAME: uplo = #blas.uplo<upper>
 // CHECK: blas.syrk
-// CHECK-SAME: uplo = #blas.uplo<U>
+// CHECK-SAME: uplo = #blas.uplo<upper>
 
 
 // Test 8: Syrk used as A operand should not block the optimization
@@ -252,16 +252,16 @@ func.func @test_syrk_as_a_operand(%arg0: tensor<32x32xf32>) -> tensor<32x32xf32>
 
     // Parent SYRK
     %0 = blas.syrk %arg0, %cst_1, %cst, %cst_0 {
-        output_uplo = #blas.uplo<F>,
+        output_uplo = #blas.uplo<any>,
         transpose = #blas.transpose<transpose>,
-        uplo = #blas.uplo<F>
+        uplo = #blas.uplo<any>
     } : (tensor<32x32xf32>, tensor<32x32xf32>, tensor<f32>, tensor<f32>) -> tensor<32x32xf32>
 
     // Child SYRK uses result as A, not C - should fail the pattern
     %1 = blas.syrk %0, %cst_1, %cst, %cst_0 {
-        output_uplo = #blas.uplo<U>,
+        output_uplo = #blas.uplo<upper>,
         transpose = #blas.transpose<none>,
-        uplo = #blas.uplo<U>
+        uplo = #blas.uplo<upper>
     } : (tensor<32x32xf32>, tensor<32x32xf32>, tensor<f32>, tensor<f32>) -> tensor<32x32xf32>
 
     return %1 : tensor<32x32xf32>
@@ -270,4 +270,4 @@ func.func @test_syrk_as_a_operand(%arg0: tensor<32x32xf32>) -> tensor<32x32xf32>
 // CHECK-LABEL: func.func @test_syrk_as_a_operand
 // Should NOT transform since child syrk uses result as A operand, not C
 // CHECK: blas.syrk
-// CHECK-SAME: output_uplo = #blas.uplo<F>
+// CHECK-SAME: output_uplo = #blas.uplo<any>
