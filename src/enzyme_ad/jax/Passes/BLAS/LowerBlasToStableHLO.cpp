@@ -59,12 +59,12 @@ struct SymmOpLowering : public OpRewritePattern<blas::SymmOp> {
     stablehlo::DotGeneralOp dotGeneralOp;
     if (op.getSide() == BlasSide::left) {
       dotGeneralOp = stablehlo::DotGeneralOp::create(
-          rewriter, op.getLoc(), cast<RankedTensorType>(op.getC().getType()),
-          op.getA(), op.getB(), dotDims, nullptr, nullptr);
+          rewriter, op.getLoc(), cast<RankedTensorType>(op.getC().getType()), A,
+          op.getB(), dotDims, nullptr, nullptr);
     } else {
       dotGeneralOp = stablehlo::DotGeneralOp::create(
           rewriter, op.getLoc(), cast<RankedTensorType>(op.getC().getType()),
-          op.getB(), op.getA(), dotDims, nullptr, nullptr);
+          op.getB(), A, dotDims, nullptr, nullptr);
     }
 
     auto mul0 = stablehlo::MulOpCreate(rewriter, op->getLoc(), op.getAlpha(),
