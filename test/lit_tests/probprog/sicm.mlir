@@ -63,7 +63,7 @@ module {
       -> (tensor<1x1xf64>, tensor<1xi1>, tensor<2xui64>) {
     %step_size = arith.constant dense<0.1> : tensor<f64>
 
-    %result:3 = enzyme.mcmc @model_cholesky_hier(%rng, %prior_scale, %base_cov) given %trace
+    %result:8 = enzyme.mcmc @model_cholesky_hier(%rng, %prior_scale, %base_cov) given %trace
         step_size = %step_size {
       selection = [[#enzyme.symbol<1>]],
       all_addresses = [[#enzyme.symbol<1>]],
@@ -72,7 +72,7 @@ module {
       thinning = 1 : i64,
       num_warmup = 0 : i64
     } : (tensor<2xui64>, tensor<f64>, tensor<2x2xf64>, tensor<1x1xf64>, tensor<f64>)
-        -> (tensor<1x1xf64>, tensor<1xi1>, tensor<2xui64>)
+        -> (tensor<1x1xf64>, tensor<1xi1>, tensor<2xui64>, tensor<1x1xf64>, tensor<1x1xf64>, tensor<f64>, tensor<f64>, tensor<1x1xf64>)
 
     return %result#0, %result#1, %result#2 : tensor<1x1xf64>, tensor<1xi1>, tensor<2xui64>
   }
@@ -124,7 +124,7 @@ module {
       -> (tensor<1x1xf64>, tensor<1xi1>, tensor<2xui64>) {
     %step_size = arith.constant dense<0.1> : tensor<f64>
 
-    %result:3 = enzyme.mcmc @model_dot_general(%rng, %prior, %W, %x) given %trace
+    %result:8 = enzyme.mcmc @model_dot_general(%rng, %prior, %W, %x) given %trace
         step_size = %step_size {
       selection = [[#enzyme.symbol<1>]],
       all_addresses = [[#enzyme.symbol<1>]],
@@ -133,7 +133,7 @@ module {
       thinning = 1 : i64,
       num_warmup = 0 : i64
     } : (tensor<2xui64>, tensor<f64>, tensor<3x2xf64>, tensor<2x1xf64>, tensor<1x1xf64>, tensor<f64>)
-        -> (tensor<1x1xf64>, tensor<1xi1>, tensor<2xui64>)
+        -> (tensor<1x1xf64>, tensor<1xi1>, tensor<2xui64>, tensor<1x1xf64>, tensor<1x1xf64>, tensor<f64>, tensor<f64>, tensor<1x1xf64>)
 
     return %result#0, %result#1, %result#2 : tensor<1x1xf64>, tensor<1xi1>, tensor<2xui64>
   }
@@ -190,7 +190,7 @@ module {
       -> (tensor<1x1xf64>, tensor<1xi1>, tensor<2xui64>) {
     %step_size = arith.constant dense<0.1> : tensor<f64>
 
-    %result:3 = enzyme.mcmc @model_triangular_solve(%rng, %prior, %L, %b) given %trace
+    %result:8 = enzyme.mcmc @model_triangular_solve(%rng, %prior, %L, %b) given %trace
         step_size = %step_size {
       selection = [[#enzyme.symbol<1>]],
       all_addresses = [[#enzyme.symbol<1>]],
@@ -199,7 +199,7 @@ module {
       thinning = 1 : i64,
       num_warmup = 0 : i64
     } : (tensor<2xui64>, tensor<f64>, tensor<3x3xf64>, tensor<3x1xf64>, tensor<1x1xf64>, tensor<f64>)
-        -> (tensor<1x1xf64>, tensor<1xi1>, tensor<2xui64>)
+        -> (tensor<1x1xf64>, tensor<1xi1>, tensor<2xui64>, tensor<1x1xf64>, tensor<1x1xf64>, tensor<f64>, tensor<f64>, tensor<1x1xf64>)
 
     return %result#0, %result#1, %result#2 : tensor<1x1xf64>, tensor<1xi1>, tensor<2xui64>
   }
@@ -259,7 +259,7 @@ module {
       -> (tensor<1x1xf64>, tensor<1xi1>, tensor<2xui64>) {
     %step_size = arith.constant dense<0.1> : tensor<f64>
 
-    %result:3 = enzyme.mcmc @model_log_multiply(%rng, %prior, %diag_values) given %trace
+    %result:8 = enzyme.mcmc @model_log_multiply(%rng, %prior, %diag_values) given %trace
         step_size = %step_size {
       selection = [[#enzyme.symbol<1>]],
       all_addresses = [[#enzyme.symbol<1>]],
@@ -268,7 +268,7 @@ module {
       thinning = 1 : i64,
       num_warmup = 0 : i64
     } : (tensor<2xui64>, tensor<f64>, tensor<3xf64>, tensor<1x1xf64>, tensor<f64>)
-        -> (tensor<1x1xf64>, tensor<1xi1>, tensor<2xui64>)
+        -> (tensor<1x1xf64>, tensor<1xi1>, tensor<2xui64>, tensor<1x1xf64>, tensor<1x1xf64>, tensor<f64>, tensor<f64>, tensor<1x1xf64>)
 
     return %result#0, %result#1, %result#2 : tensor<1x1xf64>, tensor<1xi1>, tensor<2xui64>
   }
@@ -329,7 +329,7 @@ module {
       -> (tensor<1x1xf64>, tensor<1xi1>, tensor<2xui64>) {
     %step_size = arith.constant dense<0.1> : tensor<f64>
 
-    %result:3 = enzyme.mcmc @model_cholesky_log(%rng, %prior, %base_cov) given %trace
+    %result:8 = enzyme.mcmc @model_cholesky_log(%rng, %prior, %base_cov) given %trace
         step_size = %step_size {
       selection = [[#enzyme.symbol<1>]],
       all_addresses = [[#enzyme.symbol<1>]],
@@ -338,7 +338,7 @@ module {
       thinning = 1 : i64,
       num_warmup = 0 : i64
     } : (tensor<2xui64>, tensor<f64>, tensor<2x2xf64>, tensor<1x1xf64>, tensor<f64>)
-        -> (tensor<1x1xf64>, tensor<1xi1>, tensor<2xui64>)
+        -> (tensor<1x1xf64>, tensor<1xi1>, tensor<2xui64>, tensor<1x1xf64>, tensor<1x1xf64>, tensor<f64>, tensor<f64>, tensor<1x1xf64>)
 
     return %result#0, %result#1, %result#2 : tensor<1x1xf64>, tensor<1xi1>, tensor<2xui64>
   }

@@ -56,7 +56,7 @@ module {
       -> (tensor<1x1xf64>, tensor<1xi1>, tensor<2xui64>) {
     %step_size = arith.constant dense<0.1> : tensor<f64>
 
-    %result:3 = enzyme.mcmc (%rng, %A)
+    %result:8 = enzyme.mcmc (%rng, %A)
         step_size = %step_size logpdf_fn = @logpdf initial_position = %pos0 {
       selection = [[]],
       all_addresses = [[]],
@@ -65,7 +65,7 @@ module {
       thinning = 1 : i64,
       num_warmup = 0 : i64
     } : (tensor<2xui64>, tensor<4xf64>, tensor<f64>, tensor<1x1xf64>)
-        -> (tensor<1x1xf64>, tensor<1xi1>, tensor<2xui64>)
+        -> (tensor<1x1xf64>, tensor<1xi1>, tensor<2xui64>, tensor<1x1xf64>, tensor<1x1xf64>, tensor<f64>, tensor<f64>, tensor<1x1xf64>)
 
     return %result#0, %result#1, %result#2 : tensor<1x1xf64>, tensor<1xi1>, tensor<2xui64>
   }
