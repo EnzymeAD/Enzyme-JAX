@@ -26,6 +26,61 @@ namespace blas = mlir::blas;
 using namespace mlir::blas;
 using namespace mlir::stablehlo;
 
+struct SymmOpLowering : public OpRewritePattern<blas::SymmOp> {
+
+  using OpRewritePattern<blas::SymmOp>::OpRewritePattern;
+
+  std::string backend;
+  int64_t blasIntWidth;
+  SymmOpLowering(std::string backend, int64_t blasIntWidth,
+                 MLIRContext *context, PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit), backend(backend),
+        blasIntWidth(blasIntWidth) {}
+
+  LogicalResult matchAndRewrite(blas::SymmOp op,
+                                PatternRewriter &rewriter) const override {
+    auto AType = cast<RankedTensorType>(op.getA().getType());
+    auto nBatchDims = AType.getRank() - 2;
+    SmallVector<int64_t> batchDims(nBatchDims, 0);
+    std::iota(batchDims.begin(), batchDims.end(), 0);
+
+    Value A = op.getA();
+    if (!stablehlo::IsTensorFilled(A)) {
+      // If the tensor is not filled, we copy to the non-uplo region for safety
+      A = stablehlo::copyTriangularPart(rewriter, A, op.getUplo());
+      if (!A) {
+        return failure();
+      }
+    }
+
+    // fallback to emitting a stablehlo.dot_general that computes:
+    //   alpha*A*B + beta*C if side = 'L'
+    //   alpha*B*A + beta*C if side = 'R'
+    stablehlo::DotDimensionNumbersAttr dotDims;
+    dotDims = stablehlo::DotDimensionNumbersAttr::get(
+        op.getContext(), batchDims, batchDims, {nBatchDims + 1}, {nBatchDims});
+
+    stablehlo::DotGeneralOp dotGeneralOp;
+    if (op.getSide() == BlasSide::left) {
+      dotGeneralOp = stablehlo::DotGeneralOp::create(
+          rewriter, op.getLoc(), cast<RankedTensorType>(op.getC().getType()),
+          op.getA(), op.getB(), dotDims, nullptr, nullptr);
+    } else {
+      dotGeneralOp = stablehlo::DotGeneralOp::create(
+          rewriter, op.getLoc(), cast<RankedTensorType>(op.getC().getType()),
+          op.getB(), op.getA(), dotDims, nullptr, nullptr);
+    }
+
+    auto mul0 = stablehlo::MulOpCreate(rewriter, op->getLoc(), op.getAlpha(),
+                                       dotGeneralOp);
+    auto mul1 =
+        stablehlo::MulOpCreate(rewriter, op->getLoc(), op.getBeta(), op.getC());
+    auto res = stablehlo::AddOpCreate(rewriter, op->getLoc(), mul0, mul1);
+    rewriter.replaceOp(op, res);
+    return success();
+  }
+};
+
 struct TrsmOpLowering : public OpRewritePattern<blas::TrsmOp> {
   TrsmOpLowering(MLIRContext *context, PatternBenefit benefit = 1)
       : OpRewritePattern(context, benefit) {}
@@ -119,7 +174,7 @@ struct LowerBlasToStableHLOPass
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
 
-    patterns.add<TrsmOpLowering>(context);
+    patterns.add<SymmOpLowering, TrsmOpLowering>(context);
 
     GreedyRewriteConfig config;
     config.setUseTopDownTraversal(true);

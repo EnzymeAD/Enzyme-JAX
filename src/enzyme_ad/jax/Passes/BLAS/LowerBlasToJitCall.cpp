@@ -92,7 +92,7 @@ struct SymmOpLowering : public OpRewritePattern<blas::SymmOp> {
       }
     }
 
-    return matchAndRewriteFallback(op, rewriter);
+    return failure();
   }
 
   LogicalResult matchAndRewriteCPU(blas::SymmOp op,
@@ -291,49 +291,6 @@ struct SymmOpLowering : public OpRewritePattern<blas::SymmOp> {
 
     rewriter.replaceOp(op, callOp);
 
-    return success();
-  }
-
-  LogicalResult matchAndRewriteFallback(blas::SymmOp op,
-                                        PatternRewriter &rewriter) const {
-    auto AType = cast<RankedTensorType>(op.getA().getType());
-    auto nBatchDims = AType.getRank() - 2;
-    SmallVector<int64_t> batchDims(nBatchDims, 0);
-    std::iota(batchDims.begin(), batchDims.end(), 0);
-
-    Value A = op.getA();
-    if (!stablehlo::IsTensorFilled(A)) {
-      // If the tensor is not filled, we copy to the non-uplo region for safety
-      A = stablehlo::copyTriangularPart(rewriter, A, op.getUplo());
-      if (!A) {
-        return failure();
-      }
-    }
-
-    // fallback to emitting a stablehlo.dot_general that computes:
-    //   alpha*A*B + beta*C if side = 'L'
-    //   alpha*B*A + beta*C if side = 'R'
-    stablehlo::DotDimensionNumbersAttr dotDims;
-    dotDims = stablehlo::DotDimensionNumbersAttr::get(
-        op.getContext(), batchDims, batchDims, {nBatchDims + 1}, {nBatchDims});
-
-    stablehlo::DotGeneralOp dotGeneralOp;
-    if (op.getSide() == BlasSide::left) {
-      dotGeneralOp = stablehlo::DotGeneralOp::create(
-          rewriter, op.getLoc(), cast<RankedTensorType>(op.getC().getType()),
-          op.getA(), op.getB(), dotDims, nullptr, nullptr);
-    } else {
-      dotGeneralOp = stablehlo::DotGeneralOp::create(
-          rewriter, op.getLoc(), cast<RankedTensorType>(op.getC().getType()),
-          op.getB(), op.getA(), dotDims, nullptr, nullptr);
-    }
-
-    auto mul0 = stablehlo::MulOpCreate(rewriter, op->getLoc(), op.getAlpha(),
-                                       dotGeneralOp);
-    auto mul1 =
-        stablehlo::MulOpCreate(rewriter, op->getLoc(), op.getBeta(), op.getC());
-    auto res = stablehlo::AddOpCreate(rewriter, op->getLoc(), mul0, mul1);
-    rewriter.replaceOp(op, res);
     return success();
   }
 };
