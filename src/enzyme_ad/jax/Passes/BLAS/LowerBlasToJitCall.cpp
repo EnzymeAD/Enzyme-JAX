@@ -1,5 +1,3 @@
-// #include "Enzyme/MLIR/Dialect/Dialect.h"
-// #include "Enzyme/MLIR/Passes/EnzymeBatchPass.h"
 #include "src/enzyme_ad/jax/Dialect/BLAS/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/BLAS/Utils.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
@@ -9,17 +7,7 @@
 
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-// #include "stablehlo/dialect/Base.h"
-// #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
-// #include "stablehlo/dialect/TypeInference.h"
-// #include "stablehlo/reference/Ops.h"
-// #include "stablehlo/reference/Scope.h"
-// #include "stablehlo/reference/Types.h"
-// #include "stablehlo/transforms/ChloDecompositionUtils.h"
-// #include "stablehlo/transforms/PassUtils.h"
-// #include "stablehlo/transforms/Passes.h"
-// #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/SmallVector.h"
