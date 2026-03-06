@@ -10,7 +10,26 @@ def LowerBlasToStableHLOPass : Pass<"lower-blas-to-stablehlo"> {
     "stablehlo::StablehloDialect"
   ];
 
-  let options = [];
+  let options = [
+    Option<
+      /*C++ variable name=*/"symm",
+      /*CLI argument=*/"symm",
+      /*type=*/"bool",
+      /*default=*/"false",
+      /*description=*/"lower blas.symm to stablehlo.dot_general">,
+    Option<
+      /*C++ variable name=*/"syrk",
+      /*CLI argument=*/"syrk",
+      /*type=*/"bool",
+      /*default=*/"false",
+      /*description=*/"lower blas.syrk to stablehlo.dot_general">,
+    Option<
+      /*C++ variable name=*/"trsm",
+      /*CLI argument=*/"trsm",
+      /*type=*/"bool",
+      /*default=*/"true",
+      /*description=*/"lower blas.trsm to stablehlo.triangular_solve">,
+  ];
 }
 
 def LowerBlasToJitCallPass : Pass<"lower-blas-to-jit_call"> {

@@ -234,7 +234,12 @@ struct LowerBlasToStableHLOPass
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
 
-    patterns.add<SymmOpLowering, TrsmOpLowering>(context);
+    if (symm)
+      patterns.add<SymmOpLowering>(context);
+    if (syrk)
+      patterns.add<SyrkOpLowering>(context);
+    if (trsm)
+      patterns.add<TrsmOpLowering>(context);
 
     GreedyRewriteConfig config;
     config.setUseTopDownTraversal(true);
