@@ -26,16 +26,12 @@ namespace blas = mlir::blas;
 using namespace mlir::blas;
 using namespace mlir::stablehlo;
 
+namespace lower_shlo {
 struct SymmOpLowering : public OpRewritePattern<blas::SymmOp> {
-
   using OpRewritePattern<blas::SymmOp>::OpRewritePattern;
 
-  std::string backend;
-  int64_t blasIntWidth;
-  SymmOpLowering(std::string backend, int64_t blasIntWidth,
-                 MLIRContext *context, PatternBenefit benefit = 1)
-      : OpRewritePattern(context, benefit), backend(backend),
-        blasIntWidth(blasIntWidth) {}
+  SymmOpLowering(MLIRContext *context, PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit) {}
 
   LogicalResult matchAndRewrite(blas::SymmOp op,
                                 PatternRewriter &rewriter) const override {
@@ -84,10 +80,8 @@ struct SymmOpLowering : public OpRewritePattern<blas::SymmOp> {
 struct SyrkOpLowering : public OpRewritePattern<blas::SyrkOp> {
   using OpRewritePattern<blas::SyrkOp>::OpRewritePattern;
 
-  SyrkOpLowering(std::string backend, int64_t blasIntWidth,
-                 MLIRContext *context, PatternBenefit benefit = 1)
-      : OpRewritePattern(context, benefit), backend(backend),
-        blasIntWidth(blasIntWidth){};
+  SyrkOpLowering(MLIRContext *context, PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit){};
 
   LogicalResult matchAndRewrite(blas::SyrkOp op,
                                 PatternRewriter &rewriter) const override {
@@ -135,10 +129,6 @@ struct SyrkOpLowering : public OpRewritePattern<blas::SyrkOp> {
     rewriter.replaceOp(op, res);
     return success();
   }
-
-private:
-  std::string backend;
-  int64_t blasIntWidth;
 };
 
 struct TrsmOpLowering : public OpRewritePattern<blas::TrsmOp> {
@@ -224,6 +214,7 @@ struct TrsmOpLowering : public OpRewritePattern<blas::TrsmOp> {
     return success();
   }
 };
+} // namespace lower_shlo
 
 struct LowerBlasToStableHLOPass
     : public mlir::blas::impl::LowerBlasToStableHLOPassBase<
@@ -234,12 +225,12 @@ struct LowerBlasToStableHLOPass
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
 
-    if (symm)
-      patterns.add<SymmOpLowering>(context);
-    if (syrk)
-      patterns.add<SyrkOpLowering>(context);
-    if (trsm)
-      patterns.add<TrsmOpLowering>(context);
+    if (symm.getValue())
+      patterns.add<lower_shlo::SymmOpLowering>(context);
+    if (syrk.getValue())
+      patterns.add<lower_shlo::SyrkOpLowering>(context);
+    if (trsm.getValue())
+      patterns.add<lower_shlo::TrsmOpLowering>(context);
 
     GreedyRewriteConfig config;
     config.setUseTopDownTraversal(true);
