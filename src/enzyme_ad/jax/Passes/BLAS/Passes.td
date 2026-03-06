@@ -3,7 +3,7 @@
 
 include "mlir/Pass/PassBase.td"
 
-def LowerBlasToStablehloPass : Pass<"lower-blas-to-stablehlo"> {
+def LowerBlasToStableHLOPass : Pass<"lower-blas-to-stablehlo"> {
   let summary = "Lower BLAS operations to StableHLO ops";
   let dependentDialects = [
     "mlir::blas::BlasDialect",
