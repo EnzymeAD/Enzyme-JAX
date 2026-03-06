@@ -1,7 +1,7 @@
 #include "Dialect.h"
 
 using namespace mlir;
-using namespace mlir::enzymexla::blas;
+using namespace mlir::blas;
 
 #define GET_OP_CLASSES
 #include "src/enzyme_ad/jax/Dialect/BLAS/BlasOps.cpp.inc"

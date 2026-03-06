@@ -6,7 +6,7 @@ include "mlir/Pass/PassBase.td"
 def LowerBlasToStablehloPass : Pass<"lower-blas-to-stablehlo"> {
   let summary = "Lower BLAS operations to StableHLO ops";
   let dependentDialects = [
-    "mlir::enzymexla::blas::BlasDialect",
+    "mlir::blas::BlasDialect",
     "stablehlo::StablehloDialect"
   ];
 
@@ -16,7 +16,7 @@ def LowerBlasToStablehloPass : Pass<"lower-blas-to-stablehlo"> {
 def LowerBlasToJitCallPass : Pass<"lower-blas-to-jit_call"> {
   let summary = "Lower BLAS operations to enzymexla.jit_call ops";
   let dependentDialects = [
-    "mlir::enzymexla::blas::BlasDialect",
+    "mlir::blas::BlasDialect",
     "mlir::enzymexla::EnzymeXLADialect"
   ];
 

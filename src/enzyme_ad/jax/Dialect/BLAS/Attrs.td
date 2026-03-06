@@ -12,7 +12,7 @@ def BLAS_Layout : I32EnumAttr<"BlasLayout",
       I32EnumAttrCase<"row_major", 0x52>  // 'R'
     ]> {
   let genSpecializedAttr = 0;
-  let cppNamespace = "::mlir::enzymexla::blas";
+  let cppNamespace = "::mlir::blas";
 }
 
 def BLAS_LayoutAttr : EnumAttr<BLAS_Dialect, BLAS_Layout, "layout"> {
@@ -36,7 +36,7 @@ def BLAS_Transpose : I32EnumAttr<"BlasTranspose",
       I32EnumAttrCase<"adjoint", 0x43>  // 'C'
     ]> {
   let genSpecializedAttr = 0;
-  let cppNamespace = "::mlir::enzymexla::blas";
+  let cppNamespace = "::mlir::blas";
 }
 
 def BLAS_TransposeAttr : EnumAttr<BLAS_Dialect, BLAS_Transpose, "transpose"> {
@@ -60,7 +60,7 @@ def BLAS_Side : I32EnumAttr<"BlasSide",
       I32EnumAttrCase<"right", 0x52>  // 'R'
     ]> {
   let genSpecializedAttr = 0;
-  let cppNamespace = "::mlir::enzymexla::blas";
+  let cppNamespace = "::mlir::blas";
 }
 
 def BLAS_SideAttr : EnumAttr<BLAS_Dialect, BLAS_Side, "side"> {
@@ -84,7 +84,7 @@ def BLAS_Uplo : I32EnumAttr<"BlasUplo",
       I32EnumAttrCase<"any", 0x46>    // 'F'
     ]> {
   let genSpecializedAttr = 0;
-  let cppNamespace = "::mlir::enzymexla::blas";
+  let cppNamespace = "::mlir::blas";
 }
 
 def BLAS_UploAttr : EnumAttr<BLAS_Dialect, BLAS_Uplo, "uplo"> {
@@ -108,7 +108,7 @@ def BLAS_Diag : I32EnumAttr<"BlasDiag",
       I32EnumAttrCase<"unit", 0x55>      // 'U'
     ]> {
   let genSpecializedAttr = 0;
-  let cppNamespace = "::mlir::enzymexla::blas";
+  let cppNamespace = "::mlir::blas";
 }
 
 def BLAS_DiagAttr : EnumAttr<BLAS_Dialect, BLAS_Diag, "diag"> {

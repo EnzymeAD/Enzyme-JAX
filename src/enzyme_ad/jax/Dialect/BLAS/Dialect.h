@@ -20,8 +20,8 @@
 #define GET_OP_CLASSES
 #include "src/enzyme_ad/jax/Dialect/BLAS/BlasOps.h.inc"
 
-namespace mlir::enzymexla::blas {
+namespace mlir::blas {
 using BlasDialect = BLASDialect;
-} // namespace mlir::enzymexla::blas
+} // namespace mlir::blas
 
 #endif

@@ -66,7 +66,7 @@ def SyrkOp : BLAS_Op<"syrk", [Pure, SameOperandsAndResultElementType]> {
     HLO_Tensor:$C,
     BLAS_UploAttr:$uplo,
     BLAS_UploAttr:$output_uplo,
-    DefaultValuedAttr<BLAS_TransposeAttr, "::mlir::enzymexla::blas::BlasTranspose::none">:$transpose
+    DefaultValuedAttr<BLAS_TransposeAttr, "::mlir::blas::BlasTranspose::none">:$transpose
   );
 
   let results = (outs
@@ -95,7 +95,7 @@ def TrmmOp : BLAS_Op<"trmm", [Pure, SameOperandsAndResultElementType]> {
     HLO_ScalarTensor:$B,
     BLAS_SideAttr:$side,
     BLAS_UploAttr:$uplo,
-    DefaultValuedAttr<BLAS_TransposeAttr, "::mlir::enzymexla::blas::BlasTranspose::none">:$transpose
+    DefaultValuedAttr<BLAS_TransposeAttr, "::mlir::blas::BlasTranspose::none">:$transpose
   );
 
   let results = (outs

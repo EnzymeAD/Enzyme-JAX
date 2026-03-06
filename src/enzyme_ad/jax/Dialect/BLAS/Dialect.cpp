@@ -10,7 +10,7 @@
 #define GET_ATTRDEF_CLASSES
 #include "src/enzyme_ad/jax/Dialect/BLAS/BlasAttrs.cpp.inc"
 
-void mlir::enzymexla::blas::BLASDialect::initialize() {
+void mlir::blas::BLASDialect::initialize() {
   addAttributes<
 #define GET_ATTRDEF_LIST
 #include "src/enzyme_ad/jax/Dialect/BLAS/BlasAttrs.cpp.inc"

@@ -27,15 +27,15 @@
 
 #define DEBUG_TYPE "lower-blas-to-jit_call"
 
-namespace mlir::enzymexla::blas {
+namespace mlir::blas {
 #define GEN_PASS_DEF_LOWERBLASTOJITCALLPASS
 #include "src/enzyme_ad/jax/Passes/BLAS/Passes.h.inc"
-} // namespace mlir::enzymexla::blas
+} // namespace mlir::blas
 
 using namespace mlir;
 using namespace mlir::enzyme;
-namespace blas = mlir::enzymexla::blas;
-using namespace mlir::enzymexla::blas;
+namespace blas = mlir::blas;
+using namespace mlir::blas;
 using namespace mlir::stablehlo;
 
 // Helper function to extract constant scalar value (real/imag parts)
@@ -382,7 +382,7 @@ struct SyrkOpLowering : public OpRewritePattern<blas::SyrkOp> {
     case BlasUplo::any:
       customCallUplo = standardizeUplo(op.getOutputUplo());
       needsCopy = op.getOutputUplo() == BlasUplo::any ? CopyMode::COPY
-                                                    : CopyMode::NOT_NEEDED;
+                                                      : CopyMode::NOT_NEEDED;
       break;
     case BlasUplo::lower:
       customCallUplo = op.getUplo();
@@ -559,8 +559,8 @@ struct SyrkOpLowering : public OpRewritePattern<blas::SyrkOp> {
       // symmetric, this means we need to swap upper/lower triangular.
       auto uploConst = stablehlo::ConstantOp::create(
           rewriter, op.getLoc(), uint8Type,
-          cast<ElementsAttr>(
-              makeAttr(uint8Type, customCallUplo == BlasUplo::upper ? 'L' : 'U')));
+          cast<ElementsAttr>(makeAttr(
+              uint8Type, customCallUplo == BlasUplo::upper ? 'L' : 'U')));
       // We intentionally flip transpose here, this allows us to pass in
       // the data as a row-major format without paying the cost of
       // layout transformation to a col-major (which CPU BLAS uses)
@@ -773,7 +773,7 @@ private:
 };
 
 struct LowerBlasToJitCallPass
-    : public mlir::enzymexla::blas::impl::LowerBlasToJitCallPassBase<
+    : public mlir::blas::impl::LowerBlasToJitCallPassBase<
           LowerBlasToJitCallPass> {
   using Base::Base;
 

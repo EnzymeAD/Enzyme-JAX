@@ -15,15 +15,15 @@
 
 #define DEBUG_TYPE "lower-blas-to-stablehlo"
 
-namespace mlir::enzymexla::blas {
+namespace mlir::blas {
 #define GEN_PASS_DEF_LOWERBLASTOSTABLEHLOPASS
 #include "src/enzyme_ad/jax/Passes/BLAS/Passes.h.inc"
-} // namespace mlir::enzymexla::blas
+} // namespace mlir::blas
 
 using namespace mlir;
 // using namespace mlir::enzyme;
-namespace blas = mlir::enzymexla::blas;
-using namespace mlir::enzymexla::blas;
+namespace blas = mlir::blas;
+using namespace mlir::blas;
 using namespace mlir::stablehlo;
 
 struct TrsmOpLowering : public OpRewritePattern<blas::TrsmOp> {
@@ -111,7 +111,7 @@ struct TrsmOpLowering : public OpRewritePattern<blas::TrsmOp> {
 };
 
 struct LowerBlasToStableHLOPass
-    : public mlir::enzymexla::blas::impl::LowerBlasToStableHLOPassBase<
+    : public mlir::blas::impl::LowerBlasToStableHLOPassBase<
           LowerBlasToStableHLOPass> {
   using Base::Base;
 
