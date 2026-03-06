@@ -1,12 +1,12 @@
-// RUN: enzymexlamlir-opt --lower-enzymexla-blas="backend=cpu" --enzyme-hlo-opt %s | FileCheck %s --check-prefix=CPU
-// RUN: enzymexlamlir-opt --lower-enzymexla-blas="backend=cuda" --enzyme-hlo-opt %s | FileCheck %s --check-prefix=CUDA
-// RUN: enzymexlamlir-opt --lower-enzymexla-blas="backend=tpu" --enzyme-hlo-opt %s | FileCheck %s --check-prefix=TPU
+// RUN: enzymexlamlir-opt --lower-blas-to-jit_call="backend=cpu" --enzyme-hlo-opt %s | FileCheck %s --check-prefix=CPU
+// RUN: enzymexlamlir-opt --lower-blas-to-jit_call="backend=cuda" --enzyme-hlo-opt %s | FileCheck %s --check-prefix=CUDA
+// RUN: enzymexlamlir-opt --lower-blas-to-jit_call="backend=tpu" --enzyme-hlo-opt %s | FileCheck %s --check-prefix=TPU
 
 module {
     func.func @main1(%arg0: tensor<64x32xf32>, %arg1: tensor<64x64xf32>) -> tensor<64x64xf32> {
         %alpha = stablehlo.constant dense<2.0> : tensor<f32>
         %beta = stablehlo.constant dense<3.0> : tensor<f32>
-        %0 = enzymexla.blas.syrk %arg0, %arg1, %alpha, %beta {output_uplo = #enzymexla.uplo<F>, transpose = #enzymexla.transpose<none>, uplo = #enzymexla.uplo<U>} : (tensor<64x32xf32>, tensor<64x64xf32>, tensor<f32>, tensor<f32>) -> tensor<64x64xf32>
+        %0 = blas.syrk %arg0, %arg1, %alpha, %beta {output_uplo = #blas.uplo<F>, transpose = #blas.transpose<none>, uplo = #blas.uplo<U>} : (tensor<64x32xf32>, tensor<64x64xf32>, tensor<f32>, tensor<f32>) -> tensor<64x64xf32>
         return %0 : tensor<64x64xf32>
     }
 }
@@ -68,7 +68,7 @@ module {
     func.func @main2(%arg0: tensor<64x32xf32>, %arg1: tensor<64x64xf32>) -> tensor<64x64xf32> {
         %alpha = stablehlo.constant dense<2.0> : tensor<f32>
         %beta = stablehlo.constant dense<3.0> : tensor<f32>
-        %0 = enzymexla.blas.syrk %arg0, %arg1, %alpha, %beta {output_uplo = #enzymexla.uplo<L>, transpose = #enzymexla.transpose<none>, uplo = #enzymexla.uplo<L>} : (tensor<64x32xf32>, tensor<64x64xf32>, tensor<f32>, tensor<f32>) -> tensor<64x64xf32>
+        %0 = blas.syrk %arg0, %arg1, %alpha, %beta {output_uplo = #blas.uplo<L>, transpose = #blas.transpose<none>, uplo = #blas.uplo<L>} : (tensor<64x32xf32>, tensor<64x64xf32>, tensor<f32>, tensor<f32>) -> tensor<64x64xf32>
         return %0 : tensor<64x64xf32>
     }
 }
@@ -120,7 +120,7 @@ module {
     func.func @main3(%arg0: tensor<64x32xf32>, %arg1: tensor<64x64xf32>) -> tensor<64x64xf32> {
         %alpha = stablehlo.constant dense<2.0> : tensor<f32>
         %beta = stablehlo.constant dense<3.0> : tensor<f32>
-        %0 = enzymexla.blas.syrk %arg0, %arg1, %alpha, %beta {output_uplo = #enzymexla.uplo<L>, transpose = #enzymexla.transpose<none>, uplo = #enzymexla.uplo<F>} : (tensor<64x32xf32>, tensor<64x64xf32>, tensor<f32>, tensor<f32>) -> tensor<64x64xf32>
+        %0 = blas.syrk %arg0, %arg1, %alpha, %beta {output_uplo = #blas.uplo<L>, transpose = #blas.transpose<none>, uplo = #blas.uplo<F>} : (tensor<64x32xf32>, tensor<64x64xf32>, tensor<f32>, tensor<f32>) -> tensor<64x64xf32>
         return %0 : tensor<64x64xf32>
     }
 }
@@ -169,7 +169,7 @@ module {
         %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<4x4xf32>
         %cst_1 = stablehlo.constant dense<1.000000e+00> : tensor<f32>
         %cst_2 = stablehlo.constant dense<0.000000e+00> : tensor<f32>
-        %0 = enzymexla.blas.syrk %arg0, %cst_0, %cst_1, %cst_2 {output_uplo = #enzymexla.uplo<F>, transpose = #enzymexla.transpose<transpose>, uplo = #enzymexla.uplo<U>} : (tensor<5x4xf32>, tensor<4x4xf32>, tensor<f32>, tensor<f32>) -> tensor<4x4xf32>
+        %0 = blas.syrk %arg0, %cst_0, %cst_1, %cst_2 {output_uplo = #blas.uplo<F>, transpose = #blas.transpose<transpose>, uplo = #blas.uplo<U>} : (tensor<5x4xf32>, tensor<4x4xf32>, tensor<f32>, tensor<f32>) -> tensor<4x4xf32>
         %1 = stablehlo.multiply %cst, %arg1 : tensor<4x4xf32>
         %2 = stablehlo.add %0, %1 : tensor<4x4xf32>
         return %2 : tensor<4x4xf32>
@@ -226,7 +226,7 @@ module {
 
 module {
     func.func @main(%arg0: tensor<64x32xf32>, %arg1: tensor<64x64xf32>, %alpha: tensor<f32>, %beta: tensor<f32>) -> tensor<64x64xf32> {
-        %0 = enzymexla.blas.syrk %arg0, %arg1, %alpha, %beta {output_uplo = #enzymexla.uplo<F>, transpose = #enzymexla.transpose<none>, uplo = #enzymexla.uplo<U>} : (tensor<64x32xf32>, tensor<64x64xf32>, tensor<f32>, tensor<f32>) -> tensor<64x64xf32>
+        %0 = blas.syrk %arg0, %arg1, %alpha, %beta {output_uplo = #blas.uplo<F>, transpose = #blas.transpose<none>, uplo = #blas.uplo<U>} : (tensor<64x32xf32>, tensor<64x64xf32>, tensor<f32>, tensor<f32>) -> tensor<64x64xf32>
         return %0 : tensor<64x64xf32>
     }
 }
@@ -243,7 +243,7 @@ module {
 
 module {
     func.func @main(%arg0: tensor<64x32xf32>, %arg1: tensor<64x64xf32>, %alpha: tensor<f32>, %beta: tensor<f32>) -> tensor<64x64xf32> {
-        %0 = enzymexla.blas.syrk %arg0, %arg1, %alpha, %beta {output_uplo = #enzymexla.uplo<L>, transpose = #enzymexla.transpose<none>, uplo = #enzymexla.uplo<U>} : (tensor<64x32xf32>, tensor<64x64xf32>, tensor<f32>, tensor<f32>) -> tensor<64x64xf32>
+        %0 = blas.syrk %arg0, %arg1, %alpha, %beta {output_uplo = #blas.uplo<L>, transpose = #blas.transpose<none>, uplo = #blas.uplo<U>} : (tensor<64x32xf32>, tensor<64x64xf32>, tensor<f32>, tensor<f32>) -> tensor<64x64xf32>
         return %0 : tensor<64x64xf32>
     }
 }
