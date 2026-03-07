@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - main
-    paths:
+    paths: &paths
       - ".github/scripts/process_benchmark_results.py"
       - ".github/workflows/build.yml"
       - "**/BUILD"
@@ -18,17 +18,7 @@ on:
   pull_request:
     branches:
       - main
-    paths:
-      - ".github/scripts/process_benchmark_results.py"
-      - ".github/workflows/build.yml"
-      - "**/BUILD"
-      - "**/WORKSPACE"
-      - "**/*.bzl"
-      - "builddeps/**"
-      - "patches/**"
-      - "src/**"
-      - "test/**"
-      - "third_party/**"
+    paths: *paths
   merge_group:
 
 concurrency:
