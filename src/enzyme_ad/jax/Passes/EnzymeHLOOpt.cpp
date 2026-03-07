@@ -32886,6 +32886,136 @@ struct LowerMultiSlice final
     : CheckedOpRewritePattern<enzymexla::MultiSliceOp, LowerMultiSlice> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
+  /// Given a TensorShardingAttr and the corresponding MeshAttr, compute the
+  /// number of shards along tensor dimension `d`.
+  static int64_t getNumShardsAlongDim(sdy::TensorShardingAttr sharding,
+                                      sdy::MeshAttr mesh, int64_t d) {
+    auto dimSharding = sharding.getDimShardings()[d];
+    int64_t numShards = 1;
+    for (auto axisRef : dimSharding.getAxes()) {
+      for (auto meshAxis : mesh.getAxes()) {
+        if (meshAxis.getName() == axisRef.getName()) {
+          numShards *= meshAxis.getSize();
+          break;
+        }
+      }
+    }
+    return numShards;
+  }
+
+  /// Try to retrieve the TensorShardingAttr for a Value by inspecting either
+  /// its defining op (for OpResults) or the parent op's arg shardings (for
+  /// BlockArguments).
+  static sdy::TensorShardingAttr getShardingForValue(Value value) {
+    if (auto result = dyn_cast<OpResult>(value)) {
+      auto *defOp = result.getDefiningOp();
+      auto perValue = sdy::getShardingPerValue(defOp);
+      if (!perValue)
+        return {};
+      return perValue.getShardings()[result.getResultNumber()];
+    }
+    if (auto blockArg = dyn_cast<BlockArgument>(value)) {
+      auto parentOp = blockArg.getOwner()->getParentOp();
+      if (!parentOp)
+        return {};
+      auto funcOp = dyn_cast<func::FuncOp>(parentOp);
+      if (!funcOp)
+        return {};
+      auto attr = funcOp.getArgAttrOfType<sdy::TensorShardingAttr>(
+          blockArg.getArgNumber(), sdy::kShardingAttr);
+      return attr;
+    }
+    return {};
+  }
+
+
+  /// Detect whether this MultiSliceOp matches the cross-shard pattern:
+  ///   1. All strides are 1.
+  ///   2. For every sharded dimension except the multi-slice dimension,
+  ///      start/limit span the full tensor extent.
+  ///   3. Along the multi-slice dimension, every slice's start falls within
+  ///      one shard and its end falls within a different shard.
+  void detectCrossShardPattern(enzymexla::MultiSliceOp op,
+                               ArrayRef<int64_t> startIndices,
+                               ArrayRef<int64_t> limitIndices,
+                               ArrayRef<int64_t> strides, int32_t dim,
+                               int32_t amount) const {
+    // --- Condition 1: unit strides everywhere ---
+    if (!llvm::all_of(strides, [](int64_t s) { return s == 1; }))
+      return;
+
+    auto operandType = cast<RankedTensorType>(op.getOperand().getType());
+    ArrayRef<int64_t> shape = operandType.getShape();
+    int64_t rank = shape.size();
+
+    if (dim < 0 || dim >= rank)
+      return;
+
+    // We need the operand's sharding to reason about shard boundaries.
+    auto operandSharding = getShardingForValue(op.getOperand());
+    if (!operandSharding)
+      return;
+
+    // Look up the mesh so we can translate axis names → sizes.
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+    auto meshOp = SymbolTable::lookupNearestSymbolFrom<sdy::MeshOp>(
+        moduleOp,
+        StringAttr::get(op.getContext(), operandSharding.getMeshName()));
+    if (!meshOp)
+      return;
+    sdy::MeshAttr mesh = meshOp.getMesh();
+
+    // --- Condition 2: full span on every sharded dim except `dim` ---
+    for (int64_t d = 0; d < rank; ++d) {
+      if (d == dim)
+        continue;
+      int64_t numShards = getNumShardsAlongDim(operandSharding, mesh, d);
+      if (numShards > 1) {
+        if (startIndices[d] != 0 || limitIndices[d] != shape[d])
+          return;
+      }
+    }
+
+    // --- Condition 3: cross-shard slicing along `dim` ---
+    int64_t numShards = getNumShardsAlongDim(operandSharding, mesh, dim);
+    if (numShards <= 1)
+      return; // Not sharded along the slice dimension.
+
+    int64_t dimSize = shape[dim];
+    if (dimSize % numShards != 0)
+      return; // Non-uniform shard sizes – bail out for now.
+
+    int64_t shardSize = dimSize / numShards;
+
+    // Map an index to the shard that contains it (clamped).
+    auto shardOf = [&](int64_t idx) -> int64_t {
+      return std::clamp(idx / shardSize, int64_t{0}, numShards - 1);
+    };
+
+    int32_t totalResults = amount + 1;
+    for (int i = 0; i < totalResults; ++i) {
+      int64_t sliceStart = startIndices[dim] + i;
+      int64_t sliceEnd = limitIndices[dim] + i - 1; // inclusive end
+
+      if (sliceStart < 0 || sliceEnd >= dimSize)
+        return; // Out-of-bounds – not the pattern we're looking for.
+
+      int64_t startShard = shardOf(sliceStart);
+      int64_t endShard = shardOf(sliceEnd);
+
+      if (startShard == endShard)
+        return; // Entire slice is local to one shard – not the cross-shard
+                // case.
+    }
+
+    // All conditions met – emit diagnostic information.
+    op.emitRemark("detected cross-shard multi-slice eligible for optimized "
+                  "lowering: dim=")
+        << dim << ", amount=" << amount << ", shards_along_dim=" << numShards
+        << ", shard_size=" << shardSize << ", slice_window=["
+        << startIndices[dim] << ", " << limitIndices[dim] << ")";
+  }
+
   LogicalResult matchAndRewriteImpl(enzymexla::MultiSliceOp op,
                                     PatternRewriter &rewriter) const {
     int32_t amount = op.getAmount();
@@ -32898,6 +33028,11 @@ struct LowerMultiSlice final
 
     // Get sharding info if present
     auto shard = sdy::getShardingPerValue(op);
+
+    // Check whether this op matches the cross-shard pattern that could
+    // benefit from a more efficient lowering in the future.
+    detectCrossShardPattern(op, baseStartIndices, baseLimitIndices, strides,
+                            dim, amount);
 
     SmallVector<Value> replacements(totalResults);
 
