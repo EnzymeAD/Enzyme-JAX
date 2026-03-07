@@ -28,8 +28,7 @@ MlirAttribute blasTransposeAttrGet(MlirContext ctx, int32_t mode) {
   case 2:
     transpose = mlir::blas::BlasTranspose::adjoint;
   }
-  return wrap(
-      mlir::blas::BlasTransposeAttr::get(unwrap(ctx), transpose));
+  return wrap(mlir::blas::BlasTransposeAttr::get(unwrap(ctx), transpose));
 }
 
 MlirAttribute blasSideAttrGet(MlirContext ctx, uint8_t left_side) {

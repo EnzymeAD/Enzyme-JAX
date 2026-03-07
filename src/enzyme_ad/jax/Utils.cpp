@@ -1368,8 +1368,8 @@ RankedTensorType removeBatchedDims(RankedTensorType Ty,
   return RankedTensorType::get(newShape, Ty.getElementType());
 }
 
-blas::BlasTranspose
-transposeBlasTranspose(blas::BlasTranspose trans, bool canBeComplex) {
+blas::BlasTranspose transposeBlasTranspose(blas::BlasTranspose trans,
+                                           bool canBeComplex) {
   switch (trans) {
   case blas::BlasTranspose::none:
     return blas::BlasTranspose::transpose;
@@ -2640,8 +2640,7 @@ bool isScalarValue(Operation *op) {
 }
 
 // TODO replace `blas::BlasUplo` with `blas::BlasUplo` once the latter is
-Value copyTriangularPart(OpBuilder &builder, Value input,
-                         blas::BlasUplo uplo) {
+Value copyTriangularPart(OpBuilder &builder, Value input, blas::BlasUplo uplo) {
   if (uplo == blas::BlasUplo::any)
     return input;
 
@@ -2665,7 +2664,7 @@ Value copyTriangularPart(OpBuilder &builder, Value input,
   Value indicator = stablehlo::CompareOp::create(
       builder, input.getLoc(), rowIdxs, colIdxs,
       uplo == blas::BlasUplo::upper ? ComparisonDirection::LT
-                                       : ComparisonDirection::GT);
+                                    : ComparisonDirection::GT);
 
   Value transposedInput = stablehlo::TransposeOp::create(
       builder, input.getLoc(), input, builder.getDenseI64ArrayAttr({1, 0}));

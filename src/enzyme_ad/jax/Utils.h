@@ -1041,8 +1041,8 @@ bool isValueOnlyUsedInOperation(Value value, Operation *parentOp);
 mlir::RankedTensorType removeBatchedDims(mlir::RankedTensorType Ty,
                                          llvm::ArrayRef<int64_t> dims);
 
-blas::BlasTranspose
-transposeBlasTranspose(blas::BlasTranspose trans, bool canBeComplex);
+blas::BlasTranspose transposeBlasTranspose(blas::BlasTranspose trans,
+                                           bool canBeComplex);
 
 blas::BlasUplo transposeBlasUplo(blas::BlasUplo uplo);
 
@@ -1319,8 +1319,7 @@ Value getScalarValue(Operation *op, OpBuilder &builder);
 bool isScalarValue(Value val);
 bool isScalarValue(Operation *op);
 
-Value copyTriangularPart(OpBuilder &builder, Value input,
-                         blas::BlasUplo uplo);
+Value copyTriangularPart(OpBuilder &builder, Value input, blas::BlasUplo uplo);
 
 bool OpIsReshapeLike(stablehlo::BroadcastInDimOp op);
 bool OpIsReshapeLike(stablehlo::TransposeOp op);

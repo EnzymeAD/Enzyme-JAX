@@ -18,17 +18,16 @@ extern "C" {
 // Linear Algebra Ops
 //===----------------------------------------------------------------------===//
 
-MLIR_CAPI_EXPORTED MlirAttribute
-blasLayoutAttrGet(MlirContext ctx, uint8_t col_major);
+MLIR_CAPI_EXPORTED MlirAttribute blasLayoutAttrGet(MlirContext ctx,
+                                                   uint8_t col_major);
 
-MLIR_CAPI_EXPORTED MlirAttribute
-blasTransposeAttrGet(MlirContext ctx, int32_t mode);
+MLIR_CAPI_EXPORTED MlirAttribute blasTransposeAttrGet(MlirContext ctx,
+                                                      int32_t mode);
 
 MLIR_CAPI_EXPORTED MlirAttribute blasSideAttrGet(MlirContext ctx,
-                                                            uint8_t left_side);
+                                                 uint8_t left_side);
 
-MLIR_CAPI_EXPORTED MlirAttribute blasUploAttrGet(MlirContext ctx,
-                                                            int32_t mode);
+MLIR_CAPI_EXPORTED MlirAttribute blasUploAttrGet(MlirContext ctx, int32_t mode);
 
 MLIR_CAPI_EXPORTED MlirAttribute enzymexlaQRAlgorithmAttrGet(MlirContext ctx,
                                                              int32_t mode);
