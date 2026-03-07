@@ -1180,6 +1180,7 @@ cc_library(
         ":stablehlo-derivatives",
         ":triton-derivatives",
         "//src/enzyme_ad/jax/Dialect/BLAS:BlasDialectUtils",
+        "//src/enzyme_ad/jax/Dialect/BLAS:BlasDialect",
         "//src/external/isl:Isl",
         "//src/external/polly:Polly",
         "@com_google_absl//absl/status",
