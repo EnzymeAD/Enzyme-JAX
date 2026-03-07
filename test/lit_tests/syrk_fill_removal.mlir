@@ -8,18 +8,18 @@ func.func @test_basic_chain_upper(%arg0: tensor<32x32xf32>) -> tensor<32x32xf32>
     %cst_1 = stablehlo.constant dense<0.000000e+00> : tensor<32x32xf32>
 
     // First SYRK with output_uplo=F
-    %0 = blas.syrk %arg0, %cst_1, %cst, %cst_0 {
+    %0 = blas.syrk %cst, %arg0, %cst_0, %cst_1 {
         output_uplo = #blas.uplo<any>,
         transpose = #blas.transpose<transpose>,
         uplo = #blas.uplo<any>
-    } : (tensor<32x32xf32>, tensor<32x32xf32>, tensor<f32>, tensor<f32>) -> tensor<32x32xf32>
+    } : (tensor<f32>, tensor<32x32xf32>, tensor<f32>, tensor<32x32xf32>) -> tensor<32x32xf32>
 
     // Second SYRK with uplo=U requires the input C to have U layout
-    %1 = blas.syrk %arg0, %0, %cst, %cst_0 {
+    %1 = blas.syrk %cst, %arg0, %cst_0, %0 {
         output_uplo = #blas.uplo<any>,
         transpose = #blas.transpose<transpose>,
         uplo = #blas.uplo<upper>
-    } : (tensor<32x32xf32>, tensor<32x32xf32>, tensor<f32>, tensor<f32>) -> tensor<32x32xf32>
+    } : (tensor<f32>, tensor<32x32xf32>, tensor<f32>, tensor<32x32xf32>) -> tensor<32x32xf32>
 
     return %1 : tensor<32x32xf32>
 }
@@ -38,17 +38,17 @@ func.func @test_basic_chain_lower(%arg0: tensor<32x32xf32>) -> tensor<32x32xf32>
     %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<f32>
     %cst_1 = stablehlo.constant dense<0.000000e+00> : tensor<32x32xf32>
 
-    %0 = blas.syrk %arg0, %cst_1, %cst, %cst_0 {
+    %0 = blas.syrk %cst, %arg0, %cst_0, %cst_1 {
         output_uplo = #blas.uplo<any>,
         transpose = #blas.transpose<none>,
         uplo = #blas.uplo<any>
-    } : (tensor<32x32xf32>, tensor<32x32xf32>, tensor<f32>, tensor<f32>) -> tensor<32x32xf32>
+    } : (tensor<f32>, tensor<32x32xf32>, tensor<f32>, tensor<32x32xf32>) -> tensor<32x32xf32>
 
-    %1 = blas.syrk %arg0, %0, %cst, %cst_0 {
+    %1 = blas.syrk %cst, %arg0, %cst_0, %0 {
         output_uplo = #blas.uplo<lower>,
         transpose = #blas.transpose<none>,
         uplo = #blas.uplo<lower>
-    } : (tensor<32x32xf32>, tensor<32x32xf32>, tensor<f32>, tensor<f32>) -> tensor<32x32xf32>
+    } : (tensor<f32>, tensor<32x32xf32>, tensor<f32>, tensor<32x32xf32>) -> tensor<32x32xf32>
 
     return %1 : tensor<32x32xf32>
 }
@@ -71,21 +71,21 @@ func.func @test_elementwise_chain(%arg0: tensor<32x32xf32>, %arg1: tensor<32x32x
     %cst_4 = stablehlo.constant dense<-4.775000e+00> : tensor<32x32xf32>
 
     // First SYRK with output_uplo=F
-    %0 = blas.syrk %arg0, %cst_3, %cst_2, %cst_1 {
+    %0 = blas.syrk %cst_2, %arg0, %cst_1, %cst_3 {
         output_uplo = #blas.uplo<any>,
         transpose = #blas.transpose<transpose>,
         uplo = #blas.uplo<any>
-    } : (tensor<32x32xf32>, tensor<32x32xf32>, tensor<f32>, tensor<f32>) -> tensor<32x32xf32>
+    } : (tensor<f32>, tensor<32x32xf32>, tensor<f32>, tensor<32x32xf32>) -> tensor<32x32xf32>
 
     // Elementwise operations
     %1 = stablehlo.add %0, %arg1 : tensor<32x32xf32>
     %2 = stablehlo.multiply %cst_4, %1 : tensor<32x32xf32>
 
     // Second SYRK uses %2 as C (derived from %0)
-    %3 = blas.syrk %arg0, %2, %cst_0, %cst_2 {
+    %3 = blas.syrk %cst_0, %arg0, %cst_2, %2 {
         output_uplo = #blas.uplo<any>,
         uplo = #blas.uplo<upper>
-    } : (tensor<32x32xf32>, tensor<32x32xf32>, tensor<f32>, tensor<f32>) -> tensor<32x32xf32>
+    } : (tensor<f32>, tensor<32x32xf32>, tensor<f32>, tensor<32x32xf32>) -> tensor<32x32xf32>
 
     return %3 : tensor<32x32xf32>
 }
@@ -107,24 +107,24 @@ func.func @test_multiple_children_same_uplo(%arg0: tensor<32x32xf32>) -> (tensor
     %cst_1 = stablehlo.constant dense<0.000000e+00> : tensor<32x32xf32>
 
     // Parent SYRK
-    %0 = blas.syrk %arg0, %cst_1, %cst, %cst_0 {
+    %0 = blas.syrk %cst, %arg0, %cst_0, %cst_1 {
         output_uplo = #blas.uplo<any>,
         transpose = #blas.transpose<transpose>,
         uplo = #blas.uplo<any>
-    } : (tensor<32x32xf32>, tensor<32x32xf32>, tensor<f32>, tensor<f32>) -> tensor<32x32xf32>
+    } : (tensor<f32>, tensor<32x32xf32>, tensor<f32>, tensor<32x32xf32>) -> tensor<32x32xf32>
 
     // Two child SYRKs, both with uplo=L
-    %1 = blas.syrk %arg0, %0, %cst, %cst_0 {
+    %1 = blas.syrk %cst, %arg0, %cst_0, %0 {
         output_uplo = #blas.uplo<lower>,
         transpose = #blas.transpose<transpose>,
         uplo = #blas.uplo<lower>
-    } : (tensor<32x32xf32>, tensor<32x32xf32>, tensor<f32>, tensor<f32>) -> tensor<32x32xf32>
+    } : (tensor<f32>, tensor<32x32xf32>, tensor<f32>, tensor<32x32xf32>) -> tensor<32x32xf32>
 
-    %2 = blas.syrk %arg0, %0, %cst, %cst_0 {
+    %2 = blas.syrk %cst, %arg0, %cst_0, %0 {
         output_uplo = #blas.uplo<lower>,
         transpose = #blas.transpose<transpose>,
         uplo = #blas.uplo<lower>
-    } : (tensor<32x32xf32>, tensor<32x32xf32>, tensor<f32>, tensor<f32>) -> tensor<32x32xf32>
+    } : (tensor<f32>, tensor<32x32xf32>, tensor<f32>, tensor<32x32xf32>) -> tensor<32x32xf32>
 
     return %1, %2 : tensor<32x32xf32>, tensor<32x32xf32>
 }
@@ -146,24 +146,24 @@ func.func @test_conflicting_uplos(%arg0: tensor<32x32xf32>) -> (tensor<32x32xf32
     %cst_1 = stablehlo.constant dense<0.000000e+00> : tensor<32x32xf32>
 
     // Parent SYRK
-    %0 = blas.syrk %arg0, %cst_1, %cst, %cst_0 {
+    %0 = blas.syrk %cst, %arg0, %cst_0, %cst_1 {
         output_uplo = #blas.uplo<any>,
         transpose = #blas.transpose<transpose>,
         uplo = #blas.uplo<any>
-    } : (tensor<32x32xf32>, tensor<32x32xf32>, tensor<f32>, tensor<f32>) -> tensor<32x32xf32>
+    } : (tensor<f32>, tensor<32x32xf32>, tensor<f32>, tensor<32x32xf32>) -> tensor<32x32xf32>
 
     // Two child SYRKs with CONFLICTING uplos
-    %1 = blas.syrk %arg0, %0, %cst, %cst_0 {
+    %1 = blas.syrk %cst, %arg0, %cst_0, %0 {
         output_uplo = #blas.uplo<upper>,
         transpose = #blas.transpose<transpose>,
         uplo = #blas.uplo<upper>
-    } : (tensor<32x32xf32>, tensor<32x32xf32>, tensor<f32>, tensor<f32>) -> tensor<32x32xf32>
+    } : (tensor<f32>, tensor<32x32xf32>, tensor<f32>, tensor<32x32xf32>) -> tensor<32x32xf32>
 
-    %2 = blas.syrk %arg0, %0, %cst, %cst_0 {
+    %2 = blas.syrk %cst, %arg0, %cst_0, %0 {
         output_uplo = #blas.uplo<lower>,
         transpose = #blas.transpose<transpose>,
         uplo = #blas.uplo<lower>
-    } : (tensor<32x32xf32>, tensor<32x32xf32>, tensor<f32>, tensor<f32>) -> tensor<32x32xf32>
+    } : (tensor<f32>, tensor<32x32xf32>, tensor<f32>, tensor<32x32xf32>) -> tensor<32x32xf32>
 
     return %1, %2 : tensor<32x32xf32>, tensor<32x32xf32>
 }
@@ -182,18 +182,18 @@ func.func @test_non_elementwise_user(%arg0: tensor<32x32xf32>) -> (tensor<32x32x
     %cst_1 = stablehlo.constant dense<0.000000e+00> : tensor<32x32xf32>
 
     // Parent SYRK
-    %0 = blas.syrk %arg0, %cst_1, %cst, %cst_0 {
+    %0 = blas.syrk %cst, %arg0, %cst_0, %cst_1 {
         output_uplo = #blas.uplo<any>,
         transpose = #blas.transpose<transpose>,
         uplo = #blas.uplo<any>
-    } : (tensor<32x32xf32>, tensor<32x32xf32>, tensor<f32>, tensor<f32>) -> tensor<32x32xf32>
+    } : (tensor<f32>, tensor<32x32xf32>, tensor<f32>, tensor<32x32xf32>) -> tensor<32x32xf32>
 
     // One user is a syrk
-    %1 = blas.syrk %arg0, %0, %cst, %cst_0 {
+    %1 = blas.syrk %cst, %arg0, %cst_0, %0 {
         output_uplo = #blas.uplo<upper>,
         transpose = #blas.transpose<transpose>,
         uplo = #blas.uplo<upper>
-    } : (tensor<32x32xf32>, tensor<32x32xf32>, tensor<f32>, tensor<f32>) -> tensor<32x32xf32>
+    } : (tensor<f32>, tensor<32x32xf32>, tensor<f32>, tensor<32x32xf32>) -> tensor<32x32xf32>
 
     // Return the original result - this creates an escape that prevents optimization
     return %1, %0 : tensor<32x32xf32>, tensor<32x32xf32>
@@ -212,24 +212,24 @@ func.func @test_all_f_children_upper_majority(%arg0: tensor<32x32xf32>) -> (tens
     %cst_1 = stablehlo.constant dense<0.000000e+00> : tensor<32x32xf32>
 
     // Parent SYRK
-    %0 = blas.syrk %arg0, %cst_1, %cst, %cst_0 {
+    %0 = blas.syrk %cst, %arg0, %cst_0, %cst_1 {
         output_uplo = #blas.uplo<any>,
         transpose = #blas.transpose<transpose>,
         uplo = #blas.uplo<any>
-    } : (tensor<32x32xf32>, tensor<32x32xf32>, tensor<f32>, tensor<f32>) -> tensor<32x32xf32>
+    } : (tensor<f32>, tensor<32x32xf32>, tensor<f32>, tensor<32x32xf32>) -> tensor<32x32xf32>
 
     // Children with uplo=F but different output_uplo preferences
-    %1 = blas.syrk %arg0, %0, %cst, %cst_0 {
+    %1 = blas.syrk %cst, %arg0, %cst_0, %0 {
         output_uplo = #blas.uplo<upper>,
         transpose = #blas.transpose<transpose>,
         uplo = #blas.uplo<any>
-    } : (tensor<32x32xf32>, tensor<32x32xf32>, tensor<f32>, tensor<f32>) -> tensor<32x32xf32>
+    } : (tensor<f32>, tensor<32x32xf32>, tensor<f32>, tensor<32x32xf32>) -> tensor<32x32xf32>
 
-    %2 = blas.syrk %arg0, %0, %cst, %cst_0 {
+    %2 = blas.syrk %cst, %arg0, %cst_0, %0 {
         output_uplo = #blas.uplo<upper>,
         transpose = #blas.transpose<transpose>,
         uplo = #blas.uplo<any>
-    } : (tensor<32x32xf32>, tensor<32x32xf32>, tensor<f32>, tensor<f32>) -> tensor<32x32xf32>
+    } : (tensor<f32>, tensor<32x32xf32>, tensor<f32>, tensor<32x32xf32>) -> tensor<32x32xf32>
 
     return %1, %2 : tensor<32x32xf32>, tensor<32x32xf32>
 }
@@ -251,18 +251,18 @@ func.func @test_syrk_as_a_operand(%arg0: tensor<32x32xf32>) -> tensor<32x32xf32>
     %cst_1 = stablehlo.constant dense<0.000000e+00> : tensor<32x32xf32>
 
     // Parent SYRK
-    %0 = blas.syrk %arg0, %cst_1, %cst, %cst_0 {
+    %0 = blas.syrk %cst, %arg0, %cst_0, %cst_1 {
         output_uplo = #blas.uplo<any>,
         transpose = #blas.transpose<transpose>,
         uplo = #blas.uplo<any>
-    } : (tensor<32x32xf32>, tensor<32x32xf32>, tensor<f32>, tensor<f32>) -> tensor<32x32xf32>
+    } : (tensor<f32>, tensor<32x32xf32>, tensor<f32>, tensor<32x32xf32>) -> tensor<32x32xf32>
 
     // Child SYRK uses result as A, not C - should fail the pattern
-    %1 = blas.syrk %0, %cst_1, %cst, %cst_0 {
+    %1 = blas.syrk %cst, %0, %cst_0, %cst_1 {
         output_uplo = #blas.uplo<upper>,
         transpose = #blas.transpose<none>,
         uplo = #blas.uplo<upper>
-    } : (tensor<32x32xf32>, tensor<32x32xf32>, tensor<f32>, tensor<f32>) -> tensor<32x32xf32>
+    } : (tensor<f32>, tensor<32x32xf32>, tensor<f32>, tensor<32x32xf32>) -> tensor<32x32xf32>
 
     return %1 : tensor<32x32xf32>
 }
