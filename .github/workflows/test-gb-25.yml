@@ -48,6 +48,8 @@ jobs:
           # - '0123456789abcdef0123456789abcdef01234567'
         reactant_commit:
           - 'main'
+        cuda_commit:
+          - 'wm/nvtx'
 
     steps:
       - name: Check GPUs
@@ -182,12 +184,30 @@ jobs:
           cp("${{ env.REACTANT_DIR }}/LocalPreferences.toml", "${{ env.GB25_DIR }}/LocalPreferences.toml")
 
           using Pkg
+
+          packages = PackageSpec[]
+
           if !isempty("${{ matrix.reactant_commit }}")
               # Install specific commit of Reactant, if necessary
-              Pkg.add([
-                  PackageSpec(; name="Reactant", rev="${{ matrix.reactant_commit }}"),
-              ])
+              push!(
+                packages,
+                PackageSpec(; name="Reactant", rev="${{ matrix.reactant_commit }}"),
+              )
           end
+
+          if !isempty("${{ matrix.cuda_commit }}")
+              # Install specific commit of CUDA, if necessary
+              push!(
+                packages,
+                PackageSpec(; name="CUDA", rev="${{ matrix.cuda_commit }}"),
+              )
+          end
+
+          if !isempty(packages)
+              @info "Installing specific packages" packages
+              Pkg.add(packages)
+          end
+
           # Instantiate environment
           Pkg.instantiate()
           # Cleanup depot if possible
