@@ -32903,32 +32903,6 @@ struct LowerMultiSlice final
     return numShards;
   }
 
-  /// Try to retrieve the TensorShardingAttr for a Value by inspecting either
-  /// its defining op (for OpResults) or the parent op's arg shardings (for
-  /// BlockArguments).
-  static sdy::TensorShardingAttr getShardingForValue(Value value) {
-    if (auto result = dyn_cast<OpResult>(value)) {
-      auto *defOp = result.getDefiningOp();
-      auto perValue = sdy::getShardingPerValue(defOp);
-      if (!perValue)
-        return {};
-      return perValue.getShardings()[result.getResultNumber()];
-    }
-    if (auto blockArg = dyn_cast<BlockArgument>(value)) {
-      auto parentOp = blockArg.getOwner()->getParentOp();
-      if (!parentOp)
-        return {};
-      auto funcOp = dyn_cast<func::FuncOp>(parentOp);
-      if (!funcOp)
-        return {};
-      auto attr = funcOp.getArgAttrOfType<sdy::TensorShardingAttr>(
-          blockArg.getArgNumber(), sdy::kShardingAttr);
-      return attr;
-    }
-    return {};
-  }
-
-
   /// Detect whether this MultiSliceOp matches the cross-shard pattern:
   ///   1. All strides are 1.
   ///   2. For every sharded dimension except the multi-slice dimension,
@@ -32952,7 +32926,7 @@ struct LowerMultiSlice final
       return;
 
     // We need the operand's sharding to reason about shard boundaries.
-    auto operandSharding = getShardingForValue(op.getOperand());
+    auto operandSharding = sdy::getSharding(op.getOperand());
     if (!operandSharding)
       return;
 
