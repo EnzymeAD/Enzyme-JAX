@@ -103,7 +103,7 @@ def OrmqrOp : LAPACK_Op<"ormqr", [Pure]> {
     HLO_Tensor:$tau,
     HLO_Tensor:$C,
     BLAS_SideAttr:$side,
-    DefaultValuedAttr<BLAS_TransposeAttr, "::mlir::enzymexla::blas::BlasTranspose::none">:$transpose // true if apply Q^T
+    DefaultValuedAttr<BLAS_TransposeAttr, "::mlir::blas::BlasTranspose::none">:$transpose // true if apply Q^T
   );
 
   let results = (outs
@@ -130,7 +130,7 @@ def GemqrtOp : LAPACK_Op<"gemqrt", [Pure]> {
     HLO_Tensor:$T,
     HLO_Tensor:$C,
     BLAS_SideAttr:$side,
-    DefaultValuedAttr<BLAS_TransposeAttr, "::mlir::enzymexla::blas::BlasTranspose::none">:$transpose // true if apply Q^T
+    DefaultValuedAttr<BLAS_TransposeAttr, "::mlir::blas::BlasTranspose::none">:$transpose // true if apply Q^T
   );
 
   let results = (outs

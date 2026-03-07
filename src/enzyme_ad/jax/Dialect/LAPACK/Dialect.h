@@ -17,8 +17,8 @@
 #define GET_OP_CLASSES
 #include "src/enzyme_ad/jax/Dialect/LAPACK/LapackOps.h.inc"
 
-namespace mlir::enzymexla::lapack {
+namespace mlir::lapack {
 using LapackDialect = LAPACKDialect;
-} // namespace mlir::enzymexla::lapack
+} // namespace mlir::lapack
 
 #endif

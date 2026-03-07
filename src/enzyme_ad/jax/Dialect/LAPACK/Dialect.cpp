@@ -6,7 +6,7 @@
 
 #include "src/enzyme_ad/jax/Dialect/LAPACK/LapackDialect.cpp.inc"
 
-void mlir::enzymexla::lapack::LAPACKDialect::initialize() {
+void mlir::lapack::LAPACKDialect::initialize() {
   addOperations<
 #define GET_OP_LIST
 #include "src/enzyme_ad/jax/Dialect/LAPACK/LapackOps.cpp.inc"
