@@ -483,30 +483,6 @@ def LowerEnzymeXLAMPIPass : Pass<"lower-enzymexla-mpi"> {
   ];
 }
 
-def LowerEnzymeXLALapackPass : Pass<"lower-enzymexla-lapack"> {
-  let summary = "Lower enzymexla.lapack ops to stablehlo";
-  let dependentDialects = [
-    "stablehlo::StablehloDialect",
-    "enzymexla::EnzymeXLADialect",
-    "LLVM::LLVMDialect",
-  ];
-
-  let options = [
-    Option<
-        /*C++ variable name=*/"backend",
-        /*CLI argument=*/"backend",
-        /*type=*/"std::string",
-        /*default=*/"\"cpu\"",
-        /*description=*/"HW backend">,
-    Option<
-        /*C++ variable name=*/"blasIntWidth",
-        /*CLI argument=*/"blas_int_width",
-        /*type=*/"int",
-        /*default=*/"64",
-        /*description=*/"Blas int width (32 or 64). Only used for CPU backend.">,
-  ];
-}
-
 def LowerProbProgToStableHLOPass : Pass<"lower-probprog-to-stablehlo"> {
   let summary = "Lower computational enzyme ops to StableHLO";
   let description = [{

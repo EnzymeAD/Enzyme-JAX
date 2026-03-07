@@ -94,6 +94,7 @@
 
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/BLAS/Passes.h"
+#include "src/enzyme_ad/jax/Passes/LAPACK/Passes.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/Passes.h"
 
@@ -344,6 +345,7 @@ void initializePasses() {
   enzyme::registerenzymexlaPasses();
   mlir::enzyme::tessera::registertesseraPasses();
   mlir::blas::registerblasPasses();
+  mlir::lapack::registerlapackPasses();
 
   // Register the standard passes we want.
   mlir::registerCSEPass();

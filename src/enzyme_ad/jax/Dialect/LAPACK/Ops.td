@@ -239,4 +239,22 @@ def GesvjOp : LAPACK_Op<"gesvj", [Pure]> {
   }];
 }
 
+def PotrfOp : LAPACK_Op<"potrf", [Pure]> {
+  let summary = "Cholesky factorization of symmetric/Hermitian positive-definite matrix";
+
+  let arguments = (ins
+    HLO_Tensor:$input,
+    BLAS_UploAttr:$uplo
+  );
+
+  let results = (outs
+    HLO_Tensor:$output,
+    HLO_Tensor:$info
+  );
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type(operands, results)
+  }];
+}
+
 #endif // ENZYMEXLA_DIALECT_LAPACK_OPS_TD
