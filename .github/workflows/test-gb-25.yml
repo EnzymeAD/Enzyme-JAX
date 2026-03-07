@@ -66,10 +66,10 @@ jobs:
         with:
           # Avoid downloading Bazel every time.
           bazelisk-cache: true
-          # Store build cache per workflow.
-          disk-cache: gb-25-${{ github.workflow }}-${{ matrix.os }}-${{ matrix.xla_commit }}
-          # Share repository cache between workflows.
-          repository-cache: true
+          # Store build cache per workflow only for macOS.
+          disk-cache: {{ runner.os == macOS && format('{0}-{1}-{2}', github.workflow, matrix.os, matrix.python) || false }}
+          # Do not share repository cache between workflows.
+          repository-cache: false
           bazelisk-version: 1.x
       - name: Checkout Reactant.jl
         uses: actions/checkout@v6
