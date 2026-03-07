@@ -245,6 +245,7 @@ jobs:
           xplane_file = first(filter(endswith(".xplane.pb"), readdir(prof_dir; join=true)))
 
           display(Reactant.Profiler.load_xplane_file(xplane_file))
+        working-directory: ${{ env.GB25_DIR }}
       - name: Test correctness in GB-25 code
         timeout-minutes: 20
         run: |
