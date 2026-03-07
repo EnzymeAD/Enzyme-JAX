@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=lower_multislice" --transform-interpreter --enzyme-hlo-remove-transform %s 2>&1 | FileCheck %s
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(optimize-communication{multislice_custom_call=1})" %s | FileCheck %s
 
 sdy.mesh @mesh1 = <["x"=4, "y"=1]>
 sdy.mesh @mesh2 = <["x"=4, "y"=2]>
