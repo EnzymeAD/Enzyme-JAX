@@ -20632,6 +20632,47 @@ struct ScatterIndicesAreUnique
 
     if (scatterIndices.getType().getNumElements() == 1) {
       uniqueIndices = true;
+    } else if (auto iotaOp =
+                   scatterIndices.getDefiningOp<stablehlo::IotaOp>()) {
+      // IotaOp produces [0, 1, ..., N-1] along its iota_dimension and
+      // repeats the same values along all other dimensions. We can only
+      // mark indices as unique when every scatter point gets a distinct
+      // index tuple.
+      auto rank = scatterIndices.getType().getRank();
+      if (rank == 1) {
+        // 1-D iota is always unique: either it is a single index tuple
+        // (indexVectorDim==0, one scatter point) or N scalar indices
+        // [0, 1, ..., N-1] (indexVectorDim==1).
+        uniqueIndices = true;
+      } else {
+        int64_t iotaDim = iotaOp.getIotaDimension();
+        int64_t indexVectorDim = dimNumbers.getIndexVectorDim();
+        if (iotaDim != indexVectorDim) {
+          // Iota varies along a scatter (non-index-vector) dimension.
+          // Each position along that axis gets a distinct iota value,
+          // but positions differing only in *other* scatter dimensions
+          // see the same value. Unique iff every other scatter dimension
+          // (i.e. every dim that is neither iotaDim nor indexVectorDim)
+          // has size 1.
+          // Note: when indexVectorDim == rank (scalar indices), it never
+          // equals any valid dim index, so the loop naturally checks all
+          // dims except iotaDim.
+          auto shape = scatterIndices.getType().getShape();
+          bool allOtherDimsUnit = true;
+          for (int64_t i = 0; i < rank; ++i) {
+            if (i != iotaDim && i != indexVectorDim && shape[i] != 1) {
+              allOtherDimsUnit = false;
+              break;
+            }
+          }
+          if (allOtherDimsUnit) {
+            uniqueIndices = true;
+          }
+        }
+        // If iotaDim == indexVectorDim, all scatter points read the same
+        // tuple [0, 1, ..., shape[v]-1] → not unique (the single-
+        // scatter-point case is already handled by getNumElements()==1).
+      }
     } else if (matchPattern(scatterIndices, m_Constant(&scatterIndicesAttr))) {
       auto denseAttr = dyn_cast<DenseIntElementsAttr>(scatterIndicesAttr);
 
@@ -25637,8 +25678,9 @@ struct ScatterBinaryOpSimplifyBase
     bool isAllZeros = false, isAllOnes = false;
 
     SplatElementsAttr constSetIndexValue = nullptr;
+    // TODO: figure out a better way that allowed multiple uses
     auto status = detectConstantSetindexScatterOp(
-        scatterOp, /*allowedMultipleUses*/ false,
+        scatterOp, /*allowedMultipleUses*/ true,
         [&isAllZeros, &isAllOnes](mlir::Value input) {
           isAllZeros = matchPattern(input, m_AnyZeroFloat()) ||
                        matchPattern(input, m_Zero());
