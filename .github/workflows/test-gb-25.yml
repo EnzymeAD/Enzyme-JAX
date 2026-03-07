@@ -234,6 +234,17 @@ jobs:
           export XLA_FLAGS='--xla_dump_to=${{ env.GB25_DIR }}/xla_dump_run'
           timeout --signal=TERM --verbose 59m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_run.jl ${{ env.RUN_FLAGS }}
         working-directory: ${{ env.GB25_DIR }}
+      - name: Display profile results
+        shell: julia --project --color=yes {0}
+        run: |
+          using Reactant
+
+          prof_dir = joinpath(first(readdir(joinpath(pwd(), "sharding", "profiling"); join=true)), "loop2", "plugins", "profile")
+          prof_dir = joinpath(first(readdir(prof_dir; join=true)))
+
+          xplane_file = first(filter(endswith(".xplane.pb"), readdir(prof_dir; join=true)))
+
+          display(Reactant.Profiler.load_xplane_file(xplane_file))
       - name: Test correctness in GB-25 code
         timeout-minutes: 20
         run: |
