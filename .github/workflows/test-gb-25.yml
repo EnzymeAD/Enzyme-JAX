@@ -127,6 +127,29 @@ jobs:
               cp -v bazel-bin/libReactantExtra.so.runfiles/cuda_nvcc/nvvm/libdevice/libdevice.10.bc bazel-bin/cuda/nvvm/libdevice/libdevice.10.bc
           fi
         working-directory: ${{ env.REACTANT_DIR }}/deps/ReactantExtra
+      - name: Setup CUPTI debug logging (nvlog)
+        if: ${{ contains(matrix.os, 'a100') }}
+        run: |
+          NVLOG_CONFIG_FILE="${GITHUB_WORKSPACE}/nvlog.config"
+          cat > "${NVLOG_CONFIG_FILE}" <<'EOF'
+          # Enable all info/warn/error/fatal logs for Cupti_Public
+          + 100iI 100wW 100eE 100fF  Cupti_Public
+
+          # Set log output file
+          $ cupti-nvlog.txt
+
+          # Also print logs to console
+          UseStdout
+
+          # Force log flushing for real-time debugging
+          ForceFlush
+
+          # Recommended log format
+          Format $sevc$time| ${name:0} | $proc:${tid:8} | ${file:0}:${line:0} [${sfunc:0}]: $text
+          EOF
+          echo "NVLOG_CONFIG_FILE=${NVLOG_CONFIG_FILE}" >> ${GITHUB_ENV}
+          echo "--- nvlog.config contents ---"
+          cat "${NVLOG_CONFIG_FILE}"
       - name: Checkout GB-25
         uses: actions/checkout@v6
         with:
@@ -278,6 +301,17 @@ jobs:
         with:
           name: 'simulation-xla-profile-${{ env.ARTIFACT_INDEX }}'
           path: '${{ env.GB25_DIR }}/**/plugins'
+          retention-days: 90
+          overwrite: false
+      - name: Upload CUPTI nvlog
+        uses: actions/upload-artifact@v7
+        timeout-minutes: 10
+        if: ${{ !cancelled() && contains(matrix.os, 'a100') }}
+        with:
+          name: 'cupti-nvlog-${{ env.ARTIFACT_INDEX }}'
+          path: |
+            ${{ github.workspace }}/cupti-nvlog.txt
+            ${{ env.GB25_DIR }}/cupti-nvlog.txt
           retention-days: 90
           overwrite: false
       - name: Save Julia depot cache on cancel or failure
