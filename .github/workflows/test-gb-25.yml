@@ -142,15 +142,33 @@ jobs:
           # Make sure this directory exists, for good measure
           ls -lhrt "${GB25_DIR}"
           echo "GB25_DIR=${GB25_DIR}" >> ${GITHUB_ENV}
-          
-      - name: Set default precision (GPU)
-        if: ${{ contains(matrix.os, 'a100') }}
+      - name: Set compile flags
+        shell: bash
         run: |
-          echo "RUN_FLAGS=--precision=64" >> ${GITHUB_ENV}
-      - name: Set default precision (TPU)
-        if: ${{ contains(matrix.os, 'tpu') }}
+          if [[ '${{ contains(matrix.os, 'a100') }}' == 'true' ]]; then
+              COMPILE_FLAGS=(--precision=64)
+          elif [[ '${{ contains(matrix.os, 'tpu') }}' == 'true' ]]; then
+              COMPILE_FLAGS=(--precision=32)
+          fi
+          echo "COMPILE_FLAGS=${COMPILE_FLAGS[@]}" | tee -a "${GITHUB_ENV}"
+      - name: Set run flags
+        shell: bash
         run: |
-          echo "RUN_FLAGS=--precision=32" >> ${GITHUB_ENV}
+          if [[ '${{ contains(matrix.os, 'a100') }}' == 'true' ]]; then
+              RUN_FLAGS=(--precision=64)
+          elif [[ '${{ contains(matrix.os, 'tpu') }}' == 'true' ]]; then
+              RUN_FLAGS=(--precision=32 --grid-x=2048 --grid-y=1024)
+          fi
+          echo "RUN_FLAGS=${RUN_FLAGS[@]}" | tee -a "${GITHUB_ENV}"
+      - name: Set correctness flags
+        shell: bash
+        run: |
+          if [[ '${{ contains(matrix.os, 'a100') }}' == 'true' ]]; then
+              CORRECTNESS_FLAGS=(--precision=64)
+          elif [[ '${{ contains(matrix.os, 'tpu') }}' == 'true' ]]; then
+              CORRECTNESS_FLAGS=(--precision=32)
+          fi
+          echo "CORRECTNESS_FLAGS=${CORRECTNESS_FLAGS[@]}" | tee -a "${GITHUB_ENV}"
       - name: Instantiate GB-25 environment
         timeout-minutes: 40
         shell: julia --project --color=yes {0}
@@ -191,7 +209,7 @@ jobs:
         timeout-minutes: 30
         run: |
           export XLA_FLAGS='--xla_dump_to=${{ env.GB25_DIR }}/xla_dump_compile'
-          timeout --signal=TERM --verbose 29m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_compile.jl ${{ env.RUN_FLAGS }}
+          timeout --signal=TERM --verbose 29m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_compile.jl ${{ env.COMPILE_FLAGS }}
         working-directory: ${{ env.GB25_DIR }}
       - name: Show remaining collective operations
         timeout-minutes: 10
@@ -237,7 +255,7 @@ jobs:
       - name: Test correctness in GB-25 code
         timeout-minutes: 20
         run: |
-          timeout --signal=TERM --verbose 19m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict correctness/correctness_sharded_baroclinic_instability_simulation_run.jl ${{ env.RUN_FLAGS }}
+          timeout --signal=TERM --verbose 19m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict correctness/correctness_sharded_baroclinic_instability_simulation_run.jl ${{ env.CORRECTNESS_FLAGS }}
         working-directory: ${{ env.GB25_DIR }}
       - name: Upload MLIR and XLA modules
         uses: actions/upload-artifact@v7
@@ -272,7 +290,7 @@ jobs:
         id: julia-cache-save
         if: cancelled() || failure()
         uses: actions/cache/save@v5
-        with: 
+        with:
           path: |
             ${{ steps.julia-cache.outputs.cache-paths }}
           key: ${{ steps.julia-cache.outputs.cache-key }}
