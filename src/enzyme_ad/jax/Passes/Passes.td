@@ -129,7 +129,8 @@ def EnzymeHLOOptPass : Pass<"enzyme-hlo-opt"> {
     "tensor::TensorDialect",
     "enzyme::EnzymeDialect",
     "enzymexla::EnzymeXLADialect",
-    "chlo::ChloDialect"
+    "chlo::ChloDialect",
+    "blas::BLASDialect"
   ];
   let options = [
     Option<
