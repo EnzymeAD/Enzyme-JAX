@@ -3,6 +3,10 @@
 
 include "Dialect.td"
 
-def CostType : PerfifyType<"Cost", "cost">;
+class PerfifyType<string name, string type_mnemonic, list<Trait> traits = []> : TypeDef<PerfifyDialect, name, traits>{
+    let mnemonic = type_mnemonic;
+}
 
+
+def CostType : PerfifyType<"Cost", "cost">;
 #endif // ENZYME_PERFIFY_DIALECT_TYPES_H

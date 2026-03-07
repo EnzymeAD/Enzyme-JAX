@@ -19,5 +19,7 @@
 // Operations
 #define GET_OP_CLASSES
 #include "src/enzyme_ad/jax/Dialect/Perfify/PerfifyOps.h.inc"
+#define GET_ATTRDEF_CLASSES
+#include "src/enzyme_ad/jax/Dialect/Perfify/PerfifyAttributes.h.inc"
 
 #endif // ENZYME_AD_JAX_DIALECT_PERFIFY_DIALECT_H

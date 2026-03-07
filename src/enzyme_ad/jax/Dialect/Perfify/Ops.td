@@ -21,8 +21,8 @@ def CostOp : PerfifyOp<"cost", []> {
 
 // Perfify.constant_cost op
 def ConstantCostOp : PerfifyOp<"constant_cost", []> {
-  let arguments = (ins APIntAttr:$cycle_cost);
-  let assemblyFormat = "$cycle_cost attr-dict"; 
+  let arguments = (ins I64:$cycle_cost);
+  let assemblyFormat = "$cycle_cost attr-dict `:` type($out_cost)"; 
   let results = (outs CostType:$out_cost);
 }
 

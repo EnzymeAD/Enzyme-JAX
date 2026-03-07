@@ -696,6 +696,10 @@ td_library(
         "@llvm-project//mlir:ControlFlowInterfacesTdFiles",
         "@llvm-project//mlir:OpBaseTdFiles",
         "@llvm-project//mlir:SideEffectInterfaces",
+        "@llvm-project//mlir:CallOpInterfaces",
+        "@llvm-project//mlir:FunctionInterfacesTdFiles",
+        "@llvm-project//mlir:InferTypeOpInterfaceTdFiles",
+        "@llvm-project//mlir:SideEffectInterfacesTdFiles",
     ],
 )
 
@@ -760,6 +764,23 @@ gentbl_cc_library(
     deps = [
         ":PerfifyDialectFiles",
     ],
+)
+
+gentbl_cc_library(
+    name = "PerfifyAttributesIncGen",
+    tbl_outs = [
+        (
+            ["-gen-attrdef-decls", "-attrdefs-dialect=perfify"],
+            "Dialect/Perfify/PerfifyAttributes.h.inc",
+        ),
+        (
+            ["-gen-attrdef-defs", "-attrdefs-dialect=perfify"],
+            "Dialect/Perfify/PerfifyAttributes.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/Perfify/Dialect.td",
+    deps = [":PerfifyDialectFiles"],
 )
 
 td_library(
@@ -1175,6 +1196,7 @@ cc_library(
         ":EnzymeXLAOpsIncGen",
         ":EnzymeXLAPassesIncGen",
         ":PerfifyDialectIncGen",
+        ":PerfifyAttributesIncGen",
         ":PerfifyOpsIncGen",
         ":PerfifyTypesIncGen",
         ":Polymer",

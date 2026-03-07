@@ -1,6 +1,7 @@
 #ifndef ENZYME_AD_JAX_DIALECT_PERFIFY_DIALECT_TD
 #define ENZYME_AD_JAX_DIALECT_PERFIFY_DIALECT_TD
 
+include "mlir/IR/BuiltinAttributes.td"
 include "mlir/IR/DialectBase.td"
 include "mlir/IR/AttrTypeBase.td"
 include "mlir/IR/Traits.td"
@@ -18,6 +19,8 @@ def PerfifyDialect : Dialect {
         Leverages SAT solvers to automatically prove this, or interactive theorem provers to allow for complete proofs. 
     }];
     let cppNamespace = "::mlir::enzyme::perfify";
+    let useDefaultAttributePrinterParser = 1;
+    let useDefaultTypePrinterParser = 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -27,7 +30,14 @@ def PerfifyDialect : Dialect {
 class PerfifyOp<string mnemonic, list<Trait> traits = []>
     : Op<PerfifyDialect, mnemonic, traits>;
 
-class PerfifyType<string name, string type_mnemonic, list<Trait> traits = []> : TypeDef<PerfifyDialect, name, traits>{
-    let mnemonic = type_mnemonic;
+class PerfifyAttr<string attrName, string attrMnemonic>
+    : AttrDef<PerfifyDialect, attrName, []> {
+  let mnemonic = attrMnemonic;
+}
+
+def PerfifyCostAttr : PerfifyAttr<"Cost", "cost"> {
+    let cppClassName = "CostAttr";
+    let assemblyFormat = "$value";
+    let parameters = (ins APIntParameter<"">:$value);
 }
 #endif // ENZYME_AD_JAX_DIALECT_PERFIFY_DIALECT_TD
