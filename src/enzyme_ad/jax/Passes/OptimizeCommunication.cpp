@@ -2370,10 +2370,10 @@ struct WrapCustomCallOptimize : public OpRewritePattern<enzymexla::WrapOp> {
         full_pre_wrap_size % participating_shards == 0;
 
     if (divisible_by_participating_shards) {
-      if (rightAmount < shard_size)
+      if (rightAmount >= shard_size)
         return failure();
     } else {
-      if (rightAmount < full_pre_wrap_size % shard_size)
+      if (rightAmount >= full_pre_wrap_size % shard_size)
         return failure();
     }
 
