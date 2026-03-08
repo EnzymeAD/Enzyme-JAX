@@ -25642,6 +25642,26 @@ struct SplitConvolutionIntoReverseConvolution final
   }
 };
 
+// Check whether a user of a scatter result can be simplified by one of the
+// ScatterBinaryOpSimplify patterns given the scatter's isAllZeros/isAllOnes.
+static bool canScatterUserBeSimplified(Operation *user, Value scatterResult,
+                                       bool isAllZeros, bool isAllOnes) {
+  if (isAllZeros) {
+    if (isa<stablehlo::AddOp, stablehlo::SubtractOp, stablehlo::MulOp>(user))
+      return true;
+  }
+  if (isAllOnes) {
+    if (isa<stablehlo::MulOp>(user))
+      return true;
+    if (isa<stablehlo::DivOp>(user)) {
+      // DivOp only simplifies when the scatter is on the rhs (x / scatter(1))
+      bool scatterIsLhs = (user->getOperand(0) == scatterResult);
+      return !scatterIsLhs;
+    }
+  }
+  return false;
+}
+
 template <typename OpTy, typename Child>
 struct ScatterBinaryOpSimplifyBase
     : public CheckedOpRewritePattern<OpTy, Child> {
@@ -25678,7 +25698,6 @@ struct ScatterBinaryOpSimplifyBase
     bool isAllZeros = false, isAllOnes = false;
 
     SplatElementsAttr constSetIndexValue = nullptr;
-    // TODO: figure out a better way that allowed multiple uses
     auto status = detectConstantSetindexScatterOp(
         scatterOp, /*allowedMultipleUses*/ true,
         [&isAllZeros, &isAllOnes](mlir::Value input) {
@@ -25693,6 +25712,20 @@ struct ScatterBinaryOpSimplifyBase
         constSetIndexValue);
     if (!status.ok()) {
       return rewriter.notifyMatchFailure(op, status.message());
+    }
+
+    // If the scatter has multiple uses, verify that all other uses can be
+    // simplified by a later iteration of the same pass.
+    if (!scatterOp.getResult(0).hasOneUse()) {
+      for (auto *user : scatterOp.getResult(0).getUsers()) {
+        if (user == op.getOperation())
+          continue;
+        if (!canScatterUserBeSimplified(user, scatterOp.getResult(0),
+                                        isAllZeros, isAllOnes)) {
+          return rewriter.notifyMatchFailure(
+              op, "scatter has uses that cannot be simplified by a later pass");
+        }
+      }
     }
 
     SmallVector<int64_t> sliceSizes = computeGatherSliceSizes(scatterOp);
