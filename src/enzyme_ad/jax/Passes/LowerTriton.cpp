@@ -1,40 +1,15 @@
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 
-#include <filesystem>
+#include "mlir/Bytecode/BytecodeWriter.h"
+#include "stablehlo/dialect/StablehloOps.h"
 
-#include "mlir/IR/PatternMatch.h"
-#include "mlir/Pass/Pass.h"
-#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinOps.h"
 
-#include "xla/backends/gpu/codegen/triton/compilation_pipeline.h"
-#include "xla/stream_executor/cuda/cuda_compute_capability.h"
-#include "xla/stream_executor/device_description.h"
-#include "xla/stream_executor/rocm/rocm_compute_capability.h"
-
-#include "amd/include/Dialect/TritonAMDGPU/IR/Dialect.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/GPU/IR/GPUDialect.h"
-#include "mlir/Dialect/LLVMIR/NVVMDialect.h"
-#include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
-#include "nvidia/include/Dialect/NVGPU/IR/Dialect.h"
-#include "nvidia/include/Dialect/NVWS/IR/Dialect.h"
-#include "proton/Dialect/include/Dialect/Proton/IR/Dialect.h"
-#include "proton/Dialect/include/Dialect/ProtonGPU/IR/Dialect.h"
-#include "src/enzyme_ad/jax/Dialect/Dialect.h"
-#include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Dialect/TritonExt/Dialect.h"
-#include "triton/Dialect/Gluon/IR/Dialect.h"
-#include "triton/Dialect/Triton/IR/Dialect.h"
-#include "triton/Dialect/TritonGPU/IR/Dialect.h"
-#include "triton/Dialect/TritonInstrument/IR/Dialect.h"
-#include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
-
-#include "xla/pjrt/triton.h"
-
-#include "src/enzyme_ad/jax/Utils.h"
+#include "stablehlo/dialect/StablehloOps.h"
 
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/SmallVector.h"
 
 #define DEBUG_TYPE "lower-triton"
 
@@ -51,7 +26,8 @@ using namespace mlir::enzymexla;
 using namespace mlir::enzymexla::triton_ext;
 
 void collectTritonKernels(
-    DenseMap<triton_ext::TritonCallOp, ModuleOp> &tritonKernels,
+    DenseMap<triton_ext::TritonCallOp,
+             std::pair<ModuleOp, triton_ext::TritonModuleOp>> &tritonKernels,
     SymbolTableCollection &symbolTable, triton_ext::TritonCallOp op) {
   auto funcOp = symbolTable.lookupNearestSymbolFrom(op, op.getFnAttr());
   if (!funcOp) {
@@ -72,8 +48,18 @@ void collectTritonKernels(
     return;
   }
 
-  tritonKernels[op] = wrappedMod;
+  tritonKernels[op] = {wrappedMod, ttModOP};
   return;
+}
+
+static std::optional<uint64_t> getIntFromConstant(Value v) {
+  if (!v)
+    return 1;
+  DenseIntElementsAttr attr;
+  if (matchPattern(v, m_Constant(&attr))) {
+    return attr.getSplatValue<APInt>().getZExtValue();
+  }
+  return std::nullopt;
 }
 
 struct LowerTritonPass
@@ -83,120 +69,108 @@ struct LowerTritonPass
   void runOnOperation() override {
     auto modOp = getOperation();
 
-    stream_executor::GpuComputeCapability gpuCC;
-    if (backend == "cuda") {
-      auto cudaCC =
-          stream_executor::CudaComputeCapability::FromString(computeCapability);
-      if (!cudaCC.ok()) {
-        modOp->emitError("Unsupported cuda compute capability: ")
-            << cudaCC.status().ToString();
-        return;
-      }
-      gpuCC = stream_executor::GpuComputeCapability(cudaCC.value());
-    } else if (backend == "rocm") {
-      auto rocmCC = stream_executor::RocmComputeCapability(computeCapability);
-      gpuCC = stream_executor::GpuComputeCapability(rocmCC);
-    } else {
-      modOp->emitError("Unsupported backend: ") << backend;
-      return;
-    }
-
-    DenseMap<triton_ext::TritonCallOp, ModuleOp> tritonKernels;
+    DenseMap<triton_ext::TritonCallOp,
+             std::pair<ModuleOp, triton_ext::TritonModuleOp>>
+        tritonKernels;
     SymbolTableCollection symbolTable;
     symbolTable.getSymbolTable(modOp);
     modOp->walk([&](triton_ext::TritonCallOp op) {
       collectTritonKernels(tritonKernels, symbolTable, op);
     });
 
-    SmallVector<mlir::triton::nvidia_gpu::ClusterInfo> clusterInfos;
-
-    OpBuilder builder(modOp);
+    DenseSet<triton_ext::TritonModuleOp> modulesToErase;
+    OpBuilder builder(modOp.getContext());
 
     bool anyFailed = false;
-    for (auto [ttCallOp, innerMod] : tritonKernels) {
+    for (auto [ttCallOp, innerPair] : tritonKernels) {
+      auto [innerMod, ttModOP] = innerPair;
+      modulesToErase.insert(ttModOP);
       int32_t numWarps = 4;
       if (innerMod->hasAttrOfType<IntegerAttr>("enzymexla.num_warps")) {
         numWarps = innerMod->getAttrOfType<IntegerAttr>("enzymexla.num_warps")
                        .getInt();
       }
-      int32_t numCtas = 1;
-      if (innerMod->hasAttrOfType<IntegerAttr>("enzymexla.num_ctas")) {
-        numCtas =
-            innerMod->getAttrOfType<IntegerAttr>("enzymexla.num_ctas").getInt();
-      }
-      int32_t numStages = 3;
+
+      int32_t numStages = backend == "rocm" ? 1 : 3;
       if (innerMod->hasAttrOfType<IntegerAttr>("enzymexla.num_stages")) {
         numStages = innerMod->getAttrOfType<IntegerAttr>("enzymexla.num_stages")
                         .getInt();
       }
 
-      OpPassManager pm;
+      std::string bytecode;
+      llvm::raw_string_ostream os(bytecode);
+      if (failed(writeBytecodeToFile(innerMod, os))) {
+        ttCallOp.emitError("Failed to write bytecode");
+        anyFailed = true;
+        continue;
+      }
+      os.flush();
 
-      xla::gpu::CreateTritonXlaPipeline(&pm, gpuCC, true, true, numStages);
-      mlir::triton::nvidia_gpu::ClusterInfo clusterInfo;
-      xla::gpu::CreateTritonPipeline(&pm, gpuCC, numWarps, numCtas, numStages,
-                                     clusterInfo);
-      clusterInfos.push_back(clusterInfo);
+      std::string funcName = ttCallOp.getFn().getLeafReference().str();
 
-      if (failed(runPipeline(pm, innerMod))) {
-        innerMod->emitError(
-            "Failed to lower Triton kernel to TritonGPU kernel");
+      auto gx = getIntFromConstant(ttCallOp.getGridx());
+      auto gy = getIntFromConstant(ttCallOp.getGridy());
+      auto gz = getIntFromConstant(ttCallOp.getGridz());
+      if (!gx || !gy || !gz) {
+        ttCallOp.emitError(
+            "Dynamic grid dims not supported for Triton lowering");
         anyFailed = true;
         continue;
       }
 
-      int32_t threadsPerWarp = 32;
-      if (innerMod->hasAttrOfType<IntegerAttr>("ttg.threads_per_warp")) {
-        threadsPerWarp =
-            innerMod->getAttrOfType<IntegerAttr>("ttg.threads_per_warp")
-                .getInt();
-      }
+      SmallVector<NamedAttribute> config;
+      config.push_back(
+          builder.getNamedAttr("name", builder.getStringAttr(funcName)));
+      config.push_back(
+          builder.getNamedAttr("ir", builder.getStringAttr(os.str())));
+      config.push_back(builder.getNamedAttr(
+          "num_stages", builder.getI32IntegerAttr(numStages)));
+      config.push_back(builder.getNamedAttr(
+          "num_warps", builder.getI32IntegerAttr(numWarps)));
+      config.push_back(
+          builder.getNamedAttr("grid_x", builder.getI32IntegerAttr(*gx)));
+      config.push_back(
+          builder.getNamedAttr("grid_y", builder.getI32IntegerAttr(*gy)));
+      config.push_back(
+          builder.getNamedAttr("grid_z", builder.getI32IntegerAttr(*gz)));
+      config.push_back(
+          builder.getNamedAttr("debug", builder.getBoolAttr(false)));
 
       builder.setInsertionPoint(ttCallOp);
-
-      auto sharedMemSizeAttr =
-          innerMod->getAttrOfType<IntegerAttr>("ttg.shared");
-      auto sharedMemSize = sharedMemSizeAttr.getInt();
-      auto shmemOpType = ttCallOp.getGridx().getType();
-      auto shmemOp = stablehlo::ConstantOp::create(
-          builder, ttCallOp.getLoc(), shmemOpType,
-          cast<ElementsAttr>(makeAttr(shmemOpType, sharedMemSize)));
-
-      auto blockX = stablehlo::ConstantOp::create(
-          builder, ttCallOp.getLoc(), shmemOpType,
-          cast<ElementsAttr>(makeAttr(shmemOpType, threadsPerWarp * numWarps)));
-      auto blockYZ = stablehlo::ConstantOp::create(
-          builder, ttCallOp.getLoc(), shmemOpType,
-          cast<ElementsAttr>(makeAttr(shmemOpType, 1)));
-
-      SmallVector<mlir::Value> newInputs(ttCallOp.getInputs().begin(),
-                                         ttCallOp.getInputs().end());
-      // we don't use the next 2 inputs
-      auto scratchSpace = stablehlo::ConstantOp::create(
-          builder, ttCallOp.getLoc(),
-          RankedTensorType::get({}, builder.getI8Type()),
-          cast<ElementsAttr>(
-              makeAttr(RankedTensorType::get({}, builder.getI8Type()), 0)));
-      newInputs.push_back(scratchSpace);
-      newInputs.push_back(scratchSpace);
-
-      auto kernelCallOp = enzymexla::KernelCallOp::create(
+      auto customCall = stablehlo::CustomCallOp::create(
           builder, ttCallOp.getLoc(), ttCallOp.getResultTypes(),
-          ttCallOp.getFn(), ttCallOp.getGridx(), ttCallOp.getGridy(),
-          ttCallOp.getGridz(), blockX, blockYZ, blockYZ, shmemOp,
-          ttCallOp.getClusterx(), ttCallOp.getClustery(),
-          ttCallOp.getClusterz(), newInputs, ttCallOp.getBackendConfigAttr(),
-          ttCallOp.getOperandLayoutsAttr(), ttCallOp.getResultLayoutsAttr(),
-          ttCallOp.getArgAttrsAttr(), ttCallOp.getResAttrsAttr(),
-          ttCallOp.getOutputOperandAliasesAttr(),
-          ttCallOp.getXlaSideEffectFreeAttr());
-      ttCallOp.replaceAllUsesWith(kernelCallOp);
+          ttCallOp.getInputs());
+
+      customCall.setCallTargetName("__gpu$xla.gpu.triton");
+      customCall.setBackendConfigAttr(builder.getDictionaryAttr(config));
+      customCall.setApiVersion(
+          ::mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI);
+
+      if (auto attr = ttCallOp.getOperandLayoutsAttr()) {
+        customCall.setOperandLayoutsAttr(mlir::cast<ArrayAttr>(attr));
+      }
+      if (auto attr = ttCallOp.getResultLayoutsAttr()) {
+        customCall.setResultLayoutsAttr(mlir::cast<ArrayAttr>(attr));
+      }
+      if (auto attr = ttCallOp.getOutputOperandAliasesAttr()) {
+        customCall.setOutputOperandAliasesAttr(mlir::cast<ArrayAttr>(attr));
+      }
+
+      if (!ttCallOp.getXlaSideEffectFreeAttr()) {
+        customCall.setHasSideEffect(true);
+      }
+
+      ttCallOp.replaceAllUsesWith(customCall.getResults());
       ttCallOp.erase();
     }
 
     if (anyFailed) {
       signalPassFailure();
       return;
+    }
+
+    for (auto ttModOP : modulesToErase) {
+      ttModOP.erase();
     }
   }
 };
