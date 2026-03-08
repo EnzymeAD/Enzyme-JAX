@@ -234,7 +234,7 @@ jobs:
         timeout-minutes: 60
         run: |
           export XLA_FLAGS='--xla_dump_to=${{ env.GB25_DIR }}/xla_dump_run'
-          export TF_CPP_MAX_VLOG_LEVEL=3
+          # export TF_CPP_MAX_VLOG_LEVEL=3
           timeout --signal=TERM --verbose 59m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_run.jl ${{ env.RUN_FLAGS }}
         working-directory: ${{ env.GB25_DIR }}
       - name: Display profile results
