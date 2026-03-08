@@ -2348,10 +2348,8 @@ struct MultiSliceCustomCallOptimize
       return false; // Not sharded along the slice dimension.
 
     int64_t dimSize = shape[dim];
-    if (dimSize % numShards != 0)
-      return false; // Non-uniform shard sizes.
-
-    int64_t shardSize = dimSize / numShards;
+    int64_t shardSize = (dimSize + numShards - 1) / numShards;
+    // int64_t lastShardSize = dimSize - shardSize * (numShards - 1);
 
     // Map an index to the shard that contains it (clamped).
     auto shardOf = [&](int64_t idx) -> int64_t {
