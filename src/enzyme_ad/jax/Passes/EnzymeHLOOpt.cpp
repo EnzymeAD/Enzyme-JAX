@@ -30374,12 +30374,12 @@ struct FuseAddIntoSyrk
 
   LogicalResult fuseAdd(PatternRewriter &rewriter, enzymexla::SyrkOp syrkOp,
                         stablehlo::AddOp op, Value other) {
-    
+
     // we can fuse this addition iff the other operand is a symmetric matrix
     if (!canApplySymmetricPattern(other, rewriter)) {
       return failure();
     }
-    
+
     auto [newC, newBeta] = computeNewCBeta(
         rewriter, syrkOp.getBeta(), syrkOp.getType(), op, syrkOp.getC(), other);
 
