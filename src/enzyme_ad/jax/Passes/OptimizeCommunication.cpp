@@ -2278,23 +2278,6 @@ struct MultiSliceCustomCallOptimize
     return result;
   }
 
-  /// Given a TensorShardingAttr and the corresponding MeshAttr, compute the
-  /// number of shards along tensor dimension `d`.
-  static int64_t getNumShardsAlongDim(sdy::TensorShardingAttr sharding,
-                                      sdy::MeshAttr mesh, int64_t d) {
-    auto dimSharding = sharding.getDimShardings()[d];
-    int64_t numShards = 1;
-    for (auto axisRef : dimSharding.getAxes()) {
-      for (auto meshAxis : mesh.getAxes()) {
-        if (meshAxis.getName() == axisRef.getName()) {
-          numShards *= meshAxis.getSize();
-          break;
-        }
-      }
-    }
-    return numShards;
-  }
-
   /// Detect whether this MultiSliceOp matches the cross-shard pattern:
   ///   1. All strides are 1.
   ///   2. For every sharded dimension except the multi-slice dimension,
@@ -2322,20 +2305,11 @@ struct MultiSliceCustomCallOptimize
     if (!operandSharding)
       return false;
 
-    // Look up the mesh so we can translate axis names to sizes.
-    auto moduleOp = op->getParentOfType<ModuleOp>();
-    auto meshOp = SymbolTable::lookupNearestSymbolFrom<sdy::MeshOp>(
-        moduleOp,
-        StringAttr::get(op.getContext(), operandSharding.getMeshName()));
-    if (!meshOp)
-      return false;
-    sdy::MeshAttr mesh = meshOp.getMesh();
-
     // --- Condition 2: full span on every sharded dim except `dim` ---
     for (int64_t d = 0; d < rank; ++d) {
       if (d == dim)
         continue;
-      int64_t numShards = getNumShardsAlongDim(operandSharding, mesh, d);
+      int64_t numShards = getNumDevicesAlongDimension(operandSharding, d, op);
       if (numShards > 1) {
         if (startIndices[d] != 0 || limitIndices[d] != shape[d])
           return false;
@@ -2343,7 +2317,7 @@ struct MultiSliceCustomCallOptimize
     }
 
     // --- Condition 3: cross-shard slicing along `dim` ---
-    int64_t numShards = getNumShardsAlongDim(operandSharding, mesh, dim);
+    int64_t numShards = getNumDevicesAlongDimension(operandSharding, dim, op);
     if (numShards <= 1)
       return false; // Not sharded along the slice dimension.
 
