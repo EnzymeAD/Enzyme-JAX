@@ -2415,7 +2415,7 @@ struct MultiSliceCustomCallOptimize
                          ",limit_indices=" + limit_indices_str +
                          ",strides=" + strides_str;
 
-    auto fnSym = rewriter.getStringAttr("_SPMDEnzymeInternalOp_MultiSlice");
+    auto fnSym = rewriter.getStringAttr("_SPMDOp_MultiSlice");
 
     SmallVector<TensorShardingAttr> opShardings(slice.getNumResults(),
                                                 rotateSharding);
