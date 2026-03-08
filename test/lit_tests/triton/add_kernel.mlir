@@ -36,7 +36,7 @@ module {
     // CHECK: enzymexla_tt_ext.call
     // LOWER: stablehlo.custom_call @__gpu$xla.gpu.triton(%arg0, %arg1, %arg2, %arg3)
     // LOWER-SAME: api_version = 4 : i32
-    // LOWER-SAME: backend_config = {debug = false, grid_x = 16 : i32, grid_y = 1 : i32, grid_z = 1 : i32, ir = "{{.*}}", name = "add_kernel", num_stages = 3 : i32, num_warps = 4 : i32}, has_side_effect = true
+    // LOWER-SAME: backend_config = {debug = false, grid_x = 16 : i32, grid_y = 1 : i32, grid_z = 1 : i32, ir = "{{.*}}", name = "add_kernel", num_stages = 3 : i32, num_warps = 4 : i32}
     %0:3 = enzymexla_tt_ext.call @add_kernel_tt::@add_kernel_inner::@add_kernel clusters in (%c_0, %c_0, %c_0) blocks in(%c_1, %c_0, %c_0) (%arg0, %arg1, %arg2, %arg3) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 0, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [1], operand_index = 1, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [2], operand_index = 2, operand_tuple_indices = []>]} : (tensor<1024xf32>, tensor<1024xf32>, tensor<1024xf32>, tensor<i32>) -> (tensor<1024xf32>, tensor<1024xf32>, tensor<1024xf32>)
     return %0#0, %0#1, %0#2 : tensor<1024xf32>, tensor<1024xf32>, tensor<1024xf32>
   }

@@ -44,8 +44,8 @@ namespace {
 
 static Value TI64(OpBuilder &builder, Location loc, uint64_t v) {
   auto TT = RankedTensorType::get({}, builder.getI64Type());
-  return builder.create<stablehlo::ConstantOp>(
-      loc, TT, cast<ElementsAttr>(mlir::enzyme::makeAttr(TT, v)));
+  return stablehlo::ConstantOp::create(
+      builder, loc, TT, cast<ElementsAttr>(mlir::enzyme::makeAttr(TT, v)));
 }
 
 static LogicalResult

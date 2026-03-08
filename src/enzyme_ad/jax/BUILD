@@ -1418,8 +1418,6 @@ cc_library(
         "@triton//third_party/nvidia:NVWSDialect",
         "@triton//third_party/nvidia:NVWSTransforms",
         "@triton//third_party/nvidia:TritonNVIDIAGPUToLLVM",
-        "@triton//third_party/proton:ProtonIR",
-        "@triton//third_party/proton:ProtonGPUIR",
 
         # Shardy stuff
         "@shardy//shardy/dialect/sdy/ir:dialect",
