@@ -13,6 +13,9 @@
 
 #include <zlib.h>
 
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Transforms/WalkPatternRewriteDriver.h"
@@ -39,9 +42,77 @@ using namespace stablehlo;
 
 namespace {
 
+static Value TI64(OpBuilder &builder, Location loc, uint64_t v) {
+  auto TT = RankedTensorType::get({}, builder.getI64Type());
+  return builder.create<stablehlo::ConstantOp>(
+      loc, TT, cast<ElementsAttr>(mlir::enzyme::makeAttr(TT, v)));
+}
+
+static LogicalResult
+replaceWithTritonCall(stablehlo::CustomCallOp callOp, PatternRewriter &rewriter,
+                      ModuleOp innerMod, StringRef kernelName, uint64_t gridx,
+                      uint64_t gridy, uint64_t gridz,
+                      std::optional<int32_t> numWarps = std::nullopt,
+                      std::optional<int32_t> numStages = std::nullopt) {
+  SymbolTable symTable(
+      SymbolTable::getNearestSymbolTable(callOp.getOperation()));
+
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPointToEnd(&symTable.getOp()->getRegion(0).front());
+
+  auto outerMod = enzymexla::triton_ext::TritonModuleOp::create(
+      rewriter, callOp->getLoc(), "triton_module");
+
+  Block *b = rewriter.createBlock(&outerMod.getBodyRegion());
+
+  symTable.insert(outerMod);
+
+  rewriter.setInsertionPointToStart(b);
+  rewriter.insert(innerMod);
+
+  innerMod.setSymName("triton_module_inner");
+  if (numWarps) {
+    innerMod.getOperation()->setAttr("enzymexla.num_warps",
+                                     rewriter.getI32IntegerAttr(*numWarps));
+  }
+  if (numStages) {
+    innerMod.getOperation()->setAttr("enzymexla.num_stages",
+                                     rewriter.getI32IntegerAttr(*numStages));
+  }
+
+  SmallVector<FlatSymbolRefAttr, 2> nestedRefs = {
+      FlatSymbolRefAttr::get(innerMod.getSymNameAttr()),
+      FlatSymbolRefAttr::get(StringAttr::get(callOp.getContext(), kernelName))};
+
+  SymbolRefAttr fn = SymbolRefAttr::get(callOp.getContext(),
+                                        outerMod.getSymNameAttr(), nestedRefs);
+
+  rewriter.setInsertionPoint(callOp);
+  rewriter.replaceOpWithNewOp<enzymexla::triton_ext::TritonCallOp>(
+      callOp, callOp->getResultTypes(), fn,
+
+      TI64(rewriter, callOp->getLoc(), gridx),
+      TI64(rewriter, callOp->getLoc(), gridy),
+      TI64(rewriter, callOp->getLoc(), gridz),
+
+      TI64(rewriter, callOp->getLoc(), 1), TI64(rewriter, callOp->getLoc(), 1),
+      TI64(rewriter, callOp->getLoc(), 1),
+
+      callOp.getInputs(),
+      /* backendConfig */ StringAttr::get(callOp.getContext(), ""),
+      callOp.getOperandLayoutsAttr(), callOp.getResultLayoutsAttr(),
+      /* argAttrs */ mlir::ArrayAttr::get(callOp.getContext(), {}),
+      /* resAttrs */ mlir::ArrayAttr::get(callOp.getContext(), {}),
+      callOp.getOutputOperandAliasesAttr(),
+      callOp.getHasSideEffect() ? nullptr : rewriter.getUnitAttr());
+
+  return success();
+}
+
 struct RaiseTritonCustomCallPattern final
     : public OpRewritePattern<stablehlo::CustomCallOp> {
   using OpRewritePattern::OpRewritePattern;
+
   LogicalResult matchAndRewrite(stablehlo::CustomCallOp callOp,
                                 PatternRewriter &rewriter) const {
     auto callTargetName = callOp.getCallTargetName();
@@ -90,58 +161,57 @@ struct RaiseTritonCustomCallPattern final
     if (!mir)
       return failure();
 
-    SymbolTable symTable(SymbolTable::getNearestSymbolTable(callOp));
-
-    OpBuilder::InsertionGuard guard(rewriter);
-    rewriter.setInsertionPointToEnd(&symTable.getOp()->getRegion(0).front());
-
     auto innerMod = cast<mlir::ModuleOp>(mir.release().getOperation());
-    auto outerMod = enzymexla::triton_ext::TritonModuleOp::create(
-        rewriter, callOp.getLoc(), "triton_module");
+    return replaceWithTritonCall(callOp, rewriter, innerMod,
+                                 kCall.kernel().kernel_name(), kCall.grid_0(),
+                                 kCall.grid_1(), kCall.grid_2());
+  }
+};
 
-    Block *b = rewriter.createBlock(&outerMod.getBodyRegion());
+struct RaiseXLAGpuTritonCustomCallPattern final
+    : public OpRewritePattern<stablehlo::CustomCallOp> {
+  using OpRewritePattern::OpRewritePattern;
 
-    symTable.insert(outerMod);
+  LogicalResult matchAndRewrite(stablehlo::CustomCallOp callOp,
+                                PatternRewriter &rewriter) const {
+    auto callTargetName = callOp.getCallTargetName();
+    if (callTargetName != "__gpu$xla.gpu.triton")
+      return failure();
 
-    rewriter.setInsertionPointToStart(b);
-    rewriter.insert(innerMod);
+    auto configAttr = callOp.getBackendConfig();
+    if (!configAttr)
+      return failure();
 
-    innerMod.setSymName("triton_module_inner");
+    auto configDict = dyn_cast<DictionaryAttr>(*configAttr);
+    if (!configDict)
+      return failure();
 
-    uint64_t gridx = kCall.grid_0(), gridy = kCall.grid_1(),
-             gridz = kCall.grid_2();
+    auto irAttr = configDict.getAs<StringAttr>("ir");
+    auto nameAttr = configDict.getAs<StringAttr>("name");
+    if (!irAttr || !nameAttr)
+      return failure();
 
-    SmallVector<FlatSymbolRefAttr, 2> nestedRefs = {
-        FlatSymbolRefAttr::get(innerMod.getSymNameAttr()),
-        FlatSymbolRefAttr::get(StringAttr::get(callOp.getContext(),
-                                               kCall.kernel().kernel_name()))};
+    OwningOpRef<ModuleOp> mir = mlir::parseSourceString<ModuleOp>(
+        irAttr.getValue(), callOp.getContext());
+    if (!mir)
+      return failure();
 
-    SymbolRefAttr fn = SymbolRefAttr::get(
-        callOp.getContext(), outerMod.getSymNameAttr(), nestedRefs);
-
-    auto TI64 = [&](uint64_t v) -> Value {
-      auto TT = RankedTensorType::get({}, rewriter.getI64Type());
-      return stablehlo::ConstantOp::create(
-          rewriter, callOp.getLoc(), TT,
-          cast<ElementsAttr>(mlir::enzyme::makeAttr(TT, v)));
+    auto getInt = [&](StringRef name, int64_t defaultVal) -> int64_t {
+      if (auto attr = configDict.getAs<IntegerAttr>(name))
+        return attr.getInt();
+      return defaultVal;
     };
 
-    rewriter.setInsertionPoint(callOp);
-    rewriter.replaceOpWithNewOp<enzymexla::triton_ext::TritonCallOp>(
-        callOp, callOp->getResultTypes(), fn,
+    int64_t gridx = getInt("grid_x", 1);
+    int64_t gridy = getInt("grid_y", 1);
+    int64_t gridz = getInt("grid_z", 1);
+    int64_t numWarps = getInt("num_warps", 4);
+    int64_t numStages = getInt("num_stages", 3);
 
-        TI64(gridx), TI64(gridy), TI64(gridz),
-
-        TI64(1), TI64(1), TI64(1),
-
-        callOp.getInputs(),
-        /* backendConfig */ StringAttr::get(callOp.getContext(), ""),
-        callOp.getOperandLayoutsAttr(), callOp.getResultLayoutsAttr(),
-        /* argAttrs */ mlir::ArrayAttr::get(callOp.getContext(), {}),
-        /* resAttrs */ mlir::ArrayAttr::get(callOp.getContext(), {}),
-        callOp.getOutputOperandAliasesAttr(), nullptr);
-
-    return success();
+    auto innerMod = cast<mlir::ModuleOp>(mir.release().getOperation());
+    return replaceWithTritonCall(
+        callOp, rewriter, innerMod, nameAttr.getValue(), gridx, gridy, gridz,
+        static_cast<int32_t>(numWarps), static_cast<int32_t>(numStages));
   }
 };
 
@@ -152,7 +222,9 @@ struct RaiseTritonCustomCallPass
 
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
-    patterns.add<RaiseTritonCustomCallPattern>(patterns.getContext());
+    patterns
+        .add<RaiseTritonCustomCallPattern, RaiseXLAGpuTritonCustomCallPattern>(
+            patterns.getContext());
     walkAndApplyPatterns(getOperation(), std::move(patterns));
   }
 };
