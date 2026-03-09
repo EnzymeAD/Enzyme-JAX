@@ -3072,3 +3072,8 @@ def ApplySubComplexSimplifyPatterns: EnzymeHLOPatternOp<
     "sub_complex_simplify"> {
   let patterns = ["BinaryOpComplexSimplifyBase<stablehlo::SubtractOp>"];
 }
+
+def ApplyScatterOfScatterSimplifyPatterns : EnzymeHLOPatternOp<
+    "scatter_of_scatter_simplify"> {
+  let patterns = ["ScatterOfScatterSimplify"];
+}
