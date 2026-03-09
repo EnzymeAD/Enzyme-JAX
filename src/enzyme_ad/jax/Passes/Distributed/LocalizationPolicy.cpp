@@ -39,8 +39,8 @@ bool compare_factor_significance(PhysicalMeshOp mesh, Value a, Value b) {
   // Otherwise, compare the physical axes in the mesh
   auto a_axis = a_parent.getPhysicalAxisAttr();
   auto b_axis = b_parent.getPhysicalAxisAttr();
-  auto a_axis_index = getPhysicalAxisPosition(mesh, a_axis);
-  auto b_axis_index = getPhysicalAxisPosition(mesh, b_axis);
+  auto a_axis_index = mesh.getPhysicalAxisPosition(a_axis);
+  auto b_axis_index = mesh.getPhysicalAxisPosition(b_axis);
   return a_axis_index < b_axis_index;
 }
 
@@ -53,16 +53,16 @@ NaiveLocalMostPolicy::suggestLocalization(MeshComputationOp mesh_op,
 
   auto logicalMesh = mesh_op.getMesh().getDefiningOp<LogicalMeshOp>();
   assert(logicalMesh && "mesh operand must be defined by LogicalMeshOp");
-    auto physicalMeshOr = resolvePhysicalMeshFromLogicalMesh(logicalMesh);
-    assert(succeeded(physicalMeshOr) &&
+  auto physicalMeshOr = logicalMesh.resolvePhysicalMesh();
+  assert(succeeded(physicalMeshOr) &&
       "logical mesh must resolve to a physical mesh");
-    PhysicalMeshOp physicalMesh = *physicalMeshOr;
+  PhysicalMeshOp physicalMesh = *physicalMeshOr;
 
   // Use utility functions to decompose the logical mesh into atomic factors,
   // then sort by significance and greedily consume the least significant
   // factors until the budget is met.
   llvm::SmallVector<Value> atomicFactors;
-  (void)resolveLogicalMeshToAtomicFactors(logicalMesh, atomicFactors);
+  (void)logicalMesh.resolveToAtomicFactors(atomicFactors);
 
   std::sort(atomicFactors.begin(), atomicFactors.end(),
             [&](Value a, Value b) {
