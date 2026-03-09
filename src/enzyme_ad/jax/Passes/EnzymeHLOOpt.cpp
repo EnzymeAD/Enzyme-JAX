@@ -6239,6 +6239,70 @@ struct GammaConstProp final
   }
 };
 
+struct ReduceConstProp final
+    : CheckedOpRewritePattern<stablehlo::ReduceOp, ReduceConstProp> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+  size_t max_constant_expansion;
+
+  ReduceConstProp(size_t max_constant_expansion, MLIRContext *context,
+                  PatternBenefit benefit = 1,
+                  ArrayRef<StringRef> generatedNames = {})
+      : CheckedOpRewritePattern(context, benefit, generatedNames),
+        max_constant_expansion(max_constant_expansion) {}
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
+                                    PatternRewriter &rewriter) const {
+    SmallVector<stablehlo::Tensor> inputs, initValues;
+
+    bool allSplats = true;
+
+    for (auto input : op.getInputs()) {
+      DenseElementsAttr attr;
+      if (!matchPattern(input, m_Constant(&attr)))
+        return failure();
+      inputs.push_back(stablehlo::constantOp(attr));
+
+      allSplats &= attr.isSplat();
+    }
+
+    for (auto initValue : op.getInitValues()) {
+      DenseElementsAttr attr;
+      if (!matchPattern(initValue, m_Constant(&attr)))
+        return failure();
+      initValues.push_back(stablehlo::constantOp(attr));
+
+      allSplats &= attr.isSplat();
+    }
+
+    stablehlo::Scope scope(nullptr);
+    SmallVector<mlir::ShapedType> resultTypes = llvm::map_to_vector(
+        op->getResultTypes(), [](Type ty) { return cast<ShapedType>(ty); });
+
+    if (!allSplats) {
+      for (auto st : resultTypes) {
+        size_t numEl = 1;
+        for (auto s : st.getShape())
+          numEl *= s;
+
+        if (numEl >= max_constant_expansion)
+          return failure();
+      }
+    }
+
+    SmallVector<stablehlo::Tensor> outputs = stablehlo::reduceOp(
+        inputs, initValues, stablehlo::Axes(op.getDimensions()), op.getBody(),
+        /*process=*/nullptr, scope, resultTypes);
+
+    for (auto [out, res] : llvm::zip_equal(outputs, op.getResults())) {
+      rewriter.replaceAllUsesWith(
+          res, stablehlo::ConstantOp::create(rewriter, op.getLoc(),
+                                             fromTensor(out)));
+    }
+
+    return success();
+  }
+};
+
 struct DynamicUpdateSliceConstProp final
     : CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp,
                               DynamicUpdateSliceConstProp> {
@@ -34220,6 +34284,13 @@ void mlir::transform::addPadSimplify(RewritePatternSet &patterns,
   patterns.insert<PadSimplify>(maxConstantExpansion, &context, benefit);
 }
 
+void mlir::transform::addReduceConstProp(RewritePatternSet &patterns,
+                                         int64_t maxConstantExpansion,
+                                         MLIRContext &context,
+                                         PatternBenefit benefit) {
+  patterns.insert<ReduceConstProp>(maxConstantExpansion, &context, benefit);
+}
+
 void mlir::transform::addDynamicUpdateSliceConstProp(
     RewritePatternSet &patterns, int64_t maxConstantExpansion,
     MLIRContext &context, PatternBenefit benefit) {
@@ -34587,9 +34658,9 @@ struct EnzymeHLOOptPass
         ExponentialMinusOneAddFuse>(context, PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,
-                 DynamicUpdateSliceConstProp, PadSimplify, ScatterConstFold,
-                 RecognizeFromConstant>(max_constant_expansion, context,
-                                        PatternBenefit(65000));
+                 DynamicUpdateSliceConstProp, ReduceConstProp, PadSimplify,
+                 ScatterConstFold, RecognizeFromConstant>(
+        max_constant_expansion, context, PatternBenefit(65000));
 
     patterns.add<
         ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
