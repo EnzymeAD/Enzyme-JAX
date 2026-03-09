@@ -91,7 +91,7 @@ jobs:
           version: ${{ matrix.julia_version }}
       - name: Load Julia packages from cache
         id: julia-cache
-        uses: julia-actions/cache@v2
+        uses: julia-actions/cache@v3
       - name: Modify Enzyme-JAX commit
         timeout-minutes: 1
         run: |
