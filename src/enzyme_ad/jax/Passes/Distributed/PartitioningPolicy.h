@@ -29,6 +29,7 @@ class TrivialWholeOpPartitioningPolicy : public PartitioningPolicy {
 public:
 	llvm::SmallVector<OpRange>
 	suggestSpecializationRanges(MeshComputationOp meshOp) override;
+	~TrivialWholeOpPartitioningPolicy() override = default;
 };
 
 } // namespace distributed
