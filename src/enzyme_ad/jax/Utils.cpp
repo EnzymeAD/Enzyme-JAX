@@ -1420,7 +1420,7 @@ absl::Status detectConstantSetindexScatterOp(
         "Detection not implemented for scatter op with >1 input.");
   }
 
-  if (!scatterOp.getResult(0).hasOneUse() && !allowedMultipleUses) {
+  if (!allowedMultipleUses && !scatterOp.getResult(0).hasOneUse()) {
     return absl::InvalidArgumentError(
         "ScatterOp has multiple uses, not supported.");
   }

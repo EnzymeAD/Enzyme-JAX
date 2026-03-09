@@ -353,6 +353,7 @@ def optimization_passes(
         "reduce_max_min_mul_positive_scalar",
         "add_complex_simplify",
         "sub_complex_simplify",
+        "scatter_of_scatter_simplify",
     ]
 
     # constant propagation patterns
