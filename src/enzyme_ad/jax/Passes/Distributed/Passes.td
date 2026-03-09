@@ -53,13 +53,31 @@ def ShardyCollectivesToDistributedPass
   ];
 }
 
-// def LocalizeDistributedPass : Pass<"localize-distributed", "distributed::MeshComputationOp"> {
-//   let summary = "Based on a localization and partitioning strategy, localize a mesh computation op to a region computation.";
-//   let description = [{
-//     This pass takes a mesh computation op and localizes it to a region computation op. For each region 
-//     suggested by the partitioning strategy, a new region computation op is created. The region op uses
-//     a submesh suggested by the localization strategy. Ops formerly within the mesh computation are de-sharded
-//     and each chunk is placed in the appropriate region. }];
-// }
+def LocalizeDistributedPass : Pass<"localize-distributed", "distributed::MeshComputationOp"> {
+  let summary = "Based on a localization and partitioning strategy, localize a mesh computation op to a region computation.";
+  let description = [{
+    This pass takes a mesh computation op and localizes it to a region computation op. For each region 
+    suggested by the partitioning strategy, a new region computation op is created. The region op uses
+    a submesh suggested by the localization strategy. Ops formerly within the mesh computation are de-sharded
+    and each chunk is placed in the appropriate region. }];
+  let dependentDialects = [
+    "enzyme::distributed::DistributedDialect",
+    "func::FuncDialect",
+    "sdy::SdyDialect", // still dependent on their sharding attributes.
+  ];
+}
+
+def LocalizeDistributedModulePass : Pass<"localize-distributed-module", "ModuleOp"> {
+  let summary = "Run localize-distributed on all distributed mesh computations in a module";
+  let description = [{
+    This wrapper pass finds distributed.MeshComputation ops inside the module
+    and runs localize-distributed on each one.
+  }];
+  let dependentDialects = [
+    "enzyme::distributed::DistributedDialect",
+    "func::FuncDialect",
+    "sdy::SdyDialect",
+  ];
+}
 
 #endif // ENZYME_AD_JAX_DISTRIBUTED_PASSES

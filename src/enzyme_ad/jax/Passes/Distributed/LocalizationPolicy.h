@@ -1,3 +1,5 @@
+#ifndef ENZYME_AD_JAX_PASSES_DISTRIBUTED_LOCALIZATIONPOLICY_H
+#define ENZYME_AD_JAX_PASSES_DISTRIBUTED_LOCALIZATIONPOLICY_H
 
 #include "llvm/ADT/SmallVector.h"
 #include "mlir/IR/Block.h"
@@ -19,6 +21,8 @@ using OpIterator = mlir::Block::iterator;
  */
 class LocalizationPolicy {
 public:
+  virtual ~LocalizationPolicy() = default;
+
   virtual llvm::SmallVector<TypedValue<LogicalCommAxisType>>
   suggestLocalization(MeshComputationOp mesh_op, OpIterator range_begin,
                       OpIterator range_end) = 0;
@@ -36,6 +40,7 @@ class NaiveLocalMostPolicy : public LocalizationPolicy {
 
 public:
   NaiveLocalMostPolicy(int budget);
+  ~NaiveLocalMostPolicy() override = default;
 
   llvm::SmallVector<TypedValue<LogicalCommAxisType>>
   suggestLocalization(MeshComputationOp mesh_op, OpIterator range_begin,
@@ -45,3 +50,5 @@ public:
 } // namespace distributed
 } // namespace enzyme
 } // namespace mlir
+
+#endif // ENZYME_AD_JAX_PASSES_DISTRIBUTED_LOCALIZATIONPOLICY_H

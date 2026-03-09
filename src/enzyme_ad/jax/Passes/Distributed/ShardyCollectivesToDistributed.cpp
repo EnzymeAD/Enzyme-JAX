@@ -37,7 +37,6 @@ bool sharding_encapsulates_behavior(Operation *op) {
 // TODO: hacky horrible quick prototype! Should use shardy op interfaces /
 // getter methods or should record sharding for values before rewriting.
 FailureOr<sdy::TensorShardingAttr> getTensorShardingFromValue(Value value) {
-  printValueDebug(value);
   if (auto blockArg = dyn_cast<BlockArgument>(value)) {
     Operation *parentOp = blockArg.getOwner()->getParentOp();
     if (auto meshComputation = dyn_cast<MeshComputationOp>(parentOp)) {

@@ -192,9 +192,6 @@ LogicalResult SubmeshCollectivePartsOp::inferReturnTypes(
   for (int64_t i = 0; i < *meshSize; ++i) {
     inferredReturnTypes.push_back(CollectiveTokenType::get(context));
   }
-  for (int64_t i = 0; i < *meshSize; ++i) {
-    inferredReturnTypes.push_back(CollectiveTokenType::get(context));
-  }
 
   return success();
 }

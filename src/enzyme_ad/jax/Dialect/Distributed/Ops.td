@@ -15,8 +15,14 @@ defvar TensorType = HLO_Tensor;
 defvar ShardedTensorType = HLO_Tensor; // Subject to change, for now shardy just adds attributes on top of a regular tensor.
 defvar ShardingAttribute = Sdy_TensorSharding;
 
+def DistributedMetadataTrait
+    : NativeOpTrait<"enzyme::distributed::MetadataTrait">;
+
+// Marker for distributed metadata ops. Includes builtin Pure.
+def PureDistributedMetadata : TraitList<[Pure, DistributedMetadataTrait]>;
+
 // Mesh definition ops
-def PhysicalMeshOp : DistributedOp<"PhysicalMesh", [Symbol]> {
+def PhysicalMeshOp : DistributedOp<"PhysicalMesh", [Symbol, PureDistributedMetadata]> {
     let description = [{Defines a physical mesh of devices based on the hardware topology.
     A physical mesh is a Cartesian product of zero or more physical axes. Axes should be distinct!
     Two copies of the same axis is permitted (but may better be represented as a larger axis), but
@@ -30,7 +36,7 @@ def PhysicalMeshOp : DistributedOp<"PhysicalMesh", [Symbol]> {
     let hasVerifier = 1;
 }
 
-def LogicalMeshOp : DistributedOp<"LogicalMesh"> {
+def LogicalMeshOp : DistributedOp<"LogicalMesh", [PureDistributedMetadata]> {
     let description = [{Defines a logical mesh of devices, intended to represent 
     the mesh used by the program. Defined in terms of its projection
     onto a physical mesh via a product of logical axes.}];
@@ -45,6 +51,7 @@ def LogicalMeshOp : DistributedOp<"LogicalMesh"> {
 
 def AxisAllToAllOp : DistributedOp<"AxisAllToAll", [
     Symbol,
+    PureDistributedMetadata,
     DeclareOpInterfaceMethods<PhysicalCommAxisOpInterface>
 ]> {
     let description = [{
@@ -63,6 +70,7 @@ def AxisAllToAllOp : DistributedOp<"AxisAllToAll", [
 }
 
 def AxisFactorOp : DistributedOp<"AxisFactor", [
+    PureDistributedMetadata,
     DeclareOpInterfaceMethods<InferTypeOpInterface>,
     DeclareOpInterfaceMethods<LogicalCommAxisOpInterface>
 ]> {
@@ -83,6 +91,7 @@ def AxisFactorOp : DistributedOp<"AxisFactor", [
 
 
 def AxisProductOp : DistributedOp<"AxisProduct", [
+    PureDistributedMetadata,
     DeclareOpInterfaceMethods<LogicalCommAxisOpInterface>
 ]> {
     let description = [{
@@ -144,7 +153,7 @@ def DistributedYieldOp : DistributedOp<"DistributedYield", [Terminator]> {
     let assemblyFormat = "$output_tensors type($output_tensors) attr-dict";
 }
 
-def ShardingReduceOp : DistributedOp<"ShardingReduce", []> {
+def ShardingReduceOp : DistributedOp<"ShardingReduce", [PureDistributedMetadata]> {
     let description = [{
        An axis used exclusively to indicate a reduction axis in the right hand side of a collective
        communication. 
@@ -154,7 +163,7 @@ def ShardingReduceOp : DistributedOp<"ShardingReduce", []> {
     let results = (outs ShardingAxisType:$reduction_axis);
 }
 
-def ShardingOp : DistributedOp<"Sharding", []> {
+def ShardingOp : DistributedOp<"Sharding", [PureDistributedMetadata]> {
     let description = [{
        A product of logical axes and/or reduction axes used to indicate the sharding of a tensor.
        The presence of a reduction axis indicates that the tensor is replicated along that axis, and
@@ -168,7 +177,7 @@ def ShardingOp : DistributedOp<"Sharding", []> {
 
 
 // Communication Ops
-def CollectiveOp : DistributedOp<"Collective", [DeclareOpInterfaceMethods<InferTypeOpInterface>, SameVariadicOperandSize]> {
+def CollectiveOp : DistributedOp<"Collective", [PureDistributedMetadata, DeclareOpInterfaceMethods<InferTypeOpInterface>, SameVariadicOperandSize]> {
     let description = [{
        A resharding collective communication where the resharding pattern dictates the 
        communication pattern.
@@ -187,7 +196,7 @@ def CollectiveOp : DistributedOp<"Collective", [DeclareOpInterfaceMethods<InferT
     // let hasVerifier = 1; // TODO verify sharding axes match the mesh, and that the input and output shardings are compatible with each other and the global/local tensor shapes.
 }
 
-def SubmeshCollectivePartsOp : DistributedOp<"SubmeshCollectiveParts", [SameVariadicResultSize, DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+def SubmeshCollectivePartsOp : DistributedOp<"SubmeshCollectiveParts", [PureDistributedMetadata, DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
     let description = [{
        Decomposes a submesh collective into distince send/recieve tokens 
        per submesh device, which can then be manipulated individually
@@ -198,7 +207,7 @@ def SubmeshCollectivePartsOp : DistributedOp<"SubmeshCollectiveParts", [SameVari
     TypeAttr:$input_tensor_type,
     TypeAttr:$output_tensor_type
     );
-    let results = (outs Variadic<CollectiveTokenType>:$input_tokens, Variadic<CollectiveTokenType>:$output_tokens);
+    let results = (outs Variadic<CollectiveTokenType>:$device_specific_tokens);
     let assemblyFormat = "$collective $submesh $input_tensor_type`->` $output_tensor_type attr-dict";
 }
 
