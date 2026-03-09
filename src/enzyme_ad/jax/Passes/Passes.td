@@ -1251,7 +1251,7 @@ def ConvertTritonToTritonGPUPreservingModuleAttributesPass : Pass<
 }
 
 def LowerTritonPass : Pass<"lower-triton", "mlir::ModuleOp"> {
-  let summary = "Lower Triton to kernel call";
+  let summary = "Lower Triton to xla custom call";
   let dependentDialects = [
     "triton::TritonDialect",
     "func::FuncDialect",
