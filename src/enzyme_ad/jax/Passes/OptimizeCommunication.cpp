@@ -2325,12 +2325,6 @@ struct MultiSliceCustomCallOptimize
 
     int64_t dimSize = shape[dim];
     int64_t shardSize = (dimSize + numShards - 1) / numShards;
-    // int64_t lastShardSize = dimSize - shardSize * (numShards - 1);
-
-    // Map an index to the shard that contains it (clamped).
-    auto shardOf = [&](int64_t idx) -> int64_t {
-      return std::clamp(idx / shardSize, int64_t{0}, numShards - 1);
-    };
 
     if (startIndices[dim] > shardSize) {
       return false;
