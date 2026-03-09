@@ -49,6 +49,8 @@ jobs:
         reactant_commit:
           - 'wsmoses-patch-12'
           - 'wsmoses-patch-12-ns'
+          - 'wsmoses-patch-12-js'
+          - 'main'
 
     steps:
       - name: Check GPUs
