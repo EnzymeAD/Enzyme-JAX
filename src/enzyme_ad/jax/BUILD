@@ -1149,6 +1149,7 @@ cc_library(
     name = "XLADerivatives",
     srcs = glob(
         [
+            "Analysis/*.cpp",
             "Implementations/*.cpp",
             "Passes/*.cpp",
             "Passes/Distributed/*.cpp",
@@ -1163,6 +1164,7 @@ cc_library(
         "Utils.cpp",
     ],
     hdrs = glob([
+        "Analysis/*.h",
         "Implementations/*.h",
         "Passes/*.h",
         "Passes/Distributed/*.h",

@@ -25,10 +25,12 @@
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Visitors.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/RegionUtils.h"
 #include "shardy/dialect/sdy/ir/utils.h"
+#include "src/enzyme_ad/jax/Analysis/PartialSymmetryAnalysis.h"
 #include "src/enzyme_ad/jax/CheckedRewrite.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
@@ -65,6 +67,7 @@
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/Value.h>
 #include <numeric>
+#include <optional>
 #include <ostream>
 #define DEBUG_TYPE "enzymehloopt"
 
@@ -7458,6 +7461,42 @@ struct TransposeSymmetricSimplify
       rewriter.replaceOp(op, operand);
       return success();
     }
+    return failure();
+  }
+};
+
+struct TransposePartialSymmetrySimplify
+    : public CheckedOpRewritePattern<stablehlo::TransposeOp,
+                                     TransposePartialSymmetrySimplify> {
+  using CheckedOpRewritePattern<
+      stablehlo::TransposeOp,
+      TransposePartialSymmetrySimplify>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
+                                    PatternRewriter &rewriter) const {
+    auto operand = op.getOperand();
+    auto perm = op.getPermutation();
+
+    auto annotationOpt =
+        enzyme::PartialSymmetryAnnotation::createFromIR(operand);
+    if (!annotationOpt.has_value())
+      return failure();
+
+    auto annotation = annotationOpt.value();
+
+    bool isIdentity = true;
+    for (int64_t i = 0; i < (int64_t)perm.size(); ++i) {
+      if (annotation.getSetId(i) != annotation.getSetId(perm[i])) {
+        isIdentity = false;
+        break;
+      }
+    }
+
+    if (isIdentity) {
+      rewriter.replaceOp(op, operand);
+      return success();
+    }
+
     return failure();
   }
 };
@@ -20593,6 +20632,47 @@ struct ScatterIndicesAreUnique
 
     if (scatterIndices.getType().getNumElements() == 1) {
       uniqueIndices = true;
+    } else if (auto iotaOp =
+                   scatterIndices.getDefiningOp<stablehlo::IotaOp>()) {
+      // IotaOp produces [0, 1, ..., N-1] along its iota_dimension and
+      // repeats the same values along all other dimensions. We can only
+      // mark indices as unique when every scatter point gets a distinct
+      // index tuple.
+      auto rank = scatterIndices.getType().getRank();
+      if (rank == 1) {
+        // 1-D iota is always unique: either it is a single index tuple
+        // (indexVectorDim==0, one scatter point) or N scalar indices
+        // [0, 1, ..., N-1] (indexVectorDim==1).
+        uniqueIndices = true;
+      } else {
+        int64_t iotaDim = iotaOp.getIotaDimension();
+        int64_t indexVectorDim = dimNumbers.getIndexVectorDim();
+        if (iotaDim != indexVectorDim) {
+          // Iota varies along a scatter (non-index-vector) dimension.
+          // Each position along that axis gets a distinct iota value,
+          // but positions differing only in *other* scatter dimensions
+          // see the same value. Unique iff every other scatter dimension
+          // (i.e. every dim that is neither iotaDim nor indexVectorDim)
+          // has size 1.
+          // Note: when indexVectorDim == rank (scalar indices), it never
+          // equals any valid dim index, so the loop naturally checks all
+          // dims except iotaDim.
+          auto shape = scatterIndices.getType().getShape();
+          bool allOtherDimsUnit = true;
+          for (int64_t i = 0; i < rank; ++i) {
+            if (i != iotaDim && i != indexVectorDim && shape[i] != 1) {
+              allOtherDimsUnit = false;
+              break;
+            }
+          }
+          if (allOtherDimsUnit) {
+            uniqueIndices = true;
+          }
+        }
+        // If iotaDim == indexVectorDim, all scatter points read the same
+        // tuple [0, 1, ..., shape[v]-1] → not unique (the single-
+        // scatter-point case is already handled by getNumElements()==1).
+      }
     } else if (matchPattern(scatterIndices, m_Constant(&scatterIndicesAttr))) {
       auto denseAttr = dyn_cast<DenseIntElementsAttr>(scatterIndicesAttr);
 
@@ -25562,6 +25642,26 @@ struct SplitConvolutionIntoReverseConvolution final
   }
 };
 
+// Check whether a user of a scatter result can be simplified by one of the
+// ScatterBinaryOpSimplify patterns given the scatter's isAllZeros/isAllOnes.
+static bool canScatterUserBeSimplified(Operation *user, Value scatterResult,
+                                       bool isAllZeros, bool isAllOnes) {
+  if (isAllZeros) {
+    if (isa<stablehlo::AddOp, stablehlo::SubtractOp, stablehlo::MulOp>(user))
+      return true;
+  }
+  if (isAllOnes) {
+    if (isa<stablehlo::MulOp>(user))
+      return true;
+    if (isa<stablehlo::DivOp>(user)) {
+      // DivOp only simplifies when the scatter is on the rhs (x / scatter(1))
+      bool scatterIsLhs = (user->getOperand(0) == scatterResult);
+      return !scatterIsLhs;
+    }
+  }
+  return false;
+}
+
 template <typename OpTy, typename Child>
 struct ScatterBinaryOpSimplifyBase
     : public CheckedOpRewritePattern<OpTy, Child> {
@@ -25599,7 +25699,7 @@ struct ScatterBinaryOpSimplifyBase
 
     SplatElementsAttr constSetIndexValue = nullptr;
     auto status = detectConstantSetindexScatterOp(
-        scatterOp, /*allowedMultipleUses*/ false,
+        scatterOp, /*allowedMultipleUses*/ true,
         [&isAllZeros, &isAllOnes](mlir::Value input) {
           isAllZeros = matchPattern(input, m_AnyZeroFloat()) ||
                        matchPattern(input, m_Zero());
@@ -25612,6 +25712,20 @@ struct ScatterBinaryOpSimplifyBase
         constSetIndexValue);
     if (!status.ok()) {
       return rewriter.notifyMatchFailure(op, status.message());
+    }
+
+    // If the scatter has multiple uses, verify that all other uses can be
+    // simplified by a later iteration of the same pass.
+    if (!scatterOp.getResult(0).hasOneUse()) {
+      for (auto *user : scatterOp.getResult(0).getUsers()) {
+        if (user == op.getOperation())
+          continue;
+        if (!canScatterUserBeSimplified(user, scatterOp.getResult(0),
+                                        isAllZeros, isAllOnes)) {
+          return rewriter.notifyMatchFailure(
+              op, "scatter has uses that cannot be simplified by a later pass");
+        }
+      }
     }
 
     SmallVector<int64_t> sliceSizes = computeGatherSliceSizes(scatterOp);
@@ -25838,6 +25952,111 @@ struct ScatterSubSimplify final
             op, rewriter, scatterOp, otherValue, otherValue, lhsIsScatter,
             constSetIndexValue, sliceSizes, true);
       }
+      return success();
+    }
+
+    return failure();
+  }
+};
+
+// Fuse scatter(scatter(input, indices, updates1) { body1 }, indices, updates2)
+// { body2 } into a single scatter when both use the same indices and scatter
+// dimension numbers.
+struct ScatterOfScatterSimplify final
+    : public CheckedOpRewritePattern<stablehlo::ScatterOp,
+                                     ScatterOfScatterSimplify> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ScatterOp outerScatter,
+                                    PatternRewriter &rewriter) const {
+    // The outer scatter must have a single input
+    if (outerScatter.getInputs().size() != 1)
+      return failure();
+
+    // The input to the outer scatter must be the result of another scatter
+    auto innerScatter =
+        outerScatter.getInputs()[0].getDefiningOp<stablehlo::ScatterOp>();
+    if (!innerScatter)
+      return failure();
+
+    // Inner scatter must have a single use (the outer scatter)
+    if (!innerScatter.getResult(0).hasOneUse())
+      return failure();
+
+    if (innerScatter.getInputs().size() != 1)
+      return failure();
+
+    // Both must have unique_indices
+    if (!outerScatter.getUniqueIndices() || !innerScatter.getUniqueIndices())
+      return failure();
+
+    // Same scatter indices
+    if (outerScatter.getScatterIndices() != innerScatter.getScatterIndices())
+      return failure();
+
+    // Same scatter dimension numbers
+    if (outerScatter.getScatterDimensionNumbers() !=
+        innerScatter.getScatterDimensionNumbers())
+      return failure();
+
+    using ScatterOpKind = stablehlo::ScatterOpKind;
+    auto innerInput = innerScatter.getInputs()[0];
+    auto loc = outerScatter.getLoc();
+    auto resultType = outerScatter.getResultTypes()[0];
+    auto elemType = cast<RankedTensorType>(resultType).getElementType();
+    auto scalarType = RankedTensorType::get({}, elemType);
+
+    auto innerCheck = stablehlo::CheckCommonScatterOp(innerScatter);
+    auto outerCheck = stablehlo::CheckCommonScatterOp(outerScatter);
+
+    // When the outer body completely ignores the current value (Setindex or
+    // ConstantSetindex), the inner scatter is irrelevant — just replace the
+    // input with the inner's input.
+    if (outerCheck.kind == ScatterOpKind::Setindex ||
+        outerCheck.kind == ScatterOpKind::ConstantSetindex) {
+      auto newScatter = stablehlo::ScatterOp::create(
+          rewriter, loc, outerScatter.getResultTypes(), ValueRange(innerInput),
+          outerScatter.getScatterIndices(), outerScatter.getUpdates(),
+          outerScatter.getScatterDimensionNumbersAttr(),
+          outerScatter.getIndicesAreSortedAttr(),
+          outerScatter.getUniqueIndicesAttr());
+
+      // Clone the outer update computation
+      rewriter.cloneRegionBefore(outerScatter.getUpdateComputation(),
+                                 newScatter.getUpdateComputation(),
+                                 newScatter.getUpdateComputation().end());
+
+      rewriter.replaceOp(outerScatter, newScatter);
+      return success();
+    }
+
+    // When the inner scatter is ConstantSetindex(c1), the value at scattered
+    // positions after the inner is always c1. So the outer body sees c1 as
+    // arg0 (the current value). Clone the outer body and replace arg0 with
+    // the constant — later passes will constant-fold as needed.
+    if (innerCheck.kind == ScatterOpKind::ConstantSetindex) {
+      SplatElementsAttr c1 = innerCheck.constant;
+
+      auto newScatter = stablehlo::ScatterOp::create(
+          rewriter, loc, outerScatter.getResultTypes(), ValueRange(innerInput),
+          outerScatter.getScatterIndices(), outerScatter.getUpdates(),
+          outerScatter.getScatterDimensionNumbersAttr(),
+          outerScatter.getIndicesAreSortedAttr(),
+          outerScatter.getUniqueIndicesAttr());
+
+      rewriter.cloneRegionBefore(outerScatter.getUpdateComputation(),
+                                 newScatter.getUpdateComputation(),
+                                 newScatter.getUpdateComputation().end());
+
+      // Replace uses of the first block argument (the current value at the
+      // scatter position, which is always c1) with the constant.
+      auto &block = newScatter.getUpdateComputation().front();
+      rewriter.setInsertionPointToStart(&block);
+      auto c1Const = stablehlo::ConstantOp::create(rewriter, loc,
+                                                   c1.resizeSplat(scalarType));
+      block.getArgument(0).replaceAllUsesWith(c1Const);
+
+      rewriter.replaceOp(outerScatter, newScatter);
       return success();
     }
 
@@ -30295,11 +30514,6 @@ struct FuseAddBase
       return failure();
     }
 
-    // we can fuse this addition iff the other operand is a symmetric matrix
-    if (!canApplySymmetricPattern(other, rewriter)) {
-      return failure();
-    }
-
     return ((Child *)this)->fuseAdd(rewriter, targetOp, op, other);
   }
 
@@ -30340,6 +30554,12 @@ struct FuseAddIntoSyrk
 
   LogicalResult fuseAdd(PatternRewriter &rewriter, enzymexla::SyrkOp syrkOp,
                         stablehlo::AddOp op, Value other) {
+
+    // we can fuse this addition iff the other operand is a symmetric matrix
+    if (!canApplySymmetricPattern(other, rewriter)) {
+      return failure();
+    }
+
     auto [newC, newBeta] = computeNewCBeta(
         rewriter, syrkOp.getBeta(), syrkOp.getType(), op, syrkOp.getC(), other);
 
@@ -32880,7 +33100,10 @@ struct LowerMultiSlice final
 
       // Propagate sharding if present
       if (shard) {
-        sdy::setShardings(sliceOp, shard);
+        sdy::TensorShardingAttr shards[1] = {shard.getShardings()[i]};
+        auto shard2 =
+            sdy::TensorShardingPerValueAttr::get(sliceOp.getContext(), shards);
+        sdy::setShardings(sliceOp, shard2);
       }
 
       replacements[i] = sliceOp.getResult();
@@ -34603,7 +34826,8 @@ struct EnzymeHLOOptPass
                  NoNanAddSubSimplify, NoNanMulSimplify, NoNanDivSimplify>(
         (no_nan || all_finite), context);
 
-    patterns.add<TransposeSymmetricSimplify>(context);
+    patterns.add<TransposeSymmetricSimplify, TransposePartialSymmetrySimplify>(
+        context);
     patterns.add<FactorScalarsInDotGeneral>(context);
 
     // clang-format off
@@ -34701,6 +34925,7 @@ struct EnzymeHLOOptPass
         ScatterDivSimplify,
         ScatterAddSimplify,
         ScatterSubSimplify,
+        ScatterOfScatterSimplify,
         UnaryElementwiseScatterSimplify,
         GatherElementwise,
         ElementwiseGather,
