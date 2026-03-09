@@ -346,7 +346,7 @@ public:
       llvm::SmallVector<Value> liveOuts = filterTensorValues(liveOutsAll);
       liveOuts = filterLiveOutsDefinedInRange(split.range, liveOuts);
 
-      FailureOr<int64_t> submeshSize = getLogicalMeshSize(localizedLogicalMesh);
+      FailureOr<int64_t> submeshSize = localizedLogicalMesh.getMeshSize();
       if (failed(submeshSize)) {
         localizedLogicalMesh.emitError()
             << "failed to determine localized submesh size";
