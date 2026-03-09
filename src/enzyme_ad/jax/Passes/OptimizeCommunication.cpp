@@ -2288,7 +2288,7 @@ struct MultiSliceCustomCallOptimize
                                ArrayRef<int64_t> startIndices,
                                ArrayRef<int64_t> limitIndices,
                                ArrayRef<int64_t> strides, int32_t dim,
-                               int32_t amount) const {
+                               int32_t amount, bool &needsSlice) const {
     // --- Condition 1: unit strides everywhere ---
     if (!llvm::all_of(strides, [](int64_t s) { return s == 1; }))
       return false;
@@ -2310,9 +2310,11 @@ struct MultiSliceCustomCallOptimize
       if (d == dim)
         continue;
       int64_t numShards = getNumDevicesAlongDimension(operandSharding, d, op);
-      if (numShards > 1) {
-        if (startIndices[d] != 0 || limitIndices[d] != shape[d])
+      if (startIndices[d] != 0 || limitIndices[d] != shape[d]) {
+        needsSlice = true;
+        if (numShards > 1) {
           return false;
+        }
       }
     }
 
@@ -2330,21 +2332,12 @@ struct MultiSliceCustomCallOptimize
       return std::clamp(idx / shardSize, int64_t{0}, numShards - 1);
     };
 
-    int32_t totalResults = amount + 1;
-    for (int i = 0; i < totalResults; ++i) {
-      int64_t sliceStart = startIndices[dim] + i;
-      int64_t sliceEnd = limitIndices[dim] + i - 1; // inclusive end
-
-      if (sliceStart < 0 || sliceEnd >= dimSize)
-        return false; // Out-of-bounds.
-
-      int64_t startShard = shardOf(sliceStart);
-      int64_t endShard = shardOf(sliceEnd);
-
-      if (startShard == endShard)
-        return false; // Entire slice is local to one shard.
+    if (startIndices[dim] > shardSize) {
+      return false;
     }
-
+    if (shape[dim] - limitIndices[dim] > shardSize) {
+      return false;
+    }
     return true;
   }
 
@@ -2372,10 +2365,19 @@ struct MultiSliceCustomCallOptimize
     auto startIndices = SmallVector<int64_t>(slice.getStartIndices());
     auto limitIndices = SmallVector<int64_t>(slice.getLimitIndices());
     auto strideVals = SmallVector<int64_t>(slice.getStrides());
+    bool needs_slice = false;
     if (!detectCrossShardPattern(slice, startIndices, limitIndices, strideVals,
-                                 rotateDimension, slice.getAmount()))
+                                 rotateDimension, slice.getAmount(),
+                                 needs_slice))
       return rewriter.notifyMatchFailure(
           slice, "MultiSlice does not match cross-shard pattern.");
+
+    if (needs_slice) {
+      llvm::errs() << " elligible for multislice, but needs subslice first: "
+                   << slice << "\n";
+      return rewriter.notifyMatchFailure(slice,
+                                         "MultiSlice requires a pre-slice");
+    }
 
     std::string start_indices_str =
         serializeDenseI64ArrayAttr(slice.getStartIndices());
