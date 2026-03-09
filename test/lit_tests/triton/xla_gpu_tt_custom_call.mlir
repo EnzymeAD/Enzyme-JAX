@@ -1,8 +1,7 @@
 // RUN: enzymexlamlir-opt %s --raise-triton-custom-call --canonicalize | FileCheck %s
 
 module {
-  // CHECK-LABEL: func.func @main
-  func.func @main(%arg0: tensor<1024xf32>, %arg1: tensor<1024xf32>, %arg2: tensor<1024xf32>, %arg3: tensor<i32>) -> (tensor<1024xf32>, tensor<1024xf32>, tensor<1024xf32>) {
+  func.func @main1(%arg0: tensor<1024xf32>, %arg1: tensor<1024xf32>, %arg2: tensor<1024xf32>, %arg3: tensor<i32>) -> (tensor<1024xf32>, tensor<1024xf32>, tensor<1024xf32>) {
     // CHECK-DAG: %[[GX:.*]] = stablehlo.constant dense<16> : tensor<i64>
     // CHECK-DAG: %[[C1:.*]] = stablehlo.constant dense<1> : tensor<i64>
     // CHECK: enzymexla_tt_ext.call @triton_module::@triton_module_inner::@add_kernel clusters in(%[[C1]], %[[C1]], %[[C1]]) blocks in(%[[GX]], %[[C1]], %[[C1]]) {{.*}}
@@ -14,3 +13,26 @@ module {
 // CHECK: enzymexla_tt_ext.module @triton_module
 // CHECK:   builtin.module @triton_module_inner attributes {enzymexla.num_stages = 2 : i32, enzymexla.num_warps = 7 : i32}
 // CHECK:     tt.func public @add_kernel
+
+
+module @jit_pallas_shmem attributes {mhlo.num_partitions = 1 : i32, mhlo.num_replicas = 1 : i32} {
+  func.func public @main2(%arg0: tensor<262144xf32>) -> (tensor<262142xf32> {jax.result_info = "result"}) {
+    // CHECK-DAG: %[[GX:.*]] = stablehlo.constant dense<256> : tensor<i64>
+    // CHECK-DAG: %[[C1:.*]] = stablehlo.constant dense<1> : tensor<i64>
+    // CHECK: enzymexla_tt_ext.call @triton_module::@triton_module_inner::@_shmem_kernel clusters in(%[[C1]], %[[C1]], %[[C1]]) blocks in(%[[GX]], %[[C1]], %[[C1]]) {{.*}}
+    %c = stablehlo.constant dense<0> : tensor<i32>
+    %0 = call @_pad(%arg0, %c) : (tensor<262144xf32>, tensor<i32>) -> tensor<263170xf32>
+    %1 = stablehlo.custom_call @__gpu$xla.gpu.triton(%0) {backend_config = "", mhlo.backend_config = {debug = false, grid_x = 256 : i32, grid_y = 1 : i32, grid_z = 1 : i32, ir = "ML\EFR\0DMLIR23.0.0git\00\013\07\01\05\09\1D\01\03\0F\03\11\13\17\1B\1F#'+/\05\0B37;?C\03\A3\7F\11\01{\0F\0F\07\0F\0F\0F\0B\0F\0B\13\0F\0B\0B\0F\0F\13\13\0B\0B\0B\0B\13\0B\0F\0B\0B\17\17\0F\0F\1F\0F\0F\1F\13\0F\0F\1F\13\0F\1F\0F\0F\1F\0F\0F\0F\1F\1F\0F\0F\1F\0F\0F\0F\1F\0B\0F\0B\0F\1F\05\05YY\01\0F\17\0F\17\17\07\17\0B\03\035\02\B6\04\11\03\05\1Dqs\1F\1D\179\1D\17?\1D\17G\05#\11\03\01\05%#\03\01\01\11\0D\00\05'\05)\1D#S\1D#c\03\03-/\11\03\02 \05+\05-\05/\051\01\05\1F\1F\053\11\03\81\0D\0B\055\11\03$@@\11\03\04\00@\1D\19;\1D\0D=-\11\07\E6\02\13e\1D\19A\1D\0DC-\11\07\EA\02\13e\11\03\0A \1D\19I\1D\0DK-\11\07\EE\02\13e\11\03\12 \11\03\09\13\09\10\00\00\00\10\1D%U\1D\0DW-\11\07\F6\02Qa\1D'[\1D)]\1D\0D_-\11\07\F6\02Qk\13\09\10\00\00\10\10\1D%e\1D\0Dg-\11\07\F6\02q\81\1D'k\1D)m\1D\0Do-\11\07\F6\02Q\81\057\1Duw\059\1D\0Dy-\11\07\F6\02\09K#arith.overflow<none>\00#arith.fastmath<none>\00\1B\03\02 \03\01\02\02\1B\03\02 \09\1B\03\02 \0F\0B\05\05\0F\0F\01\01\09!tt.ptr<f32>\00\04\E2\07\05\01P\05\01\07\04\BE\07\03\01\05\0BP\05\03\07\04\92\07\03\83\0E\02\05\1D\1D\00\0DB\05\05\03\03\13B\05\05\03\03\13B\05\07\03\03\17F\05\09\03\03\05\07\09\13B\05\05\03\03\13B\05\0B\03\03\17F\05\09\03\03\05\0D\0F\13B\07\05\03\03\03\06\07\03\01\03\13\05B\07\0D\03\01\03\06\07\03\01\03\0B\15F\07\09\03\01\05\17\19\13B\07\0F\03\03\03\06\07\03\01\03\1D\17F\07\09\03\01\05\1B\1F\15F\07\09\03\01\05\15!\03\06\07\03\07\03\01\07\06\07\03\07\05%#\09F\07\11\03\05\03'\13B\09\05\03\03\03\06\09\03\01\03+\05B\09\13\03\01\03\06\09\03\01\03\0B\15F\09\09\03\01\05/1\13B\09\0F\03\03\03\06\09\03\01\035\17F\09\09\03\01\0537\15F\09\09\03\01\05-9\03\06\09\03\07\03\01\07\06\09\03\07\05=;\09F\09\11\03\05\03?\13B\0B\05\03\03\03\06\0B\03\01\03C\05B\0B\15\03\01\03\06\0B\03\01\03\0B\15F\0B\09\03\01\05GI\13B\0B\0F\03\03\03\06\0B\03\01\03M\17F\0B\09\03\01\05KO\15F\0B\09\03\01\05EQ\03\06\0B\03\07\03\01\07\06\0B\03\07\05US\09F\0B\11\03\05\03W\13B\1B\17\03\09\03\06\1B\03\05\03[\19F\1B\19\03\05\05])\1BFY\19\03\05\05_A\13B\1D\1B\03\09\03\06\1D\03\05\03c\19F\1D\19\03\05\05eY\1BFi\19\03\05\05ag\13B\03\05\03\03\03\06\03\03\01\03k\05B\03\0D\03\01\03\06\03\03\01\03\11\15F\03\09\03\01\05oq\13B\03\0F\03\03\03\06\03\03\01\03u\17F\03\09\03\01\05sw\15F\03\09\03\01\05my\03\06\03\03\07\03\03\07\06\03\03\07\05}{\09F\03\11\03\05\03\7F\0FD\03\1D\05\7Fi\11\00\05\06\03\01\05\01\00\F2\03;\0B\0D\0F!\09\0B\09\0B\09\0BA\1D\0B\0B\0B\0B\13\0F\0D\1F\0B\0B\0F\17\0D\0F\0D\07\11builtin\00tt\00arith\00module\00splat\00make_range\00addptr\00load\00func\00get_program_id\00store\00return\00constant\00addi\00muli\00mulf\00subf\00_shmem_kernel\00<ipython-input-12-acc404fe5238>\00get:\00get\00mul:\00mul\00sub:\00sub\00tt.divisibility\00public\00swap:\00swap\00\08a\1F\05\1B\01\0BW1\01\0Dg\03\0F\035\03\F7\037\05!\0F\03\01\11'\03\03+\01\07\01\03\05E\01\05MO\03Q\03\FB\03a\07'\03\03", name = "_shmem_kernel", num_stages = 3 : i32, num_warps = 4 : i32}, operand_layouts = [dense<0> : tensor<1xindex>], result_layouts = [dense<0> : tensor<1xindex>]} : (tensor<263170xf32>) -> tensor<262144xf32>
+    %2 = stablehlo.slice %1 [0:262142] : (tensor<262144xf32>) -> tensor<262142xf32>
+    return %2 : tensor<262142xf32>
+  }
+  func.func private @_pad(%arg0: tensor<262144xf32>, %arg1: tensor<i32>) -> tensor<263170xf32> {
+    %0 = stablehlo.convert %arg1 : (tensor<i32>) -> tensor<f32>
+    %1 = stablehlo.pad %arg0, %0, low = [0], high = [1026], interior = [0] : (tensor<262144xf32>, tensor<f32>) -> tensor<263170xf32>
+    return %1 : tensor<263170xf32>
+  }
+}
+
+// CHECK: enzymexla_tt_ext.module @triton_module
+// CHECK:   builtin.module @triton_module_inner attributes {enzymexla.num_stages = 3 : i32, enzymexla.num_warps = 4 : i32}
+// CHECK:     tt.func public @_shmem_kernel

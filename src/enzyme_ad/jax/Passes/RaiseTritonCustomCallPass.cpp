@@ -178,11 +178,14 @@ struct RaiseXLAGpuTritonCustomCallPattern final
     if (callTargetName != "__gpu$xla.gpu.triton")
       return failure();
 
+    DictionaryAttr configDict = nullptr;
     auto configAttr = callOp.getBackendConfig();
-    if (!configAttr)
-      return failure();
+    if (configAttr)
+      configDict = dyn_cast<DictionaryAttr>(*configAttr);
 
-    auto configDict = dyn_cast<DictionaryAttr>(*configAttr);
+    if (!configDict)
+      configDict = callOp->getAttrOfType<DictionaryAttr>("mhlo.backend_config");
+
     if (!configDict)
       return failure();
 
