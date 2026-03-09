@@ -99,8 +99,8 @@ struct ConvertLLVMToControlFlow
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
     mlir::cf::populateLLVMToControlFlowConversionPatterns(patterns);
-    if (failed(
-            applyPatternsAndFoldGreedily(getOperation(), std::move(patterns))))
+    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
+                                     GreedyRewriteConfig().enableFolding())))
       signalPassFailure();
   }
 };

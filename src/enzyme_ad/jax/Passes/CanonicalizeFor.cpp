@@ -3439,9 +3439,9 @@ void CanonicalizeFor::runOnOperation() {
           MoveSideEffectFreeWhile>(getOperation()->getContext());
   //    WhileLICM,
   GreedyRewriteConfig config;
+  config.enableFolding();
   config.setMaxIterations(247);
-  if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(rpl),
-                                          config))) {
+  if (failed(applyPatternsGreedily(getOperation(), std::move(rpl), config))) {
     signalPassFailure();
   }
 }

@@ -1113,6 +1113,7 @@ cc_library(
     name = "XLADerivatives",
     srcs = glob(
         [
+            "Analysis/*.cpp",
             "Implementations/*.cpp",
             "Passes/*.cpp",
             "Passes/Tessera/*.cpp",
@@ -1126,6 +1127,7 @@ cc_library(
         "Utils.cpp",
     ],
     hdrs = glob([
+        "Analysis/*.h",
         "Implementations/*.h",
         "Passes/*.h",
         "Passes/Tessera/*.h",
@@ -1235,6 +1237,7 @@ cc_library(
         "@llvm-project//mlir:MathDialect",
         "@llvm-project//mlir:MathToLLVM",
         "@llvm-project//mlir:MathToLibm",
+        "@llvm-project//mlir:MathToNVVM",
         "@llvm-project//mlir:MathToROCDL",
         "@llvm-project//mlir:MemRefDialect",
         "@llvm-project//mlir:MemRefToLLVM",
@@ -1247,6 +1250,7 @@ cc_library(
         "@llvm-project//mlir:NVVMToLLVM",
         "@llvm-project//mlir:OpenMPDialect",
         "@llvm-project//mlir:OpenMPToLLVM",
+        "@llvm-project//mlir:PDLInterpDialect",
         "@llvm-project//mlir:Parser",
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:QuantOps",
@@ -1387,6 +1391,9 @@ cc_library(
         "@llvm-project//mlir:LLVMDialect",
         "@llvm-project//mlir:LLVMCommonConversion",
         "@llvm-project//mlir:Transforms",
+        "@llvm-project//mlir:PDLDialect",
+        "@llvm-project//mlir:PDLInterpDialect",
+        "@llvm-project//mlir:PDLToPDLInterp",
 
         # Triton
         "@triton//:TritonDialects",
