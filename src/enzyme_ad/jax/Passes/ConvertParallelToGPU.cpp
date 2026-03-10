@@ -653,6 +653,9 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
     auto upperBounds = getUpperBounds<6>(pop);
     int totalDims = upperBounds.size();
 
+    SmallVector<Value, 6> origLowerBounds(pop.getLowerBound().begin(),
+                                          pop.getLowerBound().end());
+
     SmallVector<Value, 3> blockDims;
     SmallVector<Value, 3> gridDims;
     // Arg ids in the original parallel block
@@ -760,6 +763,17 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
     rewriter.setInsertionPoint(pop);
     auto zeroindex = arith::ConstantIndexOp::create(rewriter, loc, 0);
     auto oneindex = arith::ConstantIndexOp::create(rewriter, loc, 1);
+
+    SmallVector<Value, 6> tripCounts(totalDims);
+    for (int i = 0; i < totalDims; i++)
+      tripCounts[i] = arith::SubIOp::create(rewriter, loc, upperBounds[i],
+                                             origLowerBounds[i]);
+
+    for (unsigned i = 0; i < gridDims.size(); i++)
+      gridDims[i] = tripCounts[gridArgId[i]];
+    for (unsigned i = 0; i < blockDims.size(); i++)
+      blockDims[i] = tripCounts[blockArgId[i]];
+
     unsigned splitDims = 0;
     SmallVector<int, 3> gi;
     SmallVector<int, 3> bi;
@@ -845,12 +859,18 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
     rewriter.setInsertionPointToStart(blockPop.getBody());
 
     IRMapping mapping;
-    for (unsigned i = 0; i < gridDims.size(); i++)
-      mapping.map(pop.getBody()->getArgument(gridArgId[i]),
-                  gridPop.getBody()->getArgument(i));
-    for (unsigned i = 0; i < blockDims.size(); i++)
-      mapping.map(pop.getBody()->getArgument(blockArgId[i]),
-                  blockPop.getBody()->getArgument(i));
+    for (unsigned i = 0; i < gridDims.size(); i++) {
+      Value iv = arith::AddIOp::create(rewriter, loc,
+                                       gridPop.getBody()->getArgument(i),
+                                       origLowerBounds[gridArgId[i]]);
+      mapping.map(pop.getBody()->getArgument(gridArgId[i]), iv);
+    }
+    for (unsigned i = 0; i < blockDims.size(); i++) {
+      Value iv = arith::AddIOp::create(rewriter, loc,
+                                       blockPop.getBody()->getArgument(i),
+                                       origLowerBounds[blockArgId[i]]);
+      mapping.map(pop.getBody()->getArgument(blockArgId[i]), iv);
+    }
 
     // For the split dims, calculate the equivalent threadId and map that
     // instead
@@ -871,10 +891,15 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
         auto threadId = arith::AddIOp::create(
             rewriter, loc, mul, blockPop.getBody()->getArgument(bi[i]));
         assert(blockArgId[bi[i]] == gridArgId[gi[i]]);
-        mapping.map(pop.getBody()->getArgument(gridArgId[gi[i]]), threadId);
+        // Add lower bound offset: mapped IV = threadId + lb
+        auto adjustedThreadId = arith::AddIOp::create(
+            rewriter, loc, threadId, origLowerBounds[gridArgId[gi[i]]]);
+        mapping.map(pop.getBody()->getArgument(gridArgId[gi[i]]),
+                    adjustedThreadId);
+        // Bound check against trip count (ub - lb), not upper bound
         auto threadCond =
             arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::ult,
-                                  threadId, upperBounds[gridArgId[gi[i]]]);
+                                  threadId, tripCounts[gridArgId[gi[i]]]);
         if (i == 0)
           cond = threadCond.getResult();
         else

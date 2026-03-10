@@ -3537,7 +3537,7 @@ struct MergeNestedAffineParallelIf
 
         uboundGroup[pair.first]++;
       } else {
-        auto min = rhs.floorDiv(-affCst.getValue());
+        auto min = rhs.floorDiv(getAffineConstantExpr(-affCst.getValue(), op.getContext()));
         if (auto cst = dyn_cast<AffineConstantExpr>(min)) {
 
           size_t off = 0;
