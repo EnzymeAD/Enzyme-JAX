@@ -39,7 +39,7 @@ if [ -n "$FUNC_NAME" ]; then
 fi
 
 # convert MLIR to graphviz dot format
-echo "$MLIR_CODE" | bazel run --run_under="cd $PWD &&" //:enzymexlamir-opt -- --view-op-graph 2>&1 >/dev/null
+echo "$MLIR_CODE" | bazel run --run_under="cd $PWD &&" //:enzymexlamlir-opt -- --view-op-graph 2>&1 >/dev/null
 if [ -n "$OUTPUT" ]; then
     echo $MLIR_CODE > $OUTPUT
 else
