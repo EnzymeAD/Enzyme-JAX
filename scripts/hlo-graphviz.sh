@@ -33,6 +33,16 @@ fi
 HLO_TRANSLATE_CMD=./$(bazel cquery --output=starlark --starlark:expr=target.files_to_run.executable.path @xla//xla/hlo/tools:hlo-translate 2>/dev/null)
 MLIR_OPT_CMD=./$(bazel cquery --output=starlark --starlark:expr=target.files_to_run.executable.path //:enzymexlamlir-opt 2>/dev/null)
 
+if [ ! -f "$HLO_TRANSLATE_CMD" ]; then
+    echo "Error: hlo-translate binary not found. Please build @xla//xla/hlo/tools:hlo-translate with bazel." >&2
+    exit 1
+fi
+
+if [ ! -f "$MLIR_OPT_CMD" ]; then
+    echo "Error: enzymexlamlir-opt binary not found. Please build //:enzymexlamlir-opt with bazel." >&2
+    exit 1
+fi
+
 # convert HLO to MLIR
 TMP_HLO_TRANSLATE_CMD=$(mktemp)
 $HLO_TRANSLATE_CMD --hlo-to-mlir $INPUT -o $TMP_HLO_TRANSLATE_CMD
