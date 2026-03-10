@@ -142,8 +142,7 @@ struct LowerTritonPass
           ttCallOp.getInputs());
 
       customCall.setCallTargetName("__gpu$xla.gpu.triton");
-      customCall->setAttr("mhlo.backend_config",
-                          builder.getDictionaryAttr(config));
+      customCall.setBackendConfigAttr(builder.getDictionaryAttr(config));
       customCall.setApiVersion(
           ::mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI);
 
