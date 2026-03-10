@@ -46,37 +46,13 @@ FailureOr<sdy::TensorShardingAttr> getTensorShardingFromValue(Value value) {
         return sdy::getSharding(inputTensors[argIndex]);
       }
     }
-    return failure();
+    return sdy::getSharding(value);
   }
 
   if (auto opResult = dyn_cast<OpResult>(value)) {
-    Operation *defOp = opResult.getOwner();
-    if (auto cop = dyn_cast<sdy::CollectiveOpInterface>(defOp)) {
-      // For collectives, the sharding may be on the op itself rather than the
-      // result, so check for that case and pull it from the op if so.
-      return cop.getOutSharding();
-    }
-
-    Attribute shardingAttr = defOp->getAttr("sdy.sharding");
-    if (!shardingAttr) {
-      return failure();
-    }
-
-    if (auto tensorSharding =
-            llvm::dyn_cast<sdy::TensorShardingAttr>(shardingAttr)) {
-      return tensorSharding;
-    }
-
-    if (auto perValueSharding =
-            llvm::dyn_cast<sdy::TensorShardingPerValueAttr>(shardingAttr)) {
-      unsigned resultIndex = opResult.getResultNumber();
-      if (resultIndex >= perValueSharding.getShardings().size()) {
-        return failure();
-      }
-      return perValueSharding.getSharding(resultIndex);
-    }
-
-    return failure();
+    // can now call into the shardy api since we have skipped the
+    // mesh region
+    return sdy::getSharding(value);
   }
 
   return failure();
