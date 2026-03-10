@@ -767,7 +767,7 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
     SmallVector<Value, 6> tripCounts(totalDims);
     for (int i = 0; i < totalDims; i++)
       tripCounts[i] = arith::SubIOp::create(rewriter, loc, upperBounds[i],
-                                             origLowerBounds[i]);
+                                            origLowerBounds[i]);
 
     for (unsigned i = 0; i < gridDims.size(); i++)
       gridDims[i] = tripCounts[gridArgId[i]];
