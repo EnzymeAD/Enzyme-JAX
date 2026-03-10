@@ -2261,12 +2261,12 @@ struct MultiRotateCustomCallOptimize
   }
 };
 
-  /// Detect whether this MultiSliceOp matches the cross-shard pattern:
-  ///   1. All strides are 1.
-  ///   2. For every sharded dimension except the multi-slice dimension,
-  ///      start/limit span the full tensor extent.
-  ///   3. Along the multi-slice dimension, every slice's start falls within
-  ///      one shard and its end falls within a different shard.
+/// Detect whether this MultiSliceOp matches the cross-shard pattern:
+///   1. All strides are 1.
+///   2. For every sharded dimension except the multi-slice dimension,
+///      start/limit span the full tensor extent.
+///   3. Along the multi-slice dimension, every slice's start falls within
+///      one shard and its end falls within a different shard.
 bool detectCrossShardPattern(Value operand, Operation *op,
                              ArrayRef<int64_t> startIndices,
                              ArrayRef<int64_t> limitIndices,
