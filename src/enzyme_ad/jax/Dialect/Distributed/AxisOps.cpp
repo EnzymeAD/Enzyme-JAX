@@ -49,7 +49,7 @@ LogicalResult AxisFactorOp::inferReturnTypes(
   AxisFactorOpAdaptor adaptor(operands, attributes, properties, regions);
   if (!adaptor.getFactors()) {
     if (location)
-      mlir::emitError(*location) << "missing factors attribute";
+      mlir::emitError(*location) << "missing factor size attribute";
     return mlir::failure();
   }
 
