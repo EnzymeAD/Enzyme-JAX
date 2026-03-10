@@ -2366,18 +2366,70 @@ struct MultiSliceCustomCallOptimize
       return rewriter.notifyMatchFailure(
           slice, "MultiSlice does not match cross-shard pattern.");
 
+    // --- Replace the needs_slice bail-out and custom-call emission with this:
+    // ---
+
+    Value customCallOperand = slice.getOperand();
+    SmallVector<int64_t> finalStartIndices(startIndices);
+    SmallVector<int64_t> finalLimitIndices(limitIndices);
+    SmallVector<int64_t> finalStrides(strideVals);
+
     if (needs_slice) {
-      llvm::errs() << " elligible for multislice, but needs subslice first: "
-                   << slice << "\n";
-      return rewriter.notifyMatchFailure(slice,
-                                         "MultiSlice requires a pre-slice");
+      // Emit a preliminary stablehlo::SliceOp that trims replicated
+      // (unsharded) dimensions down to the requested range, so that
+      // the MultiSlice custom call afterwards spans the full axis on
+      // every dimension except `dim`.
+      auto operandType = cast<RankedTensorType>(customCallOperand.getType());
+      ArrayRef<int64_t> shape = operandType.getShape();
+      int64_t rank = shape.size();
+
+      auto operandSharding = sdy::getSharding(slice.getOperand());
+
+      SmallVector<int64_t> preStart(rank);
+      SmallVector<int64_t> preLimit(rank);
+      SmallVector<int64_t> preStrides(rank, 1);
+
+      for (int64_t d = 0; d < rank; ++d) {
+        if (d == rotateDimension) {
+          // Keep the full extent along the multi-slice dimension;
+          // the custom call handles cross-shard slicing there.
+          preStart[d] = 0;
+          preLimit[d] = shape[d];
+        } else {
+          int64_t numShards =
+              getNumDevicesAlongDimension(operandSharding, d, slice);
+          if (numShards <= 1 &&
+              (startIndices[d] != 0 || limitIndices[d] != shape[d])) {
+            // Replicated dim that doesn't span the full tensor —
+            // slice it now so the custom call can assume full extent.
+            preStart[d] = startIndices[d];
+            preLimit[d] = limitIndices[d];
+            // After pre-slicing, the custom call sees [0, newSize).
+            finalStartIndices[d] = 0;
+            finalLimitIndices[d] = limitIndices[d] - startIndices[d];
+          } else {
+            preStart[d] = 0;
+            preLimit[d] = shape[d];
+          }
+        }
+      }
+
+      auto preSliceOp = rewriter.create<stablehlo::SliceOp>(
+          slice.getLoc(), customCallOperand, preStart, preLimit, preStrides);
+
+      // Propagate the operand sharding onto the pre-sliced result.
+      // We only sliced replicated dims, so the sharding is unchanged.
+      if (auto operandShardingAttr = sdy::getSharding(slice.getOperand()))
+        sdy::setSharding(preSliceOp, operandShardingAttr);
+
+      customCallOperand = preSliceOp.getResult();
     }
 
     std::string start_indices_str =
-        serializeDenseI64ArrayAttr(slice.getStartIndices());
+        serializeDenseI64ArrayAttr(finalStartIndices);
     std::string limit_indices_str =
-        serializeDenseI64ArrayAttr(slice.getLimitIndices());
-    std::string strides_str = serializeDenseI64ArrayAttr(slice.getStrides());
+        serializeDenseI64ArrayAttr(finalLimitIndices);
+    std::string strides_str = serializeDenseI64ArrayAttr(finalStrides);
 
     std::string opaque = "dimension=" + std::to_string(rotateDimension) +
                          ",amount=" + std::to_string(slice.getAmount()) +
@@ -2391,7 +2443,7 @@ struct MultiSliceCustomCallOptimize
                                                 rotateSharding);
 
     auto ccall = rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-        slice, slice->getResultTypes(), slice->getOperands(), fnSym,
+        slice, slice->getResultTypes(), ValueRange{customCallOperand}, fnSym,
         /*has_side_effect=*/rewriter.getBoolAttr(false),
         /*backend_config=*/rewriter.getStringAttr(opaque),
         /*api_version=*/nullptr,
