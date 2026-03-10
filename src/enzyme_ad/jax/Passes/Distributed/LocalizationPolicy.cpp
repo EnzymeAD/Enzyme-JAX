@@ -1,9 +1,8 @@
 #include "src/enzyme_ad/jax/Passes/Distributed/LocalizationPolicy.h"
-#include "src/enzyme_ad/jax/Dialect/Distributed/Dialect.h"
 #include "mlir/IR/Value.h"
+#include "src/enzyme_ad/jax/Dialect/Distributed/Dialect.h"
 
 #include <algorithm>
-
 
 namespace mlir {
 namespace enzyme {
@@ -19,11 +18,14 @@ NaiveLocalMostPolicy::NaiveLocalMostPolicy(int budget) : budget(budget) {}
  *
  * Returns a < b.
  */
-bool compare_factor_significance(PhysicalMeshOp mesh, Value a, Value b) {
-  auto a_parent = a.getDefiningOp<AxisFactorOp>();
-  auto b_parent = b.getDefiningOp<AxisFactorOp>();
-  assert(a_parent && b_parent &&
-         "Both values must be defined by AxisFactorOp");
+bool compare_factor_physical_significance(
+    PhysicalMeshOp mesh, TypedOpResult<LogicalCommAxisType> a,
+    TypedOpResult<LogicalCommAxisType> b) {
+  auto a_result = a.asOpResult();
+  auto b_result = b.asOpResult();
+  auto a_parent = a_result.getDefiningOp<AxisFactorOp>();
+  auto b_parent = b_result.getDefiningOp<AxisFactorOp>();
+  assert(a_parent && b_parent && "Both values must be defined by AxisFactorOp");
 
   // If the physical axes are the same, assert that the parents are the same
   // and compare the factor indices
@@ -31,8 +33,6 @@ bool compare_factor_significance(PhysicalMeshOp mesh, Value a, Value b) {
     assert(
         a_parent == b_parent &&
         "Factors with the same physical axis must be defined by the same op");
-    auto a_result = cast<OpResult>(a);
-    auto b_result = cast<OpResult>(b);
     return a_result.getResultNumber() < b_result.getResultNumber();
   }
 
@@ -55,34 +55,35 @@ NaiveLocalMostPolicy::suggestLocalization(MeshComputationOp mesh_op,
   assert(logicalMesh && "mesh operand must be defined by LogicalMeshOp");
   auto physicalMeshOr = logicalMesh.resolvePhysicalMesh();
   assert(succeeded(physicalMeshOr) &&
-      "logical mesh must resolve to a physical mesh");
+         "logical mesh must resolve to a physical mesh");
   PhysicalMeshOp physicalMesh = *physicalMeshOr;
 
   // Use utility functions to decompose the logical mesh into atomic factors,
   // then sort by significance and greedily consume the least significant
   // factors until the budget is met.
-  llvm::SmallVector<Value> atomicFactors;
+  llvm::SmallVector<TypedOpResult<LogicalCommAxisType>> atomicFactors;
   (void)logicalMesh.resolveToAtomicFactors(atomicFactors);
 
-  std::sort(atomicFactors.begin(), atomicFactors.end(),
-            [&](Value a, Value b) {
-              return compare_factor_significance(physicalMesh, a, b);
-            });
+  std::sort(atomicFactors.begin(), atomicFactors.end(), [&](auto a, auto b) {
+    return compare_factor_physical_significance(physicalMesh, a, b);
+  });
 
   llvm::SmallVector<TypedValue<LogicalCommAxisType>> suggested;
   int budget_used = 1;
-  for (Value factor : atomicFactors) {
+  for (auto factor : atomicFactors) {
+    auto factorResult = factor.asOpResult();
     if (budget_used >= budget) {
       break;
     }
 
-    auto factorOp =
-        dyn_cast_or_null<LogicalCommAxisOpInterface>(factor.getDefiningOp());
+    auto factorOp = dyn_cast_or_null<LogicalCommAxisOpInterface>(
+        factorResult.getDefiningOp());
     assert(factorOp && "factor must be defined by LogicalCommAxisOpInterface");
     auto factor_size = factorOp.getAxisSize(factor);
     if (factor_size <= budget / budget_used) {
       budget_used *= factor_size;
-      suggested.push_back(cast<TypedValue<LogicalCommAxisType>>(factor));
+      suggested.push_back(
+          cast<TypedValue<LogicalCommAxisType>>(Value(factorResult)));
     }
   }
 

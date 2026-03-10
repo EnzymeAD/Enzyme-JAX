@@ -60,33 +60,29 @@ LogicalResult AxisFactorOp::inferReturnTypes(
   return mlir::success();
 }
 
-int64_t AxisFactorOp::getAxisSize(::mlir::Value axis) {
-  int i = 0;
-  for (auto result : getLogicalAxes()) {
-    if (result == axis) {
-      auto factor_attr = getFactors()[i];
-      auto factor = dyn_cast<IntegerAttr>(factor_attr);
-      assert(factor && "factors must be integer attributes");
-      return factor.getValue().getSExtValue();
-    }
-    i++;
+int64_t AxisFactorOp::getAxisSize(TypedOpResult<LogicalCommAxisType> axis) {
+  auto ax = axis.asOpResult();
+  if (ax.getDefiningOp() != getOperation()) {
+    report_fatal_error("axis not defined by this op");
   }
-  report_fatal_error("axis not defined by this op");
+  unsigned i = ax.getResultNumber();
+  // zero, unless we add more results in the future.
+  unsigned offset = getLogicalAxes()[0].getResultNumber();
+  i -= offset;
+  auto factor_attr = getFactors()[i];
+  auto factor = dyn_cast<IntegerAttr>(factor_attr);
+  assert(factor && "factors must be integer attributes");
+  return factor.getValue().getSExtValue();
 }
 
 void AxisFactorOp::resolveToAtomicFactors(
-    ::mlir::Value axis, ::llvm::SmallVectorImpl<::mlir::Value> &atomicFactors) {
-  bool axisDefinedHere = false;
-  for (auto result : getLogicalAxes()) {
-    if (result == axis) {
-      axisDefinedHere = true;
-      atomicFactors.push_back(axis);
-      break;
-    }
-  }
-  assert(axisDefinedHere &&
+    TypedOpResult<LogicalCommAxisType> typed_axis,
+    llvm::SmallVectorImpl<TypedOpResult<LogicalCommAxisType>> &atomicFactors) {
+  auto axis = typed_axis.asOpResult();
+  assert(axis.getOwner() == getOperation() &&
          "cannot resolve atomic factors for axis not defined by this "
          "AxisFactorOp");
+  atomicFactors.push_back(axis);
 }
 
 LogicalResult AxisProductOp::verify() {
@@ -98,25 +94,27 @@ LogicalResult AxisProductOp::verify() {
     }
   }
 
-  llvm::SmallVector<Value> atomicFactors;
+  llvm::SmallVector<TypedOpResult<LogicalCommAxisType>> atomicFactors;
   resolveLogicalAxisToAtomicFactors(getLogicalAxis(), atomicFactors);
   // Disjointness of factors: all factors refering to the same symbol/physical
   // axis should be defined by the same factor op and should be distinct values.
-  llvm::SmallDenseMap<Attribute, llvm::SmallVector<Value>> factorGroups;
+  llvm::SmallDenseMap<Attribute, llvm::SmallVector<TypedOpResult<LogicalCommAxisType>>> factorGroups;
 
   for (auto atomicFactor : atomicFactors) {
-    auto defining_op = atomicFactor.getDefiningOp();
+    auto atomicFactorResult = atomicFactor.asOpResult();
+    auto defining_op = atomicFactorResult.getDefiningOp();
     auto axisFactorOp = cast<AxisFactorOp>(defining_op);
     auto physicalAxisAttr = axisFactorOp.getPhysicalAxisAttr();
     if (factorGroups.count(physicalAxisAttr)) {
       // Check if the atomic factor is already in the group
       auto &group = factorGroups[physicalAxisAttr];
       for (auto existingFactor : group) {
-        if (existingFactor == atomicFactor) {
+        auto existingFactorResult = existingFactor.asOpResult();
+        if (existingFactorResult == atomicFactorResult) {
           return emitOpError() << "logical axis has duplicate atomic factors "
                                << "referring to the same physical axis";
         }
-        if (existingFactor.getDefiningOp() != axisFactorOp) {
+        if (existingFactorResult.getDefiningOp() != axisFactorOp) {
           return emitOpError() << "logical axis has atomic factors referring "
                                << "to the same physical axis but defined by "
                                << "different factorization ops";
@@ -131,7 +129,8 @@ LogicalResult AxisProductOp::verify() {
   return mlir::success();
 }
 
-int64_t AxisProductOp::getAxisSize(::mlir::Value axis) {
+int64_t AxisProductOp::getAxisSize(TypedOpResult<LogicalCommAxisType> typed_axis) {
+  auto axis = typed_axis.asOpResult();
   // This op defines a single value, so just check if the
   // proper value is passed.
   if (getLogicalAxis() != axis) {
@@ -149,10 +148,13 @@ int64_t AxisProductOp::getAxisSize(::mlir::Value axis) {
 }
 
 void AxisProductOp::resolveToAtomicFactors(
-    ::mlir::Value axis, ::llvm::SmallVectorImpl<::mlir::Value> &atomicFactors) {
+    TypedOpResult<LogicalCommAxisType> typed_axis,
+    llvm::SmallVectorImpl<TypedOpResult<LogicalCommAxisType>> &atomicFactors) {
+  auto axis = typed_axis.asOpResult();
   if (getLogicalAxis() != axis) {
-    emitOpError() << "cannot resolve atomic factors for axis not defined by this "
-                  << "AxisProductOp";
+    emitOpError()
+        << "cannot resolve atomic factors for axis not defined by this "
+        << "AxisProductOp";
     return;
   }
 

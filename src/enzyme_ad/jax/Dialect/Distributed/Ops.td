@@ -53,7 +53,9 @@ def LogicalMeshOp : DistributedOp<"LogicalMesh", [PureDistributedMetadata]> {
         let extraClassDeclaration = [{
             ::mlir::FailureOr<PhysicalMeshOp> resolvePhysicalMesh();
             ::mlir::LogicalResult
-            resolveToAtomicFactors(::llvm::SmallVectorImpl<::mlir::Value> &atomicFactors);
+            resolveToAtomicFactors(::llvm::SmallVectorImpl<
+                ::mlir::enzyme::distributed::TypedOpResult<
+                    ::mlir::enzyme::distributed::LogicalCommAxisType>> &atomicFactors);
             bool isDisjoint();
             bool isSubmesh(LogicalMeshOp submesh);
             ::mlir::FailureOr<int64_t> getMeshSize();

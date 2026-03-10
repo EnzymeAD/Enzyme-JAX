@@ -14,14 +14,32 @@
 
 #include "shardy/dialect/sdy/ir/dialect.h"
 
+// Need to declare the TypedOpResult struct before including the generated
+// interface declarations
+namespace mlir::enzyme::distributed {
+template <typename TypeTy> struct TypedOpResult {
+  ::mlir::OpResult value;
+  TypedOpResult(mlir::Value value) : value(llvm::cast<mlir::OpResult>(value)) {
+    assert(isa<TypeTy>(value.getType()) && "value must have the correct type");
+  }
+  TypedOpResult(::mlir::OpResult value) : value(value) {
+    assert(isa<TypeTy>(value.getType()) && "value must have the correct type");
+  }
+  operator mlir::OpResult() const { return value; }
+
+  mlir::OpResult asOpResult() const { return value; }
+};
+} // namespace mlir::enzyme::distributed
+
 // Include the dialect
 #include "src/enzyme_ad/jax/Dialect/Distributed/DistributedDialect.h.inc"
-// Traits and interfaces
+// Traits
 #include "Traits.h"
-#include "src/enzyme_ad/jax/Dialect/Distributed/DistributedInterfaces.h.inc"
 // Types
 #define GET_TYPEDEF_CLASSES
 #include "src/enzyme_ad/jax/Dialect/Distributed/DistributedTypes.h.inc"
+// Interfaces
+#include "src/enzyme_ad/jax/Dialect/Distributed/DistributedInterfaces.h.inc"
 // Operations
 #define GET_OP_CLASSES
 #include "src/enzyme_ad/jax/Dialect/Distributed/DistributedOps.h.inc"
@@ -52,8 +70,10 @@ template <typename OpTy>
  * the `factor` calls on a physical axis.
  */
 void resolveLogicalAxisToAtomicFactors(
-    ::mlir::Value logicalAxis,
-    ::llvm::SmallVectorImpl<::mlir::Value> &atomicFactors);
+    TypedOpResult<LogicalCommAxisType> logicalAxis,
+    ::llvm::SmallVectorImpl<TypedOpResult<LogicalCommAxisType>> &atomicFactors);
+
+int getAxisSize(TypedOpResult<LogicalCommAxisType> logicalAxis);
 
 } // namespace mlir::enzyme::distributed
 
