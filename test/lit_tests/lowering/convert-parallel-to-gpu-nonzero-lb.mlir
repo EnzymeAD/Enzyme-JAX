@@ -24,7 +24,6 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
 // The scf.parallel has lb=1, ub=1023, so trip count = 1022.
 // Grid/block dims should use 1022 (not 1023), and the IV should be offset
 // by the lower bound: iv = new_iv + 1.
-//
 // Before fix: dims used ub=1023 (arr[0..1022] instead of arr[1..1022])
 // After fix:  dims use trip_count=1022, IV = new_iv + 1
 
