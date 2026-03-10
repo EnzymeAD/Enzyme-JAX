@@ -2261,6 +2261,62 @@ struct MultiRotateCustomCallOptimize
   }
 };
 
+  /// Detect whether this MultiSliceOp matches the cross-shard pattern:
+  ///   1. All strides are 1.
+  ///   2. For every sharded dimension except the multi-slice dimension,
+  ///      start/limit span the full tensor extent.
+  ///   3. Along the multi-slice dimension, every slice's start falls within
+  ///      one shard and its end falls within a different shard.
+bool detectCrossShardPattern(Value operand, Operation *op,
+                             ArrayRef<int64_t> startIndices,
+                             ArrayRef<int64_t> limitIndices,
+                             ArrayRef<int64_t> strides, int32_t dim,
+                             int32_t amount, bool &needsSlice) {
+  // --- Condition 1: unit strides everywhere ---
+  if (!llvm::all_of(strides, [](int64_t s) { return s == 1; }))
+    return false;
+
+  auto operandType = cast<RankedTensorType>(operand.getType());
+  auto operandSharding = mlir::sdy::getSharding(operand);
+  if (!operandSharding) {
+    return false;
+  }
+  ArrayRef<int64_t> shape = operandType.getShape();
+  int64_t rank = shape.size();
+
+  if (dim < 0 || dim >= rank)
+    return false;
+
+  // --- Condition 2: full span on every sharded dim except `dim` ---
+  for (int64_t d = 0; d < rank; ++d) {
+    if (d == dim)
+      continue;
+    int64_t numShards = getNumDevicesAlongDimension(operandSharding, d, op);
+    if (startIndices[d] != 0 || limitIndices[d] != shape[d]) {
+      needsSlice = true;
+      if (numShards > 1) {
+        return false;
+      }
+    }
+  }
+
+  // --- Condition 3: cross-shard slicing along `dim` ---
+  int64_t numShards = getNumDevicesAlongDimension(operandSharding, dim, op);
+  if (numShards <= 1)
+    return false; // Not sharded along the slice dimension.
+
+  int64_t dimSize = shape[dim];
+  int64_t shardSize = (dimSize + numShards - 1) / numShards;
+
+  if (startIndices[dim] > shardSize) {
+    return false;
+  }
+  if (shape[dim] - limitIndices[dim] > shardSize) {
+    return false;
+  }
+  return true;
+}
+
 struct MultiSliceCustomCallOptimize
     : public OpRewritePattern<enzymexla::MultiSliceOp> {
 
@@ -2276,63 +2332,6 @@ struct MultiSliceCustomCallOptimize
     }
     result += "]";
     return result;
-  }
-
-  /// Detect whether this MultiSliceOp matches the cross-shard pattern:
-  ///   1. All strides are 1.
-  ///   2. For every sharded dimension except the multi-slice dimension,
-  ///      start/limit span the full tensor extent.
-  ///   3. Along the multi-slice dimension, every slice's start falls within
-  ///      one shard and its end falls within a different shard.
-  bool detectCrossShardPattern(enzymexla::MultiSliceOp op,
-                               ArrayRef<int64_t> startIndices,
-                               ArrayRef<int64_t> limitIndices,
-                               ArrayRef<int64_t> strides, int32_t dim,
-                               int32_t amount, bool &needsSlice) const {
-    // --- Condition 1: unit strides everywhere ---
-    if (!llvm::all_of(strides, [](int64_t s) { return s == 1; }))
-      return false;
-
-    auto operandType = cast<RankedTensorType>(op.getOperand().getType());
-    ArrayRef<int64_t> shape = operandType.getShape();
-    int64_t rank = shape.size();
-
-    if (dim < 0 || dim >= rank)
-      return false;
-
-    // We need the operand's sharding to reason about shard boundaries.
-    auto operandSharding = sdy::getSharding(op.getOperand());
-    if (!operandSharding)
-      return false;
-
-    // --- Condition 2: full span on every sharded dim except `dim` ---
-    for (int64_t d = 0; d < rank; ++d) {
-      if (d == dim)
-        continue;
-      int64_t numShards = getNumDevicesAlongDimension(operandSharding, d, op);
-      if (startIndices[d] != 0 || limitIndices[d] != shape[d]) {
-        needsSlice = true;
-        if (numShards > 1) {
-          return false;
-        }
-      }
-    }
-
-    // --- Condition 3: cross-shard slicing along `dim` ---
-    int64_t numShards = getNumDevicesAlongDimension(operandSharding, dim, op);
-    if (numShards <= 1)
-      return false; // Not sharded along the slice dimension.
-
-    int64_t dimSize = shape[dim];
-    int64_t shardSize = (dimSize + numShards - 1) / numShards;
-
-    if (startIndices[dim] > shardSize) {
-      return false;
-    }
-    if (shape[dim] - limitIndices[dim] > shardSize) {
-      return false;
-    }
-    return true;
   }
 
   LogicalResult matchAndRewrite(enzymexla::MultiSliceOp slice,
@@ -2355,21 +2354,30 @@ struct MultiSliceCustomCallOptimize
           "numDevicesAlongDimension == 1. Communication is already optimized.");
     }
 
+    Value customCallOperand = slice.getOperand();
+    auto operandSharding = mlir::sdy::getSharding(customCallOperand);
+    if (!operandSharding) {
+      return rewriter.notifyMatchFailure(slice, "No operand shardings");
+    }
+    if (rotateSharding != operandSharding) {
+      return rewriter.notifyMatchFailure(slice,
+                                         "Mismatched input/output sharding");
+    }
+
     // Only lower to custom call if the cross-shard pattern is detected.
     auto startIndices = SmallVector<int64_t>(slice.getStartIndices());
     auto limitIndices = SmallVector<int64_t>(slice.getLimitIndices());
     auto strideVals = SmallVector<int64_t>(slice.getStrides());
     bool needs_slice = false;
-    if (!detectCrossShardPattern(slice, startIndices, limitIndices, strideVals,
-                                 sliceDimension, slice.getAmount(),
-                                 needs_slice))
+    if (!detectCrossShardPattern(customCallOperand, slice, startIndices,
+                                 limitIndices, strideVals, sliceDimension,
+                                 slice.getAmount(), needs_slice))
       return rewriter.notifyMatchFailure(
           slice, "MultiSlice does not match cross-shard pattern.");
 
     // --- Replace the needs_slice bail-out and custom-call emission with this:
     // ---
 
-    Value customCallOperand = slice.getOperand();
     SmallVector<int64_t> finalStartIndices(startIndices);
     SmallVector<int64_t> finalLimitIndices(limitIndices);
     SmallVector<int64_t> finalStrides(strideVals);
@@ -2419,7 +2427,7 @@ struct MultiSliceCustomCallOptimize
 
       // Propagate the operand sharding onto the pre-sliced result.
       // We only sliced replicated dims, so the sharding is unchanged.
-      if (auto operandShardingAttr = sdy::getSharding(slice.getOperand()))
+      if (auto operandShardingAttr = sdy::getSharding(customCallOperand))
         sdy::setSharding(preSliceOp, operandShardingAttr);
 
       customCallOperand = preSliceOp.getResult();
