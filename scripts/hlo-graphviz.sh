@@ -49,7 +49,7 @@ TMP_MLIR_OPT_CMD=$(mktemp)
 $MLIR_OPT_CMD --view-op-graph $TMP_AWK 2>$TMP_MLIR_OPT_CMD >/dev/null
 
 if [ -n "$OUTPUT" ]; then
-    mv $TMP_MLIR_OPT_CMD $OUTPUT
+    cp --interactive $TMP_MLIR_OPT_CMD $OUTPUT
 else
     cat $TMP_MLIR_OPT_CMD
 fi
