@@ -29,7 +29,6 @@ if [[ -z "$INPUT" ]]; then
     usage
 fi
 
-
 # convert HLO to MLIR
 MLIR_CODE=$(bazel run --run_under="cd $PWD &&" @xla//xla/hlo/tools:hlo-translate -- --hlo-to-mlir $INPUT)
 
