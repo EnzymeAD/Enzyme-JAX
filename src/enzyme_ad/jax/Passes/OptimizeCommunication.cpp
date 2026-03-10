@@ -2340,14 +2340,14 @@ struct MultiSliceCustomCallOptimize
     if (slice->getParentOfType<sdy::ManualComputationOp>())
       return failure();
 
-    auto rotateDimension = slice.getDimension();
+    auto sliceDimension = slice.getDimension();
     auto shardings = mlir::sdy::getShardingPerValue(slice);
     if (!shardings)
       return rewriter.notifyMatchFailure(slice, "No sharding found.");
     auto rotateSharding = shardings.getSharding(0);
 
     int64_t numDevicesAlongDimension =
-        getNumDevicesAlongDimension(rotateSharding, rotateDimension, slice);
+        getNumDevicesAlongDimension(rotateSharding, sliceDimension, slice);
 
     if (numDevicesAlongDimension == 1) {
       return rewriter.notifyMatchFailure(
@@ -2361,7 +2361,7 @@ struct MultiSliceCustomCallOptimize
     auto strideVals = SmallVector<int64_t>(slice.getStrides());
     bool needs_slice = false;
     if (!detectCrossShardPattern(slice, startIndices, limitIndices, strideVals,
-                                 rotateDimension, slice.getAmount(),
+                                 sliceDimension, slice.getAmount(),
                                  needs_slice))
       return rewriter.notifyMatchFailure(
           slice, "MultiSlice does not match cross-shard pattern.");
@@ -2390,7 +2390,7 @@ struct MultiSliceCustomCallOptimize
       SmallVector<int64_t> preStrides(rank, 1);
 
       for (int64_t d = 0; d < rank; ++d) {
-        if (d == rotateDimension) {
+        if (d == sliceDimension) {
           // Keep the full extent along the multi-slice dimension;
           // the custom call handles cross-shard slicing there.
           preStart[d] = 0;
@@ -2431,7 +2431,7 @@ struct MultiSliceCustomCallOptimize
         serializeDenseI64ArrayAttr(finalLimitIndices);
     std::string strides_str = serializeDenseI64ArrayAttr(finalStrides);
 
-    std::string opaque = "dimension=" + std::to_string(rotateDimension) +
+    std::string opaque = "dimension=" + std::to_string(sliceDimension) +
                          ",amount=" + std::to_string(slice.getAmount()) +
                          ",start_indices=" + start_indices_str +
                          ",limit_indices=" + limit_indices_str +
