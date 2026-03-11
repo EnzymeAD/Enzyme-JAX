@@ -95,7 +95,19 @@ struct InductionVariableRange {
   int64_t ub;
   int64_t step;
 
-  int64_t getNumIters() { return (ub - lb) / step; }
+  int64_t getNumIters() const {
+    if (lb == ShapedType::kDynamic || ub == ShapedType::kDynamic || step == ShapedType::kDynamic)
+      return ShapedType::kDynamic;
+    if (step == 0) return 1;
+    int64_t span = ub - lb;
+    if (step < 0) {
+      if (span > 0) return 0;
+      return (-span - step - 1) / (-step);
+    } else {
+      if (span < 0) return 0;
+      return (span + step - 1) / step;
+    }
+  }
 };
 
 static unsigned getIVPos(affine::AffineValueMap map, AffineExpr expr) {
@@ -161,7 +173,7 @@ static std::optional<InductionVariableRange> getIVRange(Value iv) {
     auto ub = getConstant(owner.getUpperBoundMap(ivPos));
     auto step = owner.getSteps()[ivPos];
     if (!lb || !ub)
-      return std::nullopt;
+      return InductionVariableRange{ShapedType::kDynamic, ShapedType::kDynamic, step};
     return InductionVariableRange{*lb, *ub, step};
   }
   if (auto owner = affine::getForInductionVarOwner(iv)) {
@@ -169,7 +181,7 @@ static std::optional<InductionVariableRange> getIVRange(Value iv) {
     auto ub = getConstant(owner.getUpperBoundMap());
     auto step = owner.getStep();
     if (!lb || !ub)
-      return std::nullopt;
+      return InductionVariableRange{ShapedType::kDynamic, ShapedType::kDynamic, step.getSExtValue()};
     return InductionVariableRange{*lb, *ub, step.getSExtValue()};
   }
   llvm_unreachable("Not affine iv");
@@ -225,7 +237,7 @@ computeExprRange(affine::AffineValueMap map, AffineExpr expr) {
   return std::optional<InductionVariableRange>{range};
 }
 
-static void
+static Value
 emitIVToStableHLO(OpBuilder &builder, Value iv, InductionVariableRange range,
                   IRMapping &mapping,
                   llvm::DenseMap<Value, affine::AffineValueMap> &maps,
@@ -254,6 +266,10 @@ emitIVToStableHLO(OpBuilder &builder, Value iv, InductionVariableRange range,
   affine::AffineValueMap accessMap(
       AffineMap::getMultiDimIdentityMap(1, iv.getContext()), {iv});
   maps[iota] = accessMap;
+
+  return stablehlo::ConstantOp::create(
+             builder, rewriteLocation(iv.getLoc(), strip_llvm_debuginfo), RankedTensorType::get({1}, ET),
+             builder.getI64TensorAttr({range.getNumIters()})).getResult();
 }
 
 // The name is parallel context but a more accurate description would be
@@ -270,6 +286,7 @@ struct ParallelContext {
 
   SmallVector<InductionVariableRange, 8> ranges;
   SmallVector<Value, 8> ivs;
+  SmallVector<Value, 8> dynamicSizes;
 
   bool isParallelIV(Value iv) { return llvm::is_contained(ivs, iv); }
 
@@ -303,18 +320,42 @@ struct ParallelContext {
     // shape we need.
     if (CTT.getRank() != 0)
       return std::nullopt;
+
     SmallVector<int64_t> dimsToBroadcast;
-    auto bc = stablehlo::BroadcastInDimOp::create(
-        b, rewriteLocation(v.getLoc(), options.strip_llvm_debuginfo), TT, v,
-        dimsToBroadcast);
+    Value finalBc;
+    if (llvm::is_contained(TT.getShape(), ShapedType::kDynamic)) {
+       SmallVector<Value> shapeElements;
+       for (int i = 0; i < TT.getRank(); ++i) {
+           if (TT.getShape()[i] == ShapedType::kDynamic) {
+               shapeElements.push_back(dynamicSizes[i]);
+           } else {
+               Value c = stablehlo::ConstantOp::create(
+                   b, rewriteLocation(v.getLoc(), options.strip_llvm_debuginfo), RankedTensorType::get({1}, b.getI64Type()),
+                   b.getI64TensorAttr({TT.getShape()[i]})).getResult();
+               shapeElements.push_back(c);
+           }
+       }
+       Value finalShape = (shapeElements.size() == 1) ? shapeElements[0] :
+           stablehlo::ConcatenateOp::create(
+               b, rewriteLocation(v.getLoc(), options.strip_llvm_debuginfo), RankedTensorType::get({TT.getRank()}, b.getI64Type()),
+               shapeElements, b.getI64IntegerAttr(0)).getResult();
+
+       finalBc = stablehlo::DynamicBroadcastInDimOp::create(
+               b, rewriteLocation(v.getLoc(), options.strip_llvm_debuginfo), TT, v, finalShape,
+               b.getDenseI64ArrayAttr(dimsToBroadcast)).getResult();
+    } else {
+       finalBc = stablehlo::BroadcastInDimOp::create(
+           b, rewriteLocation(v.getLoc(), options.strip_llvm_debuginfo), TT, v,
+           b.getDenseI64ArrayAttr(dimsToBroadcast)).getResult();
+    }
 
     AffineMap newMap = AffineMap::getMultiDimIdentityMap(
         TT.getRank() - CTT.getRank(), b.getContext());
 
-    return Broadcast{bc, affine::AffineValueMap(newMap, ivs)};
+    return Broadcast{finalBc, affine::AffineValueMap(newMap, ivs)};
   }
 
-  std::optional<ParallelContext> add(affine::AffineForOp forOp) {
+  std::optional<ParallelContext> add(affine::AffineForOp forOp, ArrayRef<Value> sizes) {
     ParallelContext newPc = *this;
     auto iv = forOp.getInductionVar();
     auto ivr = getIVRange(iv);
@@ -322,26 +363,23 @@ struct ParallelContext {
       return std::nullopt;
     newPc.ranges.push_back(*ivr);
     newPc.ivs.push_back(iv);
+    newPc.dynamicSizes.push_back(sizes[0]);
     return newPc;
   }
 
-  std::optional<ParallelContext> add(affine::AffineParallelOp parallelOp) {
+  std::optional<ParallelContext> add(affine::AffineParallelOp parallelOp, ArrayRef<Value> sizes) {
     ParallelContext newPc = *this;
-    for (auto iv : parallelOp.getIVs()) {
+    for (auto &&[iv, size] : llvm::zip(parallelOp.getIVs(), sizes)) {
       auto ivr = getIVRange(iv);
       if (!ivr)
         return std::nullopt;
       newPc.ranges.push_back(*ivr);
       newPc.ivs.push_back(iv);
+      newPc.dynamicSizes.push_back(size);
     }
     return newPc;
   }
 
-  static std::optional<ParallelContext> get(affine::AffineParallelOp parallelOp,
-                                            Options &options) {
-    ParallelContext pc(options);
-    return pc.add(parallelOp);
-  }
   static ParallelContext getEmpty(Options &options) {
     ParallelContext pc(options);
     return pc;
@@ -416,8 +454,10 @@ affineMapShape(affine::AffineValueMap accessValueMap, ParallelContext pc) {
     }
 
     auto range = getIVRange(iv);
-    if (!range.has_value())
-      return {};
+    if (!range.has_value()) {
+      shape.push_back(ShapedType::kDynamic);
+      continue;
+    }
 
     shape.push_back(range->getNumIters());
   }
@@ -425,10 +465,93 @@ affineMapShape(affine::AffineValueMap accessValueMap, ParallelContext pc) {
   return shape;
 }
 
+static Value generateBound(OpBuilder &builder, Location loc, AffineMap map,
+                           ValueRange operands, IRMapping &mapping,
+                           ParallelContext pc, bool isMin);
+
+static Value affineMapDynamicShape(
+    affine::AffineValueMap accessValueMap, ParallelContext pc,
+    OpBuilder &builder, Location loc, IRMapping &mapping) {
+  AffineMap map = accessValueMap.getAffineMap();
+  SmallVector<Value> dims;
+  auto ET = builder.getI64Type();
+  auto TT = RankedTensorType::get({}, ET);
+  auto oneTensorType = RankedTensorType::get({1}, ET);
+
+  for (auto E : map.getResults()) {
+    if (E.isSymbolicOrConstant()) {
+      dims.push_back(stablehlo::ConstantOp::create(
+        builder, loc, oneTensorType,
+        SplatElementsAttr::get(oneTensorType, ArrayRef<Attribute>(IntegerAttr::get(ET, 1)))).getResult());
+      continue;
+    }
+
+    Value iv = getIVForExpr(accessValueMap, E);
+    if (affine::isAffineForInductionVar(iv) && !pc.isParallelIV(iv)) {
+      dims.push_back(stablehlo::ConstantOp::create(
+        builder, loc, oneTensorType,
+        SplatElementsAttr::get(oneTensorType, ArrayRef<Attribute>(IntegerAttr::get(ET, 1)))).getResult());
+      continue;
+    }
+
+    auto range = getIVRange(iv);
+    if (range.has_value()) {
+      dims.push_back(stablehlo::ConstantOp::create(
+        builder, loc, oneTensorType,
+        SplatElementsAttr::get(oneTensorType, ArrayRef<Attribute>(IntegerAttr::get(ET, range->getNumIters()))))
+        .getResult());
+    } else {
+      Value lb, ub, stepVal;
+      int64_t stepInt;
+      if (auto owner = affine::getAffineParallelInductionVarOwner(iv)) {
+        auto ivPos = cast<BlockArgument>(iv).getArgNumber();
+        lb = generateBound(builder, loc, owner.getLowerBoundMap(ivPos),
+                           owner.getLowerBoundsOperands(), mapping, pc, false);
+        ub = generateBound(builder, loc, owner.getUpperBoundMap(ivPos),
+                           owner.getUpperBoundsOperands(), mapping, pc, true);
+        stepInt = owner.getSteps()[ivPos];
+      } else {
+        auto forOwner = affine::getForInductionVarOwner(iv);
+        lb = generateBound(builder, loc, forOwner.getLowerBoundMap(),
+                           forOwner.getLowerBoundOperands(), mapping, pc, false);
+        ub = generateBound(builder, loc, forOwner.getUpperBoundMap(),
+                           forOwner.getUpperBoundOperands(), mapping, pc, true);
+        stepInt = forOwner.getStepAsInt();
+      }
+      stepVal = stablehlo::ConstantOp::create(builder, loc, TT,
+        SplatElementsAttr::get(TT, ArrayRef<Attribute>(IntegerAttr::get(ET, stepInt)))).getResult();
+
+      Value minusOne = stablehlo::ConstantOp::create(builder, loc, TT,
+        SplatElementsAttr::get(TT, ArrayRef<Attribute>(IntegerAttr::get(ET, -1)))).getResult();
+      Value diff = stablehlo::SubtractOp::create(builder, loc, TT, ub, lb).getResult();
+      Value stepminus_one = stablehlo::AddOp::create(builder, loc, TT, stepVal, minusOne).getResult();
+      Value numItersScalar = stablehlo::AddOp::create(builder, loc, TT, diff, stepminus_one).getResult();
+      Value numIters = stablehlo::DivOp::create(builder, loc, TT, numItersScalar, stepVal).getResult();
+      Value zero = stablehlo::ConstantOp::create(builder, loc, TT,
+        SplatElementsAttr::get(TT, ArrayRef<Attribute>(IntegerAttr::get(ET, 0)))).getResult();
+      numIters = stablehlo::MaxOp::create(builder, loc, TT, numIters, zero).getResult();
+
+      Value numItersTensor = stablehlo::ReshapeOp::create(
+          builder, loc, oneTensorType, numIters).getResult();
+      dims.push_back(numItersTensor);
+    }
+  }
+
+  if (dims.size() == 0) {
+    return stablehlo::ConstantOp::create(
+        builder, loc, RankedTensorType::get({0}, ET),
+        DenseIntElementsAttr::get(RankedTensorType::get({0}, ET), ArrayRef<int64_t>({})))
+        .getResult();
+  }
+  return stablehlo::ConcatenateOp::create(
+      builder, loc, RankedTensorType::get({(int64_t)dims.size()}, ET),
+      dims, 0).getResult();
+}
+
 static affine::AffineValueMap
 alignMemoryAccess(Value &a, affine::AffineValueMap src, Value *bs,
                   ArrayRef<affine::AffineValueMap> dsts, OpBuilder &builder,
-                  ParallelContext pc) {
+                  ParallelContext pc, IRMapping &mapping) {
   // -> tensor<10x1xf32> loaded from (i) -> (i, 0)
   // -> to tensor<1x10xf32> written as (i) -> (0, i)
 
@@ -511,11 +634,20 @@ alignMemoryAccess(Value &a, affine::AffineValueMap src, Value *bs,
   auto TA = cast<RankedTensorType>(a.getType());
 
   if (needsBroadcastA) {
-    a = stablehlo::BroadcastInDimOp::create(
-            builder,
-            rewriteLocation(a.getLoc(), pc.options.strip_llvm_debuginfo),
-            TA.clone(outputShape), a, broadcastDimensionsA)
-            .getResult();
+    if (TA.clone(outputShape).hasStaticShape()) {
+      a = stablehlo::BroadcastInDimOp::create(
+              builder,
+              rewriteLocation(a.getLoc(), pc.options.strip_llvm_debuginfo),
+              TA.clone(outputShape), a, broadcastDimensionsA)
+              .getResult();
+    } else {
+      a = stablehlo::DynamicBroadcastInDimOp::create(
+              builder,
+              rewriteLocation(a.getLoc(), pc.options.strip_llvm_debuginfo),
+              TA.clone(outputShape), a, affineMapDynamicShape(src, pc, builder, a.getLoc(), mapping),
+              builder.getDenseI64ArrayAttr(broadcastDimensionsA))
+              .getResult();
+    }
   }
 
   for (size_t i = 0; i < dsts.size(); i++) {
@@ -532,13 +664,24 @@ alignMemoryAccess(Value &a, affine::AffineValueMap src, Value *bs,
     } else
       needsBroadcast = true;
 
-    if (needsBroadcast)
-      bs[i] =
-          stablehlo::BroadcastInDimOp::create(
-              builder,
-              rewriteLocation(bs[i].getLoc(), pc.options.strip_llvm_debuginfo),
-              TB.clone(outputShape), bs[i], broadcastDimensionsBs[i])
-              .getResult();
+    if (needsBroadcast) {
+      if (TB.clone(outputShape).hasStaticShape()) {
+        bs[i] =
+            stablehlo::BroadcastInDimOp::create(
+                builder,
+                rewriteLocation(bs[i].getLoc(), pc.options.strip_llvm_debuginfo),
+                TB.clone(outputShape), bs[i], broadcastDimensionsBs[i])
+                .getResult();
+      } else {
+        bs[i] =
+            stablehlo::DynamicBroadcastInDimOp::create(
+                builder,
+                rewriteLocation(bs[i].getLoc(), pc.options.strip_llvm_debuginfo),
+                TB.clone(outputShape), bs[i], affineMapDynamicShape(dsts[i], pc, builder, bs[i].getLoc(), mapping),
+                builder.getDenseI64ArrayAttr(broadcastDimensionsBs[i]))
+                .getResult();
+      }
+    }
   }
 
   affine::AffineValueMap outputMap(
@@ -551,10 +694,10 @@ alignMemoryAccess(Value &a, affine::AffineValueMap src, Value *bs,
 static affine::AffineValueMap
 alignMemoryAccess(Value &a, affine::AffineValueMap src, Value &b,
                   affine::AffineValueMap dst, OpBuilder &builder,
-                  ParallelContext pc) {
+                  ParallelContext pc, IRMapping &mapping) {
   Value bs[] = {b};
   affine::AffineValueMap dsts[] = {dst};
-  auto res = alignMemoryAccess(a, src, bs, dsts, builder, pc);
+  auto res = alignMemoryAccess(a, src, bs, dsts, builder, pc, mapping);
   b = bs[0];
   return res;
 }
@@ -583,7 +726,7 @@ expandAffineExpr(OpBuilder &builder, Location loc, AffineExpr expr,
         expandAffineExpr(builder, loc, rhsExpr, operands, mapping, numDims, pc);
 
     affine::AffineValueMap outputMap =
-        alignMemoryAccess(lhs, lhsMap, rhs, rhsMap, builder, pc);
+        alignMemoryAccess(lhs, lhsMap, rhs, rhsMap, builder, pc, mapping);
 
     auto makeI64Constant = [loc, &builder](ShapedType ty,
                                            int64_t cst) -> Value {
@@ -777,7 +920,7 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
 
     Value dsts[] = {b, c};
     affine::AffineValueMap submaps[] = {mapB, mapC};
-    auto outputMap = alignMemoryAccess(a, mapA, dsts, submaps, builder, pc);
+    auto outputMap = alignMemoryAccess(a, mapA, dsts, submaps, builder, pc, mapping);
     b = dsts[0];
     c = dsts[1];
     assert(b.getType() == c.getType());
@@ -878,13 +1021,30 @@ emitLoadAsGather(Location loc, Value mappedMemref, ValueRange lIndices,
           builder, loc, Ty.clone(newIndicesShape),
           ValueRange{indices, raisedIdx}, (int64_t)newIndicesShape.size() - 1);
     } else {
-
       auto S = cast<RankedTensorType>(raisedIdx.getType()).getShape();
       SmallVector<int64_t> shape(S.begin(), S.end());
       shape.push_back(1);
 
-      indices = stablehlo::ReshapeOp::create(builder, loc, Ty.clone(shape),
-                                             raisedIdx);
+      if (llvm::is_contained(shape, ShapedType::kDynamic)) {
+        SmallVector<Value> shapeElements;
+        for (int i = 0; i < S.size(); ++i) {
+          Value dimSize;
+          if (S[i] == ShapedType::kDynamic) {
+             Value dScalar32 = stablehlo::GetDimensionSizeOp::create(builder, loc, RankedTensorType::get({}, builder.getI32Type()), raisedIdx, builder.getI64IntegerAttr(i)).getResult();
+             Value dScalar = stablehlo::ConvertOp::create(builder, loc, RankedTensorType::get({}, builder.getI64Type()), dScalar32).getResult();
+             dimSize = stablehlo::ReshapeOp::create(builder, loc, RankedTensorType::get({1}, builder.getI64Type()), dScalar).getResult();
+          } else {
+             dimSize = stablehlo::ConstantOp::create(builder, loc, RankedTensorType::get({1}, builder.getI64Type()), builder.getI64TensorAttr({S[i]})).getResult();
+          }
+          shapeElements.push_back(dimSize);
+        }
+        shapeElements.push_back(stablehlo::ConstantOp::create(builder, loc, RankedTensorType::get({1}, builder.getI64Type()), builder.getI64TensorAttr({1})).getResult());
+        
+        Value finalShape = stablehlo::ConcatenateOp::create(builder, loc, RankedTensorType::get({(int64_t)shapeElements.size()}, builder.getI64Type()), shapeElements, builder.getI64IntegerAttr(0)).getResult();
+        indices = stablehlo::DynamicReshapeOp::create(builder, loc, Ty.clone(shape), raisedIdx, finalShape).getResult();
+      } else {
+        indices = stablehlo::ReshapeOp::create(builder, loc, Ty.clone(shape), raisedIdx);
+      }
     }
   }
 
@@ -895,8 +1055,34 @@ emitLoadAsGather(Location loc, Value mappedMemref, ValueRange lIndices,
     productOfIndices[0] *= s;
   }
 
-  indices = stablehlo::ReshapeOp::create(builder, loc,
-                                         Ty.clone(productOfIndices), indices);
+  Value oldIndices = indices;
+  indices = nullptr;
+  if (llvm::is_contained(productOfIndices, ShapedType::kDynamic)) {
+    SmallVector<Value> shapeElements;
+    for (int i = 0; i < productOfIndices.size(); ++i) {
+      if (productOfIndices[i] == ShapedType::kDynamic) {
+        // Find the actual dynamic sizes from Ty.getShape().drop_back() and multiply them
+        Value curProduct = stablehlo::ConstantOp::create(builder, loc, RankedTensorType::get({}, builder.getI64Type()), DenseElementsAttr::get(RankedTensorType::get({}, builder.getI64Type()), llvm::ArrayRef<int64_t>({1}))).getResult();
+        for (int j = 0; j < Ty.getShape().size() - 1; ++j) {
+            Value curDim;
+            if (Ty.getShape()[j] == ShapedType::kDynamic) {
+                Value dScalar32 = stablehlo::GetDimensionSizeOp::create(builder, loc, RankedTensorType::get({}, builder.getI32Type()), oldIndices, builder.getI64IntegerAttr(j)).getResult();
+                curDim = stablehlo::ConvertOp::create(builder, loc, RankedTensorType::get({}, builder.getI64Type()), dScalar32).getResult();
+            } else {
+                curDim = stablehlo::ConstantOp::create(builder, loc, RankedTensorType::get({}, builder.getI64Type()), DenseElementsAttr::get(RankedTensorType::get({}, builder.getI64Type()), llvm::ArrayRef<int64_t>({Ty.getShape()[j]}))).getResult();
+            }
+            curProduct = stablehlo::MulOp::create(builder, loc, curProduct.getType(), curProduct, curDim).getResult();
+        }
+        shapeElements.push_back(stablehlo::ReshapeOp::create(builder, loc, RankedTensorType::get({1}, builder.getI64Type()), curProduct).getResult());
+      } else {
+        shapeElements.push_back(stablehlo::ConstantOp::create(builder, loc, RankedTensorType::get({1}, builder.getI64Type()), builder.getI64TensorAttr({productOfIndices[i]})).getResult());
+      }
+    }
+    Value finalShape = stablehlo::ConcatenateOp::create(builder, loc, RankedTensorType::get({(int64_t)shapeElements.size()}, builder.getI64Type()), shapeElements, builder.getI64IntegerAttr(0)).getResult();
+    indices = stablehlo::DynamicReshapeOp::create(builder, loc, Ty.clone(productOfIndices), oldIndices, finalShape).getResult();
+  } else {
+    indices = stablehlo::ReshapeOp::create(builder, loc, Ty.clone(productOfIndices), oldIndices);
+  }
 
   Value res =
       stablehlo::GatherOp::create(builder, loc, mappedMemref, indices,
@@ -911,7 +1097,26 @@ emitLoadAsGather(Location loc, Value mappedMemref, ValueRange lIndices,
                                   sliceSizes);
 
   auto OT = cast<RankedTensorType>(res.getType());
-  res = stablehlo::ReshapeOp::create(builder, loc, OT.clone(outputShape), res);
+  auto TargetType = OT.clone(outputShape);
+  if (OT != TargetType) {
+    if (llvm::is_contained(outputShape, ShapedType::kDynamic)) {
+      // Create dynamic reshape using indices shape
+      SmallVector<Value> shapeElements;
+      for (int i = 0; i < TargetType.getShape().size(); ++i) {
+        if (TargetType.getShape()[i] == ShapedType::kDynamic) {
+           Value dScalar32 = stablehlo::GetDimensionSizeOp::create(builder, loc, RankedTensorType::get({}, builder.getI32Type()), res, builder.getI64IntegerAttr(i)).getResult();
+           Value curDim = stablehlo::ConvertOp::create(builder, loc, RankedTensorType::get({}, builder.getI64Type()), dScalar32).getResult();
+           shapeElements.push_back(stablehlo::ReshapeOp::create(builder, loc, RankedTensorType::get({1}, builder.getI64Type()), curDim).getResult());
+        } else {
+           shapeElements.push_back(stablehlo::ConstantOp::create(builder, loc, RankedTensorType::get({1}, builder.getI64Type()), builder.getI64TensorAttr({TargetType.getShape()[i]})).getResult());
+        }
+      }
+      Value finalShape = stablehlo::ConcatenateOp::create(builder, loc, RankedTensorType::get({(int64_t)shapeElements.size()}, builder.getI64Type()), shapeElements, builder.getI64IntegerAttr(0)).getResult();
+      res = stablehlo::DynamicReshapeOp::create(builder, loc, TargetType, res, finalShape);
+    } else {
+      res = stablehlo::ReshapeOp::create(builder, loc, TargetType, res);
+    }
+  }
 
   affine::AffineValueMap outputMap(
       AffineMap::getMultiDimIdentityMap(ivs.size(), loc.getContext()), ivs);
@@ -964,8 +1169,25 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
       }
     }
 
-    raisedIdx = stablehlo::ReshapeOp::create(
-        builder, loc, Ty.clone({numIndices, 1}), raisedIdx); // tensor<?x1xi64>
+    if (numIndices == ShapedType::kDynamic) {
+        Value curProduct = stablehlo::ConstantOp::create(builder, loc, RankedTensorType::get({}, builder.getI64Type()), DenseElementsAttr::get(RankedTensorType::get({}, builder.getI64Type()), llvm::ArrayRef<int64_t>({1}))).getResult();
+        for (int j = 0; j < Ty.getShape().size(); ++j) {
+            Value curDim;
+            if (Ty.getShape()[j] == ShapedType::kDynamic) {
+                Value dScalar32 = stablehlo::GetDimensionSizeOp::create(builder, loc, RankedTensorType::get({}, builder.getI32Type()), raisedIdx, builder.getI64IntegerAttr(j)).getResult();
+                curDim = stablehlo::ConvertOp::create(builder, loc, RankedTensorType::get({}, builder.getI64Type()), dScalar32).getResult();
+            } else {
+                curDim = stablehlo::ConstantOp::create(builder, loc, RankedTensorType::get({}, builder.getI64Type()), DenseElementsAttr::get(RankedTensorType::get({}, builder.getI64Type()), llvm::ArrayRef<int64_t>({Ty.getShape()[j]}))).getResult();
+            }
+            curProduct = stablehlo::MulOp::create(builder, loc, curProduct.getType(), curProduct, curDim).getResult();
+        }
+        Value curProduct1D = stablehlo::ReshapeOp::create(builder, loc, RankedTensorType::get({1}, builder.getI64Type()), curProduct).getResult();
+        Value one1D = stablehlo::ConstantOp::create(builder, loc, RankedTensorType::get({1}, builder.getI64Type()), builder.getI64TensorAttr({1})).getResult();
+        Value finalShape = stablehlo::ConcatenateOp::create(builder, loc, RankedTensorType::get({2}, builder.getI64Type()), ValueRange{curProduct1D, one1D}, builder.getI64IntegerAttr(0)).getResult();
+        raisedIdx = stablehlo::DynamicReshapeOp::create(builder, loc, Ty.clone({numIndices, 1}), raisedIdx, finalShape).getResult();
+    } else {
+        raisedIdx = stablehlo::ReshapeOp::create(builder, loc, Ty.clone({numIndices, 1}), raisedIdx); // tensor<?x1xi64>
+    }
 
     if (indices) {
       int64_t indicesSize =
@@ -973,6 +1195,10 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
               numDims = cast<RankedTensorType>(indices.getType()).getShape()[1],
               newSize =
                   cast<RankedTensorType>(raisedIdx.getType()).getShape()[0];
+
+      if (indicesSize == ShapedType::kDynamic || newSize == ShapedType::kDynamic) {
+        return nullptr;
+      }
 
       indices = stablehlo::BroadcastInDimOp::create(
           builder, loc, Ty.clone({indicesSize, newSize, numDims}), indices,
@@ -998,16 +1224,30 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
   }
 
   // Align update to the store indices.
-  update = stablehlo::BroadcastInDimOp::create(
-      builder, loc, cast<RankedTensorType>(update.getType()).clone(updateShape),
-      update, broadcastDims);
+  auto updateType = cast<RankedTensorType>(update.getType());
+  auto targetBroadcastType = updateType.clone(updateShape);
+  if (updateType != targetBroadcastType) {
+      if (llvm::is_contained(updateShape, ShapedType::kDynamic)) {
+          return nullptr; // Dynamic broadcast not supported here yet
+      }
+      update = stablehlo::BroadcastInDimOp::create(
+          builder, loc, targetBroadcastType, update, broadcastDims);
+  }
 
-  update = stablehlo::ReshapeOp::create(
-      builder, loc,
-      RankedTensorType::get(
-          {cast<RankedTensorType>(indices.getType()).getShape()[0]},
-          cast<RankedTensorType>(update.getType()).getElementType()),
-      update);
+  auto indicesType = cast<RankedTensorType>(indices.getType());
+  auto targetReshapeType = RankedTensorType::get(
+      {indicesType.getShape()[0]}, updateType.getElementType());
+  
+  if (cast<RankedTensorType>(update.getType()) != targetReshapeType) {
+      if (indicesType.getShape()[0] == ShapedType::kDynamic) {
+          Value dScalar32 = stablehlo::GetDimensionSizeOp::create(builder, loc, RankedTensorType::get({}, builder.getI32Type()), indices, builder.getI64IntegerAttr(0)).getResult();
+          Value curDim = stablehlo::ConvertOp::create(builder, loc, RankedTensorType::get({}, builder.getI64Type()), dScalar32).getResult();
+          Value finalShape = stablehlo::ReshapeOp::create(builder, loc, RankedTensorType::get({1}, builder.getI64Type()), curDim).getResult();
+          update = stablehlo::DynamicReshapeOp::create(builder, loc, targetReshapeType, update, finalShape).getResult();
+      } else {
+          update = stablehlo::ReshapeOp::create(builder, loc, targetReshapeType, update);
+      }
+  }
 
   auto Ty = cast<RankedTensorType>(input.getType());
   stablehlo::ScatterOp scatter = stablehlo::ScatterOp::create(
@@ -1114,37 +1354,58 @@ static LogicalResult tryRaisingForOpToStableHLOUnroll(
   return success();
 }
 
+static Value generateBound(OpBuilder &builder, Location loc, AffineMap map,
+                           ValueRange operands, IRMapping &mapping,
+                           ParallelContext pc, bool isMin) {
+  auto ET = builder.getI64Type();
+  auto TT = RankedTensorType::get({}, ET);
+  Value bound = nullptr;
+  for (auto expr : map.getResults()) {
+    auto [expanded, expandedMap] = expandAffineExpr(
+        builder, rewriteLocation(loc, pc.options.strip_llvm_debuginfo), expr,
+        operands, mapping, map.getNumDims(), pc);
+    if (expanded.getType() != TT) {
+      expanded = stablehlo::ReshapeOp::create(
+          builder, rewriteLocation(loc, pc.options.strip_llvm_debuginfo), TT,
+          expanded);
+    }
+    if (!bound) {
+      bound = expanded;
+    } else {
+      if (isMin) {
+        bound = stablehlo::MinOp::create(
+            builder, rewriteLocation(loc, pc.options.strip_llvm_debuginfo),
+            bound, expanded);
+      } else {
+        bound = stablehlo::MaxOp::create(
+            builder, rewriteLocation(loc, pc.options.strip_llvm_debuginfo),
+            bound, expanded);
+      }
+    }
+  }
+  return bound;
+}
+
 static LogicalResult tryRaisingForOpToStableHLOWhile(
     affine::AffineForOp forOp, IRMapping &parentMapping, OpBuilder &builder,
     llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc) {
   IRMapping mapping = parentMapping;
-  if (!forOp.hasConstantBounds()) {
-    return forOp.emitError("CPU kernels do not support cluster");
-  }
-
   Value iv = forOp.getInductionVar();
-  InductionVariableRange range{forOp.getConstantLowerBound(),
-                               forOp.getConstantUpperBound(),
-                               forOp.getStepAsInt()};
 
   auto ET = builder.getI64Type();
   auto TT = RankedTensorType::get({}, ET);
 
-  Value lb = stablehlo::ConstantOp::create(
-      builder, rewriteLocation(forOp.getLoc(), pc.options.strip_llvm_debuginfo),
-      TT,
-      SplatElementsAttr::get(
-          TT, ArrayRef<Attribute>(IntegerAttr::get(ET, range.lb))));
-  Value ub = stablehlo::ConstantOp::create(
-      builder, rewriteLocation(forOp.getLoc(), pc.options.strip_llvm_debuginfo),
-      TT,
-      SplatElementsAttr::get(
-          TT, ArrayRef<Attribute>(IntegerAttr::get(ET, range.ub))));
+  Value lb = generateBound(builder, forOp.getLoc(), forOp.getLowerBoundMap(),
+                           forOp.getLowerBoundOperands(), mapping, pc,
+                           /*isMin=*/false);
+  Value ub = generateBound(builder, forOp.getLoc(), forOp.getUpperBoundMap(),
+                           forOp.getUpperBoundOperands(), mapping, pc,
+                           /*isMin=*/true);
   Value step = stablehlo::ConstantOp::create(
       builder, rewriteLocation(forOp.getLoc(), pc.options.strip_llvm_debuginfo),
       TT,
       SplatElementsAttr::get(
-          TT, ArrayRef<Attribute>(IntegerAttr::get(ET, range.step))));
+          TT, ArrayRef<Attribute>(IntegerAttr::get(ET, forOp.getStepAsInt()))));
 
   Block *entryBlock = &forOp->getParentOfType<func::FuncOp>().getBody().front();
 
@@ -1272,23 +1533,103 @@ template <> SmallVector<BlockArgument, 6> getIVs(affine::AffineForOp op) {
   return {op.getInductionVar()};
 }
 
+static Value emitDynamicIVToStableHLO(
+    OpBuilder &builder, Operation *parallelOp, Value iv, IRMapping &mapping,
+    llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext &pc) {
+  auto loc = rewriteLocation(iv.getLoc(), pc.options.strip_llvm_debuginfo);
+  auto ET = builder.getI64Type();
+  auto TT = RankedTensorType::get({}, ET);
+  Value lb, ub, stepVal;
+
+  if (auto owner = affine::getAffineParallelInductionVarOwner(iv)) {
+    auto ivPos = cast<BlockArgument>(iv).getArgNumber();
+    lb = generateBound(builder, loc, owner.getLowerBoundMap(ivPos),
+                       owner.getLowerBoundsOperands(), mapping, pc, false);
+    ub = generateBound(builder, loc, owner.getUpperBoundMap(ivPos),
+                       owner.getUpperBoundsOperands(), mapping, pc, true);
+    stepVal =
+        stablehlo::ConstantOp::create(
+            builder, loc, TT,
+            SplatElementsAttr::get(
+                TT, ArrayRef<Attribute>(IntegerAttr::get(ET, owner.getSteps()[ivPos]))))
+            .getResult();
+  } else if (auto owner = affine::getForInductionVarOwner(iv)) {
+    lb = generateBound(builder, loc, owner.getLowerBoundMap(),
+                       owner.getLowerBoundOperands(), mapping, pc, false);
+    ub = generateBound(builder, loc, owner.getUpperBoundMap(),
+                       owner.getUpperBoundOperands(), mapping, pc, true);
+    stepVal =
+        stablehlo::ConstantOp::create(
+            builder, loc, TT,
+            SplatElementsAttr::get(
+                TT, ArrayRef<Attribute>(IntegerAttr::get(ET, owner.getStepAsInt()))))
+            .getResult();
+  } else {
+    return nullptr;
+  }
+
+  Value minusOne = stablehlo::ConstantOp::create(
+      builder, loc, TT, SplatElementsAttr::get(TT, ArrayRef<Attribute>(IntegerAttr::get(ET, -1)))).getResult();
+  Value diff = stablehlo::SubtractOp::create(builder, loc, TT, ub, lb).getResult();
+  
+  Value stepminus_one = stablehlo::AddOp::create(builder, loc, TT, stepVal, minusOne).getResult();
+  
+  Value numItersScalar = stablehlo::AddOp::create(builder, loc, TT, diff, stepminus_one).getResult();
+  Value numIters = stablehlo::DivOp::create(builder, loc, TT, numItersScalar, stepVal).getResult();
+  Value zero = stablehlo::ConstantOp::create(
+      builder, loc, TT, SplatElementsAttr::get(TT, ArrayRef<Attribute>(IntegerAttr::get(ET, 0)))).getResult();
+  numIters = stablehlo::MaxOp::create(builder, loc, TT, numIters, zero).getResult();
+
+  Value numItersTensor = stablehlo::ReshapeOp::create(
+      builder, loc, RankedTensorType::get({1}, ET), numIters).getResult();
+
+  auto Ty = RankedTensorType::get({ShapedType::kDynamic}, ET);
+  Value iota = stablehlo::DynamicIotaOp::create(builder, loc, Ty, numItersTensor, 0).getResult();
+
+  Value dynamicSizeTensor = numItersTensor;
+  Value broadcastLb = stablehlo::DynamicBroadcastInDimOp::create(
+      builder, loc, Ty, lb, dynamicSizeTensor, builder.getDenseI64ArrayAttr({})).getResult();
+  Value broadcastStep = stablehlo::DynamicBroadcastInDimOp::create(
+      builder, loc, Ty, stepVal, dynamicSizeTensor, builder.getDenseI64ArrayAttr({})).getResult();
+
+  iota = stablehlo::MulOp::create(builder, loc, Ty, iota, broadcastStep).getResult();
+  iota = stablehlo::AddOp::create(builder, loc, Ty, iota, broadcastLb).getResult();
+
+  auto expr = mlir::getAffineDimExpr(0, builder.getContext());
+  affine::AffineValueMap pmap(
+      AffineMap::get(1, 0, llvm::ArrayRef<AffineExpr>({expr}),
+                     builder.getContext()),
+      llvm::ArrayRef<Value>({iv}));
+  maps[iota] = pmap;
+  mapping.map(iv, iota);
+  
+  return numItersTensor;
+}
+
 template <class T>
 static LogicalResult tryRaisingParallelOpToStableHLO(
     T parallelOp, IRMapping &parentMapping, OpBuilder &builder,
     llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc) {
   IRMapping mapping = parentMapping;
 
+  SmallVector<Value> tensorSizes;
   for (auto iv : getIVs(parallelOp)) {
     auto range = getIVRange(iv);
-    if (!range.has_value())
-      return failure();
-    emitIVToStableHLO(builder, iv, *range, mapping, maps,
-                      pc.options.strip_llvm_debuginfo);
+    if (range.has_value() && range->getNumIters() != ShapedType::kDynamic) {
+      tensorSizes.push_back(emitIVToStableHLO(builder, iv, *range, mapping, maps,
+                        pc.options.strip_llvm_debuginfo));
+    } else {
+      Value sz = emitDynamicIVToStableHLO(builder, parallelOp, iv, mapping, maps, pc);
+      if (!sz)
+        return failure();
+      tensorSizes.push_back(sz);
+    }
   }
 
-  auto newPc = pc.add(parallelOp);
-  if (!newPc)
+  auto newPc = pc.add(parallelOp, tensorSizes);
+  if (!newPc) {
     return failure();
+  }
 
   SmallVector<Value> iter_inputs;
   SmallVector<BlockArgument> iters;
@@ -1330,7 +1671,7 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
       affine::AffineValueMap submaps[] = {idx_map, maps.lookup(dsts[1])};
 
       auto outputMap = alignMemoryAccess(reduce_broadcasted, reduce_map, dsts,
-                                         submaps, builder, *newPc);
+                                         submaps, builder, *newPc, mapping);
 
       ssize_t idx_to_reduce = -1;
       for (auto &&[i, expr] :
@@ -1422,8 +1763,9 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
     }
 
     if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps, *newPc)
-            .failed())
+            .failed()) {
       return failure();
+    }
   }
 
   auto yld = parallelOp.getBody()->getTerminator();
@@ -1532,7 +1874,7 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
         submaps.push_back(maps.lookup(dst));
       }
       auto outputMap2 = alignMemoryAccess(val, outputMap, dsts.data(), submaps,
-                                          builder, *newPc);
+                                          builder, *newPc, mapping);
 
       SmallVector<int64_t> idxs_to_reduce;
       SmallVector<int64_t> redshape;
@@ -1775,12 +2117,21 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     }
 
     bool repeatingIV = needsGeneralScatterGather(accessValueMap);
+    bool hasDynamicBounds = false;
+    for (auto iv : accessValueMap.getOperands()) {
+      auto ivr = getIVRange(iv);
+      if (pc.isParallelIV(iv) && (!ivr.has_value() || ivr->getNumIters() == ShapedType::kDynamic)) {
+        hasDynamicBounds = true;
+        break;
+      }
+    }
+
     bool dynIndices = llvm::any_of(accessValueMap.getOperands(), [](Value iv) {
       return affine::isAffineForInductionVar(iv);
     });
-    bool emitAsGather =
-        dynIndices &&
-            llvm::any_of(strides, [](int64_t stride) { return stride != 1; }) ||
+    bool emitAsGather = hasDynamicBounds ||
+        (dynIndices &&
+            llvm::any_of(strides, [](int64_t stride) { return stride != 1; })) ||
         repeatingIV;
 
     if (emitAsGather) {
@@ -1960,8 +2311,17 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       return success();
     }
 
+    bool hasDynamicBounds = false;
+    for (auto iv : accessValueMap.getOperands()) {
+      auto ivr = getIVRange(iv);
+      if (pc.isParallelIV(iv) && (!ivr.has_value() || ivr->getNumIters() == ShapedType::kDynamic)) {
+        hasDynamicBounds = true;
+        break;
+      }
+    }
+
     bool repeatingIV = needsGeneralScatterGather(accessValueMap);
-    bool emitAsScatter =
+    bool emitAsScatter = hasDynamicBounds ||
         llvm::any_of(strides, [](int64_t stride) { return stride != 1; }) ||
         repeatingIV;
 
@@ -2368,7 +2728,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           b = mapping.lookup(op->getOperand(1));
 
     auto mapA = maps.lookup(a), mapB = maps.lookup(b);
-    auto outputMap = alignMemoryAccess(a, mapA, b, mapB, builder, pc);
+    auto outputMap = alignMemoryAccess(a, mapA, b, mapB, builder, pc, mapping);
     assert(a.getType() == b.getType());
 
     auto IT = cast<RankedTensorType>(a.getType());
@@ -2403,7 +2763,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     Value dsts[] = {b, c};
     affine::AffineValueMap submaps[] = {mapB, mapC};
-    auto outputMap = alignMemoryAccess(a, mapA, dsts, submaps, builder, pc);
+    auto outputMap = alignMemoryAccess(a, mapA, dsts, submaps, builder, pc, mapping);
     b = dsts[0];
     c = dsts[1];
     assert(b.getType() == c.getType());
@@ -2496,7 +2856,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           eq ? stablehlo::ComparisonDirection::EQ
              : stablehlo::ComparisonDirection::GE);
       if (cond) {
-        map = alignMemoryAccess(cond, map, newCond, outputMap, builder, pc);
+        map = alignMemoryAccess(cond, map, newCond, outputMap, builder, pc, mapping);
         cond = stablehlo::AndOp::create(
             builder,
             rewriteLocation(ifOp.getLoc(), pc.options.strip_llvm_debuginfo),

@@ -6630,9 +6630,12 @@ static DepType getDepType(MemRefAccess src, MemRefAccess dst) {
 }
 
 static bool isLoopMemoryLockStepExecutable(AffineForOp forOp) {
+  fprintf(stderr, "isLoopMemoryLockStepExecutable called\n");
   // Any memref-typed iteration arguments are treated as serializing.
-  if (llvm::any_of(forOp.getResultTypes(), llvm::IsaPred<BaseMemRefType>))
+  if (llvm::any_of(forOp.getResultTypes(), llvm::IsaPred<BaseMemRefType>)) {
+    fprintf(stderr, "Failed on memref iter args\n");
     return false;
+  }
 
   // Collect all load and store ops in loop nest rooted at 'forOp'.
   SmallVector<Operation *> loadAndStoreOps;
@@ -6647,6 +6650,8 @@ static bool isLoopMemoryLockStepExecutable(AffineForOp forOp) {
         loadAndStoreOps.push_back(op);
     } else if (!isa<AffineForOp, AffineYieldOp, AffineIfOp>(op) &&
                !isReadNone(op)) {
+      fprintf(stderr, "Failed on unknown op with side effects: ");
+      op->dump();
       return WalkResult::interrupt();
     }
 
@@ -6654,8 +6659,10 @@ static bool isLoopMemoryLockStepExecutable(AffineForOp forOp) {
   });
 
   // Stop early if the loop has unknown ops with side effects.
-  if (walkResult.wasInterrupted())
+  if (walkResult.wasInterrupted()) {
+    fprintf(stderr, "walkResult interrupted\n");
     return false;
+  }
 
   // Dep check depth would be number of enclosing loops + 1.
   unsigned depth = ::getNestingDepth(forOp) + 1;
@@ -6673,6 +6680,7 @@ static bool isLoopMemoryLockStepExecutable(AffineForOp forOp) {
           srcAccess, dstAccess, depth, nullptr, &dcs);
 
       if (result.value == DependenceResult::Failure) {
+        fprintf(stderr, "checkMemrefAccessDependence Failed\n");
         LLVM_DEBUG(llvm::dbgs() << "Failed\n");
         return false;
       }
@@ -6726,8 +6734,10 @@ bool isLoopLockStepExecutable(
     AffineForOp forOp, SmallVectorImpl<LoopReduction> *parallelReductions) {
   unsigned numIterArgs = forOp.getNumIterOperands();
 
-  if (numIterArgs > 0 && !parallelReductions)
+  if (numIterArgs > 0 && !parallelReductions) {
+    fprintf(stderr, "isLoopLockStepExecutable Failed on numIterArgs\n");
     return false;
+  }
 
   return ::isLoopMemoryLockStepExecutable(forOp);
 }
