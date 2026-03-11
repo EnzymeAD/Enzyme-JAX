@@ -548,7 +548,8 @@ bool canApplyLowerTriPattern(Value val, PatternRewriter &rewriter) {
   return guaranteedLowerTriResult(val, rewriter);
 }
 
-bool canApplyUpperUnitTriPattern(mlir::Operation *op, PatternRewriter &rewriter) {
+bool canApplyUpperUnitTriPattern(mlir::Operation *op,
+                                 PatternRewriter &rewriter) {
   return guaranteedUpperUnitTriResult(op, rewriter);
 }
 
@@ -556,7 +557,8 @@ bool canApplyUpperUnitTriPattern(Value val, PatternRewriter &rewriter) {
   return guaranteedUpperUnitTriResult(val, rewriter);
 }
 
-bool canApplyLowerUnitTriPattern(mlir::Operation *op, PatternRewriter &rewriter) {
+bool canApplyLowerUnitTriPattern(mlir::Operation *op,
+                                 PatternRewriter &rewriter) {
   return guaranteedLowerUnitTriResult(op, rewriter);
 }
 
@@ -614,7 +616,8 @@ LowerUnitTriResultAnalysis initLowerUnitTriResultAnalysis() {
   lowerUnitTriAnalysis->setUpperUnitTriResultAnalysis(upperUnitTriAnalysis);
   lowerUnitTriAnalysis->setLowerTriResultAnalysis(lowerTriAnalysis);
   upperUnitTriAnalysis->setLowerUnitTriResultAnalysis(lowerUnitTriAnalysis);
-  upperUnitTriAnalysis->setUpperTriResultAnalysis(upperTriAnalysis);  return *lowerUnitTriAnalysis;
+  upperUnitTriAnalysis->setUpperTriResultAnalysis(upperTriAnalysis);
+  return *lowerUnitTriAnalysis;
 }
 
 UpperUnitTriResultAnalysis initUpperUnitTriResultAnalysis() {
@@ -869,7 +872,7 @@ template <typename Ty> bool checkConstantSquare(DenseElementsAttr attr) {
 template <typename Ty> bool checkConstantLowerTri(DenseElementsAttr attr) {
   if (!checkConstantSquare<Ty>(attr))
     return false;
-  
+
   auto type = dyn_cast<RankedTensorType>(attr.getType());
   if (type.getRank() == 0)
     return true;
@@ -877,13 +880,13 @@ template <typename Ty> bool checkConstantLowerTri(DenseElementsAttr attr) {
   auto shape = type.getShape();
   int64_t rows = shape[0];
   int64_t cols = shape[1];
-  
+
   auto values = attr.getValues<Ty>();
   auto it = values.begin();
 
   for (int64_t i = 0; i < rows; i++) {
     for (int64_t j = i; j < cols; j++) {
-      if ((*(it + i * cols + j)).isZero()) 
+      if ((*(it + i * cols + j)).isZero())
         return false;
     }
   }
@@ -893,7 +896,7 @@ template <typename Ty> bool checkConstantLowerTri(DenseElementsAttr attr) {
 template <typename Ty> bool checkConstantUpperTri(DenseElementsAttr attr) {
   if (!checkConstantSquare<Ty>(attr))
     return false;
-  
+
   auto type = dyn_cast<RankedTensorType>(attr.getType());
   if (type.getRank() == 0)
     return true;
@@ -901,29 +904,27 @@ template <typename Ty> bool checkConstantUpperTri(DenseElementsAttr attr) {
   auto shape = type.getShape();
   int64_t rows = shape[0];
   int64_t cols = shape[1];
-  
+
   auto values = attr.getValues<Ty>();
   auto it = values.begin();
 
   for (int64_t i = 0; i < rows; i++) {
     for (int64_t j = 0; j < i; j++) {
-      if ((*(it + i * cols + j)).isZero()) 
+      if ((*(it + i * cols + j)).isZero())
         return false;
     }
   }
   return true;
 }
 
-bool isOne(APFloat a) {
-  return a.isExactlyValue(1.0);
-}
+bool isOne(APFloat a) { return a.isExactlyValue(1.0); }
 
-bool isOne(APInt a) {
-  return a == 1;
-}
+bool isOne(APInt a) { return a == 1; }
 
-template <typename Ty> bool checkConstantUnitTri(DenseElementsAttr attr, bool detectUpper) {
-  if ((detectUpper && !checkConstantUpperTri<Ty>(attr)) || (!detectUpper && !checkConstantLowerTri<Ty>(attr)))
+template <typename Ty>
+bool checkConstantUnitTri(DenseElementsAttr attr, bool detectUpper) {
+  if ((detectUpper && !checkConstantUpperTri<Ty>(attr)) ||
+      (!detectUpper && !checkConstantLowerTri<Ty>(attr)))
     return false;
 
   auto type = dyn_cast<RankedTensorType>(attr.getType());
@@ -950,12 +951,14 @@ template <typename Ty> bool checkConstantUnitTri(DenseElementsAttr attr, bool de
 }
 
 template <typename Child>
-bool BaseUnitTriResultAnalysis<Child>::constantFloatCheck(DenseElementsAttr attr) {
+bool BaseUnitTriResultAnalysis<Child>::constantFloatCheck(
+    DenseElementsAttr attr) {
   return checkConstantUnitTri<APFloat>(attr, ((Child *)this)->detectUpper);
 }
 
 template <typename Child>
-bool BaseUnitTriResultAnalysis<Child>::constantIntCheck(DenseElementsAttr attr) {
+bool BaseUnitTriResultAnalysis<Child>::constantIntCheck(
+    DenseElementsAttr attr) {
   return checkConstantUnitTri<APInt>(attr, ((Child *)this)->detectUpper);
 }
 
@@ -975,57 +978,69 @@ bool UpperTriResultAnalysis::constantIntCheck(DenseElementsAttr attr) {
   return checkConstantUpperTri<APInt>(attr);
 }
 
-bool LowerTriResultAnalysis::otherResultAnalysis(Value val, PatternRewriter &rewriter){
-    return upperTriResultAnalysis->guaranteed(val, rewriter);
+bool LowerTriResultAnalysis::otherResultAnalysis(Value val,
+                                                 PatternRewriter &rewriter) {
+  return upperTriResultAnalysis->guaranteed(val, rewriter);
 }
 
-bool UpperTriResultAnalysis::otherResultAnalysis(Value val, PatternRewriter &rewriter){
-    return lowerTriResultAnalysis->guaranteed(val, rewriter);
+bool UpperTriResultAnalysis::otherResultAnalysis(Value val,
+                                                 PatternRewriter &rewriter) {
+  return lowerTriResultAnalysis->guaranteed(val, rewriter);
 }
 
-bool LowerTriResultAnalysis::unitResultAnalysis(Value val, PatternRewriter &rewriter){
-    return lowerUnitTriResultAnalysis->guaranteed(val, rewriter);
+bool LowerTriResultAnalysis::unitResultAnalysis(Value val,
+                                                PatternRewriter &rewriter) {
+  return lowerUnitTriResultAnalysis->guaranteed(val, rewriter);
 }
 
-bool UpperTriResultAnalysis::unitResultAnalysis(Value val, PatternRewriter &rewriter){
-    return upperUnitTriResultAnalysis->guaranteed(val, rewriter);
+bool UpperTriResultAnalysis::unitResultAnalysis(Value val,
+                                                PatternRewriter &rewriter) {
+  return upperUnitTriResultAnalysis->guaranteed(val, rewriter);
 }
 
-bool LowerUnitTriResultAnalysis::otherResultAnalysis(Value val, PatternRewriter &rewriter){
-    return upperUnitTriResultAnalysis->guaranteed(val, rewriter);
+bool LowerUnitTriResultAnalysis::otherResultAnalysis(
+    Value val, PatternRewriter &rewriter) {
+  return upperUnitTriResultAnalysis->guaranteed(val, rewriter);
 }
 
-bool UpperUnitTriResultAnalysis::otherResultAnalysis(Value val, PatternRewriter &rewriter){
-    return lowerUnitTriResultAnalysis->guaranteed(val, rewriter);
+bool UpperUnitTriResultAnalysis::otherResultAnalysis(
+    Value val, PatternRewriter &rewriter) {
+  return lowerUnitTriResultAnalysis->guaranteed(val, rewriter);
 }
 
-bool LowerUnitTriResultAnalysis::nonUnitResultAnalysis(Value val, PatternRewriter &rewriter){
-    return lowerTriResultAnalysis->guaranteed(val, rewriter);
+bool LowerUnitTriResultAnalysis::nonUnitResultAnalysis(
+    Value val, PatternRewriter &rewriter) {
+  return lowerTriResultAnalysis->guaranteed(val, rewriter);
 }
 
-bool UpperUnitTriResultAnalysis::nonUnitResultAnalysis(Value val, PatternRewriter &rewriter){
-    return upperTriResultAnalysis->guaranteed(val, rewriter);
+bool UpperUnitTriResultAnalysis::nonUnitResultAnalysis(
+    Value val, PatternRewriter &rewriter) {
+  return upperTriResultAnalysis->guaranteed(val, rewriter);
 }
 
-// detects triangular matrices from sequence of iota, compare, and select operations. returns true if detectUpper is true and the matrix is upper triangular, or if detectUpper is false and the matrix is lower triangular.
+// detects triangular matrices from sequence of iota, compare, and select
+// operations. returns true if detectUpper is true and the matrix is upper
+// triangular, or if detectUpper is false and the matrix is lower triangular.
 template <typename Child>
-bool BaseTriResultAnalysis<Child>::checkIotaCompare(stablehlo::SelectOp selectOp, bool detectUpper) {
-  
+bool BaseTriResultAnalysis<Child>::checkIotaCompare(
+    stablehlo::SelectOp selectOp, bool detectUpper) {
+
   Value pred = selectOp.getPred();
   Value trueTensor = selectOp.getOnTrue();
   Value falseTensor = selectOp.getOnFalse();
 
   auto cmpOp = dyn_cast<stablehlo::CompareOp>(pred.getDefiningOp());
-  if (!cmpOp) return false;
+  if (!cmpOp)
+    return false;
 
   bool zeroOnFalse;
 
   if (matchPattern(trueTensor, m_AnyZeroFloat()) ||
-    matchPattern(trueTensor, m_Zero())) {
-      zeroOnFalse = false;
+      matchPattern(trueTensor, m_Zero())) {
+    zeroOnFalse = false;
   } else if (matchPattern(falseTensor, m_AnyZeroFloat()) ||
-    matchPattern(falseTensor, m_Zero())) {
-      zeroOnFalse = true;
+             matchPattern(falseTensor, m_Zero())) {
+    zeroOnFalse = true;
   } else {
     return false;
   }
@@ -1034,46 +1049,50 @@ bool BaseTriResultAnalysis<Child>::checkIotaCompare(stablehlo::SelectOp selectOp
   auto rhs = cmpOp.getRhs();
 
   auto lhsIota = dyn_cast<stablehlo::IotaOp>(lhs.getDefiningOp());
-  if (!lhsIota) return false;
+  if (!lhsIota)
+    return false;
   auto rhsIota = dyn_cast<stablehlo::IotaOp>(rhs.getDefiningOp());
-  if (!rhsIota) return false;
+  if (!rhsIota)
+    return false;
 
   if (lhsIota.getIotaDimension() == 0 && rhsIota.getIotaDimension() == 1) {
     switch (cmpOp.getComparisonDirection()) {
-      case stablehlo::ComparisonDirection::LE:
-        return !(zeroOnFalse ^ detectUpper); // upper if zeroOnFalse, lower otherwise
-      case stablehlo::ComparisonDirection::GE:
-        return (zeroOnFalse ^ detectUpper); // lower ...
-      case stablehlo::ComparisonDirection::LT:
-        return !(zeroOnFalse ^ detectUpper);
-      case stablehlo::ComparisonDirection::GT:
-        return (zeroOnFalse ^ detectUpper);
-      default:
-        return false;
+    case stablehlo::ComparisonDirection::LE:
+      return !(zeroOnFalse ^
+               detectUpper); // upper if zeroOnFalse, lower otherwise
+    case stablehlo::ComparisonDirection::GE:
+      return (zeroOnFalse ^ detectUpper); // lower ...
+    case stablehlo::ComparisonDirection::LT:
+      return !(zeroOnFalse ^ detectUpper);
+    case stablehlo::ComparisonDirection::GT:
+      return (zeroOnFalse ^ detectUpper);
+    default:
+      return false;
     }
-  }
-  else if (lhsIota.getIotaDimension() == 1 && rhsIota.getIotaDimension() == 0) {
+  } else if (lhsIota.getIotaDimension() == 1 &&
+             rhsIota.getIotaDimension() == 0) {
     switch (cmpOp.getComparisonDirection()) {
-      case stablehlo::ComparisonDirection::LE:
-        return (zeroOnFalse ^ detectUpper); // lower
-      case stablehlo::ComparisonDirection::GE:
-        return !(zeroOnFalse ^ detectUpper); // upper
-      case stablehlo::ComparisonDirection::LT:
-        return (zeroOnFalse ^ detectUpper); // upper
-      case stablehlo::ComparisonDirection::GT:
-        return !(zeroOnFalse ^ detectUpper); // lower
-      default:
-        return false;
-
+    case stablehlo::ComparisonDirection::LE:
+      return (zeroOnFalse ^ detectUpper); // lower
+    case stablehlo::ComparisonDirection::GE:
+      return !(zeroOnFalse ^ detectUpper); // upper
+    case stablehlo::ComparisonDirection::LT:
+      return (zeroOnFalse ^ detectUpper); // upper
+    case stablehlo::ComparisonDirection::GT:
+      return !(zeroOnFalse ^ detectUpper); // lower
+    default:
+      return false;
     }
   }
   return false;
 }
 
-// returns true if iota operations are used to set the diagonal of an already triangular matrix to one
+// returns true if iota operations are used to set the diagonal of an already
+// triangular matrix to one
 template <typename Child>
-bool BaseUnitTriResultAnalysis<Child>::checkIotaCompare(stablehlo::SelectOp selectOp, PatternRewriter &rewriter) {
-  
+bool BaseUnitTriResultAnalysis<Child>::checkIotaCompare(
+    stablehlo::SelectOp selectOp, PatternRewriter &rewriter) {
+
   Value pred = selectOp.getPred();
   Value trueTensor = selectOp.getOnTrue();
   Value falseTensor = selectOp.getOnFalse();
@@ -1081,18 +1100,19 @@ bool BaseUnitTriResultAnalysis<Child>::checkIotaCompare(stablehlo::SelectOp sele
   Value nonOneTensor;
 
   auto cmpOp = dyn_cast<stablehlo::CompareOp>(pred.getDefiningOp());
-  if (!cmpOp) return false;
+  if (!cmpOp)
+    return false;
 
   bool oneOnFalse;
 
   if (matchPattern(trueTensor, m_OneFloat()) ||
-    matchPattern(trueTensor, m_One())) {
-      oneOnFalse = false;
-      nonOneTensor = falseTensor;
-    } else if (matchPattern(falseTensor, m_OneFloat()) ||
-    matchPattern(falseTensor, m_One())) {
-      oneOnFalse = true;
-      nonOneTensor = trueTensor;
+      matchPattern(trueTensor, m_One())) {
+    oneOnFalse = false;
+    nonOneTensor = falseTensor;
+  } else if (matchPattern(falseTensor, m_OneFloat()) ||
+             matchPattern(falseTensor, m_One())) {
+    oneOnFalse = true;
+    nonOneTensor = trueTensor;
   } else {
     return false;
   }
@@ -1101,13 +1121,20 @@ bool BaseUnitTriResultAnalysis<Child>::checkIotaCompare(stablehlo::SelectOp sele
   auto rhs = cmpOp.getRhs();
 
   auto lhsIota = dyn_cast<stablehlo::IotaOp>(lhs.getDefiningOp());
-  if (!lhsIota) return false;
+  if (!lhsIota)
+    return false;
   auto rhsIota = dyn_cast<stablehlo::IotaOp>(rhs.getDefiningOp());
-  if (!rhsIota) return false;
+  if (!rhsIota)
+    return false;
 
-  if (!(lhsIota.getIotaDimension() == 0 && rhsIota.getIotaDimension() == 1) || (lhsIota.getIotaDimension() == 1 && rhsIota.getIotaDimension() == 0)) return false;
-  
-  if ((oneOnFalse && cmpOp.getComparisonDirection() == stablehlo::ComparisonDirection::NE) || (!oneOnFalse && cmpOp.getComparisonDirection() == stablehlo::ComparisonDirection::EQ)) {
+  if (!(lhsIota.getIotaDimension() == 0 && rhsIota.getIotaDimension() == 1) ||
+      (lhsIota.getIotaDimension() == 1 && rhsIota.getIotaDimension() == 0))
+    return false;
+
+  if ((oneOnFalse &&
+       cmpOp.getComparisonDirection() == stablehlo::ComparisonDirection::NE) ||
+      (!oneOnFalse &&
+       cmpOp.getComparisonDirection() == stablehlo::ComparisonDirection::EQ)) {
     return ((Child *)this)->nonUnitResultAnalysis(nonOneTensor, rewriter);
   }
 
@@ -1116,7 +1143,9 @@ bool BaseUnitTriResultAnalysis<Child>::checkIotaCompare(stablehlo::SelectOp sele
 
 template <typename Child>
 typename BaseTriResultAnalysis<Child>::State
-BaseTriResultAnalysis<Child>::localGuaranteed(Value val, SmallVectorImpl<Value> &localtodo, PatternRewriter &rewriter) {
+BaseTriResultAnalysis<Child>::localGuaranteed(Value val,
+                                              SmallVectorImpl<Value> &localtodo,
+                                              PatternRewriter &rewriter) {
   auto valTy = cast<RankedTensorType>(val.getType());
   if (valTy.getRank() != 2)
     return State::NOTGUARANTEED; // restrict check to matrices
@@ -1129,8 +1158,10 @@ BaseTriResultAnalysis<Child>::localGuaranteed(Value val, SmallVectorImpl<Value> 
 
   // transpose of upper triangular is lower triangular and vice versa
   if (auto transposeOp = dyn_cast<stablehlo::TransposeOp>(op)) {
-    if (isTrueTranspose(transposeOp) && ((Child*)this)->otherResultAnalysis(transposeOp.getOperand(), rewriter)) 
-    return State::GUARANTEED;
+    if (isTrueTranspose(transposeOp) &&
+        ((Child *)this)
+            ->otherResultAnalysis(transposeOp.getOperand(), rewriter))
+      return State::GUARANTEED;
   }
 
   // diagonal implies triangular
@@ -1146,7 +1177,7 @@ BaseTriResultAnalysis<Child>::localGuaranteed(Value val, SmallVectorImpl<Value> 
   if (auto selectOp = dyn_cast<stablehlo::SelectOp>(op)) {
     if (checkIotaCompare(selectOp, ((Child *)this)->detectUpper)) {
       return State::GUARANTEED;
-    } else if (((Child*)this)->unitResultAnalysis(selectOp, rewriter)) {
+    } else if (((Child *)this)->unitResultAnalysis(selectOp, rewriter)) {
       return State::GUARANTEED;
     }
   }
@@ -1154,30 +1185,16 @@ BaseTriResultAnalysis<Child>::localGuaranteed(Value val, SmallVectorImpl<Value> 
   bool recursiveCheck = false;
 
   // unary ops where op(0) = 0
-  if (isa<
-      stablehlo::AbsOp,
-      stablehlo::CbrtOp,
-      stablehlo::CeilOp,
-      stablehlo::FloorOp,
-      stablehlo::ImagOp,
-      stablehlo::NegOp,
-      stablehlo::RealOp,
-      stablehlo::RoundOp,
-      stablehlo::SineOp,
-      stablehlo::SqrtOp>(op)) {
+  if (isa<stablehlo::AbsOp, stablehlo::CbrtOp, stablehlo::CeilOp,
+          stablehlo::FloorOp, stablehlo::ImagOp, stablehlo::NegOp,
+          stablehlo::RealOp, stablehlo::RoundOp, stablehlo::SineOp,
+          stablehlo::SqrtOp>(op)) {
     recursiveCheck = true;
   }
   // elementwise ops where op(0, 0) = 0
-  if (isa<
-      stablehlo::AddOp,
-      stablehlo::AndOp,
-      stablehlo::Atan2Op,
-      stablehlo::MaxOp,
-      stablehlo::MinOp,
-      stablehlo::MulOp,
-      stablehlo::OrOp,
-      stablehlo::SubtractOp,
-      stablehlo::XorOp>(op)) {
+  if (isa<stablehlo::AddOp, stablehlo::AndOp, stablehlo::Atan2Op,
+          stablehlo::MaxOp, stablehlo::MinOp, stablehlo::MulOp, stablehlo::OrOp,
+          stablehlo::SubtractOp, stablehlo::XorOp>(op)) {
     recursiveCheck = true;
   }
 
@@ -1192,19 +1209,22 @@ BaseTriResultAnalysis<Child>::localGuaranteed(Value val, SmallVectorImpl<Value> 
     if (dotDimNumbers.getLhsBatchingDimensions().size() == 0 &&
         dotDimNumbers.getRhsBatchingDimensions().size() == 0 &&
         lhsCDims.size() == 1 && rhsCDims.size() == 1) {
-      if (lhsCDims[0] == 1 && rhsCDims[0] == 0 ) { 
+      if (lhsCDims[0] == 1 && rhsCDims[0] == 0) {
         recursiveCheck = true;
       } else if (lhsCDims[0] == 0 && rhsCDims[1] == 1) {
         // equivalent to multiplying transposes of matrices
-        if (((Child *)this)->otherResultAnalysis(lhs, rewriter) && ((Child *)this)->otherResultAnalysis(rhs, rewriter)) {
+        if (((Child *)this)->otherResultAnalysis(lhs, rewriter) &&
+            ((Child *)this)->otherResultAnalysis(rhs, rewriter)) {
           return State::GUARANTEED;
         }
       } else if (lhsCDims[0] == 0 && rhsCDims[0] == 0) {
-        if (((Child *)this)->otherResultAnalysis(lhs, rewriter)) 
-          if (this->guaranteed(rhs, rewriter)) return State::GUARANTEED;
+        if (((Child *)this)->otherResultAnalysis(lhs, rewriter))
+          if (this->guaranteed(rhs, rewriter))
+            return State::GUARANTEED;
       } else if (lhsCDims[0] == 1 && rhsCDims[0] == 1) {
-        if (((Child *)this)->otherResultAnalysis(rhs, rewriter)) 
-          if (this->guaranteed(lhs, rewriter)) return State::GUARANTEED;
+        if (((Child *)this)->otherResultAnalysis(rhs, rewriter))
+          if (this->guaranteed(lhs, rewriter))
+            return State::GUARANTEED;
       }
     }
   }
@@ -1237,7 +1257,9 @@ BaseTriResultAnalysis<Child>::localGuaranteed(Value val, SmallVectorImpl<Value> 
 }
 
 template <typename Child>
-typename BaseUnitTriResultAnalysis<Child>::State BaseUnitTriResultAnalysis<Child>::localGuaranteed(Value val, SmallVectorImpl<Value> &localtodo, PatternRewriter &rewriter) {
+typename BaseUnitTriResultAnalysis<Child>::State
+BaseUnitTriResultAnalysis<Child>::localGuaranteed(
+    Value val, SmallVectorImpl<Value> &localtodo, PatternRewriter &rewriter) {
   auto valTy = cast<RankedTensorType>(val.getType());
   if (valTy.getRank() != 2)
     return State::NOTGUARANTEED; // restrict check to matrices
@@ -1250,11 +1272,14 @@ typename BaseUnitTriResultAnalysis<Child>::State BaseUnitTriResultAnalysis<Child
 
   // transpose of upper triangular is lower triangular and vice versa
   if (auto transposeOp = dyn_cast<stablehlo::TransposeOp>(op)) {
-    if (isTrueTranspose(transposeOp) && ((Child*)this)->otherResultAnalysis(transposeOp.getOperand(), rewriter)) 
-    return State::GUARANTEED;
+    if (isTrueTranspose(transposeOp) &&
+        ((Child *)this)
+            ->otherResultAnalysis(transposeOp.getOperand(), rewriter))
+      return State::GUARANTEED;
   }
 
-  // if iota operations are used to set the diagonal of a triangular matrix to one
+  // if iota operations are used to set the diagonal of a triangular matrix to
+  // one
   if (auto selectOp = dyn_cast<stablehlo::SelectOp>(op)) {
     if (checkIotaCompare(selectOp, rewriter)) {
       return State::GUARANTEED;
@@ -1263,12 +1288,14 @@ typename BaseUnitTriResultAnalysis<Child>::State BaseUnitTriResultAnalysis<Child
 
   bool recursiveCheck = false;
 
-  // unary ops where op(0) = 0 and op(1) = 1 
-  if (isa<stablehlo::AbsOp, stablehlo::SqrtOp, stablehlo::CbrtOp, stablehlo::CeilOp, stablehlo::FloorOp, stablehlo::RoundOp>(op)) {
+  // unary ops where op(0) = 0 and op(1) = 1
+  if (isa<stablehlo::AbsOp, stablehlo::SqrtOp, stablehlo::CbrtOp,
+          stablehlo::CeilOp, stablehlo::FloorOp, stablehlo::RoundOp>(op)) {
     recursiveCheck = true;
   }
   // elementwise ops where op(0, 0) = 0 and op(1, 1) = 1
-  if (isa<stablehlo::AndOp, stablehlo::MaxOp, stablehlo::MinOp, stablehlo::MulOp, stablehlo::OrOp>(op)) {
+  if (isa<stablehlo::AndOp, stablehlo::MaxOp, stablehlo::MinOp,
+          stablehlo::MulOp, stablehlo::OrOp>(op)) {
     recursiveCheck = true;
   }
 
@@ -1283,23 +1310,25 @@ typename BaseUnitTriResultAnalysis<Child>::State BaseUnitTriResultAnalysis<Child
     if (dotDimNumbers.getLhsBatchingDimensions().size() == 0 &&
         dotDimNumbers.getRhsBatchingDimensions().size() == 0 &&
         lhsCDims.size() == 1 && rhsCDims.size() == 1) {
-      if (lhsCDims[0] == 1 && rhsCDims[0] == 0 ) { 
+      if (lhsCDims[0] == 1 && rhsCDims[0] == 0) {
         recursiveCheck = true;
       } else if (lhsCDims[0] == 0 && rhsCDims[1] == 1) {
         // equivalent to multiplying transposes of matrices
-        if (((Child *)this)->otherResultAnalysis(lhs, rewriter) && ((Child *)this)->otherResultAnalysis(rhs, rewriter)) {
+        if (((Child *)this)->otherResultAnalysis(lhs, rewriter) &&
+            ((Child *)this)->otherResultAnalysis(rhs, rewriter)) {
           return State::GUARANTEED;
         }
       } else if (lhsCDims[0] == 0 && rhsCDims[0] == 0) {
-        if (((Child *)this)->otherResultAnalysis(lhs, rewriter)) 
-          if (this->guaranteed(rhs, rewriter)) return State::GUARANTEED;
+        if (((Child *)this)->otherResultAnalysis(lhs, rewriter))
+          if (this->guaranteed(rhs, rewriter))
+            return State::GUARANTEED;
       } else if (lhsCDims[0] == 1 && rhsCDims[0] == 1) {
-        if (((Child *)this)->otherResultAnalysis(rhs, rewriter)) 
-          if (this->guaranteed(lhs, rewriter)) return State::GUARANTEED;
+        if (((Child *)this)->otherResultAnalysis(rhs, rewriter))
+          if (this->guaranteed(lhs, rewriter))
+            return State::GUARANTEED;
       }
     }
   } // TODO this is shared with non-unit triangular matrices, refactor
-
 
   if (recursiveCheck) {
     bool allOperandsGuaranteed = true;
