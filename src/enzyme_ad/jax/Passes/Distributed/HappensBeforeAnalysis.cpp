@@ -61,7 +61,7 @@ llvm::SmallVector<EventOpInterface> all_events_simultaneous_with(Value handle) {
   llvm::SmallVector<EventOpInterface> result;
   for (Operation *user : handle.getUsers()) {
     if (auto eventOp = dyn_cast<EventOpInterface>(user)) {
-      if (llvm::is_contained(eventOp.happensAfter(), handle)) {
+      if (llvm::is_contained(eventOp.simultaneousWith(), handle)) {
         result.push_back(eventOp);
       }
     }
@@ -74,7 +74,7 @@ llvm::SmallVector<EventOpInterface> all_events_simultaneous_with(Value handle) {
 std::optional<EventOpInterface> any_event_simultaneous_with(Value handle) {
   for (Operation *user : handle.getUsers()) {
     if (auto eventOp = dyn_cast<EventOpInterface>(user)) {
-      if (llvm::is_contained(eventOp.happensAfter(), handle)) {
+      if (llvm::is_contained(eventOp.simultaneousWith(), handle)) {
         return eventOp;
       }
     }
@@ -93,7 +93,7 @@ void HappensBeforeAnalysis::scanSimultaneousOperations(LaneOpInterface laneOp) {
       // If it implements the Event op interface we can query for the
       // handles it is simultaenous with.
       if (auto eventOp = dyn_cast<EventOpInterface>(op)) {
-        for (Value handle : eventOp.simulatenousWith()) {
+        for (Value handle : eventOp.simultaneousWith()) {
           for (EventOpInterface otherEventOp :
                all_events_simultaneous_with(handle)) {
             markSimultaneous(&op, otherEventOp.getOperation());
@@ -188,7 +188,7 @@ bool HappensBeforeAnalysis::happensBefore(Operation *a, Operation *b) const {
   return llvm::is_contained(succIt->second, b);
 }
 
-bool HappensBeforeAnalysis::simulatenousWith(Operation *a, Operation *b) const {
+bool HappensBeforeAnalysis::simultaneousWith(Operation *a, Operation *b) const {
   if (!a || !b)
     return false;
   if (!simultaneousClasses.contains(a) || !simultaneousClasses.contains(b))
